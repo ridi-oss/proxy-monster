@@ -1,0 +1,47 @@
+name: commit convention
+
+# release-please derives every version and changelog entry from commit subjects, so a subject it cannot
+# parse drops the change from the release notes and a missed `feat:` or `!` bumps the wrong number.
+#
+# Checks the PR title, which squash-merge uses as the commit subject here
+# (squash_merge_commit_title = COMMIT_OR_PR_TITLE), and every commit the PR adds, since merge and rebase
+# are also enabled and land the individual subjects instead.
+on:
+  pull_request:
+    types: [opened, edited, reopened, synchronize]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  subjects:
+    name: subjects are conventional commits
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      # Full history: the commit range is diffed against the merge base with the PR's base branch.
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+
+      - name: Check the PR title
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          printf '%s' "$PR_TITLE" | npx --yes @commitlint/cli@21 --config commitlint.config.js
+
+      - name: Check every added commit subject
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          npx --yes @commitlint/cli@21 --config commitlint.config.js --from "$BASE_SHA" --to "$HEAD_SHA"

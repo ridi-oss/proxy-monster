@@ -67,6 +67,12 @@ handful of skips; zero skips is not the signal to look for.
   Coverage gaps are security gaps.
 - Kotlin uses standard conventions and Gradle (Kotlin DSL); Go uses the standard
   toolchain.
+- Commit subjects and pull request titles follow
+  [Conventional Commits](https://www.conventionalcommits.org):
+  `type(scope)!: subject`. The type is one of `feat`, `fix`, `perf`, `refactor`,
+  `build`, `docs`, `test`, `ci`, `chore`, `style`, `revert` — the component goes
+  in the scope, so `fix(web): wrap long Cedar lines`, not `web: ...`. A `!`
+  marks a breaking change. CI checks this on every pull request.
 
 Design docs follow the house style of
 [docs/authz-model.md](./docs/authz-model.md): lead with a short decision,

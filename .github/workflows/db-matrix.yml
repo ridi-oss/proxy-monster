@@ -124,7 +124,7 @@ jobs:
           PG: ${{ matrix.pg }}
           MYSQL: ${{ matrix.mysql }}
 
-      - uses: actions/upload-artifact@v5
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: control-plane-${{ steps.leg.outputs.slug }}

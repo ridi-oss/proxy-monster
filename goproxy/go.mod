@@ -8,15 +8,12 @@ require (
 	github.com/go-sql-driver/mysql v1.8.1
 	github.com/jackc/pgx/v5 v5.7.1
 	github.com/ridi-oss/proxy-monster/analyzer v0.0.0-00010101000000-000000000000
-	github.com/ridi-oss/proxy-monster/mysqlwire v0.0.0
+	github.com/ridi-oss/proxy-monster/mysqlwire v0.1.0
 	github.com/testcontainers/testcontainers-go v0.34.0
 	golang.org/x/crypto v0.27.0
 	google.golang.org/grpc v1.68.1
 	google.golang.org/protobuf v1.35.2
 )
-
-// In-repo modules: resolve locally (no go.work needed for CI / fresh clones).
-replace github.com/ridi-oss/proxy-monster/mysqlwire => ../mysqlwire
 
 // analyzer/probe (Go-to-Go, no cgo — cmd/libsqlglot is a separate package this never imports) is the
 // single source of truth for identifier normalization; introspect.go calls it directly instead of

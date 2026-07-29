@@ -36,6 +36,8 @@ type cli struct {
 	Stop    stopCmd    `cmd:"" help:"Stop the daemon."`
 	Restart restartCmd `cmd:"" help:"Stop the daemon and start a fresh one."`
 	Daemon  daemonCmd  `cmd:"" hidden:"" help:"Run the daemon in the foreground (the exec target of 'pmon start')."`
+
+	Version kong.VersionFlag `help:"Print the version and exit." short:"V"`
 }
 
 func main() {
@@ -44,6 +46,7 @@ func main() {
 		kong.Name("pmon"),
 		kong.Description("proxy-monster connector — reach a datasource on a stable local port with a password that never changes."),
 		kong.UsageOnError(),
+		kong.Vars{"version": Version},
 	)
 	ctx.FatalIfErrorf(ctx.Run())
 }

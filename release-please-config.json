@@ -1,0 +1,36 @@
+{
+  "$schema": "https://raw.githubusercontent.com/googleapis/release-please/main/schemas/config.json",
+  "separate-pull-requests": true,
+  "include-v-in-tag": true,
+  "changelog-sections": [
+    { "type": "feat", "section": "Features" },
+    { "type": "fix", "section": "Bug Fixes" },
+    { "type": "perf", "section": "Performance" },
+    { "type": "refactor", "section": "Refactoring" },
+    { "type": "build", "section": "Build & Dependencies" },
+    { "type": "docs", "section": "Documentation" },
+    { "type": "test", "section": "Tests", "hidden": true },
+    { "type": "ci", "section": "CI", "hidden": true },
+    { "type": "chore", "section": "Chores", "hidden": true }
+  ],
+  "packages": {
+    ".": {
+      "component": "server",
+      "release-type": "simple",
+      "changelog-path": "CHANGELOG.md",
+      "exclude-paths": ["pmon", "pmontray", "mysqlwire"]
+    },
+    "pmon": {
+      "component": "pmon",
+      "release-type": "go",
+      "version-file": "version.go",
+      "changelog-path": "CHANGELOG.md"
+    },
+    "mysqlwire": {
+      "component": "mysqlwire",
+      "release-type": "go",
+      "tag-separator": "/",
+      "changelog-path": "CHANGELOG.md"
+    }
+  }
+}

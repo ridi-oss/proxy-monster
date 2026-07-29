@@ -1,0 +1,30 @@
+name: release-please
+
+# Trains and their tags are in release-please-config.json. Merging a release PR is what tags and
+# publishes; a push to main only opens or updates the PR.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# Two concurrent runs would race on the same release branches.
+concurrency:
+  group: release-please
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: googleapis/release-please-action@v4
+        with:
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+          # GITHUB_TOKEN cannot trigger other workflows, so the release PR does not start CI. CI already
+          # ran on every commit it collects.
+          token: ${{ secrets.GITHUB_TOKEN }}

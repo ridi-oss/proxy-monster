@@ -26,6 +26,7 @@ step — there is no separate command to start brokering.
 | `pmon show <ds>` | One datasource's local connection string |
 | `pmon status` | Daemon state: login, expiry, brokered datasources, live connections |
 | `pmon start` / `stop` / `restart` | Daemon lifecycle (`-f` / `--force` on `stop` and `restart` skips the live-connection prompt) |
+| `pmon --version` | The release this binary was built from |
 
 ### Connection-string formats
 

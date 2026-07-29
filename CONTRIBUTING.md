@@ -73,6 +73,31 @@ Design docs follow the house style of
 justify after, stay grounded in real files, show worked examples, and name the
 failure modes. The design-doc index is [docs/README.md](./docs/README.md).
 
+## Releases
+
+Three release trains, each with its own version and changelog
+(`release-please-config.json`). Merging a release PR tags and publishes; a push
+to `main` only opens or updates the PR.
+
+<!-- prettier-ignore -->
+| Train | Tag | Covers |
+| --- | --- | --- |
+| Server | `server-v0.1.0` | `goproxy`, `control-plane`, `auditmon`, `engine`, `auth`, `proto`, `web` |
+| Client | `pmon-v0.1.0` | `pmon`, the client CLI |
+| Library | `mysqlwire/v0.1.0` | `mysqlwire`, published for `go get` |
+
+The paths a commit touches decide its train, so a `pmon/` change never bumps the
+server. Subjects follow
+[Conventional Commits](https://www.conventionalcommits.org):
+`feat:`/`fix:`/`perf:` appear in the changelog, `chore:`/`test:`/`ci:` do not,
+and `!` or a `BREAKING CHANGE:` footer drives the major bump.
+
+`mysqlwire`'s tag carries a slash because Go requires that prefix for a module
+outside the repository root. Inside the workspace `go.work` still resolves the
+in-repo modules locally, so an unreleased `mysqlwire` edit reaches `goproxy` and
+`pmon` immediately; only a standalone build (`GOWORK=off`) uses the pinned
+version.
+
 ## License
 
 proxy-monster is licensed under the [Apache License 2.0](./LICENSE). Section 5

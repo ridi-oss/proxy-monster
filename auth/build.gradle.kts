@@ -18,7 +18,7 @@ dependencies {
     implementation("org.postgresql:postgresql:42.7.4")
 
     testImplementation(kotlin("test"))
-    testImplementation("com.zaxxer:HikariCP:6.2.1")
+    testImplementation("com.zaxxer:HikariCP:7.1.0")
     testImplementation("org.testcontainers:testcontainers:$testcontainersVersion")
     testImplementation("org.testcontainers:postgresql:$testcontainersVersion")
 }

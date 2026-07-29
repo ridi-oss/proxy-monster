@@ -54,7 +54,7 @@ dependencies {
 
     // Control-plane store: PostgreSQL only (plain JDBC + Hikari pooling + Flyway migrations).
     // Db.kt hardcodes org.postgresql.Driver; there is no MySQL store variant.
-    implementation("com.zaxxer:HikariCP:6.2.1")
+    implementation("com.zaxxer:HikariCP:7.1.0")
     implementation("org.postgresql:postgresql:42.7.4")
     // Target databases (what the proxy protects) are a separate axis from the store above.
     // MySQL is the primary target engine. Connector/J drives the MySQL-target DB-backed tests;

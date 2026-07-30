@@ -26,8 +26,10 @@ import (
 	"github.com/ridi-oss/proxy-monster/goproxy/spi"
 )
 
-// queryTimeout bounds every introspection query.
-const queryTimeout = 30 * time.Second
+// queryTimeout bounds every introspection query. A full catalog scan of a large schema on a remote
+// backend has been measured at ~53s, so a bound near that turns an ordinary slow scan into a failed
+// refresh; this leaves room for one well clear of the observed cost.
+const queryTimeout = 120 * time.Second
 
 // connectTimeout bounds establishing the introspection connection to the target.
 const connectTimeout = 5 * time.Second
@@ -113,23 +115,31 @@ func Run(opener TargetOpener, target spi.BackendTarget) (*pb.CatalogRequest, err
 	// (a dial failure returns immediately, no reconnect), and every probe runs on it.
 	connectCtx, connectCancel := context.WithTimeout(context.Background(), connectTimeout+queryTimeout)
 	defer connectCancel()
+	started := time.Now()
 	conn, err := db.Conn(connectCtx)
 	if err != nil {
 		return nil, fmt.Errorf("introspect: connecting to target: %w", err)
 	}
 	defer conn.Close()
+	connectMs := time.Since(started).Milliseconds()
 
+	phase := time.Now()
 	engineVersion := probeVersion(conn)
+	versionMs := time.Since(phase).Milliseconds()
 
+	phase = time.Now()
 	defaultSchemas, mysqlLowerCaseTableNames, err := opener.ProbeNamespace(conn, target.Db)
 	if err != nil {
 		return nil, err
 	}
+	namespaceMs := time.Since(phase).Milliseconds()
 
+	phase = time.Now()
 	columns, err := introspectColumns(conn)
 	if err != nil {
 		return nil, err
 	}
+	columnsMs := time.Since(phase).Milliseconds()
 
 	// Normalize to the SAME canonical spelling the analyzer treats as authoritative (analyzer/probe,
 	// Go-to-Go — no FFM/marshaling) — an identity function for Postgres, MySQL's role-aware fold
@@ -144,19 +154,30 @@ func Run(opener TargetOpener, target spi.BackendTarget) (*pb.CatalogRequest, err
 	if mysqlLowerCaseTableNames != nil {
 		lctnMode = int(*mysqlLowerCaseTableNames)
 	}
+	phase = time.Now()
 	dbImpl := opener.NewDb()
 	columns = dbImpl.NormalizeColumns(lctnMode, columns)
 	defaultSchemas = normalizeSchemas(dbImpl, lctnMode, defaultSchemas)
+	normalizeMs := time.Since(phase).Milliseconds()
 
 	distinctTables := map[string]struct{}{}
 	for _, c := range columns {
 		distinctTables[c.GetSchema()+"."+c.GetTable()] = struct{}{}
 	}
+	// Per-phase timings, not just the total: introspection against a remote backend has been observed
+	// taking tens of seconds, and the total alone cannot say whether that is the dial, the catalog scan,
+	// or the fold over every column.
 	slog.Info("introspected catalog",
 		"columns", len(columns),
 		"tables", len(distinctTables),
 		"default_schemas", defaultSchemas,
 		"engine_version", engineVersion,
+		"total_ms", time.Since(started).Milliseconds(),
+		"connect_ms", connectMs,
+		"version_ms", versionMs,
+		"namespace_ms", namespaceMs,
+		"columns_ms", columnsMs,
+		"normalize_ms", normalizeMs,
 	)
 
 	return &pb.CatalogRequest{

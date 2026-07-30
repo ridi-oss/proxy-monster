@@ -356,11 +356,15 @@ func (c *Client) PushCatalog(catalog *pb.CatalogRequest) error {
 	ctx, cancel := context.WithTimeout(context.Background(), rpcDeadline)
 	defer cancel()
 
+	started := time.Now()
 	ack, err := c.stub.PushCatalog(c.outCtx(ctx), catalog)
 	if err != nil {
 		return fmt.Errorf("cp: push catalog for %q: %w", c.datasourceName, err)
 	}
-	slog.Info("pushed catalog", "datasource", c.datasourceName, "columns", ack.GetColumns())
+	// Paired with introspect.Run's phase breakdown, this closes the refresh cycle: a slow refresh is
+	// either the backend scan or this push, and the two logs together say which.
+	slog.Info("pushed catalog", "datasource", c.datasourceName, "columns", ack.GetColumns(),
+		"push_ms", time.Since(started).Milliseconds())
 	return nil
 }
 

@@ -358,9 +358,9 @@ class ControlPlaneGrpcService(
             // failure (fix the caller's engine or delete-and-recreate), not a server error.
             throw StatusException(Status.FAILED_PRECONDITION.withDescription(e.message))
         }
-        // A retarget makes the stored catalog describe a different database, which is why register drops the
-        // persisted columns. The enforcement state is the same hazard and outlives that delete: a connection
-        // opening next would otherwise start from structure measured on the database that is no longer there.
+        // The catalog push that follows registration cannot repair this: it only confirms content it agrees
+        // with, and a retarget is precisely the case where it disagrees. So the held structure would survive,
+        // describing a database that is no longer there, and the next connection would adopt it.
         if (priorDbName != null && priorDbName != ds.dbName) {
             val dropped = core.connectionCatalog.invalidateDatasource(ds.name)
             log.info(

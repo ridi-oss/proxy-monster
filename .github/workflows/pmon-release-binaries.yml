@@ -1,0 +1,77 @@
+name: pmon release binaries
+
+# Attaches per-platform pmon archives to a pmon-v* release, so the Homebrew formula installs a binary
+# instead of compiling Go on every machine.
+on:
+  push:
+    tags: ["pmon-v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing pmon-v* tag to build and upload"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  binaries:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: pmon/go.mod
+
+      - name: Build and archive every platform
+        env:
+          TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          set -uo pipefail
+          version="${TAG#pmon-v}"
+          mkdir -p dist
+
+          # Every target is attempted even after one fails — a broken platform is a fact about that
+          # platform, and the others still need to report (the same reason db-matrix.yml sets
+          # fail-fast: false). Hence no `set -e`: failures accumulate and the step exits once at the end.
+          #
+          # CGO_ENABLED=0 keeps each binary static, so it runs on any host of that platform regardless
+          # of libc. GOWORK=off because the repo root is a workspace; a release build resolves pmon's
+          # own go.mod, the same as a fresh clone or a formula build.
+          failed=()
+          for target in darwin/arm64 darwin/amd64 linux/amd64 linux/arm64; do
+            os="${target%/*}"; arch="${target#*/}"
+            echo "::group::$os/$arch"
+            if (cd pmon && GOWORK=off CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" \
+                  go build -trimpath -ldflags '-s -w' -o "../dist/pmon" .) &&
+               tar -C dist -czf "dist/pmon_${version}_${os}_${arch}.tar.gz" pmon; then
+              echo "built $os/$arch"
+            else
+              echo "::error::pmon build failed for $os/$arch"
+              failed+=("$os/$arch")
+            fi
+            rm -f dist/pmon
+            echo "::endgroup::"
+          done
+
+          if [ ${#failed[@]} -ne 0 ]; then
+            echo "::error::${#failed[@]} of 4 targets failed: ${failed[*]}"
+            exit 1
+          fi
+
+          # One checksum file over the archives, so a formula bump can read the hash it needs and a
+          # user can verify a download independently.
+          (cd dist && shasum -a 256 *.tar.gz > checksums.txt)
+          cat dist/checksums.txt
+
+      - name: Attach them to the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          gh release upload "$TAG" dist/*.tar.gz dist/checksums.txt --repo "$GITHUB_REPOSITORY" --clobber

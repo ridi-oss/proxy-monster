@@ -21,10 +21,16 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
+      # A GitHub App installation token, not GITHUB_TOKEN: events from GITHUB_TOKEN cannot start another
+      # workflow, so a release PR's checks sit unrunnable — and main requires them to merge.
+      - uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        id: token
+        with:
+          client-id: ${{ vars.RELEASE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+
       - uses: googleapis/release-please-action@v4
         with:
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
-          # GITHUB_TOKEN cannot trigger other workflows, so the release PR does not start CI. CI already
-          # ran on every commit it collects.
-          token: ${{ secrets.GITHUB_TOKEN }}
+          token: ${{ steps.token.outputs.token }}

@@ -325,6 +325,10 @@ class EditorSubmitRouteDbTest {
             }
             assertEquals("approval.execute_denied", resultStore.meta(ack.taskId)?.errorCode)
             assertNull(resultStore.accessFor(ack.taskId)?.decrypted, "a DENY saves no readable rows")
+            // A denial is a decision, so the reason must reach the polling client: it is what the console
+            // shows instead of a generic failure, and what the approval request is composed against. The
+            // proxy sent this exact string above; an error code alone leaves the requester nowhere to go.
+            assertEquals("policy denies", resultStore.meta(ack.taskId)?.denyReason)
 
             client.delete("/api/editor/sessions/${session.sessionId}")
             session.await()

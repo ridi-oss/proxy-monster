@@ -56,6 +56,11 @@ updates:
 
   - package-ecosystem: npm
     directory: /web
+    # @types/node tracks the Node major the toolchain runs (mise.toml, and the CI setup-node), so a
+    # bump past it types against APIs the runtime does not have. Raise this together with that pin.
+    ignore:
+      - dependency-name: "@types/node"
+        versions: [">=25"]
     schedule:
       interval: weekly
     commit-message:

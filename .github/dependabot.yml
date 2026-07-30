@@ -4,12 +4,17 @@
 # Grouped per ecosystem rather than one PR per dependency: the JVM and Go trees each
 # pin transitively-coupled sets (grpc-java + protobuf, the AWS SDK modules), and
 # splitting those lands a PR that cannot build on its own.
+# Every PR title is a conventional-commit subject: `build(deps): …`. Dependabot writes
+# "Bump x from a to b" by default, which the PR-title check rejects, so the prefix is set
+# per ecosystem rather than renamed by hand on each PR.
 version: 2
 updates:
   - package-ecosystem: gradle
     directory: /
     schedule:
       interval: weekly
+    commit-message:
+      prefix: build(deps)
     open-pull-requests-limit: 5
     groups:
       jvm:
@@ -28,6 +33,8 @@ updates:
       - /pmontray
     schedule:
       interval: weekly
+    commit-message:
+      prefix: build(deps)
     open-pull-requests-limit: 5
     groups:
       go:
@@ -38,6 +45,8 @@ updates:
     directory: /web
     schedule:
       interval: weekly
+    commit-message:
+      prefix: build(deps)
     open-pull-requests-limit: 5
     groups:
       web:
@@ -48,3 +57,5 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    commit-message:
+      prefix: build(deps)

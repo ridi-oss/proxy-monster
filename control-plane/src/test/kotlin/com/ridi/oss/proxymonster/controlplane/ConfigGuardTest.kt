@@ -78,6 +78,35 @@ class ConfigGuardTest {
         }
     }
 
+    @Test fun `the run stream outlives the dial and exchange it wraps`() {
+        // The stream opens before the proxy reports ready, so its lifetime spans BOTH the dial and the
+        // statement exchange. If it expires first the control plane tears down a statement that is still
+        // legitimately running, and the caller sees a stream-closed error instead of a timeout. The margin
+        // is arithmetic across three files, so pin it here rather than leave it to inspection.
+        for (timeout in listOf(1L, 600L, 840L, 3600L, Config.MAX_QUERY_TIMEOUT_SECONDS)) {
+            val config = Config.fromEnv(envOf("PM_QUERY_TIMEOUT" to timeout.toString()))
+            val streamTimeout = runStreamTimeoutMs(config.queryExchangeTimeoutMs)
+            assertTrue(
+                streamTimeout > DIAL_TIMEOUT_MS + config.queryExchangeTimeoutMs,
+                "run stream ($streamTimeout ms) must outlive dial + exchange " +
+                    "(${DIAL_TIMEOUT_MS + config.queryExchangeTimeoutMs} ms) for timeout=$timeout",
+            )
+        }
+    }
+
+    @Test fun `the exchange budget outlives the proxy's own statement watchdog`() {
+        // The proxy aborts a statement at PM_QUERY_TIMEOUT. This bound sits outside that one, so it has to
+        // fire later — otherwise the control plane reports a timeout for a query the proxy goes on to
+        // finish, and the two ends disagree about whether it ran.
+        for (timeout in listOf(1L, 600L, 3600L, Config.MAX_QUERY_TIMEOUT_SECONDS)) {
+            val config = Config.fromEnv(envOf("PM_QUERY_TIMEOUT" to timeout.toString()))
+            assertTrue(
+                config.queryExchangeTimeoutMs > timeout * 1000,
+                "exchange budget must outlast the proxy watchdog for timeout=$timeout",
+            )
+        }
+    }
+
     @Test fun `PM_TRUSTED_PROXIES parses comma-separated entries, trimmed, with blanks dropped`() {
         assertEquals(
             setOf("10.0.0.1", "10.0.0.2"),

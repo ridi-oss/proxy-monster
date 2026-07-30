@@ -464,6 +464,21 @@ path and `POST /api/datasources/{id}/query`, not the interactive editor.
   admission so passthrough only ever sees a pure session statement. Hard gate:
   per-statement re-decide (or an explicit session-mutation refusal) must remain
   the standing mitigation.
+- 🟡 Catalog adoption assumes one backend behind a datasource. On MySQL a new
+  connection may start from catalog content the control plane already holds
+  rather than measuring the backend itself, so its first statement decides
+  without a round-trip. That is sound because every backend session for a
+  datasource is opened by one proxy process against one target with one service
+  account, which is what makes a catalog scan the same for every connection —
+  MySQL temporary tables never appear in `information_schema` and reach a
+  decision through the per-request overlay instead. Two changes would break it
+  silently: running several proxies for one datasource against backends that can
+  disagree (a replica behind a load balancer, mid-failover), or varying backend
+  credentials per session, since `information_schema` is privilege-filtered and
+  two accounts legitimately see different columns. An adopting connection would
+  then decide against structure its own backend never had. PostgreSQL never
+  adopts: its `pg_temp_*` schemas are per-session and catalog-visible, so a
+  fragment there is only true for the connection that measured it.
 - 🟡 No concurrent-editor-session cap (auth'd DoS surface). Each open session
   pins ONE unpooled backend connection on the proxy for the life of its run
   stream, which `RUN_STREAM_TIMEOUT_MS` caps at 15 minutes. The proxy releases
@@ -480,10 +495,12 @@ path and `POST /api/datasources/{id}/query`, not the interactive editor.
   idle sweep, explicit close, or cleanup after a failed query. Neither TTL is a
   flat constant: both are floors that grow with `PM_QUERY_TIMEOUT` so a token
   never expires under the statement it authorizes. The editor session token
-  requests max(8h, `PM_QUERY_TIMEOUT` + 120s); the one-shot `run` token — the
+  requests max(8h, `PM_QUERY_TIMEOUT` + 180s); the one-shot `run` token — the
   approval-execute path and `POST /api/datasources/{id}/query` — requests
-  max(300s, `PM_QUERY_TIMEOUT` + 120s), so at the default 600s timeout it is
-  720s, not the 300s floor. `TokenStore.issue` then clamps every request into
+  max(900s, `PM_QUERY_TIMEOUT` + 180s), so at the default 600s timeout it is
+  900s, the floor. The floor covers a full-length dial plus a full-length
+  exchange, so a short `PM_QUERY_TIMEOUT` cannot leave a cold session's token
+  expiring mid-statement. `TokenStore.issue` then clamps every request into
   [60s, 24h], which is the real ceiling on both. A run-stream timeout or
   canceled HTTP query does not itself revoke it. It is barred from the
   wire-session handshake (`TokenStore.validate` rejects `kind='EDITOR'`), so a

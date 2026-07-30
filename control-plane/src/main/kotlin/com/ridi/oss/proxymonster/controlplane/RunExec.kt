@@ -23,18 +23,27 @@ import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 
 // Floor for a one-shot run token's TTL; the effective TTL grows to cover PM_QUERY_TIMEOUT (see
-// RunExecService.runTokenTtlSeconds). Comfortably covers dial + the exchange grace on short timeouts.
-private const val RUN_TOKEN_TTL_FLOOR_SECONDS = 300L
+// RunExecService.runTokenTtlSeconds). The floor alone must outlast a full-length dial plus a full-length
+// exchange, so a short PM_QUERY_TIMEOUT cannot leave a cold session's token expiring mid-statement.
+private const val RUN_TOKEN_TTL_FLOOR_SECONDS = 900L
 // A persistent editor SESSION token outlives many queries; give it a generous absolute TTL (sliding
 // refresh-on-activity is a follow-up) and bound the session with idle-sweep + explicit close. Per-session
 // and revoked on close, so a long TTL is not a standing credential.
 private const val EDITOR_SESSION_TTL_SECONDS = 8 * 3600L
 // Headroom added over PM_QUERY_TIMEOUT for a run token's TTL: covers the dial (DIAL_TIMEOUT_MS), the
 // CP exchange grace (Config.QUERY_EXCHANGE_GRACE_MS), and revalidation buffer, so the token never
-// expires while the statement it authorizes is still in flight.
-private const val TOKEN_TTL_GRACE_SECONDS = 120L
-internal const val DIAL_TIMEOUT_MS = 10_000L
-internal const val EXCHANGE_TIMEOUT_MS = 120_000L
+// expires while the statement it authorizes is still in flight. Must stay above DIAL_TIMEOUT_MS with
+// room to spare — a token that dies during a slow cold dial takes the session with it.
+private const val TOKEN_TTL_GRACE_SECONDS = 180L
+// The dial is not just a connect: the proxy also satisfies the connection's opening catalog commands
+// before it reports ready, and on a cold session against a large remote backend that is several schema
+// scans. Measured cold opens took ~26s, so a 10s bound failed them outright while the work was still
+// running.
+internal const val DIAL_TIMEOUT_MS = 120_000L
+// Fallback only: every production path passes Config.queryExchangeTimeoutMs, which tracks
+// PM_QUERY_TIMEOUT plus a grace so the proxy's own watchdog always fires first. This value exists for
+// callers that supply no config, and matches the default query timeout on the same principle.
+internal const val EXCHANGE_TIMEOUT_MS = 630_000L
 
 /** A CP-driven request waiting for the proxy to dial its dedicated [ControlRunMsg] stream. */
 data class PendingSession(
@@ -257,6 +266,7 @@ class RunExecService(
         taskId: Long? = null,
         preflight: (() -> Boolean)? = null,
         exchangeTimeoutMs: Long = EXCHANGE_TIMEOUT_MS,
+        dialTimeoutMs: Long = DIAL_TIMEOUT_MS,
     ): QueryResponse {
         val started = System.nanoTime()
         val issued = core.dataSource.mintForActivePrincipalLocked(principal, core.userGroupStore) { c ->
@@ -278,6 +288,7 @@ class RunExecService(
         val opened = core.connectionCatalog.open(
             Binding(ds.name, principal, kind),
             ds.defaultSchemas + ds.engine.systemSchemas,
+            adoptHeldContent = ds.engine.catalogIsConnectionIndependent,
         )
         val sessionId = UUID.randomUUID().toString()
         val pending = PendingSession(sessionId, principal, issued.id, CompletableDeferred())
@@ -295,7 +306,7 @@ class RunExecService(
             }
 
             attached = try {
-                withTimeout(DIAL_TIMEOUT_MS) { pending.ready.await() }
+                withTimeout(dialTimeoutMs) { pending.ready.await() }
             } catch (e: TimeoutCancellationException) {
                 throw ProxyRunTimeoutException(e)
             }
@@ -369,6 +380,7 @@ class RunExecService(
         val opened = core.connectionCatalog.open(
             Binding(ds.name, principal, TokenKind.EDITOR.name),
             ds.defaultSchemas + ds.engine.systemSchemas,
+            adoptHeldContent = ds.engine.catalogIsConnectionIndependent,
         )
         val sessionId = UUID.randomUUID().toString()
         val pending = PendingSession(sessionId, principal, issued.id, CompletableDeferred())

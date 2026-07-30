@@ -4,11 +4,13 @@ import com.ridi.oss.proxymonster.controlplane.Attached
 import com.ridi.oss.proxymonster.controlplane.AttachedTableDetail
 import com.ridi.oss.proxymonster.controlplane.AuditEvent
 import com.ridi.oss.proxymonster.controlplane.CatalogColumn
+import com.ridi.oss.proxymonster.controlplane.FragmentColumn
 import com.ridi.oss.proxymonster.controlplane.Binding
 import com.ridi.oss.proxymonster.controlplane.CatalogMutationResult
 import com.ridi.oss.proxymonster.controlplane.Channel
 import com.ridi.oss.proxymonster.controlplane.ControlPlaneCore
 import com.ridi.oss.proxymonster.controlplane.DatasourceEngineConflictException
+import com.ridi.oss.proxymonster.controlplane.catalogIsConnectionIndependent
 import com.ridi.oss.proxymonster.controlplane.catalogName
 import com.ridi.oss.proxymonster.controlplane.EnforcementOutcome
 import com.ridi.oss.proxymonster.controlplane.DatasourceStore
@@ -129,6 +131,7 @@ class ControlPlaneGrpcService(
         val opened = core.connectionCatalog.open(
             Binding(ds.name, id.principal, id.kind),
             ds.defaultSchemas + ds.engine.systemSchemas,
+            adoptHeldContent = ds.engine.catalogIsConnectionIndependent,
         )
         return wireIdentity {
             principal = id.principal
@@ -200,6 +203,7 @@ class ControlPlaneGrpcService(
                 request.connectionId,
                 binding,
                 request.searchPathList + ds.defaultSchemas + ds.engine.systemSchemas,
+                adoptHeldContent = ds.engine.catalogIsConnectionIndependent,
             ) ?: throw StatusException(Status.ABORTED.withDescription("connection recovery raced with another request"))
             return beforeDecideDecision(recovered.onOpen)
         }
@@ -336,6 +340,7 @@ class ControlPlaneGrpcService(
                 )
             }
         }
+        val priorDbName = core.datasourceStore.getByName(request.name)?.dbName
         val ds = try {
             core.datasourceStore.register(
                 name = request.name,
@@ -352,6 +357,16 @@ class ControlPlaneGrpcService(
             // Engine is immutable at register — a mismatched re-register is a client precondition
             // failure (fix the caller's engine or delete-and-recreate), not a server error.
             throw StatusException(Status.FAILED_PRECONDITION.withDescription(e.message))
+        }
+        // A retarget makes the stored catalog describe a different database, which is why register drops the
+        // persisted columns. The enforcement state is the same hazard and outlives that delete: a connection
+        // opening next would otherwise start from structure measured on the database that is no longer there.
+        if (priorDbName != null && priorDbName != ds.dbName) {
+            val dropped = core.connectionCatalog.invalidateDatasource(ds.name)
+            log.info(
+                "datasource '{}' retargeted {} -> {}: dropped {} enforcement schema(s)",
+                ds.name, priorDbName, ds.dbName, dropped.size,
+            )
         }
         return registerResponse { name = ds.name }
     }
@@ -375,6 +390,19 @@ class ControlPlaneGrpcService(
             engineVersion = request.engineVersion,
             columns = pushedColumns,
         )
+        // This push is a fresh whole-catalog read of the backend, so where it agrees with content the
+        // enforcement pool already holds it re-measures that content — the ambient refresh keeps held
+        // fragments verified instead of only feeding the config catalog, and a connection is not made to
+        // re-probe a schema the proxy just confirmed.
+        val confirmed = core.connectionCatalog.recordAmbientMeasurement(
+            ds.name,
+            pushedColumns.groupBy({ it.schema }) {
+                FragmentColumn(it.schema, it.table, it.column, it.dataType, it.ordinal, it.nullable)
+            },
+        )
+        if (confirmed.isNotEmpty()) {
+            log.debug("datasource '{}': ambient refresh re-verified {} pooled schema(s)", ds.name, confirmed.size)
+        }
         // Which shipped system-classification manifest governs THIS datasource, resolved from the version the
         // proxy just pushed — so an operator sees at connect time whether its system schemas are classified,
         // on a fallback major, or uncertified (deny-by-default). Boot logs the available set; this logs the hit.

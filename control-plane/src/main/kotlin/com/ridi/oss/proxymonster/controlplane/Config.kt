@@ -140,7 +140,13 @@ data class Config(
         // The control-plane's per-statement exchange budget sits this far above the configured query
         // timeout so the proxy's PM_QUERY_TIMEOUT watchdog — which starts later, at backend exec — fires
         // first and cancels the statement in-band, rather than the CP exchange pre-empting it.
-        const val QUERY_EXCHANGE_GRACE_MS = 30_000L
+        // Headroom the exchange budget adds over the proxy's own statement watchdog. It has to absorb
+        // everything the proxy does around the guarded execution — the watchdog wraps only the backend
+        // statement, while authorization and the catalog probes before it run outside that guard and have
+        // been measured in the tens of seconds against a large remote catalog. Too small and the control
+        // plane calls a timeout on a statement whose watchdog has not fired, blaming the query for time
+        // spent before it started.
+        const val QUERY_EXCHANGE_GRACE_MS = 150_000L
 
         fun fromEnv(env: (String) -> String? = System::getenv): Config {
             val oidc = run {

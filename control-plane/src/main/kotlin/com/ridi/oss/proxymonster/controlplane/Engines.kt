@@ -126,6 +126,26 @@ fun Engine.isSystemSchema(schema: String): Boolean = when (this) {
 }
 
 /**
+ * Whether a schema's catalog content is the same for every connection to a datasource, so one connection's
+ * measurement answers for all of them.
+ *
+ * MySQL's temporary tables are absent from `information_schema.COLUMNS` entirely — a session's temp tables
+ * cannot appear in a catalog scan, so nothing a scan returns varies by connection. They reach a decision as
+ * the per-request temp overlay instead, never through the catalog. PostgreSQL's `pg_temp_*` schemas are real,
+ * per-session, and visible in the catalog, so there a fragment is only true for the connection that measured
+ * it.
+ *
+ * Where this is true, a connection may start from catalog content the control plane already holds rather than
+ * measuring the backend itself.
+ */
+val Engine.catalogIsConnectionIndependent: Boolean
+    get() = when (this) {
+        Engine.MYSQL -> true
+        Engine.POSTGRES -> false
+        else -> error("engine has no catalog scope: $this")
+    }
+
+/**
  * Parse a wire / registration engine string, fail-closed and case-insensitive: "mysql" → MYSQL,
  * "postgres" → POSTGRES, anything else throws. This is the one gate raw engine input passes through; it
  * accepts exactly the two canonical spellings the store persists and the proxy registers.

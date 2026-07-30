@@ -1,5 +1,8 @@
 package com.ridi.oss.proxymonster.controlplane.grpc
 
+import com.google.protobuf.ByteString
+import com.ridi.oss.proxymonster.controlplane.Binding
+import com.ridi.oss.proxymonster.controlplane.CatalogMutationResult
 import com.ridi.oss.proxymonster.controlplane.ControlPlaneCore
 import com.ridi.oss.proxymonster.controlplane.Datasource
 import com.ridi.oss.proxymonster.controlplane.DatasourceEngineConflictException
@@ -11,6 +14,7 @@ import com.ridi.oss.proxymonster.grpc.Engine
 import com.ridi.oss.proxymonster.grpc.catalogRequest
 import com.ridi.oss.proxymonster.grpc.column
 import com.ridi.oss.proxymonster.grpc.registerRequest
+import com.ridi.oss.proxymonster.grpc.schemaFragmentPush
 import io.grpc.Status
 import io.grpc.StatusException
 import io.grpc.netty.shaded.io.grpc.netty.NettyChannelBuilder
@@ -29,6 +33,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertNotNull
 import kotlin.test.assertFalse
+import kotlin.test.assertIs
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
@@ -476,6 +481,68 @@ class GrpcRegistrationHandlerDbTest {
         val rrn = cols.single { it.table == "users" && it.column == "rrn" }
         assertEquals("text", rrn.dataType)
         assertEquals("VARCHAR", rrn.sqlType, "the control-plane derives sql_type from the raw data_type")
+    }
+
+    @Test
+    fun `pushCatalog re-measures the enforcement catalog, not only the stored one`() = runBlocking {
+        // The staleness ceiling is set above the ambient refresh interval on the premise that the refresh
+        // keeps enforcement content verified. That premise is a single call in this handler: exercise it
+        // through the RPC, because a registry-level test would stay green if the wiring were removed and
+        // the refresh went back to feeding only the stored catalog.
+        stub.register(registerRequest { name = "reg-ambient"; engine = Engine.MYSQL; host = "h"; port = 1; dbName = "app" })
+        val ds = core.datasourceStore.getByName("reg-ambient")!!
+
+        // A connection measures `app` itself, so the control plane holds enforcement content for it.
+        val opened = core.connectionCatalog.open(Binding(ds.name, "p", "USER"), listOf("app"))
+        val applied = core.connectionCatalog.applyPush(
+            schemaFragmentPush {
+                connectionId = opened.connectionId
+                datasourceName = ds.name
+                schema = "app"
+                contentHash = ByteString.copyFromUtf8("h1")
+                backendGeneration = 1
+                columns.add(
+                    column { schema = "app"; table = "users"; this.column = "id"; dataType = "bigint"; ordinal = 1; nullable = false },
+                )
+            },
+            ds,
+        )
+        assertIs<CatalogMutationResult.Applied>(applied)
+        val measuredBefore = core.connectionCatalog.measuredNanosFor(ds.name, "app")!!
+
+        // The ambient refresh reports the same content for that schema.
+        stub.pushCatalog(
+            catalogRequest {
+                datasourceName = ds.name
+                defaultSchemas.add("app")
+                columns.add(
+                    column { schema = "app"; table = "users"; this.column = "id"; dataType = "bigint"; ordinal = 1; nullable = false },
+                )
+            },
+        )
+
+        // The recorded measurement time must have MOVED. Asserting that instead of "the adopter looks
+        // fresh" is deliberate: the adopter would look fresh anyway from the original measurement seconds
+        // earlier, so a freshness assertion holds even with this handler unwired and proves nothing.
+        val afterAmbient = core.connectionCatalog.measuredNanosFor(ds.name, "app")
+        assertNotNull(afterAmbient, "the enforcement entry must survive the push")
+        assertTrue(
+            afterAmbient > measuredBefore,
+            "pushCatalog must record its read against the enforcement catalog " +
+                "(before=$measuredBefore after=$afterAmbient)",
+        )
+
+        // The push confirms content; it never installs it.
+        val adopter = core.connectionCatalog.open(
+            Binding(ds.name, "later", "USER"), listOf("app"), adoptHeldContent = true,
+        )
+        assertTrue(adopter.onOpen.isEmpty(), "the ambient push must leave the adopter with nothing to fetch")
+        assertEquals(
+            listOf("id"),
+            core.connectionCatalog.structuralRows(
+                core.connectionCatalog.find(adopter.connectionId)!!,
+            ).map { it.column },
+        )
     }
 
     @Test

@@ -325,7 +325,11 @@ class GrpcRunExecDbTest {
         supervisorScope {
             val event = async { stub.events(eventsRequest { datasourceName = datasource.name }).first() }
             awaitUntil("Events stream attached") { datasource.name in core.proxyEventsHub.attached() }
-            val result = async { runCatching { service.run("timeout-user", datasource, "select 1", 500) } }
+            // Inject a short dial bound: the production one is sized for a cold session against a remote
+            // backend, and waiting it out here would buy nothing but a two-minute test.
+            val result = async {
+                runCatching { service.run("timeout-user", datasource, "select 1", 500, dialTimeoutMs = 1_000) }
+            }
             val open = withTimeout(5_000) { event.await() }.openRunChannel
 
             assertEquals("timeout-user", core.tokenStore.resolve(open.ephemeralToken)?.principal)

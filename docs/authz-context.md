@@ -68,7 +68,8 @@ is consumed by [`mcp-access-control.md`](./mcp-access-control.md).
 ## `requester_ip` — attestation
 
 `requester_ip` is a Cedar `ipaddr`, server-observed, never client-supplied. Two
-disjoint resolution cases, never blended:
+disjoint resolution cases, never blended (plus a development-only exception,
+[below](#the-development-only-simulated-address)):
 
 - Wire path: the proxy's socket peer (`client_addr` on `DecisionRequest`) is the
   requester.
@@ -102,6 +103,32 @@ meaningfully attested, not a flat-LAN guess. A cryptographically-attested
 tailnet capability (resolved via `whois`) is the intended stronger successor to
 matching on the raw IP; consuming policies would be unchanged because they read
 the derived tag, not the raw signal.
+
+### The development-only simulated address
+
+`PM_AUTH_DEBUG` is the one exception to "never client-supplied", and it exists
+because a tag rule keyed on a CIDR can otherwise never fire on a development box
+— every browser request there arrives from loopback, so everything the rule
+gates is unreachable. Under that bypass, `POST /auth/debug` accepts a
+`requesterIp`, stores it on the session row
+(`principal_session.debug_requester_ip`), and `httpRequesterIp` substitutes it
+for the observed peer.
+
+Scope it honestly:
+
+- It is **inert whenever `PM_AUTH_DEBUG` is off** — the resolver consults the
+  column only under the bypass, so a row left by a development run cannot weaken
+  a real deployment. `/auth/me` likewise reports it only under the bypass, so
+  the console never shows an address the decision path is ignoring.
+- It **widens what the bypass already grants**, and is not merely equivalent to
+  it. `PM_AUTH_DEBUG` already mints any role, so for a policy gated on role
+  alone it adds nothing. But a policy conditioned on role **and** network — the
+  shipped `-258` PII unmask, which needs `system:production-pii-accessor` _and_
+  the `trusted-network` tag — previously still required a genuinely in-range
+  peer. Simulating the address removes that second, independent factor. That is
+  acceptable only because it is confined to a bypass a production-looking
+  configuration refuses to start with (`Config.fromEnv`), not because the two
+  are equivalent.
 
 `requester_ip` reaches every authorize site, query and non-query alike. The
 datasource-scoped non-query sites (`requireAdmin` — the single choke point the
@@ -194,7 +221,9 @@ Constraints that keep it safe and simple:
 - Server-attested, never client-asserted — `channel` from the entry point,
   `requester_ip` from the observed connection, `tags` computed by the
   control-plane. A wire / editor client cannot set its channel, spoof its
-  source, or assert a tag.
+  source, or assert a tag. The sole exception is the development-only simulated
+  address above, which is honored only under `PM_AUTH_DEBUG` and forfeits
+  network as an independent factor for as long as that bypass is on.
 - Fail-closed at every step (raw resolution, tag pass, real decision).
 - Tag rules see only raw context — no tag-on-tag, so the pre-pass is a pure
   one-level function of attested inputs.

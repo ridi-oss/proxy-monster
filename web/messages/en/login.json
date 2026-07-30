@@ -15,6 +15,8 @@
   "rolesLabel": "Roles",
   "rolesPlaceholder": "add a role…",
   "rolesHint": "Press Enter to add each role.",
+  "requesterIpLabel": "Source IP (optional)",
+  "requesterIpHint": "Authorize this session as if it came from this address, to exercise a network-conditioned policy. Leave blank to use the real one.",
   "signingIn": "Signing in…",
   "signInAsDebugUser": "Sign in as debug user",
   "debugLoginDisabled": "Debug login is disabled on this control-plane (PM_AUTH_DEBUG is off).",

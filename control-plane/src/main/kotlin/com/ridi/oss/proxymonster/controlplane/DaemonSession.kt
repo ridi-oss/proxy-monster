@@ -79,6 +79,9 @@ data class WebSessionRow(
     val absoluteExpiresAt: Instant,
     val idleExpiresAt: Instant,
     val now: Instant,
+    // A simulated source address chosen at debug login, or null for every ordinary login. Read ONLY
+    // while the debug-authentication bypass is enabled; see [ApplicationCall.httpRequesterIp].
+    val debugRequesterIp: String? = null,
 )
 
 data class LivenessCandidate(
@@ -167,6 +170,9 @@ class PrincipalSessionStore(
         idleSeconds: Long,
         deviceId: String,
         c: Connection? = null,
+        // Set by the debug login, and carried over by the debug OAuth authorize when it remints the same
+        // principal's session. Read back only under the debug bypass.
+        debugRequesterIp: String? = null,
     ): Long {
         val encrypted = refreshToken?.let { crypto?.encrypt(it.toByteArray(Charsets.UTF_8)) }
         var displaced = 0
@@ -181,8 +187,8 @@ class PrincipalSessionStore(
             val id = connection.prepareStatement(
                 """WITH t AS (SELECT clock_timestamp() AS ts)
                    INSERT INTO principal_session
-                   (principal, refresh_token_enc, created_at, absolute_expires_at, idle_expires_at, liveness_status, device_id, kind)
-                   SELECT ?, ?, t.ts, t.ts + make_interval(secs => ?), t.ts + make_interval(secs => ?), ?, ?, 'WEB'
+                   (principal, refresh_token_enc, created_at, absolute_expires_at, idle_expires_at, liveness_status, device_id, kind, debug_requester_ip)
+                   SELECT ?, ?, t.ts, t.ts + make_interval(secs => ?), t.ts + make_interval(secs => ?), ?, ?, 'WEB', ?
                    FROM t
                    RETURNING id""",
             ).use { ps ->
@@ -192,6 +198,7 @@ class PrincipalSessionStore(
                 ps.setDouble(4, idleSeconds.toDouble())
                 ps.setString(5, LIVENESS_ACTIVE)
                 ps.setString(6, deviceId)
+                ps.setString(7, debugRequesterIp)
                 ps.executeQuery().use { rs -> rs.next(); rs.getLong(1) }
             }
             displaced = connection.prepareStatement(
@@ -241,7 +248,7 @@ class PrincipalSessionStore(
     private fun resolveWeb(id: Long, deviceId: String?, c: Connection): WebSessionRow? {
         val resolved = c.prepareStatement(
             """SELECT id, principal, created_at, absolute_expires_at, idle_expires_at, device_id,
-                      clock_timestamp() AS db_now
+                      debug_requester_ip, clock_timestamp() AS db_now
                FROM principal_session
                WHERE id = ? AND kind = 'WEB' AND ended_at IS NULL
                  AND absolute_expires_at > clock_timestamp()
@@ -259,6 +266,7 @@ class PrincipalSessionStore(
                         absoluteExpiresAt = rs.getTimestamp("absolute_expires_at").toInstant(),
                         idleExpiresAt = rs.getTimestamp("idle_expires_at").toInstant(),
                         now = rs.getTimestamp("db_now").toInstant(),
+                        debugRequesterIp = rs.getString("debug_requester_ip"),
                     )
                 }
             }

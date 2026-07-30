@@ -19,9 +19,17 @@ private const val DEVICE_COOKIE_MAX_AGE_SECONDS = 7_776_000
 /**
  * The authenticated principal resolved from the server-side session row. Roles remain a
  * response-compatibility field; authorization resolves effective roles server-side.
+ *
+ * [requesterIp] is populated only for a session carrying a debug-login simulated address, so the console
+ * can show which network its decisions are being authorized against — a masked column and a cleartext one
+ * differ by nothing else on screen, and without this the reason is invisible.
  */
 @kotlinx.serialization.Serializable
-data class UserSession(val principal: String, val roles: List<String> = emptyList())
+data class UserSession(
+    val principal: String,
+    val roles: List<String> = emptyList(),
+    val requesterIp: String? = null,
+)
 
 @kotlinx.serialization.Serializable
 data class WebSessionRef(val sessionId: Long)
@@ -32,9 +40,19 @@ val FAILED_WEB_SESSION = AttributeKey<Long>("failed-web-session")
 private val RESOLVED_IDENTITY = AttributeKey<ResolvedIdentity>("resolved-session-identity")
 private data class ResolvedIdentity(val row: WebSessionRow?)
 
-/** Body for the dev-only debug login (PM_AUTH_DEBUG) — the dev bypass alongside the OIDC login (Oidc.kt). */
+/**
+ * Body for the dev-only debug login (PM_AUTH_DEBUG) — the dev bypass alongside the OIDC login (Oidc.kt).
+ *
+ * [requesterIp] simulates the source address the session's decisions are authorized under, so a Cedar tag
+ * rule keyed on a CIDR can be exercised from a development box where every request arrives from loopback.
+ * Blank/absent leaves the observed peer authoritative. Honored only while the bypass is enabled.
+ */
 @kotlinx.serialization.Serializable
-data class DebugLogin(val principal: String, val roles: List<String> = emptyList())
+data class DebugLogin(
+    val principal: String,
+    val roles: List<String> = emptyList(),
+    val requesterIp: String? = null,
+)
 
 /**
  * A [SessionSerializer] backed by kotlinx.serialization JSON. Ktor's bundled serializer

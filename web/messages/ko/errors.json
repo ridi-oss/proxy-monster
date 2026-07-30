@@ -36,6 +36,7 @@
   },
   "auth": {
     "invalid_id_token": "유효하지 않은 ID 토큰입니다.",
+    "invalid_requester_ip": "유효한 IP 주소가 아닙니다.",
     "missing_renewal_token": "갱신용 베어러 토큰이 없습니다.",
     "principal_deprovisioned": "이 계정은 비활성화(deprovision)되었습니다.",
     "session_window_expired": "세션이 만료되었거나 계정이 비활성화되었습니다. 다시 로그인해 주세요."

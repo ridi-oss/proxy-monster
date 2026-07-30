@@ -198,12 +198,44 @@ private fun stripToBareIp(candidate: String?): String? {
 }
 
 /**
+ * Whether [candidate] can be stored AND evaluated by the Cedar engine.
+ *
+ * `IpAddress` is a Java-side regex, looser than the Rust engine that ultimately parses the value: it
+ * accepts a NUL-bearing string (which Postgres then rejects at INSERT) and non-canonical IPv4 like
+ * `100.100.001.010` (which the engine refuses — and an unevaluable context value fails the whole
+ * authorization closed, so the request denies everywhere with nothing naming the address). Hence
+ * [evaluatesInCedar], the authoritative gate; the character allowlist is only a cheap pre-filter.
+ */
+internal fun isStorableIpLiteral(candidate: String, evaluatesInCedar: (String) -> Boolean): Boolean {
+    if (candidate.isEmpty()) return false
+    if (!candidate.all { it.isDigit() || it == '.' || it == ':' || it in 'a'..'f' || it in 'A'..'F' }) return false
+    if (runCatching { IpAddress(candidate) }.isFailure) return false
+    return evaluatesInCedar(candidate)
+}
+
+/**
  * The HTTP entry point's resolved requester IP — trusted-edge-gated per
  * [resolveHttpRequesterIp]. `request.local.remoteAddress` is the raw socket peer Ktor's Netty engine reports;
  * no `ForwardedHeaders`/`XForwardedHeaders` plugin is installed (App.kt), so nothing upstream of this call
  * has already substituted a client-asserted value — the peer really is the TCP-level fact this resolver needs.
+ *
+ * Under [Config.authDebug] a session may instead carry a SIMULATED address chosen at debug login
+ * ([debugRequesterIp]) — every browser request on a development box arrives from loopback, so a tag rule
+ * keyed on a CIDR could otherwise never fire and the behavior it gates could not be exercised at all. This
+ * is the ONE resolver every HTTP-path decision reads, so the simulation reaches the editor, the approval
+ * routes, and the admin gates identically to a real address, rather than being special-cased per route.
+ *
+ * What this costs, stated precisely: `authDebug` already mints any role, so against a policy gated on role
+ * alone a simulated address adds nothing. But against one gated on role AND network — the shipped `-258`
+ * PII unmask needs `system:production-pii-accessor` AND the `trusted-network` tag — the peer was still a
+ * second, independent factor, and simulating it removes that. So this WIDENS the bypass rather than merely
+ * riding on it. It is acceptable only because `Config.fromEnv` refuses to start with `authDebug` on in a
+ * production-looking configuration, and because with the bypass off the stored value is never consulted.
  */
 internal fun ApplicationCall.httpRequesterIp(config: Config): String? {
+    if (config.authDebug) {
+        webSession()?.debugRequesterIp?.let { return it }
+    }
     val peer = request.local.remoteAddress
     val xff = request.headers.getAll("X-Forwarded-For")?.lastOrNull()
     return resolveHttpRequesterIp(peer, xff, config.trustedProxies)

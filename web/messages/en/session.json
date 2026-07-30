@@ -20,6 +20,7 @@
     "minutes": "{minutes}m"
   },
   "reauthNow": "Re-authenticate now",
+  "simulatedSourceIp": "Source IP",
   "reauthComplete": {
     "title": "Re-authentication complete",
     "body": "You can close this window and continue your work."

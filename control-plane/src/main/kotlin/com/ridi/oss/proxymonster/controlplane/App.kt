@@ -1,5 +1,6 @@
 package com.ridi.oss.proxymonster.controlplane
 
+import com.cedarpolicy.value.IpAddress
 import com.ridi.oss.proxymonster.controlplane.authz.Authz
 import com.ridi.oss.proxymonster.controlplane.authz.AuthzAction
 import com.ridi.oss.proxymonster.controlplane.authz.AuthzContext
@@ -684,6 +685,14 @@ fun Application.module(config: Config, core: ControlPlaneCore) {
             // principal with these roles" true. Replace rather than add: the claim is the whole intended
             // set, so a second debug login cannot silently accumulate roles from the first.
             val roles = login.roles.map { it.trim() }.filter { it.isNotBlank() }.distinct()
+            // Rejected outright when malformed rather than dropped to null: a silently-ignored address
+            // would present as "the tag rule does not work", sending the reader after a policy bug that
+            // isn't there.
+            val debugRequesterIp = login.requesterIp?.trim()?.takeIf { it.isNotEmpty() }
+            if (debugRequesterIp != null && !isStorableIpLiteral(debugRequesterIp, authz::evaluatesInCedar)) {
+                call.respond(HttpStatusCode.BadRequest, ApiError("auth.invalid_requester_ip"))
+                return@post
+            }
             val deviceId = call.ensureDeviceCookie(config.mcpIssuer.startsWith("https://"))
             // Roles and session in ONE transaction under ONE per-principal lock (mintWeb re-takes the same
             // advisory lock, which is re-entrant). Committing separately would let a failed mint leave the roles
@@ -700,6 +709,7 @@ fun Application.module(config: Config, core: ControlPlaneCore) {
                         config.webSessionIdleSeconds,
                         deviceId,
                         c,
+                        debugRequesterIp,
                     )
                 }
             } catch (e: ManagementException) {
@@ -707,7 +717,7 @@ fun Application.module(config: Config, core: ControlPlaneCore) {
                 return@post
             }
             call.sessions.set(WebSessionRef(sessionId))
-            call.respond(HttpStatusCode.OK, UserSession(login.principal, roles))
+            call.respond(HttpStatusCode.OK, UserSession(login.principal, roles, debugRequesterIp))
         }
 
         mePermissionsRoute(config, authz)
@@ -718,8 +728,11 @@ fun Application.module(config: Config, core: ControlPlaneCore) {
                 // Resolved per request, never carried in the session: a role gained or lost after
                 // login (group change, expired JIT grant, deactivation) must be visible to the next
                 // read, and the console shows this set while explaining a decision.
-                val principal = requireNotNull(call.principal<WebSessionRow>()).principal
-                call.respond(UserSession(principal, roleResolver.resolve(principal).sorted()))
+                val row = requireNotNull(call.principal<WebSessionRow>())
+                // Reported only while the bypass that honors it is on, so the console never shows a
+                // simulated address the decision path is in fact ignoring.
+                val simulatedIp = row.debugRequesterIp.takeIf { config.authDebug }
+                call.respond(UserSession(row.principal, roleResolver.resolve(row.principal).sorted(), simulatedIp))
             }
 
             get("/auth/session/status") {

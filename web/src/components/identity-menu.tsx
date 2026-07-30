@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { useTranslations } from 'next-intl'
-import { Clock3, LogOut, RefreshCw, User } from 'lucide-react'
+import { Clock3, LogOut, Network, RefreshCw, User } from 'lucide-react'
 import { useAuth } from '@/lib/auth'
 import { openReauthPopup } from '@/lib/reauth'
 import { useSessionLifecycle } from '@/lib/session'
@@ -68,6 +68,15 @@ export function IdentityMenu() {
           </DropdownMenuLabel>
         </DropdownMenuGroup>
         <DropdownMenuSeparator />
+        {identity.requesterIp && (
+          // Two identical-looking results differ only by the network the decision was made from, so
+          // without this the reason a column is masked here and cleartext there is invisible.
+          <div className="text-muted-foreground flex items-center gap-1.5 px-1.5 py-1 text-xs">
+            <Network className="size-3.5" />
+            <span>{t('simulatedSourceIp')}</span>
+            <span className="ml-auto font-mono tabular-nums">{identity.requesterIp}</span>
+          </div>
+        )}
         {absoluteExpiresAt && (
           <div className="text-muted-foreground flex items-center gap-1.5 px-1.5 py-1 text-xs">
             <Clock3 className="size-3.5" />

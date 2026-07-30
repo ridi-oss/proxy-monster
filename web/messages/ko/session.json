@@ -20,6 +20,7 @@
     "minutes": "{minutes}분"
   },
   "reauthNow": "지금 재인증",
+  "simulatedSourceIp": "출발지 IP",
   "reauthComplete": {
     "title": "재인증이 완료되었습니다",
     "body": "이 창을 닫고 작업을 계속할 수 있습니다."

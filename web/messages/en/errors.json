@@ -36,6 +36,7 @@
   },
   "auth": {
     "invalid_id_token": "Invalid ID token.",
+    "invalid_requester_ip": "That is not a valid IP address.",
     "missing_renewal_token": "Missing bearer renewal token.",
     "principal_deprovisioned": "This account has been deprovisioned.",
     "session_window_expired": "Your session has expired or your account was deprovisioned. Please sign in again."

@@ -52,6 +52,9 @@ function LoginInner() {
     'system:development-pii-accessor',
     'system:development-updater',
   ])
+  // Simulates the source address this session's decisions authorize under. Every request from a dev box
+  // arrives from loopback, so a policy conditioned on a network cannot otherwise be reached at all.
+  const [requesterIp, setRequesterIp] = useState('')
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
@@ -67,7 +70,7 @@ function LoginInner() {
     }
     setSubmitting(true)
     try {
-      await loginDebug(principal.trim(), roles)
+      await loginDebug(principal.trim(), roles, requesterIp.trim())
       router.replace(
         callbackUrl === REAUTH_CALLBACK_PATH ? callbackUrl : (returnTo ?? next ?? '/query'),
       )
@@ -166,6 +169,16 @@ function LoginInner() {
                 <Label htmlFor="roles">{t('rolesLabel')}</Label>
                 <TagsInput id="roles" value={roles} onChange={setRoles} placeholder={t('rolesPlaceholder')} />
                 <p className="text-muted-foreground text-xs">{t('rolesHint')}</p>
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="requesterIp">{t('requesterIpLabel')}</Label>
+                <Input
+                  id="requesterIp"
+                  value={requesterIp}
+                  onChange={(e) => setRequesterIp(e.target.value)}
+                  placeholder="100.100.1.10"
+                />
+                <p className="text-muted-foreground text-xs">{t('requesterIpHint')}</p>
               </div>
               {error && <p className="text-sm text-red-500">{error}</p>}
               <Button

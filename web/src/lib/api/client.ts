@@ -148,11 +148,19 @@ export function getMePermissions(): Promise<MePermissions> {
   return request<MePermissions>('/api/me/permissions')
 }
 
-/** POST /auth/debug — dev-only login bypass; sets the session cookie. */
-export function debugLogin(principal: string, roles: string[]): Promise<Identity> {
+/**
+ * POST /auth/debug — dev-only login bypass; sets the session cookie. `requesterIp` simulates the source
+ * address the session's decisions authorize under, so a network-conditioned policy can be exercised from a
+ * dev box where every request arrives from loopback.
+ */
+export function debugLogin(
+  principal: string,
+  roles: string[],
+  requesterIp?: string,
+): Promise<Identity> {
   return request<Identity>('/auth/debug', {
     method: 'POST',
-    body: JSON.stringify({ principal, roles }),
+    body: JSON.stringify({ principal, roles, requesterIp: requesterIp || null }),
   })
 }
 

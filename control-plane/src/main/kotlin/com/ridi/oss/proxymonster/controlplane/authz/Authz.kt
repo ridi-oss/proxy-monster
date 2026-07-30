@@ -298,6 +298,23 @@ class Authz(
     internal fun rolesOf(principal: String): Set<String> = roleSource.rolesOf(principal)
 
     /**
+     * Whether the ENGINE can evaluate [ip] as a `requester_ip` — which cedar-java's `IpAddress` regex
+     * does not answer (see [com.ridi.oss.proxymonster.controlplane.isStorableIpLiteral]).
+     *
+     * Runs one throwaway decision and asks only whether the engine produced a verdict at all: the
+     * verdict itself is irrelevant, only the absence of an engine ERROR is being tested.
+     */
+    fun evaluatesInCedar(ip: String): Boolean {
+        val principal = USER_TYPE.of("ip-probe")
+        val entities = Entities(setOf(Entity(principal, emptyMap(), emptySet())))
+        val context = AuthzContext(requesterIp = ip).toCedarMap()
+        val response = runCatching {
+            engine.isAuthorized(principal, ACTION_TYPE.of(AuthzAction.SQL_SELECT.cedarId), SYSTEM_TYPE.of("system"), entities, context)
+        }.getOrNull() ?: return false
+        return response.success.isPresent
+    }
+
+    /**
      * Single-resolution entry: resolve [principal]'s roles once, then authorize via [authorizeAs]. This is the
      * common case (System / AuditLog resources with no datasource-scoped tags — `requireAdmin`, computeMePermissions,
      * the audit routes). When a datasource-scoped `context.tags` derivation must AGREE with the final decision on

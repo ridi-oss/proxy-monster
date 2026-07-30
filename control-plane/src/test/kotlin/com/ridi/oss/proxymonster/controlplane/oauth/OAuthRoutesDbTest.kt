@@ -54,6 +54,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertNotEquals
 import kotlin.test.assertNotNull
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
@@ -387,6 +388,74 @@ class OAuthRoutesDbTest {
         )
     }
 
+    /**
+     * The debug `/oauth/authorize` shares the console's authenticated session, and sharing means REPLACING
+     * it — `mintWeb` is newest-wins. So the simulated source address the console is deciding under has to
+     * survive that remint, or an MCP authorization in the same browser silently changes the console's
+     * authorization context: tag rules stop firing, and nothing on screen says why.
+     *
+     * Pinned here rather than in DebugRequesterIpDbTest because the bug lives in THIS route. Both branches
+     * are asserted — the carry-over, and the deliberate drop when `?principal=` names someone else, since
+     * one identity's simulated network must never follow another's.
+     */
+    @Test
+    fun `debug authorize carries the simulated source address across its session remint`() = testApplication {
+        application { oauthTestModule(config(), dataSource, resolver()) }
+        val client = createClient {
+            expectSuccess = false
+            followRedirects = false
+            install(HttpCookies)
+            install(ClientContentNegotiation) { json(Json { ignoreUnknownKeys = true }) }
+        }
+
+        suspend fun authorizeAs(principal: String): HttpStatusCode = client.get("/oauth/authorize") {
+            parameter("response_type", "code")
+            parameter("client_id", CLIENT_ID)
+            parameter("redirect_uri", REDIRECT_URI)
+            parameter("scope", "mcp:read")
+            parameter("state", "state-ip")
+            parameter("resource", RESOURCE)
+            parameter("code_challenge", CHALLENGE)
+            parameter("code_challenge_method", "S256")
+            parameter("principal", principal)
+        }.status
+
+        // The console session: signed in, deciding as if from the trusted network.
+        val owner = "ip-owner@example.com"
+        client.post("/test/login/$owner") { parameter("requesterIp", "100.100.1.10") }
+        assertEquals("100.100.1.10", liveDebugIp(owner))
+
+        // Same principal: the remint must carry the address over.
+        assertEquals(HttpStatusCode.Found, authorizeAs(owner))
+        assertEquals(
+            "100.100.1.10", liveDebugIp(owner),
+            "an MCP authorization must not silently drop the console's simulated address",
+        )
+
+        // A DIFFERENT principal: the new session must start with no simulated address at all.
+        val other = "ip-other@example.com"
+        assertEquals(HttpStatusCode.Found, authorizeAs(other))
+        assertNull(
+            liveDebugIp(other),
+            "one principal's simulated network must not follow another's identity",
+        )
+    }
+
+    /** The simulated address on [principal]'s single LIVE web session — the row a decision would resolve. */
+    private fun liveDebugIp(principal: String): String? = dataSource.connection.use { c ->
+        c.prepareStatement(
+            """SELECT debug_requester_ip FROM principal_session
+               WHERE principal = ? AND kind = 'WEB' AND ended_at IS NULL
+               ORDER BY id DESC LIMIT 1""",
+        ).use { ps ->
+            ps.setString(1, principal)
+            ps.executeQuery().use { rs ->
+                assertTrue(rs.next(), "no live web session for $principal")
+                rs.getString(1)
+            }
+        }
+    }
+
     private fun resolver(): CimdResolver = CimdResolver { clientId ->
         require(clientId == CLIENT_ID)
         metadata()
@@ -453,6 +522,9 @@ private fun Application.oauthTestModule(config: Config, dataSource: DataSource, 
                     config.webSessionAbsoluteSeconds,
                     config.webSessionIdleSeconds,
                     deviceId,
+                    // Optional so existing callers are unchanged; set by the inheritance test, which needs a
+                    // session that already carries a simulated address before OAuth remints it.
+                    debugRequesterIp = call.request.queryParameters["requesterIp"],
                 )))
             call.respond(HttpStatusCode.NoContent)
         }

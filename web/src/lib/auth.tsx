@@ -25,7 +25,7 @@ interface AuthState {
   unauthReason: SessionReason | null
   debugMode: boolean
   /** Debug-login path; on success the caller navigates into the app. */
-  loginDebug: (principal: string, roles: string[]) => Promise<void>
+  loginDebug: (principal: string, roles: string[], requesterIp?: string) => Promise<void>
   logout: () => Promise<void>
   hasRole: (role: string) => boolean
 }
@@ -70,8 +70,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   }, [])
 
-  const loginDebug = useCallback(async (principal: string, roles: string[]) => {
-    const me = await debugLogin(principal, roles)
+  const loginDebug = useCallback(async (principal: string, roles: string[], requesterIp?: string) => {
+    const me = await debugLogin(principal, roles, requesterIp)
     sessionStorage.setItem(DEBUG_FLAG_KEY, '1')
     setDebugMode(true)
     setIdentity(me)

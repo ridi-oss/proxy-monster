@@ -13,6 +13,7 @@ import com.ridi.oss.proxymonster.controlplane.PrincipalSessionStore
 import com.ridi.oss.proxymonster.controlplane.WebSessionRef
 import com.ridi.oss.proxymonster.controlplane.ensureDeviceCookie
 import com.ridi.oss.proxymonster.controlplane.userSession
+import com.ridi.oss.proxymonster.controlplane.webSession
 import io.ktor.http.ContentType
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
@@ -157,6 +158,16 @@ fun Route.mcpOAuthRoutes(
             call.sessions.set(MCP_OAUTH_PENDING_COOKIE, pending)
             // Debug OAuth and the web console intentionally share the same authenticated session,
             // matching the production co-hosted flow without a second identity boundary.
+            //
+            // Sharing the session means REPLACING it: mintWeb is newest-wins, so this ends the console's
+            // current session. Carry that session's simulated source address onto the new row, or an MCP
+            // authorization in the same browser would silently drop it and every later console decision
+            // would fall back to the observed peer — the console's authorization context changing as a
+            // side effect of an unrelated login. Only when the principal is unchanged: an explicit
+            // ?principal= switches identity, and one identity's simulated network must not follow another's.
+            val inheritedRequesterIp = call.webSession()
+                ?.takeIf { it.principal == principal }
+                ?.debugRequesterIp
             val deviceId = call.ensureDeviceCookie(config.mcpIssuer.startsWith("https://"))
             call.sessions.set(
                 WebSessionRef(
@@ -166,6 +177,7 @@ fun Route.mcpOAuthRoutes(
                         config.webSessionAbsoluteSeconds,
                         config.webSessionIdleSeconds,
                         deviceId,
+                        debugRequesterIp = inheritedRequesterIp,
                     ),
                 ),
             )

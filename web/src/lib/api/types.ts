@@ -36,6 +36,11 @@ export interface AuditEvent {
 export interface Identity {
   principal: string
   roles: string[]
+  /**
+   * The simulated source address a debug-login session authorizes under, when one was chosen. Absent for
+   * every ordinary session, and absent whenever the control-plane is not honoring it.
+   */
+  requesterIp?: string | null
 }
 
 /** Coarse Cedar-backed capabilities for the authenticated principal. */

@@ -83,6 +83,7 @@
   "query": {
     "failed": "쿼리 실행에 실패했습니다: {detail}",
     "no_proxy_attached": "이 데이터소스에 연결된 프록시가 없습니다.",
+    "proxy_stream_wedged": "이 데이터소스의 프록시가 재연결 중입니다. 잠시 후 다시 시도해 주세요.",
     "proxy_timeout": "프록시가 제한 시간 내에 응답하지 않았습니다."
   }
 }

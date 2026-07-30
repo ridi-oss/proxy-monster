@@ -59,6 +59,45 @@ class ProxyEventsHub {
     }
 
     /**
+     * The outcome of asking a proxy to open a stream. NOT_ATTACHED and WEDGED look identical to a caller
+     * that only gets a boolean, and they need different answers: the first means no proxy is there, the
+     * second means one is registered but its channel will not take an event — a stream already closed by
+     * a reset the server has not finished tearing down, or a consumer that stopped draining. Reporting
+     * both as "no proxy attached" sends whoever debugs it looking for a proxy that is in fact running.
+     */
+    enum class Dispatch { SENT, NOT_ATTACHED, WEDGED }
+
+    /**
+     * Hand [event] to exactly one attached replica. The first non-blocking send that succeeds wins;
+     * broadcasting would make every replica open a backend connection for the same request.
+     *
+     * A channel that refuses the event is deregistered here rather than left in place. It cannot serve a
+     * later request either, and leaving it registered means `attached()` keeps reporting a proxy that
+     * cannot be reached — the liveness view would lie until the stream's own close handler eventually ran.
+     */
+    private fun dispatch(name: String, what: String, event: ControlEvent): Dispatch {
+        val channels = streams[name] ?: return Dispatch.NOT_ATTACHED
+        val refused = mutableListOf<SendChannel<ControlEvent>>()
+        for (channel in channels) {
+            if (channel.trySend(event).isSuccess) {
+                refused.forEach { deregisterWedged(name, it, what) }
+                return Dispatch.SENT
+            }
+            refused += channel
+        }
+        refused.forEach { deregisterWedged(name, it, what) }
+        return if (refused.isEmpty()) Dispatch.NOT_ATTACHED else Dispatch.WEDGED
+    }
+
+    private fun deregisterWedged(name: String, channel: SendChannel<ControlEvent>, what: String) {
+        log.warn(
+            "proxy stream for datasource '{}' would not accept {} (closed or its buffer is full); dropping it",
+            name, what,
+        )
+        deregister(name, channel)
+    }
+
+    /**
      * Ask exactly one attached proxy replica to dial a run stream. The first successful non-blocking
      * send wins; broadcasting would make every replica open a backend connection for the same CP request.
      */
@@ -68,7 +107,7 @@ class ProxyEventsHub {
         ephemeralToken: String,
         connectionId: com.google.protobuf.ByteString,
         onOpen: List<Refetch>,
-    ): Boolean {
+    ): Dispatch {
         val event = controlEvent {
             openRunChannel = openRunChannel {
                 this.sessionId = sessionId
@@ -77,13 +116,11 @@ class ProxyEventsHub {
                 this.onOpen.addAll(onOpen.map { proxyCommand { refetch = it } })
             }
         }
-        val channels = streams[name] ?: return false
-        for (channel in channels) if (channel.trySend(event).isSuccess) return true
-        return false
+        return dispatch(name, "an open-run request", event)
     }
 
     /** Ask exactly one attached proxy replica to dial an on-demand table-detail stream. */
-    fun requestOpenTableDetail(name: String, sessionId: String, schema: String, table: String): Boolean {
+    fun requestOpenTableDetail(name: String, sessionId: String, schema: String, table: String): Dispatch {
         val event = controlEvent {
             openTableDetailChannel = openTableDetailChannel {
                 this.sessionId = sessionId
@@ -91,9 +128,7 @@ class ProxyEventsHub {
                 this.table = table
             }
         }
-        val channels = streams[name] ?: return false
-        for (channel in channels) if (channel.trySend(event).isSuccess) return true
-        return false
+        return dispatch(name, "a table-detail request", event)
     }
 
     /** Datasource names with at least one open Events stream — the admin "which have a proxy attached". */

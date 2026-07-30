@@ -142,6 +142,15 @@ sealed class RunExecException(message: String, cause: Throwable? = null) : Excep
 
 class NoProxyAttachedException : RunExecException("no proxy is attached to this datasource")
 
+/**
+ * A proxy IS attached, but its event stream would not accept the request — already closed by a reset the
+ * server has not finished tearing down, or its consumer stopped draining. Separate from
+ * [NoProxyAttachedException] because the operator answer differs: nothing is missing, a live stream is
+ * unusable, and the wedged one has been dropped so the proxy's own reconnect can replace it. Retrying
+ * after that reconnect is the fix; looking for an absent proxy is not.
+ */
+class ProxyStreamWedgedException : RunExecException("the proxy's event stream would not accept the request")
+
 class ProxyRunTimeoutException(cause: Throwable? = null) :
     RunExecException("the proxy run channel timed out", cause)
 
@@ -279,8 +288,10 @@ class RunExecService(
         try {
             core.runChannels.register(pending)
             registered = true
-            if (!core.proxyEventsHub.requestOpenRun(ds.name, sessionId, issued.token, opened.connectionId, opened.onOpen)) {
-                throw NoProxyAttachedException()
+            when (core.proxyEventsHub.requestOpenRun(ds.name, sessionId, issued.token, opened.connectionId, opened.onOpen)) {
+                ProxyEventsHub.Dispatch.SENT -> Unit
+                ProxyEventsHub.Dispatch.NOT_ATTACHED -> throw NoProxyAttachedException()
+                ProxyEventsHub.Dispatch.WEDGED -> throw ProxyStreamWedgedException()
             }
 
             attached = try {
@@ -364,8 +375,10 @@ class RunExecService(
         var attached: Attached? = null
         try {
             core.runChannels.register(pending)
-            if (!core.proxyEventsHub.requestOpenRun(ds.name, sessionId, issued.token, opened.connectionId, opened.onOpen)) {
-                throw NoProxyAttachedException()
+            when (core.proxyEventsHub.requestOpenRun(ds.name, sessionId, issued.token, opened.connectionId, opened.onOpen)) {
+                ProxyEventsHub.Dispatch.SENT -> Unit
+                ProxyEventsHub.Dispatch.NOT_ATTACHED -> throw NoProxyAttachedException()
+                ProxyEventsHub.Dispatch.WEDGED -> throw ProxyStreamWedgedException()
             }
             attached = try {
                 withTimeout(DIAL_TIMEOUT_MS) { pending.ready.await() }

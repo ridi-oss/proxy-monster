@@ -867,6 +867,8 @@ fun Route.queryRoutes(
             )
         } catch (_: NoProxyAttachedException) {
             call.respond(HttpStatusCode.ServiceUnavailable, ApiError("query.no_proxy_attached"))
+        } catch (_: ProxyStreamWedgedException) {
+            call.respond(HttpStatusCode.ServiceUnavailable, ApiError("query.proxy_stream_wedged"))
         } catch (_: ProxyRunTimeoutException) {
             call.respond(HttpStatusCode.GatewayTimeout, ApiError("query.proxy_timeout"))
         } catch (e: ProxyRunException) {
@@ -926,6 +928,8 @@ fun Route.editorSessionRoutes(
             call.respond(EditorSessionOpened(runExecService.openSession(principal, ds, call.httpRequesterIp(config))))
         } catch (_: NoProxyAttachedException) {
             call.respond(HttpStatusCode.ServiceUnavailable, ApiError("query.no_proxy_attached"))
+        } catch (_: ProxyStreamWedgedException) {
+            call.respond(HttpStatusCode.ServiceUnavailable, ApiError("query.proxy_stream_wedged"))
         } catch (_: ProxyRunTimeoutException) {
             call.respond(HttpStatusCode.GatewayTimeout, ApiError("query.proxy_timeout"))
         } catch (e: ProxyRunException) {
@@ -1010,6 +1014,8 @@ fun Route.editorSessionRoutes(
                 null
             } catch (_: NoProxyAttachedException) {
                 "query.no_proxy_attached"
+            } catch (_: ProxyStreamWedgedException) {
+                "query.proxy_stream_wedged"
             } catch (_: ProxyRunTimeoutException) {
                 "query.proxy_timeout"
             } catch (_: ProxyRunException) {

@@ -83,6 +83,7 @@
   "query": {
     "failed": "Query failed: {detail}",
     "no_proxy_attached": "No proxy is attached to this datasource.",
+    "proxy_stream_wedged": "The proxy for this datasource is reconnecting. Try again in a moment.",
     "proxy_timeout": "The proxy did not respond in time."
   }
 }

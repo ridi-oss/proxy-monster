@@ -80,8 +80,11 @@ class TableDetailService(private val core: ControlPlaneCore) {
         try {
             core.tableDetailChannels.register(pending)
             registered = true
-            if (!core.proxyEventsHub.requestOpenTableDetail(dsName, sessionId, schema, table)) {
+            when (core.proxyEventsHub.requestOpenTableDetail(dsName, sessionId, schema, table)) {
+                ProxyEventsHub.Dispatch.SENT -> Unit
+                ProxyEventsHub.Dispatch.NOT_ATTACHED, ProxyEventsHub.Dispatch.WEDGED -> {
                 throw NoTableDetailProxyAttachedException()
+                }
             }
 
             attached = try {

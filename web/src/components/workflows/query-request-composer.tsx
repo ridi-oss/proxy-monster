@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useRef, useState, type FormEvent } from 'react'
+import { useRef, useState, type FormEvent } from 'react'
 import { useTranslations } from 'next-intl'
 import { mutate } from 'swr'
 import { toast } from 'sonner'
@@ -59,16 +59,15 @@ export function QueryRequestComposer({
   const [submitting, setSubmitting] = useState(false)
   const [submitError, setSubmitError] = useState<string | null>(null)
   const [roleId, setRoleId] = useState<string | null>(null)
-  const [discovery, setDiscovery] = useState<DiscoverRolesResponse | null>(null)
+  // The discovery result, tagged with the inputs it was resolved FOR — that pairing is what makes a
+  // stale selection detectable without throwing the selection away on every derived-value flicker.
+  const [discovery, setDiscovery] = useState<
+    (DiscoverRolesResponse & { forSql: string; forDatasourceId: number }) | null
+  >(null)
   const [discovering, setDiscovering] = useState(false)
   const [discoverError, setDiscoverError] = useState<string | null>(null)
 
   const fromDenied = sourceDecisionId != null
-  // A query approval always runs under an elevation role R (execute-under-R), so a role must be picked from
-  // discovery before submitting — there is no requester-run / no-elevation mode.
-  const canSubmit = roleId != null && (fromDenied
-    ? reason.trim().length > 0 && record?.decision === 'DENY'
-    : datasourceId != null && sql.trim().length > 0 && title.trim().length > 0 && reason.trim().length > 0)
 
   // Effective (datasourceId, sql) used for role discovery, per composer branch.
   const effectiveSql = fromDenied ? (record?.statement ?? null) : sql.trim() || null
@@ -77,20 +76,26 @@ export function QueryRequestComposer({
     : datasourceId
   const canDiscover = effectiveDatasourceId != null && !!effectiveSql
 
-  // Every discovery (and every effective-input change) bumps this generation counter. A response is
-  // applied only if its generation is still current, so a role picked against stale SQL/datasource can
-  // neither be shown nor submitted — even if an in-flight request resolves AFTER the inputs changed.
+  // Every discovery bumps this generation counter, so a response is applied only if its generation is
+  // still current — an in-flight request that resolves after a newer one started cannot repopulate options.
   const discoverSeq = useRef(0)
 
-  // Staleness guard: reset the picker whenever the effective inputs change, and invalidate any
-  // in-flight discovery so its late response can't repopulate options for the old SQL/datasource.
-  useEffect(() => {
-    discoverSeq.current += 1
-    setDiscovery(null)
-    setRoleId(null)
-    setDiscoverError(null)
-    setDiscovering(false)
-  }, [effectiveSql, effectiveDatasourceId])
+  // Staleness guard: a role may be submitted ONLY if it was discovered for the query being submitted.
+  // Enforced by comparing the discovery's own inputs against the current ones, rather than by resetting
+  // the picker whenever those inputs change — `effectiveSql`/`effectiveDatasourceId` are derived from
+  // fetched data on the from-denied branch, so they legitimately transition through null while SWR
+  // resolves or revalidates, and a reset keyed on them wiped the user's selection for reasons that had
+  // nothing to do with the query changing. Comparing is also the stronger check: it holds even if a
+  // reset were missed, where the reset alone only held if it always fired.
+  const staleDiscovery =
+    discovery != null &&
+    (discovery.forSql !== effectiveSql || discovery.forDatasourceId !== effectiveDatasourceId)
+
+  // A query approval always runs under an elevation role R (execute-under-R), so a role must be picked from
+  // discovery before submitting — there is no requester-run / no-elevation mode.
+  const canSubmit = roleId != null && !staleDiscovery && (fromDenied
+    ? reason.trim().length > 0 && record?.decision === 'DENY'
+    : datasourceId != null && sql.trim().length > 0 && title.trim().length > 0 && reason.trim().length > 0)
 
   const handleDiscover = async () => {
     if (!canDiscover) return
@@ -100,13 +105,12 @@ export function QueryRequestComposer({
     setRoleId(null)
     setDiscovering(true)
     setDiscoverError(null)
+    const forDatasourceId = effectiveDatasourceId!
+    const forSql = effectiveSql!
     try {
-      const res = await discoverApprovalRoles({
-        datasourceId: effectiveDatasourceId!,
-        sql: effectiveSql!,
-      })
-      if (seq !== discoverSeq.current) return // inputs changed (or a newer discovery started) → stale
-      setDiscovery(res)
+      const res = await discoverApprovalRoles({ datasourceId: forDatasourceId, sql: forSql })
+      if (seq !== discoverSeq.current) return // a newer discovery started → this response is stale
+      setDiscovery({ ...res, forSql, forDatasourceId })
     } catch {
       if (seq !== discoverSeq.current) return
       // Discovery is a non-blocking helper — surface a friendly, actionable message
@@ -263,12 +267,22 @@ export function QueryRequestComposer({
                 {discovery && (
                   <div className="space-y-1.5">
                     <Label htmlFor="approval-role">{t('fields.role')}</Label>
-                    <Select
-                      value={roleId ?? undefined}
-                      onValueChange={(value: string | null) => setRoleId(value)}
-                    >
+                    {/* `value` must be the state itself, INCLUDING null. Passing `undefined` for the
+                        empty case makes the Select uncontrolled, and it then discards every selection —
+                        the picker snapped straight back to its placeholder and nothing could be
+                        submitted. `null` is "controlled, nothing selected"; `undefined` is "not
+                        controlled at all". */}
+                    <Select value={roleId} onValueChange={(value: string | null) => setRoleId(value)}>
                       <SelectTrigger id="approval-role" className="w-full">
-                        <SelectValue placeholder={t('queryComposer.selectRole')} />
+                        {/* The trigger renders the raw value unless given this mapping, which would show
+                            the role's numeric id — the one thing the approver must not misread, since the
+                            request is submitted to run under whichever role this names. */}
+                        <SelectValue placeholder={t('queryComposer.selectRole')}>
+                          {(value: string | null) =>
+                            discovery.options.find((option) => String(option.roleId) === value)?.roleName ??
+                            t('queryComposer.selectRole')
+                          }
+                        </SelectValue>
                       </SelectTrigger>
                       <SelectContent>
                         {discovery.options.map((option) => (
@@ -282,12 +296,17 @@ export function QueryRequestComposer({
                       </SelectContent>
                     </Select>
 
-                    {discovery.options.length === 0 && (
-                      <p className="text-muted-foreground text-sm">
-                        {discovery.baselineAllowed
-                          ? t('queryComposer.alreadyAllowed')
-                          : t('queryComposer.noRolesFound')}
-                      </p>
+                    {staleDiscovery ? (
+                      // Submitting is blocked here; say why, so a disabled button is not a dead end.
+                      <p className="text-sm text-amber-500">{t('queryComposer.staleDiscovery')}</p>
+                    ) : (
+                      discovery.options.length === 0 && (
+                        <p className="text-muted-foreground text-sm">
+                          {discovery.baselineAllowed
+                            ? t('queryComposer.alreadyAllowed')
+                            : t('queryComposer.noRolesFound')}
+                        </p>
+                      )
                     )}
                   </div>
                 )}

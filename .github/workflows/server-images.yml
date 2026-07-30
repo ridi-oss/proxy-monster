@@ -3,6 +3,10 @@ name: server images
 # Publishes the four server images for a server-v* release to Docker Hub and ECR Public, so a pull
 # needs neither a Docker Hub account nor its rate limits.
 #
+# Each architecture builds on a runner of that architecture, and a merge job joins the two into one
+# manifest. Emulating arm64 on an amd64 runner took 39 minutes for control-plane's Gradle build
+# against 50 seconds for auditmon's Go build — a JVM compile under QEMU runs interpreted.
+#
 # pmon is not here: it is a client binary, shipped as a release archive and a Homebrew formula
 # (pmon-release-binaries.yml).
 on:
@@ -19,19 +23,52 @@ concurrency:
 
 permissions:
   contents: read
-  # Mints the OIDC token AWS exchanges for the ECR Public push role.
-  id-token: write
 
 jobs:
-  images:
-    runs-on: ubuntu-latest
+  version:
+    runs-on: ubuntu-24-x64
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      # The ref is the only input, so it is checked before it can name an image — and it names one
+      # long before AWS refuses a bad ref, since the builds push to Docker Hub first.
+      #
+      # ref_name alone does not say whether the ref is a branch, so a branch called server-vx would
+      # otherwise pass. The version must also be a plain semver: `latest` would collapse the two
+      # tags this publishes into one, and a slash or an over-long suffix is not a valid tag at all.
+      - name: Resolve the version from the tag
+        id: version
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          if [ "$REF_TYPE" != tag ]; then
+            echo "::error::expected a tag, got a $REF_TYPE named '$TAG'"
+            exit 1
+          fi
+          version=${TAG#server-v}
+          if [ "$version" = "$TAG" ]; then
+            echo "::error::expected a server-v* tag, got '$TAG'"
+            exit 1
+          fi
+          case "$version" in
+            [0-9]*.[0-9]*.[0-9]*) ;;
+            *) echo "::error::expected server-v<major>.<minor>.<patch>, got version '$version'"; exit 1 ;;
+          esac
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: version
+    runs-on: ${{ matrix.arch == 'arm64' && 'ubuntu-24-arm' || 'ubuntu-24-x64' }}
     timeout-minutes: 60
 
     strategy:
       # A failed image is a fact about that image; the others still need to publish.
       fail-fast: false
       matrix:
-        include:
+        arch: [amd64, arm64]
+        image:
           # goproxy and control-plane build from the repo root: goproxy needs the sibling mysqlwire
           # module, and control-plane's Gradle configuration phase needs every included module.
           - name: goproxy
@@ -48,32 +85,90 @@ jobs:
             dockerfile: web/Dockerfile
             context: web
 
+    env:
+      HUB_REPO: ${{ vars.DOCKERHUB_NAMESPACE }}/pm-${{ matrix.image.name }}
+      SCOPE: ${{ matrix.image.name }}-${{ matrix.arch }}
+
     steps:
       - uses: actions/checkout@v5
 
-      # The ref is the only input, so it is checked before it can name an image. A dispatch from a
-      # branch already fails at assume-role, but that happens after a Docker Hub push would have
-      # gone out, and `server-v` alone would strip to an empty version and still move `latest`.
-      - name: Resolve the version from the tag
-        id: version
-        env:
-          TAG: ${{ github.ref_name }}
-        run: |
-          case "$TAG" in
-            server-v?*) ;;
-            *) echo "::error::expected a server-v* tag as the ref, got '$TAG'"; exit 1 ;;
-          esac
-          echo "version=${TAG#server-v}" >> "$GITHUB_OUTPUT"
-
-      # arm64 is emulated, so the matrix stays one job per image rather than one per platform:
-      # buildx produces the multi-arch manifest, and splitting would need a separate merge job.
-      - uses: docker/setup-qemu-action@v3
       - uses: docker/setup-buildx-action@v3
 
       - uses: docker/login-action@v3
         with:
           # An organization access token, so the username is the org rather than a person's handle
           # and the credential outlives any individual's account.
+          username: ${{ vars.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      # Pushed by digest with no tag: a tag naming one architecture would be visible to a puller
+      # between here and the merge. Only the merge job makes a tag point at anything.
+      - uses: docker/build-push-action@v6
+        id: build
+        with:
+          context: ${{ matrix.image.context }}
+          file: ${{ matrix.image.dockerfile }}
+          platforms: linux/${{ matrix.arch }}
+          outputs:
+            type=image,name=${{ env.HUB_REPO
+            }},push-by-digest=true,name-canonical=true,push=true
+          # Scoped per image AND architecture, so the two builds of one image do not evict each other.
+          cache-from: type=gha,scope=${{ env.SCOPE }}
+          cache-to: type=gha,scope=${{ env.SCOPE }},mode=max
+
+      - name: Record the digest for the merge
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          [ -n "$DIGEST" ] || { echo "::error::the build produced no digest"; exit 1; }
+          mkdir -p /tmp/digests
+          echo "$DIGEST" > "/tmp/digests/${{ matrix.arch }}"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: digest-${{ matrix.image.name }}-${{ matrix.arch }}
+          path: /tmp/digests/*
+          retention-days: 1
+
+  merge:
+    needs: [version, build]
+    # `build` fails as a job if any one of its eight cells failed, which would skip every merge —
+    # including images whose own two architectures both succeeded. Run regardless and let each
+    # image's own digests decide: an image missing an architecture fails its own merge, and the
+    # rest still publish.
+    if: ${{ !cancelled() && needs.version.result == 'success' }}
+    runs-on: ubuntu-24-x64
+    timeout-minutes: 20
+
+    # Only this job assumes the ECR role. At workflow level every build cell could mint a token the
+    # tag-scoped role accepts, and those cells run the image builds.
+    permissions:
+      contents: read
+      id-token: write
+
+    strategy:
+      fail-fast: false
+      matrix:
+        name: [goproxy, control-plane, auditmon, web]
+
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+
+    steps:
+      # This job runs even when a sibling image's build failed, so its own architectures may be
+      # missing. continue-on-error keeps the download from being the thing that reports that: the
+      # merge step names the missing architecture instead.
+      - uses: actions/download-artifact@v6
+        continue-on-error: true
+        with:
+          pattern: digest-${{ matrix.name }}-*
+          path: /tmp/digests
+          merge-multiple: true
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
           username: ${{ vars.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
@@ -88,56 +183,74 @@ jobs:
         with:
           registry-type: public
 
-      - uses: docker/metadata-action@v5
-        id: meta
-        with:
-          images: |
-            ${{ vars.DOCKERHUB_NAMESPACE }}/pm-${{ matrix.name }}
-            ${{ steps.ecr-public.outputs.registry }}/${{ vars.ECR_PUBLIC_ALIAS }}/pm-${{ matrix.name }}
-          tags: |
-            type=raw,value=${{ steps.version.outputs.version }}
-            type=raw,value=latest
+      # Both architectures were pushed to Docker Hub by digest. The manifest is assembled there and
+      # then copied to ECR Public, so both registries carry the same index digest.
+      - name: Join the per-architecture images into one manifest
+        id: manifest
+        env:
+          HUB_REPO: ${{ vars.DOCKERHUB_NAMESPACE }}/pm-${{ matrix.name }}
+          ECR_REGISTRY:
+            ${{ steps.ecr-public.outputs.registry }}/${{ vars.ECR_PUBLIC_ALIAS
+            }}
+        run: |
+          set -o pipefail
+          ECR_REPO="${ECR_REGISTRY}/pm-${{ matrix.name }}"
+          refs=()
+          for arch in amd64 arm64; do
+            f="/tmp/digests/$arch"
+            [ -s "$f" ] || { echo "::error::no digest for $arch — that architecture did not build"; exit 1; }
+            refs+=("${HUB_REPO}@$(cat "$f")")
+          done
+          echo "joining ${#refs[@]} architectures: ${refs[*]}"
 
-      - uses: docker/build-push-action@v6
-        id: build
-        with:
-          context: ${{ matrix.context }}
-          file: ${{ matrix.dockerfile }}
-          platforms: linux/amd64,linux/arm64
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          # Reuse layers across releases; scoped per image so one does not evict another.
-          cache-from: type=gha,scope=${{ matrix.name }}
-          cache-to: type=gha,scope=${{ matrix.name }},mode=max
+          # Written before anything is mutated. The registries are written one after the other, so a
+          # failure between them leaves the first advanced and the second stale — and the check
+          # below can only report that if it knows which tags were meant to move.
+          {
+            echo "${HUB_REPO}:${VERSION}"
+            echo "${HUB_REPO}:latest"
+            echo "${ECR_REPO}:${VERSION}"
+            echo "${ECR_REPO}:latest"
+          } > /tmp/tags
 
-      # One build produces both registries' tags, but the pushes are sequential and not atomic: a
-      # failure part-way leaves one registry on the new digest and the other on the old, which no
-      # step above reports. The role holds no delete, so the repair is another run.
-      #
-      # This runs after a failed build too, which is when a partial push is possible at all — the
-      # default success() gating would skip it exactly then. With no digest to compare against it
-      # reports what each tag currently resolves to, so the log says which registry moved.
-      - name: Check every published tag carries the built digest
+          # Hub first, then read back the index digest it produced. ECR is built from the same
+          # children, so it must land on that same digest — which is what makes the check below a
+          # cross-registry comparison rather than each registry agreeing with itself.
+          docker buildx imagetools create \
+            -t "${HUB_REPO}:${VERSION}" -t "${HUB_REPO}:latest" "${refs[@]}"
+
+          digest=$(docker buildx imagetools inspect "${HUB_REPO}:${VERSION}" --format '{{.Manifest.Digest}}')
+          [ -n "$digest" ] || { echo "::error::the merged manifest has no digest"; exit 1; }
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+          echo "merged digest: $digest"
+
+          docker buildx imagetools create \
+            -t "${ECR_REPO}:${VERSION}" -t "${ECR_REPO}:latest" "${refs[@]}"
+
+      # The tags are written to each registry separately, so a failure part-way leaves one on the new
+      # digest and the other on the old, which no step above reports. This also runs after a failed
+      # merge, which is when a partial write is possible at all — the default success() gating would
+      # skip it exactly then.
+      - name: Check every published tag carries the merged digest
         if: ${{ !cancelled() }}
         env:
-          DIGEST: ${{ steps.build.outputs.digest }}
-          TAGS: ${{ steps.meta.outputs.tags }}
+          DIGEST: ${{ steps.manifest.outputs.digest }}
         run: |
-          if [ -z "$TAGS" ]; then
-            echo "::error::no tags to check — expected the tag list to be set"
+          if [ ! -s /tmp/tags ]; then
+            echo "::error::no tags to check — the merge step did not get far enough to write any"
             exit 1
           fi
+          TAGS=$(cat /tmp/tags)
 
-          # A build that failed before pushing has no digest. The tags may still have moved, so
+          # A merge that failed before writing has no digest. The tags may still have moved, so
           # report where each one points instead of comparing against nothing.
           audit_only=false
           if [ -z "$DIGEST" ]; then
-            echo "::warning::the build published no digest; reporting what each tag resolves to"
+            echo "::warning::the merge published no digest; reporting what each tag resolves to"
             audit_only=true
           fi
 
-          # A tag that reads as the previous digest may be a partial push or may just not have
+          # A tag that reads as the previous digest may be a partial write or may just not have
           # converged yet — one read cannot tell them apart, so retry and let it settle. A 429
           # answer is likewise not a divergent tag. Only a tag still wrong at the end is reported.
           # Only stdout is the digest — a warning on stderr would never equal one. stdin is closed so
@@ -189,14 +302,12 @@ jobs:
           done <<< "$TAGS"
 
           echo "checked $checked tags${DIGEST:+ against $DIGEST}"
-          # The tag list comes from the same step that fed the push, so a list missing one registry
-          # would be pushed and verified consistently and still report success. Each image publishes
-          # a version and a latest tag to both registries; anything else is a wiring fault, not a
-          # release to pass.
+          # Each image publishes a version and a latest tag to both registries; anything else is a
+          # wiring fault, not a release to pass.
           if [ "$checked" -ne 4 ]; then
             echo "::error::expected 4 tags (version and latest, on both registries), got $checked"
             rc=1
           fi
-          # The build's own failure already fails the job; this step only adds what it found.
+          # The merge's own failure already fails the job; this step only adds what it found.
           [ "$audit_only" = true ] && exit 0
           exit "$rc"

@@ -103,13 +103,13 @@ val nativeTasks = nativeTargets.associateWith { t ->
 val hostTarget = nativeTargets.firstOrNull { it.os == hostOs && it.arch == hostArch }
     ?: error("no native target defined for host $hostOs/$hostArch")
 
-val buildNativeLib by tasks.registering {
+val buildNativeLib = tasks.register("buildNativeLib") {
     group = "build"
     description = "Builds the c-shared lib for the host platform only (fast; used by the default build)."
-    dependsOn(nativeTasks[hostTarget])
+    dependsOn(nativeTasks.getValue(hostTarget))
 }
 
-val buildAllNativeLibs by tasks.registering {
+val buildAllNativeLibs = tasks.register("buildAllNativeLibs") {
     group = "build"
     description = "Builds c-shared libs for ALL targets (host native + Linux via Zig). Run on macOS/arm64."
     dependsOn(nativeTasks.values)

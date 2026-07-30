@@ -690,7 +690,7 @@ for i in pm-goproxy pm-control-plane pm-web pm-auditmon; do docker push $REG/$i:
 ```
 
 pmon is not containerized — it's a client binary users install
-(`go build -o pmon ./pmon`).
+(`brew install ridi-oss/tap/pmon`, or `go build -o pmon ./pmon`).
 
 ### ECS task definitions
 

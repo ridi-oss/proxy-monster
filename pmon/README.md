@@ -6,7 +6,9 @@ background daemon holds a short-lived wire token, runs one loopback listener per
 datasource, and injects the token upstream.
 
 ```sh
-go build -o /usr/local/bin/pmon ./pmon
+# Homebrew 6 asks you to trust a third-party formula before it will load one.
+brew trust --formula ridi-oss/tap/pmon
+brew install ridi-oss/tap/pmon   # or: go build -o /usr/local/bin/pmon ./pmon
 
 pmon login                     # device-auth in your browser; starts the daemon + opens the brokers
 pmon status                    # principal, token expiry, every brokered datasource

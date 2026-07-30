@@ -675,19 +675,42 @@ directory. The control-plane and proxy images build for both `linux/amd64` and
 `linux/arm64` (Graviton/Fargate) via
 `docker buildx build --platform linux/amd64,linux/arm64`, with no extra flags.
 
+Published images are on Docker Hub, built for both platforms by
+`.github/workflows/server-images.yml` on every `server-v*` tag — pull these
+rather than building your own. `latest` tracks the newest release; a version tag
+pins one:
+
 ```bash
-ACCT=<acct>; REGION=ap-northeast-2; REG=$ACCT.dkr.ecr.$REGION.amazonaws.com
-aws ecr get-login-password --region $REGION | docker login --username AWS --password-stdin $REG
-
-# proxy + control-plane — build context = repo root
-docker build -f goproxy/Dockerfile       -t $REG/pm-goproxy:0.1.0        .
-docker build -f control-plane/Dockerfile -t $REG/pm-control-plane:0.1.0  .
-# web + auditmon — build context = their own directory
-docker build -t $REG/pm-web:0.1.0        web/
-docker build -t $REG/pm-auditmon:0.1.0   auditmon/
-
-for i in pm-goproxy pm-control-plane pm-web pm-auditmon; do docker push $REG/$i:0.1.0; done
+docker pull ridi/pm-goproxy:0.1.0
+docker pull ridi/pm-control-plane:0.1.0
+docker pull ridi/pm-web:0.1.0
+docker pull ridi/pm-auditmon:0.1.0
 ```
+
+The same images are mirrored on ECR Public, which is worth preferring from AWS —
+pulls do not count against Docker Hub's rate limits and need no account:
+
+```bash
+docker pull public.ecr.aws/w1t1s2q1/pm-goproxy:0.1.0
+docker pull public.ecr.aws/w1t1s2q1/pm-control-plane:0.1.0
+docker pull public.ecr.aws/w1t1s2q1/pm-web:0.1.0
+docker pull public.ecr.aws/w1t1s2q1/pm-auditmon:0.1.0
+```
+
+To build them yourself — note the context differs per image, and is not
+interchangeable:
+
+```bash
+# proxy + control-plane — build context = repo root
+docker build -f goproxy/Dockerfile       -t pm-goproxy:dev        .
+docker build -f control-plane/Dockerfile -t pm-control-plane:dev  .
+# web + auditmon — build context = their own directory
+docker build -t pm-web:dev        web/
+docker build -t pm-auditmon:dev   auditmon/
+```
+
+To host them in your own registry, retag and push there; the ECS task
+definitions below reference `<acct>.dkr.ecr…` for exactly that case.
 
 pmon is not containerized — it's a client binary users install
 (`brew install ridi-oss/tap/pmon`, or `go build -o pmon ./pmon`).

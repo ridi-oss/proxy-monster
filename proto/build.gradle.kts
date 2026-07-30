@@ -10,12 +10,12 @@ import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 // the same controlplane.proto (goproxy/buf.gen.yaml → goproxy/internal/pb).
 plugins {
     kotlin("jvm")
-    id("com.google.protobuf") version "0.9.4"
+    id("com.google.protobuf") version "0.10.0"
 }
 
-val protobufVersion = "4.28.3"
-val grpcVersion = "1.68.1"
-val grpcKotlinVersion = "1.4.1"
+val protobufVersion = "4.35.1"
+val grpcVersion = "1.83.0"
+val grpcKotlinVersion = "1.5.0"
 
 dependencies {
     // `api` so downstream modules get the runtime types + stubs transitively.
@@ -24,7 +24,7 @@ dependencies {
     api("io.grpc:grpc-protobuf:$grpcVersion")
     api("io.grpc:grpc-stub:$grpcVersion")
     api("io.grpc:grpc-kotlin-stub:$grpcKotlinVersion")
-    api("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.9.0")
+    api("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.11.0")
     // grpc-java generated code references javax.annotation.Generated (not shipped in the JDK).
     api("javax.annotation:javax.annotation-api:1.3.2")
 }

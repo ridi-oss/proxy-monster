@@ -1178,7 +1178,16 @@ fun Route.editorSessionRoutes(
                 call.respond(HttpStatusCode.Forbidden, ApiError("approval.result_view_denied"))
             }
             is ResultViewDecision.Allowed ->
-                call.respond(QueryResultView(meta, viewDecision.columns, viewDecision.rows))
+                call.respond(
+                    QueryResultView(
+                        meta, viewDecision.columns, viewDecision.rows,
+                        // MASK iff this view actually masked something. The editor labels its result from
+                        // this; deriving it client-side from "are there rows" is what let a masked result
+                        // display as a clean ALLOW.
+                        decision = if (viewDecision.maskedColumns.isEmpty()) Decision.ALLOW else Decision.MASK,
+                        maskedColumns = viewDecision.maskedColumns,
+                    ),
+                )
         }
     }
 

@@ -272,10 +272,12 @@ export function useResultTabs(datasourceId: number | null, maxRows: number): Res
           if (child?.status === 'DONE') {
             const view = await getEditorResult(submit.taskId)
             return {
-              decision: 'ALLOW',
+              // From the server's re-decision, never assumed: these rows are released under the viewer's
+              // live context, which can mask columns the execution itself returned in the clear.
+              decision: view.decision,
               decisionId: null,
               denyReason: null,
-              maskedColumns: [],
+              maskedColumns: view.maskedColumns,
               piiTouched: [],
               effectiveRoles: [],
               columns: view.columns,

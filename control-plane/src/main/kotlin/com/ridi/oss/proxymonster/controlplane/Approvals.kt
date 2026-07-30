@@ -122,8 +122,21 @@ fun discoverRoles(
     val canCancel: Boolean = false,
 )
 
-/** The decrypted rows of an execute-under-R result, plus its metadata — returned only to an authorized viewer. */
-@Serializable data class QueryResultView(val meta: QueryResultMeta, val columns: List<String>, val rows: List<List<String?>>)
+/**
+ * The decrypted rows of an execute-under-R result, plus its metadata — returned only to an authorized viewer.
+ *
+ * [decision] and [maskedColumns] describe the LIVE view re-decision these rows were released under, not the
+ * execution that stored them: the viewer's own context can narrow an execution's ALLOW to a MASK. Without
+ * them the caller cannot tell a masked cell from a value that genuinely looks like one, and a console
+ * showing rows has nothing to label them with but a guess.
+ */
+@Serializable data class QueryResultView(
+    val meta: QueryResultMeta,
+    val columns: List<String>,
+    val rows: List<List<String?>>,
+    val decision: Decision = Decision.ALLOW,
+    val maskedColumns: List<String> = emptyList(),
+)
 
 /** Submit acknowledgement. Completion is observed by polling the task detail/result endpoints. */
 @Serializable data class ExecuteApprovalResponse(val decision: String)
@@ -150,7 +163,13 @@ fun validateApprovalSource(decision: AuditEvent?, requestingPrincipal: String): 
     }
 
 internal sealed class ResultViewDecision {
-    data class Allowed(val columns: List<String>, val rows: List<List<String?>>) : ResultViewDecision()
+    /** [maskedColumns] are the columns this VIEW masked — the viewer's context can narrow an execution's
+     *  ALLOW to a MASK, so the released rows are labelled by what happened to them, not by what was stored. */
+    data class Allowed(
+        val columns: List<String>,
+        val rows: List<List<String?>>,
+        val maskedColumns: List<String> = emptyList(),
+    ) : ResultViewDecision()
     data class Denied(val reason: String) : ResultViewDecision()
 }
 
@@ -229,7 +248,11 @@ internal fun decideResultView(
             if (kind == null) value else Masking.apply(value, kind)
         }
     }
-    return ResultViewDecision.Allowed(decrypted.columns, rows)
+    // Named from the BOUND indices, not from ctx.masks: binding is what actually rewrote a cell, so a mask
+    // the decision asked for but could not bind can never be reported as applied. (An unbound one denies
+    // above, so the two agree here — reading the binding keeps them agreeing if that ever changes.)
+    val maskedColumns = binding.byIndex.keys.sorted().map { decrypted.columns[it] }
+    return ResultViewDecision.Allowed(decrypted.columns, rows, maskedColumns)
 }
 
 /**
@@ -848,7 +871,16 @@ fun Route.approvalRoutes(
                 // Audit the view BEFORE returning rows — a failed audit insert propagates (500) so PII is never
                 // returned without a durable record.
                 auditStore.insert(e3Record(principal, req, viewEvent, Channel.WORKFLOW_VIEWER))
-                call.respond(QueryResultView(meta, viewDecision.columns, viewDecision.rows))
+                call.respond(
+                    QueryResultView(
+                        meta, viewDecision.columns, viewDecision.rows,
+                        // The stored bytes are R's execution output, but this VIEW re-decides under the
+                        // viewer's own context and may narrow further — so the label describes the release,
+                        // not the execution that produced it.
+                        decision = if (viewDecision.maskedColumns.isEmpty()) Decision.ALLOW else Decision.MASK,
+                        maskedColumns = viewDecision.maskedColumns,
+                    ),
+                )
             }
         }
     }

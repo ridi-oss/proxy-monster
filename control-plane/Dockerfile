@@ -13,9 +13,9 @@
 # is also set, but set PM_AUTH_DEBUG=false explicitly for any real deployment regardless.
 
 # Go toolchain for the analyzer's native lib (cmd/libsqlglot, cgo c-shared build). Pulled from the
-# official Go image rather than apt/curl so the version matches mise.toml's `go = "1.23"` exactly
+# official Go image rather than apt/curl so the version matches mise.toml's `go = "1.26"` exactly
 # and multi-arch (amd64/arm64) resolution is automatic.
-FROM golang:1.23-bookworm AS go
+FROM golang:1.26-bookworm AS go
 
 # eclipse-temurin's Debian ("noble") variant, not alpine: the analyzer's native lib is built for
 # glibc (analyzer/jvm/build.gradle.kts's zig targets are explicitly *-linux-gnu), and cedar-java's

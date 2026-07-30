@@ -6,7 +6,7 @@
 // analyzer/README.md for how the pin is bumped.
 module github.com/ridi-oss/proxy-monster/analyzer
 
-go 1.23
+go 1.26.0
 
 require github.com/ridi-oss/sqlglot-go v0.20.0
 

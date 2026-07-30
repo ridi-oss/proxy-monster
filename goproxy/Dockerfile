@@ -9,14 +9,14 @@
 # committed, so no codegen runs at build time. Build from the repo root:
 #   docker build -f goproxy/Dockerfile -t proxy-monster-proxy .
 
-FROM golang:1.23-bookworm AS build
+FROM golang:1.26-bookworm AS build
 WORKDIR /workspace
 # goproxy's go.mod resolves ../mysqlwire and ../analyzer via `replace` directives; copy all three modules.
 COPY mysqlwire ./mysqlwire
 COPY analyzer ./analyzer
 COPY goproxy ./goproxy
 WORKDIR /workspace/goproxy
-# GOTOOLCHAIN=local pins the module's go 1.23 (no network toolchain fetch); CGO off → a static binary,
+# GOTOOLCHAIN=local pins the module's go 1.26 (no network toolchain fetch); CGO off → a static binary,
 # so the runtime image needs no libc beyond the base.
 ENV GOTOOLCHAIN=local CGO_ENABLED=0
 RUN go build -trimpath -o /out/goproxy ./cmd/goproxy

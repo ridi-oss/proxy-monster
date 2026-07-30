@@ -1,6 +1,6 @@
 module github.com/ridi-oss/proxy-monster/auditmon
 
-go 1.23.0
+go 1.26.0
 
 require (
 	github.com/aws/aws-sdk-go-v2 v1.41.2

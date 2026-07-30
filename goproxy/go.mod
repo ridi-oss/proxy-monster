@@ -1,6 +1,6 @@
 module github.com/ridi-oss/proxy-monster/goproxy
 
-go 1.23
+go 1.26.0
 
 require (
 	github.com/alecthomas/kong v1.6.0

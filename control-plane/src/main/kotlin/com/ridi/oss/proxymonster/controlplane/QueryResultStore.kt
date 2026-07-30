@@ -20,6 +20,11 @@ data class QueryResultMeta(
     val expiresAt: String? = null,
     val status: String? = null,
     val errorCode: String? = null,
+    // Set only on a POLICY denial: the reason the decision recorded, and the audit decision it was recorded
+    // under. A polling client sees only this row, so without them a denial is indistinguishable from a
+    // generic failure and it cannot offer the approval request that a denial is supposed to lead to.
+    val denyReason: String? = null,
+    val decisionId: Long? = null,
     val columns: List<String> = emptyList(),
 )
 
@@ -53,6 +58,8 @@ class QueryResultStore(private val dataSource: DataSource, private val crypto: R
         expiresAt = getTimestamp("expires_at")?.toInstant()?.toString(),
         status = getString("status"),
         errorCode = getString("error_code"),
+        denyReason = getString("deny_reason"),
+        decisionId = getLong("decision_id").let { if (wasNull()) null else it },
         columns = json.decodeFromString(stringList, getString("columns") ?: "[]"),
     )
 
@@ -136,6 +143,11 @@ class QueryResultStore(private val dataSource: DataSource, private val crypto: R
     fun failRun(
         taskId: Long,
         errorCode: String,
+        // Set only when the failure is a POLICY DENIAL, carrying that decision's reason and audit id onto
+        // the child. A client polling this row can then present the denial as a decision it may request
+        // approval for, rather than as an opaque failure.
+        denyReason: String? = null,
+        decisionId: Long? = null,
         // Runs in the SAME transaction as the child's RUNNING → FAILED flip (mirrors [completeRun]'s
         // audit hook) so the caller can terminalize the parent task atomically with the child. A throw
         // here rolls the child transition back too, keeping the two consistent.
@@ -144,11 +156,14 @@ class QueryResultStore(private val dataSource: DataSource, private val crypto: R
         val now = Instant.now()
         val childId = latestChildId(c, taskId, "status = 'RUNNING'")
         val updated = childId != null && c.prepareStatement(
-            "UPDATE query_result SET status = 'FAILED', error_code = ?, expires_at = ? WHERE id = ? AND status = 'RUNNING'",
+            "UPDATE query_result SET status = 'FAILED', error_code = ?, deny_reason = ?, decision_id = ?, " +
+                "expires_at = ? WHERE id = ? AND status = 'RUNNING'",
         ).use { ps ->
             ps.setString(1, errorCode)
-            ps.setTimestamp(2, Timestamp.from(now.plusSeconds(RESULT_RETENTION_SEC)))
-            ps.setLong(3, childId)
+            ps.setString(2, denyReason)
+            if (decisionId == null) ps.setNull(3, java.sql.Types.BIGINT) else ps.setLong(3, decisionId)
+            ps.setTimestamp(4, Timestamp.from(now.plusSeconds(RESULT_RETENTION_SEC)))
+            ps.setLong(5, childId)
             ps.executeUpdate() > 0
         }
         val meta = if (updated) meta(taskId, c) else null
@@ -283,7 +298,10 @@ class QueryResultStore(private val dataSource: DataSource, private val crypto: R
 
     companion object {
         const val RESULT_RETENTION_SEC = 86_400L
+        // Every column [toMeta] reads. The mapper reads by NAME, so a column added there and missed here
+        // fails the read at runtime rather than at compile time — keep the two in step.
         private const val META_COLS =
-            "task_id, executed_by, executed_at, row_count, expires_at, status, error_code, columns"
+            "task_id, executed_by, executed_at, row_count, expires_at, status, error_code, " +
+                "deny_reason, decision_id, columns"
     }
 }

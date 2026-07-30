@@ -67,15 +67,14 @@ configured per proxy under `PM_TARGET_*`.
 - `PM_TRUSTED_PROXIES` — _optional, set behind an LB_. Comma-separated
   socket-peer addresses or CIDR blocks of the edges trusted to assert forwarded
   headers about a request: `X-Forwarded-For` for client-IP attestation,
-  `X-Forwarded-Proto` for the SCIM TLS gate, and `X-Forwarded-Host` for the
-  authority the `/mcp` check compares. Empty (default) ignores all three and
-  uses the socket's own facts, so SCIM then requires direct HTTPS and `/mcp`
-  sees the proxy's authority. Example: `10.20.1.15,10.20.2.15`, or
-  `10.20.0.0/16` for an autoscaled edge whose address is not knowable in
-  advance. A block must cover only hops you operate — anything inside it can
-  assert its own client IP, so prefer the narrowest prefix that covers the edge.
-  Entries that are neither an address nor a valid block are ignored and logged
-  at startup.
+  `X-Forwarded-Proto` for the SCIM TLS gate, and `X-Forwarded-Host` for the host
+  the `/mcp` check compares. Empty (default) ignores all three and uses the
+  socket's own facts, so SCIM then requires direct HTTPS and `/mcp` sees the
+  proxy's authority. Example: `10.20.1.15,10.20.2.15`, or `10.20.0.0/16` for an
+  autoscaled edge whose address is not knowable in advance. A block must cover
+  only hops you operate — anything inside it can assert its own client IP, so
+  prefer the narrowest prefix that covers the edge. Entries that are neither an
+  address nor a valid block are ignored and logged at startup.
 
   An edge you list here must **overwrite** the forwarded headers it asserts,
   from its own view of the connection — never relay a client-supplied value. An
@@ -463,16 +462,20 @@ server. Set `PM_MCP_RESOURCE="https://<host>/mcp"` to that public origin. With
 `PM_AUTH_DEBUG=false` it must be HTTPS, and you additionally need a non-default
 32+ character `PM_SESSION_SECRET`, all `PM_OIDC_*` values, and an OIDC redirect
 URI exactly equal to `https://<host>/auth/oidc/callback`. If a reverse proxy
-terminates TLS in front of control-plane (as any real deployment's will), its
-forwarded `Host` header must carry the exact public authority — hostname and
-port (`:443` for the implicit HTTPS default) — that `PM_MCP_RESOURCE` declares:
-control-plane's `/mcp` guard validates the request's host/port strictly against
-that configured value and has no `ForwardedHeaders`/`XForwardedHeaders` plugin,
-so it never derives this from `X-Forwarded-*` either — only the literal `Host`
-(or HTTP/2 `:authority`) the backend receives. A proxy that forwards the
-original client-facing Host unmodified usually satisfies this already; one that
-strips the port or substitutes its own backend address needs an explicit
-host-rewrite rule, or every `/mcp` call gets a fail-closed
+terminates TLS in front of control-plane (as any real deployment's will), the
+host the backend sees must equal the host `PM_MCP_RESOURCE` declares:
+control-plane's `/mcp` guard compares that host strictly, and only the host. The
+port is never compared — behind a TLS-terminating edge the backend is reached on
+its own cleartext port, and a client's `Host` omits the port whenever it is the
+scheme default, so requiring one would reject every such request. It reads the
+literal `Host` (or HTTP/2 `:authority`) the backend receives, plus
+`X-Forwarded-Host` when the socket peer is listed in `PM_TRUSTED_PROXIES`; there
+is no `ForwardedHeaders`/`XForwardedHeaders` plugin, so nothing else is derived
+from `X-Forwarded-*`. A proxy that forwards the original client-facing hostname
+satisfies this already, whether or not it keeps the port. One that substitutes
+its own backend address in `Host` — an AWS ALB does this unless
+`preserve_host_header` is enabled — must either be fixed to preserve it or send
+`X-Forwarded-Host` from a trusted peer, or every `/mcp` call gets a fail-closed
 `403 mcp.invalid_host` instead of the expected `401` OAuth challenge. Configure
 the MCP client with the resource URL only — never a separate
 authorization-server URL, there isn't one — and it discovers OAuth through

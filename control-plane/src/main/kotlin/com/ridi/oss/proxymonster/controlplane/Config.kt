@@ -68,8 +68,8 @@ data class Config(
     // to assert forwarded headers about a request — e.g. a load balancer or reverse proxy terminating TLS
     // in front of the HTTP API. THREE headers are trusted from such a peer: `X-Forwarded-For` for
     // requester_ip (resolveHttpRequesterIp), `X-Forwarded-Proto` for the SCIM TLS gate (resolveScimTls),
-    // and `X-Forwarded-Host`/`X-Forwarded-Port` for the authority the client addressed
-    // (resolveForwardedAuthority, which the /mcp host check compares against PM_MCP_RESOURCE).
+    // and `X-Forwarded-Host` for the host the client addressed (resolveForwardedAuthority, which the
+    // /mcp host check compares against PM_MCP_RESOURCE).
     // Empty (the default) means NO edge is trusted: every one of them is ignored, so requester_ip is the
     // raw socket peer, a plaintext request can never pass the SCIM TLS gate, and the /mcp check sees the
     // socket authority — the fail-closed posture, since an untrusted client can set any of them to anything.

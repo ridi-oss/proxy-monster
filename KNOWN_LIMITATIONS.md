@@ -262,6 +262,13 @@ tagging, table detail) and never feeds an enforcement decision.
 
 ## Authz / policy
 
+- 🟡 An IPv6-literal `PM_MCP_RESOURCE` is reachable only behind a trusted edge.
+  The `/mcp` host gate resolves the client-addressed host through Ktor's
+  `host()`, which splits a direct `Host: [::1]` at the literal's first colon and
+  yields `[` — so the comparison fails and every direct request gets
+  `403 mcp.invalid_host`. `X-Forwarded-Host` from a peer in `PM_TRUSTED_PROXIES`
+  is parsed by proxy-monster's own bracket-aware path and works. Use a hostname,
+  or front the control plane with a trusted edge.
 - 🔴 Role-approval `Request` EUID is not request-unique.
   `Request::"<requester>#<datasource>"` omits the request id and requested role,
   so one approval policy authorizes every later request that principal makes for

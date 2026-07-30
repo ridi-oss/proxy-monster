@@ -176,13 +176,14 @@ must be listed in `PM_TRUSTED_PROXIES`, by the socket-peer address the CP sees �
 a literal address, or a CIDR block when the edge autoscales and its address is
 not knowable in advance. That list is what lets the CP read `X-Forwarded-For`
 (requester IP), `X-Forwarded-Proto` (the SCIM TLS gate), and `X-Forwarded-Host`
-(the authority the client addressed, which the `/mcp` check compares against
-`PM_MCP_RESOURCE`). Unlisted, those headers are ignored and the CP uses the
-socket's own facts — so a chained proxy that is not listed makes `/mcp` return
-`403 mcp.invalid_host` and SCIM return `403`, while the console's own `/api` and
-`/auth` traffic keeps working. Set `PM_MCP_RESOURCE` to the public origin
-whatever the topology: the OAuth issuer is derived from it and is deliberately
-never inferred from request headers.
+(the host the client addressed, which the `/mcp` check compares against
+`PM_MCP_RESOURCE`'s host — only the host, never the port, which a client omits
+when it is the scheme default). Unlisted, those headers are ignored and the CP
+uses the socket's own facts — so a chained proxy that is not listed makes `/mcp`
+return `403 mcp.invalid_host` and SCIM return `403`, while the console's own
+`/api` and `/auth` traffic keeps working. Set `PM_MCP_RESOURCE` to the public
+origin whatever the topology: the OAuth issuer is derived from it and is
+deliberately never inferred from request headers.
 
 ## Ports and protocols
 

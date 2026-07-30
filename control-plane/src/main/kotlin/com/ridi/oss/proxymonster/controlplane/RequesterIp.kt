@@ -124,8 +124,14 @@ internal fun resolveHttpRequesterIp(peerAddress: String?, xff: String?, trustedP
 }
 
 /**
- * The authority (`host` or `host:port`) the CLIENT addressed, for the checks that compare a request's
- * target against a configured public identity — today the `/mcp` host check (McpServer.kt).
+ * The HOST the CLIENT addressed, for the checks that compare a request's target against a configured
+ * public identity — today the `/mcp` host check (McpServer.kt).
+ *
+ * Host only, never a port. Behind a TLS-terminating edge the backend is reached on its own cleartext
+ * port, and a client's `Host` omits the port whenever it is the scheme default, so a port comparison
+ * rejects every request in the deployment shape the check exists to serve. It also buys nothing — an
+ * attacker who controls the host names any port they like. (The port of a browser-facing request is
+ * still enforced, by the `Origin` check's scheme+host+port comparison in McpServer.kt.)
  *
  * Direct `Host` is a fact of the request. `X-Forwarded-Host` is client-settable, so it is honored ONLY
  * when the socket peer is a configured trusted edge — [isTrustedEdge], the same
@@ -134,22 +140,19 @@ internal fun resolveHttpRequesterIp(peerAddress: String?, xff: String?, trustedP
  * would be bypassable by asserting a header, which is the DNS-rebinding defense it exists to provide.
  *
  * A multi-hop value takes the RIGHTMOST entry — the one THIS edge appended; everything left of it is
- * client-supplied. `X-Forwarded-Host` may itself carry a port; when it does not, [forwardedPort]
- * supplies one, so an edge that splits authority across the two headers still resolves correctly.
- * Falls back to the direct authority whenever the peer is untrusted or the header is absent/blank, so
- * a deployment with no edge behaves exactly as before.
+ * client-supplied. A port in `X-Forwarded-Host` is parsed off and discarded rather than left on the
+ * host, so `cp.example.com:8443` compares as `cp.example.com`. Falls back to the direct host whenever
+ * the peer is untrusted or the header is absent/blank, which is also the correct answer for an edge
+ * that preserves the client `Host` and sends no `X-Forwarded-Host` at all.
  */
 internal fun resolveForwardedAuthority(
     directHost: String,
-    directPort: Int,
     peerAddress: String?,
     forwardedHost: String?,
-    forwardedPort: String?,
     trustedProxies: Set<String>,
-): Pair<String, Int?> {
-    val direct = directHost to directPort
-    if (!isTrustedEdge(peerAddress, trustedProxies)) return direct
-    val asserted = forwardedHost?.split(',')?.lastOrNull()?.trim()?.takeIf { it.isNotEmpty() } ?: return direct
+): String {
+    if (!isTrustedEdge(peerAddress, trustedProxies)) return directHost
+    val asserted = forwardedHost?.split(',')?.lastOrNull()?.trim()?.takeIf { it.isNotEmpty() } ?: return directHost
     // An IPv6 literal authority is bracketed (`[::1]:443`), so only split a port off the LAST colon and
     // only when it follows the closing bracket — otherwise `[::1]` would be shredded at its first colon.
     val lastColon = asserted.lastIndexOf(':')
@@ -157,10 +160,7 @@ internal fun resolveForwardedAuthority(
         lastColon < asserted.length - 1 &&
         asserted.drop(lastColon + 1).all(Char::isDigit)
     val host = if (hasPort) asserted.take(lastColon) else asserted
-    val portFromHost = if (hasPort) asserted.drop(lastColon + 1).toIntOrNull() else null
-    val port = portFromHost
-        ?: forwardedPort?.split(',')?.lastOrNull()?.trim()?.toIntOrNull()
-    return host.removeSurrounding("[", "]") to port
+    return host.removeSurrounding("[", "]")
 }
 
 /**

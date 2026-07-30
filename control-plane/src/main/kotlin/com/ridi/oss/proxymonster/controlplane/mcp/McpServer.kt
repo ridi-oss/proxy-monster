@@ -31,7 +31,6 @@ import io.ktor.server.application.ApplicationCallPipeline
 import io.ktor.server.application.call
 import io.ktor.server.request.host
 import io.ktor.server.request.path
-import io.ktor.server.request.port
 import io.ktor.server.response.header
 import io.ktor.server.response.respond
 import io.ktor.server.routing.get
@@ -95,27 +94,25 @@ fun Application.installMcp(
     val metadataUri = protectedResourceMetadataUri(config.mcpResource)
     val resourceUri = URI(config.mcpResource)
     val resourceOrigin = URI(resourceUri.scheme, null, resourceUri.host, resourceUri.port, null, null, null)
+    // Java exposes an IPv6 URI host bracketed (`[::1]`) while a request authority resolves to the bare
+    // address, so both sides are unbracketed before they are compared.
+    val resourceHost = resourceUri.host.removeSurrounding("[", "]")
 
     intercept(ApplicationCallPipeline.Plugins) {
         if (call.request.path() != "/mcp") return@intercept
-        // The client-addressed authority, not the socket's. Ktor normalizes HTTP/1.1 Host and HTTP/2
-        // :authority through host()/port(), so reading the literal Host header would reject every HTTP/2
-        // request; behind a reverse proxy that authority is the PROXY's, so a trusted edge's
-        // X-Forwarded-Host supersedes it (resolveForwardedAuthority — honored only from a peer in
-        // PM_TRUSTED_PROXIES, so a direct caller still cannot assert its way past this check).
-        val (host, port) = resolveForwardedAuthority(
+        // The client-addressed host, not the socket's. Ktor normalizes HTTP/1.1 Host and HTTP/2
+        // :authority through host(), so reading the literal Host header would reject every HTTP/2
+        // request; behind a reverse proxy that authority is the PROXY's unless the edge preserves the
+        // client Host, so a trusted edge's X-Forwarded-Host supersedes it (resolveForwardedAuthority —
+        // honored only from a peer in PM_TRUSTED_PROXIES, so a direct caller still cannot assert its
+        // way past this check).
+        val host = resolveForwardedAuthority(
             directHost = call.request.host(),
-            directPort = call.request.port(),
             peerAddress = call.request.local.remoteAddress,
             forwardedHost = call.request.headers["X-Forwarded-Host"],
-            forwardedPort = call.request.headers["X-Forwarded-Port"],
             trustedProxies = config.trustedProxies,
         )
-        // A forwarded authority carrying no port means the edge's default for its scheme, which
-        // effectivePort() already encodes for the configured resource — so an absent port matches.
-        if (!host.equals(resourceUri.host, ignoreCase = true) ||
-            (port != null && port != resourceUri.effectivePort())
-        ) {
+        if (!host.removeSurrounding("[", "]").equals(resourceHost, ignoreCase = true)) {
             call.respond(HttpStatusCode.Forbidden, ApiError("mcp.invalid_host"))
             finish()
             return@intercept
@@ -152,8 +149,8 @@ fun Application.installMcp(
     mcpStatelessStreamableHttp(
         path = "/mcp",
         // The SDK's built-in guard reads the HTTP/1.1 Host header literally and rejects HTTP/2
-        // :authority as missing. The interceptor above enforces the configured authority through
-        // Ktor's protocol-neutral host()/port() view and validates Origin before authentication.
+        // :authority as missing. The interceptor above enforces the configured host through Ktor's
+        // protocol-neutral host() view and validates Origin before authentication.
         enableDnsRebindingProtection = false,
     ) {
         val requestContext = call.attributes[MCP_CONTEXT]

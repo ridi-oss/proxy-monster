@@ -108,6 +108,85 @@ class McpServerDbTest {
     }
 
     @Test
+    fun `an https resource admits a cleartext-forwarded request whose Host carries no port`() = testApplication {
+        // The production shape behind a TLS-terminating edge: the resource is https (default port 443),
+        // the edge forwards cleartext to the container, and the client's Host omits the port because it
+        // is the scheme default. The gate must clear the host and move on to the bearer check — reaching
+        // `common.invalid_token` (not `mcp.invalid_host`) is what proves the authority matched.
+        application { installTestMcp("https://console.example.com/mcp") }
+        val client = createClient {
+            expectSuccess = false
+            install(ClientContentNegotiation) { json(TEST_JSON) }
+        }
+        val response = client.post("/mcp") {
+            acceptMcp()
+            header(HttpHeaders.Host, "console.example.com")
+            setBody(toolCall(1, "list_roles"))
+        }
+        assertEquals(HttpStatusCode.Unauthorized, response.status)
+        assertEquals(
+            "common.invalid_token",
+            TEST_JSON.parseToJsonElement(response.bodyAsText()).jsonObject["code"]?.jsonPrimitive?.content,
+        )
+
+        // A port on the Host is ignored, not compared. `:443` alone would also pass an implementation
+        // that compared EFFECTIVE default ports, so the case that actually pins the property is a
+        // non-default port against an https resource: it must still reach the bearer check.
+        for (authority in listOf("console.example.com:443", "console.example.com:8443")) {
+            val withPort = client.post("/mcp") {
+                acceptMcp()
+                header(HttpHeaders.Host, authority)
+                setBody(toolCall(2, "list_roles"))
+            }
+            assertEquals(HttpStatusCode.Unauthorized, withPort.status, authority)
+        }
+
+        // The host is still enforced: a foreign name on the same listener is refused.
+        val foreign = client.post("/mcp") {
+            acceptMcp()
+            header(HttpHeaders.Host, "evil.example")
+            setBody(toolCall(3, "list_roles"))
+        }
+        assertEquals(HttpStatusCode.Forbidden, foreign.status)
+        assertEquals("mcp.invalid_host", TEST_JSON.parseToJsonElement(foreign.bodyAsText()).jsonObject["code"]?.jsonPrimitive?.content)
+    }
+
+    @Test
+    fun `an IPv6 literal resource host matches a forwarded authority`() = testApplication {
+        // Java exposes an IPv6 URI host bracketed (`[::1]`) while a forwarded authority resolves to the
+        // bare address, so comparing them raw rejects every request to a valid IPv6 resource.
+        //
+        // Only the FORWARDED path is asserted. Ktor's own `host()` shreds a direct `Host: [::1]` at the
+        // literal's first colon and yields `[`, so an IPv6 resource reached without a trusted edge is
+        // unreachable for a reason that lives upstream of this gate (KNOWN_LIMITATIONS.md).
+        // testApplication's peer address is the literal string "localhost", which only isTrustedEdge's
+        // exact-match arm accepts (it never resolves a hostname — see TrustedEdgeCidrTest).
+        application { installTestMcp("http://[::1]/mcp", trustedProxies = setOf("localhost")) }
+        val client = createClient {
+            expectSuccess = false
+            install(ClientContentNegotiation) { json(TEST_JSON) }
+        }
+        val response = client.post("/mcp") {
+            acceptMcp()
+            header("X-Forwarded-Host", "[::1]")
+            setBody(toolCall(1, "list_roles"))
+        }
+        assertEquals(HttpStatusCode.Unauthorized, response.status)
+        assertEquals(
+            "common.invalid_token",
+            TEST_JSON.parseToJsonElement(response.bodyAsText()).jsonObject["code"]?.jsonPrimitive?.content,
+        )
+
+        val foreign = client.post("/mcp") {
+            acceptMcp()
+            header("X-Forwarded-Host", "[::2]")
+            setBody(toolCall(2, "list_roles"))
+        }
+        assertEquals(HttpStatusCode.Forbidden, foreign.status)
+        assertEquals("mcp.invalid_host", TEST_JSON.parseToJsonElement(foreign.bodyAsText()).jsonObject["code"]?.jsonPrimitive?.content)
+    }
+
+    @Test
     fun `tool catalog is complete localized and scope cannot grant a write`() = testApplication {
         application { installTestMcp() }
         val principal = "mcp-catalog@example.com"
@@ -363,7 +442,10 @@ class McpServerDbTest {
         }
     }
 
-    private fun io.ktor.server.application.Application.installTestMcp() {
+    private fun io.ktor.server.application.Application.installTestMcp(
+        mcpResource: String = RESOURCE,
+        trustedProxies: Set<String> = emptySet(),
+    ) {
         install(ContentNegotiation) { json(TEST_JSON) }
         val datasourceService = DatasourceManagementService(core.datasourceStore, core.proxyEventsHub, TableDetailService(core))
         val policyService = PolicyManagementService(core.cedarPolicyStore, core.policyStore)
@@ -371,7 +453,7 @@ class McpServerDbTest {
             dataSource, core.userGroupStore, core.policyStore, core.tokenStore, core.accessStore,
             PrincipalSessionStore(dataSource, null),
         )
-        installMcp(config(), core, datasourceService, policyService, identityService)
+        installMcp(config(mcpResource, trustedProxies), core, datasourceService, policyService, identityService)
     }
 
     private fun io.ktor.client.request.HttpRequestBuilder.acceptMcp(token: String? = null) {
@@ -475,7 +557,7 @@ class McpServerDbTest {
         assertNotNull(result.structuredContent)
     }
 
-    private fun config() = Config(
+    private fun config(mcpResource: String = RESOURCE, trustedProxies: Set<String> = emptySet()) = Config(
         httpPort = 0,
         dbUrl = "",
         dbUser = "",
@@ -489,7 +571,8 @@ class McpServerDbTest {
         sessionWindowSeconds = 3_600,
         idpRecheckIntervalSeconds = 600,
         devMarker = false,
-        mcpResource = RESOURCE,
+        mcpResource = mcpResource,
+        trustedProxies = trustedProxies,
     )
 
     private companion object {

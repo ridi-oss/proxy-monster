@@ -6,7 +6,7 @@ import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 /**
- * [resolveForwardedAuthority] — which authority the client addressed, for the `/mcp` host check
+ * [resolveForwardedAuthority] — which host the client addressed, for the `/mcp` host check
  * (McpServer.kt). The invariant is the one [resolveHttpRequesterIp] enforces for `X-Forwarded-For` and
  * [resolveScimTls] for `X-Forwarded-Proto`: a client-settable header may speak for the request ONLY when
  * the socket peer is a configured trusted edge.
@@ -16,30 +16,29 @@ import kotlin.test.assertTrue
  * and the Host comparison is what makes that request fail. If `X-Forwarded-Host` were honored from any
  * peer, asserting one header would bypass it, so the header must buy nothing without the edge's socket
  * address behind it.
+ *
+ * Resolution is host-only. [aPortIsNeverPartOfTheResolvedHost] pins that: a TLS-terminating edge makes
+ * the addressed port unobservable, so carrying one through only reintroduces a comparison that rejects
+ * every request behind such an edge.
  */
 class ForwardedAuthorityTest {
     private val edge = setOf("10.0.0.1")
 
     @Test
-    fun `with no trusted edge the direct authority is used`() {
-        assertEquals(
-            "cp.example.com" to 443,
-            resolveForwardedAuthority("cp.example.com", 443, "203.0.113.9", null, null, emptySet()),
-        )
+    fun `with no trusted edge the direct host is used`() {
+        assertEquals("cp.example.com", resolveForwardedAuthority("cp.example.com", "203.0.113.9", null, emptySet()))
     }
 
     @Test
     fun `forwardedHostFromAnUntrustedPeerIsIgnored`() {
         // The security case: a direct caller asserting the expected public host must not pass a check it
-        // would otherwise fail. The direct authority wins, so the comparison still rejects it.
+        // would otherwise fail. The direct host wins, so the comparison still rejects it.
         assertEquals(
-            "127.0.0.1" to 8080,
+            "127.0.0.1",
             resolveForwardedAuthority(
                 directHost = "127.0.0.1",
-                directPort = 8080,
                 peerAddress = "203.0.113.9",
                 forwardedHost = "cp.example.com",
-                forwardedPort = "443",
                 trustedProxies = edge,
             ),
         )
@@ -49,30 +48,23 @@ class ForwardedAuthorityTest {
     fun `a trusted edge's forwarded host supersedes the proxy's own authority`() {
         // The deployment this exists for: an edge (or the Next console) forwards to the control plane, so
         // the socket authority is the proxy's and only the header carries what the client addressed.
-        assertEquals(
-            "cp.example.com" to 443,
-            resolveForwardedAuthority("127.0.0.1", 41390, "10.0.0.1", "cp.example.com", "443", edge),
-        )
+        assertEquals("cp.example.com", resolveForwardedAuthority("127.0.0.1", "10.0.0.1", "cp.example.com", edge))
     }
 
     @Test
-    fun `a port in the forwarded host wins over a separate forwarded port header`() {
-        // An edge may split the authority across the two headers or put it all in one; when both are
-        // present and disagree, the authority the client actually addressed is the one in Host.
-        assertEquals(
-            "cp.example.com" to 8443,
-            resolveForwardedAuthority("127.0.0.1", 41390, "10.0.0.1", "cp.example.com:8443", "443", edge),
-        )
+    fun `an edge that preserves the client host needs no forwarded header`() {
+        // An ALB with preserve_host_header forwards the client's Host untouched and sends no
+        // X-Forwarded-Host at all. The direct host is then already what the client addressed, so the
+        // absent header must fall back to it rather than resolve to the socket's own name.
+        assertEquals("cp.example.com", resolveForwardedAuthority("cp.example.com", "10.0.0.1", null, edge))
     }
 
     @Test
-    fun `a forwarded host with no port anywhere resolves the port as absent`() {
-        // Absent means "the edge's default for its scheme", which the caller compares as a match rather
-        // than guessing 80 vs 443 here — guessing would reject a correct request on the other scheme.
-        assertEquals(
-            "cp.example.com" to null,
-            resolveForwardedAuthority("127.0.0.1", 41390, "10.0.0.1", "cp.example.com", null, edge),
-        )
+    fun `aPortIsNeverPartOfTheResolvedHost`() {
+        // Whatever port the edge asserts, the result is the bare host: the caller compares hosts, and a
+        // port left dangling on the string would fail that compare (`cp.example.com:8443` != host).
+        assertEquals("cp.example.com", resolveForwardedAuthority("127.0.0.1", "10.0.0.1", "cp.example.com:8443", edge))
+        assertEquals("cp.example.com", resolveForwardedAuthority("127.0.0.1", "10.0.0.1", "cp.example.com:443", edge))
     }
 
     @Test
@@ -80,8 +72,8 @@ class ForwardedAuthorityTest {
         // Same convention as X-Forwarded-For: the rightmost entry is the one THIS edge appended;
         // everything left of it came from an upstream hop and is not attested.
         assertEquals(
-            "cp.example.com" to 443,
-            resolveForwardedAuthority("127.0.0.1", 41390, "10.0.0.1", "evil.example.net, cp.example.com", "443", edge),
+            "cp.example.com",
+            resolveForwardedAuthority("127.0.0.1", "10.0.0.1", "evil.example.net, cp.example.com", edge),
         )
     }
 
@@ -89,22 +81,22 @@ class ForwardedAuthorityTest {
     fun `a bracketed IPv6 authority is unwrapped without being split at its own colons`() {
         // A naive split on the first colon shreds `[::1]:8443` into host `[` — so the port is only taken
         // from a colon that follows the closing bracket.
-        assertEquals("::1" to 8443, resolveForwardedAuthority("127.0.0.1", 41390, "10.0.0.1", "[::1]:8443", null, edge))
-        assertEquals("::1" to null, resolveForwardedAuthority("127.0.0.1", 41390, "10.0.0.1", "[::1]", null, edge))
+        assertEquals("::1", resolveForwardedAuthority("127.0.0.1", "10.0.0.1", "[::1]:8443", edge))
+        assertEquals("::1", resolveForwardedAuthority("127.0.0.1", "10.0.0.1", "[::1]", edge))
     }
 
     @Test
     fun `a blank or non-numeric-port forwarded host falls back rather than resolving a partial authority`() {
         assertEquals(
-            "127.0.0.1" to 41390,
-            resolveForwardedAuthority("127.0.0.1", 41390, "10.0.0.1", "   ", null, edge),
+            "127.0.0.1",
+            resolveForwardedAuthority("127.0.0.1", "10.0.0.1", "   ", edge),
             "a blank header carries nothing to honor",
         )
-        // `cp.example.com:` and `cp.example.com:https` are not host:port — the trailing text is part of
-        // the host, so the comparison fails rather than silently accepting `cp.example.com`.
+        // `cp.example.com:https` is not host:port — the trailing text is part of the host, so the
+        // comparison fails rather than silently accepting `cp.example.com`.
         assertEquals(
-            "cp.example.com:https" to null,
-            resolveForwardedAuthority("127.0.0.1", 41390, "10.0.0.1", "cp.example.com:https", null, edge),
+            "cp.example.com:https",
+            resolveForwardedAuthority("127.0.0.1", "10.0.0.1", "cp.example.com:https", edge),
         )
     }
 }

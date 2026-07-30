@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -557,5 +558,133 @@ func TestStreamEventsDispatchesMalformedRunOpen(t *testing.T) {
 	_ = c.StreamEvents(func() {}, func(open spi.RunOpen) { openedRun = open }, func(string, string, string) {})
 	if openedRun.SessionID != "bad" || openedRun.MapErr == nil {
 		t.Fatalf("malformed run open was not dispatched with MapErr: %+v", openedRun)
+	}
+}
+
+// holdOpenControlPlane never returns from Events, standing in for a control plane the proxy can reach but
+// which will never send anything — the shape a stream left pointing at a replaced backend takes.
+type holdOpenControlPlane struct {
+	pb.UnimplementedControlPlaneServer
+	mu    sync.Mutex
+	opens int
+	done  chan struct{}
+}
+
+func (f *holdOpenControlPlane) Events(_ *pb.EventsRequest, stream grpc.ServerStreamingServer[pb.ControlEvent]) error {
+	f.mu.Lock()
+	f.opens++
+	if f.opens == 1 && f.done != nil {
+		close(f.done)
+	}
+	f.mu.Unlock()
+	<-stream.Context().Done()
+	return stream.Context().Err()
+}
+
+func (f *holdOpenControlPlane) openCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.opens
+}
+
+func startHoldOpenControlPlane(t *testing.T, fake *holdOpenControlPlane) *Client {
+	t.Helper()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	server := grpc.NewServer()
+	pb.RegisterControlPlaneServer(server, fake)
+	go func() { _ = server.Serve(listener) }()
+	t.Cleanup(server.Stop)
+
+	client, err := New(listener.Addr().String(), "secret-abc", "ds-1")
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	t.Cleanup(func() { _ = client.Close() })
+	return client
+}
+
+func TestStreamEventsEndsAtItsMaxAge(t *testing.T) {
+	// The stream must not outlive its deadline even when the peer sends nothing and the connection stays
+	// healthy. Without the bound this call blocks forever, which is exactly how a proxy ends up holding a
+	// stream to a control plane that is gone: keepalive proves the connection, not the stream.
+	fake := &holdOpenControlPlane{done: make(chan struct{})}
+	c := startHoldOpenControlPlane(t, fake)
+
+	restore := eventsStreamMaxAgeForTest(300 * time.Millisecond)
+	defer restore()
+
+	start := time.Now()
+	err := c.StreamEvents(func() {}, func(spi.RunOpen) {}, func(string, string, string) {})
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("expected the stream to end at its max age")
+	}
+	if status.Code(err) != codes.DeadlineExceeded {
+		t.Fatalf("err = %v, want DeadlineExceeded", err)
+	}
+	if elapsed > 3*time.Second {
+		t.Fatalf("took %v — the deadline did not bound the stream", elapsed)
+	}
+}
+
+func TestEventsLoopReopensAfterMaxAge(t *testing.T) {
+	// Ending the stream is only useful if the loop opens another one: the reopen is what restores the
+	// control plane's view of this datasource as attached.
+	fake := &holdOpenControlPlane{done: make(chan struct{})}
+	c := startHoldOpenControlPlane(t, fake)
+
+	restore := eventsStreamMaxAgeForTest(150 * time.Millisecond)
+	defer restore()
+	restoreBackoff := eventsReconnectForTest(10 * time.Millisecond)
+	defer restoreBackoff()
+
+	go c.RunEventsLoop(func() {}, func() {}, func(spi.RunOpen) {}, func(string, string, string) {})
+
+	deadline := time.After(5 * time.Second)
+	for {
+		if fake.openCount() >= 3 {
+			return // rotated more than once, so it is a loop and not a single retry
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("only %d stream opens — the loop did not keep reopening", fake.openCount())
+		case <-time.After(20 * time.Millisecond):
+		}
+	}
+}
+
+func TestEventsLoopReopensWithoutWaitingForResync(t *testing.T) {
+	// resync introspects the whole catalog and retries with its own backoff. Run in line it delays the
+	// reopen, and the datasource reads as unattached for that whole time — so a resync that never returns
+	// must not stop the stream coming back.
+	fake := &holdOpenControlPlane{done: make(chan struct{})}
+	c := startHoldOpenControlPlane(t, fake)
+
+	restore := eventsStreamMaxAgeForTest(150 * time.Millisecond)
+	defer restore()
+	restoreBackoff := eventsReconnectForTest(10 * time.Millisecond)
+	defer restoreBackoff()
+
+	blocked := make(chan struct{})
+	go c.RunEventsLoop(
+		func() { <-blocked }, // a resync that never finishes
+		func() {}, func(spi.RunOpen) {}, func(string, string, string) {},
+	)
+	defer close(blocked)
+
+	deadline := time.After(5 * time.Second)
+	for {
+		if fake.openCount() >= 3 {
+			return
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("only %d opens with a stuck resync — the reopen is behind it", fake.openCount())
+		case <-time.After(20 * time.Millisecond):
+		}
 	}
 }

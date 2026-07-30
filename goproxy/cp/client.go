@@ -14,11 +14,13 @@ package cp
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
 
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/keepalive"
 	"google.golang.org/grpc/metadata"
@@ -40,12 +42,39 @@ const (
 	// secretTokenHeader is the shared transport secret header the control plane expects.
 	secretTokenHeader = "x-pm-secret-token"
 	// eventsReconnect is the backoff between Events stream reconnect attempts.
-	eventsReconnect = 5 * time.Second
+	eventsReconnectDefault = 5 * time.Second
+	// eventsStreamMaxAge bounds how long one Events stream is used before it is replaced. HTTP/2 keepalive
+	// proves the CONNECTION is alive, not that the stream on it still reaches a live control plane: a
+	// load balancer that keeps a connection open toward a replaced backend leaves the proxy holding a
+	// stream nothing will ever answer, and because the proxy's other calls are unary they open their own
+	// connections and keep succeeding — so the catalog stays fresh while the control plane reports this
+	// datasource as having no proxy attached, and every query against it is refused. Ending the stream on
+	// a timer makes that state self-healing and bounds it to one period, without needing the control
+	// plane to notice anything.
+	eventsStreamMaxAgeDefault = 4 * time.Minute
 	// keepaliveTime / keepaliveTimeout configure HTTP/2 keepalive so a half-open connection is detected
 	// instead of silently wedging the long-lived Events stream.
 	keepaliveTime    = 30 * time.Second
 	keepaliveTimeout = 10 * time.Second
 )
+
+// Overridable only so tests can shorten them; production always uses the defaults above.
+var (
+	eventsReconnect    = eventsReconnectDefault
+	eventsStreamMaxAge = eventsStreamMaxAgeDefault
+)
+
+func eventsStreamMaxAgeForTest(d time.Duration) func() {
+	prev := eventsStreamMaxAge
+	eventsStreamMaxAge = d
+	return func() { eventsStreamMaxAge = prev }
+}
+
+func eventsReconnectForTest(d time.Duration) func() {
+	prev := eventsReconnect
+	eventsReconnect = d
+	return func() { eventsReconnect = prev }
+}
 
 // Client is the proxy's gRPC client to the control plane. It satisfies engine.Decider.
 type Client struct {
@@ -365,14 +394,20 @@ func (c *Client) CloseConnection(connectionID []byte) error {
 
 // StreamEvents opens the proxy-initiated Events stream and dispatches refresh/run/table-detail
 // nudges until the stream ends or errors. Blocks the calling goroutine for the stream's lifetime.
-// Deliberately NOT deadlined: this is a long-lived liveness stream (the open stream IS the liveness
-// signal the control plane reads), not a unary RPC.
+//
+// Bounded by eventsStreamMaxAge rather than left open indefinitely. The open stream IS the liveness
+// signal the control plane reads, so a stream that survives its control plane costs this datasource
+// every query until something ends it — and nothing here would, because keepalive only proves the
+// connection is alive. Expiry is a normal end: RunEventsLoop resyncs and reopens, and the control
+// plane sees a detach immediately followed by an attach.
 func (c *Client) StreamEvents(
 	onRefresh func(),
 	onOpenRun func(spi.RunOpen),
 	onOpenTableDetail func(sessionID, schema, table string),
 ) error {
-	stream, err := c.stub.Events(c.outCtx(context.Background()), &pb.EventsRequest{DatasourceName: c.datasourceName})
+	ctx, cancel := context.WithTimeout(c.outCtx(context.Background()), eventsStreamMaxAge)
+	defer cancel()
+	stream, err := c.stub.Events(ctx, &pb.EventsRequest{DatasourceName: c.datasourceName})
 	if err != nil {
 		return fmt.Errorf("cp: opening events stream: %w", err)
 	}
@@ -406,7 +441,12 @@ func (c *Client) StreamEvents(
 
 // RunEventsLoop holds the Events stream open and never returns. On a drop it waits eventsReconnect,
 // resyncs (re-registers + re-pushes the catalog, so a control plane that restarted with lost state
-// re-learns this datasource) BEFORE reopening the stream, then reconnects.
+// re-learns this datasource) and reopens.
+//
+// The resync runs in the background rather than in line. It introspects the whole catalog, which on a
+// large database takes seconds and retries with its own backoff — done in line, a slow one delays the
+// reopen, and the control plane reports this datasource unattached for exactly that long. The stream is
+// what queries need; the catalog refresh is not, and it re-registers this datasource either way.
 func (c *Client) RunEventsLoop(
 	resync func(),
 	onRefresh func(),
@@ -415,9 +455,14 @@ func (c *Client) RunEventsLoop(
 ) {
 	for {
 		err := c.StreamEvents(onRefresh, onOpenRun, onOpenTableDetail)
-		slog.Info("events stream ended; reconnecting", "error", err, "reconnect_in", eventsReconnect)
+		// An expiry is the bounded rotation working, not a fault, so it should not read as one in the log.
+		if errors.Is(err, context.DeadlineExceeded) || status.Code(err) == codes.DeadlineExceeded {
+			slog.Info("events stream reached its max age; reopening", "max_age", eventsStreamMaxAge)
+		} else {
+			slog.Info("events stream ended; reconnecting", "error", err, "reconnect_in", eventsReconnect)
+		}
 		time.Sleep(eventsReconnect)
-		resync()
+		go resync()
 	}
 }
 

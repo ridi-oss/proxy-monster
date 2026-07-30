@@ -1,24 +1,26 @@
 name: server images
 
-# Publishes the four server images for a server-v* release to Docker Hub.
+# Publishes the four server images for a server-v* release to Docker Hub and ECR Public, so a pull
+# needs neither a Docker Hub account nor its rate limits.
 #
 # pmon is not here: it is a client binary, shipped as a release archive and a Homebrew formula
 # (pmon-release-binaries.yml).
 on:
   push:
     tags: ["server-v*"]
+  # Select the server-v* tag as the dispatch ref. The ECR Public role trusts only
+  # refs/tags/server-v*, and the OIDC subject is the ref the run was dispatched against, so a
+  # dispatch from a branch is refused by AWS at assume-role.
   workflow_dispatch:
-    inputs:
-      tag:
-        description: "Existing server-v* tag to build and push"
-        required: true
 
 concurrency:
-  group: ${{ github.workflow }}-${{ inputs.tag || github.ref }}
+  group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: false
 
 permissions:
   contents: read
+  # Mints the OIDC token AWS exchanges for the ECR Public push role.
+  id-token: write
 
 jobs:
   images:
@@ -48,14 +50,20 @@ jobs:
 
     steps:
       - uses: actions/checkout@v5
-        with:
-          ref: ${{ inputs.tag || github.ref }}
 
+      # The ref is the only input, so it is checked before it can name an image. A dispatch from a
+      # branch already fails at assume-role, but that happens after a Docker Hub push would have
+      # gone out, and `server-v` alone would strip to an empty version and still move `latest`.
       - name: Resolve the version from the tag
         id: version
         env:
-          TAG: ${{ inputs.tag || github.ref_name }}
-        run: echo "version=${TAG#server-v}" >> "$GITHUB_OUTPUT"
+          TAG: ${{ github.ref_name }}
+        run: |
+          case "$TAG" in
+            server-v?*) ;;
+            *) echo "::error::expected a server-v* tag as the ref, got '$TAG'"; exit 1 ;;
+          esac
+          echo "version=${TAG#server-v}" >> "$GITHUB_OUTPUT"
 
       # arm64 is emulated, so the matrix stays one job per image rather than one per platform:
       # buildx produces the multi-arch manifest, and splitting would need a separate merge job.
@@ -69,15 +77,29 @@ jobs:
           username: ${{ vars.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
+      - uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6.2.3
+        with:
+          # ECR Public is served only from us-east-1, wherever the images are pulled from.
+          aws-region: us-east-1
+          role-to-assume: ${{ secrets.ECR_PUBLIC_ROLE_ARN }}
+
+      - uses: aws-actions/amazon-ecr-login@d539f0932e70871a027e9d5a9d8fc38589180a64 # v2.1.6
+        id: ecr-public
+        with:
+          registry-type: public
+
       - uses: docker/metadata-action@v5
         id: meta
         with:
-          images: ${{ vars.DOCKERHUB_NAMESPACE }}/pm-${{ matrix.name }}
+          images: |
+            ${{ vars.DOCKERHUB_NAMESPACE }}/pm-${{ matrix.name }}
+            ${{ steps.ecr-public.outputs.registry }}/${{ vars.ECR_PUBLIC_ALIAS }}/pm-${{ matrix.name }}
           tags: |
             type=raw,value=${{ steps.version.outputs.version }}
             type=raw,value=latest
 
       - uses: docker/build-push-action@v6
+        id: build
         with:
           context: ${{ matrix.context }}
           file: ${{ matrix.dockerfile }}
@@ -88,3 +110,39 @@ jobs:
           # Reuse layers across releases; scoped per image so one does not evict another.
           cache-from: type=gha,scope=${{ matrix.name }}
           cache-to: type=gha,scope=${{ matrix.name }},mode=max
+
+      # One build produces both registries' tags, but the pushes are sequential and not atomic:
+      # a failure between them leaves one registry on the new digest and the other on the old,
+      # which no step above would report. The role holds no delete, so the repair is another run.
+      - name: Check every published tag carries the built digest
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+          TAGS: ${{ steps.meta.outputs.tags }}
+        run: |
+          rc=0
+          checked=0
+          while IFS= read -r tag; do
+            [ -n "$tag" ] || continue
+            checked=$((checked + 1))
+            published=""
+            # Both registries answer a read with 429 under load, which is not a divergent tag.
+            for attempt in 1 2 3; do
+              if published=$(docker buildx imagetools inspect "$tag" --format '{{.Manifest.Digest}}' 2>&1); then
+                break
+              fi
+              [ "$attempt" = 3 ] || sleep $((attempt * 5))
+            done
+            if [ "$published" = "$DIGEST" ]; then
+              echo "ok   $tag -> $published"
+            else
+              echo "::error::$tag: expected $DIGEST, read '$published'"
+              rc=1
+            fi
+          done <<< "$TAGS"
+          # An empty tag list would otherwise check nothing and report success.
+          if [ "$checked" -eq 0 ] || [ -z "$DIGEST" ]; then
+            echo "::error::verified $checked tags against digest '$DIGEST' — expected both to be set"
+            rc=1
+          fi
+          echo "verified $checked tags against $DIGEST"
+          exit "$rc"

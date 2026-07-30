@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.1.2](https://github.com/ridi-oss/proxy-monster/compare/server-v0.1.1...server-v0.1.2) (2026-07-30)
+
+
+### Bug Fixes
+
+* **ci:** let a published tag settle before calling it divergent ([#50](https://github.com/ridi-oss/proxy-monster/issues/50)) ([6538a33](https://github.com/ridi-oss/proxy-monster/commit/6538a33114d86ca766e300197720059bd7c49566))
+* **cp:** compare only the host on the /mcp authority gate ([#48](https://github.com/ridi-oss/proxy-monster/issues/48)) ([7aa3bb2](https://github.com/ridi-oss/proxy-monster/commit/7aa3bb23505ab38d8b1fac380fdd691a2dee835f))
+* **cp:** return the principal's resolved roles from /auth/me ([#49](https://github.com/ridi-oss/proxy-monster/issues/49)) ([f3401e1](https://github.com/ridi-oss/proxy-monster/commit/f3401e179b2b56f3947e1cc136f9205483573535))
+
+
+### Performance
+
+* **cp:** open a session from the catalog already held ([#51](https://github.com/ridi-oss/proxy-monster/issues/51)) ([b57a1ea](https://github.com/ridi-oss/proxy-monster/commit/b57a1ead9f467f9f9f045f0340b0c5967961eb6a))
+
+
+### Documentation
+
+* point at the published server images, and verify a partial push ([#43](https://github.com/ridi-oss/proxy-monster/issues/43)) ([f4cfd5b](https://github.com/ridi-oss/proxy-monster/commit/f4cfd5bc8447bd912485fb22ffbec852e949d7b4))
+
 ## [0.1.1](https://github.com/ridi-oss/proxy-monster/compare/server-v0.1.0...server-v0.1.1) (2026-07-30)
 
 

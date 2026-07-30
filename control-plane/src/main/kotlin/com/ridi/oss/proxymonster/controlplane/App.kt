@@ -49,9 +49,9 @@ import io.ktor.server.sessions.get
 import io.ktor.server.sessions.cookie
 import io.ktor.server.sessions.set
 import io.ktor.server.sessions.sessions
-import io.ktor.server.sse.heartbeat
 import io.ktor.server.sse.sse
 import io.ktor.sse.ServerSentEvent
+import java.io.IOException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.selects.onTimeout
@@ -110,10 +110,6 @@ internal fun Route.taskEventsRoute(
         val context = call.httpAuthzContext(config)
         val events = taskCompletionHub.subscribe(principal)
         try {
-            heartbeat {
-                period = 30.seconds
-                event = ServerSentEvent(comments = "keepalive")
-            }
             while (true) {
                 val keepOpen = select {
                     events.onReceiveCatching { result ->
@@ -129,11 +125,26 @@ internal fun Route.taskEventsRoute(
                     onTimeout(SSE_SESSION_RECHECK_MS) {
                         // A session revoked / expired / newest-wins-displaced mid-stream must stop receiving
                         // events; webSession() caches per-call, so re-resolve the store directly here.
+                        //
+                        // This tick also carries the keepalive, rather than Ktor's `heartbeat` helper. The
+                        // helper writes from its OWN coroutine, so when the client is gone its write throws
+                        // where no handler here can reach it — every ordinary disconnect surfaced as an
+                        // unhandled exception and a 500. Writing on this loop's own coroutine puts that
+                        // same throw inside the catch below, which is what turns a closed browser tab back
+                        // into the non-event it is.
+                        send(ServerSentEvent(comments = "keepalive"))
                         sessionStillLive(config, sessionId, deviceId, principalSessionStore)
                     }
                 }
                 if (!keepOpen) break
             }
+        } catch (_: IOException) {
+            // A browser closing the tab, navigating away, or reconnecting leaves this stream writing to a
+            // channel that is already gone, and the write throws. That is the NORMAL end of an SSE stream,
+            // not a server fault: unhandled, it logged a stack trace and a "500 Internal Server Error" for
+            // every disconnect, which buries real failures in a log nobody can then read. Nothing is left
+            // to send, so ending the coroutine quietly is the whole handling — the finally below still
+            // releases the subscription.
         } finally {
             taskCompletionHub.unsubscribe(principal, events)
         }

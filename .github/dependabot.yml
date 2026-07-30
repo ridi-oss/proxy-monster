@@ -4,12 +4,25 @@
 # Grouped per ecosystem rather than one PR per dependency: the JVM and Go trees each
 # pin transitively-coupled sets (grpc-java + protobuf, the AWS SDK modules), and
 # splitting those lands a PR that cannot build on its own.
+# `prefix` is what makes the PR title conventional — Dependabot's own "Bump x from a to b"
+# fails the title check.
+#
+# `cooldown` waits before proposing a bump, so a release compromised and then yanked is
+# usually gone before a PR exists. Longer for a major: more code, less scrutiny per line.
+# It must stay a sibling of commit-message; nested, Dependabot ignores it silently.
 version: 2
 updates:
   - package-ecosystem: gradle
     directory: /
     schedule:
       interval: weekly
+    commit-message:
+      prefix: build(deps)
+    cooldown:
+      default-days: 3
+      semver-patch-days: 3
+      semver-minor-days: 5
+      semver-major-days: 7
     open-pull-requests-limit: 5
     groups:
       jvm:
@@ -28,6 +41,13 @@ updates:
       - /pmontray
     schedule:
       interval: weekly
+    commit-message:
+      prefix: build(deps)
+    cooldown:
+      default-days: 3
+      semver-patch-days: 3
+      semver-minor-days: 5
+      semver-major-days: 7
     open-pull-requests-limit: 5
     groups:
       go:
@@ -38,6 +58,13 @@ updates:
     directory: /web
     schedule:
       interval: weekly
+    commit-message:
+      prefix: build(deps)
+    cooldown:
+      default-days: 3
+      semver-patch-days: 3
+      semver-minor-days: 5
+      semver-major-days: 7
     open-pull-requests-limit: 5
     groups:
       web:
@@ -48,3 +75,7 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    commit-message:
+      prefix: build(deps)
+    cooldown:
+      default-days: 3

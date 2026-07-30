@@ -715,7 +715,11 @@ fun Application.module(config: Config, core: ControlPlaneCore) {
         authenticate(WEB_SESSION_AUTH) {
             get("/auth/me") {
                 call.response.header(HttpHeaders.CacheControl, "no-store")
-                call.respond(UserSession(requireNotNull(call.principal<WebSessionRow>()).principal))
+                // Resolved per request, never carried in the session: a role gained or lost after
+                // login (group change, expired JIT grant, deactivation) must be visible to the next
+                // read, and the console shows this set while explaining a decision.
+                val principal = requireNotNull(call.principal<WebSessionRow>()).principal
+                call.respond(UserSession(principal, roleResolver.resolve(principal).sorted()))
             }
 
             get("/auth/session/status") {

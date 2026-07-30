@@ -176,7 +176,10 @@ class WebSessionRoutesDbTest {
         assertContains(deviceCookie, "HttpOnly")
         assertContains(deviceCookie, "SameSite=Lax")
         assertEquals(UserSession("web@example.com", listOf("system:auditor")), login.body())
-        assertEquals(UserSession("web@example.com"), client.get("/auth/me").body())
+        // /auth/me re-resolves rather than echoing the session: the console reads this to show who it
+        // thinks you are, so reporting an empty set for a principal that holds roles misdescribes
+        // every later denial.
+        assertEquals(UserSession("web@example.com", listOf("system:auditor")), client.get("/auth/me").body())
 
         // The claim is not cosmetic: it became a direct assignment, so authorization (which reads the database,
         // never the session) actually sees it. Without this the route could echo any role back and still resolve

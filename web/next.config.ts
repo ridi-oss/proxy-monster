@@ -1,6 +1,8 @@
 import type { NextConfig } from "next";
 import createNextIntlPlugin from "next-intl/plugin";
 
+import { version } from "./package.json";
+
 const withNextIntl = createNextIntlPlugin("./src/i18n/request.ts");
 
 // Proxy /api and /auth to the Kotlin control-plane (default :41390), so the
@@ -12,6 +14,10 @@ const nextConfig: NextConfig = {
   // minimal subset of node_modules the built server actually needs — instead of the full
   // node_modules tree. No effect on `next dev`/plain `next start` outside a container.
   output: "standalone",
+  // The console shows this on the login page. Read from package.json, which release-please bumps with
+  // the server release, so a plain `pnpm build` and a container image report the same version and
+  // neither needs a build argument. Inlined at build time, so only the string ships — not package.json.
+  env: { NEXT_PUBLIC_APP_VERSION: version },
   async rewrites() {
     return [
       { source: "/api/:path*", destination: `${target}/api/:path*` },

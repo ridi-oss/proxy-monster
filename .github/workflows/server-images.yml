@@ -1,0 +1,90 @@
+name: server images
+
+# Publishes the four server images for a server-v* release to Docker Hub.
+#
+# pmon is not here: it is a client binary, shipped as a release archive and a Homebrew formula
+# (pmon-release-binaries.yml).
+on:
+  push:
+    tags: ["server-v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing server-v* tag to build and push"
+        required: true
+
+concurrency:
+  group: ${{ github.workflow }}-${{ inputs.tag || github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  images:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    strategy:
+      # A failed image is a fact about that image; the others still need to publish.
+      fail-fast: false
+      matrix:
+        include:
+          # goproxy and control-plane build from the repo root: goproxy needs the sibling mysqlwire
+          # module, and control-plane's Gradle configuration phase needs every included module.
+          - name: goproxy
+            dockerfile: goproxy/Dockerfile
+            context: .
+          - name: control-plane
+            dockerfile: control-plane/Dockerfile
+            context: .
+          # auditmon and web are self-contained, so their own directory is the context.
+          - name: auditmon
+            dockerfile: auditmon/Dockerfile
+            context: auditmon
+          - name: web
+            dockerfile: web/Dockerfile
+            context: web
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+
+      - name: Resolve the version from the tag
+        id: version
+        env:
+          TAG: ${{ inputs.tag || github.ref_name }}
+        run: echo "version=${TAG#server-v}" >> "$GITHUB_OUTPUT"
+
+      # arm64 is emulated, so the matrix stays one job per image rather than one per platform:
+      # buildx produces the multi-arch manifest, and splitting would need a separate merge job.
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          # An organization access token, so the username is the org rather than a person's handle
+          # and the credential outlives any individual's account.
+          username: ${{ vars.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - uses: docker/metadata-action@v5
+        id: meta
+        with:
+          images: ${{ vars.DOCKERHUB_NAMESPACE }}/pm-${{ matrix.name }}
+          tags: |
+            type=raw,value=${{ steps.version.outputs.version }}
+            type=raw,value=latest
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.dockerfile }}
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          # Reuse layers across releases; scoped per image so one does not evict another.
+          cache-from: type=gha,scope=${{ matrix.name }}
+          cache-to: type=gha,scope=${{ matrix.name }},mode=max

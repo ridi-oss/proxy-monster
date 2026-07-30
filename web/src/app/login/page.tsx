@@ -181,7 +181,7 @@ function LoginInner() {
         )}
       </div>
 
-      <p className="text-muted-foreground text-xs">v0.1.0</p>
+      <p className="text-muted-foreground text-xs">v{process.env.NEXT_PUBLIC_APP_VERSION}</p>
     </div>
   )
 }

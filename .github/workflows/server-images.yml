@@ -137,23 +137,51 @@ jobs:
             audit_only=true
           fi
 
+          # A tag that reads as the previous digest may be a partial push or may just not have
+          # converged yet — one read cannot tell them apart, so retry and let it settle. A 429
+          # answer is likewise not a divergent tag. Only a tag still wrong at the end is reported.
+          # Only stdout is the digest — a warning on stderr would never equal one. stdin is closed so
+          # a read from the registry client cannot eat the tag list this loop is reading from.
+          read_tag() {
+            local tag=$1 attempt
+            published=""
+            last_read=""
+            for attempt in 1 2 3 4 5; do
+              if published=$(docker buildx imagetools inspect "$tag" \
+                --format '{{.Manifest.Digest}}' 2>/tmp/inspect.err </dev/null); then
+                [ "$audit_only" = true ] && return 0
+                [ "$published" = "$DIGEST" ] && return 0
+                # A digest that was read but did not match is the useful diagnosis; keep it, so a
+                # 429 on a later attempt does not replace it with a transport error.
+                last_read=$published
+              else
+                # Read without `cat`, and tolerate a missing or empty file: failing the assignment
+                # would, under -e, abort the whole step — no annotation, and the remaining tags
+                # never checked.
+                published=$(< /tmp/inspect.err) || published=""
+                [ -n "$published" ] || published="the registry read failed without a message"
+              fi
+              [ "$attempt" = 5 ] || sleep $((attempt * 4))
+            done
+            [ -n "$last_read" ] && published=$last_read
+            return 1
+          }
+
           rc=0
           checked=0
           while IFS= read -r tag; do
             [ -n "$tag" ] || continue
             checked=$((checked + 1))
             published=""
-            # Both registries answer a read with 429 under load, which is not a divergent tag.
-            for attempt in 1 2 3; do
-              if published=$(docker buildx imagetools inspect "$tag" --format '{{.Manifest.Digest}}' 2>&1); then
-                break
+            if read_tag "$tag"; then
+              if [ "$audit_only" = true ]; then
+                echo "$tag -> $published"
+              else
+                echo "ok   $tag -> $published"
               fi
-              [ "$attempt" = 3 ] || sleep $((attempt * 5))
-            done
-            if [ "$audit_only" = true ]; then
-              echo "$tag -> $published"
-            elif [ "$published" = "$DIGEST" ]; then
-              echo "ok   $tag -> $published"
+            elif [ "$audit_only" = true ]; then
+              # Nothing to compare against, so an unreadable tag is a fact to report, not a failure.
+              echo "$tag -> unreadable: $published"
             else
               echo "::error::$tag: expected $DIGEST, read '$published'"
               rc=1
@@ -161,8 +189,12 @@ jobs:
           done <<< "$TAGS"
 
           echo "checked $checked tags${DIGEST:+ against $DIGEST}"
-          if [ "$checked" -eq 0 ]; then
-            echo "::error::the tag list produced nothing to check"
+          # The tag list comes from the same step that fed the push, so a list missing one registry
+          # would be pushed and verified consistently and still report success. Each image publishes
+          # a version and a latest tag to both registries; anything else is a wiring fault, not a
+          # release to pass.
+          if [ "$checked" -ne 4 ]; then
+            echo "::error::expected 4 tags (version and latest, on both registries), got $checked"
             rc=1
           fi
           # The build's own failure already fails the job; this step only adds what it found.

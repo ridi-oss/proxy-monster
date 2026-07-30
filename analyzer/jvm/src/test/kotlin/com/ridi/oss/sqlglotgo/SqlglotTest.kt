@@ -103,7 +103,7 @@ class SqlglotTest {
         val prefix = assertNotNull(Sqlglot.sqlNormalize("SELECT 1", "postgres"))
         val embeddedNul = Sqlglot.sqlNormalize("SELECT 1\u0000 UNION SELECT 2", "postgres")
         assertNull(embeddedNul)
-        assertNotEquals(prefix, embeddedNul)
+        assertNotEquals<String?>(prefix, embeddedNul)
         assertNotEquals(
             assertNotNull(Sqlglot.sqlNormalize("SELECT id FROM \"Users\"", "postgres")),
             assertNotNull(Sqlglot.sqlNormalize("SELECT id FROM \"users\"", "postgres")),

@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.1](https://github.com/ridi-oss/proxy-monster/compare/server-v0.1.0...server-v0.1.1) (2026-07-30)
+
+
+### Bug Fixes
+
+* **proxy:** bound the events stream so a dead one cannot persist ([#42](https://github.com/ridi-oss/proxy-monster/issues/42)) ([4ff1c23](https://github.com/ridi-oss/proxy-monster/commit/4ff1c2359615fd082390e2b3423504e0379d0238))
+
 ## 0.1.0 (2026-07-30)
 
 

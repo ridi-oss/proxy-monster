@@ -80,10 +80,6 @@ const ACTION_REFERENCE: { resource: string; actions: { name: string; noteKey: st
     ],
   },
   {
-    resource: 'Datasource',
-    actions: [{ name: 'task.request', noteKey: 'taskRequest' }],
-  },
-  {
     resource: 'AccessGrant',
     actions: [
       { name: 'task.read', noteKey: 'taskRead' },
@@ -100,6 +96,7 @@ const ACTION_REFERENCE: { resource: string; actions: { name: string; noteKey: st
   {
     resource: 'Datasource',
     actions: [
+      { name: 'task.request', noteKey: 'taskRequest' },
       { name: 'datasource.connect', noteKey: 'datasourceConnect' },
       { name: 'sql.select', noteKey: 'sqlSelect' },
       { name: 'sql.insert', noteKey: 'sqlInsert' },

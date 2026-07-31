@@ -4,8 +4,7 @@ name: server images
 # needs neither a Docker Hub account nor its rate limits.
 #
 # Each architecture builds on a runner of that architecture, and a merge job joins the two into one
-# manifest. Emulating arm64 on an amd64 runner took 39 minutes for control-plane's Gradle build
-# against 50 seconds for auditmon's Go build — a JVM compile under QEMU runs interpreted.
+# manifest. Emulating arm64 costs a JVM compile most of its speed — the JIT itself runs interpreted.
 #
 # pmon is not here: it is a client binary, shipped as a release archive and a Homebrew formula
 # (pmon-release-binaries.yml).
@@ -26,7 +25,7 @@ permissions:
 
 jobs:
   version:
-    runs-on: ubuntu-24-x64
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     outputs:
       version: ${{ steps.version.outputs.version }}
@@ -60,7 +59,8 @@ jobs:
 
   build:
     needs: version
-    runs-on: ${{ matrix.arch == 'arm64' && 'ubuntu-24-arm' || 'ubuntu-24-x64' }}
+    runs-on:
+      ${{ matrix.arch == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-24.04' }}
     timeout-minutes: 60
 
     strategy:
@@ -137,7 +137,7 @@ jobs:
     # image's own digests decide: an image missing an architecture fails its own merge, and the
     # rest still publish.
     if: ${{ !cancelled() && needs.version.result == 'success' }}
-    runs-on: ubuntu-24-x64
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
 
     # Only this job assumes the ECR role. At workflow level every build cell could mint a token the

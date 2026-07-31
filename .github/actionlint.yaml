@@ -1,6 +1,0 @@
-# The org's GitHub-hosted larger runners. actionlint only knows the standard labels, so without
-# these it reports every `runs-on` here as an unknown label.
-self-hosted-runner:
-  labels:
-    - ubuntu-24-x64
-    - ubuntu-24-arm

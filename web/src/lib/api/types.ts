@@ -390,6 +390,10 @@ export interface RoleOption {
   roleId: number
   roleName: string
   unmasksColumns: string[]
+  /** What the query returns under this role when executed by the workflow — the only outcome the request
+   *  can deliver. `maskedColumns` is empty on a plain ALLOW. */
+  decision: 'ALLOW' | 'MASK'
+  maskedColumns: string[]
 }
 
 export interface DiscoverRolesResponse {

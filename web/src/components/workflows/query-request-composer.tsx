@@ -22,6 +22,12 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 
+/** Colors the verdict so cleartext vs masked reads at a glance. A denying role is never offered. */
+const OUTCOME_TONE: Record<string, string> = {
+  ALLOW: 'text-emerald-600 dark:text-emerald-400',
+  MASK: 'text-amber-600 dark:text-amber-400',
+}
+
 function errorMessage(err: unknown): string {
   if (err instanceof ApiError) {
     try {
@@ -287,10 +293,19 @@ export function QueryRequestComposer({
                       <SelectContent>
                         {discovery.options.map((option) => (
                           <SelectItem key={option.roleId} value={String(option.roleId)}>
-                            {option.roleName}
-                            {option.unmasksColumns.length > 0
-                              ? ` — ${t('queryComposer.unmasksHint', { columns: option.unmasksColumns.join(', ') })}`
-                              : ''}
+                            <span className="flex flex-col gap-0.5">
+                              <span>{option.roleName}</span>
+                              {/* What the query returns under this role when the workflow executes it —
+                                  the only outcome the request can actually deliver. */}
+                              <span className="text-muted-foreground text-xs">
+                                <span className={OUTCOME_TONE[option.decision]}>
+                                  {t(`queryComposer.outcome.${option.decision}`)}
+                                </span>
+                                {option.maskedColumns.length > 0
+                                  ? ` (${option.maskedColumns.join(', ')})`
+                                  : ''}
+                              </span>
+                            </span>
                           </SelectItem>
                         ))}
                       </SelectContent>

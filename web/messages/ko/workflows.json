@@ -127,7 +127,11 @@
     "noRolesFound": "이 쿼리의 결과를 바꿀 수 있는 역할이 없습니다.",
     "staleDiscovery": "역할을 확인한 뒤 쿼리가 변경되었습니다. 사용 가능한 역할을 다시 확인해 주세요.",
     "alreadyAllowed": "이 쿼리는 이미 역할 상승 없이 허용되어 있습니다.",
-    "unmasksHint": "마스킹 해제: {columns}"
+    "unmasksHint": "마스킹 해제: {columns}",
+    "outcome": {
+      "ALLOW": "평문",
+      "MASK": "마스킹"
+    }
   },
   "roleComposer": {
     "submittedToast": "액세스 요청이 제출되었습니다 — 승인자 검토 대기 중",

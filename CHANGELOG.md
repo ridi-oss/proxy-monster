@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.1.5](https://github.com/ridi-oss/proxy-monster/compare/server-v0.1.4...server-v0.1.5) (2026-07-31)
+
+
+### Features
+
+* **control-plane:** send a PKCE S256 challenge when the IdP advertises it ([#64](https://github.com/ridi-oss/proxy-monster/issues/64)) ([bfce32d](https://github.com/ridi-oss/proxy-monster/commit/bfce32dec4c137b9e20d58d838c3874ea668d5d1))
+
+
+### Bug Fixes
+
+* **cp:** discover roles at the context an approved query executes in ([#63](https://github.com/ridi-oss/proxy-monster/issues/63)) ([a9d825c](https://github.com/ridi-oss/proxy-monster/commit/a9d825c2498a73d92b89db20f1bb4712c118a29b))
+* **cp:** surface an editor denial as a decision, not a failure ([#62](https://github.com/ridi-oss/proxy-monster/issues/62)) ([b7fdcb2](https://github.com/ridi-oss/proxy-monster/commit/b7fdcb2332d3f24d896bd07ee93851027f905c36))
+
 ## [0.1.4](https://github.com/ridi-oss/proxy-monster/compare/server-v0.1.3...server-v0.1.4) (2026-07-31)
 
 

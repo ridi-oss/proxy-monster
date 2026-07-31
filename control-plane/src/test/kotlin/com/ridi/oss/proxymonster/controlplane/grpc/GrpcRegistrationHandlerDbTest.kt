@@ -513,64 +513,97 @@ class GrpcRegistrationHandlerDbTest {
     }
 
     @Test
-    fun `pushCatalog re-measures the enforcement catalog, not only the stored one`() = runBlocking {
-        // The staleness ceiling is set above the ambient refresh interval on the premise that the refresh
-        // keeps enforcement content verified. That premise is a single call in this handler: exercise it
-        // through the RPC, because a registry-level test would stay green if the wiring were removed and
-        // the refresh went back to feeding only the stored catalog.
-        stub.register(registerRequest { name = "reg-ambient"; engine = Engine.MYSQL; host = "h"; port = 1; dbName = "app" })
-        val ds = core.datasourceStore.getByName("reg-ambient")!!
+    fun `pushCatalog seeds the enforcement catalog so the first connection adopts`() = runBlocking {
+        // The headline of the manager: a configuration reading carries the backend's own per-schema hash, so
+        // its content is content-addressable exactly like a connection's fragment and SEEDS the pool. Before
+        // this, the first connection re-read thousands of columns the control plane was handed seconds
+        // earlier, because the reading could only confirm what some connection had already measured.
+        //
+        // Exercised through the RPC rather than the registry: a registry-level test would stay green if the
+        // handler stopped routing through the manager and went back to writing only the stored catalog.
+        stub.register(registerRequest { name = "reg-seed"; engine = Engine.MYSQL; host = "h"; port = 1; dbName = "app" })
+        val ds = core.datasourceStore.getByName("reg-seed")!!
 
-        // A connection measures `app` itself, so the control plane holds enforcement content for it.
-        val opened = core.connectionCatalog.open(Binding(ds.name, "p", "USER"), listOf("app"))
-        val applied = core.connectionCatalog.applyPush(
-            schemaFragmentPush {
-                connectionId = opened.connectionId
-                datasourceName = ds.name
-                schema = "app"
-                contentHash = ByteString.copyFromUtf8("h1")
-                backendGeneration = 1
-                columns.add(
-                    column { schema = "app"; table = "users"; this.column = "id"; dataType = "bigint"; ordinal = 1; nullable = false },
-                )
-            },
-            ds,
-        )
-        assertIs<CatalogMutationResult.Applied>(applied)
-        val measuredBefore = core.connectionCatalog.measuredNanosFor(ds.name, "app")!!
-
-        // The ambient refresh reports the same content for that schema.
         stub.pushCatalog(
             catalogRequest {
                 datasourceName = ds.name
                 defaultSchemas.add("app")
+                schemaHashes.add(schemaHash { schema = "app"; hash = ByteString.copyFromUtf8("h1"); trusted = true })
+                dbClockMicros = 1_000
+                backendId = "srv"
+                contentSchemas.add("app")
+                namespaceComplete = true
                 columns.add(
                     column { schema = "app"; table = "users"; this.column = "id"; dataType = "bigint"; ordinal = 1; nullable = false },
                 )
             },
         )
 
-        // The recorded measurement time must have MOVED. Asserting that instead of "the adopter looks
-        // fresh" is deliberate: the adopter would look fresh anyway from the original measurement seconds
-        // earlier, so a freshness assertion holds even with this handler unwired and proves nothing.
-        val afterAmbient = core.connectionCatalog.measuredNanosFor(ds.name, "app")
-        assertNotNull(afterAmbient, "the enforcement entry must survive the push")
-        assertTrue(
-            afterAmbient > measuredBefore,
-            "pushCatalog must record its read against the enforcement catalog " +
-                "(before=$measuredBefore after=$afterAmbient)",
-        )
-
-        // The push confirms content; it never installs it.
+        // No connection has measured this backend, so nothing but the push could have put content here.
         val adopter = core.connectionCatalog.open(
-            Binding(ds.name, "later", "USER"), listOf("app"), adoptHeldContent = true,
+            Binding(ds.name, "first", "USER"), listOf("app"), adoptHeldContent = true,
         )
-        assertTrue(adopter.onOpen.isEmpty(), "the ambient push must leave the adopter with nothing to fetch")
+        assertTrue(adopter.onOpen.isEmpty(), "the first connection must adopt the pushed content, not fetch it")
         assertEquals(
             listOf("id"),
             core.connectionCatalog.structuralRows(
                 core.connectionCatalog.find(adopter.connectionId)!!,
             ).map { it.column },
+            "and it must resolve the columns the push actually carried",
+        )
+    }
+
+    @Test
+    fun `pushCatalog refuses to install a reading older than a connection's own`() = runBlocking {
+        // The race the version exists to reject: a whole-server scan takes tens of seconds, so a scan that
+        // read state at time 100 routinely lands after a connection refetch that read newer state at 101.
+        // Under accept order the slow scan's stale content displaces the newer catalog and the next
+        // trusting connection adopts it.
+        stub.register(registerRequest { name = "reg-stale"; engine = Engine.MYSQL; host = "h"; port = 1; dbName = "app" })
+        val ds = core.datasourceStore.getByName("reg-stale")!!
+
+        val opened = core.connectionCatalog.open(Binding(ds.name, "fast", "USER"), listOf("app"))
+        val applied = core.connectionCatalog.applyPush(
+            schemaFragmentPush {
+                connectionId = opened.connectionId
+                datasourceName = ds.name
+                schema = "app"
+                contentHash = ByteString.copyFromUtf8("h-new")
+                hashTrusted = true
+                dbClockMicros = 101
+                backendId = "srv"
+                backendGeneration = 1
+                columns.add(
+                    column { schema = "app"; table = "users"; this.column = "current"; dataType = "bigint"; ordinal = 1; nullable = false },
+                )
+            },
+            ds,
+        )
+        assertIs<CatalogMutationResult.Applied>(applied)
+
+        stub.pushCatalog(
+            catalogRequest {
+                datasourceName = ds.name
+                defaultSchemas.add("app")
+                schemaHashes.add(schemaHash { schema = "app"; hash = ByteString.copyFromUtf8("h-old"); trusted = true })
+                dbClockMicros = 100
+                backendId = "srv"
+                contentSchemas.add("app")
+                columns.add(
+                    column { schema = "app"; table = "users"; this.column = "stale"; dataType = "bigint"; ordinal = 1; nullable = false },
+                )
+            },
+        )
+
+        val adopter = core.connectionCatalog.open(
+            Binding(ds.name, "later", "USER"), listOf("app"), adoptHeldContent = true,
+        )
+        assertEquals(
+            listOf("current"),
+            core.connectionCatalog.structuralRows(
+                core.connectionCatalog.find(adopter.connectionId)!!,
+            ).map { it.column },
+            "the older scan must not become what the next connection adopts",
         )
     }
 

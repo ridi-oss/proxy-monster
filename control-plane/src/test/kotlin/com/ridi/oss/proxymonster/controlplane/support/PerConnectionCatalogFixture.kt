@@ -83,6 +83,9 @@ class PerConnectionCatalogFixture(val enforcement: EnforcementFixture) {
                 datasourceName = datasource.name
                 this.schema = schema
                 contentHash = hash(rows)
+                // The fixture reads the schema straight off the target and computes the hash over exactly
+                // the rows it pushes, which is what a coherent bracket asserts.
+                hashTrusted = true
                 this.unchanged = unchanged
                 this.backendGeneration = backendGeneration
                 if (!unchanged) {

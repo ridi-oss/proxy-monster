@@ -41,7 +41,9 @@ class ControlPlaneCore(val dataSource: DataSource) {
     // Open proxy Events streams (docs/datasource-registration.md) — liveness + refresh/run push.
     // Shared so the gRPC handlers and the HTTP routes agree on attached proxies and pending run dials.
     val proxyEventsHub = ProxyEventsHub()
-    val connectionCatalog = ConnectionCatalogRegistry()
+    // The catalog manager owns every catalog store, the persisted projection included — so one component
+    // decides what each reading may update, instead of two writers maintaining two stores.
+    val connectionCatalog = ConnectionCatalogRegistry(projection = datasourceStore)
     val runChannels = RunChannelRegistry()
     val tableDetailChannels = TableDetailChannelRegistry()
 

@@ -49,6 +49,19 @@ abstract class PerConnectionCatalogAdversarialDbContract {
         return opened
     }
 
+    /**
+     * Re-measure [schema] on a connection that has no refetch outstanding.
+     *
+     * A push is a compare-and-set against a command the control plane issued, so a test that changes the
+     * backend out of band has to ask for the re-read before it can deliver one — exactly as the proxy does
+     * when a statement's verdict carries no after-statement command.
+     */
+    protected suspend fun remeasure(opened: OpenConnection, target: Connection, schema: String) {
+        val connection = fixture.core.connectionCatalog.find(opened.connectionId)!!
+        fixture.core.connectionCatalog.markAfterStatement(connection, listOf(schema))
+        fixture.pushFromTarget(target, opened.connectionId, schema)
+    }
+
     protected suspend fun decide(
         opened: OpenConnection,
         principal: String,
@@ -115,7 +128,7 @@ abstract class PerConnectionCatalogAdversarialDbContract {
                 )
                 assertEquals(EnfAction.ALLOW, firstDdl.ctx.action, firstDdl.ctx.denyReason)
                 siblingTarget.createStatement().use { it.execute("CREATE TABLE ${qualified(schema, "pccat_version_one")} (id BIGINT)") }
-                fixture.pushFromTarget(siblingTarget, sibling.connectionId, schema)
+                remeasure(sibling, siblingTarget, schema)
 
                 val stale = assertIs<EnforcementOutcome.BeforeDecide>(
                     decide(held, "analyst@example.com", "SELECT id FROM users", listOf(schema)),
@@ -146,13 +159,14 @@ abstract class PerConnectionCatalogAdversarialDbContract {
                 )
                 assertEquals(EnfAction.ALLOW, secondDdl.ctx.action, secondDdl.ctx.denyReason)
                 siblingTarget.createStatement().use { it.execute("CREATE TABLE ${qualified(schema, "pccat_version_two")} (id BIGINT)") }
-                fixture.pushFromTarget(siblingTarget, sibling.connectionId, schema)
+                remeasure(sibling, siblingTarget, schema)
 
                 assertIs<EnforcementOutcome.BeforeDecide>(
                     decide(held, "analyst@example.com", "SELECT id FROM users", listOf(schema)),
                 )
             }
         }
+        Unit
     }
 
     @Test

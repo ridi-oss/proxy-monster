@@ -2,15 +2,19 @@ package com.ridi.oss.proxymonster.controlplane
 
 import com.google.protobuf.ByteString
 import com.ridi.oss.proxymonster.grpc.Engine
+import com.ridi.oss.proxymonster.grpc.catalogRequest
 import com.ridi.oss.proxymonster.grpc.column
 import com.ridi.oss.proxymonster.grpc.schemaFragmentPush
+import com.ridi.oss.proxymonster.grpc.schemaHash
 import io.grpc.Status
 import kotlinx.coroutines.runBlocking
 import java.security.SecureRandom
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNotEquals
 import kotlin.test.assertNotNull
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class PerConnectionCatalogStateTest {
@@ -26,6 +30,10 @@ class PerConnectionCatalogStateTest {
         generation: Long = 1,
         unchanged: Boolean = false,
         columnName: String = "id",
+        clockMicros: Long = 0,
+        backend: String = "",
+        trusted: Boolean = true,
+        inTransaction: Boolean = false,
     ) = schemaFragmentPush {
         connectionId = opened.connectionId
         datasourceName = ds.name
@@ -33,9 +41,47 @@ class PerConnectionCatalogStateTest {
         contentHash = ByteString.copyFromUtf8(hash)
         this.unchanged = unchanged
         backendGeneration = generation
+        dbClockMicros = clockMicros
+        backendId = backend
+        hashTrusted = trusted
+        measuredInTransaction = inTransaction
         if (!unchanged) {
             columns.add(column {
                 this.schema = schema; table = "users"; column = columnName
+                dataType = "bigint"; ordinal = 1; nullable = false
+            })
+        }
+    }
+
+    /** A configuration reading — what registration and the ambient refresh push, carrying per-schema hashes. */
+    private fun config(
+        schema: String,
+        hash: String,
+        columnName: String? = "id",
+        clockMicros: Long = 0,
+        backend: String = "",
+        trusted: Boolean = true,
+        complete: Boolean = false,
+        extraSchemas: Map<String, String> = emptyMap(),
+    ) = catalogRequest {
+        datasourceName = ds.name
+        defaultSchemas.add("app")
+        schemaHashes.add(schemaHash { this.schema = schema; this.hash = ByteString.copyFromUtf8(hash); this.trusted = trusted })
+        extraSchemas.forEach { (name, h) ->
+            schemaHashes.add(schemaHash { this.schema = name; this.hash = ByteString.copyFromUtf8(h); this.trusted = true })
+            contentSchemas.add(name)
+            columns.add(column {
+                this.schema = name; table = "t"; this.column = "c"
+                dataType = "bigint"; ordinal = 1; nullable = false
+            })
+        }
+        dbClockMicros = clockMicros
+        backendId = backend
+        namespaceComplete = complete
+        if (columnName != null) {
+            contentSchemas.add(schema)
+            columns.add(column {
+                this.schema = schema; table = "users"; this.column = columnName
                 dataType = "bigint"; ordinal = 1; nullable = false
             })
         }
@@ -171,7 +217,7 @@ class PerConnectionCatalogStateTest {
     }
 
     @Test
-    fun `an ambient refresh re-measures pooled content so adopters stay fresh`() = runBlocking {
+    fun `a configuration reading of the same content refreshes the staleness clock`() = runBlocking {
         // The staleness ceiling sits above the ambient refresh interval on the premise that the refresh
         // itself keeps pooled content verified. Without that, content pooled once would age out no matter
         // how recently the backend was read, and every new session would refetch.
@@ -181,50 +227,56 @@ class PerConnectionCatalogStateTest {
         registry.applyPush(push(first, "app", "h1"), ds)
 
         now = 8
-        val confirmed = registry.recordAmbientMeasurement(
-            ds.name,
-            mapOf("app" to listOf(FragmentColumn("app", "users", "id", "bigint", 1, false))),
-        )
-        assertEquals(setOf("app"), confirmed)
+        registry.applyConfigCatalog(config("app", "h1"), ds)
 
-        now = 15 // past the original measurement, inside the window from the ambient one
+        now = 15 // past the original measurement, inside the window from the configuration reading
         val second = registry.open(Binding(ds.name, "second", "USER"), listOf("app"), adoptHeldContent = true)
         assertTrue(second.onOpen.isEmpty())
         assertTrue(
             registry.freshnessGate(registry.find(second.connectionId)!!, listOf("app")).isEmpty(),
-            "the ambient re-measurement must reset the staleness clock for later adopters",
+            "the configuration reading must reset the staleness clock for later adopters",
         )
     }
 
     @Test
-    fun `an ambient refresh whose columns differ never overwrites pooled content`() = runBlocking {
-        // Confirmation only. Divergence belongs to the connection's own probe, which alone knows what that
-        // connection's backend binds; installing a differing ambient read here would decide against a
-        // catalog no connection measured.
-        var now = 0L
-        val registry = ConnectionCatalogRegistry(clockNanos = { now }, stalenessNanos = 10)
-        val first = registry.open(Binding(ds.name, "first", "USER"), listOf("app"))
-        registry.applyPush(push(first, "app", "h1"), ds)
+    fun `the first connection adopts content a configuration reading installed`() = runBlocking {
+        // The point of the whole step. A registration scan holds the same six fields a fragment does and now
+        // carries the backend's own hash for each schema, so its content is content-addressable exactly like
+        // a connection's — meaning connection #1 starts from it instead of re-reading what the control plane
+        // was handed seconds earlier.
+        val registry = ConnectionCatalogRegistry()
+        registry.applyConfigCatalog(config("app", "h1", clockMicros = 100, backend = "srv"), ds)
 
-        now = 8
-        val confirmed = registry.recordAmbientMeasurement(
-            ds.name,
-            mapOf("app" to listOf(FragmentColumn("app", "users", "DIFFERENT", "bigint", 1, false))),
-        )
-        assertTrue(confirmed.isEmpty(), "a differing ambient read must not count as a re-measurement")
-
-        now = 15
-        val second = registry.open(Binding(ds.name, "second", "USER"), listOf("app"), adoptHeldContent = true)
-        assertEquals(
-            setOf("app"),
-            registry.freshnessGate(registry.find(second.connectionId)!!, listOf("app")),
-            "unconfirmed content must still go stale on its original clock",
-        )
-        // And the pooled structure is untouched: still the originally measured column.
+        val opened = registry.open(Binding(ds.name, "first", "USER"), listOf("app"), adoptHeldContent = true)
+        assertTrue(opened.onOpen.isEmpty(), "the first connection must adopt, not fetch")
         assertEquals(
             listOf("id"),
-            registry.structuralRows(registry.find(second.connectionId)!!).map { it.column },
+            registry.structuralRows(registry.find(opened.connectionId)!!).map { it.column },
+            "it must adopt the scan's actual columns",
         )
+    }
+
+    @Test
+    fun `an untrusted configuration hash installs nothing`() = runBlocking {
+        // A hash the producer could not vouch for names content it may already have proved stale. Installing
+        // it would hand exactly that content to the next connection to adopt.
+        val registry = ConnectionCatalogRegistry()
+        registry.applyConfigCatalog(config("app", "h1", trusted = false), ds)
+
+        assertNull(registry.authoritativeFor(ds.name, "app"), "an untrusted reading must not become authoritative")
+        val opened = registry.open(Binding(ds.name, "first", "USER"), listOf("app"), adoptHeldContent = true)
+        assertEquals(listOf("app"), opened.onOpen.map { it.schema }, "there is nothing proven to adopt")
+    }
+
+    @Test
+    fun `a configuration reading naming a hash with no content asks for that schema`() = runBlocking {
+        // A pointer that names content nothing resolves is worse than no pointer: an adopting connection
+        // decides against an empty structure. The manager reports the gap instead so the proxy fills it.
+        val registry = ConnectionCatalogRegistry()
+        val result = registry.applyConfigCatalog(config("app", "h1", columnName = null), ds)
+
+        assertEquals(listOf("app"), result.fetchSchemas)
+        assertNull(registry.authoritativeFor(ds.name, "app"))
     }
 
     @Test
@@ -327,7 +379,7 @@ class PerConnectionCatalogStateTest {
     }
 
     @Test
-    fun `one datasource's ambient refresh cannot vouch for another's schema`() = runBlocking {
+    fun `one datasource's configuration reading cannot vouch for another's schema`() = runBlocking {
         // System-schema content is pooled once per engine version and shared by every datasource on it, so a
         // measurement recorded against the shared content would let a datasource nobody read look freshly
         // verified. Freshness is evidence about one backend; only the content is shareable.
@@ -339,15 +391,19 @@ class PerConnectionCatalogStateTest {
         registry.openPushSystem(dsB, "information_schema", "sys-h1")
 
         now = 8
-        // Only dsA is re-read. Its columns match, so dsA is confirmed — dsB must not be.
-        val confirmed = registry.recordAmbientMeasurement(
-            dsA.name,
-            mapOf(
-                "information_schema" to
-                    listOf(FragmentColumn("information_schema", "t", "c", "bigint", 1, false)),
-            ),
+        // Only dsA is re-read.
+        registry.applyConfigCatalog(
+            catalogRequest {
+                datasourceName = dsA.name
+                schemaHashes.add(schemaHash { schema = "information_schema"; hash = ByteString.copyFromUtf8("sys-h1"); trusted = true })
+                contentSchemas.add("information_schema")
+                columns.add(column {
+                    schema = "information_schema"; table = "t"; this.column = "c"
+                    dataType = "bigint"; ordinal = 1; nullable = false
+                })
+            },
+            dsA,
         )
-        assertEquals(setOf("information_schema"), confirmed)
 
         now = 15
         val onA = registry.open(
@@ -365,6 +421,245 @@ class PerConnectionCatalogStateTest {
         )
     }
 
+    @Test
+    fun `an older reading of the same backend is dropped, never installed`() = runBlocking {
+        // The ordering rule's whole point. A whole-server scan takes tens of seconds, so a scan that read
+        // state at time 100 routinely lands after a connection refetch that read newer state at 101. Under
+        // accept order the slow scan displaces the newer catalog and a trusting connection adopts it.
+        val registry = ConnectionCatalogRegistry()
+        val opened = registry.open(Binding(ds.name, "fast", "USER"), listOf("app"))
+        registry.applyPush(push(opened, "app", "new", clockMicros = 101, backend = "srv"), ds)
+
+        registry.applyConfigCatalog(config("app", "old", columnName = "stale", clockMicros = 100, backend = "srv"), ds)
+
+        assertEquals(
+            "new",
+            registry.authoritativeFor(ds.name, "app")!!.hash.bytes.toStringUtf8(),
+            "an older reading must not displace the newer content",
+        )
+        val adopter = registry.open(Binding(ds.name, "later", "USER"), listOf("app"), adoptHeldContent = true)
+        assertEquals(
+            listOf("id"),
+            registry.structuralRows(registry.find(adopter.connectionId)!!).map { it.column },
+            "and no connection may adopt the stale scan's columns",
+        )
+    }
+
+    @Test
+    fun `a strictly newer reading of the same backend installs`() = runBlocking {
+        // The other half of the rule: it must still let genuine progress through, or the shared state would
+        // simply freeze on whatever landed first.
+        val registry = ConnectionCatalogRegistry()
+        val opened = registry.open(Binding(ds.name, "slow", "USER"), listOf("app"))
+        registry.applyPush(push(opened, "app", "old", clockMicros = 100, backend = "srv"), ds)
+
+        registry.applyConfigCatalog(config("app", "new", columnName = "fresh", clockMicros = 101, backend = "srv"), ds)
+
+        assertEquals("new", registry.authoritativeFor(ds.name, "app")!!.hash.bytes.toStringUtf8())
+        val adopter = registry.open(Binding(ds.name, "later", "USER"), listOf("app"), adoptHeldContent = true)
+        assertEquals(listOf("fresh"), registry.structuralRows(registry.find(adopter.connectionId)!!).map { it.column })
+    }
+
+    @Test
+    fun `an unclocked reading fills a hole but never overwrites a clocked one`() = runBlocking {
+        // A reading with no clock cannot be shown to be the newer of the two, and refusing exactly that
+        // claim is what the version exists for. It may still seed a schema nothing is held for.
+        val registry = ConnectionCatalogRegistry()
+        registry.applyConfigCatalog(config("app", "seed", clockMicros = 0, backend = "srv"), ds)
+        assertEquals("seed", registry.authoritativeFor(ds.name, "app")!!.hash.bytes.toStringUtf8())
+
+        val opened = registry.open(Binding(ds.name, "clocked", "USER"), listOf("app"))
+        registry.applyPush(push(opened, "app", "clocked", clockMicros = 500, backend = "srv"), ds)
+        registry.applyConfigCatalog(config("app", "unclocked", columnName = "x", clockMicros = 0, backend = "srv"), ds)
+
+        assertEquals(
+            "clocked",
+            registry.authoritativeFor(ds.name, "app")!!.hash.bytes.toStringUtf8(),
+            "an unversioned reading must not displace a versioned one",
+        )
+    }
+
+    @Test
+    fun `readings from different backends fall back to accept order`() = runBlocking {
+        // A wall clock is only meaningful inside one backend. Comparing across two would let one server's
+        // clock skew decide the other's content, so the comparison is skipped entirely — degraded ordering,
+        // never a cross-backend clock claim.
+        val registry = ConnectionCatalogRegistry()
+        val opened = registry.open(Binding(ds.name, "a", "USER"), listOf("app"))
+        registry.applyPush(push(opened, "app", "from-a", clockMicros = 900, backend = "srv-a"), ds)
+
+        registry.applyConfigCatalog(config("app", "from-b", columnName = "b", clockMicros = 100, backend = "srv-b"), ds)
+
+        assertEquals(
+            "from-b",
+            registry.authoritativeFor(ds.name, "app")!!.hash.bytes.toStringUtf8(),
+            "a lower clock on a DIFFERENT backend is not an older reading; accept order decides",
+        )
+    }
+
+    @Test
+    fun `an untrusted connection push stays connection-only`() = runBlocking {
+        // The producer measured this hash and then proved its own reading stale — its two bracketing
+        // measurements disagreed. Its columns are the connection's to decide against, and nobody else's.
+        val registry = ConnectionCatalogRegistry()
+        val opened = registry.open(Binding(ds.name, "measurer", "USER"), listOf("app"))
+        val applied = registry.applyPush(
+            push(opened, "app", "h-untrusted", columnName = "leaked", trusted = false, clockMicros = 100, backend = "srv"),
+            ds,
+        )
+        assertTrue(applied is CatalogMutationResult.Applied, "the connection still gets its own content")
+        assertEquals(
+            listOf("leaked"),
+            registry.structuralRows(registry.find(opened.connectionId)!!).map { it.column },
+        )
+
+        assertNull(registry.authoritativeFor(ds.name, "app"), "an untrusted push must never become authoritative")
+        val adopter = registry.open(Binding(ds.name, "adopter", "USER"), listOf("app"), adoptHeldContent = true)
+        assertEquals(listOf("app"), adopter.onOpen.map { it.schema }, "no connection may adopt it")
+        assertTrue(
+            registry.structuralRows(registry.find(adopter.connectionId)!!).isEmpty(),
+            "and none may resolve its columns",
+        )
+    }
+
+    @Test
+    fun `an untrusted hash is never handed back as a refetch token`() = runBlocking {
+        // The proxy would answer `unchanged` against bytes no coherent measurement stands behind, and the
+        // connection would keep columns the producer already proved did not match that hash.
+        var now = 0L
+        val registry = ConnectionCatalogRegistry(clockNanos = { now }, stalenessNanos = 10)
+        val opened = registry.open(Binding(ds.name, "measurer", "USER"), listOf("app"))
+        registry.applyPush(push(opened, "app", "h-untrusted", trusted = false), ds)
+
+        now = 20 // aged past the staleness bound, so the next decide re-checks
+        val connection = registry.find(opened.connectionId)!!
+        assertEquals(setOf("app"), registry.freshnessGate(connection, listOf("app")))
+        val commands = registry.markBeforeDecide(connection, listOf("app"))
+        assertTrue(
+            commands.single().ifHashDiffers.isEmpty,
+            "an untrusted hash must force an unconditional fetch",
+        )
+    }
+
+    @Test
+    fun `a dirty connection push stays connection-only`() = runBlocking {
+        // Measured inside an open transaction, so its view is transactionally private: it may include the
+        // connection's own uncommitted DDL, or miss committed DDL from elsewhere.
+        val registry = ConnectionCatalogRegistry()
+        val opened = registry.open(Binding(ds.name, "in-tx", "USER"), listOf("app"))
+        registry.applyPush(
+            push(opened, "app", "h-dirty", columnName = "uncommitted", inTransaction = true, clockMicros = 100, backend = "srv"),
+            ds,
+        )
+
+        assertEquals(
+            listOf("uncommitted"),
+            registry.structuralRows(registry.find(opened.connectionId)!!).map { it.column },
+            "the measuring connection still decides against what it read",
+        )
+        assertNull(registry.authoritativeFor(ds.name, "app"), "a dirty push must never become authoritative")
+        val adopter = registry.open(Binding(ds.name, "adopter", "USER"), listOf("app"), adoptHeldContent = true)
+        assertEquals(listOf("app"), adopter.onOpen.map { it.schema }, "no connection may adopt it")
+    }
+
+    @Test
+    fun `a namespace-complete reading drops a schema it no longer sees`() = runBlocking {
+        val registry = ConnectionCatalogRegistry()
+        registry.applyConfigCatalog(
+            config("app", "h1", clockMicros = 100, backend = "srv", complete = true, extraSchemas = mapOf("gone" to "g1")),
+            ds,
+        )
+        assertNotNull(registry.authoritativeFor(ds.name, "gone"))
+
+        registry.applyConfigCatalog(config("app", "h1", clockMicros = 200, backend = "srv", complete = true), ds)
+
+        assertNull(registry.authoritativeFor(ds.name, "gone"), "a schema absent from a complete enumeration is gone")
+        assertNotNull(registry.authoritativeFor(ds.name, "app"), "the schemas it did name survive")
+        Unit
+    }
+
+    @Test
+    fun `a scoped reading never implies deletion`() = runBlocking {
+        // Both engines filter information_schema by privilege, so a least-privilege account reads a strict
+        // subset. Deleting on a reading that never claimed completeness erases every schema it cannot see.
+        val registry = ConnectionCatalogRegistry()
+        registry.applyConfigCatalog(
+            config("app", "h1", clockMicros = 100, backend = "srv", complete = true, extraSchemas = mapOf("unseen" to "u1")),
+            ds,
+        )
+        assertNotNull(registry.authoritativeFor(ds.name, "unseen"))
+
+        registry.applyConfigCatalog(config("app", "h1", clockMicros = 200, backend = "srv", complete = false), ds)
+
+        assertNotNull(
+            registry.authoritativeFor(ds.name, "unseen"),
+            "a reading that did not enumerate the server says nothing about the schemas it omitted",
+        )
+        Unit
+    }
+
+    @Test
+    fun `a schema declared present with no columns is distinct from one not carried`() = runBlocking {
+        // "carried but empty" and "not carried by this push" are different claims. Collapsing them would let
+        // an economy push that omits unchanged schemas read as those schemas having lost every column.
+        val registry = ConnectionCatalogRegistry()
+        registry.applyConfigCatalog(config("app", "h1", clockMicros = 100, backend = "srv"), ds)
+        val pooled = registry.authoritativeFor(ds.name, "app")!!.pooledRef
+
+        // A later reading names the same schema's NEW hash but carries no columns for it.
+        val result = registry.applyConfigCatalog(config("app", "h2", columnName = null, clockMicros = 200, backend = "srv"), ds)
+
+        assertEquals(listOf("app"), result.fetchSchemas, "the manager must ask for the content it lacks")
+        assertEquals(
+            "h1",
+            registry.authoritativeFor(ds.name, "app")!!.hash.bytes.toStringUtf8(),
+            "the pointer must not move to a hash with nothing behind it",
+        )
+        assertNotNull(registry.pooledFor(pooled), "and the resolvable content stays")
+        Unit
+    }
+
+    @Test
+    fun `a same-content reading keeps the higher clock`() = runBlocking {
+        // Two readings of identical content are equally good evidence of it. Taking the later clock stops an
+        // old confirming reading from making the entry look older than a newer reading already proved.
+        val registry = ConnectionCatalogRegistry()
+        registry.applyConfigCatalog(config("app", "h1", clockMicros = 500, backend = "srv"), ds)
+        registry.applyConfigCatalog(config("app", "h1", clockMicros = 100, backend = "srv"), ds)
+
+        assertEquals(500, registry.authoritativeFor(ds.name, "app")!!.dbClockMicros)
+        // And the entry still refuses an older differing reading measured against that higher clock.
+        registry.applyConfigCatalog(config("app", "h2", columnName = "x", clockMicros = 200, backend = "srv"), ds)
+        assertEquals("h1", registry.authoritativeFor(ds.name, "app")!!.hash.bytes.toStringUtf8())
+    }
+
+    @Test
+    fun `the ordering rule discriminates every case it claims to`() {
+        // Without this the rule above is only exercised where a test happens to reach it; a predicate that
+        // returned INCOMPARABLE for everything would still pass those, since accept order installs too.
+        val h1 = ContentHash(ByteString.copyFromUtf8("h1"))
+        val h2 = ContentHash(ByteString.copyFromUtf8("h2"))
+        fun v(hash: ContentHash, clock: Long, backend: String) = ReadingVersion(hash, clock, backend)
+
+        assertEquals(ReadingOrder.FIRST, orderReading(null, v(h1, 100, "srv")))
+        assertEquals(ReadingOrder.SAME, orderReading(v(h1, 100, "srv"), v(h1, 200, "srv")))
+        assertEquals(ReadingOrder.NEWER, orderReading(v(h1, 100, "srv"), v(h2, 101, "srv")))
+        assertEquals(ReadingOrder.TIED, orderReading(v(h1, 100, "srv"), v(h2, 100, "srv")))
+        assertEquals(ReadingOrder.STALE, orderReading(v(h1, 100, "srv"), v(h2, 99, "srv")))
+        assertEquals(ReadingOrder.STALE, orderReading(v(h1, 100, "srv"), v(h2, 0, "srv")))
+        assertEquals(ReadingOrder.NEWER, orderReading(v(h1, 0, "srv"), v(h2, 100, "srv")))
+        assertEquals(ReadingOrder.INCOMPARABLE, orderReading(v(h1, 0, "srv"), v(h2, 0, "srv")))
+        assertEquals(ReadingOrder.INCOMPARABLE, orderReading(v(h1, 100, "srv-a"), v(h2, 99, "srv-b")))
+        assertEquals(ReadingOrder.INCOMPARABLE, orderReading(v(h1, 100, ""), v(h2, 99, "srv")))
+        assertEquals(ReadingOrder.INCOMPARABLE, orderReading(v(h1, 100, "srv"), v(h2, 99, "")))
+
+        // Only STALE and SAME withhold installation; everything else must be able to land.
+        assertFalse(ReadingOrder.STALE.installs)
+        assertFalse(ReadingOrder.SAME.installs)
+        listOf(ReadingOrder.FIRST, ReadingOrder.NEWER, ReadingOrder.TIED, ReadingOrder.INCOMPARABLE)
+            .forEach { assertTrue(it.installs, "$it must install") }
+    }
+
     /** Open a connection on [ds] scoped to one system [schema] and push a single-column fragment for it. */
     private suspend fun ConnectionCatalogRegistry.openPushSystem(ds: Datasource, schema: String, hash: String): OpenConnection {
         val opened = open(Binding(ds.name, "p", "USER"), listOf(schema))
@@ -374,6 +669,7 @@ class PerConnectionCatalogStateTest {
                 datasourceName = ds.name
                 this.schema = schema
                 contentHash = ByteString.copyFromUtf8(hash)
+                hashTrusted = true
                 backendGeneration = 1
                 columns.add(column {
                     this.schema = schema; table = "t"; column = "c"

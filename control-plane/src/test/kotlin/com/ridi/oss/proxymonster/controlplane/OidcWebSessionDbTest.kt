@@ -8,6 +8,7 @@ import com.nimbusds.jose.jwk.RSAKey
 import com.nimbusds.jose.jwk.gen.RSAKeyGenerator
 import com.nimbusds.jwt.JWTClaimsSet
 import com.nimbusds.jwt.SignedJWT
+import com.ridi.oss.proxymonster.auth.pkceS256
 import com.ridi.oss.proxymonster.controlplane.support.SharedPostgres
 import com.ridi.oss.proxymonster.controlplane.support.requireDockerOrSkip
 import com.ridi.oss.proxymonster.controlplane.support.webSessionCookie
@@ -30,6 +31,7 @@ import io.ktor.server.engine.EmbeddedServer
 import io.ktor.server.engine.embeddedServer
 import io.ktor.server.netty.Netty
 import io.ktor.server.plugins.contentnegotiation.ContentNegotiation
+import io.ktor.server.request.receiveParameters
 import io.ktor.server.response.respondText
 import io.ktor.server.routing.get
 import io.ktor.server.routing.post
@@ -59,6 +61,7 @@ class OidcWebSessionDbTest {
     private lateinit var key: RSAKey
     private lateinit var server: EmbeddedServer<*, *>
     private val nonce = AtomicReference<String>()
+    private val tokenCodeVerifier = AtomicReference<String>()
     private val callbackPrincipal = AtomicReference("oidc-web@example.com")
     private var port = 0
     private val issuer get() = "http://127.0.0.1:$port"
@@ -71,7 +74,7 @@ class OidcWebSessionDbTest {
             routing {
                 get("/.well-known/openid-configuration") {
                     call.respondText(
-                        """{"issuer":"$issuer","authorization_endpoint":"$issuer/authorize","token_endpoint":"$issuer/token","jwks_uri":"$issuer/jwks"}""",
+                        """{"issuer":"$issuer","authorization_endpoint":"$issuer/authorize","token_endpoint":"$issuer/token","jwks_uri":"$issuer/jwks","code_challenge_methods_supported":["S256"]}""",
                         ContentType.Application.Json,
                     )
                 }
@@ -79,6 +82,7 @@ class OidcWebSessionDbTest {
                     call.respondText(JWKSet(key.toPublicJWK()).toString(), ContentType.Application.Json)
                 }
                 post("/token") {
+                    tokenCodeVerifier.set(call.receiveParameters()["code_verifier"])
                     call.respondText(
                         Json.encodeToString(
                             kotlinx.serialization.json.JsonObject.serializer(),
@@ -164,6 +168,10 @@ class OidcWebSessionDbTest {
         val query = parseQueryString(assertNotNull(login.headers[HttpHeaders.Location]).substringAfter('?'))
         nonce.set(assertNotNull(query["nonce"]))
         val callback = client.get("/auth/oidc/callback?code=ok&state=${assertNotNull(query["state"])}")
+
+        // PKCE survives the full signed-id_token path, not just the redirect shape: this IdP double
+        // advertises S256, so the challenge on /authorize must be the hash of what /token received.
+        assertEquals(query["code_challenge"], pkceS256(assertNotNull(tokenCodeVerifier.get())))
         assertEquals(HttpStatusCode.Found, callback.status)
         assertEquals(returnTo, callback.headers[HttpHeaders.Location], "SSO returns to the device authorize URL")
         assertTrue(
@@ -331,6 +339,12 @@ class OidcWebSessionDbTest {
                 transform(SessionTransportTransformerMessageAuthentication(config.sessionSecret.toByteArray()))
             }
             cookie<DeviceVerifySession>(DEVICE_VERIFY_COOKIE) {
+                serializer = jsonSessionSerializer()
+                transform(SessionTransportTransformerMessageAuthentication(config.sessionSecret.toByteArray()))
+            }
+            // oidcRoutes clears this on every login and every callback, so it must be registered
+            // even when the IdP advertises no PKCE — an unregistered session name throws.
+            cookie<OAuthVerifierSession>(OAUTH_VERIFIER_COOKIE) {
                 serializer = jsonSessionSerializer()
                 transform(SessionTransportTransformerMessageAuthentication(config.sessionSecret.toByteArray()))
             }

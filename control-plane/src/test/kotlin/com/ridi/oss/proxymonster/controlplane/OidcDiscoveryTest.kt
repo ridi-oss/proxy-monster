@@ -44,7 +44,8 @@ class OidcDiscoveryTest {
                         text = """
                             {"issuer":"$issuer","authorization_endpoint":"$issuer/authorize",
                              "token_endpoint":"$issuer/token","userinfo_endpoint":"$issuer/userinfo",
-                             "jwks_uri":"$issuer/jwks","device_authorization_endpoint":"$issuer/device/authorize"}
+                             "jwks_uri":"$issuer/jwks","device_authorization_endpoint":"$issuer/device/authorize",
+                             "code_challenge_methods_supported":["S256"]}
                         """.trimIndent(),
                     )
                 }
@@ -74,6 +75,7 @@ class OidcDiscoveryTest {
         assertEquals("$issuer/userinfo", doc.userinfo_endpoint)
         assertEquals("$issuer/jwks", doc.jwks_uri)
         assertEquals("$issuer/device/authorize", doc.device_authorization_endpoint)
+        assertEquals(listOf("S256"), doc.code_challenge_methods_supported)
     }
 
     @Test
@@ -82,6 +84,7 @@ class OidcDiscoveryTest {
         val doc = discovery.document()
         assertNull(doc.userinfo_endpoint)
         assertNull(doc.device_authorization_endpoint)
+        assertNull(doc.code_challenge_methods_supported)
     }
 
     @Test

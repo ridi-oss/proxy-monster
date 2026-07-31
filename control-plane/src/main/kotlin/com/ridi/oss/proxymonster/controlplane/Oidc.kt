@@ -1,5 +1,6 @@
 package com.ridi.oss.proxymonster.controlplane
 
+import com.ridi.oss.proxymonster.auth.pkceS256
 import io.ktor.client.HttpClient
 import io.ktor.client.call.body
 import io.ktor.client.request.forms.submitForm
@@ -47,6 +48,26 @@ const val OAUTH_NONCE_COOKIE = "pm_oauth_nonce"
 @Serializable
 data class OAuthNonceSession(val nonce: String)
 
+/** Short-lived signed cookie carrying the PKCE `code_verifier` between /login and /callback. */
+const val OAUTH_VERIFIER_COOKIE = "pm_oauth_verifier"
+
+/**
+ * The PKCE `code_verifier` stashed in [OAUTH_VERIFIER_COOKIE] for the duration of the redirect
+ * dance. Only its S256 hash travels on the authorize request; the verifier itself is presented at
+ * the token endpoint, so an attacker who intercepts the redirect still cannot redeem the code.
+ *
+ * For a confidential client the `nonce` above is already what defeats authorization-code
+ * injection, so this is defense in depth rather than the primary control. It is sent only when
+ * discovery advertises S256, because an IdP that rejects unknown authorize parameters would
+ * otherwise break, and it is what satisfies providers configured to require PKCE (Okta's
+ * "Require PKCE as additional verification" returns `invalid_request` without it).
+ *
+ * Like [OAUTH_STATE_COOKIE] and [OAUTH_NONCE_COOKIE], this must be registered by whoever installs
+ * [oidcRoutes]; both handlers clear it unconditionally, so an unregistered name fails at login.
+ */
+@Serializable
+data class OAuthVerifierSession(val verifier: String)
+
 /** Token endpoint response — only the fields we consume; the rest are ignored. */
 @Serializable
 private data class TokenResponse(
@@ -58,6 +79,18 @@ private data class TokenResponse(
 /** A 32-byte random, URL-safe-ish opaque token — used for both the CSRF `state` and the `nonce`. */
 private fun randomOpaqueToken(): String {
     val bytes = ByteArray(24)
+    SecureRandom().nextBytes(bytes)
+    return java.util.Base64.getUrlEncoder().withoutPadding().encodeToString(bytes)
+}
+
+/**
+ * A PKCE `code_verifier`: 32 random bytes, base64url-encoded to 43 characters, which is the
+ * minimum RFC 7636 permits and what [isValidPkceVerifier] enforces on the server side of this
+ * same codebase. [randomOpaqueToken] is deliberately not reused — its 24 bytes encode to 32
+ * characters and would be rejected as too short.
+ */
+private fun randomCodeVerifier(): String {
+    val bytes = ByteArray(32)
     SecureRandom().nextBytes(bytes)
     return java.util.Base64.getUrlEncoder().withoutPadding().encodeToString(bytes)
 }
@@ -99,6 +132,15 @@ fun Route.oidcRoutes(
         call.sessions.set(OAUTH_NONCE_COOKIE, OAuthNonceSession(nonce))
 
         val document = discovery.document()
+        // Negotiated, not assumed: only send a challenge to an IdP that advertises S256, so a
+        // provider that rejects unknown authorize parameters keeps working unchanged.
+        val verifier = if (document.supportsPkceS256()) randomCodeVerifier() else null
+        if (verifier != null) {
+            call.sessions.set(OAUTH_VERIFIER_COOKIE, OAuthVerifierSession(verifier))
+        } else {
+            call.sessions.clear(OAUTH_VERIFIER_COOKIE)
+        }
+
         val authorizeUrl = buildString {
             append(document.authorization_endpoint)
             append("?client_id=").append(oidc.clientId.encodeURLParameter())
@@ -107,6 +149,10 @@ fun Route.oidcRoutes(
             append("&redirect_uri=").append(oidc.redirectUri.encodeURLParameter())
             append("&state=").append(state.encodeURLParameter())
             append("&nonce=").append(nonce.encodeURLParameter())
+            if (verifier != null) {
+                append("&code_challenge=").append(pkceS256(verifier).encodeURLParameter())
+                append("&code_challenge_method=S256")
+            }
         }
         call.respondRedirect(authorizeUrl)
     }
@@ -126,9 +172,11 @@ fun Route.oidcRoutes(
         val stateSession = call.sessions.get<OAuthStateSession>()
         val expectedState = stateSession?.state
         val expectedNonce = call.sessions.get<OAuthNonceSession>()?.nonce
-        // One-time use: drop both cookies regardless of the outcome below.
+        val codeVerifier = call.sessions.get<OAuthVerifierSession>()?.verifier
+        // One-time use: drop all three cookies regardless of the outcome below.
         call.sessions.clear(OAUTH_STATE_COOKIE)
         call.sessions.clear(OAUTH_NONCE_COOKIE)
+        call.sessions.clear(OAUTH_VERIFIER_COOKIE)
 
         if (state == null || expectedState == null || state != expectedState) {
             log.warn("OIDC callback state validation failed")
@@ -166,6 +214,9 @@ fun Route.oidcRoutes(
                     append("redirect_uri", oidc.redirectUri)
                     append("client_id", oidc.clientId)
                     append("client_secret", oidc.clientSecret)
+                    // Present only when /login issued a challenge; sending it unconditionally
+                    // would fail against an IdP that never saw one.
+                    if (codeVerifier != null) append("code_verifier", codeVerifier)
                 },
             ).body()
 
@@ -211,6 +262,13 @@ fun Route.oidcRoutes(
         }
     }
 }
+
+/**
+ * Whether the IdP advertises S256 PKCE. Absent metadata means no: RFC 8414 makes the field
+ * optional, and a provider that omits it may reject the extra authorize parameters outright.
+ */
+internal fun OidcDiscoveryDocument.supportsPkceS256(): Boolean =
+    code_challenge_methods_supported?.any { it.equals("S256", ignoreCase = true) } == true
 
 internal fun oidcReturnTarget(raw: String?): String? =
     raw?.takeIf {

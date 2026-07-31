@@ -1,17 +1,22 @@
 package com.ridi.oss.proxymonster.controlplane
 
+import com.ridi.oss.proxymonster.auth.isValidPkceChallenge
+import com.ridi.oss.proxymonster.auth.isValidPkceVerifier
+import com.ridi.oss.proxymonster.auth.pkceS256
 import io.ktor.client.HttpClient
 import io.ktor.client.plugins.contentnegotiation.ContentNegotiation as ClientContentNegotiation
 import io.ktor.client.plugins.cookies.HttpCookies
 import io.ktor.client.request.get
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
+import io.ktor.http.Parameters
 import io.ktor.http.parseQueryString
 import io.ktor.serialization.kotlinx.json.json
 import io.ktor.server.application.Application
 import io.ktor.server.application.call
 import io.ktor.server.application.install
 import io.ktor.server.plugins.contentnegotiation.ContentNegotiation
+import io.ktor.server.request.receiveParameters
 import io.ktor.server.response.respond
 import io.ktor.server.routing.get as serverGet
 import io.ktor.server.routing.post
@@ -25,9 +30,12 @@ import kotlinx.serialization.json.Json
 import org.junit.jupiter.api.Test
 import org.slf4j.Logger
 import org.slf4j.LoggerFactory
+import java.util.concurrent.atomic.AtomicReference
 import javax.sql.DataSource
 import kotlin.test.assertEquals
+import kotlin.test.assertNotNull
 import kotlin.test.assertNull
+import kotlin.test.assertTrue
 
 private const val TEST_SESSION_SECRET = "oidc-callback-test-secret-not-for-prod"
 
@@ -86,7 +94,11 @@ class OidcCallbackTest {
      * disabled, so the 3xx responses under test are inspectable directly instead of being silently
      * followed.
      */
-    private fun ApplicationTestBuilder.wireOidc(config: Config): HttpClient {
+    private fun ApplicationTestBuilder.wireOidc(
+        config: Config,
+        pkceMethods: List<String>? = null,
+        tokenForm: AtomicReference<Parameters>? = null,
+    ): HttpClient {
         // The client oidcRoutes/OidcDiscovery use for their OWN outbound calls (discovery fetch +
         // token exchange) — bound to this test app's in-process engine, so "/.well-known/..." and
         // "/token" below resolve without a real socket.
@@ -101,7 +113,11 @@ class OidcCallbackTest {
         // between `Application.install` and `TestApplicationBuilder.install` (both are implicit
         // receivers in scope) — pulling the app setup out to its own receiver scope, matching how
         // Application.module itself is structured, resolves it unambiguously.
-        application { installOidcTestApp(config, discovery, validator, internalHttp, userGroupStore, roleResolver, log) }
+        application {
+            installOidcTestApp(
+                config, discovery, validator, internalHttp, userGroupStore, roleResolver, log, pkceMethods, tokenForm,
+            )
+        }
 
         return createClient {
             expectSuccess = false
@@ -215,6 +231,89 @@ class OidcCallbackTest {
         val replayResp = client.get("/auth/oidc/callback?code=abc&state=$realState")
         assertEquals("/login?error=state", replayResp.headers[HttpHeaders.Location])
     }
+
+    @Test
+    fun `a challenge is sent when the IdP advertises S256`() = testApplication {
+        val client = wireOidc(testConfig(), pkceMethods = listOf("S256"))
+
+        val query = client.authorizeQuery()
+        assertEquals("S256", query["code_challenge_method"])
+        assertTrue(isValidPkceChallenge(query["code_challenge"]!!))
+    }
+
+    @Test
+    fun `no challenge is sent when the IdP advertises no PKCE methods`() = testApplication {
+        val client = wireOidc(testConfig())
+
+        val query = client.authorizeQuery()
+        assertNull(query["code_challenge"])
+        assertNull(query["code_challenge_method"])
+    }
+
+    @Test
+    fun `no challenge is sent when the IdP advertises only plain`() = testApplication {
+        val client = wireOidc(testConfig(), pkceMethods = listOf("plain"))
+
+        val query = client.authorizeQuery()
+        assertNull(query["code_challenge"])
+        assertNull(query["code_challenge_method"])
+    }
+
+    @Test
+    fun `S256 is matched case-insensitively`() = testApplication {
+        val client = wireOidc(testConfig(), pkceMethods = listOf("s256"))
+
+        assertEquals("S256", client.authorizeQuery()["code_challenge_method"])
+    }
+
+    @Test
+    fun `the challenge is the S256 hash of the verifier presented at the token endpoint`() = testApplication {
+        val tokenForm = AtomicReference<Parameters>()
+        val client = wireOidc(testConfig(), pkceMethods = listOf("S256"), tokenForm = tokenForm)
+
+        val query = client.authorizeQuery()
+        client.get("/auth/oidc/callback?code=abc&state=${query["state"]}")
+
+        // The RFC 7636 binding itself: what the IdP was shown must be the hash of what it is later
+        // told, or the whole exchange proves nothing.
+        val verifier = tokenForm.get()["code_verifier"]!!
+        assertTrue(isValidPkceVerifier(verifier))
+        assertEquals(query["code_challenge"], pkceS256(verifier))
+    }
+
+    @Test
+    fun `no verifier is sent to a token endpoint that never issued a challenge`() = testApplication {
+        val tokenForm = AtomicReference<Parameters>()
+        val client = wireOidc(testConfig(), tokenForm = tokenForm)
+
+        val query = client.authorizeQuery()
+        client.get("/auth/oidc/callback?code=abc&state=${query["state"]}")
+
+        // Absent, not blank: an empty code_verifier is itself a protocol error.
+        assertNull(tokenForm.get()["code_verifier"])
+    }
+
+    @Test
+    fun `the verifier cookie is one-time-use`() = testApplication {
+        val tokenForm = AtomicReference<Parameters>()
+        val client = wireOidc(testConfig(), pkceMethods = listOf("S256"), tokenForm = tokenForm)
+
+        val query = client.authorizeQuery()
+        client.get("/auth/oidc/callback?code=abc&state=${query["state"]}")
+        assertNotNull(tokenForm.get()["code_verifier"])
+
+        // A second login mints its own verifier rather than reusing the first one, which is what
+        // keeps an abandoned login from leaking a verifier into an unrelated exchange.
+        val second = client.authorizeQuery()
+        assertTrue(second["code_challenge"] != query["code_challenge"])
+    }
+
+    /** The authorize parameters `oidcRoutes` redirected to, lifted off the 302. */
+    private suspend fun HttpClient.authorizeQuery(path: String = "/auth/oidc/login"): Parameters {
+        val resp = get(path)
+        assertEquals(HttpStatusCode.Found, resp.status)
+        return parseQueryString(resp.headers[HttpHeaders.Location]!!.substringAfter('?'))
+    }
 }
 
 /**
@@ -230,6 +329,8 @@ private fun Application.installOidcTestApp(
     userGroupStore: UserGroupStore,
     roleResolver: RoleResolver,
     log: Logger,
+    pkceMethods: List<String>? = null,
+    tokenForm: AtomicReference<Parameters>? = null,
 ) {
     install(ContentNegotiation) { json(Json { ignoreUnknownKeys = true }) }
     install(Sessions) {
@@ -251,6 +352,14 @@ private fun Application.installOidcTestApp(
             serializer = jsonSessionSerializer()
             transform(SessionTransportTransformerMessageAuthentication(TEST_SESSION_SECRET.toByteArray()))
         }
+        // oidcRoutes clears this on every login and every callback, so it must be registered even
+        // for an IdP that advertises no PKCE — an unregistered session name throws.
+        cookie<OAuthVerifierSession>(OAUTH_VERIFIER_COOKIE) {
+            cookie.path = "/"
+            cookie.httpOnly = true
+            serializer = jsonSessionSerializer()
+            transform(SessionTransportTransformerMessageAuthentication(TEST_SESSION_SECRET.toByteArray()))
+        }
     }
     routing {
         // Fake IdP double: a discovery document + token endpoint, just enough for oidcRoutes' own
@@ -262,10 +371,12 @@ private fun Application.installOidcTestApp(
                     authorization_endpoint = "/authorize",
                     token_endpoint = "/token",
                     jwks_uri = "http://jwks.invalid/keys",
+                    code_challenge_methods_supported = pkceMethods,
                 ),
             )
         }
         post("/token") {
+            tokenForm?.set(call.receiveParameters())
             call.respond(mapOf("id_token" to UNPARSEABLE_ID_TOKEN))
         }
         oidcRoutes(config, discovery, validator, http, userGroupStore, roleResolver, PrincipalSessionStore(UnusedDataSource, null), log)

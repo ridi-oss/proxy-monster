@@ -30,6 +30,7 @@ data class OidcDiscoveryDocument(
     val userinfo_endpoint: String? = null,
     val jwks_uri: String,
     val device_authorization_endpoint: String? = null,
+    val code_challenge_methods_supported: List<String>? = null,
 )
 
 class OidcDiscovery(private val http: HttpClient, private val issuer: String) {

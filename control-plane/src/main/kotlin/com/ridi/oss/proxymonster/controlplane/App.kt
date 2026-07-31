@@ -524,6 +524,21 @@ fun Application.module(config: Config, core: ControlPlaneCore) {
                 ),
             )
         }
+        // Short-lived signed cookie holding the PKCE code_verifier across the redirect. Same
+        // lifetime as the nonce above: it only has to outlive one authorize round-trip.
+        cookie<OAuthVerifierSession>(OAUTH_VERIFIER_COOKIE) {
+            cookie.path = "/"
+            cookie.httpOnly = true
+            cookie.secure = config.mcpIssuer.startsWith("https://")
+            cookie.extensions["SameSite"] = "Lax"
+            cookie.maxAgeInSeconds = 300 // ~5 min — only needs to outlive the authorize round-trip
+            serializer = jsonSessionSerializer()
+            transform(
+                SessionTransportTransformerMessageAuthentication(
+                    config.sessionSecret.toByteArray(),
+                ),
+            )
+        }
         cookie<McpPendingAuthorization>(MCP_OAUTH_PENDING_COOKIE) {
             cookie.path = "/"
             cookie.httpOnly = true

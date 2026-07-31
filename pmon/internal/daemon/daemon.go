@@ -56,6 +56,7 @@ const (
 type Daemon struct {
 	httpClient *http.Client
 	startedAt  time.Time
+	version    string
 
 	// stop ends the daemon's run; it is what a control-API shutdown triggers.
 	stop context.CancelFunc
@@ -103,9 +104,10 @@ type Daemon struct {
 	nextSub int
 }
 
-// New builds a daemon with no credentials loaded.
-func New() *Daemon {
+// New builds a daemon with no credentials loaded. version is what it reports over the control socket.
+func New(version string) *Daemon {
 	return &Daemon{
+		version:     version,
 		httpClient:  &http.Client{Timeout: 15 * time.Second},
 		startedAt:   time.Now(),
 		rediscover:  make(chan struct{}, 1),
@@ -239,6 +241,7 @@ func (d *Daemon) Status() control.Status {
 		SessionExpiresAt: d.cfg.SessionExpiresAt,
 		ReauthRequired:   d.reauthRequired,
 		StartedAt:        d.startedAt.Format(time.RFC3339),
+		Version:          d.version,
 		// Fall back to the persisted value: the in-memory copy is only set by ensureLocalPassword, whose failure
 		// at startup is tolerated, so a config that already HAS a password would otherwise report none and
 		// `pmon show` would emit a connection string with an empty password.
@@ -326,7 +329,10 @@ func (d *Daemon) Login(ctx context.Context, req control.LoginRequest, onEvent fu
 		TTLSeconds:   req.TTLSeconds,
 		OnPrompt: func(p login.Prompt) {
 			onEvent(control.LoginEvent{
-				Kind: "prompt", VerificationURI: p.VerificationURI, UserCode: p.UserCode, Opened: p.Opened,
+				Kind:                    "prompt",
+				VerificationURI:         p.VerificationURI,
+				VerificationURIComplete: p.VerificationURIComplete,
+				UserCode:                p.UserCode,
 			})
 		},
 	})

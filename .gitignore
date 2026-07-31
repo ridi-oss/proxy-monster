@@ -52,3 +52,6 @@ go.work.sum
 
 # Kotlin incremental-compiler session artifacts (ephemeral build state)
 .kotlin/
+
+# `mise run build-pmon` writes the stamped binary here.
+dist/

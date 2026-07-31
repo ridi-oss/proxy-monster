@@ -28,13 +28,19 @@ func (c *loginCmd) Run() error {
 	if req.TTLSeconds <= 0 {
 		req.TTLSeconds = login.DefaultTTL
 	}
+
+	// A daemon reporting no version opens its own browser. Asked here rather than in the prompt
+	// callback, which the poll loop waits on.
+	daemonOpensItsOwn := false
+	if s, err := client.Status(ctx); err == nil && s.Version == "" {
+		daemonOpensItsOwn = true
+	}
 	if err := client.Login(ctx, req, func(ev control.LoginEvent) {
 		switch ev.Kind {
 		case "prompt":
-			// pmon is commonly driven on a DIFFERENT host than the user's browser (remote over a tailnet), and
-			// the login runs in the daemon — so a browser it "opened" is on the server, useless to a remote
-			// user. Always print the clickable URL + code as the source of truth; auto-open is a best-effort
-			// local extra, never the only path.
+			if !daemonOpensItsOwn && ev.VerificationURIComplete != "" {
+				_ = openBrowser(ev.VerificationURIComplete)
+			}
 			fmt.Printf("\nTo finish logging in, open this URL in your browser:\n\n    %s\n", ev.VerificationURI)
 			if ev.UserCode != "" {
 				fmt.Printf("\nand enter this code when asked: %s\n", ev.UserCode)
@@ -51,6 +57,7 @@ func (c *loginCmd) Run() error {
 	if err != nil {
 		return err
 	}
+	warnVersionSkew(s)
 	fmt.Printf("%d datasource(s) brokered — `pmon status` for the list, `pmon show <datasource>` for a connection string\n",
 		brokeredCount(s))
 	return nil

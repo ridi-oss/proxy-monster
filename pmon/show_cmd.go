@@ -36,6 +36,9 @@ func (c *showCmd) Run() error {
 	if err != nil {
 		return err
 	}
+	warnVersionSkew(s)
+	// A second daemon makes the port this prints ambiguous.
+	warnOtherDaemons()
 	if !s.LoggedIn {
 		return fmt.Errorf("not logged in — run `pmon login`")
 	}

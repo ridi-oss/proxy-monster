@@ -26,6 +26,8 @@ func (statusCmd) Run() error {
 	if err != nil {
 		return err
 	}
+	warnVersionSkew(s)
+	warnOtherDaemons()
 
 	if !s.LoggedIn {
 		fmt.Println("daemon:    running, idle")

@@ -205,6 +205,22 @@ pnpm -C web test:unit
 pnpm -C web build
 '''
 
+[tasks.build-pmon]
+description = "Build pmon into ./dist, stamped with the commit it came from"
+shell = "bash -c"
+# Go stamps vcs.revision on its own, but skips it while a go.work is active — which is always, here.
+# So the revision is passed explicitly, with a .dirty suffix when the tree has uncommitted changes: a
+# binary built from a modified tree matches no commit, and `pmon --version` should say so rather than
+# name one it was not built from.
+run = '''
+set -euo pipefail
+rev=$(git rev-parse --short=12 HEAD)
+git diff --quiet && git diff --cached --quiet || rev="$rev.dirty"
+mkdir -p dist
+(cd pmon && go build -ldflags "-X main.Commit=$rev" -o ../dist/pmon .)
+echo "built dist/pmon — $(./dist/pmon --version)"
+'''
+
 [tasks.test-jvm]
 description = "JVM tests against one database version (defaults to the newest supported)"
 run = "./gradlew --no-daemon test"

@@ -104,7 +104,7 @@ func TestLoginOpensBrokersImmediately(t *testing.T) {
 		{Name: "acme-mysql", Engine: "mysql", DbName: "app", AdvertiseAddr: proxyAddr, CertChainPEM: "abc"},
 	})
 
-	d := New()
+	d := New("test")
 	if err := d.ensureLocalPassword(); err != nil {
 		t.Fatalf("ensureLocalPassword: %v", err)
 	}
@@ -153,7 +153,7 @@ func TestBrokeringImpliesALocalPassword(t *testing.T) {
 		{Name: "acme-mysql", Engine: "mysql", DbName: "app", AdvertiseAddr: freePort(t)},
 	})
 
-	d := New()
+	d := New("test")
 	if err := d.Login(context.Background(), control.LoginRequest{ControlPlane: cp.URL}, func(control.LoginEvent) {}); err != nil {
 		t.Fatalf("Login: %v", err)
 	}
@@ -177,7 +177,7 @@ func TestStatusReportsUnbrokerableDatasourcesWithAReason(t *testing.T) {
 		{Name: "no-addr", Engine: "mysql", DbName: "app"},
 	})
 
-	d := New()
+	d := New("test")
 	if err := d.Login(context.Background(), control.LoginRequest{ControlPlane: cp.URL}, func(control.LoginEvent) {}); err != nil {
 		t.Fatalf("Login: %v", err)
 	}
@@ -207,7 +207,7 @@ func TestRediscoveryClosesARevokedDatasource(t *testing.T) {
 		{Name: "acme-mysql", Engine: "mysql", DbName: "app", AdvertiseAddr: proxyAddr},
 	})
 
-	d := New()
+	d := New("test")
 	ctx := context.Background()
 	if err := d.Login(ctx, control.LoginRequest{ControlPlane: cp.URL}, func(control.LoginEvent) {}); err != nil {
 		t.Fatalf("Login: %v", err)
@@ -256,7 +256,7 @@ func TestLogoutClosesBrokersButKeepsTheDaemonIdle(t *testing.T) {
 		{Name: "acme-mysql", Engine: "mysql", DbName: "app", AdvertiseAddr: freePort(t)},
 	})
 
-	d := New()
+	d := New("test")
 	if err := d.Login(context.Background(), control.LoginRequest{ControlPlane: cp.URL}, func(control.LoginEvent) {}); err != nil {
 		t.Fatalf("Login: %v", err)
 	}
@@ -307,7 +307,7 @@ func TestDiscoveryFailureIsSurfacedNotFatal(t *testing.T) {
 		t.Fatalf("seed config: %v", err)
 	}
 
-	d := New()
+	d := New("test")
 	cfg, err := state.Load()
 	if err != nil {
 		t.Fatalf("Load: %v", err)
@@ -334,7 +334,7 @@ func TestConcurrentDiscoveryKeepsTheStickyPort(t *testing.T) {
 		{Name: "acme-mysql", Engine: "mysql", DbName: "app", AdvertiseAddr: freePort(t)},
 	})
 
-	d := New()
+	d := New("test")
 	ctx := context.Background()
 	// Seed credentials WITHOUT opening listeners, so every racing pass below starts from "no listener yet" —
 	// the state in which two passes both decide the datasource needs one. Logging in first would open the
@@ -384,7 +384,7 @@ func TestConcurrentDiscoveryKeepsTheStickyPort(t *testing.T) {
 // and renewal secret.
 func TestStaleRenewalDoesNotClobberANewerSession(t *testing.T) {
 	isolate(t)
-	d := New()
+	d := New("test")
 
 	// Pin the interleaving a login completing mid-round-trip produces: the request ARRIVING proves the renewal
 	// already snapshotted the old session, so the test swaps in the new one only then, and the response that
@@ -469,7 +469,7 @@ func TestRenewalWithNoExpiryIsRetriedNotPersisted(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	d := New()
+	d := New("test")
 	if err := state.Update(func(c *state.Config) error {
 		c.ControlPlane = srv.URL
 		c.Principal, c.Token = "you@example.com", "tok-old"
@@ -508,7 +508,7 @@ func TestLiveConnsCountsARealConnection(t *testing.T) {
 	cp := newFakeCP(t, []Datasource{
 		{Name: "acme-mysql", Engine: "mysql", DbName: "app", AdvertiseAddr: freePort(t)},
 	})
-	d := New()
+	d := New("test")
 	if err := d.Login(context.Background(), control.LoginRequest{ControlPlane: cp.URL}, func(control.LoginEvent) {}); err != nil {
 		t.Fatalf("Login: %v", err)
 	}
@@ -544,7 +544,7 @@ func TestLiveConnsCountsARealConnection(t *testing.T) {
 // with no confirmation at all.
 func TestTrackedConnectionsAreNeverInvisibleToStatus(t *testing.T) {
 	isolate(t)
-	d := New()
+	d := New("test")
 
 	client, server := net.Pipe()
 	defer client.Close()
@@ -600,7 +600,7 @@ func TestLogoutDuringDiscoveryLeavesNoListener(t *testing.T) {
 	}))
 	defer gate.Close()
 
-	d := New()
+	d := New("test")
 	if err := state.Update(func(c *state.Config) error {
 		c.ControlPlane = gate.URL
 		c.Principal, c.Token = "you@example.com", "pmk_tok"
@@ -646,7 +646,7 @@ func TestLogoutDuringDiscoveryLeavesNoListener(t *testing.T) {
 // `pmon logout` did not actually close the brokers.
 func TestLogoutClosesEstablishedSessions(t *testing.T) {
 	isolate(t)
-	d := New()
+	d := New("test")
 
 	// A registered connection stands in for an established session (the broker registers before piping).
 	client, server := net.Pipe()
@@ -680,7 +680,7 @@ func TestRevocationClosesEstablishedSessions(t *testing.T) {
 		{Name: "acme-mysql", Engine: "mysql", DbName: "app", AdvertiseAddr: freePort(t)},
 	})
 
-	d := New()
+	d := New("test")
 	ctx := context.Background()
 	if err := d.Login(ctx, control.LoginRequest{ControlPlane: cp.URL}, func(control.LoginEvent) {}); err != nil {
 		t.Fatalf("Login: %v", err)
@@ -706,7 +706,7 @@ func TestRevocationClosesEstablishedSessions(t *testing.T) {
 // principal and no renewal secret.
 func TestRenewalDoesNotResurrectALoggedOutSession(t *testing.T) {
 	isolate(t)
-	d := New()
+	d := New("test")
 
 	requestArrived := make(chan struct{})
 	logoutDone := make(chan struct{})
@@ -761,7 +761,7 @@ func TestRenewalDoesNotResurrectALoggedOutSession(t *testing.T) {
 // the buffer instead of blocking on the channel.
 func TestSubscribeDropsRatherThanBlocking(t *testing.T) {
 	isolate(t)
-	d := New()
+	d := New("test")
 	_, cancel := d.Subscribe() // never drained
 	defer cancel()
 
@@ -820,7 +820,7 @@ func TestStatusReportsThePersistedLocalPassword(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	d := New()
+	d := New("test")
 	d.cfg = *cfg // as Run does, without calling ensureLocalPassword
 
 	if got := d.Status().LocalPassword; got != "pmlocal_fromDisk" {
@@ -843,7 +843,7 @@ func TestAPortCollisionIsVisibleNotSilent(t *testing.T) {
 	cp := newFakeCP(t, []Datasource{
 		{Name: "acme-mysql", Engine: "mysql", DbName: "app", AdvertiseAddr: freePort(t)},
 	})
-	d := New()
+	d := New("test")
 	if err := d.Login(context.Background(), control.LoginRequest{ControlPlane: cp.URL}, func(control.LoginEvent) {}); err != nil {
 		t.Fatalf("Login: %v", err)
 	}
@@ -867,7 +867,7 @@ func TestAPortCollisionIsVisibleNotSilent(t *testing.T) {
 // timing happened to line up. Asserted by mutating the snapshot and checking the daemon is untouched.
 func TestSnapshotDoesNotAliasThePortsMap(t *testing.T) {
 	isolate(t)
-	d := New()
+	d := New("test")
 	d.mu.Lock()
 	d.cfg.Ports = map[string]int{"acme-mysql": 6100}
 	d.mu.Unlock()

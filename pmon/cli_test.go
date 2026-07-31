@@ -60,9 +60,11 @@ func freeTCPPort(t *testing.T) int {
 // run invokes pmon and returns its combined output.
 func (e *env) run(args ...string) (string, error) {
 	cmd := exec.Command(e.bin, args...)
+	// PMON_NO_BROWSER: these drive a real login, and a real $BROWSER would open a tab per run.
 	cmd.Env = append(os.Environ(),
 		"PMON_CONFIG_DIR="+e.stateDir,
 		fmt.Sprintf("PMON_PORT_BASE=%d", e.portBase),
+		"PMON_NO_BROWSER=1",
 	)
 	out, err := cmd.CombinedOutput()
 	return string(out), err

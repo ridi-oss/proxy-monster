@@ -16,5 +16,5 @@ type daemonCmd struct{}
 func (daemonCmd) Run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
-	return daemon.New().Run(ctx)
+	return daemon.New(FullVersion()).Run(ctx)
 }

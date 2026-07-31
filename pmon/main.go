@@ -46,7 +46,7 @@ func main() {
 		kong.Name("pmon"),
 		kong.Description("proxy-monster connector — reach a datasource on a stable local port with a password that never changes."),
 		kong.UsageOnError(),
-		kong.Vars{"version": Version},
+		kong.Vars{"version": FullVersion()},
 	)
 	ctx.FatalIfErrorf(ctx.Run())
 }

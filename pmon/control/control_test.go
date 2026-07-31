@@ -225,7 +225,7 @@ func TestClientReportsDaemonNotRunning(t *testing.T) {
 func TestLoginStreamsPromptBeforeDone(t *testing.T) {
 	backend := newFakeBackend()
 	backend.loginEvents = []LoginEvent{
-		{Kind: "prompt", VerificationURI: "https://idp.example/activate", UserCode: "ABCD", Opened: true},
+		{Kind: "prompt", VerificationURI: "https://idp.example/activate", UserCode: "ABCD"},
 		{Kind: "done", Principal: "you@example.com", ExpiresAt: "2026-07-26T00:00:00Z"},
 	}
 	c := serve(t, backend)

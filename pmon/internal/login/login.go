@@ -26,10 +26,10 @@ const DefaultTTL = 43200
 // the same flow.
 type Prompt struct {
 	VerificationURI string `json:"verificationUri"`
-	UserCode        string `json:"userCode"`
-	// Opened reports whether the daemon already launched a browser at the URI, so a peer can say "opened
-	// in your browser" rather than "open this".
-	Opened bool `json:"opened"`
+	// VerificationURIComplete carries the code. A peer opens this one and prints the plain one, so a
+	// user following the printed link types the code themselves.
+	VerificationURIComplete string `json:"verificationUriComplete"`
+	UserCode                string `json:"userCode"`
 }
 
 // Result is a completed device-auth flow.
@@ -61,17 +61,15 @@ type devicePollResponse struct {
 	RenewalToken     string `json:"renewalToken"`
 }
 
-// Options configures one device-auth run. OpenBrowser and Sleep are injected so tests can supply a stub
-// opener and a no-op sleep.
+// Options configures one device-auth run. Sleep is injected so tests can supply a no-op.
 type Options struct {
 	ControlPlane string
 	TTLSeconds   int
 	// OnPrompt receives the verification URI + user code as soon as the flow starts, before polling. It must
 	// not block for long — the poll loop is waiting on it.
-	OnPrompt    func(Prompt)
-	OpenBrowser func(string) error
-	Sleep       func(context.Context, time.Duration)
-	HTTPClient  *http.Client
+	OnPrompt   func(Prompt)
+	Sleep      func(context.Context, time.Duration)
+	HTTPClient *http.Client
 }
 
 // Run drives the flow: start -> open (or hand back) the verification URL -> poll until it completes or ctx
@@ -90,10 +88,6 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 		jar, _ := cookiejar.New(nil)
 		client = &http.Client{Jar: jar, Timeout: 15 * time.Second}
 	}
-	openBrowser := opts.OpenBrowser
-	if openBrowser == nil {
-		openBrowser = OpenBrowser
-	}
 	sleep := opts.Sleep
 	if sleep == nil {
 		sleep = sleepCtx
@@ -104,17 +98,16 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 		return nil, fmt.Errorf("could not start device login: %w", err)
 	}
 
-	// Auto-open uses the COMPLETE URI (the code rides in the query, so the page prefills it and the user only
-	// confirms). The URI we hand a peer to SHOW is the plain one: a user who opens a link by hand types the
-	// code in themselves, which is what makes them read it off this terminal — the check that the code they
-	// approve is their own login.
-	opened := start.VerificationURIComplete != "" && openBrowser(start.VerificationURIComplete) == nil
 	if opts.OnPrompt != nil {
 		uri := start.VerificationURI
 		if uri == "" {
 			uri = start.VerificationURIComplete
 		}
-		opts.OnPrompt(Prompt{VerificationURI: uri, UserCode: start.UserCode, Opened: opened})
+		opts.OnPrompt(Prompt{
+			VerificationURI:         uri,
+			VerificationURIComplete: start.VerificationURIComplete,
+			UserCode:                start.UserCode,
+		})
 	}
 
 	interval := time.Duration(start.Interval) * time.Second

@@ -21,6 +21,9 @@ type Status struct {
 	ReauthRequired bool `json:"reauthRequired"`
 	// StartedAt is the daemon's start time (RFC3339), so a peer can show an uptime.
 	StartedAt string `json:"startedAt"`
+	// Version is the daemon's build, which a peer compares against its own: the daemon keeps running
+	// when the binary on disk is replaced.
+	Version string `json:"version,omitempty"`
 	// LocalPassword is the sticky loopback password a peer puts in the connection strings it hands out. It
 	// travels only over the 0700 control socket, which is the same trust boundary that lets a peer start a
 	// login at all.
@@ -79,8 +82,10 @@ type LoginEvent struct {
 	Kind string `json:"kind"`
 	// Prompt fields, set when Kind == "prompt".
 	VerificationURI string `json:"verificationUri,omitempty"`
-	UserCode        string `json:"userCode,omitempty"`
-	Opened          bool   `json:"opened,omitempty"`
+	// VerificationURIComplete carries the code, so an opened page prefills it. A peer opens this one
+	// and prints the plain one, so a user following the printed link types the code themselves.
+	VerificationURIComplete string `json:"verificationUriComplete,omitempty"`
+	UserCode                string `json:"userCode,omitempty"`
 	// Done fields, set when Kind == "done".
 	Principal string `json:"principal,omitempty"`
 	ExpiresAt string `json:"expiresAt,omitempty"`

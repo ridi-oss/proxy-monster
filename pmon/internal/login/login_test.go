@@ -47,29 +47,27 @@ func TestRunOpensBrowserAndPollsUntilDone(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	var opened string
 	var prompt Prompt
 	res, err := Run(context.Background(), Options{
 		ControlPlane: srv.URL,
 		OnPrompt:     func(p Prompt) { prompt = p },
-		OpenBrowser:  func(u string) error { opened = u; return nil },
 		Sleep:        noSleep,
 		HTTPClient:   srv.Client(),
 	})
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	// Auto-open gets the COMPLETE URI so the page prefills the code…
-	if opened != "https://idp.example/activate?code=ABCD-EFGH" {
-		t.Errorf("opened %q, want the complete verification URI", opened)
+	// The peer opens the COMPLETE URI, so the page prefills the code — the flow must hand it over.
+	if prompt.VerificationURIComplete != "https://idp.example/activate?code=ABCD-EFGH" {
+		t.Errorf("prompt.VerificationURIComplete = %q, want the complete URI", prompt.VerificationURIComplete)
 	}
-	// …but what a peer SHOWS is the plain URI: a user who opens the link by hand types the code themselves,
+	// What a peer SHOWS is the plain URI: a user who opens the link by hand types the code themselves,
 	// which is what makes them read it off the terminal and confirm it's their own login.
 	if prompt.VerificationURI != "https://idp.example/activate" {
 		t.Errorf("prompt.VerificationURI = %q, want the plain URI (the code is typed, not carried)", prompt.VerificationURI)
 	}
-	if !prompt.Opened || prompt.UserCode != "ABCD-EFGH" {
-		t.Errorf("prompt = %+v, want Opened with the user code", prompt)
+	if prompt.UserCode != "ABCD-EFGH" {
+		t.Errorf("prompt = %+v, want the user code", prompt)
 	}
 	if res.Principal != "you@example.com" || res.Token != "pmk_tok" || res.RenewalToken != "pmr_abc123" {
 		t.Errorf("result = %+v, want the polled identity + tokens", res)
@@ -99,14 +97,10 @@ func TestRunHandsBackTheURIWhenNoBrowser(t *testing.T) {
 	if _, err := Run(context.Background(), Options{
 		ControlPlane: srv.URL,
 		OnPrompt:     func(p Prompt) { prompt = p },
-		OpenBrowser:  func(string) error { return errors.New("no browser") },
 		Sleep:        noSleep,
 		HTTPClient:   srv.Client(),
 	}); err != nil {
 		t.Fatalf("Run: %v", err)
-	}
-	if prompt.Opened {
-		t.Error("prompt.Opened is true although the browser launcher failed")
 	}
 	if prompt.VerificationURI != "https://idp.example/activate" {
 		t.Errorf("VerificationURI = %q, want the plain URI to print", prompt.VerificationURI)
@@ -129,7 +123,6 @@ func TestRunRefusesALoginWithNoRenewalToken(t *testing.T) {
 
 	if _, err := Run(context.Background(), Options{
 		ControlPlane: srv.URL,
-		OpenBrowser:  func(string) error { return nil },
 		Sleep:        noSleep,
 		HTTPClient:   srv.Client(),
 	}); err == nil {

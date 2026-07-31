@@ -50,6 +50,14 @@ The daemon checks that password. It answers `mysql_native_password` and
 `--enable-cleartext-plugin`. A saved connection carrying a stale or blank
 password fails with access denied; re-copy it from `pmon show`.
 
+`pmon --version` reports the release and the commit it was built from —
+`0.1.1+87d3156f2cb7`, or a `.dirty` suffix when the tree had uncommitted
+changes. Go records the revision itself except while a `go.work` is active, so
+build local binaries with `mise run build-pmon` to keep the stamp. The daemon
+reports its own, and a command warns when the two differ: the daemon keeps
+running across an upgrade of the binary on disk, so a fix can look applied while
+the running process predates it. `pmon restart` picks up the current build.
+
 ## Architecture
 
 The daemon owns all state and logic and exposes a **local control socket**. This

@@ -411,7 +411,7 @@ func (s *Server) handleExecute(sess *session, message *pgproto3.Execute) error {
 		return err
 	}
 	if _, complete := terminal.(*pgproto3.CommandComplete); complete && len(proceed.Decision.AfterStatement) > 0 {
-		if err := s.refetcher(sess, true).RunAll(proceed.Decision.AfterStatement); err != nil {
+		if err := s.refetcher(sess, true).RunAllSettled(proceed.Decision.AfterStatement); err != nil {
 			return closeRelay(sess, err)
 		}
 	}

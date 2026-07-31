@@ -9,6 +9,7 @@ import (
 	"os/signal"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -21,9 +22,21 @@ import (
 )
 
 const bootRegisterAttempts = 3
+
+// ambientRefreshInterval is the fallback tick for a control plane that does not drive re-measurement
+// itself. The manager owns the per-schema clocks and nudges for exactly the schemas that are due, so a
+// proxy paired with one that does so never needs this — but the two ship independently, and a
+// datasource left with neither a ticker nor a nudging manager would go unmeasured entirely. The ticker
+// therefore stands down the moment a scoped nudge proves the control plane is driving.
 const ambientRefreshInterval = 12 * time.Minute
 
 var refreshMu sync.Mutex
+
+// managerDrivesRefresh latches on the first scoped nudge, which only a control plane that keeps the
+// per-schema clocks can send. Latched rather than re-evaluated per tick because the evidence is an
+// event, not a state: the manager sends nothing at all when nothing is due, so a proxy that unlatched
+// on quiet would resume full scans exactly when there was nothing to measure.
+var managerDrivesRefresh atomic.Bool
 
 // Run is the dialect-neutral boot consumer. The executable composition root injects the provider registry;
 // this package imports only the SPI, never the concrete dialect wiring package.
@@ -135,7 +148,7 @@ func Run(registry spi.Registry) error {
 	registerAndPushCatalog(configClient, cfg, backend, provider, certChain)
 	go configClient.RunEventsLoop(
 		func() { registerAndPushCatalog(configClient, cfg, backend, provider, certChain) },
-		func() { refreshCatalog(configClient, provider, backend) },
+		func(schemas []string) { refreshCatalogFor(configClient, provider, backend, schemas) },
 		func(open spi.RunOpen) {
 			go run.NewRunner(enforcementClient, dbImpl, backend, provider, cfg.QueryTimeout).Run(open)
 		},
@@ -146,6 +159,9 @@ func Run(registry spi.Registry) error {
 	go func() {
 		for {
 			time.Sleep(ambientRefreshInterval)
+			if managerDrivesRefresh.Load() {
+				continue
+			}
 			refreshCatalog(configClient, provider, backend)
 		}
 	}()
@@ -173,6 +189,29 @@ func registerAndPushCatalog(
 		}
 	}
 	slog.Error("could not register + push catalog after all attempts — starting anyway; decisions fail closed until the control plane has this datasource's catalog", "attempts", bootRegisterAttempts)
+}
+
+// refreshCatalogFor answers one RefreshCatalog nudge. An empty schema set is the whole-server admin
+// refresh; a non-empty one names the schemas whose re-measure clocks expired, and those are answered by
+// hashes alone — the manager replies with the subset it holds no content for, and only those schemas'
+// columns are then read. On the common no-change nudge the backend does one grouped hash scan and the
+// wire carries a few hundred bytes instead of the whole catalog.
+func refreshCatalogFor(configClient *cp.Client, provider spi.Provider, backend spi.BackendTarget, schemas []string) bool {
+	if len(schemas) == 0 {
+		return refreshCatalog(configClient, provider, backend)
+	}
+	// A scoped nudge is something only a control plane that owns the per-schema clocks sends, so the
+	// proxy's own fixed ticker has nothing left to do.
+	managerDrivesRefresh.Store(true)
+	refreshMu.Lock()
+	defer refreshMu.Unlock()
+	if err := introspect.RunScoped(provider, backend, schemas, configClient.PushCatalogFor); err != nil {
+		// The schemas stay due, so the next nudge retries. Enforcement never depended on this path: the
+		// per-connection staleness bound still forces its own re-checks, and the stored catalog merely ages.
+		slog.Warn("scoped catalog re-measure failed", "schemas", len(schemas), "error", err)
+		return false
+	}
+	return true
 }
 
 func refreshCatalog(configClient *cp.Client, provider spi.Provider, backend spi.BackendTarget) bool {

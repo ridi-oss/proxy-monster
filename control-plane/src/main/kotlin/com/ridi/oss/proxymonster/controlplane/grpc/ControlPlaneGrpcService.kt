@@ -9,7 +9,7 @@ import com.ridi.oss.proxymonster.controlplane.CatalogMutationResult
 import com.ridi.oss.proxymonster.controlplane.Channel
 import com.ridi.oss.proxymonster.controlplane.ControlPlaneCore
 import com.ridi.oss.proxymonster.controlplane.DatasourceEngineConflictException
-import com.ridi.oss.proxymonster.controlplane.catalogIsConnectionIndependent
+import com.ridi.oss.proxymonster.controlplane.adoptsHeldCatalog
 import com.ridi.oss.proxymonster.controlplane.catalogName
 import com.ridi.oss.proxymonster.controlplane.EnforcementOutcome
 import com.ridi.oss.proxymonster.controlplane.TokenKind
@@ -129,7 +129,7 @@ class ControlPlaneGrpcService(
         val opened = core.connectionCatalog.open(
             Binding(ds.name, id.principal, id.kind),
             ds.defaultSchemas + ds.engine.systemSchemas,
-            adoptHeldContent = ds.engine.catalogIsConnectionIndependent,
+            adoptHeldContent = ds.adoptsHeldCatalog,
         )
         return wireIdentity {
             principal = id.principal
@@ -201,7 +201,7 @@ class ControlPlaneGrpcService(
                 request.connectionId,
                 binding,
                 request.searchPathList + ds.defaultSchemas + ds.engine.systemSchemas,
-                adoptHeldContent = ds.engine.catalogIsConnectionIndependent,
+                adoptHeldContent = ds.adoptsHeldCatalog,
             ) ?: throw StatusException(Status.ABORTED.withDescription("connection recovery raced with another request"))
             return beforeDecideDecision(recovered.onOpen)
         }

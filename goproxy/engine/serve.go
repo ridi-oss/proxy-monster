@@ -67,7 +67,7 @@ func ServeStatement(
 		if ref == nil {
 			return dec, false, fmt.Errorf("after-statement refetcher is nil")
 		}
-		if err := ref.RunAll(dec.AfterStatement); err != nil {
+		if err := ref.RunAllSettled(dec.AfterStatement); err != nil {
 			return dec, false, err
 		}
 	}

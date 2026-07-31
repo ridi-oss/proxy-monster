@@ -64,6 +64,15 @@ import kotlin.time.Duration.Companion.seconds
 /** How often the background sweep deletes expired result rows. */
 private const val RESULT_PURGE_INTERVAL_MS = 15 * 60 * 1000L
 
+/**
+ * How often the manager checks which schemas are due a re-measure.
+ *
+ * This is the resolution of the per-schema clock, not the clock itself: a schema goes due 12 minutes
+ * after its last clean reading and is nudged on the next tick, so a short tick keeps the actual interval
+ * close to the intended one without the check costing anything (it reads in-memory state only).
+ */
+private const val CATALOG_REMEASURE_TICK_MS = 60 * 1000L
+
 /** An editor session idle longer than this is reaped (its proxy stream + backend connection freed).
  *  Swept on the same timer as RESULT_PURGE_INTERVAL_MS. */
 private const val EDITOR_SESSION_MAX_IDLE_MS = 30 * 60 * 1000L
@@ -423,6 +432,30 @@ fun Application.module(config: Config, core: ControlPlaneCore) {
                 .onFailure { environment.log.warn("editor session idle sweep failed", it) }
             runCatching { core.connectionCatalog.sweepIdle(60L * 60 * 1000) }
                 .onFailure { environment.log.warn("connection catalog idle sweep failed", it) }
+        }
+    }
+
+    // The manager owns the per-schema re-measure clocks, so it drives re-measurement: each tick asks a
+    // datasource's attached proxy for exactly the schemas whose clocks expired, and their hashes come
+    // back for a few hundred bytes instead of the whole catalog. A datasource with no proxy attached
+    // simply ages — nothing can measure it — and the per-connection staleness bound still forces the
+    // re-checks enforcement depends on.
+    launch {
+        while (true) {
+            delay(CATALOG_REMEASURE_TICK_MS)
+            runCatching {
+                for (name in core.proxyEventsHub.attached()) {
+                    val due = core.connectionCatalog.dueSchemas(name)
+                    // An empty set is the whole-server admin refresh, so it must never be sent as a nudge:
+                    // a datasource with nothing due would otherwise trigger a full scan every tick.
+                    if (due.isEmpty()) continue
+                    val notified = core.proxyEventsHub.requestRefresh(name, due)
+                    environment.log.debug(
+                        "datasource '{}': nudged {} stream(s) to re-measure {} schema(s)",
+                        name, notified, due.size,
+                    )
+                }
+            }.onFailure { environment.log.warn("catalog re-measure nudge failed", it) }
         }
     }
 

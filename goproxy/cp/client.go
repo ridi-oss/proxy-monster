@@ -345,6 +345,14 @@ func (c *Client) Register(registrationEngine enginepb.Engine, host string, port 
 // PushCatalog sends the catalog this proxy introspected itself — the control plane never dials the
 // target, so the proxy is the only source of the schema. It stamps DatasourceName before sending.
 func (c *Client) PushCatalog(catalog *pb.CatalogRequest) error {
+	_, err := c.PushCatalogFor(catalog)
+	return err
+}
+
+// PushCatalogFor is PushCatalog returning the manager's answer: which of the schemas this reading named
+// a hash for the manager holds no content behind. The hashes-only economy form asks exactly that
+// question, so it needs the reply; the whole-server path carries its content already and ignores it.
+func (c *Client) PushCatalogFor(catalog *pb.CatalogRequest) ([]string, error) {
 	catalog.DatasourceName = c.datasourceName
 
 	ctx, cancel := context.WithTimeout(context.Background(), rpcDeadline)
@@ -353,13 +361,13 @@ func (c *Client) PushCatalog(catalog *pb.CatalogRequest) error {
 	started := time.Now()
 	ack, err := c.stub.PushCatalog(c.outCtx(ctx), catalog)
 	if err != nil {
-		return fmt.Errorf("cp: push catalog for %q: %w", c.datasourceName, err)
+		return nil, fmt.Errorf("cp: push catalog for %q: %w", c.datasourceName, err)
 	}
 	// Paired with introspect.Run's phase breakdown, this closes the refresh cycle: a slow refresh is
 	// either the backend scan or this push, and the two logs together say which.
 	slog.Info("pushed catalog", "datasource", c.datasourceName, "columns", ack.GetColumns(),
 		"push_ms", time.Since(started).Milliseconds())
-	return nil
+	return ack.GetFetchSchemas(), nil
 }
 
 // PushSchemaFragment applies one measured connection-local schema fragment and returns its generation.
@@ -399,7 +407,7 @@ func (c *Client) CloseConnection(connectionID []byte) error {
 // connection is alive. Expiry is a normal end: RunEventsLoop resyncs and reopens, and the control
 // plane sees a detach immediately followed by an attach.
 func (c *Client) StreamEvents(
-	onRefresh func(),
+	onRefresh func(schemas []string),
 	onOpenRun func(spi.RunOpen),
 	onOpenTableDetail func(sessionID, schema, table string),
 ) error {
@@ -410,7 +418,7 @@ func (c *Client) StreamEvents(
 func (c *Client) streamEvents(
 	parent context.Context,
 	maxAge time.Duration,
-	onRefresh func(),
+	onRefresh func(schemas []string),
 	onOpenRun func(spi.RunOpen),
 	onOpenTableDetail func(sessionID, schema, table string),
 ) error {
@@ -427,7 +435,9 @@ func (c *Client) streamEvents(
 		}
 		switch {
 		case ev.GetRefreshCatalog() != nil:
-			onRefresh()
+			// An empty schema list is the whole-server admin refresh; a non-empty one names exactly the
+			// schemas whose re-measure clocks expired, and only their hashes go back.
+			onRefresh(ev.GetRefreshCatalog().GetSchemas())
 		case ev.GetOpenRunChannel() != nil:
 			e := ev.GetOpenRunChannel()
 			onOpen, mapErr := refetchesFromWire(e.GetOnOpen())
@@ -458,7 +468,7 @@ func (c *Client) streamEvents(
 // what queries need; the catalog refresh is not, and it re-registers this datasource either way.
 func (c *Client) RunEventsLoop(
 	resync func(),
-	onRefresh func(),
+	onRefresh func(schemas []string),
 	onOpenRun func(spi.RunOpen),
 	onOpenTableDetail func(sessionID, schema, table string),
 ) {
@@ -469,7 +479,7 @@ func (c *Client) runEventsLoop(
 	ctx context.Context,
 	timings eventLoopTimings,
 	resync func(),
-	onRefresh func(),
+	onRefresh func(schemas []string),
 	onOpenRun func(spi.RunOpen),
 	onOpenTableDetail func(sessionID, schema, table string),
 ) {

@@ -464,21 +464,6 @@ path and `POST /api/datasources/{id}/query`, not the interactive editor.
   admission so passthrough only ever sees a pure session statement. Hard gate:
   per-statement re-decide (or an explicit session-mutation refusal) must remain
   the standing mitigation.
-- 🟡 Catalog adoption assumes one backend behind a datasource. On MySQL a new
-  connection may start from catalog content the control plane already holds
-  rather than measuring the backend itself, so its first statement decides
-  without a round-trip. That is sound because every backend session for a
-  datasource is opened by one proxy process against one target with one service
-  account, which is what makes a catalog scan the same for every connection —
-  MySQL temporary tables never appear in `information_schema` and reach a
-  decision through the per-request overlay instead. Two changes would break it
-  silently: running several proxies for one datasource against backends that can
-  disagree (a replica behind a load balancer, mid-failover), or varying backend
-  credentials per session, since `information_schema` is privilege-filtered and
-  two accounts legitimately see different columns. An adopting connection would
-  then decide against structure its own backend never had. PostgreSQL never
-  adopts: its `pg_temp_*` schemas are per-session and catalog-visible, so a
-  fragment there is only true for the connection that measured it.
 - 🟡 No concurrent-editor-session cap (auth'd DoS surface). Each open session
   pins ONE unpooled backend connection on the proxy for the life of its run
   stream, which `RUN_STREAM_TIMEOUT_MS` caps at 15 minutes. The proxy releases

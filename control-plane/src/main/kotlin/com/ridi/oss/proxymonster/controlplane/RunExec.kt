@@ -288,7 +288,7 @@ class RunExecService(
         val opened = core.connectionCatalog.open(
             Binding(ds.name, principal, kind),
             ds.defaultSchemas + ds.engine.systemSchemas,
-            adoptHeldContent = ds.engine.catalogIsConnectionIndependent,
+            adoptHeldContent = ds.adoptsHeldCatalog,
         )
         val sessionId = UUID.randomUUID().toString()
         val pending = PendingSession(sessionId, principal, issued.id, CompletableDeferred())
@@ -380,7 +380,7 @@ class RunExecService(
         val opened = core.connectionCatalog.open(
             Binding(ds.name, principal, TokenKind.EDITOR.name),
             ds.defaultSchemas + ds.engine.systemSchemas,
-            adoptHeldContent = ds.engine.catalogIsConnectionIndependent,
+            adoptHeldContent = ds.adoptsHeldCatalog,
         )
         val sessionId = UUID.randomUUID().toString()
         val pending = PendingSession(sessionId, principal, issued.id, CompletableDeferred())

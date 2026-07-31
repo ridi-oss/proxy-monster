@@ -155,6 +155,9 @@ data class DecisionContext(
     val sanitizeDiagnostics: Boolean = false,
     /** True when a successful statement may change persistent catalog structure. */
     val catalogChanging: Boolean = false,
+    /** True when a successful statement ends an open transaction, so readings taken inside it can be
+     *  re-measured from outside and finally shared. */
+    val endsTransaction: Boolean = false,
     /** True when the deny may be caused by absent structural catalog rows. */
     val catalogMiss: Boolean = false,
     /** Non-temp schemas the analyzer resolved or touched. */
@@ -463,7 +466,10 @@ fun decideQuery(
             )
             StatementClass.STATEMENT_CLASS_SESSION -> when (channel) {
                 Channel.WIRE, Channel.EDITOR -> return passthroughAllow(roleList, "passthrough (session-mutating)", derivedTags)
-                    .copy(schemaCandidates = facts.schemaQualifierCandidatesList.toSet())
+                    .copy(
+                        schemaCandidates = facts.schemaQualifierCandidatesList.toSet(),
+                        endsTransaction = facts.endsTransaction,
+                    )
                 Channel.WORKFLOW_EXECUTOR, Channel.WORKFLOW_VIEWER, Channel.MCP ->
                     return structuralDeny(EDITOR_SESSION_STATEMENT_DENY, roleList, contextTags = derivedTags)
             }

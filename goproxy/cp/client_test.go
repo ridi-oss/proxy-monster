@@ -558,7 +558,7 @@ func TestStreamEventsDispatchesMappedRunOpen(t *testing.T) {
 	var refreshes int
 	var openedRun spi.RunOpen
 	var table []string
-	err := c.StreamEvents(func() { refreshes++ }, func(open spi.RunOpen) { openedRun = open }, func(sessionID, schema, tableName string) {
+	err := c.StreamEvents(func([]string) { refreshes++ }, func(open spi.RunOpen) { openedRun = open }, func(sessionID, schema, tableName string) {
 		table = []string{sessionID, schema, tableName}
 	})
 	if err == nil {
@@ -617,7 +617,7 @@ func TestStreamEventsDispatchesMalformedRunOpen(t *testing.T) {
 	}}}}}
 	c := startFakeControlPlane(t, fake)
 	var openedRun spi.RunOpen
-	_ = c.StreamEvents(func() {}, func(open spi.RunOpen) { openedRun = open }, func(string, string, string) {})
+	_ = c.StreamEvents(func([]string) {}, func(open spi.RunOpen) { openedRun = open }, func(string, string, string) {})
 	if openedRun.SessionID != "bad" || openedRun.MapErr == nil {
 		t.Fatalf("malformed run open was not dispatched with MapErr: %+v", openedRun)
 	}
@@ -678,7 +678,7 @@ func TestStreamEventsEndsAtItsMaxAge(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	start := time.Now()
-	err := c.streamEvents(ctx, 300*time.Millisecond, func() {}, func(spi.RunOpen) {}, func(string, string, string) {})
+	err := c.streamEvents(ctx, 300*time.Millisecond, func([]string) {}, func(spi.RunOpen) {}, func(string, string, string) {})
 	elapsed := time.Since(start)
 
 	if err == nil {
@@ -705,7 +705,7 @@ func TestEventsLoopReopensAfterMaxAge(t *testing.T) {
 		c.runEventsLoop(ctx, eventLoopTimings{
 			streamMaxAge: 150 * time.Millisecond,
 			reconnect:    10 * time.Millisecond,
-		}, func() {}, func() {}, func(spi.RunOpen) {}, func(string, string, string) {})
+		}, func() {}, func([]string) {}, func(spi.RunOpen) {}, func(string, string, string) {})
 	}()
 	t.Cleanup(func() {
 		cancel()
@@ -743,7 +743,7 @@ func TestEventsLoopReopensWithoutWaitingForResync(t *testing.T) {
 		c.runEventsLoop(ctx, eventLoopTimings{
 			streamMaxAge: 150 * time.Millisecond,
 			reconnect:    10 * time.Millisecond,
-		}, resync, func() {}, func(spi.RunOpen) {}, func(string, string, string) {})
+		}, resync, func([]string) {}, func(spi.RunOpen) {}, func(string, string, string) {})
 	}()
 	t.Cleanup(func() {
 		cancel()
@@ -815,7 +815,7 @@ func TestEventsLoopWaitsTheBackoffBetweenReopens(t *testing.T) {
 		c.runEventsLoop(ctx, eventLoopTimings{
 			streamMaxAge: time.Minute, // long enough that only the backoff paces this test
 			reconnect:    backoff,
-		}, func() {}, func() {}, func(spi.RunOpen) {}, func(string, string, string) {})
+		}, func() {}, func([]string) {}, func(spi.RunOpen) {}, func(string, string, string) {})
 	}()
 	t.Cleanup(func() {
 		cancel()

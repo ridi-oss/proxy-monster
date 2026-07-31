@@ -287,10 +287,13 @@ A per-datasource setting, `catalog_adoption`, with three states:
   transfer.
 - `trust`. `on_open` adopts held content with no probe at all — the first
   statement decides with zero backend round-trips. This is today's MySQL
-  behavior. It is sound when every backend session for the datasource reaches
-  one backend with one service account (the
-  [KNOWN_LIMITATIONS](../KNOWN_LIMITATIONS.md) single-backend assumption) and
-  the catalog scan holds nothing connection-specific. An explicit `trust` is
+  behavior. It is sound while every backend session for the datasource reaches
+  one backend with one service account, and the catalog reading holds nothing
+  connection-specific. Two deployment changes would break that silently —
+  several proxies against backends that can disagree, or credentials that vary
+  per session, since both engines filter the catalog by privilege — and `verify`
+  is the answer to either, proving the content against the connection's own
+  backend rather than assuming how many backends answer. An explicit `trust` is
   accepted on any engine, PostgreSQL included — the operator's setting is
   trusted, never second-guessed by a predicate.
 
@@ -824,9 +827,7 @@ Landing order, each step shippable alone:
    trust rules; the `catalog_schema` table and per-schema `catalog_column`
    projection. From this step connection #1 adopts.
 3. Adoption modes: the tri-state per-datasource setting with the engine-derived
-   unset default (today's behavior unchanged for both engines). The
-   KNOWN_LIMITATIONS single-backend entry becomes a description of trust mode,
-   with `verify` as the per-datasource remedy.
+   unset default (today's behavior unchanged for both engines).
 4. Economy + true-up: the per-schema movable clock with manager-driven
    `RefreshCatalog(schemas)` nudges and `hashes_only`/`fetch_schemas` (the
    scoped, never-`namespace_complete` push form), the dirty stamp (PostgreSQL

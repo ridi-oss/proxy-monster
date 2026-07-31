@@ -70,12 +70,33 @@ class PerConnectionCatalogFixture(val enforcement: EnforcementFixture) {
         push(connectionId, schema, rows, backendGeneration, unchanged)
     }
 
+    /**
+     * Push one schema as a reading taken inside an open transaction — what a connection holds after DDL it
+     * has not committed. Such a reading is connection-only by design, so it never becomes authoritative and
+     * the connection is the only party that knows the schema owes a re-measure.
+     */
+    suspend fun pushDirty(connectionId: ByteString, schema: String, backendGeneration: Long = 1) {
+        push(
+            connectionId,
+            schema,
+            listOf(FragmentColumn(schema, "uncommitted", "id", "BIGINT", 1, false)),
+            backendGeneration,
+            inTransaction = true,
+        )
+    }
+
+    /** The settled counterpart of [pushDirty]: the same synthetic content, measured outside a transaction. */
+    suspend fun pushSynthetic(connectionId: ByteString, schema: String, backendGeneration: Long = 1) {
+        push(connectionId, schema, listOf(FragmentColumn(schema, "committed", "id", "BIGINT", 1, false)), backendGeneration)
+    }
+
     private suspend fun push(
         connectionId: ByteString,
         schema: String,
         rows: List<FragmentColumn>,
         backendGeneration: Long,
         unchanged: Boolean = false,
+        inTransaction: Boolean = false,
     ) {
         val result = core.connectionCatalog.applyPush(
             schemaFragmentPush {
@@ -88,6 +109,7 @@ class PerConnectionCatalogFixture(val enforcement: EnforcementFixture) {
                 hashTrusted = true
                 this.unchanged = unchanged
                 this.backendGeneration = backendGeneration
+                measuredInTransaction = inTransaction
                 if (!unchanged) {
                     columns.addAll(rows.map { row ->
                         column {

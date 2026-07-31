@@ -179,7 +179,7 @@ func (s *Server) handleConn(clientConn net.Conn) {
 	refetcher := engine.NewRefetcher(s.db, identity.ConnectionID, generation, func(sql string, expectedColumns int) ([][]*string, error) {
 		return runInternalQuery(backendConn, deprecateEOF, sql, expectedColumns)
 	}, s.client.PushSchemaFragment, nil)
-	if err := refetcher.RunAll(identity.OnOpen); err != nil {
+	if err := refetcher.RunAllSettled(identity.OnOpen); err != nil {
 		slog.Warn("mysql catalog initialization failed", "error", err)
 		_ = mysqlwire.WritePacket(clientConn, tokenSeq+1, mysqlwire.ErrPacketState(
 			1105,
@@ -426,7 +426,7 @@ func (s *Server) handleConn(clientConn net.Conn) {
 				return
 			}
 			if ok && proceed.Decision != nil && len(proceed.Decision.AfterStatement) > 0 {
-				if err := refetcher.RunAll(proceed.Decision.AfterStatement); err != nil {
+				if err := refetcher.RunAllSettled(proceed.Decision.AfterStatement); err != nil {
 					return
 				}
 			}

@@ -49,9 +49,13 @@ class ProxyEventsHub {
      * Fan a `RefreshCatalog` out to every open stream for [name]. Returns the number of streams notified
      * (0 == no proxy currently attached — the admin's refresh is a no-op, reported honestly). A full send
      * buffer (a wedged proxy) is skipped, not blocked on.
+     *
+     * An empty [schemas] asks for the whole server, which is the admin "re-introspect now" and the only
+     * form that may establish which schemas exist. A non-empty set names exactly the schemas whose
+     * re-measure clocks expired, and the proxy answers with their hashes alone.
      */
-    fun requestRefresh(name: String): Int {
-        val event = controlEvent { refreshCatalog = refreshCatalog {} }
+    fun requestRefresh(name: String, schemas: Collection<String> = emptyList()): Int {
+        val event = controlEvent { refreshCatalog = refreshCatalog { this.schemas.addAll(schemas) } }
         val channels = streams[name] ?: return 0
         var notified = 0
         for (channel in channels) if (channel.trySend(event).isSuccess) notified++

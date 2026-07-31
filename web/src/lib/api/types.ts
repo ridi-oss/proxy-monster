@@ -112,7 +112,14 @@ export interface Datasource {
   /** Whether the proxy serves TLS at all. Independent of the chain: an operator may serve a publicly-trusted
    *  certificate and publish nothing, so clients verify against their own trust store. Only false is plaintext. */
   advertiseWireTls?: boolean
+  /** How a new connection obtains its catalog. `verify` proves the held content against the connection's
+   *  own backend with a hash before adopting it; `trust` adopts it outright. Null/absent derives the mode
+   *  from the engine — trust on MySQL, verify on PostgreSQL. */
+  catalogAdoption?: CatalogAdoption | null
 }
+
+/** Per-datasource catalog adoption mode; absent means the engine-derived default. */
+export type CatalogAdoption = 'verify' | 'trust'
 
 /**
  * Create/update body for a datasource. Optional pre-provisioning only — a way to seed a row (name +
@@ -125,6 +132,8 @@ export interface DatasourceInput {
   host?: string
   port?: number
   dbName?: string
+  /** Absent leaves the mode unset, which is how a datasource returns to its engine-derived default. */
+  catalogAdoption?: CatalogAdoption | null
 }
 
 /** Result of POST .../refresh — how many connected proxy streams were nudged to re-introspect. */

@@ -146,6 +146,63 @@ val Engine.catalogIsConnectionIndependent: Boolean
     }
 
 /**
+ * How a connection to a datasource obtains its catalog.
+ *
+ * [VERIFY] measures each schema's hash against the connection's own backend and adopts the held content
+ * only when they agree — a per-connection proof, costing one hash query per schema instead of a column
+ * transfer. [TRUST] adopts held content with no probe at all, so the first statement decides with no
+ * backend round-trip; its safety argument is the single-backend assumption, which the operator asserts
+ * by choosing it.
+ */
+enum class CatalogAdoption {
+    VERIFY,
+    TRUST,
+    ;
+
+    val wireName: String get() = name.lowercase()
+}
+
+/**
+ * Parse the stored/API adoption value, or null when nothing is set. Anything unrecognized throws: the
+ * setting decides whether a connection proves its catalog, so a typo must be visible rather than
+ * silently reverting to an engine default the operator was overriding.
+ */
+fun catalogAdoptionFromWire(raw: String?): CatalogAdoption? = when (raw?.lowercase()?.trim()) {
+    null, "" -> null
+    "verify" -> CatalogAdoption.VERIFY
+    "trust" -> CatalogAdoption.TRUST
+    else -> throw IllegalArgumentException("unknown catalog adoption mode '$raw' (expected 'verify' or 'trust')")
+}
+
+/** Like [catalogAdoptionFromWire] but null-on-invalid, for a route that renders its own error. */
+fun catalogAdoptionFromWireOrNull(raw: String): CatalogAdoption? = when (raw.lowercase().trim()) {
+    "verify" -> CatalogAdoption.VERIFY
+    "trust" -> CatalogAdoption.TRUST
+    else -> null
+}
+
+/**
+ * The mode this datasource's connections open under: the explicit setting when there is one, otherwise
+ * the engine's default.
+ *
+ * The engine only ever supplies the default. [Engine.catalogIsConnectionIndependent] is a static
+ * assumption that a scan cannot vary by connection — true of MySQL, whose temporary tables never enter
+ * the catalog — while a verify-mode hash check is a per-connection proof against the backend the
+ * connection will actually bind. So an explicit `trust` is accepted on PostgreSQL too: the predicate
+ * picks the default, it never vetoes a choice.
+ */
+val Datasource.effectiveCatalogAdoption: CatalogAdoption
+    get() = catalogAdoption
+        ?: if (engine.catalogIsConnectionIndependent) CatalogAdoption.TRUST else CatalogAdoption.VERIFY
+
+/**
+ * Whether a connection opening on this datasource takes held catalog content outright. False sends the
+ * usual conditional refetch per schema, so the connection adopts only content its own backend confirmed.
+ */
+val Datasource.adoptsHeldCatalog: Boolean
+    get() = effectiveCatalogAdoption == CatalogAdoption.TRUST
+
+/**
  * Parse a wire / registration engine string, fail-closed and case-insensitive: "mysql" → MYSQL,
  * "postgres" → POSTGRES, anything else throws. This is the one gate raw engine input passes through; it
  * accepts exactly the two canonical spellings the store persists and the proxy registers.
@@ -170,4 +227,16 @@ object EngineWireSerializer : KSerializer<Engine> {
     override val descriptor: SerialDescriptor = PrimitiveSerialDescriptor("Engine", PrimitiveKind.STRING)
     override fun serialize(encoder: Encoder, value: Engine) = encoder.encodeString(value.wireName)
     override fun deserialize(decoder: Decoder): Engine = engineFromWire(decoder.decodeString())
+}
+
+/**
+ * Encodes [CatalogAdoption] as its lowercase wire string, matching how the setting is stored and how
+ * every other engine-ish enum crosses this API.
+ */
+object CatalogAdoptionWireSerializer : KSerializer<CatalogAdoption> {
+    override val descriptor: SerialDescriptor = PrimitiveSerialDescriptor("CatalogAdoption", PrimitiveKind.STRING)
+    override fun serialize(encoder: Encoder, value: CatalogAdoption) = encoder.encodeString(value.wireName)
+    override fun deserialize(decoder: Decoder): CatalogAdoption =
+        catalogAdoptionFromWire(decoder.decodeString())
+            ?: throw IllegalArgumentException("catalog adoption mode must not be blank")
 }

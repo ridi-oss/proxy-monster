@@ -30,6 +30,17 @@ private const val NO_CONTENT_FOR_HASH = "no pooled content for the observed hash
  */
 private const val DEFAULT_STALENESS_NANOS = 15L * 60 * 1_000_000_000
 
+/**
+ * How long a schema may go without a clean observation before the manager asks a proxy to re-measure it.
+ *
+ * The clock is per `(datasource, schema)` and movable: any clean observation of a schema resets that
+ * schema's clock and no other. So a schema kept fresh by its own traffic is never gratuitously
+ * re-measured, while a quiet sibling still settles into a steady hash-confirm cadence instead of
+ * starving behind it. Set below [DEFAULT_STALENESS_NANOS] so an ordinary re-measure lands before the
+ * per-connection bound puts a full fetch in front of a user's query.
+ */
+private const val DEFAULT_REMEASURE_NANOS = 12L * 60 * 1_000_000_000
+
 /** Immutable value key for catalog content. ByteString is required: raw ByteArray has reference equality. */
 data class ContentHash(val bytes: ByteString)
 
@@ -128,6 +139,11 @@ data class Binding(val datasourceName: String, val principal: String, val tokenK
  * [trusted] false means the producer measured this content but could not vouch for the hash, so the hash
  * cannot be offered back as a conditional-refetch token: a proxy replying `unchanged` against it would be
  * matching bytes no measurement stands behind. Such a schema is always re-fetched unconditionally.
+ *
+ * [dirty] records that the content was measured inside an open transaction, so nothing but this
+ * connection has seen it. Nothing else can true it up — a dirty reading never moves the shared pointer,
+ * so `freshnessGate` has no moved hash to notice — which is why the connection re-measures these schemas
+ * when its transaction ends.
  */
 data class HeldSchema(
     val pooledRef: PoolKey,
@@ -136,6 +152,7 @@ data class HeldSchema(
     val lastVerifiedNanos: Long,
     val revalidatedAgainstAuthoritativeHash: ContentHash?,
     val trusted: Boolean = true,
+    val dirty: Boolean = false,
 )
 
 data class PendingRefetch(
@@ -232,6 +249,14 @@ internal val ReadingOrder.installs: Boolean
  */
 interface CatalogProjection {
     /**
+     * Every datasource's persisted per-schema readings, for rebuilding the pool after a restart. Only a
+     * schema whose stored version and stored columns are both present is returned: a version with no rows
+     * would leave the pointer naming content nothing resolves, and rows with no version cannot be ordered
+     * against the next reading.
+     */
+    fun storedSchemaReadings(): List<StoredSchemaReading>
+
+    /**
      * Replace the columns of each schema in [observations] that carries content and is not ordered behind
      * what is already stored, and record its version.
      *
@@ -259,6 +284,19 @@ data class ProjectedObservation(
     val version: ReadingVersion?,
 )
 
+/**
+ * One schema's persisted reading, as the restart rebuild reads it back: the version behind its stored
+ * rows, and those rows. Keyed by datasource id, which the rebuild resolves to the datasource itself —
+ * the pool key depends on the engine and engine version, so a rebuilt fragment has to be filed the same
+ * way the next live reading of it will be.
+ */
+data class StoredSchemaReading(
+    val datasourceId: Long,
+    val schema: String,
+    val version: ReadingVersion,
+    val columns: List<FragmentColumn>,
+)
+
 /** The namespace facts only a whole-server reading can establish, since only it probes the namespace. */
 data class ProjectedNamespace(
     val defaultSchemas: List<String>,
@@ -281,6 +319,7 @@ class ConnectionCatalogRegistry(
     private val secureRandom: SecureRandom = SecureRandom(),
     internal val stalenessNanos: Long = DEFAULT_STALENESS_NANOS,
     private val projection: CatalogProjection? = null,
+    internal val remeasureNanos: Long = DEFAULT_REMEASURE_NANOS,
 ) {
     private val log = org.slf4j.LoggerFactory.getLogger(ConnectionCatalogRegistry::class.java)
     private val pool = ConcurrentHashMap<PoolKey, PooledFragment>()
@@ -288,15 +327,20 @@ class ConnectionCatalogRegistry(
     private val connections = ConcurrentHashMap<ByteString, EnforcementConnection>()
     private val authoritativeEpoch = AtomicLong()
 
+    // When each (datasource, schema) last received a clean observation, from any producer. The manager
+    // owns these because it is the only component every reading passes through, so it is the only one
+    // that can reset a schema's clock on a reading that arrived by some other path.
+    private val lastCleanNanos = ConcurrentHashMap<Pair<String, String>, Long>()
+
     // A full push transitions both the held and authoritative references. The global monitor makes those
     // multi-map transitions atomic; every individual reference-count mutation still occurs under pool.compute.
     private val stateLock = Any()
 
     /**
      * [adoptHeldContent] lets a connection start from catalog content the control plane already holds instead
-     * of fetching it, for an engine whose scan cannot vary by connection
-     * ([Engine.catalogIsConnectionIndependent]). A schema with nothing held still gets its fetch, so this only
-     * removes redundant work — never the first measurement.
+     * of fetching it — trust mode. A schema with nothing held still gets its fetch, so this only removes
+     * redundant work, never the first measurement. Under verify (the default) the connection is instead sent
+     * a conditional refetch per schema and adopts only what its own backend confirms.
      */
     fun open(
         binding: Binding,
@@ -432,6 +476,26 @@ class ConnectionCatalogRegistry(
                     lastFetchNanos = previous?.lastFetchNanos ?: 0,
                     lastVerifiedNanos = now,
                     revalidatedAgainstAuthoritativeHash = pending.authoritativeAtIssue,
+                    dirty = request.measuredInTransaction,
+                )
+                // A matching hash is itself a reading of the backend, and a clean one resets that schema's
+                // re-measure clock exactly as a full fetch would. This is the economy the whole per-schema
+                // clock buys: confirming a quiet schema costs one hash query and nothing else. A reading
+                // taken in a transaction, or one whose producer could not vouch for it, confirms nothing
+                // and leaves the schema due.
+                val confirmation = CatalogObservation(
+                    datasourceName = ds.name,
+                    schema = request.schema,
+                    hash = if (request.hashTrusted) expected else null,
+                    columns = null,
+                    dbClockMicros = request.dbClockMicros,
+                    backendId = request.backendId,
+                    dirty = request.measuredInTransaction,
+                )
+                noteAcceptedReading(
+                    ds.name,
+                    request.schema,
+                    shareabilityOf(confirmation, authoritative[ds.name to request.schema]),
                 )
                 if (previous != null && previous.pooledRef != key) release(previous.pooledRef)
                 accept(connection, request.schema, request.backendGeneration)
@@ -489,8 +553,14 @@ class ConnectionCatalogRegistry(
             }
 
             val now = clockNanos()
-            connection.held[request.schema] =
-                HeldSchema(key, pushedHash, now, now, null, trusted = request.hashTrusted)
+            connection.held[request.schema] = HeldSchema(
+                key, pushedHash, now, now, null,
+                trusted = request.hashTrusted,
+                // Nothing else will true this up: a reading taken in a transaction never moves the shared
+                // pointer, so the connection has to remember that it owes a re-measure once it settles.
+                dirty = observation.dirty,
+            )
+            noteAcceptedReading(ds.name, request.schema, outcome)
             when (outcome) {
                 is AuthoritativeOutcome.Installed -> {
                     authoritative[authKey] = Authoritative(
@@ -518,6 +588,46 @@ class ConnectionCatalogRegistry(
             if (previousHeld != null && previousHeld.pooledRef != key) release(previousHeld.pooledRef)
             accept(connection, request.schema, request.backendGeneration)
         }
+    }
+
+    /**
+     * Reset one schema's re-measure clock, having accepted a reading as evidence of what its backend
+     * currently holds.
+     *
+     * Only that schema's clock moves. A datasource-wide clock would let one busy schema's traffic keep
+     * postponing every sibling's re-measure, so drift on a quiet schema would go unnoticed for as long as
+     * the busy one kept moving — per schema, the reset skips work just done without starving anything.
+     *
+     * A reading the manager did not accept — dirty, untrusted, ordered behind what is held, or naming
+     * content nothing resolves — leaves the schema due, so the next nudge asks again. That is the
+     * fail-closed direction: the cost is one extra measurement, while skipping the reset can only ever
+     * delay noticing drift.
+     */
+    private fun noteAcceptedReading(datasourceName: String, schema: String, outcome: AuthoritativeOutcome) {
+        if (outcome is AuthoritativeOutcome.Dropped) return
+        lastCleanNanos[datasourceName to schema] = clockNanos()
+    }
+
+    /**
+     * The schemas of [datasourceName] whose re-measure clock has expired — what the manager asks a proxy
+     * to re-read.
+     *
+     * Only schemas the manager already holds are named. A schema it has never seen has nothing to
+     * confirm and is found by the whole-server scan instead, which is also the only reading that may
+     * decide a schema exists at all.
+     */
+    fun dueSchemas(datasourceName: String): Set<String> = synchronized(stateLock) {
+        val now = clockNanos()
+        authoritative.keys
+            .filter { it.first == datasourceName }
+            .filterTo(LinkedHashSet()) { key ->
+                // Absent means nothing has read this schema's backend since the pointer appeared — a
+                // restart rebuild, or an install by a path that left no confirmation. Due immediately, so
+                // an unconfirmed pointer cannot sit unmeasured for a whole interval.
+                val lastClean = lastCleanNanos[key] ?: return@filterTo true
+                now - lastClean > remeasureNanos
+            }
+            .mapTo(LinkedHashSet()) { it.second }
     }
 
     /**
@@ -715,6 +825,18 @@ class ConnectionCatalogRegistry(
         connection.held.keys.filterTo(LinkedHashSet()) { freshnessGate(connection, listOf(it)).isEmpty() }
 
     /**
+     * The schemas this connection holds from a reading taken inside a transaction.
+     *
+     * A dirty reading never moves the shared pointer, so nothing about it is self-correcting: the
+     * connection is the only holder of that content and `freshnessGate` sees no moved hash to re-check
+     * against. Naming them lets the transaction's end re-measure them outside the transaction, where the
+     * reading is clean and trues the shared state up immediately rather than leaving it to the
+     * re-measure clock. Must be called while holding [EnforcementConnection.mutex].
+     */
+    fun dirtyHeldSchemas(connection: EnforcementConnection): Set<String> =
+        connection.held.entries.filterTo(LinkedHashSet()) { it.value.dirty }.mapTo(LinkedHashSet()) { it.key }
+
+    /**
      * Apply a whole-server or scoped configuration reading — the registration scan and the ambient refresh.
      *
      * This is the path that dissolves the two-catalog split. The reading carries a per-schema hash measured
@@ -742,7 +864,19 @@ class ConnectionCatalogRegistry(
         // Only a reading that says it enumerated every schema may imply deletion. A scoped set speaks for
         // the schemas it names and nothing else: both engines filter information_schema by privilege, so a
         // least-privilege account reads a strict subset, and deleting on that erases what it cannot see.
-        val namespaceComplete = request.namespaceComplete
+        //
+        // A hashes-only reading answers a nudge for particular schemas, so it is scoped by construction and
+        // its completeness claim is refused here rather than trusted. The check is the manager's, not the
+        // producer's: the delete is what the flag licenses, so the component that would perform it is the
+        // one that has to be sure — a proxy that sets both flags through a bug or a compromise then costs
+        // one ignored claim instead of every schema it did not name.
+        val namespaceComplete = request.namespaceComplete && !request.hashesOnly
+        if (request.namespaceComplete && request.hashesOnly) {
+            log.warn(
+                "datasource '{}': a hashes-only reading claimed a complete namespace; refusing it the license to delete",
+                ds.name,
+            )
+        }
         // An old proxy sends no schema_hashes. Its columns still carry the schemas it read, so the stored
         // catalog is written exactly as before — versionless, seeding nothing.
         val versioned = request.schemaHashesList.associate { it.schema to it }
@@ -767,6 +901,7 @@ class ConnectionCatalogRegistry(
         synchronized(stateLock) {
             for (observation in observations) {
                 val applied = installShared(ds, observation)
+                noteAcceptedReading(ds.name, observation.schema, applied)
                 if (applied is AuthoritativeOutcome.Dropped) {
                     if (applied.reason == NO_CONTENT_FOR_HASH) fetch += observation.schema
                     log.warn(
@@ -817,6 +952,66 @@ class ConnectionCatalogRegistry(
             ),
         ) ?: 0
         return ConfigCatalogResult(stored, fetch)
+    }
+
+    /**
+     * Rebuild the pool and the authoritative pointers from the persisted catalog, at startup.
+     *
+     * Without this a restart empties every pointer, so each connection re-reads schemas the control plane
+     * already has the columns and the version for. Rebuilding is safe because it does not weaken either
+     * adoption mode's argument: verify re-proves the content against its own backend before adopting it,
+     * and trust already accepts exactly this provenance — these are the rows the last reading wrote.
+     *
+     * The rebuilt entry keeps the stored DB clock, so an arriving reading is ordered against what the
+     * backend was last proved to be rather than against nothing. Its control-plane measurement time is
+     * now: the staleness bound asks how long since the control plane last saw this confirmed, and a
+     * process that just started has not confirmed anything — pretending otherwise would put a connection
+     * on rebuilt content already past its bound.
+     *
+     * [resolve] maps a stored datasource id to the datasource, which decides the pool scope; a reading
+     * whose datasource no longer exists is skipped. Returns how many schemas were rebuilt.
+     */
+    fun rebuildFromProjection(resolve: (Long) -> Datasource?): Int {
+        val projection = projection ?: return 0
+        val readings = runCatching { projection.storedSchemaReadings() }.getOrElse {
+            // Enforcement is correct without this: every schema simply reads as absent, which is the
+            // unconditional-fetch path. Refusing to start over a cache warm-up would be the worse failure.
+            log.warn("rebuilding the catalog from the stored projection failed; connections will re-measure", it)
+            return 0
+        }
+        var rebuilt = 0
+        synchronized(stateLock) {
+            for (reading in readings) {
+                val ds = resolve(reading.datasourceId) ?: continue
+                if (reading.columns.isEmpty()) continue
+                val key = poolKey(ds, reading.schema, reading.version.hash)
+                val fragment = SchemaFragment(key, reading.version.hash, reading.columns)
+                val retained = retain(fragment, 1)
+                if (retained.fragment.columns != fragment.columns) {
+                    // Two datasources' stored rows disagree under one content hash, so at most one of them
+                    // describes what that hash names. Neither is installed: leaving both absent costs a
+                    // fetch, while guessing would hand a connection another backend's structure.
+                    release(key)
+                    log.warn(
+                        "datasource '{}' schema '{}': stored rows do not match the pooled fragment for their hash; not rebuilt",
+                        ds.name, reading.schema,
+                    )
+                    continue
+                }
+                val now = clockNanos()
+                authoritative[ds.name to reading.schema] = Authoritative(
+                    reading.version.hash, key, authoritativeEpoch.incrementAndGet(), now,
+                    reading.version.dbClockMicros, reading.version.backendId,
+                )
+                // Deliberately NOT marked as observed clean: nothing has read the backend since this
+                // process started, so every rebuilt schema is due at once and the first nudge re-confirms
+                // them all. That is one grouped hash query, against a pointer that would otherwise sit
+                // unverified for a full re-measure interval.
+                rebuilt++
+            }
+        }
+        if (rebuilt > 0) log.info("rebuilt {} catalog schema(s) from the stored projection", rebuilt)
+        return rebuilt
     }
 
     /**
@@ -879,6 +1074,7 @@ class ConnectionCatalogRegistry(
         for (key in authoritative.keys.filter { it.first == datasourceName && it.second !in present }) {
             val auth = authoritative.remove(key) ?: continue
             release(auth.pooledRef)
+            lastCleanNanos.remove(key)
             dropped += key.second
         }
         dropped
@@ -907,6 +1103,7 @@ class ConnectionCatalogRegistry(
         for (key in keys) {
             val auth = authoritative.remove(key) ?: continue
             release(auth.pooledRef)
+            lastCleanNanos.remove(key)
             dropped += key.second
         }
         dropped

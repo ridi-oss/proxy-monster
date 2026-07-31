@@ -200,4 +200,9 @@ message StatementFacts {
   repeated string functions = 13;
   // Dotted identifier schema candidates used only to retry a catalog miss with refreshed metadata.
   repeated string schema_qualifier_candidates = 14;
+  // True for a statement that ends an open transaction (COMMIT or ROLLBACK). A catalog reading taken
+  // inside a transaction is private to it, so nothing shares it until the transaction ends; this is
+  // where the control plane re-measures those schemas from outside. False is the fail-closed reading —
+  // it costs a re-measure deferred to the ordinary clock, never a shared reading of uncommitted state.
+  bool ends_transaction = 15;
 }

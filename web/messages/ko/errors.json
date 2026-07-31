@@ -49,6 +49,7 @@
     "duplicate_column": "\"{column}\" 컬럼이 요청에 중복으로 포함되어 있습니다.",
     "engine_immutable": "데이터소스의 엔진은 변경할 수 없습니다. 엔진을 바꾸려면 삭제 후 다시 생성하세요.",
     "invalid_engine": "\"{engine}\"는 지원하지 않는 엔진입니다. \"postgres\" 또는 \"mysql\"을 사용하세요.",
+    "invalid_catalog_adoption": "\"{mode}\"는 지원하지 않는 카탈로그 도입 방식입니다. \"verify\" 또는 \"trust\"를 사용하거나, 비워 두면 엔진 기본값이 적용됩니다.",
     "no_wire_cert": "이 데이터소스의 프록시가 TLS 인증서를 알리지 않았습니다.",
     "not_connectable": "이 데이터소스에 연결할 권한이 없습니다.",
     "wire_cert_unusable": "저장된 인증서 체인을 신뢰 기준점으로 사용할 수 없습니다. 프록시를 다시 등록한 후 시도하세요."

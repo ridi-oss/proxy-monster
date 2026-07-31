@@ -48,6 +48,9 @@ fun main() {
     // per-instance in-memory, so a second graph would silently go stale on a policy edit.
     val core = ControlPlaneCore(db.dataSource)
     core.accessStore.reconcileOrphanedExecutions()
+    // Start from the catalog the last process already read rather than making every connection re-measure
+    // schemas whose columns and version are both on disk.
+    core.connectionCatalog.rebuildFromProjection { core.datasourceStore.get(it) }
 
     // Bring up the gRPC surface the proxy talks to (docs/datasource-registration.md) before the HTTP
     // server takes over the main thread. `secretToken` (PM_SECRET_TOKEN) is the shared secret gating every

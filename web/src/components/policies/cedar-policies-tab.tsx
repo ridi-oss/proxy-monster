@@ -14,7 +14,7 @@ import { Fragment, useMemo, useState } from 'react'
 import { useTranslations } from 'next-intl'
 import { useTheme } from 'next-themes'
 import CodeMirror from '@uiw/react-codemirror'
-import { EditorView } from '@codemirror/view'
+import { EditorView, tooltips } from '@codemirror/view'
 import { cedar, cedarCompletion, cedarLinter } from '@ridi/codemirror-lang-cedar'
 import { useCedarWasm } from '@/lib/cedar-wasm'
 import { CheckCircle2, Loader2, Pencil, Plus, ShieldCheck, Trash2 } from 'lucide-react'
@@ -337,7 +337,12 @@ export function CedarPoliciesTab() {
             setCreating(false)
             setEditing(null)
           }}
-          onSaved={() => mutate(swrKeys.cedarPolicies)}
+          // The schema carries the context.tag actions the stored policies derive, so a save can change
+          // it — refetch, or editors opened afterwards lint against a stale vocabulary.
+          onSaved={() => {
+            mutate(swrKeys.cedarPolicies)
+            mutate(swrKeys.cedarSchema)
+          }}
         />
       )}
     </div>
@@ -361,7 +366,7 @@ function CedarPolicyDialog({
   // syntax linting. null until ready — the editor works without it until then.
   const cedarWasm = useCedarWasm(true)
   // The authz schema enables in-editor type validation + schema-aware completion.
-  const cedarSchema = useCedarSchema().data?.schema
+  const storedSchema = useCedarSchema().data?.schema
   const [name, setName] = useState(editing?.name ?? '')
   const [cedarSrc, setCedarSrc] = useState(editing?.cedarSrc ?? '')
   const [enabled, setEnabled] = useState(editing?.enabled ?? true)
@@ -372,6 +377,28 @@ function CedarPolicyDialog({
   const [validationErrors, setValidationErrors] = useState<string[] | null>(null)
 
   const valid = name.trim().length > 0 && cedarSrc.trim().length > 0
+
+  // The served schema declares the context.tag actions the STORED policies derive, so a tag name being
+  // typed here — a new one, or a rename — is not in it yet and lints as an undeclared action even though
+  // the server accepts it (it self-augments from the candidate). Declare the draft's own names too, so
+  // the editor agrees with what Validate and Save will say. Mirrors CedarSchema.schemaTextFor.
+  const cedarSchema = useMemo(() => {
+    if (!storedSchema) return storedSchema
+    const declared = new Set(
+      [...storedSchema.matchAll(/action "context\.tag::([^"]+)"/g)].map((m) => m[1]),
+    )
+    const drafted = [...cedarSrc.matchAll(/Action::"context\.tag::([^"]+)"/g)]
+      .map((m) => m[1])
+      .filter((n) => !declared.has(n))
+    if (drafted.length === 0) return storedSchema
+    return `${storedSchema}\n${[...new Set(drafted)]
+      .map(
+        (n) =>
+          `action "context.tag::${n}" appliesTo { principal: [User, Role], resource: [Datasource], ` +
+          `context: { channel?: String, requester_ip?: ipaddr, tailscale_caps?: Set<String> } };`,
+      )
+      .join('\n')}`
+  }, [storedSchema, cedarSrc])
 
   // Stable across keystrokes — see sql-editor.tsx: a fresh array here would
   // reconfigure the whole editor on every render.
@@ -395,6 +422,9 @@ function CedarPolicyDialog({
       editorTheme(resolvedTheme),
       lang,
       lang.language.data.of({ autocomplete: completion }),
+      // Lint/completion tooltips render into document.body, not the editor's parent: the editor sits in
+      // an overflow-hidden, rounded container inside the dialog, which clips a tooltip near its edge.
+      tooltips({ parent: typeof document === 'undefined' ? undefined : document.body }),
       // Wrap long policy lines (like sql-editor.tsx). Without this a long single-line
       // policy sets the editor's min-content width, and DialogContent's grid track
       // grows past the dialog card — the header/footer paint outside the modal.

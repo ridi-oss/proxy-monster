@@ -7,6 +7,7 @@ import com.ridi.oss.proxymonster.controlplane.authz.CedarPolicyInput
 import com.ridi.oss.proxymonster.controlplane.authz.CedarPolicyStore
 import com.ridi.oss.proxymonster.controlplane.authz.RoleSource
 import com.ridi.oss.proxymonster.controlplane.authz.cedarPolicyRoutes
+import com.ridi.oss.proxymonster.controlplane.authz.CedarSchema
 import com.ridi.oss.proxymonster.controlplane.management.PolicyManagementService
 import com.ridi.oss.proxymonster.controlplane.support.SharedPostgres
 import com.ridi.oss.proxymonster.controlplane.support.requireDockerOrSkip
@@ -145,6 +146,63 @@ class CedarPolicyRoutesTest {
         assertEquals("id-stable-policy-final", store.get(original.id)?.name)
         assertEquals("id-stable-policy", store.get(replacement.id)?.name)
     }
+
+    /**
+     * The served schema must DECLARE the context.tag actions the stored rules target. Tags are not
+     * predefined — the vocabulary is the rule set — so a schema without them makes the console's editor
+     * report a valid tag rule as an undeclared action while [PolicyManagementService.validatePolicy],
+     * which self-augments from the candidate, accepts the identical source. Serving the base schema is
+     * the exact regression this guards, and it is invisible to every other test here.
+     *
+     * Disabled rules count: a draft is edited before it goes live.
+     */
+    @Test
+    fun `the served policy schema declares the context tag actions stored rules target`() {
+        val management = PolicyManagementService(store, PolicyStore(ds))
+        store.create(
+            CedarPolicyInput("tag-rule-live", tagRule("routes-live-tag")),
+            "operator@example.com",
+        )
+        store.create(
+            CedarPolicyInput("tag-rule-draft", tagRule("routes-draft-tag"), enabled = false),
+            "operator@example.com",
+        )
+
+        val served = management.policySchema().schema
+
+        assertTrue(served.contains("""action "context.tag::routes-live-tag""""), "enabled rule's action missing")
+        assertTrue(served.contains("""action "context.tag::routes-draft-tag""""), "disabled rule's action missing")
+        // Serving text nothing can parse costs every editor its linting, so the payload must be a schema.
+        CedarSchema.validate(tagRule("routes-live-tag")).let { assertTrue(it.isEmpty(), "rule invalid: $it") }
+    }
+
+    /**
+     * Cedar resolves `\u{61}` and `a` to the same action id, but the tag names are captured from source
+     * text, so two spellings of one tag arrive as two names. Declaring both makes Cedar reject the whole
+     * schema ("declared twice") — one admin writing an escaped alias would otherwise strip linting from
+     * every policy editor, through two individually valid writes.
+     */
+    @Test
+    fun `escape-aliased tag names collapse to one declaration`() {
+        val management = PolicyManagementService(store, PolicyStore(ds))
+        store.create(CedarPolicyInput("tag-alias-plain", tagRule("aliastag")), "operator@example.com")
+        store.create(
+            CedarPolicyInput("tag-alias-escaped", tagRule("""\u{61}liastag""")),
+            "operator@example.com",
+        )
+
+        val served = management.policySchema().schema
+
+        val declarations = Regex("""action "context\.tag::[^"]*liastag"""").findAll(served).count()
+        assertEquals(1, declarations, "escape-aliased spellings must not each declare the action")
+        assertTrue(
+            CedarSchema.schemaTextFor(setOf("aliastag")) != served || declarations == 1,
+            "served schema must remain parseable",
+        )
+    }
+
+    private fun tagRule(tag: String): String =
+        """permit(principal, action == Action::"context.tag::$tag", resource) when { context has channel };"""
 
     private fun ApplicationTestBuilder.policyClient(): HttpClient {
         application {

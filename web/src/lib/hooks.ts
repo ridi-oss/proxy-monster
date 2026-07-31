@@ -167,7 +167,8 @@ export function useCedarPolicies() {
   return useSWR(KEYS.cedarPolicies, getCedarPolicies)
 }
 
-/** The authz Cedar schema text (static), for the policy editor's schema-aware lint/completion. */
+/** The authz Cedar schema text, for the policy editor's schema-aware lint/completion. Carries the
+ *  context.tag actions derived from stored policies, so it changes when policies do. */
 export function useCedarSchema() {
   return useSWR(KEYS.cedarSchema, getCedarSchema, { revalidateOnFocus: false })
 }

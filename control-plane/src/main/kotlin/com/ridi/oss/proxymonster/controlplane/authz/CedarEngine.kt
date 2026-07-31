@@ -32,6 +32,25 @@ private val CONTEXT_TAG_ACTION = Regex("""Action::"context\.tag::([^"]+)"""")
 internal fun extractContextTagNames(cedarSrc: String): Set<String> =
     CONTEXT_TAG_ACTION.findAll(cedarSrc).mapTo(mutableSetOf()) { it.groupValues[1] }
 
+private val CEDAR_ESCAPE = Regex("""\\(u\{([0-9A-Fa-f]{1,6})\}|.)""")
+
+/**
+ * A Cedar string literal's value, as the parser resolves it — `\u{61}` and `a` are the same action id
+ * spelled two ways. Used to compare tag names by identity rather than by source text; an unrecognized
+ * escape is left as written, since the goal is collapsing aliases, not validating the literal.
+ */
+internal fun unescapeCedarString(literal: String): String =
+    CEDAR_ESCAPE.replace(literal) { m ->
+        val hex = m.groupValues[2]
+        if (hex.isNotEmpty()) {
+            hex.toInt(16).takeIf { it <= 0x10FFFF }?.let { String(Character.toChars(it)) } ?: m.value
+        } else when (val c = m.groupValues[1]) {
+            "n" -> "\n"; "r" -> "\r"; "t" -> "\t"; "0" -> "\u0000"
+            "\\" -> "\\"; "'" -> "'"; "\"" -> "\""
+            else -> c
+        }
+    }
+
 private val CONTEXT_TAGS_CONSUMED = Regex("""context\.tags\.contains\(\s*"([^"]+)"\s*\)""")
 
 /**
@@ -82,12 +101,35 @@ object CedarSchema {
     fun schemaFor(tagNames: Set<String>): Schema {
         if (tagNames.isEmpty()) return schema
         return augmentedSchemas.getOrPut(tagNames) {
-            val decls = tagNames.sorted().joinToString("\n") { name ->
-                "action \"context.tag::$name\" appliesTo { principal: [User, Role], resource: [Datasource], " +
-                    "context: { channel?: String, requester_ip?: ipaddr, tailscale_caps?: Set<String> } };"
-            }
-            Schema.parse(Schema.JsonOrCedar.Cedar, "$text\n$decls")
+            Schema.parse(Schema.JsonOrCedar.Cedar, schemaTextFor(tagNames))
         }
+    }
+
+    /** [schemaFor]'s source text, for callers that need the schema as Cedar source rather than a parsed
+     *  [Schema] — the console's in-editor linter validates against this same text. */
+    fun schemaTextFor(tagNames: Set<String>): String {
+        if (tagNames.isEmpty()) return text
+        // Deduplicate by the id Cedar resolves the name to, not by its spelling: `a` and `\u{61}` are
+        // the same action, so emitting both declares it twice and the whole schema fails to parse.
+        val decls = tagNames.distinctBy(::unescapeCedarString).sorted().joinToString("\n") { name ->
+            "action \"context.tag::$name\" appliesTo { principal: [User, Role], resource: [Datasource], " +
+                "context: { channel?: String, requester_ip?: ipaddr, tailscale_caps?: Set<String> } };"
+        }
+        return "$text\n$decls"
+    }
+
+    /**
+     * The schema text for [tagNames], guaranteed to parse — the base schema alone if the derived
+     * declarations do not. A tag name reaches this from stored policy source, which the store validates
+     * per policy but cannot validate as a set, and a row written out of band never validated at all. A
+     * single bad name must not cost every reader its schema, so the fallback degrades to base rather
+     * than serving text nothing can parse.
+     */
+    fun parseableSchemaTextFor(tagNames: Set<String>): String {
+        val candidate = schemaTextFor(tagNames)
+        if (candidate === text) return candidate
+        return runCatching { Schema.parse(Schema.JsonOrCedar.Cedar, candidate) }
+            .fold(onSuccess = { candidate }, onFailure = { text })
     }
 
     private val engine = BasicAuthorizationEngine()

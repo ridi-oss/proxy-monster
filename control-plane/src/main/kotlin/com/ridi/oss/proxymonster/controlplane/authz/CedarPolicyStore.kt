@@ -48,8 +48,9 @@ data class CedarValidateInput(val cedarSrc: String)
 @Serializable
 data class CedarValidateResult(val valid: Boolean, val errors: List<String> = emptyList())
 
-/** The bundled authz Cedar schema text — served to the policy editor so it can offer schema-aware
- *  linting/completion in the browser (the schema is the authz model, not secret). */
+/** The authz Cedar schema text, with the `context.tag::<name>` actions the stored policies derive —
+ *  served to the policy editor so it can offer schema-aware linting/completion in the browser (the
+ *  schema is the authz model, not secret). Changes as policies do. */
 @Serializable
 data class CedarSchemaResult(val schema: String)
 

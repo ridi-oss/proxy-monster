@@ -34,6 +34,7 @@ import com.ridi.oss.proxymonster.controlplane.authz.CedarValidateResult
 import com.ridi.oss.proxymonster.controlplane.authz.InvalidCedarPolicyException
 import com.ridi.oss.proxymonster.controlplane.authz.ReservedPolicyNameException
 import com.ridi.oss.proxymonster.controlplane.authz.SystemPolicyImmutableException
+import com.ridi.oss.proxymonster.controlplane.authz.extractContextTagNames
 import com.ridi.oss.proxymonster.controlplane.advisoryLockPrincipal
 import com.ridi.oss.proxymonster.controlplane.inTx
 import com.ridi.oss.proxymonster.probe.Classification
@@ -288,7 +289,16 @@ class PolicyManagementService(
         return CedarValidateResult(errors.isEmpty(), errors)
     }
 
-    fun policySchema(): CedarSchemaResult = CedarSchemaResult(CedarSchema.text)
+    /** Carries the derived `context.tag::<name>` action declarations, not just the base schema: the
+     *  console lints the editor against this, and without them a tag rule reads as an undeclared action
+     *  in the editor while [validatePolicy] — which self-augments — accepts it. The vocabulary is the
+     *  stored rule set, so it comes from the policies themselves (docs/authz-context.md), disabled rows
+     *  included: a draft is edited before it goes live. Tag names a client is still typing are not in the
+     *  store, so the editor augments this with its own draft's names. */
+    fun policySchema(): CedarSchemaResult {
+        val tagNames = policyStore.list().flatMapTo(mutableSetOf()) { extractContextTagNames(it.cedarSrc) }
+        return CedarSchemaResult(CedarSchema.parseableSchemaTextFor(tagNames))
+    }
     fun listRoles(): List<Role> = store.listRoles()
     fun getRole(name: String): Role = store.getRoleByName(name) ?: notFound("role")
     fun getRole(name: String, c: Connection): Role = store.getRoleByName(name, c) ?: notFound("role")

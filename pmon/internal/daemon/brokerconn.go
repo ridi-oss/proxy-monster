@@ -1,7 +1,7 @@
 package daemon
 
 import (
-	"crypto/rand"
+	"errors"
 	"io"
 	"net"
 	"time"
@@ -14,18 +14,23 @@ import (
 // certChainPEM is set the upstream TLS verifies against it as the root pool, with the advertised host checked
 // against it; otherwise it falls back to the system trust store. When wireTLS says this proxy serves TLS, a
 // greeting offering none is refused rather than sent the token in plaintext.
-func brokerMySQL(local net.Conn, proxyAddr, certChainPEM string, wireTLS bool, principal, token string) error {
-	scramble := make([]byte, 20)
-	if _, err := rand.Read(scramble); err != nil {
+func brokerMySQL(local net.Conn, proxyAddr, certChainPEM string, wireTLS bool, principal, token, localPassword string) error {
+	scramble, err := mysqlwire.Scramble()
+	if err != nil {
 		return err
 	}
-	clientCaps, err := localServerGreet(local, scramble)
+	clientCaps, seq, err := localServerGreet(local, scramble, localPassword)
 	if err != nil {
+		// A rejected password never reaches the proxy: answer here and drop the connection, so a
+		// caller that cannot authenticate locally cannot spend the session's token upstream.
+		if errors.Is(err, errLocalAuth) {
+			_ = mysqlwire.WritePacket(local, seq, mysqlwire.ErrPacketState(1045, "28000", "proxy-monster: access denied"))
+		}
 		return err
 	}
 	proxy, err := net.DialTimeout("tcp", proxyAddr, dialTimeout)
 	if err != nil {
-		_ = mysqlwire.WritePacket(local, 2, mysqlwire.ErrPacket(1045, "proxy-monster: cannot reach proxy"))
+		_ = mysqlwire.WritePacket(local, seq, mysqlwire.ErrPacket(1045, "proxy-monster: cannot reach proxy"))
 		return err
 	}
 	defer proxy.Close()
@@ -39,14 +44,14 @@ func brokerMySQL(local net.Conn, proxyAddr, certChainPEM string, wireTLS bool, p
 	}
 	up, err := proxyConnect(proxy, hostOf(proxyAddr), certChainPEM, wireTLS, principal, token, clientCaps)
 	if err != nil {
-		_ = mysqlwire.WritePacket(local, 2, mysqlwire.ErrPacket(1045, "proxy-monster: "+err.Error()))
+		_ = mysqlwire.WritePacket(local, seq, mysqlwire.ErrPacket(1045, "proxy-monster: "+err.Error()))
 		return err
 	}
 	// The relay has no time bound — a session may idle legitimately — so drop the handshake deadline.
 	if err := proxy.SetDeadline(time.Time{}); err != nil {
 		return err
 	}
-	if err := mysqlwire.WritePacket(local, 2, mysqlwire.OKPacket()); err != nil {
+	if err := mysqlwire.WritePacket(local, seq, mysqlwire.OKPacket()); err != nil {
 		return err
 	}
 	pipe(up, local)

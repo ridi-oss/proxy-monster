@@ -640,8 +640,8 @@ func (d *Daemon) current(name string) (Datasource, bool) {
 
 // broker fronts one client connection: it looks up the datasource's CURRENT advertised address (so a proxy
 // that re-registered from A to B is followed without a daemon restart), speaks its wire protocol to the local
-// client, and dials the proxy with the current token. Any password the local client sends is accepted
-// (loopback trust boundary); the sticky local password is the canonical one peers hand out.
+// client, and dials the proxy with the current token. The local client is checked against the sticky
+// local password before the proxy is dialed.
 func (d *Daemon) broker(local net.Conn, name string) {
 	defer local.Close()
 	// Register now (so a logout/revocation mid-session can close this socket) and deregister on return.
@@ -656,7 +656,9 @@ func (d *Daemon) broker(local net.Conn, name string) {
 		return
 	}
 	cfg := d.snapshot()
-	if err := brokerMySQL(local, ds.AdvertiseAddr, ds.CertChainPEM, ds.WireTLS, cfg.Principal, cfg.Token); err != nil {
+	// cfg.LocalPassword is the same value `pmon show` puts in its connection strings, so the client is
+	// checked against the password it was handed.
+	if err := brokerMySQL(local, ds.AdvertiseAddr, ds.CertChainPEM, ds.WireTLS, cfg.Principal, cfg.Token, cfg.LocalPassword); err != nil {
 		fmt.Fprintf(os.Stderr, "broker %q: %v\n", name, err)
 	}
 }

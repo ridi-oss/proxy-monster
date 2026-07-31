@@ -44,6 +44,12 @@ pmon show acme-mysql --cli      # mysql -h 127.0.0.1 -P 6100 -u 'user' -p'pw' 'm
 
 Output is the bare string, so it pipes straight into a client or an env var.
 
+The daemon checks that password. It answers `mysql_native_password` and
+`caching_sha2_password` directly, and switches any other plugin to
+`mysql_clear_password` — which the `mysql` CLI only permits with
+`--enable-cleartext-plugin`. A saved connection carrying a stale or blank
+password fails with access denied; re-copy it from `pmon show`.
+
 ## Architecture
 
 The daemon owns all state and logic and exposes a **local control socket**. This
@@ -110,8 +116,6 @@ pmon CLI ──┐                        ┌── menu-bar app
 
 - **Postgres brokering** — PG datasources are discovered and listed with a
   reason, not fronted.
-- **Local-password enforcement** — the broker hands out the sticky password but
-  accepts any password (loopback + OS-user isolation is the trust boundary).
 - **Notarized menu-bar app** — [`pmontray/`](../pmontray) is built and ad-hoc
   signed; distributing it to other machines needs a Developer ID signature +
   notarization.

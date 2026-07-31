@@ -220,6 +220,42 @@ func AuthSwitchClearPassword() []byte {
 	return []byte("\xfemysql_clear_password\x00")
 }
 
+// Scramble returns a fresh 20-byte auth scramble with no NUL byte in it.
+//
+// The wire sends a scramble NUL-terminated, and a client that reads it as a C string stops at the
+// first NUL — hashing a truncated salt while the server hashes the whole thing, so the digests
+// disagree and the connection is denied. A uniformly random 20 bytes contains a NUL about 7.5% of
+// the time, which would surface as an auth failure that goes away on retry. Real servers exclude it
+// for the same reason.
+func Scramble() ([]byte, error) {
+	b := make([]byte, 20)
+	if _, err := rand.Read(b); err != nil {
+		return nil, err
+	}
+	for i, v := range b {
+		if v == 0 {
+			// Any nonzero byte does; the salt's job is freshness, not a uniform distribution.
+			b[i] = 1
+		}
+	}
+	return b, nil
+}
+
+// AuthSwitchCachingSHA2 builds an AuthSwitchRequest for caching_sha2_password carrying scramble. The
+// scramble is sent NUL-terminated, as a server does, because the client reads it as a C string and
+// would otherwise fold the terminator into the salt it hashes.
+func AuthSwitchCachingSHA2(scramble []byte) []byte {
+	b := []byte("\xfecaching_sha2_password\x00")
+	b = append(b, scramble...)
+	return append(b, 0)
+}
+
+// AuthMoreDataPacket builds an AuthMoreData packet carrying one status marker — the fast-auth
+// outcome a caching_sha2_password server reports after seeing the client's digest.
+func AuthMoreDataPacket(marker byte) []byte {
+	return []byte{AuthMoreData, marker}
+}
+
 // ParseClearPassword returns the clear-password response, stripping one trailing NUL.
 func ParseClearPassword(payload []byte) string {
 	if len(payload) > 0 && payload[len(payload)-1] == 0 {
@@ -446,6 +482,13 @@ type HandshakeResponse struct {
 	Capabilities uint32
 	Username     string
 	Database     string
+	// AuthResponse is the client's answer to the greeting's scramble, in whichever encoding its
+	// capabilities selected. Empty when the client sent no password at all, which is not the same as
+	// a wrong one: a server that treats the two alike accepts every unauthenticated connection.
+	AuthResponse []byte
+	// AuthPlugin is the plugin the client used to compute AuthResponse, which need not be the one the
+	// greeting asked for. Empty when the client negotiated no CapPluginAuth.
+	AuthPlugin string
 }
 
 // ParseHandshakeResponse parses a Protocol 41 HandshakeResponse. connectWithDBSupported must be the
@@ -468,13 +511,17 @@ func ParseHandshakeResponse(payload []byte, connectWithDBSupported bool) (Handsh
 	if err != nil {
 		return HandshakeResponse{}, err
 	}
+	var authResponse []byte
 	switch {
 	case caps&CapPluginAuthLenenc != 0:
 		n, err := r.Lenenc()
 		if err != nil {
 			return HandshakeResponse{}, err
 		}
-		if n > uint64(len(payload)) || r.Skip(int(n)) != nil {
+		if n > uint64(len(payload)) {
+			return HandshakeResponse{}, io.ErrUnexpectedEOF
+		}
+		if authResponse, err = r.Bytes(int(n)); err != nil {
 			return HandshakeResponse{}, io.ErrUnexpectedEOF
 		}
 	case caps&CapSecureConn != 0:
@@ -482,13 +529,15 @@ func ParseHandshakeResponse(payload []byte, connectWithDBSupported bool) (Handsh
 		if err != nil {
 			return HandshakeResponse{}, err
 		}
-		if err := r.Skip(int(n)); err != nil {
+		if authResponse, err = r.Bytes(int(n)); err != nil {
 			return HandshakeResponse{}, err
 		}
 	default:
-		if _, err := r.Cstr(); err != nil {
+		s, err := r.Cstr()
+		if err != nil {
 			return HandshakeResponse{}, err
 		}
+		authResponse = []byte(s)
 	}
 
 	database := ""
@@ -498,7 +547,21 @@ func ParseHandshakeResponse(payload []byte, connectWithDBSupported bool) (Handsh
 			return HandshakeResponse{}, err
 		}
 	}
-	return HandshakeResponse{Capabilities: caps, Username: username, Database: database}, nil
+	// The plugin the client actually used to compute AuthResponse. A client may answer with a plugin
+	// other than the one the greeting named, so a server that verifies the response has to know which
+	// digest it is looking at rather than assume its own advertisement was honored. Absent when the
+	// client negotiated no CapPluginAuth, which leaves the greeting's plugin as the only claim.
+	authPlugin := ""
+	if caps&CapPluginAuth != 0 && r.HasRemaining() {
+		authPlugin, _ = r.Cstr()
+	}
+	return HandshakeResponse{
+		Capabilities: caps,
+		Username:     username,
+		Database:     database,
+		AuthResponse: authResponse,
+		AuthPlugin:   authPlugin,
+	}, nil
 }
 
 // Greeting is the backend server data needed by the client role.

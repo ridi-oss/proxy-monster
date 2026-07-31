@@ -287,9 +287,6 @@ Fixes for gaps documented in
 - PostgreSQL brokering in `pmon`: the daemon fronts MySQL only, so PostgreSQL
   datasources are discovered but skipped and their connection strings are
   rendered without a broker behind them.
-- Broker-side enforcement of the local `pmon` password: today any password a
-  loopback client sends is accepted, and the sticky local password is only a
-  convention `pmon show` hands out.
 - Bound the native-wire relay by `PM_QUERY_TIMEOUT`. The control-plane-driven
   editor and workflow runs honor it; the wire relay passes no execution guard
   and keeps a fixed socket-inactivity cap, so a direct statement through `pmon`

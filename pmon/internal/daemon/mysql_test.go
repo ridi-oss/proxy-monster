@@ -1,13 +1,16 @@
 package daemon
 
 import (
+	"bytes"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/binary"
 	"encoding/pem"
+	"errors"
 	"math/big"
 	"net"
 	"strings"
@@ -32,7 +35,7 @@ func TestLocalServerGreetDoesNotAdvertiseConnectWithDB(t *testing.T) {
 	}
 	done := make(chan greetResult, 1)
 	go func() {
-		caps, err := localServerGreet(brokerSide, make([]byte, 20))
+		caps, _, err := localServerGreet(brokerSide, make([]byte, 20), "pmlocal_test")
 		done <- greetResult{caps: caps, err: err}
 	}()
 
@@ -47,13 +50,21 @@ func TestLocalServerGreetDoesNotAdvertiseConnectWithDB(t *testing.T) {
 	if parsed.Capabilities&mysqlwire.CapConnectWithDB != 0 {
 		t.Fatalf("pmon greeting caps = %#x advertise CONNECT_WITH_DB; a client's DSN database would be silently dropped", parsed.Capabilities)
 	}
+	// The advertised plugin decides which digest a client computes, and the password check verifies
+	// against it. A greeting that named a different plugin would still authenticate — the switch paths
+	// cover that — but this is the one every client takes without extra configuration.
+	if parsed.AuthPlugin != "mysql_native_password" {
+		t.Fatalf("pmon greeting advertises %q, want mysql_native_password", parsed.AuthPlugin)
+	}
 
-	// Unblock localServerGreet with a minimal handshake response (it reads only the leading capability flags).
+	// Unblock localServerGreet with a minimal handshake response. It carries no auth response, so the
+	// password check rejects it — this test is about the greeting's capabilities, and the capability
+	// assertion above has already run against the real greeting.
 	if err := mysqlwire.WritePacket(clientSide, 1, make([]byte, 32)); err != nil {
 		t.Fatalf("write client handshake response: %v", err)
 	}
-	if res := <-done; res.err != nil {
-		t.Fatalf("localServerGreet: %v", res.err)
+	if res := <-done; !errors.Is(res.err, errLocalAuth) {
+		t.Fatalf("localServerGreet with no password: err = %v, want errLocalAuth", res.err)
 	}
 }
 
@@ -239,5 +250,374 @@ func TestProxyConnectAllowsPlaintextOnlyWhenTLSIsNotExpected(t *testing.T) {
 
 	if !<-wroteHandshake {
 		t.Error("a plaintext datasource with TLS off must still connect; the refusal must not fire here")
+	}
+}
+
+// handshakeResponseWith builds a client handshake response carrying authResp under plugin, in the
+// secure-connection encoding a real MySQL client uses. An empty plugin omits the field entirely,
+// which is what a client that negotiated no CapPluginAuth sends.
+func handshakeResponseWith(authResp []byte, plugin string) []byte {
+	caps := uint32(mysqlwire.CapProtocol41 | mysqlwire.CapSecureConn)
+	if plugin != "" {
+		caps |= mysqlwire.CapPluginAuth
+	}
+	var b []byte
+	b = binary.LittleEndian.AppendUint32(b, caps)
+	b = binary.LittleEndian.AppendUint32(b, 16<<20)
+	b = append(b, 45)
+	b = append(b, make([]byte, 23)...)
+	b = append(b, "pm"...)
+	b = append(b, 0)
+	b = append(b, byte(len(authResp)))
+	b = append(b, authResp...)
+	if plugin != "" {
+		b = append(b, plugin...)
+		b = append(b, 0)
+	}
+	return b
+}
+
+// TestLocalServerGreetChecksPassword is the local trust boundary: the daemon holds a live upstream
+// token, so any process that can open its loopback port could otherwise borrow the whole session.
+func TestLocalServerGreetChecksPassword(t *testing.T) {
+	const password = "pmlocal_correct-horse"
+	scramble := bytes.Repeat([]byte{7}, 20)
+
+	tests := []struct {
+		name    string
+		auth    []byte
+		plugin  string
+		stored  string
+		wantErr bool
+		// drains is how many packets the broker writes after the greeting. net.Pipe is unbuffered, so
+		// a test that does not read them deadlocks the broker mid-write.
+		drains int
+	}{
+		{"native, correct password", mysqlwire.NativePassword(password, scramble), "mysql_native_password", password, false, 0},
+		{"native, wrong password", mysqlwire.NativePassword("pmlocal_wrong", scramble), "mysql_native_password", password, true, 0},
+		{"no plugin named, correct password", mysqlwire.NativePassword(password, scramble), "", password, false, 0},
+		{"no password", nil, "mysql_native_password", password, true, 0},
+		{"empty stored password refuses every client", mysqlwire.NativePassword(password, scramble), "mysql_native_password", "", true, 0},
+		{"right password, wrong scramble", mysqlwire.NativePassword(password, bytes.Repeat([]byte{9}, 20)), "mysql_native_password", password, true, 0},
+		// MySQL 8's default plugin: a client that answers with it is verified, not refused.
+		{"caching_sha2, correct password", mysqlwire.CachingSHA2Password(password, scramble), "caching_sha2_password", password, false, 1},
+		{"caching_sha2, wrong password", mysqlwire.CachingSHA2Password("pmlocal_wrong", scramble), "caching_sha2_password", password, true, 0},
+		// A native digest presented AS caching_sha2 must not verify: the plugin selects the digest.
+		{"plugin/digest mismatch", mysqlwire.NativePassword(password, scramble), "caching_sha2_password", password, true, 0},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			clientSide, brokerSide := net.Pipe()
+			defer clientSide.Close()
+			defer brokerSide.Close()
+
+			done := make(chan error, 1)
+			go func() {
+				_, _, err := localServerGreet(brokerSide, scramble, test.stored)
+				done <- err
+			}()
+
+			if _, _, err := mysqlwire.ReadPacket(clientSide); err != nil {
+				t.Fatalf("read greeting: %v", err)
+			}
+			if err := mysqlwire.WritePacket(clientSide, 1, handshakeResponseWith(test.auth, test.plugin)); err != nil {
+				t.Fatalf("write handshake response: %v", err)
+			}
+			// Drain whatever the broker writes back, or its write blocks on this unbuffered pipe.
+			for i := 0; i < test.drains; i++ {
+				if _, _, err := mysqlwire.ReadPacket(clientSide); err != nil {
+					t.Fatalf("drain broker packet %d: %v", i, err)
+				}
+			}
+
+			err := <-done
+			if test.wantErr && !errors.Is(err, errLocalAuth) {
+				t.Fatalf("err = %v, want errLocalAuth", err)
+			}
+			if !test.wantErr && err != nil {
+				t.Fatalf("err = %v, want nil", err)
+			}
+		})
+	}
+}
+
+// TestLocalServerGreetSwitchesUnknownPlugin: a client that answers with a plugin the broker cannot
+// verify directly is switched to mysql_clear_password rather than refused, so an unusual driver can
+// still authenticate. The switch reply is the password itself, over loopback.
+func TestLocalServerGreetSwitchesUnknownPlugin(t *testing.T) {
+	const password = "pmlocal_correct-horse"
+	scramble := bytes.Repeat([]byte{7}, 20)
+
+	for _, test := range []struct {
+		name    string
+		send    string
+		wantErr bool
+	}{
+		{"correct password after switch", password, false},
+		{"wrong password after switch", "pmlocal_nope", true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			clientSide, brokerSide := net.Pipe()
+			defer clientSide.Close()
+			defer brokerSide.Close()
+
+			type res struct {
+				seq byte
+				err error
+			}
+			done := make(chan res, 1)
+			go func() {
+				_, seq, err := localServerGreet(brokerSide, scramble, password)
+				done <- res{seq: seq, err: err}
+			}()
+
+			if _, _, err := mysqlwire.ReadPacket(clientSide); err != nil {
+				t.Fatalf("read greeting: %v", err)
+			}
+			// sha256_password is a real plugin this broker verifies neither of directly.
+			if err := mysqlwire.WritePacket(clientSide, 1, handshakeResponseWith([]byte{1, 2, 3}, "sha256_password")); err != nil {
+				t.Fatalf("write handshake response: %v", err)
+			}
+			seq, sw, err := mysqlwire.ReadPacket(clientSide)
+			if err != nil {
+				t.Fatalf("read auth switch: %v", err)
+			}
+			if len(sw) == 0 || sw[0] != 0xfe {
+				t.Fatalf("expected an AuthSwitchRequest, got % x", sw)
+			}
+			if !bytes.Contains(sw, []byte("mysql_clear_password")) {
+				t.Fatalf("switch names %q, want mysql_clear_password", sw)
+			}
+			if err := mysqlwire.WritePacket(clientSide, seq+1, append([]byte(test.send), 0)); err != nil {
+				t.Fatalf("write switch reply: %v", err)
+			}
+
+			got := <-done
+			if test.wantErr && !errors.Is(got.err, errLocalAuth) {
+				t.Fatalf("err = %v, want errLocalAuth", got.err)
+			}
+			if !test.wantErr && got.err != nil {
+				t.Fatalf("err = %v, want nil", got.err)
+			}
+			// The switch consumed packets 2 and 3, so the caller's reply must not reuse 2.
+			if got.seq != 4 {
+				t.Fatalf("nextSeq = %d after an auth switch, want 4", got.seq)
+			}
+			_ = seq
+		})
+	}
+}
+
+// TestLocalServerGreetSwitchesToCachingSHA2 covers what a real MySQL 8 client does when told to
+// prefer caching_sha2_password against this broker's native greeting: it names the plugin but sends
+// NO digest, waiting to be switched, because it will not hash against a scramble issued under
+// another plugin. Verifying that empty response directly would reject every such client.
+func TestLocalServerGreetSwitchesToCachingSHA2(t *testing.T) {
+	const password = "pmlocal_correct-horse"
+
+	for _, test := range []struct {
+		name    string
+		send    string
+		wantErr bool
+	}{
+		{"correct password after switch", password, false},
+		{"wrong password after switch", "pmlocal_nope", true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			clientSide, brokerSide := net.Pipe()
+			defer clientSide.Close()
+			defer brokerSide.Close()
+
+			done := make(chan error, 1)
+			go func() {
+				_, _, err := localServerGreet(brokerSide, bytes.Repeat([]byte{7}, 20), password)
+				done <- err
+			}()
+
+			if _, _, err := mysqlwire.ReadPacket(clientSide); err != nil {
+				t.Fatalf("read greeting: %v", err)
+			}
+			// The plugin named, no digest — exactly what the mysql CLI sends here.
+			if err := mysqlwire.WritePacket(clientSide, 1, handshakeResponseWith(nil, "caching_sha2_password")); err != nil {
+				t.Fatalf("write handshake response: %v", err)
+			}
+
+			seq, sw, err := mysqlwire.ReadPacket(clientSide)
+			if err != nil {
+				t.Fatalf("read auth switch: %v", err)
+			}
+			if len(sw) == 0 || sw[0] != 0xfe || !bytes.Contains(sw, []byte("caching_sha2_password")) {
+				t.Fatalf("expected a caching_sha2_password AuthSwitchRequest, got % x", sw)
+			}
+			// The scramble follows the NUL-terminated plugin name, itself NUL-terminated.
+			rest := sw[bytes.IndexByte(sw, 0)+1:]
+			scramble := bytes.TrimSuffix(rest, []byte{0})
+			if len(scramble) != 20 {
+				t.Fatalf("switch scramble is %d bytes, want 20", len(scramble))
+			}
+
+			if err := mysqlwire.WritePacket(clientSide, seq+1, mysqlwire.CachingSHA2Password(test.send, scramble)); err != nil {
+				t.Fatalf("write switch reply: %v", err)
+			}
+			if !test.wantErr {
+				// Success ends with the fast-auth verdict; drain it or the broker blocks writing.
+				_, more, err := mysqlwire.ReadPacket(clientSide)
+				if err != nil {
+					t.Fatalf("read AuthMoreData: %v", err)
+				}
+				if len(more) < 2 || more[0] != mysqlwire.AuthMoreData || more[1] != mysqlwire.CachingSHA2FastAuthSuccess {
+					t.Fatalf("expected fast-auth success, got % x", more)
+				}
+			}
+
+			err = <-done
+			if test.wantErr && !errors.Is(err, errLocalAuth) {
+				t.Fatalf("err = %v, want errLocalAuth", err)
+			}
+			if !test.wantErr && err != nil {
+				t.Fatalf("err = %v, want nil", err)
+			}
+		})
+	}
+}
+
+// TestLocalServerGreetSequenceIsContiguous pins the packet numbering each path ends on. MySQL
+// requires strictly increasing sequence numbers within a handshake, so a wrong nextSeq desynchronizes
+// the client — it reads the caller's OK as belonging to a packet it never sent.
+func TestLocalServerGreetSequenceIsContiguous(t *testing.T) {
+	const password = "pmlocal_correct-horse"
+	scramble := bytes.Repeat([]byte{7}, 20)
+
+	// native: greeting 0, response 1 -> caller replies at 2.
+	t.Run("native", func(t *testing.T) {
+		clientSide, brokerSide := net.Pipe()
+		defer clientSide.Close()
+		defer brokerSide.Close()
+		type res struct {
+			seq byte
+			err error
+		}
+		done := make(chan res, 1)
+		go func() {
+			_, seq, err := localServerGreet(brokerSide, scramble, password)
+			done <- res{seq, err}
+		}()
+		if _, _, err := mysqlwire.ReadPacket(clientSide); err != nil {
+			t.Fatalf("greeting: %v", err)
+		}
+		auth := mysqlwire.NativePassword(password, scramble)
+		if err := mysqlwire.WritePacket(clientSide, 1, handshakeResponseWith(auth, "mysql_native_password")); err != nil {
+			t.Fatalf("response: %v", err)
+		}
+		got := <-done
+		if got.err != nil {
+			t.Fatalf("err = %v", got.err)
+		}
+		if got.seq != 2 {
+			t.Fatalf("nextSeq = %d, want 2", got.seq)
+		}
+	})
+
+	// caching_sha2 switch: greeting 0, response 1, switch 2, reply 3, AuthMoreData 4 -> caller at 5.
+	t.Run("caching_sha2 switch", func(t *testing.T) {
+		clientSide, brokerSide := net.Pipe()
+		defer clientSide.Close()
+		defer brokerSide.Close()
+		type res struct {
+			seq byte
+			err error
+		}
+		done := make(chan res, 1)
+		go func() {
+			_, seq, err := localServerGreet(brokerSide, scramble, password)
+			done <- res{seq, err}
+		}()
+		if _, _, err := mysqlwire.ReadPacket(clientSide); err != nil {
+			t.Fatalf("greeting: %v", err)
+		}
+		if err := mysqlwire.WritePacket(clientSide, 1, handshakeResponseWith(nil, "caching_sha2_password")); err != nil {
+			t.Fatalf("response: %v", err)
+		}
+		swSeq, sw, err := mysqlwire.ReadPacket(clientSide)
+		if err != nil {
+			t.Fatalf("switch: %v", err)
+		}
+		if swSeq != 2 {
+			t.Fatalf("switch seq = %d, want 2", swSeq)
+		}
+		rest := sw[bytes.IndexByte(sw, 0)+1:]
+		sc := bytes.TrimSuffix(rest, []byte{0})
+		if err := mysqlwire.WritePacket(clientSide, 3, mysqlwire.CachingSHA2Password(password, sc)); err != nil {
+			t.Fatalf("reply: %v", err)
+		}
+		moreSeq, _, err := mysqlwire.ReadPacket(clientSide)
+		if err != nil {
+			t.Fatalf("AuthMoreData: %v", err)
+		}
+		if moreSeq != 4 {
+			t.Fatalf("AuthMoreData seq = %d, want 4", moreSeq)
+		}
+		got := <-done
+		if got.err != nil {
+			t.Fatalf("err = %v", got.err)
+		}
+		if got.seq != 5 {
+			t.Fatalf("nextSeq = %d, want 5", got.seq)
+		}
+	})
+}
+
+// TestCachingSHA2SwitchFailureSequence pins the sequence on the REJECTED path. A wrong digest ends
+// the exchange at the reply (packet 3), so the caller's error is packet 4 — reporting 5, as if the
+// fast-auth verdict had been sent, makes the client read the error as out of order and hide the
+// access-denied behind a protocol complaint.
+func TestCachingSHA2SwitchFailureSequence(t *testing.T) {
+	clientSide, brokerSide := net.Pipe()
+	defer clientSide.Close()
+	defer brokerSide.Close()
+
+	const password = "pmlocal_correct-horse"
+	type res struct {
+		seq byte
+		err error
+	}
+	done := make(chan res, 1)
+	go func() {
+		_, seq, err := localServerGreet(brokerSide, bytes.Repeat([]byte{7}, 20), password)
+		done <- res{seq, err}
+	}()
+
+	if _, _, err := mysqlwire.ReadPacket(clientSide); err != nil {
+		t.Fatalf("greeting: %v", err)
+	}
+	if err := mysqlwire.WritePacket(clientSide, 1, handshakeResponseWith(nil, "caching_sha2_password")); err != nil {
+		t.Fatalf("response: %v", err)
+	}
+	swSeq, sw, err := mysqlwire.ReadPacket(clientSide)
+	if err != nil {
+		t.Fatalf("switch: %v", err)
+	}
+	if swSeq != 2 {
+		t.Fatalf("switch seq = %d, want 2", swSeq)
+	}
+	// The scramble is NUL-terminated, as a server sends it; a bare 20 bytes would be a protocol error.
+	if sw[len(sw)-1] != 0 {
+		t.Fatalf("switch payload does not end in NUL: % x", sw[len(sw)-8:])
+	}
+	rest := sw[bytes.IndexByte(sw, 0)+1:]
+	sc := rest[:len(rest)-1]
+	if len(sc) != 20 {
+		t.Fatalf("switch scramble is %d bytes, want 20", len(sc))
+	}
+
+	if err := mysqlwire.WritePacket(clientSide, 3, mysqlwire.CachingSHA2Password("pmlocal_wrong", sc)); err != nil {
+		t.Fatalf("reply: %v", err)
+	}
+	got := <-done
+	if !errors.Is(got.err, errLocalAuth) {
+		t.Fatalf("err = %v, want errLocalAuth", got.err)
+	}
+	if got.seq != 4 {
+		t.Fatalf("nextSeq = %d after a rejected switch, want 4 (the switch and its reply only)", got.seq)
 	}
 }

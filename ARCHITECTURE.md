@@ -76,7 +76,7 @@ only.
 | Web console | UI · Next.js | User-facing UI: query editor, policy/role/grant management, approvals, audit view. Thin, and holds no state. Rewrites `/api` and `/auth` to the CP so the browser talks same-origin — the browser's paths, not the CP's whole surface: `/mcp`, `/oauth`, and `/.well-known` are not rewritten, so a deployment using MCP routes those to the CP at the edge (see [How users reach it](#how-users-reach-it)). |
 | auditmon | watcher · Go | Independent audit monitor: reads the committed trail, re-verifies the tamper-evident hash chain, exports redacted batches to a WORM object store, signs off-box anchors, runs anomaly rules to alerts. Separate from the CP by design. Its access to the control-plane store is read-only. |
 | Control-plane store | store · PostgreSQL only | System of record: identity, policy, catalog, sessions, and the `audit_event` hash chain. The CP reads and writes it; auditmon only reads. PostgreSQL is the only supported store engine — `Db.kt` hardcodes the Postgres JDBC driver, and the migrations use `RETURNING`, `ON CONFLICT`, `jsonb`, and `::` casts. Independent of which engine a target database runs. |
-| pmon | client connector · Go | A single static binary each user runs locally. `pmon login` authenticates to the CP (OIDC device auth) and mints a short-lived wire token, and re-running it is how a login is extended — there is no silent renewal in the client; the daemon then opens one local broker per datasource, which any SQL client points at (any password), injecting the real token upstream and pinning the proxy to its advertised leaf-cert fingerprint. |
+| pmon | client connector · Go | A single static binary each user runs locally. `pmon login` authenticates to the CP (OIDC device auth) and mints a short-lived wire token, and re-running it is how a login is extended — there is no silent renewal in the client; the daemon then opens one local broker per datasource, which any SQL client points at with the sticky local password, injecting the real token upstream and pinning the proxy to its advertised leaf-cert fingerprint. |
 
 Source layout, module by module, is in [AGENTS.md](./AGENTS.md#layout).
 
@@ -134,13 +134,13 @@ registers itself, and why the control plane holds no target credentials).
   fall on which side, and what the code does and does not enforce, is below.
 - Apps and SQL clients connect through pmon: `pmon login` runs the CP
   device-auth flow and stores a short-lived wire token; the daemon then runs a
-  local broker you point any SQL driver at (any password), injecting the token
-  to the proxy over the wire's clear-password auth-switch. Upstream TLS is
-  pinned, not CA-verified: the control plane hands the broker the proxy's
-  advertised leaf-cert SHA-256, and the broker accepts exactly that leaf — no
-  CA, no system trust store, no hostname check — so a self-signed wire cert
-  works and nothing has to be distributed to clients. A pinned datasource whose
-  proxy offers no TLS is refused rather than sent the token in the clear.
+  local broker you point any SQL driver at with the sticky local password,
+  injecting the token to the proxy over the wire's clear-password auth-switch.
+  Upstream TLS is pinned, not CA-verified: the control plane hands the broker
+  the proxy's advertised leaf-cert SHA-256, and the broker accepts exactly that
+  leaf — no CA, no system trust store, no hostname check — so a self-signed wire
+  cert works and nothing has to be distributed to clients. A pinned datasource
+  whose proxy offers no TLS is refused rather than sent the token in the clear.
   Without an advertised fingerprint, TLS (if the proxy offers it) falls back to
   system-trust verification against the proxy's hostname, and a proxy offering
   no TLS is brokered in plaintext — the token crosses in the clear, which only a

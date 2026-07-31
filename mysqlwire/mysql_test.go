@@ -246,10 +246,11 @@ func TestParseHandshakeResponseAuthModes(t *testing.T) {
 		name string
 		caps uint32
 		mode string
+		auth []byte
 	}{
-		{"lenenc auth", CapProtocol41 | CapPluginAuthLenenc | CapConnectWithDB, "lenenc"},
-		{"secure auth", CapProtocol41 | CapSecureConn | CapConnectWithDB, "secure"},
-		{"cstr auth", CapProtocol41 | CapConnectWithDB, "cstr"},
+		{"lenenc auth", CapProtocol41 | CapPluginAuthLenenc | CapConnectWithDB, "lenenc", []byte{1, 2, 3}},
+		{"secure auth", CapProtocol41 | CapSecureConn | CapConnectWithDB, "secure", []byte{1, 2, 3}},
+		{"cstr auth", CapProtocol41 | CapConnectWithDB, "cstr", []byte("auth")},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -257,9 +258,12 @@ func TestParseHandshakeResponseAuthModes(t *testing.T) {
 			if err != nil {
 				t.Fatalf("ParseHandshakeResponse: %v", err)
 			}
-			want := HandshakeResponse{Capabilities: test.caps, Username: "alice", Database: "app"}
-			if got != want {
-				t.Fatalf("got %+v, want %+v", got, want)
+			if got.Capabilities != test.caps || got.Username != "alice" || got.Database != "app" {
+				t.Fatalf("got %+v, want caps=%d user=alice db=app", got, test.caps)
+			}
+			// The auth response is what a password check compares; every encoding must surface it.
+			if !bytes.Equal(got.AuthResponse, test.auth) {
+				t.Fatalf("auth response: got %v, want %v", got.AuthResponse, test.auth)
 			}
 		})
 	}
@@ -532,5 +536,29 @@ func TestErrPacketRetainsExistingBytes(t *testing.T) {
 	want := append([]byte{0xff, 0x15, 0x04, '#'}, "HY000boom"...)
 	if got := ErrPacket(1045, "boom"); !reflect.DeepEqual(got, want) {
 		t.Fatalf("ErrPacket = %x, want %x", got, want)
+	}
+}
+
+// TestScrambleHasNoNUL: the wire sends a scramble NUL-terminated, so a client reading it as a C
+// string would hash a truncated salt and disagree with the server. A uniformly random 20 bytes
+// carries a NUL about 7.5% of the time, which is an auth failure that goes away on retry.
+func TestScrambleHasNoNUL(t *testing.T) {
+	seen := map[string]bool{}
+	for i := 0; i < 2000; i++ {
+		s, err := Scramble()
+		if err != nil {
+			t.Fatalf("Scramble: %v", err)
+		}
+		if len(s) != 20 {
+			t.Fatalf("len = %d, want 20", len(s))
+		}
+		if bytes.IndexByte(s, 0) >= 0 {
+			t.Fatalf("scramble contains a NUL: % x", s)
+		}
+		seen[string(s)] = true
+	}
+	// Freshness matters as much as the shape: a constant scramble would let a captured digest replay.
+	if len(seen) < 1900 {
+		t.Fatalf("only %d distinct scrambles in 2000 draws", len(seen))
 	}
 }

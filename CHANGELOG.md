@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.3](https://github.com/ridi-oss/proxy-monster/compare/server-v0.1.2...server-v0.1.3) (2026-07-31)
+
+
+### Features
+
+* **cp:** let a debug login simulate the source address it decides under ([#54](https://github.com/ridi-oss/proxy-monster/issues/54)) ([3e5f374](https://github.com/ridi-oss/proxy-monster/commit/3e5f3742fdfb7787d179de5983b4d2cea2a6e154))
+
 ## [0.1.2](https://github.com/ridi-oss/proxy-monster/compare/server-v0.1.1...server-v0.1.2) (2026-07-30)
 
 

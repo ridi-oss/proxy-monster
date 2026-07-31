@@ -40,9 +40,12 @@ Endpoints (authorize / token / userinfo / jwks / device) are resolved from OIDC
 discovery (`OidcDiscovery.kt`), so the flow is provider-agnostic:
 
 ```
-/auth/oidc/login    → mint state + nonce (short-lived signed cookie) → 302 to the IdP /authorize
-                      (scope: openid profile email groups; response_type=code)
-/auth/oidc/callback → verify state → exchange code (+ client_secret) at the IdP /token
+/auth/oidc/login    → mint state + nonce (+ PKCE code_verifier) in short-lived signed cookies
+                      → 302 to the IdP /authorize
+                      (scope: openid profile email groups; response_type=code;
+                       code_challenge + code_challenge_method=S256 when discovery advertises S256)
+/auth/oidc/callback → verify state → exchange code (+ client_secret, + code_verifier if one was
+                      issued) at the IdP /token
                       → VALIDATE id_token (IdTokenValidator): JWKS signature, iss, aud, exp, AND nonce
                       → principal = email ?? sub
                       → JIT-provision the app_user (+ map groups claim → local groups)
@@ -50,8 +53,15 @@ discovery (`OidcDiscovery.kt`), so the flow is provider-agnostic:
 ```
 
 - The security floor is `id_token` validation with `nonce` plus `state` (CSRF)
-  on the confidential client. PKCE is optional OAuth-2.1 defense-in-depth
-  (guards a `client_secret` leak), not load-bearing here.
+  on the confidential client. PKCE is OAuth-2.1 defense-in-depth on top of that
+  (it guards a `client_secret` leak); `nonce`, not the challenge, is what
+  defeats authorization-code injection here.
+- PKCE is negotiated, not assumed: a challenge is sent only when the discovery
+  document advertises `S256` in `code_challenge_methods_supported`. Sending it
+  unconditionally would break an IdP that rejects unknown authorize parameters,
+  and omitting it entirely locks out providers configured to require PKCE —
+  Okta's "Require PKCE as additional verification" answers `invalid_request`
+  before it ever renders a login form. `plain` is never sent.
 - The `groups` claim feeds JIT provisioning (local group membership), _not_
   roles. Roles come from `RoleResolver` over the local directory, never from the
   token.
@@ -208,7 +218,7 @@ the directory on its own. Setting the token turns SCIM on.
   (`/auth/debug` sets any principal) and defaults on for dev. The server refuses
   to start with it on unless a dev marker is set, and warns loudly.
 - `id_token` fully validated (JWKS sig + `iss`/`aud`/`exp` + `nonce`); `state`
-  on every auth-code flow; `state`/`nonce` are one-time.
+  on every auth-code flow; `state`/`nonce`/`code_verifier` are one-time.
 - All wire credentials expire — no permanent tokens. The only standing secrets
   are `client_secret` and `PM_SCIM_TOKEN`, env-provided, never in the DB or
   logs; a server-held refresh token is encrypted at rest.

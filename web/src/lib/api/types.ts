@@ -406,6 +406,13 @@ export interface QueryResultMeta {
   expiresAt?: string | null
   status?: 'RUNNING' | 'DONE' | 'FAILED' | 'CANCELLED' | null
   errorCode?: string | null
+  /**
+   * Present only when the failure was a POLICY DENIAL: the reason the decision recorded, and the audit
+   * decision it was recorded under — the id an approval request is opened against. A denial is a decision,
+   * not an error, and these are what let the console offer the request rather than a bare failure message.
+   */
+  denyReason?: string | null
+  decisionId?: number | null
   columns: string[]
 }
 
@@ -515,14 +522,9 @@ export interface EditorSubmitResponse {
 export interface EditorTaskStatus {
   taskId: number
   status: 'APPROVED' | 'EXECUTING' | 'EXECUTED' | 'FAILED' | 'CANCELLED'
-  result: {
-    status: 'RUNNING' | 'DONE' | 'FAILED' | 'CANCELLED' | null
-    rowCount: number | null
-    columns: string[]
-    errorCode: string | null
-    executedAt?: string
-    expiresAt?: string
-  } | null
+  // The child metadata the server actually sends here IS QueryResultMeta; a structural copy of it drifted
+  // from the real shape and silently hid the fields a denial needs.
+  result: QueryResultMeta | null
 }
 
 /** GET /api/editor/tasks/{taskId}/result: the saved, re-decided rows once the task is DONE. */

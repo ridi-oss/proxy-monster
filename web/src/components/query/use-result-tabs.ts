@@ -236,9 +236,26 @@ export function useResultTabs(datasourceId: number | null, maxRows: number): Res
           if (!current()) throw SUPERSEDED
           const child = status.result
           if (status.status === 'FAILED' || child?.status === 'FAILED') {
-            // errorCode is a catalog code (e.g. approval.execute_denied, query.proxy_timeout) — localize it
-            // here so the panel shows bilingual copy, never the raw code. ApiError messages are already
-            // translated by the fetch wrapper; this covers the polled failure path.
+            // A policy DENY is a decision, not an error: returning it as a DENY result is what gives the
+            // panel the reason and the decisionId it needs to offer "request approval". Throwing here
+            // collapsed it into a generic failure and dropped both, leaving the requester nowhere to go.
+            if (child?.errorCode === 'approval.execute_denied') {
+              return {
+                decision: 'DENY',
+                decisionId: child.decisionId ?? null,
+                denyReason: child.denyReason ?? null,
+                maskedColumns: [],
+                piiTouched: [],
+                effectiveRoles: [],
+                columns: [],
+                rows: [],
+                rowsAffected: null,
+                latencyMs: Math.max(0, Math.round(performance.now() - startedAt)),
+              }
+            }
+            // Any other failure really is one. errorCode is a catalog code (e.g. query.proxy_timeout) —
+            // localize it here so the panel shows bilingual copy, never the raw code. ApiError messages are
+            // already translated by the fetch wrapper; this covers the polled failure path.
             throw new Error(translateApiError(child?.errorCode ?? 'approval.query_failed'))
           }
           if (status.status === 'CANCELLED' || child?.status === 'CANCELLED') {

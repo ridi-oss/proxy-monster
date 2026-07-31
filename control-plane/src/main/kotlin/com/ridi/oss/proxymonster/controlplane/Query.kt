@@ -982,6 +982,10 @@ fun Route.editorSessionRoutes(
         val requesterIp = call.httpRequesterIp(config)
         val maxRows = req.maxRows
         appScope.launch {
+            // A policy DENY carries its reason and audit decision id onto the failed child, so the polling
+            // tab can offer an approval request built from that decision instead of showing a bare error.
+            var denyReason: String? = null
+            var denyDecisionId: Long? = null
             val failureCode = try {
                 // runOnSession decides on the EDITOR channel under empty assumeRoles (the caller's own roles)
                 // and saves the enforced result instead of returning it inline.
@@ -993,6 +997,8 @@ fun Route.editorSessionRoutes(
                     exchangeTimeoutMs = config.queryExchangeTimeoutMs,
                 )
                 if (response.decision == EnfAction.DENY) {
+                    denyReason = response.denyReason
+                    denyDecisionId = response.decisionId
                     // Reuse the already-translated approval.* result codes (en/ko errors.json) — the messages
                     // ("denied at execution time" / "execution failed") are channel-agnostic, so the web
                     // localizes the polled code with no editor-specific catalog entries.
@@ -1026,7 +1032,11 @@ fun Route.editorSessionRoutes(
             }
             if (failureCode != null) {
                 // Child FAILED + parent FAILED in ONE transaction (mirrors the success path's single commit).
-                runCatching { store.failRun(task.id, failureCode) { conn, _ -> accessStore.markFailed(task.id, conn) } }
+                runCatching {
+                    store.failRun(task.id, failureCode, denyReason, denyDecisionId) { conn, _ ->
+                        accessStore.markFailed(task.id, conn)
+                    }
+                }
                     .onFailure { call.application.environment.log.error("editor task failure transition failed task=${task.id}", it) }
             }
             // Push the ACTUAL terminal state (EXECUTED / FAILED / or CANCELLED if a cancel raced) to the owner's

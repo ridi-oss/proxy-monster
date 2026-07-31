@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.1.4](https://github.com/ridi-oss/proxy-monster/compare/server-v0.1.3...server-v0.1.4) (2026-07-31)
+
+
+### Bug Fixes
+
+* **cp:** end a task-event stream quietly when its client is gone ([#59](https://github.com/ridi-oss/proxy-monster/issues/59)) ([8cb617c](https://github.com/ridi-oss/proxy-monster/commit/8cb617c712415fff08214aa9f4e3b493a45782d2))
+* **web:** label an editor result with the decision that released it ([#56](https://github.com/ridi-oss/proxy-monster/issues/56)) ([0d906c7](https://github.com/ridi-oss/proxy-monster/commit/0d906c7c1726959d7406769268a6baaf86d4c7cc))
+* **web:** show the role's name, not its id, in the approval role picker ([#58](https://github.com/ridi-oss/proxy-monster/issues/58)) ([2df4294](https://github.com/ridi-oss/proxy-monster/commit/2df42944c133eee669eaf0f8ac30ffd828b55908))
+
 ## [0.1.3](https://github.com/ridi-oss/proxy-monster/compare/server-v0.1.2...server-v0.1.3) (2026-07-31)
 
 

@@ -125,6 +125,11 @@ message Column {
   int32 ordinal = 5;
   bool nullable = 6;
 }
+message SchemaHash {
+  string schema = 1;
+  bytes hash = 2;
+  bool trusted = 3;                       // false = present but the schema hash measurement failed
+}
 message CatalogRequest {
   string datasource_name = 1;
   repeated string default_schemas = 2;               // load-bearing: PG current_schemas(true)
@@ -136,9 +141,16 @@ message CatalogRequest {
   // the datasource's major engine version + Aurora-ness — so the proxy, the only side with a live
   // connection, supplies it. Raw string; the control-plane owns parsing the major + Aurora marker.
   string engine_version = 5;
+  repeated SchemaHash schema_hashes = 6;  // one entry per measured schema
+  int64 db_clock_micros = 7;
+  string backend_id = 8;
+  bool hashes_only = 9;                   // no columns: asks which schemas need content
+  repeated string content_schemas = 10;   // schemas whose columns this push carries
+  bool namespace_complete = 11;           // true only when schema_hashes enumerates every server schema
 }
 message CatalogResponse {
-  int32 columns = 1;   // ack: rows stored
+  int32 columns = 1;                    // ack: rows stored
+  repeated string fetch_schemas = 2;    // schemas whose hash has no manager-held content
 }
 
 // ---- Auth handshake ----
@@ -162,6 +174,13 @@ message SchemaFragmentPush {
   bool unchanged = 5;                   // true = live hash matched the REFETCH hash; columns omitted (no-op ack)
   repeated Column columns = 6;          // enforcement-relevant fields; reuses the catalog Column shape
   uint64 backend_generation = 7;        // backend-connection instance that measured this fragment
+  int64 db_clock_micros = 8;            // DB clock at hash measurement; 0 = unavailable
+  // raw transaction status. PostgreSQL measures it; MySQL has no latch, so false there proves settled
+  // only on the by-construction paths (on_open, post-DDL after_statement).
+  bool measured_in_transaction = 9;
+  string backend_id = 10;               // server identity; empty = unavailable
+  // content_hash is always a genuine DB-side hash; false means coherence failed and the observation remains connection-only.
+  bool hash_trusted = 11;
 }
 message SchemaFragmentAck {
   uint64 generation = 1;                // per-connection generation after applying
@@ -267,7 +286,9 @@ message ControlEvent {
     // room for more (tag/config change, revocation hint, ...) without a shape change
   }
 }
-message RefreshCatalog {}
+message RefreshCatalog {
+  repeated string schemas = 1;   // due schemas to re-measure; empty = whole server (admin refresh)
+}
 // The control-plane asks the proxy to open a RunExec stream for a CP-driven session. The proxy dials back
 // with RunExec tagging this session_id. The ephemeral_token is a short-lived wire token minted for the
 // requester — the proxy re-presents it to its normal Decide path, so editor and workflow queries share

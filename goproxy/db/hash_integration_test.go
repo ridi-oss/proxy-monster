@@ -55,7 +55,11 @@ func TestMySqlSchemaHashIntegration(t *testing.T) {
 		defer cancel()
 		_, _ = database.ExecContext(ctx, statement)
 	}
-	hash := func(schema string) []byte {
+	var backendID string
+	if err := conn.QueryRowContext(context.Background(), "SELECT @@server_uuid").Scan(&backendID); err != nil {
+		t.Fatalf("read MySQL server UUID: %v", err)
+	}
+	observe := func(schema string) engine.HashObservation {
 		t.Helper()
 		sqlText, columns, err := db.SchemaHashSQL(schema, nil)
 		if err != nil {
@@ -65,15 +69,17 @@ func TestMySqlSchemaHashIntegration(t *testing.T) {
 		if err != nil {
 			t.Fatalf("hash query for %q: %v\n%s", schema, err, sqlText)
 		}
-		value, trusted, err := db.SchemaHashFromRows(rows)
+		observation, err := db.SchemaHashFromRows(rows)
 		if err != nil {
 			t.Fatalf("SchemaHashFromRows(%q): %v", schema, err)
 		}
-		if !trusted {
+		if !observation.Trusted {
 			t.Fatalf("hash for %q is untrusted: %#v", schema, rows)
 		}
-		return value
+		assertSaneHashMetadata(t, observation, backendID)
+		return observation
 	}
+	hash := func(schema string) []byte { return observe(schema).Hash }
 	fragments := func(schema string) []*pb.Column {
 		t.Helper()
 		rows, err := queryStrings(conn, db.SchemaColumnsSQL(schema), 6)
@@ -92,6 +98,39 @@ func TestMySqlSchemaHashIntegration(t *testing.T) {
 	exec("CREATE DATABASE " + quote(schema))
 	t.Cleanup(func() { cleanupExec("DROP DATABASE IF EXISTS " + quote(schema)) })
 	exec("CREATE TABLE " + quote(schema) + ".base (a INT NOT NULL)")
+
+	t.Run("grouped hash agrees with per-schema hash", func(t *testing.T) {
+		sqlText, columns, err := db.ServerHashSQL(nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		rows, err := queryStrings(conn, sqlText, columns)
+		if err != nil {
+			t.Fatalf("grouped hash query: %v\n%s", err, sqlText)
+		}
+		observations, err := db.ServerHashFromRows(rows)
+		if err != nil {
+			t.Fatal(err)
+		}
+		grouped := findObservation(t, observations, schema)
+		perSchema := observe(schema)
+		if !reflect.DeepEqual(grouped.Hash, perSchema.Hash) {
+			t.Fatalf("grouped hash %x != per-schema hash %x", grouped.Hash, perSchema.Hash)
+		}
+		assertSaneHashMetadata(t, grouped.HashObservation, backendID)
+		empty := uniqueFixtureName("pm_hash_mysql_empty")
+		exec("CREATE DATABASE " + quote(empty))
+		t.Cleanup(func() { cleanupExec("DROP DATABASE IF EXISTS " + quote(empty)) })
+		rows, err = queryStrings(conn, sqlText, columns)
+		if err != nil {
+			t.Fatal(err)
+		}
+		observations, err = db.ServerHashFromRows(rows)
+		if err != nil {
+			t.Fatal(err)
+		}
+		assertObservationAbsent(t, observations, empty)
+	})
 
 	t.Run("schema field changes the hash", func(t *testing.T) {
 		firstSchema := uniqueFixtureName("pm_hash_mysql_schema_a")
@@ -205,6 +244,240 @@ func TestMySqlSchemaHashIntegration(t *testing.T) {
 	})
 }
 
+// TestMySqlHashClockIsNotClientSettable proves the version clock cannot be moved by the session the
+// hash probe runs on — which is the client's own backend connection, so `SET timestamp` is theirs to
+// call. A future reading would freeze the manager's strictly-newer ordering rule on the poisoned
+// version and reject every later genuine observation.
+//
+// Both server configurations are exercised because they fail differently and only one is visible in
+// SQL text: on a default server SYSDATE(6) ignores `SET timestamp` and the clock must stay real; on a
+// server started with --sysdate-is-now, SYSDATE is ALIASED to NOW and the reading becomes settable
+// again, so the statement's own guard must report the clock unavailable instead. MySQL exposes no
+// variable naming that option, so a live server is the only way to observe it.
+func TestMySqlHashClockIsNotClientSettable(t *testing.T) {
+	const poisonedEpoch = 2147483647
+	for _, tc := range []struct {
+		name          string
+		backend       dbtest.Backend
+		wantClockReal bool
+	}{
+		{"default server", dbtest.MySQL(t), true},
+		{"server started with --sysdate-is-now", dbtest.MySQLSysdateIsNow(t), false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			database := open(t, tc.backend)
+			conn, err := database.Conn(context.Background())
+			if err != nil {
+				t.Fatalf("pin MySQL connection: %v", err)
+			}
+			defer conn.Close()
+
+			ctx, cancel := context.WithTimeout(context.Background(), hashTestTimeout)
+			defer cancel()
+			if _, err := conn.ExecContext(ctx, fmt.Sprintf("SET timestamp = %d", poisonedEpoch)); err != nil {
+				t.Fatalf("poison session clock: %v", err)
+			}
+
+			db := MySqlDb{}
+			statement, width, err := db.SchemaHashSQL("information_schema", nil)
+			if err != nil {
+				t.Fatalf("SchemaHashSQL: %v", err)
+			}
+			rows, err := queryStrings(conn, statement, width)
+			if err != nil {
+				t.Fatalf("hash query: %v\n%s", err, statement)
+			}
+			observation, err := db.SchemaHashFromRows(rows)
+			if err != nil {
+				t.Fatalf("SchemaHashFromRows: %v", err)
+			}
+			// The hash itself must survive either way: an unusable clock costs recency, never content.
+			if !observation.Trusted || len(observation.Hash) == 0 {
+				t.Fatalf("observation = %+v, want a trusted non-empty hash", observation)
+			}
+			if observation.DbClockMicros == poisonedEpoch*int64(1000000) {
+				t.Fatalf("session `SET timestamp = %d` moved the version clock to %d", poisonedEpoch, observation.DbClockMicros)
+			}
+			if !tc.wantClockReal {
+				if observation.DbClockMicros != 0 {
+					t.Fatalf("DbClockMicros = %d, want 0 (unavailable) when SYSDATE is aliased to NOW", observation.DbClockMicros)
+				}
+				return
+			}
+			if observation.DbClockMicros <= 0 {
+				t.Fatalf("DbClockMicros = %d, want the real server clock", observation.DbClockMicros)
+			}
+			if delta := time.Since(time.UnixMicro(observation.DbClockMicros)); delta < -time.Minute || delta > 5*time.Minute {
+				t.Fatalf("DbClockMicros = %d, want near wall clock (delta %s)", observation.DbClockMicros, delta)
+			}
+		})
+	}
+}
+
+func open(t *testing.T, backend dbtest.Backend) *sql.DB {
+	t.Helper()
+	return openAs(t, backend, backend.User, backend.Password)
+}
+
+func openAs(t *testing.T, backend dbtest.Backend, user, password string) *sql.DB {
+	t.Helper()
+	as := backend
+	as.User, as.Password = user, password
+	database, err := sql.Open("mysql", as.MySQLDSN(""))
+	if err != nil {
+		t.Fatalf("open MySQL backend as %q: %v", user, err)
+	}
+	if err := database.Ping(); err != nil {
+		database.Close()
+		t.Fatalf("ping MySQL backend as %q: %v", user, err)
+	}
+	t.Cleanup(func() { database.Close() })
+	return database
+}
+
+// TestMySqlCatalogVisibilityTracksTheReader proves the completeness claim answers the question it is
+// asked — "will a whole-server scan on THIS connection enumerate every schema?" — rather than the
+// easier "does this account's own grant list mention SELECT". A wrong yes hands the manager a license
+// to delete every schema the account cannot see, so each case pairs the probe's answer with what the
+// account actually reads out of information_schema.COLUMNS: an assertion the probe agreed with the
+// live catalog, not merely that it returned something.
+//
+// Two shapes make the naive lookup wrong in opposite directions, and neither is visible in SQL text:
+// a partial revoke leaves the global grant row intact while hiding a schema (wrong yes), and a service
+// account that inherits global SELECT from a role holds no such row at all (wrong no, which
+// permanently suppresses dropped-schema reconciliation for the deployment shape most installs use).
+func TestMySqlCatalogVisibilityTracksTheReader(t *testing.T) {
+	probe := func(t *testing.T, database *sql.DB) (complete bool, visibleSchemas map[string]struct{}) {
+		t.Helper()
+		conn, err := database.Conn(context.Background())
+		if err != nil {
+			t.Fatalf("pin connection: %v", err)
+		}
+		defer conn.Close()
+		rows, err := queryStrings(conn, MySqlDb{}.CatalogVisibilitySQL(), 1)
+		if err != nil {
+			t.Fatalf("catalog visibility probe: %v", err)
+		}
+		if len(rows) != 1 || rows[0][0] == nil {
+			t.Fatalf("catalog visibility probe returned %#v, want one non-NULL row", rows)
+		}
+		seen, err := queryStrings(conn, "SELECT DISTINCT TABLE_SCHEMA FROM information_schema.COLUMNS", 1)
+		if err != nil {
+			t.Fatalf("read visible schemas: %v", err)
+		}
+		visibleSchemas = make(map[string]struct{}, len(seen))
+		for _, row := range seen {
+			if row[0] != nil {
+				visibleSchemas[*row[0]] = struct{}{}
+			}
+		}
+		return *rows[0][0] == "1", visibleSchemas
+	}
+
+	t.Run("partial revoke hides a schema while global SELECT survives", func(t *testing.T) {
+		backend := dbtest.MySQLPartialRevokes(t)
+		admin := open(t, backend)
+		hidden := uniqueFixtureName("pm_vis_hidden")
+		user := uniqueFixtureName("pm_vis_pr")
+		for _, statement := range []string{
+			"CREATE DATABASE `" + hidden + "`",
+			"CREATE TABLE `" + hidden + "`.secret (id INT PRIMARY KEY)",
+			"CREATE USER '" + user + "'@'%' IDENTIFIED BY 'probe'",
+			"GRANT SELECT ON *.* TO '" + user + "'@'%'",
+			"REVOKE SELECT ON `" + hidden + "`.* FROM '" + user + "'@'%'",
+		} {
+			if _, err := admin.Exec(statement); err != nil {
+				t.Fatalf("fixture %q: %v", statement, err)
+			}
+		}
+		t.Cleanup(func() {
+			_, _ = admin.Exec("DROP USER IF EXISTS '" + user + "'@'%'")
+			_, _ = admin.Exec("DROP DATABASE IF EXISTS `" + hidden + "`")
+		})
+
+		complete, visible := probe(t, openAs(t, backend, user, "probe"))
+		if _, sees := visible[hidden]; sees {
+			t.Fatalf("the restricted account still reads %q, so this fixture proves nothing", hidden)
+		}
+		if complete {
+			t.Fatalf("catalog visibility = complete while %q is hidden by a partial revoke; the manager would delete it", hidden)
+		}
+	})
+
+	// The ordinary deployment shape: a service account holding nothing directly, with global SELECT
+	// reached through a role — and, in the nested case, through a role that role holds. Both must claim
+	// completeness, since both genuinely read every schema.
+	t.Run("global SELECT inherited through a role claims completeness", func(t *testing.T) {
+		backend := dbtest.MySQL(t)
+		admin := open(t, backend)
+		inner := uniqueFixtureName("pm_vis_role_inner")
+		outer := uniqueFixtureName("pm_vis_role_outer")
+		direct := uniqueFixtureName("pm_vis_direct")
+		nested := uniqueFixtureName("pm_vis_nested")
+		dormant := uniqueFixtureName("pm_vis_dormant")
+		scoped := uniqueFixtureName("pm_vis_scoped")
+		for _, statement := range []string{
+			"CREATE ROLE '" + inner + "'", "GRANT SELECT ON *.* TO '" + inner + "'",
+			"CREATE ROLE '" + outer + "'", "GRANT '" + inner + "' TO '" + outer + "'",
+			"CREATE USER '" + direct + "'@'%' IDENTIFIED BY 'probe'",
+			"GRANT '" + inner + "' TO '" + direct + "'@'%'", "SET DEFAULT ROLE ALL TO '" + direct + "'@'%'",
+			"CREATE USER '" + nested + "'@'%' IDENTIFIED BY 'probe'",
+			"GRANT '" + outer + "' TO '" + nested + "'@'%'", "SET DEFAULT ROLE ALL TO '" + nested + "'@'%'",
+			// Granted the same global-SELECT role but never activating it: it confers nothing, so the
+			// probe must not count it. The per-schema grant on the connect database is what lets these two
+			// accounts open a session at all; it is also the grant shape that must NOT read as complete.
+			"CREATE USER '" + dormant + "'@'%' IDENTIFIED BY 'probe'",
+			"GRANT '" + inner + "' TO '" + dormant + "'@'%'", "SET DEFAULT ROLE NONE TO '" + dormant + "'@'%'",
+			"GRANT SELECT ON `" + backend.DB + "`.* TO '" + dormant + "'@'%'",
+			"CREATE USER '" + scoped + "'@'%' IDENTIFIED BY 'probe'",
+			"GRANT SELECT ON `" + backend.DB + "`.* TO '" + scoped + "'@'%'",
+		} {
+			if _, err := admin.Exec(statement); err != nil {
+				t.Fatalf("fixture %q: %v", statement, err)
+			}
+		}
+		t.Cleanup(func() {
+			for _, name := range []string{direct, nested, dormant, scoped} {
+				_, _ = admin.Exec("DROP USER IF EXISTS '" + name + "'@'%'")
+			}
+			for _, name := range []string{outer, inner} {
+				_, _ = admin.Exec("DROP ROLE IF EXISTS '" + name + "'")
+			}
+		})
+
+		_, everySchema := probe(t, admin)
+		for _, tc := range []struct {
+			name         string
+			user         string
+			wantComplete bool
+		}{
+			{"role granting global SELECT", direct, true},
+			{"role reached through another role", nested, true},
+			{"role granted but not activated", dormant, false},
+			{"per-schema grant only", scoped, false},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				complete, visible := probe(t, openAs(t, backend, tc.user, "probe"))
+				// What the claim asserts: this account reads the same schema set the privileged one does.
+				sameView := len(visible) == len(everySchema)
+				for schema := range everySchema {
+					if _, sees := visible[schema]; !sees {
+						sameView = false
+					}
+				}
+				if sameView != tc.wantComplete {
+					t.Fatalf("%s reads %d of %d schemas; the fixture no longer models %v completeness",
+						tc.user, len(visible), len(everySchema), tc.wantComplete)
+				}
+				if complete != tc.wantComplete {
+					t.Fatalf("catalog visibility = %v, want %v (account reads %d of %d schemas)",
+						complete, tc.wantComplete, len(visible), len(everySchema))
+				}
+			})
+		}
+	})
+}
+
 func TestPostgresSchemaHashIntegration(t *testing.T) {
 	backend := dbtest.Postgres(t)
 	admin := dbtest.OpenPostgres(t, "")
@@ -243,6 +516,110 @@ func TestPostgresSchemaHashIntegration(t *testing.T) {
 		database := createDatabase(t, uniqueFixtureName("pm_hash_pg_md5"))
 		verifyPostgresHashAndFragment(t, database, false)
 	})
+
+	// A cluster that revoked pg_control_system() from PUBLIC — the hardened posture — must still yield a
+	// trusted hash, degrading only the backend id. This runs against a real revocation because the
+	// failure mode is invisible to SQL-text assertions: PostgreSQL resolves function EXECUTE at PLAN
+	// time, so an inline privilege guard aborts the whole statement instead of taking its false branch,
+	// and every schema hash is lost rather than one field.
+	t.Run("identity unreadable degrades the id, never the hash", func(t *testing.T) {
+		name := uniqueFixtureName("pm_hash_pg_hardened")
+		database := createDatabase(t, name)
+		role := uniqueFixtureName("pm_hash_pg_role")
+		schema := uniqueFixtureName("pm_hash_pg_hardened_schema")
+		for _, statement := range []string{
+			`CREATE SCHEMA "` + schema + `"`,
+			`CREATE TABLE "` + schema + `".sample (id INTEGER NOT NULL, note TEXT NULL)`,
+			`CREATE ROLE "` + role + `" LOGIN PASSWORD 'probe'`,
+			`GRANT CONNECT ON DATABASE "` + name + `" TO "` + role + `"`,
+			`GRANT USAGE ON SCHEMA "` + schema + `" TO "` + role + `"`,
+			`GRANT SELECT ON "` + schema + `".sample TO "` + role + `"`,
+			`REVOKE EXECUTE ON FUNCTION pg_catalog.pg_control_system() FROM PUBLIC`,
+		} {
+			if _, err := database.Exec(statement); err != nil {
+				t.Fatalf("hardened fixture %q: %v", statement, err)
+			}
+		}
+		t.Cleanup(func() {
+			_, _ = database.Exec(`GRANT EXECUTE ON FUNCTION pg_catalog.pg_control_system() TO PUBLIC`)
+			_, _ = database.Exec(`REASSIGN OWNED BY "` + role + `" TO CURRENT_USER`)
+			_, _ = database.Exec(`DROP OWNED BY "` + role + `"`)
+			_, _ = admin.Exec(`DROP ROLE IF EXISTS "` + role + `"`)
+		})
+
+		restricted := openPostgresDatabaseAs(t, backend, name, role, "probe")
+		conn, err := restricted.Conn(context.Background())
+		if err != nil {
+			t.Fatalf("pin restricted Postgres connection: %v", err)
+		}
+		defer conn.Close()
+
+		db := PgDb{}
+		setupRows, err := queryStrings(conn, db.HashSetupProbeSQL(), db.HashSetupColumns())
+		if err != nil {
+			t.Fatalf("setup probe as restricted role: %v", err)
+		}
+		if privilege := pgSetupCell(setupRows, 1); privilege == nil || *privilege != "0" {
+			t.Fatalf("identity privilege cell = %v, want 0 after REVOKE", privilege)
+		}
+		for _, tc := range []struct {
+			name    string
+			observe func() (engine.HashObservation, error)
+		}{
+			{"SchemaHashSQL", func() (engine.HashObservation, error) {
+				statement, width, err := db.SchemaHashSQL(schema, setupRows)
+				if err != nil {
+					return engine.HashObservation{}, err
+				}
+				rows, err := queryStrings(conn, statement, width)
+				if err != nil {
+					return engine.HashObservation{}, err
+				}
+				return db.SchemaHashFromRows(rows)
+			}},
+			{"ServerHashSQL", func() (engine.HashObservation, error) {
+				statement, width, err := db.ServerHashSQL(setupRows)
+				if err != nil {
+					return engine.HashObservation{}, err
+				}
+				rows, err := queryStrings(conn, statement, width)
+				if err != nil {
+					return engine.HashObservation{}, err
+				}
+				observations, err := db.ServerHashFromRows(rows)
+				if err != nil {
+					return engine.HashObservation{}, err
+				}
+				return findObservation(t, observations, schema).HashObservation, nil
+			}},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				observation, err := tc.observe()
+				if err != nil {
+					t.Fatalf("measurement failed on a cluster with pg_control_system revoked: %v", err)
+				}
+				if !observation.Trusted || len(observation.Hash) == 0 {
+					t.Fatalf("observation = %+v, want a trusted non-empty hash", observation)
+				}
+				if observation.BackendID != "" {
+					t.Fatalf("BackendID = %q, want empty when the identity is unreadable", observation.BackendID)
+				}
+				if observation.DbClockMicros <= 0 {
+					t.Fatalf("DbClockMicros = %d, want the clock to survive an unreadable identity", observation.DbClockMicros)
+				}
+			})
+		}
+
+		// The same role must also decline to claim it saw every schema: it reads a privilege-filtered
+		// information_schema, and a subset pushed as a whole-server scan reads as mass deletion.
+		visibility, err := queryStrings(conn, db.CatalogVisibilitySQL(), 1)
+		if err != nil {
+			t.Fatalf("catalog visibility probe as restricted role: %v", err)
+		}
+		if len(visibility) != 1 || visibility[0][0] == nil || *visibility[0][0] != "0" {
+			t.Fatalf("restricted role catalog visibility = %#v, want 0", visibility)
+		}
+	})
 }
 
 func verifyPostgresHashAndFragment(t *testing.T, database *sql.DB, wantCrypto bool) {
@@ -257,8 +634,14 @@ func verifyPostgresHashAndFragment(t *testing.T, database *sql.DB, wantCrypto bo
 	if err != nil {
 		t.Fatalf("pgcrypto setup probe: %v", err)
 	}
-	if got := len(setupRows) == 1; got != wantCrypto {
+	// The probe answers two questions in one row, so pgcrypto's presence is the CELL being non-empty,
+	// not the row existing — the row is always there to carry the identity privilege.
+	cryptoSchema := pgSetupCell(setupRows, 0)
+	if got := cryptoSchema != nil && *cryptoSchema != ""; got != wantCrypto {
 		t.Fatalf("pgcrypto setup rows = %#v, wantCrypto=%v", setupRows, wantCrypto)
+	}
+	if privilege := pgSetupCell(setupRows, 1); privilege == nil || *privilege != "1" {
+		t.Fatalf("identity privilege cell = %v, want 1 for the privileged test role", privilege)
 	}
 	quote := func(identifier string) string { return `"` + strings.ReplaceAll(identifier, `"`, `""`) + `"` }
 	exec := func(statement string) {
@@ -269,7 +652,11 @@ func verifyPostgresHashAndFragment(t *testing.T, database *sql.DB, wantCrypto bo
 			t.Fatalf("Postgres exec %q: %v", statement, err)
 		}
 	}
-	measure := func(schema string) []byte {
+	var backendID string
+	if err := conn.QueryRowContext(context.Background(), "SELECT system_identifier::text FROM pg_catalog.pg_control_system()").Scan(&backendID); err != nil {
+		t.Fatalf("read Postgres system identifier: %v", err)
+	}
+	observe := func(schema string) engine.HashObservation {
 		t.Helper()
 		hashSQL, columns, err := db.SchemaHashSQL(schema, setupRows)
 		if err != nil {
@@ -285,16 +672,62 @@ func verifyPostgresHashAndFragment(t *testing.T, database *sql.DB, wantCrypto bo
 		if err != nil {
 			t.Fatalf("Postgres hash query for %q: %v\n%s", schema, err, hashSQL)
 		}
-		hash, trusted, err := db.SchemaHashFromRows(rows)
-		if err != nil || !trusted {
-			t.Fatalf("Postgres hash decode for %q = %x, trusted=%v, err=%v, rows=%#v", schema, hash, trusted, err, rows)
+		observation, err := db.SchemaHashFromRows(rows)
+		if err != nil || !observation.Trusted {
+			t.Fatalf("Postgres hash decode for %q = %+v, err=%v, rows=%#v", schema, observation, err, rows)
 		}
-		return hash
+		assertSaneHashMetadata(t, observation, backendID)
+		return observation
 	}
+	measure := func(schema string) []byte { return observe(schema).Hash }
 
 	schema := uniqueFixtureName("pm_hash_pg_fragment")
 	exec("CREATE SCHEMA " + quote(schema))
 	exec("CREATE TABLE " + quote(schema) + ".sample (id INTEGER NOT NULL, note TEXT NULL)")
+
+	t.Run("clock advances inside a transaction", func(t *testing.T) {
+		exec("BEGIN")
+		first := observe(schema)
+		exec("SELECT pg_catalog.pg_sleep(0.01)")
+		second := observe(schema)
+		exec("ROLLBACK")
+		if second.DbClockMicros <= first.DbClockMicros {
+			t.Fatalf("clock did not advance inside transaction: %d <= %d", second.DbClockMicros, first.DbClockMicros)
+		}
+	})
+
+	t.Run("grouped hash agrees with per-schema hash", func(t *testing.T) {
+		sqlText, columns, err := db.ServerHashSQL(setupRows)
+		if err != nil {
+			t.Fatal(err)
+		}
+		rows, err := queryStrings(conn, sqlText, columns)
+		if err != nil {
+			t.Fatalf("grouped hash query: %v\n%s", err, sqlText)
+		}
+		observations, err := db.ServerHashFromRows(rows)
+		if err != nil {
+			t.Fatal(err)
+		}
+		grouped := findObservation(t, observations, schema)
+		perSchema := observe(schema)
+		if !reflect.DeepEqual(grouped.Hash, perSchema.Hash) {
+			t.Fatalf("grouped hash %x != per-schema hash %x", grouped.Hash, perSchema.Hash)
+		}
+		assertSaneHashMetadata(t, grouped.HashObservation, backendID)
+		empty := uniqueFixtureName("pm_hash_pg_empty")
+		exec("CREATE SCHEMA " + quote(empty))
+		rows, err = queryStrings(conn, sqlText, columns)
+		if err != nil {
+			t.Fatal(err)
+		}
+		observations, err = db.ServerHashFromRows(rows)
+		if err != nil {
+			t.Fatal(err)
+		}
+		assertObservationAbsent(t, observations, empty)
+	})
+
 	first := measure(schema)
 	if second := measure(schema); !reflect.DeepEqual(first, second) {
 		t.Fatalf("Postgres hash nondeterministic: %x != %x", first, second)
@@ -359,9 +792,50 @@ func verifyPostgresHashAndFragment(t *testing.T, database *sql.DB, wantCrypto bo
 	mutate("drop table", "DROP TABLE "+quote(matrixSchema)+".renamed_table")
 }
 
+func assertSaneHashMetadata(t *testing.T, observation engine.HashObservation, backendID string) {
+	t.Helper()
+	if observation.BackendID != backendID || observation.BackendID == "" {
+		t.Fatalf("backend ID = %q, want %q", observation.BackendID, backendID)
+	}
+	nowMicros := time.Now().UnixMicro()
+	if observation.DbClockMicros <= 0 || observation.DbClockMicros < nowMicros-int64(time.Hour/time.Microsecond) || observation.DbClockMicros > nowMicros+int64(time.Hour/time.Microsecond) {
+		t.Fatalf("database clock %d is not within an hour of wall clock %d", observation.DbClockMicros, nowMicros)
+	}
+}
+
+func findObservation(t *testing.T, observations []engine.SchemaHashObservation, schema string) engine.SchemaHashObservation {
+	t.Helper()
+	for _, observation := range observations {
+		if observation.Schema == schema {
+			if !observation.Trusted {
+				t.Fatalf("grouped observation for %q is untrusted: %+v", schema, observation)
+			}
+			return observation
+		}
+	}
+	t.Fatalf("grouped observation for %q not found", schema)
+	return engine.SchemaHashObservation{}
+}
+
+func assertObservationAbsent(t *testing.T, observations []engine.SchemaHashObservation, schema string) {
+	t.Helper()
+	for _, observation := range observations {
+		if observation.Schema == schema {
+			t.Fatalf("zero-column schema %q unexpectedly produced a grouped row", schema)
+		}
+	}
+}
+
 func openPostgresDatabase(t *testing.T, backend dbtest.Backend, name string) *sql.DB {
 	t.Helper()
-	database, err := sql.Open("pgx", backend.PostgresDSN(name))
+	return openPostgresDatabaseAs(t, backend, name, backend.User, backend.Password)
+}
+
+func openPostgresDatabaseAs(t *testing.T, backend dbtest.Backend, name, user, password string) *sql.DB {
+	t.Helper()
+	as := backend
+	as.User, as.Password = user, password
+	database, err := sql.Open("pgx", as.PostgresDSN(name))
 	if err != nil {
 		t.Fatalf("open Postgres database %s: %v", name, err)
 	}

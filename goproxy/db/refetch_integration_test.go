@@ -35,7 +35,7 @@ func TestMySqlRefetcherIntegration(t *testing.T) {
 	previous := trustedRefetchHash(t, adapter, conn, schema)
 	t.Run("unchanged", func(t *testing.T) {
 		push := runRefetchIntegration(t, adapter, conn, schema, previous)
-		if !push.Unchanged || len(push.Columns) != 0 || !bytes.Equal(push.ContentHash, previous) {
+		if !push.Unchanged || !push.HashTrusted || len(push.Columns) != 0 || !bytes.Equal(push.ContentHash, previous) {
 			t.Fatalf("unchanged push = %+v, want hash-only unchanged push", push)
 		}
 	})
@@ -172,7 +172,7 @@ func TestPostgresRefetcherIntegration(t *testing.T) {
 			}
 			t.Run("unchanged", func(t *testing.T) {
 				push := runRefetchIntegration(t, adapter, conn, schema, previous)
-				if !push.Unchanged || len(push.Columns) != 0 || !bytes.Equal(push.ContentHash, previous) {
+				if !push.Unchanged || !push.HashTrusted || len(push.Columns) != 0 || !bytes.Equal(push.ContentHash, previous) {
 					t.Fatalf("unchanged push = %+v, want hash-only unchanged push", push)
 				}
 			})
@@ -314,18 +314,19 @@ func TestMySqlRefetcherTruncationFallsBackToFullFetch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("narrow hash query: %v\n%s", err, hashSQL)
 	}
-	if len(rows) != 1 || len(rows[0]) != 3 || rows[0][0] == nil || rows[0][1] == nil || rows[0][2] == nil {
-		t.Fatalf("narrow hash rows = %#v, want one complete row", rows)
+	if len(rows) != 1 || len(rows[0]) != 5 || rows[0][0] == nil || rows[0][1] == nil || rows[0][2] == nil || rows[0][3] == nil || rows[0][4] == nil {
+		t.Fatalf("narrow hash rows = %#v, want one complete five-column row", rows)
 	}
 	if *rows[0][1] != "1024" || *rows[0][2] != "24" {
 		t.Fatalf("real GROUP_CONCAT result length/count = %s/%s, want 1024/24", *rows[0][1], *rows[0][2])
 	}
-	truncatedHash, err := decodeHash(*rows[0][0], 64)
-	if err != nil {
-		t.Fatalf("decode truncated hash bytes: %v", err)
+	truncatedHash := decodeHash(*rows[0][0], 64)
+	if truncatedHash == nil {
+		t.Fatalf("truncated hash %q is not a decodable digest", *rows[0][0])
 	}
-	if decoded, trusted, err := adapter.SchemaHashFromRows(rows); err != nil || trusted || decoded != nil {
-		t.Fatalf("truncated hash decode = %x, trusted=%v, err=%v; want untrusted", decoded, trusted, err)
+	observation, err := adapter.SchemaHashFromRows(rows)
+	if err != nil || observation.Trusted || !bytes.Equal(observation.Hash, truncatedHash) {
+		t.Fatalf("truncated hash observation = %+v, err=%v; want genuine untrusted hash %x", observation, err, truncatedHash)
 	}
 
 	pushes := make([]*pb.SchemaFragmentPush, 0, 2)
@@ -337,13 +338,13 @@ func TestMySqlRefetcherTruncationFallsBackToFullFetch(t *testing.T) {
 		if !reflect.DeepEqual(push.Columns, wantColumns) {
 			t.Fatalf("run %d columns = %+v, want complete %+v", i+1, push.Columns, wantColumns)
 		}
-		if len(push.ContentHash) != 32 {
-			t.Fatalf("run %d nonce length = %d, want 32", i+1, len(push.ContentHash))
+		if push.HashTrusted || !bytes.Equal(push.ContentHash, truncatedHash) {
+			t.Fatalf("run %d hash = %x trusted=%v, want genuine untrusted hash %x", i+1, push.ContentHash, push.HashTrusted, truncatedHash)
 		}
 		pushes = append(pushes, push)
 	}
-	if bytes.Equal(pushes[0].ContentHash, pushes[1].ContentHash) {
-		t.Fatalf("untrusted refetch nonce repeated across runs: %x", pushes[0].ContentHash)
+	if !bytes.Equal(pushes[0].ContentHash, pushes[1].ContentHash) {
+		t.Fatalf("repeated untrusted refetch hashes differ: %x vs %x", pushes[0].ContentHash, pushes[1].ContentHash)
 	}
 }
 
@@ -382,11 +383,14 @@ func trustedRefetchHash(t *testing.T, adapter engine.Db, conn *sql.Conn, schema 
 	if err != nil {
 		t.Fatalf("hash query for %q: %v\n%s", schema, err, hashSQL)
 	}
-	hash, trusted, err := adapter.SchemaHashFromRows(rows)
-	if err != nil || !trusted {
-		t.Fatalf("hash for %q = %x, trusted=%v, err=%v, rows=%#v", schema, hash, trusted, err, rows)
+	observation, err := adapter.SchemaHashFromRows(rows)
+	if err != nil || !observation.Trusted {
+		t.Fatalf("hash for %q = %+v, err=%v, rows=%#v", schema, observation, err, rows)
 	}
-	return hash
+	if observation.DbClockMicros == 0 || observation.BackendID == "" {
+		t.Fatalf("hash for %q lacks clock/backend identity: %+v", schema, observation)
+	}
+	return observation.Hash
 }
 
 func runRefetchIntegration(t *testing.T, adapter engine.Db, conn *sql.Conn, schema string, ifHashDiffers []byte) *pb.SchemaFragmentPush {
@@ -416,6 +420,12 @@ func runRefetchIntegration(t *testing.T, adapter engine.Db, conn *sql.Conn, sche
 	if !bytes.Equal(push.ConnectionId, connectionID) || push.Schema != schema || push.BackendGeneration != generation {
 		t.Fatalf("push identity = %+v, want connection/schema/generation preserved", push)
 	}
+	if push.DbClockMicros == 0 || push.BackendId == "" {
+		t.Fatalf("push observation lacks clock/backend identity: %+v", push)
+	}
+	if push.MeasuredInTransaction {
+		t.Fatalf("integration refetch unexpectedly measured in transaction: %+v", push)
+	}
 	return push
 }
 
@@ -424,8 +434,8 @@ func assertFullRefetch(t *testing.T, push *pb.SchemaFragmentPush, currentHash []
 	if push.Unchanged {
 		t.Fatalf("push = %+v, want full fetch", push)
 	}
-	if !bytes.Equal(push.ContentHash, currentHash) {
-		t.Fatalf("push hash = %x, want new trusted hash %x", push.ContentHash, currentHash)
+	if !bytes.Equal(push.ContentHash, currentHash) || !push.HashTrusted {
+		t.Fatalf("push hash = %x trusted=%v, want new trusted hash %x", push.ContentHash, push.HashTrusted, currentHash)
 	}
 	if !reflect.DeepEqual(push.Columns, wantColumns) {
 		t.Fatalf("push columns = %+v, want %+v", push.Columns, wantColumns)

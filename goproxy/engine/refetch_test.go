@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -12,23 +13,34 @@ import (
 
 type refetchDb struct{}
 
-func (refetchDb) Dialect() Dialect            { return MySQL }
-func (refetchDb) NamespaceProbeSQL() string   { return "namespace" }
-func (refetchDb) SupportsTempOverlay() bool   { return false }
-func (refetchDb) TempColumnsProbeSQL() string { return "" }
-func (refetchDb) HashSetupProbeSQL() string   { return "setup" }
-func (refetchDb) HashSetupColumns() int       { return 1 }
+func (refetchDb) Dialect() Dialect             { return MySQL }
+func (refetchDb) NamespaceProbeSQL() string    { return "namespace" }
+func (refetchDb) SupportsTempOverlay() bool    { return false }
+func (refetchDb) TempColumnsProbeSQL() string  { return "" }
+func (refetchDb) HashSetupProbeSQL() string    { return "setup" }
+func (refetchDb) HashSetupColumns() int        { return 1 }
+func (refetchDb) CatalogVisibilitySQL() string { return "" }
 func (refetchDb) SchemaHashSQL(schema string, _ [][]*string) (string, int, error) {
-	return "hash:" + schema, 1, nil
+	return "hash:" + schema, 3, nil
 }
-func (refetchDb) SchemaHashFromRows(rows [][]*string) ([]byte, bool, error) {
-	if len(rows) != 1 || len(rows[0]) != 1 || rows[0][0] == nil {
-		return nil, false, errors.New("bad hash rows")
+func (refetchDb) SchemaHashFromRows(rows [][]*string) (HashObservation, error) {
+	if len(rows) != 1 || len(rows[0]) != 3 || rows[0][0] == nil || rows[0][1] == nil || rows[0][2] == nil {
+		return HashObservation{}, errors.New("bad hash rows")
 	}
-	if *rows[0][0] == "untrusted" {
-		return []byte("untrusted"), false, nil
+	clock, err := strconv.ParseInt(*rows[0][1], 10, 64)
+	if err != nil {
+		return HashObservation{}, err
 	}
-	return []byte(*rows[0][0]), true, nil
+	return HashObservation{
+		Hash:          []byte(*rows[0][0]),
+		Trusted:       *rows[0][0] != "untrusted",
+		DbClockMicros: clock,
+		BackendID:     *rows[0][2],
+	}, nil
+}
+func (refetchDb) ServerHashSQL(_ [][]*string) (string, int, error) { return "server-hash", 3, nil }
+func (refetchDb) ServerHashFromRows(_ [][]*string) ([]SchemaHashObservation, error) {
+	return nil, nil
 }
 func (refetchDb) SchemaColumnsSQL(schema string) string                     { return "columns:" + schema }
 func (refetchDb) LowerCaseTableNamesProbeSQL() string                       { return "" }
@@ -38,6 +50,14 @@ func ptr(s string) *string { return &s }
 
 func fragmentRows(schema string) [][]*string {
 	return [][]*string{{ptr(schema), ptr("t"), ptr("c"), ptr("text"), ptr("1"), ptr("NO")}}
+}
+
+func hashRows(hash, backendID string) [][]*string {
+	return hashRowsAt(hash, "123", backendID)
+}
+
+func hashRowsAt(hash, clock, backendID string) [][]*string {
+	return [][]*string{{ptr(hash), ptr(clock), ptr(backendID)}}
 }
 
 func TestRefetcherUnchangedOnHashMatch(t *testing.T) {
@@ -52,7 +72,7 @@ func TestRefetcherUnchangedOnHashMatch(t *testing.T) {
 			if sql == "setup" {
 				return [][]*string{{ptr("crypto")}}, nil
 			}
-			return [][]*string{{ptr("same")}}, nil
+			return hashRows("same", "backend-1"), nil
 		},
 		Push: func(push *pb.SchemaFragmentPush) (uint64, error) { pushed = push; return 9, nil },
 	}
@@ -64,6 +84,9 @@ func TestRefetcherUnchangedOnHashMatch(t *testing.T) {
 	}
 	if !pushed.Unchanged || !bytes.Equal(pushed.ContentHash, []byte("same")) || len(pushed.Columns) != 0 {
 		t.Fatalf("push = %+v, want unchanged hash-only push", pushed)
+	}
+	if !pushed.HashTrusted || pushed.DbClockMicros != 123 || pushed.BackendId != "backend-1" || pushed.MeasuredInTransaction {
+		t.Fatalf("push observation = %+v, want trusted first measurement outside transaction", pushed)
 	}
 	if !bytes.Equal(pushed.ConnectionId, r.ConnectionID) || pushed.BackendGeneration != 7 {
 		t.Fatalf("push identity/generation = %+v", pushed)
@@ -81,7 +104,7 @@ func TestRefetcherUnconditionalFetch(t *testing.T) {
 				return nil, errors.New("optional setup failed")
 			case strings.HasPrefix(sql, "hash:"):
 				hashCalls++
-				return [][]*string{{ptr("stable")}}, nil
+				return hashRowsAt("stable", strconv.Itoa(100+hashCalls), "backend-1"), nil
 			default:
 				return fragmentRows("app"), nil
 			}
@@ -96,6 +119,9 @@ func TestRefetcherUnconditionalFetch(t *testing.T) {
 	}
 	if pushed.Unchanged || !bytes.Equal(pushed.ContentHash, []byte("stable")) || len(pushed.Columns) != 1 {
 		t.Fatalf("push = %+v, want coherent full fragment", pushed)
+	}
+	if !pushed.HashTrusted || pushed.DbClockMicros != 101 || pushed.BackendId != "backend-1" || pushed.MeasuredInTransaction {
+		t.Fatalf("push observation = %+v, want trusted first measurement outside transaction", pushed)
 	}
 }
 
@@ -147,15 +173,20 @@ func TestRefetcherProbesModeAndNormalizesBeforePush(t *testing.T) {
 	}
 }
 
-func TestRefetcherUntrustedAndIncoherentHashesUseNonce(t *testing.T) {
+func TestRefetcherUntrustedPushCarriesGenuineMeasurement(t *testing.T) {
 	cases := []struct {
-		name   string
-		hashes []string
-		errAt  int
+		name       string
+		hashes     []string
+		backendIDs []string
+		errAt      int
+		wantHash   string
+		wantID     string
 	}{
-		{name: "untrusted", hashes: []string{"untrusted", "untrusted"}},
-		{name: "first probe error", hashes: []string{"ignored", "stable"}, errAt: 1},
-		{name: "coherence mismatch", hashes: []string{"first", "second"}},
+		{name: "coherence mismatch", hashes: []string{"first", "second"}, backendIDs: []string{"backend-1", "backend-1"}, wantHash: "second", wantID: "backend-1"},
+		{name: "backend id mismatch", hashes: []string{"same", "same"}, backendIDs: []string{"backend-1", "backend-2"}, wantHash: "same", wantID: "backend-1"},
+		{name: "first probe error", hashes: []string{"ignored", "second"}, backendIDs: []string{"", "backend-2"}, errAt: 1, wantHash: "second", wantID: "backend-2"},
+		{name: "second probe error", hashes: []string{"first", "ignored"}, backendIDs: []string{"backend-1", ""}, errAt: 2, wantHash: "first", wantID: "backend-1"},
+		{name: "both probes error", hashes: []string{"ignored", "ignored"}, backendIDs: []string{"", ""}, errAt: -1},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -169,10 +200,10 @@ func TestRefetcherUntrustedAndIncoherentHashesUseNonce(t *testing.T) {
 					}
 					if strings.HasPrefix(sql, "hash:") {
 						hashCalls++
-						if tc.errAt == hashCalls {
+						if tc.errAt == hashCalls || tc.errAt == -1 {
 							return nil, errors.New("hash failed")
 						}
-						return [][]*string{{ptr(tc.hashes[hashCalls-1])}}, nil
+						return hashRows(tc.hashes[hashCalls-1], tc.backendIDs[hashCalls-1]), nil
 					}
 					return fragmentRows("app"), nil
 				},
@@ -181,13 +212,54 @@ func TestRefetcherUntrustedAndIncoherentHashesUseNonce(t *testing.T) {
 			if err := r.Run(&pb.Refetch{Schema: "app", IfHashDiffers: []byte("never")}); err != nil {
 				t.Fatalf("Run: %v", err)
 			}
-			if len(pushed.ContentHash) != 32 {
-				t.Fatalf("nonce length = %d, want 32", len(pushed.ContentHash))
+			if pushed.Unchanged || pushed.HashTrusted || !bytes.Equal(pushed.ContentHash, []byte(tc.wantHash)) {
+				t.Fatalf("push = %+v, want untrusted full fragment with genuine hash %q", pushed, tc.wantHash)
 			}
-			for _, measured := range tc.hashes {
-				if bytes.Equal(pushed.ContentHash, []byte(measured)) {
-					t.Fatalf("nonce aliases measured hash %q", measured)
-				}
+			if pushed.BackendId != tc.wantID || len(pushed.Columns) != 1 {
+				t.Fatalf("push identity/columns = %+v, want backend %q and full columns", pushed, tc.wantID)
+			}
+		})
+	}
+}
+
+func TestRefetcherTransactionStatus(t *testing.T) {
+	var statusCalls int
+	dirtyOnSecondMeasurement := func() bool {
+		statusCalls++
+		return statusCalls == 2
+	}
+	for _, tc := range []struct {
+		name          string
+		ifHashDiffers []byte
+		supplier      func() bool
+		wantDirty     bool
+	}{
+		{name: "unchanged supplied true", ifHashDiffers: []byte("same"), supplier: func() bool { return true }, wantDirty: true},
+		{name: "full supplied true", supplier: func() bool { return true }, wantDirty: true},
+		{name: "dirty second measurement wins", supplier: dirtyOnSecondMeasurement, wantDirty: true},
+		{name: "nil supplier", ifHashDiffers: []byte("same")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var pushed *pb.SchemaFragmentPush
+			r := Refetcher{
+				Db: refetchDb{},
+				Probe: func(sql string, _ int) ([][]*string, error) {
+					if sql == "setup" {
+						return nil, nil
+					}
+					if strings.HasPrefix(sql, "hash:") {
+						return hashRows("same", "backend-1"), nil
+					}
+					return fragmentRows("app"), nil
+				},
+				Push:          func(push *pb.SchemaFragmentPush) (uint64, error) { pushed = push; return 1, nil },
+				InTransaction: tc.supplier,
+			}
+			if err := r.Run(&pb.Refetch{Schema: "app", IfHashDiffers: tc.ifHashDiffers}); err != nil {
+				t.Fatalf("Run: %v", err)
+			}
+			if pushed.MeasuredInTransaction != tc.wantDirty {
+				t.Fatalf("MeasuredInTransaction = %v, want %v", pushed.MeasuredInTransaction, tc.wantDirty)
 			}
 		})
 	}
@@ -205,7 +277,7 @@ func TestRefetcherTerminalErrors(t *testing.T) {
 			if strings.HasPrefix(sql, "columns:") {
 				return nil, errors.New("introspection failed")
 			}
-			return [][]*string{{ptr("hash")}}, nil
+			return hashRows("hash", "backend-1"), nil
 		}, Push: func(*pb.SchemaFragmentPush) (uint64, error) { return 0, nil }}
 		if err := r.Run(&pb.Refetch{Schema: "app"}); err == nil {
 			t.Fatal("Run succeeded, want introspection error")
@@ -216,7 +288,7 @@ func TestRefetcherTerminalErrors(t *testing.T) {
 			if strings.HasPrefix(sql, "columns:") {
 				return fragmentRows("app"), nil
 			}
-			return [][]*string{{ptr("hash")}}, nil
+			return hashRows("hash", "backend-1"), nil
 		}, Push: func(*pb.SchemaFragmentPush) (uint64, error) { return 0, errors.New("push failed") }}
 		if err := r.Run(&pb.Refetch{Schema: "app"}); err == nil || !strings.Contains(err.Error(), "push failed") {
 			t.Fatalf("Run error = %v, want push failure", err)
@@ -232,7 +304,7 @@ func TestRefetcherRunAllOrdersAndStops(t *testing.T) {
 			if strings.HasPrefix(sql, "columns:") {
 				return fragmentRows(strings.TrimPrefix(sql, "columns:")), nil
 			}
-			return [][]*string{{ptr("hash")}}, nil
+			return hashRows("hash", "backend-1"), nil
 		},
 		Push: func(push *pb.SchemaFragmentPush) (uint64, error) {
 			pushed = append(pushed, push.Schema)

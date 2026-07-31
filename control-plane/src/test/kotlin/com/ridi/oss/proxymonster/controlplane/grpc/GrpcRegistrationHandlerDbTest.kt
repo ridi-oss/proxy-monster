@@ -15,6 +15,7 @@ import com.ridi.oss.proxymonster.grpc.catalogRequest
 import com.ridi.oss.proxymonster.grpc.column
 import com.ridi.oss.proxymonster.grpc.registerRequest
 import com.ridi.oss.proxymonster.grpc.schemaFragmentPush
+import com.ridi.oss.proxymonster.grpc.schemaHash
 import io.grpc.Status
 import io.grpc.StatusException
 import io.grpc.netty.shaded.io.grpc.netty.NettyChannelBuilder
@@ -481,6 +482,34 @@ class GrpcRegistrationHandlerDbTest {
         val rrn = cols.single { it.table == "users" && it.column == "rrn" }
         assertEquals("text", rrn.dataType)
         assertEquals("VARCHAR", rrn.sqlType, "the control-plane derives sql_type from the raw data_type")
+    }
+
+    @Test
+    fun `pushCatalog accepts manager observation fields without changing stored columns`() = runBlocking {
+        stub.register(registerRequest { name = "reg-cat-new-wire"; engine = Engine.POSTGRES; host = "h"; port = 1; dbName = "d" })
+        val ack = stub.pushCatalog(
+            catalogRequest {
+                datasourceName = "reg-cat-new-wire"
+                defaultSchemas.add("public")
+                engineVersion = "PostgreSQL 17.1"
+                schemaHashes.add(schemaHash { schema = "public"; hash = ByteString.copyFromUtf8("public-hash"); trusted = true })
+                dbClockMicros = 1_234_567
+                backendId = "backend-identity"
+                contentSchemas.add("public")
+                namespaceComplete = true
+                columns.add(column { schema = "public"; table = "accounts"; this.column = "id"; dataType = "bigint"; ordinal = 1; nullable = false })
+            },
+        )
+
+        assertEquals(1, ack.columns)
+        val stored = core.datasourceStore.catalog(core.datasourceStore.getByName("reg-cat-new-wire")!!.id)
+        assertEquals(1, stored.size)
+        assertEquals("public", stored.single().schema)
+        assertEquals("accounts", stored.single().table)
+        assertEquals("id", stored.single().column)
+        assertEquals("bigint", stored.single().dataType)
+        assertEquals(1, stored.single().ordinal)
+        assertFalse(stored.single().nullable)
     }
 
     @Test

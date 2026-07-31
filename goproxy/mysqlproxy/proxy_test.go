@@ -469,6 +469,9 @@ func TestFlaggedDDLRefetchesBeforeNextStatement(t *testing.T) {
 	if fragments[0].GetBackendGeneration() == 0 {
 		t.Fatal("backend_generation = 0, want nonzero")
 	}
+	if fragments[0].GetMeasuredInTransaction() || !fragments[0].GetHashTrusted() {
+		t.Fatalf("fragment trust state = %+v, want coherent out-of-transaction measurement", fragments[0])
+	}
 
 	events := h.fake.eventLog()
 	pushIndex := eventIndex(events, "push:"+primarySchema, 0)
@@ -790,17 +793,18 @@ func schemaHash(t *testing.T, schema string) []byte {
 	if err != nil {
 		t.Fatalf("SchemaHashSQL: %v", err)
 	}
-	var hash string
+	var hash, backendID string
 	var produced, count uint64
-	if err := backend.QueryRow(query).Scan(&hash, &produced, &count); err != nil {
+	var clock int64
+	if err := backend.QueryRow(query).Scan(&hash, &produced, &count, &clock, &backendID); err != nil {
 		t.Fatalf("schema hash query: %v", err)
 	}
-	rows := [][]*string{{&hash, stringPtr(fmt.Sprint(produced)), stringPtr(fmt.Sprint(count))}}
-	decoded, trusted, err := dbImpl.SchemaHashFromRows(rows)
-	if err != nil || !trusted {
-		t.Fatalf("SchemaHashFromRows = (%x, %v, %v), want trusted", decoded, trusted, err)
+	rows := [][]*string{{&hash, stringPtr(fmt.Sprint(produced)), stringPtr(fmt.Sprint(count)), stringPtr(fmt.Sprint(clock)), &backendID}}
+	observation, err := dbImpl.SchemaHashFromRows(rows)
+	if err != nil || !observation.Trusted {
+		t.Fatalf("SchemaHashFromRows = (%+v, %v), want trusted", observation, err)
 	}
-	return decoded
+	return observation.Hash
 }
 
 func stringPtr(value string) *string { return &value }

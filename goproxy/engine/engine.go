@@ -292,6 +292,30 @@ type Decider interface {
 	Decide(req DecideRequest) DecisionOutcome
 }
 
+// HashObservation is one database-side catalog measurement. A decoder returns an untrusted observation
+// rather than an error when an integrity check fails, and keeps whatever it could genuinely decode: a
+// malformed clock or identity degrades that field alone, and a failed check keeps the hash it did read.
+// The wire never carries fabricated bytes — Trusted is what declares a measurement unusable.
+type HashObservation struct {
+	// Hash is the digest the backend computed; nil when nothing decodable came back.
+	Hash []byte
+	// Trusted reports that every integrity check passed (result shape, aggregate length against row
+	// count, no NULL-serialized rows). An untrusted hash is a real reading of a state the measurement
+	// could not vouch for, not a placeholder.
+	Trusted bool
+	// DbClockMicros is the backend's own clock, read in the same statement; 0 = unavailable.
+	DbClockMicros int64
+	// BackendID scopes clock comparability to one server; "" = unavailable, which means no comparison.
+	BackendID string
+}
+
+// SchemaHashObservation is one schema's measurement from a grouped whole-server scan. Schema is the raw
+// live spelling the backend reported, not a canonical fold — the hash covers those same bytes.
+type SchemaHashObservation struct {
+	Schema string
+	HashObservation
+}
+
 // Db is the DUMB per-database adapter: the few facts the relay needs to gather context and mechanically
 // refresh a connection-local schema fragment. No enforcement logic, no state machine.
 type Db interface {
@@ -302,13 +326,25 @@ type Db interface {
 	SupportsTempOverlay() bool
 	// TempColumnsProbeSQL is the temp-column overlay probe (PG only; "" when unsupported).
 	TempColumnsProbeSQL() string
-	// HashSetupProbeSQL locates optional engine-specific hash support (PG pgcrypto); empty means none.
+	// HashSetupProbeSQL gathers, in one best-effort statement, the facts the hash statements cannot
+	// safely ask for inline: which schema carries pgcrypto, and whether this connection may read the
+	// backend identity. Empty means the dialect needs none. Its failure must never fail a measurement —
+	// every fact it carries has a degraded default.
 	HashSetupProbeSQL() string
 	HashSetupColumns() int
+	// CatalogVisibilitySQL yields 1 when this connection is guaranteed to see EVERY schema on the
+	// server, 0 when the catalog views it reads are privilege-filtered. Only a guaranteed-complete scan
+	// may claim namespace_complete, because the manager reads a schema absent from such a scan as
+	// dropped. Empty means the dialect cannot prove it, which fails closed to "not complete".
+	CatalogVisibilitySQL() string
 	// SchemaHashSQL returns the DB-side hash query and its expected result width.
 	SchemaHashSQL(schema string, setupRows [][]*string) (sql string, columns int, err error)
 	// SchemaHashFromRows validates and decodes the hash query result.
-	SchemaHashFromRows(rows [][]*string) (hash []byte, trusted bool, err error)
+	SchemaHashFromRows(rows [][]*string) (HashObservation, error)
+	// ServerHashSQL returns the grouped whole-server hash query and its expected result width.
+	ServerHashSQL(setupRows [][]*string) (sql string, columns int, err error)
+	// ServerHashFromRows validates and decodes grouped whole-server hash results.
+	ServerHashFromRows(rows [][]*string) ([]SchemaHashObservation, error)
 	// SchemaColumnsSQL returns six fragment columns ordered by binary (table, ordinal, column).
 	SchemaColumnsSQL(schema string) string
 	// LowerCaseTableNamesProbeSQL is the query whose single-row single-column result is MySQL's live

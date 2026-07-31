@@ -46,7 +46,7 @@ func NewRunSession(target spi.BackendTarget, db engine.Db, client spi.SessionCli
 	}
 	s.ref = engine.NewRefetcher(db, s.connectionID, generation, func(sql string, expectedColumns int) ([][]*string, error) {
 		return runInternalQuery(s.conn, true, sql, expectedColumns)
-	}, client.PushSchemaFragment)
+	}, client.PushSchemaFragment, nil)
 	return s, nil
 }
 

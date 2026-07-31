@@ -17,16 +17,23 @@ type fakeDb struct {
 	tempProbeSQL string
 }
 
-func (f fakeDb) Dialect() Dialect            { return f.dialect }
-func (f fakeDb) NamespaceProbeSQL() string   { return f.nsProbeSQL }
-func (f fakeDb) SupportsTempOverlay() bool   { return f.tempOverlay }
-func (f fakeDb) TempColumnsProbeSQL() string { return f.tempProbeSQL }
-func (f fakeDb) HashSetupProbeSQL() string   { return "" }
-func (f fakeDb) HashSetupColumns() int       { return 0 }
+func (f fakeDb) Dialect() Dialect             { return f.dialect }
+func (f fakeDb) NamespaceProbeSQL() string    { return f.nsProbeSQL }
+func (f fakeDb) SupportsTempOverlay() bool    { return f.tempOverlay }
+func (f fakeDb) TempColumnsProbeSQL() string  { return f.tempProbeSQL }
+func (f fakeDb) HashSetupProbeSQL() string    { return "" }
+func (f fakeDb) HashSetupColumns() int        { return 0 }
+func (f fakeDb) CatalogVisibilitySQL() string { return "" }
 func (f fakeDb) SchemaHashSQL(string, [][]*string) (string, int, error) {
 	return "hash", 1, nil
 }
-func (f fakeDb) SchemaHashFromRows([][]*string) ([]byte, bool, error)      { return nil, false, nil }
+func (f fakeDb) SchemaHashFromRows([][]*string) (HashObservation, error) {
+	return HashObservation{}, nil
+}
+func (f fakeDb) ServerHashSQL([][]*string) (string, int, error) { return "server hash", 1, nil }
+func (f fakeDb) ServerHashFromRows([][]*string) ([]SchemaHashObservation, error) {
+	return nil, nil
+}
 func (f fakeDb) SchemaColumnsSQL(string) string                            { return "columns" }
 func (f fakeDb) LowerCaseTableNamesProbeSQL() string                       { return "" }
 func (f fakeDb) NormalizeColumns(_ int, columns []*pb.Column) []*pb.Column { return columns }

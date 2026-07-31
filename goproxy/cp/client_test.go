@@ -15,6 +15,7 @@ import (
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/reflect/protoreflect"
 
 	"github.com/ridi-oss/proxy-monster/goproxy/engine"
 	"github.com/ridi-oss/proxy-monster/goproxy/spi"
@@ -452,7 +453,22 @@ func TestRegisterAndPushCatalog(t *testing.T) {
 	if err := c.Register(enginepb.Engine_MYSQL, "backend", 3306, "app", []string{"tag"}, "127.0.0.1:6033", &chain, true); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
-	catalog := &pb.CatalogRequest{Columns: []*pb.Column{{Schema: "s", Table: "t", Column: "c"}}}
+	catalog := &pb.CatalogRequest{
+		DefaultSchemas: []string{"s", "pg_catalog"},
+		Columns:        []*pb.Column{{Schema: "s", Table: "t", Column: "c"}},
+		EngineVersion:  "8.4.3",
+		SchemaHashes: []*pb.SchemaHash{
+			{Schema: "s", Hash: []byte("hash-s"), Trusted: true},
+			{Schema: "empty", Hash: []byte("hash-empty"), Trusted: false},
+		},
+		DbClockMicros:     1_234_567,
+		BackendId:         "backend-1",
+		HashesOnly:        true,
+		ContentSchemas:    []string{"s", "empty"},
+		NamespaceComplete: true,
+	}
+	wantCatalog := proto.Clone(catalog).(*pb.CatalogRequest)
+	wantCatalog.DatasourceName = "ds-1"
 	if err := c.PushCatalog(catalog); err != nil {
 		t.Fatalf("PushCatalog: %v", err)
 	}
@@ -482,6 +498,12 @@ func TestRegisterAndPushCatalog(t *testing.T) {
 	if catalogReq.GetDatasourceName() != "ds-1" || catalog.DatasourceName != "ds-1" {
 		t.Fatalf("catalog datasource was not stamped: server=%q caller=%q", catalogReq.GetDatasourceName(), catalog.DatasourceName)
 	}
+	if !proto.Equal(catalogReq, wantCatalog) {
+		t.Fatalf("CatalogRequest changed in transit:\nserver=%+v\nwant=%+v", catalogReq, wantCatalog)
+	}
+	if !proto.Equal(catalog, wantCatalog) {
+		t.Fatalf("PushCatalog changed caller fields beyond DatasourceName:\ncaller=%+v\nwant=%+v", catalog, wantCatalog)
+	}
 }
 
 func TestPushSchemaFragmentAndCloseConnection(t *testing.T) {
@@ -489,12 +511,16 @@ func TestPushSchemaFragmentAndCloseConnection(t *testing.T) {
 	c := startFakeControlPlane(t, fake)
 	connectionID := []byte("0123456789abcdef")
 	generation, err := c.PushSchemaFragment(&pb.SchemaFragmentPush{
-		ConnectionId:      connectionID,
-		Schema:            "app",
-		ContentHash:       []byte("hash"),
-		Unchanged:         false,
-		Columns:           []*pb.Column{{Schema: "app", Table: "t", Column: "c", DataType: "text", Ordinal: 2, Nullable: true}},
-		BackendGeneration: 7,
+		ConnectionId:          connectionID,
+		Schema:                "app",
+		ContentHash:           []byte("hash"),
+		Unchanged:             false,
+		Columns:               []*pb.Column{{Schema: "app", Table: "t", Column: "c", DataType: "text", Ordinal: 2, Nullable: true}},
+		BackendGeneration:     7,
+		DbClockMicros:         9_876_543,
+		MeasuredInTransaction: true,
+		BackendId:             "server-uuid",
+		HashTrusted:           true,
 	})
 	if err != nil || generation != 11 {
 		t.Fatalf("PushSchemaFragment = %d, %v", generation, err)
@@ -507,7 +533,8 @@ func TestPushSchemaFragmentAndCloseConnection(t *testing.T) {
 	closeReq, closeMeta := fake.lastClose, fake.lastCloseMeta
 	fake.mu.Unlock()
 	if fragment.GetDatasourceName() != "ds-1" || !reflect.DeepEqual(fragment.GetConnectionId(), connectionID) || fragment.GetBackendGeneration() != 7 ||
-		fragment.GetSchema() != "app" || string(fragment.GetContentHash()) != "hash" || len(fragment.GetColumns()) != 1 || !fragment.GetColumns()[0].GetNullable() {
+		fragment.GetSchema() != "app" || string(fragment.GetContentHash()) != "hash" || len(fragment.GetColumns()) != 1 || !fragment.GetColumns()[0].GetNullable() ||
+		fragment.GetDbClockMicros() != 9_876_543 || !fragment.GetMeasuredInTransaction() || fragment.GetBackendId() != "server-uuid" || !fragment.GetHashTrusted() {
 		t.Fatalf("SchemaFragmentPush = %+v", fragment)
 	}
 	if closeReq.GetDatasourceName() != "ds-1" || !reflect.DeepEqual(closeReq.GetConnectionId(), connectionID) {
@@ -521,7 +548,7 @@ func TestPushSchemaFragmentAndCloseConnection(t *testing.T) {
 func TestStreamEventsDispatchesMappedRunOpen(t *testing.T) {
 	connectionID := []byte("0123456789abcdef")
 	fake := &fakeControlPlane{events: []*pb.ControlEvent{
-		{Kind: &pb.ControlEvent_RefreshCatalog{RefreshCatalog: &pb.RefreshCatalog{}}},
+		{Kind: &pb.ControlEvent_RefreshCatalog{RefreshCatalog: &pb.RefreshCatalog{Schemas: []string{"a"}}}},
 		{Kind: &pb.ControlEvent_OpenRunChannel{OpenRunChannel: &pb.OpenRunChannel{
 			SessionId: "sess-1", EphemeralToken: "eph-9", ConnectionId: connectionID, OnOpen: []*pb.ProxyCommand{refetch("app", nil)},
 		}}},
@@ -546,6 +573,41 @@ func TestStreamEventsDispatchesMappedRunOpen(t *testing.T) {
 	fake.mu.Unlock()
 	if req.GetDatasourceName() != "ds-1" || meta != "secret-abc" {
 		t.Fatalf("Events request/meta = %+v/%q", req, meta)
+	}
+}
+
+func TestCatalogWireFieldNumbers(t *testing.T) {
+	tests := []struct {
+		message protoreflect.MessageDescriptor
+		fields  map[protoreflect.Name]protoreflect.FieldNumber
+	}{
+		{(&pb.SchemaFragmentPush{}).ProtoReflect().Descriptor(), map[protoreflect.Name]protoreflect.FieldNumber{
+			"db_clock_micros": 8, "measured_in_transaction": 9, "backend_id": 10, "hash_trusted": 11,
+		}},
+		{(&pb.SchemaHash{}).ProtoReflect().Descriptor(), map[protoreflect.Name]protoreflect.FieldNumber{
+			"schema": 1, "hash": 2, "trusted": 3,
+		}},
+		{(&pb.CatalogRequest{}).ProtoReflect().Descriptor(), map[protoreflect.Name]protoreflect.FieldNumber{
+			"schema_hashes": 6, "db_clock_micros": 7, "backend_id": 8, "hashes_only": 9, "content_schemas": 10, "namespace_complete": 11,
+		}},
+		{(&pb.CatalogResponse{}).ProtoReflect().Descriptor(), map[protoreflect.Name]protoreflect.FieldNumber{
+			"fetch_schemas": 2,
+		}},
+		{(&pb.RefreshCatalog{}).ProtoReflect().Descriptor(), map[protoreflect.Name]protoreflect.FieldNumber{
+			"schemas": 1,
+		}},
+	}
+	for _, test := range tests {
+		for name, want := range test.fields {
+			field := test.message.Fields().ByName(name)
+			if field == nil {
+				t.Errorf("%s.%s is absent", test.message.FullName(), name)
+				continue
+			}
+			if got := field.Number(); got != want {
+				t.Errorf("%s.%s field number = %d, want %d", test.message.FullName(), name, got, want)
+			}
+		}
 	}
 }
 

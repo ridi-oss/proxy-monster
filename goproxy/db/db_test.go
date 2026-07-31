@@ -29,11 +29,15 @@ func TestMySqlSchemaHashSQL(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SchemaHashSQL: %v", err)
 	}
-	if columns != 3 {
-		t.Fatalf("columns = %d, want 3", columns)
+	if columns != 5 {
+		t.Fatalf("columns = %d, want 5", columns)
 	}
 	for _, fragment := range []string{
 		"SET_VAR(group_concat_max_len=33554432)",
+		"UNIX_TIMESTAMP(SYSDATE(6))",
+		"CASE WHEN SYSDATE(6) <> NOW(6)",
+		"1000000",
+		"@@server_uuid",
 		"LENGTH(CAST(sn AS BINARY)), ':'",
 		"LENGTH(CAST(tn AS BINARY)), ':'",
 		"LENGTH(CAST(cn AS BINARY)), ':'",
@@ -57,6 +61,7 @@ func TestMySqlSchemaHashSQL(t *testing.T) {
 	if strings.Contains(sql, "CONCAT(HEX(") {
 		t.Fatalf("SchemaHashSQL uses forbidden bare HEX concatenation:\n%s", sql)
 	}
+	assertClientSettableClockAbsent(t, "SchemaHashSQL", sql)
 	// The hashed/selected TABLE_SCHEMA value itself (aliased sn) must stay the RAW live content — only
 	// the WHERE-filter comparison folds for mode 2. Folding what's hashed would make the hash no longer
 	// fingerprint the database's actual bytes.
@@ -181,27 +186,96 @@ func TestFragmentColumnsFromRowsModeAwareSchemaCheck(t *testing.T) {
 func TestMySqlSchemaHashFromRows(t *testing.T) {
 	hash := strings.Repeat("ab", 32)
 	cases := []struct {
-		name    string
-		rows    [][]*string
-		trusted bool
+		name              string
+		rows              [][]*string
+		wantHash, trusted bool
+		clock             int64
+		id                string
 	}{
-		{"valid", rows(hash, "128", "2"), true},
-		{"truncated", rows(hash, "64", "2"), false},
-		{"nil", [][]*string{{nil, ptr("0"), ptr("0")}}, false},
-		{"extra row", append(rows(hash, "64", "1"), rows(hash, "64", "1")[0]), false},
-		{"short hash", rows("abcd", "64", "1"), false},
-		{"non-hex hash", rows(strings.Repeat("z", 64), "64", "1"), false},
+		{"valid", rows(hash, "128", "2", "123", "123e4567-e89b-12d3-a456-426614174000"), true, true, 123, "123e4567-e89b-12d3-a456-426614174000"},
+		{"truncated keeps hash", rows(hash, "64", "2", "123", "123e4567-e89b-12d3-a456-426614174000"), true, false, 123, "123e4567-e89b-12d3-a456-426614174000"},
+		{"malformed clock", rows(hash, "64", "1", "bad", "123e4567-e89b-12d3-a456-426614174000"), true, true, 0, "123e4567-e89b-12d3-a456-426614174000"},
+		{"malformed id", rows(hash, "64", "1", "123", "not-a-uuid"), true, true, 123, ""},
+		{"nil clock and id", [][]*string{{ptr(hash), ptr("64"), ptr("1"), nil, nil}}, true, true, 0, ""},
+		{"nil hash", [][]*string{{nil, ptr("0"), ptr("0"), ptr("123"), ptr("123e4567-e89b-12d3-a456-426614174000")}}, false, false, 123, "123e4567-e89b-12d3-a456-426614174000"},
+		{"extra row", append(rows(hash, "64", "1", "123", "123e4567-e89b-12d3-a456-426614174000"), rows(hash, "64", "1", "123", "123e4567-e89b-12d3-a456-426614174000")[0]), false, false, 0, ""},
+		{"short hash", rows("abcd", "64", "1", "123", "123e4567-e89b-12d3-a456-426614174000"), false, false, 123, "123e4567-e89b-12d3-a456-426614174000"},
+		// A right-length non-hex digest must yield NO hash and NO trust. hex.DecodeString hands back the
+		// bytes it managed to read alongside its error, so ignoring that error leaves an empty-but-non-nil
+		// slice that reads as a genuine measurement — and two of them compare equal, making unrelated
+		// schemas look coherent.
+		{"non-hex hash", rows(strings.Repeat("z", 64), "64", "1", "123", "123e4567-e89b-12d3-a456-426614174000"), false, false, 123, "123e4567-e89b-12d3-a456-426614174000"},
+		{"partially-hex hash", rows(strings.Repeat("ab", 31)+"zz", "64", "1", "123", "123e4567-e89b-12d3-a456-426614174000"), false, false, 123, "123e4567-e89b-12d3-a456-426614174000"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			_, trusted, err := (MySqlDb{}).SchemaHashFromRows(tc.rows)
+			got, err := (MySqlDb{}).SchemaHashFromRows(tc.rows)
 			if err != nil {
-				t.Fatalf("SchemaHashFromRows: %v", err)
+				t.Fatal(err)
 			}
-			if trusted != tc.trusted {
-				t.Fatalf("trusted = %v, want %v", trusted, tc.trusted)
+			if (got.Hash != nil) != tc.wantHash || got.Trusted != tc.trusted || got.DbClockMicros != tc.clock || got.BackendID != tc.id {
+				t.Fatalf("observation = %+v hash=%x", got, got.Hash)
 			}
 		})
+	}
+}
+
+func TestMySqlServerHash(t *testing.T) {
+	sql, columns, err := (MySqlDb{}).ServerHashSQL(nil)
+	if err != nil || columns != 6 {
+		t.Fatalf("ServerHashSQL = columns %d, err %v", columns, err)
+	}
+	for _, fragment := range []string{"CAST(sn AS BINARY) AS sng", "GROUP BY sng", "@@server_uuid", "UNIX_TIMESTAMP(SYSDATE(6))"} {
+		if !strings.Contains(sql, fragment) {
+			t.Errorf("ServerHashSQL missing %q:\n%s", fragment, sql)
+		}
+	}
+	if strings.Contains(sql, "WHERE") {
+		t.Fatalf("ServerHashSQL contains schema filter:\n%s", sql)
+	}
+	assertClientSettableClockAbsent(t, "ServerHashSQL", sql)
+	hash := strings.Repeat("ab", 32)
+	got, err := (MySqlDb{}).ServerHashFromRows([][]*string{{ptr("app"), ptr(hash), ptr("64"), ptr("1"), ptr("123"), ptr("id")}, {ptr("bad"), ptr(hash), ptr("1"), ptr("1"), ptr("bad"), nil}})
+	if err != nil || len(got) != 2 || !got[0].Trusted || got[1].Trusted || got[1].Hash == nil || got[1].DbClockMicros != 0 {
+		t.Fatalf("ServerHashFromRows = %+v, err %v", got, err)
+	}
+	if _, err := (MySqlDb{}).ServerHashFromRows([][]*string{{nil, ptr(hash), ptr("64"), ptr("1"), ptr("1"), ptr("123e4567-e89b-12d3-a456-426614174000")}}); err == nil {
+		t.Fatal("nil schema succeeded")
+	}
+	if _, err := (MySqlDb{}).ServerHashFromRows(rows("app", hash)); err == nil {
+		t.Fatal("wrong width succeeded")
+	}
+}
+
+// Both engines' information_schema is privilege-filtered, so every dialect must be able to say whether
+// its scan saw the whole server — a subset presented as a whole-server scan tells the manager the
+// schemas it could not see were dropped.
+func TestCatalogVisibilitySQLExistsPerDialect(t *testing.T) {
+	for name, statement := range map[string]string{
+		"MySQL":    MySqlDb{}.CatalogVisibilitySQL(),
+		"Postgres": PgDb{}.CatalogVisibilitySQL(),
+	} {
+		if statement == "" {
+			t.Errorf("%s CatalogVisibilitySQL is empty, so it can never claim a complete namespace", name)
+		}
+	}
+	// Each fragment is a distinct way the account can see less than the whole server while still
+	// answering yes to a naive "does it hold global SELECT" lookup. The live proofs are in
+	// hash_integration_test.go; these pin that no fragment is dropped from the statement.
+	for fragment, why := range map[string]string{
+		"USER_PRIVILEGES":                     "global SELECT is what lifts the information_schema row filter",
+		"@@partial_revokes = 0":               "a partial revoke hides a schema while global SELECT still reads as held",
+		"information_schema.ENABLED_ROLES":    "global SELECT is usually inherited from an active role, not held directly",
+		"information_schema.APPLICABLE_ROLES": "a role may hold global SELECT through another role; MySQL does not flatten the chain",
+	} {
+		if !strings.Contains(MySqlDb{}.CatalogVisibilitySQL(), fragment) {
+			t.Errorf("MySQL visibility probe missing %q: %s", fragment, why)
+		}
+	}
+	for _, fragment := range []string{"is_superuser", "pg_read_all_data"} {
+		if !strings.Contains(PgDb{}.CatalogVisibilitySQL(), fragment) {
+			t.Errorf("Postgres visibility probe missing %q", fragment)
+		}
 	}
 }
 
@@ -225,18 +299,21 @@ func TestPgDbConstants(t *testing.T) {
 func TestPgSchemaHashSQL(t *testing.T) {
 	p := PgDb{}
 	schema := "hostile'\\schema"
-	cryptoSQL, columns, err := p.SchemaHashSQL(schema, [][]*string{{ptr(`crypto"schema`)}})
+	cryptoSQL, columns, err := p.SchemaHashSQL(schema, [][]*string{{ptr(`crypto"schema`), ptr("1")}})
 	if err != nil {
 		t.Fatalf("SchemaHashSQL pgcrypto: %v", err)
 	}
-	if columns != 3 {
-		t.Fatalf("columns = %d, want 3", columns)
+	if columns != 5 {
+		t.Fatalf("columns = %d, want 5", columns)
 	}
 	for _, fragment := range []string{
 		`"crypto""schema".digest`,
 		"pg_catalog.encode(",
 		"pg_catalog.convert_to(",
 		"pg_catalog.string_agg(",
+		"pg_catalog.clock_timestamp()",
+		"pg_catalog.pg_control_system()",
+		"system_identifier",
 		"pg_catalog.octet_length(",
 		`COLLATE "C"`,
 		"pg_catalog.convert_from('\\x" + fmt.Sprintf("%x", []byte(schema)) + "'::pg_catalog.bytea, 'UTF8')",
@@ -245,6 +322,9 @@ func TestPgSchemaHashSQL(t *testing.T) {
 			t.Errorf("pgcrypto SchemaHashSQL missing %q:\n%s", fragment, cryptoSQL)
 		}
 	}
+	if strings.Contains(cryptoSQL, "statement_timestamp") {
+		t.Fatalf("SchemaHashSQL uses transaction-frozen statement_timestamp:\n%s", cryptoSQL)
+	}
 	fallbackSQL, _, err := p.SchemaHashSQL(schema, nil)
 	if err != nil {
 		t.Fatalf("SchemaHashSQL fallback: %v", err)
@@ -252,6 +332,7 @@ func TestPgSchemaHashSQL(t *testing.T) {
 	if !strings.Contains(fallbackSQL, "pg_catalog.md5(") || strings.Contains(fallbackSQL, ".digest(") {
 		t.Fatalf("fallback is not fully qualified pg_catalog.md5:\n%s", fallbackSQL)
 	}
+	assertIdentityReadOnlyWhenPermitted(t, p)
 	columnsSQL := p.SchemaColumnsSQL(schema)
 	for _, fragment := range []string{`COLLATE "C"`, "ordinal_position", "pg_catalog.convert_from('\\x" + fmt.Sprintf("%x", []byte(schema))} {
 		if !strings.Contains(columnsSQL, fragment) {
@@ -264,28 +345,185 @@ func TestPgSchemaHashFromRows(t *testing.T) {
 	sha := strings.Repeat("ab", 32)
 	md5 := strings.Repeat("cd", 16)
 	cases := []struct {
-		name    string
-		rows    [][]*string
-		trusted bool
+		name              string
+		rows              [][]*string
+		wantHash, trusted bool
+		clock             int64
+		id                string
 	}{
-		{"sha256", rows(sha, "2", "0"), true},
-		{"md5 fallback", rows(md5, "2", "0"), true},
-		{"null row blob", rows(sha, "2", "1"), false},
-		{"nil", [][]*string{{ptr(sha), nil, ptr("0")}}, false},
-		{"extra row", append(rows(sha, "1", "0"), rows(sha, "1", "0")[0]), false},
-		{"short", rows("abcd", "1", "0"), false},
+		{"sha256", rows(sha, "2", "0", "123", "123456789"), true, true, 123, "123456789"},
+		{"md5 fallback", rows(md5, "2", "0", "123", "123456789"), true, true, 123, "123456789"},
+		{"null row keeps hash", rows(sha, "2", "1", "123", "123456789"), true, false, 123, "123456789"},
+		{"bad count keeps hash", rows(sha, "bad", "0", "123", "123456789"), true, false, 123, "123456789"},
+		{"bad clock", rows(sha, "2", "0", "bad", "123456789"), true, true, 0, "123456789"},
+		{"bad identity", rows(sha, "2", "0", "123", "not-a-number"), true, true, 123, ""},
+		{"nil identity", [][]*string{{ptr(sha), ptr("2"), ptr("0"), ptr("123"), nil}}, true, true, 123, ""},
+		{"extra row", append(rows(sha, "1", "0", "1", "123456789"), rows(sha, "1", "0", "1", "123456789")[0]), false, false, 0, ""},
+		{"short", rows("abcd", "1", "0", "1", "not-a-number"), false, false, 1, ""},
+		// See the MySQL matrix: a right-length non-hex digest must not survive as an empty trusted hash.
+		{"non-hex sha", rows(strings.Repeat("z", 64), "2", "0", "123", "123456789"), false, false, 123, "123456789"},
+		{"non-hex md5", rows(strings.Repeat("z", 32), "2", "0", "123", "123456789"), false, false, 123, "123456789"},
+		{"partially-hex sha", rows(strings.Repeat("ab", 31)+"zz", "2", "0", "123", "123456789"), false, false, 123, "123456789"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			_, trusted, err := (PgDb{}).SchemaHashFromRows(tc.rows)
+			got, err := (PgDb{}).SchemaHashFromRows(tc.rows)
 			if err != nil {
-				t.Fatalf("SchemaHashFromRows: %v", err)
+				t.Fatal(err)
 			}
-			if trusted != tc.trusted {
-				t.Fatalf("trusted = %v, want %v", trusted, tc.trusted)
+			if (got.Hash != nil) != tc.wantHash || got.Trusted != tc.trusted || got.DbClockMicros != tc.clock || got.BackendID != tc.id {
+				t.Fatalf("observation = %+v hash=%x", got, got.Hash)
 			}
 		})
 	}
+}
+
+func TestPgServerHash(t *testing.T) {
+	sql, columns, err := (PgDb{}).ServerHashSQL([][]*string{{ptr("crypto"), ptr("1")}})
+	if err != nil || columns != 6 {
+		t.Fatalf("ServerHashSQL = columns %d, err %v", columns, err)
+	}
+	for _, fragment := range []string{"SELECT sn", "GROUP BY sn", "pg_catalog.clock_timestamp()", "pg_catalog.pg_control_system()", `"crypto".digest`} {
+		if !strings.Contains(sql, fragment) {
+			t.Errorf("ServerHashSQL missing %q:\n%s", fragment, sql)
+		}
+	}
+	if strings.Contains(sql, "WHERE table_schema") {
+		t.Fatalf("ServerHashSQL contains schema filter:\n%s", sql)
+	}
+	hash := strings.Repeat("ab", 32)
+	got, err := (PgDb{}).ServerHashFromRows([][]*string{{ptr("app"), ptr(hash), ptr("2"), ptr("0"), ptr("123"), ptr("123e4567-e89b-12d3-a456-426614174000")}})
+	if err != nil || len(got) != 1 || got[0].Schema != "app" || !got[0].Trusted {
+		t.Fatalf("ServerHashFromRows = %+v, err %v", got, err)
+	}
+	if _, err := (PgDb{}).ServerHashFromRows([][]*string{{nil, ptr(hash), ptr("2"), ptr("0"), ptr("123"), ptr("123456789")}}); err == nil {
+		t.Fatal("nil schema succeeded")
+	}
+}
+
+// TestUndecodableHashNeverPushesAsTrusted joins the REAL dialect decoders to the REAL Refetcher, the
+// seam where content_hash and hash_trusted are actually produced. Each side is well covered alone, and
+// a corrupt digest still slipped through as an empty hash marked trusted: the decoder's own tests
+// asserted `Hash != nil`, and the refetch tests used a hand-rolled fake decoder, so nothing observed
+// what the pair puts on the wire. hash_trusted means the measure-fetch-measure bracket held over a
+// genuine DB-side hash — an undecodable digest must fail that, and must not let two unrelated schemas
+// bracket each other by both decoding to empty.
+func TestUndecodableHashNeverPushesAsTrusted(t *testing.T) {
+	fragment := [][]*string{{ptr("app"), ptr("t"), ptr("c"), ptr("int"), ptr("1"), ptr("NO")}}
+	for _, tc := range []struct {
+		name    string
+		adapter engine.Db
+		rows    [][]*string
+	}{
+		{"MySQL non-hex", MySqlDb{}, rows(strings.Repeat("z", 64), "64", "1", "123", "123e4567-e89b-12d3-a456-426614174000")},
+		{"MySQL partially hex", MySqlDb{}, rows(strings.Repeat("ab", 31)+"zz", "64", "1", "123", "123e4567-e89b-12d3-a456-426614174000")},
+		{"Postgres non-hex", PgDb{}, rows(strings.Repeat("z", 64), "1", "0", "123", "123456789")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var pushed *pb.SchemaFragmentPush
+			refetcher := engine.NewRefetcher(
+				tc.adapter, []byte("connection"), 7,
+				func(statement string, _ int) ([][]*string, error) {
+					if strings.Contains(statement, "information_schema.COLUMNS") && strings.Contains(statement, "ORDINAL_POSITION,") ||
+						strings.Contains(statement, "information_schema.columns") && strings.Contains(statement, "ordinal_position,") {
+						return fragment, nil
+					}
+					return tc.rows, nil
+				},
+				func(push *pb.SchemaFragmentPush) (uint64, error) { pushed = push; return 1, nil },
+				nil,
+			)
+			if err := refetcher.Run(&pb.Refetch{Schema: "app"}); err != nil {
+				t.Fatalf("Refetcher.Run: %v", err)
+			}
+			if pushed.GetHashTrusted() {
+				t.Fatalf("undecodable digest pushed as trusted: content_hash=%x", pushed.GetContentHash())
+			}
+			if len(pushed.GetContentHash()) != 0 {
+				t.Fatalf("content_hash = %x, want no bytes for an undecodable digest", pushed.GetContentHash())
+			}
+		})
+	}
+}
+
+// assertClientSettableClockAbsent pins the version clock against a client-movable source. NOW()/
+// CURRENT_TIMESTAMP return the session's `SET timestamp`, which a client owns on the very connection
+// hash probes run on; a poisoned future reading would freeze the manager's strictly-newer ordering
+// rule on that version. Only SYSDATE() reads the real clock — and only on a server that did not alias
+// the two, which the emitted `SYSDATE(6) <> NOW(6)` guard is there to detect at runtime.
+func assertClientSettableClockAbsent(t *testing.T, name, sql string) {
+	t.Helper()
+	if !strings.Contains(sql, "CASE WHEN SYSDATE(6) <> NOW(6)") {
+		t.Fatalf("%s does not guard against a --sysdate-is-now server aliasing SYSDATE to NOW:\n%s", name, sql)
+	}
+	// The sanctioned forms — the guard's own comparison and the reading it protects — are hidden before
+	// scanning so their text cannot mask a genuine client-settable read elsewhere in the statement.
+	scanned := strings.ToUpper(strings.ReplaceAll(sql, "CASE WHEN SYSDATE(6) <> NOW(6)", "«GUARD»"))
+	scanned = strings.ReplaceAll(scanned, "SYSDATE(6)", "«CLOCK»")
+	for _, settable := range []string{"NOW(", "CURRENT_TIMESTAMP", "LOCALTIME"} {
+		if strings.Contains(scanned, settable) {
+			t.Fatalf("%s reads client-settable clock %q (use SYSDATE(6)):\n%s", name, settable, sql)
+		}
+	}
+}
+
+// assertIdentityReadOnlyWhenPermitted pins the ONE construction that survives a cluster which revoked
+// pg_control_system() from PUBLIC: the statement must not name the function at all unless the setup
+// probe already established EXECUTE. PostgreSQL resolves function privilege at PLAN time, so an inline
+// `CASE WHEN has_function_privilege(...) THEN (SELECT ... FROM pg_control_system()) END` does NOT
+// short-circuit — it aborts the entire statement, turning an unavailable backend id into the loss of
+// every schema hash. This asserts the emitted SQL both ways so a regression to the inline guard fails
+// here rather than only against a hardened cluster nobody tests on.
+func assertIdentityReadOnlyWhenPermitted(t *testing.T, p PgDb) {
+	t.Helper()
+	for _, tc := range []struct {
+		name      string
+		setupRows [][]*string
+		permitted bool
+	}{
+		{"EXECUTE granted", [][]*string{{nil, ptr("1")}}, true},
+		{"EXECUTE revoked", [][]*string{{nil, ptr("0")}}, false},
+		{"privilege unknown", [][]*string{{nil, nil}}, false},
+		{"setup probe failed", nil, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			for name, sql := range emittedHashStatements(t, p, tc.setupRows) {
+				names := strings.Contains(sql, "pg_control_system")
+				if names != tc.permitted {
+					t.Fatalf("%s names pg_control_system = %v, want %v:\n%s", name, names, tc.permitted, sql)
+				}
+				// has_function_privilege belongs to the setup probe; inline it and the plan-time check
+				// fires anyway.
+				if strings.Contains(sql, "has_function_privilege") {
+					t.Fatalf("%s guards the identity read inline, which PostgreSQL evaluates at plan time:\n%s", name, sql)
+				}
+				if !tc.permitted && !strings.Contains(sql, `''`) {
+					t.Fatalf("%s must emit a literal empty backend id when the identity is unreadable:\n%s", name, sql)
+				}
+			}
+		})
+	}
+	if !strings.Contains(p.HashSetupProbeSQL(), "has_function_privilege") {
+		t.Fatalf("HashSetupProbeSQL must resolve the identity privilege:\n%s", p.HashSetupProbeSQL())
+	}
+	if p.HashSetupColumns() != 2 {
+		t.Fatalf("HashSetupColumns = %d, want 2 (pgcrypto schema, identity privilege)", p.HashSetupColumns())
+	}
+}
+
+// emittedHashStatements returns both statements built from one setup-probe result, so a rule about the
+// hash SQL is asserted against every form of it rather than whichever one a test happened to build.
+func emittedHashStatements(t *testing.T, p PgDb, setupRows [][]*string) map[string]string {
+	t.Helper()
+	schemaSQL, _, err := p.SchemaHashSQL("app", setupRows)
+	if err != nil {
+		t.Fatalf("SchemaHashSQL: %v", err)
+	}
+	serverSQL, _, err := p.ServerHashSQL(setupRows)
+	if err != nil {
+		t.Fatalf("ServerHashSQL: %v", err)
+	}
+	return map[string]string{"SchemaHashSQL": schemaSQL, "ServerHashSQL": serverSQL}
 }
 
 func ptr(value string) *string { return &value }

@@ -876,6 +876,9 @@ func TestCommitAndChainRefetchesBeforeNextDecision(t *testing.T) {
 	if len(fragments) != 1 {
 		t.Fatalf("fragment pushes after COMMIT AND CHAIN = %d, want 1", len(fragments))
 	}
+	if !fragments[0].GetMeasuredInTransaction() {
+		t.Fatalf("COMMIT AND CHAIN fragment = %+v, want in-transaction measurement", fragments[0])
+	}
 	nextFrames := client.simpleQuery(t, nextSQL)
 	assertNoRawPGError(t, nextFrames)
 	assertRawReadyForQuery(t, nextFrames, 'T')
@@ -996,6 +999,9 @@ func TestTransactionalCatalogRefreshPreventsStaleBareNameAllow(t *testing.T) {
 	if fragmentHasColumn(fragments[0], frontSchema, tableName, "secret") {
 		t.Fatalf("in-transaction fragment still contains dropped %s.%s.secret", frontSchema, tableName)
 	}
+	if !fragments[0].GetMeasuredInTransaction() {
+		t.Fatalf("transactional fragment = %+v, want in-transaction measurement", fragments[0])
+	}
 	var secret string
 	err = conn.QueryRow(ctx, readSQL).Scan(&secret)
 	assertPgError(t, err, "42501", "front table is absent from refreshed catalog")
@@ -1063,6 +1069,10 @@ func TestCatalogRefreshPreventsStaleBareNameAllow(t *testing.T) {
 	}
 	if _, err := conn.Exec(ctx, dropSQL); err != nil {
 		t.Fatalf("DROP front table: %v", err)
+	}
+	fragments := waitForFragmentRequests(t, h.fake, 1)
+	if len(fragments) != 1 || fragments[0].GetMeasuredInTransaction() {
+		t.Fatalf("autocommit fragment = %+v, want one out-of-transaction measurement", fragments)
 	}
 	var secret string
 	err = conn.QueryRow(ctx, readSQL).Scan(&secret)

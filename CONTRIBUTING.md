@@ -57,6 +57,15 @@ handful of skips; zero skips is not the signal to look for.
 - Comments and docs describe the current state in present tense. No task, phase,
   or workstream codes in comments or docs — they go stale. Commit messages may
   keep such references.
+- A comment states what the code cannot: a constraint from outside the file, a
+  non-obvious failure mode, why this and not the obvious alternative. It never
+  narrates how the code came to be — no review findings, no what-was-tried, no
+  "previously X", no account of a debugging session. **This repository is
+  public.** A comment recounting how something was arrived at tends to carry
+  what was around at the time: host names, directory layouts, internal tooling,
+  network topology, who asked for what. Commit messages and pull requests are
+  where that history belongs; they are equally public, so the same rule about
+  naming internal systems applies there too.
 - Localization is non-negotiable. Every user-facing string is localized
   (currently English and Korean). The server returns a stable dot-namespaced
   code and params, never English prose; the web client resolves it through a

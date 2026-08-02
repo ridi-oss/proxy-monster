@@ -126,9 +126,17 @@ See [docs/l10n.md](./docs/l10n.md).
 
 ## Conventions
 
-Full list in [CONTRIBUTING.md](./CONTRIBUTING.md#conventions). The two that most
-often get violated:
+Full list in [CONTRIBUTING.md](./CONTRIBUTING.md#conventions). The three that
+most often get violated:
 
+- Comments and docs are not a diary, and this is a **security** rule before it
+  is a style one: this repository is public. A comment explains what the code
+  cannot say — an outside constraint, a non-obvious failure mode, why not the
+  obvious alternative. It must not narrate how the code came to be: no review
+  findings, no what-was-tried, no "previously X", no debugging account. That
+  narration is what carries host names, paths, internal tooling, and topology
+  into a public repository. History goes in the commit message, which is also
+  public — the same rule about naming internal systems applies there.
 - l10n is non-negotiable. Every user-facing string is localized (English and
   Korean today). The server returns a stable dot-namespaced code via `ApiError`,
   never English prose; every message key must exist in every locale under

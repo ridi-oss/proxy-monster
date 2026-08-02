@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -19,14 +20,40 @@ import (
 // it, reads status, renders connection strings, and stops it.
 
 // buildPmon compiles the binary once per test run and returns its path.
+//
+// Built with the race detector whenever the tests are, because the daemon these tests drive runs as a
+// separate process: instrumenting the test binary says nothing about the goroutines actually serving the
+// control socket and brokering tokens. A race there aborts the daemon with exit 2 and a report on its
+// stderr, which is the daemon log — see [assertNoDaemonRace].
 func buildPmon(t *testing.T) string {
 	t.Helper()
 	bin := filepath.Join(t.TempDir(), "pmon")
-	out, err := exec.Command("go", "build", "-o", bin, ".").CombinedOutput()
+	args := []string{"build", "-o", bin}
+	if raceEnabled {
+		args = append(args, "-race")
+	}
+	out, err := exec.Command("go", append(args, ".")...).CombinedOutput()
 	if err != nil {
 		t.Fatalf("go build: %v\n%s", err, out)
 	}
 	return bin
+}
+
+// assertNoDaemonRace fails the test if the daemon logged a race report. The daemon is detached, so its
+// failure never surfaces as a non-zero exit here: a race aborts it mid-run and the CLI sees only a daemon
+// that stopped answering, which reads as a timeout in whatever the test was doing next.
+func assertNoDaemonRace(t *testing.T, stateDir string) {
+	t.Helper()
+	if !raceEnabled {
+		return
+	}
+	log, err := os.ReadFile(filepath.Join(stateDir, "daemon.log"))
+	if err != nil {
+		return // no log means the daemon never started, which the test's own assertions cover
+	}
+	if bytes.Contains(log, []byte("WARNING: DATA RACE")) {
+		t.Errorf("the daemon reported a data race:\n%s", log)
+	}
 }
 
 // env isolates a pmon invocation: its own state dir and its own broker port range, so it neither touches the
@@ -43,6 +70,8 @@ func newEnv(t *testing.T) *env {
 	t.Cleanup(func() {
 		// Always stop the daemon this env may have started, or it outlives the test (it is detached by design).
 		_, _ = e.run("stop", "--force")
+		// After the stop, so the log holds everything the daemon ever wrote.
+		assertNoDaemonRace(t, e.stateDir)
 	})
 	return e
 }

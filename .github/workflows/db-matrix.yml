@@ -149,7 +149,7 @@ jobs:
       # needed here to make a Docker-less run fail.
       - name: Test
         working-directory: goproxy
-        run: go test ./...
+        run: go test -race ./...
 
   auditmon:
     name: auditmon ${{ matrix.pg }}
@@ -167,7 +167,7 @@ jobs:
       - uses: jdx/mise-action@v4
       - name: Test
         working-directory: auditmon
-        run: go test ./...
+        run: go test -race ./...
 
   # A single required check that is green only when every leg is. Without it, a branch protection rule
   # would have to name each matrix leg, and adding a version to db-support.json would silently create

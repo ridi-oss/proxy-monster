@@ -35,6 +35,9 @@ package paths and never need a `cd` — `go test ./goproxy/...` from the repo
 root. Bare `go test ./...` does not work there: the root is a workspace, not a
 module. `mise run verify` enumerates the modules for you.
 
+Every task that runs the Go tests passes `-race`, so a hand-run `go test`
+without it is a weaker check than the gate: a data race reads as a pass.
+
 ## Tests are DB-backed
 
 Enforcement is exercised against real databases, not mocks. Write MySQL and

@@ -200,7 +200,12 @@ mise run lint
 ./gradlew --no-daemon :analyzer:jvm:test :engine:test :control-plane:test
 # Explicit module patterns: the repo root is a Go workspace, not a module, so `./...` does not resolve
 # there. go.work is what makes these root-relative paths work with no cd.
-go test ./analyzer/... ./auditmon/... ./goproxy/... ./mysqlwire/... ./pmon/...
+#
+# -race: the concurrency this proxy is built on — the events loop, the per-connection goroutines — is
+# where a race is both most likely and least visible, and a data race is a correctness bug the plain
+# run reports as a pass. These tests wait on containers and sockets far more than they compute, so the
+# detector costs a few seconds of wall clock rather than the usual multiple.
+go test -race ./analyzer/... ./auditmon/... ./goproxy/... ./mysqlwire/... ./pmon/...
 pnpm -C web test:unit
 pnpm -C web build
 '''
@@ -230,18 +235,6 @@ description = "Go tests against one database version (defaults to the newest sup
 shell = "bash -c"
 # Each Go module is entered explicitly rather than using a root `./...`: the repo root is not a Go
 # module, so a root-relative pattern only resolves once a go.work exists.
-run = '''
-set -euo pipefail
-for m in analyzer auditmon goproxy mysqlwire pmon; do
-  echo "=== $m ==="
-  (cd "$m" && go test ./...)
-done
-'''
-
-[tasks.test-go-race]
-description = "Go race-detector tests against one database version (defaults to the newest supported)"
-shell = "bash -c"
-# Keep the same module loop as `test-go`; only enable the race detector.
 run = '''
 set -euo pipefail
 for m in analyzer auditmon goproxy mysqlwire pmon; do
@@ -281,11 +274,11 @@ for pg in $pgs; do
         ./gradlew --no-daemon :control-plane:test; then
       failed="$failed jvm($pg,$my)"
     fi
-    if ! (cd goproxy && PM_TEST_POSTGRES_IMAGE="$pg" PM_TEST_MYSQL_IMAGE="$my" go test ./...); then
+    if ! (cd goproxy && PM_TEST_POSTGRES_IMAGE="$pg" PM_TEST_MYSQL_IMAGE="$my" go test -race ./...); then
       failed="$failed goproxy($pg,$my)"
     fi
   done
-  if ! (cd auditmon && PM_TEST_POSTGRES_IMAGE="$pg" go test ./...); then
+  if ! (cd auditmon && PM_TEST_POSTGRES_IMAGE="$pg" go test -race ./...); then
     failed="$failed auditmon($pg)"
   fi
 done
@@ -365,7 +358,7 @@ while read -r pg my; do
       --project-cache-dir "$logs/gradle-$tag" :control-plane:test \
       > "$logs/jvm-$tag.log" 2>&1 || echo "jvm($pg,$my)" >> "$logs/failed"
     (cd goproxy && PM_TEST_POSTGRES_IMAGE="$pg" PM_TEST_MYSQL_IMAGE="$my" \
-      PM_TEST_CONTAINER_SUFFIX="$tag" go test ./...) \
+      PM_TEST_CONTAINER_SUFFIX="$tag" go test -race ./...) \
       > "$logs/goproxy-$tag.log" 2>&1 || echo "goproxy($pg,$my)" >> "$logs/failed"
   ) &
 done <<< "$legs"
@@ -374,7 +367,7 @@ for pg in $pgs; do
   throttle
   echo "--> auditmon leg: $pg"
   (
-    (cd auditmon && PM_TEST_POSTGRES_IMAGE="$pg" PM_TEST_CONTAINER_SUFFIX="am-${pg//[:\/]/-}" go test ./...) \
+    (cd auditmon && PM_TEST_POSTGRES_IMAGE="$pg" PM_TEST_CONTAINER_SUFFIX="am-${pg//[:\/]/-}" go test -race ./...) \
       > "$logs/auditmon-${pg//[:\/]/-}.log" 2>&1 || echo "auditmon($pg)" >> "$logs/failed"
   ) &
 done

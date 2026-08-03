@@ -17,7 +17,16 @@ import CodeMirror from '@uiw/react-codemirror'
 import { EditorView, tooltips } from '@codemirror/view'
 import { cedar, cedarCompletion, cedarLinter } from '@ridi/codemirror-lang-cedar'
 import { useCedarWasm } from '@/lib/cedar-wasm'
-import { CheckCircle2, Loader2, Pencil, Plus, ShieldCheck, Trash2 } from 'lucide-react'
+import {
+  CheckCircle2,
+  ChevronDown,
+  ChevronRight,
+  Loader2,
+  Pencil,
+  Plus,
+  ShieldCheck,
+  Trash2,
+} from 'lucide-react'
 import { mutate } from 'swr'
 import {
   createCedarPolicy,
@@ -107,6 +116,44 @@ const ACTION_REFERENCE: { resource: string; actions: { name: string; noteKey: st
   },
 ]
 
+/**
+ * Read-only Cedar source, highlighted with the same language package the edit dialog uses
+ * (@ridi/codemirror-lang-cedar) so a policy reads identically wherever it appears. Line wrapping is
+ * required, not cosmetic: a single-line policy would otherwise set the editor's min-content width and
+ * push the table sideways.
+ */
+function CedarSource({ src }: { src: string }) {
+  const { resolvedTheme } = useTheme()
+  const extensions = useMemo(
+    () => [
+      editorTheme(resolvedTheme),
+      cedar(),
+      EditorView.lineWrapping,
+      EditorView.editable.of(false),
+    ],
+    [resolvedTheme],
+  )
+  return (
+    <CodeMirror
+      value={src}
+      // theme="none" (as the editor dialog and sql-editor do): without it @uiw/react-codemirror layers
+      // its own LIGHT default on top of editorTheme, so the surface goes white under dark foreground.
+      theme="none"
+      extensions={extensions}
+      editable={false}
+      basicSetup={{
+        lineNumbers: false,
+        foldGutter: false,
+        highlightActiveLine: false,
+        highlightActiveLineGutter: false,
+        autocompletion: false,
+        searchKeymap: false,
+      }}
+      className="overflow-hidden rounded-lg border px-2 text-xs"
+    />
+  )
+}
+
 export function CedarPoliciesTab() {
   const t = useTranslations('Policies')
   const { data, error, isLoading } = useCedarPolicies()
@@ -117,6 +164,17 @@ export function CedarPoliciesTab() {
   const [deleteError, setDeleteError] = useState<string | null>(null)
   const [deleteBusy, setDeleteBusy] = useState(false)
   const [togglingId, setTogglingId] = useState<number | null>(null)
+  // Ids whose source row is expanded. Source is hidden by default: a page of policies is a list to
+  // scan, and every source shown at once buries the names.
+  const [expanded, setExpanded] = useState<ReadonlySet<number>>(() => new Set())
+
+  const allExpanded = !!data && data.length > 0 && data.every((p) => expanded.has(p.id))
+  const toggleExpanded = (id: number) =>
+    setExpanded((prev) => {
+      const next = new Set(prev)
+      if (!next.delete(id)) next.add(id)
+      return next
+    })
 
   const handleDelete = async (policy: CedarPolicy) => {
     setDeleteBusy(true)
@@ -157,10 +215,28 @@ export function CedarPoliciesTab() {
       {/* Header row */}
       <div className="flex items-center justify-between">
         <p className="text-muted-foreground text-sm">{t('cedarPolicies.blurb')}</p>
-        <Button size="sm" onClick={() => setCreating(true)}>
-          <Plus className="size-3.5" />
-          {t('cedarPolicies.add')}
-        </Button>
+        <div className="flex shrink-0 items-center gap-2">
+          {!!data && data.length > 0 && (
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() =>
+                setExpanded(allExpanded ? new Set() : new Set(data.map((p) => p.id)))
+              }
+            >
+              {allExpanded ? (
+                <ChevronRight className="size-3.5" />
+              ) : (
+                <ChevronDown className="size-3.5" />
+              )}
+              {allExpanded ? t('cedarPolicies.hideAllSource') : t('cedarPolicies.showAllSource')}
+            </Button>
+          )}
+          <Button size="sm" onClick={() => setCreating(true)}>
+            <Plus className="size-3.5" />
+            {t('cedarPolicies.add')}
+          </Button>
+        </div>
       </div>
 
       {isLoading && !data ? (
@@ -196,9 +272,23 @@ export function CedarPoliciesTab() {
                 const isSystem = policy.origin === 'SYSTEM'
                 return (
                 <Fragment key={policy.id}>
-                  <TableRow>
+                  <TableRow
+                    className="cursor-pointer"
+                    onClick={() => toggleExpanded(policy.id)}
+                    aria-expanded={expanded.has(policy.id)}
+                    aria-label={
+                      expanded.has(policy.id)
+                        ? t('cedarPolicies.hideSourceAria')
+                        : t('cedarPolicies.showSourceAria')
+                    }
+                  >
                     <TableCell>
                       <div className="flex items-center gap-2">
+                        {expanded.has(policy.id) ? (
+                          <ChevronDown className="text-muted-foreground size-3.5 shrink-0" />
+                        ) : (
+                          <ChevronRight className="text-muted-foreground size-3.5 shrink-0" />
+                        )}
                         <code className="font-mono text-sm font-semibold">{policy.name}</code>
                         {isSystem && (
                           <Tooltip>
@@ -217,7 +307,10 @@ export function CedarPoliciesTab() {
                         )}
                       </div>
                     </TableCell>
-                    <TableCell>
+                    {/* The controls below live inside a row whose click expands the source, so each
+                        stops propagation — toggling a policy or opening its editor must not also
+                        expand it. */}
+                    <TableCell onClick={(e) => e.stopPropagation()}>
                       <Switch
                         size="sm"
                         checked={policy.enabled}
@@ -242,7 +335,7 @@ export function CedarPoliciesTab() {
                         {new Date(policy.updatedAt).toLocaleString()}
                       </span>
                     </TableCell>
-                    <TableCell className="text-right">
+                    <TableCell className="text-right" onClick={(e) => e.stopPropagation()}>
                       {isSystem ? (
                         // SYSTEM policies are migration-owned + immutable through the API except
                         // enable/disable (the Switch above). No edit/delete — the backend 409s them anyway;
@@ -280,6 +373,16 @@ export function CedarPoliciesTab() {
                       )}
                     </TableCell>
                   </TableRow>
+                  {/* The policy source, on its own full-width row. The Cedar text IS the policy — the
+                      columns above are metadata about it — so reading the table without it means opening
+                      an edit dialog per row to answer "what does this actually permit". */}
+                  {expanded.has(policy.id) && (
+                    <TableRow className="hover:bg-transparent">
+                      <TableCell colSpan={5} className="pt-2 pb-2">
+                        <CedarSource src={policy.cedarSrc} />
+                      </TableCell>
+                    </TableRow>
+                  )}
                   {/* Inline delete confirm row */}
                   {deleting?.id === policy.id && (
                     <TableRow key={`${policy.id}-confirm`} className="bg-red-500/5">

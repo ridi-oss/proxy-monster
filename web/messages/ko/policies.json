@@ -105,6 +105,10 @@
     "validate": "검증",
     "sourceHint": "Cedar 구문 강조와 키워드 자동완성을 지원합니다. 검증은 저장하지 않고 파싱/스키마 오류를 확인합니다.",
     "actionReference": "Action 참조",
+    "showAllSource": "소스 전체 보기",
+    "hideAllSource": "소스 전체 숨기기",
+    "showSourceAria": "정책 소스 보기",
+    "hideSourceAria": "정책 소스 숨기기",
     "clickToExpand": "(클릭하여 펼치기)",
     "actionNotes": {
       "adminDatasources": "데이터소스/카탈로그 관리",

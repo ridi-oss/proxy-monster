@@ -105,6 +105,10 @@
     "validate": "Validate",
     "sourceHint": "Cedar syntax highlighting and keyword completion. Validate checks parse/schema errors without saving.",
     "actionReference": "Action reference",
+    "showAllSource": "Show all source",
+    "hideAllSource": "Hide all source",
+    "showSourceAria": "Show policy source",
+    "hideSourceAria": "Hide policy source",
     "clickToExpand": "(click to expand)",
     "actionNotes": {
       "adminDatasources": "manage datasources/catalog",

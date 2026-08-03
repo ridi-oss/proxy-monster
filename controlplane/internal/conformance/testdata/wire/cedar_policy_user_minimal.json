@@ -1,0 +1,1 @@
+{"id":7,"origin":"USER","name":"analyst-audit-read","cedarSrc":"permit(principal, action == Action::\"audit.read\", resource);","enabled":false,"updatedAt":"2026-07-31T04:05:06Z"}

@@ -1,0 +1,1 @@
+{"decision":"MASK","decisionId":7,"maskedColumns":["users.rrn"],"piiTouched":["users.rrn"],"effectiveRoles":["analyst"],"columns":["id","rrn"],"rows":[["1",null],["2","***"]],"latencyMs":12}

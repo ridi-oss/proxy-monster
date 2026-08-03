@@ -1,0 +1,3526 @@
+{
+  "policy_sets": {
+    "AuthzTest.seedPolicies": {
+      "provenance": "control-plane/src/test/kotlin/com/ridi/oss/proxymonster/controlplane/AuthzTest.kt:28-34",
+      "policies": {
+        "1": "permit(principal in Role::\"system:admin\", action in [Action::\"admin.datasources\",Action::\"admin.policies\",Action::\"admin.identity\"], resource);",
+        "2": "forbid(principal, action == Action::\"task.approve\", resource) when { principal == resource.requester };",
+        "3": "permit(principal in Role::\"system:admin\", action == Action::\"task.approve\", resource);",
+        "4": "permit(principal, action == Action::\"audit.read\", resource) when { resource is AuditRecord && resource.principal == principal };",
+        "5": "permit(principal in Role::\"auditor\", action == Action::\"audit.read\", resource);"
+      }
+    },
+    "AuthzTest.roleScopedApproval": {
+      "provenance": "control-plane/src/test/kotlin/com/ridi/oss/proxymonster/controlplane/AuthzTest.kt:145-154",
+      "policies": {
+        "1": "permit(principal in Role::\"pii-reader\", action == Action::\"task.approve\", resource) when { resource in Role::\"pii-reader\" };"
+      },
+      "roles": {
+        "approver1": [
+          "pii-reader"
+        ],
+        "*": []
+      }
+    },
+    "AuthzDatasourceActionTest.seedPolicies": {
+      "provenance": "control-plane/src/test/kotlin/com/ridi/oss/proxymonster/controlplane/AuthzDatasourceActionTest.kt:29-40",
+      "policies": {
+        "1": "permit(principal in Role::\"batch-writer\", action in [Action::\"datasource.connect\", Action::\"sql.select\", Action::\"sql.insert\"], resource in Datasource::\"acme-mysql\");",
+        "2": "permit(principal, action == Action::\"sql.unmaskable\", resource) when { resource in Tag::\"system:development\" };"
+      }
+    },
+    "ColumnAuthzTest.seedPolicies": {
+      "provenance": "control-plane/src/test/kotlin/com/ridi/oss/proxymonster/controlplane/ColumnAuthzTest.kt:28-32",
+      "policies": {
+        "1": "permit(principal in Role::\"analyst\", action == Action::\"result.read.unmasked\", resource in Table::\"acme-pg/acme/public/users\") unless { resource in Tag::\"pii\" };",
+        "2": "permit(principal in Role::\"analyst\", action == Action::\"result.read.masked\", resource in Table::\"acme-pg/acme/public/users\") when { resource in Tag::\"pii\" };",
+        "3": "permit(principal in Role::\"column-reader\", action == Action::\"result.read.unmasked\", resource == Column::\"acme-pg/acme/public/users/region\");"
+      }
+    },
+    "ChannelContextAuthzTest.wireOnlyConnect": {
+      "provenance": "control-plane/src/test/kotlin/com/ridi/oss/proxymonster/controlplane/ChannelContextAuthzTest.kt:30-36",
+      "policies": {
+        "1": "permit(principal in Role::\"wire-only\", action == Action::\"datasource.connect\", resource in Datasource::\"acme-mysql\") when { context has channel && context.channel == \"wire\" };"
+      }
+    },
+    "ElevationContextTagTest.tagPair": {
+      "provenance": "control-plane/src/test/kotlin/com/ridi/oss/proxymonster/controlplane/ElevationContextTagTest.kt:46-53",
+      "policies": {
+        "1": "permit(principal, action == Action::\"context.tag::trusted-network\", resource) when { context has requester_ip && context.requester_ip.isInRange(ip(\"100.100.0.0/16\")) };",
+        "2": "permit(principal in Role::\"reviewer\", action == Action::\"task.approve\", resource) when { context has tags && context.tags.contains(\"trusted-network\") };"
+      }
+    },
+    "TagResolutionTest.cidrTagRule": {
+      "provenance": "control-plane/src/test/kotlin/com/ridi/oss/proxymonster/controlplane/TagResolutionTest.kt:47-49",
+      "policies": {
+        "1": "permit(principal, action == Action::\"context.tag::trusted-network\", resource) when { context has requester_ip && context.requester_ip.isInRange(ip(\"100.100.0.0/16\")) };"
+      }
+    },
+    "AdminContextAuthzTest.ipGatedAdminPolicy": {
+      "provenance": "control-plane/src/test/kotlin/com/ridi/oss/proxymonster/controlplane/AdminContextAuthzTest.kt:67-69",
+      "policies": {
+        "1": "permit(principal in Role::\"system:admin\", action == Action::\"admin.datasources\", resource) when { context has requester_ip && context.requester_ip.isInRange(ip(\"203.0.113.0/24\")) };"
+      }
+    },
+    "CedarPolicyOriginTest.ORACLE_SOURCES": {
+      "provenance": "control-plane/src/test/kotlin/com/ridi/oss/proxymonster/controlplane/CedarPolicyOriginTest.kt:239-245",
+      "note": "same 5 shapes as AuthzTest.seedPolicies EXCEPT id 5, which grants Role::\"system:admin\" (not Role::\"auditor\") — matching the shipped -5 row",
+      "policies": {
+        "1": "permit(principal in Role::\"system:admin\", action in [Action::\"admin.datasources\",Action::\"admin.policies\",Action::\"admin.identity\"], resource);",
+        "2": "forbid(principal, action == Action::\"task.approve\", resource) when { principal == resource.requester };",
+        "3": "permit(principal in Role::\"system:admin\", action == Action::\"task.approve\", resource);",
+        "4": "permit(principal, action == Action::\"audit.read\", resource) when { resource is AuditRecord && resource.principal == principal };",
+        "5": "permit(principal in Role::\"system:admin\", action == Action::\"audit.read\", resource);"
+      }
+    },
+    "MIGRATION_ENABLED": {
+      "note": "the 29 SYSTEM rows shipping enabled=true; read from corpus/policies.json (origin==SYSTEM && enabled). Verified against PolicyOriginDbTest case 3's shippedEnabled/shippedDisabled lists (PolicyOriginDbTest.kt:116-124).",
+      "ids": [
+        -1,
+        -2,
+        -3,
+        -4,
+        -5,
+        -14,
+        -15,
+        -16,
+        -18,
+        -19,
+        -20,
+        -21,
+        -22,
+        -23,
+        -24,
+        -25,
+        -100,
+        -110,
+        -120,
+        -130,
+        -200,
+        -201,
+        -202,
+        -230,
+        -231,
+        -232,
+        -233,
+        -234,
+        -235
+      ]
+    },
+    "MIGRATION_DISABLED": {
+      "ids": [
+        -250,
+        -251,
+        -252,
+        -253,
+        -254,
+        -255,
+        -256,
+        -257,
+        -258,
+        -259,
+        -300
+      ]
+    }
+  },
+  "verdicts": [
+    {
+      "testFile": "control-plane/src/test/kotlin/com/ridi/oss/proxymonster/controlplane/AuthzTest.kt",
+      "testCase": "system-admin is allowed on admin actions",
+      "kind": "decision_allow",
+      "input": {
+        "policies": "AuthzTest.seedPolicies",
+        "roles": {
+          "root": [
+            "system:admin"
+          ]
+        },
+        "principal": "root",
+        "resource": "System::\"system\"",
+        "actions": [
+          "admin.policies",
+          "admin.datasources",
+          "admin.identity"
+        ],
+        "context": {}
+      },
+      "expected": "Allow for all three",
+      "provenance": "control-plane/src/test/kotlin/com/ridi/oss/proxymonster/controlplane/AuthzTest.kt:57-63",
+      "extractable": true,
+      "cedar_relevant": true,
+      "assertions": [
+        {
+          "kind": "decision_allow",
+          "input": {
+            "principal": "root",
+            "action": "admin.policies",
+            "resource": "System::\"system\""
+          },
+          "expected": "Allow"
+        },
+        {
+          "kind": "decision_allow",
+          "input": {
+            "principal": "root",
+            "action": "admin.datasources",
+            "resource": "System::\"system\""
+          },
+          "expected": "Allow"
+        },
+        {
+          "kind": "decision_allow",
+          "input": {
+            "principal": "root",
+            "action": "admin.identity",
+            "resource": "System::\"system\""
+          },
+          "expected": "Allow"
+        }
+      ]
+    },
+    {
+      "testFile": "control-plane/src/test/kotlin/com/ridi/oss/proxymonster/controlplane/AuthzTest.kt",
+      "testCase": "no roles is denied on admin actions — the 'admin = any session' hole stays closed",
+      "kind": "decision_deny",
+      "input": {
+        "policies": "AuthzTest.seedPolicies",
+        "roles": {},
+        "principal": "nobody",
+        "action": "admin.policies",
+        "resource": "System::\"system\""
+      },
+      "expected": "Deny (reason \"no policy permits this action\" — reasons empty)",
+      "provenance": "control-plane/src/test/kotlin/com/ridi/oss/proxymonster/controlplane/AuthzTest.kt:65-70",
+      "extractable": true,
+      "cedar_relevant": true,
+      "assertions": [
+        {
+          "kind": "decision_deny",
+          "input": {
+            "principal": "nobody",
+            "roles": [],
+            "action": "admin.policies"
+          },
+          "expected": "Deny"
+        }
+      ]
+    },
+    {
+      "testFile": "control-plane/src/test/kotlin/com/ridi/oss/proxymonster/controlplane/AuthzTest.kt",
+      "testCase": "a role other than system-admin is still denied on admin actions",
+      "kind": "decision_deny",
+      "input": {
+        "policies": "AuthzTest.seedPolicies",
+        "roles": {
+          "analyst-alice": [
+            "analyst"
+          ]
+        },
+        "principal": "analyst-alice",
+        "action": "admin.policies",
+        "resource": "System::\"system\""
+      },
+      "expected": "Deny",
+      "provenance": "control-plane/src/test/kotlin/com/ridi/oss/proxymonster/controlplane/AuthzTest.kt:72-77",
+      "extractable": true,
+      "cedar_relevant": true,
+      "assertions": [
+        {
+          "kind": "decision_deny",
+          "input": {
+            "principal": "analyst-alice",
+            "roles": [
+              "analyst"
+            ]
+          },
+          "expected": "Deny"
+        }
+      ]
+    },
+    {
+      "testFile": "control-plane/src/test/kotlin/com/ridi/oss/proxymonster/controlplane/AuthzTest.kt",
+      "testCase": "the audit policies allow own records and grant auditors the whole collection",
+      "kind": "decision_allow",
+      "input": {
+        "policies": "AuthzTest.seedPolicies",
+        "roles": {
+          "alice": [
+            "analyst"
+          ],
+          "bob": [
+            "auditor"
+          ]
+        },
+        "action": "audit.read"
+      },
+      "expected": "2 Allow, 3 Deny",
+      "provenance": "control-plane/src/test/kotlin/com/ridi/oss/proxymonster/controlplane/AuthzTest.kt:79-106",
+      "extractable": true,
+      "cedar_relevant": true,
+      "assertions": [
+        {
+          "kind": "decision_allow",
+          "input": {
+            "principal": "alice",
+            "resource": "AuditRecord::\"alice\"",
+            "attrs": {
+              "principal": "User::\"alice\""
+            }
+          },
+          "expected": "Allow"
+        },
+        {
+          "kind": "decision_deny",
+          "input": {
+            "principal": "alice",
+            "resource": "AuditRecord::\"bob\""
+          },
+          "expected": "Deny"
+        },
+        {
+          "kind": "decision_deny",
+          "input": {
+            "principal": "alice",
+            "resource": "AuditLog::\"all\""
+          },
+          "expected": "Deny"
+        },
+        {
+          "kind": "decision_allow",
+          "input": {
+            "principal": "bob",
+            "resource": "AuditRecord::\"alice\""
+          },
+          "expected": "Allow"
+        },
+        {
+          "kind": "decision_allow",
+          "input": {
+            "principal": "bob",
+            "resource": "AuditLog::\"all\""
+          },
+          "expected": "Allow"
+        }
+      ],
+      "notes": "pins the `resource is AuditRecord && resource.principal == principal` type-guard + narrowing shape and AuditLog::\"all\" as a distinct type"
+    },
+    {
+      "testFile": "control-plane/src/test/kotlin/com/ridi/oss/proxymonster/controlplane/AuthzTest.kt",
+      "testCase": "an approver may approve someone else's request",
+      "kind": "decision_allow",
+      "input": {
+        "policies": "AuthzTest.seedPolicies",
+        "roles": {
+          "approver1": [
+            "system:admin"
+          ]
+        },
+        "principal": "approver1",
+        "action": "task.approve",
+        "resource": "Request::\"someone-else#-\"",
+        "attrs": {
+          "requester": "User::\"someone-else\""
+        }
+      },
+      "expected": "Allow",
+      "provenance": "control-plane/src/test/kotlin/com/ridi/oss/proxymonster/controlplane/AuthzTest.kt:108-117",
+      "extractable": true,
+      "cedar_relevant": true,
+      "assertions": [
+        {
+          "kind": "decision_allow",
+          "input": {
+            "principal": "approver1",
+            "requester": "someone-else"
+          },
+          "expected": "Allow"
+        }
+      ],
+      "notes": "EUID is Request::\"<requester>#<datasourceName ?: \"-\">\" -> Request::\"someone-else#-\""
+    },
+    {
+      "testFile": "control-plane/src/test/kotlin/com/ridi/oss/proxymonster/controlplane/AuthzTest.kt",
+      "testCase": "ROLE self-approval is denied even for a system-admin — the self-approval hole stays closed",
+      "kind": "decision_deny",
+      "input": {
+        "policies": "AuthzTest.seedPolicies",
+        "roles": {
+          "alice": [
+            "system:admin"
+          ]
+        },
+        "principal": "alice",
+        "action": "task.approve",
+        "resource": "Request::\"alice#-\"",
+        "attrs": {
+          "requester": "User::\"alice\""
+        }
+      },
+      "expected": "Deny (forbid id 2 overrides permit id 3) — reason \"denied by policy: ...\"",
+      "provenance": "control-plane/src/test/kotlin/com/ridi/oss/proxymonster/controlplane/AuthzTest.kt:119-128",
+      "extractable": true,
+      "cedar_relevant": true,
+      "assertions": [
+        {
+          "kind": "decision_deny",
+          "input": {
+            "principal": "alice",
+            "requester": "alice",
+            "roles": [
+              "system:admin"
+            ]
+          },
+          "expected": "Deny — forbid wins over permit"
+        }
+      ],
+      "notes": "pins Cedar forbid-overrides-permit precedence"
+    },
+    {
+      "testFile": "control-plane/src/test/kotlin/com/ridi/oss/proxymonster/controlplane/AuthzTest.kt",
+      "testCase": "a non-admin approving someone else's request is still denied — no ambient permit",
+      "kind": "decision_deny",
+      "input": {
+        "policies": "AuthzTest.seedPolicies",
+        "roles": {
+          "bob": []
+        },
+        "principal": "bob",
+        "action": "task.approve",
+        "resource": "Request::\"someone-else#-\""
+      },
+      "expected": "Deny",
+      "provenance": "control-plane/src/test/kotlin/com/ridi/oss/proxymonster/controlplane/AuthzTest.kt:130-139",
+      "extractable": true,
+      "cedar_relevant": true,
+      "assertions": [
+        {
+          "kind": "decision_deny",
+          "input": {
+            "principal": "bob",
+            "roles": []
+          },
+          "expected": "Deny"
+        }
+      ]
+    },
+    {
+      "testFile": "control-plane/src/test/kotlin/com/ridi/oss/proxymonster/controlplane/AuthzTest.kt",
+      "testCase": "an approval request scoped to a role is matched via 'resource in Role' — Request carries the role as a Cedar parent",
+      "kind": "decision_allow",
+      "input": {
+        "policies": "AuthzTest.roleScopedApproval",
+        "roles": {
+          "approver1": [
+            "pii-reader"
+          ]
+        },
+        "principal": "approver1",
+        "action": "task.approve",
+        "resource": "Request::\"someone-else#-\"",
+        "resource_parents": [
+          "Role::\"pii-reader\""
+        ],
+        "attrs": {
+          "requester": "User::\"someone-else\""
+        }
+      },
+      "expected": "Allow",
+      "provenance": "control-plane/src/test/kotlin/com/ridi/oss/proxymonster/controlplane/AuthzTest.kt:156-165",
+      "extractable": true,
+      "cedar_relevant": true,
+      "assertions": [
+        {
+          "kind": "decision_allow",
+          "input": {
+            "roleName": "pii-reader"
+          },
+          "expected": "Allow"
+        }
+      ],
+      "notes": "S6 KEY CASE — this is the dedupeByEuid collision: the Request's Role parent (Role::\"pii-reader\") is the SAME EUID the principal already carries as a parent, so the entity list holds two distinct Entity objects for one EntityUID. The test asserts ALLOW, i.e. that dedupeByEuid PREVENTED cedar-java's 'duplicate entity entry' error. It does NOT assert the error itself."
+    },
+    {
+      "testFile": "control-plane/src/test/kotlin/com/ridi/oss/proxymonster/controlplane/AuthzTest.kt",
+      "testCase": "a request scoped to a DIFFERENT role than the policy grants is denied — the Role parent is the request's, not ambient",
+      "kind": "decision_deny",
+      "input": {
+        "policies": "AuthzTest.roleScopedApproval",
+        "roles": {
+          "approver1": [
+            "pii-reader"
+          ]
+        },
+        "principal": "approver1",
+        "action": "task.approve",
+        "resource": "Request::\"someone-else#-\"",
+        "resource_parents": [
+          "Role::\"other-role\""
+        ]
+      },
+      "expected": "Deny",
+      "provenance": "control-plane/src/test/kotlin/com/ridi/oss/proxymonster/controlplane/AuthzTest.kt:167-176",
+      "extractable": true,
+      "cedar_relevant": true,
+      "assertions": [
+        {
+          "kind": "decision_deny",
+          "input": {
+            "roleName": "other-role"
+          },
+          "expected": "Deny"
+        }
+      ]
+    },
+    {
+      "testFile": "control-plane/src/test/kotlin/com/ridi/oss/proxymonster/controlplane/AuthzTest.kt",
+      "testCase": "task lifecycle and grant revoke actions validate against the bundled schema",
+      "kind": "validate_accept",
+      "input": {
+        "schema": "corpus/schema.cedarschema",
+        "strict": true,
+        "sources": [
+          "permit(principal, action == Action::\"task.request\", resource);",
+          "permit(principal, action == Action::\"task.approve\", resource);",
+          "permit(principal, action == Action::\"task.read\", resource);",
+          "permit(principal, action == Action::\"task.assume\", resource);",
+          "permit(principal, action == Action::\"task.cancel\", resource);",
+          "permit(principal, action == Action::\"task.delete\", resource);",
+          "permit(principal, action == Action::\"grant.revoke\", resource);"
+        ]
+      },
+      "expected": "CedarSchema.validate(src).isEmpty() for all 7",
+      "provenance": "control-plane/src/test/kotlin/com/ridi/oss/proxymonster/controlplane/AuthzTest.kt:182-194",
+      "extractable": true,
+      "cedar_relevant": true,
+      "assertions": [
+        {
+          "kind": "validate_accept",
+          "input": "permit(principal, action == Action::\"task.request\", resource);",
+          "expected": "no errors"
+        },
+        {
+          "kind": "validate_accept",
+          "input": "permit(principal, action == Action::\"task.approve\", resource);",
+          "expected": "no errors"
+        },
+        {
+          "kind": "validate_accept",
+          "input": "permit(principal, action == Action::\"task.read\", resource);",
+          "expected": "no errors"
+        },
+        {
+          "kind": "validate_accept",
+          "input": "permit(principal, action == Action::\"task.assume\", resource);",
+          "expected": "no errors"
+        },
+        {
+          "kind": "validate_accept",
+          "input": "permit(principal, action == Action::\"task.cancel\", resource);",
+          "expected": "no errors"
+        },
+        {
+          "kind": "validate_accept",
+          "input": "permit(principal, action == Action::\"task.delete\", resource);",
+          "expected": "no errors"
+        },
+        {
+          "kind": "validate_accept",
+          "input": "permit(principal, action == Action::\"grant.revoke\", resource);",
+          "expected": "no errors"
+        }
+      ]
+    },
+    {
+      "testFile": "control-plane/src/test/kotlin/com/ridi/oss/proxymonster/controlplane/AuthzTest.kt",
+      "testCase": "task assume seeds validate and allow only parties or auditor",
+      "kind": "decision_allow",
+      "input": {
+        "policies": {
+          "21": "permit(principal, action == Action::\"task.assume\", resource) when { resource is Request && (resource.requester == principal || (resource has approver && resource.approver == principal)) };",
+          "22": "permit(principal in Role::\"system:auditor\", action == Action::\"task.assume\", resource) when { resource is Request };",
+          "23": "permit(principal in Role::\"system:admin\", action == Action::\"task.read\", resource);"
+        },
+        "roles": {
+          "auditor@example.com": [
+            "system:auditor"
+          ],
+          "admin@example.com": [
+            "system:admin"
+          ]
+        },
+        "resource": "Request::\"requester@example.com#-\"",
+        "attrs": {
+          "requester": "User::\"requester@example.com\"",
+          "approver": "User::\"approver@example.com\"",
+          "executedBy": "User::\"executor@example.com\""
+        },
+        "action": "task.assume"
+      },
+      "expected": "2 validate_accept + 3 Allow + 1 Deny",
+      "provenance": "control-plane/src/test/kotlin/com/ridi/oss/proxymonster/controlplane/AuthzTest.kt:196-223",
+      "extractable": true,
+      "cedar_relevant": true,
+      "assertions": [
+        {
+          "kind": "validate_accept",
+          "input": "policy 21 (parties)",
+          "expected": "no errors"
+        },
+        {
+          "kind": "validate_accept",
+          "input": "policy 22 (auditor)",
+          "expected": "no errors"
+        },
+        {
+          "kind": "decision_allow",
+          "input": {
+            "principal": "requester@example.com"
+          },
+          "expected": "Allow"
+        },
+        {
+          "kind": "decision_allow",
+          "input": {
+            "principal": "approver@example.com"
+          },
+          "expected": "Allow"
+        },
+        {
+          "kind": "decision_allow",
+          "input": {
+            "principal": "auditor@example.com"
+          },
+          "expected": "Allow"
+        },
+        {
+          "kind": "decision_deny",
+          "input": {
+            "principal": "admin@example.com"
+          },
+          "expected": "Deny — task.read grant is not task.assume"
+        }
+      ],
+      "notes": "pins the `resource has approver` guard and that an admin's task.read does NOT confer task.assume"
+    },
+    {
+      "testFile": "control-plane/src/test/kotlin/com/ridi/oss/proxymonster/controlplane/AuthzTest.kt",
+      "testCase": "approval request marshals executedBy as a User attribute",
+      "kind": "decision_allow",
+      "input": {
+        "policies": {
+          "1": "permit(principal, action == Action::\"task.assume\", resource) when { resource has executedBy && resource.executedBy == principal };"
+        },
+        "roles": {},
+        "principal": "executor@example.com",
+        "action": "task.assume",
+        "resource": "Request::\"requester@example.com#-\"",
+        "attrs": {
+          "requester": "User::\"requester@example.com\"",
+          "executedBy": "User::\"executor@example.com\""
+        }
+      },
+      "expected": "Allow",
+      "provenance": "control-plane/src/test/kotlin/com/ridi/oss/proxymonster/controlplane/AuthzTest.kt:225-237",
+      "extractable": true,
+      "cedar_relevant": true,
+      "assertions": [
+        {
+          "kind": "decision_allow",
+          "input": {
+            "executedBy": "executor@example.com"
+          },
+          "expected": "Allow"
+        }
+      ],
+      "notes": "approver ABSENT here; executedBy present -> pins optional-attribute marshalling per INV-A2-3 shape"
+    },
+    {
+      "testFile": "control-plane/src/test/kotlin/com/ridi/oss/proxymonster/controlplane/AuthzTest.kt",
+      "testCase": "retired workflow action ids are rejected by the bundled schema",
+      "kind": "validate_reject",
+      "input": {
+        "schema": "corpus/schema.cedarschema",
+        "strict": true,
+        "sources": [
+          "permit(principal, action == Action::\"workflow.request\", resource);",
+          "permit(principal, action == Action::\"workflow.approve\", resource);",
+          "permit(principal, action == Action::\"workflow.read\", resource);",
+          "permit(principal, action == Action::\"workflow.readResult\", resource);",
+          "permit(principal, action == Action::\"workflow.revoke\", resource);"
+        ]
+      },
+      "expected": "CedarSchema.validate(src).isNotEmpty() for all 5 (undeclared action)",
+      "provenance": "control-plane/src/test/kotlin/com/ridi/oss/proxymonster/controlplane/AuthzTest.kt:239-249",
+      "extractable": true,
+      "cedar_relevant": true,
+      "assertions": [
+        {
+          "kind": "validate_reject",
+          "input": "permit(principal, action == Action::\"workflow.request\", resource);",
+          "expected": "errors non-empty"
+        },
+        {
+          "kind": "validate_reject",
+          "input": "permit(principal, action == Action::\"workflow.approve\", resource);",
+          "expected": "errors non-empty"
+        },
+        {
+          "kind": "validate_reject",
+          "input": "permit(principal, action == Action::\"workflow.read\", resource);",
+          "expected": "errors non-empty"
+        },
+        {
+          "kind": "validate_reject",
+          "input": "permit(principal, action == Action::\"workflow.readResult\", resource);",
+          "expected": "errors non-empty"
+        },
+        {
+          "kind": "validate_reject",
+          "input": "permit(principal, action == Action::\"workflow.revoke\", resource);",
+          "expected": "errors non-empty"
+        }
+      ],
+      "notes": "S1/S2 KEY CASE — the ONLY place cedar-java's REJECT of an undeclared action is pinned at the CedarSchema.validate() level (as opposed to through the store). Note the assertion is only isNotEmpty(): the error MESSAGE TEXT is never pinned, so cedar-go message wording is free to differ."
+    },
+    {
+      "testFile": "control-plane/src/test/kotlin/com/ridi/oss/proxymonster/controlplane/AuthzTest.kt",
+      "testCase": "an approval request scoped to a datasource is matched via 'resource in Datasource' by NAME",
+      "kind": "decision_allow",
+      "input": {
+        "policies": {
+          "1": "permit(principal in Role::\"acme-approver\", action == Action::\"task.approve\", resource) when { resource in Datasource::\"acme-mysql\" };"
+        },
+        "roles": {
+          "approver1": [
+            "acme-approver"
+          ]
+        },
+        "principal": "approver1",
+        "action": "task.approve"
+      },
+      "expected": "Allow for datasourceName=acme-mysql, Deny for some-other-ds",
+      "provenance": "control-plane/src/test/kotlin/com/ridi/oss/proxymonster/controlplane/AuthzTest.kt:251-277",
+      "extractable": true,
+      "cedar_relevant": true,
+      "assertions": [
+        {
+          "kind": "decision_allow",
+          "input": {
+            "resource": "Request::\"someone-else#acme-mysql\"",
+            "resource_parents": [
+              "Datasource::\"acme-mysql\""
+            ]
+          },
+          "expected": "Allow"
+        },
+        {
+          "kind": "decision_deny",
+          "input": {
+            "resource": "Request::\"someone-else#some-other-ds\"",
+            "resource_parents": [
+              "Datasource::\"some-other-ds\""
+            ]
+          },
+          "expected": "Deny"
+        }
+      ],
+      "notes": "INV-A2-2: Request EUID embeds the datasource NAME and the Datasource parent is NAME-keyed"
+    },
+    {
+      "testFile": "control-plane/src/test/kotlin/com/ridi/oss/proxymonster/controlplane/AuthzDatasourceActionTest.kt",
+      "testCase": "a granted role may connect to the named datasource",
+      "kind": "decision_allow",
+      "input": {
+        "policies": "AuthzDatasourceActionTest.seedPolicies",
+        "principal": "alice",
+        "roles": [
+          "batch-writer"
+        ],
+        "action": "datasource.connect",
+        "datasource": "acme-mysql"
+      },
+      "expected": "Allow",
+      "provenance": "control-plane/src/test/kotlin/com/ridi/oss/proxymonster/controlplane/AuthzDatasourceActionTest.kt:66-75",
+      "extractable": true,
+      "cedar_relevant": true,
+      "assertions": [
+        {
+          "kind": "decision_allow",
+          "input": {
+            "resource": "Datasource::\"acme-mysql\"",
+            "attrs": {
+              "name": "acme-mysql"
+            }
+          },
+          "expected": "Allow"
+        }
+      ]
+    },
+    {
+      "testFile": "control-plane/src/test/kotlin/com/ridi/oss/proxymonster/controlplane/AuthzDatasourceActionTest.kt",
+      "testCase": "a granted role may run a granted sql kind on the named datasource",
+      "kind": "decision_allow",
+      "input": {
+        "policies": "AuthzDatasourceActionTest.seedPolicies",
+        "principal": "alice",
+        "roles": [
+          "batch-writer"
+        ],
+        "action": "sql.insert",
+        "datasource": "acme-mysql"
+      },
+      "expected": "Allow",
+      "provenance": "control-plane/src/test/kotlin/com/ridi/oss/proxymonster/controlplane/AuthzDatasourceActionTest.kt:77-86",
+      "extractable": true,
+      "cedar_relevant": true,
+      "assertions": [
+        {
+          "kind": "decision_allow",
+          "input": {
+            "action": "sql.insert"
+          },
+          "expected": "Allow"
+        }
+      ]
+    },
+    {
+      "testFile": "control-plane/src/test/kotlin/com/ridi/oss/proxymonster/controlplane/AuthzDatasourceActionTest.kt",
+      "testCase": "sql-unmaskable follows the preset-development datasource tag",
+      "kind": "decision_allow",
+      "input": {
+        "policies": "AuthzDatasourceActionTest.seedPolicies",
+        "principal": "alice",
+        "roles": [
+          "batch-writer"
+        ],
+        "action": "sql.unmaskable",
+        "datasource": "acme-mysql"
+      },
+      "expected": "Allow with datasourceTags=[system:development]; Deny with []",
+      "provenance": "control-plane/src/test/kotlin/com/ridi/oss/proxymonster/controlplane/AuthzDatasourceActionTest.kt:88-110",
+      "extractable": true,
+      "cedar_relevant": true,
+      "assertions": [
+        {
+          "kind": "decision_allow",
+          "input": {
+            "datasourceTags": [
+              "system:development"
+            ],
+            "resource_parents": [
+              "Tag::\"system:development\""
+            ]
+          },
+          "expected": "Allow"
+        },
+        {
+          "kind": "decision_deny",
+          "input": {
+            "datasourceTags": []
+          },
+          "expected": "Deny"
+        }
+      ],
+      "notes": "INV-A2-1 + INV-A2-7: the posture tag becomes a Tag parent on the Datasource entity"
+    },
+    {
+      "testFile": "control-plane/src/test/kotlin/com/ridi/oss/proxymonster/controlplane/AuthzDatasourceActionTest.kt",
+      "testCase": "an ungranted sql kind is denied — deny-by-default, not absent-equals-allow",
+      "kind": "decision_deny",
+      "input": {
+        "policies": "AuthzDatasourceActionTest.seedPolicies",
+        "principal": "alice",
+        "roles": [
+          "batch-writer"
+        ],
+        "action": "sql.delete",
+        "datasource": "acme-mysql"
+      },
+      "expected": "Deny",
+      "provenance": "control-plane/src/test/kotlin/com/ridi/oss/proxymonster/controlplane/AuthzDatasourceActionTest.kt:112-121",
+      "extractable": true,
+      "cedar_relevant": true,
+      "assertions": [
+        {
+          "kind": "decision_deny",
+          "input": {
+            "action": "sql.delete"
+          },
+          "expected": "Deny"
+        }
+      ]
+    },
+    {
+      "testFile": "control-plane/src/test/kotlin/com/ridi/oss/proxymonster/controlplane/AuthzDatasourceActionTest.kt",
+      "testCase": "the same grant on a different datasource name does not apply — NAME-keyed, not blanket",
+      "kind": "decision_deny",
+      "input": {
+        "policies": "AuthzDatasourceActionTest.seedPolicies",
+        "principal": "alice",
+        "roles": [
+          "batch-writer"
+        ],
+        "action": "datasource.connect",
+        "datasource": "other"
+      },
+      "expected": "Deny",
+      "provenance": "control-plane/src/test/kotlin/com/ridi/oss/proxymonster/controlplane/AuthzDatasourceActionTest.kt:123-132",
+      "extractable": true,
+      "cedar_relevant": true,
+      "assertions": [
+        {
+          "kind": "decision_deny",
+          "input": {
+            "resource": "Datasource::\"other\""
+          },
+          "expected": "Deny"
+        }
+      ]
+    },
+    {
+      "testFile": "control-plane/src/test/kotlin/com/ridi/oss/proxymonster/controlplane/AuthzDatasourceActionTest.kt",
+      "testCase": "no roles at all is denied",
+      "kind": "decision_deny",
+      "input": {
+        "policies": "AuthzDatasourceActionTest.seedPolicies",
+        "principal": "nobody",
+        "roles": [],
+        "action": "datasource.connect",
+        "datasource": "acme-mysql"
+      },
+      "expected": "Deny",
+      "provenance": "control-plane/src/test/kotlin/com/ridi/oss/proxymonster/controlplane/AuthzDatasourceActionTest.kt:134-143",
+      "extractable": true,
+      "cedar_relevant": true,
+      "assertions": [
+        {
+          "kind": "decision_deny",
+          "input": {
+            "roles": []
+          },
+          "expected": "Deny"
+        }
+      ]
+    },
+    {
+      "testFile": "control-plane/src/test/kotlin/com/ridi/oss/proxymonster/controlplane/ColumnAuthzTest.kt",
+      "testCase": "an untagged column in the granted table is unmasked",
+      "kind": "decision_allow",
+      "input": {
+        "policies": "ColumnAuthzTest.seedPolicies",
+        "principal": "alice",
+        "roles": [
+          "analyst"
+        ],
+        "datasource": "acme-pg",
+        "columns": [
+          {
+            "key": "acme.public.users.region",
+            "catalog": "acme",
+            "schema": "public",
+            "table": "users",
+            "column": "region",
+            "tags": []
+          }
+        ]
+      },
+      "expected": "{acme.public.users.region: UNMASKED}",
+      "provenance": "control-plane/src/test/kotlin/com/ridi/oss/proxymonster/controlplane/ColumnAuthzTest.kt:67-76",
+      "extractable": true,
+      "cedar_relevant": true,
+      "assertions": [
+        {
+          "kind": "decision_allow",
+          "input": "result.read.unmasked on Column::\"acme-pg/acme/public/users/region\" (parents: Table::\"acme-pg/acme/public/users\", Datasource::\"acme-pg\")",
+          "expected": "UNMASKED"
+        }
+      ]
+    },
+    {
+      "testFile": "control-plane/src/test/kotlin/com/ridi/oss/proxymonster/controlplane/ColumnAuthzTest.kt",
+      "testCase": "a fully-qualified Column EUID grant matches its exact column",
+      "kind": "decision_allow",
+      "input": {
+        "policies": "ColumnAuthzTest.seedPolicies",
+        "principal": "bob",
+        "roles": [
+          "column-reader"
+        ],
+        "datasource": "acme-pg",
+        "columns": [
+          {
+            "key": "acme.public.users.region",
+            "catalog": "acme",
+            "schema": "public",
+            "table": "users",
+            "column": "region",
+            "tags": []
+          }
+        ]
+      },
+      "expected": "{acme.public.users.region: UNMASKED}",
+      "provenance": "control-plane/src/test/kotlin/com/ridi/oss/proxymonster/controlplane/ColumnAuthzTest.kt:78-87",
+      "extractable": true,
+      "cedar_relevant": true,
+      "assertions": [
+        {
+          "kind": "decision_allow",
+          "input": "resource == Column::... exact-EUID grant",
+          "expected": "UNMASKED"
+        }
+      ]
+    },
+    {
+      "testFile": "control-plane/src/test/kotlin/com/ridi/oss/proxymonster/controlplane/ColumnAuthzTest.kt",
+      "testCase": "an identifier containing a key delimiter is denied fail-closed",
+      "kind": "decision_deny",
+      "input": {
+        "policies": {
+          "9": "permit(principal in Role::\"r\", action == Action::\"result.read.unmasked\", resource);"
+        },
+        "principal": "u",
+        "roles": [
+          "r"
+        ],
+        "datasource": "acme-pg",
+        "columns": [
+          {
+            "key": "slash",
+            "catalog": "acme",
+            "schema": "public",
+            "table": "a/users",
+            "column": "rrn",
+            "tags": []
+          },
+          {
+            "key": "dot",
+            "catalog": "acme",
+            "schema": "pub.lic",
+            "table": "users",
+            "column": "rrn",
+            "tags": []
+          },
+          {
+            "key": "clean",
+            "catalog": "acme",
+            "schema": "public",
+            "table": "users",
+            "column": "rrn",
+            "tags": []
+          }
+        ]
+      },
+      "expected": "{slash: DENIED, dot: DENIED, clean: UNMASKED}",
+      "provenance": "control-plane/src/test/kotlin/com/ridi/oss/proxymonster/controlplane/ColumnAuthzTest.kt:89-113",
+      "extractable": true,
+      "cedar_relevant": true,
+      "assertions": [
+        {
+          "kind": "decision_deny",
+          "input": "table contains '/' -> NO EUID BUILT, never reaches Cedar",
+          "expected": "DENIED"
+        },
+        {
+          "kind": "decision_deny",
+          "input": "schema contains '.' -> NO EUID BUILT, never reaches Cedar",
+          "expected": "DENIED"
+        },
+        {
+          "kind": "decision_allow",
+          "input": "clean identity under a blanket permit",
+          "expected": "UNMASKED"
+        }
+      ],
+      "notes": "INV-A2-6 delimiter guard. The two DENIED verdicts are decided BEFORE Cedar — a Go harness must reproduce the guard, not the engine, for these two."
+    },
+    {
+      "testFile": "control-plane/src/test/kotlin/com/ridi/oss/proxymonster/controlplane/ColumnAuthzTest.kt",
+      "testCase": "a pii-tagged column in the granted table is masked, not unmasked",
+      "kind": "decision_allow",
+      "input": {
+        "policies": "ColumnAuthzTest.seedPolicies",
+        "principal": "alice",
+        "roles": [
+          "analyst"
+        ],
+        "datasource": "acme-pg",
+        "columns": [
+          {
+            "key": "acme.public.users.rrn",
+            "catalog": "acme",
+            "schema": "public",
+            "table": "users",
+            "column": "rrn",
+            "tags": [
+              "pii"
+            ]
+          }
+        ]
+      },
+      "expected": "{acme.public.users.rrn: MASKED}",
+      "provenance": "control-plane/src/test/kotlin/com/ridi/oss/proxymonster/controlplane/ColumnAuthzTest.kt:115-124",
+      "extractable": true,
+      "cedar_relevant": true,
+      "assertions": [
+        {
+          "kind": "decision_deny",
+          "input": "result.read.unmasked (blocked by `unless resource in Tag::\"pii\"`)",
+          "expected": "not allowed"
+        },
+        {
+          "kind": "decision_allow",
+          "input": "result.read.masked",
+          "expected": "MASKED"
+        }
+      ],
+      "notes": "ORDERED: unmasked asked first, masked second; unmasked wins when both allow"
+    },
+    {
+      "testFile": "control-plane/src/test/kotlin/com/ridi/oss/proxymonster/controlplane/ColumnAuthzTest.kt",
+      "testCase": "a column in an ungranted table is denied — deny-by-default, not absent-equals-cleartext",
+      "kind": "decision_deny",
+      "input": {
+        "policies": "ColumnAuthzTest.seedPolicies",
+        "principal": "alice",
+        "roles": [
+          "analyst"
+        ],
+        "datasource": "acme-pg",
+        "columns": [
+          {
+            "key": "acme.public.orders.amount",
+            "catalog": "acme",
+            "schema": "public",
+            "table": "orders",
+            "column": "amount",
+            "tags": []
+          }
+        ]
+      },
+      "expected": "{acme.public.orders.amount: DENIED}",
+      "provenance": "control-plane/src/test/kotlin/com/ridi/oss/proxymonster/controlplane/ColumnAuthzTest.kt:126-135",
+      "extractable": true,
+      "cedar_relevant": true,
+      "assertions": [
+        {
+          "kind": "decision_deny",
+          "input": "orders table has no grant",
+          "expected": "DENIED"
+        }
+      ]
+    },
+    {
+      "testFile": "control-plane/src/test/kotlin/com/ridi/oss/proxymonster/controlplane/ColumnAuthzTest.kt",
+      "testCase": "a pii-tagged column in an UNGRANTED table is denied, not masked — the masked grant is table-scoped",
+      "kind": "decision_deny",
+      "input": {
+        "policies": "ColumnAuthzTest.seedPolicies",
+        "principal": "alice",
+        "roles": [
+          "analyst"
+        ],
+        "datasource": "acme-pg",
+        "columns": [
+          {
+            "key": "acme.public.orders.card",
+            "catalog": "acme",
+            "schema": "public",
+            "table": "orders",
+            "column": "card",
+            "tags": [
+              "pii"
+            ]
+          }
+        ]
+      },
+      "expected": "{acme.public.orders.card: DENIED}",
+      "provenance": "control-plane/src/test/kotlin/com/ridi/oss/proxymonster/controlplane/ColumnAuthzTest.kt:137-148",
+      "extractable": true,
+      "cedar_relevant": true,
+      "assertions": [
+        {
+          "kind": "decision_deny",
+          "input": "pii tag alone does not satisfy the table-scoped masked grant",
+          "expected": "DENIED"
+        }
+      ]
+    },
+    {
+      "testFile": "control-plane/src/test/kotlin/com/ridi/oss/proxymonster/controlplane/ColumnAuthzTest.kt",
+      "testCase": "no roles at all is denied on every column",
+      "kind": "decision_deny",
+      "input": {
+        "policies": "ColumnAuthzTest.seedPolicies",
+        "principal": "nobody",
+        "roles": [],
+        "datasource": "acme-pg",
+        "columns": [
+          {
+            "key": "acme.public.users.region",
+            "catalog": "acme",
+            "schema": "public",
+            "table": "users",
+            "column": "region",
+            "tags": []
+          }
+        ]
+      },
+      "expected": "{acme.public.users.region: DENIED}",
+      "provenance": "control-plane/src/test/kotlin/com/ridi/oss/proxymonster/controlplane/ColumnAuthzTest.kt:150-159",
+      "extractable": true,
+      "cedar_relevant": true,
+      "assertions": [
+        {
+          "kind": "decision_deny",
+          "input": "empty role set",
+          "expected": "DENIED"
+        }
+      ]
+    },
+    {
+      "testFile": "control-plane/src/test/kotlin/com/ridi/oss/proxymonster/controlplane/ColumnAuthzTest.kt",
+      "testCase": "a batch of columns resolves independent verdicts in one call",
+      "kind": "decision_allow",
+      "input": {
+        "policies": "ColumnAuthzTest.seedPolicies",
+        "principal": "alice",
+        "roles": [
+          "analyst"
+        ],
+        "datasource": "acme-pg",
+        "columns": [
+          {
+            "key": "acme.public.users.region",
+            "catalog": "acme",
+            "schema": "public",
+            "table": "users",
+            "column": "region",
+            "tags": []
+          },
+          {
+            "key": "acme.public.users.rrn",
+            "catalog": "acme",
+            "schema": "public",
+            "table": "users",
+            "column": "rrn",
+            "tags": [
+              "pii"
+            ]
+          },
+          {
+            "key": "acme.public.orders.amount",
+            "catalog": "acme",
+            "schema": "public",
+            "table": "orders",
+            "column": "amount",
+            "tags": []
+          }
+        ]
+      },
+      "expected": "{users.region: UNMASKED, users.rrn: MASKED, orders.amount: DENIED}",
+      "provenance": "control-plane/src/test/kotlin/com/ridi/oss/proxymonster/controlplane/ColumnAuthzTest.kt:161-181",
+      "extractable": true,
+      "cedar_relevant": true,
+      "assertions": [
+        {
+          "kind": "decision_allow",
+          "input": "region",
+          "expected": "UNMASKED"
+        },
+        {
+          "kind": "decision_allow",
+          "input": "rrn",
+          "expected": "MASKED"
+        },
+        {
+          "kind": "decision_deny",
+          "input": "amount",
+          "expected": "DENIED"
+        }
+      ],
+      "notes": "INV-A2-5: every input gets an explicit verdict; ONE Entities batch, 2 isAuthorized per column"
+    },
+    {
+      "testFile": "control-plane/src/test/kotlin/com/ridi/oss/proxymonster/controlplane/ColumnAuthzTest.kt",
+      "testCase": "a permit on public users does not cover analytics users with the same table name",
+      "kind": "decision_deny",
+      "input": {
+        "policies": "ColumnAuthzTest.seedPolicies",
+        "principal": "alice",
+        "roles": [
+          "analyst"
+        ],
+        "datasource": "acme-pg",
+        "columns": [
+          {
+            "key": "acme.analytics.users.region",
+            "catalog": "acme",
+            "schema": "analytics",
+            "table": "users",
+            "column": "region",
+            "tags": []
+          }
+        ]
+      },
+      "expected": "{acme.analytics.users.region: DENIED}",
+      "provenance": "control-plane/src/test/kotlin/com/ridi/oss/proxymonster/controlplane/ColumnAuthzTest.kt:183-192",
+      "extractable": true,
+      "cedar_relevant": true,
+      "assertions": [
+        {
+          "kind": "decision_deny",
+          "input": "Table::\"acme-pg/acme/analytics/users\" != the granted EUID",
+          "expected": "DENIED"
+        }
+      ],
+      "notes": "EUID-injectivity suite (9-11) — port as a group with case 3"
+    },
+    {
+      "testFile": "control-plane/src/test/kotlin/com/ridi/oss/proxymonster/controlplane/ColumnAuthzTest.kt",
+      "testCase": "a permit in one catalog does not cover the same schema and table in another catalog",
+      "kind": "decision_deny",
+      "input": {
+        "policies": "ColumnAuthzTest.seedPolicies",
+        "principal": "alice",
+        "roles": [
+          "analyst"
+        ],
+        "datasource": "acme-pg",
+        "columns": [
+          {
+            "key": "other.public.users.region",
+            "catalog": "other",
+            "schema": "public",
+            "table": "users",
+            "column": "region",
+            "tags": []
+          }
+        ]
+      },
+      "expected": "{other.public.users.region: DENIED}",
+      "provenance": "control-plane/src/test/kotlin/com/ridi/oss/proxymonster/controlplane/ColumnAuthzTest.kt:194-203",
+      "extractable": true,
+      "cedar_relevant": true,
+      "assertions": [
+        {
+          "kind": "decision_deny",
+          "input": "Table::\"acme-pg/other/public/users\"",
+          "expected": "DENIED"
+        }
+      ]
+    },
+    {
+      "testFile": "control-plane/src/test/kotlin/com/ridi/oss/proxymonster/controlplane/ColumnAuthzTest.kt",
+      "testCase": "a different datasource with the same qualified table is not covered by the grant",
+      "kind": "decision_deny",
+      "input": {
+        "policies": "ColumnAuthzTest.seedPolicies",
+        "principal": "alice",
+        "roles": [
+          "analyst"
+        ],
+        "datasource": "other-ds",
+        "columns": [
+          {
+            "key": "acme.public.users.region",
+            "catalog": "acme",
+            "schema": "public",
+            "table": "users",
+            "column": "region",
+            "tags": []
+          }
+        ]
+      },
+      "expected": "{acme.public.users.region: DENIED}",
+      "provenance": "control-plane/src/test/kotlin/com/ridi/oss/proxymonster/controlplane/ColumnAuthzTest.kt:205-214",
+      "extractable": true,
+      "cedar_relevant": true,
+      "assertions": [
+        {
+          "kind": "decision_deny",
+          "input": "Table::\"other-ds/acme/public/users\"",
+          "expected": "DENIED"
+        }
+      ]
+    },
+    {
+      "testFile": "control-plane/src/test/kotlin/com/ridi/oss/proxymonster/controlplane/ChannelContextAuthzTest.kt",
+      "testCase": "a channel-conditioned grant fires only for the matching channel",
+      "kind": "decision_allow",
+      "input": {
+        "policies": "ChannelContextAuthzTest.wireOnlyConnect",
+        "principal": "alice",
+        "roles": [
+          "wire-only"
+        ],
+        "action": "datasource.connect",
+        "datasource": "acme-mysql",
+        "context": {
+          "channel": "wire",
+          "network_zones": []
+        }
+      },
+      "expected": "Allow",
+      "provenance": "control-plane/src/test/kotlin/com/ridi/oss/proxymonster/controlplane/ChannelContextAuthzTest.kt:62-65",
+      "extractable": true,
+      "cedar_relevant": true,
+      "assertions": [
+        {
+          "kind": "decision_allow",
+          "input": {
+            "channel": "wire"
+          },
+          "expected": "Allow"
+        }
+      ]
+    },
+    {
+      "testFile": "control-plane/src/test/kotlin/com/ridi/oss/proxymonster/controlplane/ChannelContextAuthzTest.kt",
+      "testCase": "the same grant does not apply on a different channel",
+      "kind": "decision_deny",
+      "input": {
+        "policies": "ChannelContextAuthzTest.wireOnlyConnect",
+        "context": {
+          "channel": "editor",
+          "network_zones": []
+        }
+      },
+      "expected": "Deny",
+      "provenance": "control-plane/src/test/kotlin/com/ridi/oss/proxymonster/controlplane/ChannelContextAuthzTest.kt:67-70",
+      "extractable": true,
+      "cedar_relevant": true,
+      "assertions": [
+        {
+          "kind": "decision_deny",
+          "input": {
+            "channel": "editor"
+          },
+          "expected": "Deny"
+        }
+      ]
+    },
+    {
+      "testFile": "control-plane/src/test/kotlin/com/ridi/oss/proxymonster/controlplane/ChannelContextAuthzTest.kt",
+      "testCase": "an absent channel fails the guard closed",
+      "kind": "decision_deny",
+      "input": {
+        "policies": "ChannelContextAuthzTest.wireOnlyConnect",
+        "context": {
+          "network_zones": [],
+          "tags": []
+        },
+        "note": "channel key OMITTED from the Cedar context map, not empty-string"
+      },
+      "expected": "Deny",
+      "provenance": "control-plane/src/test/kotlin/com/ridi/oss/proxymonster/controlplane/ChannelContextAuthzTest.kt:72-76",
+      "extractable": true,
+      "cedar_relevant": true,
+      "assertions": [
+        {
+          "kind": "decision_deny",
+          "input": {
+            "channel": null
+          },
+          "expected": "Deny — `context has channel` is false"
+        }
+      ],
+      "notes": "INV-A2-8: optional-attribute ABSENCE (omitted key) is the fail-closed signal"
+    },
+    {
+      "testFile": "control-plane/src/test/kotlin/com/ridi/oss/proxymonster/controlplane/ChannelContextAuthzTest.kt",
+      "testCase": "an unguarded optional-attr policy is rejected at engine construction",
+      "kind": "construction_throws",
+      "input": {
+        "policies": {
+          "1": "permit(principal, action == Action::\"datasource.connect\", resource) when { context.channel == \"wire\" };"
+        }
+      },
+      "expected": "CedarEngine(List) throws IllegalStateException (Kotlin `check`) because CedarSchema.validate returned a non-empty error list",
+      "provenance": "control-plane/src/test/kotlin/com/ridi/oss/proxymonster/controlplane/ChannelContextAuthzTest.kt:78-85",
+      "extractable": true,
+      "cedar_relevant": true,
+      "assertions": [
+        {
+          "kind": "validate_reject",
+          "input": "when { context.channel == \"wire\" } (no `has` guard)",
+          "expected": "errors non-empty -> construction_throws"
+        },
+        {
+          "kind": "construction_throws",
+          "input": "CedarEngine(listOf(1L to unguarded))",
+          "expected": "IllegalStateException"
+        }
+      ],
+      "notes": "S2 KEY CASE — this is a SEMANTIC (validationErrors) rejection, not a parse error. It is the cleanest probe for whether cedar-go's strict validator flags an unguarded optional attribute read. Message text is NOT pinned. Kotlin message prefix: 'authz: enabled cedar policy failed schema validation at startup: policy #1: <errors>'"
+    },
+    {
+      "testFile": "control-plane/src/test/kotlin/com/ridi/oss/proxymonster/controlplane/ElevationContextTagTest.kt",
+      "testCase": "rolesOf exposes the wired RoleSource",
+      "kind": "not_cedar",
+      "input": {
+        "roles": {
+          "alice": [
+            "analyst",
+            "approver"
+          ]
+        }
+      },
+      "expected": "rolesOf(alice) == {analyst, approver}; rolesOf(nobody) == {}",
+      "provenance": "control-plane/src/test/kotlin/com/ridi/oss/proxymonster/controlplane/ElevationContextTagTest.kt:68-73",
+      "extractable": true,
+      "cedar_relevant": false,
+      "assertions": [
+        {
+          "kind": "not_cedar",
+          "input": "Authz.rolesOf delegation",
+          "expected": "the wired RoleSource's value"
+        }
+      ],
+      "notes": "no Cedar involved — a pure accessor test; portable but yields no S1 signal"
+    },
+    {
+      "testFile": "control-plane/src/test/kotlin/com/ridi/oss/proxymonster/controlplane/ElevationContextTagTest.kt",
+      "testCase": "a requester_ip-derived tag gates a TASK_APPROVE elevation decision (Access-kt Approvals-kt shape)",
+      "kind": "decision_allow",
+      "input": {
+        "policies": "ElevationContextTagTest.tagPair",
+        "roles": {
+          "approver": [
+            "reviewer"
+          ]
+        },
+        "principal": "approver",
+        "action": "task.approve",
+        "datasourceName": "acme-prod",
+        "resource": "Request::\"requester#acme-prod\"",
+        "two_pass": true
+      },
+      "expected": "Allow for requesterIp=100.100.5.5; Deny for 10.0.0.1",
+      "provenance": "control-plane/src/test/kotlin/com/ridi/oss/proxymonster/controlplane/ElevationContextTagTest.kt:75-88",
+      "extractable": true,
+      "cedar_relevant": true,
+      "assertions": [
+        {
+          "kind": "decision_allow",
+          "input": {
+            "requesterIp": "100.100.5.5",
+            "pass1_expected_tags": [
+              "trusted-network"
+            ]
+          },
+          "expected": "Allow"
+        },
+        {
+          "kind": "decision_deny",
+          "input": {
+            "requesterIp": "10.0.0.1",
+            "pass1_expected_tags": []
+          },
+          "expected": "Deny"
+        }
+      ],
+      "notes": "full two-pass through authorizeWithContext; pass-1 context omits `tags`"
+    },
+    {
+      "testFile": "control-plane/src/test/kotlin/com/ridi/oss/proxymonster/controlplane/ElevationContextTagTest.kt",
+      "testCase": "a null datasource derives no tags — a tag-conditioned permit fails closed",
+      "kind": "decision_deny",
+      "input": {
+        "policies": "ElevationContextTagTest.tagPair",
+        "roles": {
+          "approver": [
+            "reviewer"
+          ]
+        },
+        "requesterIp": "100.100.5.5",
+        "datasourceName": null
+      },
+      "expected": "Deny — no pass-1 runs at all, tags stays empty",
+      "provenance": "control-plane/src/test/kotlin/com/ridi/oss/proxymonster/controlplane/ElevationContextTagTest.kt:90-99",
+      "extractable": true,
+      "cedar_relevant": true,
+      "assertions": [
+        {
+          "kind": "decision_deny",
+          "input": {
+            "datasourceName": null,
+            "requesterIp": "100.100.5.5"
+          },
+          "expected": "Deny"
+        }
+      ],
+      "notes": "INV-A2-14 half 1: no pseudo-datasource synthesised"
+    },
+    {
+      "testFile": "control-plane/src/test/kotlin/com/ridi/oss/proxymonster/controlplane/ElevationContextTagTest.kt",
+      "testCase": "a null datasource still passes requester_ip through to Cedar",
+      "kind": "decision_allow",
+      "input": {
+        "policies": {
+          "3": "permit(principal in Role::\"reviewer\", action == Action::\"task.approve\", resource) when { context has requester_ip && context.requester_ip.isInRange(ip(\"100.100.0.0/16\")) };"
+        },
+        "roles": {
+          "approver": [
+            "reviewer"
+          ]
+        },
+        "requesterIp": "100.100.5.5",
+        "datasourceName": null
+      },
+      "expected": "Allow",
+      "provenance": "control-plane/src/test/kotlin/com/ridi/oss/proxymonster/controlplane/ElevationContextTagTest.kt:101-118",
+      "extractable": true,
+      "cedar_relevant": true,
+      "assertions": [
+        {
+          "kind": "decision_allow",
+          "input": {
+            "datasourceName": null,
+            "requesterIp": "100.100.5.5"
+          },
+          "expected": "Allow"
+        }
+      ],
+      "notes": "INV-A2-14 half 2: raw signals still reach Cedar with no datasource in scope"
+    },
+    {
+      "testFile": "control-plane/src/test/kotlin/com/ridi/oss/proxymonster/controlplane/ElevationContextTagTest.kt",
+      "testCase": "a datasource-scoped tag rule fires only for the datasource in scope",
+      "kind": "decision_allow",
+      "input": {
+        "policies": {
+          "1": "permit(principal, action == Action::\"context.tag::trusted-network\", resource == Datasource::\"acme-prod\") when { context has requester_ip && context.requester_ip.isInRange(ip(\"100.100.0.0/16\")) };",
+          "2": "permit(principal in Role::\"reviewer\", action == Action::\"task.approve\", resource) when { context has tags && context.tags.contains(\"trusted-network\") };"
+        },
+        "roles": {
+          "approver": [
+            "reviewer"
+          ]
+        },
+        "requesterIp": "100.100.5.5"
+      },
+      "expected": "Allow for acme-prod; Deny for other-ds",
+      "provenance": "control-plane/src/test/kotlin/com/ridi/oss/proxymonster/controlplane/ElevationContextTagTest.kt:120-135",
+      "extractable": true,
+      "cedar_relevant": true,
+      "assertions": [
+        {
+          "kind": "decision_allow",
+          "input": {
+            "datasourceName": "acme-prod"
+          },
+          "expected": "Allow"
+        },
+        {
+          "kind": "decision_deny",
+          "input": {
+            "datasourceName": "other-ds"
+          },
+          "expected": "Deny"
+        }
+      ]
+    },
+    {
+      "testFile": "control-plane/src/test/kotlin/com/ridi/oss/proxymonster/controlplane/ElevationContextTagTest.kt",
+      "testCase": "datasourceTags reach the tag rule's Datasource entity (preset posture)",
+      "kind": "decision_allow",
+      "input": {
+        "policies": {
+          "1": "permit(principal, action == Action::\"context.tag::trusted-network\", resource) when { resource in Tag::\"system:development\" };",
+          "2": "permit(principal in Role::\"reviewer\", action == Action::\"task.approve\", resource) when { context has tags && context.tags.contains(\"trusted-network\") };"
+        },
+        "roles": {
+          "approver": [
+            "reviewer"
+          ]
+        },
+        "context": {}
+      },
+      "expected": "Allow for acme-dev + datasourceTags=[system:development]; Deny for acme-prod + []",
+      "provenance": "control-plane/src/test/kotlin/com/ridi/oss/proxymonster/controlplane/ElevationContextTagTest.kt:137-158",
+      "extractable": true,
+      "cedar_relevant": true,
+      "assertions": [
+        {
+          "kind": "decision_allow",
+          "input": {
+            "datasourceName": "acme-dev",
+            "datasourceTags": [
+              "system:development"
+            ]
+          },
+          "expected": "Allow"
+        },
+        {
+          "kind": "decision_deny",
+          "input": {
+            "datasourceName": "acme-prod",
+            "datasourceTags": []
+          },
+          "expected": "Deny"
+        }
+      ],
+      "notes": "pass-1's Datasource entity carries posture Tag parents (INV-A2-7 filter applies)"
+    },
+    {
+      "testFile": "control-plane/src/test/kotlin/com/ridi/oss/proxymonster/controlplane/ElevationContextTagTest.kt",
+      "testCase": "tag derivation and final authorization share ONE role snapshot — no second, disagreeing resolution",
+      "kind": "decision_allow",
+      "input": {
+        "policies": "ElevationContextTagTest.tagPair",
+        "roleSource": "returns {reviewer} on call #1, {} on every later call",
+        "principal": "approver",
+        "requesterIp": "100.100.5.5",
+        "datasourceName": "acme-prod"
+      },
+      "expected": "Allow AND RoleSource invoked exactly once",
+      "provenance": "control-plane/src/test/kotlin/com/ridi/oss/proxymonster/controlplane/ElevationContextTagTest.kt:160-177",
+      "extractable": true,
+      "cedar_relevant": true,
+      "assertions": [
+        {
+          "kind": "decision_allow",
+          "input": "flaky RoleSource, one snapshot",
+          "expected": "Allow"
+        },
+        {
+          "kind": "not_cedar",
+          "input": "AtomicInteger call count",
+          "expected": "== 1"
+        }
+      ],
+      "notes": "INV-A2-10. Needs an observable role-resolution counter in Go, like buildCount."
+    },
+    {
+      "testFile": "control-plane/src/test/kotlin/com/ridi/oss/proxymonster/controlplane/TagResolutionTest.kt",
+      "testCase": "a tag rule loads though its action is not predefined, and fires when its condition holds",
+      "kind": "decision_allow",
+      "input": {
+        "policies": "TagResolutionTest.cidrTagRule",
+        "principal": "alice",
+        "roles": [],
+        "datasource": "acme-prod",
+        "rawContext": {
+          "requesterIp": "100.100.5.5"
+        },
+        "pass1_action": "Action::\"context.tag::trusted-network\"",
+        "augmented_schema": "base schema + action \"context.tag::trusted-network\" appliesTo { principal: [User, Role], resource: [Datasource], context: { channel?: String, requester_ip?: ipaddr, tailscale_caps?: Set<String> } };"
+      },
+      "expected": "resolveContextTags == {\"trusted-network\"}",
+      "provenance": "control-plane/src/test/kotlin/com/ridi/oss/proxymonster/controlplane/TagResolutionTest.kt:59-63",
+      "extractable": true,
+      "cedar_relevant": true,
+      "assertions": [
+        {
+          "kind": "validate_accept",
+          "input": "the tag rule validates against the AUGMENTED schema",
+          "expected": "no errors"
+        },
+        {
+          "kind": "decision_allow",
+          "input": "pass-1 isAuthorized on the generated action",
+          "expected": "Allow -> tag earned"
+        }
+      ],
+      "notes": "S3 KEY CASE — the single most direct test of the schemaFor TEXT-augmentation trick. If cedar-go cannot append a generated action decl to schema text and re-parse, this case cannot pass and the whole tag mechanism needs rewriting."
+    },
+    {
+      "testFile": "control-plane/src/test/kotlin/com/ridi/oss/proxymonster/controlplane/TagResolutionTest.kt",
+      "testCase": "the tag is absent when the raw signal does not match — fail closed",
+      "kind": "decision_deny",
+      "input": {
+        "policies": "TagResolutionTest.cidrTagRule",
+        "datasource": "acme-prod"
+      },
+      "expected": "empty tag set for requesterIp=10.0.0.1 AND for requesterIp=null",
+      "provenance": "control-plane/src/test/kotlin/com/ridi/oss/proxymonster/controlplane/TagResolutionTest.kt:65-69",
+      "extractable": true,
+      "cedar_relevant": true,
+      "assertions": [
+        {
+          "kind": "decision_deny",
+          "input": {
+            "requesterIp": "10.0.0.1"
+          },
+          "expected": "no tag"
+        },
+        {
+          "kind": "decision_deny",
+          "input": {
+            "requesterIp": null
+          },
+          "expected": "no tag — requester_ip key omitted, `has` guard false"
+        }
+      ],
+      "notes": "INV-A2-13 pass-1 fail-closed"
+    },
+    {
+      "testFile": "control-plane/src/test/kotlin/com/ridi/oss/proxymonster/controlplane/TagResolutionTest.kt",
+      "testCase": "an empty vocabulary short-circuits to no tags",
+      "kind": "not_cedar",
+      "input": {
+        "policies": {
+          "2": "permit(principal, action == Action::\"datasource.connect\", resource);"
+        },
+        "requesterIp": "100.100.5.5"
+      },
+      "expected": "empty tag set, with NO isAuthorized call made",
+      "provenance": "control-plane/src/test/kotlin/com/ridi/oss/proxymonster/controlplane/TagResolutionTest.kt:71-75",
+      "extractable": true,
+      "cedar_relevant": false,
+      "assertions": [
+        {
+          "kind": "not_cedar",
+          "input": "extractContextTagNames over the enabled set == {}",
+          "expected": "resolveContextTags returns empty without evaluating"
+        }
+      ],
+      "notes": "tests the regex-derived vocabulary + short-circuit, not a Cedar decision"
+    },
+    {
+      "testFile": "control-plane/src/test/kotlin/com/ridi/oss/proxymonster/controlplane/TagResolutionTest.kt",
+      "testCase": "a datasource-scoped tag rule fires only for the named datasource",
+      "kind": "decision_allow",
+      "input": {
+        "policies": {
+          "1": "permit(principal, action == Action::\"context.tag::trusted-network\", resource == Datasource::\"acme-prod\") when { context has requester_ip && context.requester_ip.isInRange(ip(\"100.100.0.0/16\")) };"
+        },
+        "requesterIp": "100.100.5.5"
+      },
+      "expected": "{\"trusted-network\"} for acme-prod; {} for other",
+      "provenance": "control-plane/src/test/kotlin/com/ridi/oss/proxymonster/controlplane/TagResolutionTest.kt:77-89",
+      "extractable": true,
+      "cedar_relevant": true,
+      "assertions": [
+        {
+          "kind": "decision_allow",
+          "input": {
+            "datasource": "acme-prod"
+          },
+          "expected": "tag earned"
+        },
+        {
+          "kind": "decision_deny",
+          "input": {
+            "datasource": "other"
+          },
+          "expected": "no tag"
+        }
+      ]
+    },
+    {
+      "testFile": "control-plane/src/test/kotlin/com/ridi/oss/proxymonster/controlplane/TagResolutionTest.kt",
+      "testCase": "a derived tag drives a consuming grant end-to-end",
+      "kind": "decision_allow",
+      "input": {
+        "policies": {
+          "1": "permit(principal, action == Action::\"context.tag::trusted-network\", resource) when { context has requester_ip && context.requester_ip.isInRange(ip(\"100.100.0.0/16\")) };",
+          "2": "permit(principal in Role::\"analyst\", action == Action::\"datasource.connect\", resource == Datasource::\"acme-prod\") when { context has tags && context.tags.contains(\"trusted-network\") };"
+        },
+        "principal": "alice",
+        "roles": [
+          "analyst"
+        ],
+        "datasource": "acme-prod",
+        "requesterIp": "100.100.5.5"
+      },
+      "expected": "Allow with the derived tag; Deny with tags=∅",
+      "provenance": "control-plane/src/test/kotlin/com/ridi/oss/proxymonster/controlplane/TagResolutionTest.kt:91-110",
+      "extractable": true,
+      "cedar_relevant": true,
+      "assertions": [
+        {
+          "kind": "decision_allow",
+          "input": {
+            "tags": [
+              "trusted-network"
+            ]
+          },
+          "expected": "Allow"
+        },
+        {
+          "kind": "decision_deny",
+          "input": {
+            "tags": []
+          },
+          "expected": "Deny"
+        }
+      ],
+      "notes": "the full two-pass loop; also pins that BOTH policies validate — the consumer against the BASE schema (it targets no context.tag action), the producer against the augmented one"
+    },
+    {
+      "testFile": "control-plane/src/test/kotlin/com/ridi/oss/proxymonster/controlplane/TagResolutionTest.kt",
+      "testCase": "an unguarded tag-on-tag rule is rejected at construction — tags absent from the tag-action schema",
+      "kind": "construction_throws",
+      "input": {
+        "policies": {
+          "1": "permit(principal, action == Action::\"context.tag::derived\", resource) when { context.tags.contains(\"other\") };"
+        }
+      },
+      "expected": "CedarEngine(List) throws IllegalStateException",
+      "provenance": "control-plane/src/test/kotlin/com/ridi/oss/proxymonster/controlplane/TagResolutionTest.kt:112-121",
+      "extractable": true,
+      "cedar_relevant": true,
+      "assertions": [
+        {
+          "kind": "validate_reject",
+          "input": "reads context.tags, which the GENERATED tag-action context omits",
+          "expected": "errors non-empty (unknown attribute) -> throws"
+        },
+        {
+          "kind": "construction_throws",
+          "input": "CedarEngine(unguarded)",
+          "expected": "IllegalStateException"
+        }
+      ],
+      "notes": "S3 + INV-A2-12 half 1. This is the sharpest S3 sub-probe: it only rejects if the generated action's NARROWER context (channel/requester_ip/tailscale_caps, no tags) actually takes effect. A Go port that reuses the RequestContext common type here would wrongly ACCEPT and silently open the tag-on-tag hole."
+    },
+    {
+      "testFile": "control-plane/src/test/kotlin/com/ridi/oss/proxymonster/controlplane/TagResolutionTest.kt",
+      "testCase": "a guarded tag-on-tag rule loads but can never earn a tag — no recursion",
+      "kind": "decision_deny",
+      "input": {
+        "policies": {
+          "1": "permit(principal, action == Action::\"context.tag::derived\", resource) when { context has tags && context.tags.contains(\"other\") };"
+        },
+        "rawContext": {
+          "tags": [
+            "other"
+          ]
+        },
+        "datasource": "acme-prod"
+      },
+      "expected": "validates+loads, and resolveContextTags returns empty",
+      "provenance": "control-plane/src/test/kotlin/com/ridi/oss/proxymonster/controlplane/TagResolutionTest.kt:123-137",
+      "extractable": true,
+      "cedar_relevant": true,
+      "assertions": [
+        {
+          "kind": "validate_accept",
+          "input": "`context has tags` guard validates even though tags is undeclared",
+          "expected": "no errors — Cedar allows `has` on an absent/undeclared attr"
+        },
+        {
+          "kind": "decision_deny",
+          "input": "pass-1 omits tags from the eval context (includeTags=false)",
+          "expected": "no tag"
+        }
+      ],
+      "notes": "INV-A2-12 half 2. NOTE the asymmetry a Go port must reproduce exactly: an UNGUARDED read of the undeclared `tags` is a validation ERROR, a GUARDED read is VALID. Both halves must hold."
+    },
+    {
+      "testFile": "control-plane/src/test/kotlin/com/ridi/oss/proxymonster/controlplane/TagResolutionTest.kt",
+      "testCase": "effectiveAuthzContext makes channel authoritative and discards caller-supplied tags",
+      "kind": "decision_deny",
+      "input": {
+        "policies": "TagResolutionTest.cidrTagRule",
+        "caller_context": {
+          "channel": "editor",
+          "tags": [
+            "injected",
+            "trusted-network"
+          ],
+          "requesterIp": "10.0.0.1"
+        },
+        "channel_enum": "Channel.WIRE",
+        "datasource": "acme-prod"
+      },
+      "expected": "channel==\"wire\"; tags=={} for ip 10.0.0.1; tags=={\"trusted-network\"} for 100.100.5.5",
+      "provenance": "control-plane/src/test/kotlin/com/ridi/oss/proxymonster/controlplane/TagResolutionTest.kt:139-156",
+      "extractable": true,
+      "cedar_relevant": true,
+      "assertions": [
+        {
+          "kind": "decision_deny",
+          "input": {
+            "requesterIp": "10.0.0.1"
+          },
+          "expected": "tags empty — injected tags discarded"
+        },
+        {
+          "kind": "decision_allow",
+          "input": {
+            "requesterIp": "100.100.5.5"
+          },
+          "expected": "tags == {\"trusted-network\"} only"
+        },
+        {
+          "kind": "not_cedar",
+          "input": "channel override",
+          "expected": "\"wire\" wins over caller \"editor\""
+        }
+      ],
+      "notes": "INV-A2-9. CROSS-AREA: effectiveAuthzContext + Channel live in A6 Query.kt, not A2. Pure (no DB), but porting it needs A6's overlay function."
+    },
+    {
+      "testFile": "control-plane/src/test/kotlin/com/ridi/oss/proxymonster/controlplane/TagResolutionTest.kt",
+      "testCase": "the dangling-tag lint flags a consumer with no producer and a producer with no consumer",
+      "kind": "not_cedar",
+      "input": {
+        "enabledSources": [
+          "a consumer of \"ghost\" with no producer",
+          "cidrTagRule alone",
+          "a matched producer/consumer pair"
+        ]
+      },
+      "expected": "substring assertions: \"\\\"ghost\\\"\" + \"no tag rule produces\"; \"\\\"trusted-network\\\"\" + \"no policy consumes\"; empty for the matched pair",
+      "provenance": "control-plane/src/test/kotlin/com/ridi/oss/proxymonster/controlplane/TagResolutionTest.kt:158-181",
+      "extractable": true,
+      "cedar_relevant": false,
+      "assertions": [
+        {
+          "kind": "not_cedar",
+          "input": "contextTagLint (two regexes over policy TEXT)",
+          "expected": "the two diagnostic strings, sorted"
+        }
+      ],
+      "notes": "no Cedar engine involved — pure regex. Note assertions use `contains`, so exact message wording is only partially pinned (the quoted tag name + one fixed phrase)."
+    },
+    {
+      "testFile": "control-plane/src/test/kotlin/com/ridi/oss/proxymonster/controlplane/AdminGateTest.kt",
+      "testCase": "no admin role is denied admin_policies",
+      "kind": "decision_deny",
+      "input": {
+        "policies": [
+          "MIGRATION_ENABLED",
+          "permit(principal in Role::\"system:admin\", action in [Action::\"admin.datasources\", Action::\"admin.policies\", Action::\"admin.identity\"], resource);"
+        ],
+        "principal": "analyst@example.com",
+        "roles": [],
+        "action": "admin.policies",
+        "resource": "System::\"system\""
+      },
+      "expected": "Deny",
+      "provenance": "control-plane/src/test/kotlin/com/ridi/oss/proxymonster/controlplane/AdminGateTest.kt:75-79",
+      "extractable": true,
+      "cedar_relevant": true,
+      "assertions": [
+        {
+          "kind": "decision_deny",
+          "input": {
+            "roles": []
+          },
+          "expected": "Deny"
+        }
+      ],
+      "db_coupled": [
+        "Flyway migration to obtain the seed",
+        "RoleResolver.resolve"
+      ],
+      "notes": "§10 classifies this suite as `unit`; it is in fact DB-backed (requireDockerOrSkip + Flyway + SharedPostgres, AdminGateTest.kt:43-51). policy set = the 29 enabled MIGRATION rows + one created USER row 'test-admin-grant' (AdminGateTest.kt:64-72); roles are literal (admin@example.com holds system:admin via principal_role, analyst@example.com holds none)"
+    },
+    {
+      "testFile": "control-plane/src/test/kotlin/com/ridi/oss/proxymonster/controlplane/AdminGateTest.kt",
+      "testCase": "system-admin role is allowed admin_policies",
+      "kind": "decision_allow",
+      "input": {
+        "policies": [
+          "MIGRATION_ENABLED",
+          "test-admin-grant"
+        ],
+        "principal": "admin@example.com",
+        "roles": [
+          "system:admin"
+        ],
+        "action": "admin.policies",
+        "resource": "System::\"system\""
+      },
+      "expected": "Allow",
+      "provenance": "control-plane/src/test/kotlin/com/ridi/oss/proxymonster/controlplane/AdminGateTest.kt:81-85",
+      "extractable": true,
+      "cedar_relevant": true,
+      "assertions": [
+        {
+          "kind": "decision_allow",
+          "input": {
+            "roles": [
+              "system:admin"
+            ]
+          },
+          "expected": "Allow"
+        }
+      ],
+      "db_coupled": [
+        "Flyway",
+        "RoleResolver.resolve"
+      ],
+      "notes": "policy set = the 29 enabled MIGRATION rows + one created USER row 'test-admin-grant' (AdminGateTest.kt:64-72); roles are literal (admin@example.com holds system:admin via principal_role, analyst@example.com holds none)"
+    },
+    {
+      "testFile": "control-plane/src/test/kotlin/com/ridi/oss/proxymonster/controlplane/CedarEngineCacheTest.kt",
+      "testCase": "disable invalidates the cache, re-enable and delete both take effect on the next call",
+      "kind": "not_cedar",
+      "input": {
+        "sequence": [
+          "create+enabled -> authorize",
+          "setEnabled(false) -> authorize",
+          "setEnabled(true) -> authorize",
+          "delete -> authorize"
+        ]
+      },
+      "expected": "Allow, Deny, Allow, Deny",
+      "provenance": "control-plane/src/test/kotlin/com/ridi/oss/proxymonster/controlplane/CedarEngineCacheTest.kt:53-90",
+      "extractable": false,
+      "cedar_relevant": false,
+      "assertions": [
+        {
+          "kind": "decision_allow",
+          "input": "policy enabled",
+          "expected": "Allow"
+        },
+        {
+          "kind": "decision_deny",
+          "input": "policy disabled",
+          "expected": "Deny"
+        },
+        {
+          "kind": "decision_allow",
+          "input": "policy re-enabled",
+          "expected": "Allow"
+        },
+        {
+          "kind": "decision_deny",
+          "input": "policy deleted",
+          "expected": "Deny"
+        }
+      ],
+      "extractable_reason": "the property under test is CACHE INVALIDATION on live store mutation (stateVersion polling), not a Cedar verdict. Each of the 4 constituent decisions IS individually tuple-checkable, but the case only has meaning against a mutable store.",
+      "db_coupled": [
+        "CedarPolicyStore CRUD",
+        "stateVersion()"
+      ]
+    },
+    {
+      "testFile": "control-plane/src/test/kotlin/com/ridi/oss/proxymonster/controlplane/CedarEngineCacheTest.kt",
+      "testCase": "isAuthorized only rebuilds the PolicySet when store state changes — O(1) per query",
+      "kind": "not_cedar",
+      "input": {
+        "warm": 1,
+        "then": 25
+      },
+      "expected": "engine.buildCount unchanged across 25 further isAuthorized calls",
+      "provenance": "control-plane/src/test/kotlin/com/ridi/oss/proxymonster/controlplane/CedarEngineCacheTest.kt:92-118",
+      "extractable": false,
+      "cedar_relevant": false,
+      "assertions": [
+        {
+          "kind": "not_cedar",
+          "input": "CedarEngine.buildCount",
+          "expected": "constant after warmup"
+        }
+      ],
+      "extractable_reason": "asserts an implementation counter (buildCount), not a Cedar verdict. Needs an equivalent observable counter in Go or the case cannot be ported (02-authz.md §7).",
+      "db_coupled": [
+        "CedarPolicyStore"
+      ]
+    },
+    {
+      "testFile": "control-plane/src/test/kotlin/com/ridi/oss/proxymonster/controlplane/CedarPolicyStoreTest.kt",
+      "testCase": "V20 system seeds and the V32-converted audit seeds are enabled and validate as one Cedar engine",
+      "kind": "validate_accept",
+      "input": {
+        "policies": "MIGRATION_ENABLED",
+        "schema": "corpus/schema.cedarschema",
+        "strict": true
+      },
+      "expected": "CedarEngine(store) constructs without throwing => ALL 29 enabled migration sources validate with zero errors",
+      "provenance": "control-plane/src/test/kotlin/com/ridi/oss/proxymonster/controlplane/CedarPolicyStoreTest.kt:38-84",
+      "extractable": true,
+      "cedar_relevant": true,
+      "assertions": [
+        {
+          "kind": "validate_accept",
+          "input": "migration source id -1",
+          "expected": "no errors"
+        },
+        {
+          "kind": "validate_accept",
+          "input": "migration source id -2",
+          "expected": "no errors"
+        },
+        {
+          "kind": "validate_accept",
+          "input": "migration source id -3",
+          "expected": "no errors"
+        },
+        {
+          "kind": "validate_accept",
+          "input": "migration source id -4",
+          "expected": "no errors"
+        },
+        {
+          "kind": "validate_accept",
+          "input": "migration source id -5",
+          "expected": "no errors"
+        },
+        {
+          "kind": "validate_accept",
+          "input": "migration source id -14",
+          "expected": "no errors"
+        },
+        {
+          "kind": "validate_accept",
+          "input": "migration source id -15",
+          "expected": "no errors"
+        },
+        {
+          "kind": "validate_accept",
+          "input": "migration source id -16",
+          "expected": "no errors"
+        },
+        {
+          "kind": "validate_accept",
+          "input": "migration source id -18",
+          "expected": "no errors"
+        },
+        {
+          "kind": "validate_accept",
+          "input": "migration source id -19",
+          "expected": "no errors"
+        },
+        {
+          "kind": "validate_accept",
+          "input": "migration source id -20",
+          "expected": "no errors"
+        },
+        {
+          "kind": "validate_accept",
+          "input": "migration source id -21",
+          "expected": "no errors"
+        },
+        {
+          "kind": "validate_accept",
+          "input": "migration source id -22",
+          "expected": "no errors"
+        },
+        {
+          "kind": "validate_accept",
+          "input": "migration source id -23",
+          "expected": "no errors"
+        },
+        {
+          "kind": "validate_accept",
+          "input": "migration source id -24",
+          "expected": "no errors"
+        },
+        {
+          "kind": "validate_accept",
+          "input": "migration source id -25",
+          "expected": "no errors"
+        },
+        {
+          "kind": "validate_accept",
+          "input": "migration source id -100",
+          "expected": "no errors"
+        },
+        {
+          "kind": "validate_accept",
+          "input": "migration source id -110",
+          "expected": "no errors"
+        },
+        {
+          "kind": "validate_accept",
+          "input": "migration source id -120",
+          "expected": "no errors"
+        },
+        {
+          "kind": "validate_accept",
+          "input": "migration source id -130",
+          "expected": "no errors"
+        },
+        {
+          "kind": "validate_accept",
+          "input": "migration source id -200",
+          "expected": "no errors"
+        },
+        {
+          "kind": "validate_accept",
+          "input": "migration source id -201",
+          "expected": "no errors"
+        },
+        {
+          "kind": "validate_accept",
+          "input": "migration source id -202",
+          "expected": "no errors"
+        },
+        {
+          "kind": "validate_accept",
+          "input": "migration source id -230",
+          "expected": "no errors"
+        },
+        {
+          "kind": "validate_accept",
+          "input": "migration source id -231",
+          "expected": "no errors"
+        },
+        {
+          "kind": "validate_accept",
+          "input": "migration source id -232",
+          "expected": "no errors"
+        },
+        {
+          "kind": "validate_accept",
+          "input": "migration source id -233",
+          "expected": "no errors"
+        },
+        {
+          "kind": "validate_accept",
+          "input": "migration source id -234",
+          "expected": "no errors"
+        },
+        {
+          "kind": "validate_accept",
+          "input": "migration source id -235",
+          "expected": "no errors"
+        }
+      ],
+      "db_coupled": [
+        "row metadata: id/name/origin/systemKey/enabled for -1,-2,-3,-4,-5,-21,-22",
+        "app_role 'system:auditor' seeded with 0 principal_role rows",
+        "enabledSources() containment"
+      ],
+      "notes": "S1 PRIMARY CASE. The whole Cedar-side expectation is 'every enabled shipped source validates', which is exactly what corpus/policies.json lets a Go harness check. SURPRISE: the test names V20/V24/V32 but NO such migration files exist — V1..V10 only, and every policy row lives in V8__seed.sql. The names are historical."
+    },
+    {
+      "testFile": "control-plane/src/test/kotlin/com/ridi/oss/proxymonster/controlplane/CedarPolicyStoreTest.kt",
+      "testCase": "a schema-valid policy is created",
+      "kind": "validate_accept",
+      "input": {
+        "source": "permit(principal in Role::\"system:admin\", action == Action::\"admin.datasources\", resource);"
+      },
+      "expected": "accepted (created); origin USER, systemKey null, enabled true, id > 0",
+      "provenance": "control-plane/src/test/kotlin/com/ridi/oss/proxymonster/controlplane/CedarPolicyStoreTest.kt:86-102",
+      "extractable": true,
+      "cedar_relevant": true,
+      "assertions": [
+        {
+          "kind": "validate_accept",
+          "input": "permit(... action == Action::\"admin.datasources\" ...)",
+          "expected": "no errors"
+        }
+      ],
+      "db_coupled": [
+        "origin/systemKey/updatedBy/id-sign row assertions",
+        "enabledSources()"
+      ]
+    },
+    {
+      "testFile": "control-plane/src/test/kotlin/com/ridi/oss/proxymonster/controlplane/CedarPolicyStoreTest.kt",
+      "testCase": "an unparseable policy is rejected with errors, not written",
+      "kind": "validate_reject",
+      "input": {
+        "source": "this is not cedar at all"
+      },
+      "expected": "InvalidCedarPolicyException with errors.isNotEmpty(); no row persisted",
+      "provenance": "control-plane/src/test/kotlin/com/ridi/oss/proxymonster/controlplane/CedarPolicyStoreTest.kt:104-112",
+      "extractable": true,
+      "cedar_relevant": true,
+      "assertions": [
+        {
+          "kind": "validate_reject",
+          "input": "this is not cedar at all",
+          "expected": "errors non-empty (PARSE class)"
+        }
+      ],
+      "db_coupled": [
+        "store.list().size unchanged"
+      ],
+      "notes": "S2 KEY CASE — the PARSE-error class (cedar-java surfaces it in ValidationResponse.errors, top-level). Pair with CedarPolicyStoreTest case 4 (the SEMANTIC class) to test whether cedar-go can distinguish the two. Only isNotEmpty() is asserted — the message text is never pinned."
+    },
+    {
+      "testFile": "control-plane/src/test/kotlin/com/ridi/oss/proxymonster/controlplane/CedarPolicyStoreTest.kt",
+      "testCase": "a policy referencing an unknown action is rejected — schema validation, not just syntax",
+      "kind": "validate_reject",
+      "input": {
+        "source": "permit(principal in Role::\"system:admin\", action == Action::\"totally.unknown\", resource);"
+      },
+      "expected": "InvalidCedarPolicyException with errors.isNotEmpty()",
+      "provenance": "control-plane/src/test/kotlin/com/ridi/oss/proxymonster/controlplane/CedarPolicyStoreTest.kt:114-126",
+      "extractable": true,
+      "cedar_relevant": true,
+      "assertions": [
+        {
+          "kind": "validate_reject",
+          "input": "action == Action::\"totally.unknown\"",
+          "expected": "errors non-empty (SEMANTIC class: success.validationErrors)"
+        }
+      ],
+      "notes": "S2 KEY CASE — the SEMANTIC/ill-typed class. It PARSES fine, so a Go validator that only parses would wrongly accept it and let an unknown-action policy load."
+    },
+    {
+      "testFile": "control-plane/src/test/kotlin/com/ridi/oss/proxymonster/controlplane/CedarPolicyStoreTest.kt",
+      "testCase": "update rejects invalid cedar and leaves the existing row untouched",
+      "kind": "validate_reject",
+      "input": {
+        "source": "not cedar"
+      },
+      "expected": "InvalidCedarPolicyException; cedarSrc and updatedBy unchanged",
+      "provenance": "control-plane/src/test/kotlin/com/ridi/oss/proxymonster/controlplane/CedarPolicyStoreTest.kt:128-144",
+      "extractable": true,
+      "cedar_relevant": true,
+      "assertions": [
+        {
+          "kind": "validate_reject",
+          "input": "not cedar",
+          "expected": "errors non-empty"
+        }
+      ],
+      "db_coupled": [
+        "row unchanged after rejected update"
+      ],
+      "notes": "not enumerated in 02-authz.md §10's list of 8 (the header correctly says 9 cases)"
+    },
+    {
+      "testFile": "control-plane/src/test/kotlin/com/ridi/oss/proxymonster/controlplane/CedarPolicyStoreTest.kt",
+      "testCase": "enable and disable round-trip into enabledSources",
+      "kind": "not_cedar",
+      "input": {},
+      "expected": "enabledSources() contains / does not contain the id as toggled",
+      "provenance": "control-plane/src/test/kotlin/com/ridi/oss/proxymonster/controlplane/CedarPolicyStoreTest.kt:146-167",
+      "extractable": false,
+      "cedar_relevant": false,
+      "assertions": [
+        {
+          "kind": "not_cedar",
+          "input": "setEnabled + enabledSources()",
+          "expected": "membership toggles"
+        }
+      ],
+      "extractable_reason": "pure store behaviour; no Cedar verdict",
+      "db_coupled": [
+        "all of it"
+      ]
+    },
+    {
+      "testFile": "control-plane/src/test/kotlin/com/ridi/oss/proxymonster/controlplane/CedarPolicyStoreTest.kt",
+      "testCase": "enabling a stored-malformed row is rejected and leaves it disabled (validated on load)",
+      "kind": "validate_reject",
+      "input": {
+        "source": "this is not cedar",
+        "inserted_out_of_band": true
+      },
+      "expected": "setEnabled(true) throws InvalidCedarPolicyException; row stays disabled and never reaches enabledSources()",
+      "provenance": "control-plane/src/test/kotlin/com/ridi/oss/proxymonster/controlplane/CedarPolicyStoreTest.kt:169-184",
+      "extractable": true,
+      "cedar_relevant": true,
+      "assertions": [
+        {
+          "kind": "validate_reject",
+          "input": "this is not cedar",
+          "expected": "errors non-empty"
+        }
+      ],
+      "db_coupled": [
+        "raw INSERT bypassing create()",
+        "row stays enabled=false"
+      ],
+      "notes": "INV-A2-21. Cedar half == the same validate_reject as case 3."
+    },
+    {
+      "testFile": "control-plane/src/test/kotlin/com/ridi/oss/proxymonster/controlplane/CedarPolicyStoreTest.kt",
+      "testCase": "delete removes the row",
+      "kind": "not_cedar",
+      "input": {},
+      "expected": "delete true then false; get null",
+      "provenance": "control-plane/src/test/kotlin/com/ridi/oss/proxymonster/controlplane/CedarPolicyStoreTest.kt:186-198",
+      "extractable": false,
+      "cedar_relevant": false,
+      "assertions": [
+        {
+          "kind": "not_cedar",
+          "input": "store.delete",
+          "expected": "true then false"
+        }
+      ],
+      "extractable_reason": "pure store behaviour; no Cedar verdict",
+      "db_coupled": [
+        "all of it"
+      ]
+    },
+    {
+      "testFile": "control-plane/src/test/kotlin/com/ridi/oss/proxymonster/controlplane/CedarPolicyStoreTest.kt",
+      "testCase": "stateVersion monotonically bumps on create, setEnabled, and delete — CedarEngine's cache-invalidation signal",
+      "kind": "not_cedar",
+      "input": {},
+      "expected": "v1>v0, v2>v1, v3>v2",
+      "provenance": "control-plane/src/test/kotlin/com/ridi/oss/proxymonster/controlplane/CedarPolicyStoreTest.kt:200-220",
+      "extractable": false,
+      "cedar_relevant": false,
+      "assertions": [
+        {
+          "kind": "not_cedar",
+          "input": "AtomicLong version",
+          "expected": "strictly increasing"
+        }
+      ],
+      "extractable_reason": "INV-A2-19 store versioning; no Cedar verdict",
+      "db_coupled": [
+        "all of it"
+      ]
+    },
+    {
+      "testFile": "control-plane/src/test/kotlin/com/ridi/oss/proxymonster/controlplane/CedarPolicyOriginTest.kt",
+      "testCase": "store rejects system mutation and reserved user names before touching state",
+      "kind": "not_cedar",
+      "input": {
+        "attempts": [
+          "update(-1, cedarSrc='not cedar')",
+          "delete(-1)",
+          "create(name='system:user-created')",
+          "update(userId, name='system:user-renamed')"
+        ]
+      },
+      "expected": "SystemPolicyImmutableException x2, ReservedPolicyNameException x2; every field and stateVersion unchanged",
+      "provenance": "control-plane/src/test/kotlin/com/ridi/oss/proxymonster/controlplane/CedarPolicyOriginTest.kt:48-87",
+      "extractable": false,
+      "cedar_relevant": false,
+      "assertions": [
+        {
+          "kind": "not_cedar",
+          "input": "origin/name guards under SELECT ... FOR UPDATE",
+          "expected": "exceptions, no state change"
+        }
+      ],
+      "extractable_reason": "asserts store guards and exception types, not a Cedar verdict. IMPORTANT ORDERING FACT it does pin: the SYSTEM-immutability guard runs BEFORE validate(), so the invalid source 'not cedar' is NEVER validated — a Go port that validates first returns InvalidCedarPolicyException instead of SystemPolicyImmutableException.",
+      "db_coupled": [
+        "all of it"
+      ]
+    },
+    {
+      "testFile": "control-plane/src/test/kotlin/com/ridi/oss/proxymonster/controlplane/CedarPolicyOriginTest.kt",
+      "testCase": "system toggle changes only mutable fields and writes a visible sentinel audit record",
+      "kind": "not_cedar",
+      "input": {},
+      "expected": "audit row: statement '[ADMIN policy.toggle] policy -1 (bootstrap.pm-admin) enabled true->false', principal, datasource 'control-plane', decision ALLOW, detail 'SYSTEM_POLICY_TOGGLE'; a no-op setEnabled emits nothing",
+      "provenance": "control-plane/src/test/kotlin/com/ridi/oss/proxymonster/controlplane/CedarPolicyOriginTest.kt:89-120",
+      "extractable": false,
+      "cedar_relevant": false,
+      "assertions": [
+        {
+          "kind": "not_cedar",
+          "input": "INV-A2-22 sentinel audit",
+          "expected": "one row per real flip"
+        }
+      ],
+      "extractable_reason": "audit/store behaviour; no Cedar verdict",
+      "db_coupled": [
+        "all of it"
+      ]
+    },
+    {
+      "testFile": "control-plane/src/test/kotlin/com/ridi/oss/proxymonster/controlplane/CedarPolicyOriginTest.kt",
+      "testCase": "audit failure rolls back the system toggle in the same transaction",
+      "kind": "not_cedar",
+      "input": {
+        "trigger": "BEFORE INSERT ON audit_event RAISE on detail='SYSTEM_POLICY_TOGGLE'"
+      },
+      "expected": "SQLException; policy -2 still enabled; stateVersion unchanged",
+      "provenance": "control-plane/src/test/kotlin/com/ridi/oss/proxymonster/controlplane/CedarPolicyOriginTest.kt:122-161",
+      "extractable": false,
+      "cedar_relevant": false,
+      "assertions": [
+        {
+          "kind": "not_cedar",
+          "input": "same-connection audit insert",
+          "expected": "rollback"
+        }
+      ],
+      "extractable_reason": "transaction semantics; no Cedar verdict",
+      "db_coupled": [
+        "all of it"
+      ]
+    },
+    {
+      "testFile": "control-plane/src/test/kotlin/com/ridi/oss/proxymonster/controlplane/CedarPolicyOriginTest.kt",
+      "testCase": "negative-id migration is decision-equivalent to the AuthzTest seed oracle",
+      "kind": "decision_allow",
+      "input": {
+        "oracle_policies": "CedarPolicyOriginTest.ORACLE_SOURCES",
+        "migrated_policies": "MIGRATION_ENABLED",
+        "roles": {
+          "admin@example.com": [
+            "system:admin"
+          ],
+          "analyst@example.com": [
+            "analyst"
+          ]
+        },
+        "cases": [
+          [
+            "admin@example.com",
+            "admin.datasources",
+            "System::\"system\"",
+            true
+          ],
+          [
+            "admin@example.com",
+            "admin.policies",
+            "System::\"system\"",
+            true
+          ],
+          [
+            "admin@example.com",
+            "admin.identity",
+            "System::\"system\"",
+            true
+          ],
+          [
+            "nobody@example.com",
+            "admin.policies",
+            "System::\"system\"",
+            false
+          ],
+          [
+            "analyst@example.com",
+            "admin.policies",
+            "System::\"system\"",
+            false
+          ],
+          [
+            "admin@example.com",
+            "task.approve",
+            "Request::\"requester@example.com#-\"",
+            true
+          ],
+          [
+            "admin@example.com",
+            "task.approve",
+            "Request::\"admin@example.com#-\"",
+            false
+          ],
+          [
+            "analyst@example.com",
+            "audit.read",
+            "AuditRecord::\"analyst@example.com\"",
+            true
+          ],
+          [
+            "analyst@example.com",
+            "audit.read",
+            "AuditRecord::\"other@example.com\"",
+            false
+          ],
+          [
+            "analyst@example.com",
+            "audit.read",
+            "AuditLog::\"all\"",
+            false
+          ],
+          [
+            "admin@example.com",
+            "audit.read",
+            "AuditRecord::\"other@example.com\"",
+            true
+          ],
+          [
+            "admin@example.com",
+            "audit.read",
+            "AuditLog::\"all\"",
+            true
+          ]
+        ]
+      },
+      "expected": "for all 12: oracle verdict == pinned `allowed` AND migrated verdict == oracle verdict",
+      "provenance": "control-plane/src/test/kotlin/com/ridi/oss/proxymonster/controlplane/CedarPolicyOriginTest.kt:163-219",
+      "extractable": true,
+      "cedar_relevant": true,
+      "assertions": [
+        {
+          "kind": "decision_allow",
+          "input": {
+            "principal": "admin@example.com",
+            "action": "admin.datasources",
+            "resource": "System::\"system\"",
+            "engine": "both oracle and migrated"
+          },
+          "expected": "Allow"
+        },
+        {
+          "kind": "decision_allow",
+          "input": {
+            "principal": "admin@example.com",
+            "action": "admin.policies",
+            "resource": "System::\"system\"",
+            "engine": "both oracle and migrated"
+          },
+          "expected": "Allow"
+        },
+        {
+          "kind": "decision_allow",
+          "input": {
+            "principal": "admin@example.com",
+            "action": "admin.identity",
+            "resource": "System::\"system\"",
+            "engine": "both oracle and migrated"
+          },
+          "expected": "Allow"
+        },
+        {
+          "kind": "decision_deny",
+          "input": {
+            "principal": "nobody@example.com",
+            "action": "admin.policies",
+            "resource": "System::\"system\"",
+            "engine": "both oracle and migrated"
+          },
+          "expected": "Deny"
+        },
+        {
+          "kind": "decision_deny",
+          "input": {
+            "principal": "analyst@example.com",
+            "action": "admin.policies",
+            "resource": "System::\"system\"",
+            "engine": "both oracle and migrated"
+          },
+          "expected": "Deny"
+        },
+        {
+          "kind": "decision_allow",
+          "input": {
+            "principal": "admin@example.com",
+            "action": "task.approve",
+            "resource": "Request::\"requester@example.com#-\"",
+            "engine": "both oracle and migrated"
+          },
+          "expected": "Allow"
+        },
+        {
+          "kind": "decision_deny",
+          "input": {
+            "principal": "admin@example.com",
+            "action": "task.approve",
+            "resource": "Request::\"admin@example.com#-\"",
+            "engine": "both oracle and migrated"
+          },
+          "expected": "Deny"
+        },
+        {
+          "kind": "decision_allow",
+          "input": {
+            "principal": "analyst@example.com",
+            "action": "audit.read",
+            "resource": "AuditRecord::\"analyst@example.com\"",
+            "engine": "both oracle and migrated"
+          },
+          "expected": "Allow"
+        },
+        {
+          "kind": "decision_deny",
+          "input": {
+            "principal": "analyst@example.com",
+            "action": "audit.read",
+            "resource": "AuditRecord::\"other@example.com\"",
+            "engine": "both oracle and migrated"
+          },
+          "expected": "Deny"
+        },
+        {
+          "kind": "decision_deny",
+          "input": {
+            "principal": "analyst@example.com",
+            "action": "audit.read",
+            "resource": "AuditLog::\"all\"",
+            "engine": "both oracle and migrated"
+          },
+          "expected": "Deny"
+        },
+        {
+          "kind": "decision_allow",
+          "input": {
+            "principal": "admin@example.com",
+            "action": "audit.read",
+            "resource": "AuditRecord::\"other@example.com\"",
+            "engine": "both oracle and migrated"
+          },
+          "expected": "Allow"
+        },
+        {
+          "kind": "decision_allow",
+          "input": {
+            "principal": "admin@example.com",
+            "action": "audit.read",
+            "resource": "AuditLog::\"all\"",
+            "engine": "both oracle and migrated"
+          },
+          "expected": "Allow"
+        }
+      ],
+      "notes": "S1 HIGHEST-VALUE EXTRACTABLE CASE. Both policy sets are statically known, roles are literal, all 12 verdicts are pinned as booleans. A Go harness can run this end-to-end from corpus/ with no DB. It also cross-checks the 29-row migration set against a 5-policy oracle, so it catches an extraction error in policies.json."
+    },
+    {
+      "testFile": "control-plane/src/test/kotlin/com/ridi/oss/proxymonster/controlplane/CedarPolicyRoutesTest.kt",
+      "testCase": "list exposes system provenance without accepting it in input",
+      "kind": "not_cedar",
+      "input": {},
+      "expected": "GET /api/policies 200; row -1 has origin SYSTEM, systemKey bootstrap.pm-admin, name system:admin",
+      "provenance": "control-plane/src/test/kotlin/com/ridi/oss/proxymonster/controlplane/CedarPolicyRoutesTest.kt:63-73",
+      "extractable": false,
+      "cedar_relevant": false,
+      "assertions": [
+        {
+          "kind": "not_cedar",
+          "input": "HTTP route + store",
+          "expected": "GET /api/policies 200; row -1 has origin SYSTEM, systemKey bootstrap.pm-admin, name system:admin"
+        }
+      ],
+      "extractable_reason": "HTTP status codes / ApiError codes / store rows; no Cedar verdict. (Case 3's 'not cedar' body is never validated — the 409 fires first.)",
+      "db_coupled": [
+        "ktor-server-test-host",
+        "Flyway",
+        "CedarPolicyStore"
+      ]
+    },
+    {
+      "testFile": "control-plane/src/test/kotlin/com/ridi/oss/proxymonster/controlplane/CedarPolicyRoutesTest.kt",
+      "testCase": "POST and USER rename reject the reserved system namespace",
+      "kind": "not_cedar",
+      "input": {},
+      "expected": "POST 400 policy.reserved_name; PUT 400 policy.reserved_name; name unchanged",
+      "provenance": "control-plane/src/test/kotlin/com/ridi/oss/proxymonster/controlplane/CedarPolicyRoutesTest.kt:75-96",
+      "extractable": false,
+      "cedar_relevant": false,
+      "assertions": [
+        {
+          "kind": "not_cedar",
+          "input": "HTTP route + store",
+          "expected": "POST 400 policy.reserved_name; PUT 400 policy.reserved_name; name unchanged"
+        }
+      ],
+      "extractable_reason": "HTTP status codes / ApiError codes / store rows; no Cedar verdict. (Case 3's 'not cedar' body is never validated — the 409 fires first.)",
+      "db_coupled": [
+        "ktor-server-test-host",
+        "Flyway",
+        "CedarPolicyStore"
+      ]
+    },
+    {
+      "testFile": "control-plane/src/test/kotlin/com/ridi/oss/proxymonster/controlplane/CedarPolicyRoutesTest.kt",
+      "testCase": "PUT and DELETE of a system policy return the immutable conflict",
+      "kind": "not_cedar",
+      "input": {},
+      "expected": "PUT 409 policy.system_immutable; DELETE 409 policy.system_immutable; row unchanged",
+      "provenance": "control-plane/src/test/kotlin/com/ridi/oss/proxymonster/controlplane/CedarPolicyRoutesTest.kt:98-114",
+      "extractable": false,
+      "cedar_relevant": false,
+      "assertions": [
+        {
+          "kind": "not_cedar",
+          "input": "HTTP route + store",
+          "expected": "PUT 409 policy.system_immutable; DELETE 409 policy.system_immutable; row unchanged"
+        }
+      ],
+      "extractable_reason": "HTTP status codes / ApiError codes / store rows; no Cedar verdict. (Case 3's 'not cedar' body is never validated — the 409 fires first.)",
+      "db_coupled": [
+        "ktor-server-test-host",
+        "Flyway",
+        "CedarPolicyStore"
+      ]
+    },
+    {
+      "testFile": "control-plane/src/test/kotlin/com/ridi/oss/proxymonster/controlplane/CedarPolicyRoutesTest.kt",
+      "testCase": "enable and disable remain available for system policies",
+      "kind": "not_cedar",
+      "input": {},
+      "expected": "POST /disable 200 enabled=false; POST /enable 200 enabled=true",
+      "provenance": "control-plane/src/test/kotlin/com/ridi/oss/proxymonster/controlplane/CedarPolicyRoutesTest.kt:116-129",
+      "extractable": false,
+      "cedar_relevant": false,
+      "assertions": [
+        {
+          "kind": "not_cedar",
+          "input": "HTTP route + store",
+          "expected": "POST /disable 200 enabled=false; POST /enable 200 enabled=true"
+        }
+      ],
+      "extractable_reason": "HTTP status codes / ApiError codes / store rows; no Cedar verdict. (Case 3's 'not cedar' body is never validated — the 409 fires first.)",
+      "db_coupled": [
+        "ktor-server-test-host",
+        "Flyway",
+        "CedarPolicyStore"
+      ]
+    },
+    {
+      "testFile": "control-plane/src/test/kotlin/com/ridi/oss/proxymonster/controlplane/CedarPolicyRoutesTest.kt",
+      "testCase": "REST-shaped policy mutation remains bound to its numeric id after name reuse",
+      "kind": "not_cedar",
+      "input": {},
+      "expected": "updatePolicy(originalId) renames the original, not the same-named replacement",
+      "provenance": "control-plane/src/test/kotlin/com/ridi/oss/proxymonster/controlplane/CedarPolicyRoutesTest.kt:131-147",
+      "extractable": false,
+      "cedar_relevant": false,
+      "assertions": [
+        {
+          "kind": "not_cedar",
+          "input": "HTTP route + store",
+          "expected": "updatePolicy(originalId) renames the original, not the same-named replacement"
+        }
+      ],
+      "extractable_reason": "HTTP status codes / ApiError codes / store rows; no Cedar verdict. (Case 3's 'not cedar' body is never validated — the 409 fires first.)",
+      "db_coupled": [
+        "ktor-server-test-host",
+        "Flyway",
+        "CedarPolicyStore"
+      ]
+    },
+    {
+      "testFile": "control-plane/src/test/kotlin/com/ridi/oss/proxymonster/controlplane/AdminContextAuthzTest.kt",
+      "testCase": "an admin session with no trusted edge is denied even though the policy would allow with the right ip",
+      "kind": "decision_deny",
+      "input": {
+        "policies": "AdminContextAuthzTest.ipGatedAdminPolicy",
+        "principal": "admin@example.com",
+        "roles": [
+          "system:admin"
+        ],
+        "action": "admin.datasources",
+        "resource": "System::\"system\"",
+        "context": {
+          "network_zones": [],
+          "tags": []
+        },
+        "note": "requester_ip ABSENT: trustedProxies is empty so XFF 203.0.113.10 is ignored, and the test-host's raw peer literal \"localhost\" is not a valid IP"
+      },
+      "expected": "HTTP 403 (Cedar Deny)",
+      "provenance": "control-plane/src/test/kotlin/com/ridi/oss/proxymonster/controlplane/AdminContextAuthzTest.kt:132-141",
+      "extractable": true,
+      "cedar_relevant": true,
+      "assertions": [
+        {
+          "kind": "decision_deny",
+          "input": {
+            "requester_ip": null
+          },
+          "expected": "Deny — `context has requester_ip` false"
+        }
+      ],
+      "db_coupled": [
+        "Ktor session mint (PrincipalSessionStore, Flyway)",
+        "HTTP status mapping"
+      ],
+      "notes": "the Cedar half is a clean tuple; the XFF/trusted-edge half is A12 (RequesterIp.kt)"
+    },
+    {
+      "testFile": "control-plane/src/test/kotlin/com/ridi/oss/proxymonster/controlplane/AdminContextAuthzTest.kt",
+      "testCase": "a trusted edge's forwarded ip reaches Cedar and satisfies the ip-gated admin policy",
+      "kind": "decision_allow",
+      "input": {
+        "policies": "AdminContextAuthzTest.ipGatedAdminPolicy",
+        "principal": "admin@example.com",
+        "roles": [
+          "system:admin"
+        ],
+        "action": "admin.datasources",
+        "trustedProxies": [
+          "localhost"
+        ]
+      },
+      "expected": "200 for XFF 203.0.113.10; 403 for XFF 198.51.100.10",
+      "provenance": "control-plane/src/test/kotlin/com/ridi/oss/proxymonster/controlplane/AdminContextAuthzTest.kt:143-153",
+      "extractable": true,
+      "cedar_relevant": true,
+      "assertions": [
+        {
+          "kind": "decision_allow",
+          "input": {
+            "requester_ip": "203.0.113.10"
+          },
+          "expected": "Allow — in 203.0.113.0/24"
+        },
+        {
+          "kind": "decision_deny",
+          "input": {
+            "requester_ip": "198.51.100.10"
+          },
+          "expected": "Deny — outside the range"
+        }
+      ],
+      "db_coupled": [
+        "session mint",
+        "HTTP status mapping"
+      ],
+      "notes": "S5-adjacent: pins that 203.0.113.10 and 198.51.100.10 are both ACCEPTED as ipaddr literals by cedar-java (they reach the engine and are compared), only the range differs"
+    },
+    {
+      "testFile": "control-plane/src/test/kotlin/com/ridi/oss/proxymonster/controlplane/AdminContextAuthzTest.kt",
+      "testCase": "no session is unauthenticated regardless of ip",
+      "kind": "not_cedar",
+      "input": {},
+      "expected": "HTTP 401 common.unauthenticated",
+      "provenance": "control-plane/src/test/kotlin/com/ridi/oss/proxymonster/controlplane/AdminContextAuthzTest.kt:155-160",
+      "extractable": false,
+      "cedar_relevant": false,
+      "assertions": [
+        {
+          "kind": "not_cedar",
+          "input": "no session cookie",
+          "expected": "401"
+        }
+      ],
+      "extractable_reason": "the gate returns before Cedar is reached (INV-A2-16 ordering); no Cedar verdict",
+      "db_coupled": [
+        "Ktor"
+      ]
+    },
+    {
+      "testFile": "control-plane/src/test/kotlin/com/ridi/oss/proxymonster/controlplane/PolicyOriginDbTest.kt",
+      "testCase": "the shipped default security posture is unchanged",
+      "kind": "not_cedar",
+      "input": {
+        "digest_sql": "md5(string_agg(x, '|' ORDER BY x)) over policy rows + app_role + app_group + group_role"
+      },
+      "expected": "md5 == 6a1bb6ff914c542db83ba609cdd945f4",
+      "provenance": "control-plane/src/test/kotlin/com/ridi/oss/proxymonster/controlplane/PolicyOriginDbTest.kt:47-74",
+      "extractable": false,
+      "cedar_relevant": false,
+      "assertions": [
+        {
+          "kind": "not_cedar",
+          "input": "golden fixture digest",
+          "expected": "6a1bb6ff914c542db83ba609cdd945f4"
+        }
+      ],
+      "extractable_reason": "a fixture digest over DB rows, not a Cedar verdict.",
+      "db_coupled": [
+        "the whole seeded posture"
+      ],
+      "notes": "CORPUS-INTEGRITY GOLD: this digest IS reproducible offline from corpus/policies.json + V8's role/group/group_role seeds, and I did reproduce it exactly (scratchpad/cedar-spike/check_digest.py) — which proves the 40 extracted SYSTEM rows are byte-faithful. CAVEAT: `ORDER BY x` uses the DB's default collation. Under en_US.utf8 (the postgres:17 default, TestDatabases.kt:84) the digest is the pinned value; under C/POSIX collation it is 3709c9045ac158599d33f443843d6d9e. The golden test is therefore collation-dependent — a portability hazard for the Go harness."
+    },
+    {
+      "testFile": "control-plane/src/test/kotlin/com/ridi/oss/proxymonster/controlplane/PolicyOriginDbTest.kt",
+      "testCase": "a clean database installs the admin and audit system rows",
+      "kind": "validate_accept",
+      "input": {
+        "policies": "MIGRATION_ENABLED",
+        "schema": "corpus/schema.cedarschema",
+        "strict": true
+      },
+      "expected": "rows -1/-2/-3 exact cedarSrc + systemKey + name + origin + enabled; -4/-5 present and enabled; CedarEngine(store) constructs",
+      "provenance": "control-plane/src/test/kotlin/com/ridi/oss/proxymonster/controlplane/PolicyOriginDbTest.kt:76-106",
+      "extractable": true,
+      "cedar_relevant": true,
+      "assertions": [
+        {
+          "kind": "validate_accept",
+          "input": "all 29 enabled migration sources",
+          "expected": "no errors"
+        }
+      ],
+      "db_coupled": [
+        "exact cedarSrc equality for -1/-2/-3 (ADMIN_SOURCE / NO_SELF_APPROVAL_SOURCE / APPROVER_SOURCE literals at PolicyOriginDbTest.kt:233-238)"
+      ],
+      "notes": "the three literal cedarSrc constants here are a second, independent byte-check on corpus/policies.json rows -1/-2/-3 — I verified all three match."
+    },
+    {
+      "testFile": "control-plane/src/test/kotlin/com/ridi/oss/proxymonster/controlplane/PolicyOriginDbTest.kt",
+      "testCase": "the development preset ships enabled and the production preset ships disabled",
+      "kind": "not_cedar",
+      "input": {
+        "shippedEnabled": [
+          -4,
+          -5,
+          -100,
+          -110,
+          -120,
+          -130,
+          -200,
+          -201,
+          -202,
+          -230,
+          -231,
+          -232,
+          -233,
+          -234,
+          -235
+        ],
+        "shippedDisabled": [
+          -250,
+          -251,
+          -252,
+          -253,
+          -254,
+          -255,
+          -256,
+          -257,
+          -258,
+          -259,
+          -300
+        ]
+      },
+      "expected": "enabled flags exactly as listed",
+      "provenance": "control-plane/src/test/kotlin/com/ridi/oss/proxymonster/controlplane/PolicyOriginDbTest.kt:108-125",
+      "extractable": false,
+      "cedar_relevant": false,
+      "assertions": [
+        {
+          "kind": "not_cedar",
+          "input": "policy.enabled column",
+          "expected": "as listed"
+        }
+      ],
+      "extractable_reason": "asserts the enabled column, not a Cedar verdict",
+      "db_coupled": [
+        "policy table"
+      ],
+      "notes": "VERIFIED against corpus/policies.json: the extracted enabled flags match this list exactly (29 enabled / 11 disabled)."
+    },
+    {
+      "testFile": "control-plane/src/test/kotlin/com/ridi/oss/proxymonster/controlplane/PolicyOriginDbTest.kt",
+      "testCase": "the four origin constraints reject every cross-namespace raw insert",
+      "kind": "not_cedar",
+      "input": {
+        "constraints": [
+          "policy_origin_check",
+          "policy_id_origin_check",
+          "policy_name_origin_check",
+          "policy_system_key_unique"
+        ],
+        "rejected_inserts": 7
+      },
+      "expected": "all four constraints present; 7 raw inserts each raise SQLException",
+      "provenance": "control-plane/src/test/kotlin/com/ridi/oss/proxymonster/controlplane/PolicyOriginDbTest.kt:127-173",
+      "extractable": false,
+      "cedar_relevant": false,
+      "assertions": [
+        {
+          "kind": "not_cedar",
+          "input": "Postgres CHECK/UNIQUE constraints (V3__policy.sql:32-41)",
+          "expected": "SQLException"
+        }
+      ],
+      "extractable_reason": "SQL DDL constraints; no Cedar involvement",
+      "db_coupled": [
+        "all of it"
+      ]
+    },
+    {
+      "testFile": "control-plane/src/test/kotlin/com/ridi/oss/proxymonster/controlplane/PolicyOriginDbTest.kt",
+      "testCase": "explicit negative ids do not disturb the user sequence and a system upsert preserves disabled",
+      "kind": "not_cedar",
+      "input": {},
+      "expected": "after an ON CONFLICT upsert, enabled stays false; next USER create gets id > 0",
+      "provenance": "control-plane/src/test/kotlin/com/ridi/oss/proxymonster/controlplane/PolicyOriginDbTest.kt:175-216",
+      "extractable": false,
+      "cedar_relevant": false,
+      "assertions": [
+        {
+          "kind": "not_cedar",
+          "input": "BIGSERIAL sequence + upsert UPDATE list",
+          "expected": "as described"
+        }
+      ],
+      "extractable_reason": "SQL sequence/upsert semantics; no Cedar involvement",
+      "db_coupled": [
+        "all of it"
+      ]
+    },
+    {
+      "testFile": "control-plane/src/test/kotlin/com/ridi/oss/proxymonster/controlplane/PresetPolicyDbTest.kt",
+      "testCase": "development role matrix grants connect and only the corresponding SQL kind",
+      "kind": "decision_allow",
+      "input": {
+        "policies": [
+          "MIGRATION_ENABLED",
+          "EnforcementFixture USER rows"
+        ],
+        "datasource": "target-pg",
+        "datasourceTags": [
+          "system:development"
+        ],
+        "matrix": {
+          "system:development-viewer": [
+            "sql.select"
+          ],
+          "system:development-pii-accessor": [
+            "sql.select"
+          ],
+          "system:development-updater": [
+            "sql.insert",
+            "sql.update"
+          ],
+          "system:development-deleter": [
+            "sql.delete"
+          ],
+          "system:development-architect": [
+            "sql.ddl"
+          ]
+        }
+      },
+      "expected": "datasource.connect Allow for all 5; each sql.* Allow iff in the role's granted set (25 checks)",
+      "provenance": "control-plane/src/test/kotlin/com/ridi/oss/proxymonster/controlplane/PresetPolicyDbTest.kt:114-134",
+      "extractable": true,
+      "cedar_relevant": true,
+      "assertions": [
+        {
+          "kind": "decision_allow",
+          "input": {
+            "role": "system:development-viewer",
+            "action": "datasource.connect"
+          },
+          "expected": "Allow"
+        },
+        {
+          "kind": "decision_allow",
+          "input": {
+            "role": "system:development-pii-accessor",
+            "action": "datasource.connect"
+          },
+          "expected": "Allow"
+        },
+        {
+          "kind": "decision_allow",
+          "input": {
+            "role": "system:development-updater",
+            "action": "datasource.connect"
+          },
+          "expected": "Allow"
+        },
+        {
+          "kind": "decision_allow",
+          "input": {
+            "role": "system:development-deleter",
+            "action": "datasource.connect"
+          },
+          "expected": "Allow"
+        },
+        {
+          "kind": "decision_allow",
+          "input": {
+            "role": "system:development-architect",
+            "action": "datasource.connect"
+          },
+          "expected": "Allow"
+        },
+        {
+          "kind": "decision_allow",
+          "input": "per-role granted sql kinds",
+          "expected": "Allow"
+        },
+        {
+          "kind": "decision_deny",
+          "input": "per-role ungranted sql kinds",
+          "expected": "Deny"
+        }
+      ],
+      "db_coupled": [
+        "role assignment via PolicyStore.createAssignment",
+        "datasource.tags column"
+      ],
+      "notes": "authorizeDatasourceAction only — pure once substituted. datasource name 'target-pg' (EnforcementFixture.kt:325); policy set = the 29 enabled migration rows as re-toggled by reset() (PresetPolicyDbTest.kt:71-77) PLUS the ~11 USER rows EnforcementFixture.seedPolicy creates (EnforcementFixture.kt:190-303); role->principal map is literal (PresetPolicyDbTest.kt:34-45)"
+    },
+    {
+      "testFile": "control-plane/src/test/kotlin/com/ridi/oss/proxymonster/controlplane/PresetPolicyDbTest.kt",
+      "testCase": "production role matrix grants connect and only the corresponding SQL kind once enabled",
+      "kind": "decision_allow",
+      "input": {
+        "policies": [
+          "MIGRATION_ENABLED",
+          "+ enable -250..-258 and -300"
+        ],
+        "datasource": "target-pg",
+        "datasourceTags": [
+          "system:production"
+        ],
+        "matrix": {
+          "system:production-viewer": [
+            "sql.select"
+          ],
+          "system:production-pii-accessor": [
+            "sql.select"
+          ],
+          "system:production-updater": [
+            "sql.insert",
+            "sql.update"
+          ],
+          "system:production-deleter": [
+            "sql.delete"
+          ],
+          "system:production-architect": [
+            "sql.ddl"
+          ]
+        }
+      },
+      "expected": "connect Allow for all 5; each sql.* Allow iff granted (25 checks)",
+      "provenance": "control-plane/src/test/kotlin/com/ridi/oss/proxymonster/controlplane/PresetPolicyDbTest.kt:136-158",
+      "extractable": true,
+      "cedar_relevant": true,
+      "assertions": [
+        {
+          "kind": "decision_allow",
+          "input": "connect, all 5 production roles",
+          "expected": "Allow"
+        },
+        {
+          "kind": "decision_allow",
+          "input": "per-role granted sql kinds",
+          "expected": "Allow"
+        },
+        {
+          "kind": "decision_deny",
+          "input": "per-role ungranted sql kinds",
+          "expected": "Deny"
+        }
+      ],
+      "db_coupled": [
+        "setEnabled toggles",
+        "datasource.tags"
+      ],
+      "notes": "datasource name 'target-pg' (EnforcementFixture.kt:325); policy set = the 29 enabled migration rows as re-toggled by reset() (PresetPolicyDbTest.kt:71-77) PLUS the ~11 USER rows EnforcementFixture.seedPolicy creates (EnforcementFixture.kt:190-303); role->principal map is literal (PresetPolicyDbTest.kt:34-45)"
+    },
+    {
+      "testFile": "control-plane/src/test/kotlin/com/ridi/oss/proxymonster/controlplane/PresetPolicyDbTest.kt",
+      "testCase": "development reads cleartext including PII because dev holds no PII",
+      "kind": "not_cedar",
+      "input": {
+        "path": "decideQuery"
+      },
+      "expected": "EnfAction.ALLOW for 'select id, region from users', 'select rrn from users', and 'select rrn from users' off trusted-network",
+      "provenance": "control-plane/src/test/kotlin/com/ridi/oss/proxymonster/controlplane/PresetPolicyDbTest.kt:160-169",
+      "extractable": false,
+      "cedar_relevant": true,
+      "assertions": [
+        {
+          "kind": "not_cedar",
+          "input": "decideQuery (A6) end-to-end",
+          "expected": "EnfAction.ALLOW for 'select id, region from users', 'select rrn from users', and 'select rrn from users' off trusted-network"
+        }
+      ],
+      "extractable_reason": "routes through decideQuery: needs the sqlglot-go analyzer for column lineage, the pushed information_schema catalog, and SystemClassificationService's shipped manifest. The verdict is an EnfAction (ALLOW/MASK/DENY) produced by A6+A13, not a Cedar decision on a known entity set — so it is not a pure (policies, entities, request) tuple. Cedar layer under test: the -200 role-agnostic dev cleartext permit",
+      "db_coupled": [
+        "analyzer",
+        "catalog",
+        "target Postgres",
+        "system manifest"
+      ]
+    },
+    {
+      "testFile": "control-plane/src/test/kotlin/com/ridi/oss/proxymonster/controlplane/PresetPolicyDbTest.kt",
+      "testCase": "development system floor permits catalog activity and data-leak but never critical",
+      "kind": "not_cedar",
+      "input": {
+        "path": "decideQuery"
+      },
+      "expected": "ALLOW for pg_class / pg_stat_activity / pg_stats; DENY for pg_authid",
+      "provenance": "control-plane/src/test/kotlin/com/ridi/oss/proxymonster/controlplane/PresetPolicyDbTest.kt:171-178",
+      "extractable": false,
+      "cedar_relevant": true,
+      "assertions": [
+        {
+          "kind": "not_cedar",
+          "input": "decideQuery (A6) end-to-end",
+          "expected": "ALLOW for pg_class / pg_stat_activity / pg_stats; DENY for pg_authid"
+        }
+      ],
+      "extractable_reason": "routes through decideQuery: needs the sqlglot-go analyzer for column lineage, the pushed information_schema catalog, and SystemClassificationService's shipped manifest. The verdict is an EnfAction (ALLOW/MASK/DENY) produced by A6+A13, not a Cedar decision on a known entity set — so it is not a pure (policies, entities, request) tuple. Cedar layer under test: -100 permit, -110/-120 relaxed on dev, -130 never relaxed",
+      "db_coupled": [
+        "analyzer",
+        "catalog",
+        "target Postgres",
+        "system manifest"
+      ]
+    },
+    {
+      "testFile": "control-plane/src/test/kotlin/com/ridi/oss/proxymonster/controlplane/PresetPolicyDbTest.kt",
+      "testCase": "production is denied until enabled then masks PII unless a pii-accessor earns trusted-network",
+      "kind": "not_cedar",
+      "input": {
+        "path": "decideQuery"
+      },
+      "expected": "DENY before enable; then ALLOW non-PII, MASK for viewer (with or without trusted-network), MASK for pii-accessor off-network, ALLOW for pii-accessor on 100.100.1.10",
+      "provenance": "control-plane/src/test/kotlin/com/ridi/oss/proxymonster/controlplane/PresetPolicyDbTest.kt:180-197",
+      "extractable": false,
+      "cedar_relevant": true,
+      "assertions": [
+        {
+          "kind": "not_cedar",
+          "input": "decideQuery (A6) end-to-end",
+          "expected": "DENY before enable; then ALLOW non-PII, MASK for viewer (with or without trusted-network), MASK for pii-accessor off-network, ALLOW for pii-accessor on 100.100.1.10"
+        }
+      ],
+      "extractable_reason": "routes through decideQuery: needs the sqlglot-go analyzer for column lineage, the pushed information_schema catalog, and SystemClassificationService's shipped manifest. The verdict is an EnfAction (ALLOW/MASK/DENY) produced by A6+A13, not a Cedar decision on a known entity set — so it is not a pure (policies, entities, request) tuple. Cedar layer under test: -250..-258 + the shipped -300 producer (100.100.0.0/16)",
+      "db_coupled": [
+        "analyzer",
+        "catalog",
+        "target Postgres",
+        "system manifest"
+      ]
+    },
+    {
+      "testFile": "control-plane/src/test/kotlin/com/ridi/oss/proxymonster/controlplane/PresetPolicyDbTest.kt",
+      "testCase": "production PII unmasks via the workflow-executor channel off trusted-network and re-masks at the viewer",
+      "kind": "not_cedar",
+      "input": {
+        "path": "decideQuery"
+      },
+      "expected": "ALLOW on WORKFLOW_EXECUTOR; MASK on WORKFLOW_VIEWER; MASK on WIRE; MASK for a plain viewer on WORKFLOW_EXECUTOR; MASK again once -259 is disabled",
+      "provenance": "control-plane/src/test/kotlin/com/ridi/oss/proxymonster/controlplane/PresetPolicyDbTest.kt:199-243",
+      "extractable": false,
+      "cedar_relevant": true,
+      "assertions": [
+        {
+          "kind": "not_cedar",
+          "input": "decideQuery (A6) end-to-end",
+          "expected": "ALLOW on WORKFLOW_EXECUTOR; MASK on WORKFLOW_VIEWER; MASK on WIRE; MASK for a plain viewer on WORKFLOW_EXECUTOR; MASK again once -259 is disabled"
+        }
+      ],
+      "extractable_reason": "routes through decideQuery: needs the sqlglot-go analyzer for column lineage, the pushed information_schema catalog, and SystemClassificationService's shipped manifest. The verdict is an EnfAction (ALLOW/MASK/DENY) produced by A6+A13, not a Cedar decision on a known entity set — so it is not a pure (policies, entities, request) tuple. Cedar layer under test: -259 channel-gated unmask",
+      "db_coupled": [
+        "analyzer",
+        "catalog",
+        "target Postgres",
+        "system manifest"
+      ]
+    },
+    {
+      "testFile": "control-plane/src/test/kotlin/com/ridi/oss/proxymonster/controlplane/PresetPolicyDbTest.kt",
+      "testCase": "production system surfaces stay closed even for a pii-accessor on trusted-network",
+      "kind": "not_cedar",
+      "input": {
+        "path": "decideQuery"
+      },
+      "expected": "DENY for pg_stat_activity / pg_stats / pg_authid on 100.100.1.10; ALLOW for pg_class",
+      "provenance": "control-plane/src/test/kotlin/com/ridi/oss/proxymonster/controlplane/PresetPolicyDbTest.kt:245-258",
+      "extractable": false,
+      "cedar_relevant": true,
+      "assertions": [
+        {
+          "kind": "not_cedar",
+          "input": "decideQuery (A6) end-to-end",
+          "expected": "DENY for pg_stat_activity / pg_stats / pg_authid on 100.100.1.10; ALLOW for pg_class"
+        }
+      ],
+      "extractable_reason": "routes through decideQuery: needs the sqlglot-go analyzer for column lineage, the pushed information_schema catalog, and SystemClassificationService's shipped manifest. The verdict is an EnfAction (ALLOW/MASK/DENY) produced by A6+A13, not a Cedar decision on a known entity set — so it is not a pure (policies, entities, request) tuple. Cedar layer under test: no production activity/data-leak permit; -130 forbid; -100 catalog",
+      "db_coupled": [
+        "analyzer",
+        "catalog",
+        "target Postgres",
+        "system manifest"
+      ]
+    },
+    {
+      "testFile": "control-plane/src/test/kotlin/com/ridi/oss/proxymonster/controlplane/PresetPolicyDbTest.kt",
+      "testCase": "default developer group connects selects writes and reads dev data cleartext",
+      "kind": "decision_allow",
+      "input": {
+        "policies": "MIGRATION_ENABLED",
+        "principal": "developer@example.com",
+        "roles": [
+          "system:development-viewer",
+          "system:development-pii-accessor",
+          "system:development-updater",
+          "system:development-deleter",
+          "system:development-architect"
+        ],
+        "roles_source": "the system:developer group via provisionFromOidc + group_role seed",
+        "datasource": "target-pg",
+        "datasourceTags": [
+          "system:development"
+        ]
+      },
+      "expected": "connect + select + insert + update + delete + ddl all Allow; plus one decideQuery ALLOW on 'select rrn from users'",
+      "provenance": "control-plane/src/test/kotlin/com/ridi/oss/proxymonster/controlplane/PresetPolicyDbTest.kt:260-269",
+      "extractable": true,
+      "cedar_relevant": true,
+      "assertions": [
+        {
+          "kind": "decision_allow",
+          "input": {
+            "action": "datasource.connect"
+          },
+          "expected": "Allow"
+        },
+        {
+          "kind": "decision_allow",
+          "input": {
+            "action": "sql.select"
+          },
+          "expected": "Allow"
+        },
+        {
+          "kind": "decision_allow",
+          "input": {
+            "action": "sql.insert"
+          },
+          "expected": "Allow"
+        },
+        {
+          "kind": "decision_allow",
+          "input": {
+            "action": "sql.update"
+          },
+          "expected": "Allow"
+        },
+        {
+          "kind": "decision_allow",
+          "input": {
+            "action": "sql.delete"
+          },
+          "expected": "Allow"
+        },
+        {
+          "kind": "decision_allow",
+          "input": {
+            "action": "sql.ddl"
+          },
+          "expected": "Allow"
+        }
+      ],
+      "db_coupled": [
+        "provisionFromOidc group membership",
+        "the final decideQuery assertion"
+      ],
+      "notes": "the 6 authorizeDatasourceAction halves are tuple-extractable once the group->role expansion is substituted; the 7th assertion (decideQuery) is not. datasource name 'target-pg' (EnforcementFixture.kt:325); policy set = the 29 enabled migration rows as re-toggled by reset() (PresetPolicyDbTest.kt:71-77) PLUS the ~11 USER rows EnforcementFixture.seedPolicy creates (EnforcementFixture.kt:190-303); role->principal map is literal (PresetPolicyDbTest.kt:34-45)"
+    },
+    {
+      "testFile": "control-plane/src/test/kotlin/com/ridi/oss/proxymonster/controlplane/PresetPolicyDbTest.kt",
+      "testCase": "a forged preset-development tag is honored on a datasource but stripped off a column",
+      "kind": "decision_deny",
+      "input": {
+        "policies": "MIGRATION_ENABLED",
+        "principal": "nobody@example.com",
+        "roles": [],
+        "datasource": "target-pg",
+        "column": {
+          "key": "k",
+          "catalog": "pm",
+          "schema": "public",
+          "table": "users",
+          "column": "rrn",
+          "tags": [
+            "system:development"
+          ]
+        }
+      },
+      "expected": "DENIED with datasourceTags=[system:production]; UNMASKED with datasourceTags=[system:development]",
+      "provenance": "control-plane/src/test/kotlin/com/ridi/oss/proxymonster/controlplane/PresetPolicyDbTest.kt:271-285",
+      "extractable": true,
+      "cedar_relevant": true,
+      "assertions": [
+        {
+          "kind": "decision_deny",
+          "input": {
+            "datasourceTags": [
+              "system:production"
+            ],
+            "note": "the forged system:development tag is STRIPPED from the Column's parents by col.tags.filterNot(::isReservedTag)"
+          },
+          "expected": "DENIED"
+        },
+        {
+          "kind": "decision_allow",
+          "input": {
+            "datasourceTags": [
+              "system:development"
+            ],
+            "note": "the same tag on the DATASOURCE is honored (posture tag) and the column inherits it via its Datasource parent, so -200 fires"
+          },
+          "expected": "UNMASKED"
+        }
+      ],
+      "db_coupled": [
+        "datasource name only"
+      ],
+      "notes": "INV-A2-7 REGRESSION TEST — the type-scoping security invariant. Fully tuple-extractable: authorizeColumns is called directly, roles are empty, and only the 29 enabled migration rows matter (-200 and -130). Highest-value extractable case in this suite."
+    }
+  ]
+}

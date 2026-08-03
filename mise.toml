@@ -188,6 +188,44 @@ pnpm -C web install
 ./web/node_modules/.bin/prettier --write '**/*.{md,json,yml,yaml,css}'
 '''
 
+[tasks.cp-codegen]
+description = "Regenerate the Go control plane's protobuf/gRPC stubs from proto/src/main/proto/controlplane.proto"
+shell = "bash -c"
+# buf and the two protoc plugins are not mise tools and not on PATH by default, so this task installs
+# them at pinned versions into a task-local GOBIN. The pins match what generated the committed stubs:
+# regenerating with a different protoc-gen-go rewrites every file, which reads as a large diff for no
+# behavioural change.
+#
+# GOWORK=off on the installs: `go install pkg@version` must resolve against the tool's own module
+# graph, not this workspace's.
+#
+# The --path flag is load-bearing: without it this module's codegen also picks up analyzer.proto and
+# engine.proto, and a second generated copy of engine.proto panics the protobuf global registry in
+# init() ("file already registered") the instant analyzer/probe/pb and internal/pb land in one process.
+# See controlplane/buf.gen.yaml.
+run = '''
+set -euo pipefail
+# GOBIN must be absolute; every mise task already runs from the repo root, and tmp/ is gitignored.
+bin="$PWD/tmp/gobin"
+mkdir -p "$bin"
+GOWORK=off GOBIN="$bin" go install github.com/bufbuild/buf/cmd/buf@v1.47.2
+GOWORK=off GOBIN="$bin" go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.35.2
+GOWORK=off GOBIN="$bin" go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@v1.5.1
+cd controlplane
+PATH="$bin:$PATH" buf generate ../proto/src/main/proto --path ../proto/src/main/proto/controlplane.proto
+go build ./...
+'''
+
+[tasks.cp-build]
+description = "Build and vet the Go control plane (controlplane/)"
+shell = "bash -c"
+run = '''
+set -euo pipefail
+cd controlplane
+go build ./...
+go vet ./...
+'''
+
 [tasks.verify]
 description = "The full verification gate: lint, JVM tests, Go tests, web unit tests + build"
 shell = "bash -c"
@@ -205,7 +243,11 @@ mise run lint
 # where a race is both most likely and least visible, and a data race is a correctness bug the plain
 # run reports as a pass. These tests wait on containers and sockets far more than they compute, so the
 # detector costs a few seconds of wall clock rather than the usual multiple.
-go test -race ./analyzer/... ./auditmon/... ./goproxy/... ./mysqlwire/... ./pmon/...
+#
+# gocp is in the -race set for the same reason and not as an afterthought: its ProxyEventsHub,
+# ConnectionCatalog and channel registries are shared mutable state reached from a goroutine per
+# stream, and the IdP liveness sweep runs on a timer alongside all of it.
+go test -race ./analyzer/... ./auditmon/... ./gocp/... ./goproxy/... ./mysqlwire/... ./pmon/...
 pnpm -C web test:unit
 pnpm -C web build
 '''
@@ -237,7 +279,7 @@ shell = "bash -c"
 # module, so a root-relative pattern only resolves once a go.work exists.
 run = '''
 set -euo pipefail
-for m in analyzer auditmon goproxy mysqlwire pmon; do
+for m in analyzer auditmon controlplane goproxy mysqlwire pmon; do
   echo "=== $m ==="
   (cd "$m" && go test -race ./...)
 done

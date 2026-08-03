@@ -1,0 +1,1 @@
+{"token":"pmt_0123456789abcdefghijklmnopqrstuvwxyzABCDEF","expiresAt":"2026-08-02T03:04:05Z","principal":"alice@example.com","sessionExpiresAt":"2026-08-02T05:04:05.123Z","renewalToken":"pmr_ABCDEFghijklmnopqrstuvwxyz0123456789abcdef"}

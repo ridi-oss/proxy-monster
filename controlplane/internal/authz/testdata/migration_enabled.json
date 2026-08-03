@@ -1,0 +1,176 @@
+[
+  {
+    "id": -235,
+    "systemKey": "preset.development-ddl",
+    "name": "system:development-ddl",
+    "src": "permit(principal in Role::\"system:development-architect\", action == Action::\"sql.ddl\", resource) when { resource in Tag::\"system:development\" };"
+  },
+  {
+    "id": -234,
+    "systemKey": "preset.development-delete",
+    "name": "system:development-delete",
+    "src": "permit(principal in Role::\"system:development-deleter\", action == Action::\"sql.delete\", resource) when { resource in Tag::\"system:development\" };"
+  },
+  {
+    "id": -233,
+    "systemKey": "preset.development-update",
+    "name": "system:development-update",
+    "src": "permit(principal in Role::\"system:development-updater\", action == Action::\"sql.update\", resource) when { resource in Tag::\"system:development\" };"
+  },
+  {
+    "id": -232,
+    "systemKey": "preset.development-insert",
+    "name": "system:development-insert",
+    "src": "permit(principal in Role::\"system:development-updater\", action == Action::\"sql.insert\", resource) when { resource in Tag::\"system:development\" };"
+  },
+  {
+    "id": -231,
+    "systemKey": "preset.development-select",
+    "name": "system:development-select",
+    "src": "permit(principal, action == Action::\"sql.select\", resource) when { resource in Tag::\"system:development\" && (principal in Role::\"system:development-viewer\" || principal in Role::\"system:development-pii-accessor\") };"
+  },
+  {
+    "id": -230,
+    "systemKey": "preset.development-connect",
+    "name": "system:development-connect",
+    "src": "permit(principal, action == Action::\"datasource.connect\", resource) when { resource in Tag::\"system:development\" && (principal in Role::\"system:development-viewer\" || principal in Role::\"system:development-pii-accessor\" || principal in Role::\"system:development-updater\" || principal in Role::\"system:development-deleter\" || principal in Role::\"system:development-architect\") };"
+  },
+  {
+    "id": -202,
+    "systemKey": "preset.development-unmaskable",
+    "name": "system:development-unmaskable",
+    "src": "permit(principal, action == Action::\"sql.unmaskable\", resource) when { resource in Tag::\"system:development\" };"
+  },
+  {
+    "id": -201,
+    "systemKey": "preset.development-unanalyzable",
+    "name": "system:development-unanalyzable",
+    "src": "permit(principal, action == Action::\"sql.unanalyzable\", resource) when { resource in Tag::\"system:development\" };"
+  },
+  {
+    "id": -200,
+    "systemKey": "preset.development-unmasked",
+    "name": "system:development-unmasked",
+    "src": "permit(principal, action == Action::\"result.read.unmasked\", resource) when { resource in Tag::\"system:development\" } unless { resource in Tag::\"system:critical\" };"
+  },
+  {
+    "id": -130,
+    "systemKey": "system.critical-guard",
+    "name": "system:critical-guard",
+    "src": "forbid(principal, action in [Action::\"result.read.unmasked\", Action::\"result.read.masked\"], resource) when { resource in Tag::\"system:critical\" };"
+  },
+  {
+    "id": -120,
+    "systemKey": "system.data-leak-guard",
+    "name": "system:data-leak-guard",
+    "src": "forbid(principal, action in [Action::\"result.read.unmasked\", Action::\"result.read.masked\"], resource) when { resource in Tag::\"system:data-leak\" } unless { resource in Tag::\"system:development\" };"
+  },
+  {
+    "id": -110,
+    "systemKey": "system.activity-guard",
+    "name": "system:activity-guard",
+    "src": "forbid(principal, action in [Action::\"result.read.unmasked\", Action::\"result.read.masked\"], resource) when { resource in Tag::\"system:activity\" } unless { resource in Tag::\"system:development\" };"
+  },
+  {
+    "id": -100,
+    "systemKey": "system.catalog-read",
+    "name": "system:catalog-read",
+    "src": "permit(principal, action == Action::\"result.read.unmasked\", resource) when { resource in Tag::\"system:catalog\" };"
+  },
+  {
+    "id": -25,
+    "systemKey": "task.cancel-parties",
+    "name": "system:task-cancel-parties",
+    "src": "permit(principal, action == Action::\"task.cancel\", resource) when { resource is Request && (resource.requester == principal || (resource has approver && resource.approver == principal)) };"
+  },
+  {
+    "id": -24,
+    "systemKey": "task.wire-self-approve",
+    "name": "system:task-wire-self-approve",
+    "src": "permit(principal, action == Action::\"task.approve\", resource) when { resource is Request && principal == resource.requester && context has channel && context.channel == \"wire\" };"
+  },
+  {
+    "id": -23,
+    "systemKey": "task.editor-self-approve",
+    "name": "system:task-editor-self-approve",
+    "src": "permit(principal, action == Action::\"task.approve\", resource) when { resource is Request && principal == resource.requester && context has channel && context.channel == \"editor\" };"
+  },
+  {
+    "id": -22,
+    "systemKey": "task.assume-auditor",
+    "name": "system:task-assume-auditor",
+    "src": "permit(principal in Role::\"system:auditor\", action == Action::\"task.assume\", resource) when { resource is Request };"
+  },
+  {
+    "id": -21,
+    "systemKey": "task.assume-parties",
+    "name": "system:task-assume-parties",
+    "src": "permit(principal, action == Action::\"task.assume\", resource) when { resource is Request && (resource.requester == principal || (resource has approver && resource.approver == principal)) };"
+  },
+  {
+    "id": -20,
+    "systemKey": "token.no-cross-mint",
+    "name": "system:token-no-cross-mint",
+    "src": "forbid(principal, action == Action::\"token.mint\", resource) when { resource.owner != principal };"
+  },
+  {
+    "id": -19,
+    "systemKey": "token.admin",
+    "name": "system:token-admin",
+    "src": "permit(principal in Role::\"system:admin\", action in [Action::\"token.list\", Action::\"token.revoke\"], resource);"
+  },
+  {
+    "id": -18,
+    "systemKey": "token.self",
+    "name": "system:token-self",
+    "src": "permit(principal, action in [Action::\"token.mint\", Action::\"token.list\", Action::\"token.revoke\"], resource) when { resource.owner == principal };"
+  },
+  {
+    "id": -16,
+    "systemKey": "workflow.request-default",
+    "name": "system:workflow-request-default",
+    "src": "permit(principal, action == Action::\"task.request\", resource);"
+  },
+  {
+    "id": -15,
+    "systemKey": "workflow.self-grant",
+    "name": "system:workflow-self-grant",
+    "src": "permit(principal, action in [Action::\"task.read\", Action::\"grant.revoke\"], resource) when { resource is AccessGrant && resource.owner == principal };"
+  },
+  {
+    "id": -14,
+    "systemKey": "workflow.self-request",
+    "name": "system:workflow-self-request",
+    "src": "permit(principal, action == Action::\"task.read\", resource) when { resource is Request && resource.requester == principal };"
+  },
+  {
+    "id": -5,
+    "systemKey": "audit.read-admin",
+    "name": "system:audit-read-admin",
+    "src": "permit(principal in Role::\"system:admin\", action == Action::\"audit.read\", resource);"
+  },
+  {
+    "id": -4,
+    "systemKey": "audit.read-own",
+    "name": "system:audit-read-own",
+    "src": "permit(principal, action == Action::\"audit.read\", resource) when { resource is AuditRecord && resource.principal == principal };"
+  },
+  {
+    "id": -3,
+    "systemKey": "workflow.pm-admin-approve",
+    "name": "system:admin-approver",
+    "src": "permit(principal in Role::\"system:admin\", action in [Action::\"task.approve\", Action::\"task.read\", Action::\"grant.revoke\", Action::\"task.request\", Action::\"task.cancel\", Action::\"task.delete\"], resource);"
+  },
+  {
+    "id": -2,
+    "systemKey": "workflow.no-self-approval",
+    "name": "system:no-self-approval",
+    "src": "forbid(principal, action == Action::\"task.approve\", resource) when { principal == resource.requester } unless { context has channel && (context.channel == \"editor\" || context.channel == \"wire\") };"
+  },
+  {
+    "id": -1,
+    "systemKey": "bootstrap.pm-admin",
+    "name": "system:admin",
+    "src": "permit(principal in Role::\"system:admin\", action in [Action::\"admin.datasources\",Action::\"admin.policies\",Action::\"admin.identity\"], resource);"
+  }
+]

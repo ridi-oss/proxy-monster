@@ -1,0 +1,1 @@
+{"sql":"select id, email from users limit 10","datasourceId":3,"ranAt":"2026-07-31T04:05:06.123Z"}

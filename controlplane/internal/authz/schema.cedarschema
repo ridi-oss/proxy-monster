@@ -1,0 +1,235 @@
+// Cedar schema for the authz decision service (docs/authz-model.md, "authz boundary").
+// Layer 2 (Cedar) sits on top of Layer 1 role resolution (RoleResolver, no Cedar): principals are
+// always `User` entities carrying their *resolved* roles as Cedar-graph parents, never bare Roles.
+//
+// Column authz ("masking is column config, not authorization") is deny-by-default: entities for
+// Table/Column/Tag are marshaled fresh from the live catalog on every request — there is no
+// policy-side table to keep in sync with tag/table membership (see Authz.authorizeColumns).
+
+// A singleton, attribute-less resource representing "the whole system" — the resource for
+// instance-wide admin actions (admin.datasources / admin.policies / admin.identity) that aren't
+// scoped to one entity.
+entity System;
+
+// proxy-monster's `app_role` rows (DESIGN.md), Cedar-side. A principal's roles are attached as
+// direct graph parents when Authz marshals the request (see Authz.kt) — this schema only needs to
+// know the type exists, not any particular role name.
+entity Role;
+
+// Local groups provisioned from the IdP group claim (JIT-on-login by default, or SCIM when enabled).
+// Not referenced by any action or seed policy.
+entity Group;
+
+// Column-authz entities (docs/authz-model.md worked examples). `Table`/`Column` are keyed off the
+// datasource NAME and full physical identity, not its numeric id:
+// `Table::"<dsName>/<catalog>/<schema>/<table>"` and
+// `Column::"<dsName>/<catalog>/<schema>/<table>/<column>"`. `Tag` is a leaf entity (freeform labels like "pii" — no
+// built-in "protected" meaning; whatever a policy grants/excludes on a tag is the whole of its
+// meaning). See Authz.authorizeColumns for how a query's touched columns are marshaled.
+// `Table` gains a `Tag` parent so a shipped `system:` classification (system-classification.md) attaches to
+// the Table and its Columns INHERIT it transitively via their Table parent — a Column of `pg_authid` is
+// `in Tag::"system:critical"` through the graph, without a second direct system tag on the column.
+entity Table in [Datasource, Tag];
+entity Column in [Table, Datasource, Tag];
+entity Tag;
+
+// A function CALLED by a query (facts-emission.md), keyed off the datasource NAME + bare
+// function name: `Function::"<dsName>/<name>"`. It gains a `Tag` parent so a shipped `system:`
+// classification (system-classification.md — a dangerous builtin like pg_read_file / dblink / load_file /
+// rds_* / keyring_*) attaches to it and the shipped `system:data-leak`/`system:critical` forbids override
+// any read grant → DENY. Only DANGEROUS-classified functions are marshaled; ordinary safe functions
+// (now/count/user UDFs) carry no tag and are not marshaled, so they are unaffected.
+entity Function in [Datasource, Tag];
+
+// A resource-bearing UTILITY command a statement performs (facts-emission.md), keyed off the
+// datasource NAME + the canonical command id: `Utility::"<dsName>/<command>"`. Like Function it gains a
+// `Tag` parent for its shipped `system:` classification (SHOW PROCESSLIST → system:activity, SHOW BINLOG
+// EVENTS → system:data-leak, …). Deny-by-default: unlike a Function (only dangerous ones are marshaled), a
+// RECOGNIZED utility with no classification is still marshaled and, carrying no permit, denies — so an
+// un-classifiable utility on an unsupported-version datasource fails closed (utilities are token-recognized,
+// not catalog-resolved, so this needs no function catalog).
+entity Utility in [Datasource, Tag];
+
+// The authenticated principal. Its Cedar parents are the role set RoleSource.rolesOf(principal)
+// resolved (Layer 1); "member of Role" is exactly that "principal in Role::..." relationship.
+entity User in [Role];
+
+// A brokered datasource (DESIGN.md's `datasource` table). `name` is best-effort/optional so
+// callers that only have the id can still authorize. It gains a `Tag` parent so its shipped
+// posture tags (`system:development` / `system:production`) attach to it AND — transitively via
+// the Datasource parent every Table/Column/Function carries — govern the conditional forbids / preset
+// permits over the objects under it. Only those reserved tags are ever marshaled onto a Datasource
+// (Authz.datasourceEntity); a Column/Table/Function can never carry them (the type-scoping invariant).
+entity Datasource in [Tag] = {
+    name?: String,
+};
+
+// A task request (`access_request`). Its party attributes are entity references so approval and
+// assume-role policies use real entity equality (`resource.requester == principal`, etc.).
+// `approver`/`executedBy` are OPTIONAL: they do not exist until the task is decided/executed, so
+// Authz marshals them only when present (Authz.kt) and every policy that reads one must `has`-guard
+// it — the validator rejects an unguarded read of an optional attribute, which closes the fail-open
+// where an operator forbid conditioned on `approver` would silently permit a pre-decision task.
+// `requester` is always present (required). `released` is a no-op OPTIONAL attribute: no code sets
+// it, so it is always absent, and a has-guarded operator policy that reads it
+// (`resource has released && resource.released`) evaluates false (fail-closed) instead of bricking
+// boot on an undeclared attribute. Optionally scoped to its Datasource and Role
+// parents so lifecycle policies can match the requested execution scope.
+entity Request in [Datasource, Role] = {
+    requester: User,
+    approver?: User,
+    executedBy?: User,
+    released?: Bool,
+};
+
+// An issued JIT access grant (`access_grant` row). `owner`
+// is the principal the grant elevates, so an ownership policy can scope read/revoke to it
+// (`resource.owner == principal`). Parented on its Datasource/Role like Request so a per-datasource /
+// per-role revoke policy matches transitively (`resource in Datasource::"…"` / `resource in Role::"…"`).
+entity AccessGrant in [Datasource, Role] = {
+    owner: User,
+};
+
+// A wire/personal-access token being minted or managed (`proxy_token` row). `owner` is the principal
+// it authenticates as; `kind` (SESSION | USER | EDITOR | APPROVER_EXEC) lets a policy permit short
+// sessions but forbid long-lived PATs. It is OPTIONAL — absent for operations not tied to one token
+// (e.g. listing) — so a kind-scoped policy must guard it (`resource has kind && resource.kind == "USER"`).
+entity Token = {
+    owner: User,
+    kind?: String,
+};
+
+// One audit decision, carrying its owner so ordinary principals can be limited to their own records.
+entity AuditRecord = {
+    principal: User,
+};
+
+// The whole audit collection, used only for policies that grant the global read capability.
+entity AuditLog;
+
+// Request context (docs/authz-context.md): the server-attested signals every action's policies
+// condition on. Declared once as a common type and referenced by every action's `context` — the shape
+// AuthzContext.toCedarMap (Authz.kt) builds. (The generated `context.tag::<name>` actions in
+// CedarEngine.schemaFor intentionally use their own narrower context and do not reference this type.)
+type RequestContext = {
+    network_zones?: Set<String>,
+    channel?: String,
+    requester_ip?: ipaddr,
+    tags?: Set<String>,
+};
+
+// Global admin surfaces (App.kt route groups gated via requireAdmin). No per-resource scoping —
+// the resource is always the System singleton.
+action "admin.datasources", "admin.policies", "admin.identity"
+  appliesTo {
+    principal: [User, Role],
+    resource: [System],
+    context: RequestContext,
+  };
+
+// The task-approval decision. Resource is the pending request itself, carrying who asked for it.
+action "task.approve"
+  appliesTo {
+    principal: [User, Role],
+    resource: [Request],
+    context: RequestContext,
+  };
+
+// Task lifecycle actions replace code-side group-membership / ownership gates. `task.request` gates
+// creation against a datasource. `task.read` is the metadata gate over Request and AccessGrant;
+// `task.assume` is the confidentiality gate for saved result data. Approval routing is expressed as
+// policies scoped by the Request's Role/Datasource parents.
+action "task.request"
+  appliesTo {
+    principal: [User, Role],
+    resource: [Datasource],
+    context: RequestContext,
+  };
+
+action "task.read"
+  appliesTo {
+    principal: [User, Role],
+    resource: [Request, AccessGrant],
+    context: RequestContext,
+  };
+
+action "task.assume"
+  appliesTo {
+    principal: [User, Role],
+    resource: [Request],
+    context: RequestContext,
+  };
+
+action "task.cancel", "task.delete"
+  appliesTo {
+    principal: [User, Role],
+    resource: [Request],
+    context: RequestContext,
+  };
+
+action "grant.revoke"
+  appliesTo {
+    principal: [User, Role],
+    resource: [AccessGrant],
+    context: RequestContext,
+  };
+
+// Credential issuance + management. `token.mint` gates creating a credential — and, since a
+// token's SECRET is returned only once at mint (only its hash is stored after), minting is the ONLY way
+// to obtain that secret, so there is no separate content-read action. `token.list` gates listing token
+// METADATA (id/kind/name/timestamps) and `token.revoke` gates revoking — both go to the owner and, for
+// oversight, an identity admin. `token.mint` is owner-locked (self permit + a cross-user forbid), so an
+// admin who may list/revoke can never mint AS — obtain the secret of — another principal's token.
+action "token.mint", "token.list", "token.revoke"
+  appliesTo {
+    principal: [User, Role],
+    resource: [Token],
+    context: RequestContext,
+  };
+
+// Audit reads apply either to one ownership-bearing record or to the whole collection capability.
+action "audit.read"
+  appliesTo {
+    principal: [User, Role],
+    resource: [AuditRecord, AuditLog],
+    context: RequestContext,
+  };
+
+// Per-column result-visibility decision (docs/authz-model.md — "masking is column config, not
+// authorization"). The resource is the touched Column itself, or — via Cedar `in` — any Table/Tag/
+// Datasource grant that covers it (see the "read table except pii" worked example). Deny-by-default:
+// a column with neither `result.read.unmasked` nor `result.read.masked` permitted is DENIED, never
+// returned cleartext (Authz.authorizeColumns; the caller — Query.kt — resolves the actual mask fn,
+// Cedar only picks unmasked/masked/deny).
+action "result.read.unmasked", "result.read.masked"
+  appliesTo {
+    principal: [User, Role],
+    resource: [Column, Table, Tag, Datasource, Function, Utility],
+    context: RequestContext,
+  };
+
+// The two once-per-query gates ahead of the catalog/analyzer/column loop (docs/authz-model.md:106-
+// 116): `datasource.connect` decides whether the principal may touch the datasource at all, then
+// `sql.<kind>` decides whether the specific statement kind (select/insert/update/delete/ddl) is
+// permitted on it. Both are keyed off the Datasource NAME, not its numeric id — see
+// Authz.authorizeDatasourceAction.
+action "datasource.connect", "sql.select", "sql.insert", "sql.update", "sql.delete", "sql.ddl"
+  appliesTo {
+    principal: [User, Role],
+    resource: [Datasource],
+    context: RequestContext,
+  };
+
+// Datasource-level exception gates (facts-emission.md). `sql.unanalyzable` decides whether a
+// statement the analyzer cannot fully reason about may be RELAYED VERBATIM (no rewrite, no masks);
+// `sql.unmaskable` decides whether a masked result the proxy cannot mask on the chosen wire path (the
+// MySQL binary protocol, or a wire feature that defeats masking) may still be relayed unmasked. Both
+// are deny-by-default: with no exception policy the production floor DENIES; a permissive development
+// datasource can permit them (system:development). EXPLAIN of a query whose columns are masked is a
+// separate structural deny (Query.kt), not this gate.
+action "sql.unanalyzable", "sql.unmaskable"
+  appliesTo {
+    principal: [User, Role],
+    resource: [Datasource],
+    context: RequestContext,
+  };

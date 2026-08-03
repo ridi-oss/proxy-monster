@@ -1,0 +1,600 @@
+{
+  "engine": "mysql",
+  "series": "8.4",
+  "manifestVersion": 1,
+  "curatedThrough": "8.4.7",
+  "systemSchemas": [
+    {
+      "catalog": "def",
+      "schema": "information_schema"
+    },
+    {
+      "catalog": "def",
+      "schema": "performance_schema"
+    },
+    {
+      "catalog": "def",
+      "schema": "sys"
+    },
+    {
+      "catalog": "def",
+      "schema": "mysql"
+    }
+  ],
+  "logicalFunctionSchemas": [
+    {
+      "catalog": "def",
+      "schema": "__builtin__"
+    }
+  ],
+  "relations": [
+    {
+      "schema": "mysql",
+      "name": "user",
+      "tag": "system:critical"
+    },
+    {
+      "schema": "mysql",
+      "name": "global_grants",
+      "tag": "system:critical"
+    },
+    {
+      "schema": "mysql",
+      "name": "db",
+      "tag": "system:critical"
+    },
+    {
+      "schema": "mysql",
+      "name": "tables_priv",
+      "tag": "system:critical"
+    },
+    {
+      "schema": "mysql",
+      "name": "columns_priv",
+      "tag": "system:critical"
+    },
+    {
+      "schema": "mysql",
+      "name": "procs_priv",
+      "tag": "system:critical"
+    },
+    {
+      "schema": "mysql",
+      "name": "proxies_priv",
+      "tag": "system:critical"
+    },
+    {
+      "schema": "mysql",
+      "name": "role_edges",
+      "tag": "system:critical"
+    },
+    {
+      "schema": "mysql",
+      "name": "default_roles",
+      "tag": "system:critical"
+    },
+    {
+      "schema": "mysql",
+      "name": "password_history",
+      "tag": "system:critical"
+    },
+    {
+      "schema": "mysql",
+      "name": "servers",
+      "tag": "system:critical"
+    },
+    {
+      "schema": "mysql",
+      "name": "slave_master_info",
+      "tag": "system:critical"
+    },
+    {
+      "schema": "mysql",
+      "name": "component",
+      "tag": "system:critical"
+    },
+    {
+      "schema": "mysql",
+      "name": "plugin",
+      "tag": "system:critical"
+    },
+    {
+      "schema": "mysql",
+      "name": "func",
+      "tag": "system:critical"
+    },
+    {
+      "schema": "information_schema",
+      "name": "USER_PRIVILEGES",
+      "tag": "system:critical"
+    },
+    {
+      "schema": "information_schema",
+      "name": "SCHEMA_PRIVILEGES",
+      "tag": "system:critical"
+    },
+    {
+      "schema": "information_schema",
+      "name": "TABLE_PRIVILEGES",
+      "tag": "system:critical"
+    },
+    {
+      "schema": "information_schema",
+      "name": "COLUMN_PRIVILEGES",
+      "tag": "system:critical"
+    },
+    {
+      "schema": "information_schema",
+      "name": "ROUTINE_PRIVILEGES",
+      "tag": "system:critical"
+    },
+    {
+      "schema": "information_schema",
+      "name": "USER_ATTRIBUTES",
+      "tag": "system:critical"
+    },
+    {
+      "schema": "information_schema",
+      "name": "ENABLED_ROLES",
+      "tag": "system:critical"
+    },
+    {
+      "schema": "information_schema",
+      "name": "APPLICABLE_ROLES",
+      "tag": "system:critical"
+    },
+    {
+      "schema": "information_schema",
+      "name": "ADMINISTRABLE_ROLE_AUTHORIZATIONS",
+      "tag": "system:critical"
+    },
+    {
+      "schema": "performance_schema",
+      "name": "replication_connection_configuration",
+      "tag": "system:critical"
+    },
+    {
+      "schema": "performance_schema",
+      "name": "global_variables",
+      "tag": "system:critical"
+    },
+    {
+      "schema": "performance_schema",
+      "name": "session_variables",
+      "tag": "system:critical"
+    },
+    {
+      "schema": "performance_schema",
+      "name": "persisted_variables",
+      "tag": "system:critical"
+    },
+    {
+      "schema": "performance_schema",
+      "name": "variables_info",
+      "tag": "system:critical"
+    },
+    {
+      "schema": "information_schema",
+      "name": "COLUMN_STATISTICS",
+      "tag": "system:data-leak"
+    },
+    {
+      "schema": "mysql",
+      "name": "innodb_index_stats",
+      "tag": "system:data-leak"
+    },
+    {
+      "schema": "mysql",
+      "name": "innodb_table_stats",
+      "tag": "system:data-leak"
+    },
+    {
+      "schema": "information_schema",
+      "name": "PROCESSLIST",
+      "tag": "system:activity"
+    },
+    {
+      "schema": "information_schema",
+      "name": "INNODB_TRX",
+      "tag": "system:activity"
+    },
+    {
+      "schema": "performance_schema",
+      "name": "processlist",
+      "tag": "system:activity"
+    },
+    {
+      "schema": "performance_schema",
+      "name": "threads",
+      "tag": "system:activity"
+    },
+    {
+      "schema": "performance_schema",
+      "name": "prepared_statements_instances",
+      "tag": "system:activity"
+    },
+    {
+      "schema": "performance_schema",
+      "name": "data_locks",
+      "tag": "system:activity"
+    },
+    {
+      "schema": "performance_schema",
+      "name": "data_lock_waits",
+      "tag": "system:activity"
+    },
+    {
+      "schema": "performance_schema",
+      "name": "metadata_locks",
+      "tag": "system:activity"
+    },
+    {
+      "schema": "performance_schema",
+      "name": "error_log",
+      "tag": "system:activity"
+    },
+    {
+      "schema": "mysql",
+      "name": "general_log",
+      "tag": "system:activity"
+    },
+    {
+      "schema": "mysql",
+      "name": "slow_log",
+      "tag": "system:activity"
+    },
+    {
+      "schema": "sys",
+      "name": "processlist",
+      "tag": "system:activity"
+    },
+    {
+      "schema": "sys",
+      "name": "x$processlist",
+      "tag": "system:activity"
+    },
+    {
+      "schema": "sys",
+      "name": "session",
+      "tag": "system:activity"
+    },
+    {
+      "schema": "sys",
+      "name": "x$session",
+      "tag": "system:activity"
+    },
+    {
+      "schema": "sys",
+      "name": "innodb_lock_waits",
+      "tag": "system:activity"
+    },
+    {
+      "schema": "sys",
+      "name": "x$innodb_lock_waits",
+      "tag": "system:activity"
+    }
+  ],
+  "relationFamilies": [
+    {
+      "schema": "mysql",
+      "prefix": "audit_log",
+      "tag": "system:critical"
+    },
+    {
+      "schema": "mysql",
+      "prefix": "firewall",
+      "tag": "system:critical"
+    },
+    {
+      "schema": "sys",
+      "prefix": "schema_table_statistics",
+      "tag": "system:data-leak"
+    },
+    {
+      "schema": "sys",
+      "prefix": "schema_index_statistics",
+      "tag": "system:data-leak"
+    },
+    {
+      "schema": "performance_schema",
+      "prefix": "events_statements_",
+      "tag": "system:activity"
+    },
+    {
+      "schema": "performance_schema",
+      "prefix": "events_transactions_",
+      "tag": "system:activity"
+    },
+    {
+      "schema": "performance_schema",
+      "prefix": "events_stages_",
+      "tag": "system:activity"
+    },
+    {
+      "schema": "sys",
+      "prefix": "statement_analysis",
+      "tag": "system:activity"
+    },
+    {
+      "schema": "sys",
+      "prefix": "x$statement_analysis",
+      "tag": "system:activity"
+    },
+    {
+      "schema": "sys",
+      "prefix": "statements_with_",
+      "tag": "system:activity"
+    },
+    {
+      "schema": "sys",
+      "prefix": "x$statements_with_",
+      "tag": "system:activity"
+    },
+    {
+      "schema": "sys",
+      "prefix": "host_summary_by_statement",
+      "tag": "system:activity"
+    },
+    {
+      "schema": "sys",
+      "prefix": "x$host_summary_by_statement",
+      "tag": "system:activity"
+    },
+    {
+      "schema": "sys",
+      "prefix": "user_summary_by_statement",
+      "tag": "system:activity"
+    },
+    {
+      "schema": "sys",
+      "prefix": "x$user_summary_by_statement",
+      "tag": "system:activity"
+    }
+  ],
+  "functions": [
+    {
+      "schema": "__builtin__",
+      "name": "load_file",
+      "tag": "system:data-leak"
+    }
+  ],
+  "functionFamilies": [
+    {
+      "schema": "__builtin__",
+      "prefix": "keyring_",
+      "tag": "system:critical"
+    },
+    {
+      "schema": "mysql",
+      "prefix": "rds_",
+      "tag": "system:critical"
+    }
+  ],
+  "commands": [
+    {
+      "id": "SET_PASSWORD",
+      "resource": "set-password",
+      "tag": "system:critical"
+    },
+    {
+      "id": "CREATE_USER",
+      "resource": "create-user",
+      "tag": "system:critical"
+    },
+    {
+      "id": "ALTER_USER",
+      "resource": "alter-user",
+      "tag": "system:critical"
+    },
+    {
+      "id": "DROP_USER",
+      "resource": "drop-user",
+      "tag": "system:critical"
+    },
+    {
+      "id": "GRANT",
+      "resource": "grant",
+      "tag": "system:critical"
+    },
+    {
+      "id": "REVOKE",
+      "resource": "revoke",
+      "tag": "system:critical"
+    },
+    {
+      "id": "RENAME_USER",
+      "resource": "rename-user",
+      "tag": "system:critical"
+    },
+    {
+      "id": "SET_DEFAULT_ROLE",
+      "resource": "set-default-role",
+      "tag": "system:critical"
+    },
+    {
+      "id": "SET_GLOBAL",
+      "resource": "set-global",
+      "tag": "system:critical"
+    },
+    {
+      "id": "SET_PERSIST",
+      "resource": "set-persist",
+      "tag": "system:critical"
+    },
+    {
+      "id": "SET_PERSIST_ONLY",
+      "resource": "set-persist-only",
+      "tag": "system:critical"
+    },
+    {
+      "id": "RESET_PERSIST",
+      "resource": "reset-persist",
+      "tag": "system:critical"
+    },
+    {
+      "id": "CHANGE_REPLICATION_SOURCE",
+      "resource": "change-replication-source",
+      "tag": "system:critical"
+    },
+    {
+      "id": "RESET_REPLICA",
+      "resource": "reset-replica",
+      "tag": "system:critical"
+    },
+    {
+      "id": "PURGE_BINARY_LOGS",
+      "resource": "purge-binary-logs",
+      "tag": "system:critical"
+    },
+    {
+      "id": "INSTALL_PLUGIN",
+      "resource": "install-plugin",
+      "tag": "system:critical"
+    },
+    {
+      "id": "UNINSTALL_PLUGIN",
+      "resource": "uninstall-plugin",
+      "tag": "system:critical"
+    },
+    {
+      "id": "INSTALL_COMPONENT",
+      "resource": "install-component",
+      "tag": "system:critical"
+    },
+    {
+      "id": "UNINSTALL_COMPONENT",
+      "resource": "uninstall-component",
+      "tag": "system:critical"
+    },
+    {
+      "id": "CREATE_FUNCTION_SONAME",
+      "resource": "loadable-function",
+      "tag": "system:critical"
+    },
+    {
+      "id": "DROP_FUNCTION_SONAME",
+      "resource": "loadable-function",
+      "tag": "system:critical"
+    },
+    {
+      "id": "ALTER_INSTANCE",
+      "resource": "alter-instance",
+      "tag": "system:critical"
+    },
+    {
+      "id": "CLONE_INSTANCE",
+      "resource": "clone-instance",
+      "tag": "system:critical"
+    },
+    {
+      "id": "RESTART",
+      "resource": "restart",
+      "tag": "system:critical"
+    },
+    {
+      "id": "SHUTDOWN",
+      "resource": "shutdown",
+      "tag": "system:critical"
+    },
+    {
+      "id": "INTO_OUTFILE",
+      "resource": "into-outfile",
+      "tag": "system:critical"
+    },
+    {
+      "id": "INTO_DUMPFILE",
+      "resource": "into-dumpfile",
+      "tag": "system:critical"
+    },
+    {
+      "id": "LOAD_DATA",
+      "resource": "load-data",
+      "tag": "system:critical"
+    },
+    {
+      "id": "LOAD_XML",
+      "resource": "load-xml",
+      "tag": "system:critical"
+    },
+    {
+      "id": "SHOW_CREATE_USER",
+      "resource": "show-create-user",
+      "tag": "system:critical"
+    },
+    {
+      "id": "SHOW_GRANTS",
+      "resource": "show-grants",
+      "tag": "system:critical"
+    },
+    {
+      "id": "SHOW_VARIABLES",
+      "resource": "performance_schema/global_variables",
+      "tag": "system:critical"
+    },
+    {
+      "id": "SHOW_BINLOG_EVENTS",
+      "resource": "show-binlog-events",
+      "tag": "system:data-leak"
+    },
+    {
+      "id": "SHOW_RELAYLOG_EVENTS",
+      "resource": "show-relaylog-events",
+      "tag": "system:data-leak"
+    },
+    {
+      "id": "SHOW_ENGINE_STATUS",
+      "resource": "show-engine-status",
+      "tag": "system:data-leak"
+    },
+    {
+      "id": "SHOW_WARNINGS",
+      "resource": "session-diagnostics",
+      "tag": "system:data-leak"
+    },
+    {
+      "id": "SHOW_ERRORS",
+      "resource": "session-diagnostics",
+      "tag": "system:data-leak"
+    },
+    {
+      "id": "SHOW_PROCESSLIST",
+      "resource": "def/information_schema/PROCESSLIST",
+      "tag": "system:activity"
+    },
+    {
+      "id": "SHOW_STATUS",
+      "resource": "show-status",
+      "tag": "system:activity"
+    },
+    {
+      "id": "SHOW_REPLICA_STATUS",
+      "resource": "show-replica-status",
+      "tag": "system:activity"
+    },
+    {
+      "id": "SET_ROLE",
+      "resource": "set-role",
+      "tag": "system:critical"
+    },
+    {
+      "id": "SET_SQL_MODE",
+      "resource": "set-sql-mode",
+      "tag": "system:critical"
+    },
+    {
+      "id": "USER_TYPE_CAST",
+      "resource": "user-type-cast",
+      "tag": "system:critical"
+    },
+    {
+      "id": "SET_SUBQUERY",
+      "resource": "set-subquery",
+      "tag": "system:critical"
+    },
+    {
+      "id": "SHOW_SUBQUERY",
+      "resource": "show-subquery",
+      "tag": "system:critical"
+    }
+  ]
+}

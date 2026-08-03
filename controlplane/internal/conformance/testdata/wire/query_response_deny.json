@@ -1,0 +1,1 @@
+{"decision":"DENY","denyReason":"cannot EXPLAIN a query whose columns are masked — request full access or run the query directly","maskedColumns":[],"piiTouched":[],"effectiveRoles":["analyst"],"columns":[],"rows":[],"rowsAffected":0,"latencyMs":3}

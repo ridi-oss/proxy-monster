@@ -1,0 +1,1 @@
+{"oidcEnabled":false,"authDebug":true,"session":{"heartbeatMs":90000,"idleWarnLeadMs":60000,"absoluteWarnLeadMs":300000,"absoluteCapAmount":2,"absoluteCapUnit":"hours"}}

@@ -1,0 +1,1 @@
+{"id":-1,"origin":"SYSTEM","systemKey":"bootstrap.pm-admin","name":"system:admin","cedarSrc":"permit(principal in Role::\"system:admin\", action in [Action::\"admin.policies\"], resource);","enabled":true,"updatedBy":"migration:V8","updatedAt":"2026-07-31T04:05:06.123Z"}

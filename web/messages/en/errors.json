@@ -45,6 +45,8 @@
     "table_introspection_failed": "Table introspection failed: {detail}",
     "schema_required": "A schema is required until the datasource is introspected (which captures a default schema).",
     "reserved_tag": "The tag \"{tag}\" is reserved for system classification and can't be set on a column.",
+    "batch_too_large": "A batch may carry at most {max} columns.",
+    "duplicate_column": "The column \"{column}\" appears more than once in this batch.",
     "engine_immutable": "A datasource's engine can't be changed. Delete and re-create it to switch engines.",
     "invalid_engine": "\"{engine}\" isn't a supported engine — use \"postgres\" or \"mysql\".",
     "no_wire_cert": "This datasource's proxy has not advertised a TLS certificate.",

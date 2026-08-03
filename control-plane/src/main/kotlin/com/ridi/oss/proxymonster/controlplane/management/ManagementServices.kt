@@ -70,6 +70,12 @@ data class ColumnTagEntry(
     val maskFnName: String? = null,
 )
 
+@Serializable
+data class ColumnClassificationBatch(
+    val datasource: String,
+    val columns: List<Classification>,
+)
+
 class DatasourceManagementService(
     private val store: DatasourceStore,
     private val eventsHub: ProxyEventsHub,
@@ -160,6 +166,57 @@ class DatasourceManagementService(
         return store.upsertClassification(datasource.id, ClassificationInput(schema, table, column, tags, maskFnId), connection)
     }
 
+    /**
+     * Tag many columns of one datasource in the caller's transaction — all of them or none.
+     *
+     * Every entry is validated before the first write, so a rejected entry leaves the whole batch
+     * unapplied rather than a prefix of it. Two entries resolving to the same column are rejected
+     * rather than silently letting the later one win: the caller cannot tell from the response which
+     * of its conflicting tag sets survived, and for a masking decision that is the difference between
+     * a column being masked and not.
+     */
+    fun setColumnClassifications(
+        datasourceName: String,
+        columns: List<ClassificationInput>,
+        connection: Connection,
+    ): List<Classification> {
+        if (columns.isEmpty()) throw ManagementException(ApiError("common.field_required", mapOf("fields" to "columns")))
+        if (columns.size > MAX_CLASSIFICATION_BATCH) {
+            throw ManagementException(
+                ApiError("datasource.batch_too_large", mapOf("max" to MAX_CLASSIFICATION_BATCH.toString())),
+            )
+        }
+        val datasource = datasource(datasourceName, connection)
+        val defaultSchema = store.defaultSchema(datasource.id, connection)
+        val seen = HashSet<Triple<String, String, String>>(columns.size)
+        // Resolve every entry to the identity it will actually be written under, so the duplicate check
+        // and the write agree — dedup on the submitted schema would let an explicit "public" and an
+        // omitted one both through and silently apply whichever ran last.
+        val resolved = columns.map { input ->
+            required("table", input.table)
+            required("column", input.column)
+            val schema = input.schema?.takeIf(String::isNotBlank) ?: defaultSchema
+                ?: throw ManagementException(ApiError("datasource.schema_required"))
+            input.tags.firstOrNull { it.startsWith(DatasourceStore.RESERVED_TAG_PREFIX) }?.let {
+                throw ManagementException(ApiError("datasource.reserved_tag", mapOf("tag" to it)))
+            }
+            if (!seen.add(Triple(schema, input.table, input.column))) {
+                throw ManagementException(
+                    ApiError(
+                        "datasource.duplicate_column",
+                        mapOf("column" to "$schema.${input.table}.${input.column}"),
+                    ),
+                )
+            }
+            ClassificationInput(schema, input.table, input.column, input.tags, input.maskFnId)
+        }
+        // Written in a canonical order, not the caller's: each upsert row-locks its classification, so
+        // two overlapping batches submitted in opposite orders would deadlock and one would die with an
+        // internal error. A total order over the key means concurrent batches queue instead.
+        return resolved.sortedWith(compareBy({ it.schema }, { it.table }, { it.column }))
+            .map { input -> store.upsertClassification(datasource.id, input, connection) }
+    }
+
     fun clearColumnClassification(
         datasourceName: String,
         schema: String?,
@@ -203,6 +260,15 @@ class DatasourceManagementService(
 
     private fun datasource(name: String, connection: Connection): Datasource = store.getByName(name, connection)
         ?: throw ManagementException(ApiError("common.not_found", mapOf("resource" to "datasource")))
+
+    companion object {
+        /**
+         * A batch runs as one transaction holding a row lock per column plus the audit chain-head lock,
+         * so its size bounds how long every other writer waits. Large enough for a whole table's columns
+         * in one call, small enough that a runaway agent cannot stall the chain.
+         */
+        const val MAX_CLASSIFICATION_BATCH = 500
+    }
 }
 
 class PolicyManagementService(

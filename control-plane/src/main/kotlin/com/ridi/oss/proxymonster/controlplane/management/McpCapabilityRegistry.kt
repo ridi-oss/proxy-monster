@@ -70,6 +70,7 @@ object McpCapabilityRegistry {
         read("get_table_detail", AuthzAction.ADMIN_DATASOURCES),
         read("list_column_tags", AuthzAction.ADMIN_DATASOURCES),
         write("set_column_classification", AuthzAction.ADMIN_DATASOURCES, "mcp:datasources:write"),
+        write("set_column_classifications", AuthzAction.ADMIN_DATASOURCES, "mcp:datasources:write"),
         write("clear_column_classification", AuthzAction.ADMIN_DATASOURCES, "mcp:datasources:write", destructive = true),
 
         read("list_policies", AuthzAction.ADMIN_POLICIES),
@@ -113,7 +114,8 @@ object McpCapabilityRegistry {
 
     val approvedToolNames = setOf(
         "list_datasources", "get_datasource_liveness", "browse_catalog", "get_table_detail", "list_column_tags",
-        "set_column_classification", "clear_column_classification", "list_policies", "get_policy", "validate_policy",
+        "set_column_classification", "set_column_classifications", "clear_column_classification",
+        "list_policies", "get_policy", "validate_policy",
         "get_policy_schema", "create_policy", "update_policy", "enable_policy", "disable_policy", "delete_policy",
         "list_roles", "create_role", "update_role", "delete_role", "list_role_assignments", "assign_role",
         "unassign_role", "list_users", "create_user", "update_user", "deprovision_user", "list_groups", "create_group",

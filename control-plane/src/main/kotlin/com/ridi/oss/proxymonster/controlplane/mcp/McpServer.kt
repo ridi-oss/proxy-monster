@@ -5,6 +5,7 @@ import com.ridi.oss.proxymonster.auth.sha256Hex
 import com.ridi.oss.proxymonster.controlplane.ApiError
 import com.ridi.oss.proxymonster.controlplane.AuditStore
 import com.ridi.oss.proxymonster.controlplane.Channel
+import com.ridi.oss.proxymonster.controlplane.ClassificationInput
 import com.ridi.oss.proxymonster.controlplane.Config
 import com.ridi.oss.proxymonster.controlplane.ControlPlaneCore
 import com.ridi.oss.proxymonster.controlplane.Decision
@@ -14,6 +15,7 @@ import com.ridi.oss.proxymonster.controlplane.httpRequesterIp
 import com.ridi.oss.proxymonster.controlplane.resolveForwardedAuthority
 import com.ridi.oss.proxymonster.controlplane.management.CapabilityClassification
 import com.ridi.oss.proxymonster.controlplane.management.CedarValidationManagementException
+import com.ridi.oss.proxymonster.controlplane.management.ColumnClassificationBatch
 import com.ridi.oss.proxymonster.controlplane.management.DatasourceManagementService
 import com.ridi.oss.proxymonster.controlplane.management.IdentityManagementService
 import com.ridi.oss.proxymonster.controlplane.management.ManagementException
@@ -75,6 +77,10 @@ private val mcpJson = Json { encodeDefaults = true; explicitNulls = false }
 private val POLICY_MUTATION_TOOLS = setOf(
     "create_policy", "update_policy", "enable_policy", "disable_policy", "delete_policy",
 )
+private val CLASSIFICATION_TOOLS = setOf(
+    "set_column_classification", "set_column_classifications", "clear_column_classification",
+)
+private val CLASSIFICATION_ENTRY_KEYS = setOf("schema", "table", "column", "tags", "maskFnName")
 
 data class McpRequestContext(
     val principal: String,
@@ -497,6 +503,37 @@ private fun executeWrite(
                     ),
                 )
             }
+            "set_column_classifications" -> {
+                val entries = args.objectArray(
+                    "columns",
+                    CLASSIFICATION_ENTRY_KEYS,
+                    DatasourceManagementService.MAX_CLASSIFICATION_BATCH,
+                )
+                // One name→id lookup per DISTINCT mask function, not per column: a batch tagging a whole
+                // table typically names the same one throughout.
+                val maskFnIds = entries.mapNotNull { it.string("maskFnName") }.toSet().associateWith { name ->
+                    core.policyStore.getMaskFnByName(name, connection)?.id
+                        ?: throw ManagementException(ApiError("common.not_found", mapOf("resource" to "mask function")))
+                }
+                structured(
+                    ColumnClassificationBatch(
+                        args.requiredString("datasource"),
+                        datasources.setColumnClassifications(
+                            args.requiredString("datasource"),
+                            entries.map { entry ->
+                                ClassificationInput(
+                                    entry.string("schema"),
+                                    entry.requiredString("table"),
+                                    entry.requiredString("column"),
+                                    entry.stringSet("tags").toList(),
+                                    entry.string("maskFnName")?.let(maskFnIds::getValue),
+                                )
+                            },
+                            connection,
+                        ),
+                    ),
+                )
+            }
             "clear_column_classification" -> structured(
                 datasources.clearColumnClassification(
                     args.requiredString("datasource"), args.string("schema"), args.requiredString("table"),
@@ -614,6 +651,29 @@ private fun schemaFor(tool: String): ToolSchema {
             "set_column_classification" -> {
                 string("datasource"); string("schema"); string("table"); string("column"); strings("tags"); string("maskFnName"); string("idempotencyKey")
             }
+            "set_column_classifications" -> {
+                string("datasource")
+                putJsonObject("columns") {
+                    put("type", "array")
+                    put("minItems", 1)
+                    put("maxItems", DatasourceManagementService.MAX_CLASSIFICATION_BATCH)
+                    put("items", buildJsonObject {
+                        put("type", "object")
+                        put("additionalProperties", false)
+                        put("required", buildJsonArray { add(JsonPrimitive("table")); add(JsonPrimitive("column")); add(JsonPrimitive("tags")) })
+                        putJsonObject("properties") {
+                            putJsonObject("schema") { put("type", "string") }
+                            putJsonObject("table") { put("type", "string") }
+                            putJsonObject("column") { put("type", "string") }
+                            putJsonObject("tags") {
+                                put("type", "array")
+                                put("items", buildJsonObject { put("type", "string") })
+                            }
+                            putJsonObject("maskFnName") { put("type", "string") }
+                        }
+                    })
+                }
+            }
             "clear_column_classification" -> { string("datasource"); string("schema"); string("table"); string("column"); string("idempotencyKey") }
             "create_policy" -> { string("name"); string("cedarSrc"); boolean("enabled"); string("idempotencyKey") }
             "update_policy" -> { string("name"); string("newName"); string("cedarSrc"); boolean("enabled"); string("idempotencyKey") }
@@ -640,6 +700,7 @@ private fun schemaFor(tool: String): ToolSchema {
         "get_policy", "enable_policy", "disable_policy", "delete_policy", "delete_role", "delete_group", "delete_mask_fn" -> listOf("name")
         "validate_policy" -> listOf("cedarSrc")
         "set_column_classification" -> listOf("datasource", "table", "column", "tags")
+        "set_column_classifications" -> listOf("datasource", "columns")
         "clear_column_classification" -> listOf("datasource", "table", "column")
         "create_policy" -> listOf("name", "cedarSrc")
         "update_policy" -> listOf("name", "cedarSrc")
@@ -709,11 +770,33 @@ private fun mutationDetail(tool: String, args: JsonObject): String {
             (args[key] as? JsonPrimitive)?.takeIf { it.isString }?.contentOrNull?.let { "$key=$it" }
         }
             .joinToString(",", prefix = " ").takeIf { it.isNotBlank() }?.let(::append)
+        // A batch's targets are nested, so the loop above records only its datasource. Naming each
+        // column keeps one audit row per batch as answerable as the single-column tool's row is —
+        // an auditor reading the trail must see WHICH columns were tagged, not just how many.
+        if (tool == "set_column_classifications") {
+            val entries = (args["columns"] as? JsonArray).orEmpty()
+            append(" columns=${entries.size}")
+            // Capped, because this string is built from unvalidated arguments BEFORE authorization —
+            // an unauthenticated-for-write caller must not be able to size the audit row. An
+            // over-cap batch is refused outright, so naming the entries it never applied is noise.
+            if (entries.size <= DatasourceManagementService.MAX_CLASSIFICATION_BATCH) {
+                entries.mapNotNull { entry ->
+                    (entry as? JsonObject)?.let { column ->
+                        val table = (column["table"] as? JsonPrimitive)?.takeIf { it.isString }?.contentOrNull
+                        val name = (column["column"] as? JsonPrimitive)?.takeIf { it.isString }?.contentOrNull
+                        val schema = (column["schema"] as? JsonPrimitive)?.takeIf { it.isString }?.contentOrNull
+                        if (table == null || name == null) null else listOfNotNull(schema, table, name).joinToString(".")
+                    }
+                }
+                    .takeIf { it.isNotEmpty() }
+                    ?.let { append(it.joinToString(",", prefix = " [", postfix = "]")) }
+            }
+        }
     }
 }
 
 private fun safeDatasource(capability: McpCapability, args: JsonObject): String =
-    if (capability.toolName in setOf("set_column_classification", "clear_column_classification")) {
+    if (capability.toolName in CLASSIFICATION_TOOLS) {
         (args["datasource"] as? JsonPrimitive)?.takeIf { it.isString }?.contentOrNull
             ?.takeIf(String::isNotBlank) ?: "control-plane"
     } else {
@@ -732,6 +815,26 @@ private fun JsonObject.boolean(name: String): Boolean? {
     if (value is JsonNull) return null
     return (value as? JsonPrimitive)?.booleanOrNull ?: throw McpInputException()
 }
+/**
+ * Read a bounded array of objects, rejecting any key the entry schema does not declare.
+ * [validateArguments] only sees top-level keys, so without this a batch entry could carry an unknown
+ * field and be applied as though it were understood — the same silent-acceptance the top-level check
+ * exists to prevent. The size is checked before the caller reads any entry, so an oversized batch
+ * costs no per-entry work (notably the mask-function lookups) on its way to being refused.
+ */
+private fun JsonObject.objectArray(name: String, allowed: Set<String>, max: Int): List<JsonObject> {
+    val array = get(name) as? JsonArray
+        ?: throw ManagementException(ApiError("common.field_required", mapOf("fields" to name)))
+    if (array.size > max) {
+        throw ManagementException(ApiError("datasource.batch_too_large", mapOf("max" to max.toString())))
+    }
+    return array.map { element ->
+        val entry = element as? JsonObject ?: throw McpInputException()
+        if ((entry.keys - allowed).isNotEmpty()) throw McpInputException()
+        entry
+    }
+}
+
 private fun JsonObject.stringSet(name: String): Set<String> {
     val array = get(name) as? JsonArray
         ?: throw ManagementException(ApiError("common.field_required", mapOf("fields" to name)))

@@ -167,6 +167,14 @@ mask fn is ours; Cedar only picks unmasked / masked / deny.
   [policy-store.md](./policy-store.md#target-schema).
 - `column_classification` carries `tags JSONB` and `mask_fn_id` — the per-column
   config.
+- `classification_profile`, `classification_profile_rule`, and
+  `datasource_classification_profile` — a named rule set several datasources
+  share, plus its attachments. A column's effective tags are the union of the
+  datasource's own row and every attached profile, so a per-datasource override
+  adds tags but never drops one a profile applied; the mask function instead
+  resolves by precedence, the datasource's own row first.
+  `DatasourceStore.classificationsFor` is the single resolution both read paths
+  use.
 - Identity: `app_role`, `principal_role`, `app_group`, `group_member`,
   `group_role`, `app_user`.
 - `access_grant(id, request_id, principal, role_id, granted_by, granted_at, expires_at, revoked_at)`
@@ -333,6 +341,7 @@ of a route and the gate it calls. Paths are relative to
 | Audit read | `/api/audit`, `/api/audit/{id}` | `AuditRoutes.kt` | `requireApi` + Cedar `audit.read` — allow on `AuditLog` returns all rows, else own rows only |
 | Caller capability summary | `/api/me/permissions` | `App.kt` | `requireApi`; UI convenience, computed from `admin.*` + `audit.read` |
 | Datasources, catalog, classification | `/api/datasources**` | `Datasources.kt` | mixed: list = `requireApiOrBearer`; `live`, `{id}` = `requireApi`; `{id}/catalog` = `requireApi` + `datasource.connect`; rest = `requireAdmin(admin.datasources)` |
+| Classification profiles + attachments | `/api/classification-profiles**`, `/api/datasources/{id}/classification-profiles**` | `ClassificationProfileRoutes.kt` | `requireAdmin(admin.datasources)` |
 | One-shot editor query | `/api/datasources/{id}/query` | `Query.kt` | `requireApi`, then the per-statement `decideQuery` |
 | Editor sessions and tasks | `/api/editor/**` | `Query.kt` | `requireApi` + owner scope; cancel adds `task.cancel`, result adds `task.assume` |
 | Task-completion SSE | `/api/tasks/events` | `App.kt` | resolves the session itself; each push re-filtered through `task.read` |

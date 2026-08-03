@@ -5,6 +5,7 @@ import com.ridi.oss.proxymonster.auth.ConsumeAuthorizationCodeInput
 import com.ridi.oss.proxymonster.auth.OAuthAuthorizationStore
 import com.ridi.oss.proxymonster.auth.pkceS256
 import com.ridi.oss.proxymonster.controlplane.authz.CedarPolicyInput
+import com.ridi.oss.proxymonster.controlplane.management.ClassificationProfileManagementService
 import com.ridi.oss.proxymonster.controlplane.management.DatasourceManagementService
 import com.ridi.oss.proxymonster.controlplane.management.IdentityManagementService
 import com.ridi.oss.proxymonster.controlplane.management.McpCapabilityRegistry
@@ -823,7 +824,13 @@ class McpServerDbTest {
             dataSource, core.userGroupStore, core.policyStore, core.tokenStore, core.accessStore,
             PrincipalSessionStore(dataSource, null),
         )
-        installMcp(config(mcpResource, trustedProxies), core, datasourceService, policyService, identityService)
+        val profileService = ClassificationProfileManagementService(
+            ClassificationProfileStore(dataSource), core.datasourceStore,
+        )
+        installMcp(
+            config(mcpResource, trustedProxies), core, datasourceService, policyService, identityService,
+            profileService,
+        )
     }
 
     private fun io.ktor.client.request.HttpRequestBuilder.acceptMcp(token: String? = null) {

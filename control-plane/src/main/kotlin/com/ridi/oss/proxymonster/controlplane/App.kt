@@ -9,6 +9,7 @@ import com.ridi.oss.proxymonster.controlplane.authz.AuthzResource
 import com.ridi.oss.proxymonster.controlplane.authz.authorizeWithContext
 import com.ridi.oss.proxymonster.controlplane.authz.cedarPolicyRoutes
 import com.ridi.oss.proxymonster.controlplane.authz.contextTagLint
+import com.ridi.oss.proxymonster.controlplane.management.ClassificationProfileManagementService
 import com.ridi.oss.proxymonster.controlplane.management.DatasourceManagementService
 import com.ridi.oss.proxymonster.controlplane.management.IdentityManagementService
 import com.ridi.oss.proxymonster.controlplane.management.ManagementException
@@ -561,10 +562,15 @@ fun Application.module(config: Config, core: ControlPlaneCore) {
     // MCPA transport adapters share these service instances with the REST surface and the one live core.
     val datasourceManagement = DatasourceManagementService(datasourceStore, core.proxyEventsHub, tableDetailService)
     val policyManagement = PolicyManagementService(cedarPolicyStore, policyStore)
+    val classificationProfileStore = ClassificationProfileStore(dataSource)
+    val classificationProfileManagement =
+        ClassificationProfileManagementService(classificationProfileStore, datasourceStore)
     val identityManagement = IdentityManagementService(
         dataSource, userGroupStore, policyStore, tokenStore, accessStore, principalSessionStore,
     )
-    installMcp(config, core, datasourceManagement, policyManagement, identityManagement)
+    installMcp(
+        config, core, datasourceManagement, policyManagement, identityManagement, classificationProfileManagement,
+    )
 
     routing {
         // Installed on the routing ROOT, not bare Application — Ktor's ContentNegotiation is a
@@ -636,6 +642,12 @@ fun Application.module(config: Config, core: ControlPlaneCore) {
         // The events hub backs the admin "refresh now" push + the "which datasources have a proxy attached"
         // liveness view (docs/datasource-registration.md).
         datasourceRoutes(config, authz, roleResolver, datasourceStore, core.proxyEventsHub, tableDetailService, tokenStore, userGroupStore, datasourceManagement)
+
+        // Reusable column-classification profiles + their datasource attachments. Same
+        // admin.datasources gate as per-column classification, which these resolve into.
+        classificationProfileRoutes(
+            config, authz, classificationProfileStore, datasourceStore, classificationProfileManagement,
+        )
 
         // Roles, principal->role, mask functions, column policies. Admin-gated: admin.policies
         // (role-assignments are admin.identity — see Policies.kt).

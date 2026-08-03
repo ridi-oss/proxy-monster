@@ -61,12 +61,12 @@ class PolicyOriginDbTest {
                         JOIN app_group g ON g.id = gr.group_id
                         JOIN app_role r ON r.id = gr.role_id
                     ) t(x)
-                    """.trimIndent(),
+                    """.trimIndent() + "\n",
                 ).use { rs -> rs.next(); rs.getString(1) }
             }
         }
         assertEquals(
-            "6a1bb6ff914c542db83ba609cdd945f4",
+            "6086859b83026f70f4c9b88d54d49519",
             digest,
             "the seeded security posture changed: a policy body, id, key, origin, enabled flag, role, " +
                 "group, or group-to-role link differs from what a fresh install is supposed to enforce",
@@ -230,11 +230,44 @@ class PolicyOriginDbTest {
     private fun String.sqlLiteral(): String = replace("'", "''")
 
     private companion object {
-        const val ADMIN_SOURCE =
-            "permit(principal in Role::\"system:admin\", action in [Action::\"admin.datasources\",Action::\"admin.policies\",Action::\"admin.identity\"], resource);"
-        const val NO_SELF_APPROVAL_SOURCE =
-            "forbid(principal, action == Action::\"task.approve\", resource) when { principal == resource.requester } unless { context has channel && (context.channel == \"editor\" || context.channel == \"wire\") };"
-        const val APPROVER_SOURCE =
-            "permit(principal in Role::\"system:admin\", action in [Action::\"task.approve\", Action::\"task.read\", Action::\"grant.revoke\", Action::\"task.request\", Action::\"task.cancel\", Action::\"task.delete\"], resource);"
+        val ADMIN_SOURCE =
+            """
+            permit (
+              principal in Role::"system:admin",
+              action in
+                [Action::"admin.datasources",
+                 Action::"admin.policies",
+                 Action::"admin.identity"],
+              resource
+            );
+            """.trimIndent() + "\n"
+        val NO_SELF_APPROVAL_SOURCE =
+            """
+            forbid (
+              principal,
+              action == Action::"task.approve",
+              resource
+            )
+            when { principal == resource.requester }
+            unless
+            {
+              context has channel &&
+              (context.channel == "editor" || context.channel == "wire")
+            };
+            """.trimIndent() + "\n"
+        val APPROVER_SOURCE =
+            """
+            permit (
+              principal in Role::"system:admin",
+              action in
+                [Action::"task.approve",
+                 Action::"task.read",
+                 Action::"grant.revoke",
+                 Action::"task.request",
+                 Action::"task.cancel",
+                 Action::"task.delete"],
+              resource
+            );
+            """.trimIndent() + "\n"
     }
 }

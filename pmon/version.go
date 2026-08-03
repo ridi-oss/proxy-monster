@@ -7,7 +7,7 @@ import (
 
 // Version is rewritten by release-please on each pmon release, which matches this line's exact shape —
 // keep `const Version = "x.y.z"` on one line, quoted.
-const Version = "0.1.1"
+const Version = "0.1.2"
 
 // Commit is the fallback stamp, set by `mise run build-pmon` as `-X main.Commit=<rev>`, for builds
 // under this repo's go.work where Go records no revision of its own.

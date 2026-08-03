@@ -661,14 +661,15 @@ separate shipped system parent; user column tags stay direct Column parents.
 
 Admin write APIs reject `system:*`: a classification write carrying any tag with
 that prefix fails with `datasource.reserved_tag`
-(`DatasourceStore.RESERVED_TAG_PREFIX`). The Cedar marshaller strips any
-`system:` or `udf:` tag it finds on a Column row, so a direct DB write cannot
-forge shipped provenance. The catalog API does not return computed system tags
-at all — `DatasourceStore.catalog` carries only the user-authored
-classification, so the console's catalog browser shows a system column as
-unclassified. Enforcement resolves the tags at decision time and is unaffected;
-the display gap is recorded in
-[`KNOWN_LIMITATIONS.md`](../KNOWN_LIMITATIONS.md).
+(`DatasourceStore.RESERVED_TAG_PREFIX`). The marshaller strips nothing — a tag
+is a tag — so a column row may carry `system:critical` and it reaches policy as
+`Tag::"system:critical"`. It does not forge shipped provenance: the shipped
+forbids are keyed on the classification the manifest resolves at decision time,
+never on a tag row. The catalog API does not return computed system tags at all
+— `DatasourceStore.catalog` carries only the user-authored classification, so
+the console's catalog browser shows a system column as unclassified. Enforcement
+resolves the tags at decision time and is unaffected; the display gap is
+recorded in [`KNOWN_LIMITATIONS.md`](../KNOWN_LIMITATIONS.md).
 
 ### No-manifest floor
 
@@ -789,9 +790,11 @@ means rather than which statements pass.
    forbid applies to it; a data-reading UDF's output passes unmasked (the UDF
    gap in [facts-emission.md](./facts-emission.md)). Known dangerous
    cross-schema names match the shipped `schema: "*"` rules.
-6. Forged `system:` user tag: rejected at classification write time, and any
-   `system:` tag found on a Column row is stripped before the Cedar graph is
-   built.
+6. Invented `system:` user tag: rejected at classification write time, so only
+   the six names the product defines can be stored. Those are marshalled as
+   written — a stored `system:critical` reaches the shipped critical forbid and
+   denies — and writing one takes the same `admin.datasources` authority as the
+   rest of classification.
 7. Same name in two schemas: relations match on the fully-qualified identity.
    Functions are the exception — sqlglot drops the schema qualifier, so a bare
    name resolves against every system and logical schema the manifest governs,

@@ -2,6 +2,7 @@ package com.ridi.oss.proxymonster.controlplane
 
 import com.ridi.oss.proxymonster.grpc.EnfAction
 import com.ridi.oss.proxymonster.controlplane.authz.CedarPolicyInput
+import com.ridi.oss.proxymonster.controlplane.management.ManagementException
 import com.ridi.oss.proxymonster.controlplane.support.EnforcementFixture
 import com.ridi.oss.proxymonster.controlplane.support.requireDockerOrSkip
 import org.junit.jupiter.api.BeforeAll
@@ -55,18 +56,27 @@ class SystemClassificationEnforcementDbTest {
     }
 
     @Test
-    fun `a user column classification cannot claim a reserved system tag`() {
-        // The `system:` namespace is owned by the shipped manifests — a user-authored column tag must be
-        // rejected at write time (fail-closed), not silently stored to be ignored later at Cedar marshalling.
-        val ex = assertFailsWith<IllegalArgumentException> {
+    fun `a column classification may name a product system tag but not invent one`() {
+        // The six names the product defines are writable on anything; an invented `system:` name is
+        // refused. A column carrying `system:critical` reaches the shipped critical forbid like any other
+        // tag, which denies it — the write is honest about what it asks for.
+        val ex = assertFailsWith<ManagementException> {
             fx.datasourceStore.upsertClassification(
                 fx.datasource.id,
-                ClassificationInput(schema = "public", table = "users", column = "rrn", tags = listOf("pii", "system:critical")),
+                ClassificationInput(schema = "public", table = "users", column = "rrn", tags = listOf("pii", "system:invented")),
             )
         }
-        assertTrue("system:critical" in ex.message.orEmpty(), "the error must name the reserved tag: ${ex.message}")
+        assertEquals("datasource.reserved_tag", ex.error.code, "the refusal must use the one shared error code")
+        assertEquals("system:invented", ex.error.params["tag"], "and must name the offending tag: ${ex.error.params}")
 
-        // A non-reserved tag still writes fine (positive control — the guard only rejects the `system:` prefix).
+        // A product `system:` name writes fine — it is a tag like any other.
+        val product = fx.datasourceStore.upsertClassification(
+            fx.datasource.id,
+            ClassificationInput(schema = "public", table = "users", column = "rrn", tags = listOf("pii", "system:critical")),
+        )
+        assertEquals(listOf("pii", "system:critical"), product.tags)
+
+        // And an ordinary tag, the common case.
         val ok = fx.datasourceStore.upsertClassification(
             fx.datasource.id,
             ClassificationInput(schema = "public", table = "users", column = "rrn", tags = listOf("pii")),

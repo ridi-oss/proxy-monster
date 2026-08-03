@@ -102,11 +102,11 @@ User columns use freeform tags such as `pii` (not a reserved `system:` prefix);
 the production package masks `Tag::"pii"` and unmasks only for
 `system:production-pii-accessor` when `context.tags` contains `trusted-network`.
 
-Placement is enforced: `system:development` / `system:production` are
-Datasource-only (the marshaller attaches only those posture tags to a
-Datasource; Columns/Tables/Functions never carry them). The `system:` namespace
-is reserved — user classification cannot claim it, and invalid reserved tags are
-rejected or stripped before Cedar marshalling.
+Placement is not enforced: any resource may carry any tag, and marshalling
+attaches it as written. What is enforced is the NAME — the `system:` namespace
+belongs to the product, so an operator cannot coin `system:whatever`, while the
+six names it defines are writable anywhere. A posture tag therefore decides for
+whatever carries it: on a datasource, for everything beneath it.
 
 Tagging any datasource `system:development` gives it the whole dev posture with
 no per-datasource policy; tagging a column `pii` plus the production package

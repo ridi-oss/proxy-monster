@@ -140,9 +140,7 @@ class DatasourceManagementService(
         if (schema == null && store.defaultSchema(datasource.id, connection) == null) {
             throw ManagementException(ApiError("datasource.schema_required"))
         }
-        tags.firstOrNull { it.startsWith(DatasourceStore.RESERVED_TAG_PREFIX) }?.let {
-            throw ManagementException(ApiError("datasource.reserved_tag", mapOf("tag" to it)))
-        }
+        DatasourceStore.requireWritableTags(tags)
         store.upsertClassification(datasource.id, ClassificationInput(schema, table, column, tags, maskFnId), connection)
     }
 
@@ -161,9 +159,7 @@ class DatasourceManagementService(
         if (schema == null && store.defaultSchema(datasource.id, connection) == null) {
             throw ManagementException(ApiError("datasource.schema_required"))
         }
-        tags.firstOrNull { it.startsWith(DatasourceStore.RESERVED_TAG_PREFIX) }?.let {
-            throw ManagementException(ApiError("datasource.reserved_tag", mapOf("tag" to it)))
-        }
+        DatasourceStore.requireWritableTags(tags)
         return store.upsertClassification(datasource.id, ClassificationInput(schema, table, column, tags, maskFnId), connection)
     }
 
@@ -198,9 +194,7 @@ class DatasourceManagementService(
             required("column", input.column)
             val schema = input.schema?.takeIf(String::isNotBlank) ?: defaultSchema
                 ?: throw ManagementException(ApiError("datasource.schema_required"))
-            input.tags.firstOrNull { it.startsWith(DatasourceStore.RESERVED_TAG_PREFIX) }?.let {
-                throw ManagementException(ApiError("datasource.reserved_tag", mapOf("tag" to it)))
-            }
+            DatasourceStore.requireWritableTags(input.tags)
             if (!seen.add(Triple(schema, input.table, input.column))) {
                 throw ManagementException(
                     ApiError(

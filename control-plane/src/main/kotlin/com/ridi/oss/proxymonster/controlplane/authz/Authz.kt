@@ -215,36 +215,26 @@ private val FUNCTION_TYPE: EntityTypeName = EntityTypeName.parse("Function").get
 private val UTILITY_TYPE: EntityTypeName = EntityTypeName.parse("Utility").get()
 
 /**
- * The `system:` (and `udf:`) tag namespaces are TYPE-SCOPED (facts-emission.md, system-classification.md)
- * — a security invariant enforced HERE, at Cedar marshalling, not just at the admin write API:
- *   - `system:development` / `system:production` (datasource posture) → marshalled ONLY onto a **Datasource**;
- *   - every other `system:*` tag (the shipped classification: system:critical/activity/data-leak/catalog) is
- *     attached to a Table/Column/Function ONLY from the shipped manifest, never honored from user column tags;
- *   - `udf:output-vouched` → valid only on a UDF **Function**.
- * Without this, a Column whose catalog row carried a hand-written `system:development` (or a forged
- * `system:critical`) tag would satisfy a preset permit / bypass a shipped forbid and leak cleartext. So each
- * resource attaches ONLY the reserved tags valid for its own type, plus its ordinary user tags; every other
- * reserved tag is dropped before the Cedar graph is built. Datasource tags are otherwise free-form: any
- * non-reserved tag is carried but inert. [DATASOURCE_POSTURE_TAGS] is the allowlist for a Datasource;
- * [isReservedTag] identifies a `system:`/`udf:` tag a Column/Table/Function must NOT carry directly (its
- * shipped `system:` classification is attached separately, from the manifest, not here).
+ * Marshalling attaches every tag a resource carries, whatever it is named and whatever type carries it. What
+ * a tag means is the policy's business; the only rule is a naming rule at the write
+ * ([DatasourceStore.isReservedTagName]). Shipped `system:` classification is resolved from the manifest per
+ * statement (`Query.kt`) and attached separately, so it is never read from a tag row.
+ *
+ * A datasource's tags are inherited by every Table/Column/Function beneath it, so one decides for the whole
+ * datasource. That cuts both ways on a name policy keys on: `pii` makes the shipped presets mask every column
+ * under it, and hands cleartext to any role a `Tag::"pii"` permit grants. Classify columns to decide columns.
  */
-private val DATASOURCE_POSTURE_TAGS = setOf("system:development", "system:production")
-private fun isReservedTag(t: String): Boolean =
-    t.startsWith("system:") || t == "udf:output-vouched"
 
-/** The Datasource entity carrying ONLY its recognized posture Tag parents (others dropped), so a policy's
- *  `resource in Tag::"system:development"` matches this datasource AND — transitively via the Datasource
- *  parent — every Table/Column/Function under it. [tagEuids] is the caller's shared dedup map. */
+/** The Datasource entity carrying every tag it holds as a Tag parent — so a policy's `resource in Tag::"…"`
+ *  matches this datasource AND, transitively via the Datasource parent, every Table/Column/Function under
+ *  it. [tagEuids] is the caller's shared dedup map. */
 private fun datasourceEntity(
     dsEuid: EntityUID,
     name: String,
     datasourceTags: List<String>,
     tagEuids: HashMap<String, EntityUID>,
 ): Entity {
-    val parents = datasourceTags.filter { it in DATASOURCE_POSTURE_TAGS }
-        .map { tagEuids.getOrPut(it) { TAG_TYPE.of(it) } }
-        .toSet()
+    val parents = datasourceTags.mapTo(HashSet()) { tagEuids.getOrPut(it) { TAG_TYPE.of(it) } }
     return Entity(dsEuid, mapOf("name" to PrimString(name)), parents)
 }
 
@@ -457,9 +447,9 @@ fun Authz.authorizeColumns(
     // attached to the Table entity so its Columns inherit it transitively — a column of `pg_authid`
     // is `in Tag::"system:critical"` through its Table parent. Empty = no system object touched.
     systemTags: Map<Triple<String, String, String>, String> = emptyMap(),
-    // The datasource's own `system:*` posture tags. Attached to the Datasource entity
-    // so the shipped conditional forbids / preset permits match transitively (a Column is `in system:development`
-    // through its Datasource parent). Reserved tags on a Column itself are stripped (isReservedTag).
+    // The datasource's own tags. Attached to the Datasource entity so a policy matches transitively (a
+    // Column is `in Tag::"…"` through its Datasource parent), which is how the shipped conditional forbids
+    // and preset permits reach a column.
     datasourceTags: List<String> = emptyList(),
 ): Map<String, ColumnVerdict> {
     val roleEuids = roles.map { ROLE_TYPE.of(it) }
@@ -495,10 +485,7 @@ fun Authz.authorizeColumns(
         }
         val colEuid = COLUMN_TYPE.of("$datasource/${col.catalog}/${col.schema}/${col.table}/${col.column}")
         columnEuids[col.key] = colEuid
-        // Strip reserved tags off the Column (the type-scoping invariant): a catalog/legacy `system:development`
-        // or `system:*` on a column must NOT be honored — it would satisfy the dev unmasked permit / forge a
-        // shipped classification. The column's real system tag is inherited from its Table parent, not here.
-        val tagParents = col.tags.filterNot { isReservedTag(it) }.map { tag -> tagEuids.getOrPut(tag) { TAG_TYPE.of(tag) } }
+        val tagParents = col.tags.map { tag -> tagEuids.getOrPut(tag) { TAG_TYPE.of(tag) } }
         columnEntities += Entity(colEuid, emptyMap(), (setOf(tableEuid, dsEuid) + tagParents).toSet())
     }
     // Each Table entity carries its datasource parent + its system tag, so a Column inherits

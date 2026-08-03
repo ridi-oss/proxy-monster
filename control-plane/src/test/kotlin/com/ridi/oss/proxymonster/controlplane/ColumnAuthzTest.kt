@@ -212,4 +212,196 @@ class ColumnAuthzTest {
         )
         assertEquals(mapOf("acme.public.users.region" to ColumnVerdict.DENIED), verdicts)
     }
+
+    @Test
+    fun `an operator's own datasource tag reaches a column through the datasource parent`() {
+        // The transitive path is what a datasource tag is FOR: one tag on the datasource decides every
+        // column under it.
+        val authz = Authz(
+            CedarEngine(
+                listOf(
+                    1L to """permit(principal, action == Action::"result.read.unmasked", resource)
+                             when { resource in Tag::"pci" };""",
+                ),
+            ),
+            CedarPolicyStore(UnusedDataSource),
+            RoleSource { emptySet() },
+        )
+        val col = listOf(column("acme.public.users.region", "users", "region"))
+        assertEquals(
+            mapOf("acme.public.users.region" to ColumnVerdict.UNMASKED),
+            authz.authorizeColumns(
+                principal = "alice",
+                roles = setOf("anyone"),
+                datasource = "acme-pg",
+                columns = col,
+                datasourceTags = listOf("pci"),
+            ),
+        )
+        assertEquals(
+            mapOf("acme.public.users.region" to ColumnVerdict.DENIED),
+            authz.authorizeColumns(
+                principal = "alice",
+                roles = setOf("anyone"),
+                datasource = "acme-pg",
+                columns = col,
+                datasourceTags = emptyList(),
+            ),
+            "the verdict must come from the tag, not from something else in the policy",
+        )
+    }
+
+    /**
+     * A datasource tag is inherited by every column under it, so one named after a classification the
+     * shipped presets key on decides for the whole datasource: `pii` flips an unclassified column from
+     * cleartext to masked, whatever the column itself says.
+     */
+    @Test
+    fun `a datasource tagged pii masks a column the shipped preset would otherwise read cleartext`() {
+        val authz = Authz(
+            CedarEngine(
+                listOf(
+                    // The shipped pair, verbatim in shape: -256 grants cleartext unless the resource is
+                    // pii; -257 grants masked when it is.
+                    1L to """permit(principal, action == Action::"result.read.unmasked", resource)
+                             when { resource in Tag::"system:production" }
+                             unless { resource in Tag::"pii" };""",
+                    2L to """permit(principal, action == Action::"result.read.masked", resource)
+                             when { resource in Tag::"system:production" && resource in Tag::"pii" };""",
+                ),
+            ),
+            CedarPolicyStore(UnusedDataSource),
+            RoleSource { emptySet() },
+        )
+        // No classification of its own — every bit of the decision comes from the datasource's tags.
+        val col = listOf(column("acme.public.users.region", "users", "region"))
+        assertEquals(
+            mapOf("acme.public.users.region" to ColumnVerdict.UNMASKED),
+            authz.authorizeColumns(
+                principal = "alice",
+                roles = setOf("anyone"),
+                datasource = "acme-pg",
+                columns = col,
+                datasourceTags = listOf("system:production"),
+            ),
+            "an unclassified column on a production datasource reads cleartext",
+        )
+        assertEquals(
+            mapOf("acme.public.users.region" to ColumnVerdict.MASKED),
+            authz.authorizeColumns(
+                principal = "alice",
+                roles = setOf("anyone"),
+                datasource = "acme-pg",
+                columns = col,
+                datasourceTags = listOf("system:production", "pii"),
+            ),
+            "adding pii to the DATASOURCE masks that same column, inherited through the datasource parent",
+        )
+    }
+
+    /**
+     * The other direction: a permit keyed on `resource in Tag::"pii"` — the `pii-reader` grant in
+     * authz-model.md — reaches every column under a `pii`-tagged datasource, including columns nobody
+     * classified.
+     */
+    @Test
+    fun `a datasource tagged pii hands a pii-keyed permit every column under it`() {
+        val authz = Authz(
+            CedarEngine(
+                listOf(
+                    1L to """permit(principal in Role::"pii-reader", action == Action::"result.read.unmasked",
+                                    resource in Tag::"pii");""",
+                ),
+            ),
+            CedarPolicyStore(UnusedDataSource),
+            RoleSource { emptySet() },
+        )
+        val col = listOf(column("acme.public.users.region", "users", "region"))
+        assertEquals(
+            mapOf("acme.public.users.region" to ColumnVerdict.DENIED),
+            authz.authorizeColumns(
+                principal = "alice",
+                roles = setOf("pii-reader"),
+                datasource = "acme-pg",
+                columns = col,
+                datasourceTags = emptyList(),
+            ),
+            "an unclassified column is not pii, so the pii-keyed permit does not reach it",
+        )
+        assertEquals(
+            mapOf("acme.public.users.region" to ColumnVerdict.UNMASKED),
+            authz.authorizeColumns(
+                principal = "alice",
+                roles = setOf("pii-reader"),
+                datasource = "acme-pg",
+                columns = col,
+                datasourceTags = listOf("pii"),
+            ),
+            "tagging the DATASOURCE pii extends that same permit to a column that was never classified",
+        )
+    }
+
+    /**
+     * The shipped `system:catalog` permit is bare-principal cleartext, so a datasource carrying that name
+     * opens every column under it. The widest reach any single tag has.
+     */
+    @Test
+    fun `a datasource tagged system-catalog opens the bare-principal catalog permit for every column`() {
+        val authz = Authz(
+            CedarEngine(
+                listOf(
+                    1L to """permit(principal, action == Action::"result.read.unmasked", resource)
+                             when { resource in Tag::"system:catalog" };""",
+                ),
+            ),
+            CedarPolicyStore(UnusedDataSource),
+            RoleSource { emptySet() },
+        )
+        val col = listOf(column("acme.public.users.region", "users", "region"))
+        assertEquals(
+            mapOf("acme.public.users.region" to ColumnVerdict.DENIED),
+            authz.authorizeColumns("alice", emptySet(), "acme-pg", col, datasourceTags = emptyList()),
+            "untagged, deny-by-default holds",
+        )
+        assertEquals(
+            mapOf("acme.public.users.region" to ColumnVerdict.UNMASKED),
+            authz.authorizeColumns("alice", emptySet(), "acme-pg", col, datasourceTags = listOf("system:catalog")),
+            "on the datasource it reaches every column, no role required",
+        )
+    }
+
+    /** A column's own `system:critical` reaches the shipped forbid, which overrides any read grant. */
+    @Test
+    fun `a column tagged system-critical is denied by the shipped forbid`() {
+        val authz = Authz(
+            CedarEngine(
+                listOf(
+                    1L to """permit(principal, action == Action::"result.read.unmasked", resource)
+                             when { resource in Tag::"ok" };""",
+                    2L to """forbid(principal, action in [Action::"result.read.unmasked", Action::"result.read.masked"], resource)
+                             when { resource in Tag::"system:critical" };""",
+                ),
+            ),
+            CedarPolicyStore(UnusedDataSource),
+            RoleSource { emptySet() },
+        )
+        assertEquals(
+            mapOf("acme.public.users.region" to ColumnVerdict.UNMASKED),
+            authz.authorizeColumns(
+                "alice", emptySet(), "acme-pg",
+                listOf(column("acme.public.users.region", "users", "region", tags = listOf("ok"))),
+                datasourceTags = listOf("ok"),
+            ),
+            "the read grant alone unmasks",
+        )
+        assertEquals(
+            mapOf("acme.public.users.region" to ColumnVerdict.DENIED),
+            authz.authorizeColumns(
+                "alice", emptySet(), "acme-pg",
+                listOf(column("acme.public.users.region", "users", "region", tags = listOf("ok", "system:critical"))),
+                datasourceTags = listOf("ok"),
+            ),
+            "adding system:critical to the COLUMN reaches the forbid, which overrides the grant",
+        )
+    }
 }

@@ -179,18 +179,23 @@ the sole authority, and the monitor stays read-only on the DB.
 
 Signals come from the audit row (`principal`, `decision`, `datasource`,
 `statement`, `masked_columns`, `pii_touched`, `channel`, `ts`, `client_addr`,
-`latency_ms`) plus one added signal: result volume. The decision event is
-emitted at decide time (pre-execution), so it cannot carry a row count. Rather
-than mutate the immutable decision row, the data-plane proxy emits a
-post-execution completion event — its own append-only, chained `audit_event`
-(`kind = "completion"`) via gRPC `ReportCompletion`, referencing the decision
-`id` as `decision_id`, carrying `rows_returned` + `bytes_returned` (rows catch
-"many records," bytes catch "few wide rows / big blob"), terminal status in
-`outcome` (`ok|error|canceled`), and relay wall time in `latency_ms`. The proxy
-tallies as it relays. One completion is emitted at statement end, so mass-export
-is caught after the rows left, which is fine for alerting (Cedar is the
-enforcement gate). DENY → no completion; error/cancel → a completion with
-`outcome` + partial counts.
+`latency_ms`) plus one added signal: result volume.
+
+`pii_touched` holds every **tagged** column a statement touched, whatever those
+tags are named — a deployment classifying with `pci` or `confidential` populates
+it the same as one using `pii`. The column keeps its original name; renaming it
+is pending a migration. The decision event is emitted at decide time
+(pre-execution), so it cannot carry a row count. Rather than mutate the
+immutable decision row, the data-plane proxy emits a post-execution completion
+event — its own append-only, chained `audit_event` (`kind = "completion"`) via
+gRPC `ReportCompletion`, referencing the decision `id` as `decision_id`,
+carrying `rows_returned` + `bytes_returned` (rows catch "many records," bytes
+catch "few wide rows / big blob"), terminal status in `outcome`
+(`ok|error|canceled`), and relay wall time in `latency_ms`. The proxy tallies as
+it relays. One completion is emitted at statement end, so mass-export is caught
+after the rows left, which is fine for alerting (Cedar is the enforcement gate).
+DENY → no completion; error/cancel → a completion with `outcome` + partial
+counts.
 
 <!-- prettier-ignore -->
 | Rule | Fires on | Primary signal |

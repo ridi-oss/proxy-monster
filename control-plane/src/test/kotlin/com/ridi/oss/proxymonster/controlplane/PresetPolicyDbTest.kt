@@ -269,18 +269,29 @@ class PresetPolicyDbTest {
     }
 
     @Test
-    fun `a forged preset-development tag is honored on a datasource but stripped off a column`() {
-        // Type-scoping security invariant: a reserved preset tag is valid ONLY on a Datasource. A column whose
-        // (forged/legacy) catalog row carries system:development must NOT unmask a PRODUCTION column — the
-        // marshaller strips reserved tags off a Column. Proven by calling authorizeColumns directly.
-        val forged = ColumnRef(key = "k", catalog = "pm", schema = "public", table = "users", column = "rrn", tags = listOf("system:development"))
+    fun `the shipped development permit matches a system-development tag wherever it sits`() {
+        // `system:development` reaches the shipped -200 permit whether it sits on the datasource or on the
+        // column. Either write takes the same instance-wide admin.datasources authority.
+        val tagged = ColumnRef(key = "k", catalog = "pm", schema = "public", table = "users", column = "rrn", tags = listOf("system:development"))
+        val plain = ColumnRef(key = "k", catalog = "pm", schema = "public", table = "users", column = "rrn")
         val nobody = "nobody@example.com" // no preset role; relies solely on the shipped -200 preset permit
-        // Production datasource: the forged column tag is stripped, so -200 (dev cleartext) cannot fire → deny.
-        val stripped = fx.authz.authorizeColumns(nobody, emptySet(), fx.datasource.name, listOf(forged), datasourceTags = listOf("system:production"))
-        assertEquals(ColumnVerdict.DENIED, stripped["k"], "a forged system:development on a COLUMN is stripped → deny-by-default")
-        // The SAME tag on the DATASOURCE is honored: the column is in system:development via its datasource
-        // parent, so the -200 cleartext read unmasks it — proving the strip is type-scoped, not a blanket drop.
-        val honored = fx.authz.authorizeColumns(nobody, emptySet(), fx.datasource.name, listOf(forged), datasourceTags = listOf("system:development"))
-        assertEquals(ColumnVerdict.UNMASKED, honored["k"], "system:development on the DATASOURCE unmasks its columns (the -200 permit)")
+        // On the DATASOURCE: every column under it is in system:development via its datasource parent.
+        assertEquals(
+            ColumnVerdict.UNMASKED,
+            fx.authz.authorizeColumns(nobody, emptySet(), fx.datasource.name, listOf(plain), datasourceTags = listOf("system:development"))["k"],
+            "system:development on the DATASOURCE unmasks its columns (the -200 permit)",
+        )
+        // On the COLUMN: the same name, reaching the same permit directly.
+        assertEquals(
+            ColumnVerdict.UNMASKED,
+            fx.authz.authorizeColumns(nobody, emptySet(), fx.datasource.name, listOf(tagged), datasourceTags = listOf("system:production"))["k"],
+            "system:development on the COLUMN reaches the same permit — no tag is filtered by resource type",
+        )
+        // And the verdict comes from the tag: with neither, -200 cannot fire and deny-by-default holds.
+        assertEquals(
+            ColumnVerdict.DENIED,
+            fx.authz.authorizeColumns(nobody, emptySet(), fx.datasource.name, listOf(plain), datasourceTags = listOf("system:production"))["k"],
+            "untagged on a production datasource, the same read is denied",
+        )
     }
 }

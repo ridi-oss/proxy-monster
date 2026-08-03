@@ -275,12 +275,31 @@ before toggling.
 
 Each preset ships a concrete, least-privilege role package. Posture tags are
 `system:development` / `system:production`; datasource tags are otherwise a
-free-form bag, and the marshaller honors only those two — anything else is
-inert, and there is no exact-one-posture constraint. Only the `system:`
-namespace is reserved, and only for type-scoping: a Column/Table/Function may
-not carry a `system:` tag directly (the shipped classification is attached from
-the manifest), so a hand-written `system:development` on a column can never
-satisfy a preset permit.
+free-form bag, and the marshaller carries every one of them onto the Datasource
+entity, so a policy may match an operator's own tag exactly as it matches a
+posture one. There is no exact-one-posture constraint. Reservation is a NAMING
+rule and nothing more: the six `system:` names the product defines are writable
+on any resource, and an invented `system:whatever` is refused at the write. No
+tag is filtered by resource type.
+
+The seed migration's own comment on `-200` says the development posture is
+type-scoped to a datasource and stripped from a column. That is no longer how
+marshalling works, and the comment cannot be corrected in place — an applied
+migration is immutable, since Flyway checksums the whole file.
+
+A datasource tag is inherited by every Table, Column, and Function under it, and
+it matches the same `Tag::` entity a column classification does. So naming one
+after a classification policy keys on applies it datasource-wide, and `pii` cuts
+both ways:
+
+- the shipped presets **close** — `production-non-pii-read` stops granting
+  cleartext and `production-pii-masked` masks every column, whatever each
+  column's own classification says;
+- a permit keyed on `resource in Tag::"pii"` **opens** — the `pii-reader` grant
+  in [authz-model.md](./authz-model.md) hands that role cleartext on every
+  column under the datasource, including columns nobody classified as PII.
+
+Classify columns to decide columns; a datasource tag decides the datasource.
 
 Roles: ten predefined roles in the `system:` namespace — five
 `system:development-{viewer, pii-accessor, updater, deleter, architect}` and

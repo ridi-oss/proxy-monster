@@ -141,4 +141,67 @@ class AuthzDatasourceActionTest {
         )
         assertIs<AuthzDecision.Deny>(decision)
     }
+
+    @Test
+    fun `every datasource tag reaches policy as itself, whatever it is named`() {
+        // Marshalling does not ask what a tag is called or what type carries it, so an operator's own
+        // `pci` and a product `system:` name both match a policy written against them.
+        val authz = Authz(
+            CedarEngine(
+                listOf(
+                    1L to """permit(principal, action == Action::"sql.select", resource)
+                             when { resource in Tag::"pci" };""",
+                    2L to """permit(principal, action == Action::"sql.delete", resource)
+                             when { resource in Tag::"system:critical" };""",
+                ),
+            ),
+            CedarPolicyStore(UnusedDataSource),
+            RoleSource { emptySet() },
+        )
+        assertEquals(
+            AuthzDecision.Allow,
+            authz.authorizeDatasourceAction(
+                principal = "alice",
+                roles = setOf("anyone"),
+                action = AuthzAction.SQL_SELECT,
+                datasource = "acme-mysql",
+                datasourceTags = listOf("pci"),
+            ),
+            "an ordinary datasource tag must reach Cedar as itself",
+        )
+        assertEquals(
+            AuthzDecision.Allow,
+            authz.authorizeDatasourceAction(
+                principal = "alice",
+                roles = setOf("anyone"),
+                action = AuthzAction.SQL_DELETE,
+                datasource = "acme-mysql",
+                datasourceTags = listOf("system:critical"),
+            ),
+            "a product `system:` name is a tag too — no type-scoping drops it off a datasource",
+        )
+        assertIs<AuthzDecision.Deny>(
+            authz.authorizeDatasourceAction(
+                principal = "alice",
+                roles = setOf("anyone"),
+                action = AuthzAction.SQL_SELECT,
+                datasource = "acme-mysql",
+                datasourceTags = emptyList(),
+            ),
+            "and the verdict comes from the tag: untagged, the same action is denied",
+        )
+    }
+
+    @Test
+    fun `the naming rule refuses an invented system name and admits the six the product defines`() {
+        for (legal in DatasourceStore.SYSTEM_TAG_NAMES) {
+            assertEquals(false, DatasourceStore.isReservedTagName(legal), "'$legal' is a product tag and must be writable")
+        }
+        for (invented in listOf("system:whatever", "system:", "system:Production", "system:critical-ish")) {
+            assertEquals(true, DatasourceStore.isReservedTagName(invented), "'$invented' is not a product tag and must be refused")
+        }
+        for (ordinary in listOf("pci", "pii", "udf:output-vouched", "systematic", "SYSTEM:critical")) {
+            assertEquals(false, DatasourceStore.isReservedTagName(ordinary), "'$ordinary' is an ordinary name and must be writable")
+        }
+    }
 }

@@ -226,8 +226,9 @@ function TableNode({
 
 function ColumnRow({ column, onInsert }: { column: TreeColumn; onInsert: (text: string) => void }) {
   const t = useTranslations('Query')
+  // Any tag makes a column classified; `pii` keeps the louder icon as the common case.
   const pii = column.tags.includes('pii')
-  const sensitive = column.tags.some((tag) => tag !== 'pii')
+  const sensitive = column.tags.length > 0
   return (
     <button
       type="button"

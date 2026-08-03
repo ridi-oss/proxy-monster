@@ -59,7 +59,8 @@ export function buildTree(cols: CatalogColumn[]): TreeTable[] {
     }
     const tags = c.classification?.tags ?? []
     node.columns.push({ name: c.column, dataType: c.dataType, tags, nullable: c.nullable })
-    if (tags.includes('pii')) node.piiCount += 1
+    // The badge counts classified columns, whatever the tag is named.
+    if (tags.length > 0) node.piiCount += 1
   }
   return tree
 }

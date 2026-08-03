@@ -43,7 +43,8 @@ function groupByTable(cols: CatalogColumn[]): TableGroup[] {
     let g = m.get(key)
     if (!g) m.set(key, (g = { key, label, columns: [], piiCount: 0 }))
     g.columns.push(c)
-    if (c.classification?.tags?.includes('pii')) g.piiCount += 1
+    // The badge counts classified columns, whatever the tag is named.
+    if ((c.classification?.tags?.length ?? 0) > 0) g.piiCount += 1
   }
   return [...m.values()]
 }

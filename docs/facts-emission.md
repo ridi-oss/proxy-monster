@@ -65,8 +65,10 @@ The request graph is assembled from live data on every decision:
 - [system-classification.md](./system-classification.md) provides one immutable
   shipped tag on each classified Table, Function, or Utility (a Column inherits
   its Table's system tag rather than receiving a second direct system tag); and
-- the datasource provides its recognized posture
-  (`system:development`/`system:production`).
+- the datasource provides every tag it carries — no filtering, whatever the tag
+  is named — each usable as a policy match and each inherited by every
+  Table/Column/Function beneath it. The posture tags are what the shipped
+  presets match.
 
 ### Result-read semantics per resource
 
@@ -93,16 +95,20 @@ Table covers its Column children, and the Table entity itself satisfies the same
 selector. There is no separate `table.scan` or `function.call` action — result
 visibility is one capability across every data-producing resource.
 
-### Reserved tags are type-scoped
+### Reserved names, not reserved placements
 
-`system:*` is reserved for the shipped classifier and for datasource posture.
-User-authored Column tags under that namespace are rejected on write and
-stripped defensively by the Cedar marshaller. A shipped system tag attaches
-directly to Table, Function, or Utility; a Column inherits its Table's tag. A
-Datasource carries only `system:development` or `system:production`. This is a
-security invariant, not UI validation: without it, a production PII Column
-hand-tagged `system:development` would satisfy the development unmasked permit
-and leak cleartext. Ordinary custom Column tags such as `pii` remain valid.
+`system:` is the product's namespace: an operator may not coin a name in it, and
+the six the product defines — the four shipped classification tags and the two
+datasource postures — are writable on any resource. Marshalling filters nothing
+by resource type, so a tag reaches policy from wherever it sits.
+
+Shipped classification does not come from a tag row. It is resolved from the
+manifest per statement and attached to the Table, Function, or Utility; a Column
+inherits its Table's tag. Cedar sees one `Tag::` entity either way, so a policy
+cannot tell a manifest tag from a stored one — a column classified
+`system:critical` reaches the shipped critical forbid and is denied, and one
+classified `system:development` reaches the development permit. Both take the
+`admin.datasources` authority the classification API requires.
 
 ## Scanned Tables — the zero-column gap
 

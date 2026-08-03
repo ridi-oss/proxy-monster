@@ -10,6 +10,7 @@ import com.ridi.oss.proxymonster.controlplane.CatalogMutationResult
 import com.ridi.oss.proxymonster.controlplane.Channel
 import com.ridi.oss.proxymonster.controlplane.ControlPlaneCore
 import com.ridi.oss.proxymonster.controlplane.DatasourceEngineConflictException
+import com.ridi.oss.proxymonster.controlplane.management.ManagementException
 import com.ridi.oss.proxymonster.controlplane.catalogIsConnectionIndependent
 import com.ridi.oss.proxymonster.controlplane.catalogName
 import com.ridi.oss.proxymonster.controlplane.EnforcementOutcome
@@ -357,6 +358,10 @@ class ControlPlaneGrpcService(
             // Engine is immutable at register — a mismatched re-register is a client precondition
             // failure (fix the caller's engine or delete-and-recreate), not a server error.
             throw StatusException(Status.FAILED_PRECONDITION.withDescription(e.message))
+        } catch (e: ManagementException) {
+            // A refused tag name (PM_DATASOURCE_TAGS naming a `system:` tag the product does not define) is
+            // the proxy's own misconfiguration, so it must read as one rather than an opaque server error.
+            throw StatusException(Status.INVALID_ARGUMENT.withDescription(e.error.code))
         }
         // The catalog push that follows registration cannot repair this: it only confirms content it agrees
         // with, and a retarget is precisely the case where it disagrees. So the held structure would survive,

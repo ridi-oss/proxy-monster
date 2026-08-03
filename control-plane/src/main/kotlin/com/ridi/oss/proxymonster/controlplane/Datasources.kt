@@ -1,5 +1,6 @@
 package com.ridi.oss.proxymonster.controlplane
 
+import com.ridi.oss.proxymonster.classification.SystemTag
 import com.ridi.oss.proxymonster.controlplane.authz.Authz
 import com.ridi.oss.proxymonster.controlplane.authz.AuthzAction
 import com.ridi.oss.proxymonster.controlplane.authz.AuthzDecision
@@ -153,8 +154,29 @@ class DatasourceStore(internal val dataSource: DataSource) {
     private val stringList = ListSerializer(String.serializer())
 
     companion object {
-        /** The `system:` tag namespace is owned by the shipped classification manifests — user column tags may not use it. */
+        /** The `system:` tag namespace is owned by the product — an operator may not coin a name in it. */
         const val RESERVED_TAG_PREFIX = "system:"
+
+        /**
+         * The `system:` names the product defines: the four shipped classification tags plus the two
+         * datasource postures. Any resource may carry any of them — reservation stops an operator inventing
+         * `system:whatever` and having it read as shipped provenance, nothing more.
+         */
+        /** The two datasource-posture names the shipped presets key on. Ordinary tags like any other. */
+        val POSTURE_TAG_NAMES: Set<String> = setOf("system:development", "system:production")
+
+        val SYSTEM_TAG_NAMES: Set<String> = SystemTag.entries.map { it.id }.toSet() + POSTURE_TAG_NAMES
+
+        /** True for a `system:`-prefixed name the product does not define — the one thing a write refuses. */
+        fun isReservedTagName(tag: String): Boolean =
+            tag.startsWith(RESERVED_TAG_PREFIX) && tag !in SYSTEM_TAG_NAMES
+
+        /** The gate every tag write goes through — admin, MCP, and the proxy's own Register. */
+        fun requireWritableTags(tags: List<String>) {
+            tags.firstOrNull { isReservedTagName(it) }?.let {
+                throw ManagementException(ApiError("datasource.reserved_tag", mapOf("tag" to it)))
+            }
+        }
     }
 
     fun list(): List<Datasource> = dataSource.connection.use { c ->
@@ -196,10 +218,12 @@ class DatasourceStore(internal val dataSource: DataSource) {
      * gRPC Register (docs/datasource-registration.md): upsert a datasource by its stable [name].
      * The proxy is the source of truth for its own identity, so a brand-new name self-creates a row.
      * No target credential is ever stored — the control-plane never dials the target.
-     * host/port/db_name are advisory (admin UI / triage). [tags] are a free-form bag; the posture ones
-     * (`system:development` / `system:production`) drive the preset policies, everything else is inert;
-     * an EMPTY list PRESERVES any admin-set tags on an existing row rather than clobbering them (a fresh
-     * row defaults to '[]'). Idempotent: a restart / redeploy / scaled replica re-registering converges.
+     * host/port/db_name are advisory (admin UI / triage). [tags] are a free-form bag: every one reaches Cedar
+     * as itself and every Table/Column under the datasource inherits it, so a policy may match on any of them.
+     * The posture names (`system:development` / `system:production`) are what the shipped presets key on.
+     * An EMPTY list PRESERVES any admin-set tags on an
+     * existing row rather than clobbering them (a fresh row defaults to '[]'). Idempotent: a restart /
+     * redeploy / scaled replica re-registering converges.
      * ENGINE IS IMMUTABLE: re-registering an existing [name] with a different [engine] than its
      * stored value throws [DatasourceEngineConflictException] instead of upserting — see that class's
      * kdoc for why. host/port/db_name stay mutable.
@@ -217,6 +241,9 @@ class DatasourceStore(internal val dataSource: DataSource) {
         advertiseCertChain: String?,
         advertiseWireTls: Boolean,
     ): Datasource {
+        // A proxy declaring its own posture (`PM_DATASOURCE_TAGS=system:production`) passes; an invented
+        // `system:*` name is refused here as on the admin surfaces, so no write path can coin one.
+        requireWritableTags(tags)
         dataSource.connection.use { c ->
             c.autoCommit = false
             try {
@@ -620,9 +647,7 @@ class DatasourceStore(internal val dataSource: DataSource) {
         dataSource.connection.use { c -> upsertClassification(id, input, c) }
 
     fun upsertClassification(id: Long, input: ClassificationInput, c: java.sql.Connection): Classification {
-        input.tags.firstOrNull { it.startsWith(RESERVED_TAG_PREFIX) }?.let {
-            throw IllegalArgumentException("tag '$it' is reserved: the '$RESERVED_TAG_PREFIX' namespace is owned by system classification")
-        }
+        requireWritableTags(input.tags)
         // A blank schema is absent, not a name. Taking it literally writes a row keyed on "" that no
         // enforcement lookup can ever match (decide joins classifications by exact schema/table/column),
         // so the caller sees a tagged column while the real one stays untagged and reads cleartext.

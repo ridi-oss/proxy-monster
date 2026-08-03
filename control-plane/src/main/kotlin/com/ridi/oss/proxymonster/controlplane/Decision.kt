@@ -27,6 +27,7 @@ data class AuditEvent(
     val failedStage: String? = null,   // parse|validate|convert|lineage
     val effectiveNamespace: List<String> = emptyList(),
     val maskedColumns: List<String> = emptyList(),
+    // The tagged columns touched, not only `pii`-tagged ones; see decideQuery (Query.kt).
     val piiTouched: List<String> = emptyList(),
     val latencyMs: Long = 0,
     val detail: String? = null,

@@ -97,6 +97,7 @@ data class QueryResponse(
     val decisionId: Long? = null,
     val denyReason: String? = null,
     val maskedColumns: List<String> = emptyList(),
+    // The tagged columns touched, not only `pii`-tagged ones; see decideQuery (Query.kt).
     val piiTouched: List<String> = emptyList(),
     val effectiveRoles: List<String> = emptyList(),
     val columns: List<String> = emptyList(),
@@ -124,6 +125,7 @@ data class DecisionContext(
     val action: EnfAction,
     val denyReason: String?,
     val masks: List<ColumnMask>,
+    // The tagged columns touched, not only `pii`-tagged ones; see decideQuery (Query.kt).
     val piiTouched: List<String>,
     val effectiveRoles: List<String>,
     val failedStage: String?,
@@ -672,7 +674,14 @@ fun decideQuery(
     if (facts.explainOfQuery && action == EnfAction.MASK) {
         return structuralDeny(EXPLAIN_MASK_DENY, roleList, failedStage = "explain-masked", contextTags = derivedTags)
     }
-    val pii = columnKeys.keys.filter { catalogIndex.rowsByKey.getValue(it).classification?.tags?.contains("pii") == true }
+    // Every classified column the statement touched, whatever its tags are named: `pii` is a deployment's
+    // own tag, so keying this on that one string leaves auditmon's mass-export detector blind on a
+    // deployment that classifies with `pci`.
+    // TODO: rename to tagged_columns_touched. Needs a migration plus the Go verifier, the SIEM export name,
+    // and the console; the canonical form is positional, so CHAIN_VERSION is unaffected.
+    val tagged = columnKeys.keys.filter {
+        catalogIndex.rowsByKey.getValue(it).classification?.tags?.isNotEmpty() == true
+    }
     val referencedSchemas = buildSet {
         facts.sourcesList.mapTo(this) { it.schema }
         columnGrants.mapTo(this) { it.column.identity.schema }
@@ -689,7 +698,7 @@ fun decideQuery(
         action = action,
         denyReason = null,
         masks = masks,
-        piiTouched = pii,
+        piiTouched = tagged,
         effectiveRoles = roleList,
         failedStage = facts.failedStage.takeIf { facts.hasFailedStage() }?.lowercase(),
         detail = facts.detail,

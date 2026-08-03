@@ -204,3 +204,24 @@ deliberately never inferred from request headers.
 
 Every variable named here, with defaults and examples, is in
 [INSTALL.md](./INSTALL.md#configuration).
+
+## What `PM_SECRET_TOKEN` authorizes
+
+The proxy↔CP gRPC surface is gated by one shared secret, not by a user identity,
+and holding it is equivalent to instance-wide policy administration. `Register`
+is how a proxy declares its own datasource, and the `tags` it sends
+(`PM_DATASOURCE_TAGS`) land on that datasource and are inherited by every table
+and column under it — so a caller holding the secret can attach a tag the
+shipped presets key on and change what those presets grant. `system:catalog` is
+the sharpest: it matches an enabled bare-principal permit for unmasked reads.
+
+`Register` is keyed on the datasource NAME and carries no per-datasource
+binding, so one proxy's secret can re-register, and retag, a datasource it does
+not front. Treat the secret as a control-plane administrative credential: give
+it the same handling as `PM_SESSION_SECRET`, and do not hand it to anything you
+would not let edit policy. Leaving it unset opens the gate to any caller that
+reaches the port.
+
+This is a property of the transport, not of tag marshalling: a tag is a tag
+wherever it comes from, and the CP applies the same naming rule to this path as
+to the admin surfaces.

@@ -62,6 +62,16 @@ configured per proxy under `PM_TARGET_*`.
 - `PM_SECRET_TOKEN` — _required_. The single shared secret gating all proxy↔CP
   gRPC + the HTTP ingest routes. Same value on the CP and every proxy; unset ⇒
   the gate is open (dev only). Example: `$(openssl rand -hex 32)`
+
+  **Holding this is equivalent to administering policy.** `Register` lets a
+  caller set a datasource's tags, every table and column under it inherits them,
+  and a tag the shipped presets key on changes what those presets grant —
+  `system:catalog` matches an enabled bare-principal unmasked-read permit.
+  Registration is keyed on the datasource name with no per-datasource binding,
+  so one proxy's secret can retag a datasource it does not front. Handle it like
+  `PM_SESSION_SECRET`, and do not give it to anything you would not let edit
+  policy ([ARCHITECTURE.md](./ARCHITECTURE.md#what-pm_secret_token-authorizes)).
+
 - `PM_MCP_RESOURCE` — _optional_. Public MCP resource URL; required only if MCP
   is used. Example: `https://console.example.com/mcp`
 - `PM_TRUSTED_PROXIES` — _optional, set behind an LB_. Comma-separated
@@ -112,8 +122,11 @@ configured per proxy under `PM_TARGET_*`.
   dialect this proxy speaks: `postgres` or `mysql`. Default `mysql`. Unrelated
   to `PM_DB_URL`, which is always PostgreSQL.
 - `PM_DATASOURCE_NAME` / `PM_DATASOURCE_TAGS` — _name required_. Logical id
-  (must match the CP's) + posture tags policy keys off. Example:
-  `analytics-prod` · `system:production`
+  (must match the CP's) + the tags policy keys off. Example: `analytics-prod` ·
+  `system:production`. These reach Cedar as written and every table and column
+  under the datasource inherits them, so a name the shipped presets key on
+  decides for the whole datasource — set the posture here and leave column
+  classification to the console.
 - `PM_PROXY_PORT` — _optional_. The wire port clients connect to. Defaults:
   `6033` (MySQL) · `6432` (PG).
 - `PM_TARGET_HOST` / `_PORT` / `_DB` / `_USER` / `_PASSWORD` — _optional with
@@ -367,11 +380,17 @@ advertised proxy address".
 the target's real db name. Optional: `PM_DATASOURCE_TAGS` (comma-separated tags
 — the recognized posture tags are `system:development` and `system:production`,
 per [docs/policy-store.md](docs/policy-store.md); the list is otherwise
-free-form and any non-posture tag is inert). Leave it unset and the datasource
-carries no posture, which is the production floor either way — Cedar's
-deny-by-default plus the shipped forbids give an untagged datasource that floor
-with no posture tag required. Tag it `system:development` to opt a datasource
-into the permissive development preset.
+free-form: any name that is not an invented `system:` one reaches Cedar as
+itself, so a policy may match it and every table and column under the datasource
+inherits it. It is the same tag vocabulary column classifications use, so
+reusing one of those names here decides for the whole datasource: `pii` both
+masks every column under the shipped presets and hands cleartext on every column
+to any role a `Tag::"pii"` permit grants. Name a datasource tag for the
+datasource — `analytics-prod`, `pci-zone` — not for a column classification).
+Leave it unset and the datasource carries no posture, which is the production
+floor either way — Cedar's deny-by-default plus the shipped forbids give an
+untagged datasource that floor with no posture tag required. Tag it
+`system:development` to opt a datasource into the permissive development preset.
 
 Client-facing TLS (`PM_TLS_CERT` + `PM_TLS_KEY`, both-or-neither) is recommended
 but not required for this loopback walkthrough — without it the proxy runs

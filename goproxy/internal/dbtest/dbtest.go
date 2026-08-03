@@ -17,9 +17,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/docker/go-connections/nat"
 	_ "github.com/go-sql-driver/mysql"
 	_ "github.com/jackc/pgx/v5/stdlib"
+	"github.com/moby/moby/api/types/network"
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/wait"
 )
@@ -156,7 +156,7 @@ func startMySQL() (Backend, error) {
 		Name:         containerName("pm-goproxy-it-mysql", img),
 		ExposedPorts: []string{"3306/tcp"},
 		Env:          map[string]string{"MYSQL_ROOT_PASSWORD": pass, "MYSQL_DATABASE": db},
-		WaitingFor: wait.ForSQL("3306/tcp", "mysql", func(host string, port nat.Port) string {
+		WaitingFor: wait.ForSQL("3306/tcp", "mysql", func(host string, port network.Port) string {
 			return fmt.Sprintf("%s:%s@tcp(%s:%s)/%s", user, pass, host, port.Port(), db)
 		}).WithStartupTimeout(startupTimeout),
 	}
@@ -171,7 +171,7 @@ func startPostgres() (Backend, error) {
 		Name:         containerName("pm-goproxy-it-pg", img),
 		ExposedPorts: []string{"5432/tcp"},
 		Env:          map[string]string{"POSTGRES_PASSWORD": pass, "POSTGRES_DB": db},
-		WaitingFor: wait.ForSQL("5432/tcp", "pgx", func(host string, port nat.Port) string {
+		WaitingFor: wait.ForSQL("5432/tcp", "pgx", func(host string, port network.Port) string {
 			return fmt.Sprintf("postgres://%s:%s@%s:%s/%s?sslmode=disable", user, pass, host, port.Port(), db)
 		}).WithStartupTimeout(startupTimeout),
 	}
@@ -265,7 +265,7 @@ func lockShared(name string) (func(), error) {
 
 // start creates or reuses (by Name) the container and returns its live host:port. Reuse means the
 // container persists after the run and is shared across every test package/process.
-func start(req testcontainers.ContainerRequest, port nat.Port, user, pass, db string) (Backend, error) {
+func start(req testcontainers.ContainerRequest, port, user, pass, db string) (Backend, error) {
 	unlock, err := lockShared(req.Name)
 	if err != nil {
 		return Backend{}, err
@@ -289,5 +289,5 @@ func start(req testcontainers.ContainerRequest, port nat.Port, user, pass, db st
 	if err != nil {
 		return Backend{}, err
 	}
-	return Backend{Host: host, Port: mapped.Int(), User: user, Password: pass, DB: db}, nil
+	return Backend{Host: host, Port: int(mapped.Num()), User: user, Password: pass, DB: db}, nil
 }

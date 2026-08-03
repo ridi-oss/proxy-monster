@@ -343,7 +343,7 @@ func (s *Server) forwardCancelRequest(message *pgproto3.CancelRequest) {
 	}
 }
 
-func sendCancelRequest(host string, port int, processID, secretKey uint32) error {
+func sendCancelRequest(host string, port int, processID uint32, secretKey []byte) error {
 	request := &pgproto3.CancelRequest{ProcessID: processID, SecretKey: secretKey}
 	encoded, err := request.Encode(nil)
 	if err != nil {

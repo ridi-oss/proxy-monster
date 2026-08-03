@@ -623,7 +623,10 @@ class DatasourceStore(internal val dataSource: DataSource) {
         input.tags.firstOrNull { it.startsWith(RESERVED_TAG_PREFIX) }?.let {
             throw IllegalArgumentException("tag '$it' is reserved: the '$RESERVED_TAG_PREFIX' namespace is owned by system classification")
         }
-        val schema = input.schema ?: defaultSchema(id, c)
+        // A blank schema is absent, not a name. Taking it literally writes a row keyed on "" that no
+        // enforcement lookup can ever match (decide joins classifications by exact schema/table/column),
+        // so the caller sees a tagged column while the real one stays untagged and reads cleartext.
+        val schema = input.schema?.takeIf(String::isNotBlank) ?: defaultSchema(id, c)
             ?: throw IllegalArgumentException("schema is required until datasource introspection captures a default schema")
         c.prepareStatement(
             """INSERT INTO column_classification

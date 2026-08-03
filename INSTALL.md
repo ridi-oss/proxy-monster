@@ -99,11 +99,12 @@ configured per proxy under `PM_TARGET_*`.
   `_ABSOLUTE_WARN_LEAD` / `_HEARTBEAT` — _optional_. Two-clock console session
   timings. Defaults: `2h` · `15m` · `2m` · `1m` · `5m` · `90s`.
 - `PM_SESSION_WINDOW` / `PM_IDP_RECHECK_INTERVAL` — _optional_. Daemon renewal
-  window; IdP group re-read cadence. Defaults: `2h` · `300` (s). Raising
-  `PM_SESSION_WINDOW` does not lengthen a live `pmon` session — `pmon` never
-  calls the renew route, so a login lasts one wire token TTL and then needs a
-  fresh `pmon login`. For long-running sessions raise that TTL with
-  `pmon login --ttl` (default 12h, clamped server-side to 24h) instead.
+  window; IdP group re-read cadence. Defaults: `2h` · `300` (s). The daemon
+  re-mints the wire token silently while the window is open, so raising
+  `PM_SESSION_WINDOW` is what lengthens a `pmon` session. Once it closes,
+  renewal is refused and a fresh `pmon login` is needed — brokering continues on
+  the already-issued token until its own TTL (`pmon login --ttl`, default 12h,
+  clamped server-side to 24h) expires.
 - `PM_QUERY_TIMEOUT` — _optional_. CP-side ceiling on async execute. Bare
   integer seconds (no unit). Default `600`.
 - `PM_OAUTH_ACCESS_TTL` / `PM_OAUTH_REFRESH_TTL` — _optional_. MCP OAuth token

@@ -257,7 +257,7 @@ the server (derived from env) as props — single source of truth.
 | `PM_WEB_SESSION_ABSOLUTE_WARN_LEAD` | `5m` | Absolute re-login warn toast lead. |
 | `PM_WEB_SESSION_HEARTBEAT` | `90s` | Client activity heartbeat throttle. |
 | `PM_IDP_RECHECK_INTERVAL` | `300` | Timer-driven IdP identity/group recheck interval (both kinds). |
-| `PM_SESSION_WINDOW` | `2h` | Daemon renewal window — how long `POST /auth/session/renew` would accept a renewal token. Raising it does NOT extend a live `pmon` session: `pmon` never calls that route, so the wire token's own TTL (`pmon login --ttl`, default 12h) is the real lifetime. |
+| `PM_SESSION_WINDOW` | `2h` | Daemon renewal window — how long `POST /auth/session/renew` accepts a renewal token. The daemon re-mints the wire token silently inside it, so this window, not the token's own TTL (`pmon login --ttl`, default 12h), is a `pmon` session's real lifetime. |
 
 ## Fail-closed and failure modes
 

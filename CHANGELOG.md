@@ -1,5 +1,31 @@
 # Changelog
 
+## [0.1.6](https://github.com/ridi-oss/proxy-monster/compare/server-v0.1.5...server-v0.1.6) (2026-08-03)
+
+
+### Features
+
+* **control-plane:** add a batch column-tagging MCP tool ([#75](https://github.com/ridi-oss/proxy-monster/issues/75)) ([44c5764](https://github.com/ridi-oss/proxy-monster/commit/44c5764e42e6d202cb4b62a5b84830cbf9eedd12))
+* **pmon:** check the local password before brokering a connection ([#67](https://github.com/ridi-oss/proxy-monster/issues/67)) ([87d3156](https://github.com/ridi-oss/proxy-monster/commit/87d3156f2cb73d86cb64b99c7ffbaa99c962a8e0))
+* **web:** rename and delete a group from its detail page ([#76](https://github.com/ridi-oss/proxy-monster/issues/76)) ([115b2ac](https://github.com/ridi-oss/proxy-monster/commit/115b2accde8688659f94be299088e9e20af2aa6a))
+
+
+### Bug Fixes
+
+* **cp:** serve the derived context.tag actions with the policy schema ([#77](https://github.com/ridi-oss/proxy-monster/issues/77)) ([b3aed73](https://github.com/ridi-oss/proxy-monster/commit/b3aed73ffa60937ba9f78649f5cf3a28758dd470))
+* **pmon:** open the browser from the CLI, and surface a daemon that is not this build ([#70](https://github.com/ridi-oss/proxy-monster/issues/70)) ([17ac5bb](https://github.com/ridi-oss/proxy-monster/commit/17ac5bb590f83fc2691131e16dbb052e9d632880))
+* **web:** give each action-reference group a unique resource key ([#74](https://github.com/ridi-oss/proxy-monster/issues/74)) ([3082599](https://github.com/ridi-oss/proxy-monster/commit/3082599abf08b2573b790627a834246415d31ce8))
+
+
+### Build & Dependencies
+
+* require mysqlwire v0.1.1 ([#80](https://github.com/ridi-oss/proxy-monster/issues/80)) ([e64bebf](https://github.com/ridi-oss/proxy-monster/commit/e64bebf4c89e5e44ec6d76ade8b2c104a585a85c))
+
+
+### Documentation
+
+* forbid narrating history in comments and docs ([#71](https://github.com/ridi-oss/proxy-monster/issues/71)) ([ae77de2](https://github.com/ridi-oss/proxy-monster/commit/ae77de2355cc4fd0fc595a42fe4f4fb26dcecc9c))
+
 ## [0.1.5](https://github.com/ridi-oss/proxy-monster/compare/server-v0.1.4...server-v0.1.5) (2026-07-31)
 
 

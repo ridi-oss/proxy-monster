@@ -158,7 +158,12 @@ export default function GroupsPage() {
                             <MoreHorizontal className="size-3.5" />
                           </DropdownMenuTrigger>
                           <DropdownMenuContent align="end" side="bottom">
-                            <DropdownMenuItem onClick={() => openEdit(group)}>
+                            {/* The server rejects both on a SYSTEM group; disabling explains why
+                                instead of failing the call. */}
+                            <DropdownMenuItem
+                              disabled={group.source === 'SYSTEM'}
+                              onClick={() => openEdit(group)}
+                            >
                               <Pencil className="size-3.5" />
                               {t('list.edit')}
                             </DropdownMenuItem>
@@ -169,6 +174,7 @@ export default function GroupsPage() {
                             <DropdownMenuSeparator />
                             <DropdownMenuItem
                               variant="destructive"
+                              disabled={group.source === 'SYSTEM'}
                               onClick={() => {
                                 setDeleteError(null)
                                 setDeleting((prev) => (prev?.id === group.id ? null : group))
@@ -192,6 +198,11 @@ export default function GroupsPage() {
                                   code: (chunks) => <code className="font-mono">{chunks}</code>,
                                 })}
                               </p>
+                              {group.source === 'OIDC' && (
+                                <p className="text-muted-foreground mt-1 text-xs">
+                                  {t('detail.deleteOidcWarning')}
+                                </p>
+                              )}
                               {deleteError && <p className="mt-1 text-xs text-red-500">{deleteError}</p>}
                             </div>
                             <div className="flex items-center gap-2">

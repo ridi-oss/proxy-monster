@@ -49,7 +49,12 @@
     "toastMemberRemoved": "{group}에서 {principal}을(를) 제거했습니다.",
     "removeMemberFailed": "구성원을 제거하지 못했습니다.",
     "toastRoleRemoved": "{group}에서 {roleName} 역할을 제거했습니다.",
-    "removeRoleFailed": "역할을 제거하지 못했습니다."
+    "removeRoleFailed": "역할을 제거하지 못했습니다.",
+    "rename": "이름 변경",
+    "deleteGroup": "그룹 삭제",
+    "deleteConfirm": "<code>{name}</code> 그룹을 삭제할까요? 구성원과 역할 매핑이 함께 삭제됩니다.",
+    "deleteOidcWarning": "IdP에서 만들어진 그룹입니다. 여기서 삭제해도 IdP에는 남아 있어, 구성원이 다음에 로그인하면 다시 생성됩니다.",
+    "systemImmutable": "시스템 관리 그룹은 이름을 바꾸거나 삭제할 수 없습니다."
   },
   "addMember": {
     "title": "구성원 추가",

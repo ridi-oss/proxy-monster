@@ -49,7 +49,12 @@
     "toastMemberRemoved": "Removed {principal} from {group}.",
     "removeMemberFailed": "failed to remove member",
     "toastRoleRemoved": "Removed {roleName} from {group}.",
-    "removeRoleFailed": "failed to remove role"
+    "removeRoleFailed": "failed to remove role",
+    "rename": "Rename",
+    "deleteGroup": "Delete group",
+    "deleteConfirm": "Delete group <code>{name}</code>? Members and role mappings will be removed.",
+    "deleteOidcWarning": "This group came from the IdP. Deleting it here does not remove it there, so it returns the next time a member signs in.",
+    "systemImmutable": "System-managed groups cannot be renamed or deleted."
   },
   "addMember": {
     "title": "Add member",

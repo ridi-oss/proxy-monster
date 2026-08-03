@@ -5,11 +5,18 @@
 
 import { Fragment, useState } from 'react'
 import Link from 'next/link'
+import { useRouter } from 'next/navigation'
 import { useTranslations } from 'next-intl'
-import { ArrowLeft, Loader2, Plus, ShieldCheck, Trash2, Users } from 'lucide-react'
+import { ArrowLeft, Loader2, Pencil, Plus, ShieldCheck, Trash2, Users } from 'lucide-react'
 import { toast } from 'sonner'
 import { mutate } from 'swr'
-import { addGroupMember, addGroupRole, removeGroupMember, removeGroupRole } from '@/lib/api/client'
+import {
+  addGroupMember,
+  addGroupRole,
+  deleteGroup,
+  removeGroupMember,
+  removeGroupRole,
+} from '@/lib/api/client'
 import {
   swrKeys,
   useGroupMembers,
@@ -46,9 +53,11 @@ import {
   TableRow,
 } from '@/components/ui/table'
 import { EmptyState, ErrorState, LoadingState } from '@/components/page-scaffold'
+import { GroupFormDialog } from '@/components/groups/group-form-dialog'
 
 export function GroupDetail({ id }: { id: number }) {
   const t = useTranslations('Groups')
+  const router = useRouter()
   const { data: groups } = useGroups()
   const { data: users } = useUsers()
   const { data: roles } = useRoles()
@@ -65,6 +74,31 @@ export function GroupDetail({ id }: { id: number }) {
   const [removeRoleBusy, setRemoveRoleBusy] = useState(false)
   const [removeMemberError, setRemoveMemberError] = useState<string | null>(null)
   const [removeRoleError, setRemoveRoleError] = useState<string | null>(null)
+  const [renaming, setRenaming] = useState(false)
+  const [deleting, setDeleting] = useState(false)
+  const [deleteBusy, setDeleteBusy] = useState(false)
+  const [deleteError, setDeleteError] = useState<string | null>(null)
+
+  // The server rejects both on a SYSTEM group; disabling here explains why instead of failing the call.
+  const immutable = group?.source === 'SYSTEM'
+
+  const handleDelete = async () => {
+    if (!group) return
+    setDeleteBusy(true)
+    setDeleteError(null)
+    try {
+      await deleteGroup(group.id)
+      await mutate(swrKeys.groups)
+      await mutate(swrKeys.users)
+      await mutate(swrKeys.groupMembers(group.id))
+      await mutate(swrKeys.groupRoles(group.id))
+      toast.success(t('list.toastDeleted', { name: group.name }))
+      router.push('/admin/groups')
+    } catch (err) {
+      setDeleteError(err instanceof Error ? err.message : t('list.deleteFailed'))
+      setDeleteBusy(false)
+    }
+  }
 
   const handleRemoveMember = async (member: GroupMember) => {
     setRemoveMemberBusy(true)
@@ -111,11 +145,57 @@ export function GroupDetail({ id }: { id: number }) {
           <span className="text-muted-foreground text-sm">{group.description}</span>
         )}
         {group && (
-          <Badge variant="outline" className="ml-auto font-mono text-xs">
-            {group.source}
-          </Badge>
+          <>
+            <Badge variant="outline" className="ml-auto font-mono text-xs">
+              {group.source}
+            </Badge>
+            <div className="flex items-center gap-2" title={immutable ? t('detail.systemImmutable') : undefined}>
+              <Button size="xs" variant="outline" disabled={immutable} onClick={() => setRenaming(true)}>
+                <Pencil className="size-3" />
+                {t('detail.rename')}
+              </Button>
+              <Button
+                size="xs"
+                variant="outline"
+                disabled={immutable}
+                onClick={() => {
+                  setDeleteError(null)
+                  setDeleting((prev) => !prev)
+                }}
+              >
+                <Trash2 className="size-3" />
+                {t('detail.deleteGroup')}
+              </Button>
+            </div>
+          </>
         )}
       </div>
+
+      {group && deleting && (
+        <div className="flex flex-wrap items-center justify-between gap-2 border-b bg-red-500/5 px-6 py-3">
+          <div>
+            <p className="text-sm font-medium text-red-500">
+              {t.rich('detail.deleteConfirm', {
+                name: group.name,
+                code: (chunks) => <code className="font-mono">{chunks}</code>,
+              })}
+            </p>
+            {group.source === 'OIDC' && (
+              <p className="text-muted-foreground mt-1 text-xs">{t('detail.deleteOidcWarning')}</p>
+            )}
+            {deleteError && <p className="mt-1 text-xs text-red-500">{deleteError}</p>}
+          </div>
+          <div className="flex items-center gap-2">
+            <Button size="xs" variant="outline" onClick={() => setDeleting(false)} disabled={deleteBusy}>
+              {t('list.cancel')}
+            </Button>
+            <Button size="xs" variant="destructive" onClick={handleDelete} disabled={deleteBusy}>
+              {deleteBusy ? <Loader2 className="size-3 animate-spin" /> : null}
+              {t('detail.deleteGroup')}
+            </Button>
+          </div>
+        </div>
+      )}
 
       <div className="min-h-0 flex-1 overflow-y-auto">
         <div className="mx-auto w-full max-w-6xl space-y-6 px-6 py-6">
@@ -333,6 +413,7 @@ export function GroupDetail({ id }: { id: number }) {
           onClose={() => setMappingRole(false)}
         />
       )}
+      <GroupFormDialog open={renaming} onOpenChange={setRenaming} editing={group ?? null} />
     </div>
   )
 }

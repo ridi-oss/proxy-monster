@@ -1,7 +1,6 @@
 package mysqlproxy
 
 import (
-	"crypto/rand"
 	"crypto/tls"
 	"errors"
 	"fmt"
@@ -35,8 +34,8 @@ func (s *Server) handleConn(clientConn net.Conn) {
 		}
 	}
 
-	scramble := make([]byte, 20)
-	if _, err := rand.Read(scramble); err != nil {
+	scramble, err := mysqlwire.Scramble()
+	if err != nil {
 		return
 	}
 	connID := s.connID.Add(1)

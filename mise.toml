@@ -247,6 +247,13 @@ done
 description = "All tests against the newest supported database version — the local default"
 depends = ["test-jvm", "test-go"]
 
+[tasks.test-e2e-clients]
+description = "Client-interop e2e: real client libraries (mysql CLI, JDBC/Connector-J, Go, Node, PHP PDO_MySQL) connect through the pmon broker with the exact `pmon show` string"
+shell = "bash -c"
+# Behind the e2e_clients build tag and out of `verify`: it pulls several client images and needs outbound
+# network (a Connector/J jar, an npm install). Docker is required.
+run = "(cd pmon && go test -race -tags e2e_clients ./internal/daemon/ -run ClientInterop -count=1 -timeout 900s)"
+
 [tasks.test-db-matrix]
 description = "Sweep the DB-backed tests over EVERY supported database version (db-support.json)"
 shell = "bash -c"

@@ -109,13 +109,13 @@ func TestLoadEmbeddedMigrations(t *testing.T) {
 	if err != nil {
 		t.Fatalf("loadMigrations: %v", err)
 	}
-	wantVersions := []string{"1", "2", "3", "4", "5", "6", "7", "8", "9", "10"}
+	wantVersions := []string{"1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12"}
 	if len(all) != len(wantVersions) {
 		t.Fatalf("loaded %d migrations, want %d", len(all), len(wantVersions))
 	}
 	for i, want := range wantVersions {
 		if all[i].version != want {
-			t.Errorf("migration %d has version %q, want %q (numeric order, V10 last)", i, all[i].version, want)
+			t.Errorf("migration %d has version %q, want %q (numeric order, V12 last)", i, all[i].version, want)
 		}
 		if len(all[i].body) == 0 {
 			t.Errorf("migration %s has an empty body", all[i].script)
@@ -133,8 +133,8 @@ func TestLoadEmbeddedMigrations(t *testing.T) {
 	if all[0].script != "V1__identity.sql" || all[0].description != "identity" {
 		t.Errorf("first migration = %q/%q, want V1__identity.sql/identity", all[0].script, all[0].description)
 	}
-	if last := all[len(all)-1]; last.script != "V10__debug_requester_ip.sql" || last.description != "debug requester ip" {
-		t.Errorf("last migration = %q/%q, want V10__debug_requester_ip.sql/debug requester ip", last.script, last.description)
+	if last := all[len(all)-1]; last.script != "V12__format_policy_source.sql" || last.description != "format policy source" {
+		t.Errorf("last migration = %q/%q, want V12__format_policy_source.sql/format policy source", last.script, last.description)
 	}
 }
 
@@ -161,21 +161,21 @@ func TestPendingAfter(t *testing.T) {
 
 	at9, _ := parseVersionOrder("9")
 	pending := pendingAfter(all, at9)
-	if len(pending) != 1 || pending[0].version != "10" {
-		t.Errorf("after version 9: pending = %v, want just V10", versionsOf(pending))
+	if len(pending) != 3 || pending[0].version != "10" {
+		t.Errorf("after version 9: pending = %v, want V10..V12", versionsOf(pending))
 	}
 
-	at10, _ := parseVersionOrder("10")
-	if got := pendingAfter(all, at10); len(got) != 0 {
-		t.Errorf("after version 10: pending = %v, want none", versionsOf(got))
+	at12, _ := parseVersionOrder("12")
+	if got := pendingAfter(all, at12); len(got) != 0 {
+		t.Errorf("after the newest version: pending = %v, want none", versionsOf(got))
 	}
 
 	// REPRODUCE: a file at or below the recorded version is skipped, not applied out of order. That
 	// is Flyway's behaviour with outOfOrder disabled, which is the default.
 	at5, _ := parseVersionOrder("5")
 	pending = pendingAfter(all, at5)
-	if len(pending) != 5 {
-		t.Errorf("after version 5: %d pending, want 5 (V6..V10)", len(pending))
+	if len(pending) != 7 {
+		t.Errorf("after version 5: %d pending, want 7 (V6..V12)", len(pending))
 	}
 	for _, m := range pending {
 		if compareVersions(m.order, at5) <= 0 {

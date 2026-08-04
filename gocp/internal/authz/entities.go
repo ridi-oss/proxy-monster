@@ -6,31 +6,25 @@ import (
 	"github.com/cedar-policy/cedar-go/types"
 )
 
-// 🔒 INV-A2-7 — reserved tag namespaces are TYPE-SCOPED, enforced HERE at Cedar marshalling, not only
-// at the admin write API (Authz.kt:232-234).
+// A TAG IS A TAG — upstream #78 (Authz.kt).
 //
-//   - system:development / system:production marshal ONLY onto a Datasource (datasourceEntity filters
-//     to datasourcePostureTags; all other datasource tags are dropped as parents, though free-form tags
-//     are carried and inert).
-//   - Every other system:* tag (system:critical, activity, data-leak, catalog) attaches to a Table/
-//     Column/Function/Utility ONLY from the shipped manifest, passed in as systemTags — never honoured
-//     from a user-authored column tag.
-//   - Column parents are built from tags filtered by !isReservedTag. A column's real system tag is
-//     inherited transitively through its Table parent.
-//   - udf:output-vouched is valid only on a UDF Function.
+// Marshalling attaches every tag a resource carries, whatever it is named and whatever type carries it.
+// What a tag MEANS is the policy's business; the only rule is a naming rule at the WRITE
+// (datasource.IsReservedTagName). The shipped `system:` classification is resolved per statement from the
+// manifest (internal/query) and attached separately, so it is never read from a tag row.
 //
-// Attack this prevents: a Column whose catalog row carried a hand-written system:development (or a
-// forged system:critical) would satisfy a preset permit or bypass a shipped forbid and LEAK CLEARTEXT.
-// PresetPolicyDbTest case 9 is the regression test.
-var datasourcePostureTags = map[string]bool{
-	"system:development": true,
-	"system:production":  true,
-}
-
-func isReservedTag(t string) bool {
-	return strings.HasPrefix(t, "system:") || t == "udf:output-vouched"
-}
-
+// ⚠️ THIS REPLACED A TYPE-SCOPING MODEL, and the security reasoning inverted with it. The previous code
+// kept a `datasourcePostureTags` allowlist and dropped any `system:`/`udf:` tag off a Table/Column/
+// Function, on the argument that a hand-written `system:development` on a column would satisfy a preset
+// permit and leak cleartext. Upstream removed that: the classification no longer comes from tag rows at
+// all, so there is nothing to forge by naming a tag.
+//
+// 🔒 WHAT THE OPERATOR NOW OWNS. A datasource's tags are inherited by every Table/Column/Function beneath
+// it, so one tag decides for the whole datasource — and that cuts both ways on any name a policy keys on.
+// `pii` on a datasource makes the shipped presets mask every column under it, AND hands cleartext to any
+// role a `Tag::"pii"` permit grants. Classify columns to decide columns. That is a deliberate trade of an
+// enforced invariant for a simpler model, made upstream; this port follows it rather than keeping a
+// stricter Go plane, because a Go plane that denies where the Kotlin allows is still a divergence.
 // tagEuidCache is the port of the `HashMap<String, EntityUID>` every batch entry point threads through
 // its marshalling (Authz.kt:471 and friends) so ONE Tag EUID object is reused across the batch. In Go
 // an EntityUID is a comparable value, not an object identity, so the map is not strictly needed for
@@ -65,15 +59,13 @@ func (c *tagEuidCache) entities() []types.Entity {
 	return out
 }
 
-// datasourceEntity ports Authz.kt:239-249: the Datasource entity carrying ONLY its recognized POSTURE
-// Tag parents (every other tag dropped), so a policy's `resource in Tag::"system:development"` matches
-// this datasource AND — transitively via the Datasource parent — every Table/Column/Function under it.
+// datasourceEntity is the Datasource entity carrying EVERY tag it holds as a Tag parent — so a policy's
+// `resource in Tag::"…"` matches this datasource AND, transitively via the Datasource parent, every
+// Table/Column/Function under it. See the package note above on #78: no tag is filtered here.
 func datasourceEntity(dsEuid types.EntityUID, name string, datasourceTags []string, tags *tagEuidCache) types.Entity {
-	var parents []types.EntityUID
+	parents := make([]types.EntityUID, 0, len(datasourceTags))
 	for _, t := range datasourceTags {
-		if datasourcePostureTags[t] {
-			parents = append(parents, tags.getOrPut(t))
-		}
+		parents = append(parents, tags.getOrPut(t))
 	}
 	return types.Entity{
 		UID:        dsEuid,

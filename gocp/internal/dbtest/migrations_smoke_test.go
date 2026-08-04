@@ -38,9 +38,11 @@ var wantHistory = []struct{ version, description, script string }{
 	{"8", "seed", "V8__seed.sql"},
 	{"9", "datasource cert chain", "V9__datasource_cert_chain.sql"},
 	{"10", "debug requester ip", "V10__debug_requester_ip.sql"},
+	{"11", "result deny context", "V11__result_deny_context.sql"},
+	{"12", "format policy source", "V12__format_policy_source.sql"},
 }
 
-// TestMigrations_TenSuccessRowsInFlywayShape is the harness's own smoke test AND the first real
+// TestMigrations_EverySuccessRowInFlywayShape is the harness's own smoke test AND the first real
 // exercise of internal/store's Flyway-compatible migration runner against a live PostgreSQL — the
 // TODO(A1) internal/store/doc.go leaves open.
 //
@@ -51,7 +53,7 @@ var wantHistory = []struct{ version, description, script string }{
 // ⚠️ What this does NOT prove: that the checksums equal what a real Flyway 13.0.0 would write. That
 // needs the docker-compose parity gate (99-library-decisions.md §5) — migrate with the Kotlin stack,
 // dump the table, compare. This proves the runner is internally consistent and Flyway-SHAPED.
-func TestMigrations_TenSuccessRowsInFlywayShape(t *testing.T) {
+func TestMigrations_EverySuccessRowInFlywayShape(t *testing.T) {
 	ctx := context.Background()
 	db, name := MigratedStore(t)
 	t.Logf("migrated control-plane store on database %s (image %s, server %s)",

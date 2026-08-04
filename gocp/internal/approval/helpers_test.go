@@ -199,7 +199,18 @@ func TestARoleThatUnmasksABaselineMaskedColumnIsOffered(t *testing.T) {
 }
 
 // Case 2 — a role that returns exactly what the requester already sees is NOISE and is not offered.
-// KT: RoleDiscoveryTest.kt#a role that returns the same is not offered
+// UPSTREAM-DELETED CASE — no traceability marker, deliberately.
+//
+// This ported `RoleDiscoveryTest`'s "a role that returns the same is not offered". The rebase onto main
+// brought that suite's rework and the case is gone; the surviving names describe the OPPOSITE outcome for
+// this input ("a role that runs the query but still masks is offered, marked masked"), i.e. a role
+// producing the same masked view now appears to be OFFERED and labelled rather than withheld.
+//
+// 🔒 THE MARKER IS REMOVED RATHER THAN REPOINTED. The checker requires a cited case to exist, and
+// repointing this at a case with the inverse expectation would be the WRONG-mapping class — a claim of
+// coverage satisfied by a test asserting the opposite, which is worse than an admitted gap. The test
+// below still PASSES because it pins the old behaviour; it must be re-derived from the reworked Kotlin,
+// and until then this area is knowingly behind main.
 func TestARoleThatReturnsTheSameIsNotOffered(t *testing.T) {
 	s := &scriptedDecide{byKey: map[string]query.DecisionContext{
 		"own|":       maskDecision("rrn"),
@@ -215,7 +226,7 @@ func TestARoleThatReturnsTheSameIsNotOffered(t *testing.T) {
 }
 
 // Case 3 — a role under which Q is DENIED is not offered: R does not even let Q run.
-// KT: RoleDiscoveryTest.kt#a role under which Q is denied is not offered
+// KT: RoleDiscoveryTest.kt#a role that denies the query is not offered
 func TestARoleUnderWhichQIsDeniedIsNotOffered(t *testing.T) {
 	s := &scriptedDecide{byKey: map[string]query.DecisionContext{
 		"own|": maskDecision("rrn"),

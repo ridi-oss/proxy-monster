@@ -55,11 +55,11 @@ entity Utility in [Datasource, Tag];
 entity User in [Role];
 
 // A brokered datasource (DESIGN.md's `datasource` table). `name` is best-effort/optional so
-// callers that only have the id can still authorize. It gains a `Tag` parent so its shipped
-// posture tags (`system:development` / `system:production`) attach to it AND — transitively via
-// the Datasource parent every Table/Column/Function carries — govern the conditional forbids / preset
-// permits over the objects under it. Only those reserved tags are ever marshaled onto a Datasource
-// (Authz.datasourceEntity); a Column/Table/Function can never carry them (the type-scoping invariant).
+// callers that only have the id can still authorize. It gains a `Tag` parent so every tag it carries
+// attaches to it AND — transitively via the Datasource parent every Table/Column/Function carries —
+// governs the conditional forbids / preset permits over the objects under it. The posture tags
+// (`system:development` / `system:production`) are what the shipped presets key on; marshalling filters
+// nothing by resource type, so any resource may carry any tag name (Authz.datasourceEntity).
 entity Datasource in [Tag] = {
     name?: String,
 };

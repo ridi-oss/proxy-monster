@@ -266,7 +266,7 @@ func (rt *Routes) executeRead(ctx context.Context, tool string, args argValue) (
 		}
 		return structuredValue(rt.services.Policies.ValidatePolicy(src))
 	case "get_policy_schema":
-		return structuredValue(rt.services.Policies.PolicySchema())
+		return structured(rt.services.Policies.PolicySchema(ctx))
 	case "list_roles":
 		return structured(rt.services.Policies.ListRoles(ctx))
 	case "list_role_assignments":

@@ -31,12 +31,21 @@ import (
 //
 // Set KT_COVERAGE_REQUIRE_FULL=1 to demand all 903 instead; that is the switch to flip on the day the
 // port claims completeness, and the one CI should flip to prove it.
-const minMappedCases = 893
+// ⚠️ LOWERED 893 → 890 BY A REBASE, which is the one case the "never lower it" rule above does not
+// cover. The rule guards against a coverage REGRESSION — a Go test deleted without a KT-DEFER in its
+// place. This was the DENOMINATOR moving: rebasing onto main brought 26 upstream commits, the inventory
+// went 903 → 929 cases, and three cases the port had mapped were DELETED upstream (two by #78 "a tag is
+// a tag", one by RoleDiscoveryTest's rework). A marker cannot cite a case that no longer exists, so the
+// three markers were removed and the reasoning left as prose at each site.
+//
+// Nothing became less covered. The port is now measurably BEHIND main by a known amount — 39 unmapped
+// cases against 929 — and that gap, not this number, is the thing to close.
+const minMappedCases = 890
 
 // minAccountedCases is mapped + KT-OMIT + KT-DEFER. Same ratchet, one level weaker: it counts cases
 // somebody has made a decision about, so deleting a marker outright is caught even when the deleter
 // swaps a KT: for a KT-DEFER:.
-const minAccountedCases = 903
+const minAccountedCases = 900
 
 const requireFullEnv = "KT_COVERAGE_REQUIRE_FULL"
 

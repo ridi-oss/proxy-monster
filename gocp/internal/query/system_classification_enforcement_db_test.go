@@ -38,7 +38,11 @@ func TestSystemClassificationEnforcementDb(t *testing.T) {
 		return gateDecide(fx, dbtest.FixturePrincipal, sql, classifier)
 	}
 
-	// KT: SystemClassificationEnforcementDbTest.kt#a user column classification cannot claim a reserved system tag
+	// UPSTREAM-DELETED CASE — no traceability marker.
+	//
+	// Also deleted by #78: a user column tag may now claim any name, because the shipped `system:`
+	// classification is resolved per statement from the manifest rather than read from a tag row. Same
+	// blocker as the PresetPolicyDbTest case — see internal/authz/entities.go.
 	// `a user column classification cannot claim a reserved system tag`
 	//
 	// 🔒 A2 INV-A2-7. The `system:` namespace is owned by the shipped manifests, so a user-authored

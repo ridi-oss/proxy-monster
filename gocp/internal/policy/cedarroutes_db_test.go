@@ -595,9 +595,15 @@ func TestValidateNeverEmitsNullForTheErrorList(t *testing.T) {
 	}
 }
 
-// GET /api/policies/schema serves the bundled schema text verbatim — 02-authz.md:447: "the schema is
-// the authz model, not secret". Still behind requireAdmin like every other route in the group; the
-// disclosure judgment is about what the schema REVEALS, not a decision to open the route.
+// GET /api/policies/schema serves the bundled schema AUGMENTED with the derived `context.tag::<name>`
+// actions — 02-authz.md:447: "the schema is the authz model, not secret". Still behind requireAdmin like
+// every other route in the group; the disclosure judgment is about what the schema REVEALS, not a
+// decision to open the route.
+//
+// ⚠️ NOT VERBATIM, which is what this used to assert. Cedar strict validation rejects an undeclared
+// action, so an editor linting against a schema without the derived tag actions flags every working
+// `context.tag::` rule as invalid. The shipped -300 policy targets `context.tag::trusted-network`, so a
+// clean install always has at least one. Caught by the differential harness (policies-schema).
 func TestSchemaServesTheBundledSchemaText(t *testing.T) {
 	f := newRouteFixture(t)
 
@@ -606,8 +612,12 @@ func TestSchemaServesTheBundledSchemaText(t *testing.T) {
 	assertStatus(t, rec, http.StatusOK, "schema")
 	var got CedarSchemaResult
 	decodeJSON(t, rec, &got)
-	if got.Schema != authz.SchemaSource {
-		t.Error("the schema must be served verbatim from the embedded source")
+	if !strings.HasPrefix(got.Schema, authz.SchemaSource) {
+		t.Error("the served schema must START with the embedded source; the augmentation appends, never rewrites")
+	}
+	if !strings.Contains(got.Schema, `action "context.tag::trusted-network"`) {
+		t.Errorf("the served schema is missing the derived action for the shipped -300 policy's tag; an "+
+			"editor linting against it would reject every context.tag rule:\n%s", got.Schema)
 	}
 }
 

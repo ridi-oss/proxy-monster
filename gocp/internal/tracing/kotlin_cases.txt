@@ -73,8 +73,10 @@ AuthAndIngestRoutesDbTest.kt#ingest with the correct token and a minimal record 
 AuthzDatasourceActionTest.kt#a granted role may connect to the named datasource
 AuthzDatasourceActionTest.kt#a granted role may run a granted sql kind on the named datasource
 AuthzDatasourceActionTest.kt#an ungranted sql kind is denied — deny-by-default, not absent-equals-allow
+AuthzDatasourceActionTest.kt#every datasource tag reaches policy as itself, whatever it is named
 AuthzDatasourceActionTest.kt#no roles at all is denied
 AuthzDatasourceActionTest.kt#sql-unmaskable follows the preset-development datasource tag
+AuthzDatasourceActionTest.kt#the naming rule refuses an invented system name and admits the six the product defines
 AuthzDatasourceActionTest.kt#the same grant on a different datasource name does not apply — NAME-keyed, not blanket
 AuthzTest.kt#ROLE self-approval is denied even for a system-admin — the self-approval hole stays closed
 AuthzTest.kt#a non-admin approving someone else's request is still denied — no ambient permit
@@ -127,7 +129,9 @@ CedarPolicyRoutesTest.kt#POST and USER rename reject the reserved system namespa
 CedarPolicyRoutesTest.kt#PUT and DELETE of a system policy return the immutable conflict
 CedarPolicyRoutesTest.kt#REST-shaped policy mutation remains bound to its numeric id after name reuse
 CedarPolicyRoutesTest.kt#enable and disable remain available for system policies
+CedarPolicyRoutesTest.kt#escape-aliased tag names collapse to one declaration
 CedarPolicyRoutesTest.kt#list exposes system provenance without accepting it in input
+CedarPolicyRoutesTest.kt#the served policy schema declares the context tag actions stored rules target
 CedarPolicyStoreTest.kt#V20 system seeds and the V32-converted audit seeds are enabled and validate as one Cedar engine
 CedarPolicyStoreTest.kt#a policy referencing an unknown action is rejected — schema validation, not just syntax
 CedarPolicyStoreTest.kt#a schema-valid policy is created
@@ -148,8 +152,14 @@ ChannelDecideAuditDbTest.kt#a session temp resolves and reads unmasked via the o
 ChannelDecideAuditDbTest.kt#a write cannot launder a masked column into a session temp (the unmasked-temp linchpin)
 ChannelDecideAuditDbTest.kt#the audit record carries the channel through the real run path
 ChannelDecideAuditDbTest.kt#the editor channel passthrough-allows a session statement, workflow phases still deny
+ClassificationSchemaResolutionDbTest.kt#a blank schema resolves to the datasource default instead of being stored literally
+ClassificationSchemaResolutionDbTest.kt#an explicit schema is still stored verbatim
 ColumnAuthzTest.kt#a batch of columns resolves independent verdicts in one call
 ColumnAuthzTest.kt#a column in an ungranted table is denied — deny-by-default, not absent-equals-cleartext
+ColumnAuthzTest.kt#a column tagged system-critical is denied by the shipped forbid
+ColumnAuthzTest.kt#a datasource tagged pii hands a pii-keyed permit every column under it
+ColumnAuthzTest.kt#a datasource tagged pii masks a column the shipped preset would otherwise read cleartext
+ColumnAuthzTest.kt#a datasource tagged system-catalog opens the bare-principal catalog permit for every column
 ColumnAuthzTest.kt#a different datasource with the same qualified table is not covered by the grant
 ColumnAuthzTest.kt#a fully-qualified Column EUID grant matches its exact column
 ColumnAuthzTest.kt#a permit in one catalog does not cover the same schema and table in another catalog
@@ -157,6 +167,7 @@ ColumnAuthzTest.kt#a permit on public users does not cover analytics users with 
 ColumnAuthzTest.kt#a pii-tagged column in an UNGRANTED table is denied, not masked — the masked grant is table-scoped
 ColumnAuthzTest.kt#a pii-tagged column in the granted table is masked, not unmasked
 ColumnAuthzTest.kt#an identifier containing a key delimiter is denied fail-closed
+ColumnAuthzTest.kt#an operator's own datasource tag reaches a column through the datasource parent
 ColumnAuthzTest.kt#an untagged column in the granted table is unmasked
 ColumnAuthzTest.kt#no roles at all is denied on every column
 ConfigGuardTest.kt#PM_QUERY_TIMEOUT defaults overrides and rejects invalid values
@@ -491,6 +502,12 @@ McpOAuthStoreDbTest.kt#issuing a code prunes expired and already-used authorizat
 McpOAuthStoreDbTest.kt#refresh rotates once and replay revokes the complete token family
 McpOAuthStoreDbTest.kt#revoked consent blocks code exchange and revokes access plus refresh
 McpServerDbTest.kt#Cedar authority remains narrower than a broad consent scope
+McpServerDbTest.kt#a batch classification applies atomically and never half-applies
+McpServerDbTest.kt#a batch classification is denied without the datasource Cedar action
+McpServerDbTest.kt#a batch classification never writes an unresolvable schema
+McpServerDbTest.kt#a batch classification obeys the scope ceiling and replays idempotently
+McpServerDbTest.kt#a batch classification refuses an oversized batch before doing its work
+McpServerDbTest.kt#a batch classification rolls back a write that already succeeded
 McpServerDbTest.kt#a failed audit insert rolls back its management mutation
 McpServerDbTest.kt#an IPv6 literal resource host matches a forwarded authority
 McpServerDbTest.kt#an https resource admits a cleartext-forwarded request whose Host carries no port
@@ -518,12 +535,19 @@ OAuthRoutesDbTest.kt#production OAuth reuses the existing control-plane user ses
 OAuthRoutesDbTest.kt#production OAuth without a session enters the existing control-plane OIDC login
 OAuthRoutesDbTest.kt#production configuration rejects the public dev session secret and insecure origins
 OidcCallbackTest.kt#OIDC continuation accepts only the co-hosted resume and reauth routes
+OidcCallbackTest.kt#S256 is matched case-insensitively
+OidcCallbackTest.kt#a challenge is sent when the IdP advertises S256
 OidcCallbackTest.kt#invalid id_token redirects to error=nonce, and the nonce cookie is one-time-use
+OidcCallbackTest.kt#no challenge is sent when the IdP advertises no PKCE methods
+OidcCallbackTest.kt#no challenge is sent when the IdP advertises only plain
+OidcCallbackTest.kt#no verifier is sent to a token endpoint that never issued a challenge
 OidcCallbackTest.kt#provider error param redirects to error=oidc
 OidcCallbackTest.kt#provider error preserves the popup reauth continuation
 OidcCallbackTest.kt#provider error returns to the co-hosted OAuth resume route
 OidcCallbackTest.kt#state failure preserves the popup reauth continuation
 OidcCallbackTest.kt#state mismatch redirects to error=state, and the state cookie is one-time-use
+OidcCallbackTest.kt#the challenge is the S256 hash of the verifier presented at the token endpoint
+OidcCallbackTest.kt#the verifier cookie is one-time-use
 OidcCallbackTest.kt#unconfigured oidc degrades both routes to 501
 OidcDiscoveryTest.kt#a trailing slash on the configured issuer is tolerated
 OidcDiscoveryTest.kt#document parses every field, required and optional
@@ -574,7 +598,6 @@ PolicyOriginDbTest.kt#explicit negative ids do not disturb the user sequence and
 PolicyOriginDbTest.kt#the development preset ships enabled and the production preset ships disabled
 PolicyOriginDbTest.kt#the four origin constraints reject every cross-namespace raw insert
 PolicyOriginDbTest.kt#the shipped default security posture is unchanged
-PresetPolicyDbTest.kt#a forged preset-development tag is honored on a datasource but stripped off a column
 PresetPolicyDbTest.kt#default developer group connects selects writes and reads dev data cleartext
 PresetPolicyDbTest.kt#development reads cleartext including PII because dev holds no PII
 PresetPolicyDbTest.kt#development role matrix grants connect and only the corresponding SQL kind
@@ -583,6 +606,7 @@ PresetPolicyDbTest.kt#production PII unmasks via the workflow-executor channel o
 PresetPolicyDbTest.kt#production is denied until enabled then masks PII unless a pii-accessor earns trusted-network
 PresetPolicyDbTest.kt#production role matrix grants connect and only the corresponding SQL kind once enabled
 PresetPolicyDbTest.kt#production system surfaces stay closed even for a pii-accessor on trusted-network
+PresetPolicyDbTest.kt#the shipped development permit matches a system-development tag wherever it sits
 PrincipalSessionSchemaDbTest.kt#the session table carries its indexes and a partial-unique session key
 PrincipalSessionStorageDbTest.kt#daemon rows cannot be linked or reached through web session keys
 PrincipalSessionStorageDbTest.kt#invalidate signs out only active rows and preserves an existing terminal reason
@@ -659,11 +683,13 @@ ResultCryptoTest.kt#round-trips plaintext
 ResultCryptoTest.kt#tampered ciphertext fails to decrypt
 ResultCryptoTest.kt#too-short blob is rejected
 ResultCryptoTest.kt#wrong key fails to decrypt
+RoleDiscoveryTest.kt#a candidate is previewed on the channel an approved query executes on
 RoleDiscoveryTest.kt#a candidate is previewed under R ALONE, not unioned with the requester's own roles
-RoleDiscoveryTest.kt#a role that returns the same is not offered
+RoleDiscoveryTest.kt#a role that denies the query is not offered
+RoleDiscoveryTest.kt#a role that runs the query but still masks is offered, marked masked
 RoleDiscoveryTest.kt#a role that unmasks a baseline-masked column is offered with the unmasked column
 RoleDiscoveryTest.kt#a role the requester already holds is never offered
-RoleDiscoveryTest.kt#a role under which Q is denied is not offered
+RoleDiscoveryTest.kt#the baseline is decided on the requester's own channel, never the executor's
 RoleDiscoveryTest.kt#when baseline is denied, a role that makes Q runnable is offered
 ScannedTableMySqlTest.kt#a CTE body scanning the real ungranted table is denied
 ScannedTableMySqlTest.kt#a pure CTE shadow of the ungranted table is allowed
@@ -782,8 +808,8 @@ StatementFactsGrantLoopTest.kt#unspecified disposition on an UNMASKED column fai
 StatementFactsGrantLoopTest.kt#unspecified statement class fails closed
 StatementFactsGrantLoopTest.kt#unspecified statement class with a column grant fails closed independent of the verdict
 StatementFactsGrantLoopTest.kt#write read-set membership of a masked column denies
+SystemClassificationEnforcementDbTest.kt#a column classification may name a product system tag but not invent one
 SystemClassificationEnforcementDbTest.kt#a dangerous system function denies by policy on a versioned datasource
-SystemClassificationEnforcementDbTest.kt#a user column classification cannot claim a reserved system tag
 SystemClassificationEnforcementDbTest.kt#on a PG-17 datasource, catalog structure browses and dangerous surfaces deny
 SystemClassificationEnforcementDbTest.kt#the dangerous forbids override even a broad datasource read grant
 SystemClassificationEnforcementDbTest.kt#the dangerous function forbid overrides even a broad datasource read grant

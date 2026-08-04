@@ -23,6 +23,8 @@ func TestEmbeddedMigrationSetIsComplete(t *testing.T) {
 		"sql/V8__seed.sql",
 		"sql/V9__datasource_cert_chain.sql",
 		"sql/V10__debug_requester_ip.sql",
+		"sql/V11__result_deny_context.sql",
+		"sql/V12__format_policy_source.sql",
 	}
 
 	for _, name := range want {

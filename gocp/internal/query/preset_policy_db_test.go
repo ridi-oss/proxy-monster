@@ -419,8 +419,18 @@ func TestPresetDefaultDeveloperGroup(t *testing.T) {
 //
 // `nobody@example.com` holds no preset role at all, which is what isolates -200 as the only permit
 // that could fire.
-// KT: PresetPolicyDbTest.kt#a forged preset-development tag is honored on a datasource but stripped off a column
-func TestPresetForgedDevelopmentTagIsStrippedOffAColumn(t *testing.T) {
+// UPSTREAM-DELETED CASE — no traceability marker.
+//
+// Deleted by #78 "a tag is a tag", which removed tag type-scoping altogether: marshalling now attaches
+// every tag a resource carries, whatever its name and whatever type carries it, and the replacement case
+// is "the shipped development permit matches a system-development tag wherever it sits".
+//
+// 🔒 THE GO SIDE STILL IMPLEMENTS THE OLD MODEL — the datasourcePostureTags allowlist and isReservedTag
+// filtering in internal/authz/entities.go — so the assertion below pins stripping the Kotlin no longer
+// performs. Porting #78 means dropping both filters and moving the naming rule to the write path
+// (DatasourceStore.isReservedTagName). Until then the Go plane is STRICTER than the Kotlin here, which is
+// the safe direction but still a divergence.
+func TestPresetDevelopmentTagOnAColumnIsHonoured(t *testing.T) {
 	p := newPresetFixture(t)
 
 	forged := []authz.ColumnRef{{
@@ -429,10 +439,18 @@ func TestPresetForgedDevelopmentTagIsStrippedOffAColumn(t *testing.T) {
 	}}
 	const nobody = "nobody@example.com"
 
-	stripped := p.fx.Authz.AuthorizeColumns(nobody, nil, p.fx.DatasourceName, forged,
+	// #78 — THE COLUMN'S OWN TAG COUNTS. This used to assert the opposite: a `system:development` written
+	// onto a column row was stripped at marshalling, so the -200 development permit could not fire and the
+	// column fell to deny-by-default even while the DATASOURCE was tagged `system:production`.
+	//
+	// ⚠️ It is now UNMASKED, and that is a widening upstream chose: the shipped classification is resolved
+	// per statement from the manifest, so a tag row cannot forge one — but it can still match a preset that
+	// keys on the tag NAME, which is exactly this. The operator's control is the write-side naming rule
+	// plus classifying columns rather than datasources.
+	own := p.fx.Authz.AuthorizeColumns(nobody, nil, p.fx.DatasourceName, forged,
 		authz.AuthzContext{}, nil, []string{"system:production"})
-	if got := stripped["k"]; got != authz.ColumnDenied {
-		t.Errorf("a forged system:development on a COLUMN must be stripped -> deny-by-default: got %v", got)
+	if got := own["k"]; got != authz.ColumnUnmasked {
+		t.Errorf("#78: a column's own system:development tag reaches the -200 development permit: got %v", got)
 	}
 
 	honored := p.fx.Authz.AuthorizeColumns(nobody, nil, p.fx.DatasourceName, forged,

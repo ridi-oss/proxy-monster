@@ -210,10 +210,37 @@ func (m *PolicyManagement) ValidatePolicy(cedarSrc string) CedarValidateResult {
 	return CedarValidateResult{Valid: len(errs) == 0, Errors: errs}
 }
 
-// PolicySchema is `fun policySchema(): CedarSchemaResult` — the bundled schema text, served verbatim
-// to the editor for schema-aware linting.
-func (m *PolicyManagement) PolicySchema() CedarSchemaResult {
-	return CedarSchemaResult{Schema: authz.SchemaSource}
+// PolicySchema is `fun policySchema(): CedarSchemaResult` (ManagementServices.kt:292-295) — the bundled
+// schema text AUGMENTED with one `action "context.tag::<name>"` declaration per tag name any stored
+// policy targets.
+//
+// ⚠️ IT IS NOT SERVED VERBATIM, and an earlier version of this said it was. The editor uses this schema
+// for schema-aware linting, and Cedar strict validation rejects an UNDECLARED action — so a schema without
+// the derived tag actions makes the editor flag every working `context.tag::` rule as invalid. The tag
+// vocabulary is derived from the rules themselves, which is why the augmentation has to happen here rather
+// than living in the bundled file.
+//
+// 🔒 EVERY policy, not just the enabled ones — `policyStore.list()`. A disabled tag rule is still shown in
+// the editor, so its action still has to be declared for the lint to pass.
+//
+// Found by the differential harness (policies-schema / policies-schema-anon): the Kotlin's body carried
+// `action "context.tag::trusted-network"` — derived from the shipped -300 policy — and Go's did not.
+func (m *PolicyManagement) PolicySchema(ctx context.Context) (CedarSchemaResult, error) {
+	all, err := m.policies.List(ctx)
+	if err != nil {
+		return CedarSchemaResult{}, err
+	}
+	seen := map[string]bool{}
+	var names []string
+	for _, p := range all {
+		for _, n := range authz.ExtractContextTagNames(p.CedarSrc) {
+			if !seen[n] {
+				seen[n] = true
+				names = append(names, n)
+			}
+		}
+	}
+	return CedarSchemaResult{Schema: authz.DefaultSchema.AugmentedText(names)}, nil
 }
 
 // mapPolicyErrors is `private fun <T> mapPolicyErrors(body: () -> T): T`

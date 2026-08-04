@@ -143,11 +143,11 @@ func TestPendingOverTheShippedSet(t *testing.T) {
 	}
 
 	clean := pendingAfter(all, highestAppliedVersion(nil, byVersion))
-	if len(clean) != 10 {
-		t.Fatalf("clean database: %d pending, want 10", len(clean))
+	if len(clean) != 12 {
+		t.Fatalf("clean database: %d pending, want 12", len(clean))
 	}
-	if clean[0].script != "V1__identity.sql" || clean[9].script != "V10__debug_requester_ip.sql" {
-		t.Errorf("clean database order = %v, want V1 first and V10 last", versionsOf(clean))
+	if clean[0].script != "V1__identity.sql" || clean[11].script != "V12__format_policy_source.sql" {
+		t.Errorf("clean database order = %v, want V1 first and V12 last", versionsOf(clean))
 	}
 
 	var history []appliedMigration

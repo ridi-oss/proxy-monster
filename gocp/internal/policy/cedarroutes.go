@@ -170,7 +170,12 @@ func (rt *CedarPolicyRoutes) schema(w http.ResponseWriter, r *http.Request) {
 	if !rt.admin(w, r) {
 		return
 	}
-	rt.respond(w, r, http.StatusOK, rt.management.PolicySchema())
+	result, err := rt.management.PolicySchema(r.Context())
+	if err != nil {
+		rt.fail(w, r, err)
+		return
+	}
+	rt.respond(w, r, http.StatusOK, result)
 }
 
 // POST /api/policies/{id}/enable — 200. 🔒 INV-A2-21 revalidates here; a stored-malformed row is

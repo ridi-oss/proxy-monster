@@ -246,15 +246,13 @@ func (a *Authz) AuthorizeColumns(
 			datasource+"/"+col.Catalog+"/"+col.Schema+"/"+col.Table+"/"+col.Column))
 		columnEuids[col.Key] = colEuid
 
-		// 🔒 INV-A2-7 — STRIP RESERVED TAGS OFF THE COLUMN. A catalog/legacy system:development or any
-		// system:* on a column must NOT be honoured: it would satisfy the dev unmasked permit or forge a
-		// shipped classification and leak cleartext. The column's real system tag is inherited from its
-		// Table parent, not from here. PresetPolicyDbTest case 9 is the regression test.
+		// #78 — NO TAG IS STRIPPED. A column carries every tag its catalog row holds, reserved-looking or
+		// not; the shipped `system:` classification is resolved per statement from the manifest and
+		// attached separately, so a tag row cannot forge one. See internal/authz/entities.go's package
+		// note for what the operator owns instead.
 		parents := []types.EntityUID{tableEuid, dsEuid}
 		for _, t := range col.Tags {
-			if !isReservedTag(t) {
-				parents = append(parents, tags.getOrPut(t))
-			}
+			parents = append(parents, tags.getOrPut(t))
 		}
 		columnEntities = append(columnEntities, types.Entity{
 			UID:     colEuid,

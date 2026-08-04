@@ -30,11 +30,41 @@ import (
 
 // The three seeded SYSTEM sources, verbatim from PolicyOriginDbTest.kt:227-236.
 const (
-	seedAdminSource = `permit(principal in Role::"system:admin", action in [Action::"admin.datasources",Action::"admin.policies",Action::"admin.identity"], resource);`
+	seedAdminSource = `permit (
+  principal in Role::"system:admin",
+  action in
+    [Action::"admin.datasources",
+     Action::"admin.policies",
+     Action::"admin.identity"],
+  resource
+);
+`
 
-	seedNoSelfApprovalSource = `forbid(principal, action == Action::"task.approve", resource) when { principal == resource.requester } unless { context has channel && (context.channel == "editor" || context.channel == "wire") };`
+	seedNoSelfApprovalSource = `forbid (
+  principal,
+  action == Action::"task.approve",
+  resource
+)
+when { principal == resource.requester }
+unless
+{
+  context has channel &&
+  (context.channel == "editor" || context.channel == "wire")
+};
+`
 
-	seedApproverSource = `permit(principal in Role::"system:admin", action in [Action::"task.approve", Action::"task.read", Action::"grant.revoke", Action::"task.request", Action::"task.cancel", Action::"task.delete"], resource);`
+	seedApproverSource = `permit (
+  principal in Role::"system:admin",
+  action in
+    [Action::"task.approve",
+     Action::"task.read",
+     Action::"grant.revoke",
+     Action::"task.request",
+     Action::"task.cancel",
+     Action::"task.delete"],
+  resource
+);
+`
 )
 
 // originFixture is a freshly migrated database plus a real store over it. Every case takes its OWN
@@ -144,7 +174,12 @@ func TestShippedDefaultSecurityPostureIsUnchanged(t *testing.T) {
 	if err := f.db.Pool.QueryRow(f.ctx, digestSQL).Scan(&digest); err != nil {
 		t.Fatalf("compute the posture digest: %v", err)
 	}
-	const want = "6a1bb6ff914c542db83ba609cdd945f4"
+	// ⚠️ CHANGED BY UPSTREAM V12__format_policy_source.sql, which reprints every seeded Cedar policy body.
+	// The digest covers policy source, ids, keys, origins, enabled flags, roles, groups and group→role
+	// links, so a reformat of the source moves it even though the ENFORCED posture is identical — which is
+	// also why the digest is worth having: it cannot tell a reformat from a semantic change, so it forces
+	// someone to look. Verified as a reformat by diffing the seeded sources against the Kotlin's V12.
+	const want = "6086859b83026f70f4c9b88d54d49519"
 	if digest != want {
 		t.Errorf("the seeded security posture changed: a policy body, id, key, origin, enabled flag, "+
 			"role, group, or group-to-role link differs from what a fresh install is supposed to "+
@@ -153,6 +188,12 @@ func TestShippedDefaultSecurityPostureIsUnchanged(t *testing.T) {
 }
 
 // 2. a clean database installs the admin and audit system rows
+//
+// ⚠️ THE THREE SOURCES BELOW ARE V12's, not the original one-liners. V12__format_policy_source.sql
+// reprints every seeded Cedar body across multiple lines; the ENFORCED posture is unchanged, but this
+// case compares the source TEXT, so it moves with the reformat. They are lifted verbatim from that
+// migration rather than retyped, because a hand-copied Cedar body that happens to parse would pass this
+// case while differing from what a fresh install actually stores.
 //
 // The three bootstrap rows at -1/-2/-3 with their EXACT sources, plus the two audit-read rows at
 // -4/-5, all SYSTEM and all enabled — then CedarEngine over the store, which is the assertion that the

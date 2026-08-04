@@ -1,6 +1,7 @@
 package authz
 
 import (
+	"sort"
 	"testing"
 
 	"github.com/cedar-policy/cedar-go/types"
@@ -118,7 +119,7 @@ func TestApprovalRequestOptionalAttributes(t *testing.T) {
 // TestDatasourcePostureTagsAreTypeScoped — 🔒 INV-A2-7 on the Datasource side. Only
 // system:development / system:production become Tag PARENTS; every other tag is dropped as a parent,
 // though free-form tags are carried by the caller and inert.
-func TestDatasourcePostureTagsAreTypeScoped(t *testing.T) {
+func TestADatasourceCarriesEveryTagItHolds(t *testing.T) {
 	tags := newTagEuidCache()
 	dsEuid := types.NewEntityUID(typeDatasource, "acme-pg")
 	ent := datasourceEntity(dsEuid, "acme-pg", []string{
@@ -129,8 +130,19 @@ func TestDatasourcePostureTagsAreTypeScoped(t *testing.T) {
 	for p := range ent.Parents.All() {
 		parents = append(parents, p.String())
 	}
-	if len(parents) != 1 || parents[0] != `Tag::"system:development"` {
-		t.Errorf("Datasource parents = %v, want only Tag::\"system:development\"", parents)
+	// #78 — every tag becomes a Tag parent, reserved-looking or not. This used to assert that only
+	// `system:development` survived and the other three were dropped.
+	sort.Strings(parents)
+	want := []string{`Tag::"pii"`, `Tag::"system:critical"`, `Tag::"system:development"`, `Tag::"team-analytics"`}
+	if len(parents) != len(want) {
+		t.Fatalf("Datasource parents = %v, want all four: %v", parents, want)
+	}
+	for i := range want {
+		if parents[i] != want[i] {
+			t.Errorf("Datasource parents = %v, want %v — a tag is a tag (#78); none is filtered at marshalling",
+				parents, want)
+			break
+		}
 	}
 	if v, ok := ent.Attributes.Get("name"); !ok || v != types.String("acme-pg") {
 		t.Errorf("the Datasource `name` attribute must be set: got %v", v)
@@ -142,7 +154,7 @@ func TestDatasourcePostureTagsAreTypeScoped(t *testing.T) {
 //
 // 🔒 INV-A2-7, and it is the attack the whole invariant exists to prevent: a Column whose CATALOG ROW
 // carried a hand-written system:development would satisfy a preset permit and LEAK CLEARTEXT.
-func TestForgedSystemTagIsStrippedOffAColumn(t *testing.T) {
+func TestAColumnCarriesEveryTagItHolds(t *testing.T) {
 	// A preset-shaped permit conditioned on the development posture.
 	policies := map[int64]string{
 		1: `permit(principal in Role::"dev", action == Action::"result.read.unmasked", resource) when { resource in Tag::"system:development" };`,
@@ -161,11 +173,19 @@ func TestForgedSystemTagIsStrippedOffAColumn(t *testing.T) {
 			honoured["acme.public.users.rrn"])
 	}
 
-	// STRIPPED off the column: with no genuine datasource posture, the forged column tags earn nothing.
-	stripped := a.AuthorizeColumns("alice", []string{"dev"}, "acme-pg", forged, AuthzContext{}, nil, nil)
-	if stripped["acme.public.users.rrn"] != ColumnDenied {
-		t.Errorf("🔴 INV-A2-7 violated: a forged system:* tag on a COLUMN was honoured (got %s) — "+
-			"this is the cleartext-leak path", stripped["acme.public.users.rrn"])
+	// #78 — THE COLUMN'S OWN TAGS NOW COUNT, with no manifest classification in play at all. This used
+	// to assert the opposite: that a `system:*` tag written onto a column row was stripped before the
+	// Cedar graph was built, so the permit could not fire. Upstream removed that filter, so the same
+	// input is now UNMASKED.
+	//
+	// ⚠️ That is a real widening, and it is the trade upstream made deliberately: the shipped `system:`
+	// classification is resolved per statement from the manifest rather than read from a tag row, so a
+	// tag row cannot forge a classification — but it CAN match a policy that keys on the tag's name,
+	// which is what happens here. See internal/authz/entities.go's package note.
+	ownTags := a.AuthorizeColumns("alice", []string{"dev"}, "acme-pg", forged, AuthzContext{}, nil, nil)
+	if ownTags["acme.public.users.rrn"] != ColumnUnmasked {
+		t.Errorf("a column's own system:development tag must reach the permit (#78): got %s",
+			ownTags["acme.public.users.rrn"])
 	}
 }
 

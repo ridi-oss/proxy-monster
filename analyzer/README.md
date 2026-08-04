@@ -25,7 +25,7 @@ compile-time mismatch, not a silent runtime one.
 ```
 analyzer/
   go.mod                     Go module github.com/ridi-oss/proxy-monster/analyzer;
-                             pins github.com/ridi-oss/sqlglot-go v0.20.0
+                             pins github.com/ridi-oss/sqlglot-go v0.21.0
   probe/                     the analyzer (package probe)
     facts.go                 EmitFacts: classify the statement + emit every RequiredGrant (100% AST)
     probe.go, helpers.go     internal column lineage + reference bucketing + SELECT * expansion
@@ -47,7 +47,7 @@ analyzer/
 ## The sqlglot-go dependency
 
 sqlglot-go is a version-pinned `go mod` dependency — no subtree, no vendored
-source. `analyzer/go.mod` pins `github.com/ridi-oss/sqlglot-go v0.20.0` and
+source. `analyzer/go.mod` pins `github.com/ridi-oss/sqlglot-go v0.21.0` and
 `analyzer/go.sum` locks its checksum, so a fresh clone / CI builds with a plain
 `go build`. Bump the pin with:
 

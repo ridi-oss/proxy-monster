@@ -8,36 +8,42 @@ import (
 	pb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
 )
 
-// resolve runs one statement through the analyzer and reduces its facts to the decision the control-plane
-// will reach — the same reduction Query.kt performs, named in the terms an operator reasons in. This is the
-// audit's ground truth: it is the real analyzer, not a description of it.
+// resolve runs one statement through the real analyzer and reduces its emitted facts to the requirement
+// fingerprint for the WIRE data-plane path — the grants decideQuery would require and the fail-closed bucket
+// it would hit, named in the terms an operator reasons in. It is the analyzer's actual output, reduced; it
+// is deliberately NOT a full decideQuery replica. It models decideQuery's short-circuit ORDER (INADMISSIBLE
+// deny, then the datasource-grant loop, then the unanalyzable gate) but not: the channel (a bare `session`
+// is passthrough only on WIRE/EDITOR — MCP and workflow channels DENY it), the Cedar verdict (it reports
+// what is REQUIRED, never ALLOW/DENY), or that a datasource holding `sql.unanalyzable` can relay the
+// unanalyzable gate. For those, read Query.kt.
 //
 // The vocabulary:
 //
 //	sql.select|insert|update|delete|ddl  — an ANALYZED statement's datasource grant (Query.kt grantAction()).
 //	                                        Several joined by '+' when a statement needs more than one.
-//	DENY(unspecified)                    — an ANALYZED datasource grant of UNSPECIFIED. grantAction() maps it
-//	                                        to null and Query.kt:480 denies. The fail-closed bucket for a
-//	                                        statement kind the analyzer refuses to name a verb for.
+//	DENY(unspecified)                    — a datasource grant of UNSPECIFIED. grantAction() maps it to null
+//	                                        and the datasource loop (Query.kt:478) denies THERE — before the
+//	                                        unanalyzable gate — so it short-circuits any relay below it.
 //	unanalyzable→sql.unanalyzable        — not resolved, UNANALYZABLE: routed to the deny-by-default gate a
 //	                                        dev datasource can override.
 //	INADMISSIBLE                         — not resolved, INADMISSIBLE: hard deny, no gate.
 //	metadata                             — METADATA passthrough (SHOW TABLES, DESCRIBE): only connect is asked.
-//	session                              — SESSION passthrough (SET, transaction control): only connect is asked.
+//	session                              — SESSION passthrough (SET, transaction control): only connect is
+//	                                        asked ON WIRE/EDITOR (MCP/workflow deny — see above).
 //	result.read                          — an ANALYZED statement touched a column/table/function: result.read.*
 //	                                        is authorized per resource (joined with the datasource verb).
 //	utility:<CMD>                        — carries a Utility grant; authorized as result.read.* on that
 //	                                        utility, which the shipped forbids deny for the dangerous ones.
 //	allow(connect-only)                  — resolved, ANALYZED, zero grants: nothing asked beyond connect.
-//
-// A statement that never appears here at all — one the analyzer's dispatch does not name — is the hole this
-// audit exists to catch: it would fall to the parser's default and this helper would report it, not omit it.
 func resolve(t *testing.T, sql string) string {
 	t.Helper()
 	f := mysqlFacts(t, sql)
 
-	// Every requirement the analyzer emits, surfaced together — a statement can carry a datasource verb AND
-	// be unresolved (ALTER: sql.ddl + the sql.unanalyzable gate), so nothing may early-return past the rest.
+	// INADMISSIBLE is a structural hard deny before any grant is considered (Query.kt ~357); it dominates.
+	if !f.Resolved && f.FailureClass == pb.FailureClass_FAILURE_CLASS_INADMISSIBLE {
+		return "INADMISSIBLE-deny"
+	}
+
 	var parts []string
 	dsVerbs := map[string]bool{}
 	utilities := map[string]bool{}
@@ -52,19 +58,20 @@ func resolve(t *testing.T, sql string) string {
 			touchesData = true
 		}
 	}
-	parts = append(parts, mapKeys(dsVerbs)...)
 	parts = append(parts, mapKeys(utilities)...)
+	parts = append(parts, mapKeys(dsVerbs)...)
 
-	if !f.Resolved {
-		switch f.FailureClass {
-		case pb.FailureClass_FAILURE_CLASS_UNANALYZABLE:
-			parts = append(parts, "unanalyzable→sql.unanalyzable")
-		case pb.FailureClass_FAILURE_CLASS_INADMISSIBLE:
-			parts = append(parts, "INADMISSIBLE-deny")
-		default:
-			parts = append(parts, "UNRESOLVED("+f.FailureClass.String()+")")
-		}
-	} else {
+	// A statement can carry a real datasource verb AND be unresolved (ALTER: sql.ddl + the sql.unanalyzable
+	// gate) — both are required, so both surface. But an UNSPECIFIED verb DENIES at the datasource loop
+	// before the unanalyzable gate is reached, so the relay is unreachable and must not be surfaced.
+	switch {
+	case dsVerbs["DENY(unspecified)"]:
+		// hard-denied at the datasource loop; nothing downstream runs.
+	case !f.Resolved && f.FailureClass == pb.FailureClass_FAILURE_CLASS_UNANALYZABLE:
+		parts = append(parts, "unanalyzable→sql.unanalyzable")
+	case !f.Resolved:
+		parts = append(parts, "UNRESOLVED("+f.FailureClass.String()+")")
+	default:
 		switch f.StatementClass {
 		case pb.StatementClass_STATEMENT_CLASS_METADATA:
 			parts = append(parts, "metadata")
@@ -113,29 +120,34 @@ func sqlVerb(a pb.GrantAction) string {
 }
 
 // mysqlStatement is one MySQL 8.0/8.4 statement kind, its minimal example, and the resolution the analyzer
-// must produce for it. The statement list is the authoritative set from the MySQL 8.0/8.4 reference manual
-// (§15 SQL Statements), not the analyzer's own switch — a kind the analyzer never names would still appear
-// here and be caught, which is the point.
+// must produce for it. The list is curated from the MySQL 8.0/8.4 reference manual (§15 SQL Statements) —
+// broad, but not a machine-verified extract, so it is not proven exhaustive. A kind absent from the list is
+// simply untested; the guard below catches REGRESSIONS on the kinds that are listed, not the ones that are
+// not. Exhaustiveness is the job of the statement-typing redesign (docs/statement-typing.md), whose type
+// enum a coverage check can enforce against the parser.
 type mysqlStatement struct {
 	name string
 	sql  string
 	want string
 }
 
-// mysqlStatements enumerates every MySQL statement kind a client can send as one statement. `want` is the
+// mysqlStatements enumerates the MySQL statement kinds a client can send as one statement. `want` is the
 // resolution OBSERVED from the analyzer and then audited for correctness: every privileged or
 // data-exposing kind must be fail-closed (a datasource verb the operator must grant, a utility the shipped
 // forbids deny, `unanalyzable→sql.unanalyzable`, or an outright deny), and no kind may resolve to
-// `allow(connect-only)` unless it genuinely exposes nothing.
+// `allow(connect-only)` unless it genuinely exposes nothing. Where a kind is under-gated today, its `want`
+// records that and it is enumerated in knownConnectOnlyGaps below — the audit documents the gap rather than
+// hiding it.
 var mysqlStatements = []mysqlStatement{
 	// ---- DML (§15.2) ----
 	{"SELECT", "SELECT id FROM users", "result.read + sql.select"},
 	{"SELECT (no table)", "SELECT 1", "metadata"},
 	{"SELECT INTO OUTFILE", "SELECT id INTO OUTFILE 'f' FROM users", "result.read + sql.ddl"},
+	{"SELECT INTO DUMPFILE", "SELECT id INTO DUMPFILE 'f' FROM users", "result.read + sql.ddl"},
 	{"UNION", "SELECT id FROM users UNION SELECT id FROM users", "result.read + sql.select"},
 	{"INTERSECT", "SELECT id FROM users INTERSECT SELECT id FROM users", "result.read + sql.select"},
 	{"EXCEPT", "SELECT id FROM users EXCEPT SELECT id FROM users", "result.read + sql.select"},
-	{"TABLE", "TABLE users", "unanalyzable→sql.unanalyzable"},
+	{"TABLE", "TABLE users", "result.read + sql.select"}, // sqlglot-go v0.21.0: parses as SELECT * FROM users
 	{"VALUES", "VALUES ROW(1)", "unanalyzable→sql.unanalyzable"},
 	{"WITH (CTE)", "WITH c AS (SELECT id FROM users) SELECT id FROM c", "result.read + sql.select"},
 	{"INSERT", "INSERT INTO users (id) VALUES (1)", "sql.insert"},
@@ -145,7 +157,7 @@ var mysqlStatements = []mysqlStatement{
 	{"UPDATE", "UPDATE users SET email='x'", "sql.update"},
 	{"DELETE", "DELETE FROM users", "sql.delete"},
 	{"DO", "DO 1", "unanalyzable→sql.unanalyzable"},
-	{"CALL", "CALL p()", "DENY(unspecified) + unanalyzable→sql.unanalyzable"},
+	{"CALL", "CALL p()", "DENY(unspecified)"}, // denied at the datasource loop before the unanalyzable gate
 	{"HANDLER OPEN", "HANDLER users OPEN", "unanalyzable→sql.unanalyzable"},
 	{"HANDLER READ", "HANDLER users READ FIRST", "unanalyzable→sql.unanalyzable"},
 	{"HANDLER CLOSE", "HANDLER users CLOSE", "unanalyzable→sql.unanalyzable"},
@@ -221,17 +233,17 @@ var mysqlStatements = []mysqlStatement{
 	{"CHANGE REPLICATION SOURCE TO", "CHANGE REPLICATION SOURCE TO SOURCE_HOST='h'", "unanalyzable→sql.unanalyzable"},
 	{"CHANGE MASTER TO", "CHANGE MASTER TO MASTER_HOST='h'", "unanalyzable→sql.unanalyzable"},
 	{"CHANGE REPLICATION FILTER", "CHANGE REPLICATION FILTER REPLICATE_DO_DB = (d1)", "unanalyzable→sql.unanalyzable"},
-	// GAP: parses like START TRANSACTION, so it classifies SESSION and a connect-only principal can run it.
-	{"START REPLICA", "START REPLICA", "session"},
-	{"START SLAVE", "START SLAVE", "session"}, // GAP: same as START REPLICA.
+	{"START REPLICA", "START REPLICA", "unanalyzable→sql.unanalyzable"},
+	{"START SLAVE", "START SLAVE", "unanalyzable→sql.unanalyzable"},
 	{"STOP REPLICA", "STOP REPLICA", "unanalyzable→sql.unanalyzable"},
 	{"STOP SLAVE", "STOP SLAVE", "unanalyzable→sql.unanalyzable"},
 	{"RESET REPLICA", "RESET REPLICA", "INADMISSIBLE-deny"},
 	{"RESET SLAVE", "RESET SLAVE", "INADMISSIBLE-deny"},
-	{"START GROUP_REPLICATION", "START GROUP_REPLICATION", "session"}, // GAP: same collision; STOP fails closed.
+	{"START GROUP_REPLICATION", "START GROUP_REPLICATION", "unanalyzable→sql.unanalyzable"},
 	{"STOP GROUP_REPLICATION", "STOP GROUP_REPLICATION", "unanalyzable→sql.unanalyzable"},
 	{"PURGE BINARY LOGS", "PURGE BINARY LOGS BEFORE '2020-01-01'", "unanalyzable→sql.unanalyzable"},
 	{"RESET MASTER", "RESET MASTER", "INADMISSIBLE-deny"},
+	{"RESET BINARY LOGS AND GTIDS", "RESET BINARY LOGS AND GTIDS", "INADMISSIBLE-deny"}, // 8.4 replacement for RESET MASTER
 
 	// ---- Account management (§15.7.1) — privileged, must fail closed ----
 	{"CREATE USER", "CREATE USER 'u'@'h'", "unanalyzable→sql.unanalyzable"},
@@ -279,8 +291,14 @@ var mysqlStatements = []mysqlStatement{
 	// ---- SET forms (§15.7.6) ----
 	{"SET user var", "SET @x = 1", "session"},
 	{"SET GLOBAL var", "SET GLOBAL max_connections = 100", "session + utility:SET_GLOBAL"},
+	{"SET PERSIST var", "SET PERSIST max_connections = 100", "session + utility:SET_PERSIST"},
+	{"SET PERSIST_ONLY var", "SET PERSIST_ONLY max_connections = 100", "session + utility:SET_PERSIST_ONLY"},
 	{"SET NAMES", "SET NAMES utf8mb4", "session"},
 	{"SET CHARACTER SET", "SET CHARACTER SET utf8mb4", "session"},
+	// GAP: sql_log_bin is a restricted SESSION variable (needs SESSION_VARIABLES_ADMIN); disabling it drops
+	// the session's writes from the binlog/GTID stream. The analyzer gates SET by scope (GLOBAL/PERSIST) and
+	// PASSWORD only, so a session-scoped assignment is a bare passthrough. See knownConnectOnlyGaps.
+	{"SET sql_log_bin", "SET SESSION sql_log_bin = 0", "session"},
 
 	// ---- SHOW: benign metadata (§15.7.7) ----
 	{"SHOW DATABASES", "SHOW DATABASES", "metadata"},
@@ -289,6 +307,11 @@ var mysqlStatements = []mysqlStatement{
 	{"SHOW INDEX", "SHOW INDEX FROM users", "metadata"},
 	{"SHOW CREATE TABLE", "SHOW CREATE TABLE users", "metadata"},
 	{"SHOW CREATE DATABASE", "SHOW CREATE DATABASE d", "metadata"},
+	{"SHOW CREATE VIEW", "SHOW CREATE VIEW v", "metadata"},
+	{"SHOW CREATE PROCEDURE", "SHOW CREATE PROCEDURE p", "metadata"},
+	{"SHOW CREATE FUNCTION", "SHOW CREATE FUNCTION f", "metadata"},
+	{"SHOW CREATE TRIGGER", "SHOW CREATE TRIGGER trg", "metadata"},
+	{"SHOW CREATE EVENT", "SHOW CREATE EVENT e", "metadata"},
 	{"SHOW ENGINES", "SHOW ENGINES", "metadata"},
 	{"SHOW STATUS", "SHOW STATUS", "metadata"},
 	{"SHOW VARIABLES", "SHOW VARIABLES", "metadata"},
@@ -305,16 +328,22 @@ var mysqlStatements = []mysqlStatement{
 	{"SHOW PROCEDURE STATUS", "SHOW PROCEDURE STATUS", "metadata"},
 	{"SHOW FUNCTION STATUS", "SHOW FUNCTION STATUS", "metadata"},
 
-	// ---- SHOW: data/credential-exposing — must be a utility or fail closed ----
+	// ---- SHOW: data/credential/topology-exposing — must be a utility or fail closed ----
+	// The `metadata`-only rows here are UNDER-GATED today (see knownConnectOnlyGaps): the analyzer emits no
+	// utility for them, so they relay connect-only on wire. The statement-typing redesign closes them.
 	{"SHOW PROCESSLIST", "SHOW PROCESSLIST", "metadata + utility:SHOW_PROCESSLIST"},
 	{"SHOW GRANTS", "SHOW GRANTS", "metadata + utility:SHOW_GRANTS"},
 	{"SHOW CREATE USER", "SHOW CREATE USER CURRENT_USER", "metadata + utility:SHOW_CREATE_USER"},
 	{"SHOW ENGINE INNODB STATUS", "SHOW ENGINE INNODB STATUS", "metadata + utility:SHOW_ENGINE_STATUS"},
 	{"SHOW BINLOG EVENTS", "SHOW BINLOG EVENTS", "metadata + utility:SHOW_BINLOG_EVENTS"},
 	{"SHOW RELAYLOG EVENTS", "SHOW RELAYLOG EVENTS", "metadata + utility:SHOW_RELAYLOG_EVENTS"},
-	{"SHOW BINARY LOGS", "SHOW BINARY LOGS", "metadata"},
-	{"SHOW MASTER STATUS", "SHOW MASTER STATUS", "metadata"},
+	{"SHOW BINARY LOGS", "SHOW BINARY LOGS", "metadata"},                                  // GAP: needs REPLICATION CLIENT
+	{"SHOW MASTER STATUS", "SHOW MASTER STATUS", "metadata"},                              // GAP: needs REPLICATION CLIENT
+	{"SHOW BINARY LOG STATUS", "SHOW BINARY LOG STATUS", "unanalyzable→sql.unanalyzable"}, // 8.4 rename; fails closed (unlike SHOW MASTER STATUS)
 	{"SHOW REPLICA STATUS", "SHOW REPLICA STATUS", "metadata + utility:SHOW_REPLICA_STATUS"},
+	{"SHOW SLAVE STATUS", "SHOW SLAVE STATUS", "metadata + utility:SHOW_REPLICA_STATUS"},
+	{"SHOW REPLICAS", "SHOW REPLICAS", "metadata"},       // GAP: needs REPLICATION SLAVE
+	{"SHOW SLAVE HOSTS", "SHOW SLAVE HOSTS", "metadata"}, // GAP: alias of SHOW REPLICAS
 	{"SHOW WHERE subquery", "SHOW TABLES WHERE Tables_in_db IN (SELECT rrn FROM users)", "metadata + utility:SHOW_SUBQUERY"},
 
 	// ---- Utility (§15.8) ----
@@ -327,7 +356,9 @@ var mysqlStatements = []mysqlStatement{
 	{"USE", "USE acme", "session"},
 
 	// ---- Compound (§15.6) ----
-	{"BEGIN...END block", "BEGIN NOT ATOMIC SELECT 1; END", "unanalyzable→sql.unanalyzable"},
+	// Compound BEGIN...END blocks are valid only inside a stored program; a client reaches them via CALL
+	// (above), never as a standalone statement. Sent standalone it is a parse error → fail-closed.
+	{"BEGIN...END (standalone)", "BEGIN SELECT 1; END", "unanalyzable→sql.unanalyzable"},
 }
 
 // TestMysqlStatementResolution pins the analyzer's resolution for every MySQL 8.0/8.4 statement kind in the
@@ -346,14 +377,20 @@ func TestMysqlStatementResolution(t *testing.T) {
 	}
 }
 
-// privilegedNeedingGate is the set of statement kinds that expose data, change the catalog, or exercise a
-// server-admin/replication/account privilege — the kinds that must NOT resolve to a bare connect-only
-// passthrough (`session` or `metadata` with no utility gate). Sourced from the statement table above.
+// privilegedNeedingGate is the set of statement kinds that expose data/credentials/topology, change the
+// catalog, or exercise a server-admin/replication/account privilege — the kinds that must NOT resolve to a
+// bare connect-only passthrough (`session` or `metadata` with no utility gate). The utility-gated kinds
+// (`SET ROLE`, `SHOW GRANTS`, …) are listed too: they are not bare today, but listing them makes a
+// regression from `… + utility:X` back to bare passthrough fail this test. Names must match the table.
+//
+// This hand-maintained map is a drift risk — a new privileged row is unguarded until its name is copied
+// here. The statement-typing redesign (docs/statement-typing.md) removes the risk: every type carries its
+// category, so the privileged set is derived, not re-typed by hand.
 var privilegedNeedingGate = map[string]bool{
 	"START REPLICA": true, "START SLAVE": true, "STOP REPLICA": true, "STOP SLAVE": true,
-	"RESET REPLICA": true, "RESET SLAVE": true, "RESET MASTER": true, "START GROUP_REPLICATION": true,
-	"STOP GROUP_REPLICATION": true, "PURGE BINARY LOGS": true, "CHANGE REPLICATION SOURCE TO": true,
-	"CHANGE MASTER TO": true, "CHANGE REPLICATION FILTER": true,
+	"RESET REPLICA": true, "RESET SLAVE": true, "RESET MASTER": true, "RESET BINARY LOGS AND GTIDS": true,
+	"START GROUP_REPLICATION": true, "STOP GROUP_REPLICATION": true, "PURGE BINARY LOGS": true,
+	"CHANGE REPLICATION SOURCE TO": true, "CHANGE MASTER TO": true, "CHANGE REPLICATION FILTER": true,
 	"CREATE USER": true, "ALTER USER": true, "DROP USER": true, "RENAME USER": true, "CREATE ROLE": true,
 	"DROP ROLE": true, "GRANT (priv)": true, "GRANT (role)": true, "REVOKE (priv)": true, "REVOKE (role)": true,
 	"ANALYZE TABLE": true, "CHECK TABLE": true, "CHECKSUM TABLE": true, "OPTIMIZE TABLE": true, "REPAIR TABLE": true,
@@ -363,18 +400,33 @@ var privilegedNeedingGate = map[string]bool{
 	"CREATE RESOURCE GROUP": true, "ALTER RESOURCE GROUP": true, "DROP RESOURCE GROUP": true,
 	"LOCK TABLES": true, "UNLOCK TABLES": true, "LOCK INSTANCE FOR BACKUP": true, "UNLOCK INSTANCE": true,
 	"PREPARE": true, "EXECUTE": true, "HANDLER OPEN": true, "HANDLER READ": true,
-	"LOAD DATA": true, "LOAD XML": true, "IMPORT TABLE": true, "CALL": true,
+	"LOAD DATA": true, "LOAD XML": true, "IMPORT TABLE": true, "CALL": true, "SELECT INTO DUMPFILE": true,
+	// account/server-admin SET forms and data/credential/topology SHOWs — utility-gated, guarded against
+	// regression to bare passthrough.
+	"SET PASSWORD": true, "SET ROLE": true, "SET DEFAULT ROLE": true, "SET GLOBAL var": true,
+	"SET PERSIST var": true, "SET PERSIST_ONLY var": true, "SET sql_log_bin": true,
+	"SHOW PROCESSLIST": true, "SHOW GRANTS": true, "SHOW CREATE USER": true, "SHOW ENGINE INNODB STATUS": true,
+	"SHOW BINLOG EVENTS": true, "SHOW RELAYLOG EVENTS": true, "SHOW REPLICA STATUS": true, "SHOW SLAVE STATUS": true,
+	"SHOW BINARY LOGS": true, "SHOW MASTER STATUS": true, "SHOW REPLICAS": true, "SHOW SLAVE HOSTS": true,
 }
 
-// knownConnectOnlyGaps are privileged kinds that today DO resolve to a connect-only passthrough — a real
-// under-gating the analyzer should eventually close. Listing them keeps this test green while making the
-// gap explicit; a NEW privileged kind that slips through is not on the list and fails the test.
+// knownConnectOnlyGaps are privileged kinds that today DO resolve to a bare connect-only passthrough — real
+// under-gating the analyzer does not yet close. Listing them keeps this test green while making each gap
+// explicit; a NEW privileged kind that slips through is not on the list and fails the test. They are
+// documented as an open boundary in docs/system-classification.md and are closed by the statement-typing
+// redesign (docs/statement-typing.md), which removes the benign catch-all passthrough they fall into.
 //
-//	START REPLICA / START SLAVE / START GROUP_REPLICATION — parse like START TRANSACTION, so they classify
-//	  SESSION. Their STOP/RESET counterparts do not collide and fail closed, which is the tell.
-//	ANALYZE TABLE — sits in the analyzer's session-passthrough set (facts.go); CHECK/OPTIMIZE/REPAIR do not.
+//	ANALYZE TABLE                       — in the analyzer's SESSION passthrough set (facts.go).
+//	SET sql_log_bin                     — restricted SESSION variable; SET is gated by scope/PASSWORD only.
+//	SHOW MASTER STATUS / SHOW BINARY LOGS / SHOW REPLICAS / SHOW SLAVE HOSTS
+//	                                    — replication topology/binlog reads the analyzer emits no utility for.
 var knownConnectOnlyGaps = map[string]bool{
-	"START REPLICA": true, "START SLAVE": true, "START GROUP_REPLICATION": true, "ANALYZE TABLE": true,
+	"ANALYZE TABLE":      true,
+	"SET sql_log_bin":    true,
+	"SHOW MASTER STATUS": true,
+	"SHOW BINARY LOGS":   true,
+	"SHOW REPLICAS":      true,
+	"SHOW SLAVE HOSTS":   true,
 }
 
 // TestPrivilegedStatementsAreGated is the security invariant: every privileged or data-exposing MySQL

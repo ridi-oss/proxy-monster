@@ -278,6 +278,25 @@ Fixes for gaps documented in
   fast-path, and similar features so a trusted datasource can opt in (denied
   today; MySQL and PostgreSQL binary-result relay is built). Each feature is a
   per-protocol implementation gated by a real-client end-to-end test.
+- Honor `character_set_results` instead of pinning it to UTF-8. Masking decodes
+  each result value as UTF-8, so the proxy requires the result charset to stay
+  UTF-8 and rewrites only a single session-scoped
+  `SET character_set_results = NULL` (MySQL Connector/J's default) to `utf8mb4`;
+  any other non-UTF-8 results charset fails the session closed. To let a client
+  receive results in each column's own charset — or `NULL` for raw per-column
+  bytes — make the row masker charset-aware: decode each value by its column's
+  result charset from the field metadata, mask, and re-encode, and only then
+  relax the UTF-8 session invariant. See KNOWN_LIMITATIONS.md (Live namespace
+  tracking).
+- Re-probe the session invariants before every `COM_STMT_EXECUTE`. The prepared
+  path authorizes against the prepare-time namespace/`ANSI_QUOTES` snapshot (by
+  design) but never runs the live charset/`sql_mode` probe that `COM_QUERY`
+  runs, so a client that first defeats `SESSION_TRACK` and then flips to an
+  unsafe charset/`sql_mode` can run an already-prepared statement past the
+  invariant. Not a cleartext leak today — a binary-protocol `MASK` is refused
+  and MySQL does not accept a prepared generic `SET` — but the fail-closed
+  invariant should hold on this path too: live-probe before EXECUTE for the
+  invariant check while keeping the frozen snapshot for authorization.
 - Proxy-side cancel brokering: issue synthetic `BackendKeyData` and broker
   cancels proxy-side, so `CancelRequest` can require TLS without breaking psql's
   Ctrl-C.

@@ -462,10 +462,11 @@ fun decideQuery(
                 passthrough = true,
                 contextTags = derivedTags,
                 schemaCandidates = facts.schemaQualifierCandidatesList.toSet(),
-            )
+            ).withAnalyzerRewrite(facts)
             StatementClass.STATEMENT_CLASS_SESSION -> when (channel) {
                 Channel.WIRE, Channel.EDITOR -> return passthroughAllow(roleList, "passthrough (session-mutating)", derivedTags)
                     .copy(schemaCandidates = facts.schemaQualifierCandidatesList.toSet())
+                    .withAnalyzerRewrite(facts)
                 Channel.WORKFLOW_EXECUTOR, Channel.WORKFLOW_VIEWER, Channel.MCP ->
                     return structuralDeny(EDITOR_SESSION_STATEMENT_DENY, roleList, contextTags = derivedTags)
             }
@@ -703,7 +704,6 @@ fun decideQuery(
         failedStage = facts.failedStage.takeIf { facts.hasFailedStage() }?.lowercase(),
         detail = facts.detail,
         passthrough = false,
-        rewrittenSql = facts.rewrittenSql.takeIf { facts.hasRewrittenSql() && !facts.explainOfQuery },
         outputColumns = facts.outputColumnsList,
         contextTags = derivedTags,
         unmaskablePermitted = unmaskablePermitted,
@@ -711,7 +711,7 @@ fun decideQuery(
         catalogChanging = facts.catalogChanging || facts.functionsList.isNotEmpty(),
         referencedSchemas = referencedSchemas,
         schemaCandidates = facts.schemaQualifierCandidatesList.toSet(),
-    )
+    ).withAnalyzerRewrite(facts)
 }
 
 // A resolved statement always classifies as one of these; anything else (UNSPECIFIED/UNRECOGNIZED on a
@@ -806,6 +806,15 @@ private fun grantAction(action: GrantAction): AuthzAction? = when (action) {
     GrantAction.GRANT_ACTION_RESULT_READ,
     GrantAction.UNRECOGNIZED -> null
 }
+
+// Relay the analyzer's optional rewritten SQL on a decision we allow. rewrittenSql is Go-analyzer output
+// (the `SELECT *` expansion, the MySQL charset pin) independent of statement class, so every
+// understood-and-allowed decision — analyzed, metadata, session — routes it through this one point rather
+// than each building its own. An EXPLAIN-of-query keeps its original text (the rewrite is for the inner query
+// it plans). The sql.unanalyzable escape hatches deliberately relay the original whole statement, so they do
+// not call this.
+private fun DecisionContext.withAnalyzerRewrite(facts: StatementFacts): DecisionContext =
+    if (facts.hasRewrittenSql() && !facts.explainOfQuery) copy(rewrittenSql = facts.rewrittenSql) else this
 
 private fun passthroughAllow(
     roles: List<String>,

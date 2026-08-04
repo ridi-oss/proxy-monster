@@ -34,6 +34,9 @@ type engine interface {
 	// Engine-specific: PostgreSQL's pg_temp; MySQL has no temp-schema convention (its temporary tables
 	// are marked by the TEMPORARY keyword).
 	IsTempSchema(schema exp.Expression) bool
+	// RewriteStatement optionally rewrites a parsed statement into the SQL the proxy should relay to the
+	// backend, returning "" to leave it unchanged.
+	RewriteStatement(root exp.Expression) string
 }
 
 // createEngine builds the engine for config, validating its engine-specific settings (MySQL's
@@ -54,6 +57,8 @@ func createEngine(config *pb.EngineConfig) (engine, error) {
 	}
 }
 
+// TODO: split mysqlEngine and postgresEngine into engine_mysql.go / engine_postgres.go — this file should
+// hold only the shared interface + createEngine factory; the two impls share nothing but that interface.
 type mysqlEngine struct {
 	dialect *dialects.Dialect
 }
@@ -107,6 +112,61 @@ func (e *mysqlEngine) FoldColumn(column string) string {
 // temporary arg / TemporaryProperty on the DDL), which isTemporaryDDL detects directly off the tree.
 func (e *mysqlEngine) IsTempSchema(exp.Expression) bool { return false }
 
+// RewriteStatement pins a single, session-scoped `SET character_set_results = NULL` — the default MySQL
+// Connector/J (and so DBeaver) session-init, which asks the backend to return each column in its own charset
+// for client-side decoding — to utf8mb4, so the wire masker keeps decoding results as UTF-8. Only that exact
+// form is rewritten; a compound SET, GLOBAL/PERSIST scope, a same-named user variable, a qualified or
+// bogus-scoped target, or any non-NULL value is left untouched (and still fails closed at the wire session
+// invariant). Recognition is on the parsed AST, so every spelling MySQL accepts reduces to the same check.
+func (e *mysqlEngine) RewriteStatement(root exp.Expression) string {
+	if root.Kind() != exp.KindSet {
+		return ""
+	}
+	// setUtilityCommands is non-empty for GLOBAL/PERSIST/PERSIST_ONLY/PASSWORD; a single session assignment
+	// carries exactly one SetItem and no utility command.
+	items := root.FindAll(exp.KindSetItem)
+	if len(items) != 1 || len(setUtilityCommands(root)) != 0 {
+		return ""
+	}
+	eq := items[0].This()
+	if eq == nil || eq.Kind() != exp.KindEQ || eq.Left() == nil || eq.Right() == nil {
+		return ""
+	}
+	// The target must be the SYSTEM variable, not a same-named user variable or a qualified column. A bare
+	// `character_set_results` parses to an unqualified Column; `@@[session.]character_set_results` to a
+	// SessionParameter; but `@character_set_results` (a user variable) parses to a Parameter whose Name()
+	// still returns "character_set_results", and `x.character_set_results` to a qualified Column — both would
+	// otherwise be turned into a system-variable SET the client never asked for.
+	left := eq.Left()
+	switch left.Kind() {
+	case exp.KindColumn:
+		if left.TableName() != "" {
+			return ""
+		}
+	case exp.KindSessionParameter:
+		// `@@[session.|local.]character_set_results` is this session's variable; `@@global.` is excluded by
+		// setUtilityCommands above, but a bogus scope (`@@nonsense.…`) reaches here — MySQL would reject it,
+		// so it must not normalize into a successful pin.
+		switch strings.ToLower(fmt.Sprint(left.Arg("kind"))) {
+		case "<nil>", "", "session", "local":
+		default:
+			return ""
+		}
+	default:
+		return ""
+	}
+	// A system-variable name is ASCII and case-insensitive — MySQL matches it independent of
+	// lower_case_table_names — so it is compared case-folded, not through the dialect's schema-identifier
+	// folding (which is for table/column names). utf8mb4 is full Unicode, so the pin is lossless.
+	if !strings.EqualFold(left.Name(), "character_set_results") {
+		return ""
+	}
+	if eq.Right().Kind() != exp.KindNull {
+		return ""
+	}
+	return "SET character_set_results = utf8mb4"
+}
+
 type postgresEngine struct {
 	dialect *dialects.Dialect
 }
@@ -141,6 +201,10 @@ func (e *postgresEngine) IsTempSchema(schema exp.Expression) bool {
 	name := id.Name()
 	return name == "pg_temp" || strings.HasPrefix(name, "pg_temp_")
 }
+
+// PostgreSQL has no relay rewrite: client_encoding is handled on the wire, not by an analyzer rewrite,
+// so there is nothing to rewrite here.
+func (e *postgresEngine) RewriteStatement(exp.Expression) string { return "" }
 
 // mysqlNormalizationDialect returns a MySQL *Dialect configured with the identifier-normalization
 // strategy for the server's lower_case_table_names. Under lctn=0 the server is case-sensitive for

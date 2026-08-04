@@ -2,7 +2,10 @@ package com.ridi.oss.proxymonster.controlplane.support
 
 import com.ridi.oss.proxymonster.controlplane.AccessStore
 import com.ridi.oss.proxymonster.controlplane.AuditStore
+import com.ridi.oss.proxymonster.controlplane.Channel
 import com.ridi.oss.proxymonster.controlplane.ClassificationInput
+import com.ridi.oss.proxymonster.controlplane.DecisionContext
+import com.ridi.oss.proxymonster.controlplane.decideQuery
 import com.ridi.oss.proxymonster.controlplane.PrincipalSessionStore
 import com.ridi.oss.proxymonster.controlplane.Datasource
 import com.ridi.oss.proxymonster.controlplane.DatasourceInput
@@ -154,6 +157,17 @@ class EnforcementFixture(
         authz = authz,
         execute = { sql, maxRows -> execOnTarget(targetJdbcUrl, targetUser, targetPassword, sql, maxRows) },
     )
+
+    /**
+     * The real analyzer → [decideQuery] decision for [sql] (no execution), so a test can assert on the
+     * DecisionContext itself — e.g. the analyzer-emitted `rewrittenSql` — through the production seam rather
+     * than injecting synthetic facts.
+     */
+    fun decide(sql: String, principal: String = "analyst@example.com", channel: Channel = Channel.WIRE): DecisionContext =
+        decideQuery(
+            principal, datasource, sql, channel, datasourceStore.catalog(datasource.id),
+            policyStore, accessStore, userGroupStore, roleResolver, authz,
+        )
 
     /** Run raw SQL directly against the target (test setup/teardown; no enforcement gate). */
     fun execOnTarget(sql: String): QueryRows = execOnTarget(targetJdbcUrl, targetUser, targetPassword, sql, 1000)

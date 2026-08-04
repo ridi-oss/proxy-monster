@@ -5,12 +5,12 @@ import (
 	"sort"
 	"strings"
 
+	pb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
 	sqlglot "github.com/ridi-oss/sqlglot-go"
 	"github.com/ridi-oss/sqlglot-go/dialects"
 	exp "github.com/ridi-oss/sqlglot-go/expressions"
 	"github.com/ridi-oss/sqlglot-go/generator"
 	"github.com/ridi-oss/sqlglot-go/schema"
-	pb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
 )
 
 var safeNoFromFunctions = stringSet(
@@ -137,6 +137,15 @@ func EmitFacts(sql string, engineConfig *pb.EngineConfig, sch *schema.Mapping, n
 			facts = emitLineageFacts(root, eng, qualifySchema, validatedNamespace, false)
 		} else {
 			facts = unanalyzableFacts("PARSE", fmt.Sprintf("unsupported root %s", exp.ClassName(root.Kind())))
+		}
+	}
+	// The engine may rewrite the statement into what the proxy relays to the backend — MySQL pins
+	// `character_set_results = NULL` to utf8mb4 so results stay UTF-8 for the wire masker. Emitted as
+	// rewritten_sql: the data plane relays it while authorization and audit keep the client's original. A
+	// lineage-driven rewrite (the `*`-expansion) already set on an analyzed statement takes precedence.
+	if facts.RewrittenSql == nil {
+		if rewrite := eng.RewriteStatement(root); rewrite != "" {
+			facts.RewrittenSql = &rewrite
 		}
 	}
 	facts.SchemaQualifierCandidates = candidates

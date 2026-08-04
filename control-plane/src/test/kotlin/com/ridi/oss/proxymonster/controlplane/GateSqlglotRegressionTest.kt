@@ -126,4 +126,15 @@ class GateSqlglotRegressionTest {
         denied(mysql, "RESET MASTER")
         denied(postgres, """SELECT U&"set_confi\0067"('search_path','restricted',false)""")
     }
+
+    @Test
+    fun `results-charset NULL is pinned to utf8mb4 through the real analyzer`() {
+        // Real analyzer -> decideQuery seam for issue #81: Connector/J's session-init is recognized and
+        // emitted as rewrittenSql on the session passthrough. A non-NULL charset is left for the wire
+        // invariant to fail closed, not pinned.
+        val pinned = mysql.decide("SET character_set_results = NULL")
+        assertEquals(EnfAction.ALLOW, pinned.action, pinned.denyReason)
+        assertEquals("SET character_set_results = utf8mb4", pinned.rewrittenSql)
+        assertEquals(null, mysql.decide("SET character_set_results = latin1").rewrittenSql)
+    }
 }

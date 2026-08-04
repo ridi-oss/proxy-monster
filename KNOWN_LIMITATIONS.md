@@ -109,6 +109,18 @@ analog of MySQL's Prepare-time freeze. No control-plane decision is ever stored.
 - `COM_INIT_DB` audit boundary. The MySQL database switch is enforced (dirty →
   re-probe) but is not audited as a statement because it carries no SQL text;
   the follow-on query's audit records the new effective namespace.
+- MySQL result charset is pinned to UTF-8. Masking decodes each result value as
+  UTF-8, so `character_set_results` must stay `utf8mb4`/`utf8`/`utf8mb3`; a
+  client that moves it elsewhere fails the session closed. The analyzer
+  recognizes a single, session-scoped `SET character_set_results = NULL` — the
+  default MySQL Connector/J (and so DBeaver) session-init, which requests each
+  column in its own charset for client-side decoding — and rewrites it to
+  `utf8mb4`, so those clients connect and results stay maskable. The client's
+  original statement is authorized and audited; only the bytes sent to the
+  backend are pinned. (A prepared-statement form is pinned too, but its
+  execute-time audit records the pinned statement.) Any other results charset —
+  an explicit non-UTF-8 one — is not rewritten and fails the session closed, and
+  returning results in a non-UTF-8 charset is not supported.
 - `DISCARD` routes through the datasource-wide `sql.unanalyzable` gate. The
   production posture denies it; a development datasource may relay it.
 - 🟡 First-in-transaction probe injection breaks `SET TRANSACTION` after an

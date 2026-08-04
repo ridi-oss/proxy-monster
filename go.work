@@ -3,7 +3,7 @@ go 1.26.0
 use (
 	./analyzer
 	./auditmon
-	./controlplane
+	./gocp
 	./goproxy
 	./mysqlwire
 	./pmon

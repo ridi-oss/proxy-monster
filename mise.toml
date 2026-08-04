@@ -202,7 +202,7 @@ shell = "bash -c"
 # The --path flag is load-bearing: without it this module's codegen also picks up analyzer.proto and
 # engine.proto, and a second generated copy of engine.proto panics the protobuf global registry in
 # init() ("file already registered") the instant analyzer/probe/pb and internal/pb land in one process.
-# See controlplane/buf.gen.yaml.
+# See gocp/buf.gen.yaml.
 run = '''
 set -euo pipefail
 # GOBIN must be absolute; every mise task already runs from the repo root, and tmp/ is gitignored.
@@ -211,17 +211,17 @@ mkdir -p "$bin"
 GOWORK=off GOBIN="$bin" go install github.com/bufbuild/buf/cmd/buf@v1.47.2
 GOWORK=off GOBIN="$bin" go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.35.2
 GOWORK=off GOBIN="$bin" go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@v1.5.1
-cd controlplane
+cd gocp
 PATH="$bin:$PATH" buf generate ../proto/src/main/proto --path ../proto/src/main/proto/controlplane.proto
 go build ./...
 '''
 
 [tasks.cp-build]
-description = "Build and vet the Go control plane (controlplane/)"
+description = "Build and vet the Go control plane (gocp/)"
 shell = "bash -c"
 run = '''
 set -euo pipefail
-cd controlplane
+cd gocp
 go build ./...
 go vet ./...
 '''
@@ -279,7 +279,7 @@ shell = "bash -c"
 # module, so a root-relative pattern only resolves once a go.work exists.
 run = '''
 set -euo pipefail
-for m in analyzer auditmon controlplane goproxy mysqlwire pmon; do
+for m in analyzer auditmon gocp goproxy mysqlwire pmon; do
   echo "=== $m ==="
   (cd "$m" && go test -race ./...)
 done

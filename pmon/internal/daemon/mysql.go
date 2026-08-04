@@ -39,12 +39,15 @@ var errLocalAuth = errors.New("access denied")
 // nextSeq is the sequence the caller's reply (OK or ERR) must carry. It depends on how many packets
 // the plugin negotiation spent, so the caller must use it rather than assume the handshake ended at
 // a fixed point.
-func localServerGreet(c io.ReadWriter, scramble []byte, localPassword string) (clientCaps uint32, nextSeq byte, err error) {
-	// false: this greeting must not advertise CapConnectWithDB — the handshake response below is read
-	// only for its capability flags and auth response, never for a handshake-supplied database, so a
-	// client connecting with one here would have it silently dropped rather than relayed upstream.
+func localServerGreet(c io.ReadWriter, scramble []byte, localPassword string) (clientCaps uint32, database string, nextSeq byte, err error) {
+	// Advertise CapConnectWithDB. A JDBC driver (Connector/J, so DBeaver) writes its DSN database into the
+	// handshake response whether or not the greeting offered the capability; a greeting that withheld it
+	// left that field unclaimed, so the plugin name that follows was read AS the database, the client was
+	// switched to mysql_clear_password, and it refused that plugin over the plaintext loopback. Advertising
+	// the capability makes the field parse where the client writes it. The selected database is not dropped:
+	// brokerMySQL forwards it upstream with COM_INIT_DB.
 	nextSeq = 2
-	if err = mysqlwire.WritePacket(c, 0, mysqlwire.ServerGreeting(1, scramble, serverVersion, false)); err != nil {
+	if err = mysqlwire.WritePacket(c, 0, mysqlwire.ServerGreeting(1, scramble, serverVersion, true)); err != nil {
 		return
 	}
 	_, resp, err := mysqlwire.ReadPacket(c) // handshake response (seq 1)
@@ -58,14 +61,14 @@ func localServerGreet(c io.ReadWriter, scramble []byte, localPassword string) (c
 	// An empty local password means one was never generated, which would otherwise make every
 	// password correct. Refuse rather than fall open.
 	if localPassword == "" {
-		return clientCaps, nextSeq, errLocalAuth
+		return clientCaps, "", nextSeq, errLocalAuth
 	}
-	parsed, err := mysqlwire.ParseHandshakeResponse(resp, false)
+	parsed, err := mysqlwire.ParseHandshakeResponse(resp, true)
 	if err != nil {
-		return clientCaps, nextSeq, errLocalAuth
+		return clientCaps, "", nextSeq, errLocalAuth
 	}
 	nextSeq, err = verifyLocalPassword(c, scramble, localPassword, parsed)
-	return clientCaps, nextSeq, err
+	return clientCaps, parsed.Database, nextSeq, err
 }
 
 // verifyLocalPassword checks the client's auth response against localPassword, for whichever plugin
@@ -234,6 +237,34 @@ func proxyConnect(raw net.Conn, serverName, certChainPEM string, wireTLS bool, p
 		return conn, nil
 	}
 	return nil, fmt.Errorf("unexpected auth result from proxy")
+}
+
+// proxyInitDB selects [database] on the freshly-authenticated upstream session with COM_INIT_DB, so a
+// client that chose its database in the handshake — a JDBC driver, and the mysql CLI now that the broker
+// greeting advertises CONNECT_WITH_DB — lands on it rather than the backend default. This is the same
+// command the CLI sends itself in the command phase, so nothing new is asked of the proxy; the broker
+// only relays a choice it used to see arrive one packet later.
+//
+// A rejected database comes back as the proxy's own ERR packet, returned as upstreamErr so the caller
+// relays the real error code and SQLSTATE rather than inventing one. Anything that is neither OK nor
+// ERR — an empty or truncated reply from a broken proxy — fails CLOSED (nil payload, non-nil error): the
+// caller must not report the connection ready when database selection was never confirmed.
+func proxyInitDB(up io.ReadWriter, database string) (upstreamErr []byte, err error) {
+	if err := mysqlwire.WritePacket(up, 0, append([]byte{mysqlwire.ComInitDB}, database...)); err != nil {
+		return nil, err
+	}
+	_, res, err := mysqlwire.ReadPacket(up)
+	if err != nil {
+		return nil, err
+	}
+	switch {
+	case len(res) > 0 && res[0] == 0x00:
+		return nil, nil
+	case len(res) > 0 && res[0] == 0xff:
+		return res, fmt.Errorf("%s", mysqlwire.ErrString(res))
+	default:
+		return nil, fmt.Errorf("unexpected COM_INIT_DB reply from proxy")
+	}
 }
 
 // upstreamTLSConfig returns the client TLS config for the upstream proxy hop. The control plane advertises

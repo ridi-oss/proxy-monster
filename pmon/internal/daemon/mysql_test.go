@@ -20,11 +20,13 @@ import (
 	"github.com/ridi-oss/proxy-monster/mysqlwire"
 )
 
-// TestLocalServerGreetDoesNotAdvertiseConnectWithDB guards a cross-module regression: pmon's broker
-// greeting must not advertise CONNECT_WITH_DB. pmon reads the local client's handshake but never forwards
-// a handshake-selected database upstream, so advertising the capability would let a pmon client whose DSN
-// selects a non-default database silently operate on the wrong one.
-func TestLocalServerGreetDoesNotAdvertiseConnectWithDB(t *testing.T) {
+// TestLocalServerGreetAdvertisesConnectWithDB pins the broker greeting's CONNECT_WITH_DB capability. A
+// JDBC driver (Connector/J, so DBeaver) writes its DSN database into the handshake response whether or
+// not the greeting offered the capability; withholding it leaves that field unclaimed, so the plugin
+// name that follows is read AS the database and the client is switched to mysql_clear_password — which
+// it refuses over the plaintext loopback. The selected database is not dropped: brokerMySQL forwards it
+// upstream with COM_INIT_DB.
+func TestLocalServerGreetAdvertisesConnectWithDB(t *testing.T) {
 	clientSide, brokerSide := net.Pipe()
 	defer clientSide.Close()
 	defer brokerSide.Close()
@@ -35,7 +37,7 @@ func TestLocalServerGreetDoesNotAdvertiseConnectWithDB(t *testing.T) {
 	}
 	done := make(chan greetResult, 1)
 	go func() {
-		caps, _, err := localServerGreet(brokerSide, make([]byte, 20), "pmlocal_test")
+		caps, _, _, err := localServerGreet(brokerSide, make([]byte, 20), "pmlocal_test")
 		done <- greetResult{caps: caps, err: err}
 	}()
 
@@ -47,8 +49,8 @@ func TestLocalServerGreetDoesNotAdvertiseConnectWithDB(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse broker greeting: %v", err)
 	}
-	if parsed.Capabilities&mysqlwire.CapConnectWithDB != 0 {
-		t.Fatalf("pmon greeting caps = %#x advertise CONNECT_WITH_DB; a client's DSN database would be silently dropped", parsed.Capabilities)
+	if parsed.Capabilities&mysqlwire.CapConnectWithDB == 0 {
+		t.Fatalf("pmon greeting caps = %#x withhold CONNECT_WITH_DB; a JDBC driver's schema field would be misread as the auth plugin", parsed.Capabilities)
 	}
 	// The advertised plugin decides which digest a client computes, and the password check verifies
 	// against it. A greeting that named a different plugin would still authenticate — the switch paths
@@ -313,7 +315,7 @@ func TestLocalServerGreetChecksPassword(t *testing.T) {
 
 			done := make(chan error, 1)
 			go func() {
-				_, _, err := localServerGreet(brokerSide, scramble, test.stored)
+				_, _, _, err := localServerGreet(brokerSide, scramble, test.stored)
 				done <- err
 			}()
 
@@ -367,7 +369,7 @@ func TestLocalServerGreetSwitchesUnknownPlugin(t *testing.T) {
 			}
 			done := make(chan res, 1)
 			go func() {
-				_, seq, err := localServerGreet(brokerSide, scramble, password)
+				_, _, seq, err := localServerGreet(brokerSide, scramble, password)
 				done <- res{seq: seq, err: err}
 			}()
 
@@ -430,7 +432,7 @@ func TestLocalServerGreetSwitchesToCachingSHA2(t *testing.T) {
 
 			done := make(chan error, 1)
 			go func() {
-				_, _, err := localServerGreet(brokerSide, bytes.Repeat([]byte{7}, 20), password)
+				_, _, _, err := localServerGreet(brokerSide, bytes.Repeat([]byte{7}, 20), password)
 				done <- err
 			}()
 
@@ -481,6 +483,84 @@ func TestLocalServerGreetSwitchesToCachingSHA2(t *testing.T) {
 	}
 }
 
+// handshakeResponseWithDB builds a handshake response that selects a database, the way Connector/J (so
+// DBeaver) does: CONNECT_WITH_DB set, and the schema written BETWEEN the auth response and the plugin
+// name. A broker that does not consume that field reads the plugin name as the database.
+func handshakeResponseWithDB(authResp []byte, plugin, database string) []byte {
+	caps := uint32(mysqlwire.CapProtocol41 | mysqlwire.CapSecureConn | mysqlwire.CapConnectWithDB)
+	if plugin != "" {
+		caps |= mysqlwire.CapPluginAuth
+	}
+	var b []byte
+	b = binary.LittleEndian.AppendUint32(b, caps)
+	b = binary.LittleEndian.AppendUint32(b, 16<<20)
+	b = append(b, 45)
+	b = append(b, make([]byte, 23)...)
+	b = append(b, "pm"...)
+	b = append(b, 0)
+	b = append(b, byte(len(authResp)))
+	b = append(b, authResp...)
+	b = append(b, database...)
+	b = append(b, 0)
+	if plugin != "" {
+		b = append(b, plugin...)
+		b = append(b, 0)
+	}
+	return b
+}
+
+// TestLocalServerGreetHandshakeDatabase reproduces the DBeaver/Connector-J connection that motivated
+// advertising CONNECT_WITH_DB: the handshake response carries a database between the auth response and
+// the plugin name. The broker must read the plugin where the client wrote it (caching_sha2_password
+// here) and authenticate through it — not mistake the database for an unknown plugin and switch to
+// mysql_clear_password — and it must surface the selected database so brokerMySQL forwards it upstream.
+func TestLocalServerGreetHandshakeDatabase(t *testing.T) {
+	const password = "pmlocal_correct-horse"
+	scramble := bytes.Repeat([]byte{7}, 20)
+
+	clientSide, brokerSide := net.Pipe()
+	defer clientSide.Close()
+	defer brokerSide.Close()
+
+	type res struct {
+		db  string
+		err error
+	}
+	done := make(chan res, 1)
+	go func() {
+		_, db, _, err := localServerGreet(brokerSide, scramble, password)
+		done <- res{db, err}
+	}()
+
+	if _, _, err := mysqlwire.ReadPacket(clientSide); err != nil {
+		t.Fatalf("read greeting: %v", err)
+	}
+	resp := handshakeResponseWithDB(mysqlwire.CachingSHA2Password(password, scramble), "caching_sha2_password", "app")
+	if err := mysqlwire.WritePacket(clientSide, 1, resp); err != nil {
+		t.Fatalf("write handshake response: %v", err)
+	}
+	// A matching caching_sha2 digest ends in a fast-auth verdict — never an auth switch, and above all
+	// never the mysql_clear_password switch the misparse produced. Drain it or the broker blocks writing.
+	_, more, err := mysqlwire.ReadPacket(clientSide)
+	if err != nil {
+		t.Fatalf("read AuthMoreData: %v", err)
+	}
+	if bytes.Contains(more, []byte("mysql_clear_password")) {
+		t.Fatalf("broker switched to mysql_clear_password on a handshake carrying a database")
+	}
+	if len(more) < 2 || more[0] != mysqlwire.AuthMoreData || more[1] != mysqlwire.CachingSHA2FastAuthSuccess {
+		t.Fatalf("expected fast-auth success, got % x", more)
+	}
+
+	got := <-done
+	if got.err != nil {
+		t.Fatalf("err = %v, want nil", got.err)
+	}
+	if got.db != "app" {
+		t.Fatalf("selected database = %q, want %q", got.db, "app")
+	}
+}
+
 // TestLocalServerGreetSequenceIsContiguous pins the packet numbering each path ends on. MySQL
 // requires strictly increasing sequence numbers within a handshake, so a wrong nextSeq desynchronizes
 // the client — it reads the caller's OK as belonging to a packet it never sent.
@@ -499,7 +579,7 @@ func TestLocalServerGreetSequenceIsContiguous(t *testing.T) {
 		}
 		done := make(chan res, 1)
 		go func() {
-			_, seq, err := localServerGreet(brokerSide, scramble, password)
+			_, _, seq, err := localServerGreet(brokerSide, scramble, password)
 			done <- res{seq, err}
 		}()
 		if _, _, err := mysqlwire.ReadPacket(clientSide); err != nil {
@@ -529,7 +609,7 @@ func TestLocalServerGreetSequenceIsContiguous(t *testing.T) {
 		}
 		done := make(chan res, 1)
 		go func() {
-			_, seq, err := localServerGreet(brokerSide, scramble, password)
+			_, _, seq, err := localServerGreet(brokerSide, scramble, password)
 			done <- res{seq, err}
 		}()
 		if _, _, err := mysqlwire.ReadPacket(clientSide); err != nil {
@@ -583,7 +663,7 @@ func TestCachingSHA2SwitchFailureSequence(t *testing.T) {
 	}
 	done := make(chan res, 1)
 	go func() {
-		_, seq, err := localServerGreet(brokerSide, bytes.Repeat([]byte{7}, 20), password)
+		_, _, seq, err := localServerGreet(brokerSide, bytes.Repeat([]byte{7}, 20), password)
 		done <- res{seq, err}
 	}()
 
@@ -619,5 +699,50 @@ func TestCachingSHA2SwitchFailureSequence(t *testing.T) {
 	}
 	if got.seq != 4 {
 		t.Fatalf("nextSeq = %d after a rejected switch, want 4 (the switch and its reply only)", got.seq)
+	}
+}
+
+// TestProxyInitDB covers the upstream database-selection hop the broker performs for a client that chose
+// its schema in the handshake: an OK confirms it, the proxy's ERR is returned verbatim so the broker can
+// relay the real code and SQLSTATE, and any reply that is neither OK nor ERR fails CLOSED rather than
+// letting the broker report the connection ready.
+func TestProxyInitDB(t *testing.T) {
+	tests := []struct {
+		name         string
+		reply        []byte
+		wantErr      bool
+		wantUpstream bool // a relayable ERR payload came back
+	}{
+		{"ok", mysqlwire.OKPacket(), false, false},
+		{"proxy err relayed verbatim", mysqlwire.ErrPacketState(1044, "42000", "Access denied"), true, true},
+		{"empty reply fails closed", []byte{}, true, false},
+		{"unexpected reply fails closed", []byte{0xfe}, true, false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			client, proxy := net.Pipe()
+			defer client.Close()
+			defer proxy.Close()
+
+			go func() {
+				_, cmd, err := mysqlwire.ReadPacket(proxy) // COM_INIT_DB
+				if err != nil || len(cmd) == 0 || cmd[0] != mysqlwire.ComInitDB || string(cmd[1:]) != "app" {
+					return
+				}
+				_ = mysqlwire.WritePacket(proxy, 1, tc.reply)
+			}()
+
+			upErr, err := proxyInitDB(client, "app")
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("err = %v, wantErr = %v", err, tc.wantErr)
+			}
+			if (upErr != nil) != tc.wantUpstream {
+				t.Fatalf("upstreamErr = % x, wantUpstream = %v", upErr, tc.wantUpstream)
+			}
+			// A relayed payload must be the proxy's ERR verbatim, so its code and SQLSTATE reach the client.
+			if tc.wantUpstream && !bytes.Equal(upErr, tc.reply) {
+				t.Fatalf("relayed payload = % x, want the proxy's ERR verbatim % x", upErr, tc.reply)
+			}
+		})
 	}
 }

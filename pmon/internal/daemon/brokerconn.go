@@ -19,7 +19,7 @@ func brokerMySQL(local net.Conn, proxyAddr, certChainPEM string, wireTLS bool, p
 	if err != nil {
 		return err
 	}
-	clientCaps, seq, err := localServerGreet(local, scramble, localPassword)
+	clientCaps, database, seq, err := localServerGreet(local, scramble, localPassword)
 	if err != nil {
 		// A rejected password never reaches the proxy: answer here and drop the connection, so a
 		// caller that cannot authenticate locally cannot spend the session's token upstream.
@@ -46,6 +46,22 @@ func brokerMySQL(local net.Conn, proxyAddr, certChainPEM string, wireTLS bool, p
 	if err != nil {
 		_ = mysqlwire.WritePacket(local, seq, mysqlwire.ErrPacket(1045, "proxy-monster: "+err.Error()))
 		return err
+	}
+	// Forward the client's handshake-selected database. The broker advertises CONNECT_WITH_DB (so a JDBC
+	// driver's schema field parses), but never sends a database in its own upstream handshake, so it
+	// replays the choice here as COM_INIT_DB — still under the handshake deadline. A rejected database
+	// (unknown, unauthorized) surfaces to the local client instead of an OK.
+	if database != "" {
+		if upErr, err := proxyInitDB(up, database); err != nil {
+			// Relay the proxy's own ERR (its code, SQLSTATE, and message) when it rejected the database;
+			// only synthesize one for a transport/protocol failure that produced no ERR to forward.
+			if upErr != nil {
+				_ = mysqlwire.WritePacket(local, seq, upErr)
+			} else {
+				_ = mysqlwire.WritePacket(local, seq, mysqlwire.ErrPacket(1105, "proxy-monster: "+err.Error()))
+			}
+			return err
+		}
 	}
 	// The relay has no time bound — a session may idle legitimately — so drop the handshake deadline.
 	if err := proxy.SetDeadline(time.Time{}); err != nil {

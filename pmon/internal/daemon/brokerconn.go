@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"time"
@@ -19,7 +20,7 @@ func brokerMySQL(local net.Conn, proxyAddr, certChainPEM string, wireTLS bool, p
 	if err != nil {
 		return err
 	}
-	clientCaps, seq, err := localServerGreet(local, scramble, localPassword)
+	clientCaps, database, seq, err := localServerGreet(local, scramble, localPassword)
 	if err != nil {
 		// A rejected password never reaches the proxy: answer here and drop the connection, so a
 		// caller that cannot authenticate locally cannot spend the session's token upstream.
@@ -47,6 +48,37 @@ func brokerMySQL(local net.Conn, proxyAddr, certChainPEM string, wireTLS bool, p
 		_ = mysqlwire.WritePacket(local, seq, mysqlwire.ErrPacket(1045, "proxy-monster: "+err.Error()))
 		return err
 	}
+	// A client that selected a database at connect time expects to be in it, and the selection arrived on
+	// the local handshake response — consumed here, never relayed — so it has to be applied as a command.
+	// Applying it after the upstream handshake means the proxy's per-connection catalog opened on the
+	// datasource's default schemas; this one is fetched lazily on the client's first statement.
+	if database != "" {
+		res, initErr := selectDatabase(up, database)
+		if initErr != nil {
+			// Not the 1045 the failures above use: the proxy has already answered the handshake and
+			// authenticated this session, so an access-denied would send the operator after the wrong
+			// thing — and a driver that classifies 1045 as bad credentials will not retry what is a
+			// transport failure. The message covers both halves of a round trip that did not complete,
+			// because only it reaches the client — the error itself goes to the daemon's log.
+			_ = mysqlwire.WritePacket(local, seq, mysqlwire.ErrPacket(1105, "proxy-monster: the database selection failed"))
+			return initErr
+		}
+		switch {
+		// Relay the proxy's own refusal verbatim. Its "unknown database" carries the error code and the
+		// SQLSTATE a client branches on, which a message rewritten here would throw away.
+		case len(res) > 0 && res[0] == 0xff:
+			_ = mysqlwire.WritePacket(local, seq, res)
+			return errors.New(mysqlwire.ErrString(res))
+		// Only an OK means the session really is in that database, so anything else fails closed. Letting
+		// an unrecognized packet through to the caller's OK would report a session in the schema the client
+		// asked for while it sits in the datasource's default one — the silent wrong-schema failure this
+		// selection exists to prevent — and were that packet the first of several, the rest would be
+		// relayed as the answer to the client's first query.
+		case len(res) == 0 || res[0] != 0x00:
+			_ = mysqlwire.WritePacket(local, seq, mysqlwire.ErrPacket(1105, "proxy-monster: unexpected response selecting the database"))
+			return fmt.Errorf("unexpected COM_INIT_DB response from proxy (%d bytes): % x", len(res), res)
+		}
+	}
 	// The relay has no time bound — a session may idle legitimately — so drop the handshake deadline.
 	if err := proxy.SetDeadline(time.Time{}); err != nil {
 		return err
@@ -56,6 +88,19 @@ func brokerMySQL(local net.Conn, proxyAddr, certChainPEM string, wireTLS bool, p
 	}
 	pipe(up, local)
 	return nil
+}
+
+// selectDatabase sends COM_INIT_DB for database and returns the proxy's single response packet — an OK
+// or an ERR from a proxy that answered this command, whatever arrived otherwise, which the caller
+// judges. Switching the current database is not a gated action, so the proxy relays the command to the
+// backend mechanically. The response is consumed here because the local client is still waiting on one
+// auth result, and the caller's OK stands in for this exchange's own.
+func selectDatabase(up io.ReadWriter, database string) ([]byte, error) {
+	if err := mysqlwire.WritePacket(up, 0, append([]byte{mysqlwire.ComInitDB}, database...)); err != nil {
+		return nil, err
+	}
+	_, res, err := mysqlwire.ReadPacket(up)
+	return res, err
 }
 
 // pipe copies bytes both directions until either side closes.

@@ -20,11 +20,12 @@ import (
 	"github.com/ridi-oss/proxy-monster/mysqlwire"
 )
 
-// TestLocalServerGreetDoesNotAdvertiseConnectWithDB guards a cross-module regression: pmon's broker
-// greeting must not advertise CONNECT_WITH_DB. pmon reads the local client's handshake but never forwards
-// a handshake-selected database upstream, so advertising the capability would let a pmon client whose DSN
-// selects a non-default database silently operate on the wrong one.
-func TestLocalServerGreetDoesNotAdvertiseConnectWithDB(t *testing.T) {
+// TestLocalServerGreetAdvertisesConnectWithDB guards a cross-module regression: pmon's broker greeting
+// must advertise CONNECT_WITH_DB, because brokerMySQL selects the database this reports. A client gates
+// WRITING the database field on the server having advertised the capability, so a greeting that stays
+// silent about it never receives the field at all and a client whose DSN names a database lands on the
+// datasource's default schema instead, with no error on any layer.
+func TestLocalServerGreetAdvertisesConnectWithDB(t *testing.T) {
 	clientSide, brokerSide := net.Pipe()
 	defer clientSide.Close()
 	defer brokerSide.Close()
@@ -35,7 +36,7 @@ func TestLocalServerGreetDoesNotAdvertiseConnectWithDB(t *testing.T) {
 	}
 	done := make(chan greetResult, 1)
 	go func() {
-		caps, _, err := localServerGreet(brokerSide, make([]byte, 20), "pmlocal_test")
+		caps, _, _, err := localServerGreet(brokerSide, make([]byte, 20), "pmlocal_test")
 		done <- greetResult{caps: caps, err: err}
 	}()
 
@@ -47,16 +48,9 @@ func TestLocalServerGreetDoesNotAdvertiseConnectWithDB(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse broker greeting: %v", err)
 	}
-	if parsed.Capabilities&mysqlwire.CapConnectWithDB != 0 {
-		t.Fatalf("pmon greeting caps = %#x advertise CONNECT_WITH_DB; a client's DSN database would be silently dropped", parsed.Capabilities)
+	if parsed.Capabilities&mysqlwire.CapConnectWithDB == 0 {
+		t.Fatalf("pmon greeting caps = %#x do not advertise CONNECT_WITH_DB; a client's DSN database would never be sent", parsed.Capabilities)
 	}
-	// The advertised plugin decides which digest a client computes, and the password check verifies
-	// against it. A greeting that named a different plugin would still authenticate — the switch paths
-	// cover that — but this is the one every client takes without extra configuration.
-	if parsed.AuthPlugin != "mysql_native_password" {
-		t.Fatalf("pmon greeting advertises %q, want mysql_native_password", parsed.AuthPlugin)
-	}
-
 	// Unblock localServerGreet with a minimal handshake response. It carries no auth response, so the
 	// password check rejects it — this test is about the greeting's capabilities, and the capability
 	// assertion above has already run against the real greeting.
@@ -65,6 +59,57 @@ func TestLocalServerGreetDoesNotAdvertiseConnectWithDB(t *testing.T) {
 	}
 	if res := <-done; !errors.Is(res.err, errLocalAuth) {
 		t.Fatalf("localServerGreet with no password: err = %v, want errLocalAuth", res.err)
+	}
+}
+
+// TestLocalServerGreetReportsSelectedDatabase covers the other half: the greeting advertises the
+// capability, so a client that selected a database writes the field, and localServerGreet has to hand
+// it back rather than parse past it. A client that selects none must report none — an empty string is
+// what tells brokerMySQL to send no COM_INIT_DB at all.
+func TestLocalServerGreetReportsSelectedDatabase(t *testing.T) {
+	const password = "pmlocal_correct-horse"
+	scramble := bytes.Repeat([]byte{7}, 20)
+
+	for _, test := range []struct {
+		name          string
+		database      string
+		connectWithDB bool
+	}{
+		{"database selected", "reporting", true},
+		{"no database selected", "", false},
+		// `-D ''`: the bit is set and the field is present but empty. It reports no database, same as a
+		// client that set neither — but the lone NUL still has to be consumed, or the plugin name behind
+		// it is read as the database and pmon selects a schema the client never named.
+		{"bit set over an empty field", "", true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			clientSide, brokerSide := net.Pipe()
+			defer clientSide.Close()
+			defer brokerSide.Close()
+
+			done := make(chan string, 1)
+			errs := make(chan error, 1)
+			go func() {
+				_, database, _, err := localServerGreet(brokerSide, scramble, password)
+				done <- database
+				errs <- err
+			}()
+
+			if _, _, err := mysqlwire.ReadPacket(clientSide); err != nil {
+				t.Fatalf("read greeting: %v", err)
+			}
+			response := handshakeResponse(mysqlwire.NativePassword(password, scramble), "mysql_native_password", test.database, test.connectWithDB)
+			if err := mysqlwire.WritePacket(clientSide, 1, response); err != nil {
+				t.Fatalf("write handshake response: %v", err)
+			}
+
+			if err := <-errs; err != nil {
+				t.Fatalf("localServerGreet: %v", err)
+			}
+			if got := <-done; got != test.database {
+				t.Fatalf("database = %q, want %q", got, test.database)
+			}
+		})
 	}
 }
 
@@ -257,9 +302,28 @@ func TestProxyConnectAllowsPlaintextOnlyWhenTLSIsNotExpected(t *testing.T) {
 // secure-connection encoding a real MySQL client uses. An empty plugin omits the field entirely,
 // which is what a client that negotiated no CapPluginAuth sends.
 func handshakeResponseWith(authResp []byte, plugin string) []byte {
+	return handshakeResponseWithDatabase(authResp, plugin, "")
+}
+
+// handshakeResponseWithDatabase is handshakeResponseWith plus a connect-time database, encoded the way a
+// real client does it: the CapConnectWithDB bit AND the field, in the field's wire position between the
+// auth response and the plugin name. Setting the bit without the field is what a client does against a
+// server that never advertised the capability, and is covered in mysqlwire.
+func handshakeResponseWithDatabase(authResp []byte, plugin, database string) []byte {
+	return handshakeResponse(authResp, plugin, database, database != "")
+}
+
+// handshakeResponse is handshakeResponseWithDatabase with the capability bit stated rather than inferred
+// from the name, for the one shape the name cannot express: the bit set over an EMPTY field, which is
+// what a client given `-D ”` sends. The field is a NUL-terminated string, so an empty one is a lone NUL
+// that still has to be consumed — read as anything else it would swallow the plugin name behind it.
+func handshakeResponse(authResp []byte, plugin, database string, connectWithDB bool) []byte {
 	caps := uint32(mysqlwire.CapProtocol41 | mysqlwire.CapSecureConn)
 	if plugin != "" {
 		caps |= mysqlwire.CapPluginAuth
+	}
+	if connectWithDB {
+		caps |= mysqlwire.CapConnectWithDB
 	}
 	var b []byte
 	b = binary.LittleEndian.AppendUint32(b, caps)
@@ -270,6 +334,10 @@ func handshakeResponseWith(authResp []byte, plugin string) []byte {
 	b = append(b, 0)
 	b = append(b, byte(len(authResp)))
 	b = append(b, authResp...)
+	if connectWithDB {
+		b = append(b, database...)
+		b = append(b, 0)
+	}
 	if plugin != "" {
 		b = append(b, plugin...)
 		b = append(b, 0)
@@ -313,7 +381,7 @@ func TestLocalServerGreetChecksPassword(t *testing.T) {
 
 			done := make(chan error, 1)
 			go func() {
-				_, _, err := localServerGreet(brokerSide, scramble, test.stored)
+				_, _, _, err := localServerGreet(brokerSide, scramble, test.stored)
 				done <- err
 			}()
 
@@ -367,7 +435,7 @@ func TestLocalServerGreetSwitchesUnknownPlugin(t *testing.T) {
 			}
 			done := make(chan res, 1)
 			go func() {
-				_, seq, err := localServerGreet(brokerSide, scramble, password)
+				_, _, seq, err := localServerGreet(brokerSide, scramble, password)
 				done <- res{seq: seq, err: err}
 			}()
 
@@ -430,7 +498,7 @@ func TestLocalServerGreetSwitchesToCachingSHA2(t *testing.T) {
 
 			done := make(chan error, 1)
 			go func() {
-				_, _, err := localServerGreet(brokerSide, bytes.Repeat([]byte{7}, 20), password)
+				_, _, _, err := localServerGreet(brokerSide, bytes.Repeat([]byte{7}, 20), password)
 				done <- err
 			}()
 
@@ -499,7 +567,7 @@ func TestLocalServerGreetSequenceIsContiguous(t *testing.T) {
 		}
 		done := make(chan res, 1)
 		go func() {
-			_, seq, err := localServerGreet(brokerSide, scramble, password)
+			_, _, seq, err := localServerGreet(brokerSide, scramble, password)
 			done <- res{seq, err}
 		}()
 		if _, _, err := mysqlwire.ReadPacket(clientSide); err != nil {
@@ -529,7 +597,7 @@ func TestLocalServerGreetSequenceIsContiguous(t *testing.T) {
 		}
 		done := make(chan res, 1)
 		go func() {
-			_, seq, err := localServerGreet(brokerSide, scramble, password)
+			_, _, seq, err := localServerGreet(brokerSide, scramble, password)
 			done <- res{seq, err}
 		}()
 		if _, _, err := mysqlwire.ReadPacket(clientSide); err != nil {
@@ -583,7 +651,7 @@ func TestCachingSHA2SwitchFailureSequence(t *testing.T) {
 	}
 	done := make(chan res, 1)
 	go func() {
-		_, seq, err := localServerGreet(brokerSide, bytes.Repeat([]byte{7}, 20), password)
+		_, _, seq, err := localServerGreet(brokerSide, bytes.Repeat([]byte{7}, 20), password)
 		done <- res{seq, err}
 	}()
 

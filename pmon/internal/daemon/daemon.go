@@ -42,9 +42,11 @@ const (
 	// dialTimeout bounds a broker's dial to a proxy. It covers refusal only — see handshakeTimeout for silence
 	// after accept.
 	dialTimeout = 10 * time.Second
-	// handshakeTimeout bounds the whole upstream handshake (greeting, TLS, auth). A proxy that accepts and then
-	// goes silent would otherwise park a goroutine and its two sockets forever, unreachable by logout or
-	// revocation, since closing the local side does not unblock a read on the upstream one.
+	// handshakeTimeout bounds everything before the relay: the upstream handshake (greeting, TLS, auth) and
+	// the database selection that follows it. A proxy that accepts and then goes silent would otherwise park
+	// a goroutine and its two sockets forever, unreachable by logout or revocation, since closing the local
+	// side does not unblock a read on the upstream one. One budget covers both steps, so a proxy slow enough
+	// to spend it answering the handshake leaves the selection none.
 	handshakeTimeout = 20 * time.Second
 	// acceptBackoff is the pause after a transient Accept error, so a persistent failure (e.g. fd
 	// exhaustion) can't spin the CPU.

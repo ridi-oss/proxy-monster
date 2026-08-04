@@ -39,12 +39,18 @@ var errLocalAuth = errors.New("access denied")
 // nextSeq is the sequence the caller's reply (OK or ERR) must carry. It depends on how many packets
 // the plugin negotiation spent, so the caller must use it rather than assume the handshake ended at
 // a fixed point.
-func localServerGreet(c io.ReadWriter, scramble []byte, localPassword string) (clientCaps uint32, nextSeq byte, err error) {
-	// false: this greeting must not advertise CapConnectWithDB — the handshake response below is read
-	// only for its capability flags and auth response, never for a handshake-supplied database, so a
-	// client connecting with one here would have it silently dropped rather than relayed upstream.
+//
+// database is the one the client selected at connect time, empty when it selected none. The caller
+// must select it upstream — see brokerMySQL — because nothing after this point ever sees it again: it
+// travels in the handshake response, not as a command.
+func localServerGreet(c io.ReadWriter, scramble []byte, localPassword string) (clientCaps uint32, database string, nextSeq byte, err error) {
+	// true: this greeting advertises CapConnectWithDB because the caller relays the database this
+	// returns. The advertisement is what makes a client send the field at all — a real client (e.g. the
+	// mysql CLI) sets its own CapConnectWithDB bit whenever it was given a database, but only WRITES
+	// the field when the server offered the capability, so a greeting that stays silent about it turns
+	// `-D somedb` into a connection on the datasource's default schema with no error anywhere.
 	nextSeq = 2
-	if err = mysqlwire.WritePacket(c, 0, mysqlwire.ServerGreeting(1, scramble, serverVersion, false)); err != nil {
+	if err = mysqlwire.WritePacket(c, 0, mysqlwire.ServerGreeting(1, scramble, serverVersion, true)); err != nil {
 		return
 	}
 	_, resp, err := mysqlwire.ReadPacket(c) // handshake response (seq 1)
@@ -58,14 +64,19 @@ func localServerGreet(c io.ReadWriter, scramble []byte, localPassword string) (c
 	// An empty local password means one was never generated, which would otherwise make every
 	// password correct. Refuse rather than fall open.
 	if localPassword == "" {
-		return clientCaps, nextSeq, errLocalAuth
+		return clientCaps, "", nextSeq, errLocalAuth
 	}
-	parsed, err := mysqlwire.ParseHandshakeResponse(resp, false)
+	parsed, err := mysqlwire.ParseHandshakeResponse(resp, true)
 	if err != nil {
-		return clientCaps, nextSeq, errLocalAuth
+		return clientCaps, "", nextSeq, errLocalAuth
 	}
+	// The selected database is reported only once the password checks out. A caller that failed the
+	// local check is given no upstream connection, so there is nothing left to select it on.
 	nextSeq, err = verifyLocalPassword(c, scramble, localPassword, parsed)
-	return clientCaps, nextSeq, err
+	if err != nil {
+		return clientCaps, "", nextSeq, err
+	}
+	return clientCaps, parsed.Database, nextSeq, nil
 }
 
 // verifyLocalPassword checks the client's auth response against localPassword, for whichever plugin

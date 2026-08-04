@@ -145,13 +145,14 @@ const serverGreetingCapabilities = uint32(CapLongPassword | CapProtocol41 | CapS
 // ServerGreetingSSL builds the same greeting with CLIENT_SSL advertised. serverVersion is the
 // NUL-terminated version string the greeting reports to the client.
 //
-// connectWithDB must reflect what THIS importer actually does with a handshake-supplied database, not
-// a package-wide default: a real client (e.g. the mysql CLI) still sets its OWN CapConnectWithDB bit
-// whenever it was given a database, but only WRITES the database field when the server's greeting
-// advertised the capability — declare it here without also relaying the field upstream (ports
-// ParseHandshakeResponse's connectWithDBSupported through to a real COM_INIT_DB, as goproxy's
-// mysqlproxy does) and a client's selected database is silently dropped. pmon's local broker does not
-// relay it and must pass false; goproxy/mysqlproxy does and passes true.
+// connectWithDB advertises CapConnectWithDB. An importer passes true only if it FORWARDS the
+// handshake-supplied database (parsing it via ParseHandshakeResponse's connectWithDBSupported and
+// issuing a COM_INIT_DB); otherwise the client's selected database is silently dropped. Both importers
+// forward it — goproxy/mysqlproxy relays it to the backend, and pmon's local broker replays it upstream
+// as COM_INIT_DB — so both pass true. Advertising it is also what keeps a JDBC driver parseable: such a
+// driver writes the database field whether or not the capability was offered, so a greeting that
+// withholds it leaves that field unclaimed and the auth-plugin name that follows is misread as the
+// database.
 func ServerGreeting(connID uint32, scramble []byte, serverVersion string, connectWithDB bool) []byte {
 	return serverGreeting(connID, scramble, serverVersion, greetingCapabilities(connectWithDB))
 }
@@ -220,23 +221,23 @@ func AuthSwitchClearPassword() []byte {
 	return []byte("\xfemysql_clear_password\x00")
 }
 
-// Scramble returns a fresh 20-byte auth scramble with no NUL byte in it.
+// Scramble returns a fresh 20-byte auth scramble drawn from printable ASCII (0x21..0x7e), the exact
+// range a real MySQL server uses.
 //
-// The wire sends a scramble NUL-terminated, and a client that reads it as a C string stops at the
-// first NUL — hashing a truncated salt while the server hashes the whole thing, so the digests
-// disagree and the connection is denied. A uniformly random 20 bytes contains a NUL about 7.5% of
-// the time, which would surface as an auth failure that goes away on retry. Real servers exclude it
-// for the same reason.
+// The scramble must be printable, not merely NUL-free. It travels NUL-terminated, so a NUL truncates
+// the salt for a client that reads it as a C string; but beyond that, some clients (notably MySQL
+// Connector/J, and so DBeaver) read the auth-plugin-data through a text decoder and mangle any byte
+// >= 0x80 before hashing it — the digest then disagrees with the server's and every such connection is
+// denied. A uniformly random 20 bytes hits one of those ~55% of the time, so the failure looks constant
+// rather than intermittent. Matching the server's own 94-character range sidesteps both hazards; the
+// salt's job is freshness, not a uniform distribution.
 func Scramble() ([]byte, error) {
 	b := make([]byte, 20)
 	if _, err := rand.Read(b); err != nil {
 		return nil, err
 	}
-	for i, v := range b {
-		if v == 0 {
-			// Any nonzero byte does; the salt's job is freshness, not a uniform distribution.
-			b[i] = 1
-		}
+	for i := range b {
+		b[i] = 0x21 + b[i]%94
 	}
 	return b, nil
 }

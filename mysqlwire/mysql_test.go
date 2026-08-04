@@ -76,8 +76,8 @@ func TestServerGreetingTLSCapabilities(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParseHandshakeV10: %v", err)
 	}
-	// connectWithDB=false (e.g. pmon's local broker, which does not forward a handshake-supplied
-	// database upstream) must not advertise CONNECT_WITH_DB — advertising it would let a client's
+	// connectWithDB=false must not advertise CONNECT_WITH_DB: an importer that does not forward a
+	// handshake-supplied database upstream passes false, and advertising it would let a client's
 	// selected database be silently dropped.
 	if greeting.Capabilities&CapConnectWithDB != 0 {
 		t.Fatalf("server capabilities = %#x, want CONNECT_WITH_DB not advertised", greeting.Capabilities)
@@ -539,10 +539,12 @@ func TestErrPacketRetainsExistingBytes(t *testing.T) {
 	}
 }
 
-// TestScrambleHasNoNUL: the wire sends a scramble NUL-terminated, so a client reading it as a C
-// string would hash a truncated salt and disagree with the server. A uniformly random 20 bytes
-// carries a NUL about 7.5% of the time, which is an auth failure that goes away on retry.
-func TestScrambleHasNoNUL(t *testing.T) {
+// TestScrambleIsPrintableASCII: the scramble must stay inside MySQL's own printable range
+// (0x21..0x7e). A NUL truncates the salt for a client that reads it as a C string; a byte >= 0x80 is
+// mangled by a client that decodes the auth-plugin-data as text (MySQL Connector/J, and so DBeaver),
+// which breaks its password digest. A uniformly random 20 bytes leaves the range ~55% of the time, so
+// the failure looks constant rather than intermittent — hence the whole range is asserted, not just NUL.
+func TestScrambleIsPrintableASCII(t *testing.T) {
 	seen := map[string]bool{}
 	for i := 0; i < 2000; i++ {
 		s, err := Scramble()
@@ -552,8 +554,10 @@ func TestScrambleHasNoNUL(t *testing.T) {
 		if len(s) != 20 {
 			t.Fatalf("len = %d, want 20", len(s))
 		}
-		if bytes.IndexByte(s, 0) >= 0 {
-			t.Fatalf("scramble contains a NUL: % x", s)
+		for _, c := range s {
+			if c < 0x21 || c > 0x7e {
+				t.Fatalf("scramble byte %#x outside printable ASCII 0x21..0x7e: % x", c, s)
+			}
 		}
 		seen[string(s)] = true
 	}

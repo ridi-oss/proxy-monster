@@ -190,7 +190,7 @@ var mysqlStatements = []mysqlStatement{
 	{"ALTER TABLESPACE", "ALTER TABLESPACE ts RENAME TO ts2", "unanalyzable→sql.unanalyzable"},
 	{"ALTER INSTANCE", "ALTER INSTANCE ROTATE INNODB MASTER KEY", "unanalyzable→sql.unanalyzable"},
 	{"DROP TABLE", "DROP TABLE users", "sql.ddl + unanalyzable→sql.unanalyzable"},
-	{"DROP INDEX", "DROP INDEX i ON users", "unanalyzable→sql.unanalyzable"},
+	{"DROP INDEX", "DROP INDEX i ON users", "sql.ddl + unanalyzable→sql.unanalyzable"}, // sqlglot-go v0.22.0: parses as a structured Drop (was Command)
 	{"DROP VIEW", "DROP VIEW v", "sql.ddl + unanalyzable→sql.unanalyzable"},
 	{"DROP DATABASE", "DROP DATABASE d", "sql.ddl + unanalyzable→sql.unanalyzable"},
 	{"DROP TRIGGER", "DROP TRIGGER trg", "sql.ddl + unanalyzable→sql.unanalyzable"},

@@ -76,9 +76,9 @@ func TestServerGreetingTLSCapabilities(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParseHandshakeV10: %v", err)
 	}
-	// connectWithDB=false (e.g. pmon's local broker, which does not forward a handshake-supplied
-	// database upstream) must not advertise CONNECT_WITH_DB — advertising it would let a client's
-	// selected database be silently dropped.
+	// connectWithDB=false is for an importer that does nothing with a handshake-supplied database, and
+	// must not advertise CONNECT_WITH_DB — advertising it without relaying the field would let a
+	// client's selected database be silently dropped.
 	if greeting.Capabilities&CapConnectWithDB != 0 {
 		t.Fatalf("server capabilities = %#x, want CONNECT_WITH_DB not advertised", greeting.Capabilities)
 	}
@@ -86,8 +86,9 @@ func TestServerGreetingTLSCapabilities(t *testing.T) {
 
 func TestServerGreetingConnectWithDBOptIn(t *testing.T) {
 	scramble := bytes.Repeat([]byte{0x42}, 20)
-	// connectWithDB=true (e.g. goproxy/mysqlproxy, which relays a handshake-supplied database to the
-	// backend as COM_INIT_DB) must advertise CONNECT_WITH_DB, or a real client that gates writing the
+	// connectWithDB=true (both importers here: goproxy/mysqlproxy relays a handshake-supplied database
+	// to its backend as COM_INIT_DB, pmon's local broker to the proxy upstream) must advertise
+	// CONNECT_WITH_DB, or a real client that gates writing the
 	// database field on server-advertised support (unlike go-sql-driver/mysql, which writes it
 	// unconditionally) will set its own CapConnectWithDB bit without ever including the field.
 	greeting, err := ParseHandshakeV10(ServerGreetingSSL(7, scramble, "8.0.40-test", true))
@@ -269,13 +270,12 @@ func TestParseHandshakeResponseAuthModes(t *testing.T) {
 	}
 }
 
-// TestParseHandshakeResponseIgnoresUnsupportedConnectWithDB reproduces a real mysql CLI against this
-// proxy: it sets its own CapConnectWithDB bit whenever a database was given on the command line, but
-// only WRITES the database field when the SERVER'S greeting advertised that capability. Since
-// serverGreetingCapabilities never advertises CapConnectWithDB, a real client still reports the bit
-// but sends nothing for it — auth-response is directly followed by its plugin name, no database field
-// at all. connectWithDBSupported=false (what this proxy passes) must not misread that plugin name as
-// the database.
+// TestParseHandshakeResponseIgnoresUnsupportedConnectWithDB reproduces a real mysql CLI against a
+// greeting that did NOT advertise the capability: the client sets its own CapConnectWithDB bit whenever
+// a database was given on the command line, but only WRITES the database field when the SERVER'S
+// greeting advertised that capability. So the bit is reported with nothing behind it — auth-response is
+// directly followed by the plugin name, no database field at all — and connectWithDBSupported=false
+// must not misread that plugin name as the database.
 func TestParseHandshakeResponseIgnoresUnsupportedConnectWithDB(t *testing.T) {
 	caps := uint32(CapProtocol41 | CapSecureConn | CapPluginAuth | CapConnectWithDB)
 	var b []byte

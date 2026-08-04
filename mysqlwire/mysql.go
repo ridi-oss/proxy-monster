@@ -146,12 +146,13 @@ const serverGreetingCapabilities = uint32(CapLongPassword | CapProtocol41 | CapS
 // NUL-terminated version string the greeting reports to the client.
 //
 // connectWithDB must reflect what THIS importer actually does with a handshake-supplied database, not
-// a package-wide default: a real client (e.g. the mysql CLI) still sets its OWN CapConnectWithDB bit
-// whenever it was given a database, but only WRITES the database field when the server's greeting
-// advertised the capability — declare it here without also relaying the field upstream (ports
-// ParseHandshakeResponse's connectWithDBSupported through to a real COM_INIT_DB, as goproxy's
-// mysqlproxy does) and a client's selected database is silently dropped. pmon's local broker does not
-// relay it and must pass false; goproxy/mysqlproxy does and passes true.
+// a package-wide default, and the two failure modes are opposite. A real client (e.g. the mysql CLI)
+// sets its OWN CapConnectWithDB bit whenever it was given a database, but only WRITES the database
+// field when the server's greeting advertised the capability. So declaring it without relaying the
+// field onward (porting ParseHandshakeResponse's connectWithDBSupported through to a real COM_INIT_DB)
+// drops a client's selected database, and NOT declaring it means the field never arrives to relay in
+// the first place — either way the client silently gets the default schema. Both importers here relay
+// it and pass true: goproxy/mysqlproxy to its backend, pmon's local broker to the proxy upstream.
 func ServerGreeting(connID uint32, scramble []byte, serverVersion string, connectWithDB bool) []byte {
 	return serverGreeting(connID, scramble, serverVersion, greetingCapabilities(connectWithDB))
 }

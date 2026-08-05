@@ -4,7 +4,6 @@ import com.ridi.oss.proxymonster.controlplane.Attached
 import com.ridi.oss.proxymonster.controlplane.AttachedTableDetail
 import com.ridi.oss.proxymonster.controlplane.AuditEvent
 import com.ridi.oss.proxymonster.controlplane.CatalogColumn
-import com.ridi.oss.proxymonster.controlplane.FragmentColumn
 import com.ridi.oss.proxymonster.controlplane.Binding
 import com.ridi.oss.proxymonster.controlplane.CatalogMutationResult
 import com.ridi.oss.proxymonster.controlplane.Channel
@@ -13,7 +12,6 @@ import com.ridi.oss.proxymonster.controlplane.DatasourceEngineConflictException
 import com.ridi.oss.proxymonster.controlplane.catalogIsConnectionIndependent
 import com.ridi.oss.proxymonster.controlplane.catalogName
 import com.ridi.oss.proxymonster.controlplane.EnforcementOutcome
-import com.ridi.oss.proxymonster.controlplane.DatasourceStore
 import com.ridi.oss.proxymonster.controlplane.TokenKind
 import com.ridi.oss.proxymonster.controlplane.decideConnection
 import com.ridi.oss.proxymonster.controlplane.inTx
@@ -378,31 +376,9 @@ class ControlPlaneGrpcService(
             ?: throw StatusException(
                 Status.NOT_FOUND.withDescription("unknown datasource '${request.datasourceName}' — Register first"),
             )
-        val pushedColumns = request.columnsList.map {
-            DatasourceStore.PushedColumn(it.schema, it.table, it.column, it.dataType, it.ordinal, it.nullable)
-        }
-        val mysqlLowerCaseTableNames =
-            if (request.hasMysqlLowerCaseTableNames()) request.mysqlLowerCaseTableNames else null
-        val stored = core.datasourceStore.storePushedCatalog(
-            id = ds.id,
-            defaultSchemas = request.defaultSchemasList,
-            mysqlLowerCaseTableNames = mysqlLowerCaseTableNames,
-            engineVersion = request.engineVersion,
-            columns = pushedColumns,
-        )
-        // This push is a fresh whole-catalog read of the backend, so where it agrees with content the
-        // enforcement pool already holds it re-measures that content — the ambient refresh keeps held
-        // fragments verified instead of only feeding the config catalog, and a connection is not made to
-        // re-probe a schema the proxy just confirmed.
-        val confirmed = core.connectionCatalog.recordAmbientMeasurement(
-            ds.name,
-            pushedColumns.groupBy({ it.schema }) {
-                FragmentColumn(it.schema, it.table, it.column, it.dataType, it.ordinal, it.nullable)
-            },
-        )
-        if (confirmed.isNotEmpty()) {
-            log.debug("datasource '{}': ambient refresh re-verified {} pooled schema(s)", ds.name, confirmed.size)
-        }
+        // The manager owns every catalog store, so this handler holds no catalog logic: it hands the reading
+        // over whole and reports back what the manager could not resolve.
+        val stored = core.connectionCatalog.applyConfigCatalog(request, ds)
         // Which shipped system-classification manifest governs THIS datasource, resolved from the version the
         // proxy just pushed — so an operator sees at connect time whether its system schemas are classified,
         // on a fallback major, or uncertified (deny-by-default). Boot logs the available set; this logs the hit.
@@ -411,7 +387,10 @@ class ControlPlaneGrpcService(
             ds.name,
             core.systemClassification.describeManifestFor(ds.engine, request.engineVersion),
         )
-        return catalogResponse { columns = stored }
+        return catalogResponse {
+            columns = stored.columns
+            fetchSchemas.addAll(stored.fetchSchemas)
+        }
     }
 
     /**

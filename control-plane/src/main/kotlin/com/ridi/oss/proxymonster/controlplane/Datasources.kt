@@ -148,9 +148,16 @@ fun sqlTypeFor(dataType: String): String = when (dataType.lowercase().trim()) {
 
 // ---- Store -------------------------------------------------------------------------------
 
-class DatasourceStore(internal val dataSource: DataSource) {
+class DatasourceStore(internal val dataSource: DataSource) : CatalogProjection {
     private val json = Json
     private val stringList = ListSerializer(String.serializer())
+
+    override fun projectSchemas(
+        datasourceId: Long,
+        observations: List<ProjectedObservation>,
+        namespaceComplete: Boolean,
+        namespace: ProjectedNamespace?,
+    ): Int = projectCatalogSchemas(datasourceId, observations, namespaceComplete, namespace)
 
     companion object {
         /** The `system:` tag namespace is owned by the shipped classification manifests — user column tags may not use it. */
@@ -321,8 +328,15 @@ class DatasourceStore(internal val dataSource: DataSource) {
                 // `catalogCleared` reflects the ATOMIC old→new transition (RETURNING catalog_synced_at IS NULL),
                 // not the pre-read `prior`, so it's race-free; the delete is idempotent (a fresh insert or a
                 // same-db_name re-register has no rows to drop). A host/port-only move keeps the catalog.
+                // The versions go with the rows. A version left behind describes a reading of the database
+                // that is no longer there, and the ordering rule would then measure the new target's first
+                // reading against the old target's clock — on a backend whose clock runs behind, silently
+                // refusing the only reading that describes what is actually there.
                 if (catalogCleared) {
                     c.prepareStatement("DELETE FROM catalog_column WHERE datasource_id = ?").use { ps ->
+                        ps.setLong(1, upsertedId); ps.executeUpdate()
+                    }
+                    c.prepareStatement("DELETE FROM catalog_schema WHERE datasource_id = ?").use { ps ->
                         ps.setLong(1, upsertedId); ps.executeUpdate()
                     }
                 }
@@ -354,11 +368,12 @@ class DatasourceStore(internal val dataSource: DataSource) {
     )
 
     /**
-     * gRPC PushCatalog: replace datasource [id]'s catalog with the columns the PROXY introspected and
-     * pushed — the control-plane never connects to the target itself (that's the headline of this design).
-     * Transactionally delete-then-batch-insert `catalog_column` (deriving each `sql_type` from the raw
-     * `data_type` via [sqlTypeFor]), then stamp the connection's live `default_schemas` /
-     * `mysql_lower_case_table_names` / `catalog_synced_at`. Returns the number of columns stored.
+     * Replace datasource [id]'s whole catalog with [columns] and stamp its namespace fields — the shape of
+     * an unversioned whole-server reading, which is what a caller holding the complete column set has.
+     *
+     * Expressed through the per-schema projection rather than beside it, so there is one place that writes
+     * `catalog_column`. The reading carries no version, so nothing orders it and nothing is left behind to
+     * order the next one against; enumerating the whole server is what lets it delete the schemas it omits.
      */
     fun storePushedCatalog(
         id: Long,
@@ -367,50 +382,77 @@ class DatasourceStore(internal val dataSource: DataSource) {
         engineVersion: String,
         columns: List<PushedColumn>,
     ): Int {
+        val bySchema = columns.groupBy { it.schema }
+        projectCatalogSchemas(
+            id,
+            bySchema.map { (schema, rows) -> ProjectedObservation(schema, rows, version = null) },
+            namespaceComplete = true,
+            namespace = ProjectedNamespace(defaultSchemas, mysqlLowerCaseTableNames, engineVersion),
+        )
+        return columns.size
+    }
+
+    /**
+     * The manager's persisted projection: replace exactly the schemas a reading spoke for, and record the
+     * version behind each.
+     *
+     * Per schema rather than whole-table, because the readings are per schema. A whole-table
+     * delete-and-insert would make every reading speak for every schema — a connection's measurement of one
+     * schema would erase the rest, and a scan overtaken by a newer connection measurement would erase that
+     * one's newer rows on its way past.
+     *
+     * The version guards the write the same way it guards the in-memory pointer: a reading older than the
+     * one behind the stored rows leaves them alone. Rows and version move together in one transaction, so
+     * the stored version always describes the stored rows.
+     */
+    fun projectCatalogSchemas(
+        id: Long,
+        observations: List<ProjectedObservation>,
+        namespaceComplete: Boolean,
+        namespace: ProjectedNamespace?,
+    ): Int {
+        var written = 0
         dataSource.connection.use { c ->
             c.autoCommit = false
             try {
-                // Lock the datasource row so concurrent pushes (multiple proxy replicas fronting one name)
-                // serialize instead of interleaving their DELETE/INSERT — otherwise the second push's insert
-                // races the first's delete and trips the (datasource, schema, table, column) UNIQUE. Also
-                // doubles as the disappeared-datasource check.
+                // Serializes concurrent pushes for one datasource, exactly as the whole-table writer did:
+                // two interleaved per-schema replacements would otherwise race delete against insert and
+                // trip the (datasource, schema, table, column) UNIQUE. Also the disappeared-datasource check.
                 c.prepareStatement("SELECT id FROM datasource WHERE id = ? FOR UPDATE").use { ps ->
                     ps.setLong(1, id)
                     ps.executeQuery().use { rs -> check(rs.next()) { "datasource $id disappeared before catalog push" } }
                 }
-                c.prepareStatement("DELETE FROM catalog_column WHERE datasource_id = ?").use { ps ->
-                    ps.setLong(1, id); ps.executeUpdate()
-                }
-                c.prepareStatement(
-                    """INSERT INTO catalog_column
-                       (datasource_id, schema_name, table_name, column_name, data_type, sql_type, ordinal, nullable)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-                ).use { ps ->
-                    for (col in columns) {
-                        ps.setLong(1, id)
-                        ps.setString(2, col.schema)
-                        ps.setString(3, col.table)
-                        ps.setString(4, col.column)
-                        ps.setString(5, col.dataType)
-                        ps.setString(6, sqlTypeFor(col.dataType))
-                        ps.setInt(7, col.ordinal)
-                        ps.setBoolean(8, col.nullable)
-                        ps.addBatch()
+                val storedVersions = catalogSchemaVersions(id, c)
+                for (observation in observations) {
+                    val stored = storedVersions[observation.schema]
+                    val version = observation.version
+                    val order = version?.let { orderReading(stored, it) }
+                    // A reading of the SAME content is not stale — it re-observes what is stored, so the
+                    // rows stand and only the version's clock moves forward. Skipping it outright would
+                    // leave the stored version reading older than the backend was last proved to be, and
+                    // the next genuine reading would then be ordered against that understated clock.
+                    if (order == ReadingOrder.STALE) continue
+                    if (order != ReadingOrder.SAME) {
+                        observation.columns?.let { columns ->
+                            replaceSchemaColumns(c, id, observation.schema, columns)
+                            written += columns.size
+                        }
                     }
-                    ps.executeBatch()
+                    if (version != null) {
+                        writeSchemaVersion(
+                            c, id, observation.schema,
+                            if (order == ReadingOrder.SAME && stored != null) {
+                                version.copy(dbClockMicros = maxOf(stored.dbClockMicros, version.dbClockMicros))
+                            } else {
+                                version
+                            },
+                        )
+                    }
                 }
-                c.prepareStatement(
-                    """UPDATE datasource
-                       SET default_schemas = ?::jsonb, mysql_lower_case_table_names = ?, engine_version = ?,
-                           catalog_synced_at = now()
-                       WHERE id = ?""",
-                ).use { ps ->
-                    ps.setString(1, json.encodeToString(stringList, defaultSchemas))
-                    setNullableInt(ps, 2, mysqlLowerCaseTableNames)
-                    ps.setString(3, engineVersion.ifBlank { null })
-                    ps.setLong(4, id)
-                    check(ps.executeUpdate() == 1) { "datasource $id disappeared during catalog push" }
+                if (namespaceComplete) {
+                    deleteSchemasAbsentFrom(c, id, observations.map { it.schema }.toSet())
                 }
+                namespace?.let { writeNamespace(c, id, it) }
                 c.commit()
             } catch (e: Exception) {
                 c.rollback(); throw e
@@ -418,7 +460,104 @@ class DatasourceStore(internal val dataSource: DataSource) {
                 c.autoCommit = true
             }
         }
-        return columns.size
+        return written
+    }
+
+    /** The version behind each schema's stored rows, for the ordering check. */
+    private fun catalogSchemaVersions(id: Long, c: java.sql.Connection): Map<String, ReadingVersion> =
+        c.prepareStatement(
+            "SELECT schema_name, hash, db_clock_micros, backend_id FROM catalog_schema WHERE datasource_id = ?",
+        ).use { ps ->
+            ps.setLong(1, id)
+            ps.executeQuery().use { rs ->
+                val out = HashMap<String, ReadingVersion>()
+                while (rs.next()) {
+                    out[rs.getString(1)] = ReadingVersion(
+                        ContentHash(com.google.protobuf.ByteString.copyFrom(rs.getBytes(2))),
+                        rs.getLong(3),
+                        rs.getString(4),
+                    )
+                }
+                out
+            }
+        }
+
+    private fun replaceSchemaColumns(c: java.sql.Connection, id: Long, schema: String, columns: List<PushedColumn>) {
+        c.prepareStatement("DELETE FROM catalog_column WHERE datasource_id = ? AND schema_name = ?").use { ps ->
+            ps.setLong(1, id); ps.setString(2, schema); ps.executeUpdate()
+        }
+        c.prepareStatement(
+            """INSERT INTO catalog_column
+               (datasource_id, schema_name, table_name, column_name, data_type, sql_type, ordinal, nullable)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+        ).use { ps ->
+            for (col in columns) {
+                ps.setLong(1, id)
+                ps.setString(2, col.schema)
+                ps.setString(3, col.table)
+                ps.setString(4, col.column)
+                ps.setString(5, col.dataType)
+                ps.setString(6, sqlTypeFor(col.dataType))
+                ps.setInt(7, col.ordinal)
+                ps.setBoolean(8, col.nullable)
+                ps.addBatch()
+            }
+            ps.executeBatch()
+        }
+    }
+
+    private fun writeSchemaVersion(c: java.sql.Connection, id: Long, schema: String, version: ReadingVersion) {
+        c.prepareStatement(
+            """INSERT INTO catalog_schema (datasource_id, schema_name, hash, db_clock_micros, backend_id, observed_at)
+               VALUES (?, ?, ?, ?, ?, now())
+               ON CONFLICT (datasource_id, schema_name) DO UPDATE SET
+                   hash = EXCLUDED.hash,
+                   db_clock_micros = EXCLUDED.db_clock_micros,
+                   backend_id = EXCLUDED.backend_id,
+                   observed_at = EXCLUDED.observed_at""",
+        ).use { ps ->
+            ps.setLong(1, id)
+            ps.setString(2, schema)
+            ps.setBytes(3, version.hash.bytes.toByteArray())
+            ps.setLong(4, version.dbClockMicros)
+            ps.setString(5, version.backendId)
+            ps.executeUpdate()
+        }
+    }
+
+    /** Only ever reached for a reading that enumerated the whole server — the caller establishes that. */
+    private fun deleteSchemasAbsentFrom(c: java.sql.Connection, id: Long, present: Set<String>) {
+        val stored = c.prepareStatement("SELECT DISTINCT schema_name FROM catalog_column WHERE datasource_id = ?").use { ps ->
+            ps.setLong(1, id)
+            ps.executeQuery().use { rs ->
+                val out = ArrayList<String>()
+                while (rs.next()) out += rs.getString(1)
+                out
+            }
+        }
+        for (schema in stored.filterNot { it in present }) {
+            c.prepareStatement("DELETE FROM catalog_column WHERE datasource_id = ? AND schema_name = ?").use { ps ->
+                ps.setLong(1, id); ps.setString(2, schema); ps.executeUpdate()
+            }
+            c.prepareStatement("DELETE FROM catalog_schema WHERE datasource_id = ? AND schema_name = ?").use { ps ->
+                ps.setLong(1, id); ps.setString(2, schema); ps.executeUpdate()
+            }
+        }
+    }
+
+    private fun writeNamespace(c: java.sql.Connection, id: Long, namespace: ProjectedNamespace) {
+        c.prepareStatement(
+            """UPDATE datasource
+               SET default_schemas = ?::jsonb, mysql_lower_case_table_names = ?, engine_version = ?,
+                   catalog_synced_at = now()
+               WHERE id = ?""",
+        ).use { ps ->
+            ps.setString(1, json.encodeToString(stringList, namespace.defaultSchemas))
+            setNullableInt(ps, 2, namespace.mysqlLowerCaseTableNames)
+            ps.setString(3, namespace.engineVersion.ifBlank { null })
+            ps.setLong(4, id)
+            check(ps.executeUpdate() == 1) { "datasource $id disappeared during catalog push" }
+        }
     }
 
     fun create(input: DatasourceInput): Datasource {
@@ -443,6 +582,9 @@ class DatasourceStore(internal val dataSource: DataSource) {
      *  both leave a catalog that now describes a DIFFERENT schema, a fail-OPEN unless invalidated. */
     private fun invalidateCatalog(c: java.sql.Connection, id: Long) {
         c.prepareStatement("DELETE FROM catalog_column WHERE datasource_id = ?").use { ps ->
+            ps.setLong(1, id); ps.executeUpdate()
+        }
+        c.prepareStatement("DELETE FROM catalog_schema WHERE datasource_id = ?").use { ps ->
             ps.setLong(1, id); ps.executeUpdate()
         }
         c.prepareStatement(

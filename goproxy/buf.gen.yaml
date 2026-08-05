@@ -1,9 +1,7 @@
 version: v2
-# Managed mode injects go_package (the shared controlplane.proto carries no Go options and only
-# declares java_package) — the .proto stays untouched. Regenerate with an explicit --path for
-# controlplane.proto only, so this module's codegen never picks up analyzer.proto (owned by
-# analyzer/buf.gen.yaml):
-#   cd goproxy && buf generate ../proto/src/main/proto --path ../proto/src/main/proto/controlplane.proto
+# The Mcontrolplane.proto option supplies the Go package without modifying the shared contract.
+# `mise run proto-generate` scopes this module to controlplane.proto so it never picks up
+# analyzer.proto (owned by analyzer/buf.gen.yaml).
 #
 # controlplane.proto imports the shared engine.proto (proxymonster.v1.Engine) but this module does
 # NOT generate a second copy of it: goproxy links analyzer/probe into the same binary (introspect.go,
@@ -12,15 +10,10 @@ version: v2
 # init ("file already registered") the instant both packages are imported into one process. The
 # M-option below instead points engine.proto's Go package AT analyzer/probe/pb, so RegisterRequest's
 # Engine field resolves to that ALREADY-REGISTERED type — one Go type, shared, not two colliding ones.
-managed:
-  enabled: true
-  override:
-    - file_option: go_package_prefix
-      value: github.com/ridi-oss/proxy-monster/goproxy/internal/pb
 plugins:
   - local: protoc-gen-go
     out: internal/pb
-    opt: paths=source_relative,Mengine.proto=github.com/ridi-oss/proxy-monster/analyzer/probe/pb
+    opt: paths=source_relative,Mcontrolplane.proto=github.com/ridi-oss/proxy-monster/goproxy/internal/pb;proxymonsterv1,Mengine.proto=github.com/ridi-oss/proxy-monster/analyzer/probe/pb
   - local: protoc-gen-go-grpc
     out: internal/pb
-    opt: paths=source_relative
+    opt: paths=source_relative,Mcontrolplane.proto=github.com/ridi-oss/proxy-monster/goproxy/internal/pb;proxymonsterv1,Mengine.proto=github.com/ridi-oss/proxy-monster/analyzer/probe/pb

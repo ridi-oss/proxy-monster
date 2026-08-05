@@ -13,6 +13,10 @@ java = "temurin-24.0.2"
 # Gradle build; matches analyzer/go.mod. (Zig — the Linux cross C compiler for the all-targets fat-jar
 # build, -Psqlglot.native.all=true — is only needed for that; add it when CI is wired.)
 go = "1.26"
+# Go protobuf generation. Buf provides the compiler; the two local plugins emit the checked-in Go files.
+buf = "1.72.0"
+protoc-gen-go = "1.35.2"
+protoc-gen-go-grpc = "1.5.1"
 # web/ (Next.js). Pinned rather than "whatever's on PATH" so `pnpm install`'s lockfile resolution
 # and `next build` behavior stay reproducible across machines. Match web/Dockerfile's base image +
 # corepack pin when bumping either.
@@ -165,6 +169,36 @@ BANNER
 wait
 '''
 
+[tasks.proto-generate]
+description = "Regenerate the checked-in Go protobuf bindings"
+shell = "bash -c"
+run = '''
+set -euo pipefail
+(cd analyzer && buf generate ../proto/src/main/proto --path ../proto/src/main/proto/analyzer.proto --path ../proto/src/main/proto/engine.proto)
+(cd goproxy && buf generate ../proto/src/main/proto --path ../proto/src/main/proto/controlplane.proto)
+'''
+
+[tasks.proto-check]
+description = "Verify the checked-in Go protobuf bindings are current"
+shell = "bash -c"
+run = '''
+set -euo pipefail
+files=(
+  analyzer/probe/pb/analyzer.pb.go
+  analyzer/probe/pb/engine.pb.go
+  goproxy/internal/pb/controlplane.pb.go
+  goproxy/internal/pb/controlplane_grpc.pb.go
+)
+before=$(git hash-object "${files[@]}")
+mise run proto-generate
+after=$(git hash-object "${files[@]}")
+if [ "$before" != "$after" ]; then
+  git diff -- "${files[@]}"
+  echo "Go protobuf bindings are stale; run: mise run proto-generate" >&2
+  exit 1
+fi
+'''
+
 [tasks.lint]
 description = "Lint: prettier over docs/config (md, json, yaml, css) + eslint over the web sources"
 shell = "bash -c"
@@ -194,6 +228,7 @@ shell = "bash -c"
 run = '''
 set -euo pipefail
 mise run lint
+mise run proto-check
 # The JVM tests are DB-backed (Testcontainers) and fail rather than skip, so Docker must be running.
 # --no-daemon: a shared Gradle daemon is machine-wide state, so a build here can recycle a JVM another
 # process depends on. Without it, this gate is not self-contained.

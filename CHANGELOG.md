@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.1.8](https://github.com/ridi-oss/proxy-monster/compare/server-v0.1.7...server-v0.1.8) (2026-08-05)
+
+
+### Features
+
+* **control-plane:** audit config-change admin actions ([#115](https://github.com/ridi-oss/proxy-monster/issues/115)) ([2f259f9](https://github.com/ridi-oss/proxy-monster/commit/2f259f94d02b7870f0d7bcf4bd204d64a5eb5149))
+
+
+### Bug Fixes
+
+* **control-plane:** view an authorized passthrough result instead of denying it ([#112](https://github.com/ridi-oss/proxy-monster/issues/112)) ([fd467e7](https://github.com/ridi-oss/proxy-monster/commit/fd467e7608c01b16e652a04255bc2c26aea326a1))
+
 ## [0.1.7](https://github.com/ridi-oss/proxy-monster/compare/server-v0.1.6...server-v0.1.7) (2026-08-05)
 
 

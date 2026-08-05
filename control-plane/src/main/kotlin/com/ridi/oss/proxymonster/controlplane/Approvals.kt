@@ -231,7 +231,23 @@ internal fun decideResultView(
         return ResultViewDecision.Denied(ctx.denyReason ?: ctx.detail ?: "view decision denied")
     }
     if (ctx.passthrough) {
-        return ResultViewDecision.Denied("stored query result re-decided as passthrough")
+        // The re-decision already ran full Cedar authorization under {R} in the viewer's live context and
+        // returned non-DENY (checked above). A passthrough carries no column-masking model — there is nothing
+        // to narrow for the viewer — so "authorized to run" IS "authorized to see the raw output": that is the
+        // definition of the sql.unanalyzable relay and of an authorized SHOW/DESCRIBE. Release the stored
+        // bytes; a viewer whose context should forbid it got DENY above. Context-sensitivity of unmasked
+        // relays / critical-utility reads belongs in their Cedar grants, not a hardcoded view gate.
+        //
+        // Every decideQuery passthrough site constructs ALLOW with no masks (a passthrough has no column
+        // model to mask). Assert it here so a future passthrough that ever carried a MASK verdict fails
+        // CLOSED rather than releasing its stored bytes unmasked.
+        if (ctx.action != EnfAction.ALLOW || ctx.masks.isNotEmpty()) {
+            return ResultViewDecision.Denied("passthrough result carries a masking verdict")
+        }
+        if (decrypted.rows.any { it.size != decrypted.columns.size }) {
+            return ResultViewDecision.Denied("stored result row width does not match its columns")
+        }
+        return ResultViewDecision.Allowed(decrypted.columns, decrypted.rows)
     }
     if (
         ctx.outputColumns.size != decrypted.columns.size ||

@@ -468,12 +468,38 @@ class ApprovalResultViewContextDbTest {
     }
 
     @Test
-    fun `a stored query result that re-decides as passthrough is denied without sentinel data`() = testApplication {
+    fun `an authorized passthrough result is released to the viewer`() = testApplication {
+        // A passthrough (SHOW / DESCRIBE / a session-config read) carries no column-masking model, so the view
+        // has nothing to narrow. Once the live re-decision under {R} authorizes the statement, "authorized to
+        // run" is "authorized to see" — the stored bytes are released as-is. The DENY branch is the boundary
+        // (see the SET and ungranted-table cases below), not a blanket passthrough deny.
         resetMutableAuthzState()
-        val sentinel = "LEAK-SENTINEL-PASSTHROUGH"
+        val value = "reporting, public"
         val id = seedResult(
             sql = "SHOW search_path",
             columns = listOf("search_path"),
+            rows = listOf(listOf(value)),
+        )
+        val client = wire()
+        client.login(executor)
+
+        val response = client.get("/api/approvals/$id/result")
+        assertEquals(HttpStatusCode.OK, response.status)
+        val view = response.body<QueryResultView>()
+        assertEquals(listOf("search_path"), view.columns)
+        assertEquals(value, view.rows.single().single())
+    }
+
+    @Test
+    fun `a passthrough that re-decides DENY is still refused without stored data`() = testApplication {
+        // Dropping the blanket passthrough deny must not widen the DENY branch: a session statement re-decides
+        // DENY on the workflow-viewer channel (each view runs on a fresh connection, no session to mutate), so
+        // its stored bytes stay locked.
+        resetMutableAuthzState()
+        val sentinel = "LEAK-SENTINEL-SESSION"
+        val id = seedResult(
+            sql = "SET search_path TO reporting",
+            columns = listOf("ok"),
             rows = listOf(listOf(sentinel)),
         )
         val client = wire()
@@ -483,7 +509,7 @@ class ApprovalResultViewContextDbTest {
         assertEquals(HttpStatusCode.Forbidden, response.status)
         val responseBody = response.bodyAsText()
         assertEquals("approval.result_view_denied", Json.decodeFromString<ApiError>(responseBody).code)
-        assertFalse(responseBody.contains(sentinel), "a passthrough decision must never release stored values")
+        assertFalse(responseBody.contains(sentinel), "a denied passthrough must not release stored values")
     }
 
     @Test

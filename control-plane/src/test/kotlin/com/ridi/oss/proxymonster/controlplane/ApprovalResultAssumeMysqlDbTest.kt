@@ -163,4 +163,93 @@ class ApprovalResultAssumeMysqlDbTest {
         assertEquals("rrn", viewedOffNetwork.masks.single().column)
         assertEquals(EnfAction.ALLOW, decide(Channel.WORKFLOW_VIEWER, "100.100.1.10").action)
     }
+
+    @Test
+    fun `an authorized passthrough result is released as-is`() {
+        // SHOW CREATE TABLE (and every SHOW / DESCRIBE) re-decides as an ALLOW passthrough — it carries no
+        // column-masking model, so the view has nothing to narrow. Once the live re-decision under {R}
+        // authorizes it, "authorized to run" is "authorized to see": the stored bytes are released verbatim
+        // rather than fail-closing on "re-decided as passthrough".
+        val ddl = "CREATE TABLE `users` (\n  `rrn` varchar(20) DEFAULT NULL\n)"
+        val stored = DecryptedResult(listOf("Table", "Create Table"), listOf(listOf("users", ddl)))
+        val redecide = decideQuery(
+            principal = requester, ds = datasource, sql = "SHOW CREATE TABLE users", channel = Channel.EDITOR,
+            catalog = fx.datasourceStore.catalog(datasource.id), policyStore = fx.policyStore,
+            accessStore = fx.accessStore, userGroupStore = fx.userGroupStore, roleResolver = fx.roleResolver,
+            authz = fx.authz, providedRoles = setOf(roleName), context = AuthzContext(requesterIp = "100.99.1.10"),
+        )
+        assertEquals(EnfAction.ALLOW, redecide.action)
+        assertTrue(redecide.passthrough, "SHOW CREATE TABLE re-decides as a passthrough")
+
+        val view = decideResultView(
+            viewer = requester,
+            req = request(),
+            childSql = "SHOW CREATE TABLE users",
+            ds = datasource,
+            decrypted = stored,
+            callerContext = AuthzContext(requesterIp = "100.99.1.10"),
+            datasourceStore = fx.datasourceStore,
+            policyStore = fx.policyStore,
+            accessStore = fx.accessStore,
+            userGroupStore = fx.userGroupStore,
+            roleResolver = fx.roleResolver,
+            authz = fx.authz,
+            systemClassification = null,
+            channel = Channel.EDITOR,
+        )
+        val allowed = assertIs<ResultViewDecision.Allowed>(view)
+        assertEquals(listOf("Table", "Create Table"), allowed.columns)
+        assertEquals(listOf(listOf("users", ddl)), allowed.rows)
+        assertTrue(allowed.maskedColumns.isEmpty(), "a passthrough view masks nothing")
+    }
+
+    @Test
+    fun `a passthrough that re-decides DENY via Cedar is refused, not released`() {
+        // A passthrough is released only when the live re-decision authorizes it. Under a development-only
+        // role with no datasource.connect on this system:production datasource, SHOW CREATE TABLE re-decides
+        // DENY at the Cedar connect gate, so the view refuses it — the DENY branch, not a blanket passthrough
+        // deny. (Contrast the released-as-is case above, which runs under the connect-holding {R}.)
+        val stored = DecryptedResult(listOf("Table", "Create Table"), listOf(listOf("users", "CREATE TABLE `users` ()")))
+        val view = decideResultView(
+            viewer = requester,
+            req = request().copy(roleName = "system:development-viewer", executeAs = listOf("system:development-viewer")),
+            childSql = "SHOW CREATE TABLE users",
+            ds = datasource,
+            decrypted = stored,
+            callerContext = AuthzContext(requesterIp = "100.99.1.10"),
+            datasourceStore = fx.datasourceStore,
+            policyStore = fx.policyStore,
+            accessStore = fx.accessStore,
+            userGroupStore = fx.userGroupStore,
+            roleResolver = fx.roleResolver,
+            authz = fx.authz,
+            systemClassification = null,
+            channel = Channel.EDITOR,
+        )
+        assertIs<ResultViewDecision.Denied>(view)
+    }
+
+    @Test
+    fun `a passthrough result with a mismatched row width is refused`() {
+        // The passthrough release path's structural check: stored bytes whose row width does not match the
+        // column count are refused rather than released (two columns, a one-cell row).
+        val stored = DecryptedResult(listOf("Table", "Create Table"), listOf(listOf("users")))
+        val view = decideResultView(
+            viewer = requester,
+            req = request(),
+            childSql = "SHOW CREATE TABLE users",
+            ds = datasource,
+            decrypted = stored,
+            callerContext = AuthzContext(requesterIp = "100.99.1.10"),
+            datasourceStore = fx.datasourceStore,
+            policyStore = fx.policyStore,
+            accessStore = fx.accessStore,
+            userGroupStore = fx.userGroupStore,
+            roleResolver = fx.roleResolver,
+            authz = fx.authz,
+            systemClassification = null,
+            channel = Channel.EDITOR,
+        )
+        assertIs<ResultViewDecision.Denied>(view)
+    }
 }

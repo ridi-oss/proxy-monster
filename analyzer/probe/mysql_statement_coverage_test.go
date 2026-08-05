@@ -129,6 +129,10 @@ type mysqlStatement struct {
 	name string
 	sql  string
 	want string
+	// kind is the StatementKind the analyzer computes from the parsed AST (TestMysqlStatementKind). It is
+	// orthogonal to want: a statement can fail closed (unanalyzable/inadmissible) yet still carry a specific
+	// kind (KILL, CREATE_USER), while a statement that parse-errors before a root exists is STMT_UNKNOWN.
+	kind pb.StatementKind
 }
 
 // mysqlStatements enumerates the MySQL statement kinds a client can send as one statement. `want` is the
@@ -140,233 +144,233 @@ type mysqlStatement struct {
 // hiding it.
 var mysqlStatements = []mysqlStatement{
 	// ---- DML (§15.2) ----
-	{"SELECT", "SELECT id FROM users", "result.read + sql.select"},
-	{"SELECT (no table)", "SELECT 1", "metadata"},
-	{"SELECT INTO OUTFILE", "SELECT id INTO OUTFILE 'f' FROM users", "result.read + sql.ddl"},
-	{"SELECT INTO DUMPFILE", "SELECT id INTO DUMPFILE 'f' FROM users", "result.read + sql.ddl"},
-	{"UNION", "SELECT id FROM users UNION SELECT id FROM users", "result.read + sql.select"},
-	{"INTERSECT", "SELECT id FROM users INTERSECT SELECT id FROM users", "result.read + sql.select"},
-	{"EXCEPT", "SELECT id FROM users EXCEPT SELECT id FROM users", "result.read + sql.select"},
-	{"TABLE", "TABLE users", "result.read + sql.select"}, // sqlglot-go v0.21.0: parses as SELECT * FROM users
-	{"VALUES", "VALUES ROW(1)", "unanalyzable→sql.unanalyzable"},
-	{"WITH (CTE)", "WITH c AS (SELECT id FROM users) SELECT id FROM c", "result.read + sql.select"},
-	{"INSERT", "INSERT INTO users (id) VALUES (1)", "sql.insert"},
-	{"INSERT SELECT", "INSERT INTO users (id) SELECT id FROM users", "result.read + sql.insert"},
-	{"INSERT ODKU", "INSERT INTO users (id) VALUES (1) ON DUPLICATE KEY UPDATE id=id", "result.read + sql.insert + sql.update"},
-	{"REPLACE", "REPLACE INTO users (id) VALUES (1)", "DENY(unspecified)"},
-	{"UPDATE", "UPDATE users SET email='x'", "sql.update"},
-	{"DELETE", "DELETE FROM users", "sql.delete"},
-	{"DO", "DO 1", "unanalyzable→sql.unanalyzable"},
-	{"CALL", "CALL p()", "DENY(unspecified)"}, // denied at the datasource loop before the unanalyzable gate
-	{"HANDLER OPEN", "HANDLER users OPEN", "unanalyzable→sql.unanalyzable"},
-	{"HANDLER READ", "HANDLER users READ FIRST", "unanalyzable→sql.unanalyzable"},
-	{"HANDLER CLOSE", "HANDLER users CLOSE", "unanalyzable→sql.unanalyzable"},
-	{"LOAD DATA", "LOAD DATA INFILE 'f' INTO TABLE users", "unanalyzable→sql.unanalyzable"},
-	{"LOAD XML", "LOAD XML INFILE 'f' INTO TABLE users", "unanalyzable→sql.unanalyzable"},
-	{"IMPORT TABLE", "IMPORT TABLE FROM 'users.sdi'", "unanalyzable→sql.unanalyzable"},
+	{"SELECT", "SELECT id FROM users", "result.read + sql.select", pb.StatementKind_STATEMENT_KIND_SELECT},
+	{"SELECT (no table)", "SELECT 1", "metadata", pb.StatementKind_STATEMENT_KIND_SELECT},
+	{"SELECT INTO OUTFILE", "SELECT id INTO OUTFILE 'f' FROM users", "result.read + sql.ddl", pb.StatementKind_STATEMENT_KIND_SELECT_INTO_OUTFILE},
+	{"SELECT INTO DUMPFILE", "SELECT id INTO DUMPFILE 'f' FROM users", "result.read + sql.ddl", pb.StatementKind_STATEMENT_KIND_SELECT_INTO_DUMPFILE},
+	{"UNION", "SELECT id FROM users UNION SELECT id FROM users", "result.read + sql.select", pb.StatementKind_STATEMENT_KIND_SET_OP},
+	{"INTERSECT", "SELECT id FROM users INTERSECT SELECT id FROM users", "result.read + sql.select", pb.StatementKind_STATEMENT_KIND_SET_OP},
+	{"EXCEPT", "SELECT id FROM users EXCEPT SELECT id FROM users", "result.read + sql.select", pb.StatementKind_STATEMENT_KIND_SET_OP},
+	{"TABLE", "TABLE users", "result.read + sql.select", pb.StatementKind_STATEMENT_KIND_SELECT}, // v0.22: parses as SELECT * FROM users, indistinguishable from SELECT
+	{"VALUES", "VALUES ROW(1)", "unanalyzable→sql.unanalyzable", pb.StatementKind_STATEMENT_KIND_VALUES},
+	{"WITH (CTE)", "WITH c AS (SELECT id FROM users) SELECT id FROM c", "result.read + sql.select", pb.StatementKind_STATEMENT_KIND_WITH_SELECT},
+	{"INSERT", "INSERT INTO users (id) VALUES (1)", "sql.insert", pb.StatementKind_STATEMENT_KIND_INSERT},
+	{"INSERT SELECT", "INSERT INTO users (id) SELECT id FROM users", "result.read + sql.insert", pb.StatementKind_STATEMENT_KIND_INSERT_SELECT},
+	{"INSERT ODKU", "INSERT INTO users (id) VALUES (1) ON DUPLICATE KEY UPDATE id=id", "result.read + sql.insert + sql.update", pb.StatementKind_STATEMENT_KIND_INSERT_ON_DUP},
+	{"REPLACE", "REPLACE INTO users (id) VALUES (1)", "DENY(unspecified)", pb.StatementKind_STATEMENT_KIND_REPLACE},
+	{"UPDATE", "UPDATE users SET email='x'", "sql.update", pb.StatementKind_STATEMENT_KIND_UPDATE},
+	{"DELETE", "DELETE FROM users", "sql.delete", pb.StatementKind_STATEMENT_KIND_DELETE},
+	{"DO", "DO 1", "unanalyzable→sql.unanalyzable", pb.StatementKind_STATEMENT_KIND_STMT_UNKNOWN},                                         // parse error
+	{"CALL", "CALL p()", "DENY(unspecified)", pb.StatementKind_STATEMENT_KIND_CALL},                                                       // denied at the datasource loop before the unanalyzable gate
+	{"HANDLER OPEN", "HANDLER users OPEN", "unanalyzable→sql.unanalyzable", pb.StatementKind_STATEMENT_KIND_STMT_UNKNOWN},                 // parse error
+	{"HANDLER READ", "HANDLER users READ FIRST", "unanalyzable→sql.unanalyzable", pb.StatementKind_STATEMENT_KIND_STMT_UNKNOWN},           // parse error
+	{"HANDLER CLOSE", "HANDLER users CLOSE", "unanalyzable→sql.unanalyzable", pb.StatementKind_STATEMENT_KIND_STMT_UNKNOWN},               // parse error
+	{"LOAD DATA", "LOAD DATA INFILE 'f' INTO TABLE users", "unanalyzable→sql.unanalyzable", pb.StatementKind_STATEMENT_KIND_STMT_UNKNOWN}, // parse error
+	{"LOAD XML", "LOAD XML INFILE 'f' INTO TABLE users", "unanalyzable→sql.unanalyzable", pb.StatementKind_STATEMENT_KIND_STMT_UNKNOWN},
+	{"IMPORT TABLE", "IMPORT TABLE FROM 'users.sdi'", "unanalyzable→sql.unanalyzable", pb.StatementKind_STATEMENT_KIND_STMT_UNKNOWN}, // parse error
 
 	// ---- DDL (§15.1) ----
 	// Table/index/view/schema DDL that sqlglot models structurally (Create / Alter / Drop / TruncateTable)
 	// is catalog-changing: fully determined, reads no column values, gated by sql.ddl alone. Forms sqlglot
 	// leaves as a Command (routines, events, servers, tablespaces, SRS, RENAME TABLE) stay unresolved and
 	// route to the sql.unanalyzable gate — an over-deny, not a leak.
-	{"CREATE TABLE", "CREATE TABLE t (id INT)", "sql.ddl"},
-	{"CREATE TABLE AS SELECT", "CREATE TABLE t AS SELECT id FROM users", "result.read + sql.ddl"},
-	{"CREATE TABLE LIKE", "CREATE TABLE t LIKE users", "sql.ddl"},
-	{"CREATE INDEX", "CREATE INDEX i ON users (id)", "sql.ddl"},
-	{"CREATE VIEW", "CREATE VIEW v AS SELECT 1", "sql.ddl"},
-	{"CREATE DATABASE", "CREATE DATABASE d", "sql.ddl"},
-	{"CREATE TRIGGER", "CREATE TRIGGER trg BEFORE INSERT ON users FOR EACH ROW SET @a = 1", "unanalyzable→sql.unanalyzable"},
-	{"CREATE PROCEDURE", "CREATE PROCEDURE p() SELECT 1", "unanalyzable→sql.unanalyzable"},
-	{"CREATE FUNCTION (stored)", "CREATE FUNCTION f() RETURNS INT RETURN 1", "sql.ddl"},
+	{"CREATE TABLE", "CREATE TABLE t (id INT)", "sql.ddl", pb.StatementKind_STATEMENT_KIND_CREATE_TABLE},
+	{"CREATE TABLE AS SELECT", "CREATE TABLE t AS SELECT id FROM users", "result.read + sql.ddl", pb.StatementKind_STATEMENT_KIND_CREATE_TABLE},
+	{"CREATE TABLE LIKE", "CREATE TABLE t LIKE users", "sql.ddl", pb.StatementKind_STATEMENT_KIND_CREATE_TABLE},
+	{"CREATE INDEX", "CREATE INDEX i ON users (id)", "sql.ddl", pb.StatementKind_STATEMENT_KIND_CREATE_INDEX},
+	{"CREATE VIEW", "CREATE VIEW v AS SELECT 1", "sql.ddl", pb.StatementKind_STATEMENT_KIND_CREATE_VIEW},
+	{"CREATE DATABASE", "CREATE DATABASE d", "sql.ddl", pb.StatementKind_STATEMENT_KIND_CREATE_DATABASE},
+	{"CREATE TRIGGER", "CREATE TRIGGER trg BEFORE INSERT ON users FOR EACH ROW SET @a = 1", "unanalyzable→sql.unanalyzable", pb.StatementKind_STATEMENT_KIND_STMT_UNKNOWN},
+	{"CREATE PROCEDURE", "CREATE PROCEDURE p() SELECT 1", "unanalyzable→sql.unanalyzable", pb.StatementKind_STATEMENT_KIND_STMT_UNKNOWN},
+	{"CREATE FUNCTION (stored)", "CREATE FUNCTION f() RETURNS INT RETURN 1", "sql.ddl", pb.StatementKind_STATEMENT_KIND_CREATE_FUNCTION},
 	// A routine body carrying a query (RETURN (SELECT …)) is not a CTAS: the read happens at invocation,
 	// not at CREATE. Lineage cannot analyze the routine body, so it over-denies (unresolved) rather than
 	// resolving catalog-changing like the bare form above — a fail-closed asymmetry, not a leak.
-	{"CREATE FUNCTION (stored, query body)", "CREATE FUNCTION f() RETURNS INT RETURN (SELECT id FROM users)", "sql.ddl + unanalyzable→sql.unanalyzable"},
-	{"CREATE FUNCTION (UDF)", "CREATE FUNCTION f RETURNS INTEGER SONAME 'f.so'", "sql.ddl"},
-	{"CREATE EVENT", "CREATE EVENT e ON SCHEDULE AT NOW() DO SET @a = 1", "unanalyzable→sql.unanalyzable"},
-	{"CREATE SERVER", "CREATE SERVER s FOREIGN DATA WRAPPER mysql OPTIONS (USER 'u')", "unanalyzable→sql.unanalyzable"},
-	{"CREATE TABLESPACE", "CREATE TABLESPACE ts ADD DATAFILE 'ts.ibd'", "unanalyzable→sql.unanalyzable"},
-	{"CREATE SRS", "CREATE SPATIAL REFERENCE SYSTEM 4000 NAME 'x' DEFINITION 'y'", "unanalyzable→sql.unanalyzable"},
-	{"ALTER TABLE", "ALTER TABLE users ADD COLUMN x INT", "sql.ddl"},
-	{"ALTER DATABASE", "ALTER DATABASE d CHARACTER SET utf8mb4", "unanalyzable→sql.unanalyzable"},
-	{"ALTER VIEW", "ALTER VIEW v AS SELECT 1", "sql.ddl"},
-	{"ALTER EVENT", "ALTER EVENT e DISABLE", "unanalyzable→sql.unanalyzable"},
-	{"ALTER PROCEDURE", "ALTER PROCEDURE p COMMENT 'x'", "unanalyzable→sql.unanalyzable"},
-	{"ALTER FUNCTION", "ALTER FUNCTION f COMMENT 'x'", "unanalyzable→sql.unanalyzable"},
-	{"ALTER SERVER", "ALTER SERVER s OPTIONS (USER 'u')", "unanalyzable→sql.unanalyzable"},
-	{"ALTER TABLESPACE", "ALTER TABLESPACE ts RENAME TO ts2", "unanalyzable→sql.unanalyzable"},
-	{"ALTER INSTANCE", "ALTER INSTANCE ROTATE INNODB MASTER KEY", "unanalyzable→sql.unanalyzable"},
-	{"DROP TABLE", "DROP TABLE users", "sql.ddl"},
-	{"DROP INDEX", "DROP INDEX i ON users", "sql.ddl"}, // sqlglot-go v0.22.0 models this as a structured Drop, unlike RENAME TABLE
-	{"DROP VIEW", "DROP VIEW v", "sql.ddl"},
-	{"DROP DATABASE", "DROP DATABASE d", "sql.ddl"},
-	{"DROP TRIGGER", "DROP TRIGGER trg", "sql.ddl"},
-	{"DROP PROCEDURE", "DROP PROCEDURE p", "sql.ddl"},
-	{"DROP FUNCTION", "DROP FUNCTION f", "sql.ddl"},
-	{"DROP EVENT", "DROP EVENT e", "unanalyzable→sql.unanalyzable"},
-	{"DROP SERVER", "DROP SERVER s", "unanalyzable→sql.unanalyzable"},
-	{"DROP TABLESPACE", "DROP TABLESPACE ts", "unanalyzable→sql.unanalyzable"},
-	{"DROP SRS", "DROP SPATIAL REFERENCE SYSTEM 4000", "unanalyzable→sql.unanalyzable"},
-	{"TRUNCATE TABLE", "TRUNCATE TABLE users", "sql.ddl"},
-	{"RENAME TABLE", "RENAME TABLE users TO u2", "unanalyzable→sql.unanalyzable"},
+	{"CREATE FUNCTION (stored, query body)", "CREATE FUNCTION f() RETURNS INT RETURN (SELECT id FROM users)", "sql.ddl + unanalyzable→sql.unanalyzable", pb.StatementKind_STATEMENT_KIND_CREATE_FUNCTION},
+	{"CREATE FUNCTION (UDF)", "CREATE FUNCTION f RETURNS INTEGER SONAME 'f.so'", "sql.ddl", pb.StatementKind_STATEMENT_KIND_CREATE_FUNCTION},
+	{"CREATE EVENT", "CREATE EVENT e ON SCHEDULE AT NOW() DO SET @a = 1", "unanalyzable→sql.unanalyzable", pb.StatementKind_STATEMENT_KIND_STMT_UNKNOWN},
+	{"CREATE SERVER", "CREATE SERVER s FOREIGN DATA WRAPPER mysql OPTIONS (USER 'u')", "unanalyzable→sql.unanalyzable", pb.StatementKind_STATEMENT_KIND_STMT_UNKNOWN},
+	{"CREATE TABLESPACE", "CREATE TABLESPACE ts ADD DATAFILE 'ts.ibd'", "unanalyzable→sql.unanalyzable", pb.StatementKind_STATEMENT_KIND_STMT_UNKNOWN},
+	{"CREATE SRS", "CREATE SPATIAL REFERENCE SYSTEM 4000 NAME 'x' DEFINITION 'y'", "unanalyzable→sql.unanalyzable", pb.StatementKind_STATEMENT_KIND_STMT_UNKNOWN},
+	{"ALTER TABLE", "ALTER TABLE users ADD COLUMN x INT", "sql.ddl", pb.StatementKind_STATEMENT_KIND_ALTER_TABLE},
+	{"ALTER DATABASE", "ALTER DATABASE d CHARACTER SET utf8mb4", "unanalyzable→sql.unanalyzable", pb.StatementKind_STATEMENT_KIND_STMT_UNKNOWN},
+	{"ALTER VIEW", "ALTER VIEW v AS SELECT 1", "sql.ddl", pb.StatementKind_STATEMENT_KIND_ALTER_VIEW},
+	{"ALTER EVENT", "ALTER EVENT e DISABLE", "unanalyzable→sql.unanalyzable", pb.StatementKind_STATEMENT_KIND_STMT_UNKNOWN},
+	{"ALTER PROCEDURE", "ALTER PROCEDURE p COMMENT 'x'", "unanalyzable→sql.unanalyzable", pb.StatementKind_STATEMENT_KIND_STMT_UNKNOWN},
+	{"ALTER FUNCTION", "ALTER FUNCTION f COMMENT 'x'", "unanalyzable→sql.unanalyzable", pb.StatementKind_STATEMENT_KIND_STMT_UNKNOWN},
+	{"ALTER SERVER", "ALTER SERVER s OPTIONS (USER 'u')", "unanalyzable→sql.unanalyzable", pb.StatementKind_STATEMENT_KIND_STMT_UNKNOWN},
+	{"ALTER TABLESPACE", "ALTER TABLESPACE ts RENAME TO ts2", "unanalyzable→sql.unanalyzable", pb.StatementKind_STATEMENT_KIND_STMT_UNKNOWN},
+	{"ALTER INSTANCE", "ALTER INSTANCE ROTATE INNODB MASTER KEY", "unanalyzable→sql.unanalyzable", pb.StatementKind_STATEMENT_KIND_STMT_UNKNOWN},
+	{"DROP TABLE", "DROP TABLE users", "sql.ddl", pb.StatementKind_STATEMENT_KIND_DROP_TABLE},
+	{"DROP INDEX", "DROP INDEX i ON users", "sql.ddl", pb.StatementKind_STATEMENT_KIND_DROP_INDEX}, // sqlglot-go v0.22.0 models this as a structured Drop, unlike RENAME TABLE
+	{"DROP VIEW", "DROP VIEW v", "sql.ddl", pb.StatementKind_STATEMENT_KIND_DROP_VIEW},
+	{"DROP DATABASE", "DROP DATABASE d", "sql.ddl", pb.StatementKind_STATEMENT_KIND_DROP_DATABASE},
+	{"DROP TRIGGER", "DROP TRIGGER trg", "sql.ddl", pb.StatementKind_STATEMENT_KIND_DROP_TRIGGER},
+	{"DROP PROCEDURE", "DROP PROCEDURE p", "sql.ddl", pb.StatementKind_STATEMENT_KIND_DROP_PROCEDURE},
+	{"DROP FUNCTION", "DROP FUNCTION f", "sql.ddl", pb.StatementKind_STATEMENT_KIND_DROP_FUNCTION},
+	{"DROP EVENT", "DROP EVENT e", "unanalyzable→sql.unanalyzable", pb.StatementKind_STATEMENT_KIND_STMT_UNKNOWN},
+	{"DROP SERVER", "DROP SERVER s", "unanalyzable→sql.unanalyzable", pb.StatementKind_STATEMENT_KIND_STMT_UNKNOWN},
+	{"DROP TABLESPACE", "DROP TABLESPACE ts", "unanalyzable→sql.unanalyzable", pb.StatementKind_STATEMENT_KIND_STMT_UNKNOWN},
+	{"DROP SRS", "DROP SPATIAL REFERENCE SYSTEM 4000", "unanalyzable→sql.unanalyzable", pb.StatementKind_STATEMENT_KIND_STMT_UNKNOWN},
+	{"TRUNCATE TABLE", "TRUNCATE TABLE users", "sql.ddl", pb.StatementKind_STATEMENT_KIND_TRUNCATE_TABLE},
+	{"RENAME TABLE", "RENAME TABLE users TO u2", "unanalyzable→sql.unanalyzable", pb.StatementKind_STATEMENT_KIND_STMT_UNKNOWN},
 
 	// ---- Transaction / locking (§15.3) ----
-	{"START TRANSACTION", "START TRANSACTION", "session"},
-	{"BEGIN", "BEGIN", "session"},
-	{"COMMIT", "COMMIT", "session"},
-	{"ROLLBACK", "ROLLBACK", "session"},
-	{"SAVEPOINT", "SAVEPOINT s", "session"},
-	{"ROLLBACK TO SAVEPOINT", "ROLLBACK TO SAVEPOINT s", "session"},
-	{"RELEASE SAVEPOINT", "RELEASE SAVEPOINT s", "session"},
-	{"SET TRANSACTION", "SET TRANSACTION ISOLATION LEVEL SERIALIZABLE", "session"},
-	{"SET autocommit", "SET autocommit=0", "session"},
-	{"LOCK TABLES", "LOCK TABLES users READ", "unanalyzable→sql.unanalyzable"},
-	{"UNLOCK TABLES", "UNLOCK TABLES", "unanalyzable→sql.unanalyzable"},
-	{"LOCK INSTANCE FOR BACKUP", "LOCK INSTANCE FOR BACKUP", "unanalyzable→sql.unanalyzable"},
-	{"UNLOCK INSTANCE", "UNLOCK INSTANCE", "unanalyzable→sql.unanalyzable"},
-	{"XA START", "XA START 'x'", "unanalyzable→sql.unanalyzable"},
-	{"XA END", "XA END 'x'", "unanalyzable→sql.unanalyzable"},
-	{"XA PREPARE", "XA PREPARE 'x'", "unanalyzable→sql.unanalyzable"},
-	{"XA COMMIT", "XA COMMIT 'x'", "unanalyzable→sql.unanalyzable"},
-	{"XA ROLLBACK", "XA ROLLBACK 'x'", "unanalyzable→sql.unanalyzable"},
-	{"XA RECOVER", "XA RECOVER", "unanalyzable→sql.unanalyzable"},
+	{"START TRANSACTION", "START TRANSACTION", "session", pb.StatementKind_STATEMENT_KIND_START_TRANSACTION},
+	{"BEGIN", "BEGIN", "session", pb.StatementKind_STATEMENT_KIND_START_TRANSACTION},
+	{"COMMIT", "COMMIT", "session", pb.StatementKind_STATEMENT_KIND_COMMIT},
+	{"ROLLBACK", "ROLLBACK", "session", pb.StatementKind_STATEMENT_KIND_ROLLBACK},
+	{"SAVEPOINT", "SAVEPOINT s", "session", pb.StatementKind_STATEMENT_KIND_SAVEPOINT},
+	{"ROLLBACK TO SAVEPOINT", "ROLLBACK TO SAVEPOINT s", "session", pb.StatementKind_STATEMENT_KIND_ROLLBACK},
+	{"RELEASE SAVEPOINT", "RELEASE SAVEPOINT s", "session", pb.StatementKind_STATEMENT_KIND_SAVEPOINT},
+	{"SET TRANSACTION", "SET TRANSACTION ISOLATION LEVEL SERIALIZABLE", "session", pb.StatementKind_STATEMENT_KIND_SET_TRANSACTION},
+	{"SET autocommit", "SET autocommit=0", "session", pb.StatementKind_STATEMENT_KIND_SET_SESSION_VAR},
+	{"LOCK TABLES", "LOCK TABLES users READ", "unanalyzable→sql.unanalyzable", pb.StatementKind_STATEMENT_KIND_LOCK_TABLES},
+	{"UNLOCK TABLES", "UNLOCK TABLES", "unanalyzable→sql.unanalyzable", pb.StatementKind_STATEMENT_KIND_UNLOCK_TABLES},
+	{"LOCK INSTANCE FOR BACKUP", "LOCK INSTANCE FOR BACKUP", "unanalyzable→sql.unanalyzable", pb.StatementKind_STATEMENT_KIND_STMT_UNKNOWN}, // parse error
+	{"UNLOCK INSTANCE", "UNLOCK INSTANCE", "unanalyzable→sql.unanalyzable", pb.StatementKind_STATEMENT_KIND_STMT_UNKNOWN},
+	{"XA START", "XA START 'x'", "unanalyzable→sql.unanalyzable", pb.StatementKind_STATEMENT_KIND_XA},
+	{"XA END", "XA END 'x'", "unanalyzable→sql.unanalyzable", pb.StatementKind_STATEMENT_KIND_XA},
+	{"XA PREPARE", "XA PREPARE 'x'", "unanalyzable→sql.unanalyzable", pb.StatementKind_STATEMENT_KIND_XA},
+	{"XA COMMIT", "XA COMMIT 'x'", "unanalyzable→sql.unanalyzable", pb.StatementKind_STATEMENT_KIND_XA},
+	{"XA ROLLBACK", "XA ROLLBACK 'x'", "unanalyzable→sql.unanalyzable", pb.StatementKind_STATEMENT_KIND_XA},
+	{"XA RECOVER", "XA RECOVER", "unanalyzable→sql.unanalyzable", pb.StatementKind_STATEMENT_KIND_XA},
 
 	// ---- Prepared statements (§15.5) — SQL-injection surface, must fail closed ----
-	{"PREPARE", "PREPARE s FROM 'SELECT 1'", "unanalyzable→sql.unanalyzable"},
-	{"EXECUTE", "EXECUTE s", "unanalyzable→sql.unanalyzable"},
-	{"DEALLOCATE PREPARE", "DEALLOCATE PREPARE s", "unanalyzable→sql.unanalyzable"},
+	{"PREPARE", "PREPARE s FROM 'SELECT 1'", "unanalyzable→sql.unanalyzable", pb.StatementKind_STATEMENT_KIND_PREPARE},
+	{"EXECUTE", "EXECUTE s", "unanalyzable→sql.unanalyzable", pb.StatementKind_STATEMENT_KIND_EXECUTE},
+	{"DEALLOCATE PREPARE", "DEALLOCATE PREPARE s", "unanalyzable→sql.unanalyzable", pb.StatementKind_STATEMENT_KIND_STMT_UNKNOWN}, // parse error
 
 	// ---- Replication (§15.4) — privileged, must fail closed ----
-	{"CHANGE REPLICATION SOURCE TO", "CHANGE REPLICATION SOURCE TO SOURCE_HOST='h'", "unanalyzable→sql.unanalyzable"},
-	{"CHANGE MASTER TO", "CHANGE MASTER TO MASTER_HOST='h'", "unanalyzable→sql.unanalyzable"},
-	{"CHANGE REPLICATION FILTER", "CHANGE REPLICATION FILTER REPLICATE_DO_DB = (d1)", "unanalyzable→sql.unanalyzable"},
-	{"START REPLICA", "START REPLICA", "unanalyzable→sql.unanalyzable"},
-	{"START SLAVE", "START SLAVE", "unanalyzable→sql.unanalyzable"},
-	{"STOP REPLICA", "STOP REPLICA", "unanalyzable→sql.unanalyzable"},
-	{"STOP SLAVE", "STOP SLAVE", "unanalyzable→sql.unanalyzable"},
-	{"RESET REPLICA", "RESET REPLICA", "INADMISSIBLE-deny"},
-	{"RESET SLAVE", "RESET SLAVE", "INADMISSIBLE-deny"},
-	{"START GROUP_REPLICATION", "START GROUP_REPLICATION", "unanalyzable→sql.unanalyzable"},
-	{"STOP GROUP_REPLICATION", "STOP GROUP_REPLICATION", "unanalyzable→sql.unanalyzable"},
-	{"PURGE BINARY LOGS", "PURGE BINARY LOGS BEFORE '2020-01-01'", "unanalyzable→sql.unanalyzable"},
-	{"RESET MASTER", "RESET MASTER", "INADMISSIBLE-deny"},
-	{"RESET BINARY LOGS AND GTIDS", "RESET BINARY LOGS AND GTIDS", "INADMISSIBLE-deny"}, // 8.4 replacement for RESET MASTER
+	{"CHANGE REPLICATION SOURCE TO", "CHANGE REPLICATION SOURCE TO SOURCE_HOST='h'", "unanalyzable→sql.unanalyzable", pb.StatementKind_STATEMENT_KIND_STMT_UNKNOWN},  // parse error
+	{"CHANGE MASTER TO", "CHANGE MASTER TO MASTER_HOST='h'", "unanalyzable→sql.unanalyzable", pb.StatementKind_STATEMENT_KIND_STMT_UNKNOWN},                          // parse error
+	{"CHANGE REPLICATION FILTER", "CHANGE REPLICATION FILTER REPLICATE_DO_DB = (d1)", "unanalyzable→sql.unanalyzable", pb.StatementKind_STATEMENT_KIND_STMT_UNKNOWN}, // parse error
+	{"START REPLICA", "START REPLICA", "unanalyzable→sql.unanalyzable", pb.StatementKind_STATEMENT_KIND_STMT_UNKNOWN},
+	{"START SLAVE", "START SLAVE", "unanalyzable→sql.unanalyzable", pb.StatementKind_STATEMENT_KIND_STMT_UNKNOWN},
+	{"STOP REPLICA", "STOP REPLICA", "unanalyzable→sql.unanalyzable", pb.StatementKind_STATEMENT_KIND_STMT_UNKNOWN},
+	{"STOP SLAVE", "STOP SLAVE", "unanalyzable→sql.unanalyzable", pb.StatementKind_STATEMENT_KIND_STMT_UNKNOWN},
+	{"RESET REPLICA", "RESET REPLICA", "INADMISSIBLE-deny", pb.StatementKind_STATEMENT_KIND_STMT_UNKNOWN},
+	{"RESET SLAVE", "RESET SLAVE", "INADMISSIBLE-deny", pb.StatementKind_STATEMENT_KIND_STMT_UNKNOWN},
+	{"START GROUP_REPLICATION", "START GROUP_REPLICATION", "unanalyzable→sql.unanalyzable", pb.StatementKind_STATEMENT_KIND_STMT_UNKNOWN},
+	{"STOP GROUP_REPLICATION", "STOP GROUP_REPLICATION", "unanalyzable→sql.unanalyzable", pb.StatementKind_STATEMENT_KIND_STMT_UNKNOWN},
+	{"PURGE BINARY LOGS", "PURGE BINARY LOGS BEFORE '2020-01-01'", "unanalyzable→sql.unanalyzable", pb.StatementKind_STATEMENT_KIND_STMT_UNKNOWN}, // parse error
+	{"RESET MASTER", "RESET MASTER", "INADMISSIBLE-deny", pb.StatementKind_STATEMENT_KIND_STMT_UNKNOWN},
+	{"RESET BINARY LOGS AND GTIDS", "RESET BINARY LOGS AND GTIDS", "INADMISSIBLE-deny", pb.StatementKind_STATEMENT_KIND_STMT_UNKNOWN}, // 8.4 replacement for RESET MASTER
 
 	// ---- Account management (§15.7.1) — privileged, must fail closed ----
-	{"CREATE USER", "CREATE USER 'u'@'h'", "unanalyzable→sql.unanalyzable"},
-	{"ALTER USER", "ALTER USER 'u'@'h' IDENTIFIED BY 'p'", "unanalyzable→sql.unanalyzable"},
-	{"DROP USER", "DROP USER 'u'@'h'", "unanalyzable→sql.unanalyzable"},
-	{"RENAME USER", "RENAME USER 'u'@'h' TO 'v'@'h'", "unanalyzable→sql.unanalyzable"},
-	{"CREATE ROLE", "CREATE ROLE 'r'", "unanalyzable→sql.unanalyzable"},
-	{"DROP ROLE", "DROP ROLE 'r'", "unanalyzable→sql.unanalyzable"},
-	{"GRANT (priv)", "GRANT SELECT ON *.* TO 'u'@'h'", "unanalyzable→sql.unanalyzable"},
-	{"GRANT (role)", "GRANT 'r' TO 'u'@'h'", "unanalyzable→sql.unanalyzable"},
-	{"REVOKE (priv)", "REVOKE SELECT ON *.* FROM 'u'@'h'", "unanalyzable→sql.unanalyzable"},
-	{"REVOKE (role)", "REVOKE 'r' FROM 'u'@'h'", "unanalyzable→sql.unanalyzable"},
-	{"SET PASSWORD", "SET PASSWORD FOR 'u'@'h' = 'p'", "session + utility:SET_PASSWORD"},
-	{"SET ROLE", "SET ROLE 'r'", "session + utility:SET_ROLE"},
-	{"SET DEFAULT ROLE", "SET DEFAULT ROLE 'r' TO 'u'@'h'", "session + utility:SET_DEFAULT_ROLE"},
+	{"CREATE USER", "CREATE USER 'u'@'h'", "unanalyzable→sql.unanalyzable", pb.StatementKind_STATEMENT_KIND_STMT_UNKNOWN},
+	{"ALTER USER", "ALTER USER 'u'@'h' IDENTIFIED BY 'p'", "unanalyzable→sql.unanalyzable", pb.StatementKind_STATEMENT_KIND_STMT_UNKNOWN},
+	{"DROP USER", "DROP USER 'u'@'h'", "unanalyzable→sql.unanalyzable", pb.StatementKind_STATEMENT_KIND_STMT_UNKNOWN},
+	{"RENAME USER", "RENAME USER 'u'@'h' TO 'v'@'h'", "unanalyzable→sql.unanalyzable", pb.StatementKind_STATEMENT_KIND_STMT_UNKNOWN},
+	{"CREATE ROLE", "CREATE ROLE 'r'", "unanalyzable→sql.unanalyzable", pb.StatementKind_STATEMENT_KIND_STMT_UNKNOWN},
+	{"DROP ROLE", "DROP ROLE 'r'", "unanalyzable→sql.unanalyzable", pb.StatementKind_STATEMENT_KIND_STMT_UNKNOWN},
+	{"GRANT (priv)", "GRANT SELECT ON *.* TO 'u'@'h'", "unanalyzable→sql.unanalyzable", pb.StatementKind_STATEMENT_KIND_GRANT_PRIV},
+	{"GRANT (role)", "GRANT 'r' TO 'u'@'h'", "unanalyzable→sql.unanalyzable", pb.StatementKind_STATEMENT_KIND_GRANT_PRIV},
+	{"REVOKE (priv)", "REVOKE SELECT ON *.* FROM 'u'@'h'", "unanalyzable→sql.unanalyzable", pb.StatementKind_STATEMENT_KIND_REVOKE_PRIV},
+	{"REVOKE (role)", "REVOKE 'r' FROM 'u'@'h'", "unanalyzable→sql.unanalyzable", pb.StatementKind_STATEMENT_KIND_REVOKE_PRIV},
+	{"SET PASSWORD", "SET PASSWORD FOR 'u'@'h' = 'p'", "session + utility:SET_PASSWORD", pb.StatementKind_STATEMENT_KIND_SET_PASSWORD},
+	{"SET ROLE", "SET ROLE 'r'", "session + utility:SET_ROLE", pb.StatementKind_STATEMENT_KIND_SET_ROLE},
+	{"SET DEFAULT ROLE", "SET DEFAULT ROLE 'r' TO 'u'@'h'", "session + utility:SET_DEFAULT_ROLE", pb.StatementKind_STATEMENT_KIND_SET_DEFAULT_ROLE},
 
 	// ---- Table maintenance (§15.7.3) ----
 	// GAP: ANALYZE is in the session-passthrough set (facts.go), so it is connect-only; CHECK/OPTIMIZE/REPAIR fail closed.
-	{"ANALYZE TABLE", "ANALYZE TABLE users", "session"},
-	{"CHECK TABLE", "CHECK TABLE users", "unanalyzable→sql.unanalyzable"},
-	{"CHECKSUM TABLE", "CHECKSUM TABLE users", "unanalyzable→sql.unanalyzable"},
-	{"OPTIMIZE TABLE", "OPTIMIZE TABLE users", "unanalyzable→sql.unanalyzable"},
-	{"REPAIR TABLE", "REPAIR TABLE users", "unanalyzable→sql.unanalyzable"},
+	{"ANALYZE TABLE", "ANALYZE TABLE users", "session", pb.StatementKind_STATEMENT_KIND_ANALYZE_TABLE},
+	{"CHECK TABLE", "CHECK TABLE users", "unanalyzable→sql.unanalyzable", pb.StatementKind_STATEMENT_KIND_STMT_UNKNOWN},       // parse error
+	{"CHECKSUM TABLE", "CHECKSUM TABLE users", "unanalyzable→sql.unanalyzable", pb.StatementKind_STATEMENT_KIND_STMT_UNKNOWN}, // parse error
+	{"OPTIMIZE TABLE", "OPTIMIZE TABLE users", "unanalyzable→sql.unanalyzable", pb.StatementKind_STATEMENT_KIND_OPTIMIZE_TABLE},
+	{"REPAIR TABLE", "REPAIR TABLE users", "unanalyzable→sql.unanalyzable", pb.StatementKind_STATEMENT_KIND_STMT_UNKNOWN}, // parse error
 
 	// ---- Other server administration (§15.7) — privileged, must fail closed ----
-	{"INSTALL PLUGIN", "INSTALL PLUGIN p SONAME 'p.so'", "unanalyzable→sql.unanalyzable"},
-	{"UNINSTALL PLUGIN", "UNINSTALL PLUGIN p", "unanalyzable→sql.unanalyzable"},
-	{"INSTALL COMPONENT", "INSTALL COMPONENT 'file://c'", "unanalyzable→sql.unanalyzable"},
-	{"UNINSTALL COMPONENT", "UNINSTALL COMPONENT 'file://c'", "unanalyzable→sql.unanalyzable"},
-	{"CLONE", "CLONE LOCAL DATA DIRECTORY = '/tmp/c'", "unanalyzable→sql.unanalyzable"},
-	{"FLUSH", "FLUSH TABLES", "unanalyzable→sql.unanalyzable"},
-	{"FLUSH PRIVILEGES", "FLUSH PRIVILEGES", "unanalyzable→sql.unanalyzable"},
-	{"KILL", "KILL 1", "unanalyzable→sql.unanalyzable"},
-	{"CACHE INDEX", "CACHE INDEX users IN c", "unanalyzable→sql.unanalyzable"},
-	{"LOAD INDEX INTO CACHE", "LOAD INDEX INTO CACHE users", "unanalyzable→sql.unanalyzable"},
-	{"BINLOG", "BINLOG 'x'", "unanalyzable→sql.unanalyzable"},
-	{"RESET PERSIST", "RESET PERSIST", "INADMISSIBLE-deny"},
-	{"RESTART", "RESTART", "unanalyzable→sql.unanalyzable"},
-	{"SHUTDOWN", "SHUTDOWN", "unanalyzable→sql.unanalyzable"},
-	{"SET RESOURCE GROUP", "SET RESOURCE GROUP grp", "INADMISSIBLE-deny"},
-	{"CREATE RESOURCE GROUP", "CREATE RESOURCE GROUP grp TYPE = USER", "unanalyzable→sql.unanalyzable"},
-	{"ALTER RESOURCE GROUP", "ALTER RESOURCE GROUP grp VCPU = 0", "unanalyzable→sql.unanalyzable"},
-	{"DROP RESOURCE GROUP", "DROP RESOURCE GROUP grp", "unanalyzable→sql.unanalyzable"},
+	{"INSTALL PLUGIN", "INSTALL PLUGIN p SONAME 'p.so'", "unanalyzable→sql.unanalyzable", pb.StatementKind_STATEMENT_KIND_STMT_UNKNOWN},      // parse error
+	{"UNINSTALL PLUGIN", "UNINSTALL PLUGIN p", "unanalyzable→sql.unanalyzable", pb.StatementKind_STATEMENT_KIND_STMT_UNKNOWN},                // parse error
+	{"INSTALL COMPONENT", "INSTALL COMPONENT 'file://c'", "unanalyzable→sql.unanalyzable", pb.StatementKind_STATEMENT_KIND_STMT_UNKNOWN},     // parse error
+	{"UNINSTALL COMPONENT", "UNINSTALL COMPONENT 'file://c'", "unanalyzable→sql.unanalyzable", pb.StatementKind_STATEMENT_KIND_STMT_UNKNOWN}, // parse error
+	{"CLONE", "CLONE LOCAL DATA DIRECTORY = '/tmp/c'", "unanalyzable→sql.unanalyzable", pb.StatementKind_STATEMENT_KIND_STMT_UNKNOWN},        // parse error
+	{"FLUSH", "FLUSH TABLES", "unanalyzable→sql.unanalyzable", pb.StatementKind_STATEMENT_KIND_FLUSH},
+	{"FLUSH PRIVILEGES", "FLUSH PRIVILEGES", "unanalyzable→sql.unanalyzable", pb.StatementKind_STATEMENT_KIND_FLUSH},
+	{"KILL", "KILL 1", "unanalyzable→sql.unanalyzable", pb.StatementKind_STATEMENT_KIND_KILL},
+	{"CACHE INDEX", "CACHE INDEX users IN c", "unanalyzable→sql.unanalyzable", pb.StatementKind_STATEMENT_KIND_STMT_UNKNOWN}, // parse error
+	{"LOAD INDEX INTO CACHE", "LOAD INDEX INTO CACHE users", "unanalyzable→sql.unanalyzable", pb.StatementKind_STATEMENT_KIND_STMT_UNKNOWN},
+	{"BINLOG", "BINLOG 'x'", "unanalyzable→sql.unanalyzable", pb.StatementKind_STATEMENT_KIND_BINLOG},
+	{"RESET PERSIST", "RESET PERSIST", "INADMISSIBLE-deny", pb.StatementKind_STATEMENT_KIND_STMT_UNKNOWN},
+	{"RESTART", "RESTART", "unanalyzable→sql.unanalyzable", pb.StatementKind_STATEMENT_KIND_RESTART},
+	{"SHUTDOWN", "SHUTDOWN", "unanalyzable→sql.unanalyzable", pb.StatementKind_STATEMENT_KIND_SHUTDOWN},
+	{"SET RESOURCE GROUP", "SET RESOURCE GROUP grp", "INADMISSIBLE-deny", pb.StatementKind_STATEMENT_KIND_STMT_UNKNOWN},
+	{"CREATE RESOURCE GROUP", "CREATE RESOURCE GROUP grp TYPE = USER", "unanalyzable→sql.unanalyzable", pb.StatementKind_STATEMENT_KIND_STMT_UNKNOWN},
+	{"ALTER RESOURCE GROUP", "ALTER RESOURCE GROUP grp VCPU = 0", "unanalyzable→sql.unanalyzable", pb.StatementKind_STATEMENT_KIND_STMT_UNKNOWN},
+	{"DROP RESOURCE GROUP", "DROP RESOURCE GROUP grp", "unanalyzable→sql.unanalyzable", pb.StatementKind_STATEMENT_KIND_STMT_UNKNOWN},
 
 	// ---- SET forms (§15.7.6) ----
-	{"SET user var", "SET @x = 1", "session"},
-	{"SET GLOBAL var", "SET GLOBAL max_connections = 100", "session + utility:SET_GLOBAL"},
-	{"SET PERSIST var", "SET PERSIST max_connections = 100", "session + utility:SET_PERSIST"},
-	{"SET PERSIST_ONLY var", "SET PERSIST_ONLY max_connections = 100", "session + utility:SET_PERSIST_ONLY"},
-	{"SET NAMES", "SET NAMES utf8mb4", "session"},
-	{"SET CHARACTER SET", "SET CHARACTER SET utf8mb4", "session"},
+	{"SET user var", "SET @x = 1", "session", pb.StatementKind_STATEMENT_KIND_SET_SESSION_VAR},
+	{"SET GLOBAL var", "SET GLOBAL max_connections = 100", "session + utility:SET_GLOBAL", pb.StatementKind_STATEMENT_KIND_SET_GLOBAL},
+	{"SET PERSIST var", "SET PERSIST max_connections = 100", "session + utility:SET_PERSIST", pb.StatementKind_STATEMENT_KIND_SET_PERSIST},
+	{"SET PERSIST_ONLY var", "SET PERSIST_ONLY max_connections = 100", "session + utility:SET_PERSIST_ONLY", pb.StatementKind_STATEMENT_KIND_SET_PERSIST_ONLY},
+	{"SET NAMES", "SET NAMES utf8mb4", "session", pb.StatementKind_STATEMENT_KIND_SET_SESSION_VAR},
+	{"SET CHARACTER SET", "SET CHARACTER SET utf8mb4", "session", pb.StatementKind_STATEMENT_KIND_SET_SESSION_VAR},
 	// GAP: sql_log_bin is a restricted SESSION variable (needs SESSION_VARIABLES_ADMIN); disabling it drops
 	// the session's writes from the binlog/GTID stream. The analyzer gates SET by scope (GLOBAL/PERSIST) and
 	// PASSWORD only, so a session-scoped assignment is a bare passthrough. See knownConnectOnlyGaps.
-	{"SET sql_log_bin", "SET SESSION sql_log_bin = 0", "session"},
+	{"SET sql_log_bin", "SET SESSION sql_log_bin = 0", "session", pb.StatementKind_STATEMENT_KIND_SET_SQL_LOG_BIN},
 
 	// ---- SHOW: benign metadata (§15.7.7) ----
-	{"SHOW DATABASES", "SHOW DATABASES", "metadata"},
-	{"SHOW TABLES", "SHOW TABLES", "metadata"},
-	{"SHOW COLUMNS", "SHOW COLUMNS FROM users", "metadata"},
-	{"SHOW INDEX", "SHOW INDEX FROM users", "metadata"},
-	{"SHOW CREATE TABLE", "SHOW CREATE TABLE users", "metadata"},
-	{"SHOW CREATE DATABASE", "SHOW CREATE DATABASE d", "metadata"},
-	{"SHOW CREATE VIEW", "SHOW CREATE VIEW v", "metadata"},
-	{"SHOW CREATE PROCEDURE", "SHOW CREATE PROCEDURE p", "metadata"},
-	{"SHOW CREATE FUNCTION", "SHOW CREATE FUNCTION f", "metadata"},
-	{"SHOW CREATE TRIGGER", "SHOW CREATE TRIGGER trg", "metadata"},
-	{"SHOW CREATE EVENT", "SHOW CREATE EVENT e", "metadata"},
-	{"SHOW ENGINES", "SHOW ENGINES", "metadata"},
-	{"SHOW STATUS", "SHOW STATUS", "metadata"},
-	{"SHOW VARIABLES", "SHOW VARIABLES", "metadata"},
-	{"SHOW WARNINGS", "SHOW WARNINGS", "metadata + utility:SHOW_WARNINGS"},
-	{"SHOW ERRORS", "SHOW ERRORS", "metadata + utility:SHOW_ERRORS"},
-	{"SHOW CHARACTER SET", "SHOW CHARACTER SET", "metadata"},
-	{"SHOW COLLATION", "SHOW COLLATION", "metadata"},
-	{"SHOW PRIVILEGES", "SHOW PRIVILEGES", "metadata"},
-	{"SHOW PLUGINS", "SHOW PLUGINS", "metadata"},
-	{"SHOW TABLE STATUS", "SHOW TABLE STATUS", "metadata"},
-	{"SHOW OPEN TABLES", "SHOW OPEN TABLES", "metadata"},
-	{"SHOW TRIGGERS", "SHOW TRIGGERS", "metadata"},
-	{"SHOW EVENTS", "SHOW EVENTS", "metadata"},
-	{"SHOW PROCEDURE STATUS", "SHOW PROCEDURE STATUS", "metadata"},
-	{"SHOW FUNCTION STATUS", "SHOW FUNCTION STATUS", "metadata"},
+	{"SHOW DATABASES", "SHOW DATABASES", "metadata", pb.StatementKind_STATEMENT_KIND_SHOW_METADATA},
+	{"SHOW TABLES", "SHOW TABLES", "metadata", pb.StatementKind_STATEMENT_KIND_SHOW_METADATA},
+	{"SHOW COLUMNS", "SHOW COLUMNS FROM users", "metadata", pb.StatementKind_STATEMENT_KIND_SHOW_METADATA},
+	{"SHOW INDEX", "SHOW INDEX FROM users", "metadata", pb.StatementKind_STATEMENT_KIND_SHOW_METADATA},
+	{"SHOW CREATE TABLE", "SHOW CREATE TABLE users", "metadata", pb.StatementKind_STATEMENT_KIND_SHOW_METADATA},
+	{"SHOW CREATE DATABASE", "SHOW CREATE DATABASE d", "metadata", pb.StatementKind_STATEMENT_KIND_SHOW_METADATA},
+	{"SHOW CREATE VIEW", "SHOW CREATE VIEW v", "metadata", pb.StatementKind_STATEMENT_KIND_SHOW_METADATA},
+	{"SHOW CREATE PROCEDURE", "SHOW CREATE PROCEDURE p", "metadata", pb.StatementKind_STATEMENT_KIND_SHOW_METADATA},
+	{"SHOW CREATE FUNCTION", "SHOW CREATE FUNCTION f", "metadata", pb.StatementKind_STATEMENT_KIND_SHOW_METADATA},
+	{"SHOW CREATE TRIGGER", "SHOW CREATE TRIGGER trg", "metadata", pb.StatementKind_STATEMENT_KIND_SHOW_METADATA},
+	{"SHOW CREATE EVENT", "SHOW CREATE EVENT e", "metadata", pb.StatementKind_STATEMENT_KIND_SHOW_METADATA},
+	{"SHOW ENGINES", "SHOW ENGINES", "metadata", pb.StatementKind_STATEMENT_KIND_SHOW_METADATA},
+	{"SHOW STATUS", "SHOW STATUS", "metadata", pb.StatementKind_STATEMENT_KIND_SHOW_METADATA},
+	{"SHOW VARIABLES", "SHOW VARIABLES", "metadata", pb.StatementKind_STATEMENT_KIND_SHOW_METADATA},
+	{"SHOW WARNINGS", "SHOW WARNINGS", "metadata + utility:SHOW_WARNINGS", pb.StatementKind_STATEMENT_KIND_SHOW_WARNINGS},
+	{"SHOW ERRORS", "SHOW ERRORS", "metadata + utility:SHOW_ERRORS", pb.StatementKind_STATEMENT_KIND_SHOW_ERRORS},
+	{"SHOW CHARACTER SET", "SHOW CHARACTER SET", "metadata", pb.StatementKind_STATEMENT_KIND_SHOW_METADATA},
+	{"SHOW COLLATION", "SHOW COLLATION", "metadata", pb.StatementKind_STATEMENT_KIND_SHOW_METADATA},
+	{"SHOW PRIVILEGES", "SHOW PRIVILEGES", "metadata", pb.StatementKind_STATEMENT_KIND_SHOW_METADATA},
+	{"SHOW PLUGINS", "SHOW PLUGINS", "metadata", pb.StatementKind_STATEMENT_KIND_SHOW_METADATA},
+	{"SHOW TABLE STATUS", "SHOW TABLE STATUS", "metadata", pb.StatementKind_STATEMENT_KIND_SHOW_METADATA},
+	{"SHOW OPEN TABLES", "SHOW OPEN TABLES", "metadata", pb.StatementKind_STATEMENT_KIND_SHOW_METADATA},
+	{"SHOW TRIGGERS", "SHOW TRIGGERS", "metadata", pb.StatementKind_STATEMENT_KIND_SHOW_METADATA},
+	{"SHOW EVENTS", "SHOW EVENTS", "metadata", pb.StatementKind_STATEMENT_KIND_SHOW_METADATA},
+	{"SHOW PROCEDURE STATUS", "SHOW PROCEDURE STATUS", "metadata", pb.StatementKind_STATEMENT_KIND_SHOW_METADATA},
+	{"SHOW FUNCTION STATUS", "SHOW FUNCTION STATUS", "metadata", pb.StatementKind_STATEMENT_KIND_SHOW_METADATA},
 
 	// ---- SHOW: data/credential/topology-exposing — must be a utility or fail closed ----
 	// The `metadata`-only rows here are UNDER-GATED today (see knownConnectOnlyGaps): the analyzer emits no
 	// utility for them, so they relay connect-only on wire. The statement-typing redesign closes them.
-	{"SHOW PROCESSLIST", "SHOW PROCESSLIST", "metadata + utility:SHOW_PROCESSLIST"},
-	{"SHOW GRANTS", "SHOW GRANTS", "metadata + utility:SHOW_GRANTS"},
-	{"SHOW CREATE USER", "SHOW CREATE USER CURRENT_USER", "metadata + utility:SHOW_CREATE_USER"},
-	{"SHOW ENGINE INNODB STATUS", "SHOW ENGINE INNODB STATUS", "metadata + utility:SHOW_ENGINE_STATUS"},
-	{"SHOW BINLOG EVENTS", "SHOW BINLOG EVENTS", "metadata + utility:SHOW_BINLOG_EVENTS"},
-	{"SHOW RELAYLOG EVENTS", "SHOW RELAYLOG EVENTS", "metadata + utility:SHOW_RELAYLOG_EVENTS"},
-	{"SHOW BINARY LOGS", "SHOW BINARY LOGS", "metadata"},                                  // GAP: needs REPLICATION CLIENT
-	{"SHOW MASTER STATUS", "SHOW MASTER STATUS", "metadata"},                              // GAP: needs REPLICATION CLIENT
-	{"SHOW BINARY LOG STATUS", "SHOW BINARY LOG STATUS", "unanalyzable→sql.unanalyzable"}, // 8.4 rename; fails closed (unlike SHOW MASTER STATUS)
-	{"SHOW REPLICA STATUS", "SHOW REPLICA STATUS", "metadata + utility:SHOW_REPLICA_STATUS"},
-	{"SHOW SLAVE STATUS", "SHOW SLAVE STATUS", "metadata + utility:SHOW_REPLICA_STATUS"},
-	{"SHOW REPLICAS", "SHOW REPLICAS", "metadata"},       // GAP: needs REPLICATION SLAVE
-	{"SHOW SLAVE HOSTS", "SHOW SLAVE HOSTS", "metadata"}, // GAP: alias of SHOW REPLICAS
-	{"SHOW WHERE subquery", "SHOW TABLES WHERE Tables_in_db IN (SELECT rrn FROM users)", "metadata + utility:SHOW_SUBQUERY"},
+	{"SHOW PROCESSLIST", "SHOW PROCESSLIST", "metadata + utility:SHOW_PROCESSLIST", pb.StatementKind_STATEMENT_KIND_SHOW_PROCESSLIST},
+	{"SHOW GRANTS", "SHOW GRANTS", "metadata + utility:SHOW_GRANTS", pb.StatementKind_STATEMENT_KIND_SHOW_GRANTS},
+	{"SHOW CREATE USER", "SHOW CREATE USER CURRENT_USER", "metadata + utility:SHOW_CREATE_USER", pb.StatementKind_STATEMENT_KIND_SHOW_CREATE_USER},
+	{"SHOW ENGINE INNODB STATUS", "SHOW ENGINE INNODB STATUS", "metadata + utility:SHOW_ENGINE_STATUS", pb.StatementKind_STATEMENT_KIND_SHOW_ENGINE_STATUS},
+	{"SHOW BINLOG EVENTS", "SHOW BINLOG EVENTS", "metadata + utility:SHOW_BINLOG_EVENTS", pb.StatementKind_STATEMENT_KIND_SHOW_BINLOG_EVENTS},
+	{"SHOW RELAYLOG EVENTS", "SHOW RELAYLOG EVENTS", "metadata + utility:SHOW_RELAYLOG_EVENTS", pb.StatementKind_STATEMENT_KIND_SHOW_RELAYLOG_EVENTS},
+	{"SHOW BINARY LOGS", "SHOW BINARY LOGS", "metadata", pb.StatementKind_STATEMENT_KIND_SHOW_BINARY_LOGS},                                        // GAP: needs REPLICATION CLIENT
+	{"SHOW MASTER STATUS", "SHOW MASTER STATUS", "metadata", pb.StatementKind_STATEMENT_KIND_SHOW_MASTER_STATUS},                                  // GAP: needs REPLICATION CLIENT
+	{"SHOW BINARY LOG STATUS", "SHOW BINARY LOG STATUS", "unanalyzable→sql.unanalyzable", pb.StatementKind_STATEMENT_KIND_STMT_UNKNOWN}, // 8.4 rename; degrades to Command, fails closed (unlike SHOW MASTER STATUS)
+	{"SHOW REPLICA STATUS", "SHOW REPLICA STATUS", "metadata + utility:SHOW_REPLICA_STATUS", pb.StatementKind_STATEMENT_KIND_SHOW_REPLICA_STATUS},
+	{"SHOW SLAVE STATUS", "SHOW SLAVE STATUS", "metadata + utility:SHOW_REPLICA_STATUS", pb.StatementKind_STATEMENT_KIND_SHOW_REPLICA_STATUS},
+	{"SHOW REPLICAS", "SHOW REPLICAS", "metadata", pb.StatementKind_STATEMENT_KIND_SHOW_REPLICAS},       // GAP: needs REPLICATION SLAVE
+	{"SHOW SLAVE HOSTS", "SHOW SLAVE HOSTS", "metadata", pb.StatementKind_STATEMENT_KIND_SHOW_REPLICAS}, // GAP: alias of SHOW REPLICAS
+	{"SHOW WHERE subquery", "SHOW TABLES WHERE Tables_in_db IN (SELECT rrn FROM users)", "metadata + utility:SHOW_SUBQUERY", pb.StatementKind_STATEMENT_KIND_SHOW_METADATA},
 
 	// ---- Utility (§15.8) ----
-	{"DESCRIBE", "DESCRIBE users", "metadata"},
-	{"DESC", "DESC users", "metadata"},
-	{"EXPLAIN (query)", "EXPLAIN SELECT id FROM users", "result.read + sql.select"},
-	{"EXPLAIN ANALYZE", "EXPLAIN ANALYZE SELECT id FROM users", "result.read + sql.select"},
-	{"EXPLAIN (table)", "EXPLAIN users", "metadata"},
-	{"HELP", "HELP 'contents'", "unanalyzable→sql.unanalyzable"},
-	{"USE", "USE acme", "session"},
+	{"DESCRIBE", "DESCRIBE users", "metadata", pb.StatementKind_STATEMENT_KIND_DESCRIBE},
+	{"DESC", "DESC users", "metadata", pb.StatementKind_STATEMENT_KIND_DESCRIBE},
+	{"EXPLAIN (query)", "EXPLAIN SELECT id FROM users", "result.read + sql.select", pb.StatementKind_STATEMENT_KIND_SELECT},
+	{"EXPLAIN ANALYZE", "EXPLAIN ANALYZE SELECT id FROM users", "result.read + sql.select", pb.StatementKind_STATEMENT_KIND_SELECT},
+	{"EXPLAIN (table)", "EXPLAIN users", "metadata", pb.StatementKind_STATEMENT_KIND_DESCRIBE}, // EXPLAIN <table> is AST-identical to DESCRIBE <table>
+	{"HELP", "HELP 'contents'", "unanalyzable→sql.unanalyzable", pb.StatementKind_STATEMENT_KIND_HELP},
+	{"USE", "USE acme", "session", pb.StatementKind_STATEMENT_KIND_USE},
 
 	// ---- Compound (§15.6) ----
 	// Compound BEGIN...END blocks are valid only inside a stored program; a client reaches them via CALL
 	// (above), never as a standalone statement. Sent standalone it is a parse error → fail-closed.
-	{"BEGIN...END (standalone)", "BEGIN SELECT 1; END", "unanalyzable→sql.unanalyzable"},
+	{"BEGIN...END (standalone)", "BEGIN SELECT 1; END", "unanalyzable→sql.unanalyzable", pb.StatementKind_STATEMENT_KIND_STMT_UNKNOWN}, // parse error
 }
 
 // TestMysqlStatementResolution pins the analyzer's resolution for every MySQL 8.0/8.4 statement kind in the
@@ -381,6 +385,23 @@ func TestMysqlStatementResolution(t *testing.T) {
 		seen[s.name] = true
 		if got := resolve(t, s.sql); got != s.want {
 			t.Errorf("%-28s %-60q\n    got  %s\n    want %s", s.name, s.sql, got, s.want)
+		}
+	}
+}
+
+// TestMysqlStatementKind pins the StatementKind the analyzer computes from the parsed AST for every MySQL
+// statement kind in the curated list. Each `kind` was OBSERVED from the analyzer and audited: a statement
+// that parses to a real node carries a specific kind (even when it fails closed — KILL, CREATE_USER), and
+// only the ones that parse-error before a root exists are STMT_UNKNOWN. The guard asserts no statement leaves the kind UNSPECIFIED (the invalid zero value the
+// control-plane must deny), so a new dispatch path that forgets to set a kind fails this test on purpose.
+func TestMysqlStatementKind(t *testing.T) {
+	for _, s := range mysqlStatements {
+		got := mysqlFacts(t, s.sql).GetStatementKind()
+		if got == pb.StatementKind_STATEMENT_KIND_UNSPECIFIED {
+			t.Errorf("%-28s %-60q left StatementKind UNSPECIFIED — every classified statement must set a kind or STMT_UNKNOWN", s.name, s.sql)
+		}
+		if got != s.kind {
+			t.Errorf("%-28s %-60q\n    got  %s\n    want %s", s.name, s.sql, got, s.kind)
 		}
 	}
 }

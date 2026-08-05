@@ -123,6 +123,199 @@ enum StatementClass {
   STATEMENT_CLASS_SESSION = 3;
 }
 
+// The kind of statement — one value per statement kind PM classifies, the granular half of the
+// statement-classification model (the control-plane maps each kind to a category and gates it through
+// Cedar as stmt.kind.<k> in stmt.cat.<category>). The analyzer computes the kind from the parsed AST;
+// a statement it cannot classify (a parse error, an unmodeled form) is STATEMENT_KIND_STMT_UNKNOWN,
+// which the control-plane routes to the deny-by-default-but-grantable unknown category. The zero value
+// is invalid and must deny — the analyzer never emits it on a successful classification.
+//
+// Granularity tracks what the AST exposes: kinds are as specific as the parse distinguishes (every
+// CREATE/ALTER/DROP object type, every discriminated SHOW/SET form), and benign forms the parse treats
+// uniformly share a kind (all schema-introspecting SHOWs are SHOW_METADATA; benign session SETs are
+// SET_SESSION_VAR). The coverage test (analyzer/probe/mysql_statement_coverage_test.go) is the
+// authority and pins the kind for every MySQL statement.
+//
+// The enum numbers are opaque identifiers, not a taxonomy: 0 is unspecified, 1 is unknown, and every
+// other kind has an arbitrary but stable number (a new kind takes the next free value). A kind's category
+// lives in the Cedar schema (stmt.cat.*), never in its number — do not read meaning into the value or
+// group by ranges.
+enum StatementKind {
+  STATEMENT_KIND_UNSPECIFIED = 0;
+
+  // unknown — the analyzer could not classify (parse error / unmodeled form); deny-by-default,
+  // grantable per datasource (the sql.unanalyzable semantics).
+  STATEMENT_KIND_STMT_UNKNOWN = 1;
+
+  // read
+  STATEMENT_KIND_SELECT = 2;
+  STATEMENT_KIND_TABLE = 3;
+  STATEMENT_KIND_VALUES = 4;
+  STATEMENT_KIND_WITH_SELECT = 5;
+  STATEMENT_KIND_SET_OP = 6;
+
+  // write
+  STATEMENT_KIND_INSERT = 7;
+  STATEMENT_KIND_INSERT_SELECT = 8;
+  STATEMENT_KIND_INSERT_ON_DUP = 9;
+  STATEMENT_KIND_UPDATE = 10;
+  STATEMENT_KIND_DELETE = 11;
+  STATEMENT_KIND_REPLACE = 12;
+
+  // ddl
+  STATEMENT_KIND_CREATE_TABLE = 13;
+  STATEMENT_KIND_CREATE_VIEW = 14;
+  STATEMENT_KIND_CREATE_INDEX = 15;
+  STATEMENT_KIND_CREATE_DATABASE = 16;
+  STATEMENT_KIND_CREATE_TRIGGER = 17;
+  STATEMENT_KIND_CREATE_PROCEDURE = 18;
+  STATEMENT_KIND_CREATE_FUNCTION = 19;
+  STATEMENT_KIND_CREATE_EVENT = 20;
+  STATEMENT_KIND_CREATE_SERVER = 21;
+  STATEMENT_KIND_CREATE_TABLESPACE = 22;
+  STATEMENT_KIND_CREATE_SRS = 23;
+  STATEMENT_KIND_ALTER_TABLE = 24;
+  STATEMENT_KIND_ALTER_DATABASE = 25;
+  STATEMENT_KIND_ALTER_VIEW = 26;
+  STATEMENT_KIND_ALTER_EVENT = 27;
+  STATEMENT_KIND_ALTER_PROCEDURE = 28;
+  STATEMENT_KIND_ALTER_FUNCTION = 29;
+  STATEMENT_KIND_ALTER_SERVER = 30;
+  STATEMENT_KIND_ALTER_TABLESPACE = 31;
+  STATEMENT_KIND_ALTER_INSTANCE = 32;
+  STATEMENT_KIND_DROP_TABLE = 33;
+  STATEMENT_KIND_DROP_INDEX = 34;
+  STATEMENT_KIND_DROP_VIEW = 35;
+  STATEMENT_KIND_DROP_DATABASE = 36;
+  STATEMENT_KIND_DROP_TRIGGER = 37;
+  STATEMENT_KIND_DROP_PROCEDURE = 38;
+  STATEMENT_KIND_DROP_FUNCTION = 39;
+  STATEMENT_KIND_DROP_EVENT = 40;
+  STATEMENT_KIND_DROP_SERVER = 41;
+  STATEMENT_KIND_DROP_TABLESPACE = 42;
+  STATEMENT_KIND_DROP_SRS = 43;
+  STATEMENT_KIND_TRUNCATE_TABLE = 44;
+  STATEMENT_KIND_RENAME_TABLE = 45;
+
+  // session (connection-local; permit-by-default domain)
+  STATEMENT_KIND_START_TRANSACTION = 46;
+  STATEMENT_KIND_COMMIT = 47;
+  STATEMENT_KIND_ROLLBACK = 48;
+  STATEMENT_KIND_SAVEPOINT = 49;
+  STATEMENT_KIND_SET_TRANSACTION = 50;
+  STATEMENT_KIND_SET_SESSION_VAR = 51;
+  STATEMENT_KIND_USE = 52;
+
+  // metadata (schema introspection; permit-by-default domain)
+  STATEMENT_KIND_DESCRIBE = 53;
+  STATEMENT_KIND_EXPLAIN_TABLE = 54;
+  STATEMENT_KIND_SHOW_METADATA = 55;
+  STATEMENT_KIND_SHOW_WARNINGS = 56;
+  STATEMENT_KIND_SHOW_ERRORS = 57;
+  STATEMENT_KIND_HELP = 58;
+
+  // admin.account
+  STATEMENT_KIND_CREATE_USER = 59;
+  STATEMENT_KIND_ALTER_USER = 60;
+  STATEMENT_KIND_DROP_USER = 61;
+  STATEMENT_KIND_RENAME_USER = 62;
+  STATEMENT_KIND_CREATE_ROLE = 63;
+  STATEMENT_KIND_DROP_ROLE = 64;
+  STATEMENT_KIND_GRANT_PRIV = 65;
+  STATEMENT_KIND_GRANT_ROLE = 66;
+  STATEMENT_KIND_REVOKE_PRIV = 67;
+  STATEMENT_KIND_REVOKE_ROLE = 68;
+  STATEMENT_KIND_SET_PASSWORD = 69;
+  STATEMENT_KIND_SET_ROLE = 70;
+  STATEMENT_KIND_SET_DEFAULT_ROLE = 71;
+  STATEMENT_KIND_SET_SESSION_AUTHORIZATION = 72;
+  STATEMENT_KIND_SHOW_GRANTS = 73;
+  STATEMENT_KIND_SHOW_CREATE_USER = 74;
+
+  // admin.replication
+  STATEMENT_KIND_CHANGE_REPLICATION_SOURCE = 75;
+  STATEMENT_KIND_CHANGE_REPLICATION_FILTER = 76;
+  STATEMENT_KIND_START_REPLICA = 77;
+  STATEMENT_KIND_STOP_REPLICA = 78;
+  STATEMENT_KIND_RESET_REPLICA = 79;
+  STATEMENT_KIND_START_GROUP_REPLICATION = 80;
+  STATEMENT_KIND_STOP_GROUP_REPLICATION = 81;
+  STATEMENT_KIND_PURGE_BINARY_LOGS = 82;
+  STATEMENT_KIND_RESET_MASTER = 83;
+  STATEMENT_KIND_RESET_BINARY_LOGS_AND_GTIDS = 84;
+  STATEMENT_KIND_SET_SQL_LOG_BIN = 85;
+  STATEMENT_KIND_BINLOG = 86;
+  STATEMENT_KIND_SHOW_MASTER_STATUS = 87;
+  STATEMENT_KIND_SHOW_BINARY_LOGS = 88;
+  STATEMENT_KIND_SHOW_BINARY_LOG_STATUS = 89;
+  STATEMENT_KIND_SHOW_BINLOG_EVENTS = 90;
+  STATEMENT_KIND_SHOW_RELAYLOG_EVENTS = 91;
+  STATEMENT_KIND_SHOW_REPLICA_STATUS = 92;
+  STATEMENT_KIND_SHOW_REPLICAS = 93;
+
+  // admin.process
+  STATEMENT_KIND_KILL = 94;
+  STATEMENT_KIND_SHOW_PROCESSLIST = 95;
+  STATEMENT_KIND_SHOW_ENGINE_STATUS = 96;
+
+  // admin.server
+  STATEMENT_KIND_SHUTDOWN = 97;
+  STATEMENT_KIND_RESTART = 98;
+  STATEMENT_KIND_FLUSH = 99;
+  STATEMENT_KIND_CLONE = 100;
+  STATEMENT_KIND_SET_GLOBAL = 101;
+  STATEMENT_KIND_SET_PERSIST = 102;
+  STATEMENT_KIND_SET_PERSIST_ONLY = 103;
+  STATEMENT_KIND_SET_SQL_MODE = 104;
+  STATEMENT_KIND_SET_STANDARD_CONFORMING_STRINGS = 105;
+  STATEMENT_KIND_SET_RESOURCE_GROUP = 106;
+  STATEMENT_KIND_CREATE_RESOURCE_GROUP = 107;
+  STATEMENT_KIND_ALTER_RESOURCE_GROUP = 108;
+  STATEMENT_KIND_DROP_RESOURCE_GROUP = 109;
+  STATEMENT_KIND_RESET_PERSIST = 110;
+
+  // admin.maintenance
+  STATEMENT_KIND_ANALYZE_TABLE = 111;
+  STATEMENT_KIND_CHECK_TABLE = 112;
+  STATEMENT_KIND_CHECKSUM_TABLE = 113;
+  STATEMENT_KIND_OPTIMIZE_TABLE = 114;
+  STATEMENT_KIND_REPAIR_TABLE = 115;
+  STATEMENT_KIND_CACHE_INDEX = 116;
+  STATEMENT_KIND_LOAD_INDEX_INTO_CACHE = 117;
+
+  // admin.plugin
+  STATEMENT_KIND_INSTALL_PLUGIN = 118;
+  STATEMENT_KIND_UNINSTALL_PLUGIN = 119;
+  STATEMENT_KIND_INSTALL_COMPONENT = 120;
+  STATEMENT_KIND_UNINSTALL_COMPONENT = 121;
+
+  // admin.lock
+  STATEMENT_KIND_LOCK_TABLES = 122;
+  STATEMENT_KIND_UNLOCK_TABLES = 123;
+  STATEMENT_KIND_LOCK_INSTANCE = 124;
+  STATEMENT_KIND_UNLOCK_INSTANCE = 125;
+
+  // admin.file (FILE-privilege server-filesystem I/O)
+  STATEMENT_KIND_SELECT_INTO_OUTFILE = 126;
+  STATEMENT_KIND_SELECT_INTO_DUMPFILE = 127;
+  STATEMENT_KIND_LOAD_DATA = 128;
+  STATEMENT_KIND_LOAD_XML = 129;
+  STATEMENT_KIND_IMPORT_TABLE = 130;
+  // PostgreSQL COPY TO/FROM a server file — the PG analog of OUTFILE/LOAD (one kind for both directions).
+  STATEMENT_KIND_COPY = 138;
+
+  // admin.exec (dynamic execution)
+  STATEMENT_KIND_PREPARE = 131;
+  STATEMENT_KIND_EXECUTE = 132;
+  STATEMENT_KIND_DEALLOCATE_PREPARE = 133;
+  STATEMENT_KIND_CALL = 134;
+  STATEMENT_KIND_DO = 135;
+
+  // admin.unanalyzable (opaque; the analyzer cannot decompose)
+  STATEMENT_KIND_HANDLER = 136;
+  STATEMENT_KIND_XA = 137;
+}
+
 // The security class of an unresolved statement. The zero value is invalid and must hard-deny.
 enum FailureClass {
   FAILURE_CLASS_UNSPECIFIED = 0;
@@ -200,4 +393,8 @@ message StatementFacts {
   repeated string functions = 13;
   // Dotted identifier schema candidates used only to retry a catalog miss with refreshed metadata.
   repeated string schema_qualifier_candidates = 14;
+  // The classified statement kind. UNSPECIFIED (the zero value) is invalid and denies; the analyzer
+  // always sets a specific kind or STMT_UNKNOWN. Orthogonal to statement_class/required_grants — the
+  // control-plane maps it to a category and gates it, while masking/passthrough/unanalyzable stay as is.
+  StatementKind statement_kind = 15;
 }

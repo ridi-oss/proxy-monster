@@ -158,6 +158,7 @@ func EmitFacts(sql string, engineConfig *pb.EngineConfig, sch *schema.Mapping, n
 			facts.RewrittenSql = &rewrite
 		}
 	}
+	facts.StatementKind = statementKind(root, eng)
 	facts.SchemaQualifierCandidates = candidates
 	return facts
 }
@@ -180,6 +181,7 @@ func emitConfigFailureUtilityFacts(sql string, engineConfig *pb.EngineConfig) *p
 	}
 	facts := passthroughFacts(pb.StatementClass_STATEMENT_CLASS_METADATA)
 	facts.RequiredGrants = append(facts.RequiredGrants, utilityGrant(command))
+	facts.StatementKind = statementKind(stmts[0], nil)
 	return facts
 }
 
@@ -934,6 +936,10 @@ func passthroughFacts(class pb.StatementClass) *pb.StatementFacts {
 	return &pb.StatementFacts{Resolved: true, Detail: "ok", StatementClass: class}
 }
 
+// inadmissibleFacts and unanalyzableFacts default StatementKind to STMT_UNKNOWN. A statement that reaches
+// EmitFacts's root classification overwrites it with the computed kind (so an unanalyzable ALTER still
+// reports ALTER_TABLE); the default stands only on the pre-root failures (parse error, batch), which are
+// genuinely unclassifiable — matching the deny-by-default-but-grantable unknown category.
 func inadmissibleFacts(stage, detail string) *pb.StatementFacts {
 	return &pb.StatementFacts{
 		Resolved:       false,
@@ -941,6 +947,7 @@ func inadmissibleFacts(stage, detail string) *pb.StatementFacts {
 		FailedStage:    strPtr(stage),
 		Detail:         truncateDetail(detail),
 		StatementClass: pb.StatementClass_STATEMENT_CLASS_UNSPECIFIED,
+		StatementKind:  pb.StatementKind_STATEMENT_KIND_STMT_UNKNOWN,
 	}
 }
 
@@ -951,6 +958,7 @@ func unanalyzableFacts(stage, detail string) *pb.StatementFacts {
 		FailedStage:    strPtr(stage),
 		Detail:         truncateDetail(detail),
 		StatementClass: pb.StatementClass_STATEMENT_CLASS_UNSPECIFIED,
+		StatementKind:  pb.StatementKind_STATEMENT_KIND_STMT_UNKNOWN,
 	}
 }
 

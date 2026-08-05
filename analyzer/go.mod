@@ -8,7 +8,7 @@ module github.com/ridi-oss/proxy-monster/analyzer
 
 go 1.26.0
 
-require github.com/ridi-oss/sqlglot-go v0.22.0
+require github.com/ridi-oss/sqlglot-go v0.23.0
 
 require google.golang.org/protobuf v1.35.2
 

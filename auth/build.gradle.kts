@@ -5,8 +5,8 @@ plugins {
     kotlin("plugin.serialization")
 }
 
-val ktorVersion = "3.2.0"
-val testcontainersVersion = "1.20.4"
+val ktorVersion = "3.5.1"
+val testcontainersVersion = "1.21.4"
 
 dependencies {
     implementation("io.ktor:ktor-client-core:$ktorVersion")
@@ -14,8 +14,8 @@ dependencies {
     implementation("io.ktor:ktor-client-content-negotiation:$ktorVersion")
     implementation("io.ktor:ktor-serialization-kotlinx-json:$ktorVersion")
     implementation("com.nimbusds:nimbus-jose-jwt:9.40")
-    implementation("org.slf4j:slf4j-api:2.0.16")
-    implementation("org.postgresql:postgresql:42.7.4")
+    implementation("org.slf4j:slf4j-api:2.0.18")
+    implementation("org.postgresql:postgresql:42.7.13")
 
     testImplementation(kotlin("test"))
     testImplementation("com.zaxxer:HikariCP:7.1.0")

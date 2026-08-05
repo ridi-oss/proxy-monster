@@ -4,6 +4,7 @@ import com.ridi.oss.proxymonster.controlplane.authz.Authz
 import com.ridi.oss.proxymonster.controlplane.authz.AuthzAction
 import com.ridi.oss.proxymonster.controlplane.authz.CedarPolicyStore
 import com.ridi.oss.proxymonster.controlplane.authz.requireAdmin
+import com.ridi.oss.proxymonster.controlplane.management.ManagementAuditRecorder
 import com.ridi.oss.proxymonster.controlplane.management.ManagementException
 import com.ridi.oss.proxymonster.controlplane.management.PolicyManagementService
 import io.ktor.http.HttpStatusCode
@@ -150,14 +151,15 @@ fun Route.policyRoutes(
     config: Config,
     authz: Authz,
     store: PolicyStore,
-    management: PolicyManagementService = PolicyManagementService(CedarPolicyStore(store.dataSource), store),
+    management: PolicyManagementService =
+        PolicyManagementService(CedarPolicyStore(store.dataSource), store, ManagementAuditRecorder(AuditStore(store.dataSource))),
 ) {
     get("/api/roles") { if (!call.requireApi(config)) return@get; call.respond(management.listRoles()) }
     post("/api/roles") {
         if (!call.requireAdmin(config, authz, AuthzAction.ADMIN_POLICIES)) return@post
         val input = call.receive<RoleInput>()
         try {
-            call.respond(HttpStatusCode.Created, management.createRole(input.name, input.description))
+            call.respond(HttpStatusCode.Created, management.createRole(input.name, input.description, call.auditActor(config)))
         } catch (e: ManagementException) {
             call.respondManagementError(e)
         }
@@ -167,7 +169,7 @@ fun Route.policyRoutes(
         val id = call.idParam() ?: return@put call.respond(HttpStatusCode.BadRequest, ApiError("common.bad_id"))
         val input = call.receive<RoleInput>()
         try {
-            call.respond(management.updateRole(id, input))
+            call.respond(management.updateRole(id, input, call.auditActor(config)))
         } catch (e: ManagementException) {
             call.respondManagementError(e)
         }
@@ -176,7 +178,7 @@ fun Route.policyRoutes(
         if (!call.requireAdmin(config, authz, AuthzAction.ADMIN_POLICIES)) return@delete
         val id = call.idParam() ?: return@delete call.respond(HttpStatusCode.BadRequest, ApiError("common.bad_id"))
         try {
-            management.deleteRole(id)
+            management.deleteRole(id, call.auditActor(config))
             call.respond(HttpStatusCode.NoContent)
         } catch (e: ManagementException) {
             call.respondManagementError(e)
@@ -194,7 +196,7 @@ fun Route.policyRoutes(
         if (!call.requireAdmin(config, authz, AuthzAction.ADMIN_IDENTITY)) return@post
         val input = call.receive<RoleAssignmentInput>()
         try {
-            call.respond(HttpStatusCode.Created, management.assignRole(input.principal, input.roleId))
+            call.respond(HttpStatusCode.Created, management.assignRole(input.principal, input.roleId, call.auditActor(config)))
         } catch (e: ManagementException) {
             call.respondManagementError(e)
         }
@@ -203,7 +205,7 @@ fun Route.policyRoutes(
         if (!call.requireAdmin(config, authz, AuthzAction.ADMIN_IDENTITY)) return@delete
         val id = call.idParam() ?: return@delete call.respond(HttpStatusCode.BadRequest, ApiError("common.bad_id"))
         try {
-            management.unassignRole(id)
+            management.unassignRole(id, call.auditActor(config))
             call.respond(HttpStatusCode.NoContent)
         } catch (e: ManagementException) {
             call.respondManagementError(e)
@@ -215,7 +217,7 @@ fun Route.policyRoutes(
         if (!call.requireAdmin(config, authz, AuthzAction.ADMIN_POLICIES)) return@post
         val input = call.receive<MaskFnInput>()
         try {
-            call.respond(HttpStatusCode.Created, management.createMaskFn(input))
+            call.respond(HttpStatusCode.Created, management.createMaskFn(input, call.auditActor(config)))
         } catch (e: ManagementException) {
             call.respondManagementError(e)
         }
@@ -224,7 +226,7 @@ fun Route.policyRoutes(
         if (!call.requireAdmin(config, authz, AuthzAction.ADMIN_POLICIES)) return@put
         val id = call.idParam() ?: return@put call.respond(HttpStatusCode.BadRequest, ApiError("common.bad_id"))
         try {
-            call.respond(management.updateMaskFn(id, call.receive()))
+            call.respond(management.updateMaskFn(id, call.receive(), call.auditActor(config)))
         } catch (e: ManagementException) {
             call.respondManagementError(e)
         }
@@ -233,7 +235,7 @@ fun Route.policyRoutes(
         if (!call.requireAdmin(config, authz, AuthzAction.ADMIN_POLICIES)) return@delete
         val id = call.idParam() ?: return@delete call.respond(HttpStatusCode.BadRequest, ApiError("common.bad_id"))
         try {
-            management.deleteMaskFn(id)
+            management.deleteMaskFn(id, call.auditActor(config))
             call.respond(HttpStatusCode.NoContent)
         } catch (e: ManagementException) {
             call.respondManagementError(e)

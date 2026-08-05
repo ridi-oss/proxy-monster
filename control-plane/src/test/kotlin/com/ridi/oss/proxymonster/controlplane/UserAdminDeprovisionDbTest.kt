@@ -1,6 +1,9 @@
 package com.ridi.oss.proxymonster.controlplane
 
+import com.ridi.oss.proxymonster.controlplane.management.AuditActor
+import com.ridi.oss.proxymonster.controlplane.management.AuditSource
 import com.ridi.oss.proxymonster.controlplane.management.IdentityManagementService
+import com.ridi.oss.proxymonster.controlplane.management.ManagementAuditRecorder
 import com.ridi.oss.proxymonster.controlplane.support.SharedPostgres
 import com.ridi.oss.proxymonster.controlplane.support.requireDockerOrSkip
 import org.flywaydb.core.Flyway
@@ -35,6 +38,7 @@ class UserAdminDeprovisionDbTest {
     private lateinit var daemonSessionStore: PrincipalSessionStore
     private lateinit var policyStore: PolicyStore
     private lateinit var management: IdentityManagementService
+    private val actor = AuditActor("admin@example.com", channel = AuditSource.CONSOLE)
 
     @BeforeAll
     fun setup() {
@@ -48,7 +52,7 @@ class UserAdminDeprovisionDbTest {
         daemonSessionStore = PrincipalSessionStore(ds, null)
         policyStore = PolicyStore(ds)
         management = IdentityManagementService(
-            ds, userGroupStore, policyStore, tokenStore, accessStore, daemonSessionStore,
+            ds, userGroupStore, policyStore, tokenStore, accessStore, daemonSessionStore, ManagementAuditRecorder(AuditStore(ds)),
         )
     }
 
@@ -242,7 +246,7 @@ class UserAdminDeprovisionDbTest {
             tokenStore, accessStore, daemonSessionStore,
         )
 
-        assertTrue(management.deprovisionUser(original.id).deleted)
+        assertTrue(management.deprovisionUser(original.id, actor).deleted)
         val addressed = assertNotNull(userGroupStore.getUser(original.id))
         assertEquals("id-stable-after@example.com", addressed.principal)
         assertFalse(addressed.active)
@@ -257,7 +261,7 @@ class UserAdminDeprovisionDbTest {
         val executor = Executors.newFixedThreadPool(2)
         try {
             val futures = listOf(first, second).map { role ->
-                executor.submit<Unit> { start.await(); management.addGroupRole(group.id, role.id) }
+                executor.submit<Unit> { start.await(); management.addGroupRole(group.id, role.id, actor) }
             }
             start.countDown()
             futures.forEach { it.get() }

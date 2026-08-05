@@ -8,6 +8,9 @@ import com.ridi.oss.proxymonster.controlplane.authz.CedarPolicyStore
 import com.ridi.oss.proxymonster.controlplane.authz.RoleSource
 import com.ridi.oss.proxymonster.controlplane.authz.cedarPolicyRoutes
 import com.ridi.oss.proxymonster.controlplane.authz.CedarSchema
+import com.ridi.oss.proxymonster.controlplane.management.AuditActor
+import com.ridi.oss.proxymonster.controlplane.management.AuditSource
+import com.ridi.oss.proxymonster.controlplane.management.ManagementAuditRecorder
 import com.ridi.oss.proxymonster.controlplane.management.PolicyManagementService
 import com.ridi.oss.proxymonster.controlplane.support.SharedPostgres
 import com.ridi.oss.proxymonster.controlplane.support.requireDockerOrSkip
@@ -130,8 +133,24 @@ class CedarPolicyRoutesTest {
     }
 
     @Test
+    fun `debug HTTP mutation records the unknown console actor exactly once`() = testApplication {
+        store.setEnabled(-1, enabled = true, updatedBy = "setup@example.com")
+        val before = adminToggleCount()
+        val response = policyClient().post("/api/policies/-1/disable")
+        assertEquals(HttpStatusCode.OK, response.status)
+        assertEquals(before + 1, adminToggleCount())
+        val row = ds.connection.use { c ->
+            c.prepareStatement(
+                """SELECT action, resource, channel, principal FROM audit_event
+                   WHERE kind='admin' AND resource='Policy::"-1"' ORDER BY id DESC LIMIT 1""",
+            ).use { ps -> ps.executeQuery().use { rs -> rs.next(); (1..4).map(rs::getString) } }
+        }
+        assertEquals(listOf("admin.policies", "Policy::\"-1\"", "console", "unknown"), row)
+    }
+
+    @Test
     fun `REST-shaped policy mutation remains bound to its numeric id after name reuse`() {
-        val management = PolicyManagementService(store, PolicyStore(ds))
+        val management = PolicyManagementService(store, PolicyStore(ds), ManagementAuditRecorder(AuditStore(ds)))
         val original = store.create(CedarPolicyInput("id-stable-policy", ADMIN_SOURCE), "operator@example.com")
         store.update(original.id, CedarPolicyInput("id-stable-policy-renamed", ADMIN_SOURCE), "operator@example.com")
         val replacement = store.create(CedarPolicyInput("id-stable-policy", ADMIN_SOURCE), "operator@example.com")
@@ -140,6 +159,7 @@ class CedarPolicyRoutesTest {
             original.id,
             CedarPolicyInput("id-stable-policy-final", ADMIN_SOURCE),
             "operator@example.com",
+            AuditActor("operator@example.com", channel = AuditSource.CONSOLE),
         )
 
         assertEquals(original.id, updated.id)
@@ -158,7 +178,7 @@ class CedarPolicyRoutesTest {
      */
     @Test
     fun `the served policy schema declares the context tag actions stored rules target`() {
-        val management = PolicyManagementService(store, PolicyStore(ds))
+        val management = PolicyManagementService(store, PolicyStore(ds), ManagementAuditRecorder(AuditStore(ds)))
         store.create(
             CedarPolicyInput("tag-rule-live", tagRule("routes-live-tag")),
             "operator@example.com",
@@ -184,7 +204,7 @@ class CedarPolicyRoutesTest {
      */
     @Test
     fun `escape-aliased tag names collapse to one declaration`() {
-        val management = PolicyManagementService(store, PolicyStore(ds))
+        val management = PolicyManagementService(store, PolicyStore(ds), ManagementAuditRecorder(AuditStore(ds)))
         store.create(CedarPolicyInput("tag-alias-plain", tagRule("aliastag")), "operator@example.com")
         store.create(
             CedarPolicyInput("tag-alias-escaped", tagRule("""\u{61}liastag""")),
@@ -199,6 +219,12 @@ class CedarPolicyRoutesTest {
             CedarSchema.schemaTextFor(setOf("aliastag")) != served || declarations == 1,
             "served schema must remain parseable",
         )
+    }
+
+    private fun adminToggleCount(): Int = ds.connection.use { c ->
+        c.prepareStatement("SELECT count(*) FROM audit_event WHERE kind='admin' AND resource='Policy::\"-1\"'").use { ps ->
+            ps.executeQuery().use { rs -> rs.next(); rs.getInt(1) }
+        }
     }
 
     private fun tagRule(tag: String): String =

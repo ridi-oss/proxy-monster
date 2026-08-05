@@ -9,6 +9,7 @@ import com.ridi.oss.proxymonster.controlplane.authz.requireAdmin
 import com.ridi.oss.proxymonster.controlplane.authz.resolveContextTags
 import com.ridi.oss.proxymonster.controlplane.management.DatasourceManagementService
 import com.ridi.oss.proxymonster.controlplane.grpc.inspectTrustChain
+import com.ridi.oss.proxymonster.controlplane.management.ManagementAuditRecorder
 import com.ridi.oss.proxymonster.controlplane.management.ManagementException
 import com.ridi.oss.proxymonster.grpc.Engine
 import com.ridi.oss.proxymonster.probe.Classification
@@ -448,21 +449,21 @@ class DatasourceStore(internal val dataSource: DataSource) {
         return columns.size
     }
 
-    fun create(input: DatasourceInput): Datasource {
-        val id = dataSource.connection.use { c ->
-            c.prepareStatement(
-                """INSERT INTO datasource (name, engine, host, port, db_name)
-                   VALUES (?, ?, ?, ?, ?) RETURNING id""",
-            ).use { ps ->
-                ps.setString(1, input.name)
-                ps.setString(2, input.engine)
-                ps.setString(3, input.host)
-                ps.setInt(4, input.port)
-                ps.setString(5, input.dbName)
-                ps.executeQuery().use { rs -> rs.next(); rs.getLong(1) }
-            }
+    fun create(input: DatasourceInput): Datasource = dataSource.inTx { create(input, it) }
+
+    fun create(input: DatasourceInput, c: java.sql.Connection): Datasource {
+        val id = c.prepareStatement(
+            """INSERT INTO datasource (name, engine, host, port, db_name)
+               VALUES (?, ?, ?, ?, ?) RETURNING id""",
+        ).use { ps ->
+            ps.setString(1, input.name)
+            ps.setString(2, input.engine)
+            ps.setString(3, input.host)
+            ps.setInt(4, input.port)
+            ps.setString(5, input.dbName)
+            ps.executeQuery().use { rs -> rs.next(); rs.getLong(1) }
         }
-        return get(id)!!
+        return get(id, c)!!
     }
 
     /** Drop [id]'s stored catalog and clear its sync stamps so decisions fail closed until a fresh
@@ -486,51 +487,39 @@ class DatasourceStore(internal val dataSource: DataSource) {
      * carries the unchanged engine and never trips this. A db_name change invalidates the stale catalog exactly
      * as a Register retarget does. Returns null if [id] doesn't exist.
      */
-    fun update(id: Long, input: DatasourceInput): Datasource? {
-        val existed = dataSource.connection.use { c ->
-            c.autoCommit = false
-            try {
-                data class Prior(val engine: String, val dbName: String)
-                val prior = c.prepareStatement("SELECT engine, db_name FROM datasource WHERE id = ? FOR UPDATE").use { ps ->
-                    ps.setLong(1, id)
-                    ps.executeQuery().use { rs -> if (rs.next()) Prior(rs.getString(1), rs.getString(2)) else null }
-                }
-                if (prior == null) {
-                    c.rollback()
-                    return@use false
-                }
-                if (prior.engine != input.engine) {
-                    throw DatasourceEngineConflictException(input.name, prior.engine, input.engine)
-                }
-                c.prepareStatement(
-                    "UPDATE datasource SET name=?, engine=?, host=?, port=?, db_name=? WHERE id=?",
-                ).use { ps ->
-                    ps.setString(1, input.name)
-                    ps.setString(2, input.engine)
-                    ps.setString(3, input.host)
-                    ps.setInt(4, input.port)
-                    ps.setString(5, input.dbName)
-                    ps.setLong(6, id)
-                    ps.executeUpdate()
-                }
-                if (prior.dbName != input.dbName) invalidateCatalog(c, id)
-                c.commit()
-                true
-            } catch (e: Exception) {
-                c.rollback(); throw e
-            } finally {
-                c.autoCommit = true
-            }
+    fun update(id: Long, input: DatasourceInput): Datasource? = dataSource.inTx { update(id, input, it) }
+
+    fun update(id: Long, input: DatasourceInput, c: java.sql.Connection): Datasource? {
+        data class Prior(val engine: String, val dbName: String)
+        val prior = c.prepareStatement("SELECT engine, db_name FROM datasource WHERE id = ? FOR UPDATE").use { ps ->
+            ps.setLong(1, id)
+            ps.executeQuery().use { rs -> if (rs.next()) Prior(rs.getString(1), rs.getString(2)) else null }
+        } ?: return null
+        if (prior.engine != input.engine) {
+            throw DatasourceEngineConflictException(input.name, prior.engine, input.engine)
         }
-        return if (existed) get(id) else null
+        c.prepareStatement(
+            "UPDATE datasource SET name=?, engine=?, host=?, port=?, db_name=? WHERE id=?",
+        ).use { ps ->
+            ps.setString(1, input.name)
+            ps.setString(2, input.engine)
+            ps.setString(3, input.host)
+            ps.setInt(4, input.port)
+            ps.setString(5, input.dbName)
+            ps.setLong(6, id)
+            ps.executeUpdate()
+        }
+        if (prior.dbName != input.dbName) invalidateCatalog(c, id)
+        return get(id, c)
     }
 
-    fun delete(id: Long): Boolean = dataSource.connection.use { c ->
+    fun delete(id: Long): Boolean = dataSource.inTx { delete(id, it) }
+
+    fun delete(id: Long, c: java.sql.Connection): Boolean =
         c.prepareStatement("DELETE FROM datasource WHERE id = ?").use { ps ->
             ps.setLong(1, id)
             ps.executeUpdate() > 0
         }
-    }
 
     /**
      * A creds-free liveness result: the control-plane does not dial the target, so "test" reports whether
@@ -793,7 +782,8 @@ fun Route.datasourceRoutes(
     tableDetailService: TableDetailService,
     tokenStore: TokenStore,
     userGroupStore: UserGroupStore,
-    management: DatasourceManagementService = DatasourceManagementService(store, eventsHub, tableDetailService),
+    management: DatasourceManagementService =
+        DatasourceManagementService(store, eventsHub, tableDetailService, ManagementAuditRecorder(AuditStore(store.dataSource))),
 ) {
     // A caller may connect to (and so browse the catalog of) a datasource iff Cedar grants
     // datasource.connect on it — the same name-keyed decision, with derived context tags, the proxy runs on
@@ -851,7 +841,7 @@ fun Route.datasourceRoutes(
         // the same set).
         val engine = engineFromWireOrNull(input.engine)
             ?: return@post call.respond(HttpStatusCode.BadRequest, ApiError("datasource.invalid_engine", mapOf("engine" to input.engine)))
-        call.respond(HttpStatusCode.Created, store.create(input.copy(engine = engine.wireName)))
+        call.respond(HttpStatusCode.Created, management.createDatasource(input.copy(engine = engine.wireName), call.auditActor(config)))
     }
     get("/api/datasources/{id}") {
         if (!call.requireApi(config)) return@get
@@ -870,7 +860,7 @@ fun Route.datasourceRoutes(
         // Engine is immutable — a PUT that changes it is a fail-closed 409 (delete + re-create to change
         // engine), mirroring the proxy Register path's FAILED_PRECONDITION.
         val updated = try {
-            store.update(id, input.copy(engine = engine.wireName))
+            management.updateDatasource(id, input.copy(engine = engine.wireName), call.auditActor(config))
         } catch (e: DatasourceEngineConflictException) {
             return@put call.respond(HttpStatusCode.Conflict, ApiError("datasource.engine_immutable"))
         }
@@ -879,7 +869,8 @@ fun Route.datasourceRoutes(
     delete("/api/datasources/{id}") {
         if (!call.requireAdmin(config, authz, AuthzAction.ADMIN_DATASOURCES)) return@delete
         val id = call.idParam() ?: return@delete call.respond(HttpStatusCode.BadRequest, ApiError("common.bad_id"))
-        if (store.delete(id)) call.respond(HttpStatusCode.NoContent) else call.respond(HttpStatusCode.NotFound, ApiError("common.not_found", mapOf("resource" to "datasource")))
+        if (management.deleteDatasource(id, call.auditActor(config)).deleted) call.respond(HttpStatusCode.NoContent)
+        else call.respond(HttpStatusCode.NotFound, ApiError("common.not_found", mapOf("resource" to "datasource")))
     }
     post("/api/datasources/{id}/test") {
         if (!call.requireAdmin(config, authz, AuthzAction.ADMIN_DATASOURCES)) return@post
@@ -974,7 +965,7 @@ fun Route.datasourceRoutes(
         try {
             call.respond(
                 management.setColumnClassification(
-                    id, input.schema, input.table, input.column, input.tags, input.maskFnId,
+                    id, input.schema, input.table, input.column, input.tags, input.maskFnId, call.auditActor(config),
                 ),
             )
         } catch (e: ManagementException) {
@@ -986,7 +977,7 @@ fun Route.datasourceRoutes(
         val id = call.idParam() ?: return@delete call.respond(HttpStatusCode.BadRequest, ApiError("common.bad_id"))
         val body = call.receive<ClassificationDelete>()
         try {
-            management.clearColumnClassification(id, body.schema, body.table, body.column)
+            management.clearColumnClassification(id, body.schema, body.table, body.column, call.auditActor(config))
             call.respond(HttpStatusCode.NoContent)
         } catch (e: ManagementException) {
             call.respondManagementError(e)

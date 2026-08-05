@@ -3,12 +3,12 @@ package com.ridi.oss.proxymonster.controlplane.authz
 import com.ridi.oss.proxymonster.controlplane.ApiError
 import com.ridi.oss.proxymonster.controlplane.AuditStore
 import com.ridi.oss.proxymonster.controlplane.Config
-import com.ridi.oss.proxymonster.controlplane.Decision
-import com.ridi.oss.proxymonster.controlplane.AuditEvent
 import com.ridi.oss.proxymonster.controlplane.PolicyStore
+import com.ridi.oss.proxymonster.controlplane.auditActor
 import com.ridi.oss.proxymonster.controlplane.idParam
 import com.ridi.oss.proxymonster.controlplane.inTx
 import com.ridi.oss.proxymonster.controlplane.management.CedarValidationManagementException
+import com.ridi.oss.proxymonster.controlplane.management.ManagementAuditRecorder
 import com.ridi.oss.proxymonster.controlplane.management.ManagementException
 import com.ridi.oss.proxymonster.controlplane.management.PolicyManagementService
 import com.ridi.oss.proxymonster.controlplane.respondManagementError
@@ -70,7 +70,7 @@ class ReservedPolicyNameException : RuntimeException("policy names under 'system
  * `enabled` (or exist at all): both create and update reject a schema-invalid `cedarSrc` before
  * touching the database.
  */
-class CedarPolicyStore(internal val dataSource: DataSource, private val auditStore: AuditStore = AuditStore(dataSource)) {
+class CedarPolicyStore(internal val dataSource: DataSource) {
     // Bumped after every successful mutation (create/update/setEnabled/delete) — [CedarEngine] polls
     // this to know when its cached PolicySet is stale, instead of re-reading enabledSources() on
     // every isAuthorized() call. In-process only (not persisted): fine, since a fresh process always
@@ -173,18 +173,6 @@ class CedarPolicyStore(internal val dataSource: DataSource, private val auditSto
         c.prepareStatement("UPDATE policy SET enabled=?, updated_by=?, updated_at=now() WHERE id=?").use { ps ->
             ps.setBoolean(1, enabled); ps.setString(2, updatedBy); ps.setLong(3, id); ps.executeUpdate()
         }
-        if (existing.origin == "SYSTEM" && existing.enabled != enabled) {
-            auditStore.insert(
-                c,
-                AuditEvent(
-                    principal = updatedBy ?: "unknown",
-                    datasource = "control-plane",
-                    statement = "[ADMIN policy.toggle] policy $id (${existing.systemKey}) enabled ${existing.enabled}->$enabled",
-                    decision = Decision.ALLOW,
-                    detail = "SYSTEM_POLICY_TOGGLE",
-                ),
-            )
-        }
         return get(id, c)
     }
 
@@ -243,7 +231,8 @@ fun Route.cedarPolicyRoutes(
     config: Config,
     authz: Authz,
     store: CedarPolicyStore,
-    management: PolicyManagementService = PolicyManagementService(store, PolicyStore(store.dataSource)),
+    management: PolicyManagementService =
+        PolicyManagementService(store, PolicyStore(store.dataSource), ManagementAuditRecorder(AuditStore(store.dataSource))),
 ) {
     get("/api/policies") {
         if (!call.requireAdmin(config, authz, AuthzAction.ADMIN_POLICIES)) return@get
@@ -255,7 +244,7 @@ fun Route.cedarPolicyRoutes(
         try {
             call.respond(
                 HttpStatusCode.Created,
-                management.createPolicy(input.name, input.cedarSrc, input.enabled, call.userSession()?.principal),
+                management.createPolicy(input.name, input.cedarSrc, input.enabled, call.userSession()?.principal, call.auditActor(config)),
             )
         } catch (e: CedarValidationManagementException) {
             call.respond(HttpStatusCode.BadRequest, mapOf("errors" to e.errors))
@@ -268,7 +257,7 @@ fun Route.cedarPolicyRoutes(
         val id = call.idParam() ?: return@put call.respond(HttpStatusCode.BadRequest, ApiError("common.bad_id"))
         val input = call.receive<CedarPolicyInput>()
         try {
-            call.respond(management.updatePolicy(id, input, call.userSession()?.principal))
+            call.respond(management.updatePolicy(id, input, call.userSession()?.principal, call.auditActor(config)))
         } catch (e: CedarValidationManagementException) {
             call.respond(HttpStatusCode.BadRequest, mapOf("errors" to e.errors))
         } catch (e: ManagementException) {
@@ -279,7 +268,7 @@ fun Route.cedarPolicyRoutes(
         if (!call.requireAdmin(config, authz, AuthzAction.ADMIN_POLICIES)) return@delete
         val id = call.idParam() ?: return@delete call.respond(HttpStatusCode.BadRequest, ApiError("common.bad_id"))
         try {
-            management.deletePolicy(id)
+            management.deletePolicy(id, call.auditActor(config))
             call.respond(HttpStatusCode.NoContent)
         } catch (e: ManagementException) {
             call.respondManagementError(e)
@@ -302,7 +291,7 @@ fun Route.cedarPolicyRoutes(
         if (!call.requireAdmin(config, authz, AuthzAction.ADMIN_POLICIES)) return@post
         val id = call.idParam() ?: return@post call.respond(HttpStatusCode.BadRequest, ApiError("common.bad_id"))
         try {
-            call.respond(management.setPolicyEnabled(id, true, call.userSession()?.principal))
+            call.respond(management.setPolicyEnabled(id, true, call.userSession()?.principal, call.auditActor(config)))
         } catch (e: CedarValidationManagementException) {
             call.respond(HttpStatusCode.BadRequest, mapOf("errors" to e.errors))
         } catch (e: ManagementException) {
@@ -313,7 +302,7 @@ fun Route.cedarPolicyRoutes(
         if (!call.requireAdmin(config, authz, AuthzAction.ADMIN_POLICIES)) return@post
         val id = call.idParam() ?: return@post call.respond(HttpStatusCode.BadRequest, ApiError("common.bad_id"))
         try {
-            call.respond(management.setPolicyEnabled(id, false, call.userSession()?.principal))
+            call.respond(management.setPolicyEnabled(id, false, call.userSession()?.principal, call.auditActor(config)))
         } catch (e: ManagementException) {
             call.respondManagementError(e)
         }

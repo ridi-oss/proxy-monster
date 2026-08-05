@@ -16,7 +16,6 @@ import org.flywaydb.core.Flyway
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.TestInstance
-import java.sql.SQLException
 import javax.sql.DataSource
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -27,14 +26,13 @@ import kotlin.test.assertTrue
 /**
  * Store-level proof for docs/policy-store.md: migration-owned SYSTEM source cannot be
  * updated or deleted even outside HTTP routes, the reserved name cannot enter through USER writes,
- * toggle audit is atomic with the state change, and the shipped sources at negative ids leave the
- * effective Cedar decisions identical to the [AuthzTest] oracle.
+ * and the shipped sources at negative ids leave the effective Cedar decisions identical to the
+ * [AuthzTest] oracle.
  */
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 class CedarPolicyOriginTest {
     private lateinit var ds: DataSource
     private lateinit var store: CedarPolicyStore
-    private lateinit var audit: AuditStore
 
     @BeforeAll
     fun setup() {
@@ -42,7 +40,6 @@ class CedarPolicyOriginTest {
         ds = SharedPostgres.hikari(SharedPostgres.freshDatabase("pm_cedar_policy_origin"))
         Flyway.configure().dataSource(ds).load().migrate()
         store = CedarPolicyStore(ds)
-        audit = AuditStore(ds)
     }
 
     @Test
@@ -87,11 +84,9 @@ class CedarPolicyOriginTest {
     }
 
     @Test
-    fun `system toggle changes only mutable fields and writes a visible sentinel audit record`() {
+    fun `system toggle changes only mutable fields`() {
         store.setEnabled(-1, enabled = true, updatedBy = "setup@example.com")
         val before = store.get(-1)!!
-        val auditBefore = toggleAuditRows().size
-
         val disabled = store.setEnabled(-1, enabled = false, updatedBy = "operator@example.com")
         assertNotNull(disabled)
         assertFalse(disabled.enabled)
@@ -101,63 +96,7 @@ class CedarPolicyOriginTest {
         assertEquals(before.systemKey, disabled.systemKey)
         assertEquals(before.name, disabled.name)
         assertEquals(before.cedarSrc, disabled.cedarSrc)
-
-        val disableAudit = toggleAuditRows().single { it.statement.endsWith("enabled true->false") }
-        assertEquals("operator@example.com", disableAudit.principal)
-        assertEquals("control-plane", disableAudit.datasource)
-        assertEquals(Decision.ALLOW, disableAudit.decision)
-        assertEquals("SYSTEM_POLICY_TOGGLE", disableAudit.detail)
-        assertTrue(disableAudit.statement.contains("policy -1 (bootstrap.pm-admin)"))
-        assertNotNull(audit.get(disableAudit.id!!), "ADMIN toggle sentinels must remain visible in /api/audit")
-
-        store.setEnabled(-1, enabled = false, updatedBy = "operator@example.com")
-        assertEquals(auditBefore + 1, toggleAuditRows().size, "a no-op setEnabled call must not emit a false flip event")
-
-        val enabled = store.setEnabled(-1, enabled = true, updatedBy = "operator@example.com")
-        assertNotNull(enabled)
-        assertTrue(enabled.enabled)
-        assertTrue(toggleAuditRows().any { it.statement.endsWith("enabled false->true") })
-    }
-
-    @Test
-    fun `audit failure rolls back the system toggle in the same transaction`() {
-        ds.connection.use { c ->
-            c.createStatement().use { st ->
-                st.execute(
-                    """CREATE FUNCTION reject_system_policy_toggle() RETURNS trigger
-                       LANGUAGE plpgsql AS $$
-                       BEGIN
-                           IF NEW.detail = 'SYSTEM_POLICY_TOGGLE' THEN
-                               RAISE EXCEPTION 'reject test system-policy audit';
-                           END IF;
-                           RETURN NEW;
-                       END
-                       $$""",
-                )
-                st.execute(
-                    """CREATE TRIGGER reject_system_policy_toggle
-                       BEFORE INSERT ON audit_event
-                       FOR EACH ROW EXECUTE FUNCTION reject_system_policy_toggle()""",
-                )
-            }
-        }
-
-        try {
-            store.setEnabled(-2, enabled = true, updatedBy = "setup@example.com")
-            val versionBefore = store.stateVersion()
-            assertFailsWith<SQLException> {
-                store.setEnabled(-2, enabled = false, updatedBy = "operator@example.com")
-            }
-            assertTrue(store.get(-2)!!.enabled, "the policy update must roll back when its audit insert fails")
-            assertEquals(versionBefore, store.stateVersion(), "a rolled-back toggle must not bump the store version")
-        } finally {
-            ds.connection.use { c ->
-                c.createStatement().use { st ->
-                    st.execute("DROP TRIGGER IF EXISTS reject_system_policy_toggle ON audit_event")
-                    st.execute("DROP FUNCTION IF EXISTS reject_system_policy_toggle()")
-                }
-            }
-        }
+        assertTrue(store.setEnabled(-1, enabled = true, updatedBy = "operator@example.com")!!.enabled)
     }
 
     @Test
@@ -217,9 +156,6 @@ class CedarPolicyOriginTest {
             assertEquals(expected, actual, "V20 changed the effective decision for $case")
         }
     }
-
-    private fun toggleAuditRows(): List<AuditEvent> = audit.recent(500)
-        .filter { it.detail == "SYSTEM_POLICY_TOGGLE" }
 
     private fun AuthzDecision.isAllowed(): Boolean = this == AuthzDecision.Allow
 

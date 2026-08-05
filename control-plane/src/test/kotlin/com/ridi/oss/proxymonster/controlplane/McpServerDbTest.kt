@@ -7,6 +7,7 @@ import com.ridi.oss.proxymonster.auth.pkceS256
 import com.ridi.oss.proxymonster.controlplane.authz.CedarPolicyInput
 import com.ridi.oss.proxymonster.controlplane.management.DatasourceManagementService
 import com.ridi.oss.proxymonster.controlplane.management.IdentityManagementService
+import com.ridi.oss.proxymonster.controlplane.management.ManagementAuditRecorder
 import com.ridi.oss.proxymonster.controlplane.management.McpCapabilityRegistry
 import com.ridi.oss.proxymonster.controlplane.management.PolicyManagementService
 import com.ridi.oss.proxymonster.controlplane.mcp.installMcp
@@ -241,7 +242,7 @@ class McpServerDbTest {
         assertEquals(first.structuredContent, replay.structuredContent)
         assertEquals(1L, scalar("SELECT count(*) FROM app_role WHERE name=?", roleName))
         assertEquals(
-            listOf("ALLOW", "IDEMPOTENT_REPLAY"),
+            listOf("IDEMPOTENT_REPLAY"),
             strings(
                 """SELECT outcome FROM audit_event
                    WHERE principal=? AND statement='[MCP create_role]' ORDER BY id""",
@@ -254,6 +255,17 @@ class McpServerDbTest {
                 """SELECT DISTINCT channel FROM audit_event
                    WHERE principal=? AND statement='[MCP create_role]'""",
                 principal,
+            ),
+        )
+        // The config change itself is audited once, by the service, carrying the roles `authorize`
+        // resolved — the HTTP actor has no resolved set to carry, so this is what pins the difference.
+        assertEquals(
+            listOf("admin.policies|ALLOW|mcp|system:admin"),
+            strings(
+                """SELECT action || '|' || outcome || '|' || channel || '|' ||
+                          (SELECT string_agg(r, ',' ORDER BY r) FROM jsonb_array_elements_text(roles) r)
+                   FROM audit_event WHERE kind='admin' AND resource=? ORDER BY id""",
+                """Role::"$roleName"""",
             ),
         )
 
@@ -414,7 +426,8 @@ class McpServerDbTest {
             sdk.callTool("list_column_tags", mapOf("datasource" to "mcp-family-datasource")).structuredContent,
         ).getValue("result").jsonArray
         assertEquals("rrn", tags.single().jsonObject.getValue("column").jsonPrimitive.content)
-        assertEquals(8L, scalar("SELECT count(*) FROM audit_event WHERE principal=?", principal))
+        assertEquals(8L, scalar("SELECT count(*) FROM audit_event WHERE principal=? AND kind='admin'", principal))
+        assertEquals(0L, scalar("SELECT count(*) FROM audit_event WHERE principal=? AND statement LIKE '[MCP %'", principal))
     }
 
     @Test
@@ -511,16 +524,20 @@ class McpServerDbTest {
                WHERE principal=? AND statement='[MCP set_column_classifications]' ORDER BY id""",
             principal,
         )
-        assertEquals(5, details.size)
-        // The audit row names the columns; a bare count would leave an auditor unable to tell WHICH
-        // columns a batch tagged. It records each entry AS SUBMITTED — the same detail captions the
-        // failure rows, which have no resolved schema to report — so an unqualified entry stays
-        // unqualified, exactly as the single-column tool's `table=`/`column=` detail does.
-        assertContains(details.first(), "columns=3")
-        assertContains(details.first(), "users.rrn")
-        assertContains(details.first(), "public.users.email")
+        assertEquals(4, details.size)
+        // Failure rows retain the submitted detail because no resolved write exists.
+        assertContains(details.first(), "orders.buyer")
+        assertContains(details.first(), "orders.card")
+        val adminStatement = strings(
+            """SELECT statement FROM audit_event WHERE principal=? AND kind='admin'
+               AND resource='Datasource::"mcp-batch-datasource"' AND statement LIKE 'tag 3 columns%'""",
+            principal,
+        ).single()
+        assertContains(adminStatement, "public.users.email")
+        assertContains(adminStatement, "public.users.phone")
+        assertContains(adminStatement, "public.users.rrn")
         assertEquals(
-            listOf("ALLOW", "datasource.reserved_tag", "common.not_found", "datasource.duplicate_column", "mcp.invalid_request"),
+            listOf("datasource.reserved_tag", "common.not_found", "datasource.duplicate_column", "mcp.invalid_request"),
             strings(
                 """SELECT outcome FROM audit_event
                    WHERE principal=? AND statement='[MCP set_column_classifications]' ORDER BY id""",
@@ -776,11 +793,20 @@ class McpServerDbTest {
         )
         // The scope refusal above is audited too — a denied batch leaves a trail, it does not vanish.
         assertEquals(
-            listOf("mcp.insufficient_scope", "ALLOW", "IDEMPOTENT_REPLAY", "IDEMPOTENCY_CONFLICT"),
+            listOf("mcp.insufficient_scope", "IDEMPOTENT_REPLAY", "IDEMPOTENCY_CONFLICT"),
             strings(
                 """SELECT outcome FROM audit_event
                    WHERE principal=? AND statement='[MCP set_column_classifications]' ORDER BY id""",
                 principal,
+            ),
+        )
+        // One admin row across all four calls: only the first applied anything, and the replay and the
+        // conflict must not each look like another config change.
+        assertEquals(
+            1L,
+            scalar(
+                "SELECT count(*) FROM audit_event WHERE principal=? AND kind='admin' AND resource=?",
+                principal, """Datasource::"mcp-batch-scope-datasource"""",
             ),
         )
     }
@@ -799,7 +825,7 @@ class McpServerDbTest {
         )
         execute(
             """CREATE TRIGGER pm_test_fail_mcp_audit BEFORE INSERT ON audit_event
-               FOR EACH ROW WHEN (NEW.statement = '[MCP create_group]')
+               FOR EACH ROW WHEN (NEW.kind = 'admin' AND NEW.resource = 'Group::"must-roll-back-with-audit"')
                EXECUTE FUNCTION pm_test_fail_mcp_audit()""",
         )
         try {
@@ -817,11 +843,12 @@ class McpServerDbTest {
         trustedProxies: Set<String> = emptySet(),
     ) {
         install(ContentNegotiation) { json(TEST_JSON) }
-        val datasourceService = DatasourceManagementService(core.datasourceStore, core.proxyEventsHub, TableDetailService(core))
-        val policyService = PolicyManagementService(core.cedarPolicyStore, core.policyStore)
+        val recorder = ManagementAuditRecorder(core.auditStore)
+        val datasourceService = DatasourceManagementService(core.datasourceStore, core.proxyEventsHub, TableDetailService(core), recorder)
+        val policyService = PolicyManagementService(core.cedarPolicyStore, core.policyStore, recorder)
         val identityService = IdentityManagementService(
             dataSource, core.userGroupStore, core.policyStore, core.tokenStore, core.accessStore,
-            PrincipalSessionStore(dataSource, null),
+            PrincipalSessionStore(dataSource, null), recorder,
         )
         installMcp(config(mcpResource, trustedProxies), core, datasourceService, policyService, identityService)
     }
@@ -885,16 +912,16 @@ class McpServerDbTest {
         }
     }
 
-    private fun scalar(sql: String, value: String): Long = dataSource.connection.use { connection ->
+    private fun scalar(sql: String, vararg values: String): Long = dataSource.connection.use { connection ->
         connection.prepareStatement(sql).use { statement ->
-            statement.setString(1, value)
+            values.forEachIndexed { index, value -> statement.setString(index + 1, value) }
             statement.executeQuery().use { result -> result.next(); result.getLong(1) }
         }
     }
 
-    private fun strings(sql: String, value: String): List<String> = dataSource.connection.use { connection ->
+    private fun strings(sql: String, vararg values: String): List<String> = dataSource.connection.use { connection ->
         connection.prepareStatement(sql).use { statement ->
-            statement.setString(1, value)
+            values.forEachIndexed { index, value -> statement.setString(index + 1, value) }
             statement.executeQuery().use { result ->
                 buildList { while (result.next()) add(result.getString(1)) }
             }

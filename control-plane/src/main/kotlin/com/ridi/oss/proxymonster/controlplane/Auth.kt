@@ -1,5 +1,7 @@
 package com.ridi.oss.proxymonster.controlplane
 
+import com.ridi.oss.proxymonster.controlplane.management.AuditActor
+import com.ridi.oss.proxymonster.controlplane.management.AuditSource
 import io.ktor.http.Cookie
 import io.ktor.server.application.ApplicationCall
 import io.ktor.server.sessions.SessionSerializer
@@ -107,3 +109,10 @@ fun ApplicationCall.webSession(): WebSessionRow? {
 
 /** Resolve the current server-side web session, or null if unauthenticated. */
 fun ApplicationCall.userSession(): UserSession? = webSession()?.let { UserSession(it.principal) }
+
+// The fallback is reachable only when PM_AUTH_DEBUG admits a mutation without a session.
+fun ApplicationCall.auditActor(config: Config, channel: String = AuditSource.CONSOLE): AuditActor = AuditActor(
+    principal = userSession()?.principal ?: "unknown",
+    clientAddr = httpRequesterIp(config),
+    channel = channel,
+)

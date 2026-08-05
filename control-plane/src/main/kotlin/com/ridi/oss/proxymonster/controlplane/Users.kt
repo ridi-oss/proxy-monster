@@ -4,6 +4,7 @@ import com.ridi.oss.proxymonster.controlplane.authz.Authz
 import com.ridi.oss.proxymonster.controlplane.authz.AuthzAction
 import com.ridi.oss.proxymonster.controlplane.authz.requireAdmin
 import com.ridi.oss.proxymonster.controlplane.management.IdentityManagementService
+import com.ridi.oss.proxymonster.controlplane.management.ManagementAuditRecorder
 import com.ridi.oss.proxymonster.controlplane.management.ManagementException
 import io.ktor.http.HttpStatusCode
 import io.ktor.server.request.receive
@@ -898,6 +899,7 @@ fun Route.userGroupRoutes(
     daemonSessionStore: PrincipalSessionStore,
     management: IdentityManagementService = IdentityManagementService(
         store.dataSource, store, PolicyStore(store.dataSource), tokenStore, accessStore, daemonSessionStore,
+        ManagementAuditRecorder(AuditStore(store.dataSource)),
     ),
 ) {
     get("/api/users") {
@@ -908,7 +910,7 @@ fun Route.userGroupRoutes(
         if (!call.requireAdmin(config, authz, AuthzAction.ADMIN_IDENTITY)) return@post
         val input = call.receive<AppUserInput>()
         try {
-            call.respond(HttpStatusCode.Created, management.createUser(input))
+            call.respond(HttpStatusCode.Created, management.createUser(input, call.auditActor(config)))
         } catch (e: ManagementException) {
             call.respondManagementError(e)
         }
@@ -921,7 +923,7 @@ fun Route.userGroupRoutes(
         val id = call.idParam() ?: return@put call.respond(HttpStatusCode.BadRequest, ApiError("common.bad_id"))
         val input = call.receive<AppUserInput>()
         try {
-            call.respond(management.updateUser(id, input))
+            call.respond(management.updateUser(id, input, call.auditActor(config)))
         } catch (e: ManagementException) {
             call.respondManagementError(e)
         }
@@ -932,7 +934,7 @@ fun Route.userGroupRoutes(
         if (!call.requireAdmin(config, authz, AuthzAction.ADMIN_IDENTITY)) return@delete
         val id = call.idParam() ?: return@delete call.respond(HttpStatusCode.BadRequest, ApiError("common.bad_id"))
         try {
-            management.deprovisionUser(id)
+            management.deprovisionUser(id, call.auditActor(config))
             call.respond(HttpStatusCode.NoContent)
         } catch (e: ManagementException) {
             call.respondManagementError(e)
@@ -947,7 +949,7 @@ fun Route.userGroupRoutes(
         if (!call.requireAdmin(config, authz, AuthzAction.ADMIN_IDENTITY)) return@post
         val input = call.receive<AppGroupInput>()
         try {
-            call.respond(HttpStatusCode.Created, management.createGroup(input))
+            call.respond(HttpStatusCode.Created, management.createGroup(input, call.auditActor(config)))
         } catch (e: ManagementException) {
             call.respondManagementError(e)
         }
@@ -957,7 +959,7 @@ fun Route.userGroupRoutes(
         val id = call.idParam() ?: return@put call.respond(HttpStatusCode.BadRequest, ApiError("common.bad_id"))
         val input = call.receive<AppGroupInput>()
         try {
-            call.respond(management.updateGroup(id, input))
+            call.respond(management.updateGroup(id, input, call.auditActor(config)))
         } catch (e: ManagementException) {
             call.respondManagementError(e)
         }
@@ -966,7 +968,7 @@ fun Route.userGroupRoutes(
         if (!call.requireAdmin(config, authz, AuthzAction.ADMIN_IDENTITY)) return@delete
         val id = call.idParam() ?: return@delete call.respond(HttpStatusCode.BadRequest, ApiError("common.bad_id"))
         try {
-            management.deleteGroup(id)
+            management.deleteGroup(id, call.auditActor(config))
             call.respond(HttpStatusCode.NoContent)
         } catch (e: ManagementException) {
             call.respondManagementError(e)
@@ -984,7 +986,7 @@ fun Route.userGroupRoutes(
         val id = call.idParam() ?: return@post call.respond(HttpStatusCode.BadRequest, ApiError("common.bad_id"))
         val input = call.receive<GroupMemberInput>()
         try {
-            call.respond(HttpStatusCode.Created, management.addGroupMember(id, input.userId))
+            call.respond(HttpStatusCode.Created, management.addGroupMember(id, input.userId, call.auditActor(config)))
         } catch (e: ManagementException) {
             call.respondManagementError(e)
         }
@@ -994,7 +996,7 @@ fun Route.userGroupRoutes(
         val id = call.idParam() ?: return@delete call.respond(HttpStatusCode.BadRequest, ApiError("common.bad_id"))
         val userId = call.parameters["userId"]?.toLongOrNull() ?: return@delete call.respond(HttpStatusCode.BadRequest, ApiError("common.bad_id"))
         try {
-            if (management.removeGroupMember(id, userId).deleted) call.respond(HttpStatusCode.NoContent)
+            if (management.removeGroupMember(id, userId, call.auditActor(config)).deleted) call.respond(HttpStatusCode.NoContent)
             else call.respond(HttpStatusCode.NotFound, ApiError("common.not_found", mapOf("resource" to "group member")))
         } catch (e: ManagementException) {
             call.respondManagementError(e)
@@ -1012,7 +1014,7 @@ fun Route.userGroupRoutes(
         val id = call.idParam() ?: return@post call.respond(HttpStatusCode.BadRequest, ApiError("common.bad_id"))
         val input = call.receive<GroupRoleInput>()
         try {
-            call.respond(HttpStatusCode.Created, management.addGroupRole(id, input.roleId))
+            call.respond(HttpStatusCode.Created, management.addGroupRole(id, input.roleId, call.auditActor(config)))
         } catch (e: ManagementException) {
             call.respondManagementError(e)
         }
@@ -1022,7 +1024,7 @@ fun Route.userGroupRoutes(
         val id = call.idParam() ?: return@delete call.respond(HttpStatusCode.BadRequest, ApiError("common.bad_id"))
         val roleId = call.parameters["roleId"]?.toLongOrNull() ?: return@delete call.respond(HttpStatusCode.BadRequest, ApiError("common.bad_id"))
         try {
-            if (management.removeGroupRole(id, roleId).deleted) call.respond(HttpStatusCode.NoContent)
+            if (management.removeGroupRole(id, roleId, call.auditActor(config)).deleted) call.respond(HttpStatusCode.NoContent)
             else call.respond(HttpStatusCode.NotFound, ApiError("common.not_found", mapOf("resource" to "group role mapping")))
         } catch (e: ManagementException) {
             call.respondManagementError(e)

@@ -1,6 +1,8 @@
 package com.ridi.oss.proxymonster.controlplane
 
 import com.ridi.oss.proxymonster.controlplane.support.SharedPostgres
+import com.ridi.oss.proxymonster.controlplane.support.auditChainHead
+import com.ridi.oss.proxymonster.controlplane.support.verifyAuditChain
 import com.ridi.oss.proxymonster.controlplane.support.requireDockerOrSkip
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.builtins.serializer
@@ -170,29 +172,7 @@ class AuditChainDbTest {
         contextTags = listOf("trusted", "alpha"),
     )
 
-    private fun verifyWalk() {
-        val rows = readRows(null)
-        val chainStartId = dataSource.connection.use { connection ->
-            connection.prepareStatement("SELECT COALESCE(MIN(id), 1) FROM audit_event WHERE row_hash IS NOT NULL").use { statement ->
-                statement.executeQuery().use { result -> result.next(); result.getLong(1) }
-            }
-        }
-        val baseLastId = chainStartId - 1
-        val genesis = "88d4f4719f26cf7f32839ac30b1d6a94edf3f9133fb75667d1415fff81bbcd08".hexBytes()
-        rows.forEachIndexed { index, row ->
-            val expectedPrev = if (index == 0) genesis else rows[index - 1].rowHash
-            assertContentEquals(expectedPrev, row.prevHash, "chain link at ${row.id}")
-            assertEquals(AuditCanonical.CHAIN_VERSION, row.chainVersion, "chain version at ${row.id}")
-            assertContentEquals(
-                AuditCanonical.rowHash(row.id, row.event, row.tsMicros, row.prevHash),
-                row.rowHash,
-                "row hash at ${row.id}",
-            )
-        }
-        val head = chainHead()
-        assertEquals(rows.lastOrNull()?.id ?: baseLastId, head.first)
-        if (rows.isEmpty()) assertContentEquals(genesis, head.second) else assertContentEquals(rows.last().rowHash, head.second)
-    }
+    private fun verifyWalk() = verifyAuditChain(dataSource)
 
     private fun readRows(ids: List<Long>?): List<PersistedRow> = dataSource.connection.use { connection ->
         val condition = if (ids == null) "row_hash IS NOT NULL" else "id IN (${ids.joinToString(",")})"
@@ -248,20 +228,13 @@ class AuditChainDbTest {
         }
     }
 
-    private fun chainHead(): Pair<Long, ByteArray> = dataSource.connection.use { connection ->
-        connection.prepareStatement("SELECT last_id, head_hash FROM audit_chain_head WHERE id = 1").use { statement ->
-            statement.executeQuery().use { result -> result.next(); result.getLong(1) to result.getBytes(2) }
-        }
-    }
+    private fun chainHead(): Pair<Long, ByteArray> = auditChainHead(dataSource)
 
     private fun decodeArray(value: String?): List<String> =
         json.decodeFromString(stringList, value ?: "[]")
 
     private fun java.sql.ResultSet.longOrNull(column: String): Long? =
         getLong(column).let { if (wasNull()) null else it }
-
-    private fun String.hexBytes(): ByteArray =
-        ByteArray(length / 2) { index -> substring(index * 2, index * 2 + 2).toInt(16).toByte() }
 
     private data class PersistedRow(
         val id: Long,

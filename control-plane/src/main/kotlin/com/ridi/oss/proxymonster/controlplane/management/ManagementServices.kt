@@ -10,6 +10,7 @@ import com.ridi.oss.proxymonster.controlplane.CatalogColumn
 import com.ridi.oss.proxymonster.controlplane.ClassificationInput
 import com.ridi.oss.proxymonster.controlplane.PrincipalSessionStore
 import com.ridi.oss.proxymonster.controlplane.Datasource
+import com.ridi.oss.proxymonster.controlplane.DatasourceInput
 import com.ridi.oss.proxymonster.controlplane.DatasourceStore
 import com.ridi.oss.proxymonster.controlplane.GroupMemberEntry
 import com.ridi.oss.proxymonster.controlplane.GroupRoleEntry
@@ -25,6 +26,7 @@ import com.ridi.oss.proxymonster.controlplane.TableDetailExecException
 import com.ridi.oss.proxymonster.controlplane.TableDetailService
 import com.ridi.oss.proxymonster.controlplane.TokenStore
 import com.ridi.oss.proxymonster.controlplane.UserGroupStore
+import com.ridi.oss.proxymonster.controlplane.authz.AuthzAction
 import com.ridi.oss.proxymonster.controlplane.authz.CedarPolicy
 import com.ridi.oss.proxymonster.controlplane.authz.CedarPolicyInput
 import com.ridi.oss.proxymonster.controlplane.authz.CedarPolicyStore
@@ -81,6 +83,7 @@ class DatasourceManagementService(
     private val store: DatasourceStore,
     private val eventsHub: ProxyEventsHub,
     private val tableDetailService: TableDetailService,
+    private val recorder: ManagementAuditRecorder,
 ) {
     fun listDatasources(): List<Datasource> = store.list()
 
@@ -115,15 +118,33 @@ class DatasourceManagementService(
         }
     }
 
-    fun setColumnClassification(
-        datasourceName: String,
-        schema: String?,
-        table: String,
-        column: String,
-        tags: List<String>,
-        maskFnId: Long?,
-    ): Classification = store.dataSource.inTx { connection ->
-        setColumnClassification(datasourceName, schema, table, column, tags, maskFnId, connection)
+    fun createDatasource(input: DatasourceInput, actor: AuditActor): Datasource =
+        store.dataSource.inTx { createDatasource(input, actor, it) }
+
+    fun createDatasource(input: DatasourceInput, actor: AuditActor, c: Connection): Datasource {
+        val created = store.create(input, c)
+        recordDatasource(c, actor, created.name, "create datasource '${created.name}'")
+        return created
+    }
+
+    fun updateDatasource(id: Long, input: DatasourceInput, actor: AuditActor): Datasource? =
+        store.dataSource.inTx { updateDatasource(id, input, actor, it) }
+
+    fun updateDatasource(id: Long, input: DatasourceInput, actor: AuditActor, c: Connection): Datasource? {
+        val before = store.get(id, c) ?: return null
+        val updated = store.update(id, input, c) ?: return null
+        recordDatasource(c, actor, updated.name, updateSummary("datasource", before.name, updated.name))
+        return updated
+    }
+
+    fun deleteDatasource(id: Long, actor: AuditActor): DeleteResult =
+        store.dataSource.inTx { deleteDatasource(id, actor, it) }
+
+    fun deleteDatasource(id: Long, actor: AuditActor, c: Connection): DeleteResult {
+        val current = store.get(id, c) ?: return DeleteResult(false)
+        val result = DeleteResult(store.delete(id, c))
+        if (result.deleted) recordDatasource(c, actor, current.name, "delete datasource '${current.name}'")
+        return result
     }
 
     fun setColumnClassification(
@@ -133,6 +154,7 @@ class DatasourceManagementService(
         column: String,
         tags: List<String>,
         maskFnId: Long?,
+        actor: AuditActor,
     ): Classification = store.dataSource.inTx { connection ->
         required("table", table)
         required("column", column)
@@ -141,7 +163,9 @@ class DatasourceManagementService(
             throw ManagementException(ApiError("datasource.schema_required"))
         }
         DatasourceStore.requireWritableTags(tags)
-        store.upsertClassification(datasource.id, ClassificationInput(schema, table, column, tags, maskFnId), connection)
+        val written = store.upsertClassification(datasource.id, ClassificationInput(schema, table, column, tags, maskFnId), connection)
+        recordClassification(connection, actor, datasource.name, written)
+        written
     }
 
     fun setColumnClassification(
@@ -151,6 +175,7 @@ class DatasourceManagementService(
         column: String,
         tags: List<String>,
         maskFnId: Long?,
+        actor: AuditActor,
         connection: Connection,
     ): Classification {
         required("table", table)
@@ -160,7 +185,9 @@ class DatasourceManagementService(
             throw ManagementException(ApiError("datasource.schema_required"))
         }
         DatasourceStore.requireWritableTags(tags)
-        return store.upsertClassification(datasource.id, ClassificationInput(schema, table, column, tags, maskFnId), connection)
+        val written = store.upsertClassification(datasource.id, ClassificationInput(schema, table, column, tags, maskFnId), connection)
+        recordClassification(connection, actor, datasource.name, written)
+        return written
     }
 
     /**
@@ -171,10 +198,14 @@ class DatasourceManagementService(
      * rather than silently letting the later one win: the caller cannot tell from the response which
      * of its conflicting tag sets survived, and for a masking decision that is the difference between
      * a column being masked and not.
+     *
+     * One audit row covers the batch, naming every column it wrote: the batch is one atomic change, and
+     * a row per column would let a partial trail imply a partial write that cannot happen.
      */
     fun setColumnClassifications(
         datasourceName: String,
         columns: List<ClassificationInput>,
+        actor: AuditActor,
         connection: Connection,
     ): List<Classification> {
         if (columns.isEmpty()) throw ManagementException(ApiError("common.field_required", mapOf("fields" to "columns")))
@@ -208,17 +239,13 @@ class DatasourceManagementService(
         // Written in a canonical order, not the caller's: each upsert row-locks its classification, so
         // two overlapping batches submitted in opposite orders would deadlock and one would die with an
         // internal error. A total order over the key means concurrent batches queue instead.
-        return resolved.sortedWith(compareBy({ it.schema }, { it.table }, { it.column }))
+        val written = resolved.sortedWith(compareBy({ it.schema }, { it.table }, { it.column }))
             .map { input -> store.upsertClassification(datasource.id, input, connection) }
-    }
-
-    fun clearColumnClassification(
-        datasourceName: String,
-        schema: String?,
-        table: String,
-        column: String,
-    ): DeleteResult = store.dataSource.inTx { connection ->
-        clearColumnClassification(datasourceName, schema, table, column, connection)
+        recordDatasource(
+            connection, actor, datasource.name,
+            "tag ${written.size} columns of '${datasource.name}' [${written.joinToString(", ") { it.path() }}]",
+        )
+        return written
     }
 
     fun clearColumnClassification(
@@ -226,13 +253,14 @@ class DatasourceManagementService(
         schema: String?,
         table: String,
         column: String,
+        actor: AuditActor,
     ): DeleteResult = store.dataSource.inTx { connection ->
         required("table", table)
         required("column", column)
         val datasource = store.get(datasourceId, connection) ?: notFound("datasource")
         val resolvedSchema = schema ?: store.defaultSchema(datasource.id, connection)
             ?: throw ManagementException(ApiError("datasource.schema_required"))
-        DeleteResult(store.deleteClassification(datasource.id, resolvedSchema, table, column, connection))
+        clearResolved(datasource.name, datasource.id, resolvedSchema, table, column, actor, connection)
     }
 
     fun clearColumnClassification(
@@ -240,6 +268,7 @@ class DatasourceManagementService(
         schema: String?,
         table: String,
         column: String,
+        actor: AuditActor,
         connection: Connection,
     ): DeleteResult {
         required("table", table)
@@ -247,8 +276,46 @@ class DatasourceManagementService(
         val datasource = datasource(datasourceName, connection)
         val resolvedSchema = schema ?: store.defaultSchema(datasource.id, connection)
             ?: throw ManagementException(ApiError("datasource.schema_required"))
-        return DeleteResult(store.deleteClassification(datasource.id, resolvedSchema, table, column, connection))
+        return clearResolved(datasource.name, datasource.id, resolvedSchema, table, column, actor, connection)
     }
+
+    private fun clearResolved(
+        datasourceName: String,
+        datasourceId: Long,
+        schema: String,
+        table: String,
+        column: String,
+        actor: AuditActor,
+        c: Connection,
+    ): DeleteResult {
+        val result = DeleteResult(store.deleteClassification(datasourceId, schema, table, column, c))
+        if (result.deleted) {
+            recordColumn(c, actor, datasourceName, schema, table, column, "clear tags on $datasourceName.$schema.$table.$column")
+        }
+        return result
+    }
+
+    private fun recordClassification(c: Connection, actor: AuditActor, datasourceName: String, written: Classification) =
+        recordColumn(
+            c, actor, datasourceName, written.schema, written.table, written.column,
+            "tag $datasourceName.${written.path()} [${written.tags.joinToString(", ")}]",
+        )
+
+    private fun recordColumn(
+        c: Connection,
+        actor: AuditActor,
+        datasourceName: String,
+        schema: String,
+        table: String,
+        column: String,
+        summary: String,
+    ) = recorder.record(
+        c, actor, AuthzAction.ADMIN_DATASOURCES,
+        "${auditEntity("Datasource", datasourceName)} col $schema.$table.$column", summary,
+    )
+
+    private fun recordDatasource(c: Connection, actor: AuditActor, name: String, summary: String) =
+        recorder.record(c, actor, AuthzAction.ADMIN_DATASOURCES, auditEntity("Datasource", name), summary)
 
     private fun datasource(name: String): Datasource = store.getByName(name)
         ?: throw ManagementException(ApiError("common.not_found", mapOf("resource" to "datasource")))
@@ -269,13 +336,12 @@ class DatasourceManagementService(
 class PolicyManagementService(
     private val policyStore: CedarPolicyStore,
     private val store: PolicyStore,
+    private val recorder: ManagementAuditRecorder,
 ) {
     fun listPolicies(): List<CedarPolicy> = policyStore.list()
 
-    fun getPolicy(name: String): CedarPolicy = policyStore.getByName(name)
-        ?: throw ManagementException(ApiError("common.not_found", mapOf("resource" to "policy")))
-    fun getPolicy(name: String, c: Connection): CedarPolicy = policyStore.getByName(name, c)
-        ?: throw ManagementException(ApiError("common.not_found", mapOf("resource" to "policy")))
+    fun getPolicy(name: String): CedarPolicy = policyStore.getByName(name) ?: notFound("policy")
+    fun getPolicy(name: String, c: Connection): CedarPolicy = policyStore.getByName(name, c) ?: notFound("policy")
 
     fun validatePolicy(cedarSrc: String): CedarValidateResult {
         required("cedarSrc", cedarSrc)
@@ -293,6 +359,7 @@ class PolicyManagementService(
         val tagNames = policyStore.list().flatMapTo(mutableSetOf()) { extractContextTagNames(it.cedarSrc) }
         return CedarSchemaResult(CedarSchema.parseableSchemaTextFor(tagNames))
     }
+
     fun listRoles(): List<Role> = store.listRoles()
     fun getRole(name: String): Role = store.getRoleByName(name) ?: notFound("role")
     fun getRole(name: String, c: Connection): Role = store.getRoleByName(name, c) ?: notFound("role")
@@ -302,20 +369,40 @@ class PolicyManagementService(
         return store.listAssignments(principal, roleId)
     }
 
+    fun listAssignmentsByRoleId(principal: String?, roleId: Long?): List<RoleAssignment> =
+        store.listAssignments(principal, roleId)
+
     fun listMaskFns(): List<MaskFn> = store.listMaskFns()
     fun getMaskFn(name: String): MaskFn = store.getMaskFnByName(name) ?: notFound("mask function")
     fun getMaskFn(name: String, c: Connection): MaskFn = store.getMaskFnByName(name, c) ?: notFound("mask function")
 
-    fun createPolicy(name: String, cedarSrc: String, enabled: Boolean, principal: String?): CedarPolicy {
-        val created = store.dataSource.inTx { connection -> createPolicy(name, cedarSrc, enabled, principal, connection) }
+    fun createPolicy(
+        name: String,
+        cedarSrc: String,
+        enabled: Boolean,
+        principal: String?,
+        actor: AuditActor,
+    ): CedarPolicy {
+        val created = store.dataSource.inTx { connection ->
+            createPolicy(name, cedarSrc, enabled, principal, actor, connection)
+        }
         policyStore.markCommittedMutation()
         return created
     }
 
-    fun createPolicy(name: String, cedarSrc: String, enabled: Boolean, principal: String?, c: Connection): CedarPolicy {
+    fun createPolicy(
+        name: String,
+        cedarSrc: String,
+        enabled: Boolean,
+        principal: String?,
+        actor: AuditActor,
+        c: Connection,
+    ): CedarPolicy {
         required("name", name)
         required("cedarSrc", cedarSrc)
-        return mapPolicyErrors { policyStore.create(CedarPolicyInput(name, cedarSrc, enabled), principal, c) }
+        val created = mapPolicyErrors { policyStore.create(CedarPolicyInput(name, cedarSrc, enabled), principal, c) }
+        recordPolicy(c, actor, created.id, "create policy '${created.name}'")
+        return created
     }
 
     fun updatePolicy(
@@ -324,28 +411,31 @@ class PolicyManagementService(
         cedarSrc: String,
         enabled: Boolean,
         principal: String?,
+        actor: AuditActor,
     ): CedarPolicy {
         val updated = store.dataSource.inTx { connection ->
-            updatePolicy(currentName, newName, cedarSrc, enabled, principal, connection)
+            updatePolicy(currentName, newName, cedarSrc, enabled, principal, actor, connection)
         }
         policyStore.markCommittedMutation()
         return updated
     }
 
     /** ID-shaped REST adapter: resolve and mutate the addressed row in one transaction. */
-    fun updatePolicy(id: Long, input: CedarPolicyInput, principal: String?): CedarPolicy {
+    fun updatePolicy(id: Long, input: CedarPolicyInput, principal: String?, actor: AuditActor): CedarPolicy {
         val updated = store.dataSource.inTx { connection ->
-            updatePolicy(id, input, principal, connection)
+            updatePolicy(id, input, principal, actor, connection)
         }
         policyStore.markCommittedMutation()
         return updated
     }
 
-    fun updatePolicy(id: Long, input: CedarPolicyInput, principal: String?, c: Connection): CedarPolicy {
+    fun updatePolicy(id: Long, input: CedarPolicyInput, principal: String?, actor: AuditActor, c: Connection): CedarPolicy {
         required("name", input.name)
         required("cedarSrc", input.cedarSrc)
-        if (policyStore.get(id, c) == null) notFound("policy")
-        return mapPolicyErrors { policyStore.update(id, input, principal, c) ?: notFound("policy") }
+        val current = policyStore.get(id, c) ?: notFound("policy")
+        val updated = mapPolicyErrors { policyStore.update(id, input, principal, c) ?: notFound("policy") }
+        recordPolicy(c, actor, updated.id, updateSummary("policy", current.name, updated.name))
+        return updated
     }
 
     fun updatePolicy(
@@ -354,6 +444,7 @@ class PolicyManagementService(
         cedarSrc: String,
         enabled: Boolean,
         principal: String?,
+        actor: AuditActor,
         c: Connection,
     ): CedarPolicy {
         required("name", currentName)
@@ -361,118 +452,151 @@ class PolicyManagementService(
         val current = policyStore.getByName(currentName, c) ?: notFound("policy")
         val targetName = newName ?: current.name
         required("newName", targetName)
-        return mapPolicyErrors {
+        val updated = mapPolicyErrors {
             policyStore.update(current.id, CedarPolicyInput(targetName, cedarSrc, enabled), principal, c)
                 ?: notFound("policy")
         }
+        recordPolicy(c, actor, updated.id, updateSummary("policy", current.name, updated.name))
+        return updated
     }
 
-    fun setPolicyEnabled(name: String, enabled: Boolean, principal: String?): CedarPolicy {
-        val updated = store.dataSource.inTx { connection -> setPolicyEnabled(name, enabled, principal, connection) }
+    fun setPolicyEnabled(name: String, enabled: Boolean, principal: String?, actor: AuditActor): CedarPolicy {
+        val updated = store.dataSource.inTx { connection -> setPolicyEnabled(name, enabled, principal, actor, connection) }
         policyStore.markCommittedMutation()
         return updated
     }
 
-    fun setPolicyEnabled(id: Long, enabled: Boolean, principal: String?): CedarPolicy {
+    fun setPolicyEnabled(id: Long, enabled: Boolean, principal: String?, actor: AuditActor): CedarPolicy {
         val updated = store.dataSource.inTx { connection ->
-            if (policyStore.get(id, connection) == null) notFound("policy")
+            val current = policyStore.get(id, connection) ?: notFound("policy")
             mapPolicyErrors { policyStore.setEnabled(id, enabled, principal, connection) ?: notFound("policy") }
+                .also { recordPolicyEnabled(connection, actor, current, enabled) }
         }
         policyStore.markCommittedMutation()
         return updated
     }
 
-    fun setPolicyEnabled(name: String, enabled: Boolean, principal: String?, c: Connection): CedarPolicy {
+    fun setPolicyEnabled(name: String, enabled: Boolean, principal: String?, actor: AuditActor, c: Connection): CedarPolicy {
         required("name", name)
         val current = policyStore.getByName(name, c) ?: notFound("policy")
-        return mapPolicyErrors { policyStore.setEnabled(current.id, enabled, principal, c) ?: notFound("policy") }
+        val updated = mapPolicyErrors { policyStore.setEnabled(current.id, enabled, principal, c) ?: notFound("policy") }
+        recordPolicyEnabled(c, actor, current, enabled)
+        return updated
     }
 
-    fun deletePolicy(name: String): DeleteResult {
-        val deleted = store.dataSource.inTx { connection -> deletePolicy(name, connection) }
+    fun deletePolicy(name: String, actor: AuditActor): DeleteResult {
+        val deleted = store.dataSource.inTx { connection -> deletePolicy(name, actor, connection) }
         if (deleted.deleted) policyStore.markCommittedMutation()
         return deleted
     }
 
-    fun deletePolicy(id: Long): DeleteResult {
+    fun deletePolicy(id: Long, actor: AuditActor): DeleteResult {
         val deleted = store.dataSource.inTx { connection ->
-            if (policyStore.get(id, connection) == null) notFound("policy")
-            try {
-                DeleteResult(policyStore.delete(id, connection))
-            } catch (_: SystemPolicyImmutableException) {
-                throw ManagementException(ApiError("policy.system_immutable"))
-            }
+            val current = policyStore.get(id, connection) ?: notFound("policy")
+            deletePolicy(current, actor, connection)
         }
         if (deleted.deleted) policyStore.markCommittedMutation()
         return deleted
     }
 
-    fun deletePolicy(name: String, c: Connection): DeleteResult {
+    fun deletePolicy(name: String, actor: AuditActor, c: Connection): DeleteResult {
         required("name", name)
-        val current = policyStore.getByName(name, c) ?: notFound("policy")
-        return try {
+        return deletePolicy(policyStore.getByName(name, c) ?: notFound("policy"), actor, c)
+    }
+
+    private fun deletePolicy(current: CedarPolicy, actor: AuditActor, c: Connection): DeleteResult {
+        val deleted = try {
             DeleteResult(policyStore.delete(current.id, c))
         } catch (_: SystemPolicyImmutableException) {
             throw ManagementException(ApiError("policy.system_immutable"))
         }
+        if (deleted.deleted) recordPolicy(c, actor, current.id, "delete policy '${current.name}'")
+        return deleted
     }
 
-    fun createRole(name: String, description: String?): Role = store.dataSource.inTx { createRole(name, description, it) }
+    private fun recordPolicy(c: Connection, actor: AuditActor, id: Long, summary: String) =
+        recorder.record(c, actor, AuthzAction.ADMIN_POLICIES, auditEntity("Policy", id.toString()), summary)
 
-    fun createRole(name: String, description: String?, c: Connection): Role {
+    private fun recordPolicyEnabled(c: Connection, actor: AuditActor, policy: CedarPolicy, enabled: Boolean) =
+        recordPolicy(c, actor, policy.id, "${if (enabled) "enable" else "disable"} policy '${policy.name}'")
+
+    fun createRole(name: String, description: String?, actor: AuditActor): Role =
+        store.dataSource.inTx { createRole(name, description, actor, it) }
+
+    fun createRole(name: String, description: String?, actor: AuditActor, c: Connection): Role {
         required("name", name)
-        return unique("role", name) { store.createRole(RoleInput(name, description), c) }
+        val created = unique("role", name) { store.createRole(RoleInput(name, description), c) }
+        recordRole(c, actor, created.name, "create role '${created.name}'")
+        return created
     }
 
-    fun updateRole(currentName: String, newName: String?, description: String?): Role =
-        store.dataSource.inTx { updateRole(currentName, newName, description, it) }
+    fun updateRole(currentName: String, newName: String?, description: String?, actor: AuditActor): Role =
+        store.dataSource.inTx { updateRole(currentName, newName, description, actor, it) }
 
-    fun updateRole(id: Long, input: RoleInput): Role = store.dataSource.inTx { c ->
+    fun updateRole(id: Long, input: RoleInput, actor: AuditActor): Role = store.dataSource.inTx { c ->
         val current = store.getRole(id, c) ?: notFound("role")
         if (store.isSystemRole(id, c)) throw ManagementException(ApiError("role.system_immutable"))
         required("name", input.name)
-        unique("role", input.name) { store.updateRole(current.id, input, c) ?: notFound("role") }
+        val updated = unique("role", input.name) { store.updateRole(current.id, input, c) ?: notFound("role") }
+        recordRole(c, actor, updated.name, updateSummary("role", current.name, updated.name))
+        updated
     }
 
-    fun updateRole(currentName: String, newName: String?, description: String?, c: Connection): Role {
+    fun updateRole(currentName: String, newName: String?, description: String?, actor: AuditActor, c: Connection): Role {
         required("name", currentName)
         val current = store.getRoleByName(currentName, c) ?: notFound("role")
         if (store.isSystemRole(current.id, c)) throw ManagementException(ApiError("role.system_immutable"))
         val targetName = newName ?: currentName
         required("newName", targetName)
-        return unique("role", targetName) {
+        val updated = unique("role", targetName) {
             store.updateRole(current.id, RoleInput(targetName, description), c) ?: notFound("role")
         }
+        recordRole(c, actor, updated.name, updateSummary("role", current.name, updated.name))
+        return updated
     }
 
-    fun deleteRole(name: String): DeleteResult = store.dataSource.inTx { deleteRole(name, it) }
+    fun deleteRole(name: String, actor: AuditActor): DeleteResult = store.dataSource.inTx { deleteRole(name, actor, it) }
 
-    fun deleteRole(id: Long): DeleteResult = store.dataSource.inTx { c ->
-        if (store.getRole(id, c) == null) notFound("role")
+    fun deleteRole(id: Long, actor: AuditActor): DeleteResult = store.dataSource.inTx { c ->
+        val current = store.getRole(id, c) ?: notFound("role")
         if (store.isSystemRole(id, c)) throw ManagementException(ApiError("role.system_immutable"))
-        DeleteResult(store.deleteRole(id, c))
+        deleteRole(current, actor, c)
     }
 
-    fun deleteRole(name: String, c: Connection): DeleteResult {
+    fun deleteRole(name: String, actor: AuditActor, c: Connection): DeleteResult {
         required("name", name)
         val current = store.getRoleByName(name, c) ?: notFound("role")
         if (store.isSystemRole(current.id, c)) throw ManagementException(ApiError("role.system_immutable"))
-        return DeleteResult(store.deleteRole(current.id, c))
+        return deleteRole(current, actor, c)
     }
 
-    fun assignRole(principal: String, roleName: String): RoleAssignment = store.dataSource.inTx { assignRole(principal, roleName, it) }
+    private fun deleteRole(current: Role, actor: AuditActor, c: Connection): DeleteResult {
+        val deleted = DeleteResult(store.deleteRole(current.id, c))
+        if (deleted.deleted) recordRole(c, actor, current.name, "delete role '${current.name}'")
+        return deleted
+    }
 
-    fun assignRole(principal: String, roleId: Long): RoleAssignment = store.dataSource.inTx { c ->
+    private fun recordRole(c: Connection, actor: AuditActor, name: String, summary: String) =
+        recorder.record(c, actor, AuthzAction.ADMIN_POLICIES, auditEntity("Role", name), summary)
+
+    fun assignRole(principal: String, roleName: String, actor: AuditActor): RoleAssignment =
+        store.dataSource.inTx { assignRole(principal, roleName, actor, it) }
+
+    fun assignRole(principal: String, roleId: Long, actor: AuditActor): RoleAssignment = store.dataSource.inTx { c ->
         required("principal", principal)
-        if (store.getRole(roleId, c) == null) notFound("role")
+        val role = store.getRole(roleId, c) ?: notFound("role")
+        val newlyAssigned = store.listAssignments(principal, roleId, c).isEmpty()
         store.createAssignment(RoleAssignmentInput(principal, roleId), c)
+            .also { if (newlyAssigned) recordAssignment(c, actor, role.name, principal, assigned = true) }
     }
 
-    fun assignRole(principal: String, roleName: String, c: Connection): RoleAssignment {
+    fun assignRole(principal: String, roleName: String, actor: AuditActor, c: Connection): RoleAssignment {
         required("principal", principal)
         required("roleName", roleName)
         val role = store.getRoleByName(roleName, c) ?: notFound("role")
+        val newlyAssigned = store.listAssignments(principal, role.id, c).isEmpty()
         return store.createAssignment(RoleAssignmentInput(principal, role.id), c)
+            .also { if (newlyAssigned) recordAssignment(c, actor, role.name, principal, assigned = true) }
     }
 
     /**
@@ -497,71 +621,112 @@ class PolicyManagementService(
      * login, which mints a session for exactly these roles — composes both onto one transaction under one lock
      * rather than committing twice.
      */
-    fun replaceDirectRoles(principal: String, roleNames: List<String>, c: Connection): List<RoleAssignment> {
+    fun replaceDirectRoles(
+        principal: String,
+        roleNames: List<String>,
+        actor: AuditActor,
+        c: Connection,
+    ): List<RoleAssignment> {
         required("principal", principal)
         c.advisoryLockPrincipal(principal)
         val roles = roleNames.map { name -> store.getRoleByName(name, c) ?: notFound("role '$name'") }
         store.listAssignments(principal, null, c).forEach { store.deleteAssignment(it.id, c) }
-        return roles.map { store.createAssignment(RoleAssignmentInput(principal, it.id), c) }
+        val replaced = roles.map { store.createAssignment(RoleAssignmentInput(principal, it.id), c) }
+        recorder.record(
+            c, actor, AuthzAction.ADMIN_IDENTITY, auditEntity("User", principal),
+            "replace direct roles of '$principal' [${replaced.joinToString(", ") { it.roleName }}]",
+        )
+        return replaced
     }
 
-    fun replaceDirectRoles(principal: String, roleNames: List<String>): List<RoleAssignment> =
-        store.dataSource.inTx { replaceDirectRoles(principal, roleNames, it) }
+    fun replaceDirectRoles(principal: String, roleNames: List<String>, actor: AuditActor): List<RoleAssignment> =
+        store.dataSource.inTx { replaceDirectRoles(principal, roleNames, actor, it) }
 
-    fun unassignRole(principal: String, roleName: String): DeleteResult = store.dataSource.inTx { unassignRole(principal, roleName, it) }
+    fun unassignRole(principal: String, roleName: String, actor: AuditActor): DeleteResult =
+        store.dataSource.inTx { unassignRole(principal, roleName, actor, it) }
 
-    fun unassignRole(id: Long): DeleteResult = store.dataSource.inTx { c ->
-        if (store.getAssignment(id, c) == null) notFound("role assignment")
-        DeleteResult(store.deleteAssignment(id, c))
+    fun unassignRole(id: Long, actor: AuditActor): DeleteResult = store.dataSource.inTx { c ->
+        val assignment = store.getAssignment(id, c) ?: notFound("role assignment")
+        DeleteResult(store.deleteAssignment(id, c)).also { result ->
+            if (result.deleted) recordAssignment(c, actor, assignment.roleName, assignment.principal, assigned = false)
+        }
     }
 
-    fun listAssignmentsByRoleId(principal: String?, roleId: Long?): List<RoleAssignment> =
-        store.listAssignments(principal, roleId)
-
-    fun unassignRole(principal: String, roleName: String, c: Connection): DeleteResult {
+    fun unassignRole(principal: String, roleName: String, actor: AuditActor, c: Connection): DeleteResult {
         required("principal", principal)
         required("roleName", roleName)
         val role = store.getRoleByName(roleName, c) ?: notFound("role")
-        return DeleteResult(store.deleteAssignment(principal, role.id, c))
+        return DeleteResult(store.deleteAssignment(principal, role.id, c)).also { result ->
+            if (result.deleted) recordAssignment(c, actor, role.name, principal, assigned = false)
+        }
     }
 
-    fun createMaskFn(input: MaskFnInput): MaskFn = store.dataSource.inTx { createMaskFn(input, it) }
+    private fun recordAssignment(
+        c: Connection,
+        actor: AuditActor,
+        roleName: String,
+        principal: String,
+        assigned: Boolean,
+    ) = recorder.record(
+        c, actor, AuthzAction.ADMIN_IDENTITY, auditEntity("Role", roleName),
+        if (assigned) "assign role '$roleName' to '$principal'" else "unassign role '$roleName' from '$principal'",
+    )
 
-    fun createMaskFn(input: MaskFnInput, c: Connection): MaskFn {
+    fun createMaskFn(input: MaskFnInput, actor: AuditActor): MaskFn =
+        store.dataSource.inTx { createMaskFn(input, actor, it) }
+
+    fun createMaskFn(input: MaskFnInput, actor: AuditActor, c: Connection): MaskFn {
         required("name", input.name)
         required("kind", input.kind)
-        return unique("mask function", input.name) { store.createMaskFn(input, c) }
+        val created = unique("mask function", input.name) { store.createMaskFn(input, c) }
+        recordMaskFn(c, actor, created.name, "create mask function '${created.name}'")
+        return created
     }
 
-    fun updateMaskFn(currentName: String, input: MaskFnInput): MaskFn = store.dataSource.inTx { updateMaskFn(currentName, input, it) }
+    fun updateMaskFn(currentName: String, input: MaskFnInput, actor: AuditActor): MaskFn =
+        store.dataSource.inTx { updateMaskFn(currentName, input, actor, it) }
 
-    fun updateMaskFn(id: Long, input: MaskFnInput): MaskFn = store.dataSource.inTx { c ->
-        if (store.getMaskFn(id, c) == null) notFound("mask function")
+    fun updateMaskFn(id: Long, input: MaskFnInput, actor: AuditActor): MaskFn = store.dataSource.inTx { c ->
+        val current = store.getMaskFn(id, c) ?: notFound("mask function")
         required("name", input.name)
         required("kind", input.kind)
-        unique("mask function", input.name) { store.updateMaskFn(id, input, c) ?: notFound("mask function") }
+        val updated = unique("mask function", input.name) { store.updateMaskFn(id, input, c) ?: notFound("mask function") }
+        recordMaskFn(c, actor, updated.name, updateSummary("mask function", current.name, updated.name))
+        updated
     }
 
-    fun updateMaskFn(currentName: String, input: MaskFnInput, c: Connection): MaskFn {
+    fun updateMaskFn(currentName: String, input: MaskFnInput, actor: AuditActor, c: Connection): MaskFn {
         required("name", currentName)
         val current = store.getMaskFnByName(currentName, c) ?: notFound("mask function")
         required("newName", input.name)
         required("kind", input.kind)
-        return unique("mask function", input.name) { store.updateMaskFn(current.id, input, c) ?: notFound("mask function") }
+        val updated = unique("mask function", input.name) {
+            store.updateMaskFn(current.id, input, c) ?: notFound("mask function")
+        }
+        recordMaskFn(c, actor, updated.name, updateSummary("mask function", current.name, updated.name))
+        return updated
     }
 
-    fun deleteMaskFn(name: String): DeleteResult = store.dataSource.inTx { deleteMaskFn(name, it) }
+    fun deleteMaskFn(name: String, actor: AuditActor): DeleteResult =
+        store.dataSource.inTx { deleteMaskFn(name, actor, it) }
 
-    fun deleteMaskFn(id: Long): DeleteResult = store.dataSource.inTx { c ->
-        if (store.getMaskFn(id, c) == null) notFound("mask function")
-        DeleteResult(store.deleteMaskFn(id, c))
+    fun deleteMaskFn(id: Long, actor: AuditActor): DeleteResult = store.dataSource.inTx { c ->
+        deleteMaskFn(store.getMaskFn(id, c) ?: notFound("mask function"), actor, c)
     }
 
-    fun deleteMaskFn(name: String, c: Connection): DeleteResult {
+    fun deleteMaskFn(name: String, actor: AuditActor, c: Connection): DeleteResult {
         required("name", name)
-        val current = store.getMaskFnByName(name, c) ?: notFound("mask function")
-        return DeleteResult(store.deleteMaskFn(current.id, c))
+        return deleteMaskFn(store.getMaskFnByName(name, c) ?: notFound("mask function"), actor, c)
     }
+
+    private fun deleteMaskFn(current: MaskFn, actor: AuditActor, c: Connection): DeleteResult {
+        val deleted = DeleteResult(store.deleteMaskFn(current.id, c))
+        if (deleted.deleted) recordMaskFn(c, actor, current.name, "delete mask function '${current.name}'")
+        return deleted
+    }
+
+    private fun recordMaskFn(c: Connection, actor: AuditActor, name: String, summary: String) =
+        recorder.record(c, actor, AuthzAction.ADMIN_POLICIES, auditEntity("MaskFn", name), summary)
 
     private fun <T> mapPolicyErrors(block: () -> T): T = try {
         block()
@@ -587,6 +752,7 @@ class IdentityManagementService(
     private val tokenStore: TokenStore,
     private val accessStore: AccessStore,
     private val daemonSessionStore: PrincipalSessionStore,
+    private val recorder: ManagementAuditRecorder,
 ) {
     fun listUsers(): List<AppUser> = store.listUsers()
     fun listGroups(): List<AppGroup> = store.listGroups()
@@ -595,13 +761,15 @@ class IdentityManagementService(
     fun getUser(principal: String, c: Connection): AppUser = store.getUserByPrincipal(principal, c) ?: notFound("user")
     fun getGroup(name: String, c: Connection): AppGroup = store.getGroupByName(name, c) ?: notFound("group")
 
-    fun createUser(input: AppUserInput): AppUser = dataSource.inTx { createUser(input, it) }
+    fun createUser(input: AppUserInput, actor: AuditActor): AppUser = dataSource.inTx { createUser(input, actor, it) }
 
-    fun createUser(input: AppUserInput, c: Connection): AppUser {
+    fun createUser(input: AppUserInput, actor: AuditActor, c: Connection): AppUser {
         required("principal", input.principal)
-        return unique("principal", input.principal) {
+        val created = unique("principal", input.principal) {
             store.createUser(input, tokenStore, accessStore, daemonSessionStore, c)
         }
+        recordUser(c, actor, created.principal, "create user '${created.principal}'")
+        return created
     }
 
     fun updateUser(
@@ -610,14 +778,17 @@ class IdentityManagementService(
         displayName: String?,
         email: String?,
         active: Boolean,
-    ): AppUser = dataSource.inTx { updateUser(currentPrincipal, newPrincipal, displayName, email, active, it) }
+        actor: AuditActor,
+    ): AppUser = dataSource.inTx { updateUser(currentPrincipal, newPrincipal, displayName, email, active, actor, it) }
 
-    fun updateUser(id: Long, input: AppUserInput): AppUser = dataSource.inTx { c ->
-        if (store.getUser(id, c) == null) notFound("user")
+    fun updateUser(id: Long, input: AppUserInput, actor: AuditActor): AppUser = dataSource.inTx { c ->
+        val current = store.getUser(id, c) ?: notFound("user")
         required("principal", input.principal)
-        unique("principal", input.principal) {
+        val updated = unique("principal", input.principal) {
             store.updateUser(id, input, tokenStore, accessStore, daemonSessionStore, c) ?: notFound("user")
         }
+        recordUser(c, actor, updated.principal, updateSummary("user", current.principal, updated.principal))
+        updated
     }
 
     fun updateUser(
@@ -626,6 +797,7 @@ class IdentityManagementService(
         displayName: String?,
         email: String?,
         active: Boolean,
+        actor: AuditActor,
         c: Connection,
     ): AppUser {
         required("principal", currentPrincipal)
@@ -633,124 +805,187 @@ class IdentityManagementService(
         val targetPrincipal = newPrincipal ?: currentPrincipal
         required("newPrincipal", targetPrincipal)
         val input = AppUserInput(targetPrincipal, displayName, email, active)
-        return unique("principal", input.principal) {
+        val updated = unique("principal", input.principal) {
             store.updateUser(current.id, input, tokenStore, accessStore, daemonSessionStore, c) ?: notFound("user")
         }
+        recordUser(c, actor, updated.principal, updateSummary("user", current.principal, updated.principal))
+        return updated
     }
 
-    fun deprovisionUser(principal: String): DeleteResult = dataSource.inTx { deprovisionUser(principal, it) }
+    fun deprovisionUser(principal: String, actor: AuditActor): DeleteResult =
+        dataSource.inTx { deprovisionUser(principal, actor, it) }
 
-    fun deprovisionUser(id: Long): DeleteResult = dataSource.inTx { c ->
-        if (store.getUser(id, c) == null) notFound("user")
-        DeleteResult(store.deleteUser(id, tokenStore, accessStore, daemonSessionStore, c))
+    fun deprovisionUser(id: Long, actor: AuditActor): DeleteResult = dataSource.inTx { c ->
+        deprovisionUser(store.getUser(id, c) ?: notFound("user"), actor, c)
     }
 
-    fun deprovisionUser(principal: String, c: Connection): DeleteResult {
+    fun deprovisionUser(principal: String, actor: AuditActor, c: Connection): DeleteResult {
         required("principal", principal)
-        val current = store.getUserByPrincipal(principal, c) ?: notFound("user")
-        return DeleteResult(store.deleteUser(current.id, tokenStore, accessStore, daemonSessionStore, c))
+        return deprovisionUser(store.getUserByPrincipal(principal, c) ?: notFound("user"), actor, c)
     }
 
-    fun createGroup(input: AppGroupInput): AppGroup = dataSource.inTx { createGroup(input, it) }
+    private fun deprovisionUser(current: AppUser, actor: AuditActor, c: Connection): DeleteResult {
+        val deleted = DeleteResult(store.deleteUser(current.id, tokenStore, accessStore, daemonSessionStore, c))
+        if (deleted.deleted) recordUser(c, actor, current.principal, "deprovision user '${current.principal}'")
+        return deleted
+    }
 
-    fun createGroup(input: AppGroupInput, c: Connection): AppGroup {
+    private fun recordUser(c: Connection, actor: AuditActor, principal: String, summary: String) =
+        recorder.record(c, actor, AuthzAction.ADMIN_IDENTITY, auditEntity("User", principal), summary)
+
+    fun createGroup(input: AppGroupInput, actor: AuditActor): AppGroup = dataSource.inTx { createGroup(input, actor, it) }
+
+    fun createGroup(input: AppGroupInput, actor: AuditActor, c: Connection): AppGroup {
         required("name", input.name)
-        return unique("group", input.name) { store.createGroup(input, c) }
+        val created = unique("group", input.name) { store.createGroup(input, c) }
+        recordGroup(c, actor, created.name, "create group '${created.name}'")
+        return created
     }
 
-    fun updateGroup(currentName: String, newName: String?, description: String?): AppGroup =
-        dataSource.inTx { updateGroup(currentName, newName, description, it) }
+    fun updateGroup(currentName: String, newName: String?, description: String?, actor: AuditActor): AppGroup =
+        dataSource.inTx { updateGroup(currentName, newName, description, actor, it) }
 
-    fun updateGroup(id: Long, input: AppGroupInput): AppGroup = dataSource.inTx { c ->
+    fun updateGroup(id: Long, input: AppGroupInput, actor: AuditActor): AppGroup = dataSource.inTx { c ->
         val current = store.getGroup(id, c) ?: notFound("group")
         rejectSystem(current, c)
         required("name", input.name)
-        unique("group", input.name) { store.updateGroup(id, input, c) ?: notFound("group") }
+        val updated = unique("group", input.name) { store.updateGroup(id, input, c) ?: notFound("group") }
+        recordGroup(c, actor, updated.name, updateSummary("group", current.name, updated.name))
+        updated
     }
 
-    fun updateGroup(currentName: String, newName: String?, description: String?, c: Connection): AppGroup {
+    fun updateGroup(
+        currentName: String,
+        newName: String?,
+        description: String?,
+        actor: AuditActor,
+        c: Connection,
+    ): AppGroup {
         required("name", currentName)
         val current = group(currentName, c)
         rejectSystem(current, c)
         val targetName = newName ?: currentName
         required("newName", targetName)
-        return unique("group", targetName) {
+        val updated = unique("group", targetName) {
             store.updateGroup(current.id, AppGroupInput(targetName, description), c) ?: notFound("group")
         }
+        recordGroup(c, actor, updated.name, updateSummary("group", current.name, updated.name))
+        return updated
     }
 
-    fun deleteGroup(name: String): DeleteResult = dataSource.inTx { deleteGroup(name, it) }
+    fun deleteGroup(name: String, actor: AuditActor): DeleteResult = dataSource.inTx { deleteGroup(name, actor, it) }
 
-    fun deleteGroup(id: Long): DeleteResult = dataSource.inTx { c ->
+    fun deleteGroup(id: Long, actor: AuditActor): DeleteResult = dataSource.inTx { c ->
         val current = store.getGroup(id, c) ?: notFound("group")
         rejectSystem(current, c)
-        DeleteResult(store.deleteGroup(id, c))
+        deleteGroup(current, actor, c)
     }
 
-    fun deleteGroup(name: String, c: Connection): DeleteResult {
+    fun deleteGroup(name: String, actor: AuditActor, c: Connection): DeleteResult {
         required("name", name)
         val current = group(name, c)
         rejectSystem(current, c)
-        return DeleteResult(store.deleteGroup(current.id, c))
+        return deleteGroup(current, actor, c)
     }
 
-    fun addGroupMember(groupName: String, principal: String): GroupMemberEntry =
-        dataSource.inTx { addGroupMember(groupName, principal, it) }
+    private fun deleteGroup(current: AppGroup, actor: AuditActor, c: Connection): DeleteResult {
+        val deleted = DeleteResult(store.deleteGroup(current.id, c))
+        if (deleted.deleted) recordGroup(c, actor, current.name, "delete group '${current.name}'")
+        return deleted
+    }
 
-    fun addGroupMember(groupId: Long, userId: Long): GroupMemberEntry = dataSource.inTx { c ->
+    private fun recordGroup(c: Connection, actor: AuditActor, name: String, summary: String) =
+        recorder.record(c, actor, AuthzAction.ADMIN_IDENTITY, auditEntity("Group", name), summary)
+
+    fun addGroupMember(groupName: String, principal: String, actor: AuditActor): GroupMemberEntry =
+        dataSource.inTx { addGroupMember(groupName, principal, actor, it) }
+
+    fun addGroupMember(groupId: Long, userId: Long, actor: AuditActor): GroupMemberEntry = dataSource.inTx { c ->
         val group = store.getGroup(groupId, c) ?: notFound("group")
         rejectSystem(group, c)
-        if (store.getUser(userId, c) == null) notFound("user")
-        store.addMember(groupId, userId, c)
-        store.listMembers(groupId, c).first { it.userId == userId }
+        val user = store.getUser(userId, c) ?: notFound("user")
+        if (store.addMember(group.id, user.id, c)) recordMember(c, actor, group.name, user.principal, added = true)
+        store.listMembers(group.id, c).first { it.userId == user.id }
     }
 
-    fun addGroupMember(groupName: String, principal: String, c: Connection): GroupMemberEntry {
+    fun addGroupMember(groupName: String, principal: String, actor: AuditActor, c: Connection): GroupMemberEntry {
         required("groupName", groupName)
         required("principal", principal)
         val group = group(groupName, c)
         rejectSystem(group, c)
         val user = store.getUserByPrincipal(principal, c) ?: notFound("user")
-        store.addMember(group.id, user.id, c)
+        if (store.addMember(group.id, user.id, c)) recordMember(c, actor, group.name, user.principal, added = true)
         return store.listMembers(group.id, c).first { it.userId == user.id }
     }
 
-    fun removeGroupMember(groupName: String, principal: String): DeleteResult =
-        dataSource.inTx { removeGroupMember(groupName, principal, it) }
+    fun removeGroupMember(groupName: String, principal: String, actor: AuditActor): DeleteResult =
+        dataSource.inTx { removeGroupMember(groupName, principal, actor, it) }
 
-    fun removeGroupMember(groupId: Long, userId: Long): DeleteResult = dataSource.inTx { c ->
+    fun removeGroupMember(groupId: Long, userId: Long, actor: AuditActor): DeleteResult = dataSource.inTx { c ->
         val group = store.getGroup(groupId, c) ?: notFound("group")
         rejectSystem(group, c)
-        if (store.getUser(userId, c) == null) notFound("user")
-        DeleteResult(store.removeMember(groupId, userId, c))
+        val user = store.getUser(userId, c) ?: notFound("user")
+        removeMember(group, user.principal, user.id, actor, c)
     }
 
-    fun removeGroupMember(groupName: String, principal: String, c: Connection): DeleteResult {
+    fun removeGroupMember(groupName: String, principal: String, actor: AuditActor, c: Connection): DeleteResult {
         required("groupName", groupName)
         required("principal", principal)
         val group = group(groupName, c)
         rejectSystem(group, c)
         val user = store.getUserByPrincipal(principal, c) ?: notFound("user")
-        return DeleteResult(store.removeMember(group.id, user.id, c))
+        return removeMember(group, user.principal, user.id, actor, c)
     }
 
-    fun setGroupRoles(groupName: String, roleNames: Set<String>): GroupRolesResult =
-        dataSource.inTx { setGroupRoles(groupName, roleNames, it) }
+    private fun removeMember(
+        group: AppGroup,
+        principal: String,
+        userId: Long,
+        actor: AuditActor,
+        c: Connection,
+    ): DeleteResult {
+        val deleted = DeleteResult(store.removeMember(group.id, userId, c))
+        if (deleted.deleted) recordMember(c, actor, group.name, principal, added = false)
+        return deleted
+    }
 
-    fun addGroupRole(groupId: Long, roleId: Long): GroupRoleEntry = dataSource.inTx { c ->
-        lockMutableGroup(groupId, c)
+    private fun recordMember(
+        c: Connection,
+        actor: AuditActor,
+        groupName: String,
+        principal: String,
+        added: Boolean,
+    ) = recordGroup(
+        c, actor, groupName,
+        if (added) "add '$principal' to group '$groupName'" else "remove '$principal' from group '$groupName'",
+    )
+
+    fun setGroupRoles(groupName: String, roleNames: Set<String>, actor: AuditActor): GroupRolesResult =
+        dataSource.inTx { setGroupRoles(groupName, roleNames, actor, it) }
+
+    fun addGroupRole(groupId: Long, roleId: Long, actor: AuditActor): GroupRoleEntry = dataSource.inTx { c ->
+        val groupName = lockMutableGroup(groupId, c)
         val role = policyStore.getRole(roleId, c) ?: notFound("role")
-        store.addGroupRole(groupId, roleId, c)
+        if (store.addGroupRole(groupId, role.id, c)) recordGroup(c, actor, groupName, "add role '${role.name}' to group '$groupName'")
         GroupRoleEntry(role.id, role.name)
     }
 
-    fun removeGroupRole(groupId: Long, roleId: Long): DeleteResult = dataSource.inTx { c ->
-        lockMutableGroup(groupId, c)
-        if (policyStore.getRole(roleId, c) == null) notFound("role")
-        DeleteResult(store.removeGroupRole(groupId, roleId, c))
+    fun removeGroupRole(groupId: Long, roleId: Long, actor: AuditActor): DeleteResult = dataSource.inTx { c ->
+        val groupName = lockMutableGroup(groupId, c)
+        val role = policyStore.getRole(roleId, c) ?: notFound("role")
+        DeleteResult(store.removeGroupRole(groupId, role.id, c)).also { deleted ->
+            if (deleted.deleted) {
+                recordGroup(c, actor, groupName, "remove role '${role.name}' from group '$groupName'")
+            }
+        }
     }
 
-    fun setGroupRoles(groupName: String, roleNames: Set<String>, c: Connection): GroupRolesResult {
+    fun setGroupRoles(
+        groupName: String,
+        roleNames: Set<String>,
+        actor: AuditActor,
+        c: Connection,
+    ): GroupRolesResult {
         required("groupName", groupName)
         roleNames.forEach { required("roleNames", it) }
         val group = c.prepareStatement("SELECT id, source FROM app_group WHERE name = ? FOR UPDATE").use { statement ->
@@ -765,23 +1000,39 @@ class IdentityManagementService(
         val current = store.listGroupRoles(group.first, c).associateBy(GroupRoleEntry::roleName)
         for (name in current.keys - roles.keys) store.removeGroupRole(group.first, current.getValue(name).roleId, c)
         for (name in roles.keys - current.keys) store.addGroupRole(group.first, roles.getValue(name).id, c)
-        return GroupRolesResult(groupName, store.listGroupRoles(group.first, c).map(GroupRoleEntry::roleName))
+        val result = GroupRolesResult(groupName, store.listGroupRoles(group.first, c).map(GroupRoleEntry::roleName))
+        recordGroup(c, actor, groupName, "set group '$groupName' roles [${result.roleNames.joinToString(", ")}]")
+        return result
     }
 
     private fun group(name: String, c: Connection): AppGroup = store.getGroupByName(name, c) ?: notFound("group")
 
-    private fun lockMutableGroup(id: Long, c: Connection) {
-        val source = c.prepareStatement("SELECT source FROM app_group WHERE id = ? FOR UPDATE").use { statement ->
+    /**
+     * Locks the `app_group` row, not just reading it: [setGroupRoles] holds the same lock while it lists
+     * the current roles and writes the difference, so a single-role add or remove that skipped the lock
+     * could land inside that window and be silently reverted by the diff.
+     */
+    /** Row-lock a mutable (non-SYSTEM) group, returning its name for the audit summary. */
+    private fun lockMutableGroup(id: Long, c: Connection): String {
+        val (source, name) = c.prepareStatement("SELECT source, name FROM app_group WHERE id = ? FOR UPDATE").use { statement ->
             statement.setLong(1, id)
-            statement.executeQuery().use { result -> if (result.next()) result.getString("source") else notFound("group") }
+            statement.executeQuery().use { result ->
+                if (result.next()) result.getString("source") to result.getString("name") else notFound("group")
+            }
         }
         if (source == "SYSTEM") throw ManagementException(ApiError("group.system_immutable"))
+        return name
     }
 
     private fun rejectSystem(group: AppGroup, c: Connection) {
         if (store.isSystemGroup(group.id, c)) throw ManagementException(ApiError("group.system_immutable"))
     }
 }
+
+private fun updateSummary(type: String, before: String, after: String): String =
+    if (before == after) "update $type '$before'" else "update $type '$before' -> '$after'"
+
+private fun Classification.path(): String = "$schema.$table.$column"
 
 private fun required(field: String, value: String) {
     if (value.isBlank()) throw ManagementException(ApiError("common.field_required", mapOf("fields" to field)))

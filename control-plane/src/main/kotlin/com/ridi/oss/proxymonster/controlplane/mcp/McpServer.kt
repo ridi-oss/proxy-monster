@@ -10,14 +10,19 @@ import com.ridi.oss.proxymonster.controlplane.Config
 import com.ridi.oss.proxymonster.controlplane.ControlPlaneCore
 import com.ridi.oss.proxymonster.controlplane.Decision
 import com.ridi.oss.proxymonster.controlplane.AuditEvent
+import com.ridi.oss.proxymonster.controlplane.AppGroupInput
+import com.ridi.oss.proxymonster.controlplane.AppUserInput
 import com.ridi.oss.proxymonster.controlplane.MaskFnInput
 import com.ridi.oss.proxymonster.controlplane.httpRequesterIp
 import com.ridi.oss.proxymonster.controlplane.resolveForwardedAuthority
+import com.ridi.oss.proxymonster.controlplane.management.AuditActor
+import com.ridi.oss.proxymonster.controlplane.management.AuditSource
 import com.ridi.oss.proxymonster.controlplane.management.CapabilityClassification
 import com.ridi.oss.proxymonster.controlplane.management.CedarValidationManagementException
 import com.ridi.oss.proxymonster.controlplane.management.ColumnClassificationBatch
 import com.ridi.oss.proxymonster.controlplane.management.DatasourceManagementService
 import com.ridi.oss.proxymonster.controlplane.management.IdentityManagementService
+import com.ridi.oss.proxymonster.controlplane.management.ManagementAuditRecorder
 import com.ridi.oss.proxymonster.controlplane.management.ManagementException
 import com.ridi.oss.proxymonster.controlplane.management.McpCapability
 import com.ridi.oss.proxymonster.controlplane.management.McpCapabilityRegistry
@@ -237,7 +242,7 @@ private class McpMutationExecutor(
         arguments: JsonObject,
         datasource: String = "control-plane",
         detail: String,
-        mutation: (Connection) -> JsonObject,
+        mutation: (Connection, AuditActor) -> JsonObject,
     ): JsonObject {
         val roles = try {
             authorizer.authorize(context, capability)
@@ -245,6 +250,9 @@ private class McpMutationExecutor(
             auditFailure(context, capability, e.roles, datasource, detail, Decision.DENY, e.error.code)
             throw ManagementException(e.error)
         }
+        // Built from the roles `authorize` just resolved, so the audit row names the authority the call
+        // actually ran under. Sorted because the row is hashed into the audit chain.
+        val actor = AuditActor(context.principal, roles.sorted(), context.requesterIp, AuditSource.MCP)
         try {
             validateArguments(capability, arguments)
         } catch (e: McpInputException) {
@@ -289,11 +297,7 @@ private class McpMutationExecutor(
                             return@use prior.second to true
                         }
                     }
-                    val structured = mutation(connection)
-                    auditStore.insert(
-                        connection,
-                        mcpAuditRecord(context, capability, roles, datasource, detail, Decision.ALLOW, "ALLOW"),
-                    )
+                    val structured = mutation(connection, actor)
                     if (key != null) {
                         connection.prepareStatement(
                             """INSERT INTO mcp_mutation_idempotency
@@ -372,6 +376,7 @@ private fun mcpAuditRecord(
     authzAction = capability.action.cedarId,
     authzResource = "System::\"system\"",
     outcome = outcome,
+    kind = ManagementAuditRecorder.KIND_ADMIN,
 )
 
 private fun createMcpServer(
@@ -489,7 +494,7 @@ private fun executeWrite(
 ): JsonObject {
     val datasourceName = safeDatasource(capability, args)
     val detail = mutationDetail(capability.toolName, args)
-    return mutations.execute(context, capability, args, datasource = datasourceName, detail = detail) { connection ->
+    return mutations.execute(context, capability, args, datasource = datasourceName, detail = detail) { connection, actor ->
         when (capability.toolName) {
             "set_column_classification" -> {
                 val maskFnId = args.string("maskFnName")?.let { name ->
@@ -499,7 +504,7 @@ private fun executeWrite(
                 structured(
                     datasources.setColumnClassification(
                         args.requiredString("datasource"), args.string("schema"), args.requiredString("table"),
-                        args.requiredString("column"), args.stringSet("tags").toList(), maskFnId, connection,
+                        args.requiredString("column"), args.stringSet("tags").toList(), maskFnId, actor, connection,
                     ),
                 )
             }
@@ -529,7 +534,7 @@ private fun executeWrite(
                                     entry.string("maskFnName")?.let(maskFnIds::getValue),
                                 )
                             },
-                            connection,
+                            actor, connection,
                         ),
                     ),
                 )
@@ -537,44 +542,44 @@ private fun executeWrite(
             "clear_column_classification" -> structured(
                 datasources.clearColumnClassification(
                     args.requiredString("datasource"), args.string("schema"), args.requiredString("table"),
-                    args.requiredString("column"), connection,
+                    args.requiredString("column"), actor, connection,
                 ),
             )
             "create_policy" -> structured(
-                policies.createPolicy(args.requiredString("name"), args.requiredString("cedarSrc"), args.boolean("enabled") ?: true, context.principal, connection),
+                policies.createPolicy(args.requiredString("name"), args.requiredString("cedarSrc"), args.boolean("enabled") ?: true, context.principal, actor, connection),
             )
             "update_policy" -> structured(
                 policies.getPolicy(args.requiredString("name"), connection).let { current ->
                     policies.updatePolicy(
                         current.name, args.string("newName"), args.requiredString("cedarSrc"),
                         if (args.has("enabled")) args.boolean("enabled") ?: current.enabled else current.enabled,
-                        context.principal, connection,
+                        context.principal, actor, connection,
                     )
                 },
             )
-            "enable_policy" -> structured(policies.setPolicyEnabled(args.requiredString("name"), true, context.principal, connection))
-            "disable_policy" -> structured(policies.setPolicyEnabled(args.requiredString("name"), false, context.principal, connection))
-            "delete_policy" -> structured(policies.deletePolicy(args.requiredString("name"), connection))
-            "create_role" -> structured(policies.createRole(args.requiredString("name"), args.string("description"), connection))
+            "enable_policy" -> structured(policies.setPolicyEnabled(args.requiredString("name"), true, context.principal, actor, connection))
+            "disable_policy" -> structured(policies.setPolicyEnabled(args.requiredString("name"), false, context.principal, actor, connection))
+            "delete_policy" -> structured(policies.deletePolicy(args.requiredString("name"), actor, connection))
+            "create_role" -> structured(policies.createRole(args.requiredString("name"), args.string("description"), actor, connection))
             "update_role" -> structured(
                 policies.getRole(args.requiredString("name"), connection).let { current ->
                     policies.updateRole(
                         current.name,
                         args.string("newName"),
                         if (args.has("description")) args.string("description") else current.description,
-                        connection,
+                        actor, connection,
                     )
                 },
             )
-            "delete_role" -> structured(policies.deleteRole(args.requiredString("name"), connection))
-            "assign_role" -> structured(policies.assignRole(args.requiredString("principal"), args.requiredString("roleName"), connection))
-            "unassign_role" -> structured(policies.unassignRole(args.requiredString("principal"), args.requiredString("roleName"), connection))
+            "delete_role" -> structured(policies.deleteRole(args.requiredString("name"), actor, connection))
+            "assign_role" -> structured(policies.assignRole(args.requiredString("principal"), args.requiredString("roleName"), actor, connection))
+            "unassign_role" -> structured(policies.unassignRole(args.requiredString("principal"), args.requiredString("roleName"), actor, connection))
             "create_user" -> structured(
                 identities.createUser(
-                    com.ridi.oss.proxymonster.controlplane.AppUserInput(
+                    AppUserInput(
                         args.requiredString("principal"), args.string("displayName"), args.string("email"), args.boolean("active") ?: true,
                     ),
-                    connection,
+                    actor, connection,
                 ),
             )
             "update_user" -> structured(
@@ -585,13 +590,13 @@ private fun executeWrite(
                         if (args.has("displayName")) args.string("displayName") else current.displayName,
                         if (args.has("email")) args.string("email") else current.email,
                         if (args.has("active")) args.boolean("active") ?: current.active else current.active,
-                        connection,
+                        actor, connection,
                     )
                 },
             )
-            "deprovision_user" -> structured(identities.deprovisionUser(args.requiredString("principal"), connection))
+            "deprovision_user" -> structured(identities.deprovisionUser(args.requiredString("principal"), actor, connection))
             "create_group" -> structured(
-                identities.createGroup(com.ridi.oss.proxymonster.controlplane.AppGroupInput(args.requiredString("name"), args.string("description")), connection),
+                identities.createGroup(AppGroupInput(args.requiredString("name"), args.string("description")), actor, connection),
             )
             "update_group" -> structured(
                 identities.getGroup(args.requiredString("name"), connection).let { current ->
@@ -599,22 +604,22 @@ private fun executeWrite(
                         current.name,
                         args.string("newName"),
                         if (args.has("description")) args.string("description") else current.description,
-                        connection,
+                        actor, connection,
                     )
                 },
             )
-            "delete_group" -> structured(identities.deleteGroup(args.requiredString("name"), connection))
+            "delete_group" -> structured(identities.deleteGroup(args.requiredString("name"), actor, connection))
             "add_group_member" -> structured(
-                identities.addGroupMember(args.requiredString("groupName"), args.requiredString("principal"), connection),
+                identities.addGroupMember(args.requiredString("groupName"), args.requiredString("principal"), actor, connection),
             )
             "remove_group_member" -> structured(
-                identities.removeGroupMember(args.requiredString("groupName"), args.requiredString("principal"), connection),
+                identities.removeGroupMember(args.requiredString("groupName"), args.requiredString("principal"), actor, connection),
             )
             "set_group_roles" -> structured(
-                identities.setGroupRoles(args.requiredString("groupName"), args.stringSet("roleNames"), connection),
+                identities.setGroupRoles(args.requiredString("groupName"), args.stringSet("roleNames"), actor, connection),
             )
             "create_mask_fn" -> structured(
-                policies.createMaskFn(MaskFnInput(args.requiredString("name"), args.requiredString("kind")), connection),
+                policies.createMaskFn(MaskFnInput(args.requiredString("name"), args.requiredString("kind")), actor, connection),
             )
             "update_mask_fn" -> structured(
                 policies.getMaskFn(args.requiredString("name"), connection).let { current ->
@@ -624,11 +629,11 @@ private fun executeWrite(
                             args.string("newName") ?: current.name,
                             args.requiredString("kind"),
                         ),
-                        connection,
+                        actor, connection,
                     )
                 },
             )
-            "delete_mask_fn" -> structured(policies.deleteMaskFn(args.requiredString("name"), connection))
+            "delete_mask_fn" -> structured(policies.deleteMaskFn(args.requiredString("name"), actor, connection))
             else -> throw ManagementException(ApiError("mcp.invalid_request"))
         }
     }

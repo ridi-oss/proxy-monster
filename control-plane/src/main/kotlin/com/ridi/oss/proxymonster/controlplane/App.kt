@@ -9,8 +9,11 @@ import com.ridi.oss.proxymonster.controlplane.authz.AuthzResource
 import com.ridi.oss.proxymonster.controlplane.authz.authorizeWithContext
 import com.ridi.oss.proxymonster.controlplane.authz.cedarPolicyRoutes
 import com.ridi.oss.proxymonster.controlplane.authz.contextTagLint
+import com.ridi.oss.proxymonster.controlplane.management.AuditActor
+import com.ridi.oss.proxymonster.controlplane.management.AuditSource
 import com.ridi.oss.proxymonster.controlplane.management.DatasourceManagementService
 import com.ridi.oss.proxymonster.controlplane.management.IdentityManagementService
+import com.ridi.oss.proxymonster.controlplane.management.ManagementAuditRecorder
 import com.ridi.oss.proxymonster.controlplane.management.ManagementException
 import com.ridi.oss.proxymonster.controlplane.management.PolicyManagementService
 import com.ridi.oss.proxymonster.controlplane.mcp.installMcp
@@ -559,10 +562,11 @@ fun Application.module(config: Config, core: ControlPlaneCore) {
     installMcpOAuthProtocolGuard()
 
     // MCPA transport adapters share these service instances with the REST surface and the one live core.
-    val datasourceManagement = DatasourceManagementService(datasourceStore, core.proxyEventsHub, tableDetailService)
-    val policyManagement = PolicyManagementService(cedarPolicyStore, policyStore)
+    val managementAudit = ManagementAuditRecorder(core.auditStore)
+    val datasourceManagement = DatasourceManagementService(datasourceStore, core.proxyEventsHub, tableDetailService, managementAudit)
+    val policyManagement = PolicyManagementService(cedarPolicyStore, policyStore, managementAudit)
     val identityManagement = IdentityManagementService(
-        dataSource, userGroupStore, policyStore, tokenStore, accessStore, principalSessionStore,
+        dataSource, userGroupStore, policyStore, tokenStore, accessStore, principalSessionStore, managementAudit,
     )
     installMcp(config, core, datasourceManagement, policyManagement, identityManagement)
 
@@ -727,7 +731,15 @@ fun Application.module(config: Config, core: ControlPlaneCore) {
             // while the database says {B}. The response must describe the state the session actually resolves.
             val sessionId = try {
                 dataSource.inTx { c ->
-                    policyManagement.replaceDirectRoles(login.principal, roles, c)
+                    policyManagement.replaceDirectRoles(
+                        login.principal, roles,
+                        AuditActor(
+                            principal = login.principal,
+                            clientAddr = debugRequesterIp ?: call.httpRequesterIp(config),
+                            channel = AuditSource.CONSOLE,
+                        ),
+                        c,
+                    )
                     principalSessionStore.mintWeb(
                         login.principal,
                         null,

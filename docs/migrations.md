@@ -50,6 +50,7 @@ their final shape: every column is inline in its `CREATE TABLE`, so there is no
 | `V6__sessions.sql` | `device_login`, `principal_session` |
 | `V7__tokens.sql` | `oauth_consent`, `oauth_authorization_code`, `proxy_token`, `mcp_mutation_idempotency` |
 | `V8__seed.sql` | The shipped starter package: predefined roles, protected groups, and the SYSTEM Cedar policies |
+| `V13__classification_profile.sql` | `classification_profile`, `classification_profile_rule`, `datasource_classification_profile` — shared column classification |
 
 `V8` comes last because it seeds rows into tables the earlier files create, and
 it is the only file with no DDL. Everything it writes is SYSTEM-owned — a

@@ -73,6 +73,18 @@ object McpCapabilityRegistry {
         write("set_column_classifications", AuthzAction.ADMIN_DATASOURCES, "mcp:datasources:write"),
         write("clear_column_classification", AuthzAction.ADMIN_DATASOURCES, "mcp:datasources:write", destructive = true),
 
+        read("list_classification_profiles", AuthzAction.ADMIN_DATASOURCES),
+        read("list_classification_profile_rules", AuthzAction.ADMIN_DATASOURCES),
+        read("list_datasource_classification_profiles", AuthzAction.ADMIN_DATASOURCES),
+        write("create_classification_profile", AuthzAction.ADMIN_DATASOURCES, "mcp:datasources:write"),
+        write("update_classification_profile", AuthzAction.ADMIN_DATASOURCES, "mcp:datasources:write"),
+        write("delete_classification_profile", AuthzAction.ADMIN_DATASOURCES, "mcp:datasources:write", destructive = true),
+        write("set_classification_profile_rule", AuthzAction.ADMIN_DATASOURCES, "mcp:datasources:write"),
+        write("clear_classification_profile_rule", AuthzAction.ADMIN_DATASOURCES, "mcp:datasources:write", destructive = true),
+        write("attach_classification_profile", AuthzAction.ADMIN_DATASOURCES, "mcp:datasources:write"),
+        // Detaching unclassifies every column the profile alone covered, on the whole datasource.
+        write("detach_classification_profile", AuthzAction.ADMIN_DATASOURCES, "mcp:datasources:write", destructive = true),
+
         read("list_policies", AuthzAction.ADMIN_POLICIES),
         read("get_policy", AuthzAction.ADMIN_POLICIES),
         read("validate_policy", AuthzAction.ADMIN_POLICIES),
@@ -115,6 +127,11 @@ object McpCapabilityRegistry {
     val approvedToolNames = setOf(
         "list_datasources", "get_datasource_liveness", "browse_catalog", "get_table_detail", "list_column_tags",
         "set_column_classification", "set_column_classifications", "clear_column_classification",
+        "list_classification_profiles", "list_classification_profile_rules",
+        "list_datasource_classification_profiles", "create_classification_profile",
+        "update_classification_profile", "delete_classification_profile",
+        "set_classification_profile_rule", "clear_classification_profile_rule",
+        "attach_classification_profile", "detach_classification_profile",
         "list_policies", "get_policy", "validate_policy",
         "get_policy_schema", "create_policy", "update_policy", "enable_policy", "disable_policy", "delete_policy",
         "list_roles", "create_role", "update_role", "delete_role", "list_role_assignments", "assign_role",

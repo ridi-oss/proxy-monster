@@ -11,10 +11,14 @@ import com.ridi.oss.proxymonster.controlplane.ControlPlaneCore
 import com.ridi.oss.proxymonster.controlplane.Decision
 import com.ridi.oss.proxymonster.controlplane.AuditEvent
 import com.ridi.oss.proxymonster.controlplane.MaskFnInput
+import com.ridi.oss.proxymonster.controlplane.ClassificationProfileInput
+import com.ridi.oss.proxymonster.controlplane.ClassificationProfileRuleInput
+import com.ridi.oss.proxymonster.controlplane.ProfileAttachmentInput
 import com.ridi.oss.proxymonster.controlplane.httpRequesterIp
 import com.ridi.oss.proxymonster.controlplane.resolveForwardedAuthority
 import com.ridi.oss.proxymonster.controlplane.management.CapabilityClassification
 import com.ridi.oss.proxymonster.controlplane.management.CedarValidationManagementException
+import com.ridi.oss.proxymonster.controlplane.management.ClassificationProfileManagementService
 import com.ridi.oss.proxymonster.controlplane.management.ColumnClassificationBatch
 import com.ridi.oss.proxymonster.controlplane.management.DatasourceManagementService
 import com.ridi.oss.proxymonster.controlplane.management.IdentityManagementService
@@ -60,6 +64,7 @@ import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -95,6 +100,7 @@ fun Application.installMcp(
     datasourceService: DatasourceManagementService,
     policyService: PolicyManagementService,
     identityService: IdentityManagementService,
+    profileService: ClassificationProfileManagementService,
 ) {
     McpCapabilityRegistry.verify()
     val metadataUri = protectedResourceMetadataUri(config.mcpResource)
@@ -169,6 +175,7 @@ fun Application.installMcp(
             datasourceService,
             policyService,
             identityService,
+            profileService,
             core,
         )
     }
@@ -383,6 +390,7 @@ private fun createMcpServer(
     datasourceService: DatasourceManagementService,
     policyService: PolicyManagementService,
     identityService: IdentityManagementService,
+    profileService: ClassificationProfileManagementService,
     core: ControlPlaneCore,
 ): Server {
     val locale = requestLocale(call)
@@ -407,9 +415,9 @@ private fun createMcpServer(
                 val structured = if (capability.classification == CapabilityClassification.READ) {
                     authorizeRead(context, capability, args, authorizer, core.auditStore)
                     validateArguments(capability, args)
-                    executeRead(capability.toolName, args, datasourceService, policyService, identityService)
+                    executeRead(capability.toolName, args, datasourceService, policyService, identityService, profileService)
                 } else {
-                    executeWrite(capability, args, context, mutations, datasourceService, policyService, identityService, core)
+                    executeWrite(capability, args, context, mutations, datasourceService, policyService, identityService, profileService, core)
                 }
                 CallToolResult(content = listOf(TextContent(structured.toString())), structuredContent = structured)
             } catch (e: CedarValidationManagementException) {
@@ -457,6 +465,7 @@ private suspend fun executeRead(
     datasources: DatasourceManagementService,
     policies: PolicyManagementService,
     identities: IdentityManagementService,
+    profiles: ClassificationProfileManagementService,
 ): JsonObject = when (tool) {
     "list_datasources" -> structured(datasources.listDatasources())
     "get_datasource_liveness" -> structured(datasources.getDatasourceLiveness(args.requiredString("datasource")))
@@ -465,6 +474,11 @@ private suspend fun executeRead(
         datasources.getTableDetail(args.requiredString("datasource"), args.requiredString("schema"), args.requiredString("table")),
     )
     "list_column_tags" -> structured(datasources.listColumnTags(args.requiredString("datasource")))
+    "list_classification_profiles" -> structured(profiles.listProfiles())
+    "list_classification_profile_rules" -> structured(profiles.listRules(args.requiredString("profile")))
+    "list_datasource_classification_profiles" -> structured(
+        profiles.listAttachments(args.requiredString("datasource")),
+    )
     "list_policies" -> structured(policies.listPolicies())
     "get_policy" -> structured(policies.getPolicy(args.requiredString("name")))
     "validate_policy" -> structured(policies.validatePolicy(args.requiredString("cedarSrc")))
@@ -485,6 +499,7 @@ private fun executeWrite(
     datasources: DatasourceManagementService,
     policies: PolicyManagementService,
     identities: IdentityManagementService,
+    profiles: ClassificationProfileManagementService,
     core: ControlPlaneCore,
 ): JsonObject {
     val datasourceName = safeDatasource(capability, args)
@@ -539,6 +554,61 @@ private fun executeWrite(
                     args.requiredString("datasource"), args.string("schema"), args.requiredString("table"),
                     args.requiredString("column"), connection,
                 ),
+            )
+            "create_classification_profile" -> structured(
+                profiles.createProfile(
+                    ClassificationProfileInput(args.requiredString("name"), args.string("description")),
+                    connection,
+                ),
+            )
+            "update_classification_profile" -> structured(
+                profiles.getProfile(args.requiredString("name"), connection).let { current ->
+                    profiles.updateProfile(
+                        current.name,
+                        ClassificationProfileInput(
+                            args.string("newName") ?: current.name,
+                            // Absent means "leave it alone", matching update_group / update_role: a
+                            // rename-only call must not erase the description as a side effect.
+                            if (args.has("description")) args.string("description") else current.description,
+                        ),
+                        connection,
+                    )
+                },
+            )
+            "delete_classification_profile" -> structured(
+                profiles.deleteProfile(args.requiredString("name"), connection),
+            )
+            "set_classification_profile_rule" -> {
+                val maskFnId = args.string("maskFnName")?.let { name ->
+                    core.policyStore.getMaskFnByName(name, connection)?.id
+                        ?: throw ManagementException(ApiError("common.not_found", mapOf("resource" to "mask function")))
+                }
+                structured(
+                    profiles.setRule(
+                        args.requiredString("profile"),
+                        ClassificationProfileRuleInput(
+                            args.requiredString("schema"), args.requiredString("table"),
+                            args.requiredString("column"), args.stringSet("tags").toList(), maskFnId,
+                        ),
+                        connection,
+                    ),
+                )
+            }
+            "clear_classification_profile_rule" -> structured(
+                profiles.clearRule(
+                    args.requiredString("profile"), args.requiredString("schema"),
+                    args.requiredString("table"), args.requiredString("column"), connection,
+                ),
+            )
+            "attach_classification_profile" -> structured(
+                profiles.attach(
+                    args.requiredString("datasource"),
+                    ProfileAttachmentInput(args.requiredString("profile"), args.int("precedence") ?: 0),
+                    connection,
+                ),
+            )
+            "detach_classification_profile" -> structured(
+                profiles.detach(args.requiredString("datasource"), args.requiredString("profile"), connection),
             )
             "create_policy" -> structured(
                 policies.createPolicy(args.requiredString("name"), args.requiredString("cedarSrc"), args.boolean("enabled") ?: true, context.principal, connection),
@@ -643,8 +713,29 @@ private fun schemaFor(tool: String): ToolSchema {
             put("items", buildJsonObject { put("type", "string") })
         }
         when (tool) {
-            "get_datasource_liveness", "browse_catalog", "list_column_tags" -> string("datasource")
+            "get_datasource_liveness", "browse_catalog", "list_column_tags",
+            "list_datasource_classification_profiles",
+            -> string("datasource")
             "get_table_detail" -> { string("datasource"); string("schema"); string("table") }
+            "list_classification_profile_rules" -> string("profile")
+            "create_classification_profile" -> { string("name"); string("description"); string("idempotencyKey") }
+            "update_classification_profile" -> {
+                string("name"); string("newName"); string("description"); string("idempotencyKey")
+            }
+            "delete_classification_profile" -> { string("name"); string("idempotencyKey") }
+            "set_classification_profile_rule" -> {
+                string("profile"); string("schema"); string("table"); string("column"); strings("tags")
+                string("maskFnName"); string("idempotencyKey")
+            }
+            "clear_classification_profile_rule" -> {
+                string("profile"); string("schema"); string("table"); string("column"); string("idempotencyKey")
+            }
+            "attach_classification_profile" -> {
+                string("datasource"); string("profile")
+                putJsonObject("precedence") { put("type", "integer") }
+                string("idempotencyKey")
+            }
+            "detach_classification_profile" -> { string("datasource"); string("profile"); string("idempotencyKey") }
             "get_policy", "enable_policy", "disable_policy", "delete_policy", "delete_role", "delete_group", "delete_mask_fn" -> string("name")
             "validate_policy" -> string("cedarSrc")
             "list_role_assignments" -> { string("principal"); string("roleName") }
@@ -695,8 +786,16 @@ private fun schemaFor(tool: String): ToolSchema {
         }
     }
     val required = when (tool) {
-        "get_datasource_liveness", "browse_catalog", "list_column_tags" -> listOf("datasource")
+        "get_datasource_liveness", "browse_catalog", "list_column_tags",
+        "list_datasource_classification_profiles",
+        -> listOf("datasource")
         "get_table_detail" -> listOf("datasource", "schema", "table")
+        "list_classification_profile_rules" -> listOf("profile")
+        "create_classification_profile", "update_classification_profile", "delete_classification_profile" ->
+            listOf("name")
+        "set_classification_profile_rule" -> listOf("profile", "schema", "table", "column", "tags")
+        "clear_classification_profile_rule" -> listOf("profile", "schema", "table", "column")
+        "attach_classification_profile", "detach_classification_profile" -> listOf("datasource", "profile")
         "get_policy", "enable_policy", "disable_policy", "delete_policy", "delete_role", "delete_group", "delete_mask_fn" -> listOf("name")
         "validate_policy" -> listOf("cedarSrc")
         "set_column_classification" -> listOf("datasource", "table", "column", "tags")
@@ -757,13 +856,18 @@ private fun validateArguments(capability: McpCapability, arguments: JsonObject) 
 
 private fun messageFor(error: ApiError, locale: Locale): String {
     val bundle = ResourceBundle.getBundle("mcp_errors", locale)
-    var message = bundle.getString(error.code)
+    // A code with no bundle entry falls back to the code itself. getString would throw
+    // MissingResourceException from inside the ManagementException handler, where nothing catches it,
+    // turning a structured refusal into a raw failure — the error path is exactly where that must not
+    // happen. McpToolCatalogTest pins the bundles as complete; this keeps a gap degraded, not fatal.
+    var message = runCatching { bundle.getString(error.code) }.getOrElse { error.code }
     error.params.forEach { (key, value) -> message = message.replace("{$key}", value) }
     return message
 }
 
 private fun mutationDetail(tool: String, args: JsonObject): String {
-    val targetKeys = listOf("datasource", "name", "principal", "groupName", "roleName", "table", "column")
+    val targetKeys =
+        listOf("datasource", "name", "principal", "groupName", "roleName", "profile", "schema", "table", "column")
     return buildString {
         append(tool)
         targetKeys.mapNotNull { key ->
@@ -795,8 +899,16 @@ private fun mutationDetail(tool: String, args: JsonObject): String {
     }
 }
 
+// Tools whose effect lands on one datasource audit against THAT datasource, not the control plane —
+// attach/detach change what every column there resolves to, so "who unmasked datasource X" has to be
+// answerable from the audit row alone.
+private val DATASOURCE_SCOPED_TOOLS = CLASSIFICATION_TOOLS + setOf(
+    "attach_classification_profile",
+    "detach_classification_profile",
+)
+
 private fun safeDatasource(capability: McpCapability, args: JsonObject): String =
-    if (capability.toolName in CLASSIFICATION_TOOLS) {
+    if (capability.toolName in DATASOURCE_SCOPED_TOOLS) {
         (args["datasource"] as? JsonPrimitive)?.takeIf { it.isString }?.contentOrNull
             ?.takeIf(String::isNotBlank) ?: "control-plane"
     } else {
@@ -835,6 +947,11 @@ private fun JsonObject.objectArray(name: String, allowed: Set<String>, max: Int)
     }
 }
 
+private fun JsonObject.int(name: String): Int? {
+    val value = get(name) ?: return null
+    if (value is JsonNull) return null
+    return (value as? JsonPrimitive)?.takeIf { !it.isString }?.intOrNull ?: throw McpInputException()
+}
 private fun JsonObject.stringSet(name: String): Set<String> {
     val array = get(name) as? JsonArray
         ?: throw ManagementException(ApiError("common.field_required", mapOf("fields" to name)))

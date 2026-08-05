@@ -53,6 +53,10 @@
     "not_connectable": "You do not have access to connect to this datasource.",
     "wire_cert_unusable": "The stored certificate chain is not usable as a trust anchor. Re-register the proxy, then try again."
   },
+  "classification_profile": {
+    "attached": "This classification profile is attached to {datasources}. Detach it from every datasource before deleting it — deleting it would leave those columns unclassified.",
+    "negative_precedence": "A profile precedence cannot be negative (got {precedence}); the datasource’s own classification always outranks a profile."
+  },
   "group": {
     "system_immutable": "This is a system-managed group and cannot be modified or deleted."
   },

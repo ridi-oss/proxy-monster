@@ -7,6 +7,11 @@ import com.ridi.oss.proxymonster.controlplane.AppGroupInput
 import com.ridi.oss.proxymonster.controlplane.AppUser
 import com.ridi.oss.proxymonster.controlplane.AppUserInput
 import com.ridi.oss.proxymonster.controlplane.CatalogColumn
+import com.ridi.oss.proxymonster.controlplane.ClassificationProfile
+import com.ridi.oss.proxymonster.controlplane.ClassificationProfileInput
+import com.ridi.oss.proxymonster.controlplane.ClassificationProfileRule
+import com.ridi.oss.proxymonster.controlplane.ClassificationProfileRuleInput
+import com.ridi.oss.proxymonster.controlplane.ClassificationProfileStore
 import com.ridi.oss.proxymonster.controlplane.ClassificationInput
 import com.ridi.oss.proxymonster.controlplane.PrincipalSessionStore
 import com.ridi.oss.proxymonster.controlplane.Datasource
@@ -16,6 +21,8 @@ import com.ridi.oss.proxymonster.controlplane.GroupRoleEntry
 import com.ridi.oss.proxymonster.controlplane.MaskFn
 import com.ridi.oss.proxymonster.controlplane.MaskFnInput
 import com.ridi.oss.proxymonster.controlplane.PolicyStore
+import com.ridi.oss.proxymonster.controlplane.ProfileAttachment
+import com.ridi.oss.proxymonster.controlplane.ProfileAttachmentInput
 import com.ridi.oss.proxymonster.controlplane.ProxyEventsHub
 import com.ridi.oss.proxymonster.controlplane.Role
 import com.ridi.oss.proxymonster.controlplane.RoleAssignment
@@ -781,6 +788,166 @@ class IdentityManagementService(
     private fun rejectSystem(group: AppGroup, c: Connection) {
         if (store.isSystemGroup(group.id, c)) throw ManagementException(ApiError("group.system_immutable"))
     }
+}
+
+/** One profile rule together with the attachment that brings it to a datasource. */
+@Serializable
+data class AttachedProfileRule(
+    val profile: String,
+    val precedence: Int,
+    val rule: ClassificationProfileRule,
+)
+
+/**
+ * Reusable classification profiles and their attachment to datasources.
+ *
+ * Rule writes enforce the same `system:` reserved-tag guard as a direct column classification: a
+ * profile is a third write path into the same tag field, and the namespace belongs to the shipped
+ * classification manifests either way.
+ */
+class ClassificationProfileManagementService(
+    private val store: ClassificationProfileStore,
+    private val datasourceStore: DatasourceStore,
+) {
+    fun listProfiles(): List<ClassificationProfile> = store.list()
+
+    fun getProfile(name: String): ClassificationProfile = store.getByName(name) ?: notFound("classification profile")
+
+    fun getProfile(name: String, c: Connection): ClassificationProfile = profile(name, c)
+
+    fun listRules(profileName: String): List<ClassificationProfileRule> = store.dataSource.inTx { c ->
+        store.listRules(profile(profileName, c).id, c)
+    }
+
+    /** Every rule of every profile attached to one datasource, in the order the mask tiebreak sees them. */
+    fun listAttachedRules(datasourceName: String): List<AttachedProfileRule> = store.dataSource.inTx { c ->
+        val ds = datasource(datasourceName, c)
+        store.listAttachments(ds.id, c).flatMap { attachment ->
+            store.listRules(profile(attachment.profile, c).id, c).map { rule ->
+                AttachedProfileRule(attachment.profile, attachment.precedence, rule)
+            }
+        }
+    }
+
+    fun createProfile(input: ClassificationProfileInput): ClassificationProfile =
+        store.dataSource.inTx { c -> createProfile(input, c) }
+
+    fun createProfile(input: ClassificationProfileInput, c: Connection): ClassificationProfile {
+        required("name", input.name)
+        return unique("classification profile", input.name) { store.create(input, c) }
+    }
+
+    fun updateProfile(currentName: String, input: ClassificationProfileInput): ClassificationProfile =
+        store.dataSource.inTx { c -> updateProfile(currentName, input, c) }
+
+    fun updateProfile(currentName: String, input: ClassificationProfileInput, c: Connection): ClassificationProfile {
+        required("name", input.name)
+        val existing = profile(currentName, c)
+        unique("classification profile", input.name) { store.update(existing.id, input, c) }
+        return store.getByName(input.name, c) ?: notFound("classification profile")
+    }
+
+    /**
+     * Deleting a profile detaches it from every datasource (the FK cascades), which unclassifies every
+     * column it covered on all of them. Refuse while it is attached so that removal is a deliberate
+     * detach-then-delete rather than one call that silently returns masked columns as cleartext.
+     */
+    fun deleteProfile(name: String): DeleteResult = store.dataSource.inTx { c -> deleteProfile(name, c) }
+
+    fun deleteProfile(name: String, c: Connection): DeleteResult {
+        // Lock the row, THEN re-read the attachments: the first read only tells us the profile exists,
+        // and a concurrent attach can commit between it and the delete. The FK is ON DELETE RESTRICT, so
+        // even a missed race fails the statement rather than cascading the attachment away, but that
+        // surfaces as a constraint violation instead of this route's stable code.
+        val existing = profile(name, c)
+        store.lockForDelete(existing.id, c)
+        val locked = store.getByName(name, c) ?: notFound("classification profile")
+        if (locked.attachedDatasources.isNotEmpty()) {
+            throw ManagementException(
+                ApiError(
+                    "classification_profile.attached",
+                    mapOf("datasources" to locked.attachedDatasources.joinToString(", ")),
+                ),
+            )
+        }
+        return DeleteResult(store.delete(locked.id, c))
+    }
+
+    fun setRule(profileName: String, input: ClassificationProfileRuleInput): ClassificationProfileRule =
+        store.dataSource.inTx { c -> setRule(profileName, input, c) }
+
+    fun setRule(
+        profileName: String,
+        input: ClassificationProfileRuleInput,
+        c: Connection,
+    ): ClassificationProfileRule {
+        required("schema", input.schema)
+        required("table", input.table)
+        required("column", input.column)
+        input.tags.firstOrNull { it.startsWith(DatasourceStore.RESERVED_TAG_PREFIX) }?.let {
+            throw ManagementException(ApiError("datasource.reserved_tag", mapOf("tag" to it)))
+        }
+        return store.upsertRule(profile(profileName, c).id, input, c)
+    }
+
+    fun clearRule(profileName: String, schema: String, table: String, column: String): DeleteResult =
+        store.dataSource.inTx { c -> clearRule(profileName, schema, table, column, c) }
+
+    fun clearRule(
+        profileName: String,
+        schema: String,
+        table: String,
+        column: String,
+        c: Connection,
+    ): DeleteResult {
+        required("schema", schema)
+        required("table", table)
+        required("column", column)
+        return DeleteResult(store.deleteRule(profile(profileName, c).id, schema, table, column, c))
+    }
+
+    fun listAttachments(datasourceName: String): List<ProfileAttachment> = store.dataSource.inTx { c ->
+        store.listAttachments(datasource(datasourceName, c).id, c)
+    }
+
+    fun attach(datasourceName: String, input: ProfileAttachmentInput): List<ProfileAttachment> =
+        store.dataSource.inTx { c -> attach(datasourceName, input, c) }
+
+    fun attach(datasourceName: String, input: ProfileAttachmentInput, c: Connection): List<ProfileAttachment> {
+        // Resolution seats the datasource's own classification at -1 so it outranks every profile. A
+        // negative attachment would sort ahead of it and let a profile's mask replace the datasource's,
+        // which is the inverse of the documented rule.
+        if (input.precedence < 0) {
+            throw ManagementException(
+                ApiError("classification_profile.negative_precedence", mapOf("precedence" to input.precedence.toString())),
+            )
+        }
+        val ds = datasource(datasourceName, c)
+        store.attach(ds.id, profile(input.profile, c).id, input.precedence, c)
+        return store.listAttachments(ds.id, c)
+    }
+
+    /**
+     * Detaching drops every tag the profile contributed to this datasource, so a column masked only
+     * through the profile reverts to cleartext on the next decision. The caller states the profile it
+     * believes it is removing and gets a 404 otherwise; the effect is reported back as the remaining
+     * attachments.
+     */
+    fun detach(datasourceName: String, profileName: String): List<ProfileAttachment> =
+        store.dataSource.inTx { c -> detach(datasourceName, profileName, c) }
+
+    fun detach(datasourceName: String, profileName: String, c: Connection): List<ProfileAttachment> {
+        val ds = datasource(datasourceName, c)
+        val target = profile(profileName, c)
+        if (!store.detach(ds.id, target.id, c)) notFound("profile attachment")
+        return store.listAttachments(ds.id, c)
+    }
+
+    private fun profile(name: String, c: Connection): ClassificationProfile =
+        store.getByName(name, c) ?: notFound("classification profile")
+
+    private fun datasource(name: String, c: Connection): Datasource =
+        datasourceStore.getByName(name, c) ?: notFound("datasource")
 }
 
 private fun required(field: String, value: String) {

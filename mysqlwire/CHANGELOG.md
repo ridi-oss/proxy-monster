@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.2](https://github.com/ridi-oss/proxy-monster/compare/mysqlwire/v0.1.1...mysqlwire/v0.1.2) (2026-08-05)
+
+
+### Bug Fixes
+
+* **mysqlwire:** draw the auth scramble from printable ASCII, as MySQL does ([b2b0baf](https://github.com/ridi-oss/proxy-monster/commit/b2b0baf075a2ac8e4568b5183e252900c3d35e4f))
+
 ## [0.1.1](https://github.com/ridi-oss/proxy-monster/compare/mysqlwire/v0.1.0...mysqlwire/v0.1.1) (2026-08-03)
 
 

@@ -205,7 +205,7 @@ startupComplete:
 		statements:   make(map[string]preparedStatement),
 		portals:      make(map[string]boundPortal),
 	}
-	if err := s.quietRefetcher(sess).RunAll(identity.OnOpen); err != nil {
+	if err := s.quietRefetcher(sess).RunAllSettled(identity.OnOpen); err != nil {
 		slog.Warn("postgres on-open catalog fetch failed", "error", err)
 		_ = sendError(client, "FATAL", "08004", "proxy-monster: connection catalog unavailable", false, 0)
 		return

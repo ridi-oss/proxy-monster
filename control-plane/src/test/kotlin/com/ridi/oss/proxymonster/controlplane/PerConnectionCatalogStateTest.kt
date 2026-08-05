@@ -695,4 +695,268 @@ class PerConnectionCatalogStateTest {
         assertNotNull(registry.authoritativeFor(ds.name, "app"))
         Unit
     }
+
+    // ---- The per-schema re-measure clock ---------------------------------------------------
+
+    @Test
+    fun `a schema is due only after its own clock expires`() = runBlocking {
+        var now = 0L
+        val registry = ConnectionCatalogRegistry(clockNanos = { now }, remeasureNanos = 100)
+        registry.applyConfigCatalog(config("app", "h1", clockMicros = 1, backend = "srv"), ds)
+
+        now = 100
+        assertTrue(registry.dueSchemas(ds.name).isEmpty(), "not yet past the interval")
+        now = 101
+        assertEquals(setOf("app"), registry.dueSchemas(ds.name))
+    }
+
+    @Test
+    fun `a clean arrival resets only its own schema's clock`() = runBlocking {
+        // A datasource-wide clock would let one busy schema keep postponing every sibling's re-measure, so
+        // drift on a quiet schema would go unnoticed for as long as the busy one kept moving.
+        var now = 0L
+        val registry = ConnectionCatalogRegistry(clockNanos = { now }, remeasureNanos = 100)
+        registry.applyConfigCatalog(
+            config("app", "h1", clockMicros = 1, backend = "srv", extraSchemas = mapOf("quiet" to "q1")),
+            ds,
+        )
+
+        now = 60
+        registry.applyConfigCatalog(config("app", "h2", columnName = "x", clockMicros = 2, backend = "srv"), ds)
+
+        now = 101
+        assertEquals(
+            setOf("quiet"),
+            registry.dueSchemas(ds.name),
+            "the busy schema's reading must not postpone the quiet sibling's re-measure",
+        )
+        now = 161
+        assertEquals(setOf("app", "quiet"), registry.dueSchemas(ds.name), "and the busy one comes due on its own clock")
+    }
+
+    @Test
+    fun `an unchanged reply confirms the schema and resets its clock`() = runBlocking {
+        // The whole economy: a quiet schema settles into a hash-confirm cadence that costs one hash query
+        // and moves nothing. If a confirmation did not reset the clock, every nudge would re-fetch content
+        // the manager was just told is unchanged.
+        var now = 0L
+        val registry = ConnectionCatalogRegistry(clockNanos = { now }, remeasureNanos = 100, stalenessNanos = 1000)
+        val opened = registry.open(Binding(ds.name, "p", "USER"), listOf("app"))
+        registry.applyPush(push(opened, "app", "h1", clockMicros = 1, backend = "srv"), ds)
+
+        now = 101
+        assertEquals(setOf("app"), registry.dueSchemas(ds.name))
+        val connection = registry.find(opened.connectionId)!!
+        registry.markBeforeDecide(connection, listOf("app"))
+        registry.applyPush(push(opened, "app", "h1", unchanged = true, clockMicros = 2, backend = "srv"), ds)
+
+        assertTrue(registry.dueSchemas(ds.name).isEmpty(), "a confirmed hash must reset the schema's clock")
+        now = 202
+        assertEquals(setOf("app"), registry.dueSchemas(ds.name), "and it comes due again on the new clock")
+    }
+
+    @Test
+    fun `a reading the manager did not accept leaves the schema due`() = runBlocking {
+        // Dirty, untrusted, and ordered-behind readings all confirm nothing about what the backend holds
+        // now, so the next nudge must ask again. The cost of the fail-closed direction is one extra
+        // measurement; the cost of the other is not noticing drift.
+        var now = 0L
+        val registry = ConnectionCatalogRegistry(clockNanos = { now }, remeasureNanos = 100)
+        registry.applyConfigCatalog(config("app", "h1", clockMicros = 500, backend = "srv"), ds)
+
+        now = 101
+        assertEquals(setOf("app"), registry.dueSchemas(ds.name))
+        val opened = registry.open(Binding(ds.name, "p", "USER"), listOf("app"))
+
+        // Dirty: measured inside a transaction.
+        registry.applyPush(push(opened, "app", "h2", inTransaction = true, clockMicros = 600, backend = "srv"), ds)
+        assertEquals(setOf("app"), registry.dueSchemas(ds.name), "a dirty reading confirms nothing")
+
+        // Untrusted: the producer proved its own reading stale.
+        val second = registry.open(Binding(ds.name, "q", "USER"), listOf("app"))
+        registry.applyPush(push(second, "app", "h3", trusted = false, clockMicros = 700, backend = "srv"), ds)
+        assertEquals(setOf("app"), registry.dueSchemas(ds.name), "an untrusted reading confirms nothing")
+
+        // Ordered behind what is held: the reading describes an older state than the manager already has.
+        registry.applyConfigCatalog(config("app", "h4", columnName = "x", clockMicros = 400, backend = "srv"), ds)
+        assertEquals(setOf("app"), registry.dueSchemas(ds.name), "a stale reading confirms nothing about now")
+    }
+
+    @Test
+    fun `only schemas the manager holds are ever nudged`() = runBlocking {
+        // A schema the manager has never seen has nothing to confirm — the whole-server scan finds it, and
+        // that scan is also the only reading that may decide a schema exists at all.
+        var now = 0L
+        val registry = ConnectionCatalogRegistry(clockNanos = { now }, remeasureNanos = 100)
+        now = 1000
+        assertTrue(registry.dueSchemas(ds.name).isEmpty(), "nothing held means nothing due")
+
+        registry.applyConfigCatalog(config("app", "h1", clockMicros = 1, backend = "srv"), ds)
+        now = 2000
+        assertEquals(setOf("app"), registry.dueSchemas(ds.name))
+        registry.invalidateDatasource(ds.name)
+        assertTrue(registry.dueSchemas(ds.name).isEmpty(), "an invalidated datasource has nothing to re-measure")
+    }
+
+    // ---- The scoped push form --------------------------------------------------------------
+
+    @Test
+    fun `a hashes-only reading may never delete a schema it did not name`() = runBlocking {
+        // The scoped form answers a nudge for particular schemas, so it speaks only for those. The manager
+        // refuses the completeness claim itself rather than trusting the producer: the delete is what the
+        // flag licenses, so the component that would perform it has to be the one that is sure.
+        val registry = ConnectionCatalogRegistry()
+        registry.applyConfigCatalog(
+            config("app", "h1", clockMicros = 100, backend = "srv", complete = true, extraSchemas = mapOf("quiet" to "q1")),
+            ds,
+        )
+        assertNotNull(registry.authoritativeFor(ds.name, "quiet"))
+
+        registry.applyConfigCatalog(
+            catalogRequest {
+                datasourceName = ds.name
+                schemaHashes.add(schemaHash { schema = "app"; hash = ByteString.copyFromUtf8("h1"); trusted = true })
+                dbClockMicros = 200
+                backendId = "srv"
+                hashesOnly = true
+                // A proxy that sets both through a bug or a compromise costs one ignored claim, not every
+                // schema the nudge did not mention.
+                namespaceComplete = true
+            },
+            ds,
+        )
+
+        assertNotNull(
+            registry.authoritativeFor(ds.name, "quiet"),
+            "a scoped reading must never imply a schema it did not name is gone",
+        )
+        Unit
+    }
+
+    @Test
+    fun `a hashes-only reading of an unknown hash asks for that schema's content`() = runBlocking {
+        val registry = ConnectionCatalogRegistry()
+        registry.applyConfigCatalog(config("app", "h1", clockMicros = 100, backend = "srv"), ds)
+
+        val result = registry.applyConfigCatalog(
+            catalogRequest {
+                datasourceName = ds.name
+                schemaHashes.add(schemaHash { schema = "app"; hash = ByteString.copyFromUtf8("h2"); trusted = true })
+                dbClockMicros = 200
+                backendId = "srv"
+                hashesOnly = true
+            },
+            ds,
+        )
+
+        assertEquals(listOf("app"), result.fetchSchemas, "the manager must ask for the content behind the new hash")
+        assertEquals(
+            "h1",
+            registry.authoritativeFor(ds.name, "app")!!.hash.bytes.toStringUtf8(),
+            "and must not point at a hash nothing resolves",
+        )
+    }
+
+    // ---- The dirty flag and the transaction-end true-up ------------------------------------
+
+    @Test
+    fun `a dirty push is remembered so the transaction's end can re-measure it`() = runBlocking {
+        // Nothing else can true a dirty reading up: it never moves the shared pointer, so freshnessGate has
+        // no moved hash to notice. The connection is the only party that knows it owes a re-measure.
+        val registry = ConnectionCatalogRegistry()
+        val opened = registry.open(Binding(ds.name, "in-tx", "USER"), listOf("app"))
+        registry.applyPush(push(opened, "app", "h-dirty", inTransaction = true), ds)
+
+        val connection = registry.find(opened.connectionId)!!
+        assertEquals(setOf("app"), registry.dirtyHeldSchemas(connection))
+
+        // The re-measure runs outside the transaction, and its clean reading clears the debt.
+        registry.markAfterStatement(connection, listOf("app"))
+        registry.applyPush(push(opened, "app", "h-clean", generation = 2), ds)
+        assertTrue(registry.dirtyHeldSchemas(connection).isEmpty(), "a clean re-measure must clear the dirty mark")
+        assertNotNull(registry.authoritativeFor(ds.name, "app"), "and the shared state trues up")
+        Unit
+    }
+
+    @Test
+    fun `a clean push is never remembered as owing a re-measure`() = runBlocking {
+        val registry = ConnectionCatalogRegistry()
+        val opened = registry.open(Binding(ds.name, "settled", "USER"), listOf("app"))
+        registry.applyPush(push(opened, "app", "h1"), ds)
+        assertTrue(registry.dirtyHeldSchemas(registry.find(opened.connectionId)!!).isEmpty())
+    }
+
+    // ---- Restart rebuild -------------------------------------------------------------------
+
+    @Test
+    fun `a restart rebuilds the pointer and its version from the stored projection`() = runBlocking {
+        // Without this a restart empties every pointer and each connection re-reads schemas the control
+        // plane already has the columns and the version for.
+        val stored = listOf(
+            StoredSchemaReading(
+                ds.id, "app",
+                ReadingVersion(ContentHash(ByteString.copyFromUtf8("h-stored")), 900, "srv"),
+                listOf(FragmentColumn("app", "users", "id", "bigint", 1, false)),
+            ),
+        )
+        val registry = ConnectionCatalogRegistry(projection = StubProjection(stored))
+
+        assertEquals(1, registry.rebuildFromProjection { ds })
+        val auth = registry.authoritativeFor(ds.name, "app")!!
+        assertEquals("h-stored", auth.hash.bytes.toStringUtf8())
+        assertEquals(900, auth.dbClockMicros, "the stored DB clock must survive, or the next reading orders against nothing")
+        assertEquals("srv", auth.backendId)
+
+        val adopter = registry.open(Binding(ds.name, "after-restart", "USER"), listOf("app"), adoptHeldContent = true)
+        assertTrue(adopter.onOpen.isEmpty(), "a trust-mode connection must start from the rebuilt content")
+        assertEquals(listOf("id"), registry.structuralRows(registry.find(adopter.connectionId)!!).map { it.column })
+    }
+
+    @Test
+    fun `rebuilt schemas are immediately due, since nothing has read the backend this process`() = runBlocking {
+        val stored = listOf(
+            StoredSchemaReading(
+                ds.id, "app",
+                ReadingVersion(ContentHash(ByteString.copyFromUtf8("h-stored")), 900, "srv"),
+                listOf(FragmentColumn("app", "users", "id", "bigint", 1, false)),
+            ),
+        )
+        val registry = ConnectionCatalogRegistry(
+            clockNanos = { 0 },
+            projection = StubProjection(stored),
+            remeasureNanos = 1_000_000,
+        )
+        registry.rebuildFromProjection { ds }
+
+        assertEquals(
+            setOf("app"),
+            registry.dueSchemas(ds.name),
+            "a rebuilt pointer carries no evidence that anything read the backend since this process started",
+        )
+    }
+
+    @Test
+    fun `a reading whose datasource is gone rebuilds nothing`() = runBlocking {
+        val stored = listOf(
+            StoredSchemaReading(
+                99, "app",
+                ReadingVersion(ContentHash(ByteString.copyFromUtf8("h")), 1, "srv"),
+                listOf(FragmentColumn("app", "users", "id", "bigint", 1, false)),
+            ),
+        )
+        val registry = ConnectionCatalogRegistry(projection = StubProjection(stored))
+        assertEquals(0, registry.rebuildFromProjection { null })
+        assertEquals(0, registry.poolSize())
+    }
+
+    /** A projection that only answers the restart rebuild; the persisted write path has its own DB test. */
+    private class StubProjection(private val readings: List<StoredSchemaReading>) : CatalogProjection {
+        override fun storedSchemaReadings(): List<StoredSchemaReading> = readings
+        override fun projectSchemas(
+            datasourceId: Long,
+            observations: List<ProjectedObservation>,
+            namespaceComplete: Boolean,
+            namespace: ProjectedNamespace?,
+        ): Int = 0
+    }
 }

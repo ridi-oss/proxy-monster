@@ -102,4 +102,23 @@ class ProxyEventsHubTest {
 
         assertEquals(0, hub.requestRefresh("ds"), "a dead stream notified nobody")
     }
+
+    @Test
+    fun `a scoped nudge carries exactly the due schemas, and an admin refresh carries none`() {
+        // The two forms mean different things on the wire: an empty list asks for the whole server and is
+        // the only reading that may establish which schemas exist, while a named set speaks only for the
+        // schemas it lists. Sending an admin refresh where a nudge was meant costs a full catalog scan
+        // every tick.
+        val hub = ProxyEventsHub()
+        val channel = Channel<ControlEvent>(Channel.BUFFERED)
+        hub.register("ds", channel)
+
+        assertEquals(1, hub.requestRefresh("ds", listOf("app", "reporting")))
+        val nudge = channel.tryReceive().getOrNull()!!
+        assertEquals(listOf("app", "reporting"), nudge.refreshCatalog.schemasList)
+
+        assertEquals(1, hub.requestRefresh("ds"))
+        val adminRefresh = channel.tryReceive().getOrNull()!!
+        assertTrue(adminRefresh.refreshCatalog.schemasList.isEmpty(), "an admin refresh must ask for the whole server")
+    }
 }

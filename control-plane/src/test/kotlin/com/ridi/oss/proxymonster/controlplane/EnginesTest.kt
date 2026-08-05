@@ -119,4 +119,39 @@ class EnginesTest {
         assertFalse(Engine.POSTGRES.isSystemSchema("public"))
         assertFalse(Engine.POSTGRES.isSystemSchema("app"))
     }
+
+    // ---- Catalog adoption -----------------------------------------------------------------
+
+    private fun ds(engine: Engine, adoption: CatalogAdoption? = null) =
+        Datasource(1, "ds", engine, "", 0, "app", catalogAdoption = adoption)
+
+    @Test fun `the unset mode derives from the engine, leaving both engines behaving as before`() {
+        assertEquals(CatalogAdoption.TRUST, ds(Engine.MYSQL).effectiveCatalogAdoption)
+        assertEquals(CatalogAdoption.VERIFY, ds(Engine.POSTGRES).effectiveCatalogAdoption)
+        assertTrue(ds(Engine.MYSQL).adoptsHeldCatalog, "MySQL adopts today and must keep doing so")
+        assertFalse(ds(Engine.POSTGRES).adoptsHeldCatalog, "PostgreSQL does not adopt today")
+    }
+
+    @Test fun `an explicit mode always wins, including trust on PostgreSQL`() {
+        // The engine predicate supplies the DEFAULT and nothing else. An operator who knows their topology
+        // may assert trust on PostgreSQL, and the predicate must not veto it; the same operator may take
+        // MySQL off trust without changing engines.
+        assertEquals(CatalogAdoption.TRUST, ds(Engine.POSTGRES, CatalogAdoption.TRUST).effectiveCatalogAdoption)
+        assertTrue(ds(Engine.POSTGRES, CatalogAdoption.TRUST).adoptsHeldCatalog)
+        assertEquals(CatalogAdoption.VERIFY, ds(Engine.MYSQL, CatalogAdoption.VERIFY).effectiveCatalogAdoption)
+        assertFalse(ds(Engine.MYSQL, CatalogAdoption.VERIFY).adoptsHeldCatalog)
+    }
+
+    @Test fun `the adoption mode parses fail-closed and round-trips as its wire string`() {
+        assertEquals(CatalogAdoption.VERIFY, catalogAdoptionFromWire("verify"))
+        assertEquals(CatalogAdoption.TRUST, catalogAdoptionFromWire("TRUST"))
+        // Unset is a real state, not a parse failure — it is what selects the engine default.
+        assertNull(catalogAdoptionFromWire(null))
+        assertNull(catalogAdoptionFromWire(""))
+        // A typo must be visible rather than silently reverting to the default the operator was overriding.
+        assertFailsWith<IllegalArgumentException> { catalogAdoptionFromWire("trusted") }
+        assertNull(catalogAdoptionFromWireOrNull("always"))
+        assertEquals("\"verify\"", Json.encodeToString(CatalogAdoptionWireSerializer, CatalogAdoption.VERIFY))
+        assertEquals("\"trust\"", Json.encodeToString(CatalogAdoptionWireSerializer, CatalogAdoption.TRUST))
+    }
 }

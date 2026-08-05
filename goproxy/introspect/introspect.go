@@ -222,6 +222,163 @@ func Run(opener TargetOpener, target spi.BackendTarget) (*pb.CatalogRequest, err
 	}, nil
 }
 
+// RunScoped answers a due-schema nudge: it measures exactly the named schemas' hashes and pushes them
+// with no columns, then fetches columns for only the subset the manager reports it holds no content for.
+//
+// The push is never namespace_complete. It speaks for the schemas it names and nothing else — presenting
+// a scoped reading as a complete enumeration would instruct the manager to delete every schema the nudge
+// did not mention, which is every schema that was not due.
+//
+// A schema whose hash cannot be measured coherently is sent present-but-untrusted rather than omitted:
+// omission from a reading is how a schema says nothing at all, and a measurement failure is a statement
+// about the reading's quality, not about the schema's existence.
+func RunScoped(
+	opener TargetOpener,
+	target spi.BackendTarget,
+	schemas []string,
+	push func(*pb.CatalogRequest) ([]string, error),
+) error {
+	db, err := opener.OpenTarget(target)
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+
+	connectCtx, connectCancel := context.WithTimeout(context.Background(), connectTimeout+queryTimeout)
+	defer connectCancel()
+	started := time.Now()
+	conn, err := db.Conn(connectCtx)
+	if err != nil {
+		return fmt.Errorf("introspect: connecting to target: %w", err)
+	}
+	defer conn.Close()
+
+	// The fold mode is load-bearing for the schema names on the wire: the manager keys everything by the
+	// canonical spelling, so a hash filed under a raw one would name a schema it never holds.
+	_, mysqlLowerCaseTableNames, err := opener.ProbeNamespace(conn, target.Db)
+	if err != nil {
+		return err
+	}
+	lctnMode := 0
+	if mysqlLowerCaseTableNames != nil {
+		lctnMode = int(*mysqlLowerCaseTableNames)
+	}
+
+	dbImpl := opener.NewDb()
+	var setupRows [][]*string
+	if setupSQL := dbImpl.HashSetupProbeSQL(); setupSQL != "" {
+		if rows, setupErr := queryStrings(conn, setupSQL, dbImpl.HashSetupColumns()); setupErr == nil {
+			setupRows = rows
+		}
+	}
+
+	hashes := make([]*pb.SchemaHash, 0, len(schemas))
+	var clock int64
+	backendID := ""
+	for _, schema := range schemas {
+		observation, ok := measureSchemaHash(conn, dbImpl, schema, setupRows)
+		hashes = append(hashes, &pb.SchemaHash{
+			Schema:  schema,
+			Hash:    append([]byte(nil), observation.Hash...),
+			Trusted: ok && observation.Trusted,
+		})
+		// The earliest clock across the batch, matching the whole-server path: claiming less recency can
+		// only cost an extra re-measure, while claiming more could reject a genuinely newer reading.
+		if observation.DbClockMicros > 0 && (clock == 0 || observation.DbClockMicros < clock) {
+			clock = observation.DbClockMicros
+		}
+		if backendID == "" && observation.BackendID != "" {
+			backendID = observation.BackendID
+		}
+	}
+
+	fetch, err := push(&pb.CatalogRequest{
+		SchemaHashes:  hashes,
+		DbClockMicros: clock,
+		BackendId:     backendID,
+		HashesOnly:    true,
+	})
+	if err != nil {
+		return err
+	}
+	slog.Info("re-measured due schemas", "schemas", len(schemas), "need_content", len(fetch),
+		"total_ms", time.Since(started).Milliseconds())
+	if len(fetch) == 0 {
+		return nil
+	}
+	return pushScopedContent(conn, dbImpl, lctnMode, fetch, setupRows, push)
+}
+
+// pushScopedContent reads the columns of the schemas the manager reported no content for, bracketing
+// each with the same measure-fetch-measure discipline a connection refetch applies: a schema whose two
+// hashes disagree had its columns read while the backend moved, so it is sent untrusted and installs
+// nothing rather than seeding the pool with content already known stale.
+func pushScopedContent(
+	conn *sql.Conn,
+	dbImpl engine.Db,
+	lctnMode int,
+	schemas []string,
+	setupRows [][]*string,
+	push func(*pb.CatalogRequest) ([]string, error),
+) error {
+	hashes := make([]*pb.SchemaHash, 0, len(schemas))
+	contentSchemas := make([]string, 0, len(schemas))
+	var columns []*pb.Column
+	var clock int64
+	backendID := ""
+	for _, schema := range schemas {
+		first, firstOK := measureSchemaHash(conn, dbImpl, schema, setupRows)
+		rows, err := queryStrings(conn, dbImpl.SchemaColumnsSQL(schema), 6)
+		if err != nil {
+			return fmt.Errorf("introspect: columns of schema %q: %w", schema, err)
+		}
+		schemaColumns, err := engine.FragmentColumnsFromRows(dbImpl, lctnMode, schema, rows)
+		if err != nil {
+			return fmt.Errorf("introspect: mapping schema %q: %w", schema, err)
+		}
+		second, secondOK := measureSchemaHash(conn, dbImpl, schema, setupRows)
+		coherent := firstOK && secondOK && first.Trusted && second.Trusted &&
+			bytes.Equal(first.Hash, second.Hash) && first.BackendID == second.BackendID
+		hashes = append(hashes, &pb.SchemaHash{
+			Schema:  schema,
+			Hash:    append([]byte(nil), first.Hash...),
+			Trusted: coherent,
+		})
+		contentSchemas = append(contentSchemas, schema)
+		columns = append(columns, schemaColumns...)
+		if first.DbClockMicros > 0 && (clock == 0 || first.DbClockMicros < clock) {
+			clock = first.DbClockMicros
+		}
+		if backendID == "" && first.BackendID != "" {
+			backendID = first.BackendID
+		}
+	}
+	_, err := push(&pb.CatalogRequest{
+		SchemaHashes:   hashes,
+		Columns:        columns,
+		ContentSchemas: contentSchemas,
+		DbClockMicros:  clock,
+		BackendId:      backendID,
+	})
+	return err
+}
+
+func measureSchemaHash(conn *sql.Conn, dbImpl engine.Db, schema string, setupRows [][]*string) (engine.HashObservation, bool) {
+	statement, width, err := dbImpl.SchemaHashSQL(schema, setupRows)
+	if err != nil {
+		return engine.HashObservation{}, false
+	}
+	rows, err := queryStrings(conn, statement, width)
+	if err != nil {
+		return engine.HashObservation{}, false
+	}
+	observation, err := dbImpl.SchemaHashFromRows(rows)
+	if err != nil {
+		return observation, false
+	}
+	return observation, true
+}
+
 // serverMeasurement is what the two grouped scans establish about the backend, including whether the
 // result may claim to enumerate every schema.
 type serverMeasurement struct {

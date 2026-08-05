@@ -54,7 +54,7 @@ func NewRunSession(target spi.BackendTarget, db engine.Db, client spi.SessionCli
 	return s, nil
 }
 
-func (s *RunSession) OnOpen(cmds []*pb.Refetch) error { return s.ref.RunAll(cmds) }
+func (s *RunSession) OnOpen(cmds []*pb.Refetch) error { return s.ref.RunAllSettled(cmds) }
 
 func (s *RunSession) ServeStatement(sql string, maxRows int) (result engine.StatementResult, err error) {
 	if s.poisoned {

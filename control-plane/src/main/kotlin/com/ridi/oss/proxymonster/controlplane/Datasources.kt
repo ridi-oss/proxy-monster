@@ -66,6 +66,10 @@ data class Datasource(
     // proxy may serve a publicly-trusted certificate and publish nothing. A client reads this to know a
     // plaintext greeting must be refused; false means plaintext.
     val advertiseWireTls: Boolean = false,
+    // How a new connection obtains its catalog: "verify" proves the held content against its own backend
+    // with a hash before adopting it, "trust" adopts it outright. Null derives the mode from the engine.
+    // Read through [effectiveCatalogAdoption], never directly — that is where the default lives.
+    @Serializable(with = CatalogAdoptionWireSerializer::class) val catalogAdoption: CatalogAdoption? = null,
 )
 
 // Admin create/update payload. This is OPTIONAL pre-provisioning only — a way to seed a row
@@ -79,6 +83,10 @@ data class DatasourceInput(
     val host: String = "",
     val port: Int = 0,
     val dbName: String = "",
+    // "verify" | "trust", or absent for the engine-derived default. Absent is the unset state, not a
+    // preserve-what-is-stored signal — the edit form seeds it from the current value the same way it
+    // seeds engine, so clearing the field is how an operator returns to the engine default.
+    val catalogAdoption: String? = null,
 )
 
 @Serializable
@@ -159,6 +167,48 @@ class DatasourceStore(internal val dataSource: DataSource) : CatalogProjection {
         namespace: ProjectedNamespace?,
     ): Int = projectCatalogSchemas(datasourceId, observations, namespaceComplete, namespace)
 
+    /**
+     * The stored readings the manager rebuilds its pool from after a restart.
+     *
+     * Joined rather than read in two passes: a schema is only rebuildable when its version and its rows
+     * are both present, and the join is what makes that true of the result rather than of two snapshots
+     * taken a moment apart. `data_type` is the raw stored type, matching what a live fragment carries.
+     */
+    override fun storedSchemaReadings(): List<StoredSchemaReading> = dataSource.connection.use { c ->
+        c.prepareStatement(
+            """SELECT s.datasource_id, s.schema_name, s.hash, s.db_clock_micros, s.backend_id,
+                      c.table_name, c.column_name, c.data_type, c.ordinal, c.nullable
+               FROM catalog_schema s
+               JOIN catalog_column c
+                 ON c.datasource_id = s.datasource_id AND c.schema_name = s.schema_name
+               ORDER BY s.datasource_id, s.schema_name, c.table_name, c.ordinal""",
+        ).use { ps ->
+            ps.executeQuery().use { rs ->
+                val bySchema = LinkedHashMap<Triple<Long, String, ReadingVersion>, MutableList<FragmentColumn>>()
+                while (rs.next()) {
+                    val key = Triple(
+                        rs.getLong("datasource_id"),
+                        rs.getString("schema_name"),
+                        ReadingVersion(
+                            ContentHash(com.google.protobuf.ByteString.copyFrom(rs.getBytes("hash"))),
+                            rs.getLong("db_clock_micros"),
+                            rs.getString("backend_id"),
+                        ),
+                    )
+                    bySchema.getOrPut(key) { ArrayList() } += FragmentColumn(
+                        schema = key.second,
+                        table = rs.getString("table_name"),
+                        column = rs.getString("column_name"),
+                        dataType = rs.getString("data_type"),
+                        ordinal = rs.getInt("ordinal"),
+                        nullable = rs.getBoolean("nullable"),
+                    )
+                }
+                bySchema.map { (key, columns) -> StoredSchemaReading(key.first, key.second, key.third, columns) }
+            }
+        }
+    }
+
     companion object {
         /** The `system:` tag namespace is owned by the shipped classification manifests — user column tags may not use it. */
         const val RESERVED_TAG_PREFIX = "system:"
@@ -166,7 +216,7 @@ class DatasourceStore(internal val dataSource: DataSource) : CatalogProjection {
 
     fun list(): List<Datasource> = dataSource.connection.use { c ->
         c.prepareStatement(
-            "SELECT id, name, engine, host, port, db_name, tags, default_schemas, mysql_lower_case_table_names, catalog_synced_at, last_seen_at, engine_version, advertise_addr, advertise_cert_chain, advertise_wire_tls FROM datasource ORDER BY id",
+            "SELECT id, name, engine, host, port, db_name, tags, default_schemas, mysql_lower_case_table_names, catalog_synced_at, last_seen_at, engine_version, advertise_addr, advertise_cert_chain, advertise_wire_tls, catalog_adoption FROM datasource ORDER BY id",
         ).use { ps ->
             ps.executeQuery().use { rs ->
                 val out = ArrayList<Datasource>()
@@ -179,7 +229,7 @@ class DatasourceStore(internal val dataSource: DataSource) : CatalogProjection {
     fun get(id: Long): Datasource? = dataSource.connection.use { c -> get(id, c) }
 
     fun get(id: Long, c: java.sql.Connection): Datasource? = c.prepareStatement(
-        "SELECT id, name, engine, host, port, db_name, tags, default_schemas, mysql_lower_case_table_names, catalog_synced_at, last_seen_at, engine_version, advertise_addr, advertise_cert_chain, advertise_wire_tls FROM datasource WHERE id = ?",
+        "SELECT id, name, engine, host, port, db_name, tags, default_schemas, mysql_lower_case_table_names, catalog_synced_at, last_seen_at, engine_version, advertise_addr, advertise_cert_chain, advertise_wire_tls, catalog_adoption FROM datasource WHERE id = ?",
     ).use { ps ->
         ps.setLong(1, id)
         ps.executeQuery().use { rs -> if (rs.next()) rs.toDatasource() else null }
@@ -193,7 +243,7 @@ class DatasourceStore(internal val dataSource: DataSource) : CatalogProjection {
     fun getByName(name: String): Datasource? = dataSource.connection.use { c -> getByName(name, c) }
 
     fun getByName(name: String, c: java.sql.Connection): Datasource? = c.prepareStatement(
-        "SELECT id, name, engine, host, port, db_name, tags, default_schemas, mysql_lower_case_table_names, catalog_synced_at, last_seen_at, engine_version, advertise_addr, advertise_cert_chain, advertise_wire_tls FROM datasource WHERE name = ?",
+        "SELECT id, name, engine, host, port, db_name, tags, default_schemas, mysql_lower_case_table_names, catalog_synced_at, last_seen_at, engine_version, advertise_addr, advertise_cert_chain, advertise_wire_tls, catalog_adoption FROM datasource WHERE name = ?",
     ).use { ps ->
         ps.setString(1, name)
         ps.executeQuery().use { rs -> if (rs.next()) rs.toDatasource() else null }
@@ -437,6 +487,12 @@ class DatasourceStore(internal val dataSource: DataSource) : CatalogProjection {
                             replaceSchemaColumns(c, id, observation.schema, columns)
                             written += columns.size
                         }
+                        // A reading that names NEW content but carries none leaves the stored rows
+                        // describing the previous hash, so recording its version would claim those rows
+                        // came from a reading that never delivered them — and the restart rebuild would
+                        // then pool the old columns under the new hash. The reading still counts: the
+                        // manager reports the schema in fetch_schemas and the content arrives next.
+                        if (observation.columns == null) continue
                     }
                     if (version != null) {
                         writeSchemaVersion(
@@ -563,14 +619,15 @@ class DatasourceStore(internal val dataSource: DataSource) : CatalogProjection {
     fun create(input: DatasourceInput): Datasource {
         val id = dataSource.connection.use { c ->
             c.prepareStatement(
-                """INSERT INTO datasource (name, engine, host, port, db_name)
-                   VALUES (?, ?, ?, ?, ?) RETURNING id""",
+                """INSERT INTO datasource (name, engine, host, port, db_name, catalog_adoption)
+                   VALUES (?, ?, ?, ?, ?, ?) RETURNING id""",
             ).use { ps ->
                 ps.setString(1, input.name)
                 ps.setString(2, input.engine)
                 ps.setString(3, input.host)
                 ps.setInt(4, input.port)
                 ps.setString(5, input.dbName)
+                ps.setString(6, catalogAdoptionFromWire(input.catalogAdoption)?.wireName)
                 ps.executeQuery().use { rs -> rs.next(); rs.getLong(1) }
             }
         }
@@ -618,14 +675,15 @@ class DatasourceStore(internal val dataSource: DataSource) : CatalogProjection {
                     throw DatasourceEngineConflictException(input.name, prior.engine, input.engine)
                 }
                 c.prepareStatement(
-                    "UPDATE datasource SET name=?, engine=?, host=?, port=?, db_name=? WHERE id=?",
+                    "UPDATE datasource SET name=?, engine=?, host=?, port=?, db_name=?, catalog_adoption=? WHERE id=?",
                 ).use { ps ->
                     ps.setString(1, input.name)
                     ps.setString(2, input.engine)
                     ps.setString(3, input.host)
                     ps.setInt(4, input.port)
                     ps.setString(5, input.dbName)
-                    ps.setLong(6, id)
+                    ps.setString(6, catalogAdoptionFromWire(input.catalogAdoption)?.wireName)
+                    ps.setLong(7, id)
                     ps.executeUpdate()
                 }
                 if (prior.dbName != input.dbName) invalidateCatalog(c, id)
@@ -835,6 +893,7 @@ class DatasourceStore(internal val dataSource: DataSource) : CatalogProjection {
         advertiseAddr = getString("advertise_addr"),
         advertiseCertChain = getString("advertise_cert_chain"),
         advertiseWireTls = getBoolean("advertise_wire_tls"),
+        catalogAdoption = catalogAdoptionFromWire(getString("catalog_adoption")),
     )
 }
 
@@ -968,7 +1027,20 @@ fun Route.datasourceRoutes(
         // the same set).
         val engine = engineFromWireOrNull(input.engine)
             ?: return@post call.respond(HttpStatusCode.BadRequest, ApiError("datasource.invalid_engine", mapOf("engine" to input.engine)))
-        call.respond(HttpStatusCode.Created, store.create(input.copy(engine = engine.wireName)))
+        // Validated for the same reason the engine is: an unrecognized value would be stored verbatim and
+        // then read back as "unset", silently opening connections under the engine default the operator
+        // was overriding. Absent stays absent — that IS the engine-derived default.
+        val adoption = input.catalogAdoption?.takeIf { it.isNotBlank() }?.let {
+            catalogAdoptionFromWireOrNull(it)
+                ?: return@post call.respond(
+                    HttpStatusCode.BadRequest,
+                    ApiError("datasource.invalid_catalog_adoption", mapOf("mode" to it)),
+                )
+        }
+        call.respond(
+            HttpStatusCode.Created,
+            store.create(input.copy(engine = engine.wireName, catalogAdoption = adoption?.wireName)),
+        )
     }
     get("/api/datasources/{id}") {
         if (!call.requireApi(config)) return@get
@@ -984,10 +1056,17 @@ fun Route.datasourceRoutes(
         // stored canonical engine and spuriously trip the immutability guard below.
         val engine = engineFromWireOrNull(input.engine)
             ?: return@put call.respond(HttpStatusCode.BadRequest, ApiError("datasource.invalid_engine", mapOf("engine" to input.engine)))
+        val adoption = input.catalogAdoption?.takeIf { it.isNotBlank() }?.let {
+            catalogAdoptionFromWireOrNull(it)
+                ?: return@put call.respond(
+                    HttpStatusCode.BadRequest,
+                    ApiError("datasource.invalid_catalog_adoption", mapOf("mode" to it)),
+                )
+        }
         // Engine is immutable — a PUT that changes it is a fail-closed 409 (delete + re-create to change
         // engine), mirroring the proxy Register path's FAILED_PRECONDITION.
         val updated = try {
-            store.update(id, input.copy(engine = engine.wireName))
+            store.update(id, input.copy(engine = engine.wireName, catalogAdoption = adoption?.wireName))
         } catch (e: DatasourceEngineConflictException) {
             return@put call.respond(HttpStatusCode.Conflict, ApiError("datasource.engine_immutable"))
         }

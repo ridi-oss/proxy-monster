@@ -12,7 +12,7 @@ import { Loader2 } from 'lucide-react'
 import { createDatasource, updateDatasource } from '@/lib/api/client'
 import { mutate } from 'swr'
 import { swrKeys } from '@/lib/hooks'
-import type { Datasource, DatasourceInput, Engine } from '@/lib/api/types'
+import type { CatalogAdoption, Datasource, DatasourceInput, Engine } from '@/lib/api/types'
 import { Button } from '@/components/ui/button'
 import {
   Dialog,
@@ -33,6 +33,9 @@ import {
 } from '@/components/ui/select'
 
 const DEFAULT_PORT: Record<Engine, number> = { postgres: 5432, mysql: 3306 }
+
+/** The unset adoption mode. A select needs a value for it, and '' would submit as a blank string. */
+const ADOPTION_ENGINE_DEFAULT = 'default'
 
 interface Props {
   open: boolean
@@ -71,6 +74,11 @@ function DatasourceForm({
   const [host, setHost] = useState(editing?.host ?? '')
   const [port, setPort] = useState<string>(String(editing?.port ?? DEFAULT_PORT.postgres))
   const [dbName, setDbName] = useState(editing?.dbName ?? '')
+  // Seeded from the current value the same way engine is, so an ordinary edit carries the mode unchanged
+  // and only a deliberate switch to the default clears it.
+  const [adoption, setAdoption] = useState<string>(
+    editing?.catalogAdoption ?? ADOPTION_ENGINE_DEFAULT,
+  )
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
@@ -94,6 +102,8 @@ function DatasourceForm({
       host: host.trim(),
       port: portNum,
       dbName: dbName.trim(),
+      catalogAdoption:
+        adoption === ADOPTION_ENGINE_DEFAULT ? null : (adoption as CatalogAdoption),
     }
     try {
       if (editing) {
@@ -200,6 +210,38 @@ function DatasourceForm({
             onChange={(e) => setDbName(e.target.value)}
             placeholder="acme"
           />
+        </div>
+
+        {/* Catalog adoption */}
+        <div className="space-y-1.5">
+          <Label>{t('form.labelCatalogAdoption')}</Label>
+          <Select value={adoption} onValueChange={(v: string | null) => setAdoption(v ?? ADOPTION_ENGINE_DEFAULT)}>
+            <SelectTrigger size="sm" className="w-full">
+              <SelectValue>
+                {(v: string | null) =>
+                  v === 'verify'
+                    ? t('form.catalogAdoptionVerify')
+                    : v === 'trust'
+                      ? t('form.catalogAdoptionTrust')
+                      : t('form.catalogAdoptionDefault', {
+                          engine: engine === 'mysql' ? 'MySQL' : 'PostgreSQL',
+                          mode: engine === 'mysql' ? 'trust' : 'verify',
+                        })
+                }
+              </SelectValue>
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value={ADOPTION_ENGINE_DEFAULT}>
+                {t('form.catalogAdoptionDefault', {
+                  engine: engine === 'mysql' ? 'MySQL' : 'PostgreSQL',
+                  mode: engine === 'mysql' ? 'trust' : 'verify',
+                })}
+              </SelectItem>
+              <SelectItem value="verify">{t('form.catalogAdoptionVerify')}</SelectItem>
+              <SelectItem value="trust">{t('form.catalogAdoptionTrust')}</SelectItem>
+            </SelectContent>
+          </Select>
+          <p className="text-muted-foreground text-xs">{t('form.catalogAdoptionHint')}</p>
         </div>
 
         <p className="text-muted-foreground text-xs">{t('form.advisoryHint')}</p>

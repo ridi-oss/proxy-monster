@@ -9,6 +9,7 @@ import org.junit.jupiter.api.TestInstance
 import javax.sql.DataSource
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
@@ -219,5 +220,140 @@ class CatalogProjectionDbTest {
         assertEquals(listOf("app"), refreshed.defaultSchemas)
         assertEquals("8.4.0", refreshed.engineVersion)
         assertTrue(refreshed.catalogSyncedAt != null)
+    }
+
+    @Test
+    fun `the restart rebuild reads back only schemas with both rows and a version`() {
+        // A version with no rows would leave the pointer naming content nothing resolves, and rows with no
+        // version cannot be ordered against the next reading. The join is what makes that true of the
+        // result rather than of two snapshots taken a moment apart.
+        val ds = datasource("proj-rebuild")
+        store.projectCatalogSchemas(
+            ds.id,
+            listOf(
+                ProjectedObservation("app", listOf(column("app", "users", "id")), version("h-app", 100)),
+                // Rows but no version: an older proxy's reading.
+                ProjectedObservation("unversioned", listOf(column("unversioned", "t", "c")), version = null),
+                // A version but no rows: the economy form confirming a schema whose content is elsewhere.
+                ProjectedObservation("versionless-rows", columns = null, version = version("h-none", 100)),
+            ),
+            namespaceComplete = false,
+            namespace = null,
+        )
+
+        val readings = store.storedSchemaReadings().filter { it.datasourceId == ds.id }
+
+        assertEquals(listOf("app"), readings.map { it.schema })
+        val app = readings.single()
+        assertEquals("h-app", String(app.version.hash.bytes.toByteArray()))
+        assertEquals(100L, app.version.dbClockMicros)
+        assertEquals("srv", app.version.backendId)
+        assertEquals(listOf("id"), app.columns.map { it.column })
+    }
+
+    @Test
+    fun `the restart rebuild returns every column of a schema, in order`() {
+        // The rebuilt fragment is what a trust-mode connection decides against, so a partial or reordered
+        // read would silently hand it a structure the backend never had.
+        val ds = datasource("proj-rebuild-order")
+        store.projectCatalogSchemas(
+            ds.id,
+            listOf(
+                ProjectedObservation(
+                    "app",
+                    listOf(
+                        DatasourceStore.PushedColumn("app", "users", "email", "text", 2, true),
+                        DatasourceStore.PushedColumn("app", "users", "id", "bigint", 1, false),
+                    ),
+                    version("h", 100),
+                ),
+            ),
+            namespaceComplete = false,
+            namespace = null,
+        )
+
+        val app = store.storedSchemaReadings().single { it.datasourceId == ds.id }
+        assertEquals(listOf("id", "email"), app.columns.map { it.column }, "columns must come back in ordinal order")
+        assertEquals(listOf(1, 2), app.columns.map { it.ordinal })
+        assertEquals(listOf(false, true), app.columns.map { it.nullable })
+    }
+
+    @Test
+    fun `the adoption mode round-trips through the store and clears back to the engine default`() {
+        // The whole point of the setting is that an operator can override the engine, so the stored value
+        // has to survive a write-read cycle and an explicit clear has to reach the unset state rather than
+        // sticking at whatever was there.
+        val created = store.create(
+            DatasourceInput(name = "adopt-roundtrip", engine = "mysql", host = "h", port = 3306, dbName = "app", catalogAdoption = "verify"),
+        )
+        assertEquals(CatalogAdoption.VERIFY, created.catalogAdoption)
+        assertEquals(CatalogAdoption.VERIFY, store.get(created.id)!!.catalogAdoption)
+        assertEquals(CatalogAdoption.VERIFY, store.getByName("adopt-roundtrip")!!.catalogAdoption)
+        // An explicit verify on MySQL must actually take that datasource off adoption.
+        assertFalse(store.get(created.id)!!.adoptsHeldCatalog)
+
+        val cleared = store.update(
+            created.id,
+            DatasourceInput(name = "adopt-roundtrip", engine = "mysql", host = "h", port = 3306, dbName = "app"),
+        )!!
+        assertNull(cleared.catalogAdoption, "clearing the field must return the datasource to the engine default")
+        assertTrue(cleared.adoptsHeldCatalog, "and the MySQL default is trust")
+    }
+
+    @Test
+    fun `an unset adoption mode is the default on a freshly created datasource`() {
+        val mysql = store.create(DatasourceInput(name = "adopt-default-mysql", engine = "mysql", host = "h", port = 3306, dbName = "app"))
+        val postgres = store.create(DatasourceInput(name = "adopt-default-pg", engine = "postgres", host = "h", port = 5432, dbName = "app"))
+        assertNull(mysql.catalogAdoption)
+        assertNull(postgres.catalogAdoption)
+        assertTrue(mysql.adoptsHeldCatalog, "MySQL's behavior must be unchanged when nothing is set")
+        assertFalse(postgres.adoptsHeldCatalog, "PostgreSQL's behavior must be unchanged when nothing is set")
+    }
+
+    @Test
+    fun `the database refuses an adoption mode outside the two the code understands`() {
+        // The Kotlin parser is fail-closed, but the column is also written by hand in migrations and by an
+        // operator with psql; a value the code cannot parse would read back as "unset" and silently restore
+        // the engine default the operator was overriding.
+        val ds = datasource("adopt-check")
+        val rejected = runCatching {
+            dataSource.connection.use { c ->
+                c.prepareStatement("UPDATE datasource SET catalog_adoption = 'always' WHERE id = ?").use { ps ->
+                    ps.setLong(1, ds.id); ps.executeUpdate()
+                }
+            }
+        }
+        assertTrue(rejected.isFailure, "the check constraint must reject an unrecognized mode")
+    }
+
+    @Test
+    fun `a reading that names new content but carries none records no version`() {
+        // The hashes-only economy form. Recording the new hash while the rows still describe the old one
+        // would claim those rows came from a reading that never delivered them, and the restart rebuild
+        // would then pool the previous columns under the new hash — a fragment no backend ever held.
+        val ds = datasource("proj-hash-without-content")
+        store.projectCatalogSchemas(
+            ds.id,
+            listOf(ProjectedObservation("app", listOf(column("app", "users", "id")), version("h1", 100))),
+            namespaceComplete = false,
+            namespace = null,
+        )
+
+        store.projectCatalogSchemas(
+            ds.id,
+            listOf(ProjectedObservation("app", columns = null, version = version("h2", 200))),
+            namespaceComplete = false,
+            namespace = null,
+        )
+
+        assertEquals(listOf("id"), store.catalog(ds.id).map { it.column }, "the rows describing h1 must stand")
+        assertEquals(
+            "h1" to 100L,
+            storedVersion(ds.id, "app"),
+            "and the version must keep describing them until the content behind h2 arrives",
+        )
+        // The rebuild must therefore never hand out the old columns under the new hash.
+        val rebuilt = store.storedSchemaReadings().single { it.datasourceId == ds.id }
+        assertEquals("h1", String(rebuilt.version.hash.bytes.toByteArray()))
     }
 }

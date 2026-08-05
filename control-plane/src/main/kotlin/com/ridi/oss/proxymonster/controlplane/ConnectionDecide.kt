@@ -119,10 +119,20 @@ suspend fun decideConnection(
     } else {
         ctx
     }
-    val afterStatement = if (effectiveCtx.action != EnfAction.DENY && effectiveCtx.catalogChanging) {
-        core.connectionCatalog.markAfterStatement(connection, required + effectiveCtx.referencedSchemas)
-    } else {
+    // A catalog-changing statement re-measures what it touched. A statement that ENDS a transaction
+    // re-measures what the connection read INSIDE it: those readings were transactionally private, so the
+    // manager never shared them and nothing else can true them up — this is the one moment the same
+    // content can be re-read from outside the transaction and finally reach the shared state.
+    val afterStatementSchemas = when {
+        effectiveCtx.action == EnfAction.DENY -> emptySet()
+        effectiveCtx.catalogChanging -> (required + effectiveCtx.referencedSchemas).toSet()
+        effectiveCtx.endsTransaction -> core.connectionCatalog.dirtyHeldSchemas(connection)
+        else -> emptySet()
+    }
+    val afterStatement = if (afterStatementSchemas.isEmpty()) {
         emptyList()
+    } else {
+        core.connectionCatalog.markAfterStatement(connection, afterStatementSchemas)
     }
     val ms = (System.nanoTime() - t0) / 1_000_000
     val decisionRecord = decisionRecord(principal, ds, sql, clientAddr, effectiveCtx, ms, searchPath, channel)

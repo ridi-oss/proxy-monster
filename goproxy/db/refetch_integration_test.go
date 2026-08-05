@@ -423,8 +423,11 @@ func runRefetchIntegration(t *testing.T, adapter engine.Db, conn *sql.Conn, sche
 	if push.DbClockMicros == 0 || push.BackendId == "" {
 		t.Fatalf("push observation lacks clock/backend identity: %+v", push)
 	}
-	if push.MeasuredInTransaction {
-		t.Fatalf("integration refetch unexpectedly measured in transaction: %+v", push)
+	// Run alone is the before_decide position, and MySQL exposes no transaction-status latch, so the
+	// measurement cannot prove it is settled and must say so. RunAllSettled is what the two positions that
+	// can prove it (on_open, post-DDL after_statement) use; see the engine package's own position test.
+	if !push.MeasuredInTransaction {
+		t.Fatalf("integration refetch claimed it was settled with nothing to prove it: %+v", push)
 	}
 	return push
 }

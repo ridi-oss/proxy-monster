@@ -18,10 +18,16 @@ type Refetcher struct {
 	Push              func(*pb.SchemaFragmentPush) (uint64, error)
 	// InTransaction reports whether the held backend connection had a transaction open, read at each
 	// measurement rather than captured once — the status changes under the statements being bracketed.
-	// nil means "no latch to read, and none needed": the MySQL paths qualify by construction (on_open
-	// precedes the first client statement, and after_statement follows DDL, which implicitly commits),
-	// so they stamp clean. PostgreSQL supplies a closure over the live ReadyForQuery status.
+	// nil means the dialect exposes no such latch, and then only the refetch POSITION can establish the
+	// fact: see RunAll and RunAllSettled. PostgreSQL supplies a closure over the live ReadyForQuery
+	// status and answers for every position from it.
 	InTransaction func() bool
+
+	// settledByConstruction is set for the duration of one RunAllSettled call, naming a position where no
+	// transaction can be open regardless of what any latch would say. Not a field a caller sets: the
+	// position is a property of the call site, and letting it be configured once per Refetcher would make
+	// a single mis-set value silently vouch for every later measurement on that connection.
+	settledByConstruction bool
 }
 
 func NewRefetcher(db Db, connectionID []byte, generation uint64, probe func(string, int) ([][]*string, error), push func(*pb.SchemaFragmentPush) (uint64, error), inTransaction func() bool) *Refetcher {
@@ -134,8 +140,20 @@ func (r *Refetcher) lowerCaseTableNames() int {
 	return mode
 }
 
+// inTx reports the transaction status to stamp on a measurement taken now.
+//
+// With a latch, that is simply what the latch says. Without one the answer is decided by the refetch
+// POSITION, which the caller declares by choosing RunAll or RunAllSettled, and the unproven default is
+// "in a transaction" — the fail-closed reading. A measurement that cannot prove it is settled must not
+// be shared, because a client that runs BEGIN, works past the staleness bound, then issues a SELECT gets
+// a before_decide probe measured inside its own open transaction, where the catalog it reads may include
+// its uncommitted DDL or miss committed DDL from elsewhere. Calling that clean would let another
+// connection adopt a view that never existed for anyone but this one.
 func (r *Refetcher) inTx() bool {
-	return r.InTransaction != nil && r.InTransaction()
+	if r.InTransaction != nil {
+		return r.InTransaction()
+	}
+	return !r.settledByConstruction
 }
 
 func (r *Refetcher) measureHash(sql string, expectedColumns int, sqlErr error) (HashObservation, bool) {
@@ -153,7 +171,8 @@ func (r *Refetcher) measureHash(sql string, expectedColumns int, sqlErr error) (
 	return observation, true
 }
 
-// RunAll executes commands in order and stops at the first failure.
+// RunAll executes commands in order and stops at the first failure. Without a transaction-status latch
+// these measurements stamp themselves in-transaction, since nothing about this position rules it out.
 func (r *Refetcher) RunAll(cmds []*pb.Refetch) error {
 	for i, cmd := range cmds {
 		if err := r.Run(cmd); err != nil {
@@ -161,4 +180,26 @@ func (r *Refetcher) RunAll(cmds []*pb.Refetch) error {
 		}
 	}
 	return nil
+}
+
+// RunAllSettled is RunAll at a position where no transaction can be open, which a dialect with no
+// transaction-status latch can establish no other way.
+//
+// Exactly two positions qualify, both by construction rather than by observation:
+//
+//   - on_open, which runs before the proxy serves the connection's first client statement, on a backend
+//     connection the proxy itself just dialed — no client statement has run, so no transaction exists.
+//   - after_statement, which fires only on a catalog-changing statement, i.e. after DDL, and MySQL DDL
+//     commits implicitly.
+//
+// before_decide is deliberately NOT among them: freshnessGate runs on every statement, so a probe can
+// land in the middle of a client's own open transaction. Use RunAll there.
+//
+// A dialect that supplies InTransaction ignores this entirely — a measured fact beats a positional
+// argument, and on PostgreSQL the two disagree exactly when the argument is wrong (a COMMIT refetch
+// issued while a failed transaction is still open).
+func (r *Refetcher) RunAllSettled(cmds []*pb.Refetch) error {
+	r.settledByConstruction = true
+	defer func() { r.settledByConstruction = false }()
+	return r.RunAll(cmds)
 }

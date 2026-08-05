@@ -10,6 +10,7 @@ import org.junit.jupiter.api.TestInstance
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
+import kotlin.test.assertTrue
 
 abstract class PerConnectionCatalogDbContract {
     protected abstract val enforcement: EnforcementFixture
@@ -97,11 +98,76 @@ abstract class PerConnectionCatalogDbContract {
         val before = assertIs<EnforcementOutcome.BeforeDecide>(outcome)
         assertEquals(listOf("missing_schema"), before.commands.map { it.schema })
     }
-}
 
-@TestInstance(TestInstance.Lifecycle.PER_CLASS)
-class PerConnectionCatalogMysqlDbTest : PerConnectionCatalogDbContract() {
-    override val enforcement by lazy { EnforcementFixture.mysql() }
+    @Test
+    fun `ending a transaction re-measures the schemas read inside it`() = runBlocking {
+        // A reading taken in a transaction is private to it — the manager never shares it, and freshnessGate
+        // sees no moved hash to re-check against, so nothing else can true it up. The end of the transaction
+        // is the one moment the same content can be re-read from outside, which is where the shared state
+        // catches up instead of waiting on the re-measure clock.
+        val schema = "tx_dirty_commit"
+        val opened = fixture.core.connectionCatalog.open(
+            Binding(fixture.datasource.name, "analyst@example.com", "USER"),
+            listOf(schema),
+        )
+        fixture.pushDirty(opened.connectionId, schema)
+
+        val outcome = decideConnection(
+            fixture.core,
+            opened.connectionId,
+            "analyst@example.com",
+            fixture.datasource,
+            "COMMIT",
+            listOf(schema),
+            null,
+        )
+        val verdict = assertIs<EnforcementOutcome.Verdict>(outcome)
+        assertEquals(EnfAction.ALLOW, verdict.ctx.action, verdict.ctx.denyReason)
+        assertEquals(
+            listOf(schema),
+            verdict.afterStatement.map { it.schema },
+            "the transaction's end must re-measure what was read inside it",
+        )
+    }
+
+    @Test
+    fun `ending a transaction re-measures nothing when nothing was read inside it`() = runBlocking {
+        // The re-measure is owed by dirty content, not by the COMMIT itself. Re-measuring every schema on
+        // every COMMIT would put a backend round-trip behind an ordinary transaction that read nothing.
+        val schema = "tx_clean_commit"
+        val opened = fixture.core.connectionCatalog.open(
+            Binding(fixture.datasource.name, "analyst@example.com", "USER"),
+            listOf(schema),
+        )
+        fixture.pushSynthetic(opened.connectionId, schema)
+
+        val outcome = decideConnection(
+            fixture.core, opened.connectionId, "analyst@example.com", fixture.datasource,
+            "COMMIT", listOf(schema), null,
+        )
+        val verdict = assertIs<EnforcementOutcome.Verdict>(outcome)
+        assertTrue(verdict.afterStatement.isEmpty(), "a settled reading owes nothing")
+    }
+
+    @Test
+    fun `a statement that does not end a transaction re-measures nothing`() = runBlocking {
+        // The re-measure is attached to the transaction ENDING, not to any session statement: BEGIN opens
+        // one, so re-measuring there would read the same private state again and confirm nothing.
+        val schema = "tx_dirty_begin"
+        val opened = fixture.core.connectionCatalog.open(
+            Binding(fixture.datasource.name, "analyst@example.com", "USER"),
+            listOf(schema),
+        )
+        fixture.pushDirty(opened.connectionId, schema)
+
+        val outcome = decideConnection(
+            fixture.core, opened.connectionId, "analyst@example.com", fixture.datasource,
+            "BEGIN", listOf(schema), null,
+        )
+        val verdict = assertIs<EnforcementOutcome.Verdict>(outcome)
+        assertEquals(EnfAction.ALLOW, verdict.ctx.action, verdict.ctx.denyReason)
+        assertTrue(verdict.afterStatement.isEmpty(), "opening a transaction cannot settle a reading taken inside one")
+    }
 }
 
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)

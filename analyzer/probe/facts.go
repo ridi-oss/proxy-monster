@@ -128,6 +128,11 @@ func EmitFacts(sql string, engineConfig *pb.EngineConfig, sch *schema.Mapping, n
 		// benign session passthrough. (MySQL RESET MASTER/REPLICA is a privileged admin op that degrades to
 		// Command and is denied there; it never reaches this Reset-node case.)
 		facts = passthroughFacts(pb.StatementClass_STATEMENT_CLASS_SESSION)
+		// Both arms end the transaction and so end the privacy of anything measured inside it. ROLLBACK
+		// counts for the same reason COMMIT does: the schemas the connection read in the transaction now
+		// describe a state that never became visible, and only a reading taken outside can say what the
+		// backend actually holds. SAVEPOINT/RELEASE do not end the transaction and are excluded.
+		facts.EndsTransaction = root.Kind() == exp.KindCommit || root.Kind() == exp.KindRollback
 	case exp.KindAlter, exp.KindDrop, exp.KindTruncateTable:
 		facts = unanalyzableFacts("LINEAGE", fmt.Sprintf("unsupported root %s", exp.ClassName(root.Kind())))
 		facts.CatalogChanging = !isTemporaryDDL(root, eng)

@@ -632,3 +632,85 @@ func contains(ss []string, want string) bool {
 	}
 	return false
 }
+
+// RunScoped is the economy form: it answers a due-schema nudge with hashes alone and only then fetches
+// the columns the manager reports it lacks. Its load-bearing property is what it must NOT claim — a
+// scoped reading speaks for the schemas it names, and presenting it as a complete enumeration would
+// instruct the manager to delete every schema that simply was not due.
+func TestRunScopedMySQL(t *testing.T) {
+	backend := dbtest.MySQL(t)
+	seed := dbtest.OpenMySQL(t, "")
+	for _, stmt := range []string{
+		`CREATE DATABASE IF NOT EXISTS ` + itMySQLSchema,
+		`CREATE TABLE IF NOT EXISTS ` + itMySQLSchema + `.customers (id INT PRIMARY KEY, email VARCHAR(255) NOT NULL)`,
+	} {
+		if _, err := seed.Exec(stmt); err != nil {
+			t.Fatalf("seed stmt %q: %v", stmt, err)
+		}
+	}
+	target := spi.BackendTarget{Host: backend.Host, Port: backend.Port, Db: itMySQLSchema, User: backend.User, Password: backend.Password}
+
+	t.Run("a known hash costs one hashes-only push and no columns", func(t *testing.T) {
+		var pushes []*pb.CatalogRequest
+		err := RunScoped(mysqlTestOpener{}, target, []string{itMySQLSchema}, func(req *pb.CatalogRequest) ([]string, error) {
+			pushes = append(pushes, req)
+			return nil, nil // the manager already holds content for this hash
+		})
+		if err != nil {
+			t.Fatalf("RunScoped: %v", err)
+		}
+		if len(pushes) != 1 {
+			t.Fatalf("pushes = %d, want 1 — a hash the manager holds must not trigger a column fetch", len(pushes))
+		}
+		push := pushes[0]
+		if !push.GetHashesOnly() || len(push.GetColumns()) != 0 {
+			t.Errorf("push = hashes_only:%v columns:%d, want a hashes-only reading", push.GetHashesOnly(), len(push.GetColumns()))
+		}
+		if push.GetNamespaceComplete() {
+			t.Error("a scoped reading claimed a complete namespace; the manager would delete every schema it did not name")
+		}
+		measured := schemaHash(push.GetSchemaHashes(), itMySQLSchema)
+		if measured == nil || !measured.GetTrusted() {
+			t.Fatalf("SchemaHashes[%q] = %+v, want a trusted measurement", itMySQLSchema, measured)
+		}
+		if direct := directSchemaHash(t, mysqlTestOpener{}, target, itMySQLSchema); !bytes.Equal(measured.GetHash(), direct) {
+			t.Errorf("scoped hash = %x, direct SchemaHashSQL = %x", measured.GetHash(), direct)
+		}
+		if push.GetBackendId() == "" || push.GetDbClockMicros() == 0 {
+			t.Errorf("backend_id=%q db_clock_micros=%d, want both measured", push.GetBackendId(), push.GetDbClockMicros())
+		}
+	})
+
+	t.Run("an unknown hash fetches only the schemas the manager asked for", func(t *testing.T) {
+		var pushes []*pb.CatalogRequest
+		err := RunScoped(mysqlTestOpener{}, target, []string{itMySQLSchema, "mysql"}, func(req *pb.CatalogRequest) ([]string, error) {
+			pushes = append(pushes, req)
+			if req.GetHashesOnly() {
+				return []string{itMySQLSchema}, nil // only this one needs content
+			}
+			return nil, nil
+		})
+		if err != nil {
+			t.Fatalf("RunScoped: %v", err)
+		}
+		if len(pushes) != 2 {
+			t.Fatalf("pushes = %d, want 2 (hashes, then content)", len(pushes))
+		}
+		content := pushes[1]
+		if content.GetHashesOnly() {
+			t.Error("the content push is still marked hashes_only")
+		}
+		if content.GetNamespaceComplete() {
+			t.Error("the content push of a scoped reading claimed a complete namespace")
+		}
+		if got := content.GetContentSchemas(); len(got) != 1 || got[0] != itMySQLSchema {
+			t.Fatalf("ContentSchemas = %v, want only the schema the manager asked for", got)
+		}
+		if !hasColumn(content.GetColumns(), itMySQLSchema, "customers", "email") {
+			t.Errorf("content push missing %s.customers.email", itMySQLSchema)
+		}
+		if hasSchema(content.GetColumns(), "mysql") {
+			t.Error("content push carried columns for a schema the manager did not ask for")
+		}
+	})
+}

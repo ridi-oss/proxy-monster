@@ -5,6 +5,7 @@
 package introspect
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"errors"
@@ -134,12 +135,33 @@ func Run(opener TargetOpener, target spi.BackendTarget) (*pb.CatalogRequest, err
 	}
 	namespaceMs := time.Since(phase).Milliseconds()
 
+	dbImpl := opener.NewDb()
+	var setupRows [][]*string
+	if setupSQL := dbImpl.HashSetupProbeSQL(); setupSQL != "" {
+		if rows, setupErr := queryStrings(conn, setupSQL, dbImpl.HashSetupColumns()); setupErr == nil {
+			setupRows = rows
+		}
+	}
+
+	// Visibility is bracketed like the hashes, and for the same reason. Claiming to enumerate every
+	// schema is what licenses a reader to conclude a schema it does not see has been dropped, so the
+	// claim has to hold across the whole reading: a privilege revoked partway through would otherwise
+	// narrow the scan while the opening probe still vouched for it, and the schemas that fell out of
+	// view would look deleted rather than hidden.
+	sawEverySchemaBefore := probeCatalogVisibility(conn, dbImpl)
+
+	// Measure, fetch, measure — the same bracket goproxy/engine.Refetcher applies per schema, here over
+	// the whole server: a schema whose two hashes agree is one the column scan read while the backend
+	// held still, and only that pairing may be trusted. Every step runs on the one pinned connection.
+	obs1, hashErr1 := measureServerHash(conn, dbImpl, setupRows)
 	phase = time.Now()
 	columns, err := introspectColumns(conn)
 	if err != nil {
 		return nil, err
 	}
 	columnsMs := time.Since(phase).Milliseconds()
+	obs2, hashErr2 := measureServerHash(conn, dbImpl, setupRows)
+	seesEverySchema := sawEverySchemaBefore && probeCatalogVisibility(conn, dbImpl)
 
 	// Normalize to the SAME canonical spelling the analyzer treats as authoritative (analyzer/probe,
 	// Go-to-Go — no FFM/marshaling) — an identity function for Postgres, MySQL's role-aware fold
@@ -155,9 +177,15 @@ func Run(opener TargetOpener, target spi.BackendTarget) (*pb.CatalogRequest, err
 		lctnMode = int(*mysqlLowerCaseTableNames)
 	}
 	phase = time.Now()
-	dbImpl := opener.NewDb()
 	columns = dbImpl.NormalizeColumns(lctnMode, columns)
 	defaultSchemas = normalizeSchemas(dbImpl, lctnMode, defaultSchemas)
+	measurement := measureServer(dbImpl, lctnMode, seesEverySchema, obs1, hashErr1, obs2, hashErr2)
+	// Publish content only for schemas the hash bracket covered. The column scan is its own statement, so
+	// a schema created after the opening hashes were taken shows up in the columns with no hash behind it
+	// — content the manager could not version, and a version is what decides whether an observation may
+	// install. Dropping those columns keeps every published schema one coherent measurement; the schema
+	// arrives with the next scan, which brackets it properly.
+	contentSchemas, columns := coherentContent(columns, measurement.schemaHashes)
 	normalizeMs := time.Since(phase).Milliseconds()
 
 	distinctTables := map[string]struct{}{}
@@ -185,7 +213,230 @@ func Run(opener TargetOpener, target spi.BackendTarget) (*pb.CatalogRequest, err
 		MysqlLowerCaseTableNames: mysqlLowerCaseTableNames,
 		Columns:                  columns,
 		EngineVersion:            engineVersion,
+		SchemaHashes:             measurement.schemaHashes,
+		DbClockMicros:            measurement.dbClockMicros,
+		BackendId:                measurement.backendID,
+		HashesOnly:               false,
+		ContentSchemas:           contentSchemas,
+		NamespaceComplete:        measurement.namespaceComplete,
 	}, nil
+}
+
+// serverMeasurement is what the two grouped scans establish about the backend, including whether the
+// result may claim to enumerate every schema.
+type serverMeasurement struct {
+	schemaHashes      []*pb.SchemaHash
+	dbClockMicros     int64
+	backendID         string
+	namespaceComplete bool
+}
+
+// measureServer brackets the column scan with the two grouped measurements. Any failure — either
+// statement, or an undecodable result — degrades to today's wire shape (nil hashes, no clock, no
+// identity), which a control plane already reads as "content only". A hash failure must never fail the
+// run: registration succeeds without hashes today.
+//
+// The completeness claim is decided here rather than by the caller, because it is exactly the two facts
+// this function holds: hashes were produced at all, and seesEverySchema says the connection's
+// privilege-filtered catalog views hid nothing. Both are required — the manager deletes every schema
+// missing from a push that claims completeness.
+func measureServer(dbImpl engine.Db, lctnMode int, seesEverySchema bool, first []engine.SchemaHashObservation, firstErr error, second []engine.SchemaHashObservation, secondErr error) serverMeasurement {
+	hashes, clock, backendID, err := coherentSchemaHashes(dbImpl, lctnMode, first, second)
+	if firstErr != nil || secondErr != nil || err != nil {
+		slog.Warn("whole-server catalog hash measurement failed; pushing columns without hashes",
+			"first_error", firstErr,
+			"second_error", secondErr,
+			"coherence_error", err,
+		)
+		return serverMeasurement{}
+	}
+	if !seesEverySchema {
+		slog.Warn("introspection connection cannot see every schema; sending hashes without claiming a complete namespace",
+			"schemas", len(hashes),
+		)
+	}
+	return serverMeasurement{
+		schemaHashes:      hashes,
+		dbClockMicros:     clock,
+		backendID:         backendID,
+		namespaceComplete: len(hashes) > 0 && seesEverySchema,
+	}
+}
+
+// probeCatalogVisibility answers whether this connection is guaranteed to see every schema on the
+// server. Anything short of a definite yes — no probe for the dialect, a probe failure, a value other
+// than 1 — fails closed to false, because the only thing a false costs is the manager's license to
+// delete, while a wrong true deletes schemas that exist.
+func probeCatalogVisibility(conn *sql.Conn, dbImpl engine.Db) bool {
+	statement := dbImpl.CatalogVisibilitySQL()
+	if statement == "" {
+		return false
+	}
+	rows, err := queryStrings(conn, statement, 1)
+	if err != nil {
+		slog.Warn("catalog visibility probe failed; not claiming a complete namespace", "error", err)
+		return false
+	}
+	return len(rows) == 1 && len(rows[0]) == 1 && rows[0][0] != nil && (*rows[0][0] == "1" || *rows[0][0] == "true")
+}
+
+func measureServerHash(conn *sql.Conn, dbImpl engine.Db, setupRows [][]*string) ([]engine.SchemaHashObservation, error) {
+	statement, width, err := dbImpl.ServerHashSQL(setupRows)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := queryStrings(conn, statement, width)
+	if err != nil {
+		return nil, err
+	}
+	return dbImpl.ServerHashFromRows(rows)
+}
+
+func queryStrings(conn *sql.Conn, statement string, expectedColumns int) ([][]*string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), queryTimeout)
+	defer cancel()
+	rows, err := conn.QueryContext(ctx, statement)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	columnNames, err := rows.Columns()
+	if err != nil {
+		return nil, err
+	}
+	if len(columnNames) != expectedColumns {
+		return nil, fmt.Errorf("query returned %d columns, want %d", len(columnNames), expectedColumns)
+	}
+	var result [][]*string
+	for rows.Next() {
+		values := make([]sql.NullString, expectedColumns)
+		destinations := make([]any, expectedColumns)
+		for i := range values {
+			destinations[i] = &values[i]
+		}
+		if err := rows.Scan(destinations...); err != nil {
+			return nil, err
+		}
+		row := make([]*string, expectedColumns)
+		for i := range values {
+			if values[i].Valid {
+				value := values[i].String
+				row[i] = &value
+			}
+		}
+		result = append(result, row)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+func coherentSchemaHashes(dbImpl engine.Db, lctnMode int, first, second []engine.SchemaHashObservation) ([]*pb.SchemaHash, int64, string, error) {
+	firstBySchema, err := observationsBySchema(first)
+	if err != nil {
+		return nil, 0, "", err
+	}
+	secondBySchema, err := observationsBySchema(second)
+	if err != nil {
+		return nil, 0, "", err
+	}
+
+	rawSchemas := make([]string, 0, len(firstBySchema)+len(secondBySchema))
+	seenRaw := make(map[string]struct{}, len(firstBySchema)+len(secondBySchema))
+	for _, observations := range [][]engine.SchemaHashObservation{first, second} {
+		for _, observation := range observations {
+			if _, seen := seenRaw[observation.Schema]; seen {
+				continue
+			}
+			seenRaw[observation.Schema] = struct{}{}
+			rawSchemas = append(rawSchemas, observation.Schema)
+		}
+	}
+	canonicalSchemas := normalizeSchemas(dbImpl, lctnMode, rawSchemas)
+	canonicalRaw := make(map[string]string, len(canonicalSchemas))
+	for i, canonical := range canonicalSchemas {
+		if previous, exists := canonicalRaw[canonical]; exists && previous != rawSchemas[i] {
+			return nil, 0, "", fmt.Errorf("schema hash names %q and %q normalize to %q", previous, rawSchemas[i], canonical)
+		}
+		canonicalRaw[canonical] = rawSchemas[i]
+	}
+
+	hashes := make([]*pb.SchemaHash, 0, len(rawSchemas))
+	for i, rawSchema := range rawSchemas {
+		firstObservation, inFirst := firstBySchema[rawSchema]
+		secondObservation, inSecond := secondBySchema[rawSchema]
+		// The first measurement's hash, matching the clock and identity below, which also come from
+		// measurement 1: an entry that paired scan 2's hash with scan 1's clock would describe a state
+		// that never existed at that instant. The second scan only supplies a hash for a schema the first
+		// never saw, where there is no first-measurement reading to contradict.
+		hash := firstObservation.Hash
+		if !inFirst {
+			hash = secondObservation.Hash
+		}
+		trusted := inFirst && inSecond && firstObservation.Trusted && secondObservation.Trusted &&
+			bytes.Equal(firstObservation.Hash, secondObservation.Hash) && firstObservation.BackendID == secondObservation.BackendID
+		hashes = append(hashes, &pb.SchemaHash{
+			Schema:  canonicalSchemas[i],
+			Hash:    append([]byte(nil), hash...),
+			Trusted: trusted,
+		})
+	}
+
+	var clock int64
+	backendID := ""
+	for _, observation := range first {
+		if observation.DbClockMicros > 0 && (clock == 0 || observation.DbClockMicros < clock) {
+			clock = observation.DbClockMicros
+		}
+		if backendID == "" && observation.BackendID != "" {
+			backendID = observation.BackendID
+		}
+	}
+	return hashes, clock, backendID, nil
+}
+
+func observationsBySchema(observations []engine.SchemaHashObservation) (map[string]engine.SchemaHashObservation, error) {
+	bySchema := make(map[string]engine.SchemaHashObservation, len(observations))
+	for _, observation := range observations {
+		if _, exists := bySchema[observation.Schema]; exists {
+			return nil, fmt.Errorf("duplicate schema hash measurement for %q", observation.Schema)
+		}
+		bySchema[observation.Schema] = observation
+	}
+	return bySchema, nil
+}
+
+func distinctColumnSchemas(columns []*pb.Column) []string {
+	seen := make(map[string]struct{})
+	var schemas []string
+	for _, column := range columns {
+		schema := column.GetSchema()
+		if _, exists := seen[schema]; exists {
+			continue
+		}
+		seen[schema] = struct{}{}
+		schemas = append(schemas, schema)
+	}
+	return schemas
+}
+
+// coherentContent keeps only the columns whose schema carries a hash from the same scan, and returns the
+// schemas that survive. A schema the column scan saw but the hash bracket did not — one created between
+// the two statements — has content with nothing to version it, and an observation the manager cannot
+// order is one it cannot safely install.
+func coherentContent(columns []*pb.Column, hashes []*pb.SchemaHash) ([]string, []*pb.Column) {
+	measured := make(map[string]struct{}, len(hashes))
+	for _, hash := range hashes {
+		measured[hash.GetSchema()] = struct{}{}
+	}
+	kept := make([]*pb.Column, 0, len(columns))
+	for _, column := range columns {
+		if _, ok := measured[column.GetSchema()]; ok {
+			kept = append(kept, column)
+		}
+	}
+	return distinctColumnSchemas(kept), kept
 }
 
 // normalizeSchemas folds each bare schema name (default_schemas / search_path entries have no

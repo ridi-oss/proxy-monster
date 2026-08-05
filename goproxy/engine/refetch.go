@@ -2,7 +2,6 @@ package engine
 
 import (
 	"bytes"
-	"crypto/rand"
 	"errors"
 	"fmt"
 	"strconv"
@@ -17,10 +16,19 @@ type Refetcher struct {
 	BackendGeneration uint64
 	Probe             func(sql string, expectedColumns int) ([][]*string, error)
 	Push              func(*pb.SchemaFragmentPush) (uint64, error)
+	// InTransaction reports whether the held backend connection had a transaction open, read at each
+	// measurement rather than captured once — the status changes under the statements being bracketed.
+	// nil means "no latch to read, and none needed": the MySQL paths qualify by construction (on_open
+	// precedes the first client statement, and after_statement follows DDL, which implicitly commits),
+	// so they stamp clean. PostgreSQL supplies a closure over the live ReadyForQuery status.
+	InTransaction func() bool
 }
 
-func NewRefetcher(db Db, connectionID []byte, generation uint64, probe func(string, int) ([][]*string, error), push func(*pb.SchemaFragmentPush) (uint64, error)) *Refetcher {
-	return &Refetcher{Db: db, ConnectionID: connectionID, BackendGeneration: generation, Probe: probe, Push: push}
+func NewRefetcher(db Db, connectionID []byte, generation uint64, probe func(string, int) ([][]*string, error), push func(*pb.SchemaFragmentPush) (uint64, error), inTransaction func() bool) *Refetcher {
+	return &Refetcher{
+		Db: db, ConnectionID: connectionID, BackendGeneration: generation,
+		Probe: probe, Push: push, InTransaction: inTransaction,
+	}
 }
 
 // Run executes one refetch command. Hash failures degrade to a full fetch; introspection and push failures
@@ -48,14 +56,19 @@ func (r *Refetcher) Run(cmd *pb.Refetch) error {
 	}
 
 	hashSQL, hashColumns, hashSQLErr := r.Db.SchemaHashSQL(cmd.GetSchema(), setupRows)
-	h1, trusted1 := r.measureHash(hashSQL, hashColumns, hashSQLErr)
-	if trusted1 && len(cmd.GetIfHashDiffers()) > 0 && bytes.Equal(h1, cmd.GetIfHashDiffers()) {
+	obs1, ok1 := r.measureHash(hashSQL, hashColumns, hashSQLErr)
+	tx1 := r.inTx()
+	if ok1 && obs1.Trusted && len(cmd.GetIfHashDiffers()) > 0 && bytes.Equal(obs1.Hash, cmd.GetIfHashDiffers()) {
 		_, err := r.Push(&pb.SchemaFragmentPush{
-			ConnectionId:      append([]byte(nil), r.ConnectionID...),
-			Schema:            cmd.GetSchema(),
-			ContentHash:       append([]byte(nil), h1...),
-			Unchanged:         true,
-			BackendGeneration: r.BackendGeneration,
+			ConnectionId:          append([]byte(nil), r.ConnectionID...),
+			Schema:                cmd.GetSchema(),
+			ContentHash:           append([]byte(nil), obs1.Hash...),
+			Unchanged:             true,
+			BackendGeneration:     r.BackendGeneration,
+			DbClockMicros:         obs1.DbClockMicros,
+			MeasuredInTransaction: tx1,
+			BackendId:             obs1.BackendID,
+			HashTrusted:           true,
 		})
 		return err
 	}
@@ -69,21 +82,34 @@ func (r *Refetcher) Run(cmd *pb.Refetch) error {
 		return fmt.Errorf("mapping schema %q fragment: %w", cmd.GetSchema(), err)
 	}
 
-	h2, trusted2 := r.measureHash(hashSQL, hashColumns, hashSQLErr)
-	contentHash := make([]byte, 32)
-	if _, err := rand.Read(contentHash); err != nil {
-		return fmt.Errorf("generating untrusted fragment nonce: %w", err)
+	obs2, ok2 := r.measureHash(hashSQL, hashColumns, hashSQLErr)
+	tx2 := r.inTx()
+	// Coherent = the columns just read are provably the state both measurements saw. Backend identity
+	// must match too: equal hashes from two different servers bracket nothing.
+	coherent := ok1 && ok2 && obs1.Trusted && obs2.Trusted &&
+		bytes.Equal(obs1.Hash, obs2.Hash) && obs1.BackendID == obs2.BackendID
+	// content_hash carries a genuine measurement or nothing — never a fabricated value. When the
+	// bracket fails, hash_trusted=false already tells the manager to keep the observation
+	// connection-only, so the honest measured bytes are strictly more useful than a nonce.
+	contentHash := obs2.Hash
+	if len(contentHash) == 0 {
+		contentHash = obs1.Hash
 	}
-	if trusted1 && trusted2 && bytes.Equal(h1, h2) {
-		contentHash = append(contentHash[:0], h2...)
+	backendID := obs1.BackendID
+	if backendID == "" {
+		backendID = obs2.BackendID
 	}
 
 	_, err = r.Push(&pb.SchemaFragmentPush{
-		ConnectionId:      append([]byte(nil), r.ConnectionID...),
-		Schema:            cmd.GetSchema(),
-		ContentHash:       contentHash,
-		Columns:           columns,
-		BackendGeneration: r.BackendGeneration,
+		ConnectionId:          append([]byte(nil), r.ConnectionID...),
+		Schema:                cmd.GetSchema(),
+		ContentHash:           append([]byte(nil), contentHash...),
+		Columns:               columns,
+		BackendGeneration:     r.BackendGeneration,
+		DbClockMicros:         obs1.DbClockMicros,
+		MeasuredInTransaction: tx1 || tx2,
+		BackendId:             backendID,
+		HashTrusted:           coherent,
 	})
 	return err
 }
@@ -108,19 +134,23 @@ func (r *Refetcher) lowerCaseTableNames() int {
 	return mode
 }
 
-func (r *Refetcher) measureHash(sql string, expectedColumns int, sqlErr error) ([]byte, bool) {
+func (r *Refetcher) inTx() bool {
+	return r.InTransaction != nil && r.InTransaction()
+}
+
+func (r *Refetcher) measureHash(sql string, expectedColumns int, sqlErr error) (HashObservation, bool) {
 	if sqlErr != nil {
-		return nil, false
+		return HashObservation{}, false
 	}
 	rows, err := r.Probe(sql, expectedColumns)
 	if err != nil {
-		return nil, false
+		return HashObservation{}, false
 	}
-	hash, trusted, err := r.Db.SchemaHashFromRows(rows)
+	observation, err := r.Db.SchemaHashFromRows(rows)
 	if err != nil {
-		return nil, false
+		return observation, false
 	}
-	return hash, trusted
+	return observation, true
 }
 
 // RunAll executes commands in order and stops at the first failure.

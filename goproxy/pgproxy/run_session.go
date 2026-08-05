@@ -50,7 +50,7 @@ func NewRunSession(target spi.BackendTarget, db engine.Db, client spi.SessionCli
 	}
 	s.ref = engine.NewRefetcher(db, s.connectionID, generation, func(sql string, expectedColumns int) ([][]*string, error) {
 		return s.runProbe(sql, expectedColumns, true)
-	}, client.PushSchemaFragment)
+	}, client.PushSchemaFragment, s.sessionCore.inTransaction)
 	return s, nil
 }
 

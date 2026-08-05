@@ -28,6 +28,13 @@ type sessionCore struct {
 	flushForward     func() error
 }
 
+// inTransaction reports whether the backend had a transaction open, read at the moment a hash
+// measurement is taken rather than captured when the refetcher was built: the status changes under the
+// statements the measurement brackets. 'T' is an open transaction and 'E' a failed one; anything else
+// (including a status the proxy has not observed yet) is not a settled 'I', so it reads as dirty —
+// unshareable is the safe answer, since a dirty observation only forgoes promotion to shared state.
+func (c *sessionCore) inTransaction() bool { return c.lastTxStatus != 'I' }
+
 type session struct {
 	sessionCore
 	client       *pgproto3.Backend

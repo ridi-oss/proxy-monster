@@ -328,13 +328,13 @@ func (s *Server) refetcher(sess *session, extended bool) *engine.Refetcher {
 			return s.runExtendedProbe(sess, sql, expectedColumns)
 		}
 	}
-	return engine.NewRefetcher(s.db, sess.connectionID, sess.backendGen, probe, s.client.PushSchemaFragment)
+	return engine.NewRefetcher(s.db, sess.connectionID, sess.backendGen, probe, s.client.PushSchemaFragment, sess.inTransaction)
 }
 
 func (s *Server) quietRefetcher(sess *session) *engine.Refetcher {
 	return engine.NewRefetcher(s.db, sess.connectionID, sess.backendGen, func(sql string, expectedColumns int) ([][]*string, error) {
 		return sess.sessionCore.runProbe(sql, expectedColumns, true)
-	}, s.client.PushSchemaFragment)
+	}, s.client.PushSchemaFragment, sess.inTransaction)
 }
 
 func (s *Server) forwardCancelRequest(message *pgproto3.CancelRequest) {

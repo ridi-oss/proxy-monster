@@ -57,6 +57,14 @@ var (
 	pgOnce sync.Once
 	pgB    Backend
 	pgErr  error
+
+	sysdateOnce sync.Once
+	sysdateB    Backend
+	sysdateErr  error
+
+	partialRevokesOnce sync.Once
+	partialRevokesB    Backend
+	partialRevokesErr  error
 )
 
 // MySQL returns the shared MySQL 8 backend, starting it once and reusing it across the whole suite. It
@@ -79,6 +87,35 @@ func Postgres(t testing.TB) Backend {
 		t.Fatalf("shared Postgres test container unavailable (Docker is required for DB-backed tests): %v", pgErr)
 	}
 	return pgB
+}
+
+// MySQLSysdateIsNow returns a MySQL backend started with --sysdate-is-now, a supported server option
+// that aliases SYSDATE() back to NOW(). It needs its own container because the option is set at
+// startup, and its own name so it never shares one with the ordinary fixture.
+//
+// It exists because that aliasing silently re-arms the clock poisoning SYSDATE was chosen to prevent,
+// and MySQL exposes no variable naming the option — the only way to observe it is to run against a
+// server that has it.
+func MySQLSysdateIsNow(t testing.TB) Backend {
+	t.Helper()
+	sysdateOnce.Do(func() { sysdateB, sysdateErr = startMySQLSysdateIsNow() })
+	if sysdateErr != nil {
+		t.Fatalf("MySQL --sysdate-is-now test container unavailable (Docker is required for DB-backed tests): %v", sysdateErr)
+	}
+	return sysdateB
+}
+
+// MySQLPartialRevokes returns a MySQL backend started with --partial-revokes=ON, the mode in which a
+// per-database REVOKE can coexist with a global GRANT. It needs its own container: the ordinary fixture
+// runs with the option OFF, and once any restriction exists the server refuses to turn it back off
+// (error 3896), so a test that enabled it in place would permanently change the shared server.
+func MySQLPartialRevokes(t testing.TB) Backend {
+	t.Helper()
+	partialRevokesOnce.Do(func() { partialRevokesB, partialRevokesErr = startMySQLPartialRevokes() })
+	if partialRevokesErr != nil {
+		t.Fatalf("MySQL --partial-revokes test container unavailable (Docker is required for DB-backed tests): %v", partialRevokesErr)
+	}
+	return partialRevokesB
 }
 
 // OpenMySQL opens (and pings) a *sql.DB against the shared MySQL backend for database db (blank = default).
@@ -148,14 +185,28 @@ func containerName(prefix, img string) string {
 	return name
 }
 
-func startMySQL() (Backend, error) {
+func startMySQL() (Backend, error) { return startMySQLWith("pm-goproxy-it-mysql") }
+
+func startMySQLSysdateIsNow() (Backend, error) {
+	return startMySQLWith("pm-goproxy-it-mysql-sysdate", "--sysdate-is-now")
+}
+
+func startMySQLPartialRevokes() (Backend, error) {
+	return startMySQLWith("pm-goproxy-it-mysql-partialrevokes", "--partial-revokes=ON")
+}
+
+// startMySQLWith starts one MySQL backend under the given server options. Each option set needs its own
+// container name: the options are start-up-only, and a container reused under a different name's options
+// would run the tests against a server configured for something else.
+func startMySQLWith(namePrefix string, serverOptions ...string) (Backend, error) {
 	const user, pass, db = "root", "rootpw", "app"
 	img := image("PM_TEST_MYSQL_IMAGE", defaultMySQLImage)
 	req := testcontainers.ContainerRequest{
 		Image:        img,
-		Name:         containerName("pm-goproxy-it-mysql", img),
+		Name:         containerName(namePrefix, img),
 		ExposedPorts: []string{"3306/tcp"},
 		Env:          map[string]string{"MYSQL_ROOT_PASSWORD": pass, "MYSQL_DATABASE": db},
+		Cmd:          serverOptions,
 		WaitingFor: wait.ForSQL("3306/tcp", "mysql", func(host string, port nat.Port) string {
 			return fmt.Sprintf("%s:%s@tcp(%s:%s)/%s", user, pass, host, port.Port(), db)
 		}).WithStartupTimeout(startupTimeout),

@@ -9,6 +9,7 @@ import com.ridi.oss.proxymonster.controlplane.TokenKind
 import com.ridi.oss.proxymonster.controlplane.support.SharedPostgres
 import com.ridi.oss.proxymonster.controlplane.support.requireDocker
 import com.ridi.oss.proxymonster.grpc.closeConnectionRequest
+import com.ridi.oss.proxymonster.grpc.column
 import com.ridi.oss.proxymonster.grpc.decisionRequest
 import com.ridi.oss.proxymonster.grpc.schemaFragmentPush
 import com.ridi.oss.proxymonster.grpc.validateTokenRequest
@@ -102,6 +103,31 @@ class GrpcPerConnectionCatalogDbTest {
         val identity = stub.validateToken(validateTokenRequest { token = this@GrpcPerConnectionCatalogDbTest.token; datasourceName = ds.name })
         assertEquals(16, identity.connectionId.size())
         assertEquals(setOf("pg_catalog", "information_schema"), identity.onOpenList.map { it.refetch.schema }.toSet())
+    }
+
+    @Test
+    fun `push accepts observation fields and applies the fragment as before`() = runBlocking {
+        val identity = stub.validateToken(validateTokenRequest { token = this@GrpcPerConnectionCatalogDbTest.token; datasourceName = ds.name })
+        val schema = identity.onOpenList.first().refetch.schema
+        val ack = stub.pushSchemaFragment(schemaFragmentPush {
+            connectionId = identity.connectionId
+            datasourceName = ds.name
+            this.schema = schema
+            contentHash = ByteString.copyFromUtf8("new-wire-hash")
+            backendGeneration = 42
+            dbClockMicros = 1_234_567
+            measuredInTransaction = true
+            backendId = "backend-identity"
+            hashTrusted = true
+            columns.add(column { this.schema = schema; table = "wire_fields"; this.column = "id"; dataType = "bigint"; ordinal = 1; nullable = false })
+        })
+
+        assertTrue(ack.generation > 0)
+        val rows = core.connectionCatalog.structuralRows(core.connectionCatalog.find(identity.connectionId)!!)
+        val stored = rows.single { it.schema == schema && it.table == "wire_fields" && it.column == "id" }
+        assertEquals("bigint", stored.dataType)
+        assertEquals(1, stored.ordinal)
+        assertFalse(stored.nullable)
     }
 
     @Test

@@ -165,42 +165,50 @@ var mysqlStatements = []mysqlStatement{
 	{"LOAD XML", "LOAD XML INFILE 'f' INTO TABLE users", "unanalyzable→sql.unanalyzable"},
 	{"IMPORT TABLE", "IMPORT TABLE FROM 'users.sdi'", "unanalyzable→sql.unanalyzable"},
 
-	// ---- DDL (§15.1) — all catalog-changing, all sql.ddl ----
-	{"CREATE TABLE", "CREATE TABLE t (id INT)", "sql.ddl + unanalyzable→sql.unanalyzable"},
+	// ---- DDL (§15.1) ----
+	// Table/index/view/schema DDL that sqlglot models structurally (Create / Alter / Drop / TruncateTable)
+	// is catalog-changing: fully determined, reads no column values, gated by sql.ddl alone. Forms sqlglot
+	// leaves as a Command (routines, events, servers, tablespaces, SRS, RENAME TABLE) stay unresolved and
+	// route to the sql.unanalyzable gate — an over-deny, not a leak.
+	{"CREATE TABLE", "CREATE TABLE t (id INT)", "sql.ddl"},
 	{"CREATE TABLE AS SELECT", "CREATE TABLE t AS SELECT id FROM users", "result.read + sql.ddl"},
-	{"CREATE TABLE LIKE", "CREATE TABLE t LIKE users", "sql.ddl + unanalyzable→sql.unanalyzable"},
-	{"CREATE INDEX", "CREATE INDEX i ON users (id)", "sql.ddl + unanalyzable→sql.unanalyzable"},
+	{"CREATE TABLE LIKE", "CREATE TABLE t LIKE users", "sql.ddl"},
+	{"CREATE INDEX", "CREATE INDEX i ON users (id)", "sql.ddl"},
 	{"CREATE VIEW", "CREATE VIEW v AS SELECT 1", "sql.ddl"},
-	{"CREATE DATABASE", "CREATE DATABASE d", "sql.ddl + unanalyzable→sql.unanalyzable"},
+	{"CREATE DATABASE", "CREATE DATABASE d", "sql.ddl"},
 	{"CREATE TRIGGER", "CREATE TRIGGER trg BEFORE INSERT ON users FOR EACH ROW SET @a = 1", "unanalyzable→sql.unanalyzable"},
 	{"CREATE PROCEDURE", "CREATE PROCEDURE p() SELECT 1", "unanalyzable→sql.unanalyzable"},
-	{"CREATE FUNCTION (stored)", "CREATE FUNCTION f() RETURNS INT RETURN 1", "sql.ddl + unanalyzable→sql.unanalyzable"},
-	{"CREATE FUNCTION (UDF)", "CREATE FUNCTION f RETURNS INTEGER SONAME 'f.so'", "sql.ddl + unanalyzable→sql.unanalyzable"},
+	{"CREATE FUNCTION (stored)", "CREATE FUNCTION f() RETURNS INT RETURN 1", "sql.ddl"},
+	// A routine body carrying a query (RETURN (SELECT …)) is not a CTAS: the read happens at invocation,
+	// not at CREATE. Lineage cannot analyze the routine body, so it over-denies (unresolved) rather than
+	// resolving catalog-changing like the bare form above — a fail-closed asymmetry, not a leak.
+	{"CREATE FUNCTION (stored, query body)", "CREATE FUNCTION f() RETURNS INT RETURN (SELECT id FROM users)", "sql.ddl + unanalyzable→sql.unanalyzable"},
+	{"CREATE FUNCTION (UDF)", "CREATE FUNCTION f RETURNS INTEGER SONAME 'f.so'", "sql.ddl"},
 	{"CREATE EVENT", "CREATE EVENT e ON SCHEDULE AT NOW() DO SET @a = 1", "unanalyzable→sql.unanalyzable"},
 	{"CREATE SERVER", "CREATE SERVER s FOREIGN DATA WRAPPER mysql OPTIONS (USER 'u')", "unanalyzable→sql.unanalyzable"},
 	{"CREATE TABLESPACE", "CREATE TABLESPACE ts ADD DATAFILE 'ts.ibd'", "unanalyzable→sql.unanalyzable"},
 	{"CREATE SRS", "CREATE SPATIAL REFERENCE SYSTEM 4000 NAME 'x' DEFINITION 'y'", "unanalyzable→sql.unanalyzable"},
-	{"ALTER TABLE", "ALTER TABLE users ADD COLUMN x INT", "sql.ddl + unanalyzable→sql.unanalyzable"},
+	{"ALTER TABLE", "ALTER TABLE users ADD COLUMN x INT", "sql.ddl"},
 	{"ALTER DATABASE", "ALTER DATABASE d CHARACTER SET utf8mb4", "unanalyzable→sql.unanalyzable"},
-	{"ALTER VIEW", "ALTER VIEW v AS SELECT 1", "sql.ddl + unanalyzable→sql.unanalyzable"},
+	{"ALTER VIEW", "ALTER VIEW v AS SELECT 1", "sql.ddl"},
 	{"ALTER EVENT", "ALTER EVENT e DISABLE", "unanalyzable→sql.unanalyzable"},
 	{"ALTER PROCEDURE", "ALTER PROCEDURE p COMMENT 'x'", "unanalyzable→sql.unanalyzable"},
 	{"ALTER FUNCTION", "ALTER FUNCTION f COMMENT 'x'", "unanalyzable→sql.unanalyzable"},
 	{"ALTER SERVER", "ALTER SERVER s OPTIONS (USER 'u')", "unanalyzable→sql.unanalyzable"},
 	{"ALTER TABLESPACE", "ALTER TABLESPACE ts RENAME TO ts2", "unanalyzable→sql.unanalyzable"},
 	{"ALTER INSTANCE", "ALTER INSTANCE ROTATE INNODB MASTER KEY", "unanalyzable→sql.unanalyzable"},
-	{"DROP TABLE", "DROP TABLE users", "sql.ddl + unanalyzable→sql.unanalyzable"},
-	{"DROP INDEX", "DROP INDEX i ON users", "sql.ddl + unanalyzable→sql.unanalyzable"}, // sqlglot-go v0.22.0: parses as a structured Drop (was Command)
-	{"DROP VIEW", "DROP VIEW v", "sql.ddl + unanalyzable→sql.unanalyzable"},
-	{"DROP DATABASE", "DROP DATABASE d", "sql.ddl + unanalyzable→sql.unanalyzable"},
-	{"DROP TRIGGER", "DROP TRIGGER trg", "sql.ddl + unanalyzable→sql.unanalyzable"},
-	{"DROP PROCEDURE", "DROP PROCEDURE p", "sql.ddl + unanalyzable→sql.unanalyzable"},
-	{"DROP FUNCTION", "DROP FUNCTION f", "sql.ddl + unanalyzable→sql.unanalyzable"},
+	{"DROP TABLE", "DROP TABLE users", "sql.ddl"},
+	{"DROP INDEX", "DROP INDEX i ON users", "sql.ddl"}, // sqlglot-go v0.22.0 models this as a structured Drop, unlike RENAME TABLE
+	{"DROP VIEW", "DROP VIEW v", "sql.ddl"},
+	{"DROP DATABASE", "DROP DATABASE d", "sql.ddl"},
+	{"DROP TRIGGER", "DROP TRIGGER trg", "sql.ddl"},
+	{"DROP PROCEDURE", "DROP PROCEDURE p", "sql.ddl"},
+	{"DROP FUNCTION", "DROP FUNCTION f", "sql.ddl"},
 	{"DROP EVENT", "DROP EVENT e", "unanalyzable→sql.unanalyzable"},
 	{"DROP SERVER", "DROP SERVER s", "unanalyzable→sql.unanalyzable"},
 	{"DROP TABLESPACE", "DROP TABLESPACE ts", "unanalyzable→sql.unanalyzable"},
 	{"DROP SRS", "DROP SPATIAL REFERENCE SYSTEM 4000", "unanalyzable→sql.unanalyzable"},
-	{"TRUNCATE TABLE", "TRUNCATE TABLE users", "sql.ddl + unanalyzable→sql.unanalyzable"},
+	{"TRUNCATE TABLE", "TRUNCATE TABLE users", "sql.ddl"},
 	{"RENAME TABLE", "RENAME TABLE users TO u2", "unanalyzable→sql.unanalyzable"},
 
 	// ---- Transaction / locking (§15.3) ----

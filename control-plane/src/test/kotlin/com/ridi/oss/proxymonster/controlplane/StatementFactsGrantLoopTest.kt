@@ -325,6 +325,16 @@ class StatementFactsGrantLoopTest {
     }
 
     @Test
+    fun `a resolved DDL statement authorizes off its sql-ddl grant like any grant-only write`() {
+        // DDL resolves as ANALYZED carrying a single sql.ddl datasource grant and no columns — the same
+        // shape INSERT takes. The fixture analyst holds no sql.ddl, so this is a POLICY deny at the
+        // datasource-grant loop, not a structural one: it reaches Cedar and is denied on the grant.
+        val ctx = decide(analyzed(datasourceGrant(GrantAction.GRANT_ACTION_SQL_DDL), isWrite = true))
+        assertEquals(EnfAction.DENY, ctx.action)
+        assertTrue(!ctx.structural, "a resolved DDL fact is authorized off its grant, not structurally denied")
+    }
+
+    @Test
     fun `ungranted table grant denies through table dispatch`() {
         val tableGrant = requiredGrant {
             action = GrantAction.GRANT_ACTION_RESULT_READ

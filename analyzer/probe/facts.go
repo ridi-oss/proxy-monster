@@ -106,10 +106,7 @@ func EmitFacts(sql string, engineConfig *pb.EngineConfig, sch *schema.Mapping, n
 	// Peel a whole-statement parenthesized wrapper: `(SELECT 1)` parses to a Subquery whose `this` is the
 	// real statement. Classification/lineage must run on the inner statement, not fail closed on the
 	// wrapper (a wrapped SELECT is ordinary chatter, a wrapped write is still a write).
-	root := stmts[0]
-	for root != nil && root.Kind() == exp.KindSubquery && root.This() != nil {
-		root = root.This()
-	}
+	root := unwrapSubquery(stmts[0])
 	candidates := schemaQualifierCandidates(root)
 
 	var facts *pb.StatementFacts
@@ -129,9 +126,22 @@ func EmitFacts(sql string, engineConfig *pb.EngineConfig, sch *schema.Mapping, n
 		// Command and is denied there; it never reaches this Reset-node case.)
 		facts = passthroughFacts(pb.StatementClass_STATEMENT_CLASS_SESSION)
 	case exp.KindAlter, exp.KindDrop, exp.KindTruncateTable:
-		facts = unanalyzableFacts("LINEAGE", fmt.Sprintf("unsupported root %s", exp.ClassName(root.Kind())))
-		facts.CatalogChanging = !isTemporaryDDL(root, eng)
-		facts.RequiredGrants = append(facts.RequiredGrants, datasourceGrant(pb.GrantAction_GRANT_ACTION_SQL_DDL))
+		facts = ddlFacts(root, eng)
+	case exp.KindCreate:
+		// A CREATE that reads columns (CREATE TABLE AS SELECT, CREATE VIEW) has lineage to trace and goes
+		// down the lineage path. One that reads none — CREATE INDEX, a bare CREATE TABLE with a column
+		// list — has no lineage, so it would fail there ("CREATE without analyzable query") and route a
+		// plainly-classifiable DDL through the unmasked sql.unanalyzable relay.
+		//
+		// The test is "does the body contain a query", not "is the body a Select": both a parenthesis
+		// wrapper (`AS (SELECT …)` is a Subquery) and a PostgreSQL `AS VALUES ((SELECT …))` hide one, and
+		// either would otherwise be read as body-less and emit NO column grants — the same statement
+		// enforced differently for a pair of parentheses, which is the copy-PII-into-a-new-table path.
+		if createReadsColumns(root) {
+			facts = emitLineageFacts(root, eng, qualifySchema, validatedNamespace, false)
+		} else {
+			facts = ddlFacts(root, eng)
+		}
 	default:
 		if isKnownRoot(root) {
 			facts = emitLineageFacts(root, eng, qualifySchema, validatedNamespace, false)
@@ -932,6 +942,27 @@ func unanalyzableFacts(stage, detail string) *pb.StatementFacts {
 		FailedStage:    strPtr(stage),
 		Detail:         truncateDetail(detail),
 		StatementClass: pb.StatementClass_STATEMENT_CLASS_UNSPECIFIED,
+	}
+}
+
+// A DDL statement (ALTER / DROP / TRUNCATE / a body-less CREATE) is RESOLVED: its meaning is fully
+// determined and it reads no column values, so there is no lineage to trace and its whole authorization
+// is the sql.ddl datasource grant. It resolves as ANALYZED with that single grant and no columns —
+// exactly the shape a grant-only write like INSERT already takes, so decideQuery authorizes it off the
+// datasource grant with no DDL-specific branch. Reporting it unresolved instead would route it through
+// the sql.unanalyzable gate — a grant that relays statements UNMASKED and ships scoped to
+// system:development only — so a statement whose safety is trivially provable would be authorized only by
+// the escape hatch built for statements nobody can prove safe, and denied outright anywhere else.
+func ddlFacts(root exp.Expression, eng engine) *pb.StatementFacts {
+	return &pb.StatementFacts{
+		Resolved:       true,
+		FailureClass:   pb.FailureClass_FAILURE_CLASS_UNSPECIFIED,
+		StatementClass: pb.StatementClass_STATEMENT_CLASS_ANALYZED,
+		IsWrite:        true,
+		// A temp-scoped DDL target is session-local, so it changes no shared catalog and must not force
+		// every other connection to re-measure.
+		CatalogChanging: !isTemporaryDDL(root, eng),
+		RequiredGrants:  []*pb.RequiredGrant{datasourceGrant(pb.GrantAction_GRANT_ACTION_SQL_DDL)},
 	}
 }
 

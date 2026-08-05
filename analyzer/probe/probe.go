@@ -576,9 +576,11 @@ func (p *prober) classifyWrite() *ProbeResult {
 
 	switch p.root.Kind() {
 	case exp.KindCreate:
-		if isSelectOrSet(p.root.Expr()) {
+		// Unwrapped, and the UNWRAPPED body is what gets analyzed: lineage over a Subquery wrapper finds
+		// no source columns, so a parenthesized CTAS would be a write with an empty grant set.
+		if body := unwrapSubquery(p.root.Expr()); isSelectOrSet(body) {
 			p.isWrite = true
-			p.analyzeQuery = p.root.Expr()
+			p.analyzeQuery = body
 		} else {
 			fail := failResult("VALIDATE", "CREATE without analyzable query")
 			return &fail
@@ -667,6 +669,64 @@ func isKnownRoot(e exp.Expression) bool {
 	switch e.Kind() {
 	case exp.KindSelect, exp.KindInsert, exp.KindUpdate, exp.KindDelete, exp.KindMerge, exp.KindCreate:
 		return true
+	}
+	return false
+}
+
+// unwrapSubquery peels parenthesis wrappers off an expression, returning the statement inside.
+//
+// Parentheses are real syntax, so sqlglot models `(SELECT …)` as a Subquery around the Select. Any
+// check that asks "is this a query?" has to look through that wrapper, or the same statement is
+// classified two ways depending on whether the author wrote a pair of parentheses — and for a CREATE
+// body, the parenthesized spelling would emit no column grants at all. Loops rather than unwrapping
+// once, since nothing stops `((SELECT …))`.
+func unwrapSubquery(e exp.Expression) exp.Expression {
+	for e != nil && e.Kind() == exp.KindSubquery && e.This() != nil {
+		e = e.This()
+	}
+	return e
+}
+
+// createReadsColumns reports whether a CREATE's AS-body reads or computes a value, and therefore needs
+// lineage rather than the catalog-changing class (which emits no column/function grants and no masks).
+//
+// It inspects only the `AS <body>` clause (root.Expr()); a bare column list, CREATE INDEX, generated
+// columns, and DEFAULT/CHECK expressions live in other args and stay catalog-only DDL — the uniform-DDL
+// model. Within the body it is deliberately broad: a query, a column reference, or a function call
+// anywhere inside means the value is not free. A VALUES row hides all three from a check on the immediate
+// child — `AS (SELECT …)` is a Subquery, `AS VALUES ((SELECT …))` buries a Select, and
+// `AS VALUES (query_to_xml('SELECT rrn …'))` invokes a data-leak function the function gate must still
+// see — each of which the catalog-only path would drop on the floor. A literal-only VALUES matches none
+// and stays value-free DDL.
+func createReadsColumns(root exp.Expression) bool {
+	body := unwrapSubquery(root.Expr())
+	if body == nil {
+		return false
+	}
+	if isSelectOrSet(body) {
+		return true
+	}
+	// VALUES is the one non-query CTAS/VIEW body that still materializes computed values: a row can hide a
+	// subquery, a column reference, or a function call (a data-leak function like query_to_xml) with no
+	// top-level Select, each of which the catalog-only path would drop. Literal-only VALUES matches none.
+	// Any other AS-body — a CREATE FUNCTION routine definition, say — is not a data-materializing query, so
+	// it keeps the narrow Select probe and stays catalog-only DDL.
+	if body.Kind() == exp.KindValues {
+		return bodyReferencesData(body)
+	}
+	return len(body.FindAll(exp.KindSelect)) > 0
+}
+
+// bodyReferencesData reports whether an expression subtree reads a column, runs a query, or calls a
+// function — anything the value-free catalog-changing path would fail to gate.
+func bodyReferencesData(body exp.Expression) bool {
+	if len(body.FindAll(exp.KindSelect)) > 0 || len(body.FindAll(exp.KindColumn)) > 0 {
+		return true
+	}
+	for _, node := range body.Walk() {
+		if node != nil && node.Is(exp.TraitFunc) {
+			return true
+		}
 	}
 	return false
 }

@@ -223,15 +223,15 @@ The analyzer and proxy never evaluate Cedar, roles, tags, or context.
 
 Writes and DDL. A write must pass its emitted `sql.*` action; and since every
 column a write reads or targets is a _reference_ (non-maskable), any
-masked-or-denied column in a write is a DENY (you cannot mask a write). Plain
-DDL with a supported analyzer shape, such as `CREATE TABLE (cols)`, is gated by
-`sql.ddl` (no data flow, no lineage), fully audited. `ALTER`, `DROP`, and
-`TRUNCATE` currently also require `sql.unanalyzable` because their roots are not
-lineage-analyzed. DDL that reads data — `CREATE TABLE … AS SELECT` (CTAS),
-`CREATE VIEW` — is _also_ a write: it needs `sql.ddl` and is subject to the
-write rule, so a masked/denied column in its `SELECT` is a DENY. This is the
-classic exfiltration path (copy PII into a fresh, unprotected table), so it must
-fail closed.
+masked-or-denied column in a write is a DENY (you cannot mask a write). DDL that
+only changes the catalog — `CREATE TABLE (cols)`, `CREATE INDEX`, `ALTER`,
+`DROP`, `TRUNCATE` — resolves as _catalog-changing_: its meaning is fully
+determined but it reads no column values, so there is no lineage to trace and
+`sql.ddl` is the whole gate (fully audited). DDL that reads data —
+`CREATE TABLE … AS SELECT` (CTAS), `CREATE VIEW` — is _also_ a write: it needs
+`sql.ddl` and is subject to the write rule, so a masked/denied column in its
+`SELECT` is a DENY. This is the classic exfiltration path (copy PII into a
+fresh, unprotected table), so it must fail closed.
 
 Worked walk-throughs — policies + column config from
 [Worked examples](#worked-examples) above; `alice` holds `analyst`

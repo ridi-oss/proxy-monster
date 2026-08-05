@@ -235,6 +235,13 @@ tagging, table detail) and never feeds an enforcement decision.
   `LATERAL` / `VALUES` source is unresolved and follows the same
   `sql.unanalyzable` gate; that is a masking/lineage limitation, not a parse
   gap.
+- 🟡 `RENAME TABLE a TO b` is denied. It is ordinary MySQL table DDL, but
+  sqlglot-go leaves it as an unmodeled `Command` node, and classification is
+  taken only from what the parser resolves structurally — a `Command` carries
+  the verb as text with the remainder unparsed. Matching that verb would also
+  match `RENAME USER`, which is privilege management rather than schema DDL, so
+  the over-deny is deliberate. The structured equivalent is permitted:
+  `ALTER TABLE a RENAME TO b`.
 - 🟡 `EXPLAIN` of a query that requires masking is deliberately denied. The
   analyzer emits the wrapped query's grants with `explain_of_query=true`, so an
   unmasked inner query may proceed after its ordinary grants pass. If the

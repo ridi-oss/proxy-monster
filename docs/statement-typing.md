@@ -76,7 +76,7 @@ authority and enforces exhaustiveness.
 | `admin.file` | `select_into_outfile`, `select_into_dumpfile`, `load_data`, `load_xml` — FILE-privilege I/O across the server-filesystem boundary: export of query results (a data-exfil path) and import into a table (`load_data` also writes rows) |
 | `admin.exec` | `prepare`, `execute`, `call`, `do` — dynamic execution: they run SQL or code the analyzer cannot see (a prepared string, a stored routine, an expression) |
 | `admin.unanalyzable` | `handler`, `xa` — opaque primitives the analyzer cannot decompose (`handler` = raw storage-engine row read that bypasses masking; `xa` = distributed-transaction control) |
-| `unknown` | `stmt_unknown` — anything the analyzer could not classify |
+| `sql.unanalyzable` | `stmt_unknown` — anything the analyzer could not classify; gated by the deny-by-default `sql.unanalyzable` exception, not a `stmt.cat.*` category |
 
 A domain holds both reads and writes of its resource — `show_grants` and
 `grant_priv` are both `admin.account`; `show_master_status` and `start_replica`
@@ -116,8 +116,9 @@ The `stmt.kind.` / `stmt.cat.` split keeps the two layers legible in a policy �
 stay in the `stmt` namespace, distinct from `result.read.*` / `datasource.*`.
 This is native Cedar: `action in <group>` is how the shipped `result.read.*`
 forbids already work, just several levels deep, so it validates on the same
-cedar-java path. The existing `sql.*` verbs fold into the `stmt.cat.write.*` /
-`stmt.cat.read` groups; enforcement is unchanged, the naming gains a spine.
+cedar-java path. Policies gate on `stmt.cat.*` / `stmt.kind.*` directly; there
+is no separate `sql.<verb>` vocabulary, so a policy that names one fails
+validation rather than validating and then silently matching nothing.
 
 ## Where each layer lives
 
@@ -131,15 +132,16 @@ cedar-java path. The existing `sql.*` verbs fold into the `stmt.cat.write.*` /
 
 ## Fail-closed, and grantable
 
-`stmt_unknown` is not a hardcoded deny — it is an ordinary kind in the
-`stmt.cat.unknown` domain, denied by the **absence of a permit**, never by a
-`forbid`. The production floor carries no permit that reaches it, so it denies;
-a datasource or role that Cedar-permits `stmt.cat.unknown` (a dev datasource, a
-trusted operator) runs it. This is exactly today's `sql.unanalyzable` gate —
-deny-by-default, overridable per datasource — and today's
-`GRANT_ACTION_UNSPECIFIED` (the REPLACE/CALL sentinel) folds into it. A `forbid`
-would be wrong: a forbid cannot be overridden by a permit, which would make
-`stmt_unknown` permanently un-grantable.
+`STMT_UNKNOWN` is not a hardcoded deny, and it gets no category of its own: it
+is gated by the existing `sql.unanalyzable` exception — the same
+deny-by-default, per-datasource-overridable gate an unanalyzable statement
+takes. The production floor carries no `sql.unanalyzable` permit, so it denies;
+a datasource that permits it (a dev datasource, a trusted operator) runs it.
+`GRANT_ACTION_UNSPECIFIED` (the REPLACE/CALL sentinel) folds into the same gate.
+Reusing the existing exception rather than a distinct `stmt.cat.unknown` keeps
+an existing `sql.unanalyzable` policy working and leaves one fewer domain to
+reason about. A `forbid` would be wrong: it cannot be overridden by a permit,
+which would make an unclassified statement permanently un-grantable.
 
 The gain over today is structural. The current design lets an _unrecognized_
 statement reach a benign passthrough and run with connect only; here an

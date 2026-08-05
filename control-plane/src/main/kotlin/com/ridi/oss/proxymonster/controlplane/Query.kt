@@ -19,6 +19,7 @@ import com.ridi.oss.proxymonster.controlplane.authz.authorizeTables
 import com.ridi.oss.proxymonster.controlplane.authz.resolveContextTags
 import com.ridi.oss.proxymonster.controlplane.authz.authorizeUtilities
 import com.ridi.oss.proxymonster.controlplane.authz.authorizeDatasourceAction
+import com.ridi.oss.proxymonster.controlplane.authz.authorizeDatasourceActionId
 import com.ridi.oss.proxymonster.controlplane.authz.authorizeWithContext
 import com.ridi.oss.proxymonster.classification.BaselineDangerousFunctions
 import com.ridi.oss.proxymonster.grpc.ColumnMask
@@ -31,6 +32,7 @@ import com.ridi.oss.proxymonster.analyzer.pb.GrantAction
 import com.ridi.oss.proxymonster.analyzer.pb.MaskedDisposition
 import com.ridi.oss.proxymonster.analyzer.pb.StatementClass
 import com.ridi.oss.proxymonster.analyzer.pb.StatementFacts
+import com.ridi.oss.proxymonster.analyzer.pb.StatementKind
 import com.ridi.oss.proxymonster.analyzer.pb.columnSpec
 import com.ridi.oss.proxymonster.analyzer.pb.engineConfig as pbEngineConfig
 import com.ridi.oss.proxymonster.analyzer.pb.namespace as pbNamespace
@@ -454,6 +456,22 @@ fun decideQuery(
         }
     }
 
+    // Statement-kind gate — EVERY statement is authorized against its granular kind (stmt.kind.<k>), and a
+    // resolved verb statement is ALSO authorized against its category in the loop below: both must pass.
+    // A category preset covers the common case (the kind's action is a member of its category via the
+    // schema's action-group nesting), an exact-kind forbid can still override a broad category permit, and
+    // a kind whose category differs from its datasource verb is gated by BOTH — SELECT ... INTO OUTFILE
+    // needs admin.file (kind) as well as ddl (verb). A no-datasource statement (metadata/session/admin/
+    // unknown) is gated here alone, closing the connect-only gaps (ANALYZE TABLE, SHOW MASTER STATUS, …).
+    // Runs after connect/utility, before the passthrough allow and the verb loop; the unanalyzable/utility
+    // gates still apply on top (e.g. ALTER TABLE stays prod-denied).
+    val kindAction = statementKindActionId(facts.statementKind)
+        ?: return structuralDeny("statement kind is unspecified", roleList, contextTags = derivedTags)
+    if (authz.authorizeDatasourceActionId(principal, roles, kindAction, ds.name, context, ds.tags) !is AuthzDecision.Allow) {
+        val kindName = facts.statementKind.name.removePrefix("STATEMENT_KIND_").lowercase()
+        return policyDeny("statement kind '$kindName' is not permitted", roleList, derivedTags)
+    }
+
     if (facts.resolved && facts.requiredGrantsList.none { it.hasColumn() || it.hasTable() || it.hasFunction() || it.hasDatasource() }) {
         when (facts.statementClass) {
             StatementClass.STATEMENT_CLASS_METADATA -> return DecisionContext(
@@ -484,9 +502,8 @@ fun decideQuery(
     for (grant in facts.requiredGrantsList.filter { it.hasDatasource() }) {
         val action = grantAction(grant.action)
             ?: return policyDeny("statement kind 'other' is not permitted", roleList, derivedTags)
-        when (authz.authorizeDatasourceAction(principal, roles, action, ds.name, context, ds.tags)) {
-            is AuthzDecision.Deny -> return policyDeny("no ${action.cedarId} grant for datasource '${ds.name}'", roleList, derivedTags)
-            AuthzDecision.Allow -> Unit
+        if (authz.authorizeDatasourceActionId(principal, roles, action.cedarId, ds.name, context, ds.tags) !is AuthzDecision.Allow) {
+            return policyDeny("no ${action.cedarId} grant for datasource '${ds.name}'", roleList, derivedTags)
         }
     }
 
@@ -801,12 +818,16 @@ internal fun wireTaskForbiddenDeny(
     contextTags: List<String>,
 ): DecisionContext = policyDeny(WIRE_TASK_FORBIDDEN_DENY, roles, contextTags)
 
+// The statement-category action (stmt.cat.<c>) a resolved statement's GrantAction maps to. The per-grant
+// loop requires every category a statement resolves to (INSERT ... ON DUPLICATE KEY UPDATE needs
+// write.insert AND write.update); an UNSPECIFIED action (REPLACE, CALL) maps to null → deny. Each category
+// is an action group holding the granular stmt.kind.* actions, so a category preset gates every kind under it.
 private fun grantAction(action: GrantAction): AuthzAction? = when (action) {
-    GrantAction.GRANT_ACTION_SQL_SELECT -> AuthzAction.SQL_SELECT
-    GrantAction.GRANT_ACTION_SQL_INSERT -> AuthzAction.SQL_INSERT
-    GrantAction.GRANT_ACTION_SQL_UPDATE -> AuthzAction.SQL_UPDATE
-    GrantAction.GRANT_ACTION_SQL_DELETE -> AuthzAction.SQL_DELETE
-    GrantAction.GRANT_ACTION_SQL_DDL -> AuthzAction.SQL_DDL
+    GrantAction.GRANT_ACTION_SQL_SELECT -> AuthzAction.STMT_CAT_READ
+    GrantAction.GRANT_ACTION_SQL_INSERT -> AuthzAction.STMT_CAT_WRITE_INSERT
+    GrantAction.GRANT_ACTION_SQL_UPDATE -> AuthzAction.STMT_CAT_WRITE_UPDATE
+    GrantAction.GRANT_ACTION_SQL_DELETE -> AuthzAction.STMT_CAT_WRITE_DELETE
+    GrantAction.GRANT_ACTION_SQL_DDL -> AuthzAction.STMT_CAT_DDL
     GrantAction.GRANT_ACTION_UNSPECIFIED,
     GrantAction.GRANT_ACTION_RESULT_READ,
     GrantAction.UNRECOGNIZED -> null
@@ -820,6 +841,20 @@ private fun grantAction(action: GrantAction): AuthzAction? = when (action) {
 // not call this.
 private fun DecisionContext.withAnalyzerRewrite(facts: StatementFacts): DecisionContext =
     if (facts.hasRewrittenSql() && !facts.explainOfQuery) copy(rewrittenSql = facts.rewrittenSql) else this
+
+// The granular kind action a statement is gated by on the passthrough / no-datasource-grant path
+// (metadata, session, admin commands, unknown). "stmt.kind.<k>" is a member of its category action, so a
+// category or kind preset matches it; an admin-category kind with no preset denies — closing the
+// connect-only gaps (ANALYZE TABLE, SHOW MASTER STATUS, …). UNSPECIFIED/UNRECOGNIZED is the invalid zero
+// value the analyzer never emits on a real classification; it returns null → hard deny.
+private fun statementKindActionId(kind: StatementKind): String? = when (kind) {
+    StatementKind.STATEMENT_KIND_UNSPECIFIED, StatementKind.UNRECOGNIZED -> null
+    // An unclassified statement (a parse fallback, or a discriminator the classifier does not map yet) is
+    // gated by the same deny-by-default exception as an unanalyzable one, not a distinct kind action:
+    // existing sql.unanalyzable exceptions carry it, a dev datasource may relay, prod denies.
+    StatementKind.STATEMENT_KIND_STMT_UNKNOWN -> AuthzAction.SQL_UNANALYZABLE.cedarId
+    else -> "stmt.kind." + kind.name.removePrefix("STATEMENT_KIND_").lowercase()
+}
 
 private fun passthroughAllow(
     roles: List<String>,

@@ -222,11 +222,12 @@ class GrpcDecideHandlerDbTest {
             updatedBy = null,
         )
 
-        // The next gRPC decision must reflect the edit: connect now passes, so the deny moves to the
-        // sql.select gate. A stale/separate cache would still report "no access to datasource".
+        // The next gRPC decision must reflect the edit: connect now passes, so the deny moves off the
+        // connect gate to the statement-kind gate. A stale/separate cache would still report "no access to
+        // datasource".
         val after = stub.decide(decisionRequest { token = tok; datasourceName = ds.name; connectionId = open(tok); sql = "select 1 from t" })
         assertEquals(EnfAction.DENY, after.verdict.decision)
-        assertTrue("sql.select" in after.verdict.denyReason, "after (expected sql.select deny): ${after.verdict.denyReason}")
+        assertTrue("statement kind 'select' is not permitted" in after.verdict.denyReason, "after (expected kind-gate deny): ${after.verdict.denyReason}")
         assertTrue("no access to datasource" !in after.verdict.denyReason, "connect gate should now pass: ${after.verdict.denyReason}")
     }
 
@@ -234,14 +235,15 @@ class GrpcDecideHandlerDbTest {
 
     @Test
     fun `a native-wire token cannot assert roles from the token, but an approver-exec token's assume-role is honored`() = runBlocking {
-        // Grant Role "elevated" datasource.connect. A native-wire (USER) token that CARRIES "elevated" on the
-        // token must NOT get it (roles are server-resolved — the principal has no such assignment); an
-        // APPROVER_EXEC token's on-token roles ARE the assume-role set (execute-under-R). This pins the core
-        // "native token cannot assert privilege / only ephemeral kinds carry assume-roles" invariant.
+        // Grant Role "elevated" datasource.connect + stmt.cat.read (so the `select 1` clears both gates). A
+        // native-wire (USER) token that CARRIES "elevated" on the token must NOT get it (roles are
+        // server-resolved — the principal has no such assignment); an APPROVER_EXEC token's on-token roles ARE
+        // the assume-role set (execute-under-R). This pins the core "native token cannot assert privilege /
+        // only ephemeral kinds carry assume-roles" invariant.
         core.cedarPolicyStore.create(
             CedarPolicyInput(
                 name = "elevated-connect",
-                cedarSrc = """permit(principal in Role::"elevated", action == Action::"datasource.connect", resource == Datasource::"${ds.name}");""",
+                cedarSrc = """permit(principal in Role::"elevated", action in [Action::"datasource.connect", Action::"stmt.cat.read"], resource == Datasource::"${ds.name}");""",
             ),
             updatedBy = null,
         )
@@ -257,13 +259,14 @@ class GrpcDecideHandlerDbTest {
 
     @Test
     fun `a no-R approver-exec decides at the editor channel, only a with-R token reaches workflow-executor`() = runBlocking {
-        // Grant datasource.connect ONLY on the workflow-executor channel. A with-R approver-exec (assume-role
-        // present) decides there and connects; a no-R approver-exec (no assume-role) decides at the EDITOR
-        // channel, so the workflow-executor-gated grant never fires → deny. Pins the no-R escalation fix.
+        // Grant datasource.connect + stmt.cat.read (so `select 1` clears both gates) ONLY on the
+        // workflow-executor channel. A with-R approver-exec (assume-role present) decides there and connects;
+        // a no-R approver-exec (no assume-role) decides at the EDITOR channel, so the workflow-executor-gated
+        // grant never fires → deny. Pins the no-R escalation fix.
         core.cedarPolicyStore.create(
             CedarPolicyInput(
                 name = "wfexec-only-connect",
-                cedarSrc = """permit(principal, action == Action::"datasource.connect", resource == Datasource::"${ds.name}") when { context has channel && context.channel == "workflow-executor" };""",
+                cedarSrc = """permit(principal, action in [Action::"datasource.connect", Action::"stmt.cat.read"], resource == Datasource::"${ds.name}") when { context has channel && context.channel == "workflow-executor" };""",
             ),
             updatedBy = null,
         )
@@ -305,9 +308,9 @@ class GrpcDecideHandlerDbTest {
         val decision = stub.decide(decisionRequest { token = issued.token; datasourceName = ds.name; connectionId = open(issued.token); sql = "select 1 from t" })
         assertEquals(
             EnfAction.DENY, decision.verdict.decision,
-            "connect now passes via the ip-gated permit; the deny should have moved to sql.select: ${decision.verdict.denyReason}",
+            "connect now passes via the ip-gated permit; the deny should have moved off connect to the kind gate: ${decision.verdict.denyReason}",
         )
-        assertTrue("sql.select" in decision.verdict.denyReason, "expected the connect gate to pass: ${decision.verdict.denyReason}")
+        assertTrue("statement kind 'select' is not permitted" in decision.verdict.denyReason, "expected the connect gate to pass: ${decision.verdict.denyReason}")
     }
 
     @Test
@@ -326,7 +329,7 @@ class GrpcDecideHandlerDbTest {
         core.runRequesterIps.put(tokenHash(issued.token), "203.0.113.20")
 
         val decision = stub.decide(decisionRequest { token = issued.token; datasourceName = ds.name; connectionId = open(issued.token); sql = "select 1 from t" })
-        assertTrue("sql.select" in decision.verdict.denyReason, "expected the connect gate to pass: ${decision.verdict.denyReason}")
+        assertTrue("statement kind 'select' is not permitted" in decision.verdict.denyReason, "expected the connect gate to pass: ${decision.verdict.denyReason}")
     }
 
     @Test
@@ -402,7 +405,7 @@ class GrpcDecideHandlerDbTest {
             },
         )
         assertTrue(
-            "sql.select" in decision.verdict.denyReason,
+            "statement kind 'select' is not permitted" in decision.verdict.denyReason,
             "a WIRE token's client_addr must satisfy the ip-gated connect permit: ${decision.verdict.denyReason}",
         )
     }

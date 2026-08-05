@@ -203,7 +203,7 @@ class SystemClassificationEnforcementDbTest {
         fx.cedarPolicyStore.create(
             CedarPolicyInput(
                 name = "test-fngate-connect-select",
-                cedarSrc = """permit(principal in Role::"fngate-connect-only", action in [Action::"datasource.connect", Action::"sql.select"], resource in Datasource::"${fx.datasource.name}");""",
+                cedarSrc = """permit(principal in Role::"fngate-connect-only", action in [Action::"datasource.connect", Action::"stmt.cat.read"], resource in Datasource::"${fx.datasource.name}");""",
             ),
             updatedBy = "test",
         )

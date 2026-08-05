@@ -6,6 +6,7 @@ import com.ridi.oss.proxymonster.analyzer.pb.MaskedDisposition
 import com.ridi.oss.proxymonster.analyzer.pb.RequiredGrant
 import com.ridi.oss.proxymonster.analyzer.pb.StatementClass
 import com.ridi.oss.proxymonster.analyzer.pb.StatementFacts
+import com.ridi.oss.proxymonster.analyzer.pb.StatementKind
 import com.ridi.oss.proxymonster.analyzer.pb.columnResource
 import com.ridi.oss.proxymonster.analyzer.pb.relationIdentity
 import com.ridi.oss.proxymonster.analyzer.pb.requiredGrant
@@ -93,6 +94,7 @@ class StatementFactsGrantLoopTest {
     ): StatementFacts = statementFacts {
         resolved = true
         statementClass = StatementClass.STATEMENT_CLASS_ANALYZED
+        statementKind = StatementKind.STATEMENT_KIND_SELECT
         detail = "synthetic"
         this.isWrite = isWrite
         requiredGrants.addAll(grants.toList())
@@ -308,6 +310,7 @@ class StatementFactsGrantLoopTest {
         val ctx = decide(
             statementFacts {
                 resolved = false
+                statementKind = StatementKind.STATEMENT_KIND_SELECT
                 failureClass = FailureClass.FAILURE_CLASS_UNANALYZABLE
                 schemaQualifierCandidates.add("newly_created_schema")
             },
@@ -355,6 +358,7 @@ class StatementFactsGrantLoopTest {
         val facts = statementFacts {
             resolved = true
             statementClass = StatementClass.STATEMENT_CLASS_METADATA
+            statementKind = StatementKind.STATEMENT_KIND_SHOW_METADATA
             schemaQualifierCandidates.add("public")
         }
         val ctx = decide(facts)
@@ -368,6 +372,7 @@ class StatementFactsGrantLoopTest {
         val session = statementFacts {
             resolved = true
             statementClass = StatementClass.STATEMENT_CLASS_SESSION
+            statementKind = StatementKind.STATEMENT_KIND_SET_SESSION_VAR
         }
         assertEquals(EnfAction.ALLOW, decide(session, Channel.WIRE).action)
         assertEquals(EnfAction.ALLOW, decide(session, Channel.EDITOR).action)
@@ -383,6 +388,7 @@ class StatementFactsGrantLoopTest {
         val pinned = statementFacts {
             resolved = true
             statementClass = StatementClass.STATEMENT_CLASS_SESSION
+            statementKind = StatementKind.STATEMENT_KIND_SET_SESSION_VAR
             rewrittenSql = "SET character_set_results = utf8mb4"
         }
         val wire = decide(pinned, Channel.WIRE)

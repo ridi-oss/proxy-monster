@@ -56,14 +56,17 @@ class ManifestCommandCoverageDbTest {
         }
     }
 
-    private fun decide(eng: Eng, sql: String, who: String = "analyst@example.com"): EnfAction {
+    private fun decide(eng: Eng, sql: String, who: String = "analyst@example.com"): EnfAction =
+        decideFull(eng, sql, who).action
+
+    private fun decideFull(eng: Eng, sql: String, who: String = "analyst@example.com"): DecisionContext {
         val fx = fxOf(eng)
         return decideQuery(
             principal = who, ds = fx.datasourceStore.get(fx.datasource.id)!!, sql = sql, channel = Channel.WIRE,
             catalog = fx.datasourceStore.catalog(fx.datasource.id), policyStore = fx.policyStore, accessStore = fx.accessStore,
             userGroupStore = fx.userGroupStore, roleResolver = fx.roleResolver, authz = fx.authz,
             systemClassification = classifier,
-        ).action
+        )
     }
 
     // One representative statement per dangerous command id + the engine to decide it on. The completeness
@@ -206,15 +209,18 @@ class ManifestCommandCoverageDbTest {
     }
 
     @Test
-    fun `SELECT INTO OUTFILE cannot exfil a masked column even with sql-ddl granted`() {
-        // INTO_OUTFILE/DUMPFILE classify as DDL (a write), so an analyst (no sql.ddl) is denied by the kind
-        // gate above. The real exfil concern is a sql.ddl-granted principal: writer@example.com has sql.ddl +
-        // the same users grants analyst has, so `SELECT rrn INTO OUTFILE` reads MASKED rrn into a file. The
-        // write-references-a-masked-column rule must DENY it regardless of the granted sql.ddl.
-        assertEquals(
-            EnfAction.DENY,
-            decide(Eng.MY, "SELECT rrn FROM users INTO OUTFILE '/tmp/x'", who = "writer@example.com"),
-            "INTO OUTFILE of a masked column must DENY even with sql.ddl (write-payload rule), not exfil cleartext",
+    fun `SELECT INTO OUTFILE cannot exfil a masked column even with the file and ddl grants`() {
+        // INTO OUTFILE classifies its kind as select_into_outfile (stmt.cat.admin.file) and its datasource verb
+        // as ddl. The real exfil concern is a principal who clears BOTH: filewriter@example.com has admin.file +
+        // ddl + the same users grants analyst has, so `SELECT rrn INTO OUTFILE` passes the kind gate and the verb
+        // loop, resolves rrn to MASKED at column authorization, and must then be denied by the write-payload rule
+        // — the OUTFILE analog of the CTAS write-payload check. (A ddl-only principal kind-denies at admin.file
+        // before ever reaching this rule, which is why the test needs the file+ddl grant to exercise it.)
+        val r = decideFull(Eng.MY, "SELECT rrn FROM users INTO OUTFILE '/tmp/x'", who = "filewriter@example.com")
+        assertEquals(EnfAction.DENY, r.action, "INTO OUTFILE of a masked column must DENY (write-payload rule), not exfil cleartext")
+        assertTrue(
+            r.denyReason.orEmpty().contains("write references protected") && r.denyReason.orEmpty().contains("rrn"),
+            "must deny at the write-payload rule, not the kind gate: ${r.denyReason}",
         )
     }
 }

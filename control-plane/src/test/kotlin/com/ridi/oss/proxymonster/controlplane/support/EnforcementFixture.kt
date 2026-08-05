@@ -203,14 +203,14 @@ class EnforcementFixture(
          * cleartext) — that's what `non-sensitive query is allowed` (EnforcementDbTest) actually
          * proves: `region`/`id` are ungranted-by-name but covered by the table-level permit.
          *
-         * Also seeds the once-per-query `datasource.connect` / `sql.<kind>` gates: `analyst` gets
-         * `datasource.connect` + `sql.select` (so all the existing SELECT-based EnforcementDbTest cases
-         * stay green once the gates are live), plus two more roles/principals that prove the gates'
-         * ordering and composition: `no-connect-reader` (sql.select + result.read.unmasked, but NO
-         * datasource.connect — proves connect is checked first) and `ddl-writer` (datasource.connect +
-         * sql.ddl + the same users unmasked/masked-pii pair `analyst` has — proves a CTAS that reads a
-         * masked column still gets caught by PolicyEvaluator's write-payload rule even though sql.ddl
-         * itself is granted).
+         * Also seeds the once-per-query `datasource.connect` / statement-category gates: `analyst` gets
+         * `datasource.connect` + `stmt.cat.read` (plus `stmt.cat.metadata`/`stmt.cat.session` for benign
+         * passthrough), so all the existing SELECT-based EnforcementDbTest cases stay green once the gates
+         * are live, plus two more roles/principals that prove the gates' ordering and composition:
+         * `no-connect-reader` (stmt.cat.read + result.read.unmasked, but NO datasource.connect — proves
+         * connect is checked first) and `ddl-writer` (datasource.connect + stmt.cat.ddl + the same users
+         * unmasked/masked-pii pair `analyst` has — proves a CTAS that reads a masked column still gets
+         * caught by PolicyEvaluator's write-payload rule even though stmt.cat.ddl itself is granted).
          */
         private fun seedPolicy(s: MetaStores, ds: Datasource): Datasource {
             val catalog = ds.engine.catalogName(ds.dbName)
@@ -246,7 +246,10 @@ class EnforcementFixture(
             s.cedarPolicyStore.create(
                 CedarPolicyInput(
                     name = "analyst-connect-select",
-                    cedarSrc = """permit(principal in Role::"$ROLE", action in [Action::"datasource.connect", Action::"sql.select"], resource in Datasource::"${ds.name}");""",
+                    // Plus stmt.cat.metadata / stmt.cat.session so a plain reader's benign SHOW/DESCRIBE and
+                    // SET/BEGIN passthrough still clears the kind gate (this bespoke datasource carries no
+                    // system:development preset that would grant those categories).
+                    cedarSrc = """permit(principal in Role::"$ROLE", action in [Action::"datasource.connect", Action::"stmt.cat.read", Action::"stmt.cat.metadata", Action::"stmt.cat.session"], resource in Datasource::"${ds.name}");""",
                 ),
                 updatedBy = "test-fixture",
             )
@@ -258,7 +261,7 @@ class EnforcementFixture(
             s.cedarPolicyStore.create(
                 CedarPolicyInput(
                     name = "no-connect-reader-select",
-                    cedarSrc = """permit(principal in Role::"no-connect-reader", action == Action::"sql.select", resource in Datasource::"${ds.name}");""",
+                    cedarSrc = """permit(principal in Role::"no-connect-reader", action in [Action::"stmt.cat.read"], resource in Datasource::"${ds.name}");""",
                 ),
                 updatedBy = "test-fixture",
             )
@@ -278,7 +281,7 @@ class EnforcementFixture(
             s.cedarPolicyStore.create(
                 CedarPolicyInput(
                     name = "ddl-writer-connect-ddl",
-                    cedarSrc = """permit(principal in Role::"ddl-writer", action in [Action::"datasource.connect", Action::"sql.ddl"], resource in Datasource::"${ds.name}");""",
+                    cedarSrc = """permit(principal in Role::"ddl-writer", action in [Action::"datasource.connect", Action::"stmt.cat.ddl"], resource in Datasource::"${ds.name}");""",
                 ),
                 updatedBy = "test-fixture",
             )
@@ -306,7 +309,7 @@ class EnforcementFixture(
             s.cedarPolicyStore.create(
                 CedarPolicyInput(
                     name = "insert-writer-connect-insert",
-                    cedarSrc = """permit(principal in Role::"insert-writer", action in [Action::"datasource.connect", Action::"sql.insert"], resource in Datasource::"${ds.name}");""",
+                    cedarSrc = """permit(principal in Role::"insert-writer", action in [Action::"datasource.connect", Action::"stmt.cat.write.insert"], resource in Datasource::"${ds.name}");""",
                 ),
                 updatedBy = "test-fixture",
             )
@@ -321,6 +324,36 @@ class EnforcementFixture(
                 CedarPolicyInput(
                     name = "insert-writer-users-masked-pii",
                     cedarSrc = """permit(principal in Role::"insert-writer", action == Action::"result.read.masked", resource in Table::"$usersTableEuid") when { resource in Tag::"pii" };""",
+                ),
+                updatedBy = "test-fixture",
+            )
+
+            // `file-writer` — datasource.connect + stmt.cat.admin.file (the server-side FILE-write kind category)
+            // + stmt.cat.ddl (the datasource verb INTO carries) + the same users unmasked/masked-pii pair. So a
+            // `SELECT rrn ... INTO OUTFILE` clears BOTH the kind gate (admin.file) and the verb loop (ddl), reaches
+            // column authorization where rrn resolves to MASKED, and must then be denied by the write-payload rule
+            // — the OUTFILE analog of the CTAS write-payload check, and the direction that a ddl-only principal (who
+            // now kind-denies at admin.file before ever reaching the payload rule) can no longer exercise.
+            val fileRole = s.policyStore.createRole(RoleInput("file-writer"))
+            s.policyStore.createAssignment(RoleAssignmentInput("filewriter@example.com", fileRole.id))
+            s.cedarPolicyStore.create(
+                CedarPolicyInput(
+                    name = "file-writer-connect-file-ddl",
+                    cedarSrc = """permit(principal in Role::"file-writer", action in [Action::"datasource.connect", Action::"stmt.cat.admin.file", Action::"stmt.cat.ddl"], resource in Datasource::"${ds.name}");""",
+                ),
+                updatedBy = "test-fixture",
+            )
+            s.cedarPolicyStore.create(
+                CedarPolicyInput(
+                    name = "file-writer-users-unmasked",
+                    cedarSrc = """permit(principal in Role::"file-writer", action == Action::"result.read.unmasked", resource in Table::"$usersTableEuid") unless { resource in Tag::"pii" };""",
+                ),
+                updatedBy = "test-fixture",
+            )
+            s.cedarPolicyStore.create(
+                CedarPolicyInput(
+                    name = "file-writer-users-masked-pii",
+                    cedarSrc = """permit(principal in Role::"file-writer", action == Action::"result.read.masked", resource in Table::"$usersTableEuid") when { resource in Tag::"pii" };""",
                 ),
                 updatedBy = "test-fixture",
             )

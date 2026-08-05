@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.1.3](https://github.com/ridi-oss/proxy-monster/compare/pmon-v0.1.2...pmon-v0.1.3) (2026-08-05)
+
+
+### Bug Fixes
+
+* **pmon:** advertise CONNECT_WITH_DB so JDBC/DBeaver clients connect ([4f08d55](https://github.com/ridi-oss/proxy-monster/commit/4f08d556e76e037d1e81ac94fdae6003fb757a7b))
+
+
+### Build & Dependencies
+
+* **pmon:** pin mysqlwire v0.1.2 for the auth-scramble fix ([#110](https://github.com/ridi-oss/proxy-monster/issues/110)) ([bc9f265](https://github.com/ridi-oss/proxy-monster/commit/bc9f265254d1a125b8a93a5908492fde2c0e5301))
+
 ## [0.1.2](https://github.com/ridi-oss/proxy-monster/compare/pmon-v0.1.1...pmon-v0.1.2) (2026-08-03)
 
 

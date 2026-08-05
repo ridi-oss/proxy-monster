@@ -1,5 +1,34 @@
 # Changelog
 
+## [0.1.7](https://github.com/ridi-oss/proxy-monster/compare/server-v0.1.6...server-v0.1.7) (2026-08-05)
+
+
+### Features
+
+* **analyzer:** resolve catalog-changing DDL, gated by sql.ddl ([f8abb46](https://github.com/ridi-oss/proxy-monster/commit/f8abb46ac6df68a9e843046f4887bb654918dae6))
+* **web:** show each Cedar policy's source, collapsed behind a row toggle ([#86](https://github.com/ridi-oss/proxy-monster/issues/86)) ([168684a](https://github.com/ridi-oss/proxy-monster/commit/168684a4fbdf7045860fe1b6d0f39ab4ce4e93ff))
+
+
+### Bug Fixes
+
+* **analyzer:** adopt sqlglot-go v0.21.0 + harden the MySQL statement-coverage audit ([#89](https://github.com/ridi-oss/proxy-monster/issues/89)) ([9b8b02b](https://github.com/ridi-oss/proxy-monster/commit/9b8b02baf80affb4bed8d166882f9c0cb303d071))
+* **analyzer:** pin character_set_results = NULL to utf8mb4 for JDBC clients ([#94](https://github.com/ridi-oss/proxy-monster/issues/94)) ([6dcf0b5](https://github.com/ridi-oss/proxy-monster/commit/6dcf0b50d418325fe2539ccad40f03b95874dfec)), closes [#81](https://github.com/ridi-oss/proxy-monster/issues/81)
+* **control-plane:** a tag is a tag ([#78](https://github.com/ridi-oss/proxy-monster/issues/78)) ([61cf6fd](https://github.com/ridi-oss/proxy-monster/commit/61cf6fd9ab1845e71c404dbad0eed559278cc9fa))
+* **cp:** reprint the seeded Cedar policy source ([#84](https://github.com/ridi-oss/proxy-monster/issues/84)) ([27cab70](https://github.com/ridi-oss/proxy-monster/commit/27cab70579989e34c30c15c6d15df399ad6ef8ba))
+* **goproxy:** pin mysqlwire v0.1.2 so the release image builds ([#111](https://github.com/ridi-oss/proxy-monster/issues/111)) ([c90a87e](https://github.com/ridi-oss/proxy-monster/commit/c90a87e5a3a7a4281d2bf7e5e1b6e8600aea5801))
+* **goproxy:** use the shared printable scramble for the frontend greeting ([5f307b3](https://github.com/ridi-oss/proxy-monster/commit/5f307b3f3ef877d790cd0224af6cce0d149e4503))
+
+
+### Build & Dependencies
+
+* **analyzer:** adopt sqlglot-go v0.22.0 ([#97](https://github.com/ridi-oss/proxy-monster/issues/97)) ([82f2d66](https://github.com/ridi-oss/proxy-monster/commit/82f2d66a0cd4782014da0efd850f436fb23a72b8))
+* **proto:** pin Go protobuf generators ([#102](https://github.com/ridi-oss/proxy-monster/issues/102)) ([7cf31d4](https://github.com/ridi-oss/proxy-monster/commit/7cf31d4806318341a6aca40b11f91f1bdae76ef4))
+
+
+### Documentation
+
+* add statement-classification design proposal ([#96](https://github.com/ridi-oss/proxy-monster/issues/96)) ([ed29774](https://github.com/ridi-oss/proxy-monster/commit/ed297742473d196ae23d9f4067b9002a42bdab27))
+
 ## [0.1.6](https://github.com/ridi-oss/proxy-monster/compare/server-v0.1.5...server-v0.1.6) (2026-08-03)
 
 

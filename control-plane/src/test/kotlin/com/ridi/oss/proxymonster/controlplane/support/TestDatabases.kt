@@ -73,6 +73,21 @@ internal fun assertServerSeries(image: String, expected: String?, actual: String
 }
 
 /**
+ * Let a finished test class's pool give its connections back to the shared container.
+ *
+ * Every DB-backed test class opens a pool in `@BeforeAll` and never closes it, so without this a class
+ * keeps [HikariConfig.getMinimumIdle] connections (defaulted to the max) for the rest of the JVM's life
+ * and the suite's peak is the sum over *all* classes, not the ones actually running. Classes execute
+ * sequentially in one JVM, so holding them idle buys nothing while the sum climbs toward the server's
+ * `max_connections` — which surfaces in whichever class happens to start next as
+ * "FATAL: sorry, too many clients already", not in the one that leaked.
+ */
+private fun HikariConfig.applyTestPoolReclaim() {
+    minimumIdle = 0
+    idleTimeout = 10_000
+}
+
+/**
  * Shared Testcontainers-backed databases for DB-backed unit tests.
  *
  * Each engine's container is started **once, lazily, and reused across every test in the module**
@@ -85,10 +100,9 @@ object SharedPostgres {
     private val counter = AtomicInteger()
 
     private val container: PostgreSQLContainer<*> by lazy {
-        // Generous max_connections: every DB-backed test class opens its own pool (maximumPoolSize=4)
-        // against this ONE shared container and holds it for its @BeforeAll lifetime, so the suite's peak
-        // concurrent connections scale with the number of DB test classes — which outgrew Postgres's
-        // default of 100 ("FATAL: sorry, too many clients already"). This is test-infra headroom only.
+        // Generous max_connections: every DB-backed test class opens its own pool against this ONE shared
+        // container, and no pool is ever closed, so the suite's ceiling scales with the number of DB test
+        // classes rather than with how many run at once. This is test-infra headroom only.
         PostgreSQLContainer(IMAGE).apply { withCommand("postgres", "-c", "max_connections=500"); start() }
     }
 
@@ -108,6 +122,7 @@ object SharedPostgres {
             password = container.password
             driverClassName = "org.postgresql.Driver"
             maximumPoolSize = 4
+            applyTestPoolReclaim()
         },
     )
 
@@ -198,6 +213,7 @@ object SharedMySql {
             password = container.password
             driverClassName = "com.mysql.cj.jdbc.Driver"
             maximumPoolSize = 4
+            applyTestPoolReclaim()
         },
     )
 

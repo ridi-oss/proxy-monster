@@ -1,6 +1,11 @@
 package com.ridi.oss.proxymonster.controlplane
 
 import com.ridi.oss.proxymonster.auth.pkceS256
+import com.ridi.oss.proxymonster.controlplane.AuthAuditRecorder.Companion.ACTION_OIDC_LOGIN
+import com.ridi.oss.proxymonster.controlplane.AuthAuditRecorder.Companion.CHANNEL_OIDC
+import com.ridi.oss.proxymonster.controlplane.AuthAuditRecorder.Companion.PRINCIPAL_UNATTRIBUTED
+import com.ridi.oss.proxymonster.controlplane.management.AuditActor
+import com.ridi.oss.proxymonster.controlplane.management.auditEntity
 import io.ktor.client.HttpClient
 import io.ktor.client.call.body
 import io.ktor.client.request.forms.submitForm
@@ -114,6 +119,7 @@ fun Route.oidcRoutes(
     userGroupStore: UserGroupStore,
     roleResolver: RoleResolver,
     store: PrincipalSessionStore,
+    authAudit: AuthAuditRecorder,
     log: Logger,
 ) {
     // Begin the auth-code flow: stash CSRF state + nonce, then 302 to the IdP's authorize endpoint.
@@ -178,8 +184,23 @@ fun Route.oidcRoutes(
         call.sessions.clear(OAUTH_NONCE_COOKIE)
         call.sessions.clear(OAUTH_VERIFIER_COOKIE)
 
+        // Most rejections happen before any id_token is validated, so there is no principal to name and
+        // the row is attributed to the IdP client instead; [principal] is passed only once it is known.
+        // Best-effort: every branch below redirects regardless, so a failed audit insert must not turn a
+        // login rejection into a 500.
+        fun auditFailure(detail: String, principal: String? = null) {
+            authAudit.failureBestEffort(
+                AuditActor(principal ?: PRINCIPAL_UNATTRIBUTED, clientAddr = call.httpRequesterIp(config), channel = CHANNEL_OIDC),
+                ACTION_OIDC_LOGIN,
+                if (principal == null) auditEntity("Client", oidc.clientId) else auditEntity("User", principal),
+                "OIDC login failed",
+                detail,
+            )
+        }
+
         if (state == null || expectedState == null || state != expectedState) {
             log.warn("OIDC callback state validation failed")
+            auditFailure("invalid_state")
             val target = if (stateSession?.returnTo == "/auth/reauth-complete") {
                 oidcFailureTarget(stateSession, oauthError = "access_denied", consoleError = "state")
             } else {
@@ -190,23 +211,31 @@ fun Route.oidcRoutes(
         }
         if (params["error"] != null) {
             log.warn("OIDC callback returned error: {}", params["error"])
+            // The error is whatever the caller put in the query string — /auth/oidc/login is open, so a
+            // self-minted state reaches this branch and chooses this value. Bounded before it is recorded.
+            auditFailure("idp_error=${auditedValue(params["error"].orEmpty())}")
             call.respondRedirect(oidcFailureTarget(stateSession, oauthError = "access_denied", consoleError = "oidc"))
             return@get
         }
         if (code == null) {
             log.warn("OIDC callback omitted both code and error")
+            auditFailure("missing_code")
             call.respondRedirect(oidcFailureTarget(stateSession, oauthError = "server_error", consoleError = "state"))
             return@get
         }
         if (expectedNonce == null) {
             log.warn("OIDC callback nonce state is absent")
+            auditFailure("missing_nonce")
             call.respondRedirect(oidcFailureTarget(stateSession, oauthError = "access_denied", consoleError = "nonce"))
             return@get
         }
 
-        try {
+        // Each fallible step carries its own narrow catch so a failure is attributed to the step that failed
+        // — and so the post-commit session-set + redirect below sit OUTSIDE every failure-audit catch: a
+        // browser disconnect there must not write a FAILURE row contradicting the SUCCESS already committed.
+        val token: TokenResponse = try {
             val document = discovery.document()
-            val token: TokenResponse = http.submitForm(
+            http.submitForm(
                 url = document.token_endpoint,
                 formParameters = Parameters.build {
                     append("grant_type", "authorization_code")
@@ -219,47 +248,88 @@ fun Route.oidcRoutes(
                     if (codeVerifier != null) append("code_verifier", codeVerifier)
                 },
             ).body()
+        } catch (e: Exception) {
+            log.error("OIDC token exchange failed", e)
+            auditFailure("token_exchange_failed")
+            call.respondRedirect(oidcFailureTarget(stateSession, oauthError = "server_error", consoleError = "oidc"))
+            return@get
+        }
 
-            // Signature + iss/aud/exp + nonce all verified inside validate(); null means any of
-            // those failed (incl. a nonce mismatch — the one-time cookie above already guards
-            // replay of the *state*, this guards injection of a *different* authorization result).
-            val claims = validator.validate(token.id_token, expectedNonce = expectedNonce)
-            if (claims == null) {
-                log.warn("OIDC callback id_token validation failed")
-                call.respondRedirect(oidcFailureTarget(stateSession, oauthError = "access_denied", consoleError = "nonce"))
-                return@get
-            }
+        // Signature + iss/aud/exp + nonce all verified inside validate(); null means any of
+        // those failed (incl. a nonce mismatch — the one-time cookie above already guards
+        // replay of the *state*, this guards injection of a *different* authorization result).
+        val claims = validator.validate(token.id_token, expectedNonce = expectedNonce)
+        if (claims == null) {
+            log.warn("OIDC callback id_token validation failed")
+            auditFailure("invalid_id_token")
+            call.respondRedirect(oidcFailureTarget(stateSession, oauthError = "access_denied", consoleError = "nonce"))
+            return@get
+        }
 
-            val principal = claims.email ?: claims.subject
-            // JIT-provision + SYNC group membership to the IdP claim (docs/backlog.md):
+        val principal = claims.email ?: claims.subject
+        // JIT-provision + SYNC group membership, then resolve effective roles — both attributed to the
+        // RESOLVED principal on failure, not the IdP client: the identity is known by this point, and
+        // provisioning/role-resolve is not the token exchange. (provisionFromOidc commits its directory
+        // changes on its own connection — that is directory reconciliation, not the login event; see
+        // KNOWN_LIMITATIONS.md "Audit trail".)
+        try {
             // membership is reconciled to the mapped claim set — added AND removed — so IdP group changes
             // (including admin, via system:admin) take effect on the next login. Deactivation stays SCIM's job.
             userGroupStore.provisionFromOidc(principal, claims.email, claims.groups, oidc.groupMapping)
             // Gate a principal with no effective roles to the no-access screen before minting a session.
             if (roleResolver.resolve(principal).isEmpty()) {
                 log.warn("OIDC callback principal has no effective roles: {}", principal)
+                auditFailure("no_effective_roles", principal)
                 call.respondRedirect(oidcFailureTarget(stateSession, oauthError = "access_denied", consoleError = "no_access"))
                 return@get
             }
-
-            val refreshToken = token.refresh_token?.takeIf {
-                "offline_access" in oidc.scopes.split(Regex("\\s+")).filter(String::isNotBlank)
-            }
-
-            val deviceId = call.ensureDeviceCookie(config.mcpIssuer.startsWith("https://"))
-            val sessionId = store.mintWeb(
-                principal,
-                refreshToken,
-                config.webSessionAbsoluteSeconds,
-                config.webSessionIdleSeconds,
-                deviceId,
-            )
-            call.sessions.set(WebSessionRef(sessionId))
-            call.respondRedirect(stateSession?.returnTo ?: "/")
         } catch (e: Exception) {
-            log.error("OIDC token exchange failed", e)
+            log.error("OIDC provisioning or role resolution failed", e)
+            auditFailure("provisioning_failed", principal)
             call.respondRedirect(oidcFailureTarget(stateSession, oauthError = "server_error", consoleError = "oidc"))
+            return@get
         }
+
+        val refreshToken = token.refresh_token?.takeIf {
+            "offline_access" in oidc.scopes.split(Regex("\\s+")).filter(String::isNotBlank)
+        }
+
+        val deviceId = call.ensureDeviceCookie(config.mcpIssuer.startsWith("https://"))
+        // Resolved before the transaction below opens: under the debug bypass this reads (and can end)
+        // a web session on a second connection, which the mint's principal lock would then block.
+        val actor = AuditActor(principal, clientAddr = call.httpRequesterIp(config), channel = CHANNEL_OIDC)
+        // Mint and record on one transaction: a session that exists is a session the trail names. A store
+        // failure here records the rejection standalone (the mint rolled back, so no other row names this
+        // attempt).
+        val sessionId = try {
+            store.dataSource.inTx { c ->
+                val id = store.mintWeb(
+                    principal,
+                    refreshToken,
+                    config.webSessionAbsoluteSeconds,
+                    config.webSessionIdleSeconds,
+                    deviceId,
+                    c = c,
+                )
+                authAudit.success(
+                    c,
+                    actor,
+                    ACTION_OIDC_LOGIN,
+                    auditEntity("Session", id.toString()),
+                    "OIDC login established session",
+                )
+                id
+            }
+        } catch (e: Exception) {
+            log.error("OIDC session mint failed", e)
+            auditFailure("session_mint_failed", principal)
+            call.respondRedirect(oidcFailureTarget(stateSession, oauthError = "server_error", consoleError = "oidc"))
+            return@get
+        }
+        // Post-commit: the SUCCESS row is durable. A disconnect on either line propagates uncaught rather
+        // than writing a contradicting FAILURE row.
+        call.sessions.set(WebSessionRef(sessionId))
+        call.respondRedirect(stateSession?.returnTo ?: "/")
     }
 }
 

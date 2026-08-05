@@ -1,6 +1,9 @@
 package com.ridi.oss.proxymonster.controlplane.oauth
 
 import com.ridi.oss.proxymonster.auth.pkceS256
+import com.ridi.oss.proxymonster.auth.sha256Hex
+import com.ridi.oss.proxymonster.controlplane.AuditStore
+import com.ridi.oss.proxymonster.controlplane.AuthAuditRecorder
 import com.ridi.oss.proxymonster.controlplane.Config
 import com.ridi.oss.proxymonster.controlplane.ControlPlaneCore
 import com.ridi.oss.proxymonster.controlplane.PRINCIPAL_SESSION_STORE
@@ -12,11 +15,14 @@ import com.ridi.oss.proxymonster.controlplane.jsonSessionSerializer
 import com.ridi.oss.proxymonster.controlplane.module
 import com.ridi.oss.proxymonster.controlplane.support.SharedPostgres
 import com.ridi.oss.proxymonster.controlplane.support.requireDockerOrSkip
+import com.ridi.oss.proxymonster.controlplane.support.verifyAuditChain
 import com.ridi.oss.proxymonster.controlplane.support.webSessionCookie
 import io.ktor.client.call.body
 import io.ktor.client.plugins.contentnegotiation.ContentNegotiation as ClientContentNegotiation
 import io.ktor.client.plugins.cookies.HttpCookies
+import io.ktor.client.request.delete
 import io.ktor.client.request.get
+import io.ktor.client.request.header
 import io.ktor.client.request.parameter
 import io.ktor.client.request.forms.submitForm
 import io.ktor.client.request.post
@@ -30,6 +36,7 @@ import io.ktor.server.application.Application
 import io.ktor.server.application.call
 import io.ktor.server.application.install
 import io.ktor.server.plugins.contentnegotiation.ContentNegotiation
+import io.ktor.server.plugins.statuspages.StatusPages
 import io.ktor.server.response.respond
 import io.ktor.server.routing.post as serverPost
 import io.ktor.server.routing.routing
@@ -441,6 +448,368 @@ class OAuthRoutesDbTest {
         )
     }
 
+    /**
+     * The OAuth half of the `kind="auth"` trail, driven through the routes: consent grant, token grant,
+     * `/oauth/revoke`, and consent revoke. Each assertion is written so that deleting its emission in
+     * `OAuthRoutes.kt` fails exactly here.
+     */
+    @Test
+    fun `consent, token grant, and both revoke routes each write one auth event`() = testApplication {
+        application { oauthTestModule(config().copy(mcpDebugAutoConsent = false), dataSource, resolver()) }
+        val client = createClient {
+            expectSuccess = false
+            followRedirects = false
+            install(HttpCookies)
+            install(ClientContentNegotiation) { json(Json { ignoreUnknownKeys = true }) }
+        }
+
+        val principal = "oauth-audit@example.com"
+        val grantsBefore = authEvents(AUTH_OAUTH_TOKEN, resource = """Client::"$CLIENT_ID"""").size
+        val consentPage = client.get("/oauth/authorize") {
+            parameter("response_type", "code")
+            parameter("client_id", CLIENT_ID)
+            parameter("redirect_uri", REDIRECT_URI)
+            parameter("scope", "mcp:read")
+            parameter("state", "state-audit")
+            parameter("resource", RESOURCE)
+            parameter("code_challenge", CHALLENGE)
+            parameter("code_challenge_method", "S256")
+            parameter("principal", principal)
+        }
+        assertEquals(HttpStatusCode.OK, consentPage.status)
+        val csrf = assertNotNull(
+            Regex("""name="csrf" value="([^"]+)"""").find(consentPage.bodyAsText())?.groupValues?.get(1),
+        )
+
+        assertEquals(0, authEvents(AUTH_OAUTH_CONSENT, principal).size)
+        val approved = client.submitForm(
+            "/oauth/consent",
+            Parameters.build { append("csrf", csrf); append("decision", "approve") },
+        )
+        assertEquals(HttpStatusCode.Found, approved.status)
+        val consentId = consentIdOf(principal)
+        assertEquals(
+            listOf(Triple("SUCCESS", "ALLOW", "oauth")),
+            authEvents(AUTH_OAUTH_CONSENT, principal, resource = """Consent::"$consentId""""),
+        )
+
+        val code = assertNotNull(Url(assertNotNull(approved.headers[HttpHeaders.Location])).parameters["code"])
+        val token = client.submitForm(
+            "/oauth/token",
+            Parameters.build {
+                append("grant_type", "authorization_code")
+                append("code", code)
+                append("client_id", CLIENT_ID)
+                append("redirect_uri", REDIRECT_URI)
+                append("resource", RESOURCE)
+                append("code_verifier", VERIFIER)
+            },
+        )
+        assertEquals(HttpStatusCode.OK, token.status)
+        val accessToken = token.body<JsonObject>().getValue("access_token").jsonPrimitive.content
+        // The grant is attributed to the client, not a user — the code was already redeemed, and the pair
+        // carries no principal. Counted as a delta because every other test in this class grants tokens for
+        // the same client id against this shared database.
+        val grants = authEvents(AUTH_OAUTH_TOKEN, resource = """Client::"$CLIENT_ID"""")
+        assertEquals(Triple("SUCCESS", "ALLOW", "oauth"), grants.last())
+        assertEquals(1, grants.size - grantsBefore, "one token grant must write exactly one event")
+
+        // /oauth/revoke is unauthenticated by design (RFC 7009 answers 200 for an unknown token), so only a
+        // call that actually closed a token may write a row — otherwise anyone could append to a
+        // tamper-evident chain, claiming revocations that never happened, by replaying one token.
+        val revokedResource = """Token::"${accessTokenIdOf(accessToken)}""""
+        assertEquals(HttpStatusCode.OK, client.submitForm("/oauth/revoke", Parameters.build { append("token", "pma_bogus") }).status)
+        assertEquals(
+            emptyList(), authEvents(AUTH_OAUTH_REVOKE, resource = revokedResource),
+            "a revoke of an unknown token must not claim a revocation that never happened",
+        )
+
+        assertEquals(HttpStatusCode.OK, client.submitForm("/oauth/revoke", Parameters.build { append("token", accessToken) }).status)
+        assertEquals(listOf(Triple("SUCCESS", "ALLOW", "oauth")), authEvents(AUTH_OAUTH_REVOKE, resource = revokedResource))
+
+        // Replaying the SAME token revokes nothing the second time, so it adds nothing.
+        assertEquals(HttpStatusCode.OK, client.submitForm("/oauth/revoke", Parameters.build { append("token", accessToken) }).status)
+        assertEquals(
+            1, authEvents(AUTH_OAUTH_REVOKE, resource = revokedResource).size,
+            "replaying an already-revoked token must not append a second revocation event",
+        )
+
+        val csrfHeader = assertNotNull(client.get("/oauth/consents").body<JsonObject>()["csrfToken"]).jsonPrimitive.content
+        assertEquals(
+            HttpStatusCode.NoContent,
+            client.delete("/oauth/consents/$consentId") { header("X-PM-CSRF", csrfHeader) }.status,
+        )
+        assertEquals(
+            listOf(Triple("SUCCESS", "ALLOW", "oauth")),
+            authEvents(AUTH_OAUTH_REVOKE, principal, resource = """Consent::"$consentId""""),
+        )
+        // A repeat revoke transitions nothing, so it adds nothing.
+        assertEquals(
+            HttpStatusCode.NotFound,
+            client.delete("/oauth/consents/$consentId") { header("X-PM-CSRF", csrfHeader) }.status,
+        )
+        assertEquals(
+            1,
+            authEvents(AUTH_OAUTH_REVOKE, principal, resource = """Consent::"$consentId"""").size,
+            "a consent revoke that changed nothing must not write a second event",
+        )
+
+        assertEquals(
+            0,
+            countWhere("statement LIKE '%$accessToken%' OR detail LIKE '%$accessToken%' OR resource LIKE '%$accessToken%'"),
+            "a presented OAuth token must never reach the audit trail",
+        )
+        verifyAuditChain(dataSource)
+    }
+
+    /**
+     * The debug auto-consent chokepoint (PM_AUTH_DEBUG + auto-consent) remembers a NEW consent and issues a
+     * code in one authorize hop, bypassing the manual consent form the test above drives. Deleting its
+     * emission would go unnoticed there.
+     */
+    @Test
+    fun `debug auto-consent writes one consent auth event`() = testApplication {
+        application { oauthTestModule(config(), dataSource, resolver()) }
+        val client = createClient {
+            expectSuccess = false
+            followRedirects = false
+            install(HttpCookies)
+            install(ClientContentNegotiation) { json(Json { ignoreUnknownKeys = true }) }
+        }
+
+        val principal = "oauth-auto-consent@example.com"
+        assertEquals(0, authEvents(AUTH_OAUTH_CONSENT, principal).size)
+        val authorization = client.get("/oauth/authorize") {
+            parameter("response_type", "code")
+            parameter("client_id", CLIENT_ID)
+            parameter("redirect_uri", REDIRECT_URI)
+            parameter("scope", "mcp:read")
+            parameter("state", "state-auto-consent")
+            parameter("resource", RESOURCE)
+            parameter("code_challenge", CHALLENGE)
+            parameter("code_challenge_method", "S256")
+            parameter("principal", principal)
+        }
+        assertEquals(HttpStatusCode.Found, authorization.status)
+        assertNotNull(Url(assertNotNull(authorization.headers[HttpHeaders.Location])).parameters["code"])
+
+        assertEquals(
+            listOf(Triple("SUCCESS", "ALLOW", "oauth")),
+            authEvents(AUTH_OAUTH_CONSENT, principal, resource = """Consent::"${consentIdOf(principal)}""""),
+        )
+        verifyAuditChain(dataSource)
+    }
+
+    /**
+     * A rejected token-grant audit must roll the whole grant back: the auth code stays unconsumed and no token
+     * is minted, so the client retries cleanly (finding 2, GRANT path). Proven through the route, not a
+     * re-composition of store calls.
+     */
+    @Test
+    fun `a rejected token-grant audit rolls the OAuth grant back, leaving the code unconsumed for retry`() = testApplication {
+        application { oauthTestModule(config(), dataSource, resolver()) }
+        val client = createClient {
+            expectSuccess = false
+            followRedirects = false
+            install(HttpCookies)
+            install(ClientContentNegotiation) { json(Json { ignoreUnknownKeys = true }) }
+        }
+
+        val principal = "oauth-token-rollback@example.com"
+        val authorization = client.get("/oauth/authorize") {
+            parameter("response_type", "code")
+            parameter("client_id", CLIENT_ID)
+            parameter("redirect_uri", REDIRECT_URI)
+            parameter("scope", "mcp:read")
+            parameter("state", "state-token-rollback")
+            parameter("resource", RESOURCE)
+            parameter("code_challenge", CHALLENGE)
+            parameter("code_challenge_method", "S256")
+            parameter("principal", principal)
+        }
+        val code = assertNotNull(Url(assertNotNull(authorization.headers[HttpHeaders.Location])).parameters["code"])
+
+        suspend fun grant() = client.submitForm(
+            "/oauth/token",
+            Parameters.build {
+                append("grant_type", "authorization_code"); append("code", code)
+                append("client_id", CLIENT_ID); append("redirect_uri", REDIRECT_URI)
+                append("resource", RESOURCE); append("code_verifier", VERIFIER)
+            },
+        )
+
+        val proxyTokensBefore = proxyTokenCount()
+        rejectAction(AUTH_OAUTH_TOKEN)
+        try {
+            assertEquals(HttpStatusCode.InternalServerError, grant().status)
+            assertTrue(codeUnused(code), "a rejected token-grant audit must leave the auth code unconsumed")
+            assertEquals(proxyTokensBefore, proxyTokenCount(), "a rejected token-grant audit must mint no token")
+        } finally {
+            dropRejectTrigger()
+        }
+        // The rollback left the code usable — the SAME code now grants cleanly.
+        assertEquals(HttpStatusCode.OK, grant().status)
+        verifyAuditChain(dataSource)
+    }
+
+    /**
+     * client_id is a caller-supplied CIMD URL on an unauthenticated endpoint; it must be bounded before it
+     * reaches the tamper-evident chain (finding 6). Driven on the invalid_grant failure path, which records
+     * the same bounded client_id without needing CIMD resolution.
+     */
+    @Test
+    fun `a caller-supplied client_id is bounded before it reaches the audit chain`() = testApplication {
+        application { oauthTestModule(config(), dataSource, resolver()) }
+        val client = createClient {
+            expectSuccess = false
+            install(ClientContentNegotiation) { json(Json { ignoreUnknownKeys = true }) }
+        }
+
+        val longClientId = "https://client.example/" + "a".repeat(300)
+        val bounded = longClientId.take(200)
+        val failed = client.submitForm(
+            "/oauth/token",
+            Parameters.build {
+                append("grant_type", "authorization_code"); append("code", "pmc_never-issued")
+                append("client_id", longClientId); append("redirect_uri", REDIRECT_URI)
+                append("resource", RESOURCE); append("code_verifier", VERIFIER)
+            },
+        )
+        assertEquals(HttpStatusCode.BadRequest, failed.status)
+        assertEquals("invalid_grant", failed.body<JsonObject>().getValue("error").jsonPrimitive.content)
+
+        assertEquals(
+            1, countWhere("""action='$AUTH_OAUTH_TOKEN' AND outcome='FAILURE' AND resource = 'Client::"$bounded"'"""),
+            "the invalid_grant failure must record the client_id truncated to the audited bound",
+        )
+        assertEquals(
+            0, countWhere("resource LIKE '%${"a".repeat(220)}%'"),
+            "the full over-long client_id must never reach the chain",
+        )
+        verifyAuditChain(dataSource)
+    }
+
+    /**
+     * The manual consent form guards on an existing active consent, so a double-submit of the approval (the
+     * pending cookie is still attached until the first response clears it) writes only ONE consent event for
+     * one grant (finding 7).
+     */
+    @Test
+    fun `a repeated manual consent for the same grant writes only one consent event`() = testApplication {
+        application { oauthTestModule(config().copy(mcpDebugAutoConsent = false), dataSource, resolver()) }
+        val client = createClient {
+            expectSuccess = false
+            followRedirects = false
+            install(HttpCookies)
+            install(ClientContentNegotiation) { json(Json { ignoreUnknownKeys = true }) }
+        }
+        val principal = "oauth-double-consent@example.com"
+
+        suspend fun authorizeThenApprove() {
+            val page = client.get("/oauth/authorize") {
+                parameter("response_type", "code")
+                parameter("client_id", CLIENT_ID)
+                parameter("redirect_uri", REDIRECT_URI)
+                parameter("scope", "mcp:read")
+                parameter("state", "state-double")
+                parameter("resource", RESOURCE)
+                parameter("code_challenge", CHALLENGE)
+                parameter("code_challenge_method", "S256")
+                parameter("principal", principal)
+            }
+            assertEquals(HttpStatusCode.OK, page.status)
+            val csrf = assertNotNull(Regex("""name="csrf" value="([^"]+)"""").find(page.bodyAsText())?.groupValues?.get(1))
+            val approved = client.submitForm("/oauth/consent", Parameters.build { append("csrf", csrf); append("decision", "approve") })
+            assertEquals(HttpStatusCode.Found, approved.status)
+        }
+
+        assertEquals(0, authEvents(AUTH_OAUTH_CONSENT, principal).size)
+        authorizeThenApprove()
+        authorizeThenApprove() // same principal/client/scope → the second is a no-op consent
+        assertEquals(
+            listOf(Triple("SUCCESS", "ALLOW", "oauth")),
+            authEvents(AUTH_OAUTH_CONSENT, principal, resource = """Consent::"${consentIdOf(principal)}""""),
+            "a manual re-consent for an existing active grant must not write a second consent event",
+        )
+        verifyAuditChain(dataSource)
+    }
+
+    /** Count of MCP tokens the test client holds — asserts a rejected grant minted none. */
+    private fun proxyTokenCount(): Int = dataSource.connection.use { c ->
+        c.prepareStatement("SELECT count(*) FROM proxy_token WHERE client_id = ?").use { ps ->
+            ps.setString(1, CLIENT_ID)
+            ps.executeQuery().use { rs -> rs.next(); rs.getInt(1) }
+        }
+    }
+
+    /** Whether the authorization code is still unconsumed (used_at IS NULL) — the rollback left it retryable. */
+    private fun codeUnused(code: String): Boolean = dataSource.connection.use { c ->
+        c.prepareStatement("SELECT used_at IS NULL FROM oauth_authorization_code WHERE code_hash = ?").use { ps ->
+            ps.setString(1, sha256Hex(code))
+            ps.executeQuery().use { rs -> assertTrue(rs.next()); rs.getBoolean(1) }
+        }
+    }
+
+    /** Make every `kind="auth"` insert for [action] fail, so a caller's transaction must roll back with it. */
+    private fun rejectAction(action: String) {
+        execute(
+            """CREATE OR REPLACE FUNCTION pm_test_reject_auth_audit() RETURNS trigger AS ${'$'}body${'$'}
+               BEGIN RAISE EXCEPTION 'forced auth audit failure'; END
+               ${'$'}body${'$'} LANGUAGE plpgsql""",
+        )
+        execute(
+            """CREATE TRIGGER pm_test_reject_auth_audit BEFORE INSERT ON audit_event
+               FOR EACH ROW WHEN (NEW.kind = 'auth' AND NEW.action = '$action')
+               EXECUTE FUNCTION pm_test_reject_auth_audit()""",
+        )
+    }
+
+    private fun dropRejectTrigger() {
+        execute("DROP TRIGGER IF EXISTS pm_test_reject_auth_audit ON audit_event")
+        execute("DROP FUNCTION IF EXISTS pm_test_reject_auth_audit()")
+    }
+
+    private fun execute(sql: String) = dataSource.connection.use { c -> c.createStatement().use { it.execute(sql) } }
+
+    private fun consentIdOf(principal: String): Long = dataSource.connection.use { c ->
+        c.prepareStatement("SELECT id FROM oauth_consent WHERE principal = ? ORDER BY id DESC LIMIT 1").use { ps ->
+            ps.setString(1, principal)
+            ps.executeQuery().use { rs -> assertTrue(rs.next()); rs.getLong(1) }
+        }
+    }
+
+    /** The stored id of an access token, for asserting the revocation event names the token it closed. */
+    private fun accessTokenIdOf(token: String): Long = dataSource.connection.use { c ->
+        c.prepareStatement("SELECT id FROM proxy_token WHERE token_hash = ?").use { ps ->
+            ps.setString(1, sha256Hex(token))
+            ps.executeQuery().use { rs -> assertTrue(rs.next()); rs.getLong(1) }
+        }
+    }
+
+    /** The (outcome, decision, channel) of every `kind="auth"` row matching the given filters. */
+    private fun authEvents(action: String, principal: String? = null, resource: String? = null): List<Triple<String, String, String>> =
+        dataSource.connection.use { c ->
+            val filters = buildList {
+                add("kind='auth'"); add("action=?")
+                if (principal != null) add("principal=?")
+                if (resource != null) add("resource=?")
+            }
+            c.prepareStatement(
+                "SELECT outcome, decision, channel FROM audit_event WHERE ${filters.joinToString(" AND ")} ORDER BY id",
+            ).use { ps ->
+                listOfNotNull(action, principal, resource).forEachIndexed { i, v -> ps.setString(i + 1, v) }
+                ps.executeQuery().use { rs ->
+                    buildList { while (rs.next()) add(Triple(rs.getString(1), rs.getString(2), rs.getString(3))) }
+                }
+            }
+        }
+
+    private fun countWhere(where: String): Int = dataSource.connection.use { c ->
+        c.prepareStatement("SELECT count(*) FROM audit_event WHERE $where").use { ps ->
+            ps.executeQuery().use { rs -> rs.next(); rs.getInt(1) }
+        }
+    }
+
     /** The simulated address on [principal]'s single LIVE web session — the row a decision would resolve. */
     private fun liveDebugIp(principal: String): String? = dataSource.connection.use { c ->
         c.prepareStatement(
@@ -494,6 +863,9 @@ class OAuthRoutesDbTest {
         const val REDIRECT_URI = "http://127.0.0.1:43110/callback"
         val VERIFIER = "v".repeat(43)
         val CHALLENGE = pkceS256(VERIFIER)
+        val AUTH_OAUTH_CONSENT = AuthAuditRecorder.ACTION_OAUTH_CONSENT
+        val AUTH_OAUTH_TOKEN = AuthAuditRecorder.ACTION_OAUTH_TOKEN
+        val AUTH_OAUTH_REVOKE = AuthAuditRecorder.ACTION_OAUTH_REVOKE
     }
 }
 
@@ -501,6 +873,9 @@ private fun Application.oauthTestModule(config: Config, dataSource: DataSource, 
     val principalSessionStore = PrincipalSessionStore(dataSource, null)
     attributes.put(PRINCIPAL_SESSION_STORE, principalSessionStore)
     install(ContentNegotiation) { json(Json { ignoreUnknownKeys = true; encodeDefaults = true }) }
+    // Mirrors module()'s fallback so a route whose atomic audit throws answers 500 here, as it would in the
+    // running server, instead of surfacing as a transport failure.
+    install(StatusPages) { exception<Throwable> { call, _ -> call.respond(HttpStatusCode.InternalServerError) } }
     install(Sessions) {
         webSessionCookie(principalSessionStore, config.sessionSecret)
         cookie<McpPendingAuthorization>(MCP_OAUTH_PENDING_COOKIE) {
@@ -528,6 +903,8 @@ private fun Application.oauthTestModule(config: Config, dataSource: DataSource, 
                 )))
             call.respond(HttpStatusCode.NoContent)
         }
-        mcpOAuthRoutes(config, dataSource, principalSessionStore, resolver)
+        mcpOAuthRoutes(
+            config, dataSource, principalSessionStore, AuthAuditRecorder(AuditStore(dataSource)), resolver,
+        )
     }
 }

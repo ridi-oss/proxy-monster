@@ -319,7 +319,7 @@ still lands in WORM + SIEM.
 ## Data model
 
 - `audit_event` is a heterogeneous event log (decision / completion / lifecycle
-  / management), discriminated by a `kind` column. `id` is app-allocated
+  / management / auth), discriminated by a `kind` column. `id` is app-allocated
   `BIGINT` (gap-free, lock-ordered, no `BIGSERIAL` default), plus
   `prev_hash BYTEA` and `row_hash BYTEA` (or a sidecar `audit_chain` 1:1 by
   `id`). No separate `seq` — `id` is ordinal and cursor.

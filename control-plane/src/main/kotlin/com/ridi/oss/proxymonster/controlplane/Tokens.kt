@@ -1,9 +1,14 @@
 package com.ridi.oss.proxymonster.controlplane
 
+import com.ridi.oss.proxymonster.controlplane.AuthAuditRecorder.Companion.ACTION_TOKEN_MINT
+import com.ridi.oss.proxymonster.controlplane.AuthAuditRecorder.Companion.ACTION_TOKEN_REVOKE
+import com.ridi.oss.proxymonster.controlplane.AuthAuditRecorder.Companion.CHANNEL_WIRE
 import com.ridi.oss.proxymonster.controlplane.authz.Authz
 import com.ridi.oss.proxymonster.controlplane.authz.AuthzAction
 import com.ridi.oss.proxymonster.controlplane.authz.AuthzResource
 import com.ridi.oss.proxymonster.controlplane.authz.requireAuthz
+import com.ridi.oss.proxymonster.controlplane.management.AuditActor
+import com.ridi.oss.proxymonster.controlplane.management.auditEntity
 import io.ktor.http.HttpStatusCode
 import io.ktor.server.request.receive
 import io.ktor.server.response.respond
@@ -224,14 +229,15 @@ class TokenStore(internal val dataSource: DataSource) {
     }
 
     /** Revoke a token by id, but only if it belongs to [principal] (ownership check). */
-    fun revoke(id: Long, principal: String): Boolean = dataSource.connection.use { c ->
+    fun revoke(id: Long, principal: String): Boolean = dataSource.connection.use { c -> revoke(id, principal, c) }
+
+    fun revoke(id: Long, principal: String, c: Connection): Boolean =
         c.prepareStatement(
             "UPDATE proxy_token SET revoked_at = now() WHERE id = ? AND principal = ? AND revoked_at IS NULL",
         ).use { ps ->
             ps.setLong(1, id); ps.setString(2, principal)
             ps.executeUpdate() > 0
         }
-    }
 
     /**
      * Revoke every currently-active (non-revoked, non-expired) wire token for [principal] — the
@@ -267,7 +273,18 @@ class TokenStore(internal val dataSource: DataSource) {
 private fun principalOf(call: io.ktor.server.application.ApplicationCall) = call.userSession()?.principal ?: "debug-user"
 private fun rolesOf(call: io.ktor.server.application.ApplicationCall) = call.userSession()?.roles ?: emptyList()
 
-fun Route.tokenRoutes(config: Config, store: TokenStore, userGroupStore: UserGroupStore, authz: Authz) {
+/** The audited actor of a token route: whoever made the request, resolved the same way the route's own
+ *  authorization resolves it — never the token's owner, who may be someone else on the revoke path. */
+private fun callerActor(call: io.ktor.server.application.ApplicationCall, config: Config) =
+    AuditActor(principalOf(call), clientAddr = call.httpRequesterIp(config), channel = CHANNEL_WIRE)
+
+fun Route.tokenRoutes(
+    config: Config,
+    store: TokenStore,
+    userGroupStore: UserGroupStore,
+    authz: Authz,
+    authAudit: AuthAuditRecorder,
+) {
     // Mint a short-lived SESSION token for the daemon (`pm login`) — held locally, refreshed.
     // Credential issuance is a Cedar decision (token.mint on Token{owner, kind}); the self seed permits a
     // principal to mint its own, a kind-scoped forbid can bar a role from long-lived PATs.
@@ -280,8 +297,17 @@ fun Route.tokenRoutes(config: Config, store: TokenStore, userGroupStore: UserGro
         // check + the INSERT run on ONE transaction under the per-principal advisory lock,
         // so a concurrent SCIM/liveness teardown can't slip its revoke between them and leave a
         // token that survives the deprovision (resurrectable on a later reactivation).
+        val minter = callerActor(call, config)
         val issued = store.dataSource.mintForActivePrincipalLocked(principal, userGroupStore) { c ->
-            store.issue(TokenKind.SESSION, principal, roles, name = null, ttlSeconds = ttl, c)
+            store.issue(TokenKind.SESSION, principal, roles, name = null, ttlSeconds = ttl, c).also { token ->
+                authAudit.success(
+                    c,
+                    minter,
+                    ACTION_TOKEN_MINT,
+                    auditEntity("Token", token.id.toString()),
+                    "Minted SESSION wire token",
+                )
+            }
         }
         if (issued == null) {
             call.respond(HttpStatusCode.Forbidden, ApiError("auth.principal_deprovisioned")); return@post
@@ -306,8 +332,17 @@ fun Route.tokenRoutes(config: Config, store: TokenStore, userGroupStore: UserGro
         val roles = rolesOf(call)
         // Same locked check-then-mint as /api/wire-tokens above — no fresh credentials
         // for a deactivated principal, and no revoke can race between the check and the INSERT.
+        val minter = callerActor(call, config)
         val issued = store.dataSource.mintForActivePrincipalLocked(principal, userGroupStore) { c ->
-            store.issue(TokenKind.USER, principal, roles, input.name?.ifBlank { null }, ttl, c)
+            store.issue(TokenKind.USER, principal, roles, input.name?.ifBlank { null }, ttl, c).also { token ->
+                authAudit.success(
+                    c,
+                    minter,
+                    ACTION_TOKEN_MINT,
+                    auditEntity("Token", token.id.toString()),
+                    "Minted USER wire token",
+                )
+            }
         }
         if (issued == null) {
             call.respond(HttpStatusCode.Forbidden, ApiError("auth.principal_deprovisioned")); return@post
@@ -322,7 +357,22 @@ fun Route.tokenRoutes(config: Config, store: TokenStore, userGroupStore: UserGro
         val token = store.get(id)
             ?: return@delete call.notFound("token")
         if (!call.requireAuthz(config, authz, AuthzAction.TOKEN_REVOKE, AuthzResource.Token(token.principal, TokenKind.fromWire(token.kind)))) return@delete
-        if (store.revoke(id, token.principal)) call.respond(HttpStatusCode.NoContent)
-        else call.notFound("token")
+        // The actor is the CALLER, not the token's owner: an oversight seed lets an identity admin revoke
+        // someone else's token, and attributing that to the owner would name the victim as the actor.
+        val revoker = callerActor(call, config)
+        val revoked = store.dataSource.inTx { c ->
+            store.revoke(id, token.principal, c).also { changed ->
+                if (changed) {
+                    authAudit.success(
+                        c,
+                        revoker,
+                        ACTION_TOKEN_REVOKE,
+                        auditEntity("Token", id.toString()),
+                        "Revoked ${token.kind} wire token owned by ${token.principal}",
+                    )
+                }
+            }
+        }
+        if (revoked) call.respond(HttpStatusCode.NoContent) else call.notFound("token")
     }
 }

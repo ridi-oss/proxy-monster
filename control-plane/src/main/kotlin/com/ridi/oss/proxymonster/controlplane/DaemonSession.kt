@@ -1,5 +1,11 @@
 package com.ridi.oss.proxymonster.controlplane
 
+import com.ridi.oss.proxymonster.controlplane.AuthAuditRecorder.Companion.ACTION_SESSION_EXPIRE
+import com.ridi.oss.proxymonster.controlplane.AuthAuditRecorder.Companion.ACTION_SESSION_RENEW
+import com.ridi.oss.proxymonster.controlplane.AuthAuditRecorder.Companion.CHANNEL_PMON
+import com.ridi.oss.proxymonster.controlplane.AuthAuditRecorder.Companion.CHANNEL_SESSION
+import com.ridi.oss.proxymonster.controlplane.management.AuditActor
+import com.ridi.oss.proxymonster.controlplane.management.auditEntity
 import io.ktor.client.HttpClient
 import io.ktor.client.call.body
 import io.ktor.client.plugins.ClientRequestException
@@ -279,11 +285,18 @@ class PrincipalSessionStore(
         }
     }
 
-    fun endWeb(id: Long, reason: String, c: Connection? = null): Boolean {
+    fun endWeb(id: Long, reason: String, c: Connection? = null): Boolean = endWebOwner(id, reason, c) != null
+
+    /**
+     * [endWeb], returning the principal whose session this ended (null when nothing transitioned) — the owner
+     * an audit record must name, which the caller may no longer be able to resolve: a row past its idle
+     * deadline still ends here but no longer resolves as a session.
+     */
+    fun endWebOwner(id: Long, reason: String, c: Connection? = null): String? {
         // The cleanup callback runs on the SAME connection as the end-write (see [onWebSessionEnded]), so when
         // [c] is a caller's transaction the delete composes with it; when null it shares this auto-commit
         // connection. Invoked inside the .use block so the connection is still open.
-        val useConnection: (Connection) -> Boolean = { connection ->
+        val useConnection: (Connection) -> String? = { connection ->
             val principal = connection.prepareStatement(
                 """UPDATE principal_session
                    SET ended_at = now(), ended_reason = ?, liveness_status = ?
@@ -296,7 +309,7 @@ class PrincipalSessionStore(
                 ps.executeQuery().use { rs -> if (rs.next()) rs.getString(1) else null }
             }
             if (principal != null) onWebSessionEnded?.invoke(principal, connection)
-            principal != null
+            principal
         }
         return if (c == null) dataSource.connection.use(useConnection) else useConnection(c)
     }
@@ -459,8 +472,9 @@ class PrincipalSessionStore(
             ps.executeUpdate()
         }
 
-    /** Close only the specified daemon session's still-open renewal window. */
-    fun closeDaemonWindow(id: Long) = dataSource.connection.use { c ->
+    /** Close only the specified daemon session's still-open renewal window, on the caller's connection [c].
+     *  Returns the count closed, so a caller can tell a real close from a repeat on an already-closed one. */
+    fun closeDaemonWindow(id: Long, c: Connection): Int =
         c.prepareStatement(
             """UPDATE principal_session
                SET liveness_status = ?, absolute_expires_at = now()
@@ -470,7 +484,6 @@ class PrincipalSessionStore(
             ps.setLong(2, id)
             ps.executeUpdate()
         }
-    }
 
     /** End every active web session for [principal], on a fresh connection. Already-ended rows remain unchanged. */
     fun endAllWebForPrincipal(principal: String, reason: String): Int =
@@ -632,9 +645,11 @@ class PrincipalSessionStore(
  * of someone's principal string must never be enough to mint them a fresh wire token.
  */
 internal fun Route.sessionRenewRoutes(
+    config: Config,
     daemonSessionStore: PrincipalSessionStore,
     tokenStore: TokenStore,
     userGroupStore: UserGroupStore,
+    authAudit: AuthAuditRecorder,
 ) {
     post("/auth/session/renew") {
         val authHeader = call.request.headers["Authorization"]
@@ -648,12 +663,24 @@ internal fun Route.sessionRenewRoutes(
             call.respond(HttpStatusCode.Unauthorized, ApiError("common.unauthenticated"))
             return@post
         }
+        val clientAddr = call.httpRequesterIp(config)
         // Re-check and mint under the per-principal advisory lock, not against [row]'s pre-lock
         // snapshot. Every fail-closed decision is repeated on the locked connection before issuance.
         val issued = daemonSessionStore.renewLocked(
             row,
             isDeactivated = { principal, c -> userGroupStore.isDeactivated(principal, c) },
-            mint = { fresh, c -> tokenStore.issue(TokenKind.SESSION, fresh.principal, emptyList(), name = null, ttlSeconds = fresh.ttlSeconds, c) },
+            mint = { fresh, c ->
+                tokenStore.issue(TokenKind.SESSION, fresh.principal, emptyList(), name = null, ttlSeconds = fresh.ttlSeconds, c)
+                    .also { token ->
+                        authAudit.success(
+                            c,
+                            AuditActor(fresh.principal, clientAddr = clientAddr, channel = CHANNEL_PMON),
+                            ACTION_SESSION_RENEW,
+                            auditEntity("Token", token.id.toString()),
+                            "Daemon session renewed SESSION token",
+                        )
+                    }
+            },
         )
         if (issued == null) {
             call.respond(HttpStatusCode.Unauthorized, ApiError("auth.session_window_expired"))
@@ -680,12 +707,15 @@ suspend fun sweepSessionLiveness(
     sessionStore: PrincipalSessionStore,
     userGroupStore: UserGroupStore,
     roleResolver: RoleResolver,
+    authAudit: AuthAuditRecorder,
     log: Logger,
 ) {
     if (config.oidc == null || discovery == null) return
     for (row in sessionStore.staleSessions(config.idpRecheckIntervalSeconds)) {
         runCatching {
-            revalidateSession(row, config, discovery, validator, http, sessionStore, userGroupStore, roleResolver, log)
+            revalidateSession(
+                row, config, discovery, validator, http, sessionStore, userGroupStore, roleResolver, authAudit, log,
+            )
         }.onFailure { log.warn("IdP liveness sweep failed for {} session {}", row.principal, row.id, it) }
     }
 }
@@ -704,6 +734,7 @@ private suspend fun revalidateSession(
     sessionStore: PrincipalSessionStore,
     userGroupStore: UserGroupStore,
     roleResolver: RoleResolver,
+    authAudit: AuthAuditRecorder,
     log: Logger,
 ) {
     val oidc = config.oidc ?: return
@@ -738,16 +769,48 @@ private suspend fun revalidateSession(
                 // Reconciliation is principal-global, so a zero-role verdict ends every live web
                 // session for the principal regardless of which kind produced this candidate. Daemon
                 // rows stay open; each daemon query re-resolves roles and fail-closes on its own.
-                sessionStore.endAllWebForPrincipal(row.principal, ENDED_GROUP_REVOKED)
+                sessionStore.dataSource.inTx { c ->
+                    val ended = sessionStore.endAllWebForPrincipal(row.principal, ENDED_GROUP_REVOKED, c)
+                    if (ended > 0) {
+                        authAudit.success(
+                            c,
+                            AuditActor(row.principal, clientAddr = null, channel = CHANNEL_SESSION),
+                            ACTION_SESSION_EXPIRE,
+                            auditEntity("User", row.principal),
+                            "IdP liveness ended $ended web session(s)",
+                            detail = "group_revoked",
+                        )
+                    }
+                }
             }
             sessionStore.markCheck(row.id, LIVENESS_ACTIVE)
         }
         is RefreshOutcome.Inactive -> {
             log.warn("IdP rejected refresh token for {} session {} ({})", row.principal, row.id, outcome.reason)
-            when (row.kind) {
-                "WEB" -> sessionStore.endWeb(row.id, ENDED_IDP_REJECTED)
-                "DAEMON" -> sessionStore.closeDaemonWindow(row.id)
-                else -> log.warn("ignoring unknown principal session kind {} for row {}", row.kind, row.id)
+            // Each kind has its own end (a web row is ended; a daemon row's renewal window is closed), but the
+            // record is the same event either way, and it commits with the end so a recorded revocation is one
+            // that took effect. A row already ended by an earlier sweep transitions nothing and records nothing.
+            val end: ((Connection) -> Boolean)? = when (row.kind) {
+                "WEB" -> { c -> sessionStore.endWeb(row.id, ENDED_IDP_REJECTED, c) }
+                "DAEMON" -> { c -> sessionStore.closeDaemonWindow(row.id, c) > 0 }
+                else -> {
+                    log.warn("ignoring unknown principal session kind {} for row {}", row.kind, row.id)
+                    null
+                }
+            }
+            if (end != null) {
+                sessionStore.dataSource.inTx { c ->
+                    if (end(c)) {
+                        authAudit.success(
+                            c,
+                            AuditActor(row.principal, clientAddr = null, channel = CHANNEL_SESSION),
+                            ACTION_SESSION_EXPIRE,
+                            auditEntity("Session", row.id.toString()),
+                            "IdP rejected ${row.kind.lowercase()} session",
+                            detail = "idp_rejected",
+                        )
+                    }
+                }
             }
         }
         is RefreshOutcome.Transient ->

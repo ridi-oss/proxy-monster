@@ -164,7 +164,15 @@ class OAuthAuthorizationStore(private val dataSource: DataSource) {
         return code
     }
 
-    fun consumeAuthorizationCode(input: ConsumeAuthorizationCodeInput): OAuthTokenPair? = inTransaction { connection ->
+    /**
+     * [onCommit] runs inside this transaction after the grant succeeds and before commit, so a caller can
+     * write an audit row that commits or rolls back WITH the grant — a rejected audit leaves the code
+     * unconsumed and the client retries cleanly.
+     */
+    fun consumeAuthorizationCode(
+        input: ConsumeAuthorizationCodeInput,
+        onCommit: ((Connection) -> Unit)? = null,
+    ): OAuthTokenPair? = inTransaction { connection ->
         val row = connection.prepareStatement(
             """SELECT id, principal, client_id, redirect_uri, resource, scope, code_challenge, consent_id
                FROM oauth_authorization_code
@@ -202,7 +210,7 @@ class OAuthAuthorizationStore(private val dataSource: DataSource) {
         if (!consentActive(connection, row.consentId, row.principal, row.clientId, row.resource, row.scope)) {
             return@inTransaction null
         }
-        issuePair(
+        val pair = issuePair(
             connection = connection,
             principal = row.principal,
             clientId = row.clientId,
@@ -214,9 +222,21 @@ class OAuthAuthorizationStore(private val dataSource: DataSource) {
             refreshTtlSeconds = input.refreshTtlSeconds,
             rotatedFrom = null,
         )
+        onCommit?.invoke(connection)
+        pair
     }
 
-    fun rotateRefresh(input: RefreshTokenInput): OAuthTokenPair? = inTransaction { connection ->
+    /**
+     * [onCommit] runs inside this transaction on the SUCCESS (rotation) path; [onReplayRevoke] runs when a
+     * replayed (already-rotated) refresh token forces its family to be revoked — a real revocation that
+     * commits, so its audit row must commit with it. Both are invoked before commit, keyed by the presented
+     * token's id.
+     */
+    fun rotateRefresh(
+        input: RefreshTokenInput,
+        onCommit: ((Connection) -> Unit)? = null,
+        onReplayRevoke: ((Connection, Long) -> Unit)? = null,
+    ): OAuthTokenPair? = inTransaction { connection ->
         val row = connection.prepareStatement(
             """SELECT id, kind, principal, client_id, resource, scope, refresh_family, consent_id,
                       revoked_at, expires_at, rotated_at
@@ -241,7 +261,7 @@ class OAuthAuthorizationStore(private val dataSource: DataSource) {
         }
         if (row.clientId != input.clientId || row.resource != input.resource) return@inTransaction null
         if (row.rotated) {
-            revokeFamily(connection, row.family)
+            if (revokeFamily(connection, row.family) > 0) onReplayRevoke?.invoke(connection, row.id)
             return@inTransaction null
         }
         if (row.revoked || row.expired ||
@@ -251,7 +271,7 @@ class OAuthAuthorizationStore(private val dataSource: DataSource) {
             statement.setLong(1, row.id)
             if (statement.executeUpdate() != 1) return@inTransaction null
         }
-        issuePair(
+        val pair = issuePair(
             connection = connection,
             principal = row.principal,
             clientId = row.clientId,
@@ -263,9 +283,19 @@ class OAuthAuthorizationStore(private val dataSource: DataSource) {
             refreshTtlSeconds = input.refreshTtlSeconds,
             rotatedFrom = row.id,
         )
+        onCommit?.invoke(connection)
+        pair
     }
 
-    fun rememberConsent(principal: String, clientId: String, resource: String, scopes: Collection<String>): OAuthConsent =
+    /** [onCommit] runs inside this transaction with the consent id, so a caller's consent-grant audit commits
+     *  or rolls back with the consent. */
+    fun rememberConsent(
+        principal: String,
+        clientId: String,
+        resource: String,
+        scopes: Collection<String>,
+        onCommit: ((Connection, Long) -> Unit)? = null,
+    ): OAuthConsent =
         inTransaction { connection ->
             val canonical = canonicalScopes(scopes)
             val id = connection.prepareStatement(
@@ -281,7 +311,7 @@ class OAuthAuthorizationStore(private val dataSource: DataSource) {
                 statement.setString(4, canonical)
                 statement.executeQuery().use { result -> result.next(); result.getLong(1) }
             }
-            consent(connection, id)!!
+            consent(connection, id)!!.also { onCommit?.invoke(connection, id) }
         }
 
     fun findActiveConsent(principal: String, clientId: String, resource: String, scopes: Collection<String>): OAuthConsent? =
@@ -309,7 +339,9 @@ class OAuthAuthorizationStore(private val dataSource: DataSource) {
         }
     }
 
-    fun revokeConsent(id: Long, principal: String): Boolean = inTransaction { connection ->
+    /** [onCommit] runs inside this transaction with the consent id when the revocation actually transitions a
+     *  row, so a caller's revoke audit commits with the consent + token revocation. */
+    fun revokeConsent(id: Long, principal: String, onCommit: ((Connection, Long) -> Unit)? = null): Boolean = inTransaction { connection ->
         val updated = connection.prepareStatement(
             "UPDATE oauth_consent SET revoked_at = now(), updated_at = now() WHERE id = ? AND principal = ? AND revoked_at IS NULL",
         ).use { statement ->
@@ -321,23 +353,36 @@ class OAuthAuthorizationStore(private val dataSource: DataSource) {
         connection.prepareStatement(
             "UPDATE proxy_token SET revoked_at = COALESCE(revoked_at, now()) WHERE consent_id = ? AND kind IN ('MCP_ACCESS', 'MCP_REFRESH')",
         ).use { statement -> statement.setLong(1, id); statement.executeUpdate() }
+        onCommit?.invoke(connection, id)
         true
     }
 
-    /** RFC 7009: access closes only itself; refresh closes its entire rotation family. */
-    fun revoke(token: String) = inTransaction { connection ->
-        val row = connection.prepareStatement(
+    /**
+     * RFC 7009: access closes only itself; refresh closes its entire rotation family. Returns the presented
+     * token's id when this call actually closed something, null when it resolved to nothing or to a token
+     * already revoked. The caller answers 200 either way (RFC 7009 §2.2 forbids distinguishing the cases to
+     * the client), but the endpoint is unauthenticated, so a caller replaying one once-valid token must not
+     * be able to append a revocation record per call.
+     */
+    fun revoke(token: String, onCommit: ((Connection, Long) -> Unit)? = null): Long? = inTransaction { connection ->
+        val (id, kind, family) = connection.prepareStatement(
             "SELECT id, kind, refresh_family FROM proxy_token WHERE token_hash = ? FOR UPDATE",
         ).use { statement ->
             statement.setString(1, sha256Hex(token))
             statement.executeQuery().use { result ->
                 if (result.next()) Triple(result.getLong(1), result.getString(2), result.getString(3)) else null
             }
-        } ?: return@inTransaction Unit
-        if (row.second == MCP_REFRESH_KIND) revokeFamily(connection, row.third)
-        else if (row.second == MCP_ACCESS_KIND) connection.prepareStatement(
-            "UPDATE proxy_token SET revoked_at = COALESCE(revoked_at, now()) WHERE id = ?",
-        ).use { statement -> statement.setLong(1, row.first); statement.executeUpdate() }
+        } ?: return@inTransaction null
+        val closed = when (kind) {
+            MCP_REFRESH_KIND -> revokeFamily(connection, family)
+            MCP_ACCESS_KIND -> connection.prepareStatement(
+                "UPDATE proxy_token SET revoked_at = now() WHERE id = ? AND revoked_at IS NULL",
+            ).use { statement -> statement.setLong(1, id); statement.executeUpdate() }
+            else -> 0
+        }
+        // [onCommit] runs inside this transaction only when a token actually closed, so the revoke audit
+        // commits with the revocation (RFC 7009 still answers 200 regardless — the caller absorbs a throw).
+        id.takeIf { closed > 0 }?.also { onCommit?.invoke(connection, it) }
     }
 
     private fun issuePair(
@@ -391,10 +436,13 @@ class OAuthAuthorizationStore(private val dataSource: DataSource) {
         }
     }
 
-    private fun revokeFamily(connection: Connection, family: String?) {
-        if (family == null) return
-        connection.prepareStatement(
-            "UPDATE proxy_token SET revoked_at = COALESCE(revoked_at, now()) WHERE refresh_family = ? AND kind IN ('MCP_ACCESS', 'MCP_REFRESH')",
+    /** Closes every still-open token in [family] and returns how many that was — an already-closed family
+     *  keeps its original timestamps and reports 0, which is how a caller tells a real revocation from a replay. */
+    private fun revokeFamily(connection: Connection, family: String?): Int {
+        if (family == null) return 0
+        return connection.prepareStatement(
+            """UPDATE proxy_token SET revoked_at = now()
+               WHERE refresh_family = ? AND kind IN ('MCP_ACCESS', 'MCP_REFRESH') AND revoked_at IS NULL""",
         ).use { statement -> statement.setString(1, family); statement.executeUpdate() }
     }
 

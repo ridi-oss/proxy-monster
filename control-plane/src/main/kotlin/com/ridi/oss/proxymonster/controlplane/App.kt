@@ -16,6 +16,7 @@ import com.ridi.oss.proxymonster.controlplane.management.IdentityManagementServi
 import com.ridi.oss.proxymonster.controlplane.management.ManagementAuditRecorder
 import com.ridi.oss.proxymonster.controlplane.management.ManagementException
 import com.ridi.oss.proxymonster.controlplane.management.PolicyManagementService
+import com.ridi.oss.proxymonster.controlplane.management.auditEntity
 import com.ridi.oss.proxymonster.controlplane.mcp.installMcp
 import com.ridi.oss.proxymonster.controlplane.oauth.MCP_OAUTH_PENDING_COOKIE
 import com.ridi.oss.proxymonster.controlplane.oauth.McpPendingAuthorization
@@ -440,7 +441,7 @@ fun Application.module(config: Config, core: ControlPlaneCore) {
             runCatching {
                 sweepSessionLiveness(
                     config, discovery, validator, oidcHttp, principalSessionStore, userGroupStore,
-                    roleResolver, environment.log,
+                    roleResolver, core.authAudit, environment.log,
                 )
             }.onFailure { environment.log.warn("session liveness sweep failed", it) }
         }
@@ -617,18 +618,18 @@ fun Application.module(config: Config, core: ControlPlaneCore) {
         // OIDC authorization-code routes (/auth/oidc/login, /auth/oidc/callback).
         oidcRoutes(
             config, discovery, validator, oidcHttp, userGroupStore, roleResolver, principalSessionStore,
-            this@module.environment.log,
+            core.authAudit, this@module.environment.log,
         )
 
         // OAuth 2.1/CIMD authorization-server routes share this process, origin, DB pool, OIDC login,
         // and signed user session with the control plane. There is no service-to-service auth hop.
-        mcpOAuthRoutes(config, dataSource, principalSessionStore)
+        mcpOAuthRoutes(config, dataSource, principalSessionStore, core.authAudit)
 
         // CLI/daemon login surface: /auth/device/start + /poll (pmon), the /device verification page + its
         // SSO/debug choices, and /auth/session/renew (docs/auth-model.md "CLI / daemon login").
         deviceSessionRoutes(
             config, deviceLoginStore, principalSessionStore,
-            tokenStore, userGroupStore, this@module.environment.log,
+            tokenStore, userGroupStore, core.authAudit, this@module.environment.log,
         )
 
         // SCIM 2.0 provisioning (docs/auth-model.md "SCIM 2.0 provisioning") — bearer+TLS gated,
@@ -678,7 +679,7 @@ fun Application.module(config: Config, core: ControlPlaneCore) {
         queryHistoryRoutes(config, queryHistoryStore)
 
         // Wire-auth: SESSION/PAT token issuance + revocation.
-        tokenRoutes(config, tokenStore, userGroupStore, authz)
+        tokenRoutes(config, tokenStore, userGroupStore, authz, core.authAudit)
 
         // Cedar policy admin: put/enable/disable + validate-on-write. Admin-gated: admin.policies.
         cedarPolicyRoutes(config, authz, cedarPolicyStore, policyManagement)
@@ -804,6 +805,28 @@ fun Application.module(config: Config, core: ControlPlaneCore) {
             if (request?.sessionId != null && currentRef != null && currentRef.sessionId != request.sessionId) {
                 call.respond(HttpStatusCode.OK, LogoutResponse(ended = false))
                 return@post
+            }
+            // Ends the row here rather than leaving it to the cookie-storage invalidate below, so the end and
+            // its audit record share one transaction. Keyed off the session REF, not the resolved row: a
+            // session past its idle deadline no longer resolves yet is still ended by a logout, and that
+            // termination has to appear in the trail like any other. The invalidate then no-ops on the
+            // already-ended row, so exactly one event is written.
+            if (currentRef != null) {
+                // Resolved BEFORE the transaction: under the debug bypass this reads the web session, and
+                // that read can itself write (the device-binding mismatch end) on a second connection —
+                // which would then block on the row this transaction has already locked.
+                val clientAddr = call.httpRequesterIp(config)
+                principalSessionStore.dataSource.inTx { c ->
+                    principalSessionStore.endWebOwner(currentRef.sessionId, ENDED_SIGNED_OUT, c)?.let { owner ->
+                        core.authAudit.success(
+                            c,
+                            AuditActor(owner, clientAddr = clientAddr, channel = AuthAuditRecorder.CHANNEL_SESSION),
+                            AuthAuditRecorder.ACTION_LOGOUT,
+                            auditEntity("Session", currentRef.sessionId.toString()),
+                            "Web session signed out",
+                        )
+                    }
+                }
             }
             call.sessions.clear(SESSION_COOKIE)
             call.respond(HttpStatusCode.OK, LogoutResponse(ended = true))

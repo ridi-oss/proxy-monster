@@ -69,7 +69,7 @@ class RenewalWindowTest {
     private fun ApplicationTestBuilder.installRenewRoute() {
         install(ContentNegotiation) { json(Json { ignoreUnknownKeys = true; encodeDefaults = true }) }
         routing {
-            sessionRenewRoutes(daemonSessionStore, tokenStore, userGroupStore)
+            sessionRenewRoutes(config, daemonSessionStore, tokenStore, userGroupStore, AuthAuditRecorder(AuditStore(ds)))
         }
     }
 
@@ -87,6 +87,14 @@ class RenewalWindowTest {
         val body: RenewSessionResponse = resp.body()
         assertTrue(body.token.isNotBlank())
         assertNotNull(tokenStore.validate(body.token))
+        val audit = ds.connection.use { c ->
+            c.prepareStatement("SELECT outcome, channel FROM audit_event WHERE kind='auth' AND action=? AND principal=?").use { ps ->
+                ps.setString(1, AuthAuditRecorder.ACTION_SESSION_RENEW)
+                ps.setString(2, principal)
+                ps.executeQuery().use { rs -> assertTrue(rs.next()); rs.getString(1) to rs.getString(2) }
+            }
+        }
+        assertEquals("SUCCESS" to AuthAuditRecorder.CHANNEL_PMON, audit)
     }
 
     @Test

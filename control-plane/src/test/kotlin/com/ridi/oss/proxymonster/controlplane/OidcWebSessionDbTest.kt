@@ -9,11 +9,14 @@ import com.nimbusds.jose.jwk.gen.RSAKeyGenerator
 import com.nimbusds.jwt.JWTClaimsSet
 import com.nimbusds.jwt.SignedJWT
 import com.ridi.oss.proxymonster.auth.pkceS256
+import com.ridi.oss.proxymonster.controlplane.management.auditEntity
 import com.ridi.oss.proxymonster.controlplane.support.SharedPostgres
 import com.ridi.oss.proxymonster.controlplane.support.requireDockerOrSkip
 import com.ridi.oss.proxymonster.controlplane.support.webSessionCookie
+import io.ktor.client.plugins.DefaultRequest
 import io.ktor.client.plugins.cookies.HttpCookies
 import io.ktor.client.request.get
+import io.ktor.client.request.header
 import io.ktor.client.request.post
 import io.ktor.client.request.setBody
 import io.ktor.http.ContentType
@@ -55,6 +58,9 @@ import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+
+/** The forwarded source address the callback client presents, and the one the login's audit row must carry. */
+private const val CALLER_ADDR = "203.0.113.11"
 
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 class OidcWebSessionDbTest {
@@ -120,6 +126,82 @@ class OidcWebSessionDbTest {
             seedRole = false,
             expectSession = false,
         )
+    }
+
+    @Test
+    fun `a session mint failure after id_token validation is audited and leaves no session`() = testApplication {
+        requireDockerOrSkip()
+        val dataSource = SharedPostgres.hikari(SharedPostgres.freshDatabase("pm_oidc_web"))
+        Flyway.configure().dataSource(dataSource).load().migrate()
+        val principal = "oidc-mint-fail@example.com"
+        callbackPrincipal.set(principal)
+        val policyStore = PolicyStore(dataSource)
+        val role = policyStore.createRole(RoleInput("oidc-mint-fail-role"))
+        policyStore.createAssignment(RoleAssignmentInput(principal, role.id))
+
+        // Fail the session mint AFTER the id_token validates: a BEFORE INSERT trigger on principal_session
+        // rolls the mint transaction back, exercising the callback's own mint-failure catch. The standalone
+        // failure row it writes is not on that rolled-back transaction, so it survives.
+        dataSource.connection.use { c ->
+            c.createStatement().use {
+                it.execute(
+                    """CREATE OR REPLACE FUNCTION pm_test_reject_session_insert() RETURNS trigger AS ${'$'}body${'$'}
+                       BEGIN RAISE EXCEPTION 'forced session mint failure'; END
+                       ${'$'}body${'$'} LANGUAGE plpgsql""",
+                )
+                it.execute(
+                    """CREATE TRIGGER pm_test_reject_session_insert BEFORE INSERT ON principal_session
+                       FOR EACH ROW EXECUTE FUNCTION pm_test_reject_session_insert()""",
+                )
+            }
+        }
+
+        application { installOidcWebApp(config("openid email", resultKey = ByteArray(32) { it.toByte() }), dataSource) }
+        val client = createClient {
+            expectSuccess = false
+            followRedirects = false
+            install(HttpCookies)
+            install(DefaultRequest) { header("X-Forwarded-For", CALLER_ADDR) }
+        }
+
+        val login = client.get("/auth/oidc/login")
+        val query = parseQueryString(assertNotNull(login.headers[HttpHeaders.Location]).substringAfter('?'))
+        nonce.set(assertNotNull(query["nonce"]))
+        val callback = client.get("/auth/oidc/callback?code=ok&state=${assertNotNull(query["state"])}")
+
+        assertEquals(HttpStatusCode.Found, callback.status)
+        assertEquals("/login?error=oidc", callback.headers[HttpHeaders.Location])
+        assertTrue(
+            callback.headers.getAll(HttpHeaders.SetCookie).orEmpty().none { it.startsWith("$SESSION_COOKIE=") },
+            "a rolled-back mint must set no console session cookie",
+        )
+
+        dataSource.connection.use { c ->
+            c.prepareStatement("SELECT count(*) FROM principal_session WHERE principal = ?").use { ps ->
+                ps.setString(1, principal)
+                ps.executeQuery().use { rs ->
+                    assertTrue(rs.next())
+                    assertEquals(0, rs.getInt(1), "the rolled-back mint leaves no session row")
+                }
+            }
+            c.prepareStatement(
+                """SELECT outcome, decision, channel, detail, client_addr, resource FROM audit_event
+                   WHERE kind='auth' AND principal=? AND action=?""",
+            ).use { ps ->
+                ps.setString(1, principal)
+                ps.setString(2, AuthAuditRecorder.ACTION_OIDC_LOGIN)
+                ps.executeQuery().use { rs ->
+                    assertTrue(rs.next(), "the mint failure must be audited")
+                    assertEquals("FAILURE", rs.getString("outcome"))
+                    assertEquals("DENY", rs.getString("decision"))
+                    assertEquals(AuthAuditRecorder.CHANNEL_OIDC, rs.getString("channel"))
+                    assertEquals("session_mint_failed", rs.getString("detail"))
+                    assertEquals(CALLER_ADDR, rs.getString("client_addr"))
+                    assertEquals(auditEntity("User", principal), rs.getString("resource"))
+                    assertTrue(!rs.next(), "exactly one FAILURE row for the mint failure")
+                }
+            }
+        }
     }
 
     @Test
@@ -253,6 +335,7 @@ class OidcWebSessionDbTest {
             expectSuccess = false
             followRedirects = false
             install(HttpCookies)
+            install(DefaultRequest) { header("X-Forwarded-For", CALLER_ADDR) }
         }
 
         val login = client.get(
@@ -276,6 +359,21 @@ class OidcWebSessionDbTest {
                         assertEquals(0, rs.getInt(1))
                     }
                 }
+                c.prepareStatement(
+                    """SELECT outcome, decision, channel, detail, client_addr FROM audit_event
+                       WHERE kind='auth' AND principal=? AND action=?""",
+                ).use { ps ->
+                    ps.setString(1, principal)
+                    ps.setString(2, AuthAuditRecorder.ACTION_OIDC_LOGIN)
+                    ps.executeQuery().use { rs ->
+                        assertTrue(rs.next(), "a login refused for having no roles must be audited")
+                        assertEquals("FAILURE", rs.getString("outcome"))
+                        assertEquals("DENY", rs.getString("decision"))
+                        assertEquals(AuthAuditRecorder.CHANNEL_OIDC, rs.getString("channel"))
+                        assertEquals("no_effective_roles", rs.getString("detail"))
+                        assertEquals(CALLER_ADDR, rs.getString("client_addr"))
+                    }
+                }
             }
             return@testApplication
         }
@@ -291,12 +389,30 @@ class OidcWebSessionDbTest {
 
         dataSource.connection.use { c ->
             c.prepareStatement(
-                """SELECT kind, refresh_token_enc, idle_expires_at, absolute_expires_at, created_at, device_id, session_key
+                """SELECT kind, refresh_token_enc, idle_expires_at, absolute_expires_at, created_at, device_id, session_key, id
                    FROM principal_session WHERE principal = ?""",
             ).use { ps ->
                 ps.setString(1, principal)
                 ps.executeQuery().use { rs ->
                     assertTrue(rs.next())
+                    // The audit row names the session this login actually minted, not merely that some
+                    // login happened: a row pointing at a different session would go unnoticed otherwise.
+                    val sessionId = rs.getLong("id")
+                    c.prepareStatement(
+                        """SELECT outcome, decision, channel, resource, client_addr FROM audit_event
+                           WHERE kind='auth' AND principal=? AND action=?""",
+                    ).use { auditPs ->
+                        auditPs.setString(1, principal)
+                        auditPs.setString(2, AuthAuditRecorder.ACTION_OIDC_LOGIN)
+                        auditPs.executeQuery().use { auditRs ->
+                            assertTrue(auditRs.next(), "a login that minted a session must be audited")
+                            assertEquals("SUCCESS", auditRs.getString("outcome"))
+                            assertEquals("ALLOW", auditRs.getString("decision"))
+                            assertEquals(AuthAuditRecorder.CHANNEL_OIDC, auditRs.getString("channel"))
+                            assertEquals(auditEntity("Session", sessionId.toString()), auditRs.getString("resource"))
+                            assertEquals(CALLER_ADDR, auditRs.getString("client_addr"))
+                        }
+                    }
                     assertEquals("WEB", rs.getString("kind"))
                     assertEquals(deviceId, rs.getString("device_id"))
                     assertNotNull(rs.getString("session_key"))
@@ -350,8 +466,11 @@ class OidcWebSessionDbTest {
             }
         }
         routing {
-            oidcRoutes(config, discovery, validator, http, userGroupStore, roleResolver, store, environment.log)
-            deviceSessionRoutes(config, deviceLoginStore, store, TokenStore(dataSource), userGroupStore, environment.log)
+            val authAudit = AuthAuditRecorder(AuditStore(dataSource))
+            oidcRoutes(config, discovery, validator, http, userGroupStore, roleResolver, store, authAudit, environment.log)
+            deviceSessionRoutes(
+                config, deviceLoginStore, store, TokenStore(dataSource), userGroupStore, authAudit, environment.log,
+            )
         }
     }
 
@@ -377,6 +496,9 @@ class OidcWebSessionDbTest {
         webSessionAbsoluteSeconds = 7200,
         idpRecheckIntervalSeconds = 600,
         devMarker = true,
+        // The Ktor test host's socket peer, trusted as an edge so the client's X-Forwarded-For resolves to
+        // [CALLER_ADDR] — the requester address the login's audit row is asserted to carry.
+        trustedProxies = setOf("localhost"),
     )
 
     private fun sign(expectedNonce: String): String {

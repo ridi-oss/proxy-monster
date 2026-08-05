@@ -179,6 +179,7 @@ class DaemonSessionLivenessIdpTest {
                 sessionStore,
                 userGroupStore,
                 roleResolver,
+                AuthAuditRecorder(AuditStore(ds)),
                 LoggerFactory.getLogger("DaemonSessionLivenessIdpTest"),
             )
         } finally {
@@ -231,6 +232,18 @@ class DaemonSessionLivenessIdpTest {
         val endedReason: String?,
     )
 
+    /** The (resource, detail, outcome, channel) of every `auth.session.expire` row for [principal]. */
+    private fun expiryEvents(principal: String): List<List<String?>> = ds.connection.use { c ->
+        c.prepareStatement(
+            """SELECT resource, detail, outcome, channel FROM audit_event
+               WHERE kind='auth' AND action=? AND principal=? ORDER BY id""",
+        ).use { ps ->
+            ps.setString(1, AuthAuditRecorder.ACTION_SESSION_EXPIRE)
+            ps.setString(2, principal)
+            ps.executeQuery().use { rs -> buildList { while (rs.next()) add((1..4).map(rs::getString)) } }
+        }
+    }
+
     @Test
     fun `fresh fewer groups end only the zero-role web session and preserve inactive liveness`() {
         val principal = "web-groups-removed@example.com"
@@ -254,6 +267,11 @@ class DaemonSessionLivenessIdpTest {
         assertEquals("WEB", after.kind)
         assertEquals(LIVENESS_INACTIVE, after.livenessStatus)
         assertNotNull(after.lastIdpCheckAt)
+        // Group revocation is principal-global, so the event names the principal, not one session row.
+        assertEquals(
+            listOf(listOf("""User::"$principal"""", "group_revoked", "SUCCESS", AuthAuditRecorder.CHANNEL_SESSION)),
+            expiryEvents(principal),
+        )
     }
 
     @Test
@@ -310,6 +328,10 @@ class DaemonSessionLivenessIdpTest {
         assertNull(sessionStore.resolveWeb(webId, "web-groups-omitted-device"))
         assertEquals(ENDED_GROUP_REVOKED, sessionStore.webEndedReason(webId))
         assertNotNull(snapshot(webId).lastIdpCheckAt)
+        assertEquals(
+            listOf(listOf("""User::"$principal"""", "group_revoked", "SUCCESS", AuthAuditRecorder.CHANNEL_SESSION)),
+            expiryEvents(principal),
+        )
     }
 
     @Test
@@ -331,6 +353,11 @@ class DaemonSessionLivenessIdpTest {
         assertNotNull(validAfter.lastIdpCheckAt)
         assertNull(tokenStore.get(wireToken.id)!!.revokedAt)
         assertEquals(1, accessStore.listGrants(principal, activeOnly = true).size)
+        // Only the row the IdP rejected is recorded — the sibling it left open must not appear.
+        assertEquals(
+            listOf(listOf("""Session::"${rejected.id}"""", "idp_rejected", "SUCCESS", AuthAuditRecorder.CHANNEL_SESSION)),
+            expiryEvents(principal),
+        )
     }
 
     @Test
@@ -354,6 +381,13 @@ class DaemonSessionLivenessIdpTest {
         assertEquals(LIVENESS_INACTIVE, snapshot(webId).livenessStatus)
         assertNull(tokenStore.get(wireToken.id)!!.revokedAt)
         assertEquals(1, accessStore.listGrants(principal, activeOnly = true).size)
+        // One row per session actually closed — both daemon rows and the web row, none doubled.
+        assertEquals(
+            listOf(daemonA.id, daemonB.id, webId).map {
+                listOf("""Session::"$it"""", "idp_rejected", "SUCCESS", AuthAuditRecorder.CHANNEL_SESSION)
+            }.toSet(),
+            expiryEvents(principal).toSet(),
+        )
     }
 
     @Test
@@ -380,6 +414,8 @@ class DaemonSessionLivenessIdpTest {
             assertNull(snapshot(webId).endedReason)
             assertNull(tokenStore.get(wireToken.id)!!.revokedAt)
             assertEquals(1, accessStore.listGrants(principal, activeOnly = true).size)
+            // A transient IdP error revokes nothing, so it must not be recorded as an expiry.
+            assertEquals(emptyList(), expiryEvents(principal))
         }
     }
 
@@ -406,7 +442,9 @@ class DaemonSessionLivenessIdpTest {
     fun `renew route never revalidates and only the timer sweep reaches the token endpoint`() = testApplication {
         application {
             install(ContentNegotiation) { json(Json { ignoreUnknownKeys = true; encodeDefaults = true }) }
-            routing { sessionRenewRoutes(sessionStore, tokenStore, userGroupStore) }
+            routing {
+                sessionRenewRoutes(testConfig(), sessionStore, tokenStore, userGroupStore, AuthAuditRecorder(AuditStore(ds)))
+            }
         }
         val principal = "sole-revalidator@example.com"
         val created = sessionStore.create(

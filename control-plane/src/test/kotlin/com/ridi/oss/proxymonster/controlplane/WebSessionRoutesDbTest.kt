@@ -1,5 +1,6 @@
 package com.ridi.oss.proxymonster.controlplane
 
+import com.ridi.oss.proxymonster.controlplane.management.auditEntity
 import com.ridi.oss.proxymonster.controlplane.support.SharedPostgres
 import com.ridi.oss.proxymonster.controlplane.support.requireDockerOrSkip
 import io.ktor.client.HttpClient
@@ -245,6 +246,20 @@ class WebSessionRoutesDbTest {
                     assertEquals(ENDED_SIGNED_OUT, rs.getString("ended_reason"))
                 }
             }
+            c.prepareStatement(
+                """SELECT outcome, decision, channel FROM audit_event
+                   WHERE kind='auth' AND principal=? AND action=? AND resource=?""",
+            ).use { ps ->
+                ps.setString(1, "web@example.com")
+                ps.setString(2, AuthAuditRecorder.ACTION_LOGOUT)
+                ps.setString(3, auditEntity("Session", id.toString()))
+                ps.executeQuery().use { rs ->
+                    assertTrue(rs.next())
+                    assertEquals("SUCCESS", rs.getString("outcome"))
+                    assertEquals("ALLOW", rs.getString("decision"))
+                    assertEquals(AuthAuditRecorder.CHANNEL_SESSION, rs.getString("channel"))
+                }
+            }
         }
         assertEquals(HttpStatusCode.Unauthorized, client.get("/auth/me").status)
         val replay = createClient { expectSuccess = false }.get("/auth/me") {
@@ -292,6 +307,16 @@ class WebSessionRoutesDbTest {
         assertEquals(HttpStatusCode.OK, staleLogout.status)
         assertEquals(LogoutResponse(ended = false), staleLogout.body())
         assertNull(staleLogout.headers[HttpHeaders.SetCookie], "a stale conditional logout must not clear the cookie")
+        assertEquals(
+            0,
+            dataSource.connection.use { c ->
+                c.prepareStatement("SELECT count(*) FROM audit_event WHERE kind='auth' AND action=? AND resource=?").use { ps ->
+                    ps.setString(1, AuthAuditRecorder.ACTION_LOGOUT)
+                    ps.setString(2, auditEntity("Session", currentId.toString()))
+                    ps.executeQuery().use { rs -> rs.next(); rs.getInt(1) }
+                }
+            },
+        )
         val stillCurrent = client.get("/auth/session/status")
         assertEquals(HttpStatusCode.OK, stillCurrent.status)
         assertEquals(currentId, stillCurrent.body<SessionStatus>().sessionId)
@@ -304,6 +329,53 @@ class WebSessionRoutesDbTest {
         assertEquals(LogoutResponse(ended = true), matchingLogout.body())
         assertContains(assertNotNull(matchingLogout.headers.getAll(HttpHeaders.SetCookie)?.joinToString()), "Max-Age=0")
         assertReason(client.get("/auth/session/status"), "none")
+    }
+
+    /**
+     * A logout that terminates a session must appear in the trail even when that session no longer resolves.
+     * An idle-expired row is still open (`ended_at IS NULL`), so logout ends it for real — keying the audit
+     * record off the resolved identity instead of the session reference would silently drop this one.
+     */
+    @Test
+    fun `logging out of an idle-expired session still records the termination`() = testApplication {
+        requireDockerOrSkip()
+        val dataSource = SharedPostgres.hikari(SharedPostgres.freshDatabase("pm_web_idle_logout"))
+        Flyway.configure().dataSource(dataSource).load().migrate()
+        val config = Config.fromEnv { null }.copy(dbUrl = "", dbUser = "", dbPassword = "")
+        application { module(config, ControlPlaneCore(dataSource)) }
+        val client = sessionClient()
+
+        client.post("/auth/debug") {
+            headers.append(HttpHeaders.ContentType, ContentType.Application.Json.toString())
+            setBody(DebugLogin("idle-logout@example.com"))
+        }
+        val id = webSessionId(dataSource, "idle-logout@example.com")
+        dataSource.connection.use { c ->
+            c.prepareStatement("UPDATE principal_session SET idle_expires_at = now() - interval '1 second' WHERE id = ?").use { ps ->
+                ps.setLong(1, id)
+                ps.executeUpdate()
+            }
+        }
+        assertEquals(HttpStatusCode.Unauthorized, client.get("/auth/me").status, "the row must no longer resolve")
+
+        assertEquals(HttpStatusCode.OK, client.post("/auth/logout").status)
+        dataSource.connection.use { c ->
+            c.prepareStatement("SELECT ended_reason FROM principal_session WHERE id = ?").use { ps ->
+                ps.setLong(1, id)
+                ps.executeQuery().use { rs -> assertTrue(rs.next()); assertEquals(ENDED_SIGNED_OUT, rs.getString(1)) }
+            }
+            c.prepareStatement(
+                "SELECT principal, outcome FROM audit_event WHERE kind='auth' AND action=? AND resource=?",
+            ).use { ps ->
+                ps.setString(1, AuthAuditRecorder.ACTION_LOGOUT)
+                ps.setString(2, auditEntity("Session", id.toString()))
+                ps.executeQuery().use { rs ->
+                    assertTrue(rs.next(), "a logout that ended a session must be audited even when it no longer resolves")
+                    assertEquals("idle-logout@example.com", rs.getString("principal"))
+                    assertEquals("SUCCESS", rs.getString("outcome"))
+                }
+            }
+        }
     }
 
     @Test

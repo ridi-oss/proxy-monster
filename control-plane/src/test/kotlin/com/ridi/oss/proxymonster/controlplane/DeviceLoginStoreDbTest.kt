@@ -1,5 +1,6 @@
 package com.ridi.oss.proxymonster.controlplane
 
+import com.ridi.oss.proxymonster.controlplane.management.auditEntity
 import com.ridi.oss.proxymonster.controlplane.support.SharedPostgres
 import com.ridi.oss.proxymonster.controlplane.support.requireDockerOrSkip
 import com.ridi.oss.proxymonster.controlplane.support.webSessionCookie
@@ -15,6 +16,7 @@ import io.ktor.http.HttpStatusCode
 import io.ktor.http.contentType
 import io.ktor.serialization.kotlinx.json.json
 import io.ktor.server.plugins.contentnegotiation.ContentNegotiation
+import io.ktor.server.plugins.statuspages.StatusPages
 import io.ktor.server.response.respond
 import io.ktor.server.routing.get
 import io.ktor.server.sessions.SessionTransportTransformerMessageAuthentication
@@ -149,6 +151,9 @@ class DeviceLoginStoreDbTest {
         // reads as unauthenticated and the authorize route would always bounce to /login.
         application { attributes.put(PRINCIPAL_SESSION_STORE, lastPrincipalSessionStore) }
         install(ContentNegotiation) { json(Json { ignoreUnknownKeys = true; encodeDefaults = true }) }
+        // Mirrors module()'s fallback so a poll whose atomic mint audit throws answers 500, as in the running
+        // server, rather than surfacing as a transport failure.
+        install(StatusPages) { exception<Throwable> { call, _ -> call.respond(HttpStatusCode.InternalServerError) } }
         install(Sessions) {
             webSessionCookie(lastPrincipalSessionStore, config.sessionSecret) {
                 cookie.maxAgeInSeconds = config.webSessionAbsoluteSeconds
@@ -159,7 +164,10 @@ class DeviceLoginStoreDbTest {
             }
         }
         routing {
-            deviceSessionRoutes(config, store, lastPrincipalSessionStore, lastTokenStore, userGroupStore, log)
+            deviceSessionRoutes(
+                config, store, lastPrincipalSessionStore, lastTokenStore, userGroupStore,
+                AuthAuditRecorder(AuditStore(ds)), log,
+            )
             // Stands in for the web console's own login: mints a web session so the "already logged in" path
             // can be exercised without dragging the whole OIDC flow into this test.
             get("/test/login-as/{principal}") {
@@ -199,6 +207,77 @@ class DeviceLoginStoreDbTest {
 
     private suspend fun io.ktor.client.HttpClient.poll(handle: String) =
         post("/auth/device/poll") { contentType(ContentType.Application.Json); setBody("""{"handle":"$handle"}""") }
+
+    /** `kind="auth"` rows matching [where], whose `?` placeholders [args] fill in order. */
+    private fun auditCount(where: String, vararg args: String): Int = ds.connection.use { c ->
+        c.prepareStatement("SELECT count(*) FROM audit_event WHERE kind='auth' AND ($where)").use { ps ->
+            args.forEachIndexed { i, value -> ps.setString(i + 1, value) }
+            ps.executeQuery().use { rs -> rs.next(); rs.getInt(1) }
+        }
+    }
+
+    private fun daemonSessionCount(handle: String): Int = ds.connection.use { c ->
+        c.prepareStatement("SELECT count(*) FROM principal_session WHERE handle = ? AND kind = 'DAEMON'").use { ps ->
+            ps.setString(1, handle)
+            ps.executeQuery().use { rs -> rs.next(); rs.getInt(1) }
+        }
+    }
+
+    /** Make every `kind="auth"` insert for [action] fail, so the poll's mint transaction must roll back with it. */
+    private fun rejectAction(action: String) {
+        execute(
+            """CREATE OR REPLACE FUNCTION pm_test_reject_auth_audit() RETURNS trigger AS ${'$'}body${'$'}
+               BEGIN RAISE EXCEPTION 'forced auth audit failure'; END
+               ${'$'}body${'$'} LANGUAGE plpgsql""",
+        )
+        execute(
+            """CREATE TRIGGER pm_test_reject_auth_audit BEFORE INSERT ON audit_event
+               FOR EACH ROW WHEN (NEW.kind = 'auth' AND NEW.action = '$action')
+               EXECUTE FUNCTION pm_test_reject_auth_audit()""",
+        )
+    }
+
+    private fun dropRejectTrigger() {
+        execute("DROP TRIGGER IF EXISTS pm_test_reject_auth_audit ON audit_event")
+        execute("DROP FUNCTION IF EXISTS pm_test_reject_auth_audit()")
+    }
+
+    private fun execute(sql: String) = ds.connection.use { c -> c.createStatement().use { it.execute(sql) } }
+
+    /**
+     * The APPROVED -> CONSUMED claim now runs INSIDE the mint transaction, so a failed mint rolls it back and
+     * the poll can retry — instead of stranding the handle CONSUMED with no token and no audit (finding 3). A
+     * reject-trigger on the device-mint audit forces the mint to fail after consume would have run.
+     */
+    @Test
+    fun `a failed device mint rolls the consume back so the poll can retry`() = testApplication {
+        val client = installDeviceRoutes()
+        val started = client.startLogin()
+        client.confirm(started.userCode)
+        client.get("/test/login-as/retry@example.com")
+        client.authorize(started.userCode)
+
+        rejectAction(AuthAuditRecorder.ACTION_DEVICE_MINT)
+        try {
+            assertEquals(HttpStatusCode.InternalServerError, client.poll(started.handle).status)
+            assertEquals(
+                "APPROVED", store.get(started.handle)!!.status,
+                "a failed mint must roll the consume back, leaving the handle replayable",
+            )
+            assertEquals(0, daemonSessionCount(started.handle), "a rolled-back mint must leave no session")
+            assertEquals(
+                0, auditCount("action=? AND principal=?", AuthAuditRecorder.ACTION_DEVICE_MINT, "retry@example.com"),
+                "a rolled-back mint must leave no device-mint audit row",
+            )
+        } finally {
+            dropRejectTrigger()
+        }
+
+        // The retry succeeds — proving the handle was never stranded CONSUMED.
+        val poll = client.poll(started.handle)
+        assertEquals(HttpStatusCode.OK, poll.status)
+        assertEquals("retry@example.com", poll.body<DevicePollResult>().principal)
+    }
 
     @Test
     fun `the verification URL points at the web console origin, not the control plane`() {
@@ -289,6 +368,23 @@ class DeviceLoginStoreDbTest {
         val row = store.get(started.handle)!!
         assertEquals("APPROVED", row.status)
         assertEquals("alice@example.com", row.principal, "approved as the logged-in principal, never a debug default")
+        assertEquals(
+            1,
+            auditCount(
+                "action=? AND principal=? AND resource=?",
+                AuthAuditRecorder.ACTION_DEVICE_APPROVE, "alice@example.com", auditEntity("DeviceLogin", row.id.toString()),
+            ),
+        )
+        // The handle is the bearer secret /auth/device/poll accepts on its own, and the audit trail is
+        // readable by every auditor and exported to the SIEM. It must appear in NO column of NO event.
+        assertEquals(
+            0,
+            auditCount(
+                "resource LIKE ? OR statement LIKE ? OR detail LIKE ? OR principal = ?",
+                "%${started.handle}%", "%${started.handle}%", "%${started.handle}%", started.handle,
+            ),
+            "the device-login handle is a credential and must never reach the audit trail",
+        )
     }
 
     @Test
@@ -310,6 +406,19 @@ class DeviceLoginStoreDbTest {
         assertTrue(result.token.isNotBlank())
         assertNotNull(lastTokenStore.validate(result.token))
         assertTrue(result.renewalToken.startsWith("pmr_"), "renewalToken must be the mint-once bearer renewal secret")
+        assertEquals(
+            1,
+            auditCount(
+                "action=? AND principal=? AND resource=?",
+                AuthAuditRecorder.ACTION_DEVICE_MINT, "alice@example.com",
+                auditEntity("Token", lastTokenStore.list("alice@example.com").first().id.toString()),
+            ),
+        )
+        assertEquals(
+            0,
+            auditCount("statement LIKE ? OR detail LIKE ? OR resource LIKE ?", "%${result.token}%", "%${result.renewalToken}%", "%pmr_%"),
+            "a minted token and its renewal secret must never reach the audit trail",
+        )
     }
 
     @Test
@@ -335,5 +444,14 @@ class DeviceLoginStoreDbTest {
             }
         }
         assertEquals(1, count, "a replayed poll must not mint a second session/renewal secret")
+        assertEquals(
+            1,
+            auditCount(
+                "action=? AND principal=? AND resource=?",
+                AuthAuditRecorder.ACTION_DEVICE_MINT, "alice@example.com",
+                auditEntity("Token", lastTokenStore.list("alice@example.com").first().id.toString()),
+            ),
+            "a replayed poll must not emit a second device mint event",
+        )
     }
 }

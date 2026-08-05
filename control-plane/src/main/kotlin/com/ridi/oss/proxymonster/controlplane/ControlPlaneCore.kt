@@ -22,6 +22,7 @@ import javax.sql.DataSource
  */
 class ControlPlaneCore(val dataSource: DataSource) {
     val auditStore = AuditStore(dataSource)
+    val authAudit = AuthAuditRecorder(auditStore)
     val datasourceStore = DatasourceStore(dataSource)
     val policyStore = PolicyStore(dataSource)
     val accessStore = AccessStore(dataSource)

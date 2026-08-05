@@ -1,5 +1,10 @@
 package com.ridi.oss.proxymonster.controlplane
 
+import com.ridi.oss.proxymonster.controlplane.AuthAuditRecorder.Companion.ACTION_DEVICE_APPROVE
+import com.ridi.oss.proxymonster.controlplane.AuthAuditRecorder.Companion.ACTION_DEVICE_MINT
+import com.ridi.oss.proxymonster.controlplane.AuthAuditRecorder.Companion.CHANNEL_DEVICE
+import com.ridi.oss.proxymonster.controlplane.management.AuditActor
+import com.ridi.oss.proxymonster.controlplane.management.auditEntity
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.encodeURLParameter
 import io.ktor.server.application.ApplicationCall
@@ -16,6 +21,7 @@ import io.ktor.server.sessions.set
 import kotlinx.serialization.Serializable
 import org.slf4j.Logger
 import java.security.SecureRandom
+import java.sql.Connection
 import java.sql.ResultSet
 import java.sql.Timestamp
 import java.time.Instant
@@ -88,7 +94,7 @@ data class DeviceLoginRow(
  * `PM_AUTH_DEBUG` it's simply absent (the dev-bypass short-circuit pre-approves a synthetic row
  * without ever hitting the IdP); `pmon` only ever sees the opaque [DeviceLoginRow.handle].
  */
-class DeviceLoginStore(private val dataSource: DataSource, private val crypto: ResultCrypto? = null) {
+class DeviceLoginStore(internal val dataSource: DataSource, private val crypto: ResultCrypto? = null) {
     private val rng = SecureRandom()
 
     private companion object {
@@ -183,17 +189,25 @@ class DeviceLoginStore(private val dataSource: DataSource, private val crypto: R
      * A CAS on (PENDING, unexpired) — the return value is the truth. [refreshToken], present only on the SSO
      * path with offline_access, is stored encrypted so the minted daemon session keeps its IdP-liveness path.
      */
-    fun markApproved(handle: String, principal: String, refreshToken: String? = null): Boolean = dataSource.connection.use { c ->
+    fun markApproved(
+        handle: String,
+        principal: String,
+        refreshToken: String? = null,
+        c: Connection? = null,
+    ): Boolean {
         val encrypted = refreshToken?.let { crypto?.encrypt(it.toByteArray(Charsets.UTF_8)) }
-        c.prepareStatement(
-            """UPDATE device_login SET status = 'APPROVED', principal = ?, refresh_token_enc = ?
-               WHERE handle = ? AND status = 'PENDING' AND expires_at > now()""",
-        ).use { ps ->
-            ps.setString(1, principal)
-            ps.setBytes(2, encrypted)
-            ps.setString(3, handle)
-            ps.executeUpdate() > 0
+        val update: (Connection) -> Boolean = { connection ->
+            connection.prepareStatement(
+                """UPDATE device_login SET status = 'APPROVED', principal = ?, refresh_token_enc = ?
+                   WHERE handle = ? AND status = 'PENDING' AND expires_at > now()""",
+            ).use { ps ->
+                ps.setString(1, principal)
+                ps.setBytes(2, encrypted)
+                ps.setString(3, handle)
+                ps.executeUpdate() > 0
+            }
         }
+        return if (c == null) dataSource.connection.use(update) else update(c)
     }
 
     /** Decrypt the refresh token captured at SSO approval — null for a debug login, no offline_access, or no key. */
@@ -208,13 +222,16 @@ class DeviceLoginStore(private val dataSource: DataSource, private val crypto: R
      * — without it, re-polling an approved handle re-mints a fresh renewal secret on every call,
      * turning a short-lived login handle into an unbounded credential-minting handle.
      */
-    fun consume(handle: String): Boolean = dataSource.connection.use { c ->
-        c.prepareStatement(
-            "UPDATE device_login SET status = 'CONSUMED' WHERE handle = ? AND status = 'APPROVED' AND expires_at > now()",
-        ).use { ps ->
-            ps.setString(1, handle)
-            ps.executeUpdate() > 0
+    fun consume(handle: String, c: Connection? = null): Boolean {
+        val update: (Connection) -> Boolean = { connection ->
+            connection.prepareStatement(
+                "UPDATE device_login SET status = 'CONSUMED' WHERE handle = ? AND status = 'APPROVED' AND expires_at > now()",
+            ).use { ps ->
+                ps.setString(1, handle)
+                ps.executeUpdate() > 0
+            }
         }
+        return if (c == null) dataSource.connection.use(update) else update(c)
     }
 
     /** Delete every expired row — device-auth attempts are short-lived; nothing to keep past expiry. */
@@ -263,6 +280,7 @@ fun Route.deviceSessionRoutes(
     daemonSessionStore: PrincipalSessionStore,
     tokenStore: TokenStore,
     userGroupStore: UserGroupStore,
+    authAudit: AuthAuditRecorder,
     log: Logger,
 ) {
     // pmon begins a login: mint a PENDING handle (pmon polls it) + a short human user_code, and hand back the
@@ -337,7 +355,22 @@ fun Route.deviceSessionRoutes(
             call.respondRedirect("/login?return_to=${"/auth/device/authorize?user_code=$userCode".encodeURLParameter()}")
             return@get
         }
-        val approved = deviceLoginStore.markApproved(row.handle, session.principal, refreshToken)
+        val approver = AuditActor(session.principal, clientAddr = call.httpRequesterIp(config), channel = CHANNEL_DEVICE)
+        val approved = deviceLoginStore.dataSource.inTx { c ->
+            deviceLoginStore.markApproved(row.handle, session.principal, refreshToken, c).also { changed ->
+                if (changed) {
+                    authAudit.success(
+                        c,
+                        approver,
+                        ACTION_DEVICE_APPROVE,
+                        // The row id, never [DeviceLoginRow.handle]: the handle is the bearer secret
+                        // /auth/device/poll accepts on its own, and the audit trail is readable and exported.
+                        auditEntity("DeviceLogin", row.id.toString()),
+                        "Device login approved",
+                    )
+                }
+            }
+        }
         call.sessions.clear(DEVICE_VERIFY_COOKIE)
         call.respondRedirect(if (approved) "/device/success" else backToDevice())
     }
@@ -356,19 +389,17 @@ fun Route.deviceSessionRoutes(
             call.respond(HttpStatusCode.Accepted, DevicePollPending())
             return@post
         }
-        // Claim the approved handle for a ONE-TIME mint (APPROVED -> CONSUMED); a replay finds it CONSUMED and
-        // is refused, so the handle can't be replayed into a stream of tokens + renewal secrets. A deactivated
-        // principal still fails closed below: respondWithMintedSession mints under mintForActivePrincipalLocked.
-        if (!deviceLoginStore.consume(row.handle)) {
-            call.respond(HttpStatusCode.BadRequest, ApiError("device.login_already_completed"))
-            return@post
-        }
         // Carry the refresh token captured at SSO approval onto the daemon session (null for a debug login or
-        // no offline_access/key), so its timer-driven IdP-liveness revalidation keeps working.
-        respondWithMintedSession(call, principal, row, refreshToken = deviceLoginStore.decryptRefresh(row), config, tokenStore, daemonSessionStore, userGroupStore)
+        // no offline_access/key), so its timer-driven IdP-liveness revalidation keeps working. The one-time
+        // APPROVED -> CONSUMED claim happens INSIDE the mint transaction (respondWithMintedSession), so a
+        // failed mint rolls the claim back and the poll can retry rather than stranding the handle CONSUMED.
+        respondWithMintedSession(
+            call, principal, row, refreshToken = deviceLoginStore.decryptRefresh(row), config, tokenStore,
+            daemonSessionStore, deviceLoginStore, userGroupStore, authAudit,
+        )
     }
 
-    sessionRenewRoutes(daemonSessionStore, tokenStore, userGroupStore)
+    sessionRenewRoutes(config, daemonSessionStore, tokenStore, userGroupStore, authAudit)
 }
 
 /**
@@ -387,11 +418,29 @@ private suspend fun respondWithMintedSession(
     config: Config,
     tokenStore: TokenStore,
     daemonSessionStore: PrincipalSessionStore,
+    deviceLoginStore: DeviceLoginStore,
     userGroupStore: UserGroupStore,
+    authAudit: AuthAuditRecorder,
 ) {
-    val result = tokenStore.dataSource.mintForActivePrincipalLocked(principal, userGroupStore) { c ->
+    val poller = AuditActor(principal, clientAddr = call.httpRequesterIp(config), channel = CHANNEL_DEVICE)
+    // consume + session + token + audit are ONE transaction under the per-principal lock. A replay finds the
+    // handle already CONSUMED and never reaches the mint; a failed mint rolls the consume back so the poll can
+    // retry. A deprovisioned principal is refused before the block runs, leaving the handle claimable again.
+    var alreadyCompleted = false
+    val result: DevicePollResult? = tokenStore.dataSource.mintForActivePrincipalLocked(principal, userGroupStore) { c ->
+        if (!deviceLoginStore.consume(row.handle, c)) {
+            alreadyCompleted = true
+            return@mintForActivePrincipalLocked null
+        }
         val created = daemonSessionStore.create(principal, row.handle, refreshToken, config.sessionWindowSeconds, row.ttlSeconds, c)
         val issued = tokenStore.issue(TokenKind.SESSION, principal, emptyList(), name = null, ttlSeconds = row.ttlSeconds, c)
+        authAudit.success(
+            c,
+            poller,
+            ACTION_DEVICE_MINT,
+            auditEntity("Token", issued.id.toString()),
+            "Device login minted SESSION token",
+        )
         DevicePollResult(
             issued.token,
             issued.expiresAt,
@@ -400,9 +449,9 @@ private suspend fun respondWithMintedSession(
             created.renewalToken,
         )
     }
-    if (result == null) {
-        call.respond(HttpStatusCode.Forbidden, ApiError("auth.principal_deprovisioned"))
-    } else {
-        call.respond(result)
+    when {
+        alreadyCompleted -> call.respond(HttpStatusCode.BadRequest, ApiError("device.login_already_completed"))
+        result == null -> call.respond(HttpStatusCode.Forbidden, ApiError("auth.principal_deprovisioned"))
+        else -> call.respond(result)
     }
 }

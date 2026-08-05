@@ -1,6 +1,10 @@
 package com.ridi.oss.proxymonster.controlplane.grpc
 
 import com.ridi.oss.proxymonster.controlplane.Attached
+import com.ridi.oss.proxymonster.controlplane.AuthAuditRecorder.Companion.ACTION_WIRE_VALIDATE
+import com.ridi.oss.proxymonster.controlplane.AuthAuditRecorder.Companion.CHANNEL_WIRE
+import com.ridi.oss.proxymonster.controlplane.AuthAuditRecorder.Companion.PRINCIPAL_UNATTRIBUTED
+import com.ridi.oss.proxymonster.controlplane.auditedValue
 import com.ridi.oss.proxymonster.controlplane.AttachedTableDetail
 import com.ridi.oss.proxymonster.controlplane.AuditEvent
 import com.ridi.oss.proxymonster.controlplane.CatalogColumn
@@ -10,7 +14,9 @@ import com.ridi.oss.proxymonster.controlplane.CatalogMutationResult
 import com.ridi.oss.proxymonster.controlplane.Channel
 import com.ridi.oss.proxymonster.controlplane.ControlPlaneCore
 import com.ridi.oss.proxymonster.controlplane.DatasourceEngineConflictException
+import com.ridi.oss.proxymonster.controlplane.management.AuditActor
 import com.ridi.oss.proxymonster.controlplane.management.ManagementException
+import com.ridi.oss.proxymonster.controlplane.management.auditEntity
 import com.ridi.oss.proxymonster.controlplane.catalogIsConnectionIndependent
 import com.ridi.oss.proxymonster.controlplane.catalogName
 import com.ridi.oss.proxymonster.controlplane.EnforcementOutcome
@@ -118,10 +124,34 @@ class ControlPlaneGrpcService(
 
     private val log = org.slf4j.LoggerFactory.getLogger(ControlPlaneGrpcService::class.java)
 
+    /**
+     * Record a rejected wire credential. [ValidateTokenRequest] carries no end-client address, so these rows
+     * have none — see KNOWN_LIMITATIONS.md "Audit trail". The requested datasource is caller-supplied and
+     * unvalidated at this point, so it is bounded and confined to `detail` rather than naming the resource.
+     */
+    private fun auditWireRejection(request: ValidateTokenRequest, principal: String?, reason: String) {
+        // Best-effort: this rejection changes no state, and validateToken is the hot wire path — an audit
+        // insert that throws (the chain-head lock, a broken chain) must not replace UNAUTHENTICATED with
+        // INTERNAL, which every bad token got before this trail existed.
+        core.authAudit.failureBestEffort(
+            AuditActor(principal ?: PRINCIPAL_UNATTRIBUTED, clientAddr = null, channel = CHANNEL_WIRE),
+            ACTION_WIRE_VALIDATE,
+            if (principal == null) auditEntity("Token", "unresolved") else auditEntity("User", principal),
+            "Wire token validation failed",
+            detail = "datasource=${auditedValue(request.datasourceName)};reason=$reason",
+        )
+    }
+
     override suspend fun validateToken(request: ValidateTokenRequest): WireIdentity {
         val id = core.tokenStore.validate(request.token)
-            ?: throw StatusException(Status.UNAUTHENTICATED.withDescription("invalid, expired, or revoked wire token"))
+        if (id == null) {
+            // validate() collapses invalid/expired/revoked into one null, and none of them names a
+            // principal — hence one reason covering the set, and no attribution.
+            auditWireRejection(request, principal = null, reason = "invalid_expired_or_revoked")
+            throw StatusException(Status.UNAUTHENTICATED.withDescription("invalid, expired, or revoked wire token"))
+        }
         if (core.userGroupStore.isDeactivated(id.principal)) {
+            auditWireRejection(request, id.principal, reason = "principal_deprovisioned")
             throw StatusException(Status.UNAUTHENTICATED.withDescription("principal is deprovisioned"))
         }
         if (request.datasourceName.isBlank()) {

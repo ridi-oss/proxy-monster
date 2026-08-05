@@ -77,7 +77,7 @@ class TokenRoutesDeactivationTest {
     private fun ApplicationTestBuilder.installTokenRoutes() {
         install(ContentNegotiation) { json(Json { ignoreUnknownKeys = true; encodeDefaults = true }) }
         routing {
-            tokenRoutes(config, tokenStore, userGroupStore, authz)
+            tokenRoutes(config, tokenStore, userGroupStore, authz, AuthAuditRecorder(AuditStore(ds)))
         }
     }
 

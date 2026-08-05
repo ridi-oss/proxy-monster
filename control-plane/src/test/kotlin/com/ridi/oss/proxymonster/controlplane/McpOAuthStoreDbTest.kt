@@ -111,14 +111,32 @@ class McpOAuthStoreDbTest {
     @Test
     fun `RFC 7009 access revocation is local while refresh revocation closes the family`() {
         val accessOnly = issue("oauth-revoke-access@example.com")
-        store.revoke(accessOnly.accessToken)
+        assertNotNull(store.revoke(accessOnly.accessToken))
         assertNull(tokens.resolveAccess(accessOnly.accessToken, RESOURCE))
         val afterAccessRevoke = assertNotNull(store.rotateRefresh(refresh(accessOnly.refreshToken)))
         assertNotNull(tokens.resolveAccess(afterAccessRevoke.accessToken, RESOURCE))
 
-        store.revoke(afterAccessRevoke.refreshToken)
+        assertNotNull(store.revoke(afterAccessRevoke.refreshToken))
         assertNull(tokens.resolveAccess(afterAccessRevoke.accessToken, RESOURCE))
         assertNull(store.rotateRefresh(refresh(afterAccessRevoke.refreshToken)))
+    }
+
+    /**
+     * Revocation reports the token it CLOSED, not merely one that resolved. The endpoint in front of this is
+     * unauthenticated (RFC 7009 answers 200 for an unknown token), so a caller replaying one once-valid token
+     * must not be able to append a revocation record per call.
+     */
+    @Test
+    fun `revoke reports a transition once and an unknown token never`() {
+        val pair = issue("oauth-revoke-replay@example.com")
+
+        assertNotNull(store.revoke(pair.accessToken), "the first revoke closes the access token")
+        assertNull(store.revoke(pair.accessToken), "replaying the same access token closes nothing")
+
+        assertNotNull(store.revoke(pair.refreshToken), "the refresh token's family is still open")
+        assertNull(store.revoke(pair.refreshToken), "replaying the refresh token closes nothing")
+
+        assertNull(store.revoke("pma_never-issued"))
     }
 
     @Test

@@ -3,15 +3,26 @@ package com.ridi.oss.proxymonster.controlplane.oauth
 import com.ridi.oss.proxymonster.auth.AuthorizationCodeInput
 import com.ridi.oss.proxymonster.auth.ConsumeAuthorizationCodeInput
 import com.ridi.oss.proxymonster.auth.OAuthAuthorizationStore
+import com.ridi.oss.proxymonster.auth.OAuthConsent
 import com.ridi.oss.proxymonster.auth.OAuthTokenPair
 import com.ridi.oss.proxymonster.auth.RefreshTokenInput
 import com.ridi.oss.proxymonster.auth.canonicalScopes
 import com.ridi.oss.proxymonster.auth.isValidPkceChallenge
 import com.ridi.oss.proxymonster.auth.randomSecret
+import com.ridi.oss.proxymonster.controlplane.AuthAuditRecorder
+import com.ridi.oss.proxymonster.controlplane.AuthAuditRecorder.Companion.ACTION_OAUTH_CONSENT
+import com.ridi.oss.proxymonster.controlplane.AuthAuditRecorder.Companion.ACTION_OAUTH_REVOKE
+import com.ridi.oss.proxymonster.controlplane.AuthAuditRecorder.Companion.ACTION_OAUTH_TOKEN
+import com.ridi.oss.proxymonster.controlplane.AuthAuditRecorder.Companion.CHANNEL_OAUTH
+import com.ridi.oss.proxymonster.controlplane.AuthAuditRecorder.Companion.PRINCIPAL_UNATTRIBUTED
 import com.ridi.oss.proxymonster.controlplane.Config
+import com.ridi.oss.proxymonster.controlplane.auditedValue
 import com.ridi.oss.proxymonster.controlplane.PrincipalSessionStore
 import com.ridi.oss.proxymonster.controlplane.WebSessionRef
 import com.ridi.oss.proxymonster.controlplane.ensureDeviceCookie
+import com.ridi.oss.proxymonster.controlplane.httpRequesterIp
+import com.ridi.oss.proxymonster.controlplane.management.AuditActor
+import com.ridi.oss.proxymonster.controlplane.management.auditEntity
 import com.ridi.oss.proxymonster.controlplane.userSession
 import com.ridi.oss.proxymonster.controlplane.webSession
 import io.ktor.http.ContentType
@@ -38,6 +49,7 @@ import io.ktor.server.sessions.sessions
 import io.ktor.server.sessions.set
 import kotlinx.serialization.Serializable
 import java.security.MessageDigest
+import java.sql.Connection
 import java.util.Locale
 import java.util.ResourceBundle
 import javax.crypto.Mac
@@ -45,6 +57,8 @@ import javax.crypto.spec.SecretKeySpec
 import javax.sql.DataSource
 
 val MCPA_SCOPES = setOf("mcp:read", "mcp:datasources:write", "mcp:policies:write", "mcp:identity:write")
+
+private val log = org.slf4j.LoggerFactory.getLogger("com.ridi.oss.proxymonster.controlplane.oauth.OAuthRoutes")
 
 internal const val MCP_OAUTH_PENDING_COOKIE = "pm_oauth_pending"
 
@@ -88,7 +102,7 @@ private data class AuthorizationServerMetadata(
 
 @Serializable
 private data class ConsentListResponse(
-    val consents: List<com.ridi.oss.proxymonster.auth.OAuthConsent>,
+    val consents: List<OAuthConsent>,
     val csrfToken: String,
 )
 
@@ -106,6 +120,7 @@ fun Route.mcpOAuthRoutes(
     config: Config,
     dataSource: DataSource,
     principalSessionStore: PrincipalSessionStore,
+    authAudit: AuthAuditRecorder,
     cimdResolver: CimdResolver = HttpCimdResolver(productionChecks = !config.authDebug),
 ) {
     val store = OAuthAuthorizationStore(dataSource)
@@ -182,8 +197,12 @@ fun Route.mcpOAuthRoutes(
                 ),
             )
             if (config.mcpDebugAutoConsent || params["auto_consent"] == "true") {
+                // Only a NEW consent is a grant. Reusing one the user already gave changes nothing, and
+                // recording it per authorization would report a fresh grant on every client reconnect.
                 val consent = store.findActiveConsent(principal, clientId, resource, requestedScopes)
-                    ?: store.rememberConsent(principal, clientId, resource, requestedScopes)
+                    ?: store.rememberConsent(principal, clientId, resource, requestedScopes) { c, id ->
+                        call.auditConsentGrant(c, config, authAudit, principal, clientId, id, canonicalScope)
+                    }
                 issueAuthorizationCode(call, pending, consent.id, store, cimdResolver)
             } else {
                 renderConsent(call, pending, metadata.client_name, metadata.client_id)
@@ -246,43 +265,101 @@ fun Route.mcpOAuthRoutes(
             call.respondRedirect(oauthRedirect(pending.redirectUri, mapOf("error" to "access_denied", "state" to pending.state)))
             return@post
         }
-        val consent = store.rememberConsent(principal, pending.clientId, pending.resource, pending.scope.split(' '))
+        // Only a NEW consent is a grant — a double-submit of the approval form (the pending cookie is still
+        // attached until the first response clears it) must not write a second consent event for one grant.
+        val scopes = pending.scope.split(' ')
+        val consent = store.findActiveConsent(principal, pending.clientId, pending.resource, scopes)
+            ?: store.rememberConsent(principal, pending.clientId, pending.resource, scopes) { c, id ->
+                call.auditConsentGrant(c, config, authAudit, principal, pending.clientId, id, pending.scope)
+            }
         issueAuthorizationCode(call, pending, consent.id, store, cimdResolver)
     }
 
     post("/oauth/token") {
         val form = call.receiveParameters()
+        // client_id is a caller-supplied CIMD URL on an unauthenticated endpoint — bound it before it reaches
+        // the tamper-evident chain, like every other caller field.
+        val clientId = auditedValue(form["client_id"].orEmpty())
+        val grantType = form["grant_type"].orEmpty()
+        val actor = { AuditActor(PRINCIPAL_UNATTRIBUTED, clientAddr = call.httpRequesterIp(config), channel = CHANNEL_OAUTH) }
+        // Attributed to the client, not a user: the grant is redeemed by the client against a code or a
+        // refresh token, and [OAuthTokenPair] carries no principal. Written inside the store's grant
+        // transaction, so a rejected audit rolls the grant back and the code stays unconsumed for a retry.
+        val onGrant: (Connection) -> Unit = { c ->
+            authAudit.success(
+                c, actor(), ACTION_OAUTH_TOKEN, auditEntity("Client", clientId),
+                "OAuth token granted to client $clientId", detail = "grant_type=$grantType",
+            )
+        }
+        // A replayed rotated refresh token forces its whole family revoked — a real revocation that commits,
+        // so record it atomically, keyed by the presented (replayed) token's id.
+        val onReplayRevoke: (Connection, Long) -> Unit = { c, tokenId ->
+            authAudit.success(
+                c, actor(), ACTION_OAUTH_REVOKE, auditEntity("Token", tokenId.toString()),
+                "OAuth refresh family revoked on replay", detail = "grant_type=$grantType",
+            )
+        }
         val pair: OAuthTokenPair? = when (form["grant_type"]) {
             "authorization_code" -> {
                 val code = form["code"] ?: return@post call.oauthError("invalid_request")
-                val clientId = form["client_id"] ?: return@post call.oauthError("invalid_request")
+                val client = form["client_id"] ?: return@post call.oauthError("invalid_request")
                 val redirectUri = form["redirect_uri"] ?: return@post call.oauthError("invalid_request")
                 val resource = form["resource"] ?: return@post call.oauthError("invalid_request")
                 val verifier = form["code_verifier"] ?: return@post call.oauthError("invalid_request")
                 if (resource != config.mcpResource) null else store.consumeAuthorizationCode(
                     ConsumeAuthorizationCodeInput(
-                        code, clientId, redirectUri, resource, verifier,
+                        code, client, redirectUri, resource, verifier,
                         config.mcpAccessTtlSeconds, config.mcpRefreshTtlSeconds,
                     ),
+                    onGrant,
                 )
             }
             "refresh_token" -> {
                 val refresh = form["refresh_token"] ?: return@post call.oauthError("invalid_request")
-                val clientId = form["client_id"] ?: return@post call.oauthError("invalid_request")
+                val client = form["client_id"] ?: return@post call.oauthError("invalid_request")
                 val resource = form["resource"] ?: return@post call.oauthError("invalid_request")
                 if (resource != config.mcpResource) null else store.rotateRefresh(
-                    RefreshTokenInput(refresh, clientId, resource, config.mcpAccessTtlSeconds, config.mcpRefreshTtlSeconds),
+                    RefreshTokenInput(refresh, client, resource, config.mcpAccessTtlSeconds, config.mcpRefreshTtlSeconds),
+                    onGrant,
+                    onReplayRevoke,
                 )
             }
             else -> return@post call.oauthError("unsupported_grant_type")
         }
-        if (pair == null) return@post call.oauthError("invalid_grant")
+        if (pair == null) {
+            // Best-effort, standalone: the denied grant changed nothing (any replay-revoke already recorded
+            // itself atomically above), so a failed audit insert must not turn invalid_grant into a 500.
+            authAudit.failureBestEffort(
+                actor(), ACTION_OAUTH_TOKEN, auditEntity("Client", clientId),
+                "OAuth token grant denied", detail = "grant_type=$grantType",
+            )
+            return@post call.oauthError("invalid_grant")
+        }
         call.respond(pair.toResponse())
     }
 
     post("/oauth/revoke") {
         val token = call.receiveParameters()["token"]
-        if (token != null) store.revoke(token)
+        val clientAddr = call.httpRequesterIp(config)
+        // Only a call that actually closed a token is recorded, and it names the token id [revoke] reports,
+        // written inside the revoke's own transaction so the row commits with the revocation. This endpoint
+        // is unauthenticated by design (RFC 7009 answers 200 for an unknown token), so recording every call
+        // would let anyone replay one once-valid token to append unbounded rows to a tamper-evident chain.
+        // The presented token is never itself recorded. RFC 7009 §2.2 answers 200 regardless — so even when
+        // the atomic audit throws, log and still return 200, never 500.
+        runCatching {
+            token?.let {
+                store.revoke(it) { c, revokedId ->
+                    authAudit.success(
+                        c,
+                        AuditActor(PRINCIPAL_UNATTRIBUTED, clientAddr = clientAddr, channel = CHANNEL_OAUTH),
+                        ACTION_OAUTH_REVOKE,
+                        auditEntity("Token", revokedId.toString()),
+                        "OAuth token revoked",
+                    )
+                }
+            }
+        }.onFailure { log.warn("OAuth token revoke did not record; RFC 7009 answers 200 regardless", it) }
         call.respond(HttpStatusCode.OK, emptyMap<String, String>())
     }
 
@@ -302,9 +379,49 @@ fun Route.mcpOAuthRoutes(
             return@delete call.respond(HttpStatusCode.BadRequest, OAuthError("invalid_request"))
         }
         if (id == null) return@delete call.respond(HttpStatusCode.BadRequest, OAuthError("invalid_request"))
-        if (store.revokeConsent(id, user.principal)) call.respond(HttpStatusCode.NoContent)
-        else call.respond(HttpStatusCode.NotFound, OAuthError("invalid_request"))
+        val clientAddr = call.httpRequesterIp(config)
+        // The revoke + its audit commit or roll back together (revoking a consent cascades to revoking its MCP
+        // tokens, so a committed cascade with no audit row is what atomicity closes). A revoke that transitioned
+        // nothing returns 404; only the rare atomic-audit throw is logged and treated as done rather than a 500.
+        val revoked = runCatching {
+            store.revokeConsent(id, user.principal) { c, consentId ->
+                authAudit.success(
+                    c,
+                    AuditActor(user.principal, clientAddr = clientAddr, channel = CHANNEL_OAUTH),
+                    ACTION_OAUTH_REVOKE,
+                    auditEntity("Consent", consentId.toString()),
+                    "OAuth consent revoked",
+                )
+            }
+        }.getOrElse { log.warn("OAuth consent revoke did not record", it); true }
+        if (revoked) call.respond(HttpStatusCode.NoContent) else call.respond(HttpStatusCode.NotFound, OAuthError("invalid_request"))
     }
+}
+
+/**
+ * Record a user granting an MCP client consent — the one event that names WHO authorized a client, since
+ * the token grant that follows is redeemed by the client and carries no principal.
+ *
+ * Written on the store's own transaction [c] (via [OAuthAuthorizationStore.rememberConsent]'s onCommit
+ * callback) so the audit row commits or rolls back with the consent it names. [clientId] is a caller-supplied
+ * CIMD URL, so it is bounded before it reaches the chain.
+ */
+private fun ApplicationCall.auditConsentGrant(
+    c: Connection,
+    config: Config,
+    authAudit: AuthAuditRecorder,
+    principal: String,
+    clientId: String,
+    consentId: Long,
+    scope: String,
+) {
+    authAudit.success(
+        c,
+        AuditActor(principal, clientAddr = httpRequesterIp(config), channel = CHANNEL_OAUTH),
+        ACTION_OAUTH_CONSENT,
+        auditEntity("Consent", consentId.toString()),
+        "OAuth consent granted to client ${auditedValue(clientId)} for $scope",
+    )
 }
 
 private suspend fun continueAuthorization(

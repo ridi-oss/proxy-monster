@@ -8,7 +8,7 @@ require (
 	github.com/go-sql-driver/mysql v1.8.1
 	github.com/jackc/pgx/v5 v5.7.1
 	github.com/ridi-oss/proxy-monster/analyzer v0.0.0-00010101000000-000000000000
-	github.com/ridi-oss/proxy-monster/mysqlwire v0.1.1
+	github.com/ridi-oss/proxy-monster/mysqlwire v0.1.2
 	github.com/testcontainers/testcontainers-go v0.34.0
 	golang.org/x/crypto v0.27.0
 	google.golang.org/grpc v1.68.1
@@ -58,7 +58,7 @@ require (
 	github.com/pkg/errors v0.9.1 // indirect
 	github.com/pmezard/go-difflib v1.0.0 // indirect
 	github.com/power-devops/perfstat v0.0.0-20210106213030-5aafc221ea8c // indirect
-	github.com/ridi-oss/sqlglot-go v0.20.0 // indirect
+	github.com/ridi-oss/sqlglot-go v0.22.0 // indirect
 	github.com/shirou/gopsutil/v3 v3.23.12 // indirect
 	github.com/shoenig/go-m1cpu v0.1.6 // indirect
 	github.com/sirupsen/logrus v1.9.3 // indirect

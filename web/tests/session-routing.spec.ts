@@ -39,6 +39,53 @@ for (const reason of ['expired', 'none']) {
   })
 }
 
+test('debug login stays hidden when auth config disables it', async ({ page }) => {
+  await page.route('**/auth/config', (route) => route.fulfill({
+    contentType: 'application/json',
+    body: JSON.stringify({ oidcEnabled: true, authDebug: false, session: SESSION_CONFIG }),
+  }))
+
+  await page.goto('/login')
+
+  await expect(page.getByRole('button', { name: 'Continue with SSO' })).toBeEnabled()
+  await expect(page.getByRole('button', { name: 'Sign in as debug user' })).toHaveCount(0)
+})
+
+test('debug login stays hidden until auth config explicitly enables it', async ({ page }) => {
+  let releaseConfig = () => {}
+  const configReleased = new Promise<void>((resolve) => {
+    releaseConfig = resolve
+  })
+  let markConfigRequested = () => {}
+  const configRequested = new Promise<void>((resolve) => {
+    markConfigRequested = resolve
+  })
+
+  await page.route('**/auth/config', async (route) => {
+    markConfigRequested()
+    await configReleased
+    await route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify({ oidcEnabled: false, authDebug: true, session: SESSION_CONFIG }),
+    })
+  })
+  await page.route('**/auth/me', (route) => route.fulfill({
+    status: 401,
+    contentType: 'application/json',
+    body: JSON.stringify({ reason: 'none' }),
+  }))
+
+  await page.goto('/login')
+  await configRequested
+
+  await expect(page.getByRole('heading', { name: 'Sign in to the console' })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Sign in as debug user' })).toHaveCount(0)
+
+  releaseConfig()
+
+  await expect(page.getByRole('button', { name: 'Sign in as debug user' })).toBeVisible()
+})
+
 for (const locale of ['en', 'ko'] as const) {
   test(`session-expired login banner renders in ${locale}`, async ({ context, page }) => {
     await context.addCookies([{

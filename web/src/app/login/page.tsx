@@ -59,7 +59,7 @@ function LoginInner() {
   const [error, setError] = useState<string | null>(null)
 
   const oidcEnabled = authConfig?.oidcEnabled ?? false
-  const showDebug = authConfig?.authDebug ?? true
+  const showDebug = authConfig?.authDebug === true
 
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault()

@@ -296,12 +296,16 @@ func TestIntegrityReporterDelivers(t *testing.T) {
 	}
 }
 
-func TestNewRejectsMissingURLEnv(t *testing.T) {
-	// Env var intentionally unset: a configured sink with no URL is a loud, fail-closed error.
-	_, err := New(config.AlertsConfig{
+func TestNewSkipsMissingURLEnv(t *testing.T) {
+	// Env var intentionally unset: the sink is skipped (its notifications disabled), not fatal — a missing
+	// webhook URL must not take down the monitor.
+	s, err := New(config.AlertsConfig{
 		Sinks: []config.SinkConfig{{Type: "webhook", URLEnv: "DEFINITELY_UNSET_WEBHOOK_URL", MinSeverity: "warn"}},
 	}, worm.NewMemory())
-	if err == nil {
-		t.Fatal("expected New to reject a sink whose url_env is unset")
+	if err != nil {
+		t.Fatalf("New should skip a urlless sink, not error: %v", err)
+	}
+	if len(s.dests) != 0 {
+		t.Fatalf("urlless sink should be dropped, got %d destinations", len(s.dests))
 	}
 }

@@ -103,8 +103,8 @@ const (
 )
 
 // New builds a Sink from the alerts config. Each sink's URL is resolved from its named env var (secrets never
-// live in the file); a configured sink whose env var is unset is a loud, fail-closed error rather than a
-// silently-dead notification path.
+// live in the file); a configured sink whose env var is unset is logged and skipped, so a missing notification
+// URL disables that one channel rather than aborting the monitor.
 func New(cfg config.AlertsConfig, store worm.ObjectStore, opts ...Option) (*Sink, error) {
 	s := &Sink{
 		store:       store,
@@ -120,7 +120,12 @@ func New(cfg config.AlertsConfig, store worm.ObjectStore, opts ...Option) (*Sink
 	for i, sc := range cfg.Sinks {
 		url := strings.TrimSpace(os.Getenv(sc.URLEnv))
 		if url == "" {
-			return nil, fmt.Errorf("alert: sinks[%d] env var %s (url_env) is empty", i, sc.URLEnv)
+			// A missing notification URL disables just this sink, loudly — its notifications stay off
+			// until the value is set (a redeploy then picks it up). It must not take down the monitor:
+			// every alert still lands durably in WORM regardless of any webhook.
+			s.log.Warn("alert: sink url_env is empty; its notifications are disabled until it is set",
+				"sink", i, "url_env", sc.URLEnv)
+			continue
 		}
 		d := destination{
 			url:        url,

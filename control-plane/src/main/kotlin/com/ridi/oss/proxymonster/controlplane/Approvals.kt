@@ -8,6 +8,7 @@ import com.ridi.oss.proxymonster.controlplane.authz.AuthzResource
 import com.ridi.oss.proxymonster.controlplane.authz.authorizeDatasourceAction
 import com.ridi.oss.proxymonster.controlplane.authz.authorizeWithContext
 import com.ridi.oss.proxymonster.controlplane.authz.resolveContextTags
+import com.ridi.oss.proxymonster.controlplane.management.ManagementAuditRecorder
 import com.ridi.oss.proxymonster.grpc.EnfAction
 import com.ridi.oss.proxymonster.probe.Masking
 import com.ridi.oss.proxymonster.probe.bindMasks
@@ -343,6 +344,10 @@ fun Route.approvalRoutes(
     // approval tab updates without waiting for its next poll (null in Config-free tests → publish no-ops).
     taskCompletionHub: TaskCompletionHub? = null,
 ) {
+    // Query-approval DECISIONS (approve/reject) record a kind="admin" management event; the result
+    // lifecycle (execute/cancel/view) uses e3Record's separate approval_lifecycle path.
+    val recorder = ManagementAuditRecorder(auditStore)
+
     // Whether the caller may open a query-approval request against this datasource (task.request on the
     // Datasource). The shipped global permit keeps this open by default; an operator can forbid it per
     // datasource. authDebug bypasses.
@@ -473,6 +478,8 @@ fun Route.approvalRoutes(
                     evaluatedDecision = "DENY",
                     roleId = input.roleId,
                     requestedDurationSec = input.requestedDurationSec,
+                    actor = call.auditActor(config),
+                    recorder = recorder,
                 )
             } catch (_: DuplicatePendingQueryRequestException) {
                 return@post call.respond(HttpStatusCode.Conflict, ApiError("approval.pending_request_exists"))
@@ -524,6 +531,8 @@ fun Route.approvalRoutes(
             evaluatedDecision = decision.action.name,
             roleId = input.roleId,
             requestedDurationSec = input.requestedDurationSec,
+            actor = call.auditActor(config),
+            recorder = recorder,
         )
         call.respond(HttpStatusCode.Created, CreateApprovalResponse(request, wouldAllow = decision.action == EnfAction.ALLOW))
     }
@@ -614,8 +623,10 @@ fun Route.approvalRoutes(
         }
         // An approved QUERY request is executed under role R by an approver (execute-under-R); there is no
         // requester-side re-run mode. The proxy masks the result exactly as role R would see it.
-        val updated = accessStore.decideQueryRequest(id, approved = true, rejectionReason = null, decidedBy = principal)
-            ?: return@post call.respond(HttpStatusCode.Conflict, ApiError("approval.already_decided"))
+        val updated = accessStore.decideQueryRequest(
+            id, approved = true, rejectionReason = null, decidedBy = principal,
+            actor = call.auditActor(config), recorder = recorder,
+        ) ?: return@post call.respond(HttpStatusCode.Conflict, ApiError("approval.already_decided"))
         call.application.environment.log.info(
             "query approval approved request={} requester={} decider={} sourceDecisionId={}",
             id,
@@ -640,8 +651,10 @@ fun Route.approvalRoutes(
         if (!mayDecide(call, AuthzAction.TASK_APPROVE, req)) {
             return@post call.respond(HttpStatusCode.Forbidden, ApiError("approval.not_approver"))
         }
-        val updated = accessStore.decideQueryRequest(id, approved = false, rejectionReason = body.reason.trim(), decidedBy = principal)
-            ?: return@post call.respond(HttpStatusCode.Conflict, ApiError("approval.already_decided"))
+        val updated = accessStore.decideQueryRequest(
+            id, approved = false, rejectionReason = body.reason.trim(), decidedBy = principal,
+            actor = call.auditActor(config), recorder = recorder,
+        ) ?: return@post call.respond(HttpStatusCode.Conflict, ApiError("approval.already_decided"))
         call.application.environment.log.info(
             "query approval rejected request={} requester={} decider={} sourceDecisionId={}",
             id,

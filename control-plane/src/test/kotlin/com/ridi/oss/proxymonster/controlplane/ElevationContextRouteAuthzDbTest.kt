@@ -1,6 +1,7 @@
 package com.ridi.oss.proxymonster.controlplane
 
 import com.ridi.oss.proxymonster.controlplane.authz.CedarPolicyInput
+import com.ridi.oss.proxymonster.controlplane.management.ManagementAuditRecorder
 import com.ridi.oss.proxymonster.controlplane.support.SharedPostgres
 import com.ridi.oss.proxymonster.controlplane.support.requireDockerOrSkip
 import com.ridi.oss.proxymonster.controlplane.support.webSessionCookie
@@ -155,7 +156,7 @@ class ElevationContextRouteAuthzDbTest {
                 )
                 call.respond(HttpStatusCode.NoContent)
             }
-            accessRoutes(config, core.accessStore, core.authz, core.datasourceStore, core.roleResolver)
+            accessRoutes(config, core.accessStore, core.authz, core.datasourceStore, core.roleResolver, ManagementAuditRecorder(core.auditStore))
             datasourceRoutes(config, core.authz, core.roleResolver, core.datasourceStore, core.proxyEventsHub, TableDetailService(core), core.tokenStore, core.userGroupStore)
             approvalRoutes(
                 config, core.accessStore, core.auditStore, core.datasourceStore, core.policyStore,
@@ -246,6 +247,40 @@ class ElevationContextRouteAuthzDbTest {
             HttpStatusCode.OK, ok.status,
             "trusted-edge requester_ip -> derived tag -> approve succeeds; FAILS if the route drops httpAuthzContext or the datasource tag-scoping",
         )
+    }
+
+    @Test
+    fun `approve routes write a kind=admin audit event through the wiring`() = testApplication {
+        val client = wire()
+        client.post("/test/session/$approver")
+
+        // ROLE approve through the real route writes one kind="admin" event; count is scoped to this
+        // request's id so the per-class DB's other approvals don't pollute it. Drop call.auditActor/recorder
+        // from the route and this count is 0.
+        val roleReq = seedRoleRequest()
+        assertEquals(
+            HttpStatusCode.OK,
+            client.post("/api/access-requests/$roleReq/approve") { header("X-Forwarded-For", "100.100.5.5") }.status,
+        )
+        assertEquals(1, adminAuditCount("approve access request #$roleReq:%"), "ROLE approve route must audit")
+
+        val queryReq = seedQueryRequest()
+        assertEquals(
+            HttpStatusCode.OK,
+            client.post("/api/approvals/$queryReq/approve") {
+                header("X-Forwarded-For", "100.100.5.5")
+                contentType(ContentType.Application.Json)
+                setBody("""{"mode":"APPROVER_EXEC"}""")
+            }.status,
+        )
+        assertEquals(1, adminAuditCount("approve query request #$queryReq%"), "QUERY approve route must audit")
+    }
+
+    private fun adminAuditCount(statementLike: String): Int = dataSource.connection.use { c ->
+        c.prepareStatement("SELECT count(*) FROM audit_event WHERE kind='admin' AND statement LIKE ?").use { ps ->
+            ps.setString(1, statementLike)
+            ps.executeQuery().use { rs -> rs.next(); rs.getInt(1) }
+        }
     }
 
     @Test

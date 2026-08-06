@@ -655,7 +655,7 @@ fun Application.module(config: Config, core: ControlPlaneCore) {
         )
 
         // JIT access elevation: requests, approve/reject, grants, revoke (DESIGN.md).
-        accessRoutes(config, accessStore, authz, datasourceStore, roleResolver)
+        accessRoutes(config, accessStore, authz, datasourceStore, roleResolver, managementAudit)
 
         // Query-approval workflow: from-denied + proactive compose, approver decide, then async
         // execute-under-R with encrypted short-retention result storage.

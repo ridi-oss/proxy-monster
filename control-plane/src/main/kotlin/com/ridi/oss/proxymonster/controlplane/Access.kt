@@ -8,6 +8,9 @@ import com.ridi.oss.proxymonster.controlplane.authz.authorizeDatasourceAction
 import com.ridi.oss.proxymonster.controlplane.authz.authorizeWithContext
 import com.ridi.oss.proxymonster.controlplane.authz.requireAuthz
 import com.ridi.oss.proxymonster.controlplane.authz.resolveContextTags
+import com.ridi.oss.proxymonster.controlplane.management.AuditActor
+import com.ridi.oss.proxymonster.controlplane.management.ManagementAuditRecorder
+import com.ridi.oss.proxymonster.controlplane.management.auditEntity
 import io.ktor.http.HttpStatusCode
 import io.ktor.server.request.receive
 import io.ktor.server.response.respond
@@ -72,12 +75,14 @@ class AccessStore(private val dataSource: DataSource) {
 
     private fun ResultSet.longOrNull(col: String): Long? = getLong(col).let { if (wasNull()) null else it }
 
-    fun getRequest(id: Long): AccessRequest? = dataSource.connection.use { c ->
+    fun getRequest(id: Long): AccessRequest? = dataSource.connection.use { getRequest(id, it) }
+
+    /** Read on the caller's connection so an in-transaction read never borrows a second pooled connection. */
+    fun getRequest(id: Long, c: Connection): AccessRequest? =
         c.prepareStatement("$REQ_SELECT WHERE ar.id = ?").use { ps ->
             ps.setLong(1, id)
             ps.executeQuery().use { rs -> if (rs.next()) rs.toRequest() else null }
         }
-    }
 
     fun listRequests(status: String?): List<AccessRequest> = dataSource.connection.use { c ->
         val sql = if (status != null) {
@@ -92,18 +97,42 @@ class AccessStore(private val dataSource: DataSource) {
     }
 
     fun createRequest(principal: String, input: AccessRequestInput): AccessRequest {
-        val id = dataSource.connection.use { c ->
-            c.prepareStatement(
-                """INSERT INTO access_request (principal, role_id, datasource_id, reason, requested_duration_sec)
-                   VALUES (?, ?, ?, ?, ?) RETURNING id""",
-            ).use { ps ->
-                ps.setString(1, principal)
-                ps.setLong(2, input.roleId)
-                if (input.datasourceId == null) ps.setNull(3, java.sql.Types.BIGINT) else ps.setLong(3, input.datasourceId)
-                ps.setString(4, input.reason)
-                ps.setLong(5, input.requestedDurationSec)
-                ps.executeQuery().use { rs -> rs.next(); rs.getLong(1) }
+        val id = dataSource.inTx { c -> createRequest(principal, input, c) }
+        return getRequest(id)!!
+    }
+
+    /** Insert a ROLE access request on the caller's transaction, returning its id. */
+    fun createRequest(principal: String, input: AccessRequestInput, c: Connection): Long =
+        c.prepareStatement(
+            """INSERT INTO access_request (principal, role_id, datasource_id, reason, requested_duration_sec)
+               VALUES (?, ?, ?, ?, ?) RETURNING id""",
+        ).use { ps ->
+            ps.setString(1, principal)
+            ps.setLong(2, input.roleId)
+            if (input.datasourceId == null) ps.setNull(3, java.sql.Types.BIGINT) else ps.setLong(3, input.datasourceId)
+            ps.setString(4, input.reason)
+            ps.setLong(5, input.requestedDurationSec)
+            ps.executeQuery().use { rs -> rs.next(); rs.getLong(1) }
+        }
+
+    /** Open a ROLE access request, recording the [TASK_REQUEST][AuthzAction.TASK_REQUEST] event atomically. */
+    fun createRequest(
+        principal: String,
+        input: AccessRequestInput,
+        actor: AuditActor,
+        recorder: ManagementAuditRecorder,
+    ): AccessRequest {
+        val id = dataSource.inTx { c ->
+            val newId = createRequest(principal, input, c)
+            val roleName = c.prepareStatement("SELECT name FROM app_role WHERE id = ?").use { ps ->
+                ps.setLong(1, input.roleId)
+                ps.executeQuery().use { rs -> if (rs.next()) rs.getString(1) else null }
             }
+            recorder.record(
+                c, actor, AuthzAction.TASK_REQUEST, auditEntity("AccessRequest", newId.toString()),
+                "open access request #$newId for role '$roleName'",
+            )
+            newId
         }
         return getRequest(id)!!
     }
@@ -123,6 +152,10 @@ class AccessStore(private val dataSource: DataSource) {
         // Carried on the shared access_request row; not consumed by the query-approval flow (see
         // CreateApprovalInput.requestedDurationSec). Kept for the column the ROLE-elevation path needs.
         requestedDurationSec: Long = 3600,
+        // Set on the audited create path (the /api/approvals routes); null on internal/test seeds. When both
+        // are present the created request is recorded as a TASK_REQUEST on the insert's transaction.
+        actor: AuditActor? = null,
+        recorder: ManagementAuditRecorder? = null,
     ): AccessRequest {
         val sqlHash = MessageDigest.getInstance("SHA-256")
             .digest(sql.toByteArray(Charsets.UTF_8))
@@ -164,6 +197,12 @@ class AccessStore(private val dataSource: DataSource) {
                 ps.setString(2, sql)
                 ps.setString(3, sqlHash)
                 ps.executeUpdate()
+            }
+            if (actor != null && recorder != null) {
+                recorder.record(
+                    c, actor, AuthzAction.TASK_REQUEST, auditEntity("AccessRequest", taskId.toString()),
+                    "open query request #$taskId under role '${executeAs.firstOrNull()}'",
+                )
             }
             taskId
         }
@@ -309,20 +348,55 @@ class AccessStore(private val dataSource: DataSource) {
         rejectionReason: String?,
         decidedBy: String,
     ): AccessRequest? {
+        val won = dataSource.inTx { c -> decideQueryRequest(id, approved, rejectionReason, decidedBy, c) }
+        return if (won) getRequest(id) else null
+    }
+
+    /** Same as [decideQueryRequest], composed on the caller's transaction. Returns whether a row transitioned. */
+    fun decideQueryRequest(
+        id: Long,
+        approved: Boolean,
+        rejectionReason: String?,
+        decidedBy: String,
+        c: Connection,
+    ): Boolean {
         val decidedAt = Timestamp.from(Instant.now())
-        val won = dataSource.connection.use { c ->
-            c.prepareStatement(
-                """UPDATE access_request
-                   SET status = ?, decided_by = ?, decided_at = ?, approved_at = ?, rejection_reason = ?
-                   WHERE id = ? AND kind = 'QUERY' AND status = 'PENDING'""",
-            ).use { ps ->
-                ps.setString(1, if (approved) "APPROVED" else "REJECTED")
-                ps.setString(2, decidedBy)
-                ps.setTimestamp(3, decidedAt)
-                if (approved) ps.setTimestamp(4, decidedAt) else ps.setNull(4, java.sql.Types.TIMESTAMP)
-                ps.setString(5, rejectionReason)
-                ps.setLong(6, id)
-                ps.executeUpdate() > 0
+        return c.prepareStatement(
+            """UPDATE access_request
+               SET status = ?, decided_by = ?, decided_at = ?, approved_at = ?, rejection_reason = ?
+               WHERE id = ? AND kind = 'QUERY' AND status = 'PENDING'""",
+        ).use { ps ->
+            ps.setString(1, if (approved) "APPROVED" else "REJECTED")
+            ps.setString(2, decidedBy)
+            ps.setTimestamp(3, decidedAt)
+            if (approved) ps.setTimestamp(4, decidedAt) else ps.setNull(4, java.sql.Types.TIMESTAMP)
+            ps.setString(5, rejectionReason)
+            ps.setLong(6, id)
+            ps.executeUpdate() > 0
+        }
+    }
+
+    /**
+     * Decide a pending QUERY task, recording the [TASK_APPROVE][AuthzAction.TASK_APPROVE] decision atomically.
+     * A task no longer PENDING transitions no row, so nothing is recorded.
+     */
+    fun decideQueryRequest(
+        id: Long,
+        approved: Boolean,
+        rejectionReason: String?,
+        decidedBy: String,
+        actor: AuditActor,
+        recorder: ManagementAuditRecorder,
+    ): AccessRequest? {
+        val roleName = getRequest(id)?.roleName
+        val won = dataSource.inTx { c ->
+            decideQueryRequest(id, approved, rejectionReason, decidedBy, c).also { transitioned ->
+                if (transitioned) {
+                    recorder.record(
+                        c, actor, AuthzAction.TASK_APPROVE, auditEntity("AccessRequest", id.toString()),
+                        if (approved) "approve query request #$id under role '$roleName'" else "reject query request #$id",
+                    )
+                }
             }
         }
         return if (won) getRequest(id) else null
@@ -442,32 +516,58 @@ class AccessStore(private val dataSource: DataSource) {
 
     /** Approve: mark the request APPROVED and insert a time-boxed grant. */
     fun approve(id: Long, durationSec: Long?, decidedBy: String): AccessRequest? {
-        val req = getRequest(id) ?: return null
+        dataSource.inTx { c -> approve(id, durationSec, decidedBy, c) }
+        return getRequest(id)
+    }
+
+    /**
+     * Same as [approve], composed on the caller's transaction. Flips a PENDING request to APPROVED and inserts
+     * its time-boxed grant, returning the new grant's id — or null when the request no longer exists, carries
+     * no role, or is no longer PENDING (nothing inserted).
+     */
+    fun approve(id: Long, durationSec: Long?, decidedBy: String, c: Connection): Long? {
+        val req = getRequest(id, c) ?: return null
         val roleId = req.roleId ?: return null
         val dur = durationSec ?: req.requestedDurationSec
         val expires = Timestamp.from(Instant.now().plusSeconds(dur))
-        dataSource.connection.use { c ->
-            c.autoCommit = false
-            try {
-                c.prepareStatement("UPDATE access_request SET status='APPROVED', decided_by=?, decided_at=now() WHERE id=?").use { ps ->
-                    ps.setString(1, decidedBy); ps.setLong(2, id); ps.executeUpdate()
-                }
-                c.prepareStatement(
-                    """INSERT INTO access_grant (request_id, principal, role_id, granted_by, granted_at, expires_at)
-                       VALUES (?, ?, ?, ?, now(), ?)""",
-                ).use { ps ->
-                    ps.setLong(1, id)
-                    ps.setString(2, req.principal)
-                    ps.setLong(3, roleId)
-                    ps.setString(4, decidedBy)
-                    ps.setTimestamp(5, expires)
-                    ps.executeUpdate()
-                }
-                c.commit()
-            } catch (e: Exception) {
-                c.rollback(); throw e
-            } finally {
-                c.autoCommit = true
+        val won = c.prepareStatement(
+            "UPDATE access_request SET status='APPROVED', decided_by=?, decided_at=now() WHERE id=? AND status='PENDING'",
+        ).use { ps ->
+            ps.setString(1, decidedBy); ps.setLong(2, id); ps.executeUpdate() > 0
+        }
+        if (!won) return null
+        return c.prepareStatement(
+            """INSERT INTO access_grant (request_id, principal, role_id, granted_by, granted_at, expires_at)
+               VALUES (?, ?, ?, ?, now(), ?) RETURNING id""",
+        ).use { ps ->
+            ps.setLong(1, id)
+            ps.setString(2, req.principal)
+            ps.setLong(3, roleId)
+            ps.setString(4, decidedBy)
+            ps.setTimestamp(5, expires)
+            ps.executeQuery().use { rs -> rs.next(); rs.getLong(1) }
+        }
+    }
+
+    /**
+     * Approve a ROLE request, recording the granted elevation ([TASK_APPROVE][AuthzAction.TASK_APPROVE]) atomically.
+     * A request no longer PENDING inserts no grant, so nothing is recorded.
+     */
+    fun approve(
+        id: Long,
+        durationSec: Long?,
+        decidedBy: String,
+        actor: AuditActor,
+        recorder: ManagementAuditRecorder,
+    ): AccessRequest? {
+        val req = getRequest(id) ?: return null
+        val dur = durationSec ?: req.requestedDurationSec
+        dataSource.inTx { c ->
+            approve(id, durationSec, decidedBy, c)?.let { grantId ->
+                recorder.record(
+                    c, actor, AuthzAction.TASK_APPROVE, auditEntity("AccessGrant", grantId.toString()),
+                    "approve access request #$id: grant role '${req.roleName}' to '${req.principal}' for ${dur}s",
+                )
             }
         }
         return getRequest(id)
@@ -475,9 +575,36 @@ class AccessStore(private val dataSource: DataSource) {
 
     fun reject(id: Long, reason: String, decidedBy: String): AccessRequest? {
         if (getRequest(id) == null) return null
-        dataSource.connection.use { c ->
-            c.prepareStatement("UPDATE access_request SET status='REJECTED', rejection_reason=?, decided_by=?, decided_at=now() WHERE id=?").use { ps ->
-                ps.setString(1, reason); ps.setString(2, decidedBy); ps.setLong(3, id); ps.executeUpdate()
+        dataSource.inTx { c -> reject(id, reason, decidedBy, c) }
+        return getRequest(id)
+    }
+
+    /** Same as [reject], composed on the caller's transaction. Returns whether a PENDING request transitioned. */
+    fun reject(id: Long, reason: String, decidedBy: String, c: Connection): Boolean =
+        c.prepareStatement(
+            "UPDATE access_request SET status='REJECTED', rejection_reason=?, decided_by=?, decided_at=now() WHERE id=? AND status='PENDING'",
+        ).use { ps ->
+            ps.setString(1, reason); ps.setString(2, decidedBy); ps.setLong(3, id); ps.executeUpdate() > 0
+        }
+
+    /**
+     * Reject a ROLE request, recording the [TASK_APPROVE][AuthzAction.TASK_APPROVE] decision atomically.
+     * A request no longer PENDING transitions no row, so nothing is recorded.
+     */
+    fun reject(
+        id: Long,
+        reason: String,
+        decidedBy: String,
+        actor: AuditActor,
+        recorder: ManagementAuditRecorder,
+    ): AccessRequest? {
+        val req = getRequest(id) ?: return null
+        dataSource.inTx { c ->
+            if (reject(id, reason, decidedBy, c)) {
+                recorder.record(
+                    c, actor, AuthzAction.TASK_APPROVE, auditEntity("AccessRequest", id.toString()),
+                    "reject access request #$id from '${req.principal}'",
+                )
             }
         }
         return getRequest(id)
@@ -501,9 +628,29 @@ class AccessStore(private val dataSource: DataSource) {
         }
     }
 
-    fun revoke(id: Long): Boolean = dataSource.connection.use { c ->
+    fun revoke(id: Long): Boolean = dataSource.inTx { c -> revoke(id, c) }
+
+    /** Same as [revoke], composed on the caller's transaction. */
+    fun revoke(id: Long, c: Connection): Boolean =
         c.prepareStatement("UPDATE access_grant SET revoked_at = now() WHERE id = ? AND revoked_at IS NULL").use { ps ->
             ps.setLong(1, id); ps.executeUpdate() > 0
+        }
+
+    /**
+     * Revoke a JIT grant, recording the [GRANT_REVOKE][AuthzAction.GRANT_REVOKE] event atomically. An
+     * already-revoked grant matches no row, so nothing is recorded.
+     */
+    fun revoke(id: Long, actor: AuditActor, recorder: ManagementAuditRecorder): Boolean {
+        val grant = getGrant(id)
+        return dataSource.inTx { c ->
+            revoke(id, c).also { won ->
+                if (won && grant != null) {
+                    recorder.record(
+                        c, actor, AuthzAction.GRANT_REVOKE, auditEntity("AccessGrant", id.toString()),
+                        "revoke access grant #$id (role '${grant.roleName}' from '${grant.principal}')",
+                    )
+                }
+            }
         }
     }
 
@@ -564,7 +711,14 @@ class AccessStore(private val dataSource: DataSource) {
 
 // ---- Routes ------------------------------------------------------------------------------
 
-fun Route.accessRoutes(config: Config, store: AccessStore, authz: Authz, datasourceStore: DatasourceStore, roleResolver: RoleResolver) {
+fun Route.accessRoutes(
+    config: Config,
+    store: AccessStore,
+    authz: Authz,
+    datasourceStore: DatasourceStore,
+    roleResolver: RoleResolver,
+    recorder: ManagementAuditRecorder,
+) {
     get("/api/access-requests") {
         if (!call.requireApi(config)) return@get
         // Forward-filter by task.read (self seed shows own; admin/oversight shows all),
@@ -613,7 +767,7 @@ fun Route.accessRoutes(config: Config, store: AccessStore, authz: Authz, datasou
                 return@post call.respondError(HttpStatusCode.Forbidden, "approval.request_not_permitted")
             }
         }
-        call.respond(HttpStatusCode.Created, store.createRequest(principal, input))
+        call.respond(HttpStatusCode.Created, store.createRequest(principal, input, call.auditActor(config), recorder))
     }
     post("/api/access-requests/{id}/approve") {
         if (!call.requireApi(config)) return@post
@@ -647,7 +801,7 @@ fun Route.accessRoutes(config: Config, store: AccessStore, authz: Authz, datasou
             }
         }
         val body = runCatching { call.receive<ApproveInput>() }.getOrDefault(ApproveInput())
-        store.approve(id, body.durationSec, approver)?.let { call.respond(it) }
+        store.approve(id, body.durationSec, approver, call.auditActor(config), recorder)?.let { call.respond(it) }
             ?: call.notFound("access request")
     }
     post("/api/access-requests/{id}/reject") {
@@ -678,7 +832,7 @@ fun Route.accessRoutes(config: Config, store: AccessStore, authz: Authz, datasou
             }
         }
         val body = call.receive<RejectInput>()
-        store.reject(id, body.reason, approver)?.let { call.respond(it) }
+        store.reject(id, body.reason, approver, call.auditActor(config), recorder)?.let { call.respond(it) }
             ?: call.notFound("access request")
     }
     get("/api/access-grants") {
@@ -714,6 +868,6 @@ fun Route.accessRoutes(config: Config, store: AccessStore, authz: Authz, datasou
         ) {
             return@post
         }
-        if (store.revoke(id)) call.respond(HttpStatusCode.NoContent) else call.notFound("access grant")
+        if (store.revoke(id, call.auditActor(config), recorder)) call.respond(HttpStatusCode.NoContent) else call.notFound("access grant")
     }
 }

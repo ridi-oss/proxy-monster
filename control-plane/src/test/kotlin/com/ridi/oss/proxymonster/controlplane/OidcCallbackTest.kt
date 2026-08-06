@@ -205,11 +205,18 @@ class OidcCallbackTest {
     }
 
     @Test
-    fun `OIDC continuation accepts only the co-hosted resume and reauth routes`() {
+    fun `OIDC continuation accepts only fixed auth and device routes`() {
         assertEquals("/oauth/resume", oidcReturnTarget("/oauth/resume"))
         assertEquals("/auth/reauth-complete", oidcReturnTarget("/auth/reauth-complete"))
-        assertNull(oidcReturnTarget("https://evil.example/callback"))
-        assertNull(oidcReturnTarget("//evil.example/callback"))
+        assertEquals("/device", oidcReturnTarget("/device"))
+        assertEquals("/device?user_code=ABCD-EFGH", oidcReturnTarget("/device?user_code=ABCD-EFGH"))
+        assertNull(oidcReturnTarget("/auth/device/authorize?user_code=ABCD-EFGH"))
+        assertNull(oidcReturnTarget("https://evil.example/device"))
+        assertNull(oidcReturnTarget("//evil.example/device"))
+        assertNull(oidcReturnTarget("/device/other"))
+        assertNull(oidcReturnTarget("/device?foo=bar"))
+        assertNull(oidcReturnTarget("/device?user_code=ABCD-EFGH&next=https://evil.example"))
+        assertNull(oidcReturnTarget("/auth/device/authorize?user_code=ABCD-EFGH&extra=x"))
         assertNull(oidcReturnTarget("/other"))
         assertNull(oidcReturnTarget("/"))
     }

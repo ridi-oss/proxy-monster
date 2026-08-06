@@ -216,7 +216,7 @@ class OidcWebSessionDbTest {
     }
 
     @Test
-    fun `a device login with no session logs in via SSO and comes back to approve the handle`() = testApplication {
+    fun `a device login authenticates via SSO before confirming and approving the handle`() = testApplication {
         requireDockerOrSkip()
         val dataSource = SharedPostgres.hikari(SharedPostgres.freshDatabase("pm_oidc_web"))
         Flyway.configure().dataSource(dataSource).load().migrate()
@@ -231,21 +231,17 @@ class OidcWebSessionDbTest {
         val started = deviceStore.createPending(intervalSec = 2, ttlSeconds = 3600, expiresAt = Instant.now().plusSeconds(600))
         val userCode = started.userCode!!
 
-        application { installOidcWebApp(config("openid email offline_access", resultKey = ByteArray(32) { it.toByte() }), dataSource) }
+        application {
+            installOidcWebApp(
+                config("openid email offline_access", resultKey = ByteArray(32) { it.toByte() })
+                    .copy(webOrigin = "https://console.example"),
+                dataSource,
+            )
+        }
         val client = createClient { expectSuccess = false; followRedirects = false; install(HttpCookies) }
 
-        // 1) The web /device page confirms the code the human read off their terminal.
-        client.post("/auth/device/confirm") {
-            contentType(ContentType.Application.Json)
-            setBody("""{"userCode":"$userCode"}""")
-        }
-        // 2) The page sends the browser to authorize; with no console session it routes through /login.
-        val authorize = client.get("/auth/device/authorize?user_code=$userCode")
-        val loginTarget = assertNotNull(authorize.headers[HttpHeaders.Location])
-        assertTrue(loginTarget.startsWith("/login?return_to="), "no session → /login first, got $loginTarget")
-        val returnTo = parseQueryString(loginTarget.substringAfter('?'))["return_to"]!!
-
-        // 3) /login's SSO button carries that return_to into the auth-code flow.
+        // The unauthenticated /device page sends this exact continuation through the login page.
+        val returnTo = "/device?user_code=${userCode.encodeURLParameter()}"
         val login = client.get("/auth/oidc/login?return_to=${returnTo.encodeURLParameter()}")
         val query = parseQueryString(assertNotNull(login.headers[HttpHeaders.Location]).substringAfter('?'))
         nonce.set(assertNotNull(query["nonce"]))
@@ -255,16 +251,25 @@ class OidcWebSessionDbTest {
         // advertises S256, so the challenge on /authorize must be the hash of what /token received.
         assertEquals(query["code_challenge"], pkceS256(assertNotNull(tokenCodeVerifier.get())))
         assertEquals(HttpStatusCode.Found, callback.status)
-        assertEquals(returnTo, callback.headers[HttpHeaders.Location], "SSO returns to the device authorize URL")
+        assertEquals(
+            "https://console.example$returnTo",
+            callback.headers[HttpHeaders.Location],
+            "SSO returns to the web console's device confirmation page",
+        )
         assertTrue(
             callback.headers.getAll(HttpHeaders.SetCookie).orEmpty().any { it.startsWith("$SESSION_COOKIE=") },
-            "the login itself mints the console session that authorize then reuses",
+            "the login itself mints the console session that device confirmation then reuses",
         )
 
-        // 4) Back on authorize — now a session exists, so the handle is approved for that principal.
-        val approve = client.get(returnTo)
+        val confirm = client.post("/auth/device/confirm") {
+            contentType(ContentType.Application.Json)
+            setBody("""{"userCode":"$userCode"}""")
+        }
+        assertEquals(HttpStatusCode.OK, confirm.status)
+
+        val approve = client.get("/auth/device/authorize?user_code=${userCode.encodeURLParameter()}")
         assertEquals(HttpStatusCode.Found, approve.status)
-        assertEquals("/device/success", approve.headers[HttpHeaders.Location])
+        assertEquals("https://console.example/device/success", approve.headers[HttpHeaders.Location])
 
         val approved = deviceStore.get(started.handle)!!
         assertEquals("APPROVED", approved.status)

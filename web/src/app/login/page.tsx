@@ -17,11 +17,9 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { TagsInput } from '@/components/tags-input'
 
-// The only continuation the device-login flow needs: the control-plane's own authorize endpoint for one
-// short code. Anything else — an absolute URL, a protocol-relative host, extra params — is treated as absent,
-// so this page can never be turned into an open redirect via ?return_to=.
+// Device login returns only to its fixed local page; rejecting every other shape prevents an open redirect.
 function deviceReturnTarget(raw: string | null): string | null {
-  return raw && /^\/auth\/device\/authorize\?user_code=[A-Za-z0-9-]{1,16}$/.test(raw) ? raw : null
+  return raw && (raw === '/device' || /^\/device\?user_code=[A-Za-z0-9-]{1,16}$/.test(raw)) ? raw : null
 }
 
 function LoginInner() {
@@ -37,9 +35,6 @@ function LoginInner() {
   const params = useSearchParams()
   const next = params.get('next')
   const callbackUrl = params.get('callbackUrl')
-  // Set by the device-login flow: where the control-plane authorize endpoint wants the browser to return
-  // after a fresh sign-in. Narrowed to the exact device-authorize shape so a crafted ?return_to= can never
-  // send a signed-in user off-site (the control plane applies the same allowlist on the SSO leg).
   const returnTo = deviceReturnTarget(params.get('return_to'))
   const reason = params.get('reason')
   const errorCode = params.get('error')
@@ -71,9 +66,7 @@ function LoginInner() {
     setSubmitting(true)
     try {
       await loginDebug(principal.trim(), roles, requesterIp.trim())
-      router.replace(
-        callbackUrl === REAUTH_CALLBACK_PATH ? callbackUrl : (returnTo ?? next ?? '/query'),
-      )
+      router.replace(callbackUrl === REAUTH_CALLBACK_PATH ? callbackUrl : (returnTo ?? next ?? '/query'))
     } catch (err) {
       // A 404 means one of two different things, so branch on the code rather than the status: the route
       // itself is absent (PM_AUTH_DEBUG off), or a claimed role does not exist — which answers with
@@ -143,14 +136,14 @@ function LoginInner() {
           <>
             <div className="my-5 flex items-center gap-3">
               <div className="h-px flex-1 bg-border" />
-              <span className="text-muted-foreground text-[11px] tracking-wider uppercase">
-                {t('devOnly')}
-              </span>
+              <span className="text-muted-foreground text-[11px] tracking-wider uppercase">{t('devOnly')}</span>
               <div className="h-px flex-1 bg-border" />
             </div>
 
             <div className="mb-4 rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-500">
-              {t.rich('debugWarning', { debug: (chunks) => <span className="font-semibold">{chunks}</span> })}
+              {t.rich('debugWarning', {
+                debug: (chunks) => <span className="font-semibold">{chunks}</span>,
+              })}
             </div>
 
             <form onSubmit={handleSubmit} className="space-y-3">

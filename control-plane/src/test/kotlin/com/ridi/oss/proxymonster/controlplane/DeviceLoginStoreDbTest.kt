@@ -180,6 +180,10 @@ class DeviceLoginStoreDbTest {
                 call.sessions.set(WebSessionRef(sessionId))
                 call.respond(HttpStatusCode.OK, "ok")
             }
+            get("/test/end-session") {
+                lastPrincipalSessionStore.endWeb(call.webSession()!!.id, ENDED_SIGNED_OUT)
+                call.respond(HttpStatusCode.OK, "ok")
+            }
         }
         return createClient {
             install(ClientContentNegotiation) { json(Json { ignoreUnknownKeys = true }) }
@@ -253,8 +257,8 @@ class DeviceLoginStoreDbTest {
     fun `a failed device mint rolls the consume back so the poll can retry`() = testApplication {
         val client = installDeviceRoutes()
         val started = client.startLogin()
-        client.confirm(started.userCode)
         client.get("/test/login-as/retry@example.com")
+        client.confirm(started.userCode)
         client.authorize(started.userCode)
 
         rejectAction(AuthAuditRecorder.ACTION_DEVICE_MINT)
@@ -291,13 +295,26 @@ class DeviceLoginStoreDbTest {
             mcpResource = "https://console.example/mcp",
         )
         assertEquals("https://console.example", sameOrigin.webBaseUrl)
-        assertEquals("http://127.0.0.1:41300", sameOrigin.copy(webOrigin = "http://127.0.0.1:41300/").webBaseUrl)
+        assertEquals("/device", sameOrigin.webRedirectTarget("/device"))
+        val splitOrigin = sameOrigin.copy(webOrigin = "http://127.0.0.1:41300/")
+        assertEquals("http://127.0.0.1:41300", splitOrigin.webBaseUrl)
+        assertEquals("http://127.0.0.1:41300/device", splitOrigin.webRedirectTarget("/device"))
     }
 
     @Test
-    fun `confirm accepts a real pending code and rejects an unknown one`() = testApplication {
+    fun `confirm requires a live web session`() = testApplication {
         val client = installDeviceRoutes()
         val started = client.startLogin()
+
+        assertEquals(HttpStatusCode.Unauthorized, client.confirm(started.userCode).status)
+        assertEquals("PENDING", store.get(started.handle)!!.status)
+    }
+
+    @Test
+    fun `an authenticated confirm accepts a pending code and rejects an unknown one`() = testApplication {
+        val client = installDeviceRoutes()
+        val started = client.startLogin()
+        client.get("/test/login-as/alice@example.com")
 
         assertEquals(HttpStatusCode.OK, client.confirm(started.userCode).status)
         assertEquals(HttpStatusCode.BadRequest, client.confirm("NOPE-NOPE").status, "an unknown code must not be confirmable")
@@ -341,25 +358,46 @@ class DeviceLoginStoreDbTest {
     }
 
     @Test
-    fun `authorize with no session sends the user to login and approves nothing yet`() = testApplication {
+    fun `session loss after confirm returns to the device page and approves nothing`() = testApplication {
         val client = installDeviceRoutes()
         val started = client.startLogin()
-        client.confirm(started.userCode)
+        client.get("/test/login-as/alice@example.com")
+        assertEquals(HttpStatusCode.OK, client.confirm(started.userCode).status)
+        client.get("/test/end-session")
 
         val res = client.authorize(started.userCode)
         assertEquals(HttpStatusCode.Found, res.status)
-        val location = res.headers[HttpHeaders.Location]!!
-        assertTrue(location.startsWith("/login?return_to="), "no console session → go log in first, got $location")
-        assertTrue(location.contains("device"), "login must return to the device authorize URL, got $location")
-        assertEquals("PENDING", store.get(started.handle)!!.status, "still pending until a session exists")
+        assertEquals("/device?user_code=${started.userCode}", res.headers[HttpHeaders.Location])
+        assertEquals("PENDING", store.get(started.handle)!!.status)
+
+        client.get("/test/login-as/alice@example.com")
+        assertEquals(
+            "/device?user_code=${started.userCode}",
+            client.authorize(started.userCode).headers[HttpHeaders.Location],
+            "a new session must confirm the code again",
+        )
+    }
+
+    @Test
+    fun `a replacement session cannot inherit an earlier confirmation`() = testApplication {
+        val client = installDeviceRoutes()
+        val started = client.startLogin()
+        client.get("/test/login-as/alice@example.com")
+        assertEquals(HttpStatusCode.OK, client.confirm(started.userCode).status)
+        client.get("/test/login-as/bob@example.com")
+
+        val res = client.authorize(started.userCode)
+        assertEquals(HttpStatusCode.Found, res.status)
+        assertEquals("/device?user_code=${started.userCode}", res.headers[HttpHeaders.Location])
+        assertEquals("PENDING", store.get(started.handle)!!.status)
     }
 
     @Test
     fun `an existing console session approves the login without re-authenticating`() = testApplication {
         val client = installDeviceRoutes()
         val started = client.startLogin()
-        client.confirm(started.userCode)
         client.get("/test/login-as/alice@example.com")
+        assertEquals(HttpStatusCode.OK, client.confirm(started.userCode).status)
 
         val res = client.authorize(started.userCode)
         assertEquals(HttpStatusCode.Found, res.status)
@@ -395,8 +433,8 @@ class DeviceLoginStoreDbTest {
         // Until the browser approves, pmon's poll is pending — start never auto-approves.
         assertEquals(HttpStatusCode.Accepted, client.poll(started.handle).status, "poll is pending until the browser approves")
 
-        client.confirm(started.userCode)
         client.get("/test/login-as/alice@example.com")
+        client.confirm(started.userCode)
         assertEquals(HttpStatusCode.Found, client.authorize(started.userCode).status)
 
         val poll = client.poll(started.handle)
@@ -425,8 +463,8 @@ class DeviceLoginStoreDbTest {
     fun `a device handle mints exactly once — a replayed poll is refused and mints no second session`() = testApplication {
         val client = installDeviceRoutes()
         val started = client.startLogin()
-        client.confirm(started.userCode)
         client.get("/test/login-as/alice@example.com")
+        client.confirm(started.userCode)
         client.authorize(started.userCode)
 
         // First poll completes the login and mints the one session + renewal secret.

@@ -68,12 +68,12 @@ discovery (`OidcDiscovery.kt`), so the flow is provider-agnostic:
 
 ## CLI / daemon login — web verification page
 
-`pmon login` follows the familiar device-code flow: the user confirms a short
-code on the **web console's `/device` page**, and the login completes with
-whatever identity the console already has — or, if they aren't signed in,
-through the **same `/login` page** the console uses. `pmon` is a thin client
-that only starts the flow and polls; the IdP is reached in the browser via the
-ordinary auth-code flow, never a device grant.
+`pmon login` follows the familiar device-code flow: the browser authenticates
+through the **same `/login` page** the console uses, then the user confirms the
+short code on the **web console's `/device` page**. An existing console session
+skips the login step. `pmon` is a thin client that only starts the flow and
+polls; the IdP is reached in the browser via the ordinary auth-code flow, never
+a device grant.
 
 ```
 pmon:  POST /auth/device/start
@@ -81,13 +81,15 @@ cp:    → mint a PENDING login: an opaque handle (pmon polls it) + a short user
        → return { verificationUri={origin}/device, verificationUriComplete={origin}/device?user_code=…, userCode, handle, interval }
 pmon:  print the plain URL + the code (best-effort auto-open uses the complete URL, which prefills it),
        then POST /auth/device/poll { handle } every interval
-user:  open /device (web) → the code field is prefilled when auto-opened, typed by hand when the link was
-       clicked → Continue
+user:  open /device (web)
+web:   signed in already? → show the code field
+       not signed in?     → /login?return_to=/device… → SSO or debug → back to /device
+user:  confirm the prefilled code, or type the code from the terminal → Continue
 web:   POST /auth/device/confirm { userCode }   → CP validates it's a live pending login, sets the verify cookie
        → GET /auth/device/authorize?user_code=…
-cp:    signed in already? → approve the handle with that session's principal   → 302 /device/success
-       not signed in?     → 302 /login?return_to=… → SSO or debug → back to authorize → approve → /device/success
-cp:    → /auth/device/poll: 202 while PENDING; once approved, mint a wire SESSION token (one-time claim per handle)
+cp:    approve the handle with the same live session that confirmed the code → 302 /device/success
+       session missing or replaced? → back to /device to authenticate and confirm again
+       → /auth/device/poll: 202 while PENDING; once approved, mint a wire SESSION token (one-time claim per handle)
 pmon:  store the wire token; open the loopback brokers (one per datasource) immediately
 ```
 
@@ -99,8 +101,8 @@ pmon:  store the wire token; open the loopback brokers (one per datasource) imme
   support is irrelevant).
 - **One login page.** The device flow does not carry its own sign-in UI: it
   reuses `/login` (SSO, plus the debug affordance where `PM_AUTH_DEBUG` allows
-  it) with a `return_to` back to the device authorization, so there is exactly
-  one place login can happen and `pmon` carries no dev-only code.
+  it) with a `return_to` back to `/device`, so there is exactly one place login
+  can happen and `pmon` carries no dev-only code.
 - **An existing console session is reused, not disturbed.** If the browser
   already has a console session, the approval uses it directly — no re-prompt,
   and nothing displaces or ends that session.
@@ -111,11 +113,12 @@ pmon:  store the wire token; open the loopback brokers (one per datasource) imme
   printed URL is the plain one, so a hand-opened link makes the user type the
   code — the step that ties the code they approve to the terminal in front of
   them.
-- **Confirm-before-approve.** Approval requires a signed cookie that
-  `POST /auth/device/confirm` sets, so a direct `/auth/device/authorize` link
-  can't approve a code the victim never confirmed on `/device` (device-phishing
-  defense). The residual (a victim who confirms someone else's code anyway) is
-  tracked in `docs/backlog.md`.
+- **Confirm-before-approve.** Confirmation requires a live web session and sets
+  a signed cookie bound to both that session and the code. A direct
+  `/auth/device/authorize` link cannot approve a code the victim never
+  confirmed, and a replaced session must authenticate and confirm again. The
+  residual (a victim who confirms someone else's code anyway) is tracked in
+  `docs/backlog.md`.
 - **Session renewal (decided).** A login opens a **session window**
   (`PM_SESSION_WINDOW`, default 2h). _Within_ it the daemon **silently
   re-mints** its wire SESSION token — **no re-prompt**. _After_ it, renewal is

@@ -265,9 +265,10 @@ private const val DEVICE_LOGIN_TTL_SEC = 600L // 10 min to complete the device-a
  * itself is the web app's `/device` (Next.js); the CP owns the API + the approval:
  *  - POST /auth/device/start   — pmon begins a login; the CP mints a PENDING handle + a short user_code and
  *    returns the verification page URL ({origin}/device?user_code=…). No IdP round-trip happens here.
- *  - POST /auth/device/confirm — the web /device page confirms the human-seen code; sets the verify cookie.
- *  - GET  /auth/device/authorize — the browser lands here after confirm; approves with the existing console
- *    session if any, else sends the user through /login (SSO or debug) and back. Requires the verify cookie.
+ *  - POST /auth/device/confirm — the authenticated web /device page confirms the human-seen code and binds
+ *    the verify cookie to that code and web session.
+ *  - GET  /auth/device/authorize — the browser lands here after confirm and approves with that same live web
+ *    session. A missing or replaced session returns to /device for authentication and confirmation again.
  *  - POST /auth/device/poll    — pmon polls by handle; 202 while PENDING, 200 + a one-time SESSION token once
  *    the page approved it.
  *  - /auth/session/renew (delegated to [sessionRenewRoutes]).
@@ -304,29 +305,34 @@ fun Route.deviceSessionRoutes(
         )
     }
 
-    // The web /device page POSTs here when the human confirms the code it shows: validate it's a real pending
-    // login and set the signed verify cookie binding THIS browser to the code. /auth/device/authorize below
-    // requires that cookie, so an attacker's direct authorize link (no /device confirm) cannot approve.
+    // The web /device page POSTs here when the signed-in human confirms the code it shows. The verify cookie
+    // binds THIS browser to the code, so an attacker's direct authorize link cannot approve.
     post("/auth/device/confirm") {
+        val session = call.webSession()
+        if (session == null) {
+            call.unauthenticated()
+            return@post
+        }
         val userCode = runCatching { call.receive<DeviceConfirmInput>().userCode }.getOrNull()?.trim()
         val row = userCode?.let { deviceLoginStore.getByUserCode(it) }
         if (row?.userCode == null || row.expiresAt.isBefore(Instant.now()) || row.status != "PENDING") {
             call.respond(HttpStatusCode.BadRequest, ApiError("device.unknown_or_expired_login"))
             return@post
         }
-        call.sessions.set(DeviceVerifySession(row.userCode))
+        call.sessions.set(DeviceVerifySession(row.userCode, session.id))
         call.respond(HttpStatusCode.OK, DeviceConfirmAck())
     }
 
-    // After confirm, the web page navigates the browser here. If the user already has a console session, we
-    // approve this pmon login with that identity and land on success — no re-login, no session churn. Else we
-    // send them through the normal /login (SSO or debug), which returns here once a session exists. Requires
-    // the verify cookie (set at confirm) matching the code — the device-phishing gate.
+    // After confirm, the web page navigates the browser here. The same live session that confirmed the code
+    // approves this pmon login. If it is gone, return to /device so authentication and confirmation repeat.
     get("/auth/device/authorize") {
         val userCode = call.request.queryParameters["user_code"]?.trim()
-        fun backToDevice() = "/device${if (userCode.isNullOrBlank()) "" else "?user_code=${userCode.encodeURLParameter()}"}"
-        if (userCode.isNullOrBlank() || call.sessions.get<DeviceVerifySession>()?.userCode != userCode) {
-            call.respondRedirect(backToDevice()) // not confirmed on /device in this browser
+        fun backToDevice() = config.webRedirectTarget(
+            "/device${if (userCode.isNullOrBlank()) "" else "?user_code=${userCode.encodeURLParameter()}"}",
+        )
+        val verified = call.sessions.get<DeviceVerifySession>()
+        if (userCode.isNullOrBlank() || verified?.userCode != userCode) {
+            call.respondRedirect(backToDevice())
             return@get
         }
         val row = deviceLoginStore.getByUserCode(userCode)
@@ -336,10 +342,9 @@ fun Route.deviceSessionRoutes(
             return@get
         }
         val session = call.webSession()
-        if (session == null) {
-            // No console session yet — log in first, then return here (the SSO return_to + the /login debug
-            // redirect both land back on this URL, which now finds a session).
-            call.respondRedirect("/login?return_to=${"/auth/device/authorize?user_code=$userCode".encodeURLParameter()}")
+        if (session == null || session.id != verified.webSessionId) {
+            call.sessions.clear(DEVICE_VERIFY_COOKIE)
+            call.respondRedirect(backToDevice())
             return@get
         }
         // Approve for the logged-in principal (SSO or debug — /login's PM_AUTH_DEBUG gate governs debug), and
@@ -352,7 +357,7 @@ fun Route.deviceSessionRoutes(
         val refreshToken = daemonSessionStore.webRefreshToken(session.id)
         if (!daemonSessionStore.webSessionIsLive(session.id)) {
             call.sessions.clear(DEVICE_VERIFY_COOKIE)
-            call.respondRedirect("/login?return_to=${"/auth/device/authorize?user_code=$userCode".encodeURLParameter()}")
+            call.respondRedirect(backToDevice())
             return@get
         }
         val approver = AuditActor(session.principal, clientAddr = call.httpRequesterIp(config), channel = CHANNEL_DEVICE)
@@ -372,7 +377,7 @@ fun Route.deviceSessionRoutes(
             }
         }
         call.sessions.clear(DEVICE_VERIFY_COOKIE)
-        call.respondRedirect(if (approved) "/device/success" else backToDevice())
+        call.respondRedirect(if (approved) config.webRedirectTarget("/device/success") else backToDevice())
     }
 
     // pmon polls by handle: 202 while the browser page has not approved yet, 200 + a one-time SESSION token

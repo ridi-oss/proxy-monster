@@ -118,6 +118,9 @@ data class Config(
     val webBaseUrl: String
         get() = webOrigin.trim().trimEnd('/').ifBlank { mcpIssuer }
 
+    fun webRedirectTarget(path: String): String =
+        if (webOrigin.isBlank()) path else "$webBaseUrl$path"
+
     // The outer per-statement exchange budget the run paths wait on, in milliseconds. Overflow-safe:
     // queryTimeoutSeconds is bounded by MAX_QUERY_TIMEOUT_SECONDS. Kept a grace above the proxy watchdog
     // (see QUERY_EXCHANGE_GRACE_MS) so the watchdog cancels the statement gracefully before this fires.

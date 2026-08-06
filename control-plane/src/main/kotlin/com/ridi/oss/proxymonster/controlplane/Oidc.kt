@@ -39,7 +39,7 @@ data class OAuthStateSession(val state: String, val returnTo: String? = null)
 const val DEVICE_VERIFY_COOKIE = "pm_device_verify"
 
 @Serializable
-data class DeviceVerifySession(val userCode: String)
+data class DeviceVerifySession(val userCode: String, val webSessionId: Long)
 
 /** Short-lived signed cookie carrying the OIDC `nonce` between /login and /callback. */
 const val OAUTH_NONCE_COOKIE = "pm_oauth_nonce"
@@ -206,7 +206,7 @@ fun Route.oidcRoutes(
             } else {
                 "/login?error=state"
             }
-            call.respondRedirect(target)
+            call.respondRedirect(config.oidcRedirectTarget(target))
             return@get
         }
         if (params["error"] != null) {
@@ -214,19 +214,31 @@ fun Route.oidcRoutes(
             // The error is whatever the caller put in the query string — /auth/oidc/login is open, so a
             // self-minted state reaches this branch and chooses this value. Bounded before it is recorded.
             auditFailure("idp_error=${auditedValue(params["error"].orEmpty())}")
-            call.respondRedirect(oidcFailureTarget(stateSession, oauthError = "access_denied", consoleError = "oidc"))
+            call.respondRedirect(
+                config.oidcRedirectTarget(
+                    oidcFailureTarget(stateSession, oauthError = "access_denied", consoleError = "oidc"),
+                ),
+            )
             return@get
         }
         if (code == null) {
             log.warn("OIDC callback omitted both code and error")
             auditFailure("missing_code")
-            call.respondRedirect(oidcFailureTarget(stateSession, oauthError = "server_error", consoleError = "state"))
+            call.respondRedirect(
+                config.oidcRedirectTarget(
+                    oidcFailureTarget(stateSession, oauthError = "server_error", consoleError = "state"),
+                ),
+            )
             return@get
         }
         if (expectedNonce == null) {
             log.warn("OIDC callback nonce state is absent")
             auditFailure("missing_nonce")
-            call.respondRedirect(oidcFailureTarget(stateSession, oauthError = "access_denied", consoleError = "nonce"))
+            call.respondRedirect(
+                config.oidcRedirectTarget(
+                    oidcFailureTarget(stateSession, oauthError = "access_denied", consoleError = "nonce"),
+                ),
+            )
             return@get
         }
 
@@ -251,7 +263,11 @@ fun Route.oidcRoutes(
         } catch (e: Exception) {
             log.error("OIDC token exchange failed", e)
             auditFailure("token_exchange_failed")
-            call.respondRedirect(oidcFailureTarget(stateSession, oauthError = "server_error", consoleError = "oidc"))
+            call.respondRedirect(
+                config.oidcRedirectTarget(
+                    oidcFailureTarget(stateSession, oauthError = "server_error", consoleError = "oidc"),
+                ),
+            )
             return@get
         }
 
@@ -262,7 +278,11 @@ fun Route.oidcRoutes(
         if (claims == null) {
             log.warn("OIDC callback id_token validation failed")
             auditFailure("invalid_id_token")
-            call.respondRedirect(oidcFailureTarget(stateSession, oauthError = "access_denied", consoleError = "nonce"))
+            call.respondRedirect(
+                config.oidcRedirectTarget(
+                    oidcFailureTarget(stateSession, oauthError = "access_denied", consoleError = "nonce"),
+                ),
+            )
             return@get
         }
 
@@ -280,13 +300,21 @@ fun Route.oidcRoutes(
             if (roleResolver.resolve(principal).isEmpty()) {
                 log.warn("OIDC callback principal has no effective roles: {}", principal)
                 auditFailure("no_effective_roles", principal)
-                call.respondRedirect(oidcFailureTarget(stateSession, oauthError = "access_denied", consoleError = "no_access"))
+                call.respondRedirect(
+                    config.oidcRedirectTarget(
+                        oidcFailureTarget(stateSession, oauthError = "access_denied", consoleError = "no_access"),
+                    ),
+                )
                 return@get
             }
         } catch (e: Exception) {
             log.error("OIDC provisioning or role resolution failed", e)
             auditFailure("provisioning_failed", principal)
-            call.respondRedirect(oidcFailureTarget(stateSession, oauthError = "server_error", consoleError = "oidc"))
+            call.respondRedirect(
+                config.oidcRedirectTarget(
+                    oidcFailureTarget(stateSession, oauthError = "server_error", consoleError = "oidc"),
+                ),
+            )
             return@get
         }
 
@@ -323,13 +351,17 @@ fun Route.oidcRoutes(
         } catch (e: Exception) {
             log.error("OIDC session mint failed", e)
             auditFailure("session_mint_failed", principal)
-            call.respondRedirect(oidcFailureTarget(stateSession, oauthError = "server_error", consoleError = "oidc"))
+            call.respondRedirect(
+                config.oidcRedirectTarget(
+                    oidcFailureTarget(stateSession, oauthError = "server_error", consoleError = "oidc"),
+                ),
+            )
             return@get
         }
         // Post-commit: the SUCCESS row is durable. A disconnect on either line propagates uncaught rather
         // than writing a contradicting FAILURE row.
         call.sessions.set(WebSessionRef(sessionId))
-        call.respondRedirect(stateSession?.returnTo ?: "/")
+        call.respondRedirect(config.oidcRedirectTarget(stateSession?.returnTo ?: "/"))
     }
 }
 
@@ -340,13 +372,15 @@ fun Route.oidcRoutes(
 internal fun OidcDiscoveryDocument.supportsPkceS256(): Boolean =
     code_challenge_methods_supported?.any { it.equals("S256", ignoreCase = true) } == true
 
+// Keep continuations on fixed local routes; arbitrary paths or origins would turn OIDC into an open redirect.
 internal fun oidcReturnTarget(raw: String?): String? =
     raw?.takeIf {
-        // Fixed co-hosted continuations, plus the pmon device-authorize landing (a fixed path with only a
-        // constrained user_code query) — never an arbitrary value, so this can't become an open redirect.
-        it == "/oauth/resume" || it == "/auth/reauth-complete" ||
-            it.matches(Regex("/auth/device/authorize\\?user_code=[A-Za-z0-9-]{1,16}"))
+        it == "/oauth/resume" || it == "/auth/reauth-complete" || it == "/device" ||
+            it.matches(Regex("/device\\?user_code=[A-Za-z0-9-]{1,16}"))
     }
+
+private fun Config.oidcRedirectTarget(path: String): String =
+    if (path.startsWith("/oauth/")) path else webRedirectTarget(path)
 
 internal fun oidcFailureTarget(state: OAuthStateSession?, oauthError: String, consoleError: String): String {
     val returnTo = state?.returnTo

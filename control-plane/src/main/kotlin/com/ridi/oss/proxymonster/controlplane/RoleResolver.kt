@@ -20,7 +20,7 @@ class RoleResolver(
         c.prepareStatement(
             """SELECT r.name
                FROM principal_role pr
-               JOIN app_role r ON r.id = pr.role_id
+               JOIN app_role r ON r.id = pr.role_id AND r.deleted_at IS NULL
                WHERE pr.principal = ?""",
         ).use { ps ->
             ps.setString(1, principal)
@@ -66,21 +66,21 @@ class RoleResolver(
                    EXISTS (
                        SELECT 1
                        FROM principal_role pr
-                       JOIN app_role r ON r.id = pr.role_id AND r.name = ?
+                       JOIN app_role r ON r.id = pr.role_id AND r.name = ? AND r.deleted_at IS NULL
                        LEFT JOIN app_user u ON u.principal = pr.principal
                        WHERE u.id IS NULL OR u.active
                    )
                    OR EXISTS (
                        SELECT 1
                        FROM group_role gr
-                       JOIN app_role r ON r.id = gr.role_id AND r.name = ?
+                       JOIN app_role r ON r.id = gr.role_id AND r.name = ? AND r.deleted_at IS NULL
                        JOIN group_member gm ON gm.group_id = gr.group_id
                        JOIN app_user u ON u.id = gm.user_id AND u.active
                    )
                    OR EXISTS (
                        SELECT 1
                        FROM access_grant ag
-                       JOIN app_role r ON r.id = ag.role_id AND r.name = ?
+                       JOIN app_role r ON r.id = ag.role_id AND r.name = ? AND r.deleted_at IS NULL
                        LEFT JOIN app_user u ON u.principal = ag.principal
                        WHERE ag.revoked_at IS NULL
                          AND (ag.expires_at IS NULL OR ag.expires_at > now())

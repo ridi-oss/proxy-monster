@@ -30,13 +30,28 @@ import javax.sql.DataSource
 class PolicyStore(internal val dataSource: DataSource) {
 
     fun listRoles(): List<Role> = dataSource.connection.use(::listRoles)
-    fun listRoles(c: Connection): List<Role> = c.query("SELECT id, name, description FROM app_role ORDER BY name") { it.toRole() }
+    fun listRoles(c: Connection): List<Role> = c.query("SELECT id, name, description FROM app_role WHERE deleted_at IS NULL ORDER BY name") { it.toRole() }
     fun getRole(id: Long): Role? = dataSource.connection.use { getRole(id, it) }
-    fun getRole(id: Long, c: Connection): Role? = c.queryOne("SELECT id, name, description FROM app_role WHERE id=?", id) { it.toRole() }
+    fun getRole(id: Long, c: Connection): Role? = c.queryOne("SELECT id, name, description FROM app_role WHERE id=? AND deleted_at IS NULL", id) { it.toRole() }
     fun getRoleByName(name: String): Role? = dataSource.connection.use { getRoleByName(name, it) }
     fun getRoleByName(name: String, c: Connection): Role? = c.prepareStatement(
-        "SELECT id, name, description FROM app_role WHERE name=?",
+        "SELECT id, name, description FROM app_role WHERE name=? AND deleted_at IS NULL",
     ).use { ps -> ps.setString(1, name); ps.executeQuery().use { rs -> if (rs.next()) rs.toRole() else null } }
+
+    /**
+     * Of [names], the subset that names a LIVE role — for validating a task's frozen `execute_as` role
+     * snapshot at execution/view time. A role soft-deleted after the snapshot was taken drops out here, so
+     * the caller can fail closed rather than authorize a stored result under a role that no longer exists;
+     * a name freed by a delete and reused resolves to its new live role, matching Cedar name semantics.
+     */
+    fun liveRoleNames(names: Collection<String>): Set<String> = dataSource.connection.use { liveRoleNames(names, it) }
+    fun liveRoleNames(names: Collection<String>, c: Connection): Set<String> {
+        if (names.isEmpty()) return emptySet()
+        return c.prepareStatement("SELECT name FROM app_role WHERE name = ANY(?) AND deleted_at IS NULL").use { ps ->
+            ps.setArray(1, c.createArrayOf("text", names.toTypedArray()))
+            ps.executeQuery().use { rs -> buildSet { while (rs.next()) add(rs.getString(1)) } }
+        }
+    }
     fun createRole(input: RoleInput): Role = dataSource.connection.use { createRole(input, it) }
     fun createRole(input: RoleInput, c: Connection): Role {
         val id = c.insertReturningId("INSERT INTO app_role (name, description) VALUES (?, ?) RETURNING id") {
@@ -47,13 +62,16 @@ class PolicyStore(internal val dataSource: DataSource) {
     fun updateRole(id: Long, input: RoleInput): Role? = dataSource.connection.use { updateRole(id, input, it) }
     fun updateRole(id: Long, input: RoleInput, c: Connection): Role? {
         if (getRole(id, c) == null) return null
-        c.exec("UPDATE app_role SET name=?, description=? WHERE id=?") {
+        c.exec("UPDATE app_role SET name=?, description=? WHERE id=? AND deleted_at IS NULL") {
             it.setString(1, input.name); it.setString(2, input.description); it.setLong(3, id)
         }
         return getRole(id, c)
     }
     fun deleteRole(id: Long): Boolean = dataSource.connection.use { deleteRole(id, it) }
-    fun deleteRole(id: Long, c: Connection): Boolean = c.execUpdate("DELETE FROM app_role WHERE id=?") { it.setLong(1, id) } > 0
+    /** Soft delete: the row (and the access_request / access_grant history that references it) survives,
+     *  while resolution and every live read exclude it and its name is freed for reuse. */
+    fun deleteRole(id: Long, c: Connection): Boolean =
+        c.execUpdate("UPDATE app_role SET deleted_at = now() WHERE id=? AND deleted_at IS NULL") { it.setLong(1, id) } > 0
     fun isSystemRole(id: Long): Boolean = dataSource.connection.use { isSystemRole(id, it) }
     fun isSystemRole(id: Long, c: Connection): Boolean = c.prepareStatement(
         """SELECT EXISTS(SELECT 1 FROM group_role gr JOIN app_group g ON g.id = gr.group_id
@@ -65,7 +83,7 @@ class PolicyStore(internal val dataSource: DataSource) {
     fun listAssignments(principal: String?, roleId: Long?, c: Connection): List<RoleAssignment> {
         val sql = StringBuilder(
             """SELECT pr.id, pr.principal, pr.role_id, r.name AS role_name
-               FROM principal_role pr JOIN app_role r ON r.id = pr.role_id WHERE 1=1""",
+               FROM principal_role pr JOIN app_role r ON r.id = pr.role_id AND r.deleted_at IS NULL WHERE 1=1""",
         )
         if (principal != null) sql.append(" AND pr.principal = ?")
         if (roleId != null) sql.append(" AND pr.role_id = ?")
@@ -84,7 +102,7 @@ class PolicyStore(internal val dataSource: DataSource) {
     fun getAssignment(id: Long): RoleAssignment? = dataSource.connection.use { getAssignment(id, it) }
     fun getAssignment(id: Long, c: Connection): RoleAssignment? = c.prepareStatement(
         """SELECT pr.id, pr.principal, pr.role_id, r.name AS role_name
-           FROM principal_role pr JOIN app_role r ON r.id = pr.role_id WHERE pr.id = ?""",
+           FROM principal_role pr JOIN app_role r ON r.id = pr.role_id AND r.deleted_at IS NULL WHERE pr.id = ?""",
     ).use { ps ->
         ps.setLong(1, id)
         ps.executeQuery().use { rs ->
@@ -105,12 +123,12 @@ class PolicyStore(internal val dataSource: DataSource) {
     ) { it.setString(1, principal); it.setLong(2, roleId) } > 0
 
     fun listMaskFns(): List<MaskFn> = dataSource.connection.use(::listMaskFns)
-    fun listMaskFns(c: Connection): List<MaskFn> = c.query("SELECT id, name, kind FROM mask_fn ORDER BY name") { it.toMaskFn() }
+    fun listMaskFns(c: Connection): List<MaskFn> = c.query("SELECT id, name, kind FROM mask_fn WHERE deleted_at IS NULL ORDER BY name") { it.toMaskFn() }
     fun getMaskFn(id: Long): MaskFn? = dataSource.connection.use { getMaskFn(id, it) }
-    fun getMaskFn(id: Long, c: Connection): MaskFn? = c.queryOne("SELECT id, name, kind FROM mask_fn WHERE id=?", id) { it.toMaskFn() }
+    fun getMaskFn(id: Long, c: Connection): MaskFn? = c.queryOne("SELECT id, name, kind FROM mask_fn WHERE id=? AND deleted_at IS NULL", id) { it.toMaskFn() }
     fun getMaskFnByName(name: String): MaskFn? = dataSource.connection.use { getMaskFnByName(name, it) }
     fun getMaskFnByName(name: String, c: Connection): MaskFn? = c.prepareStatement(
-        "SELECT id, name, kind FROM mask_fn WHERE name=?",
+        "SELECT id, name, kind FROM mask_fn WHERE name=? AND deleted_at IS NULL",
     ).use { ps -> ps.setString(1, name); ps.executeQuery().use { rs -> if (rs.next()) rs.toMaskFn() else null } }
     fun createMaskFn(input: MaskFnInput): MaskFn = dataSource.connection.use { createMaskFn(input, it) }
     fun createMaskFn(input: MaskFnInput, c: Connection): MaskFn {
@@ -122,13 +140,16 @@ class PolicyStore(internal val dataSource: DataSource) {
     fun updateMaskFn(id: Long, input: MaskFnInput): MaskFn? = dataSource.connection.use { updateMaskFn(id, input, it) }
     fun updateMaskFn(id: Long, input: MaskFnInput, c: Connection): MaskFn? {
         if (getMaskFn(id, c) == null) return null
-        c.exec("UPDATE mask_fn SET name=?, kind=? WHERE id=?") {
+        c.exec("UPDATE mask_fn SET name=?, kind=? WHERE id=? AND deleted_at IS NULL") {
             it.setString(1, input.name); it.setString(2, input.kind); it.setLong(3, id)
         }
         return getMaskFn(id, c)
     }
     fun deleteMaskFn(id: Long): Boolean = dataSource.connection.use { deleteMaskFn(id, it) }
-    fun deleteMaskFn(id: Long, c: Connection): Boolean = c.execUpdate("DELETE FROM mask_fn WHERE id=?") { it.setLong(1, id) } > 0
+    /** Soft delete: a column classification still referencing this mask function falls back to FIXED
+     *  masking (the column stays masked), and the name is freed for reuse. */
+    fun deleteMaskFn(id: Long, c: Connection): Boolean =
+        c.execUpdate("UPDATE mask_fn SET deleted_at = now() WHERE id=? AND deleted_at IS NULL") { it.setLong(1, id) } > 0
 
     private fun ResultSet.toRole() = Role(getLong("id"), getString("name"), getString("description"))
     private fun ResultSet.toMaskFn() = MaskFn(getLong("id"), getString("name"), getString("kind"))

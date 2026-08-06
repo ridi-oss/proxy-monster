@@ -162,7 +162,7 @@ class AccessStore(private val dataSource: DataSource) {
             .joinToString("") { "%02x".format(it) }
         val id = dataSource.inTx { c ->
             val executeAs = roleId?.let { id ->
-                c.prepareStatement("SELECT name FROM app_role WHERE id = ?").use { ps ->
+                c.prepareStatement("SELECT name FROM app_role WHERE id = ? AND deleted_at IS NULL").use { ps ->
                     ps.setLong(1, id)
                     ps.executeQuery().use { rs -> if (rs.next()) listOf(rs.getString(1)) else emptyList() }
                 }
@@ -702,10 +702,13 @@ class AccessStore(private val dataSource: DataSource) {
                       ar.approved_at, ar.executing_at, ar.executed_at, ar.execute_as, ar.creator_kind
                FROM access_request ar LEFT JOIN app_role r ON r.id = ar.role_id
                LEFT JOIN datasource d ON d.id = ar.datasource_id"""
+        // The app_role join is filtered to LIVE roles: a grant of a soft-deleted role must resolve to no
+        // role (fail-closed in RoleResolver.resolve), so it drops out of listGrants here rather than
+        // silently granting a role the operator deleted.
         const val GRANT_SELECT =
             """SELECT ag.id, ag.principal, ag.role_id, r.name AS role_name,
                       ag.granted_by, ag.granted_at, ag.expires_at, ag.revoked_at
-               FROM access_grant ag JOIN app_role r ON r.id = ag.role_id"""
+               FROM access_grant ag JOIN app_role r ON r.id = ag.role_id AND r.deleted_at IS NULL"""
     }
 }
 

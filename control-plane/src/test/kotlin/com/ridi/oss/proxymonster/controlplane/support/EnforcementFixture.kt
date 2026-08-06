@@ -163,10 +163,18 @@ class EnforcementFixture(
      * DecisionContext itself — e.g. the analyzer-emitted `rewrittenSql` — through the production seam rather
      * than injecting synthetic facts.
      */
-    fun decide(sql: String, principal: String = "analyst@example.com", channel: Channel = Channel.WIRE): DecisionContext =
+    fun decide(
+        sql: String,
+        principal: String = "analyst@example.com",
+        channel: Channel = Channel.WIRE,
+        // A task's frozen execute_as snapshot: when set it REPLACES server role resolution (the approval
+        // execute + stored-result view path), exercising the decision's own live-role re-filter.
+        providedRoles: Set<String>? = null,
+    ): DecisionContext =
         decideQuery(
             principal, datasource, sql, channel, datasourceStore.catalog(datasource.id),
             policyStore, accessStore, userGroupStore, roleResolver, authz,
+            providedRoles = providedRoles,
         )
 
     /** Run raw SQL directly against the target (test setup/teardown; no enforcement gate). */

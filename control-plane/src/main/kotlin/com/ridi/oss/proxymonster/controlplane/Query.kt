@@ -364,7 +364,12 @@ fun decideQuery(
         return structuralDeny(DEACTIVATED_PRINCIPAL_DENY, emptyList(), failedStage = "deprovisioned")
     }
 
-    val roles = providedRoles ?: roleResolver.resolve(principal)
+    // providedRoles is a task's frozen execute_as snapshot (approval execute + stored-result view). Re-filter
+    // it to LIVE roles at this final authorization point so a role soft-deleted AFTER the route-level liveness
+    // check — including between the route and the async proxy Decide — cannot still authorize the run. An
+    // all-deleted snapshot collapses to the empty set and denies here (never falls back to the principal's
+    // own roles). Ordinary resolution is already deleted-role-filtered in RoleResolver.
+    val roles = providedRoles?.let { policyStore.liveRoleNames(it) } ?: roleResolver.resolve(principal)
     val roleList = roles.toList()
     @Suppress("NAME_SHADOWING")
     val context = effectiveAuthzContext(context, channel, authz, principal, roles, ds.name, ds.tags)

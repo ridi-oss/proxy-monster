@@ -626,7 +626,7 @@ class UserGroupStore(internal val dataSource: DataSource) {
     fun listGroupRoles(groupId: Long): List<GroupRoleEntry> = dataSource.connection.use { listGroupRoles(groupId, it) }
     fun listGroupRoles(groupId: Long, c: Connection): List<GroupRoleEntry> = c.prepareStatement(
         """SELECT r.id AS role_id, r.name AS role_name
-           FROM group_role gr JOIN app_role r ON r.id = gr.role_id
+           FROM group_role gr JOIN app_role r ON r.id = gr.role_id AND r.deleted_at IS NULL
            WHERE gr.group_id = ? ORDER BY r.name""",
     ).use { ps ->
         ps.setLong(1, groupId)
@@ -654,7 +654,7 @@ class UserGroupStore(internal val dataSource: DataSource) {
                    FROM app_user u
                    JOIN group_member gm ON gm.user_id = u.id
                    JOIN group_role gr ON gr.group_id = gm.group_id
-                   JOIN app_role r ON r.id = gr.role_id
+                   JOIN app_role r ON r.id = gr.role_id AND r.deleted_at IS NULL
                    WHERE u.principal = ? AND u.active""",
             ).use { ps ->
                 ps.setString(1, principal)
@@ -693,7 +693,7 @@ class UserGroupStore(internal val dataSource: DataSource) {
             ps.executeQuery().use { rs -> rs.next(); rs.getBoolean(1) }
         }
 
-    fun role(id: Long): GroupRoleEntry? = queryOne("SELECT id, name FROM app_role WHERE id=?", id) {
+    fun role(id: Long): GroupRoleEntry? = queryOne("SELECT id, name FROM app_role WHERE id=? AND deleted_at IS NULL", id) {
         GroupRoleEntry(it.getLong("id"), it.getString("name"))
     }
     fun roleExists(id: Long): Boolean = role(id) != null
@@ -754,7 +754,7 @@ class UserGroupStore(internal val dataSource: DataSource) {
     private fun groupRoles(groupId: Long?): Map<Long, List<GroupRef>> = dataSource.connection.use { c ->
         val sql = StringBuilder(
             """SELECT gr.group_id, r.id, r.name
-               FROM group_role gr JOIN app_role r ON r.id = gr.role_id""",
+               FROM group_role gr JOIN app_role r ON r.id = gr.role_id AND r.deleted_at IS NULL""",
         )
         if (groupId != null) sql.append(" WHERE gr.group_id = ?")
         sql.append(" ORDER BY r.name")

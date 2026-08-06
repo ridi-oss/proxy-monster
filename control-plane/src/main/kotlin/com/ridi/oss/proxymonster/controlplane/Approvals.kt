@@ -211,8 +211,10 @@ internal fun decideResultView(
     channel: Channel = Channel.WORKFLOW_VIEWER,
 ): ResultViewDecision {
     val sql = childSql ?: return ResultViewDecision.Denied("saved result child has no SQL")
-    val roles = req.executeAs.toSet()
-    if (roles.isEmpty()) return ResultViewDecision.Denied("approval request has no execute-as roles")
+    // Drop any execute-as role soft-deleted since the snapshot was frozen: it must grant nothing, so a
+    // stored result never re-decides under a role that no longer exists (an empty result denies below).
+    val roles = policyStore.liveRoleNames(req.executeAs)
+    if (roles.isEmpty()) return ResultViewDecision.Denied("approval request has no live execute-as roles")
     val ctx = decideQuery(
         principal = viewer,
         ds = ds,
@@ -738,7 +740,9 @@ fun Route.approvalRoutes(
             ?: return@post call.respond(HttpStatusCode.Conflict, ApiError("common.not_found", mapOf("resource" to "datasource")))
         val sql = req.sql ?: return@post call.respond(HttpStatusCode.Conflict, ApiError("approval.no_sql"))
         val requesterIp = call.httpRequesterIp(config)
-        val executeAs = req.executeAs.toSet()
+        // Only LIVE execute-as roles: a role soft-deleted since approval grants nothing, so it drops out of
+        // the run's ceiling here (and an all-deleted snapshot fails closed at the empty check below).
+        val executeAs = policyStore.liveRoleNames(req.executeAs)
         // Fail closed on a task with no execute-as role set — there is no R to enforce the run under. Only
         // a row with no elevation role can be empty (every new request carries R), so this never rejects a
         // current request; without it the run would fall through to the proxy Decide under the requester's

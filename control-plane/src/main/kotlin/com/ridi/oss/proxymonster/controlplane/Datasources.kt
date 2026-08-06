@@ -605,7 +605,7 @@ class DatasourceStore(internal val dataSource: DataSource) {
            LEFT JOIN column_classification cl
              ON cl.datasource_id = c.datasource_id AND cl.schema_name = c.schema_name
             AND cl.table_name = c.table_name AND cl.column_name = c.column_name
-           LEFT JOIN mask_fn m ON m.id = cl.mask_fn_id
+           LEFT JOIN mask_fn m ON m.id = cl.mask_fn_id AND m.deleted_at IS NULL
            WHERE c.datasource_id = ?
            ORDER BY c.schema_name, c.table_name, c.ordinal""",
     ).use { ps ->
@@ -644,7 +644,7 @@ class DatasourceStore(internal val dataSource: DataSource) {
                 """SELECT cl.schema_name, cl.table_name, cl.column_name, cl.tags, cl.mask_fn_id,
                           m.name AS mask_fn_name
                    FROM column_classification cl
-                   LEFT JOIN mask_fn m ON m.id = cl.mask_fn_id
+                   LEFT JOIN mask_fn m ON m.id = cl.mask_fn_id AND m.deleted_at IS NULL
                    WHERE cl.datasource_id = ?""",
             ).use { ps ->
                 ps.setLong(1, id)
@@ -707,7 +707,7 @@ class DatasourceStore(internal val dataSource: DataSource) {
 
     private fun maskFnName(id: Long?, c: java.sql.Connection): String? {
         if (id == null) return null
-        return c.prepareStatement("SELECT name FROM mask_fn WHERE id = ?").use { ps ->
+        return c.prepareStatement("SELECT name FROM mask_fn WHERE id = ? AND deleted_at IS NULL").use { ps ->
             ps.setLong(1, id)
             ps.executeQuery().use { rs -> if (rs.next()) rs.getString(1) else null }
         }

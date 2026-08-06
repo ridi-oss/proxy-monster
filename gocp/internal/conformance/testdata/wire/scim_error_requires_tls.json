@@ -1,0 +1,1 @@
+{"schemas":["urn:ietf:params:scim:api:messages:2.0:Error"],"status":"403","detail":"SCIM requires TLS"}

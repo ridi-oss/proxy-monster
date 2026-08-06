@@ -1,0 +1,1 @@
+{"decision":"ALLOW","maskedColumns":[],"piiTouched":[],"effectiveRoles":[],"columns":["expr"],"rows":[["a < b & c > d"]],"latencyMs":0}

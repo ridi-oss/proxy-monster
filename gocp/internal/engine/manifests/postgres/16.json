@@ -1,0 +1,592 @@
+{
+  "engine": "postgres",
+  "series": "16",
+  "manifestVersion": 1,
+  "curatedThrough": "16.13",
+  "systemSchemas": [
+    {
+      "catalog": "*",
+      "schema": "pg_catalog"
+    },
+    {
+      "catalog": "*",
+      "schema": "information_schema"
+    }
+  ],
+  "logicalFunctionSchemas": [],
+  "relations": [
+    {
+      "schema": "pg_catalog",
+      "name": "pg_authid",
+      "tag": "system:critical"
+    },
+    {
+      "schema": "pg_catalog",
+      "name": "pg_shadow",
+      "tag": "system:critical"
+    },
+    {
+      "schema": "pg_catalog",
+      "name": "pg_user_mapping",
+      "tag": "system:critical"
+    },
+    {
+      "schema": "pg_catalog",
+      "name": "pg_user_mappings",
+      "tag": "system:critical"
+    },
+    {
+      "schema": "pg_catalog",
+      "name": "pg_foreign_server",
+      "tag": "system:critical"
+    },
+    {
+      "schema": "pg_catalog",
+      "name": "pg_foreign_data_wrapper",
+      "tag": "system:critical"
+    },
+    {
+      "schema": "pg_catalog",
+      "name": "pg_subscription",
+      "tag": "system:critical"
+    },
+    {
+      "schema": "pg_catalog",
+      "name": "pg_hba_file_rules",
+      "tag": "system:critical"
+    },
+    {
+      "schema": "pg_catalog",
+      "name": "pg_ident_file_mappings",
+      "tag": "system:critical"
+    },
+    {
+      "schema": "pg_catalog",
+      "name": "pg_config",
+      "tag": "system:critical"
+    },
+    {
+      "schema": "pg_catalog",
+      "name": "pg_file_settings",
+      "tag": "system:critical"
+    },
+    {
+      "schema": "pg_catalog",
+      "name": "pg_settings",
+      "tag": "system:critical"
+    },
+    {
+      "schema": "pg_catalog",
+      "name": "pg_db_role_setting",
+      "tag": "system:critical"
+    },
+    {
+      "schema": "information_schema",
+      "name": "user_mapping_options",
+      "tag": "system:critical"
+    },
+    {
+      "schema": "information_schema",
+      "name": "foreign_server_options",
+      "tag": "system:critical"
+    },
+    {
+      "schema": "information_schema",
+      "name": "foreign_data_wrapper_options",
+      "tag": "system:critical"
+    },
+    {
+      "schema": "pg_catalog",
+      "name": "pg_statistic",
+      "tag": "system:data-leak"
+    },
+    {
+      "schema": "pg_catalog",
+      "name": "pg_statistic_ext_data",
+      "tag": "system:data-leak"
+    },
+    {
+      "schema": "pg_catalog",
+      "name": "pg_stats",
+      "tag": "system:data-leak"
+    },
+    {
+      "schema": "pg_catalog",
+      "name": "pg_stats_ext",
+      "tag": "system:data-leak"
+    },
+    {
+      "schema": "pg_catalog",
+      "name": "pg_stats_ext_exprs",
+      "tag": "system:data-leak"
+    },
+    {
+      "schema": "pg_catalog",
+      "name": "pg_largeobject",
+      "tag": "system:data-leak"
+    },
+    {
+      "schema": "pg_catalog",
+      "name": "pg_stat_activity",
+      "tag": "system:activity"
+    },
+    {
+      "schema": "pg_catalog",
+      "name": "pg_stat_replication",
+      "tag": "system:activity"
+    },
+    {
+      "schema": "pg_catalog",
+      "name": "pg_stat_wal_receiver",
+      "tag": "system:activity"
+    },
+    {
+      "schema": "pg_catalog",
+      "name": "pg_stat_subscription",
+      "tag": "system:activity"
+    },
+    {
+      "schema": "pg_catalog",
+      "name": "pg_stat_subscription_stats",
+      "tag": "system:activity"
+    },
+    {
+      "schema": "pg_catalog",
+      "name": "pg_stat_ssl",
+      "tag": "system:activity"
+    },
+    {
+      "schema": "pg_catalog",
+      "name": "pg_stat_gssapi",
+      "tag": "system:activity"
+    },
+    {
+      "schema": "pg_catalog",
+      "name": "pg_prepared_statements",
+      "tag": "system:activity"
+    },
+    {
+      "schema": "pg_catalog",
+      "name": "pg_cursors",
+      "tag": "system:activity"
+    },
+    {
+      "schema": "pg_catalog",
+      "name": "pg_locks",
+      "tag": "system:activity"
+    },
+    {
+      "schema": "pg_catalog",
+      "name": "pg_stat_statements",
+      "tag": "system:activity"
+    },
+    {
+      "schema": "pg_catalog",
+      "name": "pg_stat_statements_info",
+      "tag": "system:activity"
+    },
+    {
+      "schema": "pg_catalog",
+      "name": "aurora_replica_status",
+      "tag": "system:activity"
+    },
+    {
+      "schema": "pg_catalog",
+      "name": "aurora_stat_activity",
+      "tag": "system:activity"
+    },
+    {
+      "schema": "pg_catalog",
+      "name": "aurora_global_db_status",
+      "tag": "system:activity"
+    },
+    {
+      "schema": "pg_catalog",
+      "name": "aurora_global_db_instance_status",
+      "tag": "system:activity"
+    }
+  ],
+  "relationFamilies": [
+    {
+      "schema": "pg_catalog",
+      "prefix": "pg_stat_progress_",
+      "tag": "system:activity"
+    },
+    {
+      "schema": "pg_catalog",
+      "prefix": "aurora_stat_",
+      "tag": "system:activity"
+    }
+  ],
+  "functions": [
+    {
+      "schema": "pg_catalog",
+      "name": "set_config",
+      "tag": "system:critical"
+    },
+    {
+      "schema": "pg_catalog",
+      "name": "current_setting",
+      "tag": "system:critical"
+    },
+    {
+      "schema": "pg_catalog",
+      "name": "pg_cancel_backend",
+      "tag": "system:critical"
+    },
+    {
+      "schema": "pg_catalog",
+      "name": "pg_terminate_backend",
+      "tag": "system:critical"
+    },
+    {
+      "schema": "pg_catalog",
+      "name": "pg_log_backend_memory_contexts",
+      "tag": "system:critical"
+    },
+    {
+      "schema": "pg_catalog",
+      "name": "pg_reload_conf",
+      "tag": "system:critical"
+    },
+    {
+      "schema": "pg_catalog",
+      "name": "pg_rotate_logfile",
+      "tag": "system:critical"
+    },
+    {
+      "schema": "pg_catalog",
+      "name": "pg_create_restore_point",
+      "tag": "system:critical"
+    },
+    {
+      "schema": "pg_catalog",
+      "name": "pg_switch_wal",
+      "tag": "system:critical"
+    },
+    {
+      "schema": "pg_catalog",
+      "name": "pg_backup_start",
+      "tag": "system:critical"
+    },
+    {
+      "schema": "pg_catalog",
+      "name": "pg_backup_stop",
+      "tag": "system:critical"
+    },
+    {
+      "schema": "pg_catalog",
+      "name": "pg_create_physical_replication_slot",
+      "tag": "system:critical"
+    },
+    {
+      "schema": "pg_catalog",
+      "name": "pg_drop_replication_slot",
+      "tag": "system:critical"
+    },
+    {
+      "schema": "pg_catalog",
+      "name": "pg_create_logical_replication_slot",
+      "tag": "system:critical"
+    },
+    {
+      "schema": "pg_catalog",
+      "name": "pg_replication_slot_advance",
+      "tag": "system:critical"
+    },
+    {
+      "schema": "pg_catalog",
+      "name": "lo_unlink",
+      "tag": "system:critical"
+    },
+    {
+      "schema": "pg_catalog",
+      "name": "lo_export",
+      "tag": "system:critical"
+    },
+    {
+      "schema": "*",
+      "name": "dblink_exec",
+      "tag": "system:critical"
+    },
+    {
+      "schema": "*",
+      "name": "dblink",
+      "tag": "system:data-leak"
+    },
+    {
+      "schema": "*",
+      "name": "dblink_open",
+      "tag": "system:data-leak"
+    },
+    {
+      "schema": "*",
+      "name": "dblink_fetch",
+      "tag": "system:data-leak"
+    },
+    {
+      "schema": "*",
+      "name": "dblink_get_result",
+      "tag": "system:data-leak"
+    },
+    {
+      "schema": "*",
+      "name": "dblink_send_query",
+      "tag": "system:data-leak"
+    },
+    {
+      "schema": "*",
+      "name": "dblink_get_notify",
+      "tag": "system:data-leak"
+    },
+    {
+      "schema": "*",
+      "name": "get_raw_page",
+      "tag": "system:data-leak"
+    },
+    {
+      "schema": "*",
+      "name": "page_header",
+      "tag": "system:data-leak"
+    },
+    {
+      "schema": "*",
+      "name": "fsm_page_contents",
+      "tag": "system:data-leak"
+    },
+    {
+      "schema": "*",
+      "name": "tuple_data_split",
+      "tag": "system:data-leak"
+    },
+    {
+      "schema": "pg_catalog",
+      "name": "pg_stat_file",
+      "tag": "system:data-leak"
+    },
+    {
+      "schema": "pg_catalog",
+      "name": "lo_get",
+      "tag": "system:data-leak"
+    },
+    {
+      "schema": "pg_catalog",
+      "name": "lo_import",
+      "tag": "system:data-leak"
+    },
+    {
+      "schema": "pg_catalog",
+      "name": "loread",
+      "tag": "system:data-leak"
+    },
+    {
+      "schema": "pg_catalog",
+      "name": "xpath_table",
+      "tag": "system:data-leak"
+    },
+    {
+      "schema": "pg_catalog",
+      "name": "pg_logical_slot_get_changes",
+      "tag": "system:data-leak"
+    },
+    {
+      "schema": "pg_catalog",
+      "name": "pg_logical_slot_peek_changes",
+      "tag": "system:data-leak"
+    },
+    {
+      "schema": "pg_catalog",
+      "name": "pg_logical_slot_get_binary_changes",
+      "tag": "system:data-leak"
+    },
+    {
+      "schema": "pg_catalog",
+      "name": "pg_logical_slot_peek_binary_changes",
+      "tag": "system:data-leak"
+    },
+    {
+      "schema": "pg_catalog",
+      "name": "current_query",
+      "tag": "system:activity"
+    },
+    {
+      "schema": "pg_catalog",
+      "name": "pg_blocking_pids",
+      "tag": "system:activity"
+    },
+    {
+      "schema": "pg_catalog",
+      "name": "pg_safe_snapshot_blocking_pids",
+      "tag": "system:activity"
+    },
+    {
+      "schema": "pg_catalog",
+      "name": "pg_current_logfile",
+      "tag": "system:activity"
+    },
+    {
+      "schema": "*",
+      "name": "aurora_replica_status",
+      "tag": "system:activity"
+    },
+    {
+      "schema": "*",
+      "name": "aurora_stat_activity",
+      "tag": "system:activity"
+    }
+  ],
+  "functionFamilies": [
+    {
+      "schema": "pg_catalog",
+      "prefix": "pg_read_",
+      "tag": "system:data-leak"
+    },
+    {
+      "schema": "pg_catalog",
+      "prefix": "pg_ls_",
+      "tag": "system:data-leak"
+    },
+    {
+      "schema": "pg_catalog",
+      "prefix": "query_to_xml",
+      "tag": "system:data-leak"
+    },
+    {
+      "schema": "pg_catalog",
+      "prefix": "table_to_xml",
+      "tag": "system:data-leak"
+    },
+    {
+      "schema": "pg_catalog",
+      "prefix": "database_to_xml",
+      "tag": "system:data-leak"
+    },
+    {
+      "schema": "pg_catalog",
+      "prefix": "schema_to_xml",
+      "tag": "system:data-leak"
+    },
+    {
+      "schema": "pg_catalog",
+      "prefix": "cursor_to_xml",
+      "tag": "system:data-leak"
+    },
+    {
+      "schema": "*",
+      "prefix": "heap_page_",
+      "tag": "system:data-leak"
+    },
+    {
+      "schema": "*",
+      "prefix": "bt_page_",
+      "tag": "system:data-leak"
+    },
+    {
+      "schema": "*",
+      "prefix": "brin_page_",
+      "tag": "system:data-leak"
+    },
+    {
+      "schema": "*",
+      "prefix": "brin_metapage_",
+      "tag": "system:data-leak"
+    },
+    {
+      "schema": "*",
+      "prefix": "gin_page_",
+      "tag": "system:data-leak"
+    },
+    {
+      "schema": "*",
+      "prefix": "gin_leafpage_",
+      "tag": "system:data-leak"
+    },
+    {
+      "schema": "*",
+      "prefix": "gin_metapage_",
+      "tag": "system:data-leak"
+    },
+    {
+      "schema": "*",
+      "prefix": "gist_page_",
+      "tag": "system:data-leak"
+    },
+    {
+      "schema": "*",
+      "prefix": "hash_page_",
+      "tag": "system:data-leak"
+    },
+    {
+      "schema": "*",
+      "prefix": "hash_metapage_",
+      "tag": "system:data-leak"
+    },
+    {
+      "schema": "pg_catalog",
+      "prefix": "pg_stat_get_",
+      "tag": "system:activity"
+    },
+    {
+      "schema": "pg_catalog",
+      "prefix": "aurora_stat_",
+      "tag": "system:activity"
+    }
+  ],
+  "commands": [
+    {
+      "id": "PG_ALTER_SYSTEM",
+      "resource": "alter-system",
+      "tag": "system:critical"
+    },
+    {
+      "id": "PG_SHOW_GUC",
+      "resource": "pg_catalog/pg_settings",
+      "tag": "system:critical"
+    },
+    {
+      "id": "PG_ALTER_ROLE_PASSWORD",
+      "resource": "alter-role-password",
+      "tag": "system:critical"
+    },
+    {
+      "id": "PG_CREATE_USER_MAPPING",
+      "resource": "create-user-mapping",
+      "tag": "system:critical"
+    },
+    {
+      "id": "PG_ALTER_SERVER",
+      "resource": "alter-server",
+      "tag": "system:critical"
+    },
+    {
+      "id": "PG_COPY_PROGRAM",
+      "resource": "copy-program-file",
+      "tag": "system:critical"
+    },
+    {
+      "id": "SET_ROLE",
+      "resource": "set-role",
+      "tag": "system:critical"
+    },
+    {
+      "id": "SET_SESSION_AUTHORIZATION",
+      "resource": "set-session-authorization",
+      "tag": "system:critical"
+    },
+    {
+      "id": "SET_STANDARD_CONFORMING_STRINGS",
+      "resource": "set-standard-conforming-strings",
+      "tag": "system:critical"
+    },
+    {
+      "id": "USER_TYPE_CAST",
+      "resource": "user-type-cast",
+      "tag": "system:critical"
+    },
+    {
+      "id": "SET_SUBQUERY",
+      "resource": "set-subquery",
+      "tag": "system:critical"
+    }
+  ]
+}

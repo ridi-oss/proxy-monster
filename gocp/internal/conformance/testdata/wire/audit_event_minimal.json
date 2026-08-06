@@ -1,0 +1,1 @@
+{"principal":"alice","roles":[],"datasource":"acme-prod","statement":"select 1","decision":"ALLOW","effectiveNamespace":[],"maskedColumns":[],"piiTouched":[],"latencyMs":0,"contextTags":[],"kind":"decision"}

@@ -1,0 +1,1 @@
+{"principal":"alice","roles":[],"datasource":"acme-prod","statement":"select * from t where a < 5 and b > 3 and c = 'x&y'","decision":"ALLOW","effectiveNamespace":[],"maskedColumns":[],"piiTouched":[],"latencyMs":0,"contextTags":[],"kind":"decision"}

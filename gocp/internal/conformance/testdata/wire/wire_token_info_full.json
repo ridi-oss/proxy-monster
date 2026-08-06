@@ -1,0 +1,1 @@
+{"id":42,"kind":"USER","principal":"alice@example.com","name":"laptop","createdAt":"2026-07-01T01:02:03.123456Z","expiresAt":"2026-07-02T01:02:03.123456Z","revokedAt":"2026-07-01T09:00:00Z","lastUsedAt":"2026-07-01T08:00:00Z"}

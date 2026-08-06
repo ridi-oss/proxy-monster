@@ -1,0 +1,1 @@
+{"id":8,"origin":"USER","name":"conditioned","cedarSrc":"permit(principal, action, resource) when { context.rank < 5 && context.tier > 1 };","enabled":true,"updatedAt":"2026-07-31T04:05:06Z"}

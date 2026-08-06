@@ -1,0 +1,1 @@
+{"sql":"select * from t where a < 5 and b > 3 and (c && d) and e = 'x&y'","datasourceId":1,"ranAt":"2026-07-31T04:05:06Z"}

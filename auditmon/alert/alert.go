@@ -77,6 +77,7 @@ type Sink struct {
 	dedupWindow time.Duration
 	client      *http.Client
 	backoffBase time.Duration
+	consoleURL  string
 	log         *slog.Logger
 
 	mu       sync.Mutex
@@ -117,6 +118,7 @@ func New(cfg config.AlertsConfig, store worm.ObjectStore, opts ...Option) (*Sink
 	for _, o := range opts {
 		o(s)
 	}
+	s.consoleURL = strings.TrimRight(strings.TrimSpace(cfg.ConsoleURL), "/")
 	for i, sc := range cfg.Sinks {
 		url := strings.TrimSpace(os.Getenv(sc.URLEnv))
 		if url == "" {
@@ -212,7 +214,7 @@ func (s *Sink) Deliver(a Alert) {
 // budget. On exhaustion it logs; the alert is already durable in WORM, so a lost webhook is a missed
 // notification, not a lost record. The URL is never logged (it is a secret).
 func (s *Sink) post(d destination, p payload) {
-	body, err := renderBody(d.format, p)
+	body, err := renderBody(d.format, s.consoleURL, p)
 	if err != nil {
 		s.log.Error("alert: render webhook body", "err", err, "rule", p.Rule)
 		return
@@ -249,15 +251,124 @@ func (s *Sink) trySend(d destination, body []byte) bool {
 	return resp.StatusCode >= 200 && resp.StatusCode < 300
 }
 
-// renderBody produces the wire body for a destination: the canonical alert JSON, or a Slack message object
-// ({"text": ...}) when the sink asked for the slack format.
-func renderBody(format string, p payload) ([]byte, error) {
+// renderBody produces the wire body for a destination: the canonical alert JSON, or a Slack Block Kit
+// message when the sink asked for the slack format.
+func renderBody(format, consoleURL string, p payload) ([]byte, error) {
 	if format == "slack" {
-		text := fmt.Sprintf("[%s] %s principal=%s datasource=%s decisions=%v (anchor %s)",
-			strings.ToUpper(p.Severity), p.Rule, p.Principal, p.Datasource, p.DecisionIDs, p.Anchor)
-		return json.Marshal(map[string]string{"text": text})
+		// No HTML escaping: the mrkdwn link syntax <url|text> must stay literal rather than becoming
+		// <url|text> (Slack decodes either, but the literal form keeps the payload readable).
+		var buf bytes.Buffer
+		enc := json.NewEncoder(&buf)
+		enc.SetEscapeHTML(false)
+		if err := enc.Encode(slackMessage(consoleURL, p)); err != nil {
+			return nil, err
+		}
+		return bytes.TrimRight(buf.Bytes(), "\n"), nil
 	}
 	return json.Marshal(p)
+}
+
+var severityEmoji = map[string]string{
+	config.SeverityCritical: "🔴",
+	config.SeverityWarn:     "🟡",
+	config.SeverityInfo:     "🔵",
+}
+
+// slackMessage renders one alert as a Slack Block Kit message. There is no alert page in the console, so
+// the message is the alert record: severity, principal, datasource, time, the alert id, and every decision
+// linked into the console's audit view (consoleURL/audit/<id>) when a console URL is set. The top-level
+// "text" is the notification fallback for clients that do not render blocks.
+func slackMessage(consoleURL string, p payload) map[string]any {
+	emoji := severityEmoji[p.Severity]
+	if emoji == "" {
+		emoji = "⚪"
+	}
+	datasource := p.Datasource
+	if datasource == "" {
+		datasource = "—"
+	}
+
+	blocks := []any{
+		map[string]any{
+			"type": "header",
+			"text": map[string]any{
+				"type":  "plain_text",
+				"text":  fmt.Sprintf("%s %s — %s", emoji, strings.ToUpper(p.Severity), p.Rule),
+				"emoji": true,
+			},
+		},
+		map[string]any{
+			"type": "section",
+			"fields": []any{
+				mrkdwnField("*Principal*\n" + p.Principal),
+				mrkdwnField("*Datasource*\n" + datasource),
+				mrkdwnField("*When*\n" + p.TS),
+				mrkdwnField("*Alert*\n`" + p.Anchor + "`"),
+			},
+		},
+	}
+
+	links := decisionLinks(consoleURL, p.DecisionIDs)
+	if len(links) == 0 {
+		blocks = append(blocks, mrkdwnSection("*Decisions:* —"))
+	} else {
+		blocks = append(blocks, mrkdwnSection(fmt.Sprintf("*Decisions (%d):*", len(links))))
+		// Chunk the links across sections: a full window (up to maxAlertIDs=100 ids) would overrun Slack's
+		// ~3000-char per-section text limit in a single block.
+		for _, chunk := range chunkJoin(links, "  ", 2800) {
+			blocks = append(blocks, mrkdwnSection(chunk))
+		}
+	}
+
+	return map[string]any{
+		"text":   fmt.Sprintf("[%s] %s principal=%s datasource=%s (%d decisions)", strings.ToUpper(p.Severity), p.Rule, p.Principal, datasource, len(links)),
+		"blocks": blocks,
+	}
+}
+
+func mrkdwnField(text string) map[string]any { return map[string]any{"type": "mrkdwn", "text": text} }
+
+func mrkdwnSection(text string) map[string]any {
+	return map[string]any{"type": "section", "text": mrkdwnField(text)}
+}
+
+// decisionLinks turns decision ids into deduplicated Slack links to consoleURL/audit/<id> (bare #<id> when
+// no console URL is configured), preserving first-seen order.
+func decisionLinks(consoleURL string, ids []int64) []string {
+	seen := make(map[int64]struct{}, len(ids))
+	links := make([]string, 0, len(ids))
+	for _, id := range ids {
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		if consoleURL != "" {
+			links = append(links, fmt.Sprintf("<%s/audit/%d|#%d>", consoleURL, id, id))
+		} else {
+			links = append(links, fmt.Sprintf("#%d", id))
+		}
+	}
+	return links
+}
+
+// chunkJoin joins items with sep into as few strings as possible, each at most maxLen bytes.
+func chunkJoin(items []string, sep string, maxLen int) []string {
+	var out []string
+	var b strings.Builder
+	for _, it := range items {
+		if b.Len() > 0 && b.Len()+len(sep)+len(it) > maxLen {
+			out = append(out, b.String())
+			b.Reset()
+		}
+		if b.Len() > 0 {
+			b.WriteString(sep)
+		}
+		b.WriteString(it)
+	}
+	if b.Len() > 0 {
+		out = append(out, b.String())
+	}
+	return out
 }
 
 // sanitizeID keeps object keys to a safe, filesystem/S3-friendly alphabet.

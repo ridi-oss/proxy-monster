@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -258,8 +259,37 @@ func TestSlackFormatBody(t *testing.T) {
 	if !ok || text == "" {
 		t.Fatalf("slack body = %v, want a non-empty text field", body)
 	}
+	if _, hasBlocks := body["blocks"]; !hasBlocks {
+		t.Errorf("slack body should carry Block Kit blocks: %v", body)
+	}
 	if _, isCanonical := body["decision_ids"]; isCanonical {
 		t.Errorf("slack body must not be the canonical payload shape: %v", body)
+	}
+}
+
+func TestSlackLinksDecisionsToConsole(t *testing.T) {
+	cap := &capture{}
+	srv := httptest.NewServer(cap.handler())
+	defer srv.Close()
+	t.Setenv("SLACK_WEBHOOK_URL", srv.URL)
+
+	sink := fastSink(t, config.AlertsConfig{
+		DedupWindow: time.Hour,
+		ConsoleURL:  "https://console.example/", // trailing slash must be trimmed
+		Sinks:       []config.SinkConfig{{Type: "webhook", URLEnv: "SLACK_WEBHOOK_URL", MinSeverity: "warn", Rules: []string{"*"}, Format: "slack"}},
+	}, worm.NewMemory())
+
+	sink.Deliver(Alert{Severity: config.SeverityWarn, Rule: config.RuleRepeatedDeny, Principal: "alice", DecisionIDs: []int64{7, 7, 9}, TS: time.Now()})
+
+	body := string(cap.last())
+	if !strings.Contains(body, "<https://console.example/audit/7|#7>") {
+		t.Errorf("missing console link for decision 7 (or slash not trimmed): %s", body)
+	}
+	if !strings.Contains(body, "<https://console.example/audit/9|#9>") {
+		t.Errorf("missing console link for decision 9: %s", body)
+	}
+	if n := strings.Count(body, "audit/7|"); n != 1 {
+		t.Errorf("decision 7 should be linked once (deduplicated), got %d: %s", n, body)
 	}
 }
 

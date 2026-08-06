@@ -166,6 +166,9 @@ type RepeatedDenyRule struct {
 type AlertsConfig struct {
 	DedupWindow time.Duration `koanf:"dedup_window"`
 	Sinks       []SinkConfig  `koanf:"sinks"`
+	// ConsoleURL is the web console's base URL (e.g. https://proxy-monster.dev.ridi.io). When set, the Slack
+	// message links each decision id to consoleURL/audit/<id>; empty leaves the bare ids.
+	ConsoleURL string `koanf:"console_url"`
 }
 
 // SinkConfig is one webhook destination. The URL is never inlined — URLEnv names the environment variable

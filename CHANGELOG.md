@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.1.9](https://github.com/ridi-oss/proxy-monster/compare/server-v0.1.8...server-v0.1.9) (2026-08-06)
+
+
+### Features
+
+* **auditmon:** detect off-hours admin changes and auth-failure bursts ([#126](https://github.com/ridi-oss/proxy-monster/issues/126)) ([d225cab](https://github.com/ridi-oss/proxy-monster/commit/d225cabe7518609ee5e091a8ba6517b281b41588))
+* **auditmon:** render Slack alerts as Block Kit with per-decision console links ([#124](https://github.com/ridi-oss/proxy-monster/issues/124)) ([70096f3](https://github.com/ridi-oss/proxy-monster/commit/70096f32227ff41db4a3c190385c8c5945cbf0c8))
+* carry the client address on ValidateToken for wire-rejection audits ([#125](https://github.com/ridi-oss/proxy-monster/issues/125)) ([37f3d71](https://github.com/ridi-oss/proxy-monster/commit/37f3d71e450104974b39af67fe1d8214c85d9d73))
+* **control-plane:** audit authentication and session events ([#116](https://github.com/ridi-oss/proxy-monster/issues/116)) ([728682d](https://github.com/ridi-oss/proxy-monster/commit/728682d105909fe517d3ba9ed088f1d2aee2182c))
+* **control-plane:** audit JIT elevation and approval decisions ([#121](https://github.com/ridi-oss/proxy-monster/issues/121)) ([4a1cf15](https://github.com/ridi-oss/proxy-monster/commit/4a1cf15b7a783db11cc62593558383e21bdcc592))
+* **control-plane:** audit SCIM provisioning events ([#123](https://github.com/ridi-oss/proxy-monster/issues/123)) ([60d78f7](https://github.com/ridi-oss/proxy-monster/commit/60d78f702c8fb85f2b7a973eeb589efc3b1feafe))
+
+
+### Bug Fixes
+
+* **auth:** authenticate before device confirmation ([#122](https://github.com/ridi-oss/proxy-monster/issues/122)) ([2a12760](https://github.com/ridi-oss/proxy-monster/commit/2a12760d397742b79fead50e36b81b1968cdc16b))
+* **control-plane:** soft-delete datasources instead of a blocked hard delete ([#120](https://github.com/ridi-oss/proxy-monster/issues/120)) ([f4f1118](https://github.com/ridi-oss/proxy-monster/commit/f4f1118aac1a8e7742fe2e4d25d7c7f64cf124ae))
+* **control-plane:** soft-delete roles and mask functions ([#127](https://github.com/ridi-oss/proxy-monster/issues/127)) ([b175483](https://github.com/ridi-oss/proxy-monster/commit/b175483f9ba7f4791aa202a7526fa63fc536eced))
+* **web:** hide debug login until config loads ([#118](https://github.com/ridi-oss/proxy-monster/issues/118)) ([fd2b72a](https://github.com/ridi-oss/proxy-monster/commit/fd2b72a32fd09fd5d19f6f64c4df9bc6dab42cac))
+
 ## [0.1.8](https://github.com/ridi-oss/proxy-monster/compare/server-v0.1.7...server-v0.1.8) (2026-08-05)
 
 

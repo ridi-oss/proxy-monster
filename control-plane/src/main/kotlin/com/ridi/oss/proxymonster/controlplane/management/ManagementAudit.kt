@@ -27,6 +27,7 @@ data class AuditActor(
 object AuditSource {
     const val CONSOLE = "console"
     const val MCP = "mcp"
+    const val SCIM = "scim"
 }
 
 /** A display label of the changed entity for the audit row (`Type::"id"`); never re-parsed as a Cedar UID. */

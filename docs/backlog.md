@@ -131,6 +131,15 @@ forward work. MySQL leads PostgreSQL in priority.
 
 ## Audit trail
 
+- Decide whether machine-driven SCIM re-syncs should suppress no-op audit
+  events. The console admin paths record only when a mutation actually changed a
+  row; the SCIM handlers instead record one `kind="admin"` event per
+  provisioning directive, so an idempotent IdP re-`POST`/`PUT` or an
+  activate-already-active still writes an event. Matching the console would need
+  field-diff detection in the SCIM upsert/replace path (the store returns the
+  row, not a changed/unchanged verdict). Audit-every-directive is kept for now —
+  an IdP-sourced directive is itself an auditable action — but at high re-sync
+  volume it inflates the trail.
 - Decide where an acceptance record belongs. Recovery honors signed acceptance
   records under the write-once bucket, which is what lets a separate operator
   process resume a running monitor — but it also makes an object in the bucket

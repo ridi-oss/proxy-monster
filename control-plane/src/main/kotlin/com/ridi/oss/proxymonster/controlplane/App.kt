@@ -635,7 +635,7 @@ fun Application.module(config: Config, core: ControlPlaneCore) {
         // SCIM 2.0 provisioning (docs/auth-model.md "SCIM 2.0 provisioning") — bearer+TLS gated,
         // not a user session. principalSessionStore is passed so a SCIM deprovision durably closes the
         // principal's daemon session windows (renewal secrets), not just its wire tokens + grants.
-        scimRoutes(config, userGroupStore, tokenStore, accessStore, principalSessionStore, this@module.environment.log)
+        scimRoutes(config, userGroupStore, tokenStore, accessStore, principalSessionStore, managementAudit, this@module.environment.log)
 
         // Datasource + catalog + classification config API. Admin-gated: admin.datasources.
         // The events hub backs the admin "refresh now" push + the "which datasources have a proxy attached"

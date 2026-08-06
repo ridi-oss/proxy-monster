@@ -224,16 +224,23 @@ class UserGroupStore(internal val dataSource: DataSource) {
         tokenStore: TokenStore,
         accessStore: AccessStore,
         daemonSessionStore: PrincipalSessionStore,
+    ): AppUser? = dataSource.inTx { c -> setActiveById(id, active, tokenStore, accessStore, daemonSessionStore, c) }
+
+    fun setActiveById(
+        id: Long,
+        active: Boolean,
+        tokenStore: TokenStore,
+        accessStore: AccessStore,
+        daemonSessionStore: PrincipalSessionStore,
+        c: Connection,
     ): AppUser? {
-        if (getUser(id) == null) return null
-        dataSource.inTx { c ->
-            val current = lockCurrentPrincipal(c, id)
-            c.prepareStatement("UPDATE app_user SET active = ? WHERE id = ?").use { ps ->
-                ps.setBoolean(1, active); ps.setLong(2, id); ps.executeUpdate()
-            }
-            if (!active && current != null) revokeActiveCredentialsTx(current, c, tokenStore, accessStore, daemonSessionStore)
+        if (getUser(id, c) == null) return null
+        val current = lockCurrentPrincipal(c, id)
+        c.prepareStatement("UPDATE app_user SET active = ? WHERE id = ?").use { ps ->
+            ps.setBoolean(1, active); ps.setLong(2, id); ps.executeUpdate()
         }
-        return getUser(id)
+        if (!active && current != null) revokeActiveCredentialsTx(current, c, tokenStore, accessStore, daemonSessionStore)
+        return getUser(id, c)
     }
 
     private fun updateAppUserRow(c: Connection, id: Long, principal: String, displayName: String?, email: String?, active: Boolean) {
@@ -402,31 +409,42 @@ class UserGroupStore(internal val dataSource: DataSource) {
         tokenStore: TokenStore,
         accessStore: AccessStore,
         daemonSessionStore: PrincipalSessionStore,
-    ): AppUser {
-        val existingId = findUserIdByExternalId(externalId)
-            ?: email?.let { findUserIdByEmail(it) }
-            ?: userIdForPrincipal(principal)
+    ): AppUser = dataSource.inTx { c ->
+        upsertScimUser(externalId, principal, email, displayName, active, tokenStore, accessStore, daemonSessionStore, c)
+    }
 
-        val id = dataSource.inTx { c ->
-            // Lock + RE-READ the row's current principal before mutating it.
-            val current = existingId?.let { lockCurrentPrincipal(c, it) }
-            releaseTombstone(c, principal, existingId)
-            val rowId = if (existingId != null) {
-                updateScimAppUserRow(c, existingId, principal, displayName, email, externalId, active)
-                existingId
-            } else {
-                insertScimAppUserRow(c, principal, displayName, email, externalId, active)
-            }
-            if (current != null && current != principal) {
-                // Rename: retire the orphaned old string — tombstone + revoke its credentials.
-                deactivatePrincipalTombstone(current, c)
-                revokeActiveCredentialsTx(current, c, tokenStore, accessStore, daemonSessionStore)
-            }
-            // Deactivate: revoke the current principal atomically with the app_user write.
-            if (!active) revokeActiveCredentialsTx(principal, c, tokenStore, accessStore, daemonSessionStore)
-            rowId
+    fun upsertScimUser(
+        externalId: String,
+        principal: String,
+        email: String?,
+        displayName: String?,
+        active: Boolean,
+        tokenStore: TokenStore,
+        accessStore: AccessStore,
+        daemonSessionStore: PrincipalSessionStore,
+        c: Connection,
+    ): AppUser {
+        val existingId = findUserIdByExternalId(externalId, c)
+            ?: email?.let { findUserIdByEmail(it, c) }
+            ?: userIdForPrincipal(principal, c)
+
+        // Lock + RE-READ the row's current principal before mutating it.
+        val current = existingId?.let { lockCurrentPrincipal(c, it) }
+        releaseTombstone(c, principal, existingId)
+        val rowId = if (existingId != null) {
+            updateScimAppUserRow(c, existingId, principal, displayName, email, externalId, active)
+            existingId
+        } else {
+            insertScimAppUserRow(c, principal, displayName, email, externalId, active)
         }
-        return getUser(id)!!
+        if (current != null && current != principal) {
+            // Rename: retire the orphaned old string — tombstone + revoke its credentials.
+            deactivatePrincipalTombstone(current, c)
+            revokeActiveCredentialsTx(current, c, tokenStore, accessStore, daemonSessionStore)
+        }
+        // Deactivate: revoke the current principal atomically with the app_user write.
+        if (!active) revokeActiveCredentialsTx(principal, c, tokenStore, accessStore, daemonSessionStore)
+        return getUser(rowId, c)!!
     }
 
     /**
@@ -449,19 +467,32 @@ class UserGroupStore(internal val dataSource: DataSource) {
         tokenStore: TokenStore,
         accessStore: AccessStore,
         daemonSessionStore: PrincipalSessionStore,
+    ): AppUser? = dataSource.inTx { c ->
+        replaceScimUserById(id, principal, email, displayName, externalId, active, tokenStore, accessStore, daemonSessionStore, c)
+    }
+
+    fun replaceScimUserById(
+        id: Long,
+        principal: String,
+        email: String?,
+        displayName: String?,
+        externalId: String,
+        active: Boolean,
+        tokenStore: TokenStore,
+        accessStore: AccessStore,
+        daemonSessionStore: PrincipalSessionStore,
+        c: Connection,
     ): AppUser? {
-        if (getUser(id) == null) return null
-        dataSource.inTx { c ->
-            val current = lockCurrentPrincipal(c, id)
-            releaseTombstone(c, principal, id)
-            updateScimAppUserRow(c, id, principal, displayName, email, externalId, active)
-            if (current != null && current != principal) {
-                deactivatePrincipalTombstone(current, c)
-                revokeActiveCredentialsTx(current, c, tokenStore, accessStore, daemonSessionStore)
-            }
-            if (!active) revokeActiveCredentialsTx(principal, c, tokenStore, accessStore, daemonSessionStore)
+        if (getUser(id, c) == null) return null
+        val current = lockCurrentPrincipal(c, id)
+        releaseTombstone(c, principal, id)
+        updateScimAppUserRow(c, id, principal, displayName, email, externalId, active)
+        if (current != null && current != principal) {
+            deactivatePrincipalTombstone(current, c)
+            revokeActiveCredentialsTx(current, c, tokenStore, accessStore, daemonSessionStore)
         }
-        return getUser(id)
+        if (!active) revokeActiveCredentialsTx(principal, c, tokenStore, accessStore, daemonSessionStore)
+        return getUser(id, c)
     }
 
     private fun updateScimAppUserRow(
@@ -510,25 +541,26 @@ class UserGroupStore(internal val dataSource: DataSource) {
      * under a row lock, closes it. Throws [SystemGroupImmutableException] (→ SCIM 409) if the resolved row
      * is SYSTEM; the seeded system:admin always matches by name, so it can never be created or hijacked here.
      */
-    fun upsertScimGroup(externalId: String, displayName: String): AppGroup {
-        val id = dataSource.inTx { c ->
-            val existingId = groupIdByExternalId(c, externalId) ?: groupIdByName(c, displayName)
-            if (existingId != null) {
-                // Re-read the resolved row's source UNDER a row lock, then mutate that SAME id — check and
-                // write target the one resolved row atomically, with no window for a concurrent re-point.
-                if (lockGroupSource(c, existingId) == "SYSTEM") throw SystemGroupImmutableException()
-                c.prepareStatement("UPDATE app_group SET name=?, source='SCIM', external_id=? WHERE id=?").use { ps ->
-                    ps.setString(1, displayName); ps.setString(2, externalId); ps.setLong(3, existingId); ps.executeUpdate()
-                }
-                existingId
-            } else {
-                c.prepareStatement("INSERT INTO app_group (name, source, external_id) VALUES (?, 'SCIM', ?) RETURNING id").use { ps ->
-                    ps.setString(1, displayName); ps.setString(2, externalId)
-                    ps.executeQuery().use { rs -> rs.next(); rs.getLong(1) }
-                }
+    fun upsertScimGroup(externalId: String, displayName: String): AppGroup =
+        dataSource.inTx { c -> upsertScimGroup(externalId, displayName, c) }
+
+    fun upsertScimGroup(externalId: String, displayName: String, c: Connection): AppGroup {
+        val existingId = groupIdByExternalId(c, externalId) ?: groupIdByName(c, displayName)
+        val id = if (existingId != null) {
+            // Re-read the resolved row's source UNDER a row lock, then mutate that SAME id — check and
+            // write target the one resolved row atomically, with no window for a concurrent re-point.
+            if (lockGroupSource(c, existingId) == "SYSTEM") throw SystemGroupImmutableException()
+            c.prepareStatement("UPDATE app_group SET name=?, source='SCIM', external_id=? WHERE id=?").use { ps ->
+                ps.setString(1, displayName); ps.setString(2, externalId); ps.setLong(3, existingId); ps.executeUpdate()
+            }
+            existingId
+        } else {
+            c.prepareStatement("INSERT INTO app_group (name, source, external_id) VALUES (?, 'SCIM', ?) RETURNING id").use { ps ->
+                ps.setString(1, displayName); ps.setString(2, externalId)
+                ps.executeQuery().use { rs -> rs.next(); rs.getLong(1) }
             }
         }
-        return getGroup(id)!!
+        return getGroup(id, c)!!
     }
 
     // Connection-scoped group resolders + a FOR UPDATE source read — used by [upsertScimGroup] so its
@@ -555,12 +587,15 @@ class UserGroupStore(internal val dataSource: DataSource) {
      * group's membership-backing `group_role` instead of the one at this URI). Null (404 at the
      * route) if no such row.
      */
-    fun replaceScimGroupById(id: Long, externalId: String, displayName: String): AppGroup? {
-        if (getGroup(id) == null) return null
-        exec("UPDATE app_group SET name=?, source='SCIM', external_id=? WHERE id=?") {
-            it.setString(1, displayName); it.setString(2, externalId); it.setLong(3, id)
+    fun replaceScimGroupById(id: Long, externalId: String, displayName: String): AppGroup? =
+        dataSource.inTx { c -> replaceScimGroupById(id, externalId, displayName, c) }
+
+    fun replaceScimGroupById(id: Long, externalId: String, displayName: String, c: Connection): AppGroup? {
+        if (getGroup(id, c) == null) return null
+        c.prepareStatement("UPDATE app_group SET name=?, source='SCIM', external_id=? WHERE id=?").use { ps ->
+            ps.setString(1, displayName); ps.setString(2, externalId); ps.setLong(3, id); ps.executeUpdate()
         }
-        return getGroup(id)
+        return getGroup(id, c)
     }
 
     fun findUserByExternalId(id: String): AppUser? = findUserIdByExternalId(id)?.let { getUser(it) }
@@ -733,12 +768,12 @@ class UserGroupStore(internal val dataSource: DataSource) {
         }
     }
 
-    private fun userIdForPrincipal(principal: String): Long? = dataSource.connection.use { c ->
+    private fun userIdForPrincipal(principal: String): Long? = dataSource.connection.use { userIdForPrincipal(principal, it) }
+    private fun userIdForPrincipal(principal: String, c: Connection): Long? =
         c.prepareStatement("SELECT id FROM app_user WHERE principal=?").use { ps ->
             ps.setString(1, principal)
             ps.executeQuery().use { rs -> if (rs.next()) rs.getLong(1) else null }
         }
-    }
 
     /** The principal string currently on this app_user row, read on the caller-supplied connection [c] (locked re-read). */
     private fun principalForUserId(id: Long, c: Connection): String? =
@@ -830,19 +865,21 @@ class UserGroupStore(internal val dataSource: DataSource) {
         }
     }
 
-    private fun findUserIdByExternalId(externalId: String): Long? = dataSource.connection.use { c ->
+    private fun findUserIdByExternalId(externalId: String): Long? =
+        dataSource.connection.use { findUserIdByExternalId(externalId, it) }
+    private fun findUserIdByExternalId(externalId: String, c: Connection): Long? =
         c.prepareStatement("SELECT id FROM app_user WHERE external_id=?").use { ps ->
             ps.setString(1, externalId)
             ps.executeQuery().use { rs -> if (rs.next()) rs.getLong(1) else null }
         }
-    }
 
-    private fun findUserIdByEmail(email: String): Long? = dataSource.connection.use { c ->
+    private fun findUserIdByEmail(email: String): Long? =
+        dataSource.connection.use { findUserIdByEmail(email, it) }
+    private fun findUserIdByEmail(email: String, c: Connection): Long? =
         c.prepareStatement("SELECT id FROM app_user WHERE email=?").use { ps ->
             ps.setString(1, email)
             ps.executeQuery().use { rs -> if (rs.next()) rs.getLong(1) else null }
         }
-    }
 
     private fun findGroupIdByExternalId(externalId: String): Long? = dataSource.connection.use { c ->
         c.prepareStatement("SELECT id FROM app_group WHERE external_id=?").use { ps ->
@@ -878,9 +915,6 @@ class UserGroupStore(internal val dataSource: DataSource) {
     }
     private fun insertReturningId(sql: String, bind: (PreparedStatement) -> Unit): Long = dataSource.connection.use { c ->
         c.prepareStatement(sql).use { ps -> bind(ps); ps.executeQuery().use { rs -> rs.next(); rs.getLong(1) } }
-    }
-    private fun exec(sql: String, bind: (PreparedStatement) -> Unit) {
-        dataSource.connection.use { c -> c.prepareStatement(sql).use { ps -> bind(ps); ps.executeUpdate() } }
     }
     private fun execUpdate(sql: String, bind: (PreparedStatement) -> Unit): Int =
         dataSource.connection.use { c -> c.prepareStatement(sql).use { ps -> bind(ps); ps.executeUpdate() } }

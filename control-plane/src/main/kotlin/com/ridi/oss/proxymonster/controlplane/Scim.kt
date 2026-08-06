@@ -1,5 +1,10 @@
 package com.ridi.oss.proxymonster.controlplane
 
+import com.ridi.oss.proxymonster.controlplane.authz.AuthzAction
+import com.ridi.oss.proxymonster.controlplane.management.AuditActor
+import com.ridi.oss.proxymonster.controlplane.management.AuditSource
+import com.ridi.oss.proxymonster.controlplane.management.ManagementAuditRecorder
+import com.ridi.oss.proxymonster.controlplane.management.auditEntity
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
 import io.ktor.server.application.ApplicationCall
@@ -230,6 +235,14 @@ private suspend fun ApplicationCall.respondScimError(status: HttpStatusCode, sci
     respond(status, ScimError(status = status.value.toString(), scimType = scimType, detail = detail))
 }
 
+/**
+ * The audit actor for a SCIM mutation. SCIM authenticates with one standing bearer token
+ * ([requireScimAuth]), so there is no per-client identity — the acting principal is the fixed
+ * synthetic [AuditSource.SCIM], on the SCIM channel.
+ */
+private fun ApplicationCall.scimAuditActor(config: Config): AuditActor =
+    AuditActor(principal = AuditSource.SCIM, clientAddr = httpRequesterIp(config), channel = AuditSource.SCIM)
+
 // ---- static discovery documents ------------------------------------------------------------------
 
 private val SERVICE_PROVIDER_CONFIG: JsonObject = buildJsonObject {
@@ -323,6 +336,7 @@ fun Route.scimRoutes(
     tokenStore: TokenStore,
     accessStore: AccessStore,
     daemonSessionStore: PrincipalSessionStore,
+    recorder: ManagementAuditRecorder,
     log: Logger,
 ) {
     get("/api/scim/v2/ServiceProviderConfig") {
@@ -362,17 +376,23 @@ fun Route.scimRoutes(
         // in ONE transaction under the per-principal lock. A POST can legitimately hit either case: Okta
         // may reconcile an existing user (matched by external_id/email) via a full-resource POST, incl.
         // deprovisioning it down to active=false — so no separate, non-atomic follow-up revoke is needed.
+        val actor = call.scimAuditActor(config)
         val user = try {
-            userGroupStore.upsertScimUser(
-                externalId = externalId,
-                principal = principal,
-                email = body.primaryEmail(),
-                displayName = body.name?.formatted,
-                active = body.active,
-                tokenStore = tokenStore,
-                accessStore = accessStore,
-                daemonSessionStore = daemonSessionStore,
-            )
+            userGroupStore.dataSource.inTx { c ->
+                userGroupStore.upsertScimUser(
+                    externalId = externalId,
+                    principal = principal,
+                    email = body.primaryEmail(),
+                    displayName = body.name?.formatted,
+                    active = body.active,
+                    tokenStore = tokenStore,
+                    accessStore = accessStore,
+                    daemonSessionStore = daemonSessionStore,
+                    c = c,
+                ).also {
+                    recorder.record(c, actor, AuthzAction.ADMIN_IDENTITY, auditEntity("User", it.principal), "scim provision user '${it.principal}'")
+                }
+            }
         } catch (e: SQLException) {
             // externalId is a partial UNIQUE index (V14) — a POST whose externalId
             // is new but whose email/principal match resolves to a row already owning a DIFFERENT
@@ -410,18 +430,24 @@ fun Route.scimRoutes(
         // the OLD principal and the active=false revoke of the CURRENT principal
         // still happen atomically inside it — one committed transaction under the
         // per-principal lock, no separate follow-up revoke that a crash could skip.
+        val actor = call.scimAuditActor(config)
         val user = try {
-            userGroupStore.replaceScimUserById(
-                id = id,
-                principal = principal,
-                email = body.primaryEmail() ?: existing.email,
-                displayName = body.name?.formatted ?: existing.displayName,
-                externalId = externalId,
-                active = body.active,
-                tokenStore = tokenStore,
-                accessStore = accessStore,
-                daemonSessionStore = daemonSessionStore,
-            ) ?: return@put call.respondScimError(HttpStatusCode.NotFound, null, "no such user")
+            userGroupStore.dataSource.inTx { c ->
+                userGroupStore.replaceScimUserById(
+                    id = id,
+                    principal = principal,
+                    email = body.primaryEmail() ?: existing.email,
+                    displayName = body.name?.formatted ?: existing.displayName,
+                    externalId = externalId,
+                    active = body.active,
+                    tokenStore = tokenStore,
+                    accessStore = accessStore,
+                    daemonSessionStore = daemonSessionStore,
+                    c = c,
+                )?.also {
+                    recorder.record(c, actor, AuthzAction.ADMIN_IDENTITY, auditEntity("User", it.principal), "scim replace user '${it.principal}'")
+                }
+            } ?: return@put call.respondScimError(HttpStatusCode.NotFound, null, "no such user")
         } catch (e: SQLException) {
             // externalId is a partial UNIQUE index (V14) — an externalId already
             // owned by a DIFFERENT row collides here instead of producing a split-brain external_id.
@@ -451,8 +477,15 @@ fun Route.scimRoutes(
                 // make this act on a stale pre-lock snapshot — and, on active=false, revokes that
                 // principal's credentials in the SAME committed transaction, not a
                 // mutate-then-revoke pair a crash could leave half-applied.
-                val updated = userGroupStore.setActiveById(id, action.active, tokenStore, accessStore, daemonSessionStore)
-                    ?: return@patch call.respondScimError(HttpStatusCode.NotFound, null, "no such user")
+                val actor = call.scimAuditActor(config)
+                val updated = userGroupStore.dataSource.inTx { c ->
+                    userGroupStore.setActiveById(id, action.active, tokenStore, accessStore, daemonSessionStore, c)?.also {
+                        recorder.record(
+                            c, actor, AuthzAction.ADMIN_IDENTITY, auditEntity("User", it.principal),
+                            "scim ${if (action.active) "activate" else "deactivate"} user '${it.principal}'",
+                        )
+                    }
+                } ?: return@patch call.respondScimError(HttpStatusCode.NotFound, null, "no such user")
                 if (!action.active) log.info("SCIM: deactivated user principal={}", updated.principal)
                 call.respond(updated.toScim())
             }
@@ -468,8 +501,14 @@ fun Route.scimRoutes(
         // re-reads the current principal under the per-principal advisory lock and revokes
         // its credentials in the SAME committed transaction, so a concurrent rename can't
         // leave the row's real identity credentialed while we tombstone a stale one.
-        val deprovisioned = id?.let { userGroupStore.setActiveById(it, false, tokenStore, accessStore, daemonSessionStore) }
-            ?: return@delete call.respondScimError(HttpStatusCode.NotFound, null, "no such user")
+        val actor = call.scimAuditActor(config)
+        val deprovisioned = id?.let {
+            userGroupStore.dataSource.inTx { c ->
+                userGroupStore.setActiveById(it, false, tokenStore, accessStore, daemonSessionStore, c)?.also { u ->
+                    recorder.record(c, actor, AuthzAction.ADMIN_IDENTITY, auditEntity("User", u.principal), "scim deprovision user '${u.principal}'")
+                }
+            }
+        } ?: return@delete call.respondScimError(HttpStatusCode.NotFound, null, "no such user")
         log.info("SCIM: deprovisioned user principal={}", deprovisioned.principal)
         call.respond(HttpStatusCode.NoContent)
     }
@@ -495,8 +534,16 @@ fun Route.scimRoutes(
         // FOR UPDATE-checks, and writes the one resolved row in a single transaction). A route-level
         // pre-check on a separate connection was defeatable by a concurrent PUT that re-pointed an
         // external_id between the check and the write — so the store throws instead.
+        // POST is one provisioning action: the group upsert and its member reconciliation commit together
+        // and record ONE group-level event, not a per-member membership event.
+        val actor = call.scimAuditActor(config)
         val group = try {
-            userGroupStore.upsertScimGroup(externalId = externalId, displayName = body.displayName)
+            userGroupStore.dataSource.inTx { c ->
+                userGroupStore.upsertScimGroup(externalId = externalId, displayName = body.displayName, c = c).also { g ->
+                    body.members.forEach { m -> m.value.toLongOrNull()?.let { userGroupStore.addMember(g.id, it, c) } }
+                    recorder.record(c, actor, AuthzAction.ADMIN_IDENTITY, auditEntity("Group", g.name), "scim provision group '${g.name}'")
+                }
+            }
         } catch (e: SystemGroupImmutableException) {
             return@post call.respondScimError(HttpStatusCode.Conflict, "mutability", "system-managed group is immutable")
         } catch (e: SQLException) {
@@ -505,7 +552,6 @@ fun Route.scimRoutes(
             }
             throw e
         }
-        body.members.forEach { m -> m.value.toLongOrNull()?.let { userGroupStore.addMember(group.id, it) } }
         log.info("SCIM: provisioned group name={} externalId={}", group.name, externalId)
         call.respond(HttpStatusCode.Created, group.toScim(userGroupStore.listMembers(group.id)))
     }
@@ -533,20 +579,26 @@ fun Route.scimRoutes(
         // PUT replaces the resource AT THIS id (same class of bug fixed for
         // Users' PUT): replaceScimGroupById mutates the row at [id] directly, never re-discovering a
         // different row by externalId/displayName the way upsertScimGroup (POST) does.
+        // PUT is one full-replace action: the group replace and the membership reconciliation to exactly
+        // the submitted set commit together and record ONE group-level event, not a per-member event.
+        val actor = call.scimAuditActor(config)
         val group = try {
-            userGroupStore.replaceScimGroupById(id, externalId = externalId, displayName = displayName)
-                ?: return@put call.respondScimError(HttpStatusCode.NotFound, null, "no such group")
+            userGroupStore.dataSource.inTx { c ->
+                val replaced = userGroupStore.replaceScimGroupById(id, externalId = externalId, displayName = displayName, c = c)
+                    ?: return@inTx null
+                val desired = body.members.mapNotNull { it.value.toLongOrNull() }.toSet()
+                val current = userGroupStore.listMembers(replaced.id, c).map { it.userId }.toSet()
+                (desired - current).forEach { userGroupStore.addMember(replaced.id, it, c) }
+                (current - desired).forEach { userGroupStore.removeMember(replaced.id, it, c) }
+                recorder.record(c, actor, AuthzAction.ADMIN_IDENTITY, auditEntity("Group", replaced.name), "scim replace group '${replaced.name}'")
+                replaced
+            } ?: return@put call.respondScimError(HttpStatusCode.NotFound, null, "no such group")
         } catch (e: SQLException) {
             if (e.isUniqueViolation()) {
                 return@put call.respondScimError(HttpStatusCode.Conflict, "uniqueness", "externalId already belongs to a different group")
             }
             throw e
         }
-        // PUT is a full replace: reconcile membership to exactly the submitted set.
-        val desired = body.members.mapNotNull { it.value.toLongOrNull() }.toSet()
-        val current = userGroupStore.listMembers(group.id).map { it.userId }.toSet()
-        (desired - current).forEach { userGroupStore.addMember(group.id, it) }
-        (current - desired).forEach { userGroupStore.removeMember(group.id, it) }
         call.respond(group.toScim(userGroupStore.listMembers(group.id)))
     }
     patch("/api/scim/v2/Groups/{id}") {
@@ -565,11 +617,24 @@ fun Route.scimRoutes(
         }
         when (action) {
             is ScimPatchAction.MemberOp -> {
+                // One event per member op ACTUALLY applied — gate on the store boolean so a no-op
+                // (adding a member already present, removing a non-member) records nothing.
+                val actor = call.scimAuditActor(config)
                 val userIds = action.values.mapNotNull { it.toLongOrNull() }
-                if (action.op == "add") {
-                    userIds.forEach { userGroupStore.addMember(existing.id, it) }
-                } else {
-                    userIds.forEach { userGroupStore.removeMember(existing.id, it) }
+                userGroupStore.dataSource.inTx { c ->
+                    userIds.forEach { userId ->
+                        val added = action.op == "add"
+                        val changed = if (added) userGroupStore.addMember(existing.id, userId, c)
+                        else userGroupStore.removeMember(existing.id, userId, c)
+                        if (changed) {
+                            val member = userGroupStore.getUser(userId, c)?.principal ?: userId.toString()
+                            recorder.record(
+                                c, actor, AuthzAction.ADMIN_IDENTITY, auditEntity("Group", existing.name),
+                                if (added) "scim add '$member' to group '${existing.name}'"
+                                else "scim remove '$member' from group '${existing.name}'",
+                            )
+                        }
+                    }
                 }
                 call.respond(existing.toScim(userGroupStore.listMembers(existing.id)))
             }
@@ -585,7 +650,17 @@ fun Route.scimRoutes(
         if (userGroupStore.isSystemGroup(id)) {
             return@delete call.respondScimError(HttpStatusCode.Conflict, null, "system-managed group is immutable")
         }
-        if (userGroupStore.deleteGroup(id)) {
+        val actor = call.scimAuditActor(config)
+        val deleted = userGroupStore.dataSource.inTx { c ->
+            val group = userGroupStore.getGroup(id, c)
+            if (group != null && userGroupStore.deleteGroup(id, c)) {
+                recorder.record(c, actor, AuthzAction.ADMIN_IDENTITY, auditEntity("Group", group.name), "scim delete group '${group.name}'")
+                true
+            } else {
+                false
+            }
+        }
+        if (deleted) {
             call.respond(HttpStatusCode.NoContent)
         } else {
             call.respondScimError(HttpStatusCode.NotFound, null, "no such group")

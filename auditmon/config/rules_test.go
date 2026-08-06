@@ -32,6 +32,12 @@ func TestLoadParsesRulesAndAlerts(t *testing.T) {
 	if cfg.Rules.RepeatedDeny.Window != 5*time.Minute || cfg.Rules.RepeatedDeny.MaxDeny != 20 {
 		t.Errorf("repeated_deny = %+v", cfg.Rules.RepeatedDeny)
 	}
+	if cfg.Rules.AuthFailureBurst.Window != 5*time.Minute || cfg.Rules.AuthFailureBurst.MaxFailures != 10 {
+		t.Errorf("auth_failure_burst = %+v", cfg.Rules.AuthFailureBurst)
+	}
+	if !cfg.Rules.OffHoursAdmin.Enabled {
+		t.Errorf("off_hours_admin.enabled = %v, want true", cfg.Rules.OffHoursAdmin.Enabled)
+	}
 
 	oh := cfg.Rules.OffHours
 	if !oh.AppliesToPIIRead() || !oh.AppliesToWrite() {
@@ -94,6 +100,12 @@ func TestValidateRejectsBadRules(t *testing.T) {
 		},
 		"repeated_deny window without max": func(c *Config) {
 			c.Rules.RepeatedDeny = RepeatedDenyRule{Window: time.Minute}
+		},
+		"auth_failure_burst window without max": func(c *Config) {
+			c.Rules.AuthFailureBurst = AuthFailureBurstRule{Window: time.Minute}
+		},
+		"off_hours_admin enabled without a window": func(c *Config) {
+			c.Rules.OffHoursAdmin = OffHoursAdminRule{Enabled: true}
 		},
 		"off_hours bad business_hours": func(c *Config) {
 			c.Rules.OffHours = OffHoursRule{BusinessHours: "nope", AppliesTo: []string{"write"}}

@@ -1,9 +1,10 @@
 // Package detect evaluates the config-driven anomaly rules over the committed audit trail and fires alerts
 // through an AlertSink. It plugs into the monitor as the Detector: Inspect is called each poll with the
-// freshly verified, past-watermark rows. The rate rules (mass_export, bulk_pii, repeated_deny) need more than
-// that one batch, so the detector also reads a window of the durable trail on each poll and recomputes the
-// windows from it — a restart loses no state and nothing is double-counted. off_hours is a per-event rule and
-// needs only the fresh batch. Every rule is fail-safe: a bad row is skipped, never fatal.
+// freshly verified, past-watermark rows. The rate rules (mass_export, bulk_pii, repeated_deny,
+// auth_failure_burst) need more than that one batch, so the detector also reads a window of the durable trail
+// on each poll and recomputes the windows from it — a restart loses no state and nothing is double-counted.
+// off_hours and off_hours_admin are per-event rules and need only the fresh batch. Every rule is fail-safe: a
+// bad row is skipped, never fatal.
 package detect
 
 import (
@@ -65,7 +66,12 @@ func New(reader WindowReader, sink AlertSink, rules config.RulesConfig) (*Detect
 		d.business = bw
 		d.offHoursOK = true
 	}
-	for _, w := range []time.Duration{rules.MassExport.Window, rules.BulkPII.Window, rules.RepeatedDeny.Window} {
+	// Fail closed at construction, not just in Config.Validate: an enabled off-hours-admin rule with no
+	// window would silently never fire — a monitoring gap in a security tool.
+	if rules.OffHoursAdmin.Enabled && rules.OffHours.BusinessHours == "" {
+		return nil, fmt.Errorf("config: rules.off_hours_admin.enabled requires rules.off_hours.business_hours")
+	}
+	for _, w := range []time.Duration{rules.MassExport.Window, rules.BulkPII.Window, rules.RepeatedDeny.Window, rules.AuthFailureBurst.Window} {
 		if w > d.maxWindow {
 			d.maxWindow = w
 		}
@@ -81,6 +87,7 @@ func (d *Detector) needsWindow() bool { return d.maxWindow > 0 }
 // read failure is returned for the monitor to log and retry; it never blocks the loop.
 func (d *Detector) Inspect(fresh []store.StoredEvent) error {
 	d.evalOffHours(fresh)
+	d.evalOffHoursAdmin(fresh)
 
 	if !d.needsWindow() {
 		return nil
@@ -93,6 +100,7 @@ func (d *Detector) Inspect(fresh []store.StoredEvent) error {
 	d.evalMassExport(fresh, window)
 	d.evalBulkPII(fresh, window)
 	d.evalRepeatedDeny(fresh, window)
+	d.evalAuthFailureBurst(fresh, window)
 	return nil
 }
 
@@ -124,6 +132,31 @@ func (d *Detector) evalOffHours(fresh []store.StoredEvent) {
 		d.sink.Deliver(alert.Alert{
 			Severity:    config.SeverityWarn,
 			Rule:        config.RuleOffHours,
+			Principal:   ev.Event.Principal,
+			Datasource:  ev.Event.Datasource,
+			DecisionIDs: []int64{ev.ID},
+			TS:          ts,
+		})
+	}
+}
+
+// evalOffHoursAdmin fires on each fresh admin event — a privileged config/authorization change — whose
+// timestamp falls outside business hours, reusing the same business window off_hours parses.
+func (d *Detector) evalOffHoursAdmin(fresh []store.StoredEvent) {
+	if !d.offHoursOK || !d.rules.OffHoursAdmin.Enabled {
+		return
+	}
+	for _, ev := range fresh {
+		if !isAdmin(ev) {
+			continue
+		}
+		ts := time.UnixMicro(ev.Event.TSMicros).In(d.business.Location)
+		if !d.isOffHours(ts) {
+			continue
+		}
+		d.sink.Deliver(alert.Alert{
+			Severity:    config.SeverityWarn,
+			Rule:        config.RuleOffHoursAdmin,
 			Principal:   ev.Event.Principal,
 			Datasource:  ev.Event.Datasource,
 			DecisionIDs: []int64{ev.ID},
@@ -177,6 +210,52 @@ func (d *Detector) evalRepeatedDeny(fresh, window []store.StoredEvent) {
 			d.sink.Deliver(alert.Alert{
 				Severity:    config.SeverityWarn,
 				Rule:        config.RuleRepeatedDeny,
+				Principal:   p,
+				DecisionIDs: ids[p],
+				TS:          d.now(),
+			})
+		}
+	}
+}
+
+// evalAuthFailureBurst fires when a principal accumulates more than max_failures failed authentication events
+// in the window (a brute-force / credential-stuffing signal). Unattributed failures carry the principal
+// "unknown"; a burst on "unknown" is itself worth surfacing, so it is keyed like any other principal.
+func (d *Detector) evalAuthFailureBurst(fresh, window []store.StoredEvent) {
+	rule := d.rules.AuthFailureBurst
+	if rule.Window <= 0 {
+		return
+	}
+	cutoff := d.now().Add(-rule.Window)
+
+	touched := map[string]struct{}{}
+	for _, ev := range fresh {
+		if isAuthFailure(ev) {
+			touched[ev.Event.Principal] = struct{}{}
+		}
+	}
+	if len(touched) == 0 {
+		return
+	}
+
+	counts := map[string]int{}
+	ids := map[string][]int64{}
+	for _, ev := range window {
+		if !withinWindow(ev, cutoff) || !isAuthFailure(ev) {
+			continue
+		}
+		p := ev.Event.Principal
+		if _, ok := touched[p]; !ok {
+			continue
+		}
+		counts[p]++
+		ids[p] = appendCapped(ids[p], ev.ID)
+	}
+	for p := range touched {
+		if counts[p] > rule.MaxFailures {
+			d.sink.Deliver(alert.Alert{
+				Severity:    config.SeverityWarn,
+				Rule:        config.RuleAuthFailureBurst,
 				Principal:   p,
 				DecisionIDs: ids[p],
 				TS:          d.now(),
@@ -381,6 +460,14 @@ func (d *Detector) evalMassExport(fresh, window []store.StoredEvent) {
 
 func isDecision(ev store.StoredEvent) bool   { return ev.Event.Kind == "decision" }
 func isCompletion(ev store.StoredEvent) bool { return ev.Event.Kind == "completion" }
+func isAuth(ev store.StoredEvent) bool       { return ev.Event.Kind == "auth" }
+func isAdmin(ev store.StoredEvent) bool      { return ev.Event.Kind == "admin" }
+
+// isAuthFailure reports whether an event is a failed authentication (kind "auth" with outcome FAILURE). The
+// outcome is a nullable column, so a missing outcome is treated as not-a-failure rather than dereferenced.
+func isAuthFailure(ev store.StoredEvent) bool {
+	return isAuth(ev) && ev.Event.Outcome != nil && *ev.Event.Outcome == "FAILURE"
+}
 
 // isDenyOrError reports whether a decision was denied or errored.
 func isDenyOrError(ev store.StoredEvent) bool {

@@ -26,6 +26,11 @@ rules:
   repeated_deny:
     window: 5m
     max_deny: 20
+  auth_failure_burst:
+    window: 5m
+    max_failures: 10
+  off_hours_admin:
+    enabled: true
 alerts:
   dedup_window: 15m
   sinks:

@@ -33,11 +33,13 @@ type Config struct {
 // Canonical anomaly-rule names. Detection fires alerts tagged with these, alert sinks route on them, and a
 // sink's rules list matches against them, so they are defined once here as the shared vocabulary.
 const (
-	RuleMassExport   = "mass_export"
-	RuleBulkPII      = "bulk_pii"
-	RuleOffHours     = "off_hours"
-	RuleRepeatedDeny = "repeated_deny"
-	RuleIntegrity    = "integrity"
+	RuleMassExport       = "mass_export"
+	RuleBulkPII          = "bulk_pii"
+	RuleOffHours         = "off_hours"
+	RuleRepeatedDeny     = "repeated_deny"
+	RuleAuthFailureBurst = "auth_failure_burst"
+	RuleOffHoursAdmin    = "off_hours_admin"
+	RuleIntegrity        = "integrity"
 )
 
 // Alert severities, least to most urgent. A sink routes an alert only when its severity is at least the
@@ -61,13 +63,15 @@ func SeverityRank(s string) int {
 	}
 }
 
-// RulesConfig holds the thresholds/windows for the four anomaly rules. A rule with a zero window (or, for
+// RulesConfig holds the thresholds/windows for the anomaly rules. A rule with a zero window (or, for
 // off_hours, an empty business_hours) is disabled; the detector skips it and Validate leaves it alone.
 type RulesConfig struct {
-	MassExport   MassExportRule   `koanf:"mass_export"`
-	BulkPII      BulkPIIRule      `koanf:"bulk_pii"`
-	OffHours     OffHoursRule     `koanf:"off_hours"`
-	RepeatedDeny RepeatedDenyRule `koanf:"repeated_deny"`
+	MassExport       MassExportRule       `koanf:"mass_export"`
+	BulkPII          BulkPIIRule          `koanf:"bulk_pii"`
+	OffHours         OffHoursRule         `koanf:"off_hours"`
+	RepeatedDeny     RepeatedDenyRule     `koanf:"repeated_deny"`
+	AuthFailureBurst AuthFailureBurstRule `koanf:"auth_failure_burst"`
+	OffHoursAdmin    OffHoursAdminRule    `koanf:"off_hours_admin"`
 }
 
 // VolumeThreshold is a per-datasource rows/bytes ceiling for mass_export. A zero field means "no ceiling on
@@ -158,6 +162,21 @@ func (r OffHoursRule) AppliesToWrite() bool { return containsFold(r.AppliesTo, "
 type RepeatedDenyRule struct {
 	Window  time.Duration `koanf:"window"`
 	MaxDeny int           `koanf:"max_deny"`
+}
+
+// AuthFailureBurstRule flags a principal accumulating more than MaxFailures failed authentication events
+// (kind "auth", outcome FAILURE) in a window — a brute-force / credential-stuffing signal from failed
+// logins and rejected wire tokens. Unattributed failures carry the principal "unknown"; a burst on
+// "unknown" is a valid signal, so it is keyed like any other principal.
+type AuthFailureBurstRule struct {
+	Window      time.Duration `koanf:"window"`
+	MaxFailures int           `koanf:"max_failures"`
+}
+
+// OffHoursAdminRule flags a privileged config/authorization change (kind "admin") made outside business
+// hours. It reuses the off_hours business window rather than defining a second one; Enabled turns it on.
+type OffHoursAdminRule struct {
+	Enabled bool `koanf:"enabled"`
 }
 
 // AlertsConfig is the alert delivery configuration: how long to suppress duplicate subjects and where to
@@ -424,6 +443,14 @@ func (r RulesConfig) validate() error {
 	}
 	if r.RepeatedDeny.Window > 0 && r.RepeatedDeny.MaxDeny <= 0 {
 		return fmt.Errorf("config: rules.repeated_deny has a window but max_deny <= 0")
+	}
+	if r.AuthFailureBurst.Window > 0 && r.AuthFailureBurst.MaxFailures <= 0 {
+		return fmt.Errorf("config: rules.auth_failure_burst has a window but max_failures <= 0")
+	}
+	// off_hours_admin borrows the off_hours window; enabling it without one leaves a rule that can never
+	// fire, so reject that at load rather than silently monitor nothing.
+	if r.OffHoursAdmin.Enabled && r.OffHours.BusinessHours == "" {
+		return fmt.Errorf("config: rules.off_hours_admin.enabled requires rules.off_hours.business_hours")
 	}
 	return nil
 }

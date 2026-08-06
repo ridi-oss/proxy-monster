@@ -98,6 +98,29 @@ func completion(principal, datasource string, decisionID, rows, bytes int64, ts 
 	}
 }
 
+func authEvent(principal, outcome, channel, action string, ts time.Time) canon.AuditEvent {
+	return canon.AuditEvent{
+		Kind:        "auth",
+		TSMicros:    canon.EpochMicros(ts),
+		Principal:   principal,
+		Channel:     &channel,
+		AuthzAction: &action,
+		Outcome:     &outcome,
+	}
+}
+
+func adminEvent(principal, action string, ts time.Time) canon.AuditEvent {
+	outcome, channel := "ALLOW", "console"
+	return canon.AuditEvent{
+		Kind:        "admin",
+		TSMicros:    canon.EpochMicros(ts),
+		Principal:   principal,
+		Channel:     &channel,
+		AuthzAction: &action,
+		Outcome:     &outcome,
+	}
+}
+
 func repeat(n int, mk func(i int) canon.AuditEvent) []canon.AuditEvent {
 	out := make([]canon.AuditEvent, 0, n)
 	for i := 0; i < n; i++ {
@@ -126,6 +149,120 @@ func TestRepeatedDeny(t *testing.T) {
 	got := sink.byRule(config.RuleRepeatedDeny)
 	if len(got) != 1 || got[0].Principal != "mallory" {
 		t.Fatalf("4 denies (> max 3) = %+v, want one alert for mallory", got)
+	}
+}
+
+// --- auth_failure_burst ---
+
+func TestAuthFailureBurst(t *testing.T) {
+	rules := config.RulesConfig{AuthFailureBurst: config.AuthFailureBurstRule{Window: 10 * time.Minute, MaxFailures: 3}}
+	now := time.Now()
+	fail := func(int) canon.AuditEvent {
+		return authEvent("mallory", "FAILURE", "wire", "login", now)
+	}
+
+	// At the threshold (== max) it must NOT fire.
+	sink := seedAndInspect(t, rules, repeat(3, fail))
+	if got := sink.byRule(config.RuleAuthFailureBurst); len(got) != 0 {
+		t.Fatalf("3 auth failures (== max 3) fired %d auth_failure_burst alerts, want 0", len(got))
+	}
+
+	// One over the threshold fires, at warn, for the right principal.
+	sink = seedAndInspect(t, rules, repeat(4, fail))
+	got := sink.byRule(config.RuleAuthFailureBurst)
+	if len(got) != 1 || got[0].Principal != "mallory" || got[0].Severity != config.SeverityWarn {
+		t.Fatalf("4 auth failures (> max 3) = %+v, want one warn alert for mallory", got)
+	}
+
+	// Successful auth events never count toward the burst, even well past the threshold.
+	success := func(int) canon.AuditEvent {
+		return authEvent("mallory", "SUCCESS", "wire", "login", now)
+	}
+	sink = seedAndInspect(t, rules, repeat(10, success))
+	if got := sink.byRule(config.RuleAuthFailureBurst); len(got) != 0 {
+		t.Fatalf("10 auth successes fired %d auth_failure_burst alerts, want 0", len(got))
+	}
+}
+
+// TestAuthFailureBurstUnknownPrincipal confirms that unattributed failures — rejected wire tokens that carry
+// the principal "unknown" — still burst: "unknown" is keyed like any other principal.
+func TestAuthFailureBurstUnknownPrincipal(t *testing.T) {
+	rules := config.RulesConfig{AuthFailureBurst: config.AuthFailureBurstRule{Window: 10 * time.Minute, MaxFailures: 3}}
+	now := time.Now()
+	fail := func(int) canon.AuditEvent {
+		return authEvent("unknown", "FAILURE", "wire", "token_validate", now)
+	}
+	sink := seedAndInspect(t, rules, repeat(4, fail))
+	got := sink.byRule(config.RuleAuthFailureBurst)
+	if len(got) != 1 || got[0].Principal != "unknown" {
+		t.Fatalf("4 unknown-principal auth failures = %+v, want one alert for unknown", got)
+	}
+}
+
+// --- off_hours_admin ---
+
+func TestOffHoursAdmin(t *testing.T) {
+	rules := config.RulesConfig{
+		OffHours:      config.OffHoursRule{BusinessHours: "09:00-19:00 Asia/Seoul", AppliesTo: []string{"pii_read", "write"}},
+		OffHoursAdmin: config.OffHoursAdminRule{Enabled: true},
+	}
+	seoul, err := time.LoadLocation("Asia/Seoul")
+	if err != nil {
+		t.Fatalf("load location: %v", err)
+	}
+	mon0300 := time.Date(2026, 1, 5, 3, 0, 0, 0, seoul)  // Monday, before business hours
+	mon1200 := time.Date(2026, 1, 5, 12, 0, 0, 0, seoul) // Monday, business hours
+
+	// An admin change inside business hours does NOT fire.
+	sink := seedAndInspect(t, rules, []canon.AuditEvent{adminEvent("root", "policy.update", mon1200)})
+	if got := sink.byRule(config.RuleOffHoursAdmin); len(got) != 0 {
+		t.Fatalf("business-hours admin change fired %d off_hours_admin alerts, want 0", len(got))
+	}
+
+	// The same change outside business hours fires, at warn, for the right principal.
+	sink = seedAndInspect(t, rules, []canon.AuditEvent{adminEvent("root", "policy.update", mon0300)})
+	got := sink.byRule(config.RuleOffHoursAdmin)
+	if len(got) != 1 || got[0].Principal != "root" || got[0].Severity != config.SeverityWarn {
+		t.Fatalf("off-hours admin change = %+v, want one warn alert for root", got)
+	}
+}
+
+// TestOffHoursAdminNoCrossKind confirms the admin rule keys strictly on kind "admin": an off-hours decision
+// or auth event does not trigger it, and an off-hours admin change does not leak into the pii off_hours rule.
+func TestOffHoursAdminNoCrossKind(t *testing.T) {
+	rules := config.RulesConfig{
+		OffHours:      config.OffHoursRule{BusinessHours: "09:00-19:00 Asia/Seoul", AppliesTo: []string{"pii_read", "write"}},
+		OffHoursAdmin: config.OffHoursAdminRule{Enabled: true},
+	}
+	seoul, _ := time.LoadLocation("Asia/Seoul")
+	mon0300 := time.Date(2026, 1, 5, 3, 0, 0, 0, seoul) // off-hours
+
+	events := []canon.AuditEvent{
+		decision("alice", "example-mysql", "SELECT email FROM users", "ALLOW", []string{"pii:email"}, mon0300),
+		authEvent("mallory", "FAILURE", "wire", "login", mon0300),
+		adminEvent("root", "policy.update", mon0300),
+	}
+	sink := seedAndInspect(t, rules, events)
+
+	// Exactly the admin change triggers off_hours_admin — not the decision, not the auth event.
+	if got := sink.byRule(config.RuleOffHoursAdmin); len(got) != 1 || got[0].Principal != "root" {
+		t.Fatalf("off_hours_admin = %+v, want exactly the admin change (root)", got)
+	}
+	// The admin change is neither a PII read nor a write, so it must not appear under the pii off_hours rule.
+	for _, a := range sink.byRule(config.RuleOffHours) {
+		if a.Principal == "root" {
+			t.Fatalf("admin change leaked into the pii off_hours rule: %+v", a)
+		}
+	}
+}
+
+// New fails closed when off_hours_admin is enabled without a business-hours window, rather than
+// constructing a detector whose enabled rule can never fire (Config.Validate rejects it too).
+func TestNewRejectsEnabledOffHoursAdminWithoutBusinessHours(t *testing.T) {
+	if _, err := detect.New(nil, nil, config.RulesConfig{
+		OffHoursAdmin: config.OffHoursAdminRule{Enabled: true},
+	}); err == nil {
+		t.Fatal("New should reject off_hours_admin enabled with no business_hours window")
 	}
 }
 

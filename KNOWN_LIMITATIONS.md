@@ -81,16 +81,6 @@ control-plane store, which is PostgreSQL only and carries no portability caveat
 
 ## Audit trail
 
-- 🟡 A rejected wire-token validation is recorded without a source address. The
-  `kind="auth"` event for an invalid, expired, revoked, or deprovisioned wire
-  credential is written from the gRPC `ValidateToken` handler, and that request
-  carries only the token and the datasource name — the end client's address
-  never reaches the control plane, because the proxy holds the socket. The event
-  still names the datasource and, where the token resolved, the principal, so a
-  repeated-failure signal is available per principal but not per source address.
-  Closing this needs a client-address field on `ValidateTokenRequest`, tracked
-  in [`docs/backlog.md`](./docs/backlog.md).
-
 - 🟡 OIDC group reconciliation is not part of the login-audit transaction. On a
   successful login the session mint and its `auth.oidc.login` event commit
   together, but the preceding `provisionFromOidc` — adding and removing local

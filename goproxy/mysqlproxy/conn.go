@@ -115,7 +115,8 @@ func (s *Server) handleConn(clientConn net.Conn) {
 	}
 	clientConn = withIODeadlines(clientConn, frontendCommandIdleTimeout, socketWriteTimeout)
 	token := mysqlwire.ParseClearPassword(tokenPayload)
-	identity, err := s.client.ValidateToken(token)
+	clientAddr := clientConn.RemoteAddr().String()
+	identity, err := s.client.ValidateToken(token, clientAddr)
 	if err != nil {
 		_ = mysqlwire.WritePacket(clientConn, tokenSeq+1, mysqlwire.ErrPacketState(
 			1045,
@@ -146,7 +147,6 @@ func (s *Server) handleConn(clientConn net.Conn) {
 
 	qe := engine.NewQueryEngine(s.db, s.client)
 	preparedStmts := make(map[uint32]preparedStmt)
-	clientAddr := clientConn.RemoteAddr().String()
 	if handshake.Database != "" {
 		// The client selected a database at connect time. Switching the current database is not a gated
 		// action, so relay it mechanically to the backend as COM_INIT_DB rather than synthesizing and

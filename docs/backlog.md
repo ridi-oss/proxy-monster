@@ -181,12 +181,6 @@ forward work. MySQL leads PostgreSQL in priority.
 - Distinguish verify's failure kinds by exit status. An integrity break and a
   database, storage, or configuration failure both exit non-zero, so automation
   has to parse logs to tell "the trail is broken" from "I could not check".
-- Carry the end client's address on `ValidateTokenRequest`. The proxy holds the
-  client socket, so a rejected wire credential is audited without a source
-  address and repeated failures can be correlated only by principal. The proxy
-  already resolves that address for the per-statement decision; adding the field
-  and populating it from the same place gives failed wire logins the source
-  attribution the rest of the auth events have.
 
 ## Enforcement completeness
 

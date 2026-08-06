@@ -152,7 +152,7 @@ startupComplete:
 		return
 	}
 
-	identity, err := s.client.ValidateToken(password.Password)
+	identity, err := s.client.ValidateToken(password.Password, rawClientConn.RemoteAddr().String())
 	if err != nil {
 		_ = sendError(client, "FATAL", "28000", "proxy-monster: invalid or expired token", false, 0)
 		return

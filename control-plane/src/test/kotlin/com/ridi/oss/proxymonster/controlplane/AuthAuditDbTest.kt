@@ -277,10 +277,10 @@ class AuthAuditDbTest {
         val before = countAuth()
         assertEquals(Status.Code.UNAUTHENTICATED, statusOf("not-a-token"))
         assertEquals(before + 1, countAuth())
-        // No client address: ValidateTokenRequest carries none (KNOWN_LIMITATIONS.md "Audit trail").
+        // The wire caller address rides ValidateTokenRequest and lands on the row, raw as decide stores it.
         assertEvent(
             PRINCIPAL_UNATTRIBUTED, ACTION_WIRE_VALIDATE, auditEntity("Token", "unresolved"), "FAILURE", "DENY",
-            expectedRows = 1, clientAddr = null,
+            expectedRows = 1,
         )
 
         val revoked = core.tokenStore.issue(TokenKind.USER, "revoked@example.com", emptyList(), null, 3600)
@@ -306,7 +306,6 @@ class AuthAuditDbTest {
         assertEquals(afterExpired + 1, countAuth())
         assertEvent(
             deprovisionedPrincipal, ACTION_WIRE_VALIDATE, auditEntity("User", deprovisionedPrincipal), "FAILURE", "DENY",
-            clientAddr = null,
         )
 
         // The presented credential is never itself recorded, on any of the failure paths above.
@@ -322,7 +321,7 @@ class AuthAuditDbTest {
         val valid = core.tokenStore.issue(TokenKind.USER, "valid@example.com", emptyList(), null, 3600)
         val beforeSuccess = countAuth()
         val identity = runBlocking {
-            grpc.validateToken(validateTokenRequest { token = valid.token; datasourceName = this@AuthAuditDbTest.datasourceName })
+            grpc.validateToken(validateTokenRequest { token = valid.token; datasourceName = this@AuthAuditDbTest.datasourceName; clientAddr = CALLER_ADDR })
         }
         assertEquals("valid@example.com", identity.principal)
         assertEquals(beforeSuccess, countAuth(), "successful wire validation must not emit auth audit rows")
@@ -353,7 +352,7 @@ class AuthAuditDbTest {
 
     private fun statusOf(token: String): Status.Code =
         assertFailsWith<StatusException> {
-            runBlocking { grpc.validateToken(validateTokenRequest { this.token = token; datasourceName = this@AuthAuditDbTest.datasourceName }) }
+            runBlocking { grpc.validateToken(validateTokenRequest { this.token = token; datasourceName = this@AuthAuditDbTest.datasourceName; clientAddr = CALLER_ADDR }) }
         }.status.code
 
     /**

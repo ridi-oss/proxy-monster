@@ -165,7 +165,7 @@ func TestValidateTokenAndDecideUnreachable(t *testing.T) {
 		t.Fatalf("New: %v", err)
 	}
 	t.Cleanup(func() { _ = c.Close() })
-	if _, err := c.ValidateToken("token"); err == nil {
+	if _, err := c.ValidateToken("token", ""); err == nil {
 		t.Fatal("ValidateToken against unreachable control plane succeeded")
 	}
 	out := c.Decide(engine.DecideRequest{Token: "token", SQL: "SELECT 1"})
@@ -333,7 +333,7 @@ func TestValidateTokenMapsRequestAndIdentity(t *testing.T) {
 		OnOpen:       []*pb.ProxyCommand{refetch("app", nil)},
 	}}
 	c := startFakeControlPlane(t, fake)
-	got, err := c.ValidateToken("raw-token")
+	got, err := c.ValidateToken("raw-token", "198.51.100.7:5432")
 	if err != nil {
 		t.Fatalf("ValidateToken: %v", err)
 	}
@@ -343,8 +343,8 @@ func TestValidateTokenMapsRequestAndIdentity(t *testing.T) {
 	fake.mu.Lock()
 	req, meta := fake.lastValidateReq, fake.lastValidateMeta
 	fake.mu.Unlock()
-	if req.GetToken() != "raw-token" || req.GetDatasourceName() != "ds-1" {
-		t.Fatalf("ValidateTokenRequest = %+v, want token and datasource", req)
+	if req.GetToken() != "raw-token" || req.GetDatasourceName() != "ds-1" || req.GetClientAddr() != "198.51.100.7:5432" {
+		t.Fatalf("ValidateTokenRequest = %+v, want token, datasource and client_addr", req)
 	}
 	if meta != "secret-abc" {
 		t.Fatalf("metadata = %q, want secret-abc", meta)
@@ -354,13 +354,13 @@ func TestValidateTokenMapsRequestAndIdentity(t *testing.T) {
 func TestValidateTokenRejectedAndMalformed(t *testing.T) {
 	t.Run("rejected", func(t *testing.T) {
 		c := startFakeControlPlane(t, &fakeControlPlane{validateErr: status.Error(codes.Unauthenticated, "invalid token")})
-		if _, err := c.ValidateToken("bad"); err == nil || !strings.Contains(err.Error(), "invalid token") {
+		if _, err := c.ValidateToken("bad", ""); err == nil || !strings.Contains(err.Error(), "invalid token") {
 			t.Fatalf("ValidateToken error = %v", err)
 		}
 	})
 	t.Run("malformed id", func(t *testing.T) {
 		c := startFakeControlPlane(t, &fakeControlPlane{validateResp: &pb.WireIdentity{ConnectionId: []byte("bad")}})
-		if _, err := c.ValidateToken("token"); err == nil {
+		if _, err := c.ValidateToken("token", ""); err == nil {
 			t.Fatal("ValidateToken accepted malformed connection id")
 		}
 	})

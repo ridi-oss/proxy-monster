@@ -145,6 +145,7 @@ message CatalogResponse {
 message ValidateTokenRequest {
   string token = 1;
   string datasource_name = 2;
+  string client_addr = 3;   // end-client address, for the audit record
 }
 message WireIdentity {
   string principal = 1;

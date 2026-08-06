@@ -125,16 +125,17 @@ class ControlPlaneGrpcService(
     private val log = org.slf4j.LoggerFactory.getLogger(ControlPlaneGrpcService::class.java)
 
     /**
-     * Record a rejected wire credential. [ValidateTokenRequest] carries no end-client address, so these rows
-     * have none — see KNOWN_LIMITATIONS.md "Audit trail". The requested datasource is caller-supplied and
-     * unvalidated at this point, so it is bounded and confined to `detail` rather than naming the resource.
+     * Record a rejected wire credential. The proxy carries the end-client address on [ValidateTokenRequest],
+     * stored raw (blank→null), exactly as the decide audit row stores it. The requested datasource is
+     * caller-supplied and unvalidated at this point, so it is bounded and confined to `detail` rather than
+     * naming the resource.
      */
     private fun auditWireRejection(request: ValidateTokenRequest, principal: String?, reason: String) {
         // Best-effort: this rejection changes no state, and validateToken is the hot wire path — an audit
         // insert that throws (the chain-head lock, a broken chain) must not replace UNAUTHENTICATED with
         // INTERNAL, which every bad token got before this trail existed.
         core.authAudit.failureBestEffort(
-            AuditActor(principal ?: PRINCIPAL_UNATTRIBUTED, clientAddr = null, channel = CHANNEL_WIRE),
+            AuditActor(principal ?: PRINCIPAL_UNATTRIBUTED, clientAddr = request.clientAddr.ifBlank { null }, channel = CHANNEL_WIRE),
             ACTION_WIRE_VALIDATE,
             if (principal == null) auditEntity("Token", "unresolved") else auditEntity("User", principal),
             "Wire token validation failed",

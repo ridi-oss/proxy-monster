@@ -49,6 +49,7 @@ type fakeControlPlane struct {
 	validateResp *pb.WireIdentity
 	validateErr  error
 	validateFn   func(*pb.ValidateTokenRequest) (*pb.WireIdentity, error)
+	lastValidate *pb.ValidateTokenRequest
 	decideFn     func(*pb.DecisionRequest) (*pb.WireDecision, error)
 	decideReqs   []*pb.DecisionRequest
 	fragmentReqs []*pb.SchemaFragmentPush
@@ -61,6 +62,7 @@ type fakeControlPlane struct {
 
 func (f *fakeControlPlane) ValidateToken(_ context.Context, req *pb.ValidateTokenRequest) (*pb.WireIdentity, error) {
 	f.mu.Lock()
+	f.lastValidate = proto.Clone(req).(*pb.ValidateTokenRequest)
 	validateErr := f.validateErr
 	validateFn := f.validateFn
 	var validateResp *pb.WireIdentity
@@ -344,6 +346,28 @@ func (h *brokerHarness) openDBInDatabase(t *testing.T, token, database string) *
 	conn.SetMaxOpenConns(1)
 	t.Cleanup(func() { _ = conn.Close() })
 	return conn
+}
+
+// The proxy must forward the client's real socket address on ValidateToken so a rejected wire credential
+// is audited with its source. A blank field re-opens the audited-without-source gap; the token in that
+// field would leak the credential into the audit chain. (pgproxy plumbs the same value symmetrically.)
+func TestValidateTokenCarriesClientAddr(t *testing.T) {
+	h := startBroker(t)
+	h.fake.decideFn = func(*pb.DecisionRequest) (*pb.WireDecision, error) {
+		return wireVerdict(&pb.Verdict{Decision: pb.EnfAction_ALLOW, DecisionId: 1}), nil
+	}
+	conn := h.openDB(t, validToken)
+	rows, err := conn.Query("SELECT id FROM people ORDER BY id")
+	if err != nil {
+		t.Fatalf("Query: %v", err)
+	}
+	rows.Close()
+	h.fake.mu.Lock()
+	got := h.fake.lastValidate.GetClientAddr()
+	h.fake.mu.Unlock()
+	if got == "" || !strings.Contains(got, ":") || got == validToken {
+		t.Fatalf("ValidateToken client_addr = %q; want the client socket address (host:port), not blank or the token", got)
+	}
 }
 
 func refetchCommand(schema string, hash []byte) *pb.ProxyCommand {

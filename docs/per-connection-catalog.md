@@ -173,10 +173,10 @@ own statement:
 
 1. Connect. Client connects (MySQL handshake / PG startup + cleartext password).
 2. Admit, mint, command. The proxy calls
-   `ValidateToken(token, datasource_name)`. The control plane decides
-   admit/reject; on admit it mints a 128-bit CSPRNG `connection_id`, creates the
-   per-connection state, and returns `connection_id` + `on_open` (`REFETCH`s for
-   the default + system schemas).
+   `ValidateToken(token, datasource_name, client_addr)`. The control plane
+   decides admit/reject; on admit it mints a 128-bit CSPRNG `connection_id`,
+   creates the per-connection state, and returns `connection_id` + `on_open`
+   (`REFETCH`s for the default + system schemas).
 3. Fetch-on-open (hash-gated). The proxy dials its backend, then runs each
    `on_open REFETCH` on that held connection: hash the schema, push the fragment
    only if it differs. Matching schemas are no-ops (shared fragment reuse). Only
@@ -261,7 +261,7 @@ message Refetch {
 }
 
 // ---- Connection open: ValidateToken admits, mints, and commands ----
-message ValidateTokenRequest { string token = 1; string datasource_name = 2; }
+message ValidateTokenRequest { string token = 1; string datasource_name = 2; string client_addr = 3; }
 message WireIdentity {
   string principal = 1;
   repeated string roles = 2;

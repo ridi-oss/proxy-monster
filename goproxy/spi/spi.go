@@ -67,7 +67,7 @@ type SessionClient interface {
 type EnforcementClient interface {
 	SessionClient
 	engine.CompletionReporter
-	ValidateToken(token string) (Identity, error)
+	ValidateToken(token, clientAddr string) (Identity, error)
 	CloseConnection(connectionID []byte) error
 }
 

@@ -182,7 +182,7 @@ class DatasourceStore(internal val dataSource: DataSource) {
 
     fun list(): List<Datasource> = dataSource.connection.use { c ->
         c.prepareStatement(
-            "SELECT id, name, engine, host, port, db_name, tags, default_schemas, mysql_lower_case_table_names, catalog_synced_at, last_seen_at, engine_version, advertise_addr, advertise_cert_chain, advertise_wire_tls FROM datasource ORDER BY id",
+            "SELECT id, name, engine, host, port, db_name, tags, default_schemas, mysql_lower_case_table_names, catalog_synced_at, last_seen_at, engine_version, advertise_addr, advertise_cert_chain, advertise_wire_tls FROM datasource WHERE deleted_at IS NULL ORDER BY id",
         ).use { ps ->
             ps.executeQuery().use { rs ->
                 val out = ArrayList<Datasource>()
@@ -195,7 +195,7 @@ class DatasourceStore(internal val dataSource: DataSource) {
     fun get(id: Long): Datasource? = dataSource.connection.use { c -> get(id, c) }
 
     fun get(id: Long, c: java.sql.Connection): Datasource? = c.prepareStatement(
-        "SELECT id, name, engine, host, port, db_name, tags, default_schemas, mysql_lower_case_table_names, catalog_synced_at, last_seen_at, engine_version, advertise_addr, advertise_cert_chain, advertise_wire_tls FROM datasource WHERE id = ?",
+        "SELECT id, name, engine, host, port, db_name, tags, default_schemas, mysql_lower_case_table_names, catalog_synced_at, last_seen_at, engine_version, advertise_addr, advertise_cert_chain, advertise_wire_tls FROM datasource WHERE id = ? AND deleted_at IS NULL",
     ).use { ps ->
         ps.setLong(1, id)
         ps.executeQuery().use { rs -> if (rs.next()) rs.toDatasource() else null }
@@ -203,17 +203,57 @@ class DatasourceStore(internal val dataSource: DataSource) {
 
     /**
      * Look a datasource up by its stable [name] — the wire identity the proxy presents over gRPC
-     * (docs/datasource-registration.md: the proxy sends `datasource_name`, never a numeric id). `name`
-     * is unique in the schema, so this returns at most one row.
+     * (docs/datasource-registration.md: the proxy sends `datasource_name`, never a numeric id). At most
+     * one LIVE row can hold a given name (the name-uniqueness index is scoped to `deleted_at IS NULL`),
+     * so a soft-deleted predecessor is invisible here and a name that was freed by a delete resolves to
+     * its new datasource.
      */
     fun getByName(name: String): Datasource? = dataSource.connection.use { c -> getByName(name, c) }
 
     fun getByName(name: String, c: java.sql.Connection): Datasource? = c.prepareStatement(
-        "SELECT id, name, engine, host, port, db_name, tags, default_schemas, mysql_lower_case_table_names, catalog_synced_at, last_seen_at, engine_version, advertise_addr, advertise_cert_chain, advertise_wire_tls FROM datasource WHERE name = ?",
+        "SELECT id, name, engine, host, port, db_name, tags, default_schemas, mysql_lower_case_table_names, catalog_synced_at, last_seen_at, engine_version, advertise_addr, advertise_cert_chain, advertise_wire_tls FROM datasource WHERE name = ? AND deleted_at IS NULL",
     ).use { ps ->
         ps.setString(1, name)
         ps.executeQuery().use { rs -> if (rs.next()) rs.toDatasource() else null }
     }
+
+    /**
+     * Resolve [id] EVEN IF it is soft-deleted — for authorizing and auditing a historical task against the
+     * datasource it targeted. A task (approval / editor query) outlives the datasource it ran on, and its
+     * lifecycle decisions (approve / read / assume / cancel) must keep evaluating against that datasource's
+     * ORIGINAL tags: dropping to empty tags when the row is soft-deleted would silence a tag-scoped Cedar
+     * forbid (e.g. one keyed on `system:production`). NOT for provisioning or the decide/connect path —
+     * those use the live-only [get]/[getByName], so a soft-deleted datasource never resolves for enforcement.
+     */
+    fun getIncludingDeleted(id: Long): Datasource? = dataSource.connection.use { c ->
+        c.prepareStatement(
+            "SELECT id, name, engine, host, port, db_name, tags, default_schemas, mysql_lower_case_table_names, catalog_synced_at, last_seen_at, engine_version, advertise_addr, advertise_cert_chain, advertise_wire_tls FROM datasource WHERE id = ?",
+        ).use { ps ->
+            ps.setLong(1, id)
+            ps.executeQuery().use { rs -> if (rs.next()) rs.toDatasource() else null }
+        }
+    }
+
+    /**
+     * True while [id] still has access-request work that a delete would strand and that is not otherwise
+     * fail-closed — a PENDING role/query request awaiting a decision, or a query mid-execution. An APPROVED
+     * query task is deliberately NOT counted: it may sit indefinitely with no cancellation transition
+     * (startup recovery only repairs EXECUTING), so blocking on it would leave the datasource permanently
+     * undeletable; deleting under it strands it fail-closed instead (its execution resolves the datasource
+     * live and denies). Terminal/historical tasks never count — they are what a soft delete retains.
+     */
+    fun hasActiveRequests(id: Long, c: java.sql.Connection): Boolean =
+        c.prepareStatement(
+            """SELECT EXISTS(
+                   SELECT 1 FROM access_request WHERE datasource_id = ? AND (
+                       (kind = 'ROLE'  AND status = 'PENDING') OR
+                       (kind = 'QUERY' AND status IN ('PENDING', 'EXECUTING'))
+                   )
+               )""",
+        ).use { ps ->
+            ps.setLong(1, id)
+            ps.executeQuery().use { rs -> rs.next() && rs.getBoolean(1) }
+        }
 
     /**
      * gRPC Register (docs/datasource-registration.md): upsert a datasource by its stable [name].
@@ -263,7 +303,7 @@ class DatasourceStore(internal val dataSource: DataSource) {
                 // identity-change → catalog-invalidate below, and capture the PRIOR load-bearing identity.
                 data class Prior(val id: Long, val engine: String, val dbName: String)
                 val prior = c.prepareStatement(
-                    "SELECT id, engine, db_name FROM datasource WHERE name = ? FOR UPDATE",
+                    "SELECT id, engine, db_name FROM datasource WHERE name = ? AND deleted_at IS NULL FOR UPDATE",
                 ).use { ps ->
                     ps.setString(1, name)
                     ps.executeQuery().use { rs ->
@@ -291,7 +331,7 @@ class DatasourceStore(internal val dataSource: DataSource) {
                 val (upsertedId, catalogCleared) = c.prepareStatement(
                     """INSERT INTO datasource (name, engine, host, port, db_name, tags, advertise_addr, advertise_cert_chain, advertise_wire_tls)
                        VALUES (?, ?, ?, ?, ?, ?::jsonb, ?, ?, ?)
-                       ON CONFLICT (name) DO UPDATE SET
+                       ON CONFLICT (name) WHERE deleted_at IS NULL DO UPDATE SET
                            engine  = EXCLUDED.engine,
                            host    = EXCLUDED.host,
                            port    = EXCLUDED.port,
@@ -336,7 +376,7 @@ class DatasourceStore(internal val dataSource: DataSource) {
                     // DIFFERENT engine (it raced in after the prior read saw null). Nothing was written; re-read
                     // the now-committed engine for a precise message and reject fail-closed — the engine-immutability
                     // invariant holds without relying on the advisory lock.
-                    val existingEngine = c.prepareStatement("SELECT engine FROM datasource WHERE name = ?").use { ps ->
+                    val existingEngine = c.prepareStatement("SELECT engine FROM datasource WHERE name = ? AND deleted_at IS NULL").use { ps ->
                         ps.setString(1, name)
                         ps.executeQuery().use { rs -> if (rs.next()) rs.getString(1) else engine.wireName }
                     }
@@ -366,7 +406,7 @@ class DatasourceStore(internal val dataSource: DataSource) {
 
     /** Stamp `last_seen_at = now()` — called when a proxy's Events stream opens (liveness). */
     fun markSeen(id: Long) = dataSource.connection.use { c ->
-        c.prepareStatement("UPDATE datasource SET last_seen_at = now() WHERE id = ?").use { ps ->
+        c.prepareStatement("UPDATE datasource SET last_seen_at = now() WHERE id = ? AND deleted_at IS NULL").use { ps ->
             ps.setLong(1, id); ps.executeUpdate()
         }
     }
@@ -402,7 +442,7 @@ class DatasourceStore(internal val dataSource: DataSource) {
                 // serialize instead of interleaving their DELETE/INSERT — otherwise the second push's insert
                 // races the first's delete and trips the (datasource, schema, table, column) UNIQUE. Also
                 // doubles as the disappeared-datasource check.
-                c.prepareStatement("SELECT id FROM datasource WHERE id = ? FOR UPDATE").use { ps ->
+                c.prepareStatement("SELECT id FROM datasource WHERE id = ? AND deleted_at IS NULL FOR UPDATE").use { ps ->
                     ps.setLong(1, id)
                     ps.executeQuery().use { rs -> check(rs.next()) { "datasource $id disappeared before catalog push" } }
                 }
@@ -491,7 +531,7 @@ class DatasourceStore(internal val dataSource: DataSource) {
 
     fun update(id: Long, input: DatasourceInput, c: java.sql.Connection): Datasource? {
         data class Prior(val engine: String, val dbName: String)
-        val prior = c.prepareStatement("SELECT engine, db_name FROM datasource WHERE id = ? FOR UPDATE").use { ps ->
+        val prior = c.prepareStatement("SELECT engine, db_name FROM datasource WHERE id = ? AND deleted_at IS NULL FOR UPDATE").use { ps ->
             ps.setLong(1, id)
             ps.executeQuery().use { rs -> if (rs.next()) Prior(rs.getString(1), rs.getString(2)) else null }
         } ?: return null
@@ -499,7 +539,7 @@ class DatasourceStore(internal val dataSource: DataSource) {
             throw DatasourceEngineConflictException(input.name, prior.engine, input.engine)
         }
         c.prepareStatement(
-            "UPDATE datasource SET name=?, engine=?, host=?, port=?, db_name=? WHERE id=?",
+            "UPDATE datasource SET name=?, engine=?, host=?, port=?, db_name=? WHERE id=? AND deleted_at IS NULL",
         ).use { ps ->
             ps.setString(1, input.name)
             ps.setString(2, input.engine)
@@ -515,8 +555,13 @@ class DatasourceStore(internal val dataSource: DataSource) {
 
     fun delete(id: Long): Boolean = dataSource.inTx { delete(id, it) }
 
+    /**
+     * Soft-delete: stamp `deleted_at` so the row (and the access_request / query_result / audit_event
+     * history that references it) survives, while every live read excludes it and its name is freed for
+     * reuse. Returns true only when a live row was flipped — a second delete of the same id is a no-op.
+     */
     fun delete(id: Long, c: java.sql.Connection): Boolean =
-        c.prepareStatement("DELETE FROM datasource WHERE id = ?").use { ps ->
+        c.prepareStatement("UPDATE datasource SET deleted_at = now() WHERE id = ? AND deleted_at IS NULL").use { ps ->
             ps.setLong(1, id)
             ps.executeUpdate() > 0
         }
@@ -544,7 +589,7 @@ class DatasourceStore(internal val dataSource: DataSource) {
      * download route is the only caller.
      */
     fun wireCertChain(id: Long): String? = dataSource.connection.use { c ->
-        c.prepareStatement("SELECT advertise_cert_chain FROM datasource WHERE id = ?").use { ps ->
+        c.prepareStatement("SELECT advertise_cert_chain FROM datasource WHERE id = ? AND deleted_at IS NULL").use { ps ->
             ps.setLong(1, id)
             ps.executeQuery().use { rs -> if (rs.next()) rs.getString(1) else null }
         }
@@ -727,7 +772,8 @@ internal suspend fun ApplicationCall.respondManagementError(exception: Managemen
     val status = when (exception.error.code) {
         "common.not_found" -> HttpStatusCode.NotFound
         "datasource.table_introspection_failed" -> HttpStatusCode.BadGateway
-        "group.system_immutable", "role.system_immutable", "policy.system_immutable" -> HttpStatusCode.Conflict
+        "group.system_immutable", "role.system_immutable", "policy.system_immutable",
+        "datasource.in_use_proxy_attached", "datasource.in_use_active_requests" -> HttpStatusCode.Conflict
         else -> HttpStatusCode.BadRequest
     }
     respond(status, exception.error)
@@ -869,8 +915,12 @@ fun Route.datasourceRoutes(
     delete("/api/datasources/{id}") {
         if (!call.requireAdmin(config, authz, AuthzAction.ADMIN_DATASOURCES)) return@delete
         val id = call.idParam() ?: return@delete call.respond(HttpStatusCode.BadRequest, ApiError("common.bad_id"))
-        if (management.deleteDatasource(id, call.auditActor(config)).deleted) call.respond(HttpStatusCode.NoContent)
-        else call.respond(HttpStatusCode.NotFound, ApiError("common.not_found", mapOf("resource" to "datasource")))
+        try {
+            if (management.deleteDatasource(id, call.auditActor(config)).deleted) call.respond(HttpStatusCode.NoContent)
+            else call.respond(HttpStatusCode.NotFound, ApiError("common.not_found", mapOf("resource" to "datasource")))
+        } catch (e: ManagementException) {
+            call.respondManagementError(e)
+        }
     }
     post("/api/datasources/{id}/test") {
         if (!call.requireAdmin(config, authz, AuthzAction.ADMIN_DATASOURCES)) return@post

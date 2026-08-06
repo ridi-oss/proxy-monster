@@ -1086,7 +1086,7 @@ fun Route.editorSessionRoutes(
                     datasourceName = task.datasourceName, roleName = task.roleName,
                 ),
                 call.httpAuthzContext(config), task.datasourceName,
-                task.datasourceId?.let(datasourceStore::get)?.tags.orEmpty(),
+                task.datasourceId?.let(datasourceStore::getIncludingDeleted)?.tags.orEmpty(),
             )
             if (mayRead is AuthzDecision.Deny) {
                 return@get call.respond(HttpStatusCode.NotFound, ApiError("common.not_found", mapOf("resource" to "editor task")))
@@ -1112,7 +1112,7 @@ fun Route.editorSessionRoutes(
                     datasourceName = task.datasourceName, roleName = task.roleName,
                 ),
                 call.httpAuthzContext(config), task.datasourceName,
-                task.datasourceId?.let(datasourceStore::get)?.tags.orEmpty(),
+                task.datasourceId?.let(datasourceStore::getIncludingDeleted)?.tags.orEmpty(),
             )
             if (mayCancel is AuthzDecision.Deny) {
                 return@post call.respond(HttpStatusCode.Forbidden, ApiError("approval.cancel_forbidden"))
@@ -1169,7 +1169,7 @@ fun Route.editorSessionRoutes(
                 datasourceName = task.datasourceName, roleName = task.roleName,
             ),
             call.httpAuthzContext(config), task.datasourceName,
-            task.datasourceId?.let(datasourceStore::get)?.tags.orEmpty(),
+            task.datasourceId?.let(datasourceStore::getIncludingDeleted)?.tags.orEmpty(),
         )
         if (mayAssume is AuthzDecision.Deny) {
             return@get call.respond(HttpStatusCode.NotFound, ApiError("common.not_found", mapOf("resource" to "editor task")))

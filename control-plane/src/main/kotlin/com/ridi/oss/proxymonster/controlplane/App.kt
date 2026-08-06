@@ -181,7 +181,7 @@ internal fun taskReadableForPush(
         ),
         context,
         task.datasourceName,
-        task.datasourceId?.let(datasourceStore::get)?.tags.orEmpty(),
+        task.datasourceId?.let(datasourceStore::getIncludingDeleted)?.tags.orEmpty(),
     )
     return decision !is AuthzDecision.Deny
 }
@@ -564,7 +564,7 @@ fun Application.module(config: Config, core: ControlPlaneCore) {
 
     // MCPA transport adapters share these service instances with the REST surface and the one live core.
     val managementAudit = ManagementAuditRecorder(core.auditStore)
-    val datasourceManagement = DatasourceManagementService(datasourceStore, core.proxyEventsHub, tableDetailService, managementAudit)
+    val datasourceManagement = DatasourceManagementService(datasourceStore, core.proxyEventsHub, tableDetailService, managementAudit, core.connectionCatalog)
     val policyManagement = PolicyManagementService(cedarPolicyStore, policyStore, managementAudit)
     val identityManagement = IdentityManagementService(
         dataSource, userGroupStore, policyStore, tokenStore, accessStore, principalSessionStore, managementAudit,

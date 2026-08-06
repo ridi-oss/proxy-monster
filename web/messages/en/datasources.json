@@ -107,7 +107,7 @@
   },
   "deleteDialog": {
     "title": "Delete datasource",
-    "description": "Delete <b>{name}</b> and its catalog rows? Policies scoped to it will no longer resolve. This cannot be undone.",
+    "description": "Delete <b>{name}</b>? Policies scoped to it will no longer resolve, and its name is freed for reuse. Its access history is retained for audit. This cannot be undone.",
     "deleteFailed": "delete failed",
     "cancel": "Cancel",
     "delete": "Delete"

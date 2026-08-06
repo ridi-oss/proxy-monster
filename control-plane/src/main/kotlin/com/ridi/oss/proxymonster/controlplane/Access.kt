@@ -596,6 +596,12 @@ fun Route.accessRoutes(config: Config, store: AccessStore, authz: Authz, datasou
         // elevation need not target one (datasourceId is optional); a datasource-less request has no
         // Datasource resource to decide, so authentication alone admits it. authDebug bypasses.
         val ds = input.datasourceId?.let(datasourceStore::get)
+        // A datasourceId that names no LIVE datasource (soft-deleted or never-existed) must not fall through
+        // to createRequest: the tombstone row still satisfies the FK, so the insert would otherwise succeed
+        // while skipping the task.request gate that a live datasource would enforce.
+        if (input.datasourceId != null && ds == null) {
+            return@post call.notFound("datasource")
+        }
         if (ds != null && !config.authDebug) {
             val roles = roleResolver.resolve(principal)
             val raw = call.httpAuthzContext(config)
@@ -634,7 +640,7 @@ fun Route.accessRoutes(config: Config, store: AccessStore, authz: Authz, datasou
                     datasourceName = req.datasourceName, roleName = req.roleName,
                 ),
                 call.httpAuthzContext(config), req.datasourceName,
-                req.datasourceId?.let(datasourceStore::get)?.tags.orEmpty(),
+                req.datasourceId?.let(datasourceStore::getIncludingDeleted)?.tags.orEmpty(),
             )
             if (decision is AuthzDecision.Deny) {
                 return@post call.respondError(HttpStatusCode.Forbidden, "approval.not_approver")
@@ -665,7 +671,7 @@ fun Route.accessRoutes(config: Config, store: AccessStore, authz: Authz, datasou
                     datasourceName = req.datasourceName, roleName = req.roleName,
                 ),
                 call.httpAuthzContext(config), req.datasourceName,
-                req.datasourceId?.let(datasourceStore::get)?.tags.orEmpty(),
+                req.datasourceId?.let(datasourceStore::getIncludingDeleted)?.tags.orEmpty(),
             )
             if (decision is AuthzDecision.Deny) {
                 return@post call.respondError(HttpStatusCode.Forbidden, "approval.not_approver")

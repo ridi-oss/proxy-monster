@@ -374,7 +374,7 @@ fun Route.approvalRoutes(
             ),
             call.httpAuthzContext(config),
             req.datasourceName,
-            req.datasourceId?.let(datasourceStore::get)?.tags.orEmpty(),
+            req.datasourceId?.let(datasourceStore::getIncludingDeleted)?.tags.orEmpty(),
         )
         return decision !is AuthzDecision.Deny
     }
@@ -391,7 +391,7 @@ fun Route.approvalRoutes(
             ),
             call.httpAuthzContext(config),
             req.datasourceName,
-            req.datasourceId?.let(datasourceStore::get)?.tags.orEmpty(),
+            req.datasourceId?.let(datasourceStore::getIncludingDeleted)?.tags.orEmpty(),
         )
         return decision !is AuthzDecision.Deny
     }
@@ -406,7 +406,9 @@ fun Route.approvalRoutes(
     // requester↔approval linkage is reconstructable from access_request by an authorized auditor via the
     // id, but is not broadcast inline (result-access confidentiality).
     fun e3Record(principal: String, req: AccessRequest, event: String, channel: Channel? = null): AuditEvent {
-        val dsName = req.datasourceId?.let { datasourceStore.get(it)?.name } ?: "?"
+        // The retained name from the (unfiltered) request join, so a datasource soft-deleted after the task
+        // ran still names itself in the audit trail rather than degrading to "?".
+        val dsName = req.datasourceName ?: "?"
         return AuditEvent(
             principal = principal, datasource = dsName,
             statement = "approval #${req.id} $event",

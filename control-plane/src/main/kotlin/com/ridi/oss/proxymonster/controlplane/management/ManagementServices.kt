@@ -8,6 +8,7 @@ import com.ridi.oss.proxymonster.controlplane.AppUser
 import com.ridi.oss.proxymonster.controlplane.AppUserInput
 import com.ridi.oss.proxymonster.controlplane.CatalogColumn
 import com.ridi.oss.proxymonster.controlplane.ClassificationInput
+import com.ridi.oss.proxymonster.controlplane.ConnectionCatalogRegistry
 import com.ridi.oss.proxymonster.controlplane.PrincipalSessionStore
 import com.ridi.oss.proxymonster.controlplane.Datasource
 import com.ridi.oss.proxymonster.controlplane.DatasourceInput
@@ -84,6 +85,7 @@ class DatasourceManagementService(
     private val eventsHub: ProxyEventsHub,
     private val tableDetailService: TableDetailService,
     private val recorder: ManagementAuditRecorder,
+    private val connectionCatalog: ConnectionCatalogRegistry = ConnectionCatalogRegistry(),
 ) {
     fun listDatasources(): List<Datasource> = store.list()
 
@@ -142,8 +144,28 @@ class DatasourceManagementService(
 
     fun deleteDatasource(id: Long, actor: AuditActor, c: Connection): DeleteResult {
         val current = store.get(id, c) ?: return DeleteResult(false)
+        // Fail-closed guard: refuse while the datasource is still in use, so a delete never has to tear down
+        // live runtime state under a name a new datasource may immediately reuse. A live proxy (open Events
+        // stream) could keep serving the freed name; an outstanding request would be decided/executed with
+        // an altered authorization context. Both are resolved by the operator first (detach the proxy, settle
+        // the requests), not silently by the delete.
+        if (current.name in eventsHub.attached()) {
+            throw ManagementException(ApiError("datasource.in_use_proxy_attached"))
+        }
+        if (store.hasActiveRequests(id, c)) {
+            throw ManagementException(ApiError("datasource.in_use_active_requests"))
+        }
         val result = DeleteResult(store.delete(id, c))
-        if (result.deleted) recordDatasource(c, actor, current.name, "delete datasource '${current.name}'")
+        if (result.deleted) {
+            recordDatasource(c, actor, current.name, "delete datasource '${current.name}'")
+            // Drop the name-keyed in-memory enforcement catalog for this datasource. A soft-deleted name is
+            // free for a new datasource to reuse, and the authoritative catalog is keyed by name, not id — so
+            // without this a connection to the reused name could adopt structure measured from the deleted
+            // predecessor's backend and mask the wrong result columns. Same hazard a retarget already
+            // invalidates; idempotent and fail-safe (an over-drop only forces the next connection to
+            // re-measure).
+            connectionCatalog.invalidateDatasource(current.name)
+        }
         return result
     }
 

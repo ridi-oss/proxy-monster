@@ -51,7 +51,9 @@
     "invalid_engine": "\"{engine}\" isn't a supported engine — use \"postgres\" or \"mysql\".",
     "no_wire_cert": "This datasource's proxy has not advertised a TLS certificate.",
     "not_connectable": "You do not have access to connect to this datasource.",
-    "wire_cert_unusable": "The stored certificate chain is not usable as a trust anchor. Re-register the proxy, then try again."
+    "wire_cert_unusable": "The stored certificate chain is not usable as a trust anchor. Re-register the proxy, then try again.",
+    "in_use_proxy_attached": "A proxy is still attached to this datasource. Stop the proxy, then delete it.",
+    "in_use_active_requests": "This datasource has open access requests. Resolve or cancel them, then delete it."
   },
   "group": {
     "system_immutable": "This is a system-managed group and cannot be modified or deleted."

@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.1.10](https://github.com/ridi-oss/proxy-monster/compare/server-v0.1.9...server-v0.1.10) (2026-08-07)
+
+
+### Features
+
+* **analyzer:** classify every statement into a StatementKind ([#138](https://github.com/ridi-oss/proxy-monster/issues/138)) ([0821b87](https://github.com/ridi-oss/proxy-monster/commit/0821b878ddfb5056508a29ee170d4136160a40ef))
+* **control-plane:** graceful drain of proxy Events streams on shutdown ([#140](https://github.com/ridi-oss/proxy-monster/issues/140)) ([9e7a73d](https://github.com/ridi-oss/proxy-monster/commit/9e7a73d20d8c75794ccda812efc56c5b33cf62e8))
+
+
+### Bug Fixes
+
+* **control-plane:** soft-delete Cedar policies ([#137](https://github.com/ridi-oss/proxy-monster/issues/137)) ([c4f8658](https://github.com/ridi-oss/proxy-monster/commit/c4f86589e9d027d9055125b7a033e7d7998b0bd2))
+* **control-plane:** soft-delete groups ([#132](https://github.com/ridi-oss/proxy-monster/issues/132)) ([3368968](https://github.com/ridi-oss/proxy-monster/commit/3368968fe8d4be286e57171d6d3cc0c6d3d5e2c6))
+* **web:** return to the intended page after login ([#133](https://github.com/ridi-oss/proxy-monster/issues/133)) ([e25ec4a](https://github.com/ridi-oss/proxy-monster/commit/e25ec4a7e85323842754c2b477a87478ec9b68b7))
+
 ## [0.1.9](https://github.com/ridi-oss/proxy-monster/compare/server-v0.1.8...server-v0.1.9) (2026-08-06)
 
 

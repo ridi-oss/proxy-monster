@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.11](https://github.com/ridi-oss/proxy-monster/compare/server-v0.1.10...server-v0.1.11) (2026-08-07)
+
+
+### Bug Fixes
+
+* **goproxy:** repin sqlglot-go to v0.23.0 to match analyzer ([#144](https://github.com/ridi-oss/proxy-monster/issues/144)) ([fbdc8ce](https://github.com/ridi-oss/proxy-monster/commit/fbdc8cead1a4b25ab8cd85584063362a70940809))
+
 ## [0.1.10](https://github.com/ridi-oss/proxy-monster/compare/server-v0.1.9...server-v0.1.10) (2026-08-07)
 
 

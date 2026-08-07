@@ -241,8 +241,26 @@ mise run proto-check
 # run reports as a pass. These tests wait on containers and sockets far more than they compute, so the
 # detector costs a few seconds of wall clock rather than the usual multiple.
 go test -race ./analyzer/... ./auditmon/... ./goproxy/... ./mysqlwire/... ./pmon/...
+mise run check-image-gomod
 pnpm -C web test:unit
 pnpm -C web build
+'''
+
+[tasks.check-image-gomod]
+description = "Build each server-image Go module in go.mod mode (GOWORK=off), the way the image build does"
+shell = "bash -c"
+# The server images (goproxy/Dockerfile, auditmon/Dockerfile) build each module GOWORK=off, so it
+# resolves its OWN go.mod — not the workspace. Every other Go build here goes through go.work, which
+# resolves a sibling like analyzer from ../analyzer and hides a stale transitive pin in goproxy/go.mod:
+# the drift then surfaces only on the release image build (a broken pm-goproxy), never in `verify`.
+# Reproduce that resolution here so a stale pin fails on the author's machine and in PR CI instead.
+# `go build ./...` compiles every package and writes no binary.
+run = '''
+set -euo pipefail
+for m in goproxy auditmon; do
+  echo "=== $m (GOWORK=off go build ./...) ==="
+  (cd "$m" && GOWORK=off go build ./...)
+done
 '''
 
 [tasks.build-pmon]

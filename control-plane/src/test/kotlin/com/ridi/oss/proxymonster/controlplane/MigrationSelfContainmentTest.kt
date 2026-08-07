@@ -5,6 +5,7 @@ import kotlin.io.path.listDirectoryEntries
 import kotlin.io.path.name
 import kotlin.io.path.readLines
 import kotlin.test.Test
+import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 /**
@@ -42,6 +43,9 @@ class MigrationSelfContainmentTest {
         Regex("""(?<![A-Za-z])(?:tasks|docs)/""") to "a repository path",
         Regex("""\.(?:kts?|go|tsx?)\b""") to "a source filename",
     )
+
+    // The version is the digits after the leading V, before the "__" description.
+    private val versionOf = Regex("""^V(\d+)__""")
 
     private fun sqlFiles(): List<Path> =
         migrationDir.listDirectoryEntries("V*.sql").sortedBy { it.name }
@@ -111,5 +115,45 @@ class MigrationSelfContainmentTest {
                 "the guard fires on an ordinary comment: $line",
             )
         }
+    }
+
+    @Test
+    fun `no two migrations share a version`() {
+        val files = sqlFiles()
+        assertTrue(
+            files.size >= 8,
+            "expected the shipped migrations under $migrationDir, found ${files.size}",
+        )
+        // Flyway refuses to migrate when two files carry the same version ("Found more than one migration
+        // with version N"), aborting control-plane startup — but only at migrate() time, in the
+        // Docker-backed tests or against a real database. Two branches each adding a V<n> merge cleanly and
+        // slip past the append-only CI guard (both are adds), so catch a collision here: fast, no container,
+        // on the author's machine before merge.
+        val byVersion = files.groupBy { file ->
+            versionOf.find(file.name)?.groupValues?.get(1)
+                ?: error("migration ${file.name} is not named V<n>__<description>.sql")
+        }
+        val collisions = byVersion.filterValues { it.size > 1 }
+        assertTrue(
+            collisions.isEmpty(),
+            buildString {
+                append("Two or more migrations share a version. Flyway will refuse to migrate, stopping every ")
+                append("database from booting; renumber one to the next free version.\n")
+                collisions.toSortedMap().forEach { (v, fs) -> appendLine("  V$v: ${fs.map { it.name }.sorted()}") }
+            },
+        )
+    }
+
+    @Test
+    fun `the version guard detects a collision`() {
+        // Without this, the check above passes whether or not its version parsing works — a unique tree and a
+        // broken matcher look identical. This also pins that V1 and V10 are distinct (not substring-confused).
+        val names = listOf("V1__a.sql", "V2__b.sql", "V2__c.sql", "V10__d.sql")
+        val byVersion = names.groupBy { versionOf.find(it)?.groupValues?.get(1) }
+        assertEquals(
+            setOf("2"),
+            byVersion.filterValues { it.size > 1 }.keys,
+            "the guard should flag exactly the shared version (2), and not confuse V1 with V10",
+        )
     }
 }

@@ -74,6 +74,7 @@ class RoleResolver(
                        SELECT 1
                        FROM group_role gr
                        JOIN app_role r ON r.id = gr.role_id AND r.name = ? AND r.deleted_at IS NULL
+                       JOIN app_group g ON g.id = gr.group_id AND g.deleted_at IS NULL
                        JOIN group_member gm ON gm.group_id = gr.group_id
                        JOIN app_user u ON u.id = gm.user_id AND u.active
                    )

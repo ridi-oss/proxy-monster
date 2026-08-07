@@ -294,8 +294,8 @@ All under `admin.policies` (write tools also require `mcp:policies:write`):
   (writes need `mcp:identity:write`).
 - `list_users` / `create_user` / `update_user` / `deprovision_user` (soft
   delete) → `admin.identity`.
-- `list_groups` / `create_group` / `update_group` / `delete_group` (hard),
-  `add_group_member` / `remove_group_member`, `set_group_roles` →
+- `list_groups` / `create_group` / `update_group` / `delete_group` (soft
+  delete), `add_group_member` / `remove_group_member`, `set_group_roles` →
   `admin.identity`; SYSTEM group → 409 `group.system_immutable`.
 - `list_mask_fns` / `create_mask_fn` / `update_mask_fn` / `delete_mask_fn` →
   `admin.policies` (writes need `mcp:policies:write`).

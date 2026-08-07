@@ -43,6 +43,12 @@ const (
 	secretTokenHeader = "x-pm-secret-token"
 	// eventsReconnectDefault is the backoff between Events stream reconnect attempts.
 	eventsReconnectDefault = 5 * time.Second
+	// eventsDrainReconnect paces the reconnect after a Draining signal: fast enough to re-home in about a
+	// second (vs the full error backoff), but non-zero so a peer that keeps draining cannot spin the loop —
+	// each reopen would otherwise launch a resync. The control plane sends GOAWAY before it closes the
+	// stream, and that is what makes this reopen dial a FRESH connection rather than reuse this one —
+	// re-homing to a live instance where a load balancer fronts several, or reconnecting once it is back.
+	eventsDrainReconnect = 500 * time.Millisecond
 	// eventsStreamMaxAge bounds how long one Events stream is used before it is replaced. HTTP/2 keepalive
 	// proves the CONNECTION is alive, not that the stream on it still reaches a live control plane: a
 	// load balancer that keeps a connection open toward a replaced backend leaves the proxy holding a
@@ -407,6 +413,12 @@ func (c *Client) StreamEvents(
 	return c.streamEvents(context.Background(), timings.streamMaxAge, onRefresh, onOpenRun, onOpenTableDetail)
 }
 
+// errDraining is returned by streamEvents when the control plane signals a graceful shutdown over the
+// stream. It selects the short-floor reconnect path in runEventsLoop, distinct from an error backoff or a
+// max-age rotation, so a rolling control-plane restart reconnects promptly; the control plane's GOAWAY is
+// what points that reconnect at a fresh connection.
+var errDraining = errors.New("cp: control plane draining")
+
 func (c *Client) streamEvents(
 	parent context.Context,
 	maxAge time.Duration,
@@ -426,6 +438,12 @@ func (c *Client) streamEvents(
 			return err
 		}
 		switch {
+		case ev.GetDraining() != nil:
+			// The control plane is shutting down and is about to close this stream. Return now so the loop
+			// reopens on the short drain floor instead of the error backoff; the control plane's GOAWAY makes
+			// that reopen dial a fresh connection (re-homing where an LB fronts several) rather than wait out
+			// a max-age rotation.
+			return errDraining
 		case ev.GetRefreshCatalog() != nil:
 			onRefresh()
 		case ev.GetOpenRunChannel() != nil:
@@ -475,17 +493,24 @@ func (c *Client) runEventsLoop(
 ) {
 	for {
 		err := c.streamEvents(ctx, timings.streamMaxAge, onRefresh, onOpenRun, onOpenTableDetail)
-		// An expiry is the bounded rotation working, not a fault, so it should not read as one in the log.
-		if errors.Is(err, context.DeadlineExceeded) || status.Code(err) == codes.DeadlineExceeded {
+		// A drain is the control plane leaving on purpose with a replacement already up: reconnect at once
+		// so this datasource re-attaches to the new instance without a gap. An expiry is the bounded
+		// rotation working, not a fault. Anything else is an error and waits out the backoff.
+		reconnectIn := timings.reconnect
+		switch {
+		case errors.Is(err, errDraining):
+			slog.Info("control plane draining; reconnecting to re-home", "reconnect_in", eventsDrainReconnect)
+			reconnectIn = eventsDrainReconnect
+		case errors.Is(err, context.DeadlineExceeded) || status.Code(err) == codes.DeadlineExceeded:
 			slog.Info("events stream reached its max age; reopening", "max_age", timings.streamMaxAge)
-		} else {
+		default:
 			slog.Info("events stream ended; reconnecting", "error", err, "reconnect_in", timings.reconnect)
 		}
 
 		select {
 		case <-ctx.Done():
 			return
-		case <-time.After(timings.reconnect):
+		case <-time.After(reconnectIn):
 		}
 
 		go resync()

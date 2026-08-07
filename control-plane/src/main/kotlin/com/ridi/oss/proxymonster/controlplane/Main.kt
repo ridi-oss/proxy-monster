@@ -8,6 +8,10 @@ import org.slf4j.LoggerFactory
 
 private val log = LoggerFactory.getLogger("com.ridi.oss.proxymonster.controlplane.Main")
 
+/** How long shutdown waits for signalled proxies to detach after a drain broadcast before it stops the gRPC
+ * server anyway. Detach is near-instant (the proxy closes on the event); this only bounds a straggler. */
+private const val DRAIN_TIMEOUT_MS = 3_000L
+
 /**
  * How long one proxy-dialed run stream may live.
  *
@@ -61,7 +65,26 @@ fun main() {
         config.secretToken,
     )
     grpcServer.start()
-    Runtime.getRuntime().addShutdownHook(Thread { grpcServer.shutdown() })
+    Runtime.getRuntime().addShutdownHook(
+        Thread {
+            // Graceful drain on SIGTERM, so a rolling restart re-homes the proxies to the replacement rather
+            // than leaving datasources detached until a reconnect timer fires. Order matters:
+            //   1. close the hub to new streams/dispatches;
+            //   2. begin gRPC shutdown — GOAWAY, so a proxy's reopen dials a fresh connection (re-homing to a
+            //      live instance where an LB fronts several) instead of reusing this one;
+            //   3. signal + close the open streams so proxies reopen now;
+            //   4. wait (bounded) for them to detach;
+            //   5. finish gRPC shutdown (force-cancel any straggler), then exit.
+            core.proxyEventsHub.beginDraining()
+            grpcServer.beginShutdown()
+            val closed = core.proxyEventsHub.broadcastDraining()
+            if (closed > 0) {
+                val clean = core.proxyEventsHub.awaitDrained(DRAIN_TIMEOUT_MS)
+                log.info("drain: closed {} proxy stream(s); {}", closed, if (clean) "all detached" else "timed out waiting")
+            }
+            grpcServer.awaitTerminated()
+        },
+    )
 
     embeddedServer(Netty, port = config.httpPort) {
         module(config, core)

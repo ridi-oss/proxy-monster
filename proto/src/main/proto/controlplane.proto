@@ -265,10 +265,15 @@ message ControlEvent {
     RefreshCatalog refresh_catalog = 1;
     OpenRunChannel open_run_channel = 2;   // nudge the proxy to dial RunExec for a session
     OpenTableDetailChannel open_table_detail_channel = 3;
+    Draining draining = 4;   // this control-plane is shutting down; close and reconnect so the stream re-homes
     // room for more (tag/config change, revocation hint, ...) without a shape change
   }
 }
 message RefreshCatalog {}
+// Sent once to every open Events stream when the control-plane is draining for shutdown, immediately before
+// the stream is closed. The proxy reconnects without the error backoff, so its liveness re-homes to the
+// replacement instance in one reconnect instead of waiting out a max-age rotation or a dropped connection.
+message Draining {}
 // The control-plane asks the proxy to open a RunExec stream for a CP-driven session. The proxy dials back
 // with RunExec tagging this session_id. The ephemeral_token is a short-lived wire token minted for the
 // requester — the proxy re-presents it to its normal Decide path, so editor and workflow queries share

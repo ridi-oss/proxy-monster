@@ -561,6 +561,90 @@ func TestStreamEventsDispatchesMalformedRunOpen(t *testing.T) {
 	}
 }
 
+func TestStreamEventsReturnsErrDrainingOnDrainSignal(t *testing.T) {
+	// A drain is neither an error nor a max-age expiry: streamEvents must surface it as errDraining so the
+	// loop reconnects at once instead of waiting out the backoff.
+	fake := &fakeControlPlane{events: []*pb.ControlEvent{
+		{Kind: &pb.ControlEvent_Draining{Draining: &pb.Draining{}}},
+	}}
+	c := startFakeControlPlane(t, fake)
+	err := c.StreamEvents(func() {}, func(spi.RunOpen) {}, func(string, string, string) {})
+	if !errors.Is(err, errDraining) {
+		t.Fatalf("StreamEvents err = %v, want errDraining", err)
+	}
+}
+
+// drainingControlPlane answers every Events call with a single Draining signal, standing in for a control
+// plane that is rolling and telling its proxies to re-home to the replacement instance.
+type drainingControlPlane struct {
+	pb.UnimplementedControlPlaneServer
+	mu    sync.Mutex
+	opens int
+}
+
+func (f *drainingControlPlane) Events(_ *pb.EventsRequest, stream grpc.ServerStreamingServer[pb.ControlEvent]) error {
+	f.mu.Lock()
+	f.opens++
+	f.mu.Unlock()
+	return stream.Send(&pb.ControlEvent{Kind: &pb.ControlEvent_Draining{Draining: &pb.Draining{}}})
+}
+
+func (f *drainingControlPlane) openCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.opens
+}
+
+func TestEventsLoopReconnectsFastOnDrain(t *testing.T) {
+	// A drain reconnects on the short drain floor, not the error backoff — but paced, not a zero-backoff
+	// spin. With a 3s error backoff and a ~500ms floor, three reopens land well inside 2s (not the ~6s two
+	// backoffs would take), yet cannot arrive before two floors (~1s) have elapsed.
+	const backoff = 3 * time.Second
+
+	fake := &drainingControlPlane{}
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	server := grpc.NewServer()
+	pb.RegisterControlPlaneServer(server, fake)
+	go func() { _ = server.Serve(listener) }()
+	t.Cleanup(server.Stop)
+
+	c, err := New(listener.Addr().String(), "secret-abc", "ds-1")
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	t.Cleanup(func() { _ = c.Close() })
+
+	ctx, cancel := context.WithCancel(context.Background())
+	loopDone := make(chan struct{})
+	start := time.Now()
+	go func() {
+		defer close(loopDone)
+		c.runEventsLoop(ctx, eventLoopTimings{
+			streamMaxAge: time.Minute, // long enough that only the drain path paces this test
+			reconnect:    backoff,
+		}, func() {}, func() {}, func(spi.RunOpen) {}, func(string, string, string) {})
+	}()
+	t.Cleanup(func() {
+		cancel()
+		<-loopDone
+	})
+
+	deadline := time.After(2 * time.Second)
+	for fake.openCount() < 3 {
+		select {
+		case <-deadline:
+			t.Fatalf("only %d reopens in 2s — a drain did not use the fast floor (looks like the error backoff)", fake.openCount())
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+	if elapsed := time.Since(start); elapsed < 850*time.Millisecond {
+		t.Fatalf("three reopens in %v — the ~500ms drain floor is not pacing the loop (looks like a zero-backoff spin)", elapsed)
+	}
+}
+
 // holdOpenControlPlane never returns from Events, standing in for a control plane the proxy can reach but
 // which will never send anything — the shape a stream left pointing at a replaced backend takes.
 type holdOpenControlPlane struct {

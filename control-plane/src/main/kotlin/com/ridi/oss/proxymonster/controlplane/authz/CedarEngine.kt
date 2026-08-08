@@ -3,6 +3,8 @@ package com.ridi.oss.proxymonster.controlplane.authz
 import com.cedarpolicy.BasicAuthorizationEngine
 import com.cedarpolicy.model.AuthorizationRequest
 import com.cedarpolicy.model.AuthorizationResponse
+import com.cedarpolicy.model.PartialAuthorizationRequest
+import com.cedarpolicy.model.PartialAuthorizationResponse
 import com.cedarpolicy.model.ValidationRequest
 import com.cedarpolicy.model.entity.Entities
 import com.cedarpolicy.model.exception.AuthException
@@ -75,6 +77,20 @@ fun contextTagLint(enabledSources: List<Pair<Long, String>>): List<String> {
     }
 }
 
+/**
+ * Whether a request COULD be authorized once the unknowns are filled in — the answer to a partial
+ * evaluation ([CedarEngine.satisfiable]). Strictly weaker than an authorization decision and never a gate:
+ * it decides only who is told something is waiting.
+ */
+enum class SatisfiableVerdict {
+    /** Allowed regardless of how the unknowns resolve. */
+    ALLOWED,
+    /** Undecided: some assignment of the unknowns would allow it. */
+    POSSIBLE,
+    /** Denied under every assignment. */
+    IMPOSSIBLE,
+}
+
 object CedarSchema {
     private const val RESOURCE_PATH = "/authz/schema.cedarschema"
 
@@ -136,6 +152,13 @@ object CedarSchema {
 
     fun isAuthorized(request: AuthorizationRequest, policies: PolicySet, entities: Entities): AuthorizationResponse =
         engine.isAuthorized(request, policies, entities)
+
+    /** Partial evaluation — see [CedarEngine.satisfiable]. Experimental upstream; used only for routing. */
+    fun isAuthorizedPartial(
+        request: PartialAuthorizationRequest,
+        policies: PolicySet,
+        entities: Entities,
+    ): PartialAuthorizationResponse = engine.isAuthorizedPartial(request, policies, entities)
 
     /**
      * Parse+validate a single candidate Cedar policy against the schema, independent of any other
@@ -253,6 +276,44 @@ class CedarEngine private constructor(private val sources: () -> List<Pair<Long,
         context: Map<String, Value> = emptyMap(),
     ): AuthorizationResponse =
         CedarSchema.isAuthorized(AuthorizationRequest(principal, action, resource, context), policySet(), entities)
+
+    /**
+     * Ask whether SOME assignment of the unknowns in [context] would authorize this request — Cedar's partial
+     * evaluation ([com.cedarpolicy.value.Unknown] values), used only by notification routing.
+     *
+     * Read the VERDICT, never the residual's contents. Cedar returns a definite Deny when a forbid fires
+     * under every assignment, so anything short of Deny is a genuine maybe. Inspecting which policies stayed
+     * unresolved and treating an undecided forbid as denying would skip every candidate whenever a
+     * restriction is written as a forbid over the unknown axis.
+     *
+     * Partial evaluation is upstream-experimental, so a failure here degrades to [SatisfiableVerdict.POSSIBLE]
+     * rather than propagating: this decides only who is TOLD something is waiting, and every real action runs
+     * the ordinary full evaluation. Failing the other way would silently drop recipients.
+     */
+    fun satisfiable(
+        principal: EntityUID,
+        action: EntityUID,
+        resource: EntityUID,
+        entities: Entities,
+        context: Map<String, Value> = emptyMap(),
+    ): SatisfiableVerdict {
+        val response = runCatching {
+            CedarSchema.isAuthorizedPartial(
+                PartialAuthorizationRequest.builder()
+                    .principal(principal).action(action).resource(resource).context(context).build(),
+                policySet(),
+                entities,
+            )
+        }.getOrElse { return SatisfiableVerdict.POSSIBLE }
+
+        val success = response.success.orElse(null) ?: return SatisfiableVerdict.POSSIBLE
+        return when (success.decision?.toString()) {
+            "Deny" -> SatisfiableVerdict.IMPOSSIBLE
+            "Allow" -> SatisfiableVerdict.ALLOWED
+            // No decision: a residual remains, so some assignment of the unknowns could still allow it.
+            else -> SatisfiableVerdict.POSSIBLE
+        }
+    }
 
     /** Parse+validate a single candidate policy against the schema; see [CedarSchema.validate]. */
     fun validate(cedarSrc: String): List<String> = CedarSchema.validate(cedarSrc)

@@ -8,6 +8,7 @@ import com.cedarpolicy.value.EntityTypeName
 import com.cedarpolicy.value.EntityUID
 import com.cedarpolicy.value.IpAddress
 import com.cedarpolicy.value.PrimString
+import com.cedarpolicy.value.Unknown
 import com.cedarpolicy.value.Value
 import com.ridi.oss.proxymonster.controlplane.ApiError
 import com.ridi.oss.proxymonster.controlplane.Config
@@ -305,6 +306,32 @@ class Authz(
     }
 
     /**
+     * Could this principal EVER be authorized, with some request attributes not yet knowable? Strictly weaker
+     * than [authorizeAs] and MUST NEVER gate access — it exists only to route notifications, where the
+     * recipient's address is unknowable until they act (docs/notifications.md). Every real action still runs
+     * the full decision.
+     *
+     * [unknownContextKeys] are marked UNKNOWN, not omitted: an absent attribute makes a conditioning policy
+     * deny and would silently drop a principal who could in fact act. Only the verdict is read — anything
+     * short of a definite Deny is a genuine maybe, so an undecided forbid does not skip a real candidate.
+     */
+    fun satisfiableAs(
+        principal: String,
+        roles: Set<String>,
+        action: AuthzAction,
+        resource: AuthzResource,
+        knownChannel: String? = null,
+        unknownContextKeys: Set<String> = emptySet(),
+    ): SatisfiableVerdict {
+        val (principalEuid, resourceEuid, entities) = marshal(principal, roles, resource)
+        val context = buildMap<String, Value> {
+            knownChannel?.let { put("channel", PrimString(it)) }
+            unknownContextKeys.forEach { put(it, Unknown(it)) }
+        }
+        return engine.satisfiable(principalEuid, ACTION_TYPE.of(action.cedarId), resourceEuid, entities, context)
+    }
+
+    /**
      * Single-resolution entry: resolve [principal]'s roles once, then authorize via [authorizeAs]. This is the
      * common case (System / AuditLog resources with no datasource-scoped tags — `requireAdmin`, computeMePermissions,
      * the audit routes). When a datasource-scoped `context.tags` derivation must AGREE with the final decision on
@@ -332,22 +359,38 @@ class Authz(
         resource: AuthzResource,
         context: AuthzContext = AuthzContext(),
     ): AuthzDecision {
+        val (principalEuid, resourceEuid, entities) = marshal(principal, roles, resource)
+        return engine.isAuthorized(principalEuid, ACTION_TYPE.of(action.cedarId), resourceEuid, entities, context.toCedarMap())
+            .toAuthzDecision()
+    }
+
+    /**
+     * The Cedar entity set a single-resource decision needs: [principal] carrying [roles] as parents, one
+     * entity per role, and [resource] with whatever entities it references. Shared by [authorizeAs] and
+     * [satisfiableAs] — the only difference between them is the context and which engine call runs.
+     *
+     * dedupeByEuid, not a plain `.toSet()`: a resource can legitimately reference the SAME Role EUID the
+     * principal already carries as a parent (e.g. `ApprovalRequest.roleName` equal to one of the principal's
+     * own roles), and cedar-java rejects two distinct Entity objects for one EUID ("duplicate entity entry").
+     */
+    private fun marshal(principal: String, roles: Set<String>, resource: AuthzResource): MarshalledRequest {
         val roleEuids = roles.map { ROLE_TYPE.of(it) }
         val principalEuid = USER_TYPE.of(principal)
         val principalEntity = Entity(principalEuid, emptyMap(), roleEuids.toSet())
         val roleEntities = roleEuids.map { Entity(it) }
-
         val (resourceEuid, resourceEntities) = marshalResource(resource)
-        val actionEuid = ACTION_TYPE.of(action.cedarId)
-        val contextMap: Map<String, Value> = context.toCedarMap()
-
-        // dedupeByEuid, not a plain .toSet(): a resource can legitimately reference the SAME Role
-        // EUID the principal already carries as a parent (e.g. ApprovalRequest.roleName equal to one
-        // of the principal's own roles) — two structurally-identical-but-distinct Entity objects for
-        // one EUID, which cedar-java rejects outright ("duplicate entity entry").
-        val entities = Entities(dedupeByEuid(listOf(principalEntity) + roleEntities + resourceEntities))
-        return engine.isAuthorized(principalEuid, actionEuid, resourceEuid, entities, contextMap).toAuthzDecision()
+        return MarshalledRequest(
+            principalEuid,
+            resourceEuid,
+            Entities(dedupeByEuid(listOf(principalEntity) + roleEntities + resourceEntities)),
+        )
     }
+
+    private data class MarshalledRequest(
+        val principalEuid: EntityUID,
+        val resourceEuid: EntityUID,
+        val entities: Entities,
+    )
 
     private fun marshalResource(resource: AuthzResource): Pair<EntityUID, List<Entity>> = when (resource) {
         AuthzResource.System -> SYSTEM_TYPE.of("system") to emptyList()

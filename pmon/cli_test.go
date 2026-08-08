@@ -270,6 +270,13 @@ func TestShowFormats(t *testing.T) {
 	if !strings.HasPrefix(jdbc, "jdbc:mysql://") || !strings.Contains(jdbc, "user=") {
 		t.Errorf("--jdbc = %q, want a jdbc:mysql:// URL with credentials", jdbc)
 	}
+	if !strings.Contains(jdbc, "jdbcCompliantTruncation=false") {
+		t.Errorf("--jdbc = %q, want the conservative JDBC diagnostic setting", jdbc)
+	}
+	jdbcDiagnostics := strings.TrimSpace(e.mustRun(t, "show", "acme-mysql", "--jdbc", "--jdbc-with-truncation-diagnostics"))
+	if strings.Contains(jdbcDiagnostics, "jdbcCompliantTruncation") {
+		t.Errorf("--jdbc --jdbc-with-truncation-diagnostics = %q, want no JDBC compliant-truncation parameter", jdbcDiagnostics)
+	}
 
 	dsn := strings.TrimSpace(e.mustRun(t, "show", "acme-mysql", "--go-dsn"))
 	if !strings.Contains(dsn, "@tcp(127.0.0.1:") || !strings.Contains(dsn, "parseTime=true") {
@@ -286,6 +293,17 @@ func TestShowFormats(t *testing.T) {
 		if strings.Count(s, "\n") != 0 {
 			t.Errorf("show output %q spans multiple lines; it must be pipeable", s)
 		}
+	}
+}
+
+func TestShowJDBCTruncationDiagnosticsRequiresJDBC(t *testing.T) {
+	e := newEnv(t)
+	out, err := e.run("show", "acme-mysql", "--jdbc-with-truncation-diagnostics")
+	if err == nil {
+		t.Fatalf("show --jdbc-with-truncation-diagnostics succeeded, want an error")
+	}
+	if !strings.Contains(out, "--jdbc-with-truncation-diagnostics requires --jdbc") {
+		t.Errorf("show --jdbc-with-truncation-diagnostics = %q, want a --jdbc requirement error", out)
 	}
 }
 

@@ -41,6 +41,8 @@ a facts layer.
 | [`facts-emission.md`](./facts-emission.md) | Statement facts + Cedar marshalling; dangerous-function gating; `analyzable` / `maskability` gates. |
 | [`statement-facts-contract.md`](./statement-facts-contract.md) | Go emits a complete `StatementFacts` / `RequiredGrant` contract; the CP is a pure Cedar grant-walk, no lexing. |
 | [`system-classification.md`](./system-classification.md) | Immutable per-engine/version manifest; exposed system schemas; curated dangerous set; open-unknown posture. |
+| [`classification-as-code.md`](./classification-as-code.md) | **Proposed.** Column classification declared by the proxy from config, not stored in the CP; live decisions use it, saved results snapshot it. |
+| [`stored-result-classification.md`](./stored-result-classification.md) | **Proposed.** A saved result re-masks against the tags captured at execution, not today's: strict snapshot, no tag history. |
 | [`diagnostic-redaction.md`](./diagnostic-redaction.md) | Closes the DB error/warning value-leak side-channel; fail-closed field strip; message tables from catalogs. |
 | [`derived-masking.md`](./derived-masking.md) | Lets a masked column pass through a provably-total builtin string transform and stay masked. |
 | [`relation-model.md`](./relation-model.md) | Whole-row / composite-value resolution: how a relation used in value position never leaks a protected column. |

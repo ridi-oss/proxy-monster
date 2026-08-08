@@ -65,6 +65,8 @@ a facts layer.
 | --- | --- |
 | [`datasource-registration.md`](./datasource-registration.md) | gRPC self-registration; Decide cutover; Register / PushCatalog + proxy introspection; events. |
 | [`web-console.md`](./web-console.md) | The `web/` console: Editor / Workflows / Access / Audit / Admin. |
+| [`notifications.md`](./notifications.md) | Task events delivered out of band: event/route/transport seam, the approver lookup, Slack over Socket Mode. |
+| [`cedar-reverse-query.md`](./cedar-reverse-query.md) | "Who may approve this?" — Cedar partial evaluation measured against the pinned engine; three silent failure modes and why we ask once per principal instead. |
 | [`migrations.md`](./migrations.md) | Flyway, auto-migrate on boot in per-migration transactions, fail-closed; single→multi-instance path. |
 | [`l10n.md`](./l10n.md) | Localized user-facing errors (en/ko): the server returns a stable `code` + `params`; the web client resolves it. |
 | [`audit-trail-hardening.md`](./audit-trail-hardening.md) | Tamper-evident hash-chained `audit_event` trail + the CP-independent `auditmon/` Go monitor. |

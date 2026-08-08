@@ -152,6 +152,9 @@ class AccessStore(private val dataSource: DataSource) {
         // Carried on the shared access_request row; not consumed by the query-approval flow (see
         // CreateApprovalInput.requestedDurationSec). Kept for the column the ROLE-elevation path needs.
         requestedDurationSec: Long = 3600,
+        // Queues the "needs approval" notification in the SAME transaction as the insert, so a crash can
+        // never leave a request pending with nobody told. No-op when notifications are not configured.
+        onCreated: ((Connection, Long) -> Unit)? = null,
         // Set on the audited create path (the /api/approvals routes); null on internal/test seeds. When both
         // are present the created request is recorded as a TASK_REQUEST on the insert's transaction.
         actor: AuditActor? = null,
@@ -204,6 +207,7 @@ class AccessStore(private val dataSource: DataSource) {
                     "open query request #$taskId under role '${executeAs.firstOrNull()}'",
                 )
             }
+            onCreated?.invoke(c, taskId)
             taskId
         }
         return getRequest(id)!!
@@ -387,8 +391,12 @@ class AccessStore(private val dataSource: DataSource) {
         decidedBy: String,
         actor: AuditActor,
         recorder: ManagementAuditRecorder,
+        // Queues the decision notification in the SAME transaction as the transition, so a crash can never
+        // leave a request decided with nobody told. No-op when the notification layer is not configured.
+        onDecided: ((Connection, AccessRequest) -> Unit)? = null,
     ): AccessRequest? {
-        val roleName = getRequest(id)?.roleName
+        val before = getRequest(id)
+        val roleName = before?.roleName
         val won = dataSource.inTx { c ->
             decideQueryRequest(id, approved, rejectionReason, decidedBy, c).also { transitioned ->
                 if (transitioned) {
@@ -396,6 +404,18 @@ class AccessStore(private val dataSource: DataSource) {
                         c, actor, AuthzAction.TASK_APPROVE, auditEntity("AccessRequest", id.toString()),
                         if (approved) "approve query request #$id under role '$roleName'" else "reject query request #$id",
                     )
+                    // The row the hook sees carries the decision that just landed: the pre-read plus the
+                    // fields this transaction set, since the UPDATE is not visible to another connection yet.
+                    before?.let { prior ->
+                        onDecided?.invoke(
+                            c,
+                            prior.copy(
+                                status = if (approved) "APPROVED" else "REJECTED",
+                                decidedBy = decidedBy,
+                                rejectionReason = rejectionReason,
+                            ),
+                        )
+                    }
                 }
             }
         }
@@ -796,7 +816,8 @@ fun Route.accessRoutes(
                     requester = req.principal, approver = req.decidedBy, executedBy = req.executedBy,
                     datasourceName = req.datasourceName, roleName = req.roleName,
                 ),
-                call.httpAuthzContext(config), req.datasourceName,
+                call.httpAuthzContext(config, Channel.WORKFLOW_VIEWER),
+                req.datasourceName,
                 req.datasourceId?.let(datasourceStore::getIncludingDeleted)?.tags.orEmpty(),
             )
             if (decision is AuthzDecision.Deny) {
@@ -827,7 +848,8 @@ fun Route.accessRoutes(
                     requester = req.principal, approver = req.decidedBy, executedBy = req.executedBy,
                     datasourceName = req.datasourceName, roleName = req.roleName,
                 ),
-                call.httpAuthzContext(config), req.datasourceName,
+                call.httpAuthzContext(config, Channel.WORKFLOW_VIEWER),
+                req.datasourceName,
                 req.datasourceId?.let(datasourceStore::getIncludingDeleted)?.tags.orEmpty(),
             )
             if (decision is AuthzDecision.Deny) {

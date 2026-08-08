@@ -91,6 +91,18 @@ forward work. MySQL leads PostgreSQL in priority.
 
 ## Approval automation
 
+- Withhold a statement whose predicate compares a literal against a column the
+  role cannot read in clear. `WHERE rrn = '…'` puts the protected value in the
+  query itself, where masking never sees it. The probe already walks predicates
+  and already reads literals; what is missing is the pairing and a wire to carry
+  it, since `StatementFacts` has no predicate or literal field and the clause
+  label does not survive the proto boundary. See
+  [notifications.md](./notifications.md#hiding-a-statement-that-carries-the-value-it-asks-for).
+- Per-user notification opt-out. Language is stored per user
+  (`app_user.locale`); a mute switch is the same shape.
+- Email as a second notification transport. The seam exists
+  ([notifications.md](./notifications.md)); it needs an SMTP adapter and a
+  message renderer, and it does not support editing a message in place.
 - Auto mode (stretch): release a narrow set of deny reasons without a human
   approver. Two questions decide whether it is safe — which deny reasons are
   ever eligible for auto-release, and whether the reasoning input is the AST and

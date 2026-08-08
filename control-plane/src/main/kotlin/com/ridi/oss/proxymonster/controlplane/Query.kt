@@ -116,7 +116,19 @@ enum class Channel(val contextValue: String) {
     WIRE("wire"),
     EDITOR("editor"),
     WORKFLOW_EXECUTOR("workflow-executor"),
+    /**
+     * The whole console-facing side of a workflow task — viewing a stored result AND deciding it (approve /
+     * reject / read-status). One actor, one session, so one channel a policy can scope. NOT
+     * `workflow-executor`: a saved result re-masks here precisely because this value is not that permit.
+     */
     WORKFLOW_VIEWER("workflow-viewer"),
+    /**
+     * A task decided from a Slack click rather than a console session (docs/notifications.md) — no OIDC
+     * session, no attested address, so its own channel a policy can scope or forbid. It carries no
+     * `requester_ip` (an IP-conditioned policy denies), and [system:no-self-approval] does not exempt it —
+     * only the server-attested `editor`/`wire` channels are.
+     */
+    SLACK("slack"),
     MCP("mcp"),
 }
 
@@ -472,7 +484,7 @@ fun decideQuery(
                 Channel.WIRE, Channel.EDITOR -> return passthroughAllow(roleList, "passthrough (session-mutating)", derivedTags)
                     .copy(schemaCandidates = facts.schemaQualifierCandidatesList.toSet())
                     .withAnalyzerRewrite(facts)
-                Channel.WORKFLOW_EXECUTOR, Channel.WORKFLOW_VIEWER, Channel.MCP ->
+                Channel.WORKFLOW_EXECUTOR, Channel.WORKFLOW_VIEWER, Channel.MCP, Channel.SLACK ->
                     return structuralDeny(EDITOR_SESSION_STATEMENT_DENY, roleList, contextTags = derivedTags)
             }
             StatementClass.STATEMENT_CLASS_UNSPECIFIED, StatementClass.UNRECOGNIZED ->

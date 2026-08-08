@@ -5,7 +5,9 @@
 // authorizeColumns()/authorizeDatasourceAction()) against the union of enabled
 // rows here — the full action set (ACTION_REFERENCE below), not just admin.*/
 // task.*: admin.*, task lifecycle, result.read.{unmasked,masked} (per-column),
-// datasource.connect + sql.{select,insert,update,delete,ddl} (per-statement).
+// datasource.connect + stmt.cat.* (per-statement classification: read / write.* /
+// ddl / metadata / session / admin.* / unknown — each an action group over the
+// granular stmt.kind.* actions, so a policy may target a category or a single kind).
 // The source editor uses @ridi/codemirror-lang-cedar for Cedar syntax
 // highlighting + keyword completion; server-side validation stays on the
 // Validate button, while cedar-wasm drives the client-side linter and
@@ -64,7 +66,7 @@ import { EmptyState, ErrorState, LoadingState } from '@/components/page-scaffold
 import { toast } from 'sonner'
 
 const PLACEHOLDER =
-  'permit(\n  principal in Role::"analyst",\n  action in [Action::"datasource.connect", Action::"sql.select"],\n  resource in Datasource::"acme-mysql"\n);'
+  'permit(\n  principal in Role::"analyst",\n  action in [Action::"datasource.connect", Action::"stmt.cat.read"],\n  resource in Datasource::"acme-mysql"\n);'
 
 /** The full Cedar action set (docs/authz-model.md), grouped by the resource each applies to —
  *  shown inline next to the source editor so an admin isn't guessing action names from memory.
@@ -107,11 +109,14 @@ const ACTION_REFERENCE: { resource: string; actions: { name: string; noteKey: st
     actions: [
       { name: 'task.request', noteKey: 'taskRequest' },
       { name: 'datasource.connect', noteKey: 'datasourceConnect' },
-      { name: 'sql.select', noteKey: 'sqlSelect' },
-      { name: 'sql.insert', noteKey: 'sqlInsert' },
-      { name: 'sql.update', noteKey: 'sqlUpdate' },
-      { name: 'sql.delete', noteKey: 'sqlDelete' },
-      { name: 'sql.ddl', noteKey: 'sqlDdl' },
+      { name: 'stmt.cat.read', noteKey: 'stmtCatRead' },
+      { name: 'stmt.cat.write.insert', noteKey: 'stmtCatWriteInsert' },
+      { name: 'stmt.cat.write.update', noteKey: 'stmtCatWriteUpdate' },
+      { name: 'stmt.cat.write.delete', noteKey: 'stmtCatWriteDelete' },
+      { name: 'stmt.cat.ddl', noteKey: 'stmtCatDdl' },
+      { name: 'stmt.cat.metadata', noteKey: 'stmtCatMetadata' },
+      { name: 'stmt.cat.session', noteKey: 'stmtCatSession' },
+      { name: 'stmt.cat.admin', noteKey: 'stmtCatAdmin' },
     ],
   },
 ]

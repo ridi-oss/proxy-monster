@@ -44,11 +44,12 @@ object McpCapabilityRegistry {
         AuthzAction.RESULT_READ_UNMASKED,
         AuthzAction.RESULT_READ_MASKED,
         AuthzAction.DATASOURCE_CONNECT,
-        AuthzAction.SQL_SELECT,
-        AuthzAction.SQL_INSERT,
-        AuthzAction.SQL_UPDATE,
-        AuthzAction.SQL_DELETE,
-        AuthzAction.SQL_DDL,
+        // The statement-category gate — data-plane, per-statement authorization, not an MCP tool.
+        AuthzAction.STMT_CAT_READ,
+        AuthzAction.STMT_CAT_WRITE_INSERT,
+        AuthzAction.STMT_CAT_WRITE_UPDATE,
+        AuthzAction.STMT_CAT_WRITE_DELETE,
+        AuthzAction.STMT_CAT_DDL,
         AuthzAction.SQL_UNANALYZABLE,
         AuthzAction.SQL_UNMASKABLE,
     )

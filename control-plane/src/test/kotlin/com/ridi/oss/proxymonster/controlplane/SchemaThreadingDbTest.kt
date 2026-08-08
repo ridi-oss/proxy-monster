@@ -254,7 +254,7 @@ object SchemaThreadingFixtures {
             roleName = READER_ROLE,
             principal = READER_PRINCIPAL,
             datasourceName = created.name,
-            sqlActions = listOf("sql.select"),
+            sqlActions = listOf("stmt.cat.read"),
             defaultTableEuid = defaultTableEuid,
             analyticsTableEuid = analyticsTableEuid,
         )
@@ -263,7 +263,7 @@ object SchemaThreadingFixtures {
             roleName = WRITER_ROLE,
             principal = WRITER_PRINCIPAL,
             datasourceName = created.name,
-            sqlActions = listOf("sql.update", "sql.insert"),
+            sqlActions = listOf("stmt.cat.write.update", "stmt.cat.write.insert"),
             defaultTableEuid = defaultTableEuid,
             analyticsTableEuid = analyticsTableEuid,
         )

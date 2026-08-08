@@ -114,15 +114,15 @@ class PresetPolicyDbTest {
     @Test
     fun `development role matrix grants connect and only the corresponding SQL kind`() {
         val expected = mapOf(
-            "system:development-viewer" to setOf(AuthzAction.SQL_SELECT),
-            "system:development-pii-accessor" to setOf(AuthzAction.SQL_SELECT),
-            "system:development-updater" to setOf(AuthzAction.SQL_INSERT, AuthzAction.SQL_UPDATE),
-            "system:development-deleter" to setOf(AuthzAction.SQL_DELETE),
-            "system:development-architect" to setOf(AuthzAction.SQL_DDL),
+            "system:development-viewer" to setOf(AuthzAction.STMT_CAT_READ),
+            "system:development-pii-accessor" to setOf(AuthzAction.STMT_CAT_READ),
+            "system:development-updater" to setOf(AuthzAction.STMT_CAT_WRITE_INSERT, AuthzAction.STMT_CAT_WRITE_UPDATE),
+            "system:development-deleter" to setOf(AuthzAction.STMT_CAT_WRITE_DELETE),
+            "system:development-architect" to setOf(AuthzAction.STMT_CAT_DDL),
         )
         val sqlActions = setOf(
-            AuthzAction.SQL_SELECT, AuthzAction.SQL_INSERT, AuthzAction.SQL_UPDATE,
-            AuthzAction.SQL_DELETE, AuthzAction.SQL_DDL,
+            AuthzAction.STMT_CAT_READ, AuthzAction.STMT_CAT_WRITE_INSERT, AuthzAction.STMT_CAT_WRITE_UPDATE,
+            AuthzAction.STMT_CAT_WRITE_DELETE, AuthzAction.STMT_CAT_DDL,
         )
         for ((role, granted) in expected) {
             val principal = principals.getValue(role)
@@ -138,15 +138,15 @@ class PresetPolicyDbTest {
         setTags("system:production")
         (listOf(-300L) + (250L..258L).map { -it }).forEach { fx.cedarPolicyStore.setEnabled(it, true, "test-enable-production") }
         val expected = mapOf(
-            "system:production-viewer" to setOf(AuthzAction.SQL_SELECT),
-            "system:production-pii-accessor" to setOf(AuthzAction.SQL_SELECT),
-            "system:production-updater" to setOf(AuthzAction.SQL_INSERT, AuthzAction.SQL_UPDATE),
-            "system:production-deleter" to setOf(AuthzAction.SQL_DELETE),
-            "system:production-architect" to setOf(AuthzAction.SQL_DDL),
+            "system:production-viewer" to setOf(AuthzAction.STMT_CAT_READ),
+            "system:production-pii-accessor" to setOf(AuthzAction.STMT_CAT_READ),
+            "system:production-updater" to setOf(AuthzAction.STMT_CAT_WRITE_INSERT, AuthzAction.STMT_CAT_WRITE_UPDATE),
+            "system:production-deleter" to setOf(AuthzAction.STMT_CAT_WRITE_DELETE),
+            "system:production-architect" to setOf(AuthzAction.STMT_CAT_DDL),
         )
         val sqlActions = setOf(
-            AuthzAction.SQL_SELECT, AuthzAction.SQL_INSERT, AuthzAction.SQL_UPDATE,
-            AuthzAction.SQL_DELETE, AuthzAction.SQL_DDL,
+            AuthzAction.STMT_CAT_READ, AuthzAction.STMT_CAT_WRITE_INSERT, AuthzAction.STMT_CAT_WRITE_UPDATE,
+            AuthzAction.STMT_CAT_WRITE_DELETE, AuthzAction.STMT_CAT_DDL,
         )
         for ((role, granted) in expected) {
             val principal = principals.getValue(role)
@@ -260,11 +260,11 @@ class PresetPolicyDbTest {
     @Test
     fun `default developer group connects selects writes and reads dev data cleartext`() {
         assertEquals(true, actionAllowed(developer, AuthzAction.DATASOURCE_CONNECT), "developer connect")
-        assertEquals(true, actionAllowed(developer, AuthzAction.SQL_SELECT), "developer select")
-        assertEquals(true, actionAllowed(developer, AuthzAction.SQL_INSERT), "developer insert")
-        assertEquals(true, actionAllowed(developer, AuthzAction.SQL_UPDATE), "developer update")
-        assertEquals(true, actionAllowed(developer, AuthzAction.SQL_DELETE), "developer delete")
-        assertEquals(true, actionAllowed(developer, AuthzAction.SQL_DDL), "developer ddl")
+        assertEquals(true, actionAllowed(developer, AuthzAction.STMT_CAT_READ), "developer select")
+        assertEquals(true, actionAllowed(developer, AuthzAction.STMT_CAT_WRITE_INSERT), "developer insert")
+        assertEquals(true, actionAllowed(developer, AuthzAction.STMT_CAT_WRITE_UPDATE), "developer update")
+        assertEquals(true, actionAllowed(developer, AuthzAction.STMT_CAT_WRITE_DELETE), "developer delete")
+        assertEquals(true, actionAllowed(developer, AuthzAction.STMT_CAT_DDL), "developer ddl")
         assertEquals(EnfAction.ALLOW, decide(developer, "select rrn from users").action, "developer reads dev PII cleartext")
     }
 

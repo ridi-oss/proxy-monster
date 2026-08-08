@@ -40,7 +40,10 @@ class ApprovalResultAssumeMysqlDbTest {
                 ps.executeUpdate()
             }
         }
-        listOf(-250L, -251L, -256L, -257L, -258L).forEach {
+        // -260 (production-metadata) enabled so SHOW CREATE TABLE / DESCRIBE re-decide as an authorized
+        // metadata passthrough: statement-classification gates metadata on stmt.cat.metadata (closing the
+        // old connect-only gap), so a viewer's re-decision of a stored SHOW now needs it too.
+        listOf(-250L, -251L, -256L, -257L, -258L, -260L).forEach {
             checkNotNull(fx.cedarPolicyStore.setEnabled(it, true, "test-enable-production"))
         }
         fx.cedarPolicyStore.create(

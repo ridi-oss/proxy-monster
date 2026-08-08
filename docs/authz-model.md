@@ -74,8 +74,9 @@ self-service is a possible later convenience.
   meaning.
 - Action — dot-scoped by capability domain: `result.read.unmasked` /
   `result.read.masked` (column value visibility);
-  `sql.select`/`sql.insert`/`sql.update`/`sql.delete`/`sql.ddl` (statement
-  kinds); `sql.unanalyzable`/`sql.unmaskable` (datasource-exception gates);
+  `stmt.cat.read`/`stmt.cat.write.insert`/`stmt.cat.write.update`/`stmt.cat.write.delete`/`stmt.cat.ddl`
+  (statement categories, each an action group over its `stmt.kind.*` actions);
+  `sql.unanalyzable`/`sql.unmaskable` (datasource-exception gates);
   `datasource.connect`; the approval lifecycle `task.request`/`task.read`/
   `task.approve`/`task.assume`/`task.cancel`/`task.delete` and `grant.revoke`;
   `token.mint`/`token.list`/`token.revoke` (credential issuance/management);
@@ -130,7 +131,7 @@ permit(principal in Role::"pii-reader", action == Action::"result.read.unmasked"
 // billing-ops: read the orders table
 permit(principal in Role::"billing-ops", action == Action::"result.read.unmasked", resource in Table::"acme-mysql/def/app/orders");
 // batch-writer: insert into the datasource
-permit(principal in Role::"batch-writer",  action == Action::"sql.insert", resource in Datasource::"acme-mysql");
+permit(principal in Role::"batch-writer",  action in [Action::"stmt.cat.write.insert"], resource in Datasource::"acme-mysql");
 // approve: the resource is the Request (in Datasource::"acme-mysql", carrying a `requester` attribute)
 permit(principal in Role::"acme-approver", action == Action::"task.approve", resource in Datasource::"acme-mysql");
 // no self-approval — authoritative forbid, overrides any permit

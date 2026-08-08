@@ -1,5 +1,6 @@
 package com.ridi.oss.proxymonster.controlplane
 
+import com.cedarpolicy.formatter.PolicyFormatter
 import com.ridi.oss.proxymonster.controlplane.authz.CedarEngine
 import com.ridi.oss.proxymonster.controlplane.authz.CedarPolicyInput
 import com.ridi.oss.proxymonster.controlplane.authz.CedarPolicyStore
@@ -66,11 +67,35 @@ class PolicyOriginDbTest {
             }
         }
         assertEquals(
-            "6086859b83026f70f4c9b88d54d49519",
+            "2a1272d48306bfa48cea5116a398ea63",
             digest,
             "the seeded security posture changed: a policy body, id, key, origin, enabled flag, role, " +
                 "group, or group-to-role link differs from what a fresh install is supposed to enforce",
         )
+    }
+
+    /**
+     * Every seeded policy source is stored in canonical Cedar format. The formatter (cedar-java's
+     * PolicyFormatter, the same Cedar formatter that produced V12) is idempotent on a canonical policy, so a
+     * stored source that differs from its formatted form was hand-written out of format. The console displays
+     * this source verbatim (#86), so an ad-hoc single-line body would render inconsistently; this guards every
+     * migration that seeds or updates a policy against re-introducing that. Fix a failure with `cedar format`.
+     */
+    @Test
+    fun `every seeded SYSTEM policy is in canonical Cedar format`() {
+        val ds = fullyMigrated("pm_policy_format")
+        val policies = ds.connection.use { c ->
+            c.createStatement().use { st ->
+                st.executeQuery("SELECT id, cedar_src FROM policy WHERE origin = 'SYSTEM' AND cedar_src IS NOT NULL ORDER BY id").use { rs ->
+                    buildList { while (rs.next()) add(rs.getLong("id") to rs.getString("cedar_src")) }
+                }
+            }
+        }
+        assertTrue(policies.isNotEmpty(), "expected seeded SYSTEM policies")
+        val unformatted = policies.filter { (_, src) ->
+            PolicyFormatter.policiesStrToPretty(src).trim() != src.trim()
+        }.map { it.first }
+        assertTrue(unformatted.isEmpty(), "seeded SYSTEM policies not in canonical Cedar format (run `cedar format`): $unformatted")
     }
 
     @Test

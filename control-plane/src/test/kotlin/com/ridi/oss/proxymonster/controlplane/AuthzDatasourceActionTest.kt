@@ -24,12 +24,12 @@ import kotlin.test.assertIs
  * Mirrors ColumnAuthzTest's in-memory-CedarEngine + UnusedDataSource pattern to stay off JDBC/Docker.
  */
 class AuthzDatasourceActionTest {
-    // A role granted datasource.connect + sql.select + sql.insert on acme-mysql specifically — NOT
-    // sql.delete, and NOT any other datasource name.
+    // A role granted datasource.connect + stmt.cat.read + stmt.cat.write.insert on acme-mysql specifically —
+    // NOT stmt.cat.write.delete, and NOT any other datasource name.
     private val seedPolicies = listOf(
         1L to """permit(
             principal in Role::"batch-writer",
-            action in [Action::"datasource.connect", Action::"sql.select", Action::"sql.insert"],
+            action in [Action::"datasource.connect", Action::"stmt.cat.read", Action::"stmt.cat.write.insert"],
             resource in Datasource::"acme-mysql"
         );""",
         2L to """permit(
@@ -79,7 +79,7 @@ class AuthzDatasourceActionTest {
         val decision = authz().authorizeDatasourceAction(
             principal = "alice",
             roles = setOf("batch-writer"),
-            action = AuthzAction.SQL_INSERT,
+            action = AuthzAction.STMT_CAT_WRITE_INSERT,
             datasource = "acme-mysql",
         )
         assertEquals(AuthzDecision.Allow, decision)
@@ -114,7 +114,7 @@ class AuthzDatasourceActionTest {
         val decision = authz().authorizeDatasourceAction(
             principal = "alice",
             roles = setOf("batch-writer"),
-            action = AuthzAction.SQL_DELETE,
+            action = AuthzAction.STMT_CAT_WRITE_DELETE,
             datasource = "acme-mysql",
         )
         assertIs<AuthzDecision.Deny>(decision)
@@ -149,9 +149,9 @@ class AuthzDatasourceActionTest {
         val authz = Authz(
             CedarEngine(
                 listOf(
-                    1L to """permit(principal, action == Action::"sql.select", resource)
+                    1L to """permit(principal, action in [Action::"stmt.cat.read"], resource)
                              when { resource in Tag::"pci" };""",
-                    2L to """permit(principal, action == Action::"sql.delete", resource)
+                    2L to """permit(principal, action in [Action::"stmt.cat.write.delete"], resource)
                              when { resource in Tag::"system:critical" };""",
                 ),
             ),
@@ -163,7 +163,7 @@ class AuthzDatasourceActionTest {
             authz.authorizeDatasourceAction(
                 principal = "alice",
                 roles = setOf("anyone"),
-                action = AuthzAction.SQL_SELECT,
+                action = AuthzAction.STMT_CAT_READ,
                 datasource = "acme-mysql",
                 datasourceTags = listOf("pci"),
             ),
@@ -174,7 +174,7 @@ class AuthzDatasourceActionTest {
             authz.authorizeDatasourceAction(
                 principal = "alice",
                 roles = setOf("anyone"),
-                action = AuthzAction.SQL_DELETE,
+                action = AuthzAction.STMT_CAT_WRITE_DELETE,
                 datasource = "acme-mysql",
                 datasourceTags = listOf("system:critical"),
             ),
@@ -184,7 +184,7 @@ class AuthzDatasourceActionTest {
             authz.authorizeDatasourceAction(
                 principal = "alice",
                 roles = setOf("anyone"),
-                action = AuthzAction.SQL_SELECT,
+                action = AuthzAction.STMT_CAT_READ,
                 datasource = "acme-mysql",
                 datasourceTags = emptyList(),
             ),

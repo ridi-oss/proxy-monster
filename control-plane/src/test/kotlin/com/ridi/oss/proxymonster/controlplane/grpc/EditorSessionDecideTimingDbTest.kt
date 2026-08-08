@@ -85,7 +85,7 @@ class EditorSessionDecideTimingDbTest {
                 name = "timing-ip-gated-connect-select",
                 cedarSrc = """permit(
                     principal,
-                    action in [Action::"datasource.connect", Action::"sql.select"],
+                    action in [Action::"datasource.connect", Action::"stmt.cat.read"],
                     resource in Datasource::"${datasource.name}"
                 ) when { context has requester_ip && context.requester_ip.isInRange(ip("203.0.113.0/24")) };""",
             ),

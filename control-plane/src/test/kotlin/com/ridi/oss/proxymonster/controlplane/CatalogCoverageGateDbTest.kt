@@ -4,6 +4,7 @@ import com.ridi.oss.proxymonster.analyzer.pb.GrantAction
 import com.ridi.oss.proxymonster.analyzer.pb.MaskedDisposition
 import com.ridi.oss.proxymonster.analyzer.pb.StatementClass
 import com.ridi.oss.proxymonster.analyzer.pb.StatementFacts
+import com.ridi.oss.proxymonster.analyzer.pb.StatementKind
 import com.ridi.oss.proxymonster.analyzer.pb.columnResource
 import com.ridi.oss.proxymonster.analyzer.pb.relationIdentity
 import com.ridi.oss.proxymonster.analyzer.pb.requiredGrant
@@ -60,6 +61,7 @@ class CatalogCoverageGateDbTest {
         return statementFacts {
             resolved = true
             statementClass = StatementClass.STATEMENT_CLASS_ANALYZED
+            statementKind = StatementKind.STATEMENT_KIND_SELECT
             detail = "synthetic coverage miss"
             schemaQualifierCandidates.add(users.schema)
             requiredGrants.add(

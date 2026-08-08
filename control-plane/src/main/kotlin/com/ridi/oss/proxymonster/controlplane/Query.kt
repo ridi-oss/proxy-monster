@@ -136,10 +136,13 @@ data class DecisionContext(
      * so backend column order matches the mask ordinals. Null = send verbatim. */
     val rewrittenSql: String? = null,
     /** The analyzer's ordered output column names for this decision (an empty list for a passthrough /
-     * unanalyzed statement). APPROVAL live result viewing compares this against the stored execute-enforced
-     * result to detect catalog drift between execute and view (a `SELECT *` re-expansion that would slide a
-     * mask onto the wrong stored column and leak a value) — a mismatch is DENY. */
+     * unanalyzed statement). Live result viewing compares this against the stored execute-enforced result to
+     * detect catalog drift between execute and view (a `SELECT *` re-expansion that would slide a mask onto
+     * the wrong stored column and leak a value) — a mismatch is DENY, except for an analyzer-verified,
+     * fully unmasked EXPLAIN plan whose backend-generated columns have no matching analyzer shape. */
     val outputColumns: List<String> = emptyList(),
+    /** True only for an analyzer-verified EXPLAIN-of-query whose backend result is a generated plan shape. */
+    val explainOfQuery: Boolean = false,
     /** The derived `context.tags` this decision was evaluated under, surfaced so [decisionRecord]
      * logs which tags the request earned. Stamped on EVERY decision that runs after context derivation —
      * ALLOW, MASK, DENY (structural + policy), and passthrough alike — so an audit row carries the attested
@@ -710,6 +713,7 @@ fun decideQuery(
         detail = facts.detail,
         passthrough = false,
         outputColumns = facts.outputColumnsList,
+        explainOfQuery = facts.explainOfQuery,
         contextTags = derivedTags,
         unmaskablePermitted = unmaskablePermitted,
         sanitizeDiagnostics = sanitizeDiagnostics,

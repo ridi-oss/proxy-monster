@@ -377,13 +377,15 @@ message StatementFacts {
   StatementClass statement_class = 5;
   // Complete authorization requirements. Missing or malformed resources/actions deny fail-closed.
   repeated RequiredGrant required_grants = 6;
-  // Ordered backend output names; RequiredGrant.output_ordinals indexes this exact list.
+  // Ordered result output names; RequiredGrant.output_ordinals indexes this exact list. When
+  // explain_of_query is true, these name the inner query outputs, not backend-generated plan columns.
   repeated string output_columns = 7;
   // True when returning masked input would be unsafe because the statement writes it.
   bool is_write = 8;
   // Safe analyzer rewrite (currently faithful star expansion); absent means relay the client's SQL.
   optional string rewritten_sql = 9;
-  // True when grants describe an inner query under EXPLAIN; rewritten_sql must then remain absent.
+  // True when grants describe an inner query under EXPLAIN; output_columns names that inner query and
+  // rewritten_sql must remain absent.
   bool explain_of_query = 10;
   // True only for non-temporary DDL roots; Kotlin also treats called functions as catalog-changing.
   bool catalog_changing = 11;

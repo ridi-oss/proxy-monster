@@ -1534,13 +1534,15 @@ type StatementFacts struct {
 	StatementClass StatementClass `protobuf:"varint,5,opt,name=statement_class,json=statementClass,proto3,enum=proxymonster.analyzer.v1.StatementClass" json:"statement_class,omitempty"`
 	// Complete authorization requirements. Missing or malformed resources/actions deny fail-closed.
 	RequiredGrants []*RequiredGrant `protobuf:"bytes,6,rep,name=required_grants,json=requiredGrants,proto3" json:"required_grants,omitempty"`
-	// Ordered backend output names; RequiredGrant.output_ordinals indexes this exact list.
+	// Ordered result output names; RequiredGrant.output_ordinals indexes this exact list. When
+	// explain_of_query is true, these name the inner query outputs, not backend-generated plan columns.
 	OutputColumns []string `protobuf:"bytes,7,rep,name=output_columns,json=outputColumns,proto3" json:"output_columns,omitempty"`
 	// True when returning masked input would be unsafe because the statement writes it.
 	IsWrite bool `protobuf:"varint,8,opt,name=is_write,json=isWrite,proto3" json:"is_write,omitempty"`
 	// Safe analyzer rewrite (currently faithful star expansion); absent means relay the client's SQL.
 	RewrittenSql *string `protobuf:"bytes,9,opt,name=rewritten_sql,json=rewrittenSql,proto3,oneof" json:"rewritten_sql,omitempty"`
-	// True when grants describe an inner query under EXPLAIN; rewritten_sql must then remain absent.
+	// True when grants describe an inner query under EXPLAIN; output_columns names that inner query and
+	// rewritten_sql must remain absent.
 	ExplainOfQuery bool `protobuf:"varint,10,opt,name=explain_of_query,json=explainOfQuery,proto3" json:"explain_of_query,omitempty"`
 	// True only for non-temporary DDL roots; Kotlin also treats called functions as catalog-changing.
 	CatalogChanging bool `protobuf:"varint,11,opt,name=catalog_changing,json=catalogChanging,proto3" json:"catalog_changing,omitempty"`

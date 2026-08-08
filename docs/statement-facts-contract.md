@@ -181,6 +181,12 @@ them — on MySQL `EXPLAIN`/`DESCRIBE`/`DESC` are synonyms, so `EXPLAIN users`
 describes the table and `DESCRIBE SELECT …` explains a query. Both parse to a
 `Describe` node; the classifier reads two args in order:
 
+When `explain_of_query=true`, `output_columns` and every
+`RequiredGrant.output_ordinals` entry describe the inner query's result shape.
+They do not describe the engine-generated plan result returned by the backend.
+They are used only for the inner query's authorization and mask-binding
+contract; a fully allowed plan may have engine-specific result columns.
+
 1. `Describe.kind == "TABLE"` → EXPLAIN of a query, not a table describe.
    MySQL's `TABLE t` is shorthand for `SELECT * FROM t`, so `EXPLAIN TABLE t`
    scans `t`. Checking `this.Kind()==Table` alone would misclassify this as

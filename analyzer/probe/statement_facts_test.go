@@ -153,18 +153,23 @@ func TestStatementFactsMetadataAndUtilityClassification(t *testing.T) {
 }
 
 func TestStatementFactsExplainAnalyzesInnerQuery(t *testing.T) {
-	facts := mysqlFacts(t, "EXPLAIN TABLE users")
+	facts := mysqlFacts(t, "EXPLAIN SELECT id FROM users")
 	if !facts.GetResolved() || !facts.GetExplainOfQuery() || facts.GetRewrittenSql() != "" {
-		t.Fatalf("unexpected EXPLAIN TABLE facts: %+v", facts)
+		t.Fatalf("unexpected EXPLAIN query facts: %+v", facts)
 	}
+	if got := facts.GetOutputColumns(); len(got) != 1 || got[0] != "id" {
+		t.Fatalf("EXPLAIN output columns must describe the inner query, got %v", got)
+	}
+
+	tableFacts := mysqlFacts(t, "EXPLAIN TABLE users")
 	foundRRN := false
-	for _, grant := range facts.GetRequiredGrants() {
+	for _, grant := range tableFacts.GetRequiredGrants() {
 		if c := grant.GetColumn(); c != nil && c.GetIdentity().GetColumn() == "rrn" {
 			foundRRN = true
 		}
 	}
 	if !foundRRN {
-		t.Fatalf("EXPLAIN TABLE did not analyze SELECT * inner query: %+v", facts.GetRequiredGrants())
+		t.Fatalf("EXPLAIN TABLE did not analyze SELECT * inner query: %+v", tableFacts.GetRequiredGrants())
 	}
 
 	descAnalyze := postgresFacts(t, "DESC ANALYZE SELECT rrn FROM users")

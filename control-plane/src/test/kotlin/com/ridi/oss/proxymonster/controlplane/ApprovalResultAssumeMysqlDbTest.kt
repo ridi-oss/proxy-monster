@@ -87,6 +87,27 @@ class ApprovalResultAssumeMysqlDbTest {
         creatorKind = "WORKFLOW",
     )
 
+    private fun viewEditor(
+        sql: String,
+        decrypted: DecryptedResult,
+        requesterIp: String = "100.100.1.10",
+    ): ResultViewDecision = decideResultView(
+        viewer = requester,
+        req = request(),
+        childSql = sql,
+        ds = datasource,
+        decrypted = decrypted,
+        callerContext = AuthzContext(requesterIp = requesterIp),
+        datasourceStore = fx.datasourceStore,
+        policyStore = fx.policyStore,
+        accessStore = fx.accessStore,
+        userGroupStore = fx.userGroupStore,
+        roleResolver = fx.roleResolver,
+        authz = fx.authz,
+        systemClassification = null,
+        channel = Channel.EDITOR,
+    )
+
     @Test
     fun `requester assumes R and sees the shipped production view for their live network`() {
         assertEquals(
@@ -251,5 +272,33 @@ class ApprovalResultAssumeMysqlDbTest {
             channel = Channel.EDITOR,
         )
         assertIs<ResultViewDecision.Denied>(view)
+    }
+
+    @Test
+    fun `editor view returns an allowed explain plan with its backend-generated columns`() {
+        val stored = DecryptedResult(
+            columns = listOf("id", "select_type", "table"),
+            rows = listOf(listOf("1", "SIMPLE", "users")),
+        )
+
+        val allowed = assertIs<ResultViewDecision.Allowed>(viewEditor("EXPLAIN SELECT id FROM users", stored))
+        assertEquals(stored.columns, allowed.columns)
+        assertEquals(stored.rows, allowed.rows)
+    }
+
+    @Test
+    fun `editor view denies an explain plan whose inner query would mask a protected column`() {
+        val sentinel = "EXPLAIN-MASKED-PLAN-SENTINEL"
+        val denied = assertIs<ResultViewDecision.Denied>(
+            viewEditor(
+                "EXPLAIN SELECT rrn FROM users",
+                DecryptedResult(
+                    columns = listOf("id", "select_type", "table"),
+                    rows = listOf(listOf(sentinel, "SIMPLE", "users")),
+                ),
+                requesterIp = "100.99.1.10",
+            ),
+        )
+        assertTrue(sentinel !in denied.reason, "a denied plan must not expose a stored value")
     }
 }

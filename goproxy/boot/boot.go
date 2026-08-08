@@ -8,22 +8,17 @@ import (
 	"os"
 	"os/signal"
 	"strings"
-	"sync"
 	"syscall"
 	"time"
 
 	"github.com/ridi-oss/proxy-monster/goproxy/config"
 	"github.com/ridi-oss/proxy-monster/goproxy/cp"
-	"github.com/ridi-oss/proxy-monster/goproxy/introspect"
 	"github.com/ridi-oss/proxy-monster/goproxy/proxytls"
 	"github.com/ridi-oss/proxy-monster/goproxy/run"
 	"github.com/ridi-oss/proxy-monster/goproxy/spi"
 )
 
-const bootRegisterAttempts = 3
 const ambientRefreshInterval = 12 * time.Minute
-
-var refreshMu sync.Mutex
 
 // Run is the dialect-neutral boot consumer. The executable composition root injects the provider registry;
 // this package imports only the SPI, never the concrete dialect wiring package.
@@ -132,10 +127,18 @@ func Run(registry spi.Registry) error {
 		slog.Info("proxy TLS disabled — plaintext (trusted tailnet only); set PM_TLS_CERT + PM_TLS_KEY to enable")
 	}
 
-	registerAndPushCatalog(configClient, cfg, backend, provider, certChain)
+	reconciler := newDatasourceReconciler(
+		configClient,
+		cfg,
+		backend,
+		provider,
+		certChain,
+		maxResyncConcurrency,
+	)
+	reconciler.registerAndPushCatalog()
 	go configClient.RunEventsLoop(
-		func() { registerAndPushCatalog(configClient, cfg, backend, provider, certChain) },
-		func() { refreshCatalog(configClient, provider, backend) },
+		reconciler.tryRegisterAndPushCatalog,
+		func() { reconciler.refreshCatalog() },
 		func(open spi.RunOpen) {
 			go run.NewRunner(enforcementClient, dbImpl, backend, provider, cfg.QueryTimeout).Run(open)
 		},
@@ -146,46 +149,11 @@ func Run(registry spi.Registry) error {
 	go func() {
 		for {
 			time.Sleep(ambientRefreshInterval)
-			refreshCatalog(configClient, provider, backend)
+			reconciler.refreshCatalog()
 		}
 	}()
 
 	server := provider.NewWireServer(cfg.ProxyPort, backend, enforcementClient, dbImpl, tlsProvider)
 	slog.Info("starting proxy-monster data plane", "engine", cfg.Engine, "control_plane", cfg.ControlPlaneGrpcTarget)
 	return server.Start()
-}
-
-func registerAndPushCatalog(
-	configClient *cp.Client, cfg *config.Config, backend spi.BackendTarget, provider spi.Provider,
-	certChain func() *string,
-) {
-	for attempt := 0; attempt < bootRegisterAttempts; attempt++ {
-		if err := configClient.Register(provider.Dialect().Proto(), backend.Host, backend.Port, backend.Db, cfg.DatasourceTags, cfg.AdvertiseAddr, certChain(), cfg.TLSEnabled()); err != nil {
-			slog.Warn("datasource registration failed", "attempt", attempt+1, "of", bootRegisterAttempts, "error", err)
-		} else if refreshCatalog(configClient, provider, backend) {
-			slog.Info("datasource registered + catalog pushed", "datasource", cfg.DatasourceName)
-			return
-		}
-		if attempt < bootRegisterAttempts-1 {
-			backoff := time.Duration(attempt+1) * 2 * time.Second
-			slog.Warn("register/push attempt failed; retrying", "attempt", attempt+1, "of", bootRegisterAttempts, "retry_in", backoff)
-			time.Sleep(backoff)
-		}
-	}
-	slog.Error("could not register + push catalog after all attempts — starting anyway; decisions fail closed until the control plane has this datasource's catalog", "attempts", bootRegisterAttempts)
-}
-
-func refreshCatalog(configClient *cp.Client, provider spi.Provider, backend spi.BackendTarget) bool {
-	refreshMu.Lock()
-	defer refreshMu.Unlock()
-	catalog, err := introspect.Run(provider, backend)
-	if err != nil {
-		slog.Warn("catalog refresh failed", "error", err)
-		return false
-	}
-	if err := configClient.PushCatalog(catalog); err != nil {
-		slog.Warn("catalog refresh failed", "error", err)
-		return false
-	}
-	return true
 }

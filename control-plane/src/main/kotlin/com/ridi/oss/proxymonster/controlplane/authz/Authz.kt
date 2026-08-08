@@ -7,6 +7,7 @@ import com.cedarpolicy.value.EntityTypeName
 import com.cedarpolicy.value.EntityUID
 import com.cedarpolicy.value.IpAddress
 import com.cedarpolicy.value.PrimString
+import com.cedarpolicy.value.Unknown
 import com.cedarpolicy.value.Value
 import com.ridi.oss.proxymonster.controlplane.ApiError
 import com.ridi.oss.proxymonster.controlplane.Config
@@ -362,6 +363,33 @@ class Authz(
             engine.isAuthorized(request, ACTION_TYPE.of(AuthzAction.SQL_SELECT.cedarId), Entity(SYSTEM_TYPE.of("system")), context)
         }.getOrNull() ?: return false
         return response.success.isPresent
+    }
+
+    /**
+     * Could this principal EVER be authorized, with some request attributes not yet knowable? Strictly weaker
+     * than [authorizeAs] and MUST NEVER gate access — it exists only to route notifications, where the
+     * recipient's address is unknowable until they act (docs/notifications.md). Every real action still runs
+     * the full decision.
+     *
+     * [unknownContextKeys] are marked UNKNOWN, not omitted: an absent attribute makes a conditioning policy
+     * deny and would silently drop a principal who could in fact act. Only the verdict is read — anything
+     * short of a definite Deny is a genuine maybe, so an undecided forbid does not skip a real candidate.
+     */
+    fun satisfiableAs(
+        principal: String,
+        roles: Set<String>,
+        action: AuthzAction,
+        resource: AuthzResource,
+        knownChannel: String? = null,
+        unknownContextKeys: Set<String> = emptySet(),
+    ): SatisfiableVerdict {
+        val (resourceEntity, auxEntities) = marshalResource(resource)
+        val request = marshal(principal, roles, auxEntities)
+        val context = buildMap<String, Value> {
+            knownChannel?.let { put("channel", PrimString(it)) }
+            unknownContextKeys.forEach { put(it, Unknown(it)) }
+        }
+        return engine.satisfiable(request, ACTION_TYPE.of(action.cedarId), resourceEntity, context)
     }
 
     /**

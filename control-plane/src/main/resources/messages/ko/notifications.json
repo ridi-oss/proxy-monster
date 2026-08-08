@@ -1,0 +1,26 @@
+{
+  "task": {
+    "requested": "*{requester}* 님이 *{datasource}*에서 {statement} 실행을 요청했습니다{role}",
+    "requested_fallback": "{requester} 님이 {datasource}에서 쿼리 실행을 요청했습니다",
+    "decided_approved": "*{datasource}*에서 {statement}를 실행하려는 *{requester}* 님의 요청을 *{decidedBy}* 님이 승인했고 실행 중입니다.",
+    "decided_rejected": "*{datasource}*에서 {statement}를 실행하려는 *{requester}* 님의 요청을 *{decidedBy}* 님이 거부했습니다.",
+    "decided_fallback": "{datasource}에 대한 {requester} 님의 요청을 {decidedBy} 님이 처리했습니다",
+    "executed": "*{datasource}*에서 {statement}를 실행하려는 *{requester}* 님의 요청이 완료되었습니다 — {rowCount}행.",
+    "executed_fallback": "{datasource}에 대한 {requester} 님의 요청이 완료되었습니다",
+    "failed": "*{datasource}*에서 {statement}를 실행하려는 *{requester}* 님의 요청이 실패했습니다.",
+    "failed_fallback": "{datasource}에 대한 {requester} 님의 요청이 실패했습니다",
+    "cancelled": "*{datasource}*에서 {statement}를 실행하려는 *{requester}* 님의 요청이 취소되었습니다.",
+    "cancelled_fallback": "{datasource}에 대한 {requester} 님의 요청이 취소되었습니다"
+  },
+  "field": {
+    "role": " (역할: *{role}*)",
+    "reason": "_{reason}_",
+    "statement_hidden": "쿼리",
+    "statement_hidden_note": "_전체 구문은 여기에 표시되지 않습니다. 요청을 열어 확인하세요._"
+  },
+  "action": {
+    "approve_and_run": "승인 후 실행",
+    "deny": "거부",
+    "open": "요청 열기"
+  }
+}

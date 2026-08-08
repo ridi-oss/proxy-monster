@@ -22,6 +22,18 @@ plane is already Go) is a proposal under evaluation.
 
 ## Documents
 
+### Guides — for people using proxy-monster
+
+Everything else on this page is a design doc, written for people building
+proxy-monster. [`guides/`](./guides) is the other direction: onboarding material
+meant to be read by an agent, which then walks a human through the system.
+
+<!-- prettier-ignore -->
+| Doc | Reader |
+| --- | --- |
+| [`guides/usage.md`](./guides/usage.md) | A developer querying through it — console, masked results, requesting access, local SQL clients |
+| [`guides/admin.md`](./guides/admin.md) | An admin configuring it — tags, roles, policy, MCP |
+
 ### Access model and enforcement
 
 The enforcement engine states _facts_ (resources + tags, sql-kind, analyzable?,

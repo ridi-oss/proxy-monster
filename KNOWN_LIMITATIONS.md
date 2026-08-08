@@ -58,13 +58,13 @@ control-plane store, which is PostgreSQL only and carries no portability caveat
 
 ## Daemon session renewal and revocation
 
-- 🟡 A `pmon` login is not renewed silently. The control plane serves
-  `POST /auth/session/renew` and `pmon login` stores the renewal token the
-  device-login result returns, but no pmon code path calls that route. A login
-  therefore lasts exactly one wire token TTL (`pmon login --ttl`, default 12h,
-  clamped server-side to 24h) and then needs a fresh `pmon login`.
-  `PM_SESSION_WINDOW` (default 2h) bounds only how long the unused renew route
-  would accept a renewal token; raising it cannot extend a live session.
+- 🟡 A `pmon` login ends at the session window, not at the token TTL. The daemon
+  re-mints the wire token silently through `POST /auth/session/renew` while the
+  window is open, so a login is not interrupted by the token's own expiry
+  (`pmon login --ttl`, default 12h, clamped server-side to 24h). Once
+  `PM_SESSION_WINDOW` (default 2h) closes, renewal is refused, `pmon status`
+  reports that reauthentication is required, and the session ends there — a
+  longer `--ttl` cannot outlive the window.
 - 🔴 Closing a daemon renewal window does not revoke the wire token issued under
   it. Because the token TTL (12h default) outlives the window (2h default) and
   the wire path validates only `proxy_token`, a definitive IdP rejection during

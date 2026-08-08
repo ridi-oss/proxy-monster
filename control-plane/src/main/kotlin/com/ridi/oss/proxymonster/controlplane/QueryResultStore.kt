@@ -29,7 +29,13 @@ data class QueryResultMeta(
 )
 
 @Serializable
-data class DecryptedResult(val columns: List<String>, val rows: List<List<String?>>)
+data class DecryptedResult(
+    val columns: List<String>,
+    val rows: List<List<String?>>,
+    // The backend's own affected-row count for a DML statement (UPDATE/INSERT/DELETE), which has no result
+    // set of its own. Null for a statement that returns rows (e.g. SELECT), where [rows].size IS the count.
+    val rowsAffected: Int? = null,
+)
 
 /**
  * A single-read snapshot of a task's latest result child: its [meta], the child's own [sql] (the exact
@@ -122,7 +128,7 @@ class QueryResultStore(private val dataSource: DataSource, private val crypto: R
                    WHERE id = ? AND status = 'RUNNING'""",
             ).use { ps ->
                 ps.setBytes(1, blob)
-                ps.setInt(2, result.rows.size)
+                ps.setInt(2, result.rowsAffected ?: result.rows.size)
                 val columnsJson = json.encodeToString(stringList, result.columns)
                 if (c.metaData.databaseProductName.contains("PostgreSQL", ignoreCase = true)) {
                     ps.setObject(3, PGobject().apply { type = "jsonb"; value = columnsJson })

@@ -1027,7 +1027,7 @@ fun Route.editorSessionRoutes(
                     // localizes the polled code with no editor-specific catalog entries.
                     "approval.execute_denied"
                 } else {
-                    val result = DecryptedResult(response.columns, response.rows)
+                    val result = DecryptedResult(response.columns, response.rows, response.rowsAffected)
                     // Child DONE + parent EXECUTED commit in ONE transaction (see /execute): a crash can never
                     // leave a readable DONE child under a non-EXECUTED task. The run's per-statement Decide
                     // round-trip already wrote the real audit decision (ALLOW/MASK/DENY + decisionId), so no

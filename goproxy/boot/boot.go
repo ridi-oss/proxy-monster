@@ -2,6 +2,7 @@
 package boot
 
 import (
+	"context"
 	"crypto/tls"
 	"fmt"
 	"log/slog"
@@ -22,6 +23,10 @@ import (
 
 const bootRegisterAttempts = 3
 const ambientRefreshInterval = 12 * time.Minute
+
+// drainTimeout bounds the graceful shutdown: in-flight statements finish and idle connections get a
+// protocol-level shutdown notice, then any connection still live is force-closed and the process exits.
+const drainTimeout = 10 * time.Second
 
 var refreshMu sync.Mutex
 
@@ -52,13 +57,6 @@ func Run(registry spi.Registry) error {
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-	go func() {
-		<-sigCh
-		slog.Info("shutting down")
-		_ = enforcementClient.Close()
-		_ = configClient.Close()
-		os.Exit(0)
-	}()
 
 	provider := cfg.Provider
 	dbImpl := provider.NewDb()
@@ -152,7 +150,38 @@ func Run(registry spi.Registry) error {
 
 	server := provider.NewWireServer(cfg.ProxyPort, backend, enforcementClient, dbImpl, tlsProvider)
 	slog.Info("starting proxy-monster data plane", "engine", cfg.Engine, "control_plane", cfg.ControlPlaneGrpcTarget)
-	return server.Start()
+
+	serveErr := make(chan error, 1)
+	go func() { serveErr <- server.Start() }()
+
+	select {
+	case err := <-serveErr:
+		// The server stopped on its own (bind failure, accept error) without a shutdown signal.
+		return err
+	case <-sigCh:
+	}
+
+	// On SIGTERM (a rolling redeploy), drain gracefully: stop accepting, let in-flight statements finish,
+	// send idle clients a protocol-level shutdown notice, then close the control-plane clients and exit.
+	// The replacement task is already fronted by the NLB, so reconnects land there.
+	slog.Info("shutting down, draining client connections", "timeout", drainTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), drainTimeout)
+	defer cancel()
+	server.Drain(ctx)
+	// Serve returns nil once Drain closes the listener. A non-nil error is a genuine serve failure (e.g. a bind
+	// error that raced the signal, which select may pick over the serveErr case); surface it AND exit non-zero
+	// so a supervisor keying on exit code sees it. A clean signalled shutdown (nil) stays exit 0.
+	serveExitErr := <-serveErr
+	if serveExitErr != nil {
+		slog.Error("data plane serve error during shutdown", "error", serveExitErr)
+	}
+	_ = enforcementClient.Close()
+	_ = configClient.Close()
+	if serveExitErr != nil {
+		os.Exit(1)
+	}
+	os.Exit(0)
+	return nil
 }
 
 func registerAndPushCatalog(

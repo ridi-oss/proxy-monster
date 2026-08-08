@@ -20,6 +20,25 @@ const (
 	maxFrontendTokenPacket     = 64 << 10
 )
 
+const (
+	shutdownErrno    = 1053 // ER_SERVER_SHUTDOWN
+	shutdownSQLState = "08S01"
+	shutdownMessage  = "proxy-monster: server shutting down"
+	// shutdownNoticeSeq frames the unsolicited notice as the response to the client's next command
+	// (command seq 0 → response seq 1), which a driver reads as a normal error before reconnecting.
+	shutdownNoticeSeq = 1
+)
+
+// writeShutdownNotice tells an idle client the proxy is going away, so its pool reconnects onto the
+// replacement task instead of seeing a bare TCP reset. Best-effort: the connection closes regardless.
+func writeShutdownNotice(clientConn net.Conn) {
+	_ = mysqlwire.WritePacket(clientConn, shutdownNoticeSeq, mysqlwire.ErrPacketState(
+		shutdownErrno,
+		shutdownSQLState,
+		shutdownMessage,
+	))
+}
+
 // handleConn performs the frontend clear-password token handshake, authenticates the service-account
 // backend, then runs one blocking command at a time.
 func (s *Server) handleConn(clientConn net.Conn) {
@@ -113,7 +132,7 @@ func (s *Server) handleConn(clientConn net.Conn) {
 	if err := clientConn.SetReadDeadline(time.Time{}); err != nil {
 		return
 	}
-	clientConn = withIODeadlines(clientConn, frontendCommandIdleTimeout, socketWriteTimeout)
+	clientConn = withDrainAwareIODeadlines(clientConn, frontendCommandIdleTimeout, socketWriteTimeout, &s.draining)
 	token := mysqlwire.ParseClearPassword(tokenPayload)
 	clientAddr := clientConn.RemoteAddr().String()
 	identity, err := s.client.ValidateToken(token, clientAddr)
@@ -205,6 +224,14 @@ func (s *Server) handleConn(clientConn net.Conn) {
 			return
 		}
 		if err != nil || len(payload) == 0 {
+			// The single drain point. A drain forces the client read deadline, so a handler waiting here for the
+			// next command unblocks and forwards the shutdown notice, and its pool reconnects onto the
+			// replacement task. Checking only here (not before the read) lets a command already decoded above the
+			// socket be served first; a command still in the kernel read buffer is preempted by the forced
+			// deadline and simply retried on reconnect. A plain idle-timeout or disconnect stays a silent close.
+			if s.draining.Load() {
+				writeShutdownNotice(clientConn)
+			}
 			return
 		}
 		cmd := payload[0]

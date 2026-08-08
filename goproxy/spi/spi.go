@@ -84,10 +84,13 @@ type TableDetailClient interface {
 }
 
 // WireServer is the enforcing native-wire broker's boot contract: Start blocks serving connections until
-// the process is asked to stop; Shutdown requests that stop.
+// the process is asked to stop; Shutdown closes the listener; Drain closes the listener and then gracefully
+// winds down live client connections — in-flight statements finish, idle connections get a protocol-level
+// shutdown notice and close — bounded by ctx, force-closing any that outlast it.
 type WireServer interface {
 	Start() error
 	Shutdown()
+	Drain(ctx context.Context)
 }
 
 // BackendSession is one dedicated run backend session.

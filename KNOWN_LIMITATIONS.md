@@ -413,6 +413,24 @@ logged at boot / proxy catalog-push.)
   but a MASK verdict carrying `unmaskable_permitted` may relay them unmasked
   when `sql.unmaskable` is granted. Detail:
   [`docs/access-model.md`](./docs/access-model.md).
+- 🟡 A graceful-shutdown drain can report a pipelined PostgreSQL statement as
+  failed. On a rolling redeploy the data plane drains: it stops accepting, lets
+  an in-flight statement finish, then hands each idle connection a
+  protocol-level shutdown notice (MySQL `ER_SERVER_SHUTDOWN`, PostgreSQL
+  `FATAL 57P01`) so the client's pool reconnects onto the replacement task.
+  Draining forces the client read deadline, which preempts a read even when the
+  next message already sits in the kernel buffer. So a pipelined
+  extended-protocol `Execute` whose `CommandComplete` was relayed but whose
+  `Sync` had not yet been read is not answered with `ReadyForQuery`: the
+  un-synced statement rolls back when the connection closes, and a client seeing
+  FATAL reconnects and retries it — but a client that had treated
+  `CommandComplete` as commit could believe a rolled-back operation succeeded.
+  The window is narrow (the drain must land between relaying `CommandComplete`
+  and reading the buffered `Sync`) and PostgreSQL is experimental. MySQL's
+  analogue is benign: a command still in the kernel buffer at drain is skipped
+  and retried on reconnect, with no completed-then-rolled-back ambiguity. A
+  deterministic fix — bounded reads through the pending `Sync` to a transaction
+  boundary before the notice — is a follow-up.
 
 ## Wire-cert distribution (direct clients and `pmon`)
 

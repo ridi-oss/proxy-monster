@@ -249,8 +249,9 @@ func seedBackend(t *testing.T) dbtest.Backend {
 }
 
 type brokerHarness struct {
-	fake *fakeControlPlane
-	addr string
+	fake   *fakeControlPlane
+	addr   string
+	server *pgproxy.Server
 }
 
 func startBroker(t *testing.T) *brokerHarness {
@@ -314,7 +315,7 @@ func startBrokerServer(t *testing.T, fake *fakeControlPlane, server *pgproxy.Ser
 			t.Errorf("pgproxy.Serve: %v", err)
 		}
 	})
-	return &brokerHarness{fake: fake, addr: server.Addr().String()}
+	return &brokerHarness{fake: fake, addr: server.Addr().String(), server: server}
 }
 
 func (h *brokerHarness) connect(t *testing.T, token string, simple bool) (*pgx.Conn, error) {

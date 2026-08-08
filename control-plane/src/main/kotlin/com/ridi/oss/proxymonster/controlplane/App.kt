@@ -80,6 +80,11 @@ private const val SSE_SESSION_RECHECK_MS = 30_000L
  *  hammer `/api/tasks/events` on its default ~3s retry (it cannot be told to stop after the 200 handshake). */
 private const val SSE_UNAUTH_RETRY_MS = 60_000L
 
+/** Reconnect backoff sent when the stream closes because the control-plane is draining (rolling restart), so
+ *  a watching tab re-homes to the replacement promptly instead of on EventSource's ~3s default. Short, not
+ *  zero: a brief gap lets the departing instance finish leaving the load balancer before the tab reconnects. */
+private const val SSE_DRAIN_RECONNECT_MS = 500L
+
 /**
  * One per-principal SSE stream of task terminal transitions (EXECUTED/FAILED/CANCELLED), so a
  * watching editor/approval tab updates immediately instead of on its next poll. Cookie-authenticated
@@ -117,7 +122,13 @@ internal fun Route.taskEventsRoute(
             while (true) {
                 val keepOpen = select {
                     events.onReceiveCatching { result ->
-                        val event = result.getOrNull() ?: return@onReceiveCatching false
+                        val event = result.getOrNull() ?: run {
+                            // The channel closed. On a drain (rolling restart) the hub closes every stream —
+                            // send a short retry so the browser reconnects to the replacement now rather than
+                            // waiting its ~3s default. Any other close is an ordinary end (nothing to send).
+                            if (taskCompletionHub.isDraining()) send(ServerSentEvent(retry = SSE_DRAIN_RECONNECT_MS))
+                            return@onReceiveCatching false
+                        }
                         // Bound the push to the SAME live `task.read` gate the poll/detail enforce, so a Cedar
                         // forbid (e.g. an untrusted zone) that 404s the poll also suppresses the push — the
                         // notification never reveals gated metadata. A denied/absent task is skipped.
@@ -366,8 +377,9 @@ fun Application.module(config: Config, core: ControlPlaneCore) {
     val runExecService = RunExecService(core, config.queryTimeoutSeconds)
     // In-process push of task terminal transitions to the SSE stream, so a watching editor/approval tab
     // updates without waiting for its next poll. HTTP-only (the run coroutines + the SSE stream live here),
-    // single-replica, and a pure accelerator over the poll (see TaskCompletionHub).
-    val taskCompletionHub = TaskCompletionHub()
+    // single-replica, and a pure accelerator over the poll (see TaskCompletionHub). On `core` so the SIGTERM
+    // shutdown hook can drain the open streams (a rolling restart re-homes the console to the replacement).
+    val taskCompletionHub = core.taskCompletionHub
     val tableDetailService = TableDetailService(core)
     // AES-256-GCM at-rest crypto for PII-bearing rows we persist server-side: query results AND
     // encrypted refresh tokens for principal sessions. Null when PM_RESULT_KEY is unset — sensitive

@@ -42,6 +42,12 @@ class ControlPlaneCore(val dataSource: DataSource) {
     // Open proxy Events streams (docs/datasource-registration.md) — liveness + refresh/run push.
     // Shared so the gRPC handlers and the HTTP routes agree on attached proxies and pending run dials.
     val proxyEventsHub = ProxyEventsHub()
+
+    // Per-principal fan-out of task terminal transitions to the console's SSE streams. Constructed here
+    // rather than in Application.module purely so the SIGTERM shutdown hook (which holds only `core`) can
+    // drain it — signalling every open browser stream to reconnect so a rolling restart re-homes the
+    // console to the replacement instead of leaving it on the draining instance until the LB cuts it.
+    val taskCompletionHub = TaskCompletionHub()
     val connectionCatalog = ConnectionCatalogRegistry()
     val runChannels = RunChannelRegistry()
     val tableDetailChannels = TableDetailChannelRegistry()

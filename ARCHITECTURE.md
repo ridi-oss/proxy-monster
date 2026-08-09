@@ -198,6 +198,7 @@ deliberately never inferred from request headers.
 | MCP / AI client → CP | HTTPS · `/mcp` `/oauth/*` | via edge | OAuth 2.1 server + MCP resource (only if MCP used) |
 | CP → control-plane store | SQL · PostgreSQL 5432 | internal | system of record (r/w) |
 | CP → OIDC IdP | HTTPS | outbound | discovery + token exchange |
+| CP → Slack | HTTPS + WSS | outbound | task notifications; Socket Mode carries button clicks back (only when `PM_SLACK_*` is set) |
 | auditmon → control-plane store | SQL · PostgreSQL 5432 (read-only) | internal | read the audit chain |
 | auditmon → WORM / KMS | HTTPS | outbound | WORM export + anchor signing · alert webhooks |
 

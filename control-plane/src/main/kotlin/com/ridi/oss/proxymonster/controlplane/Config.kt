@@ -95,6 +95,15 @@ data class Config(
     val mcpRefreshTtlSeconds: Long = 21_600,
     val mcpDebugAutoConsent: Boolean = true,
     val queryTimeoutSeconds: Long = 600,
+    // Out-of-band task notifications (docs/notifications.md). Both Slack tokens must be present for the
+    // transport to exist; either absent leaves the whole layer inert and the workflow unchanged — the same
+    // posture as an unset PM_SCIM_TOKEN disabling SCIM, never a degraded half-configured mode.
+    val slackBotToken: String? = null,
+    val slackAppToken: String? = null,
+    val notifyStatement: String = "truncated",
+    val notifyStatementMax: Int = 200,
+    // Fallback language for a recipient who has never set one (app_user.locale).
+    val notifyLocale: String = "en",
 ) {
     init {
         require(webSessionSlideSeconds < webSessionIdleSeconds) {
@@ -214,6 +223,19 @@ data class Config(
                 }
             }
 
+            // A set-but-garbage value fails fast rather than silently falling back: a misconfigured
+            // disclosure mode would decide how much query text leaves the building.
+            val notifyStatement = (env("PM_NOTIFY_STATEMENT") ?: "truncated").trim().lowercase()
+            require(notifyStatement in setOf("truncated", "full", "omit")) {
+                "PM_NOTIFY_STATEMENT must be one of truncated|full|omit; got '$notifyStatement'"
+            }
+            val notifyStatementMax = env("PM_NOTIFY_STATEMENT_MAX")?.let {
+                it.toIntOrNull() ?: throw IllegalArgumentException("PM_NOTIFY_STATEMENT_MAX must be a positive integer; got '$it'")
+            } ?: 200
+            require(notifyStatementMax > 0) { "PM_NOTIFY_STATEMENT_MAX must be greater than zero" }
+            val notifyLocale = (env("PM_NOTIFY_LOCALE") ?: "en").trim().lowercase()
+            require(notifyLocale in setOf("en", "ko")) { "PM_NOTIFY_LOCALE must be one of en|ko; got '$notifyLocale'" }
+
             return Config(
                 httpPort = env("PM_HTTP_PORT")?.toIntOrNull() ?: 8080,
                 grpcPort = env("PM_GRPC_PORT")?.toIntOrNull() ?: DEFAULT_GRPC_PORT,
@@ -253,6 +275,11 @@ data class Config(
                 mcpRefreshTtlSeconds = clampTtlSeconds(env("PM_OAUTH_REFRESH_TTL")?.toLongOrNull() ?: 21_600),
                 mcpDebugAutoConsent = env("PM_OAUTH_DEBUG_AUTO_CONSENT")?.toBooleanStrictOrNull() ?: true,
                 queryTimeoutSeconds = queryTimeoutSeconds,
+                slackBotToken = env("PM_SLACK_BOT_TOKEN")?.takeIf { it.isNotBlank() },
+                slackAppToken = env("PM_SLACK_APP_TOKEN")?.takeIf { it.isNotBlank() },
+                notifyStatement = notifyStatement,
+                notifyStatementMax = notifyStatementMax,
+                notifyLocale = notifyLocale,
             )
         }
 

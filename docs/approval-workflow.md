@@ -72,6 +72,11 @@ task exists but no rows.
 A new request must carry R — the create route rejects a null `roleId`
 (`approval.role_required`) — so every approval is execute-under-R + view-as-R.
 
+An approver is told a request is waiting, out of band
+([notifications.md](./notifications.md)) — including the reverse lookup step 3's
+per-caller eligibility check does not provide. They can also decide from there,
+on the `slack` channel, which a policy can scope or forbid.
+
 ### Worked example
 
 Column config: `users.ssn` is `tag:pii`. Role `pii-reader`: `read.masked` pii

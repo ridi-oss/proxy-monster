@@ -110,6 +110,25 @@ configured per proxy under `PM_TARGET_*`.
   lifetimes (seconds). Defaults `600` · `21600`.
 - `PM_SCIM_TOKEN` — _optional_. SCIM provisioning bearer (OIDC just-in-time is
   the default).
+- `PM_SLACK_BOT_TOKEN` / `PM_SLACK_APP_TOKEN` — _optional_. Slack notifications
+  for the approval workflow ([docs/notifications.md](./docs/notifications.md)).
+  The bot token (`xoxb-`) authorizes the Web API and the app token (`xapp-`)
+  opens the Socket Mode WebSocket. The workspace whose button clicks are honored
+  is derived from the bot token itself (`auth.test`), not configured — a token
+  belongs to exactly one workspace. **Both tokens are required** — either absent
+  leaves the whole layer inert and the workflow unchanged, never a
+  half-configured mode. Socket Mode means the CP dials out; no inbound ingress
+  is added. Set `PM_WEB_ORIGIN` too, or the message's "open request" link points
+  at the control plane rather than the console.
+- `PM_NOTIFY_STATEMENT` / `PM_NOTIFY_STATEMENT_MAX` — _optional_. How much of a
+  requester's SQL a notification may carry: `truncated` (default, first
+  `PM_NOTIFY_STATEMENT_MAX` characters, default `200`), `full`, or `omit`. A
+  statement's literals can be the very values a policy protects — masking acts
+  on results, not predicates — so `omit` is the setting for data that must not
+  leave in query text. Approve-and-run is offered only when the message carries
+  the whole statement, whatever the mode.
+- `PM_NOTIFY_LOCALE` — _optional_. Fallback language (`en` · `ko`) for a
+  recipient who has not set one in the console. Default `en`.
 - `PM_AUTH_DEBUG` / `PM_DEV` / `PM_OAUTH_DEBUG_AUTO_CONSENT` — _dev-only_.
   Defaults: `PM_AUTH_DEBUG=true`, `PM_DEV=false`,
   `PM_OAUTH_DEBUG_AUTO_CONSENT=true`. The CP refuses to boot when debug auth is

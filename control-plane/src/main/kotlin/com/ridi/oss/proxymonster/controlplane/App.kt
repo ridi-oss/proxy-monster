@@ -14,6 +14,7 @@ import com.ridi.oss.proxymonster.controlplane.management.AuditSource
 import com.ridi.oss.proxymonster.controlplane.management.DatasourceManagementService
 import com.ridi.oss.proxymonster.controlplane.management.IdentityManagementService
 import com.ridi.oss.proxymonster.controlplane.management.ManagementAuditRecorder
+import com.ridi.oss.proxymonster.controlplane.notify.installNotifications
 import com.ridi.oss.proxymonster.controlplane.management.ManagementException
 import com.ridi.oss.proxymonster.controlplane.management.PolicyManagementService
 import com.ridi.oss.proxymonster.controlplane.management.auditEntity
@@ -389,6 +390,13 @@ fun Application.module(config: Config, core: ControlPlaneCore) {
     // is refused fail-closed (no plaintext PII persisted).
     val queryResultStore = resultCrypto?.let { QueryResultStore(dataSource, it) }
 
+    // Out-of-band task notifications (docs/notifications.md): the outbox drain and, when Slack is
+    // configured, the inbound Socket Mode connection. Null and inert when no transport is configured.
+    val notifications = installNotifications(
+        config, dataSource, authz, roleResolver, accessStore, datasourceStore, policyStore,
+        queryResultStore, store, runExecService, taskCompletionHub,
+    )
+
     // OIDC (docs/auth-model.md): provider-agnostic via discovery, so any OIDC IdP works. `discovery`/
     // `validator` are null when `config.oidc` is unset — every consumer degrades gracefully (501),
     // never NPEs. Device-authorization reuses this SAME confidential client (no separate CLI client).
@@ -441,6 +449,7 @@ fun Application.module(config: Config, core: ControlPlaneCore) {
                 .onFailure { environment.log.warn("connection catalog idle sweep failed", it) }
         }
     }
+
 
     // Timer-driven IdP liveness is the sole revalidator for web and daemon sessions. A rejected
     // refresh token retires only its own session; transient failures preserve the cached state.
@@ -674,6 +683,7 @@ fun Application.module(config: Config, core: ControlPlaneCore) {
         approvalRoutes(
             config, accessStore, store, datasourceStore, policyStore, userGroupStore, queryResultStore,
             roleResolver, authz, runExecService, this@module, core.systemClassification, taskCompletionHub,
+            notifications,
         )
 
         // Enforcing SQL query endpoint (deny + result masking; effective roles come from RoleResolver).

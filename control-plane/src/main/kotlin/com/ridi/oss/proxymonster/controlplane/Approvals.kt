@@ -9,6 +9,8 @@ import com.ridi.oss.proxymonster.controlplane.authz.authorizeDatasourceAction
 import com.ridi.oss.proxymonster.controlplane.authz.authorizeWithContext
 import com.ridi.oss.proxymonster.controlplane.authz.resolveContextTags
 import com.ridi.oss.proxymonster.controlplane.management.ManagementAuditRecorder
+import com.ridi.oss.proxymonster.controlplane.notify.NotificationEvent
+import com.ridi.oss.proxymonster.controlplane.notify.NotificationService
 import com.ridi.oss.proxymonster.grpc.EnfAction
 import com.ridi.oss.proxymonster.probe.Masking
 import com.ridi.oss.proxymonster.probe.bindMasks
@@ -345,6 +347,9 @@ fun Route.approvalRoutes(
     // Pushes a task's terminal transition to the parties' (requester + approver) SSE streams so a watching
     // approval tab updates without waiting for its next poll (null in Config-free tests → publish no-ops).
     taskCompletionHub: TaskCompletionHub? = null,
+    // Queues out-of-band notifications (docs/notifications.md). Null = the layer is not configured and the
+    // workflow behaves exactly as before.
+    notifications: NotificationService? = null,
 ) {
     // Query-approval DECISIONS (approve/reject) record a kind="admin" management event; the result
     // lifecycle (execute/cancel/view) uses e3Record's separate approval_lifecycle path.
@@ -370,6 +375,12 @@ fun Route.approvalRoutes(
     // scoped to its role/datasource, with
     // requester != approver enforced by the shipped no-self-approval forbid. Approver eligibility is a
     // Cedar policy, never the datasource's approver GROUP. authDebug bypasses, matching every route.
+    //
+    // The console is a real surface, so it names itself: WORKFLOW_VIEWER, the same channel a result view
+    // runs on. Deciding and viewing are both the unelevated human side of a task and are scoped together.
+    // It must never be `editor` or `wire` — those two carry [system:task-editor-self-approve] /
+    // [system:task-wire-self-approve], which permit self-approval because a machine task runs under the
+    // caller's OWN roles. A human approval elevates to R, so it stays under the no-self-approval forbid.
     fun mayDecide(call: ApplicationCall, action: AuthzAction, req: AccessRequest): Boolean {
         if (config.authDebug) return true
         val decision = authz.authorizeWithContext(
@@ -379,7 +390,7 @@ fun Route.approvalRoutes(
                 requester = req.principal, approver = req.decidedBy, executedBy = req.executedBy,
                 datasourceName = req.datasourceName, roleName = req.roleName,
             ),
-            call.httpAuthzContext(config),
+            call.httpAuthzContext(config, Channel.WORKFLOW_VIEWER),
             req.datasourceName,
             req.datasourceId?.let(datasourceStore::getIncludingDeleted)?.tags.orEmpty(),
         )
@@ -387,7 +398,8 @@ fun Route.approvalRoutes(
     }
 
     // Result rows require Cedar authority to assume the task's R. No authDebug bypass: this is data
-    // confidentiality, enforced in development too.
+    // confidentiality, enforced in development too. Same channel as [mayDecide] and as the per-column
+    // re-decision the released rows go through, so one policy scopes the whole console surface.
     fun mayReadResult(call: ApplicationCall, req: AccessRequest): Boolean {
         val decision = authz.authorizeWithContext(
             call.userSession()?.principal ?: "debug-user",
@@ -396,7 +408,7 @@ fun Route.approvalRoutes(
                 requester = req.principal, approver = req.decidedBy, executedBy = req.executedBy,
                 datasourceName = req.datasourceName, roleName = req.roleName,
             ),
-            call.httpAuthzContext(config),
+            call.httpAuthzContext(config, Channel.WORKFLOW_VIEWER),
             req.datasourceName,
             req.datasourceId?.let(datasourceStore::getIncludingDeleted)?.tags.orEmpty(),
         )
@@ -482,10 +494,16 @@ fun Route.approvalRoutes(
                     requestedDurationSec = input.requestedDurationSec,
                     actor = call.auditActor(config),
                     recorder = recorder,
+                    // A from-denied request copies the statement of a decision that already ran; nothing
+                    // re-analyzes it here, so it is left NULL and the delivery side withholds the text.
+                    // Guessing "safe" for an unanalyzed statement is the one mistake that leaks a value.
+                    carriesProtectedLiteral = null,
+                    onCreated = { c, taskId, roleName -> notifications?.emitRequested(c, taskId, principal, ds, roleName) },
                 )
             } catch (_: DuplicatePendingQueryRequestException) {
                 return@post call.respond(HttpStatusCode.Conflict, ApiError("approval.pending_request_exists"))
             }
+            notifications?.wake()
             call.respond(HttpStatusCode.Created, CreateApprovalResponse(request, wouldAllow = false))
             return@post
         }
@@ -502,12 +520,13 @@ fun Route.approvalRoutes(
         if (input.roleId == null) return@post call.respond(HttpStatusCode.BadRequest, ApiError("approval.role_required"))
 
         // Server-side analysis only: nothing executes and no audit row is written at compose time.
+        val catalog = datasourceStore.catalog(ds.id)
         val decision = decideQuery(
             principal = principal,
             ds = ds,
             sql = sql,
             channel = Channel.EDITOR,
-            catalog = datasourceStore.catalog(ds.id),
+            catalog = catalog,
             policyStore = policyStore,
             accessStore = accessStore,
             userGroupStore = userGroupStore,
@@ -535,7 +554,14 @@ fun Route.approvalRoutes(
             requestedDurationSec = input.requestedDurationSec,
             actor = call.auditActor(config),
             recorder = recorder,
+            // The disclosure hint runs on its OWN path — reader-neutral, independent of the authorization
+            // decision above — because whether the TEXT carries a protected value has nothing to do with
+            // whether THIS requester could run it. null (unanalyzable) and true both withhold; only a proven
+            // clean statement (empty) discloses.
+            carriesProtectedLiteral = protectedPredicateLiterals(ds, sql, catalog)?.isNotEmpty(),
+            onCreated = { c, taskId, roleName -> notifications?.emitRequested(c, taskId, principal, ds, roleName) },
         )
+        notifications?.wake()
         call.respond(HttpStatusCode.Created, CreateApprovalResponse(request, wouldAllow = decision.action == EnfAction.ALLOW))
     }
 
@@ -628,7 +654,9 @@ fun Route.approvalRoutes(
         val updated = accessStore.decideQueryRequest(
             id, approved = true, rejectionReason = null, decidedBy = principal,
             actor = call.auditActor(config), recorder = recorder,
+            onDecided = { c, decided -> notifications?.emit(c, NotificationEvent.TASK_DECIDED, decided) },
         ) ?: return@post call.respond(HttpStatusCode.Conflict, ApiError("approval.already_decided"))
+        notifications?.wake()
         call.application.environment.log.info(
             "query approval approved request={} requester={} decider={} sourceDecisionId={}",
             id,
@@ -656,7 +684,9 @@ fun Route.approvalRoutes(
         val updated = accessStore.decideQueryRequest(
             id, approved = false, rejectionReason = body.reason.trim(), decidedBy = principal,
             actor = call.auditActor(config), recorder = recorder,
+            onDecided = { c, decided -> notifications?.emit(c, NotificationEvent.TASK_DECIDED, decided) },
         ) ?: return@post call.respond(HttpStatusCode.Conflict, ApiError("approval.already_decided"))
+        notifications?.wake()
         call.application.environment.log.info(
             "query approval rejected request={} requester={} decider={} sourceDecisionId={}",
             id,
@@ -698,6 +728,7 @@ fun Route.approvalRoutes(
             // A cancel can win the CAS before the run coroutine unwinds — push CANCELLED now to both parties
             // so a watching tab reflects it at once (best-effort; the coroutine's terminal push + the poll cover it).
             taskCompletionHub?.publish(listOf(req.principal, req.decidedBy).filterNotNull(), TaskEvent(id, "CANCELLED"))
+            accessStore.getRequest(id)?.let { notifications?.enqueueTerminal(it) }
         }
         val updated = accessStore.getRequest(id)
             ?: return@post call.respond(HttpStatusCode.NotFound, ApiError("common.not_found", mapOf("resource" to "query approval request")))
@@ -760,72 +791,13 @@ fun Route.approvalRoutes(
         }
 
         appScope.launch {
-            val failureCode = try {
-                // The approver executes the approved SQL: the run is initiated by and attributed to the
-                // approver (the authenticated caller of /execute), so the ephemeral token, the connection
-                // binding, and the execution audit all carry the approver's identity. execute-as R is
-                // enforced separately via assumeRoles — the role the decision runs AS, not who runs it.
-                val response = runExecService.run(
-                    principal = executor,
-                    ds = ds,
-                    sql = sql,
-                    maxRows = 5000,
-                    approverExec = true,
-                    assumeRoles = executeAs,
-                    requesterIp = requesterIp,
-                    taskId = id,
-                    preflight = { store.meta(id)?.status == "RUNNING" },
-                    exchangeTimeoutMs = config.queryExchangeTimeoutMs,
-                )
-                if (response.decision == EnfAction.DENY) {
-                    "approval.execute_denied"
-                } else {
-                    val result = DecryptedResult(response.columns, response.rows)
-                    // Child DONE, parent EXECUTED, and the execution audit all commit in ONE transaction:
-                    // a crash can never leave a readable DONE child under a non-EXECUTED task. If the parent
-                    // has left EXECUTING (e.g. a restart already reconciled it to FAILED), the flip fails and
-                    // aborts the whole commit — the child stays RUNNING and the failure path below transitions
-                    // both consistently.
-                    val completed = store.completeRun(id, result, QueryResultStore.RESULT_RETENTION_SEC) { conn, _ ->
-                        if (!accessStore.markExecuted(id, conn)) {
-                            throw IllegalStateException("task $id left EXECUTING before completion")
-                        }
-                        auditStore.insert(conn, e3Record(executor, req, "result-executed", Channel.WORKFLOW_EXECUTOR))
-                    }
-                    if (completed != null) {
-                        call.application.environment.log.info(
-                            "query approval executed request={} requester={} executor={} rows={}",
-                            id, req.principal, executor, result.rows.size,
-                        )
-                        null
-                    } else {
-                        "approval.query_failed"
-                    }
-                }
-            } catch (_: RunCanceledBeforeStartException) {
-                null
-            } catch (_: NoProxyAttachedException) {
-                "query.no_proxy_attached"
-            } catch (_: ProxyRunTimeoutException) {
-                "query.proxy_timeout"
-            } catch (_: ProxyRunException) {
-                "approval.query_failed"
-            } catch (t: Throwable) {
-                call.application.environment.log.error("query approval execution failed request=$id", t)
-                "approval.query_failed"
-            }
-            if (failureCode != null) {
-                // Child FAILED and parent FAILED commit in ONE transaction (mirrors the success path's
-                // single-commit EXECUTED/DONE): a crash can never leave a FAILED child under a still-EXECUTING
-                // task, nor the inverse — the split that boot reconcile would otherwise have to repair.
-                runCatching { store.failRun(id, failureCode) { conn, _ -> accessStore.markFailed(id, conn) } }
-                    .onFailure { call.application.environment.log.error("task failure transition failed request=$id", it) }
-            }
-            // Push the ACTUAL terminal state (EXECUTED / FAILED / or CANCELLED if a cancel raced) to both
-            // parties' SSE streams so a watching tab updates at once; best-effort, the tab also polls.
-            accessStore.getRequest(id)?.status?.let {
-                taskCompletionHub?.publish(listOf(req.principal, executor), TaskEvent(id, it))
-            }
+            runApprovedTask(
+                id = id, executor = executor, ds = ds, sql = sql, executeAs = executeAs,
+                requesterIp = requesterIp, requesterPrincipal = req.principal, req = req,
+                config = config, accessStore = accessStore, store = store, auditStore = auditStore,
+                runExecService = runExecService, taskCompletionHub = taskCompletionHub,
+                notifications = notifications, log = call.application.environment.log,
+            )
         }
         call.respond(HttpStatusCode.Accepted, ExecuteApprovalResponse(decision = "EXECUTING"))
     }
@@ -927,5 +899,109 @@ fun Route.approvalRoutes(
                 )
             }
         }
+    }
+}
+
+/**
+ * Run an approved task under its execute-as role set, then terminalize it.
+ *
+ * Shared by the HTTP `/execute` route and the Slack approve-and-run adapter, so a decision reached from
+ * either surface runs through ONE lifecycle rather than two copies of it. The caller has already claimed the
+ * task (APPROVED → EXECUTING with a RUNNING child, in one transaction), so this owns only the run and the
+ * terminal transition.
+ *
+ * The run is initiated by and attributed to [executor] — the ephemeral token, the connection binding, and the
+ * execution audit all carry their identity. Execute-as R is enforced separately via [executeAs]: the role the
+ * decision runs AS, never who runs it.
+ */
+internal suspend fun runApprovedTask(
+    id: Long,
+    executor: String,
+    ds: Datasource,
+    sql: String,
+    executeAs: Set<String>,
+    requesterIp: String?,
+    requesterPrincipal: String,
+    req: AccessRequest,
+    config: Config,
+    accessStore: AccessStore,
+    store: QueryResultStore,
+    auditStore: AuditStore,
+    runExecService: RunExecService,
+    taskCompletionHub: TaskCompletionHub?,
+    notifications: NotificationService?,
+    log: org.slf4j.Logger,
+) {
+    val dsName = req.datasourceId?.let { req.datasourceName } ?: "?"
+    fun lifecycleRecord(event: String, channel: Channel) = AuditEvent(
+        principal = executor, datasource = dsName,
+        statement = "approval #$id $event",
+        decision = Decision.ALLOW, detail = "APPROVER_EXEC $event",
+        channel = channel.contextValue, kind = "approval_lifecycle",
+    )
+
+    val failureCode = try {
+        val response = runExecService.run(
+            principal = executor,
+            ds = ds,
+            sql = sql,
+            maxRows = 5000,
+            approverExec = true,
+            assumeRoles = executeAs,
+            requesterIp = requesterIp,
+            taskId = id,
+            preflight = { store.meta(id)?.status == "RUNNING" },
+            exchangeTimeoutMs = config.queryExchangeTimeoutMs,
+        )
+        if (response.decision == EnfAction.DENY) {
+            "approval.execute_denied"
+        } else {
+            val result = DecryptedResult(response.columns, response.rows)
+            // Child DONE, parent EXECUTED, and the execution audit all commit in ONE transaction: a crash can
+            // never leave a readable DONE child under a non-EXECUTED task. If the parent has left EXECUTING
+            // (e.g. a restart already reconciled it to FAILED), the flip fails and aborts the whole commit —
+            // the child stays RUNNING and the failure path below transitions both consistently.
+            val completed = store.completeRun(id, result, QueryResultStore.RESULT_RETENTION_SEC) { conn, _ ->
+                if (!accessStore.markExecuted(id, conn)) {
+                    throw IllegalStateException("task $id left EXECUTING before completion")
+                }
+                auditStore.insert(conn, lifecycleRecord("result-executed", Channel.WORKFLOW_EXECUTOR))
+            }
+            if (completed != null) {
+                log.info(
+                    "query approval executed request={} requester={} executor={} rows={}",
+                    id, requesterPrincipal, executor, result.rows.size,
+                )
+                null
+            } else {
+                "approval.query_failed"
+            }
+        }
+    } catch (_: RunCanceledBeforeStartException) {
+        null
+    } catch (_: NoProxyAttachedException) {
+        "query.no_proxy_attached"
+    } catch (_: ProxyRunTimeoutException) {
+        "query.proxy_timeout"
+    } catch (_: ProxyRunException) {
+        "approval.query_failed"
+    } catch (t: Throwable) {
+        log.error("query approval execution failed request=$id", t)
+        "approval.query_failed"
+    }
+    if (failureCode != null) {
+        // Child FAILED and parent FAILED commit in ONE transaction (mirrors the success path's single-commit
+        // EXECUTED/DONE): a crash can never leave a FAILED child under a still-EXECUTING task, nor the
+        // inverse — the split that boot reconcile would otherwise have to repair.
+        runCatching { store.failRun(id, failureCode) { conn, _ -> accessStore.markFailed(id, conn) } }
+            .onFailure { log.error("task failure transition failed request=$id", it) }
+    }
+    // Push the ACTUAL terminal state (EXECUTED / FAILED / or CANCELLED if a cancel raced) to both parties'
+    // SSE streams so a watching tab updates at once; best-effort, the tab also polls.
+    accessStore.getRequest(id)?.let { finished ->
+        taskCompletionHub?.publish(listOf(requesterPrincipal, executor), TaskEvent(id, finished.status))
+        // Announced after the run settles, so it is not part of the execution transaction; the outbox row is
+        // still written atomically inside enqueueTerminal.
+        notifications?.enqueueTerminal(finished)
     }
 }

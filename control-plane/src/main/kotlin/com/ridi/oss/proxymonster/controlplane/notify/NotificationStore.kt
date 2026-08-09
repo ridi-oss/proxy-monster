@@ -109,6 +109,24 @@ class NotificationStore(private val dataSource: DataSource) {
     fun markRetry(id: Long, error: String, backoff: java.time.Duration) =
         update(id, "PENDING", error, Instant.now().plus(backoff))
 
+    /**
+     * Push a waiting row's next attempt out WITHOUT burning an attempt. Used when an update must wait for an
+     * earlier pending sibling: a bare skip would leave the row due, and the ordered `claimDue` LIMIT would
+     * re-select these low-id no-ops every poll, starving newer notifications while an earlier row is backed
+     * off. Deferring takes the waiter out of the due set until it is worth re-checking.
+     */
+    fun defer(id: Long, backoff: java.time.Duration) {
+        dataSource.connection.use { c ->
+            c.prepareStatement(
+                "UPDATE notification_outbox SET next_attempt_at = ?, updated_at = now() WHERE id = ?",
+            ).use { ps ->
+                ps.setTimestamp(1, Timestamp.from(Instant.now().plus(backoff)))
+                ps.setLong(2, id)
+                ps.executeUpdate()
+            }
+        }
+    }
+
     private fun update(id: Long, status: String, error: String?, nextAttempt: Instant?) {
         dataSource.connection.use { c ->
             c.prepareStatement(

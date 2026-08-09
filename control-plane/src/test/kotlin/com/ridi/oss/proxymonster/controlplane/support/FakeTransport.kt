@@ -27,7 +27,16 @@ class FakeTransport(
     @Volatile var deliverResult: DeliveryResult = DeliveryResult.Sent("ref-fake")
     @Volatile var updateResult: DeliveryResult = DeliveryResult.Sent("ref-fake")
 
-    data class Delivered(val to: String, val event: NotificationEvent, val actions: Set<NotificationAction>)
+    /** When set, deliver() THROWS it — a deterministic render/transport bug, to exercise the poison-row bound. */
+    @Volatile var deliverThrows: Throwable? = null
+
+    data class Delivered(
+        val to: String,
+        val event: NotificationEvent,
+        val actions: Set<NotificationAction>,
+        // The result-derived fact carried to THIS recipient — null for a non-party (the row-count oracle gate).
+        val rowCount: Int? = null,
+    )
     data class Updated(val ref: String, val event: NotificationEvent)
 
     val delivered: MutableList<Delivered> = Collections.synchronizedList(mutableListOf())
@@ -42,8 +51,9 @@ class FakeTransport(
     }
 
     override suspend fun deliver(to: String, message: NotificationMessage, locale: String): DeliveryResult {
-        delivered += Delivered(to, message.event, message.actions)
+        delivered += Delivered(to, message.event, message.actions, message.rowCount)
         deliverSignal.trySend(Unit)
+        deliverThrows?.let { throw it }
         return deliverResult
     }
 

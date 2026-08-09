@@ -116,7 +116,19 @@ enum class Channel(val contextValue: String) {
     WIRE("wire"),
     EDITOR("editor"),
     WORKFLOW_EXECUTOR("workflow-executor"),
+    /**
+     * The whole console-facing side of a workflow task — viewing a stored result AND deciding it (approve /
+     * reject / read-status). One actor, one session, so one channel a policy can scope. NOT
+     * `workflow-executor`: a saved result re-masks here precisely because this value is not that permit.
+     */
     WORKFLOW_VIEWER("workflow-viewer"),
+    /**
+     * A task decided from a Slack click rather than a console session (docs/notifications.md) — no OIDC
+     * session, no attested address, so its own channel a policy can scope or forbid. It carries no
+     * `requester_ip` (an IP-conditioned policy denies), and [system:no-self-approval] does not exempt it —
+     * only the server-attested `editor`/`wire` channels are.
+     */
+    SLACK("slack"),
     MCP("mcp"),
 }
 
@@ -229,6 +241,93 @@ internal fun buildCatalogColumnIndex(
     return CatalogColumnIndex(specs, rowsByKey)
 }
 
+/**
+ * Build the analyzer and the exact catalog key-index for [ds]'s [catalog] (+ any [tempColumns]). The shared
+ * analysis SETUP behind the two INDEPENDENT consumers of a statement — authorization ([decideQuery]) and the
+ * reader-neutral disclosure hint ([protectedPredicateLiterals]) — so neither re-derives it and, more to the
+ * point, neither is entangled with the other's control flow. Throws on a catalog/engine configuration error;
+ * each caller maps that to its own outcome.
+ */
+internal fun analyzerAndCatalogIndex(
+    ds: Datasource,
+    catalog: List<CatalogColumn>,
+    tempColumns: List<CatalogColumn>,
+    resolvedSearchPath: List<String>,
+    liveAnsiQuotes: Boolean,
+): Pair<CatalogColumnIndex, Analyzer> {
+    val mysqlCaseMode = ds.engine.requireCaseMode(ds.mysqlLowerCaseTableNames)
+    val namespace = pbNamespace {
+        this.catalog = ds.engine.catalogName(ds.dbName)
+        this.searchPath.addAll(resolvedSearchPath)
+    }
+    val engineConfig = pbEngineConfig {
+        this.engine = ds.engine
+        this.engineVersion = ds.engineVersion ?: ""
+        mysqlCaseMode?.let { this.mysqlLowerCaseTableNames = it }
+        // Only meaningful for MySQL (the proxy observes ANSI_QUOTES off a MySQL session and leaves this
+        // false otherwise); the PostgreSQL engine ignores it regardless.
+        if (liveAnsiQuotes) this.mysqlAnsiQuotes = true
+    }
+    val effectiveCatalog = catalog + tempColumns
+    val specs = effectiveCatalog.map { col ->
+        columnSpec {
+            this.catalog = col.catalog
+            this.identity = relationIdentity {
+                this.schema = col.schema
+                this.table = col.table
+                this.column = col.column
+            }
+            this.dataType = col.sqlType
+            this.pii = col.classification != null
+        }
+    }
+    val analyzer = analyzerFor(namespace, specs, engineConfig)
+    return buildCatalogColumnIndex(effectiveCatalog, specs, analyzer) to analyzer
+}
+
+/**
+ * The reader-neutral disclosure HINT (docs/notifications.md, "The statement in the message"): the classified
+ * columns this statement compares a LITERAL against — values that sit in the query TEXT, where masking cannot
+ * reach them (`WHERE ssn = '987-65-4320'`). Advisory and best-effort, NOT a security boundary: a non-empty
+ * result means a notification should withhold the text; null means the statement wasn't analyzed and is
+ * withheld the same way (unknown, not proven clean).
+ *
+ * Its own path, sharing nothing with authorization but the analyzer above — no principal, no roles, no
+ * verdict, because "does this text carry a value some approver cannot see" has the same answer whoever
+ * composed it and whether or not THEY could run it; it keys on classification, never on a reader. A protected
+ * column merely SELECTED or FILTERED is not here (masking handles the result stream); only a literal VALUE on
+ * a classified column is. Best-effort by construction — absence is NEVER proof of safety. Known blind spots
+ * it does not report, by design: a value reaching a column through a function/CASE/subquery/bound parameter,
+ * a subquery inside a `SET`, and a system-catalog column tagged only by the classification manifest. A hint,
+ * not a guarantee; a missed case shows a statement the console would have shown anyway.
+ */
+fun protectedPredicateLiterals(
+    ds: Datasource,
+    sql: String,
+    catalog: List<CatalogColumn>,
+    tempColumns: List<CatalogColumn> = emptyList(),
+    liveSearchPath: List<String>? = null,
+    liveAnsiQuotes: Boolean = false,
+): List<String>? {
+    val resolvedSearchPath = (liveSearchPath ?: ds.defaultSchemas).ifEmpty { listOf(ds.dbName.ifBlank { "public" }) }
+    val (catalogIndex, facts) = try {
+        val (index, analyzer) = analyzerAndCatalogIndex(ds, catalog, tempColumns, resolvedSearchPath, liveAnsiQuotes)
+        index to analyzer.analyze(sql)
+    } catch (e: Exception) {
+        return null
+    }
+    if (!facts.resolved) return null
+    return facts.predicateLiteralsList.mapNotNull { lit ->
+        val identity = lit.column.identity
+        val key = "${lit.column.catalog}.${identity.schema}.${identity.table}.${identity.column}"
+        // Unknown to the catalog ⇒ cannot be vouched for ⇒ protected. Known ⇒ protected iff it carries a tag
+        // or a mask function; a bare known column is genuinely unclassified.
+        val row = catalogIndex.rowsByKey[key]
+        val classified = row == null || row.classification?.let { it.tags.isNotEmpty() || it.maskFnName != null } == true
+        key.takeIf { classified }
+    }.distinct().sorted()
+}
+
 internal sealed interface CatalogCoverage {
     data object Covered : CatalogCoverage
     data class Denied(val reason: String) : CatalogCoverage
@@ -313,38 +412,10 @@ fun decideQuery(
         return structuralDeny(CATALOG_CONFIGURATION_DENY, emptyList(), failedStage = "catalog").copy(catalogMiss = true)
     }
     val resolvedSearchPath = (liveSearchPath ?: ds.defaultSchemas).ifEmpty { listOf(ds.dbName.ifBlank { "public" }) }
-    val engineVersion = ds.engineVersion
-    val catalogName = ds.engine.catalogName(ds.dbName)
 
     val catalogAndFacts = try {
-        val mysqlCaseMode = ds.engine.requireCaseMode(ds.mysqlLowerCaseTableNames)
-        val namespace = pbNamespace {
-            this.catalog = catalogName
-            this.searchPath.addAll(resolvedSearchPath)
-        }
-        val engineConfig = pbEngineConfig {
-            this.engine = ds.engine
-            this.engineVersion = engineVersion ?: ""
-            mysqlCaseMode?.let { this.mysqlLowerCaseTableNames = it }
-            // Only meaningful for MySQL (the proxy observes ANSI_QUOTES off a MySQL session and leaves this
-            // false otherwise); the PostgreSQL engine ignores it regardless.
-            if (liveAnsiQuotes) this.mysqlAnsiQuotes = true
-        }
-        val effectiveCatalog = catalog + tempColumns
-        val specs = effectiveCatalog.map { col ->
-            columnSpec {
-                this.catalog = col.catalog
-                this.identity = relationIdentity {
-                    this.schema = col.schema
-                    this.table = col.table
-                    this.column = col.column
-                }
-                this.dataType = col.sqlType
-                this.pii = col.classification != null
-            }
-        }
-        val analyzer = analyzerFor(namespace, specs, engineConfig)
-        Triple(buildCatalogColumnIndex(effectiveCatalog, specs, analyzer), factsOverride ?: analyzer.analyze(sql), effectiveCatalog)
+        val (index, analyzer) = analyzerAndCatalogIndex(ds, catalog, tempColumns, resolvedSearchPath, liveAnsiQuotes)
+        index to (factsOverride ?: analyzer.analyze(sql))
     } catch (e: Exception) {
         return structuralDeny(
             "$CATALOG_CONFIGURATION_DENY: ${e.message ?: e.javaClass.simpleName}",

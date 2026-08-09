@@ -47,6 +47,11 @@ data class AccessRequest(
     val executedAt: String? = null,
     val executeAs: List<String> = emptyList(),
     val creatorKind: String? = null,
+    /** Advisory, best-effort hint (NOT a security boundary): true when the statement compares a literal
+     *  against a CLASSIFIED column, so its TEXT should not be forwarded outside the console (the value sits in
+     *  the query, where masking cannot reach it). Reader-neutral — keyed on classification, never on who
+     *  composed it. NULL (never analyzed) is treated as true; absence is not proof the statement is clean. */
+    val statementCarriesProtectedLiteral: Boolean? = null,
 )
 
 @Serializable
@@ -152,6 +157,12 @@ class AccessStore(private val dataSource: DataSource) {
         // Carried on the shared access_request row; not consumed by the query-approval flow (see
         // CreateApprovalInput.requestedDurationSec). Kept for the column the ROLE-elevation path needs.
         requestedDurationSec: Long = 3600,
+        // Advisory hint: whether a literal was compared against a CLASSIFIED column (reader-neutral — see
+        // AccessRequest.statementCarriesProtectedLiteral). NULL when not analyzed → downstream withholds.
+        carriesProtectedLiteral: Boolean? = null,
+        // Queues the "needs approval" notification in the SAME transaction as the insert, so a crash can
+        // never leave a request pending with nobody told. No-op when notifications are not configured.
+        onCreated: ((Connection, Long, String?) -> Unit)? = null,
         // Set on the audited create path (the /api/approvals routes); null on internal/test seeds. When both
         // are present the created request is recorded as a TASK_REQUEST on the insert's transaction.
         actor: AuditActor? = null,
@@ -170,8 +181,9 @@ class AccessStore(private val dataSource: DataSource) {
             val taskId = c.prepareStatement(
                 """INSERT INTO access_request
                    (principal, kind, role_id, datasource_id, deny_reason, source_decision_id, reason, title,
-                    evaluated_decision, requested_duration_sec, execute_as, creator_kind)
-                   VALUES (?, 'QUERY', ?, ?, ?, ?, ?, ?, ?, ?, ?::jsonb, 'WORKFLOW')
+                    evaluated_decision, requested_duration_sec, execute_as, creator_kind,
+                    statement_carries_protected_literal)
+                   VALUES (?, 'QUERY', ?, ?, ?, ?, ?, ?, ?, ?, ?::jsonb, 'WORKFLOW', ?)
                    ON CONFLICT (source_decision_id) WHERE kind = 'QUERY' AND status = 'PENDING' AND source_decision_id IS NOT NULL
                    DO NOTHING
                    RETURNING id""",
@@ -186,6 +198,7 @@ class AccessStore(private val dataSource: DataSource) {
                 ps.setString(8, evaluatedDecision)
                 ps.setLong(9, requestedDurationSec)
                 ps.setString(10, json.encodeToString(stringList, executeAs))
+                if (carriesProtectedLiteral == null) ps.setNull(11, java.sql.Types.BOOLEAN) else ps.setBoolean(11, carriesProtectedLiteral)
                 ps.executeQuery().use { rs ->
                     if (rs.next()) rs.getLong(1) else throw DuplicatePendingQueryRequestException()
                 }
@@ -204,6 +217,7 @@ class AccessStore(private val dataSource: DataSource) {
                     "open query request #$taskId under role '${executeAs.firstOrNull()}'",
                 )
             }
+            onCreated?.invoke(c, taskId, executeAs.firstOrNull())
             taskId
         }
         return getRequest(id)!!
@@ -387,8 +401,12 @@ class AccessStore(private val dataSource: DataSource) {
         decidedBy: String,
         actor: AuditActor,
         recorder: ManagementAuditRecorder,
+        // Queues the decision notification in the SAME transaction as the transition, so a crash can never
+        // leave a request decided with nobody told. No-op when the notification layer is not configured.
+        onDecided: ((Connection, AccessRequest) -> Unit)? = null,
     ): AccessRequest? {
-        val roleName = getRequest(id)?.roleName
+        val before = getRequest(id)
+        val roleName = before?.roleName
         val won = dataSource.inTx { c ->
             decideQueryRequest(id, approved, rejectionReason, decidedBy, c).also { transitioned ->
                 if (transitioned) {
@@ -396,6 +414,18 @@ class AccessStore(private val dataSource: DataSource) {
                         c, actor, AuthzAction.TASK_APPROVE, auditEntity("AccessRequest", id.toString()),
                         if (approved) "approve query request #$id under role '$roleName'" else "reject query request #$id",
                     )
+                    // The row the hook sees carries the decision that just landed: the pre-read plus the
+                    // fields this transaction set, since the UPDATE is not visible to another connection yet.
+                    before?.let { prior ->
+                        onDecided?.invoke(
+                            c,
+                            prior.copy(
+                                status = if (approved) "APPROVED" else "REJECTED",
+                                decidedBy = decidedBy,
+                                rejectionReason = rejectionReason,
+                            ),
+                        )
+                    }
                 }
             }
         }
@@ -682,6 +712,7 @@ class AccessStore(private val dataSource: DataSource) {
         executedAt = getTimestamp("executed_at")?.toInstant()?.toString(),
         executeAs = json.decodeFromString(stringList, getString("execute_as") ?: "[]"),
         creatorKind = getString("creator_kind"),
+        statementCarriesProtectedLiteral = getBoolean("statement_carries_protected_literal").let { if (wasNull()) null else it },
     )
 
     private fun ResultSet.toGrant() = AccessGrant(
@@ -699,7 +730,8 @@ class AccessStore(private val dataSource: DataSource) {
                       (SELECT qr.sql_hash FROM query_result qr WHERE qr.task_id = ar.id ORDER BY qr.id LIMIT 1) AS task_sql_hash,
                       (SELECT qr.executed_by FROM query_result qr WHERE qr.task_id = ar.id ORDER BY qr.id LIMIT 1) AS executed_by,
                       ar.deny_reason, ar.source_decision_id, ar.title, ar.evaluated_decision,
-                      ar.approved_at, ar.executing_at, ar.executed_at, ar.execute_as, ar.creator_kind
+                      ar.approved_at, ar.executing_at, ar.executed_at, ar.execute_as, ar.creator_kind,
+                      ar.statement_carries_protected_literal
                FROM access_request ar LEFT JOIN app_role r ON r.id = ar.role_id
                LEFT JOIN datasource d ON d.id = ar.datasource_id"""
         // The app_role join is filtered to LIVE roles: a grant of a soft-deleted role must resolve to no
@@ -796,7 +828,8 @@ fun Route.accessRoutes(
                     requester = req.principal, approver = req.decidedBy, executedBy = req.executedBy,
                     datasourceName = req.datasourceName, roleName = req.roleName,
                 ),
-                call.httpAuthzContext(config), req.datasourceName,
+                call.httpAuthzContext(config, Channel.WORKFLOW_VIEWER),
+                req.datasourceName,
                 req.datasourceId?.let(datasourceStore::getIncludingDeleted)?.tags.orEmpty(),
             )
             if (decision is AuthzDecision.Deny) {
@@ -827,7 +860,8 @@ fun Route.accessRoutes(
                     requester = req.principal, approver = req.decidedBy, executedBy = req.executedBy,
                     datasourceName = req.datasourceName, roleName = req.roleName,
                 ),
-                call.httpAuthzContext(config), req.datasourceName,
+                call.httpAuthzContext(config, Channel.WORKFLOW_VIEWER),
+                req.datasourceName,
                 req.datasourceId?.let(datasourceStore::getIncludingDeleted)?.tags.orEmpty(),
             )
             if (decision is AuthzDecision.Deny) {

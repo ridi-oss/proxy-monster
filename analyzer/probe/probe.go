@@ -67,6 +67,17 @@ type ProbeResult struct {
 	Functions     []string            `json:"functions"`
 	IsWrite       bool                `json:"isWrite"`
 	RewrittenSQL  *string             `json:"rewrittenSql"`
+	// Base columns a literal is compared against in a predicate, keyed by clause. Deliberately NOT folded
+	// into References: the parity oracle diffs that map field-by-field and produces no such fact.
+	PredicateLiterals []PredicateLiteralRef `json:"predicateLiterals,omitempty"`
+}
+
+// PredicateLiteralRef is one literal-vs-column comparison: the resolved base column key and the clause it
+// sits in. Advisory only — it gates whether statement TEXT may leave the console, never whether the
+// statement runs.
+type PredicateLiteralRef struct {
+	Column string `json:"column"`
+	Clause string `json:"clause"`
 }
 
 // NamespaceConfig resolves unqualified table names — catalog + search path only. Engine-specific
@@ -104,7 +115,9 @@ type prober struct {
 	writeScope    *optimizer.Scope
 
 	references    map[string]map[string]bool
-	opaqueSelects map[exp.Expression]bool
+	// column key -> clause, for every base column a literal is compared against in a predicate.
+	predicateLiterals map[string]string
+	opaqueSelects     map[exp.Expression]bool
 
 	qualifySchema     schema.Schema
 	dialect           *dialects.Dialect // the engine's resolved Dialect — parse, qualify, and generate all share this one instance
@@ -902,9 +915,11 @@ func (p *prober) lineage() ProbeResult {
 		}
 		if w := asExpression(sel.Arg("where")); w != nil {
 			addClause([]exp.Expression{w.This()}, PREDICATE)
+			p.addPredicateLiterals(w.This(), "WHERE")
 		}
 		if h := asExpression(sel.Arg("having")); h != nil {
 			addClause([]exp.Expression{h.This()}, PREDICATE)
+			p.addPredicateLiterals(h.This(), "HAVING")
 		}
 		if g := asExpression(sel.Arg("group")); g != nil {
 			gcols := append([]exp.Expression(nil), g.Expressions()...)
@@ -915,10 +930,12 @@ func (p *prober) lineage() ProbeResult {
 		}
 		if q := asExpression(sel.Arg("qualify")); q != nil {
 			addClause([]exp.Expression{q.This()}, PREDICATE)
+			p.addPredicateLiterals(q.This(), "QUALIFY")
 		}
 		for _, j := range expressionsFor(sel, "joins") {
 			if on := asExpression(j.Arg("on")); on != nil {
 				addClause([]exp.Expression{on}, JOIN)
+				p.addPredicateLiterals(on, "JOIN")
 			}
 			addClause(expressionsFor(j, "using"), JOIN)
 		}
@@ -936,6 +953,16 @@ func (p *prober) lineage() ProbeResult {
 				}
 				addOutputRefs(sel, keys, GROUP_BY)
 			}
+		}
+	}
+
+	// A native UPDATE or DELETE keeps its WHERE on the statement root, not on a Select, so the Select walk
+	// above never reaches it. The protected value in `UPDATE … WHERE ssn = '…'` hides exactly as it does in
+	// a SELECT, and absence of the fact is read as "safe" downstream — so the predicate must be collected.
+	switch p.qroot.Kind() {
+	case exp.KindUpdate, exp.KindDelete:
+		if w := asExpression(p.qroot.Arg("where")); w != nil {
+			p.addPredicateLiterals(w.This(), "WHERE")
 		}
 	}
 
@@ -1502,7 +1529,26 @@ func (p *prober) lineage() ProbeResult {
 		Functions:     p.calledFunctions(),
 		IsWrite:       p.isWrite,
 		RewrittenSQL:  rewrittenSQL,
+		PredicateLiterals: p.predicateLiteralRefs(),
 	}
+}
+
+// predicateLiteralRefs renders the collected literal-vs-column comparisons in a stable order, so a golden
+// file and a proto payload do not churn on map iteration.
+func (p *prober) predicateLiteralRefs() []PredicateLiteralRef {
+	if len(p.predicateLiterals) == 0 {
+		return nil
+	}
+	keys := make([]string, 0, len(p.predicateLiterals))
+	for k := range p.predicateLiterals {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	out := make([]PredicateLiteralRef, 0, len(keys))
+	for _, k := range keys {
+		out = append(out, PredicateLiteralRef{Column: k, Clause: p.predicateLiterals[k]})
+	}
+	return out
 }
 
 // calledFunctions emits the DISTINCT bare names of Anonymous function calls in the statement
@@ -1622,6 +1668,62 @@ func expressionsFromAny(value any) []exp.Expression {
 	default:
 		return nil
 	}
+}
+
+// addPredicateLiterals records every base column a LITERAL is compared against inside one predicate
+// subtree, so the control plane can withhold statement text that carries a protected value
+// (`WHERE ssn = '987-65-4320'` puts the value in the query, where masking cannot reach it).
+//
+// Best-effort by construction. A literal can also reach a column through a function, a CASE, a subquery,
+// or a bound parameter, none of which this sees. That is why the fact may only ever HIDE text: a consumer
+// must treat absence as unknown, never as proof the statement is safe.
+//
+// The analyzer states the fact and stops. It has no role context and must never acquire one — whether a
+// column is CLASSIFIED (reader-neutrally) is the control plane's decision.
+func (p *prober) addPredicateLiterals(root exp.Expression, clause string) {
+	if root == nil {
+		return
+	}
+	for _, node := range root.FindAll(exp.TraitPredicate) {
+		if node == nil || p.enclosingOpaque(node) != nil {
+			continue
+		}
+		// A comparison is interesting only when it actually carries a value. `a.x = b.y` has nothing to
+		// leak; `x = 5`, `x IN ('a','b')`, and `x BETWEEN 1 AND 5` do. Different comparison kinds keep
+		// their operands under different arg names (Between uses low/high, In uses expressions), so the
+		// whole subtree is searched rather than a fixed operand list.
+		if len(node.FindAll(exp.KindLiteral)) == 0 {
+			continue
+		}
+		// Attribute to the columns of THIS comparison only. A column reached through a nested predicate
+		// belongs to that node, which the same walk visits in its own right.
+		for _, col := range node.FindAll(exp.KindColumn) {
+			if nearestPredicate(col) != node {
+				continue
+			}
+			for base := range p.bases([]exp.Expression{col}) {
+				if p.predicateLiterals == nil {
+					p.predicateLiterals = map[string]string{}
+				}
+				// First clause wins: one column compared in several places is still one fact, and the
+				// clause is only for audit legibility.
+				if _, seen := p.predicateLiterals[base]; !seen {
+					p.predicateLiterals[base] = clause
+				}
+			}
+		}
+	}
+}
+
+// nearestPredicate walks up to the closest enclosing comparison, so a column is attributed to the
+// comparison it actually participates in rather than to every predicate above it.
+func nearestPredicate(e exp.Expression) exp.Expression {
+	for cur := e; cur != nil; cur = cur.Parent() {
+		if cur != e && cur.Is(exp.TraitPredicate) {
+			return cur
+		}
+	}
+	return nil
 }
 
 func (p *prober) addRef(ctx string, bases map[string]bool) {

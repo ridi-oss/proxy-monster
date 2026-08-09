@@ -320,6 +320,24 @@ message ColumnResource {
   RelationIdentity identity = 2;
 }
 
+// A literal compared against a base column inside a predicate.
+//
+// `WHERE ssn = '987-65-4320'` puts a protected value in the query itself, where masking cannot reach it
+// -- masking rewrites results, not predicates. A notification that forwards such a statement leaks exactly
+// what the policy protects, so the control plane withholds the text when the column is CLASSIFIED.
+//
+// The analyzer states the FACT and nothing more: it has no role context and must never acquire one, so it
+// says which base columns a literal reaches and the control plane decides -- by classification, reader-
+// neutrally -- what that means. Emission is best-effort by construction (a value can also arrive through a
+// function, a CASE, a subquery, or a bound parameter), which is why this may only ever HIDE text -- never
+// authorize anything.
+message PredicateLiteral {
+  // The resolved base column, through the same lineage resolution the rest of enforcement uses.
+  ColumnResource column = 1;
+  // Where the comparison sits, for audit legibility: WHERE, HAVING, QUALIFY, or JOIN.
+  string clause = 2;
+}
+
 message TableResource {
   string catalog = 1;
   string schema = 2;
@@ -396,4 +414,9 @@ message StatementFacts {
   // The result-read requirements: masked/denied columns, uncovered table scans, called functions, and
   // utility commands. Zero or more; each authorized on its own resource.
   repeated RequireResultReadGrant result_reads = 17;
+  // Base columns a literal is compared against in a predicate. Advisory only: it gates whether the
+  // statement TEXT may be shown outside the console, never whether the statement runs. Absence never
+  // implies safety -- a consumer treats an unanalyzable statement as if it carried one.
+  repeated PredicateLiteral predicate_literals = 18;
+
 }

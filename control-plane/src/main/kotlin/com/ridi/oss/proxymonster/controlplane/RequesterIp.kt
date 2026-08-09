@@ -242,10 +242,9 @@ internal fun ApplicationCall.httpRequesterIp(config: Config): String? {
 }
 
 /**
- * The non-query [AuthzContext] for an HTTP admin/audit/approval route: only `requesterIp` is
- * populated here — `channel` is deliberately left unset (these routes have no query-decision channel, and
- * inventing one would be dishonest; see [com.ridi.oss.proxymonster.controlplane.authz.authorizeWithContext]
- * for the datasource-scoped tag derivation these routes layer on top when a datasource is in scope).
+ * The non-query [AuthzContext] for an HTTP admin/audit/approval route: `requesterIp` from the trusted-edge
+ * resolver, plus [channel] for a route that sits on a named surface — the approve/reject/read routes pass
+ * `workflow-viewer` so a policy can scope console approvals. Admin/audit routes have no channel and pass none.
  */
-internal fun ApplicationCall.httpAuthzContext(config: Config): AuthzContext =
-    AuthzContext(requesterIp = httpRequesterIp(config))
+internal fun ApplicationCall.httpAuthzContext(config: Config, channel: Channel? = null): AuthzContext =
+    AuthzContext(requesterIp = httpRequesterIp(config), channel = channel?.contextValue)

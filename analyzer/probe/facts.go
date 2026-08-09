@@ -220,6 +220,19 @@ func emitLineageFacts(root exp.Expression, eng engine, qualifySchema schema.Sche
 			facts.ResultReads = append(facts.ResultReads, columnGrant(column, pb.MaskedDisposition_MASKED_DISPOSITION_DENY_STATEMENT))
 		}
 	}
+	// Advisory, never authorization: this decides only whether the statement TEXT may be shown outside the
+	// console. An unparseable identity is skipped rather than failing the statement — a fact that can only
+	// hide text must not be able to deny a query.
+	for _, lit := range report.PredicateLiterals {
+		column, ok := columnResourceFromKey(lit.Column)
+		if !ok {
+			continue
+		}
+		facts.PredicateLiterals = append(facts.PredicateLiterals, &pb.PredicateLiteral{
+			Column: column,
+			Clause: lit.Clause,
+		})
+	}
 	if report.IsWrite {
 		seen := map[string]bool{}
 		for _, grant := range facts.ResultReads {

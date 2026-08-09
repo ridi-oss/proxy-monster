@@ -40,6 +40,25 @@ For each statement the analyzer emits, in `StatementFacts`
 Wire-path masking capability is decided after these facts (see
 [Unmaskable wire paths](#unmaskable-wire-paths)).
 
+## Predicate literals — an advisory disclosure fact
+
+`predicate_literals` reports, for each `WHERE` / `HAVING` / `QUALIFY` / join
+predicate that compares a **literal** against a column, the resolved base column
+and its clause. A column-to-column comparison emits nothing.
+
+It is the one fact that is not authorization. It gates whether a statement's
+TEXT may be shown outside the console — `WHERE ssn = '987-65-4320'` puts the
+protected value in the query itself, where masking cannot reach it, since
+masking rewrites results and not predicates. It can only ever HIDE text: it
+never denies a statement, and an unparseable identity is skipped rather than
+failing the statement.
+
+The analyzer states the fact and stops. It has no role context and must never
+acquire one — whether a column is protected is the control plane's decision,
+made against classification. Emission is best-effort by construction (a value
+also reaches a predicate through a function, a `CASE`, a subquery, or a bound
+parameter), so a consumer treats absence as unknown, never as proof of safety.
+
 ## Cedar resource graph and actions
 
 The Cedar schema (`control-plane/src/main/resources/authz/schema.cedarschema`)

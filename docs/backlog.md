@@ -91,6 +91,16 @@ forward work. MySQL leads PostgreSQL in priority.
 
 ## Approval automation
 
+- Broaden predicate-literal detection past direct comparison. A value also
+  reaches a predicate through a function, a `CASE`, a subquery, or a bound
+  parameter, and none of those are reported today. The consumer already fails
+  toward hiding, so each addition narrows over-hiding rather than closing a
+  leak.
+- Per-user notification opt-out. Language is stored per user
+  (`app_user.locale`); a mute switch is the same shape.
+- Email as a second notification transport. The seam exists
+  ([notifications.md](./notifications.md)); it needs an SMTP adapter and a
+  message renderer, and it does not support editing a message in place.
 - Auto mode (stretch): release a narrow set of deny reasons without a human
   approver. Two questions decide whether it is safe — which deny reasons are
   ever eligible for auto-release, and whether the reasoning input is the AST and

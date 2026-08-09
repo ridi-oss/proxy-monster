@@ -15,6 +15,7 @@ import (
 
 	"github.com/ridi-oss/proxy-monster/goproxy/config"
 	"github.com/ridi-oss/proxy-monster/goproxy/cp"
+	"github.com/ridi-oss/proxy-monster/goproxy/drain"
 	"github.com/ridi-oss/proxy-monster/goproxy/introspect"
 	"github.com/ridi-oss/proxy-monster/goproxy/proxytls"
 	"github.com/ridi-oss/proxy-monster/goproxy/run"
@@ -27,6 +28,10 @@ const ambientRefreshInterval = 12 * time.Minute
 // drainTimeout bounds the graceful shutdown: in-flight statements finish and idle connections get a
 // protocol-level shutdown notice, then any connection still live is force-closed and the process exits.
 const drainTimeout = 10 * time.Second
+
+// runDrainTimeout bounds how long shutdown waits for an in-flight editor/approval query to finish before
+// closing the control-plane clients its runExec stream rides — the run-stream analogue of drainTimeout.
+const runDrainTimeout = 10 * time.Second
 
 var refreshMu sync.Mutex
 
@@ -130,17 +135,35 @@ func Run(registry spi.Registry) error {
 		slog.Info("proxy TLS disabled — plaintext (trusted tailnet only); set PM_TLS_CERT + PM_TLS_KEY to enable")
 	}
 
+	// Track in-flight run executions with the same drain primitive the wire server uses, so shutdown lets an
+	// executing editor/approval query finish and idle sessions return. Every open still dials back (spawns
+	// Run): a refusal would strand the control-plane, which has already committed this proxy for the request
+	// and would otherwise wait out its full dial timeout.
+	runs := drain.New()
+	// eventsCtx lets shutdown stop the Events loop — the source of new run dispatches — and wait for it to
+	// return before draining the in-flight runs, so no dispatch can register a run after that wait sees zero.
+	eventsCtx, eventsCancel := context.WithCancel(context.Background())
+	defer eventsCancel() // covers the early serve-error return; the drain path cancels explicitly (idempotent)
+	eventsDone := make(chan struct{})
 	registerAndPushCatalog(configClient, cfg, backend, provider, certChain)
-	go configClient.RunEventsLoop(
-		func() { registerAndPushCatalog(configClient, cfg, backend, provider, certChain) },
-		func() { refreshCatalog(configClient, provider, backend) },
-		func(open spi.RunOpen) {
-			go run.NewRunner(enforcementClient, dbImpl, backend, provider, cfg.QueryTimeout).Run(open)
-		},
-		func(sessionID, schema, table string) {
-			go run.NewTableDetailRunner(configClient, backend, provider).Run(sessionID, schema, table)
-		},
-	)
+	go func() {
+		defer close(eventsDone)
+		configClient.RunEventsLoop(
+			eventsCtx,
+			func() { registerAndPushCatalog(configClient, cfg, backend, provider, certChain) },
+			func() { refreshCatalog(configClient, provider, backend) },
+			func(open spi.RunOpen) {
+				runs.Add()
+				go func() {
+					defer runs.Done()
+					run.NewRunner(enforcementClient, dbImpl, backend, provider, cfg.QueryTimeout).Run(open, runs.Signal())
+				}()
+			},
+			func(sessionID, schema, table string) {
+				go run.NewTableDetailRunner(configClient, backend, provider).Run(sessionID, schema, table)
+			},
+		)
+	}()
 	go func() {
 		for {
 			time.Sleep(ambientRefreshInterval)
@@ -165,9 +188,7 @@ func Run(registry spi.Registry) error {
 	// send idle clients a protocol-level shutdown notice, then close the control-plane clients and exit.
 	// The replacement task is already fronted by the NLB, so reconnects land there.
 	slog.Info("shutting down, draining client connections", "timeout", drainTimeout)
-	ctx, cancel := context.WithTimeout(context.Background(), drainTimeout)
-	defer cancel()
-	server.Drain(ctx)
+	gracefulDrain(runs, eventsCancel, eventsDone, server.Drain)
 	// Serve returns nil once Drain closes the listener. A non-nil error is a genuine serve failure (e.g. a bind
 	// error that raced the signal, which select may pick over the serveErr case); surface it AND exit non-zero
 	// so a supervisor keying on exit code sees it. A clean signalled shutdown (nil) stays exit 0.
@@ -182,6 +203,37 @@ func Run(registry spi.Registry) error {
 	}
 	os.Exit(0)
 	return nil
+}
+
+// gracefulDrain performs the ordered shutdown so a rolling redeploy loses no in-flight work. It signals the
+// run streams (idle editor sessions return so the editor re-homes; an executing query finishes) and stops the
+// Events loop, then drains the wire IMMEDIATELY: the wire is independent of that loop, so it must not wait
+// behind a loop that may still be inside a synchronous catalog refresh (introspection bounded only by its own
+// query timeouts) — closing the listener now stops new connections at once. Only the RUN drain waits
+// UNCONDITIONALLY for the Events loop to return: that loop is the only source of new run dispatches, so
+// runs.Wait must not run until it is gone — otherwise a late dispatch could register a run the wait already
+// counted out, and the client close would then strand it on the control-plane's dial timeout. That wait is
+// unbounded on purpose: a loop that never returns after its context is cancelled is a wedged process, left to
+// the stop timeout's SIGKILL like any other. Both drains are bounded, so the caller can close the
+// control-plane clients those run streams ride without cutting one. Split from Run so this ordering is
+// unit-testable.
+func gracefulDrain(
+	runs *drain.Tracker,
+	eventsCancel context.CancelFunc,
+	eventsDone <-chan struct{},
+	drainWire func(context.Context),
+) {
+	runs.Begin()
+	eventsCancel()
+	wireCtx, cancel := context.WithTimeout(context.Background(), drainTimeout)
+	defer cancel()
+	drainWire(wireCtx)
+	<-eventsDone
+	runCtx, runCancel := context.WithTimeout(context.Background(), runDrainTimeout)
+	defer runCancel()
+	if !runs.Wait(runCtx) {
+		slog.Warn("in-flight run drain timed out; proceeding", "timeout", runDrainTimeout)
+	}
 }
 
 func registerAndPushCatalog(

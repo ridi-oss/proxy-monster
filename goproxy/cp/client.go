@@ -466,21 +466,24 @@ func (c *Client) streamEvents(
 	}
 }
 
-// RunEventsLoop holds the Events stream open and never returns. On a drop it waits eventsReconnectDefault,
-// resyncs (re-registers + re-pushes the catalog, so a control plane that restarted with lost state
-// re-learns this datasource) and reopens.
+// RunEventsLoop holds the Events stream open until ctx is cancelled. On a drop it waits
+// eventsReconnectDefault, resyncs (re-registers + re-pushes the catalog, so a control plane that restarted
+// with lost state re-learns this datasource) and reopens. Cancelling ctx returns the loop, which shutdown
+// uses to stop new run dispatches before it drains the in-flight ones (the run-stream analogue of the wire
+// server closing its listener).
 //
 // The resync runs in the background rather than in line. It introspects the whole catalog, which on a
 // large database takes seconds and retries with its own backoff — done in line, a slow one delays the
 // reopen, and the control plane reports this datasource unattached for exactly that long. The stream is
 // what queries need; the catalog refresh is not, and it re-registers this datasource either way.
 func (c *Client) RunEventsLoop(
+	ctx context.Context,
 	resync func(),
 	onRefresh func(),
 	onOpenRun func(spi.RunOpen),
 	onOpenTableDetail func(sessionID, schema, table string),
 ) {
-	c.runEventsLoop(context.Background(), defaultEventLoopTimings(), resync, onRefresh, onOpenRun, onOpenTableDetail)
+	c.runEventsLoop(ctx, defaultEventLoopTimings(), resync, onRefresh, onOpenRun, onOpenTableDetail)
 }
 
 func (c *Client) runEventsLoop(

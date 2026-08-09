@@ -307,7 +307,7 @@ func TestRunnerMalformedOpen(t *testing.T) {
 			fake, client := runStartFakeCP(t, test.open.SessionID)
 			done := make(chan struct{})
 			go func() {
-				run.NewRunner(client, fixture.runDB, fixture.runTarget, fixture.runProvider, 0).Run(test.open)
+				run.NewRunner(client, fixture.runDB, fixture.runTarget, fixture.runProvider, 0).Run(test.open, nil)
 				close(done)
 			}()
 			if message := runRecv(t, fake); message.GetError() == nil {
@@ -1002,7 +1002,7 @@ func TestRunnerMySQLCancelInFlightKeepsSessionUsable(t *testing.T) {
 	start := time.Now()
 	runSendQuery(fake, "SELECT SLEEP(30)", 20)
 	runWaitForRequests(t, fake, 1)
-	runWaitForMySQLSleep(t, fixture)
+	runWaitForMySQLSleep(t, fixture, "SELECT SLEEP(30)")
 	runSendCancel(fake)
 	runExpectDecision(t, runRecv(t, fake), pb.EnfAction_ALLOW, nil, "")
 	rows := runExpectRows(t, runRecv(t, fake), []string{"SLEEP(30)"})
@@ -1053,6 +1053,106 @@ func TestRunnerCancelWhileIdleIsNoOp(t *testing.T) {
 	runExpectDone(t, runRecv(t, fake), -1)
 }
 
+func TestRunnerDrainReturnsWhenIdle(t *testing.T) {
+	fixture := runSeedMySQL(t)
+	fake, client := runStartFakeCP(t, runSessionID)
+	draining := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		run.NewRunner(client, fixture.runDB, fixture.runTarget, fixture.runProvider, 0).Run(runOpen(fixture), draining)
+		close(done)
+	}()
+
+	select {
+	case <-fake.runReady:
+	case <-time.After(10 * time.Second):
+		t.Fatal("timed out waiting for the runner to start")
+	}
+	if first := runRecv(t, fake); first.GetSessionReady() == nil {
+		t.Fatalf("expected SessionReady, got %v", first)
+	}
+
+	// The runner is idle between statements. A drain must return it without a Close from the control plane,
+	// so the session ends and the editor re-homes to the replacement.
+	close(draining)
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("runner did not return on drain while idle")
+	}
+}
+
+func TestRunnerDrainLetsInFlightStatementFinish(t *testing.T) {
+	fixture := runSeedMySQL(t)
+	fake, client := runStartFakeCP(t, runSessionID)
+	draining := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		run.NewRunner(client, fixture.runDB, fixture.runTarget, fixture.runProvider, 0).Run(runOpen(fixture), draining)
+		close(done)
+	}()
+
+	select {
+	case <-fake.runReady:
+	case <-time.After(10 * time.Second):
+		t.Fatal("timed out waiting for the runner to start")
+	}
+	if first := runRecv(t, fake); first.GetSessionReady() == nil {
+		t.Fatalf("expected SessionReady, got %v", first)
+	}
+
+	// Put a statement in flight, then drain mid-statement. The drain is observed only between statements, so
+	// the running SLEEP must complete and return its row (0 == slept the full duration, not interrupted)
+	// before the runner exits — draining must NOT cut it.
+	runSendQuery(fake, "SELECT SLEEP(2)", 20)
+	runWaitForRequests(t, fake, 1)
+	runWaitForMySQLSleep(t, fixture, "SELECT SLEEP(2)")
+	close(draining)
+
+	runExpectDecision(t, runRecv(t, fake), pb.EnfAction_ALLOW, nil, "")
+	rows := runExpectRows(t, runRecv(t, fake), []string{"SLEEP(2)"})
+	runExpectValues(t, rows, [][]runExpectedValue{{{value: "0"}}})
+	runExpectDone(t, runRecv(t, fake), -1)
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("runner did not exit after the in-flight statement finished")
+	}
+}
+
+func TestRunnerDrainDoesNotStartAQueuedQuery(t *testing.T) {
+	fixture := runSeedMySQL(t)
+	fake, client := runStartFakeCP(t, runSessionID)
+	draining := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		run.NewRunner(client, fixture.runDB, fixture.runTarget, fixture.runProvider, 0).Run(runOpen(fixture), draining)
+		close(done)
+	}()
+
+	select {
+	case <-fake.runReady:
+	case <-time.After(10 * time.Second):
+		t.Fatal("timed out waiting for the runner to start")
+	}
+	if first := runRecv(t, fake); first.GetSessionReady() == nil {
+		t.Fatalf("expected SessionReady, got %v", first)
+	}
+
+	// Drain, then hand the runner a query. A query racing in with the drain must not start a new statement on
+	// a departing proxy: the runner returns without a decision or rows, and the editor re-homes.
+	close(draining)
+	runSendQuery(fake, "SELECT 1", 20)
+
+	runExpectSilence(t, fake, 500*time.Millisecond)
+	select {
+	case <-done:
+	case <-time.After(8 * time.Second):
+		t.Fatal("runner did not exit after draining with a queued query")
+	}
+}
+
 func TestRunnerCloseInFlightCancelsBackend(t *testing.T) {
 	fixture := runSeedMySQL(t)
 	fake, client := runStartFakeCP(t, runSessionID)
@@ -1060,7 +1160,7 @@ func TestRunnerCloseInFlightCancelsBackend(t *testing.T) {
 
 	runSendQuery(fake, "SELECT SLEEP(30)", 20)
 	runWaitForRequests(t, fake, 1)
-	runWaitForMySQLSleep(t, fixture)
+	runWaitForMySQLSleep(t, fixture, "SELECT SLEEP(30)")
 	start := time.Now()
 	runSendClose(fake)
 	waitDone()
@@ -1122,7 +1222,7 @@ func runLaunchOpenConfigured(t *testing.T, fake *runFakeCP, client *cp.Client, f
 	}
 	done := make(chan struct{})
 	go func() {
-		runner.Run(open)
+		runner.Run(open, nil)
 		close(done)
 	}()
 	select {
@@ -1312,14 +1412,16 @@ func runWaitForRequests(t *testing.T, fake *runFakeCP, count int) {
 	t.Fatalf("timed out waiting for %d decision requests", count)
 }
 
-func runWaitForMySQLSleep(t *testing.T, fixture runEngineFixture) {
+func runWaitForMySQLSleep(t *testing.T, fixture runEngineFixture, sleepSQL string) {
 	t.Helper()
 	direct := runOpenMySQLInspector(t, fixture)
 	defer direct.Close()
 	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
 		var count int
-		if err := direct.QueryRow("SELECT COUNT(*) FROM information_schema.PROCESSLIST WHERE INFO LIKE 'SELECT SLEEP(30)%'").Scan(&count); err != nil {
+		if err := direct.QueryRow(
+			"SELECT COUNT(*) FROM information_schema.PROCESSLIST WHERE INFO LIKE ?", sleepSQL+"%",
+		).Scan(&count); err != nil {
 			t.Fatalf("inspect MySQL process list: %v", err)
 		}
 		if count > 0 {
@@ -1327,7 +1429,7 @@ func runWaitForMySQLSleep(t *testing.T, fixture runEngineFixture) {
 		}
 		time.Sleep(25 * time.Millisecond)
 	}
-	t.Fatal("timed out waiting for MySQL SLEEP(30) to start")
+	t.Fatalf("timed out waiting for MySQL %q to start", sleepSQL)
 }
 
 func runWaitForPostgresSleep(t *testing.T, fixture runEngineFixture) {

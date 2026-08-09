@@ -51,7 +51,11 @@ func NewRunner(client spi.RunClient, dbImpl engine.Db, backend spi.BackendTarget
 	return &Runner{client: client, factory: factory, queryTimeout: queryTimeout}
 }
 
-func (r *Runner) Run(open spi.RunOpen) {
+// Run drives one proxy-dialed run stream to completion. draining is closed by shutdown: when it is and no
+// statement is in flight, Run returns so the control-plane session closes and the editor re-homes to the
+// replacement — mirroring how the wire server lets an idle connection go on drain. A statement already
+// executing is never interrupted; the drain is only observed between statements. A nil channel never fires.
+func (r *Runner) Run(open spi.RunOpen, draining <-chan struct{}) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	stream, err := r.client.OpenRunStream(ctx)
@@ -114,7 +118,14 @@ func (r *Runner) Run(open spi.RunOpen) {
 
 	messages = receiveRunMessages(ctx, stream)
 	for {
-		message, ok := <-messages
+		var message *pb.ControlRunMsg
+		var ok bool
+		select {
+		case <-draining:
+			// Idle between statements while shutting down: stop so the session ends and the editor re-homes.
+			return
+		case message, ok = <-messages:
+		}
 		if !ok || message.GetClose() != nil {
 			return
 		}
@@ -124,6 +135,14 @@ func (r *Runner) Run(open spi.RunOpen) {
 		query := message.GetQuery()
 		if query == nil {
 			continue
+		}
+		// Drain takes priority over a query that raced in with it: the outer select can pick the message even
+		// after draining closed (Go picks randomly when both are ready), so re-check and stop rather than begin
+		// a new statement on a departing proxy.
+		select {
+		case <-draining:
+			return
+		default:
 		}
 
 		queryDone := make(chan bool, 1)

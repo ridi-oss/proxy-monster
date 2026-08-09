@@ -1,0 +1,33 @@
+{
+  "task": {
+    "requested": "*{requester}* wants to run {statement} on *{datasource}*{role}",
+    "requested_fallback": "{requester} wants to run a query on {datasource}",
+    "decided_approved": "*{requester}*'s request to run {statement} on *{datasource}* was approved by *{decidedBy}* and is running.",
+    "decided_rejected": "*{requester}*'s request to run {statement} on *{datasource}* was denied by *{decidedBy}*.",
+    "decided_fallback": "{requester}'s request on {datasource} was decided by {decidedBy}",
+    "executed": "*{requester}*'s request to run {statement} on *{datasource}* finished — {rowCount} rows.",
+    "executed_fallback": "{requester}'s request on {datasource} finished",
+    "failed": "*{requester}*'s request to run {statement} on *{datasource}* failed.",
+    "failed_fallback": "{requester}'s request on {datasource} failed",
+    "cancelled": "*{requester}*'s request to run {statement} on *{datasource}* was cancelled.",
+    "cancelled_fallback": "{requester}'s request on {datasource} was cancelled"
+  },
+  "field": {
+    "role": " as *{role}*",
+    "reason": "_{reason}_",
+    "statement_hidden": "a query",
+    "statement_hidden_note": "_The statement is not shown here. Open the request to read it._"
+  },
+  "action": {
+    "approve_and_run": "Approve and run",
+    "deny": "Deny",
+    "open": "Open request"
+  },
+  "reply": {
+    "request_gone": "That request no longer exists.",
+    "already_status": "Already {status} — nothing to do.",
+    "already_done": "This request was already decided — nothing to do.",
+    "not_authorized": "You are not authorized to decide this request.",
+    "run_failed": "Approved, but the run could not be started. Open the request to retry."
+  }
+}

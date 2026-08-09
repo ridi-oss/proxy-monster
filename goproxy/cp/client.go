@@ -17,6 +17,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"google.golang.org/grpc"
@@ -34,6 +35,25 @@ import (
 	enginepb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
 )
+
+// ProtocolVersion is this proxy's proxy<->control-plane wire-protocol version, exchanged at Register so a
+// half-finished rollout (proxy and control-plane on different server-v* releases) fails fast with a clear
+// error instead of a stalled run channel. Bump it on any incompatible wire change. It MUST match the
+// control-plane's CONTROL_PROTOCOL_VERSION; the two are separate constants in separate languages kept in
+// lockstep by hand — a server-v* release always ships both at the same value.
+const ProtocolVersion int32 = 1
+
+// ErrIncompatibleControlPlane means the control-plane speaks a different wire-protocol version than this
+// proxy — a PERMANENT deploy-skew condition, not a transient failure. boot treats it as fatal (refuse to
+// start) rather than retrying, so a half-finished rollout fails fast and legibly instead of attaching and
+// stalling. Covers both the control-plane rejecting our version and an older control-plane that predates the
+// version field (returns 0).
+var ErrIncompatibleControlPlane = errors.New("control-plane wire-protocol version is incompatible with this proxy")
+
+// protocolVersionRejectionMarker is a stable substring of the control-plane's version-mismatch rejection
+// message (control-plane ControlPlaneGrpcService.register). Matching it lets boot treat that FAILED_PRECONDITION
+// as this permanent condition, not a transient register failure to retry. Keep in sync with that message.
+const protocolVersionRejectionMarker = "wire-protocol version"
 
 const (
 	// rpcDeadline bounds every unary call — a control plane that accepts but never completes a call must
@@ -331,7 +351,7 @@ func (c *Client) Register(registrationEngine enginepb.Engine, host string, port 
 	ctx, cancel := context.WithTimeout(context.Background(), rpcDeadline)
 	defer cancel()
 
-	_, err := c.stub.Register(c.outCtx(ctx), &pb.RegisterRequest{
+	resp, err := c.stub.Register(c.outCtx(ctx), &pb.RegisterRequest{
 		Name:               c.datasourceName,
 		Engine:             registrationEngine,
 		Host:               host,
@@ -341,9 +361,24 @@ func (c *Client) Register(registrationEngine enginepb.Engine, host string, port 
 		AdvertiseAddr:      advertiseAddr,
 		AdvertiseCertChain: advertiseCertChain,
 		AdvertiseWireTls:   wireTLS,
+		ProtocolVersion:    ProtocolVersion,
 	})
 	if err != nil {
+		// A control-plane on a LATER protocol rejects our version with FAILED_PRECONDITION — a permanent
+		// deploy skew, so surface it as such (boot refuses to start) rather than a transient register failure.
+		if st, ok := status.FromError(err); ok && st.Code() == codes.FailedPrecondition &&
+			strings.Contains(st.Message(), protocolVersionRejectionMarker) {
+			return fmt.Errorf("%w: %s", ErrIncompatibleControlPlane, st.Message())
+		}
 		return fmt.Errorf("cp: register datasource %q: %w", c.datasourceName, err)
+	}
+	// Mirror check: an OLDER control-plane that predates the version field cannot reject us, so it returns 0.
+	// Refuse to run against it rather than proceed to a run channel it cannot speak.
+	if resp.GetProtocolVersion() != ProtocolVersion {
+		return fmt.Errorf(
+			"%w: control-plane at version %d, this proxy at %d — deploy both from the same server-v* release",
+			ErrIncompatibleControlPlane, resp.GetProtocolVersion(), ProtocolVersion,
+		)
 	}
 	return nil
 }

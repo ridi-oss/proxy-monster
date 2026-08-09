@@ -23,22 +23,41 @@ import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 
 // Floor for a one-shot run token's TTL; the effective TTL grows to cover PM_QUERY_TIMEOUT (see
-// RunExecService.runTokenTtlSeconds). The floor alone must outlast a full-length dial plus a full-length
+// RunExecService.runTokenTtlSeconds). The floor alone must outlast a full-length dial-back + cold-open +
 // exchange, so a short PM_QUERY_TIMEOUT cannot leave a cold session's token expiring mid-statement.
 private const val RUN_TOKEN_TTL_FLOOR_SECONDS = 900L
 // A persistent editor SESSION token outlives many queries; give it a generous absolute TTL (sliding
 // refresh-on-activity is a follow-up) and bound the session with idle-sweep + explicit close. Per-session
 // and revoked on close, so a long TTL is not a standing credential.
 private const val EDITOR_SESSION_TTL_SECONDS = 8 * 3600L
-// Headroom added over PM_QUERY_TIMEOUT for a run token's TTL: covers the dial (DIAL_TIMEOUT_MS), the
-// CP exchange grace (Config.QUERY_EXCHANGE_GRACE_MS), and revalidation buffer, so the token never
-// expires while the statement it authorizes is still in flight. Must stay above DIAL_TIMEOUT_MS with
-// room to spare — a token that dies during a slow cold dial takes the session with it.
-private const val TOKEN_TTL_GRACE_SECONDS = 180L
-// The dial is not just a connect: the proxy also satisfies the connection's opening catalog commands
-// before it reports ready, and on a cold session against a large remote backend that is several schema
-// scans. Measured cold opens took ~26s, so a 10s bound failed them outright while the work was still
-// running.
+// Headroom over PM_QUERY_TIMEOUT for a one-shot run token's TTL. The token must outlive the WHOLE run it
+// authorizes — the stream dial-back (RUN_DIALBACK_TIMEOUT_MS) + the hard-capped backend cold-open
+// (RUN_OPEN_TIMEOUT_MS) + the query exchange (PM_QUERY_TIMEOUT + QUERY_EXCHANGE_GRACE_MS) — so this grace
+// must exceed dial-back + open + the exchange grace (15 + 120 + 150 = 285s), the remainder being a
+// revalidation buffer. The open being HARD-capped (not merely liveness-bounded) keeps that sum finite;
+// ConfigGuardTest pins the arithmetic so a change to any of those bounds cannot silently under-budget this.
+private const val TOKEN_TTL_GRACE_SECONDS = 300L
+// The control-plane dispatched this run earlier and is waiting for the proxy to open a stream for it. When the
+// proxy opens that stream it sends the run's session id as the first frame, so the control-plane can tell WHICH
+// pending run the new stream is for. This bounds only that — the proxy opening the stream and sending the id —
+// which is near-instant when the proxy is alive. A proxy that got the dispatch but cannot open the stream
+// (dead/wedged, or drained between dispatch and dial) fails here rather than hanging; the cold-open that
+// follows is bounded by RUN_NO_PROGRESS_TIMEOUT_MS + RUN_OPEN_TIMEOUT_MS.
+internal const val RUN_DIALBACK_TIMEOUT_MS = 15_000L
+// Once the control-plane knows which run the stream is for, the proxy heartbeats RunProgress while it dials +
+// authenticates the backend and runs its on-open catalog commands, then sends RunServing. The CP waits for
+// RunServing under TWO bounds: this no-progress gap — a dead or cut proxy stops heartbeating and fails fast —
+// AND the absolute ceiling below. A heartbeat proves the PROXY is alive, NOT that the backend is advancing, so
+// a proxy blocked on a wedged backend read keeps ticking; RUN_OPEN_TIMEOUT_MS is what bounds that.
+internal const val RUN_NO_PROGRESS_TIMEOUT_MS = 15_000L
+// Absolute ceiling on the whole cold-open (the dial-back above excluded): even while heartbeats keep the
+// no-progress bound reset, the open cannot exceed this. Sized at the old blind dial budget so a legitimately
+// slow open is not regressed, while a stalled-but-heartbeating one fails here instead of riding the backend
+// read-idle timeout — and, being finite, it keeps the run token's TTL grace (which must outlast the open)
+// sufficient.
+internal const val RUN_OPEN_TIMEOUT_MS = 120_000L
+// The table-detail channel keeps a single fixed dial bound (metadata-only introspection, no cold backend
+// open with liveness heartbeats), so it is unaffected by the run-channel's dial-back/no-progress split.
 internal const val DIAL_TIMEOUT_MS = 120_000L
 // Fallback only: every production path passes Config.queryExchangeTimeoutMs, which tracks
 // PM_QUERY_TIMEOUT plus a grace so the proxy's own watchdog always fires first. This value exists for
@@ -79,9 +98,10 @@ data class OpenEditorSession(
 )
 
 /**
- * Correlates a CP-driven request with the proxy-dialed `RunExec` stream it requested. A session
- * can be claimed exactly once: [attach] atomically removes it from the pending map, so an unknown or
- * duplicate stream is rejected instead of being allowed to share another request's token/query.
+ * Matches a CP-driven request to the proxy-dialed `RunExec` stream that serves it, by the session id the
+ * proxy sends as the stream's first frame. A session can be claimed exactly once: [attach] atomically
+ * removes it from the pending map, so an unknown or duplicate stream is rejected instead of being allowed
+ * to share another request's token/query.
  */
 class RunChannelRegistry {
     private val pending = ConcurrentHashMap<String, PendingSession>()
@@ -266,7 +286,9 @@ class RunExecService(
         taskId: Long? = null,
         preflight: (() -> Boolean)? = null,
         exchangeTimeoutMs: Long = EXCHANGE_TIMEOUT_MS,
-        dialTimeoutMs: Long = DIAL_TIMEOUT_MS,
+        dialTimeoutMs: Long = RUN_DIALBACK_TIMEOUT_MS,
+        noProgressMs: Long = RUN_NO_PROGRESS_TIMEOUT_MS,
+        openTimeoutMs: Long = RUN_OPEN_TIMEOUT_MS,
     ): QueryResponse {
         val started = System.nanoTime()
         val issued = core.dataSource.mintForActivePrincipalLocked(principal, core.userGroupStore) { c ->
@@ -312,6 +334,11 @@ class RunExecService(
             }
 
             val channel = attached
+            // The stream is matched to this run the moment the proxy opens it (its first frame carries the
+            // run's id); the backend cold-open is still in flight. Wait for RunServing, bounding the wait by
+            // lack of progress (each RunProgress heartbeat resets it) so a stalled or broken open fails fast
+            // instead of riding a blind dial budget.
+            awaitServing(channel.inbound, noProgressMs, openTimeoutMs)
             // Keep 0 as the wire "use the proxy's default (500)" sentinel; the proxy re-coerces to [1,5000]
             // and maps 0 -> 500 (wire contract). The gate below vetoes the send if a cancel already won.
             activeRun = taskId?.let { id -> ActiveRun(channel.outbound).also { activeRuns[id] = it } }
@@ -341,6 +368,12 @@ class RunExecService(
             }
             try {
                 attached?.outbound?.trySend(controlRunMsg { close = runClose {} })
+                // Also close inbound so the gRPC handler tears down promptly. RunClose alone is not enough when
+                // the proxy is still cold-opening (it isn't reading control messages yet): closing inbound makes
+                // the handler's next forward-send fail, ending its collect — so the handler and its buffered
+                // frames aren't retained until the proxy's own backend timeout. Idempotent with the handler's
+                // own close on the normal path.
+                attached?.inbound?.close()
             } finally {
                 try {
                     core.tokenStore.revoke(issued.id, principal)
@@ -393,10 +426,12 @@ class RunExecService(
                 ProxyEventsHub.Dispatch.WEDGED -> throw ProxyStreamWedgedException()
             }
             attached = try {
-                withTimeout(DIAL_TIMEOUT_MS) { pending.ready.await() }
+                withTimeout(RUN_DIALBACK_TIMEOUT_MS) { pending.ready.await() }
             } catch (e: TimeoutCancellationException) {
                 throw ProxyRunTimeoutException(e)
             }
+            // Wait for the backend cold-open to finish (RunServing), bounded by lack of progress — see run().
+            awaitServing(attached.inbound, RUN_NO_PROGRESS_TIMEOUT_MS, RUN_OPEN_TIMEOUT_MS)
             openSessions[sessionId] = OpenEditorSession(
                 sessionId, principal, issued.id, ds.name, attached, opened.connectionId,
                 requesterIp = requesterIp, tokenHash = issuedTokenHash,
@@ -409,6 +444,9 @@ class RunExecService(
                 attached = withContext(NonCancellable) { pending.ready.await() }
             }
             attached?.outbound?.trySend(controlRunMsg { close = runClose {} })
+            // Close inbound too, so the gRPC handler tears down even when the proxy is still cold-opening and
+            // isn't reading the RunClose yet (see run()'s finally). On success the held session keeps the stream.
+            attached?.inbound?.close()
             runCatching { core.tokenStore.revoke(issued.id, principal) }
             closeConnectionCatalog(opened.connectionId, ds.name)
             core.runRequesterIps.remove(issuedTokenHash)
@@ -545,6 +583,40 @@ class RunExecService(
         }
     }
 
+    /**
+     * Wait for the proxy to finish its backend cold-open and announce RunServing, under two bounds. A stream
+     * closed before serving (a redeploy cutting the run) fails at once; a proxy that stops heartbeating fails
+     * within [noProgressMs]; and — because a RunProgress heartbeat proves the proxy is alive but NOT that its
+     * backend open is advancing — a proxy that keeps ticking while its open is wedged fails at the absolute
+     * [openTimeoutMs] ceiling rather than riding the backend read-idle timeout. A terminal RunError during the
+     * open (backend unreachable, catalog init failed) is surfaced as-is. The stream is already matched to
+     * this run (attached), so every one of these is attributable — there is no blind wait, unlike the old
+     * pre-RunReady gap.
+     */
+    private suspend fun awaitServing(inbound: Channel<ProxyRunMsg>, noProgressMs: Long, openTimeoutMs: Long) {
+        val deadlineNanos = System.nanoTime() + openTimeoutMs * 1_000_000
+        while (true) {
+            val remainingMs = (deadlineNanos - System.nanoTime()) / 1_000_000
+            if (remainingMs <= 0) throw ProxyRunTimeoutException()
+            val result = try {
+                withTimeout(minOf(noProgressMs, remainingMs)) { inbound.receiveCatching() }
+            } catch (e: TimeoutCancellationException) {
+                throw ProxyRunTimeoutException(e)
+            }
+            val message = result.getOrNull()
+                ?: throw ProxyRunException("proxy run stream closed before it was ready to serve")
+            when {
+                message.hasProgress() -> continue
+                message.hasServing() -> return
+                message.hasError() -> {
+                    if (message.error.message == QUERY_TIMEOUT_MESSAGE) throw ProxyRunTimeoutException()
+                    throw ProxyRunException(message.error.message.ifBlank { "proxy run open failed" })
+                }
+                else -> throw ProxyRunException("proxy sent a run response before it was ready to serve")
+            }
+        }
+    }
+
     private suspend fun collectResponse(inbound: Channel<ProxyRunMsg>, started: Long): QueryResponse {
         var decision: com.ridi.oss.proxymonster.grpc.RunDecision? = null
         var action: EnfAction? = null
@@ -607,6 +679,11 @@ class RunExecService(
                 message.hasSessionReady() -> throw ProxyRunException(
                     "proxy sent RunReady more than once",
                 )
+
+                message.hasServing() -> throw ProxyRunException("proxy sent RunServing more than once")
+
+                // A heartbeat after serving carries no result — ignore it rather than fail the run.
+                message.hasProgress() -> Unit
 
                 else -> throw ProxyRunException("proxy sent an empty run message")
             }

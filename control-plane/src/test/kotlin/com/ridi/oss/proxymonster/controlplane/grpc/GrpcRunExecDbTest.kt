@@ -26,7 +26,9 @@ import com.ridi.oss.proxymonster.grpc.runDone
 import com.ridi.oss.proxymonster.grpc.runError
 import com.ridi.oss.proxymonster.grpc.runResultRows
 import com.ridi.oss.proxymonster.grpc.runRow
+import com.ridi.oss.proxymonster.grpc.runProgress
 import com.ridi.oss.proxymonster.grpc.runReady
+import com.ridi.oss.proxymonster.grpc.runServing
 import com.ridi.oss.proxymonster.grpc.runValue
 import com.ridi.oss.proxymonster.grpc.eventsRequest
 import com.ridi.oss.proxymonster.grpc.proxyRunMsg
@@ -41,6 +43,7 @@ import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.receiveAsFlow
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.supervisorScope
@@ -154,6 +157,9 @@ class GrpcRunExecDbTest {
                 sessionReady = runReady { sessionId = open.sessionId }
             },
         )
+        // RunReady (the run id) is sent first; the CP then waits for RunServing (the backend cold-open
+        // finishing) before it sends the query. A real proxy heartbeats RunProgress; a fast fake just serves.
+        proxyRequests.send(proxyRunMsg { serving = runServing {} })
 
         val outcome = withTimeout(5_000) { result.await() }
         withTimeout(5_000) { proxy.await() }
@@ -342,6 +348,277 @@ class GrpcRunExecDbTest {
     }
 
     @Test
+    fun `a run stream cut before RunServing fails the run fast, not on the dial budget`() = runBlocking {
+        supervisorScope {
+            val event = async { stub.events(eventsRequest { datasourceName = datasource.name }).first() }
+            awaitUntil("Events stream attached") { datasource.name in core.proxyEventsHub.attached() }
+            val result = async { runCatching { service.run("cut-user", datasource, "select 1", 500) } }
+            val open = withTimeout(5_000) { event.await() }.openRunChannel
+
+            // The proxy sends RunReady (its run id), then dies mid-cold-open: it closes the stream WITHOUT ever
+            // sending RunServing (the redeploy-cut scenario). Because the stream was already matched to the run,
+            // the CP sees the broken stream at once and fails the run — it does not ride out the dial budget.
+            val proxyRequests = Channel<ProxyRunMsg>(Channel.UNLIMITED)
+            val proxy = async { stub.runExec(proxyRequests.receiveAsFlow()).collect {} }
+            proxyRequests.send(proxyRunMsg { sessionReady = runReady { sessionId = open.sessionId } })
+            proxyRequests.close()
+
+            val failure = withTimeout(5_000) { result.await() }.exceptionOrNull()
+            assertIs<ProxyRunException>(failure)
+            assertEquals(0, activeEditorTokens("cut-user"), "a cold-open cut before serving must revoke its token")
+            withTimeout(5_000) { proxy.await() }
+        }
+    }
+
+    @Test
+    fun `an openSession cut before RunServing fails the open fast and revokes its session token`() = runBlocking {
+        supervisorScope {
+            val event = async { stub.events(eventsRequest { datasourceName = datasource.name }).first() }
+            awaitUntil("Events stream attached") { datasource.name in core.proxyEventsHub.attached() }
+            // The persistent editor path (openSession) must fail-close on a cold-open cut exactly like the
+            // one-shot run() path above: the proxy sends RunReady then dies before RunServing, and openSession
+            // must fail fast and revoke its per-session token instead of returning a session id whose stream is
+            // already dead. Exercises openSession's own cleanup path, not just run()'s.
+            val opened = async { runCatching { service.openSession("cut-session-user", datasource) } }
+            val open = withTimeout(5_000) { event.await() }.openRunChannel
+
+            val proxyRequests = Channel<ProxyRunMsg>(Channel.UNLIMITED)
+            val proxy = async { stub.runExec(proxyRequests.receiveAsFlow()).collect {} }
+            proxyRequests.send(proxyRunMsg { sessionReady = runReady { sessionId = open.sessionId } })
+            proxyRequests.close()
+
+            val failure = withTimeout(5_000) { opened.await() }.exceptionOrNull()
+            assertIs<ProxyRunException>(failure)
+            assertEquals(
+                0, activeEditorTokens("cut-session-user"),
+                "a cut openSession cold-open must revoke its session token",
+            )
+            withTimeout(5_000) { proxy.await() }
+        }
+    }
+
+    @Test
+    fun `a cold-open that stops heartbeating after RunReady fails at the no-progress bound`() = runBlocking {
+        supervisorScope {
+            val event = async { stub.events(eventsRequest { datasourceName = datasource.name }).first() }
+            awaitUntil("Events stream attached") { datasource.name in core.proxyEventsHub.attached() }
+            // A short no-progress bound: waiting out the production one would only slow the test.
+            val result = async {
+                runCatching { service.run("stall-user", datasource, "select 1", 500, noProgressMs = 750) }
+            }
+            val open = withTimeout(5_000) { event.await() }.openRunChannel
+
+            // The proxy sends RunReady, then stalls: it holds the stream open but never heartbeats and never serves.
+            // The no-progress bound fires — a slow-but-live open would have kept the bound reset with heartbeats.
+            val proxyRequests = Channel<ProxyRunMsg>(Channel.UNLIMITED)
+            val proxy = async { stub.runExec(proxyRequests.receiveAsFlow()).collect {} }
+            proxyRequests.send(proxyRunMsg { sessionReady = runReady { sessionId = open.sessionId } })
+
+            val failure = withTimeout(5_000) { result.await() }.exceptionOrNull()
+            assertIs<ProxyRunTimeoutException>(failure)
+            assertEquals(0, activeEditorTokens("stall-user"), "a stalled cold-open must revoke its token")
+            proxyRequests.close()
+            withTimeout(5_000) { proxy.await() }
+        }
+    }
+
+    @Test
+    fun `RunProgress heartbeats reset the no-progress bound so a slow-but-live open serves`() = runBlocking {
+        supervisorScope {
+            val event = async { stub.events(eventsRequest { datasourceName = datasource.name }).first() }
+            awaitUntil("Events stream attached") { datasource.name in core.proxyEventsHub.attached() }
+            // Short no-progress bound; the open heartbeats in gaps well under it, for a TOTAL longer than the
+            // bound. It can only serve if each heartbeat RESETS the bound — a single deadline from the first
+            // frame would fire mid-way.
+            val result = async {
+                runCatching { service.run("live-user", datasource, "select 1", 500, noProgressMs = 600) }
+            }
+            val open = withTimeout(5_000) { event.await() }.openRunChannel
+
+            val proxyRequests = Channel<ProxyRunMsg>(Channel.UNLIMITED)
+            val proxy = async {
+                stub.runExec(proxyRequests.receiveAsFlow()).collect { control ->
+                    when {
+                        control.hasQuery() -> {
+                            proxyRequests.send(proxyRunMsg { decision = runDecision { decision = WireEnfAction.ALLOW } })
+                            proxyRequests.send(proxyRunMsg { done = runDone { rowsAffected = -1 } })
+                        }
+                        control.hasClose() -> proxyRequests.close()
+                        else -> fail("control plane sent an empty editor control message")
+                    }
+                }
+            }
+            proxyRequests.send(proxyRunMsg { sessionReady = runReady { sessionId = open.sessionId } })
+            repeat(8) {
+                delay(200)
+                proxyRequests.send(proxyRunMsg { progress = runProgress {} })
+            }
+            proxyRequests.send(proxyRunMsg { serving = runServing {} })
+
+            val response = withTimeout(10_000) { result.await() }.getOrThrow()
+            assertEquals(EnfAction.ALLOW, response.decision)
+            proxy.cancel()
+        }
+    }
+
+    @Test
+    fun `a RunError during the cold-open surfaces as-is instead of waiting to serve`() = runBlocking {
+        supervisorScope {
+            val event = async { stub.events(eventsRequest { datasourceName = datasource.name }).first() }
+            awaitUntil("Events stream attached") { datasource.name in core.proxyEventsHub.attached() }
+            val result = async { runCatching { service.run("open-err-user", datasource, "select 1", 500) } }
+            val open = withTimeout(5_000) { event.await() }.openRunChannel
+
+            val proxyRequests = Channel<ProxyRunMsg>(Channel.UNLIMITED)
+            val proxy = async { stub.runExec(proxyRequests.receiveAsFlow()).collect {} }
+            proxyRequests.send(proxyRunMsg { sessionReady = runReady { sessionId = open.sessionId } })
+            // The backend open fails mid-flight, before serving.
+            proxyRequests.send(proxyRunMsg { error = runError { message = "backend connection failed: connection refused" } })
+
+            val failure = withTimeout(5_000) { result.await() }.exceptionOrNull()
+            assertIs<ProxyRunException>(failure)
+            assertEquals("backend connection failed: connection refused", failure.message)
+            assertEquals(0, activeEditorTokens("open-err-user"), "a failed cold-open must revoke its token")
+            proxyRequests.close()
+            withTimeout(5_000) { proxy.await() }
+        }
+    }
+
+    @Test
+    fun `a cold-open that heartbeats but never serves fails at the absolute ceiling`() = runBlocking {
+        supervisorScope {
+            val event = async { stub.events(eventsRequest { datasourceName = datasource.name }).first() }
+            awaitUntil("Events stream attached") { datasource.name in core.proxyEventsHub.attached() }
+            // The proxy heartbeats faster than the no-progress bound but never serves (its backend read is
+            // wedged though the proxy is alive). Only the absolute open ceiling can end this — a heartbeat is
+            // liveness, not backend progress. Short ceiling so the test is fast.
+            val result = async {
+                runCatching { service.run("wedged-user", datasource, "select 1", 500, noProgressMs = 5_000, openTimeoutMs = 800) }
+            }
+            val open = withTimeout(5_000) { event.await() }.openRunChannel
+
+            val proxyRequests = Channel<ProxyRunMsg>(Channel.UNLIMITED)
+            val proxy = async { stub.runExec(proxyRequests.receiveAsFlow()).collect {} }
+            proxyRequests.send(proxyRunMsg { sessionReady = runReady { sessionId = open.sessionId } })
+            val heartbeat = launch {
+                while (isActive) {
+                    proxyRequests.trySend(proxyRunMsg { progress = runProgress {} })
+                    delay(100)
+                }
+            }
+
+            val failure = withTimeout(5_000) { result.await() }.exceptionOrNull()
+            assertIs<ProxyRunTimeoutException>(failure)
+            assertEquals(0, activeEditorTokens("wedged-user"), "a ceiling-timed-out open must revoke its token")
+            heartbeat.cancel()
+            proxyRequests.close()
+            withTimeout(5_000) { proxy.await() }
+        }
+    }
+
+    @Test
+    fun `an abandoned one-shot run tears down the gRPC handler, not retaining it until the proxy ends`() = runBlocking {
+        supervisorScope {
+            val event = async { stub.events(eventsRequest { datasourceName = datasource.name }).first() }
+            awaitUntil("Events stream attached") { datasource.name in core.proxyEventsHub.attached() }
+            // Short ceiling; the proxy heartbeats forever and never serves, so run() abandons at the ceiling.
+            val result = async {
+                runCatching { service.run("leak-user", datasource, "select 1", 500, noProgressMs = 5_000, openTimeoutMs = 600) }
+            }
+            val open = withTimeout(5_000) { event.await() }.openRunChannel
+
+            val proxyRequests = Channel<ProxyRunMsg>(Channel.UNLIMITED)
+            val proxy = async { stub.runExec(proxyRequests.receiveAsFlow()).collect {} }
+            proxyRequests.send(proxyRunMsg { sessionReady = runReady { sessionId = open.sessionId } })
+            val heartbeat = launch {
+                while (isActive) {
+                    proxyRequests.trySend(proxyRunMsg { progress = runProgress {} })
+                    delay(100)
+                }
+            }
+
+            assertIs<ProxyRunTimeoutException>(withTimeout(5_000) { result.await() }.exceptionOrNull())
+            // The handler must end on abandon (run() closes inbound), so the proxy's stream completes WITHOUT
+            // the test closing proxyRequests. Without that teardown the handler keeps forwarding heartbeats and
+            // this awaits forever.
+            withTimeout(5_000) { proxy.await() }
+            proxyRequests.close()
+            heartbeat.cancel()
+        }
+    }
+
+    // A separate server whose runExec handler bounds only the first frame by [firstFrameMs] — short, so the
+    // "no overall stream cap" behavior can be exercised without a multi-minute wait.
+    private fun shortFirstFrameServer(firstFrameMs: Long): Pair<ControlPlaneGrpcKt.ControlPlaneCoroutineStub, () -> Unit> {
+        val srv = GrpcServer(0, ControlPlaneGrpcService(core, firstFrameMs), secretToken = null).also { it.start() }
+        val ch = NettyChannelBuilder.forAddress("localhost", srv.boundPort).usePlaintext().build()
+        val stub = ControlPlaneGrpcKt.ControlPlaneCoroutineStub(ch)
+        return stub to {
+            ch.shutdownNow().awaitTermination(5, TimeUnit.SECONDS)
+            srv.shutdown()
+        }
+    }
+
+    @Test
+    fun `a RunExec stream that sends no first frame is reaped at the first-frame bound, not parked forever`() = runBlocking {
+        val (shortStub, cleanup) = shortFirstFrameServer(400)
+        // A stream the proxy opens but never identifies (no RunReady) and never closes.
+        val silent = Channel<ProxyRunMsg>(Channel.UNLIMITED)
+        try {
+            val started = System.nanoTime()
+            val failure = runCatching { shortStub.runExec(silent.receiveAsFlow()).collect() }.exceptionOrNull()
+            val elapsedMs = (System.nanoTime() - started) / 1_000_000
+            assertIs<StatusException>(failure)
+            assertEquals(Status.Code.DEADLINE_EXCEEDED, failure.status.code)
+            assertTrue(elapsedMs < 5_000, "a silent stream must be reaped near the 400ms bound, not parked (was ${elapsedMs}ms)")
+        } finally {
+            silent.close()
+            cleanup()
+        }
+    }
+
+    @Test
+    fun `an attached editor session outlives the first-frame bound — no overall cap cuts a live session`() = runBlocking {
+        val (shortStub, cleanup) = shortFirstFrameServer(400)
+        try {
+            supervisorScope {
+                val event = async { shortStub.events(eventsRequest { datasourceName = datasource.name }).first() }
+                awaitUntil("Events stream attached") { datasource.name in core.proxyEventsHub.attached() }
+                val sessionIdDeferred = async { service.openSession("live-session-user", datasource) }
+                val open = withTimeout(5_000) { event.await() }.openRunChannel
+
+                val proxyRequests = Channel<ProxyRunMsg>(Channel.UNLIMITED)
+                val proxy = async {
+                    shortStub.runExec(proxyRequests.receiveAsFlow()).collect { control ->
+                        when {
+                            control.hasQuery() -> {
+                                proxyRequests.send(proxyRunMsg { decision = runDecision { decision = WireEnfAction.ALLOW } })
+                                proxyRequests.send(proxyRunMsg { done = runDone { rowsAffected = -1 } })
+                            }
+                            control.hasClose() -> proxyRequests.close()
+                            else -> fail("control plane sent an empty editor control message")
+                        }
+                    }
+                }
+                proxyRequests.send(proxyRunMsg { sessionReady = runReady { sessionId = open.sessionId } })
+                proxyRequests.send(proxyRunMsg { serving = runServing {} })
+                val sessionId = withTimeout(5_000) { sessionIdDeferred.await() }
+
+                // Hold the attached stream idle PAST the 400ms first-frame bound. The old fixed overall stream
+                // cap would have force-closed it here; there is none now, so the session stays usable.
+                delay(1_200)
+                val response = withTimeout(5_000) { service.runOnSession(sessionId, "live-session-user", "select 1", 500) }
+                assertEquals(EnfAction.ALLOW, response.decision)
+
+                service.closeSessionOwnedBy(sessionId, "live-session-user")
+                withTimeout(5_000) { proxy.await() }
+            }
+        } finally {
+            cleanup()
+        }
+    }
+
+    @Test
     fun `unknown and duplicate session ids fail NOT_FOUND claim-once`() = runBlocking {
         val unknown = statusOf {
             stub.runExec(
@@ -430,6 +707,7 @@ class GrpcRunExecDbTest {
                 }
             }
             proxyRequests.send(proxyRunMsg { sessionReady = runReady { sessionId = open.sessionId } })
+            proxyRequests.send(proxyRunMsg { serving = runServing {} })
 
             val sessionId = withTimeout(5_000) { sessionIdDeferred.await() }
             assertEquals(
@@ -519,6 +797,7 @@ class GrpcRunExecDbTest {
                 }
             }
             proxyRequests.send(proxyRunMsg { sessionReady = runReady { sessionId = open.sessionId } })
+            proxyRequests.send(proxyRunMsg { serving = runServing {} })
             withTimeout(5_000) { querySeen.await() }
             assertTrue(service.cancelActiveRun(taskId))
             withTimeout(5_000) { cancelSeen.await() }
@@ -552,6 +831,7 @@ class GrpcRunExecDbTest {
                     }
                 }
                 requests.send(proxyRunMsg { sessionReady = runReady { sessionId = open.sessionId } })
+                requests.send(proxyRunMsg { serving = runServing {} })
                 return Triple(withTimeout(5_000) { opening.await() }, open.ephemeralToken, closed)
             }
 
@@ -626,6 +906,7 @@ class GrpcRunExecDbTest {
                 }
             }
             proxyRequests.send(proxyRunMsg { sessionReady = runReady { sessionId = open.sessionId } })
+            proxyRequests.send(proxyRunMsg { serving = runServing {} })
             withTimeout(5_000) { runResult.await() }.getOrThrow()
             withTimeout(5_000) { proxy.await() }
             assertNull(

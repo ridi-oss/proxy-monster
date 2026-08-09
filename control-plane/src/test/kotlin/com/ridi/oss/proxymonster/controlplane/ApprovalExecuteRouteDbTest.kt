@@ -13,6 +13,7 @@ import com.ridi.oss.proxymonster.grpc.runDone
 import com.ridi.oss.proxymonster.grpc.runResultRows
 import com.ridi.oss.proxymonster.grpc.runRow
 import com.ridi.oss.proxymonster.grpc.runReady
+import com.ridi.oss.proxymonster.grpc.runServing
 import com.ridi.oss.proxymonster.grpc.runValue
 import com.ridi.oss.proxymonster.grpc.eventsRequest
 import com.ridi.oss.proxymonster.grpc.proxyRunMsg
@@ -255,6 +256,7 @@ class ApprovalExecuteRouteDbTest {
                 }
             }
             proxyRequests.send(proxyRunMsg { sessionReady = runReady { sessionId = open.sessionId } })
+            proxyRequests.send(proxyRunMsg { serving = runServing {} })
 
             val response = withTimeout(5_000) { responseDeferred.await() }
             withTimeout(5_000) { proxy.await() }
@@ -339,6 +341,7 @@ class ApprovalExecuteRouteDbTest {
                 }
             }
             proxyRequests.send(proxyRunMsg { sessionReady = runReady { sessionId = open.sessionId } })
+            proxyRequests.send(proxyRunMsg { serving = runServing {} })
 
             val response = withTimeout(5_000) { responseDeferred.await() }
             withTimeout(5_000) { proxy.await() }
@@ -405,6 +408,7 @@ class ApprovalExecuteRouteDbTest {
                 }
             }
             proxyRequests.send(proxyRunMsg { sessionReady = runReady { sessionId = open.sessionId } })
+            proxyRequests.send(proxyRunMsg { serving = runServing {} })
 
             // The response must come back BEFORE Done — the whole point of the async submit.
             val response = withTimeout(5_000) { responseDeferred.await() }
@@ -453,6 +457,7 @@ class ApprovalExecuteRouteDbTest {
                 }
             }
             proxyRequests.send(proxyRunMsg { sessionReady = runReady { sessionId = open.sessionId } })
+            proxyRequests.send(proxyRunMsg { serving = runServing {} })
             assertEquals(HttpStatusCode.Accepted, withTimeout(5_000) { execute.await() }.status)
             awaitUntil("approval child RUNNING") { resultStore.meta(id)?.status == "RUNNING" }
             assertEquals(true, client.get("/api/approvals/$id").body<ApprovalDetail>().canCancel)

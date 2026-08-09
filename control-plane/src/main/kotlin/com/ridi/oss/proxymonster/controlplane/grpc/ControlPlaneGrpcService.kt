@@ -58,14 +58,29 @@ import com.ridi.oss.proxymonster.grpc.wireIdentity
 import io.grpc.Status
 import io.grpc.StatusException
 import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.channels.ClosedSendChannelException
 import kotlinx.coroutines.channels.awaitClose
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.channelFlow
 import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeout
 
-internal const val RUN_STREAM_TIMEOUT_MS = 15 * 60 * 1000L
+// The run handler bounds only the wait for the FIRST frame (the run's id): a proxy that opens a stream but
+// never identifies its run, or never closes, must not park the handler forever. Once a stream is attached to
+// its run there is no fixed overall cap — its lifetime is the run's or session's own (see runExec). This
+// backstop sits above RUN_DIALBACK_TIMEOUT_MS so the caller's own dial-back timeout reports first on a live
+// run; it only reaps a handler the caller has already given up on.
+internal const val RUN_FIRST_FRAME_TIMEOUT_MS = 30_000L
 private const val TABLE_DETAIL_STREAM_TIMEOUT_MS = 60_000L
+// The proxy<->control-plane wire-protocol version this control-plane speaks, exchanged at Register so a
+// half-finished rollout (proxy and control-plane on different server-v* releases) fails fast with a clear
+// error instead of a stalled run channel. Bump it on any incompatible wire change. It MUST match the proxy's
+// goproxy cp.ProtocolVersion; the two are separate constants in separate languages kept in lockstep by hand —
+// a server-v* release always ships both at the same value.
+internal const val CONTROL_PROTOCOL_VERSION = 1
 
 // The completion-event terminal statuses the proxy reports: a clean finish, a backend/relay error carrying
 // partial counts, or a canceled statement. Any other value is rejected fail-closed so a malformed report
@@ -118,7 +133,7 @@ internal fun editorTempOverlay(
  */
 class ControlPlaneGrpcService(
     private val core: ControlPlaneCore,
-    private val runStreamTimeoutMs: Long = RUN_STREAM_TIMEOUT_MS,
+    private val firstFrameTimeoutMs: Long = RUN_FIRST_FRAME_TIMEOUT_MS,
 ) :
     ControlPlaneGrpcKt.ControlPlaneCoroutineImplBase() {
 
@@ -338,6 +353,22 @@ class ControlPlaneGrpcService(
         if (request.name.isBlank()) {
             throw StatusException(Status.INVALID_ARGUMENT.withDescription("datasource name must not be blank"))
         }
+        // A server-v* release ships the proxy and control-plane at the same wire-protocol version; a mismatch
+        // means a half-finished rollout is talking across versions. Reject it here — the proxy's first call —
+        // with a clear, actionable error rather than let the incompatibility surface later as a stalled run
+        // channel. A proxy that predates the field sends 0, which fails this too. The proxy makes the mirror
+        // check against RegisterResponse.protocol_version, so an OLDER control-plane is refused on that side.
+        // The proxy classifies THIS rejection as fatal by matching the phrase "wire-protocol version" in the
+        // message (goproxy cp.protocolVersionRejectionMarker); keep that phrase in the description below.
+        if (request.protocolVersion != CONTROL_PROTOCOL_VERSION) {
+            throw StatusException(
+                Status.FAILED_PRECONDITION.withDescription(
+                    "proxy wire-protocol version ${request.protocolVersion} is incompatible with this " +
+                        "control-plane's version $CONTROL_PROTOCOL_VERSION — deploy the proxy and " +
+                        "control-plane from the same server-v* release",
+                ),
+            )
+        }
         // Pass the proto Engine through as the domain type, rejecting only the invalid sentinels (the proto3
         // zero value and the generated unrecognized value) — an unset/garbage engine must not silently
         // default to postgres and mis-drive introspection/dialect resolution. Inverting the check this way
@@ -404,7 +435,10 @@ class ControlPlaneGrpcService(
                 ds.name, priorDbName, ds.dbName, dropped.size,
             )
         }
-        return registerResponse { name = ds.name }
+        return registerResponse {
+            name = ds.name
+            protocolVersion = CONTROL_PROTOCOL_VERSION
+        }
     }
 
     override suspend fun pushCatalog(request: CatalogRequest): CatalogResponse {
@@ -458,41 +492,57 @@ class ControlPlaneGrpcService(
     override fun runExec(requests: Flow<ProxyRunMsg>): Flow<ControlRunMsg> = channelFlow {
         var sessionId: String? = null
         var attached: Attached? = null
+        // Bound ONLY the wait for the first frame. There is deliberately no overall stream cap: once the
+        // stream is attached to its run, its lifetime is the run's or session's own — the caller's RunClose
+        // for a one-shot run, and the idle sweep / closeSession / token expiry for a persistent editor session.
+        // A fixed overall cap here would silently cut a live, actively-used session short.
+        val firstFrameTimer = launch {
+            delay(firstFrameTimeoutMs)
+            // The attach cancels this timer, but delay is the only cancellation point — if attach lands after
+            // delay returns, cancel() alone would not stop the throw below from failing the just-attached
+            // stream. Re-check liveness so an attach that raced the deadline wins.
+            ensureActive()
+            throw StatusException(
+                Status.DEADLINE_EXCEEDED.withDescription("RunExec sent no first frame in time"),
+            )
+        }
         try {
-            try {
-                withTimeout(runStreamTimeoutMs) {
-                    requests.collect { message ->
-                        val current = attached
-                        if (current == null) {
-                            if (!message.hasSessionReady()) {
-                                throw StatusException(
-                                    Status.FAILED_PRECONDITION.withDescription(
-                                        "the first RunExec message must be RunReady",
-                                    ),
-                                )
-                            }
-                            val id = message.sessionReady.sessionId
-                            sessionId = id
-                            attached = core.runChannels.attach(id, channel)
-                                ?: throw StatusException(
-                                    Status.NOT_FOUND.withDescription("unknown or already-claimed run session '$id'"),
-                                )
-                        } else {
-                            current.inbound.send(message)
-                        }
-                    }
-                    if (attached == null) {
+            requests.collect { message ->
+                val current = attached
+                if (current == null) {
+                    if (!message.hasSessionReady()) {
                         throw StatusException(
                             Status.FAILED_PRECONDITION.withDescription(
-                                "RunExec closed before RunReady",
+                                "the first RunExec message must be RunReady",
                             ),
                         )
                     }
+                    val id = message.sessionReady.sessionId
+                    sessionId = id
+                    attached = core.runChannels.attach(id, channel)
+                        ?: throw StatusException(
+                            Status.NOT_FOUND.withDescription("unknown or already-claimed run session '$id'"),
+                        )
+                    // Attached — the run/session lifecycle governs the stream from here; drop the first-frame bound.
+                    firstFrameTimer.cancel()
+                } else {
+                    current.inbound.send(message)
                 }
-            } catch (e: TimeoutCancellationException) {
-                throw StatusException(Status.DEADLINE_EXCEEDED.withDescription("run stream lifetime exceeded"))
             }
+            if (attached == null) {
+                throw StatusException(
+                    Status.FAILED_PRECONDITION.withDescription(
+                        "RunExec closed before RunReady",
+                    ),
+                )
+            }
+        } catch (e: ClosedSendChannelException) {
+            // The run consumer closed its inbound while the proxy was still streaming: the run ended
+            // (served-and-done or abandoned at the open ceiling) but this proxy has not closed its side.
+            // That is a normal end of the stream, not a fault — complete it so the proxy sees a clean
+            // close rather than an UNKNOWN status.
         } finally {
+            firstFrameTimer.cancel()
             attached?.inbound?.close()
             sessionId?.let { core.runChannels.remove(it) }
         }

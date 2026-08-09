@@ -4,6 +4,7 @@ package boot
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -145,12 +146,23 @@ func Run(registry spi.Registry) error {
 	eventsCtx, eventsCancel := context.WithCancel(context.Background())
 	defer eventsCancel() // covers the early serve-error return; the drain path cancels explicitly (idempotent)
 	eventsDone := make(chan struct{})
-	registerAndPushCatalog(configClient, cfg, backend, provider, certChain)
+	// A wire-protocol version skew is fatal: refuse to start rather than attach and stall the run channel.
+	if err := registerAndPushCatalog(configClient, cfg, backend, provider, certChain); err != nil {
+		slog.Error("refusing to start — deploy the proxy and control-plane from the same server-v* release", "error", err)
+		return err
+	}
 	go func() {
 		defer close(eventsDone)
 		configClient.RunEventsLoop(
 			eventsCtx,
-			func() { registerAndPushCatalog(configClient, cfg, backend, provider, certChain) },
+			func() {
+				// A re-register (reconnect) that finds a now-incompatible control-plane is equally fatal:
+				// exit so the supervisor replaces this proxy rather than run against a version it cannot speak.
+				if err := registerAndPushCatalog(configClient, cfg, backend, provider, certChain); err != nil {
+					slog.Error("control-plane became version-incompatible on reconnect — exiting", "error", err)
+					os.Exit(1)
+				}
+			},
 			func() { refreshCatalog(configClient, provider, backend) },
 			func(open spi.RunOpen) {
 				runs.Add()
@@ -236,16 +248,25 @@ func gracefulDrain(
 	}
 }
 
+// registerAndPushCatalog registers the datasource and pushes its catalog, retrying transient failures. It
+// returns cp.ErrIncompatibleControlPlane — and only that — as a FATAL error: a wire-protocol version skew is
+// permanent, so retrying cannot fix it and attaching anyway would stall the run channel. Every other failure
+// stays non-fatal (returns nil after the attempts): the proxy starts and fails decisions closed until the
+// control plane has the catalog, so a briefly-unreachable control plane self-heals on reconnect.
 func registerAndPushCatalog(
 	configClient *cp.Client, cfg *config.Config, backend spi.BackendTarget, provider spi.Provider,
 	certChain func() *string,
-) {
+) error {
 	for attempt := 0; attempt < bootRegisterAttempts; attempt++ {
-		if err := configClient.Register(provider.Dialect().Proto(), backend.Host, backend.Port, backend.Db, cfg.DatasourceTags, cfg.AdvertiseAddr, certChain(), cfg.TLSEnabled()); err != nil {
+		err := configClient.Register(provider.Dialect().Proto(), backend.Host, backend.Port, backend.Db, cfg.DatasourceTags, cfg.AdvertiseAddr, certChain(), cfg.TLSEnabled())
+		if errors.Is(err, cp.ErrIncompatibleControlPlane) {
+			return err
+		}
+		if err != nil {
 			slog.Warn("datasource registration failed", "attempt", attempt+1, "of", bootRegisterAttempts, "error", err)
 		} else if refreshCatalog(configClient, provider, backend) {
 			slog.Info("datasource registered + catalog pushed", "datasource", cfg.DatasourceName)
-			return
+			return nil
 		}
 		if attempt < bootRegisterAttempts-1 {
 			backoff := time.Duration(attempt+1) * 2 * time.Second
@@ -254,6 +275,7 @@ func registerAndPushCatalog(
 		}
 	}
 	slog.Error("could not register + push catalog after all attempts — starting anyway; decisions fail closed until the control plane has this datasource's catalog", "attempts", bootRegisterAttempts)
+	return nil
 }
 
 func refreshCatalog(configClient *cp.Client, provider spi.Provider, backend spi.BackendTarget) bool {

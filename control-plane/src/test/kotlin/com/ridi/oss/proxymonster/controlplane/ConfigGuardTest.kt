@@ -62,14 +62,18 @@ class ConfigGuardTest {
         assertFailsWith<IllegalArgumentException> { Config.fromEnv(envOf("PM_QUERY_TIMEOUT" to Long.MAX_VALUE.toString())) }
     }
 
-    @Test fun `run token TTL always outlives the configured query window`() {
-        // The one-shot run token and the editor-session token must both stay valid for at least the full
-        // PM_QUERY_TIMEOUT window a single statement may run for, else a long query fails UNAUTHENTICATED
-        // mid-run when the proxy revalidates the token.
-        for (timeout in listOf(1L, 600L, 3600L, 36_000L, Config.MAX_QUERY_TIMEOUT_SECONDS)) {
+    @Test fun `run token TTL outlives the whole run, session TTL outlives the query window`() {
+        // The one-shot run token must stay valid for the ENTIRE run it authorizes — the dial-back + the
+        // cold-open + the exchange (PM_QUERY_TIMEOUT + exchange grace) — not merely the query window, else a
+        // long query on a slow cold-open fails UNAUTHENTICATED mid-run when the proxy revalidates the token.
+        // The editor-session token's 8h floor spans many queries, so it need only clear one window.
+        val runOverheadSeconds =
+            (RUN_DIALBACK_TIMEOUT_MS + RUN_OPEN_TIMEOUT_MS) / 1000 + Config.QUERY_EXCHANGE_GRACE_MS / 1000
+        // 616 is the smallest timeout at which the old floor-only grace under-budgeted the full run.
+        for (timeout in listOf(1L, 600L, 616L, 3600L, 36_000L, Config.MAX_QUERY_TIMEOUT_SECONDS)) {
             assertTrue(
-                RunExecService.runTokenTtlSeconds(timeout) > timeout,
-                "run token TTL must exceed the query window for timeout=$timeout",
+                RunExecService.runTokenTtlSeconds(timeout) >= timeout + runOverheadSeconds,
+                "run token TTL must cover dial-back + cold-open + exchange for timeout=$timeout",
             )
             assertTrue(
                 RunExecService.editorSessionTtlSeconds(timeout) > timeout,
@@ -78,21 +82,6 @@ class ConfigGuardTest {
         }
     }
 
-    @Test fun `the run stream outlives the dial and exchange it wraps`() {
-        // The stream opens before the proxy reports ready, so its lifetime spans BOTH the dial and the
-        // statement exchange. If it expires first the control plane tears down a statement that is still
-        // legitimately running, and the caller sees a stream-closed error instead of a timeout. The margin
-        // is arithmetic across three files, so pin it here rather than leave it to inspection.
-        for (timeout in listOf(1L, 600L, 840L, 3600L, Config.MAX_QUERY_TIMEOUT_SECONDS)) {
-            val config = Config.fromEnv(envOf("PM_QUERY_TIMEOUT" to timeout.toString()))
-            val streamTimeout = runStreamTimeoutMs(config.queryExchangeTimeoutMs)
-            assertTrue(
-                streamTimeout > DIAL_TIMEOUT_MS + config.queryExchangeTimeoutMs,
-                "run stream ($streamTimeout ms) must outlive dial + exchange " +
-                    "(${DIAL_TIMEOUT_MS + config.queryExchangeTimeoutMs} ms) for timeout=$timeout",
-            )
-        }
-    }
 
     @Test fun `the exchange budget outlives the proxy's own statement watchdog`() {
         // The proxy aborts a statement at PM_QUERY_TIMEOUT. This bound sits outside that one, so it has to

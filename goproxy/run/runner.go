@@ -19,6 +19,10 @@ const (
 	defaultQueryTimeout                         = 600 * time.Second
 	runSocketTimeoutGrace                       = 30 * time.Second
 	streamCloseDrainTimeout                     = 5 * time.Second
+	// How often the proxy heartbeats RunProgress while the backend cold-open is in flight. Must stay well
+	// under the control-plane's no-progress bound (RunExec.RUN_NO_PROGRESS_TIMEOUT_MS) so ordinary jitter
+	// never trips it — several missed beats still leave margin.
+	progressInterval = 3 * time.Second
 )
 
 // QueryTimeoutMessage is the exact RunError message the proxy sends when a statement is aborted by the
@@ -65,6 +69,16 @@ func (r *Runner) Run(open spi.RunOpen, draining <-chan struct{}) {
 	}
 	var messages <-chan *pb.ControlRunMsg
 	defer func() { gracefulCloseStream(ctx, stream, messages) }()
+	// Tell the control-plane which run this stream serves immediately — before validating the open or the
+	// (cold, ~26s) backend open. The session id is the stream's first frame, so the control-plane attaches at
+	// once and EVERY failure below is attributable to this run rather than an unmatched stream it must wait
+	// out. RunProgress heartbeats keep its no-progress bound alive through the open; RunServing (below) then
+	// tells it the backend is ready for the query.
+	ready := &pb.RunReady{SessionId: open.SessionID}
+	if stream.Send(&pb.ProxyRunMsg{Kind: &pb.ProxyRunMsg_SessionReady{SessionReady: ready}}) != nil {
+		return
+	}
+
 	if open.MapErr != nil || len(open.ConnectionID) != 16 {
 		if open.MapErr == nil {
 			open.MapErr = fmt.Errorf("connection_id is %d bytes, want 16", len(open.ConnectionID))
@@ -99,20 +113,21 @@ func (r *Runner) Run(open spi.RunOpen, draining <-chan struct{}) {
 		}
 		return err
 	}
-	sess, err = r.factory(open.Token, open.ConnectionID, guard)
-	if err != nil {
+	if err := heartbeatDuring(stream, func() (openErr error) {
+		sess, openErr = r.factory(open.Token, open.ConnectionID, guard)
+		return
+	}); err != nil {
 		_ = sendError(stream, "backend connection failed: "+err.Error())
 		r.closeConnection(open.SessionID, open.ConnectionID)
 		return
 	}
 	defer sess.Close()
 	defer r.closeConnection(open.SessionID, open.ConnectionID)
-	if err := sess.OnOpen(open.OnOpen); err != nil {
+	if err := heartbeatDuring(stream, func() error { return sess.OnOpen(open.OnOpen) }); err != nil {
 		_ = sendError(stream, "run catalog initialization failed: "+err.Error())
 		return
 	}
-	ready := &pb.RunReady{SessionId: open.SessionID}
-	if stream.Send(&pb.ProxyRunMsg{Kind: &pb.ProxyRunMsg_SessionReady{SessionReady: ready}}) != nil {
+	if stream.Send(&pb.ProxyRunMsg{Kind: &pb.ProxyRunMsg_Serving{Serving: &pb.RunServing{}}}) != nil {
 		return
 	}
 
@@ -170,6 +185,36 @@ func (r *Runner) Run(open spi.RunOpen, draining <-chan struct{}) {
 			}
 		}
 	}
+}
+
+// heartbeatDuring runs work while emitting a RunProgress heartbeat on the stream every progressInterval, so a
+// slow backend cold-open keeps the control-plane's no-progress bound alive. The heartbeat carries no payload —
+// it only attests the PROXY is alive, not that the backend open advances, so the control-plane bounds a
+// stalled-but-heartbeating open with an absolute ceiling, not this signal. For the span of work it is the ONLY
+// sender on the stream — RunReady precedes it; RunServing/RunError follow only after it returns — and it JOINS
+// its ticker before returning via defer, so even a panic in work stops the ticker before Run's deferred stream
+// teardown runs (the gRPC stream is not safe for concurrent Send). A Send error from the ticker just stops the
+// heartbeat; the caller's next Send surfaces the broken stream.
+func heartbeatDuring(stream runStream, work func() error) error {
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		ticker := time.NewTicker(progressInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-stop:
+				return
+			case <-ticker.C:
+				if stream.Send(&pb.ProxyRunMsg{Kind: &pb.ProxyRunMsg_Progress{Progress: &pb.RunProgress{}}}) != nil {
+					return
+				}
+			}
+		}
+	}()
+	defer func() { close(stop); <-done }()
+	return work()
 }
 
 func receiveRunMessages(ctx context.Context, stream runStream) <-chan *pb.ControlRunMsg {

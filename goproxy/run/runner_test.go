@@ -55,6 +55,9 @@ type runFakeCP struct {
 	runTranscript   chan *pb.ProxyRunMsg
 	runReady        chan struct{}
 	readyOnce       sync.Once
+	runServing      chan struct{}
+	servingOnce     sync.Once
+	progressCount   int
 }
 
 func runNewFakeCP() *runFakeCP {
@@ -62,6 +65,7 @@ func runNewFakeCP() *runFakeCP {
 		runCommands:   make(chan *pb.ControlRunMsg),
 		runTranscript: make(chan *pb.ProxyRunMsg, 32),
 		runReady:      make(chan struct{}),
+		runServing:    make(chan struct{}),
 	}
 }
 
@@ -124,7 +128,20 @@ func (f *runFakeCP) RunExec(stream grpc.BidiStreamingServer[pb.ProxyRunMsg, pb.C
 				recvDone <- err
 				return
 			}
-			f.runTranscript <- proto.Clone(message).(*pb.ProxyRunMsg)
+			switch {
+			case message.GetProgress() != nil:
+				// Cold-open liveness heartbeat — not part of the result transcript.
+				f.mu.Lock()
+				f.progressCount++
+				f.mu.Unlock()
+			case message.GetServing() != nil:
+				f.mu.Lock()
+				f.events = append(f.events, "serving")
+				f.mu.Unlock()
+				f.servingOnce.Do(func() { close(f.runServing) })
+			default:
+				f.runTranscript <- proto.Clone(message).(*pb.ProxyRunMsg)
+			}
 		}
 	}()
 
@@ -187,6 +204,12 @@ func (f *runFakeCP) runRecordedEvents() []string {
 	return append([]string(nil), f.events...)
 }
 
+func (f *runFakeCP) runRecordedProgress() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.progressCount
+}
+
 func (f *runFakeCP) runSetFragmentPushError(err error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -208,6 +231,19 @@ type runCapturingProvider struct {
 
 func (p *runCapturingProvider) NewRunSession(target spi.BackendTarget, dbImpl engine.Db, client spi.SessionClient, token string, connectionID []byte, guard engine.ExecGuard, readTimeout time.Duration) (spi.BackendSession, error) {
 	p.readTimeout <- readTimeout
+	return p.Provider.NewRunSession(target, dbImpl, client, token, connectionID, guard, readTimeout)
+}
+
+// runSlowOpenProvider blocks the backend dial until release is closed, modeling a cold open against a large
+// remote backend. A test uses it to observe SessionReady landing before the open finishes and heartbeats
+// being sent while it is in flight — without depending on wall-clock timing.
+type runSlowOpenProvider struct {
+	spi.Provider
+	release chan struct{}
+}
+
+func (p *runSlowOpenProvider) NewRunSession(target spi.BackendTarget, dbImpl engine.Db, client spi.SessionClient, token string, connectionID []byte, guard engine.ExecGuard, readTimeout time.Duration) (spi.BackendSession, error) {
+	<-p.release
 	return p.Provider.NewRunSession(target, dbImpl, client, token, connectionID, guard, readTimeout)
 }
 
@@ -310,8 +346,13 @@ func TestRunnerMalformedOpen(t *testing.T) {
 				run.NewRunner(client, fixture.runDB, fixture.runTarget, fixture.runProvider, 0).Run(test.open, nil)
 				close(done)
 			}()
+			// The stream sends its run id (RunReady) the instant it opens, before the open is validated, so even
+			// a malformed open is attributable to its pending session; the RunError follows.
+			if first := runRecv(t, fake); first.GetSessionReady() == nil {
+				t.Fatalf("first frame = %v, want SessionReady before the malformed-open error", first)
+			}
 			if message := runRecv(t, fake); message.GetError() == nil {
-				t.Fatalf("malformed open message = %v, want RunError", message)
+				t.Fatalf("malformed open message = %v, want RunError after SessionReady", message)
 			}
 			select {
 			case <-done:
@@ -1153,6 +1194,62 @@ func TestRunnerDrainDoesNotStartAQueuedQuery(t *testing.T) {
 	}
 }
 
+// TestRunnerSendsRunReadyBeforeColdOpenAndHeartbeats proves the run stream sends its id (RunReady) up front
+// and is kept alive through a slow open: SessionReady arrives before the (delayed) backend dial finishes — so
+// the CP can react to a stall or break during the open instead of waiting a blind budget — and RunProgress
+// heartbeats are emitted while the open runs, then RunServing once it completes.
+func TestRunnerSendsRunReadyBeforeColdOpenAndHeartbeats(t *testing.T) {
+	fixture := runSeedMySQL(t)
+	release := make(chan struct{})
+	fixture.runProvider = &runSlowOpenProvider{Provider: fixture.runProvider, release: release}
+	fake, client := runStartFakeCP(t, runSessionID)
+	done := make(chan struct{})
+	go func() {
+		run.NewRunner(client, fixture.runDB, fixture.runTarget, fixture.runProvider, 0).Run(runOpen(fixture), nil)
+		close(done)
+	}()
+
+	// SessionReady must arrive while the backend open is still blocked — proving the run id is sent up front,
+	// not deferred until the backend is ready.
+	select {
+	case <-fake.runReady:
+	case <-time.After(5 * time.Second):
+		t.Fatal("SessionReady did not arrive while the cold open was still blocked")
+	}
+	if first := runRecv(t, fake); first.GetSessionReady() == nil {
+		t.Fatalf("first frame = %v, want SessionReady", first)
+	}
+
+	// While the open is blocked, the proxy must heartbeat. Wait for at least one — deterministic, not a
+	// wall-clock race: the open cannot finish until we release it below.
+	deadline := time.Now().Add(15 * time.Second)
+	for fake.runRecordedProgress() == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("no RunProgress heartbeat was sent while the cold open was blocked")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	// Release the open; it now completes with RunServing and the session is usable.
+	close(release)
+	select {
+	case <-fake.runServing:
+	case <-time.After(15 * time.Second):
+		t.Fatal("timed out waiting for RunServing after releasing the cold open")
+	}
+	runSendQuery(fake, "SELECT 1", 20)
+	runExpectDecision(t, runRecv(t, fake), pb.EnfAction_ALLOW, nil, "")
+	runExpectRows(t, runRecv(t, fake), []string{"1"})
+	runExpectDone(t, runRecv(t, fake), -1)
+
+	runSendClose(fake)
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("runner did not exit after RunClose")
+	}
+}
+
 func TestRunnerCloseInFlightCancelsBackend(t *testing.T) {
 	fixture := runSeedMySQL(t)
 	fake, client := runStartFakeCP(t, runSessionID)
@@ -1238,12 +1335,19 @@ func runLaunchOpenConfigured(t *testing.T, fake *runFakeCP, client *cp.Client, f
 	if ready.GetSessionId() != open.SessionID {
 		t.Fatalf("SessionReady = %v, want session %q", ready, open.SessionID)
 	}
+	// SessionReady tells the CP which run the stream is for immediately; the backend cold-open (and its on-open
+	// catalog push) runs after it and completes at RunServing. Wait for serving, then assert the push landed first.
+	select {
+	case <-fake.runServing:
+	case <-time.After(15 * time.Second):
+		t.Fatal("timed out waiting for RunServing after the cold-open")
+	}
 	fragments := fake.runRecordedFragments()
 	if len(fragments) != 1 || fragments[0].GetSchema() != fixture.runNamespaceForTable() {
-		t.Fatalf("on-open fragments = %v, want schema %q before SessionReady", fragments, fixture.runNamespaceForTable())
+		t.Fatalf("on-open fragments = %v, want schema %q before RunServing", fragments, fixture.runNamespaceForTable())
 	}
-	if events := fake.runRecordedEvents(); !runLastEventBefore(events, "push:"+fixture.runNamespaceForTable(), "ready") {
-		t.Fatalf("events = %v, want on-open push acknowledged before SessionReady", events)
+	if events := fake.runRecordedEvents(); !runLastEventBefore(events, "push:"+fixture.runNamespaceForTable(), "serving") {
+		t.Fatalf("events = %v, want on-open push acknowledged before RunServing", events)
 	}
 	return func() {
 		select {

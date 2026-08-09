@@ -529,15 +529,16 @@ path and `POST /api/datasources/{id}/query`, not the interactive editor.
   fragment there is only true for the connection that measured it.
 - 🟡 No concurrent-editor-session cap (auth'd DoS surface). Each open session
   pins ONE unpooled backend connection on the proxy for the life of its run
-  stream, which `RUN_STREAM_TIMEOUT_MS` caps at 15 minutes. The proxy releases
-  the backend connection when that stream closes; the control plane's stale
-  session entry is removed by an explicit close, a subsequent failed query, or
-  the idle sweep. That sweep has two separate numbers: a 30-minute idle cutoff
+  stream. That stream has no fixed lifetime cap — so an active editor is never
+  cut mid-session — which means the connection is held until the stream closes:
+  by an explicit close, a subsequent failed query, or the idle sweep. That sweep
+  has two separate numbers: a 30-minute idle cutoff
   (`EDITOR_SESSION_MAX_IDLE_MS`) evaluated by the housekeeping loop on its
-  15-minute tick (`RESULT_PURGE_INTERVAL_MS`), so a session is reaped up to ~45
-  minutes after its last use. An authenticated user opening many sessions can
-  still exhaust the target's `max_connections` within that window. Bounded by
-  auth; a per-principal / per-datasource cap is a follow-up.
+  15-minute tick (`RESULT_PURGE_INTERVAL_MS`), so an idle session is reaped up
+  to ~45 minutes after its last use; a continuously-used session lives until its
+  token TTL. An authenticated user opening many sessions can exhaust the
+  target's `max_connections` within that window. Bounded by auth; a
+  per-principal / per-datasource cap is a follow-up.
 - Ephemeral EDITOR token, TTL-bounded not scope-bounded. The control-plane mints
   an `EDITOR` wire token per session with a generous absolute TTL, revoked on
   idle sweep, explicit close, or cleanup after a failed query. Neither TTL is a

@@ -18,17 +18,6 @@ private const val DRAIN_TIMEOUT_MS = 3_000L
 private const val SSE_DRAIN_TIMEOUT_MS = 2_000L
 
 /**
- * How long one proxy-dialed run stream may live.
- *
- * The stream is opened before the proxy reports ready, so its lifetime has to cover the dial as well as the
- * exchange that follows. Leave the dial out and the cap falls short of the work it wraps once
- * PM_QUERY_TIMEOUT is large: the stream then dies under a statement that is still legitimately running, and
- * the caller sees a stream-closed error rather than the timeout it actually is.
- */
-fun runStreamTimeoutMs(queryExchangeTimeoutMs: Long): Long =
-    maxOf(15 * 60_000L, DIAL_TIMEOUT_MS + queryExchangeTimeoutMs + 30_000)
-
-/**
  * Control-plane entry point: load config, bring up the Postgres store (with migrations),
  * then serve the HTTP API (DESIGN.md).
  */
@@ -63,10 +52,9 @@ fun main() {
     // proxy↔control-plane RPC. Fail-fast on purpose: a control-plane that can't bind its required
     // gRPC port is misconfigured — like a bad DB or a taken HTTP port — and must not come up serving
     // only HTTP while the data plane is silently dead.
-    val runStreamTimeoutMs = runStreamTimeoutMs(config.queryExchangeTimeoutMs)
     val grpcServer = GrpcServer(
         config.grpcPort,
-        ControlPlaneGrpcService(core, runStreamTimeoutMs),
+        ControlPlaneGrpcService(core),
         config.secretToken,
     )
     grpcServer.start()

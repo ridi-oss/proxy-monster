@@ -207,6 +207,10 @@ type fakeControlPlane struct {
 	lastDecideMeta   string
 	lastRegisterReq  *pb.RegisterRequest
 	lastRegisterMeta string
+	// nil => reply with the current ProtocolVersion; set => override it, to model a version-skewed control plane.
+	registerRespVersion *int32
+	// non-nil => Register fails with this error, to model a control-plane that rejects our version.
+	registerErr      error
 	lastCatalog      *pb.CatalogRequest
 	lastCatalogMeta  string
 	lastFragment     *pb.SchemaFragmentPush
@@ -265,7 +269,14 @@ func (f *fakeControlPlane) Register(ctx context.Context, req *pb.RegisterRequest
 	defer f.mu.Unlock()
 	f.lastRegisterReq = proto.Clone(req).(*pb.RegisterRequest)
 	f.lastRegisterMeta = metaValue(ctx)
-	return &pb.RegisterResponse{Name: req.GetName()}, nil
+	if f.registerErr != nil {
+		return nil, f.registerErr
+	}
+	version := ProtocolVersion
+	if f.registerRespVersion != nil {
+		version = *f.registerRespVersion
+	}
+	return &pb.RegisterResponse{Name: req.GetName(), ProtocolVersion: version}, nil
 }
 
 func (f *fakeControlPlane) PushCatalog(ctx context.Context, req *pb.CatalogRequest) (*pb.CatalogResponse, error) {
@@ -462,6 +473,10 @@ func TestRegisterAndPushCatalog(t *testing.T) {
 	if register.GetEngine() != enginepb.Engine_MYSQL || register.GetName() != "ds-1" {
 		t.Fatalf("RegisterRequest = %+v", register)
 	}
+	// The proxy must announce its wire-protocol version so the control plane can turn away a skewed rollout.
+	if register.GetProtocolVersion() != ProtocolVersion {
+		t.Errorf("RegisterRequest.ProtocolVersion = %d, want %d", register.GetProtocolVersion(), ProtocolVersion)
+	}
 	// The chain is the ONE thing a client needs to verify this proxy, so it has to reach the wire intact.
 	if !strings.Contains(register.GetAdvertiseCertChain(), "BEGIN CERTIFICATE") {
 		t.Errorf("AdvertiseCertChain did not reach the wire: %q", register.GetAdvertiseCertChain())
@@ -481,6 +496,35 @@ func TestRegisterAndPushCatalog(t *testing.T) {
 	}
 	if catalogReq.GetDatasourceName() != "ds-1" || catalog.DatasourceName != "ds-1" {
 		t.Fatalf("catalog datasource was not stamped: server=%q caller=%q", catalogReq.GetDatasourceName(), catalog.DatasourceName)
+	}
+}
+
+// A new proxy must refuse an OLDER control plane that predates the version field (and so cannot reject the
+// proxy itself): the mirror check on RegisterResponse catches the skew and fails with a clear, actionable error.
+func TestRegisterRejectsIncompatibleControlPlaneVersion(t *testing.T) {
+	bad := ProtocolVersion + 1
+	fake := &fakeControlPlane{registerRespVersion: &bad}
+	c := startFakeControlPlane(t, fake)
+	err := c.Register(enginepb.Engine_MYSQL, "backend", 3306, "app", nil, "", nil, false)
+	if !errors.Is(err, ErrIncompatibleControlPlane) {
+		t.Fatalf("Register against a version-skewed control plane must return ErrIncompatibleControlPlane: %v", err)
+	}
+	if !strings.Contains(err.Error(), "same server-v* release") {
+		t.Fatalf("error must tell the operator to deploy both together: %v", err)
+	}
+}
+
+// The other direction: a NEWER control-plane rejects our version with FAILED_PRECONDITION. Register must
+// surface that as the same permanent condition (so boot refuses to start), not a transient failure to retry.
+func TestRegisterTreatsControlPlaneRejectionAsIncompatible(t *testing.T) {
+	fake := &fakeControlPlane{registerErr: status.Error(
+		codes.FailedPrecondition,
+		"proxy wire-protocol version 1 is incompatible with this control-plane's version 2 — deploy the proxy and control-plane from the same server-v* release",
+	)}
+	c := startFakeControlPlane(t, fake)
+	err := c.Register(enginepb.Engine_MYSQL, "backend", 3306, "app", nil, "", nil, false)
+	if !errors.Is(err, ErrIncompatibleControlPlane) {
+		t.Fatalf("a control-plane version rejection must surface as ErrIncompatibleControlPlane: %v", err)
 	}
 }
 

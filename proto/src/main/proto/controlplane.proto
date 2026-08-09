@@ -111,9 +111,17 @@ message RegisterRequest {
   // A client that knows TLS is expected refuses to fall back to plaintext -- which is what stops an on-path
   // attacker from answering with a no-TLS greeting and collecting the token in the clear.
   bool advertise_wire_tls = 11;
+  // The proxy's wire-protocol version. A server-v* release ships the proxy and control-plane at the same
+  // version, so the control-plane rejects a mismatch at Register (the proxy's first call) and the proxy makes
+  // the mirror check against RegisterResponse.protocol_version below — a half-finished rollout fails fast with
+  // a clear error rather than a stalled run channel. A proxy that predates this field sends 0.
+  int32 protocol_version = 12;
 }
 message RegisterResponse {
   string name = 1;
+  // The control-plane's wire-protocol version, so the proxy can refuse a control-plane it cannot talk to. A
+  // control-plane that predates this field sends 0.
+  int32 protocol_version = 2;
 }
 
 // ---- Catalog ----
@@ -296,11 +304,16 @@ message OpenTableDetailChannel {
 // The proxy dials RunExec and sends ProxyRunMsg; the control-plane replies with ControlRunMsg.
 message ProxyRunMsg {
   oneof kind {
-    RunReady session_ready = 1;       // first message: correlates this stream to its OpenRunChannel
+    RunReady session_ready = 1;       // first message, sent the instant the stream opens: tells the control-
+                                      // plane which pending run this stream serves (the OpenRunChannel it
+                                      // dispatched) — BEFORE the backend cold-open begins
     RunDecision decision = 2;         // the enforcement verdict + UX metadata (before any rows)
     RunResultRows result_rows = 3;    // masked rows (ALLOW/MASK only)
     RunDone done = 4;                 // terminal success (rows_affected for a write)
     RunError error = 5;               // terminal failure (backend error, unsupported, ...)
+    RunProgress progress = 6;         // liveness heartbeat during the cold-open; resets the CP's no-progress bound
+    RunServing serving = 7;           // the backend is connected and its on-open catalog work is done —
+                                      // the control-plane may now send the query
   }
 }
 message ControlRunMsg {
@@ -311,6 +324,14 @@ message ControlRunMsg {
   }
 }
 message RunReady { string session_id = 1; }
+// A cold-open liveness heartbeat: the proxy emits these while dialing + authenticating the backend and
+// running its on-open catalog commands, so the control-plane can bound the open by lack of progress rather
+// than by a blind dial budget. It carries no payload — the control-plane treats every RunProgress purely as
+// "the proxy is still alive".
+message RunProgress {}
+// The backend cold-open finished and the proxy is ready to accept the query. Sent once, after the last
+// RunProgress and before any RunDecision.
+message RunServing {}
 message RunQuery {
   string sql = 1;
   int32 max_rows = 2;   // 0 = the proxy's default cap

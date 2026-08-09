@@ -61,7 +61,7 @@ class GrpcEventsHandlerDbTest {
 
     @Test
     fun `an open events stream marks attached, stamps last_seen_at, and relays a RefreshCatalog`() = runBlocking {
-        stub.register(registerRequest { name = "evt-ds"; engine = Engine.POSTGRES; host = "h"; port = 1; dbName = "d" })
+        stub.register(registerRequest { protocolVersion = CONTROL_PROTOCOL_VERSION; name = "evt-ds"; engine = Engine.POSTGRES; host = "h"; port = 1; dbName = "d" })
         // `.first()` collects exactly one event then cancels the stream (→ server awaitClose → deregister).
         val firstEvent = async { stub.events(eventsRequest { datasourceName = "evt-ds" }).first() }
 

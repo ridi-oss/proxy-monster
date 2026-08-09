@@ -15,6 +15,7 @@ import com.ridi.oss.proxymonster.grpc.runDone
 import com.ridi.oss.proxymonster.grpc.runResultRows
 import com.ridi.oss.proxymonster.grpc.runRow
 import com.ridi.oss.proxymonster.grpc.runReady
+import com.ridi.oss.proxymonster.grpc.runServing
 import com.ridi.oss.proxymonster.grpc.runValue
 import com.ridi.oss.proxymonster.grpc.eventsRequest
 import com.ridi.oss.proxymonster.grpc.proxyRunMsg
@@ -241,6 +242,7 @@ class EditorSubmitRouteDbTest {
             }
         }
         proxyRequests.send(proxyRunMsg { sessionReady = runReady { sessionId = open.sessionId } })
+        proxyRequests.send(proxyRunMsg { serving = runServing {} })
         val sessionId = withTimeout(5_000) { openDeferred.await() }.body<EditorSessionOpened>().sessionId
         return FakeSession(sessionId, proxyRequests, controls) { withTimeout(5_000) { proxy.await() } }
     }

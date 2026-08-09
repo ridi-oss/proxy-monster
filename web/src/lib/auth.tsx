@@ -14,7 +14,8 @@ import {
   useState,
   type ReactNode,
 } from 'react'
-import { ApiError, debugLogin, getMe, logout as apiLogout } from './api/client'
+import { ApiError, debugLogin, getMe, logout as apiLogout, saveLocale } from './api/client'
+import { getClientLocale } from './i18n/errors'
 import type { Identity, SessionReason } from './api/types'
 
 type AuthStatus = 'loading' | 'authenticated' | 'unauthenticated'
@@ -55,6 +56,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         setIdentity(me)
         setUnauthReason(null)
         setStatus('authenticated')
+        // Record the language this user is reading the console in, so a notification reaches them in it.
+        // The server never sees the locale cookie, so first sight is here. Best-effort: a failure only
+        // falls delivery back to the instance default.
+        void saveLocale(getClientLocale()).catch(() => {})
       })
       .catch((err) => {
         if (cancelled) return

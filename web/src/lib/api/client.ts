@@ -200,6 +200,20 @@ export function createDatasource(input: DatasourceInput): Promise<Datasource> {
   })
 }
 
+/**
+ * Persist the caller's display language, which notification delivery reads server-side.
+ *
+ * The cookie still drives the console itself; this only tells the server which locale to render a
+ * notification in. Best-effort by design — a failure leaves the cookie authoritative for the UI and falls
+ * delivery back to the instance default, so it must never block the toggle.
+ */
+export function saveLocale(locale: string): Promise<void> {
+  return request<void>('/api/me/locale', {
+    method: 'PUT',
+    body: JSON.stringify({ locale }),
+  })
+}
+
 export function updateDatasource(id: number, input: DatasourceInput): Promise<Datasource> {
   return request<Datasource>(`/api/datasources/${id}`, {
     method: 'PUT',

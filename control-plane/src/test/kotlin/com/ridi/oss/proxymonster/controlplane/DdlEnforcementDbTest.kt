@@ -14,7 +14,7 @@ import kotlin.test.assertEquals
  *
  * The shipped `system:production-ddl` preset was unreachable: the analyzer reported every DDL form
  * UNRESOLVED, so even after its `stmt.cat.ddl` grant passed the datasource-grant loop, the `!resolved`
- * branch below it routed the statement to the `sql.unanalyzable` gate. That grant ships scoped to
+ * branch below it routed the statement to the `exception.unanalyzable` gate. That grant ships scoped to
  * `system:development` only, which denied production DDL for every role — including the architect the
  * DDL policy names. Resolving DDL is what lets its `stmt.cat.ddl` grant alone authorize it.
  *
@@ -22,7 +22,7 @@ import kotlin.test.assertEquals
  * INSERT takes — so decideQuery authorizes it off the datasource grant with no DDL-specific branch.
  *
  * These cases go through the real decideQuery against a live database, so they fail if the analyzer marks
- * DDL unresolved again and it falls back through the `sql.unanalyzable` gate.
+ * DDL unresolved again and it falls back through the `exception.unanalyzable` gate.
  */
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 class DdlEnforcementDbTest {
@@ -105,7 +105,7 @@ class DdlEnforcementDbTest {
                 ctx.action,
                 "$sql denied for the stmt.cat.ddl holder: ${ctx.denyReason} (stage=${ctx.failedStage})",
             )
-            // The relay must not be the unmasked sql.unanalyzable passthrough — that grant is a whole-
+            // The relay must not be the unmasked exception.unanalyzable passthrough — that grant is a whole-
             // statement unmasked relay and is NOT what authorizes DDL.
             assertEquals(
                 false,
@@ -127,7 +127,7 @@ class DdlEnforcementDbTest {
 
     /**
      * A `stmt.cat.ddl` grant authorizes schema DDL, not everything DDL-adjacent. RENAME TABLE is a Command
-     * sqlglot does not model — unanalyzable, so it denies at the unanalyzable gate (no `sql.unanalyzable`
+     * sqlglot does not model — unanalyzable, so it denies at the unanalyzable gate (no `exception.unanalyzable`
      * hatch here). DROP USER / RENAME USER classify as `stmt.cat.admin.account` (privilege management, not
      * schema DDL), so their kind gate demands admin, which the architect lacks. None is reachable by the
      * ddl grant alone — over-denying is the correct side to fail on.

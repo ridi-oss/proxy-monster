@@ -51,8 +51,8 @@ enum class AuthzAction(val cedarId: String) {
     // (`maskable=false`, e.g. EXPLAIN-of-masked) asks its datasource for this exception instead of a blanket
     // hardcoded DENY. Deny-by-default: no exception policy → DENY (the production floor is unchanged); a
     // permissive dev datasource can permit the relay.
-    SQL_UNANALYZABLE("sql.unanalyzable"),
-    SQL_UNMASKABLE("sql.unmaskable"),
+    EXCEPTION_UNANALYZABLE("exception.unanalyzable"),
+    EXCEPTION_UNMASKABLE("exception.unmaskable"),
 }
 
 /** The Cedar-side resource an [AuthzAction] applies to. Marshalled to a Cedar entity by [Authz] —
@@ -710,7 +710,7 @@ fun Authz.authorizeDatasourceAction(
     datasource: String,
     context: AuthzContext = AuthzContext(),
     // The datasource's `system:*` posture tags — attached to the Datasource entity so a
-    // preset permit (`sql.unanalyzable`/`sql.unmaskable` on `system:development`, policy ids -201/-202) matches
+    // preset permit (`exception.unanalyzable`/`exception.unmaskable` on `system:development`, policy ids -201/-202) matches
     // this datasource. A datasource-level action's resource IS the Datasource, so its own tag parent suffices.
     datasourceTags: List<String> = emptyList(),
 ): AuthzDecision = authorizeDatasourceActionId(principal, roles, action.cedarId, datasource, context, datasourceTags)

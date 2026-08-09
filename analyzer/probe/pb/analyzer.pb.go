@@ -106,7 +106,7 @@ type StatementKind int32
 const (
 	StatementKind_STATEMENT_KIND_UNSPECIFIED StatementKind = 0
 	// unknown — the analyzer could not classify (parse error / unmodeled form); deny-by-default,
-	// grantable per datasource (the sql.unanalyzable semantics).
+	// grantable per datasource (the exception.unanalyzable semantics).
 	StatementKind_STATEMENT_KIND_STMT_UNKNOWN StatementKind = 1
 	// read
 	StatementKind_STATEMENT_KIND_SELECT      StatementKind = 2
@@ -588,7 +588,7 @@ const (
 	FailureClass_FAILURE_CLASS_UNSPECIFIED FailureClass = 0
 	// A structurally forbidden statement that policy and query grants must never override.
 	FailureClass_FAILURE_CLASS_INADMISSIBLE FailureClass = 1
-	// A single statement whose meaning Go could not fully resolve; Kotlin applies sql.unanalyzable.
+	// A single statement whose meaning Go could not fully resolve; Kotlin applies exception.unanalyzable.
 	FailureClass_FAILURE_CLASS_UNANALYZABLE FailureClass = 2
 )
 
@@ -1439,7 +1439,7 @@ type StatementFacts struct {
 
 	// True only after complete statement analysis. False requires a non-zero failure_class.
 	Resolved bool `protobuf:"varint,1,opt,name=resolved,proto3" json:"resolved,omitempty"`
-	// INADMISSIBLE hard-denies; UNANALYZABLE enters the existing sql.unanalyzable policy gate;
+	// INADMISSIBLE hard-denies; UNANALYZABLE enters the existing exception.unanalyzable policy gate;
 	// UNSPECIFIED hard-denies.
 	FailureClass FailureClass `protobuf:"varint,2,opt,name=failure_class,json=failureClass,proto3,enum=proxymonster.analyzer.v1.FailureClass" json:"failure_class,omitempty"`
 	// The failing analyzer stage (PARSE, VALIDATE, CONVERT, or LINEAGE), absent on success.

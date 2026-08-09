@@ -21,12 +21,12 @@ import kotlin.test.assertTrue
 /**
  * Catalog-coverage as a Cedar decision (docs "authorization belongs to Cedar"). When the
  * analyzer resolves a statement and traces a column with NO row in the catalog index, decideQuery no
- * longer hard-denies. It routes the miss through the SAME `sql.unanalyzable` escape hatch as an
+ * longer hard-denies. It routes the miss through the SAME `exception.unanalyzable` escape hatch as an
  * unanalyzable statement, carrying catalogMiss + the qualifier so decideConnection still runs its
  * bounded refetch-first retry:
  *  - production floor (no exception policy) → DENY, fail-closed. A non-admin
- *    never holds `sql.unanalyzable`, so a regular analyst always lands here — the safety property.
- *  - a datasource that shipped a `sql.unanalyzable` permit → ALLOW, relaying verbatim (passthrough, no
+ *    never holds `exception.unanalyzable`, so a regular analyst always lands here — the safety property.
+ *  - a datasource that shipped a `exception.unanalyzable` permit → ALLOW, relaying verbatim (passthrough, no
  *    masks) — the admin escape hatch, unmasked as that grant already means.
  *
  * A genuine coverage miss is an analyzer/catalog KEY divergence a real resolved statement cannot
@@ -97,26 +97,26 @@ class CatalogCoverageGateDbTest {
         val missSchema = fx.datasourceStore.catalog(fx.datasource.id).first { it.table == "users" }.schema
 
         // 1. No exception policy → fail-closed deny, carrying catalogMiss + the qualifier so decideConnection
-        //    runs refetch-first before this verdict can stand. A regular analyst has no sql.unanalyzable.
+        //    runs refetch-first before this verdict can stand. A regular analyst has no exception.unanalyzable.
         val floor = decide(fx)
-        assertEquals(EnfAction.DENY, floor.action, "no sql.unanalyzable policy → coverage miss denies fail-closed")
+        assertEquals(EnfAction.DENY, floor.action, "no exception.unanalyzable policy → coverage miss denies fail-closed")
         assertTrue(floor.catalogMiss, "the deny carries catalogMiss so decideConnection refetches + retries first")
         assertEquals(setOf(missSchema), floor.schemaCandidates, "the miss surfaces its qualifier schema for the refetch")
         assertTrue(floor.detail?.contains("absent from catalog") == true, "the fail-closed reason is preserved: ${floor.detail}")
 
-        // 2. A datasource that shipped the sql.unanalyzable exception → relay the uncovered read verbatim.
+        // 2. A datasource that shipped the exception.unanalyzable exception → relay the uncovered read verbatim.
         fx.cedarPolicyStore.create(
             CedarPolicyInput(
                 name = permitName,
-                cedarSrc = """permit(principal, action == Action::"sql.unanalyzable", resource == Datasource::"${fx.datasource.name}");""",
+                cedarSrc = """permit(principal, action == Action::"exception.unanalyzable", resource == Datasource::"${fx.datasource.name}");""",
             ),
             updatedBy = "test",
         )
         val permitted = decide(fx)
-        assertEquals(EnfAction.ALLOW, permitted.action, "sql.unanalyzable permit → relay the uncovered read")
+        assertEquals(EnfAction.ALLOW, permitted.action, "exception.unanalyzable permit → relay the uncovered read")
         assertTrue(permitted.passthrough, "an uncovered-column relay is a verbatim passthrough (no rewrite, no masks)")
         assertTrue(permitted.masks.isEmpty(), "no masks are applied to a relayed uncovered read")
         assertTrue(permitted.catalogMiss, "the relay still carries catalogMiss so refetch-first runs before it stands")
-        assertTrue(permitted.detail?.contains("sql.unanalyzable") == true, "the ALLOW is attributed to the exception: ${permitted.detail}")
+        assertTrue(permitted.detail?.contains("exception.unanalyzable") == true, "the ALLOW is attributed to the exception: ${permitted.detail}")
     }
 }

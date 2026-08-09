@@ -131,7 +131,7 @@ func EmitFacts(sql string, engineConfig *pb.EngineConfig, sch *schema.Mapping, n
 		// A CREATE that reads columns (CREATE TABLE AS SELECT, CREATE VIEW) has lineage to trace and goes
 		// down the lineage path. One that reads none — CREATE INDEX, a bare CREATE TABLE with a column
 		// list — has no lineage, so it would fail there ("CREATE without analyzable query") and route a
-		// plainly-classifiable DDL through the unmasked sql.unanalyzable relay.
+		// plainly-classifiable DDL through the unmasked exception.unanalyzable relay.
 		//
 		// The test is "does the body contain a query", not "is the body a Select": both a parenthesis
 		// wrapper (`AS (SELECT …)` is a Subquery) and a PostgreSQL `AS VALUES ((SELECT …))` hide one, and
@@ -874,7 +874,7 @@ func unanalyzableFacts(stage, detail string) *pb.StatementFacts {
 // determined and it reads no column values, so there is no lineage to trace — its whole authorization is
 // the kind gate on its stmt.kind.* (which Cedar maps to stmt.cat.ddl). It resolves as ANALYZED with no
 // column grants, carrying only the execute grant EmitFacts attaches. Reporting it unresolved instead
-// would route it through the sql.unanalyzable gate — a grant that relays statements UNMASKED and ships
+// would route it through the exception.unanalyzable gate — a grant that relays statements UNMASKED and ships
 // scoped to system:development only — so a statement whose safety is trivially provable would be
 // authorized only by the escape hatch built for statements nobody can prove safe, and denied elsewhere.
 func ddlFacts(root exp.Expression, eng engine) *pb.StatementFacts {

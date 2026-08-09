@@ -234,11 +234,11 @@ class PerConnectionCatalogMysqlAdversarialDbTest : PerConnectionCatalogAdversari
             "pccat-test",
         )
         // A bare `DROP TABLE` is unanalyzable (no lineage for the DDL), so it relays only under a
-        // sql.unanalyzable permit — the legitimate authorization the catalog-freshness DROP test exercises.
+        // exception.unanalyzable permit — the legitimate authorization the catalog-freshness DROP test exercises.
         enforcement.cedarPolicyStore.create(
             CedarPolicyInput(
                 "pccat-mysql-analyst-unanalyzable",
-                """permit(principal in Role::"${enforcement.role}", action == Action::"sql.unanalyzable", resource in Datasource::"${enforcement.datasource.name}");""",
+                """permit(principal in Role::"${enforcement.role}", action == Action::"exception.unanalyzable", resource in Datasource::"${enforcement.datasource.name}");""",
             ),
             "pccat-test",
         )
@@ -279,7 +279,7 @@ class PerConnectionCatalogMysqlAdversarialDbTest : PerConnectionCatalogAdversari
         )
         assertEquals(EnfAction.ALLOW, initial.ctx.action, initial.ctx.denyReason)
 
-        // The unanalyzable DROP relays (sql.unanalyzable permit) and, being catalog-changing, schedules an
+        // The unanalyzable DROP relays (exception.unanalyzable permit) and, being catalog-changing, schedules an
         // after-statement REFETCH on the connection. MySQL commits the DROP implicitly, so `accounts` is gone
         // on the target immediately; fulfilling the refetch (pushFromTarget) must therefore evict `accounts`
         // from the held fragment — so no stale entry survives for a later SELECT to resolve+ALLOW against.
@@ -374,11 +374,11 @@ class PerConnectionCatalogPostgresAdversarialDbTest : PerConnectionCatalogAdvers
             "pccat-test",
         )
         // A bare `DROP TABLE` is unanalyzable (no lineage for the DDL), so it relays only under a
-        // sql.unanalyzable permit — the legitimate authorization these catalog-freshness tests exercise.
+        // exception.unanalyzable permit — the legitimate authorization these catalog-freshness tests exercise.
         enforcement.cedarPolicyStore.create(
             CedarPolicyInput(
                 "pccat-pg-analyst-unanalyzable",
-                """permit(principal in Role::"${enforcement.role}", action == Action::"sql.unanalyzable", resource in Datasource::"${enforcement.datasource.name}");""",
+                """permit(principal in Role::"${enforcement.role}", action == Action::"exception.unanalyzable", resource in Datasource::"${enforcement.datasource.name}");""",
             ),
             "pccat-test",
         )

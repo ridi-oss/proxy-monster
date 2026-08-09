@@ -220,14 +220,14 @@ action "datasource.connect"
     context: RequestContext,
   };
 
-// Datasource-level exception gates (facts-emission.md). `sql.unanalyzable` decides whether a
+// Datasource-level exception gates (facts-emission.md). `exception.unanalyzable` decides whether a
 // statement the analyzer cannot fully reason about may be RELAYED VERBATIM (no rewrite, no masks);
-// `sql.unmaskable` decides whether a masked result the proxy cannot mask on the chosen wire path (the
+// `exception.unmaskable` decides whether a masked result the proxy cannot mask on the chosen wire path (the
 // MySQL binary protocol, or a wire feature that defeats masking) may still be relayed unmasked. Both
 // are deny-by-default: with no exception policy the production floor DENIES; a permissive development
 // datasource can permit them (system:development). EXPLAIN of a query whose columns are masked is a
 // separate structural deny (Query.kt), not this gate.
-action "sql.unanalyzable", "sql.unmaskable"
+action "exception.unanalyzable", "exception.unmaskable"
   appliesTo {
     principal: [User, Role],
     resource: [Datasource],

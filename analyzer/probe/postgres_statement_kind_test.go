@@ -27,7 +27,7 @@ func pgFacts(t *testing.T, sql string) *pb.StatementFacts {
 // It is a LIVING LEDGER, and the ledger is currently sparse: roughly half of PostgreSQL's statements land on
 // STMT_UNKNOWN, because sqlglot-go parses them as a Command (or a node the classifier does not map) and the
 // port structures far less PostgreSQL DDL/admin than MySQL. Every STMT_UNKNOWN is FAIL-SAFE: it routes to the
-// deny-by-default sql.unanalyzable exception (prod denies, a dev datasource may relay), so an unclassified
+// deny-by-default exception.unanalyzable exception (prod denies, a dev datasource may relay), so an unclassified
 // PostgreSQL statement is denied, never silently allowed. As sqlglot-go structures more and the classifier
 // maps more, these flip to real kinds — a diff on this table is the record of that progress.
 //

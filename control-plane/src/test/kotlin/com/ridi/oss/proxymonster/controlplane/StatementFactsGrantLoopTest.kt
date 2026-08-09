@@ -262,13 +262,13 @@ class StatementFactsGrantLoopTest {
 
     @Test
     fun `unanalyzable deny carries schema candidates for a bounded catalog refetch`() {
-        // An UNANALYZABLE statement referencing an uncatalogued schema denies (analyst lacks sql.unanalyzable)
+        // An UNANALYZABLE statement referencing an uncatalogued schema denies (analyst lacks exception.unanalyzable)
         // but must surface its schema qualifiers + catalogMiss so ConnectionDecide can refetch and retry.
         val ctx = decide(
             statementFacts {
                 // A lineage-failed SELECT parsed and classified (statement_exec=SELECT) but could not resolve;
                 // the kind gate allows the read, then the unresolved path routes it through
-                // sql.unanalyzable, which carries the schema candidates for the bounded refetch.
+                // exception.unanalyzable, which carries the schema candidates for the bounded refetch.
                 resolved = false
                 statementExec = executeGrant(StatementKind.STATEMENT_KIND_SELECT)
                 failureClass = FailureClass.FAILURE_CLASS_UNANALYZABLE
@@ -283,7 +283,7 @@ class StatementFactsGrantLoopTest {
     @Test
     fun `a resolved statement with no execute grant fails closed`() {
         // A resolved statement must carry its statement_exec grant (the kind); absent one it would default
-        // to the grantable sql.unanalyzable gate. A result-read alone must be a structural deny. The
+        // to the grantable exception.unanalyzable gate. A result-read alone must be a structural deny. The
         // execute grant is a bare message field now, so "two execute grants" and "a non-execute datasource
         // grant" are structurally impossible and no longer need tests.
         val ctx = decide(
@@ -301,7 +301,7 @@ class StatementFactsGrantLoopTest {
     fun `an unknown-kind statement is a policy deny via sql-unanalyzable`() {
         val ctx = decide(analyzed(kind = StatementKind.STATEMENT_KIND_STMT_UNKNOWN))
         assertEquals(EnfAction.DENY, ctx.action)
-        assertTrue(!ctx.structural, "STMT_UNKNOWN routes to sql.unanalyzable — a policy deny, not structural")
+        assertTrue(!ctx.structural, "STMT_UNKNOWN routes to exception.unanalyzable — a policy deny, not structural")
     }
 
     @Test

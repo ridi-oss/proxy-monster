@@ -176,7 +176,7 @@ func probeParsed(root exp.Expression, eng engine, qualifySchema schema.Schema, n
 	// The success path sets Functions from calledFunctions() at the final return; this defer backfills them on
 	// any POST-PARSE failResult (p.root is set once parsing succeeds), so the control-plane can gate a
 	// dangerous function that hides in an unanalyzable statement — closing the residue where a resolved=false
-	// dangerous call took the sql.unanalyzable relay unGated. A pre-parse failure leaves p.root nil → no
+	// dangerous call took the exception.unanalyzable relay unGated. A pre-parse failure leaves p.root nil → no
 	// backfill (nothing parsed to walk). It only runs when Functions is empty, so a success is never touched.
 	defer func() {
 		if !out.Resolved && p.root != nil && len(out.Functions) == 0 {

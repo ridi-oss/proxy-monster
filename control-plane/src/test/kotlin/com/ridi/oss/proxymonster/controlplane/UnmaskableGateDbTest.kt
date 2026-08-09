@@ -14,7 +14,7 @@ import kotlin.test.assertTrue
 /**
  * The unmaskable gate's control-plane half against real MySQL metadata + real Cedar. The query is maskable on the
  * text path but not on MySQL's binary result path, so the proxy needs a separate MASK-only capability bit:
- * the production floor leaves it false, while an explicit `sql.unmaskable` permit makes it true without
+ * the production floor leaves it false, while an explicit `exception.unmaskable` permit makes it true without
  * changing the underlying MASK verdict.
  */
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
@@ -57,7 +57,7 @@ class UnmaskableGateDbTest {
         setTags("""["system:production"]""")
         val floor = decide()
         assertEquals(EnfAction.MASK, floor.action)
-        assertFalse(floor.unmaskablePermitted, "no sql.unmaskable permit must refuse binary relay")
+        assertFalse(floor.unmaskablePermitted, "no exception.unmaskable permit must refuse binary relay")
 
         // The development preset also grants result.read.unmasked, so the final decision is ALLOW. The wire
         // bit deliberately remains false because the proxy never consults it for ALLOW decisions.
@@ -72,12 +72,12 @@ class UnmaskableGateDbTest {
         fx.cedarPolicyStore.create(
             CedarPolicyInput(
                 name = "test-mysql-binary-unmaskable",
-                cedarSrc = """permit(principal, action == Action::"sql.unmaskable", resource == Datasource::"${fx.datasource.name}");""",
+                cedarSrc = """permit(principal, action == Action::"exception.unmaskable", resource == Datasource::"${fx.datasource.name}");""",
             ),
             updatedBy = "test",
         )
         val permitted = decide()
         assertEquals(EnfAction.MASK, permitted.action)
-        assertTrue(permitted.unmaskablePermitted, "MASK + sql.unmaskable permit must surface the relay capability")
+        assertTrue(permitted.unmaskablePermitted, "MASK + exception.unmaskable permit must surface the relay capability")
     }
 }

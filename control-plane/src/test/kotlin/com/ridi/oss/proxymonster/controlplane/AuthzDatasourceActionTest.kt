@@ -35,7 +35,7 @@ class AuthzDatasourceActionTest {
         );""",
         2L to """permit(
             principal,
-            action == Action::"sql.unmaskable",
+            action == Action::"exception.unmaskable",
             resource
         ) when { resource in Tag::"system:development" };""",
     )
@@ -94,7 +94,7 @@ class AuthzDatasourceActionTest {
             authz.authorizeDatasourceAction(
                 principal = "alice",
                 roles = setOf("batch-writer"),
-                action = AuthzAction.SQL_UNMASKABLE,
+                action = AuthzAction.EXCEPTION_UNMASKABLE,
                 datasource = "acme-mysql",
                 datasourceTags = listOf("system:development"),
             ),
@@ -103,7 +103,7 @@ class AuthzDatasourceActionTest {
             authz.authorizeDatasourceAction(
                 principal = "alice",
                 roles = setOf("batch-writer"),
-                action = AuthzAction.SQL_UNMASKABLE,
+                action = AuthzAction.EXCEPTION_UNMASKABLE,
                 datasource = "acme-mysql",
                 datasourceTags = emptyList(),
             ),

@@ -1580,7 +1580,7 @@ func TestPreparedMaskWithoutPermitFailsClosed(t *testing.T) {
 		if rows != nil {
 			_ = rows.Close()
 		}
-		t.Fatal("prepared MASK query succeeded without sql.unmaskable permission")
+		t.Fatal("prepared MASK query succeeded without exception.unmaskable permission")
 	}
 	if rows != nil {
 		t.Fatalf("prepared MASK rows = %v, want nil (no binary row leaked)", rows)
@@ -1806,7 +1806,7 @@ func TestPreparedUnmaskablePermitRevocationFailsClosed(t *testing.T) {
 		if rows != nil {
 			_ = rows.Close()
 		}
-		t.Fatal("prepared MASK query succeeded after sql.unmaskable revocation")
+		t.Fatal("prepared MASK query succeeded after exception.unmaskable revocation")
 	}
 	if rows != nil {
 		t.Fatalf("prepared MASK rows = %v, want nil after permit revocation", rows)

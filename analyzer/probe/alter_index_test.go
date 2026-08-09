@@ -63,12 +63,12 @@ func valueFreeDdl(f *pb.StatementFacts) bool {
 // A catalog-changing statement resolves and carries exactly one sql.ddl datasource grant.
 //
 // The failure this guards is silent: reporting such a statement UNRESOLVED routes it through the
-// sql.unanalyzable gate, whose grant relays statements unmasked and ships scoped to
+// exception.unanalyzable gate, whose grant relays statements unmasked and ships scoped to
 // system:development — so on a production datasource every role is denied, including the
 // system:production-architect that the sql.ddl policy names, and approval role discovery (which
 // previews each candidate alone and drops the DENYs) offers no role at all.
 //
-// Emitting the grant is not enough on its own: an unresolved statement routes to the sql.unanalyzable
+// Emitting the grant is not enough on its own: an unresolved statement routes to the exception.unanalyzable
 // gate regardless of its grants, so resolution and the grant are asserted together here.
 func TestCatalogChangingDdlResolves(t *testing.T) {
 	cases := []struct {
@@ -98,7 +98,7 @@ func TestCatalogChangingDdlResolves(t *testing.T) {
 			f := mysqlFacts(t, tc.sql)
 
 			if !f.Resolved {
-				t.Fatalf("resolved=false (class=%v detail=%q) — routes through sql.unanalyzable, which no "+
+				t.Fatalf("resolved=false (class=%v detail=%q) — routes through exception.unanalyzable, which no "+
 					"production role holds", f.FailureClass, f.Detail)
 			}
 			// A recognized statement authorized off its single execute grant, carrying a real kind (not the
@@ -261,13 +261,13 @@ func TestParenthesizedQueryBodyKeepsLineage(t *testing.T) {
 // no columns) — that is the same copy-into-a-new-table path as the parenthesized CTAS.
 //
 // It lands unresolved rather than fully analyzed (lineage does not model this shape), which routes it to
-// the sql.unanalyzable gate and denies it on the production floor. An over-deny, not a leak; the invariant
+// the exception.unanalyzable gate and denies it on the production floor. An over-deny, not a leak; the invariant
 // asserted here is only that it never becomes value-free DDL.
 func TestValuesBodyWithSubqueryIsNotValueFreeDdl(t *testing.T) {
 	f := postgresFacts(t, "CREATE TABLE leaked AS VALUES ((SELECT ssn FROM users))")
 	// The security invariant, stated so a regression cannot pass it: this must never be a statement
 	// decideQuery would ALLOW off a lone sql.ddl grant. So it either stays unresolved (routing to the
-	// sql.unanalyzable gate, denied on the production floor) or carries the users.ssn column grant that
+	// exception.unanalyzable gate, denied on the production floor) or carries the users.ssn column grant that
 	// protects the read.
 	if valueFreeDdl(f) {
 		t.Error("classified as value-free DDL — it reads users.ssn, so its read gate would be dropped")

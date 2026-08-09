@@ -427,7 +427,7 @@ func TestStatementFactsPrivilegedSetScopeUtility(t *testing.T) {
 
 func TestStatementFactsSetPasswordCommandUtility(t *testing.T) {
 	// `SET PASSWORD FOR 'u'@'h' = 'x'` degrades to a Command, not a structured Set — it must still emit the
-	// SET_PASSWORD utility grant so it is gated and never relayed verbatim under sql.unanalyzable on dev.
+	// SET_PASSWORD utility grant so it is gated and never relayed verbatim under exception.unanalyzable on dev.
 	facts := mysqlFacts(t, "SET PASSWORD FOR 'u'@'h' = 'x'")
 	found := false
 	for _, grant := range facts.GetResultReads() {

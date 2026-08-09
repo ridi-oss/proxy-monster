@@ -380,7 +380,7 @@ fun decideQuery(
     // per-statement authorization signal. A RESOLVED statement without it would default to the grantable
     // STMT_UNKNOWN gate, so its absence fails closed. (An unresolved fact may carry the grant — a classified-
     // but-unanalyzable statement like KILL does — or omit it on a pre-parse failure; either way it routes
-    // through sql.unanalyzable, and the kind gate below denies an unspecified/unrecognized kind. The
+    // through exception.unanalyzable, and the kind gate below denies an unspecified/unrecognized kind. The
     // analyzer emits the grant exactly once, so no runtime count check is needed.)
     if (facts.resolved && !facts.hasStatementExec()) {
         return structuralDeny("fail-closed: a resolved statement must carry its execute grant", roleList, failedStage = "policy", contextTags = derivedTags)
@@ -461,7 +461,7 @@ fun decideQuery(
     // category preset covers the kind while an exact-kind forbid still overrides a broad category permit.
     // EVERY statement is gated here — including a no-column metadata/session/admin/unknown one — closing the
     // connect-only gaps (ANALYZE TABLE, SHOW MASTER STATUS, …). A missing grant (a pre-parse failure) reads
-    // as STMT_UNKNOWN → sql.unanalyzable. Runs after connect/utility, before the passthrough allow; the
+    // as STMT_UNKNOWN → exception.unanalyzable. Runs after connect/utility, before the passthrough allow; the
     // unanalyzable/utility gates still apply on top (e.g. ALTER TABLE stays prod-denied).
     val statementKind = if (facts.hasStatementExec()) facts.statementExec.statementKind
     else StatementKind.STATEMENT_KIND_STMT_UNKNOWN
@@ -519,7 +519,7 @@ fun decideQuery(
         }
         val stage = facts.failedStage.takeIf { facts.hasFailedStage() }?.lowercase()
         val reason = "fail-closed: could not analyze ($stage)"
-        return when (authz.authorizeDatasourceAction(principal, roles, AuthzAction.SQL_UNANALYZABLE, ds.name, context, ds.tags)) {
+        return when (authz.authorizeDatasourceAction(principal, roles, AuthzAction.EXCEPTION_UNANALYZABLE, ds.name, context, ds.tags)) {
             is AuthzDecision.Allow -> DecisionContext(
                 action = EnfAction.ALLOW,
                 denyReason = null,
@@ -527,7 +527,7 @@ fun decideQuery(
                 piiTouched = emptyList(),
                 effectiveRoles = roleList,
                 failedStage = null,
-                detail = "unanalyzable relay (sql.unanalyzable): $reason",
+                detail = "unanalyzable relay (exception.unanalyzable): $reason",
                 passthrough = true,
                 contextTags = derivedTags,
                 catalogChanging = facts.catalogChanging || facts.functionsList.isNotEmpty(),
@@ -548,20 +548,20 @@ fun decideQuery(
         CatalogCoverage.Covered -> Unit
         // A resolved statement traced a column key with no row in the catalog index. This is NOT a stale
         // fragment: a column truly absent from the catalog fails to RESOLVE (the analyzer is built from the
-        // same catalog), taking the !resolved sql.unanalyzable path above — not this branch. So this is a
+        // same catalog), taking the !resolved exception.unanalyzable path above — not this branch. So this is a
         // fail-closed guard for an analyzer<->CP key-rendering divergence (a contract bug; it also guards the
         // rowsByKey.getValue below). catalogMiss=true + the qualifier candidates are kept (matching the prior
         // hard deny) so decideConnection still runs its bounded refetch-first retry — harmless here, since a
         // re-fetch cannot change a key-rendering mismatch. Rather than a hard code deny, the miss routes
-        // through the same sql.unanalyzable escape hatch as an unanalyzable statement ("authorization
-        // belongs to Cedar"): a principal without sql.unanalyzable stays fail-closed (no
+        // through the same exception.unanalyzable escape hatch as an unanalyzable statement ("authorization
+        // belongs to Cedar"): a principal without exception.unanalyzable stays fail-closed (no
         // non-admin holds it — the only shipped grant is preset-scoped to system:development, where dev has
         // no PII), while a holder may relay. The relay is a whole-statement unmasked passthrough — masks for
         // any COVERED columns selected alongside the uncovered one are dropped too — which is no new
         // capability over the unanalyzable relay above, which likewise relays everything unmasked under
         // the same grant.
         is CatalogCoverage.Denied -> return when (
-            authz.authorizeDatasourceAction(principal, roles, AuthzAction.SQL_UNANALYZABLE, ds.name, context, ds.tags)
+            authz.authorizeDatasourceAction(principal, roles, AuthzAction.EXCEPTION_UNANALYZABLE, ds.name, context, ds.tags)
         ) {
             is AuthzDecision.Allow -> DecisionContext(
                 action = EnfAction.ALLOW,
@@ -570,7 +570,7 @@ fun decideQuery(
                 piiTouched = emptyList(),
                 effectiveRoles = roleList,
                 failedStage = null,
-                detail = "uncovered-column relay (sql.unanalyzable): ${coverage.reason}",
+                detail = "uncovered-column relay (exception.unanalyzable): ${coverage.reason}",
                 passthrough = true,
                 contextTags = derivedTags,
                 catalogChanging = facts.catalogChanging || facts.functionsList.isNotEmpty(),
@@ -699,7 +699,7 @@ fun decideQuery(
         columnGrants.mapTo(this) { it.column.identity.schema }
     }.filterNotTo(LinkedHashSet()) { it.startsWith("pg_temp", ignoreCase = true) }
     val unmaskablePermitted = action == EnfAction.MASK && authz.authorizeDatasourceAction(
-        principal, roles, AuthzAction.SQL_UNMASKABLE, ds.name, context, ds.tags,
+        principal, roles, AuthzAction.EXCEPTION_UNMASKABLE, ds.name, context, ds.tags,
     ) is AuthzDecision.Allow
     val sanitizeDiagnostics = redactsDiagnostics(ds.engine, action) {
         authz.authorizeDatasourceAction(
@@ -801,7 +801,7 @@ internal fun wireTaskForbiddenDeny(
 // (the `SELECT *` expansion, the MySQL charset pin) independent of statement class, so every
 // understood-and-allowed decision — analyzed, metadata, session — routes it through this one point rather
 // than each building its own. An EXPLAIN-of-query keeps its original text (the rewrite is for the inner query
-// it plans). The sql.unanalyzable escape hatches deliberately relay the original whole statement, so they do
+// it plans). The exception.unanalyzable escape hatches deliberately relay the original whole statement, so they do
 // not call this.
 private fun DecisionContext.withAnalyzerRewrite(facts: StatementFacts): DecisionContext =
     if (facts.hasRewrittenSql() && !facts.explainOfQuery) copy(rewrittenSql = facts.rewrittenSql) else this
@@ -814,8 +814,8 @@ private fun statementKindActionId(kind: StatementKind): String? = when (kind) {
     StatementKind.STATEMENT_KIND_UNSPECIFIED, StatementKind.UNRECOGNIZED -> null
     // An unclassified statement (a parse fallback, or a discriminator the classifier does not map yet) is
     // gated by the same deny-by-default exception as an unanalyzable one, not a distinct kind action:
-    // existing sql.unanalyzable exceptions carry it, a dev datasource may relay, prod denies.
-    StatementKind.STATEMENT_KIND_STMT_UNKNOWN -> AuthzAction.SQL_UNANALYZABLE.cedarId
+    // existing exception.unanalyzable exceptions carry it, a dev datasource may relay, prod denies.
+    StatementKind.STATEMENT_KIND_STMT_UNKNOWN -> AuthzAction.EXCEPTION_UNANALYZABLE.cedarId
     else -> "stmt.kind." + kind.name.removePrefix("STATEMENT_KIND_").lowercase()
 }
 

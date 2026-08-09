@@ -237,7 +237,7 @@ internal fun decideResultView(
         // The re-decision already ran full Cedar authorization under {R} in the viewer's live context and
         // returned non-DENY (checked above). A passthrough carries no column-masking model — there is nothing
         // to narrow for the viewer — so "authorized to run" IS "authorized to see the raw output": that is the
-        // definition of the sql.unanalyzable relay and of an authorized SHOW/DESCRIBE. Release the stored
+        // definition of the exception.unanalyzable relay and of an authorized SHOW/DESCRIBE. Release the stored
         // bytes; a viewer whose context should forbid it got DENY above. Context-sensitivity of unmasked
         // relays / critical-utility reads belongs in their Cedar grants, not a hardcoded view gate.
         //

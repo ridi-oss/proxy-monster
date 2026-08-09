@@ -15,6 +15,7 @@ import (
 	"github.com/ridi-oss/proxy-monster/goproxy/engine"
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
 	"github.com/ridi-oss/proxy-monster/goproxy/spi"
+	"github.com/ridi-oss/proxy-monster/goproxy/wire"
 )
 
 const backendHandshakeTimeout = 10 * time.Second
@@ -354,7 +355,7 @@ func sendCancelRequest(host string, port int, processID, secretKey uint32) error
 		return fmt.Errorf("dial backend for cancel: %w", err)
 	}
 	defer conn.Close()
-	if err := conn.SetWriteDeadline(time.Now().Add(socketWriteTimeout)); err != nil {
+	if err := conn.SetWriteDeadline(time.Now().Add(wire.SocketWriteTimeout)); err != nil {
 		return fmt.Errorf("set cancel write deadline: %w", err)
 	}
 	if _, err := conn.Write(encoded); err != nil {

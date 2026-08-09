@@ -9,6 +9,7 @@ import (
 	"github.com/ridi-oss/proxy-monster/goproxy/engine"
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
 	"github.com/ridi-oss/proxy-monster/goproxy/spi"
+	"github.com/ridi-oss/proxy-monster/goproxy/wire"
 )
 
 type RunSession struct {
@@ -28,9 +29,9 @@ func NewRunSession(target spi.BackendTarget, db engine.Db, client spi.SessionCli
 	if err != nil {
 		return nil, err
 	}
-	conn = withIODeadlines(conn, readTimeout, socketWriteTimeout)
-	generation := backendGeneration.Add(1)
-	if generation == 0 || generation > maxBackendGeneration {
+	conn = wire.WithBackendReadTimeout(conn, readTimeout)
+	generation, ok := wire.NextBackendGeneration()
+	if !ok {
 		_ = conn.Close()
 		return nil, errors.New("run backend generation out of range")
 	}

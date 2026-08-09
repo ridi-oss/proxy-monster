@@ -10,6 +10,7 @@ import (
 	"github.com/ridi-oss/proxy-monster/goproxy/engine"
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
 	"github.com/ridi-oss/proxy-monster/goproxy/spi"
+	"github.com/ridi-oss/proxy-monster/goproxy/wire"
 	"github.com/ridi-oss/proxy-monster/mysqlwire"
 )
 
@@ -29,9 +30,9 @@ func NewRunSession(target spi.BackendTarget, db engine.Db, client spi.SessionCli
 	if err != nil {
 		return nil, err
 	}
-	conn = withIODeadlines(conn, readTimeout, socketWriteTimeout)
-	generation := backendGeneration.Add(1)
-	if generation == 0 || generation > maxBackendGeneration {
+	conn = wire.WithBackendReadTimeout(conn, readTimeout)
+	generation, ok := wire.NextBackendGeneration()
+	if !ok {
 		_ = conn.Close()
 		return nil, errors.New("run backend generation out of range")
 	}
@@ -111,7 +112,7 @@ func (s *RunSession) Cancel() error {
 		_ = s.conn.Close()
 		return err
 	}
-	conn = withIODeadlines(conn, 5*time.Second, 5*time.Second)
+	conn = wire.WithIODeadlines(conn, 5*time.Second, 5*time.Second)
 	defer conn.Close()
 	if err := execBackendSet(conn, "KILL QUERY "+strconv.FormatUint(uint64(s.connID), 10)); err != nil {
 		_ = s.conn.Close()

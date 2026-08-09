@@ -8,6 +8,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgproto3"
 	"github.com/ridi-oss/proxy-monster/goproxy/engine"
+	"github.com/ridi-oss/proxy-monster/goproxy/wire"
 )
 
 const (
@@ -169,13 +170,13 @@ startupComplete:
 	defer backendConn.Close()
 
 	client.SetMaxBodyLen(maxFrontendFrameBody)
-	clientIO.Conn = withDrainAwareIODeadlines(clientConn, frontendCommandIdleTimeout, socketWriteTimeout, &s.draining)
+	clientIO.Conn = s.WrapClientConn(clientConn)
 	clientIO.strictReads = false
-	backendConn = withIODeadlines(backendConn, backendResponseIdleTimeout, socketWriteTimeout)
+	backendConn = s.WrapBackendConn(backendConn)
 	backend := pgproto3.NewFrontend(backendConn, backendConn)
 
-	backendGen := backendGeneration.Add(1)
-	if backendGen == 0 || backendGen > maxBackendGeneration {
+	backendGen, ok := wire.NextBackendGeneration()
+	if !ok {
 		_ = sendError(client, "FATAL", "08004", "proxy-monster: backend generation unavailable", false, 0)
 		return
 	}
@@ -225,7 +226,7 @@ startupComplete:
 			// read buffer is preempted by the forced deadline, so the completed Execute is rolled back on close
 			// and the client reconnects and retries it (the pipelined-drain limitation in KNOWN_LIMITATIONS).
 			// A plain idle-timeout or client disconnect stays a silent close.
-			if s.draining.Load() {
+			if s.Draining() {
 				_ = sendShutdownNotice(client)
 			}
 			return

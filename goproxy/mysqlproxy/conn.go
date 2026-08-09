@@ -10,6 +10,7 @@ import (
 
 	"github.com/ridi-oss/proxy-monster/goproxy/engine"
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
+	"github.com/ridi-oss/proxy-monster/goproxy/wire"
 	"github.com/ridi-oss/proxy-monster/mysqlwire"
 )
 
@@ -132,7 +133,7 @@ func (s *Server) handleConn(clientConn net.Conn) {
 	if err := clientConn.SetReadDeadline(time.Time{}); err != nil {
 		return
 	}
-	clientConn = withDrainAwareIODeadlines(clientConn, frontendCommandIdleTimeout, socketWriteTimeout, &s.draining)
+	clientConn = s.WrapClientConn(clientConn)
 	token := mysqlwire.ParseClearPassword(tokenPayload)
 	clientAddr := clientConn.RemoteAddr().String()
 	identity, err := s.client.ValidateToken(token, clientAddr)
@@ -161,7 +162,7 @@ func (s *Server) handleConn(clientConn net.Conn) {
 		))
 		return
 	}
-	backendConn = withIODeadlines(backendConn, backendResponseIdleTimeout, socketWriteTimeout)
+	backendConn = s.WrapBackendConn(backendConn)
 	defer backendConn.Close()
 
 	qe := engine.NewQueryEngine(s.db, s.client)
@@ -190,8 +191,8 @@ func (s *Server) handleConn(clientConn net.Conn) {
 		qe.MarkNamespaceDirty()
 	}
 
-	generation := backendGeneration.Add(1)
-	if generation == 0 || generation > maxBackendGeneration {
+	generation, ok := wire.NextBackendGeneration()
+	if !ok {
 		return
 	}
 	refetcher := engine.NewRefetcher(s.db, identity.ConnectionID, generation, func(sql string, expectedColumns int) ([][]*string, error) {
@@ -229,7 +230,7 @@ func (s *Server) handleConn(clientConn net.Conn) {
 			// replacement task. Checking only here (not before the read) lets a command already decoded above the
 			// socket be served first; a command still in the kernel read buffer is preempted by the forced
 			// deadline and simply retried on reconnect. A plain idle-timeout or disconnect stays a silent close.
-			if s.draining.Load() {
+			if s.Draining() {
 				writeShutdownNotice(clientConn)
 			}
 			return

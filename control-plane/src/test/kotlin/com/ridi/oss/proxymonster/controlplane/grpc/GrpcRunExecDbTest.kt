@@ -213,44 +213,44 @@ class GrpcRunExecDbTest {
 
     @Test
     fun `MASK preserves masked-column metadata and returns only proxy-produced values`() = runBlocking {
-        val decisionId = audit(Decision.MASK, listOf("app.public.users.rrn"))
-        val response = exchange("select rrn from users", maxRows = 0) { query, requests ->
+        val decisionId = audit(Decision.MASK, listOf("app.public.users.ssn"))
+        val response = exchange("select ssn from users", maxRows = 0) { query, requests ->
             assertEquals(0, query.maxRows, "maxRows=0 crosses the wire as the proxy's default-500 sentinel (proxy re-coerces)")
             requests.send(
                 proxyRunMsg {
                     decision = runDecision {
                         decision = WireEnfAction.MASK
                         this.decisionId = decisionId
-                        maskedColumns += "rrn"
+                        maskedColumns += "ssn"
                         effectiveRoles += "analyst"
                     }
                 },
             )
-            requests.send(rowsChunk(listOf("rrn"), listOf(listOf("######-#######"))))
+            requests.send(rowsChunk(listOf("ssn"), listOf(listOf("######-#######"))))
             requests.send(proxyRunMsg { done = runDone { rowsAffected = -1 } })
         }.getOrThrow()
 
         assertEquals(EnfAction.MASK, response.decision)
         assertEquals(decisionId, response.decisionId)
         assertNull(response.denyReason)
-        assertEquals(listOf("rrn"), response.maskedColumns)
-        assertEquals(listOf("app.public.users.rrn"), response.piiTouched)
+        assertEquals(listOf("ssn"), response.maskedColumns)
+        assertEquals(listOf("app.public.users.ssn"), response.piiTouched)
         assertEquals(listOf("analyst"), response.effectiveRoles)
-        assertEquals(listOf("rrn"), response.columns)
+        assertEquals(listOf("ssn"), response.columns)
         assertEquals(listOf(listOf("######-#######")), response.rows)
         assertNull(response.rowsAffected)
     }
 
     @Test
     fun `DENY is terminal and never returns rows`() = runBlocking {
-        val decisionId = audit(Decision.DENY, listOf("app.public.users.rrn"))
-        val response = exchange("select rrn from users") { _, requests ->
+        val decisionId = audit(Decision.DENY, listOf("app.public.users.ssn"))
+        val response = exchange("select ssn from users") { _, requests ->
             requests.send(
                 proxyRunMsg {
                     decision = runDecision {
                         decision = WireEnfAction.DENY
                         this.decisionId = decisionId
-                        denyReason = "policy denies column rrn"
+                        denyReason = "policy denies column ssn"
                         effectiveRoles += "contractor"
                     }
                 },
@@ -259,9 +259,9 @@ class GrpcRunExecDbTest {
 
         assertEquals(EnfAction.DENY, response.decision)
         assertEquals(decisionId, response.decisionId)
-        assertEquals("policy denies column rrn", response.denyReason)
+        assertEquals("policy denies column ssn", response.denyReason)
         assertEquals(emptyList(), response.maskedColumns)
-        assertEquals(listOf("app.public.users.rrn"), response.piiTouched)
+        assertEquals(listOf("app.public.users.ssn"), response.piiTouched)
         assertEquals(listOf("contractor"), response.effectiveRoles)
         assertEquals(emptyList(), response.columns)
         assertEquals(emptyList(), response.rows)

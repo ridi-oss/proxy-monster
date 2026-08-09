@@ -18,7 +18,7 @@ func TestMasking(t *testing.T) {
 		kind  string
 		want  *string
 	}{
-		{"last_n reveals only final four", stringPointer("900101-1234567"), "LAST_N", stringPointer("**********4567")},
+		{"last_n reveals only final four", stringPointer("987-65-4320"), "LAST_N", stringPointer("*******4320")},
 		{"last_n masks short value", stringPointer("abc"), "LAST_N", stringPointer("***")},
 		{"last_n masks four-character value", stringPointer("1234"), "LAST_N", stringPointer("****")},
 		{"format preserving", stringPointer("010-1234-5678"), "FORMAT_PRESERVING", stringPointer("***-****-****")},
@@ -61,7 +61,7 @@ func TestBindMasks(t *testing.T) {
 	}{
 		{
 			name:        "ordinal binds",
-			masks:       []*pb.ColumnMask{{Column: "rrn", Kind: "FIXED", Ordinal: proto.Int32(1)}},
+			masks:       []*pb.ColumnMask{{Column: "ssn", Kind: "FIXED", Ordinal: proto.Int32(1)}},
 			columnCount: 2,
 			wantByIndex: map[int]string{1: "FIXED"},
 		},
@@ -73,24 +73,24 @@ func TestBindMasks(t *testing.T) {
 		},
 		{
 			name:        "out of range ordinal is unbound",
-			masks:       []*pb.ColumnMask{{Column: "rrn", Kind: "FIXED", Ordinal: proto.Int32(5)}},
+			masks:       []*pb.ColumnMask{{Column: "ssn", Kind: "FIXED", Ordinal: proto.Int32(5)}},
 			columnCount: 2,
 			wantByIndex: map[int]string{},
-			wantUnbound: []*pb.ColumnMask{{Column: "rrn", Kind: "FIXED", Ordinal: proto.Int32(5)}},
+			wantUnbound: []*pb.ColumnMask{{Column: "ssn", Kind: "FIXED", Ordinal: proto.Int32(5)}},
 		},
 		{
 			// Ordinal nil = proto explicit-presence absent. Must be reported unbound, NOT silently bound
 			// to result column 0 (which would mask the wrong column and leak the intended-masked one).
 			name:        "absent ordinal is unbound (never binds to result column 0)",
-			masks:       []*pb.ColumnMask{{Column: "rrn", Kind: "FIXED"}},
+			masks:       []*pb.ColumnMask{{Column: "ssn", Kind: "FIXED"}},
 			columnCount: 2,
 			wantByIndex: map[int]string{},
-			wantUnbound: []*pb.ColumnMask{{Column: "rrn", Kind: "FIXED"}},
+			wantUnbound: []*pb.ColumnMask{{Column: "ssn", Kind: "FIXED"}},
 		},
 		{
 			name: "multiple ordinals bind",
 			masks: []*pb.ColumnMask{
-				{Column: "rrn", Kind: "FIXED", Ordinal: proto.Int32(0)},
+				{Column: "ssn", Kind: "FIXED", Ordinal: proto.Int32(0)},
 				{Column: "email", Kind: "LAST_N", Ordinal: proto.Int32(2)},
 			},
 			columnCount: 3,
@@ -123,11 +123,11 @@ func TestBindMasks(t *testing.T) {
 }
 
 func TestRowMasker(t *testing.T) {
-	if masker := NewRowMasker([]*pb.ColumnMask{{Column: "rrn", Kind: "redact", Ordinal: proto.Int32(2)}}, 2); masker != nil {
+	if masker := NewRowMasker([]*pb.ColumnMask{{Column: "ssn", Kind: "redact", Ordinal: proto.Int32(2)}}, 2); masker != nil {
 		t.Fatalf("out-of-range ordinal must fail closed: %#v", masker)
 	}
 
-	masker := NewRowMasker([]*pb.ColumnMask{{Column: "rrn", Kind: "FIXED", Ordinal: proto.Int32(1)}}, 2)
+	masker := NewRowMasker([]*pb.ColumnMask{{Column: "ssn", Kind: "FIXED", Ordinal: proto.Int32(1)}}, 2)
 	if masker == nil {
 		t.Fatal("valid ordinal unexpectedly failed to bind")
 	}

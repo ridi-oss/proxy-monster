@@ -55,15 +55,15 @@ Both request and response messages live in `proto/src/main/proto/analyzer.proto`
 ### Worked examples
 
 1. An ordinary masked, joined SELECT with a predicate:
-   `SELECT users.rrn, orders.amount FROM users JOIN orders ON users.id = orders.user_id WHERE users.region = 'KR'`.
-   `users.rrn` is PII (masked), `users.region` is used only in a predicate
+   `SELECT users.ssn, orders.amount FROM users JOIN orders ON users.id = orders.user_id WHERE users.region = 'KR'`.
+   `users.ssn` is PII (masked), `users.region` is used only in a predicate
    (non-output, non-maskable — a masked predicate value cannot be evaluated),
    `orders.amount` is ordinary (no grant emitted for it — absence of a
    requirement, not a satisfied one). Go emits `sql.select` on the datasource, a
-   `result.read` on `Column users.rrn` with disposition `MASK_OUTPUT` gating
+   `result.read` on `Column users.ssn` with disposition `MASK_OUTPUT` gating
    output ordinal 0, and a `result.read` on `Column users.region` with
    disposition `DENY_STATEMENT` gating no output. Kotlin's walk: `sql.select`
-   allowed; `users.rrn` denied but maskable → mask output column 0;
+   allowed; `users.ssn` denied but maskable → mask output column 0;
    `users.region` denied and non-maskable → whole query denied. No further
    grants need checking once a non-maskable deny is hit.
 
@@ -166,8 +166,8 @@ handling:
 
 MySQL's `/*! … */` executable version comments are analyzed normally, not
 rejected. With the real `Dialect.MySQLVersion` set (from `engine_config`),
-`SELECT 1 /*!50700 , rrn */ FROM users` regenerates as
-`SELECT 1, rrn FROM users` — `rrn` becomes a real, traceable column, and the
+`SELECT 1 /*!50700 , ssn */ FROM users` regenerates as
+`SELECT 1, ssn FROM users` — `ssn` becomes a real, traceable column, and the
 normal lineage/grant machinery decides. `/*+ … */` optimizer hints are inert
 comments to sqlglot-go: their content round-trips untouched and is never
 inspected, exactly like any other comment.
@@ -225,8 +225,8 @@ fail-closed as INADMISSIBLE on both engines — never a privileged-keyword scan 
 
 PostgreSQL's `U&'…'` / `U&"…"` literals are decoded by sqlglot-go's tokenizer,
 so the escaped spelling and the plain one analyze identically.
-`SELECT U&"rrn" FROM users` emits the same masked `result.read` on `users.rrn`
-as `SELECT rrn FROM users`, and `SELECT rrn FROM U&"users"` resolves the same
+`SELECT U&"ssn" FROM users` emits the same masked `result.read` on `users.ssn`
+as `SELECT ssn FROM users`, and `SELECT ssn FROM U&"users"` resolves the same
 table. Nothing is special-cased in Go: the decoded name enters the ordinary
 lineage and function machinery.
 
@@ -258,8 +258,8 @@ Command-RESET on PostgreSQL).
 - `go test ./analyzer/probe/...` and the full DB-backed gate
   (`mise run verify`).
 - The documented leak cases each deny under the grant walk:
-  `SELECT query_to_xml('SELECT rrn FROM users')`,
-  `SET @x = (SELECT rrn FROM users)`, `DESC ANALYZE SELECT …`, MySQL
+  `SELECT query_to_xml('SELECT ssn FROM users')`,
+  `SET @x = (SELECT ssn FROM users)`, `DESC ANALYZE SELECT …`, MySQL
   `RESET MASTER`, `SHOW WARNINGS` surfacing an unmasked prior value,
   `EXPLAIN TABLE t` as a row-scanning query-explain, and the GUC-alias privilege
   SETs `SET session_authorization = attacker` / `SET SESSION role = attacker` /

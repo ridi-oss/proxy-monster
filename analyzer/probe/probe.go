@@ -695,7 +695,7 @@ func unwrapSubquery(e exp.Expression) exp.Expression {
 // model. Within the body it is deliberately broad: a query, a column reference, or a function call
 // anywhere inside means the value is not free. A VALUES row hides all three from a check on the immediate
 // child — `AS (SELECT …)` is a Subquery, `AS VALUES ((SELECT …))` buries a Select, and
-// `AS VALUES (query_to_xml('SELECT rrn …'))` invokes a data-leak function the function gate must still
+// `AS VALUES (query_to_xml('SELECT ssn …'))` invokes a data-leak function the function gate must still
 // see — each of which the catalog-only path would drop on the floor. A literal-only VALUES matches none
 // and stays value-free DDL.
 func createReadsColumns(root exp.Expression) bool {
@@ -1387,7 +1387,7 @@ func (p *prober) lineage() ProbeResult {
 		// site, not per-clause guards). The loop above skips columns owned by a nested scope
 		// (p.col2scope[c] != nil): the payload subqueries of every orphaned write clause — SET,
 		// RETURNING, VALUES, MERGE-action SET, ON CONFLICT DO UPDATE. A protected column read there — a
-		// bare name PG binds column-first to the write target/outer (a correlated `(SELECT rrn)`), or a
+		// bare name PG binds column-first to the write target/outer (a correlated `(SELECT ssn)`), or a
 		// whole-row value (`to_jsonb(u)`) — must still reach references. Resolve each column-first and add
 		// any base not already referenced (dedup keeps bucket parity: cols the read/subquery passes
 		// already routed are not duplicated). A column INSIDE a SELECT-bodied write's payload
@@ -1956,7 +1956,7 @@ func (p *prober) redactableTransform(node exp.Expression) bool {
 		return true
 	case exp.KindLiteral:
 		// A literal in a STRING-operand position must be a string literal. A numeric/other literal here —
-		// e.g. COALESCE(rrn, 0) — forces a type-unification that can constant-fault on PostgreSQL (a
+		// e.g. COALESCE(ssn, 0) — forces a type-unification that can constant-fault on PostgreSQL (a
 		// value-INDEPENDENT error, not an oracle, but the analyzer must not vouch a query that always
 		// errors). Numeric args in numeric positions (SUBSTRING start/length, LEFT n) are unaffected —
 		// they go through the literal-required branch below, not this string recursion.
@@ -1964,7 +1964,7 @@ func (p *prober) redactableTransform(node exp.Expression) bool {
 	case exp.KindColumn:
 		// A column leaf is redactable only if it is a pure IDENTITY reference to a base column — NOT a
 		// column that resolves (through a subquery / derived table / CTE) to a hidden transform. Without
-		// this, an oracle buried one scope down — `SELECT c FROM (SELECT cast(rrn AS json) AS c) t`, or
+		// this, an oracle buried one scope down — `SELECT c FROM (SELECT cast(ssn AS json) AS c) t`, or
 		// even `SELECT upper(c) FROM (…)` — would slip past this surface whitelist yet still execute in
 		// the subquery. isID=false means a value-changing transform hides below; fail closed.
 		_, isID := p.projIdent(node, map[identKey]bool{})

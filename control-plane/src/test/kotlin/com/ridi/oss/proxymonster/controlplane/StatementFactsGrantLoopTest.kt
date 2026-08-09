@@ -28,13 +28,13 @@ import kotlin.test.assertTrue
  * multi-ordinal first-wins, and metadata preservation, each against the fixture's live authorization.
  *
  * Fixture (EnforcementFixture.postgres): `analyst@example.com` may read `users` unmasked except the pii
- * `rrn` column (masked with `last4`); the `orders` table has no grant at all (deny-by-default).
+ * `ssn` column (masked with `last4`); the `orders` table has no grant at all (deny-by-default).
  */
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 class StatementFactsGrantLoopTest {
     private lateinit var fx: EnforcementFixture
     private lateinit var fixtureCatalog: List<CatalogColumn>
-    private lateinit var rrn: CatalogColumn
+    private lateinit var ssn: CatalogColumn
     private lateinit var region: CatalogColumn
     private lateinit var amount: CatalogColumn
 
@@ -43,7 +43,7 @@ class StatementFactsGrantLoopTest {
         requireDockerOrSkip()
         fx = EnforcementFixture.postgres()
         fixtureCatalog = fx.datasourceStore.catalog(fx.datasource.id)
-        rrn = col("users", "rrn")
+        ssn = col("users", "ssn")
         region = col("users", "region")
         amount = col("orders", "amount")
     }
@@ -125,13 +125,13 @@ class StatementFactsGrantLoopTest {
     fun `masked verdict with MASK_OUTPUT applies the configured mask`() {
         val ctx = decide(
             analyzed(
-                columnGrant(rrn, MaskedDisposition.MASKED_DISPOSITION_MASK_OUTPUT, listOf(0)),
-                outputCols = listOf("rrn"),
+                columnGrant(ssn, MaskedDisposition.MASKED_DISPOSITION_MASK_OUTPUT, listOf(0)),
+                outputCols = listOf("ssn"),
             ),
         )
         assertEquals(EnfAction.MASK, ctx.action, ctx.denyReason)
         assertEquals(1, ctx.masks.size)
-        assertEquals("rrn", ctx.masks[0].column)
+        assertEquals("ssn", ctx.masks[0].column)
         assertEquals("last4", ctx.masks[0].maskFn)
     }
 
@@ -139,8 +139,8 @@ class StatementFactsGrantLoopTest {
     fun `masked verdict with REDACT_OUTPUT_NULL redacts to NULL`() {
         val ctx = decide(
             analyzed(
-                columnGrant(rrn, MaskedDisposition.MASKED_DISPOSITION_REDACT_OUTPUT_NULL, listOf(0)),
-                outputCols = listOf("rrn"),
+                columnGrant(ssn, MaskedDisposition.MASKED_DISPOSITION_REDACT_OUTPUT_NULL, listOf(0)),
+                outputCols = listOf("ssn"),
             ),
         )
         assertEquals(EnfAction.MASK, ctx.action, ctx.denyReason)
@@ -150,14 +150,14 @@ class StatementFactsGrantLoopTest {
 
     @Test
     fun `masked verdict with DENY_STATEMENT disposition denies`() {
-        val ctx = decide(analyzed(columnGrant(rrn, MaskedDisposition.MASKED_DISPOSITION_DENY_STATEMENT)))
+        val ctx = decide(analyzed(columnGrant(ssn, MaskedDisposition.MASKED_DISPOSITION_DENY_STATEMENT)))
         assertEquals(EnfAction.DENY, ctx.action)
     }
 
     @Test
     fun `write read-set membership of a masked column denies`() {
         val ctx = decide(
-            analyzed(columnGrant(rrn, MaskedDisposition.MASKED_DISPOSITION_DENY_STATEMENT), isWrite = true),
+            analyzed(columnGrant(ssn, MaskedDisposition.MASKED_DISPOSITION_DENY_STATEMENT), isWrite = true),
         )
         assertEquals(EnfAction.DENY, ctx.action)
         assertTrue(ctx.denyReason?.contains("write") == true, ctx.denyReason)
@@ -178,9 +178,9 @@ class StatementFactsGrantLoopTest {
     fun `multi-grant same ordinal is first-wins`() {
         val ctx = decide(
             analyzed(
-                columnGrant(rrn, MaskedDisposition.MASKED_DISPOSITION_REDACT_OUTPUT_NULL, listOf(0)),
-                columnGrant(rrn, MaskedDisposition.MASKED_DISPOSITION_MASK_OUTPUT, listOf(0)),
-                outputCols = listOf("rrn"),
+                columnGrant(ssn, MaskedDisposition.MASKED_DISPOSITION_REDACT_OUTPUT_NULL, listOf(0)),
+                columnGrant(ssn, MaskedDisposition.MASKED_DISPOSITION_MASK_OUTPUT, listOf(0)),
+                outputCols = listOf("ssn"),
             ),
         )
         assertEquals(EnfAction.MASK, ctx.action, ctx.denyReason)
@@ -192,14 +192,14 @@ class StatementFactsGrantLoopTest {
     fun `output columns and rewritten sql are preserved on the decision`() {
         val ctx = decide(
             analyzed(
-                columnGrant(rrn, MaskedDisposition.MASKED_DISPOSITION_MASK_OUTPUT, listOf(0)),
-                outputCols = listOf("rrn"),
-                rewrite = "SELECT rrn FROM users",
+                columnGrant(ssn, MaskedDisposition.MASKED_DISPOSITION_MASK_OUTPUT, listOf(0)),
+                outputCols = listOf("ssn"),
+                rewrite = "SELECT ssn FROM users",
             ),
         )
         assertEquals(EnfAction.MASK, ctx.action, ctx.denyReason)
-        assertEquals(listOf("rrn"), ctx.outputColumns)
-        assertEquals("SELECT rrn FROM users", ctx.rewrittenSql)
+        assertEquals(listOf("ssn"), ctx.outputColumns)
+        assertEquals("SELECT ssn FROM users", ctx.rewrittenSql)
     }
 
     // ---- fail-closed contract branches (unreachable from real SQL) ------------------------------
@@ -220,8 +220,8 @@ class StatementFactsGrantLoopTest {
     fun `resource grant with a non-RESULT_READ action fails closed`() {
         val ctx = decide(
             analyzed(
-                columnGrant(rrn, MaskedDisposition.MASKED_DISPOSITION_MASK_OUTPUT, listOf(0), action = GrantAction.GRANT_ACTION_SQL_SELECT),
-                outputCols = listOf("rrn"),
+                columnGrant(ssn, MaskedDisposition.MASKED_DISPOSITION_MASK_OUTPUT, listOf(0), action = GrantAction.GRANT_ACTION_SQL_SELECT),
+                outputCols = listOf("ssn"),
             ),
         )
         assertEquals(EnfAction.DENY, ctx.action)
@@ -230,7 +230,7 @@ class StatementFactsGrantLoopTest {
 
     @Test
     fun `masked verdict with an unspecified disposition fails closed`() {
-        val ctx = decide(analyzed(columnGrant(rrn, MaskedDisposition.MASKED_DISPOSITION_UNSPECIFIED)))
+        val ctx = decide(analyzed(columnGrant(ssn, MaskedDisposition.MASKED_DISPOSITION_UNSPECIFIED)))
         assertEquals(EnfAction.DENY, ctx.action)
     }
 
@@ -238,8 +238,8 @@ class StatementFactsGrantLoopTest {
     fun `an out-of-range mask ordinal fails closed`() {
         val ctx = decide(
             analyzed(
-                columnGrant(rrn, MaskedDisposition.MASKED_DISPOSITION_MASK_OUTPUT, listOf(5)),
-                outputCols = listOf("rrn"),
+                columnGrant(ssn, MaskedDisposition.MASKED_DISPOSITION_MASK_OUTPUT, listOf(5)),
+                outputCols = listOf("ssn"),
             ),
         )
         assertEquals(EnfAction.DENY, ctx.action)
@@ -266,8 +266,8 @@ class StatementFactsGrantLoopTest {
             statementFacts {
                 resolved = true
                 statementClass = StatementClass.STATEMENT_CLASS_UNSPECIFIED
-                requiredGrants.add(columnGrant(rrn, MaskedDisposition.MASKED_DISPOSITION_MASK_OUTPUT, listOf(0)))
-                outputColumns.add("rrn")
+                requiredGrants.add(columnGrant(ssn, MaskedDisposition.MASKED_DISPOSITION_MASK_OUTPUT, listOf(0)))
+                outputColumns.add("ssn")
             },
         )
         assertEquals(EnfAction.DENY, ctx.action)

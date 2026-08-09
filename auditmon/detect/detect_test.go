@@ -135,7 +135,7 @@ func TestRepeatedDeny(t *testing.T) {
 	rules := config.RulesConfig{RepeatedDeny: config.RepeatedDenyRule{Window: 10 * time.Minute, MaxDeny: 3}}
 	now := time.Now()
 	deny := func(int) canon.AuditEvent {
-		return decision("mallory", "example-mysql", "SELECT rrn FROM users", "DENY", nil, now)
+		return decision("mallory", "example-mysql", "SELECT ssn FROM users", "DENY", nil, now)
 	}
 
 	// At the threshold (== max) it must NOT fire.
@@ -302,7 +302,7 @@ func TestBulkPIIDistinctColumns(t *testing.T) {
 	}
 
 	// A third distinct column crosses the threshold.
-	threeCols := append(twoCols, decision("alice", "example-mysql", "SELECT rrn FROM users", "MASK", []string{"pii:rrn"}, now))
+	threeCols := append(twoCols, decision("alice", "example-mysql", "SELECT ssn FROM users", "MASK", []string{"pii:ssn"}, now))
 	sink = seedAndInspect(t, rules, threeCols)
 	if got := sink.byRule(config.RuleBulkPII); len(got) != 1 {
 		t.Fatalf("3 distinct pii columns (> max 2) fired %d, want 1", len(got))

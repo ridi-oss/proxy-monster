@@ -22,7 +22,7 @@ const (
 )
 
 const (
-	shutdownErrno    = 1053 // ER_SERVER_SHUTDOWN
+	shutdownEssno    = 1053 // ER_SERVER_SHUTDOWN
 	shutdownSQLState = "08S01"
 	shutdownMessage  = "proxy-monster: server shutting down"
 	// shutdownNoticeSeq frames the unsolicited notice as the response to the client's next command
@@ -34,7 +34,7 @@ const (
 // replacement task instead of seeing a bare TCP reset. Best-effort: the connection closes regardless.
 func writeShutdownNotice(clientConn net.Conn) {
 	_ = mysqlwire.WritePacket(clientConn, shutdownNoticeSeq, mysqlwire.ErrPacketState(
-		shutdownErrno,
+		shutdownEssno,
 		shutdownSQLState,
 		shutdownMessage,
 	))

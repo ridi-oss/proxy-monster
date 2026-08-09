@@ -46,7 +46,7 @@ class ChannelDecideAuditDbTest {
 
     @Test
     fun `the audit record carries the channel through the real run path`() {
-        val r = fx.run("select id, rrn from users order by id")
+        val r = fx.run("select id, ssn from users order by id")
         val rec = fx.auditStore.get(r.decisionId!!)
         assertEquals("editor", rec?.channel, "a runEnforcedQuery decision must audit channel=editor")
     }
@@ -163,13 +163,13 @@ class ChannelDecideAuditDbTest {
     @Test
     fun `a write cannot launder a masked column into a session temp (the unmasked-temp linchpin)`() {
         // Linchpin: a session temp reads UNMASKED only because a write can't copy masked/denied data
-        // into one. Both a CTAS and an INSERT-select reading users.rrn (masked) must DENY on the editor
+        // into one. Both a CTAS and an INSERT-select reading users.ssn (masked) must DENY on the editor
         // channel — even with a temp overlay ACTIVE — via the write-references-masked deny. If this ever
         // regressed, "temps read unmasked" would become an exfiltration primitive (write masked → read plain).
         val tempSchema = "pg_temp_9"
         // A session temp the attacker already holds (in the overlay), as the INSERT sink — the strongest form.
         val scratch = CatalogColumn(
-            catalog = fx.datasource.dbName, schema = tempSchema, table = "scratch", column = "rrn",
+            catalog = fx.datasource.dbName, schema = tempSchema, table = "scratch", column = "ssn",
             dataType = "text", sqlType = "text", ordinal = 1, nullable = true, isTemp = true,
         )
         fun decideWrite(principal: String, sql: String) = decideQuery(
@@ -179,11 +179,11 @@ class ChannelDecideAuditDbTest {
             liveSearchPath = listOf(tempSchema, "public"),
             systemClassification = SystemClassificationService(), tempColumns = listOf(scratch),
         )
-        // ddl-writer holds sql.ddl (CTAS), insert-writer holds sql.insert; both read users.rrn as MASKED.
-        val ctas = decideWrite("writer@example.com", "create temporary table t2 as select rrn from users")
+        // ddl-writer holds sql.ddl (CTAS), insert-writer holds sql.insert; both read users.ssn as MASKED.
+        val ctas = decideWrite("writer@example.com", "create temporary table t2 as select ssn from users")
         assertEquals(EnfAction.DENY, ctas.action, "CTAS from a masked column must DENY: ${ctas.denyReason}")
 
-        val insert = decideWrite("inserter@example.com", "insert into scratch select rrn from users")
+        val insert = decideWrite("inserter@example.com", "insert into scratch select ssn from users")
         assertEquals(EnfAction.DENY, insert.action, "INSERT-select from a masked column into a temp must DENY: ${insert.denyReason}")
     }
 

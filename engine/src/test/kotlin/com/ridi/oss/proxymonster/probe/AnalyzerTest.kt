@@ -33,18 +33,18 @@ class AnalyzerTest {
     private val config = engineConfig { engine = Engine.POSTGRES }
     private val columns = listOf(
         column("acme", "public", "users", "id"),
-        column("acme", "public", "users", "rrn", pii = true),
+        column("acme", "public", "users", "ssn", pii = true),
     )
 
     @Test
     fun `analyzer retains validated request snapshot and returns StatementFacts`() {
         val analyzer = analyzerFor(ns, columns, config)
-        val facts = analyzer.analyze("select rrn from users")
+        val facts = analyzer.analyze("select ssn from users")
         assertTrue(facts.resolved)
         assertEquals(ns, analyzer.namespaceProto)
         assertEquals(columns, analyzer.catalogProto)
-        assertEquals(setOf("acme.public.users.rrn"), analyzer.piiColumns)
-        assertTrue(facts.requiredGrantsList.any { it.hasColumn() && it.column.identity.column == "rrn" })
+        assertEquals(setOf("acme.public.users.ssn"), analyzer.piiColumns)
+        assertTrue(facts.requiredGrantsList.any { it.hasColumn() && it.column.identity.column == "ssn" })
     }
 
     @Test

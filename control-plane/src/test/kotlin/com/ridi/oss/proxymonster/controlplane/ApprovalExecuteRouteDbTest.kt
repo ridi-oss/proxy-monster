@@ -193,7 +193,7 @@ class ApprovalExecuteRouteDbTest {
     private fun seedApprovedRoleRequest(roleName: String, decidedBy: String = executor): Long {
         val roleId = core.policyStore.createRole(RoleInput(roleName)).id
         val id = core.accessStore.createQueryRequest(
-            principal = requester, datasourceId = datasource.id, sql = "select rrn from users",
+            principal = requester, datasourceId = datasource.id, sql = "select ssn from users",
             denyReason = null, sourceDecisionId = null, reason = "need it", title = null,
             evaluatedDecision = "DENY", roleId = roleId,
         ).id
@@ -245,7 +245,7 @@ class ApprovalExecuteRouteDbTest {
                             proxyRunMsg {
                                 decision = runDecision {
                                     decision = WireEnfAction.DENY
-                                    denyReason = "policy denies column rrn"
+                                    denyReason = "policy denies column ssn"
                                 }
                             },
                         )
@@ -330,7 +330,7 @@ class ApprovalExecuteRouteDbTest {
                     when {
                         control.hasQuery() -> {
                             proxyRequests.send(proxyRunMsg { decision = runDecision { decision = WireEnfAction.ALLOW } })
-                            proxyRequests.send(rowsChunk(listOf("rrn"), listOf(listOf("some-value"))))
+                            proxyRequests.send(rowsChunk(listOf("ssn"), listOf(listOf("some-value"))))
                             proxyRequests.send(proxyRunMsg { done = runDone { rowsAffected = -1 } })
                         }
                         control.hasClose() -> proxyRequests.close()
@@ -392,7 +392,7 @@ class ApprovalExecuteRouteDbTest {
                     when {
                         control.hasQuery() -> launch {
                             proxyRequests.send(proxyRunMsg { decision = runDecision { decision = WireEnfAction.ALLOW } })
-                            proxyRequests.send(rowsChunk(listOf("rrn"), listOf(listOf("some-value"))))
+                            proxyRequests.send(rowsChunk(listOf("ssn"), listOf(listOf("some-value"))))
                             // Withhold Done until the test has proven the route already returned 202 and
                             // the task/child are observably in flight.
                             releaseDone.await()

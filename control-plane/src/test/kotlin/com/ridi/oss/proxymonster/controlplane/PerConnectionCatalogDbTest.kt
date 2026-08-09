@@ -49,9 +49,9 @@ abstract class PerConnectionCatalogDbContract {
     @Test
     fun `ANSI_QUOTES threads through decideConnection so a double-quoted pii column masks`() = runBlocking {
         // ANSI_QUOTES seam: the gRPC handler forwards the proxy's observed sql_mode=ANSI_QUOTES as
-        // decideConnection(ansiQuotes=true), which must reach the analyzer's EngineConfig so `"rrn"` is read
+        // decideConnection(ansiQuotes=true), which must reach the analyzer's EngineConfig so `"ssn"` is read
         // as the masked pii column, not a string literal — MASK, not a cleartext leak. With the flag false
-        // (default mode) `"rrn"` is the constant string 'rrn' (no pii column touched) → ALLOW. Proven through
+        // (default mode) `"ssn"` is the constant string 'ssn' (no pii column touched) → ALLOW. Proven through
         // the real per-connection catalog path the wire Decide RPC actually runs.
         if (fixture.datasource.engine.isPostgres) return@runBlocking
         val schema = fixture.datasource.defaultSchemas.first()
@@ -66,14 +66,14 @@ abstract class PerConnectionCatalogDbContract {
 
         val masked = decideConnection(
             fixture.core, opened.connectionId, "analyst@example.com", fixture.datasource,
-            """select "rrn" from users""", listOf(schema), null, ansiQuotes = true,
+            """select "ssn" from users""", listOf(schema), null, ansiQuotes = true,
         )
         val maskedVerdict = assertIs<EnforcementOutcome.Verdict>(masked)
         assertEquals(EnfAction.MASK, maskedVerdict.ctx.action, maskedVerdict.ctx.denyReason)
 
         val allowed = decideConnection(
             fixture.core, opened.connectionId, "analyst@example.com", fixture.datasource,
-            """select "rrn" from users""", listOf(schema), null, ansiQuotes = false,
+            """select "ssn" from users""", listOf(schema), null, ansiQuotes = false,
         )
         val allowedVerdict = assertIs<EnforcementOutcome.Verdict>(allowed)
         assertEquals(EnfAction.ALLOW, allowedVerdict.ctx.action, allowedVerdict.ctx.denyReason)

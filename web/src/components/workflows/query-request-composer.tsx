@@ -238,7 +238,7 @@ export function QueryRequestComposer({
                     id="approval-sql"
                     value={sql}
                     onChange={(e) => setSql(e.target.value)}
-                    placeholder="SELECT id, rrn FROM users WHERE id = 1"
+                    placeholder="SELECT id, ssn FROM users WHERE id = 1"
                     rows={8}
                     required
                     className="font-mono text-xs"

@@ -36,11 +36,11 @@ import kotlin.test.assertTrue
  * ([EnforcementFixture.postgres]).
  *
  * It also carries ROUTE-level teeth for the R-ALONE preview, in the case that actually distinguishes
- * it: `debug-user` here HOLDS an own role (`base-reader`, which runs `select id, rrn from users` with
- * `rrn` masked). Two candidates are seeded so the union and R-alone decisions genuinely diverge:
- *   * `full-reader` unmasks `rrn` ON ITS OWN → offered under both models (the positive round-trip pick);
- *   * `unmask-only` grants unmasked-`rrn` but NO datasource.connect/sql.select, so ALONE it DENYs, while
- *     `{base-reader, unmask-only}` would connect (via base-reader) and unmask `rrn`. A unioned
+ * it: `debug-user` here HOLDS an own role (`base-reader`, which runs `select id, ssn from users` with
+ * `ssn` masked). Two candidates are seeded so the union and R-alone decisions genuinely diverge:
+ *   * `full-reader` unmasks `ssn` ON ITS OWN → offered under both models (the positive round-trip pick);
+ *   * `unmask-only` grants unmasked-`ssn` but NO datasource.connect/sql.select, so ALONE it DENYs, while
+ *     `{base-reader, unmask-only}` would connect (via base-reader) and unmask `ssn`. A unioned
  *     preview would offer `unmask-only`; under R-alone it must NOT be — this test catches the union
  *     bug, unlike a no-own-roles fixture where `ownRoles + R == {R}` makes the two implementations equal.
  * The pure [RoleDiscoveryTest] covers the union-vs-alone logic directly; this pins the ROUTE wiring
@@ -52,7 +52,7 @@ class ApprovalDiscoverPickSubmitRouteDbTest {
     private lateinit var runExecService: RunExecService
     private lateinit var config: Config
 
-    private val sql = "select id, rrn from users"
+    private val sql = "select id, ssn from users"
 
     @BeforeAll
     fun setup() {
@@ -92,7 +92,7 @@ class ApprovalDiscoverPickSubmitRouteDbTest {
         fun grant(name: String, src: String) =
             fx.cedarPolicyStore.create(CedarPolicyInput(name = name, cedarSrc = src), updatedBy = "discover-pick-submit-test")
 
-        // debug-user's OWN role: connects + selects, cleartext except pii, pii (rrn) masked → baseline MASK.
+        // debug-user's OWN role: connects + selects, cleartext except pii, pii (ssn) masked → baseline MASK.
         val baseReader = fx.policyStore.createRole(RoleInput("base-reader"))
         fx.policyStore.createAssignment(RoleAssignmentInput("debug-user", baseReader.id))
         grant("base-reader-connect-select", """permit(principal in Role::"base-reader", action in [Action::"datasource.connect", Action::"sql.select"], resource in Datasource::"${ds.name}");""")
@@ -100,13 +100,13 @@ class ApprovalDiscoverPickSubmitRouteDbTest {
         grant("base-reader-users-masked-pii", """permit(principal in Role::"base-reader", action == Action::"result.read.masked", resource in Table::"$usersEuid") when { resource in Tag::"pii" };""")
 
         // Candidate `full-reader`: connects + selects + unmasks EVERY users column (no `unless pii`), so
-        // ALONE it clears the query and unmasks rrn → offered regardless of the preview model.
+        // ALONE it clears the query and unmasks ssn → offered regardless of the preview model.
         fx.policyStore.createRole(RoleInput("full-reader"))
         grant("full-reader-connect-select", """permit(principal in Role::"full-reader", action in [Action::"datasource.connect", Action::"sql.select"], resource in Datasource::"${ds.name}");""")
         grant("full-reader-users-unmasked", """permit(principal in Role::"full-reader", action == Action::"result.read.unmasked", resource in Table::"$usersEuid");""")
 
-        // Candidate `unmask-only`: unmasks rrn but grants NO datasource.connect/sql.select. ALONE it DENYs
-        // (can't even connect); only UNIONED with base-reader would it connect and unmask rrn — the trap.
+        // Candidate `unmask-only`: unmasks ssn but grants NO datasource.connect/sql.select. ALONE it DENYs
+        // (can't even connect); only UNIONED with base-reader would it connect and unmask ssn — the trap.
         fx.policyStore.createRole(RoleInput("unmask-only"))
         grant("unmask-only-users-unmasked", """permit(principal in Role::"unmask-only", action == Action::"result.read.unmasked", resource in Table::"$usersEuid");""")
     }
@@ -141,12 +141,12 @@ class ApprovalDiscoverPickSubmitRouteDbTest {
         val discovered = discoverResponse.body<DiscoverRolesResponse>()
         assertTrue(
             discovered.baselineAllowed,
-            "debug-user holds base-reader, which runs the query with rrn masked -> the baseline is a masked ALLOW",
+            "debug-user holds base-reader, which runs the query with ssn masked -> the baseline is a masked ALLOW",
         )
 
         val offered = discovered.options.map { it.roleName }.toSet()
         // The teeth: `unmask-only` alone can't even connect (DENY), so R-alone must not offer it. A
-        // unioned preview of {base-reader, unmask-only} WOULD connect (base-reader) and unmask rrn → offer it.
+        // unioned preview of {base-reader, unmask-only} WOULD connect (base-reader) and unmask ssn → offer it.
         assertFalse(
             "unmask-only" in offered,
             "unmask-only DENYs previewed ALONE (no connect/select) and must NOT be offered; the old unioned " +
@@ -155,15 +155,15 @@ class ApprovalDiscoverPickSubmitRouteDbTest {
         val fullReader = discovered.options.singleOrNull { it.roleName == "full-reader" }
         assertTrue(
             fullReader != null,
-            "full-reader unmasks rrn ON ITS OWN, improving on the masked baseline -> it must be offered. Offered: $offered",
+            "full-reader unmasks ssn ON ITS OWN, improving on the masked baseline -> it must be offered. Offered: $offered",
         )
-        assertEquals(listOf("rrn"), fullReader!!.unmasksColumns, "the offered role must report rrn as newly unmasked over the baseline")
+        assertEquals(listOf("ssn"), fullReader!!.unmasksColumns, "the offered role must report ssn as newly unmasked over the baseline")
 
         val submitResponse = client.post("/api/approvals") {
             contentType(ContentType.Application.Json)
             setBody(
                 CreateApprovalInput(
-                    datasourceId = fx.datasource.id, sql = sql, title = "need rrn",
+                    datasourceId = fx.datasource.id, sql = sql, title = "need ssn",
                     reason = "investigating an incident", roleId = fullReader.roleId,
                 ),
             )

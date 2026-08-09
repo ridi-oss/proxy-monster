@@ -29,7 +29,7 @@ class DeactivationEnforcementDbTest {
         fx = EnforcementFixture.postgres()
     }
 
-    /** Grant [principal] the fixture's seeded `analyst` (MASK-on-rrn) role via a direct assignment. */
+    /** Grant [principal] the fixture's seeded `analyst` (MASK-on-ssn) role via a direct assignment. */
     private fun grantAnalystRole(principal: String) {
         val roleId = fx.policyStore.listRoles().first { it.name == fx.role }.id
         fx.policyStore.createAssignment(RoleAssignmentInput(principal, roleId))
@@ -41,20 +41,20 @@ class DeactivationEnforcementDbTest {
         grantAnalystRole(principal)
 
         // Sanity: while active, the same query MASKs the PII column as expected.
-        val active = fx.run("select id, rrn from users order by id", principal = principal)
+        val active = fx.run("select id, ssn from users order by id", principal = principal)
         assertEquals(EnfAction.MASK, active.decision, "sanity: query must MASK while the principal is active")
 
         // Deprovision: an app_user row now exists for this principal and is deactivated (the SCIM
         // active=false / IdP-liveness-failure path). Without the fail-closed gate, RoleResolver would
         // resolve to the empty set, no column policy would match, and PolicyEvaluator would ALLOW —
-        // cleartext rrn leaking to a deprovisioned user.
+        // cleartext ssn leaking to a deprovisioned user.
         fx.userGroupStore.createUser(AppUserInput(principal = principal), fx.tokenStore, fx.accessStore, fx.daemonSessionStore)
         fx.userGroupStore.setUserActive(principal, false)
         assertTrue(fx.userGroupStore.isDeactivated(principal))
 
-        val r = fx.run("select id, rrn from users order by id", principal = principal)
+        val r = fx.run("select id, ssn from users order by id", principal = principal)
         assertEquals(EnfAction.DENY, r.decision, "a deactivated principal must be denied, not fall open to ALLOW")
-        assertTrue(r.rows.isEmpty(), "a DENY must not return rows (no cleartext rrn leak)")
+        assertTrue(r.rows.isEmpty(), "a DENY must not return rows (no cleartext ssn leak)")
         assertTrue(
             r.denyReason?.contains("deprovision", ignoreCase = true) == true,
             "deny reason should call out deprovisioning: ${r.denyReason}",
@@ -104,10 +104,10 @@ class DeactivationEnforcementDbTest {
         grantAnalystRole(principal)
         fx.userGroupStore.createUser(AppUserInput(principal = principal), fx.tokenStore, fx.accessStore, fx.daemonSessionStore)
         fx.userGroupStore.setUserActive(principal, false)
-        assertEquals(EnfAction.DENY, fx.run("select id, rrn from users order by id", principal = principal).decision)
+        assertEquals(EnfAction.DENY, fx.run("select id, ssn from users order by id", principal = principal).decision)
 
         fx.userGroupStore.setUserActive(principal, true)
-        val r = fx.run("select id, rrn from users order by id", principal = principal)
+        val r = fx.run("select id, ssn from users order by id", principal = principal)
         assertEquals(EnfAction.MASK, r.decision, "reactivation must restore normal (masked) enforcement, not a stuck DENY")
     }
 }

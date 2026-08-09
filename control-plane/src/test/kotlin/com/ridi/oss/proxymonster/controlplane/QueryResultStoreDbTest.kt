@@ -35,7 +35,7 @@ class QueryResultStoreDbTest {
     private fun newTask(requester: String = "alice@example.com"): Long = accessStore.createQueryRequest(
         principal = requester,
         datasourceId = datasourceId,
-        sql = "select id, rrn from users",
+        sql = "select id, ssn from users",
         denyReason = null,
         sourceDecisionId = null,
         reason = "r",
@@ -44,7 +44,7 @@ class QueryResultStoreDbTest {
     ).id
 
     private fun result() = DecryptedResult(
-        listOf("id", "rrn"),
+        listOf("id", "ssn"),
         listOf(listOf("1", "PM_SECRET_900101"), listOf("2", "PM_SECRET_850202")),
     )
 
@@ -158,10 +158,10 @@ class QueryResultStoreDbTest {
         // ciphertext, so it must also return that SAME child's sql — the view re-decides the released bytes
         // against their own statement, never the first child's (which would let a later child's PII be
         // released under an earlier child's non-PII verdict when the output labels happen to match).
-        val id = newTask() // first child carries "select id, rrn from users"
+        val id = newTask() // first child carries "select id, ssn from users"
         dataSource.connection.use { c ->
             c.prepareStatement(
-                "INSERT INTO query_result (task_id, sql, sql_hash) VALUES (?, 'select rrn as v from users', 'second')",
+                "INSERT INTO query_result (task_id, sql, sql_hash) VALUES (?, 'select ssn as v from users', 'second')",
             ).use { ps ->
                 ps.setLong(1, id)
                 ps.executeUpdate()
@@ -173,7 +173,7 @@ class QueryResultStoreDbTest {
 
         val access = store.accessFor(id)
         assertNotNull(access)
-        assertEquals("select rrn as v from users", access?.sql, "accessFor.sql is the latest (released) child's own sql")
+        assertEquals("select ssn as v from users", access?.sql, "accessFor.sql is the latest (released) child's own sql")
         assertEquals(listOf(listOf("PM_SECRET_900101")), access?.decrypted?.rows, "and its ciphertext is that same child's")
     }
 
@@ -193,7 +193,7 @@ class QueryResultStoreDbTest {
                 ps.setLong(1, id)
                 ps.executeQuery().use { rs ->
                     assertTrue(rs.next())
-                    assertEquals("select id, rrn from users", rs.getString("sql"))
+                    assertEquals("select id, ssn from users", rs.getString("sql"))
                     assertNotNull(rs.getString("sql_hash"))
                     assertEquals("DONE", rs.getString("status"))
                     assertNull(rs.getBytes("ciphertext"))

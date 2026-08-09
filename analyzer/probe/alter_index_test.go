@@ -62,7 +62,7 @@ func TestCatalogChangingDdlResolves(t *testing.T) {
 		{"alter drop key spelling", "ALTER TABLE users DROP KEY idx_u_idx"},
 		{"alter add index", "ALTER TABLE users ADD INDEX idx_email (email)"},
 		{"alter add column", "ALTER TABLE users ADD c INT"},
-		{"alter drop column", "ALTER TABLE users DROP COLUMN rrn"},
+		{"alter drop column", "ALTER TABLE users DROP COLUMN ssn"},
 		{"alter rename", "ALTER TABLE users RENAME TO users2"},
 		{"drop table", "DROP TABLE users"},
 		{"drop index on table", "DROP INDEX idx_email ON users"},
@@ -201,12 +201,12 @@ func TestUnmodeledCommandStatementsStayDenied(t *testing.T) {
 // and emitted zero column grants, which let a sql.ddl holder copy masked columns into a new
 // unclassified table — the exfiltration path authz-model.md requires to fail closed.
 func TestParenthesizedQueryBodyKeepsLineage(t *testing.T) {
-	bare := "CREATE TABLE copied AS SELECT rrn FROM users"
+	bare := "CREATE TABLE copied AS SELECT ssn FROM users"
 	for _, sql := range []string{
-		"CREATE TABLE copied AS (SELECT rrn FROM users)",
-		"CREATE TABLE copied AS ((SELECT rrn FROM users))",
-		"CREATE VIEW copied AS (SELECT rrn FROM users)",
-		"CREATE TABLE copied AS (SELECT rrn FROM users UNION SELECT rrn FROM users)",
+		"CREATE TABLE copied AS (SELECT ssn FROM users)",
+		"CREATE TABLE copied AS ((SELECT ssn FROM users))",
+		"CREATE VIEW copied AS (SELECT ssn FROM users)",
+		"CREATE TABLE copied AS (SELECT ssn FROM users UNION SELECT ssn FROM users)",
 	} {
 		f := mysqlFacts(t, sql)
 		if f.StatementClass != pb.StatementClass_STATEMENT_CLASS_ANALYZED {
@@ -216,13 +216,13 @@ func TestParenthesizedQueryBodyKeepsLineage(t *testing.T) {
 		// the protected column. Its absence is the whole bug, so assert it rather than a grant count.
 		var denies int
 		for _, g := range f.RequiredGrants {
-			if c := g.GetColumn(); c != nil && c.Identity.Column == "rrn" &&
+			if c := g.GetColumn(); c != nil && c.Identity.Column == "ssn" &&
 				g.MaskedDisposition == pb.MaskedDisposition_MASKED_DISPOSITION_DENY_STATEMENT {
 				denies++
 			}
 		}
 		if denies == 0 {
-			t.Errorf("%q emitted no DENY_STATEMENT grant on users.rrn — a sql.ddl holder could copy it out", sql)
+			t.Errorf("%q emitted no DENY_STATEMENT grant on users.ssn — a sql.ddl holder could copy it out", sql)
 		}
 	}
 
@@ -241,16 +241,16 @@ func TestParenthesizedQueryBodyKeepsLineage(t *testing.T) {
 // the sql.unanalyzable gate and denies it on the production floor. An over-deny, not a leak; the invariant
 // asserted here is only that it never becomes value-free DDL.
 func TestValuesBodyWithSubqueryIsNotValueFreeDdl(t *testing.T) {
-	f := postgresFacts(t, "CREATE TABLE leaked AS VALUES ((SELECT rrn FROM users))")
+	f := postgresFacts(t, "CREATE TABLE leaked AS VALUES ((SELECT ssn FROM users))")
 	// The security invariant, stated so a regression cannot pass it: this must never be a statement
 	// decideQuery would ALLOW off a lone sql.ddl grant. So it either stays unresolved (routing to the
-	// sql.unanalyzable gate, denied on the production floor) or carries the users.rrn column grant that
+	// sql.unanalyzable gate, denied on the production floor) or carries the users.ssn column grant that
 	// protects the read.
 	if valueFreeDdl(f) {
-		t.Error("classified as value-free DDL — it reads users.rrn, so its read gate would be dropped")
+		t.Error("classified as value-free DDL — it reads users.ssn, so its read gate would be dropped")
 	}
-	if f.Resolved && !readsColumn(f, "rrn") {
-		t.Errorf("resolved but emits no users.rrn column grant — decideQuery would ALLOW, leaking the copied column")
+	if f.Resolved && !readsColumn(f, "ssn") {
+		t.Errorf("resolved but emits no users.ssn column grant — decideQuery would ALLOW, leaking the copied column")
 	}
 
 	// A literal-only VALUES body reads nothing and stays ordinary DDL, so the guard above is not just
@@ -271,18 +271,18 @@ func TestCreateAsTableIsNotValueFreeDdl(t *testing.T) {
 	if valueFreeDdl(f) {
 		t.Error("classified as value-free DDL — AS TABLE copies every source column, so its read gate would be dropped")
 	}
-	if f.Resolved && !readsColumn(f, "rrn") {
-		t.Error("resolved but emits no users.rrn column grant — a sql.ddl holder could copy the table out")
+	if f.Resolved && !readsColumn(f, "ssn") {
+		t.Error("resolved but emits no users.ssn column grant — a sql.ddl holder could copy the table out")
 	}
 }
 
-// A VALUES body can carry a function call with no Select node — `AS VALUES (query_to_xml('SELECT rrn
+// A VALUES body can carry a function call with no Select node — `AS VALUES (query_to_xml('SELECT ssn
 // …'))` runs arbitrary SQL server-side via a system:data-leak function. The value-free DDL path emits no
 // function grant, so a Select-only body check let a sql.ddl holder invoke it while the function gate the
 // `AS SELECT query_to_xml(…)` spelling triggers was dropped. It must route to lineage (unresolved →
 // denied on the production floor) and keep the function visible so the gate can act on it.
 func TestCreateValuesWithFunctionIsNotValueFreeDdl(t *testing.T) {
-	f := postgresFacts(t, "CREATE TABLE copied AS VALUES (query_to_xml('SELECT rrn FROM users', true, true, ''))")
+	f := postgresFacts(t, "CREATE TABLE copied AS VALUES (query_to_xml('SELECT ssn FROM users', true, true, ''))")
 	if valueFreeDdl(f) {
 		t.Error("classified as value-free DDL — a VALUES body invoking a function drops the function gate")
 	}

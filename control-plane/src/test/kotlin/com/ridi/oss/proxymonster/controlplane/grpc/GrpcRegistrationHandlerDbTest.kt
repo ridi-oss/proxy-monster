@@ -469,7 +469,7 @@ class GrpcRegistrationHandlerDbTest {
                 defaultSchemas.addAll(listOf("pg_catalog", "public"))
                 engineVersion = "PostgreSQL 16.3 (aurora 16.3)"
                 columns.add(column { schema = "public"; table = "users"; this.column = "id"; dataType = "integer"; ordinal = 1; nullable = false })
-                columns.add(column { schema = "public"; table = "users"; this.column = "rrn"; dataType = "text"; ordinal = 2; nullable = true })
+                columns.add(column { schema = "public"; table = "users"; this.column = "ssn"; dataType = "text"; ordinal = 2; nullable = true })
             },
         )
         assertEquals(2, ack.columns)
@@ -478,9 +478,9 @@ class GrpcRegistrationHandlerDbTest {
         assertEquals("PostgreSQL 16.3 (aurora 16.3)", ds.engineVersion, "the proxy-pushed engine version is stored for system-classification")
         assertTrue(ds.catalogSyncedAt != null, "catalog_synced_at is stamped on push")
         val cols = core.datasourceStore.catalog(ds.id)
-        val rrn = cols.single { it.table == "users" && it.column == "rrn" }
-        assertEquals("text", rrn.dataType)
-        assertEquals("VARCHAR", rrn.sqlType, "the control-plane derives sql_type from the raw data_type")
+        val ssn = cols.single { it.table == "users" && it.column == "ssn" }
+        assertEquals("text", ssn.dataType)
+        assertEquals("VARCHAR", ssn.sqlType, "the control-plane derives sql_type from the raw data_type")
     }
 
     @Test
@@ -652,7 +652,7 @@ class GrpcRegistrationHandlerDbTest {
             catalogRequest {
                 datasourceName = "reg-replace-classified"
                 defaultSchemas.add("public")
-                columns.add(column { schema = "public"; table = "users"; this.column = "rrn"; dataType = "text"; ordinal = 1; nullable = false })
+                columns.add(column { schema = "public"; table = "users"; this.column = "ssn"; dataType = "text"; ordinal = 1; nullable = false })
                 columns.add(column { schema = "public"; table = "users"; this.column = "display_name"; dataType = "text"; ordinal = 2; nullable = true })
             },
         )
@@ -661,7 +661,7 @@ class GrpcRegistrationHandlerDbTest {
             c.prepareStatement(
                 """INSERT INTO column_classification
                    (datasource_id, schema_name, table_name, column_name, tags)
-                   VALUES (?, 'public', 'users', 'rrn', '["pii","government-id"]'::jsonb)""",
+                   VALUES (?, 'public', 'users', 'ssn', '["pii","government-id"]'::jsonb)""",
             ).use { ps ->
                 ps.setLong(1, ds.id)
                 ps.executeUpdate()
@@ -672,14 +672,14 @@ class GrpcRegistrationHandlerDbTest {
             catalogRequest {
                 datasourceName = "reg-replace-classified"
                 defaultSchemas.add("public")
-                columns.add(column { schema = "public"; table = "users"; this.column = "rrn"; dataType = "text"; ordinal = 1; nullable = false })
+                columns.add(column { schema = "public"; table = "users"; this.column = "ssn"; dataType = "text"; ordinal = 1; nullable = false })
                 columns.add(column { schema = "public"; table = "users"; this.column = "display_name"; dataType = "character varying"; ordinal = 2; nullable = false })
                 columns.add(column { schema = "public"; table = "users"; this.column = "created_at"; dataType = "timestamp"; ordinal = 3; nullable = false })
             },
         )
 
-        val rrn = core.datasourceStore.catalog(ds.id).single { it.schema == "public" && it.table == "users" && it.column == "rrn" }
-        val classification = assertNotNull(rrn.classification, "the surviving rrn identity must stay attached to its classification")
+        val ssn = core.datasourceStore.catalog(ds.id).single { it.schema == "public" && it.table == "users" && it.column == "ssn" }
+        val classification = assertNotNull(ssn.classification, "the surviving ssn identity must stay attached to its classification")
         assertEquals(listOf("pii", "government-id"), classification.tags)
     }
 }

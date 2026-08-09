@@ -11,13 +11,13 @@ class ResultCryptoTest {
     private val crypto = ResultCrypto(key)
 
     @Test fun `round-trips plaintext`() {
-        val plain = "rrn=900101-1234567".toByteArray()
+        val plain = "ssn=987-65-4320".toByteArray()
         val blob = crypto.encrypt(plain)
         assertContentEquals(plain, crypto.decrypt(blob))
     }
 
     @Test fun `ciphertext is not the plaintext and uses a random iv`() {
-        val plain = "900101-1234567".toByteArray()
+        val plain = "987-65-4320".toByteArray()
         val a = crypto.encrypt(plain)
         val b = crypto.encrypt(plain)
         assertFalse(a.contentEquals(b), "same plaintext must not produce identical blobs (random IV)")

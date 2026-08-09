@@ -150,7 +150,7 @@ with no covering column fact requires `result.read.unmasked` or
 <!-- prettier-ignore -->
 | statement | facts | result |
 | --- | --- | --- |
-| `SELECT rrn FROM users` | `users.rrn`; `users` covered by the column | column verdict |
+| `SELECT ssn FROM users` | `users.ssn`; `users` covered by the column | column verdict |
 | `SELECT count(*) FROM users` | uncovered `users` scan | require read on `Table::.../users` |
 | `SELECT u.id FROM users u, orders o` | `users` covered; `orders` uncovered | require `users.id` and `orders` |
 | `WITH orders AS (SELECT 1) SELECT count(*) FROM orders` | no physical Table | no table-read gate |

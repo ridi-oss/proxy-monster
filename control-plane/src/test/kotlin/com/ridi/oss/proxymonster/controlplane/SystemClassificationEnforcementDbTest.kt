@@ -63,7 +63,7 @@ class SystemClassificationEnforcementDbTest {
         val ex = assertFailsWith<ManagementException> {
             fx.datasourceStore.upsertClassification(
                 fx.datasource.id,
-                ClassificationInput(schema = "public", table = "users", column = "rrn", tags = listOf("pii", "system:invented")),
+                ClassificationInput(schema = "public", table = "users", column = "ssn", tags = listOf("pii", "system:invented")),
             )
         }
         assertEquals("datasource.reserved_tag", ex.error.code, "the refusal must use the one shared error code")
@@ -72,14 +72,14 @@ class SystemClassificationEnforcementDbTest {
         // A product `system:` name writes fine — it is a tag like any other.
         val product = fx.datasourceStore.upsertClassification(
             fx.datasource.id,
-            ClassificationInput(schema = "public", table = "users", column = "rrn", tags = listOf("pii", "system:critical")),
+            ClassificationInput(schema = "public", table = "users", column = "ssn", tags = listOf("pii", "system:critical")),
         )
         assertEquals(listOf("pii", "system:critical"), product.tags)
 
         // And an ordinary tag, the common case.
         val ok = fx.datasourceStore.upsertClassification(
             fx.datasource.id,
-            ClassificationInput(schema = "public", table = "users", column = "rrn", tags = listOf("pii")),
+            ClassificationInput(schema = "public", table = "users", column = "ssn", tags = listOf("pii")),
         )
         assertEquals(listOf("pii"), ok.tags)
     }

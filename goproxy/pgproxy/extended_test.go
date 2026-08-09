@@ -312,7 +312,7 @@ func TestExtendedAllowRelaysParameterizedRows(t *testing.T) {
 	if err := rows.Scan(&id, &name, &ssn); err != nil {
 		t.Fatalf("Scan: %v", err)
 	}
-	if id != 1 || name != "Alice" || ssn == nil || *ssn != "900101-1234567" {
+	if id != 1 || name != "Alice" || ssn == nil || *ssn != "987-65-4320" {
 		t.Fatalf("row = (%d, %q, %v), want Alice row", id, name, ssn)
 	}
 	if rows.Next() {
@@ -363,7 +363,7 @@ func TestExtendedDenyAtParseLeaksNothing(t *testing.T) {
 	if err := conn.QueryRow(ctx, "stmt_deny", 1).Scan(&ssn); err != nil {
 		t.Fatalf("query recovered statement: %v", err)
 	}
-	if ssn != "900101-1234567" {
+	if ssn != "987-65-4320" {
 		t.Fatalf("ssn = %q, want cleartext primary value", ssn)
 	}
 }
@@ -491,7 +491,7 @@ func TestExtendedBinaryMaskWithPermitRelaysVerbatim(t *testing.T) {
 	if err := conn.QueryRow(ctx, "stmt_bin_permit", pgx.QueryResultFormats{1, 1, 1}, 1).Scan(&id, &name, &ssn); err != nil {
 		t.Fatalf("binary QueryRow: %v", err)
 	}
-	if id != 1 || name != "Alice" || ssn != "900101-1234567" {
+	if id != 1 || name != "Alice" || ssn != "987-65-4320" {
 		t.Fatalf("row = (%d, %q, %q), want cleartext Alice row", id, name, ssn)
 	}
 	if got := len(h.fake.requests()); got != 2 {

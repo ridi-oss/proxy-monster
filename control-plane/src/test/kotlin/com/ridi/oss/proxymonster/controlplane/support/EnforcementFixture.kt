@@ -111,7 +111,7 @@ internal fun DatasourceStore.pushTestCatalog(
 
 /**
  * A fully wired enforcement stack against real databases: a Flyway-migrated Postgres control-plane
- * store plus a seeded target database (Postgres or MySQL) whose `users.rrn` is tagged pii and
+ * store plus a seeded target database (Postgres or MySQL) whose `users.ssn` is tagged pii and
  * carries a last4 mask, with Cedar policies granting the `analyst` role cleartext on `users` EXCEPT
  * pii (masked instead) — the "read table except pii" pattern (docs/authz-model.md). The target also
  * has an UNGRANTED `orders` table (no Cedar grant covers it) so deny-by-default is provable
@@ -129,7 +129,7 @@ class EnforcementFixture(
     val daemonSessionStore: PrincipalSessionStore,
     val datasource: Datasource,
     val role: String,
-    val cleartextRrn: List<String>,
+    val cleartextSsn: List<String>,
     val roleResolver: RoleResolver,
     val authz: Authz,
     val dataSource: DataSource,
@@ -182,7 +182,7 @@ class EnforcementFixture(
 
     companion object {
         private const val ROLE = "analyst"
-        private val CLEARTEXT = listOf("900101-1234567", "850202-2345678")
+        private val CLEARTEXT = listOf("987-65-4320", "987-65-4321")
 
         /** Build a control-plane store on a fresh migrated Postgres metadata database. */
         private fun metadataStores(): MetaStores {
@@ -196,7 +196,7 @@ class EnforcementFixture(
         }
 
         /**
-         * Classifies `users.rrn` as pii + last4-masked, grants `analyst` a direct role assignment,
+         * Classifies `users.ssn` as pii + last4-masked, grants `analyst` a direct role assignment,
          * then seeds the Cedar "read table except pii" pair (docs/authz-model.md worked example):
          * cleartext on every `users` column NOT tagged pii, masked on the ones that are. Deny-by-
          * default covers everything else (a column with no matching grant at all -> DENIED, never
@@ -219,7 +219,7 @@ class EnforcementFixture(
             val maskFn = s.policyStore.createMaskFn(MaskFnInput("last4", "LAST_N"))
             s.datasourceStore.upsertClassification(
                 ds.id,
-                ClassificationInput(schema = schema, table = "users", column = "rrn", tags = listOf("pii"), maskFnId = maskFn.id),
+                ClassificationInput(schema = schema, table = "users", column = "ssn", tags = listOf("pii"), maskFnId = maskFn.id),
             )
             val role = s.policyStore.createRole(RoleInput(ROLE))
             // Direct principal_role assignment so RoleResolver.resolve("analyst@example.com") — the
@@ -271,7 +271,7 @@ class EnforcementFixture(
             )
 
             // `ddl-writer` — datasource.connect + sql.ddl, plus the same users unmasked/masked-pii pair
-            // `analyst` has, so a CTAS reading `rrn` resolves it to MASKED and the write-payload rule in
+            // `analyst` has, so a CTAS reading `ssn` resolves it to MASKED and the write-payload rule in
             // PolicyEvaluator.evaluate fires even though sql.ddl itself is granted.
             val ddlRole = s.policyStore.createRole(RoleInput("ddl-writer"))
             s.policyStore.createAssignment(RoleAssignmentInput("writer@example.com", ddlRole.id))
@@ -334,7 +334,7 @@ class EnforcementFixture(
             val targetDb = SharedPostgres.freshDatabase("pm_target")
             DriverManager.getConnection(SharedPostgres.jdbcUrlFor(targetDb), SharedPostgres.username(), SharedPostgres.password()).use { c ->
                 c.createStatement().use { st ->
-                    st.execute("CREATE TABLE users (id BIGINT PRIMARY KEY, email VARCHAR(64), rrn VARCHAR(32), region VARCHAR(8))")
+                    st.execute("CREATE TABLE users (id BIGINT PRIMARY KEY, email VARCHAR(64), ssn VARCHAR(32), region VARCHAR(8))")
                     st.execute("INSERT INTO users VALUES (1,'a@x','${CLEARTEXT[0]}','KR'),(2,'b@x','${CLEARTEXT[1]}','KR')")
                     // An ungranted table (no Cedar grant covers it) — deny-by-default regression: a
                     // touched column here must resolve to DENIED, never fall through to cleartext.
@@ -360,7 +360,7 @@ class EnforcementFixture(
             DriverManager.getConnection(SharedMySql.jdbcUrlFor(targetDb), SharedMySql.username(), SharedMySql.password()).use { c ->
                 c.createStatement().use { st ->
                     st.execute("DROP TABLE IF EXISTS users")
-                    st.execute("CREATE TABLE users (id BIGINT PRIMARY KEY, email VARCHAR(64), rrn VARCHAR(32), region VARCHAR(8))")
+                    st.execute("CREATE TABLE users (id BIGINT PRIMARY KEY, email VARCHAR(64), ssn VARCHAR(32), region VARCHAR(8))")
                     st.execute("INSERT INTO users VALUES (1,'a@x','${CLEARTEXT[0]}','KR'),(2,'b@x','${CLEARTEXT[1]}','KR')")
                     // An ungranted table (no Cedar grant covers it) — see postgres() for the rationale.
                     st.execute("DROP TABLE IF EXISTS orders")

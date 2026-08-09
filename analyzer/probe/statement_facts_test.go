@@ -15,7 +15,7 @@ func postgresFacts(t *testing.T, sql string) *pb.StatementFacts {
 		Namespace:    &pb.Namespace{Catalog: "acme", SearchPath: []string{"public"}},
 		Catalog: []*pb.ColumnSpec{
 			columnSpec("acme", "public", "users", "id", "BIGINT"),
-			columnSpec("acme", "public", "users", "rrn", "VARCHAR"),
+			columnSpec("acme", "public", "users", "ssn", "VARCHAR"),
 			columnSpec("acme", "public", "users", "email", "VARCHAR"),
 			columnSpec("acme", "public", "sink", "id", "BIGINT"),
 			columnSpec("acme", "public", "sink", "value", "VARCHAR"),
@@ -39,7 +39,7 @@ func mysqlFactsMode(t *testing.T, sql string, ansiQuotes bool) *pb.StatementFact
 		Namespace:    &pb.Namespace{Catalog: "def", SearchPath: []string{"acme"}},
 		Catalog: []*pb.ColumnSpec{
 			columnSpec("def", "acme", "users", "id", "BIGINT"),
-			columnSpec("def", "acme", "users", "rrn", "VARCHAR"),
+			columnSpec("def", "acme", "users", "ssn", "VARCHAR"),
 			columnSpec("def", "acme", "users", "email", "VARCHAR"),
 			columnSpec("def", "acme", "sink", "id", "BIGINT"),
 			columnSpec("def", "acme", "sink", "value", "VARCHAR"),
@@ -48,29 +48,29 @@ func mysqlFactsMode(t *testing.T, sql string, ansiQuotes bool) *pb.StatementFact
 }
 
 func TestStatementFactsMysqlAnsiQuotesMasksQuotedColumn(t *testing.T) {
-	// Under MySQL sql_mode=ANSI_QUOTES the server reads `"rrn"` as the column rrn, not a string. With the
+	// Under MySQL sql_mode=ANSI_QUOTES the server reads `"ssn"` as the column ssn, not a string. With the
 	// mysql_ansi_quotes EngineConfig flag the analyzer parses it the same way, so a masked column quoted
 	// with `"` is SEEN (and gated/masked) instead of read as an inert string literal — the wire proxy can
-	// forward the ANSI_QUOTES session instead of failing it closed. Without the flag (default mode) `"rrn"`
+	// forward the ANSI_QUOTES session instead of failing it closed. Without the flag (default mode) `"ssn"`
 	// is a string, so it emits no column requirement.
-	hasRRNColumnGrant := func(f *pb.StatementFacts) bool {
+	hasSSNColumnGrant := func(f *pb.StatementFacts) bool {
 		for _, g := range f.GetRequiredGrants() {
-			if c := g.GetColumn(); c != nil && c.GetIdentity().GetColumn() == "rrn" {
+			if c := g.GetColumn(); c != nil && c.GetIdentity().GetColumn() == "ssn" {
 				return true
 			}
 		}
 		return false
 	}
-	if f := mysqlFactsMode(t, `SELECT "rrn" FROM users`, true); !f.GetResolved() || !hasRRNColumnGrant(f) {
-		t.Fatalf("ANSI_QUOTES: `\"rrn\"` must be seen as the masked column rrn: %+v", f)
+	if f := mysqlFactsMode(t, `SELECT "ssn" FROM users`, true); !f.GetResolved() || !hasSSNColumnGrant(f) {
+		t.Fatalf("ANSI_QUOTES: `\"ssn\"` must be seen as the masked column ssn: %+v", f)
 	}
-	if f := mysqlFactsMode(t, `SELECT "rrn" FROM users`, false); hasRRNColumnGrant(f) {
-		t.Fatalf("default mode: `\"rrn\"` is a string literal, not a column read: %+v", f)
+	if f := mysqlFactsMode(t, `SELECT "ssn" FROM users`, false); hasSSNColumnGrant(f) {
+		t.Fatalf("default mode: `\"ssn\"` is a string literal, not a column read: %+v", f)
 	}
 }
 
 func TestStatementFactsColumnDispositions(t *testing.T) {
-	facts := postgresFacts(t, "SELECT rrn, upper(email) AS redacted FROM users WHERE id > 0")
+	facts := postgresFacts(t, "SELECT ssn, upper(email) AS redacted FROM users WHERE id > 0")
 	if !facts.GetResolved() {
 		t.Fatalf("expected resolved facts: %s", facts.GetDetail())
 	}
@@ -89,13 +89,13 @@ func TestStatementFactsColumnDispositions(t *testing.T) {
 			t.Fatalf("missing column disposition %s in %+v", disposition, facts.GetRequiredGrants())
 		}
 	}
-	if got := facts.GetOutputColumns(); len(got) != 2 || got[0] != "rrn" || got[1] != "redacted" {
+	if got := facts.GetOutputColumns(); len(got) != 2 || got[0] != "ssn" || got[1] != "redacted" {
 		t.Fatalf("unexpected output columns: %v", got)
 	}
 }
 
 func TestStatementFactsWriteReadSetAlwaysDeniesMasking(t *testing.T) {
-	facts := postgresFacts(t, "INSERT INTO sink (value) SELECT rrn FROM users")
+	facts := postgresFacts(t, "INSERT INTO sink (value) SELECT ssn FROM users")
 	if !facts.GetResolved() || !facts.GetIsWrite() {
 		t.Fatalf("expected resolved write facts: %+v", facts)
 	}
@@ -105,7 +105,7 @@ func TestStatementFactsWriteReadSetAlwaysDeniesMasking(t *testing.T) {
 		if grant.GetDatasource() && grant.GetAction() == pb.GrantAction_GRANT_ACTION_SQL_INSERT {
 			foundInsert = true
 		}
-		if c := grant.GetColumn(); c != nil && c.GetIdentity().GetColumn() == "rrn" &&
+		if c := grant.GetColumn(); c != nil && c.GetIdentity().GetColumn() == "ssn" &&
 			grant.GetMaskedDisposition() == pb.MaskedDisposition_MASKED_DISPOSITION_DENY_STATEMENT {
 			foundWriteRead = true
 		}
@@ -146,7 +146,7 @@ func TestStatementFactsMetadataAndUtilityClassification(t *testing.T) {
 		t.Fatalf("SHOW WARNINGS missing utility grant: %+v", showWarnings.GetRequiredGrants())
 	}
 
-	describe := mysqlFacts(t, "DESCRIBE users rrn")
+	describe := mysqlFacts(t, "DESCRIBE users ssn")
 	if !describe.GetResolved() || describe.GetStatementClass() != pb.StatementClass_STATEMENT_CLASS_METADATA || len(describe.GetRequiredGrants()) != 0 {
 		t.Fatalf("unexpected DESCRIBE metadata facts: %+v", describe)
 	}
@@ -157,17 +157,17 @@ func TestStatementFactsExplainAnalyzesInnerQuery(t *testing.T) {
 	if !facts.GetResolved() || !facts.GetExplainOfQuery() || facts.GetRewrittenSql() != "" {
 		t.Fatalf("unexpected EXPLAIN TABLE facts: %+v", facts)
 	}
-	foundRRN := false
+	foundSSN := false
 	for _, grant := range facts.GetRequiredGrants() {
-		if c := grant.GetColumn(); c != nil && c.GetIdentity().GetColumn() == "rrn" {
-			foundRRN = true
+		if c := grant.GetColumn(); c != nil && c.GetIdentity().GetColumn() == "ssn" {
+			foundSSN = true
 		}
 	}
-	if !foundRRN {
+	if !foundSSN {
 		t.Fatalf("EXPLAIN TABLE did not analyze SELECT * inner query: %+v", facts.GetRequiredGrants())
 	}
 
-	descAnalyze := postgresFacts(t, "DESC ANALYZE SELECT rrn FROM users")
+	descAnalyze := postgresFacts(t, "DESC ANALYZE SELECT ssn FROM users")
 	if !descAnalyze.GetResolved() || !descAnalyze.GetExplainOfQuery() {
 		t.Fatalf("DESC ANALYZE did not analyze inner query: %+v", descAnalyze)
 	}
@@ -326,7 +326,7 @@ func TestStatementFactsLexerModeAssignmentGated(t *testing.T) {
 	// A lexer-mode GUC must only be assigned a value the analyzer can read at parse time. MySQL evaluates
 	// the RHS, so a session variable, CONCAT, or DEFAULT can resolve to ANSI_QUOTES while the rendered
 	// text carries no such token — the analyzer would keep parsing the old dialect while the backend
-	// flipped the lexer, so a later `SELECT "rrn" FROM users` returns the protected identifier's value.
+	// flipped the lexer, so a later `SELECT "ssn" FROM users` returns the protected identifier's value.
 	// A value that flips the lexer, or one the analyzer cannot read at parse time, resolves carrying a
 	// system:critical Utility grant (the control-plane floor forbids it) — not a hard admission deny.
 	for _, sql := range []string{
@@ -352,12 +352,12 @@ func TestStatementFactsQualifiedFunctionInSetGated(t *testing.T) {
 	// `SET @x = acme.version()` calls a user function that merely SPELLS the safe builtin `version`. If SET
 	// admission only inspects the leaf name it looks safe and relays as a zero-grant SESSION passthrough,
 	// so a later `SELECT @x` returns whatever the user function read. A qualified non-pg_catalog call is
-	// user code and makes the SET inadmissible, e.g. `SET @x = acme.leak_rrn()`.
+	// user code and makes the SET inadmissible, e.g. `SET @x = acme.leak_ssn()`.
 	for _, sql := range []string{
 		"SET @x = acme.version()",
 		"SET @x = acme.abs(1)",
-		"SET @x = pm_leak.leak_rrn()",
-		"SET @x = (SELECT rrn FROM users)",
+		"SET @x = pm_leak.leak_ssn()",
+		"SET @x = (SELECT ssn FROM users)",
 	} {
 		parityUtility(t, sql, "mysql", "SET_SUBQUERY")
 	}
@@ -527,7 +527,7 @@ func TestStatementFactsUnicodeEscapedSetConfigEmitsFunctionGrant(t *testing.T) {
 }
 
 func TestStatementFactsSchemaCandidatesAndTemporaryDDL(t *testing.T) {
-	facts := postgresFacts(t, "SELECT public.users.rrn FROM public.users")
+	facts := postgresFacts(t, "SELECT public.users.ssn FROM public.users")
 	found := false
 	for _, candidate := range facts.GetSchemaQualifierCandidates() {
 		if candidate == "public" {
@@ -538,29 +538,29 @@ func TestStatementFactsSchemaCandidatesAndTemporaryDDL(t *testing.T) {
 		t.Fatalf("missing public schema candidate: %v", facts.GetSchemaQualifierCandidates())
 	}
 
-	temporary := postgresFacts(t, "CREATE TEMP TABLE copied AS SELECT rrn FROM users")
+	temporary := postgresFacts(t, "CREATE TEMP TABLE copied AS SELECT ssn FROM users")
 	if !temporary.GetResolved() || temporary.GetCatalogChanging() {
 		t.Fatalf("temporary DDL must not mark catalog changing: %+v", temporary)
 	}
-	permanent := postgresFacts(t, "CREATE TABLE copied AS SELECT rrn FROM users")
+	permanent := postgresFacts(t, "CREATE TABLE copied AS SELECT ssn FROM users")
 	if !permanent.GetResolved() || !permanent.GetCatalogChanging() {
 		t.Fatalf("permanent DDL must mark catalog changing: %+v", permanent)
 	}
 }
 
 func TestStatementFactsExecutableCommentAndOptimizerHint(t *testing.T) {
-	executable := mysqlFacts(t, "SELECT 1 /*!50700 , rrn */ FROM users")
+	executable := mysqlFacts(t, "SELECT 1 /*!50700 , ssn */ FROM users")
 	if !executable.GetResolved() {
 		t.Fatalf("executable comment should be analyzed: %+v", executable)
 	}
 	found := false
 	for _, grant := range executable.GetRequiredGrants() {
-		if grant.GetColumn().GetIdentity().GetColumn() == "rrn" {
+		if grant.GetColumn().GetIdentity().GetColumn() == "ssn" {
 			found = true
 		}
 	}
 	if !found {
-		t.Fatalf("executable comment rrn was not emitted: %+v", executable.GetRequiredGrants())
+		t.Fatalf("executable comment ssn was not emitted: %+v", executable.GetRequiredGrants())
 	}
 	if hinted := mysqlFacts(t, "SELECT /*+ MAX_EXECUTION_TIME(1000) */ id FROM users"); !hinted.GetResolved() {
 		t.Fatalf("optimizer hint should remain inert: %+v", hinted)

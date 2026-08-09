@@ -35,7 +35,7 @@ class SqlglotTest {
     private val postgresCatalog = listOf(
         column("acme", "public", "users", "id", "BIGINT"),
         column("acme", "public", "users", "name", "VARCHAR"),
-        column("acme", "public", "users", "rrn", "VARCHAR"),
+        column("acme", "public", "users", "ssn", "VARCHAR"),
         column("acme", "public", "orders", "id", "BIGINT"),
         column("acme", "public", "orders", "user_id", "BIGINT"),
         column("acme", "analytics", "users", "id", "BIGINT"),
@@ -78,13 +78,13 @@ class SqlglotTest {
     @Test
     fun emitsStructuredColumnGrants() {
         for (dialect in listOf("mysql", "postgres")) {
-            val result = facts("SELECT id, rrn FROM users", dialect)
+            val result = facts("SELECT id, ssn FROM users", dialect)
             val prefix = if (dialect == "mysql") "def.app" else "acme.public"
             assertTrue(result.resolved, "[$dialect] expected resolved=true, got: $result")
             val columns = result.requiredGrantsList.mapNotNull { it.column.takeIf { _ -> it.hasColumn() } }
                 .map { "${it.catalog}.${it.identity.schema}.${it.identity.table}.${it.identity.column}" }
             assertTrue("$prefix.users.id" in columns)
-            assertTrue("$prefix.users.rrn" in columns)
+            assertTrue("$prefix.users.ssn" in columns)
         }
     }
 
@@ -139,9 +139,9 @@ class SqlglotTest {
     @Test
     fun concurrentStress() {
         val queries = listOf(
-            "SELECT id, rrn FROM users",
-            "SELECT u.rrn, o.id FROM users u JOIN orders o ON u.id = o.user_id",
-            "WITH c AS (SELECT rrn FROM users) SELECT rrn FROM c",
+            "SELECT id, ssn FROM users",
+            "SELECT u.ssn, o.id FROM users u JOIN orders o ON u.id = o.user_id",
+            "WITH c AS (SELECT ssn FROM users) SELECT ssn FROM c",
             "INSERT INTO users (id) VALUES (1)",
             "garbage not sql",
             "SELECT * FROM missing",

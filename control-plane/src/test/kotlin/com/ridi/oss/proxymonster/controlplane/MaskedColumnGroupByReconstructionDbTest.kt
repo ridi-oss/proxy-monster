@@ -30,10 +30,10 @@ import kotlin.test.assertTrue
 class MaskedColumnGroupByReconstructionDbTest {
     private lateinit var fx: EnforcementFixture
 
-    // The fixture seeds users.rrn (pii, last4-masked) with exactly these two cleartext values.
-    private val actual = mapOf(1L to "900101-1234567", 2L to "850202-2345678")
-    private val alphabet = "0123456789-"   // the characters an rrn is built from
-    private val maxLen = 16                 // rrn is 14 chars; probe a little past the end
+    // The fixture seeds users.ssn (pii, last4-masked) with exactly these two cleartext values.
+    private val actual = mapOf(1L to "987-65-4320", 2L to "987-65-4321")
+    private val alphabet = "0123456789-"   // the characters an ssn is built from
+    private val maxLen = 16                 // ssn is 14 chars; probe a little past the end
 
     @BeforeAll
     fun setup() {
@@ -42,14 +42,14 @@ class MaskedColumnGroupByReconstructionDbTest {
     }
 
     /**
-     * One reconstruction step: GROUP BY the p-th character of the masked rrn, with the alphabet inlined as
+     * One reconstruction step: GROUP BY the p-th character of the masked ssn, with the alphabet inlined as
      * literal UNION rows so each `#x` label groups with the ids whose p-th char is x. Returns only
-     * GROUP_CONCAT(id + labels) — the rrn cell is never selected, and there is no comparison against a value.
+     * GROUP_CONCAT(id + labels) — the ssn cell is never selected, and there is no comparison against a value.
      */
     private fun attackQuery(p: Int): String {
         val labels = alphabet.toCharArray().joinToString(" ") { "UNION ALL SELECT '$it','#$it'" }
         return "SELECT GROUP_CONCAT(tag ORDER BY tag) FROM (" +
-            "SELECT SUBSTRING(LOWER(rrn), $p, 1) AS ch, CAST(id AS CHAR) AS tag FROM users " +
+            "SELECT SUBSTRING(LOWER(ssn), $p, 1) AS ch, CAST(id AS CHAR) AS tag FROM users " +
             "$labels) t GROUP BY ch"
     }
 
@@ -69,11 +69,11 @@ class MaskedColumnGroupByReconstructionDbTest {
     }
 
     @Test
-    fun `raw target DB - the GROUP BY exploit reconstructs the masked rrn (the DENY is load-bearing)`() {
+    fun `raw target DB - the GROUP BY exploit reconstructs the masked ssn (the DENY is load-bearing)`() {
         val recovered = reconstruct { sql -> fx.execOnTarget(sql).rows.map { it[0] ?: "" } }
         assertEquals(
             actual, recovered,
-            "against the raw DB, one GROUP BY per character reconstructs every rrn — this is what the proxy must block",
+            "against the raw DB, one GROUP BY per character reconstructs every ssn — this is what the proxy must block",
         )
     }
 
@@ -83,7 +83,7 @@ class MaskedColumnGroupByReconstructionDbTest {
             val r = fx.run(attackQuery(p))
             assertEquals(
                 EnfAction.DENY, r.decision,
-                "GROUP BY over the masked rrn must DENY (position $p) — reason: ${r.denyReason}",
+                "GROUP BY over the masked ssn must DENY (position $p) — reason: ${r.denyReason}",
             )
             assertTrue(r.rows.isEmpty(), "a DENY must return no rows (position $p)")
         }
@@ -95,8 +95,8 @@ class MaskedColumnGroupByReconstructionDbTest {
             "through enforcement the attacker must recover nothing, but got $throughProxy",
         )
         assertTrue(
-            actual.none { (id, rrn) -> throughProxy[id] == rrn },
-            "no real rrn may be reconstructed through the proxy",
+            actual.none { (id, ssn) -> throughProxy[id] == ssn },
+            "no real ssn may be reconstructed through the proxy",
         )
     }
 }

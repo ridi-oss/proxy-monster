@@ -236,7 +236,7 @@ func seedBackend(t *testing.T) dbtest.Backend {
 		"CREATE TABLE IF NOT EXISTS " + primarySchema + ".prepared_notes (id int PRIMARY KEY, note text)",
 		"DELETE FROM " + primarySchema + ".prepared_notes",
 		"DELETE FROM " + primarySchema + ".people",
-		"INSERT INTO " + primarySchema + ".people (id, name, ssn) VALUES (1, 'Alice', '900101-1234567'), (2, 'Bob', NULL)",
+		"INSERT INTO " + primarySchema + ".people (id, name, ssn) VALUES (1, 'Alice', '987-65-4320'), (2, 'Bob', NULL)",
 		"DELETE FROM " + secondarySchema + ".people",
 		"INSERT INTO " + secondarySchema + ".people (id, name, ssn) VALUES (10, 'Secondary', 'secret-2')",
 	}
@@ -420,7 +420,7 @@ func TestAllowRelaysRowsAndDecisionContext(t *testing.T) {
 	if err := rows.Err(); err != nil {
 		t.Fatalf("rows.Err: %v", err)
 	}
-	ssn := "900101-1234567"
+	ssn := "987-65-4320"
 	want := [][]any{{1, "Alice", &ssn}, {2, "Bob", (*string)(nil)}}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("rows = %#v, want %#v", got, want)

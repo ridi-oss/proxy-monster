@@ -22,8 +22,8 @@ Table::"<datasource>/<catalog>/<schema>/<table>"
 Column::"<datasource>/<catalog>/<schema>/<table>/<column>"
 ```
 
-- PostgreSQL: `acme-pg/acme/public/users/rrn`
-- MySQL: `acme-mysql/def/app/users/rrn`
+- PostgreSQL: `acme-pg/acme/public/users/ssn`
+- MySQL: `acme-mysql/def/app/users/ssn`
 
 The sqlglot mapping is depth 3 (`catalog → schema → table → column`). The
 analyzer resolves every physical table exactly once during sqlglot qualification
@@ -105,17 +105,17 @@ anything else             -> DENY
 ```
 
 Cedar entities then use the datasource's stable name plus all four physical
-parts, e.g. `Column::"acme-pg/acme/public/users/rrn"` and
-`Column::"acme-mysql/def/app/users/rrn"`.
+parts, e.g. `Column::"acme-pg/acme/public/users/ssn"` and
+`Column::"acme-mysql/def/app/users/ssn"`.
 
 ## Worked example
 
-`SET search_path = restricted, public; SELECT rrn FROM users` on `acme-pg`. The
+`SET search_path = restricted, public; SELECT ssn FROM users` on `acme-pg`. The
 resolver takes the connection's effective path (`restricted, public`), resolves
 bare `users` to the first schema that holds it — `restricted.users` — and stamps
-it. Lineage emits `acme/restricted/users/rrn`. The control plane matches that to
+it. Lineage emits `acme/restricted/users/ssn`. The control plane matches that to
 exactly one catalog row and asks Cedar about
-`Column::"acme-pg/acme/restricted/users/rrn"`. If `restricted.users.rrn` is PII,
+`Column::"acme-pg/acme/restricted/users/ssn"`. If `restricted.users.ssn` is PII,
 the verdict masks or denies it — not the `public.users` a datasource-global
 default would have authorized.
 

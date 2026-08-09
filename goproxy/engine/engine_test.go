@@ -59,7 +59,7 @@ func staticNamespace(ns []string, calls *int) func() (NamespaceProbe, error) {
 }
 
 func TestAuthorizeReducesControlPlaneVerdict(t *testing.T) {
-	masks := []*pb.ColumnMask{{Column: "rrn", Kind: "FIXED", Ordinal: proto.Int32(1)}}
+	masks := []*pb.ColumnMask{{Column: "ssn", Kind: "FIXED", Ordinal: proto.Int32(1)}}
 	cases := []struct {
 		name    string
 		outcome DecisionOutcome

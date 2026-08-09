@@ -14,19 +14,19 @@ row(){ printf "  %-46s -> %-5s (want %s) %s\n" "$1" "$2" "$3" "$([ "$2" = "$3" ]
 
 echo "### (A) now AND (B) later share this: the viewer HOLDS role R; R's own grants decide ###"
 echo "# role-grants.cedar = pii-reader: masked pii anywhere, unmasked pii when segregated"
-R=roles.cedarschema P=role-grants.cedar COL='Column::"users.rrn"'
+R=roles.cedarschema P=role-grants.cedar COL='Column::"users.ssn"'
 row "read.unmasked from open net"   "$(dec $P $R entities-assumed.json 'User::"requester"' result.read.unmasked "$COL" ctx-open.json)"       DENY
 row "read.unmasked from segregated" "$(dec $P $R entities-assumed.json 'User::"requester"' result.read.unmasked "$COL" ctx-segregated.json)" ALLOW
 row "read.masked   from open net"   "$(dec $P $R entities-assumed.json 'User::"requester"' result.read.masked   "$COL" ctx-open.json)"       ALLOW
 row "no assumed role -> unmasked"   "$(dec $P $R entities-none.json    'User::"requester"' result.read.unmasked "$COL" ctx-segregated.json)" DENY
-echo "  => rrn: MASKED from open net, CLEARTEXT from segregated — identical for (A) and (B);"
+echo "  => ssn: MASKED from open net, CLEARTEXT from segregated — identical for (A) and (B);"
 echo "     the only difference is HOW the viewer gets R (view-time union vs a result-scoped grant)."
 
 echo
 echo "### why not a single 'meta' policy: Cedar can't reference request.role's condition -> LEAKS ###"
 Rm=naive-model.cedarschema P=naive-c-leaks.cedar E=entities-naive.json
-naive=$(dec $P $Rm $E 'User::"requester"' result.viewUnmasked 'ResultColumn::"req1-rrn"' ctx-open.json)
-printf "  %-46s -> %-5s  %s\n" "naive single policy, rrn open net" "$naive" \
+naive=$(dec $P $Rm $E 'User::"requester"' result.viewUnmasked 'ResultColumn::"req1-ssn"' ctx-open.json)
+printf "  %-46s -> %-5s  %s\n" "naive single policy, ssn open net" "$naive" \
   "$([ "$naive" = ALLOW ] && echo 'LEAK (expected): no meta-authorization — hence A/B rely on R-membership' || echo unexpected)"
 
 echo

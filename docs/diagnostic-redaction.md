@@ -57,7 +57,7 @@ A diagnostic leaks iff its message/fields echo the offending operand or row;
 messages that name only the column/type/constraint do not (MySQL `3819` CHECK is
 value-free and never dumps unreferenced columns; a PostgreSQL constraint `M` is
 value-free, the value is only in `D`). Every diagnostic carries a stable numeric
-code — MySQL errno, PostgreSQL SQLSTATE (`C`) — which is the reliable handle.
+code — MySQL essno, PostgreSQL SQLSTATE (`C`) — which is the reliable handle.
 
 But the set of value-echoing codes is larger than any hand-survey and cannot be
 trusted as a denylist. Beyond the two examples above: MySQL
@@ -96,7 +96,7 @@ keeps the rest:
   from a static table the proxy owns (`goproxy/pgproxy/diagcodes.go`,
   `goproxy/mysqlproxy/diagcodes.go`) — PostgreSQL to the SQLSTATE condition name
   (`23514` → `check_violation`), falling back to the 2-char class name (`23` →
-  `integrity_constraint_violation`) then a generic string; MySQL to the errno
+  `integrity_constraint_violation`) then a generic string; MySQL to the essno
   symbol (`1146` → `ER_NO_SUCH_TABLE`), generic fallback. It is looked up only
   by the numeric code, never reconstructed from the backend's echoed text
   (truncating at `: '`, stripping quotes) — that would re-open the leak, since a
@@ -142,7 +142,7 @@ restricted-principal threat model.
 
 `NoticeResponse` is forwarded unchanged (see
 [Notices are forwarded, not redacted](#notices-are-forwarded-not-redacted)).
-MySQL ERR packets keep errno + SQLSTATE and replace the message with the errno
+MySQL ERR packets keep essno + SQLSTATE and replace the message with the essno
 symbol; MySQL has no structured error fields.
 
 The strip runs where the backend wire is decoded — the native relay

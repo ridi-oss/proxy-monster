@@ -48,7 +48,7 @@ statement touching a masked column still `DENY`s mid-session.
 The backend resolves a bare name against the connection's live effective path;
 the proxy must resolve against the same path or it authorizes the wrong table:
 
-`SET search_path = restricted, public; SELECT rrn FROM users` — a
+`SET search_path = restricted, public; SELECT ssn FROM users` — a
 datasource-global default (`public`) authorizes `public.users` (ALLOW), while
 the backend binds `restricted.users` (PII). Same via MySQL `USE otherdb`.
 

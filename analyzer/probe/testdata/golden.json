@@ -19,9 +19,9 @@
         ]
       },
       {
-        "column": "rrn",
+        "column": "ssn",
         "origins": [
-          "users.rrn"
+          "users.ssn"
         ]
       },
       {
@@ -39,7 +39,7 @@
     ],
     "references": {},
     "isWrite": false,
-    "rewrittenSql": "SELECT `users`.`id` AS `id`, `users`.`email` AS `email`, `users`.`rrn` AS `rrn`, `users`.`region` AS `region`, `users`.`name` AS `name` FROM `users` AS `users`"
+    "rewrittenSql": "SELECT `users`.`id` AS `id`, `users`.`email` AS `email`, `users`.`ssn` AS `ssn`, `users`.`region` AS `region`, `users`.`name` AS `name` FROM `users` AS `users`"
   },
   "mysql|bare star plus explicit": {
     "resolved": true,
@@ -91,9 +91,9 @@
         ]
       },
       {
-        "column": "rrn",
+        "column": "ssn",
         "origins": [
-          "users.rrn"
+          "users.ssn"
         ]
       }
     ],
@@ -115,9 +115,9 @@
         ]
       },
       {
-        "column": "rrn",
+        "column": "ssn",
         "origins": [
-          "users.rrn"
+          "users.ssn"
         ]
       }
     ],
@@ -133,9 +133,9 @@
     "tracedColumns": 1,
     "origins": [
       {
-        "column": "rrn",
+        "column": "ssn",
         "origins": [
-          "users.rrn"
+          "users.ssn"
         ]
       }
     ],
@@ -153,7 +153,7 @@
     "references": {
       "SUBQUERY": [
         "users.id",
-        "users.rrn"
+        "users.ssn"
       ],
       "OTHER": [
         "sink.id"
@@ -172,7 +172,7 @@
       {
         "column": "r",
         "origins": [
-          "users.rrn"
+          "users.ssn"
         ]
       }
     ],
@@ -188,15 +188,15 @@
     "tracedColumns": 1,
     "origins": [
       {
-        "column": "rrn",
+        "column": "ssn",
         "origins": [
-          "users.rrn"
+          "users.ssn"
         ]
       }
     ],
     "references": {
       "GROUP_BY": [
-        "users.rrn"
+        "users.ssn"
       ]
     },
     "isWrite": false,
@@ -210,17 +210,17 @@
     "tracedColumns": 1,
     "origins": [
       {
-        "column": "rrn",
+        "column": "ssn",
         "origins": [
           "users.region",
-          "users.rrn"
+          "users.ssn"
         ]
       }
     ],
     "references": {
       "SET_OP": [
         "users.region",
-        "users.rrn"
+        "users.ssn"
       ]
     },
     "isWrite": false,
@@ -244,12 +244,12 @@
       "SUBQUERY": [
         "orders.user_id",
         "users.id",
-        "users.rrn"
+        "users.ssn"
       ],
       "PREDICATE": [
         "orders.user_id",
         "users.id",
-        "users.rrn"
+        "users.ssn"
       ]
     },
     "isWrite": false,
@@ -327,7 +327,7 @@
     ],
     "references": {
       "PREDICATE": [
-        "users.rrn"
+        "users.ssn"
       ],
       "GROUP_BY": [
         "users.region"
@@ -353,12 +353,12 @@
     "references": {
       "SUBQUERY": [
         "users.id",
-        "users.rrn"
+        "users.ssn"
       ],
       "PREDICATE": [
         "orders.user_id",
         "users.id",
-        "users.rrn"
+        "users.ssn"
       ]
     },
     "isWrite": false,
@@ -374,7 +374,7 @@
     "references": {
       "OTHER": [
         "users.id",
-        "users.rrn"
+        "users.ssn"
       ]
     },
     "isWrite": true,
@@ -401,7 +401,7 @@
     "references": {
       "SUBQUERY": [
         "users.id",
-        "users.rrn"
+        "users.ssn"
       ]
     },
     "isWrite": true,
@@ -415,17 +415,17 @@
     "tracedColumns": 1,
     "origins": [
       {
-        "column": "rrn",
+        "column": "ssn",
         "origins": [
           "users.region",
-          "users.rrn"
+          "users.ssn"
         ]
       }
     ],
     "references": {
       "SET_OP": [
         "users.region",
-        "users.rrn"
+        "users.ssn"
       ]
     },
     "isWrite": false,
@@ -439,9 +439,9 @@
     "tracedColumns": 2,
     "origins": [
       {
-        "column": "rrn",
+        "column": "ssn",
         "origins": [
-          "users.rrn"
+          "users.ssn"
         ]
       },
       {
@@ -492,7 +492,7 @@
       {
         "column": "r",
         "origins": [
-          "users.rrn"
+          "users.ssn"
         ]
       }
     ],
@@ -510,13 +510,13 @@
       {
         "column": "r",
         "origins": [
-          "users.rrn"
+          "users.ssn"
         ]
       }
     ],
     "references": {
       "ORDER_BY": [
-        "users.rrn"
+        "users.ssn"
       ]
     },
     "isWrite": false,
@@ -530,15 +530,15 @@
     "tracedColumns": 1,
     "origins": [
       {
-        "column": "rrn",
+        "column": "ssn",
         "origins": [
-          "users.rrn"
+          "users.ssn"
         ]
       }
     ],
     "references": {
       "ORDER_BY": [
-        "users.rrn"
+        "users.ssn"
       ]
     },
     "isWrite": false,
@@ -552,11 +552,11 @@
     "tracedColumns": 1,
     "origins": [
       {
-        "column": "rrn",
+        "column": "ssn",
         "origins": [
           "users.email",
           "users.region",
-          "users.rrn"
+          "users.ssn"
         ]
       }
     ],
@@ -606,9 +606,9 @@
         ]
       },
       {
-        "column": "rrn",
+        "column": "ssn",
         "origins": [
-          "users.rrn"
+          "users.ssn"
         ]
       },
       {
@@ -626,7 +626,7 @@
     ],
     "references": {},
     "isWrite": false,
-    "rewrittenSql": "SELECT `u`.`id` AS `id`, `u`.`email` AS `email`, `u`.`rrn` AS `rrn`, `u`.`region` AS `region`, `u`.`name` AS `name` FROM `users` AS `u`"
+    "rewrittenSql": "SELECT `u`.`id` AS `id`, `u`.`email` AS `email`, `u`.`ssn` AS `ssn`, `u`.`region` AS `region`, `u`.`name` AS `name` FROM `users` AS `u`"
   },
   "mysql|qualify": {
     "resolved": true,
@@ -636,9 +636,9 @@
     "tracedColumns": 1,
     "origins": [
       {
-        "column": "rrn",
+        "column": "ssn",
         "origins": [
-          "users.rrn"
+          "users.ssn"
         ]
       },
       {
@@ -670,16 +670,16 @@
     "tracedColumns": 1,
     "origins": [
       {
-        "column": "rrn",
+        "column": "ssn",
         "origins": [
-          "users.rrn"
+          "users.ssn"
         ]
       }
     ],
     "references": {
       "RECURSIVE": [
         "users.id",
-        "users.rrn"
+        "users.ssn"
       ]
     },
     "isWrite": false,
@@ -699,10 +699,10 @@
     ],
     "references": {
       "SUBQUERY": [
-        "users.rrn"
+        "users.ssn"
       ],
       "DERIVED": [
-        "users.rrn"
+        "users.ssn"
       ]
     },
     "isWrite": false,
@@ -718,7 +718,7 @@
     "references": {
       "OTHER": [
         "users.id",
-        "users.rrn"
+        "users.ssn"
       ]
     },
     "isWrite": true,
@@ -735,14 +735,14 @@
         "column": "x",
         "origins": [
           "users.region",
-          "users.rrn"
+          "users.ssn"
         ]
       }
     ],
     "references": {
       "ORDER_BY": [
         "users.region",
-        "users.rrn"
+        "users.ssn"
       ]
     },
     "isWrite": false,
@@ -762,9 +762,9 @@
         ]
       },
       {
-        "column": "rrn",
+        "column": "ssn",
         "origins": [
-          "users.rrn"
+          "users.ssn"
         ]
       }
     ],
@@ -780,10 +780,10 @@
     "tracedColumns": 1,
     "origins": [
       {
-        "column": "rrn",
+        "column": "ssn",
         "origins": [
           "users.region",
-          "users.rrn"
+          "users.ssn"
         ]
       }
     ],
@@ -799,17 +799,17 @@
     "tracedColumns": 1,
     "origins": [
       {
-        "column": "rrn",
+        "column": "ssn",
         "origins": [
           "users.region",
-          "users.rrn"
+          "users.ssn"
         ]
       }
     ],
     "references": {
       "SET_OP": [
         "users.region",
-        "users.rrn"
+        "users.ssn"
       ]
     },
     "isWrite": false,
@@ -858,7 +858,7 @@
     "references": {
       "SUBQUERY": [
         "users.id",
-        "users.rrn"
+        "users.ssn"
       ],
       "OTHER": [
         "sink.id"
@@ -884,11 +884,11 @@
         "users.region"
       ],
       "ORDER_BY": [
-        "users.rrn"
+        "users.ssn"
       ],
       "DERIVED": [
         "users.region",
-        "users.rrn"
+        "users.ssn"
       ]
     },
     "isWrite": false,
@@ -908,10 +908,10 @@
     ],
     "references": {
       "AGGREGATE": [
-        "users.rrn"
+        "users.ssn"
       ],
       "DERIVED": [
-        "users.rrn"
+        "users.ssn"
       ]
     },
     "isWrite": false,
@@ -937,9 +937,9 @@
         ]
       },
       {
-        "column": "rrn",
+        "column": "ssn",
         "origins": [
-          "users.rrn"
+          "users.ssn"
         ]
       },
       {
@@ -957,7 +957,7 @@
     ],
     "references": {},
     "isWrite": false,
-    "rewrittenSql": "SELECT \"users\".\"id\" AS \"id\", \"users\".\"email\" AS \"email\", \"users\".\"rrn\" AS \"rrn\", \"users\".\"region\" AS \"region\", \"users\".\"name\" AS \"name\" FROM \"users\" AS \"users\""
+    "rewrittenSql": "SELECT \"users\".\"id\" AS \"id\", \"users\".\"email\" AS \"email\", \"users\".\"ssn\" AS \"ssn\", \"users\".\"region\" AS \"region\", \"users\".\"name\" AS \"name\" FROM \"users\" AS \"users\""
   },
   "postgres|bare star plus explicit": {
     "resolved": true,
@@ -1009,9 +1009,9 @@
         ]
       },
       {
-        "column": "rrn",
+        "column": "ssn",
         "origins": [
-          "users.rrn"
+          "users.ssn"
         ]
       }
     ],
@@ -1033,9 +1033,9 @@
         ]
       },
       {
-        "column": "rrn",
+        "column": "ssn",
         "origins": [
-          "users.rrn"
+          "users.ssn"
         ]
       }
     ],
@@ -1051,9 +1051,9 @@
     "tracedColumns": 1,
     "origins": [
       {
-        "column": "rrn",
+        "column": "ssn",
         "origins": [
-          "users.rrn"
+          "users.ssn"
         ]
       }
     ],
@@ -1072,7 +1072,7 @@
       "OTHER": [
         "sink.id",
         "users.id",
-        "users.rrn"
+        "users.ssn"
       ]
     },
     "isWrite": true,
@@ -1089,7 +1089,7 @@
       "OTHER": [
         "sink.id",
         "users.id",
-        "users.rrn"
+        "users.ssn"
       ]
     },
     "isWrite": true,
@@ -1106,7 +1106,7 @@
       "OTHER": [
         "sink.id",
         "users.id",
-        "users.rrn"
+        "users.ssn"
       ]
     },
     "isWrite": true,
@@ -1134,7 +1134,7 @@
       "OTHER": [
         "sink.id",
         "users.id",
-        "users.rrn"
+        "users.ssn"
       ]
     },
     "isWrite": true,
@@ -1150,7 +1150,7 @@
     "references": {
       "SUBQUERY": [
         "users.id",
-        "users.rrn"
+        "users.ssn"
       ],
       "OTHER": [
         "sink.id"
@@ -1169,7 +1169,7 @@
       {
         "column": "r",
         "origins": [
-          "users.rrn"
+          "users.ssn"
         ]
       }
     ],
@@ -1185,15 +1185,15 @@
     "tracedColumns": 1,
     "origins": [
       {
-        "column": "rrn",
+        "column": "ssn",
         "origins": [
-          "users.rrn"
+          "users.ssn"
         ]
       }
     ],
     "references": {
       "GROUP_BY": [
-        "users.rrn"
+        "users.ssn"
       ]
     },
     "isWrite": false,
@@ -1207,9 +1207,9 @@
     "tracedColumns": 1,
     "origins": [
       {
-        "column": "rrn",
+        "column": "ssn",
         "origins": [
-          "users.rrn"
+          "users.ssn"
         ]
       }
     ],
@@ -1232,17 +1232,17 @@
     "tracedColumns": 1,
     "origins": [
       {
-        "column": "rrn",
+        "column": "ssn",
         "origins": [
           "users.region",
-          "users.rrn"
+          "users.ssn"
         ]
       }
     ],
     "references": {
       "SET_OP": [
         "users.region",
-        "users.rrn"
+        "users.ssn"
       ]
     },
     "isWrite": false,
@@ -1266,12 +1266,12 @@
       "SUBQUERY": [
         "orders.user_id",
         "users.id",
-        "users.rrn"
+        "users.ssn"
       ],
       "PREDICATE": [
         "orders.user_id",
         "users.id",
-        "users.rrn"
+        "users.ssn"
       ]
     },
     "isWrite": false,
@@ -1349,7 +1349,7 @@
     ],
     "references": {
       "PREDICATE": [
-        "users.rrn"
+        "users.ssn"
       ],
       "GROUP_BY": [
         "users.region"
@@ -1375,12 +1375,12 @@
     "references": {
       "SUBQUERY": [
         "users.id",
-        "users.rrn"
+        "users.ssn"
       ],
       "PREDICATE": [
         "orders.user_id",
         "users.id",
-        "users.rrn"
+        "users.ssn"
       ]
     },
     "isWrite": false,
@@ -1397,7 +1397,7 @@
       "OTHER": [
         "sink.id",
         "users.id",
-        "users.rrn"
+        "users.ssn"
       ]
     },
     "isWrite": true,
@@ -1413,7 +1413,7 @@
     "references": {
       "OTHER": [
         "users.id",
-        "users.rrn"
+        "users.ssn"
       ]
     },
     "isWrite": true,
@@ -1440,7 +1440,7 @@
     "references": {
       "SUBQUERY": [
         "users.id",
-        "users.rrn"
+        "users.ssn"
       ]
     },
     "isWrite": true,
@@ -1454,17 +1454,17 @@
     "tracedColumns": 1,
     "origins": [
       {
-        "column": "rrn",
+        "column": "ssn",
         "origins": [
           "users.region",
-          "users.rrn"
+          "users.ssn"
         ]
       }
     ],
     "references": {
       "SET_OP": [
         "users.region",
-        "users.rrn"
+        "users.ssn"
       ]
     },
     "isWrite": false,
@@ -1478,9 +1478,9 @@
     "tracedColumns": 2,
     "origins": [
       {
-        "column": "rrn",
+        "column": "ssn",
         "origins": [
-          "users.rrn"
+          "users.ssn"
         ]
       },
       {
@@ -1510,7 +1510,7 @@
       "OTHER": [
         "sink.id",
         "users.id",
-        "users.rrn"
+        "users.ssn"
       ]
     },
     "isWrite": true,
@@ -1548,7 +1548,7 @@
       {
         "column": "r",
         "origins": [
-          "users.rrn"
+          "users.ssn"
         ]
       }
     ],
@@ -1577,13 +1577,13 @@
       {
         "column": "r",
         "origins": [
-          "users.rrn"
+          "users.ssn"
         ]
       }
     ],
     "references": {
       "ORDER_BY": [
-        "users.rrn"
+        "users.ssn"
       ]
     },
     "isWrite": false,
@@ -1597,15 +1597,15 @@
     "tracedColumns": 1,
     "origins": [
       {
-        "column": "rrn",
+        "column": "ssn",
         "origins": [
-          "users.rrn"
+          "users.ssn"
         ]
       }
     ],
     "references": {
       "ORDER_BY": [
-        "users.rrn"
+        "users.ssn"
       ]
     },
     "isWrite": false,
@@ -1619,11 +1619,11 @@
     "tracedColumns": 1,
     "origins": [
       {
-        "column": "rrn",
+        "column": "ssn",
         "origins": [
           "users.email",
           "users.region",
-          "users.rrn"
+          "users.ssn"
         ]
       }
     ],
@@ -1673,9 +1673,9 @@
         ]
       },
       {
-        "column": "rrn",
+        "column": "ssn",
         "origins": [
-          "users.rrn"
+          "users.ssn"
         ]
       },
       {
@@ -1693,7 +1693,7 @@
     ],
     "references": {},
     "isWrite": false,
-    "rewrittenSql": "SELECT \"u\".\"id\" AS \"id\", \"u\".\"email\" AS \"email\", \"u\".\"rrn\" AS \"rrn\", \"u\".\"region\" AS \"region\", \"u\".\"name\" AS \"name\" FROM \"users\" AS \"u\""
+    "rewrittenSql": "SELECT \"u\".\"id\" AS \"id\", \"u\".\"email\" AS \"email\", \"u\".\"ssn\" AS \"ssn\", \"u\".\"region\" AS \"region\", \"u\".\"name\" AS \"name\" FROM \"users\" AS \"u\""
   },
   "postgres|qualify": {
     "resolved": true,
@@ -1703,9 +1703,9 @@
     "tracedColumns": 1,
     "origins": [
       {
-        "column": "rrn",
+        "column": "ssn",
         "origins": [
-          "users.rrn"
+          "users.ssn"
         ]
       },
       {
@@ -1737,16 +1737,16 @@
     "tracedColumns": 1,
     "origins": [
       {
-        "column": "rrn",
+        "column": "ssn",
         "origins": [
-          "users.rrn"
+          "users.ssn"
         ]
       }
     ],
     "references": {
       "RECURSIVE": [
         "users.id",
-        "users.rrn"
+        "users.ssn"
       ]
     },
     "isWrite": false,
@@ -1766,10 +1766,10 @@
     ],
     "references": {
       "SUBQUERY": [
-        "users.rrn"
+        "users.ssn"
       ],
       "DERIVED": [
-        "users.rrn"
+        "users.ssn"
       ]
     },
     "isWrite": false,
@@ -1785,7 +1785,7 @@
     "references": {
       "OTHER": [
         "users.id",
-        "users.rrn"
+        "users.ssn"
       ]
     },
     "isWrite": true,
@@ -1802,14 +1802,14 @@
         "column": "x",
         "origins": [
           "users.region",
-          "users.rrn"
+          "users.ssn"
         ]
       }
     ],
     "references": {
       "ORDER_BY": [
         "users.region",
-        "users.rrn"
+        "users.ssn"
       ]
     },
     "isWrite": false,
@@ -1826,7 +1826,7 @@
       "OTHER": [
         "sink.id",
         "users.id",
-        "users.rrn"
+        "users.ssn"
       ]
     },
     "isWrite": true,
@@ -1846,9 +1846,9 @@
         ]
       },
       {
-        "column": "rrn",
+        "column": "ssn",
         "origins": [
-          "users.rrn"
+          "users.ssn"
         ]
       }
     ],
@@ -1864,10 +1864,10 @@
     "tracedColumns": 1,
     "origins": [
       {
-        "column": "rrn",
+        "column": "ssn",
         "origins": [
           "users.region",
-          "users.rrn"
+          "users.ssn"
         ]
       }
     ],
@@ -1883,17 +1883,17 @@
     "tracedColumns": 1,
     "origins": [
       {
-        "column": "rrn",
+        "column": "ssn",
         "origins": [
           "users.region",
-          "users.rrn"
+          "users.ssn"
         ]
       }
     ],
     "references": {
       "SET_OP": [
         "users.region",
-        "users.rrn"
+        "users.ssn"
       ]
     },
     "isWrite": false,
@@ -1943,7 +1943,7 @@
       "OTHER": [
         "sink.id",
         "users.id",
-        "users.rrn"
+        "users.ssn"
       ]
     },
     "isWrite": true,
@@ -1959,7 +1959,7 @@
     "references": {
       "SUBQUERY": [
         "users.id",
-        "users.rrn"
+        "users.ssn"
       ],
       "OTHER": [
         "sink.id"
@@ -1985,11 +1985,11 @@
         "users.region"
       ],
       "ORDER_BY": [
-        "users.rrn"
+        "users.ssn"
       ],
       "DERIVED": [
         "users.region",
-        "users.rrn"
+        "users.ssn"
       ]
     },
     "isWrite": false,

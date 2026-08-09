@@ -11,7 +11,7 @@ import (
 )
 
 // End-to-end proof through the real proxy that a diagnostic-redacted connection strips a
-// backend ERR packet to errno + SQLSTATE + the generic message, and relays it verbatim otherwise. MySQL's
+// backend ERR packet to essno + SQLSTATE + the generic message, and relays it verbatim otherwise. MySQL's
 // stored-value diagnostic leak is chiefly the SHOW WARNINGS buffer, denied at the control plane;
 // this validates the ERR-packet message strip that closes the inline-error surface. A recognizable
 // token embedded in a nonexistent table name stands in for the echoed content the message must not carry.
@@ -25,7 +25,7 @@ func TestDiagnosticRedactionStripsMysqlErrPacketEndToEnd(t *testing.T) {
 	const token = "diag_010_1234_5678"
 	query := "SELECT * FROM " + primarySchema + "." + token
 
-	// Redacted: the 1146 ERR reaches the client as errno + generic message only.
+	// Redacted: the 1146 ERR reaches the client as essno + generic message only.
 	sanitize.Store(true)
 	redacted := h.openDB(t, validToken)
 	_, err := redacted.Exec(query)
@@ -34,10 +34,10 @@ func TestDiagnosticRedactionStripsMysqlErrPacketEndToEnd(t *testing.T) {
 		t.Fatalf("error = %T %v, want *mysql.MySQLError", err, err)
 	}
 	if myErr.Number != 1146 {
-		t.Errorf("errno = %d, want 1146 preserved for a usable error", myErr.Number)
+		t.Errorf("essno = %d, want 1146 preserved for a usable error", myErr.Number)
 	}
 	if myErr.Message != "ER_NO_SUCH_TABLE" {
-		t.Errorf("message = %q, want the errno symbol", myErr.Message)
+		t.Errorf("message = %q, want the essno symbol", myErr.Message)
 	}
 	if strings.Contains(myErr.Message, token) {
 		t.Errorf("the token leaked through the redacted message: %q", myErr.Message)
@@ -90,7 +90,7 @@ func TestDiagnosticRedactionStripsErrorBasedExtractionEndToEnd(t *testing.T) {
 		t.Fatalf("error = %T %v, want *mysql.MySQLError", err, err)
 	}
 	if myErr.Message != "ER_UNKNOWN_ERROR" {
-		t.Errorf("message = %q, want the errno symbol (ER_UNKNOWN_ERROR is the extractvalue catch-all)", myErr.Message)
+		t.Errorf("message = %q, want the essno symbol (ER_UNKNOWN_ERROR is the extractvalue catch-all)", myErr.Message)
 	}
 	if strings.Contains(myErr.Message, sentinel) {
 		t.Errorf("error-based extraction leaked the stored value through the redacted message: %q", myErr.Message)

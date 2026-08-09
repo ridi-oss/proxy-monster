@@ -15,7 +15,7 @@ func pgFacts(t *testing.T, sql string) *pb.StatementFacts {
 		Namespace:    &pb.Namespace{Catalog: "def", SearchPath: []string{"public"}},
 		Catalog: []*pb.ColumnSpec{
 			columnSpec("def", "public", "users", "id", "BIGINT"),
-			columnSpec("def", "public", "users", "rrn", "VARCHAR"),
+			columnSpec("def", "public", "users", "ssn", "VARCHAR"),
 		},
 	})
 }
@@ -44,18 +44,18 @@ func TestPostgresStatementKind(t *testing.T) {
 		want pb.StatementKind
 	}{
 		// --- read ---
-		{"SELECT rrn FROM users", pb.StatementKind_STATEMENT_KIND_SELECT},
+		{"SELECT ssn FROM users", pb.StatementKind_STATEMENT_KIND_SELECT},
 		{"SELECT 1", pb.StatementKind_STATEMENT_KIND_SELECT},
 		{"WITH c AS (SELECT id FROM users) SELECT * FROM c", pb.StatementKind_STATEMENT_KIND_WITH_SELECT},
 		{"SELECT 1 UNION SELECT 2", pb.StatementKind_STATEMENT_KIND_SET_OP},
 		{"SELECT 1 INTERSECT SELECT 2", pb.StatementKind_STATEMENT_KIND_SET_OP},
 		{"SELECT 1 EXCEPT SELECT 2", pb.StatementKind_STATEMENT_KIND_SET_OP},
 		{"VALUES (1), (2)", pb.StatementKind_STATEMENT_KIND_VALUES},
-		{"SELECT rrn FROM users FOR UPDATE", pb.StatementKind_STATEMENT_KIND_SELECT},
+		{"SELECT ssn FROM users FOR UPDATE", pb.StatementKind_STATEMENT_KIND_SELECT},
 		// SELECT … INTO is CTAS-equivalent but classifies as a read; EXPLAIN unwraps to its inner query.
 		{"SELECT id INTO newtab FROM users", pb.StatementKind_STATEMENT_KIND_SELECT},
-		{"EXPLAIN SELECT rrn FROM users", pb.StatementKind_STATEMENT_KIND_SELECT},
-		{"EXPLAIN ANALYZE SELECT rrn FROM users", pb.StatementKind_STATEMENT_KIND_SELECT},
+		{"EXPLAIN SELECT ssn FROM users", pb.StatementKind_STATEMENT_KIND_SELECT},
+		{"EXPLAIN ANALYZE SELECT ssn FROM users", pb.StatementKind_STATEMENT_KIND_SELECT},
 		// TABLE <name> (a PostgreSQL SELECT shorthand) is not structured as a query.
 		{"TABLE users", pb.StatementKind_STATEMENT_KIND_STMT_UNKNOWN},
 
@@ -176,12 +176,12 @@ func TestPostgresStatementKind(t *testing.T) {
 		// --- dynamic execution (bare Commands keyed on the leading keyword) ---
 		{"CALL proc(1)", pb.StatementKind_STATEMENT_KIND_CALL},
 		{"DO $$ BEGIN PERFORM 1; END $$", pb.StatementKind_STATEMENT_KIND_DO},
-		{"PREPARE pl AS SELECT rrn FROM users", pb.StatementKind_STATEMENT_KIND_PREPARE},
+		{"PREPARE pl AS SELECT ssn FROM users", pb.StatementKind_STATEMENT_KIND_PREPARE},
 		{"EXECUTE pl", pb.StatementKind_STATEMENT_KIND_EXECUTE},
 		{"DEALLOCATE pl", pb.StatementKind_STATEMENT_KIND_STMT_UNKNOWN},
 
 		// --- cursors ---
-		{"DECLARE cur CURSOR FOR SELECT rrn FROM users", pb.StatementKind_STATEMENT_KIND_STMT_UNKNOWN},
+		{"DECLARE cur CURSOR FOR SELECT ssn FROM users", pb.StatementKind_STATEMENT_KIND_STMT_UNKNOWN},
 		{"FETCH cur", pb.StatementKind_STATEMENT_KIND_STMT_UNKNOWN},
 		{"MOVE cur", pb.StatementKind_STATEMENT_KIND_STMT_UNKNOWN},
 		{"CLOSE cur", pb.StatementKind_STATEMENT_KIND_STMT_UNKNOWN},
@@ -194,7 +194,7 @@ func TestPostgresStatementKind(t *testing.T) {
 		// --- copy / import ---
 		{"COPY users TO '/tmp/x'", pb.StatementKind_STATEMENT_KIND_COPY},
 		{"COPY users FROM '/tmp/x'", pb.StatementKind_STATEMENT_KIND_COPY},
-		{"COPY (SELECT rrn FROM users) TO '/tmp/x'", pb.StatementKind_STATEMENT_KIND_COPY},
+		{"COPY (SELECT ssn FROM users) TO '/tmp/x'", pb.StatementKind_STATEMENT_KIND_COPY},
 		{"IMPORT FOREIGN SCHEMA remote LIMIT TO (users) FROM SERVER srv INTO local", pb.StatementKind_STATEMENT_KIND_STMT_UNKNOWN},
 	}
 	for _, c := range cases {

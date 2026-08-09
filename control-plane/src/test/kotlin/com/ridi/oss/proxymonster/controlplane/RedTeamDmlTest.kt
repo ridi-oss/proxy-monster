@@ -31,16 +31,16 @@ class RedTeamDmlTest {
     @Test
     fun `writes cannot persist masked source values`() {
         for (fixture in listOf(postgres, mysql)) {
-            denied(fixture, "insert into users(email) select rrn from users")
-            denied(fixture, "update users set email = rrn")
+            denied(fixture, "insert into users(email) select ssn from users")
+            denied(fixture, "update users set email = ssn")
         }
     }
 
     @Test
     fun `write predicates and transformed payloads remain non-maskable`() {
         for (fixture in listOf(postgres, mysql)) {
-            denied(fixture, "update users set email = 'x' where rrn = 'secret'")
-            denied(fixture, "insert into users(email) select upper(rrn) from users")
+            denied(fixture, "update users set email = 'x' where ssn = 'secret'")
+            denied(fixture, "insert into users(email) select upper(ssn) from users")
         }
     }
 }

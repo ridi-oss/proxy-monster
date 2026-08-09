@@ -28,7 +28,7 @@ facts, zero policy:
 <!-- prettier-ignore -->
 | fact | from | example |
 | --- | --- | --- |
-| resources touched + their tags | catalog + analyzer | `Column::"acme-pg/acme/public/users/rrn"` tagged `pii`; `Function::"acme-pg/pg_read_file"` tagged `system:data-leak` |
+| resources touched + their tags | catalog + analyzer | `Column::"acme-pg/acme/public/users/ssn"` tagged `pii`; `Function::"acme-pg/pg_read_file"` tagged `system:data-leak` |
 | sql-kind | analyzer | `sql.select` / `sql.insert` / `sql.update` / `sql.delete` / `sql.ddl` |
 | analyzable? | analyzer | false → `sql.unanalyzable` (PIVOT, NATURAL JOIN, unsupported root) |
 | maskable? | proxy/control-plane | false → `sql.unmaskable` (COPY bulk stream, fast-path calls, MySQL binary result — the proxy can't rewrite the result) |
@@ -42,7 +42,7 @@ Every accessed thing is a Cedar resource: Column, Table, Function (built-in and
 UDF), system-catalog objects, and Utility for the few commands with no mirrored
 object. Database-object keys are fully qualified —
 `Column::"<datasource>/<catalog>/<schema>/<table>/<column>"`,
-`Table::"…/<schema>/<table>"` (canonical `acme-pg/acme/public/users/rrn`;
+`Table::"…/<schema>/<table>"` (canonical `acme-pg/acme/public/users/ssn`;
 construction in
 [mapping-schema-construction.md](./mapping-schema-construction.md)). Functions
 and utilities are name-keyed only — `Function::"<datasource>/<name>"`,

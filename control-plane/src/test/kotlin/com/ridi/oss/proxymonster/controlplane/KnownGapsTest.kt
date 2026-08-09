@@ -29,7 +29,7 @@ import kotlin.test.assertEquals
  *     traced column AND no table grant is denied.
  *
  * Fixture (`EnforcementFixture.postgres()`): `analyst@example.com` holds `result.read` on the `users`
- * table (unmasked except the pii `rrn`) plus `datasource.connect`/`sql.select`; `orders` is UNGRANTED.
+ * table (unmasked except the pii `ssn`) plus `datasource.connect`/`sql.select`; `orders` is UNGRANTED.
  */
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 class KnownGapsTest {

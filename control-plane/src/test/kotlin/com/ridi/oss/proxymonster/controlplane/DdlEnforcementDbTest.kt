@@ -86,7 +86,7 @@ class DdlEnforcementDbTest {
     )
 
     private val ddlForms = listOf(
-        "ALTER TABLE users DROP INDEX idx_rrn",
+        "ALTER TABLE users DROP INDEX idx_ssn",
         "ALTER TABLE users ADD c INT",
         "ALTER TABLE users RENAME TO users2",
         "CREATE INDEX idx_email ON users (email)",
@@ -155,10 +155,10 @@ class DdlEnforcementDbTest {
     @Test
     fun `a ddl holder cannot copy a masked column into a new table, parenthesized or not`() {
         for (sql in listOf(
-            "CREATE TABLE stolen AS SELECT rrn FROM users",
-            "CREATE TABLE stolen AS (SELECT rrn FROM users)",
-            "CREATE TABLE stolen AS ((SELECT rrn FROM users))",
-            "CREATE VIEW stolen AS (SELECT rrn FROM users)",
+            "CREATE TABLE stolen AS SELECT ssn FROM users",
+            "CREATE TABLE stolen AS (SELECT ssn FROM users)",
+            "CREATE TABLE stolen AS ((SELECT ssn FROM users))",
+            "CREATE VIEW stolen AS (SELECT ssn FROM users)",
         )) {
             val ctx = decide(sql, architect)
             assertEquals(
@@ -195,7 +195,7 @@ class DdlEnforcementDbTest {
             decideQuery(
                 principal = noRole,
                 ds = fx.datasourceStore.get(fx.datasource.id)!!,
-                sql = "ALTER TABLE users DROP INDEX idx_rrn",
+                sql = "ALTER TABLE users DROP INDEX idx_ssn",
                 channel = channel,
                 catalog = fx.datasourceStore.catalog(fx.datasource.id),
                 policyStore = fx.policyStore,

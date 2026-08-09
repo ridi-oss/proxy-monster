@@ -233,7 +233,7 @@ tagging, table detail) and never feeds an enforcement decision.
   leak. The residual gap is a function body that reads a masked/PII column
   internally, on the backend service-account connection unseen by the proxy,
   when that column never appears as an argument: `SELECT my_udf(id) FROM t`,
-  where `id` is not sensitive and `my_udf` internally reads `rrn`, returns `rrn`
+  where `id` is not sensitive and `my_udf` internally reads `ssn`, returns `ssn`
   in the clear. Operational rule: a UDF on a masking datasource must not read
   PII / masked columns — a "pure" UDF that only transforms its arguments (reads
   no data) is safe; keeping a data-reading UDF clean is an admin responsibility.
@@ -339,10 +339,10 @@ tagging, table detail) and never feeds an enforcement decision.
   or a migration shadows the table so the same unqualified SQL resolves to a
   different physical column bearing the same output name — the stored cleartext
   bytes (produced for column A) can be released under a mask plan computed for
-  column B. Example: `SELECT rrn FROM users` executed with `users` resolving to
-  a PII `rrn` in schema A, then viewed after the default schema moves to a
-  non-PII `users.rrn` in schema B — the view unmasks (schema B is non-PII), the
-  output name `rrn` matches, and schema A's PII is released. The fix is saved
+  column B. Example: `SELECT ssn FROM users` executed with `users` resolving to
+  a PII `ssn` in schema A, then viewed after the default schema moves to a
+  non-PII `users.ssn` in schema B — the view unmasks (schema B is non-PII), the
+  output name `ssn` matches, and schema A's PII is released. The fix is saved
   lineage: persist the execution namespace + physical lineage per result child
   and re-decide pinned to it, so output-name equality stops being the
   confidentiality boundary. Tracked as a high-priority follow-up in

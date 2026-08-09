@@ -64,7 +64,7 @@ func readLastAnchor(t *testing.T, os worm.ObjectStore) (*worm.Anchor, bool, erro
 	return &anchors[len(anchors)-1], true, nil
 }
 
-const secretSQL = "SELECT rrn FROM users WHERE id = 42"
+const secretSQL = "SELECT ssn FROM users WHERE id = 42"
 
 func decisionEvent(principal, statement string) canon.AuditEvent {
 	return canon.AuditEvent{
@@ -76,7 +76,7 @@ func decisionEvent(principal, statement string) canon.AuditEvent {
 		Statement:          statement,
 		Decision:           "ALLOW",
 		EffectiveNamespace: []string{"public"},
-		PIITouched:         []string{"pii:rrn"},
+		PIITouched:         []string{"pii:ssn"},
 	}
 }
 

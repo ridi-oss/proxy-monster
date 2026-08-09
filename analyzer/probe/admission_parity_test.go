@@ -139,8 +139,8 @@ func TestParityBatchAndLex(t *testing.T) {
 	for _, sql := range []string{
 		"SELECT 1; SELECT 2",
 		"SELECT 1; DROP TABLE x",
-		"SELECT 1 -- x\r; SELECT rrn FROM users",
-		"SET x = 'a\\'; SELECT rrn FROM users; --'",
+		"SELECT 1 -- x\r; SELECT ssn FROM users",
+		"SET x = 'a\\'; SELECT ssn FROM users; --'",
 		"SELECT 'unterminated",
 		"SELECT id /* unterminated",
 		"SELECT $$unterminated",
@@ -149,15 +149,15 @@ func TestParityBatchAndLex(t *testing.T) {
 		parityDenied(t, sql, "postgres")
 	}
 	for _, sql := range []string{
-		"SELECT 1--2; SELECT rrn FROM users",
+		"SELECT 1--2; SELECT ssn FROM users",
 		"# just a comment",
 	} {
 		parityDenied(t, sql, "mysql")
 	}
 	// MySQL executable comments are not blanket-rejected — with a known server version the analyzer
-	// decodes them and analyzes the real statement (`SELECT 1 /*! , rrn FROM users */` → traces rrn, which
+	// decodes them and analyzes the real statement (`SELECT 1 /*! , ssn FROM users */` → traces ssn, which
 	// the column gate then masks/denies).
-	if f := mysqlFacts(t, "SELECT 1 /*! , rrn FROM users */"); !f.Resolved {
+	if f := mysqlFacts(t, "SELECT 1 /*! , ssn FROM users */"); !f.Resolved {
 		t.Errorf("executable comment should now be analyzed, not rejected: %s", f.Detail)
 	}
 	// Single statements / trailing semicolons / semicolons inside quotes are NOT batches.
@@ -209,8 +209,8 @@ func TestParityPrivilegeAndLexerMutation(t *testing.T) {
 	// backlogged). A top-level TABLE query-primary in the RHS is still a fail-closed structural deny.
 	bothDialects(func(d string) {
 		for _, sql := range []string{
-			"SET @x = (SELECT rrn FROM users LIMIT 1)", "SET @x = leak_rrn()", "SET @x = acme.leak_rrn()",
-			"SET @x = query_to_xml('SELECT rrn FROM users', true, false, '')", "SET @x = (VALUES ROW(1))",
+			"SET @x = (SELECT ssn FROM users LIMIT 1)", "SET @x = leak_ssn()", "SET @x = acme.leak_ssn()",
+			"SET @x = query_to_xml('SELECT ssn FROM users', true, false, '')", "SET @x = (VALUES ROW(1))",
 		} {
 			parityUtility(t, sql, d, "SET_SUBQUERY")
 		}
@@ -330,9 +330,9 @@ func TestParityShowDescribe(t *testing.T) {
 	// A SHOW with a subquery / unsafe-function WHERE reads data outside a plain query → SHOW_SUBQUERY
 	// Utility grant (system:critical). Same fail-closed outcome as before, now a Cedar decision.
 	for _, sql := range []string{
-		"SHOW TABLES WHERE UPDATEXML(1, CONCAT(0x7e, (SELECT rrn FROM users LIMIT 1), 0x7e), 1)",
-		"SHOW TABLES WHERE Tables_in_db IN (SELECT rrn FROM users)",
-		"SHOW COLUMNS FROM users WHERE extractvalue(1, concat(0x7e, (SELECT rrn FROM users), 0x7e))",
+		"SHOW TABLES WHERE UPDATEXML(1, CONCAT(0x7e, (SELECT ssn FROM users LIMIT 1), 0x7e), 1)",
+		"SHOW TABLES WHERE Tables_in_db IN (SELECT ssn FROM users)",
+		"SHOW COLUMNS FROM users WHERE extractvalue(1, concat(0x7e, (SELECT ssn FROM users), 0x7e))",
 	} {
 		parityUtility(t, sql, "mysql", "SHOW_SUBQUERY")
 	}
@@ -345,12 +345,12 @@ func TestParityShowDescribe(t *testing.T) {
 		parityNoUtility(t, sql, "mysql")
 	}
 	// DESCRIBE/DESC of a query (EXPLAIN alias) is now ANALYZED as its inner query — it inherits the
-	// inner's column enforcement (rrn gets a column grant that masks/denies) rather than a blanket
-	// admission deny. Assert it's resolved+analyzed (the inner query's grants apply, so rrn is protected).
+	// inner's column enforcement (ssn gets a column grant that masks/denies) rather than a blanket
+	// admission deny. Assert it's resolved+analyzed (the inner query's grants apply, so ssn is protected).
 	bothDialects(func(d string) {
 		for _, sql := range []string{
-			"DESC ANALYZE SELECT UUID_TO_BIN(rrn) FROM users LIMIT 1",
-			"DESCRIBE ANALYZE SELECT UUID_TO_BIN(rrn) FROM users LIMIT 1",
+			"DESC ANALYZE SELECT UUID_TO_BIN(ssn) FROM users LIMIT 1",
+			"DESCRIBE ANALYZE SELECT UUID_TO_BIN(ssn) FROM users LIMIT 1",
 		} {
 			f := factsFor(t, sql, d)
 			if !f.Resolved || f.StatementClass != pb.StatementClass_STATEMENT_CLASS_ANALYZED {
@@ -367,8 +367,8 @@ func TestParityNoFromDataReaders(t *testing.T) {
 	// no-FROM SELECT calling a data/file reader → a Function grant the control-plane denies.
 	bothDialects(func(d string) {
 		for _, sql := range []string{
-			"SELECT query_to_xml('SELECT rrn FROM users WHERE id = 1', true, false, '')",
-			"SELECT leak_rrn()",
+			"SELECT query_to_xml('SELECT ssn FROM users WHERE id = 1', true, false, '')",
+			"SELECT leak_ssn()",
 		} {
 			parityFunctionGrant(t, sql, d)
 		}
@@ -377,8 +377,8 @@ func TestParityNoFromDataReaders(t *testing.T) {
 		"SELECT table_to_xml('users', true, false, '')",
 		"SELECT database_to_xml(true, false, '')",
 		"SELECT pg_read_file('/etc/passwd')",
-		"SELECT \"query_to_xml\"('SELECT rrn FROM users', true, false, '')",
-		"SELECT public.version()", "SELECT public.now()", "SELECT app.get_rrn()",
+		"SELECT \"query_to_xml\"('SELECT ssn FROM users', true, false, '')",
+		"SELECT public.version()", "SELECT public.now()", "SELECT app.get_ssn()",
 		"SELECT pm_leak.filter()", "SELECT pm_leak.\"text\"('x')",
 	} {
 		parityFunctionGrant(t, sql, "postgres")
@@ -387,7 +387,7 @@ func TestParityNoFromDataReaders(t *testing.T) {
 		parityFunctionGrant(t, sql, "mysql")
 	}
 	// A keyword-argument FROM must NOT mask an unsafe function (old KNOWN GAP, closed by the migration).
-	parityFunctionGrant(t, "select substring('abc' from 1), leak_rrn()", "postgres")
+	parityFunctionGrant(t, "select substring('abc' from 1), leak_ssn()", "postgres")
 }
 
 func TestParityNoFromSafeChatter(t *testing.T) {
@@ -538,26 +538,26 @@ func TestParityUpsertAdditionalGrant(t *testing.T) {
 }
 
 // TestParityInjectionVariants locks the batch/comment/dollar-quote injection surface: a `;` that opens a
-// REAL second statement (reading rrn, or a DROP) is a batch → fail closed; a `;` buried in a line comment,
-// block comment, or dollar-quoted string does NOT split, so the injected rrn read is inert chatter, not a
-// hidden read. The security property is that the injected rrn read never executes silently.
+// REAL second statement (reading ssn, or a DROP) is a batch → fail closed; a `;` buried in a line comment,
+// block comment, or dollar-quoted string does NOT split, so the injected ssn read is inert chatter, not a
+// hidden read. The security property is that the injected ssn read never executes silently.
 func TestParityInjectionVariants(t *testing.T) {
 	// A real second statement after the comment/string closes → batch → deny.
-	parityDenied(t, "SELECT 1; /* c */ SELECT rrn FROM users", "postgres")
-	parityDenied(t, "SELECT 1; SELECT rrn FROM users", "postgres")
-	parityDenied(t, "SELECT $$'$$; SELECT rrn FROM users", "postgres")
-	parityDenied(t, "SELECT $tag$'$tag$; SELECT rrn FROM users", "postgres")
-	parityDenied(t, "SET a=1; SELECT rrn FROM users", "mysql")
+	parityDenied(t, "SELECT 1; /* c */ SELECT ssn FROM users", "postgres")
+	parityDenied(t, "SELECT 1; SELECT ssn FROM users", "postgres")
+	parityDenied(t, "SELECT $$'$$; SELECT ssn FROM users", "postgres")
+	parityDenied(t, "SELECT $tag$'$tag$; SELECT ssn FROM users", "postgres")
+	parityDenied(t, "SET a=1; SELECT ssn FROM users", "mysql")
 	bothDialects(func(d string) { parityDenied(t, "EXPLAIN SELECT 1; DROP TABLE x", d) })
-	// The `;` and the rrn read are commented out / inside a comment → a single benign `SELECT 1`, not a
-	// batch and not an rrn read. Resolves as ordinary chatter (proves the injected read is truly absent).
+	// The `;` and the ssn read are commented out / inside a comment → a single benign `SELECT 1`, not a
+	// batch and not an ssn read. Resolves as ordinary chatter (proves the injected read is truly absent).
 	for _, sql := range []string{
-		"SELECT 1 -- ; SELECT rrn FROM users",
-		"SELECT /* ; SELECT rrn FROM users */ 1",
+		"SELECT 1 -- ; SELECT ssn FROM users",
+		"SELECT /* ; SELECT ssn FROM users */ 1",
 	} {
 		parityClass(t, sql, "postgres", pb.StatementClass_STATEMENT_CLASS_METADATA)
 	}
-	parityClass(t, "SELECT 1 # c ; SELECT rrn FROM users", "mysql", pb.StatementClass_STATEMENT_CLASS_METADATA)
+	parityClass(t, "SELECT 1 # c ; SELECT ssn FROM users", "mysql", pb.StatementClass_STATEMENT_CLASS_METADATA)
 }
 
 // TestParitySetVariantSpellings locks the alternate spellings of the privilege / session-mutation SETs:
@@ -570,7 +570,7 @@ func TestParitySetVariantSpellings(t *testing.T) {
 	parityUtility(t, "SET session_authorization TO x", "postgres", "SET_SESSION_AUTHORIZATION")
 	parityUtility(t, "SET LOCAL ROLE x", "postgres", "SET_ROLE")
 	// A subquery RHS reads data → SET_SUBQUERY Utility grant (system:critical).
-	parityUtility(t, "SET SESSION x = (SELECT rrn FROM users)", "postgres", "SET_SUBQUERY")
+	parityUtility(t, "SET SESSION x = (SELECT ssn FROM users)", "postgres", "SET_SUBQUERY")
 	// MySQL executable comments hide the keyword form: /*! role */ decodes to the keyword SET ROLE, which
 	// structures (sqlglot-go v0.18+) off SetItem.kind → SET_ROLE system:critical Utility. /*!global*/
 	// decodes to a structured SET GLOBAL → Utility. The analyzer decodes the comment and classifies the real
@@ -585,31 +585,31 @@ func TestParitySetVariantSpellings(t *testing.T) {
 func TestParityFunctionVariantSpellings(t *testing.T) {
 	parityFunctionGated(t, `SELECT "set_config"('role','admin',false)`, "postgres", "set_config")
 	parityFunctionGated(t, "SELECT pg_catalog.set_config('search_path','evil',false)", "postgres", "set_config")
-	parityFunctionGated(t, "SELECT pg_catalog.query_to_xml('SELECT rrn FROM users', true, false, '')", "postgres", "query_to_xml")
-	parityFunctionGated(t, "SELECT query_to_xmlschema('SELECT rrn FROM users', true, false, '')", "postgres", "query_to_xmlschema")
+	parityFunctionGated(t, "SELECT pg_catalog.query_to_xml('SELECT ssn FROM users', true, false, '')", "postgres", "query_to_xml")
+	parityFunctionGated(t, "SELECT query_to_xmlschema('SELECT ssn FROM users', true, false, '')", "postgres", "query_to_xmlschema")
 	parityFunctionGated(t, "(SELECT table_to_xml('users', true, false, ''))", "postgres", "table_to_xml")
 }
 
 // TestParityIntoWriteAndExplainInner locks two lineage-through-a-wrapper properties: SELECT ... INTO (a
 // file, a variable, or nested in a UNION branch) is a write requiring sql.ddl, and EXPLAIN ANALYZE of a
-// query EXECUTES the inner statement, so its columns (rrn) must be traced and gated — an EXPLAIN wrapper is
+// query EXECUTES the inner statement, so its columns (ssn) must be traced and gated — an EXPLAIN wrapper is
 // not a metadata escape hatch.
 func TestParityIntoWriteAndExplainInner(t *testing.T) {
 	for _, sql := range []string{
 		"SELECT 1 INTO OUTFILE '/tmp/x'",
-		"SELECT rrn INTO OUTFILE '/tmp/x' FROM users",
+		"SELECT ssn INTO OUTFILE '/tmp/x' FROM users",
 		"(SELECT 1) UNION SELECT 1 INTO @a",
 	} {
 		parityDatasourceAction(t, sql, "mysql", pb.GrantAction_GRANT_ACTION_SQL_DDL)
 	}
-	// An INTO buried in a UNION branch is still a write AND its rrn read is column-gated.
-	exfil := "SELECT id FROM users WHERE 1=0 UNION (SELECT rrn INTO @pm_leak FROM users LIMIT 1)"
+	// An INTO buried in a UNION branch is still a write AND its ssn read is column-gated.
+	exfil := "SELECT id FROM users WHERE 1=0 UNION (SELECT ssn INTO @pm_leak FROM users LIMIT 1)"
 	parityDatasourceAction(t, exfil, "mysql", pb.GrantAction_GRANT_ACTION_SQL_DDL)
-	parityColumnGrant(t, exfil, "mysql", "rrn")
-	// EXPLAIN ANALYZE / EXPLAIN (ANALYZE ...) execute the inner query → rrn is traced and gated.
-	parityColumnGrant(t, "EXPLAIN ANALYZE SELECT rrn FROM users", "postgres", "rrn")
-	parityColumnGrant(t, "EXPLAIN (ANALYZE, FORMAT JSON) SELECT 1 FROM users WHERE rrn = 'x'", "postgres", "rrn")
-	parityFunctionGated(t, "EXPLAIN SELECT query_to_xml('SELECT rrn FROM users', true, false, '')", "postgres", "query_to_xml")
+	parityColumnGrant(t, exfil, "mysql", "ssn")
+	// EXPLAIN ANALYZE / EXPLAIN (ANALYZE ...) execute the inner query → ssn is traced and gated.
+	parityColumnGrant(t, "EXPLAIN ANALYZE SELECT ssn FROM users", "postgres", "ssn")
+	parityColumnGrant(t, "EXPLAIN (ANALYZE, FORMAT JSON) SELECT 1 FROM users WHERE ssn = 'x'", "postgres", "ssn")
+	parityFunctionGated(t, "EXPLAIN SELECT query_to_xml('SELECT ssn FROM users', true, false, '')", "postgres", "query_to_xml")
 }
 
 // TestParityTransactionControlSavepoint locks SAVEPOINT / RELEASE SAVEPOINT as SESSION passthrough — since

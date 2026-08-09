@@ -1,7 +1,7 @@
 -- Sample OLTP schema for the target (brokered) MySQL backend —
 -- MySQL is the primary target engine (Postgres is the add-on). Mirrors
 -- deploy/seed/target-seed.sql so the same queries exercise the engine + enforcement
--- on MySQL. PII columns (email, phone, name, rrn, card_number, line1,
+-- on MySQL. PII columns (email, phone, name, ssn, card_number, line1,
 -- postal_code) are the masking/deny targets; audit_log.payload is the
 -- free-text column the content backstop covers. DATETIME (not TIMESTAMP) to
 -- avoid TZ conversion + the 2038 range limit.
@@ -17,7 +17,7 @@ CREATE TABLE users (
     email      VARCHAR(255),  -- PII
     phone      VARCHAR(255),  -- PII
     name       VARCHAR(255),  -- PII
-    rrn        VARCHAR(255),  -- PII: resident registration no. (KR national id)
+    ssn        VARCHAR(255),  -- PII: resident registration no. (KR national id)
     region     VARCHAR(255),
     created_at DATETIME
 );
@@ -63,10 +63,10 @@ CREATE TABLE audit_log (
     at      DATETIME
 );
 
-INSERT INTO users (id, email, phone, name, rrn, region, created_at) VALUES
-    (1, 'jiwon@example.com',  '010-1111-2222', 'Kim Jiwon',  '900101-1234567', 'KR-11', '2025-01-02 09:00:00'),
-    (2, 'minseo@example.com', '010-3333-4444', 'Lee Minseo', '880315-2345678', 'KR-26', '2025-02-14 13:30:00'),
-    (3, 'haeun@example.com',  '010-5555-6666', 'Park Haeun', '950722-3456789', 'KR-41', '2025-03-21 18:45:00');
+INSERT INTO users (id, email, phone, name, ssn, region, created_at) VALUES
+    (1, 'jiwon@example.com',  '010-1111-2222', 'Kim Jiwon',  '987-65-4320', 'KR-11', '2025-01-02 09:00:00'),
+    (2, 'minseo@example.com', '010-3333-4444', 'Lee Minseo', '987-65-4322', 'KR-26', '2025-02-14 13:30:00'),
+    (3, 'haeun@example.com',  '010-5555-6666', 'Park Haeun', '987-65-4323', 'KR-41', '2025-03-21 18:45:00');
 
 INSERT INTO books (id, title, author, price) VALUES
     (10, 'The Vegetarian',        'Han Kang',     12000.00),

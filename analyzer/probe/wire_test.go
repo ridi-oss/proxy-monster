@@ -61,7 +61,7 @@ func analyzeProbe(t *testing.T, req *pb.AnalyzeRequest) *ProbeResult {
 
 func TestAnalyzeStatementResolvesOrdinaryQuery(t *testing.T) {
 	out := analyzeProbe(t, &pb.AnalyzeRequest{
-		Sql:          "SELECT rrn FROM users",
+		Sql:          "SELECT ssn FROM users",
 		EngineConfig: &pb.EngineConfig{Engine: pb.Engine_POSTGRES},
 		Namespace: &pb.Namespace{
 			Catalog:    "acme",
@@ -69,16 +69,16 @@ func TestAnalyzeStatementResolvesOrdinaryQuery(t *testing.T) {
 		},
 		Catalog: []*pb.ColumnSpec{
 			columnSpec("acme", "public", "users", "id", "BIGINT"),
-			columnSpec("acme", "public", "users", "rrn", "VARCHAR"),
+			columnSpec("acme", "public", "users", "ssn", "VARCHAR"),
 		},
 	})
 	if !out.Resolved {
 		t.Fatalf("expected resolved, got detail=%q stage=%v", out.Detail, out.FailedStage)
 	}
-	if len(out.Origins) != 1 || out.Origins[0].Column != "rrn" {
+	if len(out.Origins) != 1 || out.Origins[0].Column != "ssn" {
 		t.Fatalf("unexpected origins: %+v", out.Origins)
 	}
-	if got := out.Origins[0].Origins; len(got) != 1 || got[0] != "acme.public.users.rrn" {
+	if got := out.Origins[0].Origins; len(got) != 1 || got[0] != "acme.public.users.ssn" {
 		t.Fatalf("unexpected origin source: %+v", got)
 	}
 }
@@ -114,14 +114,14 @@ func TestAnalyzeStatementMySQLRequiresEngineVersion(t *testing.T) {
 
 func TestAnalyzeStatementEngineVersionReachesMySQLParser(t *testing.T) {
 	out := analyzeProbe(t, &pb.AnalyzeRequest{
-		Sql: "SELECT 1 /*!50700 , rrn */ FROM users",
+		Sql: "SELECT 1 /*!50700 , ssn */ FROM users",
 		EngineConfig: &pb.EngineConfig{
 			Engine: pb.Engine_MYSQL, EngineVersion: "8.0.46", MysqlLowerCaseTableNames: proto.Int32(0),
 		},
 		Namespace: &pb.Namespace{Catalog: "def", SearchPath: []string{"acme"}},
 		Catalog: []*pb.ColumnSpec{
 			columnSpec("def", "acme", "users", "id", "BIGINT"),
-			columnSpec("def", "acme", "users", "rrn", "VARCHAR"),
+			columnSpec("def", "acme", "users", "ssn", "VARCHAR"),
 		},
 	})
 	if !out.Resolved {
@@ -130,7 +130,7 @@ func TestAnalyzeStatementEngineVersionReachesMySQLParser(t *testing.T) {
 	found := false
 	for _, origin := range out.Origins {
 		for _, key := range origin.Origins {
-			if key == "def.acme.users.rrn" {
+			if key == "def.acme.users.ssn" {
 				found = true
 			}
 		}

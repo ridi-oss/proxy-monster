@@ -392,7 +392,7 @@ Development datasource (`system:development`) — connect via any dev role;
 | resource the query touches | result |
 | --- | --- |
 | user table, non-PII column (`users.id`) | cleartext (`-200`) |
-| user table, PII column (`users.rrn`) | cleartext — dev holds no PII, nothing is masked (`-200`) |
+| user table, PII column (`users.ssn`) | cleartext — dev holds no PII, nothing is masked (`-200`) |
 | system table — catalog (`pg_class`, `information_schema`) | readable (`-100`) |
 | system table — activity (`pg_stat_activity`, `SHOW PROCESSLIST`) | readable (`-110` relaxed on dev, `-200` permits) |
 | system table — data-leak (`pg_stats`, `SHOW BINLOG EVENTS`) | readable (`-120` relaxed on dev) |

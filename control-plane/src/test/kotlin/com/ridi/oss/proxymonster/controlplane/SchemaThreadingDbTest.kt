@@ -47,8 +47,8 @@ data class SchemaThreadingFixture(
     val catalog: String,
     val defaultSchema: String,
     val analyticsSchema: String,
-    val defaultRrn: String,
-    val analyticsRrn: String,
+    val defaultSsn: String,
+    val analyticsSsn: String,
 ) {
     val defaultTable: String get() = "$defaultSchema.users"
     val analyticsTable: String get() = "$analyticsSchema.users"
@@ -90,25 +90,25 @@ data class SchemaThreadingFixture(
     fun rowJson(table: String): String = if (engine == "postgres") {
         "select row_to_json(u) from $table u"
     } else {
-        "select json_object('id', u.id, 'email', u.email, 'rrn', u.rrn, 'region', u.region) from $table u"
+        "select json_object('id', u.id, 'email', u.email, 'ssn', u.ssn, 'region', u.region) from $table u"
     }
 
     fun aliasOrComposite(table: String): String = if (engine == "postgres") {
-        "select (u).rrn as exposed_rrn from $table u"
+        "select (u).ssn as exposed_ssn from $table u"
     } else {
-        "select u.rrn as exposed_rrn from $table u"
+        "select u.ssn as exposed_ssn from $table u"
     }
 
     fun protectedUpdateSql(): String = if (engine == "postgres") {
-        "update users set rrn = rrn || '-blocked' where rrn = '$defaultRrn'"
+        "update users set ssn = ssn || '-blocked' where ssn = '$defaultSsn'"
     } else {
-        "update users set rrn = concat(rrn, '-blocked') where rrn = '$defaultRrn'"
+        "update users set ssn = concat(ssn, '-blocked') where ssn = '$defaultSsn'"
     }
 
     fun analyticsUpdateSql(): String = if (engine == "postgres") {
-        "update $analyticsTable set rrn = rrn || '-allowed' where rrn = '$analyticsRrn'"
+        "update $analyticsTable set ssn = ssn || '-allowed' where ssn = '$analyticsSsn'"
     } else {
-        "update $analyticsTable set rrn = concat(rrn, '-allowed') where rrn = '$analyticsRrn'"
+        "update $analyticsTable set ssn = concat(ssn, '-allowed') where ssn = '$analyticsSsn'"
     }
 
     /** Execute a real UPDATE, observe its mutation, roll it back, then verify a fresh connection sees no mutation. */
@@ -118,18 +118,18 @@ data class SchemaThreadingFixture(
             try {
                 val count = c.createStatement().use { it.executeUpdate(sql) }
                 assertTrue(count > 0, "expected a row-affecting backend UPDATE, count=$count: $sql")
-                assertEquals(after, readRrn(c, table), "the backend did not execute the claimed mutation: $sql")
+                assertEquals(after, readSsn(c, table), "the backend did not execute the claimed mutation: $sql")
             } finally {
                 c.rollback()
             }
         }
         DriverManager.getConnection(targetJdbcUrl, targetUser, targetPassword).use { c ->
-            assertEquals(before, readRrn(c, table), "the test UPDATE escaped its rollback: $sql")
+            assertEquals(before, readSsn(c, table), "the test UPDATE escaped its rollback: $sql")
         }
     }
 
-    private fun readRrn(c: Connection, table: String): String = c.createStatement().use { st ->
-        st.executeQuery("select rrn from $table where id = 1").use { rs ->
+    private fun readSsn(c: Connection, table: String): String = c.createStatement().use { st ->
+        st.executeQuery("select ssn from $table where id = 1").use { rs ->
             assertTrue(rs.next(), "missing seeded row in $table")
             rs.getString(1)
         }
@@ -140,14 +140,14 @@ object SchemaThreadingFixtures {
     fun postgres(): SchemaThreadingFixture {
         val stores = metadataStores()
         val database = SharedPostgres.freshDatabase("pm_schema_target")
-        val defaultRrn = "PG_DEFAULT_RRN_1111"
-        val analyticsRrn = "PG_ANALYTICS_RRN_9999"
+        val defaultSsn = "PG_DEFAULT_SSN_1111"
+        val analyticsSsn = "PG_ANALYTICS_SSN_9999"
         val jdbcUrl = SharedPostgres.jdbcUrlFor(database)
         DriverManager.getConnection(jdbcUrl, SharedPostgres.username(), SharedPostgres.password()).use { c ->
             c.createStatement().use { st ->
                 st.execute("CREATE SCHEMA analytics")
-                createUsers(st, "public.users", defaultRrn)
-                createUsers(st, "analytics.users", analyticsRrn)
+                createUsers(st, "public.users", defaultSsn)
+                createUsers(st, "analytics.users", analyticsSsn)
             }
         }
         val created = stores.datasourceStore.create(
@@ -168,8 +168,8 @@ object SchemaThreadingFixtures {
             catalog = database,
             defaultSchema = "public",
             analyticsSchema = "analytics",
-            defaultRrn = defaultRrn,
-            analyticsRrn = analyticsRrn,
+            defaultSsn = defaultSsn,
+            analyticsSsn = analyticsSsn,
         )
     }
 
@@ -177,13 +177,13 @@ object SchemaThreadingFixtures {
         val stores = metadataStores()
         val database = SharedMySql.freshDatabase("pm_schema_app")
         val analytics = SharedMySql.freshDatabase("pm_schema_analytics")
-        val defaultRrn = "MYSQL_DEFAULT_RRN_2222"
-        val analyticsRrn = "MYSQL_ANALYTICS_RRN_8888"
+        val defaultSsn = "MYSQL_DEFAULT_SSN_2222"
+        val analyticsSsn = "MYSQL_ANALYTICS_SSN_8888"
         DriverManager.getConnection(SharedMySql.jdbcUrlFor(database), SharedMySql.username(), SharedMySql.password()).use { c ->
-            c.createStatement().use { st -> createUsers(st, "$database.users", defaultRrn) }
+            c.createStatement().use { st -> createUsers(st, "$database.users", defaultSsn) }
         }
         DriverManager.getConnection(SharedMySql.jdbcUrlFor(analytics), SharedMySql.username(), SharedMySql.password()).use { c ->
-            c.createStatement().use { st -> createUsers(st, "$analytics.users", analyticsRrn) }
+            c.createStatement().use { st -> createUsers(st, "$analytics.users", analyticsSsn) }
         }
         val created = stores.datasourceStore.create(
             DatasourceInput(
@@ -203,14 +203,14 @@ object SchemaThreadingFixtures {
             catalog = "def",
             defaultSchema = database,
             analyticsSchema = analytics,
-            defaultRrn = defaultRrn,
-            analyticsRrn = analyticsRrn,
+            defaultSsn = defaultSsn,
+            analyticsSsn = analyticsSsn,
         )
     }
 
-    private fun createUsers(st: java.sql.Statement, table: String, rrn: String) {
-        st.execute("CREATE TABLE $table (id BIGINT PRIMARY KEY, email VARCHAR(64), rrn VARCHAR(128), region VARCHAR(16))")
-        st.execute("INSERT INTO $table VALUES (1, 'sentinel@example.com', '$rrn', 'KR')")
+    private fun createUsers(st: java.sql.Statement, table: String, ssn: String) {
+        st.execute("CREATE TABLE $table (id BIGINT PRIMARY KEY, email VARCHAR(64), ssn VARCHAR(128), region VARCHAR(16))")
+        st.execute("INSERT INTO $table VALUES (1, 'sentinel@example.com', '$ssn', 'KR')")
     }
 
     private fun finish(
@@ -222,8 +222,8 @@ object SchemaThreadingFixtures {
         catalog: String,
         defaultSchema: String,
         analyticsSchema: String,
-        defaultRrn: String,
-        analyticsRrn: String,
+        defaultSsn: String,
+        analyticsSsn: String,
     ): SchemaThreadingFixture {
         stores.datasourceStore.pushTestCatalog(created, targetJdbcUrl, targetUser, targetPassword)
         val refreshed = stores.datasourceStore.get(created.id)
@@ -241,7 +241,7 @@ object SchemaThreadingFixtures {
             ClassificationInput(
                 schema = defaultSchema,
                 table = "users",
-                column = "rrn",
+                column = "ssn",
                 tags = listOf("pii"),
                 maskFnId = maskFn.id,
             ),
@@ -288,8 +288,8 @@ object SchemaThreadingFixtures {
             catalog = catalog,
             defaultSchema = defaultSchema,
             analyticsSchema = analyticsSchema,
-            defaultRrn = defaultRrn,
-            analyticsRrn = analyticsRrn,
+            defaultSsn = defaultSsn,
+            analyticsSsn = analyticsSsn,
         )
     }
 
@@ -367,30 +367,30 @@ abstract class SchemaThreadingDbContract {
 
     @Test
     fun `explicit default schema masks while explicit analytics stays unmasked`() {
-        val protected = fx.run("select id, rrn from ${fx.defaultTable} order by id")
+        val protected = fx.run("select id, ssn from ${fx.defaultTable} order by id")
         assertEquals(EnfAction.MASK, protected.decision, "reason=${protected.denyReason}")
         assertEquals(1, protected.rows.size)
-        assertNoCleartext(protected, fx.defaultRrn)
+        assertNoCleartext(protected, fx.defaultSsn)
 
-        val analytics = fx.run("select id, rrn from ${fx.analyticsTable} order by id")
+        val analytics = fx.run("select id, ssn from ${fx.analyticsTable} order by id")
         assertEquals(EnfAction.ALLOW, analytics.decision, "reason=${analytics.denyReason}")
-        assertEquals(fx.analyticsRrn, analytics.rows.single()[1])
-        assertNotEquals(fx.defaultRrn, analytics.rows.single()[1])
+        assertEquals(fx.analyticsSsn, analytics.rows.single()[1])
+        assertNotEquals(fx.defaultSsn, analytics.rows.single()[1])
     }
 
     @Test
     fun `bare users resolves to the captured default namespace and masks`() {
-        val response = fx.run("select rrn from users")
+        val response = fx.run("select ssn from users")
         assertEquals(EnfAction.MASK, response.decision, "reason=${response.denyReason}")
-        assertNoCleartext(response, fx.defaultRrn)
+        assertNoCleartext(response, fx.defaultSsn)
     }
 
     @Test
     fun `unknown table schema and foreign catalog deny without rows`() {
         val sql = listOf(
-            "select rrn from missing_users",
-            "select rrn from missing_schema.users",
-            "select rrn from foreign_catalog.${fx.defaultSchema}.users",
+            "select ssn from missing_users",
+            "select ssn from missing_schema.users",
+            "select ssn from foreign_catalog.${fx.defaultSchema}.users",
         )
         for (query in sql) {
             val response = fx.run(query)
@@ -403,23 +403,23 @@ abstract class SchemaThreadingDbContract {
     fun `qualified star preserves schema-specific classification`() {
         val protected = fx.run("select u.* from ${fx.defaultTable} u")
         assertEquals(EnfAction.MASK, protected.decision, "reason=${protected.denyReason}")
-        assertNoCleartext(protected, fx.defaultRrn)
+        assertNoCleartext(protected, fx.defaultSsn)
 
         val analytics = fx.run("select u.* from ${fx.analyticsTable} u")
         assertEquals(EnfAction.ALLOW, analytics.decision, "reason=${analytics.denyReason}")
-        assertTrue(analytics.rows.flatten().contains(fx.analyticsRrn), "analytics sentinel was not returned unchanged")
+        assertTrue(analytics.rows.flatten().contains(fx.analyticsSsn), "analytics sentinel was not returned unchanged")
     }
 
     @Test
     fun `whole-row JSON cannot bypass default PII and analytics does not inherit it`() {
         val protected = fx.run(fx.rowJson(fx.defaultTable))
         assertEquals(EnfAction.DENY, protected.decision, "whole-row PII is not field-maskable: ${protected.denyReason}")
-        assertTrue(protected.denyReason?.contains("rrn") == true, "whole-row deny did not trace the protected field: ${protected.denyReason}")
-        assertNoCleartext(protected, fx.defaultRrn)
+        assertTrue(protected.denyReason?.contains("ssn") == true, "whole-row deny did not trace the protected field: ${protected.denyReason}")
+        assertNoCleartext(protected, fx.defaultSsn)
 
         val analytics = fx.run(fx.rowJson(fx.analyticsTable))
         assertEquals(EnfAction.ALLOW, analytics.decision, "reason=${analytics.denyReason}")
-        assertTrue(analytics.rows.flatten().any { it?.contains(fx.analyticsRrn) == true })
+        assertTrue(analytics.rows.flatten().any { it?.contains(fx.analyticsSsn) == true })
     }
 
     @Test
@@ -430,23 +430,23 @@ abstract class SchemaThreadingDbContract {
             "default alias/composite read must be protected; reason=${protected.denyReason}",
         )
         if (protected.decision == EnfAction.DENY) {
-            assertTrue(protected.denyReason?.contains("rrn") == true, "composite deny did not trace rrn: ${protected.denyReason}")
+            assertTrue(protected.denyReason?.contains("ssn") == true, "composite deny did not trace ssn: ${protected.denyReason}")
         }
-        assertNoCleartext(protected, fx.defaultRrn)
+        assertNoCleartext(protected, fx.defaultSsn)
 
         val analytics = fx.run(fx.aliasOrComposite(fx.analyticsTable))
         assertEquals(EnfAction.ALLOW, analytics.decision, "reason=${analytics.denyReason}")
-        assertEquals(fx.analyticsRrn, analytics.rows.single().single())
+        assertEquals(fx.analyticsSsn, analytics.rows.single().single())
     }
 
     @Test
     fun `protected bare-target update is valid and mutating on the backend but enforcement denies it`() {
         val sql = fx.protectedUpdateSql()
-        fx.executeRolledBack(sql, fx.defaultTable, fx.defaultRrn, "${fx.defaultRrn}-blocked")
+        fx.executeRolledBack(sql, fx.defaultTable, fx.defaultSsn, "${fx.defaultSsn}-blocked")
 
         val decision = fx.decide(sql)
         assertEquals(EnfAction.DENY, decision.action, "protected UPDATE was admitted: $sql")
-        assertTrue(decision.denyReason?.contains("rrn") == true, "deny reason did not identify the protected read: ${decision.denyReason}")
+        assertTrue(decision.denyReason?.contains("ssn") == true, "deny reason did not identify the protected read: ${decision.denyReason}")
     }
 
     @Test
@@ -456,7 +456,7 @@ abstract class SchemaThreadingDbContract {
         assertEquals(EnfAction.ALLOW, decision.action, "reason=${decision.denyReason}")
 
         val executable = decision.rewrittenSql ?: original
-        fx.executeRolledBack(executable, fx.analyticsTable, fx.analyticsRrn, "${fx.analyticsRrn}-allowed")
+        fx.executeRolledBack(executable, fx.analyticsTable, fx.analyticsSsn, "${fx.analyticsSsn}-allowed")
     }
 
     private fun assertNoCleartext(response: QueryResponse, cleartext: String) {
@@ -473,11 +473,11 @@ class SchemaThreadingPostgresDbTest : SchemaThreadingDbContract() {
 
     @Test
     fun `live search path pivots unqualified resolution without changing the default`() {
-        val default = fx.decide("SELECT rrn FROM users", principal = READER_PRINCIPAL)
+        val default = fx.decide("SELECT ssn FROM users", principal = READER_PRINCIPAL)
         assertEquals(EnfAction.MASK, default.action, "reason=${default.denyReason}")
 
         val analytics = fx.decide(
-            "SELECT rrn FROM users",
+            "SELECT ssn FROM users",
             principal = READER_PRINCIPAL,
             liveSearchPath = listOf("analytics"),
         )
@@ -485,7 +485,7 @@ class SchemaThreadingPostgresDbTest : SchemaThreadingDbContract() {
         assertTrue(analytics.masks.isEmpty())
 
         val public = fx.decide(
-            "SELECT rrn FROM users",
+            "SELECT ssn FROM users",
             principal = READER_PRINCIPAL,
             liveSearchPath = listOf("public"),
         )
@@ -495,7 +495,7 @@ class SchemaThreadingPostgresDbTest : SchemaThreadingDbContract() {
     @Test
     fun `invalid or unresolvable live search paths fail closed`() {
         val empty = fx.decide(
-            "SELECT rrn FROM users",
+            "SELECT ssn FROM users",
             principal = READER_PRINCIPAL,
             liveSearchPath = emptyList(),
         )
@@ -503,7 +503,7 @@ class SchemaThreadingPostgresDbTest : SchemaThreadingDbContract() {
         assertEquals("catalog", empty.failedStage)
 
         val blank = fx.decide(
-            "SELECT rrn FROM users",
+            "SELECT ssn FROM users",
             principal = READER_PRINCIPAL,
             liveSearchPath = listOf(" "),
         )
@@ -511,7 +511,7 @@ class SchemaThreadingPostgresDbTest : SchemaThreadingDbContract() {
         assertEquals("catalog", blank.failedStage)
 
         val unknown = fx.decide(
-            "SELECT rrn FROM users",
+            "SELECT ssn FROM users",
             principal = READER_PRINCIPAL,
             liveSearchPath = listOf("no_such_schema"),
         )
@@ -521,7 +521,7 @@ class SchemaThreadingPostgresDbTest : SchemaThreadingDbContract() {
     @Test
     fun `missing pg-temp catalog entry skips to the next live search path schema`() {
         val decision = fx.decide(
-            "SELECT rrn FROM users",
+            "SELECT ssn FROM users",
             principal = READER_PRINCIPAL,
             liveSearchPath = listOf("pg_temp_3", "public"),
         )
@@ -530,7 +530,7 @@ class SchemaThreadingPostgresDbTest : SchemaThreadingDbContract() {
 
     @Test
     fun `decideAndAudit threads and audits the live search path`() {
-        val analyticsSql = "SELECT rrn FROM users /* route_analytics */"
+        val analyticsSql = "SELECT ssn FROM users /* route_analytics */"
         val (analyticsDecision, _) = decideAndAudit(
             fx.core, READER_PRINCIPAL, fx.datasource, analyticsSql, listOf("analytics"), clientAddr = null,
         )
@@ -540,7 +540,7 @@ class SchemaThreadingPostgresDbTest : SchemaThreadingDbContract() {
             fx.auditStore.recent(100).single { it.statement == analyticsSql }.effectiveNamespace,
         )
 
-        val defaultSql = "SELECT rrn FROM users /* route_default */"
+        val defaultSql = "SELECT ssn FROM users /* route_default */"
         val (defaultDecision, _) = decideAndAudit(
             fx.core, READER_PRINCIPAL, fx.datasource, defaultSql, null, clientAddr = null,
         )
@@ -550,7 +550,7 @@ class SchemaThreadingPostgresDbTest : SchemaThreadingDbContract() {
             fx.auditStore.recent(100).single { it.statement == defaultSql }.effectiveNamespace,
         )
 
-        val emptySql = "SELECT rrn FROM users /* route_empty */"
+        val emptySql = "SELECT ssn FROM users /* route_empty */"
         val (emptyDecision, _) = decideAndAudit(
             fx.core, READER_PRINCIPAL, fx.datasource, emptySql, emptyList(), clientAddr = null,
         )
@@ -561,14 +561,14 @@ class SchemaThreadingPostgresDbTest : SchemaThreadingDbContract() {
     }
 
     @Test
-    fun `relation-valued update returning cannot disclose protected rrn`() {
+    fun `relation-valued update returning cannot disclose protected ssn`() {
         // The target has a scalar `region` column, so use a non-colliding alias to exercise relation lookup.
         val sql = """
             update ${fx.analyticsTable} as target
-            set rrn = ((source_row).sub).rrn
+            set ssn = ((source_row).sub).ssn
             from (select users as sub from users) as source_row
             where target.id = 1
-            returning ((source_row).sub).rrn
+            returning ((source_row).sub).ssn
         """.trimIndent()
 
         DriverManager.getConnection(fx.targetJdbcUrl, fx.targetUser, fx.targetPassword).use { c ->
@@ -577,11 +577,11 @@ class SchemaThreadingPostgresDbTest : SchemaThreadingDbContract() {
                 c.createStatement().use { st ->
                     st.executeQuery(sql).use { rs ->
                         assertTrue(rs.next(), "UPDATE RETURNING did not expose the mutated row")
-                        assertEquals(fx.defaultRrn, rs.getString(1), "UPDATE RETURNING did not expose the protected value")
+                        assertEquals(fx.defaultSsn, rs.getString(1), "UPDATE RETURNING did not expose the protected value")
                     }
-                    st.executeQuery("select rrn from ${fx.analyticsTable} where id = 1").use { rs ->
+                    st.executeQuery("select ssn from ${fx.analyticsTable} where id = 1").use { rs ->
                         assertTrue(rs.next(), "missing seeded row in ${fx.analyticsTable}")
-                        assertEquals(fx.defaultRrn, rs.getString(1), "the backend did not persist the protected value in the transaction")
+                        assertEquals(fx.defaultSsn, rs.getString(1), "the backend did not persist the protected value in the transaction")
                     }
                 }
             } finally {
@@ -590,16 +590,16 @@ class SchemaThreadingPostgresDbTest : SchemaThreadingDbContract() {
         }
         DriverManager.getConnection(fx.targetJdbcUrl, fx.targetUser, fx.targetPassword).use { c ->
             c.createStatement().use { st ->
-                st.executeQuery("select rrn from ${fx.analyticsTable} where id = 1").use { rs ->
+                st.executeQuery("select ssn from ${fx.analyticsTable} where id = 1").use { rs ->
                     assertTrue(rs.next(), "missing seeded row in ${fx.analyticsTable}")
-                    assertEquals(fx.analyticsRrn, rs.getString(1), "the test UPDATE escaped its rollback")
+                    assertEquals(fx.analyticsSsn, rs.getString(1), "the test UPDATE escaped its rollback")
                 }
             }
         }
 
         val decision = fx.decide(sql)
         assertEquals(EnfAction.DENY, decision.action, "relation-valued UPDATE RETURNING was admitted: $sql")
-        assertTrue(decision.denyReason?.contains("rrn") == true, "deny reason did not identify rrn: ${decision.denyReason}")
+        assertTrue(decision.denyReason?.contains("ssn") == true, "deny reason did not identify ssn: ${decision.denyReason}")
     }
 
     @Test
@@ -625,11 +625,11 @@ class SchemaThreadingMysqlDbTest : SchemaThreadingDbContract() {
 
     @Test
     fun `live current database pivots unqualified resolution without changing the default`() {
-        val default = fx.decide("SELECT rrn FROM users", principal = READER_PRINCIPAL)
+        val default = fx.decide("SELECT ssn FROM users", principal = READER_PRINCIPAL)
         assertEquals(EnfAction.MASK, default.action, "reason=${default.denyReason}")
 
         val analytics = fx.decide(
-            "SELECT rrn FROM users",
+            "SELECT ssn FROM users",
             principal = READER_PRINCIPAL,
             liveSearchPath = listOf(fx.analyticsSchema),
         )
@@ -637,7 +637,7 @@ class SchemaThreadingMysqlDbTest : SchemaThreadingDbContract() {
         assertTrue(analytics.masks.isEmpty())
 
         val original = fx.decide(
-            "SELECT rrn FROM users",
+            "SELECT ssn FROM users",
             principal = READER_PRINCIPAL,
             liveSearchPath = listOf(fx.defaultSchema),
         )
@@ -647,7 +647,7 @@ class SchemaThreadingMysqlDbTest : SchemaThreadingDbContract() {
     @Test
     fun `invalid or unresolvable live current databases fail closed`() {
         val empty = fx.decide(
-            "SELECT rrn FROM users",
+            "SELECT ssn FROM users",
             principal = READER_PRINCIPAL,
             liveSearchPath = emptyList(),
         )
@@ -655,7 +655,7 @@ class SchemaThreadingMysqlDbTest : SchemaThreadingDbContract() {
         assertEquals("catalog", empty.failedStage)
 
         val blank = fx.decide(
-            "SELECT rrn FROM users",
+            "SELECT ssn FROM users",
             principal = READER_PRINCIPAL,
             liveSearchPath = listOf(" "),
         )
@@ -663,7 +663,7 @@ class SchemaThreadingMysqlDbTest : SchemaThreadingDbContract() {
         assertEquals("catalog", blank.failedStage)
 
         val unknown = fx.decide(
-            "SELECT rrn FROM users",
+            "SELECT ssn FROM users",
             principal = READER_PRINCIPAL,
             liveSearchPath = listOf("no_such_db"),
         )
@@ -671,15 +671,15 @@ class SchemaThreadingMysqlDbTest : SchemaThreadingDbContract() {
     }
 
     @Test
-    fun `lctn=0 CTE output-column write cannot smuggle masked rrn`() {
+    fun `lctn=0 CTE output-column write cannot smuggle masked ssn`() {
         // Under lower_case_table_names=0 MySQL still resolves column and
         // column-alias names case-insensitively (lctn governs only table/db names), so a CTE's explicit
         // output-column name binds its consumer regardless of case. A fold that lowercased
         // column REFERENCES but never the CTE output-column LIST would resolve the write's payload to NO
-        // base column → empty lineage → the write reading the masked default users.rrn ALLOWed
-        // (fail-open; live-verified on MySQL 8.4 lctn=0: the INSERT copies users.rrn verbatim). sqlglot-go's
+        // base column → empty lineage → the write reading the masked default users.ssn ALLOWed
+        // (fail-open; live-verified on MySQL 8.4 lctn=0: the INSERT copies users.ssn verbatim). sqlglot-go's
         // role-aware strategy folds the output-column list, so the write's lineage carries the
-        // masked rrn and enforcement DENIES. Guard the mode: the leak is mode-0-specific (lctn=1/2 folded
+        // masked ssn and enforcement DENIES. Guard the mode: the leak is mode-0-specific (lctn=1/2 folded
         // everything already), so this must run under lower_case_table_names=0 (Testcontainers mysql:8.4).
         val lctn = DriverManager.getConnection(fx.targetJdbcUrl, fx.targetUser, fx.targetPassword).use { c ->
             c.createStatement().use { st ->
@@ -688,11 +688,11 @@ class SchemaThreadingMysqlDbTest : SchemaThreadingDbContract() {
         }
         assertEquals(0, lctn, "this regression must exercise lower_case_table_names=0")
 
-        val sql = "insert into ${fx.analyticsTable} (id, email, rrn, region) " +
-            "with cte (Secret) as (select rrn from ${fx.defaultTable}) " +
+        val sql = "insert into ${fx.analyticsTable} (id, email, ssn, region) " +
+            "with cte (Secret) as (select ssn from ${fx.defaultTable}) " +
             "select 999, 'sink@example.com', secret, 'KR' from cte"
         val decision = fx.decide(sql)
-        assertEquals(EnfAction.DENY, decision.action, "CTE output-column write smuggled masked rrn: reason=${decision.denyReason}")
-        assertTrue(decision.denyReason?.contains("rrn") == true, "deny did not trace the masked rrn: ${decision.denyReason}")
+        assertEquals(EnfAction.DENY, decision.action, "CTE output-column write smuggled masked ssn: reason=${decision.denyReason}")
+        assertTrue(decision.denyReason?.contains("ssn") == true, "deny did not trace the masked ssn: ${decision.denyReason}")
     }
 }

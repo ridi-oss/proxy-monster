@@ -25,21 +25,21 @@ class MaskFnSoftDeleteEnforcementDbTest {
 
     @Test
     fun `soft-deleting a column's mask function keeps it masked (FIXED fallback), never cleartext`() {
-        val cleartext = fx.execOnTarget("select rrn from users order by id").rows.map { it.single() }
+        val cleartext = fx.execOnTarget("select ssn from users order by id").rows.map { it.single() }
 
-        val before = fx.run("select id, rrn from users order by id")
-        assertEquals(EnfAction.MASK, before.decision, "sanity: rrn masks under the analyst role + last4 fn")
-        val rrn = before.columns.indexOf("rrn")
-        val maskedBefore = before.rows.map { it[rrn] }
+        val before = fx.run("select id, ssn from users order by id")
+        assertEquals(EnfAction.MASK, before.decision, "sanity: ssn masks under the analyst role + last4 fn")
+        val ssn = before.columns.indexOf("ssn")
+        val maskedBefore = before.rows.map { it[ssn] }
         assertEquals(emptyList(), maskedBefore.filter { it in cleartext }, "sanity: nothing cleartext while masked")
 
         // Delete the mask function the classification points at.
         fx.policyStore.deleteMaskFn(fx.policyStore.listMaskFns().first { it.name == "last4" }.id)
 
-        val after = fx.run("select id, rrn from users order by id")
+        val after = fx.run("select id, ssn from users order by id")
         assertEquals(EnfAction.MASK, after.decision, "the column stays MASK — a deleted mask fn must not un-mask it")
-        val maskedAfter = after.rows.map { it[rrn] }
-        assertEquals(emptyList(), maskedAfter.filter { it in cleartext }, "and no rrn is cleartext after the delete")
+        val maskedAfter = after.rows.map { it[ssn] }
+        assertEquals(emptyList(), maskedAfter.filter { it in cleartext }, "and no ssn is cleartext after the delete")
         assertNotEquals(maskedBefore, maskedAfter, "the mask fell back from last4 to FIXED, so the masked output changed")
     }
 }
@@ -61,14 +61,14 @@ class RoleExecuteAsSoftDeleteEnforcementDbTest {
 
     @Test
     fun `a soft-deleted execute-as role is re-filtered at the decision so the stored run denies`() {
-        val executeAs = setOf(fx.role) // the seeded analyst role, which masks rrn
+        val executeAs = setOf(fx.role) // the seeded analyst role, which masks ssn
 
-        val live = fx.decide("select id, rrn from users", providedRoles = executeAs)
+        val live = fx.decide("select id, ssn from users", providedRoles = executeAs)
         assertEquals(EnfAction.MASK, live.action, "sanity: the run authorizes and masks under its execute_as role")
 
         fx.policyStore.deleteRole(fx.policyStore.listRoles().first { it.name == fx.role }.id)
 
-        val gone = fx.decide("select id, rrn from users", providedRoles = executeAs)
+        val gone = fx.decide("select id, ssn from users", providedRoles = executeAs)
         assertEquals(
             EnfAction.DENY,
             gone.action,

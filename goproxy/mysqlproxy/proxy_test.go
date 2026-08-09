@@ -254,7 +254,7 @@ func seedBackend(t *testing.T) dbtest.Backend {
 		"CREATE TABLE IF NOT EXISTS " + primarySchema + ".prepared_notes (id INT PRIMARY KEY, note VARCHAR(64))",
 		"CREATE TABLE IF NOT EXISTS " + secondarySchema + ".people (id INT PRIMARY KEY, name VARCHAR(64), ssn VARCHAR(32))",
 		"DELETE FROM " + primarySchema + ".people",
-		"INSERT INTO " + primarySchema + ".people (id, name, ssn) VALUES (1, 'Alice', '900101-1234567'), (2, 'Bob', NULL)",
+		"INSERT INTO " + primarySchema + ".people (id, name, ssn) VALUES (1, 'Alice', '987-65-4320'), (2, 'Bob', NULL)",
 		"DELETE FROM " + primarySchema + ".prepared_notes",
 		"DELETE FROM " + secondarySchema + ".people",
 		"INSERT INTO " + secondarySchema + ".people (id, name, ssn) VALUES (10, 'Secondary', 'secret-2')",
@@ -1052,7 +1052,7 @@ func TestAllowRelaysRowsAndDecisionContext(t *testing.T) {
 		t.Fatalf("rows.Err: %v", err)
 	}
 	want := [][]any{
-		{1, "Alice", sql.NullString{String: "900101-1234567", Valid: true}},
+		{1, "Alice", sql.NullString{String: "987-65-4320", Valid: true}},
 		{2, "Bob", sql.NullString{}},
 	}
 	if !reflect.DeepEqual(got, want) {
@@ -1489,8 +1489,8 @@ func TestPreparedSelectAllowRelaysBinaryRows(t *testing.T) {
 	if err := rows.Close(); err != nil {
 		t.Fatalf("prepared rows.Close: %v", err)
 	}
-	if id != 1 || name != "Alice" || ssn != "900101-1234567" {
-		t.Fatalf("prepared row = (%d, %q, %q), want (1, Alice, 900101-1234567)", id, name, ssn)
+	if id != 1 || name != "Alice" || ssn != "987-65-4320" {
+		t.Fatalf("prepared row = (%d, %q, %q), want (1, Alice, 987-65-4320)", id, name, ssn)
 	}
 
 	requests := h.fake.requests()
@@ -1599,7 +1599,7 @@ func TestPreparedMaskWithoutPermitFailsClosed(t *testing.T) {
 	if err := conn.QueryRow("SELECT ssn FROM people WHERE id = 1").Scan(&ssn); err != nil {
 		t.Fatalf("text query after refused prepared MASK execution: %v", err)
 	}
-	if ssn != "900101-1234567" {
+	if ssn != "987-65-4320" {
 		t.Fatalf("text query after refused prepared MASK execution = %q, want real ssn", ssn)
 	}
 }
@@ -1627,7 +1627,7 @@ func TestPreparedMaskWithPermitRelaysVerbatim(t *testing.T) {
 	if err := stmt.QueryRow(1).Scan(&id, &name, &ssn); err != nil {
 		t.Fatalf("prepared QueryRow: %v", err)
 	}
-	if id != 1 || name != "Alice" || ssn != "900101-1234567" {
+	if id != 1 || name != "Alice" || ssn != "987-65-4320" {
 		t.Fatalf("prepared MASK-permitted row = (%d, %q, %q), want verbatim cleartext row", id, name, ssn)
 	}
 	if got := len(h.fake.requests()); got != 2 {
@@ -1825,7 +1825,7 @@ func TestPreparedUnmaskablePermitRevocationFailsClosed(t *testing.T) {
 	if err := conn.QueryRow("SELECT ssn FROM people WHERE id = 1").Scan(&ssn); err != nil {
 		t.Fatalf("text query after unmaskable-permit revocation: %v", err)
 	}
-	if ssn != "900101-1234567" {
+	if ssn != "987-65-4320" {
 		t.Fatalf("text query after unmaskable-permit revocation = %q, want real ssn", ssn)
 	}
 	if got := len(h.fake.requests()); got != 3 {
@@ -1853,7 +1853,7 @@ func TestPreparedExecuteUsesFrozenNamespace(t *testing.T) {
 	if err := stmt.QueryRow(1).Scan(&preparedSSN); err != nil {
 		t.Fatalf("prepared QueryRow after USE: %v", err)
 	}
-	if preparedSSN != "900101-1234567" {
+	if preparedSSN != "987-65-4320" {
 		t.Fatalf("prepared QueryRow after USE = %q, want primary-schema ssn", preparedSSN)
 	}
 	var liveName string
@@ -1912,8 +1912,8 @@ func TestPreparedRewrittenSqlReDecidedAsPrepared(t *testing.T) {
 	if err := stmt.QueryRow(1).Scan(&id, &name, &ssn); err != nil {
 		t.Fatalf("prepared rewritten QueryRow: %v", err)
 	}
-	if id != 1 || name != "Alice" || ssn != "900101-1234567" {
-		t.Fatalf("prepared rewritten row = (%d, %q, %q), want (1, Alice, 900101-1234567)", id, name, ssn)
+	if id != 1 || name != "Alice" || ssn != "987-65-4320" {
+		t.Fatalf("prepared rewritten row = (%d, %q, %q), want (1, Alice, 987-65-4320)", id, name, ssn)
 	}
 
 	requests := h.fake.requests()

@@ -126,10 +126,10 @@ class BaselineDangerousFunctionEnforcementDbTest {
     // hand-curated 15-name baseline floor MISSED — the cleartext-PII leak class. Each is a
     // whole-table/page/large-object/backend reader that reads data INVISIBLE to lineage (its data source is a
     // string/regclass/oid arg, not a scanned column), so on a no-manifest datasource a flat 15-name baseline
-    // would return null → ALLOW → the backend would stream e.g. the entire `users` table as XML incl. cleartext rrn.
+    // would return null → ALLOW → the backend would stream e.g. the entire `users` table as XML incl. cleartext ssn.
     private val pgManifestOnlyDangerousCalls = listOf(
         "table_to_xml('public.users'::regclass, true, false, '')", // table_to_xml* family (the canonical dump)
-        "query_to_xmlschema('SELECT rrn FROM users', true, false, '')", // query_to_xml* family (NOT the baseline's two exact names)
+        "query_to_xmlschema('SELECT ssn FROM users', true, false, '')", // query_to_xml* family (NOT the baseline's two exact names)
         "get_raw_page('users', 0)",          // pageinspect, exact
         "pg_terminate_backend(1)",           // critical, exact
         "lo_get(16384)",                     // large-object read, exact

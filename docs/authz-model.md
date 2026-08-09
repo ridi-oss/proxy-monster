@@ -107,7 +107,7 @@ Column config (catalog side, set by data owners):
 
 ```
   acme-mysql/def/app/users/email   tags=[pii]        mask=email-domain-only
-  acme-mysql/def/app/users/rrn     tags=[pii]        mask=last4
+  acme-mysql/def/app/users/ssn     tags=[pii]        mask=last4
   acme-mysql/def/app/orders/amount tags=[financial]  mask=fixed
 ```
 
@@ -235,16 +235,16 @@ fresh, unprotected table), so it must fail closed.
 
 Worked walk-throughs — policies + column config from
 [Worked examples](#worked-examples) above; `alice` holds `analyst`
-(`email`→`email-domain-only`, `rrn`→`last4`, both tagged `pii`):
+(`email`→`email-domain-only`, `ssn`→`last4`, both tagged `pii`):
 
 <!-- prettier-ignore -->
 | query | admission (+ lineage) | authorize | outcome |
 | --- | --- | --- | --- |
-| `SELECT id, email, rrn FROM users` | `select`; outputs `{id, email, rrn}` | connect ok · `sql.select` ok · `id`→unmasked · `email`,`rrn`→ no unmasked, `result.read.masked` ok | MASK `{id, email→domain, rrn→last4}` |
-| `SELECT id FROM users WHERE rrn = '…'` | `select`; output `{id}`; ref `{rrn}` | `id` ok — but `rrn` is a _reference_ and `alice` has no `result.read.unmasked` on it | DENY (predicate inference-oracle) |
-| `UPDATE users SET name = rrn WHERE id = 1` | `update` (write); `rrn` read into the write | `sql.update` ungranted → deny; even granted, `rrn` in a write is non-maskable | DENY (write) |
+| `SELECT id, email, ssn FROM users` | `select`; outputs `{id, email, ssn}` | connect ok · `sql.select` ok · `id`→unmasked · `email`,`ssn`→ no unmasked, `result.read.masked` ok | MASK `{id, email→domain, ssn→last4}` |
+| `SELECT id FROM users WHERE ssn = '…'` | `select`; output `{id}`; ref `{ssn}` | `id` ok — but `ssn` is a _reference_ and `alice` has no `result.read.unmasked` on it | DENY (predicate inference-oracle) |
+| `UPDATE users SET name = ssn WHERE id = 1` | `update` (write); `ssn` read into the write | `sql.update` ungranted → deny; even granted, `ssn` in a write is non-maskable | DENY (write) |
 | `CREATE TABLE t (id INT)` | `ddl` (plain, no data flow) | `sql.ddl` is the whole gate (no lineage) | DENY if ungranted (audited) |
-| `CREATE TABLE leaked AS SELECT rrn FROM users` | `ddl` + write; payload reads `users.rrn` | `sql.ddl` ungranted → deny; even granted, `rrn` copied into a persisted table is a non-maskable write payload | DENY (exfiltration — write-payload) |
+| `CREATE TABLE leaked AS SELECT ssn FROM users` | `ddl` + write; payload reads `users.ssn` | `sql.ddl` ungranted → deny; even granted, `ssn` copied into a persisted table is a non-maskable write payload | DENY (exfiltration — write-payload) |
 
 ## Statement kinds
 

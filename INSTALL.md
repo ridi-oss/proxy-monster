@@ -291,7 +291,7 @@ proxy-monster's own store; the other two are sample target databases.
   target database on the primary target engine, pre-seeded
   (`deploy/seed/target-seed-mysql.sql`) with a small OLTP schema (`users`,
   `orders`, `payments`, `addresses`, ...) carrying realistic PII columns
-  (`email`, `phone`, `name`, `rrn`, `card_number`, ...) to classify/mask
+  (`email`, `phone`, `name`, `ssn`, `card_number`, ...) to classify/mask
   against.
 - target-postgres (`:5433`, db `acme` / user `acme` / password `acme`, trust
   auth) — the same schema (`deploy/seed/target-seed.sql`) as a sample target

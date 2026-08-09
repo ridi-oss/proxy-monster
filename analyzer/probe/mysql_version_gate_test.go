@@ -12,7 +12,7 @@ func usersSchema(t *testing.T) *schema.Mapping {
 	t.Helper()
 	m, err := schemaMappingFromProto([]*pb.ColumnSpec{
 		columnSpec("def", "acme", "users", "id", "BIGINT"),
-		columnSpec("def", "acme", "users", "rrn", "VARCHAR"),
+		columnSpec("def", "acme", "users", "ssn", "VARCHAR"),
 	})
 	if err != nil {
 		t.Fatalf("build schema: %v", err)
@@ -22,7 +22,7 @@ func usersSchema(t *testing.T) *schema.Mapping {
 
 func TestMySQLWithoutKnownVersionFailsValidation(t *testing.T) {
 	out := Probe(
-		"SELECT 1 /*!50700 , rrn */ FROM users",
+		"SELECT 1 /*!50700 , ssn */ FROM users",
 		&pb.EngineConfig{Engine: pb.Engine_MYSQL, MysqlLowerCaseTableNames: proto.Int32(0)},
 		usersSchema(t),
 		NamespaceConfig{Catalog: "def", SearchPath: []string{"acme"}},
@@ -76,7 +76,7 @@ func TestPostgresWithoutVersionOrMySQLModeResolves(t *testing.T) {
 
 func TestExecutableCommentAnalyzableWithKnownVersion(t *testing.T) {
 	out := Probe(
-		"SELECT 1 /*!50700 , rrn */ FROM users",
+		"SELECT 1 /*!50700 , ssn */ FROM users",
 		&pb.EngineConfig{Engine: pb.Engine_MYSQL, EngineVersion: "8.0.46", MysqlLowerCaseTableNames: proto.Int32(0)},
 		usersSchema(t),
 		NamespaceConfig{Catalog: "def", SearchPath: []string{"acme"}},
@@ -87,13 +87,13 @@ func TestExecutableCommentAnalyzableWithKnownVersion(t *testing.T) {
 	found := false
 	for _, o := range out.Origins {
 		for _, origin := range o.Origins {
-			if origin == "def.acme.users.rrn" {
+			if origin == "def.acme.users.ssn" {
 				found = true
 			}
 		}
 	}
 	if !found {
-		t.Fatalf("expected rrn to be traced once the executable comment is version-gated open, got origins=%v", out.Origins)
+		t.Fatalf("expected ssn to be traced once the executable comment is version-gated open, got origins=%v", out.Origins)
 	}
 }
 
@@ -119,7 +119,7 @@ func TestMysqlVersionID(t *testing.T) {
 
 func TestExecutableCommentGateRespectsVersionThreshold(t *testing.T) {
 	out := Probe(
-		"SELECT 1 /*!50700 , rrn */ FROM users",
+		"SELECT 1 /*!50700 , ssn */ FROM users",
 		&pb.EngineConfig{Engine: pb.Engine_MYSQL, EngineVersion: "5.6.0", MysqlLowerCaseTableNames: proto.Int32(0)},
 		usersSchema(t),
 		NamespaceConfig{Catalog: "def", SearchPath: []string{"acme"}},
@@ -129,8 +129,8 @@ func TestExecutableCommentGateRespectsVersionThreshold(t *testing.T) {
 	}
 	for _, o := range out.Origins {
 		for _, origin := range o.Origins {
-			if origin == "def.acme.users.rrn" {
-				t.Fatalf("rrn must stay hidden below the comment's version gate, got origins=%v", out.Origins)
+			if origin == "def.acme.users.ssn" {
+				t.Fatalf("ssn must stay hidden below the comment's version gate, got origins=%v", out.Origins)
 			}
 		}
 	}

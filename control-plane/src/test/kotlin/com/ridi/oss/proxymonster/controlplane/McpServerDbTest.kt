@@ -288,7 +288,7 @@ class McpServerDbTest {
 
         val malformedDatasource = sdk.callTool(
             "set_column_classification",
-            mapOf("datasource" to mapOf("invalid" to true), "table" to "users", "column" to "rrn", "tags" to listOf("pii")),
+            mapOf("datasource" to mapOf("invalid" to true), "table" to "users", "column" to "ssn", "tags" to listOf("pii")),
         )
         assertEquals(true, malformedDatasource.isError)
         assertEquals("mcp.invalid_request", malformedDatasource.structuredContent?.get("code")?.jsonPrimitive?.content)
@@ -407,7 +407,7 @@ class McpServerDbTest {
                     "datasource" to "mcp-family-datasource",
                     "schema" to "public",
                     "table" to "users",
-                    "column" to "rrn",
+                    "column" to "ssn",
                     "tags" to listOf("pii"),
                     "maskFnName" to "mcp-managed-mask",
                 ),
@@ -425,7 +425,7 @@ class McpServerDbTest {
         val tags = assertNotNull(
             sdk.callTool("list_column_tags", mapOf("datasource" to "mcp-family-datasource")).structuredContent,
         ).getValue("result").jsonArray
-        assertEquals("rrn", tags.single().jsonObject.getValue("column").jsonPrimitive.content)
+        assertEquals("ssn", tags.single().jsonObject.getValue("column").jsonPrimitive.content)
         assertEquals(8L, scalar("SELECT count(*) FROM audit_event WHERE principal=? AND kind='admin'", principal))
         assertEquals(0L, scalar("SELECT count(*) FROM audit_event WHERE principal=? AND statement LIKE '[MCP %'", principal))
     }
@@ -435,7 +435,7 @@ class McpServerDbTest {
         application { installTestMcp() }
         val principal = "mcp-batch-tags@example.com"
         grantRole(principal, "system:admin")
-        seedDatasource("mcp-batch-datasource", listOf("rrn", "email", "phone"))
+        seedDatasource("mcp-batch-datasource", listOf("ssn", "email", "phone"))
         val accessToken = token(principal, setOf("mcp:read", "mcp:datasources:write", "mcp:policies:write"))
         val sdk = client.mcpStreamableHttp("/mcp") { header(HttpHeaders.Authorization, "Bearer $accessToken") }
         assertToolSuccess(sdk.callTool("create_mask_fn", mapOf("name" to "mcp-batch-mask", "kind" to "FIXED")))
@@ -446,7 +446,7 @@ class McpServerDbTest {
                 mapOf(
                     "datasource" to "mcp-batch-datasource",
                     "columns" to listOf(
-                        mapOf("table" to "users", "column" to "rrn", "tags" to listOf("pii"), "maskFnName" to "mcp-batch-mask"),
+                        mapOf("table" to "users", "column" to "ssn", "tags" to listOf("pii"), "maskFnName" to "mcp-batch-mask"),
                         mapOf("schema" to "public", "table" to "users", "column" to "email", "tags" to listOf("pii", "contact")),
                         mapOf("table" to "users", "column" to "phone", "tags" to listOf("contact")),
                     ),
@@ -454,7 +454,7 @@ class McpServerDbTest {
             ),
         ).getValue("result").jsonObject
         assertEquals(
-            listOf("email", "phone", "rrn"),
+            listOf("email", "phone", "ssn"),
             applied.getValue("columns").jsonArray.map { it.jsonObject.getValue("column").jsonPrimitive.content }.sorted(),
         )
         // The schema each entry omitted resolved from the datasource default, not from a literal null.
@@ -499,8 +499,8 @@ class McpServerDbTest {
             mapOf(
                 "datasource" to "mcp-batch-datasource",
                 "columns" to listOf(
-                    mapOf("table" to "users", "column" to "rrn", "tags" to listOf("pii")),
-                    mapOf("schema" to "public", "table" to "users", "column" to "rrn", "tags" to emptyList<String>()),
+                    mapOf("table" to "users", "column" to "ssn", "tags" to listOf("pii")),
+                    mapOf("schema" to "public", "table" to "users", "column" to "ssn", "tags" to emptyList<String>()),
                 ),
             ),
         )
@@ -513,7 +513,7 @@ class McpServerDbTest {
             "set_column_classifications",
             mapOf(
                 "datasource" to "mcp-batch-datasource",
-                "columns" to listOf(mapOf("table" to "users", "column" to "rrn", "tags" to listOf("pii"), "maskFnId" to 1)),
+                "columns" to listOf(mapOf("table" to "users", "column" to "ssn", "tags" to listOf("pii"), "maskFnId" to 1)),
             ),
         )
         assertEquals(true, unknownKey.isError)
@@ -535,7 +535,7 @@ class McpServerDbTest {
         ).single()
         assertContains(adminStatement, "public.users.email")
         assertContains(adminStatement, "public.users.phone")
-        assertContains(adminStatement, "public.users.rrn")
+        assertContains(adminStatement, "public.users.ssn")
         assertEquals(
             listOf("datasource.reserved_tag", "common.not_found", "datasource.duplicate_column", "mcp.invalid_request"),
             strings(
@@ -562,7 +562,7 @@ class McpServerDbTest {
         application { installTestMcp() }
         val principal = "mcp-batch-rollback@example.com"
         grantRole(principal, "system:admin")
-        seedDatasource("mcp-batch-rollback-datasource", listOf("rrn", "email"))
+        seedDatasource("mcp-batch-rollback-datasource", listOf("ssn", "email"))
         val accessToken = token(principal, setOf("mcp:read", "mcp:datasources:write"))
         val sdk = client.mcpStreamableHttp("/mcp") { header(HttpHeaders.Authorization, "Bearer $accessToken") }
         execute(
@@ -572,18 +572,18 @@ class McpServerDbTest {
         )
         execute(
             """CREATE TRIGGER pm_test_fail_second_classification BEFORE INSERT ON column_classification
-               FOR EACH ROW WHEN (NEW.column_name = 'rrn')
+               FOR EACH ROW WHEN (NEW.column_name = 'ssn')
                EXECUTE FUNCTION pm_test_fail_second_classification()""",
         )
         try {
-            // Written in canonical order, so 'email' commits before 'rrn' trips the trigger.
+            // Written in canonical order, so 'email' commits before 'ssn' trips the trigger.
             val failed = sdk.callTool(
                 "set_column_classifications",
                 mapOf(
                     "datasource" to "mcp-batch-rollback-datasource",
                     "columns" to listOf(
                         mapOf("table" to "users", "column" to "email", "tags" to listOf("pii")),
-                        mapOf("table" to "users", "column" to "rrn", "tags" to listOf("pii")),
+                        mapOf("table" to "users", "column" to "ssn", "tags" to listOf("pii")),
                     ),
                     "idempotencyKey" to "batch-rolled-back",
                 ),
@@ -606,7 +606,7 @@ class McpServerDbTest {
         application { installTestMcp() }
         val principal = "mcp-batch-blank-schema@example.com"
         grantRole(principal, "system:admin")
-        seedDatasource("mcp-batch-blank-datasource", listOf("rrn"))
+        seedDatasource("mcp-batch-blank-datasource", listOf("ssn"))
         val sdk = client.mcpStreamableHttp("/mcp") {
             header(HttpHeaders.Authorization, "Bearer ${token(principal, setOf("mcp:read", "mcp:datasources:write"))}")
         }
@@ -615,7 +615,7 @@ class McpServerDbTest {
                 "set_column_classifications",
                 mapOf(
                     "datasource" to "mcp-batch-blank-datasource",
-                    "columns" to listOf(mapOf("schema" to "", "table" to "users", "column" to "rrn", "tags" to listOf("pii"))),
+                    "columns" to listOf(mapOf("schema" to "", "table" to "users", "column" to "ssn", "tags" to listOf("pii"))),
                 ),
             ),
         ).getValue("result").jsonObject
@@ -625,7 +625,7 @@ class McpServerDbTest {
         )
         assertEquals(
             0L,
-            scalar("SELECT count(*) FROM column_classification WHERE schema_name=? AND column_name='rrn'", ""),
+            scalar("SELECT count(*) FROM column_classification WHERE schema_name=? AND column_name='ssn'", ""),
         )
         // A blank schema and the resolved default are the SAME column, so submitting both is a duplicate.
         val duplicate = sdk.callTool(
@@ -633,8 +633,8 @@ class McpServerDbTest {
             mapOf(
                 "datasource" to "mcp-batch-blank-datasource",
                 "columns" to listOf(
-                    mapOf("schema" to "", "table" to "users", "column" to "rrn", "tags" to listOf("pii")),
-                    mapOf("table" to "users", "column" to "rrn", "tags" to emptyList<String>()),
+                    mapOf("schema" to "", "table" to "users", "column" to "ssn", "tags" to listOf("pii")),
+                    mapOf("table" to "users", "column" to "ssn", "tags" to emptyList<String>()),
                 ),
             ),
         )
@@ -647,7 +647,7 @@ class McpServerDbTest {
         application { installTestMcp() }
         val principal = "mcp-batch-cap@example.com"
         grantRole(principal, "system:admin")
-        seedDatasource("mcp-batch-cap-datasource", listOf("rrn"))
+        seedDatasource("mcp-batch-cap-datasource", listOf("ssn"))
         val sdk = client.mcpStreamableHttp("/mcp") {
             header(HttpHeaders.Authorization, "Bearer ${token(principal, setOf("mcp:read", "mcp:datasources:write"))}")
         }
@@ -696,7 +696,7 @@ class McpServerDbTest {
             principal,
         )
         grantRole(principal, role.name)
-        seedDatasource("mcp-batch-cedar-datasource", listOf("rrn"))
+        seedDatasource("mcp-batch-cedar-datasource", listOf("ssn"))
         val sdk = client.mcpStreamableHttp("/mcp") {
             header(
                 HttpHeaders.Authorization,
@@ -707,12 +707,12 @@ class McpServerDbTest {
             val arguments = if (tool == "set_column_classification") {
                 mapOf(
                     "datasource" to "mcp-batch-cedar-datasource",
-                    "table" to "users", "column" to "rrn", "tags" to listOf("pii"),
+                    "table" to "users", "column" to "ssn", "tags" to listOf("pii"),
                 )
             } else {
                 mapOf(
                     "datasource" to "mcp-batch-cedar-datasource",
-                    "columns" to listOf(mapOf("table" to "users", "column" to "rrn", "tags" to listOf("pii"))),
+                    "columns" to listOf(mapOf("table" to "users", "column" to "ssn", "tags" to listOf("pii"))),
                 )
             }
             assertFailsWith<McpException>(tool) { sdk.callTool(tool, arguments) }
@@ -734,7 +734,7 @@ class McpServerDbTest {
         application { installTestMcp() }
         val principal = "mcp-batch-scope@example.com"
         grantRole(principal, "system:admin")
-        seedDatasource("mcp-batch-scope-datasource", listOf("rrn"))
+        seedDatasource("mcp-batch-scope-datasource", listOf("ssn"))
 
         val readOnly = createClient { expectSuccess = false }.post("/mcp") {
             acceptMcp(token(principal, setOf("mcp:read")))
@@ -748,7 +748,7 @@ class McpServerDbTest {
                             add(
                                 buildJsonObject {
                                     put("table", "users")
-                                    put("column", "rrn")
+                                    put("column", "ssn")
                                     put("tags", buildJsonArray { add(JsonPrimitive("pii")) })
                                 },
                             )
@@ -766,7 +766,7 @@ class McpServerDbTest {
         }
         val arguments = mapOf(
             "datasource" to "mcp-batch-scope-datasource",
-            "columns" to listOf(mapOf("table" to "users", "column" to "rrn", "tags" to listOf("pii"))),
+            "columns" to listOf(mapOf("table" to "users", "column" to "ssn", "tags" to listOf("pii"))),
             "idempotencyKey" to "batch-once",
         )
         val first = sdk.callTool("set_column_classifications", arguments)
@@ -779,7 +779,7 @@ class McpServerDbTest {
         // silently never applying the tags the caller asked for.
         val changedTags = sdk.callTool(
             "set_column_classifications",
-            arguments + ("columns" to listOf(mapOf("table" to "users", "column" to "rrn", "tags" to listOf("contact")))),
+            arguments + ("columns" to listOf(mapOf("table" to "users", "column" to "ssn", "tags" to listOf("contact")))),
         )
         assertEquals(true, changedTags.isError)
         assertEquals("mcp.idempotency_conflict", changedTags.structuredContent?.get("code")?.jsonPrimitive?.content)
@@ -932,7 +932,7 @@ class McpServerDbTest {
         dataSource.connection.use { connection -> connection.createStatement().use { it.execute(sql) } }
     }
 
-    private fun seedDatasource(name: String, columns: List<String> = listOf("rrn")) {
+    private fun seedDatasource(name: String, columns: List<String> = listOf("ssn")) {
         dataSource.connection.use { connection ->
             val id = connection.prepareStatement(
                 """INSERT INTO datasource(name, engine, host, port, db_name, default_schemas)

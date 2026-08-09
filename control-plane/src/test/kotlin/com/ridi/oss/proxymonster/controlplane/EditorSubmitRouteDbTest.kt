@@ -317,7 +317,7 @@ class EditorSubmitRouteDbTest {
                 req.send(proxyRunMsg { decision = runDecision { decision = WireEnfAction.DENY; denyReason = "policy denies" } })
             }
             val ack = client.post("/api/editor/sessions/${session.sessionId}/query") {
-                contentType(ContentType.Application.Json); setBody(QueryRequest("select rrn from t", 100))
+                contentType(ContentType.Application.Json); setBody(QueryRequest("select ssn from t", 100))
             }.body<EditorSubmitResponse>()
 
             awaitUntil("DENY marks task and child FAILED") {

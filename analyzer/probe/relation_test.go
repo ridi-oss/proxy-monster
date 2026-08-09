@@ -16,10 +16,10 @@ func runProbe(t *testing.T, sql string) *ProbeResult {
 	})
 }
 
-func rrnInRefs(res *ProbeResult) bool {
+func ssnInRefs(res *ProbeResult) bool {
 	for _, cols := range res.References {
 		for _, c := range cols {
-			if c == canonicalUsersRRNKey {
+			if c == canonicalUsersSSNKey {
 				return true
 			}
 		}
@@ -37,13 +37,13 @@ func TestRelationValuedMustDeny(t *testing.T) {
 		sql         string
 		mustResolve bool
 	}{
-		{"composite (u).rrn", "SELECT (u).rrn AS r FROM users u", false},
+		{"composite (u).ssn", "SELECT (u).ssn AS r FROM users u", false},
 		{"whole-row to_jsonb(u)", "SELECT to_jsonb(u) AS r FROM users u", false},
-		{"relation-valued (d.sub).rrn", "SELECT (d.sub).rrn AS r FROM (SELECT users AS sub FROM users) d", false},
-		{"nested write ((region).sub).rrn",
-			"UPDATE sink SET data = ((region).sub).rrn FROM (SELECT id, users AS sub FROM users) region WHERE sink.id = region.id", true},
-		{"RETURNING ((region).sub).rrn",
-			"UPDATE sink SET data='x' FROM (SELECT id, users AS sub FROM users) region WHERE sink.id=region.id RETURNING ((region).sub).rrn", true},
+		{"relation-valued (d.sub).ssn", "SELECT (d.sub).ssn AS r FROM (SELECT users AS sub FROM users) d", false},
+		{"nested write ((region).sub).ssn",
+			"UPDATE sink SET data = ((region).sub).ssn FROM (SELECT id, users AS sub FROM users) region WHERE sink.id = region.id", true},
+		{"RETURNING ((region).sub).ssn",
+			"UPDATE sink SET data='x' FROM (SELECT id, users AS sub FROM users) region WHERE sink.id=region.id RETURNING ((region).sub).ssn", true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -52,18 +52,18 @@ func TestRelationValuedMustDeny(t *testing.T) {
 				if !res.Resolved {
 					t.Fatalf("write relation regression must resolve, got %s: %s", stageString(res.FailedStage), res.Detail)
 				}
-				if !rrnInRefs(res) {
-					t.Fatalf("LEAK: resolved write omitted %s from references: %v", canonicalUsersRRNKey, res.References)
+				if !ssnInRefs(res) {
+					t.Fatalf("LEAK: resolved write omitted %s from references: %v", canonicalUsersSSNKey, res.References)
 				}
 				return
 			}
 
-			denied := !res.Resolved || rrnInRefs(res)
+			denied := !res.Resolved || ssnInRefs(res)
 			mechanism := "references"
 			if !res.Resolved {
 				mechanism = "unresolved(" + stageString(res.FailedStage) + ": " + res.Detail + ")"
 			}
-			t.Logf("resolved=%v rrnInRefs=%v via=%s", res.Resolved, rrnInRefs(res), mechanism)
+			t.Logf("resolved=%v ssnInRefs=%v via=%s", res.Resolved, ssnInRefs(res), mechanism)
 			if !denied {
 				t.Fatalf("LEAK: not denied. resolved=%v references=%v", res.Resolved, res.References)
 			}
@@ -76,6 +76,6 @@ func TestRelationValuedMustDeny(t *testing.T) {
 // only a non-PII field is later used, so `(d.sub).id` currently denies. Not a leak — an over-deny.
 func TestRelationValuedOverDeny(t *testing.T) {
 	res := runProbe(t, "SELECT (d.sub).id AS r FROM (SELECT users AS sub FROM users) d")
-	t.Logf("(d.sub).id: resolved=%v rrnInRefs=%v references=%v  [known over-deny]",
-		res.Resolved, rrnInRefs(res), res.References)
+	t.Logf("(d.sub).id: resolved=%v ssnInRefs=%v references=%v  [known over-deny]",
+		res.Resolved, ssnInRefs(res), res.References)
 }

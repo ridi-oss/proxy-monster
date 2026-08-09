@@ -56,7 +56,7 @@ class DiagnosticRedactionDecideDbTest {
         assertEquals(EnfAction.ALLOW, allow.action)
         assertTrue(allow.sanitizeDiagnostics, "production + not a full-cleartext reader + PG leaks on ALLOW → redact")
 
-        val mask = decide("select id, rrn from users order by id")
+        val mask = decide("select id, ssn from users order by id")
         assertEquals(EnfAction.MASK, mask.action)
         assertTrue(mask.sanitizeDiagnostics, "a MASK decision touches protected data → redact")
         setTags("""["system:development"]""")

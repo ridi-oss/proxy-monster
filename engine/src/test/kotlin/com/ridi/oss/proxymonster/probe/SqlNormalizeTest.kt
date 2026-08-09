@@ -14,7 +14,7 @@ import kotlin.test.assertTrue
  * Style mirrors TokenTtlTest — loop over classes with input-echoing assert messages.
  */
 class SqlNormalizeTest {
-    private val base = "SELECT id FROM users WHERE rrn = '900101-1234567'"
+    private val base = "SELECT id FROM users WHERE ssn = '987-65-4320'"
 
     private fun eq(a: String, b: String, d: Dialect) {
         val ah = assertNotNull(sqlGrantHash(a, d), "[$d] expected non-null hash for a=$a")
@@ -32,8 +32,8 @@ class SqlNormalizeTest {
 
     @Test fun `whitespace, newlines and tabs are irrelevant`() {
         for (d in Dialect.values()) {
-            eq(base, "SELECT   id\nFROM\tusers   WHERE rrn =  '900101-1234567'", d)
-            eq(base, "  SELECT id FROM users WHERE rrn = '900101-1234567'  ", d)
+            eq(base, "SELECT   id\nFROM\tusers   WHERE ssn =  '987-65-4320'", d)
+            eq(base, "  SELECT id FROM users WHERE ssn = '987-65-4320'  ", d)
         }
     }
 
@@ -47,53 +47,53 @@ class SqlNormalizeTest {
 
     @Test fun `keyword case is folded in both dialects`() {
         for (d in Dialect.values()) {
-            eq(base, "select id from users where rrn = '900101-1234567'", d)
-            eq(base, "SeLeCt id FrOm users WhErE rrn = '900101-1234567'", d)
+            eq(base, "select id from users where ssn = '987-65-4320'", d)
+            eq(base, "SeLeCt id FrOm users WhErE ssn = '987-65-4320'", d)
         }
     }
 
     @Test fun `Postgres folds unquoted identifier case`() {
-        eq(base, "SELECT ID FROM USERS WHERE RRN = '900101-1234567'", Dialect.POSTGRES)
+        eq(base, "SELECT ID FROM USERS WHERE SSN = '987-65-4320'", Dialect.POSTGRES)
     }
 
     @Test fun `line comments are stripped`() {
         // Postgres: `--` always a comment. MySQL: `--` needs trailing whitespace; `#` also comments.
-        eq(base, "SELECT id FROM users -- pick a user\nWHERE rrn = '900101-1234567'", Dialect.POSTGRES)
-        eq(base, "SELECT id FROM users -- c\rWHERE rrn = '900101-1234567'", Dialect.POSTGRES)
-        eq(base, "SELECT id FROM users -- pick a user\nWHERE rrn = '900101-1234567'", Dialect.MYSQL)
-        eq(base, "SELECT id FROM users -- c\rWHERE rrn = '900101-1234567'", Dialect.MYSQL)
-        eq(base, "SELECT id FROM users # pick a user\nWHERE rrn = '900101-1234567'", Dialect.MYSQL)
-        eq(base, "SELECT id FROM users # c\rWHERE rrn = '900101-1234567'", Dialect.MYSQL)
+        eq(base, "SELECT id FROM users -- pick a user\nWHERE ssn = '987-65-4320'", Dialect.POSTGRES)
+        eq(base, "SELECT id FROM users -- c\rWHERE ssn = '987-65-4320'", Dialect.POSTGRES)
+        eq(base, "SELECT id FROM users -- pick a user\nWHERE ssn = '987-65-4320'", Dialect.MYSQL)
+        eq(base, "SELECT id FROM users -- c\rWHERE ssn = '987-65-4320'", Dialect.MYSQL)
+        eq(base, "SELECT id FROM users # pick a user\nWHERE ssn = '987-65-4320'", Dialect.MYSQL)
+        eq(base, "SELECT id FROM users # c\rWHERE ssn = '987-65-4320'", Dialect.MYSQL)
     }
 
     @Test fun `block comments are stripped, including mid-statement and multiline`() {
         for (d in Dialect.values()) {
-            eq(base, "SELECT id /* c */ FROM users WHERE rrn = '900101-1234567'", d)
-            eq(base, "SELECT id FROM users\n/* multi\n line\n comment */\nWHERE rrn = '900101-1234567'", d)
+            eq(base, "SELECT id /* c */ FROM users WHERE ssn = '987-65-4320'", d)
+            eq(base, "SELECT id FROM users\n/* multi\n line\n comment */\nWHERE ssn = '987-65-4320'", d)
         }
     }
 
     @Test fun `Postgres nested block comments are stripped`() {
-        eq(base, "SELECT id /* outer /* inner */ still */ FROM users WHERE rrn = '900101-1234567'", Dialect.POSTGRES)
+        eq(base, "SELECT id /* outer /* inner */ still */ FROM users WHERE ssn = '987-65-4320'", Dialect.POSTGRES)
     }
 
     // ---- Hash-DIFFERENT classes -----------------------------------------------------------
 
     @Test fun `a different table changes the hash`() {
-        for (d in Dialect.values()) ne(base, "SELECT id FROM orders WHERE rrn = '900101-1234567'", d)
+        for (d in Dialect.values()) ne(base, "SELECT id FROM orders WHERE ssn = '987-65-4320'", d)
     }
 
     @Test fun `a different column changes the hash`() {
-        for (d in Dialect.values()) ne(base, "SELECT email FROM users WHERE rrn = '900101-1234567'", d)
+        for (d in Dialect.values()) ne(base, "SELECT email FROM users WHERE ssn = '987-65-4320'", d)
     }
 
     @Test fun `a different operator changes the hash`() {
-        for (d in Dialect.values()) ne(base, "SELECT id FROM users WHERE rrn <> '900101-1234567'", d)
+        for (d in Dialect.values()) ne(base, "SELECT id FROM users WHERE ssn <> '987-65-4320'", d)
     }
 
     @Test fun `a different string literal changes the hash`() {
         for (d in Dialect.values()) {
-            ne(base, "SELECT id FROM users WHERE rrn = '880315-2345678'", d)
+            ne(base, "SELECT id FROM users WHERE ssn = '987-65-4322'", d)
             ne("SELECT id FROM users WHERE id = 1", "SELECT id FROM users WHERE id = 2", d)
         }
     }

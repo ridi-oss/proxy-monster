@@ -6,13 +6,13 @@ the deep-dive for one bug-prone subsystem; the whole-analyzer overview is
 [analyzer/README.md](../analyzer/README.md), and the resolver itself is
 `analyzer/probe/relation.go`.
 
-Schema throughout: `users(id,email,phone,name,rrn,region,created_at)` with `rrn`
+Schema throughout: `users(id,email,phone,name,ssn,region,created_at)` with `ssn`
 = PII (masked), `orders(id,user_id,…)`, `sink(id,data,data2)`.
 
 ## 1. The problem in one paragraph
 
 SQL lets a relation be used where a value is expected — `to_jsonb(u)`,
-`SELECT u`, `u AS sub`, `(u).rrn`, `row(u.*)`. Such an expression carries
+`SELECT u`, `u AS sub`, `(u).ssn`, `row(u.*)`. Such an expression carries
 _every_ column of the relation (including protected ones) but produces no
 per-column lineage node the analyzer would otherwise see. PostgreSQL also
 resolves a bare identifier column-first and walks the scope chain (inner → outer
@@ -34,28 +34,28 @@ correlation) has a column `x`. Only if `x` is a column _nowhere_ does it resolve
 to a relation (a range-table alias used as a whole-row composite value).
 
 ```sql
--- users has column rrn; orders is aliased `rrn`. PG binds the bare rrn COLUMN-FIRST -> users.rrn:
-UPDATE users u SET name = (SELECT rrn) FROM orders rrn WHERE u.id = rrn.user_id;
--- live PG writes cleartext 900101-1234567 into users.name.
+-- users has column ssn; orders is aliased `ssn`. PG binds the bare ssn COLUMN-FIRST -> users.ssn:
+UPDATE users u SET name = (SELECT ssn) FROM orders ssn WHERE u.id = ssn.user_id;
+-- live PG writes cleartext 987-65-4320 into users.name.
 ```
 
 (R2) A relation-as-value is its whole tuple; field access drills in.
-`to_jsonb(u)` serializes the whole `u` row; `(u).rrn` extracts one field — the
-same value PG's `u.rrn` denotes. Composite access chains: `((region).sub).rrn`
-where `sub`'s value is the `users` row resolves to `users.rrn`.
+`to_jsonb(u)` serializes the whole `u` row; `(u).ssn` extracts one field — the
+same value PG's `u.ssn` denotes. Composite access chains: `((region).sub).ssn`
+where `sub`'s value is the `users` row resolves to `users.ssn`.
 
-The analyzer resolves that field precisely — `(u).rrn` yields `users.rrn` alone,
+The analyzer resolves that field precisely — `(u).ssn` yields `users.ssn` alone,
 not the whole row — but routes it to `references` rather than to a maskable
 output identity, so a protected column reached that way denies:
 
 ```sql
-SELECT (u).rrn FROM users u;    -- users.rrn, as a reference -> DENY (not masked)
+SELECT (u).ssn FROM users u;    -- users.ssn, as a reference -> DENY (not masked)
 SELECT (u).id  FROM users u;    -- users.id alone, non-PII -> ALLOW
-SELECT to_jsonb(u) FROM users u;-- whole row incl. rrn, as one blob -> DENY
+SELECT to_jsonb(u) FROM users u;-- whole row incl. ssn, as one blob -> DENY
 ```
 
-Masking needs an ordinary column identity: `SELECT u.rrn FROM users u` masks at
-ordinal 0, while `SELECT (u).rrn FROM users u` denies.
+Masking needs an ordinary column identity: `SELECT u.ssn FROM users u` masks at
+ordinal 0, while `SELECT (u).ssn FROM users u` denies.
 
 ## 3. The model: three operations, no whole-row special case
 
@@ -65,13 +65,13 @@ A relation handle is one of:
 - a scope — a CTE / derived table / subquery / set-op (columns are its output
   projections, resolved recursively),
 - a relation-valued column — the subtle one: `SELECT users AS sub …` makes `sub`
-  a _column whose value is the `users` relation_; downstream `(x.sub).rrn` must
+  a _column whose value is the `users` relation_; downstream `(x.sub).ssn` must
   thread through it.
 
 Given that handle, three operations cover every representation:
 
 1. A bare relation in value position expands to its tuple.
-   `to_jsonb(u) ≡ f(u.id, u.rrn, …)` — an ordinary function over all of `u`'s
+   `to_jsonb(u) ≡ f(u.id, u.ssn, …)` — an ordinary function over all of `u`'s
    columns → a _derived_ value → not maskable → its columns route to
    `references` → DENY if any is protected.
 2. `SELECT x AS sub` produces a relation-valued column, threaded through however
@@ -131,19 +131,19 @@ sqlglot node. The resolver handles all of them uniformly; each must DENY when it
 reaches a protected column.
 
 <!-- prettier-ignore -->
-| # | PoC (live-verified to leak cleartext `rrn` unless noted) | node shape |
+| # | PoC (live-verified to leak cleartext `ssn` unless noted) | node shape |
 | --- | --- | --- |
-| 1 | `UPDATE users u SET name=(SELECT rrn) FROM orders rrn WHERE u.id=rrn.user_id` | bare `Column` in a write scalar subquery |
-| 2 | `UPDATE users u SET name=(SELECT rrn FROM orders rrn LIMIT 1) WHERE u.id=1` | `TableColumn` (qualify's whole-row form when the subquery has its _own_ FROM) |
-| 3 | `UPDATE sink SET data=((d."U").rrn)::text FROM (SELECT users AS "U" FROM users) d` | quoted Dot field |
-| 4 | `UPDATE sink SET data=((sub).rrn)::text FROM orders sub CROSS JOIN (SELECT users AS sub FROM users) d` | alias vs. relation-valued column |
-| 5 | (read mirror of #2) `SELECT (SELECT rrn FROM orders rrn LIMIT 1) AS x FROM users u` | `TableColumn` in a read |
+| 1 | `UPDATE users u SET name=(SELECT ssn) FROM orders ssn WHERE u.id=ssn.user_id` | bare `Column` in a write scalar subquery |
+| 2 | `UPDATE users u SET name=(SELECT ssn FROM orders ssn LIMIT 1) WHERE u.id=1` | `TableColumn` (qualify's whole-row form when the subquery has its _own_ FROM) |
+| 3 | `UPDATE sink SET data=((d."U").ssn)::text FROM (SELECT users AS "U" FROM users) d` | quoted Dot field |
+| 4 | `UPDATE sink SET data=((sub).ssn)::text FROM orders sub CROSS JOIN (SELECT users AS sub FROM users) d` | alias vs. relation-valued column |
+| 5 | (read mirror of #2) `SELECT (SELECT ssn FROM orders ssn LIMIT 1) AS x FROM users u` | `TableColumn` in a read |
 
 The same area over-denies in two ways, both fail-safe and both accepted for now.
 Composite field access resolves field-precise but routes to `references`, so
-`SELECT (u).rrn FROM users u` denies where `SELECT u.rrn FROM users u` masks.
+`SELECT (u).ssn FROM users u` denies where `SELECT u.ssn FROM users u` masks.
 And defining a relation-valued column sweeps the whole row, so `(d.sub).id` over
-`(SELECT users AS sub FROM users) d` denies on `users.rrn` even though only the
+`(SELECT users AS sub FROM users) d` denies on `users.ssn` even though only the
 non-PII `id` is read — `TestRelationValuedOverDeny` in
 `analyzer/probe/relation_test.go` pins that behavior. Narrowing either is
 unimplemented analyzer precision work.
@@ -156,25 +156,25 @@ per-site guard drifts; a single resolver cannot.
 
 ## 5. Worked examples (each resolved by the single resolver)
 
-- #1 `(SELECT rrn) FROM orders rrn` (users in the write scope): chain =
-  [subquery scope, write scope]. The subquery has no `rrn` column; walk to the
-  write scope → `users` has column `rrn` → COLUMN (`users.rrn`) → a write reads
-  a protected column → DENY. The `orders rrn` alias never wins.
-- #4 `((sub).rrn)` with `orders sub` + derived `d(sub=users row)`:
+- #1 `(SELECT ssn) FROM orders ssn` (users in the write scope): chain =
+  [subquery scope, write scope]. The subquery has no `ssn` column; walk to the
+  write scope → `users` has column `ssn` → COLUMN (`users.ssn`) → a write reads
+  a protected column → DENY. The `orders ssn` alias never wins.
+- #4 `((sub).ssn)` with `orders sub` + derived `d(sub=users row)`:
   `relationOf("sub", …)` → in the write scope, the per-scope column check finds
   `d.sub` is a relation-valued column (the users row) → returns the `users`
-  relation _before_ the `orders sub` alias check. Then `.rrn` → `users.rrn` →
+  relation _before_ the `orders sub` alias check. Then `.ssn` → `users.ssn` →
   DENY.
-- `SELECT (u).rrn`: `relationOf("u")` → `u` is a relation alias, no column `u`
-  anywhere → the `users` relation. `.rrn` via `relationField` → `users.rrn`,
-  `found=true` → field-precise (`users.rrn` alone, not the whole row), but it
+- `SELECT (u).ssn`: `relationOf("u")` → `u` is a relation alias, no column `u`
+  anywhere → the `users` relation. `.ssn` via `relationField` → `users.ssn`,
+  `found=true` → field-precise (`users.ssn` alone, not the whole row), but it
   lands in `references` → DENY.
 - `(d.sub).id` where `d.sub` = the users row: `relationOf("sub")` → the `users`
   relation; `.id` → `users.id`. The field resolves precisely, but defining
-  `users AS sub` already swept the whole row into `references`, so `users.rrn`
+  `users AS sub` already swept the whole row into `references`, so `users.ssn`
   is there and the statement denies.
 - `to_jsonb(u)`: `u` → `users` relation → tuple-expands to all users columns as
-  function inputs → derived → `references` has `users.rrn` → DENY.
+  function inputs → derived → `references` has `users.ssn` → DENY.
 
 ## 6. Data structures
 
@@ -205,8 +205,8 @@ per-site guard drifts; a single resolver cannot.
 
 - `columnfirst_test.go` — the R1 column-first PoCs and variants.
 - `relation_test.go`, `redteam_test.go` — whole-row / composite /
-  relation-valued shapes. Every case touches `users.rrn`, so it must DENY, fail
-  closed, or MASK — a case that resolves with `rrn` nowhere is a candidate
+  relation-valued shapes. Every case touches `users.ssn`, so it must DENY, fail
+  closed, or MASK — a case that resolves with `ssn` nowhere is a candidate
   cleartext leak.
 - `cte_decoy_test.go` — a CTE name that _also_ exists as a physical decoy table
   binds to the CTE lineage, not the decoy.
@@ -216,4 +216,4 @@ per-site guard drifts; a single resolver cannot.
   coverage, driving the probe over a large SQL corpus.
 
 Each PoC is cross-checked against live PG in a rolled-back transaction to
-confirm PG actually streams or persists `rrn`.
+confirm PG actually streams or persists `ssn`.

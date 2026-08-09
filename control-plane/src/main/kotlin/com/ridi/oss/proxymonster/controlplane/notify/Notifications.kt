@@ -36,7 +36,7 @@ enum class NotificationEvent(val wire: String) {
 
 /**
  * How much of the requester's statement may leave the building (docs/notifications.md, "The statement in the
- * message"). A statement's literals can be the very values a policy protects — `WHERE rrn = '…'` leaks a
+ * message"). A statement's literals can be the very values a policy protects — `WHERE ssn = '…'` leaks a
  * value masking never sees, because masking acts on results.
  */
 enum class StatementDisclosure {

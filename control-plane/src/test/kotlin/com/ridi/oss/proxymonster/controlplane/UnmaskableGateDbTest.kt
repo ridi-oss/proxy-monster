@@ -21,7 +21,7 @@ import kotlin.test.assertTrue
 class UnmaskableGateDbTest {
     private lateinit var fx: EnforcementFixture
     private val principal = "analyst@example.com"
-    private val preparedSql = "SELECT rrn FROM users WHERE id = ?"
+    private val preparedSql = "SELECT ssn FROM users WHERE id = ?"
 
     @BeforeAll
     fun setup() {

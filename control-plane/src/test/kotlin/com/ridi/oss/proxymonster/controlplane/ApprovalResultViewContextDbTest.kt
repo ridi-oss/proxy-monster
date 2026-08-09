@@ -63,8 +63,8 @@ class ApprovalResultViewContextDbTest {
     private val auditor = "auditor@example.com"
     private val admin = "admin@example.com"
     private val outsider = "outsider@example.com"
-    private val rawRrn = "900101-1234567"
-    private val maskedRrn = "**********4567"
+    private val rawSsn = "987-65-4320"
+    private val maskedSsn = "*******4320"
 
     @BeforeAll
     fun setup() {
@@ -222,9 +222,9 @@ class ApprovalResultViewContextDbTest {
     }
 
     private fun seedResult(
-        sql: String = "SELECT id, email, rrn FROM users",
-        columns: List<String> = listOf("id", "email", "rrn"),
-        rows: List<List<String?>> = listOf(listOf("1", "a@x", rawRrn)),
+        sql: String = "SELECT id, email, ssn FROM users",
+        columns: List<String> = listOf("id", "email", "ssn"),
+        rows: List<List<String?>> = listOf(listOf("1", "a@x", rawSsn)),
     ): Long {
         val reqId = fx.dataSource.connection.use { c ->
             c.prepareStatement(
@@ -278,26 +278,26 @@ class ApprovalResultViewContextDbTest {
 
         val executorMasked = client.get("/api/approvals/$id/result")
         assertEquals(HttpStatusCode.OK, executorMasked.status)
-        assertEquals(maskedRrn, executorMasked.body<QueryResultView>().rows.single()[2])
+        assertEquals(maskedSsn, executorMasked.body<QueryResultView>().rows.single()[2])
         assertContentEquals(storedBefore, ciphertext(id), "view-time masking must not rewrite stored ciphertext")
 
         val executorRaw = client.get("/api/approvals/$id/result") {
             header("X-Forwarded-For", "100.100.5.5")
         }
         assertEquals(HttpStatusCode.OK, executorRaw.status)
-        assertEquals(rawRrn, executorRaw.body<QueryResultView>().rows.single()[2])
+        assertEquals(rawSsn, executorRaw.body<QueryResultView>().rows.single()[2])
         assertContentEquals(storedBefore, ciphertext(id), "the in-context view must read the same stored bytes")
 
         client.login(requester)
         val requesterMasked = client.get("/api/approvals/$id/result")
         assertEquals(HttpStatusCode.OK, requesterMasked.status)
-        assertEquals(maskedRrn, requesterMasked.body<QueryResultView>().rows.single()[2])
+        assertEquals(maskedSsn, requesterMasked.body<QueryResultView>().rows.single()[2])
 
         val requesterRaw = client.get("/api/approvals/$id/result") {
             header("X-Forwarded-For", "100.100.5.5")
         }
         assertEquals(HttpStatusCode.OK, requesterRaw.status)
-        assertEquals(rawRrn, requesterRaw.body<QueryResultView>().rows.single()[2])
+        assertEquals(rawSsn, requesterRaw.body<QueryResultView>().rows.single()[2])
         assertContentEquals(storedBefore, ciphertext(id), "release and live requester views must not alter ciphertext")
         assertTrue(
             fx.auditStore.recent(100).filter { it.statement.startsWith("approval #$id ") }.all {
@@ -314,11 +314,11 @@ class ApprovalResultViewContextDbTest {
     @Test
     fun `a NULL-kind redaction of a derived output blanks the cell on view, not the stored cleartext`() = testApplication {
         resetMutableAuthzState()
-        // upper(rrn) is a provably-total transform of the masked rrn → redacted in full (kind NULL). For an
-        // all-digit/dash RRN, upper(rrn) == rrn, so a `?: value` fallback would leak the raw RRN on view.
-        val derivedCleartext = rawRrn.uppercase()
+        // upper(ssn) is a provably-total transform of the masked ssn → redacted in full (kind NULL). For an
+        // all-digit/dash SSN, upper(ssn) == ssn, so a `?: value` fallback would leak the raw SSN on view.
+        val derivedCleartext = rawSsn.uppercase()
         val id = seedResult(
-            sql = "SELECT id, upper(rrn) AS u FROM users",
+            sql = "SELECT id, upper(ssn) AS u FROM users",
             columns = listOf("id", "u"),
             rows = listOf(listOf("1", derivedCleartext)),
         )
@@ -345,7 +345,7 @@ class ApprovalResultViewContextDbTest {
             }
             assertEquals(HttpStatusCode.OK, response.status)
             assertEquals(
-                rawRrn,
+                rawSsn,
                 response.body<QueryResultView>().rows.single()[2],
                 "a requester-scoped forbid must not apply to the executing viewer",
             )
@@ -366,7 +366,7 @@ class ApprovalResultViewContextDbTest {
             header("X-Forwarded-For", "100.100.5.5")
         }
         assertEquals(HttpStatusCode.OK, raw.status)
-        assertEquals(rawRrn, raw.body<QueryResultView>().rows.single()[2])
+        assertEquals(rawSsn, raw.body<QueryResultView>().rows.single()[2])
 
         assertNotNull(fx.cedarPolicyStore.setEnabled(segregatedUnmaskPolicyId, false, "test-fixture"))
         try {
@@ -374,7 +374,7 @@ class ApprovalResultViewContextDbTest {
                 header("X-Forwarded-For", "100.100.5.5")
             }
             assertEquals(HttpStatusCode.OK, remasked.status)
-            assertEquals(maskedRrn, remasked.body<QueryResultView>().rows.single()[2])
+            assertEquals(maskedSsn, remasked.body<QueryResultView>().rows.single()[2])
             assertContentEquals(storedBefore, ciphertext(id), "policy revocation must affect only the live response")
         } finally {
             fx.cedarPolicyStore.setEnabled(segregatedUnmaskPolicyId, true, "test-fixture")
@@ -393,7 +393,7 @@ class ApprovalResultViewContextDbTest {
                 header("X-Forwarded-For", "100.100.5.5")
             }
             assertEquals(HttpStatusCode.NotFound, response.status)
-            assertFalse(response.bodyAsText().contains(rawRrn), "a deactivated viewer must receive no stored PII")
+            assertFalse(response.bodyAsText().contains(rawSsn), "a deactivated viewer must receive no stored PII")
         } finally {
             fx.userGroupStore.setUserActive(executor, true)
         }
@@ -410,7 +410,7 @@ class ApprovalResultViewContextDbTest {
             header("X-Forwarded-For", "100.100.5.5")
         }
         assertEquals(HttpStatusCode.NotFound, response.status)
-        assertFalse(response.bodyAsText().contains(rawRrn), "the assume gate must return no stored PII")
+        assertFalse(response.bodyAsText().contains(rawSsn), "the assume gate must return no stored PII")
     }
 
     @Test
@@ -425,7 +425,7 @@ class ApprovalResultViewContextDbTest {
         }
         assertEquals(HttpStatusCode.OK, response.status)
         assertTrue(
-            response.bodyAsText().contains(rawRrn),
+            response.bodyAsText().contains(rawSsn),
             "task.assume admits the requester and the live exactly-R view decision applies the task role",
         )
     }
@@ -440,7 +440,7 @@ class ApprovalResultViewContextDbTest {
             client.login(principal)
             val response = client.get("/api/approvals/$id/result") { header("X-Forwarded-For", "100.100.5.5") }
             assertEquals(HttpStatusCode.OK, response.status, principal)
-            assertEquals(rawRrn, response.body<QueryResultView>().rows.single()[2], principal)
+            assertEquals(rawSsn, response.body<QueryResultView>().rows.single()[2], principal)
         }
         // The approver's view is credited to the approver; the auditor is neither party and must NOT be
         // miscredited as the approver — its view is recorded as a neutral assumer event.
@@ -557,7 +557,7 @@ class ApprovalResultViewContextDbTest {
     fun `stored row-width drift fails closed instead of returning an unbound extra value`() = testApplication {
         resetMutableAuthzState()
         val sentinel = "LEAK-SENTINEL-EXTRA-CELL"
-        val id = seedResult(rows = listOf(listOf("1", "a@x", rawRrn, sentinel)))
+        val id = seedResult(rows = listOf(listOf("1", "a@x", rawSsn, sentinel)))
         val client = wire()
         client.login(executor)
 

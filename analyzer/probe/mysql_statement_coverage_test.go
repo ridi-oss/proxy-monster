@@ -356,7 +356,7 @@ var mysqlStatements = []mysqlStatement{
 	{"SHOW SLAVE STATUS", "SHOW SLAVE STATUS", "metadata + utility:SHOW_REPLICA_STATUS", pb.StatementKind_STATEMENT_KIND_SHOW_REPLICA_STATUS},
 	{"SHOW REPLICAS", "SHOW REPLICAS", "metadata", pb.StatementKind_STATEMENT_KIND_SHOW_REPLICAS},       // GAP: needs REPLICATION SLAVE
 	{"SHOW SLAVE HOSTS", "SHOW SLAVE HOSTS", "metadata", pb.StatementKind_STATEMENT_KIND_SHOW_REPLICAS}, // GAP: alias of SHOW REPLICAS
-	{"SHOW WHERE subquery", "SHOW TABLES WHERE Tables_in_db IN (SELECT rrn FROM users)", "metadata + utility:SHOW_SUBQUERY", pb.StatementKind_STATEMENT_KIND_SHOW_METADATA},
+	{"SHOW WHERE subquery", "SHOW TABLES WHERE Tables_in_db IN (SELECT ssn FROM users)", "metadata + utility:SHOW_SUBQUERY", pb.StatementKind_STATEMENT_KIND_SHOW_METADATA},
 
 	// ---- Utility (§15.8) ----
 	{"DESCRIBE", "DESCRIBE users", "metadata", pb.StatementKind_STATEMENT_KIND_DESCRIBE},

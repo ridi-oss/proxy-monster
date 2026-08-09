@@ -104,7 +104,7 @@ func relayResultSet(backend io.Reader, deprecateEOF bool, h resultHooks) (bool, 
 		}
 		if payload[0] == 0xff {
 			// A genuine standalone ERR (continuations were handled above), so it is safe to rewrite: on a
-			// diagnostic-redacted decision strip it to errno + SQLSTATE + the errno's canonical symbol before
+			// diagnostic-redacted decision strip it to essno + SQLSTATE + the essno's canonical symbol before
 			// it reaches the sink, closing the value-echoing ERR leaks (conversion/truncation, the
 			// extractvalue XPATH oracle). See docs/diagnostic-redaction.md.
 			if h.RedactErr != nil {

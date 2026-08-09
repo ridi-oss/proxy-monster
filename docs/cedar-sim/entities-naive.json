@@ -18,7 +18,7 @@
     "parents": []
   },
   {
-    "uid": { "type": "ResultColumn", "id": "req1-rrn" },
+    "uid": { "type": "ResultColumn", "id": "req1-ssn" },
     "attrs": {
       "request": { "__entity": { "type": "Request", "id": "req1" } },
       "unmaskable": true,
@@ -36,7 +36,7 @@
     "parents": []
   },
   {
-    "uid": { "type": "ResultColumn", "id": "req2-rrn" },
+    "uid": { "type": "ResultColumn", "id": "req2-ssn" },
     "attrs": {
       "request": { "__entity": { "type": "Request", "id": "req2" } },
       "unmaskable": true,

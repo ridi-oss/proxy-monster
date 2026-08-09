@@ -27,49 +27,49 @@ class EnforcementPostgresDbTest {
     }
 
     @Test
-    fun `masked query returns masked rrn, never cleartext`() {
-        val r = fx.run("select id, rrn from users order by id")
+    fun `masked query returns masked ssn, never cleartext`() {
+        val r = fx.run("select id, ssn from users order by id")
         assertEquals(EnfAction.MASK, r.decision)
-        val rrn = r.rows.map { it[1] }
-        assertTrue(fx.cleartextRrn.none { it in rrn }, "cleartext rrn leaked: $rrn")
-        assertTrue(rrn.all { it != null && it.startsWith("*") }, "expected masked rrn values, got $rrn")
-        assertTrue(rrn.any { it!!.endsWith("4567") }, "expected LAST_N to keep the last 4, got $rrn")
+        val ssn = r.rows.map { it[1] }
+        assertTrue(fx.cleartextSsn.none { it in ssn }, "cleartext ssn leaked: $ssn")
+        assertTrue(ssn.all { it != null && it.startsWith("*") }, "expected masked ssn values, got $ssn")
+        assertTrue(ssn.any { it!!.endsWith("4320") }, "expected LAST_N to keep the last 4, got $ssn")
     }
 
     @Test
     fun `scalar subquery leak is denied and returns no rows`() {
-        val r = fx.run("select u.id, (select rrn from users where id = 1) as x from users u")
-        assertEquals(EnfAction.DENY, r.decision, "scalar-subquery rrn leak must be denied")
+        val r = fx.run("select u.id, (select ssn from users where id = 1) as x from users u")
+        assertEquals(EnfAction.DENY, r.decision, "scalar-subquery ssn leak must be denied")
         assertTrue(r.rows.isEmpty(), "a DENY must not return rows")
         assertTrue(r.denyReason!!.contains("subquery"), "deny reason: ${r.denyReason}")
     }
 
     @Test
     fun `IN subquery oracle is denied`() {
-        val r = fx.run("select id from users where region in (select rrn from users)")
-        assertEquals(EnfAction.DENY, r.decision, "IN (SELECT rrn ...) oracle must be denied")
+        val r = fx.run("select id from users where region in (select ssn from users)")
+        assertEquals(EnfAction.DENY, r.decision, "IN (SELECT ssn ...) oracle must be denied")
         assertTrue(r.rows.isEmpty(), "a DENY must not return rows")
     }
 
     @Test
-    fun `correlated subquery oracle over rrn is denied and returns no rows`() {
-        val r = fx.run("select u.id from users u where exists (select 1 from users v where v.region = u.region and u.rrn = '900101-1234567')")
-        assertEquals(EnfAction.DENY, r.decision, "correlated rrn oracle must be denied")
+    fun `correlated subquery oracle over ssn is denied and returns no rows`() {
+        val r = fx.run("select u.id from users u where exists (select 1 from users v where v.region = u.region and u.ssn = '987-65-4320')")
+        assertEquals(EnfAction.DENY, r.decision, "correlated ssn oracle must be denied")
         assertTrue(r.rows.isEmpty(), "a DENY must not return rows")
     }
 
     @Test
-    fun `INTERSECT membership oracle over rrn is denied and returns no rows`() {
-        val r = fx.run("select region from users intersect select rrn from users")
+    fun `INTERSECT membership oracle over ssn is denied and returns no rows`() {
+        val r = fx.run("select region from users intersect select ssn from users")
         assertEquals(EnfAction.DENY, r.decision, "INTERSECT membership oracle must be denied")
         assertTrue(r.rows.isEmpty(), "a DENY must not return rows")
     }
 
     @Test
     fun `no-FROM query_to_xml data reader is denied and returns no rows`() {
-        // Admission-layer bypass: query_to_xml reads users.rrn via a string arg (no FROM, invisible to
+        // Admission-layer bypass: query_to_xml reads users.ssn via a string arg (no FROM, invisible to
         // lineage). Must be denied before execution — no cleartext XML.
-        val r = fx.run("select query_to_xml('SELECT rrn FROM users WHERE id = 1', true, false, '')")
+        val r = fx.run("select query_to_xml('SELECT ssn FROM users WHERE id = 1', true, false, '')")
         assertEquals(EnfAction.DENY, r.decision, "no-FROM query_to_xml must be denied")
         assertTrue(r.rows.isEmpty(), "a DENY must not return rows")
     }
@@ -113,16 +113,16 @@ class EnforcementPostgresDbTest {
     }
 
     @Test
-    fun `LATERAL correlated leak of rrn is denied and returns no rows`() {
-        val r = fx.run("select l.x from users u, lateral (select rrn as x) l")
-        assertEquals(EnfAction.DENY, r.decision, "LATERAL rrn leak must be denied")
+    fun `LATERAL correlated leak of ssn is denied and returns no rows`() {
+        val r = fx.run("select l.x from users u, lateral (select ssn as x) l")
+        assertEquals(EnfAction.DENY, r.decision, "LATERAL ssn leak must be denied")
         assertTrue(r.rows.isEmpty(), "a DENY must not return rows")
     }
 
     @Test
-    fun `recursive CTE anchoring on rrn is denied and returns no rows`() {
-        val r = fx.run("with recursive c(x) as (select rrn from users union all select x from c) select x from c")
-        assertEquals(EnfAction.DENY, r.decision, "recursive CTE rrn leak must be denied")
+    fun `recursive CTE anchoring on ssn is denied and returns no rows`() {
+        val r = fx.run("with recursive c(x) as (select ssn from users union all select x from c) select x from c")
+        assertEquals(EnfAction.DENY, r.decision, "recursive CTE ssn leak must be denied")
         assertTrue(r.rows.isEmpty(), "a DENY must not return rows")
     }
 
@@ -162,9 +162,9 @@ class EnforcementPostgresDbTest {
         // writer@example.com HAS sql.ddl — the kind gate passes — but the write-payload rule in
         // PolicyEvaluator.evaluate still denies: a CTAS may not copy a masked/denied column into an
         // unmasked persisted table (docs/authz-model.md's exfiltration worked walk-through).
-        val r = fx.run("create table leaked as select rrn from users", principal = "writer@example.com")
+        val r = fx.run("create table leaked as select ssn from users", principal = "writer@example.com")
         assertEquals(EnfAction.DENY, r.decision)
-        assertTrue(r.denyReason!!.contains("write references protected") && r.denyReason!!.contains("rrn"), "deny reason: ${r.denyReason}")
+        assertTrue(r.denyReason!!.contains("write references protected") && r.denyReason!!.contains("ssn"), "deny reason: ${r.denyReason}")
     }
 
     @Test
@@ -186,14 +186,14 @@ class EnforcementPostgresDbTest {
     }
 
     @Test
-    fun `a no-FROM SELECT reading a table via UNION TABLE cannot exfiltrate cleartext rrn`() {
-        // Red-team regression (integration seam): `SELECT … UNION TABLE users` reads users.rrn with NO
+    fun `a no-FROM SELECT reading a table via UNION TABLE cannot exfiltrate cleartext ssn`() {
+        // Red-team regression (integration seam): `SELECT … UNION TABLE users` reads users.ssn with NO
         // FROM word — it was readonly-meta passthrough-ALLOW'd ahead of the gates, streaming cleartext
-        // rrn. Must be denied at admission (fail-closed), before role resolution, with no rows.
+        // ssn. Must be denied at admission (fail-closed), before role resolution, with no rows.
         val r = fx.run("select 0,'x','x','x' union table users")
         assertEquals(EnfAction.DENY, r.decision, "UNION TABLE read must be denied; reason=${r.denyReason}")
         assertTrue(r.rows.isEmpty(), "a DENY must not return rows")
-        assertTrue(fx.cleartextRrn.none { c -> r.rows.any { row -> c in row } }, "no cleartext rrn may leak")
+        assertTrue(fx.cleartextSsn.none { c -> r.rows.any { row -> c in row } }, "no cleartext ssn may leak")
     }
 
     @Test
@@ -202,11 +202,11 @@ class EnforcementPostgresDbTest {
         // insert works for them; an upsert (ON CONFLICT DO UPDATE) can modify an EXISTING row, so it
         // must be denied — sql.insert alone must not license that.
         try {
-            val plain = fx.run("insert into users (id, email, rrn, region) values (9, 'z@x', 'z', 'US')", principal = "inserter@example.com")
+            val plain = fx.run("insert into users (id, email, ssn, region) values (9, 'z@x', 'z', 'US')", principal = "inserter@example.com")
             assertEquals(EnfAction.ALLOW, plain.decision, "a plain insert (no upsert clause) must be allowed; reason=${plain.denyReason}")
 
             val upsert = fx.run(
-                "insert into users (id, email, rrn, region) values (1, 'z@x', 'z', 'US') " +
+                "insert into users (id, email, ssn, region) values (1, 'z@x', 'z', 'US') " +
                     "on conflict (id) do update set region = excluded.region",
                 principal = "inserter@example.com",
             )
@@ -237,19 +237,19 @@ class EnforcementPostgresDbTest {
 
     @Test
     fun `a provably-total transform of a masked column redacts in full and the rest of the row returns`() {
-        // The headline behavior end-to-end against a real backend: upper(rrn) is a provably-total transform
+        // The headline behavior end-to-end against a real backend: upper(ssn) is a provably-total transform
         // → the derived cell is blanked to NULL, but the statement is ALLOWed (MASK) and the non-sensitive
         // columns still return — unlike a DENY. Exercises the harness NULL-redaction path for a derived cell.
-        val r = fx.run("select id, upper(rrn) from users")
-        assertEquals(EnfAction.MASK, r.decision, "upper(rrn) is a total transform → redact, not deny; reason=${r.denyReason}")
+        val r = fx.run("select id, upper(ssn) from users")
+        assertEquals(EnfAction.MASK, r.decision, "upper(ssn) is a total transform → redact, not deny; reason=${r.denyReason}")
         assertTrue(r.rows.isNotEmpty(), "a redact-and-return must return rows (a DENY would not)")
         r.rows.forEach { row ->
-            assertEquals(null, row[1], "the derived upper(rrn) cell must be NULL-redacted: $row")
+            assertEquals(null, row[1], "the derived upper(ssn) cell must be NULL-redacted: $row")
             assertTrue(row[0] != null, "the non-sensitive id column is returned intact: $row")
         }
         assertTrue(
-            fx.cleartextRrn.none { c -> r.rows.any { row -> row.any { it != null && c in it } } },
-            "no cleartext rrn may leak through the redacted derived column",
+            fx.cleartextSsn.none { c -> r.rows.any { row -> row.any { it != null && c in it } } },
+            "no cleartext ssn may leak through the redacted derived column",
         )
     }
 }
@@ -265,62 +265,62 @@ class EnforcementMysqlDbTest {
     }
 
     @Test
-    fun `masked query returns masked rrn, never cleartext`() {
-        val r = fx.run("select id, rrn from users order by id")
+    fun `masked query returns masked ssn, never cleartext`() {
+        val r = fx.run("select id, ssn from users order by id")
         assertEquals(EnfAction.MASK, r.decision)
-        val rrn = r.rows.map { it[1] }
-        assertTrue(fx.cleartextRrn.none { it in rrn }, "cleartext rrn leaked: $rrn")
-        assertTrue(rrn.any { it != null && it.endsWith("4567") }, "expected LAST_N masking, got $rrn")
+        val ssn = r.rows.map { it[1] }
+        assertTrue(fx.cleartextSsn.none { it in ssn }, "cleartext ssn leaked: $ssn")
+        assertTrue(ssn.any { it != null && it.endsWith("4320") }, "expected LAST_N masking, got $ssn")
     }
 
     @Test
     fun `scalar subquery leak is denied and returns no rows`() {
-        val r = fx.run("select u.id, (select rrn from users where id = 1) as x from users u")
-        assertEquals(EnfAction.DENY, r.decision, "scalar-subquery rrn leak must be denied")
+        val r = fx.run("select u.id, (select ssn from users where id = 1) as x from users u")
+        assertEquals(EnfAction.DENY, r.decision, "scalar-subquery ssn leak must be denied")
         assertTrue(r.rows.isEmpty(), "a DENY must not return rows")
     }
 
     @Test
     fun `IN subquery oracle is denied`() {
-        val r = fx.run("select id from users where region in (select rrn from users)")
-        assertEquals(EnfAction.DENY, r.decision, "IN (SELECT rrn ...) oracle must be denied")
+        val r = fx.run("select id from users where region in (select ssn from users)")
+        assertEquals(EnfAction.DENY, r.decision, "IN (SELECT ssn ...) oracle must be denied")
         assertTrue(r.rows.isEmpty(), "a DENY must not return rows")
     }
 
     @Test
     fun `error-based extraction via extractvalue over a masked column is denied end-to-end`() {
         // A MySQL error-based exfiltration technique: extractvalue() puts a stored value into a 1105 XPATH error
-        // message. rrn (masked pii) is read in a NON-OUTPUT position — a function-argument subquery, and the
+        // message. ssn (masked pii) is read in a NON-OUTPUT position — a function-argument subquery, and the
         // ORDER BY oracle predicate — so admission must DENY before the statement reaches the backend to
         // produce that error. This is the primary defense, ahead of the proxy's DIAG error-message strip
         // (which is the backstop if enforcement ever had a gap).
-        val viaArg = fx.run("select extractvalue(1, concat(0x7e, (select rrn from users limit 1)))")
+        val viaArg = fx.run("select extractvalue(1, concat(0x7e, (select ssn from users limit 1)))")
         assertEquals(EnfAction.DENY, viaArg.decision, "extractvalue over a masked column must be denied; reason=${viaArg.denyReason}")
         assertTrue(viaArg.rows.isEmpty(), "a DENY must not return rows")
-        assertTrue(fx.cleartextRrn.none { c -> viaArg.rows.any { row -> c in row } }, "no cleartext rrn may leak")
+        assertTrue(fx.cleartextSsn.none { c -> viaArg.rows.any { row -> c in row } }, "no cleartext ssn may leak")
 
-        // A coercing/transformed read of a masked column — CAST-to-UNSIGNED, `rrn+0` — is DENIED, not
+        // A coercing/transformed read of a masked column — CAST-to-UNSIGNED, `ssn+0` — is DENIED, not
         // redacted (docs/derived-masking.md): only PROVABLY-TOTAL string transforms (upper/substr/…) are
         // redactable; a cast or arithmetic can fault (or warn) on the value, so executing it would leak the
         // raw value through the error-presence / SQLSTATE / warning-count channel that output redaction can't
         // touch. So these stay denied and never reach the backend.
-        val cast = fx.run("select cast(rrn as unsigned) from users")
-        assertEquals(EnfAction.DENY, cast.decision, "cast(rrn) is a value-dependent-fault-capable transform → denied; reason=${cast.denyReason}")
+        val cast = fx.run("select cast(ssn as unsigned) from users")
+        assertEquals(EnfAction.DENY, cast.decision, "cast(ssn) is a value-dependent-fault-capable transform → denied; reason=${cast.denyReason}")
         assertTrue(cast.rows.isEmpty(), "a DENY must not return rows")
-        val arith = fx.run("select rrn + 0 from users")
-        assertEquals(EnfAction.DENY, arith.decision, "rrn+0 (implicit cast) → denied; reason=${arith.denyReason}")
+        val arith = fx.run("select ssn + 0 from users")
+        assertEquals(EnfAction.DENY, arith.decision, "ssn+0 (implicit cast) → denied; reason=${arith.denyReason}")
 
         // The exact shape to guard: extract a benign column while using the masked one as an
         // ORDER BY oracle to pin a chosen row.
-        val viaOrderBy = fx.run("select extractvalue(1, concat(0x7e, (select id from users order by (rrn='900101-1234567') desc limit 1)))")
+        val viaOrderBy = fx.run("select extractvalue(1, concat(0x7e, (select id from users order by (ssn='987-65-4320') desc limit 1)))")
         assertEquals(EnfAction.DENY, viaOrderBy.decision, "a masked column in an ORDER BY predicate must be denied; reason=${viaOrderBy.denyReason}")
         assertTrue(viaOrderBy.rows.isEmpty(), "a DENY must not return rows")
     }
 
     @Test
     fun `SET user-variable from a subquery is denied (session-state exfiltration)`() {
-        // SET @x = (SELECT rrn ...) would stash cleartext in session state for a later `SELECT @x`.
-        val r = fx.run("set @pm_leak = (select rrn from users limit 1)")
+        // SET @x = (SELECT ssn ...) would stash cleartext in session state for a later `SELECT @x`.
+        val r = fx.run("set @pm_leak = (select ssn from users limit 1)")
         assertEquals(EnfAction.DENY, r.decision, "SET carrying a subquery must be denied")
     }
 
@@ -351,9 +351,9 @@ class EnforcementMysqlDbTest {
 
     @Test
     fun `CTAS that reads a masked column is denied even with a sql ddl grant`() {
-        val r = fx.run("create table leaked as select rrn from users", principal = "writer@example.com")
+        val r = fx.run("create table leaked as select ssn from users", principal = "writer@example.com")
         assertEquals(EnfAction.DENY, r.decision)
-        assertTrue(r.denyReason!!.contains("write references protected") && r.denyReason!!.contains("rrn"), "deny reason: ${r.denyReason}")
+        assertTrue(r.denyReason!!.contains("write references protected") && r.denyReason!!.contains("ssn"), "deny reason: ${r.denyReason}")
     }
 
     @Test
@@ -368,14 +368,14 @@ class EnforcementMysqlDbTest {
     }
 
     @Test
-    fun `a no-FROM SELECT reading a table via UNION TABLE cannot exfiltrate cleartext rrn`() {
+    fun `a no-FROM SELECT reading a table via UNION TABLE cannot exfiltrate cleartext ssn`() {
         // MySQL parity for the UNION TABLE red-team regression (a live cleartext leak):
-        // `SELECT … UNION TABLE users` reads users.rrn with no FROM word and must be denied at admission,
+        // `SELECT … UNION TABLE users` reads users.ssn with no FROM word and must be denied at admission,
         // never reaching the backend.
         val r = fx.run("select 0,'x','x','x' union table users")
         assertEquals(EnfAction.DENY, r.decision, "UNION TABLE read must be denied; reason=${r.denyReason}")
         assertTrue(r.rows.isEmpty(), "a DENY must not return rows")
-        assertTrue(fx.cleartextRrn.none { c -> r.rows.any { row -> c in row } }, "no cleartext rrn may leak")
+        assertTrue(fx.cleartextSsn.none { c -> r.rows.any { row -> c in row } }, "no cleartext ssn may leak")
     }
 
     @Test

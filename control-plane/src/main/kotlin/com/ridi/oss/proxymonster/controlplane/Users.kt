@@ -885,6 +885,28 @@ class UserGroupStore(internal val dataSource: DataSource) {
             ps.executeQuery().use { rs -> if (rs.next()) rs.getLong(1) else null }
         }
 
+    /**
+     * The principal of the ACTIVE directory user whose email is [email], or null — the inbound identity map
+     * for a Slack click. The Slack profile email is matched to a provisioned user and resolved to THAT user's
+     * principal; the email is not itself the principal (a principal can be an OIDC subject id). Case-insensitive
+     * (the IdP and Slack may differ in case). A deactivated user, or an email no active user owns, returns null
+     * so the click is refused.
+     */
+    fun activePrincipalByEmail(email: String): String? = dataSource.connection.use { c ->
+        // LIMIT 2, not 1: app_user.email carries no uniqueness constraint, so two active principals can share
+        // an email (or case variants of it). An ambiguous match is REFUSED, never resolved to an arbitrary
+        // one — this map authenticates a Slack click, and guessing the principal could hand it the wrong
+        // Cedar authority.
+        c.prepareStatement("SELECT principal FROM app_user WHERE lower(email) = lower(?) AND active LIMIT 2").use { ps ->
+            ps.setString(1, email)
+            ps.executeQuery().use { rs ->
+                if (!rs.next()) return@use null
+                val principal = rs.getString(1)
+                if (rs.next()) null else principal
+            }
+        }
+    }
+
     private fun findGroupIdByExternalId(externalId: String): Long? = dataSource.connection.use { c ->
         c.prepareStatement("SELECT id FROM app_group WHERE external_id=? AND deleted_at IS NULL").use { ps ->
             ps.setString(1, externalId)

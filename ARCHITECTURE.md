@@ -94,13 +94,12 @@ decide but never opens a connection to a target database.
    trusting a client-asserted role.
 3. The analyzer (`analyzer/`, sqlglot-go reached from the JVM through a Foreign
    Function & Memory binding) parses the statement, resolves column lineage
-   against the per-connection catalog, and emits the `StatementFacts` /
-   `RequiredGrant` contract: every table, column, function, and utility the
-   statement needs, each with its mask disposition. No SQL classification lives
-   in Kotlin.
-4. Cedar decides. The control plane walks each `RequiredGrant` through Cedar
-   over the resolved roles, resource tags, and request context. Policy is Cedar
-   text; there are no hardcoded allow/deny one-offs.
+   against the per-connection catalog, and emits the `StatementFacts` / grant
+   contract: every table, column, function, and utility the statement needs,
+   each with its mask disposition. No SQL classification lives in Kotlin.
+4. Cedar decides. The control plane walks each grant through Cedar over the
+   resolved roles, resource tags, and request context. Policy is Cedar text;
+   there are no hardcoded allow/deny one-offs.
 5. The proxy enforces the returned decision — forward, refuse, or rewrite the
    result stream, masking flagged output columns by ordinal.
 6. The backend is reached with a per-datasource service account, so users never

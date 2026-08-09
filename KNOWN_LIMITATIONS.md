@@ -96,8 +96,8 @@ control-plane store, which is PostgreSQL only and carries no portability caveat
   legal inside a _quoted_ identifier but are the key/EUID delimiters (analyzer
   keys join on `.`, Cedar EUIDs on `/`), so a component containing one either
   fails identity rendering or is denied during Cedar resource binding.
-  Production denies; an explicit `sql.unanalyzable` grant may relay a statement
-  whose dotted identity failed before resource facts were emitted.
+  Production denies; an explicit `exception.unanalyzable` grant may relay a
+  statement whose dotted identity failed before resource facts were emitted.
 
 ## Live namespace tracking
 
@@ -132,8 +132,8 @@ analog of MySQL's Prepare-time freeze. No control-plane decision is ever stored.
   execute-time audit records the pinned statement.) Any other results charset —
   an explicit non-UTF-8 one — is not rewritten and fails the session closed, and
   returning results in a non-UTF-8 charset is not supported.
-- `DISCARD` routes through the datasource-wide `sql.unanalyzable` gate. The
-  production posture denies it; a development datasource may relay it.
+- `DISCARD` routes through the datasource-wide `exception.unanalyzable` gate.
+  The production posture denies it; a development datasource may relay it.
 - 🟡 First-in-transaction probe injection breaks `SET TRANSACTION` after an
   opener. Because the namespace probes are injected as ordinary simple queries,
   they consume a transaction's first-statement slot. Under probe-always, a
@@ -195,16 +195,16 @@ tagging, table detail) and never feeds an enforcement decision.
   hash/columns revert window; 🟡 MySQL temp-table shadowing (invisible to
   `information_schema`); and, on the experimental PostgreSQL transactional-DDL
   path, held-connection-probe edges. `CALL`/routine after-refetch is
-  unreachable: the analyzer emits an unspecified datasource grant for `CALL`,
-  which the control plane denies before execution, so the `after_statement`
-  refetch — which only rides an ALLOW/MASK verdict — never fires; a denied
-  `CALL` doesn't run, so not a leak. A closed/forged `connection_id` can be
-  resurrected by Decide's restart-recovery (no tombstone / mint-evidence to
-  distinguish a closed or forged id from a genuine post-restart id; no
-  cross-principal escalation — recovery binds to the re-validated token's
-  principal). The one time-bounded residual is external / out-of-band DDL — a
-  change made outside the proxy is corrected on the next re-check past the
-  staleness bound, not immediately.
+  unreachable: the analyzer classifies `CALL` as an unanalyzable
+  `stmt.kind.call`, which the control plane denies before execution, so the
+  `after_statement` refetch — which only rides an ALLOW/MASK verdict — never
+  fires; a denied `CALL` doesn't run, so not a leak. A closed/forged
+  `connection_id` can be resurrected by Decide's restart-recovery (no tombstone
+  / mint-evidence to distinguish a closed or forged id from a genuine
+  post-restart id; no cross-principal escalation — recovery binds to the
+  re-validated token's principal). The one time-bounded residual is external /
+  out-of-band DDL — a change made outside the proxy is corrected on the next
+  re-check past the staleness bound, not immediately.
 - 🟡 Config-catalog PushCatalog ordering across replicas (bounded, self-healing)
   — CONFIG path only. With gRPC self-registration
   ([`docs/datasource-registration.md`](./docs/datasource-registration.md)) each
@@ -247,17 +247,17 @@ tagging, table detail) and never feeds an enforcement decision.
 
 ## Query coverage
 
-- 🟢 sqlglot-go parser gaps route through `sql.unanalyzable`. The production
-  posture denies them; an explicit development exception may relay them
-  verbatim. Parser coverage includes `JSON_TABLE` / `LATERAL VALUES` /
+- 🟢 sqlglot-go parser gaps route through `exception.unanalyzable`. The
+  production posture denies them; an explicit development exception may relay
+  them verbatim. Parser coverage includes `JSON_TABLE` / `LATERAL VALUES` /
   `SIMILAR TO`, MySQL `MATCH … AGAINST` / `GROUP_CONCAT(… SEPARATOR …)`, MySQL
   `INSERT … SET` / `REPLACE`, and structural PostgreSQL `EXPLAIN`. The MySQL
   write forms use the ordinary `Insert` shape and are analyzable through the
   proxy's INSERT conservation paths; `REPLACE` still emits an unspecified
   datasource action and is denied. Bare `SELECT *` over a table-function /
   `LATERAL` / `VALUES` source is unresolved and follows the same
-  `sql.unanalyzable` gate; that is a masking/lineage limitation, not a parse
-  gap.
+  `exception.unanalyzable` gate; that is a masking/lineage limitation, not a
+  parse gap.
 - 🟡 `RENAME TABLE a TO b` is denied. It is ordinary MySQL table DDL, but
   sqlglot-go leaves it as an unmodeled `Command` node, and classification is
   taken only from what the parser resolves structurally — a `Command` carries
@@ -299,6 +299,16 @@ tagging, table detail) and never feeds an enforcement decision.
   `403 mcp.invalid_host`. `X-Forwarded-Host` from a peer in `PM_TRUSTED_PROXIES`
   is parsed by proxy-monster's own bracket-aware path and works. Use a hostname,
   or front the control plane with a trusted edge.
+- 🟡 The MCP/workflow channel forbid on session statements covers only the
+  benign `stmt.cat.session` kinds. A connection-state-mutating statement
+  classified under an admin category — `SET sql_log_bin` (`admin.replication`),
+  `SET GLOBAL` (`admin.server`) — relies on that admin gate instead: the
+  production floor holds no admin category, so it denies there regardless, but a
+  `system:development` admin-holder may issue it on a non-persistent channel,
+  where a fresh connection per query discards the session change with no lasting
+  effect. The benign session statements the forbid does deny (`SET NAMES`,
+  `BEGIN`, `SET @var`) are otherwise ungated, which is why they are the ones
+  that need the channel rule.
 - 🔴 Role-approval `Request` EUID is not request-unique.
   `Request::"<requester>#<datasource>"` omits the request id and requested role,
   so one approval policy authorizes every later request that principal makes for
@@ -411,7 +421,7 @@ logged at boot / proxy catalog-push.)
   fast-path have no relay and are always denied. MySQL binary/prepared results
   and PostgreSQL binary-format results cannot be masked; they deny by default,
   but a MASK verdict carrying `unmaskable_permitted` may relay them unmasked
-  when `sql.unmaskable` is granted. Detail:
+  when `exception.unmaskable` is granted. Detail:
   [`docs/access-model.md`](./docs/access-model.md).
 - 🟡 A graceful-shutdown drain can report a pipelined PostgreSQL statement as
   failed. On a rolling redeploy the data plane drains: it stops accepting, lets

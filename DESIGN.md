@@ -86,16 +86,16 @@ Per statement, the analyzer emits `StatementFacts` and the control-plane walks
 it through Cedar:
 
 1. Parse + lineage (sqlglot-go). A statement the analyzer cannot safely resolve
-   is `resolved=false` → routes through the `sql.unanalyzable` Cedar gate
+   is `resolved=false` → routes through the `exception.unanalyzable` Cedar gate
    (fail-closed by default, grant-overridable).
 2. Required grants — the analyzer emits, per statement: the `sql.<kind>` grant;
    a `result.read` grant per output column (with a mask vs deny disposition); a
    `result.read` grant per scanned table with zero traced columns (closes the
    zero-column existence oracle); and function / utility grants for dangerous
    calls and session-critical commands.
-3. Cedar grant-walk — each `RequiredGrant` is a Cedar `authorize` verdict over
-   the principal's roles + resource tags + request context. A maskable column
-   deny → mask that output column; a non-maskable deny (a sensitive column in a
+3. Cedar grant-walk — each grant is a Cedar `authorize` verdict over the
+   principal's roles + resource tags + request context. A maskable column deny →
+   mask that output column; a non-maskable deny (a sensitive column in a
    predicate / join / aggregate / non-whitelisted derivation, where masking
    cannot preserve correctness) → DENY the whole statement. Session-privilege /
    lexer-mutation commands ride a `system:critical` Cedar forbid.
@@ -259,7 +259,7 @@ Console (Next.js + Tailwind + shadcn/ui, `web/`) — requester (request elevatio
 
 - Analyzer parse/lineage coverage drives the DENY rate — a construct sqlglot-go
   can't resolve fails closed. Mitigated by golden-parity tests and a
-  grant-overridable `sql.unanalyzable`.
+  grant-overridable `exception.unanalyzable`.
 - Rewrite correctness — masking mutates the result stream. Mitigated: prefer
   deny over a risky rewrite; ordinal-bound masking with fail-closed `SELECT *`
   expansion; large DB-backed test suites.
@@ -267,7 +267,7 @@ Console (Next.js + Tailwind + shadcn/ui, `web/`) — requester (request elevatio
   catalog caching; the Go proxy relays hot bytes.
 - Prepared statements / binary protocol — PG extended-query is enforced. MySQL
   `COM_STMT_*` is decided and relayed, but binary-protocol results cannot be
-  masked: a MASK verdict without `sql.unmaskable` fails closed
+  masked: a MASK verdict without `exception.unmaskable` fails closed
   ([KNOWN_LIMITATIONS.md](KNOWN_LIMITATIONS.md)).
 - Coverage gaps = security gaps — anything not analyzed defaults to DENY.
 

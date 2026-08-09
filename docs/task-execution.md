@@ -254,11 +254,11 @@ update.
 - Connection gate — `datasource.connect`, evaluated at connection open (not per
   statement, not at approval).
 - Execute gates — evaluated at run, per statement, under the effective roles,
-  via the sfacts contract: the statement-kind gates `sql.select`, `sql.insert`,
-  `sql.update`, `sql.delete`, `sql.ddl`; plus `sql.unanalyzable` (a statement
-  the analyzer cannot parse) and `sql.unmaskable` (a statement whose result
-  cannot be masked). Unanalyzable/unmaskable are statement kinds like the rest —
-  denied by default via Cedar, allowable by an admin policy.
+  via the sfacts contract: the statement-kind gate on `stmt.kind.<k>` (Cedar
+  maps it to its read/write/ddl/… category); plus `exception.unanalyzable` (a
+  statement the analyzer cannot parse) and `exception.unmaskable` (a statement
+  whose result cannot be masked). Unanalyzable/unmaskable are statement kinds
+  like the rest — denied by default via Cedar, allowable by an admin policy.
 - Result read — the per-column mask plan, evaluated as R (by whoever assumed R)
   in the reader's live context: `result.read.masked`, `result.read.unmasked`.
   Keyed to R, exercised by the assumer, never the viewer's own roles.

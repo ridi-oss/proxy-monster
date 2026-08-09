@@ -17,13 +17,14 @@ and how Kotlin walks it.
 
 ## The contract — no new Cedar vocabulary
 
-Cedar's existing action ids (`sql.select`, `sql.insert`, `result.read.unmasked`,
-`result.read.masked`, `datasource.connect`, `sql.unanalyzable`, …) and resource
-EUID shapes (`Table::"ds/cat/schema/tbl"`, `Column::"…/col"`,
-`Function::"ds/name"`, `Utility::"ds/command"`) already say everything needed.
-Nothing new is invented in Cedar or in policy files. What changes from a
-hand-written evaluator is who computes the list of things to check: Go emits the
-complete list once, and Kotlin's entire job is a generic walk over it.
+Cedar's action ids (`stmt.kind.<k>` for the statement's kind,
+`result.read.unmasked`, `result.read.masked`, `datasource.connect`,
+`exception.unanalyzable`, …) and resource EUID shapes
+(`Table::"ds/cat/schema/tbl"`, `Column::"…/col"`, `Function::"ds/name"`,
+`Utility::"ds/command"`) already say everything needed. Nothing new is invented
+in Cedar or in policy files. What changes from a hand-written evaluator is who
+computes the list of things to check: Go emits the complete list once, and
+Kotlin's entire job is a generic walk over it.
 
 ### Wire format — protobuf both directions
 
@@ -46,11 +47,16 @@ Both request and response messages live in `proto/src/main/proto/analyzer.proto`
   MySQL's `lower_case_table_names` — built once and reused for parsing,
   normalization, qualification, and generation).
 - Response: `StatementFacts` carries `resolved`, `failure_class`,
-  `statement_class`, `required_grants`, `output_columns`, `is_write`,
-  `rewritten_sql`, `explain_of_query`, `catalog_changing`, and the physical
-  `sources`/`functions`. Each `RequiredGrant` is a `GrantAction` plus a `oneof`
-  resource (Column/Table/Function/Utility/Datasource), a `MaskedDisposition`,
-  and the `output_ordinals` it gates.
+  `statement_exec`, `result_reads`, `output_columns`, `rewritten_sql`,
+  `explain_of_query`, `catalog_changing`, and the physical
+  `sources`/`functions`. `statement_exec` is the single
+  `RequireStatementExecGrant` (present whenever the statement parses to a
+  classifiable root, resolved or not; absent only on a pre-parse failure)
+  carrying the `statement_kind`; `result_reads` is zero or more
+  `RequireResultReadGrant`, each a `oneof` resource
+  (Column/Table/Function/Utility) with a `MaskedDisposition` and the
+  `output_ordinals` it gates. The two are separate typed fields, so the one kind
+  signal can neither be duplicated nor be present-yet-malformed.
 
 ### Worked examples
 
@@ -59,11 +65,12 @@ Both request and response messages live in `proto/src/main/proto/analyzer.proto`
    `users.ssn` is PII (masked), `users.region` is used only in a predicate
    (non-output, non-maskable — a masked predicate value cannot be evaluated),
    `orders.amount` is ordinary (no grant emitted for it — absence of a
-   requirement, not a satisfied one). Go emits `sql.select` on the datasource, a
-   `result.read` on `Column users.ssn` with disposition `MASK_OUTPUT` gating
-   output ordinal 0, and a `result.read` on `Column users.region` with
-   disposition `DENY_STATEMENT` gating no output. Kotlin's walk: `sql.select`
-   allowed; `users.ssn` denied but maskable → mask output column 0;
+   requirement, not a satisfied one). Go emits a `statement_exec` grant naming
+   the kind (`stmt.kind.select`), a `result.read` on `Column users.ssn` with
+   disposition `MASK_OUTPUT` gating output ordinal 0, and a `result.read` on
+   `Column users.region` with disposition `DENY_STATEMENT` gating no output.
+   Kotlin's walk: `stmt.kind.select` allowed (Cedar maps it to the read
+   category); `users.ssn` denied but maskable → mask output column 0;
    `users.region` denied and non-maskable → whole query denied. No further
    grants need checking once a non-maskable deny is hit.
 
@@ -83,25 +90,31 @@ Both request and response messages live in `proto/src/main/proto/analyzer.proto`
    is a valid server command that sqlglot-go does not structure, so Go emits
    `resolved=false`, `failure_class=UNANALYZABLE`, `failed_stage=PARSE`,
    `detail="unsupported command EXPLAIN"`, and no grants at all. With nothing to
-   walk, Kotlin routes it through the `sql.unanalyzable` gate like any other
-   unresolvable statement (fail-open on `system:development`, fail-closed on
-   production, grant-overridable).
+   walk, Kotlin routes it through the `exception.unanalyzable` gate like any
+   other unresolvable statement (fail-open on `system:development`, fail-closed
+   on production, grant-overridable).
 
-4. A structurally-safe passthrough — `BEGIN`. No table, column, or function
-   touched, so Go emits `resolved=true`, `required_grants=[]`,
-   `statement_class=SESSION`. Kotlin's loop has nothing to check and falls
-   through to ALLOW. "No grants required" _is_ the passthrough signal,
-   generically — no SQL-shape knowledge in Kotlin.
+4. A structurally-safe passthrough — `BEGIN`. No table, column, or function is
+   touched, so Go emits `resolved=true` and a single `statement_exec` grant
+   naming the kind (`stmt.kind.start_transaction`) — a session kind Cedar maps
+   to `stmt.cat.session`. Kotlin authorizes the kind, then relays the statement
+   verbatim: a resolved statement with no column/table/function grant (and no
+   catalog change) has nothing to mask, so the relay is derived from the grant
+   shape, not from any SQL-shape knowledge in Kotlin. A session statement is
+   denied on a non-persistent channel (MCP or a workflow phase) by the seeded
+   `stmt.cat.session` Cedar forbid, since each such query runs on a fresh
+   connection.
 
 ## The deny taxonomy
 
 Authorization belongs to Cedar. `decideQuery` may deny in code only for genuine
 impossibility; every policy decision is a Cedar verdict. Four outcomes:
 
-- Authorized / masked — the grant walk. Each `RequiredGrant` is a Cedar
-  `authorize*` verdict (datasource connect, `sql.<kind>`, column/table
-  `result.read`, utility, function). A maskable column deny masks; a
-  non-maskable deny fails the query. (Examples 1, 4.)
+- Authorized / masked — the grant walk. The datasource connect, the statement's
+  `stmt.kind.<k>` (from `statement_exec`), and each `result_reads` grant
+  (column/table `result.read`, utility, function) is a Cedar `authorize*`
+  verdict. A maskable column deny masks; a non-maskable deny fails the query.
+  (Examples 1, 4.)
 - Danger → a `system:critical` Cedar forbid. Session-privilege / lexer-mutation
   SETs, user-type/DOMAIN casts, and data-reading SET/SHOW emit a `Utility` grant
   with a fixed command id (`SET_ROLE`, `SET_SESSION_AUTHORIZATION`,
@@ -112,12 +125,12 @@ impossibility; every policy decision is a Cedar verdict. Four outcomes:
   so a Function grant would hit the no-classifier deny rather than the
   `system:critical` floor; a fixed Utility command routes straight to the floor.
   Never a Kotlin hard-deny, never a new resource kind or tag. (Example 2.)
-- Uncertainty → `sql.unanalyzable`. Anything Go cannot analyze — an
+- Uncertainty → `exception.unanalyzable`. Anything Go cannot analyze — an
   unknown-but-engine-valid command, a `Command`/parse-error, a catalog gap, or
   an infra failure (analyzer build, catalog-coverage, mask-fn load) — is
-  `resolved=false` and routes through the `sql.unanalyzable` gate: fail-closed
-  by default, grant-overridable, fail-open on dev. An admin holding
-  `sql.unanalyzable` can relay a valid command Go does not recognize — the
+  `resolved=false` and routes through the `exception.unanalyzable` gate:
+  fail-closed by default, grant-overridable, fail-open on dev. An admin holding
+  `exception.unanalyzable` can relay a valid command Go does not recognize — the
   engine-forward case is a policy grant, not a code wall. Catalog-coverage is
   decided by this gate too, so relaying an unclassified column requires the
   grant. (Example 3.)
@@ -140,7 +153,7 @@ walks the emitted grants:
 
 ```kotlin
 val facts = analyzeStatement(sql, namespace, catalog, engineConfig) // one Go call
-if (!facts.resolved) return unanalyzableOrInadmissible(facts)       // sql.unanalyzable gate, or hard deny
+if (!facts.resolved) return unanalyzableOrInadmissible(facts)       // exception.unanalyzable gate, or hard deny
 // datasource.connect, then each required grant against Cedar:
 //   column deny + maskable  -> add a mask for its output ordinals
 //   column deny + non-maskable, or table/function/utility deny -> deny the statement
@@ -232,8 +245,8 @@ lineage and function machinery.
 
 The security consequence is that an escaped dangerous-function name cannot hide.
 `SELECT U&"set_confi\0067"('search_path','x',false)` decodes to `set_config`,
-resolves (`resolved=true`, `statement_class=ANALYZED`), and emits a real
-`Function` grant naming `set_config`. The PostgreSQL classification manifest
+resolves (`resolved=true`), and emits a real `Function` grant naming
+`set_config`. The PostgreSQL classification manifest
 (`engine/src/main/resources/system-classification/postgres/17.json`) tags
 `pg_catalog.set_config` `system:critical`, so `authorizeFunctions` marshals the
 `system:critical` tag as a Cedar parent and the shipped `system:critical-guard`

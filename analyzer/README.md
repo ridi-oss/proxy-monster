@@ -27,7 +27,7 @@ analyzer/
   go.mod                     Go module github.com/ridi-oss/proxy-monster/analyzer;
                              pins github.com/ridi-oss/sqlglot-go v0.22.0
   probe/                     the analyzer (package probe)
-    facts.go                 EmitFacts: classify the statement + emit every RequiredGrant (100% AST)
+    facts.go                 EmitFacts: classify the statement + emit statement_exec + result-read grants
     probe.go, helpers.go     internal column lineage + reference bucketing + SELECT * expansion
     pb/analyzer.pb.go        generated Go bindings for analyzer.proto
     *_test.go                golden (hermetic) + parity (vs Python sqlglot) + admission-parity + unit tests
@@ -128,9 +128,9 @@ target, which also provides FFM.
 
 Fail-closed. Any malformed/unparseable input or internal error returns a valid
 `StatementFacts{resolved:false, …}` — never an exception. A non-resolved result
-is treated as DENY (fail-open only on `system:development`'s `sql.unanalyzable`
-gate). This is the safe direction for a security probe: a parser gap becomes
-DENY rather than a leak.
+is treated as DENY (fail-open only on `system:development`'s
+`exception.unanalyzable` gate). This is the safe direction for a security probe:
+a parser gap becomes DENY rather than a leak.
 
 All SQL understanding lives here on the AST — the analyzer never scans SQL text.
 `EXPLAIN`/`DESCRIBE` is decided structurally: an EXPLAIN-of-a-query (including
@@ -142,4 +142,4 @@ the analyzer cannot pin to concrete source columns degrades to a fail-closed
 over-deny rather than a leak — `NATURAL JOIN` (shared-column lineage is
 ambiguous), `PIVOT`, a data-modifying CTE, and `SELECT *` over a table-function
 / `VALUES` / `LATERAL` source (no fixed column list, so mask ordinals cannot be
-bound) all resolve false and route through the `sql.unanalyzable` gate.
+bound) all resolve false and route through the `exception.unanalyzable` gate.

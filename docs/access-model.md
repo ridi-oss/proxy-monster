@@ -29,9 +29,9 @@ facts, zero policy:
 | fact | from | example |
 | --- | --- | --- |
 | resources touched + their tags | catalog + analyzer | `Column::"acme-pg/acme/public/users/ssn"` tagged `pii`; `Function::"acme-pg/pg_read_file"` tagged `system:data-leak` |
-| sql-kind | analyzer | `sql.select` / `sql.insert` / `sql.update` / `sql.delete` / `sql.ddl` |
-| analyzable? | analyzer | false → `sql.unanalyzable` (PIVOT, NATURAL JOIN, unsupported root) |
-| maskable? | proxy/control-plane | false → `sql.unmaskable` (COPY bulk stream, fast-path calls, MySQL binary result — the proxy can't rewrite the result) |
+| statement kind | analyzer | `stmt.kind.select` / `insert` / `update` / `delete` / `create_table` / … (Cedar maps each to a `stmt.cat.*` category) |
+| analyzable? | analyzer | false → `exception.unanalyzable` (PIVOT, NATURAL JOIN, unsupported root) |
+| maskable? | proxy/control-plane | false → `exception.unmaskable` (COPY bulk stream, fast-path calls, MySQL binary result — the proxy can't rewrite the result) |
 | lineage | analyzer | per output column: origin columns (maskable identity) vs reference columns + context (DERIVED → unmaskable) |
 
 The lineage fact is what the authz layer turns into per-column verdicts.
@@ -95,7 +95,7 @@ policy set keyed on it, so an admin applies a tag instead of writing Cedar:
 <!-- prettier-ignore -->
 | tag | on | activates (shipped policy) |
 | --- | --- | --- |
-| `system:development` | datasource | permissive — `system:activity`/`system:data-leak` visible, `sql.unanalyzable`/`sql.unmaskable` relayed, cleartext reads (dev holds no real PII) |
+| `system:development` | datasource | permissive — `system:activity`/`system:data-leak` visible, `exception.unanalyzable`/`exception.unmaskable` relayed, cleartext reads (dev holds no real PII) |
 | `system:production` | datasource | strict package (disabled by default until toggled on) — role-gated connect/sql.*, PII masked, cleartext PII only on `trusted-network` |
 
 User columns use freeform tags such as `pii` (not a reserved `system:` prefix);
@@ -124,8 +124,9 @@ datasource:
   `permit(result.read.unmasked)` granted broadly on that datasource.
 - Catalog / activity / data-leak / critical are permit/forbid on the `system:`
   tags.
-- Fail-open vs fail-closed on `sql.unanalyzable` / `sql.unmaskable` is policy:
-  relayed under `system:development`, denied under the production floor.
+- Fail-open vs fail-closed on `exception.unanalyzable` / `exception.unmaskable`
+  is policy: relayed under `system:development`, denied under the production
+  floor.
 - A datasource's whole posture is its posture tag; an untagged datasource falls
   back to the production-safe floor (system forbids + deny-by-default reads). A
   datasource with special needs drops the posture tag and carries hand-written
@@ -144,9 +145,9 @@ permit (principal, action == Action::"result.read.unmasked", resource)
 permit (principal, action == Action::"result.read.unmasked", resource)
   when { resource in Tag::"system:development" }
   unless { resource in Tag::"system:critical" };
-permit (principal, action == Action::"sql.unanalyzable", resource)
+permit (principal, action == Action::"exception.unanalyzable", resource)
   when { resource in Tag::"system:development" };
-permit (principal, action == Action::"sql.unmaskable", resource)
+permit (principal, action == Action::"exception.unmaskable", resource)
   when { resource in Tag::"system:development" };
 
 // production-safe floor — dangerous tags stay forbidden unless development
@@ -215,8 +216,8 @@ Three things never become Cedar, correctly:
   `system:data-leak` → forbidden, grantable where policy relaxes
   (`system:development` or a hand-written permit).
 - Allow everything on a dev DB (auth + audit, no masking). A permissive policy
-  set: broad `result.read.unmasked` + `permit(sql.unanalyzable)` + permit the
-  `system:` tags — one `system:development` tag away.
+  set: broad `result.read.unmasked` + `permit(exception.unanalyzable)` + permit
+  the `system:` tags — one `system:development` tag away.
 
 ## Known gaps
 
@@ -258,6 +259,6 @@ Three things never become Cedar, correctly:
 - [system-classification.md](./system-classification.md) — the per-engine
   `system:` classification, dangerous set, and command map.
 - [facts-emission.md](./facts-emission.md) — Function/UDF/scanned-Table facts
-  and the `sql.unanalyzable`/`sql.unmaskable` contract.
+  and the `exception.unanalyzable`/`exception.unmaskable` contract.
 - [statement-facts-contract.md](./statement-facts-contract.md) — the full
-  `StatementFacts`/`RequiredGrant` contract between the analyzer and Cedar.
+  `StatementFacts` grant contract between the analyzer and Cedar.

@@ -74,8 +74,9 @@ self-service is a possible later convenience.
   meaning.
 - Action — dot-scoped by capability domain: `result.read.unmasked` /
   `result.read.masked` (column value visibility);
-  `sql.select`/`sql.insert`/`sql.update`/`sql.delete`/`sql.ddl` (statement
-  kinds); `sql.unanalyzable`/`sql.unmaskable` (datasource-exception gates);
+  `stmt.cat.read`/`stmt.cat.write.insert`/`stmt.cat.write.update`/`stmt.cat.write.delete`/`stmt.cat.ddl`
+  (statement categories, each an action group over its `stmt.kind.*` actions);
+  `exception.unanalyzable`/`exception.unmaskable` (datasource-exception gates);
   `datasource.connect`; the approval lifecycle `task.request`/`task.read`/
   `task.approve`/`task.assume`/`task.cancel`/`task.delete` and `grant.revoke`;
   `token.mint`/`token.list`/`token.revoke` (credential issuance/management);
@@ -130,7 +131,7 @@ permit(principal in Role::"pii-reader", action == Action::"result.read.unmasked"
 // billing-ops: read the orders table
 permit(principal in Role::"billing-ops", action == Action::"result.read.unmasked", resource in Table::"acme-mysql/def/app/orders");
 // batch-writer: insert into the datasource
-permit(principal in Role::"batch-writer",  action == Action::"sql.insert", resource in Datasource::"acme-mysql");
+permit(principal in Role::"batch-writer",  action in [Action::"stmt.cat.write.insert"], resource in Datasource::"acme-mysql");
 // approve: the resource is the Request (in Datasource::"acme-mysql", carrying a `requester` attribute)
 permit(principal in Role::"acme-approver", action == Action::"task.approve", resource in Datasource::"acme-mysql");
 // no self-approval — authoritative forbid, overrides any permit
@@ -192,11 +193,11 @@ called identically by the wire proxy and the editor. Two phases: engine
 
 Admission (the sqlglot-go probe): what the query _is_, no authz decision. Parse
 and hard-deny structurally inadmissible input such as an ambiguous batch. Emit
-one or more datasource action grants
-(`sql.select`/`insert`/`update`/`delete`/`ddl`), resource grants, and a failure
-class when complete lineage cannot be proved. Dangerous functions and utilities
-are facts for the authorization phase, not admission hardcodes. Column grants
-carry output ordinals and a `MaskedDisposition`.
+the single `statement_exec` grant naming the statement's kind (`stmt.kind.<k>`),
+resource grants, and a failure class when complete lineage cannot be proved.
+Dangerous functions and utilities are facts for the authorization phase, not
+admission hardcodes. Column grants carry output ordinals and a
+`MaskedDisposition`.
 
 Authorize (Cedar, deny-by-default; consumes admission's required grants):
 
@@ -204,9 +205,8 @@ Authorize (Cedar, deny-by-default; consumes admission's required grants):
 resolveRoles(principal)                         -- layer 1: direct ∪ group ∪ active JIT grants (expiry here)
 isAuthorized(datasource.connect)                -- else DENY: "no access to datasource"
 authorize classified Utility grants             -- missing classification or permit -> DENY
-for each emitted datasource action:
-      isAuthorized(sql.<action>)                 -- write kinds deny-by-default
-if unresolved: isAuthorized(sql.unanalyzable)   -- else DENY; permit relays verbatim
+isAuthorized(stmt.kind.<k>)                     -- the statement's kind; Cedar maps it to a category
+if unresolved: isAuthorized(exception.unanalyzable)   -- else DENY; permit relays verbatim
 authorize classified Function grants            -- system policy decides
 for each Column grant c:
       unmasked   if isAuthorized(result.read.unmasked, c)
@@ -221,17 +221,18 @@ requires masking, else ALLOW. Each `ColumnMask` carries the analyzer's
 zero-based output ordinal; `goproxy` applies masks by ordinal, never by name.
 The analyzer and proxy never evaluate Cedar, roles, tags, or context.
 
-Writes and DDL. A write must pass its emitted `sql.*` action; and since every
-column a write reads or targets is a _reference_ (non-maskable), any
-masked-or-denied column in a write is a DENY (you cannot mask a write). DDL that
-only changes the catalog — `CREATE TABLE (cols)`, `CREATE INDEX`, `ALTER`,
-`DROP`, `TRUNCATE` — resolves as _catalog-changing_: its meaning is fully
-determined but it reads no column values, so there is no lineage to trace and
-`sql.ddl` is the whole gate (fully audited). DDL that reads data —
-`CREATE TABLE … AS SELECT` (CTAS), `CREATE VIEW` — is _also_ a write: it needs
-`sql.ddl` and is subject to the write rule, so a masked/denied column in its
-`SELECT` is a DENY. This is the classic exfiltration path (copy PII into a
-fresh, unprotected table), so it must fail closed.
+Writes and DDL. A write must pass its kind gate (`stmt.kind.<k>`, a member of
+its write category); and since every column a write reads or targets is a
+_reference_ (non-maskable), any masked-or-denied column in a write is a DENY
+(you cannot mask a write). DDL that only changes the catalog —
+`CREATE TABLE (cols)`, `CREATE INDEX`, `ALTER`, `DROP`, `TRUNCATE` — resolves as
+_catalog-changing_: its meaning is fully determined but it reads no column
+values, so there is no lineage to trace and its kind (a `stmt.cat.ddl` member)
+is the whole gate (fully audited). DDL that reads data —
+`CREATE TABLE … AS SELECT` (CTAS), `CREATE VIEW`, `SELECT … INTO <table>` — is
+_also_ a write: it passes the ddl gate and is subject to the write rule, so a
+masked/denied column in its `SELECT` is a DENY. This is the classic exfiltration
+path (copy PII into a fresh, unprotected table), so it must fail closed.
 
 Worked walk-throughs — policies + column config from
 [Worked examples](#worked-examples) above; `alice` holds `analyst`
@@ -240,19 +241,27 @@ Worked walk-throughs — policies + column config from
 <!-- prettier-ignore -->
 | query | admission (+ lineage) | authorize | outcome |
 | --- | --- | --- | --- |
-| `SELECT id, email, ssn FROM users` | `select`; outputs `{id, email, ssn}` | connect ok · `sql.select` ok · `id`→unmasked · `email`,`ssn`→ no unmasked, `result.read.masked` ok | MASK `{id, email→domain, ssn→last4}` |
+| `SELECT id, email, ssn FROM users` | `select`; outputs `{id, email, ssn}` | connect ok · `stmt.kind.select` ok · `id`→unmasked · `email`,`ssn`→ no unmasked, `result.read.masked` ok | MASK `{id, email→domain, ssn→last4}` |
 | `SELECT id FROM users WHERE ssn = '…'` | `select`; output `{id}`; ref `{ssn}` | `id` ok — but `ssn` is a _reference_ and `alice` has no `result.read.unmasked` on it | DENY (predicate inference-oracle) |
-| `UPDATE users SET name = ssn WHERE id = 1` | `update` (write); `ssn` read into the write | `sql.update` ungranted → deny; even granted, `ssn` in a write is non-maskable | DENY (write) |
-| `CREATE TABLE t (id INT)` | `ddl` (plain, no data flow) | `sql.ddl` is the whole gate (no lineage) | DENY if ungranted (audited) |
-| `CREATE TABLE leaked AS SELECT ssn FROM users` | `ddl` + write; payload reads `users.ssn` | `sql.ddl` ungranted → deny; even granted, `ssn` copied into a persisted table is a non-maskable write payload | DENY (exfiltration — write-payload) |
+| `UPDATE users SET name = ssn WHERE id = 1` | `update` (write); `ssn` read into the write | `stmt.kind.update` ungranted → deny; even granted, `ssn` in a write is non-maskable | DENY (write) |
+| `CREATE TABLE t (id INT)` | `create_table` (plain, no data flow) | `stmt.kind.create_table` (∈ ddl) is the whole gate (no lineage) | DENY if ungranted (audited) |
+| `CREATE TABLE leaked AS SELECT ssn FROM users` | `create_table` + write; payload reads `users.ssn` | `stmt.kind.create_table` ungranted → deny; even granted, `ssn` copied into a persisted table is a non-maskable write payload | DENY (exfiltration — write-payload) |
 
 ## Statement kinds
 
-Admission emits datasource grants for select / insert / update / delete / ddl.
-Some statements require more than one: an upsert that can update requires both
-`sql.insert` and `sql.update`. Write actions are deny-by-default until
-explicitly granted per role. An unspecified action, including `REPLACE` and
-`MERGE`, denies.
+Every statement carries exactly one kind (`stmt.kind.<k>`); the control-plane
+authorizes that kind and the Cedar schema alone maps each kind to a category
+(`stmt.cat.read` / `write.insert` / `write.update` / `write.delete` / `ddl` /
+`admin.*` / `metadata` / `session`). A category preset (e.g. permit
+`stmt.cat.write`) covers every kind under it, while an exact-kind forbid still
+overrides a broad permit; write and admin categories are deny-by-default until
+granted per role. A statement whose permission profile differs gets its own kind
+rather than a composite requirement — an upsert is `insert_on_dup` (a member of
+`write.update`, the higher-privilege leaf, so a plain `write.insert` grant does
+not reach it), `REPLACE` is `replace` (∈ `write.delete`), and a
+`SELECT … INTO @var`/`<table>` is `select_into` (∈ `ddl`, since it writes to a
+target the proxy cannot mask). A statement the analyzer cannot classify is
+`STMT_UNKNOWN` → the `exception.unanalyzable` gate.
 
 ## The authz boundary (a separable module)
 

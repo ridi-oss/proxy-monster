@@ -341,8 +341,8 @@ Privileged functions:
 
 Utility command ids: `PG_ALTER_SYSTEM`, `PG_ALTER_ROLE_PASSWORD`,
 `PG_CREATE_USER_MAPPING`, `PG_ALTER_SERVER`, and `PG_COPY_PROGRAM` — the
-server-file/program forms of `COPY`, which are also `sql.unmaskable`, since
-policy cannot make an unimplemented relay work.
+server-file/program forms of `COPY`, which are also `exception.unmaskable`,
+since policy cannot make an unimplemented relay work.
 
 `SET_ROLE` and `SET_SESSION_AUTHORIZATION` are `system:critical` because they
 change which backend identity and namespace future statements bind under
@@ -552,7 +552,7 @@ without statement/value/session content; `SHOW DATABASES`, `SHOW TABLES`,
 
 Utility commands and embedded system-variable reads expose resources with no
 lineage Table/Function node, so admission emits one or more canonical Utility
-`RequiredGrant`s (command id). The manifest maps each command id to a tag (and
+utility grants (command id). The manifest maps each command id to a tag (and
 optional resource slug). This is the only place a command is classified rather
 than derived from the resolved analyzer scope.
 
@@ -587,16 +587,18 @@ namespace, so a quoted user schema or function cannot collide with it. The
 resource is logical only and is never passed to the backend as an object name.
 Transaction control and connection plumbing stay in their own structural path.
 Ordinary metadata SHOWs (`SHOW TABLES`, `SHOW CREATE TABLE`, …) carry no utility
-grant and pass as `STATEMENT_CLASS_METADATA` once `datasource.connect` succeeds.
+grant; their kind (a metadata kind Cedar maps to `stmt.cat.metadata`) is
+authorized, then the statement relays verbatim once `datasource.connect`
+succeeds.
 
 The manifests carry more command ids than the analyzer emits. `CREATE_USER`,
 `GRANT`, `RESTART`, `INTO_OUTFILE`, `PG_ALTER_SYSTEM` and their neighbors are
-classified there, but those statements are denied by the `sql.<kind>` gate or by
-a structural admission deny before any utility grant would matter —
-`ManifestCommandCoverageDbTest` proves each one denies, without asserting which
-gate did it. The manifest entry is the classification of record for the day one
-of them gains a utility grant; it is not evidence that the utility path is what
-currently stops the statement.
+classified there, but those statements are denied by the statement-kind gate
+(`stmt.kind.<k>`) or by a structural admission deny before any utility grant
+would matter — `ManifestCommandCoverageDbTest` proves each one denies, without
+asserting which gate did it. The manifest entry is the classification of record
+for the day one of them gains a utility grant; it is not evidence that the
+utility path is what currently stops the statement.
 
 ## Loading, applying, and tag provenance
 
@@ -723,7 +725,7 @@ bug.
 
 ## Worked decisions
 
-Assume ordinary `datasource.connect` / `sql.select` grants pass and system
+Assume ordinary `datasource.connect` / `stmt.kind.select` grants pass and system
 policies are enabled:
 
 <!-- prettier-ignore -->
@@ -747,11 +749,11 @@ relaxes to ALLOW there. Relaxing a critical tag takes an admin editing or
 disabling the shipped forbid, not a preset.
 
 Two things the table's shape can mislead about. First, catalog policy does not
-bypass the statement-kind gate: a principal still needs `sql.select` (or the
-appropriate kind) on the datasource before reading a catalog resource. Second, a
-system relation with no manifest — an uncertified engine version — is not
-`system:catalog`, it is untagged, and `SELECT relname FROM pg_class` then denies
-along with everything else.
+bypass the statement-kind gate: a principal still needs `stmt.kind.select` (or
+the appropriate kind) on the datasource before reading a catalog resource.
+Second, a system relation with no manifest — an uncertified engine version — is
+not `system:catalog`, it is untagged, and `SELECT relname FROM pg_class` then
+denies along with everything else.
 
 A no-FROM call carries its own gate. `SELECT pg_get_viewdef('v')` emits a
 `pg_get_viewdef` Function grant, because the analyzer's no-FROM allowlist covers
@@ -770,7 +772,7 @@ means rather than which statements pass.
   over the bundle;
 - `datasource.engine_version`, the raw backend version string the proxy pushed,
   which is what manifest resolution keys off;
-- canonical Utility `RequiredGrant`s and manifest command/tag mappings;
+- canonical Utility grants and manifest command/tag mappings;
 - `catalog_column` as the physical column inventory, including the system
   schemas; and
 - `column_classification.tags` as user/admin tags only.

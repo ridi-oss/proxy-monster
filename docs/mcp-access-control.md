@@ -396,7 +396,7 @@ the `warehouse` datasource."
 2. `browse_catalog(datasource="warehouse")` → confirms `sales.orders` and its
    columns; `list_column_tags` shows which carry `pii`.
 3. `get_policy_schema` → the Cedar shape; agent drafts a
-   `permit(principal == Role::"analyst", action == Action::"sql.select", resource) when { resource in Tag::"pii" ... }`
+   `permit(principal == Role::"analyst", action in [Action::"stmt.cat.read"], resource) when { resource in Tag::"pii" ... }`
    fragment.
 4. `validate_policy(src=…)` → `{errors:[]}`.
 5. `create_policy(name=…, src=…)` → the server resolves the caller's roles live,

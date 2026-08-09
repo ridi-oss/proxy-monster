@@ -143,8 +143,9 @@ most often get violated:
   `web/messages/<locale>/` ([docs/l10n.md](./docs/l10n.md)).
 - Fail-closed through Cedar, not a hardcoded deny. When the analyzer cannot
   prove a statement safe, route it through the deny-by-default gate
-  (`sql.unanalyzable` / `sql.unmaskable`) so a datasource can override it while
-  the production floor stays closed. Coverage gaps are security gaps.
+  (`exception.unanalyzable` / `exception.unmaskable`) so a datasource can
+  override it while the production floor stays closed. Coverage gaps are
+  security gaps.
 
 ## Build, test, run
 

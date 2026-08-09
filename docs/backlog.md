@@ -78,7 +78,7 @@ forward work. MySQL leads PostgreSQL in priority.
   table and tagged `pii` would read cleartext. Safe only because the shipped
   manifests classify value-bearing system tables as data-leak or critical rather
   than catalog; add a `pii` exclusion for defense in depth.
-- Split the `sql.unanalyzable` relay by admitted statement kind. On a
+- Split the `exception.unanalyzable` relay by admitted statement kind. On a
   development datasource the relay is role-agnostic, so a read-only role can
   submit a data-modifying CTE that admission classifies as a select, and the
   relay executes the write. Scope the permit to a role that legitimately writes,
@@ -346,7 +346,7 @@ Fixes for gaps documented in
   use, is an open call.
 - MySQL binary / prepared-statement (`COM_STMT_*`) result masking. `COM_STMT_*`
   is decided and relayed, but a binary-protocol result set cannot be masked, so
-  a MASK verdict without `sql.unmaskable` fails closed. Masking it means
+  a MASK verdict without `exception.unmaskable` fails closed. Masking it means
   decoding the binary row format per column type, applying the mask, and
   re-encoding — including the length-encoding and null-bitmap changes that
   follow from a changed value.

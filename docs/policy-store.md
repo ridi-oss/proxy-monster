@@ -320,31 +320,36 @@ Development preset (all enabled):
 | id | `system_key` | effect |
 | --- | --- | --- |
 | `-200` | `preset.development-unmasked` | permit `result.read.unmasked` on any `system:development` resource unless `system:critical` — role-agnostic (dev is cleartext) |
-| `-201` | `preset.development-unanalyzable` | permit `sql.unanalyzable` verbatim relay on `system:development` |
-| `-202` | `preset.development-unmaskable` | permit `sql.unmaskable` relay on `system:development` (data-plane capability still required) |
+| `-201` | `preset.development-unanalyzable` | permit `exception.unanalyzable` verbatim relay on `system:development` |
+| `-202` | `preset.development-unmaskable` | permit `exception.unmaskable` relay on `system:development` (data-plane capability still required) |
 | `-230` | `preset.development-connect` | any `system:development-*` role → `datasource.connect` |
-| `-231` | `preset.development-select` | `system:development-viewer` / `-pii-accessor` → `sql.select` |
-| `-232` | `preset.development-insert` | `system:development-updater` → `sql.insert` |
-| `-233` | `preset.development-update` | `system:development-updater` → `sql.update` |
-| `-234` | `preset.development-delete` | `system:development-deleter` → `sql.delete` |
-| `-235` | `preset.development-ddl` | `system:development-architect` → `sql.ddl` |
+| `-231` | `preset.development-select` | `system:development-viewer` / `-pii-accessor` → `stmt.cat.read` |
+| `-232` | `preset.development-insert` | `system:development-updater` → `stmt.cat.write.insert` |
+| `-233` | `preset.development-update` | `system:development-updater` → `stmt.cat.write.update` |
+| `-234` | `preset.development-delete` | `system:development-deleter` → `stmt.cat.write.delete` |
+| `-235` | `preset.development-ddl` | `system:development-architect` → `stmt.cat.ddl` |
+| `-236` | `preset.development-metadata` | any principal → `stmt.cat.metadata` on `system:development` |
+| `-237` | `preset.development-session` | any principal → `stmt.cat.session` on `system:development` |
+| `-238` | `preset.development-admin` | any principal → `stmt.cat.admin` on `system:development` |
 
 Production preset (all disabled by default — enabling production access is an
-explicit, audited toggle; `-259` ships with this package):
+explicit, audited toggle; ships through `-261`):
 
 <!-- prettier-ignore -->
 | id | `system_key` | effect |
 | --- | --- | --- |
 | `-250` | `preset.production-connect` | any `system:production-*` role → `datasource.connect` |
-| `-251` | `preset.production-select` | `system:production-viewer` / `-pii-accessor` → `sql.select` |
-| `-252` | `preset.production-insert` | `system:production-updater` → `sql.insert` |
-| `-253` | `preset.production-update` | `system:production-updater` → `sql.update` |
-| `-254` | `preset.production-delete` | `system:production-deleter` → `sql.delete` |
-| `-255` | `preset.production-ddl` | `system:production-architect` → `sql.ddl` |
+| `-251` | `preset.production-select` | `system:production-viewer` / `-pii-accessor` → `stmt.cat.read` |
+| `-252` | `preset.production-insert` | `system:production-updater` → `stmt.cat.write.insert` |
+| `-253` | `preset.production-update` | `system:production-updater` → `stmt.cat.write.update` |
+| `-254` | `preset.production-delete` | `system:production-deleter` → `stmt.cat.write.delete` |
+| `-255` | `preset.production-ddl` | `system:production-architect` → `stmt.cat.ddl` |
 | `-256` | `preset.production-non-pii-read` | `system:production-*` roles → `result.read.unmasked` unless `pii`/`system:*` |
 | `-257` | `preset.production-pii-masked` | `system:production-*` roles → `result.read.masked` on `pii` unless `system:*` |
 | `-258` | `preset.production-pii-unmasked` | `system:production-pii-accessor` → `result.read.unmasked` on `pii` when `context.tags` has `trusted-network` unless `system:*` |
 | `-259` | `preset.production-pii-unmasked-workflow` | `system:production-pii-accessor` → `result.read.unmasked` on `pii` when `context.channel == "workflow-executor"` unless `system:*` |
+| `-260` | `preset.production-metadata` | any principal → `stmt.cat.metadata` on `system:production` |
+| `-261` | `preset.production-session` | any principal → `stmt.cat.session` on `system:production` |
 
 Context tag producer:
 
@@ -382,8 +387,9 @@ not enforced.
 
 A query clears gates in order: `datasource.connect` → `sql.<kind>` → per-column
 result read (cleartext / masked / deny), with the function/command gate and the
-`sql.unanalyzable`/`sql.unmaskable` relay layered on. Deny-by-default
-throughout; the `system:*` guards are forbids that override even a broad grant.
+`exception.unanalyzable`/`exception.unmaskable` relay layered on.
+Deny-by-default throughout; the `system:*` guards are forbids that override even
+a broad grant.
 
 Development datasource (`system:development`) — connect via any dev role;
 `sql.*` per the role split above:

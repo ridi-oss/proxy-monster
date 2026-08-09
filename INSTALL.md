@@ -527,7 +527,7 @@ at minimum:
    `analyst-connect`:
 
    ```
-   permit(principal in Role::"analyst", action in [Action::"datasource.connect", Action::"sql.select"], resource == Datasource::"acme-mysql");
+   permit(principal in Role::"analyst", action in [Action::"datasource.connect", Action::"stmt.cat.read"], resource == Datasource::"acme-mysql");
    ```
 
    `analyst-read-unmasked`:

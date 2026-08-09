@@ -109,7 +109,7 @@ walk runs before redaction), independent of the whitelist.
 - Totality assumes built-in resolution. The whitelist matches a bare built-in
   name/kind; sqlglot cannot distinguish a user-defined function named
   `upper`/`left`/`md5` from the built-in, so a same-named UDF would route
-  through the total path. Mitigated by `sql.ddl`-gated function creation and the
+  through the total path. Mitigated by ddl-gated function creation and the
   operational rule that a masking datasource carries no data-reading UDFs
   ([KNOWN_LIMITATIONS.md](../KNOWN_LIMITATIONS.md)); a schema-qualified call
   (`app.upper(ssn)`) is not matched and denies.

@@ -30,11 +30,12 @@ For each statement the analyzer emits, in `StatementFacts`
 3. distinct named `Anonymous` function calls, plus explicit Function grants for
    non-allowlisted no-FROM calls;
 4. classified Utility commands (SHOW/SET forms and unsafe cast/subquery forms);
-5. zero or more datasource action grants
-   (`sql.select`/`insert`/`update`/`delete`/`ddl`) and the relay
-   `StatementClass` (`ANALYZED`/`METADATA`/`SESSION`); and
+5. the single `statement_exec` grant naming the statement's kind
+   (`stmt.kind.<k>`) — the single per-statement authorization signal, which
+   Cedar's schema maps to a category; and
 6. whether the statement is resolved, and if not, its `FailureClass`
-   (`INADMISSIBLE` hard-deny, or `UNANALYZABLE` → the `sql.unanalyzable` gate).
+   (`INADMISSIBLE` hard-deny, or `UNANALYZABLE` → the `exception.unanalyzable`
+   gate).
 
 Wire-path masking capability is decided after these facts (see
 [Unmaskable wire paths](#unmaskable-wire-paths)).
@@ -52,11 +53,12 @@ entity Function in [Datasource, Tag];
 entity Utility in [Datasource, Tag];
 ```
 
-The data actions are `datasource.connect`,
-`sql.select`/`insert`/`update`/`delete`/`ddl`,
-`result.read.unmasked`/`result.read.masked`, and the two datasource-level
-exception gates `sql.unanalyzable`/`sql.unmaskable`. `Function` and `Utility`
-appear on the result-read actions alongside `Table` and `Column`.
+The data actions are `datasource.connect`, the per-statement `stmt.kind.<k>`
+(each a member of one `stmt.cat.<category>` in the schema, so a category preset
+covers it), `result.read.unmasked`/`result.read.masked`, and the two
+datasource-level exception gates
+`exception.unanalyzable`/`exception.unmaskable`. `Function` and `Utility` appear
+on the result-read actions alongside `Table` and `Column`.
 
 The request graph is assembled from live data on every decision:
 
@@ -138,9 +140,10 @@ Physical reads are included in every scope: set-operation branches, expression
 subqueries (`EXISTS`, `IN`), CTE bodies, `UPDATE ... FROM`, `DELETE ... USING`,
 and read-side sources synthesized for write analysis. A write target is not a
 scanned Table solely because it is the target — `INSERT INTO t VALUES (...)` is
-gated by `sql.insert`, not a new result-read grant. Any target data actually
-read (`RETURNING`, `ON CONFLICT`, expressions reading old values, write-payload
-lineage) already emits Column or physical-read facts.
+gated by its kind (`stmt.kind.insert` ∈ `stmt.cat.write.insert`), not a new
+result-read grant. Any target data actually read (`RETURNING`, `ON CONFLICT`,
+expressions reading old values, write-payload lineage) already emits Column or
+physical-read facts.
 
 `covered` is computed from the final emitted facts: a table with any traced
 column is already exposed through it and needs no separate Table grant; a scan
@@ -193,12 +196,13 @@ datasource must not read PII ([KNOWN_LIMITATIONS.md](../KNOWN_LIMITATIONS.md)).
 `resolved=false` means the analyzer cannot prove complete resource/lineage facts
 — because of configuration validation, parse coverage, an unsupported analyzer
 root or data-modifying CTE, PIVOT, NATURAL JOIN, or an unresolved relation
-shape. Such a statement routes through the `sql.unanalyzable` datasource gate:
+shape. Such a statement routes through the `exception.unanalyzable` datasource
+gate:
 
 1. `datasource.connect` and every emitted datasource action must still pass; an
    unspecified action denies.
 2. If the analyzer reports `UNANALYZABLE`, the control-plane authorizes
-   `sql.unanalyzable` on the Datasource.
+   `exception.unanalyzable` on the Datasource.
 3. Permit → relay the original statement verbatim, no rewrite or masks, with a
    recorded reason.
 4. No permit / Cedar error / `INADMISSIBLE` → deny.
@@ -208,21 +212,22 @@ so the exception is datasource-wide and explicit — suitable for a permissive
 development datasource, not a way to punch a single unknown query through
 production masking.
 
-`sql.unanalyzable` is a superset of write/exec authorization for the
+`exception.unanalyzable` is a superset of write/exec authorization for the
 unanalyzable class. The class is not just weird reads: a data-modifying CTE
 (`WITH a AS (DELETE … RETURNING …) SELECT * FROM a`) is classified `SELECT` but
-rejected by the probe as unanalyzable, so a datasource granting `sql.select` +
-`sql.unanalyzable` but not `sql.delete` still executes the embedded DELETE,
-unmasked. This is the intended `system:development` posture (relay everything
-unanalyzable verbatim); production is deny-by-default. Enabling
-`sql.unanalyzable` therefore also enables writes/exec hidden in unanalyzable
-constructs, not a read-only convenience.
+rejected by the probe as unanalyzable, so a datasource granting the read
+category + `exception.unanalyzable` but not `stmt.cat.write.delete` still
+executes the embedded DELETE, unmasked. This is the intended
+`system:development` posture (relay everything unanalyzable verbatim);
+production is deny-by-default. Enabling `exception.unanalyzable` therefore also
+enables writes/exec hidden in unanalyzable constructs, not a read-only
+convenience.
 
 The structural floor stays outside policy. Protocol framing/authentication and
 multi-statement ambiguity are hard denies that policy and query grants never
 override. MySQL executable comments are decoded and analyzed when the server
 version is known; a missing or invalid MySQL engine configuration routes through
-`sql.unanalyzable`.
+`exception.unanalyzable`.
 
 ## Unmaskable wire paths
 
@@ -231,14 +236,14 @@ computes the ordinary query verdict without knowing which result format a later
 wire execution will use.
 
 On a `MASK` verdict the control-plane sets `Verdict.unmaskable_permitted` when
-the datasource grants `sql.unmaskable`
-(`authorizeDatasourceAction(SQL_UNMASKABLE)`). The proxy relays the
+the datasource grants `exception.unmaskable`
+(`authorizeDatasourceAction(EXCEPTION_UNMASKABLE)`). The proxy relays the
 binary/prepared result unmasked only when that flag is set — checked in
 `goproxy/mysqlproxy/conn.go` and `goproxy/pgproxy/extended.go` — and otherwise
 refuses fail-closed. MySQL binary/prepared-statement results and PostgreSQL
 binary-format results have a relay path; COPY and fast-path do not and stay
-denied even where policy permits `sql.unmaskable`. That is an honest fail-closed
-capability gap, not a policy exception the proxy silently ignores.
+denied even where policy permits `exception.unmaskable`. That is an honest
+fail-closed capability gap, not a policy exception the proxy silently ignores.
 
 `EXPLAIN`-of-a-masked-query is a control-plane structural deny
 (`EXPLAIN_MASK_DENY`): there is no safe relay for it, so it stays denied
@@ -250,14 +255,14 @@ regardless of policy.
 deactivated principal; resolve roles and context; validate the facts contract;
 authorize `datasource.connect`; authorize classified Utility grants; handle
 zero-resource metadata/session passthrough; authorize each emitted datasource
-action; apply the dangerous-function and `sql.unanalyzable` gates for an
+action; apply the dangerous-function and `exception.unanalyzable` gates for an
 unresolved statement; then authorize classified functions, Columns, and
 uncovered Tables. An EXPLAIN that would MASK is denied. For any remaining MASK
-verdict, the control-plane checks `sql.unmaskable` and carries the result as a
-capability flag for the proxy. Every gate runs before the backend receives the
-statement.
+verdict, the control-plane checks `exception.unmaskable` and carries the result
+as a capability flag for the proxy. Every gate runs before the backend receives
+the statement.
 
-Assuming `datasource.connect` and `sql.select` pass:
+Assuming `datasource.connect` and the `stmt.kind.select` gate pass:
 
 <!-- prettier-ignore -->
 | query / feature | emitted facts | production masking datasource | development datasource |
@@ -268,7 +273,7 @@ Assuming `datasource.connect` and `sql.select` pass:
 | `SELECT * FROM information_schema.tables` | system Table/Columns tagged `system:catalog` | catalog permit | catalog permit |
 | `SHOW FULL PROCESSLIST` | Utility → activity resource | DENY | dev activity policy may permit |
 | `SET GLOBAL general_log=ON` | critical Utility | DENY | DENY |
-| unsupported analyzer shape | `resolved=false` | DENY | relay only with `sql.unanalyzable` |
+| unsupported analyzer shape | `resolved=false` | DENY | relay only with `exception.unanalyzable` |
 | PG COPY OUT | unsupported root (`resolved=false`) | DENY | proxy still DENYs COPY after any exception permit |
 
 ## Contract and version skew

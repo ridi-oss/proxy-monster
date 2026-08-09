@@ -5,6 +5,7 @@ import com.cedarpolicy.model.AuthorizationRequest
 import com.cedarpolicy.model.AuthorizationResponse
 import com.cedarpolicy.model.ValidationRequest
 import com.cedarpolicy.model.entity.Entities
+import com.cedarpolicy.model.entity.Entity
 import com.cedarpolicy.model.exception.AuthException
 import com.cedarpolicy.model.policy.Policy
 import com.cedarpolicy.model.policy.PolicySet
@@ -74,6 +75,15 @@ fun contextTagLint(enabledSources: List<Pair<Long, String>>): List<String> {
         }
     }
 }
+
+/** The reusable half of a decision: the [principal] and the shared [entities] graph (its roles plus any
+ *  auxiliary parents). The focal resource is spliced in per call by [CedarEngine.isAuthorized], which reads
+ *  its EUID off the entity — so one graph answers for many resources (the per-column/table/function batches
+ *  build it once). */
+internal data class CedarRequest(
+    val principal: EntityUID,
+    val entities: Set<Entity>,
+)
 
 object CedarSchema {
     private const val RESOURCE_PATH = "/authz/schema.cedarschema"
@@ -245,14 +255,17 @@ class CedarEngine private constructor(private val sources: () -> List<Pair<Long,
         return cachedVocab
     }
 
-    fun isAuthorized(
-        principal: EntityUID,
+    internal fun isAuthorized(
+        request: CedarRequest,
         action: EntityUID,
-        resource: EntityUID,
-        entities: Entities,
+        resource: Entity,
         context: Map<String, Value> = emptyMap(),
     ): AuthorizationResponse =
-        CedarSchema.isAuthorized(AuthorizationRequest(principal, action, resource, context), policySet(), entities)
+        CedarSchema.isAuthorized(
+            AuthorizationRequest(request.principal, action, resource.getEUID(), context),
+            policySet(),
+            Entities(request.entities + resource),
+        )
 
     /** Parse+validate a single candidate policy against the schema; see [CedarSchema.validate]. */
     fun validate(cedarSrc: String): List<String> = CedarSchema.validate(cedarSrc)

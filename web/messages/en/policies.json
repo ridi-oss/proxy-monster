@@ -124,11 +124,14 @@
       "resultReadUnmasked": "cleartext for a touched column",
       "resultReadMasked": "masked (column's mask fn, or a safe default)",
       "datasourceConnect": "may touch this datasource at all",
-      "sqlSelect": "run SELECT",
-      "sqlInsert": "run INSERT (also required for an upsert)",
-      "sqlUpdate": "run UPDATE (also required for an upsert)",
-      "sqlDelete": "run DELETE",
-      "sqlDdl": "run CREATE/ALTER/DROP/TRUNCATE (and CTAS/CREATE VIEW)"
+      "stmtCatRead": "run read statements (SELECT and reads)",
+      "stmtCatWriteInsert": "run INSERT (also required for an upsert)",
+      "stmtCatWriteUpdate": "run UPDATE (also required for an upsert)",
+      "stmtCatWriteDelete": "run DELETE",
+      "stmtCatDdl": "run CREATE/ALTER/DROP/TRUNCATE (and CTAS/CREATE VIEW)",
+      "stmtCatMetadata": "run schema-introspecting SHOW/DESCRIBE",
+      "stmtCatSession": "run session statements (SET/BEGIN/COMMIT)",
+      "stmtCatAdmin": "run admin statements — replication/account/file/exec/… (finer leaves like stmt.cat.admin.file)"
     }
   }
 }

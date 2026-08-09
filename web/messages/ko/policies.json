@@ -124,11 +124,14 @@
       "resultReadUnmasked": "접근한 컬럼의 평문 조회",
       "resultReadMasked": "마스킹된 값 (컬럼의 마스크 함수 또는 안전한 기본값)",
       "datasourceConnect": "이 데이터소스에 접근 가능 여부",
-      "sqlSelect": "SELECT 실행",
-      "sqlInsert": "INSERT 실행 (upsert에도 필요)",
-      "sqlUpdate": "UPDATE 실행 (upsert에도 필요)",
-      "sqlDelete": "DELETE 실행",
-      "sqlDdl": "CREATE/ALTER/DROP/TRUNCATE 실행 (및 CTAS/CREATE VIEW)"
+      "stmtCatRead": "읽기 구문 실행 (SELECT 등)",
+      "stmtCatWriteInsert": "INSERT 실행 (upsert에도 필요)",
+      "stmtCatWriteUpdate": "UPDATE 실행 (upsert에도 필요)",
+      "stmtCatWriteDelete": "DELETE 실행",
+      "stmtCatDdl": "CREATE/ALTER/DROP/TRUNCATE 실행 (및 CTAS/CREATE VIEW)",
+      "stmtCatMetadata": "스키마 조회용 SHOW/DESCRIBE 실행",
+      "stmtCatSession": "세션 구문 실행 (SET/BEGIN/COMMIT)",
+      "stmtCatAdmin": "관리 구문 실행 — 복제/계정/파일/실행 등 (stmt.cat.admin.file 같은 하위 항목)"
     }
   }
 }

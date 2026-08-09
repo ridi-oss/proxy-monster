@@ -878,8 +878,8 @@ class GrpcRunExecDbTest {
             assertEquals("203.0.113.55", core.runRequesterIps.get(tokenHash(ephemeralToken)))
 
             // ...and a REAL gRPC decide against that live token sees it: the ip-gated connect permit fires, so
-            // the deny moves off the connect gate to sql.select. An impl that registered IPs only for EDITOR
-            // would leave connect denied here — the exact regression a manual-insert test can't catch.
+            // the deny moves off the connect gate to the statement-kind gate. An impl that registered IPs only
+            // for EDITOR would leave connect denied here — the exact regression a manual-insert test can't catch.
             // The OpenRunChannel carries the editor connection identity minted by the CP.
             val decideResponse = stub.decide(
                 decisionRequest {
@@ -889,7 +889,7 @@ class GrpcRunExecDbTest {
                     sql = "select 1 from t"
                 },
             )
-            assertTrue("sql.select" in decideResponse.verdict.denyReason, "the run-minted APPROVER_EXEC IP must reach Cedar: ${decideResponse.verdict.denyReason}")
+            assertTrue("statement kind 'select' is not permitted" in decideResponse.verdict.denyReason, "the run-minted APPROVER_EXEC IP must reach Cedar: ${decideResponse.verdict.denyReason}")
 
             // Service the dial so run() completes cleanly and the registry entry is removed on token revoke.
             val proxyRequests = Channel<ProxyRunMsg>(Channel.UNLIMITED)

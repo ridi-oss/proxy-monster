@@ -24,6 +24,21 @@ func statementKind(root exp.Expression, eng engine) pb.StatementKind {
 	if root == nil {
 		return pb.StatementKind_STATEMENT_KIND_STMT_UNKNOWN
 	}
+	// A SELECT ... INTO writes data to a destination outside the result stream, so it is a gated write, not
+	// the read its outer shape suggests. Classified recursively BEFORE the shape dispatch so a leading
+	// wrapper or a union/subquery branch cannot hide the INTO (sqlglot hoists a set-op's INTO onto the root
+	// but FindAll still reaches it): a file target (OUTFILE/DUMPFILE) is admin.file; any other target
+	// (MySQL `INTO @var`, PostgreSQL `INTO <table>`) is the ddl-gated select_into.
+	if into := firstInto(root); into != nil {
+		switch into.Text("kind") {
+		case exp.IntoOutfile:
+			return pb.StatementKind_STATEMENT_KIND_SELECT_INTO_OUTFILE
+		case exp.IntoDumpfile:
+			return pb.StatementKind_STATEMENT_KIND_SELECT_INTO_DUMPFILE
+		default:
+			return pb.StatementKind_STATEMENT_KIND_SELECT_INTO
+		}
+	}
 	// A set operation (UNION/INTERSECT/EXCEPT) is a distinct node family, not a Select — check the trait
 	// before the Kind switch, mirroring isKnownRoot.
 	if root.Is(exp.TraitSetOperation) {
@@ -88,38 +103,40 @@ func statementKind(root exp.Expression, eng engine) pb.StatementKind {
 	}
 }
 
-// selectKind distinguishes the Select forms. A file-write INTO (OUTFILE/DUMPFILE) is a server-side
-// FILE-privilege write, told apart by the Into node's canonical `kind`; a CTE is marked by the root's own
-// `with_` arg. `TABLE t` (MySQL 8.0.19+) parses to a plain `SELECT * FROM t` with no distinguishing
-// marker, so it is SELECT (STATEMENT_KIND_TABLE has no AST signal to key on).
+// selectKind distinguishes the plain Select forms — a file/var/table INTO is already handled by the
+// recursive INTO check in statementKind. A CTE is marked by the root's own `with_` arg. `TABLE t` (MySQL
+// 8.0.19+) parses to a plain `SELECT * FROM t` with no distinguishing marker, so it is SELECT
+// (STATEMENT_KIND_TABLE has no AST signal to key on).
 func selectKind(root exp.Expression) pb.StatementKind {
-	if into := root.Into(); into != nil {
-		switch into.Text("kind") {
-		case exp.IntoOutfile:
-			return pb.StatementKind_STATEMENT_KIND_SELECT_INTO_OUTFILE
-		case exp.IntoDumpfile:
-			return pb.StatementKind_STATEMENT_KIND_SELECT_INTO_DUMPFILE
-		}
-	}
 	if root.Arg("with_") != nil {
 		return pb.StatementKind_STATEMENT_KIND_WITH_SELECT
 	}
 	return pb.StatementKind_STATEMENT_KIND_SELECT
 }
 
-// insertKind distinguishes the write forms of an Insert. `replace` marks REPLACE; a query body (the
-// Insert's `expression` is a Select or set operation) marks INSERT ... SELECT; a conflict clause that
-// can update marks the upsert.
+// firstInto returns the statement's SELECT ... INTO clause anywhere in the tree, or nil. FindAll recurses,
+// so an INTO hidden in a union branch or subquery is still found; INSERT/REPLACE's own `INTO t` target is
+// part of the Insert node, not a KindInto, so a plain write is never matched.
+func firstInto(root exp.Expression) exp.Expression {
+	if intos := root.FindAll(exp.KindInto); len(intos) > 0 {
+		return intos[0]
+	}
+	return nil
+}
+
+// insertKind distinguishes the write forms of an Insert. `replace` marks REPLACE; a conflict clause that
+// can update marks the upsert — checked BEFORE the query-body form so an INSERT ... SELECT ... ON
+// DUPLICATE KEY UPDATE is still an upsert (it can modify existing rows), not a plain INSERT ... SELECT.
 func insertKind(root exp.Expression) pb.StatementKind {
 	if truthy(root.Arg("replace")) {
 		return pb.StatementKind_STATEMENT_KIND_REPLACE
 	}
+	if conflictDoesUpdate(root) {
+		return pb.StatementKind_STATEMENT_KIND_INSERT_ON_DUP
+	}
 	if body, ok := root.Arg("expression").(exp.Expression); ok && body != nil &&
 		(body.Kind() == exp.KindSelect || body.Is(exp.TraitSetOperation)) {
 		return pb.StatementKind_STATEMENT_KIND_INSERT_SELECT
-	}
-	if conflictDoesUpdate(root) {
-		return pb.StatementKind_STATEMENT_KIND_INSERT_ON_DUP
 	}
 	return pb.StatementKind_STATEMENT_KIND_INSERT
 }

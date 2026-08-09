@@ -4,6 +4,7 @@ import com.ridi.oss.proxymonster.analyzer.pb.ColumnSpec
 import com.ridi.oss.proxymonster.analyzer.pb.EngineConfig
 import com.ridi.oss.proxymonster.analyzer.pb.Namespace
 import com.ridi.oss.proxymonster.analyzer.pb.StatementFacts
+import com.ridi.oss.proxymonster.analyzer.pb.StatementKind
 import com.ridi.oss.proxymonster.analyzer.pb.analyzeRequest
 import com.ridi.oss.proxymonster.analyzer.pb.columnSpec
 import com.ridi.oss.proxymonster.analyzer.pb.engineConfig
@@ -81,7 +82,7 @@ class SqlglotTest {
             val result = facts("SELECT id, ssn FROM users", dialect)
             val prefix = if (dialect == "mysql") "def.app" else "acme.public"
             assertTrue(result.resolved, "[$dialect] expected resolved=true, got: $result")
-            val columns = result.requiredGrantsList.mapNotNull { it.column.takeIf { _ -> it.hasColumn() } }
+            val columns = result.resultReadsList.mapNotNull { it.column.takeIf { _ -> it.hasColumn() } }
                 .map { "${it.catalog}.${it.identity.schema}.${it.identity.table}.${it.identity.column}" }
             assertTrue("$prefix.users.id" in columns)
             assertTrue("$prefix.users.ssn" in columns)
@@ -122,7 +123,7 @@ class SqlglotTest {
         assertTrue(schema.resolved)
         assertTrue("analytics" in schema.schemaQualifierCandidatesList)
         val write = facts("INSERT INTO users (id, name) VALUES (1, 'x')", "postgres")
-        assertTrue(write.isWrite)
+        assertEquals(StatementKind.STATEMENT_KIND_INSERT, write.statementExec.statementKind)
     }
 
     @Test

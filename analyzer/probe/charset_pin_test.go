@@ -24,8 +24,8 @@ func TestResultsCharsetPinFacts(t *testing.T) {
 	for _, sql := range pinned {
 		t.Run("pin/"+sql, func(t *testing.T) {
 			f := mysqlFacts(t, sql)
-			if got := resolve(t, sql); got != "session" {
-				t.Fatalf("classification = %q, want session", got)
+			if got := resolve(t, sql); got != "stmt.kind.set_session_var" {
+				t.Fatalf("classification = %q, want stmt.kind.set_session_var", got)
 			}
 			if f.RewrittenSql == nil || f.GetRewrittenSql() != want {
 				t.Fatalf("rewrittenSql = (%q, has=%v), want %q", f.GetRewrittenSql(), f.RewrittenSql != nil, want)

@@ -5,7 +5,6 @@ import com.ridi.oss.proxymonster.analyzer.pb.EngineConfig as PbEngineConfig
 import com.ridi.oss.proxymonster.analyzer.pb.Namespace as PbNamespace
 import com.ridi.oss.proxymonster.analyzer.pb.FailureClass
 import com.ridi.oss.proxymonster.analyzer.pb.StatementFacts
-import com.ridi.oss.proxymonster.analyzer.pb.StatementClass
 import com.ridi.oss.proxymonster.analyzer.pb.statementFacts
 import com.ridi.oss.proxymonster.analyzer.pb.analyzeRequest
 import com.ridi.oss.sqlglotgo.Sqlglot
@@ -46,7 +45,6 @@ object SqlglotProbe {
                 failureClass = FailureClass.FAILURE_CLASS_UNANALYZABLE
                 failedStage = "LINEAGE"
                 detail = (e.message ?: e.javaClass.simpleName).take(150)
-                statementClass = StatementClass.STATEMENT_CLASS_UNSPECIFIED
             }
         }
 }

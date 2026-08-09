@@ -54,7 +54,7 @@ func TestStatementFactsMysqlAnsiQuotesMasksQuotedColumn(t *testing.T) {
 	// forward the ANSI_QUOTES session instead of failing it closed. Without the flag (default mode) `"ssn"`
 	// is a string, so it emits no column requirement.
 	hasSSNColumnGrant := func(f *pb.StatementFacts) bool {
-		for _, g := range f.GetRequiredGrants() {
+		for _, g := range f.GetResultReads() {
 			if c := g.GetColumn(); c != nil && c.GetIdentity().GetColumn() == "ssn" {
 				return true
 			}
@@ -79,14 +79,14 @@ func TestStatementFactsColumnDispositions(t *testing.T) {
 		pb.MaskedDisposition_MASKED_DISPOSITION_REDACT_OUTPUT_NULL: false,
 		pb.MaskedDisposition_MASKED_DISPOSITION_DENY_STATEMENT:     false,
 	}
-	for _, grant := range facts.GetRequiredGrants() {
+	for _, grant := range facts.GetResultReads() {
 		if grant.GetColumn() != nil {
 			want[grant.GetMaskedDisposition()] = true
 		}
 	}
 	for disposition, found := range want {
 		if !found {
-			t.Fatalf("missing column disposition %s in %+v", disposition, facts.GetRequiredGrants())
+			t.Fatalf("missing column disposition %s in %+v", disposition, facts.GetResultReads())
 		}
 	}
 	if got := facts.GetOutputColumns(); len(got) != 2 || got[0] != "ssn" || got[1] != "redacted" {
@@ -96,22 +96,19 @@ func TestStatementFactsColumnDispositions(t *testing.T) {
 
 func TestStatementFactsWriteReadSetAlwaysDeniesMasking(t *testing.T) {
 	facts := postgresFacts(t, "INSERT INTO sink (value) SELECT ssn FROM users")
-	if !facts.GetResolved() || !facts.GetIsWrite() {
+	if !facts.GetResolved() {
 		t.Fatalf("expected resolved write facts: %+v", facts)
 	}
-	foundInsert := false
+	foundInsert := facts.GetStatementExec().GetStatementKind() == pb.StatementKind_STATEMENT_KIND_INSERT_SELECT
 	foundWriteRead := false
-	for _, grant := range facts.GetRequiredGrants() {
-		if grant.GetDatasource() && grant.GetAction() == pb.GrantAction_GRANT_ACTION_SQL_INSERT {
-			foundInsert = true
-		}
+	for _, grant := range facts.GetResultReads() {
 		if c := grant.GetColumn(); c != nil && c.GetIdentity().GetColumn() == "ssn" &&
 			grant.GetMaskedDisposition() == pb.MaskedDisposition_MASKED_DISPOSITION_DENY_STATEMENT {
 			foundWriteRead = true
 		}
 	}
 	if !foundInsert || !foundWriteRead {
-		t.Fatalf("missing insert or write-read grant: %+v", facts.GetRequiredGrants())
+		t.Fatalf("missing insert or write-read grant: %+v", facts)
 	}
 }
 
@@ -139,15 +136,15 @@ func TestStatementFactsInadmissibleCases(t *testing.T) {
 
 func TestStatementFactsMetadataAndUtilityClassification(t *testing.T) {
 	showWarnings := mysqlFacts(t, "SHOW WARNINGS")
-	if !showWarnings.GetResolved() || showWarnings.GetStatementClass() != pb.StatementClass_STATEMENT_CLASS_METADATA {
+	if !showWarnings.GetResolved() || factsKind(showWarnings) != pb.StatementKind_STATEMENT_KIND_SHOW_WARNINGS {
 		t.Fatalf("unexpected SHOW facts: %+v", showWarnings)
 	}
-	if len(showWarnings.GetRequiredGrants()) != 1 || showWarnings.GetRequiredGrants()[0].GetUtility().GetCommand() != "SHOW_WARNINGS" {
-		t.Fatalf("SHOW WARNINGS missing utility grant: %+v", showWarnings.GetRequiredGrants())
+	if ng := nonExecuteGrants(showWarnings); len(ng) != 1 || ng[0].GetUtility().GetCommand() != "SHOW_WARNINGS" {
+		t.Fatalf("SHOW WARNINGS missing utility grant: %+v", showWarnings.GetResultReads())
 	}
 
 	describe := mysqlFacts(t, "DESCRIBE users ssn")
-	if !describe.GetResolved() || describe.GetStatementClass() != pb.StatementClass_STATEMENT_CLASS_METADATA || len(describe.GetRequiredGrants()) != 0 {
+	if !describe.GetResolved() || factsKind(describe) != pb.StatementKind_STATEMENT_KIND_DESCRIBE || len(nonExecuteGrants(describe)) != 0 {
 		t.Fatalf("unexpected DESCRIBE metadata facts: %+v", describe)
 	}
 }
@@ -158,13 +155,13 @@ func TestStatementFactsExplainAnalyzesInnerQuery(t *testing.T) {
 		t.Fatalf("unexpected EXPLAIN TABLE facts: %+v", facts)
 	}
 	foundSSN := false
-	for _, grant := range facts.GetRequiredGrants() {
+	for _, grant := range facts.GetResultReads() {
 		if c := grant.GetColumn(); c != nil && c.GetIdentity().GetColumn() == "ssn" {
 			foundSSN = true
 		}
 	}
 	if !foundSSN {
-		t.Fatalf("EXPLAIN TABLE did not analyze SELECT * inner query: %+v", facts.GetRequiredGrants())
+		t.Fatalf("EXPLAIN TABLE did not analyze SELECT * inner query: %+v", facts.GetResultReads())
 	}
 
 	descAnalyze := postgresFacts(t, "DESC ANALYZE SELECT ssn FROM users")
@@ -178,12 +175,12 @@ func TestStatementFactsNoFromUnknownFunctionGrant(t *testing.T) {
 	if !facts.GetResolved() {
 		t.Fatalf("expected analyzable no-FROM statement: %+v", facts)
 	}
-	for _, grant := range facts.GetRequiredGrants() {
+	for _, grant := range facts.GetResultReads() {
 		if grant.GetFunction().GetName() == "my_udf" {
 			return
 		}
 	}
-	t.Fatalf("unknown UDF did not emit Function grant: %+v", facts.GetRequiredGrants())
+	t.Fatalf("unknown UDF did not emit Function grant: %+v", facts.GetResultReads())
 }
 
 func TestStatementFactsUserTypeCastGated(t *testing.T) {
@@ -238,18 +235,18 @@ func TestStatementFactsSchemaQualifiedFunctionGrant(t *testing.T) {
 	} {
 		facts := postgresFacts(t, tc.sql)
 		found := false
-		for _, grant := range facts.GetRequiredGrants() {
+		for _, grant := range facts.GetResultReads() {
 			if grant.GetFunction().GetName() == tc.want {
 				found = true
 			}
 		}
 		if !found {
-			t.Fatalf("qualified user function %q did not emit %q grant: %+v", tc.sql, tc.want, facts.GetRequiredGrants())
+			t.Fatalf("qualified user function %q did not emit %q grant: %+v", tc.sql, tc.want, facts.GetResultReads())
 		}
 	}
 	// A pg_catalog-qualified safe builtin is the trusted system function of that name — no grant.
-	if facts := postgresFacts(t, "SELECT pg_catalog.abs(-1)"); len(facts.GetRequiredGrants()) != 0 {
-		t.Fatalf("pg_catalog.abs must be safe: %+v", facts.GetRequiredGrants())
+	if facts := postgresFacts(t, "SELECT pg_catalog.abs(-1)"); len(nonExecuteGrants(facts)) != 0 {
+		t.Fatalf("pg_catalog.abs must be safe: %+v", facts.GetResultReads())
 	}
 }
 
@@ -263,28 +260,28 @@ func TestStatementFactsPgCatalogQualifierFoldedQuoteAware(t *testing.T) {
 	for _, sql := range []string{
 		"SELECT pg_catalog.version()", "SELECT PG_CATALOG.version()", `SELECT "pg_catalog".version()`,
 	} {
-		if facts := postgresFacts(t, sql); len(facts.GetRequiredGrants()) != 0 {
-			t.Fatalf("qualifier folding to the system catalog must be trusted (no grant): %q -> %+v", sql, facts.GetRequiredGrants())
+		if facts := postgresFacts(t, sql); len(nonExecuteGrants(facts)) != 0 {
+			t.Fatalf("qualifier folding to the system catalog must be trusted (no grant): %q -> %+v", sql, facts.GetResultReads())
 		}
 	}
 	// Quoted "PG_CATALOG" (a distinct user schema) is gated under its case-preserved qualified name, and
 	// must never smuggle the bare trusted name `version`.
 	facts := postgresFacts(t, `SELECT "PG_CATALOG".version()`)
 	if !hasFunctionGrant(facts, "PG_CATALOG.version") {
-		t.Fatalf(`quoted "PG_CATALOG".version() must emit a case-preserved Function grant: %+v`, facts.GetRequiredGrants())
+		t.Fatalf(`quoted "PG_CATALOG".version() must emit a case-preserved Function grant: %+v`, facts.GetResultReads())
 	}
 	if hasFunctionGrant(facts, "version") {
-		t.Fatalf(`quoted "PG_CATALOG" smuggled the bare trusted name: %+v`, facts.GetRequiredGrants())
+		t.Fatalf(`quoted "PG_CATALOG" smuggled the bare trusted name: %+v`, facts.GetResultReads())
 	}
 	// Engine-gated: pg_catalog is a PostgreSQL schema. On MySQL a database literally named pg_catalog is
 	// ordinary user code, so its function is gated — never trusted as a system builtin.
 	if my := mysqlFacts(t, "SELECT pg_catalog.leak()"); !hasFunctionGrant(my, "pg_catalog.leak") {
-		t.Fatalf("MySQL pg_catalog.leak() must be gated (pg_catalog is not a MySQL system schema): %+v", my.GetRequiredGrants())
+		t.Fatalf("MySQL pg_catalog.leak() must be gated (pg_catalog is not a MySQL system schema): %+v", my.GetResultReads())
 	}
 }
 
 func hasFunctionGrant(facts *pb.StatementFacts, name string) bool {
-	for _, g := range facts.GetRequiredGrants() {
+	for _, g := range facts.GetResultReads() {
 		if g.GetFunction().GetName() == name {
 			return true
 		}
@@ -297,7 +294,7 @@ func hasFunctionGrant(facts *pb.StatementFacts, name string) bool {
 // including TO RANDOM and a FOR-user), SHOW CREATE USER (Show{this:"CREATE USER"}), and the RESET node.
 func TestStatementFactsStructuredSessionForms(t *testing.T) {
 	hasUtility := func(f *pb.StatementFacts, cmd string) bool {
-		for _, g := range f.GetRequiredGrants() {
+		for _, g := range f.GetResultReads() {
 			if g.GetUtility().GetCommand() == cmd {
 				return true
 			}
@@ -307,16 +304,16 @@ func TestStatementFactsStructuredSessionForms(t *testing.T) {
 	// SET PASSWORD in every spelling → SET_PASSWORD (system:critical account-credential mutation).
 	for _, sql := range []string{"SET PASSWORD = 'x'", "SET PASSWORD FOR 'u'@'h' = 'x'", "SET PASSWORD FOR u TO RANDOM"} {
 		if f := mysqlFacts(t, sql); !hasUtility(f, "SET_PASSWORD") {
-			t.Fatalf("%q must emit SET_PASSWORD: %+v", sql, f.GetRequiredGrants())
+			t.Fatalf("%q must emit SET_PASSWORD: %+v", sql, f.GetResultReads())
 		}
 	}
 	// SHOW CREATE USER (structured Show node) → SHOW_CREATE_USER (exposes a stored password hash).
 	if f := mysqlFacts(t, "SHOW CREATE USER u"); !hasUtility(f, "SHOW_CREATE_USER") {
-		t.Fatalf("SHOW CREATE USER must emit SHOW_CREATE_USER: %+v", f.GetRequiredGrants())
+		t.Fatalf("SHOW CREATE USER must emit SHOW_CREATE_USER: %+v", f.GetResultReads())
 	}
 	// PostgreSQL RESET (dedicated Reset node) only restores defaults — a benign session passthrough.
 	for _, sql := range []string{"RESET role", "RESET ALL", "RESET search_path"} {
-		if f := postgresFacts(t, sql); !f.GetResolved() || f.GetStatementClass() != pb.StatementClass_STATEMENT_CLASS_SESSION || len(f.GetRequiredGrants()) != 0 {
+		if f := postgresFacts(t, sql); !f.GetResolved() || factsKind(f) != pb.StatementKind_STATEMENT_KIND_SET_SESSION_VAR || len(nonExecuteGrants(f)) != 0 {
 			t.Fatalf("RESET must be a benign session passthrough: %q -> %+v", sql, f)
 		}
 	}
@@ -342,7 +339,7 @@ func TestStatementFactsLexerModeAssignmentGated(t *testing.T) {
 	// A benign user-variable set and a literal, lexer-safe sql_mode stay session passthrough.
 	for _, sql := range []string{"SET @m = 'ANSI_QUOTES'", "SET autocommit = 0", "SET sql_mode = 'TRADITIONAL'"} {
 		facts := mysqlFacts(t, sql)
-		if !facts.GetResolved() || facts.GetStatementClass() != pb.StatementClass_STATEMENT_CLASS_SESSION {
+		if !facts.GetResolved() || factsKind(facts) != pb.StatementKind_STATEMENT_KIND_SET_SESSION_VAR {
 			t.Fatalf("benign SET must be session passthrough: %q -> %+v", sql, facts)
 		}
 	}
@@ -364,7 +361,7 @@ func TestStatementFactsQualifiedFunctionInSetGated(t *testing.T) {
 	// A pg_catalog-qualified safe builtin and a bare safe builtin stay benign SESSION passthrough.
 	for _, sql := range []string{"SET @x = pg_catalog.abs(1)", "SET @x = abs(1)", "SET @x = 5"} {
 		facts := mysqlFacts(t, sql)
-		if !facts.GetResolved() || facts.GetStatementClass() != pb.StatementClass_STATEMENT_CLASS_SESSION {
+		if !facts.GetResolved() || factsKind(facts) != pb.StatementKind_STATEMENT_KIND_SET_SESSION_VAR {
 			t.Fatalf("safe SET must stay session passthrough: %q -> %+v", sql, facts)
 		}
 	}
@@ -379,7 +376,7 @@ func TestStatementFactsMultiPartQualifierFunctionGrant(t *testing.T) {
 		"SELECT current_database().public.version()",
 	} {
 		facts := postgresFacts(t, sql)
-		grants := facts.GetRequiredGrants()
+		grants := facts.GetResultReads()
 		if len(grants) == 0 {
 			t.Fatalf("multi-part qualified call must emit a Function grant: %q -> %+v", sql, facts)
 		}
@@ -405,13 +402,13 @@ func TestStatementFactsPrivilegedSetScopeUtility(t *testing.T) {
 	} {
 		facts := mysqlFacts(t, tc.sql)
 		found := false
-		for _, grant := range facts.GetRequiredGrants() {
+		for _, grant := range facts.GetResultReads() {
 			if grant.GetUtility().GetCommand() == tc.want {
 				found = true
 			}
 		}
 		if !found {
-			t.Fatalf("privileged SET %q did not emit %q utility grant: %+v", tc.sql, tc.want, facts.GetRequiredGrants())
+			t.Fatalf("privileged SET %q did not emit %q utility grant: %+v", tc.sql, tc.want, facts.GetResultReads())
 		}
 	}
 	// A standalone `SET PASSWORD` structures (kind=PASSWORD → SET_PASSWORD utility, above), but a multi-item
@@ -423,8 +420,8 @@ func TestStatementFactsPrivilegedSetScopeUtility(t *testing.T) {
 		t.Fatalf("multi-item SET with PASSWORD must fail closed unconditionally: %+v", facts)
 	}
 	// A benign multi-assignment SET emits no utility grant.
-	if facts := mysqlFacts(t, "SET @a=1, autocommit=0"); len(facts.GetRequiredGrants()) != 0 {
-		t.Fatalf("benign multi-SET must have no utility grant: %+v", facts.GetRequiredGrants())
+	if facts := mysqlFacts(t, "SET @a=1, autocommit=0"); len(nonExecuteGrants(facts)) != 0 {
+		t.Fatalf("benign multi-SET must have no utility grant: %+v", facts.GetResultReads())
 	}
 }
 
@@ -433,7 +430,7 @@ func TestStatementFactsSetPasswordCommandUtility(t *testing.T) {
 	// SET_PASSWORD utility grant so it is gated and never relayed verbatim under sql.unanalyzable on dev.
 	facts := mysqlFacts(t, "SET PASSWORD FOR 'u'@'h' = 'x'")
 	found := false
-	for _, grant := range facts.GetRequiredGrants() {
+	for _, grant := range facts.GetResultReads() {
 		if grant.GetUtility().GetCommand() == "SET_PASSWORD" {
 			found = true
 		}
@@ -489,27 +486,16 @@ func TestStatementFactsTemporaryDDLDoesNotChangeCatalog(t *testing.T) {
 }
 
 func TestStatementFactsInsertOnConflictDoNothing(t *testing.T) {
-	// `ON CONFLICT ... DO NOTHING` cannot update an existing row, so it must require ONLY sql.insert — never
-	// an extra sql.update that would deny an insert-only principal. `DO UPDATE` / MySQL upsert still need it.
-	hasAction := func(sql string, want pb.GrantAction) bool {
-		facts := postgresFacts(t, sql)
-		for _, grant := range facts.GetRequiredGrants() {
-			if grant.GetDatasource() && grant.GetAction() == want {
-				return true
-			}
-		}
-		return false
-	}
+	// `ON CONFLICT ... DO NOTHING` cannot update an existing row, so it classifies as a plain INSERT — never
+	// INSERT_ON_DUP, whose kind authorizes the update an insert-only principal must be denied. `DO UPDATE` /
+	// MySQL upsert keep the INSERT_ON_DUP kind.
 	nothing := "INSERT INTO sink (id) VALUES (1) ON CONFLICT (id) DO NOTHING"
-	if !hasAction(nothing, pb.GrantAction_GRANT_ACTION_SQL_INSERT) {
-		t.Fatalf("DO NOTHING must require sql.insert")
-	}
-	if hasAction(nothing, pb.GrantAction_GRANT_ACTION_SQL_UPDATE) {
-		t.Fatalf("DO NOTHING must NOT require sql.update")
+	if got := factsKind(postgresFacts(t, nothing)); got != pb.StatementKind_STATEMENT_KIND_INSERT {
+		t.Fatalf("DO NOTHING kind = %v, want INSERT (not the upsert kind)", got)
 	}
 	doUpdate := "INSERT INTO sink (id) VALUES (1) ON CONFLICT (id) DO UPDATE SET value='y'"
-	if !hasAction(doUpdate, pb.GrantAction_GRANT_ACTION_SQL_UPDATE) {
-		t.Fatalf("DO UPDATE must require sql.update")
+	if got := factsKind(postgresFacts(t, doUpdate)); got != pb.StatementKind_STATEMENT_KIND_INSERT_ON_DUP {
+		t.Fatalf("DO UPDATE kind = %v, want INSERT_ON_DUP", got)
 	}
 }
 
@@ -518,12 +504,12 @@ func TestStatementFactsUnicodeEscapedSetConfigEmitsFunctionGrant(t *testing.T) {
 	if !facts.GetResolved() {
 		t.Fatalf("decoded U& identifier should analyze: %+v", facts)
 	}
-	for _, grant := range facts.GetRequiredGrants() {
+	for _, grant := range facts.GetResultReads() {
 		if grant.GetFunction().GetName() == "set_config" {
 			return
 		}
 	}
-	t.Fatalf("decoded set_config did not emit a Function grant: %+v", facts.GetRequiredGrants())
+	t.Fatalf("decoded set_config did not emit a Function grant: %+v", facts.GetResultReads())
 }
 
 func TestStatementFactsSchemaCandidatesAndTemporaryDDL(t *testing.T) {
@@ -554,13 +540,13 @@ func TestStatementFactsExecutableCommentAndOptimizerHint(t *testing.T) {
 		t.Fatalf("executable comment should be analyzed: %+v", executable)
 	}
 	found := false
-	for _, grant := range executable.GetRequiredGrants() {
+	for _, grant := range executable.GetResultReads() {
 		if grant.GetColumn().GetIdentity().GetColumn() == "ssn" {
 			found = true
 		}
 	}
 	if !found {
-		t.Fatalf("executable comment ssn was not emitted: %+v", executable.GetRequiredGrants())
+		t.Fatalf("executable comment ssn was not emitted: %+v", executable.GetResultReads())
 	}
 	if hinted := mysqlFacts(t, "SELECT /*+ MAX_EXECUTION_TIME(1000) */ id FROM users"); !hinted.GetResolved() {
 		t.Fatalf("optimizer hint should remain inert: %+v", hinted)

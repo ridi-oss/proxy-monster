@@ -53,7 +53,7 @@ func TestPostgresStatementKind(t *testing.T) {
 		{"VALUES (1), (2)", pb.StatementKind_STATEMENT_KIND_VALUES},
 		{"SELECT ssn FROM users FOR UPDATE", pb.StatementKind_STATEMENT_KIND_SELECT},
 		// SELECT … INTO is CTAS-equivalent but classifies as a read; EXPLAIN unwraps to its inner query.
-		{"SELECT id INTO newtab FROM users", pb.StatementKind_STATEMENT_KIND_SELECT},
+		{"SELECT id INTO newtab FROM users", pb.StatementKind_STATEMENT_KIND_SELECT_INTO},
 		{"EXPLAIN SELECT ssn FROM users", pb.StatementKind_STATEMENT_KIND_SELECT},
 		{"EXPLAIN ANALYZE SELECT ssn FROM users", pb.StatementKind_STATEMENT_KIND_SELECT},
 		// TABLE <name> (a PostgreSQL SELECT shorthand) is not structured as a query.
@@ -198,7 +198,7 @@ func TestPostgresStatementKind(t *testing.T) {
 		{"IMPORT FOREIGN SCHEMA remote LIMIT TO (users) FROM SERVER srv INTO local", pb.StatementKind_STATEMENT_KIND_STMT_UNKNOWN},
 	}
 	for _, c := range cases {
-		if got := pgFacts(t, c.sql).StatementKind; got != c.want {
+		if got := factsKind(pgFacts(t, c.sql)); got != c.want {
 			t.Errorf("kind(%q) = %v, want %v", c.sql, got, c.want)
 		}
 	}
@@ -211,7 +211,7 @@ func TestPostgresStatementKindNoUnspecified(t *testing.T) {
 		"SELECT 1", "VACUUM users", "CREATE SEQUENCE s", "COPY users TO '/tmp/x'",
 		"DO $$ BEGIN END $$", "GRANT SELECT ON users TO r", "LISTEN ch", "MERGE INTO users u USING users s ON u.id = s.id WHEN MATCHED THEN DO NOTHING",
 	} {
-		if got := pgFacts(t, sql).StatementKind; got == pb.StatementKind_STATEMENT_KIND_UNSPECIFIED {
+		if got := factsKind(pgFacts(t, sql)); got == pb.StatementKind_STATEMENT_KIND_UNSPECIFIED {
 			t.Errorf("%q left StatementKind UNSPECIFIED — must be a real kind or STMT_UNKNOWN", sql)
 		}
 	}

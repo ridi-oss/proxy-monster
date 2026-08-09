@@ -14,10 +14,13 @@ import (
 //   - no-FROM data-reading function (allowlist deny) → Resolved=true carrying a Function grant; the
 //     control-plane function gate then denies any grant whose name isn't a classified-safe builtin
 //     (see StatementFactsGrantLoopTest / decideQuery). Here we assert the grant is emitted.
-//   - READONLY_META → StatementClass METADATA; TX_CONTROL / SESSION_MUTATING → SESSION;
-//     the analyzed classes (SELECT-with-FROM, DML, DDL, SELECT-INTO write) → ANALYZED.
+//   - the statement's classification → the single execute grant's StatementKind (the derived
+//     METADATA/SESSION/ANALYZED class is no longer on the contract). The old classes map to kinds:
+//     READONLY_META → the metadata kinds (show_*, describe, a no-FROM/const select);
+//     TX_CONTROL / SESSION_MUTATING → the session kinds (set_session_var, start_transaction, commit,
+//     savepoint, use, …); the analyzed classes (SELECT-with-FROM, DML, DDL, SELECT-INTO write) → the
+//     traced kind (select, insert, create_table, select_into, …).
 //   - utility facts (SHOW WARNINGS…, SET GLOBAL/PASSWORD) → a Utility grant with the command id.
-//   - sql.<kind> → the datasource grant's GrantAction.
 // Auxiliary Admission fields that were intentionally dropped in the migration (statementVerb,
 // statementToAnalyze, explainStripped, transactionBoundary) are not asserted — the behavior they drove
 // now lives in the facts (class/grants), which the cases below cover.
@@ -38,7 +41,7 @@ func parityDenied(t *testing.T, sql, dialect string) {
 	t.Helper()
 	f := factsFor(t, sql, dialect)
 	if f.Resolved {
-		t.Errorf("[%s] expected fail-closed (Resolved=false) for %q, got class=%s grants=%d", dialect, sql, f.StatementClass, len(f.RequiredGrants))
+		t.Errorf("[%s] expected fail-closed (Resolved=false) for %q, got kind=%s reads=%d", dialect, sql, factsKind(f), len(f.GetResultReads()))
 	}
 }
 
@@ -46,13 +49,13 @@ func parityFunctionGrant(t *testing.T, sql, dialect string) {
 	t.Helper()
 	f := factsFor(t, sql, dialect)
 	has := false
-	for _, g := range f.RequiredGrants {
+	for _, g := range f.GetResultReads() {
 		if g.GetFunction() != nil {
 			has = true
 		}
 	}
 	if !has {
-		t.Errorf("[%s] expected a Function grant (control-plane denies unclassified) for %q, got resolved=%v grants=%d", dialect, sql, f.Resolved, len(f.RequiredGrants))
+		t.Errorf("[%s] expected a Function grant (control-plane denies unclassified) for %q, got resolved=%v reads=%d", dialect, sql, f.Resolved, len(f.GetResultReads()))
 	}
 }
 
@@ -63,7 +66,7 @@ func parityFunctionGrant(t *testing.T, sql, dialect string) {
 func parityFunctionGated(t *testing.T, sql, dialect, name string) {
 	t.Helper()
 	f := factsFor(t, sql, dialect)
-	for _, g := range f.RequiredGrants {
+	for _, g := range f.GetResultReads() {
 		if fn := g.GetFunction(); fn != nil && fn.Name == name {
 			return
 		}
@@ -73,14 +76,16 @@ func parityFunctionGated(t *testing.T, sql, dialect, name string) {
 			return
 		}
 	}
-	t.Errorf("[%s] %q: expected function %q gated (grant or facts.functions), got resolved=%v grants=%d functions=%v", dialect, sql, name, f.Resolved, len(f.RequiredGrants), f.Functions)
+	t.Errorf("[%s] %q: expected function %q gated (grant or facts.functions), got resolved=%v reads=%d functions=%v", dialect, sql, name, f.Resolved, len(f.GetResultReads()), f.Functions)
 }
 
-func parityClass(t *testing.T, sql, dialect string, want pb.StatementClass) {
+// parityKind asserts the statement resolves and its single execute grant carries the expected kind — the
+// per-statement classification signal that replaced the derived METADATA/SESSION/ANALYZED class.
+func parityKind(t *testing.T, sql, dialect string, want pb.StatementKind) {
 	t.Helper()
 	f := factsFor(t, sql, dialect)
-	if !f.Resolved || f.StatementClass != want {
-		t.Errorf("[%s] %q: want resolved+%s, got resolved=%v class=%s (detail=%s)", dialect, sql, want, f.Resolved, f.StatementClass, f.Detail)
+	if !f.Resolved || factsKind(f) != want {
+		t.Errorf("[%s] %q: want resolved+%s, got resolved=%v kind=%s (detail=%s)", dialect, sql, want, f.Resolved, factsKind(f), f.Detail)
 	}
 }
 
@@ -88,7 +93,7 @@ func parityUtility(t *testing.T, sql, dialect, command string) {
 	t.Helper()
 	f := factsFor(t, sql, dialect)
 	found := false
-	for _, g := range f.RequiredGrants {
+	for _, g := range f.GetResultReads() {
 		if u := g.GetUtility(); u != nil && u.Command == command {
 			found = true
 		}
@@ -101,24 +106,20 @@ func parityUtility(t *testing.T, sql, dialect, command string) {
 func parityNoUtility(t *testing.T, sql, dialect string) {
 	t.Helper()
 	f := factsFor(t, sql, dialect)
-	for _, g := range f.RequiredGrants {
+	for _, g := range f.GetResultReads() {
 		if g.GetUtility() != nil {
 			t.Errorf("[%s] %q: expected NO utility grant, got %q", dialect, sql, g.GetUtility().Command)
 		}
 	}
 }
 
-func parityDatasourceAction(t *testing.T, sql, dialect string, action pb.GrantAction) {
+// parityStatementKind asserts the single execute grant carries the expected statement kind — the one
+// per-statement authorization signal that replaced the datasource verb grants.
+func parityStatementKind(t *testing.T, sql, dialect string, kind pb.StatementKind) {
 	t.Helper()
 	f := factsFor(t, sql, dialect)
-	found := false
-	for _, g := range f.RequiredGrants {
-		if g.GetDatasource() && g.Action == action {
-			found = true
-		}
-	}
-	if !found {
-		t.Errorf("[%s] %q: expected datasource grant %s, not present (resolved=%v grants=%d)", dialect, sql, action, f.Resolved, len(f.RequiredGrants))
+	if f.GetStatementExec().GetStatementKind() != kind {
+		t.Errorf("[%s] %q: expected execute grant kind %s, not present (resolved=%v kind=%v)", dialect, sql, kind, f.Resolved, factsKind(f))
 	}
 }
 
@@ -127,12 +128,12 @@ func parityDatasourceAction(t *testing.T, sql, dialect string, action pb.GrantAc
 func parityColumnGrant(t *testing.T, sql, dialect, column string) {
 	t.Helper()
 	f := factsFor(t, sql, dialect)
-	for _, g := range f.RequiredGrants {
+	for _, g := range f.GetResultReads() {
 		if c := g.GetColumn(); c != nil && c.GetIdentity().GetColumn() == column {
 			return
 		}
 	}
-	t.Errorf("[%s] %q: expected a column grant for %q (read must be gated), got resolved=%v grants=%d", dialect, sql, column, f.Resolved, len(f.RequiredGrants))
+	t.Errorf("[%s] %q: expected a column grant for %q (read must be gated), got resolved=%v reads=%d", dialect, sql, column, f.Resolved, len(f.GetResultReads()))
 }
 
 func TestParityBatchAndLex(t *testing.T) {
@@ -233,7 +234,9 @@ func TestParityPrivilegeAndLexerMutation(t *testing.T) {
 	parityUtility(t, "SET GLOBAL max_connections = 100", "mysql", "SET_GLOBAL")
 	parityUtility(t, "SET PASSWORD = 'x'", "mysql", "SET_PASSWORD")
 	// A SET to a safe builtin value stays a benign session mutation.
-	bothDialects(func(d string) { parityClass(t, "SET @x = version()", d, pb.StatementClass_STATEMENT_CLASS_SESSION) })
+	bothDialects(func(d string) {
+		parityKind(t, "SET @x = version()", d, pb.StatementKind_STATEMENT_KIND_SET_SESSION_VAR)
+	})
 }
 
 func TestParityMySQLResetFamily(t *testing.T) {
@@ -243,9 +246,9 @@ func TestParityMySQLResetFamily(t *testing.T) {
 	} {
 		parityDenied(t, sql, "mysql")
 	}
-	// PostgreSQL RESET is a benign session reset → SESSION passthrough.
+	// PostgreSQL RESET is a benign session reset → session-var passthrough.
 	for _, sql := range []string{"RESET search_path", "RESET ALL", "RESET ROLE", "RESET SESSION AUTHORIZATION", "RESET TIME ZONE"} {
-		parityClass(t, sql, "postgres", pb.StatementClass_STATEMENT_CLASS_SESSION)
+		parityKind(t, sql, "postgres", pb.StatementKind_STATEMENT_KIND_SET_SESSION_VAR)
 	}
 }
 
@@ -256,14 +259,21 @@ func TestParityMySQLResetFamily(t *testing.T) {
 // they resolve to a benign SESSION passthrough. The comma form and single-mode work; the space-separated
 // multi-mode form ("READ ONLY DEFERRABLE") is a documented degrade that still lands as Command → denied.
 func TestParityPGTransactionCharacteristics(t *testing.T) {
+	// The `SET TRANSACTION …` forms carry a SetItem kind=TRANSACTION → SET_TRANSACTION; the equivalent
+	// `SET SESSION CHARACTERISTICS AS TRANSACTION …` forms structure without that discriminator and fall
+	// through to the benign SET_SESSION_VAR. Both are a benign session passthrough — only the kind differs.
 	for _, sql := range []string{
 		"SET TRANSACTION DEFERRABLE",
 		"SET TRANSACTION NOT DEFERRABLE",
-		"SET SESSION CHARACTERISTICS AS TRANSACTION DEFERRABLE",
-		"SET SESSION CHARACTERISTICS AS TRANSACTION NOT DEFERRABLE",
 		"SET TRANSACTION READ ONLY, DEFERRABLE",
 	} {
-		parityClass(t, sql, "postgres", pb.StatementClass_STATEMENT_CLASS_SESSION)
+		parityKind(t, sql, "postgres", pb.StatementKind_STATEMENT_KIND_SET_TRANSACTION)
+	}
+	for _, sql := range []string{
+		"SET SESSION CHARACTERISTICS AS TRANSACTION DEFERRABLE",
+		"SET SESSION CHARACTERISTICS AS TRANSACTION NOT DEFERRABLE",
+	} {
+		parityKind(t, sql, "postgres", pb.StatementKind_STATEMENT_KIND_SET_SESSION_VAR)
 	}
 	// Documented boundary, not a desired end-state: space-separated multi-mode still degrades to Command.
 	parityDenied(t, "SET TRANSACTION READ ONLY DEFERRABLE", "postgres")
@@ -304,10 +314,10 @@ func TestParityUserTypeAndTableBlock(t *testing.T) {
 		"SELECT '2020-01-01'::timestamp", "SELECT CAST('1' AS numeric(10,2))", "SELECT CAST(1 AS double precision)",
 		"SELECT DATE '2020-01-01'", "SELECT INTERVAL '1' DAY", "SELECT 'x'::pg_catalog.text", "SELECT '{1,2}'::int[]",
 	} {
-		parityClass(t, sql, "postgres", pb.StatementClass_STATEMENT_CLASS_METADATA)
+		parityKind(t, sql, "postgres", pb.StatementKind_STATEMENT_KIND_SELECT)
 	}
-	parityClass(t, "SELECT CAST('1' AS SIGNED)", "mysql", pb.StatementClass_STATEMENT_CLASS_METADATA)
-	parityClass(t, "SET @x = CAST('1' AS SIGNED)", "mysql", pb.StatementClass_STATEMENT_CLASS_SESSION)
+	parityKind(t, "SELECT CAST('1' AS SIGNED)", "mysql", pb.StatementKind_STATEMENT_KIND_SELECT)
+	parityKind(t, "SET @x = CAST('1' AS SIGNED)", "mysql", pb.StatementKind_STATEMENT_KIND_SET_SESSION_VAR)
 	// A top-level TABLE query-primary reading a table with no FROM word is denied.
 	bothDialects(func(d string) {
 		for _, sql := range []string{"select 0,'x','x','x' union table users", "SELECT 1 UNION ALL TABLE users", "select 1 intersect table users"} {
@@ -341,25 +351,25 @@ func TestParityShowDescribe(t *testing.T) {
 		"SHOW TABLES LIKE 'user%'", "SHOW CREATE TABLE users", "SHOW ENGINES", "SHOW STATUS",
 		"SHOW VARIABLES", "SHOW TABLE STATUS",
 	} {
-		parityClass(t, sql, "mysql", pb.StatementClass_STATEMENT_CLASS_METADATA)
+		parityKind(t, sql, "mysql", pb.StatementKind_STATEMENT_KIND_SHOW_METADATA)
 		parityNoUtility(t, sql, "mysql")
 	}
-	// DESCRIBE/DESC of a query (EXPLAIN alias) is now ANALYZED as its inner query — it inherits the
+	// DESCRIBE/DESC of a query (EXPLAIN alias) is now analyzed as its inner query — it inherits the
 	// inner's column enforcement (ssn gets a column grant that masks/denies) rather than a blanket
-	// admission deny. Assert it's resolved+analyzed (the inner query's grants apply, so ssn is protected).
+	// admission deny. The kind tracks the inner query (a SELECT), so its grants apply and ssn is protected.
 	bothDialects(func(d string) {
 		for _, sql := range []string{
 			"DESC ANALYZE SELECT UUID_TO_BIN(ssn) FROM users LIMIT 1",
 			"DESCRIBE ANALYZE SELECT UUID_TO_BIN(ssn) FROM users LIMIT 1",
 		} {
 			f := factsFor(t, sql, d)
-			if !f.Resolved || f.StatementClass != pb.StatementClass_STATEMENT_CLASS_ANALYZED {
-				t.Errorf("[%s] %q: want resolved+ANALYZED (inner-query enforcement), got resolved=%v class=%s", d, sql, f.Resolved, f.StatementClass)
+			if !f.Resolved || factsKind(f) != pb.StatementKind_STATEMENT_KIND_SELECT {
+				t.Errorf("[%s] %q: want resolved+select (inner-query enforcement), got resolved=%v kind=%s", d, sql, f.Resolved, factsKind(f))
 			}
 		}
 	})
 	for _, sql := range []string{"DESC users", "DESCRIBE users", "DESCRIBE users col_name"} {
-		parityClass(t, sql, "mysql", pb.StatementClass_STATEMENT_CLASS_METADATA)
+		parityKind(t, sql, "mysql", pb.StatementKind_STATEMENT_KIND_DESCRIBE)
 	}
 }
 
@@ -404,7 +414,7 @@ func TestParityNoFromSafeChatter(t *testing.T) {
 		"SELECT session_user", "SELECT current_catalog", "SELECT current_schema",
 	}
 	for _, sql := range safe {
-		parityClass(t, sql, "postgres", pb.StatementClass_STATEMENT_CLASS_METADATA)
+		parityKind(t, sql, "postgres", pb.StatementKind_STATEMENT_KIND_SELECT)
 	}
 	// Bare niladics valid AND modeled (v0.14.0) in BOTH engines.
 	bothDialects(func(d string) {
@@ -412,11 +422,11 @@ func TestParityNoFromSafeChatter(t *testing.T) {
 			"SELECT current_user", "SELECT current_timestamp", "SELECT current_date",
 			"SELECT current_time", "SELECT localtime", "SELECT localtimestamp",
 		} {
-			parityClass(t, sql, d, pb.StatementClass_STATEMENT_CLASS_METADATA)
+			parityKind(t, sql, d, pb.StatementKind_STATEMENT_KIND_SELECT)
 		}
 	})
 	for _, sql := range []string{"SELECT @@version_comment", "SELECT DATABASE()", "SELECT USER()", "SELECT CONNECTION_ID()", "SELECT last_insert_id()"} {
-		parityClass(t, sql, "mysql", pb.StatementClass_STATEMENT_CLASS_METADATA)
+		parityKind(t, sql, "mysql", pb.StatementKind_STATEMENT_KIND_SELECT)
 	}
 }
 
@@ -441,7 +451,7 @@ func TestParityBenignSessionAndTx(t *testing.T) {
 		"SET NAMES 'utf8'", "set autocommit=0", "SET sql_mode='STRICT_TRANS_TABLES'",
 		"SET standard_conforming_strings = on", "SET TIME ZONE 'UTC'",
 	} {
-		parityClass(t, sql, "postgres", pb.StatementClass_STATEMENT_CLASS_SESSION)
+		parityKind(t, sql, "postgres", pb.StatementKind_STATEMENT_KIND_SET_SESSION_VAR)
 	}
 	// A PG SET that DEGRADES to Command is fail-closed UNIFORMLY. No
 	// BENIGN form degrades — unquoted `SET NAMES utf8mb4` is invalid PG (only the quoted form is valid PG and
@@ -454,49 +464,53 @@ func TestParityBenignSessionAndTx(t *testing.T) {
 		"SET NAMES utf8mb4", "set autocommit=0", "SET sql_mode='STRICT_TRANS_TABLES'",
 		"SET standard_conforming_strings = on", "SET search_path TO public",
 	} {
-		parityClass(t, sql, "mysql", pb.StatementClass_STATEMENT_CLASS_SESSION)
+		parityKind(t, sql, "mysql", pb.StatementKind_STATEMENT_KIND_SET_SESSION_VAR)
 	}
 	for _, sql := range []string{"SET TIME ZONE 'UTC'", "SET SESSION search_path = a, b"} {
 		parityDenied(t, sql, "mysql")
 	}
-	for _, sql := range []string{"USE analytics", "USE `analytics`", "/* c */ use analytics", "ANALYZE TABLE users"} {
-		parityClass(t, sql, "mysql", pb.StatementClass_STATEMENT_CLASS_SESSION)
+	for _, sql := range []string{"USE analytics", "USE `analytics`", "/* c */ use analytics"} {
+		parityKind(t, sql, "mysql", pb.StatementKind_STATEMENT_KIND_USE)
 	}
-	for _, sql := range []string{"BEGIN", "COMMIT", "ROLLBACK"} {
-		parityClass(t, sql, "postgres", pb.StatementClass_STATEMENT_CLASS_SESSION)
-	}
+	parityKind(t, "ANALYZE TABLE users", "mysql", pb.StatementKind_STATEMENT_KIND_ANALYZE_TABLE)
+	parityKind(t, "BEGIN", "postgres", pb.StatementKind_STATEMENT_KIND_START_TRANSACTION)
+	parityKind(t, "COMMIT", "postgres", pb.StatementKind_STATEMENT_KIND_COMMIT)
+	parityKind(t, "ROLLBACK", "postgres", pb.StatementKind_STATEMENT_KIND_ROLLBACK)
 	// START TRANSACTION (with any transaction modes) parses to a Transaction root since v0.14.0 and joins
-	// the SESSION passthrough family on both engines.
-	bothDialects(func(d string) { parityClass(t, "START TRANSACTION", d, pb.StatementClass_STATEMENT_CLASS_SESSION) })
+	// the session passthrough family on both engines.
+	bothDialects(func(d string) {
+		parityKind(t, "START TRANSACTION", d, pb.StatementKind_STATEMENT_KIND_START_TRANSACTION)
+	})
 	for _, sql := range []string{
 		"START TRANSACTION READ ONLY",
 		"START TRANSACTION ISOLATION LEVEL SERIALIZABLE",
 		"START TRANSACTION READ WRITE, DEFERRABLE",
 	} {
-		parityClass(t, sql, "postgres", pb.StatementClass_STATEMENT_CLASS_SESSION)
+		parityKind(t, sql, "postgres", pb.StatementKind_STATEMENT_KIND_START_TRANSACTION)
 	}
-	parityClass(t, "START TRANSACTION WITH CONSISTENT SNAPSHOT", "mysql", pb.StatementClass_STATEMENT_CLASS_SESSION)
+	parityKind(t, "START TRANSACTION WITH CONSISTENT SNAPSHOT", "mysql", pb.StatementKind_STATEMENT_KIND_START_TRANSACTION)
 }
 
 func TestParitySqlKind(t *testing.T) {
 	bothDialects(func(d string) {
-		parityDatasourceAction(t, "select id from users", d, pb.GrantAction_GRANT_ACTION_SQL_SELECT)
-		parityDatasourceAction(t, "insert into users values(1)", d, pb.GrantAction_GRANT_ACTION_SQL_INSERT)
-		parityDatasourceAction(t, "update users set region='x'", d, pb.GrantAction_GRANT_ACTION_SQL_UPDATE)
-		parityDatasourceAction(t, "delete from users where id=1", d, pb.GrantAction_GRANT_ACTION_SQL_DELETE)
-		parityDatasourceAction(t, "create table t (id int)", d, pb.GrantAction_GRANT_ACTION_SQL_DDL)
-		parityDatasourceAction(t, "alter table users add c int", d, pb.GrantAction_GRANT_ACTION_SQL_DDL)
-		parityDatasourceAction(t, "drop table users", d, pb.GrantAction_GRANT_ACTION_SQL_DDL)
-		parityDatasourceAction(t, "truncate table users", d, pb.GrantAction_GRANT_ACTION_SQL_DDL)
+		parityStatementKind(t, "select id from users", d, pb.StatementKind_STATEMENT_KIND_SELECT)
+		parityStatementKind(t, "insert into users values(1)", d, pb.StatementKind_STATEMENT_KIND_INSERT)
+		parityStatementKind(t, "update users set region='x'", d, pb.StatementKind_STATEMENT_KIND_UPDATE)
+		parityStatementKind(t, "delete from users where id=1", d, pb.StatementKind_STATEMENT_KIND_DELETE)
+		parityStatementKind(t, "create table t (id int)", d, pb.StatementKind_STATEMENT_KIND_CREATE_TABLE)
+		parityStatementKind(t, "alter table users add c int", d, pb.StatementKind_STATEMENT_KIND_ALTER_TABLE)
+		parityStatementKind(t, "drop table users", d, pb.StatementKind_STATEMENT_KIND_DROP_TABLE)
+		parityStatementKind(t, "truncate table users", d, pb.StatementKind_STATEMENT_KIND_TRUNCATE_TABLE)
 		// CTE-header strip: classify off the real leading verb.
-		parityDatasourceAction(t, "with c as (select 1) select * from c", d, pb.GrantAction_GRANT_ACTION_SQL_SELECT)
+		parityStatementKind(t, "with c as (select 1) select * from c", d, pb.StatementKind_STATEMENT_KIND_WITH_SELECT)
 		// EXPLAIN inherits the wrapped statement's kind.
-		parityDatasourceAction(t, "explain insert into users values(1)", d, pb.GrantAction_GRANT_ACTION_SQL_INSERT)
+		parityStatementKind(t, "explain insert into users values(1)", d, pb.StatementKind_STATEMENT_KIND_INSERT)
 	})
-	// SELECT .. INTO is a write (DDL), and a no-FROM SELECT INTO is a write, not readonly-meta.
-	parityDatasourceAction(t, "select id into leaked from users", "postgres", pb.GrantAction_GRANT_ACTION_SQL_DDL)
+	// SELECT .. INTO <newtable> is CTAS-equivalent; PostgreSQL classifies it as a read (SELECT), so the
+	// read-side lineage/masking covers it.
+	parityStatementKind(t, "select id into leaked from users", "postgres", pb.StatementKind_STATEMENT_KIND_SELECT_INTO)
 	bothDialects(func(d string) {
-		parityClass(t, "select 1 into stmt_gate_bypass", d, pb.StatementClass_STATEMENT_CLASS_ANALYZED)
+		parityKind(t, "select 1 into stmt_gate_bypass", d, pb.StatementKind_STATEMENT_KIND_SELECT_INTO)
 	})
 	// A data-modifying CTE (a write in the CTE body) is fail-closed: sqlglot-go does not model it, so it
 	// resolves false at VALIDATE ("data-modifying CTE not supported") and the grant-walk denies it. The
@@ -512,27 +526,21 @@ func TestParitySqlKind(t *testing.T) {
 	}
 }
 
-func TestParityUpsertAdditionalGrant(t *testing.T) {
-	hasUpdate := func(sql, dialect string) bool {
-		f := factsFor(t, sql, dialect)
-		for _, g := range f.RequiredGrants {
-			if g.GetDatasource() && g.Action == pb.GrantAction_GRANT_ACTION_SQL_UPDATE {
-				return true
-			}
-		}
-		return false
-	}
+// TestParityUpsertKind locks the upsert distinction now that a single execute grant carries it: an upsert
+// (ON CONFLICT DO UPDATE / ON DUPLICATE KEY UPDATE) classifies as INSERT_ON_DUP — the kind that authorizes
+// the update it can perform — while a plain insert or a DO NOTHING stays INSERT.
+func TestParityUpsertKind(t *testing.T) {
 	for _, tc := range []struct {
 		sql, dialect string
-		wantUpdate   bool
+		want         pb.StatementKind
 	}{
-		{"insert into users (id) values (1) on conflict (id) do update set region = 'x'", "postgres", true},
-		{"insert into users (id, region) values (1, 'x') on duplicate key update region = 'x'", "mysql", true},
-		{"insert into users (id) values (1) on conflict (id) do nothing", "postgres", false},
-		{"insert into users (id) values (1)", "postgres", false},
+		{"insert into users (id) values (1) on conflict (id) do update set region = 'x'", "postgres", pb.StatementKind_STATEMENT_KIND_INSERT_ON_DUP},
+		{"insert into users (id, region) values (1, 'x') on duplicate key update region = 'x'", "mysql", pb.StatementKind_STATEMENT_KIND_INSERT_ON_DUP},
+		{"insert into users (id) values (1) on conflict (id) do nothing", "postgres", pb.StatementKind_STATEMENT_KIND_INSERT},
+		{"insert into users (id) values (1)", "postgres", pb.StatementKind_STATEMENT_KIND_INSERT},
 	} {
-		if got := hasUpdate(tc.sql, tc.dialect); got != tc.wantUpdate {
-			t.Errorf("[%s] %q: upsert-adds-update = %v, want %v", tc.dialect, tc.sql, got, tc.wantUpdate)
+		if got := factsKind(factsFor(t, tc.sql, tc.dialect)); got != tc.want {
+			t.Errorf("[%s] %q: upsert kind = %v, want %v", tc.dialect, tc.sql, got, tc.want)
 		}
 	}
 }
@@ -555,9 +563,9 @@ func TestParityInjectionVariants(t *testing.T) {
 		"SELECT 1 -- ; SELECT ssn FROM users",
 		"SELECT /* ; SELECT ssn FROM users */ 1",
 	} {
-		parityClass(t, sql, "postgres", pb.StatementClass_STATEMENT_CLASS_METADATA)
+		parityKind(t, sql, "postgres", pb.StatementKind_STATEMENT_KIND_SELECT)
 	}
-	parityClass(t, "SELECT 1 # c ; SELECT ssn FROM users", "mysql", pb.StatementClass_STATEMENT_CLASS_METADATA)
+	parityKind(t, "SELECT 1 # c ; SELECT ssn FROM users", "mysql", pb.StatementKind_STATEMENT_KIND_SELECT)
 }
 
 // TestParitySetVariantSpellings locks the alternate spellings of the privilege / session-mutation SETs:
@@ -598,13 +606,15 @@ func TestParityIntoWriteAndExplainInner(t *testing.T) {
 	for _, sql := range []string{
 		"SELECT 1 INTO OUTFILE '/tmp/x'",
 		"SELECT ssn INTO OUTFILE '/tmp/x' FROM users",
-		"(SELECT 1) UNION SELECT 1 INTO @a",
 	} {
-		parityDatasourceAction(t, sql, "mysql", pb.GrantAction_GRANT_ACTION_SQL_DDL)
+		parityStatementKind(t, sql, "mysql", pb.StatementKind_STATEMENT_KIND_SELECT_INTO_OUTFILE)
 	}
+	// An INTO-variable write hidden in a set-operation branch is still a masking-bypass write: it is
+	// classified SELECT_INTO (gated as ddl), not the read its set-op shape suggests.
+	parityStatementKind(t, "(SELECT 1) UNION SELECT 1 INTO @a", "mysql", pb.StatementKind_STATEMENT_KIND_SELECT_INTO)
 	// An INTO buried in a UNION branch is still a write AND its ssn read is column-gated.
 	exfil := "SELECT id FROM users WHERE 1=0 UNION (SELECT ssn INTO @pm_leak FROM users LIMIT 1)"
-	parityDatasourceAction(t, exfil, "mysql", pb.GrantAction_GRANT_ACTION_SQL_DDL)
+	parityStatementKind(t, exfil, "mysql", pb.StatementKind_STATEMENT_KIND_SELECT_INTO)
 	parityColumnGrant(t, exfil, "mysql", "ssn")
 	// EXPLAIN ANALYZE / EXPLAIN (ANALYZE ...) execute the inner query → ssn is traced and gated.
 	parityColumnGrant(t, "EXPLAIN ANALYZE SELECT ssn FROM users", "postgres", "ssn")
@@ -619,13 +629,13 @@ func TestParityIntoWriteAndExplainInner(t *testing.T) {
 // keyword, so MySQL bare RELEASE stays a denied Alias.
 func TestParityTransactionControlSavepoint(t *testing.T) {
 	bothDialects(func(d string) {
-		parityClass(t, "SAVEPOINT s", d, pb.StatementClass_STATEMENT_CLASS_SESSION)
-		parityClass(t, "RELEASE SAVEPOINT s", d, pb.StatementClass_STATEMENT_CLASS_SESSION)
-		parityClass(t, "ROLLBACK TO SAVEPOINT s", d, pb.StatementClass_STATEMENT_CLASS_SESSION)
-		parityClass(t, "SAVEPOINT commit", d, pb.StatementClass_STATEMENT_CLASS_SESSION) // unreserved-keyword name
-		parityDenied(t, "SAVEPOINT 'foo'", d)                                            // string name → not a Savepoint
-		parityDenied(t, "SAVEPOINT 1", d)                                                // number name → not a Savepoint
+		parityKind(t, "SAVEPOINT s", d, pb.StatementKind_STATEMENT_KIND_SAVEPOINT)
+		parityKind(t, "RELEASE SAVEPOINT s", d, pb.StatementKind_STATEMENT_KIND_SAVEPOINT)
+		parityKind(t, "ROLLBACK TO SAVEPOINT s", d, pb.StatementKind_STATEMENT_KIND_ROLLBACK) // shares the Rollback node
+		parityKind(t, "SAVEPOINT commit", d, pb.StatementKind_STATEMENT_KIND_SAVEPOINT)       // unreserved-keyword name
+		parityDenied(t, "SAVEPOINT 'foo'", d)                                                 // string name → not a Savepoint
+		parityDenied(t, "SAVEPOINT 1", d)                                                     // number name → not a Savepoint
 	})
-	parityClass(t, "RELEASE s", "postgres", pb.StatementClass_STATEMENT_CLASS_SESSION) // PG bare RELEASE (no keyword)
-	parityDenied(t, "RELEASE s", "mysql")                                              // MySQL requires SAVEPOINT keyword
+	parityKind(t, "RELEASE s", "postgres", pb.StatementKind_STATEMENT_KIND_SAVEPOINT) // PG bare RELEASE (no keyword)
+	parityDenied(t, "RELEASE s", "mysql")                                             // MySQL requires SAVEPOINT keyword
 }

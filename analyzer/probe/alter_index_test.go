@@ -10,7 +10,7 @@ import (
 // readsColumn reports whether the facts carry a column grant for the named column — i.e. the read is
 // tracked and can be masked/denied, rather than silently copied out.
 func readsColumn(f *pb.StatementFacts, column string) bool {
-	for _, g := range f.RequiredGrants {
+	for _, g := range f.GetResultReads() {
 		if c := g.GetColumn(); c != nil && c.Identity.Column == column {
 			return true
 		}
@@ -27,15 +27,37 @@ func surfacesFunction(f *pb.StatementFacts, name string) bool {
 	return false
 }
 
-// valueFreeDdl reports whether the facts are a resolved statement authorized by a lone sql.ddl datasource
-// grant with nothing else — the shape schema-only DDL takes. A statement that READS (a column grant, a
-// hidden function) must not land here, or its read/function gate is silently dropped.
-func valueFreeDdl(f *pb.StatementFacts) bool {
-	if !f.Resolved || len(f.RequiredGrants) != 1 {
-		return false
+// isDdlKind reports whether a statement kind is schema/catalog DDL (the kinds that carried sql.ddl before
+// the single execute-grant migration). A privilege/account/replication statement degrades to STMT_UNKNOWN
+// and is excluded, so a DDL grant is never handed to a non-schema statement.
+func isDdlKind(k pb.StatementKind) bool {
+	switch k {
+	case pb.StatementKind_STATEMENT_KIND_CREATE_TABLE,
+		pb.StatementKind_STATEMENT_KIND_CREATE_INDEX,
+		pb.StatementKind_STATEMENT_KIND_CREATE_VIEW,
+		pb.StatementKind_STATEMENT_KIND_CREATE_DATABASE,
+		pb.StatementKind_STATEMENT_KIND_CREATE_FUNCTION,
+		pb.StatementKind_STATEMENT_KIND_ALTER_TABLE,
+		pb.StatementKind_STATEMENT_KIND_ALTER_VIEW,
+		pb.StatementKind_STATEMENT_KIND_DROP_TABLE,
+		pb.StatementKind_STATEMENT_KIND_DROP_INDEX,
+		pb.StatementKind_STATEMENT_KIND_DROP_VIEW,
+		pb.StatementKind_STATEMENT_KIND_DROP_DATABASE,
+		pb.StatementKind_STATEMENT_KIND_DROP_TRIGGER,
+		pb.StatementKind_STATEMENT_KIND_DROP_PROCEDURE,
+		pb.StatementKind_STATEMENT_KIND_DROP_FUNCTION,
+		pb.StatementKind_STATEMENT_KIND_TRUNCATE_TABLE:
+		return true
 	}
-	g := f.RequiredGrants[0]
-	return g.GetDatasource() && g.Action == pb.GrantAction_GRANT_ACTION_SQL_DDL
+	return false
+}
+
+// valueFreeDdl reports whether the facts are a resolved statement authorized by a lone DDL execute grant
+// with nothing else — the shape schema-only DDL takes. A statement that READS (a column grant, a hidden
+// function) must not land here, or its read/function gate is silently dropped.
+func valueFreeDdl(f *pb.StatementFacts) bool {
+	return f.Resolved && f.GetStatementExec() != nil &&
+		isDdlKind(f.GetStatementExec().GetStatementKind()) && len(f.GetResultReads()) == 0
 }
 
 // A catalog-changing statement resolves and carries exactly one sql.ddl datasource grant.
@@ -79,32 +101,33 @@ func TestCatalogChangingDdlResolves(t *testing.T) {
 				t.Fatalf("resolved=false (class=%v detail=%q) — routes through sql.unanalyzable, which no "+
 					"production role holds", f.FailureClass, f.Detail)
 			}
-			// Resolves as ANALYZED (a recognized statement authorized off its grant), not a new DDL-only
-			// class: with a datasource grant and no columns it takes the same path as INSERT.
-			if f.StatementClass != pb.StatementClass_STATEMENT_CLASS_ANALYZED {
-				t.Errorf("statement_class = %v, want ANALYZED", f.StatementClass)
+			// A recognized statement authorized off its single execute grant, carrying a real kind (not the
+			// STMT_UNKNOWN deny-by-default) — the same path INSERT takes, never a new DDL-only class.
+			if factsKind(f) == pb.StatementKind_STATEMENT_KIND_STMT_UNKNOWN {
+				t.Errorf("statement kind = STMT_UNKNOWN, want a resolved DDL kind")
 			}
 			if f.FailureClass != pb.FailureClass_FAILURE_CLASS_UNSPECIFIED {
 				t.Errorf("failure_class = %v, want UNSPECIFIED on a resolved statement", f.FailureClass)
 			}
 
-			if len(f.RequiredGrants) != 1 {
-				t.Fatalf("required grants = %d, want exactly 1", len(f.RequiredGrants))
+			if f.GetStatementExec() == nil {
+				t.Fatalf("no execute grant on a resolved statement")
 			}
-			g := f.RequiredGrants[0]
-			if !g.GetDatasource() || g.Action != pb.GrantAction_GRANT_ACTION_SQL_DDL {
-				t.Errorf("grant = datasource:%v action:%v, want datasource sql.ddl", g.GetDatasource(), g.Action)
+			if !isDdlKind(f.GetStatementExec().GetStatementKind()) {
+				t.Errorf("execute grant kind:%v, want a DDL kind", f.GetStatementExec().GetStatementKind())
 			}
-			// No column/table grant: an index or schema change reads no values, so there is nothing to
+			// No column/table read grant: an index or schema change reads no values, so there is nothing to
 			// mask and nothing for catalog coverage to miss.
-			if g.GetColumn() != nil || g.GetTable() != nil {
-				t.Errorf("unexpected column/table resource on a schema-only DDL statement")
+			if len(f.GetResultReads()) != 0 {
+				t.Errorf("unexpected result-read grants on a schema-only DDL statement: %+v", f.GetResultReads())
 			}
-			if !f.IsWrite {
-				t.Errorf("is_write = false, want true")
+			// is_write is off the contract; the security-equivalent for schema DDL is that the emitted kind is
+			// itself a write/DDL kind — a connection must treat it as mutating the catalog, not a benign read.
+			if !isDdlKind(factsKind(f)) {
+				t.Errorf("kind %v is not a write/DDL kind, want a schema-mutating kind", factsKind(f))
 			}
 			if !f.CatalogChanging {
-				t.Errorf("catalog_changing = false, want true — a connection must re-measure rather than "+
+				t.Errorf("catalog_changing = false, want true — a connection must re-measure rather than " +
 					"keep serving the pre-change schema")
 			}
 		})
@@ -119,11 +142,11 @@ func TestCreateWithQueryBodyKeepsLineage(t *testing.T) {
 	if !f.Resolved {
 		t.Fatalf("resolved=false: class=%v detail=%q", f.FailureClass, f.Detail)
 	}
-	if f.StatementClass != pb.StatementClass_STATEMENT_CLASS_ANALYZED {
-		t.Errorf("statement_class = %v, want ANALYZED — it has a query body to trace", f.StatementClass)
+	if factsKind(f) != pb.StatementKind_STATEMENT_KIND_CREATE_VIEW {
+		t.Errorf("statement kind = %v, want CREATE_VIEW — it has a query body to trace", factsKind(f))
 	}
 	var columns int
-	for _, g := range f.RequiredGrants {
+	for _, g := range f.GetResultReads() {
 		if g.GetColumn() != nil {
 			columns++
 		}
@@ -152,7 +175,7 @@ func TestAlterTableDropIndexProductionShape(t *testing.T) {
 		t.Fatalf("resolved=false: class=%v detail=%q", f.FailureClass, f.Detail)
 	}
 	if !valueFreeDdl(f) {
-		t.Errorf("not resolved value-free DDL: class=%v grants=%v", f.StatementClass, f.RequiredGrants)
+		t.Errorf("not resolved value-free DDL: kind=%v reads=%v", factsKind(f), f.GetResultReads())
 	}
 }
 
@@ -188,10 +211,8 @@ func TestUnmodeledCommandStatementsStayDenied(t *testing.T) {
 		if f.Resolved {
 			t.Errorf("%q resolved — a Command node is unmodeled SQL and must not be classified from its verb", sql)
 		}
-		for _, g := range f.RequiredGrants {
-			if g.Action == pb.GrantAction_GRANT_ACTION_SQL_DDL {
-				t.Errorf("%q was handed a sql.ddl grant off an unmodeled Command node", sql)
-			}
+		if se := f.GetStatementExec(); se != nil && isDdlKind(se.GetStatementKind()) {
+			t.Errorf("%q was handed a DDL execute grant off an unmodeled Command node", sql)
 		}
 	}
 }
@@ -209,13 +230,15 @@ func TestParenthesizedQueryBodyKeepsLineage(t *testing.T) {
 		"CREATE TABLE copied AS (SELECT ssn FROM users UNION SELECT ssn FROM users)",
 	} {
 		f := mysqlFacts(t, sql)
-		if f.StatementClass != pb.StatementClass_STATEMENT_CLASS_ANALYZED {
-			t.Errorf("%q class = %v, want ANALYZED — it reads columns", sql, f.StatementClass)
+		// It reads columns, so it takes the lineage path and resolves as a CREATE DDL kind (never swept
+		// into value-free DDL); the DENY_STATEMENT assertion below proves the read is gated.
+		if !f.Resolved || !isDdlKind(factsKind(f)) {
+			t.Errorf("%q kind = %v (resolved=%v), want a resolved CREATE DDL kind — it reads columns", sql, factsKind(f), f.Resolved)
 		}
 		// The write-payload rule is what denies the copy, and it needs a DENY_STATEMENT disposition on
 		// the protected column. Its absence is the whole bug, so assert it rather than a grant count.
 		var denies int
-		for _, g := range f.RequiredGrants {
+		for _, g := range f.GetResultReads() {
 			if c := g.GetColumn(); c != nil && c.Identity.Column == "ssn" &&
 				g.MaskedDisposition == pb.MaskedDisposition_MASKED_DISPOSITION_DENY_STATEMENT {
 				denies++
@@ -228,8 +251,8 @@ func TestParenthesizedQueryBodyKeepsLineage(t *testing.T) {
 
 	// And the bare spelling still behaves the same way, so the two cannot drift apart.
 	f := mysqlFacts(t, bare)
-	if f.StatementClass != pb.StatementClass_STATEMENT_CLASS_ANALYZED {
-		t.Errorf("%q class = %v, want ANALYZED", bare, f.StatementClass)
+	if !f.Resolved || factsKind(f) != pb.StatementKind_STATEMENT_KIND_CREATE_TABLE {
+		t.Errorf("%q kind = %v (resolved=%v), want CREATE_TABLE", bare, factsKind(f), f.Resolved)
 	}
 }
 
@@ -257,7 +280,7 @@ func TestValuesBodyWithSubqueryIsNotValueFreeDdl(t *testing.T) {
 	// "anything with VALUES is denied".
 	lit := postgresFacts(t, "CREATE TABLE fine AS VALUES (1), (2)")
 	if !valueFreeDdl(lit) {
-		t.Errorf("literal VALUES = resolved:%v grants:%v, want resolved value-free DDL", lit.Resolved, lit.RequiredGrants)
+		t.Errorf("literal VALUES = resolved:%v reads:%v, want resolved value-free DDL", lit.Resolved, lit.GetResultReads())
 	}
 }
 

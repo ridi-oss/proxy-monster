@@ -1,12 +1,12 @@
 package com.ridi.oss.proxymonster.controlplane
 
-import com.ridi.oss.proxymonster.analyzer.pb.GrantAction
 import com.ridi.oss.proxymonster.analyzer.pb.MaskedDisposition
-import com.ridi.oss.proxymonster.analyzer.pb.StatementClass
 import com.ridi.oss.proxymonster.analyzer.pb.StatementFacts
+import com.ridi.oss.proxymonster.analyzer.pb.StatementKind
 import com.ridi.oss.proxymonster.analyzer.pb.columnResource
 import com.ridi.oss.proxymonster.analyzer.pb.relationIdentity
-import com.ridi.oss.proxymonster.analyzer.pb.requiredGrant
+import com.ridi.oss.proxymonster.analyzer.pb.requireResultReadGrant
+import com.ridi.oss.proxymonster.analyzer.pb.requireStatementExecGrant
 import com.ridi.oss.proxymonster.analyzer.pb.statementFacts
 import com.ridi.oss.proxymonster.controlplane.authz.CedarPolicyInput
 import com.ridi.oss.proxymonster.controlplane.support.EnforcementFixture
@@ -59,12 +59,13 @@ class CatalogCoverageGateDbTest {
         val users = fx.datasourceStore.catalog(fx.datasource.id).first { it.table == "users" }
         return statementFacts {
             resolved = true
-            statementClass = StatementClass.STATEMENT_CLASS_ANALYZED
             detail = "synthetic coverage miss"
             schemaQualifierCandidates.add(users.schema)
-            requiredGrants.add(
-                requiredGrant {
-                    action = GrantAction.GRANT_ACTION_RESULT_READ
+            statementExec = requireStatementExecGrant {
+                statementKind = StatementKind.STATEMENT_KIND_SELECT
+            }
+            resultReads.add(
+                requireResultReadGrant {
                     column = columnResource {
                         catalog = users.catalog
                         identity = relationIdentity {

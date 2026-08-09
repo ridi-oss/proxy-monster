@@ -94,15 +94,11 @@ message SourceInfo {
   bool covered = 4;
 }
 
-// A Cedar action required to execute or return a statement. The zero value is invalid and must deny.
-enum GrantAction {
-  GRANT_ACTION_UNSPECIFIED = 0;
-  GRANT_ACTION_SQL_SELECT = 1;
-  GRANT_ACTION_SQL_INSERT = 2;
-  GRANT_ACTION_SQL_UPDATE = 3;
-  GRANT_ACTION_SQL_DELETE = 4;
-  GRANT_ACTION_SQL_DDL = 5;
-  GRANT_ACTION_RESULT_READ = 6;
+// The single statement-execution grant. The control-plane authorizes stmt.kind.<k> on the datasource and
+// Cedar's schema alone maps the kind to a category. An UNSPECIFIED statement_kind denies fail-closed. It is
+// implicitly on the current datasource — no resource field is needed.
+message RequireStatementExecGrant {
+  StatementKind statement_kind = 1;
 }
 
 // How a MASKED verdict applies to a grant. DENIED always denies the entire statement, regardless of
@@ -112,15 +108,6 @@ enum MaskedDisposition {
   MASKED_DISPOSITION_DENY_STATEMENT = 1;
   MASKED_DISPOSITION_MASK_OUTPUT = 2;
   MASKED_DISPOSITION_REDACT_OUTPUT_NULL = 3;
-}
-
-// The statement's relay behavior after all required grants are satisfied. The zero value is invalid
-// and must deny rather than being treated as an empty passthrough class.
-enum StatementClass {
-  STATEMENT_CLASS_UNSPECIFIED = 0;
-  STATEMENT_CLASS_ANALYZED = 1;
-  STATEMENT_CLASS_METADATA = 2;
-  STATEMENT_CLASS_SESSION = 3;
 }
 
 // The kind of statement — one value per statement kind PM classifies, the granular half of the
@@ -303,6 +290,9 @@ enum StatementKind {
   STATEMENT_KIND_IMPORT_TABLE = 130;
   // PostgreSQL COPY TO/FROM a server file — the PG analog of OUTFILE/LOAD (one kind for both directions).
   STATEMENT_KIND_COPY = 138;
+  // ddl — a SELECT ... INTO a non-file target (MySQL `INTO @var`, PostgreSQL `INTO <table>`) writes data
+  // to a destination the proxy cannot mask, so it is a gated write, never a plain read.
+  STATEMENT_KIND_SELECT_INTO = 139;
 
   // admin.exec (dynamic execution)
   STATEMENT_KIND_PREPARE = 131;
@@ -345,22 +335,21 @@ message UtilityResource {
   string command = 1;
 }
 
-message RequiredGrant {
-  // UNSPECIFIED is never grantable and must deny fail-closed.
-  GrantAction action = 1;
+// One result-read requirement, on exactly one resource. A column/table carries a MaskedDisposition (and,
+// for a column, the output ordinals it gates); a function/utility is a capability grant with neither. A
+// missing or malformed resource denies fail-closed.
+message RequireResultReadGrant {
   oneof resource {
-    ColumnResource column = 2;
-    TableResource table = 3;
-    FunctionResource function = 4;
-    UtilityResource utility = 5;
-    // Presence marks the current datasource; Kotlin supplies its name when rendering the resource.
-    bool datasource = 6;
+    ColumnResource column = 1;
+    TableResource table = 2;
+    FunctionResource function = 3;
+    UtilityResource utility = 4;
   }
-  // Consulted only for a MASKED authorization verdict. DENIED always denies the statement, and
-  // UNSPECIFIED must deny even if the resource would otherwise be maskable.
-  MaskedDisposition masked_disposition = 7;
+  // Consulted only for a MASKED authorization verdict on a column/table. DENIED always denies the
+  // statement, and UNSPECIFIED must deny even if the resource would otherwise be maskable.
+  MaskedDisposition masked_disposition = 5;
   // Zero-based positions in StatementFacts.output_columns. Invalid ordinals must deny fail-closed.
-  repeated int32 output_ordinals = 8;
+  repeated int32 output_ordinals = 6;
 }
 
 message StatementFacts {
@@ -373,14 +362,18 @@ message StatementFacts {
   optional string failed_stage = 3;
   // Stable diagnostic detail for audit. Empty failure detail is still a denial, never an allow.
   string detail = 4;
-  // ANALYZED, METADATA, or SESSION relay class. UNSPECIFIED denies fail-closed.
-  StatementClass statement_class = 5;
-  // Complete authorization requirements. Missing or malformed resources/actions deny fail-closed.
-  repeated RequiredGrant required_grants = 6;
-  // Ordered backend output names; RequiredGrant.output_ordinals indexes this exact list.
+  // was statement_class (relay class) — a statement's relay is derived: no column/table/function grant
+  // means nothing to mask, so the control-plane relays it; the session-on-channel rule is a Cedar forbid.
+  reserved 5;
+  // was required_grants (one repeated, discriminated RequiredGrant). The single statement-execution grant
+  // and the zero-or-more result-read grants are separate typed fields below, so the one kind signal cannot
+  // be duplicated, and its absence on a resolved fact is structurally distinguishable.
+  reserved 6;
+  // Ordered backend output names; RequireResultReadGrant.output_ordinals indexes this exact list.
   repeated string output_columns = 7;
-  // True when returning masked input would be unsafe because the statement writes it.
-  bool is_write = 8;
+  // was is_write — the analyzer emits DENY_STATEMENT column dispositions for write payloads directly, so
+  // the control-plane needs no separate write flag (it only ever worded a deny message from it).
+  reserved 8;
   // Safe analyzer rewrite (currently faithful star expansion); absent means relay the client's SQL.
   optional string rewritten_sql = 9;
   // True when grants describe an inner query under EXPLAIN; rewritten_sql must then remain absent.
@@ -393,8 +386,14 @@ message StatementFacts {
   repeated string functions = 13;
   // Dotted identifier schema candidates used only to retry a catalog miss with refreshed metadata.
   repeated string schema_qualifier_candidates = 14;
-  // The classified statement kind. UNSPECIFIED (the zero value) is invalid and denies; the analyzer
-  // always sets a specific kind or STMT_UNKNOWN. Orthogonal to statement_class/required_grants — the
-  // control-plane maps it to a category and gates it, while masking/passthrough/unanalyzable stay as is.
-  StatementKind statement_kind = 15;
+  reserved 15; // was statement_kind (top-level) — it lives on statement_exec below
+  // The single statement-execution grant: authorize stmt.kind.<k> on the datasource. The analyzer sets it
+  // whenever a statement parses to a classifiable root — including an unresolved-but-classified one (KILL,
+  // GRANT, a lineage-failed SELECT) — and omits it only on a pre-parse failure, which reads as STMT_UNKNOWN.
+  // Its absence on a RESOLVED fact is a fail-closed contract violation. The analyzer's field is singular and
+  // assigned exactly once, so the control-plane needs no runtime "exactly one execute grant" count.
+  optional RequireStatementExecGrant statement_exec = 16;
+  // The result-read requirements: masked/denied columns, uncovered table scans, called functions, and
+  // utility commands. Zero or more; each authorized on its own resource.
+  repeated RequireResultReadGrant result_reads = 17;
 }

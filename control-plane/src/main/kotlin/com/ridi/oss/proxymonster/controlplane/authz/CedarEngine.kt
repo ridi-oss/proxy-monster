@@ -111,6 +111,42 @@ object CedarSchema {
 
     val schema: Schema = Schema.parse(Schema.JsonOrCedar.Cedar, text)
 
+    // Each schema action's DIRECT parent actions, parsed from `action "a"[, "b"] [in ["p", ...]] appliesTo`.
+    // The statement-classification actions nest (stmt.kind.<k> in stmt.cat.<leaf>, stmt.cat.<leaf> in
+    // stmt.cat.<domain>); the flat gates (datasource.connect, sql.*, result.read.*) have no parent.
+    private val actionDirectParents: Map<String, Set<String>> = run {
+        val decl = Regex("""action\s+((?:"[^"]+"\s*,?\s*)+?)(?:in\s*\[([^\]]*)])?\s*appliesTo""")
+        val quoted = Regex(""""([^"]+)"""")
+        val map = HashMap<String, MutableSet<String>>()
+        decl.findAll(text).forEach { m ->
+            val names = quoted.findAll(m.groupValues[1]).map { it.groupValues[1] }.toList()
+            val parents = m.groupValues[2].takeIf { it.isNotBlank() }
+                ?.let { p -> quoted.findAll(p).mapTo(mutableSetOf()) { it.groupValues[1] } } ?: emptySet()
+            names.forEach { map.getOrPut(it) { mutableSetOf() }.addAll(parents) }
+        }
+        map
+    }
+
+    /**
+     * The action-group entities Cedar needs to resolve an `action in [Action::"<category>"]` permit for a
+     * request whose action is a member of that category. Cedar EVALUATION is schema-free, so the action
+     * hierarchy the schema declares is NOT applied unless the request carries it in the ENTITY store; this
+     * returns [actionId] plus each transitive category ancestor, mapped to its direct parents, for the caller
+     * to inject. A flat action with no parents yields an empty map, leaving the exact-match gates untouched.
+     */
+    fun actionAncestry(actionId: String): Map<String, Set<String>> {
+        val out = HashMap<String, Set<String>>()
+        val pending = ArrayDeque(listOf(actionId))
+        while (pending.isNotEmpty()) {
+            val a = pending.removeFirst()
+            if (a in out) continue
+            val parents = actionDirectParents[a] ?: emptySet()
+            out[a] = parents
+            pending.addAll(parents)
+        }
+        return if (out.size == 1 && out.getValue(actionId).isEmpty()) emptyMap() else out
+    }
+
     // Validation-only cache of schemas augmented with derived `context.tag::<name>` action declarations,
     // keyed by the tag-name set. Cedar EVALUATION is schema-free (isAuthorized takes no schema), so this
     // never touches the authorization path — only [validate] below.

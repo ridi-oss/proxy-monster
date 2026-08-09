@@ -43,11 +43,9 @@ enum class AuthzAction(val cedarId: String) {
     RESULT_READ_UNMASKED("result.read.unmasked"),
     RESULT_READ_MASKED("result.read.masked"),
     DATASOURCE_CONNECT("datasource.connect"),
-    SQL_SELECT("sql.select"),
-    SQL_INSERT("sql.insert"),
-    SQL_UPDATE("sql.update"),
-    SQL_DELETE("sql.delete"),
-    SQL_DDL("sql.ddl"),
+    // Statement categories (stmt.cat.*) are NOT enumerated here: a statement is authorized by its kind
+    // (stmt.kind.<k>, from the statement_exec grant) and the Cedar schema alone maps a kind to its category.
+    // The control-plane never names a category — only the schema and operator policies do.
     // Datasource-level exception gates (facts-emission.md). A statement the analyzer cannot
     // fully reason about (`analyzable=false`) or whose result cannot be masked on the chosen path
     // (`maskable=false`, e.g. EXPLAIN-of-masked) asks its datasource for this exception instead of a blanket
@@ -322,6 +320,14 @@ private fun AuthorizationResponse.toAuthzDecision(): AuthzDecision {
             reason = "authorization engine error: " +
                 errors.map { list -> list.joinToString("; ") { it.message } }.orElse("unknown error"),
         )
+    // Fail closed on a policy EVALUATION error (e.g. an arithmetic overflow in a condition). Cedar silently
+    // SKIPS an erroring policy, so an erroring forbid would be dropped and a permit could then grant what the
+    // forbid meant to deny — and an allow that carries errors is not trustworthy either. Return a hard deny,
+    // checked before isAllowed so it dominates.
+    val evalErrors = success.errors
+    if (evalErrors.isNotEmpty()) {
+        return AuthzDecision.Deny(reason = "policy evaluation error: ${evalErrors.joinToString("; ")}")
+    }
     if (success.isAllowed) return AuthzDecision.Allow
     val reasons = success.getReason()
     return AuthzDecision.Deny(
@@ -360,7 +366,7 @@ class Authz(
         val request = marshal("ip-probe", emptySet(), emptyList())
         val context = AuthzContext(requesterIp = ip).toCedarMap()
         val response = runCatching {
-            engine.isAuthorized(request, ACTION_TYPE.of(AuthzAction.SQL_SELECT.cedarId), Entity(SYSTEM_TYPE.of("system")), context)
+            engine.isAuthorized(request, ACTION_TYPE.of(AuthzAction.DATASOURCE_CONNECT.cedarId), Entity(SYSTEM_TYPE.of("system")), context)
         }.getOrNull() ?: return false
         return response.success.isPresent
     }
@@ -707,15 +713,39 @@ fun Authz.authorizeDatasourceAction(
     // preset permit (`sql.unanalyzable`/`sql.unmaskable` on `system:development`, policy ids -201/-202) matches
     // this datasource. A datasource-level action's resource IS the Datasource, so its own tag parent suffices.
     datasourceTags: List<String> = emptyList(),
+): AuthzDecision = authorizeDatasourceActionId(principal, roles, action.cedarId, datasource, context, datasourceTags)
+
+/**
+ * Authorize a Datasource-scoped action by its raw Cedar action id, for the statement-kind gate whose
+ * action (`stmt.kind.<k>`) is one of ~137 kinds rather than a fixed [AuthzAction]. Identical request shape
+ * to [authorizeDatasourceAction] — a name-keyed [Datasource] resource carrying its posture tags — so a
+ * `stmt.kind.<k>` (member of `stmt.cat.<category>` in the schema) matches a category or kind preset.
+ */
+fun Authz.authorizeDatasourceActionId(
+    principal: String,
+    roles: Set<String>,
+    cedarActionId: String,
+    datasource: String,
+    context: AuthzContext = AuthzContext(),
+    datasourceTags: List<String> = emptyList(),
 ): AuthzDecision {
     val dsEuid = DATASOURCE_TYPE.of(datasource)
     val tagEuids = HashMap<String, EntityUID>()
     val dsEntity = datasourceEntity(dsEuid, datasource, datasourceTags, tagEuids)
     val tagEntities = tagEuids.values.map { Entity(it) }
 
+    // Inject the action's category ancestry (empty for a flat action) so a category preset —
+    // `action in [Action::"stmt.cat.<c>"]` — reaches the granular stmt.kind.<k> the kind gate requests;
+    // Cedar evaluates schema-free, so the schema's action-group nesting must ride in as entities.
+    val actionEntities = CedarSchema.actionAncestry(cedarActionId).map { (id, parents) ->
+        Entity(ACTION_TYPE.of(id), emptyMap(), parents.mapTo(HashSet()) { ACTION_TYPE.of(it) })
+    }
+
     val contextMap: Map<String, Value> = context.toCedarMap()
-    val request = marshal(principal, roles, tagEntities)
-    return engine.isAuthorized(request, ACTION_TYPE.of(action.cedarId), dsEntity, contextMap).toAuthzDecision()
+    // The action-ancestry entities ride in as marshal's auxEntities, joining the request's entity set
+    // alongside the datasource resource — so the category nesting resolves under schema-free eval.
+    val request = marshal(principal, roles, tagEntities + actionEntities)
+    return engine.isAuthorized(request, ACTION_TYPE.of(cedarActionId), dsEntity, contextMap).toAuthzDecision()
 }
 
 /**

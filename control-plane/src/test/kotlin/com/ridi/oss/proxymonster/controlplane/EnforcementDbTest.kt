@@ -138,7 +138,7 @@ class EnforcementPostgresDbTest {
     fun `an INSERT without a sql insert grant is denied with a clean reason, not a parse-failure`() {
         val r = fx.run("insert into users values (3,'c@x','x','KR')")
         assertEquals(EnfAction.DENY, r.decision)
-        assertTrue(r.denyReason!!.contains("no sql.insert grant"), "deny reason: ${r.denyReason}")
+        assertTrue(r.denyReason!!.contains("statement kind 'insert' is not permitted"), "deny reason: ${r.denyReason}")
     }
 
     @Test
@@ -154,7 +154,7 @@ class EnforcementPostgresDbTest {
     fun `DDL without a sql ddl grant is denied with a clean reason, not a parse-failure`() {
         val r = fx.run("create table t (id int)")
         assertEquals(EnfAction.DENY, r.decision)
-        assertTrue(r.denyReason!!.contains("no sql.ddl grant"), "deny reason: ${r.denyReason}")
+        assertTrue(r.denyReason!!.contains("statement kind 'create_table' is not permitted"), "deny reason: ${r.denyReason}")
     }
 
     @Test
@@ -164,7 +164,7 @@ class EnforcementPostgresDbTest {
         // unmasked persisted table (docs/authz-model.md's exfiltration worked walk-through).
         val r = fx.run("create table leaked as select ssn from users", principal = "writer@example.com")
         assertEquals(EnfAction.DENY, r.decision)
-        assertTrue(r.denyReason!!.contains("write references protected") && r.denyReason!!.contains("ssn"), "deny reason: ${r.denyReason}")
+        assertTrue(r.denyReason!!.contains("cannot be masked") && r.denyReason!!.contains("ssn"), "deny reason: ${r.denyReason}")
     }
 
     @Test
@@ -177,12 +177,12 @@ class EnforcementPostgresDbTest {
     @Test
     fun `a no-FROM SELECT INTO cannot bypass the sql ddl gate via readonly-meta passthrough`() {
         // Regression (integration seam): `SELECT .. INTO` with no FROM was passthrough-classified
-        // READONLY_META and ALLOW'd ahead of the gates, so an analyst (connect + sql.select, NO sql.ddl)
-        // could create a table. It's a write (DDL): the connect gate passes, the sql.ddl gate must DENY —
-        // and it must never reach the target DB.
+        // READONLY_META and ALLOW'd ahead of the gates, so an analyst (connect + read, NO ddl) could create
+        // a table. It writes to a target the proxy cannot mask, so its kind is select_into (stmt.cat.ddl):
+        // the connect gate passes, the kind gate must DENY — and it must never reach the target DB.
         val r = fx.run("select 1 into stmt_gate_bypass")
         assertEquals(EnfAction.DENY, r.decision, "SELECT INTO must be gated, not passthrough-allowed; reason=${r.denyReason}")
-        assertTrue(r.denyReason!!.contains("no sql.ddl grant"), "deny reason: ${r.denyReason}")
+        assertEquals("statement kind 'select_into' is not permitted", r.denyReason, "deny reason: ${r.denyReason}")
     }
 
     @Test
@@ -198,9 +198,9 @@ class EnforcementPostgresDbTest {
 
     @Test
     fun `an upsert INSERT is denied without sql update, even though sql insert is granted`() {
-        // Security regression: insert-writer holds sql.insert but deliberately NOT sql.update. A plain
-        // insert works for them; an upsert (ON CONFLICT DO UPDATE) can modify an EXISTING row, so it
-        // must be denied — sql.insert alone must not license that.
+        // Security regression: inserter holds write.insert but deliberately NOT write.update. A plain
+        // insert works for them; an upsert (ON CONFLICT DO UPDATE) can modify an EXISTING row, so its kind
+        // (insert_on_dup) sits under write.update, not write.insert — write.insert alone must not license it.
         try {
             val plain = fx.run("insert into users (id, email, ssn, region) values (9, 'z@x', 'z', 'US')", principal = "inserter@example.com")
             assertEquals(EnfAction.ALLOW, plain.decision, "a plain insert (no upsert clause) must be allowed; reason=${plain.denyReason}")
@@ -210,8 +210,8 @@ class EnforcementPostgresDbTest {
                     "on conflict (id) do update set region = excluded.region",
                 principal = "inserter@example.com",
             )
-            assertEquals(EnfAction.DENY, upsert.decision, "an upsert must be denied without sql.update; reason=${upsert.denyReason}")
-            assertTrue(upsert.denyReason!!.contains("no sql.update grant"), "deny reason: ${upsert.denyReason}")
+            assertEquals(EnfAction.DENY, upsert.decision, "an upsert must be denied without write.update; reason=${upsert.denyReason}")
+            assertEquals("statement kind 'insert_on_dup' is not permitted", upsert.denyReason, "deny reason: ${upsert.denyReason}")
         } finally {
             // The plain insert above (id=9) is a real, ALLOW'd write against the shared target DB — clean
             // it up so sibling tests' row-count assertions (e.g. `non-sensitive query is allowed`, which
@@ -223,16 +223,37 @@ class EnforcementPostgresDbTest {
     }
 
     @Test
+    fun `an update-only principal can insert via an upsert (accepted single-category tradeoff)`() {
+        // The documented consequence of one-kind-one-category: insert_on_dup is a member of write.update, so an
+        // update-only principal (updater@example.com holds write.update, NOT write.insert) can run an upsert
+        // that INSERTS a new row on a non-conflicting key. Cedar action-group membership is OR, not AND, so a
+        // single category cannot require insert-AND-update; the forward hole (insert-only cannot update) is
+        // closed, this reverse one is accepted. Kept as an explicit, tested contract so it cannot regress
+        // silently — closing it needs a dedicated composite category, not a code change.
+        try {
+            val r = fx.run(
+                "insert into users (id, email, ssn, region) values (8, 'u@x', 'u', 'US') " +
+                    "on conflict (id) do update set region = excluded.region",
+                principal = "updater@example.com",
+            )
+            assertEquals(EnfAction.ALLOW, r.decision, "an update-only upsert is allowed by design; reason=${r.denyReason}")
+        } finally {
+            fx.execOnTarget("delete from users where id = 8")
+        }
+    }
+
+    @Test
     fun `UPDATE and DELETE without their sql grants are denied with a clean reason`() {
-        // analyst holds only sql.select (+ result.read.*) — proves the sql.update / sql.delete gates are
-        // real, not just sql.insert/sql.ddl (the only kinds the other gate tests exercise).
+        // analyst holds only stmt.cat.read (+ result.read.*) — proves the update / delete kinds are gated,
+        // not just insert / ddl (the kinds the other gate tests exercise). Neither kind is a member of
+        // analyst's read category, so each denies at the kind gate.
         val upd = fx.run("update users set region = 'US' where id = 1")
         assertEquals(EnfAction.DENY, upd.decision)
-        assertTrue(upd.denyReason!!.contains("no sql.update grant"), "deny reason: ${upd.denyReason}")
+        assertTrue(upd.denyReason!!.contains("statement kind 'update' is not permitted"), "deny reason: ${upd.denyReason}")
 
         val del = fx.run("delete from users where id = 1")
         assertEquals(EnfAction.DENY, del.decision)
-        assertTrue(del.denyReason!!.contains("no sql.delete grant"), "deny reason: ${del.denyReason}")
+        assertTrue(del.denyReason!!.contains("statement kind 'delete' is not permitted"), "deny reason: ${del.denyReason}")
     }
 
     @Test
@@ -339,7 +360,7 @@ class EnforcementMysqlDbTest {
     fun `an INSERT without a sql insert grant is denied with a clean reason, not a parse-failure`() {
         val r = fx.run("insert into users values (3,'c@x','x','KR')")
         assertEquals(EnfAction.DENY, r.decision)
-        assertTrue(r.denyReason!!.contains("no sql.insert grant"), "deny reason: ${r.denyReason}")
+        assertTrue(r.denyReason!!.contains("statement kind 'insert' is not permitted"), "deny reason: ${r.denyReason}")
     }
 
     @Test
@@ -353,18 +374,19 @@ class EnforcementMysqlDbTest {
     fun `CTAS that reads a masked column is denied even with a sql ddl grant`() {
         val r = fx.run("create table leaked as select ssn from users", principal = "writer@example.com")
         assertEquals(EnfAction.DENY, r.decision)
-        assertTrue(r.denyReason!!.contains("write references protected") && r.denyReason!!.contains("ssn"), "deny reason: ${r.denyReason}")
+        assertTrue(r.denyReason!!.contains("cannot be masked") && r.denyReason!!.contains("ssn"), "deny reason: ${r.denyReason}")
     }
 
     @Test
     fun `a no-FROM SELECT INTO OUTFILE cannot bypass the sql ddl gate (MySQL file-write)`() {
         // MySQL parity for the passthrough-bypass regression: `SELECT .. INTO OUTFILE` writes a server
-        // file with no FROM, and was READONLY_META-classified (ALLOW) ahead of the gates. It's a write
-        // (DDL); analyst (connect + sql.select, NO sql.ddl) must be DENIED at the sql.ddl gate before it
-        // can ever reach the backend.
+        // file with no FROM, and was READONLY_META-classified (ALLOW) ahead of the gates. Its kind is
+        // select_into_outfile (stmt.cat.admin.file, a server-side FILE write), so analyst — read + metadata
+        // + session, no admin — is DENIED at the kind gate before it can ever reach the backend. A ddl grant
+        // alone would not authorize it either: file export is admin.file, not plain ddl.
         val r = fx.run("select 1 into outfile '/tmp/pm_stmt_gate_bypass'")
         assertEquals(EnfAction.DENY, r.decision, "SELECT INTO OUTFILE must be gated; reason=${r.denyReason}")
-        assertTrue(r.denyReason!!.contains("no sql.ddl grant"), "deny reason: ${r.denyReason}")
+        assertTrue(r.denyReason!!.contains("statement kind 'select_into_outfile' is not permitted"), "deny reason: ${r.denyReason}")
     }
 
     @Test
@@ -382,11 +404,11 @@ class EnforcementMysqlDbTest {
     fun `SELECT INTO after a parenthesized branch cannot bypass the sql ddl gate`() {
         // Regression for the leading-wrapper INTO-depth fix (the exact MySQL case): `(SELECT 1)
         // UNION SELECT 1 INTO @a` mutates @a (a write) but was READONLY_META-classified and passthrough-
-        // ALLOW'd ahead of the gates — the leading paren branch drove the INTO scan's depth negative and
-        // hid the top-level INTO. It's DDL: analyst (connect + sql.select, NO sql.ddl) must be denied at
-        // the sql.ddl gate, before it can ever reach the backend.
+        // ALLOW'd ahead of the gates — the leading paren branch hid the INTO. The analyzer finds the INTO
+        // recursively and classifies it select_into (stmt.cat.ddl); analyst (connect + read, NO ddl) must
+        // be denied at the kind gate, before it can ever reach the backend.
         val r = fx.run("(select 1) union select 1 into @pm_p3_branch")
         assertEquals(EnfAction.DENY, r.decision, "branch SELECT INTO must be gated; reason=${r.denyReason}")
-        assertTrue(r.denyReason!!.contains("no sql.ddl grant"), "deny reason: ${r.denyReason}")
+        assertEquals("statement kind 'select_into' is not permitted", r.denyReason, "deny reason: ${r.denyReason}")
     }
 }

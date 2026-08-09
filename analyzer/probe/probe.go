@@ -594,6 +594,14 @@ func (p *prober) classifyWrite() *ProbeResult {
 			p.analyzeQuery = nil
 		}
 	}
+	// A SELECT ... INTO anywhere — including one hoisted onto a set-operation root or buried in a union
+	// branch — writes to a file/variable/table the masker cannot reach, so its read columns are a
+	// non-maskable write payload, not maskable output. The KindSelect case catches the top-level form;
+	// this catches the set-operation form the switch does not.
+	if !p.isWrite && len(p.root.FindAll(exp.KindInto)) > 0 {
+		p.isWrite = true
+		p.analyzeQuery = nil
+	}
 	return nil
 }
 

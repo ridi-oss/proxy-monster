@@ -1,14 +1,15 @@
 package com.ridi.oss.proxymonster.controlplane
 
 import com.ridi.oss.proxymonster.analyzer.pb.FailureClass
-import com.ridi.oss.proxymonster.analyzer.pb.GrantAction
 import com.ridi.oss.proxymonster.analyzer.pb.MaskedDisposition
-import com.ridi.oss.proxymonster.analyzer.pb.RequiredGrant
-import com.ridi.oss.proxymonster.analyzer.pb.StatementClass
+import com.ridi.oss.proxymonster.analyzer.pb.RequireResultReadGrant
+import com.ridi.oss.proxymonster.analyzer.pb.RequireStatementExecGrant
 import com.ridi.oss.proxymonster.analyzer.pb.StatementFacts
+import com.ridi.oss.proxymonster.analyzer.pb.StatementKind
 import com.ridi.oss.proxymonster.analyzer.pb.columnResource
 import com.ridi.oss.proxymonster.analyzer.pb.relationIdentity
-import com.ridi.oss.proxymonster.analyzer.pb.requiredGrant
+import com.ridi.oss.proxymonster.analyzer.pb.requireResultReadGrant
+import com.ridi.oss.proxymonster.analyzer.pb.requireStatementExecGrant
 import com.ridi.oss.proxymonster.analyzer.pb.statementFacts
 import com.ridi.oss.proxymonster.analyzer.pb.tableResource
 import com.ridi.oss.proxymonster.controlplane.support.EnforcementFixture
@@ -23,8 +24,8 @@ import kotlin.test.assertTrue
 /**
  * Drives the production [decideQuery] grant walk over SYNTHETIC [StatementFacts] (the `factsOverride`
  * test seam) against a real Cedar/catalog fixture. This is the only way to exercise the fail-closed
- * contract branches a resolved Go analyzer can never emit — UNSPECIFIED action/disposition/class, an
- * out-of-range ordinal, a resourceless grant — plus the disposition triad, resource-kind dispatch,
+ * contract branches a resolved Go analyzer can never emit — an UNSPECIFIED disposition, a resourceless
+ * result-read, a missing execute grant, an out-of-range ordinal — plus the disposition triad, resource-kind dispatch,
  * multi-ordinal first-wins, and metadata preservation, each against the fixture's live authorization.
  *
  * Fixture (EnforcementFixture.postgres): `analyst@example.com` may read `users` unmasked except the pii
@@ -70,9 +71,7 @@ class StatementFactsGrantLoopTest {
         c: CatalogColumn,
         disposition: MaskedDisposition,
         ordinals: List<Int> = emptyList(),
-        action: GrantAction = GrantAction.GRANT_ACTION_RESULT_READ,
-    ): RequiredGrant = requiredGrant {
-        this.action = action
+    ): RequireResultReadGrant = requireResultReadGrant {
         column = columnResource {
             this.catalog = c.catalog
             identity = relationIdentity {
@@ -86,24 +85,23 @@ class StatementFactsGrantLoopTest {
     }
 
     private fun analyzed(
-        vararg grants: RequiredGrant,
-        isWrite: Boolean = false,
+        vararg grants: RequireResultReadGrant,
+        kind: StatementKind = StatementKind.STATEMENT_KIND_SELECT,
         outputCols: List<String> = emptyList(),
         rewrite: String? = null,
     ): StatementFacts = statementFacts {
         resolved = true
-        statementClass = StatementClass.STATEMENT_CLASS_ANALYZED
         detail = "synthetic"
-        this.isWrite = isWrite
-        requiredGrants.addAll(grants.toList())
+        statementExec = executeGrant(kind)
+        resultReads.addAll(grants.toList())
         outputColumns.addAll(outputCols)
         if (rewrite != null) rewrittenSql = rewrite
     }
 
-    private fun datasourceGrant(action: GrantAction): RequiredGrant = requiredGrant {
-        this.action = action
-        datasource = true
-        maskedDisposition = MaskedDisposition.MASKED_DISPOSITION_DENY_STATEMENT
+    // The single per-statement authorization signal: the statement-execution grant carrying the kind the
+    // control-plane gates as stmt.kind.<k>.
+    private fun executeGrant(kind: StatementKind): RequireStatementExecGrant = requireStatementExecGrant {
+        statementKind = kind
     }
 
     // ---- happy paths / disposition triad --------------------------------------------------------
@@ -112,7 +110,6 @@ class StatementFactsGrantLoopTest {
     fun `all-granted analyzed statement allows`() {
         val ctx = decide(
             analyzed(
-                datasourceGrant(GrantAction.GRANT_ACTION_SQL_SELECT),
                 columnGrant(region, MaskedDisposition.MASKED_DISPOSITION_MASK_OUTPUT, listOf(0)),
                 outputCols = listOf("region"),
             ),
@@ -157,10 +154,10 @@ class StatementFactsGrantLoopTest {
     @Test
     fun `write read-set membership of a masked column denies`() {
         val ctx = decide(
-            analyzed(columnGrant(ssn, MaskedDisposition.MASKED_DISPOSITION_DENY_STATEMENT), isWrite = true),
+            analyzed(columnGrant(ssn, MaskedDisposition.MASKED_DISPOSITION_DENY_STATEMENT)),
         )
         assertEquals(EnfAction.DENY, ctx.action)
-        assertTrue(ctx.denyReason?.contains("write") == true, ctx.denyReason)
+        assertTrue(ctx.denyReason?.contains("cannot be masked") == true, ctx.denyReason)
     }
 
     @Test
@@ -205,25 +202,15 @@ class StatementFactsGrantLoopTest {
     // ---- fail-closed contract branches (unreachable from real SQL) ------------------------------
 
     @Test
-    fun `grant with no resource fails closed`() {
+    fun `result-read grant with no resource fails closed`() {
+        // A result-read naming no resource is invisible to the has*-filtered walk; with a valid execute
+        // grant present (so the kind gate passes), the resourceless read must still structurally deny.
         val facts = statementFacts {
             resolved = true
-            statementClass = StatementClass.STATEMENT_CLASS_METADATA
-            requiredGrants.add(requiredGrant { action = GrantAction.GRANT_ACTION_UNSPECIFIED })
+            statementExec = executeGrant(StatementKind.STATEMENT_KIND_SELECT)
+            resultReads.add(requireResultReadGrant {})
         }
         val ctx = decide(facts)
-        assertEquals(EnfAction.DENY, ctx.action)
-        assertTrue(ctx.structural)
-    }
-
-    @Test
-    fun `resource grant with a non-RESULT_READ action fails closed`() {
-        val ctx = decide(
-            analyzed(
-                columnGrant(ssn, MaskedDisposition.MASKED_DISPOSITION_MASK_OUTPUT, listOf(0), action = GrantAction.GRANT_ACTION_SQL_SELECT),
-                outputCols = listOf("ssn"),
-            ),
-        )
         assertEquals(EnfAction.DENY, ctx.action)
         assertTrue(ctx.structural)
     }
@@ -244,34 +231,6 @@ class StatementFactsGrantLoopTest {
         )
         assertEquals(EnfAction.DENY, ctx.action)
         assertEquals("mask-binding", ctx.failedStage)
-    }
-
-    @Test
-    fun `unspecified statement class fails closed`() {
-        val ctx = decide(
-            statementFacts {
-                resolved = true
-                statementClass = StatementClass.STATEMENT_CLASS_UNSPECIFIED
-            },
-        )
-        assertEquals(EnfAction.DENY, ctx.action)
-        assertTrue(ctx.structural)
-    }
-
-    @Test
-    fun `unspecified statement class with a column grant fails closed independent of the verdict`() {
-        // A resolved statement carrying a column grant skips the empty-grant class switch, so the class must
-        // be validated up front — an UNSPECIFIED class must deny even though the grant would otherwise mask.
-        val ctx = decide(
-            statementFacts {
-                resolved = true
-                statementClass = StatementClass.STATEMENT_CLASS_UNSPECIFIED
-                requiredGrants.add(columnGrant(ssn, MaskedDisposition.MASKED_DISPOSITION_MASK_OUTPUT, listOf(0)))
-                outputColumns.add("ssn")
-            },
-        )
-        assertEquals(EnfAction.DENY, ctx.action)
-        assertTrue(ctx.structural)
     }
 
     @Test
@@ -307,7 +266,11 @@ class StatementFactsGrantLoopTest {
         // but must surface its schema qualifiers + catalogMiss so ConnectionDecide can refetch and retry.
         val ctx = decide(
             statementFacts {
+                // A lineage-failed SELECT parsed and classified (statement_exec=SELECT) but could not resolve;
+                // the kind gate allows the read, then the unresolved path routes it through
+                // sql.unanalyzable, which carries the schema candidates for the bounded refetch.
                 resolved = false
+                statementExec = executeGrant(StatementKind.STATEMENT_KIND_SELECT)
                 failureClass = FailureClass.FAILURE_CLASS_UNANALYZABLE
                 schemaQualifierCandidates.add("newly_created_schema")
             },
@@ -318,26 +281,42 @@ class StatementFactsGrantLoopTest {
     }
 
     @Test
-    fun `datasource grant with an unspecified action is a policy deny`() {
-        val ctx = decide(analyzed(datasourceGrant(GrantAction.GRANT_ACTION_UNSPECIFIED)))
+    fun `a resolved statement with no execute grant fails closed`() {
+        // A resolved statement must carry its statement_exec grant (the kind); absent one it would default
+        // to the grantable sql.unanalyzable gate. A result-read alone must be a structural deny. The
+        // execute grant is a bare message field now, so "two execute grants" and "a non-execute datasource
+        // grant" are structurally impossible and no longer need tests.
+        val ctx = decide(
+            statementFacts {
+                resolved = true
+                resultReads.add(columnGrant(ssn, MaskedDisposition.MASKED_DISPOSITION_MASK_OUTPUT, listOf(0)))
+                outputColumns.add("ssn")
+            },
+        )
         assertEquals(EnfAction.DENY, ctx.action)
-        assertTrue(!ctx.structural, "kind-not-permitted is a policy deny, not structural")
+        assertTrue(ctx.structural)
     }
 
     @Test
-    fun `a resolved DDL statement authorizes off its sql-ddl grant like any grant-only write`() {
-        // DDL resolves as ANALYZED carrying a single sql.ddl datasource grant and no columns — the same
-        // shape INSERT takes. The fixture analyst holds no sql.ddl, so this is a POLICY deny at the
-        // datasource-grant loop, not a structural one: it reaches Cedar and is denied on the grant.
-        val ctx = decide(analyzed(datasourceGrant(GrantAction.GRANT_ACTION_SQL_DDL), isWrite = true))
+    fun `an unknown-kind statement is a policy deny via sql-unanalyzable`() {
+        val ctx = decide(analyzed(kind = StatementKind.STATEMENT_KIND_STMT_UNKNOWN))
         assertEquals(EnfAction.DENY, ctx.action)
-        assertTrue(!ctx.structural, "a resolved DDL fact is authorized off its grant, not structurally denied")
+        assertTrue(!ctx.structural, "STMT_UNKNOWN routes to sql.unanalyzable — a policy deny, not structural")
+    }
+
+    @Test
+    fun `a resolved DDL statement is gated by its ddl kind`() {
+        // DDL resolves as ANALYZED carrying only its execute grant — a DDL kind Cedar maps to stmt.cat.ddl —
+        // and no columns. The fixture analyst holds no ddl, so this is a POLICY deny at the kind gate, not a
+        // structural one: it reaches Cedar and is denied on the kind.
+        val ctx = decide(analyzed(kind = StatementKind.STATEMENT_KIND_CREATE_TABLE))
+        assertEquals(EnfAction.DENY, ctx.action)
+        assertTrue(!ctx.structural, "a resolved DDL fact is authorized off its kind, not structurally denied")
     }
 
     @Test
     fun `ungranted table grant denies through table dispatch`() {
-        val tableGrant = requiredGrant {
-            action = GrantAction.GRANT_ACTION_RESULT_READ
+        val tableGrant = requireResultReadGrant {
             table = tableResource {
                 this.catalog = amount.catalog
                 this.schema = amount.schema
@@ -351,10 +330,10 @@ class StatementFactsGrantLoopTest {
     // ---- empty-grant channel matrix -------------------------------------------------------------
 
     @Test
-    fun `metadata with no grants is an allow passthrough`() {
+    fun `metadata with no resource grants is an allow passthrough`() {
         val facts = statementFacts {
             resolved = true
-            statementClass = StatementClass.STATEMENT_CLASS_METADATA
+            statementExec = executeGrant(StatementKind.STATEMENT_KIND_SHOW_METADATA)
             schemaQualifierCandidates.add("public")
         }
         val ctx = decide(facts)
@@ -367,7 +346,7 @@ class StatementFactsGrantLoopTest {
     fun `session statement passes through only on persistent-connection channels`() {
         val session = statementFacts {
             resolved = true
-            statementClass = StatementClass.STATEMENT_CLASS_SESSION
+            statementExec = executeGrant(StatementKind.STATEMENT_KIND_SET_SESSION_VAR)
         }
         assertEquals(EnfAction.ALLOW, decide(session, Channel.WIRE).action)
         assertEquals(EnfAction.ALLOW, decide(session, Channel.EDITOR).action)
@@ -382,7 +361,7 @@ class StatementFactsGrantLoopTest {
         // (MCP/workflow) never execute the SET, so no rewrite reaches them.
         val pinned = statementFacts {
             resolved = true
-            statementClass = StatementClass.STATEMENT_CLASS_SESSION
+            statementExec = executeGrant(StatementKind.STATEMENT_KIND_SET_SESSION_VAR)
             rewrittenSql = "SET character_set_results = utf8mb4"
         }
         val wire = decide(pinned, Channel.WIRE)

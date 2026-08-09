@@ -208,12 +208,12 @@ action "result.read.unmasked", "result.read.masked"
     context: RequestContext,
   };
 
-// The two once-per-query gates ahead of the catalog/analyzer/column loop (docs/authz-model.md:106-
-// 116): `datasource.connect` decides whether the principal may touch the datasource at all, then
-// `sql.<kind>` decides whether the specific statement kind (select/insert/update/delete/ddl) is
-// permitted on it. Both are keyed off the Datasource NAME, not its numeric id — see
-// Authz.authorizeDatasourceAction.
-action "datasource.connect", "sql.select", "sql.insert", "sql.update", "sql.delete", "sql.ddl"
+// `datasource.connect` — the once-per-query gate ahead of the catalog/analyzer/column loop
+// (docs/authz-model.md): whether the principal may touch the datasource at all. Keyed off the
+// Datasource NAME, not its numeric id — see Authz.authorizeDatasourceAction. Per-statement
+// authorization is the statement-classification gate (stmt.cat.* / stmt.kind.*, below), the only
+// datasource-statement vocabulary — a policy naming any other statement action fails validation.
+action "datasource.connect"
   appliesTo {
     principal: [User, Role],
     resource: [Datasource],
@@ -233,3 +233,104 @@ action "sql.unanalyzable", "sql.unmaskable"
     resource: [Datasource],
     context: RequestContext,
   };
+
+// Statement-classification gate (docs/statement-typing.md). Each statement KIND is an action
+// `stmt.kind.<k>` that is a member of its category action `stmt.cat.<path>`; categories nest
+// (write.insert in write, admin.account in admin). A policy targets one kind, a leaf category,
+// or a whole domain, and Cedar action-group membership carries it down. Keyed off the
+// Datasource, like sql.<kind> was. Deny-by-default: a kind with no permit reaching it denies.
+
+// --- categories (nesting) ---
+action "stmt.cat.admin"
+  appliesTo { principal: [User, Role], resource: [Datasource], context: RequestContext };
+action "stmt.cat.ddl"
+  appliesTo { principal: [User, Role], resource: [Datasource], context: RequestContext };
+action "stmt.cat.metadata"
+  appliesTo { principal: [User, Role], resource: [Datasource], context: RequestContext };
+action "stmt.cat.read"
+  appliesTo { principal: [User, Role], resource: [Datasource], context: RequestContext };
+action "stmt.cat.session"
+  appliesTo { principal: [User, Role], resource: [Datasource], context: RequestContext };
+action "stmt.cat.write"
+  appliesTo { principal: [User, Role], resource: [Datasource], context: RequestContext };
+action "stmt.cat.admin.account" in ["stmt.cat.admin"]
+  appliesTo { principal: [User, Role], resource: [Datasource], context: RequestContext };
+action "stmt.cat.admin.exec" in ["stmt.cat.admin"]
+  appliesTo { principal: [User, Role], resource: [Datasource], context: RequestContext };
+action "stmt.cat.admin.file" in ["stmt.cat.admin"]
+  appliesTo { principal: [User, Role], resource: [Datasource], context: RequestContext };
+action "stmt.cat.admin.lock" in ["stmt.cat.admin"]
+  appliesTo { principal: [User, Role], resource: [Datasource], context: RequestContext };
+action "stmt.cat.admin.maintenance" in ["stmt.cat.admin"]
+  appliesTo { principal: [User, Role], resource: [Datasource], context: RequestContext };
+action "stmt.cat.admin.plugin" in ["stmt.cat.admin"]
+  appliesTo { principal: [User, Role], resource: [Datasource], context: RequestContext };
+action "stmt.cat.admin.process" in ["stmt.cat.admin"]
+  appliesTo { principal: [User, Role], resource: [Datasource], context: RequestContext };
+action "stmt.cat.admin.replication" in ["stmt.cat.admin"]
+  appliesTo { principal: [User, Role], resource: [Datasource], context: RequestContext };
+action "stmt.cat.admin.server" in ["stmt.cat.admin"]
+  appliesTo { principal: [User, Role], resource: [Datasource], context: RequestContext };
+action "stmt.cat.admin.unanalyzable" in ["stmt.cat.admin"]
+  appliesTo { principal: [User, Role], resource: [Datasource], context: RequestContext };
+action "stmt.cat.write.delete" in ["stmt.cat.write"]
+  appliesTo { principal: [User, Role], resource: [Datasource], context: RequestContext };
+action "stmt.cat.write.insert" in ["stmt.cat.write"]
+  appliesTo { principal: [User, Role], resource: [Datasource], context: RequestContext };
+action "stmt.cat.write.update" in ["stmt.cat.write"]
+  appliesTo { principal: [User, Role], resource: [Datasource], context: RequestContext };
+
+// --- kinds (each a member of its category) ---
+action "stmt.kind.select", "stmt.kind.table", "stmt.kind.values", "stmt.kind.with_select", "stmt.kind.set_op"
+  in ["stmt.cat.read"]
+  appliesTo { principal: [User, Role], resource: [Datasource], context: RequestContext };
+action "stmt.kind.insert", "stmt.kind.insert_select"
+  in ["stmt.cat.write.insert"]
+  appliesTo { principal: [User, Role], resource: [Datasource], context: RequestContext };
+// insert_on_dup (upsert) can UPDATE an existing row, so it needs write.update, the higher-privilege leaf —
+// a plain write.insert grant must not reach it.
+action "stmt.kind.update", "stmt.kind.insert_on_dup"
+  in ["stmt.cat.write.update"]
+  appliesTo { principal: [User, Role], resource: [Datasource], context: RequestContext };
+action "stmt.kind.delete", "stmt.kind.replace"
+  in ["stmt.cat.write.delete"]
+  appliesTo { principal: [User, Role], resource: [Datasource], context: RequestContext };
+action "stmt.kind.create_table", "stmt.kind.create_view", "stmt.kind.create_index", "stmt.kind.create_database", "stmt.kind.create_trigger", "stmt.kind.create_procedure", "stmt.kind.create_function", "stmt.kind.create_event", "stmt.kind.create_server", "stmt.kind.create_tablespace", "stmt.kind.create_srs", "stmt.kind.alter_table", "stmt.kind.alter_database", "stmt.kind.alter_view", "stmt.kind.alter_event", "stmt.kind.alter_procedure", "stmt.kind.alter_function", "stmt.kind.alter_server", "stmt.kind.alter_tablespace", "stmt.kind.alter_instance", "stmt.kind.drop_table", "stmt.kind.drop_index", "stmt.kind.drop_view", "stmt.kind.drop_database", "stmt.kind.drop_trigger", "stmt.kind.drop_procedure", "stmt.kind.drop_function", "stmt.kind.drop_event", "stmt.kind.drop_server", "stmt.kind.drop_tablespace", "stmt.kind.drop_srs", "stmt.kind.truncate_table", "stmt.kind.rename_table", "stmt.kind.select_into"
+  in ["stmt.cat.ddl"]
+  appliesTo { principal: [User, Role], resource: [Datasource], context: RequestContext };
+action "stmt.kind.start_transaction", "stmt.kind.commit", "stmt.kind.rollback", "stmt.kind.savepoint", "stmt.kind.set_transaction", "stmt.kind.set_session_var", "stmt.kind.use"
+  in ["stmt.cat.session"]
+  appliesTo { principal: [User, Role], resource: [Datasource], context: RequestContext };
+action "stmt.kind.describe", "stmt.kind.explain_table", "stmt.kind.show_metadata", "stmt.kind.show_warnings", "stmt.kind.show_errors", "stmt.kind.help"
+  in ["stmt.cat.metadata"]
+  appliesTo { principal: [User, Role], resource: [Datasource], context: RequestContext };
+action "stmt.kind.create_user", "stmt.kind.alter_user", "stmt.kind.drop_user", "stmt.kind.rename_user", "stmt.kind.create_role", "stmt.kind.drop_role", "stmt.kind.grant_priv", "stmt.kind.grant_role", "stmt.kind.revoke_priv", "stmt.kind.revoke_role", "stmt.kind.set_password", "stmt.kind.set_role", "stmt.kind.set_default_role", "stmt.kind.set_session_authorization", "stmt.kind.show_grants", "stmt.kind.show_create_user"
+  in ["stmt.cat.admin.account"]
+  appliesTo { principal: [User, Role], resource: [Datasource], context: RequestContext };
+action "stmt.kind.change_replication_source", "stmt.kind.change_replication_filter", "stmt.kind.start_replica", "stmt.kind.stop_replica", "stmt.kind.reset_replica", "stmt.kind.start_group_replication", "stmt.kind.stop_group_replication", "stmt.kind.purge_binary_logs", "stmt.kind.reset_master", "stmt.kind.reset_binary_logs_and_gtids", "stmt.kind.set_sql_log_bin", "stmt.kind.binlog", "stmt.kind.show_master_status", "stmt.kind.show_binary_logs", "stmt.kind.show_binary_log_status", "stmt.kind.show_binlog_events", "stmt.kind.show_relaylog_events", "stmt.kind.show_replica_status", "stmt.kind.show_replicas"
+  in ["stmt.cat.admin.replication"]
+  appliesTo { principal: [User, Role], resource: [Datasource], context: RequestContext };
+action "stmt.kind.kill", "stmt.kind.show_processlist", "stmt.kind.show_engine_status"
+  in ["stmt.cat.admin.process"]
+  appliesTo { principal: [User, Role], resource: [Datasource], context: RequestContext };
+action "stmt.kind.shutdown", "stmt.kind.restart", "stmt.kind.flush", "stmt.kind.clone", "stmt.kind.set_global", "stmt.kind.set_persist", "stmt.kind.set_persist_only", "stmt.kind.set_sql_mode", "stmt.kind.set_standard_conforming_strings", "stmt.kind.set_resource_group", "stmt.kind.create_resource_group", "stmt.kind.alter_resource_group", "stmt.kind.drop_resource_group", "stmt.kind.reset_persist"
+  in ["stmt.cat.admin.server"]
+  appliesTo { principal: [User, Role], resource: [Datasource], context: RequestContext };
+action "stmt.kind.analyze_table", "stmt.kind.check_table", "stmt.kind.checksum_table", "stmt.kind.optimize_table", "stmt.kind.repair_table", "stmt.kind.cache_index", "stmt.kind.load_index_into_cache"
+  in ["stmt.cat.admin.maintenance"]
+  appliesTo { principal: [User, Role], resource: [Datasource], context: RequestContext };
+action "stmt.kind.install_plugin", "stmt.kind.uninstall_plugin", "stmt.kind.install_component", "stmt.kind.uninstall_component"
+  in ["stmt.cat.admin.plugin"]
+  appliesTo { principal: [User, Role], resource: [Datasource], context: RequestContext };
+action "stmt.kind.lock_tables", "stmt.kind.unlock_tables", "stmt.kind.lock_instance", "stmt.kind.unlock_instance"
+  in ["stmt.cat.admin.lock"]
+  appliesTo { principal: [User, Role], resource: [Datasource], context: RequestContext };
+action "stmt.kind.select_into_outfile", "stmt.kind.select_into_dumpfile", "stmt.kind.load_data", "stmt.kind.load_xml", "stmt.kind.import_table", "stmt.kind.copy"
+  in ["stmt.cat.admin.file"]
+  appliesTo { principal: [User, Role], resource: [Datasource], context: RequestContext };
+action "stmt.kind.prepare", "stmt.kind.execute", "stmt.kind.deallocate_prepare", "stmt.kind.call", "stmt.kind.do"
+  in ["stmt.cat.admin.exec"]
+  appliesTo { principal: [User, Role], resource: [Datasource], context: RequestContext };
+action "stmt.kind.handler", "stmt.kind.xa"
+  in ["stmt.cat.admin.unanalyzable"]
+  appliesTo { principal: [User, Role], resource: [Datasource], context: RequestContext };

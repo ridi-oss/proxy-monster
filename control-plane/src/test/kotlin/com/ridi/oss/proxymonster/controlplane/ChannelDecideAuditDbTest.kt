@@ -100,12 +100,13 @@ class ChannelDecideAuditDbTest {
     @Test
     fun `a channel-gated grant follows the server channel and ignores a client-injected channel`() {
         // The fixture grants analyst select/insert but NOT delete. Add a delete grant that fires ONLY on the
-        // editor channel — so the sql.<kind> gate's verdict depends on the channel decideQuery overlays.
+        // editor channel — so the delete kind gate's verdict (stmt.kind.delete is a member of
+        // stmt.cat.write.delete) depends on the channel decideQuery overlays.
         fx.cedarPolicyStore.create(
             CedarPolicyInput(
                 name = "analyst-delete-editor-only",
                 cedarSrc = """permit(
-                    principal in Role::"analyst", action == Action::"sql.delete",
+                    principal in Role::"analyst", action in [Action::"stmt.cat.write.delete"],
                     resource in Datasource::"${fx.datasource.name}"
                 ) when { context has channel && context.channel == "editor" };""",
             ),
@@ -113,26 +114,22 @@ class ChannelDecideAuditDbTest {
         )
         val sql = "delete from users where id = 999999"
 
-        // WIRE: the editor-only delete grant does not fire -> policy deny naming sql.delete.
+        // WIRE: the editor-only delete grant does not fire -> the delete kind is unauthorized -> kind-gate deny.
         val wire = decide(sql, Channel.WIRE)
         assertEquals(EnfAction.DENY, wire.action, "wire delete must deny at the kind gate")
-        assertTrue(wire.denyReason!!.contains("sql.delete"), "wire deny reason: ${wire.denyReason}")
+        assertTrue(wire.denyReason!!.contains("statement kind 'delete' is not permitted"), "wire deny reason: ${wire.denyReason}")
 
-        // EDITOR: the grant fires -> the kind gate clears (no sql.delete deny). If decideQuery failed to
-        // overlay the channel onto the context, this would deny exactly like WIRE — so this pins the wiring.
+        // EDITOR: the grant fires -> the delete clears BOTH the kind gate and the verb loop -> ALLOW. A broken
+        // channel overlay (EDITOR silently treated as wire) would kind-deny 'delete' exactly like WIRE, whose
+        // reason ALSO lacks "stmt.cat.write.delete" — so only pinning ALLOW (not the absence of a verb-loop
+        // string) actually catches that regression.
         val editor = decide(sql, Channel.EDITOR)
-        assertTrue(
-            editor.denyReason?.contains("sql.delete") != true,
-            "editor channel should clear the sql.delete gate, got: ${editor.denyReason}",
-        )
+        assertEquals(EnfAction.ALLOW, editor.action, "editor channel should clear the delete gate, got: ${editor.denyReason}")
 
         // EDITOR channel but a client injecting channel="wire" + tags: the server enum is authoritative, so
         // it still clears the gate — the injected channel/tags are ignored.
         val injected = decide(sql, Channel.EDITOR, AuthzContext(channel = "wire", tags = setOf("injected")))
-        assertTrue(
-            injected.denyReason?.contains("sql.delete") != true,
-            "a client-injected channel must be ignored, got: ${injected.denyReason}",
-        )
+        assertEquals(EnfAction.ALLOW, injected.action, "a client-injected channel must be ignored, got: ${injected.denyReason}")
     }
 
     @Test

@@ -156,7 +156,7 @@ class ApprovalResultViewContextDbTest {
                 name = "approval-view-pii-reader-connect-select",
                 cedarSrc = """permit(
                     principal in Role::"$roleName",
-                    action in [Action::"datasource.connect", Action::"sql.select"],
+                    action in [Action::"datasource.connect", Action::"stmt.cat.read", Action::"stmt.cat.metadata"],
                     resource in Datasource::"${fx.datasource.name}"
                 );""",
             ),

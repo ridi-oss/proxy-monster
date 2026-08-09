@@ -95,14 +95,14 @@ class ApprovalDiscoverPickSubmitRouteDbTest {
         // debug-user's OWN role: connects + selects, cleartext except pii, pii (ssn) masked → baseline MASK.
         val baseReader = fx.policyStore.createRole(RoleInput("base-reader"))
         fx.policyStore.createAssignment(RoleAssignmentInput("debug-user", baseReader.id))
-        grant("base-reader-connect-select", """permit(principal in Role::"base-reader", action in [Action::"datasource.connect", Action::"sql.select"], resource in Datasource::"${ds.name}");""")
+        grant("base-reader-connect-select", """permit(principal in Role::"base-reader", action in [Action::"datasource.connect", Action::"stmt.cat.read"], resource in Datasource::"${ds.name}");""")
         grant("base-reader-users-unmasked", """permit(principal in Role::"base-reader", action == Action::"result.read.unmasked", resource in Table::"$usersEuid") unless { resource in Tag::"pii" };""")
         grant("base-reader-users-masked-pii", """permit(principal in Role::"base-reader", action == Action::"result.read.masked", resource in Table::"$usersEuid") when { resource in Tag::"pii" };""")
 
         // Candidate `full-reader`: connects + selects + unmasks EVERY users column (no `unless pii`), so
         // ALONE it clears the query and unmasks ssn → offered regardless of the preview model.
         fx.policyStore.createRole(RoleInput("full-reader"))
-        grant("full-reader-connect-select", """permit(principal in Role::"full-reader", action in [Action::"datasource.connect", Action::"sql.select"], resource in Datasource::"${ds.name}");""")
+        grant("full-reader-connect-select", """permit(principal in Role::"full-reader", action in [Action::"datasource.connect", Action::"stmt.cat.read"], resource in Datasource::"${ds.name}");""")
         grant("full-reader-users-unmasked", """permit(principal in Role::"full-reader", action == Action::"result.read.unmasked", resource in Table::"$usersEuid");""")
 
         // Candidate `unmask-only`: unmasks ssn but grants NO datasource.connect/sql.select. ALONE it DENYs

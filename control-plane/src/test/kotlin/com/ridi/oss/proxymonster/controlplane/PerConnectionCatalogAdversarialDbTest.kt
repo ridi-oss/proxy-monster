@@ -229,7 +229,7 @@ class PerConnectionCatalogMysqlAdversarialDbTest : PerConnectionCatalogAdversari
         enforcement.cedarPolicyStore.create(
             CedarPolicyInput(
                 "pccat-mysql-analyst-ddl",
-                """permit(principal in Role::"${enforcement.role}", action == Action::"sql.ddl", resource in Datasource::"${enforcement.datasource.name}");""",
+                """permit(principal in Role::"${enforcement.role}", action in [Action::"stmt.cat.ddl"], resource in Datasource::"${enforcement.datasource.name}");""",
             ),
             "pccat-test",
         )
@@ -245,7 +245,7 @@ class PerConnectionCatalogMysqlAdversarialDbTest : PerConnectionCatalogAdversari
         enforcement.cedarPolicyStore.create(
             CedarPolicyInput(
                 "pccat-mysql-writer-select",
-                """permit(principal in Role::"ddl-writer", action == Action::"sql.select", resource in Datasource::"${enforcement.datasource.name}");""",
+                """permit(principal in Role::"ddl-writer", action in [Action::"stmt.cat.read"], resource in Datasource::"${enforcement.datasource.name}");""",
             ),
             "pccat-test",
         )
@@ -309,12 +309,12 @@ class PerConnectionCatalogMysqlAdversarialDbTest : PerConnectionCatalogAdversari
                 decide(opened, "writer@example.com", "CALL pccat_refresh()", listOf(schema)),
             )
             assertEquals(EnfAction.DENY, call.ctx.action)
-            assertContains(call.ctx.denyReason.orEmpty(), "statement kind 'other' is not permitted")
+            assertContains(call.ctx.denyReason.orEmpty(), "statement kind 'call' is not permitted")
             assertTrue(call.afterStatement.isEmpty())
         }
     }
 
-    @Disabled("literal CALL is classified catalog-changing but the OTHER kind gate makes its ALLOW arm unreachable")
+    @Disabled("literal CALL is classified catalog-changing but its admin.exec kind gate makes its ALLOW arm unreachable for a principal without admin")
     @Test
     fun `allowed MySQL CALL carries after-statement refetch`() = runBlocking {
         target().use { held ->
@@ -369,7 +369,7 @@ class PerConnectionCatalogPostgresAdversarialDbTest : PerConnectionCatalogAdvers
         enforcement.cedarPolicyStore.create(
             CedarPolicyInput(
                 "pccat-pg-analyst-ddl",
-                """permit(principal in Role::"${enforcement.role}", action == Action::"sql.ddl", resource in Datasource::"${enforcement.datasource.name}");""",
+                """permit(principal in Role::"${enforcement.role}", action in [Action::"stmt.cat.ddl"], resource in Datasource::"${enforcement.datasource.name}");""",
             ),
             "pccat-test",
         )
@@ -385,7 +385,7 @@ class PerConnectionCatalogPostgresAdversarialDbTest : PerConnectionCatalogAdvers
         enforcement.cedarPolicyStore.create(
             CedarPolicyInput(
                 "pccat-pg-writer-select",
-                """permit(principal in Role::"ddl-writer", action == Action::"sql.select", resource in Datasource::"${enforcement.datasource.name}");""",
+                """permit(principal in Role::"ddl-writer", action in [Action::"stmt.cat.read"], resource in Datasource::"${enforcement.datasource.name}");""",
             ),
             "pccat-test",
         )

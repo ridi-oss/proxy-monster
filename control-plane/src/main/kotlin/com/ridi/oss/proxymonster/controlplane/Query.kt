@@ -19,6 +19,7 @@ import com.ridi.oss.proxymonster.controlplane.authz.authorizeTables
 import com.ridi.oss.proxymonster.controlplane.authz.resolveContextTags
 import com.ridi.oss.proxymonster.controlplane.authz.authorizeUtilities
 import com.ridi.oss.proxymonster.controlplane.authz.authorizeDatasourceAction
+import com.ridi.oss.proxymonster.controlplane.authz.authorizeDatasourceActionId
 import com.ridi.oss.proxymonster.controlplane.authz.authorizeWithContext
 import com.ridi.oss.proxymonster.classification.BaselineDangerousFunctions
 import com.ridi.oss.proxymonster.grpc.ColumnMask
@@ -27,10 +28,9 @@ import com.ridi.oss.proxymonster.grpc.Engine
 import com.ridi.oss.proxymonster.grpc.columnMask
 import com.ridi.oss.proxymonster.analyzer.pb.ColumnSpec
 import com.ridi.oss.proxymonster.analyzer.pb.FailureClass
-import com.ridi.oss.proxymonster.analyzer.pb.GrantAction
 import com.ridi.oss.proxymonster.analyzer.pb.MaskedDisposition
-import com.ridi.oss.proxymonster.analyzer.pb.StatementClass
 import com.ridi.oss.proxymonster.analyzer.pb.StatementFacts
+import com.ridi.oss.proxymonster.analyzer.pb.StatementKind
 import com.ridi.oss.proxymonster.analyzer.pb.columnSpec
 import com.ridi.oss.proxymonster.analyzer.pb.engineConfig as pbEngineConfig
 import com.ridi.oss.proxymonster.analyzer.pb.namespace as pbNamespace
@@ -301,9 +301,10 @@ fun decideQuery(
     // onto the base catalog so a bare name resolves to the temp the backend binds. Empty for one-shot/wire.
     tempColumns: List<CatalogColumn> = emptyList(),
     // TEST-ONLY seam. When non-null, the grant walk runs over these StatementFacts instead of analyzing
-    // [sql] — the ONLY way to exercise the fail-closed contract branches (UNSPECIFIED action/disposition/
-    // class, invalid ordinal, malformed grant) that a resolved Go analyzer can never emit. Production
-    // callers leave it null; the catalog/analyzer are still built so column-grant resolution is real.
+    // [sql] — the ONLY way to exercise the fail-closed contract branches (an UNSPECIFIED disposition, a
+    // resourceless result-read, a missing execute grant, an invalid ordinal) that a resolved Go analyzer can
+    // never emit. Production callers leave it null; the catalog/analyzer are still built so column-grant
+    // resolution is real.
     factsOverride: StatementFacts? = null,
 ): DecisionContext {
     val id = ds.id
@@ -375,33 +376,34 @@ fun decideQuery(
     val context = effectiveAuthzContext(context, channel, authz, principal, roles, ds.name, ds.tags)
     val derivedTags = context.tags.toList()
 
-    // Fail-closed contract validation (analyzer.proto): before any category dispatch, every emitted grant
-    // must name exactly ONE resource, and a non-datasource resource grant must carry RESULT_READ. A grant
-    // with no resource is invisible to the has*-filtered category walk below — it would silently ride a
-    // resolved-METADATA statement to a passthrough ALLOW — and a column/table/function/utility grant with
-    // an unexpected action is a malformed effect the walk would otherwise authorize as a plain read. A
-    // resolved analyzer never emits either, so treat both as a fail-closed DENY, not a skipped grant.
-    facts.requiredGrantsList.firstOrNull { grant ->
-        val resources = listOf(grant.hasColumn(), grant.hasTable(), grant.hasFunction(), grant.hasUtility(), grant.hasDatasource())
-        resources.count { it } != 1 || (!grant.hasDatasource() && grant.action != GrantAction.GRANT_ACTION_RESULT_READ)
+    // Fail-closed contract validation (analyzer.proto): the single statement-execution grant is the sole
+    // per-statement authorization signal. A RESOLVED statement without it would default to the grantable
+    // STMT_UNKNOWN gate, so its absence fails closed. (An unresolved fact may carry the grant — a classified-
+    // but-unanalyzable statement like KILL does — or omit it on a pre-parse failure; either way it routes
+    // through sql.unanalyzable, and the kind gate below denies an unspecified/unrecognized kind. The
+    // analyzer emits the grant exactly once, so no runtime count check is needed.)
+    if (facts.resolved && !facts.hasStatementExec()) {
+        return structuralDeny("fail-closed: a resolved statement must carry its execute grant", roleList, failedStage = "policy", contextTags = derivedTags)
+    }
+    // Every result-read grant must name a resource. The proto oneof guarantees AT MOST one; a grant naming
+    // NONE is invisible to the has*-filtered walk below and would silently ride a resolved statement to
+    // ALLOW, so a resourceless grant is a fail-closed DENY. A resolved analyzer never emits one.
+    facts.resultReadsList.firstOrNull { grant ->
+        !grant.hasColumn() && !grant.hasTable() && !grant.hasFunction() && !grant.hasUtility()
     }?.let {
-        return structuralDeny("fail-closed: analyzer emitted a malformed required grant", roleList, failedStage = "policy", contextTags = derivedTags)
+        return structuralDeny("fail-closed: analyzer emitted a resourceless result-read grant", roleList, failedStage = "policy", contextTags = derivedTags)
     }
 
-    // Fail-closed contract validation continued, up front and INDEPENDENT of any later Cedar verdict: a
-    // resolved statement must carry a recognized statement class; every column grant a recognized non-
-    // UNSPECIFIED masking disposition; every output ordinal an in-range index into output_columns. Validated
-    // here — not only inside the eventual MASKED branch — so an allowed/UNMASKED column can never ride a
-    // malformed disposition or a bogus ordinal to ALLOW. A resolved Go analyzer always satisfies these.
-    if (facts.resolved && facts.statementClass !in RESOLVED_STATEMENT_CLASSES) {
-        return structuralDeny("fail-closed: resolved statement has no statement class", roleList, failedStage = "policy", contextTags = derivedTags)
-    }
-    facts.requiredGrantsList.firstOrNull { grant ->
+    // Fail-closed contract validation continued, up front and INDEPENDENT of any later Cedar verdict: every
+    // column grant a recognized non-UNSPECIFIED masking disposition; every output ordinal an in-range index
+    // into output_columns. Validated here — not only inside the eventual MASKED branch — so an allowed/
+    // UNMASKED column can never ride a malformed disposition or a bogus ordinal to ALLOW.
+    facts.resultReadsList.firstOrNull { grant ->
         grant.outputOrdinalsList.any { it !in facts.outputColumnsList.indices }
     }?.let {
         return structuralDeny("invalid mask output ordinal", roleList, failedStage = "mask-binding", contextTags = derivedTags)
     }
-    facts.requiredGrantsList.firstOrNull { grant ->
+    facts.resultReadsList.firstOrNull { grant ->
         grant.hasColumn() && grant.maskedDisposition in MALFORMED_DISPOSITIONS
     }?.let {
         return structuralDeny("fail-closed: column grant has no masking disposition", roleList, failedStage = "policy", contextTags = derivedTags)
@@ -420,7 +422,7 @@ fun decideQuery(
         AuthzDecision.Allow -> Unit
     }
 
-    val utilityGrants = facts.requiredGrantsList.filter { it.hasUtility() }
+    val utilityGrants = facts.resultReadsList.filter { it.hasUtility() }
     if (utilityGrants.isNotEmpty()) {
         if (systemClassification == null || ds.engineVersion.isNullOrBlank()) {
             return structuralDeny(
@@ -454,40 +456,48 @@ fun decideQuery(
         }
     }
 
-    if (facts.resolved && facts.requiredGrantsList.none { it.hasColumn() || it.hasTable() || it.hasFunction() || it.hasDatasource() }) {
-        when (facts.statementClass) {
-            StatementClass.STATEMENT_CLASS_METADATA -> return DecisionContext(
-                action = EnfAction.ALLOW,
-                denyReason = null,
-                masks = emptyList(),
-                piiTouched = emptyList(),
-                effectiveRoles = roleList,
-                failedStage = null,
-                detail = "passthrough (readonly-meta)",
-                passthrough = true,
-                contextTags = derivedTags,
-                schemaCandidates = facts.schemaQualifierCandidatesList.toSet(),
-            ).withAnalyzerRewrite(facts)
-            StatementClass.STATEMENT_CLASS_SESSION -> when (channel) {
-                Channel.WIRE, Channel.EDITOR -> return passthroughAllow(roleList, "passthrough (session-mutating)", derivedTags)
-                    .copy(schemaCandidates = facts.schemaQualifierCandidatesList.toSet())
-                    .withAnalyzerRewrite(facts)
-                Channel.WORKFLOW_EXECUTOR, Channel.WORKFLOW_VIEWER, Channel.MCP ->
-                    return structuralDeny(EDITOR_SESSION_STATEMENT_DENY, roleList, contextTags = derivedTags)
-            }
-            StatementClass.STATEMENT_CLASS_UNSPECIFIED, StatementClass.UNRECOGNIZED ->
-                return structuralDeny("statement class is unspecified", roleList, contextTags = derivedTags)
-            StatementClass.STATEMENT_CLASS_ANALYZED -> Unit
-        }
+    // Statement-kind gate — the sole per-statement authorization. The analyzer's statement_exec grant names
+    // the granular kind; Cedar's schema alone maps it to a category (stmt.kind.<k> in stmt.cat.<c>), so a
+    // category preset covers the kind while an exact-kind forbid still overrides a broad category permit.
+    // EVERY statement is gated here — including a no-column metadata/session/admin/unknown one — closing the
+    // connect-only gaps (ANALYZE TABLE, SHOW MASTER STATUS, …). A missing grant (a pre-parse failure) reads
+    // as STMT_UNKNOWN → sql.unanalyzable. Runs after connect/utility, before the passthrough allow; the
+    // unanalyzable/utility gates still apply on top (e.g. ALTER TABLE stays prod-denied).
+    val statementKind = if (facts.hasStatementExec()) facts.statementExec.statementKind
+    else StatementKind.STATEMENT_KIND_STMT_UNKNOWN
+    val kindAction = statementKindActionId(statementKind)
+        ?: return structuralDeny("statement kind is unspecified", roleList, contextTags = derivedTags)
+    if (authz.authorizeDatasourceActionId(principal, roles, kindAction, ds.name, context, ds.tags) !is AuthzDecision.Allow) {
+        val kindName = statementKind.name.removePrefix("STATEMENT_KIND_").lowercase()
+        return policyDeny("statement kind '$kindName' is not permitted", roleList, derivedTags)
     }
 
-    for (grant in facts.requiredGrantsList.filter { it.hasDatasource() }) {
-        val action = grantAction(grant.action)
-            ?: return policyDeny("statement kind 'other' is not permitted", roleList, derivedTags)
-        when (authz.authorizeDatasourceAction(principal, roles, action, ds.name, context, ds.tags)) {
-            is AuthzDecision.Deny -> return policyDeny("no ${action.cedarId} grant for datasource '${ds.name}'", roleList, derivedTags)
-            AuthzDecision.Allow -> Unit
+    // A resolved statement that touches no column/table/function, changes no catalog, and calls no function
+    // has nothing to mask, re-measure, or authorize beyond the kind gate it already passed: relay it verbatim
+    // (SHOW/SET/const-SELECT). A catalog-changing (DDL) or function-bearing no-column statement falls through
+    // so its re-measure and function authorization still run. A session statement on a non-persistent channel
+    // (MCP/workflow) is denied earlier at the kind gate by the seeded `stmt.cat.session` Cedar forbid.
+    if (facts.resolved &&
+        !facts.catalogChanging &&
+        facts.functionsList.isEmpty() &&
+        facts.resultReadsList.none { it.hasColumn() || it.hasTable() || it.hasFunction() }
+    ) {
+        // A no-column relay is still an ALLOW, and a literal DML write reaches here — UPDATE/DELETE/INSERT
+        // VALUES gate on their kind, not a column grant. On an engine that echoes the whole row on a
+        // constraint error (PostgreSQL's `DETAIL: Failing row contains (…)`) that write's error must still
+        // be redacted for a principal without unmasked read, so sanitizeDiagnostics is computed here too. It
+        // defaults false, and a metadata/session statement simply has no such DETAIL to strip.
+        val sanitizeDiagnostics = redactsDiagnostics(ds.engine, EnfAction.ALLOW) {
+            authz.authorizeDatasourceAction(
+                principal, roles, AuthzAction.RESULT_READ_UNMASKED, ds.name, context, ds.tags,
+            ) is AuthzDecision.Allow
         }
+        return passthroughAllow(roleList, "passthrough (no data touched)", derivedTags)
+            .copy(
+                sanitizeDiagnostics = sanitizeDiagnostics,
+                schemaCandidates = facts.schemaQualifierCandidatesList.toSet(),
+            )
+            .withAnalyzerRewrite(facts)
     }
 
     if (!facts.resolved) {
@@ -527,7 +537,7 @@ fun decideQuery(
         }
     }
 
-    val columnGrants = facts.requiredGrantsList.filter { it.hasColumn() }
+    val columnGrants = facts.resultReadsList.filter { it.hasColumn() }
     val columnKeys = LinkedHashMap<String, com.ridi.oss.proxymonster.analyzer.pb.ColumnResource>()
     for (grant in columnGrants) {
         val column = grant.column
@@ -586,7 +596,7 @@ fun decideQuery(
     val allTableIds = buildSet {
         columnRefs.mapTo(this) { Triple(it.catalog, it.schema, it.table) }
         facts.sourcesList.mapTo(this) { Triple(it.catalog, it.schema, it.table) }
-        facts.requiredGrantsList.filter { it.hasTable() }.mapTo(this) { Triple(it.table.catalog, it.table.schema, it.table.table) }
+        facts.resultReadsList.filter { it.hasTable() }.mapTo(this) { Triple(it.table.catalog, it.table.schema, it.table.table) }
     }
     val systemTags = systemClassification?.let { sc ->
         allTableIds.mapNotNull { (cat, schema, table) ->
@@ -594,7 +604,7 @@ fun decideQuery(
         }.toMap()
     } ?: emptyMap()
 
-    val functionGrants = facts.requiredGrantsList.filter { it.hasFunction() }
+    val functionGrants = facts.resultReadsList.filter { it.hasFunction() }
     if (functionGrants.isNotEmpty() || facts.functionsList.isNotEmpty()) {
         val names = (functionGrants.map { it.function.name } + facts.functionsList).distinct()
         val functionTags = names.mapNotNull { name ->
@@ -628,11 +638,7 @@ fun decideQuery(
                 MaskedDisposition.MASKED_DISPOSITION_DENY_STATEMENT,
                 MaskedDisposition.MASKED_DISPOSITION_UNSPECIFIED,
                 MaskedDisposition.UNRECOGNIZED -> return deny(
-                    if (facts.isWrite) {
-                        "write references protected column $key (a write cannot be masked)"
-                    } else {
-                        "sensitive column $key used in a subquery/reference position (cannot be masked)"
-                    },
+                    "protected column $key appears in a position that cannot be masked (a write payload or a subquery/reference)",
                 )
                 MaskedDisposition.MASKED_DISPOSITION_MASK_OUTPUT,
                 MaskedDisposition.MASKED_DISPOSITION_REDACT_OUTPUT_NULL -> {
@@ -664,7 +670,7 @@ fun decideQuery(
     }
 
     val tempTableIds = tempColumns.mapTo(HashSet()) { Triple(it.catalog, it.schema, it.table) }
-    val tableGrants = facts.requiredGrantsList.filter { it.hasTable() && Triple(it.table.catalog, it.table.schema, it.table.table) !in tempTableIds }
+    val tableGrants = facts.resultReadsList.filter { it.hasTable() && Triple(it.table.catalog, it.table.schema, it.table.table) !in tempTableIds }
     if (tableGrants.isNotEmpty()) {
         val refs = tableGrants.map { grant ->
             val table = grant.table
@@ -719,14 +725,6 @@ fun decideQuery(
     ).withAnalyzerRewrite(facts)
 }
 
-// A resolved statement always classifies as one of these; anything else (UNSPECIFIED/UNRECOGNIZED on a
-// resolved fact) is a malformed analyzer contract and fails closed.
-private val RESOLVED_STATEMENT_CLASSES = setOf(
-    StatementClass.STATEMENT_CLASS_ANALYZED,
-    StatementClass.STATEMENT_CLASS_METADATA,
-    StatementClass.STATEMENT_CLASS_SESSION,
-)
-
 // A column grant must carry a real masking disposition; an absent/unrecognized one is a malformed effect
 // the walk would otherwise treat as a plain unmasked read, so it fails closed.
 private val MALFORMED_DISPOSITIONS = setOf(
@@ -734,8 +732,6 @@ private val MALFORMED_DISPOSITIONS = setOf(
     MaskedDisposition.UNRECOGNIZED,
 )
 
-private const val EDITOR_SESSION_STATEMENT_DENY =
-    "session/transaction statements aren't supported in the SQL editor — it runs each query on a fresh connection"
 internal const val MASK_BIND_DENY = "required mask could not be bound to a result column"
 private const val EXPLAIN_MASK_DENY =
     "cannot EXPLAIN a query whose columns are masked — request full access or run the query directly"
@@ -801,17 +797,6 @@ internal fun wireTaskForbiddenDeny(
     contextTags: List<String>,
 ): DecisionContext = policyDeny(WIRE_TASK_FORBIDDEN_DENY, roles, contextTags)
 
-private fun grantAction(action: GrantAction): AuthzAction? = when (action) {
-    GrantAction.GRANT_ACTION_SQL_SELECT -> AuthzAction.SQL_SELECT
-    GrantAction.GRANT_ACTION_SQL_INSERT -> AuthzAction.SQL_INSERT
-    GrantAction.GRANT_ACTION_SQL_UPDATE -> AuthzAction.SQL_UPDATE
-    GrantAction.GRANT_ACTION_SQL_DELETE -> AuthzAction.SQL_DELETE
-    GrantAction.GRANT_ACTION_SQL_DDL -> AuthzAction.SQL_DDL
-    GrantAction.GRANT_ACTION_UNSPECIFIED,
-    GrantAction.GRANT_ACTION_RESULT_READ,
-    GrantAction.UNRECOGNIZED -> null
-}
-
 // Relay the analyzer's optional rewritten SQL on a decision we allow. rewrittenSql is Go-analyzer output
 // (the `SELECT *` expansion, the MySQL charset pin) independent of statement class, so every
 // understood-and-allowed decision — analyzed, metadata, session — routes it through this one point rather
@@ -820,6 +805,19 @@ private fun grantAction(action: GrantAction): AuthzAction? = when (action) {
 // not call this.
 private fun DecisionContext.withAnalyzerRewrite(facts: StatementFacts): DecisionContext =
     if (facts.hasRewrittenSql() && !facts.explainOfQuery) copy(rewrittenSql = facts.rewrittenSql) else this
+
+// The Cedar action a statement's kind is gated by. "stmt.kind.<k>" is a member of its category action in
+// the schema, so a category or kind preset matches it; an admin-category kind with no preset denies —
+// closing the connect-only gaps (ANALYZE TABLE, SHOW MASTER STATUS, …). UNSPECIFIED/UNRECOGNIZED is the
+// invalid zero value the analyzer never emits on a real classification; it returns null → hard deny.
+private fun statementKindActionId(kind: StatementKind): String? = when (kind) {
+    StatementKind.STATEMENT_KIND_UNSPECIFIED, StatementKind.UNRECOGNIZED -> null
+    // An unclassified statement (a parse fallback, or a discriminator the classifier does not map yet) is
+    // gated by the same deny-by-default exception as an unanalyzable one, not a distinct kind action:
+    // existing sql.unanalyzable exceptions carry it, a dev datasource may relay, prod denies.
+    StatementKind.STATEMENT_KIND_STMT_UNKNOWN -> AuthzAction.SQL_UNANALYZABLE.cedarId
+    else -> "stmt.kind." + kind.name.removePrefix("STATEMENT_KIND_").lowercase()
+}
 
 private fun passthroughAllow(
     roles: List<String>,

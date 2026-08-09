@@ -7,6 +7,7 @@ import com.ridi.oss.proxymonster.controlplane.authz.CedarEngine
 import com.ridi.oss.proxymonster.controlplane.authz.CedarPolicyStore
 import com.ridi.oss.proxymonster.controlplane.authz.RoleSource
 import com.ridi.oss.proxymonster.controlplane.authz.authorizeDatasourceAction
+import com.ridi.oss.proxymonster.controlplane.authz.authorizeDatasourceActionId
 import java.sql.Connection
 import java.util.logging.Logger
 import javax.sql.DataSource
@@ -24,12 +25,12 @@ import kotlin.test.assertIs
  * Mirrors ColumnAuthzTest's in-memory-CedarEngine + UnusedDataSource pattern to stay off JDBC/Docker.
  */
 class AuthzDatasourceActionTest {
-    // A role granted datasource.connect + sql.select + sql.insert on acme-mysql specifically — NOT
-    // sql.delete, and NOT any other datasource name.
+    // A role granted datasource.connect + stmt.cat.read + stmt.cat.write.insert on acme-mysql specifically —
+    // NOT stmt.cat.write.delete, and NOT any other datasource name.
     private val seedPolicies = listOf(
         1L to """permit(
             principal in Role::"batch-writer",
-            action in [Action::"datasource.connect", Action::"sql.select", Action::"sql.insert"],
+            action in [Action::"datasource.connect", Action::"stmt.cat.read", Action::"stmt.cat.write.insert"],
             resource in Datasource::"acme-mysql"
         );""",
         2L to """permit(
@@ -76,10 +77,10 @@ class AuthzDatasourceActionTest {
 
     @Test
     fun `a granted role may run a granted sql kind on the named datasource`() {
-        val decision = authz().authorizeDatasourceAction(
+        val decision = authz().authorizeDatasourceActionId(
             principal = "alice",
             roles = setOf("batch-writer"),
-            action = AuthzAction.SQL_INSERT,
+            cedarActionId = "stmt.cat.write.insert",
             datasource = "acme-mysql",
         )
         assertEquals(AuthzDecision.Allow, decision)
@@ -111,10 +112,10 @@ class AuthzDatasourceActionTest {
 
     @Test
     fun `an ungranted sql kind is denied — deny-by-default, not absent-equals-allow`() {
-        val decision = authz().authorizeDatasourceAction(
+        val decision = authz().authorizeDatasourceActionId(
             principal = "alice",
             roles = setOf("batch-writer"),
-            action = AuthzAction.SQL_DELETE,
+            cedarActionId = "stmt.cat.write.delete",
             datasource = "acme-mysql",
         )
         assertIs<AuthzDecision.Deny>(decision)
@@ -149,9 +150,9 @@ class AuthzDatasourceActionTest {
         val authz = Authz(
             CedarEngine(
                 listOf(
-                    1L to """permit(principal, action == Action::"sql.select", resource)
+                    1L to """permit(principal, action in [Action::"stmt.cat.read"], resource)
                              when { resource in Tag::"pci" };""",
-                    2L to """permit(principal, action == Action::"sql.delete", resource)
+                    2L to """permit(principal, action in [Action::"stmt.cat.write.delete"], resource)
                              when { resource in Tag::"system:critical" };""",
                 ),
             ),
@@ -160,10 +161,10 @@ class AuthzDatasourceActionTest {
         )
         assertEquals(
             AuthzDecision.Allow,
-            authz.authorizeDatasourceAction(
+            authz.authorizeDatasourceActionId(
                 principal = "alice",
                 roles = setOf("anyone"),
-                action = AuthzAction.SQL_SELECT,
+                cedarActionId = "stmt.cat.read",
                 datasource = "acme-mysql",
                 datasourceTags = listOf("pci"),
             ),
@@ -171,20 +172,20 @@ class AuthzDatasourceActionTest {
         )
         assertEquals(
             AuthzDecision.Allow,
-            authz.authorizeDatasourceAction(
+            authz.authorizeDatasourceActionId(
                 principal = "alice",
                 roles = setOf("anyone"),
-                action = AuthzAction.SQL_DELETE,
+                cedarActionId = "stmt.cat.write.delete",
                 datasource = "acme-mysql",
                 datasourceTags = listOf("system:critical"),
             ),
             "a product `system:` name is a tag too — no type-scoping drops it off a datasource",
         )
         assertIs<AuthzDecision.Deny>(
-            authz.authorizeDatasourceAction(
+            authz.authorizeDatasourceActionId(
                 principal = "alice",
                 roles = setOf("anyone"),
-                action = AuthzAction.SQL_SELECT,
+                cedarActionId = "stmt.cat.read",
                 datasource = "acme-mysql",
                 datasourceTags = emptyList(),
             ),

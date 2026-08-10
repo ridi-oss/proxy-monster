@@ -19,8 +19,10 @@ import kotlin.test.assertTrue
  * forbidden on the production floor by the shipped forbids — the forbid overriding even a broad grant.
  * `system:critical` is never relaxed; `system:activity`/`data-leak` are relaxed on `system:development` (V32).
  * The classifier keys off `datasource.engine_version` (set here to a PG-17 `version()` string). A datasource
- * with NO version resolves to no manifest → no system tag → deny-by-default (system schemas closed) — the
- * transitional/fail-closed posture. Running this test also proves the shipped SYSTEM policies compile against
+ * with NO version resolves to no manifest, so its fixed system schemas stay closed: an explicitly-dangerous
+ * table keeps its tag, and any unrecognized/catalog-default one is treated as critical and denied even under
+ * a broad grant — fail-closed, since an unrecognized system table cannot be assumed benign catalog metadata.
+ * Running this test also proves the shipped SYSTEM policies compile against
  * schema.cedarschema at boot (the fixture's CedarEngine load).
  */
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
@@ -129,12 +131,42 @@ class SystemClassificationEnforcementDbTest {
     }
 
     @Test
-    fun `without an engine_version, system schemas stay deny-by-default`() {
+    fun `without an engine_version, fixed system schemas stay closed`() {
         setEngineVersion(null)
-        // No version → no manifest → no system tag → the object is ungranted → deny-by-default (safe).
-        // Even the otherwise-open pg_class is denied because there is no classification to permit it.
-        assertEquals(EnfAction.DENY, decide("select count(*) from pg_catalog.pg_class"), "no version → no system:catalog permit → deny")
-        assertEquals(EnfAction.DENY, decide("select count(*) from pg_catalog.pg_authid"), "no version → still denied (fail-closed)")
+        // No manifest governs, so a fixed system schema is closed: an unrecognized/catalog-default table
+        // (pg_class) is treated as critical and denied, and pg_authid is denied too. Fail-closed — an
+        // unrecognized fixed-system table cannot be assumed benign catalog metadata.
+        assertEquals(EnfAction.DENY, decide("select count(*) from pg_catalog.pg_class"), "no version → pg_class treated as critical → denied")
+        assertEquals(EnfAction.DENY, decide("select count(*) from pg_catalog.pg_authid"), "no version → pg_authid denied")
+    }
+
+    @Test
+    fun `without an engine_version, the floor still forbids a system table under a broad datasource grant`() {
+        // The advisory case (GHSA-j984-q948-4xq8): a datasource with no governing manifest, a broad Datasource
+        // read grant, and a query on a fixed system table. Before the floor, pg_authid was untagged and the
+        // broad grant read it; the floor now tags it system:critical so the shipped forbid overrides the grant.
+        setEngineVersion(null)
+        val broad = "broad-nomanifest@example.com"
+        val role = fx.policyStore.createRole(RoleInput("broad-nomanifest-reader"))
+        fx.policyStore.createAssignment(RoleAssignmentInput(broad, role.id))
+        fx.cedarPolicyStore.create(
+            CedarPolicyInput(
+                name = "test-broad-nomanifest-grant",
+                cedarSrc = """permit(principal in Role::"broad-nomanifest-reader", action, resource in Datasource::"${fx.datasource.name}");""",
+            ),
+            updatedBy = "test",
+        )
+        fun decideAs(who: String, sql: String) = decideQuery(
+            principal = who, ds = fx.datasourceStore.get(fx.datasource.id)!!, sql = sql, channel = Channel.WIRE,
+            catalog = fx.datasourceStore.catalog(fx.datasource.id), policyStore = fx.policyStore, accessStore = fx.accessStore,
+            userGroupStore = fx.userGroupStore, roleResolver = fx.roleResolver, authz = fx.authz,
+            systemClassification = classifier,
+        ).action
+        assertEquals(EnfAction.DENY, decideAs(broad, "select count(*) from pg_catalog.pg_authid"), "no-manifest critical floor overrides the broad grant")
+        assertEquals(EnfAction.DENY, decideAs(broad, "select rolname from pg_catalog.pg_authid"), "and on the column path too")
+        // And an unrecognized/catalog-default fixed-system table is closed under the same grant — the fix does
+        // not open the -100 catalog permit to unclassified system relations on an unmanifested datasource.
+        assertEquals(EnfAction.DENY, decideAs(broad, "select count(*) from pg_catalog.pg_class"), "no-manifest pg_class is closed, not browsable")
     }
 
     // A query calling a dangerous builtin is DENIED by the shipped system:data-leak/critical
@@ -152,10 +184,10 @@ class SystemClassificationEnforcementDbTest {
         // critical (pg_catalog exact, net-new vs dangerousFuncs) and data-leak (pageinspect *) both deny.
         assertEquals(EnfAction.DENY, decide("select pg_terminate_backend(1) from pg_catalog.pg_class"), "pg_terminate_backend (system:critical) must deny by policy")
         assertEquals(EnfAction.DENY, decide("select get_raw_page('pg_class', 0) from pg_catalog.pg_class"), "get_raw_page (system:data-leak) must deny by policy")
-        // No version → no classification → the function gate is inert (this DENY is deny-by-default for the
-        // ungranted table scan, not the function forbid — proven by the safe-baseline ALLOW above flipping).
+        // No version → the fixed system table itself is closed (pg_class treated as critical), so even a safe
+        // function over it denies at the table gate — the function gate is not reached.
         setEngineVersion(null)
-        assertEquals(EnfAction.DENY, decide("select now() from pg_catalog.pg_class"), "no version → table scan itself denies (function gate inert)")
+        assertEquals(EnfAction.DENY, decide("select now() from pg_catalog.pg_class"), "no version → pg_class closed → table scan denies")
     }
 
     @Test

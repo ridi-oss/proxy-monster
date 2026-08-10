@@ -48,8 +48,29 @@ class SystemClassificationServiceTest {
         val auroraPg = "PostgreSQL 17.4 on x86_64 (aurora 17.4...)"
         assertEquals("system:critical", svc.tagForTable(Engine.POSTGRES, auroraPg, "acme", "pg_catalog", "pg_authid"))
         assertEquals("system:catalog", svc.tagForTable(Engine.POSTGRES, auroraPg, "acme", "pg_catalog", "pg_class"))
-        // no version → no manifest → null (deny-by-default)
-        assertNull(svc.tagForTable(Engine.POSTGRES, null, "acme", "pg_catalog", "pg_authid"))
+    }
+
+    @Test
+    fun `a fixed system table without a governing manifest is closed`() {
+        // No governing manifest (null version, fallback off): a fixed system schema must not fall through
+        // untagged (a broad Datasource grant would read it). An explicitly-dangerous manifest tag is kept;
+        // everything else — the bare catalog default, an unrecognized table, or a catalog-mismatched one — is
+        // treated as system:critical so the unconditional forbid closes it. Fail-closed: unprovable ⇒ critical.
+        assertEquals("system:critical", svc.tagForTable(Engine.POSTGRES, null, "acme", "pg_catalog", "pg_authid"))
+        assertEquals("system:critical", svc.tagForTable(Engine.MYSQL, null, "def", "mysql", "user"))
+        // An explicit data-leak stays data-leak (kept so its own forbid + the system:development relaxation apply).
+        assertEquals("system:data-leak", svc.tagForTable(Engine.MYSQL, null, "def", "information_schema", "COLUMN_STATISTICS"))
+        // A catalog-default table (no explicit dangerous rule) is closed as critical, not opened as catalog.
+        assertEquals("system:critical", svc.tagForTable(Engine.POSTGRES, null, "acme", "pg_catalog", "pg_class"))
+        // An unrecognized table in a fixed system schema (not in any shipped manifest) is likewise closed.
+        assertEquals("system:critical", svc.tagForTable(Engine.MYSQL, null, "def", "performance_schema", "user_variables_by_thread"))
+        // A catalog-mismatched MySQL system table (schema matches, catalog is not "def") must not downgrade to
+        // catalog — it is still closed.
+        assertEquals("system:critical", svc.tagForTable(Engine.MYSQL, null, "not-def", "mysql", "user"))
+        // An ordinary user table is not a system resource, so it is never floored.
+        assertNull(svc.tagForTable(Engine.POSTGRES, null, "acme", "public", "orders"))
+        // Ephemeral pg_temp_/pg_toast are not fixed system schemas — their connection-local path owns them.
+        assertNull(svc.tagForTable(Engine.POSTGRES, null, "acme", "pg_temp_3", "scratch"))
     }
 
     // tagForFunction resolves a BARE function name (the only form the analyzer can emit, since

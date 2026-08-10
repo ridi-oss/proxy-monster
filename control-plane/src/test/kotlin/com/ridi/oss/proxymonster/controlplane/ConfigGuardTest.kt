@@ -64,8 +64,8 @@ class ConfigGuardTest {
 
     @Test fun `run token TTL outlives the whole run, session TTL outlives the query window`() {
         // The one-shot run token must stay valid for the ENTIRE run it authorizes — the dial-back + the
-        // cold-open + the exchange (PM_QUERY_TIMEOUT + exchange grace) — not merely the query window, else a
-        // long query on a slow cold-open fails UNAUTHENTICATED mid-run when the proxy revalidates the token.
+        // target-DB open + the exchange (PM_QUERY_TIMEOUT + exchange grace) — not merely the query window, else a
+        // long query on a slow target-DB open fails UNAUTHENTICATED mid-run when the proxy revalidates the token.
         // The editor-session token's 8h floor spans many queries, so it need only clear one window.
         val runOverheadSeconds =
             (RUN_DIALBACK_TIMEOUT_MS + RUN_OPEN_TIMEOUT_MS) / 1000 + Config.QUERY_EXCHANGE_GRACE_MS / 1000
@@ -73,7 +73,7 @@ class ConfigGuardTest {
         for (timeout in listOf(1L, 600L, 616L, 3600L, 36_000L, Config.MAX_QUERY_TIMEOUT_SECONDS)) {
             assertTrue(
                 RunExecService.runTokenTtlSeconds(timeout) >= timeout + runOverheadSeconds,
-                "run token TTL must cover dial-back + cold-open + exchange for timeout=$timeout",
+                "run token TTL must cover dial-back + target-DB open + exchange for timeout=$timeout",
             )
             assertTrue(
                 RunExecService.editorSessionTtlSeconds(timeout) > timeout,

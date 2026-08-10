@@ -23,15 +23,15 @@ import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 
 // Floor for a one-shot run token's TTL; the effective TTL grows to cover PM_QUERY_TIMEOUT (see
-// RunExecService.runTokenTtlSeconds). The floor alone must outlast a full-length dial-back + cold-open +
-// exchange, so a short PM_QUERY_TIMEOUT cannot leave a cold session's token expiring mid-statement.
+// RunExecService.runTokenTtlSeconds). The floor alone must outlast a full-length dial-back + target-DB open +
+// exchange, so a short PM_QUERY_TIMEOUT cannot leave an opening session's token expiring mid-statement.
 private const val RUN_TOKEN_TTL_FLOOR_SECONDS = 900L
 // A persistent editor SESSION token outlives many queries; give it a generous absolute TTL (sliding
 // refresh-on-activity is a follow-up) and bound the session with idle-sweep + explicit close. Per-session
 // and revoked on close, so a long TTL is not a standing credential.
 private const val EDITOR_SESSION_TTL_SECONDS = 8 * 3600L
 // Headroom over PM_QUERY_TIMEOUT for a one-shot run token's TTL. The token must outlive the WHOLE run it
-// authorizes — the stream dial-back (RUN_DIALBACK_TIMEOUT_MS) + the hard-capped backend cold-open
+// authorizes — the stream dial-back (RUN_DIALBACK_TIMEOUT_MS) + the hard-capped target-DB open
 // (RUN_OPEN_TIMEOUT_MS) + the query exchange (PM_QUERY_TIMEOUT + QUERY_EXCHANGE_GRACE_MS) — so this grace
 // must exceed dial-back + open + the exchange grace (15 + 120 + 150 = 285s), the remainder being a
 // revalidation buffer. The open being HARD-capped (not merely liveness-bounded) keeps that sum finite;
@@ -41,7 +41,7 @@ private const val TOKEN_TTL_GRACE_SECONDS = 300L
 // proxy opens that stream it sends the run's session id as the first frame, so the control-plane can tell WHICH
 // pending run the new stream is for. This bounds only that — the proxy opening the stream and sending the id —
 // which is near-instant when the proxy is alive. A proxy that got the dispatch but cannot open the stream
-// (dead/wedged, or drained between dispatch and dial) fails here rather than hanging; the cold-open that
+// (dead/wedged, or drained between dispatch and dial) fails here rather than hanging; the target-DB open that
 // follows is bounded by RUN_NO_PROGRESS_TIMEOUT_MS + RUN_OPEN_TIMEOUT_MS.
 internal const val RUN_DIALBACK_TIMEOUT_MS = 15_000L
 // Once the control-plane knows which run the stream is for, the proxy heartbeats RunProgress while it dials +
@@ -50,13 +50,13 @@ internal const val RUN_DIALBACK_TIMEOUT_MS = 15_000L
 // AND the absolute ceiling below. A heartbeat proves the PROXY is alive, NOT that the backend is advancing, so
 // a proxy blocked on a wedged backend read keeps ticking; RUN_OPEN_TIMEOUT_MS is what bounds that.
 internal const val RUN_NO_PROGRESS_TIMEOUT_MS = 15_000L
-// Absolute ceiling on the whole cold-open (the dial-back above excluded): even while heartbeats keep the
+// Absolute ceiling on the whole target-DB open (the dial-back above excluded): even while heartbeats keep the
 // no-progress bound reset, the open cannot exceed this. Sized at the old blind dial budget so a legitimately
 // slow open is not regressed, while a stalled-but-heartbeating one fails here instead of riding the backend
 // read-idle timeout — and, being finite, it keeps the run token's TTL grace (which must outlast the open)
 // sufficient.
 internal const val RUN_OPEN_TIMEOUT_MS = 120_000L
-// The table-detail channel keeps a single fixed dial bound (metadata-only introspection, no cold backend
+// The table-detail channel keeps a single fixed dial bound (metadata-only introspection, no slow backend
 // open with liveness heartbeats), so it is unaffected by the run-channel's dial-back/no-progress split.
 internal const val DIAL_TIMEOUT_MS = 120_000L
 // Fallback only: every production path passes Config.queryExchangeTimeoutMs, which tracks
@@ -335,7 +335,7 @@ class RunExecService(
 
             val channel = attached
             // The stream is matched to this run the moment the proxy opens it (its first frame carries the
-            // run's id); the backend cold-open is still in flight. Wait for RunServing, bounding the wait by
+            // run's id); the target-DB open is still in flight. Wait for RunServing, bounding the wait by
             // lack of progress (each RunProgress heartbeat resets it) so a stalled or broken open fails fast
             // instead of riding a blind dial budget.
             awaitServing(channel.inbound, noProgressMs, openTimeoutMs)
@@ -368,11 +368,11 @@ class RunExecService(
             }
             try {
                 attached?.outbound?.trySend(controlRunMsg { close = runClose {} })
-                // Also close inbound so the gRPC handler tears down promptly. RunClose alone is not enough when
-                // the proxy is still cold-opening (it isn't reading control messages yet): closing inbound makes
-                // the handler's next forward-send fail, ending its collect — so the handler and its buffered
-                // frames aren't retained until the proxy's own backend timeout. Idempotent with the handler's
-                // own close on the normal path.
+                // Also close inbound so the gRPC handler tears down promptly. The RunClose above aborts the
+                // proxy's target-DB open (it reads its inbound throughout); closing inbound here makes the handler's
+                // next forward-send fail and end its collect, so the handler and its buffered frames aren't
+                // retained until the proxy's stream close propagates back. Idempotent with the handler's own
+                // close on the normal path.
                 attached?.inbound?.close()
             } finally {
                 try {
@@ -430,7 +430,7 @@ class RunExecService(
             } catch (e: TimeoutCancellationException) {
                 throw ProxyRunTimeoutException(e)
             }
-            // Wait for the backend cold-open to finish (RunServing), bounded by lack of progress — see run().
+            // Wait for the target-DB open to finish (RunServing), bounded by lack of progress — see run().
             awaitServing(attached.inbound, RUN_NO_PROGRESS_TIMEOUT_MS, RUN_OPEN_TIMEOUT_MS)
             openSessions[sessionId] = OpenEditorSession(
                 sessionId, principal, issued.id, ds.name, attached, opened.connectionId,
@@ -444,8 +444,9 @@ class RunExecService(
                 attached = withContext(NonCancellable) { pending.ready.await() }
             }
             attached?.outbound?.trySend(controlRunMsg { close = runClose {} })
-            // Close inbound too, so the gRPC handler tears down even when the proxy is still cold-opening and
-            // isn't reading the RunClose yet (see run()'s finally). On success the held session keeps the stream.
+            // Close inbound too, so the gRPC handler tears down promptly (see run()'s finally). The RunClose
+            // above aborts the proxy's target-DB open; closing inbound ends the handler without waiting for the
+            // proxy's stream close to propagate. On success the held session keeps the stream.
             attached?.inbound?.close()
             runCatching { core.tokenStore.revoke(issued.id, principal) }
             closeConnectionCatalog(opened.connectionId, ds.name)
@@ -584,10 +585,10 @@ class RunExecService(
     }
 
     /**
-     * Wait for the proxy to finish its backend cold-open and announce RunServing, under two bounds. A stream
+     * Wait for the proxy to finish its target-DB open and announce RunServing, under two bounds. A stream
      * closed before serving (a redeploy cutting the run) fails at once; a proxy that stops heartbeating fails
      * within [noProgressMs]; and — because a RunProgress heartbeat proves the proxy is alive but NOT that its
-     * backend open is advancing — a proxy that keeps ticking while its open is wedged fails at the absolute
+     * target-DB open is advancing — a proxy that keeps ticking while its open is wedged fails at the absolute
      * [openTimeoutMs] ceiling rather than riding the backend read-idle timeout. A terminal RunError during the
      * open (backend unreachable, catalog init failed) is surfaced as-is. The stream is already matched to
      * this run (attached), so every one of these is attributable — there is no blind wait, unlike the old

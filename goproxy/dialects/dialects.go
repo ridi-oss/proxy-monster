@@ -2,6 +2,7 @@
 package dialects
 
 import (
+	"context"
 	"crypto/tls"
 	"database/sql"
 	"time"
@@ -38,8 +39,8 @@ func (p mysqlProvider) ReadTableDetail(conn *sql.Conn, schema, table string) (*s
 func (mysqlProvider) NewWireServer(port int, backend spi.BackendTarget, client spi.EnforcementClient, dbImpl engine.Db, tlsProvider func() (*tls.Config, error)) spi.WireServer {
 	return mysqlproxy.New(port, backend, client, dbImpl, tlsProvider)
 }
-func (mysqlProvider) NewRunSession(target spi.BackendTarget, dbImpl engine.Db, client spi.SessionClient, token string, connectionID []byte, guard engine.ExecGuard, readTimeout time.Duration) (spi.BackendSession, error) {
-	return mysqlproxy.NewRunSession(target, dbImpl, client, token, connectionID, guard, readTimeout)
+func (mysqlProvider) NewRunSession(ctx context.Context, target spi.BackendTarget, dbImpl engine.Db, client spi.SessionClient, token string, connectionID []byte, guard engine.ExecGuard, readTimeout time.Duration) (spi.BackendSession, error) {
+	return mysqlproxy.NewRunSession(ctx, target, dbImpl, client, token, connectionID, guard, readTimeout)
 }
 
 func (pgProvider) Dialect() engine.Dialect { return engine.Postgres }
@@ -63,8 +64,8 @@ func (p pgProvider) ReadTableDetail(conn *sql.Conn, schema, table string) (*spi.
 func (pgProvider) NewWireServer(port int, backend spi.BackendTarget, client spi.EnforcementClient, dbImpl engine.Db, tlsProvider func() (*tls.Config, error)) spi.WireServer {
 	return pgproxy.New(port, backend, client, dbImpl, tlsProvider)
 }
-func (pgProvider) NewRunSession(target spi.BackendTarget, dbImpl engine.Db, client spi.SessionClient, token string, connectionID []byte, guard engine.ExecGuard, readTimeout time.Duration) (spi.BackendSession, error) {
-	return pgproxy.NewRunSession(target, dbImpl, client, token, connectionID, guard, readTimeout)
+func (pgProvider) NewRunSession(ctx context.Context, target spi.BackendTarget, dbImpl engine.Db, client spi.SessionClient, token string, connectionID []byte, guard engine.ExecGuard, readTimeout time.Duration) (spi.BackendSession, error) {
+	return pgproxy.NewRunSession(ctx, target, dbImpl, client, token, connectionID, guard, readTimeout)
 }
 
 var registry = spi.MustRegistry(mysqlProvider{}, pgProvider{})

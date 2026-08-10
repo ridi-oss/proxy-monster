@@ -1,6 +1,7 @@
 package mysqlproxy
 
 import (
+	"context"
 	"crypto/tls"
 	"errors"
 	"fmt"
@@ -39,12 +40,17 @@ var testHookCachingSHA2FullAuth func(viaPublicKey bool)
 // CLIENT_SESSION_TRACK is required so text-protocol database changes arrive as protocol signals instead
 // of requiring an interposed SELECT DATABASE() that would corrupt ROW_COUNT/FOUND_ROWS diagnostics.
 func dialBackendAuth(target spi.BackendTarget, mirrorDeprecateEOF bool) (net.Conn, error) {
-	conn, _, err := dialBackendAuthID(target, mirrorDeprecateEOF)
+	conn, _, err := dialBackendAuthID(context.Background(), target, mirrorDeprecateEOF)
 	return conn, err
 }
 
-func dialBackendAuthID(target spi.BackendTarget, mirrorDeprecateEOF bool) (net.Conn, uint32, error) {
-	conn, err := net.DialTimeout("tcp", net.JoinHostPort(target.Host, strconv.Itoa(target.Port)), backendHandshakeTimeout)
+// dialBackendAuthID honors ctx for the whole handshake: DialContext aborts the connect, and while the
+// (deadline-bounded) auth exchange runs, an AfterFunc closes the conn on cancel so a blocked read unwinds at
+// once. On the run path ctx is the target-DB open context, so a run the control-plane already closed does not
+// finish a backend handshake nobody is waiting for; the wire path passes a background ctx (never cancelled).
+func dialBackendAuthID(ctx context.Context, target spi.BackendTarget, mirrorDeprecateEOF bool) (net.Conn, uint32, error) {
+	dialer := net.Dialer{Timeout: backendHandshakeTimeout}
+	conn, err := dialer.DialContext(ctx, "tcp", net.JoinHostPort(target.Host, strconv.Itoa(target.Port)))
 	if err != nil {
 		return nil, 0, err
 	}
@@ -54,6 +60,7 @@ func dialBackendAuthID(target spi.BackendTarget, mirrorDeprecateEOF bool) (net.C
 			_ = conn.Close()
 		}
 	}()
+	defer context.AfterFunc(ctx, func() { _ = conn.Close() })()
 	if err := conn.SetDeadline(time.Now().Add(backendHandshakeTimeout)); err != nil {
 		return nil, 0, fmt.Errorf("set backend auth deadline: %w", err)
 	}

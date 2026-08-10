@@ -2055,7 +2055,7 @@ type ProxyRunMsg_SessionReady struct {
 
 type ProxyRunMsg_Decision struct {
 	// plane which pending run this stream serves (the OpenRunChannel it
-	// dispatched) — BEFORE the backend cold-open begins
+	// dispatched) — BEFORE the target-DB open begins
 	Decision *RunDecision `protobuf:"bytes,2,opt,name=decision,proto3,oneof"` // the enforcement verdict + UX metadata (before any rows)
 }
 
@@ -2072,7 +2072,7 @@ type ProxyRunMsg_Error struct {
 }
 
 type ProxyRunMsg_Progress struct {
-	Progress *RunProgress `protobuf:"bytes,6,opt,name=progress,proto3,oneof"` // liveness heartbeat during the cold-open; resets the CP's no-progress bound
+	Progress *RunProgress `protobuf:"bytes,6,opt,name=progress,proto3,oneof"` // liveness heartbeat during the target-DB open; resets the CP's no-progress bound
 }
 
 type ProxyRunMsg_Serving struct {
@@ -2231,7 +2231,7 @@ func (x *RunReady) GetSessionId() string {
 	return ""
 }
 
-// A cold-open liveness heartbeat: the proxy emits these while dialing + authenticating the backend and
+// A target-DB open liveness heartbeat: the proxy emits these while dialing + authenticating the backend and
 // running its on-open catalog commands, so the control-plane can bound the open by lack of progress rather
 // than by a blind dial budget. It carries no payload — the control-plane treats every RunProgress purely as
 // "the proxy is still alive".
@@ -2271,7 +2271,7 @@ func (*RunProgress) Descriptor() ([]byte, []int) {
 	return file_controlplane_proto_rawDescGZIP(), []int{29}
 }
 
-// The backend cold-open finished and the proxy is ready to accept the query. Sent once, after the last
+// The target-DB open finished and the proxy is ready to accept the query. Sent once, after the last
 // RunProgress and before any RunDecision.
 type RunServing struct {
 	state         protoimpl.MessageState

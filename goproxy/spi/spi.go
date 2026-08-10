@@ -96,7 +96,10 @@ type WireServer interface {
 // BackendSession is one dedicated run backend session.
 type BackendSession interface {
 	ServeStatement(sql string, maxRows int) (engine.StatementResult, error)
-	OnOpen([]*pb.Refetch) error
+	// OnOpen runs the on-open catalog fetch. ctx is the target-DB open context: if the control-plane closes the
+	// run (or the proxy drains) while the fetch is in flight, ctx is cancelled and the in-flight backend read
+	// unwinds at once (a catalog push RPC to the control-plane still runs to its own deadline).
+	OnOpen(ctx context.Context, cmds []*pb.Refetch) error
 	Cancel() error
 	Close() error
 }
@@ -190,7 +193,9 @@ type Provider interface {
 	ProbeNamespace(conn *sql.Conn, targetDb string) (defaultSchemas []string, mysqlLowerCaseTableNames *int32, err error)
 	ReadTableDetail(conn *sql.Conn, schema, table string) (*TableDetail, error)
 	NewWireServer(port int, backend BackendTarget, client EnforcementClient, db engine.Db, tlsProvider func() (*tls.Config, error)) WireServer
-	NewRunSession(target BackendTarget, db engine.Db, client SessionClient, token string, connectionID []byte, guard engine.ExecGuard, readTimeout time.Duration) (BackendSession, error)
+	// NewRunSession dials and authenticates the backend. ctx is the target-DB open context: cancelling it aborts
+	// an in-flight dial/auth so a run the control-plane already closed does not finish a backend handshake.
+	NewRunSession(ctx context.Context, target BackendTarget, db engine.Db, client SessionClient, token string, connectionID []byte, guard engine.ExecGuard, readTimeout time.Duration) (BackendSession, error)
 }
 
 // Registry resolves the canonical PM_ENGINE name to its Provider. Consumers depend on this interface and

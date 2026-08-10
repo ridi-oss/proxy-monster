@@ -1,6 +1,7 @@
 package mysqlproxy
 
 import (
+	"context"
 	"errors"
 	"math"
 	"net"
@@ -25,8 +26,8 @@ type RunSession struct {
 	guard        engine.ExecGuard
 }
 
-func NewRunSession(target spi.BackendTarget, db engine.Db, client spi.SessionClient, token string, connectionID []byte, guard engine.ExecGuard, readTimeout time.Duration) (*RunSession, error) {
-	conn, connID, err := dialBackendAuthID(target, true)
+func NewRunSession(ctx context.Context, target spi.BackendTarget, db engine.Db, client spi.SessionClient, token string, connectionID []byte, guard engine.ExecGuard, readTimeout time.Duration) (*RunSession, error) {
+	conn, connID, err := dialBackendAuthID(ctx, target, true)
 	if err != nil {
 		return nil, err
 	}
@@ -51,7 +52,13 @@ func NewRunSession(target spi.BackendTarget, db engine.Db, client spi.SessionCli
 	return s, nil
 }
 
-func (s *RunSession) OnOpen(cmds []*pb.Refetch) error { return s.ref.RunAll(cmds) }
+// OnOpen runs the on-open catalog fetch over the backend conn. A cancel of ctx (the control-plane closed the
+// run, or the proxy is draining, during the target-DB open) closes the conn, which unwinds an in-flight fetch read
+// at once instead of holding the backend until readTimeout.
+func (s *RunSession) OnOpen(ctx context.Context, cmds []*pb.Refetch) error {
+	defer context.AfterFunc(ctx, func() { _ = s.conn.Close() })()
+	return s.ref.RunAll(cmds)
+}
 
 func (s *RunSession) ServeStatement(sql string, maxRows int) (result engine.StatementResult, err error) {
 	result.Decision, result.Denied, err = engine.ServeStatement(s.qe, engine.AuthzInput{
@@ -107,7 +114,7 @@ func (s *RunSession) ServeStatement(sql string, maxRows int) (result engine.Stat
 }
 
 func (s *RunSession) Cancel() error {
-	conn, _, err := dialBackendAuthID(s.target, true)
+	conn, _, err := dialBackendAuthID(context.Background(), s.target, true)
 	if err != nil {
 		_ = s.conn.Close()
 		return err

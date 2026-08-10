@@ -130,7 +130,7 @@ func (f *runFakeCP) RunExec(stream grpc.BidiStreamingServer[pb.ProxyRunMsg, pb.C
 			}
 			switch {
 			case message.GetProgress() != nil:
-				// Cold-open liveness heartbeat — not part of the result transcript.
+				// Target-DB-open liveness heartbeat — not part of the result transcript.
 				f.mu.Lock()
 				f.progressCount++
 				f.mu.Unlock()
@@ -229,22 +229,40 @@ type runCapturingProvider struct {
 	readTimeout chan time.Duration
 }
 
-func (p *runCapturingProvider) NewRunSession(target spi.BackendTarget, dbImpl engine.Db, client spi.SessionClient, token string, connectionID []byte, guard engine.ExecGuard, readTimeout time.Duration) (spi.BackendSession, error) {
+func (p *runCapturingProvider) NewRunSession(ctx context.Context, target spi.BackendTarget, dbImpl engine.Db, client spi.SessionClient, token string, connectionID []byte, guard engine.ExecGuard, readTimeout time.Duration) (spi.BackendSession, error) {
 	p.readTimeout <- readTimeout
-	return p.Provider.NewRunSession(target, dbImpl, client, token, connectionID, guard, readTimeout)
+	return p.Provider.NewRunSession(ctx, target, dbImpl, client, token, connectionID, guard, readTimeout)
 }
 
-// runSlowOpenProvider blocks the backend dial until release is closed, modeling a cold open against a large
+// runSlowOpenProvider blocks the backend dial until release is closed, modeling a slow open against a large
 // remote backend. A test uses it to observe SessionReady landing before the open finishes and heartbeats
-// being sent while it is in flight — without depending on wall-clock timing.
+// being sent while it is in flight — without depending on wall-clock timing. It honors the target-DB open context:
+// if that is cancelled (the control-plane closed the run, or the proxy drained, during the open) it returns
+// at once, standing in for a real dialect whose dial/auth aborts on cancel. entered, when non-nil, is closed
+// the first time the dial is reached so a test can wait until the open is genuinely in flight before cutting it.
 type runSlowOpenProvider struct {
 	spi.Provider
-	release chan struct{}
+	release   chan struct{}
+	entered   chan struct{}
+	enterOnce sync.Once
+	// beforeDelegate, when non-nil, runs after release but before the real dial. A test uses it to close the
+	// drain exactly as the open is about to complete, forcing the "open finished onto a draining proxy" race.
+	beforeDelegate func()
 }
 
-func (p *runSlowOpenProvider) NewRunSession(target spi.BackendTarget, dbImpl engine.Db, client spi.SessionClient, token string, connectionID []byte, guard engine.ExecGuard, readTimeout time.Duration) (spi.BackendSession, error) {
-	<-p.release
-	return p.Provider.NewRunSession(target, dbImpl, client, token, connectionID, guard, readTimeout)
+func (p *runSlowOpenProvider) NewRunSession(ctx context.Context, target spi.BackendTarget, dbImpl engine.Db, client spi.SessionClient, token string, connectionID []byte, guard engine.ExecGuard, readTimeout time.Duration) (spi.BackendSession, error) {
+	if p.entered != nil {
+		p.enterOnce.Do(func() { close(p.entered) })
+	}
+	select {
+	case <-p.release:
+		if p.beforeDelegate != nil {
+			p.beforeDelegate()
+		}
+		return p.Provider.NewRunSession(ctx, target, dbImpl, client, token, connectionID, guard, readTimeout)
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
 }
 
 func TestRunnerMySQL(t *testing.T) {
@@ -1104,14 +1122,7 @@ func TestRunnerDrainReturnsWhenIdle(t *testing.T) {
 		close(done)
 	}()
 
-	select {
-	case <-fake.runReady:
-	case <-time.After(10 * time.Second):
-		t.Fatal("timed out waiting for the runner to start")
-	}
-	if first := runRecv(t, fake); first.GetSessionReady() == nil {
-		t.Fatalf("expected SessionReady, got %v", first)
-	}
+	runAwaitServing(t, fake)
 
 	// The runner is idle between statements. A drain must return it without a Close from the control plane,
 	// so the session ends and the editor re-homes to the replacement.
@@ -1133,14 +1144,7 @@ func TestRunnerDrainLetsInFlightStatementFinish(t *testing.T) {
 		close(done)
 	}()
 
-	select {
-	case <-fake.runReady:
-	case <-time.After(10 * time.Second):
-		t.Fatal("timed out waiting for the runner to start")
-	}
-	if first := runRecv(t, fake); first.GetSessionReady() == nil {
-		t.Fatalf("expected SessionReady, got %v", first)
-	}
+	runAwaitServing(t, fake)
 
 	// Put a statement in flight, then drain mid-statement. The drain is observed only between statements, so
 	// the running SLEEP must complete and return its row (0 == slept the full duration, not interrupted)
@@ -1172,14 +1176,7 @@ func TestRunnerDrainDoesNotStartAQueuedQuery(t *testing.T) {
 		close(done)
 	}()
 
-	select {
-	case <-fake.runReady:
-	case <-time.After(10 * time.Second):
-		t.Fatal("timed out waiting for the runner to start")
-	}
-	if first := runRecv(t, fake); first.GetSessionReady() == nil {
-		t.Fatalf("expected SessionReady, got %v", first)
-	}
+	runAwaitServing(t, fake)
 
 	// Drain, then hand the runner a query. A query racing in with the drain must not start a new statement on
 	// a departing proxy: the runner returns without a decision or rows, and the editor re-homes.
@@ -1194,11 +1191,11 @@ func TestRunnerDrainDoesNotStartAQueuedQuery(t *testing.T) {
 	}
 }
 
-// TestRunnerSendsRunReadyBeforeColdOpenAndHeartbeats proves the run stream sends its id (RunReady) up front
+// TestRunnerSendsRunReadyBeforeTargetDbOpenAndHeartbeats proves the run stream sends its id (RunReady) up front
 // and is kept alive through a slow open: SessionReady arrives before the (delayed) backend dial finishes — so
 // the CP can react to a stall or break during the open instead of waiting a blind budget — and RunProgress
 // heartbeats are emitted while the open runs, then RunServing once it completes.
-func TestRunnerSendsRunReadyBeforeColdOpenAndHeartbeats(t *testing.T) {
+func TestRunnerSendsRunReadyBeforeTargetDbOpenAndHeartbeats(t *testing.T) {
 	fixture := runSeedMySQL(t)
 	release := make(chan struct{})
 	fixture.runProvider = &runSlowOpenProvider{Provider: fixture.runProvider, release: release}
@@ -1209,12 +1206,12 @@ func TestRunnerSendsRunReadyBeforeColdOpenAndHeartbeats(t *testing.T) {
 		close(done)
 	}()
 
-	// SessionReady must arrive while the backend open is still blocked — proving the run id is sent up front,
+	// SessionReady must arrive while the target-DB open is still blocked — proving the run id is sent up front,
 	// not deferred until the backend is ready.
 	select {
 	case <-fake.runReady:
 	case <-time.After(5 * time.Second):
-		t.Fatal("SessionReady did not arrive while the cold open was still blocked")
+		t.Fatal("SessionReady did not arrive while the target-DB open was still blocked")
 	}
 	if first := runRecv(t, fake); first.GetSessionReady() == nil {
 		t.Fatalf("first frame = %v, want SessionReady", first)
@@ -1225,7 +1222,7 @@ func TestRunnerSendsRunReadyBeforeColdOpenAndHeartbeats(t *testing.T) {
 	deadline := time.Now().Add(15 * time.Second)
 	for fake.runRecordedProgress() == 0 {
 		if time.Now().After(deadline) {
-			t.Fatal("no RunProgress heartbeat was sent while the cold open was blocked")
+			t.Fatal("no RunProgress heartbeat was sent while the target-DB open was blocked")
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
@@ -1235,7 +1232,7 @@ func TestRunnerSendsRunReadyBeforeColdOpenAndHeartbeats(t *testing.T) {
 	select {
 	case <-fake.runServing:
 	case <-time.After(15 * time.Second):
-		t.Fatal("timed out waiting for RunServing after releasing the cold open")
+		t.Fatal("timed out waiting for RunServing after releasing the target-DB open")
 	}
 	runSendQuery(fake, "SELECT 1", 20)
 	runExpectDecision(t, runRecv(t, fake), pb.EnfAction_ALLOW, nil, "")
@@ -1248,6 +1245,162 @@ func TestRunnerSendsRunReadyBeforeColdOpenAndHeartbeats(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("runner did not exit after RunClose")
 	}
+}
+
+// TestRunnerCloseDuringTargetDbOpenAbortsBackend proves the proxy reads the inbound during the target-DB open: a
+// RunClose the control-plane sends while the target-DB open is still in flight aborts the open at once and
+// releases the reserved connection, instead of finishing a backend handshake for a run nobody is waiting for.
+// The open is never released — the runner can only return by cancelling it — so a return is the abort.
+func TestRunnerCloseDuringTargetDbOpenAbortsBackend(t *testing.T) {
+	fixture := runSeedMySQL(t)
+	entered := make(chan struct{})
+	fixture.runProvider = &runSlowOpenProvider{Provider: fixture.runProvider, release: make(chan struct{}), entered: entered}
+	fake, client := runStartFakeCP(t, runSessionID)
+	done := make(chan struct{})
+	go func() {
+		run.NewRunner(client, fixture.runDB, fixture.runTarget, fixture.runProvider, 0).Run(runOpen(fixture), nil)
+		close(done)
+	}()
+
+	runAwaitTargetDbOpenInFlight(t, fake, entered)
+
+	runSendClose(fake)
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("runner did not abort the target-DB open on RunClose (still holding the backend handshake)")
+	}
+	runWaitForCloses(t, fake, 1)
+	runExpectSingleClose(t, fake)
+	runExpectNoServing(t, fake)
+}
+
+// TestRunnerDrainDuringTargetDbOpenAbortsBackend is the redeploy analogue: a drain that lands while the backend
+// open is in flight aborts it and releases the connection, so the proxy does not keep dialing for a run that
+// will re-home to the replacement.
+func TestRunnerDrainDuringTargetDbOpenAbortsBackend(t *testing.T) {
+	fixture := runSeedMySQL(t)
+	entered := make(chan struct{})
+	fixture.runProvider = &runSlowOpenProvider{Provider: fixture.runProvider, release: make(chan struct{}), entered: entered}
+	fake, client := runStartFakeCP(t, runSessionID)
+	draining := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		run.NewRunner(client, fixture.runDB, fixture.runTarget, fixture.runProvider, 0).Run(runOpen(fixture), draining)
+		close(done)
+	}()
+
+	runAwaitTargetDbOpenInFlight(t, fake, entered)
+
+	close(draining)
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("runner did not abort the target-DB open on drain (still holding the backend handshake)")
+	}
+	runWaitForCloses(t, fake, 1)
+	runExpectSingleClose(t, fake)
+	runExpectNoServing(t, fake)
+}
+
+// TestRunnerDrainAsTargetDbOpenCompletesInstallsNoSession is the open-then-instant-drain case end to end: the
+// target-DB open runs to completion against the real backend with the drain closing during it, and the runner
+// must NOT send RunServing — no live editor session on a departing proxy — while still releasing the
+// connection. It reaches the aborted outcome by whichever path the scheduler picks (the outer drain-abort or
+// the post-completion re-check); the re-check branch itself is pinned deterministically by
+// TestAbandonedDuringOpen in runner_internal_test.go, which no scheduler race can reach through this surface.
+func TestRunnerDrainAsTargetDbOpenCompletesInstallsNoSession(t *testing.T) {
+	fixture := runSeedMySQL(t)
+	release := make(chan struct{})
+	draining := make(chan struct{})
+	var drainOnce sync.Once
+	fixture.runProvider = &runSlowOpenProvider{
+		Provider:       fixture.runProvider,
+		release:        release,
+		beforeDelegate: func() { drainOnce.Do(func() { close(draining) }) },
+	}
+	fake, client := runStartFakeCP(t, runSessionID)
+	done := make(chan struct{})
+	go func() {
+		run.NewRunner(client, fixture.runDB, fixture.runTarget, fixture.runProvider, 0).Run(runOpen(fixture), draining)
+		close(done)
+	}()
+
+	select {
+	case <-fake.runReady:
+	case <-time.After(10 * time.Second):
+		t.Fatal("timed out waiting for the runner to start")
+	}
+	if first := runRecv(t, fake); first.GetSessionReady() == nil {
+		t.Fatalf("first frame = %v, want SessionReady", first)
+	}
+
+	// Release the open; the provider closes the drain as it hands back the real session, so the completed open
+	// is observed against a draining proxy. The runner must fail the open rather than serve it.
+	close(release)
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("runner did not return after a drain landed as the target-DB open completed")
+	}
+	runWaitForCloses(t, fake, 1)
+	runExpectSingleClose(t, fake)
+	runExpectNoServing(t, fake)
+}
+
+// TestRunnerCloseDuringRealDialAbortsIt drives the abort end to end through the REAL MySQL dial: a RunClose
+// sent while the dial is mid-handshake against a target that accepts TCP but never sends its greeting must
+// abort the dial and release the connection fast — exercising the real runner, the real gRPC control stream,
+// and the real provider.NewRunSession -> dialBackendAuthID (DialContext + AfterFunc), not a fake provider.
+// The release is asserted well under the dial's handshake timeout: a dial that ignored the cancel would leak
+// the connection until that timeout instead.
+func TestRunnerCloseDuringRealDialAbortsIt(t *testing.T) {
+	stall := runStartStallingTarget(t)
+	fake, client := runStartFakeCP(t, runSessionID)
+	done := make(chan struct{})
+	go func() {
+		run.NewRunner(client, db.MySqlDb{}, stall.target, mustProvider(t, engine.MySQL), 0).Run(runStallOpen(), nil)
+		close(done)
+	}()
+
+	runAwaitRealDialInFlight(t, fake, stall)
+
+	runSendClose(fake)
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("runner did not return on RunClose while the real dial was in flight")
+	}
+	// The reserved connection must be released well before the dial's handshake timeout — proving the real
+	// dial actually aborted on the cancel rather than running out its deadline.
+	runWaitForClosesWithin(t, fake, 1, 4*time.Second)
+	runExpectSingleClose(t, fake)
+	runExpectNoServing(t, fake)
+}
+
+// TestRunnerDrainDuringRealDialAbortsIt is the redeploy analogue of the above, driven through the real dial:
+// a drain that lands while the real MySQL handshake is stalled aborts it and releases the connection fast.
+func TestRunnerDrainDuringRealDialAbortsIt(t *testing.T) {
+	stall := runStartStallingTarget(t)
+	fake, client := runStartFakeCP(t, runSessionID)
+	draining := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		run.NewRunner(client, db.MySqlDb{}, stall.target, mustProvider(t, engine.MySQL), 0).Run(runStallOpen(), draining)
+		close(done)
+	}()
+
+	runAwaitRealDialInFlight(t, fake, stall)
+
+	close(draining)
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("runner did not return on drain while the real dial was in flight")
+	}
+	runWaitForClosesWithin(t, fake, 1, 4*time.Second)
+	runExpectSingleClose(t, fake)
+	runExpectNoServing(t, fake)
 }
 
 func TestRunnerCloseInFlightCancelsBackend(t *testing.T) {
@@ -1335,12 +1488,12 @@ func runLaunchOpenConfigured(t *testing.T, fake *runFakeCP, client *cp.Client, f
 	if ready.GetSessionId() != open.SessionID {
 		t.Fatalf("SessionReady = %v, want session %q", ready, open.SessionID)
 	}
-	// SessionReady tells the CP which run the stream is for immediately; the backend cold-open (and its on-open
+	// SessionReady tells the CP which run the stream is for immediately; the target-DB open (and its on-open
 	// catalog push) runs after it and completes at RunServing. Wait for serving, then assert the push landed first.
 	select {
 	case <-fake.runServing:
 	case <-time.After(15 * time.Second):
-		t.Fatal("timed out waiting for RunServing after the cold-open")
+		t.Fatal("timed out waiting for RunServing after the target-DB open")
 	}
 	fragments := fake.runRecordedFragments()
 	if len(fragments) != 1 || fragments[0].GetSchema() != fixture.runNamespaceForTable() {
@@ -1516,6 +1669,108 @@ func runWaitForRequests(t *testing.T, fake *runFakeCP, count int) {
 	t.Fatalf("timed out waiting for %d decision requests", count)
 }
 
+// runWaitForCloses waits until at least count CloseConnection requests have been recorded. An aborted
+// target-DB open releases its connection off the hot path (see openTargetDb's abort), so a test cannot read the count
+// synchronously right after the runner returns.
+func runWaitForCloses(t *testing.T, fake *runFakeCP, count int) {
+	t.Helper()
+	runWaitForClosesWithin(t, fake, count, 10*time.Second)
+}
+
+func runWaitForClosesWithin(t *testing.T, fake *runFakeCP, count int, within time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(within)
+	for time.Now().Before(deadline) {
+		if len(fake.runRecordedCloses()) >= count {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("timed out after %s waiting for %d CloseConnection requests", within, count)
+}
+
+// runStallingTarget is a TCP endpoint that accepts connections and holds them open without ever writing, so a
+// backend handshake read against it stalls. accepted fires on the first accepted connection.
+type runStallingTarget struct {
+	target   spi.BackendTarget
+	accepted <-chan struct{}
+}
+
+// runStartStallingTarget stands up a runStallingTarget on a loopback port and closes every accepted connection
+// (and the listener) on cleanup. It stands in for a target DB that is reachable but slow to answer, so a test
+// can dial it for real and cut the run while the handshake is still blocked.
+func runStartStallingTarget(t *testing.T) runStallingTarget {
+	t.Helper()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen stalling target: %v", err)
+	}
+	accepted := make(chan struct{}, 1)
+	var mu sync.Mutex
+	var held []net.Conn
+	go func() {
+		for {
+			conn, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			select {
+			case accepted <- struct{}{}:
+			default:
+			}
+			mu.Lock()
+			held = append(held, conn)
+			mu.Unlock()
+		}
+	}()
+	t.Cleanup(func() {
+		_ = listener.Close()
+		mu.Lock()
+		for _, conn := range held {
+			_ = conn.Close()
+		}
+		mu.Unlock()
+	})
+	addr := listener.Addr().(*net.TCPAddr)
+	return runStallingTarget{
+		target: spi.BackendTarget{
+			Host: addr.IP.String(), Port: addr.Port, Db: runMySQLSchema,
+			User: runMySQLService, Password: runMySQLServicePwd,
+		},
+		accepted: accepted,
+	}
+}
+
+// runStallOpen is a valid run open whose on-open catalog work is never reached (the dial to a stalling target
+// blocks first), so any schema will do.
+func runStallOpen() spi.RunOpen {
+	return spi.RunOpen{
+		SessionID:    runSessionID,
+		Token:        runToken,
+		ConnectionID: []byte(runConnectionID),
+		OnOpen:       []*pb.Refetch{{Schema: runMySQLSchema}},
+	}
+}
+
+// runAwaitRealDialInFlight consumes SessionReady and then blocks until the real dial has connected to the
+// stalling target, so a test cuts the run while the handshake is genuinely stalled — not before the dial began.
+func runAwaitRealDialInFlight(t *testing.T, fake *runFakeCP, stall runStallingTarget) {
+	t.Helper()
+	select {
+	case <-fake.runReady:
+	case <-time.After(10 * time.Second):
+		t.Fatal("timed out waiting for the runner to start")
+	}
+	if first := runRecv(t, fake); first.GetSessionReady() == nil {
+		t.Fatalf("first frame = %v, want SessionReady", first)
+	}
+	select {
+	case <-stall.accepted:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the real dial did not connect to the stalling target")
+	}
+}
+
 func runWaitForMySQLSleep(t *testing.T, fixture runEngineFixture, sleepSQL string) {
 	t.Helper()
 	direct := runOpenMySQLInspector(t, fixture)
@@ -1651,5 +1906,56 @@ func runExpectSilence(t *testing.T, fake *runFakeCP, duration time.Duration) {
 	case message := <-fake.runTranscript:
 		t.Fatalf("unexpected run message during silence window: %v", message)
 	case <-time.After(duration):
+	}
+}
+
+// runAwaitTargetDbOpenInFlight consumes SessionReady and then blocks until the target-DB open is genuinely in
+// flight (the slow-open provider's entered signal), so a test can cut the run knowing the abort must unwind
+// an open that is actually running, not race the runner before it reaches the open.
+func runAwaitTargetDbOpenInFlight(t *testing.T, fake *runFakeCP, entered <-chan struct{}) {
+	t.Helper()
+	select {
+	case <-fake.runReady:
+	case <-time.After(10 * time.Second):
+		t.Fatal("timed out waiting for the runner to start")
+	}
+	if first := runRecv(t, fake); first.GetSessionReady() == nil {
+		t.Fatalf("first frame = %v, want SessionReady", first)
+	}
+	select {
+	case <-entered:
+	case <-time.After(10 * time.Second):
+		t.Fatal("timed out waiting for the target-DB open to start")
+	}
+}
+
+// runAwaitServing waits until the runner has completed its target-DB open and sent RunServing, so a test that
+// exercises a post-serving path (an idle drain, an in-flight statement, a queued query) starts from a ready
+// session — matching the control-plane, which sends a query only after it observes RunServing.
+func runAwaitServing(t *testing.T, fake *runFakeCP) {
+	t.Helper()
+	select {
+	case <-fake.runReady:
+	case <-time.After(10 * time.Second):
+		t.Fatal("timed out waiting for the runner to start")
+	}
+	if first := runRecv(t, fake); first.GetSessionReady() == nil {
+		t.Fatalf("expected SessionReady, got %v", first)
+	}
+	select {
+	case <-fake.runServing:
+	case <-time.After(15 * time.Second):
+		t.Fatal("timed out waiting for RunServing after the target-DB open")
+	}
+}
+
+// runExpectNoServing asserts the run never reached RunServing — the open was aborted or failed, so the
+// control-plane never installed a live editor session for it.
+func runExpectNoServing(t *testing.T, fake *runFakeCP) {
+	t.Helper()
+	select {
+	case <-fake.runServing:
+		t.Fatal("RunServing was sent for a run that should have been aborted before it was ready to serve")
+	default:
 	}
 }

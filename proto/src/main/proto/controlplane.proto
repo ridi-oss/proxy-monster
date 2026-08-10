@@ -306,12 +306,12 @@ message ProxyRunMsg {
   oneof kind {
     RunReady session_ready = 1;       // first message, sent the instant the stream opens: tells the control-
                                       // plane which pending run this stream serves (the OpenRunChannel it
-                                      // dispatched) — BEFORE the backend cold-open begins
+                                      // dispatched) — BEFORE the target-DB open begins
     RunDecision decision = 2;         // the enforcement verdict + UX metadata (before any rows)
     RunResultRows result_rows = 3;    // masked rows (ALLOW/MASK only)
     RunDone done = 4;                 // terminal success (rows_affected for a write)
     RunError error = 5;               // terminal failure (backend error, unsupported, ...)
-    RunProgress progress = 6;         // liveness heartbeat during the cold-open; resets the CP's no-progress bound
+    RunProgress progress = 6;         // liveness heartbeat during the target-DB open; resets the CP's no-progress bound
     RunServing serving = 7;           // the backend is connected and its on-open catalog work is done —
                                       // the control-plane may now send the query
   }
@@ -324,12 +324,12 @@ message ControlRunMsg {
   }
 }
 message RunReady { string session_id = 1; }
-// A cold-open liveness heartbeat: the proxy emits these while dialing + authenticating the backend and
+// A target-DB open liveness heartbeat: the proxy emits these while dialing + authenticating the backend and
 // running its on-open catalog commands, so the control-plane can bound the open by lack of progress rather
 // than by a blind dial budget. It carries no payload — the control-plane treats every RunProgress purely as
 // "the proxy is still alive".
 message RunProgress {}
-// The backend cold-open finished and the proxy is ready to accept the query. Sent once, after the last
+// The target-DB open finished and the proxy is ready to accept the query. Sent once, after the last
 // RunProgress and before any RunDecision.
 message RunServing {}
 message RunQuery {

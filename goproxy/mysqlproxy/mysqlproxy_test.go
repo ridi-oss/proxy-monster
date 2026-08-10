@@ -2,6 +2,7 @@ package mysqlproxy
 
 import (
 	"bytes"
+	"context"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -159,7 +160,7 @@ func TestDialBackendCachingSHA2FullAuth(t *testing.T) {
 		User:     user,
 		Password: password,
 	}
-	conn, connID, err := dialBackendAuthID(target, true)
+	conn, connID, err := dialBackendAuthID(context.Background(), target, true)
 	if err != nil {
 		t.Fatalf("dialBackendAuthID against caching_sha2 backend: %v", err)
 	}

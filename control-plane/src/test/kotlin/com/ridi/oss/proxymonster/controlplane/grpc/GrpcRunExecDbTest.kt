@@ -157,7 +157,7 @@ class GrpcRunExecDbTest {
                 sessionReady = runReady { sessionId = open.sessionId }
             },
         )
-        // RunReady (the run id) is sent first; the CP then waits for RunServing (the backend cold-open
+        // RunReady (the run id) is sent first; the CP then waits for RunServing (the target-DB open
         // finishing) before it sends the query. A real proxy heartbeats RunProgress; a fast fake just serves.
         proxyRequests.send(proxyRunMsg { serving = runServing {} })
 
@@ -331,7 +331,7 @@ class GrpcRunExecDbTest {
         supervisorScope {
             val event = async { stub.events(eventsRequest { datasourceName = datasource.name }).first() }
             awaitUntil("Events stream attached") { datasource.name in core.proxyEventsHub.attached() }
-            // Inject a short dial bound: the production one is sized for a cold session against a remote
+            // Inject a short dial bound: the production one is sized for a slow open against a remote
             // backend, and waiting it out here would buy nothing but a two-minute test.
             val result = async {
                 runCatching { service.run("timeout-user", datasource, "select 1", 500, dialTimeoutMs = 1_000) }
@@ -355,7 +355,7 @@ class GrpcRunExecDbTest {
             val result = async { runCatching { service.run("cut-user", datasource, "select 1", 500) } }
             val open = withTimeout(5_000) { event.await() }.openRunChannel
 
-            // The proxy sends RunReady (its run id), then dies mid-cold-open: it closes the stream WITHOUT ever
+            // The proxy sends RunReady (its run id), then dies mid target-DB open: it closes the stream WITHOUT ever
             // sending RunServing (the redeploy-cut scenario). Because the stream was already matched to the run,
             // the CP sees the broken stream at once and fails the run — it does not ride out the dial budget.
             val proxyRequests = Channel<ProxyRunMsg>(Channel.UNLIMITED)
@@ -365,7 +365,7 @@ class GrpcRunExecDbTest {
 
             val failure = withTimeout(5_000) { result.await() }.exceptionOrNull()
             assertIs<ProxyRunException>(failure)
-            assertEquals(0, activeEditorTokens("cut-user"), "a cold-open cut before serving must revoke its token")
+            assertEquals(0, activeEditorTokens("cut-user"), "a target-DB open cut before serving must revoke its token")
             withTimeout(5_000) { proxy.await() }
         }
     }
@@ -375,7 +375,7 @@ class GrpcRunExecDbTest {
         supervisorScope {
             val event = async { stub.events(eventsRequest { datasourceName = datasource.name }).first() }
             awaitUntil("Events stream attached") { datasource.name in core.proxyEventsHub.attached() }
-            // The persistent editor path (openSession) must fail-close on a cold-open cut exactly like the
+            // The persistent editor path (openSession) must fail-close on a target-DB open cut exactly like the
             // one-shot run() path above: the proxy sends RunReady then dies before RunServing, and openSession
             // must fail fast and revoke its per-session token instead of returning a session id whose stream is
             // already dead. Exercises openSession's own cleanup path, not just run()'s.
@@ -391,14 +391,14 @@ class GrpcRunExecDbTest {
             assertIs<ProxyRunException>(failure)
             assertEquals(
                 0, activeEditorTokens("cut-session-user"),
-                "a cut openSession cold-open must revoke its session token",
+                "a cut openSession target-DB open must revoke its session token",
             )
             withTimeout(5_000) { proxy.await() }
         }
     }
 
     @Test
-    fun `a cold-open that stops heartbeating after RunReady fails at the no-progress bound`() = runBlocking {
+    fun `a target-DB open that stops heartbeating after RunReady fails at the no-progress bound`() = runBlocking {
         supervisorScope {
             val event = async { stub.events(eventsRequest { datasourceName = datasource.name }).first() }
             awaitUntil("Events stream attached") { datasource.name in core.proxyEventsHub.attached() }
@@ -416,7 +416,7 @@ class GrpcRunExecDbTest {
 
             val failure = withTimeout(5_000) { result.await() }.exceptionOrNull()
             assertIs<ProxyRunTimeoutException>(failure)
-            assertEquals(0, activeEditorTokens("stall-user"), "a stalled cold-open must revoke its token")
+            assertEquals(0, activeEditorTokens("stall-user"), "a stalled target-DB open must revoke its token")
             proxyRequests.close()
             withTimeout(5_000) { proxy.await() }
         }
@@ -462,7 +462,7 @@ class GrpcRunExecDbTest {
     }
 
     @Test
-    fun `a RunError during the cold-open surfaces as-is instead of waiting to serve`() = runBlocking {
+    fun `a RunError during the target-DB open surfaces as-is instead of waiting to serve`() = runBlocking {
         supervisorScope {
             val event = async { stub.events(eventsRequest { datasourceName = datasource.name }).first() }
             awaitUntil("Events stream attached") { datasource.name in core.proxyEventsHub.attached() }
@@ -472,20 +472,20 @@ class GrpcRunExecDbTest {
             val proxyRequests = Channel<ProxyRunMsg>(Channel.UNLIMITED)
             val proxy = async { stub.runExec(proxyRequests.receiveAsFlow()).collect {} }
             proxyRequests.send(proxyRunMsg { sessionReady = runReady { sessionId = open.sessionId } })
-            // The backend open fails mid-flight, before serving.
+            // The target-DB open fails mid-flight, before serving.
             proxyRequests.send(proxyRunMsg { error = runError { message = "backend connection failed: connection refused" } })
 
             val failure = withTimeout(5_000) { result.await() }.exceptionOrNull()
             assertIs<ProxyRunException>(failure)
             assertEquals("backend connection failed: connection refused", failure.message)
-            assertEquals(0, activeEditorTokens("open-err-user"), "a failed cold-open must revoke its token")
+            assertEquals(0, activeEditorTokens("open-err-user"), "a failed target-DB open must revoke its token")
             proxyRequests.close()
             withTimeout(5_000) { proxy.await() }
         }
     }
 
     @Test
-    fun `a cold-open that heartbeats but never serves fails at the absolute ceiling`() = runBlocking {
+    fun `a target-DB open that heartbeats but never serves fails at the absolute ceiling`() = runBlocking {
         supervisorScope {
             val event = async { stub.events(eventsRequest { datasourceName = datasource.name }).first() }
             awaitUntil("Events stream attached") { datasource.name in core.proxyEventsHub.attached() }

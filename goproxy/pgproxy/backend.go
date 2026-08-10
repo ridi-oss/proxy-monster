@@ -1,6 +1,7 @@
 package pgproxy
 
 import (
+	"context"
 	"crypto/md5"
 	"encoding/hex"
 	"errors"
@@ -20,8 +21,13 @@ import (
 
 const backendHandshakeTimeout = 10 * time.Second
 
-func dialBackendAuth(target spi.BackendTarget) (net.Conn, []pgproto3.ParameterStatus, pgproto3.BackendKeyData, byte, error) {
-	conn, err := net.DialTimeout("tcp", net.JoinHostPort(target.Host, strconv.Itoa(target.Port)), backendHandshakeTimeout)
+// dialBackendAuth honors ctx for the whole handshake: DialContext aborts the connect, and while the
+// (deadline-bounded) auth exchange runs, an AfterFunc closes the conn on cancel so a blocked read unwinds at
+// once. On the run path ctx is the target-DB open context, so a run the control-plane already closed does not
+// finish a backend handshake nobody is waiting for; the wire path passes a background ctx (never cancelled).
+func dialBackendAuth(ctx context.Context, target spi.BackendTarget) (net.Conn, []pgproto3.ParameterStatus, pgproto3.BackendKeyData, byte, error) {
+	dialer := net.Dialer{Timeout: backendHandshakeTimeout}
+	conn, err := dialer.DialContext(ctx, "tcp", net.JoinHostPort(target.Host, strconv.Itoa(target.Port)))
 	if err != nil {
 		return nil, nil, pgproto3.BackendKeyData{}, 0, err
 	}
@@ -31,6 +37,7 @@ func dialBackendAuth(target spi.BackendTarget) (net.Conn, []pgproto3.ParameterSt
 			_ = conn.Close()
 		}
 	}()
+	defer context.AfterFunc(ctx, func() { _ = conn.Close() })()
 	if err := conn.SetDeadline(time.Now().Add(backendHandshakeTimeout)); err != nil {
 		return nil, nil, pgproto3.BackendKeyData{}, 0, fmt.Errorf("set backend auth deadline: %w", err)
 	}

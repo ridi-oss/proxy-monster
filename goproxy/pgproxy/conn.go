@@ -1,6 +1,7 @@
 package pgproxy
 
 import (
+	"context"
 	"crypto/tls"
 	"log/slog"
 	"net"
@@ -161,7 +162,7 @@ startupComplete:
 	defer func() { _ = s.client.CloseConnection(identity.ConnectionID) }()
 	slog.Info("authenticated postgres client", "client", rawClientConn.RemoteAddr().String(), "principal", identity.Principal, "roles", identity.Roles)
 
-	backendConn, parameters, keyData, txStatus, err := dialBackendAuth(s.backend)
+	backendConn, parameters, keyData, txStatus, err := dialBackendAuth(context.Background(), s.backend)
 	if err != nil {
 		slog.Warn("postgres backend unavailable", "host", s.backend.Host, "port", s.backend.Port, "error", err)
 		_ = sendError(client, "FATAL", "08004", "proxy-monster: backend unavailable", false, 0)

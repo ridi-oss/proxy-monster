@@ -1,6 +1,7 @@
 package config
 
 import (
+	"context"
 	"os"
 	"strings"
 	"testing"
@@ -37,7 +38,7 @@ func (configTestProvider) ReadTableDetail(*sql.Conn, string, string) (*spi.Table
 func (configTestProvider) NewWireServer(int, spi.BackendTarget, spi.EnforcementClient, engine.Db, func() (*tls.Config, error)) spi.WireServer {
 	return nil
 }
-func (configTestProvider) NewRunSession(spi.BackendTarget, engine.Db, spi.SessionClient, string, []byte, engine.ExecGuard, time.Duration) (spi.BackendSession, error) {
+func (configTestProvider) NewRunSession(context.Context, spi.BackendTarget, engine.Db, spi.SessionClient, string, []byte, engine.ExecGuard, time.Duration) (spi.BackendSession, error) {
 	return nil, nil
 }
 

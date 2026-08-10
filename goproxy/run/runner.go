@@ -19,7 +19,7 @@ const (
 	defaultQueryTimeout                         = 600 * time.Second
 	runSocketTimeoutGrace                       = 30 * time.Second
 	streamCloseDrainTimeout                     = 5 * time.Second
-	// How often the proxy heartbeats RunProgress while the backend cold-open is in flight. Must stay well
+	// How often the proxy heartbeats RunProgress while the target-DB open is in flight. Must stay well
 	// under the control-plane's no-progress bound (RunExec.RUN_NO_PROGRESS_TIMEOUT_MS) so ordinary jitter
 	// never trips it — several missed beats still leave margin.
 	progressInterval = 3 * time.Second
@@ -36,7 +36,7 @@ var errQueryTimeout = errors.New(QueryTimeoutMessage)
 
 type runStream = spi.RunStream
 
-type backendFactory func(token string, connectionID []byte, guard engine.ExecGuard) (spi.BackendSession, error)
+type backendFactory func(ctx context.Context, token string, connectionID []byte, guard engine.ExecGuard) (spi.BackendSession, error)
 
 type Runner struct {
 	client       spi.RunClient
@@ -49,8 +49,8 @@ func NewRunner(client spi.RunClient, dbImpl engine.Db, backend spi.BackendTarget
 		queryTimeout = defaultQueryTimeout
 	}
 	readTimeout := queryTimeout + runSocketTimeoutGrace
-	factory := func(token string, connectionID []byte, guard engine.ExecGuard) (spi.BackendSession, error) {
-		return provider.NewRunSession(backend, dbImpl, client, token, connectionID, guard, readTimeout)
+	factory := func(ctx context.Context, token string, connectionID []byte, guard engine.ExecGuard) (spi.BackendSession, error) {
+		return provider.NewRunSession(ctx, backend, dbImpl, client, token, connectionID, guard, readTimeout)
 	}
 	return &Runner{client: client, factory: factory, queryTimeout: queryTimeout}
 }
@@ -70,7 +70,7 @@ func (r *Runner) Run(open spi.RunOpen, draining <-chan struct{}) {
 	var messages <-chan *pb.ControlRunMsg
 	defer func() { gracefulCloseStream(ctx, stream, messages) }()
 	// Tell the control-plane which run this stream serves immediately — before validating the open or the
-	// (cold, ~26s) backend open. The session id is the stream's first frame, so the control-plane attaches at
+	// (~26s) target-DB open. The session id is the stream's first frame, so the control-plane attaches at
 	// once and EVERY failure below is attributable to this run rather than an unmatched stream it must wait
 	// out. RunProgress heartbeats keep its no-progress bound alive through the open; RunServing (below) then
 	// tells it the backend is ready for the query.
@@ -113,25 +113,23 @@ func (r *Runner) Run(open spi.RunOpen, draining <-chan struct{}) {
 		}
 		return err
 	}
-	if err := heartbeatDuring(stream, func() (openErr error) {
-		sess, openErr = r.factory(open.Token, open.ConnectionID, guard)
-		return
-	}); err != nil {
-		_ = sendError(stream, "backend connection failed: "+err.Error())
-		r.closeConnection(open.SessionID, open.ConnectionID)
+	// Read the inbound before the (~26s) target-DB open — not after RunServing — so a RunClose the
+	// control-plane sends during the open, or a drain, aborts it instead of finishing a backend handshake for
+	// a run nobody is waiting for.
+	messages = receiveRunMessages(ctx, stream)
+	sess = r.openTargetDb(ctx, stream, messages, draining, open, guard)
+	if sess == nil {
+		// The open failed (RunError already sent) or was aborted by an early RunClose / drain. openTargetDb owns
+		// the cleanup: a failure releases the connection before returning, while an abort reaps the cancelled
+		// open and releases the connection in the background (see abort) so the drain/close returns at once.
 		return
 	}
 	defer sess.Close()
 	defer r.closeConnection(open.SessionID, open.ConnectionID)
-	if err := heartbeatDuring(stream, func() error { return sess.OnOpen(open.OnOpen) }); err != nil {
-		_ = sendError(stream, "run catalog initialization failed: "+err.Error())
-		return
-	}
 	if stream.Send(&pb.ProxyRunMsg{Kind: &pb.ProxyRunMsg_Serving{Serving: &pb.RunServing{}}}) != nil {
 		return
 	}
 
-	messages = receiveRunMessages(ctx, stream)
 	for {
 		var message *pb.ControlRunMsg
 		var ok bool
@@ -187,34 +185,119 @@ func (r *Runner) Run(open spi.RunOpen, draining <-chan struct{}) {
 	}
 }
 
-// heartbeatDuring runs work while emitting a RunProgress heartbeat on the stream every progressInterval, so a
-// slow backend cold-open keeps the control-plane's no-progress bound alive. The heartbeat carries no payload —
-// it only attests the PROXY is alive, not that the backend open advances, so the control-plane bounds a
-// stalled-but-heartbeating open with an absolute ceiling, not this signal. For the span of work it is the ONLY
-// sender on the stream — RunReady precedes it; RunServing/RunError follow only after it returns — and it JOINS
-// its ticker before returning via defer, so even a panic in work stops the ticker before Run's deferred stream
-// teardown runs (the gRPC stream is not safe for concurrent Send). A Send error from the ticker just stops the
-// heartbeat; the caller's next Send surfaces the broken stream.
-func heartbeatDuring(stream runStream, work func() error) error {
-	stop := make(chan struct{})
-	done := make(chan struct{})
+// openTargetDb dials + authenticates the backend and runs the on-open catalog fetch, while keeping the run stream
+// alive with RunProgress heartbeats and concurrently watching the inbound and the drain. It returns the ready
+// session, or nil if the open failed or was aborted; on every nil return it has already released the reserved
+// connection (and, for a genuine backend failure, sent the RunError), so the caller only sends RunServing.
+//
+// The open runs in its own goroutine under a cancellable child context — the ONLY writer to that context —
+// while this loop is the ONLY sender on the stream (the heartbeat), so neither the gRPC stream nor the open
+// contends. An early RunClose (the browser navigated away before the backend was ready), a closed or broken
+// stream, or a drain cancels the child context and returns at once; the in-flight backend dial / auth /
+// catalog reads unwind on the cancel rather than finishing a handshake for a run nobody is waiting for, and
+// the open is reaped in the background (see abort). A close or drain that lands just as the open completes
+// still fails the open (the post-completion re-check) so a live session is never installed on an abandoned
+// run or a departing proxy — the editor re-homes to the replacement rather than onto a stream about to die.
+func (r *Runner) openTargetDb(ctx context.Context, stream runStream, messages <-chan *pb.ControlRunMsg, draining <-chan struct{}, open spi.RunOpen, guard engine.ExecGuard) spi.BackendSession {
+	openCtx, cancelOpen := context.WithCancel(ctx)
+	defer cancelOpen()
+
+	type openResult struct {
+		sess    spi.BackendSession
+		err     error
+		errWhat string
+	}
+	done := make(chan openResult, 1)
 	go func() {
-		defer close(done)
-		ticker := time.NewTicker(progressInterval)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-stop:
-				return
-			case <-ticker.C:
-				if stream.Send(&pb.ProxyRunMsg{Kind: &pb.ProxyRunMsg_Progress{Progress: &pb.RunProgress{}}}) != nil {
-					return
-				}
-			}
+		sess, err := r.factory(openCtx, open.Token, open.ConnectionID, guard)
+		if err != nil {
+			done <- openResult{err: err, errWhat: "backend connection failed: "}
+			return
 		}
+		if err := sess.OnOpen(openCtx, open.OnOpen); err != nil {
+			done <- openResult{sess: sess, err: err, errWhat: "run catalog initialization failed: "}
+			return
+		}
+		done <- openResult{sess: sess}
 	}()
-	defer func() { close(stop); <-done }()
-	return work()
+
+	// abort cancels the in-flight open and, in the background, reaps it and releases the reserved connection.
+	// The cancel unwinds the backend dial/auth/catalog reads at once; a catalog push RPC to the control-plane
+	// is not cancellable here and runs to its own deadline, so the reap runs off the hot path rather than
+	// making the drain/close wait out that deadline (and the follow-on connection-release RPC).
+	abort := func() spi.BackendSession {
+		cancelOpen()
+		go func() {
+			res := <-done
+			if res.sess != nil {
+				_ = res.sess.Close()
+			}
+			r.closeConnection(open.SessionID, open.ConnectionID)
+		}()
+		return nil
+	}
+
+	ticker := time.NewTicker(progressInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case res := <-done:
+			if res.err != nil {
+				_ = sendError(stream, res.errWhat+res.err.Error())
+				if res.sess != nil {
+					_ = res.sess.Close()
+				}
+				r.closeConnection(open.SessionID, open.ConnectionID)
+				return nil
+			}
+			// The open finished, but a close or drain that landed during it must not put a live session on an
+			// abandoned run or a departing proxy: re-check both before serving. The open is complete here (no
+			// push in flight), so this cleanup is synchronous.
+			if abandonedDuringOpen(messages, draining) {
+				_ = res.sess.Close()
+				r.closeConnection(open.SessionID, open.ConnectionID)
+				return nil
+			}
+			return res.sess
+		case <-ticker.C:
+			// The heartbeat carries no payload — it attests the PROXY is alive, not that the open advances,
+			// so the control-plane bounds a stalled-but-heartbeating open with an absolute ceiling. A Send
+			// error means the stream is gone: abort the open rather than heartbeat into a dead stream.
+			if stream.Send(&pb.ProxyRunMsg{Kind: &pb.ProxyRunMsg_Progress{Progress: &pb.RunProgress{}}}) != nil {
+				return abort()
+			}
+		case message, ok := <-messages:
+			if !ok || message.GetClose() != nil {
+				return abort()
+			}
+			// A Query or Cancel before RunServing is outside the protocol during a target-DB open (the CP sends a
+			// query only after it observes RunServing); log it so a CP regression is visible, and ignore it.
+			slog.Warn("run received a control message before RunServing; ignoring", "session_id", open.SessionID)
+		case <-draining:
+			return abort()
+		}
+	}
+}
+
+// abandonedDuringOpen reports, without blocking, whether the run was closed or the proxy drained during the
+// target-DB open — checked once the open completes, before serving, so a live session is never installed on an
+// abandoned run or a departing proxy. A pending RunClose, a closed stream, or a closed drain all count. A
+// pre-serving Query/Cancel cannot occur (the CP sends a query only after RunServing), so any other message is
+// dropped rather than carried into the serving loop. The drain is checked first in its own select: a single
+// select over both would let the message arm win by chance while the drain is also ready, and Go's fairness
+// would then serve onto a departing proxy.
+func abandonedDuringOpen(messages <-chan *pb.ControlRunMsg, draining <-chan struct{}) bool {
+	select {
+	case <-draining:
+		return true
+	default:
+	}
+	select {
+	case message, ok := <-messages:
+		return !ok || message.GetClose() != nil
+	default:
+		return false
+	}
 }
 
 func receiveRunMessages(ctx context.Context, stream runStream) <-chan *pb.ControlRunMsg {

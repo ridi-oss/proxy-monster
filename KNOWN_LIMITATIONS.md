@@ -558,9 +558,9 @@ path and `POST /api/datasources/{id}/query`, not the interactive editor.
   approval-execute path and `POST /api/datasources/{id}/query` — requests
   max(900s, `PM_QUERY_TIMEOUT` + 180s), so at the default 600s timeout it is
   900s, the floor. The floor covers a full-length dial plus a full-length
-  exchange, so a short `PM_QUERY_TIMEOUT` cannot leave a cold session's token
-  expiring mid-statement. `TokenStore.issue` then clamps every request into
-  [60s, 24h], which is the real ceiling on both. A run-stream timeout or
+  exchange, so a short `PM_QUERY_TIMEOUT` cannot leave an opening session's
+  token expiring mid-statement. `TokenStore.issue` then clamps every request
+  into [60s, 24h], which is the real ceiling on both. A run-stream timeout or
   canceled HTTP query does not itself revoke it. It is barred from the
   wire-session handshake (`TokenStore.validate` rejects `kind='EDITOR'`), so a
   leak can't open a native session; within its TTL it could still drive extra

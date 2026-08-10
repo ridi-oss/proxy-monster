@@ -463,7 +463,10 @@ func (c *Client) streamEvents(
 ) error {
 	ctx, cancel := context.WithTimeout(c.outCtx(parent), maxAge)
 	defer cancel()
-	stream, err := c.stub.Events(ctx, &pb.EventsRequest{DatasourceName: c.datasourceName})
+	// Send the wire-protocol version on the liveness stream too, not only at Register: the control-plane
+	// version-gates events() so an incompatible proxy cannot attach as live against an already-registered
+	// datasource (goproxy Register may have been rejected, but the datasource row persists).
+	stream, err := c.stub.Events(ctx, &pb.EventsRequest{DatasourceName: c.datasourceName, ProtocolVersion: ProtocolVersion})
 	if err != nil {
 		return fmt.Errorf("cp: opening events stream: %w", err)
 	}
@@ -511,14 +514,17 @@ func (c *Client) streamEvents(
 // large database takes seconds and retries with its own backoff — done in line, a slow one delays the
 // reopen, and the control plane reports this datasource unattached for exactly that long. The stream is
 // what queries need; the catalog refresh is not, and it re-registers this datasource either way.
+// RunEventsLoop returns nil on ctx cancel (normal shutdown) and ErrIncompatibleControlPlane if the
+// control-plane rejects the events stream on a wire-protocol version skew — a fatal condition the caller
+// (boot) turns into a process exit so the supervisor replaces this proxy.
 func (c *Client) RunEventsLoop(
 	ctx context.Context,
 	resync func(),
 	onRefresh func(),
 	onOpenRun func(spi.RunOpen),
 	onOpenTableDetail func(sessionID, schema, table string),
-) {
-	c.runEventsLoop(ctx, defaultEventLoopTimings(), resync, onRefresh, onOpenRun, onOpenTableDetail)
+) error {
+	return c.runEventsLoop(ctx, defaultEventLoopTimings(), resync, onRefresh, onOpenRun, onOpenTableDetail)
 }
 
 func (c *Client) runEventsLoop(
@@ -528,9 +534,17 @@ func (c *Client) runEventsLoop(
 	onRefresh func(),
 	onOpenRun func(spi.RunOpen),
 	onOpenTableDetail func(sessionID, schema, table string),
-) {
+) error {
 	for {
 		err := c.streamEvents(ctx, timings.streamMaxAge, onRefresh, onOpenRun, onOpenTableDetail)
+		// A wire-protocol version rejection on the events stream is the same fatal deploy skew Register
+		// refuses — the control-plane's events() emits the marker Register's classifier matches. Do NOT
+		// reconnect: behind a load balancer a resync Register can reach a compatible instance and mask this,
+		// leaving the proxy limping against an instance it cannot speak to. Return so boot exits.
+		if st, ok := status.FromError(err); ok && st.Code() == codes.FailedPrecondition &&
+			strings.Contains(st.Message(), protocolVersionRejectionMarker) {
+			return fmt.Errorf("%w: %s", ErrIncompatibleControlPlane, st.Message())
+		}
 		// A drain is the control plane leaving on purpose with a replacement already up: reconnect at once
 		// so this datasource re-attaches to the new instance without a gap. An expiry is the bounded
 		// rotation working, not a fault. Anything else is an error and waits out the backoff.
@@ -547,7 +561,7 @@ func (c *Client) runEventsLoop(
 
 		select {
 		case <-ctx.Done():
-			return
+			return nil
 		case <-time.After(reconnectIn):
 		}
 

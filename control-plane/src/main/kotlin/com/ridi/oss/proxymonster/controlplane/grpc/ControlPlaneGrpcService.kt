@@ -349,26 +349,31 @@ class ControlPlaneGrpcService(
         }
     }
 
-    override suspend fun register(request: RegisterRequest): RegisterResponse {
-        if (request.name.isBlank()) {
-            throw StatusException(Status.INVALID_ARGUMENT.withDescription("datasource name must not be blank"))
-        }
-        // A server-v* release ships the proxy and control-plane at the same wire-protocol version; a mismatch
-        // means a half-finished rollout is talking across versions. Reject it here — the proxy's first call —
-        // with a clear, actionable error rather than let the incompatibility surface later as a stalled run
-        // channel. A proxy that predates the field sends 0, which fails this too. The proxy makes the mirror
-        // check against RegisterResponse.protocol_version, so an OLDER control-plane is refused on that side.
-        // The proxy classifies THIS rejection as fatal by matching the phrase "wire-protocol version" in the
-        // message (goproxy cp.protocolVersionRejectionMarker); keep that phrase in the description below.
-        if (request.protocolVersion != CONTROL_PROTOCOL_VERSION) {
+    // A server-v* release ships the proxy and control-plane at the same wire-protocol version; a mismatch
+    // means a half-finished rollout is talking across versions. Register is the primary guard, but the Events
+    // stream applies this too (the datasource row outlives a rejected Register). A proxy that predates the
+    // field sends 0, which fails this. The proxy classifies the rejection as fatal by matching the phrase
+    // "wire-protocol version" in the message (goproxy cp.protocolVersionRejectionMarker); keep that phrase.
+    private fun requireCompatibleProtocolVersion(protocolVersion: Int) {
+        if (protocolVersion != CONTROL_PROTOCOL_VERSION) {
             throw StatusException(
                 Status.FAILED_PRECONDITION.withDescription(
-                    "proxy wire-protocol version ${request.protocolVersion} is incompatible with this " +
+                    "proxy wire-protocol version $protocolVersion is incompatible with this " +
                         "control-plane's version $CONTROL_PROTOCOL_VERSION — deploy the proxy and " +
                         "control-plane from the same server-v* release",
                 ),
             )
         }
+    }
+
+    override suspend fun register(request: RegisterRequest): RegisterResponse {
+        if (request.name.isBlank()) {
+            throw StatusException(Status.INVALID_ARGUMENT.withDescription("datasource name must not be blank"))
+        }
+        // Reject a half-finished rollout talking across versions here — the proxy's first call — rather than
+        // let it surface later as a stalled run channel. The proxy makes the mirror check against
+        // RegisterResponse.protocol_version, so an OLDER control-plane is refused on that side.
+        requireCompatibleProtocolVersion(request.protocolVersion)
         // Pass the proto Engine through as the domain type, rejecting only the invalid sentinels (the proto3
         // zero value and the generated unrecognized value) — an unset/garbage engine must not silently
         // default to postgres and mis-drive introspection/dialect resolution. Inverting the check this way
@@ -606,6 +611,10 @@ class ControlPlaneGrpcService(
      */
     override fun events(request: EventsRequest): Flow<ControlEvent> = channelFlow {
         val name = request.datasourceName
+        // Version-gate the liveness stream too, not just Register. The datasource row outlives a rejected
+        // Register, so an old proxy could otherwise attach here and be treated as live — the exact mixed-version
+        // state Register rejects. Check before markSeen / hub.register so a mismatch never counts as attached.
+        requireCompatibleProtocolVersion(request.protocolVersion)
         val ds = core.datasourceStore.getByName(name)
             ?: throw StatusException(Status.NOT_FOUND.withDescription("unknown datasource '$name' — Register first"))
         core.datasourceStore.markSeen(ds.id)

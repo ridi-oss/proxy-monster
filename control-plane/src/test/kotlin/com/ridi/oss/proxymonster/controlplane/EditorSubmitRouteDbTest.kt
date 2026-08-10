@@ -1,6 +1,7 @@
 package com.ridi.oss.proxymonster.controlplane
 
 import com.ridi.oss.proxymonster.controlplane.authz.CedarPolicyInput
+import com.ridi.oss.proxymonster.controlplane.grpc.CONTROL_PROTOCOL_VERSION
 import com.ridi.oss.proxymonster.controlplane.grpc.ControlPlaneGrpcService
 import com.ridi.oss.proxymonster.controlplane.grpc.GrpcServer
 import com.ridi.oss.proxymonster.controlplane.support.SharedPostgres
@@ -220,7 +221,7 @@ class EditorSubmitRouteDbTest {
         client: HttpClient,
         onQuery: suspend (SendChannel<ProxyRunMsg>, ControlRunMsg) -> Unit,
     ): FakeSession {
-        val event = async { stub.events(eventsRequest { datasourceName = datasource.name }).first() }
+        val event = async { stub.events(eventsRequest { datasourceName = datasource.name; protocolVersion = CONTROL_PROTOCOL_VERSION }).first() }
         awaitUntil("Events stream attached") { datasource.name in core.proxyEventsHub.attached() }
         val openDeferred = async {
             client.post("/api/editor/sessions") {

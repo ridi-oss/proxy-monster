@@ -12,6 +12,7 @@ import com.ridi.oss.proxymonster.controlplane.RoleAssignmentInput
 import com.ridi.oss.proxymonster.controlplane.RoleInput
 import com.ridi.oss.proxymonster.controlplane.RunExecService
 import com.ridi.oss.proxymonster.controlplane.approvalRoutes
+import com.ridi.oss.proxymonster.controlplane.grpc.CONTROL_PROTOCOL_VERSION
 import com.ridi.oss.proxymonster.controlplane.grpc.ControlPlaneGrpcService
 import com.ridi.oss.proxymonster.controlplane.grpc.GrpcServer
 import com.ridi.oss.proxymonster.controlplane.management.ManagementAuditRecorder
@@ -272,7 +273,7 @@ class SlackNotificationE2eDbTest {
 
         supervisorScope {
             // The Events stream must be attached before the click so the run's open-channel lands on it.
-            val event = async { stub.events(eventsRequest { datasourceName = fx.datasource.name }).first() }
+            val event = async { stub.events(eventsRequest { datasourceName = fx.datasource.name; protocolVersion = CONTROL_PROTOCOL_VERSION }).first() }
             awaitUntil("Events stream attached") { fx.datasource.name in core.proxyEventsHub.attached() }
 
             // 3. The approver clicks approve over Socket Mode → Cedar task.approve → onApproved → the real run.

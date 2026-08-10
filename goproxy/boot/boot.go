@@ -153,7 +153,7 @@ func Run(registry spi.Registry) error {
 	}
 	go func() {
 		defer close(eventsDone)
-		configClient.RunEventsLoop(
+		err := configClient.RunEventsLoop(
 			eventsCtx,
 			func() {
 				// A re-register (reconnect) that finds a now-incompatible control-plane is equally fatal:
@@ -175,6 +175,13 @@ func Run(registry spi.Registry) error {
 				go run.NewTableDetailRunner(configClient, backend, provider).Run(sessionID, schema, table)
 			},
 		)
+		// A version rejection on the events stream is fatal even when a resync Register races to a still-
+		// compatible instance behind a load balancer: exit so the supervisor replaces this proxy rather than
+		// keep it serving against a control-plane it cannot speak to. A nil return is the normal ctx-cancel stop.
+		if err != nil {
+			slog.Error("control-plane rejected the events stream on a version skew — exiting", "error", err)
+			os.Exit(1)
+		}
 	}()
 	go func() {
 		for {

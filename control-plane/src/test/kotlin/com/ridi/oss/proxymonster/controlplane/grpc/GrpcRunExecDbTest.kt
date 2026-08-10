@@ -123,7 +123,7 @@ class GrpcRunExecDbTest {
         requesterIp: String? = null,
         playProxy: suspend (RunQuery, Channel<ProxyRunMsg>) -> Unit,
     ): Result<QueryResponse> = supervisorScope {
-        val event = async { stub.events(eventsRequest { datasourceName = datasource.name }).first() }
+        val event = async { stub.events(eventsRequest { datasourceName = datasource.name; protocolVersion = CONTROL_PROTOCOL_VERSION }).first() }
         awaitUntil("Events stream attached") { datasource.name in core.proxyEventsHub.attached() }
 
         val result = async { runCatching { service.run("editor-user", datasource, sql, maxRows, requesterIp = requesterIp) } }
@@ -329,7 +329,7 @@ class GrpcRunExecDbTest {
     @Test
     fun `dial timeout is typed, leaves no active token, and never needs a proxy stream`() = runBlocking {
         supervisorScope {
-            val event = async { stub.events(eventsRequest { datasourceName = datasource.name }).first() }
+            val event = async { stub.events(eventsRequest { datasourceName = datasource.name; protocolVersion = CONTROL_PROTOCOL_VERSION }).first() }
             awaitUntil("Events stream attached") { datasource.name in core.proxyEventsHub.attached() }
             // Inject a short dial bound: the production one is sized for a slow open against a remote
             // backend, and waiting it out here would buy nothing but a two-minute test.
@@ -350,7 +350,7 @@ class GrpcRunExecDbTest {
     @Test
     fun `a run stream cut before RunServing fails the run fast, not on the dial budget`() = runBlocking {
         supervisorScope {
-            val event = async { stub.events(eventsRequest { datasourceName = datasource.name }).first() }
+            val event = async { stub.events(eventsRequest { datasourceName = datasource.name; protocolVersion = CONTROL_PROTOCOL_VERSION }).first() }
             awaitUntil("Events stream attached") { datasource.name in core.proxyEventsHub.attached() }
             val result = async { runCatching { service.run("cut-user", datasource, "select 1", 500) } }
             val open = withTimeout(5_000) { event.await() }.openRunChannel
@@ -373,7 +373,7 @@ class GrpcRunExecDbTest {
     @Test
     fun `an openSession cut before RunServing fails the open fast and revokes its session token`() = runBlocking {
         supervisorScope {
-            val event = async { stub.events(eventsRequest { datasourceName = datasource.name }).first() }
+            val event = async { stub.events(eventsRequest { datasourceName = datasource.name; protocolVersion = CONTROL_PROTOCOL_VERSION }).first() }
             awaitUntil("Events stream attached") { datasource.name in core.proxyEventsHub.attached() }
             // The persistent editor path (openSession) must fail-close on a target-DB open cut exactly like the
             // one-shot run() path above: the proxy sends RunReady then dies before RunServing, and openSession
@@ -400,7 +400,7 @@ class GrpcRunExecDbTest {
     @Test
     fun `a target-DB open that stops heartbeating after RunReady fails at the no-progress bound`() = runBlocking {
         supervisorScope {
-            val event = async { stub.events(eventsRequest { datasourceName = datasource.name }).first() }
+            val event = async { stub.events(eventsRequest { datasourceName = datasource.name; protocolVersion = CONTROL_PROTOCOL_VERSION }).first() }
             awaitUntil("Events stream attached") { datasource.name in core.proxyEventsHub.attached() }
             // A short no-progress bound: waiting out the production one would only slow the test.
             val result = async {
@@ -425,7 +425,7 @@ class GrpcRunExecDbTest {
     @Test
     fun `RunProgress heartbeats reset the no-progress bound so a slow-but-live open serves`() = runBlocking {
         supervisorScope {
-            val event = async { stub.events(eventsRequest { datasourceName = datasource.name }).first() }
+            val event = async { stub.events(eventsRequest { datasourceName = datasource.name; protocolVersion = CONTROL_PROTOCOL_VERSION }).first() }
             awaitUntil("Events stream attached") { datasource.name in core.proxyEventsHub.attached() }
             // Short no-progress bound; the open heartbeats in gaps well under it, for a TOTAL longer than the
             // bound. It can only serve if each heartbeat RESETS the bound — a single deadline from the first
@@ -464,7 +464,7 @@ class GrpcRunExecDbTest {
     @Test
     fun `a RunError during the target-DB open surfaces as-is instead of waiting to serve`() = runBlocking {
         supervisorScope {
-            val event = async { stub.events(eventsRequest { datasourceName = datasource.name }).first() }
+            val event = async { stub.events(eventsRequest { datasourceName = datasource.name; protocolVersion = CONTROL_PROTOCOL_VERSION }).first() }
             awaitUntil("Events stream attached") { datasource.name in core.proxyEventsHub.attached() }
             val result = async { runCatching { service.run("open-err-user", datasource, "select 1", 500) } }
             val open = withTimeout(5_000) { event.await() }.openRunChannel
@@ -487,7 +487,7 @@ class GrpcRunExecDbTest {
     @Test
     fun `a target-DB open that heartbeats but never serves fails at the absolute ceiling`() = runBlocking {
         supervisorScope {
-            val event = async { stub.events(eventsRequest { datasourceName = datasource.name }).first() }
+            val event = async { stub.events(eventsRequest { datasourceName = datasource.name; protocolVersion = CONTROL_PROTOCOL_VERSION }).first() }
             awaitUntil("Events stream attached") { datasource.name in core.proxyEventsHub.attached() }
             // The proxy heartbeats faster than the no-progress bound but never serves (its backend read is
             // wedged though the proxy is alive). Only the absolute open ceiling can end this — a heartbeat is
@@ -519,7 +519,7 @@ class GrpcRunExecDbTest {
     @Test
     fun `an abandoned one-shot run tears down the gRPC handler, not retaining it until the proxy ends`() = runBlocking {
         supervisorScope {
-            val event = async { stub.events(eventsRequest { datasourceName = datasource.name }).first() }
+            val event = async { stub.events(eventsRequest { datasourceName = datasource.name; protocolVersion = CONTROL_PROTOCOL_VERSION }).first() }
             awaitUntil("Events stream attached") { datasource.name in core.proxyEventsHub.attached() }
             // Short ceiling; the proxy heartbeats forever and never serves, so run() abandons at the ceiling.
             val result = async {
@@ -582,7 +582,7 @@ class GrpcRunExecDbTest {
         val (shortStub, cleanup) = shortFirstFrameServer(400)
         try {
             supervisorScope {
-                val event = async { shortStub.events(eventsRequest { datasourceName = datasource.name }).first() }
+                val event = async { shortStub.events(eventsRequest { datasourceName = datasource.name; protocolVersion = CONTROL_PROTOCOL_VERSION }).first() }
                 awaitUntil("Events stream attached") { datasource.name in core.proxyEventsHub.attached() }
                 val sessionIdDeferred = async { service.openSession("live-session-user", datasource) }
                 val open = withTimeout(5_000) { event.await() }.openRunChannel
@@ -676,7 +676,7 @@ class GrpcRunExecDbTest {
     @Test
     fun `a persistent session runs multiple queries on ONE held stream, then closes and revokes`() = runBlocking {
         supervisorScope {
-            val event = async { stub.events(eventsRequest { datasourceName = datasource.name }).first() }
+            val event = async { stub.events(eventsRequest { datasourceName = datasource.name; protocolVersion = CONTROL_PROTOCOL_VERSION }).first() }
             awaitUntil("Events stream attached") { datasource.name in core.proxyEventsHub.attached() }
 
             // openSession completes once the fake proxy attaches its runExec stream (attach completes the
@@ -774,7 +774,7 @@ class GrpcRunExecDbTest {
     @Test
     fun `active task registry sends RunCancel on the attached stream`() = runBlocking {
         supervisorScope {
-            val event = async { stub.events(eventsRequest { datasourceName = datasource.name }).first() }
+            val event = async { stub.events(eventsRequest { datasourceName = datasource.name; protocolVersion = CONTROL_PROTOCOL_VERSION }).first() }
             awaitUntil("Events stream attached") { datasource.name in core.proxyEventsHub.attached() }
             val taskId = 991L
             val runResult = async {
@@ -813,7 +813,7 @@ class GrpcRunExecDbTest {
         supervisorScope {
             val events = Channel<com.ridi.oss.proxymonster.grpc.ControlEvent>(Channel.UNLIMITED)
             val eventJob = launch {
-                stub.events(eventsRequest { datasourceName = datasource.name }).collect { events.send(it) }
+                stub.events(eventsRequest { datasourceName = datasource.name; protocolVersion = CONTROL_PROTOCOL_VERSION }).collect { events.send(it) }
             }
             awaitUntil("Events stream attached") { datasource.name in core.proxyEventsHub.attached() }
 
@@ -861,7 +861,7 @@ class GrpcRunExecDbTest {
             updatedBy = null,
         )
         supervisorScope {
-            val event = async { stub.events(eventsRequest { datasourceName = datasource.name }).first() }
+            val event = async { stub.events(eventsRequest { datasourceName = datasource.name; protocolVersion = CONTROL_PROTOCOL_VERSION }).first() }
             awaitUntil("Events stream attached") { datasource.name in core.proxyEventsHub.attached() }
 
             // run(approverExec = true) mints an APPROVER_EXEC token and records the requester IP under its hash.

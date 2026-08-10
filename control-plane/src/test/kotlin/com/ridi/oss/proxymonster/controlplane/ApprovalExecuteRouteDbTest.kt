@@ -1,5 +1,6 @@
 package com.ridi.oss.proxymonster.controlplane
 
+import com.ridi.oss.proxymonster.controlplane.grpc.CONTROL_PROTOCOL_VERSION
 import com.ridi.oss.proxymonster.controlplane.grpc.ControlPlaneGrpcService
 import com.ridi.oss.proxymonster.controlplane.grpc.GrpcServer
 import com.ridi.oss.proxymonster.controlplane.support.SharedPostgres
@@ -224,7 +225,7 @@ class ApprovalExecuteRouteDbTest {
         val id = seedApprovedRoleRequest(roleR)
 
         supervisorScope {
-            val event = async { stub.events(eventsRequest { datasourceName = datasource.name }).first() }
+            val event = async { stub.events(eventsRequest { datasourceName = datasource.name; protocolVersion = CONTROL_PROTOCOL_VERSION }).first() }
             awaitUntil("Events stream attached") { datasource.name in core.proxyEventsHub.attached() }
 
             val responseDeferred = async { client.post("/api/approvals/$id/execute") }
@@ -320,7 +321,7 @@ class ApprovalExecuteRouteDbTest {
         val id = seedApprovedRoleRequest(roleR)
 
         supervisorScope {
-            val event = async { stub.events(eventsRequest { datasourceName = datasource.name }).first() }
+            val event = async { stub.events(eventsRequest { datasourceName = datasource.name; protocolVersion = CONTROL_PROTOCOL_VERSION }).first() }
             awaitUntil("Events stream attached") { datasource.name in core.proxyEventsHub.attached() }
 
             val responseDeferred = async { client.post("/api/approvals/$id/execute") }
@@ -382,7 +383,7 @@ class ApprovalExecuteRouteDbTest {
         val id = seedApprovedRoleRequest("exec-async-role")
 
         supervisorScope {
-            val event = async { stub.events(eventsRequest { datasourceName = datasource.name }).first() }
+            val event = async { stub.events(eventsRequest { datasourceName = datasource.name; protocolVersion = CONTROL_PROTOCOL_VERSION }).first() }
             awaitUntil("Events stream attached") { datasource.name in core.proxyEventsHub.attached() }
 
             val responseDeferred = async { client.post("/api/approvals/$id/execute") }
@@ -439,7 +440,7 @@ class ApprovalExecuteRouteDbTest {
         val id = seedApprovedRoleRequest("exec-cancel-role")
 
         supervisorScope {
-            val event = async { stub.events(eventsRequest { datasourceName = datasource.name }).first() }
+            val event = async { stub.events(eventsRequest { datasourceName = datasource.name; protocolVersion = CONTROL_PROTOCOL_VERSION }).first() }
             awaitUntil("Events stream attached") { datasource.name in core.proxyEventsHub.attached() }
             val execute = async { client.post("/api/approvals/$id/execute") }
             val open = withTimeout(5_000) { event.await() }.openRunChannel

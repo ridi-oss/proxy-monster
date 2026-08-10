@@ -111,7 +111,7 @@ class EditorSessionDecideTimingDbTest {
     @Test
     fun `each session query's real gRPC Decide sees THAT query's refreshed requester_ip, proving refresh-before-send`() = runBlocking {
         supervisorScope {
-            val event = async { stub.events(eventsRequest { datasourceName = datasource.name }).first() }
+            val event = async { stub.events(eventsRequest { datasourceName = datasource.name; protocolVersion = CONTROL_PROTOCOL_VERSION }).first() }
             awaitUntil("Events stream attached") { datasource.name in core.proxyEventsHub.attached() }
 
             // Open from an ALLOWED IP; the open-time entry is in-range, so a stale read would ALLOW — the trap

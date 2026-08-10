@@ -588,8 +588,8 @@ func TestStreamEventsDispatchesMappedRunOpen(t *testing.T) {
 	fake.mu.Lock()
 	req, meta := fake.lastEventsReq, fake.lastEventsMeta
 	fake.mu.Unlock()
-	if req.GetDatasourceName() != "ds-1" || meta != "secret-abc" {
-		t.Fatalf("Events request/meta = %+v/%q", req, meta)
+	if req.GetDatasourceName() != "ds-1" || req.GetProtocolVersion() != ProtocolVersion || meta != "secret-abc" {
+		t.Fatalf("Events request/meta = %+v/%q (want protocol version %d)", req, meta, ProtocolVersion)
 	}
 }
 
@@ -732,6 +732,71 @@ func startHoldOpenControlPlane(t *testing.T, fake *holdOpenControlPlane) *Client
 	}
 	t.Cleanup(func() { _ = client.Close() })
 	return client
+}
+
+// versionRejectingControlPlane rejects every Events call with the FAILED_PRECONDITION wire-protocol-version
+// error the control-plane's events() sends on a skew — the shape an incompatible control-plane instance takes
+// (e.g. one side of a rolling deploy behind a load balancer).
+type versionRejectingControlPlane struct {
+	pb.UnimplementedControlPlaneServer
+	mu    sync.Mutex
+	opens int
+}
+
+func (f *versionRejectingControlPlane) Events(_ *pb.EventsRequest, _ grpc.ServerStreamingServer[pb.ControlEvent]) error {
+	f.mu.Lock()
+	f.opens++
+	f.mu.Unlock()
+	return status.Error(codes.FailedPrecondition,
+		"proxy wire-protocol version 1 is incompatible with this control-plane's version 2 — "+
+			"deploy the proxy and control-plane from the same server-v* release")
+}
+
+func (f *versionRejectingControlPlane) openCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.opens
+}
+
+func TestRunEventsLoopExitsOnEventsVersionRejection(t *testing.T) {
+	// A wire-protocol version rejection on the events stream is a fatal deploy skew: the loop must return
+	// ErrIncompatibleControlPlane and stop — NOT reconnect forever. Behind a load balancer a resync Register
+	// could reach a still-compatible instance and mask it, so relying on resync to exit is not enough; the
+	// events rejection itself has to end the loop (boot turns the return into a process exit). ctx is never
+	// cancelled here, so the only way the loop returns is the fatal path.
+	fake := &versionRejectingControlPlane{}
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	server := grpc.NewServer()
+	pb.RegisterControlPlaneServer(server, fake)
+	go func() { _ = server.Serve(listener) }()
+	t.Cleanup(server.Stop)
+	c, err := New(listener.Addr().String(), "secret-abc", "ds-1")
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	t.Cleanup(func() { _ = c.Close() })
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- c.runEventsLoop(context.Background(), eventLoopTimings{
+			streamMaxAge: time.Minute,
+			reconnect:    10 * time.Millisecond,
+		}, func() {}, func() {}, func(spi.RunOpen) {}, func(string, string, string) {})
+	}()
+	select {
+	case err := <-errCh:
+		if !errors.Is(err, ErrIncompatibleControlPlane) {
+			t.Fatalf("runEventsLoop err = %v, want ErrIncompatibleControlPlane", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("runEventsLoop did not return on an events version rejection — it kept reconnecting")
+	}
+	if n := fake.openCount(); n != 1 {
+		t.Fatalf("Events opened %d times; a version rejection must stop the loop after the first, not retry", n)
+	}
 }
 
 func TestStreamEventsEndsAtItsMaxAge(t *testing.T) {

@@ -267,6 +267,11 @@ message BeforeDecide {
 // ---- Liveness + refresh ----
 message EventsRequest {
   string datasource_name = 1;
+  // The proxy's wire-protocol version, sent on the liveness stream exactly as on Register. Register is the
+  // primary version guard, but the datasource row outlives it: an old proxy whose Register was rejected can
+  // still open this stream against the persisted row and be treated as live, so the control-plane rejects a
+  // mismatch here too. A proxy that predates this field sends 0, which fails the check like an old Register.
+  int32 protocol_version = 2;
 }
 message ControlEvent {
   oneof kind {

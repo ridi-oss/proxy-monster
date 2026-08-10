@@ -204,6 +204,146 @@
       "schema": "pg_catalog",
       "name": "aurora_global_db_instance_status",
       "tag": "system:activity"
+    },
+    {
+      "schema": "pg_catalog",
+      "name": "pg_prepared_xacts",
+      "tag": "system:activity"
+    },
+    {
+      "schema": "pg_catalog",
+      "name": "pg_subscription_rel",
+      "tag": "system:activity"
+    },
+    {
+      "schema": "information_schema",
+      "name": "_pg_user_mappings",
+      "tag": "system:critical"
+    },
+    {
+      "schema": "information_schema",
+      "name": "_pg_foreign_servers",
+      "tag": "system:critical"
+    },
+    {
+      "schema": "information_schema",
+      "name": "_pg_foreign_data_wrappers",
+      "tag": "system:critical"
+    },
+    {
+      "schema": "information_schema",
+      "name": "_pg_foreign_tables",
+      "tag": "system:data-leak"
+    },
+    {
+      "schema": "information_schema",
+      "name": "_pg_foreign_table_columns",
+      "tag": "system:data-leak"
+    },
+    {
+      "schema": "information_schema",
+      "name": "foreign_table_options",
+      "tag": "system:data-leak"
+    },
+    {
+      "schema": "information_schema",
+      "name": "column_options",
+      "tag": "system:data-leak"
+    },
+    {
+      "schema": "information_schema",
+      "name": "role_column_grants",
+      "tag": "system:data-leak"
+    },
+    {
+      "schema": "information_schema",
+      "name": "role_routine_grants",
+      "tag": "system:data-leak"
+    },
+    {
+      "schema": "information_schema",
+      "name": "role_table_grants",
+      "tag": "system:data-leak"
+    },
+    {
+      "schema": "information_schema",
+      "name": "role_udt_grants",
+      "tag": "system:data-leak"
+    },
+    {
+      "schema": "information_schema",
+      "name": "role_usage_grants",
+      "tag": "system:data-leak"
+    },
+    {
+      "schema": "information_schema",
+      "name": "column_privileges",
+      "tag": "system:data-leak"
+    },
+    {
+      "schema": "information_schema",
+      "name": "table_privileges",
+      "tag": "system:data-leak"
+    },
+    {
+      "schema": "information_schema",
+      "name": "routine_privileges",
+      "tag": "system:data-leak"
+    },
+    {
+      "schema": "information_schema",
+      "name": "udt_privileges",
+      "tag": "system:data-leak"
+    },
+    {
+      "schema": "information_schema",
+      "name": "usage_privileges",
+      "tag": "system:data-leak"
+    },
+    {
+      "schema": "information_schema",
+      "name": "enabled_roles",
+      "tag": "system:data-leak"
+    },
+    {
+      "schema": "information_schema",
+      "name": "applicable_roles",
+      "tag": "system:data-leak"
+    },
+    {
+      "schema": "information_schema",
+      "name": "administrable_role_authorizations",
+      "tag": "system:data-leak"
+    },
+    {
+      "schema": "pg_catalog",
+      "name": "pg_foreign_table",
+      "tag": "system:data-leak"
+    },
+    {
+      "schema": "pg_catalog",
+      "name": "pg_sequences",
+      "tag": "system:data-leak"
+    },
+    {
+      "schema": "pg_catalog",
+      "name": "pg_backend_memory_contexts",
+      "tag": "system:activity"
+    },
+    {
+      "schema": "pg_catalog",
+      "name": "pg_shmem_allocations",
+      "tag": "system:activity"
+    },
+    {
+      "schema": "pg_catalog",
+      "name": "pg_replication_slots",
+      "tag": "system:activity"
+    },
+    {
+      "schema": "pg_catalog",
+      "name": "pg_replication_origin_status",
+      "tag": "system:activity"
     }
   ],
   "relationFamilies": [
@@ -215,6 +355,16 @@
     {
       "schema": "pg_catalog",
       "prefix": "aurora_stat_",
+      "tag": "system:activity"
+    },
+    {
+      "schema": "pg_catalog",
+      "prefix": "pg_stat_",
+      "tag": "system:activity"
+    },
+    {
+      "schema": "pg_catalog",
+      "prefix": "pg_statio_",
       "tag": "system:activity"
     }
   ],

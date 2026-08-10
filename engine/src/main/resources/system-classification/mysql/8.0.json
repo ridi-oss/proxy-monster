@@ -272,6 +272,211 @@
       "schema": "sys",
       "name": "x$innodb_lock_waits",
       "tag": "system:activity"
+    },
+    {
+      "schema": "performance_schema",
+      "name": "user_defined_functions",
+      "tag": "system:critical"
+    },
+    {
+      "schema": "performance_schema",
+      "name": "session_connect_attrs",
+      "tag": "system:data-leak"
+    },
+    {
+      "schema": "performance_schema",
+      "name": "session_account_connect_attrs",
+      "tag": "system:data-leak"
+    },
+    {
+      "schema": "performance_schema",
+      "name": "replication_connection_status",
+      "tag": "system:data-leak"
+    },
+    {
+      "schema": "performance_schema",
+      "name": "accounts",
+      "tag": "system:activity"
+    },
+    {
+      "schema": "performance_schema",
+      "name": "hosts",
+      "tag": "system:activity"
+    },
+    {
+      "schema": "performance_schema",
+      "name": "users",
+      "tag": "system:activity"
+    },
+    {
+      "schema": "performance_schema",
+      "name": "host_cache",
+      "tag": "system:activity"
+    },
+    {
+      "schema": "performance_schema",
+      "name": "binary_log_transaction_compression_stats",
+      "tag": "system:activity"
+    },
+    {
+      "schema": "performance_schema",
+      "name": "file_instances",
+      "tag": "system:activity"
+    },
+    {
+      "schema": "performance_schema",
+      "name": "global_status",
+      "tag": "system:activity"
+    },
+    {
+      "schema": "performance_schema",
+      "name": "session_status",
+      "tag": "system:activity"
+    },
+    {
+      "schema": "performance_schema",
+      "name": "table_handles",
+      "tag": "system:activity"
+    },
+    {
+      "schema": "performance_schema",
+      "name": "innodb_redo_log_files",
+      "tag": "system:activity"
+    },
+    {
+      "schema": "performance_schema",
+      "name": "log_status",
+      "tag": "system:activity"
+    },
+    {
+      "schema": "performance_schema",
+      "name": "tls_channel_status",
+      "tag": "system:activity"
+    },
+    {
+      "schema": "performance_schema",
+      "name": "replication_applier_configuration",
+      "tag": "system:activity"
+    },
+    {
+      "schema": "performance_schema",
+      "name": "replication_applier_status",
+      "tag": "system:activity"
+    },
+    {
+      "schema": "performance_schema",
+      "name": "replication_applier_filters",
+      "tag": "system:activity"
+    },
+    {
+      "schema": "performance_schema",
+      "name": "replication_applier_global_filters",
+      "tag": "system:activity"
+    },
+    {
+      "schema": "performance_schema",
+      "name": "replication_group_members",
+      "tag": "system:activity"
+    },
+    {
+      "schema": "performance_schema",
+      "name": "replication_group_member_stats",
+      "tag": "system:activity"
+    },
+    {
+      "schema": "sys",
+      "name": "schema_auto_increment_columns",
+      "tag": "system:data-leak"
+    },
+    {
+      "schema": "sys",
+      "name": "schema_tables_with_full_table_scans",
+      "tag": "system:data-leak"
+    },
+    {
+      "schema": "sys",
+      "name": "x$schema_tables_with_full_table_scans",
+      "tag": "system:data-leak"
+    },
+    {
+      "schema": "sys",
+      "name": "x$ps_schema_table_statistics_io",
+      "tag": "system:data-leak"
+    },
+    {
+      "schema": "sys",
+      "name": "latest_file_io",
+      "tag": "system:activity"
+    },
+    {
+      "schema": "sys",
+      "name": "x$latest_file_io",
+      "tag": "system:activity"
+    },
+    {
+      "schema": "sys",
+      "name": "metrics",
+      "tag": "system:activity"
+    },
+    {
+      "schema": "sys",
+      "name": "ps_check_lost_instrumentation",
+      "tag": "system:activity"
+    },
+    {
+      "schema": "sys",
+      "name": "schema_table_lock_waits",
+      "tag": "system:activity"
+    },
+    {
+      "schema": "sys",
+      "name": "x$schema_table_lock_waits",
+      "tag": "system:activity"
+    },
+    {
+      "schema": "sys",
+      "name": "session_ssl_status",
+      "tag": "system:activity"
+    },
+    {
+      "schema": "information_schema",
+      "name": "role_column_grants",
+      "tag": "system:data-leak"
+    },
+    {
+      "schema": "information_schema",
+      "name": "role_routine_grants",
+      "tag": "system:data-leak"
+    },
+    {
+      "schema": "information_schema",
+      "name": "role_table_grants",
+      "tag": "system:data-leak"
+    },
+    {
+      "schema": "information_schema",
+      "name": "innodb_ft_index_cache",
+      "tag": "system:data-leak"
+    },
+    {
+      "schema": "information_schema",
+      "name": "innodb_ft_index_table",
+      "tag": "system:data-leak"
+    },
+    {
+      "schema": "mysql",
+      "name": "slave_relay_log_info",
+      "tag": "system:activity"
+    },
+    {
+      "schema": "mysql",
+      "name": "slave_worker_info",
+      "tag": "system:activity"
+    },
+    {
+      "schema": "performance_schema",
+      "name": "objects_summary_global_by_type",
+      "tag": "system:activity"
     }
   ],
   "relationFamilies": [
@@ -348,6 +553,161 @@
     {
       "schema": "sys",
       "prefix": "x$user_summary_by_statement",
+      "tag": "system:activity"
+    },
+    {
+      "schema": "performance_schema",
+      "prefix": "user_variables_by_",
+      "tag": "system:data-leak"
+    },
+    {
+      "schema": "performance_schema",
+      "prefix": "status_by_",
+      "tag": "system:activity"
+    },
+    {
+      "schema": "performance_schema",
+      "prefix": "variables_by_",
+      "tag": "system:critical"
+    },
+    {
+      "schema": "sys",
+      "prefix": "x$schema_table_statistics",
+      "tag": "system:data-leak"
+    },
+    {
+      "schema": "sys",
+      "prefix": "x$schema_index_statistics",
+      "tag": "system:data-leak"
+    },
+    {
+      "schema": "performance_schema",
+      "prefix": "keyring_",
+      "tag": "system:critical"
+    },
+    {
+      "schema": "performance_schema",
+      "prefix": "replication_asynchronous_connection_failover",
+      "tag": "system:activity"
+    },
+    {
+      "schema": "performance_schema",
+      "prefix": "table_io_waits_summary_",
+      "tag": "system:data-leak"
+    },
+    {
+      "schema": "performance_schema",
+      "prefix": "table_lock_waits_summary_",
+      "tag": "system:data-leak"
+    },
+    {
+      "schema": "performance_schema",
+      "prefix": "replication_applier_status_by_",
+      "tag": "system:data-leak"
+    },
+    {
+      "schema": "performance_schema",
+      "prefix": "events_errors_summary_",
+      "tag": "system:activity"
+    },
+    {
+      "schema": "performance_schema",
+      "prefix": "events_waits_",
+      "tag": "system:activity"
+    },
+    {
+      "schema": "performance_schema",
+      "prefix": "file_summary_",
+      "tag": "system:activity"
+    },
+    {
+      "schema": "performance_schema",
+      "prefix": "memory_summary_",
+      "tag": "system:activity"
+    },
+    {
+      "schema": "performance_schema",
+      "prefix": "socket_",
+      "tag": "system:activity"
+    },
+    {
+      "schema": "sys",
+      "prefix": "innodb_buffer_stats_by_",
+      "tag": "system:data-leak"
+    },
+    {
+      "schema": "sys",
+      "prefix": "x$innodb_buffer_stats_by_",
+      "tag": "system:data-leak"
+    },
+    {
+      "schema": "sys",
+      "prefix": "host_summary",
+      "tag": "system:activity"
+    },
+    {
+      "schema": "sys",
+      "prefix": "x$host_summary",
+      "tag": "system:activity"
+    },
+    {
+      "schema": "sys",
+      "prefix": "user_summary",
+      "tag": "system:activity"
+    },
+    {
+      "schema": "sys",
+      "prefix": "x$user_summary",
+      "tag": "system:activity"
+    },
+    {
+      "schema": "sys",
+      "prefix": "io_",
+      "tag": "system:activity"
+    },
+    {
+      "schema": "sys",
+      "prefix": "x$io_",
+      "tag": "system:activity"
+    },
+    {
+      "schema": "sys",
+      "prefix": "memory_",
+      "tag": "system:activity"
+    },
+    {
+      "schema": "sys",
+      "prefix": "x$memory_",
+      "tag": "system:activity"
+    },
+    {
+      "schema": "sys",
+      "prefix": "waits_",
+      "tag": "system:activity"
+    },
+    {
+      "schema": "sys",
+      "prefix": "x$waits_",
+      "tag": "system:activity"
+    },
+    {
+      "schema": "sys",
+      "prefix": "wait_classes_",
+      "tag": "system:activity"
+    },
+    {
+      "schema": "sys",
+      "prefix": "x$wait_classes_",
+      "tag": "system:activity"
+    },
+    {
+      "schema": "sys",
+      "prefix": "x$ps_digest_",
+      "tag": "system:activity"
+    },
+    {
+      "schema": "mysql",
+      "prefix": "replication_asynchronous_connection_failover",
       "tag": "system:activity"
     }
   ],

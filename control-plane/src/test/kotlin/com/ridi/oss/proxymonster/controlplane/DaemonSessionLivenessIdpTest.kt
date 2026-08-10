@@ -34,7 +34,6 @@ import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.TestInstance
 import org.slf4j.LoggerFactory
-import java.net.ServerSocket
 import java.time.Instant
 import java.util.Date
 import java.util.concurrent.atomic.AtomicInteger
@@ -74,8 +73,10 @@ class DaemonSessionLivenessIdpTest {
         roleResolver = RoleResolver(ds, userGroupStore, accessStore)
         rsaKey = RSAKeyGenerator(2048).keyID("session-liveness").generate()
 
-        idpPort = ServerSocket(0).use { it.localPort }
-        idp = embeddedServer(Netty, port = idpPort, host = "127.0.0.1") {
+        // Bind an OS-assigned ephemeral port and read it back after start, rather than probing a free
+        // port with a throwaway ServerSocket: the gap between closing the probe and Netty binding is a
+        // window a parallel test worker can steal the port through, which surfaces as a BindException.
+        idp = embeddedServer(Netty, port = 0, host = "127.0.0.1") {
             routing {
                 get("/.well-known/openid-configuration") {
                     call.respondText(discoveryJson(), ContentType.Application.Json)
@@ -91,6 +92,7 @@ class DaemonSessionLivenessIdpTest {
                 }
             }
         }.start(wait = false)
+        idpPort = runBlocking { idp.engine.resolvedConnectors().first().port }
     }
 
     @AfterAll

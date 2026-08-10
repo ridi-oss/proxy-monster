@@ -145,7 +145,7 @@ data class DecisionContext(
     val passthrough: Boolean,
     val structural: Boolean = false,
     /** ALLOW/MASK only: the `*`-expanded query the wire proxy must send instead of the client's original
-     * so backend column order matches the mask ordinals. Null = send verbatim. */
+     * so target-DB column order matches the mask ordinals. Null = send verbatim. */
     val rewrittenSql: String? = null,
     /** The analyzer's ordered output column names for this decision (an empty list for a passthrough /
      * unanalyzed statement). APPROVAL live result viewing compares this against the stored execute-enforced
@@ -162,7 +162,7 @@ data class DecisionContext(
     /** MASK-only capability grant. A proxy may relay an unmaskable binary result unmasked iff this is true
      * AND the proxy's local feature capability says that relay path is supported. */
     val unmaskablePermitted: Boolean = false,
-    /** Whether the proxy must strip this statement's backend diagnostics to code + severity — set
+    /** Whether the proxy must strip this statement's target-DB diagnostics to code + severity — set
      * when the principal is not a full-cleartext reader of this datasource AND the diagnostic could carry a
      * protected value (engine leaks on ALLOW, or the verdict touches protected data). See redactsDiagnostics
      * and docs/diagnostic-redaction.md. */
@@ -178,7 +178,7 @@ data class DecisionContext(
 )
 
 /**
- * Whether a decision's backend diagnostics must be stripped to code + severity. Redact iff the
+ * Whether a decision's target-DB diagnostics must be stripped to code + severity. Redact iff the
  * diagnostic could carry a protected value — the verdict touches protected data (MASK/DENY), or the engine
  * leaks even on an ALLOW ([leaksDiagnosticsOnAllow]) — AND the principal is NOT a full-cleartext reader
  * of the datasource ([mayReadUnmasked], the Cedar `result.read.unmasked`-on-datasource authorization: ALLOW
@@ -397,7 +397,7 @@ fun decideQuery(
     // Keyed off ds.engineVersion, path-agnostic (CP-introspect + proxy PushCatalog).
     systemClassification: SystemClassificationService? = null,
     // The connection's session/temp columns (proxy-introspected off its held connection), overlaid
-    // onto the base catalog so a bare name resolves to the temp the backend binds. Empty for one-shot/wire.
+    // onto the base catalog so a bare name resolves to the temp the target DB binds. Empty for one-shot/wire.
     tempColumns: List<CatalogColumn> = emptyList(),
     // TEST-ONLY seam. When non-null, the grant walk runs over these StatementFacts instead of analyzing
     // [sql] — the ONLY way to exercise the fail-closed contract branches (an UNSPECIFIED disposition, a
@@ -986,7 +986,7 @@ data class EditorTaskStatus(val taskId: Long, val status: String, val result: Qu
 
 /**
  * Persistent editor SESSION + async task routes (connection-model.md; editor-as-task). Open
- * ONE proxy-dialed stream — one backend connection — per editor session, then submit queries that run
+ * ONE proxy-dialed stream — one target-DB connection — per editor session, then submit queries that run
  * ASYNC as auto-approved EDITOR tasks: each submit creates a born-APPROVED task with one query_result child,
  * launches the run on [appScope] over the held session, and saves the enforced result. The client polls the
  * task/result endpoints — the editor never blocks and each tab polls independently. Enforcement stays

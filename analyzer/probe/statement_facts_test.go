@@ -185,7 +185,7 @@ func TestStatementFactsNoFromUnknownFunctionGrant(t *testing.T) {
 
 func TestStatementFactsUserTypeCastGated(t *testing.T) {
 	// A cast or typed literal to a user (non-built-in) type runs that type's coercion / DOMAIN CHECK — a
-	// user function — on the shared backend session: code execution + an error-channel leak. It resolves
+	// user function — on the shared target-DB session: code execution + an error-channel leak. It resolves
 	// carrying a USER_TYPE_CAST Utility grant (system:critical), gated in every position: no-FROM CAST/::,
 	// a qualified target, and a with-FROM read (the domain code runs regardless of the FROM).
 	for _, sql := range []string{
@@ -322,7 +322,7 @@ func TestStatementFactsStructuredSessionForms(t *testing.T) {
 func TestStatementFactsLexerModeAssignmentGated(t *testing.T) {
 	// A lexer-mode GUC must only be assigned a value the analyzer can read at parse time. MySQL evaluates
 	// the RHS, so a session variable, CONCAT, or DEFAULT can resolve to ANSI_QUOTES while the rendered
-	// text carries no such token — the analyzer would keep parsing the old dialect while the backend
+	// text carries no such token — the analyzer would keep parsing the old dialect while the target DB
 	// flipped the lexer, so a later `SELECT "ssn" FROM users` returns the protected identifier's value.
 	// A value that flips the lexer, or one the analyzer cannot read at parse time, resolves carrying a
 	// system:critical Utility grant (the control-plane floor forbids it) — not a hard admission deny.

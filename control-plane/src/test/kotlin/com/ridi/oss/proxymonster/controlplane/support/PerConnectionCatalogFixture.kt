@@ -36,7 +36,7 @@ class PerConnectionCatalogFixture(val enforcement: EnforcementFixture) {
     }
 
     /**
-     * Scan one schema through the caller-owned backend connection. This intentionally observes that
+     * Scan one schema through the caller-owned target-DB connection. This intentionally observes that
      * connection's transaction-local DDL rather than opening a fresh connection or copying metadata rows.
      */
     suspend fun pushFromTarget(

@@ -1,4 +1,4 @@
--- Sample OLTP schema for the target (brokered) MySQL backend —
+-- Sample OLTP schema for the target (brokered) MySQL database —
 -- MySQL is the primary target engine (Postgres is the add-on). Mirrors
 -- deploy/seed/target-seed.sql so the same queries exercise the engine + enforcement
 -- on MySQL. PII columns (email, phone, name, ssn, card_number, line1,
@@ -6,7 +6,7 @@
 -- free-text column the content backstop covers. DATETIME (not TIMESTAMP) to
 -- avoid TZ conversion + the 2038 range limit.
 
--- The proxy brokers to the backend with a native-password handshake (8.4 has it disabled by
+-- The proxy brokers to the target DB with a native-password handshake (8.4 has it disabled by
 -- default; the container is started with --mysql-native-password=ON). caching_sha2 is a follow-up.
 ALTER USER 'acme'@'%' IDENTIFIED WITH mysql_native_password BY 'acme';
 

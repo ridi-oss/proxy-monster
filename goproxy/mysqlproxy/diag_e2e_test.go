@@ -11,7 +11,7 @@ import (
 )
 
 // End-to-end proof through the real proxy that a diagnostic-redacted connection strips a
-// backend ERR packet to essno + SQLSTATE + the generic message, and relays it verbatim otherwise. MySQL's
+// target-DB ERR packet to essno + SQLSTATE + the generic message, and relays it verbatim otherwise. MySQL's
 // stored-value diagnostic leak is chiefly the SHOW WARNINGS buffer, denied at the control plane;
 // this validates the ERR-packet message strip that closes the inline-error surface. A recognizable
 // token embedded in a nonexistent table name stands in for the echoed content the message must not carry.
@@ -43,7 +43,7 @@ func TestDiagnosticRedactionStripsMysqlErrPacketEndToEnd(t *testing.T) {
 		t.Errorf("the token leaked through the redacted message: %q", myErr.Message)
 	}
 
-	// Control: without redaction the backend message is relayed verbatim (token present), proving the
+	// Control: without redaction the target-DB message is relayed verbatim (token present), proving the
 	// redaction above is what strips it.
 	sanitize.Store(false)
 	plain := h.openDB(t, validToken)
@@ -61,7 +61,7 @@ func TestDiagnosticRedactionStripsMysqlErrPacketEndToEnd(t *testing.T) {
 // query itself with no SHOW WARNINGS / GET DIAGNOSTICS read-back. This is defense-in-depth behind the CP's
 // own lineage enforcement (a masked column in a non-output position is denied before the statement runs);
 // this test isolates the redaction layer with an allow-all fake CP to prove the ERR-packet strip still
-// removes the value if the statement ever reaches the backend.
+// removes the value if the statement ever reaches the target DB.
 func TestDiagnosticRedactionStripsErrorBasedExtractionEndToEnd(t *testing.T) {
 	h := startBroker(t)
 	var sanitize atomic.Bool

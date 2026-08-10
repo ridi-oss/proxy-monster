@@ -26,19 +26,19 @@ type configTestProvider struct {
 	dialect engine.Dialect
 }
 
-func (p configTestProvider) Dialect() engine.Dialect                     { return p.dialect }
-func (configTestProvider) NewDb() engine.Db                              { return nil }
-func (configTestProvider) OpenTarget(spi.BackendTarget) (*sql.DB, error) { return nil, nil }
+func (p configTestProvider) Dialect() engine.Dialect                { return p.dialect }
+func (configTestProvider) NewDb() engine.Db                         { return nil }
+func (configTestProvider) OpenTarget(spi.TargetDb) (*sql.DB, error) { return nil, nil }
 func (configTestProvider) ProbeNamespace(*sql.Conn, string) ([]string, *int32, error) {
 	return nil, nil, nil
 }
 func (configTestProvider) ReadTableDetail(*sql.Conn, string, string) (*spi.TableDetail, error) {
 	return nil, nil
 }
-func (configTestProvider) NewWireServer(int, spi.BackendTarget, spi.EnforcementClient, engine.Db, func() (*tls.Config, error)) spi.WireServer {
+func (configTestProvider) NewWireServer(int, spi.TargetDb, spi.EnforcementClient, engine.Db, func() (*tls.Config, error)) spi.WireServer {
 	return nil
 }
-func (configTestProvider) NewRunSession(context.Context, spi.BackendTarget, engine.Db, spi.SessionClient, string, []byte, engine.ExecGuard, time.Duration) (spi.BackendSession, error) {
+func (configTestProvider) NewRunSession(context.Context, spi.TargetDb, engine.Db, spi.SessionClient, string, []byte, engine.ExecGuard, time.Duration) (spi.TargetDbSession, error) {
 	return nil, nil
 }
 

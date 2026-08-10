@@ -81,11 +81,11 @@ func TestDrainLetsInFlightStatementComplete(t *testing.T) {
 	h.fake.decideFn = allowAll
 	client := openRawClient(t, h.addr, validToken)
 
-	// SLEEP holds the handler in the relay (reading the backend) across the Drain call.
+	// SLEEP holds the handler in the relay (reading the target DB) across the Drain call.
 	if err := mysqlwire.WritePacket(client.conn, 0, mysqlwire.ComQueryPayload("SELECT SLEEP(0.5)")); err != nil {
 		t.Fatalf("write slow query: %v", err)
 	}
-	// Let the query reach the backend and begin relaying before draining.
+	// Let the query reach the target DB and begin relaying before draining.
 	time.Sleep(100 * time.Millisecond)
 
 	drained := make(chan struct{})

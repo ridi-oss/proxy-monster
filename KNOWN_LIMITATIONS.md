@@ -128,7 +128,7 @@ analog of MySQL's Prepare-time freeze. No control-plane decision is ever stored.
   column in its own charset for client-side decoding — and rewrites it to
   `utf8mb4`, so those clients connect and results stay maskable. The client's
   original statement is authorized and audited; only the bytes sent to the
-  backend are pinned. (A prepared-statement form is pinned too, but its
+  target DB are pinned. (A prepared-statement form is pinned too, but its
   execute-time audit records the pinned statement.) Any other results charset —
   an explicit non-UTF-8 one — is not rewritten and fails the session closed, and
   returning results in a non-UTF-8 charset is not supported.
@@ -148,7 +148,7 @@ analog of MySQL's Prepare-time freeze. No control-plane decision is ever stored.
   isolation level should use `BEGIN ISOLATION LEVEL …` instead of a separate
   `SET TRANSACTION`.
 - 🟡 `client_encoding` must remain UTF8. The engine and control plane read the
-  client's SQL bytes as UTF-8 to resolve identifiers. A backend session that
+  client's SQL bytes as UTF-8 to resolve identifiers. A target-DB session that
   switches `client_encoding` to another encoding would let the same bytes bind
   different objects on each side (a non-ASCII identifier could dodge its
   mask/deny — verified against real PostgreSQL). `client_encoding` is
@@ -171,8 +171,8 @@ analog of MySQL's Prepare-time freeze. No control-plane decision is ever stored.
   never saw, and the `Execute` re-decide authorizes under the stale snapshot (a
   wrong-ALLOW). Reproduced against PG16 by
   `pgproxy.TestExtendedBindCoercionSetConfigLeaksAcrossSchema` (the proxy
-  decides under the primary path yet the backend returns the secondary schema's
-  row). The offending domain must already exist, which needs a
+  decides under the primary path yet the target DB returns the secondary
+  schema's row). The offending domain must already exist, which needs a
   `CREATE DOMAIN`/`CREATE FUNCTION` grant the masking policy denies read-only
   principals. A fail-safe close (re-probe _after_ Bind, or bind under a pinned
   `search_path`) is a follow-up. Tracked:
@@ -181,9 +181,9 @@ analog of MySQL's Prepare-time freeze. No control-plane decision is ever stored.
 ## Catalog freshness
 
 Enforcement decides against a per-connection catalog captured on the
-connection's own held backend connection (design:
+connection's own held target-DB connection (design:
 [`docs/per-connection-catalog.md`](./docs/per-connection-catalog.md)) — the
-control plane always decides against exactly what that connection's backend
+control plane always decides against exactly what that connection's target DB
 binds. The datasource-global catalog is now config-only (catalog browser,
 tagging, table detail) and never feeds an enforcement decision.
 
@@ -231,7 +231,7 @@ tagging, table detail) and never feeds an enforcement decision.
   the column's kind; a masked column in a row-shaping position
   (predicate/join/order/group/distinct) still DENYs. So none of these paths
   leak. The residual gap is a function body that reads a masked/PII column
-  internally, on the backend service-account connection unseen by the proxy,
+  internally, on the target DB service-account connection unseen by the proxy,
   when that column never appears as an argument: `SELECT my_udf(id) FROM t`,
   where `id` is not sensitive and `my_udf` internally reads `ssn`, returns `ssn`
   in the clear. Operational rule: a UDF on a masking datasource must not read
@@ -286,7 +286,7 @@ tagging, table detail) and never feeds an enforcement decision.
   that classify as passthrough and take a table target — e.g. `ANALYZE <table>`
   (PostgreSQL, `SESSION` → wire/editor passthrough, gated only by
   `datasource.connect`, not a table grant) — still disclose an ungranted table's
-  existence via a backend error. They return no rows. The fix routes each
+  existence via a target-DB error. They return no rows. The fix routes each
   resource-bearing utility to a Cedar gate instead of the blanket passthrough
   ([`docs/facts-emission.md`](./docs/facts-emission.md)).
 
@@ -504,7 +504,7 @@ The web SQL editor executes over the proxy-dialed `RunExec` channel (the
 control-plane never dials the target); its query runs through the proxy's normal
 `Decide`, same as a native-wire client. The interactive editor drives a
 persistent per-session stream (`RunExecService.openSession`/`runOnSession`, the
-`editorSessionRoutes` behind `POST /api/editor/sessions`), holding one backend
+`editorSessionRoutes` behind `POST /api/editor/sessions`), holding one target-DB
 connection so `SET`/`USE`/temp/`BEGIN` persist across queries. The one-shot
 `RunExecService.run` (open → one statement → `Close`) backs the approval-execute
 path and `POST /api/datasources/{id}/query`, not the interactive editor.
@@ -513,7 +513,7 @@ path and `POST /api/datasources/{id}/query`, not the interactive editor.
   passthrough-ALLOW. Benign `SET`, `BEGIN`, `USE`, and `ANALYZE` are allowed on
   the editor channel; classified privileged `SET` forms still pass their Utility
   gate, and session statements stay denied on the workflow executor/viewer
-  channels. Because a persistent session holds ONE backend connection across
+  channels. Because a persistent session holds ONE target-DB connection across
   MANY statements, a session mutation can affect a later query on the same
   connection; its safety rests on per-statement re-decide — every statement
   round-trips to the proxy's `Decide` against that connection's live
@@ -522,23 +522,24 @@ path and `POST /api/datasources/{id}/query`, not the interactive editor.
   admission so passthrough only ever sees a pure session statement. Hard gate:
   per-statement re-decide (or an explicit session-mutation refusal) must remain
   the standing mitigation.
-- 🟡 Catalog adoption assumes one backend behind a datasource. On MySQL a new
+- 🟡 Catalog adoption assumes one target DB behind a datasource. On MySQL a new
   connection may start from catalog content the control plane already holds
-  rather than measuring the backend itself, so its first statement decides
-  without a round-trip. That is sound because every backend session for a
+  rather than measuring the target DB itself, so its first statement decides
+  without a round-trip. That is sound because every target-DB session for a
   datasource is opened by one proxy process against one target with one service
   account, which is what makes a catalog scan the same for every connection —
   MySQL temporary tables never appear in `information_schema` and reach a
   decision through the per-request overlay instead. Two changes would break it
-  silently: running several proxies for one datasource against backends that can
-  disagree (a replica behind a load balancer, mid-failover), or varying backend
-  credentials per session, since `information_schema` is privilege-filtered and
-  two accounts legitimately see different columns. An adopting connection would
-  then decide against structure its own backend never had. PostgreSQL never
-  adopts: its `pg_temp_*` schemas are per-session and catalog-visible, so a
-  fragment there is only true for the connection that measured it.
+  silently: running several proxies for one datasource against target DBs that
+  can disagree (a replica behind a load balancer, mid-failover), or varying
+  target DB credentials per session, since `information_schema` is
+  privilege-filtered and two accounts legitimately see different columns. An
+  adopting connection would then decide against structure its own target DB
+  never had. PostgreSQL never adopts: its `pg_temp_*` schemas are per-session
+  and catalog-visible, so a fragment there is only true for the connection that
+  measured it.
 - 🟡 No concurrent-editor-session cap (auth'd DoS surface). Each open session
-  pins ONE unpooled backend connection on the proxy for the life of its run
+  pins ONE unpooled target-DB connection on the proxy for the life of its run
   stream. That stream has no fixed lifetime cap — so an active editor is never
   cut mid-session — which means the connection is held until the stream closes:
   by an explicit close, a subsequent failed query, or the idle sweep. That sweep

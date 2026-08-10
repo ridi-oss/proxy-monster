@@ -124,9 +124,9 @@ class BaselineDangerousFunctionEnforcementDbTest {
 
     // Dangerous PG functions the shipped manifest classifies (exact + `functionFamilies` prefixes) but the
     // hand-curated 15-name baseline floor MISSED — the cleartext-PII leak class. Each is a
-    // whole-table/page/large-object/backend reader that reads data INVISIBLE to lineage (its data source is a
+    // whole-table/page/large-object/target DB reader that reads data INVISIBLE to lineage (its data source is a
     // string/regclass/oid arg, not a scanned column), so on a no-manifest datasource a flat 15-name baseline
-    // would return null → ALLOW → the backend would stream e.g. the entire `users` table as XML incl. cleartext ssn.
+    // would return null → ALLOW → the target DB would stream e.g. the entire `users` table as XML incl. cleartext ssn.
     private val pgManifestOnlyDangerousCalls = listOf(
         "table_to_xml('public.users'::regclass, true, false, '')", // table_to_xml* family (the canonical dump)
         "query_to_xmlschema('SELECT ssn FROM users', true, false, '')", // query_to_xml* family (NOT the baseline's two exact names)
@@ -204,7 +204,7 @@ class BaselineDangerousFunctionEnforcementDbTest {
         assertEquals(EnfAction.DENY, decide(pg, "select dblink_exec('c','s') from users natural join users").action, "resolved=false critical denies on the floor")
         // BOUNDARY (explicit, not a gap this closes): the backfill only fires on a POST-PARSE failure — a
         // statement that sqlglot cannot PARSE (p.root == nil) emits no function facts, so a critical builtin in
-        // a parse-failing statement the backend still accepts takes the exception.unanalyzable verbatim relay on a
+        // a parse-failing statement the target DB still accepts takes the exception.unanalyzable verbatim relay on a
         // system:development datasource (it DENIES on the floor). That is the accepted `exception.unanalyzable ⊇ exec`
         // posture an operator opts into with system:development — pre-existing, unclosable via function facts,
         // and the multi-statement route into it is already shut (admission rejects >1-statement batches).

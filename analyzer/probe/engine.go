@@ -35,7 +35,7 @@ type engine interface {
 	// are marked by the TEMPORARY keyword).
 	IsTempSchema(schema exp.Expression) bool
 	// RewriteStatement optionally rewrites a parsed statement into the SQL the proxy should relay to the
-	// backend, returning "" to leave it unchanged.
+	// target DB, returning "" to leave it unchanged.
 	RewriteStatement(root exp.Expression) string
 }
 
@@ -80,7 +80,7 @@ func newMySQLEngine(config *pb.EngineConfig) (*mysqlEngine, error) {
 	// conditional mysql_ansi_quotes into a single settings string resolved by GetOrRaise. ansi_quotes MUST
 	// go through settings resolution rather than a direct field-set: it rewrites the tokenizer config
 	// (applyMySQLAnsiQuotes — `"` becomes a quoted-identifier delimiter, not a string), which only runs at
-	// resolution time. When the backend's live sql_mode carries ANSI_QUOTES, the analyzer then reads a
+	// resolution time. When the target DB's live sql_mode carries ANSI_QUOTES, the analyzer then reads a
 	// masked column quoted with `"` as the real column and still masks it (instead of the proxy having to
 	// fail the connection closed). mysqlNormalizationDialect only ever sets the strategy, so its
 	// SettingsString round-trips losslessly as the base.
@@ -113,7 +113,7 @@ func (e *mysqlEngine) FoldColumn(column string) string {
 func (e *mysqlEngine) IsTempSchema(exp.Expression) bool { return false }
 
 // RewriteStatement pins a single, session-scoped `SET character_set_results = NULL` — the default MySQL
-// Connector/J (and so DBeaver) session-init, which asks the backend to return each column in its own charset
+// Connector/J (and so DBeaver) session-init, which asks the target DB to return each column in its own charset
 // for client-side decoding — to utf8mb4, so the wire masker keeps decoding results as UTF-8. Only that exact
 // form is rewritten; a compound SET, GLOBAL/PERSIST scope, a same-named user variable, a qualified or
 // bogus-scoped target, or any non-NULL value is left untouched (and still fails closed at the wire session

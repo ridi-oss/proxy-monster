@@ -82,7 +82,7 @@ import kotlin.test.fail
  * [ControlPlaneGrpcService], so the run plays back over the true execute-under-R wire path, as in
  * `ApprovalExecuteRouteDbTest`).
  *
- * Only Slack and the target backend are mocked; the compose route, `decideQuery` + the disclosure hint,
+ * Only Slack and the target DB are mocked; the compose route, `decideQuery` + the disclosure hint,
  * the notification drain, the Socket Mode click, the Cedar `task.approve`, and the production run path
  * (`claimAndStartRun` → `runApprovedTask` → `runExecService.run`) are the real classes.
  */

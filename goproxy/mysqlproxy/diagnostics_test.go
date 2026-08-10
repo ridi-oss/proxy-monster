@@ -47,14 +47,14 @@ func TestSanitizeErrPacketDefaultsSqlStateWhenAbsent(t *testing.T) {
 	}
 }
 
-// End-to-end: a backend ERR relayed through relayResultSet with the RedactErr hook installed reaches the
+// End-to-end: a target-DB ERR relayed through relayResultSet with the RedactErr hook installed reaches the
 // client sanitized — essno + SQLSTATE preserved, message and any echoed value gone.
-func TestRelayResultSetRedactsBackendError(t *testing.T) {
-	var backend bytes.Buffer
-	writeTestPacket(t, &backend, 1, mysqlwire.ErrPacketState(1146, "42S02", "Table 'db.secret_010_1234_5678' doesn't exist"))
+func TestRelayResultSetRedactsTargetDbError(t *testing.T) {
+	var targetDb bytes.Buffer
+	writeTestPacket(t, &targetDb, 1, mysqlwire.ErrPacketState(1146, "42S02", "Table 'db.secret_010_1234_5678' doesn't exist"))
 
 	var relayed []byte
-	ok, err := relayResultSet(&backend, true, resultHooks{
+	ok, err := relayResultSet(&targetDb, true, resultHooks{
 		Sink: func(_ byte, payload []byte) error {
 			relayed = append([]byte(nil), payload...)
 			return nil
@@ -65,7 +65,7 @@ func TestRelayResultSetRedactsBackendError(t *testing.T) {
 		t.Fatalf("relayResultSet: %v", err)
 	}
 	if ok {
-		t.Fatal("relayResultSet reported success for a backend ERR")
+		t.Fatal("relayResultSet reported success for a target-DB ERR")
 	}
 	if binary.LittleEndian.Uint16(relayed[1:3]) != 1146 {
 		t.Errorf("essno not preserved through relay: %x", relayed[1:3])
@@ -80,12 +80,12 @@ func TestRelayResultSetRedactsBackendError(t *testing.T) {
 
 // Without the RedactErr hook the ERR is relayed verbatim (the system:development / non-latched path), so the
 // redaction is genuinely gated, not unconditional.
-func TestRelayResultSetForwardsBackendErrorVerbatimWhenNotRedacting(t *testing.T) {
-	var backend bytes.Buffer
-	writeTestPacket(t, &backend, 1, mysqlwire.ErrPacketState(1146, "42S02", "Table 'db.t' doesn't exist"))
+func TestRelayResultSetForwardsTargetDbErrorVerbatimWhenNotRedacting(t *testing.T) {
+	var targetDb bytes.Buffer
+	writeTestPacket(t, &targetDb, 1, mysqlwire.ErrPacketState(1146, "42S02", "Table 'db.t' doesn't exist"))
 
 	var relayed []byte
-	if _, err := relayResultSet(&backend, true, resultHooks{
+	if _, err := relayResultSet(&targetDb, true, resultHooks{
 		Sink: func(_ byte, payload []byte) error {
 			relayed = append([]byte(nil), payload...)
 			return nil
@@ -94,18 +94,18 @@ func TestRelayResultSetForwardsBackendErrorVerbatimWhenNotRedacting(t *testing.T
 		t.Fatalf("relayResultSet: %v", err)
 	}
 	if mysqlwire.ErrString(relayed) != "Table 'db.t' doesn't exist" {
-		t.Errorf("relayed message = %q, want verbatim backend message", mysqlwire.ErrString(relayed))
+		t.Errorf("relayed message = %q, want verbatim target-DB message", mysqlwire.ErrString(relayed))
 	}
 }
 
-// A prepare-time backend ERR is one of the three mandated MySQL ERR-forward sites: with the redactor it
+// A prepare-time target-DB ERR is one of the three mandated MySQL ERR-forward sites: with the redactor it
 // must reach the client stripped, closing the fail-closed gap even though PREPARE does not evaluate rows.
-func TestRelayStmtPrepareResponseRedactsBackendError(t *testing.T) {
-	var backend bytes.Buffer
-	writeTestPacket(t, &backend, 1, mysqlwire.ErrPacketState(1146, "42S02", "Table 'db.secret_010_1234_5678' doesn't exist"))
+func TestRelayStmtPrepareResponseRedactsTargetDbError(t *testing.T) {
+	var targetDb bytes.Buffer
+	writeTestPacket(t, &targetDb, 1, mysqlwire.ErrPacketState(1146, "42S02", "Table 'db.secret_010_1234_5678' doesn't exist"))
 
 	var client bytes.Buffer
-	if _, prepared, err := relayStmtPrepareResponse(&client, &backend, true, sanitizeErrPacket); err != nil || prepared {
+	if _, prepared, err := relayStmtPrepareResponse(&client, &targetDb, true, sanitizeErrPacket); err != nil || prepared {
 		t.Fatalf("relayStmtPrepareResponse: prepared=%v err=%v", prepared, err)
 	}
 	_, payload, err := mysqlwire.ReadPacket(&client)

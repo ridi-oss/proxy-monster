@@ -258,7 +258,7 @@ class EnforcementPostgresDbTest {
 
     @Test
     fun `a provably-total transform of a masked column redacts in full and the rest of the row returns`() {
-        // The headline behavior end-to-end against a real backend: upper(ssn) is a provably-total transform
+        // The headline behavior end-to-end against a real target DB: upper(ssn) is a provably-total transform
         // → the derived cell is blanked to NULL, but the statement is ALLOWed (MASK) and the non-sensitive
         // columns still return — unlike a DENY. Exercises the harness NULL-redaction path for a derived cell.
         val r = fx.run("select id, upper(ssn) from users")
@@ -312,7 +312,7 @@ class EnforcementMysqlDbTest {
     fun `error-based extraction via extractvalue over a masked column is denied end-to-end`() {
         // A MySQL error-based exfiltration technique: extractvalue() puts a stored value into a 1105 XPATH error
         // message. ssn (masked pii) is read in a NON-OUTPUT position — a function-argument subquery, and the
-        // ORDER BY oracle predicate — so admission must DENY before the statement reaches the backend to
+        // ORDER BY oracle predicate — so admission must DENY before the statement reaches the target DB to
         // produce that error. This is the primary defense, ahead of the proxy's DIAG error-message strip
         // (which is the backstop if enforcement ever had a gap).
         val viaArg = fx.run("select extractvalue(1, concat(0x7e, (select ssn from users limit 1)))")
@@ -324,7 +324,7 @@ class EnforcementMysqlDbTest {
         // redacted (docs/derived-masking.md): only PROVABLY-TOTAL string transforms (upper/substr/…) are
         // redactable; a cast or arithmetic can fault (or warn) on the value, so executing it would leak the
         // raw value through the error-presence / SQLSTATE / warning-count channel that output redaction can't
-        // touch. So these stay denied and never reach the backend.
+        // touch. So these stay denied and never reach the target DB.
         val cast = fx.run("select cast(ssn as unsigned) from users")
         assertEquals(EnfAction.DENY, cast.decision, "cast(ssn) is a value-dependent-fault-capable transform → denied; reason=${cast.denyReason}")
         assertTrue(cast.rows.isEmpty(), "a DENY must not return rows")
@@ -382,7 +382,7 @@ class EnforcementMysqlDbTest {
         // MySQL parity for the passthrough-bypass regression: `SELECT .. INTO OUTFILE` writes a server
         // file with no FROM, and was READONLY_META-classified (ALLOW) ahead of the gates. Its kind is
         // select_into_outfile (stmt.cat.admin.file, a server-side FILE write), so analyst — read + metadata
-        // + session, no admin — is DENIED at the kind gate before it can ever reach the backend. A ddl grant
+        // + session, no admin — is DENIED at the kind gate before it can ever reach the target DB. A ddl grant
         // alone would not authorize it either: file export is admin.file, not plain ddl.
         val r = fx.run("select 1 into outfile '/tmp/pm_stmt_gate_bypass'")
         assertEquals(EnfAction.DENY, r.decision, "SELECT INTO OUTFILE must be gated; reason=${r.denyReason}")
@@ -393,7 +393,7 @@ class EnforcementMysqlDbTest {
     fun `a no-FROM SELECT reading a table via UNION TABLE cannot exfiltrate cleartext ssn`() {
         // MySQL parity for the UNION TABLE red-team regression (a live cleartext leak):
         // `SELECT … UNION TABLE users` reads users.ssn with no FROM word and must be denied at admission,
-        // never reaching the backend.
+        // never reaching the target DB.
         val r = fx.run("select 0,'x','x','x' union table users")
         assertEquals(EnfAction.DENY, r.decision, "UNION TABLE read must be denied; reason=${r.denyReason}")
         assertTrue(r.rows.isEmpty(), "a DENY must not return rows")
@@ -406,7 +406,7 @@ class EnforcementMysqlDbTest {
         // UNION SELECT 1 INTO @a` mutates @a (a write) but was READONLY_META-classified and passthrough-
         // ALLOW'd ahead of the gates — the leading paren branch hid the INTO. The analyzer finds the INTO
         // recursively and classifies it select_into (stmt.cat.ddl); analyst (connect + read, NO ddl) must
-        // be denied at the kind gate, before it can ever reach the backend.
+        // be denied at the kind gate, before it can ever reach the target DB.
         val r = fx.run("(select 1) union select 1 into @pm_p3_branch")
         assertEquals(EnfAction.DENY, r.decision, "branch SELECT INTO must be gated; reason=${r.denyReason}")
         assertEquals("statement kind 'select_into' is not permitted", r.denyReason, "deny reason: ${r.denyReason}")

@@ -32,7 +32,7 @@ pnpm = "10.22.0"
 # `PM_HTTP_PORT=41390 mise run control-plane`. `mise tasks ls` lists them.
 
 [tasks.up]
-description = "Start the local datastores (control-plane store + sample MySQL/PG backends); waits until healthy"
+description = "Start the local datastores (control-plane store + sample MySQL/PG target DBs); waits until healthy"
 shell = "bash -c"
 # Idempotent, and safe when two callers overlap: on an already-healthy stack this only reads state. Two
 # concurrent `docker compose up` runs on one project fight over the same containers, and the loser tears
@@ -62,7 +62,7 @@ shell = "bash -c"
 run = 'PM_DB_URL="${PM_DB_URL:-jdbc:postgresql://localhost:5442/proxymonster}" ./gradlew --no-daemon :control-plane:run'
 
 [tasks.proxy-mysql]
-description = "Run a wire proxy on :6033 fronting the sample MySQL backend (datasource acme-mysql)"
+description = "Run a wire proxy on :6033 fronting the sample MySQL target DB (datasource acme-mysql)"
 depends = ["up"]
 shell = "bash -c"
 run = '''
@@ -79,7 +79,7 @@ PM_CONTROL_PLANE_GRPC="${PM_CONTROL_PLANE_GRPC:-127.0.0.1:9090}" \
 '''
 
 [tasks.proxy-postgres]
-description = "Run a wire proxy on :6432 fronting the sample PostgreSQL backend (datasource acme-target)"
+description = "Run a wire proxy on :6432 fronting the sample PostgreSQL target DB (datasource acme-target)"
 depends = ["up"]
 shell = "bash -c"
 run = '''
@@ -159,8 +159,8 @@ cat <<BANNER
 dev: stack up.
   web console       http://localhost:41300
   control plane     ${cp_url}
-  MySQL proxy       127.0.0.1:${PM_MYSQL_PROXY_PORT:-6033}   → sample backend, datasource acme-mysql
-  PostgreSQL proxy  127.0.0.1:${PM_PG_PROXY_PORT:-6432}   → sample backend, datasource acme-target
+  MySQL proxy       127.0.0.1:${PM_MYSQL_PROXY_PORT:-6033}   → sample target DB, datasource acme-mysql
+  PostgreSQL proxy  127.0.0.1:${PM_PG_PROXY_PORT:-6432}   → sample target DB, datasource acme-target
 
 Ctrl-C stops what this task started; the datastores keep running -- stop them with: mise run down
 

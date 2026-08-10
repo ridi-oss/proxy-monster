@@ -87,7 +87,7 @@ func TestServerGreetingTLSCapabilities(t *testing.T) {
 func TestServerGreetingConnectWithDBOptIn(t *testing.T) {
 	scramble := bytes.Repeat([]byte{0x42}, 20)
 	// connectWithDB=true (e.g. goproxy/mysqlproxy, which relays a handshake-supplied database to the
-	// backend as COM_INIT_DB) must advertise CONNECT_WITH_DB, or a real client that gates writing the
+	// target DB as COM_INIT_DB) must advertise CONNECT_WITH_DB, or a real client that gates writing the
 	// database field on server-advertised support (unlike go-sql-driver/mysql, which writes it
 	// unconditionally) will set its own CapConnectWithDB bit without ever including the field.
 	greeting, err := ParseHandshakeV10(ServerGreetingSSL(7, scramble, "8.0.40-test", true))
@@ -312,7 +312,7 @@ func TestNativePasswordKnownVector(t *testing.T) {
 	}
 }
 
-func TestBackendHandshakeResponseDatabase(t *testing.T) {
+func TestTargetDbHandshakeResponseDatabase(t *testing.T) {
 	auth := []byte{1, 2, 3}
 	for _, test := range []struct {
 		name       string
@@ -329,7 +329,7 @@ func TestBackendHandshakeResponseDatabase(t *testing.T) {
 		{"empty plugin defaults to native", CapProtocol41 | CapSecureConn | CapPluginAuth | CapConnectWithDB, "app", "", "app", "mysql_native_password"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			payload := BackendHandshakeResponse(test.caps, "svc", auth, test.database, test.authPlugin)
+			payload := TargetDbHandshakeResponse(test.caps, "svc", auth, test.database, test.authPlugin)
 			r := NewReader(payload)
 			caps, err := r.U32()
 			if err != nil || caps != test.caps {

@@ -38,7 +38,7 @@ func TestServeStatementDenySkipsRun(t *testing.T) {
 
 func TestServeStatementRunErrorRetainsDecision(t *testing.T) {
 	want := &Decision{Action: "ALLOW"}
-	runErr := errors.New("backend failed")
+	runErr := errors.New("target DB failed")
 	qe := NewQueryEngine(mysqlDb, &fakeDecider{outcome: DecisionOutcome{Decision: want}})
 	dec, denied, err := ServeStatement(qe, serveInput(), nil, nil, func(string, []*pb.ColumnMask) (bool, error) {
 		return false, runErr
@@ -67,7 +67,7 @@ func TestServeStatementRefetchesOnlyAfterCleanCompletion(t *testing.T) {
 		name  string
 		clean bool
 		want  int
-	}{{"clean", true, 3}, {"backend error response", false, 0}} {
+	}{{"clean", true, 3}, {"target-DB error response", false, 0}} {
 		t.Run(tc.name, func(t *testing.T) {
 			calls := 0
 			decision := &Decision{Action: "ALLOW", AfterStatement: []*pb.Refetch{{Schema: "app"}}}

@@ -66,7 +66,7 @@ an `EngineConfig` (engine identity, version, and — for MySQL —
 carries structured `catalog`, `schema`, `table`, `column`, and SQL-type fields.
 The namespace descriptor is the namespace observed at introspection (or the
 connection's live path on the wire), not a claim about an arbitrary long-lived
-backend session.
+target-DB session.
 
 ### Go resolves physical tables once
 

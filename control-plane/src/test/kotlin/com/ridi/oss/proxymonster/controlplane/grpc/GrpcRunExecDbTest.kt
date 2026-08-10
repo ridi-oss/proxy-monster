@@ -305,11 +305,11 @@ class GrpcRunExecDbTest {
                 },
             )
             requests.send(rowsChunk(listOf("email"), listOf(listOf("must-not-escape@example.com"))))
-            requests.send(proxyRunMsg { error = runError { message = "backend disconnected" } })
+            requests.send(proxyRunMsg { error = runError { message = "target DB disconnected" } })
         }.exceptionOrNull()
 
         assertIs<ProxyRunException>(failure)
-        assertEquals("backend disconnected", failure.message)
+        assertEquals("target DB disconnected", failure.message)
     }
 
     @Test
@@ -332,7 +332,7 @@ class GrpcRunExecDbTest {
             val event = async { stub.events(eventsRequest { datasourceName = datasource.name; protocolVersion = CONTROL_PROTOCOL_VERSION }).first() }
             awaitUntil("Events stream attached") { datasource.name in core.proxyEventsHub.attached() }
             // Inject a short dial bound: the production one is sized for a slow open against a remote
-            // backend, and waiting it out here would buy nothing but a two-minute test.
+            // target DB, and waiting it out here would buy nothing but a two-minute test.
             val result = async {
                 runCatching { service.run("timeout-user", datasource, "select 1", 500, dialTimeoutMs = 1_000) }
             }
@@ -473,11 +473,11 @@ class GrpcRunExecDbTest {
             val proxy = async { stub.runExec(proxyRequests.receiveAsFlow()).collect {} }
             proxyRequests.send(proxyRunMsg { sessionReady = runReady { sessionId = open.sessionId } })
             // The target-DB open fails mid-flight, before serving.
-            proxyRequests.send(proxyRunMsg { error = runError { message = "backend connection failed: connection refused" } })
+            proxyRequests.send(proxyRunMsg { error = runError { message = "target-DB connection failed: connection refused" } })
 
             val failure = withTimeout(5_000) { result.await() }.exceptionOrNull()
             assertIs<ProxyRunException>(failure)
-            assertEquals("backend connection failed: connection refused", failure.message)
+            assertEquals("target-DB connection failed: connection refused", failure.message)
             assertEquals(0, activeEditorTokens("open-err-user"), "a failed target-DB open must revoke its token")
             proxyRequests.close()
             withTimeout(5_000) { proxy.await() }
@@ -489,9 +489,9 @@ class GrpcRunExecDbTest {
         supervisorScope {
             val event = async { stub.events(eventsRequest { datasourceName = datasource.name; protocolVersion = CONTROL_PROTOCOL_VERSION }).first() }
             awaitUntil("Events stream attached") { datasource.name in core.proxyEventsHub.attached() }
-            // The proxy heartbeats faster than the no-progress bound but never serves (its backend read is
+            // The proxy heartbeats faster than the no-progress bound but never serves (its target-DB read is
             // wedged though the proxy is alive). Only the absolute open ceiling can end this — a heartbeat is
-            // liveness, not backend progress. Short ceiling so the test is fast.
+            // liveness, not target DB progress. Short ceiling so the test is fast.
             val result = async {
                 runCatching { service.run("wedged-user", datasource, "select 1", 500, noProgressMs = 5_000, openTimeoutMs = 800) }
             }
@@ -689,7 +689,7 @@ class GrpcRunExecDbTest {
             assertEquals("203.0.113.42", core.runRequesterIps.get(tokenHash(ephemeralToken)))
 
             // ONE fake-proxy stream that services N queries then a close — the proof the CP reuses one stream
-            // (one backend connection) across queries rather than dialing fresh per statement.
+            // (one target-DB connection) across queries rather than dialing fresh per statement.
             val proxyRequests = Channel<ProxyRunMsg>(Channel.UNLIMITED)
             val queriesSeen = java.util.Collections.synchronizedList(ArrayList<String>())
             val proxy = async {

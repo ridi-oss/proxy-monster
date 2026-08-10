@@ -1,4 +1,4 @@
-// Package run drives proxy-dialed control-plane channels over dedicated backend sessions.
+// Package run drives proxy-dialed control-plane channels over dedicated target-DB sessions.
 package run
 
 import (
@@ -28,29 +28,29 @@ const (
 // QueryTimeoutMessage is the exact RunError message the proxy sends when a statement is aborted by the
 // PM_QUERY_TIMEOUT watchdog. The control-plane matches it (RunExecService.QUERY_TIMEOUT_MESSAGE) to
 // attribute the failure as a timeout (query.proxy_timeout) instead of a generic execution error — and,
-// crucially, to never report a timed-out statement as a success: some backends (e.g. MySQL SLEEP) return
-// a row when interrupted, so the watchdog's verdict, not the backend's, decides the outcome.
+// crucially, to never report a timed-out statement as a success: some target DBs (e.g. MySQL SLEEP) return
+// a row when interrupted, so the watchdog's verdict, not the target DB's, decides the outcome.
 const QueryTimeoutMessage = "statement aborted: PM_QUERY_TIMEOUT exceeded"
 
 var errQueryTimeout = errors.New(QueryTimeoutMessage)
 
 type runStream = spi.RunStream
 
-type backendFactory func(ctx context.Context, token string, connectionID []byte, guard engine.ExecGuard) (spi.BackendSession, error)
+type targetDbFactory func(ctx context.Context, token string, connectionID []byte, guard engine.ExecGuard) (spi.TargetDbSession, error)
 
 type Runner struct {
 	client       spi.RunClient
-	factory      backendFactory
+	factory      targetDbFactory
 	queryTimeout time.Duration
 }
 
-func NewRunner(client spi.RunClient, dbImpl engine.Db, backend spi.BackendTarget, provider spi.Provider, queryTimeout time.Duration) *Runner {
+func NewRunner(client spi.RunClient, dbImpl engine.Db, targetDb spi.TargetDb, provider spi.Provider, queryTimeout time.Duration) *Runner {
 	if queryTimeout == 0 {
 		queryTimeout = defaultQueryTimeout
 	}
 	readTimeout := queryTimeout + runSocketTimeoutGrace
-	factory := func(ctx context.Context, token string, connectionID []byte, guard engine.ExecGuard) (spi.BackendSession, error) {
-		return provider.NewRunSession(ctx, backend, dbImpl, client, token, connectionID, guard, readTimeout)
+	factory := func(ctx context.Context, token string, connectionID []byte, guard engine.ExecGuard) (spi.TargetDbSession, error) {
+		return provider.NewRunSession(ctx, targetDb, dbImpl, client, token, connectionID, guard, readTimeout)
 	}
 	return &Runner{client: client, factory: factory, queryTimeout: queryTimeout}
 }
@@ -73,7 +73,7 @@ func (r *Runner) Run(open spi.RunOpen, draining <-chan struct{}) {
 	// (~26s) target-DB open. The session id is the stream's first frame, so the control-plane attaches at
 	// once and EVERY failure below is attributable to this run rather than an unmatched stream it must wait
 	// out. RunProgress heartbeats keep its no-progress bound alive through the open; RunServing (below) then
-	// tells it the backend is ready for the query.
+	// tells it the target DB is ready for the query.
 	ready := &pb.RunReady{SessionId: open.SessionID}
 	if stream.Send(&pb.ProxyRunMsg{Kind: &pb.ProxyRunMsg_SessionReady{SessionReady: ready}}) != nil {
 		return
@@ -90,7 +90,7 @@ func (r *Runner) Run(open spi.RunOpen, draining <-chan struct{}) {
 		return
 	}
 
-	var sess spi.BackendSession
+	var sess spi.TargetDbSession
 	guard := func(exec func() error) error {
 		cancelDone := make(chan struct{})
 		var timedOut atomic.Bool
@@ -105,7 +105,7 @@ func (r *Runner) Run(open spi.RunOpen, draining <-chan struct{}) {
 		if !timer.Stop() {
 			<-cancelDone
 		}
-		// The watchdog fired: report a timeout regardless of what the backend returned, so an interrupted
+		// The watchdog fired: report a timeout regardless of what the target DB returned, so an interrupted
 		// statement is never surfaced as a completed one (the receive on cancelDone above orders this read
 		// after the Store). timedOut is only ever set on that path, so an ordinary finish reads false.
 		if timedOut.Load() {
@@ -114,7 +114,7 @@ func (r *Runner) Run(open spi.RunOpen, draining <-chan struct{}) {
 		return err
 	}
 	// Read the inbound before the (~26s) target-DB open — not after RunServing — so a RunClose the
-	// control-plane sends during the open, or a drain, aborts it instead of finishing a backend handshake for
+	// control-plane sends during the open, or a drain, aborts it instead of finishing a target-DB handshake for
 	// a run nobody is waiting for.
 	messages = receiveRunMessages(ctx, stream)
 	sess = r.openTargetDb(ctx, stream, messages, draining, open, guard)
@@ -185,25 +185,25 @@ func (r *Runner) Run(open spi.RunOpen, draining <-chan struct{}) {
 	}
 }
 
-// openTargetDb dials + authenticates the backend and runs the on-open catalog fetch, while keeping the run stream
+// openTargetDb dials + authenticates the target DB and runs the on-open catalog fetch, while keeping the run stream
 // alive with RunProgress heartbeats and concurrently watching the inbound and the drain. It returns the ready
 // session, or nil if the open failed or was aborted; on every nil return it has already released the reserved
-// connection (and, for a genuine backend failure, sent the RunError), so the caller only sends RunServing.
+// connection (and, for a genuine target-DB failure, sent the RunError), so the caller only sends RunServing.
 //
 // The open runs in its own goroutine under a cancellable child context — the ONLY writer to that context —
 // while this loop is the ONLY sender on the stream (the heartbeat), so neither the gRPC stream nor the open
-// contends. An early RunClose (the browser navigated away before the backend was ready), a closed or broken
-// stream, or a drain cancels the child context and returns at once; the in-flight backend dial / auth /
+// contends. An early RunClose (the browser navigated away before the target DB was ready), a closed or broken
+// stream, or a drain cancels the child context and returns at once; the in-flight target DB dial / auth /
 // catalog reads unwind on the cancel rather than finishing a handshake for a run nobody is waiting for, and
 // the open is reaped in the background (see abort). A close or drain that lands just as the open completes
 // still fails the open (the post-completion re-check) so a live session is never installed on an abandoned
 // run or a departing proxy — the editor re-homes to the replacement rather than onto a stream about to die.
-func (r *Runner) openTargetDb(ctx context.Context, stream runStream, messages <-chan *pb.ControlRunMsg, draining <-chan struct{}, open spi.RunOpen, guard engine.ExecGuard) spi.BackendSession {
+func (r *Runner) openTargetDb(ctx context.Context, stream runStream, messages <-chan *pb.ControlRunMsg, draining <-chan struct{}, open spi.RunOpen, guard engine.ExecGuard) spi.TargetDbSession {
 	openCtx, cancelOpen := context.WithCancel(ctx)
 	defer cancelOpen()
 
 	type openResult struct {
-		sess    spi.BackendSession
+		sess    spi.TargetDbSession
 		err     error
 		errWhat string
 	}
@@ -211,7 +211,7 @@ func (r *Runner) openTargetDb(ctx context.Context, stream runStream, messages <-
 	go func() {
 		sess, err := r.factory(openCtx, open.Token, open.ConnectionID, guard)
 		if err != nil {
-			done <- openResult{err: err, errWhat: "backend connection failed: "}
+			done <- openResult{err: err, errWhat: "target-DB connection failed: "}
 			return
 		}
 		if err := sess.OnOpen(openCtx, open.OnOpen); err != nil {
@@ -222,10 +222,10 @@ func (r *Runner) openTargetDb(ctx context.Context, stream runStream, messages <-
 	}()
 
 	// abort cancels the in-flight open and, in the background, reaps it and releases the reserved connection.
-	// The cancel unwinds the backend dial/auth/catalog reads at once; a catalog push RPC to the control-plane
+	// The cancel unwinds the target DB dial/auth/catalog reads at once; a catalog push RPC to the control-plane
 	// is not cancellable here and runs to its own deadline, so the reap runs off the hot path rather than
 	// making the drain/close wait out that deadline (and the follow-on connection-release RPC).
-	abort := func() spi.BackendSession {
+	abort := func() spi.TargetDbSession {
 		cancelOpen()
 		go func() {
 			res := <-done
@@ -322,7 +322,7 @@ func receiveRunMessages(ctx context.Context, stream runStream) <-chan *pb.Contro
 	return messages
 }
 
-func (r *Runner) cancelSession(sess spi.BackendSession) {
+func (r *Runner) cancelSession(sess spi.TargetDbSession) {
 	if err := sess.Cancel(); err != nil {
 		slog.Warn("run query cancellation failed", "error", err)
 	}
@@ -334,7 +334,7 @@ func (r *Runner) closeConnection(sessionID string, connectionID []byte) {
 	}
 }
 
-func (r *Runner) handleQuery(sess spi.BackendSession, stream runStream, query *pb.RunQuery) bool {
+func (r *Runner) handleQuery(sess spi.TargetDbSession, stream runStream, query *pb.RunQuery) bool {
 	maxRows := int(query.GetMaxRows())
 	if maxRows == 0 {
 		maxRows = defaultMaxRows

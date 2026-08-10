@@ -13,7 +13,7 @@ Aurora deployments of those series — Aurora PostgreSQL 16 and 17, Aurora MySQL
 3.x (MySQL 8.0-compatible) and Aurora MySQL 8.4. (The repo's
 `docker-compose.yml` vanilla PostgreSQL 17 / MySQL 8.4 are the offline CI
 substrate; the manifests are keyed by engine major series, so the same manifest
-serves a vanilla and an Aurora backend of that series.) The format supports
+serves a vanilla and an Aurora target DB of that series.) The format supports
 additional release series without code changes.
 
 Aurora is not vanilla, so each manifest also classifies the Aurora-proprietary
@@ -345,7 +345,7 @@ server-file/program forms of `COPY`, which are also `exception.unmaskable`,
 since policy cannot make an unimplemented relay work.
 
 `SET_ROLE` and `SET_SESSION_AUTHORIZATION` are `system:critical` because they
-change which backend identity and namespace future statements bind under
+change which target DB identity and namespace future statements bind under
 ([statement-facts-contract.md](./statement-facts-contract.md)).
 `SET_STANDARD_CONFORMING_STRINGS` joins them: it changes how the server lexes
 string literals, which changes what a later statement means. `USER_TYPE_CAST`
@@ -584,7 +584,7 @@ Utility::"acme-mysql/SHOW_PROCESSLIST"
 
 The key is datasource / canonical command id, outside the SQL catalog/schema
 namespace, so a quoted user schema or function cannot collide with it. The
-resource is logical only and is never passed to the backend as an object name.
+resource is logical only and is never passed to the target DB as an object name.
 Transaction control and connection plumbing stay in their own structural path.
 Ordinary metadata SHOWs (`SHOW TABLES`, `SHOW CREATE TABLE`, …) carry no utility
 grant; their kind (a metadata kind Cedar maps to `stmt.cat.metadata`) is
@@ -616,8 +616,9 @@ at runtime.
 
 ### Version selection
 
-Catalog introspection records the backend's parsed engine release. Selection is
-by release series: PostgreSQL major (`17`) and MySQL LTS/release family (`8.4`).
+Catalog introspection records the target DB's parsed engine release. Selection
+is by release series: PostgreSQL major (`17`) and MySQL LTS/release family
+(`8.4`).
 
 - exact supported series → select its manifest;
 - newer patch/minor within the series → use the series manifest; unmatched new
@@ -633,7 +634,7 @@ that an untested engine major is certified.
 
 ### Introspection
 
-The proxy introspects every schema the backend reports — a plain
+The proxy introspects every schema the target DB reports — a plain
 `information_schema.columns` scan with no exclusions, system schemas included —
 and pushes the columns over gRPC `PushCatalog` into
 `DatasourceStore.storePushedCatalog`, which persists the real
@@ -641,7 +642,7 @@ catalog/schema/table/column identities the MappingSchema needs. Excluding a
 system schema here would be the shadowing leak
 [schema-threading-problem.md](./schema-threading-problem.md) describes: a system
 table absent from the mapping resolves to a user table of the same name while
-the backend binds the system one. Refresh follows the connection-model
+the target DB binds the system one. Refresh follows the connection-model
 snapshot/SWR path; system-schema breadth never adds a synchronous per-query
 catalog scan or blocks existing connections on a full refresh. The manifest does
 not write system tags into `column_classification`; the object identity is
@@ -694,7 +695,7 @@ listed under [Verification](#verification) — nothing more. In particular:
 - there is no committed inventory of any engine version's system objects;
 - no test enumerates a live server's catalog and compares it against a manifest;
   the DB-backed tests exercise specific statements against a Testcontainers
-  backend, they do not sweep the engine's system surface; and
+  target DB, they do not sweep the engine's system surface; and
 - no CI job diffs a manifest against a new engine release. The only
   classification-related CI is `mise run verify`, which runs those same tests.
 
@@ -770,8 +771,8 @@ means rather than which statements pass.
 - immutable JSON manifest files per engine release series;
 - a validated in-process `SystemClassifier` per series, and a combined checksum
   over the bundle;
-- `datasource.engine_version`, the raw backend version string the proxy pushed,
-  which is what manifest resolution keys off;
+- `datasource.engine_version`, the raw target DB version string the proxy
+  pushed, which is what manifest resolution keys off;
 - canonical Utility grants and manifest command/tag mappings;
 - `catalog_column` as the physical column inventory, including the system
   schemas; and

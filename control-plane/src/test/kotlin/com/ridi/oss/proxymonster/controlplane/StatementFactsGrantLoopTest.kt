@@ -357,7 +357,7 @@ class StatementFactsGrantLoopTest {
     @Test
     fun `session rewrite rides the passthrough on persistent-connection channels`() {
         // The analyzer's results-charset pin (issue #81) is emitted as a rewrite on a session SET; it must
-        // survive the session passthrough so the data plane relays utf8mb4 to the backend. Denied channels
+        // survive the session passthrough so the data plane relays utf8mb4 to the target DB. Denied channels
         // (MCP/workflow) never execute the SET, so no rewrite reaches them.
         val pinned = statementFacts {
             resolved = true

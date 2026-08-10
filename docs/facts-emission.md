@@ -140,7 +140,7 @@ each read `orders` and expose at least its existence and cardinality, so
 `orders` must be a Table resource even when no Column fact covers it.
 
 The analyzer walks each resolved scope's source map and emits a Table fact only
-when the source resolves to a physical backend relation. A CTE, derived table,
+when the source resolves to a physical target-DB relation. A CTE, derived table,
 table-valued expression, or alias is not a physical Table; the walk recurses
 into its scope and emits the physical relations it reads. This reuses the
 analyzer's scope resolution (`analyzer/probe/relation.go`) rather than
@@ -148,10 +148,10 @@ collecting SQL names and subtracting a CTE-name set — that distinction is the
 safety property:
 
 ```sql
--- The outer orders is a CTE; the backend table is not read → no Table fact.
+-- The outer orders is a CTE; the target-DB table is not read → no Table fact.
 WITH orders AS (SELECT 1) SELECT count(*) FROM orders;
 
--- The CTE body resolves orders against the backend table → it is emitted.
+-- The CTE body resolves orders against the target-DB table → it is emitted.
 WITH orders AS (SELECT count(*) AS c FROM orders) SELECT c FROM orders;
 ```
 
@@ -278,8 +278,8 @@ action; apply the dangerous-function and `exception.unanalyzable` gates for an
 unresolved statement; then authorize classified functions, Columns, and
 uncovered Tables. An EXPLAIN that would MASK is denied. For any remaining MASK
 verdict, the control-plane checks `exception.unmaskable` and carries the result
-as a capability flag for the proxy. Every gate runs before the backend receives
-the statement.
+as a capability flag for the proxy. Every gate runs before the target DB
+receives the statement.
 
 Assuming `datasource.connect` and the `stmt.kind.select` gate pass:
 

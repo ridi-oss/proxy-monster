@@ -117,8 +117,8 @@ data class SchemaThreadingFixture(
             c.autoCommit = false
             try {
                 val count = c.createStatement().use { it.executeUpdate(sql) }
-                assertTrue(count > 0, "expected a row-affecting backend UPDATE, count=$count: $sql")
-                assertEquals(after, readSsn(c, table), "the backend did not execute the claimed mutation: $sql")
+                assertTrue(count > 0, "expected a row-affecting target DB UPDATE, count=$count: $sql")
+                assertEquals(after, readSsn(c, table), "the target DB did not execute the claimed mutation: $sql")
             } finally {
                 c.rollback()
             }
@@ -352,7 +352,7 @@ object SchemaThreadingFixtures {
     }
 }
 
-/** Shared live-backend contract, run once against PostgreSQL and once against MySQL. */
+/** Shared live-target DB contract, run once against PostgreSQL and once against MySQL. */
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 abstract class SchemaThreadingDbContract {
     protected lateinit var fx: SchemaThreadingFixture
@@ -440,7 +440,7 @@ abstract class SchemaThreadingDbContract {
     }
 
     @Test
-    fun `protected bare-target update is valid and mutating on the backend but enforcement denies it`() {
+    fun `protected bare-target update is valid and mutating on the target DB but enforcement denies it`() {
         val sql = fx.protectedUpdateSql()
         fx.executeRolledBack(sql, fx.defaultTable, fx.defaultSsn, "${fx.defaultSsn}-blocked")
 
@@ -581,7 +581,7 @@ class SchemaThreadingPostgresDbTest : SchemaThreadingDbContract() {
                     }
                     st.executeQuery("select ssn from ${fx.analyticsTable} where id = 1").use { rs ->
                         assertTrue(rs.next(), "missing seeded row in ${fx.analyticsTable}")
-                        assertEquals(fx.defaultSsn, rs.getString(1), "the backend did not persist the protected value in the transaction")
+                        assertEquals(fx.defaultSsn, rs.getString(1), "the target DB did not persist the protected value in the transaction")
                     }
                 }
             } finally {
@@ -605,7 +605,7 @@ class SchemaThreadingPostgresDbTest : SchemaThreadingDbContract() {
     @Test
     fun `system catalogs are introspected as first-class resources, not shadowed`() {
         // pg_catalog is on the effective search path, so excluding it from the
-        // mapping makes a bare name the backend binds there fall through to a user schema (shadow
+        // mapping makes a bare name the target DB binds there fall through to a user schema (shadow
         // leak). System schemas must be introspected — this assertion fails if the NOT IN (...)
         // exclusion is re-added.
         val schemas = fx.datasourceStore.catalog(fx.datasource.id).map { it.schema }.toSet()

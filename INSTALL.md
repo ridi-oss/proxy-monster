@@ -150,19 +150,19 @@ configured per proxy under `PM_TARGET_*`.
   `6033` (MySQL) · `6432` (PG).
 - `PM_TARGET_HOST` / `_PORT` / `_DB` / `_USER` / `_PASSWORD` — _optional with
   local defaults_ (`localhost` · engine default port · `acme` · `acme` ·
-  `acme`). In production set all five to the backend this proxy fronts (VPC
+  `acme`). In production set all five to the target DB this proxy fronts (VPC
   peering in the AWS layout below). Example: `prod-db.prod-vpc.internal` ·
   `5432` · `appdb` · `pmproxy`
 - `PM_CONTROL_PLANE_GRPC` — _optional_. CP gRPC address `host:port`. Default
   `localhost:9090`. Production example: `pm-cp.pm.internal:9090`
 - `PM_ADVERTISE_ADDR` — _optional, no default_. The client-facing `host:port` a
   wire client dials to reach _this_ proxy — distinct from `PM_TARGET_*` (the
-  upstream backend). The proxy registers it with the CP, which hands it to pmon
-  as each datasource's connect address. The proxy cannot guess it, so there is
-  no default: leave it unset and pmon discovers the datasource but cannot broker
-  it (`pmon status` lists it with the reason "no advertised proxy address"). It
-  must parse as `host:port` with a port in 1-65535 or the proxy refuses to
-  start. Example: `127.0.0.1:6033` locally ·
+  upstream target DB). The proxy registers it with the CP, which hands it to
+  pmon as each datasource's connect address. The proxy cannot guess it, so there
+  is no default: leave it unset and pmon discovers the datasource but cannot
+  broker it (`pmon status` lists it with the reason "no advertised proxy
+  address"). It must parse as `host:port` with a port in 1-65535 or the proxy
+  refuses to start. Example: `127.0.0.1:6033` locally ·
   `analytics-prod.pm.example.com:6432` in production
 - `PM_TLS_CERT` / `PM_TLS_KEY` — _optional (both or neither; one alone ⇒ refuses
   to start)_. TLS cert+key file paths for the wire listener. Wire TLS is
@@ -501,17 +501,17 @@ server. Set `PM_MCP_RESOURCE="https://<host>/mcp"` to that public origin. With
 32+ character `PM_SESSION_SECRET`, all `PM_OIDC_*` values, and an OIDC redirect
 URI exactly equal to `https://<host>/auth/oidc/callback`. If a reverse proxy
 terminates TLS in front of control-plane (as any real deployment's will), the
-host the backend sees must equal the host `PM_MCP_RESOURCE` declares:
+host the target DB sees must equal the host `PM_MCP_RESOURCE` declares:
 control-plane's `/mcp` guard compares that host strictly, and only the host. The
-port is never compared — behind a TLS-terminating edge the backend is reached on
-its own cleartext port, and a client's `Host` omits the port whenever it is the
-scheme default, so requiring one would reject every such request. It reads the
-literal `Host` (or HTTP/2 `:authority`) the backend receives, plus
+port is never compared — behind a TLS-terminating edge the target DB is reached
+on its own cleartext port, and a client's `Host` omits the port whenever it is
+the scheme default, so requiring one would reject every such request. It reads
+the literal `Host` (or HTTP/2 `:authority`) the target DB receives, plus
 `X-Forwarded-Host` when the socket peer is listed in `PM_TRUSTED_PROXIES`; there
 is no `ForwardedHeaders`/`XForwardedHeaders` plugin, so nothing else is derived
 from `X-Forwarded-*`. A proxy that forwards the original client-facing hostname
 satisfies this already, whether or not it keeps the port. One that substitutes
-its own backend address in `Host` — an AWS ALB does this unless
+its own target-DB address in `Host` — an AWS ALB does this unless
 `preserve_host_header` is enabled — must either be fixed to preserve it or send
 `X-Forwarded-Host` from a trusted peer, or every `/mcp` call gets a fail-closed
 `403 mcp.invalid_host` instead of the expected `401` OAuth challenge. Configure
@@ -631,8 +631,8 @@ for the store; S3 Object Lock for the WORM trail.
 - pm-vpc (e.g. `10.20.0.0/16`): all ECS services, the ALB (public subnets), the
   NLB, and the Aurora cluster.
 - Peering to `prod-db-vpc` and `dev-db-vpc`: a peering connection to each, a
-  route for `PM_TARGET_HOST` traffic, and the backend DB security group opened
-  to the _proxy_ subnets' CIDRs only. CIDR blocks must not overlap.
+  route for `PM_TARGET_HOST` traffic, and the target-DB security group opened to
+  the _proxy_ subnets' CIDRs only. CIDR blocks must not overlap.
 - A `system:production`-tagged proxy targets a DB in `prod-db-vpc`; a
   `system:development` proxy targets `dev-db-vpc` — same image, different
   `PM_TARGET_*` + peering route + tag.
@@ -997,7 +997,7 @@ aws acm request-certificate --domain-name console.example.com --validation-metho
 aws acm-pca issue-certificate --certificate-authority-arn <pca> --csr fileb://wire.csr \
   --signing-algorithm SHA256WITHRSA --validity Value=365,Type=DAYS   # export → pm/wire-tls-*
 
-# --- VPC peering to a backend-DB VPC + route ---
+# --- VPC peering to a target-DB VPC + route ---
 aws ec2 create-vpc-peering-connection --vpc-id vpc-pm --peer-vpc-id vpc-proddb
 aws ec2 create-route --route-table-id rtb-pm-private \
   --destination-cidr-block 10.30.0.0/16 --vpc-peering-connection-id pcx-xxxx
@@ -1026,4 +1026,4 @@ aws elbv2 create-listener --load-balancer-arn <nlb> --protocol TCP --port 6432 \
   audit window.
 - Non-default `PM_SESSION_SECRET` (≥32) + strong `PM_RESULT_KEY`; all secrets
   via Secrets Manager; task IAM roles over static `AWS_*` keys.
-- Backend-DB security groups admit only the proxy subnets over the VPC peering.
+- Target-DB security groups admit only the proxy subnets over the VPC peering.

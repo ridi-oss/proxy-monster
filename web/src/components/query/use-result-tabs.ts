@@ -118,7 +118,7 @@ export function useResultTabs(datasourceId: number | null, maxRows: number): Res
   const tokenRef = useRef<Record<string, number>>({}) // per-tab fetch token (race guard)
   const newId = () => `t${++idRef.current}`
 
-  // One persistent editor session (one held backend connection) per datasource, so SET/USE/temp
+  // One persistent editor session (one held target-DB connection) per datasource, so SET/USE/temp
   // persist across queries. Opened lazily on the first query and reused; closed on datasource change/unmount.
   const sessionIdRef = useRef<string | null>(null)
   const sessionDsRef = useRef<number | null>(null)

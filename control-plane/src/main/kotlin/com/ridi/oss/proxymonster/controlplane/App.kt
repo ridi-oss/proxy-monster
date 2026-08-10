@@ -71,7 +71,7 @@ import kotlin.time.Duration.Companion.seconds
 /** How often the background sweep deletes expired result rows. */
 private const val RESULT_PURGE_INTERVAL_MS = 15 * 60 * 1000L
 
-/** An editor session idle longer than this is reaped (its proxy stream + backend connection freed).
+/** An editor session idle longer than this is reaped (its proxy stream + target-DB connection freed).
  *  Swept on the same timer as RESULT_PURGE_INTERVAL_MS. */
 private const val EDITOR_SESSION_MAX_IDLE_MS = 30 * 60 * 1000L
 
@@ -443,7 +443,7 @@ fun Application.module(config: Config, core: ControlPlaneCore) {
                 runCatching { queryResultStore.purgeExpired() }
                     .onFailure { environment.log.warn("result purge failed", it) }
             }
-            // Reap editor sessions idle past the cutoff — releases the held proxy stream + backend
+            // Reap editor sessions idle past the cutoff — releases the held proxy stream + target DB
             // connection + revokes the per-session token, so an abandoned editor tab doesn't pin resources.
             runCatching { runExecService.sweepIdleSessions(EDITOR_SESSION_MAX_IDLE_MS) }
                 .onFailure { environment.log.warn("editor session idle sweep failed", it) }
@@ -694,7 +694,7 @@ fun Application.module(config: Config, core: ControlPlaneCore) {
 
         // Enforcing SQL query endpoint (deny + result masking; effective roles come from RoleResolver).
         queryRoutes(config, datasourceStore, queryHistoryStore, runExecService)
-        // Persistent editor sessions (one held proxy stream / backend connection per session)
+        // Persistent editor sessions (one held proxy stream / target-DB connection per session)
         // whose submits run async as auto-approved EDITOR tasks with saved, task.assume-gated results.
         editorSessionRoutes(
             config, datasourceStore, accessStore, queryResultStore, policyStore, userGroupStore,

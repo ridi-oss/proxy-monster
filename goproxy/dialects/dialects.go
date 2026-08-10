@@ -20,7 +20,7 @@ type pgProvider struct{}
 
 func (mysqlProvider) Dialect() engine.Dialect { return engine.MySQL }
 func (mysqlProvider) NewDb() engine.Db        { return db.MySqlDb{} }
-func (mysqlProvider) OpenTarget(target spi.BackendTarget) (*sql.DB, error) {
+func (mysqlProvider) OpenTarget(target spi.TargetDb) (*sql.DB, error) {
 	return introspect.OpenMySQLTarget(target)
 }
 func (mysqlProvider) ProbeNamespace(conn *sql.Conn, targetDb string) ([]string, *int32, error) {
@@ -36,16 +36,16 @@ func (p mysqlProvider) ReadTableDetail(conn *sql.Conn, schema, table string) (*s
 	}
 	return readMySQLTableDetail(conn, schema, table)
 }
-func (mysqlProvider) NewWireServer(port int, backend spi.BackendTarget, client spi.EnforcementClient, dbImpl engine.Db, tlsProvider func() (*tls.Config, error)) spi.WireServer {
-	return mysqlproxy.New(port, backend, client, dbImpl, tlsProvider)
+func (mysqlProvider) NewWireServer(port int, targetDb spi.TargetDb, client spi.EnforcementClient, dbImpl engine.Db, tlsProvider func() (*tls.Config, error)) spi.WireServer {
+	return mysqlproxy.New(port, targetDb, client, dbImpl, tlsProvider)
 }
-func (mysqlProvider) NewRunSession(ctx context.Context, target spi.BackendTarget, dbImpl engine.Db, client spi.SessionClient, token string, connectionID []byte, guard engine.ExecGuard, readTimeout time.Duration) (spi.BackendSession, error) {
+func (mysqlProvider) NewRunSession(ctx context.Context, target spi.TargetDb, dbImpl engine.Db, client spi.SessionClient, token string, connectionID []byte, guard engine.ExecGuard, readTimeout time.Duration) (spi.TargetDbSession, error) {
 	return mysqlproxy.NewRunSession(ctx, target, dbImpl, client, token, connectionID, guard, readTimeout)
 }
 
 func (pgProvider) Dialect() engine.Dialect { return engine.Postgres }
 func (pgProvider) NewDb() engine.Db        { return db.PgDb{} }
-func (pgProvider) OpenTarget(target spi.BackendTarget) (*sql.DB, error) {
+func (pgProvider) OpenTarget(target spi.TargetDb) (*sql.DB, error) {
 	return introspect.OpenPostgresTarget(target)
 }
 func (pgProvider) ProbeNamespace(conn *sql.Conn, targetDb string) ([]string, *int32, error) {
@@ -61,10 +61,10 @@ func (p pgProvider) ReadTableDetail(conn *sql.Conn, schema, table string) (*spi.
 	}
 	return readPostgresTableDetail(conn, schema, table)
 }
-func (pgProvider) NewWireServer(port int, backend spi.BackendTarget, client spi.EnforcementClient, dbImpl engine.Db, tlsProvider func() (*tls.Config, error)) spi.WireServer {
-	return pgproxy.New(port, backend, client, dbImpl, tlsProvider)
+func (pgProvider) NewWireServer(port int, targetDb spi.TargetDb, client spi.EnforcementClient, dbImpl engine.Db, tlsProvider func() (*tls.Config, error)) spi.WireServer {
+	return pgproxy.New(port, targetDb, client, dbImpl, tlsProvider)
 }
-func (pgProvider) NewRunSession(ctx context.Context, target spi.BackendTarget, dbImpl engine.Db, client spi.SessionClient, token string, connectionID []byte, guard engine.ExecGuard, readTimeout time.Duration) (spi.BackendSession, error) {
+func (pgProvider) NewRunSession(ctx context.Context, target spi.TargetDb, dbImpl engine.Db, client spi.SessionClient, token string, connectionID []byte, guard engine.ExecGuard, readTimeout time.Duration) (spi.TargetDbSession, error) {
 	return pgproxy.NewRunSession(ctx, target, dbImpl, client, token, connectionID, guard, readTimeout)
 }
 
@@ -77,10 +77,10 @@ func Registry() spi.Registry { return registry }
 func For(dialect engine.Dialect) (spi.Provider, error) { return registry.For(dialect) }
 
 var (
-	_ spi.Provider       = mysqlProvider{}
-	_ spi.Provider       = pgProvider{}
-	_ spi.BackendSession = (*mysqlproxy.RunSession)(nil)
-	_ spi.BackendSession = (*pgproxy.RunSession)(nil)
-	_ spi.WireServer     = (*mysqlproxy.Server)(nil)
-	_ spi.WireServer     = (*pgproxy.Server)(nil)
+	_ spi.Provider        = mysqlProvider{}
+	_ spi.Provider        = pgProvider{}
+	_ spi.TargetDbSession = (*mysqlproxy.RunSession)(nil)
+	_ spi.TargetDbSession = (*pgproxy.RunSession)(nil)
+	_ spi.WireServer      = (*mysqlproxy.Server)(nil)
+	_ spi.WireServer      = (*pgproxy.Server)(nil)
 )

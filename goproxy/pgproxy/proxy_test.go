@@ -224,9 +224,9 @@ func startFakeCP(t *testing.T) (*fakeControlPlane, *cp.Client) {
 	return fake, client
 }
 
-func seedBackend(t *testing.T) dbtest.Backend {
+func seedTargetDb(t *testing.T) dbtest.TargetDb {
 	t.Helper()
-	backend := dbtest.Postgres(t)
+	targetDb := dbtest.Postgres(t)
 	seed := dbtest.OpenPostgres(t, "")
 	statements := []string{
 		"CREATE SCHEMA IF NOT EXISTS " + primarySchema,
@@ -245,7 +245,7 @@ func seedBackend(t *testing.T) dbtest.Backend {
 			t.Fatalf("seed statement %q: %v", statement, err)
 		}
 	}
-	return backend
+	return targetDb
 }
 
 type brokerHarness struct {
@@ -256,31 +256,31 @@ type brokerHarness struct {
 
 func startBroker(t *testing.T) *brokerHarness {
 	t.Helper()
-	backend := seedBackend(t)
-	return startBrokerForDB(t, backend, "app")
+	targetDb := seedTargetDb(t)
+	return startBrokerForDB(t, targetDb, "app")
 }
 
-// startBrokerForDB starts a broker whose service-account target points at a specific backend database, so a
+// startBrokerForDB starts a broker whose service-account target points at a specific target database, so a
 // test can exercise a session created under that database's stored GUC defaults (e.g. ALTER DATABASE ...
 // SET standard_conforming_strings=off). The client's requested database is irrelevant — the proxy always
 // dials its configured target.
-func startBrokerForDB(t *testing.T, backend dbtest.Backend, database string) *brokerHarness {
+func startBrokerForDB(t *testing.T, targetDb dbtest.TargetDb, database string) *brokerHarness {
 	t.Helper()
-	return startBrokerForDBSetup(t, backend, database, nil)
+	return startBrokerForDBSetup(t, targetDb, database, nil)
 }
 
-func startBrokerForDBSetup(t *testing.T, backend dbtest.Backend, database string, setup func(*fakeControlPlane)) *brokerHarness {
+func startBrokerForDBSetup(t *testing.T, targetDb dbtest.TargetDb, database string, setup func(*fakeControlPlane)) *brokerHarness {
 	t.Helper()
 	fake, cpClient := startFakeCP(t)
 	if setup != nil {
 		setup(fake)
 	}
-	target := spi.BackendTarget{
-		Host:     backend.Host,
-		Port:     backend.Port,
+	target := spi.TargetDb{
+		Host:     targetDb.Host,
+		Port:     targetDb.Port,
 		Db:       database,
-		User:     backend.User,
-		Password: backend.Password,
+		User:     targetDb.User,
+		Password: targetDb.Password,
 	}
 	server := pgproxy.New(0, target, cpClient, db.PgDb{}, nil)
 	return startBrokerServer(t, fake, server)
@@ -288,15 +288,15 @@ func startBrokerForDBSetup(t *testing.T, backend dbtest.Backend, database string
 
 func startBrokerTLS(t *testing.T) *brokerHarness {
 	t.Helper()
-	backend := seedBackend(t)
+	targetDb := seedTargetDb(t)
 	fake, cpClient := startFakeCP(t)
 	tlsProvider := proxytls.NewReloading("../proxytls/testdata/ec.crt", "../proxytls/testdata/ec-sec1.key")
-	target := spi.BackendTarget{
-		Host:     backend.Host,
-		Port:     backend.Port,
+	target := spi.TargetDb{
+		Host:     targetDb.Host,
+		Port:     targetDb.Port,
 		Db:       "app",
-		User:     backend.User,
-		Password: backend.Password,
+		User:     targetDb.User,
+		Password: targetDb.Password,
 	}
 	server := pgproxy.New(0, target, cpClient, db.PgDb{}, tlsProvider.Current)
 	return startBrokerServer(t, fake, server)
@@ -589,7 +589,7 @@ func TestEmptyStringSsnRoundTripsDistinctFromNullThroughMask(t *testing.T) {
 }
 
 // TestCopyOutResponseFailsClosed guards the relay's COPY backstop: the broker does not support the COPY
-// subprotocol, so a backend CopyOutResponse must fail closed (0A000) rather than desynchronize the wire.
+// subprotocol, so a target DB CopyOutResponse must fail closed (0A000) rather than desynchronize the wire.
 func TestCopyOutResponseFailsClosed(t *testing.T) {
 	h := startBroker(t)
 	h.fake.decideFn = func(*pb.DecisionRequest) (*pb.WireDecision, error) {
@@ -1093,7 +1093,7 @@ func TestStandardConformingStringsOffFailsClosed(t *testing.T) {
 }
 
 // TestNonUTF8ClientEncodingFailsClosed guards the identifier-binding invariant: the engine/control plane
-// read the client's SQL bytes as UTF-8, so a backend session that switches client_encoding away from UTF8
+// read the client's SQL bytes as UTF-8, so a target-DB session that switches client_encoding away from UTF8
 // would let the same bytes bind different objects on each side (a non-ASCII identifier could dodge its
 // mask/deny). client_encoding is GUC_REPORT, so the change is observed before the next statement runs and
 // the relay fails closed. The control plane ALLOWs the SET; the fail-closed is a relay-level backstop.
@@ -1117,12 +1117,12 @@ func TestNonUTF8ClientEncodingFailsClosed(t *testing.T) {
 // The on-change relay guard (TestStandardConformingStringsOffFailsClosed) only fires on a ParameterStatus
 // that ARRIVES after connect; a database whose stored default is standard_conforming_strings=off
 // (ALTER DATABASE ... SET) hands the session that divergent lexer from its very first statement, emitting
-// no on-change frame. The shared backend dial validates the startup ParameterStatus and fails closed at
+// no on-change frame. The shared target DB dial validates the startup ParameterStatus and fails closed at
 // connect, so the broker never admits such a session. Isolated on a dedicated database because the
 // suite-shared container persists across parallel test packages — mutating the "app" default would race
 // them.
 func TestUnsafeStartupStandardConformingStringsFailsClosed(t *testing.T) {
-	backend := dbtest.Postgres(t)
+	targetDb := dbtest.Postgres(t)
 	admin := dbtest.OpenPostgres(t, "")
 	const unsafeDB = "pm_it_scs_off"
 	if _, err := admin.Exec("DROP DATABASE IF EXISTS " + unsafeDB); err != nil {
@@ -1136,25 +1136,25 @@ func TestUnsafeStartupStandardConformingStringsFailsClosed(t *testing.T) {
 		t.Fatalf("set unsafe startup default: %v", err)
 	}
 
-	h := startBrokerForDB(t, backend, unsafeDB)
+	h := startBrokerForDB(t, targetDb, unsafeDB)
 	conn, err := h.connect(t, validToken, true)
 	if err == nil {
 		_ = conn.Close(context.Background())
 		t.Fatal("connect to a standard_conforming_strings=off database succeeded, want fail-closed at connect")
 	}
 	// The dial fails closed inside the service-account handshake, which the broker reports to the client as
-	// backend-unavailable (the specific cause is server-logged); no query is ever admitted.
-	assertPgError(t, err, "08004", "backend unavailable")
+	// target-DB-unavailable (the specific cause is server-logged); no query is ever admitted.
+	assertPgError(t, err, "08004", "target DB unavailable")
 	if requests := h.fake.requests(); len(requests) != 0 {
 		t.Fatalf("Decide requests = %d, want 0 (connection fails closed before any query)", len(requests))
 	}
 }
 
 func TestDisconnectAfterDDLDoesNotAffectSiblingConnection(t *testing.T) {
-	backend := seedBackend(t)
+	targetDb := seedTargetDb(t)
 	connectionIDs := [][]byte{[]byte("session-one-0001"), []byte("session-two-0002")}
 	var minted int
-	h := startBrokerForDBSetup(t, backend, "app", func(fake *fakeControlPlane) {
+	h := startBrokerForDBSetup(t, targetDb, "app", func(fake *fakeControlPlane) {
 		fake.setValidateFunc(func(*pb.ValidateTokenRequest) (*pb.WireIdentity, error) {
 			if minted >= len(connectionIDs) {
 				return nil, status.Error(codes.Internal, "too many sessions")
@@ -1231,8 +1231,8 @@ func eventIndexPG(events []string, target string, occurrence int) int {
 }
 
 func TestOnOpenRunsBeforeFirstReadyAndCloseConnectionRunsOnce(t *testing.T) {
-	backend := seedBackend(t)
-	h := startBrokerForDBSetup(t, backend, "app", func(fake *fakeControlPlane) {
+	targetDb := seedTargetDb(t)
+	h := startBrokerForDBSetup(t, targetDb, "app", func(fake *fakeControlPlane) {
 		fake.setOnOpen(&pb.ProxyCommand{
 			Command: &pb.ProxyCommand_Refetch{Refetch: &pb.Refetch{Schema: primarySchema}},
 		})
@@ -1255,8 +1255,8 @@ func TestOnOpenRunsBeforeFirstReadyAndCloseConnectionRunsOnce(t *testing.T) {
 }
 
 func TestOnOpenPushFailureRefusesConnectionAndClosesControlPlaneState(t *testing.T) {
-	backend := seedBackend(t)
-	h := startBrokerForDBSetup(t, backend, "app", func(fake *fakeControlPlane) {
+	targetDb := seedTargetDb(t)
+	h := startBrokerForDBSetup(t, targetDb, "app", func(fake *fakeControlPlane) {
 		fake.setOnOpen(&pb.ProxyCommand{
 			Command: &pb.ProxyCommand_Refetch{Refetch: &pb.Refetch{Schema: primarySchema}},
 		})

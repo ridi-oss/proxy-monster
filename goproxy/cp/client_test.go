@@ -460,7 +460,7 @@ func TestRegisterAndPushCatalog(t *testing.T) {
 	fake := &fakeControlPlane{}
 	c := startFakeControlPlane(t, fake)
 	chain := "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n"
-	if err := c.Register(enginepb.Engine_MYSQL, "backend", 3306, "app", []string{"tag"}, "127.0.0.1:6033", &chain, true); err != nil {
+	if err := c.Register(enginepb.Engine_MYSQL, "target DB", 3306, "app", []string{"tag"}, "127.0.0.1:6033", &chain, true); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
 	catalog := &pb.CatalogRequest{Columns: []*pb.Column{{Schema: "s", Table: "t", Column: "c"}}}
@@ -505,7 +505,7 @@ func TestRegisterRejectsIncompatibleControlPlaneVersion(t *testing.T) {
 	bad := ProtocolVersion + 1
 	fake := &fakeControlPlane{registerRespVersion: &bad}
 	c := startFakeControlPlane(t, fake)
-	err := c.Register(enginepb.Engine_MYSQL, "backend", 3306, "app", nil, "", nil, false)
+	err := c.Register(enginepb.Engine_MYSQL, "target DB", 3306, "app", nil, "", nil, false)
 	if !errors.Is(err, ErrIncompatibleControlPlane) {
 		t.Fatalf("Register against a version-skewed control plane must return ErrIncompatibleControlPlane: %v", err)
 	}
@@ -522,7 +522,7 @@ func TestRegisterTreatsControlPlaneRejectionAsIncompatible(t *testing.T) {
 		"proxy wire-protocol version 1 is incompatible with this control-plane's version 2 — deploy the proxy and control-plane from the same server-v* release",
 	)}
 	c := startFakeControlPlane(t, fake)
-	err := c.Register(enginepb.Engine_MYSQL, "backend", 3306, "app", nil, "", nil, false)
+	err := c.Register(enginepb.Engine_MYSQL, "target DB", 3306, "app", nil, "", nil, false)
 	if !errors.Is(err, ErrIncompatibleControlPlane) {
 		t.Fatalf("a control-plane version rejection must surface as ErrIncompatibleControlPlane: %v", err)
 	}
@@ -690,7 +690,7 @@ func TestEventsLoopReconnectsFastOnDrain(t *testing.T) {
 }
 
 // holdOpenControlPlane never returns from Events, standing in for a control plane the proxy can reach but
-// which will never send anything — the shape a stream left pointing at a replaced backend takes.
+// which will never send anything — the shape a stream left pointing at a replaced target DB takes.
 type holdOpenControlPlane struct {
 	pb.UnimplementedControlPlaneServer
 	mu    sync.Mutex

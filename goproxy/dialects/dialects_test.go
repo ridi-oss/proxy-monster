@@ -38,7 +38,7 @@ func TestRegistryProviderContracts(t *testing.T) {
 			if got := provider.NewDb(); got != test.wantDb {
 				t.Errorf("NewDb() = %#v, want %#v", got, test.wantDb)
 			}
-			server := provider.NewWireServer(0, spi.BackendTarget{}, nil, provider.NewDb(), nil)
+			server := provider.NewWireServer(0, spi.TargetDb{}, nil, provider.NewDb(), nil)
 			switch test.dialect {
 			case engine.MySQL:
 				if reflect.TypeOf(server).String() != "*mysqlproxy.Server" {
@@ -107,7 +107,7 @@ func TestNewWireServerStartsExpectedProtocol(t *testing.T) {
 	for _, dialect := range []engine.Dialect{engine.MySQL, engine.Postgres} {
 		t.Run(dialect.WireName(), func(t *testing.T) {
 			provider, _ := dialects.For(dialect)
-			server := provider.NewWireServer(0, spi.BackendTarget{}, nil, provider.NewDb(), nil)
+			server := provider.NewWireServer(0, spi.TargetDb{}, nil, provider.NewDb(), nil)
 			starter, ok := server.(interface {
 				Listen() error
 				Serve() error

@@ -62,7 +62,7 @@ message EngineConfig {
   // MySQL's server-level lower_case_table_names setting (0..2), required for MySQL. Absent for
   // PostgreSQL, which has no equivalent setting.
   optional int32 mysql_lower_case_table_names = 3;
-  // Whether the backend's live MySQL session sql_mode has ANSI_QUOTES active. When true the analyzer
+  // Whether the target DB's live MySQL session sql_mode has ANSI_QUOTES active. When true the analyzer
   // builds the MySQL dialect with the mysql_ansi_quotes tokenizer state, so `"col"` parses as a quoted
   // IDENTIFIER (a masked column read) rather than a string literal — matching the server, so a masked
   // column quoted with `"` is still masked instead of leaking cleartext. sql_mode is mutable per
@@ -84,7 +84,7 @@ message AnalyzeRequest {
 
 // ---- response side ----
 
-// One physical backend relation the statement scans (docs/facts-emission.md). catalog/schema/table
+// One physical target-DB relation the statement scans (docs/facts-emission.md). catalog/schema/table
 // is the resolved identity; covered is true once at least one traced column fact names this table
 // (see probe.go's SourceInfo doc comment for the full per-table coverage rationale).
 message SourceInfo {
@@ -387,7 +387,7 @@ message StatementFacts {
   // and the zero-or-more result-read grants are separate typed fields below, so the one kind signal cannot
   // be duplicated, and its absence on a resolved fact is structurally distinguishable.
   reserved 6;
-  // Ordered backend output names; RequireResultReadGrant.output_ordinals indexes this exact list.
+  // Ordered target-DB output names; RequireResultReadGrant.output_ordinals indexes this exact list.
   repeated string output_columns = 7;
   // was is_write — the analyzer emits DENY_STATEMENT column dispositions for write payloads directly, so
   // the control-plane needs no separate write flag (it only ever worded a deny message from it).

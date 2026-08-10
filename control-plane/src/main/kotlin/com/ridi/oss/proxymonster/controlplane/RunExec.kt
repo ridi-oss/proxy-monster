@@ -45,18 +45,18 @@ private const val TOKEN_TTL_GRACE_SECONDS = 300L
 // follows is bounded by RUN_NO_PROGRESS_TIMEOUT_MS + RUN_OPEN_TIMEOUT_MS.
 internal const val RUN_DIALBACK_TIMEOUT_MS = 15_000L
 // Once the control-plane knows which run the stream is for, the proxy heartbeats RunProgress while it dials +
-// authenticates the backend and runs its on-open catalog commands, then sends RunServing. The CP waits for
+// authenticates the target DB and runs its on-open catalog commands, then sends RunServing. The CP waits for
 // RunServing under TWO bounds: this no-progress gap — a dead or cut proxy stops heartbeating and fails fast —
-// AND the absolute ceiling below. A heartbeat proves the PROXY is alive, NOT that the backend is advancing, so
-// a proxy blocked on a wedged backend read keeps ticking; RUN_OPEN_TIMEOUT_MS is what bounds that.
+// AND the absolute ceiling below. A heartbeat proves the PROXY is alive, NOT that the target DB is advancing, so
+// a proxy blocked on a wedged target-DB read keeps ticking; RUN_OPEN_TIMEOUT_MS is what bounds that.
 internal const val RUN_NO_PROGRESS_TIMEOUT_MS = 15_000L
 // Absolute ceiling on the whole target-DB open (the dial-back above excluded): even while heartbeats keep the
 // no-progress bound reset, the open cannot exceed this. Sized at the old blind dial budget so a legitimately
-// slow open is not regressed, while a stalled-but-heartbeating one fails here instead of riding the backend
+// slow open is not regressed, while a stalled-but-heartbeating one fails here instead of riding the target DB
 // read-idle timeout — and, being finite, it keeps the run token's TTL grace (which must outlast the open)
 // sufficient.
 internal const val RUN_OPEN_TIMEOUT_MS = 120_000L
-// The table-detail channel keeps a single fixed dial bound (metadata-only introspection, no slow backend
+// The table-detail channel keeps a single fixed dial bound (metadata-only introspection, no slow target DB
 // open with liveness heartbeats), so it is unaffected by the run-channel's dial-back/no-progress split.
 internal const val DIAL_TIMEOUT_MS = 120_000L
 // Fallback only: every production path passes Config.queryExchangeTimeoutMs, which tracks
@@ -219,7 +219,7 @@ class RunExecService(
 
     /**
      * Cancel the in-flight run for [taskId] if one is registered. Under the run's [ActiveRun.gate]: if the
-     * query was already dispatched, a `RunCancel` is sent down its stream (the proxy cancels the backend
+     * query was already dispatched, a `RunCancel` is sent down its stream (the proxy cancels the target DB
      * statement); if it has NOT been dispatched yet, the pending send is vetoed (the run coroutine throws
      * [RunCanceledBeforeStartException]) so the query never leaves the CP. Returns whether a run was found.
      */
@@ -388,7 +388,7 @@ class RunExecService(
 
     // ---- Persistent per-editor-session streams (stateful editor, connection-model.md) ----
     // Unlike run() (one-shot: open→query→close, backing the approval-execute path and /api/query), an editor
-    // SESSION holds ONE proxy-dialed stream — hence one dedicated backend connection — across MANY queries, so
+    // SESSION holds ONE proxy-dialed stream — hence one dedicated target-DB connection — across MANY queries, so
     // SET/USE, temp objects, and BEGIN…COMMIT persist across the session, exactly like a native wire client.
     // This is the path the web SQL editor drives. Enforcement stays PER-STATEMENT (each query re-decides
     // against the connection's live namespace/catalog); a persistent connection is a data-plane fact, not an
@@ -398,7 +398,7 @@ class RunExecService(
 
     /**
      * Open a persistent editor session: mint a per-session EDITOR token, dial one proxy stream, and hold it.
-     * The proxy keeps its dedicated backend connection alive for the life of the session. On any failure to
+     * The proxy keeps its dedicated target-DB connection alive for the life of the session. On any failure to
      * establish, the pending registration, token, and any half-open stream are cleaned up before throwing.
      *
      * [requesterIp] is the requester-IP carrier (see [run]'s doc) — recorded under the session token's hash
@@ -511,7 +511,7 @@ class RunExecService(
                         closeSession(sessionId)
                         throw ProxyRunTimeoutException(e)
                     } catch (e: ProxyRunException) {
-                        // A query-level error — a canceled statement, a backend error — ends the persistent proxy
+                        // A query-level error — a canceled statement, a target-DB error — ends the persistent proxy
                         // session (the run loop returns on any query error), so drop the CP-side session too. The
                         // next submit then reopens a fresh one cleanly instead of failing on a since-dead stream.
                         closeSession(sessionId)
@@ -571,7 +571,7 @@ class RunExecService(
         }
     }
 
-    /** Reap sessions idle longer than [maxIdleMs] (called on a timer) — releases the backend connection. */
+    /** Reap sessions idle longer than [maxIdleMs] (called on a timer) — releases the target-DB connection. */
     fun sweepIdleSessions(maxIdleMs: Long) {
         val cutoffNanos = System.nanoTime() - maxIdleMs * 1_000_000
         openSessions.values.filter { it.lastUsedNanos < cutoffNanos }.forEach { closeSession(it.sessionId) }
@@ -589,8 +589,8 @@ class RunExecService(
      * closed before serving (a redeploy cutting the run) fails at once; a proxy that stops heartbeating fails
      * within [noProgressMs]; and — because a RunProgress heartbeat proves the proxy is alive but NOT that its
      * target-DB open is advancing — a proxy that keeps ticking while its open is wedged fails at the absolute
-     * [openTimeoutMs] ceiling rather than riding the backend read-idle timeout. A terminal RunError during the
-     * open (backend unreachable, catalog init failed) is surfaced as-is. The stream is already matched to
+     * [openTimeoutMs] ceiling rather than riding the target DB read-idle timeout. A terminal RunError during the
+     * open (target DB unreachable, catalog init failed) is surfaced as-is. The stream is already matched to
      * this run (attached), so every one of these is attributable — there is no blind wait, unlike the old
      * pre-RunReady gap.
      */

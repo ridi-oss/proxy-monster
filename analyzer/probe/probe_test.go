@@ -4,9 +4,9 @@ import (
 	"reflect"
 	"testing"
 
+	pb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
 	sqlglot "github.com/ridi-oss/sqlglot-go"
 	exp "github.com/ridi-oss/sqlglot-go/expressions"
-	pb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
 	"google.golang.org/protobuf/proto"
 )
 

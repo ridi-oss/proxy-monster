@@ -10,9 +10,9 @@ import (
 // meant to hide — a conversion/truncation warning promoted to an error, a duplicate-key value, an
 // invalid-character oracle. On a diagnostic-redacted connection the proxy keeps only the machine-readable
 // essno + SQLSTATE and replaces the message with the essno's canonical symbol (see mysqlDiagnosticMessage),
-// a fixed value-free identity looked up from the code — never reconstructed from the backend's text.
+// a fixed value-free identity looked up from the code — never reconstructed from the target DB's text.
 //
-// A CLIENT_PROTOCOL_41 ERR payload (every backend here negotiates 4.1) is:
+// A CLIENT_PROTOCOL_41 ERR payload (every target DB here negotiates 4.1) is:
 //
 //	[0]    0xff header
 //	[1:3]  essno, little-endian

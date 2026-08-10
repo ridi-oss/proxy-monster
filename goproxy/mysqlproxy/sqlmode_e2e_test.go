@@ -10,13 +10,13 @@ import (
 
 // allowAllDecide is the fake-CP verdict for these sql_mode wire tests. The analyzer is not in the loop here,
 // so every statement is ALLOWed and each assertion rides on the proxy's OWN sql_mode observation/forwarding
-// (the masked-read proof against a real ANSI_QUOTES backend + the live analyzer is a control-plane / pm-demo
+// (the masked-read proof against a real ANSI_QUOTES target DB + the live analyzer is a control-plane / pm-demo
 // check, not a wire-layer one).
 func allowAllDecide(*pb.DecisionRequest) (*pb.WireDecision, error) {
 	return wireVerdict(&pb.Verdict{Decision: pb.EnfAction_ALLOW}), nil
 }
 
-// TestAnsiQuotesObservedAndForwarded is the ANSI_QUOTES wire flip against a real MySQL backend: a session
+// TestAnsiQuotesObservedAndForwarded is the ANSI_QUOTES wire flip against a real MySQL target DB: a session
 // that enters ANSI_QUOTES is NO LONGER failed closed. The SET succeeds and every subsequent statement's
 // DecisionRequest carries MysqlAnsiQuotes=true, so the control plane can mask a `"`-quoted column instead of
 // the proxy killing the session. Because the proxy re-probes sql_mode before every statement, the flip is

@@ -37,8 +37,8 @@ forward work. MySQL leads PostgreSQL in priority.
   in between, the update matches nothing and the follow-up read dereferences a
   group that is gone, so the request fails with a 500. Fall through to an insert
   (a true upsert) or return a clean 404/409. Availability, not authorization.
-- MySQL `caching_sha2_password` backend auth. PostgreSQL SCRAM-SHA-256 is done;
-  the MySQL service user still uses `mysql_native_password`.
+- MySQL `caching_sha2_password` target-DB auth. PostgreSQL SCRAM-SHA-256 is
+  done; the MySQL service user still uses `mysql_native_password`.
 - pmon HTTP API auth: today the CLI presents its wire token as a bearer to the
   read-only datasource discovery routes only. Make it a first-class client —
   either an OAuth bearer client of its own, or a reuse of the web session — so
@@ -109,7 +109,7 @@ forward work. MySQL leads PostgreSQL in priority.
 
 ## Task execution
 
-- Retry a task whose execution never reached the backend. A definite refusal
+- Retry a task whose execution never reached the target DB. A definite refusal
   marks the task failed, which is correct, but a transient pre-dial transport
   failure does the same and permanently burns the approval, forcing a fresh
   request and approval. Add a retry affordance, or restore the approved state on
@@ -224,8 +224,8 @@ Fixes for gaps documented in
   authorize a principal's later requests.
 - Canonicalize introspected schema names on the proxy side (case-fold-aware),
   removing the interim MySQL lowercase fold in the control plane.
-- Broker a per-user backend login so `SET PASSWORD` / `SET GLOBAL` stop mutating
-  a shared service account.
+- Broker a per-user target DB login so `SET PASSWORD` / `SET GLOBAL` stop
+  mutating a shared service account.
 - UDF-output vouching: gate a data-reading UDF's output on a masking datasource
   behind an admin assertion, auto-clearing declared-pure functions (low
   priority).
@@ -252,7 +252,7 @@ Fixes for gaps documented in
   portal when its transaction ends; the proxy prunes only on an explicit close
   or a name reuse, so a long-lived connection cycling unique portal names grows
   proxy memory. There is no data path — a stale entry re-decides and then hits
-  the backend's own error. Clearing on transaction end needs either SQL
+  the target DB's own error. Clearing on transaction end needs either SQL
   classification in the proxy, which the stateless-relay contract forbids, or it
   breaks `WITH HOLD` cursors.
 - Validate that the extended protocol's temp-table overlay comes from the
@@ -316,7 +316,7 @@ Fixes for gaps documented in
   and MySQL does not accept a prepared generic `SET` — but the fail-closed
   invariant should hold on this path too: live-probe before EXECUTE for the
   invariant check while keeping the frozen snapshot for authorization.
-- Proxy-side cancel brokering: issue synthetic `BackendKeyData` and broker
+- Proxy-side cancel brokering: issue synthetic `TargetDbKeyData` and broker
   cancels proxy-side, so `CancelRequest` can require TLS without breaking psql's
   Ctrl-C.
 - Wire-cert rotation refresh: a rotated proxy leaf cert only re-advertises its
@@ -330,7 +330,7 @@ Fixes for gaps documented in
   and keeps a fixed socket-inactivity cap, so a direct statement through `pmon`
   is not bounded by it. The relay is a streaming passthrough with no discrete
   per-statement execution to guard, so this needs a per-statement watchdog plus
-  a backend cancel wired into the relay loop, not a value threaded through.
+  a target DB cancel wired into the relay loop, not a value threaded through.
 - Surface a contended daemon lock distinctly. `EnsureDaemon` connects first and
   spawns only on failure, and a daemon that loses the lock exits silently, so
   the caller sees a generic "did not come up" timeout. A caller in a loop

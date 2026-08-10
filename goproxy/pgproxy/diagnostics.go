@@ -7,16 +7,16 @@ import (
 // A PostgreSQL ErrorResponse / NoticeResponse echoes the raw stored value that masking is meant to hide —
 // the DETAIL field alone dumps the whole offending row, including columns the statement never named and
 // columns the principal is denied. On a diagnostic-redacted connection (the control plane's per-decision
-// flag, fresh each Decide) the proxy must not relay those messages verbatim. Every backend error/notice
+// flag, fresh each Decide) the proxy must not relay those messages verbatim. Every target-DB error/notice
 // forward on a client-facing path goes through the two helpers below so the strip is applied in exactly
 // one place per frame type. See docs/diagnostic-redaction.md.
 
-// sanitizeError strips a backend ErrorResponse to what cannot carry a masked/denied value that a restricted
+// sanitizeError strips a target DB ErrorResponse to what cannot carry a masked/denied value that a restricted
 // principal could not otherwise reach:
 //
 //   - Message (the free-form primary text) is replaced with the SQLSTATE's canonical condition name — a
 //     fixed value-free identity looked up from the code (see pgDiagnosticMessage), never reconstructed from
-//     the backend's echoed text. It is the one field an ordinary error (a type conversion) fills with a
+//     the target DB's echoed text. It is the one field an ordinary error (a type conversion) fills with a
 //     value, and its content can't be bounded.
 //   - Detail is dropped: `DETAIL: Failing row contains (…)` prints columns the statement never named — the
 //     one reachable way an ordinary error exposes a masked *sibling* value.
@@ -36,7 +36,7 @@ func sanitizeError(msg *pgproto3.ErrorResponse) *pgproto3.ErrorResponse {
 	return &out
 }
 
-// forwardError sends a backend ErrorResponse to the client, sanitized when the current decision has
+// forwardError sends a target DB ErrorResponse to the client, sanitized when the current decision has
 // diagnostic redaction set, otherwise verbatim.
 func forwardError(sess *session, msg *pgproto3.ErrorResponse) {
 	if sess.qe.SanitizeDiagnostics() {
@@ -46,13 +46,13 @@ func forwardError(sess *session, msg *pgproto3.ErrorResponse) {
 	sess.client.Send(msg)
 }
 
-// forwardNotice sends a backend NoticeResponse to the client — forwarded even on a redacted connection. A
+// forwardNotice sends a target DB NoticeResponse to the client — forwarded even on a redacted connection. A
 // notice carries no value a restricted principal could not otherwise reach: server-generated notices are
 // advisory (object names, DDL, transaction state — never a row value), and the only way to put a value in
 // one is `RAISE NOTICE`, which needs PL/pgSQL and is denied for a restricted principal. A pre-existing
 // trigger / vouched function that RAISEs a NOTICE is the accepted residual — the same one the kept
 // ErrorResponse structural fields carry (see sanitizeError / docs/diagnostic-redaction.md). The copy
-// defends against pgproto3 reusing the backend receive buffer until the next client flush.
+// defends against pgproto3 reusing the target DB receive buffer until the next client flush.
 func forwardNotice(sess *session, msg *pgproto3.NoticeResponse) {
 	copyMessage := *msg
 	sess.client.Send(&copyMessage)

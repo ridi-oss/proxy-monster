@@ -97,7 +97,7 @@ class ProxyEventsHub {
 
     /**
      * Hand [event] to exactly one attached replica. The first non-blocking send that succeeds wins;
-     * broadcasting would make every replica open a backend connection for the same request.
+     * broadcasting would make every replica open a target-DB connection for the same request.
      *
      * A channel that refuses the event is deregistered here rather than left in place. It cannot serve a
      * later request either, and leaving it registered means `attached()` keeps reporting a proxy that
@@ -132,7 +132,7 @@ class ProxyEventsHub {
 
     /**
      * Ask exactly one attached proxy replica to dial a run stream. The first successful non-blocking
-     * send wins; broadcasting would make every replica open a backend connection for the same CP request.
+     * send wins; broadcasting would make every replica open a target-DB connection for the same CP request.
      */
     fun requestOpenRun(
         name: String,

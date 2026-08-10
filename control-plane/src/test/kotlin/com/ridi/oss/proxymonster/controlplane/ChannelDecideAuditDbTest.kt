@@ -135,7 +135,7 @@ class ChannelDecideAuditDbTest {
     @Test
     fun `a session temp resolves and reads unmasked via the overlay, unresolvable without it`() {
         // The proxy sends the connection's temp columns; the CP overlays them so a bare name resolves to
-        // the temp (what the backend binds). A temp is unclassified + owned by the user → read UNMASKED.
+        // the temp (what the target DB binds). A temp is unclassified + owned by the user → read UNMASKED.
         val tempSchema = "pg_temp_9"
         val tempCol = CatalogColumn(
             catalog = fx.datasource.dbName, schema = tempSchema, table = "scratch", column = "secret",

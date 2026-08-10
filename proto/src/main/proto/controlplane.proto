@@ -52,7 +52,7 @@ service ControlPlane {
   rpc Events(EventsRequest) returns (stream ControlEvent);
   // The CP-driven execution channel. PROXY-DIALED bidi: the control-plane nudges the proxy over Events
   // (OpenRunChannel) to open this, so data flows both ways without the control-plane ever dialing into the
-  // proxy. It serves web-editor and workflow execution through the same backend + Decide path, streaming
+  // proxy. It serves web-editor and workflow execution through the same target DB + Decide path, streaming
   // the decision and masked rows back.
   rpc RunExec(stream ProxyRunMsg) returns (stream ControlRunMsg);
   // On-demand admin table-browser introspection. Also PROXY-DIALED: request selectors ride the Events
@@ -170,7 +170,7 @@ message SchemaFragmentPush {
   bytes content_hash = 4;               // the live DB-side hash the proxy just measured for this schema
   bool unchanged = 5;                   // true = live hash matched the REFETCH hash; columns omitted (no-op ack)
   repeated Column columns = 6;          // enforcement-relevant fields; reuses the catalog Column shape
-  uint64 backend_generation = 7;        // backend-connection instance that measured this fragment
+  uint64 backend_generation = 7;        // target-DB-connection instance that measured this fragment
 }
 message SchemaFragmentAck {
   uint64 generation = 1;                // per-connection generation after applying
@@ -190,11 +190,11 @@ message DecisionRequest {
   string client_addr = 5;           // end-client address, for the audit record
   // Per-connection catalog freshness: the session/temp tables live on THIS connection, invisible
   // to the datasource-global catalog. The proxy introspects them off its held connection and sends them so
-  // the control-plane resolves a bare name to the connection's temp (matching what the backend binds) instead
+  // the control-plane resolves a bare name to the connection's temp (matching what the target DB binds) instead
   // of a shadowed real table. Editor-session only; empty for one-shot/wire paths.
   repeated TempColumn temp_columns = 6;
   bytes connection_id = 7;
-  // Whether the backend's live MySQL session sql_mode has ANSI_QUOTES active, observed by the proxy per
+  // Whether the target DB's live MySQL session sql_mode has ANSI_QUOTES active, observed by the proxy per
   // statement (sql_mode is mutable per session). The control-plane forwards it to the analyzer's
   // EngineConfig so `"col"` is parsed as a quoted identifier (a masked column read) rather than a string,
   // letting the proxy relay an ANSI_QUOTES session under masking instead of failing it closed. Absent/false
@@ -207,7 +207,7 @@ message DecisionRequest {
 // creator was entitled to read, so an editor session reading its own temp is safe (elevation is a separate,
 // one-shot path that does not create persistent-session temps).
 message TempColumn {
-  string schema = 1;      // the temp namespace as the backend reports it (e.g. a pg_temp_N schema)
+  string schema = 1;      // the temp namespace as the target DB reports it (e.g. a pg_temp_N schema)
   string table = 2;
   string column = 3;
   string sql_type = 4;
@@ -252,7 +252,7 @@ message Verdict {
   // rejects it fail-closed).
   repeated ProxyCommand after_statement = 8;
   uint64 generation = 9;            // per-connection generation this verdict was computed under
-  // The diagnostic-redaction flag. When set, the proxy strips backend error/notice messages on
+  // The diagnostic-redaction flag. When set, the proxy strips target-DB error/notice messages on
   // this connection down to code + severity + a generic message (docs/diagnostic-redaction.md) — DB
   // diagnostics echo stored values that masking hides, so they are an unmasked side-channel. It is an
   // imperative command the proxy executes mechanically (not statement meaning), evaluated fresh per
@@ -315,21 +315,21 @@ message ProxyRunMsg {
     RunDecision decision = 2;         // the enforcement verdict + UX metadata (before any rows)
     RunResultRows result_rows = 3;    // masked rows (ALLOW/MASK only)
     RunDone done = 4;                 // terminal success (rows_affected for a write)
-    RunError error = 5;               // terminal failure (backend error, unsupported, ...)
+    RunError error = 5;               // terminal failure (target-DB error, unsupported, ...)
     RunProgress progress = 6;         // liveness heartbeat during the target-DB open; resets the CP's no-progress bound
-    RunServing serving = 7;           // the backend is connected and its on-open catalog work is done —
+    RunServing serving = 7;           // the target DB is connected and its on-open catalog work is done —
                                       // the control-plane may now send the query
   }
 }
 message ControlRunMsg {
   oneof kind {
     RunQuery query = 1;
-    RunClose close = 2;   // drop the session's backend connection; the proxy closes the stream
+    RunClose close = 2;   // drop the session's target-DB connection; the proxy closes the stream
     RunCancel cancel = 3; // cancel the in-flight statement out-of-band; a no-op when none is running
   }
 }
 message RunReady { string session_id = 1; }
-// A target-DB open liveness heartbeat: the proxy emits these while dialing + authenticating the backend and
+// A target-DB open liveness heartbeat: the proxy emits these while dialing + authenticating the target DB and
 // running its on-open catalog commands, so the control-plane can bound the open by lack of progress rather
 // than by a blind dial budget. It carries no payload — the control-plane treats every RunProgress purely as
 // "the proxy is still alive".

@@ -45,11 +45,11 @@ message:
   `RAISE`-based vectors are not reachable through the principal's own statement,
   and for an ordinary error the structural / `q` / `W` fields hold object names
   or are empty, not row values. Those fields are kept; the only reachable
-  value-carriers are stripped — the backend's own `M` (conversion) and `D` (the
-  whole-row `DETAIL` dump).
-- The editor/HTTP path also surfaces raw backend errors (`goproxy/run/runner.go`
-  returns the backend error to the control plane), so native-wire handling alone
-  does not cover it.
+  value-carriers are stripped — the target DB's own `M` (conversion) and `D`
+  (the whole-row `DETAIL` dump).
+- The editor/HTTP path also surfaces raw target-DB errors
+  (`goproxy/run/runner.go` returns the target-DB error to the control plane), so
+  native-wire handling alone does not cover it.
 
 ## Why an enumerated denylist is unsafe
 
@@ -98,7 +98,7 @@ keeps the rest:
   (`23514` → `check_violation`), falling back to the 2-char class name (`23` →
   `integrity_constraint_violation`) then a generic string; MySQL to the essno
   symbol (`1146` → `ER_NO_SUCH_TABLE`), generic fallback. It is looked up only
-  by the numeric code, never reconstructed from the backend's echoed text
+  by the numeric code, never reconstructed from the target DB's echoed text
   (truncating at `: '`, stripping quotes) — that would re-open the leak, since a
   crafted value can contain the delimiters. A free-message catch-all code (MySQL
   `1105` `ER_UNKNOWN_ERROR`, which `extractvalue`/`updatexml` abuse) keeps only
@@ -110,13 +110,13 @@ keeps the rest:
   class/generic message — a fail-safe UX default, not the boundary (the strip
   is).
 
-Everything else is kept. For an ordinary backend error the remaining PostgreSQL
-fields hold object names, not row values — the structural `s`/`t`/`c`/`d`/`n`
-(schema/table/column/type/constraint), and the PL/pgSQL context `W`/`q` which
-are simply empty. The only way to put an arbitrary value in any of them is
-`RAISE … USING` or dynamic PL/pgSQL, which needs a `DO`/`CALL`/function and is
-denied for a restricted principal. Keeping them gives a developer the real
-diagnostic —
+Everything else is kept. For an ordinary target-DB error the remaining
+PostgreSQL fields hold object names, not row values — the structural
+`s`/`t`/`c`/`d`/`n` (schema/table/column/type/constraint), and the PL/pgSQL
+context `W`/`q` which are simply empty. The only way to put an arbitrary value
+in any of them is `RAISE … USING` or dynamic PL/pgSQL, which needs a
+`DO`/`CALL`/function and is denied for a restricted principal. Keeping them
+gives a developer the real diagnostic —
 `[23514] check_violation on orders.amount, constraint amount_positive` — instead
 of a bare code. The accepted residual: a pre-existing trigger or vouched
 function that RAISEs a value into one of those fields, fired by an allowed
@@ -145,7 +145,7 @@ restricted-principal threat model.
 MySQL ERR packets keep essno + SQLSTATE and replace the message with the essno
 symbol; MySQL has no structured error fields.
 
-The strip runs where the backend wire is decoded — the native relay
+The strip runs where the target DB wire is decoded — the native relay
 (`goproxy/pgproxy/relay.go`, `goproxy/mysqlproxy/relay.go`, and the PostgreSQL
 extended-protocol `forwardError`/`forwardNotice` in
 `goproxy/pgproxy/diagnostics.go`) and the editor path.

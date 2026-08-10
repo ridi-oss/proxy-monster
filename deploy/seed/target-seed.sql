@@ -1,4 +1,4 @@
--- Sample OLTP schema for the target (brokered) Postgres backend.
+-- Sample OLTP schema for the target (brokered) Postgres database.
 -- Mirrors the catalog the analyzer's parse+lineage tests use, so the same queries run
 -- against a real database here.
 -- PII columns (email, phone, name, ssn, card_number, line1, postal_code) are what the

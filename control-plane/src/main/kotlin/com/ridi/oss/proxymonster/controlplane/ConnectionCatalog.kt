@@ -15,10 +15,10 @@ private const val CONNECTION_ID_BYTES = 16
 
 /**
  * How long a connection may hold a schema fragment before re-measuring it. This is the backstop for drift the
- * control plane never learned about — DDL run straight against the backend, which no push reports — so it
+ * control plane never learned about — DDL run straight against the target DB, which no push reports — so it
  * bounds how long such a change can go unnoticed.
  *
- * Set above the proxy's ambient refresh interval, which re-reads the whole backend catalog and, through
+ * Set above the proxy's ambient refresh interval, which re-reads the whole target-DB catalog and, through
  * [ConnectionCatalogRegistry.recordAmbientMeasurement], re-measures the pooled fragments it still agrees
  * with. That cycle is what detects out-of-band DDL; this bound is the ceiling for a connection whose
  * schemas the refresh did not confirm, so it only has to sit far enough above the interval that an ordinary
@@ -45,10 +45,10 @@ data class SchemaFragment(val key: PoolKey, val hash: ContentHash, val columns: 
 data class PooledFragment(val fragment: SchemaFragment, val refCount: Int)
 
 /**
- * [measuredNanos] is when THIS datasource's backend was last read and found to hold this content — the
+ * [measuredNanos] is when THIS datasource's target DB was last read and found to hold this content — the
  * evidence a connection inherits when it adopts. It lives here rather than on [PooledFragment] because
  * identical content is pooled once and shared across datasources, while a reading only ever speaks for the
- * backend it came from.
+ * target DB it came from.
  */
 data class Authoritative(
     val hash: ContentHash,
@@ -100,7 +100,7 @@ sealed interface CatalogMutationResult {
 /**
  * Ephemeral, fail-closed enforcement catalog state. The wire exposes datasource/principal/token-kind but no
  * proxy-instance identifier, so [Binding] binds exactly those authoritative fields; backend_generation binds
- * the first backend-connection instance that successfully pushes and thereafter advances monotonically.
+ * the first target-DB-connection instance that successfully pushes and thereafter advances monotonically.
  */
 class ConnectionCatalogRegistry(
     private val clockNanos: () -> Long = System::nanoTime,
@@ -160,9 +160,9 @@ class ConnectionCatalogRegistry(
                 val auth = authoritative[connection.binding.datasourceName to schema]
                 val pooled = auth?.let { pool[it.pooledRef] }
                 // Where a scan cannot vary by connection, content another connection already measured is
-                // this connection's answer too, so it starts from that instead of putting a backend fetch in
+                // this connection's answer too, so it starts from that instead of putting a target-DB fetch in
                 // front of the first query. lastVerifiedNanos carries the original measurement time rather
-                // than now: the staleness gate must keep counting from when the backend was actually read, or
+                // than now: the staleness gate must keep counting from when the target DB was actually read, or
                 // a stream of new connections would refresh the clock forever and the bound would never fire.
                 if (adoptHeldContent && auth != null && pooled != null) {
                     retain(pooled.fragment, 1)
@@ -299,7 +299,7 @@ class ConnectionCatalogRegistry(
             // Authoritative is ACCEPT-ordered (last accepted push wins, via a monotonic epoch), NOT
             // content-monotonic: an accepted push from a lagging read-replica may legitimately set an older
             // content hash. This is a liveness hint, never a correctness input — every connection decides
-            // against exactly what ITS OWN backend binds (freshnessGate re-verifies per connection). Under a
+            // against exactly what ITS OWN target DB binds (freshnessGate re-verifies per connection). Under a
             // primary+replica pool a lagging push can regress this and cause bounded before_decide churn on
             // siblings (each self-heals in one round-trip); damping that is a deferred liveness optimization.
             authoritative[authKey] = Authoritative(pushedHash, key, authoritativeEpoch.incrementAndGet(), now)
@@ -417,7 +417,7 @@ class ConnectionCatalogRegistry(
      * Fold a whole-catalog measurement from the proxy's ambient refresh into this datasource's authoritative
      * entries.
      *
-     * The refresh reads every schema from the backend with the same six fields a fragment holds, so for a
+     * The refresh reads every schema from the target DB with the same six fields a fragment holds, so for a
      * schema whose columns are byte-identical it is a genuine re-measurement of exactly that content — the
      * same evidence a connection's own hash probe produces. Recording it advances the authoritative entry's
      * measurement time, so the staleness gate counts from this reading rather than from the first time the
@@ -426,11 +426,11 @@ class ConnectionCatalogRegistry(
      * Recorded on the authoritative entry, NOT on the pooled fragment: identical system-schema content is
      * pooled once per engine version and shared by every datasource on it ([poolKey]), so writing the time
      * there would let one datasource's refresh vouch for another's schema that nobody read. Freshness is
-     * evidence about one backend; only the content itself is shareable.
+     * evidence about one target DB; only the content itself is shareable.
      *
      * Deliberately narrow: a schema whose columns differ is left untouched, so this can only ever confirm
      * content, never install it. Divergence stays the job of the connection's own probe, which alone knows
-     * what that connection's backend binds.
+     * what that connection's target DB binds.
      *
      * Returns the schemas confirmed, for logging.
      */
@@ -462,7 +462,7 @@ class ConnectionCatalogRegistry(
      * The persisted catalog is already cleared on a retarget, because keeping it would authorize the new
      * target against the old schema. This state is the same hazard: a connection opening afterwards would
      * otherwise adopt structure measured from the database that is no longer there, and decide against a
-     * catalog its backend never had. Dropping the entries makes the next connection measure for itself.
+     * catalog its target DB never had. Dropping the entries makes the next connection measure for itself.
      *
      * Live connections are left alone — each already holds its own reference and re-verifies on its own
      * clock, and tearing their content out mid-session would empty structuralRows under an in-flight

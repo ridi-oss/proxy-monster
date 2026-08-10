@@ -1,7 +1,7 @@
 // Package cp is the proxy's gRPC client to the control plane.
 //
 // The proxy fronts ONE datasource (identified by datasourceName, its stable wire identity) and brokers
-// to the backend itself, so it only needs the verdict + mask spec — it never sends rows to the control
+// to the target DB itself, so it only needs the verdict + mask spec — it never sends rows to the control
 // plane. Per-query enforcement re-sends the RAW token to Decide, which the control plane re-validates
 // every call (closing the mid-session revocation gap): an authN failure (bad/revoked/expired token,
 // deprovisioned principal) comes back as an error the caller fails closed on, distinct from a policy
@@ -71,7 +71,7 @@ const (
 	eventsDrainReconnect = 500 * time.Millisecond
 	// eventsStreamMaxAge bounds how long one Events stream is used before it is replaced. HTTP/2 keepalive
 	// proves the CONNECTION is alive, not that the stream on it still reaches a live control plane: a
-	// load balancer that keeps a connection open toward a replaced backend leaves the proxy holding a
+	// load balancer that keeps a connection open toward a replaced target DB leaves the proxy holding a
 	// stream nothing will ever answer, and because the proxy's other calls are unary they open their own
 	// connections and keep succeeding — so the catalog stays fresh while the control plane reports this
 	// datasource as having no proxy attached, and every query against it is refused. Ending the stream on
@@ -397,7 +397,7 @@ func (c *Client) PushCatalog(catalog *pb.CatalogRequest) error {
 		return fmt.Errorf("cp: push catalog for %q: %w", c.datasourceName, err)
 	}
 	// Paired with introspect.Run's phase breakdown, this closes the refresh cycle: a slow refresh is
-	// either the backend scan or this push, and the two logs together say which.
+	// either the target DB scan or this push, and the two logs together say which.
 	slog.Info("pushed catalog", "datasource", c.datasourceName, "columns", ack.GetColumns(),
 		"push_ms", time.Since(started).Milliseconds())
 	return nil

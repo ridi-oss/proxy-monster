@@ -180,7 +180,7 @@ wire** (auth mechanism). Authoritative: `docs/auth-model.md`.
     `KNOWN_LIMITATIONS.md`; registrar-identity hardening is backlogged). A
     rotated leaf re-advertises on the next register/reconnect resync (immediate
     rotation-refresh is a follow-up).
-- **Broker:** goproxy reaches the backend with a per-datasource **service
+- **Broker:** goproxy reaches the target DB with a per-datasource **service
   account**; the token only proves _who you are_, never _what you can see_ —
   enforcement (§5) and JIT (§7) are independent of how it was obtained.
 
@@ -218,9 +218,9 @@ mechanism). Authoritative: [docs/auth-model.md](docs/auth-model.md).
     [INSTALL.md](INSTALL.md#proxy--one-set-per-datasource). Where pinning does
     and does not cover this hop:
     [KNOWN_LIMITATIONS.md](KNOWN_LIMITATIONS.md#wire-cert-pinning-pmon--proxy).
-- Broker: goproxy reaches the backend with a per-datasource service account; the
-  token only proves _who you are_, never _what you can see_ — enforcement and
-  JIT elevation are independent of how it was obtained.
+- Broker: goproxy reaches the target DB with a per-datasource service account;
+  the token only proves _who you are_, never _what you can see_ — enforcement
+  and JIT elevation are independent of how it was obtained.
 
 Web session lifetime, IdP revalidation, and device-binding:
 [docs/session-lifetime.md](docs/session-lifetime.md).

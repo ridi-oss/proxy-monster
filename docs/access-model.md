@@ -197,7 +197,7 @@ Three things never become Cedar, correctly:
 - Connection / namespace / catalog plumbing — the per-connection model
   enforcement resolves against ([connection-model.md](./connection-model.md)) is
   a data-plane mechanism. Cedar decides over the resolved key; the connection
-  model only makes that key match what the backend binds.
+  model only makes that key match what the target DB binds.
 - Data-plane capability — Cedar can _permit_ an unmaskable feature (COPY,
   fast-path) on a development datasource, but the proxy must be _able_ to relay
   it verbatim. Where it can't, the feature stays denied regardless of policy
@@ -233,9 +233,9 @@ Three things never become Cedar, correctly:
   output passes unmasked ([KNOWN_LIMITATIONS.md](../KNOWN_LIMITATIONS.md);
   backlogged).
 - Shared service account. Permitting `SET PASSWORD`/`SET GLOBAL`
-  (`system:critical`) mutates the _shared_ backend account for everyone; it is
-  fully isolated only once the proxy brokers a per-user backend login. The admin
-  owns the call until then.
+  (`system:critical`) mutates the _shared_ target DB account for everyone; it is
+  fully isolated only once the proxy brokers a per-user target DB login. The
+  admin owns the call until then.
 - Data-plane passthrough for unmaskable features (COPY / fast-path) must be
   built for a Cedar permit to take effect; until then capability denial wins
   regardless of policy.

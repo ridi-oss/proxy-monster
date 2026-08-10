@@ -842,7 +842,7 @@ type EngineConfig struct {
 	// MySQL's server-level lower_case_table_names setting (0..2), required for MySQL. Absent for
 	// PostgreSQL, which has no equivalent setting.
 	MysqlLowerCaseTableNames *int32 `protobuf:"varint,3,opt,name=mysql_lower_case_table_names,json=mysqlLowerCaseTableNames,proto3,oneof" json:"mysql_lower_case_table_names,omitempty"`
-	// Whether the backend's live MySQL session sql_mode has ANSI_QUOTES active. When true the analyzer
+	// Whether the target DB's live MySQL session sql_mode has ANSI_QUOTES active. When true the analyzer
 	// builds the MySQL dialect with the mysql_ansi_quotes tokenizer state, so `"col"` parses as a quoted
 	// IDENTIFIER (a masked column read) rather than a string literal — matching the server, so a masked
 	// column quoted with `"` is still masked instead of leaking cleartext. sql_mode is mutable per
@@ -978,7 +978,7 @@ func (x *AnalyzeRequest) GetEngineConfig() *EngineConfig {
 	return nil
 }
 
-// One physical backend relation the statement scans (docs/facts-emission.md). catalog/schema/table
+// One physical target-DB relation the statement scans (docs/facts-emission.md). catalog/schema/table
 // is the resolved identity; covered is true once at least one traced column fact names this table
 // (see probe.go's SourceInfo doc comment for the full per-table coverage rationale).
 type SourceInfo struct {
@@ -1512,7 +1512,7 @@ type StatementFacts struct {
 	FailedStage *string `protobuf:"bytes,3,opt,name=failed_stage,json=failedStage,proto3,oneof" json:"failed_stage,omitempty"`
 	// Stable diagnostic detail for audit. Empty failure detail is still a denial, never an allow.
 	Detail string `protobuf:"bytes,4,opt,name=detail,proto3" json:"detail,omitempty"`
-	// Ordered backend output names; RequireResultReadGrant.output_ordinals indexes this exact list.
+	// Ordered target-DB output names; RequireResultReadGrant.output_ordinals indexes this exact list.
 	OutputColumns []string `protobuf:"bytes,7,rep,name=output_columns,json=outputColumns,proto3" json:"output_columns,omitempty"`
 	// Safe analyzer rewrite (currently faithful star expansion); absent means relay the client's SQL.
 	RewrittenSql *string `protobuf:"bytes,9,opt,name=rewritten_sql,json=rewrittenSql,proto3,oneof" json:"rewritten_sql,omitempty"`

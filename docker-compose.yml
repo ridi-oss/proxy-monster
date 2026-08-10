@@ -1,7 +1,7 @@
 # Local dev infra for proxy-monster (DESIGN.md).
 #   pm-postgres     — the control-plane's own metadata store (catalog/policy/grants/audit).
-#   target-mysql    — the PRIMARY sample backend the proxy brokers to (MySQL is the main target).
-#   target-postgres — the add-on sample backend (Postgres is secondary).
+#   target-mysql    — the PRIMARY sample target DB the proxy brokers to (MySQL is the main target).
+#   target-postgres — the add-on sample target DB (Postgres is secondary).
 services:
   pm-postgres:
     image: postgres:17.6
@@ -24,7 +24,7 @@ services:
   target-mysql:
     image: mysql:8.4
     # Enable mysql_native_password (disabled by default in 8.4) so the proxy's broker can do a
-    # simple native-password handshake to the backend. (caching_sha2 backend auth is a follow-up.)
+    # simple native-password handshake to the target DB. (caching_sha2 target-DB auth is a follow-up.)
     command: ["--mysql-native-password=ON"]
     environment:
       MYSQL_DATABASE: acme

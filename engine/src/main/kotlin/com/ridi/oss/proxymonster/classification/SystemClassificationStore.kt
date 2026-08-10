@@ -31,7 +31,7 @@ class SystemClassificationStore private constructor(
     val checksum: String,
 ) {
     /**
-     * Resolve the manifest for a datasource. [serverVersion] is the parsed backend release (e.g. `17.9`,
+     * Resolve the manifest for a datasource. [serverVersion] is the parsed target DB release (e.g. `17.9`,
      * `8.0.44`, `8.4.7`). [allowFallback] is the operator opt-in: when false (the safe default), an
      * uncertified major returns null (system schemas stay unavailable); when true, it falls back to the
      * nearest supported major of the same engine.

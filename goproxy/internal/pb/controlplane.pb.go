@@ -836,7 +836,7 @@ type SchemaFragmentPush struct {
 	ContentHash       []byte    `protobuf:"bytes,4,opt,name=content_hash,json=contentHash,proto3" json:"content_hash,omitempty"`                    // the live DB-side hash the proxy just measured for this schema
 	Unchanged         bool      `protobuf:"varint,5,opt,name=unchanged,proto3" json:"unchanged,omitempty"`                                          // true = live hash matched the REFETCH hash; columns omitted (no-op ack)
 	Columns           []*Column `protobuf:"bytes,6,rep,name=columns,proto3" json:"columns,omitempty"`                                               // enforcement-relevant fields; reuses the catalog Column shape
-	BackendGeneration uint64    `protobuf:"varint,7,opt,name=backend_generation,json=backendGeneration,proto3" json:"backend_generation,omitempty"` // backend-connection instance that measured this fragment
+	BackendGeneration uint64    `protobuf:"varint,7,opt,name=backend_generation,json=backendGeneration,proto3" json:"backend_generation,omitempty"` // target-DB-connection instance that measured this fragment
 }
 
 func (x *SchemaFragmentPush) Reset() {
@@ -1065,11 +1065,11 @@ type DecisionRequest struct {
 	ClientAddr     string   `protobuf:"bytes,5,opt,name=client_addr,json=clientAddr,proto3" json:"client_addr,omitempty"` // end-client address, for the audit record
 	// Per-connection catalog freshness: the session/temp tables live on THIS connection, invisible
 	// to the datasource-global catalog. The proxy introspects them off its held connection and sends them so
-	// the control-plane resolves a bare name to the connection's temp (matching what the backend binds) instead
+	// the control-plane resolves a bare name to the connection's temp (matching what the target DB binds) instead
 	// of a shadowed real table. Editor-session only; empty for one-shot/wire paths.
 	TempColumns  []*TempColumn `protobuf:"bytes,6,rep,name=temp_columns,json=tempColumns,proto3" json:"temp_columns,omitempty"`
 	ConnectionId []byte        `protobuf:"bytes,7,opt,name=connection_id,json=connectionId,proto3" json:"connection_id,omitempty"`
-	// Whether the backend's live MySQL session sql_mode has ANSI_QUOTES active, observed by the proxy per
+	// Whether the target DB's live MySQL session sql_mode has ANSI_QUOTES active, observed by the proxy per
 	// statement (sql_mode is mutable per session). The control-plane forwards it to the analyzer's
 	// EngineConfig so `"col"` is parsed as a quoted identifier (a masked column read) rather than a string,
 	// letting the proxy relay an ANSI_QUOTES session under masking instead of failing it closed. Absent/false
@@ -1172,7 +1172,7 @@ type TempColumn struct {
 	sizeCache     protoimpl.SizeCache
 	unknownFields protoimpl.UnknownFields
 
-	Schema  string `protobuf:"bytes,1,opt,name=schema,proto3" json:"schema,omitempty"` // the temp namespace as the backend reports it (e.g. a pg_temp_N schema)
+	Schema  string `protobuf:"bytes,1,opt,name=schema,proto3" json:"schema,omitempty"` // the temp namespace as the target DB reports it (e.g. a pg_temp_N schema)
 	Table   string `protobuf:"bytes,2,opt,name=table,proto3" json:"table,omitempty"`
 	Column  string `protobuf:"bytes,3,opt,name=column,proto3" json:"column,omitempty"`
 	SqlType string `protobuf:"bytes,4,opt,name=sql_type,json=sqlType,proto3" json:"sql_type,omitempty"`
@@ -1422,7 +1422,7 @@ type Verdict struct {
 	// rejects it fail-closed).
 	AfterStatement []*ProxyCommand `protobuf:"bytes,8,rep,name=after_statement,json=afterStatement,proto3" json:"after_statement,omitempty"`
 	Generation     uint64          `protobuf:"varint,9,opt,name=generation,proto3" json:"generation,omitempty"` // per-connection generation this verdict was computed under
-	// The diagnostic-redaction flag. When set, the proxy strips backend error/notice messages on
+	// The diagnostic-redaction flag. When set, the proxy strips target-DB error/notice messages on
 	// this connection down to code + severity + a generic message (docs/diagnostic-redaction.md) — DB
 	// diagnostics echo stored values that masking hides, so they are an unmasked side-channel. It is an
 	// imperative command the proxy executes mechanically (not statement meaning), evaluated fresh per
@@ -2080,7 +2080,7 @@ type ProxyRunMsg_Done struct {
 }
 
 type ProxyRunMsg_Error struct {
-	Error *RunError `protobuf:"bytes,5,opt,name=error,proto3,oneof"` // terminal failure (backend error, unsupported, ...)
+	Error *RunError `protobuf:"bytes,5,opt,name=error,proto3,oneof"` // terminal failure (target-DB error, unsupported, ...)
 }
 
 type ProxyRunMsg_Progress struct {
@@ -2088,7 +2088,7 @@ type ProxyRunMsg_Progress struct {
 }
 
 type ProxyRunMsg_Serving struct {
-	Serving *RunServing `protobuf:"bytes,7,opt,name=serving,proto3,oneof"` // the backend is connected and its on-open catalog work is done —
+	Serving *RunServing `protobuf:"bytes,7,opt,name=serving,proto3,oneof"` // the target DB is connected and its on-open catalog work is done —
 }
 
 func (*ProxyRunMsg_SessionReady) isProxyRunMsg_Kind() {}
@@ -2185,7 +2185,7 @@ type ControlRunMsg_Query struct {
 }
 
 type ControlRunMsg_Close struct {
-	Close *RunClose `protobuf:"bytes,2,opt,name=close,proto3,oneof"` // drop the session's backend connection; the proxy closes the stream
+	Close *RunClose `protobuf:"bytes,2,opt,name=close,proto3,oneof"` // drop the session's target-DB connection; the proxy closes the stream
 }
 
 type ControlRunMsg_Cancel struct {
@@ -2243,7 +2243,7 @@ func (x *RunReady) GetSessionId() string {
 	return ""
 }
 
-// A target-DB open liveness heartbeat: the proxy emits these while dialing + authenticating the backend and
+// A target-DB open liveness heartbeat: the proxy emits these while dialing + authenticating the target DB and
 // running its on-open catalog commands, so the control-plane can bound the open by lack of progress rather
 // than by a blind dial budget. It carries no payload — the control-plane treats every RunProgress purely as
 // "the proxy is still alive".

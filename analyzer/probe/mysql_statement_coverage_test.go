@@ -351,8 +351,8 @@ var mysqlStatements = []mysqlStatement{
 	{"SHOW ENGINE INNODB STATUS", "SHOW ENGINE INNODB STATUS", "stmt.kind.show_engine_status + utility:SHOW_ENGINE_STATUS", pb.StatementKind_STATEMENT_KIND_SHOW_ENGINE_STATUS},
 	{"SHOW BINLOG EVENTS", "SHOW BINLOG EVENTS", "stmt.kind.show_binlog_events + utility:SHOW_BINLOG_EVENTS", pb.StatementKind_STATEMENT_KIND_SHOW_BINLOG_EVENTS},
 	{"SHOW RELAYLOG EVENTS", "SHOW RELAYLOG EVENTS", "stmt.kind.show_relaylog_events + utility:SHOW_RELAYLOG_EVENTS", pb.StatementKind_STATEMENT_KIND_SHOW_RELAYLOG_EVENTS},
-	{"SHOW BINARY LOGS", "SHOW BINARY LOGS", "stmt.kind.show_binary_logs", pb.StatementKind_STATEMENT_KIND_SHOW_BINARY_LOGS},            // GAP: needs REPLICATION CLIENT
-	{"SHOW MASTER STATUS", "SHOW MASTER STATUS", "stmt.kind.show_master_status", pb.StatementKind_STATEMENT_KIND_SHOW_MASTER_STATUS},    // GAP: needs REPLICATION CLIENT
+	{"SHOW BINARY LOGS", "SHOW BINARY LOGS", "stmt.kind.show_binary_logs", pb.StatementKind_STATEMENT_KIND_SHOW_BINARY_LOGS},                  // GAP: needs REPLICATION CLIENT
+	{"SHOW MASTER STATUS", "SHOW MASTER STATUS", "stmt.kind.show_master_status", pb.StatementKind_STATEMENT_KIND_SHOW_MASTER_STATUS},          // GAP: needs REPLICATION CLIENT
 	{"SHOW BINARY LOG STATUS", "SHOW BINARY LOG STATUS", "unanalyzable→exception.unanalyzable", pb.StatementKind_STATEMENT_KIND_STMT_UNKNOWN}, // 8.4 rename; degrades to Command, fails closed (unlike SHOW MASTER STATUS)
 	{"SHOW REPLICA STATUS", "SHOW REPLICA STATUS", "stmt.kind.show_replica_status + utility:SHOW_REPLICA_STATUS", pb.StatementKind_STATEMENT_KIND_SHOW_REPLICA_STATUS},
 	{"SHOW SLAVE STATUS", "SHOW SLAVE STATUS", "stmt.kind.show_replica_status + utility:SHOW_REPLICA_STATUS", pb.StatementKind_STATEMENT_KIND_SHOW_REPLICA_STATUS},

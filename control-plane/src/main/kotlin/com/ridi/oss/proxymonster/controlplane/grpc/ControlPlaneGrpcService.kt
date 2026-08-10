@@ -82,7 +82,7 @@ private const val TABLE_DETAIL_STREAM_TIMEOUT_MS = 60_000L
 // a server-v* release always ships both at the same value.
 internal const val CONTROL_PROTOCOL_VERSION = 1
 
-// The completion-event terminal statuses the proxy reports: a clean finish, a backend/relay error carrying
+// The completion-event terminal statuses the proxy reports: a clean finish, a target DB/relay error carrying
 // partial counts, or a canceled statement. Any other value is rejected fail-closed so a malformed report
 // can't write an uninterpretable outcome into the audit trail.
 private val COMPLETION_STATUSES = setOf("ok", "error", "canceled")
@@ -92,7 +92,7 @@ private val COMPLETION_STATUSES = setOf("ok", "error", "canceled")
  * trust gates before any column can be read UNMASKED (an overlay column is read without a Cedar grant and
  * skips the uncovered-scan gate, so it is load-bearing that only genuine session temps reach it):
  *  - **channel gate** — temps are only legitimate on the [Channel.EDITOR] path (a persistent editor session
- *    holds the backend connection whose temps these are). A wire / approver-exec decision carrying
+ *    holds the target-DB connection whose temps these are). A wire / approver-exec decision carrying
  *    temp_columns is a buggy or compromised proxy: drop them all rather than grant the unmask on a channel
  *    that was never analyzed for it (the native-wire/one-shot proxies never send temps).
  *  - **pg_temp\* filter** — a temp overlay entry names a schema read unmasked, so it must be an actual
@@ -465,7 +465,7 @@ class ControlPlaneGrpcService(
             engineVersion = request.engineVersion,
             columns = pushedColumns,
         )
-        // This push is a fresh whole-catalog read of the backend, so where it agrees with content the
+        // This push is a fresh whole-catalog read of the target DB, so where it agrees with content the
         // enforcement pool already holds it re-measures that content — the ambient refresh keeps held
         // fragments verified instead of only feeding the config catalog, and a connection is not made to
         // re-probe a schema the proxy just confirmed.

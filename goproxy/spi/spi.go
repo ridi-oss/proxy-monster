@@ -14,8 +14,8 @@ import (
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
 )
 
-// BackendTarget is the per-datasource backend connection details (the service-account broker target).
-type BackendTarget struct {
+// TargetDb is the per-datasource target-DB connection details (the service-account broker target).
+type TargetDb struct {
 	Host     string
 	Port     int
 	Db       string
@@ -54,7 +54,7 @@ type TableDetailStream interface {
 	Recv() (*pb.ControlTableDetailMsg, error)
 }
 
-// SessionClient is the control-plane capability a held backend session needs. The concrete gRPC client
+// SessionClient is the control-plane capability a held target-DB session needs. The concrete gRPC client
 // implements it, while tests can inject a fake without pulling that implementation into the SPI.
 type SessionClient interface {
 	engine.Decider
@@ -93,11 +93,11 @@ type WireServer interface {
 	Drain(ctx context.Context)
 }
 
-// BackendSession is one dedicated run backend session.
-type BackendSession interface {
+// TargetDbSession is one dedicated run target-DB session.
+type TargetDbSession interface {
 	ServeStatement(sql string, maxRows int) (engine.StatementResult, error)
 	// OnOpen runs the on-open catalog fetch. ctx is the target-DB open context: if the control-plane closes the
-	// run (or the proxy drains) while the fetch is in flight, ctx is cancelled and the in-flight backend read
+	// run (or the proxy drains) while the fetch is in flight, ctx is cancelled and the in-flight target-DB read
 	// unwinds at once (a catalog push RPC to the control-plane still runs to its own deadline).
 	OnOpen(ctx context.Context, cmds []*pb.Refetch) error
 	Cancel() error
@@ -182,20 +182,20 @@ type Classification struct {
 	MaskFnName *string  `json:"maskFnName"`
 }
 
-// Provider bundles the per-dialect capabilities (backend connection, wire server, run session,
+// Provider bundles the per-dialect capabilities (target-DB connection, wire server, run session,
 // introspection) used by dialect-neutral consumers. The pure per-dialect facts (registration engine,
 // default ports, placeholder, schema resolution) live on engine.Dialect; a new dialect is one Provider
 // implementation plus one registry row.
 type Provider interface {
 	Dialect() engine.Dialect
 	NewDb() engine.Db
-	OpenTarget(target BackendTarget) (*sql.DB, error)
+	OpenTarget(target TargetDb) (*sql.DB, error)
 	ProbeNamespace(conn *sql.Conn, targetDb string) (defaultSchemas []string, mysqlLowerCaseTableNames *int32, err error)
 	ReadTableDetail(conn *sql.Conn, schema, table string) (*TableDetail, error)
-	NewWireServer(port int, backend BackendTarget, client EnforcementClient, db engine.Db, tlsProvider func() (*tls.Config, error)) WireServer
-	// NewRunSession dials and authenticates the backend. ctx is the target-DB open context: cancelling it aborts
-	// an in-flight dial/auth so a run the control-plane already closed does not finish a backend handshake.
-	NewRunSession(ctx context.Context, target BackendTarget, db engine.Db, client SessionClient, token string, connectionID []byte, guard engine.ExecGuard, readTimeout time.Duration) (BackendSession, error)
+	NewWireServer(port int, targetDb TargetDb, client EnforcementClient, db engine.Db, tlsProvider func() (*tls.Config, error)) WireServer
+	// NewRunSession dials and authenticates the target DB. ctx is the target-DB open context: cancelling it aborts
+	// an in-flight dial/auth so a run the control-plane already closed does not finish a target-DB handshake.
+	NewRunSession(ctx context.Context, target TargetDb, db engine.Db, client SessionClient, token string, connectionID []byte, guard engine.ExecGuard, readTimeout time.Duration) (TargetDbSession, error)
 }
 
 // Registry resolves the canonical PM_ENGINE name to its Provider. Consumers depend on this interface and

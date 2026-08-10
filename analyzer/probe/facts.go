@@ -149,7 +149,7 @@ func EmitFacts(sql string, engineConfig *pb.EngineConfig, sch *schema.Mapping, n
 			facts = unanalyzableFacts("PARSE", fmt.Sprintf("unsupported root %s", exp.ClassName(root.Kind())))
 		}
 	}
-	// The engine may rewrite the statement into what the proxy relays to the backend — MySQL pins
+	// The engine may rewrite the statement into what the proxy relays to the target DB — MySQL pins
 	// `character_set_results = NULL` to utf8mb4 so results stay UTF-8 for the wire masker. Emitted as
 	// rewritten_sql: the data plane relays it while authorization and audit keep the client's original. A
 	// lineage-driven rewrite (the `*`-expansion) already set on an analyzed statement takes precedence.
@@ -292,10 +292,10 @@ func isTemporaryDDL(root exp.Expression, eng engine) bool {
 
 func factsFromProbe(report ProbeResult) *pb.StatementFacts {
 	facts := &pb.StatementFacts{
-		Resolved:       report.Resolved,
-		Detail:         report.Detail,
-		RewrittenSql:   report.RewrittenSQL,
-		Functions:      append([]string(nil), report.Functions...),
+		Resolved:     report.Resolved,
+		Detail:       report.Detail,
+		RewrittenSql: report.RewrittenSQL,
+		Functions:    append([]string(nil), report.Functions...),
 	}
 	if !report.Resolved {
 		facts.FailureClass = pb.FailureClass_FAILURE_CLASS_UNANALYZABLE
@@ -374,7 +374,7 @@ func sessionUtilityFacts(command string) *pb.StatementFacts {
 }
 
 // sessionIdentitySetCommand returns the system-classified Utility command for a structured Set that
-// changes, or persistently reconfigures, session/user identity on a shared backend session, or "" if it
+// changes, or persistently reconfigures, session/user identity on a shared target-DB session, or "" if it
 // does not. It catches every spelling that means such an escalation — keying on only one leaves a
 // privilege-escalation bypass:
 //   - the keyword forms SET ROLE / SET DEFAULT ROLE / SET SESSION AUTHORIZATION, which sqlglot-go models as
@@ -418,7 +418,7 @@ func sessionIdentitySetCommand(root exp.Expression) string {
 }
 
 // lexerModeGucs name the session variables whose value changes how the SQL lexer parses SUBSEQUENT
-// statements on the connection. The analyzer parses under a fixed per-engine dialect, so if the backend's
+// statements on the connection. The analyzer parses under a fixed per-engine dialect, so if the target DB's
 // effective mode diverges (ANSI_QUOTES makes "x" an identifier, NO_BACKSLASH_ESCAPES/standard_conforming_
 // strings change string escaping) a later statement means something different on the wire than the
 // analyzer saw. Their assignment is therefore only allowed with a value the analyzer can read at parse
@@ -451,7 +451,7 @@ func emitSetFacts(root exp.Expression, eng engine) *pb.StatementFacts {
 // passthrough). Substring-matching the rendered SQL is not enough: MySQL evaluates the RHS, so
 // `SET sql_mode = @m`, `SET sql_mode = CONCAT('AN','SI_QUOTES')`, or any function/subquery can resolve to
 // ANSI_QUOTES while the rendered text carries no such token — the analyzer would keep parsing the old
-// dialect while the backend flips the lexer. So an unreadable RHS (and DEFAULT, a server value the
+// dialect while the target DB flips the lexer. So an unreadable RHS (and DEFAULT, a server value the
 // analyzer cannot see) is gated too. Denial then lives in Cedar via the command's system:critical tag.
 func lexerModeUtilityCommand(root exp.Expression) string {
 	for _, item := range root.FindAll(exp.KindSetItem) {
@@ -526,7 +526,7 @@ func emitCommandFacts(root exp.Expression, eng engine) *pb.StatementFacts {
 		// TRANSACTION / CONSTRAINTS / TIME ZONE, the identity forms (SET [SESSION|LOCAL] ROLE / DEFAULT ROLE /
 		// SESSION AUTHORIZATION and the GUC-alias `SET role = x`), the lexer-mode gucs, and the credential.
 		// What degrades to Command is a genuinely-unanalyzable spelling or a form the analyzer cannot vouch
-		// for — a quoted-keyword laundering attempt (`SET "ROLE" admin`, which the backend also rejects), a
+		// for — a quoted-keyword laundering attempt (`SET "ROLE" admin`, which the target DB also rejects), a
 		// value the analyzer cannot read, or an engine construct not yet modeled. Fail closed UNIFORMLY on
 		// both engines: an unstructured SET the analyzer never classified must never relay via an
 		// engine-specific passthrough.
@@ -867,19 +867,19 @@ func passthroughFacts() *pb.StatementFacts {
 // gets its computed kind there instead (so an unanalyzable ALTER still reports ALTER_TABLE).
 func inadmissibleFacts(stage, detail string) *pb.StatementFacts {
 	return &pb.StatementFacts{
-		Resolved:       false,
-		FailureClass:   pb.FailureClass_FAILURE_CLASS_INADMISSIBLE,
-		FailedStage:    strPtr(stage),
-		Detail:         truncateDetail(detail),
+		Resolved:     false,
+		FailureClass: pb.FailureClass_FAILURE_CLASS_INADMISSIBLE,
+		FailedStage:  strPtr(stage),
+		Detail:       truncateDetail(detail),
 	}
 }
 
 func unanalyzableFacts(stage, detail string) *pb.StatementFacts {
 	return &pb.StatementFacts{
-		Resolved:       false,
-		FailureClass:   pb.FailureClass_FAILURE_CLASS_UNANALYZABLE,
-		FailedStage:    strPtr(stage),
-		Detail:         truncateDetail(detail),
+		Resolved:     false,
+		FailureClass: pb.FailureClass_FAILURE_CLASS_UNANALYZABLE,
+		FailedStage:  strPtr(stage),
+		Detail:       truncateDetail(detail),
 	}
 }
 
@@ -892,8 +892,8 @@ func unanalyzableFacts(stage, detail string) *pb.StatementFacts {
 // authorized only by the escape hatch built for statements nobody can prove safe, and denied elsewhere.
 func ddlFacts(root exp.Expression, eng engine) *pb.StatementFacts {
 	return &pb.StatementFacts{
-		Resolved:       true,
-		FailureClass:   pb.FailureClass_FAILURE_CLASS_UNSPECIFIED,
+		Resolved:     true,
+		FailureClass: pb.FailureClass_FAILURE_CLASS_UNSPECIFIED,
 		// A temp-scoped DDL target is session-local, so it changes no shared catalog and must not force
 		// every other connection to re-measure.
 		CatalogChanging: !isTemporaryDDL(root, eng),

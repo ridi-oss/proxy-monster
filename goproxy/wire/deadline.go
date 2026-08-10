@@ -8,8 +8,8 @@ import (
 )
 
 const (
-	frontendCommandIdleTimeout = 5 * time.Minute
-	backendResponseIdleTimeout = 30 * time.Minute
+	frontendCommandIdleTimeout  = 5 * time.Minute
+	targetDbResponseIdleTimeout = 30 * time.Minute
 )
 
 // SocketWriteTimeout is the write-inactivity bound applied to every proxied socket. Exported so a protocol
@@ -18,19 +18,19 @@ const SocketWriteTimeout = 30 * time.Second
 
 // WrapClientConn bounds the client socket with the command-idle timeout and makes its reads drain-aware, so
 // an idle handler returns promptly on shutdown to send its protocol notice rather than waiting out the idle
-// timeout. Only the client-facing conn is wrapped this way; a backend read mid-relay must not be cut short.
+// timeout. Only the client-facing conn is wrapped this way; a target-DB read mid-relay must not be cut short.
 func (s *Server) WrapClientConn(c net.Conn) net.Conn {
 	return withDrainAwareIODeadlines(c, frontendCommandIdleTimeout, SocketWriteTimeout, s.draining)
 }
 
-// WrapBackendConn bounds the backend socket with the response-idle timeout; it is not drain-aware.
-func (s *Server) WrapBackendConn(c net.Conn) net.Conn {
-	return withIODeadlines(c, backendResponseIdleTimeout, SocketWriteTimeout)
+// WrapTargetDbConn bounds the target DB socket with the response-idle timeout; it is not drain-aware.
+func (s *Server) WrapTargetDbConn(c net.Conn) net.Conn {
+	return withIODeadlines(c, targetDbResponseIdleTimeout, SocketWriteTimeout)
 }
 
-// WithBackendReadTimeout bounds a proxy-dialed run-session backend connection with a caller-chosen read-idle
+// WithTargetDbReadTimeout bounds a proxy-dialed run-session target-DB connection with a caller-chosen read-idle
 // timeout and the standard socket write timeout. Not drain-aware — the run drain is handled separately.
-func WithBackendReadTimeout(conn net.Conn, readTimeout time.Duration) net.Conn {
+func WithTargetDbReadTimeout(conn net.Conn, readTimeout time.Duration) net.Conn {
 	return withIODeadlines(conn, readTimeout, SocketWriteTimeout)
 }
 

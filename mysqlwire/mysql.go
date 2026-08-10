@@ -148,7 +148,7 @@ const serverGreetingCapabilities = uint32(CapLongPassword | CapProtocol41 | CapS
 // connectWithDB advertises CapConnectWithDB. An importer passes true only if it FORWARDS the
 // handshake-supplied database (parsing it via ParseHandshakeResponse's connectWithDBSupported and
 // issuing a COM_INIT_DB); otherwise the client's selected database is silently dropped. Both importers
-// forward it — goproxy/mysqlproxy relays it to the backend, and pmon's local broker replays it upstream
+// forward it — goproxy/mysqlproxy relays it to the target DB, and pmon's local broker replays it upstream
 // as COM_INIT_DB — so both pass true. Advertising it is also what keeps a JDBC driver parseable: such a
 // driver writes the database field whether or not the capability was offered, so a greeting that
 // withholds it leaves that field unclaimed and the auth-plugin name that follows is misread as the
@@ -565,7 +565,7 @@ func ParseHandshakeResponse(payload []byte, connectWithDBSupported bool) (Handsh
 	}, nil
 }
 
-// Greeting is the backend server data needed by the client role.
+// Greeting is the target-DB server data needed by the client role.
 type Greeting struct {
 	ConnectionID uint32
 	Scramble     []byte
@@ -573,7 +573,7 @@ type Greeting struct {
 	Capabilities uint32
 }
 
-// ParseHandshakeV10 parses a backend Initial Handshake.
+// ParseHandshakeV10 parses a target DB Initial Handshake.
 func ParseHandshakeV10(payload []byte) (Greeting, error) {
 	r := NewReader(payload)
 	protocol, err := r.U8()
@@ -629,7 +629,7 @@ func ParseHandshakeV10(payload []byte) (Greeting, error) {
 		return Greeting{}, err
 	}
 	if len(part2) < 12 {
-		return Greeting{}, errors.New("mysqlwire: backend greeting scramble is truncated")
+		return Greeting{}, errors.New("mysqlwire: target-DB greeting scramble is truncated")
 	}
 	scramble := append(append(make([]byte, 0, 20), part1...), part2[:12]...)
 	authPlugin := "mysql_native_password"
@@ -713,11 +713,11 @@ func EncryptCachingSHA2Password(password string, scramble []byte, pubKeyPEM []by
 	return rsa.EncryptOAEP(sha1.New(), rand.Reader, pub, plain, nil)
 }
 
-// BackendHandshakeResponse builds the service-account HandshakeResponse41. authPlugin names the client
+// TargetDbHandshakeResponse builds the service-account HandshakeResponse41. authPlugin names the client
 // authentication plugin advertised when CapPluginAuth is set — it MUST match the plugin whose response
 // bytes are in authResp (e.g. "mysql_native_password" or "caching_sha2_password"); an empty authPlugin
 // defaults to mysql_native_password.
-func BackendHandshakeResponse(caps uint32, user string, authResp []byte, database, authPlugin string) []byte {
+func TargetDbHandshakeResponse(caps uint32, user string, authResp []byte, database, authPlugin string) []byte {
 	if authPlugin == "" {
 		authPlugin = "mysql_native_password"
 	}

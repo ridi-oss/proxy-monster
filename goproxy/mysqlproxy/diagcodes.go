@@ -4,7 +4,7 @@ import "github.com/ridi-oss/proxy-monster/goproxy/engine"
 
 // mysqlDiagnosticMessage maps a MySQL essno to its canonical error symbol (ER_*) for a diagnostic-redacted
 // connection — a fixed, value-free identity looked up from the code, never reconstructed from the
-// backend's echoed message text. Unmapped essnos degrade to the generic redacted string rather than leaking
+// target DB's echoed message text. Unmapped essnos degrade to the generic redacted string rather than leaking
 // (fail-safe UX, not a security boundary — that is the strip itself). The symbol preserves the error's
 // identity without any of its interpolated content.
 func mysqlDiagnosticMessage(essno int) string {

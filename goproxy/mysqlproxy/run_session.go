@@ -18,7 +18,7 @@ import (
 type RunSession struct {
 	conn         net.Conn
 	connID       uint32
-	target       spi.BackendTarget
+	target       spi.TargetDb
 	token        string
 	connectionID []byte
 	qe           *engine.QueryEngine
@@ -26,12 +26,12 @@ type RunSession struct {
 	guard        engine.ExecGuard
 }
 
-func NewRunSession(ctx context.Context, target spi.BackendTarget, db engine.Db, client spi.SessionClient, token string, connectionID []byte, guard engine.ExecGuard, readTimeout time.Duration) (*RunSession, error) {
-	conn, connID, err := dialBackendAuthID(ctx, target, true)
+func NewRunSession(ctx context.Context, target spi.TargetDb, db engine.Db, client spi.SessionClient, token string, connectionID []byte, guard engine.ExecGuard, readTimeout time.Duration) (*RunSession, error) {
+	conn, connID, err := dialTargetDbAuthID(ctx, target, true)
 	if err != nil {
 		return nil, err
 	}
-	conn = wire.WithBackendReadTimeout(conn, readTimeout)
+	conn = wire.WithTargetDbReadTimeout(conn, readTimeout)
 	generation, ok := wire.NextBackendGeneration()
 	if !ok {
 		_ = conn.Close()
@@ -52,9 +52,9 @@ func NewRunSession(ctx context.Context, target spi.BackendTarget, db engine.Db, 
 	return s, nil
 }
 
-// OnOpen runs the on-open catalog fetch over the backend conn. A cancel of ctx (the control-plane closed the
+// OnOpen runs the on-open catalog fetch over the target DB conn. A cancel of ctx (the control-plane closed the
 // run, or the proxy is draining, during the target-DB open) closes the conn, which unwinds an in-flight fetch read
-// at once instead of holding the backend until readTimeout.
+// at once instead of holding the target DB until readTimeout.
 func (s *RunSession) OnOpen(ctx context.Context, cmds []*pb.Refetch) error {
 	defer context.AfterFunc(ctx, func() { _ = s.conn.Close() })()
 	return s.ref.RunAll(cmds)
@@ -77,7 +77,7 @@ func (s *RunSession) ServeStatement(sql string, maxRows int) (result engine.Stat
 			if maxRows == math.MaxInt {
 				return false, errors.New("max rows exceeds MySQL SQL_SELECT_LIMIT range")
 			}
-			if err := execBackendSet(s.conn, "SET SQL_SELECT_LIMIT = "+strconv.Itoa(maxRows+1)); err != nil {
+			if err := execTargetDbSet(s.conn, "SET SQL_SELECT_LIMIT = "+strconv.Itoa(maxRows+1)); err != nil {
 				return false, err
 			}
 		}
@@ -85,7 +85,7 @@ func (s *RunSession) ServeStatement(sql string, maxRows int) (result engine.Stat
 			if !capped {
 				return nil
 			}
-			return execBackendSet(s.conn, "SET SQL_SELECT_LIMIT = DEFAULT")
+			return execTargetDbSet(s.conn, "SET SQL_SELECT_LIMIT = DEFAULT")
 		}
 
 		if err := mysqlwire.WritePacket(s.conn, 0, payload); err != nil {
@@ -102,8 +102,8 @@ func (s *RunSession) ServeStatement(sql string, maxRows int) (result engine.Stat
 		if relayErr != nil {
 			return false, relayErr
 		}
-		if collect.backendErr != nil {
-			return false, collect.backendErr
+		if collect.targetDbErr != nil {
+			return false, collect.targetDbErr
 		}
 		if resetErr != nil {
 			return false, resetErr
@@ -114,14 +114,14 @@ func (s *RunSession) ServeStatement(sql string, maxRows int) (result engine.Stat
 }
 
 func (s *RunSession) Cancel() error {
-	conn, _, err := dialBackendAuthID(context.Background(), s.target, true)
+	conn, _, err := dialTargetDbAuthID(context.Background(), s.target, true)
 	if err != nil {
 		_ = s.conn.Close()
 		return err
 	}
 	conn = wire.WithIODeadlines(conn, 5*time.Second, 5*time.Second)
 	defer conn.Close()
-	if err := execBackendSet(conn, "KILL QUERY "+strconv.FormatUint(uint64(s.connID), 10)); err != nil {
+	if err := execTargetDbSet(conn, "KILL QUERY "+strconv.FormatUint(uint64(s.connID), 10)); err != nil {
 		_ = s.conn.Close()
 		return err
 	}

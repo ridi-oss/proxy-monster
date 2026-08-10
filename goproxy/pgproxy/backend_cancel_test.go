@@ -10,14 +10,14 @@ import (
 	"github.com/ridi-oss/proxy-monster/goproxy/spi"
 )
 
-// TestDialBackendAuthAbortsOnContextCancel proves the real PostgreSQL dial honors the target-DB open context: a
-// backend that accepts the TCP connection but never answers the startup exchange stalls the auth read, and
-// cancelling the context must close the conn and return at once — not block until backendHandshakeTimeout.
+// TestDialTargetDbAuthAbortsOnContextCancel proves the real PostgreSQL dial honors the target-DB open context: a
+// target DB that accepts the TCP connection but never answers the startup exchange stalls the auth read, and
+// cancelling the context must close the conn and return at once — not block until targetDbHandshakeTimeout.
 // This is the mechanism the run target-DB open relies on; the runner-level tests exercise only the fake provider.
-func TestDialBackendAuthAbortsOnContextCancel(t *testing.T) {
+func TestDialTargetDbAuthAbortsOnContextCancel(t *testing.T) {
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
-		t.Fatalf("listen stalling backend: %v", err)
+		t.Fatalf("listen stalling target DB: %v", err)
 	}
 	defer listener.Close()
 
@@ -38,12 +38,12 @@ func TestDialBackendAuthAbortsOnContextCancel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse listener port: %v", err)
 	}
-	target := spi.BackendTarget{Host: host, Port: port, User: "u", Password: "p", Db: "d"}
+	target := spi.TargetDb{Host: host, Port: port, User: "u", Password: "p", Db: "d"}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	dialErr := make(chan error, 1)
 	go func() {
-		_, _, _, _, err := dialBackendAuth(ctx, target)
+		_, _, _, _, err := dialTargetDbAuth(ctx, target)
 		dialErr <- err
 	}()
 
@@ -53,7 +53,7 @@ func TestDialBackendAuthAbortsOnContextCancel(t *testing.T) {
 	case conn := <-accepted:
 		defer conn.Close()
 	case <-time.After(5 * time.Second):
-		t.Fatal("dial did not connect to the stalling backend")
+		t.Fatal("dial did not connect to the stalling target DB")
 	}
 
 	start := time.Now()
@@ -64,7 +64,7 @@ func TestDialBackendAuthAbortsOnContextCancel(t *testing.T) {
 			t.Fatal("dial returned nil error after context cancel; want the aborted handshake to fail")
 		}
 		if elapsed := time.Since(start); elapsed > 3*time.Second {
-			t.Fatalf("dial returned %s after cancel; want a prompt abort, not the %s handshake timeout", elapsed, backendHandshakeTimeout)
+			t.Fatalf("dial returned %s after cancel; want a prompt abort, not the %s handshake timeout", elapsed, targetDbHandshakeTimeout)
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("dial did not abort promptly on context cancel")

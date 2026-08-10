@@ -37,7 +37,7 @@ type OriginInfo struct {
 	Derived bool `json:"derived,omitempty"`
 }
 
-// SourceInfo is one physical backend relation the statement scans (docs/facts-emission.md).
+// SourceInfo is one physical target-DB relation the statement scans (docs/facts-emission.md).
 // `Table` is the fully-qualified `catalog.schema.table` identity. `Covered` is true when at least one
 // traced column fact (an origin base or a reference) names this table — meaning the existing column
 // authorization already gates the scan. An UNCOVERED table (Covered=false) is a scan that reads the
@@ -774,7 +774,7 @@ func generateExecutableSQL(root exp.Expression, dialect *dialects.Dialect) (stri
 	executable := root.Copy()
 	// Catalog is part of the analyzer's identity, but neither PostgreSQL nor MySQL accepts it as an
 	// executable third table-name component. Keep the real schema/database qualification and remove only
-	// the analyzer-only catalog from the copy rendered for backend execution.
+	// the analyzer-only catalog from the copy rendered for target-DB execution.
 	for _, table := range executable.FindAll(exp.KindTable) {
 		table.Set("catalog", nil)
 	}

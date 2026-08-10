@@ -72,7 +72,7 @@ class ManifestCommandCoverageDbTest {
     // One representative statement per dangerous command id + the engine to decide it on. The completeness
     // assertion below proves this map ∪ INTENTIONAL_PASSTHROUGH covers every manifest dangerous command, so a
     // missing entry is a test failure, not a silent relay. Statements need only ADMIT + decide (they are
-    // never executed — a dangerous command denies before it reaches the backend).
+    // never executed — a dangerous command denies before it reaches the target DB).
     private val samples: Map<String, Pair<Eng, String>> = mapOf(
         // MySQL — account / privilege administration.
         "SET_PASSWORD" to (Eng.MY to "SET PASSWORD = 'x'"),

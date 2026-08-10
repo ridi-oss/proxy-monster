@@ -12,7 +12,7 @@ import (
 
 // TestResultsCharsetPinAppliedFromControlPlane proves the wire path applies a control-plane rewrite on a
 // session passthrough: when the CP pins `SET character_set_results = NULL` to utf8mb4 (its rewritten_sql),
-// the proxy relays the pinned statement to the backend, so the SET succeeds and a following masked read
+// the proxy relays the pinned statement to the target DB, so the SET succeeds and a following masked read
 // still returns the mask. Authorization and audit still see the client's original statement. (The
 // recognition — that the real analyzer emits this pin — is covered by the analyzer and control-plane tests.)
 func TestResultsCharsetPinAppliedFromControlPlane(t *testing.T) {
@@ -37,12 +37,12 @@ func TestResultsCharsetPinAppliedFromControlPlane(t *testing.T) {
 	}
 	client := openRawClient(t, h.addr, validToken)
 
-	// The pinned SET reaches the backend as utf8mb4, so it succeeds instead of tripping the charset invariant.
+	// The pinned SET reaches the target DB as utf8mb4, so it succeeds instead of tripping the charset invariant.
 	response := client.firstQueryPacket(t, setNULL)
 	if len(response) == 0 || response[0] != 0x00 {
 		t.Fatalf("SET character_set_results = NULL response = %x, want OK (pinned to utf8mb4)", response)
 	}
-	// Masking still works: had the original NULL reached the backend, the invariant would have closed the
+	// Masking still works: had the original NULL reached the target DB, the invariant would have closed the
 	// session and this read would fail; instead ssn is masked and the NULL row is preserved.
 	rows := client.textRows(t, maskedRead, 3)
 	if len(rows) != 2 {

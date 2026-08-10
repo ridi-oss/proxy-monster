@@ -66,7 +66,7 @@ func Run(registry spi.Registry) error {
 
 	provider := cfg.Provider
 	dbImpl := provider.NewDb()
-	backend := spi.BackendTarget{
+	targetDb := spi.TargetDb{
 		Host:     cfg.TargetHost,
 		Port:     cfg.TargetPort,
 		Db:       cfg.TargetDb,
@@ -147,7 +147,7 @@ func Run(registry spi.Registry) error {
 	defer eventsCancel() // covers the early serve-error return; the drain path cancels explicitly (idempotent)
 	eventsDone := make(chan struct{})
 	// A wire-protocol version skew is fatal: refuse to start rather than attach and stall the run channel.
-	if err := registerAndPushCatalog(configClient, cfg, backend, provider, certChain); err != nil {
+	if err := registerAndPushCatalog(configClient, cfg, targetDb, provider, certChain); err != nil {
 		slog.Error("refusing to start — deploy the proxy and control-plane from the same server-v* release", "error", err)
 		return err
 	}
@@ -158,21 +158,21 @@ func Run(registry spi.Registry) error {
 			func() {
 				// A re-register (reconnect) that finds a now-incompatible control-plane is equally fatal:
 				// exit so the supervisor replaces this proxy rather than run against a version it cannot speak.
-				if err := registerAndPushCatalog(configClient, cfg, backend, provider, certChain); err != nil {
+				if err := registerAndPushCatalog(configClient, cfg, targetDb, provider, certChain); err != nil {
 					slog.Error("control-plane became version-incompatible on reconnect — exiting", "error", err)
 					os.Exit(1)
 				}
 			},
-			func() { refreshCatalog(configClient, provider, backend) },
+			func() { refreshCatalog(configClient, provider, targetDb) },
 			func(open spi.RunOpen) {
 				runs.Add()
 				go func() {
 					defer runs.Done()
-					run.NewRunner(enforcementClient, dbImpl, backend, provider, cfg.QueryTimeout).Run(open, runs.Signal())
+					run.NewRunner(enforcementClient, dbImpl, targetDb, provider, cfg.QueryTimeout).Run(open, runs.Signal())
 				}()
 			},
 			func(sessionID, schema, table string) {
-				go run.NewTableDetailRunner(configClient, backend, provider).Run(sessionID, schema, table)
+				go run.NewTableDetailRunner(configClient, targetDb, provider).Run(sessionID, schema, table)
 			},
 		)
 		// A version rejection on the events stream is fatal even when a resync Register races to a still-
@@ -186,11 +186,11 @@ func Run(registry spi.Registry) error {
 	go func() {
 		for {
 			time.Sleep(ambientRefreshInterval)
-			refreshCatalog(configClient, provider, backend)
+			refreshCatalog(configClient, provider, targetDb)
 		}
 	}()
 
-	server := provider.NewWireServer(cfg.ProxyPort, backend, enforcementClient, dbImpl, tlsProvider)
+	server := provider.NewWireServer(cfg.ProxyPort, targetDb, enforcementClient, dbImpl, tlsProvider)
 	slog.Info("starting proxy-monster data plane", "engine", cfg.Engine, "control_plane", cfg.ControlPlaneGrpcTarget)
 
 	serveErr := make(chan error, 1)
@@ -261,17 +261,17 @@ func gracefulDrain(
 // stays non-fatal (returns nil after the attempts): the proxy starts and fails decisions closed until the
 // control plane has the catalog, so a briefly-unreachable control plane self-heals on reconnect.
 func registerAndPushCatalog(
-	configClient *cp.Client, cfg *config.Config, backend spi.BackendTarget, provider spi.Provider,
+	configClient *cp.Client, cfg *config.Config, targetDb spi.TargetDb, provider spi.Provider,
 	certChain func() *string,
 ) error {
 	for attempt := 0; attempt < bootRegisterAttempts; attempt++ {
-		err := configClient.Register(provider.Dialect().Proto(), backend.Host, backend.Port, backend.Db, cfg.DatasourceTags, cfg.AdvertiseAddr, certChain(), cfg.TLSEnabled())
+		err := configClient.Register(provider.Dialect().Proto(), targetDb.Host, targetDb.Port, targetDb.Db, cfg.DatasourceTags, cfg.AdvertiseAddr, certChain(), cfg.TLSEnabled())
 		if errors.Is(err, cp.ErrIncompatibleControlPlane) {
 			return err
 		}
 		if err != nil {
 			slog.Warn("datasource registration failed", "attempt", attempt+1, "of", bootRegisterAttempts, "error", err)
-		} else if refreshCatalog(configClient, provider, backend) {
+		} else if refreshCatalog(configClient, provider, targetDb) {
 			slog.Info("datasource registered + catalog pushed", "datasource", cfg.DatasourceName)
 			return nil
 		}
@@ -285,10 +285,10 @@ func registerAndPushCatalog(
 	return nil
 }
 
-func refreshCatalog(configClient *cp.Client, provider spi.Provider, backend spi.BackendTarget) bool {
+func refreshCatalog(configClient *cp.Client, provider spi.Provider, targetDb spi.TargetDb) bool {
 	refreshMu.Lock()
 	defer refreshMu.Unlock()
-	catalog, err := introspect.Run(provider, backend)
+	catalog, err := introspect.Run(provider, targetDb)
 	if err != nil {
 		slog.Warn("catalog refresh failed", "error", err)
 		return false

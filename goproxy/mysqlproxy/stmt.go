@@ -10,7 +10,7 @@ import (
 
 const malformedStmtPrepareMessage = "proxy-monster: malformed prepared-statement response"
 
-// preparedStmt binds the SQL actually prepared on the backend to the namespace AND the ANSI_QUOTES
+// preparedStmt binds the SQL actually prepared on the target DB to the namespace AND the ANSI_QUOTES
 // observation frozen at PREPARE. MySQL parses `"…"` as an
 // identifier-or-string at PREPARE time under the then-current sql_mode, fixing it for every EXECUTE, so the
 // prepare-time ansiQuotes is what each EXECUTE re-authorizes under. Every EXECUTE is re-authorized against
@@ -21,11 +21,11 @@ type preparedStmt struct {
 	ansiQuotes bool
 }
 
-// relayStmtPrepareResponse relays one complete COM_STMT_PREPARE response and returns the backend-assigned
+// relayStmtPrepareResponse relays one complete COM_STMT_PREPARE response and returns the target-DB-assigned
 // statement ID. Parameter and column definitions are opaque logical packets; a full-size physical packet
 // therefore consumes the following continuation without advancing the definition count.
-func relayStmtPrepareResponse(client io.Writer, backend io.Reader, deprecateEOF bool, redactErr func([]byte) []byte) (stmtID uint32, prepared bool, err error) {
-	seq, payload, err := mysqlwire.ReadPacket(backend)
+func relayStmtPrepareResponse(client io.Writer, targetDb io.Reader, deprecateEOF bool, redactErr func([]byte) []byte) (stmtID uint32, prepared bool, err error) {
+	seq, payload, err := mysqlwire.ReadPacket(targetDb)
 	if err != nil {
 		return 0, false, err
 	}
@@ -33,7 +33,7 @@ func relayStmtPrepareResponse(client io.Writer, backend io.Reader, deprecateEOF 
 		return 0, false, errors.New("mysqlproxy: empty prepared-statement response")
 	}
 	if payload[0] == 0xff {
-		// A prepare-time backend ERR is a mandated redaction site (fail-closed): strip it on a redacted
+		// A prepare-time target-DB ERR is a mandated redaction site (fail-closed): strip it on a redacted
 		// decision before it reaches the client. See docs/diagnostic-redaction.md.
 		if redactErr != nil {
 			payload = redactErr(payload)
@@ -55,7 +55,7 @@ func relayStmtPrepareResponse(client io.Writer, backend io.Reader, deprecateEOF 
 	relayDefinitions := func(count int) error {
 		for range count {
 			for {
-				seq, payload, err := mysqlwire.ReadPacket(backend)
+				seq, payload, err := mysqlwire.ReadPacket(targetDb)
 				if err != nil {
 					return err
 				}
@@ -70,7 +70,7 @@ func relayStmtPrepareResponse(client io.Writer, backend io.Reader, deprecateEOF 
 		return nil
 	}
 	relayLegacyEOF := func() error {
-		seq, payload, err := mysqlwire.ReadPacket(backend)
+		seq, payload, err := mysqlwire.ReadPacket(targetDb)
 		if err != nil {
 			return err
 		}

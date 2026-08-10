@@ -127,7 +127,7 @@ internal fun resolveHttpRequesterIp(peerAddress: String?, xff: String?, trustedP
  * The HOST the CLIENT addressed, for the checks that compare a request's target against a configured
  * public identity — today the `/mcp` host check (McpServer.kt).
  *
- * Host only, never a port. Behind a TLS-terminating edge the backend is reached on its own cleartext
+ * Host only, never a port. Behind a TLS-terminating edge the target DB is reached on its own cleartext
  * port, and a client's `Host` omits the port whenever it is the scheme default, so a port comparison
  * rejects every request in the deployment shape the check exists to serve. It also buys nothing — an
  * attacker who controls the host names any port they like. (The port of a browser-facing request is

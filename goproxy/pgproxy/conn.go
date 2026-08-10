@@ -19,7 +19,7 @@ const (
 )
 
 type sessionCore struct {
-	backend          *pgproto3.Frontend
+	targetDb         *pgproto3.Frontend
 	qe               *engine.QueryEngine
 	db               engine.Db
 	lastTxStatus     byte
@@ -34,7 +34,7 @@ type session struct {
 	sessionCore
 	client       *pgproto3.Backend
 	clientConn   net.Conn
-	backendConn  net.Conn
+	targetDbConn net.Conn
 	token        string
 	clientAddr   string
 	connectionID []byte
@@ -162,19 +162,19 @@ startupComplete:
 	defer func() { _ = s.client.CloseConnection(identity.ConnectionID) }()
 	slog.Info("authenticated postgres client", "client", rawClientConn.RemoteAddr().String(), "principal", identity.Principal, "roles", identity.Roles)
 
-	backendConn, parameters, keyData, txStatus, err := dialBackendAuth(context.Background(), s.backend)
+	targetDbConn, parameters, keyData, txStatus, err := dialTargetDbAuth(context.Background(), s.targetDb)
 	if err != nil {
-		slog.Warn("postgres backend unavailable", "host", s.backend.Host, "port", s.backend.Port, "error", err)
-		_ = sendError(client, "FATAL", "08004", "proxy-monster: backend unavailable", false, 0)
+		slog.Warn("postgres target DB unavailable", "host", s.targetDb.Host, "port", s.targetDb.Port, "error", err)
+		_ = sendError(client, "FATAL", "08004", "proxy-monster: target DB unavailable", false, 0)
 		return
 	}
-	defer backendConn.Close()
+	defer targetDbConn.Close()
 
 	client.SetMaxBodyLen(maxFrontendFrameBody)
 	clientIO.Conn = s.WrapClientConn(clientConn)
 	clientIO.strictReads = false
-	backendConn = s.WrapBackendConn(backendConn)
-	backend := pgproto3.NewFrontend(backendConn, backendConn)
+	targetDbConn = s.WrapTargetDbConn(targetDbConn)
+	targetDb := pgproto3.NewFrontend(targetDbConn, targetDbConn)
 
 	backendGen, ok := wire.NextBackendGeneration()
 	if !ok {
@@ -183,7 +183,7 @@ startupComplete:
 	}
 	sess := &session{
 		sessionCore: sessionCore{
-			backend:      backend,
+			targetDb:     targetDb,
 			qe:           engine.NewQueryEngine(s.db, s.client),
 			db:           s.db,
 			lastTxStatus: txStatus,
@@ -192,7 +192,7 @@ startupComplete:
 		},
 		client:       client,
 		clientConn:   clientIO,
-		backendConn:  backendConn,
+		targetDbConn: targetDbConn,
 		token:        password.Password,
 		clientAddr:   rawClientConn.RemoteAddr().String(),
 		connectionID: append([]byte(nil), identity.ConnectionID...),

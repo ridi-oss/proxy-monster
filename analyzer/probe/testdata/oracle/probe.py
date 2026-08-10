@@ -313,7 +313,7 @@ def _leaf_selects(setop):
 
 
 def _from_source_order(sel):
-    """Alias order of FROM/JOIN sources, left-to-right — the order the backend expands a bare `SELECT *`
+    """Alias order of FROM/JOIN sources, left-to-right — the order the target DB expands a bare `SELECT *`
     into (and thus the wire column order the mask ordinals must match). sqlglot's expand_stars instead
     orders physical tables before derived tables, so bare-`*` origins must be re-sorted to this order."""
     order = []
@@ -371,7 +371,7 @@ def _expandable_sources(sel):
 
 def _resort_bare_star_inplace(osel, qsel):
     """Mutate qsel's projections: re-sort the bare `*`'s expanded BLOCK into FROM-source order, so the
-    serialized query's column order (which the backend echoes verbatim, since we send explicit columns)
+    serialized query's column order (which the target DB echoes verbatim, since we send explicit columns)
     equals the order origins index — and matches native `SELECT *` for the client. sqlglot expands physical
     tables before derived tables; the DB uses FROM order. `osel` (pre-qualify) locates the bare Star and
     the explicit projections around it (each a single column, since a bare `*` mixed with ANOTHER star is
@@ -533,7 +533,7 @@ def probe(sql, dialect, schema):
     # and PG folds unquoted identifiers to lowercase, but sqlglot preserves spelling — so a MySQL
     # `SELECT * FROM Users` never matches the lowercase catalog, silently leaving `*` unexpanded (a full
     # bypass), and `Users.Ssn` resolves to an origin string that misses the policy key. Normalize UNQUOTED
-    # identifiers on this analysis copy (the query the backend runs is untouched) and match a lowercased
+    # identifiers on this analysis copy (the query the target DB runs is untouched) and match a lowercased
     # schema, so resolution + policy matching are case-insensitive. For MySQL, also fold QUOTED identifiers:
     # MySQL column names are always case-insensitive and `` `Users`.`SSN` `` otherwise skips the policy key
     # (a leak) or fails the column-existence check as unknown (an over-deny). PG quoted idents ARE
@@ -636,7 +636,7 @@ def probe(sql, dialect, schema):
         qroot.set("tables", None)
 
     # Drop DEAD (unreferenced) CTEs before analysis. Postgres/MySQL don't execute an unreferenced CTE, so
-    # its clauses never touch the backend — but the reference sweeps below would still scan them, so a
+    # its clauses never touch the target DB — but the reference sweeps below would still scan them, so a
     # throwaway `WITH dead AS (SELECT id FROM users WHERE ssn='x') SELECT … FROM orders` would over-deny
     # an unrelated live query. Iterate to a fixpoint: dropping one dead CTE can orphan another that only
     # it referenced. (Safe: a CTE referenced anywhere outside its own body is kept, so this can never drop
@@ -839,7 +839,7 @@ def probe(sql, dialect, schema):
             # Like add_clause, but for ORDER BY / GROUP BY, which can reference an output ALIAS or a
             # positional ORDINAL. sqlglot leaves those as a bare, unbindable ref (or an int literal), so
             # resolve them back to that projection's base columns — else a masked column used as a sort/
-            # dedup key (the backend sorts/dedups on CLEARTEXT before masking) leaks and is missed.
+            # dedup key (the target DB sorts/dedups on CLEARTEXT before masking) leaks and is missed.
             projs = sel.selects
             for t in terms:
                 if t is None or _enclosing_opaque(t, opaque_selects) is not None:
@@ -1035,11 +1035,11 @@ def probe(sql, dialect, schema):
                 if src is not None:
                     references[OTHER] |= _src_all_cols(src)
 
-        # ---- proxy-side `*` expansion (reads only): the mask binds by ORDINAL, so the backend's wire
-        # column order MUST equal the order origins index. Rather than PREDICT the backend's native `*`
+        # ---- proxy-side `*` expansion (reads only): the mask binds by ORDINAL, so the target DB's wire
+        # column order MUST equal the order origins index. Rather than PREDICT the target DB's native `*`
         # order — fragile: it assumes the catalog's column order matches the live DB, and needs every
         # FROM source type enumerated (the whack-a-mole that leaked LATERAL/VALUES/unnest) — we EXPAND `*`
-        # here and hand the proxy explicit columns to send: the backend then echoes OUR order, so
+        # here and hand the proxy explicit columns to send: the target DB then echoes OUR order, so
         # origins-ordinal == wire-position BY CONSTRUCTION (and stays correct even if the catalog drifts
         # from the DB's physical column order). Every starred select must sit inside the proven-faithful
         # envelope (verified byte-identical vs live PG+MySQL) else fail closed; a sole bare `*` is re-sorted
@@ -1092,7 +1092,7 @@ def probe(sql, dialect, schema):
                 #  2. `*` expands to the CATALOG's columns, so `SELECT *` returns catalog columns, not
                 #     necessarily the live table's — a column the DB has but the catalog lacks is silently
                 #     dropped from the result (protected columns are still masked at their ordinal; nothing
-                #     unknown is ever revealed). Keep the catalog in sync with the backend schema.
+                #     unknown is ever revealed). Keep the catalog in sync with the target-DB schema.
                 rewritten_sql = qroot.sql(dialect=dialect)
 
         # ---- origins: a top-level output is maskable ONLY if it is the value-preserving IDENTITY of a
@@ -1301,7 +1301,7 @@ def probe(sql, dialect, schema):
         return {"resolved": True, "failedStage": None, "detail": "ok",
                 "outputColumns": len(origins), "tracedColumns": traced,
                 "origins": origins, "references": refs_out, "isWrite": is_write,
-                # the expanded query the proxy must send so the backend echoes the order origins index
+                # the expanded query the proxy must send so the target DB echoes the order origins index
                 # (null = no `*` on a read root; send the original verbatim). See the expansion block above.
                 "rewrittenSql": rewritten_sql}
     except Exception as e:

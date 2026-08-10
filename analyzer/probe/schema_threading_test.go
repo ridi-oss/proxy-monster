@@ -4,9 +4,9 @@ import (
 	"strings"
 	"testing"
 
+	pb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
 	sqlglot "github.com/ridi-oss/sqlglot-go"
 	exp "github.com/ridi-oss/sqlglot-go/expressions"
-	pb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -83,7 +83,7 @@ func requireResolvedKeys(t *testing.T, result *ProbeResult, expected ...string) 
 }
 
 // PostgreSQL quoted and unquoted cases are part of the byte-identity oracle: the emitted
-// catalog.schema.table.column spelling must match the backend's identifier identity exactly.
+// catalog.schema.table.column spelling must match the target DB's identifier identity exactly.
 func TestSchemaThreadingPostgresResolution(t *testing.T) {
 	cases := []struct {
 		name string
@@ -159,7 +159,7 @@ func TestSchemaThreadingOrderedSearchPath(t *testing.T) {
 }
 
 // Together with the PostgreSQL quoted-identifier cases above, these case-mode assertions form the
-// Byte-identity oracle: emitted catalog.schema.table.column keys must match backend folding exactly.
+// Byte-identity oracle: emitted catalog.schema.table.column keys must match target DB folding exactly.
 func TestSchemaThreadingMySQLCaseModes(t *testing.T) {
 	cols := []*pb.ColumnSpec{
 		columnSpec("def", "App", "Users", "ID", "BIGINT"),
@@ -376,7 +376,7 @@ func TestSchemaThreadingWriteSourceResolution(t *testing.T) {
 }
 
 // A mixed-case CTE in a write binds case-insensitively on PostgreSQL
-// (the backend folds `Orders` ≡ `orders`), so its masked source column MUST reach the write's lineage.
+// (the target-DB folds `Orders` ≡ `orders`), so its masked source column MUST reach the write's lineage.
 // public.orders deliberately HAS an `amount` column, so a CTE ref misclassified as the physical
 // public.orders would RESOLVE to the unmasked public.orders.amount and silently ALLOW — the exact
 // fail-open. Before folding identifiers ahead of write-scope classification, that is what happened.
@@ -411,7 +411,7 @@ func TestSchemaThreadingWriteCTECaseFold(t *testing.T) {
 
 // PG folds UNQUOTED identifiers ASCII-only (`CAFÉ` → `cafÉ`,
 // the É preserved), not full-Unicode. A distinct column `café` (e.g. quoted-created, ordinary) can
-// coexist with `cafÉ` (PII). An unquoted `CAFÉ` MUST resolve to `cafÉ` — matching the backend — not
+// coexist with `cafÉ` (PII). An unquoted `CAFÉ` MUST resolve to `cafÉ` — matching the target DB — not
 // over-fold to `café` and pick up the wrong column's policy. Requires sqlglot-go >= v0.2.0 (which folds
 // PG identifiers ASCII-only instead of strings.ToLower).
 func TestSchemaThreadingPostgresAsciiOnlyFold(t *testing.T) {

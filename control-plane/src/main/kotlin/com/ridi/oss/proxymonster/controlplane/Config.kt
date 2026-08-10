@@ -150,10 +150,10 @@ data class Config(
         const val MAX_QUERY_TIMEOUT_SECONDS = 9_223_372_006L
 
         // The control-plane's per-statement exchange budget sits this far above the configured query
-        // timeout so the proxy's PM_QUERY_TIMEOUT watchdog — which starts later, at backend exec — fires
+        // timeout so the proxy's PM_QUERY_TIMEOUT watchdog — which starts later, at target-DB exec — fires
         // first and cancels the statement in-band, rather than the CP exchange pre-empting it.
         // Headroom the exchange budget adds over the proxy's own statement watchdog. It has to absorb
-        // everything the proxy does around the guarded execution — the watchdog wraps only the backend
+        // everything the proxy does around the guarded execution — the watchdog wraps only the target DB
         // statement, while authorization and the catalog probes before it run outside that guard and have
         // been measured in the tens of seconds against a large remote catalog. Too small and the control
         // plane calls a timeout on a statement whose watchdog has not fired, blaming the query for time

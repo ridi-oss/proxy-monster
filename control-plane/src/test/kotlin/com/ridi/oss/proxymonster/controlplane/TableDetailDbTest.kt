@@ -212,13 +212,13 @@ class TableDetailDbTest {
                 dbName = "unreachable",
             ),
         )
-        fakeProxies += FakeTableDetailProxy(core, failing.name) { _, _ -> ProxyReply.Error("backend connection failed") }
+        fakeProxies += FakeTableDetailProxy(core, failing.name) { _, _ -> ProxyReply.Error("target-DB connection failed") }
         val failedResponse = client.get("/api/datasources/${failing.id}/table-detail") {
             parameter("schema", "public")
             parameter("table", "anything")
         }
         assertEquals(HttpStatusCode.BadGateway, failedResponse.status)
-        assertContains(failedResponse.bodyAsText(), "backend connection failed")
+        assertContains(failedResponse.bodyAsText(), "target-DB connection failed")
 
         val detached = datasourceStore.create(
             DatasourceInput(

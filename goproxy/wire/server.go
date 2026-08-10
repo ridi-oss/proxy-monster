@@ -57,7 +57,7 @@ type Server struct {
 	serveExited chan struct{} // closed when Serve's accept loop returns, so Drain can wait for every accepted conn to register
 }
 
-// New constructs a wire broker for one backend datasource. name prefixes its errors and logs; handle runs
+// New constructs a wire broker for one target DB datasource. name prefixes its errors and logs; handle runs
 // per accepted connection on its own goroutine.
 func New(port int, name string, handle func(net.Conn)) *Server {
 	return &Server{
@@ -181,7 +181,7 @@ func (s *Server) Shutdown() {
 // in-flight statements finish, and unblocks every idle handler so it can forward a protocol-level shutdown
 // notice (see each protocol's conn.go) and close. It waits for all handlers to return, bounded by ctx; any
 // connection still live when ctx is done is force-closed. Forcing the client read deadline only interrupts a
-// handler blocked reading the next command — an in-flight relay reads the backend and writes the client, so
+// handler blocked reading the next command — an in-flight relay reads the target DB and writes the client, so
 // it is untouched and runs to completion.
 func (s *Server) Drain(ctx context.Context) {
 	s.Shutdown()

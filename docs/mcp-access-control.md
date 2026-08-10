@@ -266,7 +266,7 @@ REST's session-only `requireApi` on some list routes).
   `DELETE /api/datasources/{id}/classification`.
 
 MCP exposes column tags only. There is no table-level tag store; tagging a whole
-table is out of scope until/unless the backend grows one (a separate design).
+table is out of scope until/unless the target DB grows one (a separate design).
 Datasource tags are set only by the proxy's gRPC `Register`/`PushCatalog` —
 there is no REST field to edit them (`DatasourceInput` has no `tags`) — so MCP
 reports datasource tags but has no `set_datasource_tags` tool.

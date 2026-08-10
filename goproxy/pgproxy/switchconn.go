@@ -4,7 +4,7 @@ import "net"
 
 // switchConn lets a pgproto3 codec retain its buffered reader while the underlying socket changes. During
 // frontend startup, strictReads prevents pgproto3's chunk reader from swallowing a pipelined TLS ClientHello;
-// during backend startup, it prevents reads beyond ReadyForQuery before dialBackendAuth returns the connection.
+// during target-DB startup, it prevents reads beyond ReadyForQuery before dialTargetDbAuth returns the connection.
 type switchConn struct {
 	net.Conn
 	strictReads bool

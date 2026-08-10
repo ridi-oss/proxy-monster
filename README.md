@@ -11,7 +11,7 @@ tamper-evident audit trail.
 - **Transparent proxy.** Speaks the native MySQL and PostgreSQL wire protocols,
   so `psql`, `mysql`, JDBC, and application drivers connect unchanged. It
   authenticates the client to a principal, authorizes each statement, applies
-  masking, and brokers to the backend with a per-datasource service account —
+  masking, and brokers to the target DB with a per-datasource service account —
   users never hold database credentials.
 - **Column-level access control.** Deterministic, role-based masking and deny,
   driven by [Cedar](https://www.cedarpolicy.com/) policy over per-column tags.
@@ -34,7 +34,7 @@ A split control plane (Kotlin/JVM) and data plane (Go), talking over gRPC:
 
 - **`goproxy`** (Go) — the data-plane wire proxy: protocol codecs, token auth, a
   per-statement `Decide` call to the control plane, inline result masking, and
-  the backend broker.
+  the target-DB broker.
 - **`control-plane`** (Kotlin) — identity and roles (OIDC), Cedar policy, the
   catalog, the per-statement decision, and the admin/console API.
 - **`analyzer`** (Go, reached from the JVM through a Foreign Function & Memory

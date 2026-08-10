@@ -44,7 +44,7 @@ every admin API. The client learns the viewer's coarse capabilities from
 - A logs tab (`query-logs` in `result-tabs`): a SQL-console-style log of
   statements run this session — statement text, ALLOW/MASK/DENY with deny
   reason, rows, latency, errors, timestamp.
-- The editor runs on a per-session backend connection (see
+- The editor runs on a per-session target-DB connection (see
   [`connection-model.md`](./connection-model.md)), so `BEGIN…COMMIT`/`ROLLBACK`,
   `SET`/`USE`, and temp tables persist across statements. Enforcement stays
   per-statement: a statement referencing a masked column still denies

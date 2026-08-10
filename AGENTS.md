@@ -30,7 +30,7 @@ weighing review findings, and weight MySQL accordingly.
 Modules:
 
 - `goproxy/` — Go data-plane wire proxy: MySQL/PostgreSQL codecs, token auth,
-  the per-statement `Decide` call, inline result masking, and the backend
+  the per-statement `Decide` call, inline result masking, and the target-DB
   broker.
 - `control-plane/` — Kotlin control plane: identity and roles, Cedar
   authorization, the catalog, the per-statement decision, and the admin +
@@ -51,7 +51,7 @@ Modules:
 - `proto/` — protobuf contracts: the proxy↔control-plane gRPC surface and the
   analyzer FFM boundary.
 - `web/` — the Next.js console (editor, policies, access, audit, admin).
-- `deploy/` — sample seed SQL for the compose backends.
+- `deploy/` — sample seed SQL for the compose target DBs.
 - `docs/` — per-workstream design docs.
 
 Key docs:
@@ -102,7 +102,7 @@ Key docs:
   (see [DESIGN.md](./DESIGN.md#jit-elevation-and-approval)).
 - Planes: the Kotlin control-plane owns a Postgres store (identity, policy,
   catalog, grants, audit); the Go data-plane proxy holds no store — it connects
-  only to its target backend and reads each decision from the control-plane over
+  only to its target DB and reads each decision from the control-plane over
   gRPC.
 - Web console (`web/`): a SQL editor plus admin for datasources, policies,
   access, and audit, in Next.js.

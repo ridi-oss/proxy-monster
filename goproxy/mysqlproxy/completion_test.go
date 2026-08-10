@@ -89,15 +89,15 @@ func TestCompletionReportPreparedSelectCountsRows(t *testing.T) {
 	}
 }
 
-// A statement whose backend result is an error still reports a completion, tagged status=error.
+// A statement whose target-DB result is an error still reports a completion, tagged status=error.
 func TestCompletionReportErroredStatement(t *testing.T) {
 	h := startBroker(t)
 	h.fake.decideFn = allowWithDecisionID(completionDecisionID)
 	conn := h.openDB(t, validToken)
 
-	// An allowed statement the backend rejects (unknown table) relays an ERR, not a result set.
+	// An allowed statement the target DB rejects (unknown table) relays an ERR, not a result set.
 	if _, err := conn.Query("SELECT id FROM no_such_table_here"); err == nil {
-		t.Fatal("Query on a missing table succeeded, want a backend error")
+		t.Fatal("Query on a missing table succeeded, want a target-DB error")
 	}
 
 	got := h.waitCompletions(t, 1)

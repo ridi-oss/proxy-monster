@@ -21,8 +21,8 @@ import kotlin.test.assertTrue
  * the `system:data-leak` tag (resource `session-diagnostics`), so the shipped floor forbid denies them on the
  * production floor — relaxed only on `system:development`, where there is no PII.
  *
- * This is an end-to-end enforcement test on a real MySQL backend: it first proves the leak is REAL (the
- * backend does echo the value into the warning buffer), then proves the control-plane decision denies the
+ * This is an end-to-end enforcement test on a real MySQL target DB: it first proves the leak is REAL (the
+ * target DB does echo the value into the warning buffer), then proves the control-plane decision denies the
  * retrieval, and that the deny is the data-leak forbid — it overrides even a broad any-action grant.
  */
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
@@ -53,10 +53,10 @@ class ShowWarningsExfilDbTest {
     ).action
 
     @Test
-    fun `SHOW WARNINGS cannot exfiltrate a value the backend leaked into the warning buffer`() {
+    fun `SHOW WARNINGS cannot exfiltrate a value the target DB leaked into the warning buffer`() {
         val secret = fx.cleartextSsn[0]
 
-        // (1) The vector is REAL — on ONE backend session, the failing CAST echoes the value into the warning
+        // (1) The vector is REAL — on ONE target-DB session, the failing CAST echoes the value into the warning
         // buffer and SHOW WARNINGS reads it back verbatim. If this precondition ever stops holding the test
         // proves nothing, so it is asserted, not assumed.
         DriverManager.getConnection(fx.targetJdbcUrl, fx.targetUser, fx.targetPassword).use { c ->
@@ -67,7 +67,7 @@ class ShowWarningsExfilDbTest {
                     while (rs.next()) {
                         if (rs.getString("Message")?.contains(secret) == true) leaked = true
                     }
-                    assertTrue(leaked, "precondition: the backend must echo the raw value into the warning buffer")
+                    assertTrue(leaked, "precondition: the target DB must echo the raw value into the warning buffer")
                 }
             }
         }

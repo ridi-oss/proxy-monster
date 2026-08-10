@@ -63,7 +63,7 @@ class GateSqlglotRegressionTest {
 
     @Test
     fun `cast or typed literal to a user type denies through the production walk`() {
-        // A user DOMAIN/type coercion runs its check function on the shared backend session (code exec +
+        // A user DOMAIN/type coercion runs its check function on the shared target-DB session (code exec +
         // error-oracle leak). The Go analyzer marks it INADMISSIBLE; prove the control-plane walk denies.
         for (sql in listOf(
             "SELECT CAST('x' AS public.pm_leak_domain)",
@@ -93,7 +93,7 @@ class GateSqlglotRegressionTest {
 
     @Test
     fun `MySQL ANSI_QUOTES masks a double-quoted pii column, default mode leaves it a string literal`() {
-        // Under sql_mode=ANSI_QUOTES the backend reads `"ssn"` as
+        // Under sql_mode=ANSI_QUOTES the target DB reads `"ssn"` as
         // the pii column ssn, not a string. Told liveAnsiQuotes=true, the analyzer parses it the same way, so
         // the CP must MASK it instead of skipping it as a literal — this is the whole reason the proxy can now
         // forward an ANSI_QUOTES session instead of failing it closed. Without the flag (default mode) `"ssn"`

@@ -5,7 +5,7 @@ import (
 )
 
 // Completion statuses reported after a statement's result is relayed. A clean result is StatusOK; a
-// backend error or a relay/transport fault carrying only the rows relayed before it is StatusError.
+// target-DB error or a relay/transport fault carrying only the rows relayed before it is StatusError.
 // StatusCanceled is accepted by the control plane and reserved for a future explicit-cancel signal — the
 // blocking wire relay has no distinct cancel event today, so a canceled query surfaces as StatusError.
 const (
@@ -41,7 +41,7 @@ type CompletionReporter interface {
 }
 
 // RelayStatus reduces a relay's terminal condition to the completion status vocabulary. clean reports
-// whether the result set terminated normally (a backend OK/EOF, not a backend error); err is any transport
+// whether the result set terminated normally (a target-DB OK/EOF, not a target-DB error); err is any transport
 // or protocol fault that tore the relay down. Anything that is not a clean, error-free completion is an
 // error — the partial counts gathered before the fault still travel with it.
 func RelayStatus(clean bool, err error) string {

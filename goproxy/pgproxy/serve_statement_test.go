@@ -14,7 +14,7 @@ import (
 
 func ptr(s string) *string { return &s }
 
-// encodePG serializes backend frames into the wire bytes a scripted backend would send.
+// encodePG serializes target-DB frames into the wire bytes a scripted target DB would send.
 func encodePG(t *testing.T, msgs ...pgproto3.BackendMessage) []byte {
 	t.Helper()
 	var buf []byte
@@ -28,7 +28,7 @@ func encodePG(t *testing.T, msgs ...pgproto3.BackendMessage) []byte {
 	return buf
 }
 
-// scriptedRunSession returns an RunSession wired to a scripted backend that, for each Execute call,
+// scriptedRunSession returns an RunSession wired to a scripted target DB that, for each Execute call,
 // consumes the client's Query and replies with the next response in order. Driving several statements over
 // one persistent session lets a test pin the persistent-session contracts (drain-through-ReadyForQuery so
 // the connection is reusable without statement/result skew; error-to-poison). Each response should end at
@@ -41,19 +41,19 @@ func (s *RunSession) execute(sql string, maxRows int) ([]string, [][]*string, in
 	if err != nil {
 		return nil, nil, 0, err
 	}
-	s.backend.Send(&pgproto3.Parse{Name: "", Query: sql})
-	s.backend.Send(&pgproto3.Bind{DestinationPortal: "", PreparedStatement: ""})
-	s.backend.Send(&pgproto3.Describe{ObjectType: 'P', Name: ""})
-	s.backend.Send(&pgproto3.Execute{Portal: "", MaxRows: executeMax})
-	s.backend.Send(&pgproto3.Close{ObjectType: 'P', Name: ""})
-	s.backend.Send(&pgproto3.Sync{})
-	if err := s.backend.Flush(); err != nil {
+	s.targetDb.Send(&pgproto3.Parse{Name: "", Query: sql})
+	s.targetDb.Send(&pgproto3.Bind{DestinationPortal: "", PreparedStatement: ""})
+	s.targetDb.Send(&pgproto3.Describe{ObjectType: 'P', Name: ""})
+	s.targetDb.Send(&pgproto3.Execute{Portal: "", MaxRows: executeMax})
+	s.targetDb.Send(&pgproto3.Close{ObjectType: 'P', Name: ""})
+	s.targetDb.Send(&pgproto3.Sync{})
+	if err := s.targetDb.Flush(); err != nil {
 		return nil, nil, 0, err
 	}
 	result := engine.StatementResult{Rows: make([][]*string, 0)}
 	collector := rowsCollector{maxRows: maxRows, result: &result}
-	backendErr, streamErr := s.streamResult(nil, streamOpts{extended: true}, collector.emit)
-	err = firstErr(backendErr, streamErr, collector.failed)
+	targetDbErr, streamErr := s.streamResult(nil, streamOpts{extended: true}, collector.emit)
+	err = firstErr(targetDbErr, streamErr, collector.failed)
 	if streamErr != nil || collector.failed != nil {
 		s.poisoned = true
 	}
@@ -67,15 +67,15 @@ func scriptedRunSession(t *testing.T, responses ...[]byte) (*RunSession, <-chan 
 	_ = client.SetDeadline(time.Now().Add(10 * time.Second))
 	_ = server.SetDeadline(time.Now().Add(10 * time.Second))
 
-	be := &RunSession{conn: client, sessionCore: sessionCore{backend: pgproto3.NewFrontend(client, client)}}
+	be := &RunSession{conn: client, sessionCore: sessionCore{targetDb: pgproto3.NewFrontend(client, client)}}
 	requests := make(chan []pgproto3.FrontendMessage, len(responses))
 	go func() {
 		defer close(requests)
-		backend := pgproto3.NewBackend(server, server)
+		targetDb := pgproto3.NewBackend(server, server)
 		for _, response := range responses {
 			messages := make([]pgproto3.FrontendMessage, 0, 6)
 			for range 6 {
-				message, err := backend.Receive()
+				message, err := targetDb.Receive()
 				if err != nil {
 					return
 				}
@@ -140,7 +140,7 @@ func scriptedStreamCore(t *testing.T, responses ...[]byte) (*sessionCore, func()
 			}
 		}
 	}()
-	return &sessionCore{backend: pgproto3.NewFrontend(client, client)}, func() { _ = client.Close(); _ = server.Close() }
+	return &sessionCore{targetDb: pgproto3.NewFrontend(client, client)}, func() { _ = client.Close(); _ = server.Close() }
 }
 
 func TestStreamResultSimpleRejectsExtendedAck(t *testing.T) {
@@ -174,14 +174,14 @@ func TestSoftProbeWidthMismatchDrainsForNextStatement(t *testing.T) {
 	defer server.Close()
 	_ = client.SetDeadline(time.Now().Add(10 * time.Second))
 	_ = server.SetDeadline(time.Now().Add(10 * time.Second))
-	core := &sessionCore{backend: pgproto3.NewFrontend(client, client)}
+	core := &sessionCore{targetDb: pgproto3.NewFrontend(client, client)}
 	go func() {
-		backend := pgproto3.NewBackend(server, server)
+		targetDb := pgproto3.NewBackend(server, server)
 		for _, response := range [][]byte{
 			encodePG(t, rowDesc("a", "b"), dataRow([]byte("one")), &pgproto3.ReadyForQuery{TxStatus: 'I'}),
 			encodePG(t, rowDesc("ok"), dataRow([]byte("next")), &pgproto3.CommandComplete{CommandTag: []byte("SELECT 1")}, &pgproto3.ReadyForQuery{TxStatus: 'I'}),
 		} {
-			if _, err := backend.Receive(); err != nil {
+			if _, err := targetDb.Receive(); err != nil {
 				return
 			}
 			if _, err := server.Write(response); err != nil {
@@ -295,14 +295,14 @@ func TestRunSessionExecutePGRowsAffectedOnWrite(t *testing.T) {
 	}
 }
 
-func TestRunSessionExecutePGBackendError(t *testing.T) {
+func TestRunSessionExecutePGTargetDbError(t *testing.T) {
 	response := encodePG(t,
 		&pgproto3.ErrorResponse{Severity: "ERROR", Code: "42P01", Message: "relation \"nope\" does not exist"},
 		&pgproto3.ReadyForQuery{TxStatus: 'I'},
 	)
 	_, _, _, err := runSessionExecute(t, "SELECT * FROM nope", 0, response)
 	if err == nil || !strings.Contains(err.Error(), "does not exist") {
-		t.Fatalf("err = %v, want backend error surfaced", err)
+		t.Fatalf("err = %v, want target-DB error surfaced", err)
 	}
 }
 
@@ -403,7 +403,7 @@ func TestRunSessionExecutePGSequentialQueriesDoNotSkew(t *testing.T) {
 }
 
 // A protocol error must poison the session: the NEXT Execute fails closed with "unusable" without writing a
-// second Query to the backend (so a swallowed best-effort probe error cannot let a later statement read the
+// second Query to the target DB (so a swallowed best-effort probe error cannot let a later statement read the
 // failed statement's stale frames).
 func TestRunSessionExecutePGErrorPoisonsSession(t *testing.T) {
 	malformed := encodePG(t, &pgproto3.BackendKeyData{ProcessID: 1, SecretKey: 2})

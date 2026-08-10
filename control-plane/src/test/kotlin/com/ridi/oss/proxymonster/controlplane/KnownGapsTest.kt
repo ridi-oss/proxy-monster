@@ -67,7 +67,7 @@ class KnownGapsTest {
 
     @Test
     fun `a CTE that shadows a real ungranted table name is allowed - the physical table is not read`() {
-        // The `orders` in the outer query binds to the CTE (SELECT 1), NOT the backend table, so nothing
+        // The `orders` in the outer query binds to the CTE (SELECT 1), NOT the target-DB table, so nothing
         // physical is scanned — ALLOW (analyst holds datasource.connect + sql.select). A naive
         // global-CTE-name fix would either leak the real table or wrongly deny this.
         val r = fx.run("with orders as (select 1) select count(*) from orders")

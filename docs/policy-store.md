@@ -26,7 +26,7 @@ System rows are immutable through the API except for `enabled`:
 - an upgrade UPSERT updates the shipped source but deliberately preserves the
   row's current `enabled` value;
 - user rows remain full CRUD; and
-- the backend enforces the distinction. The console is a matching read-only
+- the target DB enforces the distinction. The console is a matching read-only
   presentation, not the security boundary.
 
 A clean database runs the whole migration chain and therefore starts with the
@@ -538,7 +538,7 @@ DTO:
 CedarPolicy(id, systemKey?, origin /* SYSTEM | USER */, name, cedarSrc, enabled, updatedBy, updatedAt)
 ```
 
-Backend invariants:
+Target DB invariants:
 
 - `POST /api/policies` creates USER only and rejects a `system:`-prefixed name
   with a 400;
@@ -564,7 +564,7 @@ The policy list shows one surface, grouped or filterable by origin
   for copy/review; the enable switch stays available to `admin.policies`;
   disabling shows the concrete consequence (for example, "Disabling the critical
   guard allows a later permit to expose credentials or privileged mutation");
-  and the UI handles backend immutability errors rather than assuming its own
+  and the UI handles target DB immutability errors rather than assuming its own
   controls suffice.
 - User rows: normal Edit/Delete/enable controls.
 

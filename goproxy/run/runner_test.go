@@ -219,7 +219,7 @@ func (f *runFakeCP) runSetFragmentPushError(err error) {
 type runEngineFixture struct {
 	runDB        engine.Db
 	runProvider  spi.Provider
-	runTarget    spi.BackendTarget
+	runTarget    spi.TargetDb
 	runTable     string
 	runNamespace []string
 }
@@ -229,13 +229,13 @@ type runCapturingProvider struct {
 	readTimeout chan time.Duration
 }
 
-func (p *runCapturingProvider) NewRunSession(ctx context.Context, target spi.BackendTarget, dbImpl engine.Db, client spi.SessionClient, token string, connectionID []byte, guard engine.ExecGuard, readTimeout time.Duration) (spi.BackendSession, error) {
+func (p *runCapturingProvider) NewRunSession(ctx context.Context, target spi.TargetDb, dbImpl engine.Db, client spi.SessionClient, token string, connectionID []byte, guard engine.ExecGuard, readTimeout time.Duration) (spi.TargetDbSession, error) {
 	p.readTimeout <- readTimeout
 	return p.Provider.NewRunSession(ctx, target, dbImpl, client, token, connectionID, guard, readTimeout)
 }
 
-// runSlowOpenProvider blocks the backend dial until release is closed, modeling a slow open against a large
-// remote backend. A test uses it to observe SessionReady landing before the open finishes and heartbeats
+// runSlowOpenProvider blocks the target DB dial until release is closed, modeling a slow open against a large
+// remote target DB. A test uses it to observe SessionReady landing before the open finishes and heartbeats
 // being sent while it is in flight — without depending on wall-clock timing. It honors the target-DB open context:
 // if that is cancelled (the control-plane closed the run, or the proxy drained, during the open) it returns
 // at once, standing in for a real dialect whose dial/auth aborts on cancel. entered, when non-nil, is closed
@@ -250,7 +250,7 @@ type runSlowOpenProvider struct {
 	beforeDelegate func()
 }
 
-func (p *runSlowOpenProvider) NewRunSession(ctx context.Context, target spi.BackendTarget, dbImpl engine.Db, client spi.SessionClient, token string, connectionID []byte, guard engine.ExecGuard, readTimeout time.Duration) (spi.BackendSession, error) {
+func (p *runSlowOpenProvider) NewRunSession(ctx context.Context, target spi.TargetDb, dbImpl engine.Db, client spi.SessionClient, token string, connectionID []byte, guard engine.ExecGuard, readTimeout time.Duration) (spi.TargetDbSession, error) {
 	if p.entered != nil {
 		p.enterOnce.Do(func() { close(p.entered) })
 	}
@@ -319,7 +319,7 @@ func TestRunnerPostgresTempTablesAreSessionIsolated(t *testing.T) {
 	runSendQuery(fake2, readSQL, 20)
 	runExpectDecision(t, runRecv(t, fake2), pb.EnfAction_ALLOW, nil, "")
 	if message := runRecv(t, fake2); message.GetError() == nil || !strings.Contains(message.GetError().GetMessage(), "does not exist") {
-		t.Fatalf("session 2 bare temp read = %v, want backend relation-does-not-exist error", message)
+		t.Fatalf("session 2 bare temp read = %v, want target DB relation-does-not-exist error", message)
 	}
 }
 
@@ -738,7 +738,7 @@ func runCatalogRefreshContract(t *testing.T, fixture runEngineFixture) {
 		runExpectSingleClose(t, fake)
 	})
 
-	t.Run("backend-failed DDL does not refetch", func(t *testing.T) {
+	t.Run("target-DB-failed DDL does not refetch", func(t *testing.T) {
 		fake, client := runStartFakeCP(t, runSessionID)
 		waitDone := runLaunch(t, fake, client, fixture)
 		initialPushes := len(fake.runRecordedFragments())
@@ -748,7 +748,7 @@ func runCatalogRefreshContract(t *testing.T, fixture runEngineFixture) {
 		runSendQuery(fake, ddl, 20)
 		runExpectDecision(t, runRecv(t, fake), pb.EnfAction_ALLOW, nil, "")
 		if message := runRecv(t, fake); message.GetError() == nil {
-			t.Fatalf("backend-failed DDL message = %v, want RunError", message)
+			t.Fatalf("target-DB-failed DDL message = %v, want RunError", message)
 		}
 		waitDone()
 		if got := len(fake.runRecordedFragments()); got != initialPushes {
@@ -872,7 +872,7 @@ func runExpectSuccess(t *testing.T, fake *runFakeCP, rowsAffected int32) {
 // TestRunnerMySQLReprobesNamespaceAfterTrackerBypass is the run channel's namespace half of the
 // chained session-track bypass. A
 // client clears session_track_system_variables (silently defeating the sysvar tracker), then disables
-// session_track_schema (now unreported), then switches databases with a bare USE — defeating every backend
+// session_track_schema (now unreported), then switches databases with a bare USE — defeating every target DB
 // signal the proxy could observe the switch through. The current database really changed, so authorizing
 // the next statement under the stale schema would let it escape its policy. Probe-always closes the hole:
 // the engine re-reads DATABASE() before the next statement, so it is decided under the switched schema. The
@@ -918,7 +918,7 @@ func TestRunnerMySQLReprobesNamespaceAfterTrackerBypass(t *testing.T) {
 
 // TestRunnerPostgresRejectsUnsafeGUC proves the persistent PostgreSQL session holds the UTF-8 and
 // on-mode invariants the wire relay enforces (pgproxy/relay.go), so a session-scoped GUC change that
-// would let the control plane and the backend bind different objects for the same bytes fails closed and
+// would let the control plane and the target DB bind different objects for the same bytes fails closed and
 // terminates the session before any follow-up query can run.
 func TestRunnerPostgresRejectsUnsafeGUC(t *testing.T) {
 	fixture := runSeedPostgres(t)
@@ -1003,10 +1003,10 @@ func runAssertUnsafeMySQLStatementTerminates(t *testing.T, fixture runEngineFixt
 	runExpectSilence(t, fake, 200*time.Millisecond)
 }
 
-// TestRunnerMySQLCancelsSlowQuery proves the per-statement watchdog reaches the backend AND that a
+// TestRunnerMySQLCancelsSlowQuery proves the per-statement watchdog reaches the target DB AND that a
 // timed-out statement is reported as a timeout, never a success: with an injected short timeout the runner
 // dials a side connection and issues KILL QUERY, interrupting SLEEP(30) fast. MySQL SLEEP returns a success
-// row (1) when interrupted — but the watchdog's verdict overrides the backend, so the proxy sends the
+// row (1) when interrupted — but the watchdog's verdict overrides the target DB, so the proxy sends the
 // PM_QUERY_TIMEOUT sentinel error rather than a row + Done.
 func TestRunnerMySQLCancelsSlowQuery(t *testing.T) {
 	fixture := runSeedMySQL(t)
@@ -1029,7 +1029,7 @@ func TestRunnerMySQLCancelsSlowQuery(t *testing.T) {
 }
 
 // TestRunnerPostgresCancelsSlowQuery proves the watchdog's out-of-band CancelRequest reaches the
-// backend: pg_sleep(30) is canceled fast, the backend replies with an ErrorResponse, and the session ends
+// target DB: pg_sleep(30) is canceled fast, the target DB replies with an ErrorResponse, and the session ends
 // with a terminal error instead of blocking for the production timeout.
 func TestRunnerPostgresCancelsSlowQuery(t *testing.T) {
 	fixture := runSeedPostgres(t)
@@ -1192,7 +1192,7 @@ func TestRunnerDrainDoesNotStartAQueuedQuery(t *testing.T) {
 }
 
 // TestRunnerSendsRunReadyBeforeTargetDbOpenAndHeartbeats proves the run stream sends its id (RunReady) up front
-// and is kept alive through a slow open: SessionReady arrives before the (delayed) backend dial finishes — so
+// and is kept alive through a slow open: SessionReady arrives before the (delayed) target DB dial finishes — so
 // the CP can react to a stall or break during the open instead of waiting a blind budget — and RunProgress
 // heartbeats are emitted while the open runs, then RunServing once it completes.
 func TestRunnerSendsRunReadyBeforeTargetDbOpenAndHeartbeats(t *testing.T) {
@@ -1207,7 +1207,7 @@ func TestRunnerSendsRunReadyBeforeTargetDbOpenAndHeartbeats(t *testing.T) {
 	}()
 
 	// SessionReady must arrive while the target-DB open is still blocked — proving the run id is sent up front,
-	// not deferred until the backend is ready.
+	// not deferred until the target DB is ready.
 	select {
 	case <-fake.runReady:
 	case <-time.After(5 * time.Second):
@@ -1247,11 +1247,11 @@ func TestRunnerSendsRunReadyBeforeTargetDbOpenAndHeartbeats(t *testing.T) {
 	}
 }
 
-// TestRunnerCloseDuringTargetDbOpenAbortsBackend proves the proxy reads the inbound during the target-DB open: a
+// TestRunnerCloseDuringTargetDbOpenAbortsTargetDb proves the proxy reads the inbound during the target-DB open: a
 // RunClose the control-plane sends while the target-DB open is still in flight aborts the open at once and
-// releases the reserved connection, instead of finishing a backend handshake for a run nobody is waiting for.
+// releases the reserved connection, instead of finishing a target-DB handshake for a run nobody is waiting for.
 // The open is never released — the runner can only return by cancelling it — so a return is the abort.
-func TestRunnerCloseDuringTargetDbOpenAbortsBackend(t *testing.T) {
+func TestRunnerCloseDuringTargetDbOpenAbortsTargetDb(t *testing.T) {
 	fixture := runSeedMySQL(t)
 	entered := make(chan struct{})
 	fixture.runProvider = &runSlowOpenProvider{Provider: fixture.runProvider, release: make(chan struct{}), entered: entered}
@@ -1268,17 +1268,17 @@ func TestRunnerCloseDuringTargetDbOpenAbortsBackend(t *testing.T) {
 	select {
 	case <-done:
 	case <-time.After(5 * time.Second):
-		t.Fatal("runner did not abort the target-DB open on RunClose (still holding the backend handshake)")
+		t.Fatal("runner did not abort the target-DB open on RunClose (still holding the target-DB handshake)")
 	}
 	runWaitForCloses(t, fake, 1)
 	runExpectSingleClose(t, fake)
 	runExpectNoServing(t, fake)
 }
 
-// TestRunnerDrainDuringTargetDbOpenAbortsBackend is the redeploy analogue: a drain that lands while the backend
+// TestRunnerDrainDuringTargetDbOpenAbortsTargetDb is the redeploy analogue: a drain that lands while the target DB
 // open is in flight aborts it and releases the connection, so the proxy does not keep dialing for a run that
 // will re-home to the replacement.
-func TestRunnerDrainDuringTargetDbOpenAbortsBackend(t *testing.T) {
+func TestRunnerDrainDuringTargetDbOpenAbortsTargetDb(t *testing.T) {
 	fixture := runSeedMySQL(t)
 	entered := make(chan struct{})
 	fixture.runProvider = &runSlowOpenProvider{Provider: fixture.runProvider, release: make(chan struct{}), entered: entered}
@@ -1296,7 +1296,7 @@ func TestRunnerDrainDuringTargetDbOpenAbortsBackend(t *testing.T) {
 	select {
 	case <-done:
 	case <-time.After(5 * time.Second):
-		t.Fatal("runner did not abort the target-DB open on drain (still holding the backend handshake)")
+		t.Fatal("runner did not abort the target-DB open on drain (still holding the target-DB handshake)")
 	}
 	runWaitForCloses(t, fake, 1)
 	runExpectSingleClose(t, fake)
@@ -1304,7 +1304,7 @@ func TestRunnerDrainDuringTargetDbOpenAbortsBackend(t *testing.T) {
 }
 
 // TestRunnerDrainAsTargetDbOpenCompletesInstallsNoSession is the open-then-instant-drain case end to end: the
-// target-DB open runs to completion against the real backend with the drain closing during it, and the runner
+// target-DB open runs to completion against the real target DB with the drain closing during it, and the runner
 // must NOT send RunServing — no live editor session on a departing proxy — while still releasing the
 // connection. It reaches the aborted outcome by whichever path the scheduler picks (the outer drain-abort or
 // the post-completion re-check); the re-check branch itself is pinned deterministically by
@@ -1351,7 +1351,7 @@ func TestRunnerDrainAsTargetDbOpenCompletesInstallsNoSession(t *testing.T) {
 // TestRunnerCloseDuringRealDialAbortsIt drives the abort end to end through the REAL MySQL dial: a RunClose
 // sent while the dial is mid-handshake against a target that accepts TCP but never sends its greeting must
 // abort the dial and release the connection fast — exercising the real runner, the real gRPC control stream,
-// and the real provider.NewRunSession -> dialBackendAuthID (DialContext + AfterFunc), not a fake provider.
+// and the real provider.NewRunSession -> dialTargetDbAuthID (DialContext + AfterFunc), not a fake provider.
 // The release is asserted well under the dial's handshake timeout: a dial that ignored the cancel would leak
 // the connection until that timeout instead.
 func TestRunnerCloseDuringRealDialAbortsIt(t *testing.T) {
@@ -1403,7 +1403,7 @@ func TestRunnerDrainDuringRealDialAbortsIt(t *testing.T) {
 	runExpectNoServing(t, fake)
 }
 
-func TestRunnerCloseInFlightCancelsBackend(t *testing.T) {
+func TestRunnerCloseInFlightCancelsTargetDb(t *testing.T) {
 	fixture := runSeedMySQL(t)
 	fake, client := runStartFakeCP(t, runSessionID)
 	waitDone := runLaunch(t, fake, client, fixture)
@@ -1415,7 +1415,7 @@ func TestRunnerCloseInFlightCancelsBackend(t *testing.T) {
 	runSendClose(fake)
 	waitDone()
 	if elapsed := time.Since(start); elapsed > 20*time.Second {
-		t.Fatalf("runner closed in %s; RunClose did not interrupt the backend statement", elapsed)
+		t.Fatalf("runner closed in %s; RunClose did not interrupt the target-DB statement", elapsed)
 	}
 	runExpectSingleClose(t, fake)
 	runExpectMySQLSleepStopped(t, fixture)
@@ -1548,13 +1548,13 @@ func runStartFakeCP(t *testing.T, datasourceName string) (*runFakeCP, *cp.Client
 
 func runSeedMySQL(t *testing.T) runEngineFixture {
 	t.Helper()
-	backend := dbtest.MySQL(t)
+	targetDb := dbtest.MySQL(t)
 	seed := dbtest.OpenMySQL(t, "")
 	statements := []string{
 		"CREATE DATABASE IF NOT EXISTS " + runMySQLSchema,
 		"CREATE TABLE IF NOT EXISTS " + runMySQLSchema + ".pm_run_rows (id INT PRIMARY KEY, secret VARCHAR(64) NULL, note VARCHAR(64) NOT NULL DEFAULT '')",
 		"DELETE FROM " + runMySQLSchema + ".pm_run_rows",
-		// caching_sha2_password (mysql:8.0 default) so the run channel's shared backend dial is exercised against
+		// caching_sha2_password (mysql:8.0 default) so the run channel's shared target DB dial is exercised against
 		// it too; the ALTER re-salts each run, forcing the plaintext full-auth (public-key) path on first dial.
 		"CREATE USER IF NOT EXISTS '" + runMySQLService + "'@'%' IDENTIFIED WITH caching_sha2_password BY '" + runMySQLServicePwd + "'",
 		"ALTER USER '" + runMySQLService + "'@'%' IDENTIFIED WITH caching_sha2_password BY '" + runMySQLServicePwd + "'",
@@ -1570,8 +1570,8 @@ func runSeedMySQL(t *testing.T) runEngineFixture {
 	return runEngineFixture{
 		runDB:       db.MySqlDb{},
 		runProvider: mustProvider(t, engine.MySQL),
-		runTarget: spi.BackendTarget{
-			Host: backend.Host, Port: backend.Port, Db: runMySQLSchema,
+		runTarget: spi.TargetDb{
+			Host: targetDb.Host, Port: targetDb.Port, Db: runMySQLSchema,
 			User: runMySQLService, Password: runMySQLServicePwd,
 		},
 		runTable:     runMySQLSchema + ".pm_run_rows",
@@ -1581,7 +1581,7 @@ func runSeedMySQL(t *testing.T) runEngineFixture {
 
 func runSeedPostgres(t *testing.T) runEngineFixture {
 	t.Helper()
-	backend := dbtest.Postgres(t)
+	targetDb := dbtest.Postgres(t)
 	seed := dbtest.OpenPostgres(t, "")
 	statements := []string{
 		"CREATE SCHEMA IF NOT EXISTS " + runPGSchema,
@@ -1597,9 +1597,9 @@ func runSeedPostgres(t *testing.T) runEngineFixture {
 	return runEngineFixture{
 		runDB:       db.PgDb{},
 		runProvider: mustProvider(t, engine.Postgres),
-		runTarget: spi.BackendTarget{
-			Host: backend.Host, Port: backend.Port, Db: backend.DB,
-			User: backend.User, Password: backend.Password,
+		runTarget: spi.TargetDb{
+			Host: targetDb.Host, Port: targetDb.Port, Db: targetDb.DB,
+			User: targetDb.User, Password: targetDb.Password,
 		},
 		runTable:     runPGSchema + ".pm_run_rows",
 		runNamespace: []string{"pg_catalog", "public"},
@@ -1690,9 +1690,9 @@ func runWaitForClosesWithin(t *testing.T, fake *runFakeCP, count int, within tim
 }
 
 // runStallingTarget is a TCP endpoint that accepts connections and holds them open without ever writing, so a
-// backend handshake read against it stalls. accepted fires on the first accepted connection.
+// target-DB handshake read against it stalls. accepted fires on the first accepted connection.
 type runStallingTarget struct {
-	target   spi.BackendTarget
+	target   spi.TargetDb
 	accepted <-chan struct{}
 }
 
@@ -1733,7 +1733,7 @@ func runStartStallingTarget(t *testing.T) runStallingTarget {
 	})
 	addr := listener.Addr().(*net.TCPAddr)
 	return runStallingTarget{
-		target: spi.BackendTarget{
+		target: spi.TargetDb{
 			Host: addr.IP.String(), Port: addr.Port, Db: runMySQLSchema,
 			User: runMySQLService, Password: runMySQLServicePwd,
 		},

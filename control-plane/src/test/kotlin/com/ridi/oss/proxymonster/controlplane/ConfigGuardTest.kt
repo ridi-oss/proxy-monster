@@ -27,6 +27,7 @@ class ConfigGuardTest {
         "PM_OIDC_CLIENT_ID" to "cid",
         "PM_OIDC_CLIENT_SECRET" to "secret",
         "PM_OIDC_REDIRECT_URI" to "https://proxy.example.com/auth/oidc/callback",
+        "PM_SECRET_TOKEN" to "proxy-shared-secret",
         *pairs,
     )
 
@@ -166,6 +167,34 @@ class ConfigGuardTest {
                 ),
             )
         }
+    }
+
+    @Test fun `debug off requires a non-blank proxy secret`() {
+        assertFailsWith<IllegalArgumentException> { Config.fromEnv(productionEnv("PM_SECRET_TOKEN" to "")) }
+        assertFailsWith<IllegalArgumentException> { Config.fromEnv(productionEnv("PM_SECRET_TOKEN" to "   ")) }
+        // The actual advisory case: the key entirely absent (env() returns null). productionEnv always sets
+        // it, so build a production env without it to pin that the null path fails closed too.
+        assertFailsWith<IllegalArgumentException> {
+            Config.fromEnv(
+                envOf(
+                    "PM_AUTH_DEBUG" to "false",
+                    "PM_MCP_RESOURCE" to "https://proxy.example.com/mcp",
+                    "PM_SESSION_SECRET" to "x".repeat(32),
+                    "PM_OIDC_ISSUER" to "https://idp.example.com",
+                    "PM_OIDC_CLIENT_ID" to "cid",
+                    "PM_OIDC_CLIENT_SECRET" to "secret",
+                    "PM_OIDC_REDIRECT_URI" to "https://proxy.example.com/auth/oidc/callback",
+                ),
+            )
+        }
+    }
+
+    @Test fun `debug off with a valid proxy secret boots and preserves it`() {
+        assertEquals("proxy-shared-secret", Config.fromEnv(productionEnv()).secretToken)
+    }
+
+    @Test fun `debug mode preserves the configured proxy secret value verbatim`() {
+        assertEquals("   ", Config.fromEnv(envOf("PM_SECRET_TOKEN" to "   ")).secretToken)
     }
 
     @Test fun `debug off requires secure canonical MCP origins`() {

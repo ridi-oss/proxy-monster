@@ -374,14 +374,15 @@ posture validation), so this is purely about who may assert
 `system:development`: posture is self-asserted through the proxy
 self-registration gRPC path (`ControlPlaneGrpcService.register` passes the tag
 list into the `Datasources.register` upsert; a non-empty list overwrites an
-existing row's posture), gated only by the nullable shared `PM_SECRET_TOKEN`.
-Before the dev preset is relied on in production, that registration/token path
-(owned by [datasource-registration.md](./datasource-registration.md)) must close
-the boundary — any of: fail boot if the secret is unset in prod; gate
-posture-tag mutation behind admin authz rather than proxy self-assertion; or
-forbid `Register` from overwriting an existing datasource's posture. This doc's
-side is fail-closed given a trustworthy posture; that trust is asserted here,
-not enforced.
+existing row's posture), gated only by the shared `PM_SECRET_TOKEN` (required in
+production — startup is rejected when it is unset — so it can no longer be left
+open there). Before the dev preset is relied on in production, that
+registration/token path (owned by
+[datasource-registration.md](./datasource-registration.md)) must close the
+boundary — either: gate posture-tag mutation behind admin authz rather than
+proxy self-assertion; or forbid `Register` from overwriting an existing
+datasource's posture. This doc's side is fail-closed given a trustworthy
+posture; that trust is asserted here, not enforced.
 
 ## Interpretation — what a query gets, by preset × resource
 

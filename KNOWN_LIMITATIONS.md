@@ -459,15 +459,15 @@ PostgreSQL client verifies with the downloaded file instead.
 - 🔴 The advertised chain's root of trust is the `Register` credential, not a
   proxy identity. One system-wide shared secret (`PM_SECRET_TOKEN`)
   authenticates every proxy RPC and `Register` accepts a caller-asserted
-  datasource name, so whoever holds that secret — or anyone who can reach the
-  gRPC port while it is unset, which starts the gate open — can re-register any
-  datasource's advertised address and chain, serve a matching cert, and capture
-  that datasource's wire tokens. The fix is a datasource-bound registrar
-  identity (a per-datasource register credential, proxy mTLS bound to the
-  permitted name, or an admin-owned trust record), not a change to how the chain
-  is verified. Set `PM_SECRET_TOKEN` on the control plane and every proxy:
-  startup does not require it today, and [`docs/backlog.md`](./docs/backlog.md)
-  tracks failing startup when it is unset in production. Trust boundary:
+  datasource name, so whoever holds that secret can re-register any datasource's
+  advertised address and chain, serve a matching cert, and capture that
+  datasource's wire tokens. The fix is a datasource-bound registrar identity (a
+  per-datasource register credential, proxy mTLS bound to the permitted name, or
+  an admin-owned trust record), not a change to how the chain is verified.
+  Production startup requires `PM_SECRET_TOKEN` (it is rejected when
+  `PM_AUTH_DEBUG` is false), so the gate can no longer be left open by omission;
+  the admin-equivalent scope of that one shared secret is the remaining gap.
+  Trust boundary:
   [`docs/datasource-registration.md`](./docs/datasource-registration.md).
 - 🟡 Every certificate in the advertised file becomes a trust anchor for `pmon`,
   including the leaf: it loads the whole PEM into a Go root pool, and Go trusts

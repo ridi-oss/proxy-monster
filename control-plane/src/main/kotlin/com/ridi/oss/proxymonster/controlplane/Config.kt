@@ -216,6 +216,10 @@ data class Config(
                 "PM_SESSION_SECRET must be a non-default secret of at least 32 characters when PM_AUTH_DEBUG is false"
             }
             require(authDebug || oidc != null) { "PM_OIDC_* must be configured when PM_AUTH_DEBUG is false" }
+            val secretToken = env("PM_SECRET_TOKEN")
+            require(authDebug || !secretToken.isNullOrBlank()) {
+                "PM_SECRET_TOKEN must be configured when PM_AUTH_DEBUG is false"
+            }
             if (!authDebug) {
                 requireSecureOidcUri(requireNotNull(oidc).issuer, "PM_OIDC_ISSUER")
                 require(oidc.redirectUri == "$mcpIssuer/auth/oidc/callback") {
@@ -243,7 +247,7 @@ data class Config(
                 dbUser = env("PM_DB_USER") ?: "proxymonster",
                 dbPassword = env("PM_DB_PASSWORD") ?: "proxymonster",
                 authDebug = authDebug,
-                secretToken = env("PM_SECRET_TOKEN"),
+                secretToken = secretToken,
                 sessionSecret = sessionSecret,
                 oidc = oidc,
                 resultKey = env("PM_RESULT_KEY")?.let { b64 ->

@@ -8,13 +8,12 @@ forward work. MySQL leads PostgreSQL in priority.
 ## Deployment & operations
 
 - Explicit production mode: refuse startup when any debug bypass
-  (`PM_AUTH_DEBUG`, a committed session-secret fallback, an unset ingest token)
-  is enabled, instead of inferring production from a heuristic.
+  (`PM_AUTH_DEBUG`, a committed session-secret fallback) is enabled, instead of
+  inferring production from a heuristic.
 - Per-datasource authorization for posture. A proxy's `Register` currently
   overwrites a datasource's tags gated only by the shared proxy token; gate
-  posture mutation behind admin authz, forbid `Register` from overwriting an
-  existing datasource's posture, and fail startup when the proxy token is unset
-  in production.
+  posture mutation behind admin authz, and forbid `Register` from overwriting an
+  existing datasource's posture.
 - Multi-instance support. The system runs single-instance today. Before any
   rolling or multi-replica deploy: harden the `system:admin` bootstrap against a
   migrate-while-serving interleave (fleet-stopped migration, or

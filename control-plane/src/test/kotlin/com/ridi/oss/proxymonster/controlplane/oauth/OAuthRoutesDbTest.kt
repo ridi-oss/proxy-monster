@@ -384,6 +384,7 @@ class OAuthRoutesDbTest {
             "PM_OIDC_CLIENT_ID" to "client",
             "PM_OIDC_CLIENT_SECRET" to "secret",
             "PM_OIDC_REDIRECT_URI" to "https://proxy.example/auth/oidc/callback",
+            "PM_SECRET_TOKEN" to "proxy-shared-secret",
         )
         assertFailsWith<IllegalArgumentException> { Config.fromEnv(base::get) }
         base["PM_SESSION_SECRET"] = "x".repeat(32)

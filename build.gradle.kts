@@ -4,8 +4,8 @@
 // (the gRPC wire contract), and :analyzer:jvm (the sqlglot-go probe's JVM binding). Each module
 // applies the Kotlin plugin without a version.
 plugins {
-    kotlin("jvm") version "2.2.0" apply false
-    kotlin("plugin.serialization") version "2.2.0" apply false
+    kotlin("jvm") version "2.4.10" apply false
+    kotlin("plugin.serialization") version "2.4.10" apply false
 }
 
 // The build requires JDK 24 or newer: Kotlin's jvmTarget is JVM_24 in each module, and the Java

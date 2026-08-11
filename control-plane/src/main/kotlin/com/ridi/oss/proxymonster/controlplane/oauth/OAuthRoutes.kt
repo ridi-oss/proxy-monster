@@ -17,6 +17,7 @@ import com.ridi.oss.proxymonster.controlplane.AuthAuditRecorder.Companion.CHANNE
 import com.ridi.oss.proxymonster.controlplane.AuthAuditRecorder.Companion.PRINCIPAL_UNATTRIBUTED
 import com.ridi.oss.proxymonster.controlplane.Config
 import com.ridi.oss.proxymonster.controlplane.auditedValue
+import com.ridi.oss.proxymonster.controlplane.constantTimeEquals
 import com.ridi.oss.proxymonster.controlplane.PrincipalSessionStore
 import com.ridi.oss.proxymonster.controlplane.WebSessionRef
 import com.ridi.oss.proxymonster.controlplane.ensureDeviceCookie
@@ -48,7 +49,6 @@ import io.ktor.server.sessions.get
 import io.ktor.server.sessions.sessions
 import io.ktor.server.sessions.set
 import kotlinx.serialization.Serializable
-import java.security.MessageDigest
 import java.sql.Connection
 import java.util.Locale
 import java.util.ResourceBundle
@@ -375,7 +375,7 @@ fun Route.mcpOAuthRoutes(
         if (user == null) return@delete call.respond(HttpStatusCode.Unauthorized, OAuthError("login_required"))
         val expectedCsrf = consentCsrf(config.sessionSecret, user.principal)
         val suppliedCsrf = call.request.headers["X-PM-CSRF"]
-        if (suppliedCsrf == null || !MessageDigest.isEqual(suppliedCsrf.toByteArray(), expectedCsrf.toByteArray())) {
+        if (!constantTimeEquals(suppliedCsrf, expectedCsrf)) {
             return@delete call.respond(HttpStatusCode.BadRequest, OAuthError("invalid_request"))
         }
         if (id == null) return@delete call.respond(HttpStatusCode.BadRequest, OAuthError("invalid_request"))

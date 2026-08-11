@@ -11,6 +11,7 @@ import io.ktor.util.AttributeKey
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.serializer
+import java.security.MessageDigest
 import java.util.UUID
 
 /** The signed-cookie session name. */
@@ -109,6 +110,15 @@ fun ApplicationCall.webSession(): WebSessionRow? {
 
 /** Resolve the current server-side web session, or null if unauthenticated. */
 fun ApplicationCall.userSession(): UserSession? = webSession()?.let { UserSession(it.principal) }
+
+/** Compare a presented secret against the expected one without leaking its prefix through timing —
+ *  `==` on a standing secret is an oracle. Every standing-secret check goes through this: the ingest
+ *  token, the SCIM bearer, the proxy's gRPC transport secret, and the consent CSRF token (an HMAC of
+ *  the session secret, so it is standing per principal, not a per-request nonce). */
+fun constantTimeEquals(presented: String?, expected: String): Boolean {
+    if (presented == null) return false
+    return MessageDigest.isEqual(presented.toByteArray(Charsets.UTF_8), expected.toByteArray(Charsets.UTF_8))
+}
 
 // The fallback is reachable only when PM_AUTH_DEBUG admits a mutation without a session.
 fun ApplicationCall.auditActor(config: Config, channel: String = AuditSource.CONSOLE): AuditActor = AuditActor(

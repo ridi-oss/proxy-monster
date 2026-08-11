@@ -716,8 +716,7 @@ fun Application.module(config: Config, core: ControlPlaneCore) {
         post("/api/ingest/decision") {
             val expected = config.secretToken
             if (expected != null) {
-                val provided = call.request.headers["X-PM-Ingest-Token"]
-                if (provided != expected) {
+                if (!constantTimeEquals(call.request.headers["X-PM-Ingest-Token"], expected)) {
                     call.invalidToken("ingest")
                     return@post
                 }

@@ -19,6 +19,11 @@ Raw attested inputs, set by the control-plane from what the client cannot forge:
 - `requester_ip` — the end client's source address, a Cedar `ipaddr`. From the
   proxy's `client_addr` on the wire path; from `resolveHttpRequesterIp`
   (`RequesterIp.kt`) on the HTTP paths.
+- `stmt_kind` — the statement's classified kind leaf (`select`, `explain`,
+  `insert`, …), from the analyzer's statement classification. Lets a read policy
+  condition on _how_ a column is read — e.g. permit `result.read.unmasked` only
+  under a plan-only EXPLAIN (`context.stmt_kind == "explain"`), which returns a
+  plan, not rows. Absent on a pre-parse failure (`STMT_UNKNOWN`).
 
 Derived `context.tags` — a `Set<String>` of stable tag names
 (`"trusted-network"`, …) the control-plane computes before the real decision by
@@ -44,8 +49,8 @@ the conditioned grant does not apply → deny. Absence is never "allow."
 Authoring rule (Cedar strict validation): every `context` attribute is optional,
 and Cedar refuses an unguarded read of an optional attribute (the policy fails
 validation, the policy store rejects the write, and `CedarEngine` fails fast at
-boot). So a policy touching `channel` / `requester_ip` / `tags` MUST guard
-first: `context has tags && context.tags.contains("…")`.
+boot). So a policy touching `channel` / `requester_ip` / `stmt_kind` / `tags`
+MUST guard first: `context has tags && context.tags.contains("…")`.
 
 ## `channel` — which surface / phase
 

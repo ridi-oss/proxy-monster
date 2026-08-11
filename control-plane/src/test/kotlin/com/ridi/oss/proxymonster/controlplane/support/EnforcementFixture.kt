@@ -385,6 +385,42 @@ class EnforcementFixture(
                 ),
                 updatedBy = "test-fixture",
             )
+            // `explainer` — the same reads as `analyst` (connect + cat.read, non-pii unmasked, pii masked)
+            // PLUS a plan-only-EXPLAIN unmask: result.read.unmasked on the users table, but ONLY when
+            // context.stmt_kind == "explain". A masked column in a predicate — denied for a row-returning
+            // SELECT, since its selectivity would leak — is then readable under a plan-only EXPLAIN, which
+            // returns no rows. Proves the stmt_kind context threading; the shipped -262 preset applies this
+            // shape to system:production-pii-accessor.
+            val explainRole = s.policyStore.createRole(RoleInput("explainer"))
+            s.policyStore.createAssignment(RoleAssignmentInput("explainer@example.com", explainRole.id))
+            s.cedarPolicyStore.create(
+                CedarPolicyInput(
+                    name = "explainer-connect-read-write",
+                    cedarSrc = """permit(principal in Role::"explainer", action in [Action::"datasource.connect", Action::"stmt.cat.read", Action::"stmt.cat.write.insert", Action::"stmt.cat.ddl"], resource in Datasource::"${ds.name}");""",
+                ),
+                updatedBy = "test-fixture",
+            )
+            s.cedarPolicyStore.create(
+                CedarPolicyInput(
+                    name = "explainer-users-unmasked",
+                    cedarSrc = """permit(principal in Role::"explainer", action == Action::"result.read.unmasked", resource in Table::"$usersTableEuid") unless { resource in Tag::"pii" };""",
+                ),
+                updatedBy = "test-fixture",
+            )
+            s.cedarPolicyStore.create(
+                CedarPolicyInput(
+                    name = "explainer-users-masked-pii",
+                    cedarSrc = """permit(principal in Role::"explainer", action == Action::"result.read.masked", resource in Table::"$usersTableEuid") when { resource in Tag::"pii" };""",
+                ),
+                updatedBy = "test-fixture",
+            )
+            s.cedarPolicyStore.create(
+                CedarPolicyInput(
+                    name = "explainer-explain-unmasked",
+                    cedarSrc = """permit(principal in Role::"explainer", action == Action::"result.read.unmasked", resource in Table::"$usersTableEuid") when { context has stmt_kind && context.stmt_kind == "explain" };""",
+                ),
+                updatedBy = "test-fixture",
+            )
             // pushTestCatalog() captures static namespace/case metadata on the datasource row. Always hand
             // decideQuery the refreshed row rather than the pre-catalog create() result.
             return s.datasourceStore.get(ds.id)!!

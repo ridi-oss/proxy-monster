@@ -264,9 +264,14 @@ binary-format results have a relay path; COPY and fast-path do not and stay
 denied even where policy permits `exception.unmaskable`. That is an honest
 fail-closed capability gap, not a policy exception the proxy silently ignores.
 
-`EXPLAIN`-of-a-masked-query is a control-plane structural deny
-(`EXPLAIN_MASK_DENY`): there is no safe relay for it, so it stays denied
-regardless of policy.
+A plan-only `EXPLAIN` returns the query plan, not rows, so the analyzer emits
+its projected columns as read-required with no output ordinal (and empty
+`output_columns`): an authorized `result.read.masked` references a column that
+is never returned, so nothing is masked and the plan relays as-is. A masked
+column in a PREDICATE still denies unless the reader holds
+`result.read.unmasked` (its selectivity leaks — exact under `ANALYZE`); an
+`EXPLAIN ANALYZE` of a write carries the write's own kind and denies as that
+write.
 
 ## End-to-end flow
 
@@ -276,10 +281,9 @@ authorize `datasource.connect`; authorize classified Utility grants; handle
 zero-resource metadata/session passthrough; authorize each emitted datasource
 action; apply the dangerous-function and `exception.unanalyzable` gates for an
 unresolved statement; then authorize classified functions, Columns, and
-uncovered Tables. An EXPLAIN that would MASK is denied. For any remaining MASK
-verdict, the control-plane checks `exception.unmaskable` and carries the result
-as a capability flag for the proxy. Every gate runs before the target DB
-receives the statement.
+uncovered Tables. For any remaining MASK verdict, the control-plane checks
+`exception.unmaskable` and carries the result as a capability flag for the
+proxy. Every gate runs before the target DB receives the statement.
 
 Assuming `datasource.connect` and the `stmt.kind.select` gate pass:
 

@@ -355,8 +355,9 @@ internal fun effectiveAuthzContext(
     roles: Set<String>,
     datasource: String,
     datasourceTags: List<String>,
+    stmtKind: String? = null,
 ): AuthzContext {
-    val raw = caller.copy(channel = channel.contextValue)
+    val raw = caller.copy(channel = channel.contextValue, stmtKind = stmtKind)
     return raw.copy(tags = authz.resolveContextTags(principal, roles, datasource, raw, datasourceTags))
 }
 
@@ -443,8 +444,24 @@ fun decideQuery(
     // own roles). Ordinary resolution is already deleted-role-filtered in RoleResolver.
     val roles = providedRoles?.let { policyStore.liveRoleNames(it) } ?: roleResolver.resolve(principal)
     val roleList = roles.toList()
+    // The statement's classified kind, resolved before the context so a read policy can condition on it
+    // (`context.stmt_kind`) — e.g. permit unmasked reads only under a plan-only EXPLAIN, which returns no
+    // rows. STMT_UNKNOWN (a pre-parse failure), like an unspecified/unrecognized kind, leaves stmt_kind
+    // ABSENT rather than exposing a value to condition on; it routes through exception.unanalyzable at the
+    // kind gate below.
+    val statementKind = if (facts.hasStatementExec()) facts.statementExec.statementKind
+    else StatementKind.STATEMENT_KIND_STMT_UNKNOWN
     @Suppress("NAME_SHADOWING")
-    val context = effectiveAuthzContext(context, channel, authz, principal, roles, ds.name, ds.tags)
+    val context = effectiveAuthzContext(
+        context, channel, authz, principal, roles, ds.name, ds.tags,
+        stmtKind = statementKind
+            .takeIf {
+                it != StatementKind.STATEMENT_KIND_UNSPECIFIED &&
+                    it != StatementKind.STATEMENT_KIND_STMT_UNKNOWN &&
+                    it != StatementKind.UNRECOGNIZED
+            }
+            ?.name?.removePrefix("STATEMENT_KIND_")?.lowercase(),
+    )
     val derivedTags = context.tags.toList()
 
     // Fail-closed contract validation (analyzer.proto): the single statement-execution grant is the sole
@@ -534,8 +551,6 @@ fun decideQuery(
     // connect-only gaps (ANALYZE TABLE, SHOW MASTER STATUS, …). A missing grant (a pre-parse failure) reads
     // as STMT_UNKNOWN → exception.unanalyzable. Runs after connect/utility, before the passthrough allow; the
     // unanalyzable/utility gates still apply on top (e.g. ALTER TABLE stays prod-denied).
-    val statementKind = if (facts.hasStatementExec()) facts.statementExec.statementKind
-    else StatementKind.STATEMENT_KIND_STMT_UNKNOWN
     val kindAction = statementKindActionId(statementKind)
         ?: return structuralDeny("statement kind is unspecified", roleList, contextTags = derivedTags)
     if (authz.authorizeDatasourceActionId(principal, roles, kindAction, ds.name, context, ds.tags) !is AuthzDecision.Allow) {
@@ -754,9 +769,6 @@ fun decideQuery(
     }
 
     val action = if (masks.isEmpty()) EnfAction.ALLOW else EnfAction.MASK
-    if (facts.explainOfQuery && action == EnfAction.MASK) {
-        return structuralDeny(EXPLAIN_MASK_DENY, roleList, failedStage = "explain-masked", contextTags = derivedTags)
-    }
     // Every classified column the statement touched, whatever its tags are named: `pii` is a deployment's
     // own tag, so keying this on that one string leaves auditmon's mass-export detector blind on a
     // deployment that classifies with `pci`.
@@ -804,8 +816,6 @@ private val MALFORMED_DISPOSITIONS = setOf(
 )
 
 internal const val MASK_BIND_DENY = "required mask could not be bound to a result column"
-private const val EXPLAIN_MASK_DENY =
-    "cannot EXPLAIN a query whose columns are masked — request full access or run the query directly"
 private const val SYSTEM_FUNCTION_DENY = "dangerous system function is not allowed:"
 private const val SYSTEM_UTILITY_DENY = "utility command is not allowed on this datasource:"
 private const val DEACTIVATED_PRINCIPAL_DENY = "principal is deprovisioned (deactivated) — access denied"
@@ -871,11 +881,11 @@ internal fun wireTaskForbiddenDeny(
 // Relay the analyzer's optional rewritten SQL on a decision we allow. rewrittenSql is Go-analyzer output
 // (the `SELECT *` expansion, the MySQL charset pin) independent of statement class, so every
 // understood-and-allowed decision — analyzed, metadata, session — routes it through this one point rather
-// than each building its own. An EXPLAIN-of-query keeps its original text (the rewrite is for the inner query
-// it plans). The exception.unanalyzable escape hatches deliberately relay the original whole statement, so they do
-// not call this.
+// than each building its own. An EXPLAIN/DESCRIBE keeps its original text — the analyzer emits no
+// rewritten_sql for it (the rewrite is for the inner query it plans). The exception.unanalyzable escape
+// hatches deliberately relay the original whole statement, so they do not call this.
 private fun DecisionContext.withAnalyzerRewrite(facts: StatementFacts): DecisionContext =
-    if (facts.hasRewrittenSql() && !facts.explainOfQuery) copy(rewrittenSql = facts.rewrittenSql) else this
+    if (facts.hasRewrittenSql()) copy(rewrittenSql = facts.rewrittenSql) else this
 
 // The Cedar action a statement's kind is gated by. "stmt.kind.<k>" is a member of its category action in
 // the schema, so a category or kind preset matches it; an admin-category kind with no preset denies —

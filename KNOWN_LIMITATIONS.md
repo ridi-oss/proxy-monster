@@ -265,11 +265,6 @@ tagging, table detail) and never feeds an enforcement decision.
   match `RENAME USER`, which is privilege management rather than schema DDL, so
   the over-deny is deliberate. The structured equivalent is permitted:
   `ALTER TABLE a RENAME TO b`.
-- 🟡 `EXPLAIN` of a query that requires masking is deliberately denied. The
-  analyzer emits the wrapped query's grants with `explain_of_query=true`, so an
-  unmasked inner query may proceed after its ordinary grants pass. If the
-  resulting verdict would be MASK, `decideQuery` denies with
-  `EXPLAIN_MASK_DENY`; this also covers `EXPLAIN ANALYZE`.
 - 🟢 Zero-column table scans require a table grant. A query that names no column
   of a table — `SELECT count(*) FROM t`, `SELECT 1 FROM t`,
   `EXISTS(SELECT 1 FROM t)`, a cross-join side that only multiplies cardinality
@@ -281,14 +276,17 @@ tagging, table detail) and never feeds an enforcement decision.
   already exposed through that column, so it needs no separate table grant; only
   a table with zero traced columns and no table grant is denied. Verified on
   PostgreSQL (`KnownGapsTest`) and MySQL (`ScannedTableMySqlTest`).
-- 🔴 Utility-command passthrough is still an existence oracle. Analyzer-path
-  (`ANALYZED`-class) zero-column scans are covered above, but utility commands
-  that classify as passthrough and take a table target — e.g. `ANALYZE <table>`
-  (PostgreSQL, `SESSION` → wire/editor passthrough, gated only by
-  `datasource.connect`, not a table grant) — still disclose an ungranted table's
-  existence via a target-DB error. They return no rows. The fix routes each
-  resource-bearing utility to a Cedar gate instead of the blanket passthrough
-  ([`docs/facts-emission.md`](./docs/facts-emission.md)).
+- 🟡 Whole-database `ANALYZE` forms are gated by statement kind, not per-table
+  reads. A table-targeted `ANALYZE TABLE t` (MySQL) / `ANALYZE t` (PostgreSQL)
+  carries its target's result-read grant, so a principal who cannot read the
+  table cannot ANALYZE it. The forms that name no single table — bare PostgreSQL
+  `ANALYZE` (every accessible table), `ANALYZE INDEX`/`DATABASE`/`CLUSTER` —
+  carry only the `analyze_table` statement kind, so `stmt.cat.admin.maintenance`
+  gates them but no per-table read does. They name no table to probe, so they
+  are not a single-table existence oracle; a maintenance-privileged principal
+  running one can still surface an unreadable table's name through a forwarded
+  target-DB notice (the shared target-DB account, tracked in
+  [`docs/backlog.md`](./docs/backlog.md)).
 
 ## Authz / policy
 
@@ -510,18 +508,18 @@ connection so `SET`/`USE`/temp/`BEGIN` persist across queries. The one-shot
 path and `POST /api/datasources/{id}/query`, not the interactive editor.
 
 - 🟡 Editor statements decide as `Channel.EDITOR`, so `SESSION` statements
-  passthrough-ALLOW. Benign `SET`, `BEGIN`, `USE`, and `ANALYZE` are allowed on
-  the editor channel; classified privileged `SET` forms still pass their Utility
-  gate, and session statements stay denied on the workflow executor/viewer
-  channels. Because a persistent session holds ONE target-DB connection across
-  MANY statements, a session mutation can affect a later query on the same
-  connection; its safety rests on per-statement re-decide — every statement
-  round-trips to the proxy's `Decide` against that connection's live
-  per-connection catalog, so a mutated namespace is re-authorized rather than
-  carried silently, and a multi-statement `SET; SELECT` batch is rejected at
-  admission so passthrough only ever sees a pure session statement. Hard gate:
-  per-statement re-decide (or an explicit session-mutation refusal) must remain
-  the standing mitigation.
+  passthrough-ALLOW. Benign `SET`, `BEGIN`, and `USE` are allowed on the editor
+  channel; classified privileged `SET` forms still pass their Utility gate,
+  `ANALYZE` is gated by its statement kind and its target's read, and session
+  statements stay denied on the workflow executor/viewer channels. Because a
+  persistent session holds ONE target-DB connection across MANY statements, a
+  session mutation can affect a later query on the same connection; its safety
+  rests on per-statement re-decide — every statement round-trips to the proxy's
+  `Decide` against that connection's live per-connection catalog, so a mutated
+  namespace is re-authorized rather than carried silently, and a multi-statement
+  `SET; SELECT` batch is rejected at admission so passthrough only ever sees a
+  pure session statement. Hard gate: per-statement re-decide (or an explicit
+  session-mutation refusal) must remain the standing mitigation.
 - 🟡 Catalog adoption assumes one target DB behind a datasource. On MySQL a new
   connection may start from catalog content the control plane already holds
   rather than measuring the target DB itself, so its first statement decides

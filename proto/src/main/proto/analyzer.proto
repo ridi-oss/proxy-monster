@@ -140,6 +140,11 @@ enum StatementKind {
   STATEMENT_KIND_VALUES = 4;
   STATEMENT_KIND_WITH_SELECT = 5;
   STATEMENT_KIND_SET_OP = 6;
+  // A plan-only EXPLAIN of a query — MySQL EXPLAIN and EXPLAIN ANALYZE, PostgreSQL EXPLAIN, and
+  // PostgreSQL EXPLAIN ANALYZE of a read: it returns the query PLAN, not rows, and executes no write. The
+  // schema places stmt.kind.explain in stmt.cat.read. An EXPLAIN ANALYZE that EXECUTES a write (PostgreSQL
+  // only) is classified as that write's own kind instead, so it authorizes — and denies — as the write.
+  STATEMENT_KIND_EXPLAIN = 140;
 
   // write
   STATEMENT_KIND_INSERT = 7;
@@ -394,8 +399,10 @@ message StatementFacts {
   reserved 8;
   // Safe analyzer rewrite (currently faithful star expansion); absent means relay the client's SQL.
   optional string rewritten_sql = 9;
-  // True when grants describe an inner query under EXPLAIN; rewritten_sql must then remain absent.
-  bool explain_of_query = 10;
+  // was explain_of_query — an EXPLAIN's output is the plan, not the query's columns, so the analyzer emits
+  // its projected columns as read-required-with-no-output-ordinal and leaves output_columns empty; nothing
+  // binds a mask, so no separate result-shape flag is needed.
+  reserved 10;
   // True only for non-temporary DDL roots; Kotlin also treats called functions as catalog-changing.
   bool catalog_changing = 11;
   // Resolved physical source identities. Missing required sources is an analyzer failure, not allow.

@@ -151,7 +151,8 @@ func TestStatementFactsMetadataAndUtilityClassification(t *testing.T) {
 
 func TestStatementFactsExplainAnalyzesInnerQuery(t *testing.T) {
 	facts := mysqlFacts(t, "EXPLAIN TABLE users")
-	if !facts.GetResolved() || !facts.GetExplainOfQuery() || facts.GetRewrittenSql() != "" {
+	// An EXPLAIN's output is the plan, not the query's columns: no output_columns, and no rewritten SQL.
+	if !facts.GetResolved() || len(facts.GetOutputColumns()) != 0 || facts.GetRewrittenSql() != "" {
 		t.Fatalf("unexpected EXPLAIN TABLE facts: %+v", facts)
 	}
 	foundSSN := false
@@ -165,8 +166,189 @@ func TestStatementFactsExplainAnalyzesInnerQuery(t *testing.T) {
 	}
 
 	descAnalyze := postgresFacts(t, "DESC ANALYZE SELECT ssn FROM users")
-	if !descAnalyze.GetResolved() || !descAnalyze.GetExplainOfQuery() {
+	if !descAnalyze.GetResolved() || len(descAnalyze.GetOutputColumns()) != 0 {
 		t.Fatalf("DESC ANALYZE did not analyze inner query: %+v", descAnalyze)
+	}
+}
+
+func TestStatementFactsAnalyzeTableGatesTableRead(t *testing.T) {
+	// A table-targeted ANALYZE must carry the same result-read grant SELECT * FROM the table would, so the
+	// result-read gate governs it and it is not an existence oracle. Both MySQL `ANALYZE TABLE t` and
+	// PostgreSQL `ANALYZE t` target one table to read. The read grants must name THAT table (a second target,
+	// `sink`, pins that they follow the target rather than a hardcoded one). Like an EXPLAIN, ANALYZE's output
+	// is not the table's rows, so it emits no output_columns and no SELECT rewritten_sql leaks onto the wire.
+	for _, tc := range []struct {
+		name  string
+		facts *pb.StatementFacts
+		table string
+	}{
+		{"mysql ANALYZE TABLE users", mysqlFacts(t, "ANALYZE TABLE users"), "users"},
+		{"mysql ANALYZE TABLE sink", mysqlFacts(t, "ANALYZE TABLE sink"), "sink"},
+		{"postgres ANALYZE users", postgresFacts(t, "ANALYZE users"), "users"},
+		{"postgres ANALYZE sink", postgresFacts(t, "ANALYZE sink"), "sink"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if !tc.facts.GetResolved() || factsKind(tc.facts) != pb.StatementKind_STATEMENT_KIND_ANALYZE_TABLE {
+				t.Fatalf("expected resolved ANALYZE_TABLE: %+v", tc.facts)
+			}
+			if len(tc.facts.GetOutputColumns()) != 0 || tc.facts.GetRewrittenSql() != "" {
+				t.Fatalf("ANALYZE must not rewrite onto the wire or output the table's columns: %+v", tc.facts)
+			}
+			// Every emitted column read grant must name the ANALYZE target, and there must be at least one —
+			// a grant on a different table would mean the read gate governs the wrong resource.
+			gated := false
+			for _, grant := range tc.facts.GetResultReads() {
+				c := grant.GetColumn()
+				if c == nil {
+					continue
+				}
+				if c.GetIdentity().GetTable() != tc.table {
+					t.Fatalf("ANALYZE %s emitted a read grant on %q, not the target: %+v", tc.table, c.GetIdentity().GetTable(), grant)
+				}
+				gated = true
+			}
+			if !gated {
+				t.Fatalf("ANALYZE %s did not gate the table read: %+v", tc.table, tc.facts.GetResultReads())
+			}
+		})
+	}
+}
+
+func TestStatementFactsAnalyzeAdversarialFormsFailClosed(t *testing.T) {
+	// The two ANALYZE forms that resolve to a table node but must NOT read-gate as a plain table both rely on
+	// sqlglot-go's parse/lineage to fail closed: MySQL multi-table `ANALYZE TABLE t1, t2` degrades to a
+	// Command (the list tail is unconsumed), and PostgreSQL's column-list `ANALYZE t (col)` parses the target
+	// as an anonymous table-valued source that star-expansion refuses. If a future sqlglot-go bump widened
+	// either, the synthetic SELECT * could resolve with no grants — connect-only, the oracle reopened. Pin
+	// them unresolved so that regression fails here rather than silently.
+	if f := mysqlFacts(t, "ANALYZE TABLE users, sink"); f.GetResolved() {
+		t.Fatalf("multi-table ANALYZE must fail closed (unresolved), got: %+v", f)
+	}
+	if f := postgresFacts(t, "ANALYZE users (ssn)"); f.GetResolved() {
+		t.Fatalf("column-list ANALYZE must fail closed (unresolved), got: %+v", f)
+	}
+}
+
+// A plan-only EXPLAIN of a READ is stmt.kind.explain — MySQL EXPLAIN and EXPLAIN ANALYZE, PostgreSQL
+// EXPLAIN, and PostgreSQL EXPLAIN ANALYZE of a read all land there (ANALYZE of a read returns a plan, not
+// rows). An EXPLAIN of a WRITE keeps the write's own kind, so it authorizes/denies as that write. An
+// EXPLAIN's output is the plan, not the query's columns, so `explain` here also means empty output_columns.
+func TestStatementFactsExplainKind(t *testing.T) {
+	cases := []struct {
+		name    string
+		facts   *pb.StatementFacts
+		explain bool // an EXPLAIN form → output is the plan, so output_columns is empty
+		kind    pb.StatementKind
+	}{
+		{"mysql read plan-only", mysqlFacts(t, "EXPLAIN SELECT ssn FROM users"), true, pb.StatementKind_STATEMENT_KIND_EXPLAIN},
+		{"mysql read analyze", mysqlFacts(t, "EXPLAIN ANALYZE SELECT ssn FROM users"), true, pb.StatementKind_STATEMENT_KIND_EXPLAIN},
+		{"mysql read desc analyze", mysqlFacts(t, "DESC ANALYZE SELECT ssn FROM users"), true, pb.StatementKind_STATEMENT_KIND_EXPLAIN},
+		// A parenthesized target wraps the query in a Subquery; it must still classify, not fall unresolved.
+		{"mysql read parenthesized", mysqlFacts(t, "EXPLAIN (SELECT ssn FROM users)"), true, pb.StatementKind_STATEMENT_KIND_EXPLAIN},
+		{"mysql read analyze parenthesized", mysqlFacts(t, "EXPLAIN ANALYZE (SELECT ssn FROM users)"), true, pb.StatementKind_STATEMENT_KIND_EXPLAIN},
+		{"mysql explain table", mysqlFacts(t, "EXPLAIN TABLE users"), true, pb.StatementKind_STATEMENT_KIND_DESCRIBE},
+		// A write keeps its own kind, plan-only or ANALYZE, so it gates + denies as the write. The
+		// MATERIALIZING forms are the security boundary — an EXPLAIN ANALYZE that copies masked PII into a
+		// new/other table must NOT classify as the read-shaped EXPLAIN kind (which would run unmasked). Each
+		// must keep its write kind.
+		{"mysql write keeps kind", mysqlFacts(t, "EXPLAIN INSERT INTO users VALUES (1)"), true, pb.StatementKind_STATEMENT_KIND_INSERT},
+		{"mysql analyze insert-select materializes", mysqlFacts(t, "EXPLAIN ANALYZE INSERT INTO users (ssn) SELECT ssn FROM users"), true, pb.StatementKind_STATEMENT_KIND_INSERT_SELECT},
+		{"mysql analyze select-into-outfile materializes", mysqlFacts(t, "EXPLAIN ANALYZE SELECT ssn INTO OUTFILE '/tmp/x' FROM users"), true, pb.StatementKind_STATEMENT_KIND_SELECT_INTO_OUTFILE},
+		{"mysql plain select", mysqlFacts(t, "SELECT ssn FROM users"), false, pb.StatementKind_STATEMENT_KIND_SELECT},
+		{"pg read plan-only", postgresFacts(t, "EXPLAIN SELECT ssn FROM users"), true, pb.StatementKind_STATEMENT_KIND_EXPLAIN},
+		{"pg read analyze", postgresFacts(t, "EXPLAIN ANALYZE SELECT ssn FROM users"), true, pb.StatementKind_STATEMENT_KIND_EXPLAIN},
+		{"pg read analyze wrapped", postgresFacts(t, "EXPLAIN (ANALYZE, FORMAT JSON) SELECT ssn FROM users"), true, pb.StatementKind_STATEMENT_KIND_EXPLAIN},
+		{"pg write analyze keeps kind", postgresFacts(t, "EXPLAIN ANALYZE DELETE FROM users WHERE id = 1"), true, pb.StatementKind_STATEMENT_KIND_DELETE},
+		{"pg analyze ctas materializes", postgresFacts(t, "EXPLAIN ANALYZE CREATE TABLE leak AS SELECT ssn FROM users"), true, pb.StatementKind_STATEMENT_KIND_CREATE_TABLE},
+	}
+	// The materializing forms must also emit ssn as a write-payload DENY_STATEMENT grant, so a masked reader
+	// is denied even where the inner write kind itself is authorized.
+	for _, sql := range []string{
+		"EXPLAIN ANALYZE INSERT INTO users (ssn) SELECT ssn FROM users",
+		"EXPLAIN ANALYZE CREATE TABLE leak AS SELECT ssn FROM users",
+	} {
+		f := postgresFacts(t, sql)
+		denied := false
+		for _, g := range f.GetResultReads() {
+			if c := g.GetColumn(); c != nil && c.GetIdentity().GetColumn() == "ssn" &&
+				g.GetMaskedDisposition() == pb.MaskedDisposition_MASKED_DISPOSITION_DENY_STATEMENT {
+				denied = true
+			}
+		}
+		if !denied {
+			t.Errorf("%q: ssn must carry a DENY_STATEMENT write-payload grant: %+v", sql, f.GetResultReads())
+		}
+	}
+	for _, c := range cases {
+		if got := len(c.facts.GetOutputColumns()) == 0; got != c.explain {
+			t.Errorf("%s: output_columns empty = %v, want %v (an EXPLAIN outputs the plan, not the query's columns)", c.name, got, c.explain)
+		}
+		if got := factsKind(c.facts); got != c.kind {
+			t.Errorf("%s: kind = %v, want %v", c.name, got, c.kind)
+		}
+	}
+}
+
+// The security invariant behind EXPLAIN classification: a statement that would MATERIALIZE data must never
+// resolve as the read-shaped STATEMENT_KIND_EXPLAIN, which drops projection masks and can be unmasked by a
+// `context.stmt_kind == "explain"` policy. describeKind's classifier (explainInnerIsPlanOnlyRead) is a
+// separate signal from the probe's IsWrite; this locks them so a drift (e.g. a modifying CTE, or a new write shape)
+// cannot silently reclassify a materializing form as plan-only. Each form must keep a non-EXPLAIN kind OR
+// fail closed as unresolved.
+func TestExplainNeverResolvesAMaterializingWriteAsPlanOnly(t *testing.T) {
+	materializing := []string{
+		"EXPLAIN ANALYZE INSERT INTO users (ssn) SELECT ssn FROM users",
+		"EXPLAIN ANALYZE CREATE TABLE leak AS SELECT ssn FROM users",
+		"EXPLAIN ANALYZE SELECT ssn INTO OUTFILE '/tmp/x' FROM users",
+		"EXPLAIN ANALYZE DELETE FROM users WHERE id = 1",
+		"EXPLAIN ANALYZE UPDATE users SET ssn = 'x' WHERE id = 1",
+		"EXPLAIN WITH w AS (INSERT INTO users (ssn) VALUES ('x')) SELECT ssn FROM users",
+		"EXPLAIN ANALYZE MERGE INTO users u USING users s ON u.id = s.id WHEN MATCHED THEN UPDATE SET ssn = s.ssn",
+	}
+	check := func(engine string, f *pb.StatementFacts, sql string) {
+		if f.GetResolved() && factsKind(f) == pb.StatementKind_STATEMENT_KIND_EXPLAIN {
+			t.Errorf("[%s] %q: a materializing statement resolved as plan-only EXPLAIN — its masks would drop", engine, sql)
+		}
+	}
+	for _, sql := range materializing {
+		check("mysql", mysqlFacts(t, sql), sql)
+		check("postgres", postgresFacts(t, sql), sql)
+	}
+}
+
+// The emission invariant that makes a plan-only EXPLAIN safe: an EXPLAIN's output is the plan, so it clears
+// output_columns and every column grant must bind an EMPTY output ordinal. A stray ordinal against the empty
+// output_columns fails the control-plane's mask-binding contract (a hard structural deny), which for a write
+// EXPLAIN (CTAS, INSERT…SELECT — Origins carry ordinals off the read path) would mask the real write-payload
+// deny path and block a legitimate writer. This locks that no EXPLAIN — read- OR write-shaped — emits one.
+func TestExplainEmitsNoOutputOrdinal(t *testing.T) {
+	explains := []string{
+		"EXPLAIN SELECT id, ssn FROM users",
+		"EXPLAIN ANALYZE SELECT id, ssn FROM users",
+		"EXPLAIN SELECT id FROM users WHERE ssn = 'x'",
+		"EXPLAIN TABLE users",
+		"EXPLAIN ANALYZE INSERT INTO users (ssn) SELECT ssn FROM users",
+		"EXPLAIN ANALYZE CREATE TABLE leak AS SELECT ssn FROM users",
+		"EXPLAIN ANALYZE UPDATE users SET ssn = 'x' WHERE id = 1",
+		"EXPLAIN ANALYZE DELETE FROM users WHERE id = 1",
+	}
+	check := func(engine string, f *pb.StatementFacts, sql string) {
+		if !f.GetResolved() {
+			return
+		}
+		if cols := f.GetOutputColumns(); len(cols) != 0 {
+			t.Errorf("[%s] %q: an EXPLAIN must clear output_columns, got %v", engine, sql, cols)
+		}
+		for _, g := range f.GetResultReads() {
+			if ords := g.GetOutputOrdinals(); len(ords) != 0 {
+				t.Errorf("[%s] %q: an EXPLAIN grant on %s bound output ordinal %v against empty output_columns",
+					engine, sql, g.GetColumn().GetIdentity().GetColumn(), ords)
+			}
+		}
+	}
+	for _, sql := range explains {
+		check("mysql", mysqlFacts(t, sql), sql)
+		check("postgres", postgresFacts(t, sql), sql)
 	}
 }
 

@@ -354,17 +354,18 @@ func TestParityShowDescribe(t *testing.T) {
 		parityKind(t, sql, "mysql", pb.StatementKind_STATEMENT_KIND_SHOW_METADATA)
 		parityNoUtility(t, sql, "mysql")
 	}
-	// DESCRIBE/DESC of a query (EXPLAIN alias) is now analyzed as its inner query — it inherits the
-	// inner's column enforcement (ssn gets a column grant that masks/denies) rather than a blanket
-	// admission deny. The kind tracks the inner query (a SELECT), so its grants apply and ssn is protected.
+	// DESCRIBE/DESC of a query (EXPLAIN alias) is analyzed as its inner query — it inherits the inner's
+	// column enforcement (ssn gets a column grant that masks/denies) rather than a blanket admission deny.
+	// The inner is a read, so a plan-only EXPLAIN kind classifies it; its column grants still apply and ssn
+	// stays protected.
 	bothDialects(func(d string) {
 		for _, sql := range []string{
 			"DESC ANALYZE SELECT UUID_TO_BIN(ssn) FROM users LIMIT 1",
 			"DESCRIBE ANALYZE SELECT UUID_TO_BIN(ssn) FROM users LIMIT 1",
 		} {
 			f := factsFor(t, sql, d)
-			if !f.Resolved || factsKind(f) != pb.StatementKind_STATEMENT_KIND_SELECT {
-				t.Errorf("[%s] %q: want resolved+select (inner-query enforcement), got resolved=%v kind=%s", d, sql, f.Resolved, factsKind(f))
+			if !f.Resolved || factsKind(f) != pb.StatementKind_STATEMENT_KIND_EXPLAIN {
+				t.Errorf("[%s] %q: want resolved+explain (inner-query enforcement), got resolved=%v kind=%s", d, sql, f.Resolved, factsKind(f))
 			}
 		}
 	})

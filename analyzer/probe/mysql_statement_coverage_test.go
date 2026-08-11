@@ -275,8 +275,8 @@ var mysqlStatements = []mysqlStatement{
 	{"SET DEFAULT ROLE", "SET DEFAULT ROLE 'r' TO 'u'@'h'", "stmt.kind.set_default_role + utility:SET_DEFAULT_ROLE", pb.StatementKind_STATEMENT_KIND_SET_DEFAULT_ROLE},
 
 	// ---- Table maintenance (§15.7.3) ----
-	// GAP: ANALYZE is in the session-passthrough set (facts.go), so it is connect-only; CHECK/OPTIMIZE/REPAIR fail closed.
-	{"ANALYZE TABLE", "ANALYZE TABLE users", "stmt.kind.analyze_table", pb.StatementKind_STATEMENT_KIND_ANALYZE_TABLE},
+	// ANALYZE gates the target table's read (facts.go), so it is not connect-only; CHECK/OPTIMIZE/REPAIR fail closed.
+	{"ANALYZE TABLE", "ANALYZE TABLE users", "result.read + stmt.kind.analyze_table", pb.StatementKind_STATEMENT_KIND_ANALYZE_TABLE},
 	{"CHECK TABLE", "CHECK TABLE users", "unanalyzable→exception.unanalyzable", pb.StatementKind_STATEMENT_KIND_STMT_UNKNOWN},       // parse error
 	{"CHECKSUM TABLE", "CHECKSUM TABLE users", "unanalyzable→exception.unanalyzable", pb.StatementKind_STATEMENT_KIND_STMT_UNKNOWN}, // parse error
 	{"OPTIMIZE TABLE", "OPTIMIZE TABLE users", "stmt.kind.optimize_table + unanalyzable→exception.unanalyzable", pb.StatementKind_STATEMENT_KIND_OPTIMIZE_TABLE},
@@ -363,8 +363,8 @@ var mysqlStatements = []mysqlStatement{
 	// ---- Utility (§15.8) ----
 	{"DESCRIBE", "DESCRIBE users", "stmt.kind.describe", pb.StatementKind_STATEMENT_KIND_DESCRIBE},
 	{"DESC", "DESC users", "stmt.kind.describe", pb.StatementKind_STATEMENT_KIND_DESCRIBE},
-	{"EXPLAIN (query)", "EXPLAIN SELECT id FROM users", "result.read + stmt.kind.select", pb.StatementKind_STATEMENT_KIND_SELECT},
-	{"EXPLAIN ANALYZE", "EXPLAIN ANALYZE SELECT id FROM users", "result.read + stmt.kind.select", pb.StatementKind_STATEMENT_KIND_SELECT},
+	{"EXPLAIN (query)", "EXPLAIN SELECT id FROM users", "result.read + stmt.kind.explain", pb.StatementKind_STATEMENT_KIND_EXPLAIN},
+	{"EXPLAIN ANALYZE", "EXPLAIN ANALYZE SELECT id FROM users", "result.read + stmt.kind.explain", pb.StatementKind_STATEMENT_KIND_EXPLAIN},
 	{"EXPLAIN (table)", "EXPLAIN users", "stmt.kind.describe", pb.StatementKind_STATEMENT_KIND_DESCRIBE}, // EXPLAIN <table> is AST-identical to DESCRIBE <table>
 	{"HELP", "HELP 'contents'", "stmt.kind.help + unanalyzable→exception.unanalyzable", pb.StatementKind_STATEMENT_KIND_HELP},
 	{"USE", "USE acme", "stmt.kind.use", pb.StatementKind_STATEMENT_KIND_USE},
@@ -447,12 +447,10 @@ var privilegedNeedingGate = map[string]bool{
 // documented as an open boundary in docs/system-classification.md and are closed by the statement-typing
 // redesign (docs/statement-typing.md), which removes the benign catch-all passthrough they fall into.
 //
-//	ANALYZE TABLE                       — in the analyzer's SESSION passthrough set (facts.go).
 //	SET sql_log_bin                     — restricted SESSION variable; SET is gated by scope/PASSWORD only.
 //	SHOW MASTER STATUS / SHOW BINARY LOGS / SHOW REPLICAS / SHOW SLAVE HOSTS
 //	                                    — replication topology/binlog reads the analyzer emits no utility for.
 var knownConnectOnlyGaps = map[string]bool{
-	"ANALYZE TABLE":      true,
 	"SET sql_log_bin":    true,
 	"SHOW MASTER STATUS": true,
 	"SHOW BINARY LOGS":   true,

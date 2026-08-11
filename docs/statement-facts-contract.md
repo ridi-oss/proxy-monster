@@ -48,11 +48,10 @@ Both request and response messages live in `proto/src/main/proto/analyzer.proto`
   normalization, qualification, and generation).
 - Response: `StatementFacts` carries `resolved`, `failure_class`,
   `statement_exec`, `result_reads`, `output_columns`, `rewritten_sql`,
-  `explain_of_query`, `catalog_changing`, and the physical
-  `sources`/`functions`. `statement_exec` is the single
-  `RequireStatementExecGrant` (present whenever the statement parses to a
-  classifiable root, resolved or not; absent only on a pre-parse failure)
-  carrying the `statement_kind`; `result_reads` is zero or more
+  `catalog_changing`, and the physical `sources`/`functions`. `statement_exec`
+  is the single `RequireStatementExecGrant` (present whenever the statement
+  parses to a classifiable root, resolved or not; absent only on a pre-parse
+  failure) carrying the `statement_kind`; `result_reads` is zero or more
   `RequireResultReadGrant`, each a `oneof` resource
   (Column/Table/Function/Utility) with a `MaskedDisposition` and the
   `output_ordinals` it gates. The two are separate typed fields, so the one kind
@@ -187,10 +186,14 @@ inspected, exactly like any other comment.
 
 ### EXPLAIN / DESCRIBE
 
-`EXPLAIN ANALYZE` executes its inner query, so an EXPLAIN-of-a-query is decided
-on that inner statement (inheriting its DENY/MASK/ALLOW), while a
+An EXPLAIN returns the query plan, not rows. A plan-only EXPLAIN of a READ is
+one read-shaped kind, `stmt.kind.explain` — MySQL `EXPLAIN` and
+`EXPLAIN ANALYZE`, PostgreSQL `EXPLAIN`, and PostgreSQL `EXPLAIN ANALYZE` of a
+read all land there. An EXPLAIN of a WRITE keeps the write's own kind, so it
+authorizes — and its payload `DENY_STATEMENT` denies — as that write (only
+`EXPLAIN ANALYZE` materializes, and its write grant already governs that). A
 DESCRIBE-of-a-table is table metadata. The leading keyword does not distinguish
-them — on MySQL `EXPLAIN`/`DESCRIBE`/`DESC` are synonyms, so `EXPLAIN users`
+these — on MySQL `EXPLAIN`/`DESCRIBE`/`DESC` are synonyms, so `EXPLAIN users`
 describes the table and `DESCRIBE SELECT …` explains a query. Both parse to a
 `Describe` node; the classifier reads two args in order:
 
@@ -205,9 +208,11 @@ describes the table and `DESCRIBE SELECT …` explains a query. Both parse to a
    `DESCRIBE tbl 'wild%'`. The column slot is a single identifier only:
    `DESCRIBE t (SELECT …)`, a function, a cast, `a.b`, or a reserved word all
    fail closed to `Command`, so no subquery can hide behind `this:Table`.
-3. else `Describe.this.Kind()` is a statement kind
-   (Select/Insert/Update/Delete/Merge/…) → EXPLAIN of a query → decide on that
-   inner statement.
+3. else `Describe.this` (unwrapping a parenthesized `(SELECT …)`) is a query
+   root → a READ classifies as `stmt.kind.explain`; a WRITE keeps its own kind
+   so it gates and denies as that write. Either way the output is the plan, not
+   the query's rows, so the analyzer emits empty `output_columns` and the
+   projected columns carry no output ordinal — read-required, never masked.
 4. else → fail closed.
 
 A few valid spellings degrade to `Command` rather than a `Describe` node
@@ -272,10 +277,9 @@ Command-RESET on PostgreSQL).
   (`mise run verify`).
 - The documented leak cases each deny under the grant walk:
   `SELECT query_to_xml('SELECT ssn FROM users')`,
-  `SET @x = (SELECT ssn FROM users)`, `DESC ANALYZE SELECT …`, MySQL
-  `RESET MASTER`, `SHOW WARNINGS` surfacing an unmasked prior value,
-  `EXPLAIN TABLE t` as a row-scanning query-explain, and the GUC-alias privilege
-  SETs `SET session_authorization = attacker` / `SET SESSION role = attacker` /
+  `SET @x = (SELECT ssn FROM users)`, MySQL `RESET MASTER`, `SHOW WARNINGS`
+  surfacing an unmasked prior value, and the GUC-alias privilege SETs
+  `SET session_authorization = attacker` / `SET SESSION role = attacker` /
   `SET role = attacker` / `SET LOCAL session_authorization = attacker` (denied
   via the LHS-variable-name check).
 - `U&"set_confi\0067"(…)` denies by a different mechanism, not fail-closed

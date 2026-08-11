@@ -119,12 +119,14 @@ func EmitFacts(sql string, engineConfig *pb.EngineConfig, sch *schema.Mapping, n
 		facts = emitSetFacts(root, eng)
 	case exp.KindCommand:
 		facts = emitCommandFacts(root, eng)
-	case exp.KindTransaction, exp.KindCommit, exp.KindRollback, exp.KindSavepoint, exp.KindUse, exp.KindAnalyze, exp.KindReset:
+	case exp.KindTransaction, exp.KindCommit, exp.KindRollback, exp.KindSavepoint, exp.KindUse, exp.KindReset:
 		// PostgreSQL `RESET <guc>` / `RESET ALL` (sqlglot-go v0.16 models it as a dedicated Reset node) only
 		// restores a session variable to its default — a de-escalation, never a privilege gain — so it is a
 		// benign session passthrough. (MySQL RESET MASTER/REPLICA is a privileged admin op that degrades to
 		// Command and is denied there; it never reaches this Reset-node case.)
 		facts = passthroughFacts()
+	case exp.KindAnalyze:
+		facts = emitAnalyzeFacts(root, eng, qualifySchema, validatedNamespace)
 	case exp.KindAlter, exp.KindDrop, exp.KindTruncateTable:
 		facts = ddlFacts(root, eng)
 	case exp.KindCreate:
@@ -191,13 +193,18 @@ func emitLineageFacts(root exp.Expression, eng engine, qualifySchema schema.Sche
 	}
 	report := probeParsed(root, eng, qualifySchema, namespace)
 	facts := factsFromProbe(report)
-	facts.ExplainOfQuery = explain
 	// The execute grant (the statement kind) is attached centrally in EmitFacts, for resolved and
 	// unresolved statements alike; here we only add the column/table RESULT_READ grants below.
 	if !facts.Resolved {
 		return facts
 	}
 
+	// An EXPLAIN — of a read or a write — returns the query PLAN, not rows. So a projected column is READ to
+	// build the plan but is NOT an output: emit it with no output ordinal, so it still needs a read grant
+	// (masked read is enough) yet binds no mask, and output_columns is left empty below for the same reason.
+	// A write EXPLAIN additionally keeps its DENY_STATEMENT payload protection via the IsWrite loop below, so
+	// materializing a masked column still denies. Every EXPLAIN grant must have an empty ordinal to match the
+	// empty output_columns — a stray ordinal would fail the mask-binding contract check (Query.kt).
 	for ordinal, origin := range report.Origins {
 		for _, key := range origin.Origins {
 			column, ok := columnResourceFromKey(key)
@@ -208,7 +215,11 @@ func emitLineageFacts(root exp.Expression, eng engine, qualifySchema schema.Sche
 			if origin.Derived {
 				disposition = pb.MaskedDisposition_MASKED_DISPOSITION_REDACT_OUTPUT_NULL
 			}
-			facts.ResultReads = append(facts.ResultReads, columnGrant(column, disposition, int32(ordinal)))
+			if explain {
+				facts.ResultReads = append(facts.ResultReads, columnGrant(column, disposition))
+			} else {
+				facts.ResultReads = append(facts.ResultReads, columnGrant(column, disposition, int32(ordinal)))
+			}
 		}
 	}
 	for _, refs := range report.References {
@@ -258,13 +269,17 @@ func emitLineageFacts(root exp.Expression, eng engine, qualifySchema schema.Sche
 	if len(report.Sources) == 0 {
 		facts.ResultReads = append(facts.ResultReads, noFromFunctionGrants(root, eng)...)
 	}
-	facts.OutputColumns = outputColumnNames(report)
 	facts.CatalogChanging = root.Kind() == exp.KindCreate && !isTemporaryDDL(root, eng)
 	if root.Kind() == exp.KindSelect && root.Arg("into") != nil {
 		facts.CatalogChanging = true
 	}
 	if explain {
+		// An EXPLAIN's output is the plan, not the query's columns: no output_columns (nothing to mask
+		// against), and relay the client's original text rather than a `*`-expanded rewrite.
+		facts.OutputColumns = nil
 		facts.RewrittenSql = nil
+	} else {
+		facts.OutputColumns = outputColumnNames(report)
 	}
 	return facts
 }
@@ -317,10 +332,59 @@ func emitDescribeFacts(root exp.Expression, eng engine, qualifySchema schema.Sch
 	if this != nil && this.Kind() == exp.KindTable {
 		return passthroughFacts()
 	}
-	if isKnownRoot(this) {
-		return emitLineageFacts(this, eng, qualifySchema, namespace, true)
+	// `EXPLAIN (SELECT …)` wraps the query in a Subquery (parentheses are real syntax); peel it so a
+	// parenthesized target is analyzed like a bare one. The kind (plan-only EXPLAIN, or the inner write for
+	// an executing EXPLAIN ANALYZE) is decided centrally by describeKind; here we only trace the inner
+	// query's lineage.
+	if inner := unwrapSubquery(this); isKnownRoot(inner) {
+		return emitLineageFacts(inner, eng, qualifySchema, namespace, true)
 	}
 	return unanalyzableFacts("PARSE", "DESCRIBE target is not a table or analyzable statement")
+}
+
+// explainInnerIsPlanOnlyRead reports whether an EXPLAIN's inner statement is a PROVABLE pure read — the
+// only case that becomes the read-shaped plan-only EXPLAIN kind (its projected columns are read-required
+// with no output ordinal, so a `context.stmt_kind == "explain"` policy can read them unmasked). A
+// whitelist, deliberately, not a write blacklist: anything not provably a read — a write root, an
+// as-yet-unmodeled root, a `SELECT … INTO`, or a data-modifying CTE — keeps its own kind, so it authorizes
+// and denies (payload DENY_STATEMENT) as that statement. A newly modeled write shape therefore fails closed
+// instead of silently reclassifying as a read.
+func explainInnerIsPlanOnlyRead(inner exp.Expression) bool {
+	if !inner.Is(exp.TraitSetOperation) && inner.Kind() != exp.KindSelect {
+		return false
+	}
+	if len(inner.FindAll(exp.KindInto)) > 0 {
+		return false // SELECT … INTO OUTFILE / a new table materializes
+	}
+	for _, k := range []exp.Kind{exp.KindInsert, exp.KindUpdate, exp.KindDelete, exp.KindMerge} {
+		if len(inner.FindAll(k)) > 0 {
+			return false // a data-modifying CTE writes
+		}
+	}
+	return true
+}
+
+// emitAnalyzeFacts gates a table-targeted ANALYZE the same way DESCRIBE is: a table statistics command
+// reveals the table's existence and touches its rows, so it must carry the same result-read grant a
+// `SELECT * FROM <table>` would (routed through lineage with explain = true — read-required, not row
+// masking). Without it the statement resolves connect-only and becomes an existence oracle that bypasses
+// the result-read gate. The single-table target is exact: a multi-table `ANALYZE TABLE t1, t2` leaves the
+// list tail unconsumed and the parser degrades the whole statement to Command, which never reaches here.
+// The statement-kind exec grant is attached centrally in EmitFacts, so the kind gate applies regardless.
+func emitAnalyzeFacts(root exp.Expression, eng engine, qualifySchema schema.Schema, namespace NamespaceConfig) *pb.StatementFacts {
+	this := root.This()
+	kind := ""
+	if k := root.Arg("kind"); k != nil {
+		kind = strings.ToUpper(fmt.Sprint(k))
+	}
+	// MySQL `ANALYZE TABLE t` (kind TABLE) and PostgreSQL/Presto `ANALYZE t` (no kind) both target one table
+	// to read. INDEX / DATABASE / CLUSTER / bare all-table ANALYZE carry no single readable table target and
+	// stay a benign passthrough — still exec-gated by the statement kind.
+	if (kind == "TABLE" || kind == "") && this != nil && this.Kind() == exp.KindTable {
+		selectRoot := exp.Select(exp.Args{"expressions": []exp.Expression{exp.Star(nil)}, "from_": exp.From(exp.Args{"this": this.Copy()})})
+		return emitLineageFacts(selectRoot, eng, qualifySchema, namespace, true)
+	}
+	return passthroughFacts()
 }
 
 func emitShowFacts(root exp.Expression, eng engine) *pb.StatementFacts {

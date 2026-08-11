@@ -116,6 +116,10 @@ type RequestContext = {
     channel?: String,
     requester_ip?: ipaddr,
     tags?: Set<String>,
+    // The statement's classified kind leaf (`select`, `explain`, `insert`, …), so a read policy can
+    // condition on HOW a column is read — e.g. permit `result.read.unmasked` only under a plan-only
+    // EXPLAIN (`context.stmt_kind == "explain"`), which returns no rows.
+    stmt_kind?: String,
 };
 
 // Global admin surfaces (App.kt route groups gated via requireAdmin). No per-resource scoping —
@@ -225,8 +229,7 @@ action "datasource.connect"
 // `exception.unmaskable` decides whether a masked result the proxy cannot mask on the chosen wire path (the
 // MySQL binary protocol, or a wire feature that defeats masking) may still be relayed unmasked. Both
 // are deny-by-default: with no exception policy the production floor DENIES; a permissive development
-// datasource can permit them (system:development). EXPLAIN of a query whose columns are masked is a
-// separate structural deny (Query.kt), not this gate.
+// datasource can permit them (system:development).
 action "exception.unanalyzable", "exception.unmaskable"
   appliesTo {
     principal: [User, Role],
@@ -281,7 +284,7 @@ action "stmt.cat.write.update" in ["stmt.cat.write"]
   appliesTo { principal: [User, Role], resource: [Datasource], context: RequestContext };
 
 // --- kinds (each a member of its category) ---
-action "stmt.kind.select", "stmt.kind.table", "stmt.kind.values", "stmt.kind.with_select", "stmt.kind.set_op"
+action "stmt.kind.select", "stmt.kind.table", "stmt.kind.values", "stmt.kind.with_select", "stmt.kind.set_op", "stmt.kind.explain"
   in ["stmt.cat.read"]
   appliesTo { principal: [User, Role], resource: [Datasource], context: RequestContext };
 action "stmt.kind.insert", "stmt.kind.insert_select"

@@ -217,8 +217,6 @@ Fixes for gaps documented in
   grant hygiene.
 - Per-engine-version golden inventory of system objects plus a CI release-diff
   gate, so a manifest can't silently fall behind a new engine minor.
-- Route resource-bearing utility commands (e.g. `ANALYZE <table>`) through a
-  Cedar gate instead of blanket passthrough, closing the existence oracle.
 - Make the role-approval `Request` EUID request-unique so one approval can't
   authorize a principal's later requests.
 - Canonicalize introspected schema names on the proxy side (case-fold-aware),
@@ -266,12 +264,11 @@ Fixes for gaps documented in
   client through it. This adds integration confidence, not a missing enforcement
   assertion.
 - Backfill DB-backed regression tests for enforcement invariants whose code is
-  confirmed correct but only covered indirectly: an EXPLAIN carrying a masked
-  column denying, the editor's refusal of session-mutating and
-  transaction-control statements, the editor's fail-closed mask bind, and the
-  approval route's conflict and not-found cases. Also: that a deny under the
-  approval role stores no result, and that a group-member approver lacking a
-  role-scoped approve permission is refused at execute.
+  confirmed correct but only covered indirectly: the editor's refusal of
+  session-mutating and transaction-control statements, the editor's fail-closed
+  mask bind, and the approval route's conflict and not-found cases. Also: that a
+  deny under the approval role stores no result, and that a group-member
+  approver lacking a role-scoped approve permission is refused at execute.
 - Diagnostic-redaction corpus probe. A test that builds a corpus from each
   engine's full error-code catalog plus adversarial constraints, conversions,
   functions, and raised errors, replays it against every supported engine

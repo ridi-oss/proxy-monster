@@ -133,12 +133,14 @@ is treated as DENY (fail-open only on `system:development`'s
 a parser gap becomes DENY rather than a leak.
 
 All SQL understanding lives here on the AST — the analyzer never scans SQL text.
-`EXPLAIN`/`DESCRIBE` is decided structurally: an EXPLAIN-of-a-query (including
-`EXPLAIN ANALYZE`, which executes its inner statement) is analyzed as that inner
-statement and inherits its column enforcement, while a DESCRIBE-of-a-table is
-metadata passthrough. MySQL executable comments (`/*!NNNNN … */`) are decoded
-and analyzed under the connection's server version. A statement whose lineage
-the analyzer cannot pin to concrete source columns degrades to a fail-closed
+`EXPLAIN`/`DESCRIBE` is decided structurally. An EXPLAIN returns the query plan,
+not rows: a plan-only EXPLAIN of a READ is the read-shaped `stmt.kind.explain`
+(its projected columns are read to build the plan, not output, so no mask
+binds), while an EXPLAIN of a WRITE keeps the write's own kind and its
+`DENY_STATEMENT` payload protection. A DESCRIBE-of-a-table is metadata
+passthrough. MySQL executable comments (`/*!NNNNN … */`) are decoded and
+analyzed under the connection's server version. A statement whose lineage the
+analyzer cannot pin to concrete source columns degrades to a fail-closed
 over-deny rather than a leak — `NATURAL JOIN` (shared-column lineage is
 ambiguous), `PIVOT`, a data-modifying CTE, and `SELECT *` over a table-function
 / `VALUES` / `LATERAL` source (no fixed column list, so mask ordinals cannot be

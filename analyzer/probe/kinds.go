@@ -142,15 +142,25 @@ func insertKind(root exp.Expression) pb.StatementKind {
 }
 
 // describeKind classifies DESCRIBE / EXPLAIN. `EXPLAIN <query>` (its `this` is an analyzable statement)
-// carries the kind of the explained statement — EmitFacts analyzes that inner query and authorizes it
-// as a read, so the kind tracks it. `DESCRIBE <table>`, `DESC <table>`, and `EXPLAIN <table>` are all
-// table introspection and parse to an identical Describe{this:Table} node — indistinguishable, so all
-// three are DESCRIBE (STATEMENT_KIND_EXPLAIN_TABLE has no AST signal to key on).
+// returns the plan, not rows: a READ is the read-shaped STATEMENT_KIND_EXPLAIN (the body), a WRITE keeps
+// its own kind. `DESCRIBE <table>`, `DESC <table>`, and `EXPLAIN <table>` are all table introspection and
+// parse to an identical Describe{this:Table} node — indistinguishable, so all three are DESCRIBE
+// (STATEMENT_KIND_EXPLAIN_TABLE has no AST signal to key on).
 func describeKind(root exp.Expression, eng engine) pb.StatementKind {
-	if this := root.This(); isKnownRoot(this) {
-		return statementKind(this, eng)
+	// `EXPLAIN (SELECT …)` wraps the query in a Subquery (parentheses are real syntax); peel it so a
+	// parenthesized target classifies like a bare one — matching emitDescribeFacts.
+	inner := unwrapSubquery(root.This())
+	if !isKnownRoot(inner) {
+		return pb.StatementKind_STATEMENT_KIND_DESCRIBE
 	}
-	return pb.StatementKind_STATEMENT_KIND_DESCRIBE
+	// An EXPLAIN of a READ returns the plan, not rows → one read-shaped kind (MySQL EXPLAIN and EXPLAIN
+	// ANALYZE, PostgreSQL EXPLAIN, and PostgreSQL EXPLAIN ANALYZE of a read all land here). Everything else —
+	// a write, an as-yet-unmodeled root — keeps its own kind, so it authorizes and denies (payload
+	// DENY_STATEMENT) as that statement rather than as a mask-dropping plan-only EXPLAIN.
+	if explainInnerIsPlanOnlyRead(inner) {
+		return pb.StatementKind_STATEMENT_KIND_EXPLAIN
+	}
+	return statementKind(inner, eng)
 }
 
 // showKind maps a structured Show to its kind off the SHOW target (Show.this). That value is a canonical

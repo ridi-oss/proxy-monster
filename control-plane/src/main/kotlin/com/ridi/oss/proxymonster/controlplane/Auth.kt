@@ -120,9 +120,12 @@ fun constantTimeEquals(presented: String?, expected: String): Boolean {
     return MessageDigest.isEqual(presented.toByteArray(Charsets.UTF_8), expected.toByteArray(Charsets.UTF_8))
 }
 
-// The fallback is reachable only when PM_AUTH_DEBUG admits a mutation without a session.
+// Every mutation route gates on a session first (requireAdmin / requireAuthz both resolve one before they
+// decide), so this names the principal the authorization decision ran against and the trail cannot disagree
+// with the gate about who acted. Total rather than asserting that: an audit row is the last place to throw,
+// and an unattributed row is a louder signal than a 500 that loses the row entirely.
 fun ApplicationCall.auditActor(config: Config, channel: String = AuditSource.CONSOLE): AuditActor = AuditActor(
-    principal = userSession()?.principal ?: "unknown",
+    principal = userSession()?.principal ?: AuthAuditRecorder.PRINCIPAL_UNATTRIBUTED,
     clientAddr = httpRequesterIp(config),
     channel = channel,
 )

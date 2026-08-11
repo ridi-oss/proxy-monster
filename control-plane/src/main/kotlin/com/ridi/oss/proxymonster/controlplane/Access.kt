@@ -755,35 +755,28 @@ fun Route.accessRoutes(
     recorder: ManagementAuditRecorder,
 ) {
     get("/api/access-requests") {
-        if (!call.requireApi(config)) return@get
-        // Forward-filter by task.read (self seed shows own; admin/oversight shows all),
-        // replacing the unfiltered listing that exposed every principal's requests. authDebug (no
-        // session) keeps the full list, matching requireApi's dev bypass.
-        val caller = call.userSession()?.principal
+        val caller = call.requireApi() ?: return@get
+        // Forward-filter by task.read: the self seed shows own, admin/oversight shows all. Every row is
+        // decided — a listing that answers any of them unfiltered answers the whole table.
         val rows = store.listRequests(call.request.queryParameters["status"])
         call.respond(
-            if (caller == null) {
-                rows
-            } else {
-                rows.filter {
-                    authz.authorize(
-                        caller, AuthzAction.TASK_READ,
-                        AuthzResource.ApprovalRequest(
-                            requester = it.principal, approver = it.decidedBy, executedBy = it.executedBy,
-                            datasourceName = it.datasourceName, roleName = it.roleName,
-                        ),
-                    ) is AuthzDecision.Allow
-                }
+            rows.filter {
+                authz.authorize(
+                    caller, AuthzAction.TASK_READ,
+                    AuthzResource.ApprovalRequest(
+                        requester = it.principal, approver = it.decidedBy, executedBy = it.executedBy,
+                        datasourceName = it.datasourceName, roleName = it.roleName,
+                    ),
+                ) is AuthzDecision.Allow
             },
         )
     }
     post("/api/access-requests") {
-        if (!call.requireApi(config)) return@post
-        val principal = call.userSession()?.principal ?: "debug-user"
+        val principal = call.requireApi() ?: return@post
         val input = call.receive<AccessRequestInput>()
         // Opening a request against a datasource is gated by task.request on that datasource. A role
         // elevation need not target one (datasourceId is optional); a datasource-less request has no
-        // Datasource resource to decide, so authentication alone admits it. authDebug bypasses.
+        // Datasource resource to decide, so authentication alone admits it.
         val ds = input.datasourceId?.let(datasourceStore::get)
         // A datasourceId that names no LIVE datasource (soft-deleted or never-existed) must not fall through
         // to createRequest: the tombstone row still satisfies the FK, so the insert would otherwise succeed
@@ -791,7 +784,7 @@ fun Route.accessRoutes(
         if (input.datasourceId != null && ds == null) {
             return@post call.notFound("datasource")
         }
-        if (ds != null && !config.authDebug) {
+        if (ds != null) {
             val roles = roleResolver.resolve(principal)
             val raw = call.httpAuthzContext(config)
             val tags = authz.resolveContextTags(principal, roles, ds.name, raw, ds.tags)
@@ -805,91 +798,80 @@ fun Route.accessRoutes(
         call.respond(HttpStatusCode.Created, store.createRequest(principal, input, call.auditActor(config), recorder))
     }
     post("/api/access-requests/{id}/approve") {
-        if (!call.requireApi(config)) return@post
+        val approver = call.requireApi() ?: return@post
         val id = call.idParam() ?: return@post call.badId()
         val req = store.getRequest(id) ?: return@post call.notFound("access request")
         if (req.kind != "ROLE") {
             return@post call.respondError(HttpStatusCode.BadRequest, "approval.use_query_approval_endpoint")
         }
-        val approver = call.userSession()?.principal ?: "debug-user"
         // Self-approval is governed entirely by Cedar policy (the `no-self-approval` forbid, V11
         // seed) — never a hardcoded app-level rule. A deployment may disable that policy (dev/eval);
         // this route only ever asks authz "may this principal do this?" (docs/approval-workflow.md).
-        if (!config.authDebug) {
-            // roleName places the request in `Role::"<name>"` so a policy can scope who may approve by
-            // the ROLE being requested (`resource in Role::...`), not just the requester (Authz.kt,
-            // AuthzTest's Request-in-Role case). Without it that capability would be unreachable here.
-            // requester_ip + (when a datasource is in scope) its derived context.tags, resolved
-            // over a SINGLE role snapshot (authorizeWithContext) — the ROLE-request analog of the QUERY
-            // approval routes' mayDecide (task.approve) call in Approvals.kt.
-            val decision = authz.authorizeWithContext(
-                approver, AuthzAction.TASK_APPROVE,
-                AuthzResource.ApprovalRequest(
-                    requester = req.principal, approver = req.decidedBy, executedBy = req.executedBy,
-                    datasourceName = req.datasourceName, roleName = req.roleName,
-                ),
-                call.httpAuthzContext(config, Channel.WORKFLOW_VIEWER),
-                req.datasourceName,
-                req.datasourceId?.let(datasourceStore::getIncludingDeleted)?.tags.orEmpty(),
-            )
-            if (decision is AuthzDecision.Deny) {
-                return@post call.respondError(HttpStatusCode.Forbidden, "approval.not_approver")
-            }
+        // roleName places the request in `Role::"<name>"` so a policy can scope who may approve by
+        // the ROLE being requested (`resource in Role::...`), not just the requester (Authz.kt,
+        // AuthzTest's Request-in-Role case). Without it that capability would be unreachable here.
+        // requester_ip + (when a datasource is in scope) its derived context.tags, resolved
+        // over a SINGLE role snapshot (authorizeWithContext) — the ROLE-request analog of the QUERY
+        // approval routes' mayDecide (task.approve) call in Approvals.kt.
+        val decision = authz.authorizeWithContext(
+            approver, AuthzAction.TASK_APPROVE,
+            AuthzResource.ApprovalRequest(
+                requester = req.principal, approver = req.decidedBy, executedBy = req.executedBy,
+                datasourceName = req.datasourceName, roleName = req.roleName,
+            ),
+            call.httpAuthzContext(config, Channel.WORKFLOW_VIEWER),
+            req.datasourceName,
+            req.datasourceId?.let(datasourceStore::getIncludingDeleted)?.tags.orEmpty(),
+        )
+        if (decision is AuthzDecision.Deny) {
+            return@post call.respondError(HttpStatusCode.Forbidden, "approval.not_approver")
         }
         val body = runCatching { call.receive<ApproveInput>() }.getOrDefault(ApproveInput())
         store.approve(id, body.durationSec, approver, call.auditActor(config), recorder)?.let { call.respond(it) }
             ?: call.notFound("access request")
     }
     post("/api/access-requests/{id}/reject") {
-        if (!call.requireApi(config)) return@post
+        val approver = call.requireApi() ?: return@post
         val id = call.idParam() ?: return@post call.badId()
         val req = store.getRequest(id) ?: return@post call.notFound("access request")
         if (req.kind != "ROLE") {
             return@post call.respondError(HttpStatusCode.BadRequest, "approval.use_query_approval_endpoint")
         }
-        val approver = call.userSession()?.principal ?: "debug-user"
         // Self-approval is governed entirely by Cedar policy (the `no-self-approval` forbid, V11
         // seed) — never a hardcoded app-level rule. A deployment may disable that policy (dev/eval);
         // this route only ever asks authz "may this principal do this?" (docs/approval-workflow.md).
-        if (!config.authDebug) {
-            // Same role-scoped approver check as /approve — the reject path must ask the identical
-            // Cedar question, so a role-scoped approval policy governs reject too (see /approve above).
-            val decision = authz.authorizeWithContext(
-                approver, AuthzAction.TASK_APPROVE,
-                AuthzResource.ApprovalRequest(
-                    requester = req.principal, approver = req.decidedBy, executedBy = req.executedBy,
-                    datasourceName = req.datasourceName, roleName = req.roleName,
-                ),
-                call.httpAuthzContext(config, Channel.WORKFLOW_VIEWER),
-                req.datasourceName,
-                req.datasourceId?.let(datasourceStore::getIncludingDeleted)?.tags.orEmpty(),
-            )
-            if (decision is AuthzDecision.Deny) {
-                return@post call.respondError(HttpStatusCode.Forbidden, "approval.not_approver")
-            }
+        // Same role-scoped approver check as /approve — the reject path must ask the identical
+        // Cedar question, so a role-scoped approval policy governs reject too (see /approve above).
+        val decision = authz.authorizeWithContext(
+            approver, AuthzAction.TASK_APPROVE,
+            AuthzResource.ApprovalRequest(
+                requester = req.principal, approver = req.decidedBy, executedBy = req.executedBy,
+                datasourceName = req.datasourceName, roleName = req.roleName,
+            ),
+            call.httpAuthzContext(config, Channel.WORKFLOW_VIEWER),
+            req.datasourceName,
+            req.datasourceId?.let(datasourceStore::getIncludingDeleted)?.tags.orEmpty(),
+        )
+        if (decision is AuthzDecision.Deny) {
+            return@post call.respondError(HttpStatusCode.Forbidden, "approval.not_approver")
         }
         val body = call.receive<RejectInput>()
         store.reject(id, body.reason, approver, call.auditActor(config), recorder)?.let { call.respond(it) }
             ?: call.notFound("access request")
     }
     get("/api/access-grants") {
-        if (!call.requireApi(config)) return@get
+        val caller = call.requireApi() ?: return@get
         val principal = call.request.queryParameters["principal"]
         val active = call.request.queryParameters["active"]?.toBoolean() ?: false
-        // Forward-filter by task.read — an arbitrary ?principal= does not leak another
-        // principal's grants; each row is kept only if the caller may read it (own, or oversight).
-        val caller = call.userSession()?.principal
+        // Forward-filter by task.read: an arbitrary ?principal= selects which rows to look for, never
+        // which the caller may see — each row is kept only if the caller may read it (own, or oversight).
         val rows = store.listGrants(principal, active)
         call.respond(
-            if (caller == null) {
-                rows
-            } else {
-                rows.filter {
-                    authz.authorize(
-                        caller, AuthzAction.TASK_READ,
-                        AuthzResource.AccessGrant(owner = it.principal, id = it.id, roleName = it.roleName),
-                    ) is AuthzDecision.Allow
-                }
+            rows.filter {
+                authz.authorize(
+                    caller, AuthzAction.TASK_READ,
+                    AuthzResource.AccessGrant(owner = it.principal, id = it.id, roleName = it.roleName),
+                ) is AuthzDecision.Allow
             },
         )
     }

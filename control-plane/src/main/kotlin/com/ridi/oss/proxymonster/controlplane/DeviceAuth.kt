@@ -254,7 +254,6 @@ class DeviceLoginStore(internal val dataSource: DataSource, private val crypto: 
     )
 }
 
-private const val DEV_PRINCIPAL = "debug-user"
 private const val DEVICE_POLL_INTERVAL_SEC = 2 // how often pmon polls /poll; the browser page approves out-of-band
 private const val DEVICE_LOGIN_TTL_SEC = 600L // 10 min to complete the device-auth dance
 

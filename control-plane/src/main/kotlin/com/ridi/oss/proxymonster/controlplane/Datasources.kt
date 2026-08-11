@@ -766,13 +766,17 @@ class DatasourceStore(internal val dataSource: DataSource) {
 
 // ---- Routes ------------------------------------------------------------------------------
 
-/** Reject if no session and not in auth-debug mode (mirrors the /api/audit guard). */
-suspend fun ApplicationCall.requireApi(config: Config): Boolean {
-    if (!config.authDebug && userSession() == null) {
-        respond(HttpStatusCode.Unauthorized, ApiError("common.unauthenticated"))
-        return false
-    }
-    return true
+/**
+ * Returns the caller principal, or responds 401 and returns null. It hands back the identity so the gate and
+ * the name come from one call, and a handler never holds a principal the gate did not approve.
+ *
+ * A session is the only way in. `PM_AUTH_DEBUG` is an authentication setting — it adds the `/auth/debug`
+ * login, which mints a real session row with real role assignments — so every mode reaches this the same way.
+ */
+suspend fun ApplicationCall.requireApi(): String? {
+    userSession()?.principal?.let { return it }
+    respond(HttpStatusCode.Unauthorized, ApiError("common.unauthenticated"))
+    return null
 }
 
 suspend fun ApplicationCall.idParam(): Long? = parameters["id"]?.toLongOrNull()
@@ -813,15 +817,14 @@ private fun ApplicationCall.bearerWirePrincipal(tokenStore: TokenStore, userGrou
 }
 
 /**
- * Authenticate a read-only API call by web session, else (interim option a) a native-wire Bearer token, else
- * authDebug. Returns the caller principal, or responds 401 and returns null. Mirrors [requireApi] but adds
- * the Bearer path so the `pmon` daemon can discover datasources without a browser cookie. PRIVATE by design:
- * the Bearer path is discovery-only, so no other route file can reach it (compiler-enforced scope).
+ * Authenticate a read-only API call by web session, else (interim option a) a native-wire Bearer token.
+ * Returns the caller principal, or responds 401 and returns null. Mirrors [requireApi] but adds the Bearer
+ * path so the `pmon` daemon can discover datasources without a browser cookie. PRIVATE by design: the Bearer
+ * path is discovery-only, so no other route file can reach it (compiler-enforced scope).
  */
 private suspend fun ApplicationCall.requireApiOrBearer(config: Config, tokenStore: TokenStore, userGroupStore: UserGroupStore): String? {
     userSession()?.principal?.let { return it }
     bearerWirePrincipal(tokenStore, userGroupStore)?.let { return it }
-    if (config.authDebug) return "debug-user"
     respond(HttpStatusCode.Unauthorized, ApiError("common.unauthenticated"))
     return null
 }
@@ -879,7 +882,7 @@ fun Route.datasourceRoutes(
     // Which datasources currently have a proxy attached (an open Events stream) — the admin liveness
     // view. Read-only; returns the set of attached datasource names.
     get("/api/datasources/live") {
-        if (!call.requireApi(config)) return@get
+        call.requireApi() ?: return@get
         call.respond(eventsHub.attached())
     }
     // Admin "re-introspect now": push a RefreshCatalog down the datasource's open Events stream(s).
@@ -956,10 +959,9 @@ fun Route.datasourceRoutes(
         call.respond(store.test(ds, management.getDatasourceLiveness(ds.name).attached))
     }
     get("/api/datasources/{id}/catalog") {
-        // requireApiOrBearer, and the principal it RETURNS: a wire-token caller has no session, so resolving
-        // the principal from the session alone would fall through to the literal "debug-user" and run the
-        // Cedar check against a synthetic identity. The helper hands back whichever identity authenticated,
-        // and only answers "debug-user" when PM_AUTH_DEBUG actually says so.
+        // requireApiOrBearer, and the principal it RETURNS: a wire-token caller has no session, so reading
+        // the principal from the session alone would decide against nobody. The helper hands back whichever
+        // identity authenticated, session or token.
         val principal = call.requireApiOrBearer(config, tokenStore, userGroupStore) ?: return@get
         val id = call.idParam() ?: return@get call.respond(HttpStatusCode.BadRequest, ApiError("common.bad_id"))
         val datasource = store.get(id)
@@ -989,7 +991,7 @@ fun Route.datasourceRoutes(
         // Same gate and the same principal resolution as {id}/catalog: a browser session or a wire-token
         // Bearer. The console is today's only caller, since the chain also rides on the datasource list pmon
         // already polls — but a Bearer client asking for the certificate directly is a reasonable thing to do,
-        // and the alternative was a 401 for it plus a "debug-user" fallback in the authorization check.
+        // and session-only would answer it 401.
         val principal = call.requireApiOrBearer(config, tokenStore, userGroupStore) ?: return@get
         val id = call.idParam() ?: return@get call.respond(HttpStatusCode.BadRequest, ApiError("common.bad_id"))
         val datasource = store.get(id)

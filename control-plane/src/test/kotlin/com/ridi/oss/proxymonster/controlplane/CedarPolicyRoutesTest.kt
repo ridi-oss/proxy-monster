@@ -14,9 +14,12 @@ import com.ridi.oss.proxymonster.controlplane.management.ManagementAuditRecorder
 import com.ridi.oss.proxymonster.controlplane.management.PolicyManagementService
 import com.ridi.oss.proxymonster.controlplane.support.SharedPostgres
 import com.ridi.oss.proxymonster.controlplane.support.requireDockerOrSkip
+import com.ridi.oss.proxymonster.controlplane.support.testLoginRoute
+import com.ridi.oss.proxymonster.controlplane.support.webSessionCookie
 import io.ktor.client.HttpClient
 import io.ktor.client.call.body
 import io.ktor.client.plugins.contentnegotiation.ContentNegotiation as ClientContentNegotiation
+import io.ktor.client.plugins.cookies.HttpCookies
 import io.ktor.client.request.delete
 import io.ktor.client.request.get
 import io.ktor.client.request.post
@@ -29,9 +32,7 @@ import io.ktor.serialization.kotlinx.json.json
 import io.ktor.server.application.install
 import io.ktor.server.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.server.routing.routing
-import io.ktor.server.sessions.SessionTransportTransformerMessageAuthentication
 import io.ktor.server.sessions.Sessions
-import io.ktor.server.sessions.cookie
 import io.ktor.server.testing.ApplicationTestBuilder
 import io.ktor.server.testing.testApplication
 import kotlinx.serialization.json.Json
@@ -53,7 +54,10 @@ import kotlin.test.assertTrue
 class CedarPolicyRoutesTest {
     private lateinit var ds: DataSource
     private lateinit var store: CedarPolicyStore
+    private lateinit var sessionStore: PrincipalSessionStore
     private lateinit var authz: Authz
+
+    private val admin = "dev@example.com"
 
     @BeforeAll
     fun setup() {
@@ -61,7 +65,11 @@ class CedarPolicyRoutesTest {
         ds = SharedPostgres.hikari(SharedPostgres.freshDatabase("pm_cedar_policy_routes"))
         Flyway.configure().dataSource(ds).load().migrate()
         store = CedarPolicyStore(ds)
-        authz = Authz(CedarEngine(store), store, RoleSource { emptySet() })
+        sessionStore = PrincipalSessionStore(ds, null)
+        // These routes are admin-gated, so the caller needs a real role: system:admin, which the seeded
+        // bootstrap policy grants admin.* to. Roles come from the RoleSource port rather than a seeded
+        // assignment, keeping the fixture's authority explicit.
+        authz = Authz(CedarEngine(store), store, RoleSource { setOf("system:admin") })
     }
 
     @Test
@@ -133,7 +141,7 @@ class CedarPolicyRoutesTest {
     }
 
     @Test
-    fun `debug HTTP mutation records the unknown console actor exactly once`() = testApplication {
+    fun `an HTTP mutation records the console actor exactly once`() = testApplication {
         store.setEnabled(-1, enabled = true, updatedBy = "setup@example.com")
         val before = adminToggleCount()
         val response = policyClient().post("/api/policies/-1/disable")
@@ -145,7 +153,9 @@ class CedarPolicyRoutesTest {
                    WHERE kind='admin' AND resource='Policy::"-1"' ORDER BY id DESC LIMIT 1""",
             ).use { ps -> ps.executeQuery().use { rs -> rs.next(); (1..4).map(rs::getString) } }
         }
-        assertEquals(listOf("admin.policies", "Policy::\"-1\"", "console", "unknown"), row)
+        // The row names the principal the authorization decision ran against, so the trail and the gate
+        // cannot disagree about who acted.
+        assertEquals(listOf("admin.policies", "Policy::\"-1\"", "console", admin), row)
     }
 
     @Test
@@ -230,16 +240,25 @@ class CedarPolicyRoutesTest {
     private fun tagRule(tag: String): String =
         """permit(principal, action == Action::"context.tag::$tag", resource) when { context has channel };"""
 
-    private fun ApplicationTestBuilder.policyClient(): HttpClient {
+    /** The routes plus a client already signed in as [admin] — every case below is an admin mutation. */
+    private suspend fun ApplicationTestBuilder.policyClient(): HttpClient {
+        val config = config()
         application {
-            val config = config()
+            attributes.put(PRINCIPAL_SESSION_STORE, sessionStore)
             install(ContentNegotiation) { json(Json { encodeDefaults = true }) }
-            routing { cedarPolicyRoutes(config, authz, store) }
+            install(Sessions) { webSessionCookie(sessionStore, config.sessionSecret) }
+            routing {
+                testLoginRoute(sessionStore, config)
+                cedarPolicyRoutes(config, authz, store)
+            }
         }
-        return createClient {
+        val client = createClient {
             expectSuccess = false
+            install(HttpCookies)
             install(ClientContentNegotiation) { json(Json { ignoreUnknownKeys = true }) }
         }
+        assertEquals(HttpStatusCode.NoContent, client.post("/test/session/$admin").status)
+        return client
     }
 
     private fun config() = Config(
@@ -247,7 +266,7 @@ class CedarPolicyRoutesTest {
         dbUrl = "",
         dbUser = "",
         dbPassword = "",
-        authDebug = true,
+        authDebug = false,
         secretToken = null,
         sessionSecret = "policy-route-test-secret",
         oidc = null,

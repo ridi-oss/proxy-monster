@@ -357,10 +357,8 @@ fun Route.approvalRoutes(
 
     // Whether the caller may open a query-approval request against this datasource (task.request on the
     // Datasource). The shipped global permit keeps this open by default; an operator can forbid it per
-    // datasource. authDebug bypasses.
-    fun mayRequest(call: ApplicationCall, ds: Datasource): Boolean {
-        if (config.authDebug) return true
-        val principal = call.userSession()?.principal ?: "debug-user"
+    // datasource.
+    fun mayRequest(call: ApplicationCall, principal: String, ds: Datasource): Boolean {
         val roles = roleResolver.resolve(principal)
         val raw = call.httpAuthzContext(config)
         val tags = authz.resolveContextTags(principal, roles, ds.name, raw, ds.tags)
@@ -374,17 +372,16 @@ fun Route.approvalRoutes(
     // task.approve (approve/reject/execute under R) or task.read (metadata) against the Request —
     // scoped to its role/datasource, with
     // requester != approver enforced by the shipped no-self-approval forbid. Approver eligibility is a
-    // Cedar policy, never the datasource's approver GROUP. authDebug bypasses, matching every route.
+    // Cedar policy, never the datasource's approver GROUP.
     //
     // The console is a real surface, so it names itself: WORKFLOW_VIEWER, the same channel a result view
     // runs on. Deciding and viewing are both the unelevated human side of a task and are scoped together.
     // It must never be `editor` or `wire` — those two carry [system:task-editor-self-approve] /
     // [system:task-wire-self-approve], which permit self-approval because a machine task runs under the
     // caller's OWN roles. A human approval elevates to R, so it stays under the no-self-approval forbid.
-    fun mayDecide(call: ApplicationCall, action: AuthzAction, req: AccessRequest): Boolean {
-        if (config.authDebug) return true
+    fun mayDecide(call: ApplicationCall, principal: String, action: AuthzAction, req: AccessRequest): Boolean {
         val decision = authz.authorizeWithContext(
-            call.userSession()?.principal ?: "debug-user",
+            principal,
             action,
             AuthzResource.ApprovalRequest(
                 requester = req.principal, approver = req.decidedBy, executedBy = req.executedBy,
@@ -400,9 +397,9 @@ fun Route.approvalRoutes(
     // Result rows require Cedar authority to assume the task's R. No authDebug bypass: this is data
     // confidentiality, enforced in development too. Same channel as [mayDecide] and as the per-column
     // re-decision the released rows go through, so one policy scopes the whole console surface.
-    fun mayReadResult(call: ApplicationCall, req: AccessRequest): Boolean {
+    fun mayReadResult(call: ApplicationCall, principal: String, req: AccessRequest): Boolean {
         val decision = authz.authorizeWithContext(
-            call.userSession()?.principal ?: "debug-user",
+            principal,
             AuthzAction.TASK_ASSUME,
             AuthzResource.ApprovalRequest(
                 requester = req.principal, approver = req.decidedBy, executedBy = req.executedBy,
@@ -439,8 +436,7 @@ fun Route.approvalRoutes(
     }
 
     post("/api/approvals") {
-        if (!call.requireApi(config)) return@post
-        val principal = call.userSession()?.principal ?: "debug-user"
+        val principal = call.requireApi() ?: return@post
         val input = call.receive<CreateApprovalInput>()
         if (input.reason.isBlank()) return@post call.respond(HttpStatusCode.BadRequest, ApiError("common.field_required", mapOf("fields" to "reason")))
 
@@ -475,7 +471,7 @@ fun Route.approvalRoutes(
             val ds = datasourceStore.list().firstOrNull { it.name == source.datasource }
                 ?: return@post call.respond(HttpStatusCode.Conflict, ApiError("common.not_found", mapOf("resource" to "datasource")))
             val datasourceId = ds.id
-            if (!mayRequest(call, ds)) {
+            if (!mayRequest(call, principal, ds)) {
                 return@post call.respond(HttpStatusCode.Forbidden, ApiError("common.forbidden"))
             }
             if (input.roleId == null) return@post call.respond(HttpStatusCode.BadRequest, ApiError("approval.role_required"))
@@ -514,7 +510,7 @@ fun Route.approvalRoutes(
         val ds = datasourceStore.get(input.datasourceId!!)
             ?: return@post call.respond(HttpStatusCode.NotFound, ApiError("common.not_found", mapOf("resource" to "datasource")))
         val sql = input.sql!!
-        if (!mayRequest(call, ds)) {
+        if (!mayRequest(call, principal, ds)) {
             return@post call.respond(HttpStatusCode.Forbidden, ApiError("common.forbidden"))
         }
         if (input.roleId == null) return@post call.respond(HttpStatusCode.BadRequest, ApiError("approval.role_required"))
@@ -569,8 +565,7 @@ fun Route.approvalRoutes(
     // candidate role and offer the ones that return MORE than the requester's own roles. A dry-run — no
     // audit row is written.
     post("/api/approvals/discover-roles") {
-        if (!call.requireApi(config)) return@post
-        val principal = call.userSession()?.principal ?: "debug-user"
+        val principal = call.requireApi() ?: return@post
         val input = call.receive<DiscoverRolesRequest>()
         val ds = datasourceStore.get(input.datasourceId)
             ?: return@post call.respond(HttpStatusCode.NotFound, ApiError("common.not_found", mapOf("resource" to "datasource")))
@@ -592,40 +587,38 @@ fun Route.approvalRoutes(
     }
 
     get("/api/approvals") {
-        if (!call.requireApi(config)) return@get
-        val principal = call.userSession()?.principal ?: "debug-user"
+        val principal = call.requireApi() ?: return@get
         call.respond(accessStore.listQueryRequests(status = call.request.queryParameters["status"], principal = principal))
     }
 
     get("/api/approvals/inbox") {
-        if (!call.requireApi(config)) return@get
+        val principal = call.requireApi() ?: return@get
         // Forward filter: every PENDING request the caller may approve (Cedar task.approve), not a
-        // group-membership join. authDebug shows all.
-        val requests = accessStore.listQueryRequests("PENDING", null).filter { mayDecide(call, AuthzAction.TASK_APPROVE, it) }
+        // group-membership join.
+        val requests = accessStore.listQueryRequests("PENDING", null).filter { mayDecide(call, principal, AuthzAction.TASK_APPROVE, it) }
         call.respond(requests)
     }
 
     get("/api/approvals/{id}") {
-        if (!call.requireApi(config)) return@get
+        val principal = call.requireApi() ?: return@get
         val id = call.idParam() ?: return@get call.respond(HttpStatusCode.BadRequest, ApiError("common.bad_id"))
-        val principal = call.userSession()?.principal ?: "debug-user"
         val req = accessStore.getRequest(id)
         if (req == null || !req.isWorkflowApproval) return@get call.respond(HttpStatusCode.NotFound, ApiError("common.not_found", mapOf("resource" to "query approval request")))
-        val isApprover = mayDecide(call, AuthzAction.TASK_APPROVE, req)
+        val isApprover = mayDecide(call, principal, AuthzAction.TASK_APPROVE, req)
         // Task metadata is gated by task.read. Saved rows are separate and remain behind task.assume.
-        if (!mayDecide(call, AuthzAction.TASK_READ, req)) {
+        if (!mayDecide(call, principal, AuthzAction.TASK_READ, req)) {
             return@get call.respond(HttpStatusCode.NotFound, ApiError("common.not_found", mapOf("resource" to "query approval request")))
         }
         // task.read is a metadata gate; result-derived data stays behind task.assume. A caller who cannot
         // assume R sees execution status only (status/executor/timestamps/error) — never the result's row
         // count or output-column shape, which are cardinality/existence oracles the assume gate must close.
         val visibleMeta = queryResultStore?.meta(id)?.let { meta ->
-            if (mayReadResult(call, req)) meta else meta.copy(rowCount = null, columns = emptyList())
+            if (mayReadResult(call, principal, req)) meta else meta.copy(rowCount = null, columns = emptyList())
         }
         // Mirror /execute's gates: only the approver OF RECORD (decided_by) can run it, so a merely-eligible
         // approver who did not approve THIS task gets no Run affordance that would just 403.
         val canExecute = queryResultStore != null && isApprover && req.status == "APPROVED" && req.decidedBy == principal
-        val canCancel = req.status == "EXECUTING" && mayDecide(call, AuthzAction.TASK_CANCEL, req)
+        val canCancel = req.status == "EXECUTING" && mayDecide(call, principal, AuthzAction.TASK_CANCEL, req)
         call.respond(
             ApprovalDetail(
                 req,
@@ -638,15 +631,14 @@ fun Route.approvalRoutes(
     }
 
     post("/api/approvals/{id}/approve") {
-        if (!call.requireApi(config)) return@post
+        val principal = call.requireApi() ?: return@post
         val id = call.idParam() ?: return@post call.respond(HttpStatusCode.BadRequest, ApiError("common.bad_id"))
-        val principal = call.userSession()?.principal ?: "debug-user"
         val req = accessStore.getRequest(id)
         if (req == null || !req.isWorkflowApproval) return@post call.respond(HttpStatusCode.NotFound, ApiError("common.not_found", mapOf("resource" to "query approval request")))
         if (req.status != "PENDING") return@post call.respond(HttpStatusCode.Conflict, ApiError("approval.already_decided"))
         // Cedar owns the authorization: task.approve on this request, scoped to its role/datasource,
         // with requester != approver via the no-self-approval forbid.
-        if (!mayDecide(call, AuthzAction.TASK_APPROVE, req)) {
+        if (!mayDecide(call, principal, AuthzAction.TASK_APPROVE, req)) {
             return@post call.respond(HttpStatusCode.Forbidden, ApiError("approval.not_approver"))
         }
         // An approved QUERY request is executed under role R by an approver (execute-under-R); there is no
@@ -668,9 +660,8 @@ fun Route.approvalRoutes(
     }
 
     post("/api/approvals/{id}/reject") {
-        if (!call.requireApi(config)) return@post
+        val principal = call.requireApi() ?: return@post
         val id = call.idParam() ?: return@post call.respond(HttpStatusCode.BadRequest, ApiError("common.bad_id"))
-        val principal = call.userSession()?.principal ?: "debug-user"
         val body = call.receive<RejectInput>()
         if (body.reason.isBlank()) return@post call.respond(HttpStatusCode.BadRequest, ApiError("common.field_required", mapOf("fields" to "reason")))
         val req = accessStore.getRequest(id)
@@ -678,7 +669,7 @@ fun Route.approvalRoutes(
         if (req.status != "PENDING") return@post call.respond(HttpStatusCode.Conflict, ApiError("approval.already_decided"))
         // Cedar owns the authorization: reject is the SAME task.approve decision as approve, scoped to its
         // role/datasource with requester != approver via the no-self-approval forbid.
-        if (!mayDecide(call, AuthzAction.TASK_APPROVE, req)) {
+        if (!mayDecide(call, principal, AuthzAction.TASK_APPROVE, req)) {
             return@post call.respond(HttpStatusCode.Forbidden, ApiError("approval.not_approver"))
         }
         val updated = accessStore.decideQueryRequest(
@@ -698,14 +689,13 @@ fun Route.approvalRoutes(
     }
 
     post("/api/approvals/{id}/cancel") {
-        if (!call.requireApi(config)) return@post
+        val principal = call.requireApi() ?: return@post
         val id = call.idParam() ?: return@post call.respond(HttpStatusCode.BadRequest, ApiError("common.bad_id"))
-        val principal = call.userSession()?.principal ?: "debug-user"
         val req = accessStore.getRequest(id)
         if (req == null || !req.isWorkflowApproval) {
             return@post call.respond(HttpStatusCode.NotFound, ApiError("common.not_found", mapOf("resource" to "query approval request")))
         }
-        if (!mayDecide(call, AuthzAction.TASK_CANCEL, req)) {
+        if (!mayDecide(call, principal, AuthzAction.TASK_CANCEL, req)) {
             return@post call.respond(HttpStatusCode.Forbidden, ApiError("approval.cancel_forbidden"))
         }
         when (req.status) {
@@ -738,9 +728,8 @@ fun Route.approvalRoutes(
     // ---- Execute under R ---------------------------------------------------------------
 
     post("/api/approvals/{id}/execute") {
-        if (!call.requireApi(config)) return@post
+        val executor = call.requireApi() ?: return@post
         val id = call.idParam() ?: return@post call.respond(HttpStatusCode.BadRequest, ApiError("common.bad_id"))
-        val executor = call.userSession()?.principal ?: "debug-user"
         val req = accessStore.getRequest(id)
         if (req == null || !req.isWorkflowApproval) {
             return@post call.respond(HttpStatusCode.NotFound, ApiError("common.not_found", mapOf("resource" to "query approval request")))
@@ -748,7 +737,7 @@ fun Route.approvalRoutes(
         // Authorize (task.approve) BEFORE disclosing task state: a caller who cannot approve this task gets a
         // uniform 403 regardless of its status, so the 409 already_executed/not_approved distinctions below are
         // never a state oracle for a non-approver. The approver-of-record identity is still pinned further down.
-        if (!mayDecide(call, AuthzAction.TASK_APPROVE, req)) {
+        if (!mayDecide(call, executor, AuthzAction.TASK_APPROVE, req)) {
             return@post call.respond(HttpStatusCode.Forbidden, ApiError("approval.not_approver"))
         }
         if (req.status in setOf("EXECUTING", "EXECUTED", "FAILED", "CANCELLED")) {
@@ -806,9 +795,8 @@ fun Route.approvalRoutes(
     // exactly the task's execute-as role set in the viewer's workflow-viewer context. Every successful
     // view and live-decision denial is audited; a deactivated viewer is hidden and an expired result is Gone.
     get("/api/approvals/{id}/result") {
-        if (!call.requireApi(config)) return@get
+        val principal = call.requireApi() ?: return@get
         val id = call.idParam() ?: return@get call.respond(HttpStatusCode.BadRequest, ApiError("common.bad_id"))
-        val principal = call.userSession()?.principal ?: "debug-user"
         val req = accessStore.getRequest(id)
         if (req == null || !req.isWorkflowApproval) return@get call.respond(HttpStatusCode.NotFound, ApiError("common.not_found", mapOf("resource" to "query approval request")))
         // Deprovisioning gate applies before result lookup. The live decideQuery path repeats this gate as
@@ -823,7 +811,7 @@ fun Route.approvalRoutes(
         val access = queryResultStore?.accessFor(id)
             ?: return@get call.respond(HttpStatusCode.NotFound, ApiError("common.not_found", mapOf("resource" to "query approval request")))
         val meta = access.meta
-        if (!mayReadResult(call, req)) {
+        if (!mayReadResult(call, principal, req)) {
             return@get call.respond(HttpStatusCode.NotFound, ApiError("common.not_found", mapOf("resource" to "query approval request")))
         }
         if (meta.status != "DONE") {

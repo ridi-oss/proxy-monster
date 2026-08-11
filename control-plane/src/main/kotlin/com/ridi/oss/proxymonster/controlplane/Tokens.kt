@@ -270,13 +270,16 @@ class TokenStore(internal val dataSource: DataSource) {
 
 // ---- Routes -----------------------------------------------------------------
 
-private fun principalOf(call: io.ktor.server.application.ApplicationCall) = call.userSession()?.principal ?: "debug-user"
+// Nullable, unlike a gated route's principal: these routes resolve the caller to BUILD the Token resource
+// they then authorize against, so this necessarily runs before any gate. Null means no session, and each
+// caller answers 401 itself rather than asserting a name it has not yet had approved.
+private fun principalOf(call: io.ktor.server.application.ApplicationCall) = call.userSession()?.principal
 private fun rolesOf(call: io.ktor.server.application.ApplicationCall) = call.userSession()?.roles ?: emptyList()
 
 /** The audited actor of a token route: whoever made the request, resolved the same way the route's own
  *  authorization resolves it — never the token's owner, who may be someone else on the revoke path. */
-private fun callerActor(call: io.ktor.server.application.ApplicationCall, config: Config) =
-    AuditActor(principalOf(call), clientAddr = call.httpRequesterIp(config), channel = CHANNEL_WIRE)
+private fun callerActor(principal: String, call: io.ktor.server.application.ApplicationCall, config: Config) =
+    AuditActor(principal, clientAddr = call.httpRequesterIp(config), channel = CHANNEL_WIRE)
 
 fun Route.tokenRoutes(
     config: Config,
@@ -290,6 +293,7 @@ fun Route.tokenRoutes(
     // principal to mint its own, a kind-scoped forbid can bar a role from long-lived PATs.
     post("/api/wire-tokens") {
         val principal = principalOf(call)
+            ?: return@post call.respond(HttpStatusCode.Unauthorized, ApiError("common.unauthenticated"))
         if (!call.requireAuthz(config, authz, AuthzAction.TOKEN_MINT, AuthzResource.Token(principal, TokenKind.SESSION))) return@post
         val ttl = call.receive<MintSessionTokenInput>().ttlSeconds ?: store.sessionTtlSeconds
         val roles = rolesOf(call)
@@ -297,7 +301,7 @@ fun Route.tokenRoutes(
         // check + the INSERT run on ONE transaction under the per-principal advisory lock,
         // so a concurrent SCIM/liveness teardown can't slip its revoke between them and leave a
         // token that survives the deprovision (resurrectable on a later reactivation).
-        val minter = callerActor(call, config)
+        val minter = callerActor(principal, call, config)
         val issued = store.dataSource.mintForActivePrincipalLocked(principal, userGroupStore) { c ->
             store.issue(TokenKind.SESSION, principal, roles, name = null, ttlSeconds = ttl, c).also { token ->
                 authAudit.success(
@@ -321,18 +325,20 @@ fun Route.tokenRoutes(
         // list another principal's (token.list oversight seed). This returns METADATA only; a token's
         // secret is only ever exposed at mint (token.mint) and is never re-readable. kind is irrelevant here.
         val target = call.request.queryParameters["principal"] ?: principalOf(call)
+            ?: return@get call.respond(HttpStatusCode.Unauthorized, ApiError("common.unauthenticated"))
         if (!call.requireAuthz(config, authz, AuthzAction.TOKEN_LIST, AuthzResource.Token(target, kind = null))) return@get
         call.respond(store.list(target))
     }
     post("/api/tokens") {
         val principal = principalOf(call)
+            ?: return@post call.respond(HttpStatusCode.Unauthorized, ApiError("common.unauthenticated"))
         if (!call.requireAuthz(config, authz, AuthzAction.TOKEN_MINT, AuthzResource.Token(principal, TokenKind.USER))) return@post
         val input = call.receive<CreateTokenInput>()
         val ttl = input.ttlSeconds ?: store.defaultUserTtlSeconds
         val roles = rolesOf(call)
         // Same locked check-then-mint as /api/wire-tokens above — no fresh credentials
         // for a deactivated principal, and no revoke can race between the check and the INSERT.
-        val minter = callerActor(call, config)
+        val minter = callerActor(principal, call, config)
         val issued = store.dataSource.mintForActivePrincipalLocked(principal, userGroupStore) { c ->
             store.issue(TokenKind.USER, principal, roles, input.name?.ifBlank { null }, ttl, c).also { token ->
                 authAudit.success(
@@ -359,7 +365,8 @@ fun Route.tokenRoutes(
         if (!call.requireAuthz(config, authz, AuthzAction.TOKEN_REVOKE, AuthzResource.Token(token.principal, TokenKind.fromWire(token.kind)))) return@delete
         // The actor is the CALLER, not the token's owner: an oversight seed lets an identity admin revoke
         // someone else's token, and attributing that to the owner would name the victim as the actor.
-        val revoker = callerActor(call, config)
+        // requireAuthz above admitted this request, so the session is present.
+        val revoker = callerActor(call.requireApi() ?: return@delete, call, config)
         val revoked = store.dataSource.inTx { c ->
             store.revoke(id, token.principal, c).also { changed ->
                 if (changed) {

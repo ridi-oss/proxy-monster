@@ -34,7 +34,7 @@ MCP covers the access-control management surface only. Target-database query
 execution, approvals, and audit-log tools are later MCP work tracked in
 [backlog.md](./backlog.md), not architectural non-goals. proxy-monster has no
 table-level tag store and does not add one, so MCP exposes only the column tags
-that already exist. The `authDebug` bypass remains available for development.
+that already exist. `PM_AUTH_DEBUG` provides the development login method.
 
 ## Why this shape
 
@@ -78,9 +78,10 @@ Three facts about the system force the design.
   token carrying `mcp:policies:write` still gets a live `admin.policies` Cedar
   check and is denied if the user lacks the role. A token _without_ that scope
   is rejected before Cedar runs. Scope subtracts, never adds.
-- Development debug parity. When `config.authDebug` is on, MCP supports the same
-  local-development authentication/authorization bypass as the other
-  control-plane surfaces; developers do not need Okta to exercise MCP locally.
+- Development debug parity. When `config.authDebug` is on, MCP accepts the same
+  dev login the other control-plane surfaces do, so developers do not need Okta
+  to exercise MCP locally. The principal chosen authorizes on its own roles, so
+  a tool call needs an `admin.*` grant.
 - Audience binding. Access tokens are bound to this resource (`resource` = the
   MCP endpoint's canonical URI, RFC 8707). A token minted for any other audience
   is rejected. proxy-monster never forwards a received token upstream (no
@@ -176,14 +177,19 @@ fallback). The client reads resource metadata → discovers the same-origin AS �
 uses its CIMD URL as `client_id` → runs auth-code+PKCE → authenticates through
 Okta → consents → calls `/mcp` with the bearer.
 
-### Development bypass
+### Development login
 
 With `PM_AUTH_DEBUG=true`, the authorization routes replace the Okta step with a
 dev-only principal selection equivalent to the existing `/auth/debug` flow and
 may auto-consent. It still issues a normal resource-bound bearer so MCP
-discovery, PKCE, token validation, and tool dispatch are exercised locally; the
-control plane then applies its existing authDebug authorization bypass.
+discovery, PKCE, token validation, and tool dispatch are exercised locally.
 Development needs no Okta connection and no second non-OAuth MCP transport.
+
+The principal must be named — an explicit `?principal=` or an existing console
+session — because this route mints a session for it. Tool dispatch then runs the
+ordinary Cedar check, so that principal needs an `admin.*` grant or every tool
+answers `common.forbidden`; sign in at `/login` with `system:admin` first, or
+authorize as a principal that already holds the role.
 
 ### Tokens
 
@@ -361,10 +367,10 @@ shape from `/validate` verbatim.
 
 ## Security & failure modes
 
-- `authDebug` on → local MCP calls use the existing debug principal/bypass with
-  no Okta round trip. With debug off, canonical HTTPS MCP/OAuth origins are
-  required; the authorization server rejects the public dev session secret and
-  incomplete OIDC configuration.
+- `authDebug` on → local MCP calls use the dev login with no Okta round trip,
+  and authorize on that principal's real roles. With debug off, canonical HTTPS
+  MCP/OAuth origins are required; the authorization server rejects the public
+  dev session secret and incomplete OIDC configuration.
 - Token for wrong audience / expired / revoked → `401`, `WWW-Authenticate`
   points back at resource metadata (the client re-auths).
 - Scope missing → tool error `mcp.insufficient_scope` _before_ Cedar (structured

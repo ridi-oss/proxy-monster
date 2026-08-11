@@ -82,13 +82,20 @@ class AuthAuditDbTest {
         core = ControlPlaneCore(dataSource)
         grpc = ControlPlaneGrpcService(core)
         val policyStore = CedarPolicyStore(dataSource)
-        authz = Authz(CedarEngine(policyStore), policyStore, RoleSource { emptySet() })
+        // token-admin@example.com holds system:admin so the seeded token.revoke oversight policy applies to
+        // it — the cross-principal revoke below is the case under test, and it has to be authorized for real.
+        // Everyone else resolves to no roles, so their own token.mint still comes from the token.self seed.
+        authz = Authz(
+            CedarEngine(policyStore),
+            policyStore,
+            RoleSource { principal -> if (principal == "token-admin@example.com") setOf("system:admin") else emptySet() },
+        )
         sessionStore = PrincipalSessionStore(dataSource, null)
         datasourceName = core.datasourceStore.create(DatasourceInput("auth-audit-ds", "postgres")).name
     }
 
-    /** authDebug bypasses requireAuthz, so the routes under test decide nothing here — the point is who the
-     *  audit row NAMES, and a signed-in caller is established through the same web-session cookie the app uses.
+    /** The point here is who the audit row NAMES, not whether the route admits — a signed-in caller is
+     *  established through the same web-session cookie the app uses, and authorizes on its real roles.
      *  The test host's socket peer is trusted as an edge so [CALLER_ADDR] resolves off `X-Forwarded-For`,
      *  which is how the recorder's client-address wiring is pinned to a known value. */
     private fun testConfig() = Config(

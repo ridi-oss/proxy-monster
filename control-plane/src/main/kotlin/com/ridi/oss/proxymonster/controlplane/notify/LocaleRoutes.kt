@@ -23,9 +23,7 @@ data class LocaleInput(val locale: String)
  */
 fun Route.localeRoutes(config: Config, store: NotificationStore) {
     put("/api/me/locale") {
-        if (!call.requireApi(config)) return@put
-        val principal = call.userSession()?.principal
-            ?: return@put call.respond(HttpStatusCode.Unauthorized, ApiError("common.unauthenticated"))
+        val principal = call.requireApi() ?: return@put
         val locale = call.receive<LocaleInput>().locale.trim().lowercase()
         // Validated against the same closed set the catalog carries: an unknown locale has no messages, and
         // storing one would fall every message back to the default forever.

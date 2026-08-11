@@ -108,16 +108,16 @@ internal fun Route.taskEventsRoute(
     appJson: Json,
 ) {
     sse("/api/tasks/events") {
-        val liveSession = if (config.authDebug) null else call.webSession()
-        val principal = liveSession?.principal ?: if (config.authDebug) "debug-user" else null
-        if (principal == null) {
+        val liveSession = call.webSession()
+        if (liveSession == null) {
             // No live session. EventSource cannot be told to STOP reconnecting after the 200 handshake, so
             // lengthen its reconnect backoff and end the stream (an expired-session tab then re-polls far less
             // aggressively; the app's 401ing polls redirect it to login). Poll is the truth.
             send(ServerSentEvent(retry = SSE_UNAUTH_RETRY_MS))
             return@sse
         }
-        val sessionId = liveSession?.id
+        val principal = liveSession.principal
+        val sessionId = liveSession.id
         val deviceId = call.deviceCookieId()
         val context = call.httpAuthzContext(config)
         val events = taskCompletionHub.subscribe(principal)
@@ -135,10 +135,10 @@ internal fun Route.taskEventsRoute(
                         // Bound the push to the SAME live `task.read` gate the poll/detail enforce, so a Cedar
                         // forbid (e.g. an untrusted zone) that 404s the poll also suppresses the push — the
                         // notification never reveals gated metadata. A denied/absent task is skipped.
-                        if (taskReadableForPush(config, principal, event.taskId, context, accessStore, authz, datasourceStore)) {
+                        if (taskReadableForPush(principal, event.taskId, context, accessStore, authz, datasourceStore)) {
                             send(ServerSentEvent(data = appJson.encodeToString(TaskEvent.serializer(), event), event = "task"))
                         }
-                        sessionStillLive(config, sessionId, deviceId, principalSessionStore)
+                        sessionStillLive(sessionId, deviceId, principalSessionStore)
                     }
                     onTimeout(SSE_SESSION_RECHECK_MS) {
                         // A session revoked / expired / newest-wins-displaced mid-stream must stop receiving
@@ -151,7 +151,7 @@ internal fun Route.taskEventsRoute(
                         // same throw inside the catch below, which is what turns a closed browser tab back
                         // into the non-event it is.
                         send(ServerSentEvent(comments = "keepalive"))
-                        sessionStillLive(config, sessionId, deviceId, principalSessionStore)
+                        sessionStillLive(sessionId, deviceId, principalSessionStore)
                     }
                 }
                 if (!keepOpen) break
@@ -169,14 +169,13 @@ internal fun Route.taskEventsRoute(
     }
 }
 
-/** True while the SSE stream's web session is still live (authDebug has no session and is always live). */
-internal fun sessionStillLive(config: Config, sessionId: Long?, deviceId: String?, store: PrincipalSessionStore): Boolean =
-    config.authDebug || (sessionId != null && store.resolveWeb(sessionId, deviceId) != null)
+/** True while the SSE stream's web session is still live — logging out or being displaced ends the stream. */
+internal fun sessionStillLive(sessionId: Long?, deviceId: String?, store: PrincipalSessionStore): Boolean =
+    sessionId != null && store.resolveWeb(sessionId, deviceId) != null
 
 /** Whether [principal] may still `task.read` [taskId] — the SAME live Cedar gate the poll/detail enforce,
  *  so the push cannot surface metadata the poll would 404. A missing task is not readable. */
 internal fun taskReadableForPush(
-    config: Config,
     principal: String,
     taskId: Long,
     context: AuthzContext,
@@ -184,7 +183,6 @@ internal fun taskReadableForPush(
     authz: Authz,
     datasourceStore: DatasourceStore,
 ): Boolean {
-    if (config.authDebug) return true
     val task = accessStore.getRequest(taskId) ?: return false
     val decision = authz.authorizeWithContext(
         principal,
@@ -309,15 +307,15 @@ internal fun computeMePermissions(principal: String, authz: Authz, context: Auth
 
 internal fun Route.mePermissionsRoute(config: Config, authz: Authz) {
     get("/api/me/permissions") {
-        if (!call.requireApi(config)) return@get
-        val permissions = if (config.authDebug) {
-            MePermissions(isAdmin = true, canReadAllAudit = true, canApprove = true)
-        } else {
-            val session = requireNotNull(call.userSession()) {
-                "requireApi admitted a non-debug request without a UserSession"
-            }
-            computeMePermissions(session.principal, authz, call.httpAuthzContext(config))
-        }
+        val principal = call.requireApi() ?: return@get
+        // Computed for the debug caller too. Claiming admin under authDebug would render every admin
+        // affordance for a session that logged in with a low-privilege role, and each one would then 403 on
+        // click — the console must describe the authority the routes will actually grant.
+        val permissions = computeMePermissions(
+            principal,
+            authz,
+            call.httpAuthzContext(config),
+        )
 
         // UI navigation and client-side guards are convenience only; every API authorizes independently.
         call.respond(permissions)
@@ -726,7 +724,7 @@ fun Application.module(config: Config, core: ControlPlaneCore) {
             call.respond(HttpStatusCode.Accepted, mapOf("status" to "accepted"))
         }
 
-        // Live decision feed for the UI. Requires a session unless running in auth-debug mode.
+        // Live decision feed for the UI. Requires a session; each record is then filtered by audit.read.
         auditRoutes(config, store, authz)
 
         // Dev-only login shortcut; gated by PM_AUTH_DEBUG. OIDC (above) is the production path.

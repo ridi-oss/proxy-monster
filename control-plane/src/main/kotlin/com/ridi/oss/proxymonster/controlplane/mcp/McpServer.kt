@@ -212,17 +212,15 @@ private class McpAuthorizer(private val config: Config, private val core: Contro
             )
         }
         val roles = core.roleResolver.resolve(context.principal)
-        if (!config.authDebug) {
-            val decision = core.authz.authorizeAs(
-                context.principal,
-                roles,
-                capability.action,
-                capability.resource,
-                AuthzContext(channel = Channel.MCP.contextValue, requesterIp = context.requesterIp),
-            )
-            if (decision is AuthzDecision.Deny) {
-                throw McpAuthorizationException(ApiError("common.forbidden", mapOf("detail" to decision.reason)), roles)
-            }
+        val decision = core.authz.authorizeAs(
+            context.principal,
+            roles,
+            capability.action,
+            capability.resource,
+            AuthzContext(channel = Channel.MCP.contextValue, requesterIp = context.requesterIp),
+        )
+        if (decision is AuthzDecision.Deny) {
+            throw McpAuthorizationException(ApiError("common.forbidden", mapOf("detail" to decision.reason)), roles)
         }
         return roles
     }

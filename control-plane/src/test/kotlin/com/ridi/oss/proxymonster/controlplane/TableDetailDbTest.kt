@@ -7,6 +7,8 @@ import com.ridi.oss.proxymonster.controlplane.authz.RoleSource
 import com.ridi.oss.proxymonster.controlplane.grpc.ControlPlaneGrpcService
 import com.ridi.oss.proxymonster.controlplane.support.SharedPostgres
 import com.ridi.oss.proxymonster.controlplane.support.requireDockerOrSkip
+import com.ridi.oss.proxymonster.controlplane.support.testLoginRoute
+import com.ridi.oss.proxymonster.controlplane.support.webSessionCookie
 import com.ridi.oss.proxymonster.grpc.ControlEvent
 import com.ridi.oss.proxymonster.grpc.ProxyTableDetailMsg
 import com.ridi.oss.proxymonster.grpc.controlTableDetailMsg
@@ -23,8 +25,10 @@ import com.ridi.oss.proxymonster.probe.TableMetadata
 import com.ridi.oss.proxymonster.probe.TableRelation
 import io.ktor.client.HttpClient
 import io.ktor.client.plugins.contentnegotiation.ContentNegotiation as ClientContentNegotiation
+import io.ktor.client.plugins.cookies.HttpCookies
 import io.ktor.client.request.get
 import io.ktor.client.request.parameter
+import io.ktor.client.request.post
 import io.ktor.client.statement.HttpResponse
 import io.ktor.client.statement.bodyAsText
 import io.ktor.http.HttpStatusCode
@@ -33,9 +37,7 @@ import io.ktor.server.application.Application
 import io.ktor.server.application.install
 import io.ktor.server.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.server.routing.routing
-import io.ktor.server.sessions.SessionTransportTransformerMessageAuthentication
 import io.ktor.server.sessions.Sessions
-import io.ktor.server.sessions.cookie
 import io.ktor.server.testing.ApplicationTestBuilder
 import io.ktor.server.testing.testApplication
 import kotlinx.coroutines.CompletableDeferred
@@ -77,12 +79,14 @@ class TableDetailDbTest {
     private lateinit var mysql: Fixture
     private val fakeProxies = ArrayList<FakeTableDetailProxy>()
 
+    private val caller = "dev@example.com"
+
     private val config = Config(
         httpPort = 0,
         dbUrl = "",
         dbUser = "",
         dbPassword = "",
-        authDebug = true,
+        authDebug = false,
         secretToken = null,
         sessionSecret = "table-detail-test-secret",
         oidc = null,
@@ -103,9 +107,8 @@ class TableDetailDbTest {
         policyStore = core.policyStore
         val cedarStore = CedarPolicyStore(metadata)
         // This suite exercises detail ASSEMBLY, not the connect gate (DatasourceMetadataConnectGateDbTest
-        // owns that), so the engine carries an outright connect permit rather than leaning on PM_AUTH_DEBUG —
-        // the flag bypasses authentication, never the Cedar decision, so a route reached under it still needs
-        // a grant. The permit goes to the ENGINE, which is what authorize() reads.
+        // owns that), so the engine carries an outright connect permit and every case signs in as an
+        // ordinary principal. The permit goes to the ENGINE, which is what authorize() reads.
         authz = Authz(
             CedarEngine(listOf(1L to """permit(principal, action == Action::"datasource.connect", resource);""")),
             cedarStore,
@@ -374,17 +377,25 @@ class TableDetailDbTest {
         )
     }
 
-    private fun ApplicationTestBuilder.wireTableDetailApp(): HttpClient {
+    /** The routes plus a client already signed in as [caller] — the detail route needs an authenticated one. */
+    private suspend fun ApplicationTestBuilder.wireTableDetailApp(): HttpClient {
         application { installTableDetailTestApp() }
-        return createClient {
+        val client = createClient {
             expectSuccess = false
+            install(HttpCookies)
             install(ClientContentNegotiation) { json(Json { ignoreUnknownKeys = true }) }
         }
+        assertEquals(HttpStatusCode.NoContent, client.post("/test/session/$caller").status)
+        return client
     }
 
     private fun Application.installTableDetailTestApp() {
+        val sessionStore = PrincipalSessionStore(metadata, null)
+        attributes.put(PRINCIPAL_SESSION_STORE, sessionStore)
         install(ContentNegotiation) { json(Json { ignoreUnknownKeys = true; encodeDefaults = true }) }
+        install(Sessions) { webSessionCookie(sessionStore, config.sessionSecret) }
         routing {
+            testLoginRoute(sessionStore, config)
             datasourceRoutes(config, authz, core.roleResolver, datasourceStore, core.proxyEventsHub, TableDetailService(core), core.tokenStore, core.userGroupStore)
         }
     }

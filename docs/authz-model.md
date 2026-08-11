@@ -354,9 +354,10 @@ of a route and the gate it calls. Paths are relative to
 | Users, groups, group-to-role map | `/api/users**`, `/api/groups**` | `Users.kt` | `requireAdmin(admin.identity)` |
 | Cedar policies | `/api/policies**` | `authz/CedarPolicyStore.kt` | `requireAdmin(admin.policies)` |
 
-- `requireApi(config)` (`Datasources.kt`) — a live web session, or
-  `PM_AUTH_DEBUG`. Authentication only, no authorization. Routes behind it do
-  their own per-row Cedar filtering (audit, tasks, grants).
+- `requireApi()` (`Datasources.kt`) — a live web session, returning the caller
+  principal so a route never re-reads it behind an assertion. Authentication
+  only, no authorization. Routes behind it do their own per-row Cedar filtering
+  (audit, tasks, grants).
 - `requireAdmin(config, authz, action)` (`authz/Authz.kt`) — a session plus
   `authorize(principal, admin.datasources | admin.policies | admin.identity, System) == Allow`.
   401 (`common.unauthenticated`) without a session, 403 (`common.forbidden`,
@@ -369,8 +370,16 @@ of a route and the gate it calls. Paths are relative to
   constant-time compared, TLS-only. Not a session and not Cedar: this is an
   IdP-to-control-plane integration ([`auth-model.md`](./auth-model.md)).
 
-`PM_AUTH_DEBUG` short-circuits all four to allow. It is a full authentication
-bypass and must be off in production.
+`PM_AUTH_DEBUG` is an authentication setting: it enables one extra **login
+method**, `POST /auth/debug`, which signs in as any principal with any roles and
+mints a real session row with real role assignments, exactly as the OIDC
+callback does. Keep it off in production — that login lets the caller name its
+own identity.
+
+A session it mints is an ordinary session, so the gates above read it like any
+other and a dev session authorizes on the roles it logged in with. Sign in with
+a low-privilege role and you are held to it, which is how you see what such a
+role sees.
 
 Ungated by design: `GET /health`, `GET /auth/config`, the OIDC and
 device-authorization routes (they mint the session), and `POST /auth/logout`,
@@ -430,11 +439,9 @@ rows from the list. That is deliberate: classification and policy work run off
 wants admins browsing live table metadata grants them a connect policy, the same
 one that lets them query it.
 
-`PM_AUTH_DEBUG` does not short-circuit the connect decision either. It is an
-authentication bypass, and `POST /auth/debug` persists its claimed roles as real
-assignments precisely so Cedar evaluates them — so a dev session sees exactly
-what its roles grant. A bare `PM_AUTH_DEBUG=1` with no debug login resolves to a
-principal with no roles, and therefore reads no connection material.
+A dev session decides here like any other: `POST /auth/debug` persists its
+claimed roles as real assignments, so Cedar evaluates them and the session reads
+exactly the connection material those roles grant.
 
 ## What this fixes (falls out of the model, not bolted on)
 

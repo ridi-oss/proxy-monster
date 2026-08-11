@@ -6,6 +6,7 @@ import com.ridi.oss.proxymonster.controlplane.grpc.ControlPlaneGrpcService
 import com.ridi.oss.proxymonster.controlplane.grpc.GrpcServer
 import com.ridi.oss.proxymonster.controlplane.support.SharedPostgres
 import com.ridi.oss.proxymonster.controlplane.support.requireDockerOrSkip
+import com.ridi.oss.proxymonster.controlplane.support.testLoginRoute
 import com.ridi.oss.proxymonster.controlplane.support.webSessionCookie
 import com.ridi.oss.proxymonster.grpc.ControlPlaneGrpcKt
 import com.ridi.oss.proxymonster.grpc.ControlRunMsg
@@ -36,12 +37,8 @@ import io.ktor.http.contentType
 import io.ktor.serialization.kotlinx.json.json
 import io.ktor.server.application.install
 import io.ktor.server.plugins.contentnegotiation.ContentNegotiation
-import io.ktor.server.response.respond
-import io.ktor.server.routing.post
 import io.ktor.server.routing.routing
 import io.ktor.server.sessions.Sessions
-import io.ktor.server.sessions.sessions
-import io.ktor.server.sessions.set
 import io.ktor.server.testing.ApplicationTestBuilder
 import io.ktor.server.testing.testApplication
 import kotlinx.coroutines.CompletableDeferred
@@ -78,11 +75,11 @@ import kotlin.test.fail
  * returns 202 while the run proceeds async on the held session, the enforced result is SAVED (not returned
  * inline), and the client observes completion by polling. Delete-on-close removes the tab's task + rows.
  *
- * Runs under `authDebug=true`, so the caller is the literal `debug-user` (given a role so the fail-closed
- * "own roles" gate passes) and the editor self-approve Cedar gate is bypassed — the V44 self-approve policy
- * gets its own isolated coverage in [EditorSelfApproveAuthzDbTest]. The masked re-decision at GET /result
- * (the shared `decideResultView`) is covered by the Approval result tests; here the result view's GATING
- * (not-ready 409, non-owner task.assume 404) is exercised, which never reaches the analyzer.
+ * The caller signs in as an ordinary principal holding one role, which the fail-closed "own roles" gate
+ * requires; the V44 editor self-approve policy gets its own isolated coverage in
+ * [EditorSelfApproveAuthzDbTest]. The masked re-decision at GET /result (the shared `decideResultView`) is
+ * covered by the Approval result tests; here the result view's GATING (not-ready 409, non-owner task.assume
+ * 404) is exercised, which never reaches the analyzer.
  */
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 class EditorSubmitRouteDbTest {
@@ -96,8 +93,9 @@ class EditorSubmitRouteDbTest {
     private lateinit var stub: ControlPlaneGrpcKt.ControlPlaneCoroutineStub
     private lateinit var rawChannel: ManagedChannel
     private lateinit var appScope: CoroutineScope
+    private lateinit var sessionStore: PrincipalSessionStore
 
-    private val caller = "debug-user" // the authDebug fallback principal (no session cookie is sent)
+    private val caller = "dev@example.com"
 
     @BeforeAll
     fun setup() {
@@ -108,20 +106,20 @@ class EditorSubmitRouteDbTest {
         runExecService = RunExecService(core)
         resultStore = QueryResultStore(dataSource, ResultCrypto(ByteArray(32) { it.toByte() }))
         appScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+        sessionStore = PrincipalSessionStore(dataSource, null)
 
         datasource = core.datasourceStore.create(
             DatasourceInput(name = "editor-submit-ds", engine = "postgres", host = "localhost", port = 5432, dbName = "app"),
         )
         core.userGroupStore.createUser(
-            AppUserInput(principal = caller), core.tokenStore, core.accessStore,
-            PrincipalSessionStore(dataSource, null),
+            AppUserInput(principal = caller), core.tokenStore, core.accessStore, sessionStore,
         )
-        // The editor requires the caller to have ≥1 own role (fail-closed) — give debug-user one.
+        // The editor requires the caller to have ≥1 own role (fail-closed).
         val roleId = core.policyStore.createRole(RoleInput("editor-analyst")).id
         core.policyStore.createAssignment(RoleAssignmentInput(caller, roleId))
 
         config = Config(
-            httpPort = 0, dbUrl = "", dbUser = "", dbPassword = "", authDebug = true, secretToken = null,
+            httpPort = 0, dbUrl = "", dbUser = "", dbPassword = "", authDebug = false, secretToken = null,
             sessionSecret = "editor-submit-test-secret", oidc = null, resultKey = null, scimToken = null,
             sessionWindowSeconds = 3600, idpRecheckIntervalSeconds = 600, devMarker = true,
         )
@@ -143,57 +141,31 @@ class EditorSubmitRouteDbTest {
         require(predicate()) { "timed out awaiting: $what" }
     }
 
-    private fun ApplicationTestBuilder.wire(cfg: Config = config, hub: TaskCompletionHub? = null): HttpClient {
+    /**
+     * The routes plus a client already signed in as [caller] — every editor route resolves the caller from
+     * a real web-session cookie (the same webSessionCookie transport App uses).
+     */
+    private suspend fun ApplicationTestBuilder.wire(hub: TaskCompletionHub? = null): HttpClient {
         application {
+            attributes.put(PRINCIPAL_SESSION_STORE, sessionStore)
             install(ContentNegotiation) { json(Json { ignoreUnknownKeys = true; encodeDefaults = true }) }
+            install(Sessions) { webSessionCookie(sessionStore, config.sessionSecret) }
             routing {
+                testLoginRoute(sessionStore, config)
                 editorSessionRoutes(
-                    cfg, core.datasourceStore, core.accessStore, resultStore,
+                    config, core.datasourceStore, core.accessStore, resultStore,
                     core.policyStore, core.userGroupStore, core.roleResolver, core.authz, runExecService,
                     appScope, core.systemClassification, hub,
                 )
             }
         }
-        return createClient {
+        val client = createClient {
             expectSuccess = false
             install(HttpCookies)
             install(ClientContentNegotiation) { json(Json { ignoreUnknownKeys = true }) }
         }
-    }
-
-    // A session-authenticated wiring for the non-authDebug Cedar gate: [cfg] must have authDebug=false, so
-    // requireApi needs a real web-session cookie. A /test/session/{principal} route mints one (the same
-    // webSessionCookie transport App uses), and [login] sets it on the client before driving the route.
-    private fun ApplicationTestBuilder.wireAuthenticated(cfg: Config): HttpClient {
-        val sessionStore = PrincipalSessionStore(dataSource, null)
-        application {
-            attributes.put(PRINCIPAL_SESSION_STORE, sessionStore)
-            install(ContentNegotiation) { json(Json { ignoreUnknownKeys = true; encodeDefaults = true }) }
-            install(Sessions) { webSessionCookie(sessionStore, cfg.sessionSecret) }
-            routing {
-                post("/test/session/{principal}") {
-                    val deviceId = call.ensureDeviceCookie(secure = false)
-                    call.sessions.set(
-                        WebSessionRef(sessionStore.mintWeb(requireNotNull(call.parameters["principal"]), null, 7200, 900, deviceId)),
-                    )
-                    call.respond(HttpStatusCode.NoContent)
-                }
-                editorSessionRoutes(
-                    cfg, core.datasourceStore, core.accessStore, resultStore,
-                    core.policyStore, core.userGroupStore, core.roleResolver, core.authz, runExecService,
-                    appScope, core.systemClassification,
-                )
-            }
-        }
-        return createClient {
-            expectSuccess = false
-            install(HttpCookies)
-            install(ClientContentNegotiation) { json(Json { ignoreUnknownKeys = true }) }
-        }
-    }
-
-    private suspend fun HttpClient.login(principal: String) {
-        assertEquals(HttpStatusCode.NoContent, post("/test/session/$principal").status)
+        assertEquals(HttpStatusCode.NoContent, client.post("/test/session/$caller").status)
+        return client
     }
 
     private fun rowsChunk(columns: List<String>, rows: List<List<String?>>): ProxyRunMsg = proxyRunMsg {
@@ -470,13 +442,10 @@ class EditorSubmitRouteDbTest {
 
     @Test
     fun `a task_read forbid denies the owner's poll with 404`() = testApplication {
-        // The other route tests run under authDebug (Cedar bypassed). task.read gates the poll metadata, so a
-        // Cedar forbid must override the owner self-read permit — the owner guard alone is not the authorization.
-        // Wire the route with authDebug=false so the gate actually runs, authenticating as the task owner via a
-        // real web-session cookie. The CedarEngine polls stateVersion, so a freshly-inserted forbid takes effect
-        // live and its deletion restores the baseline.
-        val client = wireAuthenticated(config.copy(authDebug = false))
-        client.login(caller)
+        // task.read gates the poll metadata, so a Cedar forbid must override the owner self-read permit —
+        // the owner guard alone is not the authorization. The CedarEngine polls stateVersion, so a
+        // freshly-inserted forbid takes effect live and its deletion restores the baseline.
+        val client = wire()
         val task = core.accessStore.createEditorTask(
             caller, datasource.id, "select id from t", listOf("editor-analyst"), caller,
         )
@@ -507,8 +476,8 @@ class EditorSubmitRouteDbTest {
     @Test
     fun `poll and result for a non-owner editor task are 404`() = testApplication {
         val client = wire()
-        // A task owned by someone OTHER than the authDebug caller (debug-user): poll is owner-scoped and
-        // result is task.assume-scoped, so both 404 for debug-user.
+        // A task owned by someone OTHER than the signed-in caller: poll is owner-scoped and result is
+        // task.assume-scoped, so both 404.
         val other = core.accessStore.createEditorTask(
             "someone-else@example.com", datasource.id, "select id from t", listOf("editor-analyst"), "someone-else@example.com",
         )

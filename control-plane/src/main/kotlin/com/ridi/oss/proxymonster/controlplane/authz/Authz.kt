@@ -828,11 +828,8 @@ internal fun Authz.authorizeWithContext(
 }
 
 /**
- * Gate an admin/privileged route: `true` if [Config.authDebug] (the dev-only bypass — mirrors
- * `requireApi`'s posture, the trusted-network dev story; this is NOT a Cedar bypass, Cedar
- * itself is never skipped, only never *reached* here), else 401 with no session, else the real
- * [Authz.authorize] decision (403 + the deny reason on Deny). This is what closes the "admin routes
- * require admin.*, not any session" hole once `config.authDebug=false` in production.
+ * Gate an admin/privileged route: 401 with no session, else the real [Authz.authorize] decision (403 +
+ * the deny reason on Deny). This is what closes the "admin routes require admin.*, not any session" hole.
  *
  * The ONE choke point every admin route funnels through — threading
  * [com.ridi.oss.proxymonster.controlplane.httpAuthzContext] here fixes `requester_ip` for every admin
@@ -849,11 +846,14 @@ suspend fun ApplicationCall.requireAdmin(
 
 /**
  * The general per-(action, resource) route gate — [requireAdmin]'s body, named for the routes that
- * aren't admin surfaces (token.* / workflow.* self-service and grant routes). Same posture:
- * [Config.authDebug] dev bypass → true; no session → 401; else the real
- * [Authz.authorize] decision (403 + reason on Deny). [requireAdmin] is the `System`-resource alias.
+ * aren't admin surfaces (token.* / workflow.* self-service and grant routes). No session → 401; else the
+ * real [Authz.authorize] decision (403 + reason on Deny). [requireAdmin] is the `System`-resource alias.
  * Build the [resource] (e.g. `Token(owner)`) from [userSession]'s principal at the call site, since it
- * usually references the caller — under `authDebug` this short-circuits before the session is read.
+ * usually references the caller.
+ *
+ * A dev session decides here like an SSO one: `PM_AUTH_DEBUG` adds the `/auth/debug` login (email plus the
+ * roles you ask for, minted as real assignments), so signing in with a LOW-privilege role holds you to it —
+ * which is how you test one.
  */
 suspend fun ApplicationCall.requireAuthz(
     config: Config,
@@ -861,13 +861,11 @@ suspend fun ApplicationCall.requireAuthz(
     action: AuthzAction,
     resource: AuthzResource,
 ): Boolean {
-    if (config.authDebug) return true
-    val session = userSession()
-    if (session == null) {
+    val principal = userSession()?.principal ?: run {
         respond(HttpStatusCode.Unauthorized, ApiError("common.unauthenticated"))
         return false
     }
-    return when (val decision = authz.authorize(session.principal, action, resource, httpAuthzContext(config))) {
+    return when (val decision = authz.authorize(principal, action, resource, httpAuthzContext(config))) {
         AuthzDecision.Allow -> true
         is AuthzDecision.Deny -> {
             respond(HttpStatusCode.Forbidden, ApiError("common.forbidden", mapOf("detail" to decision.reason)))

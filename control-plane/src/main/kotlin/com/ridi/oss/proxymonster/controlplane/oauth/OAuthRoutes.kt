@@ -166,9 +166,15 @@ fun Route.mcpOAuthRoutes(
         }
         val canonicalScope = canonicalScopes(requestedScopes)
         if (config.authDebug) {
+            // Like /auth/debug, this is a login: it mints a real session below. So it has to be TOLD who —
+            // an explicit ?principal= or an existing console session — rather than defaulting to a synthetic
+            // name, which would mint a session for a principal nobody chose and then authorize MCP tools as it.
             val principal = params["principal"]?.takeIf(String::isNotBlank)
                 ?: call.userSession()?.principal
-                ?: "debug-user"
+                ?: run {
+                    call.respond(HttpStatusCode.BadRequest, OAuthError("login_required"))
+                    return@get
+                }
             val pending = McpPendingAuthorization(clientId, redirectUri, resource, canonicalScope, state, challenge, principal)
             call.sessions.set(MCP_OAUTH_PENDING_COOKIE, pending)
             // Debug OAuth and the web console intentionally share the same authenticated session,

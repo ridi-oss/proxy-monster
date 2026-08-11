@@ -5,6 +5,7 @@ import com.ridi.oss.proxymonster.controlplane.AppUserInput
 import com.ridi.oss.proxymonster.controlplane.Config
 import com.ridi.oss.proxymonster.controlplane.ControlPlaneCore
 import com.ridi.oss.proxymonster.controlplane.CreateApprovalResponse
+import com.ridi.oss.proxymonster.controlplane.PRINCIPAL_SESSION_STORE
 import com.ridi.oss.proxymonster.controlplane.PrincipalSessionStore
 import com.ridi.oss.proxymonster.controlplane.QueryResultStore
 import com.ridi.oss.proxymonster.controlplane.ResultCrypto
@@ -20,6 +21,8 @@ import com.ridi.oss.proxymonster.controlplane.runApprovedTask
 import com.ridi.oss.proxymonster.controlplane.support.EnforcementFixture
 import com.ridi.oss.proxymonster.controlplane.support.MockSlack
 import com.ridi.oss.proxymonster.controlplane.support.requireDockerOrSkip
+import com.ridi.oss.proxymonster.controlplane.support.testLoginRoute
+import com.ridi.oss.proxymonster.controlplane.support.webSessionCookie
 import com.ridi.oss.proxymonster.grpc.ControlPlaneGrpcKt
 import com.ridi.oss.proxymonster.grpc.EnfAction as WireEnfAction
 import com.ridi.oss.proxymonster.grpc.ProxyRunMsg
@@ -37,6 +40,7 @@ import io.grpc.netty.shaded.io.grpc.netty.NettyChannelBuilder
 import io.ktor.client.HttpClient
 import io.ktor.client.call.body
 import io.ktor.client.plugins.contentnegotiation.ContentNegotiation as ClientContentNegotiation
+import io.ktor.client.plugins.cookies.HttpCookies
 import io.ktor.client.request.post
 import io.ktor.client.request.setBody
 import io.ktor.http.ContentType
@@ -46,6 +50,7 @@ import io.ktor.serialization.kotlinx.json.json
 import io.ktor.server.application.install
 import io.ktor.server.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.server.routing.routing
+import io.ktor.server.sessions.Sessions
 import io.ktor.server.testing.ApplicationTestBuilder
 import io.ktor.server.testing.testApplication
 import kotlinx.coroutines.CoroutineScope
@@ -100,10 +105,11 @@ class SlackNotificationE2eDbTest {
     private lateinit var http: HttpClient
     private lateinit var svc: NotificationService
     private lateinit var socket: SlackSocketMode
+    private lateinit var sessionStore: PrincipalSessionStore
 
-    // The compose route runs under authDebug, so the requester is the literal debug principal; the Slack click
-    // resolves the approver's verified email to its own active app_user principal.
-    private val requester = "debug-user"
+    // The requester signs in to the compose route; the Slack click resolves the approver's verified email to
+    // its own active app_user principal.
+    private val requester = "dev@example.com"
     private val approver = "admin@example.com"
     private var runnerRoleId = 0L
     private val runScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
@@ -116,8 +122,9 @@ class SlackNotificationE2eDbTest {
         core = ControlPlaneCore(fx.dataSource)
         resultStore = QueryResultStore(fx.dataSource, ResultCrypto(ByteArray(32) { it.toByte() }))
         runExecService = RunExecService(core)
+        sessionStore = PrincipalSessionStore(fx.dataSource, null)
         config = Config(
-            httpPort = 0, dbUrl = "", dbUser = "", dbPassword = "", authDebug = true, secretToken = null,
+            httpPort = 0, dbUrl = "", dbUser = "", dbPassword = "", authDebug = false, secretToken = null,
             sessionSecret = "e2e-test-secret", oidc = null, resultKey = null, scimToken = null,
             sessionWindowSeconds = 3600, idpRecheckIntervalSeconds = 600, devMarker = true,
         )
@@ -204,10 +211,14 @@ class SlackNotificationE2eDbTest {
         }
     }
 
-    private fun ApplicationTestBuilder.wire(): HttpClient {
+    /** The compose route plus a client already signed in as [requester]. */
+    private suspend fun ApplicationTestBuilder.wire(): HttpClient {
         application {
+            attributes.put(PRINCIPAL_SESSION_STORE, sessionStore)
             install(ContentNegotiation) { json(Json { ignoreUnknownKeys = true; encodeDefaults = true }) }
+            install(Sessions) { webSessionCookie(sessionStore, config.sessionSecret) }
             routing {
+                testLoginRoute(sessionStore, config)
                 approvalRoutes(
                     config, core.accessStore, core.auditStore, core.datasourceStore, core.policyStore,
                     core.userGroupStore, resultStore, core.roleResolver, core.authz, runExecService,
@@ -215,10 +226,13 @@ class SlackNotificationE2eDbTest {
                 )
             }
         }
-        return createClient {
+        val client = createClient {
             expectSuccess = false
+            install(HttpCookies)
             install(ClientContentNegotiation) { json(Json { ignoreUnknownKeys = true }) }
         }
+        assertEquals(HttpStatusCode.NoContent, client.post("/test/session/$requester").status)
+        return client
     }
 
     private suspend fun awaitUntil(what: String, predicate: () -> Boolean) {

@@ -117,7 +117,10 @@ the map of which file owns which prefix — and the gate each one calls — is i
 
 An authenticated session alone is never authorization. A route states its
 requirement by which gate helper it calls (`requireApi`, `requireAdmin`,
-`requireAuthz`, `requireScimAuth`), and `PM_AUTH_DEBUG` short-circuits all four.
+`requireAuthz`, `requireScimAuth`). `PM_AUTH_DEBUG` is an authentication
+setting: it adds a login method (`POST /auth/debug`, any principal with any
+roles, minted as a real session), and the gates read that session like any
+other.
 
 Errors are never English prose on the wire: a route responds
 `ApiError(code, params)` with a stable dot-namespaced code the web looks up as

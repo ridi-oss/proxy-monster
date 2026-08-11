@@ -942,11 +942,10 @@ fun Route.queryRoutes(
     runExecService: RunExecService,
 ) {
     post("/api/datasources/{id}/query") {
-        if (!call.requireApi(config)) return@post
+        val principal = call.requireApi() ?: return@post
         val id = call.idParam() ?: return@post call.respond(HttpStatusCode.BadRequest, ApiError("common.bad_id"))
         val ds = datasourceStore.get(id) ?: return@post call.respond(HttpStatusCode.NotFound, ApiError("common.not_found", mapOf("resource" to "datasource")))
         val req = call.receive<QueryRequest>()
-        val principal = call.userSession()?.principal ?: "debug-user"
         // Auto-save the run to the principal's editor history (best-effort; never blocks the query).
         runCatching { historyStore.add(principal, id, req.sql) }
         try {
@@ -1011,11 +1010,10 @@ fun Route.editorSessionRoutes(
     taskCompletionHub: TaskCompletionHub? = null,
 ) {
     post("/api/editor/sessions") {
-        if (!call.requireApi(config)) return@post
+        val principal = call.requireApi() ?: return@post
         val input = call.receive<OpenEditorSessionInput>()
         val ds = datasourceStore.get(input.datasourceId)
             ?: return@post call.respond(HttpStatusCode.NotFound, ApiError("common.not_found", mapOf("resource" to "datasource")))
-        val principal = call.userSession()?.principal ?: "debug-user"
         try {
             call.respond(EditorSessionOpened(runExecService.openSession(principal, ds, call.httpRequesterIp(config))))
         } catch (_: NoProxyAttachedException) {
@@ -1032,10 +1030,9 @@ fun Route.editorSessionRoutes(
     // Async submit: launch the run as an auto-approved EDITOR task on the held session and ACK 202 — no rows
     // inline (mirrors /api/approvals/{id}/execute). The web swaps its tab's taskId and polls to completion.
     post("/api/editor/sessions/{sessionId}/query") {
-        if (!call.requireApi(config)) return@post
+        val principal = call.requireApi() ?: return@post
         val sessionId = call.parameters["sessionId"]
             ?: return@post call.respond(HttpStatusCode.BadRequest, ApiError("common.bad_id"))
-        val principal = call.userSession()?.principal ?: "debug-user"
         val req = call.receive<QueryRequest>()
         val sql = req.sql
         if (sql.isBlank()) {
@@ -1055,11 +1052,8 @@ fun Route.editorSessionRoutes(
             ?: return@post call.respond(HttpStatusCode.NotFound, ApiError("common.not_found", mapOf("resource" to "datasource")))
         val store = queryResultStore
             ?: return@post call.respond(HttpStatusCode.ServiceUnavailable, ApiError("approval.result_storage_not_configured"))
-        // Self-approve on the editor channel: must clear task.request AND task.approve. authDebug bypasses.
-        if (!config.authDebug && !autoApproveTask(
-                principal, ownRoles, ds, call.httpAuthzContext(config), authz, Channel.EDITOR,
-            )
-        ) {
+        // Self-approve on the editor channel: must clear task.request AND task.approve.
+        if (!autoApproveTask(principal, ownRoles, ds, call.httpAuthzContext(config), authz, Channel.EDITOR)) {
             return@post call.respond(HttpStatusCode.Forbidden, ApiError("common.forbidden"))
         }
 
@@ -1141,56 +1135,50 @@ fun Route.editorSessionRoutes(
     // Poll: task status + child metadata. Owner-scoped to the caller's own EDITOR tasks (task.read/own);
     // 404 for a non-owner / non-EDITOR id, so it's not an existence oracle. Rows stay behind /result.
     get("/api/editor/tasks/{taskId}") {
-        if (!call.requireApi(config)) return@get
+        val principal = call.requireApi() ?: return@get
         val taskId = call.parameters["taskId"]?.toLongOrNull()
             ?: return@get call.respond(HttpStatusCode.BadRequest, ApiError("common.bad_id"))
-        val principal = call.userSession()?.principal ?: "debug-user"
         val task = accessStore.getRequest(taskId)
         if (task == null || task.kind != "QUERY" || task.creatorKind != "EDITOR" || task.principal != principal) {
             return@get call.respond(HttpStatusCode.NotFound, ApiError("common.not_found", mapOf("resource" to "editor task")))
         }
         // task.read gates the metadata (status, row count, column names, error code, timestamps) — the owner
         // guard above is not a substitute: a Cedar forbid (e.g. task.read denied from an untrusted zone) must
-        // still override the self-read permit. authDebug bypasses, matching every other route's Cedar gate.
-        if (!config.authDebug) {
-            val mayRead = authz.authorizeWithContext(
-                principal, AuthzAction.TASK_READ,
-                AuthzResource.ApprovalRequest(
-                    requester = task.principal, approver = task.decidedBy, executedBy = task.executedBy,
-                    datasourceName = task.datasourceName, roleName = task.roleName,
-                ),
-                call.httpAuthzContext(config), task.datasourceName,
-                task.datasourceId?.let(datasourceStore::getIncludingDeleted)?.tags.orEmpty(),
-            )
-            if (mayRead is AuthzDecision.Deny) {
-                return@get call.respond(HttpStatusCode.NotFound, ApiError("common.not_found", mapOf("resource" to "editor task")))
-            }
+        // still override the self-read permit.
+        val mayRead = authz.authorizeWithContext(
+            principal, AuthzAction.TASK_READ,
+            AuthzResource.ApprovalRequest(
+                requester = task.principal, approver = task.decidedBy, executedBy = task.executedBy,
+                datasourceName = task.datasourceName, roleName = task.roleName,
+            ),
+            call.httpAuthzContext(config), task.datasourceName,
+            task.datasourceId?.let(datasourceStore::getIncludingDeleted)?.tags.orEmpty(),
+        )
+        if (mayRead is AuthzDecision.Deny) {
+            return@get call.respond(HttpStatusCode.NotFound, ApiError("common.not_found", mapOf("resource" to "editor task")))
         }
         call.respond(EditorTaskStatus(task.id, task.status, queryResultStore?.meta(taskId)))
     }
 
     post("/api/editor/tasks/{taskId}/cancel") {
-        if (!call.requireApi(config)) return@post
+        val principal = call.requireApi() ?: return@post
         val taskId = call.parameters["taskId"]?.toLongOrNull()
             ?: return@post call.respond(HttpStatusCode.BadRequest, ApiError("common.bad_id"))
-        val principal = call.userSession()?.principal ?: "debug-user"
         val task = accessStore.getRequest(taskId)
         if (task == null || task.kind != "QUERY" || task.creatorKind != "EDITOR" || task.principal != principal) {
             return@post call.respond(HttpStatusCode.NotFound, ApiError("common.not_found", mapOf("resource" to "editor task")))
         }
-        if (!config.authDebug) {
-            val mayCancel = authz.authorizeWithContext(
-                principal, AuthzAction.TASK_CANCEL,
-                AuthzResource.ApprovalRequest(
-                    requester = task.principal, approver = task.decidedBy, executedBy = task.executedBy,
-                    datasourceName = task.datasourceName, roleName = task.roleName,
-                ),
-                call.httpAuthzContext(config), task.datasourceName,
-                task.datasourceId?.let(datasourceStore::getIncludingDeleted)?.tags.orEmpty(),
-            )
-            if (mayCancel is AuthzDecision.Deny) {
-                return@post call.respond(HttpStatusCode.Forbidden, ApiError("approval.cancel_forbidden"))
-            }
+        val mayCancel = authz.authorizeWithContext(
+            principal, AuthzAction.TASK_CANCEL,
+            AuthzResource.ApprovalRequest(
+                requester = task.principal, approver = task.decidedBy, executedBy = task.executedBy,
+                datasourceName = task.datasourceName, roleName = task.roleName,
+            ),
+            call.httpAuthzContext(config), task.datasourceName,
+            task.datasourceId?.let(datasourceStore::getIncludingDeleted)?.tags.orEmpty(),
+        )
+        if (mayCancel is AuthzDecision.Deny) {
+            return@post call.respond(HttpStatusCode.Forbidden, ApiError("approval.cancel_forbidden"))
         }
         if (task.status != "EXECUTING") {
             return@post call.respond(EditorTaskStatus(task.id, task.status, queryResultStore?.meta(taskId)))
@@ -1216,10 +1204,9 @@ fun Route.editorSessionRoutes(
     // Rows: task.assume gates the viewer (no authDebug bypass — data confidentiality), then the stored result
     // is re-decided live under the task's execute-as roles on the EDITOR channel — mirrors the approval view.
     get("/api/editor/tasks/{taskId}/result") {
-        if (!call.requireApi(config)) return@get
+        val principal = call.requireApi() ?: return@get
         val taskId = call.parameters["taskId"]?.toLongOrNull()
             ?: return@get call.respond(HttpStatusCode.BadRequest, ApiError("common.bad_id"))
-        val principal = call.userSession()?.principal ?: "debug-user"
         val task = accessStore.getRequest(taskId)
         // Owner-scoped (frozen contract): an editor result is readable ONLY by its own submitter. The
         // task.assume check below is defense-in-depth (the owner passes it via the task.assume-parties policy);
@@ -1296,10 +1283,9 @@ fun Route.editorSessionRoutes(
     // Delete-on-close: drop the tab's saved rows + its task row (CASCADE). Owner-scoped + EDITOR-only, so a
     // leaked id can't delete another principal's task; a non-owner / unknown id is a silent, idempotent 204.
     delete("/api/editor/tasks/{taskId}") {
-        if (!call.requireApi(config)) return@delete
+        val principal = call.requireApi() ?: return@delete
         val taskId = call.parameters["taskId"]?.toLongOrNull()
             ?: return@delete call.respond(HttpStatusCode.BadRequest, ApiError("common.bad_id"))
-        val principal = call.userSession()?.principal ?: "debug-user"
         val task = accessStore.getRequest(taskId)
         if (task != null && task.kind == "QUERY" && task.creatorKind == "EDITOR" && task.principal == principal) {
             if (task.status == "EXECUTING") runExecService.cancelActiveRun(taskId)
@@ -1310,13 +1296,12 @@ fun Route.editorSessionRoutes(
     }
 
     delete("/api/editor/sessions/{sessionId}") {
-        if (!call.requireApi(config)) return@delete
+        val principal = call.requireApi() ?: return@delete
         val sessionId = call.parameters["sessionId"]
             ?: return@delete call.respond(HttpStatusCode.BadRequest, ApiError("common.bad_id"))
         // Close only if the caller owns the session (mirrors runOnSession) — a leaked sessionId must not let
         // another principal tear down this connection. Idempotent NoContent regardless, so it's not an
         // existence oracle for someone else's session id.
-        val principal = call.userSession()?.principal ?: "debug-user"
         runExecService.closeSessionOwnedBy(sessionId, principal)
         call.respond(HttpStatusCode.NoContent)
     }

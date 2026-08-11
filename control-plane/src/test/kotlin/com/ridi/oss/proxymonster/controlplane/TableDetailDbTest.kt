@@ -102,7 +102,15 @@ class TableDetailDbTest {
         datasourceStore = core.datasourceStore
         policyStore = core.policyStore
         val cedarStore = CedarPolicyStore(metadata)
-        authz = Authz(CedarEngine(emptyList()), cedarStore, RoleSource { emptySet() })
+        // This suite exercises detail ASSEMBLY, not the connect gate (DatasourceMetadataConnectGateDbTest
+        // owns that), so the engine carries an outright connect permit rather than leaning on PM_AUTH_DEBUG —
+        // the flag bypasses authentication, never the Cedar decision, so a route reached under it still needs
+        // a grant. The permit goes to the ENGINE, which is what authorize() reads.
+        authz = Authz(
+            CedarEngine(listOf(1L to """permit(principal, action == Action::"datasource.connect", resource);""")),
+            cedarStore,
+            RoleSource { emptySet() },
+        )
         postgres = createFixture("detail-postgres", "postgres", "detail_schema", "detail_pg")
         mysql = createFixture("detail-mysql", "mysql", "detail_mysql", "detail_my")
         fakeProxies += FakeTableDetailProxy(core, postgres.datasource.name) { schema, table ->

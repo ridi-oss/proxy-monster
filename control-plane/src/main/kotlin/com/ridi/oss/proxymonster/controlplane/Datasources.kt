@@ -4,7 +4,6 @@ import com.ridi.oss.proxymonster.classification.SystemTag
 import com.ridi.oss.proxymonster.controlplane.authz.Authz
 import com.ridi.oss.proxymonster.controlplane.authz.AuthzAction
 import com.ridi.oss.proxymonster.controlplane.authz.AuthzDecision
-import com.ridi.oss.proxymonster.controlplane.authz.AuthzResource
 import com.ridi.oss.proxymonster.controlplane.authz.authorizeDatasourceAction
 import com.ridi.oss.proxymonster.controlplane.authz.requireAdmin
 import com.ridi.oss.proxymonster.controlplane.authz.resolveContextTags
@@ -843,9 +842,10 @@ fun Route.datasourceRoutes(
 ) {
     // A caller may connect to (and so browse the catalog of) a datasource iff Cedar grants
     // datasource.connect on it — the same name-keyed decision, with derived context tags, the proxy runs on
-    // connect. authDebug sees everything, matching every other route.
+    // connect. No authDebug arm: PM_AUTH_DEBUG is an AUTHENTICATION bypass, and `/auth/debug` persists its
+    // claimed roles as real assignments so Cedar can evaluate them, so short-circuiting the decision here
+    // would only hide the policy dev is configured to exercise.
     fun mayConnect(call: ApplicationCall, principal: String, ds: Datasource): Boolean {
-        if (config.authDebug) return true
         val roles = roleResolver.resolve(principal)
         val raw = call.httpAuthzContext(config)
         val tags = authz.resolveContextTags(principal, roles, ds.name, raw, ds.tags)
@@ -869,19 +869,10 @@ fun Route.datasourceRoutes(
         val connectableOnly = call.request.queryParameters["connectable"].equals("true", ignoreCase = true)
         // The list stays unfiltered by default — JIT-request compose must show datasources you cannot yet
         // connect to, precisely so they can be requested — but a row you may not connect to is stripped of
-        // its connection material. Otherwise the list answers what {id} and {id}/wire-cert refuse, and
-        // their datasource.connect gate is decorative.
-        //
-        // admin.datasources keeps the full row: administering a datasource means editing the very host/port
-        // it is being stripped of, and that authority is instance-wide, so it resolves once rather than
-        // per row.
-        val isDatasourceAdmin = config.authDebug ||
-            authz.authorize(principal, AuthzAction.ADMIN_DATASOURCES, AuthzResource.System, call.httpAuthzContext(config)) ==
-            AuthzDecision.Allow
-        val visible = when {
-            connectableOnly -> all.filter { mayConnect(call, principal, it) }
-            isDatasourceAdmin -> all
-            else -> all.map { if (mayConnect(call, principal, it)) it else it.withoutConnectionMaterial() }
+        // its connection material, the same decision {id} and {id}/wire-cert make. A row this list would
+        // answer more fully than {id} does is a bypass of {id}.
+        val visible = if (connectableOnly) all.filter { mayConnect(call, principal, it) } else {
+            all.map { if (mayConnect(call, principal, it)) it else it.withoutConnectionMaterial() }
         }
         call.respond(visible)
     }

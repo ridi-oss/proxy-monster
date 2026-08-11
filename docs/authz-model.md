@@ -416,18 +416,25 @@ The unfiltered list is the alternate path to those same bytes, so it redacts
 rather than filters: a row the caller cannot connect to keeps its identity
 (name, engine, tags) and loses its connection material — `host`, `port`,
 `dbName`, `advertiseAddr`, `advertiseCertChain`. Enough to name in an access
-request, not enough to dial. `admin.datasources` receives the full row, since
-administering a datasource means editing the fields being stripped.
+request, not enough to dial. There is no admin exemption: a list row that
+answered more fully than `{id}` does would simply be a way around `{id}`.
 
-`admin.datasources` does **not** imply any of the four connect-gated reads. The
-seeded `system:admin` role carries the three `admin.*` actions and no
+`admin.datasources` does **not** imply any of these reads. The seeded
+`system:admin` role carries the three `admin.*` actions and no
 `datasource.connect` — it is administrative, not a data reader — so on a stock
 install an admin who holds no connect grant gets `datasource.not_connectable`
-from all four, `{id}/table-detail` included. That is deliberate: classification
-and policy work run off `{id}/catalog`, which has always required connect, and
-the console reaches `{id}/table-detail` only from the SQL editor's table
-browser. An operator who wants admins browsing live table metadata grants them a
-connect policy, the same one that lets them query it.
+from all four per-datasource routes, `{id}/table-detail` included, and redacted
+rows from the list. That is deliberate: classification and policy work run off
+`{id}/catalog`, which has always required connect, and the console reaches
+`{id}/table-detail` only from the SQL editor's table browser. An operator who
+wants admins browsing live table metadata grants them a connect policy, the same
+one that lets them query it.
+
+`PM_AUTH_DEBUG` does not short-circuit the connect decision either. It is an
+authentication bypass, and `POST /auth/debug` persists its claimed roles as real
+assignments precisely so Cedar evaluates them — so a dev session sees exactly
+what its roles grant. A bare `PM_AUTH_DEBUG=1` with no debug login resolves to a
+principal with no roles, and therefore reads no connection material.
 
 ## What this fixes (falls out of the model, not bolted on)
 

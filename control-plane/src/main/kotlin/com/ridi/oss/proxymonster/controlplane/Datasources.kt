@@ -4,6 +4,7 @@ import com.ridi.oss.proxymonster.classification.SystemTag
 import com.ridi.oss.proxymonster.controlplane.authz.Authz
 import com.ridi.oss.proxymonster.controlplane.authz.AuthzAction
 import com.ridi.oss.proxymonster.controlplane.authz.AuthzDecision
+import com.ridi.oss.proxymonster.controlplane.authz.AuthzResource
 import com.ridi.oss.proxymonster.controlplane.authz.authorizeDatasourceAction
 import com.ridi.oss.proxymonster.controlplane.authz.requireAdmin
 import com.ridi.oss.proxymonster.controlplane.authz.resolveContextTags
@@ -61,14 +62,23 @@ data class Datasource(
     // The PEM certificate chain to trust for this datasource's proxy, leaf first, as the proxy advertised it
     // at registration. pmon uses it as the root pool for its upstream hop, with advertiseAddr checked against
     // it; the browser downloads the same bytes from {id}/wire-cert for psql/mysql/DataGrip. Null when the
-    // proxy has no wire TLS. Public material — this is what the proxy already presents to every TLS client —
-    // and a few KB on a poll no client makes hot, which is cheaper than a second round trip per datasource.
+    // proxy has no wire TLS. Not secret in itself — the proxy presents it to every TLS client — but it is
+    // still connection material, so it rides only on rows the caller may datasource.connect to.
     val advertiseCertChain: String? = null,
     // Whether this datasource's proxy serves client-facing TLS — a separate fact from the chain above, since a
     // proxy may serve a publicly-trusted certificate and publish nothing. A client reads this to know a
     // plaintext greeting must be refused; false means plaintext.
     val advertiseWireTls: Boolean = false,
-)
+) {
+    /**
+     * The same row with everything a caller would need to reach the proxy removed — the advertised address
+     * and certificate chain, and the advisory upstream coordinates. What survives is identity (name, engine,
+     * tags): enough to name the datasource in a JIT access request, not enough to dial it.
+     */
+    fun withoutConnectionMaterial(): Datasource = copy(
+        host = "", port = 0, dbName = "", advertiseAddr = null, advertiseCertChain = null,
+    )
+}
 
 // Admin create/update payload. This is OPTIONAL pre-provisioning only — a way to seed a row
 // (name + advisory connection fields) before its proxy first attaches; the proxy's Register is the
@@ -844,18 +854,36 @@ fun Route.datasourceRoutes(
         ) !is AuthzDecision.Deny
     }
 
-    // The datasource list + detail stay open to every authenticated principal: the SQL editor's picker,
+    // The datasource LIST stays open to every authenticated principal: the SQL editor's picker,
     // JIT-request compose (which must show datasources you CANNOT yet connect to, precisely so they can be
-    // requested), and token generation all need it — not an admin action. `?connectable=true` narrows the
-    // list to datasources the caller can connect to (for the query picker); the CATALOG itself is
-    // connect-gated below. Only mutation/config routes require admin.datasources.
+    // requested), and token generation all need it — not an admin action. `?connectable=true` narrows it to
+    // datasources the caller can connect to (for the query picker), and a row the caller cannot connect to
+    // is served without its connection material. Everything keyed to ONE datasource — the row, its catalog,
+    // its wire cert, its table detail — is connect-gated below. Only mutation/config routes require
+    // admin.datasources.
     get("/api/datasources") {
         // Discovery route: the pmon daemon reads this (with a Bearer wire token) to learn each datasource's
         // engine + advertised proxy address, so it can open a local broker port per datasource.
         val principal = call.requireApiOrBearer(config, tokenStore, userGroupStore) ?: return@get
         val all = management.listDatasources()
         val connectableOnly = call.request.queryParameters["connectable"].equals("true", ignoreCase = true)
-        call.respond(if (connectableOnly) all.filter { mayConnect(call, principal, it) } else all)
+        // The list stays unfiltered by default — JIT-request compose must show datasources you cannot yet
+        // connect to, precisely so they can be requested — but a row you may not connect to is stripped of
+        // its connection material. Otherwise the list answers what {id} and {id}/wire-cert refuse, and
+        // their datasource.connect gate is decorative.
+        //
+        // admin.datasources keeps the full row: administering a datasource means editing the very host/port
+        // it is being stripped of, and that authority is instance-wide, so it resolves once rather than
+        // per row.
+        val isDatasourceAdmin = config.authDebug ||
+            authz.authorize(principal, AuthzAction.ADMIN_DATASOURCES, AuthzResource.System, call.httpAuthzContext(config)) ==
+            AuthzDecision.Allow
+        val visible = when {
+            connectableOnly -> all.filter { mayConnect(call, principal, it) }
+            isDatasourceAdmin -> all
+            else -> all.map { if (mayConnect(call, principal, it)) it else it.withoutConnectionMaterial() }
+        }
+        call.respond(visible)
     }
     // Which datasources currently have a proxy attached (an open Events stream) — the admin liveness
     // view. Read-only; returns the set of attached datasource names.
@@ -890,9 +918,17 @@ fun Route.datasourceRoutes(
         call.respond(HttpStatusCode.Created, management.createDatasource(input.copy(engine = engine.wireName), call.auditActor(config)))
     }
     get("/api/datasources/{id}") {
-        if (!call.requireApi(config)) return@get
+        // Connect-gated, unlike the list: a single row carries advertiseAddr and advertiseCertChain, the
+        // same trust material {id}/wire-cert serves under datasource.connect. Leaving this on
+        // authentication alone would make that gate decorative.
+        val principal = call.requireApiOrBearer(config, tokenStore, userGroupStore) ?: return@get
         val id = call.idParam() ?: return@get call.respond(HttpStatusCode.BadRequest, ApiError("common.bad_id"))
-        store.get(id)?.let { call.respond(it) } ?: call.respond(HttpStatusCode.NotFound, ApiError("common.not_found", mapOf("resource" to "datasource")))
+        val datasource = store.get(id)
+            ?: return@get call.respond(HttpStatusCode.NotFound, ApiError("common.not_found", mapOf("resource" to "datasource")))
+        if (!mayConnect(call, principal, datasource)) {
+            return@get call.respond(HttpStatusCode.Forbidden, ApiError("datasource.not_connectable"))
+        }
+        call.respond(datasource)
     }
     put("/api/datasources/{id}") {
         if (!call.requireAdmin(config, authz, AuthzAction.ADMIN_DATASOURCES)) return@put
@@ -991,7 +1027,11 @@ fun Route.datasourceRoutes(
         call.respondText(chain, ContentType.parse("application/x-pem-file"))
     }
     get("/api/datasources/{id}/table-detail") {
-        if (!call.requireAdmin(config, authz, AuthzAction.ADMIN_DATASOURCES)) return@get
+        // Same authority as {id}/catalog, and for the same reason: this is the physical shape of a table the
+        // caller may already browse, so gating it on the instance-wide admin action would hide index/FK/size
+        // metadata from exactly the people entitled to query the table. The per-column classifications it
+        // overlays are the ones {id}/catalog already serves under this gate.
+        val principal = call.requireApiOrBearer(config, tokenStore, userGroupStore) ?: return@get
         val id = call.idParam()?.takeIf { it > 0 }
             ?: return@get call.respond(HttpStatusCode.BadRequest, ApiError("common.bad_id"))
         val schema = call.request.queryParameters["schema"]
@@ -1002,6 +1042,9 @@ fun Route.datasourceRoutes(
         }
         val datasource = store.get(id)
             ?: return@get call.respond(HttpStatusCode.NotFound, ApiError("common.not_found", mapOf("resource" to "datasource")))
+        if (!mayConnect(call, principal, datasource)) {
+            return@get call.respond(HttpStatusCode.Forbidden, ApiError("datasource.not_connectable"))
+        }
         try {
             call.respond(management.getTableDetail(datasource.name, schema, table))
         } catch (e: ManagementException) {

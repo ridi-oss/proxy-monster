@@ -341,7 +341,7 @@ of a route and the gate it calls. Paths are relative to
 | Audit ingest (from the proxy) | `/api/ingest/decision` | `App.kt` | `X-PM-Ingest-Token` vs `PM_SECRET_TOKEN`; open when that env is unset (dev only) |
 | Audit read | `/api/audit`, `/api/audit/{id}` | `AuditRoutes.kt` | `requireApi` + Cedar `audit.read` — allow on `AuditLog` returns all rows, else own rows only |
 | Caller capability summary | `/api/me/permissions` | `App.kt` | `requireApi`; UI convenience, computed from `admin.*` + `audit.read` |
-| Datasources, catalog, classification | `/api/datasources**` | `Datasources.kt` | mixed: list = `requireApiOrBearer`; `live`, `{id}` = `requireApi`; `{id}/catalog` = `requireApi` + `datasource.connect`; rest = `requireAdmin(admin.datasources)` |
+| Datasources, catalog, classification | `/api/datasources**` | `Datasources.kt` | mixed: list = `requireApiOrBearer`, redacting non-connectable rows; `live` = `requireApi`; `{id}`, `{id}/catalog`, `{id}/wire-cert`, `{id}/table-detail` = `requireApiOrBearer` + `datasource.connect`; rest = `requireAdmin(admin.datasources)` |
 | One-shot editor query | `/api/datasources/{id}/query` | `Query.kt` | `requireApi`, then the per-statement `decideQuery` |
 | Editor sessions and tasks | `/api/editor/**` | `Query.kt` | `requireApi` + owner scope; cancel adds `task.cancel`, result adds `task.assume` |
 | Task-completion SSE | `/api/tasks/events` | `App.kt` | resolves the session itself; each push re-filtered through `task.read` |
@@ -391,23 +391,43 @@ Two exceptions to "session or nothing":
 - `POST /api/ingest/decision` is the proxy's audit-ingest path. It checks
   `X-PM-Ingest-Token` against `PM_SECRET_TOKEN` — and when that env is unset the
   gate is open to any caller, which is dev-only.
-- `GET /api/datasources` is the one `/api/**` route that also accepts
+- The read-only datasource routes (`GET /api/datasources` and the per-datasource
+  `{id}`, `{id}/catalog`, `{id}/wire-cert`, `{id}/table-detail`) also accept
   `Authorization: Bearer <wire token>` (`requireApiOrBearer`, private to
   `Datasources.kt`), because `pmon` must discover datasources without a browser
   cookie. Only the native-wire kinds `SESSION` and `USER` are accepted; `EDITOR`
   and `APPROVER_EXEC` are rejected, and a deactivated principal's surviving
   token fails closed. Roles are still resolved server-side, so this is an extra
-  authentication surface, not a privilege grant, and it is wired into this one
-  read-only route: a leaked wire token cannot mutate a datasource or mint
-  another credential over HTTP.
+  authentication surface, not a privilege grant, and it is wired into read-only
+  routes only: a leaked wire token cannot mutate a datasource or mint another
+  credential over HTTP.
 
 `GET /api/datasources?connectable=true` narrows the list to datasources the
 caller may `datasource.connect` to — the same name-keyed Cedar decision, with
 derived context tags, the proxy runs on connect. The unfiltered default is
 deliberate: JIT-request compose must show datasources you cannot yet connect to,
-precisely so they can be requested. The catalog itself
-(`GET /api/datasources/{id}/catalog`) is connect-gated, returning
-`datasource.not_connectable` otherwise.
+precisely so they can be requested. Everything keyed to one datasource is
+connect-gated, returning `datasource.not_connectable` otherwise: the row itself
+(`{id}`, which carries the advertised address and certificate chain), its
+catalog, its wire certificate, and its live table detail. Reading a table's
+physical shape needs the same authority as querying it.
+
+The unfiltered list is the alternate path to those same bytes, so it redacts
+rather than filters: a row the caller cannot connect to keeps its identity
+(name, engine, tags) and loses its connection material — `host`, `port`,
+`dbName`, `advertiseAddr`, `advertiseCertChain`. Enough to name in an access
+request, not enough to dial. `admin.datasources` receives the full row, since
+administering a datasource means editing the fields being stripped.
+
+`admin.datasources` does **not** imply any of the four connect-gated reads. The
+seeded `system:admin` role carries the three `admin.*` actions and no
+`datasource.connect` — it is administrative, not a data reader — so on a stock
+install an admin who holds no connect grant gets `datasource.not_connectable`
+from all four, `{id}/table-detail` included. That is deliberate: classification
+and policy work run off `{id}/catalog`, which has always required connect, and
+the console reaches `{id}/table-detail` only from the SQL editor's table
+browser. An operator who wants admins browsing live table metadata grants them a
+connect policy, the same one that lets them query it.
 
 ## What this fixes (falls out of the model, not bolted on)
 

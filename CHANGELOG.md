@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.1.13](https://github.com/ridi-oss/proxy-monster/compare/server-v0.1.12...server-v0.1.13) (2026-08-11)
+
+
+### Bug Fixes
+
+* **control-plane:** close unmanifested system tables fail-closed (GHSA-j984-q948-4xq8) ([#170](https://github.com/ridi-oss/proxy-monster/issues/170)) ([064b31c](https://github.com/ridi-oss/proxy-monster/commit/064b31c08ffd303fd157442dbe3e561d776ca56a))
+* **control-plane:** gate per-datasource metadata on datasource.connect ([#171](https://github.com/ridi-oss/proxy-monster/issues/171)) ([a366c2b](https://github.com/ridi-oss/proxy-monster/commit/a366c2b64b3cd39dda06fb384e3100cc3cd1e9db))
+* **engine:** classify value-bearing system tables away from catalog ([#173](https://github.com/ridi-oss/proxy-monster/issues/173)) ([e15840d](https://github.com/ridi-oss/proxy-monster/commit/e15840ddc153d909b839891a6eae07b27789fc61))
+
 ## [0.1.12](https://github.com/ridi-oss/proxy-monster/compare/server-v0.1.11...server-v0.1.12) (2026-08-11)
 
 

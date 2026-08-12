@@ -175,6 +175,30 @@ class AuthzTest {
         assertIs<AuthzDecision.Deny>(decision)
     }
 
+    @Test
+    fun `a request-specific policy cannot carry over to a later request with the same requester and datasource`() {
+        // An operator permit scoped to one exact Request EUID must match only that persisted request, not a
+        // later one that happens to share the requester and datasource — each durable request keys off its id.
+        // Routed through `toApprovalResource`, the single persisted-path constructor every route funnels
+        // through, so dropping the id there (the exact regression this closes) would fail here.
+        val authz = Authz(
+            CedarEngine(listOf(1L to """permit(principal, action == Action::"task.approve", resource == Request::"41");""")),
+            CedarPolicyStore(UnusedDataSource),
+            RoleSource { emptySet() },
+        )
+        fun row(id: Long) = AccessRequest(
+            id = id, principal = "requester@example.com", datasourceName = "acme",
+            requestedDurationSec = 3600, status = "PENDING", createdAt = "2026-01-01T00:00:00Z",
+        )
+        assertEquals(
+            AuthzDecision.Allow,
+            authz.authorize("approver@example.com", AuthzAction.TASK_APPROVE, row(41).toApprovalResource()),
+        )
+        assertIs<AuthzDecision.Deny>(
+            authz.authorize("approver@example.com", AuthzAction.TASK_APPROVE, row(42).toApprovalResource()),
+        )
+    }
+
     /** Regression: the Request's Datasource parent must be keyed by NAME (`Datasource::"acme-mysql"`),
      *  matching every other Datasource-keyed grant in the system — including this exact policy shape,
      *  straight from the doc's worked examples. Keyed by numeric id (`Datasource::"2"`) instead, a

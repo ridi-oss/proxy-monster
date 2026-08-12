@@ -54,6 +54,17 @@ data class AccessRequest(
     val statementCarriesProtectedLiteral: Boolean? = null,
 )
 
+/**
+ * The authz view of this persisted approval request. Keys the Cedar `Request` EUID off the durable
+ * [AccessRequest.id] so a per-request approval policy cannot carry over to a later request with the same
+ * requester and datasource. This is the only persisted-path constructor of the resource, so no call site
+ * can reintroduce the non-unique legacy key.
+ */
+fun AccessRequest.toApprovalResource() = AuthzResource.ApprovalRequest(
+    requester = principal, id = id, approver = decidedBy, executedBy = executedBy,
+    datasourceName = datasourceName, roleName = roleName,
+)
+
 @Serializable
 data class AccessRequestInput(
     val roleId: Long, val datasourceId: Long? = null,
@@ -767,11 +778,7 @@ fun Route.accessRoutes(
             } else {
                 rows.filter {
                     authz.authorize(
-                        caller, AuthzAction.TASK_READ,
-                        AuthzResource.ApprovalRequest(
-                            requester = it.principal, approver = it.decidedBy, executedBy = it.executedBy,
-                            datasourceName = it.datasourceName, roleName = it.roleName,
-                        ),
+                        caller, AuthzAction.TASK_READ, it.toApprovalResource(),
                     ) is AuthzDecision.Allow
                 }
             },
@@ -823,11 +830,7 @@ fun Route.accessRoutes(
             // over a SINGLE role snapshot (authorizeWithContext) — the ROLE-request analog of the QUERY
             // approval routes' mayDecide (task.approve) call in Approvals.kt.
             val decision = authz.authorizeWithContext(
-                approver, AuthzAction.TASK_APPROVE,
-                AuthzResource.ApprovalRequest(
-                    requester = req.principal, approver = req.decidedBy, executedBy = req.executedBy,
-                    datasourceName = req.datasourceName, roleName = req.roleName,
-                ),
+                approver, AuthzAction.TASK_APPROVE, req.toApprovalResource(),
                 call.httpAuthzContext(config, Channel.WORKFLOW_VIEWER),
                 req.datasourceName,
                 req.datasourceId?.let(datasourceStore::getIncludingDeleted)?.tags.orEmpty(),
@@ -855,11 +858,7 @@ fun Route.accessRoutes(
             // Same role-scoped approver check as /approve — the reject path must ask the identical
             // Cedar question, so a role-scoped approval policy governs reject too (see /approve above).
             val decision = authz.authorizeWithContext(
-                approver, AuthzAction.TASK_APPROVE,
-                AuthzResource.ApprovalRequest(
-                    requester = req.principal, approver = req.decidedBy, executedBy = req.executedBy,
-                    datasourceName = req.datasourceName, roleName = req.roleName,
-                ),
+                approver, AuthzAction.TASK_APPROVE, req.toApprovalResource(),
                 call.httpAuthzContext(config, Channel.WORKFLOW_VIEWER),
                 req.datasourceName,
                 req.datasourceId?.let(datasourceStore::getIncludingDeleted)?.tags.orEmpty(),

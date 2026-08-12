@@ -189,10 +189,7 @@ internal fun taskReadableForPush(
     val decision = authz.authorizeWithContext(
         principal,
         AuthzAction.TASK_READ,
-        AuthzResource.ApprovalRequest(
-            requester = task.principal, approver = task.decidedBy, executedBy = task.executedBy,
-            datasourceName = task.datasourceName, roleName = task.roleName,
-        ),
+        task.toApprovalResource(),
         context,
         task.datasourceName,
         task.datasourceId?.let(datasourceStore::getIncludingDeleted)?.tags.orEmpty(),

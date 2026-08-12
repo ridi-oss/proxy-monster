@@ -64,9 +64,14 @@ sealed interface AuthzResource {
     data class AuditRecord(val principal: String) : AuthzResource
     /** The whole audit collection, for policies granting a global read capability. */
     data object AuditLog : AuthzResource
-    /** A task request. Datasource and role parents support scoped lifecycle policies. */
+    /** A task request. Datasource and role parents support scoped lifecycle policies. [id] is the durable
+     *  `access_request` row id — it disambiguates the EUID so an exact-Request policy cannot carry over from
+     *  one persisted request to a later one with the same requester and datasource. Null only for a
+     *  prospective check before a row exists (auto-approval), which falls back to the requester+datasource
+     *  contextual identity. */
     data class ApprovalRequest(
         val requester: String,
+        val id: Long? = null,
         val approver: String? = null,
         val executedBy: String? = null,
         val datasourceName: String? = null,
@@ -460,7 +465,9 @@ class Authz(
                 parents += roleEuid
                 extraEntities += Entity(roleEuid)
             }
-            val reqEuid = REQUEST_TYPE.of("${resource.requester}#${resource.datasourceName ?: "-"}")
+            // A durable request keys off its row id; the requester+datasource contextual form remains only for
+            // a prospective check before a row exists (auto-approval), where no durable id can be supplied.
+            val reqEuid = REQUEST_TYPE.of(resource.id?.toString() ?: "${resource.requester}#${resource.datasourceName ?: "-"}")
             val attrs = buildMap<String, Value> {
                 put("requester", requesterEuid)
                 resource.approver?.let { put("approver", USER_TYPE.of(it)) }

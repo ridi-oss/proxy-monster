@@ -386,10 +386,7 @@ fun Route.approvalRoutes(
         val decision = authz.authorizeWithContext(
             call.userSession()?.principal ?: "debug-user",
             action,
-            AuthzResource.ApprovalRequest(
-                requester = req.principal, approver = req.decidedBy, executedBy = req.executedBy,
-                datasourceName = req.datasourceName, roleName = req.roleName,
-            ),
+            req.toApprovalResource(),
             call.httpAuthzContext(config, Channel.WORKFLOW_VIEWER),
             req.datasourceName,
             req.datasourceId?.let(datasourceStore::getIncludingDeleted)?.tags.orEmpty(),
@@ -404,10 +401,7 @@ fun Route.approvalRoutes(
         val decision = authz.authorizeWithContext(
             call.userSession()?.principal ?: "debug-user",
             AuthzAction.TASK_ASSUME,
-            AuthzResource.ApprovalRequest(
-                requester = req.principal, approver = req.decidedBy, executedBy = req.executedBy,
-                datasourceName = req.datasourceName, roleName = req.roleName,
-            ),
+            req.toApprovalResource(),
             call.httpAuthzContext(config, Channel.WORKFLOW_VIEWER),
             req.datasourceName,
             req.datasourceId?.let(datasourceStore::getIncludingDeleted)?.tags.orEmpty(),

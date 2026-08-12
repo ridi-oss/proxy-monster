@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.1.14](https://github.com/ridi-oss/proxy-monster/compare/server-v0.1.13...server-v0.1.14) (2026-08-12)
+
+
+### Features
+
+* **control-plane:** recut statement disclosure to omit|auto|full and notify the requester ([#182](https://github.com/ridi-oss/proxy-monster/issues/182)) ([bf1d6e2](https://github.com/ridi-oss/proxy-monster/commit/bf1d6e281bb463c3aa99a873d72752d4c614f7be))
+
+
+### Bug Fixes
+
+* **control-plane:** PM_AUTH_DEBUG is a login method, nothing else ([#174](https://github.com/ridi-oss/proxy-monster/issues/174)) ([2174b2c](https://github.com/ridi-oss/proxy-monster/commit/2174b2c92c85387c9b81b45fc88228075f38fca5))
+
 ## [0.1.13](https://github.com/ridi-oss/proxy-monster/compare/server-v0.1.12...server-v0.1.13) (2026-08-11)
 
 

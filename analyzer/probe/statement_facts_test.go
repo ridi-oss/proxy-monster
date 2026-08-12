@@ -170,6 +170,64 @@ func TestStatementFactsExplainAnalyzesInnerQuery(t *testing.T) {
 	}
 }
 
+func TestStatementFactsAnalyzeTableGatesTableRead(t *testing.T) {
+	// A table-targeted ANALYZE must carry the same result-read grant SELECT * FROM the table would, so the
+	// result-read gate governs it and it is not an existence oracle. Both MySQL `ANALYZE TABLE t` and
+	// PostgreSQL `ANALYZE t` target one table to read. The read grants must name THAT table (a second target,
+	// `sink`, pins that they follow the target rather than a hardcoded one). The statement is relayed as-is:
+	// ExplainOfQuery (authorization, not row masking) and no SELECT rewritten_sql leaking back onto the wire.
+	for _, tc := range []struct {
+		name  string
+		facts *pb.StatementFacts
+		table string
+	}{
+		{"mysql ANALYZE TABLE users", mysqlFacts(t, "ANALYZE TABLE users"), "users"},
+		{"mysql ANALYZE TABLE sink", mysqlFacts(t, "ANALYZE TABLE sink"), "sink"},
+		{"postgres ANALYZE users", postgresFacts(t, "ANALYZE users"), "users"},
+		{"postgres ANALYZE sink", postgresFacts(t, "ANALYZE sink"), "sink"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if !tc.facts.GetResolved() || factsKind(tc.facts) != pb.StatementKind_STATEMENT_KIND_ANALYZE_TABLE {
+				t.Fatalf("expected resolved ANALYZE_TABLE: %+v", tc.facts)
+			}
+			if !tc.facts.GetExplainOfQuery() || tc.facts.GetRewrittenSql() != "" {
+				t.Fatalf("ANALYZE must not rewrite onto the wire: %+v", tc.facts)
+			}
+			// Every emitted column read grant must name the ANALYZE target, and there must be at least one —
+			// a grant on a different table would mean the read gate governs the wrong resource.
+			gated := false
+			for _, grant := range tc.facts.GetResultReads() {
+				c := grant.GetColumn()
+				if c == nil {
+					continue
+				}
+				if c.GetIdentity().GetTable() != tc.table {
+					t.Fatalf("ANALYZE %s emitted a read grant on %q, not the target: %+v", tc.table, c.GetIdentity().GetTable(), grant)
+				}
+				gated = true
+			}
+			if !gated {
+				t.Fatalf("ANALYZE %s did not gate the table read: %+v", tc.table, tc.facts.GetResultReads())
+			}
+		})
+	}
+}
+
+func TestStatementFactsAnalyzeAdversarialFormsFailClosed(t *testing.T) {
+	// The two ANALYZE forms that resolve to a table node but must NOT read-gate as a plain table both rely on
+	// sqlglot-go's parse/lineage to fail closed: MySQL multi-table `ANALYZE TABLE t1, t2` degrades to a
+	// Command (the list tail is unconsumed), and PostgreSQL's column-list `ANALYZE t (col)` parses the target
+	// as an anonymous table-valued source that star-expansion refuses. If a future sqlglot-go bump widened
+	// either, the synthetic SELECT * could resolve with no grants — connect-only, the oracle reopened. Pin
+	// them unresolved so that regression fails here rather than silently.
+	if f := mysqlFacts(t, "ANALYZE TABLE users, sink"); f.GetResolved() {
+		t.Fatalf("multi-table ANALYZE must fail closed (unresolved), got: %+v", f)
+	}
+	if f := postgresFacts(t, "ANALYZE users (ssn)"); f.GetResolved() {
+		t.Fatalf("column-list ANALYZE must fail closed (unresolved), got: %+v", f)
+	}
+}
+
 func TestStatementFactsNoFromUnknownFunctionGrant(t *testing.T) {
 	facts := postgresFacts(t, "SELECT my_udf()")
 	if !facts.GetResolved() {

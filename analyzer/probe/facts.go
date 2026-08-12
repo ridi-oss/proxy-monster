@@ -119,12 +119,14 @@ func EmitFacts(sql string, engineConfig *pb.EngineConfig, sch *schema.Mapping, n
 		facts = emitSetFacts(root, eng)
 	case exp.KindCommand:
 		facts = emitCommandFacts(root, eng)
-	case exp.KindTransaction, exp.KindCommit, exp.KindRollback, exp.KindSavepoint, exp.KindUse, exp.KindAnalyze, exp.KindReset:
+	case exp.KindTransaction, exp.KindCommit, exp.KindRollback, exp.KindSavepoint, exp.KindUse, exp.KindReset:
 		// PostgreSQL `RESET <guc>` / `RESET ALL` (sqlglot-go v0.16 models it as a dedicated Reset node) only
 		// restores a session variable to its default — a de-escalation, never a privilege gain — so it is a
 		// benign session passthrough. (MySQL RESET MASTER/REPLICA is a privileged admin op that degrades to
 		// Command and is denied there; it never reaches this Reset-node case.)
 		facts = passthroughFacts()
+	case exp.KindAnalyze:
+		facts = emitAnalyzeFacts(root, eng, qualifySchema, validatedNamespace)
 	case exp.KindAlter, exp.KindDrop, exp.KindTruncateTable:
 		facts = ddlFacts(root, eng)
 	case exp.KindCreate:
@@ -321,6 +323,29 @@ func emitDescribeFacts(root exp.Expression, eng engine, qualifySchema schema.Sch
 		return emitLineageFacts(this, eng, qualifySchema, namespace, true)
 	}
 	return unanalyzableFacts("PARSE", "DESCRIBE target is not a table or analyzable statement")
+}
+
+// emitAnalyzeFacts gates a table-targeted ANALYZE the same way DESCRIBE is: a table statistics command
+// reveals the table's existence and touches its rows, so it must carry the same result-read grant a
+// `SELECT * FROM <table>` would (routed through lineage with explain = true — for authorization, not row
+// masking). Without it the statement resolves connect-only and becomes an existence oracle that bypasses
+// the result-read gate. The single-table target is exact: a multi-table `ANALYZE TABLE t1, t2` leaves the
+// list tail unconsumed and the parser degrades the whole statement to Command, which never reaches here.
+// The statement-kind exec grant is attached centrally in EmitFacts, so the kind gate applies regardless.
+func emitAnalyzeFacts(root exp.Expression, eng engine, qualifySchema schema.Schema, namespace NamespaceConfig) *pb.StatementFacts {
+	this := root.This()
+	kind := ""
+	if k := root.Arg("kind"); k != nil {
+		kind = strings.ToUpper(fmt.Sprint(k))
+	}
+	// MySQL `ANALYZE TABLE t` (kind TABLE) and PostgreSQL/Presto `ANALYZE t` (no kind) both target one table
+	// to read. INDEX / DATABASE / CLUSTER / bare all-table ANALYZE carry no single readable table target and
+	// stay a benign passthrough — still exec-gated by the statement kind.
+	if (kind == "TABLE" || kind == "") && this != nil && this.Kind() == exp.KindTable {
+		selectRoot := exp.Select(exp.Args{"expressions": []exp.Expression{exp.Star(nil)}, "from_": exp.From(exp.Args{"this": this.Copy()})})
+		return emitLineageFacts(selectRoot, eng, qualifySchema, namespace, true)
+	}
+	return passthroughFacts()
 }
 
 func emitShowFacts(root exp.Expression, eng engine) *pb.StatementFacts {

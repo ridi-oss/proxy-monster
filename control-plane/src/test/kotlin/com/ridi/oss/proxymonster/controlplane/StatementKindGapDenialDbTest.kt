@@ -105,6 +105,34 @@ class StatementKindGapDenialDbTest {
     }
 
     @Test
+    fun `ANALYZE TABLE holding the admin kind but no read on the table denies at the read gate — the existence oracle is closed`() {
+        // The kind gate is not the whole gate for ANALYZE: a table-targeted ANALYZE also carries the target's
+        // result-read grant, so `ANALYZE TABLE users` is authorized like `SELECT * FROM users`. This principal
+        // holds stmt.cat.admin.maintenance — it PASSES the analyze_table kind gate — but has no read on `users`,
+        // so the read gate denies. Before the analyzer gated the read, ANALYZE resolved connect-only and an
+        // unauthorized principal learned the table exists (and error-probed it). The deny must NOT be the kind
+        // reason: that would mean the kind gate caught it and the read gate never ran.
+        val maint = "maint-only@example.com"
+        val role = fx.policyStore.createRole(RoleInput("maint-only"))
+        fx.policyStore.createAssignment(RoleAssignmentInput(maint, role.id))
+        fx.cedarPolicyStore.create(
+            CedarPolicyInput(
+                name = "maint-only-grant",
+                cedarSrc = """permit(principal in Role::"maint-only", action in [Action::"datasource.connect", Action::"stmt.cat.admin.maintenance"], resource in Datasource::"${fx.datasource.name}");""",
+            ),
+            updatedBy = "test",
+        )
+        val d = decide("ANALYZE TABLE users", maint)
+        assertEquals(EnfAction.DENY, d.action, "ANALYZE must deny without a read grant on the table")
+        // The deny must come from the READ gate, which names the target table — not the kind gate (which this
+        // principal clears) and not an unrelated structural stage.
+        assertTrue(
+            d.denyReason.orEmpty() != "statement kind 'analyze_table' is not permitted" && d.denyReason.orEmpty().contains("users"),
+            "the deny must be the read gate naming the table: ${d.denyReason}",
+        )
+    }
+
+    @Test
     fun `a benign metadata SHOW stays allowed while a replication SHOW denies`() {
         // `analyst@example.com` has stmt.cat.metadata + stmt.cat.session (not admin). The SHOW split holds:
         // a schema-introspecting SHOW is metadata (passthrough allow), a replication SHOW is admin.

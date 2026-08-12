@@ -87,11 +87,14 @@ class SlackTransport(
      *  `<…|link>`, a `<!mention>`, or an entity. Mirrors NotificationRenderer's escape for the fields it owns. */
     private fun escapeMrkdwn(s: String): String = s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
-    /** The message with every principal it NAMES (the requester, the decider) resolved to a Slack mention. */
+    /** The message with every principal it NAMES (the requester, the decider, the notified approvers) resolved
+     *  to a Slack mention. A mention in the requester's own DM, where the approvers are not members, renders as
+     *  a name and pings no one — the point is a readable handle, not a second notification. */
     private suspend fun withMentions(message: NotificationMessage): NotificationMessage =
         message.copy(
             requester = mentionFor(message.requester),
             decidedBy = message.decidedBy?.let { mentionFor(it) },
+            notifiedApprovers = message.notifiedApprovers.map { mentionFor(it) },
         )
 
     override suspend fun deliver(to: String, message: NotificationMessage, locale: String): DeliveryResult {

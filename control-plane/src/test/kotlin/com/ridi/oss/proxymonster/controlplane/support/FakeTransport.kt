@@ -5,6 +5,7 @@ import com.ridi.oss.proxymonster.controlplane.notify.NotificationAction
 import com.ridi.oss.proxymonster.controlplane.notify.NotificationEvent
 import com.ridi.oss.proxymonster.controlplane.notify.NotificationMessage
 import com.ridi.oss.proxymonster.controlplane.notify.NotificationTransport
+import com.ridi.oss.proxymonster.controlplane.notify.RenderedStatement
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.withTimeout
 import java.util.Collections
@@ -36,8 +37,11 @@ class FakeTransport(
         val actions: Set<NotificationAction>,
         // The result-derived fact carried to THIS recipient — null for a non-party (the row-count oracle gate).
         val rowCount: Int? = null,
+        // The disclosure outcome and receipt list, so a drain test can see what actually rendered.
+        val statement: RenderedStatement = RenderedStatement(null, false),
+        val notifiedApprovers: List<String> = emptyList(),
     )
-    data class Updated(val ref: String, val event: NotificationEvent)
+    data class Updated(val ref: String, val event: NotificationEvent, val statement: RenderedStatement = RenderedStatement(null, false))
 
     val delivered: MutableList<Delivered> = Collections.synchronizedList(mutableListOf())
     val updated: MutableList<Updated> = Collections.synchronizedList(mutableListOf())
@@ -51,14 +55,14 @@ class FakeTransport(
     }
 
     override suspend fun deliver(to: String, message: NotificationMessage, locale: String): DeliveryResult {
-        delivered += Delivered(to, message.event, message.actions, message.rowCount)
+        delivered += Delivered(to, message.event, message.actions, message.rowCount, message.statement, message.notifiedApprovers)
         deliverSignal.trySend(Unit)
         deliverThrows?.let { throw it }
         return deliverResult
     }
 
     override suspend fun update(externalRef: String, message: NotificationMessage, locale: String): DeliveryResult {
-        updated += Updated(externalRef, message.event)
+        updated += Updated(externalRef, message.event, message.statement)
         return updateResult
     }
 

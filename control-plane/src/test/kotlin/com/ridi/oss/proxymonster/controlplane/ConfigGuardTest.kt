@@ -47,6 +47,16 @@ class ConfigGuardTest {
         assertFailsWith<IllegalArgumentException> { Config.fromEnv(envOf("PM_QUERY_TIMEOUT" to "abc")) }
     }
 
+    @Test fun `PM_NOTIFY_STATEMENT takes omit auto full, coerces legacy truncated, rejects the rest`() {
+        assertEquals("auto", Config.fromEnv(envOf()).notifyStatement, "default is auto")
+        assertEquals("omit", Config.fromEnv(envOf("PM_NOTIFY_STATEMENT" to "omit")).notifyStatement)
+        assertEquals("full", Config.fromEnv(envOf("PM_NOTIFY_STATEMENT" to "FULL")).notifyStatement)
+        // The removed `truncated` must not fail boot — it coerces to `auto` (logged).
+        assertEquals("auto", Config.fromEnv(envOf("PM_NOTIFY_STATEMENT" to "truncated")).notifyStatement)
+        // Anything else is a config error, not a silent default.
+        assertFailsWith<IllegalArgumentException> { Config.fromEnv(envOf("PM_NOTIFY_STATEMENT" to "sometimes")) }
+    }
+
     @Test fun `PM_QUERY_TIMEOUT is bounded to the proxy's duration-safe ceiling (no ms overflow)`() {
         // The shared CP+proxy maximum: accepted here, rejected one above. Keeps queryExchangeTimeoutMs /
         // the run-stream cap from overflowing Long, and keeps the lockstep contract with goproxy exact.

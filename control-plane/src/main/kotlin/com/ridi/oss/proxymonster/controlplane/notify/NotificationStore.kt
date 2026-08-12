@@ -194,6 +194,10 @@ class NotificationStore(private val dataSource: DataSource) {
             }
         }
 
+    /** [recipientsOfRequest] on the store's own connection, for a delivery-time read outside any transaction. */
+    fun recipientsOfRequest(taskId: Long): Set<String> =
+        dataSource.connection.use { c -> recipientsOfRequest(c, taskId) }
+
     /** Record where a message landed, so a later event edits it in place. */
     fun rememberMessage(taskId: Long, transport: String, recipient: String, externalRef: String) {
         dataSource.connection.use { c ->

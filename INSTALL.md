@@ -120,13 +120,16 @@ configured per proxy under `PM_TARGET_*`.
   half-configured mode. Socket Mode means the CP dials out; no inbound ingress
   is added. Set `PM_WEB_ORIGIN` too, or the message's "open request" link points
   at the control plane rather than the console.
-- `PM_NOTIFY_STATEMENT` / `PM_NOTIFY_STATEMENT_MAX` — _optional_. How much of a
-  requester's SQL a notification may carry: `truncated` (default, first
-  `PM_NOTIFY_STATEMENT_MAX` characters, default `200`), `full`, or `omit`. A
+- `PM_NOTIFY_STATEMENT` — _optional_. How much of a requester's SQL a
+  notification may carry: `auto` (default) shows a statement only when a
+  disclosure hint clears it, hiding one whose predicate compares a literal
+  against a classified column; `full` shows it to pending approvers regardless,
+  then hides a flagged one once the task is handled; `omit` never shows SQL. A
   statement's literals can be the very values a policy protects — masking acts
   on results, not predicates — so `omit` is the setting for data that must not
   leave in query text. Approve-and-run is offered only when the message carries
-  the whole statement, whatever the mode.
+  the whole statement, whatever the mode. (Legacy `truncated` boots as `auto`
+  with a warning.)
 - `PM_NOTIFY_LOCALE` — _optional_. Fallback language (`en` · `ko`) for a
   recipient who has not set one in the console. Default `en`.
 - `PM_AUTH_DEBUG` / `PM_DEV` / `PM_OAUTH_DEBUG_AUTO_CONSENT` — _dev-only_.

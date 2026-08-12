@@ -50,7 +50,6 @@ class SlackDecisionHandlerDbTest {
             queryResultStore = null,
             webBaseUrl = "https://console.example",
             disclosure = StatementDisclosure.FULL,
-            statementMaxChars = 10_000,
             defaultLocale = "en",
         )
         handler = SlackDecisionHandler(

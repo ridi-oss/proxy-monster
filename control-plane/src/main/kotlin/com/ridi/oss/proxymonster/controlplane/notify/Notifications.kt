@@ -12,14 +12,17 @@ package com.ridi.oss.proxymonster.controlplane.notify
 /** What happened. The workflow states this once; who hears it and how are decided downstream. */
 enum class NotificationEvent(val wire: String) {
     TASK_REQUESTED("task.requested"),
+    TASK_SUBMITTED("task.submitted"),
     TASK_DECIDED("task.decided"),
     TASK_EXECUTED("task.executed"),
     TASK_FAILED("task.failed"),
     TASK_CANCELLED("task.cancelled"),
     ;
 
-    /** True when this event should edit an existing message rather than start a new thread of its own. */
-    val isUpdate: Boolean get() = this != TASK_REQUESTED
+    /** True when this event should edit an existing message rather than start a new thread of its own. The two
+     *  creation events — the approvers' request and the requester's own receipt — start threads; every later
+     *  event edits the message its recipient already holds. */
+    val isUpdate: Boolean get() = this != TASK_REQUESTED && this != TASK_SUBMITTED
 
     companion object {
         fun fromWire(wire: String): NotificationEvent? = entries.firstOrNull { it.wire == wire }
@@ -37,16 +40,26 @@ enum class NotificationEvent(val wire: String) {
 /**
  * How much of the requester's statement may leave the building (docs/notifications.md, "The statement in the
  * message"). A statement's literals can be the very values a policy protects — `WHERE ssn = '…'` leaks a
- * value masking never sees, because masking acts on results.
+ * value masking never sees, because masking acts on results. The disclosure hint
+ * (`protectedPredicateLiterals`) flags a statement whose predicate compares a literal against a classified
+ * column; [AUTO] and [FULL] both consult it.
  */
 enum class StatementDisclosure {
-    TRUNCATED,
-    FULL,
+    /** Never show the statement — the message carries metadata only. */
     OMIT,
+
+    /** Show the statement only when the hint has cleared it (no protected literal detected); hide it
+     *  otherwise. An unanalyzable statement (no hint) is treated as unsafe and hidden. */
+    AUTO,
+
+    /** Show the whole statement while the task is PENDING, so an approver can read it and approve-and-run.
+     *  Once the task is HANDLED (decided, executed, failed, cancelled — by anyone), fall back to [AUTO]: hide
+     *  the statement if the hint flags a protected literal, so a PII value does not linger in the channel. */
+    FULL,
     ;
 
     companion object {
-        /** Parse `PM_NOTIFY_STATEMENT`. An unrecognized value is a config error the caller fails fast on. */
+        /** Parse a normalized `PM_NOTIFY_STATEMENT` value (`omit`|`auto`|`full`). */
         fun parse(raw: String?): StatementDisclosure? =
             raw?.trim()?.uppercase()?.let { v -> entries.firstOrNull { it.name == v } }
     }
@@ -56,39 +69,39 @@ enum class StatementDisclosure {
  * The statement as it will actually appear, and whether anything was cut.
  *
  * [complete] is the gate on approve-and-run: an approver may only decide from a message carrying the WHOLE
- * statement. The test is what the recipient can read, never which mode the operator configured — a short
- * statement under TRUNCATED was not truncated, and a long one under FULL is still elided by a transport's own
- * length ceiling. See [renderStatement].
+ * statement. The test is what the recipient can read, never which mode the operator configured — a statement
+ * shown under FULL is still elided by a transport's own length ceiling. See [renderStatement].
  */
 data class RenderedStatement(val text: String?, val complete: Boolean)
 
 /**
- * Apply [disclosure] to [sql], then the transport's own [hardLimit] (0 = none). The result is [complete] only
- * when the full statement survived both — the flag is an input to rendering, and the button is decided after.
+ * The statement text to place in a message. [show] is the disclosure decision the caller has already made
+ * (mode × event × hint); a false [show] or a null [sql] yields no text. When shown, the only cut is the
+ * transport's own [hardLimit] (0 = none): [complete] is true only when the whole statement fit under it, and
+ * that flag is what gates approve-and-run.
  */
-fun renderStatement(
-    sql: String?,
-    disclosure: StatementDisclosure,
-    maxChars: Int,
-    hardLimit: Int = 0,
-): RenderedStatement {
-    if (sql == null) return RenderedStatement(null, complete = false)
-    if (disclosure == StatementDisclosure.OMIT) return RenderedStatement(null, complete = false)
-
-    // The tightest applicable ceiling wins. FULL has no configured limit of its own, so only the transport's
-    // applies; TRUNCATED takes the smaller of the two.
-    val configured = if (disclosure == StatementDisclosure.TRUNCATED) maxChars else Int.MAX_VALUE
-    val ceiling = when {
-        hardLimit <= 0 -> configured
-        else -> minOf(configured, hardLimit)
-    }
-    if (ceiling <= 0) return RenderedStatement(null, complete = false)
-    if (sql.length <= ceiling) return RenderedStatement(sql, complete = true)
+fun renderStatement(sql: String?, show: Boolean, hardLimit: Int = 0): RenderedStatement {
+    if (sql == null || !show) return RenderedStatement(null, complete = false)
+    if (hardLimit <= 0 || sql.length <= hardLimit) return RenderedStatement(sql, complete = true)
     // The ellipsis has to fit INSIDE the ceiling, or a transport that hard-rejects an over-length field
     // would reject the very message that was truncated to satisfy it.
-    val keep = (ceiling - 1).coerceAtLeast(0)
+    val keep = (hardLimit - 1).coerceAtLeast(0)
     return RenderedStatement(sql.take(keep) + "…", complete = false)
 }
+
+/**
+ * Whether a message may show the statement, from the operator's [disclosure] mode, whether the task is still
+ * [pending] (the approvers' request, before any decision), and whether the disclosure hint has [cleared] the
+ * statement (no protected literal detected — an unanalyzed statement is NOT cleared). OMIT never shows; AUTO
+ * always defers to the hint; FULL shows a pending statement whatever the hint says, then falls back to AUTO
+ * once the task is handled, so a protected literal does not linger in the channel after the decision.
+ */
+fun discloseStatement(disclosure: StatementDisclosure, pending: Boolean, cleared: Boolean): Boolean =
+    when (disclosure) {
+        StatementDisclosure.OMIT -> false
+        StatementDisclosure.AUTO -> cleared
+        StatementDisclosure.FULL -> pending || cleared
+    }
 
 /** An action a message may offer. [OPEN] is always available; the other two are gated. */
 enum class NotificationAction { APPROVE_AND_RUN, DENY, OPEN }
@@ -115,6 +128,9 @@ data class NotificationMessage(
     val errorCode: String? = null,
     val deepLink: String,
     val actions: Set<NotificationAction>,
+    /** SUBMITTED only: the approvers the request was routed to, shown to the requester as their receipt.
+     *  Plain identities, not `<@id>` mentions — the requester learns who can act without re-pinging them. */
+    val notifiedApprovers: List<String> = emptyList(),
 )
 
 /** The outcome of one delivery attempt. Only the transport knows which failures are worth another try. */

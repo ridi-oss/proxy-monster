@@ -1,22 +1,25 @@
 {
   "task": {
-    "requested": "*{requester}* wants to run {statement} on *{datasource}*{role}",
+    "requested": "*{requester}* wants to run {statement} on *{datasource}*{role}{reason}{statementNote}",
     "requested_fallback": "{requester} wants to run a query on {datasource}",
-    "decided_approved": "*{requester}*'s request to run {statement} on *{datasource}* was approved by *{decidedBy}* and is running.",
-    "decided_rejected": "*{requester}*'s request to run {statement} on *{datasource}* was denied by *{decidedBy}*.",
+    "submitted": "Your request to run a query on *{datasource}*{role} is pending approval.{notified}",
+    "submitted_fallback": "Your request on {datasource} is pending approval",
+    "decided_approved": "*{requester}*'s request to run {statement} on *{datasource}* was approved by *{decidedBy}* and is running.{statementNote}",
+    "decided_rejected": "*{requester}*'s request to run {statement} on *{datasource}* was denied by *{decidedBy}*.{statementNote}",
     "decided_fallback": "{requester}'s request on {datasource} was decided by {decidedBy}",
-    "executed": "*{requester}*'s request to run {statement} on *{datasource}* finished — {rowCount} rows.",
+    "executed": "*{requester}*'s request to run {statement} on *{datasource}* finished — {rowCount} rows.{statementNote}",
     "executed_fallback": "{requester}'s request on {datasource} finished",
-    "failed": "*{requester}*'s request to run {statement} on *{datasource}* failed.",
+    "failed": "*{requester}*'s request to run {statement} on *{datasource}* failed.{statementNote}",
     "failed_fallback": "{requester}'s request on {datasource} failed",
-    "cancelled": "*{requester}*'s request to run {statement} on *{datasource}* was cancelled.",
+    "cancelled": "*{requester}*'s request to run {statement} on *{datasource}* was cancelled.{statementNote}",
     "cancelled_fallback": "{requester}'s request on {datasource} was cancelled"
   },
   "field": {
     "role": " as *{role}*",
     "reason": "_{reason}_",
     "statement_hidden": "a query",
-    "statement_hidden_note": "_The statement is not shown here. Open the request to read it._"
+    "statement_hidden_note": "_The statement is not shown here. Open the request to read it._",
+    "notified": "Notified for approval: {notified}"
   },
   "action": {
     "approve_and_run": "Approve and run",

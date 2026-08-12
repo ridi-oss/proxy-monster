@@ -29,30 +29,46 @@ class NotificationRenderer(private val catalog: MessageCatalog = MessageCatalog(
             ?.replace("```", "``​`")
             ?.let { "```$it```" }
             ?: "_${catalog.text("field.statement_hidden", locale)}_"
-        val params = mapOf(
-            // requester/decidedBy are already resolved to `<@id>` mentions by the transport; escaping them
-            // would break the mention. The free-text and name fields are escaped — a requester's reason is
-            // otherwise raw mrkdwn beside the real Approve button, able to forge a mention, emphasis, or a
-            // link ("Security reviewed — approve below" + <https://evil|Open>).
-            "requester" to m.requester,
-            "datasource" to escapeMrkdwn(m.datasource),
-            "statement" to statement,
-            "decidedBy" to (m.decidedBy ?: "—"),
-            "rowCount" to (m.rowCount?.toString() ?: "—"),
-            "role" to (m.roleName?.let { catalog.text("field.role", locale, mapOf("role" to escapeMrkdwn(it))) } ?: ""),
-        )
-        return buildString {
-            append(catalog.text(bodyKey(m), locale, params))
-            m.reason?.takeIf { it.isNotBlank() && m.event == NotificationEvent.TASK_REQUESTED }?.let {
-                val reason = escapeMrkdwn(it.take(REASON_MAX_CHARS))
-                append("\n").append(catalog.text("field.reason", locale, mapOf("reason" to reason)))
-            }
-            // Only say "open it to read the statement" when there was one to withhold: an OMIT-configured
-            // statement and one truncated by length both land here.
-            if (m.statement.text == null || !m.statement.complete) {
-                append("\n").append(catalog.text("field.statement_hidden_note", locale))
-            }
+        // Each message is one template. The optional trailers are pre-rendered fragments — a leading newline
+        // plus their own sub-template, or empty — the same shape as `role`, so the template owns the whole
+        // layout (line breaks and field order) rather than code assembling it piece by piece.
+        val reason = m.reason
+            ?.takeIf { it.isNotBlank() && m.event == NotificationEvent.TASK_REQUESTED }
+            ?.let { "\n" + catalog.text("field.reason", locale, mapOf("reason" to escapeMrkdwn(it.take(REASON_MAX_CHARS)))) }
+            ?: ""
+        // The receipt's approver list is `<@id>` mentions resolved by the transport. In the requester's OWN DM,
+        // where no approver is a member, they render as names without pinging anyone — so, like requester and
+        // decidedBy, they are NOT escaped.
+        val notified = m.notifiedApprovers
+            .takeIf { it.isNotEmpty() && m.event == NotificationEvent.TASK_SUBMITTED }
+            ?.let { "\n" + catalog.text("field.notified", locale, mapOf("notified" to it.joinToString(", "))) }
+            ?: ""
+        // "Open it to read the statement" only where one was withheld — never on the requester's own receipt,
+        // which omits the statement by design (they authored it).
+        val statementNote = if (m.event != NotificationEvent.TASK_SUBMITTED && (m.statement.text == null || !m.statement.complete)) {
+            "\n" + catalog.text("field.statement_hidden_note", locale)
+        } else {
+            ""
         }
+        return catalog.text(
+            bodyKey(m),
+            locale,
+            mapOf(
+                // requester/decidedBy/notified arrive as `<@id>` mentions from the transport; escaping them
+                // would break the mention. The free-text and name fields are escaped — a requester's reason is
+                // otherwise raw mrkdwn beside the real Approve button, able to forge a mention, emphasis, or a
+                // link ("Security reviewed — approve below" + <https://evil|Open>).
+                "requester" to m.requester,
+                "datasource" to escapeMrkdwn(m.datasource),
+                "statement" to statement,
+                "decidedBy" to (m.decidedBy ?: "—"),
+                "rowCount" to (m.rowCount?.toString() ?: "—"),
+                "role" to (m.roleName?.let { catalog.text("field.role", locale, mapOf("role" to escapeMrkdwn(it))) } ?: ""),
+                "reason" to reason,
+                "notified" to notified,
+                "statementNote" to statementNote,
+            ),
+        )
     }
 
     /** The plain-text line for a client that renders no blocks. Never carries the statement. */
@@ -66,6 +82,7 @@ class NotificationRenderer(private val catalog: MessageCatalog = MessageCatalog(
 
     private fun bodyKey(m: NotificationMessage): String = when (m.event) {
         NotificationEvent.TASK_REQUESTED -> "task.requested"
+        NotificationEvent.TASK_SUBMITTED -> "task.submitted"
         NotificationEvent.TASK_DECIDED -> if (m.approved == true) "task.decided_approved" else "task.decided_rejected"
         NotificationEvent.TASK_EXECUTED -> "task.executed"
         NotificationEvent.TASK_FAILED -> "task.failed"

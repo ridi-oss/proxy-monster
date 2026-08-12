@@ -104,6 +104,10 @@ class MockSlack private constructor() : AutoCloseable {
     fun requestsFor(method: String): List<Recorded> = recorded.filter { it.method == method }
     fun lastRequest(method: String): Recorded? = recorded.lastOrNull { it.method == method }
 
+    /** Drop the recorded call log — not the configured users/team — so a shared instance gives each test a
+     *  clean count instead of accumulating posts across the class. */
+    fun clearRecorded() = recorded.clear()
+
     /** The envelope_id acknowledgements the client sent back over the socket. */
     fun acks(): List<JsonObject> = ackFrames.toList()
 

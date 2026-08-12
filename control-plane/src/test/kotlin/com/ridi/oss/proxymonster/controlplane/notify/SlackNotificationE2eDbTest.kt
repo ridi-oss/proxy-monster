@@ -72,6 +72,7 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
+import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.TestInstance
 import org.slf4j.LoggerFactory
@@ -114,6 +115,13 @@ class SlackNotificationE2eDbTest {
     private var runnerRoleId = 0L
     private val runScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private val log = LoggerFactory.getLogger("e2e")
+
+    // The class shares one MockSlack (@BeforeAll), so drop its recorded call log per test — every case then
+    // counts only its own posts, instead of accumulating across the class in method-order-dependent ways.
+    @BeforeEach
+    fun resetSlackLog() {
+        slack.clearRecorded()
+    }
 
     @BeforeAll
     fun setup() {
@@ -159,8 +167,9 @@ class SlackNotificationE2eDbTest {
             accessStore = core.accessStore,
             queryResultStore = resultStore,
             webBaseUrl = "https://console.example",
-            disclosure = StatementDisclosure.FULL,
-            statementMaxChars = 10_000,
+            // `auto`, the default: a cleared statement is shown (approve-and-run offered), a flagged one is
+            // withheld (no button). The two E2E cases below exercise both branches on the real hint path.
+            disclosure = StatementDisclosure.AUTO,
             defaultLocale = "en",
         )
         val handler = SlackDecisionHandler(
@@ -359,6 +368,39 @@ class SlackNotificationE2eDbTest {
         assertTrue(
             post.actionElements().none { it["action_id"]?.jsonPrimitive?.content == SlackTransport.ACTION_APPROVE },
             "a withheld statement offers no approve-and-run — you cannot vouch for what you cannot read",
+        )
+    }
+
+    /**
+     * The mode is a property of the draining service, not the enqueued row, so a FULL-mode drainer renders the
+     * same flagged request the AUTO case above withholds. FULL shows it to a pending approver on purpose — they
+     * must read it to decide — where AUTO never would. The hint reasserts itself once the task is handled
+     * (discloseStatement, unit-tested); the withhold render path is the same one the AUTO case exercises.
+     */
+    @Test
+    fun `under full a pending approver sees even a flagged statement`() = testApplication {
+        val fullSvc = NotificationService(
+            store = NotificationStore(fx.dataSource),
+            recipients = RecipientResolver(core.authz, core.roleResolver) { listOf(approver) },
+            transports = listOf(SlackTransport(http, "xoxb-e2e", "https://console.example", NotificationRenderer(), api = slack.apiBase)),
+            accessStore = core.accessStore,
+            queryResultStore = resultStore,
+            webBaseUrl = "https://console.example",
+            disclosure = StatementDisclosure.FULL,
+            defaultLocale = "en",
+        )
+        val client = wire()
+        assertEquals(HttpStatusCode.Created, client.createApproval("SELECT id FROM users WHERE ssn = '987-65-4320'").status)
+
+        fullSvc.drainOnce()
+        val post = slack.lastRequest("chat.postMessage")!!
+        assertTrue(
+            post.sectionText().contains("987-65-4320"),
+            "full shows a pending approver the whole statement, flagged or not — they must read it to decide",
+        )
+        assertTrue(
+            post.actionElements().any { it["action_id"]?.jsonPrimitive?.content == SlackTransport.ACTION_APPROVE },
+            "a fully-shown statement offers approve-and-run",
         )
     }
 }

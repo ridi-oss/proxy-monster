@@ -54,8 +54,7 @@ fun Application.installNotifications(
         accessStore = accessStore,
         queryResultStore = queryResultStore,
         webBaseUrl = config.webBaseUrl,
-        disclosure = StatementDisclosure.parse(config.notifyStatement) ?: StatementDisclosure.TRUNCATED,
-        statementMaxChars = config.notifyStatementMax,
+        disclosure = StatementDisclosure.parse(config.notifyStatement) ?: StatementDisclosure.AUTO,
         defaultLocale = config.notifyLocale,
     )
     // A plain poll rather than LISTEN/NOTIFY: the table is the queue, so a notification would only be a

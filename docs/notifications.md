@@ -29,10 +29,10 @@ Had Bob tapped **approve and run**, the query runs and the message becomes
 console.
 
 Alice's statement is short, so Bob sees all of it and can approve from the DM.
-Had any of it been elided — too long for the configured limit, too long for
-Slack, or withheld because it carried a protected value — the message would
-offer only `[deny]` and `[open request]`. Nobody approves a statement they have
-not read in full.
+Had any of it been elided — too long for Slack, or withheld because it carried a
+protected value the disclosure mode does not surface — the message would offer
+only `[deny]` and `[open request]`. Nobody approves a statement they have not
+read in full.
 
 Everything below is how that works.
 
@@ -48,11 +48,12 @@ touching the workflow.
 
 ## Events
 
-| Event                                          | When                 | Who hears it                           |
-| ---------------------------------------------- | -------------------- | -------------------------------------- |
-| `task.requested`                               | a request is filed   | everyone who could approve it          |
-| `task.decided`                                 | approved or rejected | the requester, and everyone told above |
-| `task.executed` `task.failed` `task.cancelled` | the run ends         | the requester and the approver         |
+| Event                                          | When                 | Who hears it                                        |
+| ---------------------------------------------- | -------------------- | --------------------------------------------------- |
+| `task.requested`                               | a request is filed   | everyone who could approve it, except the requester |
+| `task.submitted`                               | a request is filed   | the requester — a receipt naming who was asked      |
+| `task.decided`                                 | approved or rejected | the requester, and everyone told above              |
+| `task.executed` `task.failed` `task.cancelled` | the run ends         | the requester and the approver                      |
 
 Anyone told about a request is told how it ended. That is what stops a stale
 "needs your approval" sitting in a DM after someone else already handled it —
@@ -156,30 +157,28 @@ The shipped policies never read `requester_ip` for `task.approve`, so on a
 default deployment either choice is correct. The unknown earns its place the
 moment an operator writes "approvers must be on the office network."
 
-### The one wart: the requester hears about their own request
+### The requester gets a receipt, not an invitation to self-approve
 
-Marking anything unknown costs one wrong notification, and it is worth stating
-plainly because it looks alarming: the requester may be invited to approve their
-own request.
+The requester hears about their own request — as a receipt, never as an approver
+of it. `emitRequested` routes the approver message (`task.requested`) to
+everyone who could approve it _except the requester_, and sends the requester a
+`task.submitted` receipt instead: their request is pending, and here is who was
+asked. So the requester gets exactly one message, and it is never an "approve
+your own request" button.
 
-The cause is a Cedar limitation, not a modelling mistake. Cedar treats the
-context as a single record, and `context has channel` will not reduce while
-_any_ unknown sits in that record — even though `channel` is right there with a
-concrete value, and no address could change whether it exists. Our
-[`system:no-self-approval`] forbid guards its editor/wire escape that way, so it
-goes undecided and the requester reads as "maybe":
+That exclusion is routing, not authorization — the boundary stays Cedar's
+[`system:no-self-approval`] forbid, which denies a requester who reaches an
+approve button by any other path. Cedar's own limitation is unchanged: it treats
+the context as a single record, so `context has channel` will not reduce while
+_any_ unknown sits in that record, even with `channel` right there with a
+concrete value. That still over-notifies by catching a genuine approver
+candidate on the UNKNOWN `requester_ip` row, which is harmless — a click just
+gets a 403:
 
 ```
 channel known, requester_ip omitted  ->  Deny   (correct, forbid resolves)
-channel known, requester_ip UNKNOWN  ->  null   (undecided; the requester is notified)
+channel known, requester_ip UNKNOWN  ->  null   (undecided → over-notified, harmless)
 ```
-
-It is bounded — one person per request, the requester themselves — and it does
-not arise at all on a deployment with no IP-conditioned approval policy, since
-nothing then needs to be unknown. Clicking the button denies exactly as it
-should. Not worth filtering outside Cedar: a hardcoded "skip the requester"
-would move an authorization rule out of the policy engine that owns it, to save
-one message.
 
 ### What this costs, and what it means
 
@@ -296,9 +295,21 @@ left the building.
 
 So `PM_NOTIFY_STATEMENT` picks one of:
 
-- `truncated` (default) — first 200 characters, enough to recognize the query
-- `full` — the whole statement
-- `omit` — no SQL at all; requester, datasource, role, and the link only
+- `omit` — no SQL at all; requester, datasource, role, and the link only.
+- `auto` (default) — show the statement only when the disclosure hint (below)
+  clears it, hide it otherwise. A query that might carry a protected value in
+  its own text never reaches the channel.
+- `full` — show the whole statement while the task is **pending**, so an
+  approver can read it and approve-and-run; once the task is **handled**
+  (decided, executed, failed, or cancelled — by anyone) fall back to `auto`,
+  hiding the statement if the hint flags it, so a protected value does not
+  linger in the channel after the decision.
+
+`truncated` is gone: a first-N-characters cut guarantees nothing — the protected
+value can sit in the first 40 characters as readily as the last — and it
+withheld `[approve and run]` for every statement past the limit. A config that
+still sets `PM_NOTIFY_STATEMENT=truncated` boots as `auto` (the hint-gated show
+it always was beneath the cut) with a warning.
 
 It lives in the environment because that is where all configuration lives here.
 There is no settings table, and adding the first one belongs to its own change.
@@ -309,33 +320,31 @@ There is no settings table, and adding the first one belongs to its own change.
 statement.** The test is what the recipient can actually read, not which mode
 the operator configured:
 
-- `truncated` with a statement shorter than the limit — nothing was cut, so the
-  button appears.
-- `truncated` with a longer one — cut, no button.
-- `full` — usually the button, but not always: a transport has its own length
-  ceiling (a Slack section block's text field caps at 3000 characters), and a
-  statement that overruns it is elided on the way out. Elided is elided, whoever
-  did it.
-- `omit` — no button.
+- a statement shown whole (`auto` on a cleared query, or `full` while pending) —
+  the button appears, unless a transport's own length ceiling (a Slack section
+  block's text field caps at 3000 characters) elided it on the way out. Elided
+  is elided, whoever did it.
+- a hidden statement (`omit`, or `auto`/`full`-once-handled on a flagged query)
+  — no button.
 
 So the flag is an input to rendering, and the button is decided **after**
 rendering, from whether the text survived intact. Writing the gate against the
 mode instead would get both edge cases backwards.
 
-Approving is vouching for a specific statement. A truncated one is worse than
-none: `SELECT id, name FROM users WHERE …` looks harmless and the elided tail is
-exactly where a dangerous predicate would sit. One tap on a query nobody read in
-full is not an approval, it is a rubber stamp with an audit trail.
+Approving is vouching for a specific statement, so a statement nobody could read
+in full never carries the button — the elided tail is exactly where a dangerous
+predicate would sit, and one tap on a query read only in part would be a rubber
+stamp with an audit trail.
 
 `[deny]` stays available throughout — refusing something you have not fully read
 is always safe.
 
-### Hiding a statement that carries the value it asks for
+### The disclosure hint
 
-`PM_NOTIFY_STATEMENT` is a blunt instrument: an operator picks one setting for
-every query, so `full` would send `WHERE ssn = '987-65-4320'` verbatim. The
-protected value is in the query, and masking never sees it because masking acts
-on results. That is the case where `full` needs a floor, and it has one.
+Both `auto` and `full` consult a hint: whether the statement's own text carries
+a value a policy protects. `full` would otherwise send
+`WHERE ssn = '987-65-4320'` verbatim — the protected value is in the query, and
+masking never sees it because masking acts on results.
 
 The analyzer emits a `predicate_literals` fact: for every `WHERE`, `HAVING`,
 `QUALIFY`, and join predicate that compares a **literal** against a column, the
@@ -345,9 +354,9 @@ are followed. A comparison between two columns emits nothing — there is no val
 to leak.
 
 The control plane intersects that against classification: a literal landing on a
-classified column means the statement's own text carries a protected value, so
-the text is withheld whatever the mode, and the message loses
-`[approve and run]` by the rule above.
+classified column means the statement's own text carries a protected value.
+`auto` then hides it from the first message; `full` hides it the moment the task
+is handled. Either way the message loses `[approve and run]` by the rule above.
 
 **The verdict is deliberately reader-independent.** It keys on whether the
 column is classified, not on what the requester may read. A notification goes to
@@ -364,8 +373,11 @@ known clean shows the text, known dirty withholds it, and **never analyzed
 withholds it too**. A from-denied request — which copies a statement nothing
 re-analyzed — is in that third state by construction.
 
-This is an extra layer, not the boundary: `omit` remains the setting for a
-deployment that cannot let query text leave at all.
+Under `full`, a pending message shows the statement whatever the hint says — an
+approver who must decide needs to read it — and the hint reasserts itself the
+moment the task is handled, so the value does not persist. Under `auto` the hint
+governs from the first message. `omit` shows the text under no circumstances,
+the setting for a deployment that cannot let query text leave at all.
 
 ## Slack
 
@@ -447,13 +459,12 @@ may see them.
 
 ## Configuration
 
-| Variable                  | Default     | Meaning                                                                                               |
-| ------------------------- | ----------- | ----------------------------------------------------------------------------------------------------- |
-| `PM_SLACK_BOT_TOKEN`      | unset       | Slack API token; unset = no Slack                                                                     |
-| `PM_SLACK_APP_TOKEN`      | unset       | Socket Mode token; unset = no Slack                                                                   |
-| `PM_NOTIFY_STATEMENT`     | `truncated` | `truncated` · `full` · `omit`. Approve-and-run needs the statement to render whole, whatever the mode |
-| `PM_NOTIFY_STATEMENT_MAX` | `200`       | characters kept when truncating                                                                       |
-| `PM_NOTIFY_LOCALE`        | `en`        | fallback when the recipient has saved no language                                                     |
+| Variable              | Default | Meaning                                                                                                                                                                                         |
+| --------------------- | ------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `PM_SLACK_BOT_TOKEN`  | unset   | Slack API token; unset = no Slack                                                                                                                                                               |
+| `PM_SLACK_APP_TOKEN`  | unset   | Socket Mode token; unset = no Slack                                                                                                                                                             |
+| `PM_NOTIFY_STATEMENT` | `auto`  | `omit` · `auto` · `full`. `auto` shows a hint-cleared statement; `full` shows it to pending approvers, then hides a flagged one once handled. Legacy `truncated` boots as `auto` with a warning |
+| `PM_NOTIFY_LOCALE`    | `en`    | fallback when the recipient has saved no language                                                                                                                                               |
 
 ## What this exposes
 

@@ -35,9 +35,9 @@ func TestGucAliasPrivilegeSetIsSystemCritical(t *testing.T) {
 	}
 	for _, sql := range allowed {
 		facts := postgresFacts(t, sql)
-		if !facts.GetResolved() || facts.GetStatementClass() != pb.StatementClass_STATEMENT_CLASS_SESSION || len(facts.GetRequiredGrants()) != 0 {
-			t.Errorf("%q: expected SESSION passthrough with no grants, got resolved=%v class=%v grants=%d",
-				sql, facts.GetResolved(), facts.GetStatementClass(), len(facts.GetRequiredGrants()))
+		if !facts.GetResolved() || factsKind(facts) != pb.StatementKind_STATEMENT_KIND_SET_SESSION_VAR || len(nonExecuteGrants(facts)) != 0 {
+			t.Errorf("%q: expected a benign session-var passthrough with no grants beyond execute, got resolved=%v kind=%v grants=%d",
+				sql, facts.GetResolved(), factsKind(facts), len(nonExecuteGrants(facts)))
 		}
 	}
 }

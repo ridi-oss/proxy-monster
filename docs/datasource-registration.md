@@ -13,7 +13,7 @@ set up policy ahead of time), not a required gate.
 
 A proxy needs only `PM_DATASOURCE_NAME` — already what Cedar policies key on
 (`Datasource::"<name>"`, `authz/Authz.kt`) — plus `PM_TARGET_*` for its own
-backend connection. No numeric id crosses the wire; the control-plane keeps a
+target-DB connection. No numeric id crosses the wire; the control-plane keeps a
 `BIGSERIAL` surrogate internally and resolves `name` → `id` on every call.
 
 ## The gRPC surface
@@ -73,7 +73,7 @@ admin UI and incident triage — which physical instance a datasource points at.
 The three `advertise_*` fields are the opposite — client-facing and consumed.
 `advertise_addr` is the `host:port` a wire client dials to reach this
 datasource's proxy (`PM_ADVERTISE_ADDR`, [`../INSTALL.md`](../INSTALL.md)), not
-the upstream backend `host`/`port` above.
+the upstream target DB `host`/`port` above.
 
 `advertise_cert_chain` is the certificate chain a client should trust to reach
 this proxy: PEM, leaf first, then any intermediates and the root. A self-signed
@@ -141,7 +141,7 @@ message CatalogRequest {
 `default_schemas` and `mysql_lower_case_table_names` are load-bearing, not
 advisory: schema-threading resolves every bare table reference to catalog+schema
 via exactly these values, and getting them wrong authorizes a different table
-than the backend binds (see [`connection-model.md`](./connection-model.md)).
+than the target DB binds (see [`connection-model.md`](./connection-model.md)).
 Both come from live server/session state the proxy holds and cannot be
 hand-configured reliably. `engine_version` feeds
 [`system-classification.md`](./system-classification.md), whose
@@ -235,7 +235,7 @@ target:
 - `POST /api/datasources/{id}/test` is a proxy-attachment check, not a database
   connection test: `ok` is true when a proxy `Events` stream is currently
   attached to this datasource, and `message` adds the catalog-sync and last-seen
-  state. It reaches neither the backend nor the proxy.
+  state. It reaches neither the target DB nor the proxy.
 - `GET /api/datasources/live` is the same signal as a list of attached
   datasource names. `Datasource.lastSeenAt` is weaker — it records only that a
   proxy was seen at some point, and never clears.
@@ -278,10 +278,10 @@ short-lived ephemeral token minted for the requester), and the proxy dials back
 with `RunExec`. Data then flows both ways over a connection the control-plane
 never opened.
 
-One stream serves one session (session ↔ `RunExec` stream ↔ its own backend
+One stream serves one session (session ↔ `RunExec` stream ↔ its own target-DB
 connection), so a slow query in one session cannot head-of-line-block another,
 the stream's lifecycle is the session's lifecycle, and each session gets a
-dedicated backend connection where transactions, `SET`, and temp tables behave
+dedicated target-DB connection where transactions, `SET`, and temp tables behave
 like a real session.
 
 ```protobuf

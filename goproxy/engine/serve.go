@@ -15,7 +15,7 @@ type StatementResult struct {
 	RowsAffected int
 }
 
-// ExecGuard optionally wraps only backend execution. Authorization and catalog probes run outside it.
+// ExecGuard optionally wraps only target-DB execution. Authorization and catalog probes run outside it.
 type ExecGuard func(exec func() error) error
 
 // FailError is a mechanical authorization failure that has no control-plane decision to report.

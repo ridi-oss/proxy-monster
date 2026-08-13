@@ -32,24 +32,24 @@ class RoleDiscoveryTest {
 
     @Test
     fun `a role that unmasks a baseline-masked column is offered with the unmasked column`() {
-        // own role analyst masks rrn; pii-reader unmasks it; auditor still masks it (no improvement).
+        // own role analyst masks ssn; pii-reader unmasks it; auditor still masks it (no improvement).
         val decide = { r: Set<String>, _: Channel ->
             when {
-                "pii-reader" in r -> ctx(EnfAction.ALLOW) // rrn unmasked → no masks
-                else -> ctx(EnfAction.MASK, listOf("rrn"))
+                "pii-reader" in r -> ctx(EnfAction.ALLOW) // ssn unmasked → no masks
+                else -> ctx(EnfAction.MASK, listOf("ssn"))
             }
         }
         val res = discoverRoles(setOf("analyst"), roles, decide)
         assertTrue(res.baselineAllowed, "a MASK baseline is 'allowed' (not denied)")
         // Both candidates run Q, so both are listed; what distinguishes them is the reported gain.
         assertEquals(listOf("pii-reader", "auditor"), res.options.map { it.roleName })
-        assertEquals(listOf("rrn"), res.options.single { it.roleName == "pii-reader" }.unmasksColumns)
+        assertEquals(listOf("ssn"), res.options.single { it.roleName == "pii-reader" }.unmasksColumns)
         assertEquals(emptyList(), res.options.single { it.roleName == "auditor" }.unmasksColumns)
     }
 
     @Test
     fun `a role that denies the query is not offered`() {
-        val decide = { r: Set<String>, _: Channel -> if ("auditor" in r) ctx(EnfAction.DENY) else ctx(EnfAction.MASK, listOf("rrn")) }
+        val decide = { r: Set<String>, _: Channel -> if ("auditor" in r) ctx(EnfAction.DENY) else ctx(EnfAction.MASK, listOf("ssn")) }
         val res = discoverRoles(setOf("analyst"), roles, decide)
         assertTrue(res.options.none { it.roleName == "auditor" }, "a role that denies Q cannot be the answer")
         assertTrue(res.options.any { it.roleName == "pii-reader" }, "a role that CAN run Q is still listed")
@@ -66,7 +66,7 @@ class RoleDiscoveryTest {
 
     @Test
     fun `a role the requester already holds is never offered`() {
-        val decide = { _: Set<String>, _: Channel -> ctx(EnfAction.MASK, listOf("rrn")) }
+        val decide = { _: Set<String>, _: Channel -> ctx(EnfAction.MASK, listOf("ssn")) }
         val res = discoverRoles(setOf("analyst", "pii-reader"), roles, decide)
         assertTrue(res.options.none { it.roleName in setOf("analyst", "pii-reader") }, "already-held roles are filtered out")
     }
@@ -75,17 +75,17 @@ class RoleDiscoveryTest {
     fun `a candidate is previewed on the channel an approved query executes on`() {
         // The shipped -259 unmasks production PII for a pii-accessor on WORKFLOW_EXECUTOR alone. Previewed on
         // the requester's own channel that grant never fires, so the role reads as no better than baseline
-        // and was filtered out — leaving a requester who asked to see rrn told that no role would help.
+        // and was filtered out — leaving a requester who asked to see ssn told that no role would help.
         val decide = { r: Set<String>, channel: Channel ->
             if ("pii-reader" in r && channel == Channel.WORKFLOW_EXECUTOR) ctx(EnfAction.ALLOW)
-            else ctx(EnfAction.MASK, listOf("rrn"))
+            else ctx(EnfAction.MASK, listOf("ssn"))
         }
         val res = discoverRoles(setOf("analyst"), roles, decide)
 
         val option = res.options.single { it.roleName == "pii-reader" }
         assertEquals(Decision.ALLOW, option.decision)
         assertEquals(emptyList(), option.maskedColumns)
-        assertEquals(listOf("rrn"), option.unmasksColumns)
+        assertEquals(listOf("ssn"), option.unmasksColumns)
     }
 
     @Test
@@ -95,7 +95,7 @@ class RoleDiscoveryTest {
         val seen = mutableListOf<Channel>()
         val decide = { r: Set<String>, channel: Channel ->
             if (r == setOf("analyst")) seen.add(channel)
-            ctx(EnfAction.MASK, listOf("rrn"))
+            ctx(EnfAction.MASK, listOf("ssn"))
         }
         discoverRoles(setOf("analyst"), roles, decide)
         assertEquals(listOf(Channel.EDITOR), seen)
@@ -103,11 +103,11 @@ class RoleDiscoveryTest {
 
     @Test
     fun `a role that runs the query but still masks is offered, marked masked`() {
-        val decide = { _: Set<String>, _: Channel -> ctx(EnfAction.MASK, listOf("rrn")) }
+        val decide = { _: Set<String>, _: Channel -> ctx(EnfAction.MASK, listOf("ssn")) }
         val res = discoverRoles(setOf("analyst"), roles, decide)
         val option = res.options.first()
         assertEquals(Decision.MASK, option.decision)
-        assertEquals(listOf("rrn"), option.maskedColumns)
+        assertEquals(listOf("ssn"), option.maskedColumns)
         assertEquals(emptyList(), option.unmasksColumns, "it unmasks nothing relative to the baseline")
     }
 

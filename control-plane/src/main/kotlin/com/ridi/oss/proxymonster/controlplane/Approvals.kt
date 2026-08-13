@@ -9,6 +9,8 @@ import com.ridi.oss.proxymonster.controlplane.authz.authorizeDatasourceAction
 import com.ridi.oss.proxymonster.controlplane.authz.authorizeWithContext
 import com.ridi.oss.proxymonster.controlplane.authz.resolveContextTags
 import com.ridi.oss.proxymonster.controlplane.management.ManagementAuditRecorder
+import com.ridi.oss.proxymonster.controlplane.notify.NotificationEvent
+import com.ridi.oss.proxymonster.controlplane.notify.NotificationService
 import com.ridi.oss.proxymonster.grpc.EnfAction
 import com.ridi.oss.proxymonster.probe.Masking
 import com.ridi.oss.proxymonster.probe.bindMasks
@@ -237,7 +239,7 @@ internal fun decideResultView(
         // The re-decision already ran full Cedar authorization under {R} in the viewer's live context and
         // returned non-DENY (checked above). A passthrough carries no column-masking model — there is nothing
         // to narrow for the viewer — so "authorized to run" IS "authorized to see the raw output": that is the
-        // definition of the sql.unanalyzable relay and of an authorized SHOW/DESCRIBE. Release the stored
+        // definition of the exception.unanalyzable relay and of an authorized SHOW/DESCRIBE. Release the stored
         // bytes; a viewer whose context should forbid it got DENY above. Context-sensitivity of unmasked
         // relays / critical-utility reads belongs in their Cedar grants, not a hardcoded view gate.
         //
@@ -345,6 +347,9 @@ fun Route.approvalRoutes(
     // Pushes a task's terminal transition to the parties' (requester + approver) SSE streams so a watching
     // approval tab updates without waiting for its next poll (null in Config-free tests → publish no-ops).
     taskCompletionHub: TaskCompletionHub? = null,
+    // Queues out-of-band notifications (docs/notifications.md). Null = the layer is not configured and the
+    // workflow behaves exactly as before.
+    notifications: NotificationService? = null,
 ) {
     // Query-approval DECISIONS (approve/reject) record a kind="admin" management event; the result
     // lifecycle (execute/cancel/view) uses e3Record's separate approval_lifecycle path.
@@ -352,10 +357,8 @@ fun Route.approvalRoutes(
 
     // Whether the caller may open a query-approval request against this datasource (task.request on the
     // Datasource). The shipped global permit keeps this open by default; an operator can forbid it per
-    // datasource. authDebug bypasses.
-    fun mayRequest(call: ApplicationCall, ds: Datasource): Boolean {
-        if (config.authDebug) return true
-        val principal = call.userSession()?.principal ?: "debug-user"
+    // datasource.
+    fun mayRequest(call: ApplicationCall, principal: String, ds: Datasource): Boolean {
         val roles = roleResolver.resolve(principal)
         val raw = call.httpAuthzContext(config)
         val tags = authz.resolveContextTags(principal, roles, ds.name, raw, ds.tags)
@@ -369,17 +372,19 @@ fun Route.approvalRoutes(
     // task.approve (approve/reject/execute under R) or task.read (metadata) against the Request —
     // scoped to its role/datasource, with
     // requester != approver enforced by the shipped no-self-approval forbid. Approver eligibility is a
-    // Cedar policy, never the datasource's approver GROUP. authDebug bypasses, matching every route.
-    fun mayDecide(call: ApplicationCall, action: AuthzAction, req: AccessRequest): Boolean {
-        if (config.authDebug) return true
+    // Cedar policy, never the datasource's approver GROUP.
+    //
+    // The console is a real surface, so it names itself: WORKFLOW_VIEWER, the same channel a result view
+    // runs on. Deciding and viewing are both the unelevated human side of a task and are scoped together.
+    // It must never be `editor` or `wire` — those two carry [system:task-editor-self-approve] /
+    // [system:task-wire-self-approve], which permit self-approval because a machine task runs under the
+    // caller's OWN roles. A human approval elevates to R, so it stays under the no-self-approval forbid.
+    fun mayDecide(call: ApplicationCall, principal: String, action: AuthzAction, req: AccessRequest): Boolean {
         val decision = authz.authorizeWithContext(
-            call.userSession()?.principal ?: "debug-user",
+            principal,
             action,
-            AuthzResource.ApprovalRequest(
-                requester = req.principal, approver = req.decidedBy, executedBy = req.executedBy,
-                datasourceName = req.datasourceName, roleName = req.roleName,
-            ),
-            call.httpAuthzContext(config),
+            req.toApprovalResource(),
+            call.httpAuthzContext(config, Channel.WORKFLOW_VIEWER),
             req.datasourceName,
             req.datasourceId?.let(datasourceStore::getIncludingDeleted)?.tags.orEmpty(),
         )
@@ -387,16 +392,14 @@ fun Route.approvalRoutes(
     }
 
     // Result rows require Cedar authority to assume the task's R. No authDebug bypass: this is data
-    // confidentiality, enforced in development too.
-    fun mayReadResult(call: ApplicationCall, req: AccessRequest): Boolean {
+    // confidentiality, enforced in development too. Same channel as [mayDecide] and as the per-column
+    // re-decision the released rows go through, so one policy scopes the whole console surface.
+    fun mayReadResult(call: ApplicationCall, principal: String, req: AccessRequest): Boolean {
         val decision = authz.authorizeWithContext(
-            call.userSession()?.principal ?: "debug-user",
+            principal,
             AuthzAction.TASK_ASSUME,
-            AuthzResource.ApprovalRequest(
-                requester = req.principal, approver = req.decidedBy, executedBy = req.executedBy,
-                datasourceName = req.datasourceName, roleName = req.roleName,
-            ),
-            call.httpAuthzContext(config),
+            req.toApprovalResource(),
+            call.httpAuthzContext(config, Channel.WORKFLOW_VIEWER),
             req.datasourceName,
             req.datasourceId?.let(datasourceStore::getIncludingDeleted)?.tags.orEmpty(),
         )
@@ -427,8 +430,7 @@ fun Route.approvalRoutes(
     }
 
     post("/api/approvals") {
-        if (!call.requireApi(config)) return@post
-        val principal = call.userSession()?.principal ?: "debug-user"
+        val principal = call.requireApi() ?: return@post
         val input = call.receive<CreateApprovalInput>()
         if (input.reason.isBlank()) return@post call.respond(HttpStatusCode.BadRequest, ApiError("common.field_required", mapOf("fields" to "reason")))
 
@@ -463,7 +465,7 @@ fun Route.approvalRoutes(
             val ds = datasourceStore.list().firstOrNull { it.name == source.datasource }
                 ?: return@post call.respond(HttpStatusCode.Conflict, ApiError("common.not_found", mapOf("resource" to "datasource")))
             val datasourceId = ds.id
-            if (!mayRequest(call, ds)) {
+            if (!mayRequest(call, principal, ds)) {
                 return@post call.respond(HttpStatusCode.Forbidden, ApiError("common.forbidden"))
             }
             if (input.roleId == null) return@post call.respond(HttpStatusCode.BadRequest, ApiError("approval.role_required"))
@@ -482,10 +484,16 @@ fun Route.approvalRoutes(
                     requestedDurationSec = input.requestedDurationSec,
                     actor = call.auditActor(config),
                     recorder = recorder,
+                    // A from-denied request copies the statement of a decision that already ran; nothing
+                    // re-analyzes it here, so it is left NULL and the delivery side withholds the text.
+                    // Guessing "safe" for an unanalyzed statement is the one mistake that leaks a value.
+                    carriesProtectedLiteral = null,
+                    onCreated = { c, taskId, roleName -> notifications?.emitRequested(c, taskId, principal, ds, roleName) },
                 )
             } catch (_: DuplicatePendingQueryRequestException) {
                 return@post call.respond(HttpStatusCode.Conflict, ApiError("approval.pending_request_exists"))
             }
+            notifications?.wake()
             call.respond(HttpStatusCode.Created, CreateApprovalResponse(request, wouldAllow = false))
             return@post
         }
@@ -496,18 +504,19 @@ fun Route.approvalRoutes(
         val ds = datasourceStore.get(input.datasourceId!!)
             ?: return@post call.respond(HttpStatusCode.NotFound, ApiError("common.not_found", mapOf("resource" to "datasource")))
         val sql = input.sql!!
-        if (!mayRequest(call, ds)) {
+        if (!mayRequest(call, principal, ds)) {
             return@post call.respond(HttpStatusCode.Forbidden, ApiError("common.forbidden"))
         }
         if (input.roleId == null) return@post call.respond(HttpStatusCode.BadRequest, ApiError("approval.role_required"))
 
         // Server-side analysis only: nothing executes and no audit row is written at compose time.
+        val catalog = datasourceStore.catalog(ds.id)
         val decision = decideQuery(
             principal = principal,
             ds = ds,
             sql = sql,
             channel = Channel.EDITOR,
-            catalog = datasourceStore.catalog(ds.id),
+            catalog = catalog,
             policyStore = policyStore,
             accessStore = accessStore,
             userGroupStore = userGroupStore,
@@ -535,7 +544,14 @@ fun Route.approvalRoutes(
             requestedDurationSec = input.requestedDurationSec,
             actor = call.auditActor(config),
             recorder = recorder,
+            // The disclosure hint runs on its OWN path — reader-neutral, independent of the authorization
+            // decision above — because whether the TEXT carries a protected value has nothing to do with
+            // whether THIS requester could run it. null (unanalyzable) and true both withhold; only a proven
+            // clean statement (empty) discloses.
+            carriesProtectedLiteral = protectedPredicateLiterals(ds, sql, catalog)?.isNotEmpty(),
+            onCreated = { c, taskId, roleName -> notifications?.emitRequested(c, taskId, principal, ds, roleName) },
         )
+        notifications?.wake()
         call.respond(HttpStatusCode.Created, CreateApprovalResponse(request, wouldAllow = decision.action == EnfAction.ALLOW))
     }
 
@@ -543,8 +559,7 @@ fun Route.approvalRoutes(
     // candidate role and offer the ones that return MORE than the requester's own roles. A dry-run — no
     // audit row is written.
     post("/api/approvals/discover-roles") {
-        if (!call.requireApi(config)) return@post
-        val principal = call.userSession()?.principal ?: "debug-user"
+        val principal = call.requireApi() ?: return@post
         val input = call.receive<DiscoverRolesRequest>()
         val ds = datasourceStore.get(input.datasourceId)
             ?: return@post call.respond(HttpStatusCode.NotFound, ApiError("common.not_found", mapOf("resource" to "datasource")))
@@ -566,40 +581,38 @@ fun Route.approvalRoutes(
     }
 
     get("/api/approvals") {
-        if (!call.requireApi(config)) return@get
-        val principal = call.userSession()?.principal ?: "debug-user"
+        val principal = call.requireApi() ?: return@get
         call.respond(accessStore.listQueryRequests(status = call.request.queryParameters["status"], principal = principal))
     }
 
     get("/api/approvals/inbox") {
-        if (!call.requireApi(config)) return@get
+        val principal = call.requireApi() ?: return@get
         // Forward filter: every PENDING request the caller may approve (Cedar task.approve), not a
-        // group-membership join. authDebug shows all.
-        val requests = accessStore.listQueryRequests("PENDING", null).filter { mayDecide(call, AuthzAction.TASK_APPROVE, it) }
+        // group-membership join.
+        val requests = accessStore.listQueryRequests("PENDING", null).filter { mayDecide(call, principal, AuthzAction.TASK_APPROVE, it) }
         call.respond(requests)
     }
 
     get("/api/approvals/{id}") {
-        if (!call.requireApi(config)) return@get
+        val principal = call.requireApi() ?: return@get
         val id = call.idParam() ?: return@get call.respond(HttpStatusCode.BadRequest, ApiError("common.bad_id"))
-        val principal = call.userSession()?.principal ?: "debug-user"
         val req = accessStore.getRequest(id)
         if (req == null || !req.isWorkflowApproval) return@get call.respond(HttpStatusCode.NotFound, ApiError("common.not_found", mapOf("resource" to "query approval request")))
-        val isApprover = mayDecide(call, AuthzAction.TASK_APPROVE, req)
+        val isApprover = mayDecide(call, principal, AuthzAction.TASK_APPROVE, req)
         // Task metadata is gated by task.read. Saved rows are separate and remain behind task.assume.
-        if (!mayDecide(call, AuthzAction.TASK_READ, req)) {
+        if (!mayDecide(call, principal, AuthzAction.TASK_READ, req)) {
             return@get call.respond(HttpStatusCode.NotFound, ApiError("common.not_found", mapOf("resource" to "query approval request")))
         }
         // task.read is a metadata gate; result-derived data stays behind task.assume. A caller who cannot
         // assume R sees execution status only (status/executor/timestamps/error) — never the result's row
         // count or output-column shape, which are cardinality/existence oracles the assume gate must close.
         val visibleMeta = queryResultStore?.meta(id)?.let { meta ->
-            if (mayReadResult(call, req)) meta else meta.copy(rowCount = null, columns = emptyList())
+            if (mayReadResult(call, principal, req)) meta else meta.copy(rowCount = null, columns = emptyList())
         }
         // Mirror /execute's gates: only the approver OF RECORD (decided_by) can run it, so a merely-eligible
         // approver who did not approve THIS task gets no Run affordance that would just 403.
         val canExecute = queryResultStore != null && isApprover && req.status == "APPROVED" && req.decidedBy == principal
-        val canCancel = req.status == "EXECUTING" && mayDecide(call, AuthzAction.TASK_CANCEL, req)
+        val canCancel = req.status == "EXECUTING" && mayDecide(call, principal, AuthzAction.TASK_CANCEL, req)
         call.respond(
             ApprovalDetail(
                 req,
@@ -612,15 +625,14 @@ fun Route.approvalRoutes(
     }
 
     post("/api/approvals/{id}/approve") {
-        if (!call.requireApi(config)) return@post
+        val principal = call.requireApi() ?: return@post
         val id = call.idParam() ?: return@post call.respond(HttpStatusCode.BadRequest, ApiError("common.bad_id"))
-        val principal = call.userSession()?.principal ?: "debug-user"
         val req = accessStore.getRequest(id)
         if (req == null || !req.isWorkflowApproval) return@post call.respond(HttpStatusCode.NotFound, ApiError("common.not_found", mapOf("resource" to "query approval request")))
         if (req.status != "PENDING") return@post call.respond(HttpStatusCode.Conflict, ApiError("approval.already_decided"))
         // Cedar owns the authorization: task.approve on this request, scoped to its role/datasource,
         // with requester != approver via the no-self-approval forbid.
-        if (!mayDecide(call, AuthzAction.TASK_APPROVE, req)) {
+        if (!mayDecide(call, principal, AuthzAction.TASK_APPROVE, req)) {
             return@post call.respond(HttpStatusCode.Forbidden, ApiError("approval.not_approver"))
         }
         // An approved QUERY request is executed under role R by an approver (execute-under-R); there is no
@@ -628,7 +640,9 @@ fun Route.approvalRoutes(
         val updated = accessStore.decideQueryRequest(
             id, approved = true, rejectionReason = null, decidedBy = principal,
             actor = call.auditActor(config), recorder = recorder,
+            onDecided = { c, decided -> notifications?.emit(c, NotificationEvent.TASK_DECIDED, decided) },
         ) ?: return@post call.respond(HttpStatusCode.Conflict, ApiError("approval.already_decided"))
+        notifications?.wake()
         call.application.environment.log.info(
             "query approval approved request={} requester={} decider={} sourceDecisionId={}",
             id,
@@ -640,9 +654,8 @@ fun Route.approvalRoutes(
     }
 
     post("/api/approvals/{id}/reject") {
-        if (!call.requireApi(config)) return@post
+        val principal = call.requireApi() ?: return@post
         val id = call.idParam() ?: return@post call.respond(HttpStatusCode.BadRequest, ApiError("common.bad_id"))
-        val principal = call.userSession()?.principal ?: "debug-user"
         val body = call.receive<RejectInput>()
         if (body.reason.isBlank()) return@post call.respond(HttpStatusCode.BadRequest, ApiError("common.field_required", mapOf("fields" to "reason")))
         val req = accessStore.getRequest(id)
@@ -650,13 +663,15 @@ fun Route.approvalRoutes(
         if (req.status != "PENDING") return@post call.respond(HttpStatusCode.Conflict, ApiError("approval.already_decided"))
         // Cedar owns the authorization: reject is the SAME task.approve decision as approve, scoped to its
         // role/datasource with requester != approver via the no-self-approval forbid.
-        if (!mayDecide(call, AuthzAction.TASK_APPROVE, req)) {
+        if (!mayDecide(call, principal, AuthzAction.TASK_APPROVE, req)) {
             return@post call.respond(HttpStatusCode.Forbidden, ApiError("approval.not_approver"))
         }
         val updated = accessStore.decideQueryRequest(
             id, approved = false, rejectionReason = body.reason.trim(), decidedBy = principal,
             actor = call.auditActor(config), recorder = recorder,
+            onDecided = { c, decided -> notifications?.emit(c, NotificationEvent.TASK_DECIDED, decided) },
         ) ?: return@post call.respond(HttpStatusCode.Conflict, ApiError("approval.already_decided"))
+        notifications?.wake()
         call.application.environment.log.info(
             "query approval rejected request={} requester={} decider={} sourceDecisionId={}",
             id,
@@ -668,14 +683,13 @@ fun Route.approvalRoutes(
     }
 
     post("/api/approvals/{id}/cancel") {
-        if (!call.requireApi(config)) return@post
+        val principal = call.requireApi() ?: return@post
         val id = call.idParam() ?: return@post call.respond(HttpStatusCode.BadRequest, ApiError("common.bad_id"))
-        val principal = call.userSession()?.principal ?: "debug-user"
         val req = accessStore.getRequest(id)
         if (req == null || !req.isWorkflowApproval) {
             return@post call.respond(HttpStatusCode.NotFound, ApiError("common.not_found", mapOf("resource" to "query approval request")))
         }
-        if (!mayDecide(call, AuthzAction.TASK_CANCEL, req)) {
+        if (!mayDecide(call, principal, AuthzAction.TASK_CANCEL, req)) {
             return@post call.respond(HttpStatusCode.Forbidden, ApiError("approval.cancel_forbidden"))
         }
         when (req.status) {
@@ -698,6 +712,7 @@ fun Route.approvalRoutes(
             // A cancel can win the CAS before the run coroutine unwinds — push CANCELLED now to both parties
             // so a watching tab reflects it at once (best-effort; the coroutine's terminal push + the poll cover it).
             taskCompletionHub?.publish(listOf(req.principal, req.decidedBy).filterNotNull(), TaskEvent(id, "CANCELLED"))
+            accessStore.getRequest(id)?.let { notifications?.enqueueTerminal(it) }
         }
         val updated = accessStore.getRequest(id)
             ?: return@post call.respond(HttpStatusCode.NotFound, ApiError("common.not_found", mapOf("resource" to "query approval request")))
@@ -707,9 +722,8 @@ fun Route.approvalRoutes(
     // ---- Execute under R ---------------------------------------------------------------
 
     post("/api/approvals/{id}/execute") {
-        if (!call.requireApi(config)) return@post
+        val executor = call.requireApi() ?: return@post
         val id = call.idParam() ?: return@post call.respond(HttpStatusCode.BadRequest, ApiError("common.bad_id"))
-        val executor = call.userSession()?.principal ?: "debug-user"
         val req = accessStore.getRequest(id)
         if (req == null || !req.isWorkflowApproval) {
             return@post call.respond(HttpStatusCode.NotFound, ApiError("common.not_found", mapOf("resource" to "query approval request")))
@@ -717,7 +731,7 @@ fun Route.approvalRoutes(
         // Authorize (task.approve) BEFORE disclosing task state: a caller who cannot approve this task gets a
         // uniform 403 regardless of its status, so the 409 already_executed/not_approved distinctions below are
         // never a state oracle for a non-approver. The approver-of-record identity is still pinned further down.
-        if (!mayDecide(call, AuthzAction.TASK_APPROVE, req)) {
+        if (!mayDecide(call, executor, AuthzAction.TASK_APPROVE, req)) {
             return@post call.respond(HttpStatusCode.Forbidden, ApiError("approval.not_approver"))
         }
         if (req.status in setOf("EXECUTING", "EXECUTED", "FAILED", "CANCELLED")) {
@@ -760,72 +774,13 @@ fun Route.approvalRoutes(
         }
 
         appScope.launch {
-            val failureCode = try {
-                // The approver executes the approved SQL: the run is initiated by and attributed to the
-                // approver (the authenticated caller of /execute), so the ephemeral token, the connection
-                // binding, and the execution audit all carry the approver's identity. execute-as R is
-                // enforced separately via assumeRoles — the role the decision runs AS, not who runs it.
-                val response = runExecService.run(
-                    principal = executor,
-                    ds = ds,
-                    sql = sql,
-                    maxRows = 5000,
-                    approverExec = true,
-                    assumeRoles = executeAs,
-                    requesterIp = requesterIp,
-                    taskId = id,
-                    preflight = { store.meta(id)?.status == "RUNNING" },
-                    exchangeTimeoutMs = config.queryExchangeTimeoutMs,
-                )
-                if (response.decision == EnfAction.DENY) {
-                    "approval.execute_denied"
-                } else {
-                    val result = DecryptedResult(response.columns, response.rows, response.rowsAffected)
-                    // Child DONE, parent EXECUTED, and the execution audit all commit in ONE transaction:
-                    // a crash can never leave a readable DONE child under a non-EXECUTED task. If the parent
-                    // has left EXECUTING (e.g. a restart already reconciled it to FAILED), the flip fails and
-                    // aborts the whole commit — the child stays RUNNING and the failure path below transitions
-                    // both consistently.
-                    val completed = store.completeRun(id, result, QueryResultStore.RESULT_RETENTION_SEC) { conn, _ ->
-                        if (!accessStore.markExecuted(id, conn)) {
-                            throw IllegalStateException("task $id left EXECUTING before completion")
-                        }
-                        auditStore.insert(conn, e3Record(executor, req, "result-executed", Channel.WORKFLOW_EXECUTOR))
-                    }
-                    if (completed != null) {
-                        call.application.environment.log.info(
-                            "query approval executed request={} requester={} executor={} rows={}",
-                            id, req.principal, executor, result.rows.size,
-                        )
-                        null
-                    } else {
-                        "approval.query_failed"
-                    }
-                }
-            } catch (_: RunCanceledBeforeStartException) {
-                null
-            } catch (_: NoProxyAttachedException) {
-                "query.no_proxy_attached"
-            } catch (_: ProxyRunTimeoutException) {
-                "query.proxy_timeout"
-            } catch (_: ProxyRunException) {
-                "approval.query_failed"
-            } catch (t: Throwable) {
-                call.application.environment.log.error("query approval execution failed request=$id", t)
-                "approval.query_failed"
-            }
-            if (failureCode != null) {
-                // Child FAILED and parent FAILED commit in ONE transaction (mirrors the success path's
-                // single-commit EXECUTED/DONE): a crash can never leave a FAILED child under a still-EXECUTING
-                // task, nor the inverse — the split that boot reconcile would otherwise have to repair.
-                runCatching { store.failRun(id, failureCode) { conn, _ -> accessStore.markFailed(id, conn) } }
-                    .onFailure { call.application.environment.log.error("task failure transition failed request=$id", it) }
-            }
-            // Push the ACTUAL terminal state (EXECUTED / FAILED / or CANCELLED if a cancel raced) to both
-            // parties' SSE streams so a watching tab updates at once; best-effort, the tab also polls.
-            accessStore.getRequest(id)?.status?.let {
-                taskCompletionHub?.publish(listOf(req.principal, executor), TaskEvent(id, it))
-            }
+            runApprovedTask(
+                id = id, executor = executor, ds = ds, sql = sql, executeAs = executeAs,
+                requesterIp = requesterIp, requesterPrincipal = req.principal, req = req,
+                config = config, accessStore = accessStore, store = store, auditStore = auditStore,
+                runExecService = runExecService, taskCompletionHub = taskCompletionHub,
+                notifications = notifications, log = call.application.environment.log,
+            )
         }
         call.respond(HttpStatusCode.Accepted, ExecuteApprovalResponse(decision = "EXECUTING"))
     }
@@ -834,9 +789,8 @@ fun Route.approvalRoutes(
     // exactly the task's execute-as role set in the viewer's workflow-viewer context. Every successful
     // view and live-decision denial is audited; a deactivated viewer is hidden and an expired result is Gone.
     get("/api/approvals/{id}/result") {
-        if (!call.requireApi(config)) return@get
+        val principal = call.requireApi() ?: return@get
         val id = call.idParam() ?: return@get call.respond(HttpStatusCode.BadRequest, ApiError("common.bad_id"))
-        val principal = call.userSession()?.principal ?: "debug-user"
         val req = accessStore.getRequest(id)
         if (req == null || !req.isWorkflowApproval) return@get call.respond(HttpStatusCode.NotFound, ApiError("common.not_found", mapOf("resource" to "query approval request")))
         // Deprovisioning gate applies before result lookup. The live decideQuery path repeats this gate as
@@ -851,7 +805,7 @@ fun Route.approvalRoutes(
         val access = queryResultStore?.accessFor(id)
             ?: return@get call.respond(HttpStatusCode.NotFound, ApiError("common.not_found", mapOf("resource" to "query approval request")))
         val meta = access.meta
-        if (!mayReadResult(call, req)) {
+        if (!mayReadResult(call, principal, req)) {
             return@get call.respond(HttpStatusCode.NotFound, ApiError("common.not_found", mapOf("resource" to "query approval request")))
         }
         if (meta.status != "DONE") {
@@ -927,5 +881,109 @@ fun Route.approvalRoutes(
                 )
             }
         }
+    }
+}
+
+/**
+ * Run an approved task under its execute-as role set, then terminalize it.
+ *
+ * Shared by the HTTP `/execute` route and the Slack approve-and-run adapter, so a decision reached from
+ * either surface runs through ONE lifecycle rather than two copies of it. The caller has already claimed the
+ * task (APPROVED → EXECUTING with a RUNNING child, in one transaction), so this owns only the run and the
+ * terminal transition.
+ *
+ * The run is initiated by and attributed to [executor] — the ephemeral token, the connection binding, and the
+ * execution audit all carry their identity. Execute-as R is enforced separately via [executeAs]: the role the
+ * decision runs AS, never who runs it.
+ */
+internal suspend fun runApprovedTask(
+    id: Long,
+    executor: String,
+    ds: Datasource,
+    sql: String,
+    executeAs: Set<String>,
+    requesterIp: String?,
+    requesterPrincipal: String,
+    req: AccessRequest,
+    config: Config,
+    accessStore: AccessStore,
+    store: QueryResultStore,
+    auditStore: AuditStore,
+    runExecService: RunExecService,
+    taskCompletionHub: TaskCompletionHub?,
+    notifications: NotificationService?,
+    log: org.slf4j.Logger,
+) {
+    val dsName = req.datasourceId?.let { req.datasourceName } ?: "?"
+    fun lifecycleRecord(event: String, channel: Channel) = AuditEvent(
+        principal = executor, datasource = dsName,
+        statement = "approval #$id $event",
+        decision = Decision.ALLOW, detail = "APPROVER_EXEC $event",
+        channel = channel.contextValue, kind = "approval_lifecycle",
+    )
+
+    val failureCode = try {
+        val response = runExecService.run(
+            principal = executor,
+            ds = ds,
+            sql = sql,
+            maxRows = 5000,
+            approverExec = true,
+            assumeRoles = executeAs,
+            requesterIp = requesterIp,
+            taskId = id,
+            preflight = { store.meta(id)?.status == "RUNNING" },
+            exchangeTimeoutMs = config.queryExchangeTimeoutMs,
+        )
+        if (response.decision == EnfAction.DENY) {
+            "approval.execute_denied"
+        } else {
+            val result = DecryptedResult(response.columns, response.rows, response.rowsAffected)
+            // Child DONE, parent EXECUTED, and the execution audit all commit in ONE transaction: a crash can
+            // never leave a readable DONE child under a non-EXECUTED task. If the parent has left EXECUTING
+            // (e.g. a restart already reconciled it to FAILED), the flip fails and aborts the whole commit —
+            // the child stays RUNNING and the failure path below transitions both consistently.
+            val completed = store.completeRun(id, result, QueryResultStore.RESULT_RETENTION_SEC) { conn, _ ->
+                if (!accessStore.markExecuted(id, conn)) {
+                    throw IllegalStateException("task $id left EXECUTING before completion")
+                }
+                auditStore.insert(conn, lifecycleRecord("result-executed", Channel.WORKFLOW_EXECUTOR))
+            }
+            if (completed != null) {
+                log.info(
+                    "query approval executed request={} requester={} executor={} rows={}",
+                    id, requesterPrincipal, executor, result.rows.size,
+                )
+                null
+            } else {
+                "approval.query_failed"
+            }
+        }
+    } catch (_: RunCanceledBeforeStartException) {
+        null
+    } catch (_: NoProxyAttachedException) {
+        "query.no_proxy_attached"
+    } catch (_: ProxyRunTimeoutException) {
+        "query.proxy_timeout"
+    } catch (_: ProxyRunException) {
+        "approval.query_failed"
+    } catch (t: Throwable) {
+        log.error("query approval execution failed request=$id", t)
+        "approval.query_failed"
+    }
+    if (failureCode != null) {
+        // Child FAILED and parent FAILED commit in ONE transaction (mirrors the success path's single-commit
+        // EXECUTED/DONE): a crash can never leave a FAILED child under a still-EXECUTING task, nor the
+        // inverse — the split that boot reconcile would otherwise have to repair.
+        runCatching { store.failRun(id, failureCode) { conn, _ -> accessStore.markFailed(id, conn) } }
+            .onFailure { log.error("task failure transition failed request=$id", it) }
+    }
+    // Push the ACTUAL terminal state (EXECUTED / FAILED / or CANCELLED if a cancel raced) to both parties'
+    // SSE streams so a watching tab updates at once; best-effort, the tab also polls.
+    accessStore.getRequest(id)?.let { finished ->
+        taskCompletionHub?.publish(listOf(requesterPrincipal, executor), TaskEvent(id, finished.status))
+        // Announced after the run settles, so it is not part of the execution transaction; the outbox row is
+        // still written atomically inside enqueueTerminal.
+        notifications?.enqueueTerminal(finished)
     }
 }

@@ -46,7 +46,7 @@ class ChannelDecideAuditDbTest {
 
     @Test
     fun `the audit record carries the channel through the real run path`() {
-        val r = fx.run("select id, rrn from users order by id")
+        val r = fx.run("select id, ssn from users order by id")
         val rec = fx.auditStore.get(r.decisionId!!)
         assertEquals("editor", rec?.channel, "a runEnforcedQuery decision must audit channel=editor")
     }
@@ -100,12 +100,13 @@ class ChannelDecideAuditDbTest {
     @Test
     fun `a channel-gated grant follows the server channel and ignores a client-injected channel`() {
         // The fixture grants analyst select/insert but NOT delete. Add a delete grant that fires ONLY on the
-        // editor channel — so the sql.<kind> gate's verdict depends on the channel decideQuery overlays.
+        // editor channel — so the delete kind gate's verdict (stmt.kind.delete is a member of
+        // stmt.cat.write.delete) depends on the channel decideQuery overlays.
         fx.cedarPolicyStore.create(
             CedarPolicyInput(
                 name = "analyst-delete-editor-only",
                 cedarSrc = """permit(
-                    principal in Role::"analyst", action == Action::"sql.delete",
+                    principal in Role::"analyst", action in [Action::"stmt.cat.write.delete"],
                     resource in Datasource::"${fx.datasource.name}"
                 ) when { context has channel && context.channel == "editor" };""",
             ),
@@ -113,32 +114,28 @@ class ChannelDecideAuditDbTest {
         )
         val sql = "delete from users where id = 999999"
 
-        // WIRE: the editor-only delete grant does not fire -> policy deny naming sql.delete.
+        // WIRE: the editor-only delete grant does not fire -> the delete kind is unauthorized -> kind-gate deny.
         val wire = decide(sql, Channel.WIRE)
         assertEquals(EnfAction.DENY, wire.action, "wire delete must deny at the kind gate")
-        assertTrue(wire.denyReason!!.contains("sql.delete"), "wire deny reason: ${wire.denyReason}")
+        assertTrue(wire.denyReason!!.contains("statement kind 'delete' is not permitted"), "wire deny reason: ${wire.denyReason}")
 
-        // EDITOR: the grant fires -> the kind gate clears (no sql.delete deny). If decideQuery failed to
-        // overlay the channel onto the context, this would deny exactly like WIRE — so this pins the wiring.
+        // EDITOR: the grant fires -> the delete clears BOTH the kind gate and the verb loop -> ALLOW. A broken
+        // channel overlay (EDITOR silently treated as wire) would kind-deny 'delete' exactly like WIRE, whose
+        // reason ALSO lacks "stmt.cat.write.delete" — so only pinning ALLOW (not the absence of a verb-loop
+        // string) actually catches that regression.
         val editor = decide(sql, Channel.EDITOR)
-        assertTrue(
-            editor.denyReason?.contains("sql.delete") != true,
-            "editor channel should clear the sql.delete gate, got: ${editor.denyReason}",
-        )
+        assertEquals(EnfAction.ALLOW, editor.action, "editor channel should clear the delete gate, got: ${editor.denyReason}")
 
         // EDITOR channel but a client injecting channel="wire" + tags: the server enum is authoritative, so
         // it still clears the gate — the injected channel/tags are ignored.
         val injected = decide(sql, Channel.EDITOR, AuthzContext(channel = "wire", tags = setOf("injected")))
-        assertTrue(
-            injected.denyReason?.contains("sql.delete") != true,
-            "a client-injected channel must be ignored, got: ${injected.denyReason}",
-        )
+        assertEquals(EnfAction.ALLOW, injected.action, "a client-injected channel must be ignored, got: ${injected.denyReason}")
     }
 
     @Test
     fun `a session temp resolves and reads unmasked via the overlay, unresolvable without it`() {
         // The proxy sends the connection's temp columns; the CP overlays them so a bare name resolves to
-        // the temp (what the backend binds). A temp is unclassified + owned by the user → read UNMASKED.
+        // the temp (what the target DB binds). A temp is unclassified + owned by the user → read UNMASKED.
         val tempSchema = "pg_temp_9"
         val tempCol = CatalogColumn(
             catalog = fx.datasource.dbName, schema = tempSchema, table = "scratch", column = "secret",
@@ -163,13 +160,13 @@ class ChannelDecideAuditDbTest {
     @Test
     fun `a write cannot launder a masked column into a session temp (the unmasked-temp linchpin)`() {
         // Linchpin: a session temp reads UNMASKED only because a write can't copy masked/denied data
-        // into one. Both a CTAS and an INSERT-select reading users.rrn (masked) must DENY on the editor
+        // into one. Both a CTAS and an INSERT-select reading users.ssn (masked) must DENY on the editor
         // channel — even with a temp overlay ACTIVE — via the write-references-masked deny. If this ever
         // regressed, "temps read unmasked" would become an exfiltration primitive (write masked → read plain).
         val tempSchema = "pg_temp_9"
         // A session temp the attacker already holds (in the overlay), as the INSERT sink — the strongest form.
         val scratch = CatalogColumn(
-            catalog = fx.datasource.dbName, schema = tempSchema, table = "scratch", column = "rrn",
+            catalog = fx.datasource.dbName, schema = tempSchema, table = "scratch", column = "ssn",
             dataType = "text", sqlType = "text", ordinal = 1, nullable = true, isTemp = true,
         )
         fun decideWrite(principal: String, sql: String) = decideQuery(
@@ -179,11 +176,11 @@ class ChannelDecideAuditDbTest {
             liveSearchPath = listOf(tempSchema, "public"),
             systemClassification = SystemClassificationService(), tempColumns = listOf(scratch),
         )
-        // ddl-writer holds sql.ddl (CTAS), insert-writer holds sql.insert; both read users.rrn as MASKED.
-        val ctas = decideWrite("writer@example.com", "create temporary table t2 as select rrn from users")
+        // ddl-writer holds sql.ddl (CTAS), insert-writer holds sql.insert; both read users.ssn as MASKED.
+        val ctas = decideWrite("writer@example.com", "create temporary table t2 as select ssn from users")
         assertEquals(EnfAction.DENY, ctas.action, "CTAS from a masked column must DENY: ${ctas.denyReason}")
 
-        val insert = decideWrite("inserter@example.com", "insert into scratch select rrn from users")
+        val insert = decideWrite("inserter@example.com", "insert into scratch select ssn from users")
         assertEquals(EnfAction.DENY, insert.action, "INSERT-select from a masked column into a temp must DENY: ${insert.denyReason}")
     }
 

@@ -71,7 +71,7 @@ class ManagementAuditDbTest {
             datasources.setColumnClassifications(
                 ds.name,
                 listOf(
-                    ClassificationInput(null, "users", "rrn", listOf("pii")),
+                    ClassificationInput(null, "users", "ssn", listOf("pii")),
                     ClassificationInput("public", "users", "email", listOf("contact")),
                     ClassificationInput(null, "users", "phone", listOf("contact")),
                 ),
@@ -81,7 +81,7 @@ class ManagementAuditDbTest {
         }
         assertEvent(
             principal, AuthzAction.ADMIN_DATASOURCES, "Datasource::\"${ds.name}\"",
-            "tag 3 columns of '${ds.name}' [public.users.email, public.users.phone, public.users.rrn]",
+            "tag 3 columns of '${ds.name}' [public.users.email, public.users.phone, public.users.ssn]",
         )
         // One row for the whole batch, not one per column: the batch is a single atomic change.
         assertEquals(1, count("SELECT count(*) FROM audit_event WHERE principal=? AND statement LIKE 'tag %columns%'", principal))
@@ -212,15 +212,15 @@ class ManagementAuditDbTest {
 
         // Schema omitted on the wire: both the descriptor and the summary must carry the RESOLVED schema,
         // since that is the column the mask decision reads.
-        datasources.setColumnClassification(renamed.id, null, "users", "rrn", listOf("pii"), null, actor)
+        datasources.setColumnClassification(renamed.id, null, "users", "ssn", listOf("pii"), null, actor)
         assertEvent(
-            principal, AuthzAction.ADMIN_DATASOURCES, """Datasource::"${renamed.name}" col public.users.rrn""",
-            "tag ${renamed.name}.public.users.rrn [pii]",
+            principal, AuthzAction.ADMIN_DATASOURCES, """Datasource::"${renamed.name}" col public.users.ssn""",
+            "tag ${renamed.name}.public.users.ssn [pii]",
         )
-        assertEquals(true, datasources.clearColumnClassification(renamed.id, null, "users", "rrn", actor).deleted)
+        assertEquals(true, datasources.clearColumnClassification(renamed.id, null, "users", "ssn", actor).deleted)
         assertEvent(
-            principal, AuthzAction.ADMIN_DATASOURCES, """Datasource::"${renamed.name}" col public.users.rrn""",
-            "clear tags on ${renamed.name}.public.users.rrn",
+            principal, AuthzAction.ADMIN_DATASOURCES, """Datasource::"${renamed.name}" col public.users.ssn""",
+            "clear tags on ${renamed.name}.public.users.ssn",
         )
 
         assertEquals(true, datasources.deleteDatasource(renamed.id, actor).deleted)

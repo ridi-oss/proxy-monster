@@ -7,6 +7,7 @@ import com.ridi.oss.proxymonster.controlplane.authz.CedarPolicyStore
 import com.ridi.oss.proxymonster.controlplane.authz.RoleSource
 import com.ridi.oss.proxymonster.controlplane.support.SharedPostgres
 import com.ridi.oss.proxymonster.controlplane.support.requireDockerOrSkip
+import com.ridi.oss.proxymonster.controlplane.support.testLoginRoute
 import com.ridi.oss.proxymonster.controlplane.support.webSessionCookie
 import io.ktor.client.HttpClient
 import io.ktor.client.call.body
@@ -21,14 +22,8 @@ import io.ktor.serialization.kotlinx.json.json
 import io.ktor.server.application.Application
 import io.ktor.server.application.install
 import io.ktor.server.plugins.contentnegotiation.ContentNegotiation
-import io.ktor.server.response.respond
-import io.ktor.server.routing.post
 import io.ktor.server.routing.routing
-import io.ktor.server.sessions.SessionTransportTransformerMessageAuthentication
 import io.ktor.server.sessions.Sessions
-import io.ktor.server.sessions.cookie
-import io.ktor.server.sessions.set
-import io.ktor.server.sessions.sessions
 import io.ktor.server.testing.ApplicationTestBuilder
 import io.ktor.server.testing.testApplication
 import kotlinx.serialization.decodeFromString
@@ -88,7 +83,7 @@ class AuditReadRoutesDbTest {
     }
 
     @Test
-    fun `unauthenticated non-debug list is rejected without authorization`() = testApplication {
+    fun `an unauthenticated list is rejected without authorization`() = testApplication {
         val app = wireAuditApp(authDebug = false)
         app.roleSource.reset()
 
@@ -174,23 +169,30 @@ class AuditReadRoutesDbTest {
         }
     }
 
+    /**
+     * `PM_AUTH_DEBUG` authenticates nobody: with no session the read is 401 before any decision, and a dev
+     * session is decided exactly like an SSO one. This principal holds no audit.read grant on the
+     * collection, so it falls back to its own rows (none) rather than being handed every principal's trail.
+     */
     @Test
-    fun `auth debug returns all rows and details without authorization or a session`() = testApplication {
+    fun `under auth debug a sessionless read is rejected and a signed-in read still authorizes`() = testApplication {
         val app = wireAuditApp(authDebug = true)
 
         app.roleSource.reset()
+        assertEquals(HttpStatusCode.Unauthorized, app.client.get("/api/audit?limit=500").status)
+        assertEquals(0, app.roleSource.lookupCount, "an unauthenticated read must not reach Cedar")
+
+        app.client.login(GRANTLESS)
+        app.roleSource.reset()
         val listResponse = app.client.get("/api/audit?limit=500")
         assertEquals(HttpStatusCode.OK, listResponse.status)
-        val records: List<AuditEvent> = listResponse.body()
-        assertEquals(normalIds + e3Id, records.mapNotNull { it.id }.toSet())
-        assertEquals("approval_lifecycle", records.single { it.id == e3Id }.kind)
-        assertEquals(0, app.roleSource.lookupCount)
+        assertEquals(emptyList(), listResponse.body<List<AuditEvent>>().mapNotNull { it.id })
+        assertTrue(app.roleSource.lookupCount > 0, "the decision must run: authDebug authenticates, never authorizes")
 
-        app.roleSource.reset()
+        // Another principal's record is not readable without a grant — 404, the same non-oracle the
+        // collection fallback implies.
         val detailResponse = app.client.get("/api/audit/${bobIds.first()}")
-        assertEquals(HttpStatusCode.OK, detailResponse.status)
-        assertEquals(BOB, detailResponse.body<AuditEvent>().principal)
-        assertEquals(0, app.roleSource.lookupCount)
+        assertEquals(HttpStatusCode.NotFound, detailResponse.status)
     }
 
     @Test
@@ -279,12 +281,7 @@ class AuditReadRoutesDbTest {
             webSessionCookie(sessionStore, config.sessionSecret)
         }
         routing {
-            post("/test/session/{principal}") {
-                val principal = requireNotNull(call.parameters["principal"])
-                val deviceId = call.ensureDeviceCookie(secure = false)
-                call.sessions.set(WebSessionRef(sessionStore.mintWeb(principal, null, config.webSessionAbsoluteSeconds, config.webSessionIdleSeconds, deviceId)))
-                call.respond(HttpStatusCode.NoContent)
-            }
+            testLoginRoute(sessionStore, config)
             auditRoutes(config, auditStore, authz)
         }
     }
@@ -318,5 +315,9 @@ class AuditReadRoutesDbTest {
         const val ALICE = "alice"
         const val BOB = "bob"
         const val AUDITOR = "auditor-user"
+
+        // A principal with no roles and no audited rows of its own, so a read that fell back to own-rows
+        // returns an observably EMPTY list rather than one that merely looks filtered.
+        const val GRANTLESS = "grantless"
     }
 }

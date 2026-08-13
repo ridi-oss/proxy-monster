@@ -22,7 +22,7 @@ func TestDerivedProjectionFacts(t *testing.T) {
 		ec    *pb.EngineConfig
 		ns    *pb.Namespace
 		cols  []*pb.ColumnSpec
-		rrn   string // fully-qualified base key of the protected column
+		ssn   string // fully-qualified base key of the protected column
 		email string
 		id    string
 	}{
@@ -32,10 +32,10 @@ func TestDerivedProjectionFacts(t *testing.T) {
 			ns:   &pb.Namespace{Catalog: "def", SearchPath: []string{"app"}},
 			cols: []*pb.ColumnSpec{
 				columnSpec("def", "app", "users", "id", "BIGINT"),
-				columnSpec("def", "app", "users", "rrn", "VARCHAR"),
+				columnSpec("def", "app", "users", "ssn", "VARCHAR"),
 				columnSpec("def", "app", "users", "email", "VARCHAR"),
 			},
-			rrn: "def.app.users.rrn", email: "def.app.users.email", id: "def.app.users.id",
+			ssn: "def.app.users.ssn", email: "def.app.users.email", id: "def.app.users.id",
 		},
 		{
 			name: "postgres",
@@ -43,10 +43,10 @@ func TestDerivedProjectionFacts(t *testing.T) {
 			ns:   &pb.Namespace{Catalog: "acme", SearchPath: []string{"public"}},
 			cols: []*pb.ColumnSpec{
 				columnSpec("acme", "public", "users", "id", "BIGINT"),
-				columnSpec("acme", "public", "users", "rrn", "VARCHAR"),
+				columnSpec("acme", "public", "users", "ssn", "VARCHAR"),
 				columnSpec("acme", "public", "users", "email", "VARCHAR"),
 			},
-			rrn: "acme.public.users.rrn", email: "acme.public.users.email", id: "acme.public.users.id",
+			ssn: "acme.public.users.ssn", email: "acme.public.users.email", id: "acme.public.users.id",
 		},
 	}
 
@@ -69,65 +69,65 @@ func TestDerivedProjectionFacts(t *testing.T) {
 			}{
 				{
 					name:      "scalar transform → derived, redactable, no reference",
-					sql:       "SELECT upper(rrn) FROM users",
-					origins:   []wantOrigin{{derived: true, origins: []string{e.rrn}}},
+					sql:       "SELECT upper(ssn) FROM users",
+					origins:   []wantOrigin{{derived: true, origins: []string{e.ssn}}},
 					refAbsent: []string{"DERIVED", "ORDER_BY", "GROUP_BY", "PREDICATE"},
 				},
 				{
 					name:    "direct projection stays non-derived (masked via its own kind)",
-					sql:     "SELECT rrn FROM users",
-					origins: []wantOrigin{{derived: false, origins: []string{e.rrn}}},
+					sql:     "SELECT ssn FROM users",
+					origins: []wantOrigin{{derived: false, origins: []string{e.ssn}}},
 				},
 				{
-					name: "mixed: direct id + derived transform of rrn",
-					sql:  "SELECT id, upper(rrn) AS x FROM users",
+					name: "mixed: direct id + derived transform of ssn",
+					sql:  "SELECT id, upper(ssn) AS x FROM users",
 					origins: []wantOrigin{
 						{derived: false, origins: []string{e.id}},
-						{derived: true, origins: []string{e.rrn}},
+						{derived: true, origins: []string{e.ssn}},
 					},
 					refAbsent: []string{"DERIVED"},
 				},
 				{
 					name:      "multi-base scalar transform carries every base column",
-					sql:       "SELECT concat(rrn, email) FROM users",
-					origins:   []wantOrigin{{derived: true, origins: []string{e.email, e.rrn}}},
+					sql:       "SELECT concat(ssn, email) FROM users",
+					origins:   []wantOrigin{{derived: true, origins: []string{e.email, e.ssn}}},
 					refAbsent: []string{"DERIVED"},
 				},
 				{
 					name:    "aggregate is NOT derived → DERIVED reference (deny)",
-					sql:     "SELECT max(rrn) FROM users",
+					sql:     "SELECT max(ssn) FROM users",
 					origins: []wantOrigin{{derived: false, origins: []string{}}},
-					refHas:  map[string][]string{"DERIVED": {e.rrn}},
+					refHas:  map[string][]string{"DERIVED": {e.ssn}},
 				},
 				{
 					name:    "window is NOT derived → row-shaping reference (deny)",
-					sql:     "SELECT row_number() OVER (ORDER BY rrn) FROM users",
+					sql:     "SELECT row_number() OVER (ORDER BY ssn) FROM users",
 					origins: []wantOrigin{{derived: false, origins: []string{}}},
-					refHas:  map[string][]string{"ORDER_BY": {e.rrn}},
+					refHas:  map[string][]string{"ORDER_BY": {e.ssn}},
 				},
 				{
 					name:    "DISTINCT scalar transform is NOT derived (dedup cardinality leak)",
-					sql:     "SELECT DISTINCT upper(rrn) FROM users",
+					sql:     "SELECT DISTINCT upper(ssn) FROM users",
 					origins: []wantOrigin{{derived: false, origins: []string{}}},
-					refHas:  map[string][]string{"DERIVED": {e.rrn}},
+					refHas:  map[string][]string{"DERIVED": {e.ssn}},
 				},
 				{
 					name:    "derived transform ALSO in ORDER BY → recorded as a reference (deny before redact)",
-					sql:     "SELECT upper(rrn) FROM users ORDER BY upper(rrn)",
-					origins: []wantOrigin{{derived: true, origins: []string{e.rrn}}},
-					refHas:  map[string][]string{"ORDER_BY": {e.rrn}},
+					sql:     "SELECT upper(ssn) FROM users ORDER BY upper(ssn)",
+					origins: []wantOrigin{{derived: true, origins: []string{e.ssn}}},
+					refHas:  map[string][]string{"ORDER_BY": {e.ssn}},
 				},
 				{
 					name:    "positional ORDER BY over a derived transform → ORDER_BY reference (deny)",
-					sql:     "SELECT upper(rrn) FROM users ORDER BY 1",
-					origins: []wantOrigin{{derived: true, origins: []string{e.rrn}}},
-					refHas:  map[string][]string{"ORDER_BY": {e.rrn}},
+					sql:     "SELECT upper(ssn) FROM users ORDER BY 1",
+					origins: []wantOrigin{{derived: true, origins: []string{e.ssn}}},
+					refHas:  map[string][]string{"ORDER_BY": {e.ssn}},
 				},
 				{
 					name:    "aliased ORDER BY over a derived transform → ORDER_BY reference (deny)",
-					sql:     "SELECT upper(rrn) AS u FROM users ORDER BY u",
-					origins: []wantOrigin{{derived: true, origins: []string{e.rrn}}},
-					refHas:  map[string][]string{"ORDER_BY": {e.rrn}},
+					sql:     "SELECT upper(ssn) AS u FROM users ORDER BY u",
+					origins: []wantOrigin{{derived: true, origins: []string{e.ssn}}},
+					refHas:  map[string][]string{"ORDER_BY": {e.ssn}},
 				},
 			}
 
@@ -185,10 +185,10 @@ func TestRedactableWhitelistGate(t *testing.T) {
 		t.Run(e.name, func(t *testing.T) {
 			cols := []*pb.ColumnSpec{
 				columnSpec(e.cat, e.sch, "users", "id", "BIGINT"),
-				columnSpec(e.cat, e.sch, "users", "rrn", "VARCHAR"),
+				columnSpec(e.cat, e.sch, "users", "ssn", "VARCHAR"),
 				columnSpec(e.cat, e.sch, "users", "email", "VARCHAR"),
 			}
-			rrn := e.cat + "." + e.sch + ".users.rrn"
+			ssn := e.cat + "." + e.sch + ".users.ssn"
 			// redactable returns true iff output ordinal 0 is a redactable derived transform (derived=true
 			// and the masked column is NOT in any reference bucket).
 			redactable := func(sql string) bool {
@@ -198,7 +198,7 @@ func TestRedactableWhitelistGate(t *testing.T) {
 				}
 				for _, cr := range r.References {
 					for _, c := range cr {
-						if c == rrn {
+						if c == ssn {
 							return false
 						}
 					}
@@ -207,15 +207,15 @@ func TestRedactableWhitelistGate(t *testing.T) {
 			}
 			// Provably-total string transforms → redactable.
 			for _, sql := range []string{
-				"SELECT upper(rrn) FROM users",
-				"SELECT lower(rrn) FROM users",
-				"SELECT substr(rrn, 1, 3) FROM users",
-				"SELECT left(rrn, 3) FROM users",
-				"SELECT concat(rrn, '-x') FROM users",
-				"SELECT md5(rrn) FROM users",
-				"SELECT length(rrn) FROM users",
-				"SELECT upper(substr(rrn, 1, 6)) FROM users",
-				"SELECT coalesce(rrn, 'unknown') FROM users", // string-literal fallback is total
+				"SELECT upper(ssn) FROM users",
+				"SELECT lower(ssn) FROM users",
+				"SELECT substr(ssn, 1, 3) FROM users",
+				"SELECT left(ssn, 3) FROM users",
+				"SELECT concat(ssn, '-x') FROM users",
+				"SELECT md5(ssn) FROM users",
+				"SELECT length(ssn) FROM users",
+				"SELECT upper(substr(ssn, 1, 6)) FROM users",
+				"SELECT coalesce(ssn, 'unknown') FROM users", // string-literal fallback is total
 			} {
 				if !redactable(sql) {
 					t.Errorf("want REDACTABLE, got denied: %q", sql)
@@ -223,16 +223,16 @@ func TestRedactableWhitelistGate(t *testing.T) {
 			}
 			// Fault/warn-capable or subquery-hidden → must NOT be redactable (→ DENY).
 			for _, sql := range []string{
-				"SELECT cast(rrn as char) FROM users",                               // cast/coercion
-				"SELECT 1/(ascii(substr(rrn,1,1)) - 115) FROM users",                // division equality oracle
-				"SELECT pow(1e300, ascii(substr(rrn,1,1)) - 100) FROM users",        // overflow threshold oracle
-				"SELECT case when rrn like '90%' then 1 else 0 end FROM users",      // conditional
-				"SELECT (rrn = 'x') FROM users",                                     // comparison
-				"SELECT substr(rrn, ascii(rrn), 1) FROM users",                      // column in a numeric arg
-				"SELECT c FROM (SELECT cast(rrn as char) AS c FROM users) t",        // oracle hidden in a subquery
-				"SELECT upper(c) FROM (SELECT cast(rrn as char) AS c FROM users) t", // hidden under a whitelisted wrapper
-				"SELECT c FROM (SELECT md5(rrn) AS c FROM users) t",                 // even a safe transform hidden below → deny
-				"SELECT coalesce(rrn, 0) FROM users",                                // numeric fallback → type-unification, can fault
+				"SELECT cast(ssn as char) FROM users",                               // cast/coercion
+				"SELECT 1/(ascii(substr(ssn,1,1)) - 115) FROM users",                // division equality oracle
+				"SELECT pow(1e300, ascii(substr(ssn,1,1)) - 100) FROM users",        // overflow threshold oracle
+				"SELECT case when ssn like '90%' then 1 else 0 end FROM users",      // conditional
+				"SELECT (ssn = 'x') FROM users",                                     // comparison
+				"SELECT substr(ssn, ascii(ssn), 1) FROM users",                      // column in a numeric arg
+				"SELECT c FROM (SELECT cast(ssn as char) AS c FROM users) t",        // oracle hidden in a subquery
+				"SELECT upper(c) FROM (SELECT cast(ssn as char) AS c FROM users) t", // hidden under a whitelisted wrapper
+				"SELECT c FROM (SELECT md5(ssn) AS c FROM users) t",                 // even a safe transform hidden below → deny
+				"SELECT coalesce(ssn, 0) FROM users",                                // numeric fallback → type-unification, can fault
 			} {
 				if redactable(sql) {
 					t.Errorf("want DENY (not redactable), got redactable: %q", sql)

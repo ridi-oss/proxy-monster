@@ -38,17 +38,33 @@ type Target struct {
 
 // String renders t in the requested format, defaulting to [URL] for an empty or unknown one.
 func String(format Format, t Target) string {
+	return StringWithOptions(format, t, Options{})
+}
+
+// Options adjusts connection-string rendering for clients with non-default requirements.
+type Options struct {
+	// JDBCTruncationDiagnostics leaves MySQL JDBC driver options unspecified. The default false adds pmon's
+	// compatibility setting that prevents Connector/J from automatically issuing SHOW WARNINGS.
+	JDBCTruncationDiagnostics bool
+}
+
+// StringWithOptions renders t in the requested format using opts.
+func StringWithOptions(format Format, t Target, opts Options) string {
 	if t.Engine == "postgres" {
 		return postgres(format, t)
 	}
-	return mysql(format, t)
+	return mysql(format, t, opts)
 }
 
-func mysql(format Format, t Target) string {
+func mysql(format Format, t Target, opts Options) string {
 	switch format {
 	case JDBC:
-		return fmt.Sprintf("jdbc:mysql://%s:%d/%s?user=%s&password=%s",
+		jdbc := fmt.Sprintf("jdbc:mysql://%s:%d/%s?user=%s&password=%s",
 			Host, t.Port, t.DbName, url.QueryEscape(t.User), url.QueryEscape(t.Password))
+		if opts.JDBCTruncationDiagnostics {
+			return jdbc
+		}
+		return jdbc + "&jdbcCompliantTruncation=false"
 	case GoDSN:
 		// go-sql-driver/mysql: user:pass@tcp(host:port)/db?params. parseTime + utf8mb4 are the conventional
 		// defaults; TLS is deliberately absent — the loopback hop to the broker is plaintext by design (the

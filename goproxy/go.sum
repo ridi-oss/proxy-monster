@@ -107,8 +107,8 @@ github.com/power-devops/perfstat v0.0.0-20210106213030-5aafc221ea8c h1:ncq/mPwQF
 github.com/power-devops/perfstat v0.0.0-20210106213030-5aafc221ea8c/go.mod h1:OmDBASR4679mdNQnz2pUhc2G8CO2JrUAVFDRBDP/hJE=
 github.com/ridi-oss/proxy-monster/mysqlwire v0.1.2 h1:KM/b7PfadLw0drVrTU+/34eTJLLBRbIEfsPhp4+bzds=
 github.com/ridi-oss/proxy-monster/mysqlwire v0.1.2/go.mod h1:yielY+j1TFdAdh9cn7WGFUwUtLwligQEwpO7Xmfvinc=
-github.com/ridi-oss/sqlglot-go v0.22.0 h1:uPRNk6iFJYy46PsGz3Tjduejg+WcLzd7aNiyJ0bMQpM=
-github.com/ridi-oss/sqlglot-go v0.22.0/go.mod h1:uj8jRoyYvCZFR94rVzQs6s5xCKkOqZXlf6Ye9dCXNFE=
+github.com/ridi-oss/sqlglot-go v0.23.0 h1:yk4tCVNXOO/2amBKEAK800lvcEITh0ixQbiquvGIhsM=
+github.com/ridi-oss/sqlglot-go v0.23.0/go.mod h1:uj8jRoyYvCZFR94rVzQs6s5xCKkOqZXlf6Ye9dCXNFE=
 github.com/rogpeppe/go-internal v1.8.1 h1:geMPLpDpQOgVyCg5z5GoRwLHepNdb71NXb67XFkP+Eg=
 github.com/rogpeppe/go-internal v1.8.1/go.mod h1:JeRgkft04UBgHMgCIwADu4Pn6Mtm5d4nPKWu0nJ5d+o=
 github.com/shirou/gopsutil/v3 v3.23.12 h1:z90NtUkp3bMtmICZKpC4+WaknU1eXtp5vtbQ11DgpE4=

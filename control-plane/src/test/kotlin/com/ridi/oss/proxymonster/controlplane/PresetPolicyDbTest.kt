@@ -7,7 +7,7 @@ import com.ridi.oss.proxymonster.controlplane.authz.AuthzDecision
 import com.ridi.oss.proxymonster.controlplane.authz.ColumnRef
 import com.ridi.oss.proxymonster.controlplane.authz.ColumnVerdict
 import com.ridi.oss.proxymonster.controlplane.authz.authorizeColumns
-import com.ridi.oss.proxymonster.controlplane.authz.authorizeDatasourceAction
+import com.ridi.oss.proxymonster.controlplane.authz.authorizeDatasourceActionId
 import com.ridi.oss.proxymonster.controlplane.support.EnforcementFixture
 import com.ridi.oss.proxymonster.controlplane.support.requireDockerOrSkip
 import org.junit.jupiter.api.BeforeAll
@@ -100,33 +100,35 @@ class PresetPolicyDbTest {
         systemClassification = SystemClassificationService(),
     )
 
-    private fun actionAllowed(principal: String, action: AuthzAction): Boolean {
+    // Categories are Cedar policy handles (strings), not control-plane constants — a preset grants a
+    // category, and a kind gates against it via the schema. So the test authorizes by the raw action id.
+    private fun actionAllowed(principal: String, cedarActionId: String): Boolean {
         val ds = fx.datasourceStore.get(fx.datasource.id)!!
-        return fx.authz.authorizeDatasourceAction(
+        return fx.authz.authorizeDatasourceActionId(
             principal,
             fx.roleResolver.resolve(principal),
-            action,
+            cedarActionId,
             ds.name,
             datasourceTags = ds.tags,
-        ) == AuthzDecision.Allow
+        ) is AuthzDecision.Allow
     }
 
     @Test
     fun `development role matrix grants connect and only the corresponding SQL kind`() {
         val expected = mapOf(
-            "system:development-viewer" to setOf(AuthzAction.SQL_SELECT),
-            "system:development-pii-accessor" to setOf(AuthzAction.SQL_SELECT),
-            "system:development-updater" to setOf(AuthzAction.SQL_INSERT, AuthzAction.SQL_UPDATE),
-            "system:development-deleter" to setOf(AuthzAction.SQL_DELETE),
-            "system:development-architect" to setOf(AuthzAction.SQL_DDL),
+            "system:development-viewer" to setOf("stmt.cat.read"),
+            "system:development-pii-accessor" to setOf("stmt.cat.read"),
+            "system:development-updater" to setOf("stmt.cat.write.insert", "stmt.cat.write.update"),
+            "system:development-deleter" to setOf("stmt.cat.write.delete"),
+            "system:development-architect" to setOf("stmt.cat.ddl"),
         )
         val sqlActions = setOf(
-            AuthzAction.SQL_SELECT, AuthzAction.SQL_INSERT, AuthzAction.SQL_UPDATE,
-            AuthzAction.SQL_DELETE, AuthzAction.SQL_DDL,
+            "stmt.cat.read", "stmt.cat.write.insert", "stmt.cat.write.update",
+            "stmt.cat.write.delete", "stmt.cat.ddl",
         )
         for ((role, granted) in expected) {
             val principal = principals.getValue(role)
-            assertEquals(true, actionAllowed(principal, AuthzAction.DATASOURCE_CONNECT), "$role connect")
+            assertEquals(true, actionAllowed(principal, AuthzAction.DATASOURCE_CONNECT.cedarId), "$role connect")
             for (action in sqlActions) {
                 assertEquals(action in granted, actionAllowed(principal, action), "$role $action")
             }
@@ -138,19 +140,19 @@ class PresetPolicyDbTest {
         setTags("system:production")
         (listOf(-300L) + (250L..258L).map { -it }).forEach { fx.cedarPolicyStore.setEnabled(it, true, "test-enable-production") }
         val expected = mapOf(
-            "system:production-viewer" to setOf(AuthzAction.SQL_SELECT),
-            "system:production-pii-accessor" to setOf(AuthzAction.SQL_SELECT),
-            "system:production-updater" to setOf(AuthzAction.SQL_INSERT, AuthzAction.SQL_UPDATE),
-            "system:production-deleter" to setOf(AuthzAction.SQL_DELETE),
-            "system:production-architect" to setOf(AuthzAction.SQL_DDL),
+            "system:production-viewer" to setOf("stmt.cat.read"),
+            "system:production-pii-accessor" to setOf("stmt.cat.read"),
+            "system:production-updater" to setOf("stmt.cat.write.insert", "stmt.cat.write.update"),
+            "system:production-deleter" to setOf("stmt.cat.write.delete"),
+            "system:production-architect" to setOf("stmt.cat.ddl"),
         )
         val sqlActions = setOf(
-            AuthzAction.SQL_SELECT, AuthzAction.SQL_INSERT, AuthzAction.SQL_UPDATE,
-            AuthzAction.SQL_DELETE, AuthzAction.SQL_DDL,
+            "stmt.cat.read", "stmt.cat.write.insert", "stmt.cat.write.update",
+            "stmt.cat.write.delete", "stmt.cat.ddl",
         )
         for ((role, granted) in expected) {
             val principal = principals.getValue(role)
-            assertEquals(true, actionAllowed(principal, AuthzAction.DATASOURCE_CONNECT), "$role connect")
+            assertEquals(true, actionAllowed(principal, AuthzAction.DATASOURCE_CONNECT.cedarId), "$role connect")
             for (action in sqlActions) {
                 assertEquals(action in granted, actionAllowed(principal, action), "$role $action")
             }
@@ -164,8 +166,8 @@ class PresetPolicyDbTest {
         // Ordinary non-PII columns read cleartext.
         assertEquals(EnfAction.ALLOW, decide(viewer, "select id, region from users").action)
         // A pii-tagged column ALSO reads cleartext on a dev datasource — trusted-network is irrelevant here.
-        assertEquals(EnfAction.ALLOW, decide(viewer, "select rrn from users").action, "dev has no PII -> rrn is cleartext")
-        assertEquals(EnfAction.ALLOW, decide(accessor, "select rrn from users", "100.99.1.10").action, "off trusted-network is still cleartext on dev")
+        assertEquals(EnfAction.ALLOW, decide(viewer, "select ssn from users").action, "dev has no PII -> ssn is cleartext")
+        assertEquals(EnfAction.ALLOW, decide(accessor, "select ssn from users", "100.99.1.10").action, "off trusted-network is still cleartext on dev")
     }
 
     @Test
@@ -189,11 +191,11 @@ class PresetPolicyDbTest {
         // Enabling production PII access means enabling its trusted-network producer (-300) too.
         (listOf(-300L) + (250L..258L).map { -it }).forEach { fx.cedarPolicyStore.setEnabled(it, true, "test-enable-production") }
         assertEquals(EnfAction.ALLOW, decide(viewer, "select id from users").action, "non-PII cleartext")
-        assertEquals(EnfAction.MASK, decide(viewer, "select rrn from users").action, "viewer masks PII")
-        assertEquals(EnfAction.MASK, decide(viewer, "select rrn from users", "100.100.1.10").action, "viewer never gets PII cleartext, trusted-network or not")
-        assertEquals(EnfAction.MASK, decide(accessor, "select rrn from users", "100.99.1.10").action, "pii-accessor masks off trusted-network")
+        assertEquals(EnfAction.MASK, decide(viewer, "select ssn from users").action, "viewer masks PII")
+        assertEquals(EnfAction.MASK, decide(viewer, "select ssn from users", "100.100.1.10").action, "viewer never gets PII cleartext, trusted-network or not")
+        assertEquals(EnfAction.MASK, decide(accessor, "select ssn from users", "100.99.1.10").action, "pii-accessor masks off trusted-network")
         // The SHIPPED -300 example trusts 100.100.0.0/16, so an in-range request earns the tag and -258 fires.
-        assertEquals(EnfAction.ALLOW, decide(accessor, "select rrn from users", "100.100.1.10").action, "pii-accessor reads cleartext on trusted-network")
+        assertEquals(EnfAction.ALLOW, decide(accessor, "select ssn from users", "100.100.1.10").action, "pii-accessor reads cleartext on trusted-network")
     }
 
     @Test
@@ -209,26 +211,26 @@ class PresetPolicyDbTest {
         // -259: an approved run on the workflow-executor channel unmasks pii even OFF the trusted network.
         assertEquals(
             EnfAction.ALLOW,
-            decide(accessor, "select rrn from users", offNetwork, Channel.WORKFLOW_EXECUTOR).action,
+            decide(accessor, "select ssn from users", offNetwork, Channel.WORKFLOW_EXECUTOR).action,
             "-259: pii-accessor unmasks off-network on the workflow-executor channel",
         )
         // The viewer channel does NOT match -259, so off-network it falls through to -257 (masked) — this is
         // the re-mask that bounds a saved result at view time.
         assertEquals(
             EnfAction.MASK,
-            decide(accessor, "select rrn from users", offNetwork, Channel.WORKFLOW_VIEWER).action,
+            decide(accessor, "select ssn from users", offNetwork, Channel.WORKFLOW_VIEWER).action,
             "workflow-viewer re-masks off-network (-259 does not match the viewer channel)",
         )
         // The wire channel likewise masks off-network — -259 is workflow-executor only, never the raw wire.
         assertEquals(
             EnfAction.MASK,
-            decide(accessor, "select rrn from users", offNetwork, Channel.WIRE).action,
+            decide(accessor, "select ssn from users", offNetwork, Channel.WIRE).action,
             "wire masks off-network (the executor-channel unmask never reaches the native wire)",
         )
         // -259 is role-scoped to pii-accessor: a plain production-viewer on workflow-executor still masks.
         assertEquals(
             EnfAction.MASK,
-            decide(viewer, "select rrn from users", offNetwork, Channel.WORKFLOW_EXECUTOR).action,
+            decide(viewer, "select ssn from users", offNetwork, Channel.WORKFLOW_EXECUTOR).action,
             "-259 grants only system:production-pii-accessor; a viewer still masks",
         )
 
@@ -237,7 +239,7 @@ class PresetPolicyDbTest {
         fx.cedarPolicyStore.setEnabled(-259, false, "test-disable-259")
         assertEquals(
             EnfAction.MASK,
-            decide(accessor, "select rrn from users", offNetwork, Channel.WORKFLOW_EXECUTOR).action,
+            decide(accessor, "select ssn from users", offNetwork, Channel.WORKFLOW_EXECUTOR).action,
             "-259 disabled (shipped default) -> workflow-executor masks off-network",
         )
     }
@@ -259,21 +261,21 @@ class PresetPolicyDbTest {
 
     @Test
     fun `default developer group connects selects writes and reads dev data cleartext`() {
-        assertEquals(true, actionAllowed(developer, AuthzAction.DATASOURCE_CONNECT), "developer connect")
-        assertEquals(true, actionAllowed(developer, AuthzAction.SQL_SELECT), "developer select")
-        assertEquals(true, actionAllowed(developer, AuthzAction.SQL_INSERT), "developer insert")
-        assertEquals(true, actionAllowed(developer, AuthzAction.SQL_UPDATE), "developer update")
-        assertEquals(true, actionAllowed(developer, AuthzAction.SQL_DELETE), "developer delete")
-        assertEquals(true, actionAllowed(developer, AuthzAction.SQL_DDL), "developer ddl")
-        assertEquals(EnfAction.ALLOW, decide(developer, "select rrn from users").action, "developer reads dev PII cleartext")
+        assertEquals(true, actionAllowed(developer, AuthzAction.DATASOURCE_CONNECT.cedarId), "developer connect")
+        assertEquals(true, actionAllowed(developer, "stmt.cat.read"), "developer select")
+        assertEquals(true, actionAllowed(developer, "stmt.cat.write.insert"), "developer insert")
+        assertEquals(true, actionAllowed(developer, "stmt.cat.write.update"), "developer update")
+        assertEquals(true, actionAllowed(developer, "stmt.cat.write.delete"), "developer delete")
+        assertEquals(true, actionAllowed(developer, "stmt.cat.ddl"), "developer ddl")
+        assertEquals(EnfAction.ALLOW, decide(developer, "select ssn from users").action, "developer reads dev PII cleartext")
     }
 
     @Test
     fun `the shipped development permit matches a system-development tag wherever it sits`() {
         // `system:development` reaches the shipped -200 permit whether it sits on the datasource or on the
         // column. Either write takes the same instance-wide admin.datasources authority.
-        val tagged = ColumnRef(key = "k", catalog = "pm", schema = "public", table = "users", column = "rrn", tags = listOf("system:development"))
-        val plain = ColumnRef(key = "k", catalog = "pm", schema = "public", table = "users", column = "rrn")
+        val tagged = ColumnRef(key = "k", catalog = "pm", schema = "public", table = "users", column = "ssn", tags = listOf("system:development"))
+        val plain = ColumnRef(key = "k", catalog = "pm", schema = "public", table = "users", column = "ssn")
         val nobody = "nobody@example.com" // no preset role; relies solely on the shipped -200 preset permit
         // On the DATASOURCE: every column under it is in system:development via its datasource parent.
         assertEquals(

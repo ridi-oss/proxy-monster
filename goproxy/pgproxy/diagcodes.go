@@ -5,7 +5,7 @@ import "github.com/ridi-oss/proxy-monster/goproxy/engine"
 // pgDiagnosticMessage maps a PostgreSQL SQLSTATE to a fixed, value-free identity string for a
 // diagnostic-redacted connection: the canonical condition name when the exact code is known, else
 // the SQLSTATE class name (first two characters), else the generic redacted string. The result is looked up
-// entirely from the code — never reconstructed from the backend's echoed message text — so no stored value
+// entirely from the code — never reconstructed from the target DB's echoed message text — so no stored value
 // can ride along. Both tables are the PostgreSQL error-code appendix's own fixed identities, so keeping
 // them preserves the error *class* without preserving any *content*. Unmapped codes degrade to the class or
 // generic message rather than leaking (fail-safe UX, not a security boundary — that is the strip itself).

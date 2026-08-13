@@ -25,7 +25,7 @@ const clientFlushThreshold = 64
 
 type streamOpts struct{ extended, soft bool }
 
-func (c *sessionCore) streamResult(masks []*pb.ColumnMask, opts streamOpts, emit func(pgproto3.BackendMessage) error) (backendErr error, err error) {
+func (c *sessionCore) streamResult(masks []*pb.ColumnMask, opts streamOpts, emit func(pgproto3.BackendMessage) error) (targetDbErr error, err error) {
 	var masker *engine.RowMasker
 	columnCount := -1
 	fail := func(cause error) bool {
@@ -35,7 +35,7 @@ func (c *sessionCore) streamResult(masks []*pb.ColumnMask, opts streamOpts, emit
 		return opts.soft
 	}
 	emitFrame := func(message pgproto3.BackendMessage, data bool) bool {
-		if data && (backendErr != nil || opts.soft && err != nil) {
+		if data && (targetDbErr != nil || opts.soft && err != nil) {
 			return true
 		}
 		if emit != nil {
@@ -47,9 +47,9 @@ func (c *sessionCore) streamResult(masks []*pb.ColumnMask, opts streamOpts, emit
 	}
 
 	for {
-		message, receiveErr := c.backend.Receive()
+		message, receiveErr := c.targetDb.Receive()
 		if receiveErr != nil {
-			return backendErr, receiveErr
+			return targetDbErr, receiveErr
 		}
 		out := message
 		data := true
@@ -60,7 +60,7 @@ func (c *sessionCore) streamResult(masks []*pb.ColumnMask, opts streamOpts, emit
 			if len(masks) > 0 {
 				masker = engine.NewRowMasker(masks, columnCount)
 				if masker == nil && !fail(errMaskUnbound) {
-					return backendErr, err
+					return targetDbErr, err
 				}
 			}
 		case *pgproto3.DataRow:
@@ -70,13 +70,13 @@ func (c *sessionCore) streamResult(masks []*pb.ColumnMask, opts streamOpts, emit
 					cause = fmt.Errorf("probe row returned %d columns, want %d", len(message.Values), columnCount)
 				}
 				if !fail(cause) {
-					return backendErr, err
+					return targetDbErr, err
 				}
 				continue
 			}
 			if len(masks) > 0 && masker == nil {
 				if !fail(errMaskUnbound) {
-					return backendErr, err
+					return targetDbErr, err
 				}
 				continue
 			}
@@ -88,16 +88,16 @@ func (c *sessionCore) streamResult(masks []*pb.ColumnMask, opts streamOpts, emit
 			columnCount = -1
 		case *pgproto3.ErrorResponse:
 			data = false
-			// The one client-facing backend-error site for both relays: on a diagnostic-redacted decision,
-			// strip the value-bearing fields before the frame is emitted (native wire) AND before backendErr
-			// is derived (run surfaces backendErr) — a PostgreSQL error can echo a masked/denied value the
+			// The one client-facing target-DB-error site for both relays: on a diagnostic-redacted decision,
+			// strip the value-bearing fields before the frame is emitted (native wire) AND before targetDbErr
+			// is derived (run surfaces targetDbErr) — a PostgreSQL error can echo a masked/denied value the
 			// statement never referenced (the whole-row `DETAIL`). See docs/diagnostic-redaction.md.
 			if c.qe != nil && c.qe.SanitizeDiagnostics() {
 				message = sanitizeError(message)
 				out = message
 			}
-			if backendErr == nil {
-				backendErr = errors.New(message.Message)
+			if targetDbErr == nil {
+				targetDbErr = errors.New(message.Message)
 			}
 		case *pgproto3.ParameterStatus:
 			data = false
@@ -105,7 +105,7 @@ func (c *sessionCore) streamResult(masks []*pb.ColumnMask, opts streamOpts, emit
 				c.qe.MarkNamespaceDirty()
 			}
 			if cause := guardParameterStatusValue(message.Name, message.Value); cause != nil && !fail(cause) {
-				return backendErr, err
+				return targetDbErr, err
 			}
 		case *pgproto3.NoticeResponse, *pgproto3.NotificationResponse:
 			data = false
@@ -113,29 +113,29 @@ func (c *sessionCore) streamResult(masks []*pb.ColumnMask, opts streamOpts, emit
 		case *pgproto3.ParseComplete, *pgproto3.BindComplete, *pgproto3.NoData, *pgproto3.CloseComplete, *pgproto3.PortalSuspended:
 			if !opts.extended {
 				if !fail(fmt.Errorf("%w %T", errUnexpectedFrame, message)) {
-					return backendErr, err
+					return targetDbErr, err
 				}
 				continue
 			}
 		case *pgproto3.CopyInResponse, *pgproto3.CopyOutResponse, *pgproto3.CopyBothResponse:
 			if !fail(errCopyStream) {
-				return backendErr, err
+				return targetDbErr, err
 			}
 			continue
 		case *pgproto3.ReadyForQuery:
 			c.lastTxStatus = message.TxStatus
 			if !emitFrame(message, false) {
-				return backendErr, err
+				return targetDbErr, err
 			}
-			return backendErr, err
+			return targetDbErr, err
 		default:
 			if !fail(fmt.Errorf("%w %T", errUnexpectedFrame, message)) {
-				return backendErr, err
+				return targetDbErr, err
 			}
 			continue
 		}
 		if !emitFrame(out, data) {
-			return backendErr, err
+			return targetDbErr, err
 		}
 	}
 }
@@ -239,12 +239,12 @@ func (s *Server) handleQuery(sess *session, sql string) error {
 	decision, denied, err := engine.ServeStatement(sess.qe,
 		sess.authzInput(sql, sess.token, sess.clientAddr, sess.connectionID, ref.RunAll), ref, nil,
 		func(toSend string, masks []*pb.ColumnMask) (bool, error) {
-			sess.backend.Send(&pgproto3.Query{String: toSend})
-			if err := sess.backend.Flush(); err != nil {
+			sess.targetDb.Send(&pgproto3.Query{String: toSend})
+			if err := sess.targetDb.Flush(); err != nil {
 				return false, err
 			}
 			bufferedFrames := 0
-			backendErr, streamErr := sess.streamResult(masks, streamOpts{}, func(message pgproto3.BackendMessage) error {
+			targetDbErr, streamErr := sess.streamResult(masks, streamOpts{}, func(message pgproto3.BackendMessage) error {
 				if row, ok := message.(*pgproto3.DataRow); ok {
 					relayStats.Rows++
 					relayStats.Bytes += dataRowBytes(row)
@@ -264,8 +264,8 @@ func (s *Server) handleQuery(sess *session, sql string) error {
 			if err := sess.client.Flush(); err != nil {
 				return false, err
 			}
-			relayStatus = engine.RelayStatus(backendErr == nil, nil)
-			return backendErr == nil, nil
+			relayStatus = engine.RelayStatus(targetDbErr == nil, nil)
+			return targetDbErr == nil, nil
 		})
 	// Post-relay, best-effort completion: only a relayed (Proceed) statement reports. A DENY relayed
 	// nothing, and EmitCompletion additionally no-ops for a decision with no audit id.
@@ -300,7 +300,7 @@ func mapWireStreamError(sess *session, err error) error {
 	case errors.Is(err, errStdConformingStrings):
 		return failClosedRelay(sess, "0A000", "proxy-monster: standard_conforming_strings must remain on", err)
 	case errors.Is(err, errUnexpectedFrame):
-		return failClosedRelay(sess, "58000", "proxy-monster: malformed backend response", err)
+		return failClosedRelay(sess, "58000", "proxy-monster: malformed target-DB response", err)
 	default:
 		return err
 	}
@@ -338,6 +338,6 @@ func failClosedRelay(sess *session, code, message string, cause error) error {
 
 func closeRelay(sess *session, cause error) error {
 	_ = sess.clientConn.Close()
-	_ = sess.backendConn.Close()
+	_ = sess.targetDbConn.Close()
 	return cause
 }

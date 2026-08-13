@@ -37,25 +37,25 @@ class ClassificationSchemaResolutionDbTest {
     @Test
     fun `a blank schema resolves to the datasource default instead of being stored literally`() {
         val id = datasource("blank-schema-datasource")
-        val stored = store.upsertClassification(id, ClassificationInput("", "users", "rrn", listOf("pii"), null))
+        val stored = store.upsertClassification(id, ClassificationInput("", "users", "ssn", listOf("pii"), null))
         assertEquals("public", stored.schema)
         assertEquals(0L, rowsUnderSchema(id, ""))
         assertEquals(1L, rowsUnderSchema(id, "public"))
 
         // A blank schema and an omitted one name the SAME column, so the second write updates the first
         // row rather than adding a second one that shadows it.
-        store.upsertClassification(id, ClassificationInput(null, "users", "rrn", listOf("contact"), null))
+        store.upsertClassification(id, ClassificationInput(null, "users", "ssn", listOf("contact"), null))
         assertEquals(1L, rowsUnderSchema(id, "public"))
         assertEquals(
             listOf("contact"),
-            store.classificationsFor(id).getValue(Triple("public", "users", "rrn")).tags,
+            store.classificationsFor(id).getValue(Triple("public", "users", "ssn")).tags,
         )
     }
 
     @Test
     fun `an explicit schema is still stored verbatim`() {
         val id = datasource("explicit-schema-datasource")
-        val stored = store.upsertClassification(id, ClassificationInput("analytics", "users", "rrn", listOf("pii"), null))
+        val stored = store.upsertClassification(id, ClassificationInput("analytics", "users", "ssn", listOf("pii"), null))
         assertEquals("analytics", stored.schema)
         assertEquals(1L, rowsUnderSchema(id, "analytics"))
         assertEquals(0L, rowsUnderSchema(id, "public"))

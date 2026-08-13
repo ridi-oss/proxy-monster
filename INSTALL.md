@@ -110,6 +110,28 @@ configured per proxy under `PM_TARGET_*`.
   lifetimes (seconds). Defaults `600` · `21600`.
 - `PM_SCIM_TOKEN` — _optional_. SCIM provisioning bearer (OIDC just-in-time is
   the default).
+- `PM_SLACK_BOT_TOKEN` / `PM_SLACK_APP_TOKEN` — _optional_. Slack notifications
+  for the approval workflow ([docs/notifications.md](./docs/notifications.md)).
+  The bot token (`xoxb-`) authorizes the Web API and the app token (`xapp-`)
+  opens the Socket Mode WebSocket. The workspace whose button clicks are honored
+  is derived from the bot token itself (`auth.test`), not configured — a token
+  belongs to exactly one workspace. **Both tokens are required** — either absent
+  leaves the whole layer inert and the workflow unchanged, never a
+  half-configured mode. Socket Mode means the CP dials out; no inbound ingress
+  is added. Set `PM_WEB_ORIGIN` too, or the message's "open request" link points
+  at the control plane rather than the console.
+- `PM_NOTIFY_STATEMENT` — _optional_. How much of a requester's SQL a
+  notification may carry: `auto` (default) shows a statement only when a
+  disclosure hint clears it, hiding one whose predicate compares a literal
+  against a classified column; `full` shows it to pending approvers regardless,
+  then hides a flagged one once the task is handled; `omit` never shows SQL. A
+  statement's literals can be the very values a policy protects — masking acts
+  on results, not predicates — so `omit` is the setting for data that must not
+  leave in query text. Approve-and-run is offered only when the message carries
+  the whole statement, whatever the mode. (Legacy `truncated` boots as `auto`
+  with a warning.)
+- `PM_NOTIFY_LOCALE` — _optional_. Fallback language (`en` · `ko`) for a
+  recipient who has not set one in the console. Default `en`.
 - `PM_AUTH_DEBUG` / `PM_DEV` / `PM_OAUTH_DEBUG_AUTO_CONSENT` — _dev-only_.
   Defaults: `PM_AUTH_DEBUG=true`, `PM_DEV=false`,
   `PM_OAUTH_DEBUG_AUTO_CONSENT=true`. The CP refuses to boot when debug auth is
@@ -131,19 +153,19 @@ configured per proxy under `PM_TARGET_*`.
   `6033` (MySQL) · `6432` (PG).
 - `PM_TARGET_HOST` / `_PORT` / `_DB` / `_USER` / `_PASSWORD` — _optional with
   local defaults_ (`localhost` · engine default port · `acme` · `acme` ·
-  `acme`). In production set all five to the backend this proxy fronts (VPC
+  `acme`). In production set all five to the target DB this proxy fronts (VPC
   peering in the AWS layout below). Example: `prod-db.prod-vpc.internal` ·
   `5432` · `appdb` · `pmproxy`
 - `PM_CONTROL_PLANE_GRPC` — _optional_. CP gRPC address `host:port`. Default
   `localhost:9090`. Production example: `pm-cp.pm.internal:9090`
 - `PM_ADVERTISE_ADDR` — _optional, no default_. The client-facing `host:port` a
   wire client dials to reach _this_ proxy — distinct from `PM_TARGET_*` (the
-  upstream backend). The proxy registers it with the CP, which hands it to pmon
-  as each datasource's connect address. The proxy cannot guess it, so there is
-  no default: leave it unset and pmon discovers the datasource but cannot broker
-  it (`pmon status` lists it with the reason "no advertised proxy address"). It
-  must parse as `host:port` with a port in 1-65535 or the proxy refuses to
-  start. Example: `127.0.0.1:6033` locally ·
+  upstream target DB). The proxy registers it with the CP, which hands it to
+  pmon as each datasource's connect address. The proxy cannot guess it, so there
+  is no default: leave it unset and pmon discovers the datasource but cannot
+  broker it (`pmon status` lists it with the reason "no advertised proxy
+  address"). It must parse as `host:port` with a port in 1-65535 or the proxy
+  refuses to start. Example: `127.0.0.1:6033` locally ·
   `analytics-prod.pm.example.com:6432` in production
 - `PM_TLS_CERT` / `PM_TLS_KEY` — _optional (both or neither; one alone ⇒ refuses
   to start)_. TLS cert+key file paths for the wire listener. Wire TLS is
@@ -291,7 +313,7 @@ proxy-monster's own store; the other two are sample target databases.
   target database on the primary target engine, pre-seeded
   (`deploy/seed/target-seed-mysql.sql`) with a small OLTP schema (`users`,
   `orders`, `payments`, `addresses`, ...) carrying realistic PII columns
-  (`email`, `phone`, `name`, `rrn`, `card_number`, ...) to classify/mask
+  (`email`, `phone`, `name`, `ssn`, `card_number`, ...) to classify/mask
   against.
 - target-postgres (`:5433`, db `acme` / user `acme` / password `acme`, trust
   auth) — the same schema (`deploy/seed/target-seed.sql`) as a sample target
@@ -319,7 +341,7 @@ schema automatically on boot. The defaults you're implicitly relying on here
 | `PM_HTTP_PORT` | `8080` | the web-facing JSON API |
 | `PM_GRPC_PORT` | `9090` | the proxy-facing gRPC surface (register, decide, catalog push) — never expose publicly |
 | `PM_DB_USER` / `PM_DB_PASSWORD` | `proxymonster` / `proxymonster` | matches `docker-compose.yml` |
-| `PM_AUTH_DEBUG` | `true` | a full auth bypass (`/auth/debug` logs in as ANY principal) — trusted machine only |
+| `PM_AUTH_DEBUG` | `true` | enables `/auth/debug`, a login as ANY principal with any roles — trusted machine only |
 | `PM_SECRET_TOKEN` | unset → gate OPEN | the shared proxy↔control-plane secret; set it once you're off a trusted loopback |
 | `PM_MCP_RESOURCE` | `http://127.0.0.1:8080/mcp` | MCP resource URI; its origin doubles as the co-hosted OAuth issuer |
 
@@ -397,12 +419,22 @@ but not required for this loopback walkthrough — without it the proxy runs
 plaintext, which is fine on `127.0.0.1` but must never be exposed beyond a fully
 trusted network (the wire token rides the password field in the clear).
 
-Confirm registration: `curl http://localhost:8080/api/datasources` should list
-both, each with a non-null `catalogSyncedAt` and `lastSeenAt`. This route isn't
-public — it requires an authenticated session — but works unauthenticated here
-because `PM_AUTH_DEBUG` (default `true`) skips that check; against a real
-deployment (`PM_AUTH_DEBUG=false`) the same bare `curl` gets a `401`, and you'd
-need a session cookie from the [login step](#first-login-and-first-query) first.
+Confirm registration with `GET /api/datasources`, which should list both, each
+with a non-null `catalogSyncedAt` and `lastSeenAt`. It needs a session, so log
+in first and reuse the cookie:
+
+```
+curl -c /tmp/pm.jar -X POST http://localhost:8080/auth/debug \
+  -H 'content-type: application/json' \
+  -d '{"principal":"you@example.com","roles":["system:development-viewer"]}'
+curl -b /tmp/pm.jar http://localhost:8080/api/datasources
+```
+
+The roles you log in with are the ones the response reflects: a row's connection
+material (`host`, `port`, `dbName`, `advertiseAddr`, `advertiseCertChain`) needs
+`datasource.connect` on that datasource, so a role that does not grant it sees
+the row's identity only. Easier from the console — see the
+[login step](#first-login-and-first-query).
 
 ### Run the web UI
 
@@ -458,8 +490,15 @@ PM_MCP_RESOURCE="http://127.0.0.1:8080/mcp" mise run control-plane
 With the local `PM_AUTH_DEBUG=true` default, `/oauth/authorize` uses a debug
 principal and auto-consents (`PM_OAUTH_DEBUG_AUTO_CONSENT`, default `true`) with
 no Okta round-trip — it still mints normal audience-bound OAuth bearer tokens,
-so discovery and client behavior stay identical to production. Add and authorize
-the user-scoped Claude Code connection:
+so discovery and client behavior stay identical to production.
+
+That flow selects a principal but assigns it no roles, and every MCP tool needs
+an `admin.*` grant, so the token authorizes nothing until its principal holds a
+role — a tool call answers `common.forbidden`. Sign that principal in through
+`/login` (debug login, with `system:admin`) first, or authorize with
+`?principal=` naming a principal that already has the role.
+
+Add and authorize the user-scoped Claude Code connection:
 
 ```
 claude mcp add --scope user --transport http proxy-monster http://127.0.0.1:8080/mcp
@@ -482,17 +521,17 @@ server. Set `PM_MCP_RESOURCE="https://<host>/mcp"` to that public origin. With
 32+ character `PM_SESSION_SECRET`, all `PM_OIDC_*` values, and an OIDC redirect
 URI exactly equal to `https://<host>/auth/oidc/callback`. If a reverse proxy
 terminates TLS in front of control-plane (as any real deployment's will), the
-host the backend sees must equal the host `PM_MCP_RESOURCE` declares:
+host the target DB sees must equal the host `PM_MCP_RESOURCE` declares:
 control-plane's `/mcp` guard compares that host strictly, and only the host. The
-port is never compared — behind a TLS-terminating edge the backend is reached on
-its own cleartext port, and a client's `Host` omits the port whenever it is the
-scheme default, so requiring one would reject every such request. It reads the
-literal `Host` (or HTTP/2 `:authority`) the backend receives, plus
+port is never compared — behind a TLS-terminating edge the target DB is reached
+on its own cleartext port, and a client's `Host` omits the port whenever it is
+the scheme default, so requiring one would reject every such request. It reads
+the literal `Host` (or HTTP/2 `:authority`) the target DB receives, plus
 `X-Forwarded-Host` when the socket peer is listed in `PM_TRUSTED_PROXIES`; there
 is no `ForwardedHeaders`/`XForwardedHeaders` plugin, so nothing else is derived
 from `X-Forwarded-*`. A proxy that forwards the original client-facing hostname
 satisfies this already, whether or not it keeps the port. One that substitutes
-its own backend address in `Host` — an AWS ALB does this unless
+its own target-DB address in `Host` — an AWS ALB does this unless
 `preserve_host_header` is enabled — must either be fixed to preserve it or send
 `X-Forwarded-Host` from a trusted peer, or every `/mcp` call gets a fail-closed
 `403 mcp.invalid_host` instead of the expected `401` OAuth challenge. Configure
@@ -504,9 +543,10 @@ protected-resource metadata automatically.
 
 With `PM_AUTH_DEBUG=true` (the default), open http://localhost:41300/login and
 use the debug-login option to sign in as any principal (e.g. `you@example.com`)
-— no IdP needed. This also grants admin UI access outright: `PM_AUTH_DEBUG`
-bypasses the admin-route gate itself (`requireAdmin` short-circuits true), not
-Cedar — real per-query authorization is never bypassed, debug or not.
+with whatever roles you want — no IdP needed. Those roles are stored as real
+assignments, so the session authorizes exactly like an SSO one: the flag decides
+who you are, never what you may do. Sign in with `system:admin` for the admin
+UI, or with a narrow role to see precisely what that role sees.
 
 A clean principal has zero usable query access until roles are assigned
 (deny-by-default). Migrations do ship SYSTEM roles and preset policies (e.g.
@@ -527,7 +567,7 @@ at minimum:
    `analyst-connect`:
 
    ```
-   permit(principal in Role::"analyst", action in [Action::"datasource.connect", Action::"sql.select"], resource == Datasource::"acme-mysql");
+   permit(principal in Role::"analyst", action in [Action::"datasource.connect", Action::"stmt.cat.read"], resource == Datasource::"acme-mysql");
    ```
 
    `analyst-read-unmasked`:
@@ -561,9 +601,9 @@ PUT /api/datasources/{id}/classification
 {"schema":"acme","table":"payments","column":"card_number","tags":["pii"],"maskFnId":<id>}
 ```
 
-With debug auth on, the principal these API calls authorize as is `debug-user`,
-not the address you typed at the login screen — assign the role to that
-principal too if you're driving the walkthrough with `curl`.
+These API calls authorize as the principal you logged in as — the address you
+typed at the login screen, or the one in the `/auth/debug` body if you are
+driving the walkthrough with `curl`. Assign the role to that principal.
 
 ### Verify it works
 
@@ -593,6 +633,12 @@ per statement.
   (`V8__seed.sql`); harmless before your first login, self-resolves after. Under
   real OIDC (not debug auth), admin membership comes from the IdP's group claim
   via `PM_OIDC_GROUP_MAP`, not this endpoint.
+- The admin UI 403s, or a datasource row arrives without its host/port, with
+  `PM_AUTH_DEBUG=true` — the flag authenticates you, it does not grant anything.
+  Sign in at `/login` with the roles you need (`system:admin` for admin, a
+  `system:development-*` role for a `system:development`-tagged datasource).
+  Signing in with a narrow role and seeing exactly what it permits is the point;
+  a request carrying no session at all holds no roles and is denied accordingly.
 - Port already in use — this doc's ports (`5442`/`31307`/`5433` for Docker,
   `8080`/`9090` for control-plane, `6432`/`6033` for the two proxies, `41300`
   for web) are this doc's own choices, not hardcoded anywhere; override any of
@@ -612,8 +658,8 @@ for the store; S3 Object Lock for the WORM trail.
 - pm-vpc (e.g. `10.20.0.0/16`): all ECS services, the ALB (public subnets), the
   NLB, and the Aurora cluster.
 - Peering to `prod-db-vpc` and `dev-db-vpc`: a peering connection to each, a
-  route for `PM_TARGET_HOST` traffic, and the backend DB security group opened
-  to the _proxy_ subnets' CIDRs only. CIDR blocks must not overlap.
+  route for `PM_TARGET_HOST` traffic, and the target-DB security group opened to
+  the _proxy_ subnets' CIDRs only. CIDR blocks must not overlap.
 - A `system:production`-tagged proxy targets a DB in `prod-db-vpc`; a
   `system:development` proxy targets `dev-db-vpc` — same image, different
   `PM_TARGET_*` + peering route + tag.
@@ -978,7 +1024,7 @@ aws acm request-certificate --domain-name console.example.com --validation-metho
 aws acm-pca issue-certificate --certificate-authority-arn <pca> --csr fileb://wire.csr \
   --signing-algorithm SHA256WITHRSA --validity Value=365,Type=DAYS   # export → pm/wire-tls-*
 
-# --- VPC peering to a backend-DB VPC + route ---
+# --- VPC peering to a target-DB VPC + route ---
 aws ec2 create-vpc-peering-connection --vpc-id vpc-pm --peer-vpc-id vpc-proddb
 aws ec2 create-route --route-table-id rtb-pm-private \
   --destination-cidr-block 10.30.0.0/16 --vpc-peering-connection-id pcx-xxxx
@@ -1007,4 +1053,4 @@ aws elbv2 create-listener --load-balancer-arn <nlb> --protocol TCP --port 6432 \
   audit window.
 - Non-default `PM_SESSION_SECRET` (≥32) + strong `PM_RESULT_KEY`; all secrets
   via Secrets Manager; task IAM roles over static `AWS_*` keys.
-- Backend-DB security groups admit only the proxy subnets over the VPC peering.
+- Target-DB security groups admit only the proxy subnets over the VPC peering.

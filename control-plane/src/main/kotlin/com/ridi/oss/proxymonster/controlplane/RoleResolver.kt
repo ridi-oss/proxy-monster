@@ -15,6 +15,44 @@ class RoleResolver(
     private val userGroupStore: UserGroupStore,
     private val accessStore: AccessStore,
 ) {
+    /**
+     * Every principal who could act at all: active directory users, plus anyone holding a role through a
+     * direct assignment or an unexpired JIT grant. The union [hasActiveAssignee] tests as an EXISTS,
+     * enumerated instead of counted.
+     *
+     * `app_user` alone is NOT the principal universe (V1__identity.sql): a principal string is free text and
+     * a `principal_role`-only identity holds roles without ever having a directory row. A row that DOES exist
+     * and is inactive is excluded, matching [UserGroupStore.isDeactivated] — deprovisioning wins over every
+     * role source.
+     *
+     * Used by notification routing to enumerate candidates. It answers "who exists", never "who may do X" —
+     * that stays a per-principal Cedar decision.
+     */
+    fun listActivePrincipals(): List<String> = dataSource.connection.use { c ->
+        c.prepareStatement(
+            """SELECT principal FROM app_user WHERE active
+               UNION
+               SELECT pr.principal
+               FROM principal_role pr
+               LEFT JOIN app_user u ON u.principal = pr.principal
+               WHERE u.id IS NULL OR u.active
+               UNION
+               SELECT ag.principal
+               FROM access_grant ag
+               LEFT JOIN app_user u ON u.principal = ag.principal
+               WHERE ag.revoked_at IS NULL
+                 AND (ag.expires_at IS NULL OR ag.expires_at > now())
+                 AND (u.id IS NULL OR u.active)
+               ORDER BY 1""",
+        ).use { ps ->
+            ps.executeQuery().use { rs ->
+                val out = ArrayList<String>()
+                while (rs.next()) out += rs.getString(1)
+                out
+            }
+        }
+    }
+
     /** Role names this principal holds via a direct `principal_role` assignment. */
     fun directRoles(principal: String): List<String> = dataSource.connection.use { c ->
         c.prepareStatement(
@@ -74,6 +112,7 @@ class RoleResolver(
                        SELECT 1
                        FROM group_role gr
                        JOIN app_role r ON r.id = gr.role_id AND r.name = ? AND r.deleted_at IS NULL
+                       JOIN app_group g ON g.id = gr.group_id AND g.deleted_at IS NULL
                        JOIN group_member gm ON gm.group_id = gr.group_id
                        JOIN app_user u ON u.id = gm.user_id AND u.active
                    )

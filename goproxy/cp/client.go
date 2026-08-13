@@ -1,7 +1,7 @@
 // Package cp is the proxy's gRPC client to the control plane.
 //
 // The proxy fronts ONE datasource (identified by datasourceName, its stable wire identity) and brokers
-// to the backend itself, so it only needs the verdict + mask spec — it never sends rows to the control
+// to the target DB itself, so it only needs the verdict + mask spec — it never sends rows to the control
 // plane. Per-query enforcement re-sends the RAW token to Decide, which the control plane re-validates
 // every call (closing the mid-session revocation gap): an authN failure (bad/revoked/expired token,
 // deprovisioned principal) comes back as an error the caller fails closed on, distinct from a policy
@@ -17,6 +17,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"google.golang.org/grpc"
@@ -35,6 +36,25 @@ import (
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
 )
 
+// ProtocolVersion is this proxy's proxy<->control-plane wire-protocol version, exchanged at Register so a
+// half-finished rollout (proxy and control-plane on different server-v* releases) fails fast with a clear
+// error instead of a stalled run channel. Bump it on any incompatible wire change. It MUST match the
+// control-plane's CONTROL_PROTOCOL_VERSION; the two are separate constants in separate languages kept in
+// lockstep by hand — a server-v* release always ships both at the same value.
+const ProtocolVersion int32 = 1
+
+// ErrIncompatibleControlPlane means the control-plane speaks a different wire-protocol version than this
+// proxy — a PERMANENT deploy-skew condition, not a transient failure. boot treats it as fatal (refuse to
+// start) rather than retrying, so a half-finished rollout fails fast and legibly instead of attaching and
+// stalling. Covers both the control-plane rejecting our version and an older control-plane that predates the
+// version field (returns 0).
+var ErrIncompatibleControlPlane = errors.New("control-plane wire-protocol version is incompatible with this proxy")
+
+// protocolVersionRejectionMarker is a stable substring of the control-plane's version-mismatch rejection
+// message (control-plane ControlPlaneGrpcService.register). Matching it lets boot treat that FAILED_PRECONDITION
+// as this permanent condition, not a transient register failure to retry. Keep in sync with that message.
+const protocolVersionRejectionMarker = "wire-protocol version"
+
 const (
 	// rpcDeadline bounds every unary call — a control plane that accepts but never completes a call must
 	// not park the caller forever.
@@ -43,9 +63,15 @@ const (
 	secretTokenHeader = "x-pm-secret-token"
 	// eventsReconnectDefault is the backoff between Events stream reconnect attempts.
 	eventsReconnectDefault = 5 * time.Second
+	// eventsDrainReconnect paces the reconnect after a Draining signal: fast enough to re-home in about a
+	// second (vs the full error backoff), but non-zero so a peer that keeps draining cannot spin the loop —
+	// each reopen would otherwise launch a resync. The control plane sends GOAWAY before it closes the
+	// stream, and that is what makes this reopen dial a FRESH connection rather than reuse this one —
+	// re-homing to a live instance where a load balancer fronts several, or reconnecting once it is back.
+	eventsDrainReconnect = 500 * time.Millisecond
 	// eventsStreamMaxAge bounds how long one Events stream is used before it is replaced. HTTP/2 keepalive
 	// proves the CONNECTION is alive, not that the stream on it still reaches a live control plane: a
-	// load balancer that keeps a connection open toward a replaced backend leaves the proxy holding a
+	// load balancer that keeps a connection open toward a replaced target DB leaves the proxy holding a
 	// stream nothing will ever answer, and because the proxy's other calls are unary they open their own
 	// connections and keep succeeding — so the catalog stays fresh while the control plane reports this
 	// datasource as having no proxy attached, and every query against it is refused. Ending the stream on
@@ -325,7 +351,7 @@ func (c *Client) Register(registrationEngine enginepb.Engine, host string, port 
 	ctx, cancel := context.WithTimeout(context.Background(), rpcDeadline)
 	defer cancel()
 
-	_, err := c.stub.Register(c.outCtx(ctx), &pb.RegisterRequest{
+	resp, err := c.stub.Register(c.outCtx(ctx), &pb.RegisterRequest{
 		Name:               c.datasourceName,
 		Engine:             registrationEngine,
 		Host:               host,
@@ -335,9 +361,24 @@ func (c *Client) Register(registrationEngine enginepb.Engine, host string, port 
 		AdvertiseAddr:      advertiseAddr,
 		AdvertiseCertChain: advertiseCertChain,
 		AdvertiseWireTls:   wireTLS,
+		ProtocolVersion:    ProtocolVersion,
 	})
 	if err != nil {
+		// A control-plane on a LATER protocol rejects our version with FAILED_PRECONDITION — a permanent
+		// deploy skew, so surface it as such (boot refuses to start) rather than a transient register failure.
+		if st, ok := status.FromError(err); ok && st.Code() == codes.FailedPrecondition &&
+			strings.Contains(st.Message(), protocolVersionRejectionMarker) {
+			return fmt.Errorf("%w: %s", ErrIncompatibleControlPlane, st.Message())
+		}
 		return fmt.Errorf("cp: register datasource %q: %w", c.datasourceName, err)
+	}
+	// Mirror check: an OLDER control-plane that predates the version field cannot reject us, so it returns 0.
+	// Refuse to run against it rather than proceed to a run channel it cannot speak.
+	if resp.GetProtocolVersion() != ProtocolVersion {
+		return fmt.Errorf(
+			"%w: control-plane at version %d, this proxy at %d — deploy both from the same server-v* release",
+			ErrIncompatibleControlPlane, resp.GetProtocolVersion(), ProtocolVersion,
+		)
 	}
 	return nil
 }
@@ -356,7 +397,7 @@ func (c *Client) PushCatalog(catalog *pb.CatalogRequest) error {
 		return fmt.Errorf("cp: push catalog for %q: %w", c.datasourceName, err)
 	}
 	// Paired with introspect.Run's phase breakdown, this closes the refresh cycle: a slow refresh is
-	// either the backend scan or this push, and the two logs together say which.
+	// either the target DB scan or this push, and the two logs together say which.
 	slog.Info("pushed catalog", "datasource", c.datasourceName, "columns", ack.GetColumns(),
 		"push_ms", time.Since(started).Milliseconds())
 	return nil
@@ -407,6 +448,12 @@ func (c *Client) StreamEvents(
 	return c.streamEvents(context.Background(), timings.streamMaxAge, onRefresh, onOpenRun, onOpenTableDetail)
 }
 
+// errDraining is returned by streamEvents when the control plane signals a graceful shutdown over the
+// stream. It selects the short-floor reconnect path in runEventsLoop, distinct from an error backoff or a
+// max-age rotation, so a rolling control-plane restart reconnects promptly; the control plane's GOAWAY is
+// what points that reconnect at a fresh connection.
+var errDraining = errors.New("cp: control plane draining")
+
 func (c *Client) streamEvents(
 	parent context.Context,
 	maxAge time.Duration,
@@ -416,7 +463,10 @@ func (c *Client) streamEvents(
 ) error {
 	ctx, cancel := context.WithTimeout(c.outCtx(parent), maxAge)
 	defer cancel()
-	stream, err := c.stub.Events(ctx, &pb.EventsRequest{DatasourceName: c.datasourceName})
+	// Send the wire-protocol version on the liveness stream too, not only at Register: the control-plane
+	// version-gates events() so an incompatible proxy cannot attach as live against an already-registered
+	// datasource (goproxy Register may have been rejected, but the datasource row persists).
+	stream, err := c.stub.Events(ctx, &pb.EventsRequest{DatasourceName: c.datasourceName, ProtocolVersion: ProtocolVersion})
 	if err != nil {
 		return fmt.Errorf("cp: opening events stream: %w", err)
 	}
@@ -426,6 +476,12 @@ func (c *Client) streamEvents(
 			return err
 		}
 		switch {
+		case ev.GetDraining() != nil:
+			// The control plane is shutting down and is about to close this stream. Return now so the loop
+			// reopens on the short drain floor instead of the error backoff; the control plane's GOAWAY makes
+			// that reopen dial a fresh connection (re-homing where an LB fronts several) rather than wait out
+			// a max-age rotation.
+			return errDraining
 		case ev.GetRefreshCatalog() != nil:
 			onRefresh()
 		case ev.GetOpenRunChannel() != nil:
@@ -448,21 +504,27 @@ func (c *Client) streamEvents(
 	}
 }
 
-// RunEventsLoop holds the Events stream open and never returns. On a drop it waits eventsReconnectDefault,
-// resyncs (re-registers + re-pushes the catalog, so a control plane that restarted with lost state
-// re-learns this datasource) and reopens.
+// RunEventsLoop holds the Events stream open until ctx is cancelled. On a drop it waits
+// eventsReconnectDefault, resyncs (re-registers + re-pushes the catalog, so a control plane that restarted
+// with lost state re-learns this datasource) and reopens. Cancelling ctx returns the loop, which shutdown
+// uses to stop new run dispatches before it drains the in-flight ones (the run-stream analogue of the wire
+// server closing its listener).
 //
 // The resync runs in the background rather than in line. It introspects the whole catalog, which on a
 // large database takes seconds and retries with its own backoff — done in line, a slow one delays the
 // reopen, and the control plane reports this datasource unattached for exactly that long. The stream is
 // what queries need; the catalog refresh is not, and it re-registers this datasource either way.
+// RunEventsLoop returns nil on ctx cancel (normal shutdown) and ErrIncompatibleControlPlane if the
+// control-plane rejects the events stream on a wire-protocol version skew — a fatal condition the caller
+// (boot) turns into a process exit so the supervisor replaces this proxy.
 func (c *Client) RunEventsLoop(
+	ctx context.Context,
 	resync func(),
 	onRefresh func(),
 	onOpenRun func(spi.RunOpen),
 	onOpenTableDetail func(sessionID, schema, table string),
-) {
-	c.runEventsLoop(context.Background(), defaultEventLoopTimings(), resync, onRefresh, onOpenRun, onOpenTableDetail)
+) error {
+	return c.runEventsLoop(ctx, defaultEventLoopTimings(), resync, onRefresh, onOpenRun, onOpenTableDetail)
 }
 
 func (c *Client) runEventsLoop(
@@ -472,20 +534,35 @@ func (c *Client) runEventsLoop(
 	onRefresh func(),
 	onOpenRun func(spi.RunOpen),
 	onOpenTableDetail func(sessionID, schema, table string),
-) {
+) error {
 	for {
 		err := c.streamEvents(ctx, timings.streamMaxAge, onRefresh, onOpenRun, onOpenTableDetail)
-		// An expiry is the bounded rotation working, not a fault, so it should not read as one in the log.
-		if errors.Is(err, context.DeadlineExceeded) || status.Code(err) == codes.DeadlineExceeded {
+		// A wire-protocol version rejection on the events stream is the same fatal deploy skew Register
+		// refuses — the control-plane's events() emits the marker Register's classifier matches. Do NOT
+		// reconnect: behind a load balancer a resync Register can reach a compatible instance and mask this,
+		// leaving the proxy limping against an instance it cannot speak to. Return so boot exits.
+		if st, ok := status.FromError(err); ok && st.Code() == codes.FailedPrecondition &&
+			strings.Contains(st.Message(), protocolVersionRejectionMarker) {
+			return fmt.Errorf("%w: %s", ErrIncompatibleControlPlane, st.Message())
+		}
+		// A drain is the control plane leaving on purpose with a replacement already up: reconnect at once
+		// so this datasource re-attaches to the new instance without a gap. An expiry is the bounded
+		// rotation working, not a fault. Anything else is an error and waits out the backoff.
+		reconnectIn := timings.reconnect
+		switch {
+		case errors.Is(err, errDraining):
+			slog.Info("control plane draining; reconnecting to re-home", "reconnect_in", eventsDrainReconnect)
+			reconnectIn = eventsDrainReconnect
+		case errors.Is(err, context.DeadlineExceeded) || status.Code(err) == codes.DeadlineExceeded:
 			slog.Info("events stream reached its max age; reopening", "max_age", timings.streamMaxAge)
-		} else {
+		default:
 			slog.Info("events stream ended; reconnecting", "error", err, "reconnect_in", timings.reconnect)
 		}
 
 		select {
 		case <-ctx.Done():
-			return
-		case <-time.After(timings.reconnect):
+			return nil
+		case <-time.After(reconnectIn):
 		}
 
 		go resync()

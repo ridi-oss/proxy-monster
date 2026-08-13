@@ -31,7 +31,7 @@ flowchart LR
   proxy["Proxy · per datasource"]
   audit["auditmon"]
   pg[("Control-plane store · PostgreSQL only")]
-  backend[("Target DB · MySQL/PG")]
+  targetdb[("Target DB · MySQL/PG")]
   s3[("WORM object store")]
   kms{{"KMS"}}
   op -->|HTTPS| alb
@@ -43,7 +43,7 @@ flowchart LR
   nlb -->|wire| proxy
   web -->|"/api /auth · HTTP"| cp
   proxy -->|"gRPC · decide / register"| cp
-  proxy -->|"MySQL / PG"| backend
+  proxy -->|"MySQL / PG"| targetdb
   cp -->|"SQL r/w"| pg
   cp -.->|"OIDC · HTTPS"| idp
   audit -->|"SQL · read-only"| pg
@@ -55,7 +55,7 @@ flowchart LR
   classDef audit fill:#dff2e8,stroke:#2f8f5b,color:#124430;
   classDef store fill:#e6eaf4,stroke:#4a5a86,color:#26304d;
   class proxy proxy; class cp cp; class web web; class audit audit;
-  class pg,backend,s3 store;
+  class pg,targetdb,s3 store;
 ```
 
 ## Components
@@ -71,7 +71,7 @@ only.
 <!-- prettier-ignore -->
 | Component | Kind | Role |
 | --- | --- | --- |
-| Proxy | data plane · Go | Terminates SQL wire connections in front of one target database (MySQL or PostgreSQL). Authenticates the client to a principal (a minted token as the wire password), asks the control plane to authorize each statement, applies masking, relays to the backend. Introspects the backend catalog and pushes it up. Fails closed. One proxy per datasource. |
+| Proxy | data plane · Go | Terminates SQL wire connections in front of one target database (MySQL or PostgreSQL). Authenticates the client to a principal (a minted token as the wire password), asks the control plane to authorize each statement, applies masking, relays to the target DB. Introspects the target-DB catalog and pushes it up. Fails closed. One proxy per datasource. |
 | Control plane (CP) | brain · Kotlin/Ktor | Owns identity (OIDC login, sessions, roles and groups), policy (Cedar), the catalog, and the per-statement decision. Exposes HTTP (web API, auth and OIDC, an OAuth 2.1 server + MCP resource) and gRPC (proxies register and fetch decisions). Persists to its own PostgreSQL store; never touches a target database directly. |
 | Web console | UI · Next.js | User-facing UI: query editor, policy/role/grant management, approvals, audit view. Thin, and holds no state. Rewrites `/api` and `/auth` to the CP so the browser talks same-origin — the browser's paths, not the CP's whole surface: `/mcp`, `/oauth`, and `/.well-known` are not rewritten, so a deployment using MCP routes those to the CP at the edge (see [How users reach it](#how-users-reach-it)). |
 | auditmon | watcher · Go | Independent audit monitor: reads the committed trail, re-verifies the tamper-evident hash chain, exports redacted batches to a WORM object store, signs off-box anchors, runs anomaly rules to alerts. Separate from the CP by design. Its access to the control-plane store is read-only. |
@@ -94,17 +94,16 @@ decide but never opens a connection to a target database.
    trusting a client-asserted role.
 3. The analyzer (`analyzer/`, sqlglot-go reached from the JVM through a Foreign
    Function & Memory binding) parses the statement, resolves column lineage
-   against the per-connection catalog, and emits the `StatementFacts` /
-   `RequiredGrant` contract: every table, column, function, and utility the
-   statement needs, each with its mask disposition. No SQL classification lives
-   in Kotlin.
-4. Cedar decides. The control plane walks each `RequiredGrant` through Cedar
-   over the resolved roles, resource tags, and request context. Policy is Cedar
-   text; there are no hardcoded allow/deny one-offs.
+   against the per-connection catalog, and emits the `StatementFacts` / grant
+   contract: every table, column, function, and utility the statement needs,
+   each with its mask disposition. No SQL classification lives in Kotlin.
+4. Cedar decides. The control plane walks each grant through Cedar over the
+   resolved roles, resource tags, and request context. Policy is Cedar text;
+   there are no hardcoded allow/deny one-offs.
 5. The proxy enforces the returned decision — forward, refuse, or rewrite the
    result stream, masking flagged output columns by ordinal.
-6. The backend is reached with a per-datasource service account, so users never
-   hold database credentials.
+6. The target DB is reached with a per-datasource service account, so users
+   never hold database credentials.
 7. Every decision, plus a post-execution completion event carrying result
    volume, is written to the hash-chained `audit_event` log in the control-plane
    store. auditmon verifies that chain independently — when it is deployed and
@@ -199,6 +198,7 @@ deliberately never inferred from request headers.
 | MCP / AI client → CP | HTTPS · `/mcp` `/oauth/*` | via edge | OAuth 2.1 server + MCP resource (only if MCP used) |
 | CP → control-plane store | SQL · PostgreSQL 5432 | internal | system of record (r/w) |
 | CP → OIDC IdP | HTTPS | outbound | discovery + token exchange |
+| CP → Slack | HTTPS + WSS | outbound | task notifications; Socket Mode carries button clicks back (only when `PM_SLACK_*` is set) |
 | auditmon → control-plane store | SQL · PostgreSQL 5432 (read-only) | internal | read the audit chain |
 | auditmon → WORM / KMS | HTTPS | outbound | WORM export + anchor signing · alert webhooks |
 

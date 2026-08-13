@@ -25,7 +25,6 @@ class TaskEventsRouteDbTest {
     private lateinit var datasource: Datasource
     private lateinit var sessionStore: PrincipalSessionStore
     private lateinit var prod: Config
-    private lateinit var debug: Config
     private val caller = "alice@example.com"
 
     @BeforeAll
@@ -46,14 +45,28 @@ class TaskEventsRouteDbTest {
             sessionSecret = "task-events-test", oidc = null, resultKey = null, scimToken = null,
             sessionWindowSeconds = 3600, idpRecheckIntervalSeconds = 600, devMarker = true,
         )
-        debug = prod.copy(authDebug = true)
     }
 
     private fun newTask(): Long =
         core.accessStore.createEditorTask(caller, datasource.id, "select 1", listOf("editor-analyst"), caller).id
 
-    private fun readable(taskId: Long, config: Config = prod) =
-        taskReadableForPush(config, caller, taskId, AuthzContext(), core.accessStore, core.authz, core.datasourceStore)
+    private fun readable(taskId: Long) =
+        taskReadableForPush(caller, taskId, AuthzContext(), core.accessStore, core.authz, core.datasourceStore)
+
+    /**
+     * A stream lasts exactly as long as its session, in every mode. `PM_AUTH_DEBUG` is a login method, not a
+     * way to stream without logging in, so a logged-out or displaced dev session stops receiving pushes just
+     * as it would in production.
+     */
+    @Test
+    fun `a stream ends when its session dies, and no session never streams`() {
+        val deviceId = "sse-device"
+        val sessionId = sessionStore.mintWeb(caller, null, prod.webSessionAbsoluteSeconds, prod.webSessionIdleSeconds, deviceId)
+        assertTrue(sessionStillLive(sessionId, deviceId, sessionStore), "a live session streams")
+        assertTrue(sessionStore.endWeb(sessionId, "logout"), "the fixture must actually end the session")
+        assertFalse(sessionStillLive(sessionId, deviceId, sessionStore), "a dead session's stream ends")
+        assertFalse(sessionStillLive(null, null, sessionStore), "a caller with no session never streams")
+    }
 
     @Test
     fun `the push task_read filter mirrors the poll - owner allowed, a forbid suppresses, absent denied`() {
@@ -75,21 +88,20 @@ class TaskEventsRouteDbTest {
         }
         assertTrue(readable(task), "with the forbid gone the push is allowed again")
 
-        // An absent task is never pushable (no oracle), and authDebug bypasses the gate (dev parity with routes).
+        // An absent task is never pushable — no oracle. PM_AUTH_DEBUG cannot change that: it decides who the
+        // caller is, never what they may read, so the filter runs for real in dev too.
         assertFalse(readable(-999_999L), "a missing task is not readable")
-        assertTrue(readable(-999_999L, debug), "authDebug bypasses the gate")
     }
 
     @Test
     fun `session liveness tracks minting and revocation`() {
         val sessionId = sessionStore.mintWeb(caller, null, 7200, 900, "device-1")
-        assertTrue(sessionStillLive(prod, sessionId, "device-1", sessionStore), "a freshly minted session is live")
+        assertTrue(sessionStillLive(sessionId, "device-1", sessionStore), "a freshly minted session is live")
 
         assertTrue(sessionStore.endWeb(sessionId, "test-logout"))
-        assertFalse(sessionStillLive(prod, sessionId, "device-1", sessionStore), "a revoked session is not live → stream ends")
+        assertFalse(sessionStillLive(sessionId, "device-1", sessionStore), "a revoked session is not live → stream ends")
 
-        // authDebug has no session and is always live; a null session id is never live.
-        assertTrue(sessionStillLive(debug, null, null, sessionStore))
-        assertFalse(sessionStillLive(prod, null, "device-1", sessionStore))
+        // A null session id is never live, flag or no flag.
+        assertFalse(sessionStillLive(null, "device-1", sessionStore))
     }
 }

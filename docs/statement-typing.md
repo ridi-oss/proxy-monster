@@ -1,30 +1,30 @@
-# Statement classification — design proposal
+# Statement classification
 
-Status: **proposal**, not built. This replaces the way a statement's kind is
-decided and gated today. It does not change masking, lineage, or the Cedar
-principal/role model — only how "what kind of statement is this" is represented
-and authorized.
+A statement's kind is decided and gated as described here. This governs only how
+"what kind of statement is this" is represented and authorized — not masking,
+lineage, or the Cedar principal/role model.
 
-## The problem
+## The problem it solved
 
-There is no explicit statement kind. A statement's kind is whatever sqlglot's
-parser node happens to be (`Select`, `Command`, `Transaction`, `Alias`), which
-is a parser taxonomy — incomplete (`Command` is a catch-all), leaky (the
-`Alias`/`Column`/`Transaction` misparses), and not ours to own.
+The earlier design had no explicit statement kind. A statement's kind was
+whatever sqlglot's parser node happened to be (`Select`, `Command`,
+`Transaction`, `Alias`) — a parser taxonomy that is incomplete (`Command` is a
+catch-all), leaky (the `Alias`/`Column`/`Transaction` misparses), and not ours
+to own.
 
-And the "category" is smeared across three fields of `StatementFacts`:
+And the "category" was smeared across three mechanisms of `StatementFacts`:
 
-- `GrantAction` — the five `sql.*` verbs, on a datasource grant;
-- `StatementClass` — `session` / `metadata` / `analyzed`, a separate field;
+- `GrantAction` — five `sql.*` verbs, on a datasource grant;
+- a separate relay class field (`session` / `metadata` / `analyzed`);
 - a `Utility` resource tag (`SET_ROLE`, `SHOW_PROCESSLIST`) — a third mechanism.
 
-So "what kind of statement is this?" has no single answer, and sensitivity is
-decided per statement, inline in `facts.go`: `SET ROLE` gets a utility tag and
-is gateable, `SET NAMES` gets nothing and is a bare `session` passthrough. The
-consequence is that **"silently allowed" is a reachable state** — a statement
-the analyzer does not explicitly recognize lands in a passthrough and runs with
+So "what kind of statement is this?" had no single answer, and sensitivity was
+decided per statement, inline in `facts.go`: `SET ROLE` got a utility tag and
+was gateable, `SET NAMES` got nothing and was a bare passthrough. The
+consequence was that **"silently allowed" was a reachable state** — a statement
+the analyzer did not explicitly recognize landed in a passthrough and ran with
 connect only. `START REPLICA` reaching that state (a parser misparse into
-`Transaction`) is not a one-off; it is what this design removes.
+`Transaction`) was not a one-off; it is what this design removes.
 
 ## The model
 
@@ -46,8 +46,11 @@ primitives. Every kind belongs to exactly one category, and a category may nest
 (`write.insert` within `write`, `admin.account` within `admin`), so a policy
 gates one kind, a leaf category, or a whole domain.
 
-A statement is authorized against **both**: its kind and its category are in
-scope, and a policy may target either.
+A statement is authorized against its **kind**: the control-plane asks Cedar to
+authorize `stmt.kind.<k>`, and the schema makes that kind a member of its
+category, so a policy targeting the exact kind or its (leaf or whole-domain)
+category both match — one authorization, either handle. The analyzer names only
+the kind; the `kind → category` map lives solely in Cedar.
 
 ## The kind enum, by category
 
@@ -60,10 +63,10 @@ authority and enforces exhaustiveness.
 | Category | Kinds |
 | --- | --- |
 | `read` | `select`, `table`, `values`, `with_select`, `set_op` (union/intersect/except) |
-| `write.insert` | `insert`, `insert_select`, `insert_on_dup` (also `write.update`) |
-| `write.update` | `update` |
+| `write.insert` | `insert`, `insert_select` |
+| `write.update` | `update`, `insert_on_dup` (an upsert can modify an existing row, so it needs the higher-privilege leaf) |
 | `write.delete` | `delete`, `replace` (delete+insert) |
-| `ddl` | `create_table`, `create_view`, `create_index`, `alter_table`, `drop_table`, `truncate_table`, `rename_table`, … (every CREATE/ALTER/DROP/TRUNCATE of a schema object) |
+| `ddl` | `create_table`, `create_view`, `create_index`, `alter_table`, `drop_table`, `truncate_table`, `rename_table`, `select_into` (a `SELECT … INTO @var`/`<table>` — a write to an unmaskable target), … (every CREATE/ALTER/DROP/TRUNCATE of a schema object) |
 | `session` | `start_transaction`, `commit`, `rollback`, `savepoint`, `set_transaction`, `set_var`, `set_names`, `set_charset`, `use` — connection-local, exposes no rows/credentials, changes no privilege |
 | `metadata` | `show_tables`, `show_columns`, `show_create_table`, `describe`, `explain_table`, … — schema introspection that exposes no rows, credentials, or topology |
 | `admin.account` | `create_user`, `alter_user`, `drop_user`, `rename_user`, `create_role`, `drop_role`, `grant_priv`, `grant_role`, `revoke_priv`, `revoke_role`, `set_password`, `set_role`, `set_default_role`, `show_grants`, `show_create_user` |
@@ -76,7 +79,7 @@ authority and enforces exhaustiveness.
 | `admin.file` | `select_into_outfile`, `select_into_dumpfile`, `load_data`, `load_xml` — FILE-privilege I/O across the server-filesystem boundary: export of query results (a data-exfil path) and import into a table (`load_data` also writes rows) |
 | `admin.exec` | `prepare`, `execute`, `call`, `do` — dynamic execution: they run SQL or code the analyzer cannot see (a prepared string, a stored routine, an expression) |
 | `admin.unanalyzable` | `handler`, `xa` — opaque primitives the analyzer cannot decompose (`handler` = raw storage-engine row read that bypasses masking; `xa` = distributed-transaction control) |
-| `unknown` | `stmt_unknown` — anything the analyzer could not classify |
+| `exception.unanalyzable` | `stmt_unknown` — anything the analyzer could not classify; gated by the deny-by-default `exception.unanalyzable` exception, not a `stmt.cat.*` category |
 
 A domain holds both reads and writes of its resource — `show_grants` and
 `grant_priv` are both `admin.account`; `show_master_status` and `start_replica`
@@ -116,8 +119,9 @@ The `stmt.kind.` / `stmt.cat.` split keeps the two layers legible in a policy �
 stay in the `stmt` namespace, distinct from `result.read.*` / `datasource.*`.
 This is native Cedar: `action in <group>` is how the shipped `result.read.*`
 forbids already work, just several levels deep, so it validates on the same
-cedar-java path. The existing `sql.*` verbs fold into the `stmt.cat.write.*` /
-`stmt.cat.read` groups; enforcement is unchanged, the naming gains a spine.
+cedar-java path. Policies gate on `stmt.cat.*` / `stmt.kind.*` directly; there
+is no separate `sql.<verb>` vocabulary, so a policy that names one fails
+validation rather than validating and then silently matching nothing.
 
 ## Where each layer lives
 
@@ -131,35 +135,25 @@ cedar-java path. The existing `sql.*` verbs fold into the `stmt.cat.write.*` /
 
 ## Fail-closed, and grantable
 
-`stmt_unknown` is not a hardcoded deny — it is an ordinary kind in the
-`stmt.cat.unknown` domain, denied by the **absence of a permit**, never by a
-`forbid`. The production floor carries no permit that reaches it, so it denies;
-a datasource or role that Cedar-permits `stmt.cat.unknown` (a dev datasource, a
-trusted operator) runs it. This is exactly today's `sql.unanalyzable` gate —
-deny-by-default, overridable per datasource — and today's
-`GRANT_ACTION_UNSPECIFIED` (the REPLACE/CALL sentinel) folds into it. A `forbid`
-would be wrong: a forbid cannot be overridden by a permit, which would make
-`stmt_unknown` permanently un-grantable.
+`STMT_UNKNOWN` is not a hardcoded deny, and it gets no category of its own: it
+is gated by the existing `exception.unanalyzable` exception — the same
+deny-by-default, per-datasource-overridable gate an unanalyzable statement
+takes. The production floor carries no `exception.unanalyzable` permit, so it
+denies; a datasource that permits it (a dev datasource, a trusted operator) runs
+it. `stmt_unknown` (a statement the analyzer cannot classify) folds into the
+same gate. Reusing the existing exception rather than a distinct
+`stmt.cat.unknown` keeps an existing `exception.unanalyzable` policy working and
+leaves one fewer domain to reason about. A `forbid` would be wrong: it cannot be
+overridden by a permit, which would make an unclassified statement permanently
+un-grantable.
 
-The gain over today is structural. The current design lets an _unrecognized_
-statement reach a benign passthrough and run with connect only; here an
-unclassified statement is `stmt_unknown`, which denies by default like every
-other gated kind unless a policy grants it. The analyzer never enumerates the
-dangerous statements to be safe — it enumerates the safe ones to be permissive,
-the correct direction. The coverage test guards the enum: a MySQL statement kind
+The gain is structural. A parser taxonomy would let an _unrecognized_ statement
+reach a benign passthrough and run with connect only; here an unclassified
+statement is `stmt_unknown`, which denies by default like every other gated kind
+unless a policy grants it. The analyzer never enumerates the dangerous
+statements to be safe — it enumerates the safe ones to be permissive, the
+correct direction. The coverage test guards the enum: a MySQL statement kind
 with no `StatementKind` fails the build.
-
-## Migration
-
-1. Add `StatementKind` to the proto; the Go analyzer assigns it alongside the
-   grants it already emits (no removal yet — both coexist).
-2. Add the `kind → category` map and the action-group schema in the CP.
-3. Move the shipped presets from the `sql.*` actions to the category groups; the
-   effective decisions are unchanged (verified by the policy-posture digest
-   test).
-4. Once policies are on the new actions, retire `StatementClass`'s use as a
-   category signal and the per-statement utility-tag sensitivity hacks. The
-   `Utility` resource stays for the genuine resource-bearing commands.
 
 ## Open questions
 

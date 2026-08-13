@@ -8,7 +8,8 @@
     "invalid_token": "Invalid or expired token.",
     "forbidden": "Forbidden: {detail}",
     "oidc_not_configured": "Single sign-on is not configured on this server.",
-    "fallback": "Something went wrong. Please try again."
+    "fallback": "Something went wrong. Please try again.",
+    "invalid_value": "That value is not allowed for {field}."
   },
   "approval": {
     "already_decided": "This request has already been decided.",

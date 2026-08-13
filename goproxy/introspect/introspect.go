@@ -27,7 +27,7 @@ import (
 )
 
 // queryTimeout bounds every introspection query. A full catalog scan of a large schema on a remote
-// backend has been measured at ~53s, so a bound near that turns an ordinary slow scan into a failed
+// target DB has been measured at ~53s, so a bound near that turns an ordinary slow scan into a failed
 // refresh; this leaves room for one well clear of the observed cost.
 const queryTimeout = 120 * time.Second
 
@@ -38,7 +38,7 @@ const connectTimeout = 5 * time.Second
 //
 // Introspect ALL schemas, including the system catalogs (pg_catalog / information_schema / mysql /
 // performance_schema / sys). We do NOT exclude them: a system schema on the search path that is absent
-// from the mapping makes bare-name resolution diverge from the backend (the backend binds pg_catalog
+// from the mapping makes bare-name resolution diverge from the target DB (the target DB binds pg_catalog
 // first; we would fall through to a user schema shadowing a system-table name) — a fail-open leak.
 // System objects are first-class access-controlled resources: deny-by-default until the access-model
 // `system:` tags open the safe ones. Never re-add a NOT IN (...) exclusion here.
@@ -47,7 +47,7 @@ FROM information_schema.columns
 ORDER BY table_schema, table_name, ordinal_position`
 
 // OpenMySQLTarget opens a database/sql handle to a MySQL target (plaintext link, 5s connect / 30s socket).
-func OpenMySQLTarget(target spi.BackendTarget) (*sql.DB, error) {
+func OpenMySQLTarget(target spi.TargetDb) (*sql.DB, error) {
 	cfg := mysqldriver.NewConfig()
 	cfg.User = target.User
 	cfg.Passwd = target.Password
@@ -73,7 +73,7 @@ func OpenMySQLTarget(target spi.BackendTarget) (*sql.DB, error) {
 }
 
 // OpenPostgresTarget opens a database/sql handle to a Postgres target.
-func OpenPostgresTarget(target spi.BackendTarget) (*sql.DB, error) {
+func OpenPostgresTarget(target spi.TargetDb) (*sql.DB, error) {
 	// pgx has no socket-timeout DSN param; the per-query 30s context below carries that intent.
 	u := url.URL{
 		Scheme:   "postgres",
@@ -93,14 +93,14 @@ func OpenPostgresTarget(target spi.BackendTarget) (*sql.DB, error) {
 // dialect's engine.Db — whose NormalizeColumns is the one place that decides how a dialect folds
 // identifiers, so Run never branches on a dialect name to normalize.
 type TargetOpener interface {
-	OpenTarget(target spi.BackendTarget) (*sql.DB, error)
+	OpenTarget(target spi.TargetDb) (*sql.DB, error)
 	ProbeNamespace(conn *sql.Conn, targetDb string) (defaultSchemas []string, mysqlLowerCaseTableNames *int32, err error)
 	NewDb() engine.Db
 }
 
 // Run introspects the target's information_schema over a live connection and returns the catalog to
 // push to the control plane. DatasourceName is left blank — the caller (cp.PushCatalog) stamps it.
-func Run(opener TargetOpener, target spi.BackendTarget) (*pb.CatalogRequest, error) {
+func Run(opener TargetOpener, target spi.TargetDb) (*pb.CatalogRequest, error) {
 	db, err := opener.OpenTarget(target)
 	if err != nil {
 		return nil, err
@@ -164,7 +164,7 @@ func Run(opener TargetOpener, target spi.BackendTarget) (*pb.CatalogRequest, err
 	for _, c := range columns {
 		distinctTables[c.GetSchema()+"."+c.GetTable()] = struct{}{}
 	}
-	// Per-phase timings, not just the total: introspection against a remote backend has been observed
+	// Per-phase timings, not just the total: introspection against a remote target DB has been observed
 	// taking tens of seconds, and the total alone cannot say whether that is the dial, the catalog scan,
 	// or the fold over every column.
 	slog.Info("introspected catalog",

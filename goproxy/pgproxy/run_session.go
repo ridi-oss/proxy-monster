@@ -1,6 +1,7 @@
 package pgproxy
 
 import (
+	"context"
 	"errors"
 	"net"
 	"time"
@@ -9,13 +10,14 @@ import (
 	"github.com/ridi-oss/proxy-monster/goproxy/engine"
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
 	"github.com/ridi-oss/proxy-monster/goproxy/spi"
+	"github.com/ridi-oss/proxy-monster/goproxy/wire"
 )
 
 type RunSession struct {
 	sessionCore
 	conn         net.Conn
 	keyData      pgproto3.BackendKeyData
-	target       spi.BackendTarget
+	target       spi.TargetDb
 	token        string
 	connectionID []byte
 	ref          *engine.Refetcher
@@ -23,20 +25,20 @@ type RunSession struct {
 	poisoned     bool
 }
 
-func NewRunSession(target spi.BackendTarget, db engine.Db, client spi.SessionClient, token string, connectionID []byte, guard engine.ExecGuard, readTimeout time.Duration) (*RunSession, error) {
-	conn, _, keyData, txStatus, err := dialBackendAuth(target)
+func NewRunSession(ctx context.Context, target spi.TargetDb, db engine.Db, client spi.SessionClient, token string, connectionID []byte, guard engine.ExecGuard, readTimeout time.Duration) (*RunSession, error) {
+	conn, _, keyData, txStatus, err := dialTargetDbAuth(ctx, target)
 	if err != nil {
 		return nil, err
 	}
-	conn = withIODeadlines(conn, readTimeout, socketWriteTimeout)
-	generation := backendGeneration.Add(1)
-	if generation == 0 || generation > maxBackendGeneration {
+	conn = wire.WithTargetDbReadTimeout(conn, readTimeout)
+	generation, ok := wire.NextBackendGeneration()
+	if !ok {
 		_ = conn.Close()
 		return nil, errors.New("run backend generation out of range")
 	}
 	s := &RunSession{
 		sessionCore: sessionCore{
-			backend:      pgproto3.NewFrontend(conn, conn),
+			targetDb:     pgproto3.NewFrontend(conn, conn),
 			qe:           engine.NewQueryEngine(db, client),
 			db:           db,
 			lastTxStatus: txStatus,
@@ -54,7 +56,13 @@ func NewRunSession(target spi.BackendTarget, db engine.Db, client spi.SessionCli
 	return s, nil
 }
 
-func (s *RunSession) OnOpen(cmds []*pb.Refetch) error { return s.ref.RunAll(cmds) }
+// OnOpen runs the on-open catalog fetch over the target DB conn. A cancel of ctx (the control-plane closed the
+// run, or the proxy is draining, during the target-DB open) closes the conn, which unwinds an in-flight fetch read
+// at once instead of holding the target DB until readTimeout.
+func (s *RunSession) OnOpen(ctx context.Context, cmds []*pb.Refetch) error {
+	defer context.AfterFunc(ctx, func() { _ = s.conn.Close() })()
+	return s.ref.RunAll(cmds)
+}
 
 func (s *RunSession) ServeStatement(sql string, maxRows int) (result engine.StatementResult, err error) {
 	if s.poisoned {
@@ -71,17 +79,17 @@ func (s *RunSession) ServeStatement(sql string, maxRows int) (result engine.Stat
 				&pgproto3.Parse{Name: "", Query: toSend}, &pgproto3.Bind{}, &pgproto3.Describe{ObjectType: 'P'},
 				&pgproto3.Execute{MaxRows: max}, &pgproto3.Close{ObjectType: 'P'}, &pgproto3.Sync{},
 			} {
-				s.backend.Send(message)
+				s.targetDb.Send(message)
 			}
-			if runErr = s.backend.Flush(); runErr != nil {
+			if runErr = s.targetDb.Flush(); runErr != nil {
 				return false, runErr
 			}
 			collector := rowsCollector{maxRows: maxRows, result: &result}
-			backendErr, runErr := s.streamResult(masks, streamOpts{extended: true}, collector.emit)
+			targetDbErr, runErr := s.streamResult(masks, streamOpts{extended: true}, collector.emit)
 			runErr = firstErr(runErr, collector.failed)
 			s.poisoned = runErr != nil
 			s.pendingDirty = true
-			return backendErr == nil, firstErr(backendErr, runErr)
+			return targetDbErr == nil, firstErr(targetDbErr, runErr)
 		})
 	return result, err
 }
@@ -89,7 +97,7 @@ func (s *RunSession) ServeStatement(sql string, maxRows int) (result engine.Stat
 func (s *RunSession) Cancel() error {
 	if s.keyData.ProcessID == 0 {
 		_ = s.conn.Close()
-		return errors.New("cannot cancel: backend did not provide a cancellation key")
+		return errors.New("cannot cancel: target DB did not provide a cancellation key")
 	}
 	if err := sendCancelRequest(s.target.Host, s.target.Port, s.keyData.ProcessID, s.keyData.SecretKey); err != nil {
 		_ = s.conn.Close()

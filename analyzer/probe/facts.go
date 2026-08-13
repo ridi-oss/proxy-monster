@@ -119,19 +119,21 @@ func EmitFacts(sql string, engineConfig *pb.EngineConfig, sch *schema.Mapping, n
 		facts = emitSetFacts(root, eng)
 	case exp.KindCommand:
 		facts = emitCommandFacts(root, eng)
-	case exp.KindTransaction, exp.KindCommit, exp.KindRollback, exp.KindSavepoint, exp.KindUse, exp.KindAnalyze, exp.KindReset:
+	case exp.KindTransaction, exp.KindCommit, exp.KindRollback, exp.KindSavepoint, exp.KindUse, exp.KindReset:
 		// PostgreSQL `RESET <guc>` / `RESET ALL` (sqlglot-go v0.16 models it as a dedicated Reset node) only
 		// restores a session variable to its default — a de-escalation, never a privilege gain — so it is a
 		// benign session passthrough. (MySQL RESET MASTER/REPLICA is a privileged admin op that degrades to
 		// Command and is denied there; it never reaches this Reset-node case.)
-		facts = passthroughFacts(pb.StatementClass_STATEMENT_CLASS_SESSION)
+		facts = passthroughFacts()
+	case exp.KindAnalyze:
+		facts = emitAnalyzeFacts(root, eng, qualifySchema, validatedNamespace)
 	case exp.KindAlter, exp.KindDrop, exp.KindTruncateTable:
 		facts = ddlFacts(root, eng)
 	case exp.KindCreate:
 		// A CREATE that reads columns (CREATE TABLE AS SELECT, CREATE VIEW) has lineage to trace and goes
 		// down the lineage path. One that reads none — CREATE INDEX, a bare CREATE TABLE with a column
 		// list — has no lineage, so it would fail there ("CREATE without analyzable query") and route a
-		// plainly-classifiable DDL through the unmasked sql.unanalyzable relay.
+		// plainly-classifiable DDL through the unmasked exception.unanalyzable relay.
 		//
 		// The test is "does the body contain a query", not "is the body a Select": both a parenthesis
 		// wrapper (`AS (SELECT …)` is a Subquery) and a PostgreSQL `AS VALUES ((SELECT …))` hide one, and
@@ -149,7 +151,7 @@ func EmitFacts(sql string, engineConfig *pb.EngineConfig, sch *schema.Mapping, n
 			facts = unanalyzableFacts("PARSE", fmt.Sprintf("unsupported root %s", exp.ClassName(root.Kind())))
 		}
 	}
-	// The engine may rewrite the statement into what the proxy relays to the backend — MySQL pins
+	// The engine may rewrite the statement into what the proxy relays to the target DB — MySQL pins
 	// `character_set_results = NULL` to utf8mb4 so results stay UTF-8 for the wire masker. Emitted as
 	// rewritten_sql: the data plane relays it while authorization and audit keep the client's original. A
 	// lineage-driven rewrite (the `*`-expansion) already set on an analyzed statement takes precedence.
@@ -158,6 +160,7 @@ func EmitFacts(sql string, engineConfig *pb.EngineConfig, sch *schema.Mapping, n
 			facts.RewrittenSql = &rewrite
 		}
 	}
+	facts.StatementExec = executeGrant(statementKind(root, eng))
 	facts.SchemaQualifierCandidates = candidates
 	return facts
 }
@@ -178,27 +181,30 @@ func emitConfigFailureUtilityFacts(sql string, engineConfig *pb.EngineConfig) *p
 	if command == "" {
 		return nil
 	}
-	facts := passthroughFacts(pb.StatementClass_STATEMENT_CLASS_METADATA)
-	facts.RequiredGrants = append(facts.RequiredGrants, utilityGrant(command))
+	facts := passthroughFacts()
+	facts.ResultReads = append(facts.ResultReads, utilityGrant(command))
+	facts.StatementExec = executeGrant(statementKind(stmts[0], nil))
 	return facts
 }
 
 func emitLineageFacts(root exp.Expression, eng engine, qualifySchema schema.Schema, namespace NamespaceConfig, explain bool) *pb.StatementFacts {
 	if userTypeCast(root) != "" {
-		return criticalUtilityFacts(cmdUserTypeCast, pb.StatementClass_STATEMENT_CLASS_METADATA)
+		return criticalUtilityFacts(cmdUserTypeCast)
 	}
 	report := probeParsed(root, eng, qualifySchema, namespace)
 	facts := factsFromProbe(report)
-	facts.ExplainOfQuery = explain
-	facts.StatementClass = pb.StatementClass_STATEMENT_CLASS_ANALYZED
-	facts.RequiredGrants = append(facts.RequiredGrants, statementActionGrants(root, report)...)
+	// The execute grant (the statement kind) is attached centrally in EmitFacts, for resolved and
+	// unresolved statements alike; here we only add the column/table RESULT_READ grants below.
 	if !facts.Resolved {
-		if len(facts.RequiredGrants) == 0 {
-			facts.RequiredGrants = append(facts.RequiredGrants, syntacticStatementActionGrants(root)...)
-		}
 		return facts
 	}
 
+	// An EXPLAIN — of a read or a write — returns the query PLAN, not rows. So a projected column is READ to
+	// build the plan but is NOT an output: emit it with no output ordinal, so it still needs a read grant
+	// (masked read is enough) yet binds no mask, and output_columns is left empty below for the same reason.
+	// A write EXPLAIN additionally keeps its DENY_STATEMENT payload protection via the IsWrite loop below, so
+	// materializing a masked column still denies. Every EXPLAIN grant must have an empty ordinal to match the
+	// empty output_columns — a stray ordinal would fail the mask-binding contract check (Query.kt).
 	for ordinal, origin := range report.Origins {
 		for _, key := range origin.Origins {
 			column, ok := columnResourceFromKey(key)
@@ -209,7 +215,11 @@ func emitLineageFacts(root exp.Expression, eng engine, qualifySchema schema.Sche
 			if origin.Derived {
 				disposition = pb.MaskedDisposition_MASKED_DISPOSITION_REDACT_OUTPUT_NULL
 			}
-			facts.RequiredGrants = append(facts.RequiredGrants, columnGrant(column, disposition, int32(ordinal)))
+			if explain {
+				facts.ResultReads = append(facts.ResultReads, columnGrant(column, disposition))
+			} else {
+				facts.ResultReads = append(facts.ResultReads, columnGrant(column, disposition, int32(ordinal)))
+			}
 		}
 	}
 	for _, refs := range report.References {
@@ -218,19 +228,32 @@ func emitLineageFacts(root exp.Expression, eng engine, qualifySchema schema.Sche
 			if !ok {
 				return unanalyzableFacts("LINEAGE", "invalid column identity emitted by analyzer")
 			}
-			facts.RequiredGrants = append(facts.RequiredGrants, columnGrant(column, pb.MaskedDisposition_MASKED_DISPOSITION_DENY_STATEMENT))
+			facts.ResultReads = append(facts.ResultReads, columnGrant(column, pb.MaskedDisposition_MASKED_DISPOSITION_DENY_STATEMENT))
 		}
+	}
+	// Advisory, never authorization: this decides only whether the statement TEXT may be shown outside the
+	// console. An unparseable identity is skipped rather than failing the statement — a fact that can only
+	// hide text must not be able to deny a query.
+	for _, lit := range report.PredicateLiterals {
+		column, ok := columnResourceFromKey(lit.Column)
+		if !ok {
+			continue
+		}
+		facts.PredicateLiterals = append(facts.PredicateLiterals, &pb.PredicateLiteral{
+			Column: column,
+			Clause: lit.Clause,
+		})
 	}
 	if report.IsWrite {
 		seen := map[string]bool{}
-		for _, grant := range facts.RequiredGrants {
+		for _, grant := range facts.ResultReads {
 			if column := grant.GetColumn(); column != nil {
 				key := column.GetCatalog() + "." + column.GetIdentity().GetSchema() + "." + column.GetIdentity().GetTable() + "." + column.GetIdentity().GetColumn()
 				if seen[key] {
 					continue
 				}
 				seen[key] = true
-				facts.RequiredGrants = append(facts.RequiredGrants, columnGrant(column, pb.MaskedDisposition_MASKED_DISPOSITION_DENY_STATEMENT))
+				facts.ResultReads = append(facts.ResultReads, columnGrant(column, pb.MaskedDisposition_MASKED_DISPOSITION_DENY_STATEMENT))
 			}
 		}
 	}
@@ -238,25 +261,25 @@ func emitLineageFacts(root exp.Expression, eng engine, qualifySchema schema.Sche
 		if source.Covered {
 			continue
 		}
-		facts.RequiredGrants = append(facts.RequiredGrants, &pb.RequiredGrant{
-			Action:            pb.GrantAction_GRANT_ACTION_RESULT_READ,
-			Resource:          &pb.RequiredGrant_Table{Table: &pb.TableResource{Catalog: source.Catalog, Schema: source.Schema, Table: source.Table}},
+		facts.ResultReads = append(facts.ResultReads, &pb.RequireResultReadGrant{
+			Resource:          &pb.RequireResultReadGrant_Table{Table: &pb.TableResource{Catalog: source.Catalog, Schema: source.Schema, Table: source.Table}},
 			MaskedDisposition: pb.MaskedDisposition_MASKED_DISPOSITION_DENY_STATEMENT,
 		})
 	}
 	if len(report.Sources) == 0 {
-		facts.RequiredGrants = append(facts.RequiredGrants, noFromFunctionGrants(root, eng)...)
-		if len(facts.RequiredGrants) == 0 && !report.IsWrite {
-			facts.StatementClass = pb.StatementClass_STATEMENT_CLASS_METADATA
-		}
+		facts.ResultReads = append(facts.ResultReads, noFromFunctionGrants(root, eng)...)
 	}
-	facts.OutputColumns = outputColumnNames(report)
 	facts.CatalogChanging = root.Kind() == exp.KindCreate && !isTemporaryDDL(root, eng)
 	if root.Kind() == exp.KindSelect && root.Arg("into") != nil {
 		facts.CatalogChanging = true
 	}
 	if explain {
+		// An EXPLAIN's output is the plan, not the query's columns: no output_columns (nothing to mask
+		// against), and relay the client's original text rather than a `*`-expanded rewrite.
+		facts.OutputColumns = nil
 		facts.RewrittenSql = nil
+	} else {
+		facts.OutputColumns = outputColumnNames(report)
 	}
 	return facts
 }
@@ -284,12 +307,10 @@ func isTemporaryDDL(root exp.Expression, eng engine) bool {
 
 func factsFromProbe(report ProbeResult) *pb.StatementFacts {
 	facts := &pb.StatementFacts{
-		Resolved:       report.Resolved,
-		Detail:         report.Detail,
-		StatementClass: pb.StatementClass_STATEMENT_CLASS_ANALYZED,
-		IsWrite:        report.IsWrite,
-		RewrittenSql:   report.RewrittenSQL,
-		Functions:      append([]string(nil), report.Functions...),
+		Resolved:     report.Resolved,
+		Detail:       report.Detail,
+		RewrittenSql: report.RewrittenSQL,
+		Functions:    append([]string(nil), report.Functions...),
 	}
 	if !report.Resolved {
 		facts.FailureClass = pb.FailureClass_FAILURE_CLASS_UNANALYZABLE
@@ -309,25 +330,74 @@ func emitDescribeFacts(root exp.Expression, eng engine, qualifySchema schema.Sch
 		return emitLineageFacts(selectRoot, eng, qualifySchema, namespace, true)
 	}
 	if this != nil && this.Kind() == exp.KindTable {
-		return passthroughFacts(pb.StatementClass_STATEMENT_CLASS_METADATA)
+		return passthroughFacts()
 	}
-	if isKnownRoot(this) {
-		return emitLineageFacts(this, eng, qualifySchema, namespace, true)
+	// `EXPLAIN (SELECT …)` wraps the query in a Subquery (parentheses are real syntax); peel it so a
+	// parenthesized target is analyzed like a bare one. The kind (plan-only EXPLAIN, or the inner write for
+	// an executing EXPLAIN ANALYZE) is decided centrally by describeKind; here we only trace the inner
+	// query's lineage.
+	if inner := unwrapSubquery(this); isKnownRoot(inner) {
+		return emitLineageFacts(inner, eng, qualifySchema, namespace, true)
 	}
 	return unanalyzableFacts("PARSE", "DESCRIBE target is not a table or analyzable statement")
 }
 
+// explainInnerIsPlanOnlyRead reports whether an EXPLAIN's inner statement is a PROVABLE pure read — the
+// only case that becomes the read-shaped plan-only EXPLAIN kind (its projected columns are read-required
+// with no output ordinal, so a `context.stmt_kind == "explain"` policy can read them unmasked). A
+// whitelist, deliberately, not a write blacklist: anything not provably a read — a write root, an
+// as-yet-unmodeled root, a `SELECT … INTO`, or a data-modifying CTE — keeps its own kind, so it authorizes
+// and denies (payload DENY_STATEMENT) as that statement. A newly modeled write shape therefore fails closed
+// instead of silently reclassifying as a read.
+func explainInnerIsPlanOnlyRead(inner exp.Expression) bool {
+	if !inner.Is(exp.TraitSetOperation) && inner.Kind() != exp.KindSelect {
+		return false
+	}
+	if len(inner.FindAll(exp.KindInto)) > 0 {
+		return false // SELECT … INTO OUTFILE / a new table materializes
+	}
+	for _, k := range []exp.Kind{exp.KindInsert, exp.KindUpdate, exp.KindDelete, exp.KindMerge} {
+		if len(inner.FindAll(k)) > 0 {
+			return false // a data-modifying CTE writes
+		}
+	}
+	return true
+}
+
+// emitAnalyzeFacts gates a table-targeted ANALYZE the same way DESCRIBE is: a table statistics command
+// reveals the table's existence and touches its rows, so it must carry the same result-read grant a
+// `SELECT * FROM <table>` would (routed through lineage with explain = true — read-required, not row
+// masking). Without it the statement resolves connect-only and becomes an existence oracle that bypasses
+// the result-read gate. The single-table target is exact: a multi-table `ANALYZE TABLE t1, t2` leaves the
+// list tail unconsumed and the parser degrades the whole statement to Command, which never reaches here.
+// The statement-kind exec grant is attached centrally in EmitFacts, so the kind gate applies regardless.
+func emitAnalyzeFacts(root exp.Expression, eng engine, qualifySchema schema.Schema, namespace NamespaceConfig) *pb.StatementFacts {
+	this := root.This()
+	kind := ""
+	if k := root.Arg("kind"); k != nil {
+		kind = strings.ToUpper(fmt.Sprint(k))
+	}
+	// MySQL `ANALYZE TABLE t` (kind TABLE) and PostgreSQL/Presto `ANALYZE t` (no kind) both target one table
+	// to read. INDEX / DATABASE / CLUSTER / bare all-table ANALYZE carry no single readable table target and
+	// stay a benign passthrough — still exec-gated by the statement kind.
+	if (kind == "TABLE" || kind == "") && this != nil && this.Kind() == exp.KindTable {
+		selectRoot := exp.Select(exp.Args{"expressions": []exp.Expression{exp.Star(nil)}, "from_": exp.From(exp.Args{"this": this.Copy()})})
+		return emitLineageFacts(selectRoot, eng, qualifySchema, namespace, true)
+	}
+	return passthroughFacts()
+}
+
 func emitShowFacts(root exp.Expression, eng engine) *pb.StatementFacts {
 	if unsafeExpression(root.Arg("where"), eng) || unsafeExpression(root.Arg("query"), eng) {
-		return criticalUtilityFacts(cmdShowSubquery, pb.StatementClass_STATEMENT_CLASS_METADATA)
+		return criticalUtilityFacts(cmdShowSubquery)
 	}
 	if userTypeCast(root) != "" {
-		return criticalUtilityFacts(cmdUserTypeCast, pb.StatementClass_STATEMENT_CLASS_METADATA)
+		return criticalUtilityFacts(cmdUserTypeCast)
 	}
-	facts := passthroughFacts(pb.StatementClass_STATEMENT_CLASS_METADATA)
+	facts := passthroughFacts()
 	command := showUtilityCommand(root)
 	if command != "" {
-		facts.RequiredGrants = append(facts.RequiredGrants, utilityGrant(command))
+		facts.ResultReads = append(facts.ResultReads, utilityGrant(command))
 	}
 	return facts
 }
@@ -356,19 +426,19 @@ const (
 // TODO(backlog): a data-reading SET/SHOW (subquery / unsafe-function RHS) is gated here as a whole-
 // statement critical utility (the easy, fail-closed path). The precise model would trace the read's
 // columns and mask/deny them individually — deferred until multi-position lineage over SET/SHOW lands.
-func criticalUtilityFacts(command string, class pb.StatementClass) *pb.StatementFacts {
-	facts := passthroughFacts(class)
-	facts.RequiredGrants = append(facts.RequiredGrants, utilityGrant(command))
+func criticalUtilityFacts(command string) *pb.StatementFacts {
+	facts := passthroughFacts()
+	facts.ResultReads = append(facts.ResultReads, utilityGrant(command))
 	return facts
 }
 
 // sessionUtilityFacts is criticalUtilityFacts for a SESSION-class statement (the SET … danger set).
 func sessionUtilityFacts(command string) *pb.StatementFacts {
-	return criticalUtilityFacts(command, pb.StatementClass_STATEMENT_CLASS_SESSION)
+	return criticalUtilityFacts(command)
 }
 
 // sessionIdentitySetCommand returns the system-classified Utility command for a structured Set that
-// changes, or persistently reconfigures, session/user identity on a shared backend session, or "" if it
+// changes, or persistently reconfigures, session/user identity on a shared target-DB session, or "" if it
 // does not. It catches every spelling that means such an escalation — keying on only one leaves a
 // privilege-escalation bypass:
 //   - the keyword forms SET ROLE / SET DEFAULT ROLE / SET SESSION AUTHORIZATION, which sqlglot-go models as
@@ -412,7 +482,7 @@ func sessionIdentitySetCommand(root exp.Expression) string {
 }
 
 // lexerModeGucs name the session variables whose value changes how the SQL lexer parses SUBSEQUENT
-// statements on the connection. The analyzer parses under a fixed per-engine dialect, so if the backend's
+// statements on the connection. The analyzer parses under a fixed per-engine dialect, so if the target DB's
 // effective mode diverges (ANSI_QUOTES makes "x" an identifier, NO_BACKSLASH_ESCAPES/standard_conforming_
 // strings change string escaping) a later statement means something different on the wire than the
 // analyzer saw. Their assignment is therefore only allowed with a value the analyzer can read at parse
@@ -432,9 +502,9 @@ func emitSetFacts(root exp.Expression, eng engine) *pb.StatementFacts {
 	if command := lexerModeUtilityCommand(root); command != "" {
 		return sessionUtilityFacts(command)
 	}
-	facts := passthroughFacts(pb.StatementClass_STATEMENT_CLASS_SESSION)
+	facts := passthroughFacts()
 	for _, command := range setUtilityCommands(root) {
-		facts.RequiredGrants = append(facts.RequiredGrants, utilityGrant(command))
+		facts.ResultReads = append(facts.ResultReads, utilityGrant(command))
 	}
 	return facts
 }
@@ -445,7 +515,7 @@ func emitSetFacts(root exp.Expression, eng engine) *pb.StatementFacts {
 // passthrough). Substring-matching the rendered SQL is not enough: MySQL evaluates the RHS, so
 // `SET sql_mode = @m`, `SET sql_mode = CONCAT('AN','SI_QUOTES')`, or any function/subquery can resolve to
 // ANSI_QUOTES while the rendered text carries no such token — the analyzer would keep parsing the old
-// dialect while the backend flips the lexer. So an unreadable RHS (and DEFAULT, a server value the
+// dialect while the target DB flips the lexer. So an unreadable RHS (and DEFAULT, a server value the
 // analyzer cannot see) is gated too. Denial then lives in Cedar via the command's system:critical tag.
 func lexerModeUtilityCommand(root exp.Expression) string {
 	for _, item := range root.FindAll(exp.KindSetItem) {
@@ -520,7 +590,7 @@ func emitCommandFacts(root exp.Expression, eng engine) *pb.StatementFacts {
 		// TRANSACTION / CONSTRAINTS / TIME ZONE, the identity forms (SET [SESSION|LOCAL] ROLE / DEFAULT ROLE /
 		// SESSION AUTHORIZATION and the GUC-alias `SET role = x`), the lexer-mode gucs, and the credential.
 		// What degrades to Command is a genuinely-unanalyzable spelling or a form the analyzer cannot vouch
-		// for — a quoted-keyword laundering attempt (`SET "ROLE" admin`, which the backend also rejects), a
+		// for — a quoted-keyword laundering attempt (`SET "ROLE" admin`, which the target DB also rejects), a
 		// value the analyzer cannot read, or an engine construct not yet modeled. Fail closed UNIFORMLY on
 		// both engines: an unstructured SET the analyzer never classified must never relay via an
 		// engine-specific passthrough.
@@ -530,7 +600,7 @@ func emitCommandFacts(root exp.Expression, eng engine) *pb.StatementFacts {
 			// A PostgreSQL RESET that degrades to Command (rather than the structured Reset node) is an
 			// unusual/laundering spelling; RESET only ever restores defaults (de-escalation), so it stays a
 			// benign session passthrough.
-			return passthroughFacts(pb.StatementClass_STATEMENT_CLASS_SESSION)
+			return passthroughFacts()
 		}
 		return inadmissibleFacts("VALIDATE", "RESET is not allowed on MySQL")
 	case "SHOW":
@@ -540,59 +610,14 @@ func emitCommandFacts(root exp.Expression, eng engine) *pb.StatementFacts {
 		// PostgreSQL it can only be a read-only GUC/config read (no table data) → metadata passthrough; on
 		// MySQL an unrecognized SHOW is one the proxy cannot vouch for → fail closed.
 		if eng.Type() == pb.Engine_POSTGRES {
-			return passthroughFacts(pb.StatementClass_STATEMENT_CLASS_METADATA)
+			return passthroughFacts()
 		}
 		return unanalyzableFacts("PARSE", "unsupported SHOW command")
 	case "CALL":
-		facts := unanalyzableFacts("PARSE", "CALL is not analyzable")
-		facts.RequiredGrants = append(facts.RequiredGrants, datasourceGrant(pb.GrantAction_GRANT_ACTION_UNSPECIFIED))
-		return facts
+		return unanalyzableFacts("PARSE", "CALL is not analyzable")
 	default:
 		return unanalyzableFacts("PARSE", fmt.Sprintf("unsupported command %s", command))
 	}
-}
-
-func statementActionGrants(root exp.Expression, report ProbeResult) []*pb.RequiredGrant {
-	var actions []pb.GrantAction
-	if len(root.FindAll(exp.KindInto)) > 0 {
-		return []*pb.RequiredGrant{datasourceGrant(pb.GrantAction_GRANT_ACTION_SQL_DDL)}
-	}
-	switch root.Kind() {
-	case exp.KindSelect:
-		if root.Arg("into") != nil {
-			actions = []pb.GrantAction{pb.GrantAction_GRANT_ACTION_SQL_DDL}
-		} else if len(report.Sources) > 0 || len(root.FindAll(exp.KindTable)) > 0 {
-			actions = []pb.GrantAction{pb.GrantAction_GRANT_ACTION_SQL_SELECT}
-		}
-	case exp.KindInsert:
-		if truthy(root.Arg("replace")) {
-			actions = []pb.GrantAction{pb.GrantAction_GRANT_ACTION_UNSPECIFIED}
-		} else {
-			actions = []pb.GrantAction{pb.GrantAction_GRANT_ACTION_SQL_INSERT}
-			if conflictDoesUpdate(root) {
-				actions = append(actions, pb.GrantAction_GRANT_ACTION_SQL_UPDATE)
-			}
-		}
-	case exp.KindUpdate:
-		actions = []pb.GrantAction{pb.GrantAction_GRANT_ACTION_SQL_UPDATE}
-	case exp.KindDelete:
-		actions = []pb.GrantAction{pb.GrantAction_GRANT_ACTION_SQL_DELETE}
-	case exp.KindCreate:
-		actions = []pb.GrantAction{pb.GrantAction_GRANT_ACTION_SQL_DDL}
-	case exp.KindMerge:
-		actions = []pb.GrantAction{pb.GrantAction_GRANT_ACTION_UNSPECIFIED}
-	default:
-		if root.Is(exp.TraitSetOperation) {
-			actions = []pb.GrantAction{pb.GrantAction_GRANT_ACTION_SQL_SELECT}
-		} else {
-			actions = []pb.GrantAction{pb.GrantAction_GRANT_ACTION_UNSPECIFIED}
-		}
-	}
-	out := make([]*pb.RequiredGrant, 0, len(actions))
-	for _, action := range actions {
-		out = append(out, datasourceGrant(action))
-	}
-	return out
 }
 
 // conflictDoesUpdate reports whether an INSERT's conflict clause can UPDATE an existing row — PostgreSQL
@@ -610,47 +635,16 @@ func conflictDoesUpdate(root exp.Expression) bool {
 	return false
 }
 
-func syntacticStatementActionGrants(root exp.Expression) []*pb.RequiredGrant {
-	if len(root.FindAll(exp.KindInto)) > 0 {
-		return []*pb.RequiredGrant{datasourceGrant(pb.GrantAction_GRANT_ACTION_SQL_DDL)}
-	}
-	var action pb.GrantAction
-	switch root.Kind() {
-	case exp.KindSelect:
-		if root.Arg("into") != nil {
-			action = pb.GrantAction_GRANT_ACTION_SQL_DDL
-		} else {
-			action = pb.GrantAction_GRANT_ACTION_SQL_SELECT
-		}
-	case exp.KindInsert:
-		action = pb.GrantAction_GRANT_ACTION_SQL_INSERT
-	case exp.KindUpdate:
-		action = pb.GrantAction_GRANT_ACTION_SQL_UPDATE
-	case exp.KindDelete:
-		action = pb.GrantAction_GRANT_ACTION_SQL_DELETE
-	case exp.KindCreate:
-		action = pb.GrantAction_GRANT_ACTION_SQL_DDL
-	default:
-		if root.Is(exp.TraitSetOperation) {
-			action = pb.GrantAction_GRANT_ACTION_SQL_SELECT
-		} else {
-			action = pb.GrantAction_GRANT_ACTION_UNSPECIFIED
-		}
-	}
-	return []*pb.RequiredGrant{datasourceGrant(action)}
-}
-
-func noFromFunctionGrants(root exp.Expression, eng engine) []*pb.RequiredGrant {
+func noFromFunctionGrants(root exp.Expression, eng engine) []*pb.RequireResultReadGrant {
 	seen := map[string]bool{}
-	out := []*pb.RequiredGrant{}
+	out := []*pb.RequireResultReadGrant{}
 	emit := func(name string) {
 		if name == "" || name == "*" || seen[name] {
 			return
 		}
 		seen[name] = true
-		out = append(out, &pb.RequiredGrant{
-			Action:            pb.GrantAction_GRANT_ACTION_RESULT_READ,
-			Resource:          &pb.RequiredGrant_Function{Function: &pb.FunctionResource{Name: name}},
+		out = append(out, &pb.RequireResultReadGrant{
+			Resource:          &pb.RequireResultReadGrant_Function{Function: &pb.FunctionResource{Name: name}},
 			MaskedDisposition: pb.MaskedDisposition_MASKED_DISPOSITION_DENY_STATEMENT,
 		})
 	}
@@ -905,73 +899,68 @@ func columnResourceFromKey(key string) (*pb.ColumnResource, bool) {
 	}, true
 }
 
-func columnGrant(column *pb.ColumnResource, disposition pb.MaskedDisposition, ordinals ...int32) *pb.RequiredGrant {
-	return &pb.RequiredGrant{
-		Action:            pb.GrantAction_GRANT_ACTION_RESULT_READ,
-		Resource:          &pb.RequiredGrant_Column{Column: column},
+func columnGrant(column *pb.ColumnResource, disposition pb.MaskedDisposition, ordinals ...int32) *pb.RequireResultReadGrant {
+	return &pb.RequireResultReadGrant{
+		Resource:          &pb.RequireResultReadGrant_Column{Column: column},
 		MaskedDisposition: disposition,
 		OutputOrdinals:    ordinals,
 	}
 }
 
-func datasourceGrant(action pb.GrantAction) *pb.RequiredGrant {
-	return &pb.RequiredGrant{
-		Action:            action,
-		Resource:          &pb.RequiredGrant_Datasource{Datasource: true},
+// executeGrant is the single per-statement authorization signal: run this statement, which the
+// control-plane authorizes as stmt.kind.<kind>. The analyzer names only the kind — Cedar's schema maps
+// it to a category. Every analyzable statement carries exactly one, added once at classification.
+func executeGrant(kind pb.StatementKind) *pb.RequireStatementExecGrant {
+	return &pb.RequireStatementExecGrant{StatementKind: kind}
+}
+
+func utilityGrant(command string) *pb.RequireResultReadGrant {
+	return &pb.RequireResultReadGrant{
+		Resource:          &pb.RequireResultReadGrant_Utility{Utility: &pb.UtilityResource{Command: command}},
 		MaskedDisposition: pb.MaskedDisposition_MASKED_DISPOSITION_DENY_STATEMENT,
 	}
 }
 
-func utilityGrant(command string) *pb.RequiredGrant {
-	return &pb.RequiredGrant{
-		Action:            pb.GrantAction_GRANT_ACTION_RESULT_READ,
-		Resource:          &pb.RequiredGrant_Utility{Utility: &pb.UtilityResource{Command: command}},
-		MaskedDisposition: pb.MaskedDisposition_MASKED_DISPOSITION_DENY_STATEMENT,
-	}
+func passthroughFacts() *pb.StatementFacts {
+	return &pb.StatementFacts{Resolved: true, Detail: "ok"}
 }
 
-func passthroughFacts(class pb.StatementClass) *pb.StatementFacts {
-	return &pb.StatementFacts{Resolved: true, Detail: "ok", StatementClass: class}
-}
-
+// inadmissibleFacts and unanalyzableFacts carry no execute grant. A pre-root failure (parse error, batch)
+// is genuinely unclassifiable, so the control-plane reads a missing execute grant as STMT_UNKNOWN — the
+// deny-by-default-but-grantable unknown category. A statement that reaches EmitFacts's root classification
+// gets its computed kind there instead (so an unanalyzable ALTER still reports ALTER_TABLE).
 func inadmissibleFacts(stage, detail string) *pb.StatementFacts {
 	return &pb.StatementFacts{
-		Resolved:       false,
-		FailureClass:   pb.FailureClass_FAILURE_CLASS_INADMISSIBLE,
-		FailedStage:    strPtr(stage),
-		Detail:         truncateDetail(detail),
-		StatementClass: pb.StatementClass_STATEMENT_CLASS_UNSPECIFIED,
+		Resolved:     false,
+		FailureClass: pb.FailureClass_FAILURE_CLASS_INADMISSIBLE,
+		FailedStage:  strPtr(stage),
+		Detail:       truncateDetail(detail),
 	}
 }
 
 func unanalyzableFacts(stage, detail string) *pb.StatementFacts {
 	return &pb.StatementFacts{
-		Resolved:       false,
-		FailureClass:   pb.FailureClass_FAILURE_CLASS_UNANALYZABLE,
-		FailedStage:    strPtr(stage),
-		Detail:         truncateDetail(detail),
-		StatementClass: pb.StatementClass_STATEMENT_CLASS_UNSPECIFIED,
+		Resolved:     false,
+		FailureClass: pb.FailureClass_FAILURE_CLASS_UNANALYZABLE,
+		FailedStage:  strPtr(stage),
+		Detail:       truncateDetail(detail),
 	}
 }
 
 // A DDL statement (ALTER / DROP / TRUNCATE / a body-less CREATE) is RESOLVED: its meaning is fully
-// determined and it reads no column values, so there is no lineage to trace and its whole authorization
-// is the sql.ddl datasource grant. It resolves as ANALYZED with that single grant and no columns —
-// exactly the shape a grant-only write like INSERT already takes, so decideQuery authorizes it off the
-// datasource grant with no DDL-specific branch. Reporting it unresolved instead would route it through
-// the sql.unanalyzable gate — a grant that relays statements UNMASKED and ships scoped to
-// system:development only — so a statement whose safety is trivially provable would be authorized only by
-// the escape hatch built for statements nobody can prove safe, and denied outright anywhere else.
+// determined and it reads no column values, so there is no lineage to trace — its whole authorization is
+// the kind gate on its stmt.kind.* (which Cedar maps to stmt.cat.ddl). It resolves as ANALYZED with no
+// column grants, carrying only the execute grant EmitFacts attaches. Reporting it unresolved instead
+// would route it through the exception.unanalyzable gate — a grant that relays statements UNMASKED and ships
+// scoped to system:development only — so a statement whose safety is trivially provable would be
+// authorized only by the escape hatch built for statements nobody can prove safe, and denied elsewhere.
 func ddlFacts(root exp.Expression, eng engine) *pb.StatementFacts {
 	return &pb.StatementFacts{
-		Resolved:       true,
-		FailureClass:   pb.FailureClass_FAILURE_CLASS_UNSPECIFIED,
-		StatementClass: pb.StatementClass_STATEMENT_CLASS_ANALYZED,
-		IsWrite:        true,
+		Resolved:     true,
+		FailureClass: pb.FailureClass_FAILURE_CLASS_UNSPECIFIED,
 		// A temp-scoped DDL target is session-local, so it changes no shared catalog and must not force
 		// every other connection to re-measure.
 		CatalogChanging: !isTemporaryDDL(root, eng),
-		RequiredGrants:  []*pb.RequiredGrant{datasourceGrant(pb.GrantAction_GRANT_ACTION_SQL_DDL)},
 	}
 }
 

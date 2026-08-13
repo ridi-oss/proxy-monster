@@ -47,6 +47,21 @@ data class AccessRequest(
     val executedAt: String? = null,
     val executeAs: List<String> = emptyList(),
     val creatorKind: String? = null,
+    /** Advisory, best-effort hint (NOT a security boundary): true when the statement compares a literal
+     *  against a CLASSIFIED column, so its TEXT should not be forwarded outside the console (the value sits in
+     *  the query, where masking cannot reach it). Reader-neutral — keyed on classification, never on who
+     *  composed it. NULL (never analyzed) is treated as true; absence is not proof the statement is clean. */
+    val statementCarriesProtectedLiteral: Boolean? = null,
+)
+
+/**
+ * The authz view of this persisted approval request, built from its row so every route that decides a task
+ * asks Cedar the same question from one place. The prospective auto-approval check (before a row exists)
+ * builds its resource inline instead.
+ */
+fun AccessRequest.toApprovalResource() = AuthzResource.ApprovalRequest(
+    requester = principal, approver = decidedBy, executedBy = executedBy,
+    datasourceName = datasourceName, roleName = roleName,
 )
 
 @Serializable
@@ -152,6 +167,12 @@ class AccessStore(private val dataSource: DataSource) {
         // Carried on the shared access_request row; not consumed by the query-approval flow (see
         // CreateApprovalInput.requestedDurationSec). Kept for the column the ROLE-elevation path needs.
         requestedDurationSec: Long = 3600,
+        // Advisory hint: whether a literal was compared against a CLASSIFIED column (reader-neutral — see
+        // AccessRequest.statementCarriesProtectedLiteral). NULL when not analyzed → downstream withholds.
+        carriesProtectedLiteral: Boolean? = null,
+        // Queues the "needs approval" notification in the SAME transaction as the insert, so a crash can
+        // never leave a request pending with nobody told. No-op when notifications are not configured.
+        onCreated: ((Connection, Long, String?) -> Unit)? = null,
         // Set on the audited create path (the /api/approvals routes); null on internal/test seeds. When both
         // are present the created request is recorded as a TASK_REQUEST on the insert's transaction.
         actor: AuditActor? = null,
@@ -170,8 +191,9 @@ class AccessStore(private val dataSource: DataSource) {
             val taskId = c.prepareStatement(
                 """INSERT INTO access_request
                    (principal, kind, role_id, datasource_id, deny_reason, source_decision_id, reason, title,
-                    evaluated_decision, requested_duration_sec, execute_as, creator_kind)
-                   VALUES (?, 'QUERY', ?, ?, ?, ?, ?, ?, ?, ?, ?::jsonb, 'WORKFLOW')
+                    evaluated_decision, requested_duration_sec, execute_as, creator_kind,
+                    statement_carries_protected_literal)
+                   VALUES (?, 'QUERY', ?, ?, ?, ?, ?, ?, ?, ?, ?::jsonb, 'WORKFLOW', ?)
                    ON CONFLICT (source_decision_id) WHERE kind = 'QUERY' AND status = 'PENDING' AND source_decision_id IS NOT NULL
                    DO NOTHING
                    RETURNING id""",
@@ -186,6 +208,7 @@ class AccessStore(private val dataSource: DataSource) {
                 ps.setString(8, evaluatedDecision)
                 ps.setLong(9, requestedDurationSec)
                 ps.setString(10, json.encodeToString(stringList, executeAs))
+                if (carriesProtectedLiteral == null) ps.setNull(11, java.sql.Types.BOOLEAN) else ps.setBoolean(11, carriesProtectedLiteral)
                 ps.executeQuery().use { rs ->
                     if (rs.next()) rs.getLong(1) else throw DuplicatePendingQueryRequestException()
                 }
@@ -204,6 +227,7 @@ class AccessStore(private val dataSource: DataSource) {
                     "open query request #$taskId under role '${executeAs.firstOrNull()}'",
                 )
             }
+            onCreated?.invoke(c, taskId, executeAs.firstOrNull())
             taskId
         }
         return getRequest(id)!!
@@ -387,8 +411,12 @@ class AccessStore(private val dataSource: DataSource) {
         decidedBy: String,
         actor: AuditActor,
         recorder: ManagementAuditRecorder,
+        // Queues the decision notification in the SAME transaction as the transition, so a crash can never
+        // leave a request decided with nobody told. No-op when the notification layer is not configured.
+        onDecided: ((Connection, AccessRequest) -> Unit)? = null,
     ): AccessRequest? {
-        val roleName = getRequest(id)?.roleName
+        val before = getRequest(id)
+        val roleName = before?.roleName
         val won = dataSource.inTx { c ->
             decideQueryRequest(id, approved, rejectionReason, decidedBy, c).also { transitioned ->
                 if (transitioned) {
@@ -396,6 +424,18 @@ class AccessStore(private val dataSource: DataSource) {
                         c, actor, AuthzAction.TASK_APPROVE, auditEntity("AccessRequest", id.toString()),
                         if (approved) "approve query request #$id under role '$roleName'" else "reject query request #$id",
                     )
+                    // The row the hook sees carries the decision that just landed: the pre-read plus the
+                    // fields this transaction set, since the UPDATE is not visible to another connection yet.
+                    before?.let { prior ->
+                        onDecided?.invoke(
+                            c,
+                            prior.copy(
+                                status = if (approved) "APPROVED" else "REJECTED",
+                                decidedBy = decidedBy,
+                                rejectionReason = rejectionReason,
+                            ),
+                        )
+                    }
                 }
             }
         }
@@ -682,6 +722,7 @@ class AccessStore(private val dataSource: DataSource) {
         executedAt = getTimestamp("executed_at")?.toInstant()?.toString(),
         executeAs = json.decodeFromString(stringList, getString("execute_as") ?: "[]"),
         creatorKind = getString("creator_kind"),
+        statementCarriesProtectedLiteral = getBoolean("statement_carries_protected_literal").let { if (wasNull()) null else it },
     )
 
     private fun ResultSet.toGrant() = AccessGrant(
@@ -699,7 +740,8 @@ class AccessStore(private val dataSource: DataSource) {
                       (SELECT qr.sql_hash FROM query_result qr WHERE qr.task_id = ar.id ORDER BY qr.id LIMIT 1) AS task_sql_hash,
                       (SELECT qr.executed_by FROM query_result qr WHERE qr.task_id = ar.id ORDER BY qr.id LIMIT 1) AS executed_by,
                       ar.deny_reason, ar.source_decision_id, ar.title, ar.evaluated_decision,
-                      ar.approved_at, ar.executing_at, ar.executed_at, ar.execute_as, ar.creator_kind
+                      ar.approved_at, ar.executing_at, ar.executed_at, ar.execute_as, ar.creator_kind,
+                      ar.statement_carries_protected_literal
                FROM access_request ar LEFT JOIN app_role r ON r.id = ar.role_id
                LEFT JOIN datasource d ON d.id = ar.datasource_id"""
         // The app_role join is filtered to LIVE roles: a grant of a soft-deleted role must resolve to no
@@ -723,35 +765,25 @@ fun Route.accessRoutes(
     recorder: ManagementAuditRecorder,
 ) {
     get("/api/access-requests") {
-        if (!call.requireApi(config)) return@get
-        // Forward-filter by task.read (self seed shows own; admin/oversight shows all),
-        // replacing the unfiltered listing that exposed every principal's requests. authDebug (no
-        // session) keeps the full list, matching requireApi's dev bypass.
-        val caller = call.userSession()?.principal
+        val caller = call.requireApi() ?: return@get
+        // Forward-filter by task.read: the self seed shows own, admin/oversight shows all. Every row is
+        // decided — a listing that answers any of them unfiltered answers the whole table.
         val rows = store.listRequests(call.request.queryParameters["status"])
         call.respond(
-            if (caller == null) {
-                rows
-            } else {
-                rows.filter {
-                    authz.authorize(
-                        caller, AuthzAction.TASK_READ,
-                        AuthzResource.ApprovalRequest(
-                            requester = it.principal, approver = it.decidedBy, executedBy = it.executedBy,
-                            datasourceName = it.datasourceName, roleName = it.roleName,
-                        ),
-                    ) is AuthzDecision.Allow
-                }
+            rows.filter {
+                authz.authorize(
+                    caller, AuthzAction.TASK_READ,
+                    it.toApprovalResource(),
+                ) is AuthzDecision.Allow
             },
         )
     }
     post("/api/access-requests") {
-        if (!call.requireApi(config)) return@post
-        val principal = call.userSession()?.principal ?: "debug-user"
+        val principal = call.requireApi() ?: return@post
         val input = call.receive<AccessRequestInput>()
         // Opening a request against a datasource is gated by task.request on that datasource. A role
         // elevation need not target one (datasourceId is optional); a datasource-less request has no
-        // Datasource resource to decide, so authentication alone admits it. authDebug bypasses.
+        // Datasource resource to decide, so authentication alone admits it.
         val ds = input.datasourceId?.let(datasourceStore::get)
         // A datasourceId that names no LIVE datasource (soft-deleted or never-existed) must not fall through
         // to createRequest: the tombstone row still satisfies the FK, so the insert would otherwise succeed
@@ -759,7 +791,7 @@ fun Route.accessRoutes(
         if (input.datasourceId != null && ds == null) {
             return@post call.notFound("datasource")
         }
-        if (ds != null && !config.authDebug) {
+        if (ds != null) {
             val roles = roleResolver.resolve(principal)
             val raw = call.httpAuthzContext(config)
             val tags = authz.resolveContextTags(principal, roles, ds.name, raw, ds.tags)
@@ -773,89 +805,74 @@ fun Route.accessRoutes(
         call.respond(HttpStatusCode.Created, store.createRequest(principal, input, call.auditActor(config), recorder))
     }
     post("/api/access-requests/{id}/approve") {
-        if (!call.requireApi(config)) return@post
+        val approver = call.requireApi() ?: return@post
         val id = call.idParam() ?: return@post call.badId()
         val req = store.getRequest(id) ?: return@post call.notFound("access request")
         if (req.kind != "ROLE") {
             return@post call.respondError(HttpStatusCode.BadRequest, "approval.use_query_approval_endpoint")
         }
-        val approver = call.userSession()?.principal ?: "debug-user"
         // Self-approval is governed entirely by Cedar policy (the `no-self-approval` forbid, V11
         // seed) — never a hardcoded app-level rule. A deployment may disable that policy (dev/eval);
         // this route only ever asks authz "may this principal do this?" (docs/approval-workflow.md).
-        if (!config.authDebug) {
-            // roleName places the request in `Role::"<name>"` so a policy can scope who may approve by
-            // the ROLE being requested (`resource in Role::...`), not just the requester (Authz.kt,
-            // AuthzTest's Request-in-Role case). Without it that capability would be unreachable here.
-            // requester_ip + (when a datasource is in scope) its derived context.tags, resolved
-            // over a SINGLE role snapshot (authorizeWithContext) — the ROLE-request analog of the QUERY
-            // approval routes' mayDecide (task.approve) call in Approvals.kt.
-            val decision = authz.authorizeWithContext(
-                approver, AuthzAction.TASK_APPROVE,
-                AuthzResource.ApprovalRequest(
-                    requester = req.principal, approver = req.decidedBy, executedBy = req.executedBy,
-                    datasourceName = req.datasourceName, roleName = req.roleName,
-                ),
-                call.httpAuthzContext(config), req.datasourceName,
-                req.datasourceId?.let(datasourceStore::getIncludingDeleted)?.tags.orEmpty(),
-            )
-            if (decision is AuthzDecision.Deny) {
-                return@post call.respondError(HttpStatusCode.Forbidden, "approval.not_approver")
-            }
+        // roleName places the request in `Role::"<name>"` so a policy can scope who may approve by
+        // the ROLE being requested (`resource in Role::...`), not just the requester (Authz.kt,
+        // AuthzTest's Request-in-Role case). Without it that capability would be unreachable here.
+        // requester_ip + (when a datasource is in scope) its derived context.tags, resolved
+        // over a SINGLE role snapshot (authorizeWithContext) — the ROLE-request analog of the QUERY
+        // approval routes' mayDecide (task.approve) call in Approvals.kt.
+        val decision = authz.authorizeWithContext(
+            approver, AuthzAction.TASK_APPROVE,
+            req.toApprovalResource(),
+            call.httpAuthzContext(config, Channel.WORKFLOW_VIEWER),
+            req.datasourceName,
+            req.datasourceId?.let(datasourceStore::getIncludingDeleted)?.tags.orEmpty(),
+        )
+        if (decision is AuthzDecision.Deny) {
+            return@post call.respondError(HttpStatusCode.Forbidden, "approval.not_approver")
         }
         val body = runCatching { call.receive<ApproveInput>() }.getOrDefault(ApproveInput())
         store.approve(id, body.durationSec, approver, call.auditActor(config), recorder)?.let { call.respond(it) }
             ?: call.notFound("access request")
     }
     post("/api/access-requests/{id}/reject") {
-        if (!call.requireApi(config)) return@post
+        val approver = call.requireApi() ?: return@post
         val id = call.idParam() ?: return@post call.badId()
         val req = store.getRequest(id) ?: return@post call.notFound("access request")
         if (req.kind != "ROLE") {
             return@post call.respondError(HttpStatusCode.BadRequest, "approval.use_query_approval_endpoint")
         }
-        val approver = call.userSession()?.principal ?: "debug-user"
         // Self-approval is governed entirely by Cedar policy (the `no-self-approval` forbid, V11
         // seed) — never a hardcoded app-level rule. A deployment may disable that policy (dev/eval);
         // this route only ever asks authz "may this principal do this?" (docs/approval-workflow.md).
-        if (!config.authDebug) {
-            // Same role-scoped approver check as /approve — the reject path must ask the identical
-            // Cedar question, so a role-scoped approval policy governs reject too (see /approve above).
-            val decision = authz.authorizeWithContext(
-                approver, AuthzAction.TASK_APPROVE,
-                AuthzResource.ApprovalRequest(
-                    requester = req.principal, approver = req.decidedBy, executedBy = req.executedBy,
-                    datasourceName = req.datasourceName, roleName = req.roleName,
-                ),
-                call.httpAuthzContext(config), req.datasourceName,
-                req.datasourceId?.let(datasourceStore::getIncludingDeleted)?.tags.orEmpty(),
-            )
-            if (decision is AuthzDecision.Deny) {
-                return@post call.respondError(HttpStatusCode.Forbidden, "approval.not_approver")
-            }
+        // Same role-scoped approver check as /approve — the reject path must ask the identical
+        // Cedar question, so a role-scoped approval policy governs reject too (see /approve above).
+        val decision = authz.authorizeWithContext(
+            approver, AuthzAction.TASK_APPROVE,
+            req.toApprovalResource(),
+            call.httpAuthzContext(config, Channel.WORKFLOW_VIEWER),
+            req.datasourceName,
+            req.datasourceId?.let(datasourceStore::getIncludingDeleted)?.tags.orEmpty(),
+        )
+        if (decision is AuthzDecision.Deny) {
+            return@post call.respondError(HttpStatusCode.Forbidden, "approval.not_approver")
         }
         val body = call.receive<RejectInput>()
         store.reject(id, body.reason, approver, call.auditActor(config), recorder)?.let { call.respond(it) }
             ?: call.notFound("access request")
     }
     get("/api/access-grants") {
-        if (!call.requireApi(config)) return@get
+        val caller = call.requireApi() ?: return@get
         val principal = call.request.queryParameters["principal"]
         val active = call.request.queryParameters["active"]?.toBoolean() ?: false
-        // Forward-filter by task.read — an arbitrary ?principal= does not leak another
-        // principal's grants; each row is kept only if the caller may read it (own, or oversight).
-        val caller = call.userSession()?.principal
+        // Forward-filter by task.read: an arbitrary ?principal= selects which rows to look for, never
+        // which the caller may see — each row is kept only if the caller may read it (own, or oversight).
         val rows = store.listGrants(principal, active)
         call.respond(
-            if (caller == null) {
-                rows
-            } else {
-                rows.filter {
-                    authz.authorize(
-                        caller, AuthzAction.TASK_READ,
-                        AuthzResource.AccessGrant(owner = it.principal, id = it.id, roleName = it.roleName),
-                    ) is AuthzDecision.Allow
-                }
+            rows.filter {
+                authz.authorize(
+                    caller, AuthzAction.TASK_READ,
+                    AuthzResource.AccessGrant(owner = it.principal, id = it.id, roleName = it.roleName),
+                ) is AuthzDecision.Allow
             },
         )
     }

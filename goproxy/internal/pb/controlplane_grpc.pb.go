@@ -57,7 +57,7 @@ type ControlPlaneClient interface {
 	Events(ctx context.Context, in *EventsRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[ControlEvent], error)
 	// The CP-driven execution channel. PROXY-DIALED bidi: the control-plane nudges the proxy over Events
 	// (OpenRunChannel) to open this, so data flows both ways without the control-plane ever dialing into the
-	// proxy. It serves web-editor and workflow execution through the same backend + Decide path, streaming
+	// proxy. It serves web-editor and workflow execution through the same target DB + Decide path, streaming
 	// the decision and masked rows back.
 	RunExec(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[ProxyRunMsg, ControlRunMsg], error)
 	// On-demand admin table-browser introspection. Also PROXY-DIALED: request selectors ride the Events
@@ -215,7 +215,7 @@ type ControlPlaneServer interface {
 	Events(*EventsRequest, grpc.ServerStreamingServer[ControlEvent]) error
 	// The CP-driven execution channel. PROXY-DIALED bidi: the control-plane nudges the proxy over Events
 	// (OpenRunChannel) to open this, so data flows both ways without the control-plane ever dialing into the
-	// proxy. It serves web-editor and workflow execution through the same backend + Decide path, streaming
+	// proxy. It serves web-editor and workflow execution through the same target DB + Decide path, streaming
 	// the decision and masked rows back.
 	RunExec(grpc.BidiStreamingServer[ProxyRunMsg, ControlRunMsg]) error
 	// On-demand admin table-browser introspection. Also PROXY-DIALED: request selectors ride the Events

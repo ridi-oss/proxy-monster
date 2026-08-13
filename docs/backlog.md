@@ -8,13 +8,12 @@ forward work. MySQL leads PostgreSQL in priority.
 ## Deployment & operations
 
 - Explicit production mode: refuse startup when any debug bypass
-  (`PM_AUTH_DEBUG`, a committed session-secret fallback, an unset ingest token)
-  is enabled, instead of inferring production from a heuristic.
+  (`PM_AUTH_DEBUG`, a committed session-secret fallback) is enabled, instead of
+  inferring production from a heuristic.
 - Per-datasource authorization for posture. A proxy's `Register` currently
   overwrites a datasource's tags gated only by the shared proxy token; gate
-  posture mutation behind admin authz, forbid `Register` from overwriting an
-  existing datasource's posture, and fail startup when the proxy token is unset
-  in production.
+  posture mutation behind admin authz, and forbid `Register` from overwriting an
+  existing datasource's posture.
 - Multi-instance support. The system runs single-instance today. Before any
   rolling or multi-replica deploy: harden the `system:admin` bootstrap against a
   migrate-while-serving interleave (fleet-stopped migration, or
@@ -37,8 +36,8 @@ forward work. MySQL leads PostgreSQL in priority.
   in between, the update matches nothing and the follow-up read dereferences a
   group that is gone, so the request fails with a 500. Fall through to an insert
   (a true upsert) or return a clean 404/409. Availability, not authorization.
-- MySQL `caching_sha2_password` backend auth. PostgreSQL SCRAM-SHA-256 is done;
-  the MySQL service user still uses `mysql_native_password`.
+- MySQL `caching_sha2_password` target-DB auth. PostgreSQL SCRAM-SHA-256 is
+  done; the MySQL service user still uses `mysql_native_password`.
 - pmon HTTP API auth: today the CLI presents its wire token as a bearer to the
   read-only datasource discovery routes only. Make it a first-class client —
   either an OAuth bearer client of its own, or a reuse of the web session — so
@@ -78,7 +77,7 @@ forward work. MySQL leads PostgreSQL in priority.
   table and tagged `pii` would read cleartext. Safe only because the shipped
   manifests classify value-bearing system tables as data-leak or critical rather
   than catalog; add a `pii` exclusion for defense in depth.
-- Split the `sql.unanalyzable` relay by admitted statement kind. On a
+- Split the `exception.unanalyzable` relay by admitted statement kind. On a
   development datasource the relay is role-agnostic, so a read-only role can
   submit a data-modifying CTE that admission classifies as a select, and the
   relay executes the write. Scope the permit to a role that legitimately writes,
@@ -91,6 +90,16 @@ forward work. MySQL leads PostgreSQL in priority.
 
 ## Approval automation
 
+- Broaden predicate-literal detection past direct comparison. A value also
+  reaches a predicate through a function, a `CASE`, a subquery, or a bound
+  parameter, and none of those are reported today. The consumer already fails
+  toward hiding, so each addition narrows over-hiding rather than closing a
+  leak.
+- Per-user notification opt-out. Language is stored per user
+  (`app_user.locale`); a mute switch is the same shape.
+- Email as a second notification transport. The seam exists
+  ([notifications.md](./notifications.md)); it needs an SMTP adapter and a
+  message renderer, and it does not support editing a message in place.
 - Auto mode (stretch): release a narrow set of deny reasons without a human
   approver. Two questions decide whether it is safe — which deny reasons are
   ever eligible for auto-release, and whether the reasoning input is the AST and
@@ -99,7 +108,7 @@ forward work. MySQL leads PostgreSQL in priority.
 
 ## Task execution
 
-- Retry a task whose execution never reached the backend. A definite refusal
+- Retry a task whose execution never reached the target DB. A definite refusal
   marks the task failed, which is correct, but a transient pre-dial transport
   failure does the same and permanently burns the approval, forcing a fresh
   request and approval. Add a retry affordance, or restore the approved state on
@@ -200,22 +209,16 @@ Fixes for gaps documented in
   (saved lineage), so an output-name match can no longer release stored
   cleartext under a mask plan computed for a different physical column. High
   priority.
-- Fail-closed close for a `search_path` change made inside Bind parameter
-  coercion: re-probe after `Bind`, or plan under a pinned `search_path`.
 - Fail-closed manifest-completeness guard: deny a touched system schema that has
   no governing manifest, plus a version-independent system-table floor (the
   analog of the dangerous-function floor), so completeness doesn't depend on
   grant hygiene.
 - Per-engine-version golden inventory of system objects plus a CI release-diff
   gate, so a manifest can't silently fall behind a new engine minor.
-- Route resource-bearing utility commands (e.g. `ANALYZE <table>`) through a
-  Cedar gate instead of blanket passthrough, closing the existence oracle.
-- Make the role-approval `Request` EUID request-unique so one approval can't
-  authorize a principal's later requests.
 - Canonicalize introspected schema names on the proxy side (case-fold-aware),
   removing the interim MySQL lowercase fold in the control plane.
-- Broker a per-user backend login so `SET PASSWORD` / `SET GLOBAL` stop mutating
-  a shared service account.
+- Broker a per-user target DB login so `SET PASSWORD` / `SET GLOBAL` stop
+  mutating a shared service account.
 - UDF-output vouching: gate a data-reading UDF's output on a masking datasource
   behind an admin assertion, auto-clearing declared-pure functions (low
   priority).
@@ -242,7 +245,7 @@ Fixes for gaps documented in
   portal when its transaction ends; the proxy prunes only on an explicit close
   or a name reuse, so a long-lived connection cycling unique portal names grows
   proxy memory. There is no data path — a stale entry re-decides and then hits
-  the backend's own error. Clearing on transaction end needs either SQL
+  the target DB's own error. Clearing on transaction end needs either SQL
   classification in the proxy, which the stateless-relay contract forbids, or it
   breaks `WITH HOLD` cursors.
 - Validate that the extended protocol's temp-table overlay comes from the
@@ -257,12 +260,11 @@ Fixes for gaps documented in
   client through it. This adds integration confidence, not a missing enforcement
   assertion.
 - Backfill DB-backed regression tests for enforcement invariants whose code is
-  confirmed correct but only covered indirectly: an EXPLAIN carrying a masked
-  column denying, the editor's refusal of session-mutating and
-  transaction-control statements, the editor's fail-closed mask bind, and the
-  approval route's conflict and not-found cases. Also: that a deny under the
-  approval role stores no result, and that a group-member approver lacking a
-  role-scoped approve permission is refused at execute.
+  confirmed correct but only covered indirectly: the editor's refusal of
+  session-mutating and transaction-control statements, the editor's fail-closed
+  mask bind, and the approval route's conflict and not-found cases. Also: that a
+  deny under the approval role stores no result, and that a group-member
+  approver lacking a role-scoped approve permission is refused at execute.
 - Diagnostic-redaction corpus probe. A test that builds a corpus from each
   engine's full error-code catalog plus adversarial constraints, conversions,
   functions, and raised errors, replays it against every supported engine
@@ -306,7 +308,7 @@ Fixes for gaps documented in
   and MySQL does not accept a prepared generic `SET` — but the fail-closed
   invariant should hold on this path too: live-probe before EXECUTE for the
   invariant check while keeping the frozen snapshot for authorization.
-- Proxy-side cancel brokering: issue synthetic `BackendKeyData` and broker
+- Proxy-side cancel brokering: issue synthetic `TargetDbKeyData` and broker
   cancels proxy-side, so `CancelRequest` can require TLS without breaking psql's
   Ctrl-C.
 - Wire-cert rotation refresh: a rotated proxy leaf cert only re-advertises its
@@ -320,7 +322,7 @@ Fixes for gaps documented in
   and keeps a fixed socket-inactivity cap, so a direct statement through `pmon`
   is not bounded by it. The relay is a streaming passthrough with no discrete
   per-statement execution to guard, so this needs a per-statement watchdog plus
-  a backend cancel wired into the relay loop, not a value threaded through.
+  a target DB cancel wired into the relay loop, not a value threaded through.
 - Surface a contended daemon lock distinctly. `EnsureDaemon` connects first and
   spawns only on failure, and a daemon that loses the lock exits silently, so
   the caller sees a generic "did not come up" timeout. A caller in a loop
@@ -346,7 +348,7 @@ Fixes for gaps documented in
   use, is an open call.
 - MySQL binary / prepared-statement (`COM_STMT_*`) result masking. `COM_STMT_*`
   is decided and relayed, but a binary-protocol result set cannot be masked, so
-  a MASK verdict without `sql.unmaskable` fails closed. Masking it means
+  a MASK verdict without `exception.unmaskable` fails closed. Masking it means
   decoding the binary row format per column type, applying the mask, and
   re-encoding — including the length-encoding and null-bitmap changes that
   follow from a changed value.

@@ -10,6 +10,7 @@ import (
 
 	"github.com/ridi-oss/proxy-monster/goproxy/engine"
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
+	"github.com/ridi-oss/proxy-monster/goproxy/wire"
 	"github.com/ridi-oss/proxy-monster/mysqlwire"
 )
 
@@ -20,8 +21,27 @@ const (
 	maxFrontendTokenPacket     = 64 << 10
 )
 
+const (
+	shutdownEssno    = 1053 // ER_SERVER_SHUTDOWN
+	shutdownSQLState = "08S01"
+	shutdownMessage  = "proxy-monster: server shutting down"
+	// shutdownNoticeSeq frames the unsolicited notice as the response to the client's next command
+	// (command seq 0 → response seq 1), which a driver reads as a normal error before reconnecting.
+	shutdownNoticeSeq = 1
+)
+
+// writeShutdownNotice tells an idle client the proxy is going away, so its pool reconnects onto the
+// replacement task instead of seeing a bare TCP reset. Best-effort: the connection closes regardless.
+func writeShutdownNotice(clientConn net.Conn) {
+	_ = mysqlwire.WritePacket(clientConn, shutdownNoticeSeq, mysqlwire.ErrPacketState(
+		shutdownEssno,
+		shutdownSQLState,
+		shutdownMessage,
+	))
+}
+
 // handleConn performs the frontend clear-password token handshake, authenticates the service-account
-// backend, then runs one blocking command at a time.
+// target DB, then runs one blocking command at a time.
 func (s *Server) handleConn(clientConn net.Conn) {
 	defer clientConn.Close()
 
@@ -39,7 +59,7 @@ func (s *Server) handleConn(clientConn net.Conn) {
 		return
 	}
 	connID := s.connID.Add(1)
-	// true: this handler relays a handshake-supplied database to the backend as COM_INIT_DB below, so
+	// true: this handler relays a handshake-supplied database to the target DB as COM_INIT_DB below, so
 	// it is safe (and, for a real client's self-consistency, necessary) to advertise CapConnectWithDB.
 	greeting := mysqlwire.ServerGreeting(connID, scramble, frontendServerVersion, true)
 	if tlsConfig != nil {
@@ -113,7 +133,7 @@ func (s *Server) handleConn(clientConn net.Conn) {
 	if err := clientConn.SetReadDeadline(time.Time{}); err != nil {
 		return
 	}
-	clientConn = withIODeadlines(clientConn, frontendCommandIdleTimeout, socketWriteTimeout)
+	clientConn = s.WrapClientConn(clientConn)
 	token := mysqlwire.ParseClearPassword(tokenPayload)
 	clientAddr := clientConn.RemoteAddr().String()
 	identity, err := s.client.ValidateToken(token, clientAddr)
@@ -132,34 +152,34 @@ func (s *Server) handleConn(clientConn net.Conn) {
 	}()
 	slog.Info("authenticated mysql client", "client", clientConn.RemoteAddr().String(), "principal", identity.Principal, "roles", identity.Roles)
 
-	backendConn, err := dialBackendAuth(s.backend, deprecateEOF)
+	targetDbConn, err := dialTargetDbAuth(s.targetDb, deprecateEOF)
 	if err != nil {
-		slog.Warn("mysql backend unavailable", "host", s.backend.Host, "port", s.backend.Port, "error", err)
+		slog.Warn("mysql target DB unavailable", "host", s.targetDb.Host, "port", s.targetDb.Port, "error", err)
 		_ = mysqlwire.WritePacket(clientConn, tokenSeq+1, mysqlwire.ErrPacketState(
 			1045,
 			"08004",
-			"proxy-monster: backend unavailable",
+			"proxy-monster: target DB unavailable",
 		))
 		return
 	}
-	backendConn = withIODeadlines(backendConn, backendResponseIdleTimeout, socketWriteTimeout)
-	defer backendConn.Close()
+	targetDbConn = s.WrapTargetDbConn(targetDbConn)
+	defer targetDbConn.Close()
 
 	qe := engine.NewQueryEngine(s.db, s.client)
 	preparedStmts := make(map[uint32]preparedStmt)
 	if handshake.Database != "" {
 		// The client selected a database at connect time. Switching the current database is not a gated
-		// action, so relay it mechanically to the backend as COM_INIT_DB rather than synthesizing and
+		// action, so relay it mechanically to the target DB as COM_INIT_DB rather than synthesizing and
 		// authorizing a USE — the control plane enforces subsequent queries under the new namespace. The
-		// backend's response is consumed here (the client is still awaiting the single auth result): only a
+		// target DB's response is consumed here (the client is still awaiting the single auth result): only a
 		// failure is surfaced to the client, and the auth OK written below stands in for success.
 		payload := append([]byte{mysqlwire.ComInitDB}, handshake.Database...)
-		result, err := executeSingleResponse(backendConn, 0, payload)
+		result, err := executeSingleResponse(targetDbConn, 0, payload)
 		if err != nil {
 			_ = mysqlwire.WritePacket(clientConn, tokenSeq+1, mysqlwire.ErrPacketState(
 				1045,
 				"08004",
-				"proxy-monster: backend unavailable",
+				"proxy-monster: target DB unavailable",
 			))
 			return
 		}
@@ -171,12 +191,12 @@ func (s *Server) handleConn(clientConn net.Conn) {
 		qe.MarkNamespaceDirty()
 	}
 
-	generation := backendGeneration.Add(1)
-	if generation == 0 || generation > maxBackendGeneration {
+	generation, ok := wire.NextBackendGeneration()
+	if !ok {
 		return
 	}
 	refetcher := engine.NewRefetcher(s.db, identity.ConnectionID, generation, func(sql string, expectedColumns int) ([][]*string, error) {
-		return runInternalQuery(backendConn, deprecateEOF, sql, expectedColumns)
+		return runInternalQuery(targetDbConn, deprecateEOF, sql, expectedColumns)
 	}, s.client.PushSchemaFragment)
 	if err := refetcher.RunAll(identity.OnOpen); err != nil {
 		slog.Warn("mysql catalog initialization failed", "error", err)
@@ -205,12 +225,20 @@ func (s *Server) handleConn(clientConn net.Conn) {
 			return
 		}
 		if err != nil || len(payload) == 0 {
+			// The single drain point. A drain forces the client read deadline, so a handler waiting here for the
+			// next command unblocks and forwards the shutdown notice, and its pool reconnects onto the
+			// replacement task. Checking only here (not before the read) lets a command already decoded above the
+			// socket be served first; a command still in the kernel read buffer is preempted by the forced
+			// deadline and simply retried on reconnect. A plain idle-timeout or disconnect stays a silent close.
+			if s.Draining() {
+				writeShutdownNotice(clientConn)
+			}
 			return
 		}
 		cmd := payload[0]
 		switch cmd {
 		case mysqlwire.ComQuit:
-			_ = mysqlwire.WritePacket(backendConn, seq, payload)
+			_ = mysqlwire.WritePacket(targetDbConn, seq, payload)
 			return
 
 		case mysqlwire.ComQuery:
@@ -223,7 +251,7 @@ func (s *Server) handleConn(clientConn net.Conn) {
 				Token:          token,
 				ClientAddr:     clientAddr,
 				ConnectionID:   identity.ConnectionID,
-				ProbeNamespace: func() (engine.NamespaceProbe, error) { return probeNamespaceObservation(backendConn, deprecateEOF) },
+				ProbeNamespace: func() (engine.NamespaceProbe, error) { return probeNamespaceObservation(targetDbConn, deprecateEOF) },
 				RunCommands:    refetcher.RunAll,
 			}, refetcher, nil, func(toSend string, masks []*pb.ColumnMask) (bool, error) {
 				queryPayload := mysqlwire.ComQueryPayload(toSend)
@@ -237,10 +265,10 @@ func (s *Server) handleConn(clientConn net.Conn) {
 					}
 					return false, nil
 				}
-				if err := mysqlwire.WritePacket(backendConn, 0, queryPayload); err != nil {
+				if err := mysqlwire.WritePacket(targetDbConn, 0, queryPayload); err != nil {
 					return false, err
 				}
-				clean, stats, err := relayQueryResponseTracked(clientConn, backendConn, deprecateEOF, masks, errRedactor(qe))
+				clean, stats, err := relayQueryResponseTracked(clientConn, targetDbConn, deprecateEOF, masks, errRedactor(qe))
 				relayStats = stats
 				relayStatus = engine.RelayStatus(clean, err)
 				if err != nil {
@@ -273,15 +301,15 @@ func (s *Server) handleConn(clientConn net.Conn) {
 
 		case mysqlwire.ComInitDB:
 			// Switching the current database is not a gated action. Relay COM_INIT_DB mechanically to the
-			// backend and forward its OK/ERR verbatim; the control plane enforces subsequent queries under
+			// target DB and forward its OK/ERR verbatim; the control plane enforces subsequent queries under
 			// the new namespace via Decide. The database changed, so re-probe the namespace on the next query.
-			if _, err := relaySingleResponse(clientConn, backendConn, seq, payload, errRedactor(qe)); err != nil {
+			if _, err := relaySingleResponse(clientConn, targetDbConn, seq, payload, errRedactor(qe)); err != nil {
 				return
 			}
 			qe.MarkNamespaceDirty()
 
 		case mysqlwire.ComPing:
-			if _, err := relaySingleResponse(clientConn, backendConn, seq, payload, errRedactor(qe)); err != nil {
+			if _, err := relaySingleResponse(clientConn, targetDbConn, seq, payload, errRedactor(qe)); err != nil {
 				return
 			}
 
@@ -291,7 +319,7 @@ func (s *Server) handleConn(clientConn net.Conn) {
 			var frozen []string
 			var frozenAnsiQuotes bool
 			proceed, allowed, err := s.authorize(qe, clientConn, seq, sql, token, clientAddr, identity.ConnectionID, refetcher.RunAll, func() (engine.NamespaceProbe, error) {
-				obs, err := probeNamespaceObservation(backendConn, deprecateEOF)
+				obs, err := probeNamespaceObservation(targetDbConn, deprecateEOF)
 				if err == nil {
 					frozen = append([]string{}, obs.Namespace...)
 					frozenAnsiQuotes = obs.MySQLAnsiQuotes
@@ -340,10 +368,10 @@ func (s *Server) handleConn(clientConn net.Conn) {
 			}
 			// After-statement commands from PREPARE are deliberately ignored: PREPARE executes no statement effect,
 			// and EXECUTE obtains its own fresh verdict whose commands govern the actual execution.
-			if err := mysqlwire.WritePacket(backendConn, 0, toSend); err != nil {
+			if err := mysqlwire.WritePacket(targetDbConn, 0, toSend); err != nil {
 				return
 			}
-			stmtID, prepared, err := relayStmtPrepareResponse(clientConn, backendConn, deprecateEOF, errRedactor(qe))
+			stmtID, prepared, err := relayStmtPrepareResponse(clientConn, targetDbConn, deprecateEOF, errRedactor(qe))
 			if err != nil {
 				return
 			}
@@ -411,14 +439,14 @@ func (s *Server) handleConn(clientConn net.Conn) {
 				continue
 			}
 
-			// The fresh verdict authorized exactly the SQL already prepared on the backend under exactly its
+			// The fresh verdict authorized exactly the SQL already prepared on the target DB under exactly its
 			// frozen namespace. EXECUTE is forwarded verbatim; a fresh rewrite and masks cannot be applied to
 			// the binary path and are deliberately ignored.
 			start := time.Now()
-			if err := mysqlwire.WritePacket(backendConn, 0, payload); err != nil {
+			if err := mysqlwire.WritePacket(targetDbConn, 0, payload); err != nil {
 				return
 			}
-			ok, stats, err := relayQueryResponseTracked(clientConn, backendConn, deprecateEOF, nil, errRedactor(qe))
+			ok, stats, err := relayQueryResponseTracked(clientConn, targetDbConn, deprecateEOF, nil, errRedactor(qe))
 			// Post-relay, best-effort completion for this binary-protocol EXECUTE (no-op if unaudited).
 			engine.EmitCompletion(s.client, proceed.Decision, stats, engine.RelayStatus(ok, err), start)
 			if err != nil {
@@ -439,7 +467,7 @@ func (s *Server) handleConn(clientConn net.Conn) {
 				continue
 			}
 			delete(preparedStmts, id)
-			if err := mysqlwire.WritePacket(backendConn, seq, payload); err != nil {
+			if err := mysqlwire.WritePacket(targetDbConn, seq, payload); err != nil {
 				return
 			}
 
@@ -448,7 +476,7 @@ func (s *Server) handleConn(clientConn net.Conn) {
 			if _, ok := preparedStmts[id]; err != nil || !ok {
 				continue
 			}
-			if err := mysqlwire.WritePacket(backendConn, seq, payload); err != nil {
+			if err := mysqlwire.WritePacket(targetDbConn, seq, payload); err != nil {
 				return
 			}
 
@@ -460,7 +488,7 @@ func (s *Server) handleConn(clientConn net.Conn) {
 				}
 				continue
 			}
-			if _, err := relaySingleResponse(clientConn, backendConn, seq, payload, errRedactor(qe)); err != nil {
+			if _, err := relaySingleResponse(clientConn, targetDbConn, seq, payload, errRedactor(qe)); err != nil {
 				return
 			}
 
@@ -537,41 +565,41 @@ type singleResponse struct {
 	schema  *string
 }
 
-func executeSingleResponse(backend net.Conn, seq byte, payload []byte) (singleResponse, error) {
-	if err := mysqlwire.WritePacket(backend, seq, payload); err != nil {
+func executeSingleResponse(targetDb net.Conn, seq byte, payload []byte) (singleResponse, error) {
+	if err := mysqlwire.WritePacket(targetDb, seq, payload); err != nil {
 		return singleResponse{}, err
 	}
-	responseSeq, response, err := mysqlwire.ReadPacket(backend)
+	responseSeq, response, err := mysqlwire.ReadPacket(targetDb)
 	if err != nil {
 		return singleResponse{}, err
 	}
 	if len(response) == 0 {
-		return singleResponse{}, errors.New("mysqlproxy: empty single-packet backend response")
+		return singleResponse{}, errors.New("mysqlproxy: empty single-packet target-DB response")
 	}
 	result := singleResponse{seq: responseSeq, payload: response}
 	switch response[0] {
 	case 0x00:
-		result.payload, _, result.schema, _, err = normalizeBackendOK(response)
+		result.payload, _, result.schema, _, err = normalizeTargetDbOK(response)
 		if err != nil {
 			return singleResponse{}, err
 		}
 		result.ok = true
 	case 0xff:
-		// Preserve the backend ERR packet for the frontend.
+		// Preserve the target-DB ERR packet for the frontend.
 	default:
-		return singleResponse{}, fmt.Errorf("mysqlproxy: unexpected single-packet backend response 0x%02x", response[0])
+		return singleResponse{}, fmt.Errorf("mysqlproxy: unexpected single-packet target-DB response 0x%02x", response[0])
 	}
 	return result, nil
 }
 
-// relaySingleResponse forwards a command and exactly one backend packet, translating a session-tracked OK
+// relaySingleResponse forwards a command and exactly one target DB packet, translating a session-tracked OK
 // into the frontend's non-tracking packet shape.
-func relaySingleResponse(client, backend net.Conn, seq byte, payload []byte, redactErr func([]byte) []byte) (singleResponse, error) {
-	result, err := executeSingleResponse(backend, seq, payload)
+func relaySingleResponse(client, targetDb net.Conn, seq byte, payload []byte, redactErr func([]byte) []byte) (singleResponse, error) {
+	result, err := executeSingleResponse(targetDb, seq, payload)
 	if err != nil {
 		return singleResponse{}, err
 	}
-	// A single-response backend ERR (COM_INIT_DB / COM_PING / COM_STMT_RESET) is a mandated redaction site
+	// A single-response target-DB ERR (COM_INIT_DB / COM_PING / COM_STMT_RESET) is a mandated redaction site
 	// (fail-closed): strip it on a redacted decision before forwarding. See docs/diagnostic-redaction.md.
 	if !result.ok && redactErr != nil && len(result.payload) > 0 && result.payload[0] == 0xff {
 		result.payload = redactErr(result.payload)

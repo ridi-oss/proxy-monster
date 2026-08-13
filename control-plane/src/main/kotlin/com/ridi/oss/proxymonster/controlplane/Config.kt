@@ -95,6 +95,14 @@ data class Config(
     val mcpRefreshTtlSeconds: Long = 21_600,
     val mcpDebugAutoConsent: Boolean = true,
     val queryTimeoutSeconds: Long = 600,
+    // Out-of-band task notifications (docs/notifications.md). Both Slack tokens must be present for the
+    // transport to exist; either absent leaves the whole layer inert and the workflow unchanged — the same
+    // posture as an unset PM_SCIM_TOKEN disabling SCIM, never a degraded half-configured mode.
+    val slackBotToken: String? = null,
+    val slackAppToken: String? = null,
+    val notifyStatement: String = "auto",
+    // Fallback language for a recipient who has never set one (app_user.locale).
+    val notifyLocale: String = "en",
 ) {
     init {
         require(webSessionSlideSeconds < webSessionIdleSeconds) {
@@ -141,10 +149,10 @@ data class Config(
         const val MAX_QUERY_TIMEOUT_SECONDS = 9_223_372_006L
 
         // The control-plane's per-statement exchange budget sits this far above the configured query
-        // timeout so the proxy's PM_QUERY_TIMEOUT watchdog — which starts later, at backend exec — fires
+        // timeout so the proxy's PM_QUERY_TIMEOUT watchdog — which starts later, at target-DB exec — fires
         // first and cancels the statement in-band, rather than the CP exchange pre-empting it.
         // Headroom the exchange budget adds over the proxy's own statement watchdog. It has to absorb
-        // everything the proxy does around the guarded execution — the watchdog wraps only the backend
+        // everything the proxy does around the guarded execution — the watchdog wraps only the target DB
         // statement, while authorization and the catalog probes before it run outside that guard and have
         // been measured in the tens of seconds against a large remote catalog. Too small and the control
         // plane calls a timeout on a statement whose watchdog has not fired, blaming the query for time
@@ -207,12 +215,35 @@ data class Config(
                 "PM_SESSION_SECRET must be a non-default secret of at least 32 characters when PM_AUTH_DEBUG is false"
             }
             require(authDebug || oidc != null) { "PM_OIDC_* must be configured when PM_AUTH_DEBUG is false" }
+            val secretToken = env("PM_SECRET_TOKEN")
+            require(authDebug || !secretToken.isNullOrBlank()) {
+                "PM_SECRET_TOKEN must be configured when PM_AUTH_DEBUG is false"
+            }
             if (!authDebug) {
                 requireSecureOidcUri(requireNotNull(oidc).issuer, "PM_OIDC_ISSUER")
                 require(oidc.redirectUri == "$mcpIssuer/auth/oidc/callback") {
                     "PM_OIDC_REDIRECT_URI must equal the co-hosted control-plane callback URI"
                 }
             }
+
+            // A set-but-garbage value fails fast rather than silently falling back: a misconfigured
+            // disclosure mode decides how much query text leaves the building. The removed `truncated` mode
+            // (a first-N-chars cut is no PII guarantee) coerces to `auto` — the hint-gated show it always was
+            // beneath the truncation — with a warning, so an existing config is not broken by the rename.
+            val notifyStatement = (env("PM_NOTIFY_STATEMENT") ?: "auto").trim().lowercase().let {
+                if (it == "truncated") {
+                    org.slf4j.LoggerFactory.getLogger(Config::class.java)
+                        .warn("PM_NOTIFY_STATEMENT=truncated is removed; using auto (hint-gated disclosure)")
+                    "auto"
+                } else {
+                    it
+                }
+            }
+            require(notifyStatement in setOf("omit", "auto", "full")) {
+                "PM_NOTIFY_STATEMENT must be one of omit|auto|full; got '$notifyStatement'"
+            }
+            val notifyLocale = (env("PM_NOTIFY_LOCALE") ?: "en").trim().lowercase()
+            require(notifyLocale in setOf("en", "ko")) { "PM_NOTIFY_LOCALE must be one of en|ko; got '$notifyLocale'" }
 
             return Config(
                 httpPort = env("PM_HTTP_PORT")?.toIntOrNull() ?: 8080,
@@ -221,7 +252,7 @@ data class Config(
                 dbUser = env("PM_DB_USER") ?: "proxymonster",
                 dbPassword = env("PM_DB_PASSWORD") ?: "proxymonster",
                 authDebug = authDebug,
-                secretToken = env("PM_SECRET_TOKEN"),
+                secretToken = secretToken,
                 sessionSecret = sessionSecret,
                 oidc = oidc,
                 resultKey = env("PM_RESULT_KEY")?.let { b64 ->
@@ -253,6 +284,10 @@ data class Config(
                 mcpRefreshTtlSeconds = clampTtlSeconds(env("PM_OAUTH_REFRESH_TTL")?.toLongOrNull() ?: 21_600),
                 mcpDebugAutoConsent = env("PM_OAUTH_DEBUG_AUTO_CONSENT")?.toBooleanStrictOrNull() ?: true,
                 queryTimeoutSeconds = queryTimeoutSeconds,
+                slackBotToken = env("PM_SLACK_BOT_TOKEN")?.takeIf { it.isNotBlank() },
+                slackAppToken = env("PM_SLACK_APP_TOKEN")?.takeIf { it.isNotBlank() },
+                notifyStatement = notifyStatement,
+                notifyLocale = notifyLocale,
             )
         }
 

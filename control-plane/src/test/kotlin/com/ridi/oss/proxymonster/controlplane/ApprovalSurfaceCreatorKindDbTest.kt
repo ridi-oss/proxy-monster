@@ -1,7 +1,10 @@
 package com.ridi.oss.proxymonster.controlplane
 
+import com.ridi.oss.proxymonster.controlplane.authz.CedarPolicyInput
 import com.ridi.oss.proxymonster.controlplane.support.SharedPostgres
 import com.ridi.oss.proxymonster.controlplane.support.requireDockerOrSkip
+import com.ridi.oss.proxymonster.controlplane.support.testLoginRoute
+import com.ridi.oss.proxymonster.controlplane.support.webSessionCookie
 import io.ktor.client.HttpClient
 import io.ktor.client.call.body
 import io.ktor.client.plugins.contentnegotiation.ContentNegotiation as ClientContentNegotiation
@@ -16,6 +19,7 @@ import io.ktor.serialization.kotlinx.json.json
 import io.ktor.server.application.install
 import io.ktor.server.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.server.routing.routing
+import io.ktor.server.sessions.Sessions
 import io.ktor.server.testing.ApplicationTestBuilder
 import io.ktor.server.testing.testApplication
 import kotlinx.serialization.json.Json
@@ -35,9 +39,8 @@ import kotlin.test.assertTrue
  * task per Decide, so without the creator_kind guard every statement the principal ran would pollute their
  * approvals feed and expose a nonsensical (null-SQL) approve/execute action surface.
  *
- * Runs under authDebug=true, so the Cedar task.approve/read gates short-circuit true and the creator_kind
- * guard is the SOLE gate under test: if it were absent, these routes would happily serve the WIRE/EDITOR
- * rows here.
+ * The caller is granted task.approve/read/assume outright, so the creator_kind guard is the SOLE gate under
+ * test: if it were absent, these routes would happily serve the WIRE/EDITOR rows here.
  */
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 class ApprovalSurfaceCreatorKindDbTest {
@@ -48,7 +51,9 @@ class ApprovalSurfaceCreatorKindDbTest {
     private lateinit var datasource: Datasource
     private lateinit var config: Config
 
-    private val principal = "debug-user" // the authDebug fallback principal (no session cookie is sent)
+    private lateinit var sessionStore: PrincipalSessionStore
+
+    private val principal = "dev@example.com"
 
     @BeforeAll
     fun setup() {
@@ -58,31 +63,52 @@ class ApprovalSurfaceCreatorKindDbTest {
         core = ControlPlaneCore(dataSource)
         runExecService = RunExecService(core)
         resultStore = QueryResultStore(dataSource, ResultCrypto(ByteArray(32) { it.toByte() }))
+        sessionStore = PrincipalSessionStore(dataSource, null)
         datasource = core.datasourceStore.create(
             DatasourceInput(name = "surface-ds", engine = "postgres", host = "localhost", port = 5432, dbName = "app"),
         )
+        // Blanket task authority for the caller, so every 404 below is the creator_kind guard's and never a
+        // missing grant. task.assume covers the /result case, which is gated separately from the rest.
+        core.cedarPolicyStore.create(
+            CedarPolicyInput(
+                name = "approval-surface-test-task-authority",
+                cedarSrc = """permit(
+                    principal == User::"$principal",
+                    action in [
+                        Action::"task.approve", Action::"task.read", Action::"task.cancel", Action::"task.assume"
+                    ],
+                    resource
+                );""",
+            ),
+            updatedBy = null,
+        )
         config = Config(
-            httpPort = 0, dbUrl = "", dbUser = "", dbPassword = "", authDebug = true, secretToken = null,
+            httpPort = 0, dbUrl = "", dbUser = "", dbPassword = "", authDebug = false, secretToken = null,
             sessionSecret = "surface-test-secret", oidc = null, resultKey = null, scimToken = null,
             sessionWindowSeconds = 3600, idpRecheckIntervalSeconds = 600, devMarker = true,
         )
     }
 
-    private fun ApplicationTestBuilder.wire(): HttpClient {
+    private suspend fun ApplicationTestBuilder.wire(): HttpClient {
         application {
+            attributes.put(PRINCIPAL_SESSION_STORE, sessionStore)
             install(ContentNegotiation) { json(Json { ignoreUnknownKeys = true; encodeDefaults = true }) }
+            install(Sessions) { webSessionCookie(sessionStore, config.sessionSecret) }
             routing {
+                testLoginRoute(sessionStore, config)
                 approvalRoutes(
                     config, core.accessStore, core.auditStore, core.datasourceStore, core.policyStore,
                     core.userGroupStore, resultStore, core.roleResolver, core.authz, runExecService,
                 )
             }
         }
-        return createClient {
+        val client = createClient {
             expectSuccess = false
             install(HttpCookies)
             install(ClientContentNegotiation) { json(Json { ignoreUnknownKeys = true }) }
         }
+        assertEquals(HttpStatusCode.NoContent, client.post("/test/session/$principal").status)
+        return client
     }
 
     private fun seedWorkflowRequest(): Long = core.accessStore.createQueryRequest(
@@ -130,7 +156,7 @@ class ApprovalSurfaceCreatorKindDbTest {
         assertUnreachableAsApproval(client, seedEditorTask())
     }
 
-    /** Every id-addressed approval route must 404 a non-WORKFLOW task even though authDebug clears the Cedar gate. */
+    /** Every id-addressed approval route must 404 a non-WORKFLOW task even though the Cedar gate passes. */
     private suspend fun assertUnreachableAsApproval(client: HttpClient, id: Long) {
         assertEquals(HttpStatusCode.NotFound, client.get("/api/approvals/$id").status, "detail")
         assertEquals(HttpStatusCode.NotFound, client.post("/api/approvals/$id/approve").status, "approve")

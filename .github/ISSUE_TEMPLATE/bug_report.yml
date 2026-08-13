@@ -148,11 +148,11 @@ body:
       label: Environment
       description: >-
         How you are running it — the local `mise run dev` stack or your own
-        deployment — plus the OS, the backend database version, and the client
+        deployment — plus the OS, the target database version, and the client
         you connected with (`mysql`, `psql`, JDBC, the console editor).
       placeholder: |
         Local `mise run dev` stack on macOS 15 (Apple Silicon)
-        Backend: MySQL 8.4 (sample compose backend)
+        Target DB: MySQL 8.4 (sample compose target DB)
         Client: mysql 8.4 CLI through pmon
     validations:
       required: true

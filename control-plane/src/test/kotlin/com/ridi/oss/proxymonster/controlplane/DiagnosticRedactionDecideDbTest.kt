@@ -56,9 +56,24 @@ class DiagnosticRedactionDecideDbTest {
         assertEquals(EnfAction.ALLOW, allow.action)
         assertTrue(allow.sanitizeDiagnostics, "production + not a full-cleartext reader + PG leaks on ALLOW → redact")
 
-        val mask = decide("select id, rrn from users order by id")
+        val mask = decide("select id, ssn from users order by id")
         assertEquals(EnfAction.MASK, mask.action)
         assertTrue(mask.sanitizeDiagnostics, "a MASK decision touches protected data → redact")
+        setTags("""["system:development"]""")
+    }
+
+    @Test
+    fun `a no-column relay still carries diagnostic redaction (the path a literal DML write takes)`() {
+        // `SELECT 1` touches no column/table/function, so it relays through the verbatim passthrough — the
+        // same shortcut a literal `UPDATE users SET x='y'` / `DELETE FROM users` reaches (their write target
+        // gates on the kind, not a column grant). That relay must NOT drop sanitizeDiagnostics: a PostgreSQL
+        // constraint error on such a write echoes the whole row (`DETAIL: Failing row contains (…)`), which
+        // the redaction strips for a principal without unmasked read.
+        setTags("""["system:production"]""")
+        val r = decide("select 1")
+        assertEquals(EnfAction.ALLOW, r.action)
+        assertTrue(r.passthrough, "a no-column statement relays verbatim")
+        assertTrue(r.sanitizeDiagnostics, "production + not a full-cleartext reader + PG leaks on ALLOW → redact even on a relay")
         setTags("""["system:development"]""")
     }
 }

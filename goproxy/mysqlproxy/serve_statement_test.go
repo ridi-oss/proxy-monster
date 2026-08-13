@@ -106,11 +106,11 @@ func TestRunStatementMySQLUncappedHasNoBracket(t *testing.T) {
 	}
 }
 
-func TestRunStatementMySQLResetsAfterBackendError(t *testing.T) {
+func TestRunStatementMySQLResetsAfterTargetDbError(t *testing.T) {
 	response := mysqlPacket(t, mysqlwire.ErrPacketState(1146, "42S02", "missing"))
 	_, err, writes := runMySQLStatement(t, 2, response)
 	if err == nil || !strings.Contains(err.Error(), "missing") {
-		t.Fatalf("err = %v, want backend error", err)
+		t.Fatalf("err = %v, want target-DB error", err)
 	}
 	if len(writes) != 3 || writes[2] != "SET SQL_SELECT_LIMIT = DEFAULT" {
 		t.Fatalf("writes = %v, want reset after ERR", writes)

@@ -65,7 +65,7 @@ class ManagementAuditRecorder(private val auditStore: AuditStore) {
         const val KIND_ADMIN = "admin"
         const val OUTCOME_ALLOW = "ALLOW"
 
-        /** Admin events are instance-scoped, not tied to a target backend; the query-decision `datasource`
+        /** Admin events are instance-scoped, not tied to a target DB; the query-decision `datasource`
          *  slot carries the control plane itself, matching the existing SYSTEM-policy-toggle event. */
         private const val DATASOURCE = "control-plane"
     }

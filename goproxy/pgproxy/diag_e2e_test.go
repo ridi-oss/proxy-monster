@@ -13,8 +13,8 @@ import (
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
 )
 
-// End-to-end proof, through the real proxy against a real PostgreSQL backend, that a
-// diagnostic-redacted connection (Verdict.sanitize_diagnostics) never relays a stored value in a backend
+// End-to-end proof, through the real proxy against a real PostgreSQL target DB, that a
+// diagnostic-redacted connection (Verdict.sanitize_diagnostics) never relays a stored value in a target DB
 // error's fields — the whole-row `DETAIL: Failing row contains (…)` leak from the design — while a
 // non-redacted connection does (so the test exercises a genuine leak the redaction closes). Complements the
 // unit-level field-strip tests. See docs/diagnostic-redaction.md.

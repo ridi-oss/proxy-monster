@@ -27,7 +27,7 @@ analyzer/
   go.mod                     Go module github.com/ridi-oss/proxy-monster/analyzer;
                              pins github.com/ridi-oss/sqlglot-go v0.22.0
   probe/                     the analyzer (package probe)
-    facts.go                 EmitFacts: classify the statement + emit every RequiredGrant (100% AST)
+    facts.go                 EmitFacts: classify the statement + emit statement_exec + result-read grants
     probe.go, helpers.go     internal column lineage + reference bucketing + SELECT * expansion
     pb/analyzer.pb.go        generated Go bindings for analyzer.proto
     *_test.go                golden (hermetic) + parity (vs Python sqlglot) + admission-parity + unit tests
@@ -128,18 +128,20 @@ target, which also provides FFM.
 
 Fail-closed. Any malformed/unparseable input or internal error returns a valid
 `StatementFacts{resolved:false, …}` — never an exception. A non-resolved result
-is treated as DENY (fail-open only on `system:development`'s `sql.unanalyzable`
-gate). This is the safe direction for a security probe: a parser gap becomes
-DENY rather than a leak.
+is treated as DENY (fail-open only on `system:development`'s
+`exception.unanalyzable` gate). This is the safe direction for a security probe:
+a parser gap becomes DENY rather than a leak.
 
 All SQL understanding lives here on the AST — the analyzer never scans SQL text.
-`EXPLAIN`/`DESCRIBE` is decided structurally: an EXPLAIN-of-a-query (including
-`EXPLAIN ANALYZE`, which executes its inner statement) is analyzed as that inner
-statement and inherits its column enforcement, while a DESCRIBE-of-a-table is
-metadata passthrough. MySQL executable comments (`/*!NNNNN … */`) are decoded
-and analyzed under the connection's server version. A statement whose lineage
-the analyzer cannot pin to concrete source columns degrades to a fail-closed
+`EXPLAIN`/`DESCRIBE` is decided structurally. An EXPLAIN returns the query plan,
+not rows: a plan-only EXPLAIN of a READ is the read-shaped `stmt.kind.explain`
+(its projected columns are read to build the plan, not output, so no mask
+binds), while an EXPLAIN of a WRITE keeps the write's own kind and its
+`DENY_STATEMENT` payload protection. A DESCRIBE-of-a-table is metadata
+passthrough. MySQL executable comments (`/*!NNNNN … */`) are decoded and
+analyzed under the connection's server version. A statement whose lineage the
+analyzer cannot pin to concrete source columns degrades to a fail-closed
 over-deny rather than a leak — `NATURAL JOIN` (shared-column lineage is
 ambiguous), `PIVOT`, a data-modifying CTE, and `SELECT *` over a table-function
 / `VALUES` / `LATERAL` source (no fixed column list, so mask ordinals cannot be
-bound) all resolve false and route through the `sql.unanalyzable` gate.
+bound) all resolve false and route through the `exception.unanalyzable` gate.

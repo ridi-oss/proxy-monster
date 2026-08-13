@@ -1,6 +1,7 @@
 package pgproxy
 
 import (
+	"context"
 	"crypto/tls"
 	"log/slog"
 	"net"
@@ -8,6 +9,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgproto3"
 	"github.com/ridi-oss/proxy-monster/goproxy/engine"
+	"github.com/ridi-oss/proxy-monster/goproxy/wire"
 )
 
 const (
@@ -17,7 +19,7 @@ const (
 )
 
 type sessionCore struct {
-	backend          *pgproto3.Frontend
+	targetDb         *pgproto3.Frontend
 	qe               *engine.QueryEngine
 	db               engine.Db
 	lastTxStatus     byte
@@ -32,7 +34,7 @@ type session struct {
 	sessionCore
 	client       *pgproto3.Backend
 	clientConn   net.Conn
-	backendConn  net.Conn
+	targetDbConn net.Conn
 	token        string
 	clientAddr   string
 	connectionID []byte
@@ -160,28 +162,28 @@ startupComplete:
 	defer func() { _ = s.client.CloseConnection(identity.ConnectionID) }()
 	slog.Info("authenticated postgres client", "client", rawClientConn.RemoteAddr().String(), "principal", identity.Principal, "roles", identity.Roles)
 
-	backendConn, parameters, keyData, txStatus, err := dialBackendAuth(s.backend)
+	targetDbConn, parameters, keyData, txStatus, err := dialTargetDbAuth(context.Background(), s.targetDb)
 	if err != nil {
-		slog.Warn("postgres backend unavailable", "host", s.backend.Host, "port", s.backend.Port, "error", err)
-		_ = sendError(client, "FATAL", "08004", "proxy-monster: backend unavailable", false, 0)
+		slog.Warn("postgres target DB unavailable", "host", s.targetDb.Host, "port", s.targetDb.Port, "error", err)
+		_ = sendError(client, "FATAL", "08004", "proxy-monster: target DB unavailable", false, 0)
 		return
 	}
-	defer backendConn.Close()
+	defer targetDbConn.Close()
 
 	client.SetMaxBodyLen(maxFrontendFrameBody)
-	clientIO.Conn = withIODeadlines(clientConn, frontendCommandIdleTimeout, socketWriteTimeout)
+	clientIO.Conn = s.WrapClientConn(clientConn)
 	clientIO.strictReads = false
-	backendConn = withIODeadlines(backendConn, backendResponseIdleTimeout, socketWriteTimeout)
-	backend := pgproto3.NewFrontend(backendConn, backendConn)
+	targetDbConn = s.WrapTargetDbConn(targetDbConn)
+	targetDb := pgproto3.NewFrontend(targetDbConn, targetDbConn)
 
-	backendGen := backendGeneration.Add(1)
-	if backendGen == 0 || backendGen > maxBackendGeneration {
+	backendGen, ok := wire.NextBackendGeneration()
+	if !ok {
 		_ = sendError(client, "FATAL", "08004", "proxy-monster: backend generation unavailable", false, 0)
 		return
 	}
 	sess := &session{
 		sessionCore: sessionCore{
-			backend:      backend,
+			targetDb:     targetDb,
 			qe:           engine.NewQueryEngine(s.db, s.client),
 			db:           s.db,
 			lastTxStatus: txStatus,
@@ -190,7 +192,7 @@ startupComplete:
 		},
 		client:       client,
 		clientConn:   clientIO,
-		backendConn:  backendConn,
+		targetDbConn: targetDbConn,
 		token:        password.Password,
 		clientAddr:   rawClientConn.RemoteAddr().String(),
 		connectionID: append([]byte(nil), identity.ConnectionID...),
@@ -218,6 +220,16 @@ startupComplete:
 	for {
 		message, err := client.Receive()
 		if err != nil {
+			// The single drain point. A drain forces the client read deadline, so a handler waiting here for the
+			// next message unblocks and sends the FATAL shutdown notice, and its pool reconnects onto the
+			// replacement task. Checking only here (not before the read) lets a Sync already decoded above the
+			// socket after a completed Execute be answered with ReadyForQuery first; a Sync still in the kernel
+			// read buffer is preempted by the forced deadline, so the completed Execute is rolled back on close
+			// and the client reconnects and retries it (the pipelined-drain limitation in KNOWN_LIMITATIONS).
+			// A plain idle-timeout or client disconnect stays a silent close.
+			if s.Draining() {
+				_ = sendShutdownNotice(client)
+			}
 			return
 		}
 		if sess.skipToSync {
@@ -279,6 +291,14 @@ startupComplete:
 			return
 		}
 	}
+}
+
+// sendShutdownNotice tells an idle client the proxy is going away, so its pool reconnects onto the
+// replacement task instead of seeing a bare TCP reset. FATAL 57P01 (admin_shutdown) is what PostgreSQL
+// itself sends on shutdown, so a driver already treats it as a reconnect signal. Best-effort: the
+// connection closes regardless.
+func sendShutdownNotice(client *pgproto3.Backend) error {
+	return sendError(client, "FATAL", "57P01", "proxy-monster: server shutting down", false, 0)
 }
 
 func sendError(client *pgproto3.Backend, severity, code, message string, ready bool, txStatus byte) error {

@@ -111,7 +111,7 @@ internal fun DatasourceStore.pushTestCatalog(
 
 /**
  * A fully wired enforcement stack against real databases: a Flyway-migrated Postgres control-plane
- * store plus a seeded target database (Postgres or MySQL) whose `users.rrn` is tagged pii and
+ * store plus a seeded target database (Postgres or MySQL) whose `users.ssn` is tagged pii and
  * carries a last4 mask, with Cedar policies granting the `analyst` role cleartext on `users` EXCEPT
  * pii (masked instead) — the "read table except pii" pattern (docs/authz-model.md). The target also
  * has an UNGRANTED `orders` table (no Cedar grant covers it) so deny-by-default is provable
@@ -129,7 +129,7 @@ class EnforcementFixture(
     val daemonSessionStore: PrincipalSessionStore,
     val datasource: Datasource,
     val role: String,
-    val cleartextRrn: List<String>,
+    val cleartextSsn: List<String>,
     val roleResolver: RoleResolver,
     val authz: Authz,
     val dataSource: DataSource,
@@ -182,7 +182,7 @@ class EnforcementFixture(
 
     companion object {
         private const val ROLE = "analyst"
-        private val CLEARTEXT = listOf("900101-1234567", "850202-2345678")
+        private val CLEARTEXT = listOf("987-65-4320", "987-65-4321")
 
         /** Build a control-plane store on a fresh migrated Postgres metadata database. */
         private fun metadataStores(): MetaStores {
@@ -196,21 +196,21 @@ class EnforcementFixture(
         }
 
         /**
-         * Classifies `users.rrn` as pii + last4-masked, grants `analyst` a direct role assignment,
+         * Classifies `users.ssn` as pii + last4-masked, grants `analyst` a direct role assignment,
          * then seeds the Cedar "read table except pii" pair (docs/authz-model.md worked example):
          * cleartext on every `users` column NOT tagged pii, masked on the ones that are. Deny-by-
          * default covers everything else (a column with no matching grant at all -> DENIED, never
          * cleartext) — that's what `non-sensitive query is allowed` (EnforcementDbTest) actually
          * proves: `region`/`id` are ungranted-by-name but covered by the table-level permit.
          *
-         * Also seeds the once-per-query `datasource.connect` / `sql.<kind>` gates: `analyst` gets
-         * `datasource.connect` + `sql.select` (so all the existing SELECT-based EnforcementDbTest cases
-         * stay green once the gates are live), plus two more roles/principals that prove the gates'
-         * ordering and composition: `no-connect-reader` (sql.select + result.read.unmasked, but NO
-         * datasource.connect — proves connect is checked first) and `ddl-writer` (datasource.connect +
-         * sql.ddl + the same users unmasked/masked-pii pair `analyst` has — proves a CTAS that reads a
-         * masked column still gets caught by PolicyEvaluator's write-payload rule even though sql.ddl
-         * itself is granted).
+         * Also seeds the once-per-query `datasource.connect` / statement-category gates: `analyst` gets
+         * `datasource.connect` + `stmt.cat.read` (plus `stmt.cat.metadata`/`stmt.cat.session` for benign
+         * passthrough), so all the existing SELECT-based EnforcementDbTest cases stay green once the gates
+         * are live, plus two more roles/principals that prove the gates' ordering and composition:
+         * `no-connect-reader` (stmt.cat.read + result.read.unmasked, but NO datasource.connect — proves
+         * connect is checked first) and `ddl-writer` (datasource.connect + stmt.cat.ddl + the same users
+         * unmasked/masked-pii pair `analyst` has — proves a CTAS that reads a masked column still gets
+         * caught by PolicyEvaluator's write-payload rule even though stmt.cat.ddl itself is granted).
          */
         private fun seedPolicy(s: MetaStores, ds: Datasource): Datasource {
             val catalog = ds.engine.catalogName(ds.dbName)
@@ -219,7 +219,7 @@ class EnforcementFixture(
             val maskFn = s.policyStore.createMaskFn(MaskFnInput("last4", "LAST_N"))
             s.datasourceStore.upsertClassification(
                 ds.id,
-                ClassificationInput(schema = schema, table = "users", column = "rrn", tags = listOf("pii"), maskFnId = maskFn.id),
+                ClassificationInput(schema = schema, table = "users", column = "ssn", tags = listOf("pii"), maskFnId = maskFn.id),
             )
             val role = s.policyStore.createRole(RoleInput(ROLE))
             // Direct principal_role assignment so RoleResolver.resolve("analyst@example.com") — the
@@ -246,7 +246,10 @@ class EnforcementFixture(
             s.cedarPolicyStore.create(
                 CedarPolicyInput(
                     name = "analyst-connect-select",
-                    cedarSrc = """permit(principal in Role::"$ROLE", action in [Action::"datasource.connect", Action::"sql.select"], resource in Datasource::"${ds.name}");""",
+                    // Plus stmt.cat.metadata / stmt.cat.session so a plain reader's benign SHOW/DESCRIBE and
+                    // SET/BEGIN passthrough still clears the kind gate (this bespoke datasource carries no
+                    // system:development preset that would grant those categories).
+                    cedarSrc = """permit(principal in Role::"$ROLE", action in [Action::"datasource.connect", Action::"stmt.cat.read", Action::"stmt.cat.metadata", Action::"stmt.cat.session"], resource in Datasource::"${ds.name}");""",
                 ),
                 updatedBy = "test-fixture",
             )
@@ -258,7 +261,7 @@ class EnforcementFixture(
             s.cedarPolicyStore.create(
                 CedarPolicyInput(
                     name = "no-connect-reader-select",
-                    cedarSrc = """permit(principal in Role::"no-connect-reader", action == Action::"sql.select", resource in Datasource::"${ds.name}");""",
+                    cedarSrc = """permit(principal in Role::"no-connect-reader", action in [Action::"stmt.cat.read"], resource in Datasource::"${ds.name}");""",
                 ),
                 updatedBy = "test-fixture",
             )
@@ -271,14 +274,14 @@ class EnforcementFixture(
             )
 
             // `ddl-writer` — datasource.connect + sql.ddl, plus the same users unmasked/masked-pii pair
-            // `analyst` has, so a CTAS reading `rrn` resolves it to MASKED and the write-payload rule in
+            // `analyst` has, so a CTAS reading `ssn` resolves it to MASKED and the write-payload rule in
             // PolicyEvaluator.evaluate fires even though sql.ddl itself is granted.
             val ddlRole = s.policyStore.createRole(RoleInput("ddl-writer"))
             s.policyStore.createAssignment(RoleAssignmentInput("writer@example.com", ddlRole.id))
             s.cedarPolicyStore.create(
                 CedarPolicyInput(
                     name = "ddl-writer-connect-ddl",
-                    cedarSrc = """permit(principal in Role::"ddl-writer", action in [Action::"datasource.connect", Action::"sql.ddl"], resource in Datasource::"${ds.name}");""",
+                    cedarSrc = """permit(principal in Role::"ddl-writer", action in [Action::"datasource.connect", Action::"stmt.cat.ddl"], resource in Datasource::"${ds.name}");""",
                 ),
                 updatedBy = "test-fixture",
             )
@@ -298,15 +301,15 @@ class EnforcementFixture(
             )
 
             // `insert-writer` — datasource.connect + sql.insert (deliberately NO sql.update) + the same
-            // users unmasked/masked-pii pair — proves an upsert INSERT (ON CONFLICT DO UPDATE / ON
-            // DUPLICATE KEY UPDATE) is denied even though sql.insert alone is granted: Admission's
-            // additionalSqlKind requires sql.update too, since an upsert can modify an EXISTING row.
+            // users unmasked/masked-pii pair — proves an upsert (ON CONFLICT DO UPDATE / ON DUPLICATE KEY
+            // UPDATE) is denied for an insert-only principal: its kind insert_on_dup is a member of
+            // write.update, not write.insert, since an upsert can modify an EXISTING row.
             val insertRole = s.policyStore.createRole(RoleInput("insert-writer"))
             s.policyStore.createAssignment(RoleAssignmentInput("inserter@example.com", insertRole.id))
             s.cedarPolicyStore.create(
                 CedarPolicyInput(
                     name = "insert-writer-connect-insert",
-                    cedarSrc = """permit(principal in Role::"insert-writer", action in [Action::"datasource.connect", Action::"sql.insert"], resource in Datasource::"${ds.name}");""",
+                    cedarSrc = """permit(principal in Role::"insert-writer", action in [Action::"datasource.connect", Action::"stmt.cat.write.insert"], resource in Datasource::"${ds.name}");""",
                 ),
                 updatedBy = "test-fixture",
             )
@@ -324,6 +327,100 @@ class EnforcementFixture(
                 ),
                 updatedBy = "test-fixture",
             )
+
+            // `update-writer` — datasource.connect + stmt.cat.write.update + the same users read grants. An
+            // upsert's kind is insert_on_dup (a member of write.update), so this update-only principal can run
+            // one and INSERT a new row. That is the ACCEPTED tradeoff of one-kind-one-category — Cedar
+            // membership is OR, not AND — where the forward hole (insert-only cannot update via upsert) is
+            // closed but the reverse is by design (see EnforcementDbTest).
+            val updateRole = s.policyStore.createRole(RoleInput("update-writer"))
+            s.policyStore.createAssignment(RoleAssignmentInput("updater@example.com", updateRole.id))
+            s.cedarPolicyStore.create(
+                CedarPolicyInput(
+                    name = "update-writer-connect-update",
+                    cedarSrc = """permit(principal in Role::"update-writer", action in [Action::"datasource.connect", Action::"stmt.cat.write.update"], resource in Datasource::"${ds.name}");""",
+                ),
+                updatedBy = "test-fixture",
+            )
+            s.cedarPolicyStore.create(
+                CedarPolicyInput(
+                    name = "update-writer-users-unmasked",
+                    cedarSrc = """permit(principal in Role::"update-writer", action == Action::"result.read.unmasked", resource in Table::"$usersTableEuid") unless { resource in Tag::"pii" };""",
+                ),
+                updatedBy = "test-fixture",
+            )
+            s.cedarPolicyStore.create(
+                CedarPolicyInput(
+                    name = "update-writer-users-masked-pii",
+                    cedarSrc = """permit(principal in Role::"update-writer", action == Action::"result.read.masked", resource in Table::"$usersTableEuid") when { resource in Tag::"pii" };""",
+                ),
+                updatedBy = "test-fixture",
+            )
+
+            // `file-writer` — datasource.connect + stmt.cat.admin.file (the server-side FILE-write kind
+            // category) + the same users unmasked/masked-pii pair. A `SELECT ssn ... INTO OUTFILE` clears the
+            // kind gate (its kind select_into_outfile is a member of admin.file), reaches column authorization
+            // where ssn resolves to MASKED, and must then be denied by the write-payload rule — the OUTFILE
+            // analog of the CTAS write-payload check. (A principal without admin.file kind-denies first.)
+            val fileRole = s.policyStore.createRole(RoleInput("file-writer"))
+            s.policyStore.createAssignment(RoleAssignmentInput("filewriter@example.com", fileRole.id))
+            s.cedarPolicyStore.create(
+                CedarPolicyInput(
+                    name = "file-writer-connect-file",
+                    cedarSrc = """permit(principal in Role::"file-writer", action in [Action::"datasource.connect", Action::"stmt.cat.admin.file"], resource in Datasource::"${ds.name}");""",
+                ),
+                updatedBy = "test-fixture",
+            )
+            s.cedarPolicyStore.create(
+                CedarPolicyInput(
+                    name = "file-writer-users-unmasked",
+                    cedarSrc = """permit(principal in Role::"file-writer", action == Action::"result.read.unmasked", resource in Table::"$usersTableEuid") unless { resource in Tag::"pii" };""",
+                ),
+                updatedBy = "test-fixture",
+            )
+            s.cedarPolicyStore.create(
+                CedarPolicyInput(
+                    name = "file-writer-users-masked-pii",
+                    cedarSrc = """permit(principal in Role::"file-writer", action == Action::"result.read.masked", resource in Table::"$usersTableEuid") when { resource in Tag::"pii" };""",
+                ),
+                updatedBy = "test-fixture",
+            )
+            // `explainer` — the same reads as `analyst` (connect + cat.read, non-pii unmasked, pii masked)
+            // PLUS a plan-only-EXPLAIN unmask: result.read.unmasked on the users table, but ONLY when
+            // context.stmt_kind == "explain". A masked column in a predicate — denied for a row-returning
+            // SELECT, since its selectivity would leak — is then readable under a plan-only EXPLAIN, which
+            // returns no rows. Proves the stmt_kind context threading; the shipped -262 preset applies this
+            // shape to system:production-pii-accessor.
+            val explainRole = s.policyStore.createRole(RoleInput("explainer"))
+            s.policyStore.createAssignment(RoleAssignmentInput("explainer@example.com", explainRole.id))
+            s.cedarPolicyStore.create(
+                CedarPolicyInput(
+                    name = "explainer-connect-read-write",
+                    cedarSrc = """permit(principal in Role::"explainer", action in [Action::"datasource.connect", Action::"stmt.cat.read", Action::"stmt.cat.write.insert", Action::"stmt.cat.ddl"], resource in Datasource::"${ds.name}");""",
+                ),
+                updatedBy = "test-fixture",
+            )
+            s.cedarPolicyStore.create(
+                CedarPolicyInput(
+                    name = "explainer-users-unmasked",
+                    cedarSrc = """permit(principal in Role::"explainer", action == Action::"result.read.unmasked", resource in Table::"$usersTableEuid") unless { resource in Tag::"pii" };""",
+                ),
+                updatedBy = "test-fixture",
+            )
+            s.cedarPolicyStore.create(
+                CedarPolicyInput(
+                    name = "explainer-users-masked-pii",
+                    cedarSrc = """permit(principal in Role::"explainer", action == Action::"result.read.masked", resource in Table::"$usersTableEuid") when { resource in Tag::"pii" };""",
+                ),
+                updatedBy = "test-fixture",
+            )
+            s.cedarPolicyStore.create(
+                CedarPolicyInput(
+                    name = "explainer-explain-unmasked",
+                    cedarSrc = """permit(principal in Role::"explainer", action == Action::"result.read.unmasked", resource in Table::"$usersTableEuid") when { context has stmt_kind && context.stmt_kind == "explain" };""",
+                ),
+                updatedBy = "test-fixture",
+            )
             // pushTestCatalog() captures static namespace/case metadata on the datasource row. Always hand
             // decideQuery the refreshed row rather than the pre-catalog create() result.
             return s.datasourceStore.get(ds.id)!!
@@ -334,7 +431,7 @@ class EnforcementFixture(
             val targetDb = SharedPostgres.freshDatabase("pm_target")
             DriverManager.getConnection(SharedPostgres.jdbcUrlFor(targetDb), SharedPostgres.username(), SharedPostgres.password()).use { c ->
                 c.createStatement().use { st ->
-                    st.execute("CREATE TABLE users (id BIGINT PRIMARY KEY, email VARCHAR(64), rrn VARCHAR(32), region VARCHAR(8))")
+                    st.execute("CREATE TABLE users (id BIGINT PRIMARY KEY, email VARCHAR(64), ssn VARCHAR(32), region VARCHAR(8))")
                     st.execute("INSERT INTO users VALUES (1,'a@x','${CLEARTEXT[0]}','KR'),(2,'b@x','${CLEARTEXT[1]}','KR')")
                     // An ungranted table (no Cedar grant covers it) — deny-by-default regression: a
                     // touched column here must resolve to DENIED, never fall through to cleartext.
@@ -360,7 +457,7 @@ class EnforcementFixture(
             DriverManager.getConnection(SharedMySql.jdbcUrlFor(targetDb), SharedMySql.username(), SharedMySql.password()).use { c ->
                 c.createStatement().use { st ->
                     st.execute("DROP TABLE IF EXISTS users")
-                    st.execute("CREATE TABLE users (id BIGINT PRIMARY KEY, email VARCHAR(64), rrn VARCHAR(32), region VARCHAR(8))")
+                    st.execute("CREATE TABLE users (id BIGINT PRIMARY KEY, email VARCHAR(64), ssn VARCHAR(32), region VARCHAR(8))")
                     st.execute("INSERT INTO users VALUES (1,'a@x','${CLEARTEXT[0]}','KR'),(2,'b@x','${CLEARTEXT[1]}','KR')")
                     // An ungranted table (no Cedar grant covers it) — see postgres() for the rationale.
                     st.execute("DROP TABLE IF EXISTS orders")

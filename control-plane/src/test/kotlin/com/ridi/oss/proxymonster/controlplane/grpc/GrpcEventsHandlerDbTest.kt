@@ -29,7 +29,7 @@ import kotlin.test.assertTrue
 /**
  * DB-backed coverage for the `events` streaming handler (docs/datasource-registration.md):
  * an open stream marks the datasource attached + stamps last_seen_at, relays an admin-pushed RefreshCatalog,
- * deregisters on client cancel, and NOT_FOUNDs an unregistered name.
+ * deregisters on client cancel, NOT_FOUNDs an unregistered name, and rejects a wire-protocol-version mismatch.
  */
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 class GrpcEventsHandlerDbTest {
@@ -61,9 +61,9 @@ class GrpcEventsHandlerDbTest {
 
     @Test
     fun `an open events stream marks attached, stamps last_seen_at, and relays a RefreshCatalog`() = runBlocking {
-        stub.register(registerRequest { name = "evt-ds"; engine = Engine.POSTGRES; host = "h"; port = 1; dbName = "d" })
+        stub.register(registerRequest { protocolVersion = CONTROL_PROTOCOL_VERSION; name = "evt-ds"; engine = Engine.POSTGRES; host = "h"; port = 1; dbName = "d" })
         // `.first()` collects exactly one event then cancels the stream (→ server awaitClose → deregister).
-        val firstEvent = async { stub.events(eventsRequest { datasourceName = "evt-ds" }).first() }
+        val firstEvent = async { stub.events(eventsRequest { datasourceName = "evt-ds"; protocolVersion = CONTROL_PROTOCOL_VERSION }).first() }
 
         awaitUntil("stream registered") { core.proxyEventsHub.attached().contains("evt-ds") }
         assertTrue(core.datasourceStore.getByName("evt-ds")!!.lastSeenAt != null, "opening the stream stamps last_seen_at")
@@ -79,8 +79,39 @@ class GrpcEventsHandlerDbTest {
     @Test
     fun `events for an unregistered datasource is NOT_FOUND`() {
         val code = assertFailsWith<StatusException> {
-            runBlocking { stub.events(eventsRequest { datasourceName = "never-registered" }).first() }
+            runBlocking { stub.events(eventsRequest { datasourceName = "never-registered"; protocolVersion = CONTROL_PROTOCOL_VERSION }).first() }
         }.status.code
         assertEquals(Status.Code.NOT_FOUND, code)
+    }
+
+    @Test
+    fun `events rejects a proxy on a different wire-protocol version and never attaches it`() = runBlocking {
+        // The registered datasource row outlives a rejected Register, so an old proxy (predates the field →
+        // sends 0) or a skewed one can open the liveness stream against the persisted row. events() must reject
+        // it the same way Register does, so the incompatible proxy never counts as attached — the gap #158 closes.
+        stub.register(registerRequest { protocolVersion = CONTROL_PROTOCOL_VERSION; name = "ver-ds"; engine = Engine.POSTGRES; host = "h"; port = 1; dbName = "d" })
+        val lastSeenBefore = core.datasourceStore.getByName("ver-ds")!!.lastSeenAt
+
+        val failure = assertFailsWith<StatusException> {
+            stub.events(eventsRequest { datasourceName = "ver-ds"; protocolVersion = 0 }).first()
+        }
+        assertEquals(Status.Code.FAILED_PRECONDITION, failure.status.code)
+        val description = failure.status.description ?: ""
+        assertTrue(
+            description.contains("wire-protocol version") && description.contains("same server-v* release"),
+            "the events version rejection carries the same actionable, proxy-recognizable message as Register: $description",
+        )
+
+        // A skewed (non-zero) version is rejected too.
+        assertFailsWith<StatusException> {
+            stub.events(eventsRequest { datasourceName = "ver-ds"; protocolVersion = CONTROL_PROTOCOL_VERSION + 1 }).first()
+        }
+        assertTrue(!core.proxyEventsHub.attached().contains("ver-ds"), "an incompatible proxy is never attached")
+        // The rejection happens before markSeen, so an incompatible proxy never even refreshes liveness:
+        // last_seen_at is unchanged. (Moving the check after markSeen would falsely record it as recently live.)
+        assertEquals(
+            lastSeenBefore, core.datasourceStore.getByName("ver-ds")!!.lastSeenAt,
+            "a rejected proxy must not stamp last_seen_at",
+        )
     }
 }

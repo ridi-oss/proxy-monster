@@ -14,11 +14,16 @@ server-side, never from the token"). Two kinds:
 Raw attested inputs, set by the control-plane from what the client cannot forge:
 
 - `channel` — which surface/phase the decision is in: `wire` | `editor` |
-  `workflow-executor` | `workflow-viewer` | `mcp`. Derived from the entry point
-  / ephemeral-token kind, never a client-supplied field.
+  `workflow-executor` | `workflow-viewer` | `slack` | `mcp`. Derived from the
+  entry point / ephemeral-token kind, never a client-supplied field.
 - `requester_ip` — the end client's source address, a Cedar `ipaddr`. From the
   proxy's `client_addr` on the wire path; from `resolveHttpRequesterIp`
   (`RequesterIp.kt`) on the HTTP paths.
+- `stmt_kind` — the statement's classified kind leaf (`select`, `explain`,
+  `insert`, …), from the analyzer's statement classification. Lets a read policy
+  condition on _how_ a column is read — e.g. permit `result.read.unmasked` only
+  under a plan-only EXPLAIN (`context.stmt_kind == "explain"`), which returns a
+  plan, not rows. Absent on a pre-parse failure (`STMT_UNKNOWN`).
 
 Derived `context.tags` — a `Set<String>` of stable tag names
 (`"trusted-network"`, …) the control-plane computes before the real decision by
@@ -44,8 +49,8 @@ the conditioned grant does not apply → deny. Absence is never "allow."
 Authoring rule (Cedar strict validation): every `context` attribute is optional,
 and Cedar refuses an unguarded read of an optional attribute (the policy fails
 validation, the policy store rejects the write, and `CedarEngine` fails fast at
-boot). So a policy touching `channel` / `requester_ip` / `tags` MUST guard
-first: `context has tags && context.tags.contains("…")`.
+boot). So a policy touching `channel` / `requester_ip` / `stmt_kind` / `tags`
+MUST guard first: `context has tags && context.tags.contains("…")`.
 
 ## `channel` — which surface / phase
 
@@ -57,13 +62,40 @@ Closed set (a value outside it is a config error → fail-closed deny):
 | `wire` | a native DB client's query through the proxy | proxy `Decide` (wire-session token) |
 | `editor` | the web SQL editor | the editor's ephemeral token kind |
 | `workflow-executor` | an approval running as role R to fetch + store the result | the approval-exec ephemeral token kind |
-| `workflow-viewer` | viewing a stored approval result as role R | the control-plane view route |
+| `workflow-viewer` | the unelevated human side of a task: viewing a stored result, and approving or rejecting one | the control-plane view + task-decision routes |
+| `slack` | a task decided from a Slack button rather than a console session | the Slack interaction handler (`Channel.SLACK`) |
 | `mcp` | an access-control change over the MCP admin surface | the MCP request handler (`Channel.MCP`) |
 
 For the proxy-mediated paths the value is derived from the ephemeral-token kind
-(the control-plane mints the kind; the proxy cannot assert it); the view route
-sets it directly. It is never read from a client-supplied field. The MCP channel
-is consumed by [`mcp-access-control.md`](./mcp-access-control.md).
+(the control-plane mints the kind; the proxy cannot assert it); the view and
+task-decision routes set it directly. It is never read from a client-supplied
+field. The MCP channel is consumed by
+[`mcp-access-control.md`](./mcp-access-control.md).
+
+The axis is which surface an actor is on, not what kind of operation runs there:
+`wire` and `editor` run statements, `workflow-executor` runs one under an
+elevation role, `workflow-viewer` views and decides, `mcp` changes
+configuration. A value earns its place when a policy needs to tell that surface
+from a neighbouring one, so two values may be merged only if nothing — policy or
+code gate — distinguishes them. `editor` and `workflow-viewer` cannot be:
+`editor` carries [`system:task-editor-self-approve`], which permits
+self-approval because an editor task runs under the caller's own roles, while a
+console approval elevates to R and must stay under [`system:no-self-approval`].
+
+`workflow-viewer` is the **workflow** viewer, not a result viewer — read the
+name broadly. It is the whole console-facing surface of a workflow task: viewing
+a stored result, showing the approval UI, and making the decision (approve /
+reject / read-status). All of it is the same actor doing the human half of the
+workflow on one session, so one channel scopes it. It is also defined by what it
+does **not** match: no shipped policy mentions it, and a saved result re-masks
+at view time precisely because
+[`system:production-pii-unmasked-workflow-executor`] does not fire here.
+
+`slack` is the sibling of `workflow-viewer`: a task decided from a chat
+interaction rather than a console session
+([`notifications.md`](./notifications.md)). It carries no `requester_ip`, so a
+policy conditioning on one denies, and it is how an operator scopes or forbids
+that weaker assertion.
 
 ## `requester_ip` — attestation
 

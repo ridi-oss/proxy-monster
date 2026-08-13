@@ -104,7 +104,7 @@ type relResult struct {
 // relationOf applies PG's column-first, full-chain rule to a bare `name`: walking inner→outer, the
 // first source that exposes `name` as a COLUMN wins — a scalar column (its base cols) or a
 // relation-valued column (its underlying relation). A column of ANY scope shadows a same-named source
-// alias (so a correlated `rrn` binds to the outer users.rrn, and `(sub).rrn` with `SELECT users AS
+// alias (so a correlated `ssn` binds to the outer users.ssn, and `(sub).ssn` with `SELECT users AS
 // sub` picks the users row over a decoy `orders sub` alias); only a name that is a column nowhere is a
 // bare relation alias. `depth` guards the recursion — a relation-valued column's value is itself
 // resolved — and overflow returns unresolved (the caller fails closed).
@@ -131,8 +131,8 @@ func (p *prober) relationOf(name string, chain []*optimizer.Scope, depth int) re
 
 // relationBaseOf resolves the BASE of composite field access `(name).field` to a relation. Unlike
 // relationOf it does NOT let a scalar column shadow: a relation-valued column still beats a same-named
-// alias, but a name that is merely a scalar column (`(id).rrn` where id is also a column) is treated
-// as the relation anyway — real PG errors on `.field` of a scalar (`column notation .rrn applied to
+// alias, but a name that is merely a scalar column (`(id).ssn` where id is also a column) is treated
+// as the relation anyway — real PG errors on `.field` of a scalar (`column notation .ssn applied to
 // type bigint`), so treating the base as a relation can only OVER-count what a genuine whole-row
 // access exposes, never under-count it (fail-safe; see docs/relation-model.md _dot_base_relation).
 func (p *prober) relationBaseOf(name string, chain []*optimizer.Scope, depth int) (any, bool) {

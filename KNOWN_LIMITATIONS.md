@@ -96,8 +96,8 @@ control-plane store, which is PostgreSQL only and carries no portability caveat
   legal inside a _quoted_ identifier but are the key/EUID delimiters (analyzer
   keys join on `.`, Cedar EUIDs on `/`), so a component containing one either
   fails identity rendering or is denied during Cedar resource binding.
-  Production denies; an explicit `sql.unanalyzable` grant may relay a statement
-  whose dotted identity failed before resource facts were emitted.
+  Production denies; an explicit `exception.unanalyzable` grant may relay a
+  statement whose dotted identity failed before resource facts were emitted.
 
 ## Live namespace tracking
 
@@ -128,12 +128,12 @@ analog of MySQL's Prepare-time freeze. No control-plane decision is ever stored.
   column in its own charset for client-side decoding — and rewrites it to
   `utf8mb4`, so those clients connect and results stay maskable. The client's
   original statement is authorized and audited; only the bytes sent to the
-  backend are pinned. (A prepared-statement form is pinned too, but its
+  target DB are pinned. (A prepared-statement form is pinned too, but its
   execute-time audit records the pinned statement.) Any other results charset —
   an explicit non-UTF-8 one — is not rewritten and fails the session closed, and
   returning results in a non-UTF-8 charset is not supported.
-- `DISCARD` routes through the datasource-wide `sql.unanalyzable` gate. The
-  production posture denies it; a development datasource may relay it.
+- `DISCARD` routes through the datasource-wide `exception.unanalyzable` gate.
+  The production posture denies it; a development datasource may relay it.
 - 🟡 First-in-transaction probe injection breaks `SET TRANSACTION` after an
   opener. Because the namespace probes are injected as ordinary simple queries,
   they consume a transaction's first-statement slot. Under probe-always, a
@@ -148,7 +148,7 @@ analog of MySQL's Prepare-time freeze. No control-plane decision is ever stored.
   isolation level should use `BEGIN ISOLATION LEVEL …` instead of a separate
   `SET TRANSACTION`.
 - 🟡 `client_encoding` must remain UTF8. The engine and control plane read the
-  client's SQL bytes as UTF-8 to resolve identifiers. A backend session that
+  client's SQL bytes as UTF-8 to resolve identifiers. A target-DB session that
   switches `client_encoding` to another encoding would let the same bytes bind
   different objects on each side (a non-ASCII identifier could dodge its
   mask/deny — verified against real PostgreSQL). `client_encoding` is
@@ -162,28 +162,23 @@ analog of MySQL's Prepare-time freeze. No control-plane decision is ever stored.
   against real PostgreSQL). It is `GUC_REPORT`, so a session turning it off is
   observed and the relay fails closed (SQLSTATE `0A000`) rather than proxying
   under a divergent lexer.
-- 🔴 `search_path` mutated _inside_ Bind parameter coercion is untracked
-  (extended path). The bind-time capture probes the namespace immediately before
-  forwarding `Bind`, but `Bind` itself runs parameter input/coercion (input
-  functions, domain `CHECK`s) _before_ it plans the portal. A crafted domain
-  whose check calls `set_config('search_path', <bound value>, false)` moves the
-  path during `Bind`, so the portal resolves under a path the pre-`Bind` probe
-  never saw, and the `Execute` re-decide authorizes under the stale snapshot (a
-  wrong-ALLOW). Reproduced against PG16 by
-  `pgproxy.TestExtendedBindCoercionSetConfigLeaksAcrossSchema` (the proxy
-  decides under the primary path yet the backend returns the secondary schema's
-  row). The offending domain must already exist, which needs a
-  `CREATE DOMAIN`/`CREATE FUNCTION` grant the masking policy denies read-only
-  principals. A fail-safe close (re-probe _after_ Bind, or bind under a pinned
-  `search_path`) is a follow-up. Tracked:
-  [`docs/backlog.md`](./docs/backlog.md).
+- 🟡 A `search_path` change made _inside_ Bind parameter coercion is not tracked
+  (extended path). `Bind` runs parameter input/coercion — input functions and
+  domain `CHECK`s — before it plans the portal, so a domain whose check calls
+  `set_config('search_path', <bound value>, false)` moves the path during
+  `Bind`, and the portal resolves under a path the pre-`Bind` namespace probe
+  never saw. Only user-defined code can change `search_path` mid-coercion, so
+  this is the same accepted case as a data-reading UDF: a domain or function
+  with a side effect is user code the operator vouches for, not a boundary the
+  proxy enforces. Reproduced against PG16 by
+  `pgproxy.TestExtendedBindCoercionSetConfigLeaksAcrossSchema`.
 
 ## Catalog freshness
 
 Enforcement decides against a per-connection catalog captured on the
-connection's own held backend connection (design:
+connection's own held target-DB connection (design:
 [`docs/per-connection-catalog.md`](./docs/per-connection-catalog.md)) — the
-control plane always decides against exactly what that connection's backend
+control plane always decides against exactly what that connection's target DB
 binds. The datasource-global catalog is now config-only (catalog browser,
 tagging, table detail) and never feeds an enforcement decision.
 
@@ -195,16 +190,16 @@ tagging, table detail) and never feeds an enforcement decision.
   hash/columns revert window; 🟡 MySQL temp-table shadowing (invisible to
   `information_schema`); and, on the experimental PostgreSQL transactional-DDL
   path, held-connection-probe edges. `CALL`/routine after-refetch is
-  unreachable: the analyzer emits an unspecified datasource grant for `CALL`,
-  which the control plane denies before execution, so the `after_statement`
-  refetch — which only rides an ALLOW/MASK verdict — never fires; a denied
-  `CALL` doesn't run, so not a leak. A closed/forged `connection_id` can be
-  resurrected by Decide's restart-recovery (no tombstone / mint-evidence to
-  distinguish a closed or forged id from a genuine post-restart id; no
-  cross-principal escalation — recovery binds to the re-validated token's
-  principal). The one time-bounded residual is external / out-of-band DDL — a
-  change made outside the proxy is corrected on the next re-check past the
-  staleness bound, not immediately.
+  unreachable: the analyzer classifies `CALL` as an unanalyzable
+  `stmt.kind.call`, which the control plane denies before execution, so the
+  `after_statement` refetch — which only rides an ALLOW/MASK verdict — never
+  fires; a denied `CALL` doesn't run, so not a leak. A closed/forged
+  `connection_id` can be resurrected by Decide's restart-recovery (no tombstone
+  / mint-evidence to distinguish a closed or forged id from a genuine
+  post-restart id; no cross-principal escalation — recovery binds to the
+  re-validated token's principal). The one time-bounded residual is external /
+  out-of-band DDL — a change made outside the proxy is corrected on the next
+  re-check past the staleness bound, not immediately.
 - 🟡 Config-catalog PushCatalog ordering across replicas (bounded, self-healing)
   — CONFIG path only. With gRPC self-registration
   ([`docs/datasource-registration.md`](./docs/datasource-registration.md)) each
@@ -231,9 +226,9 @@ tagging, table detail) and never feeds an enforcement decision.
   the column's kind; a masked column in a row-shaping position
   (predicate/join/order/group/distinct) still DENYs. So none of these paths
   leak. The residual gap is a function body that reads a masked/PII column
-  internally, on the backend service-account connection unseen by the proxy,
+  internally, on the target DB service-account connection unseen by the proxy,
   when that column never appears as an argument: `SELECT my_udf(id) FROM t`,
-  where `id` is not sensitive and `my_udf` internally reads `rrn`, returns `rrn`
+  where `id` is not sensitive and `my_udf` internally reads `ssn`, returns `ssn`
   in the clear. Operational rule: a UDF on a masking datasource must not read
   PII / masked columns — a "pure" UDF that only transforms its arguments (reads
   no data) is safe; keeping a data-reading UDF clean is an admin responsibility.
@@ -247,17 +242,17 @@ tagging, table detail) and never feeds an enforcement decision.
 
 ## Query coverage
 
-- 🟢 sqlglot-go parser gaps route through `sql.unanalyzable`. The production
-  posture denies them; an explicit development exception may relay them
-  verbatim. Parser coverage includes `JSON_TABLE` / `LATERAL VALUES` /
+- 🟢 sqlglot-go parser gaps route through `exception.unanalyzable`. The
+  production posture denies them; an explicit development exception may relay
+  them verbatim. Parser coverage includes `JSON_TABLE` / `LATERAL VALUES` /
   `SIMILAR TO`, MySQL `MATCH … AGAINST` / `GROUP_CONCAT(… SEPARATOR …)`, MySQL
   `INSERT … SET` / `REPLACE`, and structural PostgreSQL `EXPLAIN`. The MySQL
   write forms use the ordinary `Insert` shape and are analyzable through the
   proxy's INSERT conservation paths; `REPLACE` still emits an unspecified
   datasource action and is denied. Bare `SELECT *` over a table-function /
   `LATERAL` / `VALUES` source is unresolved and follows the same
-  `sql.unanalyzable` gate; that is a masking/lineage limitation, not a parse
-  gap.
+  `exception.unanalyzable` gate; that is a masking/lineage limitation, not a
+  parse gap.
 - 🟡 `RENAME TABLE a TO b` is denied. It is ordinary MySQL table DDL, but
   sqlglot-go leaves it as an unmodeled `Command` node, and classification is
   taken only from what the parser resolves structurally — a `Command` carries
@@ -265,11 +260,6 @@ tagging, table detail) and never feeds an enforcement decision.
   match `RENAME USER`, which is privilege management rather than schema DDL, so
   the over-deny is deliberate. The structured equivalent is permitted:
   `ALTER TABLE a RENAME TO b`.
-- 🟡 `EXPLAIN` of a query that requires masking is deliberately denied. The
-  analyzer emits the wrapped query's grants with `explain_of_query=true`, so an
-  unmasked inner query may proceed after its ordinary grants pass. If the
-  resulting verdict would be MASK, `decideQuery` denies with
-  `EXPLAIN_MASK_DENY`; this also covers `EXPLAIN ANALYZE`.
 - 🟢 Zero-column table scans require a table grant. A query that names no column
   of a table — `SELECT count(*) FROM t`, `SELECT 1 FROM t`,
   `EXISTS(SELECT 1 FROM t)`, a cross-join side that only multiplies cardinality
@@ -281,14 +271,17 @@ tagging, table detail) and never feeds an enforcement decision.
   already exposed through that column, so it needs no separate table grant; only
   a table with zero traced columns and no table grant is denied. Verified on
   PostgreSQL (`KnownGapsTest`) and MySQL (`ScannedTableMySqlTest`).
-- 🔴 Utility-command passthrough is still an existence oracle. Analyzer-path
-  (`ANALYZED`-class) zero-column scans are covered above, but utility commands
-  that classify as passthrough and take a table target — e.g. `ANALYZE <table>`
-  (PostgreSQL, `SESSION` → wire/editor passthrough, gated only by
-  `datasource.connect`, not a table grant) — still disclose an ungranted table's
-  existence via a backend error. They return no rows. The fix routes each
-  resource-bearing utility to a Cedar gate instead of the blanket passthrough
-  ([`docs/facts-emission.md`](./docs/facts-emission.md)).
+- 🟡 Whole-database `ANALYZE` forms are gated by statement kind, not per-table
+  reads. A table-targeted `ANALYZE TABLE t` (MySQL) / `ANALYZE t` (PostgreSQL)
+  carries its target's result-read grant, so a principal who cannot read the
+  table cannot ANALYZE it. The forms that name no single table — bare PostgreSQL
+  `ANALYZE` (every accessible table), `ANALYZE INDEX`/`DATABASE`/`CLUSTER` —
+  carry only the `analyze_table` statement kind, so `stmt.cat.admin.maintenance`
+  gates them but no per-table read does. They name no table to probe, so they
+  are not a single-table existence oracle; a maintenance-privileged principal
+  running one can still surface an unreadable table's name through a forwarded
+  target-DB notice (the shared target-DB account, tracked in
+  [`docs/backlog.md`](./docs/backlog.md)).
 
 ## Authz / policy
 
@@ -299,11 +292,16 @@ tagging, table detail) and never feeds an enforcement decision.
   `403 mcp.invalid_host`. `X-Forwarded-Host` from a peer in `PM_TRUSTED_PROXIES`
   is parsed by proxy-monster's own bracket-aware path and works. Use a hostname,
   or front the control plane with a trusted edge.
-- 🔴 Role-approval `Request` EUID is not request-unique.
-  `Request::"<requester>#<datasource>"` omits the request id and requested role,
-  so one approval policy authorizes every later request that principal makes for
-  that datasource — a wrong-ALLOW. Tracked in
-  [`docs/backlog.md`](./docs/backlog.md).
+- 🟡 The MCP/workflow channel forbid on session statements covers only the
+  benign `stmt.cat.session` kinds. A connection-state-mutating statement
+  classified under an admin category — `SET sql_log_bin` (`admin.replication`),
+  `SET GLOBAL` (`admin.server`) — relies on that admin gate instead: the
+  production floor holds no admin category, so it denies there regardless, but a
+  `system:development` admin-holder may issue it on a non-persistent channel,
+  where a fresh connection per query discards the session change with no lasting
+  effect. The benign session statements the forbid does deny (`SET NAMES`,
+  `BEGIN`, `SET @var`) are otherwise ungated, which is why they are the ones
+  that need the channel rule.
 - 🔴 `system:admin` immutability assumes single-instance, migrate-before-serve.
   The `system:admin` group is immutable through the API and SCIM via runtime
   guards inside `UserGroupStore`, which are in-process: they serialize
@@ -339,10 +337,10 @@ tagging, table detail) and never feeds an enforcement decision.
   or a migration shadows the table so the same unqualified SQL resolves to a
   different physical column bearing the same output name — the stored cleartext
   bytes (produced for column A) can be released under a mask plan computed for
-  column B. Example: `SELECT rrn FROM users` executed with `users` resolving to
-  a PII `rrn` in schema A, then viewed after the default schema moves to a
-  non-PII `users.rrn` in schema B — the view unmasks (schema B is non-PII), the
-  output name `rrn` matches, and schema A's PII is released. The fix is saved
+  column B. Example: `SELECT ssn FROM users` executed with `users` resolving to
+  a PII `ssn` in schema A, then viewed after the default schema moves to a
+  non-PII `users.ssn` in schema B — the view unmasks (schema B is non-PII), the
+  output name `ssn` matches, and schema A's PII is released. The fix is saved
   lineage: persist the execution namespace + physical lineage per result child
   and re-decide pinned to it, so output-name equality stops being the
   confidentiality boundary. Tracked as a high-priority follow-up in
@@ -411,8 +409,26 @@ logged at boot / proxy catalog-push.)
   fast-path have no relay and are always denied. MySQL binary/prepared results
   and PostgreSQL binary-format results cannot be masked; they deny by default,
   but a MASK verdict carrying `unmaskable_permitted` may relay them unmasked
-  when `sql.unmaskable` is granted. Detail:
+  when `exception.unmaskable` is granted. Detail:
   [`docs/access-model.md`](./docs/access-model.md).
+- 🟡 A graceful-shutdown drain can report a pipelined PostgreSQL statement as
+  failed. On a rolling redeploy the data plane drains: it stops accepting, lets
+  an in-flight statement finish, then hands each idle connection a
+  protocol-level shutdown notice (MySQL `ER_SERVER_SHUTDOWN`, PostgreSQL
+  `FATAL 57P01`) so the client's pool reconnects onto the replacement task.
+  Draining forces the client read deadline, which preempts a read even when the
+  next message already sits in the kernel buffer. So a pipelined
+  extended-protocol `Execute` whose `CommandComplete` was relayed but whose
+  `Sync` had not yet been read is not answered with `ReadyForQuery`: the
+  un-synced statement rolls back when the connection closes, and a client seeing
+  FATAL reconnects and retries it — but a client that had treated
+  `CommandComplete` as commit could believe a rolled-back operation succeeded.
+  The window is narrow (the drain must land between relaying `CommandComplete`
+  and reading the buffered `Sync`) and PostgreSQL is experimental. MySQL's
+  analogue is benign: a command still in the kernel buffer at drain is skipped
+  and retried on reconnect, with no completed-then-rolled-back ambiguity. A
+  deterministic fix — bounded reads through the pending `Sync` to a transaction
+  boundary before the notice — is a follow-up.
 
 ## Wire-cert distribution (direct clients and `pmon`)
 
@@ -431,15 +447,15 @@ PostgreSQL client verifies with the downloaded file instead.
 - 🔴 The advertised chain's root of trust is the `Register` credential, not a
   proxy identity. One system-wide shared secret (`PM_SECRET_TOKEN`)
   authenticates every proxy RPC and `Register` accepts a caller-asserted
-  datasource name, so whoever holds that secret — or anyone who can reach the
-  gRPC port while it is unset, which starts the gate open — can re-register any
-  datasource's advertised address and chain, serve a matching cert, and capture
-  that datasource's wire tokens. The fix is a datasource-bound registrar
-  identity (a per-datasource register credential, proxy mTLS bound to the
-  permitted name, or an admin-owned trust record), not a change to how the chain
-  is verified. Set `PM_SECRET_TOKEN` on the control plane and every proxy:
-  startup does not require it today, and [`docs/backlog.md`](./docs/backlog.md)
-  tracks failing startup when it is unset in production. Trust boundary:
+  datasource name, so whoever holds that secret can re-register any datasource's
+  advertised address and chain, serve a matching cert, and capture that
+  datasource's wire tokens. The fix is a datasource-bound registrar identity (a
+  per-datasource register credential, proxy mTLS bound to the permitted name, or
+  an admin-owned trust record), not a change to how the chain is verified.
+  Production startup requires `PM_SECRET_TOKEN` (it is rejected when
+  `PM_AUTH_DEBUG` is false), so the gate can no longer be left open by omission;
+  the admin-equivalent scope of that one shared secret is the remaining gap.
+  Trust boundary:
   [`docs/datasource-registration.md`](./docs/datasource-registration.md).
 - 🟡 Every certificate in the advertised file becomes a trust anchor for `pmon`,
   including the leaf: it loads the whole PEM into a Go root pool, and Go trusts
@@ -476,50 +492,52 @@ The web SQL editor executes over the proxy-dialed `RunExec` channel (the
 control-plane never dials the target); its query runs through the proxy's normal
 `Decide`, same as a native-wire client. The interactive editor drives a
 persistent per-session stream (`RunExecService.openSession`/`runOnSession`, the
-`editorSessionRoutes` behind `POST /api/editor/sessions`), holding one backend
+`editorSessionRoutes` behind `POST /api/editor/sessions`), holding one target-DB
 connection so `SET`/`USE`/temp/`BEGIN` persist across queries. The one-shot
 `RunExecService.run` (open → one statement → `Close`) backs the approval-execute
 path and `POST /api/datasources/{id}/query`, not the interactive editor.
 
 - 🟡 Editor statements decide as `Channel.EDITOR`, so `SESSION` statements
-  passthrough-ALLOW. Benign `SET`, `BEGIN`, `USE`, and `ANALYZE` are allowed on
-  the editor channel; classified privileged `SET` forms still pass their Utility
-  gate, and session statements stay denied on the workflow executor/viewer
-  channels. Because a persistent session holds ONE backend connection across
-  MANY statements, a session mutation can affect a later query on the same
-  connection; its safety rests on per-statement re-decide — every statement
-  round-trips to the proxy's `Decide` against that connection's live
-  per-connection catalog, so a mutated namespace is re-authorized rather than
-  carried silently, and a multi-statement `SET; SELECT` batch is rejected at
-  admission so passthrough only ever sees a pure session statement. Hard gate:
-  per-statement re-decide (or an explicit session-mutation refusal) must remain
-  the standing mitigation.
-- 🟡 Catalog adoption assumes one backend behind a datasource. On MySQL a new
+  passthrough-ALLOW. Benign `SET`, `BEGIN`, and `USE` are allowed on the editor
+  channel; classified privileged `SET` forms still pass their Utility gate,
+  `ANALYZE` is gated by its statement kind and its target's read, and session
+  statements stay denied on the workflow executor/viewer channels. Because a
+  persistent session holds ONE target-DB connection across MANY statements, a
+  session mutation can affect a later query on the same connection; its safety
+  rests on per-statement re-decide — every statement round-trips to the proxy's
+  `Decide` against that connection's live per-connection catalog, so a mutated
+  namespace is re-authorized rather than carried silently, and a multi-statement
+  `SET; SELECT` batch is rejected at admission so passthrough only ever sees a
+  pure session statement. Hard gate: per-statement re-decide (or an explicit
+  session-mutation refusal) must remain the standing mitigation.
+- 🟡 Catalog adoption assumes one target DB behind a datasource. On MySQL a new
   connection may start from catalog content the control plane already holds
-  rather than measuring the backend itself, so its first statement decides
-  without a round-trip. That is sound because every backend session for a
+  rather than measuring the target DB itself, so its first statement decides
+  without a round-trip. That is sound because every target-DB session for a
   datasource is opened by one proxy process against one target with one service
   account, which is what makes a catalog scan the same for every connection —
   MySQL temporary tables never appear in `information_schema` and reach a
   decision through the per-request overlay instead. Two changes would break it
-  silently: running several proxies for one datasource against backends that can
-  disagree (a replica behind a load balancer, mid-failover), or varying backend
-  credentials per session, since `information_schema` is privilege-filtered and
-  two accounts legitimately see different columns. An adopting connection would
-  then decide against structure its own backend never had. PostgreSQL never
-  adopts: its `pg_temp_*` schemas are per-session and catalog-visible, so a
-  fragment there is only true for the connection that measured it.
+  silently: running several proxies for one datasource against target DBs that
+  can disagree (a replica behind a load balancer, mid-failover), or varying
+  target DB credentials per session, since `information_schema` is
+  privilege-filtered and two accounts legitimately see different columns. An
+  adopting connection would then decide against structure its own target DB
+  never had. PostgreSQL never adopts: its `pg_temp_*` schemas are per-session
+  and catalog-visible, so a fragment there is only true for the connection that
+  measured it.
 - 🟡 No concurrent-editor-session cap (auth'd DoS surface). Each open session
-  pins ONE unpooled backend connection on the proxy for the life of its run
-  stream, which `RUN_STREAM_TIMEOUT_MS` caps at 15 minutes. The proxy releases
-  the backend connection when that stream closes; the control plane's stale
-  session entry is removed by an explicit close, a subsequent failed query, or
-  the idle sweep. That sweep has two separate numbers: a 30-minute idle cutoff
+  pins ONE unpooled target-DB connection on the proxy for the life of its run
+  stream. That stream has no fixed lifetime cap — so an active editor is never
+  cut mid-session — which means the connection is held until the stream closes:
+  by an explicit close, a subsequent failed query, or the idle sweep. That sweep
+  has two separate numbers: a 30-minute idle cutoff
   (`EDITOR_SESSION_MAX_IDLE_MS`) evaluated by the housekeeping loop on its
-  15-minute tick (`RESULT_PURGE_INTERVAL_MS`), so a session is reaped up to ~45
-  minutes after its last use. An authenticated user opening many sessions can
-  still exhaust the target's `max_connections` within that window. Bounded by
-  auth; a per-principal / per-datasource cap is a follow-up.
+  15-minute tick (`RESULT_PURGE_INTERVAL_MS`), so an idle session is reaped up
+  to ~45 minutes after its last use; a continuously-used session lives until its
+  token TTL. An authenticated user opening many sessions can exhaust the
+  target's `max_connections` within that window. Bounded by auth; a
+  per-principal / per-datasource cap is a follow-up.
 - Ephemeral EDITOR token, TTL-bounded not scope-bounded. The control-plane mints
   an `EDITOR` wire token per session with a generous absolute TTL, revoked on
   idle sweep, explicit close, or cleanup after a failed query. Neither TTL is a
@@ -529,9 +547,9 @@ path and `POST /api/datasources/{id}/query`, not the interactive editor.
   approval-execute path and `POST /api/datasources/{id}/query` — requests
   max(900s, `PM_QUERY_TIMEOUT` + 180s), so at the default 600s timeout it is
   900s, the floor. The floor covers a full-length dial plus a full-length
-  exchange, so a short `PM_QUERY_TIMEOUT` cannot leave a cold session's token
-  expiring mid-statement. `TokenStore.issue` then clamps every request into
-  [60s, 24h], which is the real ceiling on both. A run-stream timeout or
+  exchange, so a short `PM_QUERY_TIMEOUT` cannot leave an opening session's
+  token expiring mid-statement. `TokenStore.issue` then clamps every request
+  into [60s, 24h], which is the real ceiling on both. A run-stream timeout or
   canceled HTTP query does not itself revoke it. It is barred from the
   wire-session handshake (`TokenStore.validate` rejects `kind='EDITOR'`), so a
   leak can't open a native session; within its TTL it could still drive extra

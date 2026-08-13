@@ -194,7 +194,7 @@ class DatasourceSoftDeleteDbTest {
             core.connectionCatalog.authoritativeFor(name, "app"),
             "delete drops the name-keyed authoritative catalog",
         )
-        // A new connection on the freed name must therefore re-measure its own backend, not adopt the drop.
+        // A new connection on the freed name must therefore re-measure its own target DB, not adopt the drop.
         val reused = core.connectionCatalog.open(Binding(name, "after", "USER"), listOf("app"), adoptHeldContent = true)
         assertEquals(
             listOf("app"),

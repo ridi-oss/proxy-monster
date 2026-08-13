@@ -1,0 +1,6 @@
+{
+  "greeting": "안녕 {name}",
+  "nested": {
+    "deep": "deep-ko"
+  }
+}

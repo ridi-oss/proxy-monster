@@ -1,29 +1,9 @@
 package pgproxy
 
 import (
-	"net"
 	"strings"
 	"testing"
-	"time"
-
-	"github.com/ridi-oss/proxy-monster/goproxy/spi"
 )
-
-func TestServerConnectionLimit(t *testing.T) {
-	s := New(0, spi.BackendTarget{}, nil, nil, nil)
-	for i := 0; i < maxConcurrentConnections; i++ {
-		if !s.acquireConnection() {
-			t.Fatalf("connection slot %d rejected before limit", i)
-		}
-	}
-	if s.acquireConnection() {
-		t.Fatal("connection above server-wide limit was accepted")
-	}
-	s.releaseConnection()
-	if !s.acquireConnection() {
-		t.Fatal("released connection slot was not reusable")
-	}
-}
 
 func TestScramSHA256RFC7677Vector(t *testing.T) {
 	const nonce = "rOprNGfwEbeRWgbNEkqO"
@@ -74,36 +54,4 @@ func TestMD5Password(t *testing.T) {
 	if got, want := md5Password("user", "password", salt), "md5a3576f1ae039b8996bc4fc2720f9c71a"; got != want {
 		t.Fatalf("md5Password = %q, want %q", got, want)
 	}
-}
-
-func TestDeadlineConnBoundsIdleReadAndBlockedWrite(t *testing.T) {
-	const timeout = 100 * time.Millisecond
-
-	t.Run("read", func(t *testing.T) {
-		client, peer := net.Pipe()
-		defer client.Close()
-		defer peer.Close()
-		wrapped := withIODeadlines(client, timeout, timeout)
-		_, err := wrapped.Read(make([]byte, 1))
-		if err == nil {
-			t.Fatal("idle read did not time out")
-		}
-		if netErr, ok := err.(net.Error); !ok || !netErr.Timeout() {
-			t.Fatalf("idle read error = %v, want timeout", err)
-		}
-	})
-
-	t.Run("write", func(t *testing.T) {
-		client, peer := net.Pipe()
-		defer client.Close()
-		defer peer.Close()
-		wrapped := withIODeadlines(client, timeout, timeout)
-		_, err := wrapped.Write([]byte{0x01})
-		if err == nil {
-			t.Fatal("blocked write did not time out")
-		}
-		if netErr, ok := err.(net.Error); !ok || !netErr.Timeout() {
-			t.Fatalf("blocked write error = %v, want timeout", err)
-		}
-	})
 }

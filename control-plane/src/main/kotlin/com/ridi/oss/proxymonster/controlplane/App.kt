@@ -14,6 +14,9 @@ import com.ridi.oss.proxymonster.controlplane.management.AuditSource
 import com.ridi.oss.proxymonster.controlplane.management.DatasourceManagementService
 import com.ridi.oss.proxymonster.controlplane.management.IdentityManagementService
 import com.ridi.oss.proxymonster.controlplane.management.ManagementAuditRecorder
+import com.ridi.oss.proxymonster.controlplane.notify.NotificationStore
+import com.ridi.oss.proxymonster.controlplane.notify.installNotifications
+import com.ridi.oss.proxymonster.controlplane.notify.localeRoutes
 import com.ridi.oss.proxymonster.controlplane.management.ManagementException
 import com.ridi.oss.proxymonster.controlplane.management.PolicyManagementService
 import com.ridi.oss.proxymonster.controlplane.management.auditEntity
@@ -68,7 +71,7 @@ import kotlin.time.Duration.Companion.seconds
 /** How often the background sweep deletes expired result rows. */
 private const val RESULT_PURGE_INTERVAL_MS = 15 * 60 * 1000L
 
-/** An editor session idle longer than this is reaped (its proxy stream + backend connection freed).
+/** An editor session idle longer than this is reaped (its proxy stream + target-DB connection freed).
  *  Swept on the same timer as RESULT_PURGE_INTERVAL_MS. */
 private const val EDITOR_SESSION_MAX_IDLE_MS = 30 * 60 * 1000L
 
@@ -79,6 +82,11 @@ private const val SSE_SESSION_RECHECK_MS = 30_000L
 /** Reconnect backoff advertised to an EventSource with no live session, so an expired-session tab does not
  *  hammer `/api/tasks/events` on its default ~3s retry (it cannot be told to stop after the 200 handshake). */
 private const val SSE_UNAUTH_RETRY_MS = 60_000L
+
+/** Reconnect backoff sent when the stream closes because the control-plane is draining (rolling restart), so
+ *  a watching tab re-homes to the replacement promptly instead of on EventSource's ~3s default. Short, not
+ *  zero: a brief gap lets the departing instance finish leaving the load balancer before the tab reconnects. */
+private const val SSE_DRAIN_RECONNECT_MS = 500L
 
 /**
  * One per-principal SSE stream of task terminal transitions (EXECUTED/FAILED/CANCELLED), so a
@@ -100,16 +108,16 @@ internal fun Route.taskEventsRoute(
     appJson: Json,
 ) {
     sse("/api/tasks/events") {
-        val liveSession = if (config.authDebug) null else call.webSession()
-        val principal = liveSession?.principal ?: if (config.authDebug) "debug-user" else null
-        if (principal == null) {
+        val liveSession = call.webSession()
+        if (liveSession == null) {
             // No live session. EventSource cannot be told to STOP reconnecting after the 200 handshake, so
             // lengthen its reconnect backoff and end the stream (an expired-session tab then re-polls far less
             // aggressively; the app's 401ing polls redirect it to login). Poll is the truth.
             send(ServerSentEvent(retry = SSE_UNAUTH_RETRY_MS))
             return@sse
         }
-        val sessionId = liveSession?.id
+        val principal = liveSession.principal
+        val sessionId = liveSession.id
         val deviceId = call.deviceCookieId()
         val context = call.httpAuthzContext(config)
         val events = taskCompletionHub.subscribe(principal)
@@ -117,14 +125,20 @@ internal fun Route.taskEventsRoute(
             while (true) {
                 val keepOpen = select {
                     events.onReceiveCatching { result ->
-                        val event = result.getOrNull() ?: return@onReceiveCatching false
+                        val event = result.getOrNull() ?: run {
+                            // The channel closed. On a drain (rolling restart) the hub closes every stream —
+                            // send a short retry so the browser reconnects to the replacement now rather than
+                            // waiting its ~3s default. Any other close is an ordinary end (nothing to send).
+                            if (taskCompletionHub.isDraining()) send(ServerSentEvent(retry = SSE_DRAIN_RECONNECT_MS))
+                            return@onReceiveCatching false
+                        }
                         // Bound the push to the SAME live `task.read` gate the poll/detail enforce, so a Cedar
                         // forbid (e.g. an untrusted zone) that 404s the poll also suppresses the push — the
                         // notification never reveals gated metadata. A denied/absent task is skipped.
-                        if (taskReadableForPush(config, principal, event.taskId, context, accessStore, authz, datasourceStore)) {
+                        if (taskReadableForPush(principal, event.taskId, context, accessStore, authz, datasourceStore)) {
                             send(ServerSentEvent(data = appJson.encodeToString(TaskEvent.serializer(), event), event = "task"))
                         }
-                        sessionStillLive(config, sessionId, deviceId, principalSessionStore)
+                        sessionStillLive(sessionId, deviceId, principalSessionStore)
                     }
                     onTimeout(SSE_SESSION_RECHECK_MS) {
                         // A session revoked / expired / newest-wins-displaced mid-stream must stop receiving
@@ -137,7 +151,7 @@ internal fun Route.taskEventsRoute(
                         // same throw inside the catch below, which is what turns a closed browser tab back
                         // into the non-event it is.
                         send(ServerSentEvent(comments = "keepalive"))
-                        sessionStillLive(config, sessionId, deviceId, principalSessionStore)
+                        sessionStillLive(sessionId, deviceId, principalSessionStore)
                     }
                 }
                 if (!keepOpen) break
@@ -155,14 +169,13 @@ internal fun Route.taskEventsRoute(
     }
 }
 
-/** True while the SSE stream's web session is still live (authDebug has no session and is always live). */
-internal fun sessionStillLive(config: Config, sessionId: Long?, deviceId: String?, store: PrincipalSessionStore): Boolean =
-    config.authDebug || (sessionId != null && store.resolveWeb(sessionId, deviceId) != null)
+/** True while the SSE stream's web session is still live — logging out or being displaced ends the stream. */
+internal fun sessionStillLive(sessionId: Long?, deviceId: String?, store: PrincipalSessionStore): Boolean =
+    sessionId != null && store.resolveWeb(sessionId, deviceId) != null
 
 /** Whether [principal] may still `task.read` [taskId] — the SAME live Cedar gate the poll/detail enforce,
  *  so the push cannot surface metadata the poll would 404. A missing task is not readable. */
 internal fun taskReadableForPush(
-    config: Config,
     principal: String,
     taskId: Long,
     context: AuthzContext,
@@ -170,15 +183,11 @@ internal fun taskReadableForPush(
     authz: Authz,
     datasourceStore: DatasourceStore,
 ): Boolean {
-    if (config.authDebug) return true
     val task = accessStore.getRequest(taskId) ?: return false
     val decision = authz.authorizeWithContext(
         principal,
         AuthzAction.TASK_READ,
-        AuthzResource.ApprovalRequest(
-            requester = task.principal, approver = task.decidedBy, executedBy = task.executedBy,
-            datasourceName = task.datasourceName, roleName = task.roleName,
-        ),
+        task.toApprovalResource(),
         context,
         task.datasourceName,
         task.datasourceId?.let(datasourceStore::getIncludingDeleted)?.tags.orEmpty(),
@@ -295,15 +304,15 @@ internal fun computeMePermissions(principal: String, authz: Authz, context: Auth
 
 internal fun Route.mePermissionsRoute(config: Config, authz: Authz) {
     get("/api/me/permissions") {
-        if (!call.requireApi(config)) return@get
-        val permissions = if (config.authDebug) {
-            MePermissions(isAdmin = true, canReadAllAudit = true, canApprove = true)
-        } else {
-            val session = requireNotNull(call.userSession()) {
-                "requireApi admitted a non-debug request without a UserSession"
-            }
-            computeMePermissions(session.principal, authz, call.httpAuthzContext(config))
-        }
+        val principal = call.requireApi() ?: return@get
+        // Computed for the debug caller too. Claiming admin under authDebug would render every admin
+        // affordance for a session that logged in with a low-privilege role, and each one would then 403 on
+        // click — the console must describe the authority the routes will actually grant.
+        val permissions = computeMePermissions(
+            principal,
+            authz,
+            call.httpAuthzContext(config),
+        )
 
         // UI navigation and client-side guards are convenience only; every API authorizes independently.
         call.respond(permissions)
@@ -366,8 +375,9 @@ fun Application.module(config: Config, core: ControlPlaneCore) {
     val runExecService = RunExecService(core, config.queryTimeoutSeconds)
     // In-process push of task terminal transitions to the SSE stream, so a watching editor/approval tab
     // updates without waiting for its next poll. HTTP-only (the run coroutines + the SSE stream live here),
-    // single-replica, and a pure accelerator over the poll (see TaskCompletionHub).
-    val taskCompletionHub = TaskCompletionHub()
+    // single-replica, and a pure accelerator over the poll (see TaskCompletionHub). On `core` so the SIGTERM
+    // shutdown hook can drain the open streams (a rolling restart re-homes the console to the replacement).
+    val taskCompletionHub = core.taskCompletionHub
     val tableDetailService = TableDetailService(core)
     // AES-256-GCM at-rest crypto for PII-bearing rows we persist server-side: query results AND
     // encrypted refresh tokens for principal sessions. Null when PM_RESULT_KEY is unset — sensitive
@@ -376,6 +386,13 @@ fun Application.module(config: Config, core: ControlPlaneCore) {
     // Result storage is only available when PM_RESULT_KEY is set; otherwise APPROVER_EXEC execution
     // is refused fail-closed (no plaintext PII persisted).
     val queryResultStore = resultCrypto?.let { QueryResultStore(dataSource, it) }
+
+    // Out-of-band task notifications (docs/notifications.md): the outbox drain and, when Slack is
+    // configured, the inbound Socket Mode connection. Null and inert when no transport is configured.
+    val notifications = installNotifications(
+        config, dataSource, authz, roleResolver, accessStore, datasourceStore, policyStore,
+        queryResultStore, store, runExecService, taskCompletionHub,
+    )
 
     // OIDC (docs/auth-model.md): provider-agnostic via discovery, so any OIDC IdP works. `discovery`/
     // `validator` are null when `config.oidc` is unset — every consumer degrades gracefully (501),
@@ -421,7 +438,7 @@ fun Application.module(config: Config, core: ControlPlaneCore) {
                 runCatching { queryResultStore.purgeExpired() }
                     .onFailure { environment.log.warn("result purge failed", it) }
             }
-            // Reap editor sessions idle past the cutoff — releases the held proxy stream + backend
+            // Reap editor sessions idle past the cutoff — releases the held proxy stream + target DB
             // connection + revokes the per-session token, so an abandoned editor tab doesn't pin resources.
             runCatching { runExecService.sweepIdleSessions(EDITOR_SESSION_MAX_IDLE_MS) }
                 .onFailure { environment.log.warn("editor session idle sweep failed", it) }
@@ -429,6 +446,7 @@ fun Application.module(config: Config, core: ControlPlaneCore) {
                 .onFailure { environment.log.warn("connection catalog idle sweep failed", it) }
         }
     }
+
 
     // Timer-driven IdP liveness is the sole revalidator for web and daemon sessions. A rejected
     // refresh token retires only its own session; transient failures preserve the cached state.
@@ -662,11 +680,16 @@ fun Application.module(config: Config, core: ControlPlaneCore) {
         approvalRoutes(
             config, accessStore, store, datasourceStore, policyStore, userGroupStore, queryResultStore,
             roleResolver, authz, runExecService, this@module, core.systemClassification, taskCompletionHub,
+            notifications,
         )
+
+        // Self-service: the caller's own display language, which notification delivery reads. Not an admin
+        // surface and not an authorization input — it only changes which locale a message renders in.
+        localeRoutes(config, NotificationStore(dataSource))
 
         // Enforcing SQL query endpoint (deny + result masking; effective roles come from RoleResolver).
         queryRoutes(config, datasourceStore, queryHistoryStore, runExecService)
-        // Persistent editor sessions (one held proxy stream / backend connection per session)
+        // Persistent editor sessions (one held proxy stream / target-DB connection per session)
         // whose submits run async as auto-approved EDITOR tasks with saved, task.assume-gated results.
         editorSessionRoutes(
             config, datasourceStore, accessStore, queryResultStore, policyStore, userGroupStore,
@@ -688,8 +711,7 @@ fun Application.module(config: Config, core: ControlPlaneCore) {
         post("/api/ingest/decision") {
             val expected = config.secretToken
             if (expected != null) {
-                val provided = call.request.headers["X-PM-Ingest-Token"]
-                if (provided != expected) {
+                if (!constantTimeEquals(call.request.headers["X-PM-Ingest-Token"], expected)) {
                     call.invalidToken("ingest")
                     return@post
                 }
@@ -699,7 +721,7 @@ fun Application.module(config: Config, core: ControlPlaneCore) {
             call.respond(HttpStatusCode.Accepted, mapOf("status" to "accepted"))
         }
 
-        // Live decision feed for the UI. Requires a session unless running in auth-debug mode.
+        // Live decision feed for the UI. Requires a session; each record is then filtered by audit.read.
         auditRoutes(config, store, authz)
 
         // Dev-only login shortcut; gated by PM_AUTH_DEBUG. OIDC (above) is the production path.

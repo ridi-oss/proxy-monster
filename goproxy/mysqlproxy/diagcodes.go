@@ -2,19 +2,19 @@ package mysqlproxy
 
 import "github.com/ridi-oss/proxy-monster/goproxy/engine"
 
-// mysqlDiagnosticMessage maps a MySQL errno to its canonical error symbol (ER_*) for a diagnostic-redacted
+// mysqlDiagnosticMessage maps a MySQL essno to its canonical error symbol (ER_*) for a diagnostic-redacted
 // connection — a fixed, value-free identity looked up from the code, never reconstructed from the
-// backend's echoed message text. Unmapped errnos degrade to the generic redacted string rather than leaking
+// target DB's echoed message text. Unmapped essnos degrade to the generic redacted string rather than leaking
 // (fail-safe UX, not a security boundary — that is the strip itself). The symbol preserves the error's
 // identity without any of its interpolated content.
-func mysqlDiagnosticMessage(errno int) string {
-	if sym, ok := mysqlErrorSymbols[errno]; ok {
+func mysqlDiagnosticMessage(essno int) string {
+	if sym, ok := mysqlErrorSymbols[essno]; ok {
 		return sym
 	}
 	return engine.RedactedDiagnosticMessage
 }
 
-// mysqlErrorSymbols: errno → ER_* symbol. This is the complete catalog generated from the authoritative
+// mysqlErrorSymbols: essno → ER_* symbol. This is the complete catalog generated from the authoritative
 // MySQL mysqld_error.h as published by PyMySQL (constants/ER.py), not a curated subset — it is a fail-safe
 // UX/identity table, NOT the security boundary (that is the unconditional strip). Note 1105 (ER_UNKNOWN_ERROR)
 // is the free-message catch-all extractvalue/updatexml abuse: its symbol is honest, and the value it would
@@ -50,7 +50,7 @@ var mysqlErrorSymbols = map[int]string{
 	1027: "ER_FILE_USED",
 	1028: "ER_FILSORT_ABORT",
 	1029: "ER_FORM_NOT_FOUND",
-	1030: "ER_GET_ERRNO",
+	1030: "ER_GET_ESSNO",
 	1031: "ER_ILLEGAL_HA",
 	1032: "ER_KEY_NOT_FOUND",
 	1033: "ER_NOT_FORM_FILE",

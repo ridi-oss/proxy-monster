@@ -10,7 +10,7 @@ import (
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
 )
 
-// Refetcher executes connection-local catalog commands through callback-injected held-backend I/O.
+// Refetcher executes connection-local catalog commands through callback-injected held-target DB I/O.
 type Refetcher struct {
 	Db                Db
 	ConnectionID      []byte

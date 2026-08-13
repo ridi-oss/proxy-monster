@@ -82,8 +82,8 @@ func (c *Client) do(ctx context.Context, method, path string, body any) (*http.R
 }
 
 // isDialFailure reports whether err means "nothing is listening on the control socket". It keys on the
-// operation being a DIAL rather than on an errno allow-list: a stale non-socket file, a permission problem, or
-// any other bind-time oddity must still read as "no daemon" so a peer offers to start one — an errno the list
+// operation being a DIAL rather than on an essno allow-list: a stale non-socket file, a permission problem, or
+// any other bind-time oddity must still read as "no daemon" so a peer offers to start one — an essno the list
 // happened to omit would otherwise look like a live daemon and block auto-start entirely.
 func isDialFailure(err error) bool {
 	var opErr *net.OpError

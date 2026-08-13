@@ -44,13 +44,8 @@ object McpCapabilityRegistry {
         AuthzAction.RESULT_READ_UNMASKED,
         AuthzAction.RESULT_READ_MASKED,
         AuthzAction.DATASOURCE_CONNECT,
-        AuthzAction.SQL_SELECT,
-        AuthzAction.SQL_INSERT,
-        AuthzAction.SQL_UPDATE,
-        AuthzAction.SQL_DELETE,
-        AuthzAction.SQL_DDL,
-        AuthzAction.SQL_UNANALYZABLE,
-        AuthzAction.SQL_UNMASKABLE,
+        AuthzAction.EXCEPTION_UNANALYZABLE,
+        AuthzAction.EXCEPTION_UNMASKABLE,
     )
 
     private fun read(name: String, action: AuthzAction) = McpCapability(

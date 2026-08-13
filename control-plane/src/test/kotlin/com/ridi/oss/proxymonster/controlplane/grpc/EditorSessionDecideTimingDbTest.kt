@@ -17,6 +17,7 @@ import com.ridi.oss.proxymonster.grpc.runDone
 import com.ridi.oss.proxymonster.grpc.runResultRows
 import com.ridi.oss.proxymonster.grpc.runRow
 import com.ridi.oss.proxymonster.grpc.runReady
+import com.ridi.oss.proxymonster.grpc.runServing
 import com.ridi.oss.proxymonster.grpc.runValue
 import com.ridi.oss.proxymonster.grpc.eventsRequest
 import com.ridi.oss.proxymonster.grpc.proxyRunMsg
@@ -85,7 +86,7 @@ class EditorSessionDecideTimingDbTest {
                 name = "timing-ip-gated-connect-select",
                 cedarSrc = """permit(
                     principal,
-                    action in [Action::"datasource.connect", Action::"sql.select"],
+                    action in [Action::"datasource.connect", Action::"stmt.cat.read"],
                     resource in Datasource::"${datasource.name}"
                 ) when { context has requester_ip && context.requester_ip.isInRange(ip("203.0.113.0/24")) };""",
             ),
@@ -110,7 +111,7 @@ class EditorSessionDecideTimingDbTest {
     @Test
     fun `each session query's real gRPC Decide sees THAT query's refreshed requester_ip, proving refresh-before-send`() = runBlocking {
         supervisorScope {
-            val event = async { stub.events(eventsRequest { datasourceName = datasource.name }).first() }
+            val event = async { stub.events(eventsRequest { datasourceName = datasource.name; protocolVersion = CONTROL_PROTOCOL_VERSION }).first() }
             awaitUntil("Events stream attached") { datasource.name in core.proxyEventsHub.attached() }
 
             // Open from an ALLOWED IP; the open-time entry is in-range, so a stale read would ALLOW — the trap
@@ -146,6 +147,7 @@ class EditorSessionDecideTimingDbTest {
                 }
             }
             proxyRequests.send(proxyRunMsg { sessionReady = runReady { sessionId = open.sessionId } })
+            proxyRequests.send(proxyRunMsg { serving = runServing {} })
             val sessionId = withTimeout(5_000) { sessionIdDeferred.await() }
 
             // Query 1 from an ALLOWED IP → the refreshed IP reaches the decide → ALLOW.

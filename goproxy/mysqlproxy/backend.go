@@ -1,6 +1,7 @@
 package mysqlproxy
 
 import (
+	"context"
 	"crypto/tls"
 	"errors"
 	"fmt"
@@ -17,13 +18,13 @@ import (
 )
 
 const (
-	backendHandshakeTimeout = 10 * time.Second
-	maxBackendAuthPacket    = 64 << 10
+	targetDbHandshakeTimeout = 10 * time.Second
+	maxTargetDbAuthPacket    = 64 << 10
 )
 
 const (
-	backendPluginNative      = "mysql_native_password"
-	backendPluginCachingSHA2 = "caching_sha2_password"
+	targetDbPluginNative      = "mysql_native_password"
+	targetDbPluginCachingSHA2 = "caching_sha2_password"
 )
 
 // testHookCachingSHA2FullAuth, when non-nil, is invoked whenever the caching_sha2_password full-auth
@@ -32,19 +33,24 @@ const (
 // is exercised end-to-end.
 var testHookCachingSHA2FullAuth func(viaPublicKey bool)
 
-// dialBackendAuth connects to the target and performs the service-account handshake. Both
+// dialTargetDbAuth connects to the target and performs the service-account handshake. Both
 // mysql_native_password and caching_sha2_password (mysql:8.0 / Aurora MySQL 3 default) are supported,
 // each on the direct and auth-switch paths; caching_sha2 additionally runs the full-auth exchange
 // (RSA public-key over a plaintext link, cleartext over TLS) when the server's fast-auth cache misses.
 // CLIENT_SESSION_TRACK is required so text-protocol database changes arrive as protocol signals instead
 // of requiring an interposed SELECT DATABASE() that would corrupt ROW_COUNT/FOUND_ROWS diagnostics.
-func dialBackendAuth(target spi.BackendTarget, mirrorDeprecateEOF bool) (net.Conn, error) {
-	conn, _, err := dialBackendAuthID(target, mirrorDeprecateEOF)
+func dialTargetDbAuth(target spi.TargetDb, mirrorDeprecateEOF bool) (net.Conn, error) {
+	conn, _, err := dialTargetDbAuthID(context.Background(), target, mirrorDeprecateEOF)
 	return conn, err
 }
 
-func dialBackendAuthID(target spi.BackendTarget, mirrorDeprecateEOF bool) (net.Conn, uint32, error) {
-	conn, err := net.DialTimeout("tcp", net.JoinHostPort(target.Host, strconv.Itoa(target.Port)), backendHandshakeTimeout)
+// dialTargetDbAuthID honors ctx for the whole handshake: DialContext aborts the connect, and while the
+// (deadline-bounded) auth exchange runs, an AfterFunc closes the conn on cancel so a blocked read unwinds at
+// once. On the run path ctx is the target-DB open context, so a run the control-plane already closed does not
+// finish a target-DB handshake nobody is waiting for; the wire path passes a background ctx (never cancelled).
+func dialTargetDbAuthID(ctx context.Context, target spi.TargetDb, mirrorDeprecateEOF bool) (net.Conn, uint32, error) {
+	dialer := net.Dialer{Timeout: targetDbHandshakeTimeout}
+	conn, err := dialer.DialContext(ctx, "tcp", net.JoinHostPort(target.Host, strconv.Itoa(target.Port)))
 	if err != nil {
 		return nil, 0, err
 	}
@@ -54,20 +60,21 @@ func dialBackendAuthID(target spi.BackendTarget, mirrorDeprecateEOF bool) (net.C
 			_ = conn.Close()
 		}
 	}()
-	if err := conn.SetDeadline(time.Now().Add(backendHandshakeTimeout)); err != nil {
-		return nil, 0, fmt.Errorf("set backend auth deadline: %w", err)
+	defer context.AfterFunc(ctx, func() { _ = conn.Close() })()
+	if err := conn.SetDeadline(time.Now().Add(targetDbHandshakeTimeout)); err != nil {
+		return nil, 0, fmt.Errorf("set target-DB auth deadline: %w", err)
 	}
 
-	greetingSeq, payload, err := mysqlwire.ReadPacketLimited(conn, maxBackendAuthPacket)
+	greetingSeq, payload, err := mysqlwire.ReadPacketLimited(conn, maxTargetDbAuthPacket)
 	if err != nil {
-		return nil, 0, fmt.Errorf("read backend greeting: %w", err)
+		return nil, 0, fmt.Errorf("read target-DB greeting: %w", err)
 	}
 	greeting, err := mysqlwire.ParseHandshakeV10(payload)
 	if err != nil {
-		return nil, 0, fmt.Errorf("malformed backend greeting: %w", err)
+		return nil, 0, fmt.Errorf("malformed target-DB greeting: %w", err)
 	}
 	if greeting.Capabilities&mysqlwire.CapSessionTrack == 0 {
-		return nil, 0, errors.New("backend does not support CLIENT_SESSION_TRACK (MySQL 8.0+ required)")
+		return nil, 0, errors.New("target DB does not support CLIENT_SESSION_TRACK (MySQL 8.0+ required)")
 	}
 
 	caps := uint32(mysqlwire.CapLongPassword | mysqlwire.CapProtocol41 | mysqlwire.CapTransactions |
@@ -79,27 +86,27 @@ func dialBackendAuthID(target spi.BackendTarget, mirrorDeprecateEOF bool) (net.C
 	// The plugin negotiated in the greeting drives the initial HandshakeResponse. scramble is the auth
 	// challenge for the CURRENT plugin; it is updated on an auth-switch and is the seed the caching_sha2
 	// full-auth path encrypts against.
-	plugin, err := canonicalBackendPlugin(greeting.AuthPlugin)
+	plugin, err := canonicalTargetDbPlugin(greeting.AuthPlugin)
 	if err != nil {
 		return nil, 0, err
 	}
 	scramble := greeting.Scramble
-	authResp, err := backendAuthResponse(plugin, target.Password, scramble)
+	authResp, err := targetDbAuthResponse(plugin, target.Password, scramble)
 	if err != nil {
 		return nil, 0, err
 	}
-	response := mysqlwire.BackendHandshakeResponse(caps, target.User, authResp, target.Db, plugin)
+	response := mysqlwire.TargetDbHandshakeResponse(caps, target.User, authResp, target.Db, plugin)
 	if err := mysqlwire.WritePacket(conn, greetingSeq+1, response); err != nil {
-		return nil, 0, fmt.Errorf("write backend handshake response: %w", err)
+		return nil, 0, fmt.Errorf("write target-DB handshake response: %w", err)
 	}
 
 	for {
-		seq, authPayload, err := mysqlwire.ReadPacketLimited(conn, maxBackendAuthPacket)
+		seq, authPayload, err := mysqlwire.ReadPacketLimited(conn, maxTargetDbAuthPacket)
 		if err != nil {
-			return nil, 0, fmt.Errorf("read backend auth response: %w", err)
+			return nil, 0, fmt.Errorf("read target-DB auth response: %w", err)
 		}
 		if len(authPayload) == 0 {
-			return nil, 0, errors.New("unexpected empty backend auth packet")
+			return nil, 0, errors.New("unexpected empty target-DB auth packet")
 		}
 		switch authPayload[0] {
 		case 0x00:
@@ -107,12 +114,12 @@ func dialBackendAuthID(target spi.BackendTarget, mirrorDeprecateEOF bool) (net.C
 				return nil, 0, err
 			}
 			if err := conn.SetDeadline(time.Time{}); err != nil {
-				return nil, 0, fmt.Errorf("clear backend auth deadline: %w", err)
+				return nil, 0, fmt.Errorf("clear target-DB auth deadline: %w", err)
 			}
 			keep = true
 			return conn, greeting.ConnectionID, nil
 		case 0xff:
-			return nil, 0, fmt.Errorf("backend auth failed: %s", mysqlwire.ErrString(authPayload))
+			return nil, 0, fmt.Errorf("target-DB auth failed: %s", mysqlwire.ErrString(authPayload))
 		case 0xfe:
 			switchPlugin, switchScramble, err := parseAuthSwitch(authPayload)
 			if err != nil {
@@ -120,49 +127,49 @@ func dialBackendAuthID(target spi.BackendTarget, mirrorDeprecateEOF bool) (net.C
 			}
 			plugin = switchPlugin
 			scramble = switchScramble
-			resp, err := backendAuthResponse(plugin, target.Password, scramble)
+			resp, err := targetDbAuthResponse(plugin, target.Password, scramble)
 			if err != nil {
 				return nil, 0, err
 			}
 			if err := mysqlwire.WritePacket(conn, seq+1, resp); err != nil {
-				return nil, 0, fmt.Errorf("write backend auth switch response: %w", err)
+				return nil, 0, fmt.Errorf("write target-DB auth switch response: %w", err)
 			}
 		case mysqlwire.AuthMoreData:
-			if plugin != backendPluginCachingSHA2 {
+			if plugin != targetDbPluginCachingSHA2 {
 				return nil, 0, fmt.Errorf("unexpected AuthMoreData for plugin %s", plugin)
 			}
 			if err := handleCachingSHA2MoreData(conn, seq, authPayload, target.Password, scramble); err != nil {
 				return nil, 0, err
 			}
 		default:
-			return nil, 0, fmt.Errorf("unexpected backend auth packet 0x%02x", authPayload[0])
+			return nil, 0, fmt.Errorf("unexpected target-DB auth packet 0x%02x", authPayload[0])
 		}
 	}
 }
 
-// canonicalBackendPlugin normalizes the greeting's auth plugin to one the proxy implements, failing
+// canonicalTargetDbPlugin normalizes the greeting's auth plugin to one the proxy implements, failing
 // closed on anything else. An empty plugin name (pre-4.1 greeting without CapPluginAuth) is treated as
 // mysql_native_password, matching ParseHandshakeV10's default.
-func canonicalBackendPlugin(plugin string) (string, error) {
+func canonicalTargetDbPlugin(plugin string) (string, error) {
 	switch {
-	case plugin == "" || strings.EqualFold(plugin, backendPluginNative):
-		return backendPluginNative, nil
-	case strings.EqualFold(plugin, backendPluginCachingSHA2):
-		return backendPluginCachingSHA2, nil
+	case plugin == "" || strings.EqualFold(plugin, targetDbPluginNative):
+		return targetDbPluginNative, nil
+	case strings.EqualFold(plugin, targetDbPluginCachingSHA2):
+		return targetDbPluginCachingSHA2, nil
 	default:
-		return "", fmt.Errorf("backend requested unsupported auth plugin %s", plugin)
+		return "", fmt.Errorf("target DB requested unsupported auth plugin %s", plugin)
 	}
 }
 
-// backendAuthResponse computes the HandshakeResponse (or auth-switch response) auth bytes for plugin.
-func backendAuthResponse(plugin, password string, scramble []byte) ([]byte, error) {
+// targetDbAuthResponse computes the HandshakeResponse (or auth-switch response) auth bytes for plugin.
+func targetDbAuthResponse(plugin, password string, scramble []byte) ([]byte, error) {
 	switch plugin {
-	case backendPluginNative:
+	case targetDbPluginNative:
 		return mysqlwire.NativePassword(password, scramble), nil
-	case backendPluginCachingSHA2:
+	case targetDbPluginCachingSHA2:
 		return mysqlwire.CachingSHA2Password(password, scramble), nil
 	default:
-		return nil, fmt.Errorf("backend requested unsupported auth plugin %s", plugin)
+		return nil, fmt.Errorf("target DB requested unsupported auth plugin %s", plugin)
 	}
 }
 
@@ -172,15 +179,15 @@ func backendAuthResponse(plugin, password string, scramble []byte) ([]byte, erro
 func parseAuthSwitch(payload []byte) (string, []byte, error) {
 	r := mysqlwire.NewReader(payload)
 	if err := r.Skip(1); err != nil {
-		return "", nil, errors.New("unexpected backend auth packet")
+		return "", nil, errors.New("unexpected target-DB auth packet")
 	}
 	plugin, err := r.Cstr()
 	if err != nil {
-		return "", nil, errors.New("unexpected backend auth packet")
+		return "", nil, errors.New("unexpected target-DB auth packet")
 	}
 	start := 1 + len(plugin) + 1
 	if start > len(payload) {
-		return "", nil, errors.New("unexpected backend auth packet")
+		return "", nil, errors.New("unexpected target-DB auth packet")
 	}
 	end := len(payload)
 	if end > start && payload[end-1] == 0 {
@@ -189,7 +196,7 @@ func parseAuthSwitch(payload []byte) (string, []byte, error) {
 	if end > start+20 {
 		end = start + 20
 	}
-	canonical, err := canonicalBackendPlugin(plugin)
+	canonical, err := canonicalTargetDbPlugin(plugin)
 	if err != nil {
 		return "", nil, err
 	}
@@ -225,7 +232,7 @@ func handleCachingSHA2MoreData(conn net.Conn, seq byte, payload []byte, password
 		if err := mysqlwire.WritePacket(conn, seq+1, []byte{mysqlwire.CachingSHA2RequestPublicKey}); err != nil {
 			return fmt.Errorf("request caching_sha2 public key: %w", err)
 		}
-		keySeq, keyPayload, err := mysqlwire.ReadPacketLimited(conn, maxBackendAuthPacket)
+		keySeq, keyPayload, err := mysqlwire.ReadPacketLimited(conn, maxTargetDbAuthPacket)
 		if err != nil {
 			return fmt.Errorf("read caching_sha2 public key: %w", err)
 		}
@@ -248,7 +255,7 @@ func handleCachingSHA2MoreData(conn net.Conn, seq byte, payload []byte, password
 	}
 }
 
-// enableSessionTracking makes the backend report enforcement-critical session state in the OK packet of the
+// enableSessionTracking makes the target DB report enforcement-critical session state in the OK packet of the
 // statement that changed it: session_track_schema=ON emits an authoritative SESSION_TRACK_SCHEMA block after
 // every text USE, and the SESSION_TRACK_SYSTEM_VARIABLES list surfaces a direct change to schema tracking,
 // the tracking list, or the connection charset. This is a fast fail-closed signal for DIRECT tampering; it
@@ -257,22 +264,22 @@ func handleCachingSHA2MoreData(conn net.Conn, seq byte, payload []byte, password
 // but the variables are session-configurable, so the proxy sets them explicitly rather than trusting the
 // server default.
 func enableSessionTracking(conn net.Conn) error {
-	if err := execBackendSet(conn, "SET SESSION session_track_schema = ON"); err != nil {
-		return fmt.Errorf("enable backend schema tracking: %w", err)
+	if err := execTargetDbSet(conn, "SET SESSION session_track_schema = ON"); err != nil {
+		return fmt.Errorf("enable target-DB schema tracking: %w", err)
 	}
-	if err := execBackendSet(conn, "SET SESSION session_track_system_variables = '"+trackedSysVarList()+"'"); err != nil {
-		return fmt.Errorf("enable backend session-variable tracking: %w", err)
+	if err := execTargetDbSet(conn, "SET SESSION session_track_system_variables = '"+trackedSysVarList()+"'"); err != nil {
+		return fmt.Errorf("enable target DB session-variable tracking: %w", err)
 	}
 	return nil
 }
 
-// execBackendSet sends one SET on the service-account connection and consumes its single OK packet, failing
-// on a backend error or a malformed response.
-func execBackendSet(conn net.Conn, sql string) error {
+// execTargetDbSet sends one SET on the service-account connection and consumes its single OK packet, failing
+// on a target-DB error or a malformed response.
+func execTargetDbSet(conn net.Conn, sql string) error {
 	if err := mysqlwire.WritePacket(conn, 0, mysqlwire.ComQueryPayload(sql)); err != nil {
 		return err
 	}
-	_, payload, err := mysqlwire.ReadPacketLimited(conn, maxBackendAuthPacket)
+	_, payload, err := mysqlwire.ReadPacketLimited(conn, maxTargetDbAuthPacket)
 	if err != nil {
 		return err
 	}
@@ -285,7 +292,7 @@ func execBackendSet(conn net.Conn, sql string) error {
 	if payload[0] != 0x00 {
 		return fmt.Errorf("unexpected response 0x%02x", payload[0])
 	}
-	if _, _, _, _, err := normalizeBackendOK(payload); err != nil {
+	if _, _, _, _, err := normalizeTargetDbOK(payload); err != nil {
 		return err
 	}
 	return nil
@@ -299,7 +306,7 @@ func execBackendSet(conn net.Conn, sql string) error {
 // the true current database, charset, and sql_mode regardless of tracker state, so a client cannot silently
 // defeat the proxy's namespace/encoding/lexer-mode observation. Reading sql_mode here (not just at connect)
 // covers BOTH the connect-time and mid-session vectors: ANSI_QUOTES is OBSERVED and forwarded to the analyzer
-// (which parses "…" as the quoted identifier the backend reads, so a masked column stays masked), while any
+// (which parses "…" as the quoted identifier the target DB reads, so a masked column stays masked), while any
 // flag that is not parse-safe — a known parse-affecting one the analyzer cannot model or an unrecognized one
 // — fails the session closed (see classifyMySQLSqlMode's allowlist; mirrors pgproxy's
 // standard_conforming_strings guard). Because the proxy serves one statement at a time and sql_mode changes
@@ -342,7 +349,7 @@ type textResultCollector struct {
 	masks                      []*pb.ColumnMask
 	result                     *engine.StatementResult
 	masker                     *engine.RowMasker
-	backendErr, affectedErr    error
+	targetDbErr, affectedErr   error
 }
 
 func (c *textResultCollector) hooks() resultHooks {
@@ -350,7 +357,7 @@ func (c *textResultCollector) hooks() resultHooks {
 }
 func (c *textResultCollector) sink(_ byte, payload []byte) error {
 	if len(payload) > 0 && payload[0] == 0xff {
-		c.backendErr = errors.New(mysqlwire.ErrString(payload))
+		c.targetDbErr = errors.New(mysqlwire.ErrString(payload))
 	}
 	return c.affectedErr
 }
@@ -411,22 +418,22 @@ func (c *textResultCollector) onOK(affected uint64) {
 	}
 }
 
-// runInternalQuery executes one text query on the held backend and strictly decodes its rows.
-func runInternalQuery(backend net.Conn, deprecateEOF bool, sql string, expectedColumns int) ([][]*string, error) {
+// runInternalQuery executes one text query on the held target DB and strictly decodes its rows.
+func runInternalQuery(targetDb net.Conn, deprecateEOF bool, sql string, expectedColumns int) ([][]*string, error) {
 	if expectedColumns <= 0 {
 		return nil, fmt.Errorf("internal query expected columns = %d, want positive", expectedColumns)
 	}
-	if err := mysqlwire.WritePacket(backend, 0, mysqlwire.ComQueryPayload(sql)); err != nil {
+	if err := mysqlwire.WritePacket(targetDb, 0, mysqlwire.ComQueryPayload(sql)); err != nil {
 		return nil, err
 	}
 	result := engine.StatementResult{Rows: make([][]*string, 0)}
 	collect := textResultCollector{expected: expectedColumns, result: &result}
-	_, err := relayResultSet(backend, deprecateEOF, collect.hooks())
+	_, err := relayResultSet(targetDb, deprecateEOF, collect.hooks())
 	if err != nil {
 		return nil, err
 	}
-	if collect.backendErr != nil {
-		return nil, fmt.Errorf("backend internal query: %w", collect.backendErr)
+	if collect.targetDbErr != nil {
+		return nil, fmt.Errorf("target DB internal query: %w", collect.targetDbErr)
 	}
 	return result.Rows, collect.affectedErr
 }
@@ -434,8 +441,8 @@ func runInternalQuery(backend net.Conn, deprecateEOF bool, sql string, expectedC
 // probeNamespace runs the pre-statement session probe and returns the connection's namespace plus whether
 // its live sql_mode has ANSI_QUOTES active, failing closed on an unsafe charset or a non-modeled
 // lexer-changing sql_mode flag.
-func probeNamespace(backend net.Conn, deprecateEOF bool) (namespace []string, ansiQuotes bool, err error) {
-	rows, err := runInternalQuery(backend, deprecateEOF, mysqlSessionProbeSQL, 5)
+func probeNamespace(targetDb net.Conn, deprecateEOF bool) (namespace []string, ansiQuotes bool, err error) {
+	rows, err := runInternalQuery(targetDb, deprecateEOF, mysqlSessionProbeSQL, 5)
 	if err != nil {
 		return nil, false, err
 	}
@@ -447,8 +454,8 @@ func probeNamespace(backend net.Conn, deprecateEOF bool) (namespace []string, an
 
 // probeNamespaceObservation runs the pre-statement session probe and packages its result as the engine's
 // NamespaceProbe, so every wire/editor call site shares one probe→engine conversion.
-func probeNamespaceObservation(backend net.Conn, deprecateEOF bool) (engine.NamespaceProbe, error) {
-	namespace, ansiQuotes, err := probeNamespace(backend, deprecateEOF)
+func probeNamespaceObservation(targetDb net.Conn, deprecateEOF bool) (engine.NamespaceProbe, error) {
+	namespace, ansiQuotes, err := probeNamespace(targetDb, deprecateEOF)
 	if err != nil {
 		return engine.NamespaceProbe{}, err
 	}

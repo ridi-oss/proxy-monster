@@ -1,11 +1,15 @@
 package com.ridi.oss.proxymonster.controlplane
 
 import kotlinx.coroutines.channels.ClosedReceiveChannelException
+import kotlinx.coroutines.channels.ReceiveChannel
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
+import java.util.concurrent.ConcurrentLinkedQueue
+import java.util.concurrent.CountDownLatch
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
@@ -81,5 +85,89 @@ class TaskCompletionHubTest {
         assertTrue(drained.isNotEmpty())
         // The most recent event is always retained; the oldest are the ones dropped.
         assertEquals(500L, drained.last().taskId)
+    }
+
+    @Test
+    fun `isDraining is false until beginDraining`() {
+        val hub = TaskCompletionHub()
+        assertFalse(hub.isDraining())
+        hub.beginDraining()
+        assertTrue(hub.isDraining())
+    }
+
+    @Test
+    fun `broadcastDraining closes every open stream and returns the count`() {
+        val hub = TaskCompletionHub()
+        val alice = hub.subscribe("alice")
+        val bobTab1 = hub.subscribe("bob")
+        val bobTab2 = hub.subscribe("bob")
+
+        assertEquals(3, hub.broadcastDraining(), "every open stream across principals is closed")
+
+        // A closed stream ends its SSE handler, which the browser's EventSource then reconnects.
+        for (stream in listOf(alice, bobTab1, bobTab2)) {
+            assertTrue(stream.tryReceive().isClosed, "the stream is closed by the drain")
+        }
+    }
+
+    @Test
+    fun `awaitDrained blocks until the closed streams deregister, then reports drained`() {
+        val hub = TaskCompletionHub()
+        val stream = hub.subscribe("alice")
+        hub.beginDraining()
+        hub.broadcastDraining()
+
+        // broadcastDraining closes the channel but the subscriber map only empties when the handler's `finally`
+        // unsubscribes (off-thread in production). Until then the hub is not drained: the wait must report that
+        // rather than return early, so shutdown keeps the process alive for the reconnect hint to flush.
+        assertFalse(hub.awaitDrained(50), "still holding a closed-but-not-yet-deregistered stream")
+
+        // Simulate the handler's finally running after it flushed its hint.
+        hub.unsubscribe("alice", stream)
+        assertTrue(hub.awaitDrained(200), "drained once the last stream deregisters")
+    }
+
+    @Test
+    fun `once draining, a new subscribe is refused with an already-closed channel`() {
+        val hub = TaskCompletionHub()
+        hub.beginDraining()
+
+        val late = hub.subscribe("alice")
+        // Handed back closed so its handler ends at once (and the browser re-homes), and never registered —
+        // so a browser reconnecting onto this draining instance is bounced straight back off it.
+        assertTrue(late.tryReceive().isClosed, "a subscribe during drain is handed a closed channel")
+        hub.publish("alice", TaskEvent(1, "EXECUTED"))
+        assertTrue(late.tryReceive().isClosed, "and it was never registered, so nothing is delivered")
+    }
+
+    @Test
+    fun `concurrent subscribe cannot survive a drain`() {
+        // The subscribe barrier must be atomic with the drain: however subscribes interleave with
+        // beginDraining + broadcastDraining, none may be left OPEN (registered but unclosed) — such a stream
+        // would linger on the draining instance, never told to reconnect. Without subscribe()'s lock, a check
+        // that reads shuttingDown as false can insert its (open) channel after broadcastDraining already swept.
+        // subscribe() owns the channel it returns (the SSE handler does not supply one, unlike a proxy Events
+        // stream), so the deterministic parking-close ProxyEventsHubTest uses is not available here — this
+        // stresses the check-then-insert window across many interleavings instead.
+        repeat(200) {
+            val hub = TaskCompletionHub()
+            val start = CountDownLatch(1)
+            val streams = ConcurrentLinkedQueue<ReceiveChannel<TaskEvent>>()
+            val subscribers = (1..12).map { i ->
+                Thread { start.await(); streams.add(hub.subscribe("p-$i")) }
+            }
+            val drainer = Thread { start.await(); hub.beginDraining(); hub.broadcastDraining() }
+            val threads = subscribers + drainer
+            threads.forEach(Thread::start)
+            start.countDown()
+            threads.forEach { it.join(5000) }
+            assertTrue(threads.none(Thread::isAlive), "no thread should be stuck (a deadlock regression)")
+
+            assertEquals(12, streams.size, "every subscribe returned a stream")
+            // Each stream must be closed — broadcast-closed if it registered before the drain, refuse-closed if
+            // it raced in after the flag. An OPEN (empty, not closed) stream is a lost subscribe that would sit
+            // on the dying instance forever.
+            streams.forEach { assertTrue(it.tryReceive().isClosed, "every stream must be closed by the drain, none left open") }
+        }
     }
 }

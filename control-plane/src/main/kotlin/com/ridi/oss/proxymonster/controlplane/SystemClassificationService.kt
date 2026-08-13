@@ -15,8 +15,10 @@ import org.slf4j.LoggerFactory
  * Keyed off the STORED `datasource.engine_version` (raw `SELECT version()` + `(aurora <v>)`), so it is
  * path-agnostic — it works identically for a proxy-`PushCatalog` datasource and a legacy CP-introspected one,
  * without touching either catalog path. A datasource whose version is absent or an uncertified major resolves
- * to no manifest → no system tag → the object stays deny-by-default (system schemas closed) unless the
- * operator enables the nearest-major fallback.
+ * to no manifest; its FIXED system schemas then stay closed (a table is treated as [SystemTag.CRITICAL]
+ * unless a shipped manifest explicitly classifies it as dangerous — see [tagForTable]), and its dangerous
+ * functions fall back to the version-independent union floor ([tagForFunction]). A user schema stays
+ * unclassified.
  */
 class SystemClassificationService(
     private val store: SystemClassificationStore = SystemClassificationStore.load(),
@@ -37,9 +39,44 @@ class SystemClassificationService(
         )
     }
 
-    /** The shipped `system:` tag id for a Table, or null when no manifest governs the datasource. */
-    fun tagForTable(engine: Engine, engineVersion: String?, catalog: String, schema: String, table: String): String? =
-        classifierFor(engine, engineVersion)?.classifyRelation(catalog, schema, table)?.id
+    /**
+     * The shipped `system:` tag id for a Table, or null when the table is not in a system schema (ordinary
+     * user classification then applies).
+     *
+     * A datasource with NO governing manifest (absent or uncertified `engine_version`, fallback off) cannot
+     * classify its system schemas, yet the classifier's [SystemTag.CATALOG] default plus the role-agnostic
+     * `system:catalog` read permit would make every unrecognized fixed-system-schema table world-readable.
+     * That is fail-open: the manifests do not enumerate every value-bearing system table (e.g. MySQL
+     * `performance_schema.user_variables_by_thread`, the `sys.x$…` twins), so an unrecognized one cannot be
+     * assumed benign catalog metadata. So a fixed system schema without a governing manifest is closed:
+     * an explicitly-dangerous tag any shipped manifest of the engine assigns is kept (it routes through its
+     * own Cedar forbid), and everything else — the catalog default and any unrecognized or catalog-mismatched
+     * relation — is treated as [SystemTag.CRITICAL] so the unconditional critical forbid denies it even under
+     * a broad Datasource grant. Ephemeral `pg_temp_`/`pg_toast` schemas are excluded
+     * ([Engine.isFixedSystemSchema]): their connection-local handling owns that separate path.
+     */
+    fun tagForTable(engine: Engine, engineVersion: String?, catalog: String, schema: String, table: String): String? {
+        classifierFor(engine, engineVersion)?.let { return it.classifyRelation(catalog, schema, table)?.id }
+        if (!engine.isFixedSystemSchema(schema)) return null
+        return (noManifestDangerousFloor(engine, catalog, schema, table) ?: SystemTag.CRITICAL).id
+    }
+
+    /**
+     * The strongest EXPLICIT dangerous tag (stronger than [SystemTag.CATALOG]) any shipped manifest of [engine]
+     * assigns the relation, or null when no manifest classifies it beyond the catalog default. Used only for a
+     * datasource with no governing manifest: an explicit critical/data-leak/activity classification is
+     * version-stable enough to trust (and over-classifying is fail-safe), while the bare catalog default cannot
+     * be distinguished from an unrecognized relation, so [tagForTable] closes that case instead.
+     */
+    private fun noManifestDangerousFloor(engine: Engine, catalog: String, schema: String, table: String): SystemTag? {
+        var tag: SystemTag? = null
+        for (classifier in store.classifiersForEngine(engine.wireName)) {
+            val t = classifier.classifyRelation(catalog, schema, table) ?: continue
+            if (t == SystemTag.CATALOG) continue
+            tag = if (tag == null) t else SystemTag.stronger(tag, t)
+        }
+        return tag
+    }
 
     /**
      * The shipped `system:` tag id for a called function, or null when it is an ordinary safe function

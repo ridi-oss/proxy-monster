@@ -235,7 +235,7 @@ func TestExtendedCatalogRefreshDoesNotArmOnExecuteError(t *testing.T) {
 	}
 	client := newRawPGClient(t, h)
 
-	// Parse succeeds, then a direct backend session creates the same table before Execute so PostgreSQL's
+	// Parse succeeds, then a direct target-DB session creates the same table before Execute so PostgreSQL's
 	// Execute path returns ErrorResponse. The command must not arm on that terminal failure.
 	assertRawExtendedCompletion(t, client.sendSync(t, &pgproto3.Parse{Name: "refresh_ddl_error", Query: ddlSQL}), "ParseComplete", 'I')
 	if _, err := direct.Exec(ddlSQL); err != nil {
@@ -312,7 +312,7 @@ func TestExtendedAllowRelaysParameterizedRows(t *testing.T) {
 	if err := rows.Scan(&id, &name, &ssn); err != nil {
 		t.Fatalf("Scan: %v", err)
 	}
-	if id != 1 || name != "Alice" || ssn == nil || *ssn != "900101-1234567" {
+	if id != 1 || name != "Alice" || ssn == nil || *ssn != "987-65-4320" {
 		t.Fatalf("row = (%d, %q, %v), want Alice row", id, name, ssn)
 	}
 	if rows.Next() {
@@ -363,7 +363,7 @@ func TestExtendedDenyAtParseLeaksNothing(t *testing.T) {
 	if err := conn.QueryRow(ctx, "stmt_deny", 1).Scan(&ssn); err != nil {
 		t.Fatalf("query recovered statement: %v", err)
 	}
-	if ssn != "900101-1234567" {
+	if ssn != "987-65-4320" {
 		t.Fatalf("ssn = %q, want cleartext primary value", ssn)
 	}
 }
@@ -491,7 +491,7 @@ func TestExtendedBinaryMaskWithPermitRelaysVerbatim(t *testing.T) {
 	if err := conn.QueryRow(ctx, "stmt_bin_permit", pgx.QueryResultFormats{1, 1, 1}, 1).Scan(&id, &name, &ssn); err != nil {
 		t.Fatalf("binary QueryRow: %v", err)
 	}
-	if id != 1 || name != "Alice" || ssn != "900101-1234567" {
+	if id != 1 || name != "Alice" || ssn != "987-65-4320" {
 		t.Fatalf("row = (%d, %q, %q), want cleartext Alice row", id, name, ssn)
 	}
 	if got := len(h.fake.requests()); got != 2 {
@@ -766,7 +766,7 @@ func TestExtendedPostBindSearchPathDriftCannotBypassPolicy(t *testing.T) {
 // the erroring Bind aborts the whole transaction (verified against PG16: 42P03 "cursor already exists",
 // then any following command returns 25P02, never 34000). Because every Bind error aborts the transaction,
 // no subsequent Execute can ever return rows, so a stale boundPortal snapshot cannot leak data. With an
-// ALLOW-all policy the proxy re-decides the Execute (a harmless audit decision) and relays the backend's
+// ALLOW-all policy the proxy re-decides the Execute (a harmless audit decision) and relays the target DB's
 // own 25P02 verbatim: zero DataRow frames reach the client. That transaction abort — not a 34000, which
 // real PostgreSQL never returns here — is what makes a rejected re-Bind safe.
 func TestExtendedRejectedRebindAbortsTransactionNoLeak(t *testing.T) {
@@ -798,7 +798,7 @@ func TestExtendedRejectedRebindAbortsTransactionNoLeak(t *testing.T) {
 	}
 	assertRawReadyForQuery(t, rebindFrames, 'E')
 
-	// Execute the still-mapped portal. The backend's aborted-transaction error (25P02) is relayed and no
+	// Execute the still-mapped portal. The target DB's aborted-transaction error (25P02) is relayed and no
 	// row ever flows; the proxy never fabricates a 34000, matching real PostgreSQL.
 	executeFrames := client.sendSync(t, &pgproto3.Execute{Portal: "p"})
 	for _, frame := range executeFrames {
@@ -808,7 +808,7 @@ func TestExtendedRejectedRebindAbortsTransactionNoLeak(t *testing.T) {
 	}
 	execErr, ok := executeFrames[0].(*pgproto3.ErrorResponse)
 	if !ok || execErr.Code != "25P02" {
-		t.Fatalf("Execute frame[0] = %#v, want backend 25P02 aborted-transaction error", executeFrames[0])
+		t.Fatalf("Execute frame[0] = %#v, want target DB 25P02 aborted-transaction error", executeFrames[0])
 	}
 	assertRawReadyForQuery(t, executeFrames, 'E')
 	// The transaction stays aborted; recovery from 'E' via ROLLBACK is covered by
@@ -817,7 +817,7 @@ func TestExtendedRejectedRebindAbortsTransactionNoLeak(t *testing.T) {
 
 // TestExtendedAbortedTransactionRecoversViaRollback pins that a connection wedged in the aborted-transaction
 // state ('E') recovers via ROLLBACK over BOTH protocols. Before the 'E'-state namespace-reuse guard, the
-// injected namespace probe hit the backend's 25P02 and the proxy refused ROLLBACK with 58000, leaving the
+// injected namespace probe hit the target DB's 25P02 and the proxy refused ROLLBACK with 58000, leaving the
 // only escape a disconnect — an availability regression on routine traffic (any error inside an explicit
 // transaction), and a divergence from vanilla PostgreSQL, which accepts ROLLBACK in the aborted state.
 func TestExtendedAbortedTransactionRecoversViaRollback(t *testing.T) {
@@ -856,7 +856,7 @@ func TestExtendedAbortedTransactionRecoversViaRollback(t *testing.T) {
 		client := newRawPGClient(t, h)
 		abortInTx(t, client)
 		// JDBC-style ROLLBACK: Parse/Bind/Execute. Every injected probe on this path (handleParse's namespace
-		// probe and handleBind's probeBindContext) must reuse the overlay rather than hit the aborted backend.
+		// probe and handleBind's probeBindContext) must reuse the overlay rather than hit the aborted target DB.
 		rollback := client.sendSync(t,
 			&pgproto3.Parse{Name: "rb", Query: "ROLLBACK"},
 			&pgproto3.Bind{DestinationPortal: "rbp", PreparedStatement: "rb"},
@@ -870,7 +870,7 @@ func TestExtendedAbortedTransactionRecoversViaRollback(t *testing.T) {
 // TestExtendedBindCoercionSetConfigLeaksAcrossSchema is a CHARACTERIZATION test for a known, out-of-scope
 // limitation (KNOWN_LIMITATIONS.md, backlog): a domain CHECK that calls set_config('search_path', …) moves
 // the path DURING Bind parameter coercion — after the proxy's pre-Bind probe but before PostgreSQL resolves
-// the portal's table names — so Execute is authorized under the stale probed snapshot while the backend binds
+// the portal's table names — so Execute is authorized under the stale probed snapshot while the target DB binds
 // the portal under the mutated path. The bare `people` reads id=10, which exists ONLY in the secondary
 // schema, so a real leak surfaces the secondary row ('secret-2') even though the policy DENIES the secondary
 // path. The proxy tracks search_path by SQL classification and cannot observe a set_config fired from inside
@@ -889,7 +889,7 @@ func TestExtendedBindCoercionSetConfigLeaksAcrossSchema(t *testing.T) {
 		return wireVerdict(&pb.Verdict{Decision: pb.EnfAction_ALLOW}), nil
 	}
 
-	// Create the evil domain directly on the backend (bypassing the proxy) and look up its OID so Parse can
+	// Create the evil domain directly on the target DB (bypassing the proxy) and look up its OID so Parse can
 	// declare $1 as that domain — forcing PostgreSQL to run its CHECK during Bind parameter coercion.
 	admin := dbtest.OpenPostgres(t, "")
 	for _, stmt := range []string{
@@ -938,7 +938,7 @@ func TestExtendedBindCoercionSetConfigLeaksAcrossSchema(t *testing.T) {
 		t.Fatalf("expected the documented Bind-coercion set_config leak to reproduce (secondary row 'secret-2'); it did not — the leak may no longer reproduce, so revisit KNOWN_LIMITATIONS.md")
 	}
 	// The leak is only meaningful if the proxy authorized under the STALE primary path (not the secondary
-	// one the backend actually bound). Assert no decision was ever made under the secondary schema.
+	// one the target DB actually bound). Assert no decision was ever made under the secondary schema.
 	for _, path := range decidedPaths {
 		for _, schema := range path {
 			if schema == secondarySchema {
@@ -1002,7 +1002,7 @@ func TestExtendedGucGuardOnExtendedPath(t *testing.T) {
 	assertPgError(t, err, "0A000", "client_encoding must remain UTF8")
 }
 
-func TestExtendedBackendRejectedParseLeavesNoStaleStatement(t *testing.T) {
+func TestExtendedTargetDbRejectedParseLeavesNoStaleStatement(t *testing.T) {
 	h := startBroker(t)
 	h.fake.decideFn = func(*pb.DecisionRequest) (*pb.WireDecision, error) {
 		return wireVerdict(&pb.Verdict{Decision: pb.EnfAction_ALLOW}), nil

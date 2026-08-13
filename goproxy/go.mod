@@ -20,6 +20,10 @@ require (
 // duplicating the fold rules.
 replace github.com/ridi-oss/proxy-monster/analyzer => ../analyzer
 
+// mysqlwire is a sibling module in this repo; resolve it from source so a renamed/added symbol is
+// picked up by the GOWORK=off image build (goproxy/Dockerfile copies ../mysqlwire in), not just go.work.
+replace github.com/ridi-oss/proxy-monster/mysqlwire => ../mysqlwire
+
 require (
 	dario.cat/mergo v1.0.0 // indirect
 	filippo.io/edwards25519 v1.1.0 // indirect
@@ -58,7 +62,7 @@ require (
 	github.com/pkg/errors v0.9.1 // indirect
 	github.com/pmezard/go-difflib v1.0.0 // indirect
 	github.com/power-devops/perfstat v0.0.0-20210106213030-5aafc221ea8c // indirect
-	github.com/ridi-oss/sqlglot-go v0.22.0 // indirect
+	github.com/ridi-oss/sqlglot-go v0.23.0 // indirect
 	github.com/shirou/gopsutil/v3 v3.23.12 // indirect
 	github.com/shoenig/go-m1cpu v0.1.6 // indirect
 	github.com/sirupsen/logrus v1.9.3 // indirect

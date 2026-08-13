@@ -13,6 +13,7 @@ import com.ridi.oss.proxymonster.grpc.ControlPlaneGrpcKt
 import com.ridi.oss.proxymonster.grpc.Engine
 import com.ridi.oss.proxymonster.grpc.catalogRequest
 import com.ridi.oss.proxymonster.grpc.column
+import com.ridi.oss.proxymonster.grpc.RegisterRequest
 import com.ridi.oss.proxymonster.grpc.registerRequest
 import com.ridi.oss.proxymonster.grpc.schemaFragmentPush
 import io.grpc.Status
@@ -118,10 +119,52 @@ class GrpcRegistrationHandlerDbTest {
     private fun statusOf(block: suspend () -> Unit): Status.Code =
         assertFailsWith<StatusException> { runBlocking { block() } }.status.code
 
+    // Every real proxy sends its wire-protocol version at Register; default it to the current one here so each
+    // test's request passes the control-plane's version guard without repeating the field. The guard itself is
+    // covered by a dedicated mismatch test that builds a raw registerRequest with a wrong version.
+    private fun regReq(block: com.ridi.oss.proxymonster.grpc.RegisterRequestKt.Dsl.() -> Unit): RegisterRequest =
+        registerRequest {
+            protocolVersion = CONTROL_PROTOCOL_VERSION
+            block()
+        }
+
+    @Test
+    fun `register rejects a proxy on a different wire-protocol version with a clear, actionable error`() = runBlocking {
+        // A proxy from a different server-v* release (here, a higher version) must be turned away at Register —
+        // its first call — not left to fail later as a stalled run channel. An old proxy predating the field
+        // sends 0, which fails this the same way.
+        val failure = assertFailsWith<StatusException> {
+            stub.register(
+                registerRequest {
+                    protocolVersion = CONTROL_PROTOCOL_VERSION + 1
+                    name = "reg-ver-mismatch"
+                    engine = Engine.POSTGRES
+                    host = "h"
+                    port = 1
+                    dbName = "d"
+                },
+            )
+        }
+        assertEquals(Status.Code.FAILED_PRECONDITION, failure.status.code)
+        val description = failure.status.description ?: ""
+        assertTrue(
+            description.contains("wire-protocol version") && description.contains("same server-v* release"),
+            "the mismatch error must name the version and tell the operator to deploy both together: $description",
+        )
+    }
+
+    @Test
+    fun `register echoes the control-plane's wire-protocol version so the proxy can mirror-check it`() = runBlocking {
+        val response = stub.register(
+            regReq { name = "reg-ver-ok"; engine = Engine.POSTGRES; host = "h"; port = 1; dbName = "d" },
+        )
+        assertEquals(CONTROL_PROTOCOL_VERSION, response.protocolVersion)
+    }
+
     @Test
     fun `register self-creates a datasource by name with no service credential`() = runBlocking {
         val resp = stub.register(
-            registerRequest {
+            regReq {
                 name = "reg-new"
                 engine = Engine.POSTGRES
                 host = "db.internal"
@@ -142,7 +185,7 @@ class GrpcRegistrationHandlerDbTest {
     @Test
     fun `register persists the advertised proxy address and cert chain and preserves them on a blank re-register`() = runBlocking {
         stub.register(
-            registerRequest {
+            regReq {
                 name = "reg-adv"
                 engine = Engine.MYSQL
                 host = "db.internal"
@@ -170,7 +213,7 @@ class GrpcRegistrationHandlerDbTest {
         // A re-register carrying no address/chain (a bare admin re-seed, or a transient read on the proxy)
         // must not wipe what a proxy previously advertised — the COALESCE upsert keeps the prior values.
         stub.register(
-            registerRequest {
+            regReq {
                 name = "reg-adv"; engine = Engine.MYSQL; host = "db2"; port = 3307; dbName = "app"
                 advertiseWireTls = true
             },
@@ -188,7 +231,7 @@ class GrpcRegistrationHandlerDbTest {
         // If the stored chain survived that, clients would keep verifying the new certificate against dead
         // roots and every connection would fail -- and the console would keep offering a stale download.
         stub.register(
-            registerRequest {
+            regReq {
                 name = "reg-tls-off"; engine = Engine.MYSQL; host = "h"; port = 3306; dbName = "d"
                 advertiseCertChain = SELF_SIGNED_CHAIN
                 advertiseWireTls = true
@@ -197,7 +240,7 @@ class GrpcRegistrationHandlerDbTest {
         assertEquals(SELF_SIGNED_CHAIN, core.datasourceStore.getByName("reg-tls-off")!!.advertiseCertChain)
 
         stub.register(
-            registerRequest {
+            regReq {
                 name = "reg-tls-off"; engine = Engine.MYSQL; host = "h"; port = 3306; dbName = "d"
                 advertiseWireTls = false
             },
@@ -219,7 +262,7 @@ class GrpcRegistrationHandlerDbTest {
         // plaintext-downgrade refusal goes dead for exactly this deployment and an attacker answering the
         // greeting without CLIENT_SSL collects a live session token.
         stub.register(
-            registerRequest {
+            regReq {
                 name = "reg-public-tls"; engine = Engine.MYSQL; host = "h"; port = 3306; dbName = "d"
                 advertiseAddr = "proxy.example.com:6033"
                 advertiseWireTls = true
@@ -243,7 +286,7 @@ class GrpcRegistrationHandlerDbTest {
         // outcome than one client reporting its own TLS error. The client verifies; it is the only party that
         // can. A warning is logged for the operator.
         stub.register(
-            registerRequest {
+            regReq {
                 name = "reg-odd-chain"; engine = Engine.MYSQL; host = "h"; port = 3306; dbName = "d"
                 advertiseCertChain = CA_ISSUED_LEAF_ALONE
                 advertiseWireTls = true
@@ -256,8 +299,8 @@ class GrpcRegistrationHandlerDbTest {
 
     @Test
     fun `register is idempotent by name and updates advisory fields`() = runBlocking {
-        stub.register(registerRequest { name = "reg-idem"; engine = Engine.POSTGRES; host = "old"; port = 1; dbName = "d" })
-        stub.register(registerRequest { name = "reg-idem"; engine = Engine.POSTGRES; host = "new"; port = 3306; dbName = "d2"; tags.add("system:production") })
+        stub.register(regReq { name = "reg-idem"; engine = Engine.POSTGRES; host = "old"; port = 1; dbName = "d" })
+        stub.register(regReq { name = "reg-idem"; engine = Engine.POSTGRES; host = "new"; port = 3306; dbName = "d2"; tags.add("system:production") })
         val ds = core.datasourceStore.getByName("reg-idem")!!
         assertEquals(Engine.POSTGRES, ds.engine, "engine is immutable at register — the same-engine re-register keeps it")
         assertEquals("new", ds.host)
@@ -269,7 +312,7 @@ class GrpcRegistrationHandlerDbTest {
 
     @Test
     fun `register refuses an engine change FAILED_PRECONDITION and leaves the row untouched`() = runBlocking {
-        stub.register(registerRequest { name = "reg-engine-lock"; engine = Engine.POSTGRES; host = "h"; port = 5432; dbName = "d" })
+        stub.register(regReq { name = "reg-engine-lock"; engine = Engine.POSTGRES; host = "h"; port = 5432; dbName = "d" })
         stub.pushCatalog(
             catalogRequest {
                 datasourceName = "reg-engine-lock"
@@ -281,7 +324,7 @@ class GrpcRegistrationHandlerDbTest {
         assertTrue(before.catalogSyncedAt != null)
 
         val code = statusOf {
-            stub.register(registerRequest { name = "reg-engine-lock"; engine = Engine.MYSQL; host = "h2"; port = 3306; dbName = "d2" })
+            stub.register(regReq { name = "reg-engine-lock"; engine = Engine.MYSQL; host = "h2"; port = 3306; dbName = "d2" })
         }
         assertEquals(Status.Code.FAILED_PRECONDITION, code)
 
@@ -305,7 +348,7 @@ class GrpcRegistrationHandlerDbTest {
         // piling up on the UNIQUE index; the atomic WHERE is what makes the flip impossible.)
         val outcomes = listOf(Engine.POSTGRES, Engine.MYSQL).map { eng ->
             async(Dispatchers.IO) {
-                runCatching { stub.register(registerRequest { this.name = name; engine = eng; host = "h"; port = 1; dbName = "d" }) }
+                runCatching { stub.register(regReq { this.name = name; engine = eng; host = "h"; port = 1; dbName = "d" }) }
             }
         }.awaitAll()
 
@@ -419,8 +462,8 @@ class GrpcRegistrationHandlerDbTest {
 
     @Test
     fun `re-register with empty tags preserves the existing tags`() = runBlocking {
-        stub.register(registerRequest { name = "reg-tags"; engine = Engine.POSTGRES; host = "h"; port = 1; dbName = "d"; tags.add("system:development") })
-        stub.register(registerRequest { name = "reg-tags"; engine = Engine.POSTGRES; host = "h2"; port = 1; dbName = "d" }) // no tags
+        stub.register(regReq { name = "reg-tags"; engine = Engine.POSTGRES; host = "h"; port = 1; dbName = "d"; tags.add("system:development") })
+        stub.register(regReq { name = "reg-tags"; engine = Engine.POSTGRES; host = "h2"; port = 1; dbName = "d" }) // no tags
         assertEquals(listOf("system:development"), core.datasourceStore.getByName("reg-tags")!!.tags)
     }
 
@@ -429,7 +472,7 @@ class GrpcRegistrationHandlerDbTest {
         // Datasource tags are free-form: there is no exact-one-posture validation. Whatever the proxy sends is
         // stored verbatim (the marshaller later honors only the recognized posture tags; everything else is inert).
         stub.register(
-            registerRequest {
+            regReq {
                 name = "reg-freeform"; engine = Engine.POSTGRES; host = "h"; port = 1; dbName = "d"
                 tags.addAll(listOf("system:development", "system:production", "team-x"))
             },
@@ -443,13 +486,13 @@ class GrpcRegistrationHandlerDbTest {
 
     @Test
     fun `register rejects an unspecified engine INVALID_ARGUMENT`() {
-        assertEquals(Status.Code.INVALID_ARGUMENT, statusOf { stub.register(registerRequest { name = "reg-bad"; host = "h"; port = 1; dbName = "d" }) })
+        assertEquals(Status.Code.INVALID_ARGUMENT, statusOf { stub.register(regReq { name = "reg-bad"; host = "h"; port = 1; dbName = "d" }) })
         assertNull(core.datasourceStore.getByName("reg-bad"), "a rejected register must not create a row")
     }
 
     @Test
     fun `register rejects a blank name INVALID_ARGUMENT`() {
-        assertEquals(Status.Code.INVALID_ARGUMENT, statusOf { stub.register(registerRequest { name = ""; engine = Engine.POSTGRES; host = "h"; port = 1; dbName = "d" }) })
+        assertEquals(Status.Code.INVALID_ARGUMENT, statusOf { stub.register(regReq { name = ""; engine = Engine.POSTGRES; host = "h"; port = 1; dbName = "d" }) })
     }
 
     @Test
@@ -462,14 +505,14 @@ class GrpcRegistrationHandlerDbTest {
 
     @Test
     fun `pushCatalog stores the proxy-pushed columns and default schemas`() = runBlocking {
-        stub.register(registerRequest { name = "reg-cat"; engine = Engine.POSTGRES; host = "h"; port = 1; dbName = "d" })
+        stub.register(regReq { name = "reg-cat"; engine = Engine.POSTGRES; host = "h"; port = 1; dbName = "d" })
         val ack = stub.pushCatalog(
             catalogRequest {
                 datasourceName = "reg-cat"
                 defaultSchemas.addAll(listOf("pg_catalog", "public"))
                 engineVersion = "PostgreSQL 16.3 (aurora 16.3)"
                 columns.add(column { schema = "public"; table = "users"; this.column = "id"; dataType = "integer"; ordinal = 1; nullable = false })
-                columns.add(column { schema = "public"; table = "users"; this.column = "rrn"; dataType = "text"; ordinal = 2; nullable = true })
+                columns.add(column { schema = "public"; table = "users"; this.column = "ssn"; dataType = "text"; ordinal = 2; nullable = true })
             },
         )
         assertEquals(2, ack.columns)
@@ -478,9 +521,9 @@ class GrpcRegistrationHandlerDbTest {
         assertEquals("PostgreSQL 16.3 (aurora 16.3)", ds.engineVersion, "the proxy-pushed engine version is stored for system-classification")
         assertTrue(ds.catalogSyncedAt != null, "catalog_synced_at is stamped on push")
         val cols = core.datasourceStore.catalog(ds.id)
-        val rrn = cols.single { it.table == "users" && it.column == "rrn" }
-        assertEquals("text", rrn.dataType)
-        assertEquals("VARCHAR", rrn.sqlType, "the control-plane derives sql_type from the raw data_type")
+        val ssn = cols.single { it.table == "users" && it.column == "ssn" }
+        assertEquals("text", ssn.dataType)
+        assertEquals("VARCHAR", ssn.sqlType, "the control-plane derives sql_type from the raw data_type")
     }
 
     @Test
@@ -489,7 +532,7 @@ class GrpcRegistrationHandlerDbTest {
         // keeps enforcement content verified. That premise is a single call in this handler: exercise it
         // through the RPC, because a registry-level test would stay green if the wiring were removed and
         // the refresh went back to feeding only the stored catalog.
-        stub.register(registerRequest { name = "reg-ambient"; engine = Engine.MYSQL; host = "h"; port = 1; dbName = "app" })
+        stub.register(regReq { name = "reg-ambient"; engine = Engine.MYSQL; host = "h"; port = 1; dbName = "app" })
         val ds = core.datasourceStore.getByName("reg-ambient")!!
 
         // A connection measures `app` itself, so the control plane holds enforcement content for it.
@@ -561,7 +604,7 @@ class GrpcRegistrationHandlerDbTest {
         )
         // A proxy self-registers by the same name, same engine+db, host moved. The catalog survives because
         // engine+db_name are unchanged (only advisory host moved); the advisory host is refreshed.
-        stub.register(registerRequest { name = "reg-preserve"; engine = Engine.POSTGRES; host = "h2"; port = 5432; dbName = "app" })
+        stub.register(regReq { name = "reg-preserve"; engine = Engine.POSTGRES; host = "h2"; port = 5432; dbName = "app" })
         val after = core.datasourceStore.getByName("reg-preserve")!!
         assertEquals("h2", after.host, "advisory host is still updated")
         assertTrue(core.datasourceStore.catalog(ds.id).any { it.table == "keep" }, "same-target re-register must not wipe the catalog")
@@ -570,7 +613,7 @@ class GrpcRegistrationHandlerDbTest {
 
     @Test
     fun `re-register to a different schema invalidates the stale catalog (fail-closed)`() = runBlocking {
-        stub.register(registerRequest { name = "reg-retarget"; engine = Engine.POSTGRES; host = "h"; port = 5432; dbName = "db_a" })
+        stub.register(regReq { name = "reg-retarget"; engine = Engine.POSTGRES; host = "h"; port = 5432; dbName = "db_a" })
         stub.pushCatalog(
             catalogRequest {
                 datasourceName = "reg-retarget"
@@ -583,7 +626,7 @@ class GrpcRegistrationHandlerDbTest {
 
         // Reuse the name for a DIFFERENT database — the old catalog describes the wrong schema now, so it must
         // be dropped and catalog_synced_at cleared until a fresh push lands (decisions fail closed meanwhile).
-        stub.register(registerRequest { name = "reg-retarget"; engine = Engine.POSTGRES; host = "h"; port = 5432; dbName = "db_b" })
+        stub.register(regReq { name = "reg-retarget"; engine = Engine.POSTGRES; host = "h"; port = 5432; dbName = "db_b" })
         val after = core.datasourceStore.getByName("reg-retarget")!!
         assertEquals("db_b", after.dbName)
         assertTrue(core.datasourceStore.catalog(ds.id).isEmpty(), "a retarget must invalidate the stale catalog")
@@ -593,7 +636,7 @@ class GrpcRegistrationHandlerDbTest {
 
     @Test
     fun `pushCatalog rolls back a mid-batch failure and keeps the prior catalog`() = runBlocking {
-        stub.register(registerRequest { name = "reg-rollback"; engine = Engine.POSTGRES; host = "h"; port = 1; dbName = "d" })
+        stub.register(regReq { name = "reg-rollback"; engine = Engine.POSTGRES; host = "h"; port = 1; dbName = "d" })
         stub.pushCatalog(
             catalogRequest {
                 datasourceName = "reg-rollback"
@@ -622,7 +665,7 @@ class GrpcRegistrationHandlerDbTest {
 
     @Test
     fun `pushCatalog replaces the prior catalog (delete-then-insert)`() = runBlocking {
-        stub.register(registerRequest { name = "reg-replace"; engine = Engine.POSTGRES; host = "h"; port = 1; dbName = "d" })
+        stub.register(regReq { name = "reg-replace"; engine = Engine.POSTGRES; host = "h"; port = 1; dbName = "d" })
         stub.pushCatalog(
             catalogRequest {
                 datasourceName = "reg-replace"
@@ -647,12 +690,12 @@ class GrpcRegistrationHandlerDbTest {
 
     @Test
     fun `pushCatalog replacement preserves classification for a surviving column identity`() = runBlocking {
-        stub.register(registerRequest { name = "reg-replace-classified"; engine = Engine.POSTGRES; host = "h"; port = 1; dbName = "d" })
+        stub.register(regReq { name = "reg-replace-classified"; engine = Engine.POSTGRES; host = "h"; port = 1; dbName = "d" })
         stub.pushCatalog(
             catalogRequest {
                 datasourceName = "reg-replace-classified"
                 defaultSchemas.add("public")
-                columns.add(column { schema = "public"; table = "users"; this.column = "rrn"; dataType = "text"; ordinal = 1; nullable = false })
+                columns.add(column { schema = "public"; table = "users"; this.column = "ssn"; dataType = "text"; ordinal = 1; nullable = false })
                 columns.add(column { schema = "public"; table = "users"; this.column = "display_name"; dataType = "text"; ordinal = 2; nullable = true })
             },
         )
@@ -661,7 +704,7 @@ class GrpcRegistrationHandlerDbTest {
             c.prepareStatement(
                 """INSERT INTO column_classification
                    (datasource_id, schema_name, table_name, column_name, tags)
-                   VALUES (?, 'public', 'users', 'rrn', '["pii","government-id"]'::jsonb)""",
+                   VALUES (?, 'public', 'users', 'ssn', '["pii","government-id"]'::jsonb)""",
             ).use { ps ->
                 ps.setLong(1, ds.id)
                 ps.executeUpdate()
@@ -672,14 +715,14 @@ class GrpcRegistrationHandlerDbTest {
             catalogRequest {
                 datasourceName = "reg-replace-classified"
                 defaultSchemas.add("public")
-                columns.add(column { schema = "public"; table = "users"; this.column = "rrn"; dataType = "text"; ordinal = 1; nullable = false })
+                columns.add(column { schema = "public"; table = "users"; this.column = "ssn"; dataType = "text"; ordinal = 1; nullable = false })
                 columns.add(column { schema = "public"; table = "users"; this.column = "display_name"; dataType = "character varying"; ordinal = 2; nullable = false })
                 columns.add(column { schema = "public"; table = "users"; this.column = "created_at"; dataType = "timestamp"; ordinal = 3; nullable = false })
             },
         )
 
-        val rrn = core.datasourceStore.catalog(ds.id).single { it.schema == "public" && it.table == "users" && it.column == "rrn" }
-        val classification = assertNotNull(rrn.classification, "the surviving rrn identity must stay attached to its classification")
+        val ssn = core.datasourceStore.catalog(ds.id).single { it.schema == "public" && it.table == "users" && it.column == "ssn" }
+        val classification = assertNotNull(ssn.classification, "the surviving ssn identity must stay attached to its classification")
         assertEquals(listOf("pii", "government-id"), classification.tags)
     }
 }

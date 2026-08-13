@@ -19,13 +19,13 @@ const (
 // TableDetailRunner runs one short-lived, proxy-dialed table-detail session.
 type TableDetailRunner struct {
 	client   spi.TableDetailClient
-	backend  spi.BackendTarget
+	targetDb spi.TargetDb
 	provider spi.Provider
 }
 
 // NewTableDetailRunner constructs a table-detail runner for one datasource target.
-func NewTableDetailRunner(client spi.TableDetailClient, backend spi.BackendTarget, provider spi.Provider) *TableDetailRunner {
-	return &TableDetailRunner{client: client, backend: backend, provider: provider}
+func NewTableDetailRunner(client spi.TableDetailClient, targetDb spi.TargetDb, provider spi.Provider) *TableDetailRunner {
+	return &TableDetailRunner{client: client, targetDb: targetDb, provider: provider}
 }
 
 // Run blocks for the short table-detail session lifetime.
@@ -100,7 +100,7 @@ func (r *TableDetailRunner) Run(sessionID, schema, table string) {
 }
 
 func (r *TableDetailRunner) read(schema, table string) (*spi.TableDetail, error) {
-	sqlDB, err := r.provider.OpenTarget(r.backend)
+	sqlDB, err := r.provider.OpenTarget(r.targetDb)
 	if err != nil {
 		return nil, err
 	}
@@ -114,6 +114,6 @@ func (r *TableDetailRunner) read(schema, table string) (*spi.TableDetail, error)
 	}
 	defer conn.Close()
 
-	resolvedSchema := r.provider.Dialect().ResolveSchema(schema, r.backend.Db)
+	resolvedSchema := r.provider.Dialect().ResolveSchema(schema, r.targetDb.Db)
 	return r.provider.ReadTableDetail(conn, resolvedSchema, table)
 }

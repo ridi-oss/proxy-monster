@@ -39,7 +39,7 @@ a facts layer.
 | [`per-connection-catalog.md`](./per-connection-catalog.md) | Per-connection enforcement catalog: content-addressed fragments, DB-hash-gated freshness. |
 | [`policy-store.md`](./policy-store.md) | One policy table, two id spaces; migration-owned system rows with toggle-only UI; the default policy seed. |
 | [`facts-emission.md`](./facts-emission.md) | Statement facts + Cedar marshalling; dangerous-function gating; `analyzable` / `maskability` gates. |
-| [`statement-facts-contract.md`](./statement-facts-contract.md) | Go emits a complete `StatementFacts` / `RequiredGrant` contract; the CP is a pure Cedar grant-walk, no lexing. |
+| [`statement-facts-contract.md`](./statement-facts-contract.md) | Go emits a complete `StatementFacts` grant contract; the CP is a pure Cedar grant-walk, no lexing. |
 | [`system-classification.md`](./system-classification.md) | Immutable per-engine/version manifest; exposed system schemas; curated dangerous set; open-unknown posture. |
 | [`diagnostic-redaction.md`](./diagnostic-redaction.md) | Closes the DB error/warning value-leak side-channel; fail-closed field strip; message tables from catalogs. |
 | [`derived-masking.md`](./derived-masking.md) | Lets a masked column pass through a provably-total builtin string transform and stay masked. |
@@ -65,6 +65,8 @@ a facts layer.
 | --- | --- |
 | [`datasource-registration.md`](./datasource-registration.md) | gRPC self-registration; Decide cutover; Register / PushCatalog + proxy introspection; events. |
 | [`web-console.md`](./web-console.md) | The `web/` console: Editor / Workflows / Access / Audit / Admin. |
+| [`notifications.md`](./notifications.md) | Task events delivered out of band: event/route/transport seam, the approver lookup, Slack over Socket Mode. |
+| [`cedar-reverse-query.md`](./cedar-reverse-query.md) | "Who may approve this?" — Cedar partial evaluation measured against the pinned engine; three silent failure modes and why we ask once per principal instead. |
 | [`migrations.md`](./migrations.md) | Flyway, auto-migrate on boot in per-migration transactions, fail-closed; single→multi-instance path. |
 | [`l10n.md`](./l10n.md) | Localized user-facing errors (en/ko): the server returns a stable `code` + `params`; the web client resolves it. |
 | [`audit-trail-hardening.md`](./audit-trail-hardening.md) | Tamper-evident hash-chained `audit_event` trail + the CP-independent `auditmon/` Go monitor. |

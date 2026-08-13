@@ -243,9 +243,9 @@ func startFakeCP(t *testing.T) (*fakeControlPlane, *cp.Client) {
 	return fake, client
 }
 
-func seedBackend(t *testing.T) dbtest.Backend {
+func seedTargetDb(t *testing.T) dbtest.TargetDb {
 	t.Helper()
-	backend := dbtest.MySQL(t)
+	targetDb := dbtest.MySQL(t)
 	seed := dbtest.OpenMySQL(t, "")
 	statements := []string{
 		"CREATE DATABASE IF NOT EXISTS " + primarySchema,
@@ -254,14 +254,14 @@ func seedBackend(t *testing.T) dbtest.Backend {
 		"CREATE TABLE IF NOT EXISTS " + primarySchema + ".prepared_notes (id INT PRIMARY KEY, note VARCHAR(64))",
 		"CREATE TABLE IF NOT EXISTS " + secondarySchema + ".people (id INT PRIMARY KEY, name VARCHAR(64), ssn VARCHAR(32))",
 		"DELETE FROM " + primarySchema + ".people",
-		"INSERT INTO " + primarySchema + ".people (id, name, ssn) VALUES (1, 'Alice', '900101-1234567'), (2, 'Bob', NULL)",
+		"INSERT INTO " + primarySchema + ".people (id, name, ssn) VALUES (1, 'Alice', '987-65-4320'), (2, 'Bob', NULL)",
 		"DELETE FROM " + primarySchema + ".prepared_notes",
 		"DELETE FROM " + secondarySchema + ".people",
 		"INSERT INTO " + secondarySchema + ".people (id, name, ssn) VALUES (10, 'Secondary', 'secret-2')",
 		// caching_sha2_password is the mysql:8.0 / Aurora MySQL 3 default, so the broker's DB tests run
-		// against it as the regression proof that the caching_sha2 backend handshake works end-to-end.
+		// against it as the regression proof that the caching_sha2 target-DB handshake works end-to-end.
 		// ALTER USER re-salts the stored credential every run, invalidating the server's fast-auth cache,
-		// so the first backend dial each run is forced through the full-auth (RSA public-key) exchange.
+		// so the first target DB dial each run is forced through the full-auth (RSA public-key) exchange.
 		"CREATE USER IF NOT EXISTS '" + serviceUser + "'@'%' IDENTIFIED WITH caching_sha2_password BY '" + servicePassword + "'",
 		"ALTER USER '" + serviceUser + "'@'%' IDENTIFIED WITH caching_sha2_password BY '" + servicePassword + "'",
 		"GRANT ALL ON " + primarySchema + ".* TO '" + serviceUser + "'@'%'",
@@ -273,7 +273,7 @@ func seedBackend(t *testing.T) dbtest.Backend {
 			t.Fatalf("seed statement %q: %v", statement, err)
 		}
 	}
-	return backend
+	return targetDb
 }
 
 type brokerHarness struct {
@@ -298,7 +298,7 @@ func startBrokerTLS(t *testing.T) *brokerHarness {
 	return startBrokerWithTLS(t, reloading.Current)
 }
 
-// startBrokerWithTLS boots a broker against the shared seeded backend. A nil tlsProvider keeps the frontend
+// startBrokerWithTLS boots a broker against the shared seeded target DB. A nil tlsProvider keeps the frontend
 // plaintext (every existing test); a non-nil one advertises CLIENT_SSL and requires TLS.
 func startBrokerWithTLS(t *testing.T, tlsProvider func() (*tls.Config, error)) *brokerHarness {
 	t.Helper()
@@ -307,11 +307,11 @@ func startBrokerWithTLS(t *testing.T, tlsProvider func() (*tls.Config, error)) *
 
 func startBrokerConfigured(t *testing.T, tlsProvider func() (*tls.Config, error), dbImpl engine.Db) *brokerHarness {
 	t.Helper()
-	backend := seedBackend(t)
+	targetDb := seedTargetDb(t)
 	fake, cpClient := startFakeCP(t)
-	target := spi.BackendTarget{
-		Host:     backend.Host,
-		Port:     backend.Port,
+	target := spi.TargetDb{
+		Host:     targetDb.Host,
+		Port:     targetDb.Port,
 		Db:       primarySchema,
 		User:     serviceUser,
 		Password: servicePassword,
@@ -636,14 +636,14 @@ func TestRejectedFlaggedDDLDoesNotRefetch(t *testing.T) {
 
 	response := client.firstQueryPacket(t, "ALTER TABLE "+missing+" ADD COLUMN impossible INT")
 	if len(response) == 0 || response[0] != 0xff {
-		t.Fatalf("rejected DDL response = %x, want backend ERR", response)
+		t.Fatalf("rejected DDL response = %x, want target-DB ERR", response)
 	}
 	if got := len(h.fake.fragmentRequests()); got != 0 {
 		t.Fatalf("PushSchemaFragment calls after rejected DDL = %d, want zero", got)
 	}
 }
 
-func TestFlaggedDMLRefetchFailureClosesFrontendAndBackend(t *testing.T) {
+func TestFlaggedDMLRefetchFailureClosesFrontendAndTargetDb(t *testing.T) {
 	h := startBroker(t)
 	const connectionIDQuery = "SELECT CONNECTION_ID()"
 	h.fake.decideFn = func(req *pb.DecisionRequest) (*pb.WireDecision, error) {
@@ -658,15 +658,15 @@ func TestFlaggedDMLRefetchFailureClosesFrontendAndBackend(t *testing.T) {
 	if len(rows) != 1 || rows[0][0] == nil {
 		t.Fatalf("CONNECTION_ID rows = %v", rows)
 	}
-	var backendID uint64
-	if _, err := fmt.Sscan(*rows[0][0], &backendID); err != nil {
-		t.Fatalf("parse backend id %q: %v", *rows[0][0], err)
+	var targetDbID uint64
+	if _, err := fmt.Sscan(*rows[0][0], &targetDbID); err != nil {
+		t.Fatalf("parse target-DB id %q: %v", *rows[0][0], err)
 	}
 
 	h.fake.setPushError(status.Error(codes.Unavailable, "catalog unavailable"))
 	response := client.firstQueryPacket(t, "UPDATE people SET name = name WHERE id = 1")
 	if len(response) == 0 || response[0] != 0x00 {
-		t.Fatalf("DML response = %x, want backend OK before terminal refetch", response)
+		t.Fatalf("DML response = %x, want target-DB OK before terminal refetch", response)
 	}
 	_ = client.conn.SetReadDeadline(time.Now().Add(2 * time.Second))
 	if _, err := client.conn.Read(make([]byte, 1)); err == nil {
@@ -676,7 +676,7 @@ func TestFlaggedDMLRefetchFailureClosesFrontendAndBackend(t *testing.T) {
 	direct := dbtest.OpenMySQL(t, "")
 	waitFor(t, func() bool {
 		var count int
-		if err := direct.QueryRow("SELECT COUNT(*) FROM information_schema.PROCESSLIST WHERE ID = ?", backendID).Scan(&count); err != nil {
+		if err := direct.QueryRow("SELECT COUNT(*) FROM information_schema.PROCESSLIST WHERE ID = ?", targetDbID).Scan(&count); err != nil {
 			return false
 		}
 		return count == 0
@@ -727,7 +727,7 @@ func TestPreparedDDLRefetchesOnlyAfterSuccessfulExecute(t *testing.T) {
 		prepared := client.prepare(t, "ALTER TABLE "+missing+" ADD COLUMN impossible INT")
 		response := client.command(t, stmtExecuteNoParamsPayload(t, prepared.StmtID))
 		if len(response) == 0 || response[0] != 0xff {
-			t.Fatalf("failed EXECUTE response = %x, want backend ERR", response)
+			t.Fatalf("failed EXECUTE response = %x, want target-DB ERR", response)
 		}
 		if got := len(h.fake.fragmentRequests()); got != 0 {
 			t.Fatalf("PushSchemaFragment calls after failed EXECUTE = %d, want zero", got)
@@ -808,7 +808,7 @@ func assertFragmentColumn(t *testing.T, fragment *pb.SchemaFragmentPush, schema,
 
 func schemaHash(t *testing.T, schema string) []byte {
 	t.Helper()
-	backend := dbtest.OpenMySQL(t, primarySchema)
+	targetDb := dbtest.OpenMySQL(t, primarySchema)
 	dbImpl := db.MySqlDb{}
 	query, _, err := dbImpl.SchemaHashSQL(schema, nil)
 	if err != nil {
@@ -816,7 +816,7 @@ func schemaHash(t *testing.T, schema string) []byte {
 	}
 	var hash string
 	var produced, count uint64
-	if err := backend.QueryRow(query).Scan(&hash, &produced, &count); err != nil {
+	if err := targetDb.QueryRow(query).Scan(&hash, &produced, &count); err != nil {
 		t.Fatalf("schema hash query: %v", err)
 	}
 	rows := [][]*string{{&hash, stringPtr(fmt.Sprint(produced)), stringPtr(fmt.Sprint(count))}}
@@ -1052,7 +1052,7 @@ func TestAllowRelaysRowsAndDecisionContext(t *testing.T) {
 		t.Fatalf("rows.Err: %v", err)
 	}
 	want := [][]any{
-		{1, "Alice", sql.NullString{String: "900101-1234567", Valid: true}},
+		{1, "Alice", sql.NullString{String: "987-65-4320", Valid: true}},
 		{2, "Bob", sql.NullString{}},
 	}
 	if !reflect.DeepEqual(got, want) {
@@ -1099,7 +1099,7 @@ func TestHandshakeDatabaseIsRelayedAndSelected(t *testing.T) {
 		t.Fatalf("secondary database rows = %v, want [10]", got)
 	}
 
-	// The handshake-selected database is relayed to the backend as COM_INIT_DB, not authorized as a
+	// The handshake-selected database is relayed to the target DB as COM_INIT_DB, not authorized as a
 	// synthesized USE: only the query reaches the control plane, decided under the switched namespace.
 	requests := h.fake.requests()
 	if len(requests) != 1 {
@@ -1221,7 +1221,7 @@ func TestComInitDBRelaysAndReprobesNamespace(t *testing.T) {
 
 // TestTextUseIsReprobedIntoNamespace proves a bare text USE moves the authorization namespace: after USE
 // the next statement is decided under the new schema. The proxy re-probes the current database before
-// every statement (probe-always), so this holds whether or not the backend emits a SESSION_TRACK_SCHEMA
+// every statement (probe-always), so this holds whether or not the target DB emits a SESSION_TRACK_SCHEMA
 // signal for the USE.
 func TestTextUseIsReprobedIntoNamespace(t *testing.T) {
 	h := startBroker(t)
@@ -1248,7 +1248,7 @@ func TestTextUseIsReprobedIntoNamespace(t *testing.T) {
 // TestChainedSessionTrackBypassStillReprobesNamespace is the namespace half of the chained
 // session-track bypass. A client that
 // clears session_track_system_variables (silently defeating the sysvar tracker), then disables
-// session_track_schema (now unreported), then issues a bare text USE, defeats every backend signal the
+// session_track_schema (now unreported), then issues a bare text USE, defeats every target DB signal the
 // proxy could observe the switch through — yet the current database really changed. Probe-always closes
 // the hole: the proxy re-reads DATABASE() before the next statement, so that statement is authorized under
 // the switched schema, never the stale one. The tracker-defeating SETs and the USE all succeed; the guard
@@ -1404,7 +1404,7 @@ func TestLegacyEOFRelayRewriteAndPing(t *testing.T) {
 }
 
 func TestOversizedUnauthenticatedHandshakeIsRejectedWithoutBody(t *testing.T) {
-	server := mysqlproxy.New(0, spi.BackendTarget{}, nil, nil, nil)
+	server := mysqlproxy.New(0, spi.TargetDb{}, nil, nil, nil)
 	if err := server.Listen(); err != nil {
 		t.Fatalf("Listen: %v", err)
 	}
@@ -1489,8 +1489,8 @@ func TestPreparedSelectAllowRelaysBinaryRows(t *testing.T) {
 	if err := rows.Close(); err != nil {
 		t.Fatalf("prepared rows.Close: %v", err)
 	}
-	if id != 1 || name != "Alice" || ssn != "900101-1234567" {
-		t.Fatalf("prepared row = (%d, %q, %q), want (1, Alice, 900101-1234567)", id, name, ssn)
+	if id != 1 || name != "Alice" || ssn != "987-65-4320" {
+		t.Fatalf("prepared row = (%d, %q, %q), want (1, Alice, 987-65-4320)", id, name, ssn)
 	}
 
 	requests := h.fake.requests()
@@ -1580,7 +1580,7 @@ func TestPreparedMaskWithoutPermitFailsClosed(t *testing.T) {
 		if rows != nil {
 			_ = rows.Close()
 		}
-		t.Fatal("prepared MASK query succeeded without sql.unmaskable permission")
+		t.Fatal("prepared MASK query succeeded without exception.unmaskable permission")
 	}
 	if rows != nil {
 		t.Fatalf("prepared MASK rows = %v, want nil (no binary row leaked)", rows)
@@ -1599,7 +1599,7 @@ func TestPreparedMaskWithoutPermitFailsClosed(t *testing.T) {
 	if err := conn.QueryRow("SELECT ssn FROM people WHERE id = 1").Scan(&ssn); err != nil {
 		t.Fatalf("text query after refused prepared MASK execution: %v", err)
 	}
-	if ssn != "900101-1234567" {
+	if ssn != "987-65-4320" {
 		t.Fatalf("text query after refused prepared MASK execution = %q, want real ssn", ssn)
 	}
 }
@@ -1627,7 +1627,7 @@ func TestPreparedMaskWithPermitRelaysVerbatim(t *testing.T) {
 	if err := stmt.QueryRow(1).Scan(&id, &name, &ssn); err != nil {
 		t.Fatalf("prepared QueryRow: %v", err)
 	}
-	if id != 1 || name != "Alice" || ssn != "900101-1234567" {
+	if id != 1 || name != "Alice" || ssn != "987-65-4320" {
 		t.Fatalf("prepared MASK-permitted row = (%d, %q, %q), want verbatim cleartext row", id, name, ssn)
 	}
 	if got := len(h.fake.requests()); got != 2 {
@@ -1806,7 +1806,7 @@ func TestPreparedUnmaskablePermitRevocationFailsClosed(t *testing.T) {
 		if rows != nil {
 			_ = rows.Close()
 		}
-		t.Fatal("prepared MASK query succeeded after sql.unmaskable revocation")
+		t.Fatal("prepared MASK query succeeded after exception.unmaskable revocation")
 	}
 	if rows != nil {
 		t.Fatalf("prepared MASK rows = %v, want nil after permit revocation", rows)
@@ -1825,7 +1825,7 @@ func TestPreparedUnmaskablePermitRevocationFailsClosed(t *testing.T) {
 	if err := conn.QueryRow("SELECT ssn FROM people WHERE id = 1").Scan(&ssn); err != nil {
 		t.Fatalf("text query after unmaskable-permit revocation: %v", err)
 	}
-	if ssn != "900101-1234567" {
+	if ssn != "987-65-4320" {
 		t.Fatalf("text query after unmaskable-permit revocation = %q, want real ssn", ssn)
 	}
 	if got := len(h.fake.requests()); got != 3 {
@@ -1853,7 +1853,7 @@ func TestPreparedExecuteUsesFrozenNamespace(t *testing.T) {
 	if err := stmt.QueryRow(1).Scan(&preparedSSN); err != nil {
 		t.Fatalf("prepared QueryRow after USE: %v", err)
 	}
-	if preparedSSN != "900101-1234567" {
+	if preparedSSN != "987-65-4320" {
 		t.Fatalf("prepared QueryRow after USE = %q, want primary-schema ssn", preparedSSN)
 	}
 	var liveName string
@@ -1912,8 +1912,8 @@ func TestPreparedRewrittenSqlReDecidedAsPrepared(t *testing.T) {
 	if err := stmt.QueryRow(1).Scan(&id, &name, &ssn); err != nil {
 		t.Fatalf("prepared rewritten QueryRow: %v", err)
 	}
-	if id != 1 || name != "Alice" || ssn != "900101-1234567" {
-		t.Fatalf("prepared rewritten row = (%d, %q, %q), want (1, Alice, 900101-1234567)", id, name, ssn)
+	if id != 1 || name != "Alice" || ssn != "987-65-4320" {
+		t.Fatalf("prepared rewritten row = (%d, %q, %q), want (1, Alice, 987-65-4320)", id, name, ssn)
 	}
 
 	requests := h.fake.requests()
@@ -1924,7 +1924,7 @@ func TestPreparedRewrittenSqlReDecidedAsPrepared(t *testing.T) {
 		t.Fatalf("PREPARE DecisionRequest SQL = %q, want original %q", requests[0].GetSql(), original)
 	}
 	if requests[1].GetSql() != rewritten {
-		t.Fatalf("EXECUTE DecisionRequest SQL = %q, want backend-prepared rewrite %q", requests[1].GetSql(), rewritten)
+		t.Fatalf("EXECUTE DecisionRequest SQL = %q, want target-DB-prepared rewrite %q", requests[1].GetSql(), rewritten)
 	}
 	for i, request := range requests {
 		if got := request.GetSearchPath(); !reflect.DeepEqual(got, []string{primarySchema}) {

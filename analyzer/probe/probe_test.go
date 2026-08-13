@@ -4,9 +4,9 @@ import (
 	"reflect"
 	"testing"
 
+	pb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
 	sqlglot "github.com/ridi-oss/sqlglot-go"
 	exp "github.com/ridi-oss/sqlglot-go/expressions"
-	pb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -34,11 +34,11 @@ func TestLeafSelects(t *testing.T) {
 }
 
 func TestIdentityCol(t *testing.T) {
-	root := mustParseOne(t, "SELECT rrn AS r, substr(rrn, 1, 1) AS s FROM users")
+	root := mustParseOne(t, "SELECT ssn AS r, substr(ssn, 1, 1) AS s FROM users")
 	p := &prober{}
 	selects := root.Selects()
-	if got := p.identityCol(selects[0]); got == nil || got.Kind() != exp.KindColumn || got.Name() != "rrn" {
-		t.Fatalf("identityCol(first) = %#v, want rrn column", got)
+	if got := p.identityCol(selects[0]); got == nil || got.Kind() != exp.KindColumn || got.Name() != "ssn" {
+		t.Fatalf("identityCol(first) = %#v, want ssn column", got)
 	}
 	if got := p.identityCol(selects[1]); got != nil {
 		t.Fatalf("identityCol(computed) = %#v, want nil", got)
@@ -100,20 +100,20 @@ func TestFromSourceOrder(t *testing.T) {
 func TestMySQLPlaceholderResolvesAndTracesColumns(t *testing.T) {
 	cols := []*pb.ColumnSpec{
 		columnSpec("def", "app", "users", "id", "BIGINT"),
-		columnSpec("def", "app", "users", "rrn", "VARCHAR"),
+		columnSpec("def", "app", "users", "ssn", "VARCHAR"),
 	}
 	ns := &pb.Namespace{Catalog: "def", SearchPath: []string{"app"}}
 
 	result := analyzeProbe(t, &pb.AnalyzeRequest{
-		Sql:          "SELECT rrn FROM users WHERE id = ?",
+		Sql:          "SELECT ssn FROM users WHERE id = ?",
 		EngineConfig: &pb.EngineConfig{Engine: pb.Engine_MYSQL, EngineVersion: "8.0.46", MysqlLowerCaseTableNames: proto.Int32(1)},
 		Namespace:    ns, Catalog: cols,
 	})
-	requireResolvedKeys(t, result, "def.app.users.rrn", "def.app.users.id")
+	requireResolvedKeys(t, result, "def.app.users.ssn", "def.app.users.id")
 }
 
 func TestCTEColNames(t *testing.T) {
-	root := mustParseOne(t, "WITH s(x) AS (SELECT rrn FROM users UNION ALL SELECT region FROM users) SELECT x FROM s")
+	root := mustParseOne(t, "WITH s(x) AS (SELECT ssn FROM users UNION ALL SELECT region FROM users) SELECT x FROM s")
 	p := &prober{}
 	cte := root.Find(exp.KindCTE)
 	if cte == nil {

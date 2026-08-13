@@ -81,13 +81,13 @@ class CedarPolicyStore(internal val dataSource: DataSource) {
     fun stateVersion(): Long = version.get()
 
     fun list(): List<CedarPolicy> = query(
-        "SELECT id, origin, system_key, name, cedar_src, enabled, updated_by, updated_at FROM policy ORDER BY id",
+        "SELECT id, origin, system_key, name, cedar_src, enabled, updated_by, updated_at FROM policy WHERE deleted_at IS NULL ORDER BY id",
     ) { it.toPolicy() }
 
     fun get(id: Long): CedarPolicy? = dataSource.connection.use { get(id, it) }
 
     fun get(id: Long, c: java.sql.Connection): CedarPolicy? = c.prepareStatement(
-        "SELECT id, origin, system_key, name, cedar_src, enabled, updated_by, updated_at FROM policy WHERE id=?",
+        "SELECT id, origin, system_key, name, cedar_src, enabled, updated_by, updated_at FROM policy WHERE id=? AND deleted_at IS NULL",
     ).use { ps ->
         ps.setLong(1, id)
         ps.executeQuery().use { rs -> if (rs.next()) rs.toPolicy() else null }
@@ -96,7 +96,7 @@ class CedarPolicyStore(internal val dataSource: DataSource) {
     fun getByName(name: String): CedarPolicy? = dataSource.connection.use { getByName(name, it) }
 
     fun getByName(name: String, c: java.sql.Connection): CedarPolicy? = c.prepareStatement(
-        "SELECT id, origin, system_key, name, cedar_src, enabled, updated_by, updated_at FROM policy WHERE name=?",
+        "SELECT id, origin, system_key, name, cedar_src, enabled, updated_by, updated_at FROM policy WHERE name=? AND deleted_at IS NULL",
     ).use { ps ->
         ps.setString(1, name)
         ps.executeQuery().use { rs -> if (rs.next()) rs.toPolicy() else null }
@@ -136,7 +136,7 @@ class CedarPolicyStore(internal val dataSource: DataSource) {
     }
 
     fun update(id: Long, input: CedarPolicyInput, updatedBy: String?, c: java.sql.Connection): CedarPolicy? {
-        val origin = c.prepareStatement("SELECT origin FROM policy WHERE id=? FOR UPDATE").use { ps ->
+        val origin = c.prepareStatement("SELECT origin FROM policy WHERE id=? AND deleted_at IS NULL FOR UPDATE").use { ps ->
             ps.setLong(1, id)
             ps.executeQuery().use { rs -> if (rs.next()) rs.getString("origin") else null }
         } ?: return null
@@ -145,7 +145,7 @@ class CedarPolicyStore(internal val dataSource: DataSource) {
         val errors = CedarSchema.validate(input.cedarSrc)
         if (errors.isNotEmpty()) throw InvalidCedarPolicyException(errors)
         c.prepareStatement(
-            "UPDATE policy SET name=?, cedar_src=?, enabled=?, updated_by=?, updated_at=now() WHERE id=?",
+            "UPDATE policy SET name=?, cedar_src=?, enabled=?, updated_by=?, updated_at=now() WHERE id=? AND deleted_at IS NULL",
         ).use { ps ->
             ps.setString(1, input.name); ps.setString(2, input.cedarSrc); ps.setBoolean(3, input.enabled)
             ps.setString(4, updatedBy); ps.setLong(5, id); ps.executeUpdate()
@@ -161,7 +161,7 @@ class CedarPolicyStore(internal val dataSource: DataSource) {
 
     fun setEnabled(id: Long, enabled: Boolean, updatedBy: String?, c: java.sql.Connection): CedarPolicy? {
         val existing = c.prepareStatement(
-            "SELECT id, origin, system_key, name, cedar_src, enabled, updated_by, updated_at FROM policy WHERE id=? FOR UPDATE",
+            "SELECT id, origin, system_key, name, cedar_src, enabled, updated_by, updated_at FROM policy WHERE id=? AND deleted_at IS NULL FOR UPDATE",
         ).use { ps ->
             ps.setLong(1, id)
             ps.executeQuery().use { rs -> if (rs.next()) rs.toPolicy() else null }
@@ -170,7 +170,7 @@ class CedarPolicyStore(internal val dataSource: DataSource) {
             val errors = CedarSchema.validate(existing.cedarSrc)
             if (errors.isNotEmpty()) throw InvalidCedarPolicyException(errors)
         }
-        c.prepareStatement("UPDATE policy SET enabled=?, updated_by=?, updated_at=now() WHERE id=?").use { ps ->
+        c.prepareStatement("UPDATE policy SET enabled=?, updated_by=?, updated_at=now() WHERE id=? AND deleted_at IS NULL").use { ps ->
             ps.setBoolean(1, enabled); ps.setString(2, updatedBy); ps.setLong(3, id); ps.executeUpdate()
         }
         return get(id, c)
@@ -184,20 +184,25 @@ class CedarPolicyStore(internal val dataSource: DataSource) {
     }
 
     fun delete(id: Long, c: java.sql.Connection): Boolean {
-        val origin = c.prepareStatement("SELECT origin FROM policy WHERE id=? FOR UPDATE").use { ps ->
+        val origin = c.prepareStatement("SELECT origin FROM policy WHERE id=? AND deleted_at IS NULL FOR UPDATE").use { ps ->
             ps.setLong(1, id)
             ps.executeQuery().use { rs -> if (rs.next()) rs.getString("origin") else null }
         } ?: return false
         if (origin == "SYSTEM") throw SystemPolicyImmutableException()
-        return c.prepareStatement("DELETE FROM policy WHERE id=?").use { ps ->
+        // Soft delete: the row survives (name freed for reuse via the partial unique index), but it leaves
+        // the evaluated policy set — enabledSources() filters it and the caller bumps the version.
+        return c.prepareStatement("UPDATE policy SET deleted_at = now() WHERE id=? AND deleted_at IS NULL").use { ps ->
             ps.setLong(1, id)
             ps.executeUpdate() > 0
         }
     }
 
-    /** `(id, cedar_src)` for every enabled row, in a stable order — what [CedarEngine] loads. */
+    /** `(id, cedar_src)` for every LIVE enabled row, in a stable order — the ONLY policy set [CedarEngine]
+     *  evaluates. Filtering `deleted_at IS NULL` here is what makes a soft-deleted policy (permit OR forbid)
+     *  stop applying: the delete bumps the version, the engine rebuilds its PolicySet, and the tombstone
+     *  is gone from it. */
     fun enabledSources(): List<Pair<Long, String>> = dataSource.connection.use { c ->
-        c.prepareStatement("SELECT id, cedar_src FROM policy WHERE enabled = true ORDER BY id").use { ps ->
+        c.prepareStatement("SELECT id, cedar_src FROM policy WHERE enabled = true AND deleted_at IS NULL ORDER BY id").use { ps ->
             ps.executeQuery().use { rs ->
                 val out = ArrayList<Pair<Long, String>>()
                 while (rs.next()) out += rs.getLong("id") to rs.getString("cedar_src")

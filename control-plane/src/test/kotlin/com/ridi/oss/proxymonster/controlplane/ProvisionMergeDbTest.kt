@@ -60,6 +60,26 @@ class ProvisionMergeDbTest {
     }
 
     @Test
+    fun `activePrincipalByEmail resolves a unique active email but refuses an ambiguous one`() {
+        // email carries no uniqueness constraint, so two ACTIVE principals can share one. This method
+        // authenticates a Slack click, so an ambiguous match must be refused, never resolved to an arbitrary
+        // principal (which could hand the click the wrong Cedar authority).
+        ds.connection.use { c ->
+            c.prepareStatement("INSERT INTO app_user (principal, email, active) VALUES (?, ?, true)").use { ps ->
+                ps.setString(1, "solo@principal"); ps.setString(2, "solo@example.com"); ps.executeUpdate()
+                ps.setString(1, "dup-a@principal"); ps.setString(2, "shared@example.com"); ps.executeUpdate()
+                ps.setString(1, "dup-b@principal"); ps.setString(2, "shared@example.com"); ps.executeUpdate()
+            }
+        }
+        assertEquals("solo@principal", store.activePrincipalByEmail("solo@example.com"))
+        assertEquals("solo@principal", store.activePrincipalByEmail("SOLO@example.com"), "case-insensitive match")
+        assertNull(
+            store.activePrincipalByEmail("shared@example.com"),
+            "two active principals share this email — an ambiguous identity is refused, not guessed",
+        )
+    }
+
+    @Test
     fun `re-provisioning SYNCS group membership to the latest claim (drops removed groups)`() {
         // OIDC is authoritative for an OIDC user's group membership, so a login with a
         // smaller claim REMOVES the groups no longer claimed (this is how dropping someone from the IdP

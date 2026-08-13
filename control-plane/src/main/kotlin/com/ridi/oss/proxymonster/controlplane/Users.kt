@@ -253,7 +253,7 @@ class UserGroupStore(internal val dataSource: DataSource) {
     fun listGroups(): List<AppGroup> {
         val counts = memberCounts(null)
         val rolesByGroup = groupRoles(null)
-        return query("SELECT id, name, description, source, external_id FROM app_group ORDER BY name") {
+        return query("SELECT id, name, description, source, external_id FROM app_group WHERE deleted_at IS NULL ORDER BY name") {
             it.toGroup(counts[it.getLong("id")] ?: 0, rolesByGroup[it.getLong("id")].orEmpty())
         }
     }
@@ -265,7 +265,7 @@ class UserGroupStore(internal val dataSource: DataSource) {
             ps.setLong(1, id); ps.executeQuery().use { rs -> rs.next(); rs.getInt(1) }
         }
         val roles = listGroupRoles(id, c).map { GroupRef(it.roleId, it.roleName) }
-        return c.prepareStatement("SELECT id, name, description, source, external_id FROM app_group WHERE id=?").use { ps ->
+        return c.prepareStatement("SELECT id, name, description, source, external_id FROM app_group WHERE id=? AND deleted_at IS NULL").use { ps ->
             ps.setLong(1, id)
             ps.executeQuery().use { rs -> if (rs.next()) rs.toGroup(count, roles) else null }
         }
@@ -274,7 +274,7 @@ class UserGroupStore(internal val dataSource: DataSource) {
     fun getGroupByName(name: String): AppGroup? = dataSource.connection.use { getGroupByName(name, it) }
 
     fun getGroupByName(name: String, c: Connection): AppGroup? {
-        val id = c.prepareStatement("SELECT id FROM app_group WHERE name=?").use { ps ->
+        val id = c.prepareStatement("SELECT id FROM app_group WHERE name=? AND deleted_at IS NULL").use { ps ->
             ps.setString(1, name); ps.executeQuery().use { rs -> if (rs.next()) rs.getLong(1) else null }
         } ?: return null
         return getGroup(id, c)
@@ -294,16 +294,19 @@ class UserGroupStore(internal val dataSource: DataSource) {
 
     fun updateGroup(id: Long, input: AppGroupInput, c: Connection): AppGroup? {
         if (getGroup(id, c) == null) return null
-        c.prepareStatement("UPDATE app_group SET name=?, description=? WHERE id=?").use { ps ->
+        c.prepareStatement("UPDATE app_group SET name=?, description=? WHERE id=? AND deleted_at IS NULL").use { ps ->
             ps.setString(1, input.name); ps.setString(2, input.description); ps.setLong(3, id); ps.executeUpdate()
         }
         return getGroup(id, c)
     }
 
     fun deleteGroup(id: Long): Boolean = dataSource.connection.use { deleteGroup(id, it) }
-    fun deleteGroup(id: Long, c: Connection): Boolean = c.prepareStatement("DELETE FROM app_group WHERE id=?").use { ps ->
-        ps.setLong(1, id); ps.executeUpdate() > 0
-    }
+    /** Soft delete: the group_member / group_role rows survive but the group is excluded from role
+     *  resolution and every live read, and its name + SCIM external_id are freed for reuse. */
+    fun deleteGroup(id: Long, c: Connection): Boolean =
+        c.prepareStatement("UPDATE app_group SET deleted_at = now() WHERE id=? AND deleted_at IS NULL").use { ps ->
+            ps.setLong(1, id); ps.executeUpdate() > 0
+        }
 
     /**
      * True if the group is SYSTEM-owned (e.g. the seeded `system:admin`). Such groups are immutable
@@ -325,7 +328,7 @@ class UserGroupStore(internal val dataSource: DataSource) {
      * SYSTEM group to source=SCIM and defeat every other immutability guard.
      */
     fun isSystemGroupByName(name: String): Boolean = dataSource.connection.use { c ->
-        c.prepareStatement("SELECT source = 'SYSTEM' FROM app_group WHERE name = ?").use { ps ->
+        c.prepareStatement("SELECT source = 'SYSTEM' FROM app_group WHERE name = ? AND deleted_at IS NULL").use { ps ->
             ps.setString(1, name)
             ps.executeQuery().use { rs -> rs.next() && rs.getBoolean(1) }
         }
@@ -550,7 +553,7 @@ class UserGroupStore(internal val dataSource: DataSource) {
             // Re-read the resolved row's source UNDER a row lock, then mutate that SAME id — check and
             // write target the one resolved row atomically, with no window for a concurrent re-point.
             if (lockGroupSource(c, existingId) == "SYSTEM") throw SystemGroupImmutableException()
-            c.prepareStatement("UPDATE app_group SET name=?, source='SCIM', external_id=? WHERE id=?").use { ps ->
+            c.prepareStatement("UPDATE app_group SET name=?, source='SCIM', external_id=? WHERE id=? AND deleted_at IS NULL").use { ps ->
                 ps.setString(1, displayName); ps.setString(2, externalId); ps.setLong(3, existingId); ps.executeUpdate()
             }
             existingId
@@ -567,15 +570,15 @@ class UserGroupStore(internal val dataSource: DataSource) {
     // resolve/check/mutate share one transaction (the standalone [findGroupIdByExternalId]/[findGroupIdByName]
     // each open their own connection and must NOT be mixed into the atomic path).
     private fun groupIdByExternalId(c: Connection, externalId: String): Long? =
-        c.prepareStatement("SELECT id FROM app_group WHERE external_id=?").use { ps ->
+        c.prepareStatement("SELECT id FROM app_group WHERE external_id=? AND deleted_at IS NULL").use { ps ->
             ps.setString(1, externalId); ps.executeQuery().use { rs -> if (rs.next()) rs.getLong(1) else null }
         }
     private fun groupIdByName(c: Connection, name: String): Long? =
-        c.prepareStatement("SELECT id FROM app_group WHERE name=?").use { ps ->
+        c.prepareStatement("SELECT id FROM app_group WHERE name=? AND deleted_at IS NULL").use { ps ->
             ps.setString(1, name); ps.executeQuery().use { rs -> if (rs.next()) rs.getLong(1) else null }
         }
     private fun lockGroupSource(c: Connection, id: Long): String? =
-        c.prepareStatement("SELECT source FROM app_group WHERE id=? FOR UPDATE").use { ps ->
+        c.prepareStatement("SELECT source FROM app_group WHERE id=? AND deleted_at IS NULL FOR UPDATE").use { ps ->
             ps.setLong(1, id); ps.executeQuery().use { rs -> if (rs.next()) rs.getString(1) else null }
         }
 
@@ -592,7 +595,7 @@ class UserGroupStore(internal val dataSource: DataSource) {
 
     fun replaceScimGroupById(id: Long, externalId: String, displayName: String, c: Connection): AppGroup? {
         if (getGroup(id, c) == null) return null
-        c.prepareStatement("UPDATE app_group SET name=?, source='SCIM', external_id=? WHERE id=?").use { ps ->
+        c.prepareStatement("UPDATE app_group SET name=?, source='SCIM', external_id=? WHERE id=? AND deleted_at IS NULL").use { ps ->
             ps.setString(1, displayName); ps.setString(2, externalId); ps.setLong(3, id); ps.executeUpdate()
         }
         return getGroup(id, c)
@@ -653,6 +656,7 @@ class UserGroupStore(internal val dataSource: DataSource) {
                 """SELECT DISTINCT r.name
                    FROM app_user u
                    JOIN group_member gm ON gm.user_id = u.id
+                   JOIN app_group g ON g.id = gm.group_id AND g.deleted_at IS NULL
                    JOIN group_role gr ON gr.group_id = gm.group_id
                    JOIN app_role r ON r.id = gr.role_id AND r.deleted_at IS NULL
                    WHERE u.principal = ? AND u.active""",
@@ -724,7 +728,7 @@ class UserGroupStore(internal val dataSource: DataSource) {
     private fun userGroups(userId: Long?): Map<Long, List<GroupRef>> = dataSource.connection.use { userGroups(userId, it) }
 
     private fun userGroups(userId: Long?, c: Connection): Map<Long, List<GroupRef>> {
-        val sql = StringBuilder("SELECT gm.user_id, g.id, g.name FROM group_member gm JOIN app_group g ON g.id = gm.group_id")
+        val sql = StringBuilder("SELECT gm.user_id, g.id, g.name FROM group_member gm JOIN app_group g ON g.id = gm.group_id AND g.deleted_at IS NULL")
         if (userId != null) sql.append(" WHERE gm.user_id = ?")
         sql.append(" ORDER BY g.name")
         return c.prepareStatement(sql.toString()).use { ps ->
@@ -881,15 +885,37 @@ class UserGroupStore(internal val dataSource: DataSource) {
             ps.executeQuery().use { rs -> if (rs.next()) rs.getLong(1) else null }
         }
 
+    /**
+     * The principal of the ACTIVE directory user whose email is [email], or null — the inbound identity map
+     * for a Slack click. The Slack profile email is matched to a provisioned user and resolved to THAT user's
+     * principal; the email is not itself the principal (a principal can be an OIDC subject id). Case-insensitive
+     * (the IdP and Slack may differ in case). A deactivated user, or an email no active user owns, returns null
+     * so the click is refused.
+     */
+    fun activePrincipalByEmail(email: String): String? = dataSource.connection.use { c ->
+        // LIMIT 2, not 1: app_user.email carries no uniqueness constraint, so two active principals can share
+        // an email (or case variants of it). An ambiguous match is REFUSED, never resolved to an arbitrary
+        // one — this map authenticates a Slack click, and guessing the principal could hand it the wrong
+        // Cedar authority.
+        c.prepareStatement("SELECT principal FROM app_user WHERE lower(email) = lower(?) AND active LIMIT 2").use { ps ->
+            ps.setString(1, email)
+            ps.executeQuery().use { rs ->
+                if (!rs.next()) return@use null
+                val principal = rs.getString(1)
+                if (rs.next()) null else principal
+            }
+        }
+    }
+
     private fun findGroupIdByExternalId(externalId: String): Long? = dataSource.connection.use { c ->
-        c.prepareStatement("SELECT id FROM app_group WHERE external_id=?").use { ps ->
+        c.prepareStatement("SELECT id FROM app_group WHERE external_id=? AND deleted_at IS NULL").use { ps ->
             ps.setString(1, externalId)
             ps.executeQuery().use { rs -> if (rs.next()) rs.getLong(1) else null }
         }
     }
 
     private fun findGroupIdByName(name: String): Long? = dataSource.connection.use { c ->
-        c.prepareStatement("SELECT id FROM app_group WHERE name=?").use { ps ->
+        c.prepareStatement("SELECT id FROM app_group WHERE name=? AND deleted_at IS NULL").use { ps ->
             ps.setString(1, name)
             ps.executeQuery().use { rs -> if (rs.next()) rs.getLong(1) else null }
         }
@@ -903,7 +929,7 @@ class UserGroupStore(internal val dataSource: DataSource) {
      */
     private fun ensureGroupByName(name: String): Long = insertReturningId(
         """INSERT INTO app_group (name, source) VALUES (?, 'OIDC')
-           ON CONFLICT (name) DO UPDATE SET name = EXCLUDED.name
+           ON CONFLICT (name) WHERE deleted_at IS NULL DO UPDATE SET name = EXCLUDED.name
            RETURNING id""",
     ) { it.setString(1, name) }
 

@@ -31,7 +31,6 @@ import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonArray
 import kotlinx.serialization.json.putJsonObject
-import java.security.MessageDigest
 import java.sql.SQLException
 import org.slf4j.Logger
 
@@ -206,11 +205,6 @@ internal fun resolveScimTls(
     val asserted = forwardedProto?.split(',')?.lastOrNull()?.trim()
     return asserted.equals("https", ignoreCase = true)
 }
-
-/** Constant-time bearer compare — do NOT replace with `==`/`!=` (see Tokens.kt's ingest-token check
- *  for the naive version this deliberately avoids; a standing SCIM secret is a juicier timing target). */
-private fun constantTimeEquals(a: String, b: String): Boolean =
-    MessageDigest.isEqual(a.toByteArray(Charsets.UTF_8), b.toByteArray(Charsets.UTF_8))
 
 // ---- mapping helpers -----------------------------------------------------------------------------
 

@@ -102,9 +102,9 @@ class ColumnAuthzTest {
         val verdicts = authz.authorizeColumns(
             "u", setOf("r"), "acme-pg",
             listOf(
-                column("slash", table = "a/users", name = "rrn"),                 // '/' in table
-                column("dot", table = "users", name = "rrn", schema = "pub.lic"),  // '.' in schema
-                column("clean", table = "users", name = "rrn"),                    // no delimiter
+                column("slash", table = "a/users", name = "ssn"),                 // '/' in table
+                column("dot", table = "users", name = "ssn", schema = "pub.lic"),  // '.' in schema
+                column("clean", table = "users", name = "ssn"),                    // no delimiter
             ),
         )
         assertEquals(ColumnVerdict.DENIED, verdicts["slash"], "a '/'-bearing identity must be denied")
@@ -118,9 +118,9 @@ class ColumnAuthzTest {
             principal = "alice",
             roles = setOf("analyst"),
             datasource = "acme-pg",
-            columns = listOf(column("acme.public.users.rrn", "users", "rrn", tags = listOf("pii"))),
+            columns = listOf(column("acme.public.users.ssn", "users", "ssn", tags = listOf("pii"))),
         )
-        assertEquals(mapOf("acme.public.users.rrn" to ColumnVerdict.MASKED), verdicts)
+        assertEquals(mapOf("acme.public.users.ssn" to ColumnVerdict.MASKED), verdicts)
     }
 
     @Test
@@ -166,14 +166,14 @@ class ColumnAuthzTest {
             datasource = "acme-pg",
             columns = listOf(
                 column("acme.public.users.region", "users", "region"),
-                column("acme.public.users.rrn", "users", "rrn", tags = listOf("pii")),
+                column("acme.public.users.ssn", "users", "ssn", tags = listOf("pii")),
                 column("acme.public.orders.amount", "orders", "amount"),
             ),
         )
         assertEquals(
             mapOf(
                 "acme.public.users.region" to ColumnVerdict.UNMASKED,
-                "acme.public.users.rrn" to ColumnVerdict.MASKED,
+                "acme.public.users.ssn" to ColumnVerdict.MASKED,
                 "acme.public.orders.amount" to ColumnVerdict.DENIED,
             ),
             verdicts,

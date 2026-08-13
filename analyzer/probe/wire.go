@@ -8,8 +8,8 @@ package probe
 import (
 	"fmt"
 
-	"github.com/ridi-oss/sqlglot-go/schema"
 	pb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
+	"github.com/ridi-oss/sqlglot-go/schema"
 	"google.golang.org/protobuf/proto"
 )
 

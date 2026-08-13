@@ -153,7 +153,7 @@ def _resolve_scope_output(scope, out_name, col2scope, seen):
         else:
             names = [p.alias_or_name for p in branches[0].selects] if branches else []
         # union EVERY position whose output name matches — duplicate output aliases (`region AS leak,
-        # rrn AS leak`) are legal, and names.index() would return only the first, silently dropping the
+        # ssn AS leak`) are legal, and names.index() would return only the first, silently dropping the
         # protected column at a later position. (For unique names this is identical to a single lookup.)
         for i, nm in enumerate(names):
             if nm == out_name:
@@ -186,7 +186,7 @@ def _resolve_scope_output(scope, out_name, col2scope, seen):
 
 # ---- identity-aware resolution: like _resolve, but also reports whether EVERY hop on the path is a
 # value-preserving bare-column identity. An output is a maskable ORIGIN only if it is — a transform
-# anywhere on the path (even one scope down: `SELECT c FROM (SELECT substr(rrn) AS c …) t`) means masking
+# anywhere on the path (even one scope down: `SELECT c FROM (SELECT substr(ssn) AS c …) t`) means masking
 # the output cell masks the TRANSFORMED value, not the source, so the output must be DERIVED (DENY). ----
 
 def _resolve_ident(col, col2scope, seen):
@@ -288,7 +288,7 @@ def _identity_col(p):
     """If projection `p` is a bare column (optionally just aliased) — a value-preserving IDENTITY of
     that column, so masking the output cell fully protects it — return that Column; else None. Any
     computed expression (function/operator/cast/CASE/…) is NOT an identity: masking its rendered
-    result doesn't protect the source value (e.g. last4 of substr(rrn) leaks the first digits)."""
+    result doesn't protect the source value (e.g. last4 of substr(ssn) leaks the first digits)."""
     while isinstance(p, exp.Alias):
         p = p.this
     return p if isinstance(p, exp.Column) else None
@@ -313,7 +313,7 @@ def _leaf_selects(setop):
 
 
 def _from_source_order(sel):
-    """Alias order of FROM/JOIN sources, left-to-right — the order the backend expands a bare `SELECT *`
+    """Alias order of FROM/JOIN sources, left-to-right — the order the target DB expands a bare `SELECT *`
     into (and thus the wire column order the mask ordinals must match). sqlglot's expand_stars instead
     orders physical tables before derived tables, so bare-`*` origins must be re-sorted to this order."""
     order = []
@@ -371,7 +371,7 @@ def _expandable_sources(sel):
 
 def _resort_bare_star_inplace(osel, qsel):
     """Mutate qsel's projections: re-sort the bare `*`'s expanded BLOCK into FROM-source order, so the
-    serialized query's column order (which the backend echoes verbatim, since we send explicit columns)
+    serialized query's column order (which the target DB echoes verbatim, since we send explicit columns)
     equals the order origins index — and matches native `SELECT *` for the client. sqlglot expands physical
     tables before derived tables; the DB uses FROM order. `osel` (pre-qualify) locates the bare Star and
     the explicit projections around it (each a single column, since a bare `*` mixed with ANOTHER star is
@@ -475,7 +475,7 @@ def _is_expression_subquery(node):
         if isinstance(p, (exp.Exists, exp.In, exp.Any, exp.All)):
             return True
         # a subquery that is an ARGUMENT to a function / array constructor / unnest (even in FROM
-        # position, e.g. unnest(ARRAY(SELECT rrn …))) is an expression, not a transparent source.
+        # position, e.g. unnest(ARRAY(SELECT ssn …))) is an expression, not a transparent source.
         if isinstance(p, (exp.Func, exp.Array, exp.Unnest)):
             return True
         if isinstance(p, exp.Subquery):
@@ -532,10 +532,10 @@ def probe(sql, dialect, schema):
     # --- case-fold identifiers for matching. MySQL is case-insensitive for columns (and usually tables)
     # and PG folds unquoted identifiers to lowercase, but sqlglot preserves spelling — so a MySQL
     # `SELECT * FROM Users` never matches the lowercase catalog, silently leaving `*` unexpanded (a full
-    # bypass), and `Users.Rrn` resolves to an origin string that misses the policy key. Normalize UNQUOTED
-    # identifiers on this analysis copy (the query the backend runs is untouched) and match a lowercased
+    # bypass), and `Users.Ssn` resolves to an origin string that misses the policy key. Normalize UNQUOTED
+    # identifiers on this analysis copy (the query the target DB runs is untouched) and match a lowercased
     # schema, so resolution + policy matching are case-insensitive. For MySQL, also fold QUOTED identifiers:
-    # MySQL column names are always case-insensitive and `` `Users`.`RRN` `` otherwise skips the policy key
+    # MySQL column names are always case-insensitive and `` `Users`.`SSN` `` otherwise skips the policy key
     # (a leak) or fails the column-existence check as unknown (an over-deny). PG quoted idents ARE
     # case-sensitive, so they stay untouched. ---
     fold_quoted = dialect == "mysql"
@@ -636,8 +636,8 @@ def probe(sql, dialect, schema):
         qroot.set("tables", None)
 
     # Drop DEAD (unreferenced) CTEs before analysis. Postgres/MySQL don't execute an unreferenced CTE, so
-    # its clauses never touch the backend — but the reference sweeps below would still scan them, so a
-    # throwaway `WITH dead AS (SELECT id FROM users WHERE rrn='x') SELECT … FROM orders` would over-deny
+    # its clauses never touch the target DB — but the reference sweeps below would still scan them, so a
+    # throwaway `WITH dead AS (SELECT id FROM users WHERE ssn='x') SELECT … FROM orders` would over-deny
     # an unrelated live query. Iterate to a fixpoint: dropping one dead CTE can orphan another that only
     # it referenced. (Safe: a CTE referenced anywhere outside its own body is kept, so this can never drop
     # a live read — a dropped CTE contributed nothing to the result.)
@@ -753,14 +753,14 @@ def probe(sql, dialect, schema):
         # each such source (outside the CTE's own body, which legitimately reads the real table) to the
         # CTE's scope. ONLY the top-level WITH shadows statement-wide: a CTE defined in an INNER subquery's
         # WITH is scoped to that subquery (and sqlglot binds it natively), so rebinding by name across the
-        # whole statement would let a throwaway inner `WITH users AS (…orders…)` hijack a real users.rrn
+        # whole statement would let a throwaway inner `WITH users AS (…orders…)` hijack a real users.ssn
         # read in a sibling clause → leak. So collect names from the write's top-level WITH only.
         cte_scopes = {}
         top_with = qroot.args.get("with") or qroot.args.get("with_")
         for cte in (top_with.expressions if top_with is not None else []):
             body = cte.this
             bs = scope_of_select.get(id(body))
-            # a set-op-bodied CTE (`WITH s AS (SELECT rrn … UNION ALL SELECT region …)`) is a Union, not a
+            # a set-op-bodied CTE (`WITH s AS (SELECT ssn … UNION ALL SELECT region …)`) is a Union, not a
             # Select, so it never entered scope_of_select — scope it directly and register its columns, or a
             # write subquery reading `s.col` resolves to a physical-looking `s.col` and the read is lost.
             if bs is None and isinstance(body, exp.SetOperation):
@@ -783,7 +783,7 @@ def probe(sql, dialect, schema):
                     # Rebind only a BARE reference to the CTE (the source's REAL table name == the CTE
                     # name), not a different physical table merely ALIASED with the CTE's name: `FROM
                     # users audit_summary` is the `users` table (real name `users`), and rebinding it to a
-                    # decoy CTE named `audit_summary` would drop `audit_summary.rrn` = users.rrn → leak.
+                    # decoy CTE named `audit_summary` would drop `audit_summary.ssn` = users.ssn → leak.
                     if isinstance(src, exp.Table) and (src.name or "").lower() in cte_scopes:
                         sc.sources[nm] = cte_scopes[(src.name or "").lower()]
 
@@ -839,7 +839,7 @@ def probe(sql, dialect, schema):
             # Like add_clause, but for ORDER BY / GROUP BY, which can reference an output ALIAS or a
             # positional ORDINAL. sqlglot leaves those as a bare, unbindable ref (or an int literal), so
             # resolve them back to that projection's base columns — else a masked column used as a sort/
-            # dedup key (the backend sorts/dedups on CLEARTEXT before masking) leaks and is missed.
+            # dedup key (the target DB sorts/dedups on CLEARTEXT before masking) leaks and is missed.
             projs = sel.selects
             for t in terms:
                 if t is None or _enclosing_opaque(t, opaque_selects) is not None:
@@ -936,8 +936,8 @@ def probe(sql, dialect, schema):
                 add_clause([cond], AGGREGATE)
 
         # ---- table-function / lateral-VALUES row sources -> OTHER. A source in FROM/JOIN/LATERAL that
-        # is not a plain table nor a derived-table subquery — unnest(ARRAY[u.rrn]), generate_series(…
-        # length(u.rrn)…), LATERAL (VALUES (u.rrn)), json_table(…) — consumes columns whose flow to the
+        # is not a plain table nor a derived-table subquery — unnest(ARRAY[u.ssn]), generate_series(…
+        # length(u.ssn)…), LATERAL (VALUES (u.ssn)), json_table(…) — consumes columns whose flow to the
         # output sqlglot CANNOT trace: the output resolves to nothing (origins=[]) while the input sits
         # in a FROM/JOIN/LATERAL position both backstops skip (READ SKIP_ARGS + the write scoped-skip),
         # so the read leaks and, as a write payload, escapes the sweep. Route every column such a source
@@ -977,7 +977,7 @@ def probe(sql, dialect, schema):
                 if nm in sc.sources:
                     return sc.sources[nm]
                 sc = sc.parent
-            # A whole-row / composite ref in a WRITE's OWN clause (`UPDATE … SET x = (u).rrn`, `to_jsonb(u)`
+            # A whole-row / composite ref in a WRITE's OWN clause (`UPDATE … SET x = (u).ssn`, `to_jsonb(u)`
             # in SET/WHERE/USING/RETURNING) has no enclosing exp.Select, so the scope walk finds nothing —
             # resolve against the synthesized write scope (else the ref silently no-ops and, if the alias
             # collides with another table's column name, the write backstop misresolves it → cleartext leak).
@@ -1035,11 +1035,11 @@ def probe(sql, dialect, schema):
                 if src is not None:
                     references[OTHER] |= _src_all_cols(src)
 
-        # ---- proxy-side `*` expansion (reads only): the mask binds by ORDINAL, so the backend's wire
-        # column order MUST equal the order origins index. Rather than PREDICT the backend's native `*`
+        # ---- proxy-side `*` expansion (reads only): the mask binds by ORDINAL, so the target DB's wire
+        # column order MUST equal the order origins index. Rather than PREDICT the target DB's native `*`
         # order — fragile: it assumes the catalog's column order matches the live DB, and needs every
         # FROM source type enumerated (the whack-a-mole that leaked LATERAL/VALUES/unnest) — we EXPAND `*`
-        # here and hand the proxy explicit columns to send: the backend then echoes OUR order, so
+        # here and hand the proxy explicit columns to send: the target DB then echoes OUR order, so
         # origins-ordinal == wire-position BY CONSTRUCTION (and stays correct even if the catalog drifts
         # from the DB's physical column order). Every starred select must sit inside the proven-faithful
         # envelope (verified byte-identical vs live PG+MySQL) else fail closed; a sole bare `*` is re-sorted
@@ -1051,7 +1051,7 @@ def probe(sql, dialect, schema):
             # array / table-function / LATERAL) means the mask can't bind a concrete column count -> fail
             # closed (the unnest bypass). We deny on ANY residual, with no "doesn't reach the
             # result" exemption: two attempts at such an exemption each leaked (a top-level-only check missed
-            # `SELECT x.rrn FROM (SELECT * FROM t, unnest) x`; skipping opaque subqueries missed a LATERAL,
+            # `SELECT x.ssn FROM (SELECT * FROM t, unnest) x`; skipping opaque subqueries missed a LATERAL,
             # which IS opaque for reference-bucketing yet DOES reach the result). The only cost is a rare,
             # fail-SAFE over-deny: `* ` over a table-function inside a control-clause subquery (e.g.
             # `… WHERE EXISTS (SELECT * FROM t, unnest(…))`) — deliberate DENY. `count(*)` is a func arg, not
@@ -1092,7 +1092,7 @@ def probe(sql, dialect, schema):
                 #  2. `*` expands to the CATALOG's columns, so `SELECT *` returns catalog columns, not
                 #     necessarily the live table's — a column the DB has but the catalog lacks is silently
                 #     dropped from the result (protected columns are still masked at their ordinal; nothing
-                #     unknown is ever revealed). Keep the catalog in sync with the backend schema.
+                #     unknown is ever revealed). Keep the catalog in sync with the target-DB schema.
                 rewritten_sql = qroot.sql(dialect=dialect)
 
         # ---- origins: a top-level output is maskable ONLY if it is the value-preserving IDENTITY of a
@@ -1197,7 +1197,7 @@ def probe(sql, dialect, schema):
             # `EXCLUDED` is a real pseudo-relation ONLY inside an INSERT … ON CONFLICT and only when no
             # real table/alias in scope is named `excluded`. Otherwise `excluded.col` is a genuine read
             # of an aliased source and must NOT be skipped (else `UPDATE users AS excluded SET x =
-            # excluded.rrn` smuggles cleartext PII past the write backstop).
+            # excluded.ssn` smuggles cleartext PII past the write backstop).
             has_onconflict = bool(list(qroot.find_all(exp.OnConflict)))
             alias_names_ci = {k.lower() for k in alias_map}
 
@@ -1242,13 +1242,13 @@ def probe(sql, dialect, schema):
                     continue          # a qualified star (`RETURNING sink.*`) — routed wholesale by the
                                       # RETURNING-* / unexpanded-star handler below, not a single column
                 # a bare (unqualified) column whose NAME is a write SOURCE ALIAS *and* is NOT a column of
-                # any in-scope table is a WHOLE-ROW reference, not a scalar column: `to_jsonb(u)` / `(u).rrn`
+                # any in-scope table is a WHOLE-ROW reference, not a scalar column: `to_jsonb(u)` / `(u).ssn`
                 # -base where `FROM users u` aliases users as `u` and no table has a column `u`. Route the
                 # whole row's columns (DENY if any is protected). The column-existence guard enforces SQL's
                 # resolution order — a bare identifier binds to a COLUMN first, the relation (whole row) only
-                # when no such column exists: without it `UPDATE users SET name = rrn FROM orders rrn` reads
-                # `rrn` (a real users column) as a whole-row ref to the `orders rrn` alias (no PII) and leaks
-                # cleartext `users.rrn`. When a column DOES exist, fall through to `_wbase` -> real resolution.
+                # when no such column exists: without it `UPDATE users SET name = ssn FROM orders ssn` reads
+                # `ssn` (a real users column) as a whole-row ref to the `orders ssn` alias (no PII) and leaks
+                # cleartext `users.ssn`. When a column DOES exist, fall through to `_wbase` -> real resolution.
                 if (not c.table and write_scope is not None and c.name
                         and c.name.lower() in write_scope.sources
                         and not any(c.name.lower() in schema_ci.get(t, set()) for t in write_phys)):
@@ -1286,7 +1286,7 @@ def probe(sql, dialect, schema):
                 for t in phys:
                     for col in schema_ci.get(t.lower(), set()):
                         references[OTHER].add(f"{t}.{col}")
-            # MySQL `… ON DUPLICATE KEY UPDATE x = VALUES(rrn)`: VALUES(col) moves the pending row's `col`
+            # MySQL `… ON DUPLICATE KEY UPDATE x = VALUES(ssn)`: VALUES(col) moves the pending row's `col`
             # into another column; sqlglot parses its arg as a bare Identifier (not a Column).
             for fn in qroot.find_all(exp.Func):
                 if (fn.name or "").lower() == "values":
@@ -1301,7 +1301,7 @@ def probe(sql, dialect, schema):
         return {"resolved": True, "failedStage": None, "detail": "ok",
                 "outputColumns": len(origins), "tracedColumns": traced,
                 "origins": origins, "references": refs_out, "isWrite": is_write,
-                # the expanded query the proxy must send so the backend echoes the order origins index
+                # the expanded query the proxy must send so the target DB echoes the order origins index
                 # (null = no `*` on a read root; send the original verbatim). See the expansion block above.
                 "rewrittenSql": rewritten_sql}
     except Exception as e:

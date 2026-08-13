@@ -124,12 +124,12 @@ class BaselineDangerousFunctionEnforcementDbTest {
 
     // Dangerous PG functions the shipped manifest classifies (exact + `functionFamilies` prefixes) but the
     // hand-curated 15-name baseline floor MISSED — the cleartext-PII leak class. Each is a
-    // whole-table/page/large-object/backend reader that reads data INVISIBLE to lineage (its data source is a
+    // whole-table/page/large-object/target DB reader that reads data INVISIBLE to lineage (its data source is a
     // string/regclass/oid arg, not a scanned column), so on a no-manifest datasource a flat 15-name baseline
-    // would return null → ALLOW → the backend would stream e.g. the entire `users` table as XML incl. cleartext rrn.
+    // would return null → ALLOW → the target DB would stream e.g. the entire `users` table as XML incl. cleartext ssn.
     private val pgManifestOnlyDangerousCalls = listOf(
         "table_to_xml('public.users'::regclass, true, false, '')", // table_to_xml* family (the canonical dump)
-        "query_to_xmlschema('SELECT rrn FROM users', true, false, '')", // query_to_xml* family (NOT the baseline's two exact names)
+        "query_to_xmlschema('SELECT ssn FROM users', true, false, '')", // query_to_xml* family (NOT the baseline's two exact names)
         "get_raw_page('users', 0)",          // pageinspect, exact
         "pg_terminate_backend(1)",           // critical, exact
         "lo_get(16384)",                     // large-object read, exact
@@ -167,15 +167,15 @@ class BaselineDangerousFunctionEnforcementDbTest {
     @Test
     fun `a dangerous function is denied on a preset-development datasource, not relayed via sql-unanalyzable`() {
         // The improvement: before this change dangerousFuncs made a FROM'd dangerous call resolved=false, so
-        // on a dev datasource that permits sql.unanalyzable it RELAYED VERBATIM (executing the function). Now
+        // on a dev datasource that permits exception.unanalyzable it RELAYED VERBATIM (executing the function). Now
         // the call resolves + emits a function fact + is forbidden by the function gate. A `system:critical`
         // function (lo_export) is forbidden UNCONDITIONALLY (V25 -130), even under system:development.
         configure(pg, pg17, listOf("system:development"))
-        // Control: the sql.unanalyzable relay path IS live on this dev datasource — an actually-unanalyzable
+        // Control: the exception.unanalyzable relay path IS live on this dev datasource — an actually-unanalyzable
         // statement (NATURAL JOIN) is relayed verbatim (ALLOW, passthrough). This is the path the dangerous
         // call would take without the function gate.
         val relay = decide(pg, "select count(*) from orders natural join users")
-        assertEquals(EnfAction.ALLOW, relay.action, "dev datasource relays an unanalyzable statement via sql.unanalyzable")
+        assertEquals(EnfAction.ALLOW, relay.action, "dev datasource relays an unanalyzable statement via exception.unanalyzable")
         assertTrue(relay.passthrough, "the unanalyzable relay is a verbatim passthrough")
         // Improvement (RESOLVED forms only): a projected/scalar dangerous call RESOLVES + emits a function
         // fact → DENIED by the function gate, NOT relayed, even on dev (lo_export is critical → V25 -130).
@@ -186,26 +186,26 @@ class BaselineDangerousFunctionEnforcementDbTest {
         // RESOLVED=FALSE forms: the set-returning shape
         // `SELECT * FROM dblink(...)` analyzes resolved=false (unexpandable *), but the analyzer emits the
         // function fact even on a post-parse failure, so the unanalyzable gate runs the SAME function policy
-        // the resolved path does — BEFORE the sql.unanalyzable relay.
+        // the resolved path does — BEFORE the exception.unanalyzable relay.
         // - dblink is system:data-leak → the system:development relaxation applies (consistent with a RESOLVED
         //   dblink on dev), so it proceeds to the verbatim relay.
         val dataLeak = decide(pg, "select * from dblink('h','SELECT 1') as t(c text)")
         assertEquals(EnfAction.ALLOW, dataLeak.action, "a resolved=false data-leak function follows the dev relaxation, consistent with the resolved form")
-        assertTrue(dataLeak.passthrough, "the data-leak dev relaxation proceeds to the sql.unanalyzable verbatim relay")
+        assertTrue(dataLeak.passthrough, "the data-leak dev relaxation proceeds to the exception.unanalyzable verbatim relay")
         // - but a system:critical function (dblink_exec) hiding in a resolved=false statement DENIES even on a
-        //   system:development datasource — the function gate runs ahead of the sql.unanalyzable relay, so a
+        //   system:development datasource — the function gate runs ahead of the exception.unanalyzable relay, so a
         //   critical builtin is NEVER relayed verbatim (V25 -130 is unconditional). This is the residue CLOSED.
         val critical = decide(pg, "select dblink_exec('c','s') from users natural join users")
-        assertEquals(EnfAction.DENY, critical.action, "a resolved=false critical function is denied even on a system:development datasource (not relayed via sql.unanalyzable)")
+        assertEquals(EnfAction.DENY, critical.action, "a resolved=false critical function is denied even on a system:development datasource (not relayed via exception.unanalyzable)")
         assertTrue(critical.detail?.contains("dangerous system function") == true, "the DENY is the function gate, not the relay: ${critical.detail}")
-        // Both resolved=false forms DENY on the production floor (no sql.unanalyzable permit).
+        // Both resolved=false forms DENY on the production floor (no exception.unanalyzable permit).
         configure(pg, pg17, listOf("system:production"))
         assertEquals(EnfAction.DENY, decide(pg, "select * from dblink('h','SELECT 1') as t(c text)").action, "resolved=false data-leak denies on the floor")
         assertEquals(EnfAction.DENY, decide(pg, "select dblink_exec('c','s') from users natural join users").action, "resolved=false critical denies on the floor")
         // BOUNDARY (explicit, not a gap this closes): the backfill only fires on a POST-PARSE failure — a
         // statement that sqlglot cannot PARSE (p.root == nil) emits no function facts, so a critical builtin in
-        // a parse-failing statement the backend still accepts takes the sql.unanalyzable verbatim relay on a
-        // system:development datasource (it DENIES on the floor). That is the accepted `sql.unanalyzable ⊇ exec`
+        // a parse-failing statement the target DB still accepts takes the exception.unanalyzable verbatim relay on a
+        // system:development datasource (it DENIES on the floor). That is the accepted `exception.unanalyzable ⊇ exec`
         // posture an operator opts into with system:development — pre-existing, unclosable via function facts,
         // and the multi-statement route into it is already shut (admission rejects >1-statement batches).
     }

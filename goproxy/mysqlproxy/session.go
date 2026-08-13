@@ -23,10 +23,10 @@ type sysVarChange struct {
 }
 
 var (
-	errSchemaTrackingDisabled = errors.New("backend disabled session_track_schema; session state can no longer be tracked")
-	errUnsafeCharset          = errors.New("backend session character set left utf8mb4/utf8; identifier binding can no longer be trusted")
-	errSessionTrackingDropped = errors.New("backend dropped a required member from session_track_system_variables; session-state changes can no longer be observed")
-	errUnsafeSqlMode          = errors.New("backend session sql_mode enabled a flag that is not parse-safe (only ANSI_QUOTES and known runtime/semantic flags are allowed; anything else — NO_BACKSLASH_ESCAPES/PIPES_AS_CONCAT/… or an unrecognized flag — fails closed); analyzer↔backend SQL lexing can no longer be trusted")
+	errSchemaTrackingDisabled = errors.New("target DB disabled session_track_schema; session state can no longer be tracked")
+	errUnsafeCharset          = errors.New("target-DB session character set left utf8mb4/utf8; identifier binding can no longer be trusted")
+	errSessionTrackingDropped = errors.New("target DB dropped a required member from session_track_system_variables; session-state changes can no longer be observed")
+	errUnsafeSqlMode          = errors.New("target-DB session sql_mode enabled a flag that is not parse-safe (only ANSI_QUOTES and known runtime/semantic flags are allowed; anything else — NO_BACKSLASH_ESCAPES/PIPES_AS_CONCAT/… or an unrecognized flag — fails closed); analyzer↔target-DB SQL lexing can no longer be trusted")
 )
 
 // requiredTrackedSysVars are the system variables the proxy pins to SESSION_TRACK_SYSTEM_VARIABLES so a
@@ -40,7 +40,7 @@ var (
 // omits the variable itself — is reported as NOTHING (verified against live MySQL 8.0: no SESSION_TRACK
 // block, and the OK's SESSION_STATE_CHANGED status bit stays clear). Once the list is cleared, a later
 // SET session_track_schema=OFF and SET NAMES latin1 are equally silent. The proxy therefore ALSO re-probes
-// the namespace and charset before every statement (probe-always; see backend.go mysqlSessionProbeSQL),
+// the namespace and charset before every statement (probe-always; see target DB.go mysqlSessionProbeSQL),
 // which observes the true current database and charset regardless of tracker state.
 var requiredTrackedSysVars = []string{
 	"session_track_system_variables",
@@ -56,7 +56,7 @@ func trackedSysVarList() string { return strings.Join(requiredTrackedSysVars, ",
 // checkSysVarInvariants returns a terminal error if a reported system-variable change moved an enforcement
 // invariant to an unsafe value: schema tracking turned off, the tracking list dropped a required member, a
 // session charset left UTF-8, or sql_mode enabled a lexer-changing flag the analyzer cannot model
-// (NO_BACKSLASH_ESCAPES / PIPES_AS_CONCAT / …, which desync the analyzer's lexing from the backend's). It is
+// (NO_BACKSLASH_ESCAPES / PIPES_AS_CONCAT / …, which desync the analyzer's lexing from the target DB's). It is
 // shared by the run session and the wire relay so a client cannot silently defeat the proxy's observation
 // on either path. A change that enables ONLY ANSI_QUOTES is NOT a violation here: the analyzer models it and
 // the pre-statement probe forwards it, so the following statement is decided under the right mode rather than
@@ -121,7 +121,7 @@ func isSafeMySQLCharset(value string) bool {
 // HIGH_NOT_PRECEDENCE / IGNORE_SPACE are parse-affecting and unmodeled). This set is the ALLOWLIST: a flag
 // that is neither ANSI_QUOTES nor a member here fails the session closed — fail-closed conservation, so a
 // flag we do not recognize (a future MySQL version, an Aurora/fork extension) cannot silently desync the
-// analyzer's lexer from the backend's. A denylist would fail OPEN on such an unknown flag. The compound
+// analyzer's lexer from the target DB's. A denylist would fail OPEN on such an unknown flag. The compound
 // modes (ANSI, TRADITIONAL, …) are absent because MySQL stores @@session.sql_mode EXPANDED — only the
 // component flags ever reach this classifier.
 var mysqlParseSafeSqlModes = map[string]bool{
@@ -148,9 +148,9 @@ var mysqlParseSafeSqlModes = map[string]bool{
 // (mysqlParseSafeSqlModes) is ignored. ANY OTHER flag — a known parse-affecting one the analyzer cannot
 // model (NO_BACKSLASH_ESCAPES / PIPES_AS_CONCAT / HIGH_NOT_PRECEDENCE / IGNORE_SPACE) OR one this build does
 // not recognize — fails the session closed (errUnsafeSqlMode), because it could desync the analyzer's lexer
-// from the backend's and leak a masked column. sql_mode is a comma-separated flag list; an unsafe member
+// from the target DB's and leak a masked column. sql_mode is a comma-separated flag list; an unsafe member
 // takes precedence over an observed ANSI_QUOTES (e.g. "ANSI_QUOTES,NO_BACKSLASH_ESCAPES" fails closed).
-// Mirrors the PG standard_conforming_strings guard (pgproxy/backend.go).
+// Mirrors the PG standard_conforming_strings guard (pgproxy/target DB.go).
 func classifyMySQLSqlMode(value string) (ansiQuotes bool, err error) {
 	for _, raw := range strings.Split(value, ",") {
 		mode := strings.ToUpper(strings.TrimSpace(raw))
@@ -168,15 +168,15 @@ func classifyMySQLSqlMode(value string) (ansiQuotes bool, err error) {
 	return ansiQuotes, nil
 }
 
-// normalizeBackendOK removes CLIENT_SESSION_TRACK-only framing before an OK packet is sent to a frontend
+// normalizeTargetDbOK removes CLIENT_SESSION_TRACK-only framing before an OK packet is sent to a frontend
 // that did not negotiate it, and returns affected rows plus its authoritative session-state signals: a
 // schema-change value (SESSION_TRACK_SCHEMA) and any tracked system-variable changes
 // (SESSION_TRACK_SYSTEM_VARIABLES). Tracking these signals avoids interposing SELECT DATABASE() between
 // client statements, which would corrupt MySQL's statement-scoped diagnostics such as ROW_COUNT(),
 // FOUND_ROWS(), and SHOW WARNINGS.
-func normalizeBackendOK(payload []byte) ([]byte, uint64, *string, []sysVarChange, error) {
+func normalizeTargetDbOK(payload []byte) ([]byte, uint64, *string, []sysVarChange, error) {
 	if len(payload) == 0 || (payload[0] != 0x00 && payload[0] != 0xfe) {
-		return nil, 0, nil, nil, fmt.Errorf("mysqlproxy: expected backend OK packet")
+		return nil, 0, nil, nil, fmt.Errorf("mysqlproxy: expected target-DB OK packet")
 	}
 
 	pos := 1
@@ -202,7 +202,7 @@ func normalizeBackendOK(payload []byte) ([]byte, uint64, *string, []sysVarChange
 	// payload in that shape, so the fixed fields are already valid for a non-tracking frontend.
 	if pos == len(payload) {
 		if status&serverStatusSessionStateChanged != 0 {
-			return nil, 0, nil, nil, fmt.Errorf("mysqlproxy: backend OK advertises session state without a state payload")
+			return nil, 0, nil, nil, fmt.Errorf("mysqlproxy: target-DB OK advertises session state without a state payload")
 		}
 		return clean, affected, nil, nil, nil
 	}
@@ -227,7 +227,7 @@ func normalizeBackendOK(payload []byte) ([]byte, uint64, *string, []sysVarChange
 		}
 	}
 	if pos != len(payload) {
-		return nil, 0, nil, nil, fmt.Errorf("mysqlproxy: trailing bytes after backend OK packet")
+		return nil, 0, nil, nil, fmt.Errorf("mysqlproxy: trailing bytes after target-DB OK packet")
 	}
 	return clean, affected, schema, sysVars, nil
 }

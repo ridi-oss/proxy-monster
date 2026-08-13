@@ -30,7 +30,7 @@ weighing review findings, and weight MySQL accordingly.
 Modules:
 
 - `goproxy/` — Go data-plane wire proxy: MySQL/PostgreSQL codecs, token auth,
-  the per-statement `Decide` call, inline result masking, and the backend
+  the per-statement `Decide` call, inline result masking, and the target-DB
   broker.
 - `control-plane/` — Kotlin control plane: identity and roles, Cedar
   authorization, the catalog, the per-statement decision, and the admin +
@@ -51,7 +51,7 @@ Modules:
 - `proto/` — protobuf contracts: the proxy↔control-plane gRPC surface and the
   analyzer FFM boundary.
 - `web/` — the Next.js console (editor, policies, access, audit, admin).
-- `deploy/` — sample seed SQL for the compose backends.
+- `deploy/` — sample seed SQL for the compose target DBs.
 - `docs/` — per-workstream design docs.
 
 Key docs:
@@ -102,7 +102,7 @@ Key docs:
   (see [DESIGN.md](./DESIGN.md#jit-elevation-and-approval)).
 - Planes: the Kotlin control-plane owns a Postgres store (identity, policy,
   catalog, grants, audit); the Go data-plane proxy holds no store — it connects
-  only to its target backend and reads each decision from the control-plane over
+  only to its target DB and reads each decision from the control-plane over
   gRPC.
 - Web console (`web/`): a SQL editor plus admin for datasources, policies,
   access, and audit, in Next.js.
@@ -117,7 +117,10 @@ the map of which file owns which prefix — and the gate each one calls — is i
 
 An authenticated session alone is never authorization. A route states its
 requirement by which gate helper it calls (`requireApi`, `requireAdmin`,
-`requireAuthz`, `requireScimAuth`), and `PM_AUTH_DEBUG` short-circuits all four.
+`requireAuthz`, `requireScimAuth`). `PM_AUTH_DEBUG` is an authentication
+setting: it adds a login method (`POST /auth/debug`, any principal with any
+roles, minted as a real session), and the gates read that session like any
+other.
 
 Errors are never English prose on the wire: a route responds
 `ApiError(code, params)` with a stable dot-namespaced code the web looks up as
@@ -143,8 +146,9 @@ most often get violated:
   `web/messages/<locale>/` ([docs/l10n.md](./docs/l10n.md)).
 - Fail-closed through Cedar, not a hardcoded deny. When the analyzer cannot
   prove a statement safe, route it through the deny-by-default gate
-  (`sql.unanalyzable` / `sql.unmaskable`) so a datasource can override it while
-  the production floor stays closed. Coverage gaps are security gaps.
+  (`exception.unanalyzable` / `exception.unmaskable`) so a datasource can
+  override it while the production floor stays closed. Coverage gaps are
+  security gaps.
 
 ## Build, test, run
 

@@ -6,18 +6,22 @@ import com.ridi.oss.proxymonster.controlplane.authz.CedarPolicyStore
 import com.ridi.oss.proxymonster.controlplane.authz.RoleSource
 import com.ridi.oss.proxymonster.controlplane.support.SharedPostgres
 import com.ridi.oss.proxymonster.controlplane.support.requireDockerOrSkip
+import com.ridi.oss.proxymonster.controlplane.support.testLoginRoute
+import com.ridi.oss.proxymonster.controlplane.support.webSessionCookie
+import io.ktor.client.HttpClient
 import io.ktor.client.call.body
 import io.ktor.client.plugins.contentnegotiation.ContentNegotiation as ClientContentNegotiation
+import io.ktor.client.plugins.cookies.HttpCookies
 import io.ktor.client.request.post
 import io.ktor.client.request.setBody
 import io.ktor.http.ContentType
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.contentType
 import io.ktor.serialization.kotlinx.json.json
+import io.ktor.server.application.install
 import io.ktor.server.plugins.contentnegotiation.ContentNegotiation
+import io.ktor.server.routing.routing
 import io.ktor.server.sessions.Sessions
-import io.ktor.server.sessions.SessionTransportTransformerMessageAuthentication
-import io.ktor.server.sessions.cookie
 import io.ktor.server.testing.ApplicationTestBuilder
 import io.ktor.server.testing.testApplication
 import kotlinx.serialization.Serializable
@@ -48,6 +52,11 @@ class TokenRoutesDeactivationTest {
     private lateinit var userGroupStore: UserGroupStore
     private lateinit var authz: Authz
     private lateinit var config: Config
+    private lateinit var sessionStore: PrincipalSessionStore
+
+    // The deprovisioned caller every mint test below runs as. Both routes mint for the SESSION-holder, so
+    // the caller has to be the deactivated principal itself for the backstop to be what refuses.
+    private val caller = "dev@example.com"
 
     @BeforeAll
     fun setup() {
@@ -57,34 +66,42 @@ class TokenRoutesDeactivationTest {
         tokenStore = TokenStore(ds)
         accessStore = AccessStore(ds)
         daemonSessionStore = PrincipalSessionStore(ds, null)
+        sessionStore = PrincipalSessionStore(ds, null)
         userGroupStore = UserGroupStore(ds)
-        // authDebug=true below bypasses authz in requireAuthz, so this instance is only needed to satisfy
-        // the route signature; back it with the real migrated policy store all the same.
+        // The mint routes gate on token.mint, which the seeded self-permit grants a principal on its OWN
+        // Token — so the engine reads the real migrated policy store and the caller needs no role.
         val policyStore = CedarPolicyStore(ds)
         authz = Authz(CedarEngine(policyStore), policyStore, RoleSource { emptySet() })
         config = Config(
-            httpPort = 0, dbUrl = "", dbUser = "", dbPassword = "", authDebug = true, secretToken = null,
+            httpPort = 0, dbUrl = "", dbUser = "", dbPassword = "", authDebug = false, secretToken = null,
             sessionSecret = "test-secret", oidc = null, resultKey = null,
             scimToken = null, sessionWindowSeconds = 3600, idpRecheckIntervalSeconds = 600, devMarker = true,
         )
-        // principalOf(call) falls back to this literal under authDebug when no session cookie is
-        // sent (Tokens.kt:194) — no test here installs one. Deactivate it once, up front, so every
-        // mint-route test below sees a deprovisioned caller.
-        userGroupStore.createUser(AppUserInput(principal = "debug-user"), tokenStore, accessStore, daemonSessionStore)
-        userGroupStore.setUserActive("debug-user", false)
+        userGroupStore.createUser(AppUserInput(principal = caller), tokenStore, accessStore, daemonSessionStore)
+        userGroupStore.setUserActive(caller, false)
     }
 
-    private fun ApplicationTestBuilder.installTokenRoutes() {
-        install(ContentNegotiation) { json(Json { ignoreUnknownKeys = true; encodeDefaults = true }) }
-        routing {
-            tokenRoutes(config, tokenStore, userGroupStore, authz, AuthAuditRecorder(AuditStore(ds)))
+    private fun ApplicationTestBuilder.installTokenRoutes(): HttpClient {
+        application {
+            attributes.put(PRINCIPAL_SESSION_STORE, sessionStore)
+            install(ContentNegotiation) { json(Json { ignoreUnknownKeys = true; encodeDefaults = true }) }
+            install(Sessions) { webSessionCookie(sessionStore, config.sessionSecret) }
+            routing {
+                testLoginRoute(sessionStore, config)
+                tokenRoutes(config, tokenStore, userGroupStore, authz, AuthAuditRecorder(AuditStore(ds)))
+            }
+        }
+        return createClient {
+            expectSuccess = false
+            install(HttpCookies)
+            install(ClientContentNegotiation) { json(Json { ignoreUnknownKeys = true }) }
         }
     }
 
     @Test
     fun `POST api-wire-tokens for a deactivated principal is refused before minting`() = testApplication {
-        installTokenRoutes()
-        val client = createClient { install(ClientContentNegotiation) { json(Json { ignoreUnknownKeys = true }) } }
+        val client = installTokenRoutes()
+        assertEquals(HttpStatusCode.NoContent, client.post("/test/session/$caller").status)
 
         val resp = client.post("/api/wire-tokens") {
             contentType(ContentType.Application.Json)
@@ -96,8 +113,8 @@ class TokenRoutesDeactivationTest {
 
     @Test
     fun `POST api-tokens for a deactivated principal is refused before minting`() = testApplication {
-        installTokenRoutes()
-        val client = createClient { install(ClientContentNegotiation) { json(Json { ignoreUnknownKeys = true }) } }
+        val client = installTokenRoutes()
+        assertEquals(HttpStatusCode.NoContent, client.post("/test/session/$caller").status)
 
         val resp = client.post("/api/tokens") {
             contentType(ContentType.Application.Json)

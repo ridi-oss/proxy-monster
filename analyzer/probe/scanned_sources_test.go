@@ -15,10 +15,10 @@ import (
 // that SHADOWS a real table name must not surface the physical table (it is not read), while a CTE BODY
 // that reads the real table must — resolved by the scope graph, not a global name set.
 func TestScannedSources(t *testing.T) {
-	// PG-style catalog. orders/sink carry no PII; users.rrn is the protected column used elsewhere.
+	// PG-style catalog. orders/sink carry no PII; users.ssn is the protected column used elsewhere.
 	cols := []*pb.ColumnSpec{
 		columnSpec("acme", "public", "users", "id", "BIGINT"),
-		columnSpec("acme", "public", "users", "rrn", "VARCHAR"),
+		columnSpec("acme", "public", "users", "ssn", "VARCHAR"),
 		columnSpec("acme", "public", "users", "email", "VARCHAR"),
 		columnSpec("acme", "public", "orders", "id", "BIGINT"),
 		columnSpec("acme", "public", "orders", "uid", "BIGINT"),
@@ -41,7 +41,7 @@ func TestScannedSources(t *testing.T) {
 		{"count(*) traces zero columns → uncovered", "SELECT count(*) FROM orders", map[string]bool{o: false}},
 		{"SELECT 1 → uncovered", "SELECT 1 FROM orders", map[string]bool{o: false}},
 		{"EXISTS subquery scan → uncovered", "SELECT EXISTS(SELECT 1 FROM orders)", map[string]bool{o: false}},
-		{"projected column → covered", "SELECT rrn FROM users", map[string]bool{u: true}},
+		{"projected column → covered", "SELECT ssn FROM users", map[string]bool{u: true}},
 		{"cross-join: projected side covered, bare side uncovered", "SELECT u.id FROM users u, orders o", map[string]bool{u: true, o: false}},
 		{"self-join, per-tableID: users covered by a.id (no separate grant)", "SELECT a.id FROM users a CROSS JOIN users b", map[string]bool{u: true}},
 		{"join predicate reference covers the joined table", "SELECT u.id FROM users u JOIN orders o ON o.uid = u.id", map[string]bool{u: true, o: true}},
@@ -70,7 +70,7 @@ func TestScannedSources(t *testing.T) {
 func TestScannedSourcesMySQL(t *testing.T) {
 	cols := []*pb.ColumnSpec{
 		columnSpec("def", "app", "users", "id", "BIGINT"),
-		columnSpec("def", "app", "users", "rrn", "VARCHAR"),
+		columnSpec("def", "app", "users", "ssn", "VARCHAR"),
 		columnSpec("def", "app", "orders", "id", "BIGINT"),
 		columnSpec("def", "app", "orders", "uid", "BIGINT"),
 	}

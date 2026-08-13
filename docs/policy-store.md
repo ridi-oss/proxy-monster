@@ -26,7 +26,7 @@ System rows are immutable through the API except for `enabled`:
 - an upgrade UPSERT updates the shipped source but deliberately preserves the
   row's current `enabled` value;
 - user rows remain full CRUD; and
-- the backend enforces the distinction. The console is a matching read-only
+- the target DB enforces the distinction. The console is a matching read-only
   presentation, not the security boundary.
 
 A clean database runs the whole migration chain and therefore starts with the
@@ -320,31 +320,36 @@ Development preset (all enabled):
 | id | `system_key` | effect |
 | --- | --- | --- |
 | `-200` | `preset.development-unmasked` | permit `result.read.unmasked` on any `system:development` resource unless `system:critical` — role-agnostic (dev is cleartext) |
-| `-201` | `preset.development-unanalyzable` | permit `sql.unanalyzable` verbatim relay on `system:development` |
-| `-202` | `preset.development-unmaskable` | permit `sql.unmaskable` relay on `system:development` (data-plane capability still required) |
+| `-201` | `preset.development-unanalyzable` | permit `exception.unanalyzable` verbatim relay on `system:development` |
+| `-202` | `preset.development-unmaskable` | permit `exception.unmaskable` relay on `system:development` (data-plane capability still required) |
 | `-230` | `preset.development-connect` | any `system:development-*` role → `datasource.connect` |
-| `-231` | `preset.development-select` | `system:development-viewer` / `-pii-accessor` → `sql.select` |
-| `-232` | `preset.development-insert` | `system:development-updater` → `sql.insert` |
-| `-233` | `preset.development-update` | `system:development-updater` → `sql.update` |
-| `-234` | `preset.development-delete` | `system:development-deleter` → `sql.delete` |
-| `-235` | `preset.development-ddl` | `system:development-architect` → `sql.ddl` |
+| `-231` | `preset.development-select` | `system:development-viewer` / `-pii-accessor` → `stmt.cat.read` |
+| `-232` | `preset.development-insert` | `system:development-updater` → `stmt.cat.write.insert` |
+| `-233` | `preset.development-update` | `system:development-updater` → `stmt.cat.write.update` |
+| `-234` | `preset.development-delete` | `system:development-deleter` → `stmt.cat.write.delete` |
+| `-235` | `preset.development-ddl` | `system:development-architect` → `stmt.cat.ddl` |
+| `-236` | `preset.development-metadata` | any principal → `stmt.cat.metadata` on `system:development` |
+| `-237` | `preset.development-session` | any principal → `stmt.cat.session` on `system:development` |
+| `-238` | `preset.development-admin` | any principal → `stmt.cat.admin` on `system:development` |
 
 Production preset (all disabled by default — enabling production access is an
-explicit, audited toggle; `-259` ships with this package):
+explicit, audited toggle; ships through `-261`):
 
 <!-- prettier-ignore -->
 | id | `system_key` | effect |
 | --- | --- | --- |
 | `-250` | `preset.production-connect` | any `system:production-*` role → `datasource.connect` |
-| `-251` | `preset.production-select` | `system:production-viewer` / `-pii-accessor` → `sql.select` |
-| `-252` | `preset.production-insert` | `system:production-updater` → `sql.insert` |
-| `-253` | `preset.production-update` | `system:production-updater` → `sql.update` |
-| `-254` | `preset.production-delete` | `system:production-deleter` → `sql.delete` |
-| `-255` | `preset.production-ddl` | `system:production-architect` → `sql.ddl` |
+| `-251` | `preset.production-select` | `system:production-viewer` / `-pii-accessor` → `stmt.cat.read` |
+| `-252` | `preset.production-insert` | `system:production-updater` → `stmt.cat.write.insert` |
+| `-253` | `preset.production-update` | `system:production-updater` → `stmt.cat.write.update` |
+| `-254` | `preset.production-delete` | `system:production-deleter` → `stmt.cat.write.delete` |
+| `-255` | `preset.production-ddl` | `system:production-architect` → `stmt.cat.ddl` |
 | `-256` | `preset.production-non-pii-read` | `system:production-*` roles → `result.read.unmasked` unless `pii`/`system:*` |
 | `-257` | `preset.production-pii-masked` | `system:production-*` roles → `result.read.masked` on `pii` unless `system:*` |
 | `-258` | `preset.production-pii-unmasked` | `system:production-pii-accessor` → `result.read.unmasked` on `pii` when `context.tags` has `trusted-network` unless `system:*` |
 | `-259` | `preset.production-pii-unmasked-workflow` | `system:production-pii-accessor` → `result.read.unmasked` on `pii` when `context.channel == "workflow-executor"` unless `system:*` |
+| `-260` | `preset.production-metadata` | any principal → `stmt.cat.metadata` on `system:production` |
+| `-261` | `preset.production-session` | any principal → `stmt.cat.session` on `system:production` |
 
 Context tag producer:
 
@@ -369,21 +374,23 @@ posture validation), so this is purely about who may assert
 `system:development`: posture is self-asserted through the proxy
 self-registration gRPC path (`ControlPlaneGrpcService.register` passes the tag
 list into the `Datasources.register` upsert; a non-empty list overwrites an
-existing row's posture), gated only by the nullable shared `PM_SECRET_TOKEN`.
-Before the dev preset is relied on in production, that registration/token path
-(owned by [datasource-registration.md](./datasource-registration.md)) must close
-the boundary — any of: fail boot if the secret is unset in prod; gate
-posture-tag mutation behind admin authz rather than proxy self-assertion; or
-forbid `Register` from overwriting an existing datasource's posture. This doc's
-side is fail-closed given a trustworthy posture; that trust is asserted here,
-not enforced.
+existing row's posture), gated only by the shared `PM_SECRET_TOKEN` (required in
+production — startup is rejected when it is unset — so it can no longer be left
+open there). Before the dev preset is relied on in production, that
+registration/token path (owned by
+[datasource-registration.md](./datasource-registration.md)) must close the
+boundary — either: gate posture-tag mutation behind admin authz rather than
+proxy self-assertion; or forbid `Register` from overwriting an existing
+datasource's posture. This doc's side is fail-closed given a trustworthy
+posture; that trust is asserted here, not enforced.
 
 ## Interpretation — what a query gets, by preset × resource
 
 A query clears gates in order: `datasource.connect` → `sql.<kind>` → per-column
 result read (cleartext / masked / deny), with the function/command gate and the
-`sql.unanalyzable`/`sql.unmaskable` relay layered on. Deny-by-default
-throughout; the `system:*` guards are forbids that override even a broad grant.
+`exception.unanalyzable`/`exception.unmaskable` relay layered on.
+Deny-by-default throughout; the `system:*` guards are forbids that override even
+a broad grant.
 
 Development datasource (`system:development`) — connect via any dev role;
 `sql.*` per the role split above:
@@ -392,7 +399,7 @@ Development datasource (`system:development`) — connect via any dev role;
 | resource the query touches | result |
 | --- | --- |
 | user table, non-PII column (`users.id`) | cleartext (`-200`) |
-| user table, PII column (`users.rrn`) | cleartext — dev holds no PII, nothing is masked (`-200`) |
+| user table, PII column (`users.ssn`) | cleartext — dev holds no PII, nothing is masked (`-200`) |
 | system table — catalog (`pg_class`, `information_schema`) | readable (`-100`) |
 | system table — activity (`pg_stat_activity`, `SHOW PROCESSLIST`) | readable (`-110` relaxed on dev, `-200` permits) |
 | system table — data-leak (`pg_stats`, `SHOW BINLOG EVENTS`) | readable (`-120` relaxed on dev) |
@@ -532,7 +539,7 @@ DTO:
 CedarPolicy(id, systemKey?, origin /* SYSTEM | USER */, name, cedarSrc, enabled, updatedBy, updatedAt)
 ```
 
-Backend invariants:
+Target DB invariants:
 
 - `POST /api/policies` creates USER only and rejects a `system:`-prefixed name
   with a 400;
@@ -558,7 +565,7 @@ The policy list shows one surface, grouped or filterable by origin
   for copy/review; the enable switch stays available to `admin.policies`;
   disabling shows the concrete consequence (for example, "Disabling the critical
   guard allows a later permit to expose credentials or privileged mutation");
-  and the UI handles backend immutability errors rather than assuming its own
+  and the UI handles target DB immutability errors rather than assuming its own
   controls suffice.
 - User rows: normal Edit/Delete/enable controls.
 

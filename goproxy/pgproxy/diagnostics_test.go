@@ -10,7 +10,7 @@ import (
 
 const diagSentinel = "010-1234-5678"
 
-// A backend ErrorResponse for an ordinary constraint violation: the stored value lands ONLY in Detail (the
+// A target DB ErrorResponse for an ordinary constraint violation: the stored value lands ONLY in Detail (the
 // whole-row dump); the structural fields carry object names, not values, as PostgreSQL populates them for a
 // real (non-RAISE) error.
 func fullErrorResponse() *pgproto3.ErrorResponse {
@@ -77,7 +77,7 @@ func TestSanitizeErrorDoesNotMutateInput(t *testing.T) {
 	in := fullErrorResponse()
 	_ = sanitizeError(in)
 	if in.Detail == "" || in.Message == "check_violation" || in.UnknownFields == nil {
-		t.Error("sanitizeError mutated the backend frame instead of returning a copy")
+		t.Error("sanitizeError mutated the target-DB frame instead of returning a copy")
 	}
 }
 

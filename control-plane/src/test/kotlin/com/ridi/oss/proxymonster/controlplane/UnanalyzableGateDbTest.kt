@@ -13,9 +13,9 @@ import kotlin.test.assertTrue
 /**
  * Unanalyzable-statement gate (docs/facts-emission.md) end-to-end on real PostgreSQL + real Cedar. The
  * analyzer cannot prove lineage for a NATURAL JOIN (shared-column lineage is ambiguous) → `resolved=false`.
- * decideQuery asks the datasource for the `sql.unanalyzable` exception:
+ * decideQuery asks the datasource for the `exception.unanalyzable` exception:
  *  - production floor (no exception policy) → DENY; and
- *  - a datasource that shipped a `sql.unanalyzable` permit → ALLOW, relaying the ORIGINAL statement verbatim
+ *  - a datasource that shipped a `exception.unanalyzable` permit → ALLOW, relaying the ORIGINAL statement verbatim
  *    (passthrough, no masks) — the permissive development-datasource posture.
  * The gate fires before the column/table/function gates (an unresolved probe emits no facts for them), so a
  * missing read grant on the referenced tables is irrelevant here — this isolates the analyzable decision.
@@ -47,21 +47,21 @@ class UnanalyzableGateDbTest {
     fun `unanalyzable denies on the floor, then a sql-unanalyzable permit relays it verbatim`() {
         // 1. Production floor — no exception policy → deny-by-default (fail-closed).
         val floor = decide(unanalyzable)
-        assertEquals(EnfAction.DENY, floor.action, "no sql.unanalyzable policy → deny-by-default")
+        assertEquals(EnfAction.DENY, floor.action, "no exception.unanalyzable policy → deny-by-default")
         assertTrue(floor.detail?.contains("could not analyze") == true, "the fail-closed reason is preserved: ${floor.detail}")
 
         // 2. A datasource that shipped the exception (the permissive development posture) → relay verbatim.
         fx.cedarPolicyStore.create(
             CedarPolicyInput(
                 name = "test-dev-unanalyzable",
-                cedarSrc = """permit(principal, action == Action::"sql.unanalyzable", resource == Datasource::"${fx.datasource.name}");""",
+                cedarSrc = """permit(principal, action == Action::"exception.unanalyzable", resource == Datasource::"${fx.datasource.name}");""",
             ),
             updatedBy = "test",
         )
         val permitted = decide(unanalyzable)
-        assertEquals(EnfAction.ALLOW, permitted.action, "sql.unanalyzable permit → relay the original statement verbatim")
+        assertEquals(EnfAction.ALLOW, permitted.action, "exception.unanalyzable permit → relay the original statement verbatim")
         assertTrue(permitted.passthrough, "an unanalyzable relay is a verbatim passthrough (no rewrite, no masks)")
         assertTrue(permitted.masks.isEmpty(), "no masks are applied to an unanalyzable relay")
-        assertTrue(permitted.detail?.contains("sql.unanalyzable") == true, "the ALLOW is attributed to the exception: ${permitted.detail}")
+        assertTrue(permitted.detail?.contains("exception.unanalyzable") == true, "the ALLOW is attributed to the exception: ${permitted.detail}")
     }
 }

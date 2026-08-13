@@ -131,7 +131,7 @@ func TestMySqlRefetcherIntegration(t *testing.T) {
 }
 
 func TestPostgresRefetcherIntegration(t *testing.T) {
-	backend := dbtest.Postgres(t)
+	targetDb := dbtest.Postgres(t)
 	admin := dbtest.OpenPostgres(t, "")
 
 	modes := []struct {
@@ -144,7 +144,7 @@ func TestPostgresRefetcherIntegration(t *testing.T) {
 	for _, mode := range modes {
 		t.Run(mode.name, func(t *testing.T) {
 			databaseName := uniqueFixtureName("pm_refetch_pg")
-			database := createPostgresRefetchDatabase(t, admin, backend, databaseName)
+			database := createPostgresRefetchDatabase(t, admin, targetDb, databaseName)
 			if mode.crypto {
 				if _, err := database.Exec("CREATE EXTENSION pgcrypto"); err != nil {
 					t.Fatalf("CREATE EXTENSION pgcrypto: %v", err)
@@ -441,7 +441,7 @@ func execRefetchSQL(t *testing.T, conn *sql.Conn, statement string) {
 	}
 }
 
-func createPostgresRefetchDatabase(t *testing.T, admin *sql.DB, backend dbtest.Backend, name string) *sql.DB {
+func createPostgresRefetchDatabase(t *testing.T, admin *sql.DB, targetDb dbtest.TargetDb, name string) *sql.DB {
 	t.Helper()
 	if _, err := admin.Exec(`DROP DATABASE IF EXISTS "` + name + `" WITH (FORCE)`); err != nil {
 		t.Fatalf("drop database %s: %v", name, err)
@@ -452,5 +452,5 @@ func createPostgresRefetchDatabase(t *testing.T, admin *sql.DB, backend dbtest.B
 	t.Cleanup(func() {
 		_, _ = admin.Exec(`DROP DATABASE IF EXISTS "` + name + `" WITH (FORCE)`)
 	})
-	return openPostgresDatabase(t, backend, name)
+	return openPostgresDatabase(t, targetDb, name)
 }

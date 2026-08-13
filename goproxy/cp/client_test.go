@@ -207,6 +207,10 @@ type fakeControlPlane struct {
 	lastDecideMeta   string
 	lastRegisterReq  *pb.RegisterRequest
 	lastRegisterMeta string
+	// nil => reply with the current ProtocolVersion; set => override it, to model a version-skewed control plane.
+	registerRespVersion *int32
+	// non-nil => Register fails with this error, to model a control-plane that rejects our version.
+	registerErr      error
 	lastCatalog      *pb.CatalogRequest
 	lastCatalogMeta  string
 	lastFragment     *pb.SchemaFragmentPush
@@ -265,7 +269,14 @@ func (f *fakeControlPlane) Register(ctx context.Context, req *pb.RegisterRequest
 	defer f.mu.Unlock()
 	f.lastRegisterReq = proto.Clone(req).(*pb.RegisterRequest)
 	f.lastRegisterMeta = metaValue(ctx)
-	return &pb.RegisterResponse{Name: req.GetName()}, nil
+	if f.registerErr != nil {
+		return nil, f.registerErr
+	}
+	version := ProtocolVersion
+	if f.registerRespVersion != nil {
+		version = *f.registerRespVersion
+	}
+	return &pb.RegisterResponse{Name: req.GetName(), ProtocolVersion: version}, nil
 }
 
 func (f *fakeControlPlane) PushCatalog(ctx context.Context, req *pb.CatalogRequest) (*pb.CatalogResponse, error) {
@@ -449,7 +460,7 @@ func TestRegisterAndPushCatalog(t *testing.T) {
 	fake := &fakeControlPlane{}
 	c := startFakeControlPlane(t, fake)
 	chain := "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n"
-	if err := c.Register(enginepb.Engine_MYSQL, "backend", 3306, "app", []string{"tag"}, "127.0.0.1:6033", &chain, true); err != nil {
+	if err := c.Register(enginepb.Engine_MYSQL, "target DB", 3306, "app", []string{"tag"}, "127.0.0.1:6033", &chain, true); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
 	catalog := &pb.CatalogRequest{Columns: []*pb.Column{{Schema: "s", Table: "t", Column: "c"}}}
@@ -461,6 +472,10 @@ func TestRegisterAndPushCatalog(t *testing.T) {
 	fake.mu.Unlock()
 	if register.GetEngine() != enginepb.Engine_MYSQL || register.GetName() != "ds-1" {
 		t.Fatalf("RegisterRequest = %+v", register)
+	}
+	// The proxy must announce its wire-protocol version so the control plane can turn away a skewed rollout.
+	if register.GetProtocolVersion() != ProtocolVersion {
+		t.Errorf("RegisterRequest.ProtocolVersion = %d, want %d", register.GetProtocolVersion(), ProtocolVersion)
 	}
 	// The chain is the ONE thing a client needs to verify this proxy, so it has to reach the wire intact.
 	if !strings.Contains(register.GetAdvertiseCertChain(), "BEGIN CERTIFICATE") {
@@ -481,6 +496,35 @@ func TestRegisterAndPushCatalog(t *testing.T) {
 	}
 	if catalogReq.GetDatasourceName() != "ds-1" || catalog.DatasourceName != "ds-1" {
 		t.Fatalf("catalog datasource was not stamped: server=%q caller=%q", catalogReq.GetDatasourceName(), catalog.DatasourceName)
+	}
+}
+
+// A new proxy must refuse an OLDER control plane that predates the version field (and so cannot reject the
+// proxy itself): the mirror check on RegisterResponse catches the skew and fails with a clear, actionable error.
+func TestRegisterRejectsIncompatibleControlPlaneVersion(t *testing.T) {
+	bad := ProtocolVersion + 1
+	fake := &fakeControlPlane{registerRespVersion: &bad}
+	c := startFakeControlPlane(t, fake)
+	err := c.Register(enginepb.Engine_MYSQL, "target DB", 3306, "app", nil, "", nil, false)
+	if !errors.Is(err, ErrIncompatibleControlPlane) {
+		t.Fatalf("Register against a version-skewed control plane must return ErrIncompatibleControlPlane: %v", err)
+	}
+	if !strings.Contains(err.Error(), "same server-v* release") {
+		t.Fatalf("error must tell the operator to deploy both together: %v", err)
+	}
+}
+
+// The other direction: a NEWER control-plane rejects our version with FAILED_PRECONDITION. Register must
+// surface that as the same permanent condition (so boot refuses to start), not a transient failure to retry.
+func TestRegisterTreatsControlPlaneRejectionAsIncompatible(t *testing.T) {
+	fake := &fakeControlPlane{registerErr: status.Error(
+		codes.FailedPrecondition,
+		"proxy wire-protocol version 1 is incompatible with this control-plane's version 2 — deploy the proxy and control-plane from the same server-v* release",
+	)}
+	c := startFakeControlPlane(t, fake)
+	err := c.Register(enginepb.Engine_MYSQL, "target DB", 3306, "app", nil, "", nil, false)
+	if !errors.Is(err, ErrIncompatibleControlPlane) {
+		t.Fatalf("a control-plane version rejection must surface as ErrIncompatibleControlPlane: %v", err)
 	}
 }
 
@@ -544,8 +588,8 @@ func TestStreamEventsDispatchesMappedRunOpen(t *testing.T) {
 	fake.mu.Lock()
 	req, meta := fake.lastEventsReq, fake.lastEventsMeta
 	fake.mu.Unlock()
-	if req.GetDatasourceName() != "ds-1" || meta != "secret-abc" {
-		t.Fatalf("Events request/meta = %+v/%q", req, meta)
+	if req.GetDatasourceName() != "ds-1" || req.GetProtocolVersion() != ProtocolVersion || meta != "secret-abc" {
+		t.Fatalf("Events request/meta = %+v/%q (want protocol version %d)", req, meta, ProtocolVersion)
 	}
 }
 
@@ -561,8 +605,92 @@ func TestStreamEventsDispatchesMalformedRunOpen(t *testing.T) {
 	}
 }
 
+func TestStreamEventsReturnsErrDrainingOnDrainSignal(t *testing.T) {
+	// A drain is neither an error nor a max-age expiry: streamEvents must surface it as errDraining so the
+	// loop reconnects at once instead of waiting out the backoff.
+	fake := &fakeControlPlane{events: []*pb.ControlEvent{
+		{Kind: &pb.ControlEvent_Draining{Draining: &pb.Draining{}}},
+	}}
+	c := startFakeControlPlane(t, fake)
+	err := c.StreamEvents(func() {}, func(spi.RunOpen) {}, func(string, string, string) {})
+	if !errors.Is(err, errDraining) {
+		t.Fatalf("StreamEvents err = %v, want errDraining", err)
+	}
+}
+
+// drainingControlPlane answers every Events call with a single Draining signal, standing in for a control
+// plane that is rolling and telling its proxies to re-home to the replacement instance.
+type drainingControlPlane struct {
+	pb.UnimplementedControlPlaneServer
+	mu    sync.Mutex
+	opens int
+}
+
+func (f *drainingControlPlane) Events(_ *pb.EventsRequest, stream grpc.ServerStreamingServer[pb.ControlEvent]) error {
+	f.mu.Lock()
+	f.opens++
+	f.mu.Unlock()
+	return stream.Send(&pb.ControlEvent{Kind: &pb.ControlEvent_Draining{Draining: &pb.Draining{}}})
+}
+
+func (f *drainingControlPlane) openCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.opens
+}
+
+func TestEventsLoopReconnectsFastOnDrain(t *testing.T) {
+	// A drain reconnects on the short drain floor, not the error backoff — but paced, not a zero-backoff
+	// spin. With a 3s error backoff and a ~500ms floor, three reopens land well inside 2s (not the ~6s two
+	// backoffs would take), yet cannot arrive before two floors (~1s) have elapsed.
+	const backoff = 3 * time.Second
+
+	fake := &drainingControlPlane{}
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	server := grpc.NewServer()
+	pb.RegisterControlPlaneServer(server, fake)
+	go func() { _ = server.Serve(listener) }()
+	t.Cleanup(server.Stop)
+
+	c, err := New(listener.Addr().String(), "secret-abc", "ds-1")
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	t.Cleanup(func() { _ = c.Close() })
+
+	ctx, cancel := context.WithCancel(context.Background())
+	loopDone := make(chan struct{})
+	start := time.Now()
+	go func() {
+		defer close(loopDone)
+		c.runEventsLoop(ctx, eventLoopTimings{
+			streamMaxAge: time.Minute, // long enough that only the drain path paces this test
+			reconnect:    backoff,
+		}, func() {}, func() {}, func(spi.RunOpen) {}, func(string, string, string) {})
+	}()
+	t.Cleanup(func() {
+		cancel()
+		<-loopDone
+	})
+
+	deadline := time.After(2 * time.Second)
+	for fake.openCount() < 3 {
+		select {
+		case <-deadline:
+			t.Fatalf("only %d reopens in 2s — a drain did not use the fast floor (looks like the error backoff)", fake.openCount())
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+	if elapsed := time.Since(start); elapsed < 850*time.Millisecond {
+		t.Fatalf("three reopens in %v — the ~500ms drain floor is not pacing the loop (looks like a zero-backoff spin)", elapsed)
+	}
+}
+
 // holdOpenControlPlane never returns from Events, standing in for a control plane the proxy can reach but
-// which will never send anything — the shape a stream left pointing at a replaced backend takes.
+// which will never send anything — the shape a stream left pointing at a replaced target DB takes.
 type holdOpenControlPlane struct {
 	pb.UnimplementedControlPlaneServer
 	mu    sync.Mutex
@@ -604,6 +732,71 @@ func startHoldOpenControlPlane(t *testing.T, fake *holdOpenControlPlane) *Client
 	}
 	t.Cleanup(func() { _ = client.Close() })
 	return client
+}
+
+// versionRejectingControlPlane rejects every Events call with the FAILED_PRECONDITION wire-protocol-version
+// error the control-plane's events() sends on a skew — the shape an incompatible control-plane instance takes
+// (e.g. one side of a rolling deploy behind a load balancer).
+type versionRejectingControlPlane struct {
+	pb.UnimplementedControlPlaneServer
+	mu    sync.Mutex
+	opens int
+}
+
+func (f *versionRejectingControlPlane) Events(_ *pb.EventsRequest, _ grpc.ServerStreamingServer[pb.ControlEvent]) error {
+	f.mu.Lock()
+	f.opens++
+	f.mu.Unlock()
+	return status.Error(codes.FailedPrecondition,
+		"proxy wire-protocol version 1 is incompatible with this control-plane's version 2 — "+
+			"deploy the proxy and control-plane from the same server-v* release")
+}
+
+func (f *versionRejectingControlPlane) openCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.opens
+}
+
+func TestRunEventsLoopExitsOnEventsVersionRejection(t *testing.T) {
+	// A wire-protocol version rejection on the events stream is a fatal deploy skew: the loop must return
+	// ErrIncompatibleControlPlane and stop — NOT reconnect forever. Behind a load balancer a resync Register
+	// could reach a still-compatible instance and mask it, so relying on resync to exit is not enough; the
+	// events rejection itself has to end the loop (boot turns the return into a process exit). ctx is never
+	// cancelled here, so the only way the loop returns is the fatal path.
+	fake := &versionRejectingControlPlane{}
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	server := grpc.NewServer()
+	pb.RegisterControlPlaneServer(server, fake)
+	go func() { _ = server.Serve(listener) }()
+	t.Cleanup(server.Stop)
+	c, err := New(listener.Addr().String(), "secret-abc", "ds-1")
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	t.Cleanup(func() { _ = c.Close() })
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- c.runEventsLoop(context.Background(), eventLoopTimings{
+			streamMaxAge: time.Minute,
+			reconnect:    10 * time.Millisecond,
+		}, func() {}, func() {}, func(spi.RunOpen) {}, func(string, string, string) {})
+	}()
+	select {
+	case err := <-errCh:
+		if !errors.Is(err, ErrIncompatibleControlPlane) {
+			t.Fatalf("runEventsLoop err = %v, want ErrIncompatibleControlPlane", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("runEventsLoop did not return on an events version rejection — it kept reconnecting")
+	}
+	if n := fake.openCount(); n != 1 {
+		t.Fatalf("Events opened %d times; a version rejection must stop the loop after the first, not retry", n)
+	}
 }
 
 func TestStreamEventsEndsAtItsMaxAge(t *testing.T) {

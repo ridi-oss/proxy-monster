@@ -229,23 +229,23 @@ class PerConnectionCatalogMysqlAdversarialDbTest : PerConnectionCatalogAdversari
         enforcement.cedarPolicyStore.create(
             CedarPolicyInput(
                 "pccat-mysql-analyst-ddl",
-                """permit(principal in Role::"${enforcement.role}", action == Action::"sql.ddl", resource in Datasource::"${enforcement.datasource.name}");""",
+                """permit(principal in Role::"${enforcement.role}", action in [Action::"stmt.cat.ddl"], resource in Datasource::"${enforcement.datasource.name}");""",
             ),
             "pccat-test",
         )
         // A bare `DROP TABLE` is unanalyzable (no lineage for the DDL), so it relays only under a
-        // sql.unanalyzable permit — the legitimate authorization the catalog-freshness DROP test exercises.
+        // exception.unanalyzable permit — the legitimate authorization the catalog-freshness DROP test exercises.
         enforcement.cedarPolicyStore.create(
             CedarPolicyInput(
                 "pccat-mysql-analyst-unanalyzable",
-                """permit(principal in Role::"${enforcement.role}", action == Action::"sql.unanalyzable", resource in Datasource::"${enforcement.datasource.name}");""",
+                """permit(principal in Role::"${enforcement.role}", action == Action::"exception.unanalyzable", resource in Datasource::"${enforcement.datasource.name}");""",
             ),
             "pccat-test",
         )
         enforcement.cedarPolicyStore.create(
             CedarPolicyInput(
                 "pccat-mysql-writer-select",
-                """permit(principal in Role::"ddl-writer", action == Action::"sql.select", resource in Datasource::"${enforcement.datasource.name}");""",
+                """permit(principal in Role::"ddl-writer", action in [Action::"stmt.cat.read"], resource in Datasource::"${enforcement.datasource.name}");""",
             ),
             "pccat-test",
         )
@@ -279,7 +279,7 @@ class PerConnectionCatalogMysqlAdversarialDbTest : PerConnectionCatalogAdversari
         )
         assertEquals(EnfAction.ALLOW, initial.ctx.action, initial.ctx.denyReason)
 
-        // The unanalyzable DROP relays (sql.unanalyzable permit) and, being catalog-changing, schedules an
+        // The unanalyzable DROP relays (exception.unanalyzable permit) and, being catalog-changing, schedules an
         // after-statement REFETCH on the connection. MySQL commits the DROP implicitly, so `accounts` is gone
         // on the target immediately; fulfilling the refetch (pushFromTarget) must therefore evict `accounts`
         // from the held fragment — so no stale entry survives for a later SELECT to resolve+ALLOW against.
@@ -309,12 +309,12 @@ class PerConnectionCatalogMysqlAdversarialDbTest : PerConnectionCatalogAdversari
                 decide(opened, "writer@example.com", "CALL pccat_refresh()", listOf(schema)),
             )
             assertEquals(EnfAction.DENY, call.ctx.action)
-            assertContains(call.ctx.denyReason.orEmpty(), "statement kind 'other' is not permitted")
+            assertContains(call.ctx.denyReason.orEmpty(), "statement kind 'call' is not permitted")
             assertTrue(call.afterStatement.isEmpty())
         }
     }
 
-    @Disabled("literal CALL is classified catalog-changing but the OTHER kind gate makes its ALLOW arm unreachable")
+    @Disabled("literal CALL is classified catalog-changing but its admin.exec kind gate makes its ALLOW arm unreachable for a principal without admin")
     @Test
     fun `allowed MySQL CALL carries after-statement refetch`() = runBlocking {
         target().use { held ->
@@ -369,23 +369,23 @@ class PerConnectionCatalogPostgresAdversarialDbTest : PerConnectionCatalogAdvers
         enforcement.cedarPolicyStore.create(
             CedarPolicyInput(
                 "pccat-pg-analyst-ddl",
-                """permit(principal in Role::"${enforcement.role}", action == Action::"sql.ddl", resource in Datasource::"${enforcement.datasource.name}");""",
+                """permit(principal in Role::"${enforcement.role}", action in [Action::"stmt.cat.ddl"], resource in Datasource::"${enforcement.datasource.name}");""",
             ),
             "pccat-test",
         )
         // A bare `DROP TABLE` is unanalyzable (no lineage for the DDL), so it relays only under a
-        // sql.unanalyzable permit — the legitimate authorization these catalog-freshness tests exercise.
+        // exception.unanalyzable permit — the legitimate authorization these catalog-freshness tests exercise.
         enforcement.cedarPolicyStore.create(
             CedarPolicyInput(
                 "pccat-pg-analyst-unanalyzable",
-                """permit(principal in Role::"${enforcement.role}", action == Action::"sql.unanalyzable", resource in Datasource::"${enforcement.datasource.name}");""",
+                """permit(principal in Role::"${enforcement.role}", action == Action::"exception.unanalyzable", resource in Datasource::"${enforcement.datasource.name}");""",
             ),
             "pccat-test",
         )
         enforcement.cedarPolicyStore.create(
             CedarPolicyInput(
                 "pccat-pg-writer-select",
-                """permit(principal in Role::"ddl-writer", action == Action::"sql.select", resource in Datasource::"${enforcement.datasource.name}");""",
+                """permit(principal in Role::"ddl-writer", action in [Action::"stmt.cat.read"], resource in Datasource::"${enforcement.datasource.name}");""",
             ),
             "pccat-test",
         )

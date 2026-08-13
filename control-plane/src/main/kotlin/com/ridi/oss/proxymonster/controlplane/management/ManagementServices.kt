@@ -161,7 +161,7 @@ class DatasourceManagementService(
             // Drop the name-keyed in-memory enforcement catalog for this datasource. A soft-deleted name is
             // free for a new datasource to reuse, and the authoritative catalog is keyed by name, not id — so
             // without this a connection to the reused name could adopt structure measured from the deleted
-            // predecessor's backend and mask the wrong result columns. Same hazard a retarget already
+            // predecessor's target DB and mask the wrong result columns. Same hazard a retarget already
             // invalidates; idempotent and fail-safe (an over-drop only forces the next connection to
             // re-measure).
             connectionCatalog.invalidateDatasource(current.name)
@@ -1010,7 +1010,7 @@ class IdentityManagementService(
     ): GroupRolesResult {
         required("groupName", groupName)
         roleNames.forEach { required("roleNames", it) }
-        val group = c.prepareStatement("SELECT id, source FROM app_group WHERE name = ? FOR UPDATE").use { statement ->
+        val group = c.prepareStatement("SELECT id, source FROM app_group WHERE name = ? AND deleted_at IS NULL FOR UPDATE").use { statement ->
             statement.setString(1, groupName)
             statement.executeQuery().use { result ->
                 if (!result.next()) notFound("group")
@@ -1036,7 +1036,7 @@ class IdentityManagementService(
      */
     /** Row-lock a mutable (non-SYSTEM) group, returning its name for the audit summary. */
     private fun lockMutableGroup(id: Long, c: Connection): String {
-        val (source, name) = c.prepareStatement("SELECT source, name FROM app_group WHERE id = ? FOR UPDATE").use { statement ->
+        val (source, name) = c.prepareStatement("SELECT source, name FROM app_group WHERE id = ? AND deleted_at IS NULL FOR UPDATE").use { statement ->
             statement.setLong(1, id)
             statement.executeQuery().use { result ->
                 if (result.next()) result.getString("source") to result.getString("name") else notFound("group")

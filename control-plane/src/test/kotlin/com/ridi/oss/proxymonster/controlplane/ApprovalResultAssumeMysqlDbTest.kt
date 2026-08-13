@@ -25,8 +25,8 @@ class ApprovalResultAssumeMysqlDbTest {
     private val requester = "requester@example.com"
     private val approver = "approver@example.com"
     private val roleName = "system:production-pii-accessor"
-    private val rawRrn = "900101-1234567"
-    private val maskedRrn = "**********4567"
+    private val rawSsn = "987-65-4320"
+    private val maskedSsn = "*******4320"
 
     @BeforeAll
     fun setup() {
@@ -40,7 +40,10 @@ class ApprovalResultAssumeMysqlDbTest {
                 ps.executeUpdate()
             }
         }
-        listOf(-250L, -251L, -256L, -257L, -258L).forEach {
+        // -260 (production-metadata) enabled so SHOW CREATE TABLE / DESCRIBE re-decide as an authorized
+        // metadata passthrough: statement-classification gates metadata on stmt.cat.metadata (closing the
+        // old connect-only gap), so a viewer's re-decision of a stored SHOW now needs it too.
+        listOf(-250L, -251L, -256L, -257L, -258L, -260L).forEach {
             checkNotNull(fx.cedarPolicyStore.setEnabled(it, true, "test-enable-production"))
         }
         fx.cedarPolicyStore.create(
@@ -57,7 +60,7 @@ class ApprovalResultAssumeMysqlDbTest {
     private fun decide(channel: Channel, ip: String): DecisionContext = decideQuery(
         principal = requester,
         ds = datasource,
-        sql = "SELECT rrn FROM users",
+        sql = "SELECT ssn FROM users",
         channel = channel,
         catalog = fx.datasourceStore.catalog(datasource.id),
         policyStore = fx.policyStore,
@@ -82,7 +85,7 @@ class ApprovalResultAssumeMysqlDbTest {
         executedBy = approver,
         createdAt = "2026-07-23T00:00:00Z",
         kind = "QUERY",
-        sql = "SELECT rrn FROM users",
+        sql = "SELECT ssn FROM users",
         executeAs = listOf(roleName),
         creatorKind = "WORKFLOW",
     )
@@ -103,7 +106,7 @@ class ApprovalResultAssumeMysqlDbTest {
                 ),
             ),
         )
-        val decrypted = DecryptedResult(listOf("rrn"), listOf(listOf(rawRrn)))
+        val decrypted = DecryptedResult(listOf("ssn"), listOf(listOf(rawSsn)))
 
         val trusted = decideResultView(
             viewer = requester,
@@ -120,7 +123,7 @@ class ApprovalResultAssumeMysqlDbTest {
             authz = fx.authz,
             systemClassification = null,
         )
-        assertEquals(rawRrn, assertIs<ResultViewDecision.Allowed>(trusted).rows.single().single())
+        assertEquals(rawSsn, assertIs<ResultViewDecision.Allowed>(trusted).rows.single().single())
 
         val outside = decideResultView(
             viewer = requester,
@@ -137,30 +140,30 @@ class ApprovalResultAssumeMysqlDbTest {
             authz = fx.authz,
             systemClassification = null,
         )
-        assertEquals(maskedRrn, assertIs<ResultViewDecision.Allowed>(outside).rows.single().single())
+        assertEquals(maskedSsn, assertIs<ResultViewDecision.Allowed>(outside).rows.single().single())
     }
 
     @Test
     fun `workflow executor stores R's execution-enforced masks and the viewer re-decides per context`() {
-        // Off the trusted network R (a production PII accessor) cannot unmask rrn, so the stored result is
+        // Off the trusted network R (a production PII accessor) cannot unmask ssn, so the stored result is
         // R's execution-enforced masked form — storage is never widened to what some other context reveals.
         val storedOffNetwork = decide(Channel.WORKFLOW_EXECUTOR, "100.99.1.10")
-        assertEquals(EnfAction.MASK, storedOffNetwork.action, "off-network execution masks rrn")
+        assertEquals(EnfAction.MASK, storedOffNetwork.action, "off-network execution masks ssn")
         assertEquals(
-            listOf("rrn"), storedOffNetwork.masks.map { it.column },
+            listOf("ssn"), storedOffNetwork.masks.map { it.column },
             "storage holds R's execution-context mask plan, never widened",
         )
 
-        // Executing ON the trusted network unmasks rrn, so R stores it cleartext.
+        // Executing ON the trusted network unmasks ssn, so R stores it cleartext.
         assertEquals(
             EnfAction.ALLOW, decide(Channel.WORKFLOW_EXECUTOR, "100.100.1.10").action,
-            "on the trusted network R stores rrn cleartext",
+            "on the trusted network R stores ssn cleartext",
         )
 
         // The viewer re-decides under exactly {R} in the viewer's own context: masked off-network, unmasked on it.
         val viewedOffNetwork = decide(Channel.WORKFLOW_VIEWER, "100.99.1.10")
         assertEquals(EnfAction.MASK, viewedOffNetwork.action)
-        assertEquals("rrn", viewedOffNetwork.masks.single().column)
+        assertEquals("ssn", viewedOffNetwork.masks.single().column)
         assertEquals(EnfAction.ALLOW, decide(Channel.WORKFLOW_VIEWER, "100.100.1.10").action)
     }
 
@@ -170,7 +173,7 @@ class ApprovalResultAssumeMysqlDbTest {
         // column-masking model, so the view has nothing to narrow. Once the live re-decision under {R}
         // authorizes it, "authorized to run" is "authorized to see": the stored bytes are released verbatim
         // rather than fail-closing on "re-decided as passthrough".
-        val ddl = "CREATE TABLE `users` (\n  `rrn` varchar(20) DEFAULT NULL\n)"
+        val ddl = "CREATE TABLE `users` (\n  `ssn` varchar(20) DEFAULT NULL\n)"
         val stored = DecryptedResult(listOf("Table", "Create Table"), listOf(listOf("users", ddl)))
         val redecide = decideQuery(
             principal = requester, ds = datasource, sql = "SHOW CREATE TABLE users", channel = Channel.EDITOR,

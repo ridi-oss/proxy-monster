@@ -5,9 +5,9 @@ Two catalogs with opposite freshness contracts run on separate gRPC channels:
 - The **enforcement catalog** is per-connection, control-plane-commanded, and
   transactionally current. Every wire/editor connection resolves decisions
   against catalog fragments the proxy introspected on that connection's own held
-  backend connection, so they reflect uncommitted in-transaction DDL. The
-  control plane always decides against exactly what _that_ connection's backend
-  will bind.
+  target-DB connection, so they reflect uncommitted in-transaction DDL. The
+  control plane always decides against exactly what _that_ connection's target
+  DB will bind.
 - The **config catalog** is datasource-global and SWR-refreshed (~12 min), on
   its own channel. It feeds the config/admin surfaces — catalog browsing,
   tagging/classification, table detail, the system-classification manifest, the
@@ -66,7 +66,7 @@ the DB-side hash (`goproxy/db/db.go`), and the config-channel split (a second
 | Scope | one wire/editor connection (per-schema fragments) | the datasource |
 | Freshness | transactionally current for the issuing connection | SWR, ambient ~12 min + admin refresh |
 | Kept current by | control-plane `REFETCH` commands, DB-hash-gated | proxy timer + Events `RefreshCatalog` |
-| Introspected on | the connection's held backend connection | a dedicated short-lived connection (`introspect.Run`) |
+| Introspected on | the connection's held target-DB connection | a dedicated short-lived connection (`introspect.Run`) |
 | Channel | enforcement (`ValidateToken`/`Decide`/`PushSchemaFragment`/`CloseConnection`/`RunExec`/`ReportCompletion`) | config (`Register`/`PushCatalog`/`Events`/`TableDetailExec`) |
 | Control-plane storage | in-memory content-addressed fragments + per-connection held-hash map | `catalog_column` + `datasource` rows |
 | Read by | `decideConnection` → `decideQuery` (wire/editor/`RunExec`) | catalog browser, classification writes/reads, MCP `browse_catalog`, table detail, approval dry-run previews, manifest logging, liveness UI |
@@ -96,7 +96,7 @@ keyed by a stable content hash of its enforcement-relevant fields:
   (refcount).
 
 So "reuse instead of refetch" falls out for free: two connections that see the
-same `s1` share `(datasource, s1, H)`; a connection whose backend already
+same `s1` share `(datasource, s1, H)`; a connection whose target DB already
 matches the held hash for a schema skips the fetch (a no-op `REFETCH`). It also
 makes the after-DDL refresh a content event, not a timing event.
 
@@ -106,7 +106,7 @@ One generic, extensible command carries the whole mechanism; `REFETCH` is its
 only value today.
 
 `REFETCH(schema S, if_hash_differs H)` — the proxy runs a DB-side hash query for
-`S` on the held backend connection. If the live hash equals `H` it is a no-op
+`S` on the held target-DB connection. If the live hash equals `H` it is a no-op
 (the connection already holds the right fragment) and the proxy acks
 "unchanged". If it differs (or no trustworthy hash can be produced), the proxy
 full-introspects `S` on the held connection and pushes the fragment plus its
@@ -144,11 +144,11 @@ own statement:
    statement of its own. On its next `Decide` the control plane sees the held
    `S`-hash ≠ the datasource-authoritative `S`-hash →
    `before_decide REFETCH(S, H = held)` → retry. The proxy re-hashes `S` on its
-   own backend: if that backend also has the change it pushes the new fragment;
-   if it legitimately does not (replica lag), the `REFETCH` is a no-op and the
-   control plane records the connection as revalidated so it does not loop. The
-   control plane always decides against what _this_ connection's backend binds,
-   never a sibling's.
+   own target DB: if that target DB also has the change it pushes the new
+   fragment; if it legitimately does not (replica lag), the `REFETCH` is a no-op
+   and the control plane records the connection as revalidated so it does not
+   loop. The control plane always decides against what _this_ connection's
+   target DB binds, never a sibling's.
 2. Control-plane restart. The control plane lost its in-memory per-connection
    catalogs; the next `Decide` for an unknown `connection_id` → `before_decide`
    (re-push the needed schemas) → retry. A mid-transaction connection
@@ -177,7 +177,7 @@ own statement:
    decides admit/reject; on admit it mints a 128-bit CSPRNG `connection_id`,
    creates the per-connection state, and returns `connection_id` + `on_open`
    (`REFETCH`s for the default + system schemas).
-3. Fetch-on-open (hash-gated). The proxy dials its backend, then runs each
+3. Fetch-on-open (hash-gated). The proxy dials its target DB, then runs each
    `on_open REFETCH` on that held connection: hash the schema, push the fragment
    only if it differs. Matching schemas are no-ops (shared fragment reuse). Only
    after every `on_open` push is acknowledged does the proxy serve client
@@ -186,7 +186,7 @@ own statement:
 4. Decide, refresh-on-command. Every client statement → `Decide` (carrying
    `connection_id` + the live `search_path`). The response is a `oneof`: a
    verdict (with any `after_statement` commands) or a `before_decide` (run
-   commands, re-send). On a verdict the proxy relays, observes the backend's
+   commands, re-send). On a verdict the proxy relays, observes the target DB's
    mechanical success signal, and runs any `after_statement REFETCH` on the held
    connection before the next statement.
 5. Close. On connection close the proxy sends `CloseConnection(connection_id)`;
@@ -195,15 +195,15 @@ own statement:
 
 ### The correctness property
 
-The hash query and the full introspection both run on the held backend
+The hash query and the full introspection both run on the held target-DB
 connection, inside the client's current transaction, so they see uncommitted
 DDL. After `BEGIN; DROP TABLE s1.accounts;` the `after_statement REFETCH(s1, …)`
 hashes `s1` on the held connection (now differs) → full-introspects `s1` inside
 the transaction (sees the drop) → pushes a fragment without `accounts` → the
 connection's held `s1`-hash updates. The next decision for
 `SELECT … FROM accounts` (search_path `s1, s2`) resolves the bare name to what
-the backend will actually bind — `s2.accounts` — and denies it if the principal
-lacks access.
+the target DB will actually bind — `s2.accounts` — and denies it if the
+principal lacks access.
 
 This eliminates, for the enforcing session: datasource-global staleness (no
 shared snapshot to be stale against), the committed-DDL wrong-ALLOW gate
@@ -215,12 +215,12 @@ go directly: the refresh runs inside the transaction right after the DDL;
 so there is no idle gate to miss; a disconnect takes the connection's fragments
 with it and no sibling's catalog ever depended on that session.
 
-Scope (MySQL temporary tables). The "decides against exactly what the backend
+Scope (MySQL temporary tables). The "decides against exactly what the target DB
 binds" property is scoped to objects visible in `information_schema`. A MySQL
 `CREATE TEMPORARY TABLE` is invisible to `information_schema` even within its
 own session, so the held-connection hash/introspection cannot see a session temp
 that shadows a base-table name — `decideQuery` resolves the bare name to the
-base table while the backend binds the temp. This is mostly fail-closed in
+base table while the target DB binds the temp. This is mostly fail-closed in
 practice (a temp `CREATE … AS SELECT` is a write gated by the
 write-references-masked deny; a shape-mismatched read tends to error) but the
 property does not cover it. PostgreSQL's `pg_temp` is handled by the per-query
@@ -232,10 +232,10 @@ residual is MySQL-specific (see known limitations).
 The proxy is inside the trusted computing base. Correctness depends on it (a)
 calling the control plane for every statement, (b) enforcing the verdict
 (mask/deny), and (c) honestly executing a forced `REFETCH` (running the hash
-query on its backend and reporting the result truthfully). A proxy that bypasses
-`Decide`, forwards raw SQL, or fabricates a hash / `unchanged` reply defeats
-enforcement — no protocol mechanism here prevents that; removing the proxy from
-the TCB would require DB-enforced, control-plane-signed per-statement
+query on its target DB and reporting the result truthfully). A proxy that
+bypasses `Decide`, forwards raw SQL, or fabricates a hash / `unchanged` reply
+defeats enforcement — no protocol mechanism here prevents that; removing the
+proxy from the TCB would require DB-enforced, control-plane-signed per-statement
 capabilities, a different architecture out of scope. What this design avoids is
 depending on the proxy's proactive, voluntary freshness bookkeeping:
 `before_decide` + the pending mark let the control plane demand freshness at
@@ -279,7 +279,7 @@ message SchemaFragmentPush {
   bool   unchanged          = 5;  // true = live hash matched H; columns omitted (no-op ack)
   repeated Column columns   = 6;  // enforcement-relevant fields only (schema/table/column/
                                   // data_type/ordinal/nullable) — the same Column message as PushCatalog
-  uint64 backend_generation = 7;  // which backend-connection instance measured this
+  uint64 backend_generation = 7;  // which target-DB-connection instance measured this
 }
 message SchemaFragmentAck { uint64 generation = 1; }  // per-connection generation after applying
 
@@ -360,8 +360,8 @@ catalog).
 
 - State. Per `(datasource, schema)`: the authoritative
   `{ hash, immutable fragment, epoch }` (last accepted push; a liveness hint,
-  never a correctness input — each connection re-verifies against its own
-  backend), plus a content-addressed fragment pool (dedup + refcount). Per
+  never a correctness input — each connection re-verifies against its own target
+  DB), plus a content-addressed fragment pool (dedup + refcount). Per
   `connection_id`:
   `{ held schema→hash map, per-schema pending mark, generation, binding tuple, backend_generation }`.
   All in-memory — session-scoped ephemeral state; persisting it would be
@@ -403,7 +403,7 @@ catalog).
   `probeNamespace`/`probeTempColumns`: the DB-side hash query for a schema, and
   the per-schema full introspection (the `columnsSQL` column scan filtered to
   the schema — all schemas including system, never excluded). Both run on the
-  wire session's backend connection so they see its transaction.
+  wire session's target-DB connection so they see its transaction.
   `introspect.Run` (dedicated connection) stays for the config catalog only.
 - PG extended-protocol capture uses the extended probe. When a PG connection is
   mid extended-query batch (Parse/Bind/Execute), the held-connection hash and
@@ -412,7 +412,7 @@ catalog).
   would trigger an implicit commit/sync of the pending extended batch and
   corrupt normal operation.
 - Fetch-on-open / refresh-on-command. Run `on_open` before the serve loop; run
-  `after_statement` immediately after the backend's mechanical success signal
+  `after_statement` immediately after the target DB's mechanical success signal
   (PG simple: no `ErrorResponse` before `ReadyForQuery`; PG extended:
   `CommandComplete` for the flagged `Execute`; MySQL: the tracked OK/EOF
   terminator, `relayQueryResponseTracked`, for both `COM_QUERY` and
@@ -421,7 +421,7 @@ catalog).
   (bounded retries; repeated failure → fail closed).
 - Refresh failure is fail-closed, per-connection. A failed `after_statement`
   refetch would leave this connection's fragment provably wrong for the open
-  transaction → close both connections (forcing backend rollback). The
+  transaction → close both connections (forcing target DB rollback). The
   control-plane pending mark makes this belt-and-suspenders.
 
 ## The catalog hash
@@ -509,7 +509,7 @@ endpoint, same `x-pm-secret-token`), owned by a config-side client in
 
 ## Editor, table-detail, temp overlay
 
-- The editor session is just another connection. It already holds one backend
+- The editor session is just another connection. It already holds one target-DB
   connection per session (`RunExecService.openSession` / one `RunExec` stream).
   `OpenRunChannel` carries `connection_id` + `on_open`; the proxy fetches the
   session's schemas before the first `RunQuery`; editor DDL/CALL gets the same
@@ -552,7 +552,7 @@ endpoint, same `x-pm-secret-token`), owned by a config-side client in
   both holding `accounts`; an in-tx `DROP app.accounts` is captured, then
   `COMMIT` / `Sync` / `ROLLBACK TO` reverts it; the held fragment still shows
   `app.accounts` gone, so `decideQuery` resolves bare `accounts` to
-  `public.accounts` (allowed) while the reverted backend binds the restored
+  `public.accounts` (allowed) while the reverted target DB binds the restored
   `app.accounts` → cleartext of `app.accounts`. Fail-closed stopgap: on any
   observed rollback / `Sync`-abort / savepoint-revert, force a `before_decide`
   re-check of the transaction-dirty schemas instead of trusting the held
@@ -560,10 +560,10 @@ endpoint, same `x-pm-secret-token`), owned by a config-side client in
 - MySQL temporary-table shadowing (mostly fail-closed). A
   `CREATE TEMPORARY TABLE` is invisible to `information_schema`, so a session
   temp shadowing a base-table name is not captured in the held fragment;
-  `decideQuery` resolves the bare name to the base table while the backend binds
-  the temp. Mostly fail-closed in practice (temp creation is a write gated by
-  the write-references-masked deny; shape-mismatched reads against the temp tend
-  to error). MySQL has no `pg_temp`-style overlay
+  `decideQuery` resolves the bare name to the base table while the target DB
+  binds the temp. Mostly fail-closed in practice (temp creation is a write gated
+  by the write-references-masked deny; shape-mismatched reads against the temp
+  tend to error). MySQL has no `pg_temp`-style overlay
   (`SupportsTempOverlay() == false`).
 - PostgreSQL without `pgcrypto` (weakened schema-hash collision-resistance).
   Where `pgcrypto` is absent the schema hash falls back to core `md5()` rather
@@ -587,7 +587,7 @@ endpoint, same `x-pm-secret-token`), owned by a config-side client in
   (row-limited Execute) defers its `after_statement` refetch to the next
   `CommandComplete` — niche for DDL (returns no rows) and backstopped by the
   pending mark. A held-connection probe that draws an `ErrorResponse` mid
-  extended-batch leaves the backend awaiting `Sync`, so the next probe blocks
+  extended-batch leaves the target DB awaiting `Sync`, so the next probe blocks
   until the read-idle timeout before failing closed — a latency amplification,
   not a leak; a `Sync`-to-resync removes it.
 

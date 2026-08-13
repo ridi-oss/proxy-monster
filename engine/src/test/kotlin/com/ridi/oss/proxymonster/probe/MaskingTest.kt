@@ -7,7 +7,7 @@ import kotlin.test.assertNull
 /** Deterministic masking shared by the control plane and the wire proxy — must not drift. */
 class MaskingTest {
     @Test fun `last_n reveals only the final four`() {
-        assertEquals("**********4567", Masking.apply("900101-1234567", "LAST_N"))
+        assertEquals("*******4320", Masking.apply("987-65-4320", "LAST_N"))
     }
 
     @Test fun `last_n on short values masks entirely`() {

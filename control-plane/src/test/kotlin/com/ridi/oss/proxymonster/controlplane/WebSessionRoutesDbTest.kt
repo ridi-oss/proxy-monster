@@ -149,7 +149,7 @@ class WebSessionRoutesDbTest {
             module(config, core)
             routing {
                 serverGet("/test/protected") {
-                    if (!call.requireApi(config.copy(authDebug = false))) return@serverGet
+                    call.requireApi() ?: return@serverGet
                     call.respond(HttpStatusCode.OK)
                 }
             }
@@ -388,7 +388,7 @@ class WebSessionRoutesDbTest {
             module(config, ControlPlaneCore(dataSource))
             routing {
                 serverGet("/test/protected") {
-                    if (!call.requireApi(config.copy(authDebug = false))) return@serverGet
+                    call.requireApi() ?: return@serverGet
                     call.respond(HttpStatusCode.OK)
                 }
             }
@@ -435,7 +435,7 @@ class WebSessionRoutesDbTest {
             module(config, ControlPlaneCore(dataSource))
             routing {
                 serverGet("/api/test/protected") {
-                    if (!call.requireApi(config.copy(authDebug = false))) return@serverGet
+                    call.requireApi() ?: return@serverGet
                     call.respond(HttpStatusCode.OK)
                 }
             }

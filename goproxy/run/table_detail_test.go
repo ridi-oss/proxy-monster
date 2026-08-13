@@ -103,12 +103,12 @@ func tableDetailRun(
 	tableDetailClient *cp.Client,
 	tableDetailFake *tableDetailFakeCP,
 	provider spi.Provider,
-	tableDetailBackend spi.BackendTarget,
+	tableDetailTargetDb spi.TargetDb,
 	tableDetailSessionID, schema, table string,
 ) *pb.ProxyTableDetailMsg {
 	t.Helper()
 	tableDetailFake.tableDetailExpect(tableDetailSessionID)
-	run.NewTableDetailRunner(tableDetailClient, tableDetailBackend, provider).Run(tableDetailSessionID, schema, table)
+	run.NewTableDetailRunner(tableDetailClient, tableDetailTargetDb, provider).Run(tableDetailSessionID, schema, table)
 	select {
 	case tableDetailObservation := <-tableDetailFake.observed:
 		if tableDetailObservation.err != nil {
@@ -124,13 +124,13 @@ func tableDetailRun(
 	}
 }
 
-func tableDetailBackend(tableDetailDBBackend dbtest.Backend) spi.BackendTarget {
-	return spi.BackendTarget{
-		Host:     tableDetailDBBackend.Host,
-		Port:     tableDetailDBBackend.Port,
-		Db:       tableDetailDBBackend.DB,
-		User:     tableDetailDBBackend.User,
-		Password: tableDetailDBBackend.Password,
+func tableDetailTargetDb(tableDetailDBTargetDb dbtest.TargetDb) spi.TargetDb {
+	return spi.TargetDb{
+		Host:     tableDetailDBTargetDb.Host,
+		Port:     tableDetailDBTargetDb.Port,
+		Db:       tableDetailDBTargetDb.DB,
+		User:     tableDetailDBTargetDb.User,
+		Password: tableDetailDBTargetDb.Password,
 	}
 }
 
@@ -253,8 +253,8 @@ func tableDetailAssertSeededTablesExist(t *testing.T, tableDetailSQLDB *sql.DB, 
 }
 
 func TestTableDetailMySQL(t *testing.T) {
-	tableDetailDBBackend := dbtest.MySQL(t)
-	tableDetailSQLDB := dbtest.OpenMySQL(t, tableDetailDBBackend.DB)
+	tableDetailDBTargetDb := dbtest.MySQL(t)
+	tableDetailSQLDB := dbtest.OpenMySQL(t, tableDetailDBTargetDb.DB)
 	tableDetailExec(t, tableDetailSQLDB, `
 DROP TABLE IF EXISTS pm_tdetail_orders;
 DROP TABLE IF EXISTS pm_tdetail_users;
@@ -282,15 +282,15 @@ CREATE TABLE pm_tdetail_plain (
 ) ENGINE=InnoDB;`)
 
 	tableDetailClient, tableDetailFake := tableDetailStartFakeCP(t)
-	tableDetailTarget := tableDetailBackend(tableDetailDBBackend)
+	tableDetailTarget := tableDetailTargetDb(tableDetailDBTargetDb)
 
 	tableDetailUsersPayload := tableDetailRequireResult(t, tableDetailRun(
 		t, tableDetailClient, tableDetailFake, mustProvider(t, engine.MySQL), tableDetailTarget,
 		"pm_tdetail_mysql_users", "public", "pm_tdetail_users",
 	))
 	tableDetailUsers, tableDetailUsersTop := tableDetailDecode(t, tableDetailUsersPayload)
-	if tableDetailUsers.Schema != tableDetailDBBackend.DB || tableDetailUsers.Table != "pm_tdetail_users" {
-		t.Fatalf("MySQL public selector resolved to %s.%s, want %s.pm_tdetail_users", tableDetailUsers.Schema, tableDetailUsers.Table, tableDetailDBBackend.DB)
+	if tableDetailUsers.Schema != tableDetailDBTargetDb.DB || tableDetailUsers.Table != "pm_tdetail_users" {
+		t.Fatalf("MySQL public selector resolved to %s.%s, want %s.pm_tdetail_users", tableDetailUsers.Schema, tableDetailUsers.Table, tableDetailDBTargetDb.DB)
 	}
 	tableDetailAssertColumns(t, tableDetailUsers, tableDetailUsersTop, map[string]struct {
 		dataType string
@@ -305,7 +305,7 @@ CREATE TABLE pm_tdetail_plain (
 
 	tableDetailOrdersPayload := tableDetailRequireResult(t, tableDetailRun(
 		t, tableDetailClient, tableDetailFake, mustProvider(t, engine.MySQL), tableDetailTarget,
-		"pm_tdetail_mysql_orders", tableDetailDBBackend.DB, "pm_tdetail_orders",
+		"pm_tdetail_mysql_orders", tableDetailDBTargetDb.DB, "pm_tdetail_orders",
 	))
 	tableDetailOrders, _ := tableDetailDecode(t, tableDetailOrdersPayload)
 	tableDetailAssertRelation(t, tableDetailOrders.ForeignKeys, "pm_tdetail_orders_user_fk", "pm_tdetail_orders", "pm_tdetail_users")
@@ -335,13 +335,13 @@ CREATE TABLE pm_tdetail_plain (
 	}
 	tableDetailAssertSeededTablesExist(t, tableDetailSQLDB,
 		"SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = ? AND table_name IN (?, ?, ?)",
-		tableDetailDBBackend.DB, "pm_tdetail_users", "pm_tdetail_orders", "pm_tdetail_plain",
+		tableDetailDBTargetDb.DB, "pm_tdetail_users", "pm_tdetail_orders", "pm_tdetail_plain",
 	)
 }
 
 func TestTableDetailPostgres(t *testing.T) {
-	tableDetailDBBackend := dbtest.Postgres(t)
-	tableDetailSQLDB := dbtest.OpenPostgres(t, tableDetailDBBackend.DB)
+	tableDetailDBTargetDb := dbtest.Postgres(t)
+	tableDetailSQLDB := dbtest.OpenPostgres(t, tableDetailDBTargetDb.DB)
 	tableDetailExec(t, tableDetailSQLDB, `
 DROP SCHEMA IF EXISTS pm_tdetail_it CASCADE;
 CREATE SCHEMA pm_tdetail_it;
@@ -368,7 +368,7 @@ CREATE TABLE pm_tdetail_it.pm_tdetail_plain (
 );`)
 
 	tableDetailClient, tableDetailFake := tableDetailStartFakeCP(t)
-	tableDetailTarget := tableDetailBackend(tableDetailDBBackend)
+	tableDetailTarget := tableDetailTargetDb(tableDetailDBTargetDb)
 
 	tableDetailUsersPayload := tableDetailRequireResult(t, tableDetailRun(
 		t, tableDetailClient, tableDetailFake, mustProvider(t, engine.Postgres), tableDetailTarget,

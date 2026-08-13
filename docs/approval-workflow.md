@@ -26,7 +26,7 @@ task exists but no rows.
   separate requests. `source_decision_id` is the denied audit event a
   _from-denied_ request was raised from (null for a proactive compose).
 - Role R (elevation unit) — an existing RBAC role whose grants let Q return what
-  the requester needs (e.g. `rrn` cleartext). Found by role discovery, not typed
+  the requester needs (e.g. `ssn` cleartext). Found by role discovery, not typed
   by hand.
 - Result — the executed rows, stored encrypted with short retention
   (`QueryResultStore.RESULT_RETENTION_SEC` = 24 h). It holds R's
@@ -42,7 +42,7 @@ task exists but no rows.
 2. Role discovery. `POST /api/approvals/discover-roles` evaluates Q under
    candidate roles (preview via `decideQuery` on the `editor` channel in the
    requester's HTTP context) and offers the roles under which Q is not denied
-   _and_ that return more than the requester's own roles (e.g. `rrn` unmasked).
+   _and_ that return more than the requester's own roles (e.g. `ssn` unmasked).
    The requester picks R. Role-set parity with execute is `assumeRoles={R}`
    alone; channel/context can still diverge at run (execute uses
    `workflow-executor` in the approver's context).
@@ -72,25 +72,30 @@ task exists but no rows.
 A new request must carry R — the create route rejects a null `roleId`
 (`approval.role_required`) — so every approval is execute-under-R + view-as-R.
 
+An approver is told a request is waiting, out of band
+([notifications.md](./notifications.md)) — including the reverse lookup step 3's
+per-caller eligibility check does not provide. They can also decide from there,
+on the `slack` channel, which a policy can scope or forbid.
+
 ### Worked example
 
-Column config: `users.rrn` is `tag:pii`. Role `pii-reader`: `read.masked` pii
+Column config: `users.ssn` is `tag:pii`. Role `pii-reader`: `read.masked` pii
 anywhere, `read.unmasked` pii `when trusted-network`. Requester `alice` holds
-`analyst` (masks rrn); she needs rrn.
+`analyst` (masks ssn); she needs ssn.
 
-- Compose: `SELECT id, name, rrn FROM users`.
-- Discovery: under `analyst`, rrn masks; under `pii-reader`, rrn unmasks from a
+- Compose: `SELECT id, name, ssn FROM users`.
+- Discovery: under `analyst`, ssn masks; under `pii-reader`, ssn unmasks from a
   망분리 node. Offer `pii-reader`; alice picks it.
 - Approve: approvers of `pii-reader` (Cedar). `bob` approves (`bob ≠ alice`).
 - Execute: bob runs it under `pii-reader`, off-망분리. Off-network, R's verdict
-  for `rrn` is MASK, so the encrypted stored result holds `rrn` masked — the
+  for `ssn` is MASK, so the encrypted stored result holds `ssn` masked — the
   run's own execution-enforced output, not a form widened and stashed for later
   viewing.
 - View: Cedar permits alice to `task.assume` because she is the requester, so
-  she is now exactly R. But the stored `rrn` is masked, so she sees `rrn` masked
+  she is now exactly R. But the stored `ssn` is masked, so she sees `ssn` masked
   (`last4`) from both her desk and a 망분리 PC — a view re-decides under `{R}`
   and can mask further, never reveal what the execution masked. To deliver alice
-  `rrn` cleartext, the run itself must execute from a 망분리 node (then storage
+  `ssn` cleartext, the run itself must execute from a 망분리 node (then storage
   holds it cleartext and an open-net view narrows it back to masked). bob (the
   approver) and a `system:auditor` may assume R too; a metadata-only admin may
   not.
@@ -124,7 +129,7 @@ permit(principal in Role::"pii-reader", action == Action::"result.read.unmasked"
 Because R's grants are re-evaluated live on every view, a view can mask further
 than the stored form where the viewer's context is more restrictive — and
 revoking R re-masks an un-purged result on the next view — but it can never
-reveal a column the execution masked. So `rrn` reads cleartext at view only if
+reveal a column the execution masked. So `ssn` reads cleartext at view only if
 the run itself executed in an unmasking context (e.g. from 망분리).
 
 A single "meta" policy cannot do this. One policy can gate on approval +

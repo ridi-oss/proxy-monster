@@ -47,16 +47,16 @@ class SchemaKeyWiringTest {
     @Test
     fun `an emitted key absent from the catalog cannot fall back to a same-named table in another schema`() {
         val namespace = pbNamespace { catalog = "acme"; searchPath.add("public") }
-        val catalog = listOf(catalogColumn(schema = "public", table = "users", column = "rrn"))
+        val catalog = listOf(catalogColumn(schema = "public", table = "users", column = "ssn"))
         val specs = specsFor(catalog)
         val index = buildCatalogColumnIndex(catalog, specs, analyzerFor(namespace, specs, postgresEngineConfig))
 
         val denied = assertIs<CatalogCoverage.Denied>(
-            catalogCoverage(index, setOf("acme.analytics.users.rrn")),
+            catalogCoverage(index, setOf("acme.analytics.users.ssn")),
         )
 
         assertContains(denied.reason, "absent from catalog")
-        assertIs<CatalogCoverage.Covered>(catalogCoverage(index, setOf("acme.public.users.rrn")))
+        assertIs<CatalogCoverage.Covered>(catalogCoverage(index, setOf("acme.public.users.ssn")))
     }
 
     @Test
@@ -70,8 +70,8 @@ class SchemaKeyWiringTest {
             searchPath.add("app")
         }
         val catalog = listOf(
-            catalogColumn(catalog = "def", schema = "app", table = "users", column = "rrn"),
-            catalogColumn(catalog = "def", schema = "app", table = "users", column = "rrn"),
+            catalogColumn(catalog = "def", schema = "app", table = "users", column = "ssn"),
+            catalogColumn(catalog = "def", schema = "app", table = "users", column = "ssn"),
         )
 
         assertFailsWith<IllegalArgumentException> {
@@ -83,8 +83,8 @@ class SchemaKeyWiringTest {
     fun `dot-containing identifiers that render to one key are rejected rather than parsed`() {
         val namespace = pbNamespace { catalog = "acme"; searchPath.add("public") }
         val catalog = listOf(
-            catalogColumn(schema = "public", table = "users.archive", column = "rrn"),
-            catalogColumn(schema = "public.users", table = "archive", column = "rrn"),
+            catalogColumn(schema = "public", table = "users.archive", column = "ssn"),
+            catalogColumn(schema = "public.users", table = "archive", column = "ssn"),
         )
 
         assertFailsWith<IllegalArgumentException> {

@@ -1,5 +1,6 @@
 package com.ridi.oss.proxymonster.controlplane.grpc
 
+import com.ridi.oss.proxymonster.controlplane.constantTimeEquals
 import com.ridi.oss.proxymonster.grpc.WireMetadata
 import io.grpc.Contexts
 import io.grpc.Metadata
@@ -7,7 +8,6 @@ import io.grpc.ServerCall
 import io.grpc.ServerCallHandler
 import io.grpc.ServerInterceptor
 import io.grpc.Status
-import java.security.MessageDigest
 
 /**
  * Gate on the proxy's transport secret (`x-pm-secret-token`, docs/datasource-registration.md).
@@ -33,10 +33,5 @@ class SecretTokenInterceptor(private val expected: String?) : ServerInterceptor 
         }
         val ctx = io.grpc.Context.current().withValue(WireMetadata.SECRET_TOKEN_CTX, presented)
         return Contexts.interceptCall(ctx, call, headers, next)
-    }
-
-    private fun constantTimeEquals(a: String?, b: String): Boolean {
-        if (a == null) return false
-        return MessageDigest.isEqual(a.toByteArray(Charsets.UTF_8), b.toByteArray(Charsets.UTF_8))
     }
 }

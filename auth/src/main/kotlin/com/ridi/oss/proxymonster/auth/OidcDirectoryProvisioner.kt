@@ -68,7 +68,7 @@ class OidcDirectoryProvisioner(private val dataSource: DataSource) {
     private fun Connection.ensureGroup(name: String): Long =
         prepareStatement(
             """INSERT INTO app_group (name, source) VALUES (?, 'OIDC')
-               ON CONFLICT (name) DO UPDATE SET name = EXCLUDED.name
+               ON CONFLICT (name) WHERE deleted_at IS NULL DO UPDATE SET name = EXCLUDED.name
                RETURNING id""",
         ).use { statement ->
             statement.setString(1, name)

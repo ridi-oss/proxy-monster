@@ -61,14 +61,23 @@ data class Datasource(
     // The PEM certificate chain to trust for this datasource's proxy, leaf first, as the proxy advertised it
     // at registration. pmon uses it as the root pool for its upstream hop, with advertiseAddr checked against
     // it; the browser downloads the same bytes from {id}/wire-cert for psql/mysql/DataGrip. Null when the
-    // proxy has no wire TLS. Public material — this is what the proxy already presents to every TLS client —
-    // and a few KB on a poll no client makes hot, which is cheaper than a second round trip per datasource.
+    // proxy has no wire TLS. Not secret in itself — the proxy presents it to every TLS client — but it is
+    // still connection material, so it rides only on rows the caller may datasource.connect to.
     val advertiseCertChain: String? = null,
     // Whether this datasource's proxy serves client-facing TLS — a separate fact from the chain above, since a
     // proxy may serve a publicly-trusted certificate and publish nothing. A client reads this to know a
     // plaintext greeting must be refused; false means plaintext.
     val advertiseWireTls: Boolean = false,
-)
+) {
+    /**
+     * The same row with everything a caller would need to reach the proxy removed — the advertised address
+     * and certificate chain, and the advisory upstream coordinates. What survives is identity (name, engine,
+     * tags): enough to name the datasource in a JIT access request, not enough to dial it.
+     */
+    fun withoutConnectionMaterial(): Datasource = copy(
+        host = "", port = 0, dbName = "", advertiseAddr = null, advertiseCertChain = null,
+    )
+}
 
 // Admin create/update payload. This is OPTIONAL pre-provisioning only — a way to seed a row
 // (name + advisory connection fields) before its proxy first attaches; the proxy's Register is the
@@ -757,13 +766,17 @@ class DatasourceStore(internal val dataSource: DataSource) {
 
 // ---- Routes ------------------------------------------------------------------------------
 
-/** Reject if no session and not in auth-debug mode (mirrors the /api/audit guard). */
-suspend fun ApplicationCall.requireApi(config: Config): Boolean {
-    if (!config.authDebug && userSession() == null) {
-        respond(HttpStatusCode.Unauthorized, ApiError("common.unauthenticated"))
-        return false
-    }
-    return true
+/**
+ * Returns the caller principal, or responds 401 and returns null. It hands back the identity so the gate and
+ * the name come from one call, and a handler never holds a principal the gate did not approve.
+ *
+ * A session is the only way in. `PM_AUTH_DEBUG` is an authentication setting — it adds the `/auth/debug`
+ * login, which mints a real session row with real role assignments — so every mode reaches this the same way.
+ */
+suspend fun ApplicationCall.requireApi(): String? {
+    userSession()?.principal?.let { return it }
+    respond(HttpStatusCode.Unauthorized, ApiError("common.unauthenticated"))
+    return null
 }
 
 suspend fun ApplicationCall.idParam(): Long? = parameters["id"]?.toLongOrNull()
@@ -804,15 +817,14 @@ private fun ApplicationCall.bearerWirePrincipal(tokenStore: TokenStore, userGrou
 }
 
 /**
- * Authenticate a read-only API call by web session, else (interim option a) a native-wire Bearer token, else
- * authDebug. Returns the caller principal, or responds 401 and returns null. Mirrors [requireApi] but adds
- * the Bearer path so the `pmon` daemon can discover datasources without a browser cookie. PRIVATE by design:
- * the Bearer path is discovery-only, so no other route file can reach it (compiler-enforced scope).
+ * Authenticate a read-only API call by web session, else (interim option a) a native-wire Bearer token.
+ * Returns the caller principal, or responds 401 and returns null. Mirrors [requireApi] but adds the Bearer
+ * path so the `pmon` daemon can discover datasources without a browser cookie. PRIVATE by design: the Bearer
+ * path is discovery-only, so no other route file can reach it (compiler-enforced scope).
  */
 private suspend fun ApplicationCall.requireApiOrBearer(config: Config, tokenStore: TokenStore, userGroupStore: UserGroupStore): String? {
     userSession()?.principal?.let { return it }
     bearerWirePrincipal(tokenStore, userGroupStore)?.let { return it }
-    if (config.authDebug) return "debug-user"
     respond(HttpStatusCode.Unauthorized, ApiError("common.unauthenticated"))
     return null
 }
@@ -833,9 +845,10 @@ fun Route.datasourceRoutes(
 ) {
     // A caller may connect to (and so browse the catalog of) a datasource iff Cedar grants
     // datasource.connect on it — the same name-keyed decision, with derived context tags, the proxy runs on
-    // connect. authDebug sees everything, matching every other route.
+    // connect. No authDebug arm: PM_AUTH_DEBUG is an AUTHENTICATION bypass, and `/auth/debug` persists its
+    // claimed roles as real assignments so Cedar can evaluate them, so short-circuiting the decision here
+    // would only hide the policy dev is configured to exercise.
     fun mayConnect(call: ApplicationCall, principal: String, ds: Datasource): Boolean {
-        if (config.authDebug) return true
         val roles = roleResolver.resolve(principal)
         val raw = call.httpAuthzContext(config)
         val tags = authz.resolveContextTags(principal, roles, ds.name, raw, ds.tags)
@@ -844,23 +857,32 @@ fun Route.datasourceRoutes(
         ) !is AuthzDecision.Deny
     }
 
-    // The datasource list + detail stay open to every authenticated principal: the SQL editor's picker,
+    // The datasource LIST stays open to every authenticated principal: the SQL editor's picker,
     // JIT-request compose (which must show datasources you CANNOT yet connect to, precisely so they can be
-    // requested), and token generation all need it — not an admin action. `?connectable=true` narrows the
-    // list to datasources the caller can connect to (for the query picker); the CATALOG itself is
-    // connect-gated below. Only mutation/config routes require admin.datasources.
+    // requested), and token generation all need it — not an admin action. `?connectable=true` narrows it to
+    // datasources the caller can connect to (for the query picker), and a row the caller cannot connect to
+    // is served without its connection material. Everything keyed to ONE datasource — the row, its catalog,
+    // its wire cert, its table detail — is connect-gated below. Only mutation/config routes require
+    // admin.datasources.
     get("/api/datasources") {
         // Discovery route: the pmon daemon reads this (with a Bearer wire token) to learn each datasource's
         // engine + advertised proxy address, so it can open a local broker port per datasource.
         val principal = call.requireApiOrBearer(config, tokenStore, userGroupStore) ?: return@get
         val all = management.listDatasources()
         val connectableOnly = call.request.queryParameters["connectable"].equals("true", ignoreCase = true)
-        call.respond(if (connectableOnly) all.filter { mayConnect(call, principal, it) } else all)
+        // The list stays unfiltered by default — JIT-request compose must show datasources you cannot yet
+        // connect to, precisely so they can be requested — but a row you may not connect to is stripped of
+        // its connection material, the same decision {id} and {id}/wire-cert make. A row this list would
+        // answer more fully than {id} does is a bypass of {id}.
+        val visible = if (connectableOnly) all.filter { mayConnect(call, principal, it) } else {
+            all.map { if (mayConnect(call, principal, it)) it else it.withoutConnectionMaterial() }
+        }
+        call.respond(visible)
     }
     // Which datasources currently have a proxy attached (an open Events stream) — the admin liveness
     // view. Read-only; returns the set of attached datasource names.
     get("/api/datasources/live") {
-        if (!call.requireApi(config)) return@get
+        call.requireApi() ?: return@get
         call.respond(eventsHub.attached())
     }
     // Admin "re-introspect now": push a RefreshCatalog down the datasource's open Events stream(s).
@@ -890,9 +912,17 @@ fun Route.datasourceRoutes(
         call.respond(HttpStatusCode.Created, management.createDatasource(input.copy(engine = engine.wireName), call.auditActor(config)))
     }
     get("/api/datasources/{id}") {
-        if (!call.requireApi(config)) return@get
+        // Connect-gated, unlike the list: a single row carries advertiseAddr and advertiseCertChain, the
+        // same trust material {id}/wire-cert serves under datasource.connect. Leaving this on
+        // authentication alone would make that gate decorative.
+        val principal = call.requireApiOrBearer(config, tokenStore, userGroupStore) ?: return@get
         val id = call.idParam() ?: return@get call.respond(HttpStatusCode.BadRequest, ApiError("common.bad_id"))
-        store.get(id)?.let { call.respond(it) } ?: call.respond(HttpStatusCode.NotFound, ApiError("common.not_found", mapOf("resource" to "datasource")))
+        val datasource = store.get(id)
+            ?: return@get call.respond(HttpStatusCode.NotFound, ApiError("common.not_found", mapOf("resource" to "datasource")))
+        if (!mayConnect(call, principal, datasource)) {
+            return@get call.respond(HttpStatusCode.Forbidden, ApiError("datasource.not_connectable"))
+        }
+        call.respond(datasource)
     }
     put("/api/datasources/{id}") {
         if (!call.requireAdmin(config, authz, AuthzAction.ADMIN_DATASOURCES)) return@put
@@ -929,10 +959,9 @@ fun Route.datasourceRoutes(
         call.respond(store.test(ds, management.getDatasourceLiveness(ds.name).attached))
     }
     get("/api/datasources/{id}/catalog") {
-        // requireApiOrBearer, and the principal it RETURNS: a wire-token caller has no session, so resolving
-        // the principal from the session alone would fall through to the literal "debug-user" and run the
-        // Cedar check against a synthetic identity. The helper hands back whichever identity authenticated,
-        // and only answers "debug-user" when PM_AUTH_DEBUG actually says so.
+        // requireApiOrBearer, and the principal it RETURNS: a wire-token caller has no session, so reading
+        // the principal from the session alone would decide against nobody. The helper hands back whichever
+        // identity authenticated, session or token.
         val principal = call.requireApiOrBearer(config, tokenStore, userGroupStore) ?: return@get
         val id = call.idParam() ?: return@get call.respond(HttpStatusCode.BadRequest, ApiError("common.bad_id"))
         val datasource = store.get(id)
@@ -962,7 +991,7 @@ fun Route.datasourceRoutes(
         // Same gate and the same principal resolution as {id}/catalog: a browser session or a wire-token
         // Bearer. The console is today's only caller, since the chain also rides on the datasource list pmon
         // already polls — but a Bearer client asking for the certificate directly is a reasonable thing to do,
-        // and the alternative was a 401 for it plus a "debug-user" fallback in the authorization check.
+        // and session-only would answer it 401.
         val principal = call.requireApiOrBearer(config, tokenStore, userGroupStore) ?: return@get
         val id = call.idParam() ?: return@get call.respond(HttpStatusCode.BadRequest, ApiError("common.bad_id"))
         val datasource = store.get(id)
@@ -991,7 +1020,11 @@ fun Route.datasourceRoutes(
         call.respondText(chain, ContentType.parse("application/x-pem-file"))
     }
     get("/api/datasources/{id}/table-detail") {
-        if (!call.requireAdmin(config, authz, AuthzAction.ADMIN_DATASOURCES)) return@get
+        // Same authority as {id}/catalog, and for the same reason: this is the physical shape of a table the
+        // caller may already browse, so gating it on the instance-wide admin action would hide index/FK/size
+        // metadata from exactly the people entitled to query the table. The per-column classifications it
+        // overlays are the ones {id}/catalog already serves under this gate.
+        val principal = call.requireApiOrBearer(config, tokenStore, userGroupStore) ?: return@get
         val id = call.idParam()?.takeIf { it > 0 }
             ?: return@get call.respond(HttpStatusCode.BadRequest, ApiError("common.bad_id"))
         val schema = call.request.queryParameters["schema"]
@@ -1002,6 +1035,9 @@ fun Route.datasourceRoutes(
         }
         val datasource = store.get(id)
             ?: return@get call.respond(HttpStatusCode.NotFound, ApiError("common.not_found", mapOf("resource" to "datasource")))
+        if (!mayConnect(call, principal, datasource)) {
+            return@get call.respond(HttpStatusCode.Forbidden, ApiError("datasource.not_connectable"))
+        }
         try {
             call.respond(management.getTableDetail(datasource.name, schema, table))
         } catch (e: ManagementException) {

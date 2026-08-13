@@ -22,7 +22,7 @@ import (
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
 )
 
-// Dialect is the typed datasource engine — the backend SQL dialect and the registration identity are the
+// Dialect is the typed datasource engine — the target-DB SQL dialect and the registration identity are the
 // same fact. It is the single home for every "is this MySQL or Postgres?" decision, so nothing else
 // compares an engine string literal. MySQL is the priority engine (iota 0, listed first everywhere).
 type Dialect int
@@ -138,7 +138,7 @@ func (d Dialect) DefaultProxyPort() int {
 	}
 }
 
-// DefaultTargetPort is the proxy's default backend port for this dialect when PM_TARGET_PORT is unset —
+// DefaultTargetPort is the proxy's default target DB port for this dialect when PM_TARGET_PORT is unset —
 // MySQL 3307, Postgres 5433 (an unrecognized dialect falls back to the MySQL default; boot rejects it
 // before the port is used).
 func (d Dialect) DefaultTargetPort() int {
@@ -212,15 +212,15 @@ type Decision struct {
 	AfterStatement      []*pb.Refetch
 	Generation          uint64
 	// SanitizeDiagnostics is the control plane's per-decision diagnostic-redaction flag. When set,
-	// the proxy strips this statement's backend error/notice messages down to code + severity. See
+	// the proxy strips this statement's target-DB error/notice messages down to code + severity. See
 	// docs/diagnostic-redaction.md.
 	SanitizeDiagnostics bool
 }
 
-// RedactedDiagnosticMessage is the single generic string that replaces every backend diagnostic message on
+// RedactedDiagnosticMessage is the single generic string that replaces every target-DB diagnostic message on
 // a diagnostic-redacted connection. It carries no stored value; the proxy keeps only the
 // machine-readable code + severity beside it. See docs/diagnostic-redaction.md.
-const RedactedDiagnosticMessage = "backend diagnostic details are redacted on this connection (proxy-monster)"
+const RedactedDiagnosticMessage = "target-DB diagnostic details are redacted on this connection (proxy-monster)"
 
 // EnfActionName reduces a proto EnfAction to Decision.Action's string vocabulary, fail-closed: any
 // value that is not ALLOW or MASK — including ENF_ACTION_UNSPECIFIED and the generated UNRECOGNIZED —
@@ -269,7 +269,7 @@ type TempColumn struct {
 }
 
 // DecideRequest is the complete per-query control-plane request plus the callback used to satisfy
-// before_decide commands on the held backend connection.
+// before_decide commands on the held target-DB connection.
 type DecideRequest struct {
 	Token      string
 	SQL        string
@@ -423,17 +423,17 @@ func NewQueryEngine(db Db, decider Decider) *QueryEngine {
 }
 
 // MarkNamespaceDirty invalidates the cached namespace. The protocol calls this when an authoritative
-// backend signal says the namespace may have changed but does not include its new value, never by
+// target DB signal says the namespace may have changed but does not include its new value, never by
 // classifying SQL text.
 func (e *QueryEngine) MarkNamespaceDirty() { e.nsDirty = true }
 
-// SanitizeDiagnostics reports whether the CURRENT statement's backend diagnostics must be redacted
-// — the value from the most recent decision, so the protocol can gate each backend error/notice forward on
+// SanitizeDiagnostics reports whether the CURRENT statement's target-DB diagnostics must be redacted
+// — the value from the most recent decision, so the protocol can gate each target-DB error/notice forward on
 // it. Per-decision, not latched (the control plane decides it fresh each Decide). See
 // docs/diagnostic-redaction.md.
 func (e *QueryEngine) SanitizeDiagnostics() bool { return e.sanitizeDiag }
 
-// SetNamespace replaces the cached namespace from an authoritative backend protocol signal. It copies
+// SetNamespace replaces the cached namespace from an authoritative target DB protocol signal. It copies
 // namespace so a caller cannot mutate the authorization context after the signal is consumed.
 func (e *QueryEngine) SetNamespace(namespace []string) {
 	e.namespace = append([]string{}, namespace...)
@@ -452,7 +452,7 @@ type NamespaceProbe struct {
 }
 
 // AuthzInput is one statement to authorize plus the probe callbacks the protocol wires up. The Db
-// supplies the probe SQL; the protocol runs it on the backend and parses the result. The engine calls
+// supplies the probe SQL; the protocol runs it on the target DB and parses the result. The engine calls
 // ProbeNamespace only when its cache is dirty, and ProbeTempColumns only when the Db supports the overlay.
 type AuthzInput struct {
 	SQL              string
@@ -500,7 +500,7 @@ func (e *QueryEngine) Authorize(in AuthzInput) Verdict {
 	if out.IsErr() {
 		return Fail{Message: out.Err}
 	}
-	// The control plane decides per statement whether this statement's backend diagnostics are
+	// The control plane decides per statement whether this statement's target-DB diagnostics are
 	// redacted (production posture + engine leak-on-ALLOW capability + the verdict action). Applied
 	// per-decision, NOT latched: a MySQL ALLOW after a MASK is intentionally left un-redacted, because an
 	// ALLOW MySQL query cannot leak a protected value through a diagnostic (docs/diagnostic-redaction.md).

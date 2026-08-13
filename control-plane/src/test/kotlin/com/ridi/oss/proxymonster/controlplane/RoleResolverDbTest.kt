@@ -10,14 +10,16 @@ import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 /**
- * DB-backed tests for [RoleResolver] (docs/authz-model.md, Layer 1 — identity, no Cedar):
- * proves the effective role set is the real, server-side union of a direct `principal_role`
- * assignment, a group-derived role, and an active JIT grant — and that it is fail-closed: a
- * revoked grant drops out, and an unknown principal resolves to the empty set (never invents a
- * role from thin air; a client-asserted `baseRoles` is never honored).
+ * DB-backed tests for [RoleResolver] (docs/authz-model.md, Layer 1 — identity, no Cedar).
+ *
+ * [RoleResolver.resolve] is the real, server-side union of a direct `principal_role` assignment, a
+ * group-derived role, and an active JIT grant — fail-closed: a revoked grant drops out and an unknown
+ * principal resolves to the empty set (a client-asserted `baseRoles` is never honored).
+ * [RoleResolver.listActivePrincipals] projects that same union to "who exists" for notification routing —
+ * deduped and sorted, with deprovisioning and grant expiry/revocation dropping a principal.
  */
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
-class ResolveRolesTest {
+class RoleResolverDbTest {
     private lateinit var policyStore: PolicyStore
     private lateinit var userGroupStore: UserGroupStore
     private lateinit var accessStore: AccessStore
@@ -32,8 +34,7 @@ class ResolveRolesTest {
     @BeforeAll
     fun setup() {
         requireDockerOrSkip()
-        val dbName = SharedPostgres.freshDatabase("pm_resolve_roles")
-        val ds = SharedPostgres.hikari(dbName)
+        val ds = SharedPostgres.hikari(SharedPostgres.freshDatabase("pm_role_resolver"))
         Flyway.configure().dataSource(ds).load().migrate()
         policyStore = PolicyStore(ds)
         userGroupStore = UserGroupStore(ds)
@@ -59,6 +60,8 @@ class ResolveRolesTest {
         val request = accessStore.createRequest(PRINCIPAL, AccessRequestInput(roleId = grantRole.id))
         accessStore.approve(request.id, durationSec = 3600, decidedBy = "approver@example.com")
     }
+
+    // ---- resolve: the effective role set ------------------------------------------------------
 
     @Test
     fun `resolve unions direct, group, and JIT grant roles`() {
@@ -92,6 +95,48 @@ class ResolveRolesTest {
     @Test
     fun `unknown principal resolves to the empty set (fail-closed)`() {
         assertEquals(emptySet(), roleResolver.resolve("nobody@example.com"))
+    }
+
+    // ---- listActivePrincipals: who exists -----------------------------------------------------
+
+    @Test
+    fun `listActivePrincipals enumerates every active identity source, once each and sorted`() {
+        createUser("active-user@example.com") // directory app_user, active
+        policyStore.createAssignment(RoleAssignmentInput("direct-only@example.com", directRole.id)) // principal_role, no app_user
+        approveGrant("grant-only@example.com", durationSec = 3600) // active JIT grant, no other source
+        createUser("multi@example.com") // present via all three sources — must appear exactly once
+        policyStore.createAssignment(RoleAssignmentInput("multi@example.com", directRole.id))
+        approveGrant("multi@example.com", durationSec = 3600)
+
+        createUser("inactive@example.com") // deactivated, though still role-holding
+        policyStore.createAssignment(RoleAssignmentInput("inactive@example.com", directRole.id))
+        userGroupStore.setUserActive("inactive@example.com", false)
+        approveGrant("revoked-only@example.com", durationSec = 3600) // sole source, then revoked
+        assertTrue(accessStore.revoke(accessStore.listGrants("revoked-only@example.com", activeOnly = true).first().id))
+        approveGrant("expired-only@example.com", durationSec = -3600) // sole source, already expired
+
+        val result = roleResolver.listActivePrincipals()
+
+        assertEquals(result.sorted(), result, "principals are returned sorted")
+        assertEquals(result.toSet().size, result.size, "a principal present via several sources appears once")
+        assertTrue(
+            result.containsAll(
+                listOf("active-user@example.com", "direct-only@example.com", "grant-only@example.com", "multi@example.com"),
+            ),
+            "every active identity source is enumerated; was: $result",
+        )
+        assertTrue(
+            result.none { it in setOf("inactive@example.com", "revoked-only@example.com", "expired-only@example.com") },
+            "a deprovisioned user and a revoked/expired grant are not active principals; was: $result",
+        )
+    }
+
+    private fun createUser(principal: String) =
+        userGroupStore.createUser(AppUserInput(principal = principal), tokenStore, accessStore, daemonSessionStore)
+
+    private fun approveGrant(principal: String, durationSec: Long) {
+        val req = accessStore.createRequest(principal, AccessRequestInput(roleId = grantRole.id))
+        accessStore.approve(req.id, durationSec = durationSec, decidedBy = "approver@example.com")
     }
 
     companion object {

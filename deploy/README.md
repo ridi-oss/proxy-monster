@@ -6,9 +6,9 @@ local, ECS Fargate, and EKS run steps — lives in [INSTALL.md](../INSTALL.md).
 
 ## Contents
 
-- `seed/target-seed-mysql.sql`, `seed/target-seed.sql` — sample backend schema
+- `seed/target-seed-mysql.sql`, `seed/target-seed.sql` — sample target-DB schema
   and seed data: a small OLTP schema (`users`, `orders`, `payments`,
-  `addresses`, ...) with realistic PII columns (`email`, `phone`, `name`, `rrn`,
+  `addresses`, ...) with realistic PII columns (`email`, `phone`, `name`, `ssn`,
   `card_number`, ...) to classify and mask against. The local compose stack
   bind-mounts them into the MySQL and Postgres sample targets; see
   [Datastores](../INSTALL.md#datastores).

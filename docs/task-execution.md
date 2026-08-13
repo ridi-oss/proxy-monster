@@ -75,7 +75,7 @@ request lifecycle, a human approver, and the encrypted result store.
 3. Run. Per statement, the proxy round-trips `Decide` → sfacts + Cedar under the
    relevant role set, against the live per-connection catalog → verdict + mask
    plan — then runs the statement and applies the masks.
-   - Wire: the native session's own backend connection; roles = caller's own;
+   - Wire: the native session's own target-DB connection; roles = caller's own;
      channel `wire`.
    - Editor: CP-driven `RunExec` on an editor session connection (or one-shot
      `/api/datasources/{id}/query`); roles = caller's own; channel `editor`.
@@ -108,7 +108,7 @@ by the per-statement `Decide`.
 | Create | — | — | `POST /api/approvals` → `PENDING` (requires `roleId`) |
 | Approval | — | — | the chosen approver approves or rejects (`task.approve`) |
 | `execute-as R` | the connecting principal's own roles | the caller's own roles (no elevation) | the elevation role set R |
-| Connection | the wire session's own backend connection | the editor session's held connection (or one-shot dial) | a new connection, dialed at run |
+| Connection | the wire session's own target-DB connection | the editor session's held connection (or one-shot dial) | a new connection, dialed at run |
 | Executor (runs it) | the connecting client (caller) | the caller | the approver of record |
 | Run | per-statement `Decide` → apply masks (streams to socket) | per-statement `Decide` via `RunExec` → apply masks | per-statement `Decide` via `RunExec` under `{R}` → apply masks |
 | Result | streams back on the socket | HTTP response rows | `save → query_result` ciphertext; view via `/api/approvals/{id}/result` |
@@ -184,7 +184,7 @@ connection is opened, under the relevant roles:
 - editor — when the editor session opens / one-shot query dials;
 - workflow — when the new connection is dialed at run.
 
-On DENY the connection is refused with no backend dial. `decideQuery` also
+On DENY the connection is refused with no target DB dial. `decideQuery` also
 re-checks `datasource.connect` ahead of each statement as a mid-session
 revocation guard, but the authoritative connect gate is at connection open.
 
@@ -204,7 +204,7 @@ revocation guard, but the authoritative connect gate is at connection open.
 - Cancel / abort. There is no `RunCancel` control message on the run channel
   today (`ControlRunMsg` is only `RunQuery` | `RunClose`). In-flight aborts use
   the proxy timeout watchdog: PostgreSQL `CancelRequest` (via the session's
-  `BackendKeyData`), MySQL `KILL QUERY <conn-id>`, without dropping the
+  `TargetDbKeyData`), MySQL `KILL QUERY <conn-id>`, without dropping the
   connection for a clean timeout path. A cancel is a control-plane-side
   terminalization: `POST /api/approvals/{id}/cancel` and
   `POST /api/editor/tasks/{taskId}/cancel` are `task.cancel`-gated, accept only
@@ -254,11 +254,11 @@ update.
 - Connection gate — `datasource.connect`, evaluated at connection open (not per
   statement, not at approval).
 - Execute gates — evaluated at run, per statement, under the effective roles,
-  via the sfacts contract: the statement-kind gates `sql.select`, `sql.insert`,
-  `sql.update`, `sql.delete`, `sql.ddl`; plus `sql.unanalyzable` (a statement
-  the analyzer cannot parse) and `sql.unmaskable` (a statement whose result
-  cannot be masked). Unanalyzable/unmaskable are statement kinds like the rest —
-  denied by default via Cedar, allowable by an admin policy.
+  via the sfacts contract: the statement-kind gate on `stmt.kind.<k>` (Cedar
+  maps it to its read/write/ddl/… category); plus `exception.unanalyzable` (a
+  statement the analyzer cannot parse) and `exception.unmaskable` (a statement
+  whose result cannot be masked). Unanalyzable/unmaskable are statement kinds
+  like the rest — denied by default via Cedar, allowable by an admin policy.
 - Result read — the per-column mask plan, evaluated as R (by whoever assumed R)
   in the reader's live context: `result.read.masked`, `result.read.unmasked`.
   Keyed to R, exercised by the assumer, never the viewer's own roles.

@@ -17,7 +17,7 @@ cargo install cedar-policy-cli --version 4.3.1   # matches the project's cedar-j
 - Assume-R works. The viewer holds role R (`pii-reader`), and R's own column
   grants decide each column: `result.read.masked` on `pii` from anywhere,
   `result.read.unmasked` on `pii` only
-  `when context.network_zones.contains("segregated")`. So `users.rrn` reads
+  `when context.network_zones.contains("segregated")`. So `users.ssn` reads
   masked from the open network and cleartext from a segregated node; a viewer
   holding no role is denied both.
 - A single "meta" policy leaks. One policy can gate on approval + requester but

@@ -86,16 +86,16 @@ Per statement, the analyzer emits `StatementFacts` and the control-plane walks
 it through Cedar:
 
 1. Parse + lineage (sqlglot-go). A statement the analyzer cannot safely resolve
-   is `resolved=false` → routes through the `sql.unanalyzable` Cedar gate
+   is `resolved=false` → routes through the `exception.unanalyzable` Cedar gate
    (fail-closed by default, grant-overridable).
 2. Required grants — the analyzer emits, per statement: the `sql.<kind>` grant;
    a `result.read` grant per output column (with a mask vs deny disposition); a
    `result.read` grant per scanned table with zero traced columns (closes the
    zero-column existence oracle); and function / utility grants for dangerous
    calls and session-critical commands.
-3. Cedar grant-walk — each `RequiredGrant` is a Cedar `authorize` verdict over
-   the principal's roles + resource tags + request context. A maskable column
-   deny → mask that output column; a non-maskable deny (a sensitive column in a
+3. Cedar grant-walk — each grant is a Cedar `authorize` verdict over the
+   principal's roles + resource tags + request context. A maskable column deny →
+   mask that output column; a non-maskable deny (a sensitive column in a
    predicate / join / aggregate / non-whitelisted derivation, where masking
    cannot preserve correctness) → DENY the whole statement. Session-privilege /
    lexer-mutation commands ride a `system:critical` Cedar forbid.
@@ -180,7 +180,7 @@ wire** (auth mechanism). Authoritative: `docs/auth-model.md`.
     `KNOWN_LIMITATIONS.md`; registrar-identity hardening is backlogged). A
     rotated leaf re-advertises on the next register/reconnect resync (immediate
     rotation-refresh is a follow-up).
-- **Broker:** goproxy reaches the backend with a per-datasource **service
+- **Broker:** goproxy reaches the target DB with a per-datasource **service
   account**; the token only proves _who you are_, never _what you can see_ —
   enforcement (§5) and JIT (§7) are independent of how it was obtained.
 
@@ -218,9 +218,9 @@ mechanism). Authoritative: [docs/auth-model.md](docs/auth-model.md).
     [INSTALL.md](INSTALL.md#proxy--one-set-per-datasource). Where pinning does
     and does not cover this hop:
     [KNOWN_LIMITATIONS.md](KNOWN_LIMITATIONS.md#wire-cert-pinning-pmon--proxy).
-- Broker: goproxy reaches the backend with a per-datasource service account; the
-  token only proves _who you are_, never _what you can see_ — enforcement and
-  JIT elevation are independent of how it was obtained.
+- Broker: goproxy reaches the target DB with a per-datasource service account;
+  the token only proves _who you are_, never _what you can see_ — enforcement
+  and JIT elevation are independent of how it was obtained.
 
 Web session lifetime, IdP revalidation, and device-binding:
 [docs/session-lifetime.md](docs/session-lifetime.md).
@@ -259,7 +259,7 @@ Console (Next.js + Tailwind + shadcn/ui, `web/`) — requester (request elevatio
 
 - Analyzer parse/lineage coverage drives the DENY rate — a construct sqlglot-go
   can't resolve fails closed. Mitigated by golden-parity tests and a
-  grant-overridable `sql.unanalyzable`.
+  grant-overridable `exception.unanalyzable`.
 - Rewrite correctness — masking mutates the result stream. Mitigated: prefer
   deny over a risky rewrite; ordinal-bound masking with fail-closed `SELECT *`
   expansion; large DB-backed test suites.
@@ -267,7 +267,7 @@ Console (Next.js + Tailwind + shadcn/ui, `web/`) — requester (request elevatio
   catalog caching; the Go proxy relays hot bytes.
 - Prepared statements / binary protocol — PG extended-query is enforced. MySQL
   `COM_STMT_*` is decided and relayed, but binary-protocol results cannot be
-  masked: a MASK verdict without `sql.unmaskable` fails closed
+  masked: a MASK verdict without `exception.unmaskable` fails closed
   ([KNOWN_LIMITATIONS.md](KNOWN_LIMITATIONS.md)).
 - Coverage gaps = security gaps — anything not analyzed defaults to DENY.
 

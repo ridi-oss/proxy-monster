@@ -4,9 +4,9 @@ import (
 	"strings"
 	"testing"
 
+	pb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
 	sqlglot "github.com/ridi-oss/sqlglot-go"
 	exp "github.com/ridi-oss/sqlglot-go/expressions"
-	pb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -14,7 +14,7 @@ var canonicalPostgresCatalog = []*pb.ColumnSpec{
 	columnSpec("acme", "pg_catalog", "pg_class", "oid", "BIGINT"),
 	columnSpec("acme", "pg_catalog", "pg_class", "relname", "VARCHAR"),
 	columnSpec("acme", "public", "users", "id", "BIGINT"),
-	columnSpec("acme", "public", "users", "rrn", "VARCHAR"),
+	columnSpec("acme", "public", "users", "ssn", "VARCHAR"),
 	columnSpec("acme", "public", "users", "name", "VARCHAR"),
 	columnSpec("acme", "public", "users", "Name", "VARCHAR"),
 	columnSpec("acme", "public", "Users", "ID", "BIGINT"),
@@ -32,7 +32,7 @@ var canonicalPostgresNamespace = &pb.Namespace{
 	SearchPath: []string{"pg_catalog", "public"},
 }
 
-const canonicalUsersRRNKey = "acme.public.users.rrn"
+const canonicalUsersSSNKey = "acme.public.users.ssn"
 
 // decodeProbeResult runs sql through the wire boundary for dialect ("mysql" | "postgres"). MySQL
 // calls need mysqlLowerCaseTableNames (0/1/2); pass nil to test the fail-closed missing-mode path.
@@ -83,20 +83,20 @@ func requireResolvedKeys(t *testing.T, result *ProbeResult, expected ...string) 
 }
 
 // PostgreSQL quoted and unquoted cases are part of the byte-identity oracle: the emitted
-// catalog.schema.table.column spelling must match the backend's identifier identity exactly.
+// catalog.schema.table.column spelling must match the target DB's identifier identity exactly.
 func TestSchemaThreadingPostgresResolution(t *testing.T) {
 	cases := []struct {
 		name string
 		sql  string
 		keys []string
 	}{
-		{"bare default", "SELECT rrn FROM users", []string{canonicalUsersRRNKey}},
+		{"bare default", "SELECT ssn FROM users", []string{canonicalUsersSSNKey}},
 		{"implicit pg_catalog first", "SELECT relname FROM pg_class", []string{"acme.pg_catalog.pg_class.relname"}},
 		{"explicit cross schema", "SELECT score FROM analytics.users", []string{"acme.analytics.users.score"}},
 		{
 			"same table name across schemas",
-			"SELECT u.rrn, a.score FROM public.users u JOIN analytics.users a ON u.id = a.id",
-			[]string{canonicalUsersRRNKey, "acme.analytics.users.score", "acme.public.users.id", "acme.analytics.users.id"},
+			"SELECT u.ssn, a.score FROM public.users u JOIN analytics.users a ON u.id = a.id",
+			[]string{canonicalUsersSSNKey, "acme.analytics.users.score", "acme.public.users.id", "acme.analytics.users.id"},
 		},
 		{"unquoted identifiers fold", "SELECT NAME FROM USERS", []string{"acme.public.users.name"}},
 		{"quoted identifiers preserve spelling", `SELECT "ID" FROM "Users"`, []string{"acme.public.Users.ID"}},
@@ -110,8 +110,8 @@ func TestSchemaThreadingPostgresResolution(t *testing.T) {
 	}
 
 	for _, sql := range []string{
-		"SELECT rrn FROM other.public.users",
-		"SELECT rrn FROM missing.users",
+		"SELECT ssn FROM other.public.users",
+		"SELECT ssn FROM missing.users",
 		"SELECT id FROM missing_table",
 	} {
 		result := decodeProbeResult(t, sql, "postgres", canonicalPostgresCatalog, canonicalPostgresNamespace)
@@ -159,11 +159,11 @@ func TestSchemaThreadingOrderedSearchPath(t *testing.T) {
 }
 
 // Together with the PostgreSQL quoted-identifier cases above, these case-mode assertions form the
-// Byte-identity oracle: emitted catalog.schema.table.column keys must match backend folding exactly.
+// Byte-identity oracle: emitted catalog.schema.table.column keys must match target DB folding exactly.
 func TestSchemaThreadingMySQLCaseModes(t *testing.T) {
 	cols := []*pb.ColumnSpec{
 		columnSpec("def", "App", "Users", "ID", "BIGINT"),
-		columnSpec("def", "App", "Users", "RRN", "VARCHAR"),
+		columnSpec("def", "App", "Users", "SSN", "VARCHAR"),
 		columnSpec("def", "Reporting", "Users", "ID", "BIGINT"),
 		columnSpec("def", "Reporting", "Users", "Score", "BIGINT"),
 	}
@@ -175,7 +175,7 @@ func TestSchemaThreadingMySQLCaseModes(t *testing.T) {
 		expected string
 	}{
 		{"mode 0 preserves schema and table", 0, "App", "SELECT id FROM App.Users", "def.App.Users.id"},
-		{"mode 0 bare current database", 0, "App", "SELECT RRN FROM Users", "def.App.Users.rrn"},
+		{"mode 0 bare current database", 0, "App", "SELECT SSN FROM Users", "def.App.Users.ssn"},
 		{"mode 1 compares schema and table lowercase", 1, "APP", "SELECT ID FROM APP.USERS", "def.app.users.id"},
 		{"mode 2 compares schema and table lowercase", 2, "APP", "SELECT ID FROM APP.USERS", "def.app.users.id"},
 	}
@@ -224,7 +224,7 @@ func TestSchemaThreadingMySQLCaseModes(t *testing.T) {
 func TestSchemaThreadingRewrittenSQLDropsAnalyzerCatalog(t *testing.T) {
 	cols := []*pb.ColumnSpec{
 		columnSpec("def", "App", "Users", "ID", "BIGINT"),
-		columnSpec("def", "App", "Users", "RRN", "VARCHAR"),
+		columnSpec("def", "App", "Users", "SSN", "VARCHAR"),
 	}
 	result := decodeProbeResult(
 		t,
@@ -234,7 +234,7 @@ func TestSchemaThreadingRewrittenSQLDropsAnalyzerCatalog(t *testing.T) {
 		&pb.Namespace{Catalog: "def", SearchPath: []string{"App"}},
 		0,
 	)
-	requireResolvedKeys(t, result, "def.App.Users.id", "def.App.Users.rrn")
+	requireResolvedKeys(t, result, "def.App.Users.id", "def.App.Users.ssn")
 	if result.RewrittenSQL == nil {
 		t.Fatal("qualified star must produce rewritten SQL")
 	}
@@ -292,11 +292,11 @@ func TestSchemaThreadingWholeRowsAndWrites(t *testing.T) {
 	wholeRows := []string{
 		"SELECT u.* FROM users u",
 		"SELECT row_to_json(u) FROM users u",
-		"SELECT (u).rrn FROM users u",
+		"SELECT (u).ssn FROM users u",
 	}
 	for _, sql := range wholeRows {
 		result := decodeProbeResult(t, sql, "postgres", canonicalPostgresCatalog, canonicalPostgresNamespace)
-		requireResolvedKeys(t, result, canonicalUsersRRNKey)
+		requireResolvedKeys(t, result, canonicalUsersSSNKey)
 	}
 
 	writes := []struct {
@@ -304,20 +304,20 @@ func TestSchemaThreadingWholeRowsAndWrites(t *testing.T) {
 		keys []string
 	}{
 		{
-			"UPDATE users SET name = rrn WHERE id = 1 RETURNING rrn",
-			[]string{canonicalUsersRRNKey, "acme.public.users.id"},
+			"UPDATE users SET name = ssn WHERE id = 1 RETURNING ssn",
+			[]string{canonicalUsersSSNKey, "acme.public.users.id"},
 		},
 		{
-			"DELETE FROM users WHERE rrn = 'x' RETURNING id",
-			[]string{canonicalUsersRRNKey, "acme.public.users.id"},
+			"DELETE FROM users WHERE ssn = 'x' RETURNING id",
+			[]string{canonicalUsersSSNKey, "acme.public.users.id"},
 		},
 		{
-			"INSERT INTO sink (id, data) VALUES (1, (SELECT rrn FROM users LIMIT 1)) RETURNING id",
-			[]string{canonicalUsersRRNKey, "acme.public.sink.id"},
+			"INSERT INTO sink (id, data) VALUES (1, (SELECT ssn FROM users LIMIT 1)) RETURNING id",
+			[]string{canonicalUsersSSNKey, "acme.public.sink.id"},
 		},
 		{
-			"WITH protected(x) AS (SELECT rrn FROM users) INSERT INTO sink (data) VALUES ((SELECT x FROM protected LIMIT 1))",
-			[]string{canonicalUsersRRNKey},
+			"WITH protected(x) AS (SELECT ssn FROM users) INSERT INTO sink (data) VALUES ((SELECT x FROM protected LIMIT 1))",
+			[]string{canonicalUsersSSNKey},
 		},
 		{
 			"MERGE INTO users u USING analytics.users a ON u.id = a.id WHEN MATCHED THEN UPDATE SET name = a.score",
@@ -358,12 +358,12 @@ func TestSchemaThreadingWriteSourceResolution(t *testing.T) {
 		{
 			"UPDATE sink SET data = name FROM users WHERE users.id = sink.id",
 			[]string{"acme.public.users.name", "acme.public.users.id", "acme.public.sink.id"},
-			canonicalUsersRRNKey,
+			canonicalUsersSSNKey,
 		},
 		{
 			"UPDATE sink SET data = to_jsonb(user_id)::text FROM users user_id, orders o WHERE sink.id = user_id.id AND o.id = sink.id",
 			[]string{"acme.public.orders.user_id", "acme.public.users.id", "acme.public.orders.id", "acme.public.sink.id"},
-			canonicalUsersRRNKey,
+			canonicalUsersSSNKey,
 		},
 	}
 	for _, tc := range cases {
@@ -376,21 +376,21 @@ func TestSchemaThreadingWriteSourceResolution(t *testing.T) {
 }
 
 // A mixed-case CTE in a write binds case-insensitively on PostgreSQL
-// (the backend folds `Orders` ≡ `orders`), so its masked source column MUST reach the write's lineage.
+// (the target-DB folds `Orders` ≡ `orders`), so its masked source column MUST reach the write's lineage.
 // public.orders deliberately HAS an `amount` column, so a CTE ref misclassified as the physical
 // public.orders would RESOLVE to the unmasked public.orders.amount and silently ALLOW — the exact
 // fail-open. Before folding identifiers ahead of write-scope classification, that is what happened.
 func TestSchemaThreadingWriteCTECaseFold(t *testing.T) {
 	cols := []*pb.ColumnSpec{
 		columnSpec("acme", "public", "users", "id", "BIGINT"),
-		columnSpec("acme", "public", "users", "rrn", "VARCHAR"),
+		columnSpec("acme", "public", "users", "ssn", "VARCHAR"),
 		columnSpec("acme", "public", "orders", "id", "BIGINT"),
 		columnSpec("acme", "public", "orders", "amount", "VARCHAR"),
 		columnSpec("acme", "public", "sink", "id", "BIGINT"),
 		columnSpec("acme", "public", "sink", "data", "VARCHAR"),
 	}
 	ns := &pb.Namespace{Catalog: "acme", SearchPath: []string{"pg_catalog", "public"}}
-	sql := "WITH Orders AS (SELECT id, rrn AS amount FROM users) " +
+	sql := "WITH Orders AS (SELECT id, ssn AS amount FROM users) " +
 		"UPDATE sink SET data = orders.amount FROM orders WHERE sink.id = orders.id"
 	result := decodeProbeResult(t, sql, "postgres", cols, ns)
 	if !result.Resolved {
@@ -400,8 +400,8 @@ func TestSchemaThreadingWriteCTECaseFold(t *testing.T) {
 		t.Fatalf("expected a write result")
 	}
 	keys := allLineageKeys(result)
-	if !keys["acme.public.users.rrn"] {
-		t.Errorf("mixed-case write CTE dropped masked acme.public.users.rrn from lineage %v "+
+	if !keys["acme.public.users.ssn"] {
+		t.Errorf("mixed-case write CTE dropped masked acme.public.users.ssn from lineage %v "+
 			"(misclassified as the unmasked physical public.orders) — fail-open", keys)
 	}
 	if keys["acme.public.orders.amount"] {
@@ -411,7 +411,7 @@ func TestSchemaThreadingWriteCTECaseFold(t *testing.T) {
 
 // PG folds UNQUOTED identifiers ASCII-only (`CAFÉ` → `cafÉ`,
 // the É preserved), not full-Unicode. A distinct column `café` (e.g. quoted-created, ordinary) can
-// coexist with `cafÉ` (PII). An unquoted `CAFÉ` MUST resolve to `cafÉ` — matching the backend — not
+// coexist with `cafÉ` (PII). An unquoted `CAFÉ` MUST resolve to `cafÉ` — matching the target DB — not
 // over-fold to `café` and pick up the wrong column's policy. Requires sqlglot-go >= v0.2.0 (which folds
 // PG identifiers ASCII-only instead of strings.ToLower).
 func TestSchemaThreadingPostgresAsciiOnlyFold(t *testing.T) {
@@ -437,27 +437,27 @@ func TestSchemaThreadingPostgresAsciiOnlyFold(t *testing.T) {
 // Non-ASCII MySQL identifiers resolve via sqlglot-go's exact utf8mb3_general_ci fold (MySQLLower) — so
 // the ASCII restriction is lifted. The É≡é CTE-shadow that once forced a fail-closed deny now binds
 // the CTE correctly: MySQL
-// folds `éOrders` ≡ `ÉOrders`, so the reference reads the CTE source (users.rrn), NOT the unmasked
+// folds `éOrders` ≡ `ÉOrders`, so the reference reads the CTE source (users.ssn), NOT the unmasked
 // physical decoy `éorders.amount`. general_ci is accent-PRESERVING (café ≠ cafe), so distinct
 // accented columns stay distinct.
 func TestSchemaThreadingMysqlNonAsciiIdentifiersFoldExactly(t *testing.T) {
 	cols := []*pb.ColumnSpec{
-		columnSpec("def", "app", "users", "rrn", "VARCHAR"),
+		columnSpec("def", "app", "users", "ssn", "VARCHAR"),
 		columnSpec("def", "app", "users", "id", "INT"),
 		columnSpec("def", "app", "éorders", "amount", "VARCHAR"),
 		columnSpec("def", "app", "éorders", "id", "INT"),
 	}
 	ns := &pb.Namespace{Catalog: "def", SearchPath: []string{"app"}}
 	// The CTE `ÉOrders` shadows the physical `éorders` (general_ci: É≡é). MySQL binds the reference
-	// `éOrders` to the CTE → reads users.rrn. The analyzer must trace the CTE source, not the decoy.
-	cte := "WITH `ÉOrders` AS (SELECT rrn AS amount FROM users) SELECT amount FROM `éOrders`"
+	// `éOrders` to the CTE → reads users.ssn. The analyzer must trace the CTE source, not the decoy.
+	cte := "WITH `ÉOrders` AS (SELECT ssn AS amount FROM users) SELECT amount FROM `éOrders`"
 	res := decodeProbeResult(t, cte, "mysql", cols, ns, 1)
 	if !res.Resolved {
 		t.Fatalf("non-ASCII CTE-shadow must resolve via the exact fold: %s", res.Detail)
 	}
 	keys := allLineageKeys(res)
-	if !keys["def.app.users.rrn"] {
-		t.Errorf("CTE-shadow must trace the CTE source def.app.users.rrn; got %v", keys)
+	if !keys["def.app.users.ssn"] {
+		t.Errorf("CTE-shadow must trace the CTE source def.app.users.ssn; got %v", keys)
 	}
 	if keys["def.app.éorders.amount"] {
 		t.Errorf("CTE-shadow wrongly resolved the physical decoy def.app.éorders.amount: %v", keys)
@@ -467,7 +467,7 @@ func TestSchemaThreadingMysqlNonAsciiIdentifiersFoldExactly(t *testing.T) {
 		t.Errorf("non-ASCII reference must resolve (Éorders ≡ éorders): %s", r.Detail)
 	}
 	// an ASCII query against the same catalog still resolves normally
-	if r := decodeProbeResult(t, "SELECT rrn FROM users", "mysql", cols, ns, 1); !r.Resolved {
+	if r := decodeProbeResult(t, "SELECT ssn FROM users", "mysql", cols, ns, 1); !r.Resolved {
 		t.Errorf("ASCII MySQL query must still resolve: %s", r.Detail)
 	}
 }
@@ -477,13 +477,13 @@ func TestSchemaThreadingMysqlNonAsciiIdentifiersFoldExactly(t *testing.T) {
 // consumer regardless of case. If it did not, `WITH cte (Secret) … SELECT secret` would leave
 // `Secret` (definition) ≠ `secret` (reference): the payload output resolves to NO base column, and
 // because a write disables the column validator the INSERT would ship with EMPTY lineage —
-// users.rrn copied into the unmasked sink and ALLOWed (fail-open). sqlglot-go's role-aware
+// users.ssn copied into the unmasked sink and ALLOWed (fail-open). sqlglot-go's role-aware
 // mysql_case_sensitive_table_names strategy folds the output-column list like any other column, so
-// definition ↔ reference match and the write's lineage carries users.rrn. Covers both lctn modes and
+// definition ↔ reference match and the write's lineage carries users.ssn. Covers both lctn modes and
 // read/write (the read must not over-deny; the write must not leak).
 func TestSchemaThreadingMysqlCTEOutputColumnFold(t *testing.T) {
 	cols := []*pb.ColumnSpec{
-		columnSpec("def", "app", "users", "rrn", "VARCHAR"),
+		columnSpec("def", "app", "users", "ssn", "VARCHAR"),
 		columnSpec("def", "app", "users", "id", "INT"),
 		columnSpec("def", "app", "sink", "data", "VARCHAR"),
 		columnSpec("def", "app", "sink", "id", "INT"),
@@ -494,10 +494,10 @@ func TestSchemaThreadingMysqlCTEOutputColumnFold(t *testing.T) {
 		sql   string
 		write bool
 	}{
-		{"mode0 write", 0, "INSERT INTO sink (data) WITH cte (Secret) AS (SELECT rrn FROM users) SELECT secret FROM cte", true},
-		{"mode0 read", 0, "WITH cte (Secret) AS (SELECT rrn FROM users) SELECT secret FROM cte", false},
-		{"mode0 same case", 0, "WITH cte (Secret) AS (SELECT rrn FROM users) SELECT Secret FROM cte", false},
-		{"mode1 write", 1, "INSERT INTO sink (data) WITH cte (Secret) AS (SELECT rrn FROM users) SELECT secret FROM cte", true},
+		{"mode0 write", 0, "INSERT INTO sink (data) WITH cte (Secret) AS (SELECT ssn FROM users) SELECT secret FROM cte", true},
+		{"mode0 read", 0, "WITH cte (Secret) AS (SELECT ssn FROM users) SELECT secret FROM cte", false},
+		{"mode0 same case", 0, "WITH cte (Secret) AS (SELECT ssn FROM users) SELECT Secret FROM cte", false},
+		{"mode1 write", 1, "INSERT INTO sink (data) WITH cte (Secret) AS (SELECT ssn FROM users) SELECT secret FROM cte", true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -509,8 +509,8 @@ func TestSchemaThreadingMysqlCTEOutputColumnFold(t *testing.T) {
 			if result.IsWrite != tc.write {
 				t.Fatalf("IsWrite=%v, want %v", result.IsWrite, tc.write)
 			}
-			if !allLineageKeys(result)["def.app.users.rrn"] {
-				t.Errorf("CTE output-column case mismatch dropped def.app.users.rrn from lineage %v — fail-open",
+			if !allLineageKeys(result)["def.app.users.ssn"] {
+				t.Errorf("CTE output-column case mismatch dropped def.app.users.ssn from lineage %v — fail-open",
 					allLineageKeys(result))
 			}
 		})
@@ -521,7 +521,7 @@ func TestSchemaThreadingMysqlCTEOutputColumnFold(t *testing.T) {
 // names, column QUALIFIERS, and CTE names — are case-sensitive, while column names fold. The analyzer's
 // fold (sqlglot-go's mysql_case_sensitive_table_names strategy) must PRESERVE the relation-level ones;
 // folding a qualifier or CTE name resolves the wrong relation and, for a write (qualify-validation
-// off), silently drops lineage → wrong ALLOW. Live-verified on MySQL 8.4 lctn=0: `SELECT users.rrn FROM
+// off), silently drops lineage → wrong ALLOW. Live-verified on MySQL 8.4 lctn=0: `SELECT users.ssn FROM
 // Users` → ERROR 1054 (qualifier case-sensitive); a mixed-case CTE binds by exact case.
 func TestSchemaThreadingMysqlLctn0RelationCaseSensitivity(t *testing.T) {
 	ns := &pb.Namespace{Catalog: "def", SearchPath: []string{"app"}}
@@ -529,39 +529,39 @@ func TestSchemaThreadingMysqlLctn0RelationCaseSensitivity(t *testing.T) {
 	// the fix the qualifier folded to `users` while the table stayed `Users` → empty write lineage.
 	t.Run("qualified column, unaliased mixed-case table", func(t *testing.T) {
 		cols := []*pb.ColumnSpec{
-			columnSpec("def", "app", "Users", "rrn", "VARCHAR"),
+			columnSpec("def", "app", "Users", "ssn", "VARCHAR"),
 			columnSpec("def", "app", "Users", "id", "INT"),
 			columnSpec("def", "app", "sink", "data", "VARCHAR"),
 			columnSpec("def", "app", "sink", "id", "INT"),
 		}
-		result := decodeProbeResult(t, "INSERT INTO sink (data) SELECT Users.rrn FROM Users", "mysql", cols, ns, 0)
-		requireResolvedKeys(t, result, "def.app.Users.rrn")
+		result := decodeProbeResult(t, "INSERT INTO sink (data) SELECT Users.ssn FROM Users", "mysql", cols, ns, 0)
+		requireResolvedKeys(t, result, "def.app.Users.ssn")
 		if !result.IsWrite {
 			t.Fatalf("expected a write result")
 		}
 	})
 	// #2: a mixed-case CTE shadowing a same-spelled physical table binds the CTE (its source), not the
 	// physical decoy. Before the fix the CTE definition name folded but the reference did not → the
-	// reference resolved the physical decoy Users.rrn instead of the CTE source other.rrn.
+	// reference resolved the physical decoy Users.ssn instead of the CTE source other.ssn.
 	t.Run("mixed-case CTE shadows physical table", func(t *testing.T) {
 		cols := []*pb.ColumnSpec{
-			columnSpec("def", "app", "Users", "rrn", "VARCHAR"),
+			columnSpec("def", "app", "Users", "ssn", "VARCHAR"),
 			columnSpec("def", "app", "Users", "id", "INT"),
-			columnSpec("def", "app", "other", "rrn", "VARCHAR"),
+			columnSpec("def", "app", "other", "ssn", "VARCHAR"),
 			columnSpec("def", "app", "other", "id", "INT"),
 			columnSpec("def", "app", "sink", "data", "VARCHAR"),
 			columnSpec("def", "app", "sink", "id", "INT"),
 		}
-		result := decodeProbeResult(t, "INSERT INTO sink (data) WITH Users AS (SELECT rrn FROM other) SELECT rrn FROM Users", "mysql", cols, ns, 0)
+		result := decodeProbeResult(t, "INSERT INTO sink (data) WITH Users AS (SELECT ssn FROM other) SELECT ssn FROM Users", "mysql", cols, ns, 0)
 		if !result.Resolved {
 			t.Fatalf("probe unresolved: %s", result.Detail)
 		}
 		keys := allLineageKeys(result)
-		if !keys["def.app.other.rrn"] {
-			t.Errorf("CTE reference must bind the CTE source def.app.other.rrn; got %v", keys)
+		if !keys["def.app.other.ssn"] {
+			t.Errorf("CTE reference must bind the CTE source def.app.other.ssn; got %v", keys)
 		}
-		if keys["def.app.Users.rrn"] {
-			t.Errorf("CTE reference wrongly resolved the physical decoy def.app.Users.rrn: %v", keys)
+		if keys["def.app.Users.ssn"] {
+			t.Errorf("CTE reference wrongly resolved the physical decoy def.app.Users.ssn: %v", keys)
 		}
 	})
 }

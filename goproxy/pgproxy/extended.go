@@ -11,7 +11,7 @@ import (
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
 )
 
-// isCleanExecuteTerminal reports whether an extended-protocol Execute ended without a backend error: a
+// isCleanExecuteTerminal reports whether an extended-protocol Execute ended without a target-DB error: a
 // CommandComplete (statement done), an EmptyQueryResponse (empty statement), or a PortalSuspended (a
 // row-limited Execute that stopped with more rows pending) are all clean; an ErrorResponse is not.
 func isCleanExecuteTerminal(terminal pgproto3.BackendMessage) bool {
@@ -73,7 +73,7 @@ func refuseExtended(sess *session, code, message string) error {
 
 func (s *Server) awaitExtendedCompletion(sess *session, isTerminal func(pgproto3.BackendMessage) bool) (pgproto3.BackendMessage, error) {
 	for {
-		message, err := sess.backend.Receive()
+		message, err := sess.targetDb.Receive()
 		if err != nil {
 			return nil, err
 		}
@@ -90,7 +90,7 @@ func (s *Server) awaitExtendedCompletion(sess *session, isTerminal func(pgproto3
 			sess.client.Send(message)
 		default:
 			if !isTerminal(message) {
-				return nil, failClosedRelay(sess, "58000", "proxy-monster: malformed backend response", fmt.Errorf("unexpected backend extended response %T", message))
+				return nil, failClosedRelay(sess, "58000", "proxy-monster: malformed target-DB response", fmt.Errorf("unexpected target DB extended response %T", message))
 			}
 			if errMsg, failed := message.(*pgproto3.ErrorResponse); failed {
 				forwardError(sess, errMsg)
@@ -125,9 +125,9 @@ func (s *Server) handleParse(sess *session, message *pgproto3.Parse) error {
 	if proceed.RewrittenSQL != nil {
 		sentSQL = *proceed.RewrittenSQL
 	}
-	sess.backend.Send(&pgproto3.Parse{Name: message.Name, Query: sentSQL, ParameterOIDs: message.ParameterOIDs})
-	sess.backend.Send(&pgproto3.Flush{})
-	if err := sess.backend.Flush(); err != nil {
+	sess.targetDb.Send(&pgproto3.Parse{Name: message.Name, Query: sentSQL, ParameterOIDs: message.ParameterOIDs})
+	sess.targetDb.Send(&pgproto3.Flush{})
+	if err := sess.targetDb.Flush(); err != nil {
 		return err
 	}
 	terminal, err := s.awaitExtendedCompletion(sess, func(message pgproto3.BackendMessage) bool {
@@ -161,9 +161,9 @@ func (s *Server) handleBind(sess *session, message *pgproto3.Bind) error {
 	}
 
 	// Capture immediately before forwarding: the lockstep single writer guarantees nothing executes on the
-	// backend between this probe and Bind, so the captured context is exactly the one PostgreSQL binds under.
-	// Probing first also leaves no registry/backend inconsistency if capture fails. An aborted transaction
-	// fails here before PostgreSQL's equivalent 25P02 Bind, retaining the prior portal snapshot and backend portal.
+	// target DB between this probe and Bind, so the captured context is exactly the one PostgreSQL binds under.
+	// Probing first also leaves no registry/target DB inconsistency if capture fails. An aborted transaction
+	// fails here before PostgreSQL's equivalent 25P02 Bind, retaining the prior portal snapshot and target DB portal.
 	namespace, temps, err := s.probeBindContext(sess)
 	if err != nil {
 		if errors.Is(err, errClientEncoding) || errors.Is(err, errStdConformingStrings) {
@@ -172,9 +172,9 @@ func (s *Server) handleBind(sess *session, message *pgproto3.Bind) error {
 		return refuseExtended(sess, "58000", "bind-time namespace unavailable")
 	}
 
-	sess.backend.Send(message)
-	sess.backend.Send(&pgproto3.Flush{})
-	if err := sess.backend.Flush(); err != nil {
+	sess.targetDb.Send(message)
+	sess.targetDb.Send(&pgproto3.Flush{})
+	if err := sess.targetDb.Flush(); err != nil {
 		return err
 	}
 	terminal, err := s.awaitExtendedCompletion(sess, func(message pgproto3.BackendMessage) bool {
@@ -200,9 +200,9 @@ func (s *Server) handleBind(sess *session, message *pgproto3.Bind) error {
 }
 
 func (s *Server) handleDescribe(sess *session, message *pgproto3.Describe) error {
-	sess.backend.Send(message)
-	sess.backend.Send(&pgproto3.Flush{})
-	if err := sess.backend.Flush(); err != nil {
+	sess.targetDb.Send(message)
+	sess.targetDb.Send(&pgproto3.Flush{})
+	if err := sess.targetDb.Flush(); err != nil {
 		return err
 	}
 	_, err := s.awaitExtendedCompletion(sess, func(message pgproto3.BackendMessage) bool {
@@ -224,13 +224,13 @@ func (s *Server) runExtendedProbe(sess *session, sql string, expectedColumns int
 	statementName := fmt.Sprintf("__pm_probe_statement_%d__", sequence)
 	portalName := fmt.Sprintf("__pm_probe_portal_%d__", sequence)
 
-	sess.backend.Send(&pgproto3.Parse{Name: statementName, Query: sql})
-	sess.backend.Send(&pgproto3.Bind{DestinationPortal: portalName, PreparedStatement: statementName})
-	sess.backend.Send(&pgproto3.Execute{Portal: portalName})
-	sess.backend.Send(&pgproto3.Close{ObjectType: 'P', Name: portalName})
-	sess.backend.Send(&pgproto3.Close{ObjectType: 'S', Name: statementName})
-	sess.backend.Send(&pgproto3.Flush{})
-	if err := sess.backend.Flush(); err != nil {
+	sess.targetDb.Send(&pgproto3.Parse{Name: statementName, Query: sql})
+	sess.targetDb.Send(&pgproto3.Bind{DestinationPortal: portalName, PreparedStatement: statementName})
+	sess.targetDb.Send(&pgproto3.Execute{Portal: portalName})
+	sess.targetDb.Send(&pgproto3.Close{ObjectType: 'P', Name: portalName})
+	sess.targetDb.Send(&pgproto3.Close{ObjectType: 'S', Name: statementName})
+	sess.targetDb.Send(&pgproto3.Flush{})
+	if err := sess.targetDb.Flush(); err != nil {
 		return nil, err
 	}
 
@@ -248,7 +248,7 @@ func (s *Server) runExtendedProbe(sess *session, sql string, expectedColumns int
 	}
 
 	for {
-		message, err := sess.backend.Receive()
+		message, err := sess.targetDb.Receive()
 		if err != nil {
 			return nil, err
 		}
@@ -321,7 +321,7 @@ func (s *Server) runExtendedProbe(sess *session, sql string, expectedColumns int
 		case *pgproto3.NotificationResponse:
 			sess.client.Send(&pgproto3.NotificationResponse{PID: message.PID, Channel: message.Channel, Payload: message.Payload})
 		default:
-			fail(fmt.Errorf("unexpected backend probe response %T", message))
+			fail(fmt.Errorf("unexpected target DB probe response %T", message))
 		}
 	}
 }
@@ -335,7 +335,7 @@ func (s *Server) probeBindContext(sess *session) ([]string, []engine.TempColumn,
 	}
 	namespaceRows, err := s.runExtendedProbe(sess, s.db.NamespaceProbeSQL(), 1)
 	if err != nil {
-		return nil, nil, fmt.Errorf("backend namespace probe: %w", err)
+		return nil, nil, fmt.Errorf("target-DB namespace probe: %w", err)
 	}
 	namespace, err := namespaceFromRows(namespaceRows)
 	if err != nil {
@@ -345,7 +345,7 @@ func (s *Server) probeBindContext(sess *session) ([]string, []engine.TempColumn,
 
 	tempRows, err := s.runExtendedProbe(sess, s.db.TempColumnsProbeSQL(), 5)
 	if err != nil {
-		return nil, nil, fmt.Errorf("backend temp-column probe: %w", err)
+		return nil, nil, fmt.Errorf("target DB temp-column probe: %w", err)
 	}
 	temps, err := tempColumnsFromRows(tempRows)
 	if err != nil {
@@ -393,12 +393,12 @@ func (s *Server) handleExecute(sess *session, message *pgproto3.Execute) error {
 		}
 		masks = nil
 	}
-	// The fresh verdict authorizes the SQL already parsed on the backend. A fresh rewrite cannot replace
+	// The fresh verdict authorizes the SQL already parsed on the target DB. A fresh rewrite cannot replace
 	// that prepared statement, so RewrittenSQL is deliberately ignored at Execute.
 	start := time.Now()
-	sess.backend.Send(message)
-	sess.backend.Send(&pgproto3.Flush{})
-	if err := sess.backend.Flush(); err != nil {
+	sess.targetDb.Send(message)
+	sess.targetDb.Send(&pgproto3.Flush{})
+	if err := sess.targetDb.Flush(); err != nil {
 		return err
 	}
 	var relayStats engine.RelayStats
@@ -422,7 +422,7 @@ func (s *Server) relayExecuteStream(sess *session, masks []*pb.ColumnMask, stats
 	var masker *engine.RowMasker
 	bufferedFrames := 0
 	for {
-		message, err := sess.backend.Receive()
+		message, err := sess.targetDb.Receive()
 		if err != nil {
 			return nil, err
 		}
@@ -434,7 +434,7 @@ func (s *Server) relayExecuteStream(sess *session, masks []*pb.ColumnMask, stats
 					return nil, failClosedRelay(sess, "0A000", "proxy-monster: required mask could not be bound to a result column", errMaskUnbound)
 				}
 			}
-			// Tally the backend row before masking, so the volume reflects the backend result, not the
+			// Tally the target-DB row before masking, so the volume reflects the target-DB result, not the
 			// rewritten one.
 			stats.Rows++
 			stats.Bytes += dataRowBytes(message)
@@ -461,7 +461,7 @@ func (s *Server) relayExecuteStream(sess *session, masks []*pb.ColumnMask, stats
 			sess.skipToSync = true
 			return message, sess.client.Flush()
 		default:
-			return nil, failClosedRelay(sess, "58000", "proxy-monster: malformed backend response", fmt.Errorf("unexpected backend execute response %T", message))
+			return nil, failClosedRelay(sess, "58000", "proxy-monster: malformed target-DB response", fmt.Errorf("unexpected target DB execute response %T", message))
 		}
 
 		bufferedFrames++
@@ -475,9 +475,9 @@ func (s *Server) relayExecuteStream(sess *session, masks []*pb.ColumnMask, stats
 }
 
 func (s *Server) handleClose(sess *session, message *pgproto3.Close) error {
-	sess.backend.Send(message)
-	sess.backend.Send(&pgproto3.Flush{})
-	if err := sess.backend.Flush(); err != nil {
+	sess.targetDb.Send(message)
+	sess.targetDb.Send(&pgproto3.Flush{})
+	if err := sess.targetDb.Flush(); err != nil {
 		return err
 	}
 	terminal, err := s.awaitExtendedCompletion(sess, func(message pgproto3.BackendMessage) bool {
@@ -503,20 +503,20 @@ func (s *Server) handleClose(sess *session, message *pgproto3.Close) error {
 }
 
 func (s *Server) handleFlush(sess *session) error {
-	sess.backend.Send(&pgproto3.Flush{})
-	if err := sess.backend.Flush(); err != nil {
+	sess.targetDb.Send(&pgproto3.Flush{})
+	if err := sess.targetDb.Flush(); err != nil {
 		return err
 	}
 	return sess.client.Flush()
 }
 
 func (s *Server) handleSync(sess *session) error {
-	sess.backend.Send(&pgproto3.Sync{})
-	if err := sess.backend.Flush(); err != nil {
+	sess.targetDb.Send(&pgproto3.Sync{})
+	if err := sess.targetDb.Flush(); err != nil {
 		return err
 	}
 	for {
-		message, err := sess.backend.Receive()
+		message, err := sess.targetDb.Receive()
 		if err != nil {
 			return err
 		}
@@ -539,7 +539,7 @@ func (s *Server) handleSync(sess *session) error {
 			}
 			return nil
 		default:
-			return failClosedRelay(sess, "58000", "proxy-monster: malformed backend response", fmt.Errorf("unexpected backend sync response %T", message))
+			return failClosedRelay(sess, "58000", "proxy-monster: malformed target-DB response", fmt.Errorf("unexpected target DB sync response %T", message))
 		}
 	}
 }

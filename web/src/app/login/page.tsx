@@ -12,6 +12,7 @@ import { API_BASE, ApiError } from '@/lib/api/client'
 import { useAuth } from '@/lib/auth'
 import { useAuthConfig } from '@/lib/hooks'
 import { REAUTH_CALLBACK_PATH } from '@/lib/reauth'
+import { NEXT_STORAGE_KEY, safeInternalPath } from '@/lib/next-path'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -66,7 +67,9 @@ function LoginInner() {
     setSubmitting(true)
     try {
       await loginDebug(principal.trim(), roles, requesterIp.trim())
-      router.replace(callbackUrl === REAUTH_CALLBACK_PATH ? callbackUrl : (returnTo ?? next ?? '/query'))
+      const dest =
+        callbackUrl === REAUTH_CALLBACK_PATH ? callbackUrl : (returnTo ?? safeInternalPath(next) ?? '/query')
+      router.replace(dest)
     } catch (err) {
       // A 404 means one of two different things, so branch on the code rather than the status: the route
       // itself is absent (PM_AUTH_DEBUG off), or a claimed role does not exist — which answers with
@@ -85,6 +88,12 @@ function LoginInner() {
 
   // Full-page navigation into the OIDC flow (NOT fetch — the browser must follow the IdP's 302s).
   const handleSso = () => {
+    // A general app path (a deep link) is not on the control plane's return_to allowlist and would be
+    // dropped there, so it rides same-origin sessionStorage across the round-trip instead — the callback
+    // lands on the web origin, where the root page consumes it. The device/reauth `return_to`, which IS
+    // allowlisted, keeps threading through the control plane as before.
+    const deepLink = safeInternalPath(next)
+    if (deepLink) sessionStorage.setItem(NEXT_STORAGE_KEY, deepLink)
     const returnToQs = returnTo
       ? `?return_to=${encodeURIComponent(returnTo)}`
       : callbackUrl === REAUTH_CALLBACK_PATH

@@ -136,7 +136,7 @@ fun Engine.isSystemSchema(schema: String): Boolean = when (this) {
  * it.
  *
  * Where this is true, a connection may start from catalog content the control plane already holds rather than
- * measuring the backend itself.
+ * measuring the target DB itself.
  */
 val Engine.catalogIsConnectionIndependent: Boolean
     get() = when (this) {

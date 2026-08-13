@@ -2,10 +2,10 @@ package mysqlproxy
 
 import (
 	"bytes"
+	"context"
 	"encoding/binary"
 	"errors"
 	"fmt"
-	"net"
 	"reflect"
 	"strings"
 	"testing"
@@ -20,32 +20,16 @@ import (
 	"github.com/ridi-oss/proxy-monster/mysqlwire"
 )
 
-func TestServerConnectionLimit(t *testing.T) {
-	s := New(0, spi.BackendTarget{}, nil, nil, nil)
-	for i := 0; i < maxConcurrentConnections; i++ {
-		if !s.acquireConnection() {
-			t.Fatalf("connection slot %d rejected before limit", i)
-		}
-	}
-	if s.acquireConnection() {
-		t.Fatal("connection above server-wide limit was accepted")
-	}
-	s.releaseConnection()
-	if !s.acquireConnection() {
-		t.Fatal("released connection slot was not reusable")
-	}
-}
-
-func TestNormalizeBackendOKExtractsSchemaAndStripsTracking(t *testing.T) {
+func TestNormalizeTargetDbOKExtractsSchemaAndStripsTracking(t *testing.T) {
 	block := mysqlwire.AppendLenencStr(nil, "other_db")
 	state := []byte{sessionTrackSchema}
 	state = mysqlwire.AppendLenenc(state, uint64(len(block)))
 	state = append(state, block...)
 
 	payload := trackedOKPacket(0x00, serverStatusSessionStateChanged|0x0002, "rows matched", state)
-	clean, _, schema, _, err := normalizeBackendOK(payload)
+	clean, _, schema, _, err := normalizeTargetDbOK(payload)
 	if err != nil {
-		t.Fatalf("normalizeBackendOK: %v", err)
+		t.Fatalf("normalizeTargetDbOK: %v", err)
 	}
 	if schema == nil || *schema != "other_db" {
 		t.Fatalf("schema = %v, want other_db", schema)
@@ -77,18 +61,18 @@ func TestMaskedRowExpansionAtPacketBoundaryFailsClosed(t *testing.T) {
 }
 
 func TestUnmaskedRowContinuationCannotMasqueradeAsTerminator(t *testing.T) {
-	var backend bytes.Buffer
-	writeTestPacket(t, &backend, 1, []byte{0x01})
-	writeTestPacket(t, &backend, 2, []byte{0x03, 'd', 'e', 'f'})
+	var targetDb bytes.Buffer
+	writeTestPacket(t, &targetDb, 1, []byte{0x01})
+	writeTestPacket(t, &targetDb, 2, []byte{0x03, 'd', 'e', 'f'})
 	firstFragment := make([]byte, maxPacketPayload)
 	firstFragment[0] = 0xfe
 	binary.LittleEndian.PutUint64(firstFragment[1:9], uint64(maxPacketPayload+3))
-	writeTestPacket(t, &backend, 3, firstFragment)
-	writeTestPacket(t, &backend, 4, []byte{0xfe, 0x01, 0x02})
-	writeTestPacket(t, &backend, 5, trackedOKPacket(0xfe, 0x0002, "", nil))
+	writeTestPacket(t, &targetDb, 3, firstFragment)
+	writeTestPacket(t, &targetDb, 4, []byte{0xfe, 0x01, 0x02})
+	writeTestPacket(t, &targetDb, 5, trackedOKPacket(0xfe, 0x0002, "", nil))
 
 	var got [][]byte
-	ok, err := relayResultSet(&backend, true, resultHooks{Sink: func(_ byte, payload []byte) error {
+	ok, err := relayResultSet(&targetDb, true, resultHooks{Sink: func(_ byte, payload []byte) error {
 		got = append(got, append([]byte(nil), payload...))
 		return nil
 	}})
@@ -96,7 +80,7 @@ func TestUnmaskedRowContinuationCannotMasqueradeAsTerminator(t *testing.T) {
 		t.Fatalf("relayResultSet: %v", err)
 	}
 	if !ok {
-		t.Fatal("relayResultSet reported backend failure for a fragmented successful result")
+		t.Fatal("relayResultSet reported target-DB failure for a fragmented successful result")
 	}
 	if len(got) != 5 {
 		t.Fatalf("relayed packets = %d, want 5", len(got))
@@ -106,81 +90,49 @@ func TestUnmaskedRowContinuationCannotMasqueradeAsTerminator(t *testing.T) {
 	}
 }
 
-func TestRelayResultSetReportsBackendError(t *testing.T) {
-	var backend bytes.Buffer
-	writeTestPacket(t, &backend, 1, mysqlwire.ErrPacketState(1146, "42S02", "missing table"))
+func TestRelayResultSetReportsTargetDbError(t *testing.T) {
+	var targetDb bytes.Buffer
+	writeTestPacket(t, &targetDb, 1, mysqlwire.ErrPacketState(1146, "42S02", "missing table"))
 
-	ok, err := relayResultSet(&backend, true, resultHooks{})
+	ok, err := relayResultSet(&targetDb, true, resultHooks{})
 	if err != nil {
 		t.Fatalf("relayResultSet: %v", err)
 	}
 	if ok {
-		t.Fatal("relayResultSet reported success for a backend ERR packet")
+		t.Fatal("relayResultSet reported success for a target-DB ERR packet")
 	}
 }
 
 func TestRelayResultSetReportsAffectedRowsFromFirstOK(t *testing.T) {
 	payload := mysqlwire.OKPacket()
 	payload[1] = 7
-	var backend bytes.Buffer
-	writeTestPacket(t, &backend, 1, payload)
+	var targetDb bytes.Buffer
+	writeTestPacket(t, &targetDb, 1, payload)
 
 	var affected uint64
-	ok, err := relayResultSet(&backend, true, resultHooks{OnOK: func(n uint64) { affected = n }})
+	ok, err := relayResultSet(&targetDb, true, resultHooks{OnOK: func(n uint64) { affected = n }})
 	if err != nil || !ok || affected != 7 {
 		t.Fatalf("ok=%v affected=%d err=%v, want true, 7, nil", ok, affected, err)
 	}
 }
 
 func TestRelayResultSetRejectsFragmentedColumnDefinitionForCollector(t *testing.T) {
-	var backend bytes.Buffer
-	writeTestPacket(t, &backend, 1, []byte{0x01})
-	writeTestPacket(t, &backend, 2, make([]byte, maxPacketPayload))
+	var targetDb bytes.Buffer
+	writeTestPacket(t, &targetDb, 1, []byte{0x01})
+	writeTestPacket(t, &targetDb, 2, make([]byte, maxPacketPayload))
 
-	_, err := relayResultSet(&backend, true, resultHooks{OnColumnDef: func([]byte) error { return nil }})
+	_, err := relayResultSet(&targetDb, true, resultHooks{OnColumnDef: func([]byte) error { return nil }})
 	if err == nil || !strings.Contains(err.Error(), "fragmented MySQL column definitions") {
 		t.Fatalf("err=%v, want fragmented column-definition rejection", err)
 	}
 }
 
-func TestDeadlineConnBoundsIdleReadAndBlockedWrite(t *testing.T) {
-	const timeout = 100 * time.Millisecond
-
-	t.Run("read", func(t *testing.T) {
-		client, peer := net.Pipe()
-		defer client.Close()
-		defer peer.Close()
-		wrapped := withIODeadlines(client, timeout, timeout)
-		_, err := wrapped.Read(make([]byte, 1))
-		if err == nil {
-			t.Fatal("idle read did not time out")
-		}
-		if netErr, ok := err.(net.Error); !ok || !netErr.Timeout() {
-			t.Fatalf("idle read error = %v, want timeout", err)
-		}
-	})
-
-	t.Run("write", func(t *testing.T) {
-		client, peer := net.Pipe()
-		defer client.Close()
-		defer peer.Close()
-		wrapped := withIODeadlines(client, timeout, timeout)
-		_, err := wrapped.Write([]byte{0x01})
-		if err == nil {
-			t.Fatal("blocked write did not time out")
-		}
-		if netErr, ok := err.(net.Error); !ok || !netErr.Timeout() {
-			t.Fatalf("blocked write error = %v, want timeout", err)
-		}
-	})
-}
-
-// TestDialBackendCachingSHA2FullAuth proves the service-account dial completes the caching_sha2_password
+// TestDialTargetDbCachingSHA2FullAuth proves the service-account dial completes the caching_sha2_password
 // full-auth exchange over the plaintext link. The user is created fresh (unique name), so the server's
 // fast-auth cache has never seen it and MUST demand full authentication — a successful dial therefore
 // necessarily ran the RSA public-key path, which the test hook confirms directly.
-func TestDialBackendCachingSHA2FullAuth(t *testing.T) {
-	backend := dbtest.MySQL(t)
+func TestDialTargetDbCachingSHA2FullAuth(t *testing.T) {
+	targetDb := dbtest.MySQL(t)
 	seed := dbtest.OpenMySQL(t, "")
 
 	user := fmt.Sprintf("it_csha2_%d", time.Now().UnixNano())
@@ -188,7 +140,7 @@ func TestDialBackendCachingSHA2FullAuth(t *testing.T) {
 	if _, err := seed.Exec("CREATE USER '" + user + "'@'%' IDENTIFIED WITH caching_sha2_password BY '" + password + "'"); err != nil {
 		t.Fatalf("create caching_sha2 user: %v", err)
 	}
-	if _, err := seed.Exec("GRANT SELECT ON " + backend.DB + ".* TO '" + user + "'@'%'"); err != nil {
+	if _, err := seed.Exec("GRANT SELECT ON " + targetDb.DB + ".* TO '" + user + "'@'%'"); err != nil {
 		t.Fatalf("grant caching_sha2 user: %v", err)
 	}
 	t.Cleanup(func() { _, _ = seed.Exec("DROP USER IF EXISTS '" + user + "'@'%'") })
@@ -201,20 +153,20 @@ func TestDialBackendCachingSHA2FullAuth(t *testing.T) {
 	}
 	t.Cleanup(func() { testHookCachingSHA2FullAuth = nil })
 
-	target := spi.BackendTarget{
-		Host:     backend.Host,
-		Port:     backend.Port,
-		Db:       backend.DB,
+	target := spi.TargetDb{
+		Host:     targetDb.Host,
+		Port:     targetDb.Port,
+		Db:       targetDb.DB,
 		User:     user,
 		Password: password,
 	}
-	conn, connID, err := dialBackendAuthID(target, true)
+	conn, connID, err := dialTargetDbAuthID(context.Background(), target, true)
 	if err != nil {
-		t.Fatalf("dialBackendAuthID against caching_sha2 backend: %v", err)
+		t.Fatalf("dialTargetDbAuthID against caching_sha2 target DB: %v", err)
 	}
 	defer conn.Close()
 	if connID == 0 {
-		t.Fatal("backend connection id = 0, want the server-assigned id")
+		t.Fatal("target-DB connection id = 0, want the server-assigned id")
 	}
 	if fullAuthViaPublicKey != 1 {
 		t.Fatalf("caching_sha2 full-auth public-key path ran %d times, want exactly 1", fullAuthViaPublicKey)

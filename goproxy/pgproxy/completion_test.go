@@ -86,7 +86,7 @@ func TestCompletionReportExtendedSelectCountsRows(t *testing.T) {
 	}
 }
 
-// A statement whose backend result is an error still reports a completion, tagged status=error.
+// A statement whose target-DB result is an error still reports a completion, tagged status=error.
 func TestCompletionReportErroredStatement(t *testing.T) {
 	h := startBroker(t)
 	h.fake.decideFn = allowWithDecisionID(completionDecisionID)
@@ -94,7 +94,7 @@ func TestCompletionReportErroredStatement(t *testing.T) {
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}
-	// An allowed statement the backend rejects (unknown table) relays an error, not a result set.
+	// An allowed statement the target DB rejects (unknown table) relays an error, not a result set.
 	rows, queryErr := conn.Query(context.Background(), "SELECT id FROM it_pgproxy.no_such_table_here")
 	if queryErr == nil {
 		for rows.Next() {
@@ -103,7 +103,7 @@ func TestCompletionReportErroredStatement(t *testing.T) {
 		rows.Close()
 	}
 	if queryErr == nil {
-		t.Fatal("Query on a missing table succeeded, want a backend error")
+		t.Fatal("Query on a missing table succeeded, want a target-DB error")
 	}
 
 	report := h.waitCompletions(t, 1)[0]

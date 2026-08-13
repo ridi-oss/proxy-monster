@@ -1,4 +1,4 @@
-// Package dbtest provides the ONE shared MySQL and PostgreSQL backend that every DB-backed test in the
+// Package dbtest provides the ONE shared MySQL and PostgreSQL target DB that every DB-backed test in the
 // goproxy module uses. Each engine's container is started once and REUSED for the entire suite
 // (testcontainers Reuse by fixed Name — the first test to need it starts it, every other test and
 // package reuses the same running container). DB-backed tests are MANDATORY: if no Docker provider is
@@ -24,8 +24,8 @@ import (
 	"github.com/testcontainers/testcontainers-go/wait"
 )
 
-// Backend is the connection info for a shared test database.
-type Backend struct {
+// Target DB is the connection info for a shared test database.
+type TargetDb struct {
 	Host     string
 	Port     int
 	User     string
@@ -33,16 +33,16 @@ type Backend struct {
 	DB       string
 }
 
-// MySQLDSN is a go-sql-driver/mysql DSN for this backend (for the given database, blank = the default).
-func (b Backend) MySQLDSN(db string) string {
+// MySQLDSN is a go-sql-driver/mysql DSN for this target DB (for the given database, blank = the default).
+func (b TargetDb) MySQLDSN(db string) string {
 	if db == "" {
 		db = b.DB
 	}
 	return fmt.Sprintf("%s:%s@tcp(%s:%d)/%s?parseTime=true&multiStatements=true", b.User, b.Password, b.Host, b.Port, db)
 }
 
-// PostgresDSN is a pgx-stdlib DSN for this backend.
-func (b Backend) PostgresDSN(db string) string {
+// PostgresDSN is a pgx-stdlib DSN for this target DB.
+func (b TargetDb) PostgresDSN(db string) string {
 	if db == "" {
 		db = b.DB
 	}
@@ -51,17 +51,17 @@ func (b Backend) PostgresDSN(db string) string {
 
 var (
 	mysqlOnce sync.Once
-	mysqlB    Backend
+	mysqlB    TargetDb
 	mysqlErr  error
 
 	pgOnce sync.Once
-	pgB    Backend
+	pgB    TargetDb
 	pgErr  error
 )
 
-// MySQL returns the shared MySQL 8 backend, starting it once and reusing it across the whole suite. It
+// MySQL returns the shared MySQL 8 target DB, starting it once and reusing it across the whole suite. It
 // fails the test if no Docker provider is available.
-func MySQL(t testing.TB) Backend {
+func MySQL(t testing.TB) TargetDb {
 	t.Helper()
 	mysqlOnce.Do(func() { mysqlB, mysqlErr = startMySQL() })
 	if mysqlErr != nil {
@@ -70,9 +70,9 @@ func MySQL(t testing.TB) Backend {
 	return mysqlB
 }
 
-// Postgres returns the shared PostgreSQL 16 backend, starting it once and reusing it across the whole
+// Postgres returns the shared PostgreSQL 16 target DB, starting it once and reusing it across the whole
 // suite. It fails the test if no Docker provider is available.
-func Postgres(t testing.TB) Backend {
+func Postgres(t testing.TB) TargetDb {
 	t.Helper()
 	pgOnce.Do(func() { pgB, pgErr = startPostgres() })
 	if pgErr != nil {
@@ -81,10 +81,10 @@ func Postgres(t testing.TB) Backend {
 	return pgB
 }
 
-// OpenMySQL opens (and pings) a *sql.DB against the shared MySQL backend for database db (blank = default).
+// OpenMySQL opens (and pings) a *sql.DB against the shared MySQL target DB for database db (blank = default).
 func OpenMySQL(t testing.TB, db string) *sql.DB { return open(t, "mysql", MySQL(t).MySQLDSN(db)) }
 
-// OpenPostgres opens (and pings) a *sql.DB against the shared Postgres backend for database db (blank = default).
+// OpenPostgres opens (and pings) a *sql.DB against the shared Postgres target DB for database db (blank = default).
 func OpenPostgres(t testing.TB, db string) *sql.DB {
 	return open(t, "pgx", Postgres(t).PostgresDSN(db))
 }
@@ -148,7 +148,7 @@ func containerName(prefix, img string) string {
 	return name
 }
 
-func startMySQL() (Backend, error) {
+func startMySQL() (TargetDb, error) {
 	const user, pass, db = "root", "rootpw", "app"
 	img := image("PM_TEST_MYSQL_IMAGE", defaultMySQLImage)
 	req := testcontainers.ContainerRequest{
@@ -163,7 +163,7 @@ func startMySQL() (Backend, error) {
 	return start(req, "3306/tcp", user, pass, db)
 }
 
-func startPostgres() (Backend, error) {
+func startPostgres() (TargetDb, error) {
 	const user, pass, db = "postgres", "pgpw", "app"
 	img := image("PM_TEST_POSTGRES_IMAGE", defaultPostgresImage)
 	req := testcontainers.ContainerRequest{
@@ -219,7 +219,7 @@ func imageSeries(img string) string {
 // assertSeries fails the test unless the live server is in the series its configured image names. A
 // container reused from another image, or a tag that resolved elsewhere, would otherwise let a leg
 // report a pass for a version it never ran — indistinguishable from real coverage. Called from the
-// shared fixtures below, so every consumer gets a verified backend rather than having to opt in.
+// shared fixtures below, so every consumer gets a verified target DB rather than having to opt in.
 func assertSeries(t testing.TB, db *sql.DB, query, img string) {
 	t.Helper()
 	want := imageSeries(img)
@@ -265,10 +265,10 @@ func lockShared(name string) (func(), error) {
 
 // start creates or reuses (by Name) the container and returns its live host:port. Reuse means the
 // container persists after the run and is shared across every test package/process.
-func start(req testcontainers.ContainerRequest, port nat.Port, user, pass, db string) (Backend, error) {
+func start(req testcontainers.ContainerRequest, port nat.Port, user, pass, db string) (TargetDb, error) {
 	unlock, err := lockShared(req.Name)
 	if err != nil {
-		return Backend{}, err
+		return TargetDb{}, err
 	}
 	defer unlock()
 
@@ -279,15 +279,15 @@ func start(req testcontainers.ContainerRequest, port nat.Port, user, pass, db st
 		Reuse:            true,
 	})
 	if err != nil {
-		return Backend{}, err
+		return TargetDb{}, err
 	}
 	host, err := c.Host(ctx)
 	if err != nil {
-		return Backend{}, err
+		return TargetDb{}, err
 	}
 	mapped, err := c.MappedPort(ctx, port)
 	if err != nil {
-		return Backend{}, err
+		return TargetDb{}, err
 	}
-	return Backend{Host: host, Port: mapped.Int(), User: user, Password: pass, DB: db}, nil
+	return TargetDb{Host: host, Port: mapped.Int(), User: user, Password: pass, DB: db}, nil
 }

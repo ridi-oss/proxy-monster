@@ -37,7 +37,7 @@ type OriginInfo struct {
 	Derived bool `json:"derived,omitempty"`
 }
 
-// SourceInfo is one physical backend relation the statement scans (docs/facts-emission.md).
+// SourceInfo is one physical target-DB relation the statement scans (docs/facts-emission.md).
 // `Table` is the fully-qualified `catalog.schema.table` identity. `Covered` is true when at least one
 // traced column fact (an origin base or a reference) names this table — meaning the existing column
 // authorization already gates the scan. An UNCOVERED table (Covered=false) is a scan that reads the
@@ -67,6 +67,17 @@ type ProbeResult struct {
 	Functions     []string            `json:"functions"`
 	IsWrite       bool                `json:"isWrite"`
 	RewrittenSQL  *string             `json:"rewrittenSql"`
+	// Base columns a literal is compared against in a predicate, keyed by clause. Deliberately NOT folded
+	// into References: the parity oracle diffs that map field-by-field and produces no such fact.
+	PredicateLiterals []PredicateLiteralRef `json:"predicateLiterals,omitempty"`
+}
+
+// PredicateLiteralRef is one literal-vs-column comparison: the resolved base column key and the clause it
+// sits in. Advisory only — it gates whether statement TEXT may leave the console, never whether the
+// statement runs.
+type PredicateLiteralRef struct {
+	Column string `json:"column"`
+	Clause string `json:"clause"`
 }
 
 // NamespaceConfig resolves unqualified table names — catalog + search path only. Engine-specific
@@ -104,7 +115,9 @@ type prober struct {
 	writeScope    *optimizer.Scope
 
 	references    map[string]map[string]bool
-	opaqueSelects map[exp.Expression]bool
+	// column key -> clause, for every base column a literal is compared against in a predicate.
+	predicateLiterals map[string]string
+	opaqueSelects     map[exp.Expression]bool
 
 	qualifySchema     schema.Schema
 	dialect           *dialects.Dialect // the engine's resolved Dialect — parse, qualify, and generate all share this one instance
@@ -176,7 +189,7 @@ func probeParsed(root exp.Expression, eng engine, qualifySchema schema.Schema, n
 	// The success path sets Functions from calledFunctions() at the final return; this defer backfills them on
 	// any POST-PARSE failResult (p.root is set once parsing succeeds), so the control-plane can gate a
 	// dangerous function that hides in an unanalyzable statement — closing the residue where a resolved=false
-	// dangerous call took the sql.unanalyzable relay unGated. A pre-parse failure leaves p.root nil → no
+	// dangerous call took the exception.unanalyzable relay unGated. A pre-parse failure leaves p.root nil → no
 	// backfill (nothing parsed to walk). It only runs when Functions is empty, so a success is never touched.
 	defer func() {
 		if !out.Resolved && p.root != nil && len(out.Functions) == 0 {
@@ -594,6 +607,14 @@ func (p *prober) classifyWrite() *ProbeResult {
 			p.analyzeQuery = nil
 		}
 	}
+	// A SELECT ... INTO anywhere — including one hoisted onto a set-operation root or buried in a union
+	// branch — writes to a file/variable/table the masker cannot reach, so its read columns are a
+	// non-maskable write payload, not maskable output. The KindSelect case catches the top-level form;
+	// this catches the set-operation form the switch does not.
+	if !p.isWrite && len(p.root.FindAll(exp.KindInto)) > 0 {
+		p.isWrite = true
+		p.analyzeQuery = nil
+	}
 	return nil
 }
 
@@ -695,7 +716,7 @@ func unwrapSubquery(e exp.Expression) exp.Expression {
 // model. Within the body it is deliberately broad: a query, a column reference, or a function call
 // anywhere inside means the value is not free. A VALUES row hides all three from a check on the immediate
 // child — `AS (SELECT …)` is a Subquery, `AS VALUES ((SELECT …))` buries a Select, and
-// `AS VALUES (query_to_xml('SELECT rrn …'))` invokes a data-leak function the function gate must still
+// `AS VALUES (query_to_xml('SELECT ssn …'))` invokes a data-leak function the function gate must still
 // see — each of which the catalog-only path would drop on the floor. A literal-only VALUES matches none
 // and stays value-free DDL.
 func createReadsColumns(root exp.Expression) bool {
@@ -753,7 +774,7 @@ func generateExecutableSQL(root exp.Expression, dialect *dialects.Dialect) (stri
 	executable := root.Copy()
 	// Catalog is part of the analyzer's identity, but neither PostgreSQL nor MySQL accepts it as an
 	// executable third table-name component. Keep the real schema/database qualification and remove only
-	// the analyzer-only catalog from the copy rendered for backend execution.
+	// the analyzer-only catalog from the copy rendered for target-DB execution.
 	for _, table := range executable.FindAll(exp.KindTable) {
 		table.Set("catalog", nil)
 	}
@@ -894,9 +915,11 @@ func (p *prober) lineage() ProbeResult {
 		}
 		if w := asExpression(sel.Arg("where")); w != nil {
 			addClause([]exp.Expression{w.This()}, PREDICATE)
+			p.addPredicateLiterals(w.This(), "WHERE")
 		}
 		if h := asExpression(sel.Arg("having")); h != nil {
 			addClause([]exp.Expression{h.This()}, PREDICATE)
+			p.addPredicateLiterals(h.This(), "HAVING")
 		}
 		if g := asExpression(sel.Arg("group")); g != nil {
 			gcols := append([]exp.Expression(nil), g.Expressions()...)
@@ -907,10 +930,12 @@ func (p *prober) lineage() ProbeResult {
 		}
 		if q := asExpression(sel.Arg("qualify")); q != nil {
 			addClause([]exp.Expression{q.This()}, PREDICATE)
+			p.addPredicateLiterals(q.This(), "QUALIFY")
 		}
 		for _, j := range expressionsFor(sel, "joins") {
 			if on := asExpression(j.Arg("on")); on != nil {
 				addClause([]exp.Expression{on}, JOIN)
+				p.addPredicateLiterals(on, "JOIN")
 			}
 			addClause(expressionsFor(j, "using"), JOIN)
 		}
@@ -928,6 +953,16 @@ func (p *prober) lineage() ProbeResult {
 				}
 				addOutputRefs(sel, keys, GROUP_BY)
 			}
+		}
+	}
+
+	// A native UPDATE or DELETE keeps its WHERE on the statement root, not on a Select, so the Select walk
+	// above never reaches it. The protected value in `UPDATE … WHERE ssn = '…'` hides exactly as it does in
+	// a SELECT, and absence of the fact is read as "safe" downstream — so the predicate must be collected.
+	switch p.qroot.Kind() {
+	case exp.KindUpdate, exp.KindDelete:
+		if w := asExpression(p.qroot.Arg("where")); w != nil {
+			p.addPredicateLiterals(w.This(), "WHERE")
 		}
 	}
 
@@ -1387,7 +1422,7 @@ func (p *prober) lineage() ProbeResult {
 		// site, not per-clause guards). The loop above skips columns owned by a nested scope
 		// (p.col2scope[c] != nil): the payload subqueries of every orphaned write clause — SET,
 		// RETURNING, VALUES, MERGE-action SET, ON CONFLICT DO UPDATE. A protected column read there — a
-		// bare name PG binds column-first to the write target/outer (a correlated `(SELECT rrn)`), or a
+		// bare name PG binds column-first to the write target/outer (a correlated `(SELECT ssn)`), or a
 		// whole-row value (`to_jsonb(u)`) — must still reach references. Resolve each column-first and add
 		// any base not already referenced (dedup keeps bucket parity: cols the read/subquery passes
 		// already routed are not duplicated). A column INSIDE a SELECT-bodied write's payload
@@ -1494,7 +1529,26 @@ func (p *prober) lineage() ProbeResult {
 		Functions:     p.calledFunctions(),
 		IsWrite:       p.isWrite,
 		RewrittenSQL:  rewrittenSQL,
+		PredicateLiterals: p.predicateLiteralRefs(),
 	}
+}
+
+// predicateLiteralRefs renders the collected literal-vs-column comparisons in a stable order, so a golden
+// file and a proto payload do not churn on map iteration.
+func (p *prober) predicateLiteralRefs() []PredicateLiteralRef {
+	if len(p.predicateLiterals) == 0 {
+		return nil
+	}
+	keys := make([]string, 0, len(p.predicateLiterals))
+	for k := range p.predicateLiterals {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	out := make([]PredicateLiteralRef, 0, len(keys))
+	for _, k := range keys {
+		out = append(out, PredicateLiteralRef{Column: k, Clause: p.predicateLiterals[k]})
+	}
+	return out
 }
 
 // calledFunctions emits the DISTINCT bare names of Anonymous function calls in the statement
@@ -1614,6 +1668,62 @@ func expressionsFromAny(value any) []exp.Expression {
 	default:
 		return nil
 	}
+}
+
+// addPredicateLiterals records every base column a LITERAL is compared against inside one predicate
+// subtree, so the control plane can withhold statement text that carries a protected value
+// (`WHERE ssn = '987-65-4320'` puts the value in the query, where masking cannot reach it).
+//
+// Best-effort by construction. A literal can also reach a column through a function, a CASE, a subquery,
+// or a bound parameter, none of which this sees. That is why the fact may only ever HIDE text: a consumer
+// must treat absence as unknown, never as proof the statement is safe.
+//
+// The analyzer states the fact and stops. It has no role context and must never acquire one — whether a
+// column is CLASSIFIED (reader-neutrally) is the control plane's decision.
+func (p *prober) addPredicateLiterals(root exp.Expression, clause string) {
+	if root == nil {
+		return
+	}
+	for _, node := range root.FindAll(exp.TraitPredicate) {
+		if node == nil || p.enclosingOpaque(node) != nil {
+			continue
+		}
+		// A comparison is interesting only when it actually carries a value. `a.x = b.y` has nothing to
+		// leak; `x = 5`, `x IN ('a','b')`, and `x BETWEEN 1 AND 5` do. Different comparison kinds keep
+		// their operands under different arg names (Between uses low/high, In uses expressions), so the
+		// whole subtree is searched rather than a fixed operand list.
+		if len(node.FindAll(exp.KindLiteral)) == 0 {
+			continue
+		}
+		// Attribute to the columns of THIS comparison only. A column reached through a nested predicate
+		// belongs to that node, which the same walk visits in its own right.
+		for _, col := range node.FindAll(exp.KindColumn) {
+			if nearestPredicate(col) != node {
+				continue
+			}
+			for base := range p.bases([]exp.Expression{col}) {
+				if p.predicateLiterals == nil {
+					p.predicateLiterals = map[string]string{}
+				}
+				// First clause wins: one column compared in several places is still one fact, and the
+				// clause is only for audit legibility.
+				if _, seen := p.predicateLiterals[base]; !seen {
+					p.predicateLiterals[base] = clause
+				}
+			}
+		}
+	}
+}
+
+// nearestPredicate walks up to the closest enclosing comparison, so a column is attributed to the
+// comparison it actually participates in rather than to every predicate above it.
+func nearestPredicate(e exp.Expression) exp.Expression {
+	for cur := e; cur != nil; cur = cur.Parent() {
+		if cur != e && cur.Is(exp.TraitPredicate) {
+			return cur
+		}
+	}
+	return nil
 }
 
 func (p *prober) addRef(ctx string, bases map[string]bool) {
@@ -1956,7 +2066,7 @@ func (p *prober) redactableTransform(node exp.Expression) bool {
 		return true
 	case exp.KindLiteral:
 		// A literal in a STRING-operand position must be a string literal. A numeric/other literal here —
-		// e.g. COALESCE(rrn, 0) — forces a type-unification that can constant-fault on PostgreSQL (a
+		// e.g. COALESCE(ssn, 0) — forces a type-unification that can constant-fault on PostgreSQL (a
 		// value-INDEPENDENT error, not an oracle, but the analyzer must not vouch a query that always
 		// errors). Numeric args in numeric positions (SUBSTRING start/length, LEFT n) are unaffected —
 		// they go through the literal-required branch below, not this string recursion.
@@ -1964,7 +2074,7 @@ func (p *prober) redactableTransform(node exp.Expression) bool {
 	case exp.KindColumn:
 		// A column leaf is redactable only if it is a pure IDENTITY reference to a base column — NOT a
 		// column that resolves (through a subquery / derived table / CTE) to a hidden transform. Without
-		// this, an oracle buried one scope down — `SELECT c FROM (SELECT cast(rrn AS json) AS c) t`, or
+		// this, an oracle buried one scope down — `SELECT c FROM (SELECT cast(ssn AS json) AS c) t`, or
 		// even `SELECT upper(c) FROM (…)` — would slip past this surface whitelist yet still execute in
 		// the subquery. isID=false means a value-changing transform hides below; fail closed.
 		_, isID := p.projIdent(node, map[identKey]bool{})

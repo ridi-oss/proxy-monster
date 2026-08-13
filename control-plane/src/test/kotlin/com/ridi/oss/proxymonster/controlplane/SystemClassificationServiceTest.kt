@@ -43,13 +43,101 @@ class SystemClassificationServiceTest {
         assertEquals("system:catalog", svc.tagForTable(Engine.MYSQL, auroraMysql, "def", "information_schema", "TABLES"))
     }
 
+    // Value-bearing MySQL system tables were absent from the manifest, so they defaulted to system:catalog and
+    // the role-agnostic catalog read permit exposed them to any viewer. This is a representative sample of the
+    // audit set (the full set is data in the manifests); structural metadata must still resolve to catalog.
+    @Test
+    fun `value-bearing MySQL system tables are classified, structural stays catalog`() {
+        fun tag(schema: String, table: String) = { v: String -> svc.tagForTable(Engine.MYSQL, v, "def", schema, table) }
+        val cases = listOf<Pair<String, (String) -> String?>>(
+            // critical — key/credential/code-load material (never relaxed).
+            "system:critical" to tag("performance_schema", "keyring_component_status"),
+            "system:critical" to tag("performance_schema", "user_defined_functions"),
+            "system:critical" to tag("performance_schema", "variables_by_thread"),
+            // data-leak — data values / user content / per-table statistics (relaxed on dev).
+            "system:data-leak" to tag("performance_schema", "user_variables_by_thread"),
+            "system:data-leak" to tag("performance_schema", "session_connect_attrs"),
+            "system:data-leak" to tag("performance_schema", "table_io_waits_summary_by_table"),
+            "system:data-leak" to tag("information_schema", "INNODB_FT_INDEX_CACHE"),
+            "system:data-leak" to tag("information_schema", "ROLE_TABLE_GRANTS"),
+            "system:data-leak" to tag("sys", "x\$schema_table_statistics"),
+            // activity — live/session/monitoring (relaxed on dev); replication topology demoted here.
+            "system:activity" to tag("performance_schema", "accounts"),
+            "system:activity" to tag("performance_schema", "host_cache"),
+            "system:activity" to tag("performance_schema", "socket_instances"),
+            "system:activity" to tag("performance_schema", "replication_asynchronous_connection_failover"),
+            "system:activity" to tag("mysql", "slave_relay_log_info"),
+            "system:activity" to tag("sys", "host_summary_by_file_io"),
+            "system:activity" to tag("sys", "x\$io_global_by_file_by_bytes"),
+            // structural definitions / config knobs / reference stay browsable.
+            "system:catalog" to tag("information_schema", "TABLES"),
+            "system:catalog" to tag("performance_schema", "setup_instruments"),
+            "system:catalog" to tag("sys", "version"),
+        )
+        for (v in listOf("8.0.44", "8.4.0")) {
+            for ((want, get) in cases) assertEquals(want, get(v), "$v: expected $want")
+        }
+    }
+
+    @Test
+    fun `value-bearing PostgreSQL system relations are classified, structural stays catalog`() {
+        for (v in listOf("PostgreSQL 16.4 on x86_64", "PostgreSQL 17.2 on x86_64")) {
+            // Live session/monitoring views — activity (exact rules, not a pg_replication_ family: that
+            // family would over-catch the structural pg_replication_origin).
+            assertEquals("system:activity", svc.tagForTable(Engine.POSTGRES, v, "app", "pg_catalog", "pg_stat_activity"), v)
+            assertEquals("system:activity", svc.tagForTable(Engine.POSTGRES, v, "app", "pg_catalog", "pg_statio_user_tables"), v)
+            assertEquals("system:activity", svc.tagForTable(Engine.POSTGRES, v, "app", "pg_catalog", "pg_replication_slots"), v)
+            assertEquals("system:activity", svc.tagForTable(Engine.POSTGRES, v, "app", "pg_catalog", "pg_replication_origin_status"), v)
+            // FDW option views expose raw srvoptions/fdwoptions — critical, mirroring the already-critical
+            // public foreign_server_options / pg_foreign_server twins; _pg_user_mappings exposes umoptions.
+            assertEquals("system:critical", svc.tagForTable(Engine.POSTGRES, v, "app", "information_schema", "_pg_user_mappings"), v)
+            assertEquals("system:critical", svc.tagForTable(Engine.POSTGRES, v, "app", "information_schema", "_pg_foreign_servers"), v)
+            assertEquals("system:critical", svc.tagForTable(Engine.POSTGRES, v, "app", "information_schema", "_pg_foreign_data_wrappers"), v)
+            // Grant/privilege views expose the access model — data-leak, parity with the MySQL role_*_grants.
+            assertEquals("system:data-leak", svc.tagForTable(Engine.POSTGRES, v, "app", "information_schema", "role_table_grants"), v)
+            assertEquals("system:data-leak", svc.tagForTable(Engine.POSTGRES, v, "app", "information_schema", "table_privileges"), v)
+            // pg_sequences.last_value reveals row/txn volume — data-leak (parity with MySQL schema_auto_increment_columns).
+            assertEquals("system:data-leak", svc.tagForTable(Engine.POSTGRES, v, "app", "pg_catalog", "pg_sequences"), v)
+            // Structural catalog stays browsable. pg_statistic_ext (extended-stats DEFINITION, no override rule)
+            // proves pg_stat_ is precise — it is NOT swept to activity; and pg_replication_origin (structural
+            // origin ids) is NOT over-caught now that the pg_replication_ family was replaced by exacts.
+            assertEquals("system:catalog", svc.tagForTable(Engine.POSTGRES, v, "app", "pg_catalog", "pg_class"), v)
+            assertEquals("system:catalog", svc.tagForTable(Engine.POSTGRES, v, "app", "pg_catalog", "pg_statistic_ext"), v)
+            assertEquals("system:catalog", svc.tagForTable(Engine.POSTGRES, v, "app", "pg_catalog", "pg_replication_origin"), v)
+        }
+    }
+
     @Test
     fun `Aurora PostgreSQL resolves to the PG major manifest`() {
         val auroraPg = "PostgreSQL 17.4 on x86_64 (aurora 17.4...)"
         assertEquals("system:critical", svc.tagForTable(Engine.POSTGRES, auroraPg, "acme", "pg_catalog", "pg_authid"))
         assertEquals("system:catalog", svc.tagForTable(Engine.POSTGRES, auroraPg, "acme", "pg_catalog", "pg_class"))
-        // no version → no manifest → null (deny-by-default)
-        assertNull(svc.tagForTable(Engine.POSTGRES, null, "acme", "pg_catalog", "pg_authid"))
+    }
+
+    @Test
+    fun `a fixed system table without a governing manifest is closed`() {
+        // No governing manifest (null version, fallback off): a fixed system schema must not fall through
+        // untagged (a broad Datasource grant would read it). An explicitly-dangerous manifest tag is kept;
+        // everything else — the bare catalog default, an unrecognized table, or a catalog-mismatched one — is
+        // treated as system:critical so the unconditional forbid closes it. Fail-closed: unprovable ⇒ critical.
+        assertEquals("system:critical", svc.tagForTable(Engine.POSTGRES, null, "acme", "pg_catalog", "pg_authid"))
+        assertEquals("system:critical", svc.tagForTable(Engine.MYSQL, null, "def", "mysql", "user"))
+        // An explicit data-leak stays data-leak (kept so its own forbid + the system:development relaxation apply).
+        assertEquals("system:data-leak", svc.tagForTable(Engine.MYSQL, null, "def", "information_schema", "COLUMN_STATISTICS"))
+        // A catalog-default table (structural, no explicit dangerous rule) is closed as critical, not catalog.
+        assertEquals("system:critical", svc.tagForTable(Engine.POSTGRES, null, "acme", "pg_catalog", "pg_class"))
+        // An unrecognized table in a fixed system schema (in no shipped manifest) is likewise closed as critical.
+        assertEquals("system:critical", svc.tagForTable(Engine.MYSQL, null, "def", "performance_schema", "not_a_real_pfs_table_xyz"))
+        // A table the manifest DOES classify dangerous keeps that explicit tag even with no governing version
+        // (the floor keeps an explicit critical/data-leak/activity) — user_variables_by_thread is data-leak.
+        assertEquals("system:data-leak", svc.tagForTable(Engine.MYSQL, null, "def", "performance_schema", "user_variables_by_thread"))
+        // A catalog-mismatched MySQL system table (schema matches, catalog is not "def") must not downgrade to
+        // catalog — it is still closed.
+        assertEquals("system:critical", svc.tagForTable(Engine.MYSQL, null, "not-def", "mysql", "user"))
+        // An ordinary user table is not a system resource, so it is never floored.
+        assertNull(svc.tagForTable(Engine.POSTGRES, null, "acme", "public", "orders"))
+        // Ephemeral pg_temp_/pg_toast are not fixed system schemas — their connection-local path owns them.
+        assertNull(svc.tagForTable(Engine.POSTGRES, null, "acme", "pg_temp_3", "scratch"))
     }
 
     // tagForFunction resolves a BARE function name (the only form the analyzer can emit, since

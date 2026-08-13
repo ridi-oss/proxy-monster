@@ -51,16 +51,30 @@ class GrpcServer(
         )
     }
 
-    /** Graceful drain: stop accepting new calls, then wait (bounded) for in-flight RPCs to finish. A
-     * long-lived Events stream never finishes on its own (its handler awaits the client forever), so after
-     * the grace period force-cancel remaining calls — otherwise orderly shutdown would block indefinitely
-     * and the streams would never deregister. */
-    fun shutdown() {
+    /** Begin graceful shutdown: send HTTP/2 GOAWAY and stop accepting new calls, while existing streams keep
+     * running. GOAWAY is what lets a client re-home cleanly — it marks this connection draining, so the
+     * client's next RPC opens on a FRESH connection instead of reusing this one (re-homing to a live instance
+     * where a load balancer fronts several; otherwise reconnecting once the replacement process is up). Split
+     * from [awaitTerminated] so the caller can drain the Events streams IN BETWEEN: the reopen a closed Events
+     * stream triggers only dials fresh once GOAWAY is already in flight. */
+    fun beginShutdown() {
         server.shutdown()
+    }
+
+    /** Wait (bounded) for in-flight RPCs to finish after [beginShutdown], then force-cancel stragglers. A
+     * long-lived Events stream never finishes on its own (its handler awaits the client forever), so without
+     * the force an orderly shutdown would block indefinitely and the streams would never deregister. */
+    fun awaitTerminated() {
         if (!server.awaitTermination(5, TimeUnit.SECONDS)) {
             server.shutdownNow()
             server.awaitTermination(5, TimeUnit.SECONDS)
         }
+    }
+
+    /** Begin-and-await in one call — used by tests that do not drain streams in between. */
+    fun shutdown() {
+        beginShutdown()
+        awaitTerminated()
     }
 
     /** The actually-bound port, valid after [start]. Equals [port] unless [port] was 0 (ephemeral). */

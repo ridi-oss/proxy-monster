@@ -212,9 +212,9 @@ abstract class WireTaskDecideDbContract {
     @Test
     fun `MASK stays approved until completion and preserves mask relay bytes`() = runBlocking {
         val opened = openAndPush()
-        val expected = preChangeWireDecision("select rrn from users")
+        val expected = preChangeWireDecision("select ssn from users")
 
-        val verdict = assertIs<EnforcementOutcome.Verdict>(decide(opened, "select rrn from users"))
+        val verdict = assertIs<EnforcementOutcome.Verdict>(decide(opened, "select ssn from users"))
 
         assertEquals(EnfAction.MASK, verdict.ctx.action, verdict.ctx.denyReason)
         assertWireBytesUnchanged(expected, verdict)

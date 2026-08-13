@@ -144,14 +144,14 @@ class PerConnectionCatalogStateTest {
         val connection = registry.find(second.connectionId)!!
         assertEquals("h1", connection.held.getValue("app").hash.bytes.toStringUtf8())
         assertTrue(connection.pending.isEmpty())
-        // The point of adopting: the first statement decides without waiting on the backend.
+        // The point of adopting: the first statement decides without waiting on the target DB.
         assertTrue(registry.freshnessGate(connection, listOf("app")).isEmpty())
     }
 
     @Test
     fun `adoption inherits the original measurement time so staleness still fires`() = runBlocking {
         // Adopting must not restart the staleness clock. If it did, a stream of new connections would keep
-        // content alive indefinitely without anyone re-reading the backend, and the bound could never fire.
+        // content alive indefinitely without anyone re-reading the target DB, and the bound could never fire.
         var now = 0L
         val registry = ConnectionCatalogRegistry(clockNanos = { now }, stalenessNanos = 10)
         val first = registry.open(Binding(ds.name, "first", "USER"), listOf("app"))
@@ -174,7 +174,7 @@ class PerConnectionCatalogStateTest {
     fun `an ambient refresh re-measures pooled content so adopters stay fresh`() = runBlocking {
         // The staleness ceiling sits above the ambient refresh interval on the premise that the refresh
         // itself keeps pooled content verified. Without that, content pooled once would age out no matter
-        // how recently the backend was read, and every new session would refetch.
+        // how recently the target DB was read, and every new session would refetch.
         var now = 0L
         val registry = ConnectionCatalogRegistry(clockNanos = { now }, stalenessNanos = 10)
         val first = registry.open(Binding(ds.name, "first", "USER"), listOf("app"))
@@ -199,7 +199,7 @@ class PerConnectionCatalogStateTest {
     @Test
     fun `an ambient refresh whose columns differ never overwrites pooled content`() = runBlocking {
         // Confirmation only. Divergence belongs to the connection's own probe, which alone knows what that
-        // connection's backend binds; installing a differing ambient read here would decide against a
+        // connection's target DB binds; installing a differing ambient read here would decide against a
         // catalog no connection measured.
         var now = 0L
         val registry = ConnectionCatalogRegistry(clockNanos = { now }, stalenessNanos = 10)
@@ -303,7 +303,7 @@ class PerConnectionCatalogStateTest {
     fun `invalidating a datasource forces the next connection to measure for itself`() = runBlocking {
         // Repointing a datasource at another database makes held structure describe a database that is no
         // longer there. Adoption would otherwise hand that structure to the next connection, which would
-        // decide against a catalog its backend never had.
+        // decide against a catalog its target DB never had.
         val registry = ConnectionCatalogRegistry()
         val first = registry.open(Binding(ds.name, "first", "USER"), listOf("app"))
         registry.applyPush(push(first, "app", "h1"), ds)
@@ -330,7 +330,7 @@ class PerConnectionCatalogStateTest {
     fun `one datasource's ambient refresh cannot vouch for another's schema`() = runBlocking {
         // System-schema content is pooled once per engine version and shared by every datasource on it, so a
         // measurement recorded against the shared content would let a datasource nobody read look freshly
-        // verified. Freshness is evidence about one backend; only the content is shareable.
+        // verified. Freshness is evidence about one target DB; only the content is shareable.
         var now = 0L
         val registry = ConnectionCatalogRegistry(clockNanos = { now }, stalenessNanos = 10)
         val dsA = ds.copy(id = 1, name = "dsA")
@@ -361,7 +361,7 @@ class PerConnectionCatalogStateTest {
         assertEquals(
             setOf("information_schema"),
             registry.freshnessGate(registry.find(onB.connectionId)!!, listOf("information_schema")),
-            "dsB's backend was never re-read; dsA's refresh must not make it look fresh",
+            "dsB's target DB was never re-read; dsA's refresh must not make it look fresh",
         )
     }
 

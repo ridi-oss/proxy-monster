@@ -439,7 +439,7 @@ func TestMutationsRejectGET(t *testing.T) {
 }
 
 // TestIsDialFailureCoversAnyDialError: a peer branches on ErrDaemonNotRunning to decide whether to offer a start.
-// Keying on an errno allow-list meant an unlisted failure — a stale non-socket file at the path, a permission
+// Keying on an essno allow-list meant an unlisted failure — a stale non-socket file at the path, a permission
 // problem — looked like a LIVE daemon and blocked auto-start entirely. Any dial-op error must read as "no daemon".
 func TestIsDialFailureCoversAnyDialError(t *testing.T) {
 	tests := []struct {

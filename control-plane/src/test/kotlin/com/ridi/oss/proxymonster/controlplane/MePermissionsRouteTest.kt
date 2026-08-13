@@ -4,6 +4,7 @@ import com.ridi.oss.proxymonster.controlplane.authz.Authz
 import com.ridi.oss.proxymonster.controlplane.authz.CedarEngine
 import com.ridi.oss.proxymonster.controlplane.authz.CedarPolicyStore
 import com.ridi.oss.proxymonster.controlplane.authz.RoleSource
+import com.ridi.oss.proxymonster.controlplane.support.testLoginRoute
 import com.ridi.oss.proxymonster.controlplane.support.webSessionCookie
 import io.ktor.client.HttpClient
 import io.ktor.client.call.body
@@ -18,14 +19,8 @@ import io.ktor.serialization.kotlinx.json.json
 import io.ktor.server.application.Application
 import io.ktor.server.application.install
 import io.ktor.server.plugins.contentnegotiation.ContentNegotiation
-import io.ktor.server.response.respond
-import io.ktor.server.routing.post
 import io.ktor.server.routing.routing
-import io.ktor.server.sessions.SessionTransportTransformerMessageAuthentication
 import io.ktor.server.sessions.Sessions
-import io.ktor.server.sessions.cookie
-import io.ktor.server.sessions.set
-import io.ktor.server.sessions.sessions
 import io.ktor.server.testing.ApplicationTestBuilder
 import io.ktor.server.testing.testApplication
 import java.sql.Connection
@@ -101,23 +96,40 @@ class MePermissionsRouteTest {
         Json.parseToJsonElement(body).jsonObject.getValue("isAdmin").jsonPrimitive.boolean
 
     @Test
-    fun `non-debug requests require a session`() = testApplication {
+    fun `requests require a session`() = testApplication {
         val client = wirePermissionsApp(config(authDebug = false), authz(), dataSource)
 
         assertEquals(HttpStatusCode.Unauthorized, client.get("/api/me/permissions").status)
     }
 
+    /**
+     * A session is what authenticates, in either mode: `PM_AUTH_DEBUG` is a login METHOD, so turning it on
+     * changes nothing about needing to log in first.
+     */
     @Test
-    fun `auth debug returns all capabilities without a session`() = testApplication {
+    fun `auth debug does not admit a caller without a session`() = testApplication {
         val client = wirePermissionsApp(config(authDebug = true), authz(), dataSource)
+
+        assertEquals(HttpStatusCode.Unauthorized, client.get("/api/me/permissions").status)
+    }
+
+    /**
+     * The capabilities reported are the ones Cedar actually grants the logged-in principal. Claiming admin
+     * for a session signed in with a low-privilege role would render every admin affordance and each one
+     * would 403 on click — the console has to describe the authority the routes will actually grant.
+     */
+    @Test
+    fun `a principal holding no roles claims no capabilities`() = testApplication {
+        val client = wirePermissionsApp(config(authDebug = true), authz(), dataSource)
+        assertEquals(HttpStatusCode.NoContent, client.post("/test/session/roleless").status)
 
         val response = client.get("/api/me/permissions")
         assertEquals(HttpStatusCode.OK, response.status)
         val payload = Json.parseToJsonElement(response.bodyAsText()).jsonObject
         assertEquals(setOf("isAdmin", "canReadAllAudit", "canApprove"), payload.keys)
-        assertEquals(true, payload.getValue("isAdmin").jsonPrimitive.boolean)
-        assertEquals(true, payload.getValue("canReadAllAudit").jsonPrimitive.boolean)
-        assertEquals(true, payload.getValue("canApprove").jsonPrimitive.boolean)
+        assertEquals(false, payload.getValue("isAdmin").jsonPrimitive.boolean)
+        assertEquals(false, payload.getValue("canReadAllAudit").jsonPrimitive.boolean)
+        assertEquals(false, payload.getValue("canApprove").jsonPrimitive.boolean)
     }
 
     @Test
@@ -206,12 +218,7 @@ private fun Application.installPermissionsTestApp(config: Config, authz: Authz, 
         webSessionCookie(sessionStore, config.sessionSecret)
     }
     routing {
-        post("/test/session/{principal}") {
-            val principal = requireNotNull(call.parameters["principal"])
-            val deviceId = call.ensureDeviceCookie(secure = false)
-            call.sessions.set(WebSessionRef(sessionStore.mintWeb(principal, null, config.webSessionAbsoluteSeconds, config.webSessionIdleSeconds, deviceId)))
-            call.respond(HttpStatusCode.NoContent)
-        }
+        testLoginRoute(sessionStore, config)
         mePermissionsRoute(config, authz)
     }
 }

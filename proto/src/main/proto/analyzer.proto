@@ -62,7 +62,7 @@ message EngineConfig {
   // MySQL's server-level lower_case_table_names setting (0..2), required for MySQL. Absent for
   // PostgreSQL, which has no equivalent setting.
   optional int32 mysql_lower_case_table_names = 3;
-  // Whether the backend's live MySQL session sql_mode has ANSI_QUOTES active. When true the analyzer
+  // Whether the target DB's live MySQL session sql_mode has ANSI_QUOTES active. When true the analyzer
   // builds the MySQL dialect with the mysql_ansi_quotes tokenizer state, so `"col"` parses as a quoted
   // IDENTIFIER (a masked column read) rather than a string literal — matching the server, so a masked
   // column quoted with `"` is still masked instead of leaking cleartext. sql_mode is mutable per
@@ -84,7 +84,7 @@ message AnalyzeRequest {
 
 // ---- response side ----
 
-// One physical backend relation the statement scans (docs/facts-emission.md). catalog/schema/table
+// One physical target-DB relation the statement scans (docs/facts-emission.md). catalog/schema/table
 // is the resolved identity; covered is true once at least one traced column fact names this table
 // (see probe.go's SourceInfo doc comment for the full per-table coverage rationale).
 message SourceInfo {
@@ -94,15 +94,11 @@ message SourceInfo {
   bool covered = 4;
 }
 
-// A Cedar action required to execute or return a statement. The zero value is invalid and must deny.
-enum GrantAction {
-  GRANT_ACTION_UNSPECIFIED = 0;
-  GRANT_ACTION_SQL_SELECT = 1;
-  GRANT_ACTION_SQL_INSERT = 2;
-  GRANT_ACTION_SQL_UPDATE = 3;
-  GRANT_ACTION_SQL_DELETE = 4;
-  GRANT_ACTION_SQL_DDL = 5;
-  GRANT_ACTION_RESULT_READ = 6;
+// The single statement-execution grant. The control-plane authorizes stmt.kind.<k> on the datasource and
+// Cedar's schema alone maps the kind to a category. An UNSPECIFIED statement_kind denies fail-closed. It is
+// implicitly on the current datasource — no resource field is needed.
+message RequireStatementExecGrant {
+  StatementKind statement_kind = 1;
 }
 
 // How a MASKED verdict applies to a grant. DENIED always denies the entire statement, regardless of
@@ -114,13 +110,205 @@ enum MaskedDisposition {
   MASKED_DISPOSITION_REDACT_OUTPUT_NULL = 3;
 }
 
-// The statement's relay behavior after all required grants are satisfied. The zero value is invalid
-// and must deny rather than being treated as an empty passthrough class.
-enum StatementClass {
-  STATEMENT_CLASS_UNSPECIFIED = 0;
-  STATEMENT_CLASS_ANALYZED = 1;
-  STATEMENT_CLASS_METADATA = 2;
-  STATEMENT_CLASS_SESSION = 3;
+// The kind of statement — one value per statement kind PM classifies, the granular half of the
+// statement-classification model (the control-plane maps each kind to a category and gates it through
+// Cedar as stmt.kind.<k> in stmt.cat.<category>). The analyzer computes the kind from the parsed AST;
+// a statement it cannot classify (a parse error, an unmodeled form) is STATEMENT_KIND_STMT_UNKNOWN,
+// which the control-plane routes to the deny-by-default-but-grantable unknown category. The zero value
+// is invalid and must deny — the analyzer never emits it on a successful classification.
+//
+// Granularity tracks what the AST exposes: kinds are as specific as the parse distinguishes (every
+// CREATE/ALTER/DROP object type, every discriminated SHOW/SET form), and benign forms the parse treats
+// uniformly share a kind (all schema-introspecting SHOWs are SHOW_METADATA; benign session SETs are
+// SET_SESSION_VAR). The coverage test (analyzer/probe/mysql_statement_coverage_test.go) is the
+// authority and pins the kind for every MySQL statement.
+//
+// The enum numbers are opaque identifiers, not a taxonomy: 0 is unspecified, 1 is unknown, and every
+// other kind has an arbitrary but stable number (a new kind takes the next free value). A kind's category
+// lives in the Cedar schema (stmt.cat.*), never in its number — do not read meaning into the value or
+// group by ranges.
+enum StatementKind {
+  STATEMENT_KIND_UNSPECIFIED = 0;
+
+  // unknown — the analyzer could not classify (parse error / unmodeled form); deny-by-default,
+  // grantable per datasource (the exception.unanalyzable semantics).
+  STATEMENT_KIND_STMT_UNKNOWN = 1;
+
+  // read
+  STATEMENT_KIND_SELECT = 2;
+  STATEMENT_KIND_TABLE = 3;
+  STATEMENT_KIND_VALUES = 4;
+  STATEMENT_KIND_WITH_SELECT = 5;
+  STATEMENT_KIND_SET_OP = 6;
+  // A plan-only EXPLAIN of a query — MySQL EXPLAIN and EXPLAIN ANALYZE, PostgreSQL EXPLAIN, and
+  // PostgreSQL EXPLAIN ANALYZE of a read: it returns the query PLAN, not rows, and executes no write. The
+  // schema places stmt.kind.explain in stmt.cat.read. An EXPLAIN ANALYZE that EXECUTES a write (PostgreSQL
+  // only) is classified as that write's own kind instead, so it authorizes — and denies — as the write.
+  STATEMENT_KIND_EXPLAIN = 140;
+
+  // write
+  STATEMENT_KIND_INSERT = 7;
+  STATEMENT_KIND_INSERT_SELECT = 8;
+  STATEMENT_KIND_INSERT_ON_DUP = 9;
+  STATEMENT_KIND_UPDATE = 10;
+  STATEMENT_KIND_DELETE = 11;
+  STATEMENT_KIND_REPLACE = 12;
+
+  // ddl
+  STATEMENT_KIND_CREATE_TABLE = 13;
+  STATEMENT_KIND_CREATE_VIEW = 14;
+  STATEMENT_KIND_CREATE_INDEX = 15;
+  STATEMENT_KIND_CREATE_DATABASE = 16;
+  STATEMENT_KIND_CREATE_TRIGGER = 17;
+  STATEMENT_KIND_CREATE_PROCEDURE = 18;
+  STATEMENT_KIND_CREATE_FUNCTION = 19;
+  STATEMENT_KIND_CREATE_EVENT = 20;
+  STATEMENT_KIND_CREATE_SERVER = 21;
+  STATEMENT_KIND_CREATE_TABLESPACE = 22;
+  STATEMENT_KIND_CREATE_SRS = 23;
+  STATEMENT_KIND_ALTER_TABLE = 24;
+  STATEMENT_KIND_ALTER_DATABASE = 25;
+  STATEMENT_KIND_ALTER_VIEW = 26;
+  STATEMENT_KIND_ALTER_EVENT = 27;
+  STATEMENT_KIND_ALTER_PROCEDURE = 28;
+  STATEMENT_KIND_ALTER_FUNCTION = 29;
+  STATEMENT_KIND_ALTER_SERVER = 30;
+  STATEMENT_KIND_ALTER_TABLESPACE = 31;
+  STATEMENT_KIND_ALTER_INSTANCE = 32;
+  STATEMENT_KIND_DROP_TABLE = 33;
+  STATEMENT_KIND_DROP_INDEX = 34;
+  STATEMENT_KIND_DROP_VIEW = 35;
+  STATEMENT_KIND_DROP_DATABASE = 36;
+  STATEMENT_KIND_DROP_TRIGGER = 37;
+  STATEMENT_KIND_DROP_PROCEDURE = 38;
+  STATEMENT_KIND_DROP_FUNCTION = 39;
+  STATEMENT_KIND_DROP_EVENT = 40;
+  STATEMENT_KIND_DROP_SERVER = 41;
+  STATEMENT_KIND_DROP_TABLESPACE = 42;
+  STATEMENT_KIND_DROP_SRS = 43;
+  STATEMENT_KIND_TRUNCATE_TABLE = 44;
+  STATEMENT_KIND_RENAME_TABLE = 45;
+
+  // session (connection-local; permit-by-default domain)
+  STATEMENT_KIND_START_TRANSACTION = 46;
+  STATEMENT_KIND_COMMIT = 47;
+  STATEMENT_KIND_ROLLBACK = 48;
+  STATEMENT_KIND_SAVEPOINT = 49;
+  STATEMENT_KIND_SET_TRANSACTION = 50;
+  STATEMENT_KIND_SET_SESSION_VAR = 51;
+  STATEMENT_KIND_USE = 52;
+
+  // metadata (schema introspection; permit-by-default domain)
+  STATEMENT_KIND_DESCRIBE = 53;
+  STATEMENT_KIND_EXPLAIN_TABLE = 54;
+  STATEMENT_KIND_SHOW_METADATA = 55;
+  STATEMENT_KIND_SHOW_WARNINGS = 56;
+  STATEMENT_KIND_SHOW_ERRORS = 57;
+  STATEMENT_KIND_HELP = 58;
+
+  // admin.account
+  STATEMENT_KIND_CREATE_USER = 59;
+  STATEMENT_KIND_ALTER_USER = 60;
+  STATEMENT_KIND_DROP_USER = 61;
+  STATEMENT_KIND_RENAME_USER = 62;
+  STATEMENT_KIND_CREATE_ROLE = 63;
+  STATEMENT_KIND_DROP_ROLE = 64;
+  STATEMENT_KIND_GRANT_PRIV = 65;
+  STATEMENT_KIND_GRANT_ROLE = 66;
+  STATEMENT_KIND_REVOKE_PRIV = 67;
+  STATEMENT_KIND_REVOKE_ROLE = 68;
+  STATEMENT_KIND_SET_PASSWORD = 69;
+  STATEMENT_KIND_SET_ROLE = 70;
+  STATEMENT_KIND_SET_DEFAULT_ROLE = 71;
+  STATEMENT_KIND_SET_SESSION_AUTHORIZATION = 72;
+  STATEMENT_KIND_SHOW_GRANTS = 73;
+  STATEMENT_KIND_SHOW_CREATE_USER = 74;
+
+  // admin.replication
+  STATEMENT_KIND_CHANGE_REPLICATION_SOURCE = 75;
+  STATEMENT_KIND_CHANGE_REPLICATION_FILTER = 76;
+  STATEMENT_KIND_START_REPLICA = 77;
+  STATEMENT_KIND_STOP_REPLICA = 78;
+  STATEMENT_KIND_RESET_REPLICA = 79;
+  STATEMENT_KIND_START_GROUP_REPLICATION = 80;
+  STATEMENT_KIND_STOP_GROUP_REPLICATION = 81;
+  STATEMENT_KIND_PURGE_BINARY_LOGS = 82;
+  STATEMENT_KIND_RESET_MASTER = 83;
+  STATEMENT_KIND_RESET_BINARY_LOGS_AND_GTIDS = 84;
+  STATEMENT_KIND_SET_SQL_LOG_BIN = 85;
+  STATEMENT_KIND_BINLOG = 86;
+  STATEMENT_KIND_SHOW_MASTER_STATUS = 87;
+  STATEMENT_KIND_SHOW_BINARY_LOGS = 88;
+  STATEMENT_KIND_SHOW_BINARY_LOG_STATUS = 89;
+  STATEMENT_KIND_SHOW_BINLOG_EVENTS = 90;
+  STATEMENT_KIND_SHOW_RELAYLOG_EVENTS = 91;
+  STATEMENT_KIND_SHOW_REPLICA_STATUS = 92;
+  STATEMENT_KIND_SHOW_REPLICAS = 93;
+
+  // admin.process
+  STATEMENT_KIND_KILL = 94;
+  STATEMENT_KIND_SHOW_PROCESSLIST = 95;
+  STATEMENT_KIND_SHOW_ENGINE_STATUS = 96;
+
+  // admin.server
+  STATEMENT_KIND_SHUTDOWN = 97;
+  STATEMENT_KIND_RESTART = 98;
+  STATEMENT_KIND_FLUSH = 99;
+  STATEMENT_KIND_CLONE = 100;
+  STATEMENT_KIND_SET_GLOBAL = 101;
+  STATEMENT_KIND_SET_PERSIST = 102;
+  STATEMENT_KIND_SET_PERSIST_ONLY = 103;
+  STATEMENT_KIND_SET_SQL_MODE = 104;
+  STATEMENT_KIND_SET_STANDARD_CONFORMING_STRINGS = 105;
+  STATEMENT_KIND_SET_RESOURCE_GROUP = 106;
+  STATEMENT_KIND_CREATE_RESOURCE_GROUP = 107;
+  STATEMENT_KIND_ALTER_RESOURCE_GROUP = 108;
+  STATEMENT_KIND_DROP_RESOURCE_GROUP = 109;
+  STATEMENT_KIND_RESET_PERSIST = 110;
+
+  // admin.maintenance
+  STATEMENT_KIND_ANALYZE_TABLE = 111;
+  STATEMENT_KIND_CHECK_TABLE = 112;
+  STATEMENT_KIND_CHECKSUM_TABLE = 113;
+  STATEMENT_KIND_OPTIMIZE_TABLE = 114;
+  STATEMENT_KIND_REPAIR_TABLE = 115;
+  STATEMENT_KIND_CACHE_INDEX = 116;
+  STATEMENT_KIND_LOAD_INDEX_INTO_CACHE = 117;
+
+  // admin.plugin
+  STATEMENT_KIND_INSTALL_PLUGIN = 118;
+  STATEMENT_KIND_UNINSTALL_PLUGIN = 119;
+  STATEMENT_KIND_INSTALL_COMPONENT = 120;
+  STATEMENT_KIND_UNINSTALL_COMPONENT = 121;
+
+  // admin.lock
+  STATEMENT_KIND_LOCK_TABLES = 122;
+  STATEMENT_KIND_UNLOCK_TABLES = 123;
+  STATEMENT_KIND_LOCK_INSTANCE = 124;
+  STATEMENT_KIND_UNLOCK_INSTANCE = 125;
+
+  // admin.file (FILE-privilege server-filesystem I/O)
+  STATEMENT_KIND_SELECT_INTO_OUTFILE = 126;
+  STATEMENT_KIND_SELECT_INTO_DUMPFILE = 127;
+  STATEMENT_KIND_LOAD_DATA = 128;
+  STATEMENT_KIND_LOAD_XML = 129;
+  STATEMENT_KIND_IMPORT_TABLE = 130;
+  // PostgreSQL COPY TO/FROM a server file — the PG analog of OUTFILE/LOAD (one kind for both directions).
+  STATEMENT_KIND_COPY = 138;
+  // ddl — a SELECT ... INTO a non-file target (MySQL `INTO @var`, PostgreSQL `INTO <table>`) writes data
+  // to a destination the proxy cannot mask, so it is a gated write, never a plain read.
+  STATEMENT_KIND_SELECT_INTO = 139;
+
+  // admin.exec (dynamic execution)
+  STATEMENT_KIND_PREPARE = 131;
+  STATEMENT_KIND_EXECUTE = 132;
+  STATEMENT_KIND_DEALLOCATE_PREPARE = 133;
+  STATEMENT_KIND_CALL = 134;
+  STATEMENT_KIND_DO = 135;
+
+  // admin.unanalyzable (opaque; the analyzer cannot decompose)
+  STATEMENT_KIND_HANDLER = 136;
+  STATEMENT_KIND_XA = 137;
 }
 
 // The security class of an unresolved statement. The zero value is invalid and must hard-deny.
@@ -128,13 +316,31 @@ enum FailureClass {
   FAILURE_CLASS_UNSPECIFIED = 0;
   // A structurally forbidden statement that policy and query grants must never override.
   FAILURE_CLASS_INADMISSIBLE = 1;
-  // A single statement whose meaning Go could not fully resolve; Kotlin applies sql.unanalyzable.
+  // A single statement whose meaning Go could not fully resolve; Kotlin applies exception.unanalyzable.
   FAILURE_CLASS_UNANALYZABLE = 2;
 }
 
 message ColumnResource {
   string catalog = 1;
   RelationIdentity identity = 2;
+}
+
+// A literal compared against a base column inside a predicate.
+//
+// `WHERE ssn = '987-65-4320'` puts a protected value in the query itself, where masking cannot reach it
+// -- masking rewrites results, not predicates. A notification that forwards such a statement leaks exactly
+// what the policy protects, so the control plane withholds the text when the column is CLASSIFIED.
+//
+// The analyzer states the FACT and nothing more: it has no role context and must never acquire one, so it
+// says which base columns a literal reaches and the control plane decides -- by classification, reader-
+// neutrally -- what that means. Emission is best-effort by construction (a value can also arrive through a
+// function, a CASE, a subquery, or a bound parameter), which is why this may only ever HIDE text -- never
+// authorize anything.
+message PredicateLiteral {
+  // The resolved base column, through the same lineage resolution the rest of enforcement uses.
+  ColumnResource column = 1;
+  // Where the comparison sits, for audit legibility: WHERE, HAVING, QUALIFY, or JOIN.
+  string clause = 2;
 }
 
 message TableResource {
@@ -152,46 +358,51 @@ message UtilityResource {
   string command = 1;
 }
 
-message RequiredGrant {
-  // UNSPECIFIED is never grantable and must deny fail-closed.
-  GrantAction action = 1;
+// One result-read requirement, on exactly one resource. A column/table carries a MaskedDisposition (and,
+// for a column, the output ordinals it gates); a function/utility is a capability grant with neither. A
+// missing or malformed resource denies fail-closed.
+message RequireResultReadGrant {
   oneof resource {
-    ColumnResource column = 2;
-    TableResource table = 3;
-    FunctionResource function = 4;
-    UtilityResource utility = 5;
-    // Presence marks the current datasource; Kotlin supplies its name when rendering the resource.
-    bool datasource = 6;
+    ColumnResource column = 1;
+    TableResource table = 2;
+    FunctionResource function = 3;
+    UtilityResource utility = 4;
   }
-  // Consulted only for a MASKED authorization verdict. DENIED always denies the statement, and
-  // UNSPECIFIED must deny even if the resource would otherwise be maskable.
-  MaskedDisposition masked_disposition = 7;
+  // Consulted only for a MASKED authorization verdict on a column/table. DENIED always denies the
+  // statement, and UNSPECIFIED must deny even if the resource would otherwise be maskable.
+  MaskedDisposition masked_disposition = 5;
   // Zero-based positions in StatementFacts.output_columns. Invalid ordinals must deny fail-closed.
-  repeated int32 output_ordinals = 8;
+  repeated int32 output_ordinals = 6;
 }
 
 message StatementFacts {
   // True only after complete statement analysis. False requires a non-zero failure_class.
   bool resolved = 1;
-  // INADMISSIBLE hard-denies; UNANALYZABLE enters the existing sql.unanalyzable policy gate;
+  // INADMISSIBLE hard-denies; UNANALYZABLE enters the existing exception.unanalyzable policy gate;
   // UNSPECIFIED hard-denies.
   FailureClass failure_class = 2;
   // The failing analyzer stage (PARSE, VALIDATE, CONVERT, or LINEAGE), absent on success.
   optional string failed_stage = 3;
   // Stable diagnostic detail for audit. Empty failure detail is still a denial, never an allow.
   string detail = 4;
-  // ANALYZED, METADATA, or SESSION relay class. UNSPECIFIED denies fail-closed.
-  StatementClass statement_class = 5;
-  // Complete authorization requirements. Missing or malformed resources/actions deny fail-closed.
-  repeated RequiredGrant required_grants = 6;
-  // Ordered backend output names; RequiredGrant.output_ordinals indexes this exact list.
+  // was statement_class (relay class) — a statement's relay is derived: no column/table/function grant
+  // means nothing to mask, so the control-plane relays it; the session-on-channel rule is a Cedar forbid.
+  reserved 5;
+  // was required_grants (one repeated, discriminated RequiredGrant). The single statement-execution grant
+  // and the zero-or-more result-read grants are separate typed fields below, so the one kind signal cannot
+  // be duplicated, and its absence on a resolved fact is structurally distinguishable.
+  reserved 6;
+  // Ordered target-DB output names; RequireResultReadGrant.output_ordinals indexes this exact list.
   repeated string output_columns = 7;
-  // True when returning masked input would be unsafe because the statement writes it.
-  bool is_write = 8;
+  // was is_write — the analyzer emits DENY_STATEMENT column dispositions for write payloads directly, so
+  // the control-plane needs no separate write flag (it only ever worded a deny message from it).
+  reserved 8;
   // Safe analyzer rewrite (currently faithful star expansion); absent means relay the client's SQL.
   optional string rewritten_sql = 9;
-  // True when grants describe an inner query under EXPLAIN; rewritten_sql must then remain absent.
-  bool explain_of_query = 10;
+  // was explain_of_query — an EXPLAIN's output is the plan, not the query's columns, so the analyzer emits
+  // its projected columns as read-required-with-no-output-ordinal and leaves output_columns empty; nothing
+  // binds a mask, so no separate result-shape flag is needed.
+  reserved 10;
   // True only for non-temporary DDL roots; Kotlin also treats called functions as catalog-changing.
   bool catalog_changing = 11;
   // Resolved physical source identities. Missing required sources is an analyzer failure, not allow.
@@ -200,4 +411,19 @@ message StatementFacts {
   repeated string functions = 13;
   // Dotted identifier schema candidates used only to retry a catalog miss with refreshed metadata.
   repeated string schema_qualifier_candidates = 14;
+  reserved 15; // was statement_kind (top-level) — it lives on statement_exec below
+  // The single statement-execution grant: authorize stmt.kind.<k> on the datasource. The analyzer sets it
+  // whenever a statement parses to a classifiable root — including an unresolved-but-classified one (KILL,
+  // GRANT, a lineage-failed SELECT) — and omits it only on a pre-parse failure, which reads as STMT_UNKNOWN.
+  // Its absence on a RESOLVED fact is a fail-closed contract violation. The analyzer's field is singular and
+  // assigned exactly once, so the control-plane needs no runtime "exactly one execute grant" count.
+  optional RequireStatementExecGrant statement_exec = 16;
+  // The result-read requirements: masked/denied columns, uncovered table scans, called functions, and
+  // utility commands. Zero or more; each authorized on its own resource.
+  repeated RequireResultReadGrant result_reads = 17;
+  // Base columns a literal is compared against in a predicate. Advisory only: it gates whether the
+  // statement TEXT may be shown outside the console, never whether the statement runs. Absence never
+  // implies safety -- a consumer treats an unanalyzable statement as if it carried one.
+  repeated PredicateLiteral predicate_literals = 18;
+
 }

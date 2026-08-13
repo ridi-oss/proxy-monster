@@ -8,7 +8,8 @@
     "invalid_token": "유효하지 않거나 만료된 토큰입니다.",
     "forbidden": "권한이 없습니다: {detail}",
     "oidc_not_configured": "이 서버에는 SSO(Single Sign-On)가 설정되어 있지 않습니다.",
-    "fallback": "문제가 발생했습니다. 다시 시도해 주세요."
+    "fallback": "문제가 발생했습니다. 다시 시도해 주세요.",
+    "invalid_value": "{field}에 사용할 수 없는 값입니다."
   },
   "approval": {
     "already_decided": "이미 처리된 요청입니다.",

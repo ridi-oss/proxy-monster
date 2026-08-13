@@ -27,6 +27,7 @@ class ConfigGuardTest {
         "PM_OIDC_CLIENT_ID" to "cid",
         "PM_OIDC_CLIENT_SECRET" to "secret",
         "PM_OIDC_REDIRECT_URI" to "https://proxy.example.com/auth/oidc/callback",
+        "PM_SECRET_TOKEN" to "proxy-shared-secret",
         *pairs,
     )
 
@@ -46,6 +47,16 @@ class ConfigGuardTest {
         assertFailsWith<IllegalArgumentException> { Config.fromEnv(envOf("PM_QUERY_TIMEOUT" to "abc")) }
     }
 
+    @Test fun `PM_NOTIFY_STATEMENT takes omit auto full, coerces legacy truncated, rejects the rest`() {
+        assertEquals("auto", Config.fromEnv(envOf()).notifyStatement, "default is auto")
+        assertEquals("omit", Config.fromEnv(envOf("PM_NOTIFY_STATEMENT" to "omit")).notifyStatement)
+        assertEquals("full", Config.fromEnv(envOf("PM_NOTIFY_STATEMENT" to "FULL")).notifyStatement)
+        // The removed `truncated` must not fail boot — it coerces to `auto` (logged).
+        assertEquals("auto", Config.fromEnv(envOf("PM_NOTIFY_STATEMENT" to "truncated")).notifyStatement)
+        // Anything else is a config error, not a silent default.
+        assertFailsWith<IllegalArgumentException> { Config.fromEnv(envOf("PM_NOTIFY_STATEMENT" to "sometimes")) }
+    }
+
     @Test fun `PM_QUERY_TIMEOUT is bounded to the proxy's duration-safe ceiling (no ms overflow)`() {
         // The shared CP+proxy maximum: accepted here, rejected one above. Keeps queryExchangeTimeoutMs /
         // the run-stream cap from overflowing Long, and keeps the lockstep contract with goproxy exact.
@@ -62,14 +73,18 @@ class ConfigGuardTest {
         assertFailsWith<IllegalArgumentException> { Config.fromEnv(envOf("PM_QUERY_TIMEOUT" to Long.MAX_VALUE.toString())) }
     }
 
-    @Test fun `run token TTL always outlives the configured query window`() {
-        // The one-shot run token and the editor-session token must both stay valid for at least the full
-        // PM_QUERY_TIMEOUT window a single statement may run for, else a long query fails UNAUTHENTICATED
-        // mid-run when the proxy revalidates the token.
-        for (timeout in listOf(1L, 600L, 3600L, 36_000L, Config.MAX_QUERY_TIMEOUT_SECONDS)) {
+    @Test fun `run token TTL outlives the whole run, session TTL outlives the query window`() {
+        // The one-shot run token must stay valid for the ENTIRE run it authorizes — the dial-back + the
+        // target-DB open + the exchange (PM_QUERY_TIMEOUT + exchange grace) — not merely the query window, else a
+        // long query on a slow target-DB open fails UNAUTHENTICATED mid-run when the proxy revalidates the token.
+        // The editor-session token's 8h floor spans many queries, so it need only clear one window.
+        val runOverheadSeconds =
+            (RUN_DIALBACK_TIMEOUT_MS + RUN_OPEN_TIMEOUT_MS) / 1000 + Config.QUERY_EXCHANGE_GRACE_MS / 1000
+        // 616 is the smallest timeout at which the old floor-only grace under-budgeted the full run.
+        for (timeout in listOf(1L, 600L, 616L, 3600L, 36_000L, Config.MAX_QUERY_TIMEOUT_SECONDS)) {
             assertTrue(
-                RunExecService.runTokenTtlSeconds(timeout) > timeout,
-                "run token TTL must exceed the query window for timeout=$timeout",
+                RunExecService.runTokenTtlSeconds(timeout) >= timeout + runOverheadSeconds,
+                "run token TTL must cover dial-back + target-DB open + exchange for timeout=$timeout",
             )
             assertTrue(
                 RunExecService.editorSessionTtlSeconds(timeout) > timeout,
@@ -78,21 +93,6 @@ class ConfigGuardTest {
         }
     }
 
-    @Test fun `the run stream outlives the dial and exchange it wraps`() {
-        // The stream opens before the proxy reports ready, so its lifetime spans BOTH the dial and the
-        // statement exchange. If it expires first the control plane tears down a statement that is still
-        // legitimately running, and the caller sees a stream-closed error instead of a timeout. The margin
-        // is arithmetic across three files, so pin it here rather than leave it to inspection.
-        for (timeout in listOf(1L, 600L, 840L, 3600L, Config.MAX_QUERY_TIMEOUT_SECONDS)) {
-            val config = Config.fromEnv(envOf("PM_QUERY_TIMEOUT" to timeout.toString()))
-            val streamTimeout = runStreamTimeoutMs(config.queryExchangeTimeoutMs)
-            assertTrue(
-                streamTimeout > DIAL_TIMEOUT_MS + config.queryExchangeTimeoutMs,
-                "run stream ($streamTimeout ms) must outlive dial + exchange " +
-                    "(${DIAL_TIMEOUT_MS + config.queryExchangeTimeoutMs} ms) for timeout=$timeout",
-            )
-        }
-    }
 
     @Test fun `the exchange budget outlives the proxy's own statement watchdog`() {
         // The proxy aborts a statement at PM_QUERY_TIMEOUT. This bound sits outside that one, so it has to
@@ -177,6 +177,34 @@ class ConfigGuardTest {
                 ),
             )
         }
+    }
+
+    @Test fun `debug off requires a non-blank proxy secret`() {
+        assertFailsWith<IllegalArgumentException> { Config.fromEnv(productionEnv("PM_SECRET_TOKEN" to "")) }
+        assertFailsWith<IllegalArgumentException> { Config.fromEnv(productionEnv("PM_SECRET_TOKEN" to "   ")) }
+        // The actual advisory case: the key entirely absent (env() returns null). productionEnv always sets
+        // it, so build a production env without it to pin that the null path fails closed too.
+        assertFailsWith<IllegalArgumentException> {
+            Config.fromEnv(
+                envOf(
+                    "PM_AUTH_DEBUG" to "false",
+                    "PM_MCP_RESOURCE" to "https://proxy.example.com/mcp",
+                    "PM_SESSION_SECRET" to "x".repeat(32),
+                    "PM_OIDC_ISSUER" to "https://idp.example.com",
+                    "PM_OIDC_CLIENT_ID" to "cid",
+                    "PM_OIDC_CLIENT_SECRET" to "secret",
+                    "PM_OIDC_REDIRECT_URI" to "https://proxy.example.com/auth/oidc/callback",
+                ),
+            )
+        }
+    }
+
+    @Test fun `debug off with a valid proxy secret boots and preserves it`() {
+        assertEquals("proxy-shared-secret", Config.fromEnv(productionEnv()).secretToken)
+    }
+
+    @Test fun `debug mode preserves the configured proxy secret value verbatim`() {
+        assertEquals("   ", Config.fromEnv(envOf("PM_SECRET_TOKEN" to "   ")).secretToken)
     }
 
     @Test fun `debug off requires secure canonical MCP origins`() {

@@ -19,11 +19,11 @@ Blanking the output cell does not stop the query from executing on the raw
 value, and execution has side channels the proxy cannot mask:
 
 - Error presence / SQLSTATE. A value-conditional error is a per-bit oracle.
-  `SELECT 1/(CASE WHEN rrn LIKE '90%' THEN 0 ELSE 1 END)` (PostgreSQL) errors
+  `SELECT 1/(CASE WHEN ssn LIKE '90%' THEN 0 ELSE 1 END)` (PostgreSQL) errors
   iff a row matches; `CAST('x' AS JSON)` and `EXP(710)` are hard errors on both
   engines. Diagnostic redaction
   ([diagnostic-redaction.md](./diagnostic-redaction.md)) strips the error text,
-  but the client still sees that the statement errored and the SQLSTATE/errno.
+  but the client still sees that the statement errored and the SQLSTATE/essno.
   Loop over prefixes and reconstruct the value.
 - Warning count. MySQL puts a `warning_count` in the OK packet.
   `CAST(CASE WHEN … THEN 'x' ELSE '1' END AS UNSIGNED)` warns iff the branch
@@ -31,10 +31,10 @@ value, and execution has side channels the proxy cannot mask:
   warning text, not the OK-packet count.
 
 A conditional is not even required — arithmetic and coercion fault on the value
-directly. `1/(ASCII(SUBSTRING(rrn,1,1)) - 115)` faults iff the first character
-is `s`; `POW(1e300, ASCII(SUBSTRING(rrn,1,1)) - 100)` overflows past a threshold
+directly. `1/(ASCII(SUBSTRING(ssn,1,1)) - 115)` faults iff the first character
+is `s`; `POW(1e300, ASCII(SUBSTRING(ssn,1,1)) - 100)` overflows past a threshold
 (a comparison done arithmetically, so binary-searchable);
-`CAST(SUBSTRING(rrn,1,1) AS UNSIGNED)` warns iff the character is not a digit.
+`CAST(SUBSTRING(ssn,1,1) AS UNSIGNED)` warns iff the character is not a digit.
 These are exploitable against a real masking proxy, single-row-targeted via a
 non-sensitive `WHERE id = N`, so the row cap does not help.
 
@@ -67,7 +67,7 @@ aggregate/window/subquery, or any non-whitelisted call — denies.
 A column leaf is redactable only if it resolves as a pure identity to a base
 column. A column that resolves (one or more scopes down) to a non-identity
 derivation is denied, because an oracle can hide there:
-`SELECT c FROM (SELECT cast(rrn AS json) AS c) t`, or even
+`SELECT c FROM (SELECT cast(ssn AS json) AS c) t`, or even
 `SELECT upper(c) FROM (…)`, would otherwise pass a surface whitelist check while
 the cast still executes in the subquery. Failing closed here also denies a safe
 transform hidden in a subquery — accepted over-restriction.
@@ -99,7 +99,7 @@ walk runs before redaction), independent of the whitelist.
   (MySQL + PostgreSQL) locks the boundary — total transforms redact;
   cast/arithmetic/`CASE`/comparison/overflow/coercion-arg and subquery-hidden
   transforms deny. `TestDerivedProjectionFacts` locks the per-ordinal facts.
-- Control-plane: `GateSqlglotRegressionTest` (`upper(rrn)` redacts to mask kind
+- Control-plane: `GateSqlglotRegressionTest` (`upper(ssn)` redacts to mask kind
   `NULL`; the whitelist redact/deny split; hidden-in-derived-table denies),
   `EnforcementDbTest` (cast/arithmetic deny), `SchemaThreadingDbTest` (whole-row
   JSON deny).
@@ -109,10 +109,10 @@ walk runs before redaction), independent of the whitelist.
 - Totality assumes built-in resolution. The whitelist matches a bare built-in
   name/kind; sqlglot cannot distinguish a user-defined function named
   `upper`/`left`/`md5` from the built-in, so a same-named UDF would route
-  through the total path. Mitigated by `sql.ddl`-gated function creation and the
+  through the total path. Mitigated by ddl-gated function creation and the
   operational rule that a masking datasource carries no data-reading UDFs
   ([KNOWN_LIMITATIONS.md](../KNOWN_LIMITATIONS.md)); a schema-qualified call
-  (`app.upper(rrn)`) is not matched and denies.
+  (`app.upper(ssn)`) is not matched and denies.
 - `CONCAT` is total except at `max_allowed_packet` (MySQL): a result exceeding
   the packet limit yields NULL plus a warning, so a ~64 MB padded literal is a
   per-row length (not value) oracle — impractical, but noted; prefer

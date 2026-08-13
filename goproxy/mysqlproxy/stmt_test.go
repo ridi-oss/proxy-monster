@@ -27,17 +27,17 @@ func TestRelayStmtPrepareResponseRelaysMetadata(t *testing.T) {
 				packets = append(packets, stmtTestPacket{seq: byte(len(packets) + 1), payload: stmtTestEOFPacket()})
 			}
 
-			backend := stmtTestPacketBuffer(t, packets)
+			targetDb := stmtTestPacketBuffer(t, packets)
 			var client bytes.Buffer
-			stmtID, prepared, err := relayStmtPrepareResponse(&client, backend, deprecateEOF, nil)
+			stmtID, prepared, err := relayStmtPrepareResponse(&client, targetDb, deprecateEOF, nil)
 			if err != nil {
 				t.Fatalf("relayStmtPrepareResponse: %v", err)
 			}
 			if stmtID != 42 || !prepared {
 				t.Fatalf("result = (%d, %v), want (42, true)", stmtID, prepared)
 			}
-			if backend.Len() != 0 {
-				t.Fatalf("backend has %d unread bytes", backend.Len())
+			if targetDb.Len() != 0 {
+				t.Fatalf("target DB has %d unread bytes", targetDb.Len())
 			}
 			if got := readStmtTestPackets(t, &client); !reflect.DeepEqual(got, packets) {
 				t.Fatalf("relayed packets = %#v, want %#v", got, packets)
@@ -98,17 +98,17 @@ func TestRelayStmtPrepareResponseMetadataShapes(t *testing.T) {
 				[]stmtTestPacket{{seq: 1, payload: stmtPrepareOKPayload(99, test.columns, test.params)}},
 				test.definitions...,
 			)
-			backend := stmtTestPacketBuffer(t, packets)
+			targetDb := stmtTestPacketBuffer(t, packets)
 			var client bytes.Buffer
-			stmtID, prepared, err := relayStmtPrepareResponse(&client, backend, test.deprecate, nil)
+			stmtID, prepared, err := relayStmtPrepareResponse(&client, targetDb, test.deprecate, nil)
 			if err != nil {
 				t.Fatalf("relayStmtPrepareResponse: %v", err)
 			}
 			if stmtID != 99 || !prepared {
 				t.Fatalf("result = (%d, %v), want (99, true)", stmtID, prepared)
 			}
-			if backend.Len() != 0 {
-				t.Fatalf("backend has %d unread bytes", backend.Len())
+			if targetDb.Len() != 0 {
+				t.Fatalf("target DB has %d unread bytes", targetDb.Len())
 			}
 			if got := readStmtTestPackets(t, &client); !reflect.DeepEqual(got, packets) {
 				t.Fatalf("relayed packets = %#v, want %#v", got, packets)
@@ -125,31 +125,31 @@ func TestRelayStmtPrepareResponseCountsLogicalDefinitions(t *testing.T) {
 		{seq: 2, payload: firstFragment},
 		{seq: 3, payload: []byte("definition-continuation")},
 	}
-	backend := stmtTestPacketBuffer(t, packets)
+	targetDb := stmtTestPacketBuffer(t, packets)
 	var client bytes.Buffer
 
-	stmtID, prepared, err := relayStmtPrepareResponse(&client, backend, true, nil)
+	stmtID, prepared, err := relayStmtPrepareResponse(&client, targetDb, true, nil)
 	if err != nil {
 		t.Fatalf("relayStmtPrepareResponse: %v", err)
 	}
 	if stmtID != 77 || !prepared {
 		t.Fatalf("result = (%d, %v), want (77, true)", stmtID, prepared)
 	}
-	if backend.Len() != 0 {
-		t.Fatalf("backend has %d unread bytes", backend.Len())
+	if targetDb.Len() != 0 {
+		t.Fatalf("target DB has %d unread bytes", targetDb.Len())
 	}
 	if got := readStmtTestPackets(t, &client); !reflect.DeepEqual(got, packets) {
 		t.Fatalf("relayed packets = %#v, want %#v", got, packets)
 	}
 }
 
-func TestRelayStmtPrepareResponseRelaysBackendError(t *testing.T) {
-	backendErr := mysqlwire.ErrPacketState(1064, "42000", "backend rejected prepare")
-	packets := []stmtTestPacket{{seq: 1, payload: backendErr}}
-	backend := stmtTestPacketBuffer(t, packets)
+func TestRelayStmtPrepareResponseRelaysTargetDbError(t *testing.T) {
+	targetDbErr := mysqlwire.ErrPacketState(1064, "42000", "target DB rejected prepare")
+	packets := []stmtTestPacket{{seq: 1, payload: targetDbErr}}
+	targetDb := stmtTestPacketBuffer(t, packets)
 	var client bytes.Buffer
 
-	stmtID, prepared, err := relayStmtPrepareResponse(&client, backend, true, nil)
+	stmtID, prepared, err := relayStmtPrepareResponse(&client, targetDb, true, nil)
 	if err != nil {
 		t.Fatalf("relayStmtPrepareResponse: %v", err)
 	}
@@ -164,10 +164,10 @@ func TestRelayStmtPrepareResponseRelaysBackendError(t *testing.T) {
 func TestRelayStmtPrepareResponseRejectsMalformedHeader(t *testing.T) {
 	malformed := stmtPrepareOKPayload(42, 0, 0)
 	malformed[0] = 0x01
-	backend := stmtTestPacketBuffer(t, []stmtTestPacket{{seq: 7, payload: malformed}})
+	targetDb := stmtTestPacketBuffer(t, []stmtTestPacket{{seq: 7, payload: malformed}})
 	var client bytes.Buffer
 
-	if _, prepared, err := relayStmtPrepareResponse(&client, backend, true, nil); err == nil || prepared {
+	if _, prepared, err := relayStmtPrepareResponse(&client, targetDb, true, nil); err == nil || prepared {
 		t.Fatalf("result = (prepared %v, error %v), want false and error", prepared, err)
 	}
 	packets := readStmtTestPackets(t, &client)
@@ -186,10 +186,10 @@ func TestRelayStmtPrepareResponseRequiresLegacyEOF(t *testing.T) {
 		{seq: 2, payload: []byte("param-definition")},
 		{seq: 3, payload: []byte("not-an-eof")},
 	}
-	backend := stmtTestPacketBuffer(t, packets)
+	targetDb := stmtTestPacketBuffer(t, packets)
 	var client bytes.Buffer
 
-	if _, prepared, err := relayStmtPrepareResponse(&client, backend, false, nil); err == nil || prepared {
+	if _, prepared, err := relayStmtPrepareResponse(&client, targetDb, false, nil); err == nil || prepared {
 		t.Fatalf("result = (prepared %v, error %v), want false and error", prepared, err)
 	}
 	got := readStmtTestPackets(t, &client)

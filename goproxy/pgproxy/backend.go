@@ -1,6 +1,7 @@
 package pgproxy
 
 import (
+	"context"
 	"crypto/md5"
 	"encoding/hex"
 	"errors"
@@ -15,12 +16,18 @@ import (
 	"github.com/ridi-oss/proxy-monster/goproxy/engine"
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
 	"github.com/ridi-oss/proxy-monster/goproxy/spi"
+	"github.com/ridi-oss/proxy-monster/goproxy/wire"
 )
 
-const backendHandshakeTimeout = 10 * time.Second
+const targetDbHandshakeTimeout = 10 * time.Second
 
-func dialBackendAuth(target spi.BackendTarget) (net.Conn, []pgproto3.ParameterStatus, pgproto3.BackendKeyData, byte, error) {
-	conn, err := net.DialTimeout("tcp", net.JoinHostPort(target.Host, strconv.Itoa(target.Port)), backendHandshakeTimeout)
+// dialTargetDbAuth honors ctx for the whole handshake: DialContext aborts the connect, and while the
+// (deadline-bounded) auth exchange runs, an AfterFunc closes the conn on cancel so a blocked read unwinds at
+// once. On the run path ctx is the target-DB open context, so a run the control-plane already closed does not
+// finish a target-DB handshake nobody is waiting for; the wire path passes a background ctx (never cancelled).
+func dialTargetDbAuth(ctx context.Context, target spi.TargetDb) (net.Conn, []pgproto3.ParameterStatus, pgproto3.BackendKeyData, byte, error) {
+	dialer := net.Dialer{Timeout: targetDbHandshakeTimeout}
+	conn, err := dialer.DialContext(ctx, "tcp", net.JoinHostPort(target.Host, strconv.Itoa(target.Port)))
 	if err != nil {
 		return nil, nil, pgproto3.BackendKeyData{}, 0, err
 	}
@@ -30,8 +37,9 @@ func dialBackendAuth(target spi.BackendTarget) (net.Conn, []pgproto3.ParameterSt
 			_ = conn.Close()
 		}
 	}()
-	if err := conn.SetDeadline(time.Now().Add(backendHandshakeTimeout)); err != nil {
-		return nil, nil, pgproto3.BackendKeyData{}, 0, fmt.Errorf("set backend auth deadline: %w", err)
+	defer context.AfterFunc(ctx, func() { _ = conn.Close() })()
+	if err := conn.SetDeadline(time.Now().Add(targetDbHandshakeTimeout)); err != nil {
+		return nil, nil, pgproto3.BackendKeyData{}, 0, fmt.Errorf("set target-DB auth deadline: %w", err)
 	}
 
 	wireConn := &switchConn{Conn: conn, strictReads: true}
@@ -45,7 +53,7 @@ func dialBackendAuth(target spi.BackendTarget) (net.Conn, []pgproto3.ParameterSt
 		},
 	})
 	if err := frontend.Flush(); err != nil {
-		return nil, nil, pgproto3.BackendKeyData{}, 0, fmt.Errorf("write backend startup: %w", err)
+		return nil, nil, pgproto3.BackendKeyData{}, 0, fmt.Errorf("write target-DB startup: %w", err)
 	}
 
 	var scram *scramClient
@@ -55,30 +63,30 @@ func dialBackendAuth(target spi.BackendTarget) (net.Conn, []pgproto3.ParameterSt
 	for !authenticated {
 		message, err := frontend.Receive()
 		if err != nil {
-			return nil, nil, pgproto3.BackendKeyData{}, 0, fmt.Errorf("read backend auth response: %w", err)
+			return nil, nil, pgproto3.BackendKeyData{}, 0, fmt.Errorf("read target-DB auth response: %w", err)
 		}
 		switch message := message.(type) {
 		case *pgproto3.AuthenticationOk:
 			if scram != nil && !scramVerified {
-				return nil, nil, pgproto3.BackendKeyData{}, 0, errors.New("backend accepted auth without completing the SCRAM exchange")
+				return nil, nil, pgproto3.BackendKeyData{}, 0, errors.New("target DB accepted auth without completing the SCRAM exchange")
 			}
 			authenticated = true
 
 		case *pgproto3.AuthenticationCleartextPassword:
 			frontend.Send(&pgproto3.PasswordMessage{Password: target.Password})
 			if err := frontend.Flush(); err != nil {
-				return nil, nil, pgproto3.BackendKeyData{}, 0, fmt.Errorf("write backend cleartext password: %w", err)
+				return nil, nil, pgproto3.BackendKeyData{}, 0, fmt.Errorf("write target DB cleartext password: %w", err)
 			}
 
 		case *pgproto3.AuthenticationMD5Password:
 			frontend.Send(&pgproto3.PasswordMessage{Password: md5Password(target.User, target.Password, message.Salt)})
 			if err := frontend.Flush(); err != nil {
-				return nil, nil, pgproto3.BackendKeyData{}, 0, fmt.Errorf("write backend md5 password: %w", err)
+				return nil, nil, pgproto3.BackendKeyData{}, 0, fmt.Errorf("write target DB md5 password: %w", err)
 			}
 
 		case *pgproto3.AuthenticationSASL:
 			if scram != nil || !containsString(message.AuthMechanisms, "SCRAM-SHA-256") {
-				return nil, nil, pgproto3.BackendKeyData{}, 0, fmt.Errorf("backend offered no usable SCRAM-SHA-256 mechanism: %v", message.AuthMechanisms)
+				return nil, nil, pgproto3.BackendKeyData{}, 0, fmt.Errorf("target DB offered no usable SCRAM-SHA-256 mechanism: %v", message.AuthMechanisms)
 			}
 			scram, err = newScramClient(target.Password)
 			if err != nil {
@@ -89,12 +97,12 @@ func dialBackendAuth(target spi.BackendTarget) (net.Conn, []pgproto3.ParameterSt
 				Data:          scram.clientFirstMessage(),
 			})
 			if err := frontend.Flush(); err != nil {
-				return nil, nil, pgproto3.BackendKeyData{}, 0, fmt.Errorf("write backend SCRAM initial response: %w", err)
+				return nil, nil, pgproto3.BackendKeyData{}, 0, fmt.Errorf("write target DB SCRAM initial response: %w", err)
 			}
 
 		case *pgproto3.AuthenticationSASLContinue:
 			if scram == nil || scramFinalSent {
-				return nil, nil, pgproto3.BackendKeyData{}, 0, errors.New("unexpected SASLContinue from backend")
+				return nil, nil, pgproto3.BackendKeyData{}, 0, errors.New("unexpected SASLContinue from target DB")
 			}
 			if err := scram.recvServerFirstMessage(message.Data); err != nil {
 				return nil, nil, pgproto3.BackendKeyData{}, 0, fmt.Errorf("SCRAM exchange failed: %w", err)
@@ -106,12 +114,12 @@ func dialBackendAuth(target spi.BackendTarget) (net.Conn, []pgproto3.ParameterSt
 			scramFinalSent = true
 			frontend.Send(&pgproto3.SASLResponse{Data: final})
 			if err := frontend.Flush(); err != nil {
-				return nil, nil, pgproto3.BackendKeyData{}, 0, fmt.Errorf("write backend SCRAM final response: %w", err)
+				return nil, nil, pgproto3.BackendKeyData{}, 0, fmt.Errorf("write target DB SCRAM final response: %w", err)
 			}
 
 		case *pgproto3.AuthenticationSASLFinal:
 			if scram == nil || !scramFinalSent || scramVerified {
-				return nil, nil, pgproto3.BackendKeyData{}, 0, errors.New("unexpected SASLFinal from backend")
+				return nil, nil, pgproto3.BackendKeyData{}, 0, errors.New("unexpected SASLFinal from target DB")
 			}
 			if err := scram.verifyServerFinal(message.Data); err != nil {
 				return nil, nil, pgproto3.BackendKeyData{}, 0, err
@@ -119,13 +127,13 @@ func dialBackendAuth(target spi.BackendTarget) (net.Conn, []pgproto3.ParameterSt
 			scramVerified = true
 
 		case *pgproto3.ErrorResponse:
-			return nil, nil, pgproto3.BackendKeyData{}, 0, fmt.Errorf("backend auth failed: %s", message.Message)
+			return nil, nil, pgproto3.BackendKeyData{}, 0, fmt.Errorf("target-DB auth failed: %s", message.Message)
 
 		case *pgproto3.NoticeResponse:
 			// Notices during service-account authentication have no authenticated frontend recipient.
 
 		default:
-			return nil, nil, pgproto3.BackendKeyData{}, 0, fmt.Errorf("unexpected backend auth message %T", message)
+			return nil, nil, pgproto3.BackendKeyData{}, 0, fmt.Errorf("unexpected target-DB auth message %T", message)
 		}
 	}
 
@@ -134,7 +142,7 @@ func dialBackendAuth(target spi.BackendTarget) (net.Conn, []pgproto3.ParameterSt
 	for {
 		message, err := frontend.Receive()
 		if err != nil {
-			return nil, nil, pgproto3.BackendKeyData{}, 0, fmt.Errorf("read backend startup response: %w", err)
+			return nil, nil, pgproto3.BackendKeyData{}, 0, fmt.Errorf("read target-DB startup response: %w", err)
 		}
 		switch message := message.(type) {
 		case *pgproto3.ParameterStatus:
@@ -146,16 +154,16 @@ func dialBackendAuth(target spi.BackendTarget) (net.Conn, []pgproto3.ParameterSt
 				return nil, nil, pgproto3.BackendKeyData{}, 0, err
 			}
 			if err := conn.SetDeadline(time.Time{}); err != nil {
-				return nil, nil, pgproto3.BackendKeyData{}, 0, fmt.Errorf("clear backend auth deadline: %w", err)
+				return nil, nil, pgproto3.BackendKeyData{}, 0, fmt.Errorf("clear target-DB auth deadline: %w", err)
 			}
 			keep = true
 			return conn, parameters, keyData, message.TxStatus, nil
 		case *pgproto3.ErrorResponse:
-			return nil, nil, pgproto3.BackendKeyData{}, 0, fmt.Errorf("backend startup failed: %s", message.Message)
+			return nil, nil, pgproto3.BackendKeyData{}, 0, fmt.Errorf("target-DB startup failed: %s", message.Message)
 		case *pgproto3.NoticeResponse:
 			// Ignore pre-ready notices; client authentication has not completed yet.
 		default:
-			return nil, nil, pgproto3.BackendKeyData{}, 0, fmt.Errorf("unexpected backend startup message %T", message)
+			return nil, nil, pgproto3.BackendKeyData{}, 0, fmt.Errorf("unexpected target-DB startup message %T", message)
 		}
 	}
 }
@@ -168,20 +176,20 @@ func validateStartupParameters(parameters []pgproto3.ParameterStatus) error {
 		case "client_encoding":
 			sawEncoding = true
 			if !strings.EqualFold(parameter.Value, "UTF8") {
-				return fmt.Errorf("unsafe backend startup client_encoding %q: %w", parameter.Value, errClientEncoding)
+				return fmt.Errorf("unsafe target-DB startup client_encoding %q: %w", parameter.Value, errClientEncoding)
 			}
 		case "standard_conforming_strings":
 			sawStdStrings = true
 			if !strings.EqualFold(parameter.Value, "on") {
-				return fmt.Errorf("unsafe backend startup standard_conforming_strings %q: %w", parameter.Value, errStdConformingStrings)
+				return fmt.Errorf("unsafe target-DB startup standard_conforming_strings %q: %w", parameter.Value, errStdConformingStrings)
 			}
 		}
 	}
 	if !sawEncoding {
-		return fmt.Errorf("backend did not report client_encoding at startup: %w", errClientEncoding)
+		return fmt.Errorf("target DB did not report client_encoding at startup: %w", errClientEncoding)
 	}
 	if !sawStdStrings {
-		return fmt.Errorf("backend did not report standard_conforming_strings at startup: %w", errStdConformingStrings)
+		return fmt.Errorf("target DB did not report standard_conforming_strings at startup: %w", errStdConformingStrings)
 	}
 	return nil
 }
@@ -206,7 +214,7 @@ func containsString(values []string, want string) bool {
 func (c *sessionCore) probeNamespace() ([]string, error) {
 	rows, err := c.runProbe(c.db.NamespaceProbeSQL(), 1, false)
 	if err != nil {
-		return nil, fmt.Errorf("backend namespace probe: %w", err)
+		return nil, fmt.Errorf("target-DB namespace probe: %w", err)
 	}
 	return namespaceFromRows(rows)
 }
@@ -225,7 +233,7 @@ func namespaceFromRows(rows [][]*string) ([]string, error) {
 func (c *sessionCore) probeTempColumns() ([]engine.TempColumn, error) {
 	rows, err := c.runProbe(c.db.TempColumnsProbeSQL(), 5, false)
 	if err != nil {
-		return nil, fmt.Errorf("backend temp-column probe: %w", err)
+		return nil, fmt.Errorf("target DB temp-column probe: %w", err)
 	}
 	return tempColumnsFromRows(rows)
 }
@@ -252,12 +260,12 @@ func tempColumnsFromRows(rows [][]*string) ([]engine.TempColumn, error) {
 }
 
 func (c *sessionCore) runProbe(sql string, expectedColumns int, quiet bool) ([][]*string, error) {
-	c.backend.Send(&pgproto3.Query{String: sql})
+	c.targetDb.Send(&pgproto3.Query{String: sql})
 	return c.collectProbe(expectedColumns, quiet)
 }
 
 func (c *sessionCore) collectProbe(expectedColumns int, quiet bool) ([][]*string, error) {
-	if err := c.backend.Flush(); err != nil {
+	if err := c.targetDb.Flush(); err != nil {
 		return nil, err
 	}
 	result := engine.StatementResult{Rows: make([][]*string, 0)}
@@ -276,8 +284,8 @@ func (c *sessionCore) collectProbe(expectedColumns int, quiet bool) ([][]*string
 			return collector.emit(message)
 		}
 	}
-	backendErr, streamErr := c.streamResult(nil, streamOpts{soft: true}, emit)
-	if err := firstErr(streamErr, collector.failed, backendErr); err != nil {
+	targetDbErr, streamErr := c.streamResult(nil, streamOpts{soft: true}, emit)
+	if err := firstErr(streamErr, collector.failed, targetDbErr); err != nil {
 		return nil, err
 	}
 	return result.Rows, nil
@@ -338,8 +346,8 @@ func (s *Server) quietRefetcher(sess *session) *engine.Refetcher {
 }
 
 func (s *Server) forwardCancelRequest(message *pgproto3.CancelRequest) {
-	if err := sendCancelRequest(s.backend.Host, s.backend.Port, message.ProcessID, message.SecretKey); err != nil {
-		slog.Warn("postgres CancelRequest forward failed", "host", s.backend.Host, "port", s.backend.Port, "error", err)
+	if err := sendCancelRequest(s.targetDb.Host, s.targetDb.Port, message.ProcessID, message.SecretKey); err != nil {
+		slog.Warn("postgres CancelRequest forward failed", "host", s.targetDb.Host, "port", s.targetDb.Port, "error", err)
 	}
 }
 
@@ -349,12 +357,12 @@ func sendCancelRequest(host string, port int, processID, secretKey uint32) error
 	if err != nil {
 		return fmt.Errorf("encode CancelRequest: %w", err)
 	}
-	conn, err := net.DialTimeout("tcp", net.JoinHostPort(host, strconv.Itoa(port)), backendHandshakeTimeout)
+	conn, err := net.DialTimeout("tcp", net.JoinHostPort(host, strconv.Itoa(port)), targetDbHandshakeTimeout)
 	if err != nil {
-		return fmt.Errorf("dial backend for cancel: %w", err)
+		return fmt.Errorf("dial target DB for cancel: %w", err)
 	}
 	defer conn.Close()
-	if err := conn.SetWriteDeadline(time.Now().Add(socketWriteTimeout)); err != nil {
+	if err := conn.SetWriteDeadline(time.Now().Add(wire.SocketWriteTimeout)); err != nil {
 		return fmt.Errorf("set cancel write deadline: %w", err)
 	}
 	if _, err := conn.Write(encoded); err != nil {

@@ -8,7 +8,7 @@ require (
 	github.com/go-sql-driver/mysql v1.10.0
 	github.com/jackc/pgx/v5 v5.10.0
 	github.com/ridi-oss/proxy-monster/analyzer v0.0.0-00010101000000-000000000000
-	github.com/ridi-oss/proxy-monster/mysqlwire v0.1.2
+	github.com/ridi-oss/proxy-monster/mysqlwire v0.1.3
 	github.com/testcontainers/testcontainers-go v0.44.0
 	golang.org/x/crypto v0.54.0
 	google.golang.org/grpc v1.83.0

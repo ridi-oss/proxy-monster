@@ -65,8 +65,8 @@ class NotificationStoreTest {
     fun `enqueue is idempotent per task-event-transport-recipient`() {
         val task = newTask()
         fx.dataSource.connection.use { c ->
-            store.enqueue(c, task, NotificationEvent.TASK_REQUESTED, "slack", "a@x")
-            store.enqueue(c, task, NotificationEvent.TASK_REQUESTED, "slack", "a@x")
+            store.enqueue(c, task, NotificationEvent.TASK_REQUESTED, "slack", "a@x", NotificationKind.APPROVER)
+            store.enqueue(c, task, NotificationEvent.TASK_REQUESTED, "slack", "a@x", NotificationKind.APPROVER)
         }
         assertEquals(1, store.claimDue(10).count { it.taskId == task }, "the second enqueue collapsed onto the first")
     }
@@ -75,9 +75,9 @@ class NotificationStoreTest {
     fun `claimDue returns due pending rows in id order up to the limit`() {
         val task = newTask()
         fx.dataSource.connection.use { c ->
-            store.enqueue(c, task, NotificationEvent.TASK_REQUESTED, "slack", "one@x")
-            store.enqueue(c, task, NotificationEvent.TASK_REQUESTED, "slack", "two@x")
-            store.enqueue(c, task, NotificationEvent.TASK_REQUESTED, "slack", "three@x")
+            store.enqueue(c, task, NotificationEvent.TASK_REQUESTED, "slack", "one@x", NotificationKind.APPROVER)
+            store.enqueue(c, task, NotificationEvent.TASK_REQUESTED, "slack", "two@x", NotificationKind.APPROVER)
+            store.enqueue(c, task, NotificationEvent.TASK_REQUESTED, "slack", "three@x", NotificationKind.APPROVER)
         }
         val claimed = store.claimDue(2).filter { it.taskId == task }
         assertEquals(2, claimed.size, "the limit is honored")
@@ -92,8 +92,8 @@ class NotificationStoreTest {
     fun `claimDue skips a row another transaction holds locked`() {
         val task = newTask()
         fx.dataSource.connection.use { c ->
-            store.enqueue(c, task, NotificationEvent.TASK_REQUESTED, "slack", "locked@x")
-            store.enqueue(c, task, NotificationEvent.TASK_REQUESTED, "slack", "free@x")
+            store.enqueue(c, task, NotificationEvent.TASK_REQUESTED, "slack", "locked@x", NotificationKind.APPROVER)
+            store.enqueue(c, task, NotificationEvent.TASK_REQUESTED, "slack", "free@x", NotificationKind.APPROVER)
         }
         val rows = store.claimDue(10).filter { it.taskId == task }.sortedBy { it.id }
         val lockedId = rows.first().id
@@ -117,7 +117,7 @@ class NotificationStoreTest {
     @Test
     fun `markSent is terminal and increments attempts`() {
         val task = newTask()
-        fx.dataSource.connection.use { c -> store.enqueue(c, task, NotificationEvent.TASK_REQUESTED, "slack", "s@x") }
+        fx.dataSource.connection.use { c -> store.enqueue(c, task, NotificationEvent.TASK_REQUESTED, "slack", "s@x", NotificationKind.APPROVER) }
         val row = store.claimDue(10).first { it.taskId == task }
         store.markSent(row.id)
         assertEquals("SENT", statusOf(row.id))
@@ -128,7 +128,7 @@ class NotificationStoreTest {
     @Test
     fun `markRetry keeps the row pending but out of the claim until it is due`() {
         val task = newTask()
-        fx.dataSource.connection.use { c -> store.enqueue(c, task, NotificationEvent.TASK_REQUESTED, "slack", "r@x") }
+        fx.dataSource.connection.use { c -> store.enqueue(c, task, NotificationEvent.TASK_REQUESTED, "slack", "r@x", NotificationKind.APPROVER) }
         val row = store.claimDue(10).first { it.taskId == task }
 
         store.markRetry(row.id, "ratelimited", Duration.ofHours(1))
@@ -143,7 +143,7 @@ class NotificationStoreTest {
     @Test
     fun `markDead is terminal`() {
         val task = newTask()
-        fx.dataSource.connection.use { c -> store.enqueue(c, task, NotificationEvent.TASK_REQUESTED, "slack", "d@x") }
+        fx.dataSource.connection.use { c -> store.enqueue(c, task, NotificationEvent.TASK_REQUESTED, "slack", "d@x", NotificationKind.APPROVER) }
         val row = store.claimDue(10).first { it.taskId == task }
         store.markDead(row.id, "channel_not_found")
         assertEquals("DEAD", statusOf(row.id))
@@ -154,8 +154,8 @@ class NotificationStoreTest {
     fun `an update waits while an earlier event for the same recipient is still pending`() {
         val task = newTask()
         fx.dataSource.connection.use { c ->
-            store.enqueue(c, task, NotificationEvent.TASK_REQUESTED, "slack", "u@x")
-            store.enqueue(c, task, NotificationEvent.TASK_DECIDED, "slack", "u@x")
+            store.enqueue(c, task, NotificationEvent.TASK_REQUESTED, "slack", "u@x", NotificationKind.APPROVER)
+            store.enqueue(c, task, NotificationEvent.TASK_DECIDED, "slack", "u@x", NotificationKind.APPROVER)
         }
         val rows = store.claimDue(10).filter { it.taskId == task }.sortedBy { it.id }
         val requested = rows.first { it.event == NotificationEvent.TASK_REQUESTED }
@@ -169,11 +169,11 @@ class NotificationStoreTest {
     @Test
     fun `rememberMessage upserts the external ref`() {
         val task = newTask()
-        assertNull(store.externalRef(task, "slack", "m@x"), "nothing delivered yet")
-        store.rememberMessage(task, "slack", "m@x", "C1:100")
-        assertEquals("C1:100", store.externalRef(task, "slack", "m@x"))
-        store.rememberMessage(task, "slack", "m@x", "C1:200")
-        assertEquals("C1:200", store.externalRef(task, "slack", "m@x"), "a later delivery overwrites the handle")
+        assertNull(store.externalRef(task, "slack", "m@x", NotificationKind.APPROVER), "nothing delivered yet")
+        store.rememberMessage(task, "slack", "m@x", NotificationKind.APPROVER, "C1:100")
+        assertEquals("C1:100", store.externalRef(task, "slack", "m@x", NotificationKind.APPROVER))
+        store.rememberMessage(task, "slack", "m@x", NotificationKind.APPROVER, "C1:200")
+        assertEquals("C1:200", store.externalRef(task, "slack", "m@x", NotificationKind.APPROVER), "a later delivery overwrites the handle")
     }
 
     @Test

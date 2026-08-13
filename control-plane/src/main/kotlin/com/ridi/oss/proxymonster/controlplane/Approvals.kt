@@ -383,10 +383,7 @@ fun Route.approvalRoutes(
         val decision = authz.authorizeWithContext(
             principal,
             action,
-            AuthzResource.ApprovalRequest(
-                requester = req.principal, approver = req.decidedBy, executedBy = req.executedBy,
-                datasourceName = req.datasourceName, roleName = req.roleName,
-            ),
+            req.toApprovalResource(),
             call.httpAuthzContext(config, Channel.WORKFLOW_VIEWER),
             req.datasourceName,
             req.datasourceId?.let(datasourceStore::getIncludingDeleted)?.tags.orEmpty(),
@@ -401,10 +398,7 @@ fun Route.approvalRoutes(
         val decision = authz.authorizeWithContext(
             principal,
             AuthzAction.TASK_ASSUME,
-            AuthzResource.ApprovalRequest(
-                requester = req.principal, approver = req.decidedBy, executedBy = req.executedBy,
-                datasourceName = req.datasourceName, roleName = req.roleName,
-            ),
+            req.toApprovalResource(),
             call.httpAuthzContext(config, Channel.WORKFLOW_VIEWER),
             req.datasourceName,
             req.datasourceId?.let(datasourceStore::getIncludingDeleted)?.tags.orEmpty(),
@@ -944,7 +938,7 @@ internal suspend fun runApprovedTask(
         if (response.decision == EnfAction.DENY) {
             "approval.execute_denied"
         } else {
-            val result = DecryptedResult(response.columns, response.rows)
+            val result = DecryptedResult(response.columns, response.rows, response.rowsAffected)
             // Child DONE, parent EXECUTED, and the execution audit all commit in ONE transaction: a crash can
             // never leave a readable DONE child under a non-EXECUTED task. If the parent has left EXECUTING
             // (e.g. a restart already reconciled it to FAILED), the flip fails and aborts the whole commit —

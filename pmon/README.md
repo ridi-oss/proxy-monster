@@ -37,12 +37,19 @@ connection for other clients.
 
 ```sh
 pmon show acme-mysql --url      # mysql://user:pw@127.0.0.1:6100/my_database
-pmon show acme-mysql --jdbc     # jdbc:mysql://127.0.0.1:6100/my_database?user=…&password=…
+pmon show acme-mysql --jdbc     # jdbc:mysql://127.0.0.1:6100/my_database?user=…&password=…&jdbcCompliantTruncation=false
+pmon show acme-mysql --jdbc --jdbc-with-truncation-diagnostics
 pmon show acme-mysql --go-dsn   # user:pw@tcp(127.0.0.1:6100)/my_database?parseTime=true&charset=utf8mb4
 pmon show acme-mysql --cli      # mysql -h 127.0.0.1 -P 6100 -u 'user' -p'pw' 'my_database'
 ```
 
 Output is the bare string, so it pipes straight into a client or an env var.
+MySQL JDBC URLs include `jdbcCompliantTruncation=false` by default. This
+prevents Connector/J from making an automatic `SHOW WARNINGS` diagnostic
+read-back after a warning; explicit diagnostics remain subject to their normal
+authorization. Use `--jdbc-with-truncation-diagnostics` with `--jdbc` only when
+the client needs Connector/J's truncation diagnostics; its output omits that
+parameter and may issue `SHOW WARNINGS`.
 
 The daemon checks that password. It answers `mysql_native_password` and
 `caching_sha2_password` directly, and switches any other plugin to

@@ -344,7 +344,8 @@ query_result
   id, task_id      FK access_request
   sql, sql_hash
   status           RUNNING | DONE | FAILED | CANCELLED
-  columns JSONB, row_count          (null until DONE)
+  columns JSONB, row_count          (null until DONE; the backend's affected-row
+                                     count for DML, else the result-set size)
   ciphertext BYTEA                  (rows masked-per-R, then AES-256-GCM at rest; null until DONE)
   error_code                        (FAILED only)
   executed_by, executed_at, created_at, expires_at

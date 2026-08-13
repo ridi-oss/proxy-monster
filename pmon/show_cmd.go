@@ -14,19 +14,25 @@ import (
 //
 //	pmon show acme-mysql            postgres://…  |  mysql://…      (--url, the default)
 //	pmon show acme-mysql --jdbc     jdbc:mysql://127.0.0.1:6100/app?user=…&password=…
+//	pmon show acme-mysql --jdbc --jdbc-with-truncation-diagnostics
 //	pmon show acme-mysql --go-dsn   user:pass@tcp(127.0.0.1:6100)/app?parseTime=true&charset=utf8mb4
 //	pmon show acme-mysql --cli      mysql -h 127.0.0.1 -P 6100 -u … -p… app
 //
 // Output is the bare string, so it pipes straight into a client or an env var.
 type showCmd struct {
-	Datasource string `arg:"" help:"Datasource name (as shown by 'pmon status')."`
-	URL        bool   `xor:"format" help:"Print a driver URI (default)."`
-	JDBC       bool   `xor:"format" help:"Print a JDBC URL."`
-	GoDSN      bool   `name:"go-dsn" xor:"format" help:"Print a Go driver DSN."`
-	CLI        bool   `xor:"format" help:"Print the mysql/psql command line."`
+	Datasource                string `arg:"" help:"Datasource name (as shown by 'pmon status')."`
+	URL                       bool   `xor:"format" help:"Print a driver URI (default)."`
+	JDBC                      bool   `xor:"format" help:"Print a JDBC URL."`
+	JDBCTruncationDiagnostics bool   `name:"jdbc-with-truncation-diagnostics" help:"With --jdbc, omit the compatibility parameter so Connector/J can fetch truncation diagnostics (may issue SHOW WARNINGS)."`
+	GoDSN                     bool   `name:"go-dsn" xor:"format" help:"Print a Go driver DSN."`
+	CLI                       bool   `xor:"format" help:"Print the mysql/psql command line."`
 }
 
 func (c *showCmd) Run() error {
+	if c.JDBCTruncationDiagnostics && !c.JDBC {
+		return fmt.Errorf("--jdbc-with-truncation-diagnostics requires --jdbc")
+	}
+
 	ctx := context.Background()
 	client, err := control.Connect(ctx)
 	if err != nil {
@@ -57,13 +63,13 @@ func (c *showCmd) Run() error {
 		return fmt.Errorf("datasource %q is not brokered locally: %s", found.Name, found.Reason)
 	}
 
-	fmt.Println(conn.String(c.format(), conn.Target{
+	fmt.Println(conn.StringWithOptions(c.format(), conn.Target{
 		Engine:   found.Engine,
 		DbName:   found.DbName,
 		Port:     found.LocalPort,
 		User:     s.Principal,
 		Password: s.LocalPassword,
-	}))
+	}, conn.Options{JDBCTruncationDiagnostics: c.JDBCTruncationDiagnostics}))
 	return nil
 }
 

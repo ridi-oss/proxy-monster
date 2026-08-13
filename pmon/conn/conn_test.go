@@ -9,7 +9,7 @@ func TestMySQLFormats(t *testing.T) {
 	target := Target{Engine: "mysql", DbName: "app", Port: 6100, User: "you@example.com", Password: "pw"}
 	cases := map[Format]string{
 		URL:   "mysql://you%40example.com:pw@127.0.0.1:6100/app",
-		JDBC:  "jdbc:mysql://127.0.0.1:6100/app?user=you%40example.com&password=pw",
+		JDBC:  "jdbc:mysql://127.0.0.1:6100/app?user=you%40example.com&password=pw&jdbcCompliantTruncation=false",
 		GoDSN: "you@example.com:pw@tcp(127.0.0.1:6100)/app?parseTime=true&charset=utf8mb4",
 		CLI:   `mysql -h 127.0.0.1 -P 6100 -u 'you@example.com' -p'pw' 'app'`,
 	}
@@ -17,6 +17,14 @@ func TestMySQLFormats(t *testing.T) {
 		if got := String(format, target); got != want {
 			t.Errorf("String(%s) = %q, want %q", format, got, want)
 		}
+	}
+}
+
+func TestMySQLJDBCTruncationDiagnostics(t *testing.T) {
+	target := Target{Engine: "mysql", DbName: "app", Port: 6100, User: "you@example.com", Password: "pw"}
+	if got, want := StringWithOptions(JDBC, target, Options{JDBCTruncationDiagnostics: true}),
+		"jdbc:mysql://127.0.0.1:6100/app?user=you%40example.com&password=pw"; got != want {
+		t.Errorf("StringWithOptions(JDBC, truncation diagnostics) = %q, want %q", got, want)
 	}
 }
 

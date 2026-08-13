@@ -38,6 +38,21 @@ enum class NotificationEvent(val wire: String) {
 }
 
 /**
+ * Which side of a request a message serves. One person can hold both for the same task — a requester whom
+ * policy lets approve their own request is [REQUESTER] (their receipt) AND [APPROVER] (the actionable copy).
+ * The two are independent threads, keyed apart so neither deduplicates or overwrites the other.
+ */
+enum class NotificationKind(val wire: String) {
+    APPROVER("approver"),
+    REQUESTER("requester"),
+    ;
+
+    companion object {
+        fun fromWire(wire: String): NotificationKind = entries.firstOrNull { it.wire == wire } ?: APPROVER
+    }
+}
+
+/**
  * How much of the requester's statement may leave the building (docs/notifications.md, "The statement in the
  * message"). A statement's literals can be the very values a policy protects — `WHERE ssn = '…'` leaks a
  * value masking never sees, because masking acts on results. The disclosure hint

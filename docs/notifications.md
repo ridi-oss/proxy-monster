@@ -48,12 +48,12 @@ touching the workflow.
 
 ## Events
 
-| Event                                          | When                 | Who hears it                                                                    |
-| ---------------------------------------------- | -------------------- | ------------------------------------------------------------------------------- |
-| `task.requested`                               | a request is filed   | everyone Cedar says may approve it (the requester too, where policy allows)     |
-| `task.submitted`                               | a request is filed   | the requester, when not themselves an approver — a receipt naming who was asked |
-| `task.decided`                                 | approved or rejected | the requester, and everyone told above                                          |
-| `task.executed` `task.failed` `task.cancelled` | the run ends         | the requester and the approver                                                  |
+| Event                                          | When                 | Who hears it                                                                                  |
+| ---------------------------------------------- | -------------------- | --------------------------------------------------------------------------------------------- |
+| `task.requested`                               | a request is filed   | everyone Cedar says may approve it (the requester too, where policy allows)                   |
+| `task.submitted`                               | a request is filed   | the requester — their own receipt (plus the approver message above, if they may also approve) |
+| `task.decided`                                 | approved or rejected | the requester, and everyone told above                                                        |
+| `task.executed` `task.failed` `task.cancelled` | the run ends         | the requester and the approver                                                                |
 
 Anyone told about a request is told how it ended. That is what stops a stale
 "needs your approval" sitting in a DM after someone else already handled it —
@@ -162,10 +162,14 @@ moment an operator writes "approvers must be on the office network."
 `recipientsFor` is Cedar's answer to who may approve, and it is never
 post-filtered. A hard-coded denial or filter in code — dropping the requester,
 skipping an "impossible" approver — is a bug, not a shortcut: it moves a policy
-rule out of the engine that owns it. If the requester is in that set they get
-the ordinary approver message like any approver; if not, they get a
-`task.submitted` receipt — their request is pending, and here is who was asked.
-One message per recipient; which one is Cedar's set, not a branch in code.
+rule out of the engine that owns it.
+
+The requester always gets their own `task.submitted` receipt — their request is
+pending, and here is who was asked. If Cedar also puts them in the approver set
+(policy lets them approve their own request), they get the ordinary approver
+message too. Those are two independent threads (message `kind` requester vs
+approver), both delivered and both updated on the decision — neither deduped
+into the other, and no branch in code deciding which they "should" get.
 
 The reverse query has one quirk: it treats the context as a single record, so
 `context has channel` will not reduce while _any_ unknown sits in it. That

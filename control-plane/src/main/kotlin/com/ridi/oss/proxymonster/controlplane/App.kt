@@ -56,6 +56,7 @@ import io.ktor.server.sessions.get
 import io.ktor.server.sessions.cookie
 import io.ktor.server.sessions.set
 import io.ktor.server.sessions.sessions
+import io.ktor.server.sse.SSE
 import io.ktor.server.sse.sse
 import io.ktor.sse.ServerSentEvent
 import java.io.IOException
@@ -187,10 +188,7 @@ internal fun taskReadableForPush(
     val decision = authz.authorizeWithContext(
         principal,
         AuthzAction.TASK_READ,
-        AuthzResource.ApprovalRequest(
-            requester = task.principal, approver = task.decidedBy, executedBy = task.executedBy,
-            datasourceName = task.datasourceName, roleName = task.roleName,
-        ),
+        task.toApprovalResource(),
         context,
         task.datasourceName,
         task.datasourceId?.let(datasourceStore::getIncludingDeleted)?.tags.orEmpty(),
@@ -486,10 +484,7 @@ fun Application.module(config: Config, core: ControlPlaneCore) {
             }
         }
     }
-    // NOTE: the Ktor SSE plugin is NOT installed here — the MCP SDK's `mcpStatelessStreamableHttp` mount
-    // (see mcpOAuthRoutes) already installs it unconditionally, and Ktor's install throws on a duplicate.
-    // The /api/tasks/events route below reuses that same application-level plugin. If the MCP mount is ever
-    // removed, add `install(SSE)` back here.
+    install(SSE)
     install(Sessions) {
         cookie<WebSessionRef>(SESSION_COOKIE, webSessionStorage) {
             cookie.path = "/"

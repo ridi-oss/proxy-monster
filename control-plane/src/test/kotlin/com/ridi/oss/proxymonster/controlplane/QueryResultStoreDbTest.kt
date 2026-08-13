@@ -73,6 +73,15 @@ class QueryResultStoreDbTest {
     }
 
     @Test
+    fun `DML result stores rowsAffected as row_count, not the empty result-set size`() {
+        val id = newTask()
+        assertNotNull(store.startRun(id, "bob@example.com"))
+        val done = store.completeRun(id, DecryptedResult(emptyList(), emptyList(), rowsAffected = 1), 3600)
+        assertEquals("DONE", done?.status)
+        assertEquals(1, done?.rowCount)
+    }
+
+    @Test
     fun `failed child stores a stable error code without ciphertext`() {
         val id = newTask()
         assertNotNull(store.startRun(id, "bob@example.com"))

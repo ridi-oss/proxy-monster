@@ -69,8 +69,14 @@ class NotificationServiceDbTest {
             denyReason = null, sourceDecisionId = null, reason = "r", title = "t", evaluatedDecision = "ALLOW",
         )
 
-    private fun enqueue(task: Long, event: NotificationEvent, recipient: String, transportName: String = "fake") {
-        fx.dataSource.connection.use { c -> store.enqueue(c, task, event, transportName, recipient) }
+    private fun enqueue(
+        task: Long,
+        event: NotificationEvent,
+        recipient: String,
+        kind: NotificationKind = NotificationKind.APPROVER,
+        transportName: String = "fake",
+    ) {
+        fx.dataSource.connection.use { c -> store.enqueue(c, task, event, transportName, recipient, kind) }
     }
 
     private fun statusOf(task: Long, event: NotificationEvent, recipient: String): String =
@@ -141,19 +147,40 @@ class NotificationServiceDbTest {
     }
 
     @Test
-    fun `an eligible requester is in Cedar's approver set and gets the approver message`() = runBlocking {
-        // Policy lets the requester approve their own request, so recipientsFor (Cedar) returns them — and they
-        // are never post-filtered out. They get the ordinary approver message and can act on it.
+    fun `a self-approving requester gets BOTH the approver message and their own receipt`() = runBlocking {
+        // Policy lets the requester approve their own request, so recipientsFor (Cedar) returns them — never
+        // post-filtered. They are a plain recipient of both threads, and both are delivered, not deduped.
         val requester = "self@example.com"
         fx.policyStore.createAssignment(RoleAssignmentInput(requester, adminRoleId()))
         val routing = serviceWith(StatementDisclosure.AUTO, candidates = listOf(requester))
         val task = newTask(principal = requester).id
         fx.dataSource.connection.use { c -> routing.emitRequested(c, task, requester, fx.datasource, roleName = null) }
-        assertEquals(1, countRows(task, NotificationEvent.TASK_REQUESTED, requester), "an eligible requester stays in the approver set")
-        // One message per recipient: the actionable approver message wins, the receipt is deduped on delivery.
         routing.drainOnce()
-        val toRequester = transport.delivered.filter { it.to == "addr:$requester" }.map { it.event }
-        assertEquals(listOf(NotificationEvent.TASK_REQUESTED), toRequester, "the approver message, not the receipt")
+        val toRequester = transport.delivered.filter { it.to == "addr:$requester" }.map { it.event }.toSet()
+        assertEquals(
+            setOf(NotificationEvent.TASK_REQUESTED, NotificationEvent.TASK_SUBMITTED),
+            toRequester,
+            "the requester receives BOTH the approver message and their receipt — neither is deduped away",
+        )
+    }
+
+    @Test
+    fun `a terminal event updates both threads of a self-approving requester`() = runBlocking {
+        val requester = "self@example.com"
+        fx.policyStore.createAssignment(RoleAssignmentInput(requester, adminRoleId()))
+        val routing = serviceWith(StatementDisclosure.AUTO, candidates = listOf(requester))
+        val task = newTask(principal = requester).id
+        fx.dataSource.connection.use { c -> routing.emitRequested(c, task, requester, fx.datasource, roleName = null) }
+        routing.drainOnce() // both threads delivered, both refs remembered
+        transport.updated.clear()
+        val req = fx.accessStore.getRequest(task)!!
+        fx.dataSource.connection.use { c -> routing.emit(c, NotificationEvent.TASK_DECIDED, req) }
+        routing.drainOnce()
+        assertEquals(
+            2,
+            transport.updated.count { it.event == NotificationEvent.TASK_DECIDED },
+            "the decision edits both the approver-side message and the requester's receipt",
+        )
     }
 
     @Test
@@ -164,7 +191,7 @@ class NotificationServiceDbTest {
         // recomputed eligibility would list nobody — asserting bob+carol proves it reads the outbox instead.
         enqueue(task, NotificationEvent.TASK_REQUESTED, "bob@x")
         enqueue(task, NotificationEvent.TASK_REQUESTED, "carol@x")
-        enqueue(task, NotificationEvent.TASK_SUBMITTED, "req@example.com")
+        enqueue(task, NotificationEvent.TASK_SUBMITTED, "req@example.com", NotificationKind.REQUESTER)
         svc.drainOnce()
         val receipt = transport.delivered.single { it.event == NotificationEvent.TASK_SUBMITTED }
         assertEquals(listOf("bob@x", "carol@x"), receipt.notifiedApprovers, "the receipt names who was actually asked")
@@ -198,7 +225,7 @@ class NotificationServiceDbTest {
         assertEquals("addr:sam@x", transport.delivered.first().to)
         assertEquals(NotificationEvent.TASK_REQUESTED, transport.delivered.first().event)
         assertEquals("SENT", statusOf(task, NotificationEvent.TASK_REQUESTED, "sam@x"))
-        assertEquals("ref-fake", store.externalRef(task, "fake", "sam@x"), "the handle is remembered for later edits")
+        assertEquals("ref-fake", store.externalRef(task, "fake", "sam@x", NotificationKind.APPROVER), "the handle is remembered for later edits")
     }
 
     @Test
@@ -268,12 +295,12 @@ class NotificationServiceDbTest {
         enqueue(task, NotificationEvent.TASK_REQUESTED, "sam@x")
         // A prior attempt posted (ref recorded) but its markSent did not commit: the row is still PENDING, yet
         // a delivery handle already exists. Re-posting would double-send and strand the first message's buttons.
-        store.rememberMessage(task, "fake", "sam@x", "ref-prior")
+        store.rememberMessage(task, "fake", "sam@x", NotificationKind.APPROVER, "ref-prior")
         svc.drainOnce()
 
         assertTrue(transport.delivered.isEmpty(), "the existing ref is adopted; the message is not sent again")
         assertEquals("SENT", statusOf(task, NotificationEvent.TASK_REQUESTED, "sam@x"), "the row is finished, not left pending")
-        assertEquals("ref-prior", store.externalRef(task, "fake", "sam@x"), "the original handle is kept for later edits")
+        assertEquals("ref-prior", store.externalRef(task, "fake", "sam@x", NotificationKind.APPROVER), "the original handle is kept for later edits")
     }
 
     @Test

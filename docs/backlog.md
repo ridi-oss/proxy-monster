@@ -209,16 +209,12 @@ Fixes for gaps documented in
   (saved lineage), so an output-name match can no longer release stored
   cleartext under a mask plan computed for a different physical column. High
   priority.
-- Fail-closed close for a `search_path` change made inside Bind parameter
-  coercion: re-probe after `Bind`, or plan under a pinned `search_path`.
 - Fail-closed manifest-completeness guard: deny a touched system schema that has
   no governing manifest, plus a version-independent system-table floor (the
   analog of the dangerous-function floor), so completeness doesn't depend on
   grant hygiene.
 - Per-engine-version golden inventory of system objects plus a CI release-diff
   gate, so a manifest can't silently fall behind a new engine minor.
-- Make the role-approval `Request` EUID request-unique so one approval can't
-  authorize a principal's later requests.
 - Canonicalize introspected schema names on the proxy side (case-fold-aware),
   removing the interim MySQL lowercase fold in the control plane.
 - Broker a per-user target DB login so `SET PASSWORD` / `SET GLOBAL` stop

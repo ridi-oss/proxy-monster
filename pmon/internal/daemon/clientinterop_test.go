@@ -36,7 +36,7 @@ import (
 	"time"
 
 	"github.com/docker/docker/api/types/container"
-	"github.com/docker/go-connections/nat"
+	"github.com/moby/moby/api/types/network"
 	_ "github.com/go-sql-driver/mysql"
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/wait"
@@ -98,7 +98,7 @@ func createBackend() (addr, user, pass string, err error) {
 		// Serve native by default so the stub's hand-rolled native handshake is accepted directly rather
 		// than provoking an auth-switch. This is the stub's private backend hop, not the surface under test.
 		Cmd: []string{"--default-authentication-plugin=mysql_native_password"},
-		WaitingFor: wait.ForSQL("3306/tcp", "mysql", func(host string, port nat.Port) string {
+		WaitingFor: wait.ForSQL("3306/tcp", "mysql", func(host string, port network.Port) string {
 			return fmt.Sprintf("root:%s@tcp(%s:%s)/%s", rootPass, host, port.Port(), itDatabase)
 		}).WithStartupTimeout(180 * time.Second),
 	}

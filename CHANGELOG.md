@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.1.16](https://github.com/ridi-oss/proxy-monster/compare/server-v0.1.15...server-v0.1.16) (2026-08-13)
+
+
+### Bug Fixes
+
+* **control-plane:** deliver both the requester's receipt and the approver message ([#188](https://github.com/ridi-oss/proxy-monster/issues/188)) ([f5515ec](https://github.com/ridi-oss/proxy-monster/commit/f5515ec48c4c817106c6e020d531de40a48ea724))
+
+
+### Refactoring
+
+* **control-plane:** build the approval authz resource from the request row ([#189](https://github.com/ridi-oss/proxy-monster/issues/189)) ([bce0163](https://github.com/ridi-oss/proxy-monster/commit/bce0163fed9f49fd6ea666be501e25128f9e902d))
+
+
+### Documentation
+
+* reclassify the Bind-coercion search_path limitation as accepted (out-of-scope UDF) ([#190](https://github.com/ridi-oss/proxy-monster/issues/190)) ([98b55d2](https://github.com/ridi-oss/proxy-monster/commit/98b55d29af60a8956480c49b6313399042897ca9))
+
 ## [0.1.15](https://github.com/ridi-oss/proxy-monster/compare/server-v0.1.14...server-v0.1.15) (2026-08-13)
 
 

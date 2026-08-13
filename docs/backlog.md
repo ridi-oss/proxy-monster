@@ -209,8 +209,6 @@ Fixes for gaps documented in
   (saved lineage), so an output-name match can no longer release stored
   cleartext under a mask plan computed for a different physical column. High
   priority.
-- Fail-closed close for a `search_path` change made inside Bind parameter
-  coercion: re-probe after `Bind`, or plan under a pinned `search_path`.
 - Fail-closed manifest-completeness guard: deny a touched system schema that has
   no governing manifest, plus a version-independent system-table floor (the
   analog of the dangerous-function floor), so completeness doesn't depend on

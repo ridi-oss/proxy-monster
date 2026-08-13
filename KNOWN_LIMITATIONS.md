@@ -162,21 +162,16 @@ analog of MySQL's Prepare-time freeze. No control-plane decision is ever stored.
   against real PostgreSQL). It is `GUC_REPORT`, so a session turning it off is
   observed and the relay fails closed (SQLSTATE `0A000`) rather than proxying
   under a divergent lexer.
-- 🔴 `search_path` mutated _inside_ Bind parameter coercion is untracked
-  (extended path). The bind-time capture probes the namespace immediately before
-  forwarding `Bind`, but `Bind` itself runs parameter input/coercion (input
-  functions, domain `CHECK`s) _before_ it plans the portal. A crafted domain
-  whose check calls `set_config('search_path', <bound value>, false)` moves the
-  path during `Bind`, so the portal resolves under a path the pre-`Bind` probe
-  never saw, and the `Execute` re-decide authorizes under the stale snapshot (a
-  wrong-ALLOW). Reproduced against PG16 by
-  `pgproxy.TestExtendedBindCoercionSetConfigLeaksAcrossSchema` (the proxy
-  decides under the primary path yet the target DB returns the secondary
-  schema's row). The offending domain must already exist, which needs a
-  `CREATE DOMAIN`/`CREATE FUNCTION` grant the masking policy denies read-only
-  principals. A fail-safe close (re-probe _after_ Bind, or bind under a pinned
-  `search_path`) is a follow-up. Tracked:
-  [`docs/backlog.md`](./docs/backlog.md).
+- 🟡 A `search_path` change made _inside_ Bind parameter coercion is not tracked
+  (extended path). `Bind` runs parameter input/coercion — input functions and
+  domain `CHECK`s — before it plans the portal, so a domain whose check calls
+  `set_config('search_path', <bound value>, false)` moves the path during
+  `Bind`, and the portal resolves under a path the pre-`Bind` namespace probe
+  never saw. Only user-defined code can change `search_path` mid-coercion, so
+  this is the same accepted case as a data-reading UDF: a domain or function
+  with a side effect is user code the operator vouches for, not a boundary the
+  proxy enforces. Reproduced against PG16 by
+  `pgproxy.TestExtendedBindCoercionSetConfigLeaksAcrossSchema`.
 
 ## Catalog freshness
 

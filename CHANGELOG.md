@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.1.15](https://github.com/ridi-oss/proxy-monster/compare/server-v0.1.14...server-v0.1.15) (2026-08-13)
+
+
+### Features
+
+* **control-plane:** model EXPLAIN and table ANALYZE as metadata-output reads ([#175](https://github.com/ridi-oss/proxy-monster/issues/175)) ([2d58e3d](https://github.com/ridi-oss/proxy-monster/commit/2d58e3da420eaa125d275d537e0414ec2a35dc08))
+
+
+### Bug Fixes
+
+* **control-plane:** let a self-approving requester get the approver message ([#186](https://github.com/ridi-oss/proxy-monster/issues/186)) ([a6196ba](https://github.com/ridi-oss/proxy-monster/commit/a6196bacec39918dc89b6c3d2c33efb8f880736c))
+
 ## [0.1.14](https://github.com/ridi-oss/proxy-monster/compare/server-v0.1.13...server-v0.1.14) (2026-08-12)
 
 

@@ -141,16 +141,19 @@ class NotificationServiceDbTest {
     }
 
     @Test
-    fun `an eligible requester is still dropped from the approver message and only gets the receipt`() {
-        // Make the requester resolve as a genuine approver candidate, so the exclusion filter has something to
-        // drop — without it they would receive both task.requested and task.submitted.
+    fun `an eligible requester is in Cedar's approver set and gets the approver message`() = runBlocking {
+        // Policy lets the requester approve their own request, so recipientsFor (Cedar) returns them — and they
+        // are never post-filtered out. They get the ordinary approver message and can act on it.
         val requester = "self@example.com"
         fx.policyStore.createAssignment(RoleAssignmentInput(requester, adminRoleId()))
         val routing = serviceWith(StatementDisclosure.AUTO, candidates = listOf(requester))
         val task = newTask(principal = requester).id
         fx.dataSource.connection.use { c -> routing.emitRequested(c, task, requester, fx.datasource, roleName = null) }
-        assertEquals(0, countRows(task, NotificationEvent.TASK_REQUESTED, requester))
-        assertEquals("PENDING", statusOf(task, NotificationEvent.TASK_SUBMITTED, requester))
+        assertEquals(1, countRows(task, NotificationEvent.TASK_REQUESTED, requester), "an eligible requester stays in the approver set")
+        // One message per recipient: the actionable approver message wins, the receipt is deduped on delivery.
+        routing.drainOnce()
+        val toRequester = transport.delivered.filter { it.to == "addr:$requester" }.map { it.event }
+        assertEquals(listOf(NotificationEvent.TASK_REQUESTED), toRequester, "the approver message, not the receipt")
     }
 
     @Test

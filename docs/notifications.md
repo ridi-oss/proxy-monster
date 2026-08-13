@@ -48,12 +48,12 @@ touching the workflow.
 
 ## Events
 
-| Event                                          | When                 | Who hears it                                        |
-| ---------------------------------------------- | -------------------- | --------------------------------------------------- |
-| `task.requested`                               | a request is filed   | everyone who could approve it, except the requester |
-| `task.submitted`                               | a request is filed   | the requester — a receipt naming who was asked      |
-| `task.decided`                                 | approved or rejected | the requester, and everyone told above              |
-| `task.executed` `task.failed` `task.cancelled` | the run ends         | the requester and the approver                      |
+| Event                                          | When                 | Who hears it                                                                    |
+| ---------------------------------------------- | -------------------- | ------------------------------------------------------------------------------- |
+| `task.requested`                               | a request is filed   | everyone Cedar says may approve it (the requester too, where policy allows)     |
+| `task.submitted`                               | a request is filed   | the requester, when not themselves an approver — a receipt naming who was asked |
+| `task.decided`                                 | approved or rejected | the requester, and everyone told above                                          |
+| `task.executed` `task.failed` `task.cancelled` | the run ends         | the requester and the approver                                                  |
 
 Anyone told about a request is told how it ended. That is what stops a stale
 "needs your approval" sitting in a DM after someone else already handled it —
@@ -157,28 +157,20 @@ The shipped policies never read `requester_ip` for `task.approve`, so on a
 default deployment either choice is correct. The unknown earns its place the
 moment an operator writes "approvers must be on the office network."
 
-### The requester gets a receipt, not an invitation to self-approve
+### The requester's own message
 
-The requester hears about their own request — as a receipt, never as an approver
-of it. `emitRequested` routes the approver message (`task.requested`) to
-everyone who could approve it _except the requester_, and sends the requester a
-`task.submitted` receipt instead: their request is pending, and here is who was
-asked. So the requester gets exactly one message, and it is never an "approve
-your own request" button.
+`recipientsFor` is Cedar's answer to who may approve, and it is never
+post-filtered. A hard-coded denial or filter in code — dropping the requester,
+skipping an "impossible" approver — is a bug, not a shortcut: it moves a policy
+rule out of the engine that owns it. If the requester is in that set they get
+the ordinary approver message like any approver; if not, they get a
+`task.submitted` receipt — their request is pending, and here is who was asked.
+One message per recipient; which one is Cedar's set, not a branch in code.
 
-That exclusion is routing, not authorization — the boundary stays Cedar's
-[`system:no-self-approval`] forbid, which denies a requester who reaches an
-approve button by any other path. Cedar's own limitation is unchanged: it treats
-the context as a single record, so `context has channel` will not reduce while
-_any_ unknown sits in that record, even with `channel` right there with a
-concrete value. That still over-notifies by catching a genuine approver
-candidate on the UNKNOWN `requester_ip` row, which is harmless — a click just
-gets a 403:
-
-```
-channel known, requester_ip omitted  ->  Deny   (correct, forbid resolves)
-channel known, requester_ip UNKNOWN  ->  null   (undecided → over-notified, harmless)
-```
+The reverse query has one quirk: it treats the context as a single record, so
+`context has channel` will not reduce while _any_ unknown sits in it. That
+over-notifies an approver candidate on the UNKNOWN `requester_ip` row —
+harmless, since the click re-decides and may 403.
 
 ### What this costs, and what it means
 

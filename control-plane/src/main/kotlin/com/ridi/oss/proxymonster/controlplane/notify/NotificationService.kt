@@ -119,13 +119,12 @@ class NotificationService(
                 status = "PENDING",
                 createdAt = "",
             )
-            // The requester hears about their own request as a receipt (TASK_SUBMITTED), never as an approver
-            // of it — so they get exactly one message even where policy would let them approve their own.
-            val approvers = recipients.recipientsFor(subject).filter { it != requester }
+            val approvers = recipients.recipientsFor(subject)
             for (transport in transports) {
                 for (recipient in approvers) {
                     store.enqueue(c, taskId, NotificationEvent.TASK_REQUESTED, transport.name, recipient)
                 }
+                // A requester who can approve is already in `approvers`; the drain dedups this receipt away.
                 store.enqueue(c, taskId, NotificationEvent.TASK_SUBMITTED, transport.name, requester)
             }
         }.onFailure { log.warn("notification emit failed task={} event=task.requested", taskId, it) }

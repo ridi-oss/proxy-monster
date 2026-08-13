@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.3](https://github.com/ridi-oss/proxy-monster/compare/mysqlwire/v0.1.2...mysqlwire/v0.1.3) (2026-08-13)
+
+
+### Refactoring
+
+* rename the "backend" target-DB vocabulary to target-DB ([#165](https://github.com/ridi-oss/proxy-monster/issues/165)) ([690953c](https://github.com/ridi-oss/proxy-monster/commit/690953cac6fc0463c96750bb646d356d916d9a8c))
+
 ## [0.1.2](https://github.com/ridi-oss/proxy-monster/compare/mysqlwire/v0.1.1...mysqlwire/v0.1.2) (2026-08-05)
 
 

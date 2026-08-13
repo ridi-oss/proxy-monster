@@ -1,6 +1,7 @@
 package com.ridi.oss.proxymonster.controlplane.notify
 
 import com.ridi.oss.proxymonster.controlplane.AccessRequest
+import com.ridi.oss.proxymonster.controlplane.toApprovalResource
 import com.ridi.oss.proxymonster.controlplane.AccessStore
 import com.ridi.oss.proxymonster.controlplane.Channel
 import com.ridi.oss.proxymonster.controlplane.Datasource
@@ -9,7 +10,6 @@ import com.ridi.oss.proxymonster.controlplane.authz.Authz
 import com.ridi.oss.proxymonster.controlplane.authz.AuthzAction
 import com.ridi.oss.proxymonster.controlplane.authz.AuthzContext
 import com.ridi.oss.proxymonster.controlplane.authz.AuthzDecision
-import com.ridi.oss.proxymonster.controlplane.authz.AuthzResource
 import com.ridi.oss.proxymonster.controlplane.authz.authorizeWithContext
 import com.ridi.oss.proxymonster.controlplane.i18n.MessageCatalog
 import com.ridi.oss.proxymonster.controlplane.management.AuditActor
@@ -102,10 +102,7 @@ class SlackDecisionHandler(
         val decision = authz.authorizeWithContext(
             principal,
             AuthzAction.TASK_APPROVE,
-            AuthzResource.ApprovalRequest(
-                requester = req.principal, approver = req.decidedBy, executedBy = req.executedBy,
-                datasourceName = req.datasourceName, roleName = req.roleName,
-            ),
+            req.toApprovalResource(),
             // No attested address: a Slack click carries none, so a policy requiring one denies. That is the
             // same fail-closed posture the system takes for any unknown attribute, and the reason `slack` is
             // its own channel rather than a flag.

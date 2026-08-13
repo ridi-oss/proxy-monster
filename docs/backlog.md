@@ -217,8 +217,6 @@ Fixes for gaps documented in
   grant hygiene.
 - Per-engine-version golden inventory of system objects plus a CI release-diff
   gate, so a manifest can't silently fall behind a new engine minor.
-- Make the role-approval `Request` EUID request-unique so one approval can't
-  authorize a principal's later requests.
 - Canonicalize introspected schema names on the proxy side (case-fold-aware),
   removing the interim MySQL lowercase fold in the control plane.
 - Broker a per-user target DB login so `SET PASSWORD` / `SET GLOBAL` stop

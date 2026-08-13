@@ -1,10 +1,10 @@
 package com.ridi.oss.proxymonster.controlplane.notify
 
 import com.ridi.oss.proxymonster.controlplane.AccessRequest
+import com.ridi.oss.proxymonster.controlplane.toApprovalResource
 import com.ridi.oss.proxymonster.controlplane.RoleResolver
 import com.ridi.oss.proxymonster.controlplane.authz.Authz
 import com.ridi.oss.proxymonster.controlplane.authz.AuthzAction
-import com.ridi.oss.proxymonster.controlplane.authz.AuthzResource
 import com.ridi.oss.proxymonster.controlplane.authz.SatisfiableVerdict
 import org.slf4j.LoggerFactory
 
@@ -34,13 +34,7 @@ class RecipientResolver(
     }
 
     private fun approverCandidates(req: AccessRequest): Set<String> {
-        val resource = AuthzResource.ApprovalRequest(
-            requester = req.principal,
-            approver = req.decidedBy,
-            executedBy = req.executedBy,
-            datasourceName = req.datasourceName,
-            roleName = req.roleName,
-        )
+        val resource = req.toApprovalResource()
         return candidateSource()
             .filter { candidate ->
                 authz.satisfiableAs(

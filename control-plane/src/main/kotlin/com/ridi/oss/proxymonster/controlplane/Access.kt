@@ -54,6 +54,16 @@ data class AccessRequest(
     val statementCarriesProtectedLiteral: Boolean? = null,
 )
 
+/**
+ * The authz view of this persisted approval request, built from its row so every route that decides a task
+ * asks Cedar the same question from one place. The prospective auto-approval check (before a row exists)
+ * builds its resource inline instead.
+ */
+fun AccessRequest.toApprovalResource() = AuthzResource.ApprovalRequest(
+    requester = principal, approver = decidedBy, executedBy = executedBy,
+    datasourceName = datasourceName, roleName = roleName,
+)
+
 @Serializable
 data class AccessRequestInput(
     val roleId: Long, val datasourceId: Long? = null,
@@ -763,10 +773,7 @@ fun Route.accessRoutes(
             rows.filter {
                 authz.authorize(
                     caller, AuthzAction.TASK_READ,
-                    AuthzResource.ApprovalRequest(
-                        requester = it.principal, approver = it.decidedBy, executedBy = it.executedBy,
-                        datasourceName = it.datasourceName, roleName = it.roleName,
-                    ),
+                    it.toApprovalResource(),
                 ) is AuthzDecision.Allow
             },
         )
@@ -815,10 +822,7 @@ fun Route.accessRoutes(
         // approval routes' mayDecide (task.approve) call in Approvals.kt.
         val decision = authz.authorizeWithContext(
             approver, AuthzAction.TASK_APPROVE,
-            AuthzResource.ApprovalRequest(
-                requester = req.principal, approver = req.decidedBy, executedBy = req.executedBy,
-                datasourceName = req.datasourceName, roleName = req.roleName,
-            ),
+            req.toApprovalResource(),
             call.httpAuthzContext(config, Channel.WORKFLOW_VIEWER),
             req.datasourceName,
             req.datasourceId?.let(datasourceStore::getIncludingDeleted)?.tags.orEmpty(),
@@ -844,10 +848,7 @@ fun Route.accessRoutes(
         // Cedar question, so a role-scoped approval policy governs reject too (see /approve above).
         val decision = authz.authorizeWithContext(
             approver, AuthzAction.TASK_APPROVE,
-            AuthzResource.ApprovalRequest(
-                requester = req.principal, approver = req.decidedBy, executedBy = req.executedBy,
-                datasourceName = req.datasourceName, roleName = req.roleName,
-            ),
+            req.toApprovalResource(),
             call.httpAuthzContext(config, Channel.WORKFLOW_VIEWER),
             req.datasourceName,
             req.datasourceId?.let(datasourceStore::getIncludingDeleted)?.tags.orEmpty(),

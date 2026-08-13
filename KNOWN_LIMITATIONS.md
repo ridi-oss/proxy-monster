@@ -307,11 +307,6 @@ tagging, table detail) and never feeds an enforcement decision.
   effect. The benign session statements the forbid does deny (`SET NAMES`,
   `BEGIN`, `SET @var`) are otherwise ungated, which is why they are the ones
   that need the channel rule.
-- 🔴 Role-approval `Request` EUID is not request-unique.
-  `Request::"<requester>#<datasource>"` omits the request id and requested role,
-  so one approval policy authorizes every later request that principal makes for
-  that datasource — a wrong-ALLOW. Tracked in
-  [`docs/backlog.md`](./docs/backlog.md).
 - 🔴 `system:admin` immutability assumes single-instance, migrate-before-serve.
   The `system:admin` group is immutable through the API and SCIM via runtime
   guards inside `UserGroupStore`, which are in-process: they serialize

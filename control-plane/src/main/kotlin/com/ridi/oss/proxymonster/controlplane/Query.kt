@@ -4,7 +4,6 @@ import com.ridi.oss.proxymonster.controlplane.authz.Authz
 import com.ridi.oss.proxymonster.controlplane.authz.AuthzAction
 import com.ridi.oss.proxymonster.controlplane.authz.AuthzContext
 import com.ridi.oss.proxymonster.controlplane.authz.AuthzDecision
-import com.ridi.oss.proxymonster.controlplane.authz.AuthzResource
 import com.ridi.oss.proxymonster.controlplane.authz.ColumnRef
 import com.ridi.oss.proxymonster.controlplane.authz.ColumnVerdict
 import com.ridi.oss.proxymonster.controlplane.authz.FunctionRef
@@ -1157,10 +1156,7 @@ fun Route.editorSessionRoutes(
         // still override the self-read permit.
         val mayRead = authz.authorizeWithContext(
             principal, AuthzAction.TASK_READ,
-            AuthzResource.ApprovalRequest(
-                requester = task.principal, approver = task.decidedBy, executedBy = task.executedBy,
-                datasourceName = task.datasourceName, roleName = task.roleName,
-            ),
+            task.toApprovalResource(),
             call.httpAuthzContext(config), task.datasourceName,
             task.datasourceId?.let(datasourceStore::getIncludingDeleted)?.tags.orEmpty(),
         )
@@ -1180,10 +1176,7 @@ fun Route.editorSessionRoutes(
         }
         val mayCancel = authz.authorizeWithContext(
             principal, AuthzAction.TASK_CANCEL,
-            AuthzResource.ApprovalRequest(
-                requester = task.principal, approver = task.decidedBy, executedBy = task.executedBy,
-                datasourceName = task.datasourceName, roleName = task.roleName,
-            ),
+            task.toApprovalResource(),
             call.httpAuthzContext(config), task.datasourceName,
             task.datasourceId?.let(datasourceStore::getIncludingDeleted)?.tags.orEmpty(),
         )
@@ -1235,10 +1228,7 @@ fun Route.editorSessionRoutes(
             ?: return@get call.respond(HttpStatusCode.NotFound, ApiError("common.not_found", mapOf("resource" to "editor task")))
         val mayAssume = authz.authorizeWithContext(
             principal, AuthzAction.TASK_ASSUME,
-            AuthzResource.ApprovalRequest(
-                requester = task.principal, approver = task.decidedBy, executedBy = task.executedBy,
-                datasourceName = task.datasourceName, roleName = task.roleName,
-            ),
+            task.toApprovalResource(),
             call.httpAuthzContext(config), task.datasourceName,
             task.datasourceId?.let(datasourceStore::getIncludingDeleted)?.tags.orEmpty(),
         )

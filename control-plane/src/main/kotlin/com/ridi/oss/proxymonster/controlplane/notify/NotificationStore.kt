@@ -12,6 +12,7 @@ data class OutboxRow(
     val event: NotificationEvent,
     val transport: String,
     val recipient: String,
+    val kind: NotificationKind,
     val attempts: Int,
 )
 
@@ -26,8 +27,9 @@ data class OutboxRow(
 class NotificationStore(private val dataSource: DataSource) {
 
     /**
-     * Queue one delivery, in the caller's transaction. Idempotent per (task, event, transport, recipient):
-     * an event emitted twice for one recipient collapses onto the existing row rather than sending twice.
+     * Queue one delivery, in the caller's transaction. Idempotent per (task, event, transport, recipient,
+     * kind): an event emitted twice for one recipient+kind collapses onto the existing row rather than sending
+     * twice — but the same recipient's requester-side and approver-side threads ([kind]) stay separate.
      */
     fun enqueue(
         c: Connection,
@@ -35,16 +37,18 @@ class NotificationStore(private val dataSource: DataSource) {
         event: NotificationEvent,
         transport: String,
         recipient: String,
+        kind: NotificationKind,
     ) {
         c.prepareStatement(
-            """INSERT INTO notification_outbox (task_id, event, transport, recipient)
-               VALUES (?, ?, ?, ?)
-               ON CONFLICT (task_id, event, transport, recipient) DO NOTHING""",
+            """INSERT INTO notification_outbox (task_id, event, transport, recipient, kind)
+               VALUES (?, ?, ?, ?, ?)
+               ON CONFLICT (task_id, event, transport, recipient, kind) DO NOTHING""",
         ).use { ps ->
             ps.setLong(1, taskId)
             ps.setString(2, event.wire)
             ps.setString(3, transport)
             ps.setString(4, recipient)
+            ps.setString(5, kind.wire)
             ps.executeUpdate()
         }
     }
@@ -59,7 +63,7 @@ class NotificationStore(private val dataSource: DataSource) {
      */
     fun claimDue(limit: Int): List<OutboxRow> = dataSource.inTxLocal { c ->
         c.prepareStatement(
-            """SELECT id, task_id, event, transport, recipient, attempts
+            """SELECT id, task_id, event, transport, recipient, kind, attempts
                FROM notification_outbox
                WHERE status = 'PENDING' AND next_attempt_at <= now()
                ORDER BY id
@@ -85,6 +89,7 @@ class NotificationStore(private val dataSource: DataSource) {
                         event = event,
                         transport = rs.getString("transport"),
                         recipient = rs.getString("recipient"),
+                        kind = NotificationKind.fromWire(rs.getString("kind")),
                         attempts = rs.getInt("attempts"),
                     )
                 }
@@ -153,26 +158,28 @@ class NotificationStore(private val dataSource: DataSource) {
     fun hasEarlierPending(row: OutboxRow): Boolean = dataSource.connection.use { c ->
         c.prepareStatement(
             """SELECT 1 FROM notification_outbox
-               WHERE task_id = ? AND transport = ? AND recipient = ? AND status = 'PENDING' AND id < ?
+               WHERE task_id = ? AND transport = ? AND recipient = ? AND kind = ? AND status = 'PENDING' AND id < ?
                LIMIT 1""",
         ).use { ps ->
             ps.setLong(1, row.taskId)
             ps.setString(2, row.transport)
             ps.setString(3, row.recipient)
-            ps.setLong(4, row.id)
+            ps.setString(4, row.kind.wire)
+            ps.setLong(5, row.id)
             ps.executeQuery().use { it.next() }
         }
     }
 
-    /** The handle a delivered message left behind, or null when nothing has been delivered yet. */
-    fun externalRef(taskId: Long, transport: String, recipient: String): String? =
+    /** The handle a delivered message left behind for this thread, or null when nothing has been delivered. */
+    fun externalRef(taskId: Long, transport: String, recipient: String, kind: NotificationKind): String? =
         dataSource.connection.use { c ->
             c.prepareStatement(
-                "SELECT external_ref FROM notification_message WHERE task_id = ? AND transport = ? AND recipient = ?",
+                "SELECT external_ref FROM notification_message WHERE task_id = ? AND transport = ? AND recipient = ? AND kind = ?",
             ).use { ps ->
                 ps.setLong(1, taskId)
                 ps.setString(2, transport)
                 ps.setString(3, recipient)
+                ps.setString(4, kind.wire)
                 ps.executeQuery().use { if (it.next()) it.getString(1) else null }
             }
         }
@@ -198,19 +205,20 @@ class NotificationStore(private val dataSource: DataSource) {
     fun recipientsOfRequest(taskId: Long): Set<String> =
         dataSource.connection.use { c -> recipientsOfRequest(c, taskId) }
 
-    /** Record where a message landed, so a later event edits it in place. */
-    fun rememberMessage(taskId: Long, transport: String, recipient: String, externalRef: String) {
+    /** Record where a message landed, so a later event edits that thread in place. */
+    fun rememberMessage(taskId: Long, transport: String, recipient: String, kind: NotificationKind, externalRef: String) {
         dataSource.connection.use { c ->
             c.prepareStatement(
-                """INSERT INTO notification_message (task_id, transport, recipient, external_ref)
-                   VALUES (?, ?, ?, ?)
-                   ON CONFLICT (task_id, transport, recipient)
+                """INSERT INTO notification_message (task_id, transport, recipient, kind, external_ref)
+                   VALUES (?, ?, ?, ?, ?)
+                   ON CONFLICT (task_id, transport, recipient, kind)
                    DO UPDATE SET external_ref = EXCLUDED.external_ref, updated_at = now()""",
             ).use { ps ->
                 ps.setLong(1, taskId)
                 ps.setString(2, transport)
                 ps.setString(3, recipient)
-                ps.setString(4, externalRef)
+                ps.setString(4, kind.wire)
+                ps.setString(5, externalRef)
                 ps.executeUpdate()
             }
         }

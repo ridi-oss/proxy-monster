@@ -403,4 +403,57 @@ class SlackNotificationE2eDbTest {
             "a fully-shown statement offers approve-and-run",
         )
     }
+
+    /**
+     * The one person who is BOTH requester and approver (self-approval) gets both messages, and a decision
+     * edits both — over the real Slack wire, not just the store. The delivery model keyed each message and its
+     * handle by (task, transport, recipient), so this person's own receipt used to dedup against their approver
+     * message and never post; this exercises that end to end (real Cedar routing, real Postgres, real
+     * SlackTransport → mock Slack). The approver is already a system:admin registered in mock Slack, so a
+     * request they file themselves is a self-approver with no extra setup.
+     */
+    @Test
+    fun `a self-approving requester gets both the approver message and their own receipt over Slack`() {
+        val selfSvc = NotificationService(
+            store = NotificationStore(fx.dataSource),
+            recipients = RecipientResolver(core.authz, core.roleResolver) { listOf(approver) },
+            transports = listOf(SlackTransport(http, "xoxb-e2e", "https://console.example", NotificationRenderer(), api = slack.apiBase)),
+            accessStore = core.accessStore,
+            queryResultStore = resultStore,
+            webBaseUrl = "https://console.example",
+            disclosure = StatementDisclosure.AUTO,
+            defaultLocale = "en",
+        )
+        val task = core.accessStore.createQueryRequest(
+            principal = approver,
+            datasourceId = fx.datasource.id,
+            sql = "SELECT id FROM users",
+            denyReason = null,
+            sourceDecisionId = null,
+            reason = "audit",
+            title = "read",
+            evaluatedDecision = "ALLOW",
+            roleId = runnerRoleId,
+            carriesProtectedLiteral = false,
+        )
+        runBlocking {
+            fx.dataSource.connection.use { c -> selfSvc.emitRequested(c, task.id, approver, fx.datasource, task.roleName) }
+            selfSvc.drainOnce()
+        }
+        val posts = slack.requestsFor("chat.postMessage")
+        assertEquals(2, posts.size, "the self-approver gets BOTH the approver message and their own receipt, not one deduped into the other")
+        assertEquals(
+            1,
+            posts.count { p -> p.actionElements().any { it["action_id"]?.jsonPrimitive?.content == SlackTransport.ACTION_APPROVE } },
+            "exactly one carries approve-and-run — the approver copy; the receipt has no buttons",
+        )
+
+        // A decision edits BOTH threads in place — again over the wire, not one update swallowing the other.
+        slack.clearRecorded()
+        runBlocking {
+            fx.dataSource.connection.use { c -> selfSvc.emit(c, NotificationEvent.TASK_DECIDED, core.accessStore.getRequest(task.id)!!) }
+            selfSvc.drainOnce()
+        }
+        assertEquals(2, slack.requestsFor("chat.update").size, "the decision edits both the approver message and the receipt")
+    }
 }

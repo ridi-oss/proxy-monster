@@ -76,19 +76,24 @@ class NotificationService(
     fun emit(c: Connection, event: NotificationEvent, req: AccessRequest) {
         if (!enabled) return
         runCatching {
-            val targets = when (event) {
-                // Only a pending request goes to the freshly-computed eligible approvers.
-                NotificationEvent.TASK_REQUESTED -> recipients.recipientsFor(req)
-                // Every later event edits the messages of exactly the people who were TOLD about the request.
-                // Recomputing eligibility would skip an approver whose role was revoked since, leaving their
-                // live "needs approval" buttons in place forever — and address someone who never saw it. Plus
-                // the parties, told how their own request ended regardless of approval authority.
-                else -> store.recipientsOfRequest(c, req.id) +
-                    listOfNotNull(req.principal, req.decidedBy, req.executedBy).filter { it.isNotBlank() }
+            val targets: List<Pair<String, NotificationKind>> = when (event) {
+                // emit() only carries later events; a pending request is enqueued by emitRequested. Kept total.
+                NotificationEvent.TASK_REQUESTED -> recipients.recipientsFor(req).map { it to NotificationKind.APPROVER }
+                // Every later event edits the threads of exactly the people who were TOLD about the request —
+                // the approver side is those who got it (recomputing eligibility would skip an approver whose
+                // role was revoked since, stranding their live buttons), the requester side is the requester's
+                // own receipt. A self-approving requester holds both threads and both are updated.
+                else -> buildList {
+                    for (r in store.recipientsOfRequest(c, req.id)) add(r to NotificationKind.APPROVER)
+                    for (r in listOfNotNull(req.decidedBy, req.executedBy).filter { it.isNotBlank() }) {
+                        add(r to NotificationKind.APPROVER)
+                    }
+                    add(req.principal to NotificationKind.REQUESTER)
+                }
             }
             for (transport in transports) {
-                for (recipient in targets) {
-                    store.enqueue(c, req.id, event, transport.name, recipient)
+                for ((recipient, kind) in targets) {
+                    store.enqueue(c, req.id, event, transport.name, recipient, kind)
                 }
             }
         }.onFailure { log.warn("notification emit failed task={} event={}", req.id, event.wire, it) }
@@ -122,10 +127,11 @@ class NotificationService(
             val approvers = recipients.recipientsFor(subject)
             for (transport in transports) {
                 for (recipient in approvers) {
-                    store.enqueue(c, taskId, NotificationEvent.TASK_REQUESTED, transport.name, recipient)
+                    store.enqueue(c, taskId, NotificationEvent.TASK_REQUESTED, transport.name, recipient, NotificationKind.APPROVER)
                 }
-                // A requester who can approve is already in `approvers`; the drain dedups this receipt away.
-                store.enqueue(c, taskId, NotificationEvent.TASK_SUBMITTED, transport.name, requester)
+                // The requester always gets their own receipt. When they are also an approver it is a separate
+                // thread from their approver message (distinct kind), so both are delivered, not deduped.
+                store.enqueue(c, taskId, NotificationEvent.TASK_SUBMITTED, transport.name, requester, NotificationKind.REQUESTER)
             }
         }.onFailure { log.warn("notification emit failed task={} event=task.requested", taskId, it) }
     }
@@ -178,7 +184,7 @@ class NotificationService(
 
         val locale = store.localeOf(row.recipient) ?: defaultLocale
         val message = buildMessage(row, req, transport)
-        val existingRef = store.externalRef(row.taskId, transport.name, row.recipient)
+        val existingRef = store.externalRef(row.taskId, transport.name, row.recipient, row.kind)
 
         // A non-update row that already left a ref was delivered by a prior attempt whose markSent did not
         // commit (the post succeeded, then the bookkeeping failed). Re-posting would double-send and strand
@@ -205,7 +211,7 @@ class NotificationService(
 
         when (result) {
             is DeliveryResult.Sent -> {
-                store.rememberMessage(row.taskId, transport.name, row.recipient, result.externalRef)
+                store.rememberMessage(row.taskId, transport.name, row.recipient, row.kind, result.externalRef)
                 store.markSent(row.id)
             }
             is DeliveryResult.Drop -> store.markDead(row.id, result.reason)

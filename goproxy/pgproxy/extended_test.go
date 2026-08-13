@@ -867,15 +867,12 @@ func TestExtendedAbortedTransactionRecoversViaRollback(t *testing.T) {
 	})
 }
 
-// TestExtendedBindCoercionSetConfigLeaksAcrossSchema is a CHARACTERIZATION test for a known, out-of-scope
-// limitation (KNOWN_LIMITATIONS.md, backlog): a domain CHECK that calls set_config('search_path', …) moves
-// the path DURING Bind parameter coercion — after the proxy's pre-Bind probe but before PostgreSQL resolves
-// the portal's table names — so Execute is authorized under the stale probed snapshot while the target DB binds
-// the portal under the mutated path. The bare `people` reads id=10, which exists ONLY in the secondary
-// schema, so a real leak surfaces the secondary row ('secret-2') even though the policy DENIES the secondary
-// path. The proxy tracks search_path by SQL classification and cannot observe a set_config fired from inside
-// coercion, so this is out of scope. If this test ever STOPS leaking, the limitation was closed — update the docs.
-func TestExtendedBindCoercionSetConfigLeaksAcrossSchema(t *testing.T) {
+// TestExtendedBindCoercionSetConfigReprobesNamespace closes GHSA-c99q: a domain CHECK that calls
+// set_config('search_path', …) moves the path DURING Bind parameter coercion — after any pre-Bind probe but
+// before PostgreSQL resolves the portal's table names. handleBind therefore probes the namespace AFTER
+// BindComplete, so Execute is authorized under the path PostgreSQL actually bound (the secondary schema), and
+// the policy DENY on that path blocks the cross-schema read instead of disclosing the secondary row.
+func TestExtendedBindCoercionSetConfigReprobesNamespace(t *testing.T) {
 	h := startBroker(t)
 	var decidedPaths [][]string
 	h.fake.decideFn = func(req *pb.DecisionRequest) (*pb.WireDecision, error) {
@@ -917,6 +914,7 @@ func TestExtendedBindCoercionSetConfigLeaksAcrossSchema(t *testing.T) {
 	)
 
 	leaked := false
+	denied := false
 	for _, f := range frames {
 		switch m := f.(type) {
 		case *pgproto3.DataRow:
@@ -927,24 +925,31 @@ func TestExtendedBindCoercionSetConfigLeaksAcrossSchema(t *testing.T) {
 			}
 			t.Logf("DataRow: %q", m.Values)
 		case *pgproto3.ErrorResponse:
+			if m.Code == "42501" {
+				denied = true
+			}
 			t.Logf("ErrorResponse: %s (%s)", m.Message, m.Code)
-		default:
-			t.Logf("frame: %T", f)
 		}
 	}
 	t.Logf("decision search_paths seen: %v", decidedPaths)
-	t.Logf("LEAKED (secondary secret disclosed under a primary-authorized decision): %v", leaked)
-	if !leaked {
-		t.Fatalf("expected the documented Bind-coercion set_config leak to reproduce (secondary row 'secret-2'); it did not — the leak may no longer reproduce, so revisit KNOWN_LIMITATIONS.md")
+	if leaked {
+		t.Fatalf("Bind coercion changed search_path and disclosed the secondary row 'secret-2' — the post-Bind reprobe did not close the leak")
 	}
-	// The leak is only meaningful if the proxy authorized under the STALE primary path (not the secondary
-	// one the target DB actually bound). Assert no decision was ever made under the secondary schema.
+	if !denied {
+		t.Fatalf("expected a 42501 deny at Execute under the post-Bind secondary path; frames=%v decidedPaths=%v", frames, decidedPaths)
+	}
+	// The deny is only correct if a decision observed the POST-Bind secondary path (the reprobe) rather than
+	// the stale primary snapshot the pre-Bind probe would have captured.
+	sawSecondary := false
 	for _, path := range decidedPaths {
 		for _, schema := range path {
 			if schema == secondarySchema {
-				t.Fatalf("a decision was made under the secondary path %v — not the stale-snapshot leak this test documents", path)
+				sawSecondary = true
 			}
 		}
+	}
+	if !sawSecondary {
+		t.Fatalf("expected an Execute decision under the post-Bind secondary path, saw %v", decidedPaths)
 	}
 }
 

@@ -33,11 +33,14 @@ type preparedStatement struct {
 	sql string
 }
 
-// boundPortal snapshots the namespace and temporary-column context immediately before its confirmed Bind.
-// Every Execute re-decides the portal SQL against this snapshot, matching PostgreSQL's resolution point.
-// This is the PostgreSQL analog of MySQL's Prepare-time freeze (goproxy/mysqlproxy/stmt.go). Capturing the
-// context at Bind (rather than refusing a Parse-to-Bind path drift) lets the probe-always model authorize
-// the true Bind context with a fail-closed guarantee. No decision is ever stored.
+// boundPortal snapshots the namespace and temporary-column context probed immediately AFTER its confirmed
+// Bind — a Bind-time parameter coercion can move search_path, and PostgreSQL binds the portal's unqualified
+// relations under that post-coercion namespace, so only a post-BindComplete probe captures the context it
+// actually resolved under. Every Execute re-decides the portal SQL against this snapshot, matching
+// PostgreSQL's resolution point. This is the PostgreSQL analog of MySQL's Prepare-time freeze
+// (goproxy/mysqlproxy/stmt.go). Capturing the context at Bind (rather than refusing a Parse-to-Bind path
+// drift) lets the probe-always model authorize the true Bind context with a fail-closed guarantee. No
+// decision is ever stored.
 type boundPortal struct {
 	sql       string
 	namespace []string
@@ -160,18 +163,10 @@ func (s *Server) handleBind(sess *session, message *pgproto3.Bind) error {
 		}
 	}
 
-	// Capture immediately before forwarding: the lockstep single writer guarantees nothing executes on the
-	// target DB between this probe and Bind, so the captured context is exactly the one PostgreSQL binds under.
-	// Probing first also leaves no registry/target DB inconsistency if capture fails. An aborted transaction
-	// fails here before PostgreSQL's equivalent 25P02 Bind, retaining the prior portal snapshot and target DB portal.
-	namespace, temps, err := s.probeBindContext(sess)
-	if err != nil {
-		if errors.Is(err, errClientEncoding) || errors.Is(err, errStdConformingStrings) {
-			return err
-		}
-		return refuseExtended(sess, "58000", "bind-time namespace unavailable")
-	}
-
+	// A parameter coercion runs DURING Bind — a domain CHECK or a cast function can `SET search_path` as a
+	// side effect, and PostgreSQL resolves the portal's unqualified relations under that POST-coercion
+	// namespace. So the authorization context is probed AFTER BindComplete, not before: a pre-Bind probe
+	// captures the namespace the coercion is about to move, and Execute would then decide the wrong schema.
 	sess.targetDb.Send(message)
 	sess.targetDb.Send(&pgproto3.Flush{})
 	if err := sess.targetDb.Flush(); err != nil {
@@ -188,13 +183,30 @@ func (s *Server) handleBind(sess *session, message *pgproto3.Bind) error {
 	if err != nil {
 		return err
 	}
-	if _, complete := terminal.(*pgproto3.BindComplete); complete {
-		sess.portals[message.DestinationPortal] = boundPortal{
-			sql:       statement.sql,
-			namespace: namespace,
-			temps:     temps,
-			binary:    binary,
+	if _, complete := terminal.(*pgproto3.BindComplete); !complete {
+		// Bind errored (a coercion failure, or a 25P02 in an aborted transaction): no portal was bound, so
+		// there is nothing to register or re-decide.
+		return sess.client.Flush()
+	}
+
+	// Bind confirmed: probe the live namespace + temp context the coercion may have moved, and register the
+	// portal against THAT snapshot. The probe's own statement and portal are uniquely named and closed, so it
+	// does not disturb the client's just-bound portal. Fail closed if the probe cannot complete — discard any
+	// prior snapshot at this portal name so a later Execute finds no portal and is denied, never one decided
+	// under stale context.
+	namespace, temps, err := s.probeBindContext(sess)
+	if err != nil {
+		delete(sess.portals, message.DestinationPortal)
+		if errors.Is(err, errClientEncoding) || errors.Is(err, errStdConformingStrings) {
+			return err
 		}
+		return refuseExtended(sess, "58000", "post-bind namespace unavailable")
+	}
+	sess.portals[message.DestinationPortal] = boundPortal{
+		sql:       statement.sql,
+		namespace: namespace,
+		temps:     temps,
+		binary:    binary,
 	}
 	return sess.client.Flush()
 }

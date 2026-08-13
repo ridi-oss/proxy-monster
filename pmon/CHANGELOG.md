@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.1.4](https://github.com/ridi-oss/proxy-monster/compare/pmon-v0.1.3...pmon-v0.1.4) (2026-08-13)
+
+
+### Features
+
+* **pmon:** add JDBC truncation diagnostics opt-in ([#129](https://github.com/ridi-oss/proxy-monster/issues/129)) ([6160315](https://github.com/ridi-oss/proxy-monster/commit/61603152491aa1babc5cea80b72f6690bb06f292))
+
+
+### Build & Dependencies
+
+* **deps:** bump mysqlwire to v0.1.3 in goproxy and pmon ([#196](https://github.com/ridi-oss/proxy-monster/issues/196)) ([54d0491](https://github.com/ridi-oss/proxy-monster/commit/54d049160706fd8c99683aa5caa97c4d29b76e44))
+* **deps:** bump the go group across 4 directories with 14 updates ([#181](https://github.com/ridi-oss/proxy-monster/issues/181)) ([47f3f3c](https://github.com/ridi-oss/proxy-monster/commit/47f3f3c57c7d2ceba31e201c3e2e7187ea28015f))
+
 ## [0.1.3](https://github.com/ridi-oss/proxy-monster/compare/pmon-v0.1.2...pmon-v0.1.3) (2026-08-05)
 
 

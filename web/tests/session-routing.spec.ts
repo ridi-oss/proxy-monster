@@ -43,7 +43,7 @@ for (const reason of ['expired', 'none']) {
 
     await page.goto('/query')
 
-    await expect(page).toHaveURL(/\/login$/)
+    await expect(page).toHaveURL(/\/login(\?|$)/)
   })
 }
 

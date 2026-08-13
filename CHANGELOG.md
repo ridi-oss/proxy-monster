@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.1.17](https://github.com/ridi-oss/proxy-monster/compare/server-v0.1.16...server-v0.1.17) (2026-08-13)
+
+
+### Bug Fixes
+
+* **control-plane:** record a DML statement's affected-row count on the saved result ([#130](https://github.com/ridi-oss/proxy-monster/issues/130)) ([5d01b2c](https://github.com/ridi-oss/proxy-monster/commit/5d01b2c8f5bd2fac3aa563351e03acf0012a5199))
+
+
+### Build & Dependencies
+
+* **deps:** bump CI actions — checkout/setup-node/setup-go v7, setup-buildx v4, release-please v5 ([#194](https://github.com/ridi-oss/proxy-monster/issues/194)) ([c77ea17](https://github.com/ridi-oss/proxy-monster/commit/c77ea17ab83287bcce7268099968d3a8142ff5f7))
+* **deps:** bump gradle-wrapper from 8.14.5 to 9.6.1 ([#6](https://github.com/ridi-oss/proxy-monster/issues/6)) ([588b383](https://github.com/ridi-oss/proxy-monster/commit/588b383670f40a2e141e100b7349377d898ea884))
+* **deps:** bump mysqlwire to v0.1.3 in goproxy and pmon ([#196](https://github.com/ridi-oss/proxy-monster/issues/196)) ([54d0491](https://github.com/ridi-oss/proxy-monster/commit/54d049160706fd8c99683aa5caa97c4d29b76e44))
+* **deps:** bump the go group across 4 directories with 14 updates ([#181](https://github.com/ridi-oss/proxy-monster/issues/181)) ([47f3f3c](https://github.com/ridi-oss/proxy-monster/commit/47f3f3c57c7d2ceba31e201c3e2e7187ea28015f))
+* **deps:** bump the jvm group across 1 directory with 45 updates ([#195](https://github.com/ridi-oss/proxy-monster/issues/195)) ([95af897](https://github.com/ridi-oss/proxy-monster/commit/95af89772c16a9ae25d74c10e0aa38e8928e7329))
+
 ## [0.1.16](https://github.com/ridi-oss/proxy-monster/compare/server-v0.1.15...server-v0.1.16) (2026-08-13)
 
 

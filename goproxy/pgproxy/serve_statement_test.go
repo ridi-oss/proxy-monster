@@ -346,7 +346,7 @@ func TestRunSessionExecutePGAllowsUTF8ParameterStatus(t *testing.T) {
 }
 
 func TestRunSessionExecutePGRejectsUnexpectedFrame(t *testing.T) {
-	response := encodePG(t, &pgproto3.BackendKeyData{ProcessID: 1, SecretKey: 2})
+	response := encodePG(t, &pgproto3.BackendKeyData{ProcessID: 1, SecretKey: []byte{0, 0, 0, 2}})
 	_, _, _, err := runSessionExecute(t, "SELECT 1", 0, response)
 	if err == nil || !strings.Contains(err.Error(), "unexpected") {
 		t.Fatalf("err = %v, want unexpected-frame rejection", err)
@@ -406,7 +406,7 @@ func TestRunSessionExecutePGSequentialQueriesDoNotSkew(t *testing.T) {
 // second Query to the target DB (so a swallowed best-effort probe error cannot let a later statement read the
 // failed statement's stale frames).
 func TestRunSessionExecutePGErrorPoisonsSession(t *testing.T) {
-	malformed := encodePG(t, &pgproto3.BackendKeyData{ProcessID: 1, SecretKey: 2})
+	malformed := encodePG(t, &pgproto3.BackendKeyData{ProcessID: 1, SecretKey: []byte{0, 0, 0, 2}})
 	be, _ := scriptedRunSession(t, malformed) // only the first statement is ever served
 
 	if _, _, _, err := be.execute("SELECT 1", 0); err == nil {

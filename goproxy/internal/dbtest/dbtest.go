@@ -17,7 +17,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/docker/go-connections/nat"
+	"github.com/moby/moby/api/types/network"
 	_ "github.com/go-sql-driver/mysql"
 	_ "github.com/jackc/pgx/v5/stdlib"
 	"github.com/testcontainers/testcontainers-go"
@@ -156,7 +156,7 @@ func startMySQL() (TargetDb, error) {
 		Name:         containerName("pm-goproxy-it-mysql", img),
 		ExposedPorts: []string{"3306/tcp"},
 		Env:          map[string]string{"MYSQL_ROOT_PASSWORD": pass, "MYSQL_DATABASE": db},
-		WaitingFor: wait.ForSQL("3306/tcp", "mysql", func(host string, port nat.Port) string {
+		WaitingFor: wait.ForSQL("3306/tcp", "mysql", func(host string, port network.Port) string {
 			return fmt.Sprintf("%s:%s@tcp(%s:%s)/%s", user, pass, host, port.Port(), db)
 		}).WithStartupTimeout(startupTimeout),
 	}
@@ -171,7 +171,7 @@ func startPostgres() (TargetDb, error) {
 		Name:         containerName("pm-goproxy-it-pg", img),
 		ExposedPorts: []string{"5432/tcp"},
 		Env:          map[string]string{"POSTGRES_PASSWORD": pass, "POSTGRES_DB": db},
-		WaitingFor: wait.ForSQL("5432/tcp", "pgx", func(host string, port nat.Port) string {
+		WaitingFor: wait.ForSQL("5432/tcp", "pgx", func(host string, port network.Port) string {
 			return fmt.Sprintf("postgres://%s:%s@%s:%s/%s?sslmode=disable", user, pass, host, port.Port(), db)
 		}).WithStartupTimeout(startupTimeout),
 	}
@@ -265,7 +265,7 @@ func lockShared(name string) (func(), error) {
 
 // start creates or reuses (by Name) the container and returns its live host:port. Reuse means the
 // container persists after the run and is shared across every test package/process.
-func start(req testcontainers.ContainerRequest, port nat.Port, user, pass, db string) (TargetDb, error) {
+func start(req testcontainers.ContainerRequest, port string, user, pass, db string) (TargetDb, error) {
 	unlock, err := lockShared(req.Name)
 	if err != nil {
 		return TargetDb{}, err
@@ -289,5 +289,5 @@ func start(req testcontainers.ContainerRequest, port nat.Port, user, pass, db st
 	if err != nil {
 		return TargetDb{}, err
 	}
-	return TargetDb{Host: host, Port: mapped.Int(), User: user, Password: pass, DB: db}, nil
+	return TargetDb{Host: host, Port: int(mapped.Num()), User: user, Password: pass, DB: db}, nil
 }

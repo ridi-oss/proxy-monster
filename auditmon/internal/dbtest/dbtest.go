@@ -20,7 +20,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/docker/go-connections/nat"
+	"github.com/moby/moby/api/types/network"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	_ "github.com/jackc/pgx/v5/stdlib" // registers the "pgx" database/sql driver for wait.ForSQL
@@ -147,7 +147,7 @@ func startPostgres() (Backend, error) {
 		Name:         name,
 		ExposedPorts: []string{"5432/tcp"},
 		Env:          map[string]string{"POSTGRES_PASSWORD": pass, "POSTGRES_DB": db},
-		WaitingFor: wait.ForSQL("5432/tcp", "pgx", func(host string, port nat.Port) string {
+		WaitingFor: wait.ForSQL("5432/tcp", "pgx", func(host string, port network.Port) string {
 			return fmt.Sprintf("postgres://%s:%s@%s:%s/%s?sslmode=disable", user, pass, host, port.Port(), db)
 		}).WithStartupTimeout(startupTimeout),
 	}
@@ -168,7 +168,7 @@ func startPostgres() (Backend, error) {
 	if err != nil {
 		return Backend{}, err
 	}
-	return Backend{Host: host, Port: mapped.Int(), User: user, Password: pass, DB: db}, nil
+	return Backend{Host: host, Port: int(mapped.Num()), User: user, Password: pass, DB: db}, nil
 }
 
 // lockShared takes an exclusive cross-process advisory lock on a temp file, serializing the shared-container

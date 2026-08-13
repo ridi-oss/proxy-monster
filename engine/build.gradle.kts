@@ -10,8 +10,8 @@ plugins {
 }
 
 dependencies {
-    api("org.jetbrains.kotlinx:kotlinx-serialization-core:1.7.3")
-    implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.7.3")
+    api("org.jetbrains.kotlinx:kotlinx-serialization-core:1.11.0")
+    implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.11.0")
     // Layer-1 analyzer: the column-lineage probe via its in-repo JVM binding (FFM → Go c-shared lib).
     // The probe (analyzer/) and this binding (analyzer/jvm) live in this repo; see settings.gradle.kts.
     implementation(project(":analyzer:jvm"))

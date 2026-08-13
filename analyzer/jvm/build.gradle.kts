@@ -19,7 +19,7 @@ dependencies {
     // test suite needs the actual analyzer.proto message types to exercise the binding meaningfully.
     testImplementation(project(":proto"))
     testImplementation(kotlin("test"))
-    testImplementation("org.junit.jupiter:junit-jupiter:6.1.2")
+    testImplementation("org.junit.jupiter:junit-jupiter:6.1.3")
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
 }
 

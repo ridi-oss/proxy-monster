@@ -260,12 +260,15 @@ var mysqlStatements = []mysqlStatement{
 	{"RESET BINARY LOGS AND GTIDS", "RESET BINARY LOGS AND GTIDS", "INADMISSIBLE-deny", pb.StatementKind_STATEMENT_KIND_STMT_UNKNOWN}, // 8.4 replacement for RESET MASTER
 
 	// ---- Account management (§15.7.1) — privileged, must fail closed ----
-	{"CREATE USER", "CREATE USER 'u'@'h'", "unanalyzable→exception.unanalyzable", pb.StatementKind_STATEMENT_KIND_STMT_UNKNOWN},
-	{"ALTER USER", "ALTER USER 'u'@'h' IDENTIFIED BY 'p'", "unanalyzable→exception.unanalyzable", pb.StatementKind_STATEMENT_KIND_STMT_UNKNOWN},
-	{"DROP USER", "DROP USER 'u'@'h'", "unanalyzable→exception.unanalyzable", pb.StatementKind_STATEMENT_KIND_STMT_UNKNOWN},
+	{"CREATE USER", "CREATE USER 'u'@'h'", "stmt.kind.create_user", pb.StatementKind_STATEMENT_KIND_CREATE_USER},
+	{"CREATE USER RANDOM PASSWORD", "CREATE USER 'u'@'h' IDENTIFIED BY RANDOM PASSWORD", "stmt.kind.create_user", pb.StatementKind_STATEMENT_KIND_CREATE_USER},
+	{"ALTER USER", "ALTER USER 'u'@'h' IDENTIFIED BY 'p'", "stmt.kind.alter_user", pb.StatementKind_STATEMENT_KIND_ALTER_USER},
+	{"DROP USER", "DROP USER 'u'@'h'", "stmt.kind.drop_user", pb.StatementKind_STATEMENT_KIND_DROP_USER},
+	// RENAME USER is the one account-mgmt form sqlglot-go leaves as an opaque Command, so it stays
+	// unanalyzable where its CREATE/ALTER/DROP siblings resolve to a classified kind.
 	{"RENAME USER", "RENAME USER 'u'@'h' TO 'v'@'h'", "unanalyzable→exception.unanalyzable", pb.StatementKind_STATEMENT_KIND_STMT_UNKNOWN},
-	{"CREATE ROLE", "CREATE ROLE 'r'", "unanalyzable→exception.unanalyzable", pb.StatementKind_STATEMENT_KIND_STMT_UNKNOWN},
-	{"DROP ROLE", "DROP ROLE 'r'", "unanalyzable→exception.unanalyzable", pb.StatementKind_STATEMENT_KIND_STMT_UNKNOWN},
+	{"CREATE ROLE", "CREATE ROLE 'r'", "stmt.kind.create_role", pb.StatementKind_STATEMENT_KIND_CREATE_ROLE},
+	{"DROP ROLE", "DROP ROLE 'r'", "stmt.kind.drop_role", pb.StatementKind_STATEMENT_KIND_DROP_ROLE},
 	{"GRANT (priv)", "GRANT SELECT ON *.* TO 'u'@'h'", "stmt.kind.grant_priv + unanalyzable→exception.unanalyzable", pb.StatementKind_STATEMENT_KIND_GRANT_PRIV},
 	{"GRANT (role)", "GRANT 'r' TO 'u'@'h'", "stmt.kind.grant_priv + unanalyzable→exception.unanalyzable", pb.StatementKind_STATEMENT_KIND_GRANT_PRIV},
 	{"REVOKE (priv)", "REVOKE SELECT ON *.* FROM 'u'@'h'", "stmt.kind.revoke_priv + unanalyzable→exception.unanalyzable", pb.StatementKind_STATEMENT_KIND_REVOKE_PRIV},
@@ -422,7 +425,7 @@ var privilegedNeedingGate = map[string]bool{
 	"RESET REPLICA": true, "RESET SLAVE": true, "RESET MASTER": true, "RESET BINARY LOGS AND GTIDS": true,
 	"START GROUP_REPLICATION": true, "STOP GROUP_REPLICATION": true, "PURGE BINARY LOGS": true,
 	"CHANGE REPLICATION SOURCE TO": true, "CHANGE MASTER TO": true, "CHANGE REPLICATION FILTER": true,
-	"CREATE USER": true, "ALTER USER": true, "DROP USER": true, "RENAME USER": true, "CREATE ROLE": true,
+	"CREATE USER": true, "CREATE USER RANDOM PASSWORD": true, "ALTER USER": true, "DROP USER": true, "RENAME USER": true, "CREATE ROLE": true,
 	"DROP ROLE": true, "GRANT (priv)": true, "GRANT (role)": true, "REVOKE (priv)": true, "REVOKE (role)": true,
 	"ANALYZE TABLE": true, "CHECK TABLE": true, "CHECKSUM TABLE": true, "OPTIMIZE TABLE": true, "REPAIR TABLE": true,
 	"INSTALL PLUGIN": true, "UNINSTALL PLUGIN": true, "INSTALL COMPONENT": true, "UNINSTALL COMPONENT": true,
@@ -458,10 +461,25 @@ var knownConnectOnlyGaps = map[string]bool{
 	"SHOW SLAVE HOSTS":   true,
 }
 
+// gatedBareKinds are privileged kinds whose bare stmt.kind.<k> term IS the gate, not an under-gating.
+// Account management (CREATE/ALTER/DROP USER|ROLE) touches no data, so it emits no utility grant and no
+// lineage — a lone stmt.kind.<k>. But the CP schema maps these kinds into stmt.cat.admin.account, a
+// deny-by-default category with no benign passthrough, so a bare admin-category term denies unless an
+// admin grant is present. This is the opposite of knownConnectOnlyGaps, which are genuinely under-gated
+// (a benign category). The map key is the resolve() output.
+var gatedBareKinds = map[string]bool{
+	"stmt.kind.create_user": true,
+	"stmt.kind.alter_user":  true,
+	"stmt.kind.drop_user":   true,
+	"stmt.kind.create_role": true,
+	"stmt.kind.drop_role":   true,
+}
+
 // TestPrivilegedStatementsAreGated is the security invariant: every privileged or data-exposing MySQL
-// statement must be gated — a datasource verb, a utility grant, or a fail-closed deny — never a bare
-// connect-only passthrough. The known gaps are enumerated, so this stays green today AND fails the moment a
-// new privileged kind falls through the analyzer's dispatch to a bare stmt.kind passthrough.
+// statement must be gated — a datasource verb, a utility grant, a gated-category kind, or a fail-closed
+// deny — never a bare connect-only passthrough. The known gaps are enumerated, so this stays green today
+// AND fails the moment a new privileged kind falls through the analyzer's dispatch to a bare stmt.kind
+// passthrough.
 func TestPrivilegedStatementsAreGated(t *testing.T) {
 	for _, s := range mysqlStatements {
 		if !privilegedNeedingGate[s.name] {
@@ -471,9 +489,10 @@ func TestPrivilegedStatementsAreGated(t *testing.T) {
 		// A bare connect-only passthrough now shows as a lone stmt.kind.<k> term (or the zero-grant
 		// sentinel): resolved, asking nothing beyond the kind — no utility grant, no result.read, and not
 		// a fail-closed deny. A privileged statement landing there is authorized by its benign-category
-		// kind alone, the same under-gating the METADATA/SESSION passthrough classes used to represent.
+		// kind alone, the same under-gating the METADATA/SESSION passthrough classes used to represent —
+		// UNLESS the kind's own category gates it (gatedBareKinds), which the account-mgmt kinds do.
 		bareKind := strings.HasPrefix(got, "stmt.kind.") && !strings.Contains(got, " + ")
-		connectOnly := bareKind || got == "allow(connect-only)"
+		connectOnly := (bareKind && !gatedBareKinds[got]) || got == "allow(connect-only)"
 		if connectOnly && !knownConnectOnlyGaps[s.name] {
 			t.Errorf("%s is privileged but resolves connect-only (%s) — it must be gated; verify %q", s.name, got, s.sql)
 		}

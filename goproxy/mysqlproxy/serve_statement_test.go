@@ -1,6 +1,7 @@
 package mysqlproxy
 
 import (
+	"encoding/binary"
 	"errors"
 	"io"
 	"net"
@@ -129,7 +130,76 @@ func TestTextResultCollectorRejectsMalformedRowWidth(t *testing.T) {
 	}
 }
 
+func TestTextResultCollectorDisplaysBinaryValuesAsHex(t *testing.T) {
+	result := engine.StatementResult{Rows: make([][]*string, 0)}
+	collect := textResultCollector{maxRows: 1, result: &result}
+	if err := collect.onColumns(2); err != nil {
+		t.Fatal(err)
+	}
+	if err := collect.onColumnDef(mysqlColumnDef("uuid", mysqlwire.CharsetBinary, mysqlwire.ColumnTypeString)); err != nil {
+		t.Fatal(err)
+	}
+	if err := collect.onColumnDef(mysqlColumnDef("name", 45, mysqlwire.ColumnTypeVarString)); err != nil {
+		t.Fatal(err)
+	}
+	raw := string([]byte{0x12, 0x34, 0x56, 0x78, 0x90, 0xab, 0xcd, 0xef, 0x12, 0x34, 0x56, 0x78, 0x90, 0xab, 0xcd, 0xef})
+	if _, err := collect.onRow(mysqlwire.TextRowPayload([]*string{&raw, ptrMySQL("Alice")})); err != nil {
+		t.Fatal(err)
+	}
+	got := derefMySQL(result.Rows[0][0])
+	if got != "0x1234567890abcdef1234567890abcdef" {
+		t.Fatalf("binary value = %q, want visible hex", got)
+	}
+	if got := derefMySQL(result.Rows[0][1]); got != "Alice" {
+		t.Fatalf("text value = %q, want Alice", got)
+	}
+}
+
+func TestTextResultCollectorLeavesMaskedBinaryValuesMasked(t *testing.T) {
+	ordinal := int32(0)
+	result := engine.StatementResult{Rows: make([][]*string, 0)}
+	collect := textResultCollector{
+		maxRows: 1,
+		result:  &result,
+		masks:   []*pb.ColumnMask{{Kind: "FIXED", Ordinal: &ordinal}},
+	}
+	if err := collect.onColumns(1); err != nil {
+		t.Fatal(err)
+	}
+	if err := collect.onColumnDef(mysqlColumnDef("uuid", mysqlwire.CharsetBinary, mysqlwire.ColumnTypeString)); err != nil {
+		t.Fatal(err)
+	}
+	raw := string([]byte{0x12, 0x34, 0x56, 0x78})
+	if _, err := collect.onRow(mysqlwire.TextRowPayload([]*string{&raw})); err != nil {
+		t.Fatal(err)
+	}
+	if got := derefMySQL(result.Rows[0][0]); got != "####" {
+		t.Fatalf("masked binary value = %q, want mask", got)
+	}
+}
+
 func ptrMySQL(value string) *string { return &value }
+
+func derefMySQL(value *string) string {
+	if value == nil {
+		return "<nil>"
+	}
+	return *value
+}
+
+func mysqlColumnDef(name string, charset uint16, typ byte) []byte {
+	var payload []byte
+	for _, value := range []string{"def", "app", "people", "people", name, name} {
+		payload = mysqlwire.AppendLenencStr(payload, value)
+	}
+	payload = mysqlwire.AppendLenenc(payload, 0x0c)
+	payload = binary.LittleEndian.AppendUint16(payload, charset)
+	payload = binary.LittleEndian.AppendUint32(payload, 16)
+	payload = append(payload, typ)
+	payload = binary.LittleEndian.AppendUint16(payload, 0)
+	payload = append(payload, 0, 0, 0)
+	return payload
+}
 
 func TestTextResultCollectorMaskUnboundBeforeRows(t *testing.T) {
 	ordinal := int32(3)

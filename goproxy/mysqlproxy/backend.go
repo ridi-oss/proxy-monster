@@ -3,6 +3,7 @@ package mysqlproxy
 import (
 	"context"
 	"crypto/tls"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"math"
@@ -347,6 +348,7 @@ func interpretSessionProbeRow(values []*string) (namespace []string, ansiQuotes 
 type textResultCollector struct {
 	expected, maxRows, columns int
 	masks                      []*pb.ColumnMask
+	columnDefs                 []mysqlwire.ColumnDefinition
 	result                     *engine.StatementResult
 	masker                     *engine.RowMasker
 	targetDbErr, affectedErr   error
@@ -368,6 +370,7 @@ func (c *textResultCollector) onColumns(count int) error {
 	}
 	if c.result != nil {
 		c.result.RowsAffected = -1
+		c.columnDefs = make([]mysqlwire.ColumnDefinition, 0, count)
 	}
 	if len(c.masks) > 0 {
 		c.masker = engine.NewRowMasker(c.masks, count)
@@ -381,11 +384,12 @@ func (c *textResultCollector) onColumnDef(payload []byte) error {
 	if c.result == nil {
 		return nil
 	}
-	name, err := mysqlwire.ParseColumnName(payload)
+	def, err := mysqlwire.ParseColumnDefinition(payload)
 	if err != nil {
 		return fmt.Errorf("parse column definition: %w", err)
 	}
-	c.result.Columns = append(c.result.Columns, name)
+	c.columnDefs = append(c.columnDefs, def)
+	c.result.Columns = append(c.result.Columns, def.Name)
 	return nil
 }
 func (c *textResultCollector) onRow(payload []byte) ([]byte, error) {
@@ -406,7 +410,7 @@ func (c *textResultCollector) onRow(payload []byte) ([]byte, error) {
 		values = c.masker.Apply(values)
 	}
 	if c.result != nil && (c.maxRows <= 0 || len(c.result.Rows) < c.maxRows) {
-		c.result.Rows = append(c.result.Rows, append([]*string(nil), values...))
+		c.result.Rows = append(c.result.Rows, c.displayValues(values))
 	}
 	return payload, nil
 }
@@ -415,6 +419,53 @@ func (c *textResultCollector) onOK(affected uint64) {
 		c.affectedErr = fmt.Errorf("affected rows %d exceeds int32 range", affected)
 	} else if c.result != nil {
 		c.result.RowsAffected = int(affected)
+	}
+}
+
+func (c *textResultCollector) displayValues(values []*string) []*string {
+	out := append([]*string(nil), values...)
+	if len(c.columnDefs) != len(out) {
+		return out
+	}
+	masked := maskedOrdinals(c.masks)
+	for i, def := range c.columnDefs {
+		if _, ok := masked[i]; ok || out[i] == nil || !isBinaryColumn(def) {
+			continue
+		}
+		encoded := "0x" + hex.EncodeToString([]byte(*out[i]))
+		out[i] = &encoded
+	}
+	return out
+}
+
+func maskedOrdinals(masks []*pb.ColumnMask) map[int]struct{} {
+	if len(masks) == 0 {
+		return nil
+	}
+	out := make(map[int]struct{}, len(masks))
+	for _, mask := range masks {
+		if mask != nil && mask.Ordinal != nil {
+			out[int(mask.GetOrdinal())] = struct{}{}
+		}
+	}
+	return out
+}
+
+func isBinaryColumn(def mysqlwire.ColumnDefinition) bool {
+	if def.Charset != mysqlwire.CharsetBinary {
+		return false
+	}
+	switch def.Type {
+	case mysqlwire.ColumnTypeVarchar,
+		mysqlwire.ColumnTypeVarString,
+		mysqlwire.ColumnTypeString,
+		mysqlwire.ColumnTypeBlob,
+		mysqlwire.ColumnTypeTinyBlob,
+		mysqlwire.ColumnTypeMedBlob,
+		mysqlwire.ColumnTypeLongBlob:
+		return true
+	default:
+		return false
 	}
 }
 

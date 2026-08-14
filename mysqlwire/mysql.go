@@ -784,15 +784,87 @@ func StmtID(payload []byte) (uint32, error) {
 	return binary.LittleEndian.Uint32(payload[1:5]), nil
 }
 
-// ParseColumnName returns the fifth length-encoded string in a ColumnDefinition41 packet.
-func ParseColumnName(payload []byte) (string, error) {
+const (
+	ColumnTypeVarchar   = 0x0f
+	ColumnTypeVarString = 0xfd
+	ColumnTypeString    = 0xfe
+	ColumnTypeBlob      = 0xfc
+	ColumnTypeTinyBlob  = 0xf9
+	ColumnTypeMedBlob   = 0xfa
+	ColumnTypeLongBlob  = 0xfb
+
+	CharsetBinary = 63
+)
+
+type ColumnDefinition struct {
+	Name         string
+	Charset      uint16
+	ColumnLength uint32
+	Type         byte
+	Flags        uint16
+	Decimals     byte
+}
+
+// ParseColumnDefinition parses the metadata fields this proxy needs from a ColumnDefinition41 packet.
+func ParseColumnDefinition(payload []byte) (ColumnDefinition, error) {
 	r := NewReader(payload)
 	for range 4 {
 		if _, err := r.LenencStr(); err != nil {
-			return "", err
+			return ColumnDefinition{}, err
 		}
 	}
-	return r.LenencStr()
+	name, err := r.LenencStr()
+	if err != nil {
+		return ColumnDefinition{}, err
+	}
+	if _, err := r.LenencStr(); err != nil {
+		return ColumnDefinition{}, err
+	}
+	if n, err := r.Lenenc(); err != nil {
+		return ColumnDefinition{}, err
+	} else if n != 0x0c {
+		return ColumnDefinition{}, fmt.Errorf("mysqlwire: column definition fixed length = %d, want 12", n)
+	}
+	charset, err := r.U16()
+	if err != nil {
+		return ColumnDefinition{}, err
+	}
+	columnLength, err := r.U32()
+	if err != nil {
+		return ColumnDefinition{}, err
+	}
+	typ, err := r.U8()
+	if err != nil {
+		return ColumnDefinition{}, err
+	}
+	flags, err := r.U16()
+	if err != nil {
+		return ColumnDefinition{}, err
+	}
+	decimals, err := r.U8()
+	if err != nil {
+		return ColumnDefinition{}, err
+	}
+	if err := r.Skip(2); err != nil {
+		return ColumnDefinition{}, err
+	}
+	return ColumnDefinition{
+		Name:         name,
+		Charset:      charset,
+		ColumnLength: columnLength,
+		Type:         typ,
+		Flags:        flags,
+		Decimals:     decimals,
+	}, nil
+}
+
+// ParseColumnName returns the fifth length-encoded string in a ColumnDefinition41 packet.
+func ParseColumnName(payload []byte) (string, error) {
+	def, err := ParseColumnDefinition(payload)
+	if err != nil {
+		return "", err
+	}
+	return def.Name, nil
 }
 
 // ParseTextRow decodes one text-protocol result row, preserving NULL.

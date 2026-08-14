@@ -8,7 +8,11 @@ const SESSION_CONFIG = {
   absoluteCapUnit: 'hours',
 }
 
-async function mockAppBootstrap(page: Page, meResponse: { status: number; body: object }) {
+type MeResponse = { status: number; body: object }
+
+// meResponse may be a function so a test can flip /auth/me from 401 to authenticated once a debug login
+// installs the session — the hard navigation after login re-boots the app and re-fetches /auth/me.
+async function mockAppBootstrap(page: Page, meResponse: MeResponse | (() => MeResponse)) {
   await page.route('**/auth/config', (route) =>
     route.fulfill({
       contentType: 'application/json',
@@ -19,13 +23,14 @@ async function mockAppBootstrap(page: Page, meResponse: { status: number; body: 
       }),
     }),
   )
-  await page.route('**/auth/me', (route) =>
+  await page.route('**/auth/me', (route) => {
+    const me = typeof meResponse === 'function' ? meResponse() : meResponse
     route.fulfill({
-      status: meResponse.status,
+      status: me.status,
       contentType: 'application/json',
-      body: JSON.stringify(meResponse.body),
-    }),
-  )
+      body: JSON.stringify(me.body),
+    })
+  })
 }
 
 test('a displaced session lands on the displacement interstitial', async ({ page }) => {
@@ -57,13 +62,17 @@ test('a displaced device login lands on the displacement interstitial', async ({
 })
 
 test('device login authenticates before showing the verification code', async ({ page }) => {
-  await mockAppBootstrap(page, { status: 401, body: { reason: 'none' } })
-  await page.route('**/auth/debug', (route) =>
+  let authed = false
+  await mockAppBootstrap(page, () =>
+    authed ? { status: 200, body: { principal: 'sam@example.com', roles: [] } } : { status: 401, body: { reason: 'none' } },
+  )
+  await page.route('**/auth/debug', (route) => {
+    authed = true
     route.fulfill({
       contentType: 'application/json',
       body: JSON.stringify({ principal: 'sam@example.com', roles: [] }),
-    }),
-  )
+    })
+  })
 
   await page.goto('/device?user_code=abcd-efgh')
 
@@ -112,13 +121,17 @@ test('device confirmation returns to login when the session expires before submi
 })
 
 test('a bare device URL authenticates before allowing manual code entry', async ({ page }) => {
-  await mockAppBootstrap(page, { status: 401, body: { reason: 'none' } })
-  await page.route('**/auth/debug', (route) =>
+  let authed = false
+  await mockAppBootstrap(page, () =>
+    authed ? { status: 200, body: { principal: 'sam@example.com', roles: [] } } : { status: 401, body: { reason: 'none' } },
+  )
+  await page.route('**/auth/debug', (route) => {
+    authed = true
     route.fulfill({
       contentType: 'application/json',
       body: JSON.stringify({ principal: 'sam@example.com', roles: [] }),
-    }),
-  )
+    })
+  })
 
   await page.goto('/device')
 
@@ -229,3 +242,33 @@ for (const locale of ['en', 'ko'] as const) {
     await expect(page.getByText(copy)).toBeVisible()
   })
 }
+
+test('logout fully reloads the page so no in-memory state survives to the next principal', async ({
+  page,
+}) => {
+  // The #203 fix is that identity changes are hard navigations: a full page load discards the JS heap, and
+  // with it SWR's in-memory cache. A stamp on `window` proves the reload happened — a soft router.push would
+  // keep the same document (and the stamp, and the cache), which is exactly the regression to catch.
+  let authed = true
+  await mockAppBootstrap(page, () =>
+    authed ? { status: 200, body: { principal: 'sam@example.com', roles: [] } } : { status: 401, body: { reason: 'none' } },
+  )
+  await page.route('**/auth/logout', (route) => {
+    authed = false
+    route.fulfill({ contentType: 'application/json', body: JSON.stringify({ ended: true }) })
+  })
+  // Every other authenticated fetch resolves empty so the app shell (and its identity menu) renders.
+  await page.route('**/api/**', (route) => route.fulfill({ contentType: 'application/json', body: '[]' }))
+
+  await page.goto('/query')
+  const menu = page.getByRole('button', { name: /sam@example\.com/ })
+  await expect(menu).toBeVisible()
+  await page.evaluate(() => ((window as unknown as { __pmHeap?: number }).__pmHeap = 1))
+
+  await menu.click()
+  await page.getByRole('menuitem', { name: /sign out/i }).click()
+
+  await expect(page).toHaveURL(/\/login/)
+  const stamp = await page.evaluate(() => (window as unknown as { __pmHeap?: number }).__pmHeap ?? null)
+  expect(stamp).toBeNull()
+})

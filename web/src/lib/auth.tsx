@@ -76,21 +76,20 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [])
 
   const loginDebug = useCallback(async (principal: string, roles: string[], requesterIp?: string) => {
-    const me = await debugLogin(principal, roles, requesterIp)
+    await debugLogin(principal, roles, requesterIp)
     sessionStorage.setItem(DEBUG_FLAG_KEY, '1')
-    setDebugMode(true)
-    setIdentity(me)
-    setUnauthReason(null)
-    setStatus('authenticated')
+    // The caller hard-navigates into the app (window.location), so it boots fresh under the new principal
+    // with an empty SWR cache. Flipping identity in place instead would keep the previous principal's cached
+    // responses live in the same heap and serve them to this one.
   }, [])
 
   const logout = useCallback(async () => {
     await apiLogout().catch(() => undefined)
     sessionStorage.removeItem(DEBUG_FLAG_KEY)
-    setDebugMode(false)
-    setIdentity(null)
-    setUnauthReason('none')
-    setStatus('unauthenticated')
+    // Hard-reload to /login rather than a client-side route change: discarding the JS heap drops the SWR
+    // cache and every other in-memory copy of the previous principal's data, so nothing survives to the next
+    // sign-in on a shared browser. A soft navigation would keep the heap — and the cache — alive.
+    window.location.replace('/login')
   }, [])
 
   const hasRole = useCallback(

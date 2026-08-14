@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.1.18](https://github.com/ridi-oss/proxy-monster/compare/server-v0.1.17...server-v0.1.18) (2026-08-14)
+
+
+### Bug Fixes
+
+* **analyzer:** classify MySQL account management and keep its result viewable ([#200](https://github.com/ridi-oss/proxy-monster/issues/200)) ([a5b609b](https://github.com/ridi-oss/proxy-monster/commit/a5b609ba74630c467c5ba57a27641206661fb345))
+
+
+### Build & Dependencies
+
+* **deps:** bump the web group across 1 directory with 12 updates ([#184](https://github.com/ridi-oss/proxy-monster/issues/184)) ([2a57582](https://github.com/ridi-oss/proxy-monster/commit/2a57582f26c1ff02cb2dc91a42376f851e959330))
+* **deps:** bump typescript from 5.9.3 to 6.0.3 in /web ([#9](https://github.com/ridi-oss/proxy-monster/issues/9)) ([6f69117](https://github.com/ridi-oss/proxy-monster/commit/6f69117a304782f08f5830724285592f651546b3))
+
 ## [0.1.17](https://github.com/ridi-oss/proxy-monster/compare/server-v0.1.16...server-v0.1.17) (2026-08-13)
 
 

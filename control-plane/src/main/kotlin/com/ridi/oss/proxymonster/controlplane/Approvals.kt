@@ -59,68 +59,55 @@ private val AccessRequest.isWorkflowApproval: Boolean
     get() = kind == "QUERY" && creatorKind == "WORKFLOW"
 
 /**
- * A role the requester could ask to run Q under (approval-workflow.md, "role discovery").
+ * A role the statement can run under (approval-workflow.md, "role discovery").
  *
- * [decision] and [maskedColumns] are what Q returns under this role WHEN EXECUTED BY THE WORKFLOW — the
- * `workflow-executor` channel an approved query actually runs on, which is the only outcome the request
- * can deliver. A role is listed whenever that outcome is not a denial, rather than only when it beats the
- * requester's own roles: "runs, but still masked" is an answer they need in order to stop looking.
- *
- * [unmasksColumns] is the pre-existing summary: columns this role unmasks relative to the baseline.
+ * [decision] and [maskedColumns] are the outcome under this role on the `workflow-executor` channel — the
+ * channel an approved query runs on — PREVIEWED in the requester's current context. Execution runs in the
+ * approver's context and can narrow further (e.g. off a trusted network), so this is the previewed outcome,
+ * not a guaranteed one.
  */
 @Serializable
 data class RoleOption(
     val roleId: Long,
     val roleName: String,
-    val unmasksColumns: List<String>,
     val decision: Decision = Decision.ALLOW,
     val maskedColumns: List<String> = emptyList(),
 )
 
 @Serializable
-data class DiscoverRolesResponse(val baselineAllowed: Boolean, val options: List<RoleOption>)
+data class DiscoverRolesResponse(
+    val options: List<RoleOption>,
+)
 
 /**
- * APPROVAL role discovery (approval-workflow.md — "the requester picks R"): offer every role R the requester
- * does not already hold under which Q runs from SOME network posture, each with its per-posture outcome. R is
- * the elevation unit the request carries (`access_request.role_id`); the workflow adds lifecycle, not
- * authorization.
+ * APPROVAL role discovery (approval-workflow.md — "the requester picks R"): list every role the statement can
+ * run under — one entry per role that is not denied under that role alone. There is no baseline and no
+ * held-vs-not-held concept: a role is offered whether or not the requester already holds it, so a statement
+ * that already runs can still be taken through the workflow for approval/audit.
  *
- * PREVIEW PARITY: each candidate is previewed ALONE — `decide(setOf(role.name), …)`, never unioned with the
- * requester's own roles — because execute-under-R runs with `assumeRoles = setOf(R)` alone. A unioned preview
- * could ALLOW here and DENY at execute, offering a role the requester cannot actually run. Only the baseline
- * and the already-held filter are keyed on the requester's own roles.
- *
- * RESIDUAL GAP: the approver's own identity and address are not known at discovery time, so a policy
- * conditioned on them can still make an offered R deny at execute. The channel and network axes are modeled
- * (candidates preview on the execution channel, across both postures); the approver-identity axis is not.
+ * PREVIEW PARITY: each role is previewed ALONE — `decide(setOf(role.name), …)`, never unioned with the
+ * requester's own roles — because execute-under-R runs with `assumeRoles = setOf(R)` alone, on the
+ * `workflow-executor` channel an approved query actually runs on. A unioned or wrong-channel preview could
+ * ALLOW here and DENY at execute, offering a role the requester cannot actually run.
  *
  * [decide] runs the real decision path and MUST be side-effect-free — discovery is a dry run, no audit write.
  */
 fun discoverRoles(
-    ownRoles: Set<String>,
     allRoles: List<Role>,
     decide: (roles: Set<String>, channel: Channel) -> DecisionContext,
 ): DiscoverRolesResponse {
-    // The baseline answers "what do I get right now", so it decides where the requester is: the editor
-    // channel, under their own roles.
-    val baseline = decide(ownRoles, Channel.EDITOR)
-    val baselineMasked = baseline.masks.map { it.column }.toSet()
-    val baselineDenied = baseline.action == EnfAction.DENY
-
-    val options = allRoles.filterNot { it.name in ownRoles }.mapNotNull { role ->
+    val options = allRoles.mapNotNull { role ->
         val underR = decide(setOf(role.name), Channel.WORKFLOW_EXECUTOR)
         if (underR.action == EnfAction.DENY) return@mapNotNull null
         val masked = underR.masks.map { it.column }.distinct().sorted()
         RoleOption(
             roleId = role.id,
             roleName = role.name,
-            unmasksColumns = (baselineMasked - masked.toSet()).sorted(),
             decision = if (masked.isEmpty()) Decision.ALLOW else Decision.MASK,
             maskedColumns = masked,
         )
     }
-    return DiscoverRolesResponse(baselineAllowed = !baselineDenied, options = options)
+    return DiscoverRolesResponse(options = options)
 }
 
 @Serializable data class ApprovalDetail(
@@ -555,21 +542,19 @@ fun Route.approvalRoutes(
         call.respond(HttpStatusCode.Created, CreateApprovalResponse(request, wouldAllow = decision.action == EnfAction.ALLOW))
     }
 
-    // APPROVAL role discovery (approval-workflow.md — "the requester picks R"): evaluate Q under each
-    // candidate role and offer the ones that return MORE than the requester's own roles. A dry-run — no
-    // audit row is written.
+    // APPROVAL role discovery (approval-workflow.md — "the requester picks R"): evaluate the statement under
+    // each role and list every one it runs under, held or not. A dry-run — no audit row is written.
     post("/api/approvals/discover-roles") {
         val principal = call.requireApi() ?: return@post
         val input = call.receive<DiscoverRolesRequest>()
         val ds = datasourceStore.get(input.datasourceId)
             ?: return@post call.respond(HttpStatusCode.NotFound, ApiError("common.not_found", mapOf("resource" to "datasource")))
-        val ownRoles = roleResolver.resolve(principal)
-        // Resolve requester_ip ONCE here (the closure runs decideQuery per candidate role and posture).
+        // Resolve requester_ip ONCE here (the closure runs decideQuery per candidate role).
         val discoverContext = call.httpAuthzContext(config)
         // Candidates preview on WORKFLOW_EXECUTOR, the channel an approved query actually runs on. A grant
         // scoped to that channel — the shipped -259 PII unmask — is invisible from any other, so previewing
         // candidates elsewhere hides roles that would in fact work.
-        val response = discoverRoles(ownRoles, policyStore.listRoles()) { roles, channel ->
+        val response = discoverRoles(policyStore.listRoles()) { roles, channel ->
             decideQuery(
                 principal = principal, ds = ds, sql = input.sql, channel = channel,
                 catalog = datasourceStore.catalog(ds.id), policyStore = policyStore, accessStore = accessStore,

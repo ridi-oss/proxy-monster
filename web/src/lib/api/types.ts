@@ -389,15 +389,14 @@ export interface DiscoverRolesRequest {
 export interface RoleOption {
   roleId: number
   roleName: string
-  unmasksColumns: string[]
-  /** What the query returns under this role when executed by the workflow — the only outcome the request
-   *  can deliver. `maskedColumns` is empty on a plain ALLOW. */
+  /** What the query returns under this role, PREVIEWED under `{R}` on workflow-executor in the requester's
+   *  context. Execution runs in the approver's context and can mask further, so this is the previewed
+   *  outcome, not a guaranteed one. `maskedColumns` is empty on a plain ALLOW. */
   decision: 'ALLOW' | 'MASK'
   maskedColumns: string[]
 }
 
 export interface DiscoverRolesResponse {
-  baselineAllowed: boolean
   options: RoleOption[]
 }
 

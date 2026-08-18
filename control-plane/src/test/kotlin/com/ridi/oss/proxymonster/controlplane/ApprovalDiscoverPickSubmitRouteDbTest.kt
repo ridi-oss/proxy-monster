@@ -35,16 +35,16 @@ import kotlin.test.assertTrue
  * coverage, driven at the HTTP layer against a real introspected catalog + real Cedar grants
  * ([EnforcementFixture.postgres]).
  *
- * It also carries ROUTE-level teeth for the R-ALONE preview, in the case that actually distinguishes
- * it: the requester here HOLDS an own role (`base-reader`, which runs `select id, ssn from users` with
- * `ssn` masked). Two candidates are seeded so the union and R-alone decisions genuinely diverge:
- *   * `full-reader` unmasks `ssn` ON ITS OWN → offered under both models (the positive round-trip pick);
- *   * `unmask-only` grants unmasked-`ssn` but NO datasource.connect/sql.select, so ALONE it DENYs, while
- *     `{base-reader, unmask-only}` would connect (via base-reader) and unmask `ssn`. A unioned
- *     preview would offer `unmask-only`; under R-alone it must NOT be — this test catches the union
- *     bug, unlike a no-own-roles fixture where `ownRoles + R == {R}` makes the two implementations equal.
- * The pure [RoleDiscoveryTest] covers the union-vs-alone logic directly; this pins the ROUTE wiring
- * (ownRoles resolution + per-candidate decideQuery through real Cedar) to the same behavior end to end.
+ * It also carries ROUTE-level teeth for the R-ALONE preview: each candidate is previewed under `{R}` ALONE
+ * (never unioned with any other role), on the `workflow-executor` channel. Three roles are seeded so a
+ * union would diverge from the R-alone decision the route makes:
+ *   * `base-reader` runs `select id, ssn from users` with `ssn` masked → offered, outcome MASK;
+ *   * `full-reader` unmasks `ssn` ON ITS OWN → offered, outcome ALLOW (the positive round-trip pick);
+ *   * `unmask-only` grants unmasked-`ssn` but NO datasource.connect/sql.select, so ALONE it DENYs and must
+ *     NOT be offered — a unioned preview `{base-reader, unmask-only}` would connect (via base-reader) and
+ *     wrongly offer it. That divergence is the R-alone teeth.
+ * The pure [RoleDiscoveryTest] covers the listing logic directly; this pins the ROUTE wiring — per-candidate
+ * `decideQuery` under `{R}` alone on `workflow-executor`, through real Cedar — to the same behavior end to end.
  */
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 class ApprovalDiscoverPickSubmitRouteDbTest {
@@ -80,7 +80,7 @@ class ApprovalDiscoverPickSubmitRouteDbTest {
     }
 
     /**
-     * Seed the own-role + two candidates whose union and R-alone previews diverge (see the class kdoc).
+     * Seed three roles whose R-alone previews diverge from a union preview (see the class kdoc).
      * Mirrors [EnforcementFixture.seedPolicy]'s pattern (the `users` Table EUID + connect/select + read
      * grants). [com.ridi.oss.proxymonster.controlplane.authz.CedarEngine] rebuilds its cached PolicySet on
      * the next stateVersion, so grants created here (before the first request) are live for the test.
@@ -93,7 +93,7 @@ class ApprovalDiscoverPickSubmitRouteDbTest {
         fun grant(name: String, src: String) =
             fx.cedarPolicyStore.create(CedarPolicyInput(name = name, cedarSrc = src), updatedBy = "discover-pick-submit-test")
 
-        // The requester's OWN role: connects + selects, cleartext except pii, pii (ssn) masked → baseline MASK.
+        // base-reader: connects + selects, cleartext except pii, pii (ssn) masked → runs Q with ssn MASKed.
         val baseReader = fx.policyStore.createRole(RoleInput("base-reader"))
         fx.policyStore.createAssignment(RoleAssignmentInput(requester, baseReader.id))
         grant("base-reader-connect-select", """permit(principal in Role::"base-reader", action in [Action::"datasource.connect", Action::"stmt.cat.read"], resource in Datasource::"${ds.name}");""")
@@ -145,10 +145,6 @@ class ApprovalDiscoverPickSubmitRouteDbTest {
         }
         assertEquals(HttpStatusCode.OK, discoverResponse.status)
         val discovered = discoverResponse.body<DiscoverRolesResponse>()
-        assertTrue(
-            discovered.baselineAllowed,
-            "the requester holds base-reader, which runs the query with ssn masked -> the baseline is a masked ALLOW",
-        )
 
         val offered = discovered.options.map { it.roleName }.toSet()
         // The teeth: `unmask-only` alone can't even connect (DENY), so R-alone must not offer it. A
@@ -161,9 +157,9 @@ class ApprovalDiscoverPickSubmitRouteDbTest {
         val fullReader = discovered.options.singleOrNull { it.roleName == "full-reader" }
         assertTrue(
             fullReader != null,
-            "full-reader unmasks ssn ON ITS OWN, improving on the masked baseline -> it must be offered. Offered: $offered",
+            "full-reader runs the query and returns ssn cleartext ON ITS OWN -> it must be offered. Offered: $offered",
         )
-        assertEquals(listOf("ssn"), fullReader!!.unmasksColumns, "the offered role must report ssn as newly unmasked over the baseline")
+        assertEquals(Decision.ALLOW, fullReader!!.decision, "full-reader returns ssn cleartext, so its outcome is ALLOW")
 
         val submitResponse = client.post("/api/approvals") {
             contentType(ContentType.Application.Json)

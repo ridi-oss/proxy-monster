@@ -12,6 +12,7 @@ import com.ridi.oss.proxymonster.controlplane.PendingSession
 import com.ridi.oss.proxymonster.controlplane.ProxyRunException
 import com.ridi.oss.proxymonster.controlplane.ProxyRunTimeoutException
 import com.ridi.oss.proxymonster.controlplane.QueryResponse
+import com.ridi.oss.proxymonster.controlplane.TargetDbRunException
 import com.ridi.oss.proxymonster.controlplane.authz.CedarPolicyInput
 import com.ridi.oss.proxymonster.controlplane.support.SharedPostgres
 import com.ridi.oss.proxymonster.controlplane.support.requireDockerOrSkip
@@ -57,6 +58,7 @@ import java.util.concurrent.TimeUnit
 import javax.sql.DataSource
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertIs
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
@@ -313,6 +315,41 @@ class GrpcRunExecDbTest {
     }
 
     @Test
+    fun `a post-serving RunError tagged target_db_error becomes a surfaceable TargetDbRunException`() = runBlocking {
+        val failure = exchange("select from a missing table") { _, requests ->
+            requests.send(proxyRunMsg { decision = runDecision { decision = WireEnfAction.ALLOW } })
+            requests.send(
+                proxyRunMsg {
+                    error = runError {
+                        message = "ERROR: relation \"nope\" does not exist"
+                        targetDbError = true
+                    }
+                },
+            )
+        }.exceptionOrNull()
+
+        // The flag is the sole discriminator: a tagged target-DB statement ERR is the one provenance whose
+        // text (already diagnostic-redacted at the wire) the CP may carry into error_detail.
+        assertIs<TargetDbRunException>(failure)
+        assertEquals("ERROR: relation \"nope\" does not exist", failure.message)
+    }
+
+    @Test
+    fun `a post-serving RunError without target_db_error stays a generic ProxyRunException`() = runBlocking {
+        // A decode/decision/mask-binding failure the proxy also reports post-serving — no flag set.
+        val failure = exchange("select 1") { _, requests ->
+            requests.send(proxyRunMsg { error = runError { message = "decision failed: analyzer unavailable" } })
+        }.exceptionOrNull()
+
+        assertIs<ProxyRunException>(failure)
+        assertFalse(
+            failure is TargetDbRunException,
+            "a non-target post-serving failure must never be promoted to a TargetDbRunException",
+        )
+        assertEquals("decision failed: analyzer unavailable", failure.message)
+    }
+
+    @Test
     fun `no attached proxy returns the typed service-unavailable outcome and revokes its token`() = runBlocking {
         awaitUntil("no Events stream attached") { datasource.name !in core.proxyEventsHub.attached() }
         val failure = try {
@@ -477,6 +514,9 @@ class GrpcRunExecDbTest {
 
             val failure = withTimeout(5_000) { result.await() }.exceptionOrNull()
             assertIs<ProxyRunException>(failure)
+            // An open failure carries no target_db_error flag: its text can echo proxy-internal detail, so it
+            // must stay a generic ProxyRunException and never be promoted to a surfaceable TargetDbRunException.
+            assertFalse(failure is TargetDbRunException, "an open failure must never become a TargetDbRunException")
             assertEquals("target-DB connection failed: connection refused", failure.message)
             assertEquals(0, activeEditorTokens("open-err-user"), "a failed target-DB open must revoke its token")
             proxyRequests.close()

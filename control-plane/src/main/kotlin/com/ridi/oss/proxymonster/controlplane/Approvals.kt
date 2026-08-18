@@ -59,68 +59,55 @@ private val AccessRequest.isWorkflowApproval: Boolean
     get() = kind == "QUERY" && creatorKind == "WORKFLOW"
 
 /**
- * A role the requester could ask to run Q under (approval-workflow.md, "role discovery").
+ * A role the statement can run under (approval-workflow.md, "role discovery").
  *
- * [decision] and [maskedColumns] are what Q returns under this role WHEN EXECUTED BY THE WORKFLOW — the
- * `workflow-executor` channel an approved query actually runs on, which is the only outcome the request
- * can deliver. A role is listed whenever that outcome is not a denial, rather than only when it beats the
- * requester's own roles: "runs, but still masked" is an answer they need in order to stop looking.
- *
- * [unmasksColumns] is the pre-existing summary: columns this role unmasks relative to the baseline.
+ * [decision] and [maskedColumns] are the outcome under this role on the `workflow-executor` channel — the
+ * channel an approved query runs on — PREVIEWED in the requester's current context. Execution runs in the
+ * approver's context and can narrow further (e.g. off a trusted network), so this is the previewed outcome,
+ * not a guaranteed one.
  */
 @Serializable
 data class RoleOption(
     val roleId: Long,
     val roleName: String,
-    val unmasksColumns: List<String>,
     val decision: Decision = Decision.ALLOW,
     val maskedColumns: List<String> = emptyList(),
 )
 
 @Serializable
-data class DiscoverRolesResponse(val baselineAllowed: Boolean, val options: List<RoleOption>)
+data class DiscoverRolesResponse(
+    val options: List<RoleOption>,
+)
 
 /**
- * APPROVAL role discovery (approval-workflow.md — "the requester picks R"): offer every role R the requester
- * does not already hold under which Q runs from SOME network posture, each with its per-posture outcome. R is
- * the elevation unit the request carries (`access_request.role_id`); the workflow adds lifecycle, not
- * authorization.
+ * APPROVAL role discovery (approval-workflow.md — "the requester picks R"): list every role the statement can
+ * run under — one entry per role that is not denied under that role alone. There is no baseline and no
+ * held-vs-not-held concept: a role is offered whether or not the requester already holds it, so a statement
+ * that already runs can still be taken through the workflow for approval/audit.
  *
- * PREVIEW PARITY: each candidate is previewed ALONE — `decide(setOf(role.name), …)`, never unioned with the
- * requester's own roles — because execute-under-R runs with `assumeRoles = setOf(R)` alone. A unioned preview
- * could ALLOW here and DENY at execute, offering a role the requester cannot actually run. Only the baseline
- * and the already-held filter are keyed on the requester's own roles.
- *
- * RESIDUAL GAP: the approver's own identity and address are not known at discovery time, so a policy
- * conditioned on them can still make an offered R deny at execute. The channel and network axes are modeled
- * (candidates preview on the execution channel, across both postures); the approver-identity axis is not.
+ * PREVIEW PARITY: each role is previewed ALONE — `decide(setOf(role.name), …)`, never unioned with the
+ * requester's own roles — because execute-under-R runs with `assumeRoles = setOf(R)` alone, on the
+ * `workflow-executor` channel an approved query actually runs on. A unioned or wrong-channel preview could
+ * ALLOW here and DENY at execute, offering a role the requester cannot actually run.
  *
  * [decide] runs the real decision path and MUST be side-effect-free — discovery is a dry run, no audit write.
  */
 fun discoverRoles(
-    ownRoles: Set<String>,
     allRoles: List<Role>,
     decide: (roles: Set<String>, channel: Channel) -> DecisionContext,
 ): DiscoverRolesResponse {
-    // The baseline answers "what do I get right now", so it decides where the requester is: the editor
-    // channel, under their own roles.
-    val baseline = decide(ownRoles, Channel.EDITOR)
-    val baselineMasked = baseline.masks.map { it.column }.toSet()
-    val baselineDenied = baseline.action == EnfAction.DENY
-
-    val options = allRoles.filterNot { it.name in ownRoles }.mapNotNull { role ->
+    val options = allRoles.mapNotNull { role ->
         val underR = decide(setOf(role.name), Channel.WORKFLOW_EXECUTOR)
         if (underR.action == EnfAction.DENY) return@mapNotNull null
         val masked = underR.masks.map { it.column }.distinct().sorted()
         RoleOption(
             roleId = role.id,
             roleName = role.name,
-            unmasksColumns = (baselineMasked - masked.toSet()).sorted(),
             decision = if (masked.isEmpty()) Decision.ALLOW else Decision.MASK,
             maskedColumns = masked,
         )
     }
-    return DiscoverRolesResponse(baselineAllowed = !baselineDenied, options = options)
+    return DiscoverRolesResponse(options = options)
 }
 
 @Serializable data class ApprovalDetail(
@@ -144,8 +131,13 @@ fun discoverRoles(
     val meta: QueryResultMeta,
     val columns: List<String>,
     val rows: List<List<String?>>,
-    val decision: Decision = Decision.ALLOW,
+    // Null for a FAILED view (no rows were released, so there is no release to label); set to the view
+    // re-decision's verdict on the DONE path. explicitNulls=false drops it from the FAILED response body.
+    val decision: Decision? = null,
     val maskedColumns: List<String> = emptyList(),
+    // The raw target-DB error behind a FAILED run, released only behind the task.assume gate (like the rows) —
+    // never on the task.read metadata poll. Null on a DONE view; set only when a FAILED run is viewed.
+    val errorDetail: String? = null,
 )
 
 /** Submit acknowledgement. Completion is observed by polling the task detail/result endpoints. */
@@ -555,21 +547,19 @@ fun Route.approvalRoutes(
         call.respond(HttpStatusCode.Created, CreateApprovalResponse(request, wouldAllow = decision.action == EnfAction.ALLOW))
     }
 
-    // APPROVAL role discovery (approval-workflow.md — "the requester picks R"): evaluate Q under each
-    // candidate role and offer the ones that return MORE than the requester's own roles. A dry-run — no
-    // audit row is written.
+    // APPROVAL role discovery (approval-workflow.md — "the requester picks R"): evaluate the statement under
+    // each role and list every one it runs under, held or not. A dry-run — no audit row is written.
     post("/api/approvals/discover-roles") {
         val principal = call.requireApi() ?: return@post
         val input = call.receive<DiscoverRolesRequest>()
         val ds = datasourceStore.get(input.datasourceId)
             ?: return@post call.respond(HttpStatusCode.NotFound, ApiError("common.not_found", mapOf("resource" to "datasource")))
-        val ownRoles = roleResolver.resolve(principal)
-        // Resolve requester_ip ONCE here (the closure runs decideQuery per candidate role and posture).
+        // Resolve requester_ip ONCE here (the closure runs decideQuery per candidate role).
         val discoverContext = call.httpAuthzContext(config)
         // Candidates preview on WORKFLOW_EXECUTOR, the channel an approved query actually runs on. A grant
         // scoped to that channel — the shipped -259 PII unmask — is invisible from any other, so previewing
         // candidates elsewhere hides roles that would in fact work.
-        val response = discoverRoles(ownRoles, policyStore.listRoles()) { roles, channel ->
+        val response = discoverRoles(policyStore.listRoles()) { roles, channel ->
             decideQuery(
                 principal = principal, ds = ds, sql = input.sql, channel = channel,
                 catalog = datasourceStore.catalog(ds.id), policyStore = policyStore, accessStore = accessStore,
@@ -808,6 +798,20 @@ fun Route.approvalRoutes(
         if (!mayReadResult(call, principal, req)) {
             return@get call.respond(HttpStatusCode.NotFound, ApiError("common.not_found", mapOf("resource" to "query approval request")))
         }
+        // A FAILED run's raw target-DB detail is released here, behind the SAME task.assume gate as the rows —
+        // never on the task.read metadata poll. There are no rows to re-decide, so the gate is the boundary;
+        // audit the release like a normal view (before responding) so it is never returned without a record.
+        if (meta.status == "FAILED" && access.errorDetail != null) {
+            val viewEvent = when (principal) {
+                req.principal -> "result-failure-viewed-by-requester"
+                req.decidedBy -> "result-failure-viewed-by-approver"
+                else -> "result-failure-viewed-by-assumer"
+            }
+            auditStore.insert(e3Record(principal, req, viewEvent, Channel.WORKFLOW_VIEWER))
+            return@get call.respond(
+                QueryResultView(meta, emptyList(), emptyList(), errorDetail = access.errorDetail),
+            )
+        }
         if (meta.status != "DONE") {
             return@get call.respond(HttpStatusCode.Conflict, ApiError("approval.result_not_ready"))
         }
@@ -922,6 +926,8 @@ internal suspend fun runApprovedTask(
         channel = channel.contextValue, kind = "approval_lifecycle",
     )
 
+    // The target-DB error behind a failure, surfaced under the localized code so the run names its real cause.
+    var errorDetail: String? = null
     val failureCode = try {
         val response = runExecService.run(
             principal = executor,
@@ -965,6 +971,9 @@ internal suspend fun runApprovedTask(
         "query.no_proxy_attached"
     } catch (_: ProxyRunTimeoutException) {
         "query.proxy_timeout"
+    } catch (e: TargetDbRunException) {
+        errorDetail = e.message
+        "approval.query_failed"
     } catch (_: ProxyRunException) {
         "approval.query_failed"
     } catch (t: Throwable) {
@@ -975,7 +984,7 @@ internal suspend fun runApprovedTask(
         // Child FAILED and parent FAILED commit in ONE transaction (mirrors the success path's single-commit
         // EXECUTED/DONE): a crash can never leave a FAILED child under a still-EXECUTING task, nor the
         // inverse — the split that boot reconcile would otherwise have to repair.
-        runCatching { store.failRun(id, failureCode) { conn, _ -> accessStore.markFailed(id, conn) } }
+        runCatching { store.failRun(id, failureCode, errorDetail = errorDetail) { conn, _ -> accessStore.markFailed(id, conn) } }
             .onFailure { log.error("task failure transition failed request=$id", it) }
     }
     // Push the ACTUAL terminal state (EXECUTED / FAILED / or CANCELLED if a cancel raced) to both parties'

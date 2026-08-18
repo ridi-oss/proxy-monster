@@ -39,13 +39,18 @@ task exists but no rows.
 
 1. Compose. The requester writes Q + datasource, or arrives from a denied
    decision (auto-filled).
-2. Role discovery. `POST /api/approvals/discover-roles` evaluates Q under
-   candidate roles (preview via `decideQuery` on the `editor` channel in the
-   requester's HTTP context) and offers the roles under which Q is not denied
-   _and_ that return more than the requester's own roles (e.g. `ssn` unmasked).
-   The requester picks R. Role-set parity with execute is `assumeRoles={R}`
-   alone; channel/context can still diverge at run (execute uses
-   `workflow-executor` in the approver's context).
+2. Role discovery. `POST /api/approvals/discover-roles` previews Q under each
+   role on the `workflow-executor` channel — the channel an approved query
+   actually executes on — with `assumeRoles={R}` alone, so the preview matches
+   execution's role set. It lists every role Q runs under (not denied), each
+   with the outcome it previews in the requester's context (cleartext, or which
+   columns it still masks) — execution in the approver's context can narrow it.
+   There is no baseline and no held-vs-not-held distinction: a role is listed
+   whether or not the requester holds it, so a statement that already runs can
+   still go through the workflow for approval/audit. The console re-lists
+   automatically as the query changes (debounced) and defaults to the first
+   role; the requester can pick another. Channel/context can still diverge at
+   run (execute uses the approver's context).
 3. Route + approve. Eligibility is exactly
    `authorize(approver, task.approve, request, context)` — the request is
    `in Role::R`, so approvers-of-R match. Single approval. Self-approval is not
@@ -84,8 +89,8 @@ anywhere, `read.unmasked` pii `when trusted-network`. Requester `alice` holds
 `analyst` (masks ssn); she needs ssn.
 
 - Compose: `SELECT id, name, ssn FROM users`.
-- Discovery: under `analyst`, ssn masks; under `pii-reader`, ssn unmasks from a
-  망분리 node. Offer `pii-reader`; alice picks it.
+- Discovery lists every role Q runs under: `analyst` (ssn masked) and
+  `pii-reader` (ssn unmasked from a 망분리 node). alice picks `pii-reader`.
 - Approve: approvers of `pii-reader` (Cedar). `bob` approves (`bob ≠ alice`).
 - Execute: bob runs it under `pii-reader`, off-망분리. Off-network, R's verdict
   for `ssn` is MASK, so the encrypted stored result holds `ssn` masked — the
@@ -146,9 +151,9 @@ Verified on the real Cedar engine in [docs/cedar-sim/](./cedar-sim/)
   channel (via `RunExecService.run` + proxy `Decide`) → R's enforced result. A
   column R cannot read at all ⇒ Q-under-R denied ⇒ pick another role / narrow Q.
 - Role discovery: the same `decideQuery(under candidate role, Q)`, one per
-  candidate, with `assumeRoles={R}` alone — matching execute's role set (no
-  offer-then-DENY skew on the role axis). Preview channel is `editor`, not
-  `workflow-executor`.
+  candidate, with `assumeRoles={R}` alone AND on the `workflow-executor` channel
+  — matching execute on both axes, so a channel-scoped grant fires the same way
+  in the preview as at run (no offer-then-DENY skew).
 - View: `task.assume` gates whether the viewer may act as R, then R's
   `result.read.*` grants mask each column as exactly `{R}` in the viewer's
   context.

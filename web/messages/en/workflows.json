@@ -120,14 +120,11 @@
     "titleRequired": "Title (required)",
     "titlePlaceholder": "Incident triage / support investigation / monthly report",
     "reasonPlaceholder": "Why do you need this query reviewed?",
-    "discoverRoles": "Check available roles",
     "discovering": "Checking…",
-    "discoverFailed": "Couldn't check roles — you can still submit without one.",
-    "selectRole": "Select an elevation role",
-    "noRolesFound": "No role would change the outcome for this query.",
-    "staleDiscovery": "The query changed since these roles were checked. Check available roles again.",
-    "alreadyAllowed": "This query is already allowed without an elevated role.",
-    "unmasksHint": "Unmasks: {columns}",
+    "discoverFailed": "Couldn't check roles.",
+    "retry": "Retry",
+    "selectRole": "Select a role",
+    "noRolesFound": "No role can run this query.",
     "outcome": {
       "ALLOW": "cleartext",
       "MASK": "masked"

@@ -192,17 +192,40 @@ func TestTemporaryDdlIsNotCatalogChanging(t *testing.T) {
 	}
 }
 
+// Account-object DDL (CREATE/ALTER/DROP USER|ROLE) changes accounts/roles, not the column catalog the
+// proxy re-measures — so it must resolve non-catalog-changing and relay as a no-column passthrough. If it
+// were catalog-changing it would fall out of the passthrough, and a result-bearing form (CREATE USER …
+// IDENTIFIED BY RANDOM PASSWORD returns the generated password) would be dropped for a column mismatch on
+// view.
+func TestAccountObjectDdlIsNotCatalogChanging(t *testing.T) {
+	for _, sql := range []string{
+		"CREATE USER 'u'@'h'",
+		"CREATE USER 'u'@'h' IDENTIFIED BY RANDOM PASSWORD",
+		"ALTER USER 'u'@'h' IDENTIFIED BY 'p'",
+		"DROP USER 'u'@'h'",
+		"CREATE ROLE 'r'",
+		"DROP ROLE 'r'",
+	} {
+		f := mysqlFacts(t, sql)
+		if !f.Resolved {
+			t.Fatalf("%q resolved=false: class=%v detail=%q", sql, f.FailureClass, f.Detail)
+		}
+		if f.CatalogChanging {
+			t.Errorf("%q catalog_changing=true — account DDL changes no column catalog, want false", sql)
+		}
+	}
+}
+
 // Classification comes from what sqlglot structurally resolved, never from matching the SQL text.
 //
 // A Command node IS sqlglot reporting "I did not model this statement": the verb survives as a string
-// and the rest is unparsed text. Granting sql.ddl off that verb would hand a schema-DDL grant to
-// privilege management — `DROP USER`, `RENAME USER` — which are not schema changes and must stay
-// denied. Some genuine table DDL degrades to Command too (`RENAME TABLE a TO b`) and is denied along
-// with it; over-denying an unmodeled statement is the correct side to fail on, and the fix is for
-// sqlglot to model the form, not for this layer to guess from a prefix.
+// and the rest is unparsed text. Classifying off that verb would hand an authorization off a prefix —
+// `RENAME USER`, which is account management, not a schema change. Some genuine table DDL degrades to
+// Command too (`RENAME TABLE a TO b`) and is denied along with it; over-denying an unmodeled statement
+// is the correct side to fail on, and the fix is for sqlglot to model the form, not for this layer to
+// guess from a prefix.
 func TestUnmodeledCommandStatementsStayDenied(t *testing.T) {
 	for _, sql := range []string{
-		"DROP USER 'x'@'%'",
 		"RENAME USER 'a'@'%' TO 'b'@'%'",
 		// Table DDL that also degrades to Command — denied, deliberately.
 		"RENAME TABLE users TO users2",

@@ -120,14 +120,11 @@
     "titleRequired": "제목 (필수)",
     "titlePlaceholder": "장애 대응 / 지원 조사 / 월간 리포트",
     "reasonPlaceholder": "이 쿼리를 검토받아야 하는 이유는 무엇인가요?",
-    "discoverRoles": "사용 가능한 역할 확인",
     "discovering": "확인 중…",
-    "discoverFailed": "역할을 확인하지 못했습니다 — 역할 없이도 제출할 수 있습니다.",
-    "selectRole": "권한 상승 역할 선택",
-    "noRolesFound": "이 쿼리의 결과를 바꿀 수 있는 역할이 없습니다.",
-    "staleDiscovery": "역할을 확인한 뒤 쿼리가 변경되었습니다. 사용 가능한 역할을 다시 확인해 주세요.",
-    "alreadyAllowed": "이 쿼리는 이미 역할 상승 없이 허용되어 있습니다.",
-    "unmasksHint": "마스킹 해제: {columns}",
+    "discoverFailed": "역할을 확인하지 못했습니다.",
+    "retry": "다시 시도",
+    "selectRole": "역할 선택",
+    "noRolesFound": "이 쿼리를 실행할 수 있는 역할이 없습니다.",
     "outcome": {
       "ALLOW": "평문",
       "MASK": "마스킹"

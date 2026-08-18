@@ -1,6 +1,6 @@
 {
   "name": "web",
-  "version": "0.1.17",
+  "version": "0.1.18",
   "private": true,
   "scripts": {
     "predev": "node scripts/copy-cedar-wasm.mjs",
@@ -51,7 +51,7 @@
     "playwright": "^1.62.1",
     "prettier": "^3.9.6",
     "tailwindcss": "^4",
-    "typescript": "^5",
+    "typescript": "^6",
     "vitest": "^4.1.10"
   }
 }

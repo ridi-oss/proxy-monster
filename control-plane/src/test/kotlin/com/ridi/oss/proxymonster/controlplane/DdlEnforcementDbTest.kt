@@ -126,11 +126,11 @@ class DdlEnforcementDbTest {
     }
 
     /**
-     * A `stmt.cat.ddl` grant authorizes schema DDL, not everything DDL-adjacent. RENAME TABLE is a Command
-     * sqlglot does not model — unanalyzable, so it denies at the unanalyzable gate (no `exception.unanalyzable`
-     * hatch here). DROP USER / RENAME USER classify as `stmt.cat.admin.account` (privilege management, not
-     * schema DDL), so their kind gate demands admin, which the architect lacks. None is reachable by the
-     * ddl grant alone — over-denying is the correct side to fail on.
+     * A `stmt.cat.ddl` grant authorizes schema DDL, not everything DDL-adjacent. RENAME TABLE and RENAME USER
+     * are Commands sqlglot does not model — unanalyzable, so they deny at the `exception.unanalyzable` gate the
+     * architect does not hold. DROP USER is account management (`stmt.cat.admin.account`, not schema DDL), so
+     * its kind gate demands admin, which the architect also lacks. None is reachable by the ddl grant alone —
+     * over-denying is the correct side to fail on.
      */
     @Test
     fun `a statement outside schema DDL stays denied even with the ddl grant`() {
@@ -191,7 +191,7 @@ class DdlEnforcementDbTest {
      */
     @Test
     fun `role discovery offers the ddl role for a DDL statement`() {
-        val response = discoverRoles(ownRoles = emptySet(), allRoles = fx.policyStore.listRoles()) { roles, channel ->
+        val response = discoverRoles(allRoles = fx.policyStore.listRoles()) { roles, channel ->
             decideQuery(
                 principal = noRole,
                 ds = fx.datasourceStore.get(fx.datasource.id)!!,

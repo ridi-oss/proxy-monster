@@ -1,0 +1,1192 @@
+AccessListingForwardFilterDbTest.kt#a principal query parameter does not widen the grants listing
+AccessListingForwardFilterDbTest.kt#both listings reject a caller with no session even under auth debug
+AccessListingForwardFilterDbTest.kt#the grants listing shows a principal its own rows and never another's
+AccessListingForwardFilterDbTest.kt#the requests listing shows a principal its own rows and never another's
+AccountManagementEnforcementDbTest.kt#a connect-only role is denied CREATE USER at the account-kind gate
+AccountManagementEnforcementDbTest.kt#an admin-account holder runs CREATE USER RANDOM PASSWORD as a passthrough and views its generated password
+AdminContextAuthzTest.kt#a trusted edge's forwarded ip reaches Cedar and satisfies the ip-gated admin policy
+AdminContextAuthzTest.kt#an admin session with no trusted edge is denied even though the policy would allow with the right ip
+AdminContextAuthzTest.kt#no session is unauthenticated regardless of ip
+AdminGateTest.kt#no admin role is denied admin_policies
+AdminGateTest.kt#system-admin role is allowed admin_policies
+AnalyzerTest.kt#analyzer retains validated request snapshot and returns StatementFacts
+AnalyzerTest.kt#invalid catalog identity fails before native analysis
+AnalyzerTest.kt#malformed and batched statements fail closed with explicit failure classes
+ApprovalDiscoverPickSubmitRouteDbTest.kt#a compose with all fields but no elevation role is rejected role_required (single execute-under-R path)
+ApprovalDiscoverPickSubmitRouteDbTest.kt#a proactive compose missing a required field returns common field_required naming that field
+ApprovalDiscoverPickSubmitRouteDbTest.kt#discover offers full-reader (R-alone) not unmask-only (union trap), pick it, submit carries roleId
+ApprovalExecuteRouteDbTest.kt#V46 allows the requester to cancel and denies an unrelated principal without sending control
+ApprovalExecuteRouteDbTest.kt#a DENY-under-R at execute leaks no result and stores nothing (fail-closed floor)
+ApprovalExecuteRouteDbTest.kt#a non-target post-serving failure fails with a generic code and NULL error_detail
+ApprovalExecuteRouteDbTest.kt#a second execute after a successful first is rejected with 409 approval_already_executed, storing exactly one result
+ApprovalExecuteRouteDbTest.kt#a target-DB statement error stores the backend text as assume-gated error_detail
+ApprovalExecuteRouteDbTest.kt#cancel is idempotent after execution and rejects pending tasks
+ApprovalExecuteRouteDbTest.kt#canceling an in-flight approval terminalizes both rows and emits RunCancel
+ApprovalExecuteRouteDbTest.kt#claimExecution is race-safe - two concurrent callers on separate connections yield exactly one winner
+ApprovalExecuteRouteDbTest.kt#execute by an approver other than the approver of record is 403 not_the_approver and runs nothing
+ApprovalExecuteRouteDbTest.kt#execute returns 202 EXECUTING while the run is still in flight, then completes to EXECUTED and DONE
+ApprovalExecuteRouteDbTest.kt#removed release and withhold routes return 404
+ApprovalResultAssumeMysqlDbTest.kt#a passthrough result with a mismatched row width is refused
+ApprovalResultAssumeMysqlDbTest.kt#a passthrough that re-decides DENY via Cedar is refused, not released
+ApprovalResultAssumeMysqlDbTest.kt#an authorized passthrough result is released as-is
+ApprovalResultAssumeMysqlDbTest.kt#requester assumes R and sees the shipped production view for their live network
+ApprovalResultAssumeMysqlDbTest.kt#workflow executor stores R's execution-enforced masks and the viewer re-decides per context
+ApprovalResultDeactivationDbTest.kt#a deactivated viewer is gated out before any result decision — NotFound, no existence oracle
+ApprovalResultDeactivationDbTest.kt#an active viewer passes the deactivation gate and reaches the live re-decision — positive control
+ApprovalResultViewContextDbTest.kt#a FAILED run's target-DB detail is released behind task assume, never on the metadata poll
+ApprovalResultViewContextDbTest.kt#a NULL-kind redaction of a derived output blanks the cell on view, not the stored cleartext
+ApprovalResultViewContextDbTest.kt#a deactivated executor is hidden before any live result decision
+ApprovalResultViewContextDbTest.kt#a live DENY on an ungranted table returns 403 without stored sentinel data
+ApprovalResultViewContextDbTest.kt#a passthrough that re-decides DENY is still refused without stored data
+ApprovalResultViewContextDbTest.kt#a requester assumes R and reads their own result
+ApprovalResultViewContextDbTest.kt#an authorized passthrough result is released to the viewer
+ApprovalResultViewContextDbTest.kt#an outsider cannot assume the task role
+ApprovalResultViewContextDbTest.kt#approver and auditor assume R while admin sees metadata only
+ApprovalResultViewContextDbTest.kt#disabling the live unmask grant re-masks the next view without changing storage
+ApprovalResultViewContextDbTest.kt#output-column drift fails closed before any partially matched row is returned
+ApprovalResultViewContextDbTest.kt#stored row-width drift fails closed instead of returning an unbound extra value
+ApprovalResultViewContextDbTest.kt#the live decision uses the viewer principal rather than the requester identity
+ApprovalResultViewContextDbTest.kt#the same stored result masks off-segregated and unmasks in-context for approver and requester
+ApprovalSurfaceCreatorKindDbTest.kt#a WIRE task is not fetchable, decidable, executable, or viewable as an approval
+ApprovalSurfaceCreatorKindDbTest.kt#an EDITOR task is not fetchable, decidable, executable, or viewable as an approval
+ApprovalSurfaceCreatorKindDbTest.kt#list surfaces only WORKFLOW tasks - WIRE and EDITOR never appear
+ApprovalsTest.kt#another principal's DENY is NOT_FOUND
+ApprovalsTest.kt#blank reason is invalid
+ApprovalsTest.kt#blank sql is invalid
+ApprovalsTest.kt#blank title is invalid
+ApprovalsTest.kt#complete proactive compose input is valid
+ApprovalsTest.kt#missing datasource is invalid
+ApprovalsTest.kt#null source is NOT_FOUND
+ApprovalsTest.kt#own DENY is OK
+ApprovalsTest.kt#own non-DENY decisions are NOT_DENY
+AuditCanonicalGoldenTest.kt#canonical bytes and row hashes match the cross-language golden vectors
+AuditCanonicalGoldenTest.kt#row hash rejects a previous hash with the wrong length
+AuditChainDbTest.kt#completion fields round-trip chain and reject a bogus decision id
+AuditChainDbTest.kt#concurrent appends serialize without duplicate ids and preserve the chain
+AuditChainDbTest.kt#connection overload commits linked and rollback leaves both event and head untouched
+AuditChainDbTest.kt#single-argument inserts allocate contiguous ids and persist a recomputable chain
+AuditChainDbTest.kt#verify walk detects a historical event mutation
+AuditFeedDbTest.kt#effective namespace round-trips through recent and get
+AuditFeedDbTest.kt#lifecycle rows are visible in recent and get
+AuditFeedDbTest.kt#principal-scoped feed includes owned lifecycle rows before applying the limit
+AuditReadRoutesDbTest.kt#an unauthenticated list is rejected without authorization
+AuditReadRoutesDbTest.kt#auditor sees every row and can read details
+AuditReadRoutesDbTest.kt#non-numeric audit id is a bad id, not a lookup
+AuditReadRoutesDbTest.kt#old decisions route is removed
+AuditReadRoutesDbTest.kt#ordinary principal sees only own rows and denied detail is indistinguishable from missing
+AuditReadRoutesDbTest.kt#requester_ip from a trusted edge gates the audit-collection read
+AuditReadRoutesDbTest.kt#under auth debug a sessionless read is rejected and a signed-in read still authorizes
+AuditTrailSchemaDbTest.kt#a clean store has no id sequence a genesis head and a live source-decision foreign key
+AuthAndIngestRoutesDbTest.kt#an unhandled exception is caught by the StatusPages fallback without leaking the cause
+AuthAndIngestRoutesDbTest.kt#auth debug is a 404 endpoint when PM_AUTH_DEBUG is off
+AuthAndIngestRoutesDbTest.kt#auth me without a session is unauthenticated
+AuthAndIngestRoutesDbTest.kt#datasource discovery accepts a wire-token Bearer and rejects missing or bad auth
+AuthAndIngestRoutesDbTest.kt#ingest with a wrong token is an invalid ingest token
+AuthAndIngestRoutesDbTest.kt#ingest with the correct token and a minimal record is accepted
+AuthAuditDbTest.kt#a rejected auth audit insert rolls the token route's own mutation back
+AuthAuditDbTest.kt#a rejected auth audit insert rolls the wire-token route's own mint back
+AuthAuditDbTest.kt#a rejected wire-rejection audit still answers UNAUTHENTICATED, not INTERNAL
+AuthAuditDbTest.kt#session wire-token mint is audited through its route and names the caller
+AuthAuditDbTest.kt#token mint and revoke are audited through their routes and name the caller
+AuthAuditDbTest.kt#validateToken audits failures but not successful validation
+AuthzDatasourceActionTest.kt#a granted role may connect to the named datasource
+AuthzDatasourceActionTest.kt#a granted role may run a granted sql kind on the named datasource
+AuthzDatasourceActionTest.kt#an ungranted sql kind is denied — deny-by-default, not absent-equals-allow
+AuthzDatasourceActionTest.kt#every datasource tag reaches policy as itself, whatever it is named
+AuthzDatasourceActionTest.kt#no roles at all is denied
+AuthzDatasourceActionTest.kt#sql-unmaskable follows the preset-development datasource tag
+AuthzDatasourceActionTest.kt#the naming rule refuses an invented system name and admits the six the product defines
+AuthzDatasourceActionTest.kt#the same grant on a different datasource name does not apply — NAME-keyed, not blanket
+AuthzSatisfiableTest.kt#a known channel is supplied concretely and decides the permit
+AuthzSatisfiableTest.kt#a permit conditioned on an UNKNOWN attribute is POSSIBLE
+AuthzSatisfiableTest.kt#an unconditional permit is ALLOWED regardless of the unknowns
+AuthzSatisfiableTest.kt#an undecided forbid does not make a permitted principal IMPOSSIBLE
+AuthzSatisfiableTest.kt#no matching permit is IMPOSSIBLE
+AuthzSatisfiableTest.kt#omitting the attribute the permit reads makes it IMPOSSIBLE — the bug UNKNOWN prevents
+AuthzTest.kt#ROLE self-approval is denied even for a system-admin — the self-approval hole stays closed
+AuthzTest.kt#a non-admin approving someone else's request is still denied — no ambient permit
+AuthzTest.kt#a request scoped to a DIFFERENT role than the policy grants is denied — the Role parent is the request's, not ambient
+AuthzTest.kt#a role other than system-admin is still denied on admin actions
+AuthzTest.kt#an approval request scoped to a datasource is matched via 'resource in Datasource' by NAME
+AuthzTest.kt#an approval request scoped to a role is matched via 'resource in Role' — Request carries the role as a Cedar parent
+AuthzTest.kt#an approver may approve someone else's request
+AuthzTest.kt#approval request marshals executedBy as a User attribute
+AuthzTest.kt#no roles is denied on admin actions — the 'admin = any session' hole stays closed
+AuthzTest.kt#retired workflow action ids are rejected by the bundled schema
+AuthzTest.kt#system-admin is allowed on admin actions
+AuthzTest.kt#task assume seeds validate and allow only parties or auditor
+AuthzTest.kt#task lifecycle and grant revoke actions validate against the bundled schema
+AuthzTest.kt#the audit policies allow own records and grant auditors the whole collection
+BaselineDangerousFunctionEnforcementDbTest.kt#MySQL load_file denies WITH a FROM on both a governed and a no-manifest datasource
+BaselineDangerousFunctionEnforcementDbTest.kt#a dangerous function is denied on a preset-development datasource, not relayed via sql-unanalyzable
+BaselineDangerousFunctionEnforcementDbTest.kt#a null classifier service STILL denies a dangerous builtin via the static baseline
+BaselineDangerousFunctionEnforcementDbTest.kt#every former dangerousFuncs name STILL denies on a no-manifest PG datasource (the baseline)
+BaselineDangerousFunctionEnforcementDbTest.kt#every former dangerousFuncs name denies WITH a FROM on a governed PG datasource
+BaselineDangerousFunctionEnforcementDbTest.kt#manifest-only dangerous functions deny on a no-manifest datasource via the union floor
+BaselineDangerousFunctionEnforcementDbTest.kt#safe functions and a user UDF are unaffected by the function gate
+BindMasksTest.kt#absent ordinal is unbound - never binds to result column 0
+BindMasksTest.kt#multiple ordinals bind
+BindMasksTest.kt#name is ignored
+BindMasksTest.kt#ordinal binds
+BindMasksTest.kt#out of range ordinal is unbound
+BootstrapAdminDbTest.kt#a raw reserved-name claim without a mapping does not confer admin (escalation closed)
+BootstrapAdminDbTest.kt#an IdP admin-group member resolves system-admin and loses it when the group is dropped (sync)
+BootstrapAdminDbTest.kt#an unmapped IdP group is created by name with the prefix stripped
+BootstrapAdminDbTest.kt#isSystemGroup distinguishes the seeded system group from a user-created one
+BootstrapAdminDbTest.kt#isSystemRole protects the system-admin role wired into system-admin
+BootstrapAdminDbTest.kt#the seed installs the system-admin group (SYSTEM), the system-admin role, and their link
+BootstrapAdminDbTest.kt#the seeded system-admin group carries only the intended wiring and no members
+BootstrapAdminDbTest.kt#upsertScimGroup refuses to mutate the SYSTEM group atomically (by name and by externalId)
+CatalogCoverageGateDbTest.kt#mysql coverage miss denies on the floor, then a sql-unanalyzable permit relays it
+CatalogCoverageGateDbTest.kt#postgres coverage miss denies on the floor, then a sql-unanalyzable permit relays it
+CatalogRefreshCommandDbTest.kt#allowed SELECT carries no catalog refresh command
+CatalogRefreshCommandDbTest.kt#allowed non-temporary DDL carries a catalog refresh command
+CatalogRefreshCommandDbTest.kt#allowed temporary CTAS carries no catalog refresh command
+CatalogRefreshCommandDbTest.kt#bare PREPARE is denied without a catalog refresh command
+CatalogRefreshCommandDbTest.kt#denied DDL carries no catalog refresh command
+CedarEngineCacheTest.kt#disable invalidates the cache, re-enable and delete both take effect on the next call
+CedarEngineCacheTest.kt#isAuthorized only rebuilds the PolicySet when store state changes — O(1) per query
+CedarPolicyOriginTest.kt#negative-id migration is decision-equivalent to the AuthzTest seed oracle
+CedarPolicyOriginTest.kt#store rejects system mutation and reserved user names before touching state
+CedarPolicyOriginTest.kt#system toggle changes only mutable fields
+CedarPolicyRoutesTest.kt#POST and USER rename reject the reserved system namespace
+CedarPolicyRoutesTest.kt#PUT and DELETE of a system policy return the immutable conflict
+CedarPolicyRoutesTest.kt#REST-shaped policy mutation remains bound to its numeric id after name reuse
+CedarPolicyRoutesTest.kt#an HTTP mutation records the console actor exactly once
+CedarPolicyRoutesTest.kt#enable and disable remain available for system policies
+CedarPolicyRoutesTest.kt#escape-aliased tag names collapse to one declaration
+CedarPolicyRoutesTest.kt#list exposes system provenance without accepting it in input
+CedarPolicyRoutesTest.kt#the served policy schema declares the context tag actions stored rules target
+CedarPolicyStoreTest.kt#V20 system seeds and the V32-converted audit seeds are enabled and validate as one Cedar engine
+CedarPolicyStoreTest.kt#a policy referencing an unknown action is rejected — schema validation, not just syntax
+CedarPolicyStoreTest.kt#a schema-valid policy is created
+CedarPolicyStoreTest.kt#an unparseable policy is rejected with errors, not written
+CedarPolicyStoreTest.kt#delete removes the row
+CedarPolicyStoreTest.kt#enable and disable round-trip into enabledSources
+CedarPolicyStoreTest.kt#enabling a stored-malformed row is rejected and leaves it disabled (validated on load)
+CedarPolicyStoreTest.kt#stateVersion monotonically bumps on create, setEnabled, and delete — CedarEngine's cache-invalidation signal
+CedarPolicyStoreTest.kt#update rejects invalid cedar and leaves the existing row untouched
+ChannelContextAuthzTest.kt#a channel-conditioned grant fires only for the matching channel
+ChannelContextAuthzTest.kt#an absent channel fails the guard closed
+ChannelContextAuthzTest.kt#an unguarded optional-attr policy is rejected at engine construction
+ChannelContextAuthzTest.kt#the same grant does not apply on a different channel
+ChannelDecideAuditDbTest.kt#a DENY decision's audit row carries the derived context tag
+ChannelDecideAuditDbTest.kt#a bare count over a session temp is allowed (uncovered-scan gate skips temps)
+ChannelDecideAuditDbTest.kt#a channel-gated grant follows the server channel and ignores a client-injected channel
+ChannelDecideAuditDbTest.kt#a session temp resolves and reads unmasked via the overlay, unresolvable without it
+ChannelDecideAuditDbTest.kt#a write cannot launder a masked column into a session temp (the unmasked-temp linchpin)
+ChannelDecideAuditDbTest.kt#the audit record carries the channel through the real run path
+ChannelDecideAuditDbTest.kt#the editor channel passthrough-allows a session statement, workflow phases still deny
+ClassificationSchemaResolutionDbTest.kt#a blank schema resolves to the datasource default instead of being stored literally
+ClassificationSchemaResolutionDbTest.kt#an explicit schema is still stored verbatim
+ColumnAuthzTest.kt#a batch of columns resolves independent verdicts in one call
+ColumnAuthzTest.kt#a column in an ungranted table is denied — deny-by-default, not absent-equals-cleartext
+ColumnAuthzTest.kt#a column tagged system-critical is denied by the shipped forbid
+ColumnAuthzTest.kt#a datasource tagged pii hands a pii-keyed permit every column under it
+ColumnAuthzTest.kt#a datasource tagged pii masks a column the shipped preset would otherwise read cleartext
+ColumnAuthzTest.kt#a datasource tagged system-catalog opens the bare-principal catalog permit for every column
+ColumnAuthzTest.kt#a different datasource with the same qualified table is not covered by the grant
+ColumnAuthzTest.kt#a fully-qualified Column EUID grant matches its exact column
+ColumnAuthzTest.kt#a permit in one catalog does not cover the same schema and table in another catalog
+ColumnAuthzTest.kt#a permit on public users does not cover analytics users with the same table name
+ColumnAuthzTest.kt#a pii-tagged column in an UNGRANTED table is denied, not masked — the masked grant is table-scoped
+ColumnAuthzTest.kt#a pii-tagged column in the granted table is masked, not unmasked
+ColumnAuthzTest.kt#an identifier containing a key delimiter is denied fail-closed
+ColumnAuthzTest.kt#an operator's own datasource tag reaches a column through the datasource parent
+ColumnAuthzTest.kt#an untagged column in the granted table is unmasked
+ColumnAuthzTest.kt#no roles at all is denied on every column
+ConfigGuardTest.kt#PM_NOTIFY_STATEMENT takes omit auto full, coerces legacy truncated, rejects the rest
+ConfigGuardTest.kt#PM_QUERY_TIMEOUT defaults overrides and rejects invalid values
+ConfigGuardTest.kt#PM_QUERY_TIMEOUT is bounded to the proxy's duration-safe ceiling (no ms overflow)
+ConfigGuardTest.kt#PM_TRUSTED_PROXIES parses comma-separated entries, trimmed, with blanks dropped
+ConfigGuardTest.kt#bare defaults boot fine (local dev, debug on, dev secret, no oidc)
+ConfigGuardTest.kt#debug mode leaves oidc null unless all four required fields are present
+ConfigGuardTest.kt#debug mode preserves the configured proxy secret value verbatim
+ConfigGuardTest.kt#debug off is always allowed, even with real oidc + session secret
+ConfigGuardTest.kt#debug off rejects the public development session secret
+ConfigGuardTest.kt#debug off requires a non-blank proxy secret
+ConfigGuardTest.kt#debug off requires complete secure oidc config on the co-hosted callback
+ConfigGuardTest.kt#debug off requires secure canonical MCP origins
+ConfigGuardTest.kt#debug off with a valid proxy secret boots and preserves it
+ConfigGuardTest.kt#debug on plus a production-looking context WITH PM_DEV is allowed
+ConfigGuardTest.kt#debug on plus a real session secret without PM_DEV refuses to start
+ConfigGuardTest.kt#debug on plus real oidc config without PM_DEV refuses to start
+ConfigGuardTest.kt#idp recheck interval must be positive
+ConfigGuardTest.kt#malformed web session durations fail fast
+ConfigGuardTest.kt#oidc scopes are overridable via PM_OIDC_SCOPES
+ConfigGuardTest.kt#oidc scopes default to openid profile email groups offline_access
+ConfigGuardTest.kt#run token TTL outlives the whole run, session TTL outlives the query window
+ConfigGuardTest.kt#session window, idp recheck interval, and scim token are overridable
+ConfigGuardTest.kt#session window, web clocks, idp recheck interval, and scim token default sanely
+ConfigGuardTest.kt#the exchange budget outlives the proxy's own statement watchdog
+ConfigGuardTest.kt#web idle and slide durations accept units and plain seconds
+ConfigGuardTest.kt#web session UX timings accept duration units
+ConfigGuardTest.kt#web session absolute duration accepts seconds and concatenated units
+ConfigGuardTest.kt#web session slide must be strictly less than idle
+DaemonSessionLivenessIdpTest.kt#all rejected session tokens retire every row in one sweep without principal teardown
+DaemonSessionLivenessIdpTest.kt#fresh fewer groups end only the zero-role web session and preserve inactive liveness
+DaemonSessionLivenessIdpTest.kt#invalid grant closes only its daemon row while a valid sibling and credentials survive
+DaemonSessionLivenessIdpTest.kt#omitted groups claim is authoritative empty and removes old membership
+DaemonSessionLivenessIdpTest.kt#renew route never revalidates and only the timer sweep reaches the token endpoint
+DaemonSessionLivenessIdpTest.kt#sessions without stored refresh tokens remain live and unstamped
+DaemonSessionLivenessIdpTest.kt#still-grouped and direct-role web users survive with fresh checks
+DaemonSessionLivenessIdpTest.kt#transient invalid client and server errors preserve both session kinds and credentials
+DaemonSessionStoreDbTest.kt#create round-trips and encrypts the refresh token at rest
+DaemonSessionStoreDbTest.kt#daemon lookups stay isolated while liveness operations cover web rows
+DaemonSessionStoreDbTest.kt#deactivateAllForPrincipal closes EVERY in-window session for the principal and marks them INACTIVE
+DaemonSessionStoreDbTest.kt#endAllWebForPrincipal ends only live web rows for one principal and is idempotent
+DaemonSessionStoreDbTest.kt#getByHandle finds the exact session
+DaemonSessionStoreDbTest.kt#getByPrincipal returns the most recent session
+DaemonSessionStoreDbTest.kt#getByRenewalTokenHash resolves the session by the hashed bearer secret, and a wrong hash finds nothing
+DaemonSessionStoreDbTest.kt#markCheck connection overload stamps within the transaction and preserves an ended row status
+DaemonSessionStoreDbTest.kt#markCheck stamps last_idp_check_at and the liveness status
+DaemonSessionStoreDbTest.kt#no crypto configured means the refresh token is never persisted, not even plaintext
+DaemonSessionStoreDbTest.kt#no refresh token at all round-trips as null (device flow without offline_access)
+DaemonSessionStoreDbTest.kt#staleSessions returns live stale daemon and web rows and excludes fresh ended or expired rows
+DaemonSessionStoreDbTest.kt#updateRefresh is a no-op when no crypto is configured
+DaemonSessionStoreDbTest.kt#updateRefresh rotates the stored ciphertext
+DaemonSessionStoreDbTest.kt#withinWindow ignores a still-open WEB row once the daemon window has closed
+DaemonSessionStoreDbTest.kt#withinWindow is false, fail-closed, for a principal with no session at all
+DaemonSessionStoreDbTest.kt#withinWindow is true right after create and false once the window has passed
+DatasourceMetadataConnectGateDbTest.kt#a connect grant on one datasource does not carry to another
+DatasourceMetadataConnectGateDbTest.kt#a granted caller passes the table-detail gate and fails at proxy dispatch
+DatasourceMetadataConnectGateDbTest.kt#a granted caller reads the datasource row
+DatasourceMetadataConnectGateDbTest.kt#a wire-token Bearer caller is authorized by the same connect decision
+DatasourceMetadataConnectGateDbTest.kt#table-detail is 401 unauthenticated
+DatasourceMetadataConnectGateDbTest.kt#table-detail is 403 without datasource-connect
+DatasourceMetadataConnectGateDbTest.kt#the datasource row is 401 unauthenticated
+DatasourceMetadataConnectGateDbTest.kt#the datasource row is 403 without datasource-connect, chain withheld
+DatasourceMetadataConnectGateDbTest.kt#the list keeps connection material for a connectable row
+DatasourceMetadataConnectGateDbTest.kt#the list keeps non-connectable rows but strips their connection material
+DatasourceSoftDeleteDbTest.kt#a soft-deleted datasource keeps its name and tags for historical-task authorization and audit
+DatasourceSoftDeleteDbTest.kt#a soft-deleted name is free for a new datasource to reuse
+DatasourceSoftDeleteDbTest.kt#delete is refused while a proxy is attached
+DatasourceSoftDeleteDbTest.kt#deleting a datasource drops its name-keyed enforcement catalog so a reused name re-measures
+DatasourceSoftDeleteDbTest.kt#deleting a datasource with access-request history soft-deletes it and keeps the rows
+DatasourceSoftDeleteDbTest.kt#the in-flight guard blocks non-terminal query work but not approved or terminal work
+DbSupportMatrixTest.kt#every declared version pins an image of that same series
+DbSupportMatrixTest.kt#every supported target series has a bundled classification manifest and vice versa
+DbSupportMatrixTest.kt#storage engines are postgres only
+DbSupportMatrixTest.kt#the CI matrix runs exactly the declared versions
+DbSupportMatrixTest.kt#the running servers are the versions the images asked for
+DbSupportMatrixTest.kt#the shared test containers default to a declared version
+DdlEnforcementDbTest.kt#a ddl holder cannot copy a masked column into a new table, parenthesized or not
+DdlEnforcementDbTest.kt#a ddl holder cannot copy even an unclassified column without a read grant
+DdlEnforcementDbTest.kt#a principal that can connect but lacks the sql-ddl grant is denied every DDL form
+DdlEnforcementDbTest.kt#a statement outside schema DDL stays denied even with the ddl grant
+DdlEnforcementDbTest.kt#role discovery offers the ddl role for a DDL statement
+DdlEnforcementDbTest.kt#the sql-ddl grant alone authorizes every DDL form on a production datasource
+DeactivationEnforcementDbTest.kt#a deactivated principal is denied even a READONLY_META passthrough (the gate dominates passthrough)
+DeactivationEnforcementDbTest.kt#a deactivated principal is denied even for a non-sensitive lineage query
+DeactivationEnforcementDbTest.kt#a deactivated principal is denied instead of falling open to cleartext
+DeactivationEnforcementDbTest.kt#reactivating a principal restores normal enforcement
+DebugRequesterIpDbTest.kt#a debug login's simulated address replaces the observed peer on the decision path
+DebugRequesterIpDbTest.kt#a malformed address is refused rather than silently ignored
+DebugRequesterIpDbTest.kt#a simulated address changes a real Cedar decision through the derived tag
+DebugRequesterIpDbTest.kt#the stored address is inert once the debug bypass is off
+DeprovisionDbTest.kt#AccessStore revokeAllForPrincipal revokes every active grant for that principal only
+DeprovisionDbTest.kt#RoleResolver resolve is fail-closed to empty for a deactivated principal, across every role source
+DeprovisionDbTest.kt#a principal with no app_user row at all is unaffected by the deactivation gate
+DeprovisionDbTest.kt#mintForActivePrincipalLocked refuses when a concurrent teardown deactivates first
+DeprovisionDbTest.kt#revokeActiveCredentials closes the principal's daemon session windows so a renewal secret can't survive
+DeprovisionDbTest.kt#revokeActiveCredentials sums tokens grants daemon windows and web sessions
+DeprovisionDbTest.kt#revokeAllForPrincipal is a no-op on an already-revoked or expired token
+DeprovisionDbTest.kt#revokeAllForPrincipal revokes every active token for that principal only
+DeviceLoginStoreDbTest.kt#a confirm for one code cannot authorize a different code
+DeviceLoginStoreDbTest.kt#a device handle mints exactly once — a replayed poll is refused and mints no second session
+DeviceLoginStoreDbTest.kt#a failed device mint rolls the consume back so the poll can retry
+DeviceLoginStoreDbTest.kt#a login is retrievable by its user_code and a fresh one is well-formed
+DeviceLoginStoreDbTest.kt#a login mints a wire token end-to-end via start, confirm, authorize, then poll
+DeviceLoginStoreDbTest.kt#a replacement session cannot inherit an earlier confirmation
+DeviceLoginStoreDbTest.kt#an authenticated confirm accepts a pending code and rejects an unknown one
+DeviceLoginStoreDbTest.kt#an existing console session approves the login without re-authenticating
+DeviceLoginStoreDbTest.kt#authorize without a prior confirm approves nothing and bounces back to the device page
+DeviceLoginStoreDbTest.kt#confirm requires a live web session
+DeviceLoginStoreDbTest.kt#create then get round-trips a pending row
+DeviceLoginStoreDbTest.kt#markApproved refuses an expired handle
+DeviceLoginStoreDbTest.kt#markApproved sets status and principal, only once
+DeviceLoginStoreDbTest.kt#purgeExpired removes only expired rows
+DeviceLoginStoreDbTest.kt#session loss after confirm returns to the device page and approves nothing
+DeviceLoginStoreDbTest.kt#the verification URL points at the web console origin, not the control plane
+DeviceLoginStoreDbTest.kt#unknown handle is absent
+DiagnosticRedactionDecideDbTest.kt#a no-column relay still carries diagnostic redaction (the path a literal DML write takes)
+DiagnosticRedactionDecideDbTest.kt#a production datasource redacts an ordinary principal, even on an ALLOW (Postgres whole-row leak)
+DiagnosticRedactionDecideDbTest.kt#a system-development datasource never redacts (Cedar permits unmasked reads there)
+DiagnosticsRedactionTest.kt#MySQL ALLOW never redacts, whatever the principal
+DiagnosticsRedactionTest.kt#MySQL ALLOW skips the Cedar unmasked-reader check (cannot leak on allow)
+DiagnosticsRedactionTest.kt#MySQL MASK or DENY redacts unless the principal reads the datasource unmasked
+DiagnosticsRedactionTest.kt#PostgreSQL redacts even an ALLOW unless the principal reads the datasource unmasked
+DiagnosticsRedactionTest.kt#only PostgreSQL leaks diagnostics on an allowed query
+EditorSelfApproveAuthzDbTest.kt#autoApproveTask allows non-admin self-approve on server-attested channels
+EditorSelfApproveAuthzDbTest.kt#self-approve is explicitly allowed on editor and wire
+EditorSelfApproveAuthzDbTest.kt#self-approve stays denied outside editor and wire
+EditorSelfApproveAuthzDbTest.kt#server-attested channel permits do not open cross-user approval
+EditorSessionDecideTimingDbTest.kt#each session query's real gRPC Decide sees THAT query's refreshed requester_ip, proving refresh-before-send
+EditorSubmitRouteDbTest.kt#a DENY at execute marks the task and child FAILED and saves no rows
+EditorSubmitRouteDbTest.kt#a task_read forbid denies the owner's poll with 404
+EditorSubmitRouteDbTest.kt#cancel terminalizes an in-flight editor task and emits RunCancel without closing the session
+EditorSubmitRouteDbTest.kt#canceling a queued editor task sends no cancel or query for the queued statement
+EditorSubmitRouteDbTest.kt#delete of an executing editor task emits RunCancel then removes the task
+EditorSubmitRouteDbTest.kt#poll and result for a non-owner editor task are 404
+EditorSubmitRouteDbTest.kt#result on a still-running task is 409 not_ready then gates status codes
+EditorSubmitRouteDbTest.kt#submit guards - blank sql is 400 and an unknown session is 404
+EditorSubmitRouteDbTest.kt#submit pushes a terminal task event to the owner's stream on completion
+EditorSubmitRouteDbTest.kt#submit returns 202 then the run completes async, saves the result, polls DONE, and delete-on-close removes it
+EditorTaskStoreDbTest.kt#createEditorTask is born APPROVED as EDITOR with own roles and one child
+EditorTaskStoreDbTest.kt#createWireTask is born APPROVED as WIRE linked to its decision and has no child
+EditorTaskStoreDbTest.kt#deleteEditorResultsForPrincipal drops only that principal's editor children
+EditorTaskStoreDbTest.kt#deleteEditorTask cascades the child and is owner + EDITOR scoped
+EditorTaskStoreDbTest.kt#deleteResultsForTask drops the child but leaves the task, idempotently
+EditorTaskStoreDbTest.kt#purgeExpiredEditorChildren deletes only expired editor children
+EditorTaskStoreDbTest.kt#the born-APPROVED editor task runs the same single-execution status machine
+EffectiveRolesTest.kt#all empty invents no roles
+EffectiveRolesTest.kt#group grants a role
+EffectiveRolesTest.kt#principal in no group unaffected
+EffectiveRolesTest.kt#union dedupes across sources
+ElevationContextRouteAuthzDbTest.kt#ROLE access-request approve fires the tag-gated permit only through a trusted edge (Access-kt wiring)
+ElevationContextRouteAuthzDbTest.kt#ROLE request creation against a datasource is gated by workflow-request
+ElevationContextRouteAuthzDbTest.kt#approve routes write a kind=admin audit event through the wiring
+ElevationContextRouteAuthzDbTest.kt#catalog browse is gated by datasource-connect
+ElevationContextRouteAuthzDbTest.kt#datasource list is filtered by connect only when connectable is requested
+ElevationContextRouteAuthzDbTest.kt#query-approval approve fires the tag-gated permit only through a trusted edge (Approvals-kt wiring)
+ElevationContextRouteAuthzDbTest.kt#query-approval approve mutates only authorization state and never runs the query
+ElevationContextRouteAuthzDbTest.kt#query-approval execute clears the R-scoped authority gate through a trusted edge (then fails on no attached proxy)
+ElevationContextRouteAuthzDbTest.kt#query-approval execute is forbidden without the trusted edge, even for an already-approved request
+ElevationContextTagTest.kt#a datasource-scoped tag rule fires only for the datasource in scope
+ElevationContextTagTest.kt#a null datasource derives no tags — a tag-conditioned permit fails closed
+ElevationContextTagTest.kt#a null datasource still passes requester_ip through to Cedar
+ElevationContextTagTest.kt#a requester_ip-derived tag gates a TASK_APPROVE elevation decision (Access-kt Approvals-kt shape)
+ElevationContextTagTest.kt#datasourceTags reach the tag rule's Datasource entity (preset posture)
+ElevationContextTagTest.kt#rolesOf exposes the wired RoleSource
+ElevationContextTagTest.kt#tag derivation and final authorization share ONE role snapshot — no second, disagreeing resolution
+EnforcementDbTest.kt#CTAS over non-sensitive columns is allowed with a sql ddl grant
+EnforcementDbTest.kt#DDL without a sql ddl grant is denied with a clean reason, not a parse-failure
+EnforcementDbTest.kt#EnforcementMysqlDbTest.CTAS that reads a masked column is denied even with a sql ddl grant
+EnforcementDbTest.kt#EnforcementMysqlDbTest.IN subquery oracle is denied
+EnforcementDbTest.kt#EnforcementMysqlDbTest.a no-FROM SELECT reading a table via UNION TABLE cannot exfiltrate cleartext ssn
+EnforcementDbTest.kt#EnforcementMysqlDbTest.a principal with sql select but no datasource connect is denied first
+EnforcementDbTest.kt#EnforcementMysqlDbTest.a query on an ungranted table is denied end-to-end — deny-by-default, not cleartext
+EnforcementDbTest.kt#EnforcementMysqlDbTest.an INSERT without a sql insert grant is denied with a clean reason, not a parse-failure
+EnforcementDbTest.kt#EnforcementMysqlDbTest.masked query returns masked ssn, never cleartext
+EnforcementDbTest.kt#EnforcementMysqlDbTest.scalar subquery leak is denied and returns no rows
+EnforcementDbTest.kt#EnforcementPostgresDbTest.CTAS that reads a masked column is denied even with a sql ddl grant
+EnforcementDbTest.kt#EnforcementPostgresDbTest.IN subquery oracle is denied
+EnforcementDbTest.kt#EnforcementPostgresDbTest.a no-FROM SELECT reading a table via UNION TABLE cannot exfiltrate cleartext ssn
+EnforcementDbTest.kt#EnforcementPostgresDbTest.a principal with sql select but no datasource connect is denied first
+EnforcementDbTest.kt#EnforcementPostgresDbTest.a query on an ungranted table is denied end-to-end — deny-by-default, not cleartext
+EnforcementDbTest.kt#EnforcementPostgresDbTest.an INSERT without a sql insert grant is denied with a clean reason, not a parse-failure
+EnforcementDbTest.kt#EnforcementPostgresDbTest.masked query returns masked ssn, never cleartext
+EnforcementDbTest.kt#EnforcementPostgresDbTest.scalar subquery leak is denied and returns no rows
+EnforcementDbTest.kt#INTERSECT membership oracle over ssn is denied and returns no rows
+EnforcementDbTest.kt#LATERAL correlated leak of ssn is denied and returns no rows
+EnforcementDbTest.kt#SELECT INTO after a parenthesized branch cannot bypass the sql ddl gate
+EnforcementDbTest.kt#SET user-variable from a subquery is denied (session-state exfiltration)
+EnforcementDbTest.kt#UPDATE and DELETE without their sql grants are denied with a clean reason
+EnforcementDbTest.kt#a no-FROM SELECT INTO OUTFILE cannot bypass the sql ddl gate (MySQL file-write)
+EnforcementDbTest.kt#a no-FROM SELECT INTO cannot bypass the sql ddl gate via readonly-meta passthrough
+EnforcementDbTest.kt#a principal with zero grants cannot enumerate schema via readonly-meta passthrough
+EnforcementDbTest.kt#a provably-total transform of a masked column redacts in full and the rest of the row returns
+EnforcementDbTest.kt#an update-only principal can insert via an upsert (accepted single-category tradeoff)
+EnforcementDbTest.kt#an upsert INSERT is denied without sql update, even though sql insert is granted
+EnforcementDbTest.kt#benign correlated exists is allowed
+EnforcementDbTest.kt#correlated subquery oracle over ssn is denied and returns no rows
+EnforcementDbTest.kt#error-based extraction via extractvalue over a masked column is denied end-to-end
+EnforcementDbTest.kt#no-FROM metadata chatter still runs
+EnforcementDbTest.kt#no-FROM query_to_xml data reader is denied and returns no rows
+EnforcementDbTest.kt#non-sensitive query is allowed and returns rows
+EnforcementDbTest.kt#recursive CTE anchoring on ssn is denied and returns no rows
+EnginesTest.kt#EngineWireSerializer round-trips as the exact wire string
+EnginesTest.kt#MySQL non-system schema does not match
+EnginesTest.kt#MySQL system schemas match case-insensitively
+EnginesTest.kt#Postgres non-system schema does not match
+EnginesTest.kt#Postgres system schemas require exact lowercase spelling, unlike MySQL
+EnginesTest.kt#Postgres temp and toast schemas match isSystemSchema by prefix but are not fixed
+EnginesTest.kt#catalogName, defaultSchema and resolveSchema follow each engine's namespace model
+EnginesTest.kt#engineFromWire accepts the canonical spellings, case-insensitively
+EnginesTest.kt#engineFromWire is fail-closed on unknown engines and the postgresql alias
+EnginesTest.kt#isFixedSystemSchema keeps each engine's casing but drops the prefixes
+EnginesTest.kt#systemSchemas is the concrete enumerable set per engine
+EnginesTest.kt#value-returning engine methods fail closed on an unspecified engine
+EnginesTest.kt#wireName and dialect are the canonical mappings
+EvalErrorFailClosedDbTest.kt#an erroring forbid is not skipped into an allow
+ExceptionGateRenameMigrationDbTest.kt#V19 rewrites only the exception-gate action reference, never a like-named role
+ForwardedAuthorityTest.kt#IPv6 blocks work and never match across address families
+ForwardedAuthorityTest.kt#a blank or non-numeric-port forwarded host falls back rather than resolving a partial authority
+ForwardedAuthorityTest.kt#a bracketed IPv6 authority is unwrapped without being split at its own colons
+ForwardedAuthorityTest.kt#a hostname entry is never resolved at match time
+ForwardedAuthorityTest.kt#a literal entry still matches exactly and nothing else
+ForwardedAuthorityTest.kt#a malformed entry matches nothing rather than everything
+ForwardedAuthorityTest.kt#a prefix that is not byte-aligned masks the boundary byte
+ForwardedAuthorityTest.kt#a trusted edge's forwarded host supersedes the proxy's own authority
+ForwardedAuthorityTest.kt#aPortIsNeverPartOfTheResolvedHost
+ForwardedAuthorityTest.kt#an address inside a CIDR block is trusted and one outside it is not
+ForwardedAuthorityTest.kt#an edge that preserves the client host needs no forwarded header
+ForwardedAuthorityTest.kt#an empty trusted set trusts nothing
+ForwardedAuthorityTest.kt#forwardedHostFromAnUntrustedPeerIsIgnored
+ForwardedAuthorityTest.kt#the rightmost entry of a multi-hop forwarded host is taken
+ForwardedAuthorityTest.kt#with no trusted edge the direct host is used
+GateSqlglotRegressionTest.kt#EXPLAIN ANALYZE of a materializing write is denied by the payload even for a writer holding the explain-unmask
+GateSqlglotRegressionTest.kt#EXPLAIN of a read runs unmasked whether or not ANALYZE, masked predicate and executing writes still deny
+GateSqlglotRegressionTest.kt#EXPLAIN of a write whose source columns the writer can read runs — no structural ordinal deny
+GateSqlglotRegressionTest.kt#MySQL ANSI_QUOTES masks a double-quoted pii column, default mode leaves it a string literal
+GateSqlglotRegressionTest.kt#cast or typed literal to a user type denies through the production walk
+GateSqlglotRegressionTest.kt#context stmt_kind lets a policy unmask a masked predicate only under a plan-only EXPLAIN
+GateSqlglotRegressionTest.kt#derived transforms redact while row-shaping use denies
+GateSqlglotRegressionTest.kt#explain of an ungranted table and reset master deny through the production walk
+GateSqlglotRegressionTest.kt#non-literal sql_mode assignment denies on MySQL
+GateSqlglotRegressionTest.kt#query-to-xml and session-state exfiltration stay closed
+GateSqlglotRegressionTest.kt#reference and membership oracles deny on both engines
+GateSqlglotRegressionTest.kt#results-charset NULL is pinned to utf8mb4 through the real analyzer
+GateSqlglotRegressionTest.kt#schema-qualified user function denies through the production walk
+GateSqlglotRegressionTest.kt#unknown table and UNION TABLE forms fail closed
+GroupSoftDeleteDbTest.kt#a soft-deleted group grants no roles and keeps its membership rows
+GroupSoftDeleteDbTest.kt#a soft-deleted group's name is free for a new group that resolves
+GroupSoftDeleteDbTest.kt#hasActiveAssignee stops counting a role granted only through a soft-deleted group
+GrpcDecideHandlerDbTest.kt#a native-wire token DOES resolve requester_ip from client_addr (the WIRE-channel source)
+GrpcDecideHandlerDbTest.kt#a native-wire token cannot assert roles from the token, but an approver-exec token's assume-role is honored
+GrpcDecideHandlerDbTest.kt#a no-R approver-exec decides at the editor channel, only a with-R token reaches workflow-executor
+GrpcDecideHandlerDbTest.kt#a registry entry is ignored for a native-wire (USER) token — gated strictly on kind, never merely 'an entry exists'
+GrpcDecideHandlerDbTest.kt#an APPROVER_EXEC token's registered requester_ip also reaches Cedar (run-minted, not just openSession-minted)
+GrpcDecideHandlerDbTest.kt#an EDITOR token with no registry entry does NOT fall back to the proxy client_addr — requester_ip stays absent
+GrpcDecideHandlerDbTest.kt#an EDITOR token's registered requester_ip reaches Cedar and satisfies an ip-gated permit
+GrpcDecideHandlerDbTest.kt#an HTTP-side policy edit is seen by the gRPC decision path
+GrpcDecideHandlerDbTest.kt#an editor or approver-exec token cannot open a wire session — validate rejects both ephemeral kinds
+GrpcDecideHandlerDbTest.kt#decide denies an ungranted principal by default and audits the decision
+GrpcDecideHandlerDbTest.kt#decide re-validates the token per query - a token revoked mid-session is rejected
+GrpcDecideHandlerDbTest.kt#decide rejects a deactivated principal UNAUTHENTICATED (session teardown, not a policy deny)
+GrpcDecideHandlerDbTest.kt#decide rejects an expired token UNAUTHENTICATED
+GrpcDecideHandlerDbTest.kt#decide rejects an unknown datasource NOT_FOUND
+GrpcDecideHandlerDbTest.kt#validateToken rejects a deactivated principal UNAUTHENTICATED
+GrpcDecideHandlerDbTest.kt#validateToken rejects a revoked token UNAUTHENTICATED
+GrpcDecideHandlerDbTest.kt#validateToken rejects an unknown token UNAUTHENTICATED
+GrpcDecideHandlerDbTest.kt#validateToken returns the identity for a valid token
+GrpcEventsHandlerDbTest.kt#an open events stream marks attached, stamps last_seen_at, and relays a RefreshCatalog
+GrpcEventsHandlerDbTest.kt#events for an unregistered datasource is NOT_FOUND
+GrpcEventsHandlerDbTest.kt#events rejects a proxy on a different wire-protocol version and never attaches it
+GrpcMappersTest.kt#ALLOW with no rewrite leaves rewrittenSql absent
+GrpcMappersTest.kt#MASK decision carries the proto action and every mask field and generation
+GrpcMappersTest.kt#before-decide is structurally exclusive from verdict
+GrpcMappersTest.kt#targeted after-statement refetch maps schema and hash
+GrpcPerConnectionCatalogDbTest.kt#cross-principal Decide on a live id rejects binding mismatch
+GrpcPerConnectionCatalogDbTest.kt#current post-close Decide behavior recovers the closed id
+GrpcPerConnectionCatalogDbTest.kt#current replay behavior accepts an old full push for a newer pending command
+GrpcPerConnectionCatalogDbTest.kt#forged push and close reject not-found and live datasource mismatch rejects precondition
+GrpcPerConnectionCatalogDbTest.kt#post-close Decide reuse is rejected
+GrpcPerConnectionCatalogDbTest.kt#post-close late push rejects not-found
+GrpcPerConnectionCatalogDbTest.kt#push rejects old backend generation and unchanged hash mismatch
+GrpcPerConnectionCatalogDbTest.kt#real restart recovers original id and token then anchors the principal
+GrpcPerConnectionCatalogDbTest.kt#replayed full push cannot satisfy a newer pending refetch
+GrpcPerConnectionCatalogDbTest.kt#unknown connection Decide recovers with before-decide only and no audit
+GrpcPerConnectionCatalogDbTest.kt#validate mints connection id and system on-open commands
+GrpcRegistrationHandlerDbTest.kt#a proxy serving TLS without publishing a chain still reports the TLS requirement
+GrpcRegistrationHandlerDbTest.kt#a row racing into an in-flight register cannot bypass the engine guard (cross-writer)
+GrpcRegistrationHandlerDbTest.kt#admin update refuses an engine change and invalidates the catalog on a db_name retarget
+GrpcRegistrationHandlerDbTest.kt#concurrent first registrations with different engines cannot bypass the engine guard
+GrpcRegistrationHandlerDbTest.kt#pushCatalog for an unknown datasource is NOT_FOUND
+GrpcRegistrationHandlerDbTest.kt#pushCatalog re-measures the enforcement catalog, not only the stored one
+GrpcRegistrationHandlerDbTest.kt#pushCatalog replacement preserves classification for a surviving column identity
+GrpcRegistrationHandlerDbTest.kt#pushCatalog replaces the prior catalog (delete-then-insert)
+GrpcRegistrationHandlerDbTest.kt#pushCatalog rolls back a mid-batch failure and keeps the prior catalog
+GrpcRegistrationHandlerDbTest.kt#pushCatalog stores the proxy-pushed columns and default schemas
+GrpcRegistrationHandlerDbTest.kt#re-register to a different schema invalidates the stale catalog (fail-closed)
+GrpcRegistrationHandlerDbTest.kt#re-register with empty tags preserves the existing tags
+GrpcRegistrationHandlerDbTest.kt#re-register with the same target preserves the catalog and updates advisory fields
+GrpcRegistrationHandlerDbTest.kt#register accepts a free-form tag bag including both postures and custom tags
+GrpcRegistrationHandlerDbTest.kt#register echoes the control-plane's wire-protocol version so the proxy can mirror-check it
+GrpcRegistrationHandlerDbTest.kt#register is idempotent by name and updates advisory fields
+GrpcRegistrationHandlerDbTest.kt#register persists the advertised proxy address and cert chain and preserves them on a blank re-register
+GrpcRegistrationHandlerDbTest.kt#register refuses an engine change FAILED_PRECONDITION and leaves the row untouched
+GrpcRegistrationHandlerDbTest.kt#register rejects a blank name INVALID_ARGUMENT
+GrpcRegistrationHandlerDbTest.kt#register rejects a proxy on a different wire-protocol version with a clear, actionable error
+GrpcRegistrationHandlerDbTest.kt#register rejects an unspecified engine INVALID_ARGUMENT
+GrpcRegistrationHandlerDbTest.kt#register self-creates a datasource by name with no service credential
+GrpcRegistrationHandlerDbTest.kt#register stores a questionable chain rather than refusing the datasource
+GrpcRegistrationHandlerDbTest.kt#turning wire TLS off clears a previously advertised chain
+GrpcReportCompletionHandlerDbTest.kt#a completion carries the terminal error status and partial counts
+GrpcReportCompletionHandlerDbTest.kt#a completion for a decision without a wire task stays audit-only
+GrpcReportCompletionHandlerDbTest.kt#a completion for an unknown decision is rejected NOT_FOUND
+GrpcReportCompletionHandlerDbTest.kt#a completion report inserts a chained completion event referencing the decision
+GrpcReportCompletionHandlerDbTest.kt#a completion with an unknown status is rejected INVALID_ARGUMENT
+GrpcReportCompletionHandlerDbTest.kt#a completion with decision_id 0 is rejected INVALID_ARGUMENT
+GrpcRunExecDbTest.kt#ALLOW assembles chunked rows, nulls, metadata, audit PII, and SELECT rowsAffected
+GrpcRunExecDbTest.kt#DENY is terminal and never returns rows
+GrpcRunExecDbTest.kt#MASK preserves masked-column metadata and returns only proxy-produced values
+GrpcRunExecDbTest.kt#RunError fails the whole exchange without exposing earlier rows
+GrpcRunExecDbTest.kt#RunProgress heartbeats reset the no-progress bound so a slow-but-live open serves
+GrpcRunExecDbTest.kt#a RunError during the target-DB open surfaces as-is instead of waiting to serve
+GrpcRunExecDbTest.kt#a RunExec stream that sends no first frame is reaped at the first-frame bound, not parked forever
+GrpcRunExecDbTest.kt#a non-ready first message fails FAILED_PRECONDITION
+GrpcRunExecDbTest.kt#a persistent session runs multiple queries on ONE held stream, then closes and revokes
+GrpcRunExecDbTest.kt#a post-serving RunError tagged target_db_error becomes a surfaceable TargetDbRunException
+GrpcRunExecDbTest.kt#a post-serving RunError without target_db_error stays a generic ProxyRunException
+GrpcRunExecDbTest.kt#a run stream cut before RunServing fails the run fast, not on the dial budget
+GrpcRunExecDbTest.kt#a run-minted APPROVER_EXEC token's requester_ip reaches a real gRPC decide (approverExec=true, the ONLY APPROVER_EXEC minter)
+GrpcRunExecDbTest.kt#a target-DB open that heartbeats but never serves fails at the absolute ceiling
+GrpcRunExecDbTest.kt#a target-DB open that stops heartbeating after RunReady fails at the no-progress bound
+GrpcRunExecDbTest.kt#active task registry sends RunCancel on the attached stream
+GrpcRunExecDbTest.kt#an abandoned one-shot run tears down the gRPC handler, not retaining it until the proxy ends
+GrpcRunExecDbTest.kt#an attached editor session outlives the first-frame bound — no overall cap cuts a live session
+GrpcRunExecDbTest.kt#an openSession cut before RunServing fails the open fast and revokes its session token
+GrpcRunExecDbTest.kt#an unspecified wire decision fails closed to DENY
+GrpcRunExecDbTest.kt#closeSessionsForPrincipal closes only the matching principal's streams
+GrpcRunExecDbTest.kt#dial timeout is typed, leaves no active token, and never needs a proxy stream
+GrpcRunExecDbTest.kt#no attached proxy returns the typed service-unavailable outcome and revokes its token
+GrpcRunExecDbTest.kt#run's requesterIp is carried on ControlPlaneCore for the life of the ephemeral token
+GrpcRunExecDbTest.kt#unknown and duplicate session ids fail NOT_FOUND claim-once
+GrpcServerTest.kt#correct secret passes the gate and reaches the handler with the token propagated
+GrpcServerTest.kt#missing secret is rejected UNAUTHENTICATED when a secret is configured
+GrpcServerTest.kt#open gate (no secret configured) reaches the handler with a null token context
+GrpcServerTest.kt#wrong secret is rejected UNAUTHENTICATED before the handler
+GrpcTempOverlayTest.kt#a mixed batch keeps only the pg_temp entries
+GrpcTempOverlayTest.kt#a non-pg_temp overlay entry is DROPPED — a proxy cannot mislabel a real table as a temp
+GrpcTempOverlayTest.kt#an editor pg_temp column is overlaid under the pg database catalog as a temp
+GrpcTempOverlayTest.kt#mysql overlays under the def catalog segment
+GrpcTempOverlayTest.kt#temps are dropped on every non-editor channel
+HttpRequesterIpResolutionTest.kt#a blank or absent XFF from a trusted peer resolves to null — the edge's own address is not the requester
+HttpRequesterIpResolutionTest.kt#a malformed rightmost XFF entry is not salvaged into a valid IP — it resolves to null
+HttpRequesterIpResolutionTest.kt#a null or unparseable peer resolves to null — fail closed, never throws
+HttpRequesterIpResolutionTest.kt#a peer or XFF entry carrying a well-formed port is stripped to the bare address
+HttpRequesterIpResolutionTest.kt#a trusted peer's rightmost XFF entry is honored
+HttpRequesterIpResolutionTest.kt#an invalid rightmost XFF entry from a trusted peer resolves to null — never falls back to the edge's own IP
+HttpRequesterIpResolutionTest.kt#an untrusted peer that happens to equal an entry after cleaning does not match on the raw (uncleaned) form
+HttpRequesterIpResolutionTest.kt#an untrusted peer's X-Forwarded-For is ignored entirely — the peer itself is used
+HttpRequesterIpResolutionTest.kt#httpRequesterIp honors X-Forwarded-For only when the test-host peer is configured as trusted
+HttpRequesterIpResolutionTest.kt#multi-hop XFF takes the RIGHTMOST entry — the one the trusted edge itself appended
+HttpRequesterIpResolutionTest.kt#whitespace around a multi-hop XFF entry is trimmed
+IdTokenValidatorTest.kt#a correctly signed, matching id_token validates and surfaces claims
+IdTokenValidatorTest.kt#a missing groups claim resolves to an empty list, not a failure
+IdTokenValidatorTest.kt#a nonce mismatch fails closed
+IdTokenValidatorTest.kt#a token signed by an untrusted key fails closed (bad signature)
+IdTokenValidatorTest.kt#a wrong audience fails closed
+IdTokenValidatorTest.kt#a wrong issuer fails closed
+IdTokenValidatorTest.kt#an expired token fails closed
+IdTokenValidatorTest.kt#the nonce check is skipped when the caller expects none (device flow)
+JitApprovalAuditDbTest.kt#QUERY create, approve, and reject each record one admin event
+JitApprovalAuditDbTest.kt#ROLE create, approve, reject, and grant revoke each record one admin event
+JitApprovalAuditDbTest.kt#a rejected audit insert rolls back the approval it describes
+JitApprovalAuditDbTest.kt#re-approving and re-revoking record nothing the second time
+KnownGapsTest.kt#EXISTS over an ungranted table is denied
+KnownGapsTest.kt#a CTE body that reads the real ungranted table is denied
+KnownGapsTest.kt#a CTE that shadows a real ungranted table name is allowed - the physical table is not read
+KnownGapsTest.kt#a cross-join scanning an ungranted table is denied even when only the granted side is projected
+KnownGapsTest.kt#count(star) on a table the principal has a read grant on is allowed
+KnownGapsTest.kt#count(star) on an ungranted table is denied
+KnownGapsTest.kt#select 1 on an ungranted table is denied
+ManagementAuditDbTest.kt#a rejected audit insert rolls back the mutation it describes
+ManagementAuditDbTest.kt#a rejected mutation and a no-op removal record nothing
+ManagementAuditDbTest.kt#batch classification writes one row naming resolved columns in canonical order
+ManagementAuditDbTest.kt#datasource CRUD and single-column tagging record the resolved column path
+ManagementAuditDbTest.kt#each service records one atomic admin event with its pinned descriptor
+ManagementAuditDbTest.kt#group role grant and revoke each record once
+ManagementAuditDbTest.kt#identity and policy edits record their resolved before and after names
+ManagementAuditDbTest.kt#mask function CRUD and a SYSTEM policy toggle each record once
+ManagementAuditDbTest.kt#ordinary policy CRUD records create, rename, and delete
+ManagementAuditDbTest.kt#repeating an add or assignment records nothing the second time
+ManifestCommandCoverageDbTest.kt#SELECT INTO OUTFILE cannot exfil a masked column even with the admin_file grant
+ManifestCommandCoverageDbTest.kt#every manifest dangerous command is gated (or documented passthrough) — fail-closed emission guard
+MaskedColumnGroupByReconstructionDbTest.kt#enforcement denies every step of the GROUP BY exploit - attacker recovers zero characters
+MaskedColumnGroupByReconstructionDbTest.kt#raw target DB - the GROUP BY exploit reconstructs the masked ssn (the DENY is load-bearing)
+MaskingTest.kt#fixed and null kinds
+MaskingTest.kt#format_preserving keeps separators, masks alphanumerics
+MaskingTest.kt#last_n on short values masks entirely
+MaskingTest.kt#last_n reveals only the final four
+MaskingTest.kt#null input stays null and unknown kind is fully masked
+McpOAuthStoreDbTest.kt#RFC 7009 access revocation is local while refresh revocation closes the family
+McpOAuthStoreDbTest.kt#authorization code is one-time PKCE-bound and access tokens are audience-bound
+McpOAuthStoreDbTest.kt#authorization codes cannot borrow a mismatched or revoked consent
+McpOAuthStoreDbTest.kt#issuing a code prunes expired and already-used authorization codes
+McpOAuthStoreDbTest.kt#refresh rotates once and replay revokes the complete token family
+McpOAuthStoreDbTest.kt#revoke reports a transition once and an unknown token never
+McpOAuthStoreDbTest.kt#revoked consent blocks code exchange and revokes access plus refresh
+McpServerDbTest.kt#Cedar authority remains narrower than a broad consent scope
+McpServerDbTest.kt#a batch classification applies atomically and never half-applies
+McpServerDbTest.kt#a batch classification is denied without the datasource Cedar action
+McpServerDbTest.kt#a batch classification never writes an unresolvable schema
+McpServerDbTest.kt#a batch classification obeys the scope ceiling and replays idempotently
+McpServerDbTest.kt#a batch classification refuses an oversized batch before doing its work
+McpServerDbTest.kt#a batch classification rolls back a write that already succeeded
+McpServerDbTest.kt#a failed audit insert rolls back its management mutation
+McpServerDbTest.kt#an IPv6 literal resource host matches a forwarded authority
+McpServerDbTest.kt#an https resource admits a cleartext-forwarded request whose Host carries no port
+McpServerDbTest.kt#mutations are atomic idempotent audited and roles are resolved live
+McpServerDbTest.kt#representative tool families dispatch successfully with structured liveness and audit
+McpServerDbTest.kt#resource metadata and bearer failures are standards shaped
+McpServerDbTest.kt#tool catalog is complete localized and scope cannot grant a write
+MePermissionsRouteTest.kt#a principal holding no roles claims no capabilities
+MePermissionsRouteTest.kt#an untrusted peer cannot spoof requester_ip via X-Forwarded-For at the me-permissions route
+MePermissionsRouteTest.kt#auditor can read the audit collection without admin or approval capabilities
+MePermissionsRouteTest.kt#auth debug does not admit a caller without a session
+MePermissionsRouteTest.kt#each independent admin action grants admin and approval but not audit collection access
+MePermissionsRouteTest.kt#ordinary principal has no coarse capabilities
+MePermissionsRouteTest.kt#requester_ip from a trusted edge reaches the me-permissions admin decision
+MePermissionsRouteTest.kt#requests require a session
+MessageCatalogTest.kt#a missing domain file fails fast
+MessageCatalogTest.kt#an unknown key returns the key itself rather than throwing
+MessageCatalogTest.kt#an unknown locale falls back to the default
+MessageCatalogTest.kt#falls back to the default locale for a key a locale is missing
+MessageCatalogTest.kt#looks up a key and interpolates named params
+MessageCatalogTest.kt#resolves a nested dot path
+MigrationSelfContainmentTest.kt#every migration is self-contained
+MigrationSelfContainmentTest.kt#no two migrations share a version
+MigrationSelfContainmentTest.kt#the guard rejects the reference forms that break a database
+MigrationSelfContainmentTest.kt#the version guard detects a collision
+MySqlSummaryTableLeakDbTest.kt#governed value-bearing summary tables deny under a broad grant while structural catalog still browses
+NotificationRendererTest.kt#a long reason is capped
+NotificationRendererTest.kt#a requester's reason cannot inject mrkdwn beside the approve button
+NotificationRendererTest.kt#a statement cannot break out of its code fence
+NotificationRendererTest.kt#a withheld statement is announced rather than silently missing
+NotificationRendererTest.kt#an approved decision reads differently from a rejected one
+NotificationRendererTest.kt#an unknown locale falls back rather than rendering a raw key
+NotificationRendererTest.kt#every key resolves in both locales
+NotificationRendererTest.kt#the fallback line never carries the statement
+NotificationServiceDbTest.kt#a deterministic delivery exception is bounded by the attempt budget, not retried forever
+NotificationServiceDbTest.kt#a permanent drop marks the row dead
+NotificationServiceDbTest.kt#a recipient with no address is dropped as dead, not retried forever
+NotificationServiceDbTest.kt#a requested row whose ref was already recorded is adopted, not re-posted
+NotificationServiceDbTest.kt#a retry that exhausts the attempt budget dies rather than looping forever
+NotificationServiceDbTest.kt#a row for an unknown transport is dead
+NotificationServiceDbTest.kt#a self-approving requester gets BOTH the approver message and their own receipt
+NotificationServiceDbTest.kt#a terminal event updates both threads of a self-approving requester
+NotificationServiceDbTest.kt#a wake drains immediately rather than waiting for the poll
+NotificationServiceDbTest.kt#an update edits by stored handle and skips the address lookup
+NotificationServiceDbTest.kt#an update waits while the requested message it edits is still pending
+NotificationServiceDbTest.kt#drain delivers a pending notification and records its handle
+NotificationServiceDbTest.kt#emit queues the always-include parties in the caller's transaction
+NotificationServiceDbTest.kt#emitRequested sends the requester a receipt and never routes them the approver message
+NotificationServiceDbTest.kt#enqueueTerminal announces a terminal event and it drains
+NotificationServiceDbTest.kt#full shows a flagged statement while pending and hides it once the task is handled
+NotificationServiceDbTest.kt#result facts reach the requester and executor but never a mere co-approver
+NotificationServiceDbTest.kt#the requester receipt lists the durable task-requested recipients and carries no statement
+NotificationStoreTest.kt#an update waits while an earlier event for the same recipient is still pending
+NotificationStoreTest.kt#claimDue returns due pending rows in id order up to the limit
+NotificationStoreTest.kt#claimDue skips a row another transaction holds locked
+NotificationStoreTest.kt#enqueue is idempotent per task-event-transport-recipient
+NotificationStoreTest.kt#locale and email round-trip for a directory user, and setLocale reports a missing one
+NotificationStoreTest.kt#markDead is terminal
+NotificationStoreTest.kt#markRetry keeps the row pending but out of the claim until it is due
+NotificationStoreTest.kt#markSent is terminal and increments attempts
+NotificationStoreTest.kt#rememberMessage upserts the external ref
+NotificationsTest.kt#a hidden statement carries no text and is never complete
+NotificationsTest.kt#a shown statement under the ceiling is complete
+NotificationsTest.kt#a shown statement within the transport ceiling is complete
+NotificationsTest.kt#a task with no statement is never complete
+NotificationsTest.kt#auto follows the hint, pending or handled
+NotificationsTest.kt#full falls back to the hint once the task is handled
+NotificationsTest.kt#full shows a pending statement even when the hint flags it
+NotificationsTest.kt#omit never shows the statement
+NotificationsTest.kt#parse accepts the three modes and rejects anything else
+NotificationsTest.kt#the transport ceiling cuts an overlong statement and drops completeness
+OAuthRoutesDbTest.kt#CIMD validation accepts omitted scope but rejects unsafe client identifiers
+OAuthRoutesDbTest.kt#CIMD validation matches a portless loopback redirect_uri against any request port, RFC 8252 section 7
+OAuthRoutesDbTest.kt#a caller-supplied client_id is bounded before it reaches the audit chain
+OAuthRoutesDbTest.kt#a rejected token-grant audit rolls the OAuth grant back, leaving the code unconsumed for retry
+OAuthRoutesDbTest.kt#a repeated manual consent for the same grant writes only one consent event
+OAuthRoutesDbTest.kt#consent discloses redirect destination and warns for loopback clients
+OAuthRoutesDbTest.kt#consent, token grant, and both revoke routes each write one auth event
+OAuthRoutesDbTest.kt#control-plane application mounts both OAuth AS and MCP resource discovery on one origin
+OAuthRoutesDbTest.kt#debug authorization code PKCE refresh and discovery work end to end
+OAuthRoutesDbTest.kt#debug authorize carries the simulated source address across its session remint
+OAuthRoutesDbTest.kt#debug auto-consent writes one consent auth event
+OAuthRoutesDbTest.kt#production OAuth resumes through the shared session and issues a code after consent
+OAuthRoutesDbTest.kt#production OAuth reuses the existing control-plane user session without another auth boundary
+OAuthRoutesDbTest.kt#production OAuth without a session enters the existing control-plane OIDC login
+OAuthRoutesDbTest.kt#production configuration rejects the public dev session secret and insecure origins
+OidcCallbackTest.kt#OIDC continuation accepts only fixed auth and device routes
+OidcCallbackTest.kt#S256 is matched case-insensitively
+OidcCallbackTest.kt#a callback whose nonce cookie is gone is recorded
+OidcCallbackTest.kt#a callback with neither code nor error is recorded
+OidcCallbackTest.kt#a challenge is sent when the IdP advertises S256
+OidcCallbackTest.kt#a failed token exchange is recorded
+OidcCallbackTest.kt#an oversized idp error is truncated before it reaches the trail
+OidcCallbackTest.kt#invalid id_token redirects to error=nonce, and the nonce cookie is one-time-use
+OidcCallbackTest.kt#no challenge is sent when the IdP advertises no PKCE methods
+OidcCallbackTest.kt#no challenge is sent when the IdP advertises only plain
+OidcCallbackTest.kt#no verifier is sent to a token endpoint that never issued a challenge
+OidcCallbackTest.kt#provider error param redirects to error=oidc
+OidcCallbackTest.kt#provider error preserves the popup reauth continuation
+OidcCallbackTest.kt#provider error returns to the co-hosted OAuth resume route
+OidcCallbackTest.kt#state failure preserves the popup reauth continuation
+OidcCallbackTest.kt#state mismatch redirects to error=state, and the state cookie is one-time-use
+OidcCallbackTest.kt#the challenge is the S256 hash of the verifier presented at the token endpoint
+OidcCallbackTest.kt#the verifier cookie is one-time-use
+OidcCallbackTest.kt#unconfigured oidc degrades both routes to 501
+OidcDiscoveryTest.kt#a trailing slash on the configured issuer is tolerated
+OidcDiscoveryTest.kt#document parses every field, required and optional
+OidcDiscoveryTest.kt#optional fields default to null when the IdP omits them
+OidcDiscoveryTest.kt#the document is fetched once and cached across repeated calls
+OidcGroupMappingTest.kt#a group that is blank after stripping the prefix is dropped
+OidcGroupMappingTest.kt#an explicit mapping may target the reserved system namespace
+OidcGroupMappingTest.kt#an explicit mapping wins over the prefix rule
+OidcGroupMappingTest.kt#an unmapped group is taken by name with the prefix stripped
+OidcGroupMappingTest.kt#no prefix keeps unmapped names as-is
+OidcGroupMappingTest.kt#parse reads idpGroup=pmGroup pairs and ignores malformed entries
+OidcGroupMappingTest.kt#the reserved system namespace is unreachable via the unmapped fallback
+OidcWebSessionDbTest.kt#a device login authenticates via SSO before confirming and approving the handle
+OidcWebSessionDbTest.kt#a direct authorize link with no device-page confirm approves no handle
+OidcWebSessionDbTest.kt#a session mint failure after id_token validation is audited and leaves no session
+OidcWebSessionDbTest.kt#oidc callback denies a principal with zero effective roles without minting a session
+OidcWebSessionDbTest.kt#oidc callback mints web row and stores refresh only when encrypted offline access is available
+OidcWebSessionDbTest.kt#oidc callback returns a successful popup reauth to its landing route
+PerConnectionCatalogAdversarialDbTest.kt#MySQL implicit-commit DROP cannot leave a stale allow
+PerConnectionCatalogAdversarialDbTest.kt#PostgreSQL SELECT invoking a function carries after-statement refetch
+PerConnectionCatalogAdversarialDbTest.kt#allowed MySQL CALL carries after-statement refetch
+PerConnectionCatalogAdversarialDbTest.kt#an unchanged reply quiets one authoritative version and the next version re-gates
+PerConnectionCatalogAdversarialDbTest.kt#closing a mutated connection never changes a sibling verdict
+PerConnectionCatalogAdversarialDbTest.kt#ignored after-statement command blocks the next decision without auditing it
+PerConnectionCatalogAdversarialDbTest.kt#literal MySQL CALL is denied before it can create a stale-catalog window
+PerConnectionCatalogAdversarialDbTest.kt#transaction-local DROP changes bare-name resolution before commit
+PerConnectionCatalogDbTest.kt#ANSI_QUOTES threads through decideConnection so a double-quoted pii column masks
+PerConnectionCatalogDbTest.kt#decision uses held structure after global catalog rows are deleted
+PerConnectionCatalogDbTest.kt#missing search path fragment returns before-decide without audit
+PerConnectionCatalogStateTest.kt#a hash marker quiets one authoritative version and retriggers on the next
+PerConnectionCatalogStateTest.kt#a schema with nothing held is still fetched when adopting
+PerConnectionCatalogStateTest.kt#adopting held content opens with no fetch and decides immediately
+PerConnectionCatalogStateTest.kt#adopting retains the pooled fragment so it survives the original holder closing
+PerConnectionCatalogStateTest.kt#adoption inherits the original measurement time so staleness still fires
+PerConnectionCatalogStateTest.kt#an ambient refresh re-measures pooled content so adopters stay fresh
+PerConnectionCatalogStateTest.kt#an ambient refresh whose columns differ never overwrites pooled content
+PerConnectionCatalogStateTest.kt#authoritative ordering follows accepted observation order including revert
+PerConnectionCatalogStateTest.kt#backend generation binds and old pushes reject
+PerConnectionCatalogStateTest.kt#invalidating a datasource forces the next connection to measure for itself
+PerConnectionCatalogStateTest.kt#minted ids are 16 bytes and collisions retry
+PerConnectionCatalogStateTest.kt#one datasource's ambient refresh cannot vouch for another's schema
+PerConnectionCatalogStateTest.kt#pending is the push CAS and replay cannot regress authoritative
+PerConnectionCatalogStateTest.kt#same hash with different columns rejects and close is idempotently fail-closed
+PerConnectionCatalogStateTest.kt#system schema fragments dedup across datasources on the same engine version
+PerConnectionCatalogStateTest.kt#unchanged adoption shares pooled fragment and refreshes staleness clock
+PerConnectionCatalogStateTest.kt#unchanged on-open cannot no-op an unconditional first fetch
+PolicyOriginDbTest.kt#a clean database installs the admin and audit system rows
+PolicyOriginDbTest.kt#every seeded SYSTEM policy is in canonical Cedar format
+PolicyOriginDbTest.kt#explicit negative ids do not disturb the user sequence and a system upsert preserves disabled
+PolicyOriginDbTest.kt#the development preset ships enabled and the production preset ships disabled
+PolicyOriginDbTest.kt#the four origin constraints reject every cross-namespace raw insert
+PolicyOriginDbTest.kt#the shipped default security posture is unchanged
+PolicySoftDeleteDbTest.kt#a soft-deleted policy name is free for a new policy
+PolicySoftDeleteDbTest.kt#soft-deleting a forbid removes it from the evaluated policy set
+PredicateLiteralDisclosureDbTest.kt#a classified column filtered without a literal is disclosed, even though it denies for the requester
+PredicateLiteralDisclosureDbTest.kt#a classified column merely SELECTED carries no value and is disclosed
+PredicateLiteralDisclosureDbTest.kt#a column-to-column comparison carries no value
+PredicateLiteralDisclosureDbTest.kt#a literal on a classified column is reported, so the text is withheld
+PredicateLiteralDisclosureDbTest.kt#a literal on an unclassified column is disclosed
+PredicateLiteralDisclosureDbTest.kt#an unanalyzable statement is withheld, never assumed clean
+PredicateLiteralDisclosureDbTest.kt#the hint is decoupled from authz — it reports a literal the requester's own decision denies on
+PresetPolicyDbTest.kt#default developer group connects selects writes and reads dev data cleartext
+PresetPolicyDbTest.kt#development reads cleartext including PII because dev holds no PII
+PresetPolicyDbTest.kt#development role matrix grants connect and only the corresponding SQL kind
+PresetPolicyDbTest.kt#development system floor permits catalog activity and data-leak but never critical
+PresetPolicyDbTest.kt#production PII unmasks via the workflow-executor channel off trusted-network and re-masks at the viewer
+PresetPolicyDbTest.kt#production is denied until enabled then masks PII unless a pii-accessor earns trusted-network
+PresetPolicyDbTest.kt#production role matrix grants connect and only the corresponding SQL kind once enabled
+PresetPolicyDbTest.kt#production system surfaces stay closed even for a pii-accessor on trusted-network
+PresetPolicyDbTest.kt#the shipped development permit matches a system-development tag wherever it sits
+PrincipalSessionSchemaDbTest.kt#the session table carries its indexes and a partial-unique session key
+PrincipalSessionStorageDbTest.kt#daemon rows cannot be linked or reached through web session keys
+PrincipalSessionStorageDbTest.kt#invalidate signs out only active rows and preserves an existing terminal reason
+PrincipalSessionStorageDbTest.kt#read returns live ended and expired refs without changing idle state
+PrincipalSessionStorageDbTest.kt#write links a web row and steals a reused key from its prior holder
+PrincipalSessionStoreDbTest.kt#deprovision-composed cleanup rolls back with an aborted teardown transaction
+PrincipalSessionStoreDbTest.kt#device mismatch ends a live web row permanently without sliding idle
+PrincipalSessionStoreDbTest.kt#newest web session displaces only same-principal web siblings
+PrincipalSessionStoreDbTest.kt#resolve web requires both live clocks and excludes daemon rows
+PrincipalSessionStoreDbTest.kt#the session-end seam invokes the editor-cleanup callback on every ending path
+PrincipalSessionStoreDbTest.kt#web ended reason is returned only for web rows
+PrincipalSessionStoreDbTest.kt#web mint waits for the principal lock and leaves exactly one active web row
+PrincipalSessionStoreDbTest.kt#web refresh token is omitted when encryption is unavailable
+PrincipalSessionStoreDbTest.kt#web session lifecycle separates validation from idle touch without moving the absolute cap
+ProvisionMergeDbTest.kt#JIT never clobbers a source=SCIM user's fields
+ProvisionMergeDbTest.kt#a SCIM rename atomically revokes the old principal's active credentials — tokens, grants, and daemon session window
+ProvisionMergeDbTest.kt#a SCIM rename retires the old principal string so it cannot keep authenticating
+ProvisionMergeDbTest.kt#a blocked rename retires the principal carried by the row after lock release
+ProvisionMergeDbTest.kt#activePrincipalByEmail resolves a unique active email but refuses an ambiguous one
+ProvisionMergeDbTest.kt#findUserByExternalId and findGroupByExternalId round-trip
+ProvisionMergeDbTest.kt#isDeactivated is false for a principal with no app_user row at all
+ProvisionMergeDbTest.kt#provisionFromOidc creates a new source=OIDC user and mirrors the claim's groups
+ProvisionMergeDbTest.kt#provisionFromOidc reuses an existing group's source, whatever it is
+ProvisionMergeDbTest.kt#re-provisioning SYNCS group membership to the latest claim (drops removed groups)
+ProvisionMergeDbTest.kt#setActiveById deactivates and revokes atomically by id (SCIM PATCH SetActive false, and DELETE)
+ProvisionMergeDbTest.kt#setActiveById re-reads the current principal under the lock — deactivates the row's real identity, not a stale snapshot (SCIM PATCH-DELETE)
+ProvisionMergeDbTest.kt#setUserActive and isDeactivated
+ProvisionMergeDbTest.kt#the public 5-arg upsertScimUser rename revokes the old principal credentials
+ProvisionMergeDbTest.kt#upsertScimGroup matches an existing group by external_id then by name
+ProvisionMergeDbTest.kt#upsertScimUser active=false atomically revokes the principal credentials
+ProvisionMergeDbTest.kt#upsertScimUser matches an existing JIT user by email and reconciles it to SCIM
+ProvisionMergeDbTest.kt#upsertScimUser matches by external_id first, even if principal or email changed at the IdP
+ProvisionMergeDbTest.kt#upsertScimUser matches by principal when external_id and email are both new
+ProxyEventsHubTest.kt#a closed stream is WEDGED, not NOT_ATTACHED
+ProxyEventsHubTest.kt#a datasource with no stream is not attached
+ProxyEventsHubTest.kt#a full buffer is WEDGED too
+ProxyEventsHubTest.kt#a live replica serves the request even when another is wedged
+ProxyEventsHubTest.kt#a refresh push skips a wedged stream rather than counting it
+ProxyEventsHubTest.kt#a wedged stream is dropped so liveness stops claiming it
+ProxyEventsHubTest.kt#an open stream takes the event
+ProxyEventsHubTest.kt#awaitDrained returns true once every signalled stream deregisters
+ProxyEventsHubTest.kt#broadcastDraining signals then closes every open stream
+ProxyEventsHubTest.kt#concurrent register cannot survive a drain
+ProxyEventsHubTest.kt#dispatch is serialized behind an in-progress drain
+ProxyEventsHubTest.kt#once draining, a new register is refused and told to reconnect
+ProxyEventsHubTest.kt#once draining, dispatch stops returning SENT
+ProxyEventsHubTest.kt#once draining, requestRefresh notifies nobody
+QueryResultStoreDbTest.kt#DML result stores rowsAffected as row_count, not the empty result-set size
+QueryResultStoreDbTest.kt#a target-DB failure stores the backend error text encrypted, released only via accessFor
+QueryResultStoreDbTest.kt#accessFor binds the released child's own sql to its ciphertext, not the first child's
+QueryResultStoreDbTest.kt#accessFor withholds the error detail once past expiry, before any purge sweep
+QueryResultStoreDbTest.kt#cancelRun atomically cancels the child and parent and wins late completion
+QueryResultStoreDbTest.kt#child transitions from pending to running to done with encrypted rows
+QueryResultStoreDbTest.kt#claimAndStartRun atomically claims the parent and starts the child, closing the cancel window
+QueryResultStoreDbTest.kt#claimAndStartRun is single-shot - a second claim on a non-APPROVED task loses
+QueryResultStoreDbTest.kt#error detail is off the metadata path and reachable only through accessFor
+QueryResultStoreDbTest.kt#expiry purges the encrypted error detail
+QueryResultStoreDbTest.kt#expiry purges the payload but keeps the child row and its sql for audit
+QueryResultStoreDbTest.kt#failed child stores a stable error code without ciphertext
+QueryResultStoreDbTest.kt#one task supports multiple children and latest metadata wins
+ReadinessDiagnosticDbTest.kt#hasActiveAssignee mirrors resolve across direct group and JIT role paths
+ReadinessDiagnosticDbTest.kt#health stays ok and reports whether system-admin has an active assignee
+RecipientResolverDbTest.kt#an admin approving another principal's request is announced and allowed
+RecipientResolverDbTest.kt#an operator forbid over the unknown axis does not silence every candidate
+RecipientResolverDbTest.kt#an operator permit over the unknown axis must not silently drop its approver
+RecipientResolverDbTest.kt#routing never skips a principal the live decision would allow
+RecipientResolverDbTest.kt#shipped policies announce to an approver and skip a principal who holds nothing
+RecipientResolverDbTest.kt#shipped policies decide every candidate outright when nothing needs the address
+RecipientResolverDbTest.kt#the requester is over-announced under an unknown address but is still denied on click
+RecipientResolverDbTest.kt#the resolver notifies approvers and skips a principal who holds nothing
+RedTeamDmlTest.kt#write predicates and transformed payloads remain non-maskable
+RedTeamDmlTest.kt#writes cannot persist masked source values
+RenewalWindowTest.kt#a deprovision-then-reactivate cannot resurrect the old renewal secret (window stays closed)
+RenewalWindowTest.kt#a principal-only JSON body with no bearer is refused — the unauthenticated-renewal attack
+RenewalWindowTest.kt#a renew blocks behind a concurrent holder of the SAME principal's advisory lock, then observes its committed state
+RenewalWindowTest.kt#a wrong or garbage bearer secret is refused
+RenewalWindowTest.kt#authoritative principal deprovision refuses renewal on every sibling session
+RenewalWindowTest.kt#missing Authorization header entirely is refused
+RenewalWindowTest.kt#renew after the window closed is refused even with the correct secret
+RenewalWindowTest.kt#renew for a deprovisioned principal is refused even inside the window
+RenewalWindowTest.kt#renew for a liveness-INACTIVE session is refused even inside the window
+RenewalWindowTest.kt#renew mints under the lock, so an immediately-following teardown sweeps up the just-minted token
+RenewalWindowTest.kt#renew with the correct bearer secret inside the window mints a fresh token
+RenewalWindowTest.kt#revokeActiveCredentials itself blocks behind a concurrent holder of the SAME principal's advisory lock
+RequesterIpParseTest.kt#extracts the ip from Netty host-port forms
+RequesterIpParseTest.kt#null blank empty or slash-only yield null — fail closed
+ResultCryptoTest.kt#ciphertext is not the plaintext and uses a random iv
+ResultCryptoTest.kt#empty plaintext round-trips
+ResultCryptoTest.kt#key must be 32 bytes
+ResultCryptoTest.kt#round-trips plaintext
+ResultCryptoTest.kt#tampered ciphertext fails to decrypt
+ResultCryptoTest.kt#too-short blob is rejected
+ResultCryptoTest.kt#wrong key fails to decrypt
+RoleDiscoveryTest.kt#a candidate is previewed on the channel an approved query executes on
+RoleDiscoveryTest.kt#a candidate is previewed under R ALONE, not unioned with the requester's own roles
+RoleDiscoveryTest.kt#a role that denies the statement is not listed
+RoleDiscoveryTest.kt#a role that returns cleartext is marked ALLOW
+RoleDiscoveryTest.kt#a role that runs but still masks is listed, marked masked
+RoleDiscoveryTest.kt#every role that runs the statement is listed
+RoleMaskFnSoftDeleteDbTest.kt#a soft-deleted mask function falls back and its name is reusable
+RoleMaskFnSoftDeleteDbTest.kt#a soft-deleted role drops out of every resolution source
+RoleMaskFnSoftDeleteDbTest.kt#a soft-deleted role name is free for a new role, and the new role resolves
+RoleMaskFnSoftDeleteDbTest.kt#liveRoleNames drops a role soft-deleted after an execute-as snapshot
+RoleResolverDbTest.kt#a revoked grant is excluded from resolve (activeOnly)
+RoleResolverDbTest.kt#an expired grant is excluded from resolve (activeOnly)
+RoleResolverDbTest.kt#listActivePrincipals enumerates every active identity source, once each and sorted
+RoleResolverDbTest.kt#resolve unions direct, group, and JIT grant roles
+RoleResolverDbTest.kt#unknown principal resolves to the empty set (fail-closed)
+ScannedTableMySqlTest.kt#a CTE body scanning the real ungranted table is denied
+ScannedTableMySqlTest.kt#a pure CTE shadow of the ungranted table is allowed
+ScannedTableMySqlTest.kt#count(star) on a table the principal can read is allowed
+ScannedTableMySqlTest.kt#count(star) on an ungranted table is denied
+SchemaKeyWiringTest.kt#an emitted key absent from the catalog cannot fall back to a same-named table in another schema
+SchemaKeyWiringTest.kt#dot-containing identifiers that render to one key are rejected rather than parsed
+SchemaKeyWiringTest.kt#duplicate catalog keys are rejected as ambiguous
+SchemaThreadingDbTest.kt#alias or composite resolution keeps the physical schema identity
+SchemaThreadingDbTest.kt#bare users resolves to the captured default namespace and masks
+SchemaThreadingDbTest.kt#decideAndAudit threads and audits the live search path
+SchemaThreadingDbTest.kt#explicit analytics update is allowed executes and rolls back without persistence
+SchemaThreadingDbTest.kt#explicit default schema masks while explicit analytics stays unmasked
+SchemaThreadingDbTest.kt#invalid or unresolvable live current databases fail closed
+SchemaThreadingDbTest.kt#invalid or unresolvable live search paths fail closed
+SchemaThreadingDbTest.kt#lctn=0 CTE output-column write cannot smuggle masked ssn
+SchemaThreadingDbTest.kt#live current database pivots unqualified resolution without changing the default
+SchemaThreadingDbTest.kt#live search path pivots unqualified resolution without changing the default
+SchemaThreadingDbTest.kt#missing pg-temp catalog entry skips to the next live search path schema
+SchemaThreadingDbTest.kt#protected bare-target update is valid and mutating on the target DB but enforcement denies it
+SchemaThreadingDbTest.kt#qualified star preserves schema-specific classification
+SchemaThreadingDbTest.kt#relation-valued update returning cannot disclose protected ssn
+SchemaThreadingDbTest.kt#system catalogs are introspected as first-class resources, not shadowed
+SchemaThreadingDbTest.kt#unknown table schema and foreign catalog deny without rows
+SchemaThreadingDbTest.kt#whole-row JSON cannot bypass default PII and analytics does not inherit it
+ScimAuditDbTest.kt#a rejected audit insert rolls back the SCIM mutation
+ScimAuditDbTest.kt#group provision, membership add and remove, and delete record one event each while a no-op records none
+ScimAuditDbTest.kt#user provision, replace, deactivate, activate, and deprovision each record one admin event
+ScimAuthTest.kt#an unconfigured SCIM token disables the endpoint fail-closed
+ScimAuthTest.kt#forwarded proto from an untrusted peer does not satisfy the TLS gate
+ScimAuthTest.kt#https-asserted request with no bearer header is unauthorized
+ScimAuthTest.kt#https-asserted request with the correct bearer succeeds
+ScimAuthTest.kt#https-asserted request with the wrong bearer is unauthorized
+ScimAuthTest.kt#plaintext request is rejected regardless of the bearer token
+ScimGroupsDbTest.kt#SCIM group membership PATCH reuses addMember-removeMember (group_member)
+ScimGroupsDbTest.kt#a group with roles mapped via group_role is unaffected by SCIM provisioning
+ScimGroupsDbTest.kt#distinct externalIds never collide into the same group row
+ScimGroupsDbTest.kt#findGroupByExternalId finds a provisioned group and is null for an unknown id
+ScimGroupsDbTest.kt#upsertScimGroup is idempotent on repeated pushes for the same externalId
+ScimGroupsDbTest.kt#upsertScimGroup provisions a source=SCIM group keyed on externalId
+ScimPatchValidatorTest.kt#accepts add members with a value array
+ScimPatchValidatorTest.kt#accepts remove members with a value array
+ScimPatchValidatorTest.kt#accepts replace active false
+ScimPatchValidatorTest.kt#accepts replace active true
+ScimPatchValidatorTest.kt#op is case-insensitive for replace active
+ScimPatchValidatorTest.kt#rejects a members value that is not an array of objects
+ScimPatchValidatorTest.kt#rejects a missing path
+ScimPatchValidatorTest.kt#rejects a non-boolean active value
+ScimPatchValidatorTest.kt#rejects add on active (wrong op for that path)
+ScimPatchValidatorTest.kt#rejects an empty Operations list
+ScimPatchValidatorTest.kt#rejects an unsupported path
+ScimPatchValidatorTest.kt#rejects filter-path grammar on members
+ScimPatchValidatorTest.kt#rejects multiple operations
+ScimPatchValidatorTest.kt#rejects replace on members (wrong op for that path)
+ScimTlsGateTest.kt#a multi-hop value takes the rightmost entry
+ScimTlsGateTest.kt#a null peer never passes on a header alone
+ScimTlsGateTest.kt#absent or blank forwarded proto is not TLS
+ScimTlsGateTest.kt#an empty trusted-edge set trusts no peer
+ScimTlsGateTest.kt#direct http with no forwarded header is not TLS
+ScimTlsGateTest.kt#direct https is TLS regardless of the trusted-edge set
+ScimTlsGateTest.kt#forwarded proto from a trusted edge is honored
+ScimTlsGateTest.kt#forwardedProtoFromUntrustedPeerIsIgnored
+ScimUsersDbTest.kt#a retired (tombstoned) principal can be reused by a later rename — no permanent unique-constraint block
+ScimUsersDbTest.kt#a retired principal's direct principal_role grant does not silently transfer to whoever reuses the string
+ScimUsersDbTest.kt#distinct externalIds never collide into the same row
+ScimUsersDbTest.kt#findUserByExternalId finds a provisioned user and is null for an unknown id
+ScimUsersDbTest.kt#replaceScimUserById can rename BACK onto its own just-retired principal string
+ScimUsersDbTest.kt#replaceScimUserById is null (404) for a nonexistent id
+ScimUsersDbTest.kt#replaceScimUserById mutates the row AT this id — never a different row a body-key match would have resolved
+ScimUsersDbTest.kt#replaceScimUserById rejects an externalId that already belongs to a DIFFERENT row
+ScimUsersDbTest.kt#setUserActive toggles active and persists
+ScimUsersDbTest.kt#upsertScimUser active=false deactivates the row
+ScimUsersDbTest.kt#upsertScimUser is idempotent on repeated pushes for the same externalId
+ScimUsersDbTest.kt#upsertScimUser never clobbers a SCIM row's source
+ScimUsersDbTest.kt#upsertScimUser provisions a source=SCIM row keyed on externalId
+ScimUsersDbTest.kt#upsertScimUser reconciles an existing OIDC-provisioned row instead of duplicating it
+ShowWarningsExfilDbTest.kt#SHOW WARNINGS cannot exfiltrate a value the target DB leaked into the warning buffer
+ShowWarningsExfilDbTest.kt#the deny is the data-leak forbid — it overrides even a broad any-action grant
+SlackDecisionHandlerDbTest.kt#a click for a request that does not exist is rejected
+SlackDecisionHandlerDbTest.kt#a deny transitions to rejected with the Slack reason
+SlackDecisionHandlerDbTest.kt#a failed run is reported as a retry hint, and the decision still stands
+SlackDecisionHandlerDbTest.kt#an already-decided request reports what happened instead of deciding again
+SlackDecisionHandlerDbTest.kt#an authorized approve transitions the request and runs it
+SlackDecisionHandlerDbTest.kt#an unauthorized clicker is refused and nothing transitions
+SlackDecisionHandlerDbTest.kt#the requester cannot self-approve from Slack
+SlackNotificationE2eDbTest.kt#a request whose predicate carries a protected literal is announced with the statement withheld and no approve button
+SlackNotificationE2eDbTest.kt#a self-approving requester gets both the approver message and their own receipt over Slack
+SlackNotificationE2eDbTest.kt#requester creates the workflow, the approver approves in Slack, and the approved run stores its result
+SlackNotificationE2eDbTest.kt#under full a pending approver sees even a flagged statement
+SlackSocketModeTest.kt#a Slack user with no email-confirmation field is refused
+SlackSocketModeTest.kt#a click from another workspace is refused
+SlackSocketModeTest.kt#a deactivated Slack account is refused
+SlackSocketModeTest.kt#a non-block_actions payload is ignored
+SlackSocketModeTest.kt#a non-decision action id is ignored
+SlackSocketModeTest.kt#a valid click is acked and dispatched with the resolved principal
+SlackSocketModeTest.kt#a verified Slack user with no active directory match is refused
+SlackSocketModeTest.kt#an unlinked Slack user is refused ephemerally and never dispatched
+SlackSocketModeTest.kt#an unverified Slack email is refused even when it would match a principal
+SlackSocketModeTest.kt#the handler's reply is sent back as an ephemeral message
+SlackTransportTest.kt#a 429 retries
+SlackTransportTest.kt#a 5xx resolving an address throws so delivery retries, not drops
+SlackTransportTest.kt#a 5xx with a permanent-looking body still retries, never dead-letters an outage
+SlackTransportTest.kt#a message with only open offers no decision buttons
+SlackTransportTest.kt#a non-email principal is never looked up
+SlackTransportTest.kt#a pending request renders approve-and-run, deny, and open buttons with their action ids
+SlackTransportTest.kt#a principal with no Slack match renders as the plain identity
+SlackTransportTest.kt#a requester whose email resolves is rendered as a Slack mention
+SlackTransportTest.kt#a retryable Slack error retries and a permanent one drops
+SlackTransportTest.kt#a transient failure resolving an address throws so delivery retries, not null
+SlackTransportTest.kt#a transport-level failure retries rather than dropping
+SlackTransportTest.kt#addressing falls back to the directory email for a non-address principal
+SlackTransportTest.kt#addressing prefers the current directory email over an email-shaped principal
+SlackTransportTest.kt#addressing returns null when the email resolves to no Slack user
+SlackTransportTest.kt#deliver posts chat_postMessage as JSON and returns a channel-ts ref
+SlackTransportTest.kt#read methods are form-encoded, never JSON
+SlackTransportTest.kt#the decider is resolved to a mention too
+SlackTransportTest.kt#update drops a malformed message ref without calling Slack
+SlackTransportTest.kt#update edits by channel-ts and returns the same ref
+SoftDeleteEnforcementDbTest.kt#a soft-deleted execute-as role is re-filtered at the decision so the stored run denies
+SoftDeleteEnforcementDbTest.kt#soft-deleting a column's mask function keeps it masked (FIXED fallback), never cleartext
+SqlNormalizeTest.kt#MySQL bare double-dash is arithmetic but Postgres is a comment
+SqlNormalizeTest.kt#MySQL executable comments and optimizer hints fail closed
+SqlNormalizeTest.kt#MySQL preserves non-reserved identifier case (case-sensitive tables)
+SqlNormalizeTest.kt#Postgres dollar-quoted string body case is significant
+SqlNormalizeTest.kt#Postgres folds unquoted identifier case
+SqlNormalizeTest.kt#Postgres nested block comments are stripped
+SqlNormalizeTest.kt#Postgres quoted identifier case is significant
+SqlNormalizeTest.kt#a comment-lookalike inside a literal is preserved
+SqlNormalizeTest.kt#a different column changes the hash
+SqlNormalizeTest.kt#a different operator changes the hash
+SqlNormalizeTest.kt#a different string literal changes the hash
+SqlNormalizeTest.kt#a different table changes the hash
+SqlNormalizeTest.kt#block comments are stripped, including mid-statement and multiline
+SqlNormalizeTest.kt#embedded NUL and unpaired surrogates fail closed through the public API
+SqlNormalizeTest.kt#empty and content-free inputs normalize to null
+SqlNormalizeTest.kt#keyword case is folded in both dialects
+SqlNormalizeTest.kt#line comments are stripped
+SqlNormalizeTest.kt#literal case and inner whitespace are preserved
+SqlNormalizeTest.kt#normalization is lexical and does not require parser coverage
+SqlNormalizeTest.kt#raw lexeme spellings cannot collide
+SqlNormalizeTest.kt#the hash is 64 lowercase hex chars
+SqlNormalizeTest.kt#trailing semicolons are dropped
+SqlNormalizeTest.kt#unterminated constructs normalize to null
+SqlNormalizeTest.kt#whitespace, newlines and tabs are irrelevant
+SqlVerbActionMigrationDbTest.kt#V18 rewrites every sql-verb policy form to its statement category
+SqlVerbActionMigrationDbTest.kt#a policy naming a removed sql-verb action fails validation, its category form validates
+StatementFactsGrantLoopTest.kt#a resolved DDL statement is gated by its ddl kind
+StatementFactsGrantLoopTest.kt#a resolved statement with no execute grant fails closed
+StatementFactsGrantLoopTest.kt#all-granted analyzed statement allows
+StatementFactsGrantLoopTest.kt#an out-of-range mask ordinal fails closed
+StatementFactsGrantLoopTest.kt#an unknown-kind statement is a policy deny via sql-unanalyzable
+StatementFactsGrantLoopTest.kt#denied verdict denies regardless of disposition
+StatementFactsGrantLoopTest.kt#masked verdict with DENY_STATEMENT disposition denies
+StatementFactsGrantLoopTest.kt#masked verdict with MASK_OUTPUT applies the configured mask
+StatementFactsGrantLoopTest.kt#masked verdict with REDACT_OUTPUT_NULL redacts to NULL
+StatementFactsGrantLoopTest.kt#masked verdict with an unspecified disposition fails closed
+StatementFactsGrantLoopTest.kt#metadata with no resource grants is an allow passthrough
+StatementFactsGrantLoopTest.kt#multi-grant same ordinal is first-wins
+StatementFactsGrantLoopTest.kt#out-of-range ordinal on an UNMASKED column fails closed
+StatementFactsGrantLoopTest.kt#output columns and rewritten sql are preserved on the decision
+StatementFactsGrantLoopTest.kt#result-read grant with no resource fails closed
+StatementFactsGrantLoopTest.kt#session rewrite rides the passthrough on persistent-connection channels
+StatementFactsGrantLoopTest.kt#session statement passes through only on persistent-connection channels
+StatementFactsGrantLoopTest.kt#unanalyzable deny carries schema candidates for a bounded catalog refetch
+StatementFactsGrantLoopTest.kt#ungranted table grant denies through table dispatch
+StatementFactsGrantLoopTest.kt#unspecified disposition on an UNMASKED column fails closed
+StatementFactsGrantLoopTest.kt#write read-set membership of a masked column denies
+StatementKindGapDenialDbTest.kt#ANALYZE TABLE holding the admin kind but no read on the table denies at the read gate — the existence oracle is closed
+StatementKindGapDenialDbTest.kt#OUTFILE is gated on admin_file, not ddl
+StatementKindGapDenialDbTest.kt#a benign metadata SHOW stays allowed while a replication SHOW denies
+StatementKindGapDenialDbTest.kt#admin gaps deny at the kind gate for a principal with every benign category but not admin
+SystemClassificationEnforcementDbTest.kt#a column classification may name a product system tag but not invent one
+SystemClassificationEnforcementDbTest.kt#a dangerous system function denies by policy on a versioned datasource
+SystemClassificationEnforcementDbTest.kt#on a PG-17 datasource, catalog structure browses and dangerous surfaces deny
+SystemClassificationEnforcementDbTest.kt#the dangerous forbids override even a broad datasource read grant
+SystemClassificationEnforcementDbTest.kt#the dangerous function forbid overrides even a broad datasource read grant
+SystemClassificationEnforcementDbTest.kt#the dangerous-function deny wins over the uncovered-table deny
+SystemClassificationEnforcementDbTest.kt#without an engine_version, fixed system schemas stay closed
+SystemClassificationEnforcementDbTest.kt#without an engine_version, the floor still forbids a system table under a broad datasource grant
+SystemClassificationEnforcementMySqlDbTest.kt#a governed MySQL datasource is unaffected by the no-manifest floor
+SystemClassificationEnforcementMySqlDbTest.kt#an uncertified MySQL broad grant cannot read a fixed system table
+SystemClassificationEnforcementMySqlDbTest.kt#an uncertified MySQL explicit data-leak table is kept not forced critical so dev relaxes it
+SystemClassificationServiceTest.kt#Aurora MySQL 3_x version() resolves to the MySQL 8_0 manifest and classifies
+SystemClassificationServiceTest.kt#Aurora PostgreSQL resolves to the PG major manifest
+SystemClassificationServiceTest.kt#a fixed system table without a governing manifest is closed
+SystemClassificationServiceTest.kt#parseServerVersion handles vanilla and Aurora formats
+SystemClassificationServiceTest.kt#tagForFunction classifies dangerous MySQL builtins including Aurora rds_ from the bare name
+SystemClassificationServiceTest.kt#tagForFunction classifies dangerous PostgreSQL builtins from the bare name
+SystemClassificationServiceTest.kt#the baseline floor classifies every former dangerousFuncs name with or without a manifest
+SystemClassificationServiceTest.kt#value-bearing MySQL system tables are classified, structural stays catalog
+SystemClassificationServiceTest.kt#value-bearing PostgreSQL system relations are classified, structural stays catalog
+SystemClassificationTest.kt#a cross-schema function rule applies in any schema, catalog default only in a system schema
+SystemClassificationTest.kt#a datasource older than every supported major falls back to the lowest
+SystemClassificationTest.kt#a duplicate exact identity with conflicting tags aborts
+SystemClassificationTest.kt#a non-system tag aborts
+SystemClassificationTest.kt#a relation in a system schema defaults to catalog, exact and family raise it to the strongest
+SystemClassificationTest.kt#a utility command maps to its resource tag
+SystemClassificationTest.kt#a wildcard-schema relation rule is rejected at boot
+SystemClassificationTest.kt#all four bundled Aurora manifests load, validate, and index
+SystemClassificationTest.kt#an exact major and a newer minor both resolve to the series manifest, no fallback
+SystemClassificationTest.kt#an exact rule that would downgrade a stronger family aborts
+SystemClassificationTest.kt#an unsupported major is unavailable without fallback, and falls back to the nearest lower with it
+SystemClassificationTest.kt#case-insensitive within a system schema, catalog wildcard vs pinned
+SystemClassificationTest.kt#gate regressions - stat-getter, pageinspect, and aurora_stat functions are dangerous, not open
+SystemClassificationTest.kt#mysql 8_4 falls back to 8_0 nearest-lower reasoning stays within engine
+SystemClassificationTest.kt#overlapping families with conflicting tags abort
+SystemClassificationTest.kt#real MySQL classifications (incl Aurora rds_) are correct
+SystemClassificationTest.kt#real PostgreSQL classifications (incl Aurora) are correct
+SystemClassificationTest.kt#real version resolution + Aurora fallback
+SystemClassificationTest.kt#the PostgreSQL manifest is a superset of the old dangerousFuncs (must hold before that map retires)
+TableDetailDbTest.kt#grpc table-detail stream claims once and relays both directions
+TableDetailDbTest.kt#mysql route assembles proxy detail overlays classification and stays stateless
+TableDetailDbTest.kt#postgres route assembles proxy detail overlays classification and stays stateless
+TableDetailDbTest.kt#route validates selectors rejects identifier attacks and reports proxy failures
+TagResolutionTest.kt#a datasource-scoped tag rule fires only for the named datasource
+TagResolutionTest.kt#a derived tag drives a consuming grant end-to-end
+TagResolutionTest.kt#a guarded tag-on-tag rule loads but can never earn a tag — no recursion
+TagResolutionTest.kt#a tag rule loads though its action is not predefined, and fires when its condition holds
+TagResolutionTest.kt#an empty vocabulary short-circuits to no tags
+TagResolutionTest.kt#an unguarded tag-on-tag rule is rejected at construction — tags absent from the tag-action schema
+TagResolutionTest.kt#effectiveAuthzContext makes channel authoritative and discards caller-supplied tags
+TagResolutionTest.kt#the dangling-tag lint flags a consumer with no producer and a producer with no consumer
+TagResolutionTest.kt#the tag is absent when the raw signal does not match — fail closed
+TaskCompletionHubTest.kt#a full subscriber buffer drops oldest and never blocks the publisher, keeping the newest event
+TaskCompletionHubTest.kt#a principal only receives its own events
+TaskCompletionHubTest.kt#a subscriber receives an event published to its principal
+TaskCompletionHubTest.kt#an event reaches every open stream of the same principal
+TaskCompletionHubTest.kt#awaitDrained blocks until the closed streams deregister, then reports drained
+TaskCompletionHubTest.kt#broadcastDraining closes every open stream and returns the count
+TaskCompletionHubTest.kt#concurrent subscribe cannot survive a drain
+TaskCompletionHubTest.kt#isDraining is false until beginDraining
+TaskCompletionHubTest.kt#once draining, a new subscribe is refused with an already-closed channel
+TaskCompletionHubTest.kt#publish to a party set delivers once per principal even when a principal repeats
+TaskCompletionHubTest.kt#publish to a principal with no subscribers is a no-op
+TaskCompletionHubTest.kt#unsubscribe removes and closes the channel
+TaskEventsRouteDbTest.kt#a stream ends when its session dies, and no session never streams
+TaskEventsRouteDbTest.kt#session liveness tracks minting and revocation
+TaskEventsRouteDbTest.kt#the push task_read filter mirrors the poll - owner allowed, a forbid suppresses, absent denied
+TaskReconcileStartupDbTest.kt#boot fails orphaned executions, spares not-started tasks, and is idempotent
+TaskStoreDbTest.kt#a task carries one-to-many statement children, latest wins in meta
+TaskStoreDbTest.kt#claimExecution fires only from APPROVED
+TaskStoreDbTest.kt#claimExecution moves APPROVED to EXECUTING and stamps executing_at
+TaskStoreDbTest.kt#createQueryRequest persists execute_as, creator_kind, and a not-started statement child
+TaskStoreDbTest.kt#decideQueryRequest approve stamps approved_at, reject leaves it null
+TaskStoreDbTest.kt#execute_as and creator_kind round-trip through the reshaped columns
+TaskStoreDbTest.kt#markCancelled moves only EXECUTING to CANCELLED and blocks later terminal transitions
+TaskStoreDbTest.kt#markDeleted fires from DRAFT PENDING REJECTED but never from live states
+TaskStoreDbTest.kt#markExecuted moves EXECUTING to EXECUTED and stamps executed_at, only from EXECUTING
+TaskStoreDbTest.kt#markFailed moves EXECUTING to FAILED, only from EXECUTING
+TaskStoreDbTest.kt#no-child WIRE tasks use the shared terminal lifecycle
+TaskStoreDbTest.kt#reconcileOrphanedExecutions terminalizes EXECUTING tasks and RUNNING children, idempotently
+TaskStoreDbTest.kt#resubmit moves REJECTED to PENDING but never other states
+TaskStoreDbTest.kt#two concurrent claims on separate connections yield exactly one winner
+TokenRoutesDeactivationTest.kt#POST api-tokens for a deactivated principal is refused before minting
+TokenRoutesDeactivationTest.kt#POST api-wire-tokens for a deactivated principal is refused before minting
+TokenTtlTest.kt#every clamped ttl is a bounded, positive lifetime
+TokenTtlTest.kt#over-long requests are capped at 24h
+TokenTtlTest.kt#requests within the window are unchanged
+TokenTtlTest.kt#tiny, zero, and negative requests are floored to the minimum
+TrustChainInspectionTest.kt#a CA-issued leaf alone is reported because nothing anchors it
+TrustChainInspectionTest.kt#a certificate that only CLAIMS to be its own issuer is reported
+TrustChainInspectionTest.kt#a chain whose issuer is not a CA is reported
+TrustChainInspectionTest.kt#a leaf with its issuer is a valid chain
+TrustChainInspectionTest.kt#a self-signed certificate is its own anchor
+TrustChainInspectionTest.kt#a smuggled trust anchor is reported
+TrustChainInspectionTest.kt#unparseable or empty input is reported
+UnanalyzableGateDbTest.kt#unanalyzable denies on the floor, then a sql-unanalyzable permit relays it verbatim
+UnmaskableGateDbTest.kt#unmaskable permission is fail-closed and populated only on the final MASK path
+UserAdminDeprovisionDbTest.kt#DELETE on a nonexistent id returns false (404 at the route)
+UserAdminDeprovisionDbTest.kt#DELETE tombstones (never hard-deletes) and revokes token + grant + session atomically
+UserAdminDeprovisionDbTest.kt#PUT active flip (true to false, no rename) revokes token + grant + session in the same transaction
+UserAdminDeprovisionDbTest.kt#PUT rename and deactivate revokes credentials held by both principal strings
+UserAdminDeprovisionDbTest.kt#PUT rename atomically retires the old principal — tombstoned, token + grant + session revoked
+UserAdminDeprovisionDbTest.kt#PUT with no rename and no active flip does not revoke anything
+UserAdminDeprovisionDbTest.kt#REST-shaped ID deprovision still targets the original row after a principal rename
+UserAdminDeprovisionDbTest.kt#concurrent REST-shaped group role additions retain both mappings
+UserAdminDeprovisionDbTest.kt#createUser with active=false revokes credentials held before the row existed
+UserAdminDeprovisionDbTest.kt#createUser with active=true does not touch an unrelated principal's credentials
+UtilityGateDbTest.kt#a data-bearing SHOW is denied on the floor and relaxed on a preset-development datasource
+UtilityGateDbTest.kt#an unclassifiable utility is hard-denied even against a broad Datasource read grant
+WebSessionRoutesDbTest.kt#a pre-cutover principal-roles cookie fails closed to unauthenticated
+WebSessionRoutesDbTest.kt#auth config exposes default session UX timings
+WebSessionRoutesDbTest.kt#auth config normalizes a mixed-unit absolute cap to minutes
+WebSessionRoutesDbTest.kt#conditional logout ends only the session id observed by the client
+WebSessionRoutesDbTest.kt#debug login resolves through the database and logout ends the row
+WebSessionRoutesDbTest.kt#expired and ended web rows fail closed
+WebSessionRoutesDbTest.kt#logging out of an idle-expired session still records the termination
+WebSessionRoutesDbTest.kt#session observation and ordinary authenticated routes never slide idle while heartbeat does
+WebSessionRoutesDbTest.kt#session status and me surface displacement and bind mismatch reasons
+WireCertRouteDbTest.kt#a datasource whose proxy published no chain is 404 with its own code
+WireCertRouteDbTest.kt#a granted caller downloads the advertised chain as a PEM attachment
+WireCertRouteDbTest.kt#an authenticated caller without datasource-connect gets 403
+WireCertRouteDbTest.kt#an unauthenticated caller gets 401, never a debug-user fallback
+WireCertRouteDbTest.kt#an unknown datasource id is 404 and is not confused with a missing chain
+WireTaskDecideDbTest.kt#ALLOW stays approved until a clean completion executes it and preserves relay bytes
+WireTaskDecideDbTest.kt#MASK stays approved until completion and preserves mask relay bytes
+WireTaskDecideDbTest.kt#datasource-scoped task approve forbid overrides enforcement to deny without creating a task
+WireTaskDecideDbTest.kt#duplicate clean completions leave the wire task executed
+WireTaskDecideDbTest.kt#error and canceled completions fail their wire tasks
+WireTaskDecideDbTest.kt#non-wire decide creates no wire task
+WireTaskDecideDbTest.kt#only the completed decision executes in a prepare then execute pair
+WireTaskDecideDbTest.kt#policy DENY fails its wire task inline and preserves deny relay bytes
+WireTaskDecideDbTest.kt#stale catalog before-decide creates no wire task
+WireTaskDecideDbTest.kt#task request forbid overrides enforcement to deny without creating a task

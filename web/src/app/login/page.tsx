@@ -5,7 +5,7 @@
 // the dev-only path. Which affordances render is driven by GET /auth/config.
 
 import { Suspense, useState, type FormEvent } from 'react'
-import { useRouter, useSearchParams } from 'next/navigation'
+import { useSearchParams } from 'next/navigation'
 import { useTranslations } from 'next-intl'
 import { ShieldHalf } from 'lucide-react'
 import { API_BASE, ApiError } from '@/lib/api/client'
@@ -32,7 +32,6 @@ function LoginInner() {
     no_access: t('errorNoAccess'),
   }
   const { loginDebug } = useAuth()
-  const router = useRouter()
   const params = useSearchParams()
   const next = params.get('next')
   const callbackUrl = params.get('callbackUrl')
@@ -69,7 +68,9 @@ function LoginInner() {
       await loginDebug(principal.trim(), roles, requesterIp.trim())
       const dest =
         callbackUrl === REAUTH_CALLBACK_PATH ? callbackUrl : (returnTo ?? safeInternalPath(next) ?? '/query')
-      router.replace(dest)
+      // Hard-navigate (not router.replace): a full load brings the app up under the new principal with a
+      // fresh SWR cache, so a debug identity switch cannot serve the previous principal's cached responses.
+      window.location.replace(dest)
     } catch (err) {
       // A 404 means one of two different things, so branch on the code rather than the status: the route
       // itself is absent (PM_AUTH_DEBUG off), or a claimed role does not exist — which answers with

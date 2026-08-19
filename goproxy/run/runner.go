@@ -353,6 +353,12 @@ func (r *Runner) handleQuery(sess spi.TargetDbSession, stream runStream, query *
 			// Send the exact sentinel so the CP attributes a PM_QUERY_TIMEOUT abort, not a generic failure.
 			return sendError(stream, QueryTimeoutMessage)
 		}
+		var targetDbErr engine.TargetDbError
+		if errors.As(err, &targetDbErr) {
+			// The only failure the CP may surface as errorDetail: the target DB's own ERR for the executed
+			// statement, already diagnostic-redacted. Send the redacted text without the generic prefix.
+			return sendTargetDbError(stream, targetDbErr.Error())
+		}
 		message := "query execution failed: " + err.Error()
 		if errors.Is(err, engine.ErrMaskUnbound) {
 			message = "mask binding failed: " + err.Error()
@@ -414,8 +420,20 @@ func sendRows(stream runStream, columns []string, rows [][]*string) bool {
 	}
 }
 
+// sendError sends a terminal RunError whose provenance is NOT a target-DB statement ERR — every
+// proxy/decode/decision/mask-binding failure — so target_db_error stays false and the CP keeps it generic.
 func sendError(stream runStream, message string) bool {
-	payload := &pb.RunError{Message: message}
+	return sendRunError(stream, message, false)
+}
+
+// sendTargetDbError sends the target DB's own (already diagnostic-redacted) ERR for the executed statement,
+// the ONLY provenance the CP may surface as a query's error detail.
+func sendTargetDbError(stream runStream, message string) bool {
+	return sendRunError(stream, message, true)
+}
+
+func sendRunError(stream runStream, message string, targetDb bool) bool {
+	payload := &pb.RunError{Message: message, TargetDbError: targetDb}
 	_ = stream.Send(&pb.ProxyRunMsg{Kind: &pb.ProxyRunMsg_Error{Error: payload}})
 	return false
 }

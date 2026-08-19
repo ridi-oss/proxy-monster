@@ -13,6 +13,7 @@ import com.ridi.oss.proxymonster.grpc.EnfAction as WireEnfAction
 import com.ridi.oss.proxymonster.grpc.ProxyRunMsg
 import com.ridi.oss.proxymonster.grpc.runDecision
 import com.ridi.oss.proxymonster.grpc.runDone
+import com.ridi.oss.proxymonster.grpc.runError
 import com.ridi.oss.proxymonster.grpc.runResultRows
 import com.ridi.oss.proxymonster.grpc.runRow
 import com.ridi.oss.proxymonster.grpc.runReady
@@ -61,6 +62,7 @@ import javax.sql.DataSource
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import kotlin.test.fail
 
@@ -282,6 +284,101 @@ class ApprovalExecuteRouteDbTest {
                 "execute-under-R runs AS the approver (run(principal = executor)) — the decide token's principal " +
                     "must be the approver who initiated the run, so a run left on the requester's identity is caught here",
             )
+
+            awaitUntil("Events stream detached") { datasource.name !in core.proxyEventsHub.attached() }
+        }
+    }
+
+    @Test
+    fun `a target-DB statement error stores the backend text as assume-gated error_detail`() = testApplication {
+        val client = wireAsExecutor()
+        val id = seedApprovedRoleRequest("exec-targetdb-err-role")
+
+        supervisorScope {
+            val event = async { stub.events(eventsRequest { datasourceName = datasource.name; protocolVersion = CONTROL_PROTOCOL_VERSION }).first() }
+            awaitUntil("Events stream attached") { datasource.name in core.proxyEventsHub.attached() }
+
+            val responseDeferred = async { client.post("/api/approvals/$id/execute") }
+            val open = withTimeout(5_000) { event.await() }.openRunChannel
+
+            val proxyRequests = Channel<ProxyRunMsg>(Channel.UNLIMITED)
+            val proxy = async {
+                stub.runExec(proxyRequests.receiveAsFlow()).collect { control ->
+                    when {
+                        // The runner sends the statement's decision, then the target DB's own ERR tagged with
+                        // its provenance (already diagnostic-redacted at the wire).
+                        control.hasQuery() -> {
+                            proxyRequests.send(proxyRunMsg { decision = runDecision { decision = WireEnfAction.ALLOW } })
+                            proxyRequests.send(
+                                proxyRunMsg {
+                                    error = runError {
+                                        message = "ERROR: relation \"nope\" does not exist"
+                                        targetDbError = true
+                                    }
+                                },
+                            )
+                        }
+                        control.hasClose() -> proxyRequests.close()
+                        else -> fail("control plane sent an empty editor control message")
+                    }
+                }
+            }
+            proxyRequests.send(proxyRunMsg { sessionReady = runReady { sessionId = open.sessionId } })
+            proxyRequests.send(proxyRunMsg { serving = runServing {} })
+
+            val response = withTimeout(5_000) { responseDeferred.await() }
+            withTimeout(5_000) { proxy.await() }
+
+            assertEquals(HttpStatusCode.Accepted, response.status)
+            awaitUntil("target-DB error marks task and child failed") {
+                core.accessStore.getRequest(id)?.status == "FAILED" && resultStore.meta(id)?.status == "FAILED"
+            }
+            // The stable generic code stays on the metadata poll; the raw backend text is carried onto the
+            // child and released only through accessFor, which the /result route gates on task.assume.
+            assertEquals("approval.query_failed", resultStore.meta(id)?.errorCode)
+            assertEquals("ERROR: relation \"nope\" does not exist", resultStore.accessFor(id)?.errorDetail)
+
+            awaitUntil("Events stream detached") { datasource.name !in core.proxyEventsHub.attached() }
+        }
+    }
+
+    @Test
+    fun `a non-target post-serving failure fails with a generic code and NULL error_detail`() = testApplication {
+        val client = wireAsExecutor()
+        val id = seedApprovedRoleRequest("exec-generic-err-role")
+
+        supervisorScope {
+            val event = async { stub.events(eventsRequest { datasourceName = datasource.name; protocolVersion = CONTROL_PROTOCOL_VERSION }).first() }
+            awaitUntil("Events stream attached") { datasource.name in core.proxyEventsHub.attached() }
+
+            val responseDeferred = async { client.post("/api/approvals/$id/execute") }
+            val open = withTimeout(5_000) { event.await() }.openRunChannel
+
+            val proxyRequests = Channel<ProxyRunMsg>(Channel.UNLIMITED)
+            val proxy = async {
+                stub.runExec(proxyRequests.receiveAsFlow()).collect { control ->
+                    when {
+                        // A decode/decision/mask-binding failure the proxy reports post-serving — untagged.
+                        control.hasQuery() -> proxyRequests.send(
+                            proxyRunMsg { error = runError { message = "decision failed: analyzer unavailable" } },
+                        )
+                        control.hasClose() -> proxyRequests.close()
+                        else -> fail("control plane sent an empty editor control message")
+                    }
+                }
+            }
+            proxyRequests.send(proxyRunMsg { sessionReady = runReady { sessionId = open.sessionId } })
+            proxyRequests.send(proxyRunMsg { serving = runServing {} })
+
+            val response = withTimeout(5_000) { responseDeferred.await() }
+            withTimeout(5_000) { proxy.await() }
+
+            assertEquals(HttpStatusCode.Accepted, response.status)
+            awaitUntil("generic failure marks task and child failed") {
+                core.accessStore.getRequest(id)?.status == "FAILED" && resultStore.meta(id)?.status == "FAILED"
+            }
+            assertEquals("approval.query_failed", resultStore.meta(id)?.errorCode)
+            assertNull(resultStore.accessFor(id)?.errorDetail, "a non-target failure's text is never stored or released")
 
             awaitUntil("Events stream detached") { datasource.name !in core.proxyEventsHub.attached() }
         }

@@ -1081,6 +1081,8 @@ fun Route.editorSessionRoutes(
             // tab can offer an approval request built from that decision instead of showing a bare error.
             var denyReason: String? = null
             var denyDecisionId: Long? = null
+            // The target-DB error behind a failure, surfaced under the localized code so the run names its cause.
+            var errorDetail: String? = null
             val failureCode = try {
                 // runOnSession decides on the EDITOR channel under empty assumeRoles (the caller's own roles)
                 // and saves the enforced result instead of returning it inline.
@@ -1119,6 +1121,9 @@ fun Route.editorSessionRoutes(
                 "query.proxy_stream_wedged"
             } catch (_: ProxyRunTimeoutException) {
                 "query.proxy_timeout"
+            } catch (e: TargetDbRunException) {
+                errorDetail = e.message
+                "approval.query_failed"
             } catch (_: ProxyRunException) {
                 "approval.query_failed"
             } catch (t: Throwable) {
@@ -1128,7 +1133,7 @@ fun Route.editorSessionRoutes(
             if (failureCode != null) {
                 // Child FAILED + parent FAILED in ONE transaction (mirrors the success path's single commit).
                 runCatching {
-                    store.failRun(task.id, failureCode, denyReason, denyDecisionId) { conn, _ ->
+                    store.failRun(task.id, failureCode, denyReason, denyDecisionId, errorDetail = errorDetail) { conn, _ ->
                         accessStore.markFailed(task.id, conn)
                     }
                 }
@@ -1236,6 +1241,14 @@ fun Route.editorSessionRoutes(
             return@get call.respond(HttpStatusCode.NotFound, ApiError("common.not_found", mapOf("resource" to "editor task")))
         }
         val meta = access.meta
+        // A FAILED editor run's raw target-DB detail is released behind the SAME task.assume gate as the rows;
+        // no rows to re-decide, so the gate is the boundary. The editor view is not audited (its per-statement
+        // Decide already recorded the decision), so neither is this.
+        if (meta.status == "FAILED" && access.errorDetail != null) {
+            return@get call.respond(
+                QueryResultView(meta, emptyList(), emptyList(), errorDetail = access.errorDetail),
+            )
+        }
         if (meta.status != "DONE") {
             return@get call.respond(HttpStatusCode.Conflict, ApiError("approval.result_not_ready"))
         }

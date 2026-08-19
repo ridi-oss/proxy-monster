@@ -1,11 +1,12 @@
 'use client'
 
-import { useRef, useState, type FormEvent } from 'react'
+import { useRef, useState, useEffect, useMemo, type FormEvent } from 'react'
 import { useTranslations } from 'next-intl'
 import { mutate } from 'swr'
 import { toast } from 'sonner'
 import { createApproval, discoverApprovalRoles, ApiError } from '@/lib/api/client'
 import type { AccessRequest, DiscoverRolesResponse } from '@/lib/api/types'
+import { pickRole } from './pick-role'
 import { swrKeys, useAuditEvent, useDatasources } from '@/lib/hooks'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -27,6 +28,9 @@ const OUTCOME_TONE: Record<string, string> = {
   ALLOW: 'text-emerald-600 dark:text-emerald-400',
   MASK: 'text-amber-600 dark:text-amber-400',
 }
+
+/** Wait this long after the query stops changing before re-listing roles, so it is not fetched per keystroke. */
+const DISCOVER_DEBOUNCE_MS = 400
 
 function errorMessage(err: unknown): string {
   if (err instanceof ApiError) {
@@ -64,14 +68,22 @@ export function QueryRequestComposer({
   const [reason, setReason] = useState('')
   const [submitting, setSubmitting] = useState(false)
   const [submitError, setSubmitError] = useState<string | null>(null)
-  const [roleId, setRoleId] = useState<string | null>(null)
-  // The discovery result, tagged with the inputs it was resolved FOR — that pairing is what makes a
-  // stale selection detectable without throwing the selection away on every derived-value flicker.
+  // The role the user explicitly picked, remembered across query changes so it can be RECOVERED when it is
+  // offered again. null = never overridden → the first offered role is selected by default.
+  const [userChoice, setUserChoice] = useState<string | null>(null)
+  // The discovery result, tagged with the inputs it was resolved FOR — that pairing is what makes a stale
+  // result detectable without throwing it away on every derived-value flicker.
   const [discovery, setDiscovery] = useState<
     (DiscoverRolesResponse & { forSql: string; forDatasourceId: number }) | null
   >(null)
-  const [discovering, setDiscovering] = useState(false)
   const [discoverError, setDiscoverError] = useState<string | null>(null)
+  // True while a discovery fetch for the CURRENT query is in flight (debounce + request). It gates a PRIOR
+  // same-query result from reactivating before the fresh fetch lands (a query edited A→B→A back to A would
+  // otherwise show A's earlier options while A is being re-listed), and drives the "checking…" copy.
+  const [discovering, setDiscovering] = useState(false)
+  // Bumped by the Retry control so a discovery that failed for the UNCHANGED query re-runs — the effect's
+  // other deps have not moved, so without this a transient failure would leave the form permanently stuck.
+  const [retryNonce, setRetryNonce] = useState(0)
 
   const fromDenied = sourceDecisionId != null
 
@@ -82,50 +94,70 @@ export function QueryRequestComposer({
     : datasourceId
   const canDiscover = effectiveDatasourceId != null && !!effectiveSql
 
-  // Every discovery bumps this generation counter, so a response is applied only if its generation is
-  // still current — an in-flight request that resolves after a newer one started cannot repopulate options.
+  // Each discovery bumps this generation counter, so a response is applied only if its generation is still
+  // current — an in-flight request that resolves after a newer one (or after the query cleared) cannot
+  // repopulate the list.
   const discoverSeq = useRef(0)
 
-  // Staleness guard: a role may be submitted ONLY if it was discovered for the query being submitted.
-  // Enforced by comparing the discovery's own inputs against the current ones, rather than by resetting
-  // the picker whenever those inputs change — `effectiveSql`/`effectiveDatasourceId` are derived from
-  // fetched data on the from-denied branch, so they legitimately transition through null while SWR
-  // resolves or revalidates, and a reset keyed on them wiped the user's selection for reasons that had
-  // nothing to do with the query changing. Comparing is also the stronger check: it holds even if a
-  // reset were missed, where the reset alone only held if it always fired.
-  const staleDiscovery =
-    discovery != null &&
-    (discovery.forSql !== effectiveSql || discovery.forDatasourceId !== effectiveDatasourceId)
-
-  // A query approval always runs under an elevation role R (execute-under-R), so a role must be picked from
-  // discovery before submitting — there is no requester-run / no-elevation mode.
-  const canSubmit = roleId != null && !staleDiscovery && (fromDenied
-    ? reason.trim().length > 0 && record?.decision === 'DENY'
-    : datasourceId != null && sql.trim().length > 0 && title.trim().length > 0 && reason.trim().length > 0)
-
-  const handleDiscover = async () => {
-    if (!canDiscover) return
-    // Start a fresh generation; drop any prior selection so it can't be submitted against the reload.
+  // Roles are re-listed automatically whenever the query changes, debounced. No manual "check roles" step.
+  useEffect(() => {
+    if (!canDiscover) {
+      discoverSeq.current += 1 // cancel any in-flight response; the render guard already ignores a stale one
+      setDiscovering(false)
+      // Drop the stale list too: restoring the SAME query (A → cleared → A) would otherwise re-offer A's
+      // prior options on the render BEFORE the fresh fetch marks itself in flight — a brief submit window on
+      // outdated options. userChoice is preserved, so the pick recovers when the re-fetch lands.
+      setDiscovery(null)
+      return
+    }
+    const forDatasourceId = effectiveDatasourceId
+    const forSql = effectiveSql
     const seq = (discoverSeq.current += 1)
-    setDiscovery(null)
-    setRoleId(null)
+    // Mark this query's fetch in flight and clear a stale error up front: until it lands, a prior result for
+    // the same query text is not usable, and a leftover error must not mask the fresh "checking…".
     setDiscovering(true)
     setDiscoverError(null)
-    const forDatasourceId = effectiveDatasourceId!
-    const forSql = effectiveSql!
-    try {
-      const res = await discoverApprovalRoles({ datasourceId: forDatasourceId, sql: forSql })
-      if (seq !== discoverSeq.current) return // a newer discovery started → this response is stale
-      setDiscovery({ ...res, forSql, forDatasourceId })
-    } catch {
-      if (seq !== discoverSeq.current) return
-      // Discovery is a non-blocking helper — surface a friendly, actionable message
-      // (you can still submit with no elevation) rather than the raw API error.
-      setDiscoverError(t('queryComposer.discoverFailed'))
-    } finally {
-      if (seq === discoverSeq.current) setDiscovering(false)
-    }
-  }
+    const timer = setTimeout(() => {
+      discoverApprovalRoles({ datasourceId: forDatasourceId, sql: forSql })
+        .then((res) => {
+          if (seq !== discoverSeq.current) return // a newer generation started → this response is stale
+          setDiscovery({ ...res, forSql, forDatasourceId })
+          setDiscovering(false)
+        })
+        .catch(() => {
+          if (seq !== discoverSeq.current) return
+          setDiscovery(null)
+          setDiscoverError(t('queryComposer.discoverFailed'))
+          setDiscovering(false)
+        })
+    }, DISCOVER_DEBOUNCE_MS)
+    return () => clearTimeout(timer)
+  }, [canDiscover, effectiveSql, effectiveDatasourceId, retryNonce, t])
+
+  // The discovery is usable only if it was resolved FOR the query now being composed. On the from-denied
+  // branch effectiveSql/effectiveDatasourceId transition through null while SWR resolves, so comparing —
+  // rather than resetting on change — is what keeps a valid list from being wiped by a derived-value flicker.
+  const discoveryFresh =
+    discovery != null &&
+    discovery.forSql === effectiveSql &&
+    discovery.forDatasourceId === effectiveDatasourceId
+  // The list is usable only when it matches the current query AND no fetch for it is in flight — the latter is
+  // what stops a prior same-query result from being offered while it is being re-listed.
+  const resolved = discoveryFresh && !discovering
+  const options = useMemo(
+    () => (resolved && discovery ? discovery.options : []),
+    [resolved, discovery],
+  )
+
+  // The selected role: the user's explicit pick while it is still offered (recovered), else the first offered
+  // role. A query change that drops the picked role falls back to the first, without forgetting the pick.
+  const selectedRoleId = useMemo(() => pickRole(options, userChoice), [options, userChoice])
+
+  // A query approval always runs under an elevation role R (execute-under-R), so a role must be selected
+  // before submitting — there is no requester-run / no-elevation mode.
+  const canSubmit = selectedRoleId != null && (fromDenied
+    ? reason.trim().length > 0 && record?.decision === 'DENY'
+    : datasourceId != null && sql.trim().length > 0 && title.trim().length > 0 && reason.trim().length > 0)
 
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
@@ -133,7 +165,7 @@ export function QueryRequestComposer({
     setSubmitting(true)
     setSubmitError(null)
     try {
-      const pickedRoleId = roleId != null ? Number(roleId) : undefined
+      const pickedRoleId = selectedRoleId != null ? Number(selectedRoleId) : undefined
       const res = fromDenied
         ? await createApproval({
             sourceDecisionId: sourceDecisionId!,
@@ -254,49 +286,45 @@ export function QueryRequestComposer({
                 <CardTitle>{t('fields.role')}</CardTitle>
               </CardHeader>
               <CardContent className="space-y-3">
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  onClick={handleDiscover}
-                  disabled={!canDiscover || discovering}
-                >
-                  {discovering ? t('queryComposer.discovering') : t('queryComposer.discoverRoles')}
-                </Button>
-
-                {discoverError && (
-                  <div className="rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-500">
-                    {discoverError}
+                {discoverError ? (
+                  // A failed discovery is not a dead end: since a role must be picked to submit, offer an
+                  // explicit retry for the unchanged query (editing the query re-runs discovery on its own).
+                  <div className="flex items-center justify-between gap-2 rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-500">
+                    <span>{discoverError}</span>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      onClick={() => setRetryNonce((n) => n + 1)}
+                    >
+                      {t('queryComposer.retry')}
+                    </Button>
                   </div>
-                )}
-
-                {discovery && (
+                ) : options.length > 0 ? (
                   <div className="space-y-1.5">
                     <Label htmlFor="approval-role">{t('fields.role')}</Label>
-                    {/* `value` must be the state itself, INCLUDING null. Passing `undefined` for the
-                        empty case makes the Select uncontrolled, and it then discards every selection —
-                        the picker snapped straight back to its placeholder and nothing could be
-                        submitted. `null` is "controlled, nothing selected"; `undefined` is "not
-                        controlled at all". */}
-                    <Select value={roleId} onValueChange={(value: string | null) => setRoleId(value)}>
+                    {/* `value` must be the state itself, INCLUDING null. Passing `undefined` for the empty
+                        case makes the Select uncontrolled, and it then discards every selection. `null` is
+                        "controlled, nothing selected"; `undefined` is "not controlled at all". */}
+                    <Select value={selectedRoleId} onValueChange={(value: string | null) => setUserChoice(value)}>
                       <SelectTrigger id="approval-role" className="w-full">
-                        {/* The trigger renders the raw value unless given this mapping, which would show
-                            the role's numeric id — the one thing the approver must not misread, since the
-                            request is submitted to run under whichever role this names. */}
+                        {/* The trigger renders the raw value unless given this mapping, which would show the
+                            role's numeric id — the one thing the requester must not misread, since the request
+                            is submitted to run under whichever role this names. */}
                         <SelectValue placeholder={t('queryComposer.selectRole')}>
                           {(value: string | null) =>
-                            discovery.options.find((option) => String(option.roleId) === value)?.roleName ??
+                            options.find((option) => String(option.roleId) === value)?.roleName ??
                             t('queryComposer.selectRole')
                           }
                         </SelectValue>
                       </SelectTrigger>
                       <SelectContent>
-                        {discovery.options.map((option) => (
+                        {options.map((option) => (
                           <SelectItem key={option.roleId} value={String(option.roleId)}>
                             <span className="flex flex-col gap-0.5">
                               <span>{option.roleName}</span>
-                              {/* What the query returns under this role when the workflow executes it —
-                                  the only outcome the request can actually deliver. */}
+                              {/* The outcome under this role, previewed in your context; the approver's
+                                  execution context can narrow it further. */}
                               <span className="text-muted-foreground text-xs">
                                 <span className={OUTCOME_TONE[option.decision]}>
                                   {t(`queryComposer.outcome.${option.decision}`)}
@@ -310,20 +338,11 @@ export function QueryRequestComposer({
                         ))}
                       </SelectContent>
                     </Select>
-
-                    {staleDiscovery ? (
-                      // Submitting is blocked here; say why, so a disabled button is not a dead end.
-                      <p className="text-sm text-amber-500">{t('queryComposer.staleDiscovery')}</p>
-                    ) : (
-                      discovery.options.length === 0 && (
-                        <p className="text-muted-foreground text-sm">
-                          {discovery.baselineAllowed
-                            ? t('queryComposer.alreadyAllowed')
-                            : t('queryComposer.noRolesFound')}
-                        </p>
-                      )
-                    )}
                   </div>
+                ) : (
+                  <p className="text-muted-foreground text-sm">
+                    {resolved ? t('queryComposer.noRolesFound') : t('queryComposer.discovering')}
+                  </p>
                 )}
               </CardContent>
             </Card>

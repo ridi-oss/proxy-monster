@@ -1,7 +1,6 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import { useRouter } from 'next/navigation'
 import { useTranslations } from 'next-intl'
 import { Clock3, LogOut, Network, RefreshCw, User } from 'lucide-react'
 import { useAuth } from '@/lib/auth'
@@ -34,7 +33,6 @@ export function IdentityMenu() {
   const { identity, logout } = useAuth()
   const { absoluteExpiresAt } = useSessionLifecycle()
   const [now, setNow] = useState(() => Date.now())
-  const router = useRouter()
 
   useEffect(() => {
     const ticker = setInterval(() => setNow(Date.now()), 1000)
@@ -42,11 +40,6 @@ export function IdentityMenu() {
   }, [])
 
   if (!identity) return null
-
-  const handleLogout = async () => {
-    await logout()
-    router.push('/login')
-  }
 
   return (
     <DropdownMenu>
@@ -91,7 +84,7 @@ export function IdentityMenu() {
           {t('reauthNow')}
         </DropdownMenuItem>
         <DropdownMenuSeparator />
-        <DropdownMenuItem variant="destructive" onClick={handleLogout}>
+        <DropdownMenuItem variant="destructive" onClick={() => void logout()}>
           <LogOut className="size-3.5" />
           {commonT('signOut')}
         </DropdownMenuItem>

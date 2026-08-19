@@ -366,7 +366,13 @@ message RunValue {
   bool is_null = 2;
 }
 message RunDone { int32 rows_affected = 1; }   // -1 when not applicable (a SELECT)
-message RunError { string message = 1; }
+message RunError {
+  string message = 1;
+  // Set ONLY for a genuine target-DB statement ERR (already diagnostic-redacted); false for every
+  // proxy/control-plane/decode/decision/mask-binding failure. Gates whether the control-plane may surface
+  // the message as a query's error detail (docs/diagnostic-redaction.md).
+  bool target_db_error = 2;
+}
 
 // ---- Admin table-browser introspection channel ----
 message ProxyTableDetailMsg {

@@ -9,7 +9,7 @@ plugins {
 }
 
 val ktorVersion = "3.5.2"
-val flywayVersion = "13.2.0"
+val flywayVersion = "13.3.0"
 val testcontainersVersion = "1.21.4"
 // 0.10.0 is the last official kotlin-sdk line built on Ktor 3.2.x (3.2.3); newer releases require
 // Ktor 3.3/3.4. It provides the official stateless Streamable HTTP server/client and structured tools.
@@ -63,7 +63,7 @@ dependencies {
     implementation("org.flywaydb:flyway-core:$flywayVersion")
     implementation("org.flywaydb:flyway-database-postgresql:$flywayVersion")
 
-    implementation("ch.qos.logback:logback-classic:1.6.1")
+    implementation("ch.qos.logback:logback-classic:1.6.3")
 
     // Cedar policy engine (authz decision service, docs/authz-model.md). `uber` classifier bundles
     // the per-platform JNI native libs (jne/<os>/<arch>/libcedar_java_ffi.*) that the plain jar lacks.

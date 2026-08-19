@@ -155,6 +155,54 @@ func TestTextResultCollectorDisplaysBinaryValuesAsHex(t *testing.T) {
 	}
 }
 
+func TestTextResultCollectorHexesBitAndGeometry(t *testing.T) {
+	// BIT (0x10) and GEOMETRY (0xff) carry a binary charset; their bytes must always render as hex like every
+	// other binary column, even when a value happens to be valid UTF-8 (e.g. BIT(1) = 0x01) — otherwise it
+	// would reach the UI as an invisible control character.
+	result := engine.StatementResult{Rows: make([][]*string, 0)}
+	collect := textResultCollector{maxRows: 1, result: &result}
+	if err := collect.onColumns(2); err != nil {
+		t.Fatal(err)
+	}
+	for _, typ := range []byte{0x10, 0xff} {
+		if err := collect.onColumnDef(mysqlColumnDef("c", mysqlwire.CharsetBinary, typ)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	bit := string([]byte{0x01})                                      // BIT(1) = b'1' — valid UTF-8, still binary
+	geom := string([]byte{0x00, 0x00, 0x00, 0x00, 0x01, 0x01, 0x00}) // WKB-ish, all valid UTF-8
+	if _, err := collect.onRow(mysqlwire.TextRowPayload([]*string{&bit, &geom})); err != nil {
+		t.Fatal(err)
+	}
+	if got := derefMySQL(result.Rows[0][0]); got != "0x01" {
+		t.Fatalf("BIT value = %q, want 0x01", got)
+	}
+	if got := derefMySQL(result.Rows[0][1]); got != "0x00000000010100" {
+		t.Fatalf("GEOMETRY value = %q, want hex", got)
+	}
+}
+
+func TestTextResultCollectorHexesNonUTF8Fallback(t *testing.T) {
+	// A cell whose bytes are not valid UTF-8 must be hexed even when its column is not classified binary, so
+	// an unnamed or future binary type cannot revive the proto3-string marshal failure.
+	result := engine.StatementResult{Rows: make([][]*string, 0)}
+	collect := textResultCollector{maxRows: 1, result: &result}
+	if err := collect.onColumns(1); err != nil {
+		t.Fatal(err)
+	}
+	// charset 45 (utf8mb4) is not binary, so only the invalid-UTF-8 fallback can hex this value.
+	if err := collect.onColumnDef(mysqlColumnDef("c", 45, mysqlwire.ColumnTypeVarString)); err != nil {
+		t.Fatal(err)
+	}
+	raw := string([]byte{0xff, 0xfe})
+	if _, err := collect.onRow(mysqlwire.TextRowPayload([]*string{&raw})); err != nil {
+		t.Fatal(err)
+	}
+	if got := derefMySQL(result.Rows[0][0]); got != "0xfffe" {
+		t.Fatalf("non-utf8 value = %q, want 0xfffe", got)
+	}
+}
+
 func TestTextResultCollectorLeavesMaskedBinaryValuesMasked(t *testing.T) {
 	ordinal := int32(0)
 	result := engine.StatementResult{Rows: make([][]*string, 0)}

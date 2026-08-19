@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/ridi-oss/proxy-monster/goproxy/engine"
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
@@ -429,7 +430,13 @@ func (c *textResultCollector) displayValues(values []*string) []*string {
 	}
 	masked := maskedOrdinals(c.masks)
 	for i, def := range c.columnDefs {
-		if _, ok := masked[i]; ok || out[i] == nil || !isBinaryColumn(def) {
+		if _, ok := masked[i]; ok || out[i] == nil {
+			continue
+		}
+		// A binary/blob column is always rendered as hex. Anything else is left as-is UNLESS its bytes are
+		// not valid UTF-8 — BIT and GEOMETRY carry a binary charset but are not named by isBinaryColumn, and
+		// RunValue.value is a proto3 string, so a non-UTF-8 cell would fail to marshal and abort the query.
+		if !isBinaryColumn(def) && utf8.ValidString(*out[i]) {
 			continue
 		}
 		encoded := "0x" + hex.EncodeToString([]byte(*out[i]))
@@ -463,6 +470,10 @@ func isBinaryColumn(def mysqlwire.ColumnDefinition) bool {
 		mysqlwire.ColumnTypeTinyBlob,
 		mysqlwire.ColumnTypeMedBlob,
 		mysqlwire.ColumnTypeLongBlob:
+		return true
+	case 0x10, 0xff:
+		// MYSQL_TYPE_BIT and MYSQL_TYPE_GEOMETRY — binary-charset types mysqlwire does not name. Always
+		// rendered as hex like every other binary column, even when a value happens to be valid UTF-8.
 		return true
 	default:
 		return false

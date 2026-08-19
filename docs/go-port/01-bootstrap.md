@@ -74,11 +74,11 @@ prod" mistake.
 
 ### Derived values
 
-| Name                     | Definition                                                                                                          |
-| ------------------------ | ------------------------------------------------------------------------------------------------------------------- |
-| `mcpIssuer`              | origin of `mcpResource` (scheme + host + port), trailing `/` stripped. Never inferred from request headers.         |
-| `webBaseUrl`             | `webOrigin` trimmed of trailing `/`, or `mcpIssuer` when blank                                                      |
-| `queryExchangeTimeoutMs` | `queryTimeoutSeconds * 1000 + 150_000` (`QUERY_EXCHANGE_GRACE_MS`)                                                  |
+| Name                        | Definition                                                                                                                                                                                                                                     |
+| --------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `mcpIssuer`                 | origin of `mcpResource` (scheme + host + port), trailing `/` stripped. Never inferred from request headers.                                                                                                                                    |
+| `webBaseUrl`                | `webOrigin` trimmed of trailing `/`, or `mcpIssuer` when blank                                                                                                                                                                                 |
+| `queryExchangeTimeoutMs`    | `queryTimeoutSeconds * 1000 + 150_000` (`QUERY_EXCHANGE_GRACE_MS`)                                                                                                                                                                             |
 | ~~`runStreamTimeoutMs(q)`~~ | **Removed upstream by #160.** The single run-stream deadline was replaced by per-phase budgets (`RUN_DIALBACK_TIMEOUT_MS`, `RUN_OPEN_TIMEOUT_MS`, `RUN_NO_PROGRESS_TIMEOUT_MS` in `RunExec.kt`), which belong to the run-exec slice, not here. |
 
 The `QUERY_EXCHANGE_GRACE_MS = 150_000` constant exists so the **proxy's**
@@ -184,8 +184,8 @@ _before_ the HTTP module's `RunExecService` exists.
 3. `Db(config)`, then `db.migrate()`.
 4. `ControlPlaneCore(db.dataSource)`, then
    `core.accessStore.reconcileOrphanedExecutions()`.
-5. `GrpcServer(config.grpcPort, ControlPlaneGrpcService(core, …), config.secretToken)` —
-   the run-stream timeout argument is gone since #160; see the note above,
+5. `GrpcServer(config.grpcPort, ControlPlaneGrpcService(core, …), config.secretToken)`
+   — the run-stream timeout argument is gone since #160; see the note above,
    `.start()`, register a shutdown hook calling `.shutdown()`.
 6. HTTP server on `config.httpPort` with `module(config, core)`, blocking.
 
@@ -478,44 +478,43 @@ cross-reference them.)_
 
 ### `ConfigGuardTest.kt` — 356 LOC, 25 cases, pure unit (injected `env` lambda, no DB)
 
-| #   | Case                                                                                | Asserts                                           |
-| --- | ----------------------------------------------------------------------------------- | ------------------------------------------------- |
-| 1   | bare defaults boot fine (local dev, debug on, dev secret, no oidc)                  | happy path                                        |
-| 2   | debug mode leaves oidc null unless all four required fields are present             | partial OIDC ⇒ null                               |
-| 3   | oidc scopes default to `openid profile email groups offline_access`                 | default                                           |
-| 4   | oidc scopes are overridable via `PM_OIDC_SCOPES`                                    | override                                          |
-| 5   | debug on plus real oidc config without `PM_DEV` refuses to start                    | V5 🔒                                             |
-| 6   | debug on plus a real session secret without `PM_DEV` refuses to start               | V5 🔒                                             |
-| 7   | debug on plus a production-looking context WITH `PM_DEV` is allowed                 | V5 escape 🔒                                      |
-| 8   | debug off is always allowed, even with real oidc + session secret                   | V5                                                |
-| 9   | debug off rejects the public development session secret                             | V6 🔒                                             |
-| 10  | debug off requires complete secure oidc config on the co-hosted callback            | V7,V8,V9 🔒                                       |
-| 11  | debug off requires secure canonical MCP origins                                     | V10 🔒                                            |
-| 12  | session window, web clocks, idp recheck interval, and scim token default sanely     | defaults                                          |
-| 13  | session window, idp recheck interval, and scim token are overridable                | overrides                                         |
-| 14  | web idle and slide durations accept units and plain seconds                         | `parseDuration`                                   |
-| 15  | web session absolute duration accepts seconds and concatenated units                | `parseDuration`                                   |
-| 16  | web session UX timings accept duration units                                        | `parseDuration`                                   |
-| 17  | web session slide must be strictly less than idle                                   | V1                                                |
-| 18  | malformed web session durations fail fast                                           | `parseDuration` throws                            |
-| 19  | idp recheck interval must be positive                                               | V2                                                |
-| 20  | `PM_TRUSTED_PROXIES` parses comma-separated entries, trimmed, with blanks dropped   | parse                                             |
-| 21  | `PM_QUERY_TIMEOUT` defaults, overrides, and rejects invalid values                  | V3 + throw-on-garbage                             |
-| 22  | `PM_QUERY_TIMEOUT` is bounded to the proxy's duration-safe ceiling (no ms overflow) | V4                                                |
-| 23  | the exchange budget outlives the proxy's own statement watchdog                     | `queryExchangeTimeoutMs`                          |
-| 24  | ~~the run stream outlives the dial and exchange it wraps~~ — **deleted upstream by #160** together with the function it pinned | — |
-| 25  | run token TTL outlives the whole run, session TTL outlives the query window (renamed by #160; was "…always outlives…") | ⚠️ asserts the **pure functions only** — see below |
+| #   | Case                                                                                                                           | Asserts                                            |
+| --- | ------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------- |
+| 1   | bare defaults boot fine (local dev, debug on, dev secret, no oidc)                                                             | happy path                                         |
+| 2   | debug mode leaves oidc null unless all four required fields are present                                                        | partial OIDC ⇒ null                                |
+| 3   | oidc scopes default to `openid profile email groups offline_access`                                                            | default                                            |
+| 4   | oidc scopes are overridable via `PM_OIDC_SCOPES`                                                                               | override                                           |
+| 5   | debug on plus real oidc config without `PM_DEV` refuses to start                                                               | V5 🔒                                              |
+| 6   | debug on plus a real session secret without `PM_DEV` refuses to start                                                          | V5 🔒                                              |
+| 7   | debug on plus a production-looking context WITH `PM_DEV` is allowed                                                            | V5 escape 🔒                                       |
+| 8   | debug off is always allowed, even with real oidc + session secret                                                              | V5                                                 |
+| 9   | debug off rejects the public development session secret                                                                        | V6 🔒                                              |
+| 10  | debug off requires complete secure oidc config on the co-hosted callback                                                       | V7,V8,V9 🔒                                        |
+| 11  | debug off requires secure canonical MCP origins                                                                                | V10 🔒                                             |
+| 12  | session window, web clocks, idp recheck interval, and scim token default sanely                                                | defaults                                           |
+| 13  | session window, idp recheck interval, and scim token are overridable                                                           | overrides                                          |
+| 14  | web idle and slide durations accept units and plain seconds                                                                    | `parseDuration`                                    |
+| 15  | web session absolute duration accepts seconds and concatenated units                                                           | `parseDuration`                                    |
+| 16  | web session UX timings accept duration units                                                                                   | `parseDuration`                                    |
+| 17  | web session slide must be strictly less than idle                                                                              | V1                                                 |
+| 18  | malformed web session durations fail fast                                                                                      | `parseDuration` throws                             |
+| 19  | idp recheck interval must be positive                                                                                          | V2                                                 |
+| 20  | `PM_TRUSTED_PROXIES` parses comma-separated entries, trimmed, with blanks dropped                                              | parse                                              |
+| 21  | `PM_QUERY_TIMEOUT` defaults, overrides, and rejects invalid values                                                             | V3 + throw-on-garbage                              |
+| 22  | `PM_QUERY_TIMEOUT` is bounded to the proxy's duration-safe ceiling (no ms overflow)                                            | V4                                                 |
+| 23  | the exchange budget outlives the proxy's own statement watchdog                                                                | `queryExchangeTimeoutMs`                           |
+| 24  | ~~the run stream outlives the dial and exchange it wraps~~ — **deleted upstream by #160** together with the function it pinned | —                                                  |
+| 25  | run token TTL outlives the whole run, session TTL outlives the query window (renamed by #160; was "…always outlives…")         | ⚠️ asserts the **pure functions only** — see below |
 
 Cases 21–25 are a coupled group asserting the **timeout ladder**:
 `PM_QUERY_TIMEOUT` < proxy watchdog < `queryExchangeTimeoutMs` <
-~~`runStreamTimeoutMs`~~ ≤ run-token TTL — void since #160. Port the surviving pair together; each alone is
-meaningless.
+~~`runStreamTimeoutMs`~~ ≤ run-token TTL — void since #160. Port the surviving
+pair together; each alone is meaningless.
 
 🔴 **CORRECTION — the ladder is NOT total.** (#160 has since dropped the word
-"always" from the case name, but the gap it hid is still there.)
-(Index finding **F26**.) `RunExec.kt:280` passes `runTokenTtlSeconds` into
-`TokenStore.issue`, which clamps it: `Tokens.kt:126`
-`clampTtlSeconds(ttlSeconds)` → `Tokens.kt:81`
+"always" from the case name, but the gap it hid is still there.) (Index finding
+**F26**.) `RunExec.kt:280` passes `runTokenTtlSeconds` into `TokenStore.issue`,
+which clamps it: `Tokens.kt:126` `clampTtlSeconds(ttlSeconds)` → `Tokens.kt:81`
 `coerceIn(60, TOKEN_MAX_TTL_SECONDS)` → `Tokens.kt:76`
 `TOKEN_MAX_TTL_SECONDS = 24 * 3600`. But `PM_QUERY_TIMEOUT` is bounded only by
 the overflow guard (V4, `9_223_372_006`). So the stored TTL stops tracking the
@@ -577,6 +576,6 @@ clamping, or `PM_OAUTH_DEBUG_AUTO_CONSENT`.
    If not, a fresh cookie scheme is simpler and safer.
 4. **SSE ownership.** If the Go MCP SDK's HTTP handler does not install SSE, the
    port must provide it for `/api/tasks/events`. Confirm during the MCP spike.
-5. ~~`runStreamTimeoutMs` reads `DIAL_TIMEOUT_MS`, which is defined outside A1~~ — void since #160;
-   `DIAL_TIMEOUT_MS` itself survives and is still defined outside A1 —
-   resolve when A5/A7 are specified.
+5. ~~`runStreamTimeoutMs` reads `DIAL_TIMEOUT_MS`, which is defined outside A1~~
+   — void since #160; `DIAL_TIMEOUT_MS` itself survives and is still defined
+   outside A1 — resolve when A5/A7 are specified.

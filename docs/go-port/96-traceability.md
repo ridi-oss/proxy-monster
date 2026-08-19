@@ -24,10 +24,10 @@ go run ./internal/tracing/geninventory.go -check   # fail if it is stale (CI)
 ## Why this exists
 
 The Go control plane will end with more test functions than the Kotlin has
-cases, and `go test ./...` will be green throughout. Neither
-fact says anything useful about the port, because the Go tests were written
-**from the area docs in this directory**, not migrated from the Kotlin suite. A
-test count exceeding the case count is a flattering number that proves nothing.
+cases, and `go test ./...` will be green throughout. Neither fact says anything
+useful about the port, because the Go tests were written **from the area docs in
+this directory**, not migrated from the Kotlin suite. A test count exceeding the
+case count is a flattering number that proves nothing.
 
 The measurement that mattered was different: of the Kotlin suites, **83 were
 "mentioned somewhere" in the Go tests and 38 were not mentioned at all**. And a
@@ -38,8 +38,8 @@ of the Kotlin suite was **unfalsifiable in both directions**: nobody could prove
 a case was covered, and nobody could prove one was not.
 
 This document defines the machinery that makes it falsifiable. The deliverable
-is not more tests — it is a machine-checkable mapping from each of the
-Kotlin cases to a named Go test.
+is not more tests — it is a machine-checkable mapping from each of the Kotlin
+cases to a named Go test.
 
 ## The three pieces
 
@@ -66,14 +66,14 @@ grep -rhoE '@Test\b' --include='*.kt' <path> | wc -l
 - Counting backticked funcs **under**-counts — a few cases use plain camelCase
   identifiers.
 
-| Tree                                                      | Cases                          |
-| --------------------------------------------------------- | ------------------------------ |
+| Tree                                                      | Cases                           |
+| --------------------------------------------------------- | ------------------------------- |
 | `control-plane/src/test/kotlin/com/ridi/oss/proxymonster` | 1136                            |
 | `engine/src/test/kotlin/com/ridi/oss/proxymonster`        | 56                              |
 | **Total**                                                 | **1192** in **155** suite files |
 
-Those totals are as of the commit this slice is cut from; regenerate rather
-than trust them.
+Those totals are as of the commit this slice is cut from; regenerate rather than
+trust them.
 
 `TestInventoryMatchesTheKotlinTree` re-derives both numbers from the Kotlin tree
 on every run (and skips only where the Kotlin tree is not checked out beside the
@@ -143,11 +143,11 @@ the checker rejects a bare identity.
 
 **Identity must match `kotlin_cases.txt` exactly.** The parser recovers it by
 _longest inventory prefix_ within the cited suite, so a trailing note is
-free-form and needs no escaping — necessary because many case names
-contain `—` themselves and would be truncated at their own em dash by any
-split-on-separator scheme. `TestNoIdentityIsAPrefixOfAnother` proves the
-resolution is unambiguous (no inventory identity is a prefix of another) and
-fails if a future Kotlin case breaks that.
+free-form and needs no escaping — necessary because many case names contain `—`
+themselves and would be truncated at their own em dash by any split-on-separator
+scheme. `TestNoIdentityIsAPrefixOfAnother` proves the resolution is unambiguous
+(no inventory identity is a prefix of another) and fails if a future Kotlin case
+breaks that.
 
 **A note needs a separator: `—` (or `--`).** Without one,
 `#…on admin actions extra` would resolve to `#…on admin actions` with note

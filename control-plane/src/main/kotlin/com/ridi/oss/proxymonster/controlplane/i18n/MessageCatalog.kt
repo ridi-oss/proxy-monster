@@ -21,7 +21,12 @@ class MessageCatalog(
     /** [key] in [locale], falling back to the default locale, then English, then the key itself. */
     fun text(key: String, locale: String, params: Map<String, String> = emptyMap()): String {
         val raw = lookup(locale, key) ?: lookup(defaultLocale, key) ?: lookup(FALLBACK, key) ?: return key
-        return params.entries.fold(raw) { acc, (k, v) -> acc.replace("{$k}", v) }
+        // Single pass over the TEMPLATE: each {placeholder} is resolved from params, and a substituted value is
+        // never re-scanned. A sequential replace would let one field's value smuggle another field's
+        // placeholder — a requester's free-text reason containing "{statementNote}" would expand to that field
+        // (second-order injection into a message rendered beside the real Approve button). An unknown
+        // placeholder is left as written.
+        return PLACEHOLDER.replace(raw) { m -> params[m.groupValues[1]] ?: m.value }
     }
 
     private fun lookup(locale: String, key: String): String? {
@@ -37,6 +42,9 @@ class MessageCatalog(
 
     companion object {
         const val FALLBACK = "en"
+
+        /** One `{placeholder}` token. `[^{}]+` never spans a brace, so a substituted value is not a new token. */
+        private val PLACEHOLDER = Regex("""\{([^{}]+)\}""")
 
         /** The locales every domain must provide a file for — the l10n invariant is enforced by [load]. */
         val LOCALES = listOf("en", "ko")

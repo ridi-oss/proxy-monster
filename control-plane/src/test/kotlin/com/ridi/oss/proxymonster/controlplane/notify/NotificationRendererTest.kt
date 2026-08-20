@@ -111,6 +111,54 @@ class NotificationRendererTest {
         assertTrue(summary.count { it == 'Z' } <= 500, "reason contributed ${summary.count { it == 'Z' }} chars, expected ≤ 500")
     }
 
+    /**
+     * A reason that is a bare URL must survive intact. Slack cannot italicize a URL — the enclosing `_…_` would
+     * render literally and glue onto the auto-linked href — so the reason is set off with a blockquote instead.
+     */
+    @Test
+    fun `a url reason is not corrupted by surrounding formatting`() {
+        val url = "https://example.com/pull/1234"
+        // Every locale's field.reason must be a blockquote, so reverting one locale's template to italic fails.
+        for (locale in MessageCatalog.LOCALES) {
+            val summary = renderer.summary(
+                message(NotificationEvent.TASK_REQUESTED, RenderedStatement("SELECT 1", true)).copy(reason = url),
+                locale,
+            )
+            assertTrue(summary.contains("> $url"), "[$locale] the reason is a blockquote with the URL intact: $summary")
+            assertFalse(summary.contains("_$url"), "[$locale] no italic mark glued onto the URL: $summary")
+            assertFalse(summary.contains("${url}_"), "[$locale] no trailing italic mark absorbed into the link: $summary")
+        }
+    }
+
+    /** A multi-line reason stays inside the blockquote — every line carries the `>` marker, in every locale. */
+    @Test
+    fun `a multi-line reason stays quoted on every line`() {
+        for (locale in MessageCatalog.LOCALES) {
+            val summary = renderer.summary(
+                message(NotificationEvent.TASK_REQUESTED, RenderedStatement("SELECT 1", true)).copy(reason = "line one\n\nline two"),
+                locale,
+            )
+            // A blank line in the middle also stays quoted — no un-prefixed line escapes the blockquote.
+            assertTrue(summary.contains("> line one\n> \n> line two"), "[$locale] every line incl. blank is quoted: $summary")
+        }
+    }
+
+    /**
+     * A requester's reason must not smuggle another field's placeholder. With a naive sequential substitution,
+     * a reason containing "{statementNote}" expanded into that field's value — which begins with a newline —
+     * breaking out of the reason's blockquote into unquoted, attacker-controlled mrkdwn beside the real
+     * Approve button. Single-pass substitution keeps the placeholder literal.
+     */
+    @Test
+    fun `a reason cannot expand another field's placeholder`() {
+        val summary = renderer.summary(
+            // A withheld statement makes statementNote non-empty — the field the injection would target.
+            message(NotificationEvent.TASK_REQUESTED, RenderedStatement(null, false)).copy(reason = "INJECT{statementNote}END"),
+            "en",
+        )
+        assertTrue(summary.contains("> INJECT{statementNote}END"), "the placeholder stays literal and quoted: $summary")
+    }
+
     /** A requester's SQL must not close the code fence and inject forged prose beside the real buttons. */
     @Test
     fun `a statement cannot break out of its code fence`() {

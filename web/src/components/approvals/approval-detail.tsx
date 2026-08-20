@@ -223,8 +223,12 @@ export function ApprovalDetail({ id }: { id: number }) {
                 >
                   {t('actions.reject')}
                 </Button>
-                <Button onClick={() => setApproveOpen(true)} disabled={busy !== null}>
-                  {t('actions.approve')}
+                <Button
+                  onClick={() => setApproveOpen(true)}
+                  disabled={busy !== null}
+                  className="bg-emerald-600 text-white hover:bg-emerald-700"
+                >
+                  {t('actions.approveAndRun')}
                 </Button>
               </div>
             )}
@@ -291,7 +295,11 @@ export function ApprovalDetail({ id }: { id: number }) {
                   <p className="text-muted-foreground text-sm">
                     {t('approvalDetail.runUnderRole', { principal: request.principal })}
                   </p>
-                  <Button onClick={handleRun} disabled={busy !== null}>
+                  <Button
+                    onClick={handleRun}
+                    disabled={busy !== null}
+                    className="bg-emerald-600 text-white hover:bg-emerald-700"
+                  >
                     {busy === 'run' ? t('actions.running') : t('actions.runQuery')}
                   </Button>
                 </div>

@@ -4,7 +4,7 @@ import { useState } from 'react'
 import { useTranslations } from 'next-intl'
 import { mutate } from 'swr'
 import { toast } from 'sonner'
-import { approveApproval, ApiError } from '@/lib/api/client'
+import { approveApproval, executeApproval, ApiError } from '@/lib/api/client'
 import type { AccessRequest } from '@/lib/api/types'
 import { swrKeys } from '@/lib/hooks'
 import { Button } from '@/components/ui/button'
@@ -48,22 +48,33 @@ export function ApproveQueryDialog({
     if (!open && !busy) onClose()
   }
 
-  const handleApprove = async () => {
+  // Approve and run are one action here, mirroring the Slack "Approve and run" button: the approver is
+  // always the executor (the query runs under the requested role, execute-under-R), so approving without
+  // running would just strand the task waiting for a second click. Approval is committed first; if only the
+  // run fails, the request stays APPROVED and the detail's Run button lets the approver retry.
+  const handleApproveAndRun = async () => {
     if (!request) return
     setBusy(true)
     setError(null)
     try {
       await approveApproval(request.id)
-      toast.success(t('approveDialog.approvedToast', { principal: request.principal }))
-      mutate(swrKeys.approvalInbox)
-      mutate(swrKeys.approval(request.id))
-      onApproved?.()
-      onClose()
     } catch (err) {
       setError(errorMessage(err, t))
-    } finally {
       setBusy(false)
+      return
     }
+    try {
+      await executeApproval(request.id)
+      toast.success(t('approveDialog.approveAndRunToast', { principal: request.principal }))
+    } catch {
+      toast.error(t('approveDialog.approvedRunFailed'))
+    }
+    mutate(swrKeys.approvalInbox)
+    mutate(swrKeys.approval(request.id))
+    mutate(['approval-result', request.id])
+    onApproved?.()
+    onClose()
+    setBusy(false)
   }
 
   return (
@@ -90,8 +101,12 @@ export function ApproveQueryDialog({
           <Button variant="outline" onClick={onClose} disabled={busy}>
             {t('actions.cancel')}
           </Button>
-          <Button onClick={handleApprove} disabled={busy}>
-            {busy ? t('actions.approving') : t('actions.approve')}
+          <Button
+            onClick={handleApproveAndRun}
+            disabled={busy}
+            className="bg-emerald-600 text-white hover:bg-emerald-700"
+          >
+            {busy ? t('actions.approvingAndRunning') : t('actions.approveAndRun')}
           </Button>
         </DialogFooter>
       </DialogContent>

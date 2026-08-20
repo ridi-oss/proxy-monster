@@ -5,6 +5,8 @@
     "submitting": "제출 중…",
     "approve": "승인",
     "approving": "승인 중…",
+    "approveAndRun": "승인 후 실행",
+    "approvingAndRunning": "승인·실행 중…",
     "reject": "반려",
     "rejecting": "반려 중…",
     "revoke": "회수",
@@ -180,9 +182,11 @@
   "approveDialog": {
     "approveFailed": "승인에 실패했습니다",
     "approvedToast": "{principal}의 쿼리 요청을 승인했습니다",
-    "title": "쿼리 요청 승인",
-    "descriptionWithPrincipal": "{principal}님의 쿼리 요청을 승인합니다.",
-    "descriptionFallback": "이 쿼리 요청을 승인합니다.",
+    "approveAndRunToast": "{principal}의 요청을 승인하고 실행합니다.",
+    "approvedRunFailed": "승인했지만 실행을 시작하지 못했습니다. 쿼리 실행으로 다시 시도하세요.",
+    "title": "쿼리 요청 승인 후 실행",
+    "descriptionWithPrincipal": "{principal}님의 쿼리 요청을 승인하고 요청된 역할로 실행합니다.",
+    "descriptionFallback": "이 쿼리 요청을 승인하고 요청된 역할로 실행합니다.",
     "executeUnderRNote": "승인되면 승인자가 요청된 역할로 쿼리를 실행하고 결과를 공개합니다. 요청자는 해당 역할이 볼 수 있는 범위 이상을 볼 수 없습니다."
   },
   "tokenDialog": {

@@ -37,6 +37,18 @@ var safeNoFromFunctions = stringSet(
 	"iif", "if", "typeof", "pg_typeof",
 )
 
+// mysqlOnlySafeFunctions are safe no-FROM function names that exist ONLY on MySQL. `values` is MySQL's
+// INSERT … ON DUPLICATE KEY UPDATE pseudo-function — it names the value that would have been inserted, not a
+// callable function, and its lineage is traced in probe.go. PostgreSQL has no `values` builtin, so keeping
+// it out of the cross-engine set leaves a quoted PostgreSQL `"values"()` (a user function) gated.
+var mysqlOnlySafeFunctions = stringSet("values")
+
+// isSafeNoFromFunction reports whether a bare (unqualified) anonymous function name is a known-safe builtin
+// that needs no no-FROM Function grant — the cross-engine set plus any engine-specific pseudo-functions.
+func isSafeNoFromFunction(name string, eng engine) bool {
+	return safeNoFromFunctions[name] || (eng.Type() == pb.Engine_MYSQL && mysqlOnlySafeFunctions[name])
+}
+
 // userTypeCast returns the name of the first reference to a non-built-in (user) type anywhere in root, or
 // "" if every type reference is a safe built-in. sqlglot resolves a built-in type to a concrete DType and
 // a user type to DTypeUserDefined, so this is a single AST pass over DataType nodes. It covers every way a
@@ -675,7 +687,7 @@ func noFromFunctionGrants(root exp.Expression, eng engine) []*pb.RequireResultRe
 			continue
 		}
 		name := strings.ToLower(fn.Name())
-		if safeNoFromFunctions[name] {
+		if isSafeNoFromFunction(name, eng) {
 			continue
 		}
 		emit(name)
@@ -775,7 +787,7 @@ func hasUnsafeCall(root exp.Expression, eng engine) bool {
 			continue
 		}
 		name := strings.ToLower(fn.Name())
-		if name != "" && name != "*" && !safeNoFromFunctions[name] {
+		if name != "" && name != "*" && !isSafeNoFromFunction(name, eng) {
 			return true
 		}
 	}

@@ -95,7 +95,7 @@ func probeParityCases() []probeParityCase {
 		// not leaks. Listed explicitly rather than silently absent; skipped by the harness
 		// deferred branch.
 		{name: "table valued function source", dialect: "postgres", sql: "SELECT g FROM generate_series(1, 10) g", category: "parser gap", deferredReason: "TVF as standalone FROM source not parsed by the Go parser; Go PARSE-fails=DENY vs Python resolves"},
-		{name: "mysql on duplicate key update", dialect: "mysql", sql: "INSERT INTO sink (id, data) VALUES (1, 'x') ON DUPLICATE KEY UPDATE data = VALUES(data)", category: "parser gap", deferredReason: "MySQL ON DUPLICATE KEY UPDATE ... VALUES(col) not parsed; Go PARSE-fails=DENY vs Python resolves"},
+		{name: "mysql on duplicate key update", dialect: "mysql", sql: "INSERT INTO sink (id, data) VALUES (1, 'x') ON DUPLICATE KEY UPDATE data = VALUES(data)", category: "resolution strictness", deferredReason: "MySQL ODKU VALUES(col) now parses and resolves for known columns (TestOdkuValuesIsNotAFunctionGrant); this case's `data` is absent from the schema, so Go fails closed at VALIDATE where Python resolves the unknown column leniently"},
 		{name: "similar to operator", dialect: "postgres", sql: "SELECT ssn FROM users WHERE ssn SIMILAR TO 'x%'", category: "parser gap", deferredReason: "SIMILAR TO operator not parsed by the Go parser; Go PARSE-fails=DENY vs Python resolves"},
 	}
 }

@@ -127,6 +127,76 @@ func TestFormerDangerousFuncsResolveAndEmit(t *testing.T) {
 	}
 }
 
+// deniedColumns returns the set of column names emitted as DENY_STATEMENT result-read grants.
+func deniedColumns(f *pb.StatementFacts) map[string]bool {
+	out := map[string]bool{}
+	for _, g := range f.GetResultReads() {
+		if c := g.GetColumn(); c != nil && g.GetMaskedDisposition() == pb.MaskedDisposition_MASKED_DISPOSITION_DENY_STATEMENT {
+			out[c.GetIdentity().GetColumn()] = true
+		}
+	}
+	return out
+}
+
+// TestOdkuValuesIsNotAFunctionGrant locks two things about MySQL's `INSERT … ON DUPLICATE KEY UPDATE
+// col = VALUES(col)`. First, `VALUES()` there is not a callable function — it names the value that would
+// have been inserted — so the upsert must resolve and must NOT emit the deny-by-default Function grant that
+// noFromFunctionGrants gives an unclassified no-FROM call (a regression there re-denies every plain upsert
+// with "dangerous system function is not allowed: 'values'"). Second — and separately — making the
+// pseudo-function safe must NOT weaken write-side gating: every column VALUES() names is still a
+// DENY_STATEMENT grant, so a masked column cannot slip through the write payload unauthorized.
+func TestOdkuValuesIsNotAFunctionGrant(t *testing.T) {
+	sql := "INSERT INTO users (id, email, ssn) VALUES (1, 'x', 'y') ON DUPLICATE KEY UPDATE email = VALUES(email), ssn = VALUES(ssn)"
+	f := mysqlFacts(t, sql)
+	if !f.Resolved {
+		t.Fatalf("upsert did not resolve: detail=%q", f.GetDetail())
+	}
+	for _, g := range f.GetResultReads() {
+		if fn := g.GetFunction(); fn != nil && fn.GetName() == "values" {
+			t.Fatalf("VALUES() emitted a Function grant (control-plane hard-denies it): %q", sql)
+		}
+	}
+	denied := deniedColumns(f)
+	for _, col := range []string{"email", "ssn"} {
+		if !denied[col] {
+			t.Fatalf("VALUES(%s) column is not gated DENY_STATEMENT — masking could be bypassed: reads=%v", col, f.GetResultReads())
+		}
+	}
+}
+
+// TestOdkuInsertSelectRetainsSourceLineage locks that the source of an INSERT … SELECT upsert stays gated
+// even with a `VALUES(col)` in the update clause: a protected source column read by the SELECT must still be
+// a DENY_STATEMENT grant, so the safe pseudo-function never masks the read side of a write-from-select.
+func TestOdkuInsertSelectRetainsSourceLineage(t *testing.T) {
+	sql := "INSERT INTO sink (id, value) SELECT id, ssn FROM users ON DUPLICATE KEY UPDATE value = VALUES(value)"
+	f := mysqlFacts(t, sql)
+	if !f.Resolved {
+		t.Fatalf("insert-select upsert did not resolve: detail=%q", f.GetDetail())
+	}
+	if !deniedColumns(f)["ssn"] {
+		t.Fatalf("protected source column users.ssn is not gated DENY_STATEMENT: reads=%v", f.GetResultReads())
+	}
+}
+
+// TestPostgresQuotedValuesStaysGated locks that `values` is safe ONLY on MySQL. PostgreSQL has no `values`
+// builtin, so a quoted `"values"()` is a user function and must still emit a no-FROM Function grant the
+// control-plane denies — the MySQL ODKU allowance must not leak into PostgreSQL.
+func TestPostgresQuotedValuesStaysGated(t *testing.T) {
+	f := postgresFacts(t, `SELECT "values"()`)
+	if !f.Resolved {
+		t.Fatalf(`SELECT "values"() did not resolve: detail=%q`, f.GetDetail())
+	}
+	gated := false
+	for _, g := range f.GetResultReads() {
+		if fn := g.GetFunction(); fn != nil && fn.GetName() == "values" {
+			gated = true
+		}
+	}
+	if !gated {
+		t.Fatalf(`PostgreSQL "values"() must emit a Function grant (a user function is gated): reads=%v`, f.GetResultReads())
+	}
+}
+
 func probeFunctions(t *testing.T, sql, dialect string, cols []*pb.ColumnSpec, ns *pb.Namespace) ([]string, bool) {
 	t.Helper()
 	engineConfig := &pb.EngineConfig{Engine: pb.Engine_POSTGRES}

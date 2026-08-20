@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.1.20](https://github.com/ridi-oss/proxy-monster/compare/server-v0.1.19...server-v0.1.20) (2026-08-20)
+
+
+### Bug Fixes
+
+* **analyzer:** allow VALUES() in INSERT … ON DUPLICATE KEY UPDATE ([#224](https://github.com/ridi-oss/proxy-monster/issues/224)) ([44944af](https://github.com/ridi-oss/proxy-monster/commit/44944af2a409ecdf49dc50615276c92603c0ff5b))
+* uncorrupt Slack reason links + one Approve & run button ([#226](https://github.com/ridi-oss/proxy-monster/issues/226)) ([94f99c0](https://github.com/ridi-oss/proxy-monster/commit/94f99c0bf4f34bc822c6e21daea0255a6819d8fb))
+
 ## [0.1.19](https://github.com/ridi-oss/proxy-monster/compare/server-v0.1.18...server-v0.1.19) (2026-08-20)
 
 

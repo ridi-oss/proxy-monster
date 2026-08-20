@@ -14,7 +14,7 @@
   },
   "field": {
     "role": " as *{role}*",
-    "reason": "_{reason}_",
+    "reason": "> {reason}",
     "statement_hidden": "a query",
     "statement_hidden_note": "_The statement is not shown here. Open the request to read it._"
   },

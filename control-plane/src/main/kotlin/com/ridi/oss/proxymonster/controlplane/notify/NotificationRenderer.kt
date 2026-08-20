@@ -44,7 +44,10 @@ class NotificationRenderer(private val catalog: MessageCatalog = MessageCatalog(
         return buildString {
             append(catalog.text(bodyKey(m), locale, params))
             m.reason?.takeIf { it.isNotBlank() && m.event == NotificationEvent.TASK_REQUESTED }?.let {
-                val reason = escapeMrkdwn(it.take(REASON_MAX_CHARS))
+                // `field.reason` renders as a Slack blockquote (`> …`); carry the quote onto every wrapped line
+                // so a multi-line reason stays inside it. A blockquote is applied per line, so — unlike italic
+                // — it never glues a formatting mark onto a bare URL and corrupts the link.
+                val reason = escapeMrkdwn(it.take(REASON_MAX_CHARS)).replace("\n", "\n> ")
                 append("\n").append(catalog.text("field.reason", locale, mapOf("reason" to reason)))
             }
             // Only say "open it to read the statement" when there was one to withhold: an OMIT-configured

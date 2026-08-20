@@ -111,6 +111,32 @@ class NotificationRendererTest {
         assertTrue(summary.count { it == 'Z' } <= 500, "reason contributed ${summary.count { it == 'Z' }} chars, expected ≤ 500")
     }
 
+    /**
+     * A reason that is a bare URL must survive intact. Slack cannot italicize a URL — the enclosing `_…_` would
+     * render literally and glue onto the auto-linked href — so the reason is set off with a blockquote instead.
+     */
+    @Test
+    fun `a url reason is not corrupted by surrounding formatting`() {
+        val url = "https://example.com/pull/1234"
+        val summary = renderer.summary(
+            message(NotificationEvent.TASK_REQUESTED, RenderedStatement("SELECT 1", true)).copy(reason = url),
+            "en",
+        )
+        assertTrue(summary.contains("> $url"), "the reason is a blockquote with the URL intact: $summary")
+        assertFalse(summary.contains("_$url"), "no italic mark glued onto the URL: $summary")
+        assertFalse(summary.contains("${url}_"), "no trailing italic mark absorbed into the link: $summary")
+    }
+
+    /** A multi-line reason stays inside the blockquote — every line carries the `>` marker. */
+    @Test
+    fun `a multi-line reason stays quoted on every line`() {
+        val summary = renderer.summary(
+            message(NotificationEvent.TASK_REQUESTED, RenderedStatement("SELECT 1", true)).copy(reason = "line one\nline two"),
+            "en",
+        )
+        assertTrue(summary.contains("> line one\n> line two"), "both lines are quoted: $summary")
+    }
+
     /** A requester's SQL must not close the code fence and inject forged prose beside the real buttons. */
     @Test
     fun `a statement cannot break out of its code fence`() {

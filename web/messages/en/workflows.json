@@ -5,6 +5,8 @@
     "submitting": "Submitting…",
     "approve": "Approve",
     "approving": "Approving…",
+    "approveAndRun": "Approve & run",
+    "approvingAndRunning": "Approving & running…",
     "reject": "Reject",
     "rejecting": "Rejecting…",
     "revoke": "Revoke",
@@ -176,10 +178,11 @@
   },
   "approveDialog": {
     "approveFailed": "approve failed",
-    "approvedToast": "Approved query request from {principal}",
-    "title": "Approve query request",
-    "descriptionWithPrincipal": "Approve {principal}'s query request.",
-    "descriptionFallback": "Approve this query request.",
+    "approveAndRunToast": "Approved {principal}'s request — running it now.",
+    "approvedRunFailed": "Approved, but the run could not be started. Use Run query to retry.",
+    "title": "Approve & run query request",
+    "descriptionWithPrincipal": "Approve {principal}'s query request and run it under the requested role.",
+    "descriptionFallback": "Approve this query request and run it under the requested role.",
     "executeUnderRNote": "Once approved, an approver runs the query under the requested role and releases the result — the requester never sees more than that role would."
   },
   "tokenDialog": {

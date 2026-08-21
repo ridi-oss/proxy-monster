@@ -147,10 +147,12 @@ data class DecisionContext(
      * so target-DB column order matches the mask ordinals. Null = send verbatim. */
     val rewrittenSql: String? = null,
     /** The analyzer's ordered output column names for this decision (an empty list for a passthrough /
-     * unanalyzed statement). APPROVAL live result viewing compares this against the stored execute-enforced
-     * result to detect catalog drift between execute and view (a `SELECT *` re-expansion that would slide a
-     * mask onto the wrong stored column and leak a value) — a mismatch is DENY. */
+     * unanalyzed statement). Live result viewing compares this against the stored execute-enforced result to
+     * detect catalog drift between execute and view (a `SELECT *` re-expansion that would slide a mask onto
+     * the wrong stored column and leak a value) — a mismatch is DENY. */
     val outputColumns: List<String> = emptyList(),
+    /** The analyzer-attested statement kind for this decision, or STMT_UNKNOWN when absent. */
+    val statementKind: StatementKind = StatementKind.STATEMENT_KIND_STMT_UNKNOWN,
     /** The derived `context.tags` this decision was evaluated under, surfaced so [decisionRecord]
      * logs which tags the request earned. Stamped on EVERY decision that runs after context derivation —
      * ALLOW, MASK, DENY (structural + policy), and passthrough alike — so an audit row carries the attested
@@ -798,6 +800,7 @@ fun decideQuery(
         detail = facts.detail,
         passthrough = false,
         outputColumns = facts.outputColumnsList,
+        statementKind = statementKind,
         contextTags = derivedTags,
         unmaskablePermitted = unmaskablePermitted,
         sanitizeDiagnostics = sanitizeDiagnostics,
@@ -880,9 +883,8 @@ internal fun wireTaskForbiddenDeny(
 // Relay the analyzer's optional rewritten SQL on a decision we allow. rewrittenSql is Go-analyzer output
 // (the `SELECT *` expansion, the MySQL charset pin) independent of statement class, so every
 // understood-and-allowed decision — analyzed, metadata, session — routes it through this one point rather
-// than each building its own. An EXPLAIN/DESCRIBE keeps its original text — the analyzer emits no
-// rewritten_sql for it (the rewrite is for the inner query it plans). The exception.unanalyzable escape
-// hatches deliberately relay the original whole statement, so they do not call this.
+// than each building its own. The sql.unanalyzable escape hatches deliberately relay the original whole
+// statement, so they do not call this.
 private fun DecisionContext.withAnalyzerRewrite(facts: StatementFacts): DecisionContext =
     if (facts.hasRewrittenSql()) copy(rewrittenSql = facts.rewrittenSql) else this
 

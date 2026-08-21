@@ -8,6 +8,7 @@ import com.ridi.oss.proxymonster.controlplane.authz.AuthzResource
 import com.ridi.oss.proxymonster.controlplane.authz.authorizeDatasourceAction
 import com.ridi.oss.proxymonster.controlplane.authz.authorizeWithContext
 import com.ridi.oss.proxymonster.controlplane.authz.resolveContextTags
+import com.ridi.oss.proxymonster.analyzer.pb.StatementKind
 import com.ridi.oss.proxymonster.controlplane.management.ManagementAuditRecorder
 import com.ridi.oss.proxymonster.controlplane.notify.NotificationEvent
 import com.ridi.oss.proxymonster.controlplane.notify.NotificationService
@@ -174,7 +175,8 @@ internal sealed class ResultViewDecision {
  * Re-evaluate a stored execute-under-R result for the actual viewer in their live HTTP context. The store
  * holds R's execution-enforced output; this function re-applies R's masks for the viewer's current context,
  * narrowing further where it requires. Every uncertainty is a deny: no role/SQL, policy DENY, passthrough,
- * output-column drift, or an unbound mask.
+ * ordinary-result output-column drift, or an unbound mask. An analyzer-verified, fully unmasked EXPLAIN
+ * plan releases its backend-generated columns after those other checks pass.
  *
  * [childSql] is the statement of the SAME result child whose bytes are in [decrypted] (from
  * [ResultAccess.sql]) — NOT the task's first-child `req.sql`, which can diverge once a task holds plural
@@ -241,9 +243,16 @@ internal fun decideResultView(
         }
         return ResultViewDecision.Allowed(decrypted.columns, decrypted.rows)
     }
-    if (
-        ctx.outputColumns.size != decrypted.columns.size ||
-        ctx.outputColumns.zip(decrypted.columns).any { (decided, stored) -> !decided.equals(stored, ignoreCase = true) }
+    val planOnlyExplain =
+        ctx.statementKind == StatementKind.STATEMENT_KIND_EXPLAIN &&
+            ctx.action == EnfAction.ALLOW &&
+            ctx.masks.isEmpty() &&
+            ctx.outputColumns.isEmpty()
+    if (!planOnlyExplain &&
+        (
+            ctx.outputColumns.size != decrypted.columns.size ||
+                ctx.outputColumns.zip(decrypted.columns).any { (decided, stored) -> !decided.equals(stored, ignoreCase = true) }
+            )
     ) {
         return ResultViewDecision.Denied("stored result columns no longer match the live query decision")
     }

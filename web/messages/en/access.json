@@ -8,7 +8,7 @@
     "oneShotTitle": "One-shot connection password",
     "oneShotBody": "Generate a token and paste it as the password in psql / mysql / DataGrip. It stops working when it expires; generate a new one next time.",
     "brokerTitle": "Local broker (stable connection)",
-    "brokerBody": "Run pmon login — the daemon holds your token and opens a local port per datasource; pmon show prints the connection string. Point your client at it with any password and a connection string that never changes. The token is not renewed automatically; run pmon login again when it expires."
+    "brokerBody": "Run pmon login — the daemon holds your token and opens a local port per datasource; pmon show prints the connection string. Point your client at it with the password pmon show prints, which never changes. The daemon re-mints the token silently; when the session window closes it stops renewing and asks you to run pmon login again."
   },
   "loading": "Loading tokens…",
   "empty": {

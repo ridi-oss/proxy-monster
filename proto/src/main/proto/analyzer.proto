@@ -375,6 +375,15 @@ message RequireResultReadGrant {
   repeated int32 output_ordinals = 6;
 }
 
+// The authorization requirements that identify a stored execute-under-R result — the same result-read
+// grants the analyzer emits. The control-plane serializes this and freezes the bytes with the result, then
+// re-serializes the live re-decision at view time and denies on any difference (a schema/namespace change
+// that would rebind a mask onto a different stored column). Serialized as an opaque payload the proxy just
+// carries; only the control-plane reads it.
+message ResultFingerprint {
+  repeated RequireResultReadGrant grants = 1;
+}
+
 message StatementFacts {
   // True only after complete statement analysis. False requires a non-zero failure_class.
   bool resolved = 1;

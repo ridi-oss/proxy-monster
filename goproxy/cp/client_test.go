@@ -58,6 +58,7 @@ func TestDecisionFromWire(t *testing.T) {
 			Masks:               []*pb.ColumnMask{{Column: "c", MaskFn: "mask", Kind: "FIXED", Ordinal: proto.Int32(2)}},
 			AfterStatement:      []*pb.ProxyCommand{refetch("app", []byte("hash"))},
 			Generation:          9,
+			ResultFingerprint:   []*enginepb.RequireResultReadGrant{{Resource: &enginepb.RequireResultReadGrant_Function{Function: &enginepb.FunctionResource{Name: "now"}}}},
 		}))
 		if commands != nil {
 			t.Fatalf("commands = %+v, want nil", commands)
@@ -72,6 +73,7 @@ func TestDecisionFromWire(t *testing.T) {
 			UnmaskablePermitted: true,
 			AfterStatement:      []*pb.Refetch{{Schema: "app", IfHashDiffers: []byte("hash")}},
 			Generation:          9,
+			ResultFingerprint:   []*enginepb.RequireResultReadGrant{{Resource: &enginepb.RequireResultReadGrant_Function{Function: &enginepb.FunctionResource{Name: "now"}}}},
 		}
 		if !reflect.DeepEqual(got, want) {
 			t.Fatalf("decision = %+v, want %+v", got, want)

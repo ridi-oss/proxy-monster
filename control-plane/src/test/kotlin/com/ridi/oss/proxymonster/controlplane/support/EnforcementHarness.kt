@@ -18,6 +18,7 @@ import com.ridi.oss.proxymonster.controlplane.UserGroupStore
 import com.ridi.oss.proxymonster.controlplane.authz.Authz
 import com.ridi.oss.proxymonster.controlplane.authz.AuthzContext
 import com.ridi.oss.proxymonster.controlplane.decideQuery
+import com.ridi.oss.proxymonster.controlplane.fingerprintOf
 import com.ridi.oss.proxymonster.controlplane.decisionRecord
 import com.ridi.oss.proxymonster.controlplane.parseRequesterIp
 import com.ridi.oss.proxymonster.probe.Masking
@@ -164,6 +165,6 @@ fun runEnforcedForTest(
     return QueryResponse(
         decision = ctx.action, decisionId = decisionId, maskedColumns = ctx.masks.map { it.column }, piiTouched = ctx.piiTouched,
         effectiveRoles = ctx.effectiveRoles, columns = rows.columns, rows = maskedRows,
-        rowsAffected = rows.rowsAffected, latencyMs = ms,
+        rowsAffected = rows.rowsAffected, resultFingerprint = fingerprintOf(ctx.resultFingerprint), latencyMs = ms,
     )
 }

@@ -106,7 +106,14 @@ class ApprovalResultAssumeMysqlDbTest {
                 ),
             ),
         )
-        val decrypted = DecryptedResult(listOf("ssn"), listOf(listOf(rawSsn)))
+        // Freeze the execution-time requirement digest the way the real run does (R executing on the trusted
+        // network), so the view's re-decision matches and the masks bind (an empty digest would fail closed as
+        // a pre-fingerprint legacy result).
+        val decrypted = DecryptedResult(
+            listOf("ssn"),
+            listOf(listOf(rawSsn)),
+            resultFingerprint = fingerprintOf(decide(Channel.WORKFLOW_EXECUTOR, "100.100.1.10").resultFingerprint),
+        )
 
         val trusted = decideResultView(
             viewer = requester,
@@ -174,7 +181,7 @@ class ApprovalResultAssumeMysqlDbTest {
         // authorizes it, "authorized to run" is "authorized to see": the stored bytes are released verbatim
         // rather than fail-closing on "re-decided as passthrough".
         val ddl = "CREATE TABLE `users` (\n  `ssn` varchar(20) DEFAULT NULL\n)"
-        val stored = DecryptedResult(listOf("Table", "Create Table"), listOf(listOf("users", ddl)))
+        val stored = DecryptedResult(listOf("Table", "Create Table"), listOf(listOf("users", ddl)), resultFingerprint = fingerprintOf(emptyList()))
         val redecide = decideQuery(
             principal = requester, ds = datasource, sql = "SHOW CREATE TABLE users", channel = Channel.EDITOR,
             catalog = fx.datasourceStore.catalog(datasource.id), policyStore = fx.policyStore,
@@ -212,7 +219,7 @@ class ApprovalResultAssumeMysqlDbTest {
         // role with no datasource.connect on this system:production datasource, SHOW CREATE TABLE re-decides
         // DENY at the Cedar connect gate, so the view refuses it — the DENY branch, not a blanket passthrough
         // deny. (Contrast the released-as-is case above, which runs under the connect-holding {R}.)
-        val stored = DecryptedResult(listOf("Table", "Create Table"), listOf(listOf("users", "CREATE TABLE `users` ()")))
+        val stored = DecryptedResult(listOf("Table", "Create Table"), listOf(listOf("users", "CREATE TABLE `users` ()")), resultFingerprint = fingerprintOf(emptyList()))
         val view = decideResultView(
             viewer = requester,
             req = request().copy(roleName = "system:development-viewer", executeAs = listOf("system:development-viewer")),
@@ -236,7 +243,7 @@ class ApprovalResultAssumeMysqlDbTest {
     fun `a passthrough result with a mismatched row width is refused`() {
         // The passthrough release path's structural check: stored bytes whose row width does not match the
         // column count are refused rather than released (two columns, a one-cell row).
-        val stored = DecryptedResult(listOf("Table", "Create Table"), listOf(listOf("users")))
+        val stored = DecryptedResult(listOf("Table", "Create Table"), listOf(listOf("users")), resultFingerprint = fingerprintOf(emptyList()))
         val view = decideResultView(
             viewer = requester,
             req = request(),

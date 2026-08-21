@@ -7,6 +7,23 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
+func TestStatementFactsResultReadsAreDeterministic(t *testing.T) {
+	// Reference (predicate/order/join) columns come from a Go map, so without a stable sort the DENY grants
+	// shuffle between runs. The control-plane freezes result_reads as a stored result's fingerprint and
+	// compares them for proto equality at view, so a nondeterministic order would falsely deny an unchanged
+	// query. Use a query whose unprojected refs span multiple clauses (WHERE + ORDER BY).
+	sql := "SELECT id FROM users WHERE email = 'x' ORDER BY ssn"
+	first := postgresFacts(t, sql)
+	if !first.GetResolved() {
+		t.Fatalf("expected resolved facts: %s", first.GetDetail())
+	}
+	for i := 0; i < 50; i++ {
+		if !proto.Equal(first, postgresFacts(t, sql)) {
+			t.Fatalf("result_reads order is nondeterministic across analyzer runs (run %d differs)", i)
+		}
+	}
+}
+
 func postgresFacts(t *testing.T, sql string) *pb.StatementFacts {
 	t.Helper()
 	return analyzeProto(t, &pb.AnalyzeRequest{

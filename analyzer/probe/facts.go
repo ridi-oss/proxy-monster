@@ -234,14 +234,21 @@ func emitLineageFacts(root exp.Expression, eng engine, qualifySchema schema.Sche
 			}
 		}
 	}
+	// Flatten and sort the reference columns: report.References is a map, so iterating it directly emits the
+	// DENY grants in a random order per run. The control-plane freezes these grants as a stored result's
+	// fingerprint and compares them for equality at view, so a nondeterministic order would make an unchanged
+	// query's fingerprint differ between execute and view and falsely deny the view.
+	refCols := []string{}
 	for _, refs := range report.References {
-		for _, key := range refs {
-			column, ok := columnResourceFromKey(key)
-			if !ok {
-				return unanalyzableFacts("LINEAGE", "invalid column identity emitted by analyzer")
-			}
-			facts.ResultReads = append(facts.ResultReads, columnGrant(column, pb.MaskedDisposition_MASKED_DISPOSITION_DENY_STATEMENT))
+		refCols = append(refCols, refs...)
+	}
+	sort.Strings(refCols)
+	for _, key := range refCols {
+		column, ok := columnResourceFromKey(key)
+		if !ok {
+			return unanalyzableFacts("LINEAGE", "invalid column identity emitted by analyzer")
 		}
+		facts.ResultReads = append(facts.ResultReads, columnGrant(column, pb.MaskedDisposition_MASKED_DISPOSITION_DENY_STATEMENT))
 	}
 	// Advisory, never authorization: this decides only whether the statement TEXT may be shown outside the
 	// console. An unparseable identity is skipped rather than failing the statement — a fact that can only

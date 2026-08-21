@@ -703,6 +703,9 @@ class RunExecService(
     ): QueryResponse {
         val decisionId = decision.decisionId.takeIf { it != 0L }
         val piiTouched = decisionId?.let { core.auditStore.get(it)?.piiTouched } ?: emptyList()
+        // The decision's requirements, forwarded structured on RunDecision from the Verdict; a stored result
+        // freezes them so a later view denies drift ([decideResultView]).
+        val resultFingerprint = fingerprintOf(decision.resultFingerprintList)
         return QueryResponse(
             decision = action,
             decisionId = decisionId,
@@ -713,6 +716,7 @@ class RunExecService(
             columns = columns,
             rows = rows,
             rowsAffected = rowsAffected,
+            resultFingerprint = resultFingerprint,
             latencyMs = (System.nanoTime() - started) / 1_000_000,
         )
     }

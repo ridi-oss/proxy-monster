@@ -1,5 +1,6 @@
 package com.ridi.oss.proxymonster.controlplane
 
+import com.ridi.oss.proxymonster.analyzer.pb.ResultFingerprint
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.builtins.serializer
@@ -35,6 +36,12 @@ data class DecryptedResult(
     // The backend's own affected-row count for a DML statement (UPDATE/INSERT/DELETE), which has no result
     // set of its own. Null for a statement that returns rows (e.g. SELECT), where [rows].size IS the count.
     val rowsAffected: Int? = null,
+    // The executed decision's requirements (ResultFingerprint), frozen with the bytes so a view denies drift
+    // ([decideResultView]). NULL for a result stored before this field existed (legacy) — distinct from a
+    // present-but-empty fingerprint (a genuine passthrough result), so a legacy view always fails closed
+    // rather than being mistaken for a grant-less passthrough and released raw.
+    @Serializable(with = ResultFingerprintSerializer::class)
+    val resultFingerprint: ResultFingerprint? = null,
 )
 
 /**

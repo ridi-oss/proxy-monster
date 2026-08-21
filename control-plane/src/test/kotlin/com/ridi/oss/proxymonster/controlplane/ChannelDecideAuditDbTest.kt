@@ -51,6 +51,22 @@ class ChannelDecideAuditDbTest {
         assertEquals("editor", rec?.channel, "a runEnforcedQuery decision must audit channel=editor")
     }
 
+    // The execute-under-R fingerprint through a REAL run (real decision + real target query), not an injected
+    // DecryptedResult: the decision's requirement fingerprint must reach the run response so an execute-under-R
+    // run can freeze it with the stored result. A masked query's fingerprint must be non-empty and equal to
+    // the pure decision's, or a stored result would fail closed at view.
+    @Test
+    fun `the real run path carries the decision's requirement fingerprint on the response`() {
+        val sql = "select id, ssn from users order by id"
+        val r = fx.run(sql)
+        val expected = fx.decide(sql).resultFingerprint
+        assertTrue(expected.isNotEmpty(), "a query over the masked ssn must have a non-empty fingerprint")
+        assertTrue(
+            fingerprintOf(expected) == r.resultFingerprint,
+            "the run response must carry the live decision's fingerprint",
+        )
+    }
+
     @Test
     fun `the editor channel passthrough-allows a session statement, workflow phases still deny`() {
         // The stateful editor may run SET/USE/BEGIN (its held connection persists them; the proxy

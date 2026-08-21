@@ -222,6 +222,15 @@ internal fun decideResultView(
     if (ctx.action == EnfAction.DENY) {
         return ResultViewDecision.Denied(ctx.denyReason ?: ctx.detail ?: "view decision denied")
     }
+    // A stored result must never be released through the passthrough relay unless it was itself frozen as a
+    // grant-less passthrough. If its SQL became unanalyzable since execution (a dropped table/column →
+    // exception.unanalyzable), the live re-decision turns passthrough while the stored bytes still hold the
+    // columnar, possibly masked, result. A legacy result (null fingerprint) is likewise unverifiable. Both
+    // fail closed — only a present, grant-less fingerprint takes the raw-release path below.
+    val storedFingerprint = decrypted.resultFingerprint
+    if (ctx.passthrough && (storedFingerprint == null || storedFingerprint.grantsList.isNotEmpty())) {
+        return ResultViewDecision.Denied("stored result no longer matches the live query decision")
+    }
     if (ctx.passthrough) {
         // The re-decision already ran full Cedar authorization under {R} in the viewer's live context and
         // returned non-DENY (checked above). A passthrough carries no column-masking model — there is nothing
@@ -241,10 +250,18 @@ internal fun decideResultView(
         }
         return ResultViewDecision.Allowed(decrypted.columns, decrypted.rows)
     }
-    if (
-        ctx.outputColumns.size != decrypted.columns.size ||
-        ctx.outputColumns.zip(decrypted.columns).any { (decided, stored) -> !decided.equals(stored, ignoreCase = true) }
-    ) {
+    // Apply the re-decided masks only when the frozen requirements still match the live re-decision — then
+    // each masked column keeps the same output ordinals, so ctx.masks bind to the same stored columns they
+    // did at execution ([resultFingerprint]). Any drift (a reorder, a namespace change, a legacy result with
+    // no frozen fingerprint) denies fail-closed. This does NOT freeze the mask FUNCTIONS or Cedar verdicts:
+    // masking is re-decided under {R} at view, so a policy that liberalizes between execute and view can
+    // still narrow (or widen) the masks — matched requirements only prove the ordinal binding is sound.
+    if (storedFingerprint == null || storedFingerprint != fingerprintOf(ctx.resultFingerprint)) {
+        return ResultViewDecision.Denied("stored result no longer matches the live query decision")
+    }
+    // The live projection must be the same width as the stored bytes a mask ordinal indexes into; this also
+    // denies a plan-shaped result (EXPLAIN emits no output columns) rather than releasing it raw.
+    if (ctx.outputColumns.size != decrypted.columns.size) {
         return ResultViewDecision.Denied("stored result columns no longer match the live query decision")
     }
     if (decrypted.rows.any { it.size != decrypted.columns.size }) {
@@ -923,7 +940,7 @@ internal suspend fun runApprovedTask(
         if (response.decision == EnfAction.DENY) {
             "approval.execute_denied"
         } else {
-            val result = DecryptedResult(response.columns, response.rows, response.rowsAffected)
+            val result = DecryptedResult(response.columns, response.rows, response.rowsAffected, response.resultFingerprint)
             // Child DONE, parent EXECUTED, and the execution audit all commit in ONE transaction: a crash can
             // never leave a readable DONE child under a non-EXECUTED task. If the parent has left EXECUTING
             // (e.g. a restart already reconciled it to FAILED), the flip fails and aborts the whole commit —

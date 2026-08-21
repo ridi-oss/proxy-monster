@@ -384,7 +384,8 @@ func sendDecision(stream runStream, decision *engine.Decision) bool {
 			DecisionId:     decision.DecisionID,
 			MaskedColumns:  maskedColumns,
 			DenyReason:     decision.DenyReason,
-			EffectiveRoles: append([]string(nil), decision.EffectiveRoles...),
+			EffectiveRoles:    append([]string(nil), decision.EffectiveRoles...),
+			ResultFingerprint: decision.ResultFingerprint,
 		},
 	}}) == nil
 }

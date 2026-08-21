@@ -28,9 +28,12 @@ import com.ridi.oss.proxymonster.grpc.columnMask
 import com.ridi.oss.proxymonster.analyzer.pb.ColumnSpec
 import com.ridi.oss.proxymonster.analyzer.pb.FailureClass
 import com.ridi.oss.proxymonster.analyzer.pb.MaskedDisposition
+import com.ridi.oss.proxymonster.analyzer.pb.RequireResultReadGrant
+import com.ridi.oss.proxymonster.analyzer.pb.ResultFingerprint
 import com.ridi.oss.proxymonster.analyzer.pb.StatementFacts
 import com.ridi.oss.proxymonster.analyzer.pb.StatementKind
 import com.ridi.oss.proxymonster.analyzer.pb.columnSpec
+import com.ridi.oss.proxymonster.analyzer.pb.resultFingerprint
 import com.ridi.oss.proxymonster.analyzer.pb.engineConfig as pbEngineConfig
 import com.ridi.oss.proxymonster.analyzer.pb.namespace as pbNamespace
 import com.ridi.oss.proxymonster.analyzer.pb.relationIdentity
@@ -102,6 +105,10 @@ data class QueryResponse(
     val columns: List<String> = emptyList(),
     val rows: List<List<String?>> = emptyList(),
     val rowsAffected: Int? = null,
+    // The executed decision's requirements ([ResultFingerprint]), frozen with the stored result so a later
+    // view can deny drift ([decideResultView]). Carried back from the Decide handler on the RunDecision.
+    @Serializable(with = ResultFingerprintSerializer::class)
+    val resultFingerprint: ResultFingerprint = ResultFingerprint.getDefaultInstance(),
     val latencyMs: Long = 0,
 )
 
@@ -131,6 +138,24 @@ enum class Channel(val contextValue: String) {
     MCP("mcp"),
 }
 
+/** The analyzer's result-read grants bundled as the [ResultFingerprint] message [decideResultView] freezes
+ *  with a stored result and compares (by the message's own structural equality). */
+internal fun fingerprintOf(requirements: List<RequireResultReadGrant>): ResultFingerprint =
+    resultFingerprint { grants.addAll(requirements) }
+
+/**
+ * kotlinx serializer for [ResultFingerprint]: a `@Serializable` payload ([QueryResponse], [DecryptedResult])
+ * holds the proto MESSAGE itself, persisted as base64 of its proto bytes. kotlinx can't serialize a protobuf
+ * message directly, so this delegates to proto's own serialization rather than exposing a raw ByteArray field.
+ */
+object ResultFingerprintSerializer : KSerializer<ResultFingerprint> {
+    override val descriptor = PrimitiveSerialDescriptor("ResultFingerprint", PrimitiveKind.STRING)
+    override fun serialize(encoder: Encoder, value: ResultFingerprint) =
+        encoder.encodeString(java.util.Base64.getEncoder().encodeToString(value.toByteArray()))
+    override fun deserialize(decoder: Decoder): ResultFingerprint =
+        ResultFingerprint.parseFrom(java.util.Base64.getDecoder().decode(decoder.decodeString()))
+}
+
 /** The verdict for a statement, without executing it: action + masks (output col → kind) + context. */
 data class DecisionContext(
     val action: EnfAction,
@@ -147,10 +172,15 @@ data class DecisionContext(
      * so target-DB column order matches the mask ordinals. Null = send verbatim. */
     val rewrittenSql: String? = null,
     /** The analyzer's ordered output column names for this decision (an empty list for a passthrough /
-     * unanalyzed statement). APPROVAL live result viewing compares this against the stored execute-enforced
-     * result to detect catalog drift between execute and view (a `SELECT *` re-expansion that would slide a
-     * mask onto the wrong stored column and leak a value) — a mismatch is DENY. */
+     * unanalyzed statement). */
     val outputColumns: List<String> = emptyList(),
+    /** The decision's authorization requirements — the analyzer's result-read grants (empty for a
+     * passthrough / unanalyzed statement). Carried structured to the proxy and back; an execute-under-R
+     * result freezes them ([fingerprintOf]) and the view denies if the live re-decision's differ.
+     * E.g. a column reorder moves `ssn` from ordinal 1 to 0, so the frozen grant (ssn MASK_OUTPUT @1) no
+     * longer matches the live one (@0) and the re-decided mask can't bind to the wrong stored column and
+     * leak it. See [decideResultView]. */
+    val resultFingerprint: List<RequireResultReadGrant> = emptyList(),
     /** The derived `context.tags` this decision was evaluated under, surfaced so [decisionRecord]
      * logs which tags the request earned. Stamped on EVERY decision that runs after context derivation —
      * ALLOW, MASK, DENY (structural + policy), and passthrough alike — so an audit row carries the attested
@@ -798,6 +828,7 @@ fun decideQuery(
         detail = facts.detail,
         passthrough = false,
         outputColumns = facts.outputColumnsList,
+        resultFingerprint = facts.resultReadsList,
         contextTags = derivedTags,
         unmaskablePermitted = unmaskablePermitted,
         sanitizeDiagnostics = sanitizeDiagnostics,
@@ -1099,7 +1130,7 @@ fun Route.editorSessionRoutes(
                     // localizes the polled code with no editor-specific catalog entries.
                     "approval.execute_denied"
                 } else {
-                    val result = DecryptedResult(response.columns, response.rows, response.rowsAffected)
+                    val result = DecryptedResult(response.columns, response.rows, response.rowsAffected, response.resultFingerprint)
                     // Child DONE + parent EXECUTED commit in ONE transaction (see /execute): a crash can never
                     // leave a readable DONE child under a non-EXECUTED task. The run's per-statement Decide
                     // round-trip already wrote the real audit decision (ALLOW/MASK/DENY + decisionId), so no

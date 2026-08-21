@@ -215,6 +215,10 @@ type Decision struct {
 	// the proxy strips this statement's target-DB error/notice messages down to code + severity. See
 	// docs/diagnostic-redaction.md.
 	SanitizeDiagnostics bool
+	// ResultFingerprint is the decision's authorization requirements (the analyzer's result-read grants). The
+	// proxy does not interpret them; it only echoes them back on a RunDecision so an execute-under-R run can
+	// freeze them with the stored result (the control plane's result-view drift gate).
+	ResultFingerprint []*enginepb.RequireResultReadGrant
 }
 
 // RedactedDiagnosticMessage is the single generic string that replaces every target-DB diagnostic message on

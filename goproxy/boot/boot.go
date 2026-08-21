@@ -4,26 +4,22 @@ package boot
 import (
 	"context"
 	"crypto/tls"
-	"errors"
 	"fmt"
 	"log/slog"
 	"os"
 	"os/signal"
 	"strings"
-	"sync"
 	"syscall"
 	"time"
 
 	"github.com/ridi-oss/proxy-monster/goproxy/config"
 	"github.com/ridi-oss/proxy-monster/goproxy/cp"
 	"github.com/ridi-oss/proxy-monster/goproxy/drain"
-	"github.com/ridi-oss/proxy-monster/goproxy/introspect"
 	"github.com/ridi-oss/proxy-monster/goproxy/proxytls"
 	"github.com/ridi-oss/proxy-monster/goproxy/run"
 	"github.com/ridi-oss/proxy-monster/goproxy/spi"
 )
 
-const bootRegisterAttempts = 3
 const ambientRefreshInterval = 12 * time.Minute
 
 // drainTimeout bounds the graceful shutdown: in-flight statements finish and idle connections get a
@@ -33,8 +29,6 @@ const drainTimeout = 10 * time.Second
 // runDrainTimeout bounds how long shutdown waits for an in-flight editor/approval query to finish before
 // closing the control-plane clients its runExec stream rides — the run-stream analogue of drainTimeout.
 const runDrainTimeout = 10 * time.Second
-
-var refreshMu sync.Mutex
 
 // Run is the dialect-neutral boot consumer. The executable composition root injects the provider registry;
 // this package imports only the SPI, never the concrete dialect wiring package.
@@ -136,6 +130,14 @@ func Run(registry spi.Registry) error {
 		slog.Info("proxy TLS disabled — plaintext (trusted tailnet only); set PM_TLS_CERT + PM_TLS_KEY to enable")
 	}
 
+	reconciler := newDatasourceReconciler(
+		configClient,
+		cfg,
+		targetDb,
+		provider,
+		certChain,
+		maxResyncConcurrency,
+	)
 	// Track in-flight run executions with the same drain primitive the wire server uses, so shutdown lets an
 	// executing editor/approval query finish and idle sessions return. Every open still dials back (spawns
 	// Run): a refusal would strand the control-plane, which has already committed this proxy for the request
@@ -147,7 +149,7 @@ func Run(registry spi.Registry) error {
 	defer eventsCancel() // covers the early serve-error return; the drain path cancels explicitly (idempotent)
 	eventsDone := make(chan struct{})
 	// A wire-protocol version skew is fatal: refuse to start rather than attach and stall the run channel.
-	if err := registerAndPushCatalog(configClient, cfg, targetDb, provider, certChain); err != nil {
+	if err := reconciler.registerAndPushCatalog(); err != nil {
 		slog.Error("refusing to start — deploy the proxy and control-plane from the same server-v* release", "error", err)
 		return err
 	}
@@ -158,12 +160,12 @@ func Run(registry spi.Registry) error {
 			func() {
 				// A re-register (reconnect) that finds a now-incompatible control-plane is equally fatal:
 				// exit so the supervisor replaces this proxy rather than run against a version it cannot speak.
-				if err := registerAndPushCatalog(configClient, cfg, targetDb, provider, certChain); err != nil {
+				if err := reconciler.tryRegisterAndPushCatalog(); err != nil {
 					slog.Error("control-plane became version-incompatible on reconnect — exiting", "error", err)
 					os.Exit(1)
 				}
 			},
-			func() { refreshCatalog(configClient, provider, targetDb) },
+			func() { reconciler.refreshCatalog() },
 			func(open spi.RunOpen) {
 				runs.Add()
 				go func() {
@@ -185,8 +187,12 @@ func Run(registry spi.Registry) error {
 	}()
 	go func() {
 		for {
-			time.Sleep(ambientRefreshInterval)
-			refreshCatalog(configClient, provider, targetDb)
+			select {
+			case <-eventsCtx.Done():
+				return
+			case <-time.After(ambientRefreshInterval):
+				reconciler.refreshCatalog()
+			}
 		}
 	}()
 
@@ -253,49 +259,4 @@ func gracefulDrain(
 	if !runs.Wait(runCtx) {
 		slog.Warn("in-flight run drain timed out; proceeding", "timeout", runDrainTimeout)
 	}
-}
-
-// registerAndPushCatalog registers the datasource and pushes its catalog, retrying transient failures. It
-// returns cp.ErrIncompatibleControlPlane — and only that — as a FATAL error: a wire-protocol version skew is
-// permanent, so retrying cannot fix it and attaching anyway would stall the run channel. Every other failure
-// stays non-fatal (returns nil after the attempts): the proxy starts and fails decisions closed until the
-// control plane has the catalog, so a briefly-unreachable control plane self-heals on reconnect.
-func registerAndPushCatalog(
-	configClient *cp.Client, cfg *config.Config, targetDb spi.TargetDb, provider spi.Provider,
-	certChain func() *string,
-) error {
-	for attempt := 0; attempt < bootRegisterAttempts; attempt++ {
-		err := configClient.Register(provider.Dialect().Proto(), targetDb.Host, targetDb.Port, targetDb.Db, cfg.DatasourceTags, cfg.AdvertiseAddr, certChain(), cfg.TLSEnabled())
-		if errors.Is(err, cp.ErrIncompatibleControlPlane) {
-			return err
-		}
-		if err != nil {
-			slog.Warn("datasource registration failed", "attempt", attempt+1, "of", bootRegisterAttempts, "error", err)
-		} else if refreshCatalog(configClient, provider, targetDb) {
-			slog.Info("datasource registered + catalog pushed", "datasource", cfg.DatasourceName)
-			return nil
-		}
-		if attempt < bootRegisterAttempts-1 {
-			backoff := time.Duration(attempt+1) * 2 * time.Second
-			slog.Warn("register/push attempt failed; retrying", "attempt", attempt+1, "of", bootRegisterAttempts, "retry_in", backoff)
-			time.Sleep(backoff)
-		}
-	}
-	slog.Error("could not register + push catalog after all attempts — starting anyway; decisions fail closed until the control plane has this datasource's catalog", "attempts", bootRegisterAttempts)
-	return nil
-}
-
-func refreshCatalog(configClient *cp.Client, provider spi.Provider, targetDb spi.TargetDb) bool {
-	refreshMu.Lock()
-	defer refreshMu.Unlock()
-	catalog, err := introspect.Run(provider, targetDb)
-	if err != nil {
-		slog.Warn("catalog refresh failed", "error", err)
-		return false
-	}
-	if err := configClient.PushCatalog(catalog); err != nil {
-		slog.Warn("catalog refresh failed", "error", err)
-		return false
-	}
-	return true
 }

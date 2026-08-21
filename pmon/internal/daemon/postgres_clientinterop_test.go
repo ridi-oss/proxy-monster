@@ -46,6 +46,17 @@ public class Probe {
     try (Connection c = DriverManager.getConnection(a[0]); Statement s = c.createStatement()) {
       try (ResultSet r = s.executeQuery("SELECT current_database()")) { r.next(); System.out.println("DB=" + r.getString(1)); }
       try (ResultSet r = s.executeQuery("SELECT name FROM members WHERE id=1")) { r.next(); System.out.println("ROW=" + r.getString(1)); }
+      int backendPid;
+      try (ResultSet r = s.executeQuery("SELECT pg_backend_pid()")) { r.next(); backendPid = r.getInt(1); }
+      if (!c.isValid(5)) throw new IllegalStateException("healthy connection reported invalid");
+      System.out.println("VALID_OK");
+      try (Connection killer = DriverManager.getConnection(a[0]); Statement ks = killer.createStatement()) {
+        try (ResultSet r = ks.executeQuery("SELECT pg_terminate_backend(" + backendPid + ")")) {
+          if (!r.next() || !r.getBoolean(1)) throw new IllegalStateException("target session was not terminated");
+        }
+      }
+      if (c.isValid(5)) throw new IllegalStateException("terminated connection reported valid");
+      System.out.println("INVALID_OK");
       System.out.println("JDBC_OK");
     }
   }
@@ -65,6 +76,8 @@ func TestClientInteropPostgresJDBC(t *testing.T) {
 		Cmd: []string{"sh", "-c", `cd /work && javac Probe.java && java -cp .:driver.jar Probe "$PM_URL"`},
 	})
 	assertPostgresClientResult(t, logs, "JDBC_OK")
+	mustContain(t, logs, "VALID_OK")
+	mustContain(t, logs, "INVALID_OK")
 }
 
 func TestClientInteropPostgresGoPGX(t *testing.T) {

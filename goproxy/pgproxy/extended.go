@@ -104,26 +104,27 @@ func (s *Server) awaitExtendedCompletion(sess *session, isTerminal func(pgproto3
 }
 
 func (s *Server) handleParse(sess *session, message *pgproto3.Parse) error {
-	// Parse always authorizes against the live namespace. Lockstep has drained every earlier response,
-	// so pgx.Batch cannot interleave this injected simple-query probe with extended frames. Outside an
-	// explicit transaction the probe can commit the batch's implicit transaction early; that is a
-	// deliberate fail-safe deviation (an extra probe, never a skipped one). In an aborted transaction,
-	// the probe fails and produces a fail-safe 58000 refusal before PostgreSQL's equivalent 25P02 Parse.
-	sess.qe.MarkNamespaceDirty()
-	sess.pendingDirty = false
-	verdict := sess.qe.Authorize(sess.authzInput(message.Query, sess.token, sess.clientAddr, sess.connectionID, s.refetcher(sess, true).RunAll))
-	proceed, allowed, err := renderExtendedVerdict(sess, verdict)
-	if err != nil || !allowed {
-		return err
-	}
-	if proceed.Decision == nil {
-		return refuseExtended(sess, "58000", "control plane returned no decision")
-	}
-	// Parse has no statement effect, so its after_statement commands are deliberately not fired.
-
 	sentSQL := message.Query
-	if proceed.RewrittenSQL != nil {
-		sentSQL = *proceed.RewrittenSQL
+	if sentSQL != "" {
+		// Parse always authorizes against the live namespace. Lockstep has drained every earlier response,
+		// so pgx.Batch cannot interleave this injected simple-query probe with extended frames. Outside an
+		// explicit transaction the probe can commit the batch's implicit transaction early; that is a
+		// deliberate fail-safe deviation (an extra probe, never a skipped one). In an aborted transaction,
+		// the probe fails and produces a fail-safe 58000 refusal before PostgreSQL's equivalent 25P02 Parse.
+		sess.qe.MarkNamespaceDirty()
+		sess.pendingDirty = false
+		verdict := sess.qe.Authorize(sess.authzInput(sentSQL, sess.token, sess.clientAddr, sess.connectionID, s.refetcher(sess, true).RunAll))
+		proceed, allowed, err := renderExtendedVerdict(sess, verdict)
+		if err != nil || !allowed {
+			return err
+		}
+		if proceed.Decision == nil {
+			return refuseExtended(sess, "58000", "control plane returned no decision")
+		}
+		// Parse has no statement effect, so its after_statement commands are deliberately not fired.
+		if proceed.RewrittenSQL != nil {
+			sentSQL = *proceed.RewrittenSQL
+		}
 	}
 	sess.targetDb.Send(&pgproto3.Parse{Name: message.Name, Query: sentSQL, ParameterOIDs: message.ParameterOIDs})
 	sess.targetDb.Send(&pgproto3.Flush{})
@@ -160,16 +161,21 @@ func (s *Server) handleBind(sess *session, message *pgproto3.Bind) error {
 		}
 	}
 
-	// Capture immediately before forwarding: the lockstep single writer guarantees nothing executes on the
-	// target DB between this probe and Bind, so the captured context is exactly the one PostgreSQL binds under.
-	// Probing first also leaves no registry/target DB inconsistency if capture fails. An aborted transaction
-	// fails here before PostgreSQL's equivalent 25P02 Bind, retaining the prior portal snapshot and target DB portal.
-	namespace, temps, err := s.probeBindContext(sess)
-	if err != nil {
-		if errors.Is(err, errClientEncoding) || errors.Is(err, errStdConformingStrings) {
-			return err
+	var namespace []string
+	var temps []engine.TempColumn
+	if statement.sql != "" {
+		// Capture immediately before forwarding: the lockstep single writer guarantees nothing executes on the
+		// target DB between this probe and Bind, so the captured context is exactly the one PostgreSQL binds under.
+		// Probing first also leaves no registry/target DB inconsistency if capture fails. An aborted transaction
+		// fails here before PostgreSQL's equivalent 25P02 Bind, retaining the prior portal snapshot and target DB portal.
+		var err error
+		namespace, temps, err = s.probeBindContext(sess)
+		if err != nil {
+			if errors.Is(err, errClientEncoding) || errors.Is(err, errStdConformingStrings) {
+				return err
+			}
+			return refuseExtended(sess, "58000", "bind-time namespace unavailable")
 		}
-		return refuseExtended(sess, "58000", "bind-time namespace unavailable")
 	}
 
 	sess.targetDb.Send(message)
@@ -359,6 +365,15 @@ func (s *Server) handleExecute(sess *session, message *pgproto3.Execute) error {
 	portal, ok := sess.portals[message.Portal]
 	if !ok {
 		return refuseExtended(sess, "34000", "Execute references an unknown portal")
+	}
+	if portal.sql == "" {
+		sess.targetDb.Send(message)
+		sess.targetDb.Send(&pgproto3.Flush{})
+		if err := sess.targetDb.Flush(); err != nil {
+			return err
+		}
+		_, err := s.relayExecuteStream(sess, nil, &engine.RelayStats{})
+		return err
 	}
 
 	// Re-decide the portal SQL under the context snapshotted when PostgreSQL bound it. A live probe here can

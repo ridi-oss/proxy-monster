@@ -58,4 +58,10 @@ class ControlPlaneCore(val dataSource: DataSource) {
     // SAME reason [runChannels] does: [com.ridi.oss.proxymonster.controlplane.grpc.ControlPlaneGrpcService]
     // is constructed independently in Main.kt, before Application.module's RunExecService exists.
     val runRequesterIps = RequesterIpRegistry()
+
+    // Carries a decision's requirement digest from the gRPC decide handler to the run that stores its result
+    // under execute-under-R, keyed by decision id (only the id survives the proxy round-trip). Frozen with
+    // the stored bytes so a later view denies drift ([decideResultView]). Here for the same reason
+    // runChannels is: the gRPC service is constructed before Application.module's RunExecService.
+    val decisionFingerprints = ResultFingerprintRegistry()
 }

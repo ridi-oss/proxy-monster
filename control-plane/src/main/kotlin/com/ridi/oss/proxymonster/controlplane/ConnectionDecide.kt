@@ -153,5 +153,11 @@ suspend fun decideConnection(
         core.auditStore.insert(decisionRecord)
     }
     check(connection.generation == generationAtEntry) { "connection generation changed during serialized decide" }
+    // Only non-WIRE (editor / workflow-executor) runs store a result to view later, so only they need the
+    // requirement digest frozen for the drift check; a WIRE decision streams to the client and stores
+    // nothing, so caching its digest would only churn the bounded registry.
+    if (channel != Channel.WIRE) {
+        core.decisionFingerprints.put(decisionId, effectiveCtx.resultFingerprint)
+    }
     EnforcementOutcome.Verdict(effectiveCtx, decisionId, generationAtEntry, afterStatement)
 }

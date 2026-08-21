@@ -167,6 +167,31 @@ class RequesterIpRegistry {
     }
 }
 
+/**
+ * A CP-only carrier for a decision's requirement digest ([resultFingerprint]), keyed by the audit decision
+ * id, from the gRPC `decide` handler ([decideConnection]) to the run's result writer ([response]). The
+ * Decide handler computes the digest; an execute-under-R run must freeze it with the stored bytes so a later
+ * view can deny drift ([decideResultView]) — but only the decision id survives the proxy round-trip between
+ * decide and result-write, so the digest rides here rather than the wire proto. [take] consumes the entry,
+ * so a stored result carries the digest exactly once. A miss — a DENY that stores nothing, a crash before
+ * the result is written, an eviction, or a restart — yields an empty digest, and the later view fails
+ * closed. Bounded so an entry that is never consumed cannot accumulate without limit; only result-storing
+ * (non-WIRE) decisions are put, so the live set stays small.
+ */
+class ResultFingerprintRegistry(private val capacity: Int = 4096) {
+    private val byDecision = object : LinkedHashMap<Long, List<String>>(256, 0.75f, false) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<Long, List<String>>) = size > capacity
+    }
+
+    @Synchronized
+    fun put(decisionId: Long, fingerprint: List<String>) {
+        if (fingerprint.isNotEmpty()) byDecision[decisionId] = fingerprint
+    }
+
+    @Synchronized
+    fun take(decisionId: Long): List<String> = byDecision.remove(decisionId) ?: emptyList()
+}
+
 sealed class RunExecException(message: String, cause: Throwable? = null) : Exception(message, cause)
 
 class NoProxyAttachedException : RunExecException("no proxy is attached to this datasource")
@@ -703,6 +728,9 @@ class RunExecService(
     ): QueryResponse {
         val decisionId = decision.decisionId.takeIf { it != 0L }
         val piiTouched = decisionId?.let { core.auditStore.get(it)?.piiTouched } ?: emptyList()
+        // Consume the decision's frozen requirement digest (the Decide handler stashed it by decision id) so
+        // a stored result carries it exactly once; see [ResultFingerprintRegistry] and [decideResultView].
+        val resultFingerprint = decisionId?.let { core.decisionFingerprints.take(it) } ?: emptyList()
         return QueryResponse(
             decision = action,
             decisionId = decisionId,
@@ -713,6 +741,7 @@ class RunExecService(
             columns = columns,
             rows = rows,
             rowsAffected = rowsAffected,
+            resultFingerprint = resultFingerprint,
             latencyMs = (System.nanoTime() - started) / 1_000_000,
         )
     }

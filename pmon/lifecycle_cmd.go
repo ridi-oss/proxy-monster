@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/ridi-oss/proxy-monster/pmon/control"
+	"github.com/ridi-oss/proxy-monster/pmon/state"
 )
 
 // startCmd starts the daemon if none is running. Symmetric with the menu-bar app's Start: both call the same
@@ -47,18 +48,24 @@ type stopCmd struct {
 func (c *stopCmd) Run() error {
 	ctx := context.Background()
 	client, err := control.Connect(ctx)
-	if err != nil {
-		fmt.Println("the daemon is not running")
-		return nil
-	}
-	if !c.Force {
-		if s, err := client.Status(ctx); err == nil {
-			if n := s.TotalLiveConns(); n > 0 {
-				if !confirm(fmt.Sprintf("%d active connection(s) will be dropped. Stop anyway?", n)) {
-					fmt.Println("left the daemon running")
-					return nil
-				}
+	if err == nil && !c.Force {
+		s, statusErr := client.Status(ctx)
+		if statusErr != nil {
+			if (!errors.Is(statusErr, control.ErrDaemonNotRunning) || state.DaemonRunning()) &&
+				!confirm("the daemon status cannot be read, so its connections cannot be checked. Stop anyway?") {
+				fmt.Println("left the daemon running")
+				return nil
 			}
+		} else if n := s.TotalLiveConns(); n > 0 {
+			if !confirm(fmt.Sprintf("%d active connection(s) will be dropped. Stop anyway?", n)) {
+				fmt.Println("left the daemon running")
+				return nil
+			}
+		}
+	} else if err != nil && !errors.Is(err, control.ErrDaemonNotRunning) && !c.Force {
+		if !confirm("the daemon status cannot be read, so its connections cannot be checked. Stop anyway?") {
+			fmt.Println("left the daemon running")
+			return nil
 		}
 	}
 	if err := control.StopDaemon(ctx); err != nil {
@@ -79,22 +86,31 @@ type restartCmd struct {
 
 func (c *restartCmd) Run() error {
 	ctx := context.Background()
-	if client, err := control.Connect(ctx); err == nil {
-		if !c.Force {
-			if s, err := client.Status(ctx); err == nil {
-				if n := s.TotalLiveConns(); n > 0 {
-					if !confirm(fmt.Sprintf("%d active connection(s) will be dropped. Restart anyway?", n)) {
-						fmt.Println("left the daemon running")
-						return nil
-					}
-				}
+	client, err := control.Connect(ctx)
+	if err == nil && !c.Force {
+		s, statusErr := client.Status(ctx)
+		if statusErr != nil {
+			if (!errors.Is(statusErr, control.ErrDaemonNotRunning) || state.DaemonRunning()) &&
+				!confirm("the daemon status cannot be read, so its connections cannot be checked. Restart anyway?") {
+				fmt.Println("left the daemon running")
+				return nil
+			}
+		} else if n := s.TotalLiveConns(); n > 0 {
+			if !confirm(fmt.Sprintf("%d active connection(s) will be dropped. Restart anyway?", n)) {
+				fmt.Println("left the daemon running")
+				return nil
 			}
 		}
-		if err := control.StopDaemon(ctx); err != nil && !errors.Is(err, control.ErrDaemonNotRunning) {
-			return err
+	} else if err != nil && !errors.Is(err, control.ErrDaemonNotRunning) && !c.Force {
+		if !confirm("the daemon status cannot be read, so its connections cannot be checked. Restart anyway?") {
+			fmt.Println("left the daemon running")
+			return nil
 		}
 	}
-	client, err := control.EnsureDaemon(ctx)
+	if err := control.StopDaemon(ctx); err != nil && !errors.Is(err, control.ErrDaemonNotRunning) {
+		return err
+	}
+	client, err = control.EnsureDaemon(ctx)
 	if err != nil {
 		return err
 	}
@@ -116,9 +132,12 @@ type logoutCmd struct{}
 func (logoutCmd) Run() error {
 	ctx := context.Background()
 	client, err := control.Connect(ctx)
-	if err != nil {
+	if errors.Is(err, control.ErrDaemonNotRunning) {
 		fmt.Println("the daemon is not running — nothing to log out of")
 		return nil
+	}
+	if err != nil {
+		return err
 	}
 	if err := client.Logout(ctx); err != nil {
 		return err

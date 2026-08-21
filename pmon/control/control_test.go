@@ -220,6 +220,22 @@ func TestClientReportsDaemonNotRunning(t *testing.T) {
 	}
 }
 
+func TestConnectReportsUnreachableDaemonWhenPidLockIsHeld(t *testing.T) {
+	t.Setenv("PMON_CONFIG_DIR", t.TempDir())
+	held, err := state.AcquirePidLock()
+	if err != nil {
+		t.Fatalf("AcquirePidLock: %v", err)
+	}
+	if !held {
+		t.Fatal("AcquirePidLock reported an unexpected live daemon")
+	}
+	t.Cleanup(state.ReleasePidLock)
+
+	if _, err := Connect(context.Background()); !errors.Is(err, ErrDaemonUnreachable) {
+		t.Errorf("Connect with a held pid lock and no socket = %v, want ErrDaemonUnreachable", err)
+	}
+}
+
 // TestLoginStreamsPromptBeforeDone is the property that lets both peers show the verification code while the
 // flow is still running: events arrive incrementally, not batched at the end.
 func TestLoginStreamsPromptBeforeDone(t *testing.T) {

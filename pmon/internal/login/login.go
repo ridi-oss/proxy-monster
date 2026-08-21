@@ -21,6 +21,9 @@ const DefaultControlPlane = "http://localhost:8080"
 // DefaultTTL is the requested wire-token lifetime (12h). The control plane clamps it.
 const DefaultTTL = 43200
 
+// RequestTimeout bounds each control-plane HTTP request.
+const RequestTimeout = 15 * time.Second
+
 // Prompt is what the user must do to complete a login: open [VerificationURI] and confirm [UserCode]. The
 // daemon emits one to whichever peer asked, so a CLI can print it and a tray can raise a notification from
 // the same flow.
@@ -86,7 +89,7 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 	client := opts.HTTPClient
 	if client == nil {
 		jar, _ := cookiejar.New(nil)
-		client = &http.Client{Jar: jar, Timeout: 15 * time.Second}
+		client = &http.Client{Jar: jar, Timeout: RequestTimeout}
 	}
 	sleep := opts.Sleep
 	if sleep == nil {

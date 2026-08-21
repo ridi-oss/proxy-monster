@@ -31,15 +31,46 @@ func TestMySQLJDBCTruncationDiagnostics(t *testing.T) {
 func TestPostgresFormats(t *testing.T) {
 	target := Target{Engine: "postgres", DbName: "app", Port: 6101, User: "you@example.com", Password: "pw"}
 	cases := map[Format]string{
-		URL:   "postgresql://you%40example.com:pw@127.0.0.1:6101/app",
-		JDBC:  "jdbc:postgresql://127.0.0.1:6101/app?user=you%40example.com&password=pw",
+		URL:   "postgresql://you%40example.com:pw@127.0.0.1:6101/app?sslmode=disable",
+		JDBC:  "jdbc:postgresql://127.0.0.1:6101/app?user=you%40example.com&password=pw&sslmode=disable",
 		GoDSN: "host=127.0.0.1 port=6101 user=you@example.com password=pw dbname=app sslmode=disable",
-		CLI:   `psql 'host=127.0.0.1 port=6101 dbname=app user=you@example.com password=pw'`,
+		CLI:   `psql 'host=127.0.0.1 port=6101 dbname=app user=you@example.com password=pw sslmode=disable'`,
 	}
 	for format, want := range cases {
 		if got := String(format, target); got != want {
 			t.Errorf("String(%s) = %q, want %q", format, got, want)
 		}
+	}
+}
+
+func TestPostgresEscapesURLPathAndUserInfo(t *testing.T) {
+	target := Target{
+		Engine: "postgres", DbName: "team / reports", Port: 6101,
+		User: "user name", Password: "pw/secret",
+	}
+	cases := map[Format]string{
+		URL:  "postgresql://user%20name:pw%2Fsecret@127.0.0.1:6101/team%20%2F%20reports?sslmode=disable",
+		JDBC: "jdbc:postgresql://127.0.0.1:6101/team%20%2F%20reports?user=user+name&password=pw%2Fsecret&sslmode=disable",
+	}
+	for format, want := range cases {
+		if got := String(format, target); got != want {
+			t.Errorf("String(%s) = %q, want %q", format, got, want)
+		}
+	}
+}
+
+func TestPostgresEscapesKeywordValues(t *testing.T) {
+	target := Target{
+		Engine: "postgres", DbName: "team / reports", Port: 6101,
+		User: "user name", Password: `pw'\secret`,
+	}
+	wantDSN := `host=127.0.0.1 port=6101 user='user name' password='pw\'\\secret' dbname='team / reports' sslmode=disable`
+	if got := String(GoDSN, target); got != wantDSN {
+		t.Errorf("String(%s) = %q, want %q", GoDSN, got, wantDSN)
+	}
+	wantCLIFields := `host=127.0.0.1 port=6101 dbname='team / reports' user='user name' password='pw\'\\secret' sslmode=disable`
+	if got, want := String(CLI, target), "psql "+shellQuote(wantCLIFields); got != want {
+		t.Errorf("String(%s) = %q, want %q", CLI, got, want)
 	}
 }
 

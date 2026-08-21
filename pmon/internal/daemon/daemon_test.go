@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -143,6 +144,140 @@ func TestLoginOpensBrokersImmediately(t *testing.T) {
 	d.closeAllListeners()
 }
 
+func TestFreshLoginClosesExistingSessions(t *testing.T) {
+	isolate(t)
+	cp := newFakeCP(t, []Datasource{
+		{Name: "acme-postgres", Engine: "postgres", DbName: "app", AdvertiseAddr: freePort(t)},
+	})
+	d := New("test")
+	ctx := context.Background()
+	if err := d.Login(ctx, control.LoginRequest{ControlPlane: cp.URL}, func(control.LoginEvent) {}); err != nil {
+		t.Fatalf("first Login: %v", err)
+	}
+	defer d.closeAllListeners()
+
+	client, server := net.Pipe()
+	defer client.Close()
+	closed := make(chan struct{})
+	tracked := &closeObserverConn{Conn: server, onClose: func() { close(closed) }}
+	deregister := d.addConn("acme-postgres", tracked)
+	defer deregister()
+
+	if err := d.Login(ctx, control.LoginRequest{ControlPlane: cp.URL}, func(control.LoginEvent) {}); err != nil {
+		t.Fatalf("second Login: %v", err)
+	}
+	select {
+	case <-closed:
+	case <-time.After(time.Second):
+		t.Fatal("a session opened under the previous login survived the fresh login")
+	}
+	status := d.Status()
+	if len(status.Datasources) != 1 || !status.Datasources[0].Brokered {
+		t.Fatalf("replacement login did not reopen the broker: %+v", status.Datasources)
+	}
+}
+
+func TestFreshLoginDrainKeepsCurrentGeneration(t *testing.T) {
+	d := New("test")
+	oldClient, oldServer := net.Pipe()
+	defer oldClient.Close()
+	oldClosed := make(chan struct{})
+	deregisterOld := d.addConn("acme-postgres", &closeObserverConn{Conn: oldServer, onClose: func() { close(oldClosed) }})
+	defer deregisterOld()
+
+	d.mu.Lock()
+	d.tokenGeneration++
+	currentGeneration := d.tokenGeneration
+	d.mu.Unlock()
+	newClient, newServer := net.Pipe()
+	defer newClient.Close()
+	newClosed := make(chan struct{})
+	deregisterNew := d.addConn("acme-postgres", &closeObserverConn{Conn: newServer, onClose: func() { close(newClosed) }})
+	defer deregisterNew()
+
+	d.closeTokenGenerationsBefore(currentGeneration)
+	select {
+	case <-oldClosed:
+	case <-time.After(time.Second):
+		t.Fatal("the previous login generation survived the fresh-login drain")
+	}
+	select {
+	case <-newClosed:
+		t.Fatal("the fresh-login drain closed a session using the current login generation")
+	case <-time.After(100 * time.Millisecond):
+	}
+	newServer.Close()
+}
+
+func TestConcurrentLoginAndLogoutLeaveLoggedOutState(t *testing.T) {
+	isolate(t)
+	polling := make(chan struct{})
+	releasePoll := make(chan struct{})
+	var pollingOnce, releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(releasePoll) }) }
+	defer release()
+
+	cp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/auth/device/start":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"verificationUri": "https://idp.example/activate", "userCode": "ABCD",
+				"handle": "h-1", "interval": 1,
+			})
+		case "/auth/device/poll":
+			pollingOnce.Do(func() { close(polling) })
+			<-releasePoll
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"principal": "you@example.com", "token": "pmk_tok",
+				"expiresAt":    time.Now().Add(12 * time.Hour).Format(time.RFC3339),
+				"renewalToken": "pmr_abc",
+			})
+		case "/api/datasources":
+			_ = json.NewEncoder(w).Encode([]Datasource{})
+		default:
+			t.Errorf("unexpected control-plane path %q", r.URL.Path)
+		}
+	}))
+	defer cp.Close()
+
+	d := New("test")
+	loginDone := make(chan error, 1)
+	go func() {
+		loginDone <- d.Login(context.Background(), control.LoginRequest{ControlPlane: cp.URL}, func(control.LoginEvent) {})
+	}()
+	select {
+	case <-polling:
+	case <-time.After(2 * time.Second):
+		t.Fatal("login did not reach device polling")
+	}
+
+	logoutDone := make(chan error, 1)
+	go func() { logoutDone <- d.Logout() }()
+	select {
+	case err := <-logoutDone:
+		t.Fatalf("Logout returned before the concurrent Login transition completed: %v", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	release()
+	if err := <-loginDone; err != nil {
+		t.Fatalf("Login: %v", err)
+	}
+	if err := <-logoutDone; err != nil {
+		t.Fatalf("Logout: %v", err)
+	}
+	if d.Status().LoggedIn {
+		t.Fatal("daemon remains logged in after concurrent Login and Logout")
+	}
+	cfg, err := state.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.LoggedIn() || cfg.Token != "" || cfg.RenewalToken != "" {
+		t.Fatalf("credentials remain on disk after concurrent Login and Logout: %+v", cfg)
+	}
+}
+
 // TestBrokeringImpliesALocalPassword locks the invariant a connection string depends on: if any broker is
 // listening, the sticky loopback password exists — otherwise `pmon show` would emit a string with an empty
 // password. Asserted without the explicit ensureLocalPassword() that Run does, so the guarantee holds on every
@@ -168,12 +303,12 @@ func TestBrokeringImpliesALocalPassword(t *testing.T) {
 	}
 }
 
-// TestStatusReportsUnbrokerableDatasourcesWithAReason: a PG or address-less datasource must still appear, with
-// an explanation — a silently short list would read as "you have no access".
+// TestStatusReportsUnbrokerableDatasourcesWithAReason: an unsupported or address-less datasource must still
+// appear with an explanation rather than silently shortening the list.
 func TestStatusReportsUnbrokerableDatasourcesWithAReason(t *testing.T) {
 	isolate(t)
 	cp := newFakeCP(t, []Datasource{
-		{Name: "pg", Engine: "postgres", DbName: "app", AdvertiseAddr: freePort(t)},
+		{Name: "unsupported", Engine: "sqlite", DbName: "app", AdvertiseAddr: freePort(t)},
 		{Name: "no-addr", Engine: "mysql", DbName: "app"},
 	})
 
@@ -245,6 +380,208 @@ func TestRediscoveryClosesARevokedDatasource(t *testing.T) {
 	}
 	if cfg.Ports["acme-mysql"] != port {
 		t.Errorf("sticky port for a revoked datasource = %d, want it kept at %d", cfg.Ports["acme-mysql"], port)
+	}
+}
+
+func TestRediscoveryReplacesListenerWhenEngineChanges(t *testing.T) {
+	isolate(t)
+	cp := newFakeCP(t, []Datasource{
+		{Name: "acme", Engine: "mysql", DbName: "app", AdvertiseAddr: freePort(t)},
+	})
+
+	d := New("test")
+	ctx := context.Background()
+	if err := d.Login(ctx, control.LoginRequest{ControlPlane: cp.URL}, func(control.LoginEvent) {}); err != nil {
+		t.Fatalf("Login: %v", err)
+	}
+	defer d.closeAllListeners()
+
+	before := d.Status().Datasources[0]
+	client, server := net.Pipe()
+	defer client.Close()
+	defer server.Close()
+	deregister := d.addConn("acme", server)
+	defer deregister()
+
+	cp.datasources = []Datasource{
+		{Name: "acme", Engine: "postgres", DbName: "app", AdvertiseAddr: freePort(t)},
+	}
+	d.openListeners(ctx)
+
+	if _, err := server.Read(make([]byte, 1)); err == nil {
+		t.Error("a session using the old engine survived the listener replacement")
+	}
+	after := d.Status().Datasources[0]
+	if after.Engine != "postgres" || !after.Brokered {
+		t.Fatalf("datasource after engine change = %+v, want a brokered PostgreSQL datasource", after)
+	}
+	if after.LocalPort != before.LocalPort {
+		t.Errorf("local port changed from %d to %d with the engine; saved connections must keep the sticky port",
+			before.LocalPort, after.LocalPort)
+	}
+
+	c, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", after.LocalPort), 2*time.Second)
+	if err != nil {
+		t.Fatalf("dial replacement broker: %v", err)
+	}
+	defer c.Close()
+	if err := c.SetDeadline(time.Now().Add(2 * time.Second)); err != nil {
+		t.Fatalf("set deadline: %v", err)
+	}
+	if _, err := c.Write(postgresStartupPacket(pgSSLRequest)); err != nil {
+		t.Fatalf("write PostgreSQL SSLRequest: %v", err)
+	}
+	var response [1]byte
+	if _, err := c.Read(response[:]); err != nil {
+		t.Fatalf("read PostgreSQL SSL response: %v", err)
+	}
+	if response[0] != 'N' {
+		t.Fatalf("replacement broker answered %#x, want PostgreSQL SSL response 'N'", response[0])
+	}
+}
+
+func TestRediscoveryRestartsPostgresWhenProxyRouteChanges(t *testing.T) {
+	isolate(t)
+	oldAddr := freePort(t)
+	newAddr := freePort(t)
+	cp := newFakeCP(t, []Datasource{
+		{Name: "acme", Engine: "postgres", DbName: "app", AdvertiseAddr: oldAddr},
+	})
+
+	d := New("test")
+	ctx := context.Background()
+	if err := d.Login(ctx, control.LoginRequest{ControlPlane: cp.URL}, func(control.LoginEvent) {}); err != nil {
+		t.Fatalf("Login: %v", err)
+	}
+	defer d.closeAllListeners()
+
+	before := d.Status().Datasources[0]
+	d.mu.Lock()
+	beforeGeneration := d.listenerGenerations["acme"]
+	d.mu.Unlock()
+
+	client, server := net.Pipe()
+	defer client.Close()
+	deregister := d.addConn("acme", server)
+	defer deregister()
+
+	cp.datasources = []Datasource{
+		{Name: "acme", Engine: "postgres", DbName: "app", AdvertiseAddr: newAddr},
+	}
+	d.openListeners(ctx)
+
+	if _, err := server.Read(make([]byte, 1)); err == nil {
+		t.Error("a PostgreSQL session tied to the old proxy route survived rediscovery")
+	}
+	after := d.Status().Datasources[0]
+	if !after.Brokered || after.AdvertiseAddr != newAddr {
+		t.Fatalf("datasource after route change = %+v, want the replacement PostgreSQL route", after)
+	}
+	if after.LocalPort != before.LocalPort {
+		t.Errorf("local port changed from %d to %d with the proxy route", before.LocalPort, after.LocalPort)
+	}
+	d.mu.Lock()
+	afterGeneration := d.listenerGenerations["acme"]
+	d.mu.Unlock()
+	if afterGeneration == beforeGeneration {
+		t.Errorf("listener generation stayed %d after the PostgreSQL proxy route changed", afterGeneration)
+	}
+}
+
+func TestPostgresBrokerRouteIdentity(t *testing.T) {
+	base := Datasource{
+		Name: "acme", Engine: "postgres", AdvertiseAddr: "proxy-a:5432", WireTLS: true, CertChainPEM: "cert-a",
+	}
+	for _, tc := range []struct {
+		name    string
+		mutate  func(*Datasource)
+		changed bool
+	}{
+		{name: "address", mutate: func(ds *Datasource) { ds.AdvertiseAddr = "proxy-b:5432" }, changed: true},
+		{name: "TLS mode", mutate: func(ds *Datasource) { ds.WireTLS = false }, changed: true},
+		{name: "certificate chain", mutate: func(ds *Datasource) { ds.CertChainPEM = "cert-b" }, changed: true},
+		{name: "database name", mutate: func(ds *Datasource) { ds.DbName = "other" }, changed: false},
+		{name: "MySQL route", mutate: func(ds *Datasource) { ds.Engine = "mysql" }, changed: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			current := base
+			tc.mutate(&current)
+			if got := postgresBrokerRouteChanged(base, current); got != tc.changed {
+				t.Errorf("postgresBrokerRouteChanged() = %v, want %v", got, tc.changed)
+			}
+		})
+	}
+}
+
+func TestBrokerBoundsAndClearsLocalAuthentication(t *testing.T) {
+	proxyAddr, proxyDone := postgresProxyStub(t, func(c net.Conn) error {
+		if _, code, err := readPostgresStartup(c); err != nil || code != pgSSLRequest {
+			return fmt.Errorf("SSL request code = %d, err %v", code, err)
+		}
+		if _, err := c.Write([]byte{'N'}); err != nil {
+			return err
+		}
+		if _, _, err := readPostgresStartup(c); err != nil {
+			return err
+		}
+		if err := writePostgresFrame(c, 'R', uint32Bytes(3)); err != nil {
+			return err
+		}
+		if _, _, _, err := readPostgresFrame(c, maxPGAuthBody); err != nil {
+			return err
+		}
+		if err := writePostgresFrame(c, 'R', uint32Bytes(0)); err != nil {
+			return err
+		}
+		return writePostgresFrame(c, 'Z', []byte{'I'})
+	})
+
+	d := New("test")
+	d.mu.Lock()
+	d.cfg.ControlPlane = "https://cp.example"
+	d.cfg.Token = "pmk_token"
+	d.cfg.LocalPassword = "pmlocal_test"
+	d.datasources["pg"] = Datasource{
+		Name: "pg", Engine: "postgres", DbName: "app", AdvertiseAddr: proxyAddr,
+	}
+	d.nextListenerGeneration++
+	generation := d.nextListenerGeneration
+	d.listenerGenerations["pg"] = generation
+	d.mu.Unlock()
+
+	client, server := net.Pipe()
+	defer client.Close()
+	tracked := &deadlineRecordingConn{Conn: server}
+	done := make(chan struct{})
+	go func() {
+		d.broker(tracked, "pg", "postgres", generation)
+		close(done)
+	}()
+
+	if _, err := client.Write(postgresStartup("alice", "app")); err != nil {
+		t.Fatal(err)
+	}
+	assertPostgresAuthCode(t, client, 3)
+	if err := writePostgresFrame(client, 'p', []byte("pmlocal_test\x00")); err != nil {
+		t.Fatal(err)
+	}
+	assertPostgresAuthCode(t, client, 0)
+	if typ, body, _, err := readPostgresFrame(client, maxPGAuthBody); err != nil || typ != 'Z' || !bytes.Equal(body, []byte{'I'}) {
+		t.Fatalf("ready frame = %q %x, err %v", typ, body, err)
+	}
+	<-done
+	if err := <-proxyDone; err != nil {
+		t.Fatal(err)
+	}
+
+	if len(tracked.deadlines) < 3 {
+		t.Fatalf("local deadline changes = %v, want local auth bound, upstream startup bound, then clear", tracked.deadlines)
+	}
+	if tracked.deadlines[0].IsZero() || tracked.deadlines[1].IsZero() {
+		t.Errorf("local handshake deadlines = %v, want both phases bounded", tracked.deadlines[:2])
+	}
+	if !tracked.deadlines[2].IsZero() {
+		t.Errorf("deadline after ReadyForQuery = %s, want cleared", tracked.deadlines[2])
 	}
 }
 
@@ -458,6 +795,91 @@ func TestStaleRenewalDoesNotClobberANewerSession(t *testing.T) {
 	}
 }
 
+func TestLoginCancelsInFlightRenewal(t *testing.T) {
+	isolate(t)
+	renewStarted := make(chan struct{})
+	renewCanceled := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/auth/session/renew":
+			if got := r.Header.Get("Authorization"); got != "Bearer pmr_old" {
+				t.Errorf("renewal Authorization = %q, want the old renewal token", got)
+			}
+			close(renewStarted)
+			<-r.Context().Done()
+			close(renewCanceled)
+		case "/auth/device/start":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"verificationUri": "https://idp.example/activate",
+				"userCode":        "ABCD",
+				"handle":          "h-1",
+				"interval":        1,
+			})
+		case "/auth/device/poll":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"principal":    "new@example.com",
+				"token":        "tok-new",
+				"expiresAt":    time.Now().Add(time.Minute).Format(time.RFC3339),
+				"renewalToken": "pmr_new",
+			})
+		case "/api/datasources":
+			_ = json.NewEncoder(w).Encode([]Datasource{})
+		default:
+			t.Errorf("unexpected control-plane path %q", r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+
+	now := time.Now().UTC().Truncate(time.Second)
+	if err := state.Update(func(c *state.Config) error {
+		c.ControlPlane = srv.URL
+		c.Principal = "old@example.com"
+		c.Token = "tok-old"
+		c.RenewalToken = "pmr_old"
+		c.IssuedAt = now.Add(-time.Minute).Format(time.RFC3339)
+		c.ExpiresAt = now.Add(time.Second).Format(time.RFC3339)
+		return nil
+	}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	cfg, err := state.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	d := New("test")
+	d.cfg = *cfg
+
+	renewCtx, stopRenew := context.WithCancel(context.Background())
+	defer stopRenew()
+	renewDone := make(chan struct{})
+	go func() {
+		d.maybeRenew(renewCtx)
+		close(renewDone)
+	}()
+	select {
+	case <-renewStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("old-session renewal did not start")
+	}
+
+	if err := d.Login(context.Background(), control.LoginRequest{ControlPlane: srv.URL}, func(control.LoginEvent) {}); err != nil {
+		t.Fatalf("Login: %v", err)
+	}
+	select {
+	case <-renewCanceled:
+	case <-time.After(time.Second):
+		t.Fatal("fresh login did not cancel the old-session renewal")
+	}
+	select {
+	case <-renewDone:
+	case <-time.After(time.Second):
+		t.Fatal("old-session renewal did not return after cancellation")
+	}
+	if got := d.snapshot().RenewalToken; got != "pmr_new" {
+		t.Errorf("current renewal token = %q, want the fresh login token", got)
+	}
+}
+
 // TestRenewalWithNoExpiryIsRetriedNotPersisted: persisting an empty ExpiresAt would make every later tick fail
 // to parse it, so the daemon would silently stop renewing forever.
 func TestRenewalWithNoExpiryIsRetriedNotPersisted(t *testing.T) {
@@ -498,6 +920,75 @@ func TestRenewalWithNoExpiryIsRetriedNotPersisted(t *testing.T) {
 	if calls != 2 {
 		t.Errorf("renew calls = %d after a second tick, want 2 (it must keep retrying)", calls)
 	}
+}
+
+func TestRenewalClosesOnlyTheOldTokenGenerationAtExpiry(t *testing.T) {
+	isolate(t)
+	oldExpiry := time.Now().UTC().Truncate(time.Second).Add(2 * time.Second)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Authorization"); got != "Bearer pmr_old" {
+			t.Errorf("renewal Authorization = %q", got)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"token":     "tok-fresh",
+			"expiresAt": time.Now().Add(12 * time.Hour).Format(time.RFC3339),
+		})
+	}))
+	defer srv.Close()
+
+	d := New("test")
+	if err := state.Update(func(c *state.Config) error {
+		c.ControlPlane = srv.URL
+		c.Principal = "you@example.com"
+		c.Token = "tok-old"
+		c.RenewalToken = "pmr_old"
+		c.IssuedAt = oldExpiry.Add(-time.Hour).Format(time.RFC3339)
+		c.ExpiresAt = oldExpiry.Format(time.RFC3339)
+		return nil
+	}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	cfg, err := state.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	d.cfg = *cfg
+
+	oldClient, oldServer := net.Pipe()
+	defer oldClient.Close()
+	oldClosed := make(chan struct{})
+	oldTracked := &closeObserverConn{Conn: oldServer, onClose: func() { close(oldClosed) }}
+	deregisterOld := d.addConn("acme-postgres", oldTracked)
+	defer deregisterOld()
+
+	d.maybeRenew(context.Background())
+	if got := d.snapshot().Token; got != "tok-fresh" {
+		t.Fatalf("token after renewal = %q, want the fresh token", got)
+	}
+
+	newClient, newServer := net.Pipe()
+	defer newClient.Close()
+	newClosed := make(chan struct{})
+	newTracked := &closeObserverConn{Conn: newServer, onClose: func() { close(newClosed) }}
+	deregisterNew := d.addConn("acme-postgres", newTracked)
+	defer deregisterNew()
+
+	select {
+	case <-oldClosed:
+		t.Fatal("renewal closed the old session before its captured token expired")
+	default:
+	}
+	select {
+	case <-oldClosed:
+	case <-time.After(3 * time.Second):
+		t.Fatal("the old token generation survived its token expiry")
+	}
+	select {
+	case <-newClosed:
+		t.Fatal("expiring the old token generation closed a session using the fresh token")
+	case <-time.After(100 * time.Millisecond):
+	}
+	newServer.Close()
 }
 
 // TestLiveConnsCountsARealConnection locks the number the stop/restart confirmation depends on: it is what warns
@@ -646,13 +1137,28 @@ func TestLogoutDuringDiscoveryLeavesNoListener(t *testing.T) {
 // `pmon logout` did not actually close the brokers.
 func TestLogoutClosesEstablishedSessions(t *testing.T) {
 	isolate(t)
+	if err := state.Update(func(c *state.Config) error {
+		c.ControlPlane = "https://cp.example"
+		c.Token = "pmk_token"
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
 	d := New("test")
+	d.mu.Lock()
+	d.cfg.ControlPlane = "https://cp.example"
+	d.cfg.Token = "pmk_token"
+	d.mu.Unlock()
 
 	// A registered connection stands in for an established session (the broker registers before piping).
 	client, server := net.Pipe()
 	defer client.Close()
-	defer server.Close()
-	deregister := d.addConn("acme-mysql", server)
+	loggedInAtClose := make(chan bool, 1)
+	tracked := &closeObserverConn{Conn: server, onClose: func() {
+		cfg := d.snapshot()
+		loggedInAtClose <- cfg.LoggedIn()
+	}}
+	deregister := d.addConn("acme-mysql", tracked)
 	defer deregister()
 
 	// The tracked session is visible in the count even with no listener for it, which is what stop/quit read
@@ -664,11 +1170,81 @@ func TestLogoutClosesEstablishedSessions(t *testing.T) {
 	if err := d.Logout(); err != nil {
 		t.Fatalf("Logout: %v", err)
 	}
+	if <-loggedInAtClose {
+		t.Error("logout closed sessions before invalidating in-memory credentials")
+	}
 
 	// The session's socket must be closed, which is what unblocks its pipe. A closed net.Pipe returns
 	// io.ErrClosedPipe immediately, so no deadline is needed — and setting one would itself fail.
 	if _, err := server.Read(make([]byte, 1)); err == nil {
 		t.Error("the established session survived logout; it must be closed")
+	}
+}
+
+func TestBrokerRejectsConnectionAcceptedBeforeLogout(t *testing.T) {
+	isolate(t)
+	if err := state.Update(func(c *state.Config) error {
+		c.ControlPlane = "https://cp.example"
+		c.Token = "pmk_old"
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	proxy, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer proxy.Close()
+
+	d := New("test")
+	d.mu.Lock()
+	d.cfg.ControlPlane = "https://cp.example"
+	d.cfg.Token = "pmk_old"
+	d.cfg.LocalPassword = "pmlocal_test"
+	d.datasources["pg"] = Datasource{
+		Name: "pg", Engine: "postgres", AdvertiseAddr: proxy.Addr().String(),
+	}
+	d.nextListenerGeneration++
+	acceptedGeneration := d.nextListenerGeneration
+	d.listenerGenerations["pg"] = acceptedGeneration
+	d.mu.Unlock()
+	if err := d.Logout(); err != nil {
+		t.Fatal(err)
+	}
+
+	d.mu.Lock()
+	d.cfg.ControlPlane = "https://cp.example"
+	d.cfg.Token = "pmk_new"
+	d.datasources["pg"] = Datasource{
+		Name: "pg", Engine: "postgres", AdvertiseAddr: proxy.Addr().String(),
+	}
+	d.nextListenerGeneration++
+	d.listenerGenerations["pg"] = d.nextListenerGeneration
+	d.mu.Unlock()
+
+	client, server := net.Pipe()
+	defer client.Close()
+	done := make(chan struct{})
+	go func() {
+		d.broker(server, "pg", "postgres", acceptedGeneration)
+		close(done)
+	}()
+	if _, err := client.Write(postgresStartup("alice", "app")); err != nil {
+		t.Fatal(err)
+	}
+	if typ, _, _, err := readPostgresFrame(client, maxPGAuthBody); err != nil || typ != 'E' {
+		t.Fatalf("stale accepted connection response = %q, err %v", typ, err)
+	}
+	<-done
+
+	if err := proxy.(*net.TCPListener).SetDeadline(time.Now().Add(100 * time.Millisecond)); err != nil {
+		t.Fatal(err)
+	}
+	if c, err := proxy.Accept(); err == nil {
+		c.Close()
+		t.Fatal("a connection accepted before logout used the new login")
+	} else if netErr, ok := err.(net.Error); !ok || !netErr.Timeout() {
+		t.Fatalf("accept after stale broker: %v", err)
 	}
 }
 
@@ -779,25 +1355,175 @@ func TestSubscribeDropsRatherThanBlocking(t *testing.T) {
 	}
 }
 
-// TestRenewLeadIsNeverNarrowerThanTheSampleInterval: the renewal loop only checks every renewCheckInterval, so a
-// lead shorter than that can fall entirely between two checks and the token expires un-renewed. Sizing the lead
-// to a short token's lifetime must not trade "renews every tick" for "never renews" — the control plane clamps
-// TTL to a 60s floor, so those tokens are real.
-func TestRenewLeadIsNeverNarrowerThanTheSampleInterval(t *testing.T) {
-	floor := 2 * renewCheckInterval
-	for _, ttl := range []time.Duration{60 * time.Second, 2 * time.Minute, 10 * time.Minute, 12 * time.Hour} {
-		issued := time.Now()
-		expiry := issued.Add(ttl)
-		cfg := state.Config{IssuedAt: issued.Format(time.RFC3339), ExpiresAt: expiry.Format(time.RFC3339)}
+func TestRenewLoopChecksImmediately(t *testing.T) {
+	isolate(t)
+	renewed := make(chan struct{})
+	var renewedOnce sync.Once
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Authorization"); got != "Bearer pmr_old" {
+			t.Errorf("renewal Authorization = %q, want the current renewal token", got)
+		}
+		renewedOnce.Do(func() { close(renewed) })
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"token":     "tok-fresh",
+			"expiresAt": time.Now().Add(time.Hour).Format(time.RFC3339),
+		})
+	}))
+	defer srv.Close()
+
+	now := time.Now().UTC().Truncate(time.Second)
+	if err := state.Update(func(c *state.Config) error {
+		c.ControlPlane = srv.URL
+		c.Principal = "you@example.com"
+		c.Token = "tok-old"
+		c.RenewalToken = "pmr_old"
+		c.IssuedAt = now.Add(-time.Minute).Format(time.RFC3339)
+		c.ExpiresAt = now.Add(5 * time.Second).Format(time.RFC3339)
+		return nil
+	}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	cfg, err := state.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	d := New("test")
+	d.cfg = *cfg
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		d.renewLoop(ctx)
+		close(done)
+	}()
+	select {
+	case <-renewed:
+	case <-time.After(2 * time.Second):
+		cancel()
+		<-done
+		t.Fatal("renewal loop did not check a due token immediately")
+	}
+	waitFor(t, "the immediate renewal to apply", func() bool { return d.snapshot().Token == "tok-fresh" })
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("renewal loop did not stop after cancellation")
+	}
+}
+
+func TestRenewLoopRetriesAfterRequestTimeout(t *testing.T) {
+	isolate(t)
+	firstStarted := make(chan time.Time, 1)
+	secondStarted := make(chan time.Time, 1)
+	var mu sync.Mutex
+	attempts := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		attempts++
+		attempt := attempts
+		mu.Unlock()
+		switch attempt {
+		case 1:
+			firstStarted <- time.Now()
+			<-r.Context().Done()
+		case 2:
+			secondStarted <- time.Now()
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"token":     "tok-fresh",
+				"expiresAt": time.Now().Add(time.Hour).Format(time.RFC3339),
+			})
+		}
+	}))
+	defer srv.Close()
+
+	now := time.Now().UTC().Truncate(time.Second)
+	if err := state.Update(func(c *state.Config) error {
+		c.ControlPlane = srv.URL
+		c.Principal = "you@example.com"
+		c.Token = "tok-old"
+		c.RenewalToken = "pmr_old"
+		c.IssuedAt = now.Add(-30 * time.Second).Format(time.RFC3339)
+		c.ExpiresAt = now.Add(30 * time.Second).Format(time.RFC3339)
+		return nil
+	}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	cfg, err := state.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	d := New("test")
+	d.cfg = *cfg
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		d.renewLoop(ctx)
+		close(done)
+	}()
+	var first time.Time
+	select {
+	case first = <-firstStarted:
+	case <-time.After(2 * time.Second):
+		cancel()
+		<-done
+		t.Fatal("renewal loop did not start the due attempt")
+	}
+	select {
+	case second := <-secondStarted:
+		if delay := second.Sub(first); delay >= renewRequestTimeout+renewCheckInterval+2*time.Second {
+			t.Fatalf("second renewal attempt started after %s; timeout retry exceeded its bound", delay)
+		}
+	case <-time.After(renewRequestTimeout + renewCheckInterval + 2*time.Second):
+		cancel()
+		<-done
+		t.Fatal("renewal loop did not retry after the request timeout")
+	}
+	waitFor(t, "the retry to apply", func() bool { return d.snapshot().Token == "tok-fresh" })
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("renewal loop did not stop after cancellation")
+	}
+}
+
+func TestRenewScheduleLeavesTwoAttemptsBeforeTokenExpiry(t *testing.T) {
+	floor := 3*renewCheckInterval + 2*renewRequestTimeout
+	minted := time.Date(2026, time.August, 25, 12, 0, 0, 0, time.UTC)
+	cases := []struct {
+		ttl           time.Duration
+		deliveryDelay time.Duration
+	}{
+		{ttl: 60 * time.Second},
+		{ttl: 60 * time.Second, deliveryDelay: renewRequestTimeout},
+		{ttl: 2 * time.Minute},
+		{ttl: 10 * time.Minute},
+		{ttl: 12 * time.Hour},
+	}
+	for _, tc := range cases {
+		received := minted.Add(tc.deliveryDelay)
+		expiry := minted.Add(tc.ttl)
+		cfg := state.Config{IssuedAt: received.Format(time.RFC3339), ExpiresAt: expiry.Format(time.RFC3339)}
 		lead := renewLead(cfg, expiry)
 		if lead < floor {
-			t.Errorf("ttl %s: lead %s is narrower than %s, so the loop can skip past expiry", ttl, lead, floor)
+			t.Errorf("ttl %s, delivery %s: lead %s is narrower than %s", tc.ttl, tc.deliveryDelay, lead, floor)
 		}
 		if lead > maxRenewLeadTime {
-			t.Errorf("ttl %s: lead %s exceeds the %s cap", ttl, lead, maxRenewLeadTime)
+			t.Errorf("ttl %s, delivery %s: lead %s exceeds the %s cap", tc.ttl, tc.deliveryDelay, lead, maxRenewLeadTime)
+		}
+		eligibleAt := expiry.Add(-lead)
+		if eligibleAt.Before(received) {
+			eligibleAt = received
+		}
+		latestFirstAttempt := eligibleAt.Add(renewCheckInterval)
+		latestSecondCompletion := latestFirstAttempt.Add(renewRequestTimeout + renewCheckInterval + renewRequestTimeout)
+		if !latestSecondCompletion.Before(expiry) {
+			t.Errorf("ttl %s, delivery %s: two bounded renewal attempts complete at %s, not before expiry %s", tc.ttl, tc.deliveryDelay, latestSecondCompletion, expiry)
 		}
 	}
-	// A config predating IssuedAt falls back to the fixed cap rather than computing a nonsense lifetime.
+
 	expiry := time.Now().Add(12 * time.Hour)
 	if lead := renewLead(state.Config{}, expiry); lead != maxRenewLeadTime {
 		t.Errorf("legacy config (no IssuedAt) lead = %s, want the %s fallback", lead, maxRenewLeadTime)
@@ -860,6 +1586,27 @@ func TestAPortCollisionIsVisibleNotSilent(t *testing.T) {
 	if !strings.Contains(ds.Reason, "in use") {
 		t.Errorf("Reason = %q, want it to name the port collision", ds.Reason)
 	}
+}
+
+type closeObserverConn struct {
+	net.Conn
+	once    sync.Once
+	onClose func()
+}
+
+func (c *closeObserverConn) Close() error {
+	c.once.Do(c.onClose)
+	return c.Conn.Close()
+}
+
+type deadlineRecordingConn struct {
+	net.Conn
+	deadlines []time.Time
+}
+
+func (c *deadlineRecordingConn) SetDeadline(deadline time.Time) error {
+	c.deadlines = append(c.deadlines, deadline)
+	return c.Conn.SetDeadline(deadline)
 }
 
 // TestSnapshotDoesNotAliasThePortsMap: a bare struct copy shares the map header, so a caller reading Ports off a

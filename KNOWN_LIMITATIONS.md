@@ -58,13 +58,12 @@ control-plane store, which is PostgreSQL only and carries no portability caveat
 
 ## Daemon session renewal and revocation
 
-- 🟡 A `pmon` login is not renewed silently. The control plane serves
-  `POST /auth/session/renew` and `pmon login` stores the renewal token the
-  device-login result returns, but no pmon code path calls that route. A login
-  therefore lasts exactly one wire token TTL (`pmon login --ttl`, default 12h,
-  clamped server-side to 24h) and then needs a fresh `pmon login`.
-  `PM_SESSION_WINDOW` (default 2h) bounds only how long the unused renew route
-  would accept a renewal token; raising it cannot extend a live session.
+- 🟡 The daemon renews its wire token shortly before expiry while the `DAEMON`
+  session window remains open. `PM_SESSION_WINDOW` defaults to 2h while the wire
+  token TTL defaults to 12h, so the default token does not approach renewal
+  until after that window has closed and a default login still lasts one token
+  TTL. A longer session window or shorter token TTL permits silent renewal; once
+  renewal is refused, a fresh `pmon login` is required.
 - 🔴 Closing a daemon renewal window does not revoke the wire token issued under
   it. Because the token TTL (12h default) outlives the window (2h default) and
   the wire path validates only `proxy_token`, a definitive IdP rejection during
@@ -441,8 +440,8 @@ same bytes as the root pool for its upstream hop with the advertised host
 checked, so there is one trust mechanism rather than a separate pinning path.
 Registration also carries `advertise_wire_tls`, a separate boolean saying
 whether the proxy serves TLS at all: `pmon` refuses to send the token to a proxy
-that offers no TLS whenever that is set. `pmon` brokers MySQL only, so a
-PostgreSQL client verifies with the downloaded file instead.
+that offers no TLS whenever that is set. This applies to both MySQL and
+PostgreSQL brokers.
 
 - 🔴 The advertised chain's root of trust is the `Register` credential, not a
   proxy identity. One system-wide shared secret (`PM_SECRET_TOKEN`)

@@ -91,8 +91,8 @@ certificate and publish nothing (`PM_TLS_NO_ADVERTISE`), so an empty chain does
 NOT mean plaintext. `pmon` refuses to send its token to a proxy that offers no
 TLS whenever this is set — inferring the requirement from the chain instead
 would make an attacker's plaintext greeting indistinguishable from a datasource
-that never had TLS. `pmon` brokers MySQL only today, so a PostgreSQL client
-verifies with the downloaded file instead.
+that never had TLS. `pmon` applies this check to both MySQL and PostgreSQL
+brokers.
 
 `GET /api/datasources` surfaces all three (`advertiseAddr`,
 `advertiseCertChain`, `advertiseWireTls`). That is how a client finds them:

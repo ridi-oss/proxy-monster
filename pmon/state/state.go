@@ -24,8 +24,8 @@ type Config struct {
 	// logins that omit it, so the address is configured once.
 	ControlPlane string `json:"controlPlane"`
 	Principal    string `json:"principal"`
-	// Token is the wire token the daemon injects upstream. Each login rewrites it; the daemon swaps it in
-	// without restarting, so in-flight sessions keep flowing under the fresh token.
+	// Token is the wire token the daemon injects when it opens an upstream database session. Renewal keeps
+	// older sessions only until their captured token expires, then clients reconnect with this token.
 	Token     string `json:"token"`
 	ExpiresAt string `json:"expiresAt"`
 	// IssuedAt is when the current wire token was stored, so the renewal loop can size its lead time against the

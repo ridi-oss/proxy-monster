@@ -194,16 +194,13 @@ mechanism). Authoritative: [docs/auth-model.md](docs/auth-model.md).
   binary) runs the OIDC device-auth flow and the control-plane mints a
   short-lived opaque, revocable credential bound to principal + roles.
   - Default — background daemon + local broker: the daemon opens one loopback
-    listener per MySQL datasource on a sticky port as soon as credentials exist
-    (`pmon login` is the only step), so a saved `mysql` or JDBC connection keeps
-    a fixed `127.0.0.1:<port>` and a localhost password that never rotates,
-    while the daemon injects the current token on the upstream hop. Only MySQL
-    is brokered — a PostgreSQL datasource is discovered then skipped, so `psql`
-    connects to the proxy directly with a token as its password. Renewal is
-    server-side only: the control plane serves `POST /auth/session/renew`, but
-    `pmon` stores the renewal token from device login and never calls it, so a
-    login lasts one token lifetime (12h default) and then needs a fresh
-    `pmon login`.
+    listener per MySQL or PostgreSQL datasource on a sticky port as soon as
+    credentials exist (`pmon login` is the only step), so a saved native or JDBC
+    connection keeps a fixed `127.0.0.1:<port>` and a localhost password that
+    never rotates while the daemon injects the current token on the upstream
+    hop. PostgreSQL cancel requests are forwarded to the proxy. The daemon
+    renews the wire token before expiry until the server-side session window
+    closes, then requires a fresh `pmon login`.
   - One-shot token: the console's Access page (`/access`) mints a short-lived
     password (`POST /api/tokens`) the user pastes into any client.
   - Expiring-only — every credential has a server-set expiry (TTL clamped
@@ -215,9 +212,9 @@ mechanism). Authoritative: [docs/auth-model.md](docs/auth-model.md).
     crosses the network in the clear. Plaintext is therefore only acceptable on
     a trusted network — a private transport such as a peered VPC, PrivateLink,
     or a VPN/tailnet. Configuration:
-    [INSTALL.md](INSTALL.md#proxy--one-set-per-datasource). Where pinning does
-    and does not cover this hop:
-    [KNOWN_LIMITATIONS.md](KNOWN_LIMITATIONS.md#wire-cert-pinning-pmon--proxy).
+    [INSTALL.md](INSTALL.md#proxy--one-set-per-datasource). The remaining trust
+    limits are documented in
+    [KNOWN_LIMITATIONS.md](KNOWN_LIMITATIONS.md#wire-cert-distribution-direct-clients-and-pmon).
 - Broker: goproxy reaches the target DB with a per-datasource service account;
   the token only proves _who you are_, never _what you can see_ — enforcement
   and JIT elevation are independent of how it was obtained.

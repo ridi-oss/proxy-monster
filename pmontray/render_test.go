@@ -71,18 +71,18 @@ func TestConcurrentRendersNeverLeaveAMixedPool(t *testing.T) {
 	}
 }
 
-// TestUnbrokeredRowCarriesNoPayload: a row for a datasource that is not brokered (Postgres, no advertised
-// address) must be un-clickable rather than copying an empty or bogus string.
+// TestUnbrokeredRowCarriesNoPayload: a row without an advertised address must be un-clickable rather than
+// copying an empty or bogus string.
 func TestUnbrokeredRowCarriesNoPayload(t *testing.T) {
 	a := newTestApp(4)
 	s := &control.Status{Principal: "you@example.com", LoggedIn: true, LocalPassword: "pw"}
 	s.Datasources = []control.Datasource{
-		{Name: "pg", Engine: "postgres", Brokered: false, Reason: "postgres brokering not yet supported"},
+		{Name: "no-addr", Engine: "postgres", Brokered: false, Reason: "no advertised proxy address"},
 	}
 	a.applyRows(s)
 
-	if a.dsItems[0].name != "pg" {
-		t.Fatalf("row 0 = %q, want pg", a.dsItems[0].name)
+	if a.dsItems[0].name != "no-addr" {
+		t.Fatalf("row 0 = %q, want no-addr", a.dsItems[0].name)
 	}
 	if a.dsItems[0].connString != "" {
 		t.Errorf("unbrokered row carries a payload %q; a click must copy nothing", a.dsItems[0].connString)

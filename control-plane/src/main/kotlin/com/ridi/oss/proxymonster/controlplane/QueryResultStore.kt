@@ -35,6 +35,10 @@ data class DecryptedResult(
     // The backend's own affected-row count for a DML statement (UPDATE/INSERT/DELETE), which has no result
     // set of its own. Null for a statement that returns rows (e.g. SELECT), where [rows].size IS the count.
     val rowsAffected: Int? = null,
+    // The executed decision's requirement digest, frozen with the bytes so a view denies drift
+    // ([decideResultView]). Empty for a result stored before this was recorded (legacy) — a view of an
+    // analyzable result whose digest is absent then fails closed.
+    val resultFingerprint: List<String> = emptyList(),
 )
 
 /**

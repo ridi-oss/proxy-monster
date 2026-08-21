@@ -222,6 +222,13 @@ internal fun decideResultView(
     if (ctx.action == EnfAction.DENY) {
         return ResultViewDecision.Denied(ctx.denyReason ?: ctx.detail ?: "view decision denied")
     }
+    // A stored analyzable result (non-empty frozen digest) must never be released through the passthrough
+    // relay: if its SQL became unanalyzable since execution (a dropped table/column → exception.unanalyzable),
+    // the live re-decision turns passthrough while the stored bytes still hold the columnar, possibly masked,
+    // result. Releasing them raw would leak exactly what the digest exists to protect, so it fails closed.
+    if (ctx.passthrough && decrypted.resultFingerprint.isNotEmpty()) {
+        return ResultViewDecision.Denied("stored result no longer matches the live query decision")
+    }
     if (ctx.passthrough) {
         // The re-decision already ran full Cedar authorization under {R} in the viewer's live context and
         // returned non-DENY (checked above). A passthrough carries no column-masking model — there is nothing
@@ -241,10 +248,20 @@ internal fun decideResultView(
         }
         return ResultViewDecision.Allowed(decrypted.columns, decrypted.rows)
     }
-    if (
-        ctx.outputColumns.size != decrypted.columns.size ||
-        ctx.outputColumns.zip(decrypted.columns).any { (decided, stored) -> !decided.equals(stored, ignoreCase = true) }
-    ) {
+    // Apply the re-decided masks to the stored bytes only when the frozen requirement digest still matches
+    // the live re-decision. An equal digest means every masked column carries the same output ordinals it did
+    // at execution (so ctx.masks, bound to the live ordinals, bind to the same stored column) AND the same
+    // predicate/aggregate references and scanned tables held — so a schema or namespace change that would
+    // rebind a mask, or move a protected value through a predicate the stored result no longer reflects,
+    // makes the digest differ and denies. Compared by base-column identity, not result-set label, so an
+    // expression output whose label differs from the analyzer's is not falsely denied. A result stored before
+    // the digest was recorded (legacy) carries none, so an analyzable view of it fails closed here.
+    if (decrypted.resultFingerprint != ctx.resultFingerprint) {
+        return ResultViewDecision.Denied("stored result no longer matches the live query decision")
+    }
+    // The live projection must be the same width as the stored bytes a mask ordinal indexes into; this also
+    // denies a plan-shaped result (EXPLAIN emits no output columns) rather than releasing it raw.
+    if (ctx.outputColumns.size != decrypted.columns.size) {
         return ResultViewDecision.Denied("stored result columns no longer match the live query decision")
     }
     if (decrypted.rows.any { it.size != decrypted.columns.size }) {
@@ -923,7 +940,7 @@ internal suspend fun runApprovedTask(
         if (response.decision == EnfAction.DENY) {
             "approval.execute_denied"
         } else {
-            val result = DecryptedResult(response.columns, response.rows, response.rowsAffected)
+            val result = DecryptedResult(response.columns, response.rows, response.rowsAffected, response.resultFingerprint)
             // Child DONE, parent EXECUTED, and the execution audit all commit in ONE transaction: a crash can
             // never leave a readable DONE child under a non-EXECUTED task. If the parent has left EXECUTING
             // (e.g. a restart already reconciled it to FAILED), the flip fails and aborts the whole commit —

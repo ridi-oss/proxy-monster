@@ -106,7 +106,14 @@ class ApprovalResultAssumeMysqlDbTest {
                 ),
             ),
         )
-        val decrypted = DecryptedResult(listOf("ssn"), listOf(listOf(rawSsn)))
+        // Freeze the execution-time requirement digest the way the real run does (R executing on the trusted
+        // network), so the view's re-decision matches and the masks bind (an empty digest would fail closed as
+        // a pre-fingerprint legacy result).
+        val decrypted = DecryptedResult(
+            listOf("ssn"),
+            listOf(listOf(rawSsn)),
+            resultFingerprint = decide(Channel.WORKFLOW_EXECUTOR, "100.100.1.10").resultFingerprint,
+        )
 
         val trusted = decideResultView(
             viewer = requester,

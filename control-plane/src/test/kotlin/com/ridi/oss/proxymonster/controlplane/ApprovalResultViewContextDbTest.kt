@@ -34,6 +34,7 @@ import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertNotEquals
 import kotlin.test.assertTrue
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
@@ -225,6 +226,10 @@ class ApprovalResultViewContextDbTest {
         sql: String = "SELECT id, email, ssn FROM users",
         columns: List<String> = listOf("id", "email", "ssn"),
         rows: List<List<String?>> = listOf(listOf("1", "a@x", rawSsn)),
+        // The execution-time requirement digest frozen with the result. Defaults to what the real decision
+        // emits for [sql] under the execute-as role, so a same-schema view matches and releases; a test that
+        // simulates a schema change between execute and view passes a different (drifted / empty) digest.
+        resultFingerprint: List<String> = fx.decide(sql, providedRoles = setOf(roleName)).resultFingerprint,
     ): Long {
         val reqId = fx.dataSource.connection.use { c ->
             c.prepareStatement(
@@ -243,7 +248,7 @@ class ApprovalResultViewContextDbTest {
         }
         fx.dataSource.connection.use { c -> c.prepareStatement("INSERT INTO query_result (task_id, sql, sql_hash) VALUES (?, ?, 'fixture')").use { ps -> ps.setLong(1, reqId); ps.setString(2, sql); ps.executeUpdate() } }
         assertNotNull(resultStore.startRun(reqId, executor))
-        assertNotNull(resultStore.completeRun(reqId, DecryptedResult(columns, rows), 3600))
+        assertNotNull(resultStore.completeRun(reqId, DecryptedResult(columns, rows, resultFingerprint = resultFingerprint), 3600))
         return reqId
     }
 
@@ -568,5 +573,103 @@ class ApprovalResultViewContextDbTest {
         val responseBody = response.bodyAsText()
         assertEquals("approval.result_view_denied", Json.decodeFromString<ApiError>(responseBody).code)
         assertFalse(responseBody.contains(sentinel), "an extra stored cell must never bypass ordinal masking")
+    }
+
+    // A column reorder between execute and view (e.g. MySQL `MODIFY ssn ... FIRST`) re-expands `SELECT *` to
+    // the same columns in a new order, so the masked column lands on a different ordinal. The stored bytes
+    // still hold the raw ssn at its ORIGINAL ordinal, so the re-decision's mask — bound to the NEW ordinal —
+    // would mask a different column and release the ssn cleartext. The frozen requirement digest carries each
+    // masked column's ordinals, so it no longer matches the live one and the view denies. (A count/name check
+    // misses this: same count, and the reordered labels come from the same columns.)
+    @Test
+    fun `a column reorder between execute and view fails closed rather than misbinding the mask`() = testApplication {
+        resetMutableAuthzState()
+        // Freeze the digest of a projection where ssn sat at ordinal 0, then view the result whose live
+        // re-decision projects ssn at ordinal 2 — the masked column's ordinals no longer line up.
+        val reordered = fx.decide("SELECT ssn, email, id FROM users", providedRoles = setOf(roleName)).resultFingerprint
+        val id = seedResult(rows = listOf(listOf("1", "a@x", rawSsn)), resultFingerprint = reordered)
+        val client = wire()
+        client.login(executor)
+
+        val response = client.get("/api/approvals/$id/result") {
+            header("X-Forwarded-For", "100.100.5.5")
+        }
+        assertEquals(HttpStatusCode.Forbidden, response.status)
+        val responseBody = response.bodyAsText()
+        assertEquals("approval.result_view_denied", Json.decodeFromString<ApiError>(responseBody).code)
+        assertFalse(responseBody.contains(rawSsn), "a reorder must not slide the mask off the ssn and leak it")
+    }
+
+    // The digest compares base-column identity, not result-set labels, so a stored column whose label differs
+    // from the analyzer's output name (an unaliased expression like `cast(id …)`, whose DB label is
+    // engine-specific) is NOT falsely denied — the value is masked and released. The pre-fix name-equality
+    // check denied this outright. Modeled by storing arbitrary labels over the same requirement digest.
+    @Test
+    fun `a result whose labels differ from the analyzer names is released, not falsely denied`() = testApplication {
+        resetMutableAuthzState()
+        val id = seedResult(columns = listOf("c0", "c1", "c2"))
+        val client = wire()
+        client.login(executor)
+
+        val response = client.get("/api/approvals/$id/result")
+        assertEquals(HttpStatusCode.OK, response.status)
+        val view = response.body<QueryResultView>()
+        assertEquals(listOf("c0", "c1", "c2"), view.columns, "the stored labels are returned as-is")
+        assertEquals(maskedSsn, view.rows.single()[2], "the ssn is still masked by ordinal, just not falsely denied")
+    }
+
+    // A result stored before the digest was recorded (legacy) carries none. An analyzable result whose live
+    // re-decision DOES have a digest then has nothing to prove its mask bindings against, so the view denies
+    // fail-closed rather than releasing the stored bytes with unverified masks.
+    @Test
+    fun `a legacy result with no stored digest fails closed`() = testApplication {
+        resetMutableAuthzState()
+        val id = seedResult(rows = listOf(listOf("1", "a@x", rawSsn)), resultFingerprint = emptyList())
+        val client = wire()
+        client.login(executor)
+
+        val response = client.get("/api/approvals/$id/result") {
+            header("X-Forwarded-For", "100.100.5.5")
+        }
+        assertEquals(HttpStatusCode.Forbidden, response.status)
+        val responseBody = response.bodyAsText()
+        assertEquals("approval.result_view_denied", Json.decodeFromString<ApiError>(responseBody).code)
+        assertFalse(responseBody.contains(rawSsn), "a result with no digest must not release stored PII")
+    }
+
+    // A stored analyzable result (non-empty digest) whose SQL later re-decides as a passthrough relay (its
+    // table/column dropped → exception.unanalyzable) must NOT take the raw-release passthrough shortcut — the
+    // stored bytes still hold the columnar, possibly masked, result. It fails closed instead.
+    @Test
+    fun `a stored analyzable result that re-decides as passthrough fails closed`() = testApplication {
+        resetMutableAuthzState()
+        val sentinel = "LEAK-SENTINEL-PASSTHROUGH"
+        // SHOW re-decides as an authorized passthrough at view; the stored digest is non-empty as if the row
+        // had been an analyzable columnar result at execution.
+        val id = seedResult(
+            sql = "SHOW search_path",
+            columns = listOf("search_path"),
+            rows = listOf(listOf(sentinel)),
+            resultFingerprint = listOf("t:acme.public.users"),
+        )
+        val client = wire()
+        client.login(executor)
+
+        val response = client.get("/api/approvals/$id/result")
+        assertEquals(HttpStatusCode.Forbidden, response.status)
+        val responseBody = response.bodyAsText()
+        assertEquals("approval.result_view_denied", Json.decodeFromString<ApiError>(responseBody).code)
+        assertFalse(responseBody.contains(sentinel), "a columnar result must not release raw through a passthrough re-decision")
+    }
+
+    // The digest freezes the WHOLE analyzer requirement set, not just projected columns — a scanned table
+    // (here uncovered by count(*)) changes it — so drift in a value that shaped which rows were stored, not
+    // just which were projected, is caught. Guards against regressing to a projection-only fingerprint.
+    @Test
+    fun `the digest captures scanned-table requirements beyond the projection`() = testApplication {
+        resetMutableAuthzState()
+        val projected = fx.decide("SELECT id FROM users", providedRoles = setOf(roleName)).resultFingerprint
+        val scanned = fx.decide("SELECT count(*) FROM users", providedRoles = setOf(roleName)).resultFingerprint
+        assertNotEquals(projected, scanned, "an uncovered table scan must change the requirement digest")
     }
 }

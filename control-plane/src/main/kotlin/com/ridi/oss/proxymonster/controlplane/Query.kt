@@ -102,6 +102,9 @@ data class QueryResponse(
     val columns: List<String> = emptyList(),
     val rows: List<List<String?>> = emptyList(),
     val rowsAffected: Int? = null,
+    // The executed decision's requirement digest, frozen with the stored result so a later view can deny
+    // drift (see [decideResultView]). Carried from the Decide handler by decision id.
+    val resultFingerprint: List<String> = emptyList(),
     val latencyMs: Long = 0,
 )
 
@@ -131,6 +134,29 @@ enum class Channel(val contextValue: String) {
     MCP("mcp"),
 }
 
+/**
+ * A canonical, order-independent digest of every authorization requirement the analyzer emitted for a
+ * statement: each protected/denied column with its disposition and output ordinals, each uncovered table,
+ * function, and utility. An execute-under-R result freezes this; the view denies if the live re-decision's
+ * digest differs (see [decideResultView]). Because it carries each masked column's output ordinals, a
+ * schema change that reorders a masked column changes the digest — so the re-decided masks can only ever
+ * apply to stored bytes whose column layout provably matches. It also captures predicate/aggregate
+ * references (analyzer DENY grants) and scanned tables, so drift in a value that shaped which rows were
+ * stored — not just which were projected — is caught too. It is compared by base-column identity, never
+ * result-set label, so an expression output whose label differs from the analyzer's is not falsely denied.
+ */
+private fun resultFingerprint(facts: StatementFacts): List<String> =
+    facts.resultReadsList.map { g ->
+        when {
+            g.hasColumn() -> "c${g.maskedDisposition.number}:" +
+                "${g.column.catalog}.${g.column.identity.schema}.${g.column.identity.table}.${g.column.identity.column}:" +
+                g.outputOrdinalsList.sorted().joinToString(",")
+            g.hasTable() -> "t:${g.table.catalog}.${g.table.schema}.${g.table.table}"
+            g.hasFunction() -> "fn:${g.function.name}"
+            else -> "u:${g.utility.command}"
+        }
+    }.sorted()
+
 /** The verdict for a statement, without executing it: action + masks (output col → kind) + context. */
 data class DecisionContext(
     val action: EnfAction,
@@ -147,10 +173,13 @@ data class DecisionContext(
      * so target-DB column order matches the mask ordinals. Null = send verbatim. */
     val rewrittenSql: String? = null,
     /** The analyzer's ordered output column names for this decision (an empty list for a passthrough /
-     * unanalyzed statement). APPROVAL live result viewing compares this against the stored execute-enforced
-     * result to detect catalog drift between execute and view (a `SELECT *` re-expansion that would slide a
-     * mask onto the wrong stored column and leak a value) — a mismatch is DENY. */
+     * unanalyzed statement). */
     val outputColumns: List<String> = emptyList(),
+    /** The analyzer requirement digest (empty for a passthrough / unanalyzed statement). An execute-under-R
+     * result freezes this; live result viewing re-decides and denies if it no longer matches — a schema or
+     * namespace change that would rebind a mask onto a different stored column, or move a protected column
+     * through a predicate the frozen result no longer reflects. See [resultFingerprint], [decideResultView]. */
+    val resultFingerprint: List<String> = emptyList(),
     /** The derived `context.tags` this decision was evaluated under, surfaced so [decisionRecord]
      * logs which tags the request earned. Stamped on EVERY decision that runs after context derivation —
      * ALLOW, MASK, DENY (structural + policy), and passthrough alike — so an audit row carries the attested
@@ -798,6 +827,7 @@ fun decideQuery(
         detail = facts.detail,
         passthrough = false,
         outputColumns = facts.outputColumnsList,
+        resultFingerprint = resultFingerprint(facts),
         contextTags = derivedTags,
         unmaskablePermitted = unmaskablePermitted,
         sanitizeDiagnostics = sanitizeDiagnostics,
@@ -1099,7 +1129,7 @@ fun Route.editorSessionRoutes(
                     // localizes the polled code with no editor-specific catalog entries.
                     "approval.execute_denied"
                 } else {
-                    val result = DecryptedResult(response.columns, response.rows, response.rowsAffected)
+                    val result = DecryptedResult(response.columns, response.rows, response.rowsAffected, response.resultFingerprint)
                     // Child DONE + parent EXECUTED commit in ONE transaction (see /execute): a crash can never
                     // leave a readable DONE child under a non-EXECUTED task. The run's per-statement Decide
                     // round-trip already wrote the real audit decision (ALLOW/MASK/DENY + decisionId), so no

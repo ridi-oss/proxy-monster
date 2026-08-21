@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.21](https://github.com/ridi-oss/proxy-monster/compare/pmon-v0.1.5...pmon-v0.1.21) (2026-08-21)
+
+
+### Chores
+
+* cut server 0.1.21 for the [#202](https://github.com/ridi-oss/proxy-monster/issues/202) revert ([#230](https://github.com/ridi-oss/proxy-monster/issues/230)) ([5001b8c](https://github.com/ridi-oss/proxy-monster/commit/5001b8ccd91a3a9f9ef47f5fc6efe50f0a86f715))
+
 ## [0.1.5](https://github.com/ridi-oss/proxy-monster/compare/pmon-v0.1.4...pmon-v0.1.5) (2026-08-20)
 
 

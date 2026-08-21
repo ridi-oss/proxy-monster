@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.1.21](https://github.com/ridi-oss/proxy-monster/compare/server-v0.1.20...server-v0.1.21) (2026-08-21)
+
+
+### Reverts
+
+* surface a failed query's target-DB error ([#202](https://github.com/ridi-oss/proxy-monster/issues/202)) ([#227](https://github.com/ridi-oss/proxy-monster/issues/227)) ([203ca88](https://github.com/ridi-oss/proxy-monster/commit/203ca88e720d2c5cb9e5e7767238ed98abea546e))
+
+
+### Build & Dependencies
+
+* **release:** recognize revert-type commits + cut server 0.1.21 ([#233](https://github.com/ridi-oss/proxy-monster/issues/233)) ([f57c488](https://github.com/ridi-oss/proxy-monster/commit/f57c4887897e4e9066e2234908ed4ab49e5aebdc))
+
 ## [0.1.20](https://github.com/ridi-oss/proxy-monster/compare/server-v0.1.19...server-v0.1.20) (2026-08-20)
 
 

@@ -12,37 +12,42 @@ import (
 
 // menuItem wrappers for the FIXED items, nil-safe for the same reason as the row ones: render() must be
 // exercisable in a test, so the shipped function is what is verified rather than a parallel copy.
-func setTitleOf(m *systray.MenuItem, title string) {
+var setTitleOf = func(m *systray.MenuItem, title string) {
 	if m != nil {
 		m.SetTitle(title)
 	}
 }
 
-func showItem(m *systray.MenuItem) {
+var showItem = func(m *systray.MenuItem) {
 	if m != nil {
 		m.Show()
 	}
 }
 
-func hideItem(m *systray.MenuItem) {
+var hideItem = func(m *systray.MenuItem) {
 	if m != nil {
 		m.Hide()
 	}
 }
 
-func enableItem(m *systray.MenuItem) {
+var enableItem = func(m *systray.MenuItem) {
 	if m != nil {
 		m.Enable()
 	}
 }
 
-// render mirrors one daemon state into the menu. A nil status means no daemon is reachable, which is a normal
-// state to display — never a stale last-known one, since a menu bar claiming "connected" after the daemon died
-// is worse than one that says nothing.
-//
+// render mirrors one daemon state into the menu. A nil status means the daemon is stopped.
+func (a *app) render(s *control.Status) {
+	a.renderState(s, false)
+}
+
+func (a *app) renderUnreachable() {
+	a.renderState(nil, true)
+}
+
 // Only ever updates or hides existing items: systray cannot remove an item, so a menu rebuilt per update would
 // accumulate rows forever.
-func (a *app) render(s *control.Status) {
+func (a *app) renderState(s *control.Status, unreachable bool) {
 	// One render at a time, start to finish. render is reachable from the event watcher AND from every action
 	// goroutine (via refresh), and it assigns a LABEL and a CONNECTION STRING to each row in separate steps —
 	// so two interleaved renders could leave a row displaying one datasource while its click copied another
@@ -52,9 +57,12 @@ func (a *app) render(s *control.Status) {
 
 	a.mu.Lock()
 	a.status = s
+	a.unreachable = unreachable
 	a.mu.Unlock()
 
 	switch {
+	case unreachable:
+		a.renderUnreachableState()
 	case s == nil:
 		a.renderStopped()
 	case !s.LoggedIn:
@@ -62,6 +70,24 @@ func (a *app) render(s *control.Status) {
 	default:
 		a.renderLoggedIn(s)
 	}
+}
+
+func (a *app) renderUnreachableState() {
+	if a.mHeader != nil {
+		systray.SetTooltip("proxy-monster — daemon needs restart")
+	}
+	setTitleOf(a.mHeader, "daemon needs restart")
+	setTitleOf(a.mDetail, "control socket unreachable")
+	showItem(a.mDetail)
+	a.hideDatasourcesFrom(0)
+
+	hideItem(a.mLogin)
+	hideItem(a.mLogout)
+	hideItem(a.mStart)
+	showItem(a.mRestart)
+	enableItem(a.mRestart)
+	showItem(a.mStop)
+	enableItem(a.mStop)
 }
 
 func (a *app) renderStopped() {

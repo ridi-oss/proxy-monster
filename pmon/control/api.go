@@ -50,8 +50,7 @@ type Datasource struct {
 	// publicly-trusted certificate and publish no chain, which is encrypted-and-verified against system trust.
 	// Only WireTLS false is plaintext.
 	WireTLS bool `json:"wireTls"`
-	// Brokered is false for a datasource discovered but not fronted (no advertised address, or an engine the
-	// broker does not speak yet).
+	// Brokered is false for a datasource discovered but not fronted (no advertised address or unsupported engine).
 	Brokered bool `json:"brokered"`
 	// Reason explains a false Brokered, for a peer to show in place of a connection string.
 	Reason string `json:"reason,omitempty"`

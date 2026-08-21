@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -168,12 +169,12 @@ func TestBrokeringImpliesALocalPassword(t *testing.T) {
 	}
 }
 
-// TestStatusReportsUnbrokerableDatasourcesWithAReason: a PG or address-less datasource must still appear, with
-// an explanation — a silently short list would read as "you have no access".
+// TestStatusReportsUnbrokerableDatasourcesWithAReason: an unsupported or address-less datasource must still
+// appear with an explanation rather than silently shortening the list.
 func TestStatusReportsUnbrokerableDatasourcesWithAReason(t *testing.T) {
 	isolate(t)
 	cp := newFakeCP(t, []Datasource{
-		{Name: "pg", Engine: "postgres", DbName: "app", AdvertiseAddr: freePort(t)},
+		{Name: "unsupported", Engine: "sqlite", DbName: "app", AdvertiseAddr: freePort(t)},
 		{Name: "no-addr", Engine: "mysql", DbName: "app"},
 	})
 
@@ -245,6 +246,135 @@ func TestRediscoveryClosesARevokedDatasource(t *testing.T) {
 	}
 	if cfg.Ports["acme-mysql"] != port {
 		t.Errorf("sticky port for a revoked datasource = %d, want it kept at %d", cfg.Ports["acme-mysql"], port)
+	}
+}
+
+func TestRediscoveryReplacesListenerWhenEngineChanges(t *testing.T) {
+	isolate(t)
+	cp := newFakeCP(t, []Datasource{
+		{Name: "acme", Engine: "mysql", DbName: "app", AdvertiseAddr: freePort(t)},
+	})
+
+	d := New("test")
+	ctx := context.Background()
+	if err := d.Login(ctx, control.LoginRequest{ControlPlane: cp.URL}, func(control.LoginEvent) {}); err != nil {
+		t.Fatalf("Login: %v", err)
+	}
+	defer d.closeAllListeners()
+
+	before := d.Status().Datasources[0]
+	client, server := net.Pipe()
+	defer client.Close()
+	defer server.Close()
+	deregister := d.addConn("acme", server)
+	defer deregister()
+
+	cp.datasources = []Datasource{
+		{Name: "acme", Engine: "postgres", DbName: "app", AdvertiseAddr: freePort(t)},
+	}
+	d.openListeners(ctx)
+
+	if _, err := server.Read(make([]byte, 1)); err == nil {
+		t.Error("a session using the old engine survived the listener replacement")
+	}
+	after := d.Status().Datasources[0]
+	if after.Engine != "postgres" || !after.Brokered {
+		t.Fatalf("datasource after engine change = %+v, want a brokered PostgreSQL datasource", after)
+	}
+	if after.LocalPort != before.LocalPort {
+		t.Errorf("local port changed from %d to %d with the engine; saved connections must keep the sticky port",
+			before.LocalPort, after.LocalPort)
+	}
+
+	c, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", after.LocalPort), 2*time.Second)
+	if err != nil {
+		t.Fatalf("dial replacement broker: %v", err)
+	}
+	defer c.Close()
+	if err := c.SetDeadline(time.Now().Add(2 * time.Second)); err != nil {
+		t.Fatalf("set deadline: %v", err)
+	}
+	if _, err := c.Write(postgresStartupPacket(pgSSLRequest)); err != nil {
+		t.Fatalf("write PostgreSQL SSLRequest: %v", err)
+	}
+	var response [1]byte
+	if _, err := c.Read(response[:]); err != nil {
+		t.Fatalf("read PostgreSQL SSL response: %v", err)
+	}
+	if response[0] != 'N' {
+		t.Fatalf("replacement broker answered %#x, want PostgreSQL SSL response 'N'", response[0])
+	}
+}
+
+func TestBrokerBoundsAndClearsLocalAuthentication(t *testing.T) {
+	proxyAddr, proxyDone := postgresProxyStub(t, func(c net.Conn) error {
+		if _, code, err := readPostgresStartup(c); err != nil || code != pgSSLRequest {
+			return fmt.Errorf("SSL request code = %d, err %v", code, err)
+		}
+		if _, err := c.Write([]byte{'N'}); err != nil {
+			return err
+		}
+		if _, _, err := readPostgresStartup(c); err != nil {
+			return err
+		}
+		if err := writePostgresFrame(c, 'R', uint32Bytes(3)); err != nil {
+			return err
+		}
+		if _, _, _, err := readPostgresFrame(c, maxPGAuthBody); err != nil {
+			return err
+		}
+		if err := writePostgresFrame(c, 'R', uint32Bytes(0)); err != nil {
+			return err
+		}
+		return writePostgresFrame(c, 'Z', []byte{'I'})
+	})
+
+	d := New("test")
+	d.mu.Lock()
+	d.cfg.ControlPlane = "https://cp.example"
+	d.cfg.Token = "pmk_token"
+	d.cfg.LocalPassword = "pmlocal_test"
+	d.datasources["pg"] = Datasource{
+		Name: "pg", Engine: "postgres", DbName: "app", AdvertiseAddr: proxyAddr,
+	}
+	d.nextListenerGeneration++
+	generation := d.nextListenerGeneration
+	d.listenerGenerations["pg"] = generation
+	d.mu.Unlock()
+
+	client, server := net.Pipe()
+	defer client.Close()
+	tracked := &deadlineRecordingConn{Conn: server}
+	done := make(chan struct{})
+	go func() {
+		d.broker(tracked, "pg", "postgres", generation)
+		close(done)
+	}()
+
+	if _, err := client.Write(postgresStartup("alice", "app")); err != nil {
+		t.Fatal(err)
+	}
+	assertPostgresAuthCode(t, client, 3)
+	if err := writePostgresFrame(client, 'p', []byte("pmlocal_test\x00")); err != nil {
+		t.Fatal(err)
+	}
+	assertPostgresAuthCode(t, client, 0)
+	if typ, body, _, err := readPostgresFrame(client, maxPGAuthBody); err != nil || typ != 'Z' || !bytes.Equal(body, []byte{'I'}) {
+		t.Fatalf("ready frame = %q %x, err %v", typ, body, err)
+	}
+	<-done
+	if err := <-proxyDone; err != nil {
+		t.Fatal(err)
+	}
+
+	if len(tracked.deadlines) < 3 {
+		t.Fatalf("local deadline changes = %v, want local auth bound, upstream startup bound, then clear", tracked.deadlines)
+	}
+	if tracked.deadlines[0].IsZero() || tracked.deadlines[1].IsZero() {
+		t.Errorf("local handshake deadlines = %v, want both phases bounded", tracked.deadlines[:2])
+	}
+	if !tracked.deadlines[2].IsZero() {
+		t.Errorf("deadline after ReadyForQuery = %s, want cleared", tracked.deadlines[2])
 	}
 }
 
@@ -646,13 +776,28 @@ func TestLogoutDuringDiscoveryLeavesNoListener(t *testing.T) {
 // `pmon logout` did not actually close the brokers.
 func TestLogoutClosesEstablishedSessions(t *testing.T) {
 	isolate(t)
+	if err := state.Update(func(c *state.Config) error {
+		c.ControlPlane = "https://cp.example"
+		c.Token = "pmk_token"
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
 	d := New("test")
+	d.mu.Lock()
+	d.cfg.ControlPlane = "https://cp.example"
+	d.cfg.Token = "pmk_token"
+	d.mu.Unlock()
 
 	// A registered connection stands in for an established session (the broker registers before piping).
 	client, server := net.Pipe()
 	defer client.Close()
-	defer server.Close()
-	deregister := d.addConn("acme-mysql", server)
+	loggedInAtClose := make(chan bool, 1)
+	tracked := &closeObserverConn{Conn: server, onClose: func() {
+		cfg := d.snapshot()
+		loggedInAtClose <- cfg.LoggedIn()
+	}}
+	deregister := d.addConn("acme-mysql", tracked)
 	defer deregister()
 
 	// The tracked session is visible in the count even with no listener for it, which is what stop/quit read
@@ -664,11 +809,81 @@ func TestLogoutClosesEstablishedSessions(t *testing.T) {
 	if err := d.Logout(); err != nil {
 		t.Fatalf("Logout: %v", err)
 	}
+	if <-loggedInAtClose {
+		t.Error("logout closed sessions before invalidating in-memory credentials")
+	}
 
 	// The session's socket must be closed, which is what unblocks its pipe. A closed net.Pipe returns
 	// io.ErrClosedPipe immediately, so no deadline is needed — and setting one would itself fail.
 	if _, err := server.Read(make([]byte, 1)); err == nil {
 		t.Error("the established session survived logout; it must be closed")
+	}
+}
+
+func TestBrokerRejectsConnectionAcceptedBeforeLogout(t *testing.T) {
+	isolate(t)
+	if err := state.Update(func(c *state.Config) error {
+		c.ControlPlane = "https://cp.example"
+		c.Token = "pmk_old"
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	proxy, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer proxy.Close()
+
+	d := New("test")
+	d.mu.Lock()
+	d.cfg.ControlPlane = "https://cp.example"
+	d.cfg.Token = "pmk_old"
+	d.cfg.LocalPassword = "pmlocal_test"
+	d.datasources["pg"] = Datasource{
+		Name: "pg", Engine: "postgres", AdvertiseAddr: proxy.Addr().String(),
+	}
+	d.nextListenerGeneration++
+	acceptedGeneration := d.nextListenerGeneration
+	d.listenerGenerations["pg"] = acceptedGeneration
+	d.mu.Unlock()
+	if err := d.Logout(); err != nil {
+		t.Fatal(err)
+	}
+
+	d.mu.Lock()
+	d.cfg.ControlPlane = "https://cp.example"
+	d.cfg.Token = "pmk_new"
+	d.datasources["pg"] = Datasource{
+		Name: "pg", Engine: "postgres", AdvertiseAddr: proxy.Addr().String(),
+	}
+	d.nextListenerGeneration++
+	d.listenerGenerations["pg"] = d.nextListenerGeneration
+	d.mu.Unlock()
+
+	client, server := net.Pipe()
+	defer client.Close()
+	done := make(chan struct{})
+	go func() {
+		d.broker(server, "pg", "postgres", acceptedGeneration)
+		close(done)
+	}()
+	if _, err := client.Write(postgresStartup("alice", "app")); err != nil {
+		t.Fatal(err)
+	}
+	if typ, _, _, err := readPostgresFrame(client, maxPGAuthBody); err != nil || typ != 'E' {
+		t.Fatalf("stale accepted connection response = %q, err %v", typ, err)
+	}
+	<-done
+
+	if err := proxy.(*net.TCPListener).SetDeadline(time.Now().Add(100 * time.Millisecond)); err != nil {
+		t.Fatal(err)
+	}
+	if c, err := proxy.Accept(); err == nil {
+		c.Close()
+		t.Fatal("a connection accepted before logout used the new login")
+	} else if netErr, ok := err.(net.Error); !ok || !netErr.Timeout() {
+		t.Fatalf("accept after stale broker: %v", err)
 	}
 }
 
@@ -860,6 +1075,27 @@ func TestAPortCollisionIsVisibleNotSilent(t *testing.T) {
 	if !strings.Contains(ds.Reason, "in use") {
 		t.Errorf("Reason = %q, want it to name the port collision", ds.Reason)
 	}
+}
+
+type closeObserverConn struct {
+	net.Conn
+	once    sync.Once
+	onClose func()
+}
+
+func (c *closeObserverConn) Close() error {
+	c.once.Do(c.onClose)
+	return c.Conn.Close()
+}
+
+type deadlineRecordingConn struct {
+	net.Conn
+	deadlines []time.Time
+}
+
+func (c *deadlineRecordingConn) SetDeadline(deadline time.Time) error {
+	c.deadlines = append(c.deadlines, deadline)
+	return c.Conn.SetDeadline(deadline)
 }
 
 // TestSnapshotDoesNotAliasThePortsMap: a bare struct copy shares the map header, so a caller reading Ports off a

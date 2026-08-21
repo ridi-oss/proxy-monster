@@ -93,9 +93,9 @@ Key docs:
   provider; any OIDC IdP works ([docs/auth-model.md](./docs/auth-model.md)).
 - Wire auth: SSO login plus a local broker daemon (`pmon`). Saved connections
   use a fixed localhost password while the daemon injects a short-lived token on
-  the upstream hop. The daemon does not renew that token — a login lasts one
-  token TTL, then `pmon login` again (see
-  [DESIGN.md](./DESIGN.md#identity-and-broker)).
+  the upstream hop and renews it while the server-side session window is open.
+  After that window closes, the current token lasts to its TTL, then requires
+  `pmon login` again (see [DESIGN.md](./DESIGN.md#identity-and-broker)).
 - JIT elevation: a time-boxed, revocable grant of a role to a user (an
   `access_grant`). The grant just adds to the user's effective roles, so the
   same per-query decision applies — the engine has no separate elevation path

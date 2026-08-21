@@ -56,10 +56,10 @@ The two authenticated surfaces share identity but have different runtime needs
   clocks, device binding, refresh token, and explicit end reason.
 - Local proxy / wire — a SQL client presents an expiring wire token as its
   password; the Go proxy resolves it via the control-plane's gRPC
-  `validateToken` / `Decide`. Its `kind='DAEMON'` row bounds renewal, but `pmon`
-  never calls the renew route, so in practice the wire token's own TTL is the
-  session lifetime and live role resolution is what keeps every query
-  fail-closed after group loss
+  `validateToken` / `Decide`. Its `kind='DAEMON'` row bounds renewal, and `pmon`
+  re-mints the token shortly before expiry while that row remains open. The
+  current token remains valid to its own TTL after the renewal window closes;
+  live role resolution keeps every query fail-closed after group loss
   ([auth-model.md](./auth-model.md#cli--daemon-login--control-plane-brokered-device-authorization)).
 
 Both need current IdP identity without shortening the interactive 2-hour cap to
@@ -162,10 +162,9 @@ refresh-token rotation is serialized in-process. Per row:
 3. `invalid_grant` is per-session, never a principal-wide teardown from the
    sweep. For `WEB`, end only that row as `IDP_REJECTED`; for `DAEMON`, close
    only that row's renewal window. Other active rows, wire tokens, and grants
-   are untouched. Because `pmon` never renews, closing a daemon window revokes
-   nothing a user currently holds: that principal's already-issued wire token
-   stays valid to its TTL, and only role reconciliation (step 2) or an
-   authoritative deprovision cuts their access
+   are untouched. Closing the daemon window prevents pmon's next renewal but
+   does not revoke the already-issued wire token: it stays valid to its TTL, and
+   only role reconciliation (step 2) or an authoritative deprovision cuts access
    ([KNOWN_LIMITATIONS.md](../KNOWN_LIMITATIONS.md#daemon-session-renewal-and-revocation)).
 4. Network failures, 5xx, non-`invalid_grant` OAuth errors, validation failures,
    and provisioning failures are transient: keep the cached state and leave the
@@ -257,7 +256,7 @@ the server (derived from env) as props — single source of truth.
 | `PM_WEB_SESSION_ABSOLUTE_WARN_LEAD` | `5m` | Absolute re-login warn toast lead. |
 | `PM_WEB_SESSION_HEARTBEAT` | `90s` | Client activity heartbeat throttle. |
 | `PM_IDP_RECHECK_INTERVAL` | `300` | Timer-driven IdP identity/group recheck interval (both kinds). |
-| `PM_SESSION_WINDOW` | `2h` | Daemon renewal window — how long `POST /auth/session/renew` would accept a renewal token. Raising it does NOT extend a live `pmon` session: `pmon` never calls that route, so the wire token's own TTL (`pmon login --ttl`, default 12h) is the real lifetime. |
+| `PM_SESSION_WINDOW` | `2h` | Daemon renewal window — how long `POST /auth/session/renew` accepts pmon's renewal token. The daemon renews shortly before wire-token expiry while this window is open; after it closes, the current token remains valid to its own TTL (`pmon login --ttl`, default 12h). |
 
 ## Fail-closed and failure modes
 

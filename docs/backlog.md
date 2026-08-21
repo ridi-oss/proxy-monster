@@ -311,12 +311,9 @@ Fixes for gaps documented in
 - Proxy-side cancel brokering: issue synthetic `TargetDbKeyData` and broker
   cancels proxy-side, so `CancelRequest` can require TLS without breaking psql's
   Ctrl-C.
-- Wire-cert rotation refresh: a rotated proxy leaf cert only re-advertises its
-  pinning fingerprint on the next reconnect resync. Push the new fingerprint on
-  rotation instead, so a pinning client is never left on a stale one.
-- PostgreSQL brokering in `pmon`: the daemon fronts MySQL only, so PostgreSQL
-  datasources are discovered but skipped and their connection strings are
-  rendered without a broker behind them.
+- Wire-cert rotation refresh: a rotated proxy certificate chain is only
+  re-advertised on the next reconnect resync. Push the new chain on rotation so
+  a verifying client is never left with stale trust material.
 - Bound the native-wire relay by `PM_QUERY_TIMEOUT`. The control-plane-driven
   editor and workflow runs honor it; the wire relay passes no execution guard
   and keeps a fixed socket-inactivity cap, so a direct statement through `pmon`
@@ -333,8 +330,8 @@ Fixes for gaps documented in
 - Push-based datasource discovery for `pmon`. Rediscovery polls every 30
   seconds, so a revoked datasource keeps its broker open for up to that long. A
   per-principal stream would cut revocation latency to sub-second and carry a
-  rotated certificate fingerprint; the poll stays the authoritative backstop,
-  since a dropped stream must never read as "no change". Waits on the pmon API
+  rotated certificate chain; the poll stays the authoritative backstop, since a
+  dropped stream must never read as "no change". Waits on the pmon API
   authentication decision — the existing event stream is cookie-authenticated
   and `pmon` holds no cookie.
 - Menu-bar app signing and distribution. The tray app is built and ad-hoc

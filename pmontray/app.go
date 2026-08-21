@@ -37,8 +37,9 @@ type app struct {
 	actionBusy sync.Mutex
 	actionHeld bool
 
-	mu     sync.Mutex
-	status *control.Status // nil means "no daemon reachable"
+	mu          sync.Mutex
+	status      *control.Status
+	unreachable bool
 	// dsItems are the reusable datasource rows, in a fixed order established at startup.
 	dsItems []*dsItem
 
@@ -199,8 +200,12 @@ func (a *app) watchDaemon() {
 			return
 		}
 		client, err := control.Connect(a.ctx)
-		if err != nil {
+		if errors.Is(err, control.ErrDaemonUnreachable) {
+			a.renderUnreachable()
+		} else if err != nil {
 			a.render(nil)
+		}
+		if err != nil {
 			if !a.sleep(reconnectDelay) {
 				return
 			}

@@ -232,6 +232,21 @@ func firstErr(errs ...error) error {
 }
 
 func (s *Server) handleQuery(sess *session, sql string) error {
+	if sql == "" {
+		sess.targetDb.Send(&pgproto3.Query{})
+		if err := sess.targetDb.Flush(); err != nil {
+			return closeRelay(sess, err)
+		}
+		_, err := sess.streamResult(nil, streamOpts{}, func(message pgproto3.BackendMessage) error {
+			sess.client.Send(message)
+			return nil
+		})
+		if err != nil {
+			return closeRelay(sess, mapWireStreamError(sess, err))
+		}
+		return sess.client.Flush()
+	}
+
 	ref := s.refetcher(sess, false)
 	start := time.Now()
 	var relayStats engine.RelayStats

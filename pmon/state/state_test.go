@@ -193,6 +193,13 @@ func TestSocketPathFitsTheKernelLimit(t *testing.T) {
 	// A state dir well past the limit on its own.
 	deep := filepath.Join(t.TempDir(), strings.Repeat("nested-directory-segment/", 8), "proxy-monster")
 	t.Setenv(dirEnv, deep)
+	if socketFallbackRoot != "/tmp" {
+		t.Fatalf("production fallback root = %q, want /tmp", socketFallbackRoot)
+	}
+	shortRoot := t.TempDir()
+	oldRoot := socketFallbackRoot
+	socketFallbackRoot = shortRoot
+	t.Cleanup(func() { socketFallbackRoot = oldRoot })
 
 	sock, err := SocketPath()
 	if err != nil {
@@ -201,6 +208,10 @@ func TestSocketPathFitsTheKernelLimit(t *testing.T) {
 	if len(sock) > maxSocketPath {
 		t.Errorf("socket path is %d bytes (%q), over the %d-byte limit", len(sock), sock, maxSocketPath)
 	}
+	wantDir := filepath.Join(shortRoot, fmt.Sprintf("pmon-%d", os.Getuid()))
+	if got := filepath.Dir(sock); got != wantDir {
+		t.Errorf("fallback socket dir = %q, want injected fixed root %q", got, wantDir)
+	}
 	// Deterministic: every peer must derive the same path from the same state dir, with no coordination.
 	again, err := SocketPath()
 	if err != nil {
@@ -208,6 +219,15 @@ func TestSocketPathFitsTheKernelLimit(t *testing.T) {
 	}
 	if again != sock {
 		t.Errorf("SocketPath is not deterministic: %q then %q", sock, again)
+	}
+	// macOS GUI and terminal processes can carry different TMPDIR values. The daemon and CLI must still meet.
+	t.Setenv("TMPDIR", t.TempDir())
+	withDifferentTemp, err := SocketPath()
+	if err != nil {
+		t.Fatalf("SocketPath with a different TMPDIR: %v", err)
+	}
+	if withDifferentTemp != sock {
+		t.Errorf("SocketPath depends on TMPDIR: %q then %q", sock, withDifferentTemp)
 	}
 	// A different state dir must NOT collide with it.
 	t.Setenv(dirEnv, filepath.Join(t.TempDir(), strings.Repeat("another-long-directory/", 8), "proxy-monster"))
@@ -240,7 +260,6 @@ func TestShortSocketDirRefusesADirectoryOwnedByAnotherUser(t *testing.T) {
 		t.Skip("running as root: uid 0 is not a foreign owner here")
 	}
 	tmp := t.TempDir()
-	t.Setenv("TMPDIR", tmp)
 	d := filepath.Join(tmp, fmt.Sprintf("pmon-%d", os.Getuid()))
 	if err := os.MkdirAll(d, 0o700); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
@@ -248,7 +267,7 @@ func TestShortSocketDirRefusesADirectoryOwnedByAnotherUser(t *testing.T) {
 	// A test cannot chown to another user, so drive the guard with a DIFFERENT expected owner — exactly the
 	// comparison it makes when an attacker pre-created the path. Without this the uid branch is never exercised
 	// and could be deleted with the suite still green.
-	if _, err := shortSocketDirFor(os.Getuid() + 1); err == nil {
+	if _, err := shortSocketDirAt(tmp, os.Getuid()+1); err == nil {
 		t.Error("a directory owned by another uid was accepted; it must fail closed")
 	} else if !strings.Contains(err.Error(), "owned by uid") {
 		t.Errorf("refused with %q; want the ownership check to be what rejects it", err)
@@ -258,9 +277,9 @@ func TestShortSocketDirRefusesADirectoryOwnedByAnotherUser(t *testing.T) {
 	if err := os.Chmod(d, 0o777); err != nil {
 		t.Fatalf("Chmod: %v", err)
 	}
-	got, err := shortSocketDir()
+	got, err := shortSocketDirAt(tmp, os.Getuid())
 	if err != nil {
-		t.Fatalf("shortSocketDir on our own dir: %v", err)
+		t.Fatalf("shortSocketDirAt on our own dir: %v", err)
 	}
 	if got != d {
 		t.Errorf("shortSocketDir = %q, want %q", got, d)
@@ -278,7 +297,6 @@ func TestShortSocketDirRefusesADirectoryOwnedByAnotherUser(t *testing.T) {
 // attacker controls, so it must be rejected rather than followed.
 func TestShortSocketDirRefusesASymlink(t *testing.T) {
 	tmp := t.TempDir()
-	t.Setenv("TMPDIR", tmp)
 	target := filepath.Join(tmp, "elsewhere")
 	if err := os.MkdirAll(target, 0o700); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
@@ -288,7 +306,7 @@ func TestShortSocketDirRefusesASymlink(t *testing.T) {
 		t.Fatalf("Symlink: %v", err)
 	}
 
-	_, err := shortSocketDir()
+	_, err := shortSocketDirAt(tmp, os.Getuid())
 	if err == nil {
 		t.Fatal("shortSocketDir followed a symlink at the fallback path; it must refuse")
 	}

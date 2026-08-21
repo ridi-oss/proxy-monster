@@ -28,6 +28,9 @@ func brokerMySQL(local net.Conn, proxyAddr, certChainPEM string, wireTLS bool, p
 		}
 		return err
 	}
+	if err := local.SetDeadline(time.Time{}); err != nil {
+		return err
+	}
 	proxy, err := net.DialTimeout("tcp", proxyAddr, dialTimeout)
 	if err != nil {
 		_ = mysqlwire.WritePacket(local, seq, mysqlwire.ErrPacket(1045, "proxy-monster: cannot reach proxy"))

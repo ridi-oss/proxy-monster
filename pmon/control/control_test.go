@@ -132,7 +132,7 @@ func TestStatusRoundTrips(t *testing.T) {
 	backend := newFakeBackend()
 	backend.status.Datasources = []Datasource{
 		{Name: "acme-mysql", Engine: "mysql", DbName: "app", LocalPort: 6100, Brokered: true, LiveConns: 2},
-		{Name: "pg", Engine: "postgres", Brokered: false, Reason: "postgres brokering not yet supported"},
+		{Name: "unsupported", Engine: "sqlite", Brokered: false, Reason: "engine \"sqlite\" not brokered"},
 	}
 	c := serve(t, backend)
 
@@ -217,6 +217,22 @@ func TestClientReportsDaemonNotRunning(t *testing.T) {
 	// Shutdown is idempotent: asking a daemon that is already gone to stop is success, not an error.
 	if err := c.Shutdown(context.Background()); err != nil {
 		t.Errorf("Shutdown with no daemon = %v, want nil (already stopped)", err)
+	}
+}
+
+func TestConnectReportsUnreachableDaemonWhenPidLockIsHeld(t *testing.T) {
+	t.Setenv("PMON_CONFIG_DIR", t.TempDir())
+	held, err := state.AcquirePidLock()
+	if err != nil {
+		t.Fatalf("AcquirePidLock: %v", err)
+	}
+	if !held {
+		t.Fatal("AcquirePidLock reported an unexpected live daemon")
+	}
+	t.Cleanup(state.ReleasePidLock)
+
+	if _, err := Connect(context.Background()); !errors.Is(err, ErrDaemonUnreachable) {
+		t.Errorf("Connect with a held pid lock and no socket = %v, want ErrDaemonUnreachable", err)
 	}
 }
 

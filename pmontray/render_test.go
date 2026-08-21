@@ -5,6 +5,8 @@ import (
 	"sync"
 	"testing"
 
+	"fyne.io/systray"
+
 	"github.com/ridi-oss/proxy-monster/pmon/control"
 )
 
@@ -29,6 +31,83 @@ func statusWith(names ...string) *control.Status {
 		})
 	}
 	return s
+}
+
+func TestUnreachableDaemonShowsRecoveryActions(t *testing.T) {
+	originalSetTitle := setTitleOf
+	originalShow := showItem
+	originalHide := hideItem
+	originalEnable := enableItem
+	t.Cleanup(func() {
+		setTitleOf = originalSetTitle
+		showItem = originalShow
+		hideItem = originalHide
+		enableItem = originalEnable
+	})
+
+	a := newTestApp(2)
+	a.mDetail = new(systray.MenuItem)
+	a.mLogin = new(systray.MenuItem)
+	a.mLogout = new(systray.MenuItem)
+	a.mStart = new(systray.MenuItem)
+	a.mRestart = new(systray.MenuItem)
+	a.mStop = new(systray.MenuItem)
+
+	titles := make(map[*systray.MenuItem]string)
+	visible := map[*systray.MenuItem]bool{
+		a.mLogin: true, a.mLogout: true, a.mStart: true,
+	}
+	enabled := make(map[*systray.MenuItem]bool)
+	setTitleOf = func(item *systray.MenuItem, title string) {
+		if item != nil {
+			titles[item] = title
+		}
+	}
+	showItem = func(item *systray.MenuItem) { visible[item] = true }
+	hideItem = func(item *systray.MenuItem) { visible[item] = false }
+	enableItem = func(item *systray.MenuItem) { enabled[item] = true }
+
+	a.renderUnreachable()
+
+	if titles[a.mDetail] != "control socket unreachable" || !visible[a.mDetail] {
+		t.Errorf("detail = %q visible=%t", titles[a.mDetail], visible[a.mDetail])
+	}
+	for name, item := range map[string]*systray.MenuItem{
+		"login": a.mLogin, "logout": a.mLogout, "start": a.mStart,
+	} {
+		if visible[item] {
+			t.Errorf("%s action is visible while the daemon needs restart", name)
+		}
+	}
+	for name, item := range map[string]*systray.MenuItem{"restart": a.mRestart, "stop": a.mStop} {
+		if !visible[item] || !enabled[item] {
+			t.Errorf("%s action visible=%t enabled=%t", name, visible[item], enabled[item])
+		}
+	}
+}
+
+func TestUnreachableDaemonIsDistinctFromStopped(t *testing.T) {
+	a := newTestApp(2)
+	a.render(statusWith("acme"))
+	a.renderUnreachable()
+
+	a.mu.Lock()
+	unreachable, status := a.unreachable, a.status
+	a.mu.Unlock()
+	if !unreachable || status != nil {
+		t.Fatalf("unreachable render stored unreachable=%t status=%v", unreachable, status)
+	}
+	if a.dsItems[0].name != "" || a.dsItems[0].connString != "" {
+		t.Errorf("unreachable render retained datasource state: %+v", a.dsItems[0])
+	}
+
+	a.render(nil)
+	a.mu.Lock()
+	unreachable = a.unreachable
+	a.mu.Unlock()
+	if unreachable {
+		t.Error("stopped render retained the unreachable state")
+	}
 }
 
 // TestConcurrentRendersNeverLeaveAMixedPool is the invariant serializing renders exists for. render is reachable
@@ -71,18 +150,18 @@ func TestConcurrentRendersNeverLeaveAMixedPool(t *testing.T) {
 	}
 }
 
-// TestUnbrokeredRowCarriesNoPayload: a row for a datasource that is not brokered (Postgres, no advertised
-// address) must be un-clickable rather than copying an empty or bogus string.
+// TestUnbrokeredRowCarriesNoPayload: a row without an advertised address must be un-clickable rather than
+// copying an empty or bogus string.
 func TestUnbrokeredRowCarriesNoPayload(t *testing.T) {
 	a := newTestApp(4)
 	s := &control.Status{Principal: "you@example.com", LoggedIn: true, LocalPassword: "pw"}
 	s.Datasources = []control.Datasource{
-		{Name: "pg", Engine: "postgres", Brokered: false, Reason: "postgres brokering not yet supported"},
+		{Name: "no-addr", Engine: "postgres", Brokered: false, Reason: "no advertised proxy address"},
 	}
 	a.applyRows(s)
 
-	if a.dsItems[0].name != "pg" {
-		t.Fatalf("row 0 = %q, want pg", a.dsItems[0].name)
+	if a.dsItems[0].name != "no-addr" {
+		t.Fatalf("row 0 = %q, want no-addr", a.dsItems[0].name)
 	}
 	if a.dsItems[0].connString != "" {
 		t.Errorf("unbrokered row carries a payload %q; a click must copy nothing", a.dsItems[0].connString)

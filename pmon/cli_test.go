@@ -13,6 +13,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/ridi-oss/proxy-monster/pmon/control"
+	"github.com/ridi-oss/proxy-monster/pmon/state"
 )
 
 // End-to-end tests over the REAL binary and a REAL spawned daemon, so the peer-symmetry claims are exercised
@@ -324,21 +327,48 @@ func TestShowRejectsAnUnknownDatasourceWithTheKnownOnes(t *testing.T) {
 	}
 }
 
-// TestShowExplainsAnUnbrokeredDatasource: a PG datasource is discovered but not fronted, so show must say why
-// rather than emit a connection string that cannot work.
-func TestShowExplainsAnUnbrokeredDatasource(t *testing.T) {
+func TestPostgresShowFormats(t *testing.T) {
 	e := newEnv(t)
 	cp := fakeCP(t, []map[string]any{
-		{"name": "pg", "engine": "postgres", "dbName": "app", "advertiseAddr": dummyProxy(t)},
+		{"name": "acme-postgres", "engine": "postgres", "dbName": "app", "advertiseAddr": dummyProxy(t)},
+	})
+	if out := e.mustRun(t, "login", "--url", cp.URL); !strings.Contains(out, "1 datasource(s) brokered") {
+		t.Fatalf("login = %q, want the PostgreSQL broker to open", out)
+	}
+
+	cases := []struct {
+		flag string
+		want string
+	}{
+		{"", "postgresql://"},
+		{"--jdbc", "jdbc:postgresql://"},
+		{"--go-dsn", "host=127.0.0.1"},
+		{"--cli", "psql 'host=127.0.0.1"},
+	}
+	for _, tc := range cases {
+		args := []string{"show", "acme-postgres"}
+		if tc.flag != "" {
+			args = append(args, tc.flag)
+		}
+		if got := strings.TrimSpace(e.mustRun(t, args...)); !strings.HasPrefix(got, tc.want) {
+			t.Errorf("pmon %s = %q, want prefix %q", strings.Join(args, " "), got, tc.want)
+		}
+	}
+}
+
+func TestShowExplainsAnUnsupportedDatasource(t *testing.T) {
+	e := newEnv(t)
+	cp := fakeCP(t, []map[string]any{
+		{"name": "unsupported", "engine": "sqlite", "dbName": "app", "advertiseAddr": dummyProxy(t)},
 	})
 	e.mustRun(t, "login", "--url", cp.URL)
 
-	out, err := e.run("show", "pg")
+	out, err := e.run("show", "unsupported")
 	if err == nil {
-		t.Fatal("show for an unbrokered datasource succeeded")
+		t.Fatal("show for an unsupported datasource succeeded")
 	}
-	if !strings.Contains(out, "postgres") {
-		t.Errorf("show error = %q, want the reason it is not brokered", out)
+	if !strings.Contains(out, "sqlite") {
+		t.Errorf("show error = %q, want the unsupported engine named", out)
 	}
 }
 
@@ -384,6 +414,183 @@ func TestRestartKeepsStickyPortsAndPassword(t *testing.T) {
 	after := strings.TrimSpace(e.mustRun(t, "show", "acme-mysql"))
 	if before != after {
 		t.Errorf("connection string changed across a restart:\n before %q\n after  %q", before, after)
+	}
+}
+
+func TestLifecycleCommandsUsePidLockWhenControlSocketIsUnreachable(t *testing.T) {
+	e := newEnv(t)
+	e.mustRun(t, "start")
+
+	t.Setenv("PMON_CONFIG_DIR", e.stateDir)
+	sock, err := state.SocketPath()
+	if err != nil {
+		t.Fatalf("SocketPath: %v", err)
+	}
+	if err := os.Rename(sock, sock+".unreachable"); err != nil {
+		t.Fatalf("hide daemon socket before restart: %v", err)
+	}
+	if out := e.mustRun(t, "status"); !strings.Contains(out, "running, control socket unreachable") {
+		t.Errorf("status with unreachable socket = %q, want the live daemon reported", out)
+	}
+	if out, err := e.run("start"); err == nil || !strings.Contains(out, "run `pmon restart`") {
+		t.Errorf("start with unreachable socket = %q, %v; want restart guidance", out, err)
+	}
+	if out := e.mustRun(t, "restart"); !strings.Contains(out, "left the daemon running") {
+		t.Errorf("restart without --force = %q, want the daemon preserved", out)
+	}
+	out := e.mustRun(t, "restart", "--force")
+	if !strings.Contains(out, "restarted") {
+		t.Errorf("restart with unreachable socket = %q, want a confirmation", out)
+	}
+
+	if err := os.Rename(sock, sock+".unreachable-after-restart"); err != nil {
+		t.Fatalf("hide daemon socket before stop: %v", err)
+	}
+	if out := e.mustRun(t, "stop"); !strings.Contains(out, "left the daemon running") {
+		t.Errorf("stop without --force = %q, want the daemon preserved", out)
+	}
+	if out := e.mustRun(t, "stop", "--force"); !strings.Contains(out, "stopped") {
+		t.Errorf("stop with unreachable socket = %q, want a confirmation", out)
+	}
+	if out := e.mustRun(t, "status"); !strings.Contains(out, "not running") {
+		t.Errorf("status after stop = %q, want the daemon stopped", out)
+	}
+}
+
+func TestLifecycleCommandsPreserveDaemonWhenStatusCannotBeRead(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		failStatus func(int) bool
+	}{
+		{name: "connect", failStatus: func(int) bool { return true }},
+		{name: "follow-up read", failStatus: func(read int) bool { return read%2 == 0 }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newEnv(t)
+			t.Setenv("PMON_CONFIG_DIR", e.stateDir)
+			sock, err := state.SocketPath()
+			if err != nil {
+				t.Fatalf("SocketPath: %v", err)
+			}
+			ln, err := net.Listen("unix", sock)
+			if err != nil {
+				t.Fatalf("listen on control socket: %v", err)
+			}
+			shutdown := make(chan struct{}, 1)
+			statusReads := 0
+			srv := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch r.URL.Path {
+				case control.PathStatus:
+					statusReads++
+					if tc.failStatus(statusReads) {
+						http.Error(w, "status unavailable", http.StatusInternalServerError)
+						return
+					}
+					_ = json.NewEncoder(w).Encode(control.Status{})
+				case control.PathShutdown:
+					shutdown <- struct{}{}
+					w.WriteHeader(http.StatusNoContent)
+				default:
+					http.NotFound(w, r)
+				}
+			})}
+			go func() { _ = srv.Serve(ln) }()
+			t.Cleanup(func() { _ = srv.Close() })
+
+			for _, command := range []string{"stop", "restart"} {
+				if out := e.mustRun(t, command); !strings.Contains(out, "left the daemon running") {
+					t.Errorf("%s with unreadable status = %q, want the daemon preserved", command, out)
+				}
+				select {
+				case <-shutdown:
+					t.Fatalf("%s sent shutdown without --force", command)
+				default:
+				}
+			}
+		})
+	}
+}
+
+func TestLifecycleCommandsHandleDaemonExitBetweenStatusReads(t *testing.T) {
+	for _, tc := range []struct {
+		command string
+		want    string
+	}{
+		{command: "stop", want: "not running"},
+		{command: "restart", want: "restarted"},
+	} {
+		t.Run(tc.command, func(t *testing.T) {
+			e := newEnv(t)
+			t.Setenv("PMON_CONFIG_DIR", e.stateDir)
+			sock, err := state.SocketPath()
+			if err != nil {
+				t.Fatalf("SocketPath: %v", err)
+			}
+			ln, err := net.Listen("unix", sock)
+			if err != nil {
+				t.Fatalf("listen on control socket: %v", err)
+			}
+			srv := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != control.PathStatus {
+					http.NotFound(w, r)
+					return
+				}
+				w.Header().Set("Connection", "close")
+				_ = json.NewEncoder(w).Encode(control.Status{})
+				_ = ln.Close()
+			})}
+			go func() { _ = srv.Serve(ln) }()
+			t.Cleanup(func() { _ = srv.Close() })
+
+			out := e.mustRun(t, tc.command)
+			if !strings.Contains(out, tc.want) {
+				t.Errorf("%s after daemon exit = %q, want %q", tc.command, out, tc.want)
+			}
+			if strings.Contains(out, "left the daemon running") {
+				t.Errorf("%s after daemon exit falsely preserved it: %q", tc.command, out)
+			}
+		})
+	}
+}
+
+func TestLifecycleCommandsPreserveDaemonWhenSocketDisappearsBetweenStatusReads(t *testing.T) {
+	for _, command := range []string{"stop", "restart"} {
+		t.Run(command, func(t *testing.T) {
+			e := newEnv(t)
+			e.mustRun(t, "start")
+
+			t.Setenv("PMON_CONFIG_DIR", e.stateDir)
+			sock, err := state.SocketPath()
+			if err != nil {
+				t.Fatalf("SocketPath: %v", err)
+			}
+			if err := os.Rename(sock, sock+".real"); err != nil {
+				t.Fatalf("hide daemon socket: %v", err)
+			}
+			ln, err := net.Listen("unix", sock)
+			if err != nil {
+				t.Fatalf("listen on replacement control socket: %v", err)
+			}
+			srv := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != control.PathStatus {
+					http.NotFound(w, r)
+					return
+				}
+				w.Header().Set("Connection", "close")
+				_ = json.NewEncoder(w).Encode(control.Status{})
+				_ = ln.Close()
+			})}
+			go func() { _ = srv.Serve(ln) }()
+			t.Cleanup(func() { _ = srv.Close() })
+
+			out := e.mustRun(t, command)
+			if !strings.Contains(out, "left the daemon running") {
+				t.Errorf("%s after control socket loss = %q, want the daemon preserved", command, out)
+			}
+			if !state.DaemonRunning() {
+				t.Errorf("%s stopped the daemon without confirmation", command)
+			}
+		})
 	}
 }
 

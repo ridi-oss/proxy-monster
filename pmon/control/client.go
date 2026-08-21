@@ -23,6 +23,9 @@ import (
 // failing: a stopped daemon is a normal state, and the peer offers to start one.
 var ErrDaemonNotRunning = errors.New("the pmon daemon is not running")
 
+// ErrDaemonUnreachable reports that the pid lock is held but no daemon answers at the current control socket.
+var ErrDaemonUnreachable = errors.New("the pmon daemon is running but its control socket is unreachable; run `pmon restart`")
+
 // Client speaks the control API over the daemon's unix socket.
 type Client struct {
 	http *http.Client
@@ -159,9 +162,17 @@ func (c *Client) Reload(ctx context.Context) error {
 // Shutdown asks the daemon to exit gracefully. The daemon closes the connection as it goes, so a dial/EOF
 // error after the request was accepted is success, not failure.
 func (c *Client) Shutdown(ctx context.Context) error {
+	err := c.shutdown(ctx)
+	if errors.Is(err, ErrDaemonNotRunning) {
+		return nil
+	}
+	return err
+}
+
+func (c *Client) shutdown(ctx context.Context) error {
 	resp, err := c.do(ctx, http.MethodPost, PathShutdown, nil)
 	if err != nil {
-		if errors.Is(err, ErrDaemonNotRunning) || errors.Is(err, io.EOF) {
+		if errors.Is(err, io.EOF) {
 			return nil
 		}
 		return err
@@ -200,6 +211,9 @@ func (c *Client) Events(ctx context.Context, onEvent func(Event)) error {
 // daemonStartTimeout bounds how long a peer waits for a freshly spawned daemon to answer on its socket.
 const daemonStartTimeout = 10 * time.Second
 
+// daemonStartRaceGrace lets a concurrently starting daemon bind before it is reported unreachable.
+const daemonStartRaceGrace = time.Second
+
 // EnsureDaemon returns a client to a live daemon, starting one if none is running. Both peers call this, so
 // start-if-needed has exactly one implementation.
 //
@@ -215,6 +229,17 @@ func EnsureDaemon(ctx context.Context) (*Client, error) {
 		return c, nil
 	} else if !errors.Is(err, ErrDaemonNotRunning) {
 		return nil, err
+	}
+	if state.DaemonRunning() {
+		if err := waitForDaemon(ctx, c, daemonStartRaceGrace); err == nil {
+			return c, nil
+		}
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		if state.DaemonRunning() {
+			return nil, ErrDaemonUnreachable
+		}
 	}
 	if err := StartDaemon(); err != nil {
 		return nil, err
@@ -233,6 +258,9 @@ func Connect(ctx context.Context) (*Client, error) {
 		return nil, err
 	}
 	if _, err := c.Status(ctx); err != nil {
+		if errors.Is(err, ErrDaemonNotRunning) && state.DaemonRunning() {
+			return nil, ErrDaemonUnreachable
+		}
 		return nil, err
 	}
 	return c, nil
@@ -417,7 +445,7 @@ func StopDaemon(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	if err := c.Shutdown(ctx); err == nil {
+	if err := c.shutdown(ctx); err == nil {
 		return waitForExit(ctx, 10*time.Second)
 	}
 	if !state.DaemonRunning() {

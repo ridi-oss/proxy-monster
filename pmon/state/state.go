@@ -130,14 +130,18 @@ const ConfigName = "config.json"
 // Linux), minus room for the NUL. A bind past it fails with EINVAL, so the path is checked, never assumed.
 const maxSocketPath = 100
 
+var socketFallbackRoot = "/tmp"
+
 // SocketPath is the daemon's control socket, which the CLI and the tray both drive.
 //
 // A unix socket path is length-limited by the kernel, and the state directory can be deep (a nested worktree,
-// a long PMON_CONFIG_DIR). When the in-directory path would not fit, this falls back to a short path in the
-// temp dir, named from a hash of the state directory — deterministic, so every peer derives the SAME path
-// without coordination. The fallback is created 0700 and owner-scoped, keeping the "only the same OS user can
-// connect" property that is this API's entire authentication.
-func SocketPath() (string, error) {
+// a long PMON_CONFIG_DIR). When the in-directory path would not fit, this falls back to a short path under fixed
+// /tmp, named from a hash of the state directory — deterministic even when peers carry different TMPDIR values.
+// The fallback is created 0700 and owner-scoped, keeping the "only the same OS user can connect" property that
+// is this API's entire authentication.
+func SocketPath() (string, error) { return socketPathAt(socketFallbackRoot) }
+
+func socketPathAt(shortRoot string) (string, error) {
 	p, err := pathIn("daemon.sock")
 	if err != nil {
 		return "", err
@@ -149,7 +153,7 @@ func SocketPath() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	short, err := shortSocketDir()
+	short, err := shortSocketDirAt(shortRoot, os.Getuid())
 	if err != nil {
 		return "", err
 	}
@@ -161,23 +165,9 @@ func SocketPath() (string, error) {
 	return p, nil
 }
 
-// shortSocketDir is the owner-only directory holding fallback sockets, under the temp dir because that is the
-// only reliably-short writable path.
-//
-// The temp dir is usually world-writable + sticky (/tmp on Linux; macOS gives each user a private one), so a
-// pre-existing entry cannot be trusted: MkdirAll succeeds on ANY existing directory regardless of its owner or
-// mode, which would let another local user own the path where a login-capable socket lands. So the directory is
-// VERIFIED after creation — owned by us, and not group/other-accessible — and a failure is fatal rather than
-// silently accepted. A symlink is rejected too (Lstat, not Stat), so it cannot be redirected somewhere the
-// attacker controls.
-func shortSocketDir() (string, error) {
-	return shortSocketDirFor(os.Getuid())
-}
-
-// shortSocketDirFor is [shortSocketDir] with the expected owner injected, so the ownership refusal is testable
-// (a test cannot chown a directory to another user).
-func shortSocketDirFor(wantUID int) (string, error) {
-	d := filepath.Join(os.TempDir(), fmt.Sprintf("pmon-%d", os.Getuid()))
+// The fallback root is usually world-writable + sticky, so ownership, mode, and symlink checks are mandatory.
+func shortSocketDirAt(root string, wantUID int) (string, error) {
+	d := filepath.Join(root, fmt.Sprintf("pmon-%d", os.Getuid()))
 	if err := os.MkdirAll(d, 0o700); err != nil {
 		return "", err
 	}

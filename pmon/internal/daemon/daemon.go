@@ -42,6 +42,9 @@ const (
 	// dialTimeout bounds a broker's dial to a proxy. It covers refusal only — see handshakeTimeout for silence
 	// after accept.
 	dialTimeout = 10 * time.Second
+	// localHandshakeTimeout bounds startup and local-password authentication before the client can hold a broker
+	// connection indefinitely.
+	localHandshakeTimeout = 20 * time.Second
 	// handshakeTimeout bounds the whole upstream handshake (greeting, TLS, auth). A proxy that accepts and then
 	// goes silent would otherwise park a goroutine and its two sockets forever, unreachable by logout or
 	// revocation, since closing the local side does not unblock a read on the upstream one.
@@ -71,13 +74,15 @@ type Daemon struct {
 	// emit a connection string with port 0 and the sticky identity would be lost across restarts.
 	discoveryMu sync.Mutex
 
-	mu            sync.Mutex
-	cfg           state.Config
-	localPassword string
+	mu                     sync.Mutex
+	cfg                    state.Config
+	localPassword          string
+	nextListenerGeneration uint64
 	// listeners maps a datasource name to its loopback listener; presence here means "brokered right now",
 	// which is what /status reports (the sticky port map on disk keeps revoked datasources, so counting it
 	// would over-report).
-	listeners map[string]net.Listener
+	listeners           map[string]net.Listener
+	listenerGenerations map[string]uint64
 	// datasources maps a datasource name to its CURRENT discovered form, so a broker always dials the
 	// freshly-advertised address rather than the one captured when its listener opened.
 	datasources map[string]Datasource
@@ -107,16 +112,17 @@ type Daemon struct {
 // New builds a daemon with no credentials loaded. version is what it reports over the control socket.
 func New(version string) *Daemon {
 	return &Daemon{
-		version:     version,
-		httpClient:  &http.Client{Timeout: 15 * time.Second},
-		startedAt:   time.Now(),
-		rediscover:  make(chan struct{}, 1),
-		listeners:   map[string]net.Listener{},
-		datasources: map[string]Datasource{},
-		unbrokered:  map[string]Datasource{},
-		bindErrors:  map[string]string{},
-		liveConns:   map[string]map[uint64]net.Conn{},
-		subs:        map[int]chan control.Event{},
+		version:             version,
+		httpClient:          &http.Client{Timeout: 15 * time.Second},
+		startedAt:           time.Now(),
+		rediscover:          make(chan struct{}, 1),
+		listeners:           map[string]net.Listener{},
+		listenerGenerations: map[string]uint64{},
+		datasources:         map[string]Datasource{},
+		unbrokered:          map[string]Datasource{},
+		bindErrors:          map[string]string{},
+		liveConns:           map[string]map[uint64]net.Conn{},
+		subs:                map[int]chan control.Event{},
 	}
 }
 
@@ -386,17 +392,17 @@ func (d *Daemon) Logout() error {
 	}); err != nil {
 		return err
 	}
-	d.closeAllListeners()
-	// Also end sessions already established: closing a listener only stops NEW accepts, so without this a
-	// logged-out daemon would keep piping live connections under the credentials just cleared.
-	d.closeConns()
 	d.mu.Lock()
 	d.cfg.Principal, d.cfg.Token, d.cfg.ExpiresAt, d.cfg.IssuedAt = "", "", "", ""
 	d.cfg.SessionExpiresAt, d.cfg.RenewalToken = "", ""
 	d.datasources = map[string]Datasource{}
 	d.unbrokered = map[string]Datasource{}
+	d.listenerGenerations = map[string]uint64{}
 	d.reauthRequired = false
 	d.mu.Unlock()
+	// Clear authority first; a connection accepted just before logout may not be registered for closeConns yet.
+	d.closeAllListeners()
+	d.closeConns()
 	d.publishStatus()
 	return nil
 }
@@ -502,6 +508,7 @@ func (d *Daemon) openListeners(ctx context.Context) {
 	brokerableNow := make(map[string]bool, len(dss))
 	needsListener := make([]Datasource, 0, len(dss))
 	var stale []net.Listener
+	var closeSessions []string
 
 	d.mu.Lock()
 	d.lastDiscoveryErr = ""
@@ -513,8 +520,17 @@ func (d *Daemon) openListeners(ctx context.Context) {
 			continue
 		}
 		brokerableNow[ds.Name] = true
+		previous := d.datasources[ds.Name]
+		ln, already := d.listeners[ds.Name]
 		d.datasources[ds.Name] = ds
-		if _, already := d.listeners[ds.Name]; !already {
+		if already && previous.Engine != ds.Engine {
+			stale = append(stale, ln)
+			closeSessions = append(closeSessions, ds.Name)
+			delete(d.listeners, ds.Name)
+			delete(d.listenerGenerations, ds.Name)
+			needsListener = append(needsListener, ds)
+			fmt.Fprintf(os.Stderr, "broker for %q restarting for engine %s\n", ds.Name, ds.Engine)
+		} else if !already {
 			needsListener = append(needsListener, ds)
 		}
 	}
@@ -523,12 +539,12 @@ func (d *Daemon) openListeners(ctx context.Context) {
 	// daemon would keep handing the wire token to a stale/unauthorized address. Close its listener (its serve
 	// loop exits on the closed listener) and forget its current form. The sticky port in the config is kept,
 	// so a later re-grant reuses the same local port + saved connection string.
-	var revoked []string
 	for name, ln := range d.listeners {
 		if !brokerableNow[name] {
 			stale = append(stale, ln)
-			revoked = append(revoked, name)
+			closeSessions = append(closeSessions, name)
 			delete(d.listeners, name)
+			delete(d.listenerGenerations, name)
 			delete(d.datasources, name)
 			fmt.Fprintf(os.Stderr, "broker for %q closed (no longer connectable)\n", name)
 		}
@@ -537,10 +553,10 @@ func (d *Daemon) openListeners(ctx context.Context) {
 	for _, ln := range stale {
 		ln.Close()
 	}
-	// End sessions already established on a revoked datasource too: a closed listener stops new accepts, but an
-	// open session would otherwise keep piping to an address this principal is no longer authorized for.
-	if len(revoked) > 0 {
-		d.closeConns(revoked...)
+	// End sessions already established on a revoked or protocol-changed datasource too: a closed listener stops
+	// new accepts, but an open session would otherwise keep piping through the old broker.
+	if len(closeSessions) > 0 {
+		d.closeConns(closeSessions...)
 	}
 
 	ports := map[string]int{}
@@ -587,8 +603,12 @@ func (d *Daemon) openListeners(ctx context.Context) {
 		// early on !LoggedIn) and which serves under whatever the config holds at accept time.
 		d.mu.Lock()
 		stillLoggedIn := d.cfg.LoggedIn()
+		var generation uint64
 		if stillLoggedIn {
+			d.nextListenerGeneration++
+			generation = d.nextListenerGeneration
 			d.listeners[ds.Name] = ln
+			d.listenerGenerations[ds.Name] = generation
 		}
 		d.mu.Unlock()
 		if !stillLoggedIn {
@@ -597,7 +617,7 @@ func (d *Daemon) openListeners(ctx context.Context) {
 			continue
 		}
 		fmt.Printf("broker %s -> %s (%s)\n", addr, ds.AdvertiseAddr, ds.Engine)
-		go d.serve(ctx, ln, ds.Name)
+		go d.serve(ctx, ln, ds.Name, ds.Engine, generation)
 	}
 	if len(needsListener) > 0 || len(stale) > 0 {
 		d.publishStatus()
@@ -610,6 +630,7 @@ func (d *Daemon) closeAllListeners() {
 	for name, ln := range d.listeners {
 		lns = append(lns, ln)
 		delete(d.listeners, name)
+		delete(d.listenerGenerations, name)
 	}
 	d.mu.Unlock()
 	for _, ln := range lns {
@@ -617,7 +638,7 @@ func (d *Daemon) closeAllListeners() {
 	}
 }
 
-func (d *Daemon) serve(ctx context.Context, ln net.Listener, name string) {
+func (d *Daemon) serve(ctx context.Context, ln net.Listener, name, engine string, generation uint64) {
 	for {
 		c, err := ln.Accept()
 		if err != nil {
@@ -632,39 +653,46 @@ func (d *Daemon) serve(ctx context.Context, ln net.Listener, name string) {
 				continue
 			}
 		}
-		go d.broker(c, name)
+		go d.broker(c, name, engine, generation)
 	}
 }
 
-// current returns the freshest discovered form of a datasource by name (false if it is gone).
-func (d *Daemon) current(name string) (Datasource, bool) {
+func (d *Daemon) brokerState(name, engine string, generation uint64) (Datasource, state.Config, bool) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	ds, ok := d.datasources[name]
-	return ds, ok
+	if generation == 0 || generation != d.listenerGenerations[name] || !d.cfg.LoggedIn() || !ok || ds.Engine != engine || ds.AdvertiseAddr == "" {
+		return Datasource{}, state.Config{}, false
+	}
+	return ds, d.cfg, true
 }
 
-// broker fronts one client connection: it looks up the datasource's CURRENT advertised address (so a proxy
-// that re-registered from A to B is followed without a daemon restart), speaks its wire protocol to the local
-// client, and dials the proxy with the current token. The local client is checked against the sticky
-// local password before the proxy is dialed.
-func (d *Daemon) broker(local net.Conn, name string) {
+// broker uses the datasource's current advertised address and the daemon's current token.
+func (d *Daemon) broker(local net.Conn, name, engine string, generation uint64) {
 	defer local.Close()
-	// Register now (so a logout/revocation mid-session can close this socket) and deregister on return.
 	deregister := d.addConn(name, local)
 	defer deregister()
-
-	ds, ok := d.current(name)
-	if !ok || ds.Engine != "mysql" || ds.AdvertiseAddr == "" {
-		// Deleted, lost its advertised address, or no longer brokerable since the listener opened — reject
-		// rather than dial a stale/empty address.
-		_ = mysqlwire.WritePacket(local, 2, mysqlwire.ErrPacket(1045, "proxy-monster: datasource no longer available"))
+	if err := local.SetDeadline(time.Now().Add(localHandshakeTimeout)); err != nil {
 		return
 	}
-	cfg := d.snapshot()
-	// cfg.LocalPassword is the same value `pmon show` puts in its connection strings, so the client is
-	// checked against the password it was handed.
-	if err := brokerMySQL(local, ds.AdvertiseAddr, ds.CertChainPEM, ds.WireTLS, cfg.Principal, cfg.Token, cfg.LocalPassword); err != nil {
+
+	ds, cfg, ok := d.brokerState(name, engine, generation)
+	if !ok {
+		if engine == "postgres" {
+			_ = rejectPostgresUnavailable(local)
+		} else {
+			_ = mysqlwire.WritePacket(local, 2, mysqlwire.ErrPacket(1045, "proxy-monster: datasource no longer available"))
+		}
+		return
+	}
+	var err error
+	switch ds.Engine {
+	case "mysql":
+		err = brokerMySQL(local, ds.AdvertiseAddr, ds.CertChainPEM, ds.WireTLS, cfg.Principal, cfg.Token, cfg.LocalPassword)
+	case "postgres":
+		err = brokerPostgres(local, ds.AdvertiseAddr, ds.CertChainPEM, ds.WireTLS, cfg.Token, cfg.LocalPassword)
+	}
+	if err != nil {
 		fmt.Fprintf(os.Stderr, "broker %q: %v\n", name, err)
 	}
 }

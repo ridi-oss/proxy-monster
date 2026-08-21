@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -35,8 +36,11 @@ func (c *showCmd) Run() error {
 
 	ctx := context.Background()
 	client, err := control.Connect(ctx)
-	if err != nil {
+	if errors.Is(err, control.ErrDaemonNotRunning) {
 		return fmt.Errorf("the daemon is not running — run `pmon login` (or `pmon start` if you are already logged in)")
+	}
+	if err != nil {
+		return err
 	}
 	s, err := client.Status(ctx)
 	if err != nil {

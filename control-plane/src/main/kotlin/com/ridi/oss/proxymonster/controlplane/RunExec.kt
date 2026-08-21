@@ -183,14 +183,7 @@ class ProxyStreamWedgedException : RunExecException("the proxy's event stream wo
 class ProxyRunTimeoutException(cause: Throwable? = null) :
     RunExecException("the proxy run channel timed out", cause)
 
-open class ProxyRunException(message: String, cause: Throwable? = null) : RunExecException(message, cause)
-
-// A failure the TARGET DB reported for the executed statement (the proxy tagged its RunError
-// target_db_error): a syntax error, a missing table, a constraint violation. Its message is the backend error
-// text, redaction-gated at the wire on the same decision as the client-facing path, so it is safe to surface
-// to the caller as the failure's real cause — unlike a bare [ProxyRunException], which also covers
-// proxy-internal conditions (decode, decision, mask-binding, connection) whose text must not be shown.
-class TargetDbRunException(message: String, cause: Throwable? = null) : ProxyRunException(message, cause)
+class ProxyRunException(message: String, cause: Throwable? = null) : RunExecException(message, cause)
 
 class RunCanceledBeforeStartException : RunExecException("the run was canceled before it started")
 
@@ -618,9 +611,6 @@ class RunExecService(
                 message.hasServing() -> return
                 message.hasError() -> {
                     if (message.error.message == QUERY_TIMEOUT_MESSAGE) throw ProxyRunTimeoutException()
-                    // An open/connect/catalog-init failure is not the statement's own target-DB error — it can
-                    // echo proxy-internal detail (a service-account host), so it is NOT surfaced. Only the
-                    // statement-EXEC error below is a genuine target-DB error safe to release.
                     throw ProxyRunException(message.error.message.ifBlank { "proxy run open failed" })
                 }
                 else -> throw ProxyRunException("proxy sent a run response before it was ready to serve")
@@ -684,12 +674,7 @@ class RunExecService(
                     // A statement the proxy aborted at PM_QUERY_TIMEOUT carries an exact sentinel — attribute it
                     // as a timeout (→ query.proxy_timeout, task FAILED), never a generic failure or a success.
                     if (message.error.message == QUERY_TIMEOUT_MESSAGE) throw ProxyRunTimeoutException()
-                    val text = message.error.message.ifBlank { "proxy run execution failed" }
-                    // Only a genuine target-DB statement ERR (target_db_error, already diagnostic-redacted at the
-                    // wire) is safe to surface as the failure's real cause; a decode/decision/mask-binding failure
-                    // the proxy also reports post-serving stays a generic ProxyRunException with no error detail.
-                    if (message.error.targetDbError) throw TargetDbRunException(text)
-                    throw ProxyRunException(text)
+                    throw ProxyRunException(message.error.message.ifBlank { "proxy run execution failed" })
                 }
 
                 message.hasSessionReady() -> throw ProxyRunException(

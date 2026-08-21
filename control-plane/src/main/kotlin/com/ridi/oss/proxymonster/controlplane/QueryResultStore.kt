@@ -46,31 +46,12 @@ data class DecryptedResult(
  * unauthorized viewer, or a not-ready status — never triggers the decrypt. The ciphertext and meta are
  * captured by one read in [QueryResultStore.accessFor], so a concurrent re-execute cannot swap the row
  * between an authorization check on [meta] and this decrypt.
- *
- * [errorDetail] is the FAILED run's target-DB error text, encrypted at rest like the rows and decrypted the
- * same way — lazily, after the same task.assume gate the rows are released behind. Null unless the child is a
- * target-DB failure that carried one (and not yet expired).
  */
-class ResultAccess(
-    val meta: QueryResultMeta,
-    val sql: String?,
-    decrypt: () -> DecryptedResult?,
-    decryptErrorDetail: () -> String? = { null },
-) {
+class ResultAccess(val meta: QueryResultMeta, val sql: String?, decrypt: () -> DecryptedResult?) {
     val decrypted: DecryptedResult? by lazy(decrypt)
-    val errorDetail: String? by lazy(decryptErrorDetail)
 }
 
 class QueryResultStore(private val dataSource: DataSource, private val crypto: ResultCrypto) {
-    // One-read snapshot backing [accessFor]: the child's meta, its own sql, and the two encrypted blobs
-    // (rows + target-DB detail), captured together so a concurrent re-execute cannot swap the row underneath.
-    private class RawResultRow(
-        val meta: QueryResultMeta,
-        val sql: String?,
-        val ciphertext: ByteArray?,
-        val errorDetail: ByteArray?,
-    )
-
     private val json = Json
     private val payloadSerializer = DecryptedResult.serializer()
     private val stringList = ListSerializer(String.serializer())
@@ -173,9 +154,6 @@ class QueryResultStore(private val dataSource: DataSource, private val crypto: R
         // approval for, rather than as an opaque failure.
         denyReason: String? = null,
         decisionId: Long? = null,
-        // Set only on a target-DB failure: the backend error text (redaction-gated at the wire). Stored as
-        // AES-GCM ciphertext, released only behind the task.assume gate on GET /result — never on metadata.
-        errorDetail: String? = null,
         // Runs in the SAME transaction as the child's RUNNING → FAILED flip (mirrors [completeRun]'s
         // audit hook) so the caller can terminalize the parent task atomically with the child. A throw
         // here rolls the child transition back too, keeping the two consistent.
@@ -185,18 +163,13 @@ class QueryResultStore(private val dataSource: DataSource, private val crypto: R
         val childId = latestChildId(c, taskId, "status = 'RUNNING'")
         val updated = childId != null && c.prepareStatement(
             "UPDATE query_result SET status = 'FAILED', error_code = ?, deny_reason = ?, decision_id = ?, " +
-                "error_detail = ?, expires_at = ? WHERE id = ? AND status = 'RUNNING'",
+                "expires_at = ? WHERE id = ? AND status = 'RUNNING'",
         ).use { ps ->
             ps.setString(1, errorCode)
             ps.setString(2, denyReason)
             if (decisionId == null) ps.setNull(3, java.sql.Types.BIGINT) else ps.setLong(3, decisionId)
-            if (errorDetail == null) {
-                ps.setNull(4, java.sql.Types.BINARY)
-            } else {
-                ps.setBytes(4, crypto.encrypt(errorDetail.toByteArray(Charsets.UTF_8)))
-            }
-            ps.setTimestamp(5, Timestamp.from(now.plusSeconds(RESULT_RETENTION_SEC)))
-            ps.setLong(6, childId)
+            ps.setTimestamp(4, Timestamp.from(now.plusSeconds(RESULT_RETENTION_SEC)))
+            ps.setLong(5, childId)
             ps.executeUpdate() > 0
         }
         val meta = if (updated) meta(taskId, c) else null
@@ -244,49 +217,38 @@ class QueryResultStore(private val dataSource: DataSource, private val crypto: R
     fun accessFor(taskId: Long): ResultAccess? {
         val row = dataSource.connection.use { c ->
             c.prepareStatement(
-                // Reading qr.sql in the SAME row as the ciphertext and error_detail binds the view's
-                // re-decision — and the released detail — to those bytes.
-                "SELECT $META_COLS, qr.sql, ciphertext, error_detail FROM query_result qr " +
-                    "WHERE task_id = ? ORDER BY id DESC LIMIT 1",
+                // Reading qr.sql in the SAME row as the ciphertext binds the view's re-decision to the
+                // released bytes.
+                "SELECT $META_COLS, qr.sql, ciphertext FROM query_result qr WHERE task_id = ? ORDER BY id DESC LIMIT 1",
             ).use { ps ->
                 ps.setLong(1, taskId)
                 ps.executeQuery().use { rs ->
                     if (!rs.next()) return null
-                    RawResultRow(rs.toMeta(), rs.getString("sql"), rs.getBytes("ciphertext"), rs.getBytes("error_detail"))
+                    Triple(rs.toMeta(), rs.getString("sql"), rs.getBytes("ciphertext"))
                 }
             }
         }
-        val meta = row.meta
+        val (meta, sql, ciphertext) = row
         val expired = meta.expiresAt != null && Instant.parse(meta.expiresAt).isBefore(Instant.now())
         if (expired) purgeExpired()
         // Only a DONE, unexpired, still-populated child holds a decryptable payload; anything else (not
         // ready, expired, or payload already purged) decrypts to null, so the route surfaces 409/410 rather
         // than any bytes. The decrypt itself runs lazily on first read of [ResultAccess.decrypted] — after
         // the caller has authorized on [meta].
-        val payload = if (meta.status == "DONE" && !expired) row.ciphertext else null
-        // The FAILED run's target-DB detail is released the same way — behind the same task.assume gate, and
-        // gone once expired (purgeExpired NULLs the column). Decrypt lazily so a caller rejected on [meta]
-        // never triggers it.
-        val errorDetailBytes = if (!expired) row.errorDetail else null
-        return ResultAccess(
-            meta,
-            row.sql,
-            decrypt = {
-                payload?.let { json.decodeFromString(payloadSerializer, crypto.decrypt(it).toString(Charsets.UTF_8)) }
-            },
-            decryptErrorDetail = { errorDetailBytes?.let { crypto.decrypt(it).toString(Charsets.UTF_8) } },
-        )
+        val payload = if (meta.status == "DONE" && !expired) ciphertext else null
+        return ResultAccess(meta, sql) {
+            payload?.let { json.decodeFromString(payloadSerializer, crypto.decrypt(it).toString(Charsets.UTF_8)) }
+        }
     }
 
-    // Expiry drops the decryptable PAYLOAD (ciphertext, row_count, columns, the encrypted error_detail) and
-    // clears expires_at, but keeps the child row and its sql/sql_hash/status/error_code/executed_* for durable
-    // audit and web preview. A purged row still exists yet reads back with no payload (accessFor's `decrypted`
-    // is null → the route returns 410). Clearing expires_at makes the row fall out of this sweep's WHERE, so
-    // it isn't reprocessed.
+    // Expiry drops the decryptable PAYLOAD (ciphertext, row_count, columns) and clears expires_at, but keeps
+    // the child row and its sql/sql_hash/status/error_code/executed_* for durable audit and web preview. A
+    // purged row still exists yet reads back with no payload (accessFor's `decrypted` is null → the route
+    // returns 410). Clearing expires_at makes the row fall out of this sweep's WHERE, so it isn't reprocessed.
     fun purgeExpired(): Int = dataSource.connection.use { c ->
         c.prepareStatement(
-            "UPDATE query_result SET ciphertext = NULL, row_count = NULL, columns = NULL, error_detail = NULL, " +
-                "expires_at = NULL WHERE expires_at <= ?",
+            "UPDATE query_result SET ciphertext = NULL, row_count = NULL, columns = NULL, expires_at = NULL " +
+                "WHERE expires_at <= ?",
         ).use { ps ->
             ps.setTimestamp(1, Timestamp.from(Instant.now()))
             ps.executeUpdate()

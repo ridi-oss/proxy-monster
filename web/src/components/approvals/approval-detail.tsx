@@ -4,7 +4,7 @@ import { useEffect, useState, type ReactNode } from 'react'
 import { useTranslations } from 'next-intl'
 import useSWR, { mutate as globalMutate } from 'swr'
 import { toast } from 'sonner'
-import { ApiError, cancelApproval, executeApproval, getApprovalResult, rejectApproval } from '@/lib/api/client'
+import { cancelApproval, executeApproval, getApprovalResult, rejectApproval } from '@/lib/api/client'
 import { onTaskEvent, subscribeTaskEvents } from '@/lib/api/task-events'
 import { translateApiError } from '@/lib/i18n/errors'
 import { swrKeys, useApproval } from '@/lib/hooks'
@@ -124,17 +124,9 @@ export function ApprovalDetail({ id }: { id: number }) {
   const runStarted = result != null && result.status != null
   const canViewRows = result?.status === 'DONE'
 
-  // Fetch /result on DONE (rows) and on FAILED (the target-DB errorDetail, which lives behind the
-  // task.assume gate — never on the metadata poll). Only an EXPECTED absence is swallowed to null so the
-  // localized code still shows: 404 (viewer can't assume R / no such result) or 409 (not yet ready).
-  // Anything else — transient or 5xx — re-throws so SWR retries instead of masking it as "no detail".
   const { data: resultView } = useSWR(
-    canViewRows || result?.status === 'FAILED' ? (['approval-result', id] as const) : null,
-    () =>
-      getApprovalResult(id).catch((e) => {
-        if (e instanceof ApiError && (e.status === 404 || e.status === 409)) return null
-        throw e
-      }),
+    canViewRows ? (['approval-result', id] as const) : null,
+    () => getApprovalResult(id),
   )
 
   // Task-event push: revalidate the moment this task terminalizes (execute done, cancel) instead of waiting
@@ -342,13 +334,8 @@ export function ApprovalDetail({ id }: { id: number }) {
                   </div>
 
                   {result.status === 'FAILED' && result.errorCode && (
-                    <div className="space-y-1 rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-500">
-                      <div>{t('approvalDetail.failedCode', { code: translateApiError(result.errorCode) })}</div>
-                      {/* The backend error text (redaction-gated at the proxy) from the assume-gated /result, so
-                          the failure names its real cause. Absent when the viewer can't assume R. */}
-                      {resultView?.errorDetail && (
-                        <div className="font-mono text-xs break-words opacity-80">{resultView.errorDetail}</div>
-                      )}
+                    <div className="rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-500">
+                      {t('approvalDetail.failedCode', { code: translateApiError(result.errorCode) })}
                     </div>
                   )}
 

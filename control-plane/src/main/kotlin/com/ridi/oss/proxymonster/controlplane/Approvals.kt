@@ -131,13 +131,8 @@ fun discoverRoles(
     val meta: QueryResultMeta,
     val columns: List<String>,
     val rows: List<List<String?>>,
-    // Null for a FAILED view (no rows were released, so there is no release to label); set to the view
-    // re-decision's verdict on the DONE path. explicitNulls=false drops it from the FAILED response body.
-    val decision: Decision? = null,
+    val decision: Decision = Decision.ALLOW,
     val maskedColumns: List<String> = emptyList(),
-    // The raw target-DB error behind a FAILED run, released only behind the task.assume gate (like the rows) —
-    // never on the task.read metadata poll. Null on a DONE view; set only when a FAILED run is viewed.
-    val errorDetail: String? = null,
 )
 
 /** Submit acknowledgement. Completion is observed by polling the task detail/result endpoints. */
@@ -798,20 +793,6 @@ fun Route.approvalRoutes(
         if (!mayReadResult(call, principal, req)) {
             return@get call.respond(HttpStatusCode.NotFound, ApiError("common.not_found", mapOf("resource" to "query approval request")))
         }
-        // A FAILED run's raw target-DB detail is released here, behind the SAME task.assume gate as the rows —
-        // never on the task.read metadata poll. There are no rows to re-decide, so the gate is the boundary;
-        // audit the release like a normal view (before responding) so it is never returned without a record.
-        if (meta.status == "FAILED" && access.errorDetail != null) {
-            val viewEvent = when (principal) {
-                req.principal -> "result-failure-viewed-by-requester"
-                req.decidedBy -> "result-failure-viewed-by-approver"
-                else -> "result-failure-viewed-by-assumer"
-            }
-            auditStore.insert(e3Record(principal, req, viewEvent, Channel.WORKFLOW_VIEWER))
-            return@get call.respond(
-                QueryResultView(meta, emptyList(), emptyList(), errorDetail = access.errorDetail),
-            )
-        }
         if (meta.status != "DONE") {
             return@get call.respond(HttpStatusCode.Conflict, ApiError("approval.result_not_ready"))
         }
@@ -926,8 +907,6 @@ internal suspend fun runApprovedTask(
         channel = channel.contextValue, kind = "approval_lifecycle",
     )
 
-    // The target-DB error behind a failure, surfaced under the localized code so the run names its real cause.
-    var errorDetail: String? = null
     val failureCode = try {
         val response = runExecService.run(
             principal = executor,
@@ -971,9 +950,6 @@ internal suspend fun runApprovedTask(
         "query.no_proxy_attached"
     } catch (_: ProxyRunTimeoutException) {
         "query.proxy_timeout"
-    } catch (e: TargetDbRunException) {
-        errorDetail = e.message
-        "approval.query_failed"
     } catch (_: ProxyRunException) {
         "approval.query_failed"
     } catch (t: Throwable) {
@@ -984,7 +960,7 @@ internal suspend fun runApprovedTask(
         // Child FAILED and parent FAILED commit in ONE transaction (mirrors the success path's single-commit
         // EXECUTED/DONE): a crash can never leave a FAILED child under a still-EXECUTING task, nor the
         // inverse — the split that boot reconcile would otherwise have to repair.
-        runCatching { store.failRun(id, failureCode, errorDetail = errorDetail) { conn, _ -> accessStore.markFailed(id, conn) } }
+        runCatching { store.failRun(id, failureCode) { conn, _ -> accessStore.markFailed(id, conn) } }
             .onFailure { log.error("task failure transition failed request=$id", it) }
     }
     // Push the ACTUAL terminal state (EXECUTED / FAILED / or CANCELLED if a cancel raced) to both parties'

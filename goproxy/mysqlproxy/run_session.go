@@ -103,9 +103,7 @@ func (s *RunSession) ServeStatement(sql string, maxRows int) (result engine.Stat
 			return false, relayErr
 		}
 		if collect.targetDbErr != nil {
-			// The target DB's own ERR for THIS executed statement (already run through RedactErr). Tag its
-			// provenance so the control-plane may surface it; an internal probe/refetch ERR never reaches here.
-			return false, engine.TargetDbError{Err: collect.targetDbErr}
+			return false, collect.targetDbErr
 		}
 		if resetErr != nil {
 			return false, resetErr

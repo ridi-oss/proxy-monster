@@ -89,12 +89,7 @@ func (s *RunSession) ServeStatement(sql string, maxRows int) (result engine.Stat
 			runErr = firstErr(runErr, collector.failed)
 			s.poisoned = runErr != nil
 			s.pendingDirty = true
-			if targetDbErr != nil {
-				// The target DB's own ERR for THIS executed statement (already run through sanitizeError). Tag
-				// its provenance so the control-plane may surface it; a probe/refetch ERR takes a different path.
-				return false, engine.TargetDbError{Err: targetDbErr}
-			}
-			return true, runErr
+			return targetDbErr == nil, firstErr(targetDbErr, runErr)
 		})
 	return result, err
 }

@@ -435,16 +435,10 @@ export interface QueryResultView {
   /**
    * The verdict of the LIVE view re-decision these rows were released under — the viewer's own context can
    * narrow an execution's ALLOW to a MASK, so this describes the release, not the stored execution. Only
-   * these two values reach a caller holding rows: a denied view is a 403 with no body. Absent on a FAILED
-   * view, which releases no rows and so has no release to label.
+   * these two values reach a caller holding rows: a denied view is a 403 with no body.
    */
-  decision?: 'ALLOW' | 'MASK' | null
+  decision: 'ALLOW' | 'MASK'
   maskedColumns: string[]
-  /**
-   * Present only when viewing a FAILED run: the raw target-DB error text, released behind the same
-   * task.assume gate as the rows (never on the metadata poll). Shown under the localized error code.
-   */
-  errorDetail?: string | null
 }
 
 /** Submit acknowledgement; completion is observed through task polling. */
@@ -544,14 +538,8 @@ export interface EditorResultView {
   /**
    * The verdict of the re-decision that released these rows. The editor labels its result panel from this;
    * inferring it from the presence of rows cannot distinguish a masked result from a clean one. Only these
-   * two values reach a caller holding rows: a denied view is a 403 with no body. Absent on a FAILED view,
-   * which releases no rows and so has no release to label.
+   * two values reach a caller holding rows: a denied view is a 403 with no body.
    */
-  decision?: 'ALLOW' | 'MASK' | null
+  decision: 'ALLOW' | 'MASK'
   maskedColumns: string[]
-  /**
-   * Present only when viewing a FAILED run: the raw target-DB error text, released behind the same
-   * task.assume gate as the rows (never on the metadata poll). Appended to the localized error code.
-   */
-  errorDetail?: string | null
 }

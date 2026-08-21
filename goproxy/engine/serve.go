@@ -23,14 +23,6 @@ type FailError struct{ Message string }
 
 func (e FailError) Error() string { return e.Message }
 
-// TargetDbError marks an error as the target DB's own ERR response for the executed statement, already
-// passed through the diagnostic redactor. It is the ONLY error provenance the control-plane may surface as
-// a query's error detail; every proxy/decode/decision/mask-binding failure stays unwrapped and generic.
-type TargetDbError struct{ Err error }
-
-func (e TargetDbError) Error() string { return e.Err.Error() }
-func (e TargetDbError) Unwrap() error { return e.Err }
-
 // ServeStatement authorizes, executes, and conditionally runs after-statement refetch commands.
 func ServeStatement(
 	qe *QueryEngine,

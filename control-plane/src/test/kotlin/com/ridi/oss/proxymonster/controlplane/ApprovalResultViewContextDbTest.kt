@@ -247,33 +247,6 @@ class ApprovalResultViewContextDbTest {
         return reqId
     }
 
-    private fun seedFailedResult(errorDetail: String): Long {
-        val reqId = fx.dataSource.connection.use { c ->
-            c.prepareStatement(
-                "INSERT INTO access_request (principal, kind, datasource_id, role_id, execute_as, creator_kind, decided_by) VALUES (?, 'QUERY', ?, ?, ?::jsonb, 'WORKFLOW', ?) RETURNING id",
-            ).use { ps ->
-                ps.setString(1, requester)
-                ps.setLong(2, fx.datasource.id)
-                ps.setLong(3, roleId)
-                ps.setString(4, "[\"$roleName\"]")
-                ps.setString(5, approver)
-                ps.executeQuery().use { rs ->
-                    check(rs.next())
-                    rs.getLong(1)
-                }
-            }
-        }
-        fx.dataSource.connection.use { c ->
-            c.prepareStatement("INSERT INTO query_result (task_id, sql, sql_hash) VALUES (?, 'SELECT 1', 'fixture')").use { ps ->
-                ps.setLong(1, reqId)
-                ps.executeUpdate()
-            }
-        }
-        assertNotNull(resultStore.startRun(reqId, executor))
-        assertNotNull(resultStore.failRun(reqId, "approval.query_failed", errorDetail = errorDetail))
-        return reqId
-    }
-
     private fun ciphertext(requestId: Long): ByteArray = fx.dataSource.connection.use { c ->
         c.prepareStatement("SELECT ciphertext FROM query_result WHERE task_id = ?").use { ps ->
             ps.setLong(1, requestId)
@@ -578,35 +551,6 @@ class ApprovalResultViewContextDbTest {
         val responseBody = response.bodyAsText()
         assertEquals("approval.result_view_denied", Json.decodeFromString<ApiError>(responseBody).code)
         assertFalse(responseBody.contains(sentinel), "catalog drift must not return a partially rebound row")
-    }
-
-    @Test
-    fun `a FAILED run's target-DB detail is released behind task assume, never on the metadata poll`() = testApplication {
-        resetMutableAuthzState()
-        val detail = "ERROR: relation \"orders_missing\" does not exist"
-        val id = seedFailedResult(detail)
-        val client = wire()
-
-        // task.assume viewer: the decrypted detail is returned with no rows to re-decide.
-        client.login(executor)
-        val viewed = client.get("/api/approvals/$id/result")
-        assertEquals(HttpStatusCode.OK, viewed.status)
-        val view = viewed.body<QueryResultView>()
-        assertEquals(detail, view.errorDetail)
-        assertTrue(view.rows.isEmpty(), "a FAILED view carries no rows")
-        assertTrue(view.columns.isEmpty(), "a FAILED view carries no columns")
-
-        // A metadata-only admin (task.read, no task.assume) is refused the raw detail, and it never rides on
-        // the metadata poll either — the FAILED code is all the poll carries.
-        client.login(admin)
-        assertEquals(HttpStatusCode.NotFound, client.get("/api/approvals/$id/result").status, "admin may not assume R")
-        val adminDetail = client.get("/api/approvals/$id")
-        assertEquals(HttpStatusCode.OK, adminDetail.status, "admin may read metadata")
-        assertFalse(
-            adminDetail.bodyAsText().contains("orders_missing"),
-            "the raw target-DB detail must not ride on the task.read metadata poll",
-        )
-        assertEquals("approval.query_failed", adminDetail.body<ApprovalDetail>().result?.errorCode)
     }
 
     @Test

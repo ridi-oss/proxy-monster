@@ -68,3 +68,39 @@ func TestColumnFirstCanonical(t *testing.T) {
 		})
 	}
 }
+
+func TestWriteCorrelatedColumnAmbiguityRemainsUnresolved(t *testing.T) {
+	catalog := append([]*pb.ColumnSpec{}, canonicalPostgresCatalog...)
+	catalog = append(catalog, columnSpec("acme", "public", "orders", "ssn", "VARCHAR"))
+	result := analyzeProbe(t, &pb.AnalyzeRequest{
+		Sql:          "DELETE FROM users u USING orders ssn WHERE u.id = ssn.user_id RETURNING (SELECT ssn)",
+		EngineConfig: &pb.EngineConfig{Engine: pb.Engine_POSTGRES},
+		Namespace:    canonicalPostgresNamespace,
+		Catalog:      catalog,
+	})
+	if result.Resolved {
+		t.Fatalf("ambiguous correlated column must fail closed: %+v", result)
+	}
+}
+
+func TestWriteCorrelatedColumnIgnoresUnselectedCTE(t *testing.T) {
+	catalog := append([]*pb.ColumnSpec{}, canonicalPostgresCatalog...)
+	catalog = append(catalog, columnSpec("acme", "public", "orders", "ssn", "VARCHAR"))
+	result := analyzeProbe(t, &pb.AnalyzeRequest{
+		Sql:          "WITH d AS (SELECT ssn FROM orders) DELETE FROM users u WHERE u.id = 1 RETURNING (SELECT ssn)",
+		EngineConfig: &pb.EngineConfig{Engine: pb.Engine_POSTGRES},
+		Namespace:    canonicalPostgresNamespace,
+		Catalog:      catalog,
+	})
+	if !result.Resolved {
+		t.Fatalf("unselected CTE must not compete with a correlated column: %+v", result)
+	}
+	for _, columns := range result.References {
+		for _, column := range columns {
+			if column == canonicalUsersSSNKey {
+				return
+			}
+		}
+	}
+	t.Fatalf("correlated users.ssn read was not surfaced: %+v", result)
+}

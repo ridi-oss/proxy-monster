@@ -38,16 +38,11 @@ type OriginInfo struct {
 }
 
 // SourceInfo is one physical target-DB relation the statement scans (docs/facts-emission.md).
-// `Table` is the fully-qualified `catalog.schema.table` identity. `Covered` is true when at least one
-// traced column fact (an origin base or a reference) names this table — meaning the existing column
-// authorization already gates the scan. An UNCOVERED table (Covered=false) is a scan that reads the
-// relation while tracing zero of its columns (`count(*)`, `SELECT 1`, `EXISTS`, a cross-join side that
-// only multiplies cardinality); its existence/row-count leaks unless a `result.read` grant covers the
-// Table resource, so the control-plane must gate it. Coverage is per-TABLE (not per scan occurrence):
-// once any column of a table is a granted fact, the principal can already observe that table's
-// cardinality, so no additional Table grant is required for another uncovered occurrence of the SAME
-// table. Computed from the FINAL emitted facts (not speculative resolution), so an ambiguous unqualified
-// column that resolves to nothing leaves its table uncovered → gated, fail-closed.
+// `Table` is the fully-qualified `catalog.schema.table` identity. `Covered` is true when an emitted
+// column fact gates the scan. It stays false when no column is traced, or when the statement reads an
+// implicit non-visible column with no catalog identity and therefore no Column grant of its own. An
+// uncovered table requires a `result.read` grant for the Table resource. Coverage is per table, not per
+// scan occurrence, and is computed from the final emitted facts.
 type SourceInfo struct {
 	Catalog string `json:"catalog"`
 	Schema  string `json:"schema"`
@@ -107,6 +102,7 @@ type prober struct {
 	analyzeQuery exp.Expression
 	payloadQuery exp.Expression
 	isWrite      bool
+	relAmbiguous bool
 	relOverflow  bool // set when the relation resolver hits its depth guard → fail closed (resolved=false)
 
 	scopes        []*optimizer.Scope
@@ -124,6 +120,8 @@ type prober struct {
 	physicalTables    map[exp.Expression]tableID
 	nonPhysicalTables map[exp.Expression]bool
 	newTargets        map[exp.Expression]bool
+
+	implicitNonVisibleSources map[tableID]bool
 }
 
 type resolveKey struct {
@@ -150,7 +148,7 @@ func Probe(sql string, engineConfig *pb.EngineConfig, sch *schema.Mapping, names
 	if err := detectRenderCollisions(sch); err != nil {
 		return failResult("VALIDATE", err.Error())
 	}
-	qualifySchema, err := schema.NewMappingSchema(sch, eng.Dialect(), eng.NormalizeCatalogOnBuild())
+	qualifySchema, err := newQualifySchema(sch, eng)
 	if err != nil {
 		return failResult("VALIDATE", err.Error())
 	}
@@ -183,6 +181,8 @@ func probeParsed(root exp.Expression, eng engine, qualifySchema schema.Schema, n
 		physicalTables:    map[exp.Expression]tableID{},
 		nonPhysicalTables: map[exp.Expression]bool{},
 		newTargets:        map[exp.Expression]bool{},
+
+		implicitNonVisibleSources: map[tableID]bool{},
 	}
 	// Emit the called-function facts even when analysis FAILS after parsing — an unsupported/
 	// unresolved statement (`SELECT * FROM dblink(...)`, a data-modifying CTE, PIVOT, …) that resolves=false.
@@ -562,7 +562,7 @@ func (p *prober) writeTargetTable() exp.Expression {
 }
 
 // writeTargetNodes is the set of table NODES that are the write target of an INSERT/UPDATE/DELETE/
-// MERGE/CREATE (or SELECT ... INTO) — the mutated relation, gated by sql.<kind>. Excludes the
+// MERGE/CREATE (or SELECT ... INTO) — the mutated relation, gated by stmt.kind.<kind>. Excludes the
 // target occurrence from scanned-source facts; a distinct read occurrence of the same table is
 // unaffected. Node-keyed (not tableID) so the target and an aliased self-read stay distinguishable.
 func (p *prober) writeTargetNodes() map[exp.Expression]bool {
@@ -783,10 +783,9 @@ func generateExecutableSQL(root exp.Expression, dialect *dialects.Dialect) (stri
 
 func (p *prober) buildScopes() {
 	p.scopes = optimizer.TraverseScope(p.qroot)
-	// INSERT has no native root query, and the root traversal can omit SELECTs nested under VALUES/SET,
-	// so retain those query scopes as independent analysis graphs for the INSERT conservation
-	// paths. UPDATE/DELETE/MERGE stay on the single native traversal graph validated below.
-	if p.qroot.Kind() == exp.KindInsert {
+	// Native DML traversal can omit SELECTs nested under payload expressions. Retain their scopes as
+	// independent analysis graphs; scopeChainFor links them back to the write root for correlation.
+	if p.isWrite {
 		seenExpressions := map[exp.Expression]bool{}
 		for _, sc := range p.scopes {
 			seenExpressions[sc.Expression] = true
@@ -834,6 +833,20 @@ func (p *prober) buildScopes() {
 
 func (p *prober) lineage() ProbeResult {
 	p.references = map[string]map[string]bool{}
+	p.implicitNonVisibleSources = map[tableID]bool{}
+
+	if p.isWrite {
+		for _, column := range p.qroot.FindAll(exp.KindColumn) {
+			if column.This() == nil ||
+				column.This().Kind() == exp.KindStar ||
+				isOutputAliasReference(column) {
+				continue
+			}
+			if source, virtual := p.implicitNonVisibleWriteSource(column); virtual && source == nil {
+				return failResult("VALIDATE", fmt.Sprintf("unresolved column '%s' in write", column.Name()))
+			}
+		}
+	}
 
 	p.opaqueSelects = map[exp.Expression]bool{}
 	for _, node := range append(p.qroot.FindAll(exp.KindSelect), p.findAllSetOperations(p.qroot)...) {
@@ -1085,9 +1098,26 @@ func (p *prober) lineage() ProbeResult {
 		if dot.Expr() != nil {
 			fld = dot.Expr().Name() // AS-IS; relationField lowercases only for the schema lookup
 		}
+		if table, physical := rel.(exp.Expression); physical && table != nil && table.Kind() == exp.KindTable &&
+			p.isImplicitNonVisibleColumn(fld) {
+			if _, catalogBacked := p.canonicalColumn(table, fld); !catalogBacked {
+				p.markImplicitNonVisibleTable(table, fld)
+				continue
+			}
+		}
+		virtual := false
+		if derived, ok := rel.(*optimizer.Scope); ok {
+			virtualSources := p.implicitNonVisibleScopeOutputSources(derived, fld, map[resolveKey]bool{})
+			virtual = len(virtualSources) > 0
+			for source := range virtualSources {
+				if id, resolved := p.resolvedTableID(source); resolved {
+					p.implicitNonVisibleSources[id] = true
+				}
+			}
+		}
 		if bases, found := p.relationField(rel, fld); found {
 			p.addRef(OTHER, bases) // (x).f → the specific base column(s)
-		} else {
+		} else if !virtual {
 			p.addRef(OTHER, p.relationColumns(rel)) // unresolved field → whole relation (fail closed)
 		}
 	}
@@ -1414,6 +1444,22 @@ func (p *prober) lineage() ProbeResult {
 			}
 			bases, ok := wbase(c.Name(), c.TableName(), c)
 			if !ok {
+				virtualSources := p.implicitNonVisibleColumnSources(c, map[resolveKey]bool{})
+				if len(virtualSources) > 0 {
+					for source := range virtualSources {
+						if id, resolved := p.resolvedTableID(source); resolved {
+							p.implicitNonVisibleSources[id] = true
+						}
+					}
+					continue
+				}
+				if source, virtual := p.implicitNonVisibleWriteSource(c); virtual {
+					if source == nil {
+						return failResult("VALIDATE", fmt.Sprintf("unresolved column '%s' in write", c.Name()))
+					}
+					p.markImplicitNonVisibleTable(source, c.Name())
+					continue
+				}
 				return failResult("VALIDATE", fmt.Sprintf("unresolved column '%s' in write", c.Name()))
 			}
 			p.addRef(OTHER, subtractSet(bases, accounted))
@@ -1445,6 +1491,9 @@ func (p *prober) lineage() ProbeResult {
 				continue
 			}
 			if c.This() != nil && c.This().Kind() == exp.KindStar {
+				continue
+			}
+			if c.FindAncestor(exp.KindDot) != nil {
 				continue
 			}
 			if within(c, payloadBody) || c.FindAncestor(exp.KindCTE) != nil {
@@ -1503,6 +1552,13 @@ func (p *prober) lineage() ProbeResult {
 				}
 			}
 		}
+	}
+
+	if p.relAmbiguous {
+		return failResult("VALIDATE", "ambiguous relation column")
+	}
+	if p.relOverflow {
+		return failResult("LINEAGE", "relation-resolution depth exceeded (possible composite cycle)")
 	}
 
 	refsOut := map[string][]string{}
@@ -1585,15 +1641,373 @@ func (p *prober) calledFunctions() []string {
 // (docs/facts-emission.md). p.physicalTables holds only relations the resolution report proved
 // Physical — a shadowed CTE reference resolves to CTE/Derived and is absent, so `WITH t AS (...)
 // SELECT count(*) FROM t` emits no physical `t` (ALLOW), while a CTE BODY that reads the real table
-// does (a scanned source, gated). Write TARGETS are excluded upstream (p.newTargets is skipped in
-// consumeResolutionReport), so an INSERT/UPDATE/DELETE target is never a scanned source.
+// does (a scanned source, gated). A write target is excluded unless an implicit non-visible column
+// reads it and therefore requires a Table grant.
 //
-// Coverage is per-TABLE and computed from the FINAL emitted facts: a table is covered iff some origin
-// base or reference key begins with `<catalog.schema.table>.` — i.e. a column of it is a traced fact
-// the column gate already authorizes. The trailing dot makes the prefix injective (a `users.` prefix
-// never matches `users_archive.col`). An unqualified column that stays ambiguous resolves to no base
-// key, so its table is left uncovered → gated, never silently covered. Over-attribution can only make
-// a table appear UNCOVERED (a dotted pathological name failing the prefix) → over-deny, fail-closed.
+// Coverage is per table and computed from the final emitted facts. A traced origin/reference normally
+// covers its table, but an implicit non-visible column has no catalog-backed Column resource and forces
+// the Table grant. The trailing dot keeps the base-key prefix injective (`users.` never matches
+// `users_archive.col`). Anything unresolved leaves the table uncovered and gated.
+func isOutputAliasReference(column exp.Expression) bool {
+	if column.TableName() != "" || column.Parent() == nil {
+		return false
+	}
+	if column.Parent().Kind() != exp.KindOrdered && column.FindAncestor(exp.KindDistinct) == nil {
+		return false
+	}
+	for query := column.Parent(); query != nil; query = query.Parent() {
+		if !query.Is(exp.TraitQuery) {
+			continue
+		}
+		for _, projection := range query.Selects() {
+			if projection.AliasOrName() == column.Name() {
+				return true
+			}
+		}
+		return false
+	}
+	return false
+}
+
+func (p *prober) isImplicitNonVisibleColumn(name string) bool {
+	name = p.engine.FoldColumn(name)
+	for _, candidate := range p.engine.ImplicitNonVisibleColumns() {
+		if p.engine.FoldColumn(candidate) == name {
+			return true
+		}
+	}
+	return false
+}
+
+// PostgreSQL excludes the target row from INSERT payloads and MERGE NOT MATCHED BY TARGET clauses.
+func (p *prober) writeTargetVisibleAt(node exp.Expression) bool {
+	switch p.qroot.Kind() {
+	case exp.KindInsert:
+		return node.FindAncestor(exp.KindReturning, exp.KindOnConflict) != nil
+	case exp.KindMerge:
+		when := node.FindAncestor(exp.KindWhen)
+		if when == nil {
+			return true
+		}
+		matched, _ := when.Arg("matched").(bool)
+		bySource, _ := when.Arg("source").(bool)
+		return matched || bySource
+	default:
+		return true
+	}
+}
+
+func (p *prober) implicitNonVisibleWriteSource(column exp.Expression) (exp.Expression, bool) {
+	if column == nil || column.This() == nil || column.This().Kind() == exp.KindStar {
+		return nil, false
+	}
+	name := p.engine.FoldColumn(column.Name())
+	if !p.isImplicitNonVisibleColumn(name) {
+		return nil, false
+	}
+
+	physical := func(source any) exp.Expression {
+		table, ok := source.(exp.Expression)
+		if !ok || table == nil || table.Kind() != exp.KindTable {
+			return nil
+		}
+		if _, ok := p.resolvedTableID(table); !ok {
+			return nil
+		}
+		return table
+	}
+
+	target := p.writeTargetTable()
+	if target != nil && p.newTargets[target] {
+		target = nil
+	}
+	target = physical(target)
+	targetVisible := p.writeTargetVisibleAt(column)
+
+	classify := func(scope *optimizer.Scope, alias string, source any) (exp.Expression, bool, bool) {
+		var table exp.Expression
+		var derived *optimizer.Scope
+		switch source := source.(type) {
+		case exp.Expression:
+			if source == nil {
+				return nil, false, false
+			}
+			if source.Kind() == exp.KindTable {
+				table = physical(source)
+				if table == nil {
+					return nil, false, false
+				}
+				if table == target && (!targetVisible || (target.Alias() != "" && alias != target.Alias())) {
+					return nil, false, true
+				}
+			}
+		case *optimizer.Scope:
+			if source == nil || source.Expression == nil {
+				return nil, false, false
+			}
+			derived = source
+		default:
+			return nil, false, false
+		}
+
+		if derived != nil {
+			sources := p.implicitNonVisibleScopeOutputSources(derived, name, map[resolveKey]bool{})
+			if len(sources) > 1 {
+				return nil, false, false
+			}
+			for source := range sources {
+				return source, true, true
+			}
+		}
+
+		columns := optimizer.NewResolver(scope, p.qualifySchema, false).GetSourceColumns(alias)
+		for _, candidate := range columns {
+			if candidate != name {
+				continue
+			}
+			if table != nil {
+				if _, catalogBacked := p.canonicalColumn(table, name); catalogBacked {
+					return nil, true, true
+				}
+				return table, true, true
+			}
+			return nil, true, true
+		}
+		return nil, false, true
+	}
+
+	if alias := column.TableName(); alias != "" {
+		for _, scope := range p.queryScopeChainFor(column) {
+			selected, ok := scope.SelectedSources()[alias]
+			if !ok {
+				continue
+			}
+			table, matches, certain := classify(scope, alias, selected.Source)
+			if !certain || !matches {
+				return nil, true
+			}
+			if table == nil {
+				return nil, false
+			}
+			return table, true
+		}
+		if target == nil || !targetVisible || alias != target.AliasOrName() {
+			return nil, true
+		}
+		if _, catalogBacked := p.canonicalColumn(target, name); catalogBacked {
+			return nil, false
+		}
+		return target, true
+	}
+
+	for _, scope := range p.queryScopeChainFor(column) {
+		candidates := []exp.Expression{}
+		uncertain := false
+		for alias, selected := range scope.SelectedSources() {
+			table, matches, certain := classify(scope, alias, selected.Source)
+			if !certain {
+				uncertain = true
+				continue
+			}
+			if matches {
+				candidates = append(candidates, table)
+			}
+		}
+		if uncertain || len(candidates) > 1 {
+			return nil, true
+		}
+		if len(candidates) == 1 {
+			if candidates[0] == nil {
+				return nil, false
+			}
+			return candidates[0], true
+		}
+	}
+	if target == nil || !targetVisible {
+		return nil, true
+	}
+	if _, catalogBacked := p.canonicalColumn(target, name); catalogBacked {
+		return nil, false
+	}
+	return target, true
+}
+
+func (p *prober) implicitNonVisibleSourceIDs() map[tableID]bool {
+	out := make(map[tableID]bool, len(p.implicitNonVisibleSources))
+	for id := range p.implicitNonVisibleSources {
+		out[id] = true
+	}
+	return out
+}
+
+func (p *prober) markImplicitNonVisibleColumn(column exp.Expression) {
+	for table := range p.implicitNonVisibleColumnSources(column, map[resolveKey]bool{}) {
+		if id, ok := p.resolvedTableID(table); ok {
+			p.implicitNonVisibleSources[id] = true
+		}
+	}
+}
+
+func (p *prober) markImplicitNonVisibleTable(table exp.Expression, column string) {
+	if table == nil || table.Kind() != exp.KindTable || !p.isImplicitNonVisibleColumn(column) {
+		return
+	}
+	if _, catalogBacked := p.canonicalColumn(table, column); catalogBacked {
+		return
+	}
+	if id, ok := p.resolvedTableID(table); ok {
+		p.implicitNonVisibleSources[id] = true
+	}
+}
+
+func (p *prober) implicitNonVisibleColumnSources(
+	column exp.Expression,
+	seen map[resolveKey]bool,
+) map[exp.Expression]bool {
+	out := map[exp.Expression]bool{}
+	if column == nil || column.This() == nil || column.This().Kind() == exp.KindStar ||
+		isOutputAliasReference(column) {
+		return out
+	}
+	name := column.Name()
+	alias := column.TableName()
+	for _, scope := range p.scopeChainFor(column) {
+		if alias != "" {
+			selected, ok := scope.SelectedSources()[alias]
+			if !ok {
+				continue
+			}
+			return p.implicitNonVisibleSourceColumnSources(selected.Source, name, seen)
+		}
+		resolver := optimizer.NewResolver(scope, p.qualifySchema, false)
+		var source any
+		matches := 0
+		for sourceAlias, selected := range scope.SelectedSources() {
+			for _, candidate := range resolver.GetSourceColumns(sourceAlias) {
+				if candidate == name {
+					source = selected.Source
+					matches++
+					break
+				}
+			}
+		}
+		if matches == 1 {
+			return p.implicitNonVisibleSourceColumnSources(source, name, seen)
+		}
+		if matches > 1 {
+			return out
+		}
+	}
+	return out
+}
+
+func (p *prober) implicitNonVisibleSourceColumnSources(
+	source any,
+	name string,
+	seen map[resolveKey]bool,
+) map[exp.Expression]bool {
+	out := map[exp.Expression]bool{}
+	switch source := source.(type) {
+	case exp.Expression:
+		if source == nil || source.Kind() != exp.KindTable || !p.isImplicitNonVisibleColumn(name) {
+			return out
+		}
+		if _, catalogBacked := p.canonicalColumn(source, name); !catalogBacked {
+			out[source] = true
+		}
+	case *optimizer.Scope:
+		return p.implicitNonVisibleScopeOutputSources(source, name, seen)
+	}
+	return out
+}
+
+func (p *prober) implicitNonVisibleScopeOutputSources(
+	scope *optimizer.Scope,
+	name string,
+	seen map[resolveKey]bool,
+) map[exp.Expression]bool {
+	out := map[exp.Expression]bool{}
+	if scope == nil || scope.Expression == nil {
+		return out
+	}
+	key := resolveKey{scope: scope, name: name}
+	if seen[key] {
+		return out
+	}
+	seen[key] = true
+	expr := scope.Expression
+	if expr.Is(exp.TraitSetOperation) {
+		branches := p.leafSelects(expr)
+		names := []string{}
+		if cte := expr.Parent(); cte != nil && cte.Kind() == exp.KindCTE {
+			names = p.cteColNames(cte)
+		}
+		if len(names) == 0 && len(branches) > 0 {
+			for _, projection := range branches[0].Selects() {
+				names = append(names, projection.AliasOrName())
+			}
+		}
+		for index, candidate := range names {
+			if candidate != name {
+				continue
+			}
+			for _, branch := range branches {
+				selects := branch.Selects()
+				if index < len(selects) {
+					p.collectImplicitNonVisibleSources(selects[index], out, seen)
+				}
+			}
+		}
+		return out
+	}
+	if scope.IsUnion() {
+		for _, branch := range scope.UnionScopes {
+			for table := range p.implicitNonVisibleScopeOutputSources(branch, name, seen) {
+				out[table] = true
+			}
+		}
+		return out
+	}
+	if value := p.scopeProjectionValue(scope, name); value != nil {
+		p.collectImplicitNonVisibleSources(value, out, seen)
+	}
+	return out
+}
+
+func (p *prober) collectImplicitNonVisibleSources(
+	node exp.Expression,
+	out map[exp.Expression]bool,
+	seen map[resolveKey]bool,
+) {
+	if node == nil {
+		return
+	}
+	columns := []exp.Expression{}
+	if node.Kind() == exp.KindColumn {
+		columns = append(columns, node)
+	} else {
+		columns = node.FindAll(exp.KindColumn)
+	}
+	for _, column := range columns {
+		for table := range p.implicitNonVisibleColumnSources(column, seen) {
+			out[table] = true
+		}
+	}
+	for _, dot := range node.FindAll(exp.KindDot) {
+		if dot.FindAncestor(exp.KindDot) != nil || dot.Expr() == nil ||
+			!p.isImplicitNonVisibleColumn(dot.Expr().Name()) {
+			continue
+		}
+		if table, ok := p.relationOfNode(dot.This(), 0); ok {
+			if physical, ok := table.(exp.Expression); ok && physical != nil && physical.Kind() == exp.KindTable {
+				if _, catalogBacked := p.canonicalColumn(physical, dot.Expr().Name()); !catalogBacked {
+					out[physical] = true
+				}
+			}
+		}
+	}
+}
+
 func (p *prober) scannedSources(origins []OriginInfo, refs map[string][]string) []SourceInfo {
 	baseKeys := map[string]bool{}
 	for _, origin := range origins {
@@ -1606,15 +2020,16 @@ func (p *prober) scannedSources(origins []OriginInfo, refs map[string][]string) 
 			baseKeys[base] = true
 		}
 	}
-	// The write TARGET occurrence is gated by sql.<kind>, not result.read (docs/facts-emission.md:
+	// The write TARGET occurrence is gated by stmt.kind.<kind>, not result.read (docs/facts-emission.md:
 	// "A write target is not a scanned Table solely because it is the target"). Exclude the target
 	// NODE(s), not the tableID — a DIFFERENT occurrence of the same table (a subquery reading old
 	// values) is a genuine scanned source and its column reads still emit facts / conservation applies.
 	targets := p.writeTargetNodes()
+	tableGrantRequired := p.implicitNonVisibleSourceIDs()
 	seen := map[tableID]bool{}
 	out := []SourceInfo{}
 	for node, id := range p.physicalTables {
-		if targets[node] {
+		if targets[node] && !tableGrantRequired[id] {
 			continue
 		}
 		if seen[id] {
@@ -1623,16 +2038,18 @@ func (p *prober) scannedSources(origins []OriginInfo, refs map[string][]string) 
 		seen[id] = true
 		prefix := id.String() + "."
 		covered := false
-		for base := range baseKeys {
-			// A base key is `<catalog>.<schema>.<table>.<column>`. Coverage requires the prefix AND that
-			// the remainder (the column) carries no further '.', so a table literally named "x.foo" (a
-			// dot in the name) cannot make a clean sibling `x` look covered — its base key `…x.foo.col`
-			// has a dotted remainder past the `x.` prefix. A delimiter-bearing identity therefore reads
-			// as UNCOVERED → gated → DENIED downstream (authorizeTables/authorizeColumns reject it),
-			// fail-closed, instead of relying on that Kotlin guard for correctness.
-			if strings.HasPrefix(base, prefix) && !strings.Contains(base[len(prefix):], ".") {
-				covered = true
-				break
+		if !tableGrantRequired[id] {
+			for base := range baseKeys {
+				// A base key is `<catalog>.<schema>.<table>.<column>`. Coverage requires the prefix AND that
+				// the remainder (the column) carries no further '.', so a table literally named "x.foo" (a
+				// dot in the name) cannot make a clean sibling `x` look covered — its base key `…x.foo.col`
+				// has a dotted remainder past the `x.` prefix. A delimiter-bearing identity therefore reads
+				// as UNCOVERED → gated → DENIED downstream (authorizeTables/authorizeColumns reject it),
+				// fail-closed, instead of relying on that Kotlin guard for correctness.
+				if strings.HasPrefix(base, prefix) && !strings.Contains(base[len(prefix):], ".") {
+					covered = true
+					break
+				}
 			}
 		}
 		out = append(out, SourceInfo{Catalog: id.catalog, Schema: id.schema, Table: id.table, Covered: covered})
@@ -1766,6 +2183,7 @@ func (p *prober) resolve(col exp.Expression, seen map[resolveKey]bool) map[strin
 	if col == nil {
 		return map[string]bool{}
 	}
+	p.markImplicitNonVisibleColumn(col)
 	scope := p.col2scope[col]
 	if scope == nil {
 		return map[string]bool{}
@@ -1886,6 +2304,7 @@ func (p *prober) resolveIdent(col exp.Expression, seen map[identKey]bool) (map[s
 	if col == nil {
 		return map[string]bool{}, true
 	}
+	p.markImplicitNonVisibleColumn(col)
 	scope := p.col2scope[col]
 	if scope == nil {
 		return map[string]bool{}, true

@@ -26,6 +26,7 @@ type engine interface {
 	// no separate parse-only string form to keep in sync with this one).
 	Dialect() *dialects.Dialect
 	NormalizeCatalogOnBuild() bool
+	ImplicitNonVisibleColumns() []string
 	FoldColumn(column string) string
 	// IsTempSchema reports whether a DDL target's schema identifier denotes session-local (temporary)
 	// storage for this engine, so the DDL is not catalog-changing. The schema is passed as its parsed
@@ -103,6 +104,8 @@ func (e *mysqlEngine) Dialect() *dialects.Dialect { return e.dialect }
 // MySQL's catalog needs build-time folding: columns are always case-insensitive, while relation
 // spelling follows lower_case_table_names and the information_schema exception.
 func (e *mysqlEngine) NormalizeCatalogOnBuild() bool { return true }
+
+func (e *mysqlEngine) ImplicitNonVisibleColumns() []string { return nil }
 
 func (e *mysqlEngine) FoldColumn(column string) string {
 	return e.dialect.FoldIdentifierName(column, false)
@@ -182,6 +185,8 @@ func (e *postgresEngine) Dialect() *dialects.Dialect { return e.dialect }
 // PostgreSQL does not fold the introspected catalog: quoted and unquoted names can identify distinct
 // real columns, while query-side qualification already preserves quoted names and folds unquoted ones.
 func (e *postgresEngine) NormalizeCatalogOnBuild() bool { return false }
+
+func (e *postgresEngine) ImplicitNonVisibleColumns() []string { return []string{"ctid"} }
 
 func (e *postgresEngine) FoldColumn(column string) string { return column }
 

@@ -96,7 +96,7 @@ func EmitFacts(sql string, engineConfig *pb.EngineConfig, sch *schema.Mapping, n
 	if err := detectRenderCollisions(sch); err != nil {
 		return unanalyzableFacts("VALIDATE", err.Error())
 	}
-	qualifySchema, err := schema.NewMappingSchema(sch, eng.Dialect(), eng.NormalizeCatalogOnBuild())
+	qualifySchema, err := newQualifySchema(sch, eng)
 	if err != nil {
 		return unanalyzableFacts("VALIDATE", err.Error())
 	}

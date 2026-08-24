@@ -3,6 +3,7 @@ package com.ridi.oss.proxymonster.controlplane
 import com.ridi.oss.proxymonster.grpc.Engine
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
@@ -88,11 +89,20 @@ class SystemClassificationServiceTest {
             assertEquals("system:activity", svc.tagForTable(Engine.POSTGRES, v, "app", "pg_catalog", "pg_statio_user_tables"), v)
             assertEquals("system:activity", svc.tagForTable(Engine.POSTGRES, v, "app", "pg_catalog", "pg_replication_slots"), v)
             assertEquals("system:activity", svc.tagForTable(Engine.POSTGRES, v, "app", "pg_catalog", "pg_replication_origin_status"), v)
-            // FDW option views expose raw srvoptions/fdwoptions — critical, mirroring the already-critical
-            // public foreign_server_options / pg_foreign_server twins; _pg_user_mappings exposes umoptions.
+            assertEquals("system:activity", svc.tagForTable(Engine.POSTGRES, v, "app", "pg_catalog", "pg_locks"), v)
+            assertEquals("system:catalog", svc.tagForColumn(Engine.POSTGRES, v, "app", "pg_catalog", "pg_locks", "transactionid"), v)
+            assertEquals("system:activity", svc.tagForColumn(Engine.POSTGRES, v, "app", "pg_catalog", "pg_locks", "pid"), v)
             assertEquals("system:critical", svc.tagForTable(Engine.POSTGRES, v, "app", "information_schema", "_pg_user_mappings"), v)
             assertEquals("system:critical", svc.tagForTable(Engine.POSTGRES, v, "app", "information_schema", "_pg_foreign_servers"), v)
             assertEquals("system:critical", svc.tagForTable(Engine.POSTGRES, v, "app", "information_schema", "_pg_foreign_data_wrappers"), v)
+            assertEquals("system:catalog", svc.tagForTable(Engine.POSTGRES, v, "app", "pg_catalog", "pg_foreign_data_wrapper"), v)
+            assertEquals("system:catalog", svc.tagForTable(Engine.POSTGRES, v, "app", "pg_catalog", "pg_foreign_server"), v)
+            assertEquals("system:catalog", svc.tagForTable(Engine.POSTGRES, v, "app", "pg_catalog", "pg_user_mapping"), v)
+            assertEquals("system:catalog", svc.tagForTable(Engine.POSTGRES, v, "app", "pg_catalog", "pg_foreign_table"), v)
+            assertTrue(svc.redactsColumn(Engine.POSTGRES, v, "app", "pg_catalog", "pg_foreign_data_wrapper", "fdwoptions"), v)
+            assertTrue(svc.redactsColumn(Engine.POSTGRES, v, "app", "pg_catalog", "pg_foreign_server", "srvoptions"), v)
+            assertTrue(svc.redactsColumn(Engine.POSTGRES, v, "app", "pg_catalog", "pg_user_mapping", "umoptions"), v)
+            assertTrue(svc.redactsColumn(Engine.POSTGRES, v, "app", "pg_catalog", "pg_foreign_table", "ftoptions"), v)
             // Grant/privilege views expose the access model — data-leak, parity with the MySQL role_*_grants.
             assertEquals("system:data-leak", svc.tagForTable(Engine.POSTGRES, v, "app", "information_schema", "role_table_grants"), v)
             assertEquals("system:data-leak", svc.tagForTable(Engine.POSTGRES, v, "app", "information_schema", "table_privileges"), v)
@@ -126,6 +136,11 @@ class SystemClassificationServiceTest {
         assertEquals("system:data-leak", svc.tagForTable(Engine.MYSQL, null, "def", "information_schema", "COLUMN_STATISTICS"))
         // A catalog-default table (structural, no explicit dangerous rule) is closed as critical, not catalog.
         assertEquals("system:critical", svc.tagForTable(Engine.POSTGRES, null, "acme", "pg_catalog", "pg_class"))
+        assertEquals(
+            "system:activity",
+            svc.tagForColumn(Engine.POSTGRES, null, "acme", "pg_catalog", "pg_locks", "transactionid"),
+            "without a governing manifest the column keeps the relation's dangerous floor",
+        )
         // An unrecognized table in a fixed system schema (in no shipped manifest) is likewise closed as critical.
         assertEquals("system:critical", svc.tagForTable(Engine.MYSQL, null, "def", "performance_schema", "not_a_real_pfs_table_xyz"))
         // A table the manifest DOES classify dangerous keeps that explicit tag even with no governing version
@@ -138,6 +153,7 @@ class SystemClassificationServiceTest {
         assertNull(svc.tagForTable(Engine.POSTGRES, null, "acme", "public", "orders"))
         // Ephemeral pg_temp_/pg_toast are not fixed system schemas — their connection-local path owns them.
         assertNull(svc.tagForTable(Engine.POSTGRES, null, "acme", "pg_temp_3", "scratch"))
+        assertFalse(svc.redactsColumn(Engine.POSTGRES, null, "acme", "pg_catalog", "pg_foreign_server", "srvoptions"))
     }
 
     // tagForFunction resolves a BARE function name (the only form the analyzer can emit, since

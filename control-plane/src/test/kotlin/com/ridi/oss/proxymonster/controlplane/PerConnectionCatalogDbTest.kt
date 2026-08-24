@@ -10,6 +10,7 @@ import org.junit.jupiter.api.TestInstance
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
+import kotlin.test.assertTrue
 
 abstract class PerConnectionCatalogDbContract {
     protected abstract val enforcement: EnforcementFixture
@@ -77,6 +78,140 @@ abstract class PerConnectionCatalogDbContract {
         )
         val allowedVerdict = assertIs<EnforcementOutcome.Verdict>(allowed)
         assertEquals(EnfAction.ALLOW, allowedVerdict.ctx.action, allowedVerdict.ctx.denyReason)
+    }
+
+    @Test
+    fun `PostgreSQL function visibility threads through decideConnection`() = runBlocking {
+        if (!fixture.datasource.engine.isPostgres) return@runBlocking
+        val schema = fixture.datasource.defaultSchemas.first()
+        val opened = fixture.openAndPush(schemas = listOf(schema))
+        val sql = "select unnest from unnest(array[1])"
+
+        val unobserved = assertIs<EnforcementOutcome.Verdict>(
+            decideConnection(
+                fixture.core,
+                opened.connectionId,
+                "analyst@example.com",
+                fixture.datasource,
+                sql,
+                listOf("pg_catalog", schema),
+                null,
+            ),
+        )
+        assertEquals(EnfAction.DENY, unobserved.ctx.action)
+
+        val observed = assertIs<EnforcementOutcome.Verdict>(
+            decideConnection(
+                fixture.core,
+                opened.connectionId,
+                "analyst@example.com",
+                fixture.datasource,
+                sql,
+                listOf("pg_catalog", schema),
+                null,
+                postgresFunctionShadowingObserved = true,
+                postgresShadowedFunctions = emptyList(),
+            ),
+        )
+        assertEquals(EnfAction.ALLOW, observed.ctx.action, observed.ctx.denyReason)
+        assertTrue(
+            observed.ctx.rewrittenSql.orEmpty()
+                .lowercase()
+                .replace("\"", "")
+                .contains("pg_catalog.unnest"),
+            observed.ctx.toString(),
+        )
+    }
+
+    @Test
+    fun `PostgreSQL safe function rewrite survives target shadowing`() = runBlocking {
+        if (!fixture.datasource.engine.isPostgres) return@runBlocking
+        val schema = fixture.datasource.defaultSchemas.first { it !in fixture.datasource.engine.systemSchemas }
+        val shadowSchema = "pm_abs_shadow"
+        val sql = "select abs(1)"
+
+        java.sql.DriverManager.getConnection(
+            fixture.enforcement.targetJdbcUrl,
+            fixture.enforcement.targetUser,
+            fixture.enforcement.targetPassword,
+        ).use { target ->
+            target.createStatement().use { statement ->
+                statement.execute("drop schema if exists $shadowSchema cascade")
+                statement.execute("create schema $shadowSchema")
+                statement.execute(
+                    "create function $shadowSchema.abs(integer) returns integer language sql immutable as 'select 777'",
+                )
+            }
+            val opened = fixture.openAndPush(schemas = listOf(shadowSchema, "pg_catalog", schema))
+            try {
+                val verdict = assertIs<EnforcementOutcome.Verdict>(
+                    decideConnection(
+                        fixture.core,
+                        opened.connectionId,
+                        "analyst@example.com",
+                        fixture.datasource,
+                        sql,
+                        listOf(shadowSchema, "pg_catalog", schema),
+                        null,
+                    ),
+                )
+                assertEquals(EnfAction.ALLOW, verdict.ctx.action, verdict.ctx.denyReason)
+                val rewritten = verdict.ctx.rewrittenSql ?: error("safe function query was not rewritten")
+                assertEquals("select pg_catalog.abs(1)", rewritten)
+
+                target.autoCommit = false
+                target.createStatement().use { statement ->
+                    statement.execute("set local search_path to $shadowSchema, pg_catalog, $schema")
+                    statement.executeQuery(sql).use { result ->
+                        assertTrue(result.next())
+                        assertEquals(777, result.getInt(1))
+                    }
+                    statement.executeQuery(rewritten).use { result ->
+                        assertTrue(result.next())
+                        assertEquals(1, result.getInt(1))
+                    }
+                }
+                target.rollback()
+            } finally {
+                target.autoCommit = true
+                target.createStatement().use { it.execute("drop schema if exists $shadowSchema cascade") }
+            }
+        }
+    }
+
+    @Test
+    fun `PostgreSQL xid visibility threads through decideConnection`() = runBlocking {
+        if (!fixture.datasource.engine.isPostgres) return@runBlocking
+        val schema = fixture.datasource.defaultSchemas.first { it !in fixture.datasource.engine.systemSchemas }
+        val opened = fixture.openAndPush(schemas = listOf("pg_catalog", schema))
+        val path = listOf("pg_temp_3", "pg_catalog", schema)
+
+        suspend fun decide(
+            visible: Boolean?,
+            searchPath: List<String> = path,
+        ) = assertIs<EnforcementOutcome.Verdict>(
+            decideConnection(
+                fixture.core,
+                opened.connectionId,
+                "analyst@example.com",
+                fixture.datasource,
+                "select '1'::xid",
+                searchPath,
+                null,
+                postgresSystemXidVisible = visible,
+            ),
+        )
+
+        assertEquals(EnfAction.DENY, decide(null).ctx.action)
+        val visible = decide(true)
+        assertEquals(EnfAction.ALLOW, visible.ctx.action)
+        assertTrue(
+            visible.ctx.rewrittenSql.orEmpty().lowercase().replace("\"", "").contains("pg_catalog.xid"),
+            visible.ctx.toString(),
+        )
+        assertEquals(EnfAction.DENY, decide(false).ctx.action)
+        val userFirst = decide(true, listOf(schema, "pg_catalog"))
+        assertEquals(EnfAction.DENY, userFirst.ctx.action, userFirst.ctx.toString())
     }
 
     @Test

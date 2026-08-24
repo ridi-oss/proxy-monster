@@ -69,6 +69,16 @@ message EngineConfig {
   // session, so this is observed and forwarded per statement. Absent/false for PostgreSQL and for the
   // default MySQL mode (`"` is a string).
   optional bool mysql_ansi_quotes = 4;
+  // Unqualified PostgreSQL functions whose live resolution can select a visible non-pg_catalog
+  // overload instead of the builtin whose implicit output schema the analyzer knows. The proxy observes
+  // this per statement; explicit pg_catalog qualification remains trusted. Empty for MySQL.
+  repeated string postgres_shadowed_functions = 5;
+  // True only after the proxy successfully observed function visibility on the held PostgreSQL session.
+  // False is distinct from an observed empty shadow list and keeps implicit polymorphic schemas closed.
+  bool postgres_function_shadowing_observed = 6;
+  // Whether pg_catalog.xid is the type PostgreSQL resolves for an unqualified xid on the held session.
+  // Absence means the proxy did not observe type visibility and keeps the cast gated fail-closed.
+  optional bool postgres_system_xid_visible = 7;
 }
 
 message AnalyzeRequest {

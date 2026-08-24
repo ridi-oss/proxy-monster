@@ -2,6 +2,7 @@ package probe
 
 import (
 	"sort"
+	"strings"
 	"testing"
 
 	pb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
@@ -68,12 +69,185 @@ func TestCalledFunctions(t *testing.T) {
 	}
 }
 
+func TestPostgresSafeFunctionsPinToPgCatalog(t *testing.T) {
+	analyze := func(sql string) *pb.StatementFacts {
+		t.Helper()
+		return analyzeProto(t, &pb.AnalyzeRequest{
+			Sql:          sql,
+			EngineConfig: &pb.EngineConfig{Engine: pb.Engine_POSTGRES},
+			Namespace: &pb.Namespace{
+				Catalog:    "acme",
+				SearchPath: []string{"user_schema", "pg_catalog"},
+			},
+			Catalog: []*pb.ColumnSpec{
+				columnSpec("acme", "public", "users", "id", "BIGINT"),
+			},
+		})
+	}
+	eng, err := newPostgresEngine(&pb.EngineConfig{Engine: pb.Engine_POSTGRES})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		sql       string
+		wantCalls []string
+	}{
+		{"SELECT version()", []string{"pg_catalog.version"}},
+		{`SELECT "version"()`, []string{"pg_catalog.version"}},
+		{"SELECT current_setting('search_path')", []string{"pg_catalog.current_setting"}},
+		{"SELECT version(), current_setting('search_path')", []string{"pg_catalog.version", "pg_catalog.current_setting"}},
+		{"SELECT quote_literal(version())", []string{"pg_catalog.quote_literal", "pg_catalog.version"}},
+		{"SELECT quote_literal(md5(version()))", []string{"pg_catalog.quote_literal", "pg_catalog.md5", "pg_catalog.version"}},
+		{"SELECT abs(1)", []string{"pg_catalog.abs"}},
+		{"SELECT substring('abc', 1, 1)", []string{"pg_catalog.substring"}},
+		{"SELECT substring('from', 1, 1)", []string{"pg_catalog.substring"}},
+		{"SELECT position('in', 'abc')", []string{"pg_catalog.position"}},
+		{"SELECT overlay('placing', 'X', 2, 1)", []string{"pg_catalog.overlay"}},
+		{"SELECT version(), id FROM public.users", []string{"pg_catalog.version"}},
+		{"SELECT value FROM version() AS v(value)", []string{"pg_catalog.version"}},
+	} {
+		facts := analyze(tc.sql)
+		rewrite := strings.ReplaceAll(strings.ToLower(facts.GetRewrittenSql()), `"`, "")
+		if !facts.GetResolved() {
+			t.Errorf("safe function query did not resolve: %q -> %+v", tc.sql, facts)
+			continue
+		}
+		for _, call := range tc.wantCalls {
+			if !strings.Contains(rewrite, call) {
+				t.Errorf("safe function was not pinned: %q -> %q", tc.sql, facts.GetRewrittenSql())
+			}
+		}
+	}
+
+	nested := analyze("SELECT quote_literal(md5(version()))")
+	if got, want := nested.GetRewrittenSql(), "SELECT pg_catalog.quote_literal(pg_catalog.md5(pg_catalog.version()))"; got != want {
+		t.Errorf("nested safe functions rewrite = %q, want %q", got, want)
+	}
+	abs := analyze("SELECT abs(1)")
+	if got, want := abs.GetRewrittenSql(), "SELECT pg_catalog.abs(1)"; got != want {
+		t.Errorf("dedicated safe function rewrite = %q, want %q", got, want)
+	}
+
+	for _, tc := range []struct {
+		sql  string
+		name string
+	}{
+		{"SELECT pg_catalog.version()", "version"},
+		{"SELECT pg_catalog.abs(1)", "abs"},
+		{"SELECT value FROM pg_catalog.version() AS v(value)", "version"},
+	} {
+		explicit := analyze(tc.sql)
+		if !explicit.GetResolved() || explicit.RewrittenSql != nil || hasFunctionGrant(explicit, tc.name) {
+			t.Errorf("explicit pg_catalog function was unnecessarily gated or rewritten: %q -> %+v", tc.sql, explicit)
+		}
+	}
+
+	grammar := analyze("SELECT substring('abc' FROM 1 FOR 1), position('b' IN 'abc'), overlay('abc' PLACING 'X' FROM 2 FOR 1), coalesce(NULL, 1)")
+	if !grammar.GetResolved() || grammar.RewrittenSql != nil {
+		t.Errorf("PostgreSQL grammar functions were unnecessarily qualified: %+v", grammar)
+	}
+
+	stableComposition := analyze("SELECT users.*, upper('x') FROM public.users")
+	stableRewrite := strings.ReplaceAll(strings.ToLower(stableComposition.GetRewrittenSql()), `"`, "")
+	if !stableComposition.GetResolved() || strings.Contains(stableRewrite, "*") ||
+		!strings.Contains(stableRewrite, "pg_catalog.upper") {
+		t.Errorf("stable function did not compose with star expansion: %+v", stableComposition)
+	}
+	for _, call := range []string{
+		"ceiling(1.2)",
+		"char(65)",
+		"char_length('x')",
+		"character_length('x')",
+		"current_date()",
+		"date_part('year', current_timestamp)",
+		"extract('year', current_timestamp)",
+		"dateadd('day', 1, current_date)",
+		"if(true, 1, 2)",
+		"ifnull(NULL, 1)",
+		"lcase('X')",
+		"nvl(NULL, 1)",
+		"overlay('abc', 'X', 2, 1)",
+		"position('b', 'abc')",
+		"pow(2, 3)",
+		"substr('abc', 1, 1)",
+		"substring('abc', 1, 1)",
+		"truncate(1.2)",
+		"ucase('x')",
+	} {
+		facts := analyze("SELECT users.*, " + call + " FROM public.users")
+		if facts.GetResolved() || facts.RewrittenSql != nil || stageString(facts.FailedStage) != "VALIDATE" {
+			t.Errorf("function changed by star regeneration was not rejected: %s -> %+v", call, facts)
+		}
+	}
+
+	for _, sql := range []string{
+		"CREATE TABLE version (id int)",
+		"CREATE VIEW version(id) AS SELECT 1",
+		"WITH version(id) AS (SELECT 1) SELECT id FROM version",
+		"CREATE FUNCTION lower(text) RETURNS text LANGUAGE SQL AS 'SELECT $1'",
+		"DROP FUNCTION lower(text)",
+		"CREATE PROCEDURE lower() LANGUAGE SQL AS 'SELECT 1'",
+		"CREATE TRIGGER tr BEFORE INSERT ON users FOR EACH ROW EXECUTE FUNCTION lower()",
+	} {
+		rewritten, changed, err := pinSafePostgresFunctionSQL(sql, eng)
+		if err != nil || changed || rewritten != sql {
+			t.Errorf("non-call identifier was rewritten: %q -> %q, changed=%v err=%v", sql, rewritten, changed, err)
+		}
+	}
+
+	defaultCall := "CREATE FUNCTION user_fn(text DEFAULT lower('X')) RETURNS text LANGUAGE SQL AS 'SELECT $1'"
+	defaultRewrite, changed, err := pinSafePostgresFunctionSQL(defaultCall, eng)
+	if want := "CREATE FUNCTION user_fn(text DEFAULT pg_catalog.lower('X')) RETURNS text LANGUAGE SQL AS 'SELECT $1'"; err != nil || !changed || defaultRewrite != want {
+		t.Errorf("executable declaration expression was not pinned: got %q, changed=%v err=%v, want %q", defaultRewrite, changed, err, want)
+	}
+
+	ambiguous := "WITH version(id) AS (SELECT 1) SELECT version(id) FROM version"
+	if _, _, err := pinSafePostgresFunctionSQL(ambiguous, eng); err == nil {
+		t.Errorf("ambiguous source-to-AST function match did not fail closed: %q", ambiguous)
+	}
+
+	quotedDedicated := analyze(`SELECT "ABS"(-1)`)
+	if quotedDedicated.GetResolved() || quotedDedicated.RewrittenSql != nil ||
+		stageString(quotedDedicated.FailedStage) != "VALIDATE" {
+		t.Errorf("quoted dedicated user function was treated as pg_catalog.abs: %+v", quotedDedicated)
+	}
+
+	userAbs := analyze("SELECT user_schema.abs(1)")
+	if !userAbs.GetResolved() || userAbs.RewrittenSql != nil || !hasFunctionGrant(userAbs, "user_schema.abs") {
+		t.Errorf("user-qualified dedicated function did not retain its Function grant: %+v", userAbs)
+	}
+
+	userFunction := analyze("SELECT user_schema.version()")
+	if !userFunction.GetResolved() || userFunction.RewrittenSql != nil ||
+		!hasFunctionGrant(userFunction, "user_schema.version") {
+		t.Errorf("user-qualified function did not retain its Function grant: %+v", userFunction)
+	}
+
+	userTableFunction := analyze("SELECT value FROM user_schema.version() AS v(value)")
+	if userTableFunction.GetResolved() || userTableFunction.RewrittenSql != nil ||
+		stageString(userTableFunction.FailedStage) != "VALIDATE" {
+		t.Errorf("user-qualified table function was treated as a safe builtin: %+v", userTableFunction)
+	}
+
+	for _, sql := range []string{`SELECT "VERSION"()`, `SELECT pg_catalog."VERSION"()`} {
+		facts := analyze(sql)
+		gated := false
+		for _, grant := range facts.GetResultReads() {
+			if grant.GetFunction() != nil {
+				gated = true
+			}
+		}
+		if !facts.GetResolved() || facts.RewrittenSql != nil || !gated {
+			t.Errorf("quoted user function was treated as a safe builtin: %q -> %+v", sql, facts)
+		}
+	}
+}
+
 // TestFormerDangerousFuncsResolveAndEmit: every dangerous builtin analyzes resolved=TRUE and emits its
 // bare name as a function fact (docs/facts-emission.md) — so the verdict is the control-plane function
 // gate (per-version manifest OR the version-independent baseline floor), a stronger position than a
 // datasource-agnostic resolved=false relay. A FROM clause mirrors the real gated shape
-// (`SELECT pg_read_file('/x') FROM t`); the no-FROM form is gated separately by noFromFunctionGrants
-// (facts.go).
+// (`SELECT pg_read_file('/x') FROM t`); qualifier-aware Function grants provide the fail-closed floor.
 func TestFormerDangerousFuncsResolveAndEmit(t *testing.T) {
 	pgCatalog := []*pb.ColumnSpec{
 		columnSpec("acme", "public", "t", "id", "BIGINT"),
@@ -141,7 +315,7 @@ func deniedColumns(f *pb.StatementFacts) map[string]bool {
 // TestOdkuValuesIsNotAFunctionGrant locks two things about MySQL's `INSERT … ON DUPLICATE KEY UPDATE
 // col = VALUES(col)`. First, `VALUES()` there is not a callable function — it names the value that would
 // have been inserted — so the upsert must resolve and must NOT emit the deny-by-default Function grant that
-// noFromFunctionGrants gives an unclassified no-FROM call (a regression there re-denies every plain upsert
+// functionCallGrants gives an unclassified call a fail-closed Function grant (a regression there re-denies every plain upsert
 // with "dangerous system function is not allowed: 'values'"). Second — and separately — making the
 // pseudo-function safe must NOT weaken write-side gating: every column VALUES() names is still a
 // DENY_STATEMENT grant, so a masked column cannot slip through the write payload unauthorized.

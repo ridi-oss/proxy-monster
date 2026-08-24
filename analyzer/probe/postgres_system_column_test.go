@@ -217,6 +217,354 @@ from pg_catalog.pg_tablespace T
 	}
 }
 
+func TestPostgresDataGripLockAgeProbeUsesColumnLineage(t *testing.T) {
+	facts := analyzeProto(t, &pb.AnalyzeRequest{
+		Sql: `select L.transactionid::varchar::bigint as transaction_id
+			from pg_catalog.pg_locks L
+			where L.transactionid is not null
+			order by pg_catalog.age(L.transactionid) desc
+			limit 1`,
+		EngineConfig: &pb.EngineConfig{Engine: pb.Engine_POSTGRES},
+		Namespace:    &pb.Namespace{Catalog: "acme", SearchPath: []string{"pg_catalog", "public"}},
+		Catalog: []*pb.ColumnSpec{
+			columnSpec("acme", "pg_catalog", "pg_locks", "transactionid", "XID"),
+			columnSpec("acme", "pg_catalog", "pg_locks", "pid", "INTEGER"),
+		},
+	})
+	if !facts.GetResolved() {
+		t.Fatalf("DataGrip lock-age probe must resolve: stage=%s detail=%q", stageString(facts.FailedStage), facts.GetDetail())
+	}
+	if facts.RewrittenSql != nil {
+		t.Fatalf("DataGrip lock-age probe must relay unchanged, got rewrite %q", facts.GetRewrittenSql())
+	}
+	if got := facts.GetOutputColumns(); len(got) != 1 || got[0] != "transaction_id" {
+		t.Fatalf("output columns = %v, want [transaction_id]", got)
+	}
+	found := false
+	for _, grant := range facts.GetResultReads() {
+		column := grant.GetColumn()
+		if column == nil || column.GetIdentity().GetColumn() != "transactionid" {
+			t.Fatalf("lock-age probe emitted a non-transactionid grant: %+v", grant)
+		}
+		found = true
+	}
+	if !found {
+		t.Fatal("lock-age probe emitted no transactionid grant")
+	}
+}
+
+func TestPostgresDataGripRoutinesNaturalJoin(t *testing.T) {
+	query := `with languages as (
+    select oid as lang_oid, lanname as lang
+    from pg_catalog.pg_language
+),
+routines as (
+    select proname as r_name,
+           prolang as lang_oid,
+           oid as r_id,
+           xmin as r_state_number,
+           proargnames as arg_names,
+           proargmodes as arg_modes,
+           proargtypes::int[] as in_arg_types,
+           proallargtypes::int[] as all_arg_types,
+           pg_catalog.pg_get_expr(proargdefaults, 0) as arg_defaults,
+           provariadic as arg_variadic_id,
+           prorettype as ret_type_id,
+           proretset as ret_set,
+           prokind as kind,
+           provolatile as volatile_kind,
+           proisstrict as is_strict,
+           prosecdef as is_security_definer,
+           proconfig as configuration_parameters,
+           procost as cost,
+           pg_catalog.pg_get_userbyid(proowner) as "owner",
+           prorows as rows,
+           proleakproof as is_leakproof,
+           proparallel as concurrency_kind
+    from pg_catalog.pg_proc
+    where pronamespace = $1::oid
+      and not (prokind = 'a')
+      and pg_catalog.age(xmin) <= coalesce(
+          nullif(greatest(pg_catalog.age($2::varchar::xid), -1), -1),
+          2147483647
+      )
+)
+select *
+from routines natural join languages`
+	catalog := []*pb.ColumnSpec{
+		columnSpec("acme", "pg_catalog", "pg_language", "oid", "OID"),
+		columnSpec("acme", "pg_catalog", "pg_language", "lanname", "NAME"),
+	}
+	for name, kind := range map[string]string{
+		"proname": "NAME", "prolang": "OID", "oid": "OID", "pronamespace": "OID",
+		"proargnames": "TEXT[]", "proargmodes": "CHAR[]", "proargtypes": "OIDVECTOR",
+		"proallargtypes": "OID[]", "proargdefaults": "PG_NODE_TREE", "provariadic": "OID",
+		"prorettype": "OID", "proretset": "BOOLEAN", "prokind": "CHAR", "provolatile": "CHAR",
+		"proisstrict": "BOOLEAN", "prosecdef": "BOOLEAN", "proconfig": "TEXT[]", "procost": "REAL",
+		"proowner": "OID", "prorows": "REAL", "proleakproof": "BOOLEAN", "proparallel": "CHAR",
+	} {
+		catalog = append(catalog, columnSpec("acme", "pg_catalog", "pg_proc", name, kind))
+	}
+	req := &pb.AnalyzeRequest{
+		Sql:          query,
+		EngineConfig: &pb.EngineConfig{Engine: pb.Engine_POSTGRES},
+		Namespace:    &pb.Namespace{Catalog: "acme", SearchPath: []string{"pg_catalog", "public"}},
+		Catalog:      catalog,
+	}
+	result := analyzeProbe(t, req)
+	if !result.Resolved {
+		t.Fatalf("DataGrip routines query must resolve: stage=%v detail=%q", result.FailedStage, result.Detail)
+	}
+	if result.OutputColumns != 23 {
+		t.Fatalf("output columns = %d, want 23: %+v", result.OutputColumns, result.Origins)
+	}
+	langOIDCount := 0
+	for _, origin := range result.Origins {
+		if origin.Column != "lang_oid" {
+			continue
+		}
+		langOIDCount++
+		want := []string{"acme.pg_catalog.pg_language.oid", "acme.pg_catalog.pg_proc.prolang"}
+		if len(origin.Origins) != len(want) || origin.Origins[0] != want[0] || origin.Origins[1] != want[1] {
+			t.Fatalf("lang_oid origins = %v, want %v", origin.Origins, want)
+		}
+	}
+	if langOIDCount != 1 {
+		t.Fatalf("lang_oid outputs = %d, want 1: %+v", langOIDCount, result.Origins)
+	}
+	for _, column := range []string{"acme.pg_catalog.pg_language.oid", "acme.pg_catalog.pg_proc.prolang"} {
+		found := false
+		for _, reference := range result.References[JOIN] {
+			if reference == column {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("JOIN references = %v, missing %s", result.References[JOIN], column)
+		}
+	}
+	if result.RewrittenSQL == nil {
+		t.Fatal("DataGrip routines star must carry an executable rewrite")
+	}
+	rewritten, err := sqlglot.ParseOne(*result.RewrittenSQL, "postgres")
+	if err != nil {
+		t.Fatalf("parse rewritten SQL: %v; sql=%q", err, *result.RewrittenSQL)
+	}
+	selects := rewritten.Selects()
+	if len(selects) != 23 {
+		t.Fatalf("rewritten outputs = %d, want 23: %q", len(selects), *result.RewrittenSQL)
+	}
+	if selects[0].AliasOrName() != "lang_oid" || selects[1].AliasOrName() != "r_name" || selects[22].AliasOrName() != "lang" {
+		t.Fatalf("rewritten output order is not PostgreSQL NATURAL JOIN order: %q", *result.RewrittenSQL)
+	}
+	for _, projection := range selects {
+		if projection.Kind() == exp.KindStar || projection.IsStar() {
+			t.Fatalf("rewritten SQL still contains a star: %q", *result.RewrittenSQL)
+		}
+	}
+}
+
+func TestPostgresImplicitFunctionColumnsSupportDataGripExtensions(t *testing.T) {
+	query := `select E.oid        as id,
+       E.xmin       as state_number,
+       extname      as name,
+       extversion   as version,
+       extnamespace as schema_id,
+       nspname      as schema_name,
+       array(select unnest
+             from unnest(available_versions)
+             where unnest > extversion) as available_updates
+from pg_catalog.pg_extension E
+       join pg_namespace N on E.extnamespace = N.oid
+       left join (select name, array_agg(version) as available_versions
+                  from pg_available_extension_versions()
+                  group by name) V on E.extname = V.name`
+	facts := analyzeProto(t, &pb.AnalyzeRequest{
+		Sql: query,
+		EngineConfig: &pb.EngineConfig{
+			Engine:                            pb.Engine_POSTGRES,
+			PostgresFunctionShadowingObserved: true,
+		},
+		Namespace: &pb.Namespace{Catalog: "acme", SearchPath: []string{"pg_catalog", "public"}},
+		Catalog: []*pb.ColumnSpec{
+			columnSpec("acme", "pg_catalog", "pg_extension", "oid", "OID"),
+			columnSpec("acme", "pg_catalog", "pg_extension", "extname", "NAME"),
+			columnSpec("acme", "pg_catalog", "pg_extension", "extversion", "TEXT"),
+			columnSpec("acme", "pg_catalog", "pg_extension", "extnamespace", "OID"),
+			columnSpec("acme", "pg_catalog", "pg_namespace", "oid", "OID"),
+			columnSpec("acme", "pg_catalog", "pg_namespace", "nspname", "NAME"),
+		},
+	})
+	if !facts.GetResolved() {
+		t.Fatalf("DataGrip extension query must resolve: stage=%s detail=%q", stageString(facts.FailedStage), facts.GetDetail())
+	}
+	rewrite := strings.ReplaceAll(strings.ToLower(facts.GetRewrittenSql()), `"`, "")
+	for _, function := range []string{
+		"pg_catalog.pg_available_extension_versions",
+		"pg_catalog.unnest",
+	} {
+		if !strings.Contains(rewrite, function) {
+			t.Errorf("DataGrip extension query did not pin %s: %q", function, facts.GetRewrittenSql())
+		}
+	}
+}
+
+func TestPostgresImplicitFunctionColumnsRespectResolution(t *testing.T) {
+	analyze := func(sql string, searchPath []string, observed bool, shadowed ...string) *pb.StatementFacts {
+		t.Helper()
+		return analyzeProto(t, &pb.AnalyzeRequest{
+			Sql: sql,
+			EngineConfig: &pb.EngineConfig{
+				Engine:                            pb.Engine_POSTGRES,
+				PostgresFunctionShadowingObserved: observed,
+				PostgresShadowedFunctions:         shadowed,
+			},
+			Namespace: &pb.Namespace{Catalog: "acme", SearchPath: searchPath},
+			Catalog: []*pb.ColumnSpec{
+				columnSpec("acme", "public", "users", "id", "BIGINT"),
+				columnSpec("acme", "public", "users", "ssn", "VARCHAR"),
+			},
+		})
+	}
+	for _, tc := range []struct {
+		sql        string
+		searchPath []string
+		observed   bool
+		wantPinned string
+	}{
+		{"SELECT name FROM pg_available_extension_versions()", []string{"pg_catalog", "public"}, false, "pg_catalog.pg_available_extension_versions"},
+		{"SELECT name FROM pg_available_extension_versions()", []string{"pg_temp_3", "pg_catalog", "public"}, false, "pg_catalog.pg_available_extension_versions"},
+		{"SELECT name FROM LATERAL pg_available_extension_versions() AS e(name)", []string{"pg_catalog", "public"}, false, "pg_catalog.pg_available_extension_versions"},
+		{"SELECT name FROM pg_catalog.pg_available_extension_versions()", []string{"public", "pg_catalog"}, false, ""},
+		{"SELECT name FROM LATERAL pg_catalog.pg_available_extension_versions() AS e(name)", []string{"public", "pg_catalog"}, false, ""},
+		{"SELECT unnest FROM unnest(ARRAY[1, 2])", []string{"pg_catalog", "public"}, true, "pg_catalog.unnest"},
+		{"SELECT value FROM LATERAL unnest(ARRAY[1, 2]) AS u(value)", []string{"pg_catalog", "public"}, true, "pg_catalog.unnest"},
+		{"SELECT unnest FROM unnest(ARRAY[1, 2])", []string{"pg_temp_3", "pg_catalog", "public"}, true, "pg_catalog.unnest"},
+		{"SELECT value FROM unnest(ARRAY[1, 2]) AS u(value)", []string{"pg_catalog", "public"}, true, "pg_catalog.unnest"},
+		{"SELECT unnest FROM pg_catalog.unnest(ARRAY[1, 2])", []string{"public", "pg_catalog"}, false, ""},
+		{"SELECT a, b FROM pg_catalog.unnest(ARRAY[1], ARRAY[2]) AS u(a, b)", []string{"public", "pg_catalog"}, false, ""},
+	} {
+		facts := analyze(tc.sql, tc.searchPath, tc.observed)
+		if !facts.GetResolved() {
+			t.Errorf("trusted or explicitly typed function must resolve: %q path=%v stage=%s detail=%q", tc.sql, tc.searchPath, stageString(facts.FailedStage), facts.GetDetail())
+			continue
+		}
+		if tc.wantPinned != "" {
+			rewrite := strings.ReplaceAll(strings.ToLower(facts.GetRewrittenSql()), `"`, "")
+			if !strings.Contains(rewrite, tc.wantPinned) {
+				t.Errorf("trusted implicit function was not pinned in relayed SQL: %q -> %q", tc.sql, facts.GetRewrittenSql())
+			}
+		} else if facts.RewrittenSql != nil {
+			t.Errorf("explicit or caller-typed function was unnecessarily rewritten: %q -> %q", tc.sql, facts.GetRewrittenSql())
+		}
+		if strings.Contains(strings.ToLower(tc.sql), "pg_catalog.") {
+			for _, grant := range facts.GetResultReads() {
+				if function := grant.GetFunction(); function != nil {
+					t.Errorf("explicit pg_catalog function emitted a Function grant: %q -> %q", tc.sql, function.GetName())
+				}
+			}
+		}
+	}
+	for _, sql := range []string{
+		"SELECT value FROM unnest(ARRAY[1, 2]) AS u(value)",
+		"SELECT name FROM pg_available_extension_versions() AS e(name)",
+		"SELECT value FROM LATERAL unnest(ARRAY[1, 2]) AS u(value)",
+		"SELECT name FROM LATERAL pg_available_extension_versions() AS e(name)",
+		"SELECT value FROM attacker.unnest(ARRAY[1, 2]) AS u(value)",
+		"SELECT name FROM attacker.pg_available_extension_versions() AS e(name)",
+		"SELECT name FROM LATERAL attacker.pg_available_extension_versions() AS e(name)",
+		`SELECT name FROM "PG_CATALOG".pg_available_extension_versions() AS e(name)`,
+		`SELECT name FROM LATERAL "PG_CATALOG".pg_available_extension_versions() AS e(name)`,
+	} {
+		facts := analyze(sql, []string{"public", "pg_catalog"}, false)
+		if facts.GetResolved() || facts.RewrittenSql != nil || stageString(facts.FailedStage) != "VALIDATE" {
+			t.Errorf("untrusted implicit function resolved through caller aliases: %q -> %+v", sql, facts)
+		}
+	}
+	ordinalityRoot, err := sqlglot.ParseOne(
+		"SELECT value, n FROM unnest(ARRAY[1, 2]) WITH ORDINALITY AS u(value, n)",
+		"postgres",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ordinalityEngine, err := createEngine(&pb.EngineConfig{
+		Engine:                            pb.Engine_POSTGRES,
+		PostgresFunctionShadowingObserved: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !pinTrustedPostgresImplicitFunctions(
+		ordinalityRoot,
+		ordinalityEngine,
+		NamespaceConfig{SearchPath: []string{"pg_catalog", "public"}},
+	) {
+		t.Fatal("WITH ORDINALITY unnest was not pinned")
+	}
+	ordinalitySQL, err := generateExecutableSQL(ordinalityRoot, ordinalityEngine.Dialect())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ordinalityRewrite := strings.ReplaceAll(strings.ToLower(ordinalitySQL), `"`, "")
+	for _, fragment := range []string{"pg_catalog.unnest", "with ordinality", "as u(value, n)"} {
+		if !strings.Contains(ordinalityRewrite, fragment) {
+			t.Errorf("WITH ORDINALITY rewrite lost %q: %q", fragment, ordinalitySQL)
+		}
+	}
+
+	multiArgumentUnnest := analyze(
+		"SELECT a, b FROM unnest(ARRAY[1], ARRAY[2]) AS u(a, b)",
+		[]string{"pg_catalog", "public"},
+		true,
+	)
+	if multiArgumentUnnest.GetResolved() || multiArgumentUnnest.RewrittenSql != nil ||
+		stageString(multiArgumentUnnest.FailedStage) != "VALIDATE" {
+		t.Errorf("multi-argument unnest was trusted without a relay rewrite: %+v", multiArgumentUnnest)
+	}
+
+	offset := analyze(
+		"SELECT 1 FROM unnest(ARRAY[1, 2]) WITH OFFSET AS pos",
+		[]string{"pg_catalog", "public"},
+		true,
+	)
+	if offset.GetResolved() || offset.RewrittenSql != nil || stageString(offset.FailedStage) != "VALIDATE" {
+		t.Errorf("non-PostgreSQL WITH OFFSET shape was not rejected before rewriting: %+v", offset)
+	}
+	deadCTE := analyze(
+		"WITH unused AS (SELECT name FROM pg_available_extension_versions()) SELECT * FROM public.users",
+		[]string{"pg_catalog", "public"},
+		false,
+	)
+	deadCTERewrite := strings.ReplaceAll(strings.ToLower(deadCTE.GetRewrittenSql()), `"`, "")
+	if !deadCTE.GetResolved() || deadCTE.RewrittenSql == nil ||
+		strings.Contains(deadCTERewrite, "pg_available_extension_versions") ||
+		strings.Contains(deadCTERewrite, "*") ||
+		!strings.Contains(deadCTERewrite, "users.id") ||
+		!strings.Contains(deadCTERewrite, "users.ssn") {
+		t.Errorf("dead function CTE interfered with the live star rewrite: %+v", deadCTE)
+	}
+
+	for _, tc := range []struct {
+		sql        string
+		searchPath []string
+		observed   bool
+		shadowed   []string
+	}{
+		{"SELECT name FROM pg_available_extension_versions()", []string{"public", "pg_catalog"}, false, nil},
+		{"SELECT name FROM public.pg_available_extension_versions()", []string{"pg_catalog", "public"}, false, nil},
+		{"SELECT unnest FROM unnest(ARRAY[1, 2])", []string{"pg_catalog", "public"}, false, nil},
+		{"SELECT unnest FROM unnest(ARRAY[1, 2])", []string{"pg_catalog", "public"}, true, []string{"unnest"}},
+		{"SELECT value FROM unknown_function()", []string{"pg_catalog", "public"}, true, nil},
+	} {
+		facts := analyze(tc.sql, tc.searchPath, tc.observed, tc.shadowed...)
+		if facts.GetResolved() {
+			t.Errorf("shadowable or unknown function resolved without explicit columns: %q path=%v", tc.sql, tc.searchPath)
+		}
+	}
+}
+
 func TestPostgresCTIDResolutionBoundaries(t *testing.T) {
 	baseCatalog := []*pb.ColumnSpec{
 		columnSpec("acme", "public", "users", "id", "BIGINT"),

@@ -26,6 +26,18 @@ type rawPGClient struct {
 	frontend *pgproto3.Frontend
 }
 
+var postgresEmptyQueryCases = []struct {
+	name string
+	sql  string
+}{
+	{name: "literal", sql: ""},
+	{name: "whitespace", sql: " \t\r\n\f"},
+	{name: "line comment", sql: "-- empty\n"},
+	{name: "block comment", sql: "/* outer /* nested */ comment */"},
+	{name: "semicolon", sql: ";"},
+	{name: "combined", sql: " ; -- empty\n /* still empty */ ; "},
+}
+
 func newRawPGClient(t *testing.T, h *brokerHarness) *rawPGClient {
 	t.Helper()
 	conn, err := net.DialTimeout("tcp", h.addr, 30*time.Second)
@@ -121,16 +133,20 @@ func TestEmptySimpleQueryBypassesDecision(t *testing.T) {
 	h := startBroker(t)
 	client := newRawPGClient(t, h)
 
-	frames := client.simpleQuery(t, "")
-	if len(frames) != 2 {
-		t.Fatalf("empty-query frames = %d, want EmptyQueryResponse + ReadyForQuery", len(frames))
-	}
-	if _, ok := frames[0].(*pgproto3.EmptyQueryResponse); !ok {
-		t.Fatalf("empty-query frame[0] = %T, want EmptyQueryResponse", frames[0])
-	}
-	assertRawReadyForQuery(t, frames, 'I')
-	if requests := h.fake.requests(); len(requests) != 0 {
-		t.Fatalf("Decide requests = %d, want 0 for an empty query", len(requests))
+	for _, tc := range postgresEmptyQueryCases {
+		t.Run(tc.name, func(t *testing.T) {
+			frames := client.simpleQuery(t, tc.sql)
+			if len(frames) != 2 {
+				t.Fatalf("empty-query frames = %d, want EmptyQueryResponse + ReadyForQuery", len(frames))
+			}
+			if _, ok := frames[0].(*pgproto3.EmptyQueryResponse); !ok {
+				t.Fatalf("empty-query frame[0] = %T, want EmptyQueryResponse", frames[0])
+			}
+			assertRawReadyForQuery(t, frames, 'I')
+			if requests := h.fake.requests(); len(requests) != 0 {
+				t.Fatalf("Decide requests = %d, want 0 for an empty query", len(requests))
+			}
+		})
 	}
 }
 
@@ -191,15 +207,19 @@ func TestEmptyExtendedQueryBypassesDecision(t *testing.T) {
 	h := startBroker(t)
 	client := newRawPGClient(t, h)
 
-	frames := client.sendSync(t,
-		&pgproto3.Parse{Name: "", Query: ""},
-		&pgproto3.Bind{},
-		&pgproto3.Describe{ObjectType: 'P'},
-		&pgproto3.Execute{},
-	)
-	assertEmptyExtendedResponse(t, frames, 'I')
-	if requests := h.fake.requests(); len(requests) != 0 {
-		t.Fatalf("Decide requests = %d, want 0 for an empty query", len(requests))
+	for _, tc := range postgresEmptyQueryCases {
+		t.Run(tc.name, func(t *testing.T) {
+			frames := client.sendSync(t,
+				&pgproto3.Parse{Name: "", Query: tc.sql},
+				&pgproto3.Bind{},
+				&pgproto3.Describe{ObjectType: 'P'},
+				&pgproto3.Execute{},
+			)
+			assertEmptyExtendedResponse(t, frames, 'I')
+			if requests := h.fake.requests(); len(requests) != 0 {
+				t.Fatalf("Decide requests = %d, want 0 for an empty query", len(requests))
+			}
+		})
 	}
 }
 
@@ -222,13 +242,17 @@ func TestEmptyQueriesInAbortedTransaction(t *testing.T) {
 		client := newRawPGClient(t, h)
 		abort(t, client)
 		decisions := len(h.fake.requests())
-		frames := client.simpleQuery(t, "")
-		if _, ok := frames[0].(*pgproto3.EmptyQueryResponse); !ok {
-			t.Fatalf("empty-query frame[0] = %T, want EmptyQueryResponse", frames[0])
-		}
-		assertRawReadyForQuery(t, frames, 'E')
-		if got := len(h.fake.requests()); got != decisions {
-			t.Fatalf("Decide requests = %d after empty query, want %d", got, decisions)
+		for _, tc := range postgresEmptyQueryCases {
+			t.Run(tc.name, func(t *testing.T) {
+				frames := client.simpleQuery(t, tc.sql)
+				if _, ok := frames[0].(*pgproto3.EmptyQueryResponse); !ok {
+					t.Fatalf("empty-query frame[0] = %T, want EmptyQueryResponse", frames[0])
+				}
+				assertRawReadyForQuery(t, frames, 'E')
+				if got := len(h.fake.requests()); got != decisions {
+					t.Fatalf("Decide requests = %d after empty query, want %d", got, decisions)
+				}
+			})
 		}
 	})
 
@@ -236,24 +260,28 @@ func TestEmptyQueriesInAbortedTransaction(t *testing.T) {
 		client := newRawPGClient(t, h)
 		abort(t, client)
 		decisions := len(h.fake.requests())
-		frames := client.sendSync(t,
-			&pgproto3.Parse{Name: "", Query: ""},
-			&pgproto3.Bind{},
-			&pgproto3.Describe{ObjectType: 'P'},
-			&pgproto3.Execute{},
-		)
-		if len(frames) != 3 {
-			t.Fatalf("empty extended-query frames = %d, want ParseComplete + ErrorResponse + ReadyForQuery", len(frames))
-		}
-		if _, ok := frames[0].(*pgproto3.ParseComplete); !ok {
-			t.Fatalf("empty extended-query frame[0] = %T, want ParseComplete", frames[0])
-		}
-		if response, ok := frames[1].(*pgproto3.ErrorResponse); !ok || response.Code != "25P02" {
-			t.Fatalf("empty extended-query frame[1] = %#v, want ErrorResponse(25P02)", frames[1])
-		}
-		assertRawReadyForQuery(t, frames, 'E')
-		if got := len(h.fake.requests()); got != decisions {
-			t.Fatalf("Decide requests = %d after empty query, want %d", got, decisions)
+		for _, tc := range postgresEmptyQueryCases {
+			t.Run(tc.name, func(t *testing.T) {
+				frames := client.sendSync(t,
+					&pgproto3.Parse{Name: "", Query: tc.sql},
+					&pgproto3.Bind{},
+					&pgproto3.Describe{ObjectType: 'P'},
+					&pgproto3.Execute{},
+				)
+				if len(frames) != 3 {
+					t.Fatalf("empty extended-query frames = %d, want ParseComplete + ErrorResponse + ReadyForQuery", len(frames))
+				}
+				if _, ok := frames[0].(*pgproto3.ParseComplete); !ok {
+					t.Fatalf("empty extended-query frame[0] = %T, want ParseComplete", frames[0])
+				}
+				if response, ok := frames[1].(*pgproto3.ErrorResponse); !ok || response.Code != "25P02" {
+					t.Fatalf("empty extended-query frame[1] = %#v, want ErrorResponse(25P02)", frames[1])
+				}
+				assertRawReadyForQuery(t, frames, 'E')
+				if got := len(h.fake.requests()); got != decisions {
+					t.Fatalf("Decide requests = %d after empty query, want %d", got, decisions)
+				}
+			})
 		}
 	})
 }
@@ -697,6 +725,332 @@ func TestExtendedExecuteRevocationDeniesMutation(t *testing.T) {
 	}
 }
 
+func TestExtendedExecuteAuthorizesUnderBindTimeFunctionVisibility(t *testing.T) {
+	h := startBroker(t)
+	h.fake.decideFn = func(*pb.DecisionRequest) (*pb.WireDecision, error) {
+		return wireVerdict(&pb.Verdict{Decision: pb.EnfAction_ALLOW}), nil
+	}
+	direct := dbtest.OpenPostgres(t, "")
+	schema := "bind_shadow_" + strconv.FormatInt(time.Now().UnixNano(), 10)
+	for _, sql := range []string{
+		"CREATE SCHEMA " + schema,
+		"CREATE FUNCTION " + schema + ".unnest(integer[]) RETURNS SETOF integer LANGUAGE SQL AS 'SELECT 999'",
+	} {
+		if _, err := direct.Exec(sql); err != nil {
+			t.Fatalf("shadow setup %q: %v", sql, err)
+		}
+	}
+	t.Cleanup(func() { _, _ = direct.Exec("DROP SCHEMA IF EXISTS " + schema + " CASCADE") })
+
+	client := newRawPGClient(t, h)
+	const query = "SELECT unnest($1::integer[])"
+	assertNoRawPGError(t, client.simpleQuery(t, "SET search_path TO pg_catalog, "+schema))
+	assertNoRawPGError(t, client.simpleQuery(t, "BEGIN"))
+	assertRawExtendedCompletion(t, client.sendSync(t, &pgproto3.Parse{Name: "shadowed", Query: query}), "ParseComplete", 'T')
+	assertRawExtendedCompletion(t, client.sendSync(t, &pgproto3.Bind{
+		DestinationPortal: "shadowed_portal",
+		PreparedStatement: "shadowed",
+		Parameters:        [][]byte{[]byte("{1}")},
+	}), "BindComplete", 'T')
+	assertNoRawPGError(t, client.simpleQuery(t, "SET search_path TO "+primarySchema))
+
+	frames := client.sendSync(t, &pgproto3.Execute{Portal: "shadowed_portal"})
+	if len(frames) != 3 {
+		t.Fatalf("Execute frames = %d, want DataRow + CommandComplete + ReadyForQuery", len(frames))
+	}
+	row, ok := frames[0].(*pgproto3.DataRow)
+	if !ok || !reflect.DeepEqual(row.Values, [][]byte{[]byte("999")}) {
+		t.Fatalf("Execute frame[0] = %#v, want shadow-function result 999", frames[0])
+	}
+
+	var execute *pb.DecisionRequest
+	for _, request := range h.fake.requests() {
+		if request.GetSql() == query {
+			execute = request
+		}
+	}
+	if execute == nil || !reflect.DeepEqual(execute.GetSearchPath(), []string{"pg_catalog", schema}) ||
+		!execute.GetPostgresFunctionShadowingObserved() ||
+		!reflect.DeepEqual(execute.GetPostgresShadowedFunctions(), []string{"unnest"}) {
+		t.Fatalf("Execute DecisionRequest = %+v, want bind-time path and observed [unnest]", execute)
+	}
+	assertNoRawPGError(t, client.simpleQuery(t, "ROLLBACK"))
+}
+
+func TestExtendedExecuteAuthorizesUnderBindTimeTypeVisibility(t *testing.T) {
+	h := startBroker(t)
+	h.fake.decideFn = func(*pb.DecisionRequest) (*pb.WireDecision, error) {
+		return wireVerdict(&pb.Verdict{Decision: pb.EnfAction_ALLOW}), nil
+	}
+	client := newRawPGClient(t, h)
+	assertNoRawPGError(t, client.simpleQuery(t, "SET search_path TO pg_catalog, "+primarySchema))
+	assertNoRawPGError(t, client.simpleQuery(t, "BEGIN"))
+
+	const visibleSQL = "SELECT 1 AS visible_xid"
+	assertRawExtendedCompletion(t, client.sendSync(t, &pgproto3.Parse{Name: "visible_xid", Query: visibleSQL}), "ParseComplete", 'T')
+	assertRawExtendedCompletion(t, client.sendSync(t, &pgproto3.Bind{
+		DestinationPortal: "visible_xid_portal", PreparedStatement: "visible_xid",
+	}), "BindComplete", 'T')
+
+	assertNoRawPGError(t, client.simpleQuery(t, "CREATE TYPE pg_temp.xid AS ENUM ('x')"))
+	const shadowedSQL = "SELECT 2 AS shadowed_xid"
+	assertRawExtendedCompletion(t, client.sendSync(t, &pgproto3.Parse{Name: "shadowed_xid", Query: shadowedSQL}), "ParseComplete", 'T')
+	assertRawExtendedCompletion(t, client.sendSync(t, &pgproto3.Bind{
+		DestinationPortal: "shadowed_xid_portal", PreparedStatement: "shadowed_xid",
+	}), "BindComplete", 'T')
+
+	assertNoRawPGError(t, client.sendSync(t, &pgproto3.Execute{Portal: "visible_xid_portal"}))
+	assertNoRawPGError(t, client.simpleQuery(t, "DROP TYPE pg_temp.xid"))
+	assertNoRawPGError(t, client.sendSync(t, &pgproto3.Execute{Portal: "shadowed_xid_portal"}))
+
+	lastRequest := func(sql string) *pb.DecisionRequest {
+		t.Helper()
+		var found *pb.DecisionRequest
+		for _, request := range h.fake.requests() {
+			if request.GetSql() == sql {
+				found = request
+			}
+		}
+		if found == nil {
+			t.Fatalf("no DecisionRequest for %q", sql)
+		}
+		return found
+	}
+	visible := lastRequest(visibleSQL)
+	if visible.PostgresSystemXidVisible == nil || !visible.GetPostgresSystemXidVisible() {
+		t.Fatalf("visible portal xid visibility = %v, want present true", visible.PostgresSystemXidVisible)
+	}
+	shadowed := lastRequest(shadowedSQL)
+	if shadowed.PostgresSystemXidVisible == nil || shadowed.GetPostgresSystemXidVisible() {
+		t.Fatalf("shadowed portal xid visibility = %v, want present false", shadowed.PostgresSystemXidVisible)
+	}
+	assertNoRawPGError(t, client.simpleQuery(t, "ROLLBACK"))
+}
+
+func TestExtendedParsePinsXIDAcrossMissingSchemaRace(t *testing.T) {
+	h := startBroker(t)
+	direct := dbtest.OpenPostgres(t, "")
+	schema := "xid_race_" + strconv.FormatInt(time.Now().UnixNano(), 10)
+	t.Cleanup(func() { _, _ = direct.Exec("DROP SCHEMA IF EXISTS " + schema + " CASCADE") })
+
+	const query = "SELECT pg_typeof('0'::xid)::oid::text"
+	const pinned = "SELECT pg_typeof('0'::pg_catalog.xid)::oid::text"
+	created := false
+	h.fake.decideFn = func(request *pb.DecisionRequest) (*pb.WireDecision, error) {
+		verdict := &pb.Verdict{Decision: pb.EnfAction_ALLOW}
+		if request.GetSql() == query {
+			if !created {
+				if _, err := direct.Exec("CREATE SCHEMA " + schema); err != nil {
+					return nil, err
+				}
+				if _, err := direct.Exec("CREATE DOMAIN " + schema + ".xid AS text CHECK (VALUE = 'blocked')"); err != nil {
+					return nil, err
+				}
+				created = true
+			}
+			verdict.RewrittenSql = proto.String(pinned)
+		}
+		return wireVerdict(verdict), nil
+	}
+
+	client := newRawPGClient(t, h)
+	assertNoRawPGError(t, client.simpleQuery(t, "SET search_path TO "+schema+", pg_catalog, "+primarySchema))
+	assertNoRawPGError(t, client.simpleQuery(t, "BEGIN"))
+	assertRawExtendedCompletion(t, client.sendSync(t, &pgproto3.Parse{Name: "xid_race", Query: query}), "ParseComplete", 'T')
+	if !created {
+		t.Fatal("race schema was not created between namespace probe and target Parse")
+	}
+	assertRawExtendedCompletion(t, client.sendSync(t, &pgproto3.Bind{
+		DestinationPortal: "xid_race_portal", PreparedStatement: "xid_race",
+	}), "BindComplete", 'T')
+	frames := client.sendSync(t, &pgproto3.Execute{Portal: "xid_race_portal"})
+	if len(frames) != 3 {
+		if response, ok := frames[0].(*pgproto3.ErrorResponse); ok {
+			t.Fatalf("Execute error = %s (%s)", response.Message, response.Code)
+		}
+		t.Fatalf("Execute frames = %#v, want DataRow + CommandComplete + ReadyForQuery", frames)
+	}
+	row, ok := frames[0].(*pgproto3.DataRow)
+	if !ok || !reflect.DeepEqual(row.Values, [][]byte{[]byte("28")}) {
+		t.Fatalf("Execute frame[0] = %#v, want pg_catalog.xid OID 28", frames[0])
+	}
+	requests := h.fake.requests()
+	if got := requests[len(requests)-1].GetSql(); got != pinned {
+		t.Fatalf("Execute SQL = %q, want pinned SQL %q", got, pinned)
+	}
+	assertNoRawPGError(t, client.simpleQuery(t, "ROLLBACK"))
+}
+
+func TestExtendedParsePinsXIDAcrossSharedTempSchemaRace(t *testing.T) {
+	h := startBroker(t)
+	direct := dbtest.OpenPostgres(t, "")
+
+	const query = "SELECT pg_typeof('0'::xid)::oid::text"
+	const pinned = "SELECT pg_typeof('0'::pg_catalog.xid)::oid::text"
+	created := false
+	h.fake.decideFn = func(request *pb.DecisionRequest) (*pb.WireDecision, error) {
+		verdict := &pb.Verdict{Decision: pb.EnfAction_ALLOW}
+		if request.GetSql() == query {
+			if !created {
+				path := request.GetSearchPath()
+				if len(path) == 0 || !strings.HasPrefix(path[0], "pg_temp_") {
+					return nil, errors.New("namespace probe did not resolve the held session's temp schema")
+				}
+				if _, err := direct.Exec("CREATE DOMAIN " + path[0] + ".xid AS text CHECK (VALUE = 'blocked')"); err != nil {
+					return nil, err
+				}
+				created = true
+			}
+			verdict.RewrittenSql = proto.String(pinned)
+		}
+		return wireVerdict(verdict), nil
+	}
+
+	client := newRawPGClient(t, h)
+	assertNoRawPGError(t, client.simpleQuery(t, "SET search_path TO pg_temp, pg_catalog, "+primarySchema))
+	assertNoRawPGError(t, client.simpleQuery(t, "CREATE TEMP TABLE xid_race_marker (id integer)"))
+	assertNoRawPGError(t, client.simpleQuery(t, "BEGIN"))
+	assertRawExtendedCompletion(t, client.sendSync(t, &pgproto3.Parse{Name: "temp_xid_race", Query: query}), "ParseComplete", 'T')
+	if !created {
+		t.Fatal("xid type was not created in the held session's temp schema before target Parse")
+	}
+	assertRawExtendedCompletion(t, client.sendSync(t, &pgproto3.Bind{
+		DestinationPortal: "temp_xid_race_portal", PreparedStatement: "temp_xid_race",
+	}), "BindComplete", 'T')
+	frames := client.sendSync(t, &pgproto3.Execute{Portal: "temp_xid_race_portal"})
+	if len(frames) != 3 {
+		if response, ok := frames[0].(*pgproto3.ErrorResponse); ok {
+			t.Fatalf("Execute error = %s (%s)", response.Message, response.Code)
+		}
+		t.Fatalf("Execute frames = %#v, want DataRow + CommandComplete + ReadyForQuery", frames)
+	}
+	row, ok := frames[0].(*pgproto3.DataRow)
+	if !ok || !reflect.DeepEqual(row.Values, [][]byte{[]byte("28")}) {
+		t.Fatalf("Execute frame[0] = %#v, want pg_catalog.xid OID 28", frames[0])
+	}
+	requests := h.fake.requests()
+	if got := requests[len(requests)-1].GetSql(); got != pinned {
+		t.Fatalf("Execute SQL = %q, want pinned SQL %q", got, pinned)
+	}
+	assertNoRawPGError(t, client.simpleQuery(t, "ROLLBACK"))
+}
+
+func TestExtendedBindSnapshotsLiveXIDVisibilityAfterNamespaceDrift(t *testing.T) {
+	h := startBroker(t)
+	h.fake.decideFn = func(*pb.DecisionRequest) (*pb.WireDecision, error) {
+		return wireVerdict(&pb.Verdict{Decision: pb.EnfAction_ALLOW}), nil
+	}
+	client := newRawPGClient(t, h)
+	assertNoRawPGError(t, client.simpleQuery(t, "SET search_path TO pg_catalog, "+primarySchema))
+	assertNoRawPGError(t, client.simpleQuery(t, "BEGIN"))
+
+	const query = "SELECT 1 WHERE NULL::xid IS NULL"
+	assertRawExtendedCompletion(t, client.sendSync(t, &pgproto3.Parse{Name: "drift_xid", Query: query}), "ParseComplete", 'T')
+	assertNoRawPGError(t, client.simpleQuery(t, "CREATE TEMP TABLE xid (value integer)"))
+	assertRawExtendedCompletion(t, client.sendSync(t, &pgproto3.Bind{
+		DestinationPortal: "drift_xid_portal", PreparedStatement: "drift_xid",
+	}), "BindComplete", 'T')
+	assertNoRawPGError(t, client.sendSync(t, &pgproto3.Execute{Portal: "drift_xid_portal"}))
+
+	var execute *pb.DecisionRequest
+	for _, request := range h.fake.requests() {
+		if request.GetSql() == query {
+			execute = request
+		}
+	}
+	if execute == nil || execute.PostgresSystemXidVisible == nil || execute.GetPostgresSystemXidVisible() {
+		t.Fatalf("Execute DecisionRequest xid visibility = %v, want Bind-time present false", execute)
+	}
+	assertNoRawPGError(t, client.simpleQuery(t, "ROLLBACK"))
+}
+
+func TestExtendedBindRevalidatesXIDAfterNamespaceDrift(t *testing.T) {
+	h := startBroker(t)
+	h.fake.decideFn = func(*pb.DecisionRequest) (*pb.WireDecision, error) {
+		return wireVerdict(&pb.Verdict{Decision: pb.EnfAction_ALLOW}), nil
+	}
+	client := newRawPGClient(t, h)
+	assertNoRawPGError(t, client.simpleQuery(t, "SET search_path TO pg_catalog, "+primarySchema))
+	assertNoRawPGError(t, client.simpleQuery(t, "BEGIN"))
+
+	const query = "SELECT '0'::xid"
+	assertRawExtendedCompletion(t, client.sendSync(t, &pgproto3.Parse{Name: "drift_xid", Query: query}), "ParseComplete", 'T')
+	assertNoRawPGError(t, client.simpleQuery(t, "CREATE TEMP TABLE xid (value integer)"))
+	bindFrames := client.sendSync(t, &pgproto3.Bind{
+		DestinationPortal: "drift_xid_portal", PreparedStatement: "drift_xid",
+	})
+	var targetError *pgproto3.ErrorResponse
+	for _, frame := range bindFrames {
+		if response, ok := frame.(*pgproto3.ErrorResponse); ok {
+			targetError = response
+		}
+	}
+	if targetError == nil || targetError.Code != "22P02" || !strings.Contains(targetError.Message, "malformed record literal") {
+		t.Fatalf("Bind target error = %#v, want composite xid 22P02", targetError)
+	}
+	assertNoRawPGError(t, client.simpleQuery(t, "ROLLBACK"))
+}
+
+func TestExtendedBindSnapshotsLiveXIDVisibilityAfterSameNamespaceInvalidation(t *testing.T) {
+	h := startBroker(t)
+	h.fake.decideFn = func(*pb.DecisionRequest) (*pb.WireDecision, error) {
+		return wireVerdict(&pb.Verdict{Decision: pb.EnfAction_ALLOW}), nil
+	}
+	client := newRawPGClient(t, h)
+	assertNoRawPGError(t, client.simpleQuery(t, "SET search_path TO pg_catalog, "+primarySchema))
+	assertNoRawPGError(t, client.simpleQuery(t, "BEGIN"))
+	assertNoRawPGError(t, client.simpleQuery(t, "CREATE TEMP TABLE parse_marker AS SELECT 1 AS id"))
+
+	const query = "SELECT 1 FROM parse_marker WHERE NULL::xid IS NULL"
+	assertRawExtendedCompletion(t, client.sendSync(t, &pgproto3.Parse{Name: "parsed_xid", Query: query}), "ParseComplete", 'T')
+	assertNoRawPGError(t, client.simpleQuery(t, "CREATE TEMP TABLE xid (value integer)"))
+	assertNoRawPGError(t, client.simpleQuery(t, "ALTER TABLE parse_marker ADD COLUMN extra integer"))
+	assertRawExtendedCompletion(t, client.sendSync(t, &pgproto3.Bind{
+		DestinationPortal: "parsed_xid_portal", PreparedStatement: "parsed_xid",
+	}), "BindComplete", 'T')
+	assertNoRawPGError(t, client.sendSync(t, &pgproto3.Execute{Portal: "parsed_xid_portal"}))
+
+	var execute *pb.DecisionRequest
+	for _, request := range h.fake.requests() {
+		if request.GetSql() == query {
+			execute = request
+		}
+	}
+	if execute == nil || execute.PostgresSystemXidVisible == nil || execute.GetPostgresSystemXidVisible() {
+		t.Fatalf("Execute DecisionRequest xid visibility = %v, want Bind-time present false", execute)
+	}
+	assertNoRawPGError(t, client.simpleQuery(t, "ROLLBACK"))
+}
+
+func TestExtendedBindRevalidatesXIDAfterSameNamespaceInvalidation(t *testing.T) {
+	h := startBroker(t)
+	h.fake.decideFn = func(*pb.DecisionRequest) (*pb.WireDecision, error) {
+		return wireVerdict(&pb.Verdict{Decision: pb.EnfAction_ALLOW}), nil
+	}
+	client := newRawPGClient(t, h)
+	assertNoRawPGError(t, client.simpleQuery(t, "SET search_path TO pg_catalog, "+primarySchema))
+	assertNoRawPGError(t, client.simpleQuery(t, "BEGIN"))
+	assertNoRawPGError(t, client.simpleQuery(t, "CREATE TEMP TABLE parse_marker AS SELECT 1 AS id"))
+
+	const query = "SELECT 1 FROM parse_marker WHERE '0'::xid IS NULL"
+	assertRawExtendedCompletion(t, client.sendSync(t, &pgproto3.Parse{Name: "parsed_xid", Query: query}), "ParseComplete", 'T')
+	assertNoRawPGError(t, client.simpleQuery(t, "CREATE TEMP TABLE xid (value integer)"))
+	assertNoRawPGError(t, client.simpleQuery(t, "ALTER TABLE parse_marker ADD COLUMN extra integer"))
+	bindFrames := client.sendSync(t, &pgproto3.Bind{
+		DestinationPortal: "parsed_xid_portal", PreparedStatement: "parsed_xid",
+	})
+	var targetError *pgproto3.ErrorResponse
+	for _, frame := range bindFrames {
+		if response, ok := frame.(*pgproto3.ErrorResponse); ok {
+			targetError = response
+		}
+	}
+	if targetError == nil || targetError.Code != "22P02" || !strings.Contains(targetError.Message, "malformed record literal") {
+		t.Fatalf("Bind target error = %#v, want composite xid 22P02", targetError)
+	}
+	assertNoRawPGError(t, client.simpleQuery(t, "ROLLBACK"))
+}
+
 func TestExtendedExecuteAuthorizesUnderBindTimeNamespace(t *testing.T) {
 	h := startBroker(t)
 	h.fake.decideFn = func(*pb.DecisionRequest) (*pb.WireDecision, error) {
@@ -1027,6 +1381,23 @@ func TestExtendedAbortedTransactionRecoversViaRollback(t *testing.T) {
 		assertNoRawPGError(t, rollback)
 		assertRawReadyForQuery(t, rollback, 'I')
 	})
+
+	rollbackDecisions := 0
+	for _, request := range h.fake.requests() {
+		if request.GetSql() != "ROLLBACK" {
+			continue
+		}
+		rollbackDecisions++
+		if !request.GetPostgresFunctionShadowingObserved() || len(request.GetPostgresShadowedFunctions()) != 0 {
+			t.Fatalf("ROLLBACK shadow state = %v/%v, want cached observed empty", request.GetPostgresFunctionShadowingObserved(), request.GetPostgresShadowedFunctions())
+		}
+		if request.PostgresSystemXidVisible == nil || !request.GetPostgresSystemXidVisible() {
+			t.Fatalf("ROLLBACK xid visibility = %v, want cached present true", request.PostgresSystemXidVisible)
+		}
+	}
+	if rollbackDecisions != 3 {
+		t.Fatalf("ROLLBACK decisions = %d, want simple plus Parse and Execute", rollbackDecisions)
+	}
 }
 
 // TestExtendedBindCoercionSetConfigLeaksAcrossSchema is a CHARACTERIZATION test for a known, out-of-scope

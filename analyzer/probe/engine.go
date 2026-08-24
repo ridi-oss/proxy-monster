@@ -27,6 +27,9 @@ type engine interface {
 	Dialect() *dialects.Dialect
 	NormalizeCatalogOnBuild() bool
 	ImplicitNonVisibleColumns() []string
+	ImplicitFunctionColumns(name string) []string
+	ImplicitFunctionUnqualifiedTrusted(name string) bool
+	PostgresSystemXIDVisible() bool
 	FoldColumn(column string) string
 	// IsTempSchema reports whether a DDL target's schema identifier denotes session-local (temporary)
 	// storage for this engine, so the DDL is not catalog-changing. The schema is passed as its parsed
@@ -65,6 +68,12 @@ type mysqlEngine struct {
 }
 
 func newMySQLEngine(config *pb.EngineConfig) (*mysqlEngine, error) {
+	if len(config.GetPostgresShadowedFunctions()) != 0 || config.GetPostgresFunctionShadowingObserved() {
+		return nil, fmt.Errorf("postgres function shadowing context is not valid for mysql")
+	}
+	if config.PostgresSystemXidVisible != nil {
+		return nil, fmt.Errorf("postgres type visibility context is not valid for mysql")
+	}
 	if config.MysqlLowerCaseTableNames == nil {
 		return nil, fmt.Errorf("mysqlLowerCaseTableNames is required for mysql")
 	}
@@ -105,7 +114,10 @@ func (e *mysqlEngine) Dialect() *dialects.Dialect { return e.dialect }
 // spelling follows lower_case_table_names and the information_schema exception.
 func (e *mysqlEngine) NormalizeCatalogOnBuild() bool { return true }
 
-func (e *mysqlEngine) ImplicitNonVisibleColumns() []string { return nil }
+func (e *mysqlEngine) ImplicitNonVisibleColumns() []string            { return nil }
+func (e *mysqlEngine) ImplicitFunctionColumns(string) []string        { return nil }
+func (e *mysqlEngine) ImplicitFunctionUnqualifiedTrusted(string) bool { return false }
+func (e *mysqlEngine) PostgresSystemXIDVisible() bool                 { return false }
 
 func (e *mysqlEngine) FoldColumn(column string) string {
 	return e.dialect.FoldIdentifierName(column, false)
@@ -171,11 +183,32 @@ func (e *mysqlEngine) RewriteStatement(root exp.Expression) string {
 }
 
 type postgresEngine struct {
-	dialect *dialects.Dialect
+	dialect                   *dialects.Dialect
+	shadowedFunctions         map[string]bool
+	functionShadowingObserved bool
+	systemXIDVisible          bool
 }
 
-func newPostgresEngine(*pb.EngineConfig) (*postgresEngine, error) {
-	return &postgresEngine{dialect: dialects.Postgres()}, nil
+func newPostgresEngine(config *pb.EngineConfig) (*postgresEngine, error) {
+	if !config.GetPostgresFunctionShadowingObserved() && len(config.GetPostgresShadowedFunctions()) != 0 {
+		return nil, fmt.Errorf("postgresShadowedFunctions requires an observed function-shadowing context")
+	}
+	shadowed := make(map[string]bool, len(config.GetPostgresShadowedFunctions()))
+	for _, name := range config.GetPostgresShadowedFunctions() {
+		if name == "" || name != strings.ToLower(name) {
+			return nil, fmt.Errorf("postgresShadowedFunctions contains invalid function name %q", name)
+		}
+		if shadowed[name] {
+			return nil, fmt.Errorf("postgresShadowedFunctions contains duplicate function name %q", name)
+		}
+		shadowed[name] = true
+	}
+	return &postgresEngine{
+		dialect:                   dialects.Postgres(),
+		shadowedFunctions:         shadowed,
+		functionShadowingObserved: config.GetPostgresFunctionShadowingObserved(),
+		systemXIDVisible:          config.GetPostgresSystemXidVisible(),
+	}, nil
 }
 
 func (e *postgresEngine) Type() pb.Engine            { return pb.Engine_POSTGRES }
@@ -189,6 +222,26 @@ func (e *postgresEngine) NormalizeCatalogOnBuild() bool { return false }
 func (e *postgresEngine) ImplicitNonVisibleColumns() []string {
 	return []string{"tableoid", "xmin", "cmin", "xmax", "cmax", "ctid"}
 }
+
+func (e *postgresEngine) ImplicitFunctionColumns(name string) []string {
+	switch name {
+	case "pg_available_extension_versions":
+		return []string{"name", "version", "superuser", "trusted", "relocatable", "schema", "requires", "comment"}
+	case "unnest":
+		return []string{"unnest"}
+	default:
+		return nil
+	}
+}
+
+func (e *postgresEngine) ImplicitFunctionUnqualifiedTrusted(name string) bool {
+	if name != "unnest" {
+		return true
+	}
+	return e.functionShadowingObserved && !e.shadowedFunctions[name]
+}
+
+func (e *postgresEngine) PostgresSystemXIDVisible() bool { return e.systemXIDVisible }
 
 func (e *postgresEngine) FoldColumn(column string) string { return column }
 

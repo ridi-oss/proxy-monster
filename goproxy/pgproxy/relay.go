@@ -231,8 +231,49 @@ func firstErr(errs ...error) error {
 	return nil
 }
 
+func isPostgresEmptyQuery(sql string) bool {
+	for i := 0; i < len(sql); {
+		switch sql[i] {
+		case ' ', '\t', '\n', '\r', '\f', ';':
+			i++
+		case '-':
+			if i+1 >= len(sql) || sql[i+1] != '-' {
+				return false
+			}
+			i += 2
+			for i < len(sql) && sql[i] != '\n' && sql[i] != '\r' {
+				i++
+			}
+		case '/':
+			if i+1 >= len(sql) || sql[i+1] != '*' {
+				return false
+			}
+			i += 2
+			depth := 1
+			for i < len(sql) && depth > 0 {
+				switch {
+				case i+1 < len(sql) && sql[i] == '/' && sql[i+1] == '*':
+					depth++
+					i += 2
+				case i+1 < len(sql) && sql[i] == '*' && sql[i+1] == '/':
+					depth--
+					i += 2
+				default:
+					i++
+				}
+			}
+			if depth != 0 {
+				return false
+			}
+		default:
+			return false
+		}
+	}
+	return true
+}
+
 func (s *Server) handleQuery(sess *session, sql string) error {
-	if sql == "" {
+	if isPostgresEmptyQuery(sql) {
 		sess.targetDb.Send(&pgproto3.Query{})
 		if err := sess.targetDb.Flush(); err != nil {
 			return closeRelay(sess, err)

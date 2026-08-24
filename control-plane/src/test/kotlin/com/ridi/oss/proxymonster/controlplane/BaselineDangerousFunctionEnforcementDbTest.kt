@@ -171,10 +171,8 @@ class BaselineDangerousFunctionEnforcementDbTest {
         // the call resolves + emits a function fact + is forbidden by the function gate. A `system:critical`
         // function (lo_export) is forbidden UNCONDITIONALLY (V25 -130), even under system:development.
         configure(pg, pg17, listOf("system:development"))
-        // Control: the exception.unanalyzable relay path IS live on this dev datasource — an actually-unanalyzable
-        // statement (NATURAL JOIN) is relayed verbatim (ALLOW, passthrough). This is the path the dangerous
-        // call would take without the function gate.
-        val relay = decide(pg, "select count(*) from orders natural join users")
+        // The exception.unanalyzable relay remains active for an unresolved catalog column.
+        val relay = decide(pg, "select missing_column from orders")
         assertEquals(EnfAction.ALLOW, relay.action, "dev datasource relays an unanalyzable statement via exception.unanalyzable")
         assertTrue(relay.passthrough, "the unanalyzable relay is a verbatim passthrough")
         // Improvement (RESOLVED forms only): a projected/scalar dangerous call RESOLVES + emits a function
@@ -195,13 +193,13 @@ class BaselineDangerousFunctionEnforcementDbTest {
         // - but a system:critical function (dblink_exec) hiding in a resolved=false statement DENIES even on a
         //   system:development datasource — the function gate runs ahead of the exception.unanalyzable relay, so a
         //   critical builtin is NEVER relayed verbatim (V25 -130 is unconditional). This is the residue CLOSED.
-        val critical = decide(pg, "select dblink_exec('c','s') from users natural join users")
+        val critical = decide(pg, "select dblink_exec('c','s'), missing_column from users")
         assertEquals(EnfAction.DENY, critical.action, "a resolved=false critical function is denied even on a system:development datasource (not relayed via exception.unanalyzable)")
         assertTrue(critical.detail?.contains("dangerous system function") == true, "the DENY is the function gate, not the relay: ${critical.detail}")
         // Both resolved=false forms DENY on the production floor (no exception.unanalyzable permit).
         configure(pg, pg17, listOf("system:production"))
         assertEquals(EnfAction.DENY, decide(pg, "select * from dblink('h','SELECT 1') as t(c text)").action, "resolved=false data-leak denies on the floor")
-        assertEquals(EnfAction.DENY, decide(pg, "select dblink_exec('c','s') from users natural join users").action, "resolved=false critical denies on the floor")
+        assertEquals(EnfAction.DENY, decide(pg, "select dblink_exec('c','s'), missing_column from users").action, "resolved=false critical denies on the floor")
         // BOUNDARY (explicit, not a gap this closes): the backfill only fires on a POST-PARSE failure — a
         // statement that sqlglot cannot PARSE (p.root == nil) emits no function facts, so a critical builtin in
         // a parse-failing statement the target DB still accepts takes the exception.unanalyzable verbatim relay on a

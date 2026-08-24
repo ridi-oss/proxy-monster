@@ -39,10 +39,10 @@ class UnmaskableGateDbTest {
         }
     }
 
-    private fun decide() = decideQuery(
+    private fun decide(sql: String = preparedSql) = decideQuery(
         principal = principal,
         ds = fx.datasourceStore.get(fx.datasource.id)!!,
-        sql = preparedSql,
+        sql = sql,
         channel = Channel.WIRE,
         catalog = fx.datasourceStore.catalog(fx.datasource.id),
         policyStore = fx.policyStore,
@@ -79,5 +79,10 @@ class UnmaskableGateDbTest {
         val permitted = decide()
         assertEquals(EnfAction.MASK, permitted.action)
         assertTrue(permitted.unmaskablePermitted, "MASK + exception.unmaskable permit must surface the relay capability")
+
+        val derived = decide("SELECT LOWER(ssn) FROM users WHERE id = ?")
+        assertEquals(EnfAction.MASK, derived.action)
+        assertEquals("NULL", derived.masks.single().kind)
+        assertTrue(derived.unmaskablePermitted, "ordinary derived NULL masking keeps the explicit binary relay capability")
     }
 }

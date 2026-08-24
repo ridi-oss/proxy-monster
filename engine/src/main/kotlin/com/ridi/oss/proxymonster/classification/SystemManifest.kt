@@ -6,7 +6,8 @@ import kotlinx.serialization.Serializable
  * The shipped system classification (docs/system-classification.md). Every object in an exposed system
  * schema is one of four `system:` tags; only the dangerous overrides are enumerated — everything else
  * defaults to `system:catalog` (open browsing). These tags are a product fact, immutable and bundled per
- * engine MAJOR version; policy over them lives in Cedar (`access-model.md`).
+ * engine MAJOR version; exact column overrides and forced redactions are bundled with those facts, while
+ * policy over them lives in Cedar (`access-model.md`).
  *
  * Strength order (strongest first) drives the classifier: when several rules match one object it takes the
  * STRONGEST tag, so a weaker exact rule can never downgrade a stronger family rule. Over-classifying is
@@ -42,14 +43,23 @@ data class ObjectRule(val schema: String, val name: String, val tag: String)
 @Serializable
 data class FamilyRule(val schema: String, val prefix: String, val tag: String)
 
+/** An exact system column classification that replaces its relation's tag for traced column reads. */
+@Serializable
+data class ColumnRule(val schema: String, val table: String, val column: String, val tag: String)
+
+/** A system-catalog column whose output is always NULL and whose non-output use is denied. */
+@Serializable
+data class RedactedColumnRule(val schema: String, val table: String, val column: String)
+
 /** A utility command → the resource it exposes + that resource's tag (SHOW/DESCRIBE/…). */
 @Serializable
 data class CommandRule(val id: String, val resource: String, val tag: String)
 
 /**
  * One bundled manifest, deserialized from `resources/system-classification/<engine>/<series>.json`
- * (docs/system-classification.md). Declarative: schemas + exact/family relation & function rules +
- * the utility-command map. `series` is the engine major (PostgreSQL `17`, MySQL `8.0`/`8.4`).
+ * (docs/system-classification.md). Declarative: schemas + exact/family relation & function rules + exact
+ * column overrides/redactions + the utility-command map. `series` is the engine major (PostgreSQL `17`,
+ * MySQL `8.0`/`8.4`).
  */
 @Serializable
 data class SystemManifest(
@@ -62,6 +72,8 @@ data class SystemManifest(
     val logicalFunctionSchemas: List<SystemSchema> = emptyList(),
     val relations: List<ObjectRule> = emptyList(),
     val relationFamilies: List<FamilyRule> = emptyList(),
+    val columnOverrides: List<ColumnRule> = emptyList(),
+    val redactedColumns: List<RedactedColumnRule> = emptyList(),
     val functions: List<ObjectRule> = emptyList(),
     val functionFamilies: List<FamilyRule> = emptyList(),
     val commands: List<CommandRule> = emptyList(),

@@ -1,6 +1,7 @@
 package probe
 
 import (
+	"strings"
 	"testing"
 
 	pb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
@@ -423,6 +424,99 @@ func TestStatementFactsUserTypeCastGated(t *testing.T) {
 	}
 }
 
+func TestStatementFactsPostgresXIDCastVisibility(t *testing.T) {
+	factsFor := func(sql string, searchPath []string, visible *bool) *pb.StatementFacts {
+		t.Helper()
+		return analyzeProto(t, &pb.AnalyzeRequest{
+			Sql: sql,
+			EngineConfig: &pb.EngineConfig{
+				Engine:                   pb.Engine_POSTGRES,
+				PostgresSystemXidVisible: visible,
+			},
+			Namespace: &pb.Namespace{Catalog: "acme", SearchPath: searchPath},
+			Catalog: []*pb.ColumnSpec{
+				columnSpec("acme", "public", "users", "id", "BIGINT"),
+				columnSpec("acme", "public", "users", "ssn", "VARCHAR"),
+			},
+		})
+	}
+	hasUserTypeCast := func(facts *pb.StatementFacts) bool {
+		for _, grant := range facts.GetResultReads() {
+			if grant.GetUtility().GetCommand() == "USER_TYPE_CAST" {
+				return true
+			}
+		}
+		return false
+	}
+
+	for _, tc := range []struct {
+		sql         string
+		searchPath  []string
+		visible     *bool
+		wantRewrite bool
+	}{
+		{"SELECT $2::varchar::xid", []string{"pg_catalog", "public"}, proto.Bool(true), true},
+		{"SELECT '1'::xid", []string{"pg_temp_3", "pg_catalog", "public"}, proto.Bool(true), true},
+		{"SELECT '1'::pg_catalog.xid", []string{"public", "pg_catalog"}, nil, false},
+		{`SELECT '1'::"pg_catalog"."xid"`, []string{"pg_temp_3", "pg_catalog", "public"}, nil, false},
+		{"SELECT '{1}'::xid[]", []string{"pg_catalog", "public"}, proto.Bool(true), true},
+	} {
+		facts := factsFor(tc.sql, tc.searchPath, tc.visible)
+		if !facts.GetResolved() || hasUserTypeCast(facts) {
+			t.Errorf("safe xid cast was gated: %q path=%v facts=%+v", tc.sql, tc.searchPath, facts)
+			continue
+		}
+		if tc.wantRewrite {
+			rewrite := strings.ReplaceAll(strings.ToLower(facts.GetRewrittenSql()), `"`, "")
+			if !strings.Contains(rewrite, "pg_catalog.xid") {
+				t.Errorf("bare xid cast was not pinned in relayed SQL: %q -> %q", tc.sql, facts.GetRewrittenSql())
+			}
+		} else if facts.RewrittenSql != nil {
+			t.Errorf("explicit pg_catalog.xid was unnecessarily rewritten: %q -> %q", tc.sql, facts.GetRewrittenSql())
+		}
+	}
+
+	for _, tc := range []struct {
+		sql        string
+		searchPath []string
+		visible    *bool
+	}{
+		{"SELECT '1'::xid", []string{"pg_catalog", "public"}, nil},
+		{"SELECT '1'::xid", []string{"pg_catalog", "public"}, proto.Bool(false)},
+		{"SELECT '1'::xid", []string{"pg_temp_3", "pg_catalog", "public"}, proto.Bool(false)},
+		{"SELECT '1'::xid", []string{"public", "pg_catalog"}, proto.Bool(true)},
+		{"SELECT '1'::xid", []string{"pg_temp_3", "public", "pg_catalog"}, proto.Bool(true)},
+		{"SELECT '1'::public.xid", []string{"pg_catalog", "public"}, proto.Bool(true)},
+		{`SELECT '1'::"XID"`, []string{"pg_catalog", "public"}, proto.Bool(true)},
+		{"SELECT '1'::xid(5)", []string{"pg_catalog", "public"}, proto.Bool(true)},
+	} {
+		facts := factsFor(tc.sql, tc.searchPath, tc.visible)
+		if !hasUserTypeCast(facts) {
+			t.Errorf("shadowable xid cast was not gated: %q path=%v facts=%+v", tc.sql, tc.searchPath, facts)
+		}
+		if facts.RewrittenSql != nil {
+			t.Errorf("untrusted xid cast produced relayed SQL: %q -> %q", tc.sql, facts.GetRewrittenSql())
+		}
+	}
+
+	for _, sql := range []string{
+		"SELECT *, '1'::xid AS transaction_id FROM users",
+		"EXPLAIN SELECT '1'::xid",
+	} {
+		facts := factsFor(sql, []string{"pg_catalog", "public"}, proto.Bool(true))
+		rewrite := strings.ReplaceAll(strings.ToLower(facts.GetRewrittenSql()), `"`, "")
+		if !facts.GetResolved() || !strings.Contains(rewrite, "pg_catalog.xid") {
+			t.Errorf("xid pin did not compose with statement rewrite: %q -> %+v", sql, facts)
+		}
+		if strings.HasPrefix(sql, "SELECT *") && strings.Contains(rewrite, "*") {
+			t.Errorf("xid pin lost star expansion: %q", facts.GetRewrittenSql())
+		}
+		if strings.HasPrefix(sql, "EXPLAIN") && !strings.HasPrefix(strings.TrimSpace(rewrite), "explain") {
+			t.Errorf("xid pin lost EXPLAIN wrapper: %q", facts.GetRewrittenSql())
+		}
+	}
+}
+
 func TestStatementFactsSchemaQualifiedFunctionGrant(t *testing.T) {
 	// sqlglot drops a call's schema qualifier from the function node's own Name(), so `public.version()`
 	// would fold onto the safe metadata version() and pass. A non-pg_catalog qualifier is user code: it
@@ -430,6 +524,7 @@ func TestStatementFactsSchemaQualifiedFunctionGrant(t *testing.T) {
 	// as a trusted function (a user function shadowing a safe name is an exfil vector).
 	for _, tc := range []struct{ sql, want string }{
 		{"SELECT public.version()", "public.version"},
+		{"SELECT public.version(), id FROM users", "public.version"},
 		{"SELECT pm_leak.upper('x')", "pm_leak.upper"},
 	} {
 		facts := postgresFacts(t, tc.sql)
@@ -446,6 +541,10 @@ func TestStatementFactsSchemaQualifiedFunctionGrant(t *testing.T) {
 	// A pg_catalog-qualified safe builtin is the trusted system function of that name — no grant.
 	if facts := postgresFacts(t, "SELECT pg_catalog.abs(-1)"); len(nonExecuteGrants(facts)) != 0 {
 		t.Fatalf("pg_catalog.abs must be safe: %+v", facts.GetResultReads())
+	}
+	// A bare builtin with a physical source stays on the manifest path; it is not a user-qualified call.
+	if facts := postgresFacts(t, "SELECT age(now()), id FROM users"); hasFunctionGrant(facts, "age") {
+		t.Fatalf("bare age() must not become an unclassified Function grant: %+v", facts.GetResultReads())
 	}
 }
 

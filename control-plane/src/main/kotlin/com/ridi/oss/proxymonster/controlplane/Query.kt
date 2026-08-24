@@ -283,6 +283,9 @@ internal fun analyzerAndCatalogIndex(
     tempColumns: List<CatalogColumn>,
     resolvedSearchPath: List<String>,
     liveAnsiQuotes: Boolean,
+    postgresFunctionShadowingObserved: Boolean = false,
+    postgresShadowedFunctions: List<String> = emptyList(),
+    postgresSystemXidVisible: Boolean? = null,
 ): Pair<CatalogColumnIndex, Analyzer> {
     val mysqlCaseMode = ds.engine.requireCaseMode(ds.mysqlLowerCaseTableNames)
     val namespace = pbNamespace {
@@ -296,6 +299,9 @@ internal fun analyzerAndCatalogIndex(
         // Only meaningful for MySQL (the proxy observes ANSI_QUOTES off a MySQL session and leaves this
         // false otherwise); the PostgreSQL engine ignores it regardless.
         if (liveAnsiQuotes) this.mysqlAnsiQuotes = true
+        if (postgresFunctionShadowingObserved) this.postgresFunctionShadowingObserved = true
+        this.postgresShadowedFunctions.addAll(postgresShadowedFunctions)
+        postgresSystemXidVisible?.let { this.postgresSystemXidVisible = it }
     }
     val effectiveCatalog = catalog + tempColumns
     val specs = effectiveCatalog.map { col ->
@@ -423,6 +429,11 @@ fun decideQuery(
     // Forwarded to the analyzer's EngineConfig so a masked column quoted with `"` is parsed as the column
     // and still masked; false for PostgreSQL and default MySQL mode.
     liveAnsiQuotes: Boolean = false,
+    // PostgreSQL function visibility observed on the held target session. An unobserved empty list is not
+    // equivalent to an observed empty list for polymorphic builtins such as unnest.
+    postgresFunctionShadowingObserved: Boolean = false,
+    postgresShadowedFunctions: List<String> = emptyList(),
+    postgresSystemXidVisible: Boolean? = null,
     // The shipped system classifier. Null → no system tags marshaled (system schemas stay deny-by-default).
     // Keyed off ds.engineVersion, path-agnostic (CP-introspect + proxy PushCatalog).
     systemClassification: SystemClassificationService? = null,
@@ -444,7 +455,16 @@ fun decideQuery(
     val resolvedSearchPath = (liveSearchPath ?: ds.defaultSchemas).ifEmpty { listOf(ds.dbName.ifBlank { "public" }) }
 
     val catalogAndFacts = try {
-        val (index, analyzer) = analyzerAndCatalogIndex(ds, catalog, tempColumns, resolvedSearchPath, liveAnsiQuotes)
+        val (index, analyzer) = analyzerAndCatalogIndex(
+            ds,
+            catalog,
+            tempColumns,
+            resolvedSearchPath,
+            liveAnsiQuotes,
+            postgresFunctionShadowingObserved,
+            postgresShadowedFunctions,
+            postgresSystemXidVisible,
+        )
         index to (factsOverride ?: analyzer.analyze(sql))
     } catch (e: Exception) {
         return structuralDeny(
@@ -713,11 +733,28 @@ fun decideQuery(
         facts.sourcesList.mapTo(this) { Triple(it.catalog, it.schema, it.table) }
         facts.resultReadsList.filter { it.hasTable() }.mapTo(this) { Triple(it.table.catalog, it.table.schema, it.table.table) }
     }
-    val systemTags = systemClassification?.let { sc ->
+    val tableSystemTags = systemClassification?.let { sc ->
         allTableIds.mapNotNull { (cat, schema, table) ->
             sc.tagForTable(ds.engine, ds.engineVersion, cat, schema, table)?.let { Triple(cat, schema, table) to it }
         }.toMap()
     } ?: emptyMap()
+    val columnSystemTags = systemClassification?.let { sc ->
+        columnRefs.mapNotNull { ref ->
+            sc.tagForColumn(
+                ds.engine,
+                ds.engineVersion,
+                ref.catalog,
+                ref.schema,
+                ref.table,
+                ref.column,
+            )?.let { ref.key to it }
+        }.toMap()
+    } ?: emptyMap()
+    val systemRedactedColumns = systemClassification?.let { sc ->
+        columnRefs.filterTo(LinkedHashSet()) { ref ->
+            sc.redactsColumn(ds.engine, ds.engineVersion, ref.catalog, ref.schema, ref.table, ref.column)
+        }.mapTo(HashSet()) { it.key }
+    } ?: emptySet()
 
     val functionGrants = facts.resultReadsList.filter { it.hasFunction() }
     if (functionGrants.isNotEmpty() || facts.functionsList.isNotEmpty()) {
@@ -739,13 +776,24 @@ fun decideQuery(
     }
 
     val columnVerdicts = if (columnRefs.isEmpty()) emptyMap() else
-        authz.authorizeColumns(principal, roles, ds.name, columnRefs, context, systemTags, ds.tags)
+        authz.authorizeColumns(principal, roles, ds.name, columnRefs, context, columnSystemTags, ds.tags)
     val masks = ArrayList<ColumnMask>()
+    var hasMandatoryRedaction = false
     for (grant in columnGrants) {
         val column = grant.column
         val key = listOf(column.catalog, column.identity.schema, column.identity.table, column.identity.column).joinToString(".")
         val row = catalogIndex.rowsByKey.getValue(key)
-        val verdict = if (row.isTemp) ColumnVerdict.UNMASKED else columnVerdicts[key] ?: ColumnVerdict.DENIED
+        val systemRedacted = key in systemRedactedColumns
+        val authorizedVerdict = if (row.isTemp) {
+            ColumnVerdict.UNMASKED
+        } else {
+            columnVerdicts[key] ?: ColumnVerdict.DENIED
+        }
+        val verdict = if (systemRedacted && authorizedVerdict != ColumnVerdict.DENIED) {
+            ColumnVerdict.MASKED
+        } else {
+            authorizedVerdict
+        }
         when (verdict) {
             ColumnVerdict.UNMASKED -> Unit
             ColumnVerdict.DENIED -> return deny("policy denies column $key")
@@ -758,25 +806,32 @@ fun decideQuery(
                 MaskedDisposition.MASKED_DISPOSITION_MASK_OUTPUT,
                 MaskedDisposition.MASKED_DISPOSITION_REDACT_OUTPUT_NULL -> {
                     // Ordinals were bounds-checked up front (fail-closed contract validation), so each is a
-                    // valid index here; apply the first grant per ordinal (first-wins).
+                    // valid index here. NULL redaction dominates any ordinary mask on that ordinal.
                     for (ordinal in grant.outputOrdinalsList) {
-                        if (masks.none { it.ordinal == ordinal }) {
-                            masks += if (grant.maskedDisposition == MaskedDisposition.MASKED_DISPOSITION_REDACT_OUTPUT_NULL) {
-                                columnMask {
-                                    this.column = facts.outputColumnsList[ordinal]
-                                    maskFn = "redact"
-                                    kind = "NULL"
-                                    this.ordinal = ordinal
-                                }
-                            } else {
-                                val fn = row.classification?.maskFnName
-                                columnMask {
-                                    this.column = facts.outputColumnsList[ordinal]
-                                    maskFn = fn ?: "mask"
-                                    kind = fn?.let { maskKinds[it] } ?: "FIXED"
-                                    this.ordinal = ordinal
-                                }
+                        val redactOutput = systemRedacted ||
+                            grant.maskedDisposition == MaskedDisposition.MASKED_DISPOSITION_REDACT_OUTPUT_NULL
+                        hasMandatoryRedaction = hasMandatoryRedaction || systemRedacted
+                        val candidate = if (redactOutput) {
+                            columnMask {
+                                this.column = facts.outputColumnsList[ordinal]
+                                maskFn = "redact"
+                                kind = "NULL"
+                                this.ordinal = ordinal
                             }
+                        } else {
+                            val fn = row.classification?.maskFnName
+                            columnMask {
+                                this.column = facts.outputColumnsList[ordinal]
+                                maskFn = fn ?: "mask"
+                                kind = fn?.let { maskKinds[it] } ?: "FIXED"
+                                this.ordinal = ordinal
+                            }
+                        }
+                        val existing = masks.indexOfFirst { it.ordinal == ordinal }
+                        if (existing == -1) {
+                            masks += candidate
+                        } else if (redactOutput && masks[existing].kind != "NULL") {
+                            masks[existing] = candidate
                         }
                     }
                 }
@@ -791,7 +846,7 @@ fun decideQuery(
             val table = grant.table
             TableRef("${table.catalog}.${table.schema}.${table.table}", table.catalog, table.schema, table.table)
         }.distinctBy { it.key }
-        val verdicts = authz.authorizeTables(principal, roles, ds.name, refs, context, systemTags, ds.tags)
+        val verdicts = authz.authorizeTables(principal, roles, ds.name, refs, context, tableSystemTags, ds.tags)
         refs.firstOrNull { verdicts[it.key] != TableVerdict.READ }?.let {
             return deny("no read grant for scanned table '${it.schema}.${it.table}'")
         }
@@ -810,7 +865,7 @@ fun decideQuery(
         facts.sourcesList.mapTo(this) { it.schema }
         columnGrants.mapTo(this) { it.column.identity.schema }
     }.filterNotTo(LinkedHashSet()) { it.startsWith("pg_temp", ignoreCase = true) }
-    val unmaskablePermitted = action == EnfAction.MASK && authz.authorizeDatasourceAction(
+    val unmaskablePermitted = action == EnfAction.MASK && !hasMandatoryRedaction && authz.authorizeDatasourceAction(
         principal, roles, AuthzAction.EXCEPTION_UNMASKABLE, ds.name, context, ds.tags,
     ) is AuthzDecision.Allow
     val sanitizeDiagnostics = redactsDiagnostics(ds.engine, action) {

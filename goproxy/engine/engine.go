@@ -283,10 +283,14 @@ type DecideRequest struct {
 	// `"x"` is a quoted identifier rather than a string literal. The control plane forwards it to the
 	// analyzer's EngineConfig (mysql_ansi_quotes) so a masked column quoted with `"` is still masked.
 	// Always false for Postgres and for MySQL's default mode.
-	MysqlAnsiQuotes bool
-	TempColumns     []TempColumn
-	ConnectionID    []byte
-	RunCommands     func([]*pb.Refetch) error
+	MysqlAnsiQuotes                   bool
+	PostgresShadowedFunctions         []string
+	PostgresFunctionShadowingObserved bool
+	PostgresSystemXIDVisible          bool
+	PostgresTypeVisibilityObserved    bool
+	TempColumns                       []TempColumn
+	ConnectionID                      []byte
+	RunCommands                       func([]*pb.Refetch) error
 }
 
 // Decider performs the per-query control-plane decision. It is injected so the engine is unit-testable;
@@ -412,12 +416,16 @@ func (Fail) isVerdict()    {}
 // signals via MarkNamespaceDirty, never by inspecting SQL). It is created with a dumb Db and an
 // injected Decider and never touches sockets — the protocol supplies probe I/O via callbacks.
 type QueryEngine struct {
-	db              Db
-	decider         Decider
-	namespace       []string
-	mysqlAnsiQuotes bool
-	nsDirty         bool
-	sanitizeDiag    bool
+	db                                Db
+	decider                           Decider
+	namespace                         []string
+	mysqlAnsiQuotes                   bool
+	postgresShadowedFunctions         []string
+	postgresFunctionShadowingObserved bool
+	postgresSystemXIDVisible          bool
+	postgresTypeVisibilityObserved    bool
+	nsDirty                           bool
+	sanitizeDiag                      bool
 }
 
 // NewQueryEngine creates the per-connection engine. The namespace starts dirty so the first query
@@ -445,14 +453,15 @@ func (e *QueryEngine) SetNamespace(namespace []string) {
 }
 
 // NamespaceProbe is the pre-statement session observation the protocol returns to the engine: the
-// connection's effective namespace, plus (MySQL only) whether the live session sql_mode has ANSI_QUOTES
-// active so `"x"` is a quoted identifier rather than a string literal. The engine caches both together and
-// forwards MySQLAnsiQuotes to the control plane, which hands it to the analyzer's EngineConfig so a masked
-// column quoted with `"` is still masked. Postgres reports false: it has no ANSI_QUOTES equivalent, and its
-// standard_conforming_strings divergence fails the connection closed instead of forwarding a flag.
+// connection's effective namespace plus engine-specific lookup state: MySQL ANSI_QUOTES and PostgreSQL
+// function/type visibility. The engine caches the observation atomically with the namespace.
 type NamespaceProbe struct {
-	Namespace       []string
-	MySQLAnsiQuotes bool
+	Namespace                         []string
+	MySQLAnsiQuotes                   bool
+	PostgresShadowedFunctions         []string
+	PostgresFunctionShadowingObserved bool
+	PostgresSystemXIDVisible          bool
+	PostgresTypeVisibilityObserved    bool
 }
 
 // AuthzInput is one statement to authorize plus the probe callbacks the protocol wires up. The Db
@@ -480,6 +489,10 @@ func (e *QueryEngine) Authorize(in AuthzInput) Verdict {
 		}
 		e.namespace = append([]string{}, probe.Namespace...)
 		e.mysqlAnsiQuotes = probe.MySQLAnsiQuotes
+		e.postgresShadowedFunctions = append([]string{}, probe.PostgresShadowedFunctions...)
+		e.postgresFunctionShadowingObserved = probe.PostgresFunctionShadowingObserved
+		e.postgresSystemXIDVisible = probe.PostgresSystemXIDVisible
+		e.postgresTypeVisibilityObserved = probe.PostgresTypeVisibilityObserved
 		e.nsDirty = false
 	}
 
@@ -492,14 +505,18 @@ func (e *QueryEngine) Authorize(in AuthzInput) Verdict {
 	}
 
 	out := e.decider.Decide(DecideRequest{
-		Token:           in.Token,
-		SQL:             in.SQL,
-		ClientAddr:      in.ClientAddr,
-		Namespace:       e.namespace,
-		MysqlAnsiQuotes: e.mysqlAnsiQuotes,
-		TempColumns:     temps,
-		ConnectionID:    in.ConnectionID,
-		RunCommands:     in.RunCommands,
+		Token:                             in.Token,
+		SQL:                               in.SQL,
+		ClientAddr:                        in.ClientAddr,
+		Namespace:                         e.namespace,
+		MysqlAnsiQuotes:                   e.mysqlAnsiQuotes,
+		PostgresShadowedFunctions:         e.postgresShadowedFunctions,
+		PostgresFunctionShadowingObserved: e.postgresFunctionShadowingObserved,
+		PostgresSystemXIDVisible:          e.postgresSystemXIDVisible,
+		PostgresTypeVisibilityObserved:    e.postgresTypeVisibilityObserved,
+		TempColumns:                       temps,
+		ConnectionID:                      in.ConnectionID,
+		RunCommands:                       in.RunCommands,
 	})
 	if out.IsErr() {
 		return Fail{Message: out.Err}

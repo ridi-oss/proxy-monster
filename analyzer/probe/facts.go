@@ -11,6 +11,7 @@ import (
 	exp "github.com/ridi-oss/sqlglot-go/expressions"
 	"github.com/ridi-oss/sqlglot-go/generator"
 	"github.com/ridi-oss/sqlglot-go/schema"
+	"github.com/ridi-oss/sqlglot-go/tokens"
 )
 
 var safeNoFromFunctions = stringSet(
@@ -49,23 +50,26 @@ func isSafeNoFromFunction(name string, eng engine) bool {
 	return safeNoFromFunctions[name] || (eng.Type() == pb.Engine_MYSQL && mysqlOnlySafeFunctions[name])
 }
 
-// userTypeCast returns the name of the first reference to a non-built-in (user) type anywhere in root, or
-// "" if every type reference is a safe built-in. sqlglot resolves a built-in type to a concrete DType and
-// a user type to DTypeUserDefined, so this is a single AST pass over DataType nodes. It covers every way a
-// statement can name a type — the `::type` and `CAST(x AS type)` forms and the `type 'literal'` typed
-// literal alike (they all parse to the same DataType node), in any position and whether or not the
-// statement has a FROM (a `SELECT 1::public.evil_domain FROM users` runs the domain's code just the same).
-// A `pg_catalog.<builtin>` reference needs no special-case here: sqlglot-go resolves it to the built-in
-// node directly (`pg_catalog.int4` → INT DataType, `pg_catalog.oid`/reg* → ObjectIdentifier — not a
-// DataType at all), so it never reaches the DTypeUserDefined branch. Only a non-catalog builtin ALIAS in
-// pg_catalog (e.g. `pg_catalog.integer`, which PostgreSQL itself rejects as a nonexistent type) still
-// lands here and is fail-closed — an accepted over-deny of invalid SQL.
-func userTypeCast(root exp.Expression) string {
+func normalizedFunctionName(function exp.Expression, eng engine) string {
+	if identifier, ok := function.Arg("this").(exp.Expression); ok && identifier.Kind() == exp.KindIdentifier {
+		identifier = identifier.Copy()
+		eng.Dialect().NormalizeIdentifier(identifier)
+		return identifier.Name()
+	}
+	return strings.ToLower(function.Name())
+}
+
+// userTypeCast returns the first type that may run user coercion or domain code. sqlglot marks unknown
+// types as DTypeUserDefined; PostgreSQL xid is safe only when live type lookup resolves pg_catalog.xid.
+func userTypeCast(root exp.Expression, eng engine, namespace NamespaceConfig) string {
 	for _, dt := range root.FindAll(exp.KindDataType) {
 		if dt.Arg("this") != exp.DTypeUserDefined {
 			continue
 		}
 		kind, _ := dt.Arg("kind").(exp.Expression)
+		if isSafePostgresXIDType(dt, kind, eng, namespace) {
+			continue
+		}
 		if kind != nil && kind.Kind() == exp.KindDot {
 			qualifier := strings.ToLower(kind.Left().Name())
 			leaf := strings.ToLower(kind.Right().Name())
@@ -77,6 +81,452 @@ func userTypeCast(root exp.Expression) string {
 		return "user-defined type"
 	}
 	return ""
+}
+
+func isSafePostgresXIDType(dt, kind exp.Expression, eng engine, namespace NamespaceConfig) bool {
+	if eng.Type() != pb.Engine_POSTGRES || kind == nil || len(dt.Expressions()) != 0 {
+		return false
+	}
+	leaf := kind
+	var qualifier exp.Expression
+	if kind.Kind() == exp.KindDot {
+		qualifier = kind.Left()
+		leaf = kind.Right()
+	} else if kind.Kind() != exp.KindIdentifier {
+		return false
+	}
+	if leaf == nil || leaf.Kind() != exp.KindIdentifier {
+		return false
+	}
+	folded := leaf.Copy()
+	eng.Dialect().NormalizeIdentifier(folded)
+	if folded.Name() != "xid" {
+		return false
+	}
+	if qualifier != nil {
+		return isTrustedSystemQualifier(qualifier, eng)
+	}
+	return eng.PostgresSystemXIDVisible() && postgresCatalogFirstAfterTempSchemas(namespace.SearchPath)
+}
+
+func pinSafePostgresXIDTypes(root exp.Expression, eng engine, namespace NamespaceConfig) bool {
+	pinned := false
+	for _, dt := range root.FindAll(exp.KindDataType) {
+		kind, _ := dt.Arg("kind").(exp.Expression)
+		if kind == nil || kind.Kind() != exp.KindIdentifier || !isSafePostgresXIDType(dt, kind, eng, namespace) {
+			continue
+		}
+		dt.Set("kind", exp.Dot(exp.Args{
+			"this":       exp.ToIdentifier("pg_catalog"),
+			"expression": kind.Copy(),
+		}))
+		pinned = true
+	}
+	return pinned
+}
+
+func hasUnsupportedPostgresUnnestOffset(root exp.Expression, eng engine) bool {
+	if eng.Type() != pb.Engine_POSTGRES {
+		return false
+	}
+	for _, unnest := range root.FindAll(exp.KindUnnest) {
+		if offset := unnest.Arg("offset"); offset != nil {
+			if _, ok := offset.(bool); !ok {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+var postgresDedicatedSafeFunctions = stringSet(
+	"abs", "ceil", "ceiling", "char", "char_length", "character_length", "chr", "coalesce", "concat",
+	"current_date", "date_part", "dateadd", "datediff", "exp", "extract", "floor", "greatest", "hex",
+	"if", "ifnull", "initcap", "lcase", "least", "ln", "log", "md5", "mod", "nvl", "overlay",
+	"position", "pow", "power", "replace", "round", "sqrt", "substr", "substring", "trim", "trunc",
+	"truncate", "ucase",
+)
+
+var postgresRegenerationChangesFunctionCalls = stringSet(
+	"ceiling", "char", "char_length", "character_length", "current_date", "date_part", "dateadd", "extract",
+	"if", "ifnull", "lcase", "nvl", "overlay", "position", "pow", "substr", "substring", "truncate", "ucase",
+)
+
+type postgresFunctionCall struct {
+	name        string
+	position    int
+	usesGrammar bool
+}
+
+func postgresFunctionUsesGrammar(stream []tokens.Token, index int, name string) bool {
+	switch name {
+	case "cast", "coalesce", "greatest", "least", "nullif", "trim":
+		return true
+	}
+	markers := map[string]map[tokens.TokenType]bool{
+		"convert":   {tokens.USING: true},
+		"extract":   {tokens.FROM: true},
+		"overlay":   {tokens.FROM: true},
+		"position":  {tokens.IN: true},
+		"substring": {tokens.ESCAPE: true, tokens.FOR: true, tokens.FROM: true, tokens.SIMILAR_TO: true},
+	}
+	wanted := markers[name]
+	if len(wanted) == 0 {
+		return false
+	}
+	depth := 0
+	for i := index + 1; i < len(stream); i++ {
+		token := stream[i]
+		switch token.TokenType {
+		case tokens.L_PAREN:
+			depth++
+		case tokens.R_PAREN:
+			depth--
+			if depth == 0 {
+				return false
+			}
+		default:
+			if depth != 1 {
+				continue
+			}
+			if wanted[token.TokenType] {
+				return true
+			}
+			if name == "overlay" && token.TokenType == tokens.VAR &&
+				strings.EqualFold(token.Text, "placing") && i > index+1 &&
+				stream[i-1].TokenType != tokens.COMMA {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func postgresFunctionFingerprint(function exp.Expression, eng engine) (string, error) {
+	return sqlglot.Generate(function, eng.Dialect(), generator.Options{})
+}
+
+func postgresUnqualifiedFunctions(root exp.Expression) map[exp.Expression]bool {
+	qualified := map[exp.Expression]bool{}
+	for _, dot := range root.FindAll(exp.KindDot) {
+		if function := dot.Right(); function != nil && function.Is(exp.TraitFunc) {
+			qualified[function] = true
+		}
+	}
+	for _, table := range root.FindAll(exp.KindTable) {
+		function := table.This()
+		if function == nil || !function.Is(exp.TraitFunc) {
+			continue
+		}
+		if table.Arg("schema") != nil || table.Arg("catalog") != nil {
+			qualified[function] = true
+		}
+	}
+	unqualified := map[exp.Expression]bool{}
+	for _, function := range root.FindAll(exp.TraitFunc) {
+		if qualified[function] || function.FindAncestor(exp.KindTriggerExecute) != nil {
+			continue
+		}
+		unqualified[function] = true
+	}
+	return unqualified
+}
+
+func postgresFunctionCandidateFingerprint(
+	sql []rune,
+	stream []tokens.Token,
+	index int,
+	eng engine,
+) (string, bool, error) {
+	depth := 0
+	end := -1
+	for i := index + 1; i < len(stream); i++ {
+		switch stream[i].TokenType {
+		case tokens.L_PAREN:
+			depth++
+		case tokens.R_PAREN:
+			depth--
+			if depth == 0 {
+				end = stream[i].End + 1
+				i = len(stream)
+			}
+		}
+	}
+	if end < 0 {
+		return "", false, nil
+	}
+	candidate, err := sqlglot.ParseOne("SELECT "+string(sql[stream[index].Start:end]), eng.Dialect())
+	if err != nil {
+		return "", false, nil
+	}
+	selects := candidate.Selects()
+	if len(selects) != 1 || !selects[0].Is(exp.TraitFunc) {
+		return "", false, nil
+	}
+	fingerprint, err := postgresFunctionFingerprint(selects[0], eng)
+	return fingerprint, true, err
+}
+
+func postgresPinnableFunctionCalls(sql string, eng engine) ([]postgresFunctionCall, error) {
+	if eng.Type() != pb.Engine_POSTGRES {
+		return nil, nil
+	}
+	root, err := sqlglot.ParseOne(sql, eng.Dialect())
+	if err != nil {
+		return nil, err
+	}
+	stream, err := sqlglot.Tokenize(sql, eng.Dialect())
+	if err != nil {
+		return nil, err
+	}
+	actual := map[string]int{}
+	for function := range postgresUnqualifiedFunctions(root) {
+		fingerprint, err := postgresFunctionFingerprint(function, eng)
+		if err != nil {
+			return nil, err
+		}
+		actual[fingerprint]++
+	}
+	type candidate struct {
+		call   postgresFunctionCall
+		quoted bool
+	}
+	candidates := map[string][]candidate{}
+	runes := []rune(sql)
+	for i, token := range stream {
+		if i+1 >= len(stream) || stream[i+1].TokenType != tokens.L_PAREN ||
+			(i > 0 && stream[i-1].TokenType == tokens.DOT) {
+			continue
+		}
+		name := strings.ToLower(token.Text)
+		quoted := token.TokenType == tokens.IDENTIFIER
+		if quoted {
+			name = token.Text
+		}
+		if !isSafeNoFromFunction(name, eng) &&
+			!(quoted && postgresDedicatedSafeFunctions[strings.ToLower(name)]) {
+			continue
+		}
+		fingerprint, ok, err := postgresFunctionCandidateFingerprint(runes, stream, i, eng)
+		if err != nil {
+			return nil, err
+		}
+		if !ok {
+			continue
+		}
+		candidates[fingerprint] = append(candidates[fingerprint], candidate{
+			call: postgresFunctionCall{
+				name:        name,
+				position:    token.Start,
+				usesGrammar: postgresFunctionUsesGrammar(stream, i, strings.ToLower(name)),
+			},
+			quoted: quoted,
+		})
+	}
+	calls := []postgresFunctionCall{}
+	for fingerprint, matches := range candidates {
+		count := actual[fingerprint]
+		if count == 0 {
+			continue
+		}
+		if count != len(matches) {
+			return nil, fmt.Errorf("ambiguous PostgreSQL function call location: %s", matches[0].call.name)
+		}
+		for _, match := range matches {
+			if match.quoted && !isSafeNoFromFunction(match.call.name, eng) {
+				return nil, fmt.Errorf(
+					"quoted PostgreSQL function identity is not a system builtin: %s",
+					match.call.name,
+				)
+			}
+			if !match.call.usesGrammar {
+				calls = append(calls, match.call)
+			}
+		}
+	}
+	sort.Slice(calls, func(i, j int) bool { return calls[i].position < calls[j].position })
+	return calls, nil
+}
+
+func pinSafePostgresFunctionSQL(sql string, eng engine) (string, bool, error) {
+	calls, err := postgresPinnableFunctionCalls(sql, eng)
+	if err != nil {
+		return "", false, err
+	}
+	if len(calls) == 0 {
+		return sql, false, nil
+	}
+	rewritten := []rune(sql)
+	prefix := []rune("pg_catalog.")
+	for i := len(calls) - 1; i >= 0; i-- {
+		position := calls[i].position
+		rewritten = append(rewritten[:position], append(prefix, rewritten[position:]...)...)
+	}
+	return string(rewritten), true, nil
+}
+
+func postgresFunctionChangedByRegeneration(sql string, eng engine) (string, error) {
+	calls, err := postgresPinnableFunctionCalls(sql, eng)
+	if err != nil {
+		return "", err
+	}
+	for _, call := range calls {
+		if postgresRegenerationChangesFunctionCalls[call.name] {
+			return call.name, nil
+		}
+	}
+	return "", nil
+}
+
+func postgresLateralFunction(lateral exp.Expression) (exp.Expression, exp.Expression) {
+	function := lateral.This()
+	if function == nil {
+		return nil, nil
+	}
+	if function.Kind() == exp.KindDot {
+		if call := function.Right(); call != nil && call.Is(exp.TraitFunc) {
+			return call, function.Left()
+		}
+		return nil, nil
+	}
+	if function.Is(exp.TraitFunc) {
+		return function, nil
+	}
+	return nil, nil
+}
+
+func untrustedPostgresTableFunction(root exp.Expression, eng engine, namespace NamespaceConfig) string {
+	if eng.Type() != pb.Engine_POSTGRES {
+		return ""
+	}
+	catalogFirst := postgresCatalogFirstAfterTempSchemas(namespace.SearchPath)
+	for _, table := range root.FindAll(exp.KindTable) {
+		function := table.This()
+		if function == nil || !function.Is(exp.TraitFunc) {
+			continue
+		}
+		name := normalizedFunctionName(function, eng)
+		implicit := len(eng.ImplicitFunctionColumns(name)) != 0
+		if !implicit && !isSafeNoFromFunction(name, eng) {
+			continue
+		}
+		if table.Arg("catalog") != nil {
+			return name
+		}
+		if schema, _ := table.Arg("schema").(exp.Expression); schema != nil {
+			if !isTrustedSystemQualifier(schema, eng) {
+				return name
+			}
+			continue
+		}
+		if implicit && (!catalogFirst || !eng.ImplicitFunctionUnqualifiedTrusted(name)) {
+			return name
+		}
+	}
+	for _, lateral := range root.FindAll(exp.KindLateral) {
+		function, qualifier := postgresLateralFunction(lateral)
+		if function == nil {
+			continue
+		}
+		name := normalizedFunctionName(function, eng)
+		implicit := len(eng.ImplicitFunctionColumns(name)) != 0
+		if !implicit && !isSafeNoFromFunction(name, eng) {
+			continue
+		}
+		if qualifier != nil {
+			if !isTrustedSystemQualifier(qualifier, eng) {
+				return name
+			}
+			continue
+		}
+		if implicit && (!catalogFirst || !eng.ImplicitFunctionUnqualifiedTrusted(name)) {
+			return name
+		}
+	}
+	for _, unnest := range root.FindAll(exp.KindUnnest) {
+		if len(unnest.Expressions()) != 1 || !catalogFirst || !eng.ImplicitFunctionUnqualifiedTrusted("unnest") {
+			return "unnest"
+		}
+	}
+	return ""
+}
+
+func pinTrustedPostgresImplicitFunctions(root exp.Expression, eng engine, namespace NamespaceConfig) bool {
+	if eng.Type() != pb.Engine_POSTGRES || !postgresCatalogFirstAfterTempSchemas(namespace.SearchPath) {
+		return false
+	}
+	pinned := false
+	for _, table := range root.FindAll(exp.KindTable) {
+		function := table.This()
+		if function == nil || !function.Is(exp.TraitFunc) || table.Arg("catalog") != nil || table.Arg("schema") != nil {
+			continue
+		}
+		name := function.Name()
+		if identifier, ok := function.Arg("this").(exp.Expression); ok {
+			identifier = identifier.Copy()
+			eng.Dialect().NormalizeIdentifier(identifier)
+			name = identifier.Name()
+		} else {
+			name = strings.ToLower(name)
+		}
+		if len(eng.ImplicitFunctionColumns(name)) == 0 || !eng.ImplicitFunctionUnqualifiedTrusted(name) ||
+			(name == "unnest" && len(function.Expressions()) != 1) {
+			continue
+		}
+		table.Set("schema", exp.ToIdentifier("pg_catalog"))
+		pinned = true
+	}
+	for _, lateral := range root.FindAll(exp.KindLateral) {
+		function, qualifier := postgresLateralFunction(lateral)
+		if function == nil || qualifier != nil || function.Kind() == exp.KindUnnest {
+			continue
+		}
+		name := normalizedFunctionName(function, eng)
+		if len(eng.ImplicitFunctionColumns(name)) == 0 || !eng.ImplicitFunctionUnqualifiedTrusted(name) {
+			continue
+		}
+		lateral.Set("this", exp.Dot(exp.Args{
+			"this":       exp.ToIdentifier("pg_catalog"),
+			"expression": function.Copy(),
+		}))
+		pinned = true
+	}
+	if !eng.ImplicitFunctionUnqualifiedTrusted("unnest") {
+		return pinned
+	}
+	for _, unnest := range root.FindAll(exp.KindUnnest) {
+		if len(unnest.Expressions()) != 1 {
+			continue
+		}
+		ordinality, ok := unnest.Arg("offset").(bool)
+		if !ok && unnest.Arg("offset") != nil {
+			continue
+		}
+		arguments := make([]exp.Expression, 0, len(unnest.Expressions()))
+		for _, argument := range unnest.Expressions() {
+			arguments = append(arguments, argument.Copy())
+		}
+		tableArgs := exp.Args{
+			"this": exp.Anonymous(exp.Args{
+				"this":        "unnest",
+				"expressions": arguments,
+			}),
+			"schema": exp.ToIdentifier("pg_catalog"),
+		}
+		if alias, ok := unnest.Arg("alias").(exp.Expression); ok && alias != nil {
+			tableArgs["alias"] = alias.Copy()
+		}
+		if ordinality {
+			tableArgs["ordinality"] = true
+		}
+		unnest.Replace(exp.Table(tableArgs))
+		pinned = true
+	}
+	return pinned
+}
+
+func pinSafePostgresFunctions(root exp.Expression, eng engine, namespace NamespaceConfig) bool {
+	return pinTrustedPostgresImplicitFunctions(root, eng, namespace)
 }
 
 // EmitFacts parses one statement, classifies its relay behavior, and emits every Cedar requirement.
@@ -119,16 +569,30 @@ func EmitFacts(sql string, engineConfig *pb.EngineConfig, sch *schema.Mapping, n
 	// real statement. Classification/lineage must run on the inner statement, not fail closed on the
 	// wrapper (a wrapped SELECT is ordinary chatter, a wrapped write is still a write).
 	root := unwrapSubquery(stmts[0])
+	originalRoot := root
 	candidates := schemaQualifierCandidates(root)
+	if hasUnsupportedPostgresUnnestOffset(root, eng) {
+		facts := unanalyzableFacts("VALIDATE", "unsupported PostgreSQL UNNEST offset")
+		facts.StatementExec = executeGrant(statementKind(originalRoot, eng))
+		facts.SchemaQualifierCandidates = candidates
+		return facts
+	}
+	if _, _, err := pinSafePostgresFunctionSQL(sql, eng); err != nil {
+		facts := unanalyzableFacts("VALIDATE", err.Error())
+		facts.StatementExec = executeGrant(statementKind(originalRoot, eng))
+		facts.SchemaQualifierCandidates = candidates
+		return facts
+	}
+	pinnedPostgresIdentity := pinSafePostgresXIDTypes(root, eng, validatedNamespace)
 
 	var facts *pb.StatementFacts
 	switch root.Kind() {
 	case exp.KindDescribe:
 		facts = emitDescribeFacts(root, eng, qualifySchema, validatedNamespace)
 	case exp.KindShow:
-		facts = emitShowFacts(root, eng)
+		facts = emitShowFacts(root, eng, validatedNamespace)
 	case exp.KindSet:
-		facts = emitSetFacts(root, eng)
+		facts = emitSetFacts(root, eng, validatedNamespace)
 	case exp.KindCommand:
 		facts = emitCommandFacts(root, eng)
 	case exp.KindTransaction, exp.KindCommit, exp.KindRollback, exp.KindSavepoint, exp.KindUse, exp.KindReset:
@@ -172,7 +636,63 @@ func EmitFacts(sql string, engineConfig *pb.EngineConfig, sch *schema.Mapping, n
 			facts.RewrittenSql = &rewrite
 		}
 	}
-	facts.StatementExec = executeGrant(statementKind(root, eng))
+	if facts.GetResolved() {
+		if facts.RewrittenSql == nil {
+			if name := untrustedPostgresTableFunction(root, eng, validatedNamespace); name != "" {
+				facts = unanalyzableFacts("VALIDATE", "untrusted PostgreSQL function resolution: "+name)
+			} else {
+				pinnedPostgresIdentity =
+					pinSafePostgresFunctions(root, eng, validatedNamespace) ||
+						pinnedPostgresIdentity
+			}
+		} else if eng.Type() == pb.Engine_POSTGRES {
+			rewrittenRoot, err := sqlglot.ParseOne(facts.GetRewrittenSql(), eng.Dialect())
+			if err != nil {
+				facts = unanalyzableFacts("GENERATE", err.Error())
+			} else if name := untrustedPostgresTableFunction(rewrittenRoot, eng, validatedNamespace); name != "" {
+				facts = unanalyzableFacts("VALIDATE", "untrusted PostgreSQL function resolution: "+name)
+			} else if pinSafePostgresFunctions(rewrittenRoot, eng, validatedNamespace) {
+				if rewrite, err := generateExecutableSQL(rewrittenRoot, eng.Dialect()); err != nil {
+					facts = unanalyzableFacts("GENERATE", err.Error())
+				} else {
+					facts.RewrittenSql = &rewrite
+				}
+			}
+		}
+	}
+	if facts.GetResolved() && pinnedPostgresIdentity && facts.RewrittenSql == nil {
+		rewrite, err := generateExecutableSQL(root, eng.Dialect())
+		if err != nil {
+			facts = unanalyzableFacts("GENERATE", err.Error())
+		} else {
+			facts.RewrittenSql = &rewrite
+		}
+	}
+	if facts.GetResolved() && eng.Type() == pb.Engine_POSTGRES && facts.RewrittenSql != nil {
+		name, err := postgresFunctionChangedByRegeneration(sql, eng)
+		if err != nil {
+			facts = unanalyzableFacts("VALIDATE", err.Error())
+		} else if name != "" {
+			facts = unanalyzableFacts("VALIDATE", "PostgreSQL function call changes during SQL regeneration: "+name)
+		}
+	}
+	if facts.GetResolved() && eng.Type() == pb.Engine_POSTGRES {
+		effectiveSQL := sql
+		if facts.RewrittenSql != nil {
+			effectiveSQL = facts.GetRewrittenSql()
+		}
+		pinnedSQL, pinned, err := pinSafePostgresFunctionSQL(effectiveSQL, eng)
+		if err != nil {
+			facts = unanalyzableFacts("VALIDATE", err.Error())
+		} else if pinned {
+			if _, err := sqlglot.ParseOne(pinnedSQL, eng.Dialect()); err != nil {
+				facts = unanalyzableFacts("GENERATE", err.Error())
+			} else {
+				facts.RewrittenSql = &pinnedSQL
+			}
+		}
+	}
+	facts.StatementExec = executeGrant(statementKind(originalRoot, eng))
 	facts.SchemaQualifierCandidates = candidates
 	return facts
 }
@@ -200,7 +720,7 @@ func emitConfigFailureUtilityFacts(sql string, engineConfig *pb.EngineConfig) *p
 }
 
 func emitLineageFacts(root exp.Expression, eng engine, qualifySchema schema.Schema, namespace NamespaceConfig, explain bool) *pb.StatementFacts {
-	if userTypeCast(root) != "" {
+	if userTypeCast(root, eng, namespace) != "" {
 		return criticalUtilityFacts(cmdUserTypeCast)
 	}
 	report := probeParsed(root, eng, qualifySchema, namespace)
@@ -285,9 +805,10 @@ func emitLineageFacts(root exp.Expression, eng engine, qualifySchema schema.Sche
 			MaskedDisposition: pb.MaskedDisposition_MASKED_DISPOSITION_DENY_STATEMENT,
 		})
 	}
-	if len(report.Sources) == 0 {
-		facts.ResultReads = append(facts.ResultReads, noFromFunctionGrants(root, eng)...)
-	}
+	facts.ResultReads = append(
+		facts.ResultReads,
+		functionCallGrants(root, eng, len(report.Sources) == 0)...,
+	)
 	facts.CatalogChanging = root.Kind() == exp.KindCreate && !isTemporaryDDL(root, eng)
 	if root.Kind() == exp.KindSelect && root.Arg("into") != nil {
 		facts.CatalogChanging = true
@@ -406,11 +927,11 @@ func emitAnalyzeFacts(root exp.Expression, eng engine, qualifySchema schema.Sche
 	return passthroughFacts()
 }
 
-func emitShowFacts(root exp.Expression, eng engine) *pb.StatementFacts {
+func emitShowFacts(root exp.Expression, eng engine, namespace NamespaceConfig) *pb.StatementFacts {
 	if unsafeExpression(root.Arg("where"), eng) || unsafeExpression(root.Arg("query"), eng) {
 		return criticalUtilityFacts(cmdShowSubquery)
 	}
-	if userTypeCast(root) != "" {
+	if userTypeCast(root, eng, namespace) != "" {
 		return criticalUtilityFacts(cmdUserTypeCast)
 	}
 	facts := passthroughFacts()
@@ -508,14 +1029,14 @@ func sessionIdentitySetCommand(root exp.Expression) string {
 // time — a literal or a bareword keyword — and never one that changes the lexer.
 var lexerModeGucs = stringSet("sql_mode", "standard_conforming_strings")
 
-func emitSetFacts(root exp.Expression, eng engine) *pb.StatementFacts {
+func emitSetFacts(root exp.Expression, eng engine, namespace NamespaceConfig) *pb.StatementFacts {
 	if command := sessionIdentitySetCommand(root); command != "" {
 		return sessionUtilityFacts(command)
 	}
 	if unsafeExpression(root, eng) {
 		return sessionUtilityFacts(cmdSetSubquery)
 	}
-	if userTypeCast(root) != "" {
+	if userTypeCast(root, eng, namespace) != "" {
 		return sessionUtilityFacts(cmdUserTypeCast)
 	}
 	if command := lexerModeUtilityCommand(root); command != "" {
@@ -654,7 +1175,7 @@ func conflictDoesUpdate(root exp.Expression) bool {
 	return false
 }
 
-func noFromFunctionGrants(root exp.Expression, eng engine) []*pb.RequireResultReadGrant {
+func functionCallGrants(root exp.Expression, eng engine, includeUnqualified bool) []*pb.RequireResultReadGrant {
 	seen := map[string]bool{}
 	out := []*pb.RequireResultReadGrant{}
 	emit := func(name string) {
@@ -667,12 +1188,9 @@ func noFromFunctionGrants(root exp.Expression, eng engine) []*pb.RequireResultRe
 			MaskedDisposition: pb.MaskedDisposition_MASKED_DISPOSITION_DENY_STATEMENT,
 		})
 	}
-	// Schema-qualified calls carry their qualifier in a wrapping Dot (left = qualifier, right = the
-	// function), even though the function node's own Name() drops it. Only a bare `pg_catalog.<fn>` is a
-	// trusted system builtin; any other qualifier — a user schema, or a multi-part/computed qualifier
-	// whose leaf merely spells `pg_catalog` (`db.pg_catalog.fn`, `current_database().public.fn`) — is user
-	// code and must NOT inherit a safe built-in's name. Emit its fully-qualified identity so it can never
-	// classify to a trusted function and the control-plane hard-denies it (unclassified Function grant).
+	// Scalar qualifiers wrap the function in Dot; FROM-function qualifiers live on the Table node.
+	// Only a bare `pg_catalog.<fn>` is trusted. Emit every other qualifier as user code so it cannot
+	// inherit a safe built-in's classification.
 	qualified := map[exp.Expression]bool{}
 	for _, dot := range root.FindAll(exp.KindDot) {
 		fn := dot.Right()
@@ -680,20 +1198,50 @@ func noFromFunctionGrants(root exp.Expression, eng engine) []*pb.RequireResultRe
 			continue
 		}
 		qualified[fn] = true
-		leaf := strings.ToLower(fn.Name())
+		leaf := normalizedFunctionName(fn, eng)
 		if isTrustedSystemQualifier(dot.Left(), eng) {
-			if !safeNoFromFunctions[leaf] {
+			if includeUnqualified && !safeNoFromFunctions[leaf] && len(eng.ImplicitFunctionColumns(leaf)) == 0 {
 				emit(leaf)
 			}
 			continue
 		}
 		emit(qualifiedCallName(dot.Left(), leaf, eng))
 	}
+	for _, table := range root.FindAll(exp.KindTable) {
+		fn := table.This()
+		if fn == nil || !fn.Is(exp.TraitFunc) {
+			continue
+		}
+		schema, _ := table.Arg("schema").(exp.Expression)
+		catalog, _ := table.Arg("catalog").(exp.Expression)
+		if schema == nil && catalog == nil {
+			continue
+		}
+		qualified[fn] = true
+		leaf := normalizedFunctionName(fn, eng)
+		if catalog == nil && isTrustedSystemQualifier(schema, eng) {
+			if includeUnqualified && !safeNoFromFunctions[leaf] && len(eng.ImplicitFunctionColumns(leaf)) == 0 {
+				emit(leaf)
+			}
+			continue
+		}
+		qualifier := schema
+		if catalog != nil {
+			qualifier = catalog
+			if schema != nil {
+				qualifier = exp.Dot(exp.Args{"this": catalog.Copy(), "expression": schema.Copy()})
+			}
+		}
+		emit(qualifiedCallName(qualifier, leaf, eng))
+	}
+	if !includeUnqualified {
+		return out
+	}
 	for _, fn := range root.FindAll(exp.TraitFunc) {
 		if fn.Kind() != exp.KindAnonymous || qualified[fn] {
 			continue
 		}
-		name := strings.ToLower(fn.Name())
+		name := normalizedFunctionName(fn, eng)
 		if isSafeNoFromFunction(name, eng) {
 			continue
 		}
@@ -765,7 +1313,7 @@ func unsafeExpression(value any, eng engine) bool {
 }
 
 // hasUnsafeCall reports whether root contains any function call that is not provably a safe builtin,
-// applying the SAME qualifier rule as noFromFunctionGrants: a qualified call is safe only when it is a
+// applying the SAME qualifier rule as functionCallGrants: a qualified call is safe only when it is a
 // bare `pg_catalog.<safe builtin>`; a user-schema or multi-part qualifier is user code regardless of the
 // leaf's spelling. Without the qualifier check a call like `acme.version()` would fold onto the safe
 // metadata `version()` and let session-state exfil (`SET @x = acme.leak()` then `SELECT @x`) slip through.
@@ -778,7 +1326,7 @@ func hasUnsafeCall(root exp.Expression, eng engine) bool {
 		}
 		qualified[fn] = true
 		if isTrustedSystemQualifier(dot.Left(), eng) {
-			if !safeNoFromFunctions[strings.ToLower(fn.Name())] {
+			if !safeNoFromFunctions[normalizedFunctionName(fn, eng)] {
 				return true
 			}
 			continue
@@ -789,11 +1337,11 @@ func hasUnsafeCall(root exp.Expression, eng engine) bool {
 		// Only ANONYMOUS calls are candidates for user code — sqlglot resolves every recognized builtin to
 		// a dedicated kind (Abs, Upper, …) whose Name() is its argument, not the function, so checking it
 		// against the safe set is meaningless and would false-positive `abs(1)`. This mirrors
-		// noFromFunctionGrants: dedicated builtins are inherently safe; an unrecognized Anonymous call is not.
+		// functionCallGrants: dedicated builtins are inherently safe; an unrecognized Anonymous call is not.
 		if qualified[fn] || fn.Kind() != exp.KindAnonymous {
 			continue
 		}
-		name := strings.ToLower(fn.Name())
+		name := normalizedFunctionName(fn, eng)
 		if name != "" && name != "*" && !isSafeNoFromFunction(name, eng) {
 			return true
 		}

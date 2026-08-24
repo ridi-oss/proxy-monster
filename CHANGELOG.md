@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.22](https://github.com/ridi-oss/proxy-monster/compare/server-v0.1.21...server-v0.1.22) (2026-08-24)
+
+
+### Bug Fixes
+
+* **control-plane:** gate stored-result views on a decision fingerprint, not column labels ([#229](https://github.com/ridi-oss/proxy-monster/issues/229)) ([#241](https://github.com/ridi-oss/proxy-monster/issues/241)) ([06c189c](https://github.com/ridi-oss/proxy-monster/commit/06c189c98cc6c288b4ef0956cb580f27c00becfd))
+
 ## [0.1.21](https://github.com/ridi-oss/proxy-monster/compare/server-v0.1.20...server-v0.1.21) (2026-08-21)
 
 

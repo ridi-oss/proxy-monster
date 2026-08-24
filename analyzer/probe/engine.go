@@ -186,7 +186,9 @@ func (e *postgresEngine) Dialect() *dialects.Dialect { return e.dialect }
 // real columns, while query-side qualification already preserves quoted names and folds unquoted ones.
 func (e *postgresEngine) NormalizeCatalogOnBuild() bool { return false }
 
-func (e *postgresEngine) ImplicitNonVisibleColumns() []string { return []string{"ctid"} }
+func (e *postgresEngine) ImplicitNonVisibleColumns() []string {
+	return []string{"tableoid", "xmin", "cmin", "xmax", "cmax", "ctid"}
+}
 
 func (e *postgresEngine) FoldColumn(column string) string { return column }
 

@@ -67,9 +67,7 @@ func unwrapParen(e exp.Expression) exp.Expression {
 	return e
 }
 
-// scopeChainFor is the chain a bare identifier at `node` resolves against, PG-style: prefer the
-// node's own scope, otherwise its enclosing SELECT, then chain-walk parents (correlation) and finally
-// the native DML-root scope. One walk covers reads and write clauses such as SET and RETURNING.
+// scopeChainFor walks the optimizer-assigned scope through correlations and the DML root.
 func (p *prober) scopeChainFor(node exp.Expression) []*optimizer.Scope {
 	start := p.col2scope[node]
 	if start == nil {
@@ -77,6 +75,21 @@ func (p *prober) scopeChainFor(node exp.Expression) []*optimizer.Scope {
 			start = p.scopeOfSelect[sel]
 		}
 	}
+	return p.scopeChain(start)
+}
+
+// queryScopeChainFor starts from the exact SELECT that owns a nested write payload.
+func (p *prober) queryScopeChainFor(node exp.Expression) []*optimizer.Scope {
+	start := p.col2scope[node]
+	if sel := node.FindAncestor(exp.KindSelect); sel != nil {
+		if queryScope := p.scopeOfSelect[sel]; queryScope != nil {
+			start = queryScope
+		}
+	}
+	return p.scopeChain(start)
+}
+
+func (p *prober) scopeChain(start *optimizer.Scope) []*optimizer.Scope {
 	var chain []*optimizer.Scope
 	seen := map[*optimizer.Scope]bool{}
 	hasDMLRoot := false
@@ -158,21 +171,41 @@ func (p *prober) relationBaseOf(name string, chain []*optimizer.Scope, depth int
 // that value, NOT a static node-shape check, so it works even where a write's disabled qualify left a
 // relation reference as a bare exp.Column), or not a column here.
 func (p *prober) scopeColumn(sc *optimizer.Scope, name string, depth int) relResult {
-	for _, src := range sc.Sources {
+	var found relResult
+	matched := false
+	for _, selected := range sc.SelectedSources() {
+		src := selected.Source
+		var candidate relResult
+		candidateMatched := false
 		if tbl, ok := src.(exp.Expression); ok && tbl != nil && tbl.Kind() == exp.KindTable {
-			if key, found := p.columnKey(tbl, name); found {
-				return relResult{scalar: map[string]bool{key: true}}
+			if key, ok := p.columnKey(tbl, name); ok {
+				candidate = relResult{scalar: map[string]bool{key: true}}
+				candidateMatched = true
 			}
 		} else if scope, ok := src.(*optimizer.Scope); ok && scope != nil {
 			if val := p.scopeProjectionValue(scope, name); val != nil {
+				candidateMatched = true
 				if rel, ok := p.relationOfNode(val, depth+1); ok {
-					return relResult{rel: rel} // a relation-valued column
+					candidate = relResult{rel: rel}
+				} else {
+					candidate = relResult{scalar: p.resolveScopeOutput(scope, name, map[resolveKey]bool{})}
+					if candidate.scalar == nil {
+						candidate.scalar = map[string]bool{}
+					}
 				}
-				return relResult{scalar: p.resolveScopeOutput(scope, name, map[resolveKey]bool{})} // scalar derived output
 			}
 		}
+		if !candidateMatched {
+			continue
+		}
+		if matched {
+			p.relAmbiguous = true
+			return relResult{}
+		}
+		found = candidate
+		matched = true
 	}
-	return relResult{}
+	return found
 }
 
 // scopeProjectionValue returns the value expression of a derived scope's output column `name`

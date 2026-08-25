@@ -34,6 +34,9 @@ suspend fun decideConnection(
     providedRoles: Set<String>? = null,
     tempColumns: List<CatalogColumn> = emptyList(),
     httpRequesterIp: String? = null,
+    postgresFunctionShadowingObserved: Boolean = false,
+    postgresShadowedFunctions: List<String> = emptyList(),
+    postgresSystemXidVisible: Boolean? = null,
 ): EnforcementOutcome? = core.connectionCatalog.withConnection(connectionId) { connection ->
     // Snapshot the generation at entry; the registry mutex is held through analysis + audit, so only an
     // applyPush (which needs the same mutex) can bump it — impossible mid-flow. Stamping the entry value and
@@ -86,6 +89,9 @@ suspend fun decideConnection(
         context = AuthzContext(requesterIp = requesterIp),
         liveSearchPath = searchPath,
         liveAnsiQuotes = ansiQuotes,
+        postgresFunctionShadowingObserved = postgresFunctionShadowingObserved,
+        postgresShadowedFunctions = postgresShadowedFunctions,
+        postgresSystemXidVisible = postgresSystemXidVisible,
         systemClassification = core.systemClassification,
         tempColumns = tempColumns,
     )

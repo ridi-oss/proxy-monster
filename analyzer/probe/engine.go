@@ -123,6 +123,12 @@ type mysqlEngine struct {
 }
 
 func newMySQLEngine(config *pb.EngineConfig) (*mysqlEngine, error) {
+	if len(config.GetPostgresShadowedFunctions()) != 0 || config.GetPostgresFunctionShadowingObserved() {
+		return nil, fmt.Errorf("postgres function shadowing context is not valid for mysql")
+	}
+	if config.PostgresSystemXidVisible != nil {
+		return nil, fmt.Errorf("postgres type visibility context is not valid for mysql")
+	}
 	if config.MysqlLowerCaseTableNames == nil {
 		return nil, fmt.Errorf("mysqlLowerCaseTableNames is required for mysql")
 	}
@@ -276,11 +282,32 @@ func (e *mysqlEngine) RejectsDuplicateDerivedLabels() bool { return true }
 func (e *mysqlEngine) ExpandsNaturalJoins() bool { return false }
 
 type postgresEngine struct {
-	dialect *dialects.Dialect
+	dialect                   *dialects.Dialect
+	shadowedFunctions         map[string]bool
+	functionShadowingObserved bool
+	systemXIDVisible          bool
 }
 
-func newPostgresEngine(*pb.EngineConfig) (*postgresEngine, error) {
-	return &postgresEngine{dialect: dialects.Postgres()}, nil
+func newPostgresEngine(config *pb.EngineConfig) (*postgresEngine, error) {
+	if !config.GetPostgresFunctionShadowingObserved() && len(config.GetPostgresShadowedFunctions()) != 0 {
+		return nil, fmt.Errorf("postgresShadowedFunctions requires an observed function-shadowing context")
+	}
+	shadowed := make(map[string]bool, len(config.GetPostgresShadowedFunctions()))
+	for _, name := range config.GetPostgresShadowedFunctions() {
+		if name == "" || name != strings.ToLower(name) {
+			return nil, fmt.Errorf("postgresShadowedFunctions contains invalid function name %q", name)
+		}
+		if shadowed[name] {
+			return nil, fmt.Errorf("postgresShadowedFunctions contains duplicate function name %q", name)
+		}
+		shadowed[name] = true
+	}
+	return &postgresEngine{
+		dialect:                   dialects.Postgres(),
+		shadowedFunctions:         shadowed,
+		functionShadowingObserved: config.GetPostgresFunctionShadowingObserved(),
+		systemXIDVisible:          config.GetPostgresSystemXidVisible(),
+	}, nil
 }
 
 func (e *postgresEngine) WireName() string           { return "postgres" }

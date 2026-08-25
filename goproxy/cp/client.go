@@ -271,14 +271,19 @@ func (c *Client) Decide(req engine.DecideRequest) engine.DecisionOutcome {
 		})
 	}
 	wireReq := &pb.DecisionRequest{
-		Token:           req.Token,
-		DatasourceName:  c.datasourceName,
-		Sql:             req.SQL,
-		SearchPath:      append([]string(nil), req.Namespace...),
-		ClientAddr:      req.ClientAddr,
-		TempColumns:     temps,
-		ConnectionId:    append([]byte(nil), req.ConnectionID...),
-		MysqlAnsiQuotes: req.MysqlAnsiQuotes,
+		Token:                             req.Token,
+		DatasourceName:                    c.datasourceName,
+		Sql:                               req.SQL,
+		SearchPath:                        append([]string(nil), req.Namespace...),
+		ClientAddr:                        req.ClientAddr,
+		TempColumns:                       temps,
+		ConnectionId:                      append([]byte(nil), req.ConnectionID...),
+		MysqlAnsiQuotes:                   req.MysqlAnsiQuotes,
+		PostgresShadowedFunctions:         append([]string(nil), req.PostgresShadowedFunctions...),
+		PostgresFunctionShadowingObserved: req.PostgresFunctionShadowingObserved,
+	}
+	if req.PostgresTypeVisibilityObserved {
+		wireReq.PostgresSystemXidVisible = &req.PostgresSystemXIDVisible
 	}
 
 	for round := 0; ; round++ {

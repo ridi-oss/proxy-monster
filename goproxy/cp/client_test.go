@@ -387,12 +387,16 @@ func TestDecideMapsRequestAndRetriesBeforeDecide(t *testing.T) {
 	c := startFakeControlPlane(t, fake)
 	var run [][]*pb.Refetch
 	request := engine.DecideRequest{
-		Token:        "raw-token",
-		SQL:          "SELECT 1",
-		ClientAddr:   "10.0.0.9:5555",
-		Namespace:    []string{"public", "app"},
-		TempColumns:  []engine.TempColumn{{Schema: "pg_temp_3", Table: "t", Column: "c", SqlType: "text", Ordinal: 5}},
-		ConnectionID: []byte("0123456789abcdef"),
+		Token:                             "raw-token",
+		SQL:                               "SELECT 1",
+		ClientAddr:                        "10.0.0.9:5555",
+		Namespace:                         []string{"public", "app"},
+		PostgresShadowedFunctions:         []string{"unnest"},
+		PostgresFunctionShadowingObserved: true,
+		PostgresSystemXIDVisible:          true,
+		PostgresTypeVisibilityObserved:    true,
+		TempColumns:                       []engine.TempColumn{{Schema: "pg_temp_3", Table: "t", Column: "c", SqlType: "text", Ordinal: 5}},
+		ConnectionID:                      []byte("0123456789abcdef"),
 		RunCommands: func(commands []*pb.Refetch) error {
 			run = append(run, commands)
 			return nil
@@ -418,11 +422,39 @@ func TestDecideMapsRequestAndRetriesBeforeDecide(t *testing.T) {
 		!reflect.DeepEqual(req.GetSearchPath(), request.Namespace) || !reflect.DeepEqual(req.GetConnectionId(), request.ConnectionID) {
 		t.Fatalf("DecisionRequest = %+v", req)
 	}
+	if !req.GetPostgresFunctionShadowingObserved() ||
+		!reflect.DeepEqual(req.GetPostgresShadowedFunctions(), []string{"unnest"}) {
+		t.Fatalf("PostgreSQL function shadow state = %v/%v, want observed [unnest]", req.GetPostgresFunctionShadowingObserved(), req.GetPostgresShadowedFunctions())
+	}
+	if req.PostgresSystemXidVisible == nil || !req.GetPostgresSystemXidVisible() {
+		t.Fatalf("PostgreSQL xid visibility = %v, want present true", req.PostgresSystemXidVisible)
+	}
 	if len(req.GetTempColumns()) != 1 || req.GetTempColumns()[0].GetOrdinal() != 5 {
 		t.Fatalf("TempColumns = %+v", req.GetTempColumns())
 	}
 	if meta != "secret-abc" {
 		t.Fatalf("metadata = %q", meta)
+	}
+}
+
+func TestDecideOmitsUnobservedPostgresTypeVisibility(t *testing.T) {
+	fake := &fakeControlPlane{}
+	c := startFakeControlPlane(t, fake)
+	out := c.Decide(engine.DecideRequest{
+		Token:        "raw-token",
+		SQL:          "SELECT 1",
+		ConnectionID: []byte("0123456789abcdef"),
+	})
+	if out.IsErr() {
+		t.Fatalf("Decide = %+v", out)
+	}
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	if len(fake.decideReqs) != 1 {
+		t.Fatalf("Decide requests = %d, want 1", len(fake.decideReqs))
+	}
+	if got := fake.decideReqs[0].PostgresSystemXidVisible; got != nil {
+		t.Fatalf("unobserved PostgreSQL xid visibility = %v, want absent", got)
 	}
 }
 

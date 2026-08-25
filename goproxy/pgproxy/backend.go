@@ -4,8 +4,10 @@ import (
 	"context"
 	"crypto/md5"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"strconv"
@@ -211,23 +213,47 @@ func containsString(values []string, want string) bool {
 	return false
 }
 
-func (c *sessionCore) probeNamespace() ([]string, error) {
+func (c *sessionCore) probeNamespace() (engine.NamespaceProbe, error) {
 	rows, err := c.runProbe(c.db.NamespaceProbeSQL(), 1, false)
 	if err != nil {
-		return nil, fmt.Errorf("target-DB namespace probe: %w", err)
+		return engine.NamespaceProbe{}, fmt.Errorf("target-DB namespace probe: %w", err)
 	}
-	return namespaceFromRows(rows)
+	return namespaceProbeFromRows(rows)
 }
 
-func namespaceFromRows(rows [][]*string) ([]string, error) {
-	schemas := make([]string, 0, len(rows))
-	for _, row := range rows {
-		if len(row) != 1 || row[0] == nil {
-			return nil, errors.New("namespace probe returned a malformed row")
-		}
-		schemas = append(schemas, *row[0])
+type postgresNamespaceObservation struct {
+	SearchPath          []string `json:"search_path"`
+	ShadowedFunctions   []string `json:"shadowed_functions"`
+	PgCatalogXIDVisible *bool    `json:"pg_catalog_xid_visible"`
+}
+
+func namespaceProbeFromRows(rows [][]*string) (engine.NamespaceProbe, error) {
+	if len(rows) != 1 || len(rows[0]) != 1 || rows[0][0] == nil {
+		return engine.NamespaceProbe{}, errors.New("namespace probe returned a malformed result")
 	}
-	return schemas, nil
+	var observed postgresNamespaceObservation
+	decoder := json.NewDecoder(strings.NewReader(*rows[0][0]))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&observed); err != nil {
+		return engine.NamespaceProbe{}, fmt.Errorf("namespace probe returned invalid JSON: %w", err)
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		return engine.NamespaceProbe{}, errors.New("namespace probe returned trailing JSON")
+	}
+	seen := make(map[string]bool, len(observed.ShadowedFunctions))
+	for _, name := range observed.ShadowedFunctions {
+		if name == "" || name != strings.ToLower(name) || seen[name] {
+			return engine.NamespaceProbe{}, fmt.Errorf("namespace probe returned invalid shadowed function %q", name)
+		}
+		seen[name] = true
+	}
+	return engine.NamespaceProbe{
+		Namespace:                         observed.SearchPath,
+		PostgresShadowedFunctions:         observed.ShadowedFunctions,
+		PostgresFunctionShadowingObserved: true,
+		PostgresSystemXIDVisible:          observed.PgCatalogXIDVisible != nil && *observed.PgCatalogXIDVisible,
+		PostgresTypeVisibilityObserved:    observed.PgCatalogXIDVisible != nil,
+	}, nil
 }
 
 func (c *sessionCore) probeTempColumns() ([]engine.TempColumn, error) {
@@ -306,13 +332,23 @@ func (c *sessionCore) authzInput(sql, token, clientAddr string, connectionID []b
 			// Postgres never reports MySQLAnsiQuotes: it has no ANSI_QUOTES mode, and its string-lexing
 			// divergence (standard_conforming_strings) fails the connection closed at the relay instead.
 			if c.lastTxStatus == 'E' {
-				return engine.NamespaceProbe{Namespace: c.namespaceOverlay}, nil
+				return engine.NamespaceProbe{
+					Namespace:                         append([]string{}, c.namespaceOverlay...),
+					PostgresShadowedFunctions:         append([]string{}, c.shadowedFunctions...),
+					PostgresFunctionShadowingObserved: c.functionShadowingObserved,
+					PostgresSystemXIDVisible:          c.postgresSystemXIDVisible,
+					PostgresTypeVisibilityObserved:    c.typeVisibilityObserved,
+				}, nil
 			}
-			namespace, err := c.probeNamespace()
+			probe, err := c.probeNamespace()
 			if err == nil {
-				c.namespaceOverlay = namespace
+				c.namespaceOverlay = append([]string{}, probe.Namespace...)
+				c.shadowedFunctions = append([]string{}, probe.PostgresShadowedFunctions...)
+				c.functionShadowingObserved = probe.PostgresFunctionShadowingObserved
+				c.postgresSystemXIDVisible = probe.PostgresSystemXIDVisible
+				c.typeVisibilityObserved = probe.PostgresTypeVisibilityObserved
 			}
-			return engine.NamespaceProbe{Namespace: namespace}, err
+			return probe, err
 		},
 		ProbeTempColumns: func() ([]engine.TempColumn, error) {
 			if c.lastTxStatus == 'E' {

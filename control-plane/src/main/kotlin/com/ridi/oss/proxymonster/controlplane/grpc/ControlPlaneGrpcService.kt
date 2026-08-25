@@ -260,7 +260,15 @@ class ControlPlaneGrpcService(
         return when (
             val outcome = decideConnection(
                 core, request.connectionId, id.principal, ds, request.sql, request.searchPathList,
-                clientAddr, request.mysqlAnsiQuotes, channel, assumeRoles, tempColumns, httpRequesterIp = httpIp,
+                clientAddr, request.mysqlAnsiQuotes, channel, assumeRoles, tempColumns,
+                httpRequesterIp = httpIp,
+                postgresFunctionShadowingObserved = request.postgresFunctionShadowingObserved,
+                postgresShadowedFunctions = request.postgresShadowedFunctionsList,
+                postgresSystemXidVisible = if (request.hasPostgresSystemXidVisible()) {
+                    request.postgresSystemXidVisible
+                } else {
+                    null
+                },
             ) ?: throw StatusException(Status.NOT_FOUND.withDescription("connection disappeared during Decide"))
         ) {
             is EnforcementOutcome.BeforeDecide -> beforeDecideDecision(outcome.commands)

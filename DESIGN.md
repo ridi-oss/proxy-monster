@@ -199,11 +199,9 @@ mechanism). Authoritative: [docs/auth-model.md](docs/auth-model.md).
     a fixed `127.0.0.1:<port>` and a localhost password that never rotates,
     while the daemon injects the current token on the upstream hop. Only MySQL
     is brokered — a PostgreSQL datasource is discovered then skipped, so `psql`
-    connects to the proxy directly with a token as its password. Renewal is
-    server-side only: the control plane serves `POST /auth/session/renew`, but
-    `pmon` stores the renewal token from device login and never calls it, so a
-    login lasts one token lifetime (12h default) and then needs a fresh
-    `pmon login`.
+    connects to the proxy directly with a token as its password. The daemon
+    renews the wire token before expiry until the server-side session window
+    closes, then requires a fresh `pmon login`.
   - One-shot token: the console's Access page (`/access`) mints a short-lived
     password (`POST /api/tokens`) the user pastes into any client.
   - Expiring-only — every credential has a server-set expiry (TTL clamped

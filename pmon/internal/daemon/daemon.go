@@ -30,8 +30,10 @@ const (
 	// re-advertised address, and — the security-relevant case — stop brokering one that is no longer
 	// connectable.
 	rediscoverInterval = 30 * time.Second
-	// renewCheckInterval is how often the renewal loop reconsiders the wire token's expiry.
-	renewCheckInterval = 1 * time.Minute
+	// renewCheckInterval leaves multiple renewal attempts inside the 60-second minimum token lifetime.
+	renewCheckInterval = 5 * time.Second
+	// renewRequestTimeout bounds each attempt and participates in the minimum renewal lead calculation.
+	renewRequestTimeout = login.RequestTimeout
 	// maxRenewLeadTime is how long before expiry a renewal is attempted for a long-lived token, leaving room for
 	// a slow control plane or a transient failure to be retried before the token dies.
 	maxRenewLeadTime = 30 * time.Minute
@@ -94,7 +96,7 @@ type Daemon struct {
 	// real cause (a port collision) rather than a generic one.
 	bindErrors map[string]string
 	// liveConns holds the OPEN client connections per datasource, keyed by a serial so each can be removed
-	// independently. The token generation lets a fresh login close only sessions from older credentials.
+	// independently. A generation keeps each session tied to the token captured when it started.
 	liveConns map[string]map[uint64]liveConn
 	// nextConnID serializes the keys in liveConns.
 	nextConnID uint64
@@ -105,6 +107,9 @@ type Daemon struct {
 	// reauthRequired is set once renewal is refused: brokering keeps working until the wire token expires,
 	// but only a fresh login recovers it.
 	reauthRequired bool
+	// renewCancel stops the registered renewal when login or logout replaces its session.
+	renewCancel    context.CancelFunc
+	renewAttemptID uint64
 
 	subMu   sync.Mutex
 	subs    map[int]chan control.Event
@@ -115,7 +120,7 @@ type Daemon struct {
 func New(version string) *Daemon {
 	return &Daemon{
 		version:             version,
-		httpClient:          &http.Client{Timeout: 15 * time.Second},
+		httpClient:          &http.Client{Timeout: renewRequestTimeout},
 		startedAt:           time.Now(),
 		rediscover:          make(chan struct{}, 1),
 		listeners:           map[string]net.Listener{},
@@ -368,6 +373,7 @@ func (d *Daemon) Login(ctx context.Context, req control.LoginRequest, onEvent fu
 		return fmt.Errorf("could not re-read the saved login: %w", err)
 	}
 	d.mu.Lock()
+	d.cancelRenewalLocked()
 	d.cfg = *cfg
 	d.reauthRequired = false
 	d.tokenGeneration++
@@ -405,6 +411,7 @@ func (d *Daemon) Logout() error {
 		return err
 	}
 	d.mu.Lock()
+	d.cancelRenewalLocked()
 	d.cfg.Principal, d.cfg.Token, d.cfg.ExpiresAt, d.cfg.IssuedAt = "", "", "", ""
 	d.cfg.SessionExpiresAt, d.cfg.RenewalToken = "", ""
 	d.datasources = map[string]Datasource{}
@@ -764,6 +771,31 @@ func (d *Daemon) closeTokenGenerationsBefore(generation uint64) {
 	}
 }
 
+func (d *Daemon) closeTokenGeneration(generation uint64) {
+	d.mu.Lock()
+	var doomed []net.Conn
+	for _, conns := range d.liveConns {
+		for _, tracked := range conns {
+			if tracked.tokenGeneration == generation {
+				doomed = append(doomed, tracked.conn)
+			}
+		}
+	}
+	d.mu.Unlock()
+	for _, c := range doomed {
+		c.Close()
+	}
+}
+
+func (d *Daemon) closeTokenGenerationAt(generation uint64, expiry time.Time) {
+	delay := time.Until(expiry)
+	if delay <= 0 {
+		d.closeTokenGeneration(generation)
+		return
+	}
+	time.AfterFunc(delay, func() { d.closeTokenGeneration(generation) })
+}
+
 func (d *Daemon) rediscoverLoop(ctx context.Context) {
 	t := time.NewTicker(rediscoverInterval)
 	defer t.Stop()
@@ -779,10 +811,20 @@ func (d *Daemon) rediscoverLoop(ctx context.Context) {
 	}
 }
 
+func (d *Daemon) cancelRenewalLocked() {
+	if d.renewCancel == nil {
+		return
+	}
+	d.renewCancel()
+	d.renewCancel = nil
+	d.renewAttemptID++
+}
+
 // renewLoop silently re-mints the wire token before it expires, so a saved connection keeps working without a
 // terminal. A refusal means the session window closed: brokering continues on the current token until it
 // expires, and the daemon announces that a login is required rather than failing silently.
 func (d *Daemon) renewLoop(ctx context.Context) {
+	d.maybeRenew(ctx)
 	t := time.NewTicker(renewCheckInterval)
 	defer t.Stop()
 	for {
@@ -795,11 +837,7 @@ func (d *Daemon) renewLoop(ctx context.Context) {
 	}
 }
 
-// renewLead is how long before expiry this token should be renewed: [maxRenewLeadTime] for a long-lived token,
-// or a fraction of its own lifetime for a short one. The control plane clamps TTL to a 60s floor, so a fixed
-// lead would leave any shorter token permanently past its threshold — renewing on every tick for its whole life
-// rather than once near the end. Falls back to the max lead when the issue time is unknown (a config written
-// before IssuedAt existed), which is the pre-existing behavior.
+// renewLead returns the renewal window, reserving enough time for two bounded attempts before expiry.
 func renewLead(cfg state.Config, expiry time.Time) time.Duration {
 	issued, err := time.Parse(time.RFC3339, cfg.IssuedAt)
 	if err != nil {
@@ -810,10 +848,7 @@ func renewLead(cfg state.Config, expiry time.Time) time.Duration {
 		return maxRenewLeadTime
 	}
 	lead := lifetime / renewLeadFraction
-	// Never narrower than a couple of ticks: the loop only samples every renewCheckInterval, so a lead shorter
-	// than that can fall entirely between two samples and the token expires un-renewed. Scaling the lead down
-	// for short tokens must not turn "renews too often" into "never renews".
-	if floor := 2 * renewCheckInterval; lead < floor {
+	if floor := 3*renewCheckInterval + 2*renewRequestTimeout; lead < floor {
 		lead = floor
 	}
 	if lead > maxRenewLeadTime {
@@ -824,10 +859,7 @@ func renewLead(cfg state.Config, expiry time.Time) time.Duration {
 
 func (d *Daemon) maybeRenew(ctx context.Context) {
 	cfg := d.snapshot()
-	d.mu.Lock()
-	refused := d.reauthRequired
-	d.mu.Unlock()
-	if refused || !cfg.LoggedIn() || cfg.RenewalToken == "" {
+	if !cfg.LoggedIn() || cfg.RenewalToken == "" {
 		return
 	}
 	expiry, err := time.Parse(time.RFC3339, cfg.ExpiresAt)
@@ -835,10 +867,35 @@ func (d *Daemon) maybeRenew(ctx context.Context) {
 		return
 	}
 
-	res, err := login.Renew(ctx, d.httpClient, cfg.ControlPlane, cfg.RenewalToken)
+	renewCtx, cancel := context.WithCancel(ctx)
+	d.mu.Lock()
+	if d.reauthRequired || d.cfg.RenewalToken != cfg.RenewalToken {
+		d.mu.Unlock()
+		cancel()
+		return
+	}
+	d.cancelRenewalLocked()
+	d.renewAttemptID++
+	attemptID := d.renewAttemptID
+	d.renewCancel = cancel
+	d.mu.Unlock()
+	defer func() {
+		cancel()
+		d.mu.Lock()
+		if d.renewAttemptID == attemptID {
+			d.renewCancel = nil
+		}
+		d.mu.Unlock()
+	}()
+
+	res, err := login.Renew(renewCtx, d.httpClient, cfg.ControlPlane, cfg.RenewalToken)
+	d.mu.Lock()
+	sessionStale := d.cfg.RenewalToken != cfg.RenewalToken
+	d.mu.Unlock()
+	if sessionStale {
+		return
+	}
 	if errors.Is(err, login.ErrRenewalRefused) {
-		// Only mark reauth-required if this is still the session that was refused. A login that landed during
-		// the round-trip has already replaced it, and its fresh session is fine.
 		d.mu.Lock()
 		if d.cfg.RenewalToken == cfg.RenewalToken {
 			d.reauthRequired = true
@@ -855,16 +912,11 @@ func (d *Daemon) maybeRenew(ctx context.Context) {
 		fmt.Fprintln(os.Stderr, "token renewal failed (will retry):", err)
 		return
 	}
-	// A renewal with no expiry would leave maybeRenew unable to parse ExpiresAt on every later tick, so it
-	// would silently stop renewing forever. Treat it as a failed attempt and retry rather than persisting it.
 	if res.ExpiresAt == "" {
 		fmt.Fprintln(os.Stderr, "token renewal returned no expiry (will retry)")
 		return
 	}
 
-	// Apply ONLY if the session that was renewed is still current: a login completing during the round-trip
-	// installs a new token AND a new renewal token, and writing this stale result would pair the old token with
-	// the new session's principal and renewal secret.
 	d.mu.Lock()
 	stale := d.cfg.RenewalToken != cfg.RenewalToken
 	d.mu.Unlock()
@@ -872,27 +924,40 @@ func (d *Daemon) maybeRenew(ctx context.Context) {
 		return
 	}
 	issuedAt := time.Now().UTC().Format(time.RFC3339)
+	persisted := false
 	if err := state.Update(func(c *state.Config) error {
-		// Re-checked under the config lock. An EMPTY renewal token means a logout landed and cleared the
-		// credentials — writing a token back would resurrect the session with no principal and no renewal
-		// secret, and LoggedIn() would report true again.
 		if c.RenewalToken == "" || c.RenewalToken != cfg.RenewalToken {
 			return nil
 		}
 		c.Token = res.Token
 		c.ExpiresAt = res.ExpiresAt
 		c.IssuedAt = issuedAt
+		persisted = true
 		return nil
 	}); err != nil {
 		fmt.Fprintln(os.Stderr, "could not save the renewed token:", err)
 		return
 	}
+	if !persisted {
+		return
+	}
+
 	d.mu.Lock()
-	if d.cfg.RenewalToken != "" && d.cfg.RenewalToken == cfg.RenewalToken {
+	var oldGeneration uint64
+	applied := d.cfg.RenewalToken != "" && d.cfg.RenewalToken == cfg.RenewalToken
+	if applied {
+		oldGeneration = d.tokenGeneration
+		d.tokenGeneration++
 		d.cfg.Token = res.Token
 		d.cfg.ExpiresAt = res.ExpiresAt
 		d.cfg.IssuedAt = issuedAt
 	}
 	d.mu.Unlock()
+	if !applied {
+		return
+	}
+	// A live database session cannot replace its startup token, so reconnect it only when that token expires.
+	d.closeTokenGenerationAt(oldGeneration, expiry)
+	d.Reload()
 	d.publishStatus()
 }

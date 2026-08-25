@@ -593,6 +593,91 @@ func TestStaleRenewalDoesNotClobberANewerSession(t *testing.T) {
 	}
 }
 
+func TestLoginCancelsInFlightRenewal(t *testing.T) {
+	isolate(t)
+	renewStarted := make(chan struct{})
+	renewCanceled := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/auth/session/renew":
+			if got := r.Header.Get("Authorization"); got != "Bearer pmr_old" {
+				t.Errorf("renewal Authorization = %q, want the old renewal token", got)
+			}
+			close(renewStarted)
+			<-r.Context().Done()
+			close(renewCanceled)
+		case "/auth/device/start":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"verificationUri": "https://idp.example/activate",
+				"userCode":        "ABCD",
+				"handle":          "h-1",
+				"interval":        1,
+			})
+		case "/auth/device/poll":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"principal":    "new@example.com",
+				"token":        "tok-new",
+				"expiresAt":    time.Now().Add(time.Minute).Format(time.RFC3339),
+				"renewalToken": "pmr_new",
+			})
+		case "/api/datasources":
+			_ = json.NewEncoder(w).Encode([]Datasource{})
+		default:
+			t.Errorf("unexpected control-plane path %q", r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+
+	now := time.Now().UTC().Truncate(time.Second)
+	if err := state.Update(func(c *state.Config) error {
+		c.ControlPlane = srv.URL
+		c.Principal = "old@example.com"
+		c.Token = "tok-old"
+		c.RenewalToken = "pmr_old"
+		c.IssuedAt = now.Add(-time.Minute).Format(time.RFC3339)
+		c.ExpiresAt = now.Add(time.Second).Format(time.RFC3339)
+		return nil
+	}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	cfg, err := state.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	d := New("test")
+	d.cfg = *cfg
+
+	renewCtx, stopRenew := context.WithCancel(context.Background())
+	defer stopRenew()
+	renewDone := make(chan struct{})
+	go func() {
+		d.maybeRenew(renewCtx)
+		close(renewDone)
+	}()
+	select {
+	case <-renewStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("old-session renewal did not start")
+	}
+
+	if err := d.Login(context.Background(), control.LoginRequest{ControlPlane: srv.URL}, func(control.LoginEvent) {}); err != nil {
+		t.Fatalf("Login: %v", err)
+	}
+	select {
+	case <-renewCanceled:
+	case <-time.After(time.Second):
+		t.Fatal("fresh login did not cancel the old-session renewal")
+	}
+	select {
+	case <-renewDone:
+	case <-time.After(time.Second):
+		t.Fatal("old-session renewal did not return after cancellation")
+	}
+	if got := d.snapshot().RenewalToken; got != "pmr_new" {
+		t.Errorf("current renewal token = %q, want the fresh login token", got)
+	}
+}
+
 // TestRenewalWithNoExpiryIsRetriedNotPersisted: persisting an empty ExpiresAt would make every later tick fail
 // to parse it, so the daemon would silently stop renewing forever.
 func TestRenewalWithNoExpiryIsRetriedNotPersisted(t *testing.T) {
@@ -633,6 +718,75 @@ func TestRenewalWithNoExpiryIsRetriedNotPersisted(t *testing.T) {
 	if calls != 2 {
 		t.Errorf("renew calls = %d after a second tick, want 2 (it must keep retrying)", calls)
 	}
+}
+
+func TestRenewalClosesOnlyTheOldTokenGenerationAtExpiry(t *testing.T) {
+	isolate(t)
+	oldExpiry := time.Now().UTC().Truncate(time.Second).Add(2 * time.Second)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Authorization"); got != "Bearer pmr_old" {
+			t.Errorf("renewal Authorization = %q", got)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"token":     "tok-fresh",
+			"expiresAt": time.Now().Add(12 * time.Hour).Format(time.RFC3339),
+		})
+	}))
+	defer srv.Close()
+
+	d := New("test")
+	if err := state.Update(func(c *state.Config) error {
+		c.ControlPlane = srv.URL
+		c.Principal = "you@example.com"
+		c.Token = "tok-old"
+		c.RenewalToken = "pmr_old"
+		c.IssuedAt = oldExpiry.Add(-time.Hour).Format(time.RFC3339)
+		c.ExpiresAt = oldExpiry.Format(time.RFC3339)
+		return nil
+	}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	cfg, err := state.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	d.cfg = *cfg
+
+	oldClient, oldServer := net.Pipe()
+	defer oldClient.Close()
+	oldClosed := make(chan struct{})
+	oldTracked := &closeObserverConn{Conn: oldServer, onClose: func() { close(oldClosed) }}
+	deregisterOld := d.addConn("acme-mysql", oldTracked)
+	defer deregisterOld()
+
+	d.maybeRenew(context.Background())
+	if got := d.snapshot().Token; got != "tok-fresh" {
+		t.Fatalf("token after renewal = %q, want the fresh token", got)
+	}
+
+	newClient, newServer := net.Pipe()
+	defer newClient.Close()
+	newClosed := make(chan struct{})
+	newTracked := &closeObserverConn{Conn: newServer, onClose: func() { close(newClosed) }}
+	deregisterNew := d.addConn("acme-mysql", newTracked)
+	defer deregisterNew()
+
+	select {
+	case <-oldClosed:
+		t.Fatal("renewal closed the old session before its captured token expired")
+	default:
+	}
+	select {
+	case <-oldClosed:
+	case <-time.After(3 * time.Second):
+		t.Fatal("the old token generation survived its token expiry")
+	}
+	select {
+	case <-newClosed:
+		t.Fatal("expiring the old token generation closed a session using the fresh token")
+	case <-time.After(100 * time.Millisecond):
+	}
+	newServer.Close()
 }
 
 // TestLiveConnsCountsARealConnection locks the number the stop/restart confirmation depends on: it is what warns
@@ -990,25 +1144,175 @@ func TestSubscribeDropsRatherThanBlocking(t *testing.T) {
 	}
 }
 
-// TestRenewLeadIsNeverNarrowerThanTheSampleInterval: the renewal loop only checks every renewCheckInterval, so a
-// lead shorter than that can fall entirely between two checks and the token expires un-renewed. Sizing the lead
-// to a short token's lifetime must not trade "renews every tick" for "never renews" — the control plane clamps
-// TTL to a 60s floor, so those tokens are real.
-func TestRenewLeadIsNeverNarrowerThanTheSampleInterval(t *testing.T) {
-	floor := 2 * renewCheckInterval
-	for _, ttl := range []time.Duration{60 * time.Second, 2 * time.Minute, 10 * time.Minute, 12 * time.Hour} {
-		issued := time.Now()
-		expiry := issued.Add(ttl)
-		cfg := state.Config{IssuedAt: issued.Format(time.RFC3339), ExpiresAt: expiry.Format(time.RFC3339)}
+func TestRenewLoopChecksImmediately(t *testing.T) {
+	isolate(t)
+	renewed := make(chan struct{})
+	var renewedOnce sync.Once
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Authorization"); got != "Bearer pmr_old" {
+			t.Errorf("renewal Authorization = %q, want the current renewal token", got)
+		}
+		renewedOnce.Do(func() { close(renewed) })
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"token":     "tok-fresh",
+			"expiresAt": time.Now().Add(time.Hour).Format(time.RFC3339),
+		})
+	}))
+	defer srv.Close()
+
+	now := time.Now().UTC().Truncate(time.Second)
+	if err := state.Update(func(c *state.Config) error {
+		c.ControlPlane = srv.URL
+		c.Principal = "you@example.com"
+		c.Token = "tok-old"
+		c.RenewalToken = "pmr_old"
+		c.IssuedAt = now.Add(-time.Minute).Format(time.RFC3339)
+		c.ExpiresAt = now.Add(5 * time.Second).Format(time.RFC3339)
+		return nil
+	}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	cfg, err := state.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	d := New("test")
+	d.cfg = *cfg
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		d.renewLoop(ctx)
+		close(done)
+	}()
+	select {
+	case <-renewed:
+	case <-time.After(2 * time.Second):
+		cancel()
+		<-done
+		t.Fatal("renewal loop did not check a due token immediately")
+	}
+	waitFor(t, "the immediate renewal to apply", func() bool { return d.snapshot().Token == "tok-fresh" })
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("renewal loop did not stop after cancellation")
+	}
+}
+
+func TestRenewLoopRetriesAfterRequestTimeout(t *testing.T) {
+	isolate(t)
+	firstStarted := make(chan time.Time, 1)
+	secondStarted := make(chan time.Time, 1)
+	var mu sync.Mutex
+	attempts := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		attempts++
+		attempt := attempts
+		mu.Unlock()
+		switch attempt {
+		case 1:
+			firstStarted <- time.Now()
+			<-r.Context().Done()
+		case 2:
+			secondStarted <- time.Now()
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"token":     "tok-fresh",
+				"expiresAt": time.Now().Add(time.Hour).Format(time.RFC3339),
+			})
+		}
+	}))
+	defer srv.Close()
+
+	now := time.Now().UTC().Truncate(time.Second)
+	if err := state.Update(func(c *state.Config) error {
+		c.ControlPlane = srv.URL
+		c.Principal = "you@example.com"
+		c.Token = "tok-old"
+		c.RenewalToken = "pmr_old"
+		c.IssuedAt = now.Add(-30 * time.Second).Format(time.RFC3339)
+		c.ExpiresAt = now.Add(30 * time.Second).Format(time.RFC3339)
+		return nil
+	}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	cfg, err := state.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	d := New("test")
+	d.cfg = *cfg
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		d.renewLoop(ctx)
+		close(done)
+	}()
+	var first time.Time
+	select {
+	case first = <-firstStarted:
+	case <-time.After(2 * time.Second):
+		cancel()
+		<-done
+		t.Fatal("renewal loop did not start the due attempt")
+	}
+	select {
+	case second := <-secondStarted:
+		if delay := second.Sub(first); delay >= renewRequestTimeout+renewCheckInterval+2*time.Second {
+			t.Fatalf("second renewal attempt started after %s; timeout retry exceeded its bound", delay)
+		}
+	case <-time.After(renewRequestTimeout + renewCheckInterval + 2*time.Second):
+		cancel()
+		<-done
+		t.Fatal("renewal loop did not retry after the request timeout")
+	}
+	waitFor(t, "the retry to apply", func() bool { return d.snapshot().Token == "tok-fresh" })
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("renewal loop did not stop after cancellation")
+	}
+}
+
+func TestRenewScheduleLeavesTwoAttemptsBeforeTokenExpiry(t *testing.T) {
+	floor := 3*renewCheckInterval + 2*renewRequestTimeout
+	minted := time.Date(2026, time.August, 25, 12, 0, 0, 0, time.UTC)
+	cases := []struct {
+		ttl           time.Duration
+		deliveryDelay time.Duration
+	}{
+		{ttl: 60 * time.Second},
+		{ttl: 60 * time.Second, deliveryDelay: renewRequestTimeout},
+		{ttl: 2 * time.Minute},
+		{ttl: 10 * time.Minute},
+		{ttl: 12 * time.Hour},
+	}
+	for _, tc := range cases {
+		received := minted.Add(tc.deliveryDelay)
+		expiry := minted.Add(tc.ttl)
+		cfg := state.Config{IssuedAt: received.Format(time.RFC3339), ExpiresAt: expiry.Format(time.RFC3339)}
 		lead := renewLead(cfg, expiry)
 		if lead < floor {
-			t.Errorf("ttl %s: lead %s is narrower than %s, so the loop can skip past expiry", ttl, lead, floor)
+			t.Errorf("ttl %s, delivery %s: lead %s is narrower than %s", tc.ttl, tc.deliveryDelay, lead, floor)
 		}
 		if lead > maxRenewLeadTime {
-			t.Errorf("ttl %s: lead %s exceeds the %s cap", ttl, lead, maxRenewLeadTime)
+			t.Errorf("ttl %s, delivery %s: lead %s exceeds the %s cap", tc.ttl, tc.deliveryDelay, lead, maxRenewLeadTime)
+		}
+		eligibleAt := expiry.Add(-lead)
+		if eligibleAt.Before(received) {
+			eligibleAt = received
+		}
+		latestFirstAttempt := eligibleAt.Add(renewCheckInterval)
+		latestSecondCompletion := latestFirstAttempt.Add(renewRequestTimeout + renewCheckInterval + renewRequestTimeout)
+		if !latestSecondCompletion.Before(expiry) {
+			t.Errorf("ttl %s, delivery %s: two bounded renewal attempts complete at %s, not before expiry %s", tc.ttl, tc.deliveryDelay, latestSecondCompletion, expiry)
 		}
 	}
-	// A config predating IssuedAt falls back to the fixed cap rather than computing a nonsense lifetime.
+
 	expiry := time.Now().Add(12 * time.Hour)
 	if lead := renewLead(state.Config{}, expiry); lead != maxRenewLeadTime {
 		t.Errorf("legacy config (no IssuedAt) lead = %s, want the %s fallback", lead, maxRenewLeadTime)

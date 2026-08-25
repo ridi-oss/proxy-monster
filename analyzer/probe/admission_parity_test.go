@@ -145,15 +145,21 @@ func TestParityBatchAndLex(t *testing.T) {
 		"SELECT 'unterminated",
 		"SELECT id /* unterminated",
 		"SELECT $$unterminated",
-		"", "   \n\t ", ";", ";;", "-- just a comment",
 	} {
 		parityDenied(t, sql, "postgres")
 	}
-	for _, sql := range []string{
-		"SELECT 1--2; SELECT ssn FROM users",
-		"# just a comment",
+	parityDenied(t, "SELECT 1--2; SELECT ssn FROM users", "mysql")
+	// A statement with no statements is a first-class EMPTY passthrough (both targets accept it on
+	// the wire: PostgreSQL answers EmptyQueryResponse, MySQL ER_EMPTY_QUERY or OK), never a deny.
+	for _, tc := range []struct{ sql, dialect string }{
+		{"", "postgres"}, {"   \n\t ", "postgres"}, {";", "postgres"}, {";;", "postgres"},
+		{"-- just a comment", "postgres"},
+		{"# just a comment", "mysql"},
 	} {
-		parityDenied(t, sql, "mysql")
+		f := factsFor(t, tc.sql, tc.dialect)
+		if !f.Resolved || f.GetStatementExec().GetStatementKind() != pb.StatementKind_STATEMENT_KIND_EMPTY {
+			t.Errorf("[%s] %q: want resolved EMPTY, got resolved=%v kind=%s", tc.dialect, tc.sql, f.Resolved, factsKind(f))
+		}
 	}
 	// MySQL executable comments are not blanket-rejected — with a known server version the analyzer
 	// decodes them and analyzes the real statement (`SELECT 1 /*! , ssn FROM users */` → traces ssn, which

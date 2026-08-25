@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -23,6 +24,18 @@ import (
 type rawPGClient struct {
 	conn     net.Conn
 	frontend *pgproto3.Frontend
+}
+
+var postgresEmptyQueryCases = []struct {
+	name string
+	sql  string
+}{
+	{name: "literal", sql: ""},
+	{name: "whitespace", sql: " \t\r\n\f"},
+	{name: "line comment", sql: "-- empty\n"},
+	{name: "block comment", sql: "/* outer /* nested */ comment */"},
+	{name: "semicolon", sql: ";"},
+	{name: "combined", sql: " ; -- empty\n /* still empty */ ; "},
 }
 
 func newRawPGClient(t *testing.T, h *brokerHarness) *rawPGClient {
@@ -114,6 +127,207 @@ func (c *rawPGClient) drainToRFQ(t *testing.T) []pgproto3.BackendMessage {
 			return messages
 		}
 	}
+}
+
+func TestEmptySimpleQueryDecidesAndRelays(t *testing.T) {
+	h := startBroker(t)
+	client := newRawPGClient(t, h)
+
+	for _, tc := range postgresEmptyQueryCases {
+		t.Run(tc.name, func(t *testing.T) {
+			before := len(h.fake.requests())
+			frames := client.simpleQuery(t, tc.sql)
+			if len(frames) != 2 {
+				t.Fatalf("empty-query frames = %d, want EmptyQueryResponse + ReadyForQuery", len(frames))
+			}
+			if _, ok := frames[0].(*pgproto3.EmptyQueryResponse); !ok {
+				t.Fatalf("empty-query frame[0] = %T, want EmptyQueryResponse", frames[0])
+			}
+			assertRawReadyForQuery(t, frames, 'I')
+			// An empty statement is a first-class decision (audited, Cedar-visible), not a bypass.
+			if got := len(h.fake.requests()); got != before+1 {
+				t.Fatalf("Decide requests = %d, want %d", got, before+1)
+			}
+		})
+	}
+}
+
+func TestEmptySimpleQueryDetectsDeadTarget(t *testing.T) {
+	h := startBroker(t)
+	h.fake.decideFn = func(*pb.DecisionRequest) (*pb.WireDecision, error) {
+		return wireVerdict(&pb.Verdict{Decision: pb.EnfAction_ALLOW}), nil
+	}
+	client := newRawPGClient(t, h)
+
+	var backendPID int
+	for _, frame := range client.simpleQuery(t, "SELECT pg_backend_pid()") {
+		row, ok := frame.(*pgproto3.DataRow)
+		if !ok || len(row.Values) != 1 {
+			continue
+		}
+		var err error
+		backendPID, err = strconv.Atoi(string(row.Values[0]))
+		if err != nil {
+			t.Fatalf("parse target DB process id: %v", err)
+		}
+	}
+	if backendPID == 0 {
+		t.Fatal("target DB process id was not returned")
+	}
+	admin := dbtest.OpenPostgres(t, "")
+	var terminated bool
+	if err := admin.QueryRow("SELECT pg_terminate_backend($1)", backendPID).Scan(&terminated); err != nil {
+		t.Fatalf("terminate target DB session: %v", err)
+	}
+	if !terminated {
+		t.Fatal("target DB session was not terminated")
+	}
+
+	if err := client.conn.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		t.Fatalf("set dead-target read deadline: %v", err)
+	}
+	// An empty statement takes the same decide-and-relay path as any other; against a dead target
+	// it must surface an error (not hang, not succeed), exactly like a non-empty statement.
+	client.frontend.Send(&pgproto3.Query{})
+	if err := client.frontend.Flush(); err != nil {
+		t.Fatalf("send empty query to dead target: %v", err)
+	}
+	sawError := false
+	for {
+		message, err := client.frontend.Receive()
+		if err != nil {
+			var netErr net.Error
+			if errors.As(err, &netErr) && netErr.Timeout() {
+				t.Fatal("empty query against dead target timed out instead of surfacing an error")
+			}
+			if !sawError {
+				t.Fatal("connection closed without an error response")
+			}
+			return
+		}
+		switch message.(type) {
+		case *pgproto3.ErrorResponse:
+			sawError = true
+		case *pgproto3.EmptyQueryResponse, *pgproto3.CommandComplete:
+			t.Fatalf("empty query against dead target succeeded: %T", message)
+		case *pgproto3.ReadyForQuery:
+			if !sawError {
+				t.Fatal("empty query reported a dead target connection as ready without an error")
+			}
+			return
+		}
+	}
+}
+
+func TestEmptyExtendedQueryDecidesAndRelays(t *testing.T) {
+	h := startBroker(t)
+	client := newRawPGClient(t, h)
+
+	for _, tc := range postgresEmptyQueryCases {
+		t.Run(tc.name, func(t *testing.T) {
+			before := len(h.fake.requests())
+			frames := client.sendSync(t,
+				&pgproto3.Parse{Name: "", Query: tc.sql},
+				&pgproto3.Bind{},
+				&pgproto3.Describe{ObjectType: 'P'},
+				&pgproto3.Execute{},
+			)
+			assertEmptyExtendedResponse(t, frames, 'I')
+			// Parse authorizes and Execute re-decides — both gates must fire, on the original SQL.
+			after := h.fake.requests()
+			if len(after) != before+2 {
+				t.Fatalf("Decide requests = %d, want %d (Parse + Execute both decide empty statements)", len(after), before+2)
+			}
+			for _, request := range after[before:] {
+				if request.GetSql() != tc.sql {
+					t.Fatalf("Decide saw %q, want the original %q", request.GetSql(), tc.sql)
+				}
+			}
+		})
+	}
+}
+
+func TestEmptyQueriesInAbortedTransaction(t *testing.T) {
+	h := startBroker(t)
+	h.fake.decideFn = func(*pb.DecisionRequest) (*pb.WireDecision, error) {
+		return wireVerdict(&pb.Verdict{Decision: pb.EnfAction_ALLOW}), nil
+	}
+	abort := func(t *testing.T, client *rawPGClient) {
+		t.Helper()
+		assertNoRawPGError(t, client.simpleQuery(t, "BEGIN"))
+		frames := client.simpleQuery(t, "SELECT 1 / 0")
+		if response, ok := frames[0].(*pgproto3.ErrorResponse); !ok || response.Code != "22012" {
+			t.Fatalf("division-by-zero frame[0] = %#v, want ErrorResponse(22012)", frames[0])
+		}
+		assertRawReadyForQuery(t, frames, 'E')
+	}
+
+	t.Run("simple", func(t *testing.T) {
+		client := newRawPGClient(t, h)
+		abort(t, client)
+		for _, tc := range postgresEmptyQueryCases {
+			t.Run(tc.name, func(t *testing.T) {
+				before := len(h.fake.requests())
+				frames := client.simpleQuery(t, tc.sql)
+				if _, ok := frames[0].(*pgproto3.EmptyQueryResponse); !ok {
+					t.Fatalf("empty-query frame[0] = %T, want EmptyQueryResponse", frames[0])
+				}
+				assertRawReadyForQuery(t, frames, 'E')
+				if got := len(h.fake.requests()); got != before+1 {
+					t.Fatalf("Decide requests = %d after empty query, want %d", got, before+1)
+				}
+			})
+		}
+	})
+
+	t.Run("extended", func(t *testing.T) {
+		client := newRawPGClient(t, h)
+		abort(t, client)
+		for _, tc := range postgresEmptyQueryCases {
+			t.Run(tc.name, func(t *testing.T) {
+				before := len(h.fake.requests())
+				frames := client.sendSync(t,
+					&pgproto3.Parse{Name: "", Query: tc.sql},
+					&pgproto3.Bind{},
+					&pgproto3.Describe{ObjectType: 'P'},
+					&pgproto3.Execute{},
+				)
+				if len(frames) != 3 {
+					t.Fatalf("empty extended-query frames = %d, want ParseComplete + ErrorResponse + ReadyForQuery", len(frames))
+				}
+				if _, ok := frames[0].(*pgproto3.ParseComplete); !ok {
+					t.Fatalf("empty extended-query frame[0] = %T, want ParseComplete", frames[0])
+				}
+				if response, ok := frames[1].(*pgproto3.ErrorResponse); !ok || response.Code != "25P02" {
+					t.Fatalf("empty extended-query frame[1] = %#v, want ErrorResponse(25P02)", frames[1])
+				}
+				assertRawReadyForQuery(t, frames, 'E')
+				if got := len(h.fake.requests()); got <= before {
+					t.Fatalf("Decide requests = %d after empty query, want > %d", got, before)
+				}
+			})
+		}
+	})
+}
+
+func assertEmptyExtendedResponse(t *testing.T, frames []pgproto3.BackendMessage, txStatus byte) {
+	t.Helper()
+	if len(frames) != 5 {
+		t.Fatalf("empty extended-query frames = %d, want ParseComplete + BindComplete + NoData + EmptyQueryResponse + ReadyForQuery", len(frames))
+	}
+	want := []any{
+		(*pgproto3.ParseComplete)(nil),
+		(*pgproto3.BindComplete)(nil),
+		(*pgproto3.NoData)(nil),
+		(*pgproto3.EmptyQueryResponse)(nil),
+		(*pgproto3.ReadyForQuery)(nil),
+	}
+	for i, expected := range want {
+		if reflect.TypeOf(frames[i]) != reflect.TypeOf(expected) {
+			t.Fatalf("empty extended-query frame[%d] = %T, want %T", i, frames[i], expected)
+		}
+	}
+	assertRawReadyForQuery(t, frames, txStatus)
 }
 
 func TestExtendedCatalogRefreshRunsAfterCommandCompleteBeforeSync(t *testing.T) {

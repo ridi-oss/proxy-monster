@@ -12,6 +12,7 @@ import (
 	"github.com/ridi-oss/sqlglot-go/generator"
 	"github.com/ridi-oss/sqlglot-go/optimizer"
 	"github.com/ridi-oss/sqlglot-go/schema"
+	"github.com/ridi-oss/sqlglot-go/tokens"
 )
 
 var safeNoFromFunctions = stringSet(
@@ -117,6 +118,15 @@ func EmitFacts(sql string, engineConfig *pb.EngineConfig, sch *schema.Mapping, n
 	qualifySchema, err := schema.NewMappingSchema(sch, eng.Dialect(), eng.NormalizeCatalogOnBuild())
 	if err != nil {
 		return unanalyzableFacts("VALIDATE", err.Error())
+	}
+
+	if emptyStatement(sql, eng) {
+		// A statement with no statements — "" / ";" / comment-only. Authorized as stmt.kind.empty
+		// under stmt.cat.session, then relayed so the target answers natively (PostgreSQL
+		// EmptyQueryResponse, MySQL ER_EMPTY_QUERY for blank, OK for comment-only).
+		facts := passthroughFacts()
+		facts.StatementExec = executeGrant(pb.StatementKind_STATEMENT_KIND_EMPTY)
+		return facts
 	}
 
 	var parsed []exp.Expression
@@ -987,6 +997,22 @@ func utilityGrant(command string) *pb.RequireResultReadGrant {
 		Resource:          &pb.RequireResultReadGrant_Utility{Utility: &pb.UtilityResource{Command: command}},
 		MaskedDisposition: pb.MaskedDisposition_MASKED_DISPOSITION_DENY_STATEMENT,
 	}
+}
+
+// emptyStatement reports whether sql tokenizes to nothing but statement separators — the wire
+// protocols' "empty query". A tokenizer error (an unterminated comment) is NOT empty: it goes down
+// the ordinary parse path and fails closed there.
+func emptyStatement(sql string, eng engine) bool {
+	toks, err := sqlglot.Tokenize(sql, eng.Dialect())
+	if err != nil {
+		return false
+	}
+	for _, tok := range toks {
+		if tok.TokenType != tokens.SEMICOLON {
+			return false
+		}
+	}
+	return true
 }
 
 func passthroughFacts() *pb.StatementFacts {

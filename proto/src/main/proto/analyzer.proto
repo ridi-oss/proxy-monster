@@ -309,6 +309,10 @@ enum StatementKind {
   // admin.unanalyzable (opaque; the analyzer cannot decompose)
   STATEMENT_KIND_HANDLER = 136;
   STATEMENT_KIND_XA = 137;
+
+  // session — a statement with no statements: "" / ";" / comment-only. Touches nothing; each
+  // engine's target answers natively (PostgreSQL EmptyQueryResponse, MySQL ER_EMPTY_QUERY or OK).
+  STATEMENT_KIND_EMPTY = 141;
 }
 
 // The security class of an unresolved statement. The zero value is invalid and must hard-deny.

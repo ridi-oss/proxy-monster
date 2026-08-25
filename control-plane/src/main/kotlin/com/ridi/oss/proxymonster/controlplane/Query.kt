@@ -647,6 +647,9 @@ fun decideQuery(
                 contextTags = derivedTags,
                 catalogChanging = facts.catalogChanging || facts.functionsList.isNotEmpty(),
                 schemaCandidates = facts.schemaQualifierCandidatesList.toSet(),
+                // A statement may be unresolvable only because this connection never fetched the schema it
+                // names, so refetch the qualifiers before relaying it unmasked.
+                catalogMiss = true,
             )
             is AuthzDecision.Deny -> deny(reason, catalogMiss = true)
         }

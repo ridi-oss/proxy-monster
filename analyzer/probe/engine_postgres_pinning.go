@@ -18,6 +18,48 @@ import (
 	pb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
 )
 
+func (e *postgresEngine) isSafeXIDType(dt, kind exp.Expression, namespace NamespaceConfig) bool {
+	if kind == nil || len(dt.Expressions()) != 0 {
+		return false
+	}
+	leaf := kind
+	var qualifier exp.Expression
+	if kind.Kind() == exp.KindDot {
+		qualifier = kind.Left()
+		leaf = kind.Right()
+	} else if kind.Kind() != exp.KindIdentifier {
+		return false
+	}
+	if leaf == nil || leaf.Kind() != exp.KindIdentifier {
+		return false
+	}
+	folded := leaf.Copy()
+	e.dialect.NormalizeIdentifier(folded)
+	if folded.Name() != "xid" {
+		return false
+	}
+	if qualifier != nil {
+		return e.IsTrustedSystemQualifier(qualifier)
+	}
+	return e.PostgresSystemXIDVisible() && postgresCatalogFirstAfterTempSchemas(namespace.SearchPath)
+}
+
+func (e *postgresEngine) pinSafeXIDTypes(root exp.Expression, namespace NamespaceConfig) bool {
+	pinned := false
+	for _, dt := range root.FindAll(exp.KindDataType) {
+		kind, _ := dt.Arg("kind").(exp.Expression)
+		if kind == nil || kind.Kind() != exp.KindIdentifier || !e.isSafeXIDType(dt, kind, namespace) {
+			continue
+		}
+		dt.Set("kind", exp.Dot(exp.Args{
+			"this":       exp.ToIdentifier("pg_catalog"),
+			"expression": kind.Copy(),
+		}))
+		pinned = true
+	}
+	return pinned
+}
+
 func hasUnsupportedPostgresUnnestOffset(root exp.Expression) bool {
 	for _, unnest := range root.FindAll(exp.KindUnnest) {
 		if offset := unnest.Arg("offset"); offset != nil {
@@ -432,13 +474,13 @@ func (e *postgresEngine) ValidateStatement(root exp.Expression, sql string) erro
 // table-function resolution is trusted, pin implicit functions and safe builtins to pg_catalog,
 // and refuse any statement whose function calls would change spelling under SQL regeneration.
 func (e *postgresEngine) FinalizeStatementIdentity(root exp.Expression, sql string, facts *pb.StatementFacts, namespace NamespaceConfig) *pb.StatementFacts {
-	pinned := false
+	pinned := e.pinSafeXIDTypes(root, namespace)
 	if facts.GetResolved() {
 		if facts.RewrittenSql == nil {
 			if name := e.untrustedTableFunction(root, namespace); name != "" {
 				facts = unanalyzableFacts("VALIDATE", "untrusted PostgreSQL function resolution: "+name)
 			} else {
-				pinned = e.pinSafeFunctions(root, namespace)
+				pinned = e.pinSafeFunctions(root, namespace) || pinned
 			}
 		} else {
 			rewrittenRoot, err := sqlglot.ParseOne(facts.GetRewrittenSql(), e.dialect)
@@ -446,11 +488,14 @@ func (e *postgresEngine) FinalizeStatementIdentity(root exp.Expression, sql stri
 				facts = unanalyzableFacts("GENERATE", err.Error())
 			} else if name := e.untrustedTableFunction(rewrittenRoot, namespace); name != "" {
 				facts = unanalyzableFacts("VALIDATE", "untrusted PostgreSQL function resolution: "+name)
-			} else if e.pinSafeFunctions(rewrittenRoot, namespace) {
-				if rewrite, err := generateExecutableSQL(rewrittenRoot, e.dialect); err != nil {
-					facts = unanalyzableFacts("GENERATE", err.Error())
-				} else {
-					facts.RewrittenSql = &rewrite
+			} else {
+				repinned := e.pinSafeXIDTypes(rewrittenRoot, namespace)
+				if e.pinSafeFunctions(rewrittenRoot, namespace) || repinned {
+					if rewrite, err := generateExecutableSQL(rewrittenRoot, e.dialect); err != nil {
+						facts = unanalyzableFacts("GENERATE", err.Error())
+					} else {
+						facts.RewrittenSql = &rewrite
+					}
 				}
 			}
 		}

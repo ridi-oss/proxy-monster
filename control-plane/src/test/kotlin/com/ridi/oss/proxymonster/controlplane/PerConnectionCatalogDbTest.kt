@@ -180,6 +180,41 @@ abstract class PerConnectionCatalogDbContract {
     }
 
     @Test
+    fun `PostgreSQL xid visibility threads through decideConnection`() = runBlocking {
+        if (!fixture.datasource.engine.isPostgres) return@runBlocking
+        val schema = fixture.datasource.defaultSchemas.first { it !in fixture.datasource.engine.systemSchemas }
+        val opened = fixture.openAndPush(schemas = listOf("pg_catalog", schema))
+        val path = listOf("pg_temp_3", "pg_catalog", schema)
+
+        suspend fun decide(
+            visible: Boolean?,
+            searchPath: List<String> = path,
+        ) = assertIs<EnforcementOutcome.Verdict>(
+            decideConnection(
+                fixture.core,
+                opened.connectionId,
+                "analyst@example.com",
+                fixture.datasource,
+                "select '1'::xid",
+                searchPath,
+                null,
+                postgresSystemXidVisible = visible,
+            ),
+        )
+
+        assertEquals(EnfAction.DENY, decide(null).ctx.action)
+        val visible = decide(true)
+        assertEquals(EnfAction.ALLOW, visible.ctx.action)
+        assertTrue(
+            visible.ctx.rewrittenSql.orEmpty().lowercase().replace("\"", "").contains("pg_catalog.xid"),
+            visible.ctx.toString(),
+        )
+        assertEquals(EnfAction.DENY, decide(false).ctx.action)
+        val userFirst = decide(true, listOf(schema, "pg_catalog"))
+        assertEquals(EnfAction.DENY, userFirst.ctx.action, userFirst.ctx.toString())
+    }
+
+    @Test
     fun `missing search path fragment returns before-decide without audit`() = runBlocking {
         val opened = fixture.core.connectionCatalog.open(
             Binding(fixture.datasource.name, "analyst@example.com", "USER"),

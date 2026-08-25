@@ -90,6 +90,29 @@ class SqlglotTest {
     }
 
     @Test
+    fun postgresXidCastRequiresCatalogFirst() {
+        fun xidFacts(searchPath: List<String>): StatementFacts {
+            val request = analyzeRequest {
+                sql = "SELECT '1'::xid"
+                namespace = namespace {
+                    catalog = "acme"
+                    this.searchPath.addAll(searchPath)
+                }
+                engineConfig = engineConfig {
+                    engine = Engine.POSTGRES
+                    postgresSystemXidVisible = true
+                }
+            }
+            return StatementFacts.parseFrom(Sqlglot.analyzeStatement(request.toByteArray()))
+        }
+
+        val safe = xidFacts(listOf("pg_catalog", "public"))
+        assertTrue(safe.resultReadsList.none { it.utility.command == "USER_TYPE_CAST" })
+        assertTrue(safe.rewrittenSql.lowercase().replace("\"", "").contains("pg_catalog.xid"))
+        assertTrue(xidFacts(listOf("public", "pg_catalog")).resultReadsList.any { it.utility.command == "USER_TYPE_CAST" })
+    }
+
+    @Test
     fun sqlNormalizeReturnsCanonicalSqlAndFailsClosed() {
         assertEquals("select id from users", Sqlglot.sqlNormalize("SELECT id FROM users", "postgres"))
         assertNull(Sqlglot.sqlNormalize("SELECT 'unterminated", "postgres"))

@@ -40,23 +40,17 @@ var safeNoFromFunctions = stringSet(
 	"iif", "if", "typeof", "pg_typeof",
 )
 
-// userTypeCast returns the name of the first reference to a non-built-in (user) type anywhere in root, or
-// "" if every type reference is a safe built-in. sqlglot resolves a built-in type to a concrete DType and
-// a user type to DTypeUserDefined, so this is a single AST pass over DataType nodes. It covers every way a
-// statement can name a type — the `::type` and `CAST(x AS type)` forms and the `type 'literal'` typed
-// literal alike (they all parse to the same DataType node), in any position and whether or not the
-// statement has a FROM (a `SELECT 1::public.evil_domain FROM users` runs the domain's code just the same).
-// A `pg_catalog.<builtin>` reference needs no special-case here: sqlglot-go resolves it to the built-in
-// node directly (`pg_catalog.int4` → INT DataType, `pg_catalog.oid`/reg* → ObjectIdentifier — not a
-// DataType at all), so it never reaches the DTypeUserDefined branch. Only a non-catalog builtin ALIAS in
-// pg_catalog (e.g. `pg_catalog.integer`, which PostgreSQL itself rejects as a nonexistent type) still
-// lands here and is fail-closed — an accepted over-deny of invalid SQL.
-func userTypeCast(root exp.Expression) string {
+// userTypeCast returns the first type that may run user coercion or domain code. sqlglot marks unknown
+// types as DTypeUserDefined; PostgreSQL xid is safe only when live type lookup resolves pg_catalog.xid.
+func userTypeCast(root exp.Expression, eng engine, namespace NamespaceConfig) string {
 	for _, dt := range root.FindAll(exp.KindDataType) {
 		if dt.Arg("this") != exp.DTypeUserDefined {
 			continue
 		}
 		kind, _ := dt.Arg("kind").(exp.Expression)
+		if eng.IsSafeTypeReference(dt, kind, namespace) {
+			continue
+		}
 		if kind != nil && kind.Kind() == exp.KindDot {
 			qualifier := strings.ToLower(kind.Left().Name())
 			leaf := strings.ToLower(kind.Right().Name())
@@ -145,9 +139,9 @@ func EmitFacts(sql string, engineConfig *pb.EngineConfig, sch *schema.Mapping, n
 	case exp.KindDescribe:
 		facts = emitDescribeFacts(root, eng, qualifySchema, validatedNamespace)
 	case exp.KindShow:
-		facts = emitShowFacts(root, eng)
+		facts = emitShowFacts(root, eng, validatedNamespace)
 	case exp.KindSet:
-		facts = emitSetFacts(root, eng)
+		facts = emitSetFacts(root, eng, validatedNamespace)
 	case exp.KindCommand:
 		facts = emitCommandFacts(root, eng)
 	case exp.KindTransaction, exp.KindCommit, exp.KindRollback, exp.KindSavepoint, exp.KindUse, exp.KindReset:
@@ -220,7 +214,7 @@ func emitConfigFailureUtilityFacts(sql string, engineConfig *pb.EngineConfig) *p
 }
 
 func emitLineageFacts(root exp.Expression, eng engine, qualifySchema schema.Schema, namespace NamespaceConfig, explain bool) *pb.StatementFacts {
-	if userTypeCast(root) != "" {
+	if userTypeCast(root, eng, namespace) != "" {
 		return criticalUtilityFacts(cmdUserTypeCast)
 	}
 	report := probeParsed(root, eng, qualifySchema, namespace)
@@ -450,11 +444,11 @@ func emitAnalyzeFacts(root exp.Expression, eng engine, qualifySchema schema.Sche
 	return passthroughFacts()
 }
 
-func emitShowFacts(root exp.Expression, eng engine) *pb.StatementFacts {
+func emitShowFacts(root exp.Expression, eng engine, namespace NamespaceConfig) *pb.StatementFacts {
 	if unsafeExpression(root.Arg("where"), eng) || unsafeExpression(root.Arg("query"), eng) {
 		return criticalUtilityFacts(cmdShowSubquery)
 	}
-	if userTypeCast(root) != "" {
+	if userTypeCast(root, eng, namespace) != "" {
 		return criticalUtilityFacts(cmdUserTypeCast)
 	}
 	facts := passthroughFacts()
@@ -552,14 +546,14 @@ func sessionIdentitySetCommand(root exp.Expression) string {
 // time — a literal or a bareword keyword — and never one that changes the lexer.
 var lexerModeGucs = stringSet("sql_mode", "standard_conforming_strings")
 
-func emitSetFacts(root exp.Expression, eng engine) *pb.StatementFacts {
+func emitSetFacts(root exp.Expression, eng engine, namespace NamespaceConfig) *pb.StatementFacts {
 	if command := sessionIdentitySetCommand(root); command != "" {
 		return sessionUtilityFacts(command)
 	}
 	if unsafeExpression(root, eng) {
 		return sessionUtilityFacts(cmdSetSubquery)
 	}
-	if userTypeCast(root) != "" {
+	if userTypeCast(root, eng, namespace) != "" {
 		return sessionUtilityFacts(cmdUserTypeCast)
 	}
 	if command := lexerModeUtilityCommand(root); command != "" {

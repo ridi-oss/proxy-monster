@@ -29,6 +29,7 @@ type engine interface {
 	ImplicitNonVisibleColumns() []string
 	ImplicitFunctionColumns(name string) []string
 	ImplicitFunctionUnqualifiedTrusted(name string) bool
+	PostgresSystemXIDVisible() bool
 	FoldColumn(column string) string
 	// IsTempSchema reports whether a DDL target's schema identifier denotes session-local (temporary)
 	// storage for this engine, so the DDL is not catalog-changing. The schema is passed as its parsed
@@ -72,6 +73,10 @@ type engine interface {
 	// ExpandsNaturalJoins reports whether the prober expands NATURAL JOIN through this engine's
 	// catalog-backed USING semantics; false fails closed (shared-column lineage stays ambiguous).
 	ExpandsNaturalJoins() bool
+	// IsSafeTypeReference reports whether a DTypeUserDefined type reference is one this engine
+	// trusts anyway (PostgreSQL pg_catalog.xid under live type visibility); false keeps the
+	// user-type fail-close.
+	IsSafeTypeReference(dt, kind exp.Expression, namespace NamespaceConfig) bool
 	// SystemSchemaFirst reports whether an UNQUALIFIED name resolves against this engine's system
 	// schema before any user schema under searchPath — the precondition for trusting an unqualified
 	// implicit-function call as the builtin.
@@ -180,6 +185,7 @@ func (e *mysqlEngine) NormalizeCatalogOnBuild() bool { return true }
 func (e *mysqlEngine) ImplicitNonVisibleColumns() []string            { return nil }
 func (e *mysqlEngine) ImplicitFunctionColumns(string) []string        { return nil }
 func (e *mysqlEngine) ImplicitFunctionUnqualifiedTrusted(string) bool { return false }
+func (e *mysqlEngine) PostgresSystemXIDVisible() bool                 { return false }
 
 func (e *mysqlEngine) FoldColumn(column string) string {
 	return e.dialect.FoldIdentifierName(column, false)
@@ -297,6 +303,11 @@ func (e *mysqlEngine) ExpandsNaturalJoins() bool { return false }
 // MySQL has no search path; unqualified names resolve in the current database, never a system schema.
 func (e *mysqlEngine) SystemSchemaFirst([]string) bool { return false }
 
+// sqlglot resolves every MySQL builtin type to a concrete DType; a DTypeUserDefined is user code.
+func (e *mysqlEngine) IsSafeTypeReference(exp.Expression, exp.Expression, NamespaceConfig) bool {
+	return false
+}
+
 type postgresEngine struct {
 	dialect                   *dialects.Dialect
 	shadowedFunctions         map[string]bool
@@ -354,6 +365,8 @@ func (e *postgresEngine) ImplicitFunctionUnqualifiedTrusted(name string) bool {
 	}
 	return e.functionShadowingObserved && !e.shadowedFunctions[name]
 }
+
+func (e *postgresEngine) PostgresSystemXIDVisible() bool { return e.systemXIDVisible }
 
 func (e *postgresEngine) FoldColumn(column string) string { return column }
 
@@ -416,6 +429,10 @@ func (e *postgresEngine) ExpandsNaturalJoins() bool { return true }
 
 func (e *postgresEngine) SystemSchemaFirst(searchPath []string) bool {
 	return postgresCatalogFirstAfterTempSchemas(searchPath)
+}
+
+func (e *postgresEngine) IsSafeTypeReference(dt, kind exp.Expression, namespace NamespaceConfig) bool {
+	return e.isSafeXIDType(dt, kind, namespace)
 }
 
 // PostgreSQL names an unaliased projection per parse_target.c FigureColname; a call is labeled by

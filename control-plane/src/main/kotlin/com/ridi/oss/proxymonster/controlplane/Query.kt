@@ -759,6 +759,11 @@ fun decideQuery(
             )?.let { ref.key to it }
         }.toMap()
     } ?: emptyMap()
+    val systemRedactedColumns = systemClassification?.let { sc ->
+        columnRefs.filterTo(LinkedHashSet()) { ref ->
+            sc.redactsColumn(ds.engine, ds.engineVersion, ref.catalog, ref.schema, ref.table, ref.column)
+        }.mapTo(HashSet()) { it.key }
+    } ?: emptySet()
 
     val functionGrants = facts.resultReadsList.filter { it.hasFunction() }
     if (functionGrants.isNotEmpty() || facts.functionsList.isNotEmpty()) {
@@ -782,11 +787,22 @@ fun decideQuery(
     val columnVerdicts = if (columnRefs.isEmpty()) emptyMap() else
         authz.authorizeColumns(principal, roles, ds.name, columnRefs, context, columnSystemTags, ds.tags)
     val masks = ArrayList<ColumnMask>()
+    var hasMandatoryRedaction = false
     for (grant in columnGrants) {
         val column = grant.column
         val key = listOf(column.catalog, column.identity.schema, column.identity.table, column.identity.column).joinToString(".")
         val row = catalogIndex.rowsByKey.getValue(key)
-        val verdict = if (row.isTemp) ColumnVerdict.UNMASKED else columnVerdicts[key] ?: ColumnVerdict.DENIED
+        val systemRedacted = key in systemRedactedColumns
+        val authorizedVerdict = if (row.isTemp) {
+            ColumnVerdict.UNMASKED
+        } else {
+            columnVerdicts[key] ?: ColumnVerdict.DENIED
+        }
+        val verdict = if (systemRedacted && authorizedVerdict != ColumnVerdict.DENIED) {
+            ColumnVerdict.MASKED
+        } else {
+            authorizedVerdict
+        }
         when (verdict) {
             ColumnVerdict.UNMASKED -> Unit
             ColumnVerdict.DENIED -> return deny("policy denies column $key")
@@ -799,25 +815,32 @@ fun decideQuery(
                 MaskedDisposition.MASKED_DISPOSITION_MASK_OUTPUT,
                 MaskedDisposition.MASKED_DISPOSITION_REDACT_OUTPUT_NULL -> {
                     // Ordinals were bounds-checked up front (fail-closed contract validation), so each is a
-                    // valid index here; apply the first grant per ordinal (first-wins).
+                    // valid index here. NULL redaction dominates any ordinary mask on that ordinal.
                     for (ordinal in grant.outputOrdinalsList) {
-                        if (masks.none { it.ordinal == ordinal }) {
-                            masks += if (grant.maskedDisposition == MaskedDisposition.MASKED_DISPOSITION_REDACT_OUTPUT_NULL) {
-                                columnMask {
-                                    this.column = facts.outputColumnsList[ordinal]
-                                    maskFn = "redact"
-                                    kind = "NULL"
-                                    this.ordinal = ordinal
-                                }
-                            } else {
-                                val fn = row.classification?.maskFnName
-                                columnMask {
-                                    this.column = facts.outputColumnsList[ordinal]
-                                    maskFn = fn ?: "mask"
-                                    kind = fn?.let { maskKinds[it] } ?: "FIXED"
-                                    this.ordinal = ordinal
-                                }
+                        val redactOutput = systemRedacted ||
+                            grant.maskedDisposition == MaskedDisposition.MASKED_DISPOSITION_REDACT_OUTPUT_NULL
+                        hasMandatoryRedaction = hasMandatoryRedaction || systemRedacted
+                        val candidate = if (redactOutput) {
+                            columnMask {
+                                this.column = facts.outputColumnsList[ordinal]
+                                maskFn = "redact"
+                                kind = "NULL"
+                                this.ordinal = ordinal
                             }
+                        } else {
+                            val fn = row.classification?.maskFnName
+                            columnMask {
+                                this.column = facts.outputColumnsList[ordinal]
+                                maskFn = fn ?: "mask"
+                                kind = fn?.let { maskKinds[it] } ?: "FIXED"
+                                this.ordinal = ordinal
+                            }
+                        }
+                        val existing = masks.indexOfFirst { it.ordinal == ordinal }
+                        if (existing == -1) {
+                            masks += candidate
+                        } else if (redactOutput && masks[existing].kind != "NULL") {
+                            masks[existing] = candidate
                         }
                     }
                 }
@@ -851,7 +874,7 @@ fun decideQuery(
         facts.sourcesList.mapTo(this) { it.schema }
         columnGrants.mapTo(this) { it.column.identity.schema }
     }.filterNotTo(LinkedHashSet()) { it.startsWith("pg_temp", ignoreCase = true) }
-    val unmaskablePermitted = action == EnfAction.MASK && authz.authorizeDatasourceAction(
+    val unmaskablePermitted = action == EnfAction.MASK && !hasMandatoryRedaction && authz.authorizeDatasourceAction(
         principal, roles, AuthzAction.EXCEPTION_UNMASKABLE, ds.name, context, ds.tags,
     ) is AuthzDecision.Allow
     // MASK/DENY always redacts; an ALLOW redacts iff the analyzer's leak set holds a column the viewer

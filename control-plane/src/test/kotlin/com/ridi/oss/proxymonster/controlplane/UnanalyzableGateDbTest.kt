@@ -12,7 +12,7 @@ import kotlin.test.assertTrue
 
 /**
  * Unanalyzable-statement gate (docs/facts-emission.md) end-to-end on real PostgreSQL + real Cedar. The
- * analyzer cannot prove lineage for a NATURAL JOIN (shared-column lineage is ambiguous) → `resolved=false`.
+ * analyzer cannot resolve an unknown output column → `resolved=false`.
  * decideQuery asks the datasource for the `exception.unanalyzable` exception:
  *  - production floor (no exception policy) → DENY; and
  *  - a datasource that shipped a `exception.unanalyzable` permit → ALLOW, relaying the ORIGINAL statement verbatim
@@ -25,9 +25,8 @@ class UnanalyzableGateDbTest {
     private lateinit var fx: EnforcementFixture
     private val principal = "analyst@example.com"
 
-    // Admitted (single SELECT statement, passes the sql.select kind gate) but unanalyzable: the probe rejects
-    // NATURAL JOIN early, before catalog resolution, so this is `resolved=false` regardless of the schema.
-    private val unanalyzable = "select count(*) from orders natural join users"
+    // Admitted as SELECT but unresolved against the catalog.
+    private val unanalyzable = "select missing_column from orders"
 
     @BeforeAll
     fun setup() {

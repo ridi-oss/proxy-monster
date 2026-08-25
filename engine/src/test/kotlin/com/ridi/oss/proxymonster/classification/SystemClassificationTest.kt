@@ -92,6 +92,44 @@ class SystemClassificationTest {
     }
 
     @Test
+    fun `a redacted catalog column is exact and stays inside an open system relation`() {
+        val c = SystemClassifier(
+            SystemManifest(
+                engine = "postgres", series = "17", manifestVersion = 1, curatedThrough = "17.6",
+                systemSchemas = listOf(SystemSchema("*", "pg_catalog")),
+                redactedColumns = listOf(RedactedColumnRule("pg_catalog", "pg_foreign_server", "srvoptions")),
+            ),
+        )
+        assertTrue(c.redactsColumn("acme", "PG_CATALOG", "PG_FOREIGN_SERVER", "SRVOPTIONS"))
+        assertFalse(c.redactsColumn("acme", "pg_catalog", "pg_foreign_server", "srvname"))
+        assertFalse(c.redactsColumn("acme", "public", "pg_foreign_server", "srvoptions"))
+        assertEquals(SystemTag.CATALOG, c.classifyRelation("acme", "pg_catalog", "pg_foreign_server"))
+    }
+
+    @Test
+    fun `a redacted column outside an open system relation aborts`() {
+        assertFailsWith<SystemManifestException> {
+            SystemClassifier(
+                SystemManifest(
+                    engine = "postgres", series = "17", manifestVersion = 1, curatedThrough = "17.6",
+                    systemSchemas = listOf(SystemSchema("*", "pg_catalog")),
+                    relations = listOf(ObjectRule("pg_catalog", "pg_foreign_server", "system:critical")),
+                    redactedColumns = listOf(RedactedColumnRule("pg_catalog", "pg_foreign_server", "srvoptions")),
+                ),
+            )
+        }
+        assertFailsWith<SystemManifestException> {
+            SystemClassifier(
+                SystemManifest(
+                    engine = "postgres", series = "17", manifestVersion = 1, curatedThrough = "17.6",
+                    systemSchemas = listOf(SystemSchema("*", "pg_catalog")),
+                    redactedColumns = listOf(RedactedColumnRule("public", "pg_foreign_server", "srvoptions")),
+                ),
+            )
+        }
+    }
+
+    @Test
     fun `a utility command maps to its resource tag`() {
         val c = SystemClassifier(
             SystemManifest(
@@ -233,9 +271,17 @@ class SystemClassificationTest {
         assertEquals(SystemTag.ACTIVITY, c.classifyRelation("acme", "pg_catalog", "pg_stat_activity"))
         assertEquals(SystemTag.ACTIVITY, c.classifyRelation("acme", "pg_catalog", "pg_stat_progress_vacuum"), "family")
         assertEquals(SystemTag.CATALOG, c.classifyRelation("acme", "pg_catalog", "pg_class"), "ordinary catalog stays open")
+        assertEquals(SystemTag.CATALOG, c.classifyRelation("acme", "pg_catalog", "pg_foreign_server"))
+        assertEquals(SystemTag.CATALOG, c.classifyRelation("acme", "pg_catalog", "pg_foreign_table"))
         assertEquals(SystemTag.ACTIVITY, c.classifyRelation("acme", "pg_catalog", "pg_locks"))
         assertEquals(SystemTag.CATALOG, c.classifyColumn("acme", "pg_catalog", "pg_locks", "transactionid"))
         assertEquals(SystemTag.ACTIVITY, c.classifyColumn("acme", "pg_catalog", "pg_locks", "pid"))
+        assertTrue(c.redactsColumn("acme", "pg_catalog", "pg_foreign_server", "srvoptions"))
+        assertTrue(c.redactsColumn("acme", "pg_catalog", "pg_foreign_data_wrapper", "fdwoptions"))
+        assertTrue(c.redactsColumn("acme", "pg_catalog", "pg_user_mapping", "umoptions"))
+        assertTrue(c.redactsColumn("acme", "pg_catalog", "pg_foreign_table", "ftoptions"))
+        assertFalse(c.redactsColumn("acme", "pg_catalog", "pg_foreign_server", "srvname"))
+        assertFalse(c.redactsColumn("acme", "pg_catalog", "pg_foreign_table", "ftrelid"))
         assertEquals(SystemTag.CRITICAL, c.classifyFunction("acme", "pg_catalog", "set_config"))
         assertEquals(SystemTag.DATA_LEAK, c.classifyFunction("acme", "pg_catalog", "pg_read_file"), "pg_read_ family")
         assertEquals(SystemTag.DATA_LEAK, c.classifyFunction("acme", "public", "dblink"), "cross-schema extension fn")

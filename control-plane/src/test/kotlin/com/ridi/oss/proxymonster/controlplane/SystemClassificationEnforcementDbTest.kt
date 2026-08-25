@@ -4,6 +4,7 @@ import com.ridi.oss.proxymonster.grpc.EnfAction
 import com.ridi.oss.proxymonster.controlplane.authz.CedarPolicyInput
 import com.ridi.oss.proxymonster.controlplane.management.ManagementException
 import com.ridi.oss.proxymonster.controlplane.support.EnforcementFixture
+import com.ridi.oss.proxymonster.controlplane.support.pushTestCatalog
 import com.ridi.oss.proxymonster.controlplane.support.requireDockerOrSkip
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.Test
@@ -124,6 +125,141 @@ class SystemClassificationEnforcementDbTest {
     }
 
     @Test
+    fun `foreign catalog metadata stays browsable while credential options are always null`() {
+        setEngineVersion("PostgreSQL 17.4 on x86_64-pc-linux-gnu, compiled by gcc")
+        assertEquals(EnfAction.ALLOW, decide("select oid, srvname from pg_catalog.pg_foreign_server"))
+        val star = decideContext("select * from pg_catalog.pg_foreign_server")
+        assertEquals(EnfAction.MASK, star.action)
+        assertTrue(star.rewrittenSql != null)
+        assertEquals("srvoptions", star.masks.single().column)
+        assertEquals(7, star.masks.single().ordinal)
+        assertEquals("NULL", star.masks.single().kind)
+
+        for ((table, key, option) in listOf(
+            Triple("pg_foreign_data_wrapper", "oid", "fdwoptions"),
+            Triple("pg_foreign_server", "oid", "srvoptions"),
+            Triple("pg_user_mapping", "oid", "umoptions"),
+            Triple("pg_foreign_table", "ftrelid", "ftoptions"),
+        )) {
+            val output = decideContext("select $key, $option from pg_catalog.$table")
+            assertEquals(EnfAction.MASK, output.action, "$table.$option output must be redacted")
+            val mask = output.masks.single()
+            assertEquals(option, mask.column)
+            assertEquals("redact", mask.maskFn)
+            assertEquals("NULL", mask.kind)
+
+            assertEquals(
+                EnfAction.DENY,
+                decide("select $key from pg_catalog.$table where $option is not null"),
+                "$table.$option must not affect row selection",
+            )
+            assertEquals(
+                EnfAction.DENY,
+                decide("select $key from pg_catalog.$table order by $option"),
+                "$table.$option must not affect row order",
+            )
+        }
+
+        val derived = decideContext(
+            "select coalesce(srvoptions, '{}') as options from pg_catalog.pg_foreign_server",
+        )
+        assertEquals(EnfAction.MASK, derived.action, derived.detail)
+        assertEquals("options", derived.masks.single().column)
+        assertEquals("redact", derived.masks.single().maskFn)
+        assertEquals("NULL", derived.masks.single().kind)
+    }
+
+    @Test
+    fun `forced redaction dominates an ordinary mask on the same set-operation output`() {
+        fx.execOnTarget("create schema app")
+        fx.execOnTarget("create table app.secrets (secret_options text[])")
+        fx.datasourceStore.pushTestCatalog(
+            fx.datasource,
+            fx.targetJdbcUrl,
+            fx.targetUser,
+            fx.targetPassword,
+        )
+        setEngineVersion("PostgreSQL 17.4 on x86_64-pc-linux-gnu, compiled by gcc")
+        val last4 = fx.policyStore.getMaskFnByName("last4")!!
+        fx.datasourceStore.upsertClassification(
+            fx.datasource.id,
+            ClassificationInput(
+                schema = "app",
+                table = "secrets",
+                column = "secret_options",
+                tags = listOf("pii"),
+                maskFnId = last4.id,
+            ),
+        )
+        val secret = fx.datasourceStore.catalog(fx.datasource.id).single {
+            it.schema == "app" && it.table == "secrets" && it.column == "secret_options"
+        }
+        val tableEuid = listOf(
+            fx.datasource.name,
+            secret.catalog,
+            secret.schema,
+            secret.table,
+        ).joinToString("/")
+        fx.cedarPolicyStore.create(
+            CedarPolicyInput(
+                name = "test-union-secret-mask",
+                cedarSrc =
+                    """permit(principal in Role::"${fx.role}", action == Action::"result.read.masked", resource in Table::"$tableEuid") when { resource in Tag::"pii" };""",
+            ),
+            updatedBy = "test",
+        )
+
+        val sql =
+            """select secret_options as value from app.secrets
+                |union all
+                |select srvoptions from pg_catalog.pg_foreign_server
+            """.trimMargin()
+        fx.execOnTarget(sql)
+        val output = decideContext(sql)
+        assertEquals(EnfAction.MASK, output.action, output.detail)
+        val mask = output.masks.single()
+        assertEquals(0, mask.ordinal)
+        assertEquals("value", mask.column)
+        assertEquals("redact", mask.maskFn)
+        assertEquals("NULL", mask.kind)
+    }
+
+    @Test
+    fun `forced redaction does not override a Cedar denial`() {
+        setEngineVersion("PostgreSQL 17.4 on x86_64-pc-linux-gnu, compiled by gcc")
+        val who = "redaction-denied@example.com"
+        val srvoptions = fx.datasourceStore.catalog(fx.datasource.id).single {
+            it.schema == "pg_catalog" && it.table == "pg_foreign_server" && it.column == "srvoptions"
+        }
+        val columnEuid = listOf(
+            fx.datasource.name,
+            srvoptions.catalog,
+            srvoptions.schema,
+            srvoptions.table,
+            srvoptions.column,
+        ).joinToString("/")
+        fx.cedarPolicyStore.create(
+            CedarPolicyInput(
+                name = "test-redaction-reader",
+                cedarSrc = """permit(principal == User::"$who", action, resource in Datasource::"${fx.datasource.name}");""",
+            ),
+            updatedBy = "test",
+        )
+        fx.cedarPolicyStore.create(
+            CedarPolicyInput(
+                name = "test-redaction-column-forbid",
+                cedarSrc = """forbid(principal == User::"$who", action, resource == Column::"$columnEuid");""",
+            ),
+            updatedBy = "test",
+        )
+
+        assertEquals(EnfAction.ALLOW, decideContext("select oid from pg_catalog.pg_foreign_server", who).action)
+        val denied = decideContext("select srvoptions from pg_catalog.pg_foreign_server", who)
+        assertEquals(EnfAction.DENY, denied.action)
+        assertTrue(denied.detail?.contains("policy denies column") == true)
+    }
+
+    @Test
     fun `the dangerous forbids override even a broad datasource read grant`() {
         // The DENY cases above are deny-by-default for the ungranted analyst. This case makes the forbids
         // LOAD-BEARING: a principal with a broad any-action grant on the whole datasource. Without the shipped
@@ -139,9 +275,18 @@ class SystemClassificationEnforcementDbTest {
             ),
             updatedBy = "test",
         )
-        fun decideAs(who: String, sql: String) = decideContext(sql, who).action
+        fun decideAsContext(who: String, sql: String) = decideContext(sql, who)
+        fun decideAs(who: String, sql: String) = decideAsContext(who, sql).action
         // The broad grant genuinely permits: system:catalog browses.
         assertEquals(EnfAction.ALLOW, decideAs(broad, "select count(*) from pg_catalog.pg_class"), "broad grant permits system:catalog")
+        val redacted = decideAsContext(broad, "select oid, srvoptions from pg_catalog.pg_foreign_server")
+        assertEquals(EnfAction.MASK, redacted.action, "a broad unmasked grant cannot expose srvoptions")
+        assertEquals("NULL", redacted.masks.single().kind)
+        assertFalse(redacted.unmaskablePermitted, "mandatory redaction cannot be bypassed on a binary wire path")
+        val redactedForeignTable = decideAsContext(broad, "select ftrelid, ftoptions from pg_catalog.pg_foreign_table")
+        assertEquals(EnfAction.MASK, redactedForeignTable.action, "a broad unmasked grant cannot expose ftoptions")
+        assertEquals("NULL", redactedForeignTable.masks.single().kind)
+        assertFalse(redactedForeignTable.unmaskablePermitted, "mandatory redaction cannot be bypassed on a binary wire path")
         assertEquals(EnfAction.ALLOW, decideAs(broad, "select transactionid from pg_catalog.pg_locks"))
         assertEquals(EnfAction.DENY, decideAs(broad, "select pid from pg_catalog.pg_locks"))
         assertEquals(EnfAction.DENY, decideAs(broad, "select count(*) from pg_catalog.pg_locks"))
@@ -160,6 +305,7 @@ class SystemClassificationEnforcementDbTest {
         // unrecognized fixed-system table cannot be assumed benign catalog metadata.
         assertEquals(EnfAction.DENY, decide("select count(*) from pg_catalog.pg_class"), "no version → pg_class treated as critical → denied")
         assertEquals(EnfAction.DENY, decide("select count(*) from pg_catalog.pg_authid"), "no version → pg_authid denied")
+        assertEquals(EnfAction.DENY, decide("select oid from pg_catalog.pg_foreign_server"), "no version → foreign metadata stays closed")
     }
 
     @Test

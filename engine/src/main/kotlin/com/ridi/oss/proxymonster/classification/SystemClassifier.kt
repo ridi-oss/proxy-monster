@@ -32,6 +32,9 @@ class SystemClassifier(val manifest: SystemManifest) {
     // schema -> [(prefix, tag)]; a "*" schema (cross-schema function) is keyed under "*".
     private val relationFamilies: Map<String, List<Pair<String, SystemTag>>> = familyMap(manifest.relationFamilies)
     private val functionFamilies: Map<String, List<Pair<String, SystemTag>>> = familyMap(manifest.functionFamilies)
+    private val redactedColumns: Set<Triple<String, String, String>> = manifest.redactedColumns
+        .map { Triple(fold(it.schema), fold(it.table), fold(it.column)) }
+        .toSet()
     private val commandTags: Map<String, SystemTag> = manifest.commands.associate { it.id to requireTag(it.tag, "command ${it.id}") }
     // Cross-schema (schema "*") function rules apply in ANY schema.
     private val functionAnySchema: Map<String, SystemTag> =
@@ -57,6 +60,10 @@ class SystemClassifier(val manifest: SystemManifest) {
         return columnOverrides[Triple(fold(schema), fold(table), fold(column))]
             ?: classifySystemRelation(schema, table)
     }
+
+    /** True when the shipped manifest requires the catalog column to be output only as NULL. */
+    fun redactsColumn(catalog: String, schema: String, table: String, column: String): Boolean =
+        isSystemSchema(catalog, schema) && Triple(fold(schema), fold(table), fold(column)) in redactedColumns
 
     private fun classifySystemRelation(schema: String, name: String): SystemTag {
         val s = fold(schema)
@@ -177,6 +184,18 @@ class SystemClassifier(val manifest: SystemManifest) {
                 throw SystemManifestException(
                     "${manifestId()}: column override ${rule.schema}.${rule.table}.${rule.column} is outside a system schema",
                 )
+            }
+        }
+        val redactionKeys = manifest.redactedColumns.map { Triple(fold(it.schema), fold(it.table), fold(it.column)) }
+        if (redactionKeys.size != redactionKeys.toSet().size) {
+            throw SystemManifestException("${manifestId()}: duplicate redacted column")
+        }
+        for (rule in manifest.redactedColumns) {
+            if (fold(rule.schema) !in systemSchemas) {
+                throw SystemManifestException("${manifestId()}: redacted column ${rule.schema}.${rule.table}.${rule.column} is outside a system schema")
+            }
+            if (classifySystemRelation(rule.schema, rule.table) != SystemTag.CATALOG) {
+                throw SystemManifestException("${manifestId()}: redacted column ${rule.schema}.${rule.table}.${rule.column} belongs to a non-catalog relation")
             }
         }
         for ((schema, families) in relationFamilies + functionFamilies) {

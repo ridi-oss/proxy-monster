@@ -185,6 +185,13 @@ analyzer. A manifest is declarative:
       "tag": "system:catalog"
     }
   ],
+  "redactedColumns": [
+    {
+      "schema": "pg_catalog",
+      "table": "pg_foreign_server",
+      "column": "srvoptions"
+    }
+  ],
   "functions": [{ "schema": "*", "name": "dblink", "tag": "system:data-leak" }],
   "functionFamilies": [
     { "schema": "pg_catalog", "prefix": "pg_read_", "tag": "system:data-leak" }
@@ -206,9 +213,9 @@ its file path; a duplicate manifest for one engine/series; any tag outside the
 four `system:` tags; a wildcard schema on a relation rule (only a function rule
 may be cross-schema); duplicate exact identities with different tags;
 overlapping prefix families with different tags; an exact relation rule weaker
-than a family prefix it matches; and a column override outside an exposed system
-schema. Anything rejected throws `SystemManifestException`, which aborts
-startup.
+than a family prefix it matches; a column override outside an exposed system
+schema; and a redacted column outside a catalog-class relation. Anything
+rejected throws `SystemManifestException`, which aborts startup.
 
 Validation does not check command ids against the analyzer: nothing verifies
 that a manifest command id is one `analyzer/probe/facts.go` can actually emit,
@@ -260,6 +267,11 @@ that entry replaces the relation tag only for the named Column. The Column keeps
 its ordinary Table parent for direct table grants, while its system tag is
 attached directly for Cedar policy. This permits a reviewed structural field of
 a dangerous relation without opening another column or a column-free scan.
+
+`redactedColumns` is separate from classification. A named catalog column may
+appear only as an output, is always masked to SQL `NULL`, and cannot affect a
+predicate, join, ordering, or write. The forced redaction applies even under a
+broad datasource grant.
 
 ## Exposed system surface and catalog boundary
 
@@ -321,13 +333,18 @@ Relations/views:
 | object | why |
 | --- | --- |
 | `pg_catalog.pg_authid`, `pg_catalog.pg_shadow` | password verifiers and privileged role attributes |
-| `pg_catalog.pg_user_mapping`, `pg_catalog.pg_user_mappings` | user-mapping options can include remote credentials |
-| `pg_catalog.pg_foreign_server`, `pg_catalog.pg_foreign_data_wrapper` | server/wrapper options can include connection and handler configuration |
+| `pg_catalog.pg_user_mappings` | public user-mapping view can expose remote credentials |
 | `information_schema.user_mapping_options` | user-mapping option view |
 | `information_schema.foreign_server_options`, `information_schema.foreign_data_wrapper_options` | FDW option views |
 | `pg_catalog.pg_subscription` | logical-subscription connection string (`subconninfo`) |
 | `pg_catalog.pg_hba_file_rules`, `pg_catalog.pg_ident_file_mappings` | authentication/identity-map configuration |
 | `pg_catalog.pg_config`, `pg_catalog.pg_file_settings`, `pg_catalog.pg_settings`, `pg_catalog.pg_db_role_setting` | build/config paths, source files, pending values, per-role/database settings, and potentially sensitive connection/config values |
+
+The structural columns of `pg_catalog.pg_foreign_data_wrapper`,
+`pg_foreign_server`, `pg_user_mapping`, and `pg_foreign_table` are
+`system:catalog`. Their exact option columns (`fdwoptions`, `srvoptions`,
+`umoptions`, and `ftoptions`) always return SQL `NULL` and cannot be used
+outside output.
 
 Privileged functions:
 
@@ -795,7 +812,7 @@ means rather than which statements pass.
 - `datasource.engine_version`, the raw target DB version string the proxy
   pushed, which is what manifest resolution keys off;
 - canonical Utility grants and manifest command/tag mappings;
-- exact manifest column overrides;
+- exact manifest column overrides and forced-NULL redaction rules;
 - `catalog_column` as the physical column inventory, including the system
   schemas; and
 - `column_classification.tags` as user/admin tags only.
@@ -837,8 +854,8 @@ surfaces:
 
 - `SystemClassificationTest` (`engine/`) — manifest validation (bad tag,
   duplicate identity, overlapping family, downgrade-by-ordering, wildcard
-  relation, column override scope), the strongest-wins combinator, version
-  resolution and fallback, and that all four bundled manifests load and
+  relation, column override and redaction scope), the strongest-wins combinator,
+  version resolution and fallback, and that all four bundled manifests load and
   classify a spot-checked set of real PostgreSQL and MySQL objects including the
   Aurora ones.
 - `ManifestCommandCoverageDbTest` (`control-plane/`) — the fail-closed

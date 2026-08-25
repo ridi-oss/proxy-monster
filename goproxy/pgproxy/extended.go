@@ -409,9 +409,12 @@ func (s *Server) handleExecute(sess *session, message *pgproto3.Execute) error {
 	masks := proceed.Masks
 	if portal.binary {
 		if proceed.Decision.Action == "MASK" && !proceed.Decision.UnmaskablePermitted {
-			return refuseExtended(sess, "0A000", "binary result format is not supported for a masked statement")
+			if !nullOnlyMasks(masks) {
+				return refuseExtended(sess, "0A000", "binary result format is not supported for a masked statement")
+			}
+		} else {
+			masks = nil
 		}
-		masks = nil
 	}
 	// The fresh verdict authorizes the SQL already parsed on the target DB. A fresh rewrite cannot replace
 	// that prepared statement, so RewrittenSQL is deliberately ignored at Execute.
@@ -436,6 +439,18 @@ func (s *Server) handleExecute(sess *session, message *pgproto3.Execute) error {
 		}
 	}
 	return nil
+}
+
+func nullOnlyMasks(masks []*pb.ColumnMask) bool {
+	if len(masks) == 0 {
+		return false
+	}
+	for _, mask := range masks {
+		if mask.GetKind() != "NULL" {
+			return false
+		}
+	}
+	return true
 }
 
 func (s *Server) relayExecuteStream(sess *session, masks []*pb.ColumnMask, stats *engine.RelayStats) (pgproto3.BackendMessage, error) {

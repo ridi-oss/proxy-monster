@@ -161,13 +161,15 @@ and read-side sources synthesized for write analysis. A write target is not a
 scanned Table solely because it is the target — `INSERT INTO t VALUES (...)` is
 gated by its kind (`stmt.kind.insert` ∈ `stmt.cat.write.insert`), not a new
 result-read grant. Any target data actually read (`RETURNING`, `ON CONFLICT`,
-expressions reading old values, write-payload lineage) already emits Column or
-physical-read facts.
+expressions reading old values, write-payload lineage) emits Column facts, or a
+Table fact when an implicit non-visible column has no catalog identity.
 
-`covered` is computed from the final emitted facts: a table with any traced
-column is already exposed through it and needs no separate Table grant; a scan
-with no covering column fact requires `result.read.unmasked` or
-`result.read.masked` on the Table.
+`covered` is computed from the final emitted facts. A traced column normally
+covers its table. A scan with no covering column fact requires
+`result.read.unmasked` or `result.read.masked` on the Table. An implicit
+non-visible column without a catalog identity, such as PostgreSQL `ctid`, cannot
+emit a Column grant and therefore requires the Table grant even when the query
+also traces ordinary columns.
 
 <!-- prettier-ignore -->
 | statement | facts | result |
@@ -175,6 +177,8 @@ with no covering column fact requires `result.read.unmasked` or
 | `SELECT ssn FROM users` | `users.ssn`; `users` covered by the column | column verdict |
 | `SELECT count(*) FROM users` | uncovered `users` scan | require read on `Table::.../users` |
 | `SELECT u.id FROM users u, orders o` | `users` covered; `orders` uncovered | require `users.id` and `orders` |
+| `SELECT id, ctid FROM users` | `users.id`; `users` uncovered by virtual `ctid` | require `users.id` and `users` |
+| `UPDATE users SET email = 'x' WHERE ctid = '(0,1)'` | `users` uncovered by virtual `ctid` | require `stmt.kind.update` and `users` |
 | `WITH orders AS (SELECT 1) SELECT count(*) FROM orders` | no physical Table | no table-read gate |
 
 Verified by `KnownGapsTest` and `ScannedTableMySqlTest` (control-plane) and

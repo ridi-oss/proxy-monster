@@ -430,6 +430,7 @@ func TestStatementFactsSchemaQualifiedFunctionGrant(t *testing.T) {
 	// as a trusted function (a user function shadowing a safe name is an exfil vector).
 	for _, tc := range []struct{ sql, want string }{
 		{"SELECT public.version()", "public.version"},
+		{"SELECT public.version(), id FROM users", "public.version"},
 		{"SELECT pm_leak.upper('x')", "pm_leak.upper"},
 	} {
 		facts := postgresFacts(t, tc.sql)
@@ -446,6 +447,10 @@ func TestStatementFactsSchemaQualifiedFunctionGrant(t *testing.T) {
 	// A pg_catalog-qualified safe builtin is the trusted system function of that name — no grant.
 	if facts := postgresFacts(t, "SELECT pg_catalog.abs(-1)"); len(nonExecuteGrants(facts)) != 0 {
 		t.Fatalf("pg_catalog.abs must be safe: %+v", facts.GetResultReads())
+	}
+	// A bare builtin with a physical source stays on the manifest path; it is not a user-qualified call.
+	if facts := postgresFacts(t, "SELECT age(now()), id FROM users"); hasFunctionGrant(facts, "age") {
+		t.Fatalf("bare age() must not become an unclassified Function grant: %+v", facts.GetResultReads())
 	}
 }
 

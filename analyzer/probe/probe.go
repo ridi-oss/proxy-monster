@@ -234,6 +234,7 @@ func probeParsed(root exp.Expression, eng engine, qualifySchema schema.Schema, n
 	}
 	if fail := runStage("VALIDATE", func() {
 		p.qroot = p.root.Copy()
+		p.markImplicitFunctionColumns(p.qroot)
 		p.expandNaturalJoins(p.qroot)
 		p.markNewTargets(p.qroot)
 		// MySQL's DELETE target-alias list names sources already present under FROM. Keeping the
@@ -295,6 +296,74 @@ func probeParsed(root exp.Expression, eng engine, qualifySchema schema.Schema, n
 		return *fail
 	}
 	return result
+}
+
+func (p *prober) markImplicitFunctionColumns(root exp.Expression) {
+	systemFirst := p.engine.SystemSchemaFirst(p.namespace.SearchPath)
+	for _, table := range root.FindAll(exp.KindTable) {
+		function := table.This()
+		if function == nil || !function.Is(exp.TraitFunc) || table.Arg("catalog") != nil {
+			continue
+		}
+		name := function.Name()
+		if identifier, ok := function.Arg("this").(exp.Expression); ok {
+			identifier = identifier.Copy()
+			p.dialect.NormalizeIdentifier(identifier)
+			name = identifier.Name()
+		} else {
+			name = strings.ToLower(name)
+		}
+		schema, _ := table.Arg("schema").(exp.Expression)
+		if schema == nil {
+			if !systemFirst || !p.engine.ImplicitFunctionUnqualifiedTrusted(name) {
+				continue
+			}
+		} else if !p.engine.IsTrustedSystemQualifier(schema) {
+			continue
+		}
+		columns := p.engine.ImplicitFunctionColumns(name)
+		if len(columns) == 0 || (name == "unnest" && len(function.Expressions()) != 1) {
+			continue
+		}
+		setImplicitRelationColumns(table, columns)
+	}
+	if !systemFirst || !p.engine.ImplicitFunctionUnqualifiedTrusted("unnest") {
+		return
+	}
+	for _, unnest := range root.FindAll(exp.KindUnnest) {
+		if len(unnest.Expressions()) == 1 {
+			setImplicitRelationColumns(unnest, p.engine.ImplicitFunctionColumns("unnest"))
+		}
+	}
+}
+
+func postgresCatalogFirstAfterTempSchemas(searchPath []string) bool {
+	for _, schema := range searchPath {
+		if schema == "pg_temp" || strings.HasPrefix(schema, "pg_temp_") {
+			continue
+		}
+		return schema == "pg_catalog"
+	}
+	return false
+}
+
+func setImplicitRelationColumns(relation exp.Expression, names []string) {
+	if len(names) == 0 {
+		return
+	}
+	alias, _ := relation.Arg("alias").(exp.Expression)
+	if len(relation.AliasColumnNames()) != 0 {
+		return
+	}
+	if alias == nil {
+		alias = exp.TableAlias(exp.Args{})
+	}
+	columns := make([]exp.Expression, 0, len(names))
+	for _, name := range names {
+		columns = append(columns, exp.ToIdentifier(name))
+	}
+	alias.Set("columns", columns)
+	relation.Set("alias", alias)
 }
 
 func (p *prober) expandNaturalJoins(root exp.Expression) {

@@ -285,7 +285,9 @@ func (e *postgresEngine) Dialect() *dialects.Dialect { return e.dialect }
 // real columns, while query-side qualification already preserves quoted names and folds unquoted ones.
 func (e *postgresEngine) NormalizeCatalogOnBuild() bool { return false }
 
-func (e *postgresEngine) ImplicitNonVisibleColumns() []string { return []string{"ctid"} }
+func (e *postgresEngine) ImplicitNonVisibleColumns() []string {
+	return []string{"tableoid", "xmin", "cmin", "xmax", "cmax", "ctid"}
+}
 
 func (e *postgresEngine) FoldColumn(column string) string { return column }
 
@@ -377,7 +379,16 @@ func (e *postgresEngine) DiagnosticLeakKeys(report ProbeResult, qualifySchema sc
 		keys[id.String()+".*"] = true
 		return keys
 	}
+	// The qualify schema also lists the implicit system columns (ctid, xmin, …); a `Failing row
+	// contains (…)` DETAIL echoes only the real row.
+	implicit := map[string]bool{}
+	for _, col := range e.ImplicitNonVisibleColumns() {
+		implicit[col] = true
+	}
 	for _, col := range cols {
+		if implicit[col] {
+			continue
+		}
 		keys[id.String()+"."+col] = true
 	}
 	return keys

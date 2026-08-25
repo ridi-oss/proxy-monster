@@ -116,6 +116,107 @@ func TestPostgresCTIDSupportsDataGripTableQuery(t *testing.T) {
 	}
 }
 
+func TestPostgresSystemColumnsResolveExplicitly(t *testing.T) {
+	catalog := []*pb.ColumnSpec{
+		columnSpec("acme", "public", "users", "id", "BIGINT"),
+		columnSpec("acme", "public", "users", "email", "VARCHAR"),
+	}
+
+	t.Run("all system columns", func(t *testing.T) {
+		facts := analyzeProto(t, &pb.AnalyzeRequest{
+			Sql:          "SELECT tableoid, xmin, cmin, xmax, cmax, ctid FROM public.users",
+			EngineConfig: &pb.EngineConfig{Engine: pb.Engine_POSTGRES},
+			Namespace:    &pb.Namespace{Catalog: "acme", SearchPath: []string{"public"}},
+			Catalog:      catalog,
+		})
+		if !facts.GetResolved() {
+			t.Fatalf("PostgreSQL system columns must resolve: stage=%s detail=%q", stageString(facts.FailedStage), facts.GetDetail())
+		}
+		if len(facts.GetResultReads()) != 1 {
+			t.Fatalf("system columns emitted unexpected grants: %+v", facts.GetResultReads())
+		}
+		table := facts.GetResultReads()[0].GetTable()
+		if table == nil || table.GetCatalog() != "acme" || table.GetSchema() != "public" || table.GetTable() != "users" {
+			t.Fatalf("system columns must emit the physical table grant: %+v", facts.GetResultReads())
+		}
+	})
+}
+
+func TestPostgresSystemColumnsSupportDataGripIntrospection(t *testing.T) {
+	cases := []struct {
+		name    string
+		sql     string
+		catalog []*pb.ColumnSpec
+		table   string
+	}{
+		{
+			name: "namespaces",
+			sql: `select N.oid::bigint as id,
+       N.xmin as state_number,
+       nspname as name,
+       D.description,
+       pg_catalog.pg_get_userbyid(N.nspowner) as "owner"
+from pg_catalog.pg_namespace N
+  left join pg_catalog.pg_description D on N.oid = D.objoid
+order by case when nspname = pg_catalog.current_schema() then -1::bigint else N.oid::bigint end`,
+			catalog: []*pb.ColumnSpec{
+				columnSpec("acme", "pg_catalog", "pg_namespace", "oid", "OID"),
+				columnSpec("acme", "pg_catalog", "pg_namespace", "nspname", "NAME"),
+				columnSpec("acme", "pg_catalog", "pg_namespace", "nspowner", "OID"),
+				columnSpec("acme", "pg_catalog", "pg_description", "objoid", "OID"),
+				columnSpec("acme", "pg_catalog", "pg_description", "description", "TEXT"),
+			},
+			table: "pg_namespace",
+		},
+		{
+			name: "tablespaces",
+			sql: `select T.oid::bigint as id, T.spcname as name,
+       T.xmin as state_number, pg_catalog.pg_get_userbyid(T.spcowner) as owner,
+       pg_catalog.pg_tablespace_location(T.oid) /* null */ as location,
+       T.spcoptions /* null */ as options,
+       D.description as comment
+from pg_catalog.pg_tablespace T
+  left join pg_catalog.pg_shdescription D on D.objoid = T.oid
+--  where pg_catalog.age(T.xmin) <= #TXAGE`,
+			catalog: []*pb.ColumnSpec{
+				columnSpec("acme", "pg_catalog", "pg_tablespace", "oid", "OID"),
+				columnSpec("acme", "pg_catalog", "pg_tablespace", "spcname", "NAME"),
+				columnSpec("acme", "pg_catalog", "pg_tablespace", "spcowner", "OID"),
+				columnSpec("acme", "pg_catalog", "pg_tablespace", "spcoptions", "TEXT[]"),
+				columnSpec("acme", "pg_catalog", "pg_shdescription", "objoid", "OID"),
+				columnSpec("acme", "pg_catalog", "pg_shdescription", "description", "TEXT"),
+			},
+			table: "pg_tablespace",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			facts := analyzeProto(t, &pb.AnalyzeRequest{
+				Sql:          tc.sql,
+				EngineConfig: &pb.EngineConfig{Engine: pb.Engine_POSTGRES},
+				Namespace:    &pb.Namespace{Catalog: "acme", SearchPath: []string{"public"}},
+				Catalog:      tc.catalog,
+			})
+			if !facts.GetResolved() {
+				t.Fatalf("DataGrip introspection must resolve: stage=%s detail=%q", stageString(facts.FailedStage), facts.GetDetail())
+			}
+			tableGrant := false
+			for _, grant := range facts.GetResultReads() {
+				if column := grant.GetColumn(); column != nil && strings.EqualFold(column.GetIdentity().GetColumn(), "xmin") {
+					t.Fatalf("virtual xmin emitted a catalog-column grant: %+v", grant)
+				}
+				if table := grant.GetTable(); table != nil && table.GetCatalog() == "acme" && table.GetSchema() == "pg_catalog" && table.GetTable() == tc.table {
+					tableGrant = true
+				}
+			}
+			if !tableGrant {
+				t.Fatalf("virtual xmin emitted no %s table grant: %+v", tc.table, facts.GetResultReads())
+			}
+		})
+	}
+}
+
 func TestPostgresCTIDResolutionBoundaries(t *testing.T) {
 	baseCatalog := []*pb.ColumnSpec{
 		columnSpec("acme", "public", "users", "id", "BIGINT"),

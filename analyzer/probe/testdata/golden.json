@@ -471,17 +471,6 @@
     "isWrite": false,
     "rewrittenSql": null
   },
-  "mysql|natural join": {
-    "resolved": false,
-    "failedStage": "VALIDATE",
-    "detail": "NATURAL JOIN not supported (shared-column lineage is ambiguous)",
-    "outputColumns": 0,
-    "tracedColumns": 0,
-    "origins": [],
-    "references": {},
-    "isWrite": false,
-    "rewrittenSql": null
-  },
   "mysql|nested derived": {
     "resolved": true,
     "failedStage": null,
@@ -1470,17 +1459,6 @@
     "resolved": false,
     "failedStage": "PARSE",
     "detail": "expected 1 statement, got 2",
-    "outputColumns": 0,
-    "tracedColumns": 0,
-    "origins": [],
-    "references": {},
-    "isWrite": false,
-    "rewrittenSql": null
-  },
-  "postgres|natural join": {
-    "resolved": false,
-    "failedStage": "VALIDATE",
-    "detail": "NATURAL JOIN not supported (shared-column lineage is ambiguous)",
     "outputColumns": 0,
     "tracedColumns": 0,
     "origins": [],

@@ -366,6 +366,51 @@ Fixes for gaps documented in
 
 ## Analyzer & masking
 
+- Carry MySQL column visibility (`INVISIBLE`) through the catalog contract.
+  Introspection lists invisible columns like any other, so the analyzer includes
+  them in `SELECT *` expansion and NATURAL-join matching while the target
+  excludes them from both — the predicted star order and join key diverge from
+  what actually runs. Needs a visibility flag on `ColumnSpec` (introspected from
+  `information_schema.columns.EXTRA`), star expansion and NATURAL matching
+  skipping invisible columns, and explicit references still resolving.
+- Reorder merged NATURAL/USING stars inside derived tables and CTEs. The
+  faithful reorder runs only on the outer query's branches, so a merged star in
+  a derived scope fails closed today; supporting it needs the resort pass to
+  walk nested scopes and the outer scope to consume the derived output's merged
+  order.
+- Support a NATURAL/USING join after an outer merging join (RIGHT/FULL). The
+  merged key's value is `COALESCE(l.k, r.k)`, which a rewrite to plain USING
+  cannot express against a single carrier table; fails closed today.
+- Couple function-catalog freshness to the held connection. Function resolution
+  reads a datasource-level snapshot the proxy pushes on whole-catalog
+  introspection, so a same-named user function created ahead of `pg_catalog` on
+  the search path keeps resolving as the builtin (and relays) until the catalog
+  refreshes — the shadowing window in
+  [`KNOWN_LIMITATIONS.md`](../KNOWN_LIMITATIONS.md). The column catalog already
+  decides per connection against a generation stamp; the function catalog should
+  ride the same seam (deny function calls on a stale/absent generation) instead
+  of a process-global map, which also closes the transactional-DDL commit
+  ordering and concurrent-re-push reorder edges.
+- Fail closed on ambiguous unqualified columns in write payloads. The
+  write-payload resolver treats a column that is ambiguous among the payload's
+  local sources (`SELECT … FROM orders o, orders p WHERE ctid = …` — same for a
+  real column) as a correlated reference to the outer write target, where a bare
+  SELECT of the same shape fails closed. Grants still cover the read and
+  PostgreSQL rejects the ambiguous statement before execution, so this is
+  mis-attribution, not a leak — but the resolver should deny like the read path
+  does.
+- Synthesize implicit system columns per relation KIND. Synthesis adds all six
+  PostgreSQL system columns to every cataloged relation, but a view has none and
+  a foreign table has only `tableoid` — `SELECT xmin FROM a_view` resolves (with
+  a Column grant) and the target rejects it. Gated then engine-rejected, never a
+  leak; fixing it means the proxy pushing relation kinds with the catalog.
+- Tag the state-mutation / DoS builtins in the system-classification manifests.
+  `get_lock`/`sleep`/`benchmark` (MySQL) and `pg_advisory_lock`/`pg_sleep`/
+  `setval`/`nextval`/`lo_put`/`lowrite` (PostgreSQL) resolve as safe builtins
+  and relay ungated, so a read-authorized client can hold application locks or
+  mutate sequence / large-object state. Decide the tag (reuse `system:critical`
+  vs. a new state-mutation category) and audit the full surface before landing —
+  a manifest change per shipped engine version, curated like the native lists.
 - Reconsider redacting, rather than denying, a masked column used only in
   `GROUP BY` / `DISTINCT`; `DISTINCT` is the more defensible loosening.
 - Validate that a bare column's inferred source actually exposes it before

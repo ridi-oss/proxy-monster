@@ -125,6 +125,9 @@ type prober struct {
 	physicalTables    map[exp.Expression]tableID
 	nonPhysicalTables map[exp.Expression]bool
 	newTargets        map[exp.Expression]bool
+
+	naturalStarOrders  map[exp.Expression][]naturalStarColumn
+	naturalStarPending map[exp.Expression]bool
 }
 
 type resolveKey struct {
@@ -137,6 +140,11 @@ type identKey struct {
 	scope *optimizer.Scope
 	alias string
 	name  string
+}
+
+type naturalStarColumn struct {
+	name   string
+	tables []string
 }
 
 func Probe(sql string, engineConfig *pb.EngineConfig, sch *schema.Mapping, namespace NamespaceConfig) ProbeResult {
@@ -190,6 +198,9 @@ func probeParsed(root exp.Expression, eng engine, qualifySchema schema.Schema, n
 		physicalTables:    map[exp.Expression]tableID{},
 		nonPhysicalTables: map[exp.Expression]bool{},
 		newTargets:        map[exp.Expression]bool{},
+
+		naturalStarOrders:  map[exp.Expression][]naturalStarColumn{},
+		naturalStarPending: map[exp.Expression]bool{},
 	}
 	// Emit the called-function facts even when analysis FAILS after parsing — an unsupported/
 	// unresolved statement (`SELECT * FROM dblink(...)`, a data-modifying CTE, PIVOT, …) that resolves=false.
@@ -220,11 +231,6 @@ func probeParsed(root exp.Expression, eng engine, qualifySchema schema.Schema, n
 	if len(p.root.FindAll(exp.KindPivot)) > 0 {
 		return failResult("VALIDATE", "PIVOT/UNPIVOT not supported")
 	}
-	for _, join := range p.root.FindAll(exp.KindJoin) {
-		if strings.ToUpper(fmt.Sprint(firstNonNil(join.Arg("method"), ""))) == "NATURAL" || fmt.Sprint(join.Arg("kind")) == "NATURAL" {
-			return failResult("VALIDATE", "NATURAL JOIN not supported (shared-column lineage is ambiguous)")
-		}
-	}
 	for _, oc := range p.root.FindAll(exp.KindOnConflict) {
 		if truthy(oc.Arg("constraint")) {
 			return failResult("VALIDATE", "ON CONFLICT ON CONSTRAINT — cannot map a named constraint to columns")
@@ -232,6 +238,7 @@ func probeParsed(root exp.Expression, eng engine, qualifySchema schema.Schema, n
 	}
 	if fail := runStage("VALIDATE", func() {
 		p.qroot = p.root.Copy()
+		p.expandNaturalJoins(p.qroot)
 		p.markNewTargets(p.qroot)
 		// MySQL's DELETE target-alias list names sources already present under FROM. Keeping the
 		// selector nodes during qualification makes the native DML scope reject the duplicate alias;
@@ -292,6 +299,243 @@ func probeParsed(root exp.Expression, eng engine, qualifySchema schema.Schema, n
 		return *fail
 	}
 	return result
+}
+
+func (p *prober) expandNaturalJoins(root exp.Expression) {
+	for _, scope := range optimizer.TraverseScope(root) {
+		if scope == nil || scope.Expression == nil {
+			continue
+		}
+		joins := expressionsFor(scope.Expression, "joins")
+		needsExpansion := false
+		for _, join := range joins {
+			// Any NATURAL or USING join merges its common columns first in the star order, which
+			// differs from sqlglot's per-table expansion — every such scope needs the merge pass.
+			if isNaturalJoin(join) || len(expressionsFor(join, "using")) > 0 {
+				needsExpansion = true
+				break
+			}
+		}
+		if !needsExpansion {
+			continue
+		}
+		if scope.Expression.Kind() != exp.KindSelect {
+			panic(fmt.Errorf("NATURAL JOIN is unsupported in %s", exp.ClassName(scope.Expression.Kind())))
+		}
+
+		sourceOrder := p.fromSourceOrder(scope.Expression)
+		if len(sourceOrder) != len(joins)+1 {
+			panic(fmt.Errorf("NATURAL JOIN source order is incomplete"))
+		}
+		resolver := optimizer.NewResolver(scope, p.qualifySchema, false)
+		sourceColumns := func(alias string) []naturalStarColumn {
+			names := resolver.GetSourceColumns(alias, true)
+			if len(names) == 0 {
+				panic(fmt.Errorf("NATURAL JOIN source %q has no known columns", alias))
+			}
+			columns := make([]naturalStarColumn, 0, len(names))
+			for _, name := range names {
+				if name == "*" {
+					panic(fmt.Errorf("NATURAL JOIN source %q has an unknown column set", alias))
+				}
+				columns = append(columns, naturalStarColumn{name: name, tables: []string{alias}})
+			}
+			return columns
+		}
+
+		prefix := []naturalStarColumn{}
+		group := sourceColumns(sourceOrder[0])
+		outerMerged := false
+		for i, join := range joins {
+			right := sourceColumns(sourceOrder[i+1])
+			if isCommaJoin(join) {
+				prefix = append(prefix, group...)
+				group = right
+				continue
+			}
+			kind := strings.ToUpper(fmt.Sprint(join.Arg("kind")))
+			side := strings.ToUpper(fmt.Sprint(join.Arg("side")))
+			if kind == "SEMI" || kind == "ANTI" || side == "SEMI" || side == "ANTI" {
+				panic(fmt.Errorf("NATURAL JOIN with %s%s join is unsupported", side, kind))
+			}
+
+			mergeLeft, mergeRight := group, right
+			if side == "RIGHT" && p.engine.RightJoinStarOrder() == starOrderCommonRightLeft {
+				mergeLeft, mergeRight = right, group
+			}
+			using := p.joinUsingColumns(join)
+			if isNaturalJoin(join) {
+				// Both targets reject NATURAL combined with ON/USING as a syntax error; expanding it
+				// would hand back data for a statement the target would refuse.
+				if join.Arg("on") != nil || len(using) > 0 {
+					panic(fmt.Errorf("NATURAL JOIN with an ON/USING clause is invalid on the target"))
+				}
+				var err error
+				using, err = naturalCommonColumns(mergeLeft, mergeRight, p.engine.FoldColumn)
+				if err != nil {
+					panic(err)
+				}
+				join.Set("method", nil)
+				if strings.EqualFold(fmt.Sprint(join.Arg("kind")), "NATURAL") {
+					join.Set("kind", nil)
+				}
+				if len(using) == 0 {
+					if side == "" {
+						join.Set("kind", "CROSS")
+						join.Set("side", nil)
+					} else {
+						join.Set("on", exp.Boolean(exp.Args{"this": true}))
+					}
+				} else {
+					identifiers := make([]exp.Expression, 0, len(using))
+					for _, name := range using {
+						identifiers = append(identifiers, exp.ToIdentifier(name, true))
+					}
+					join.Set("using", identifiers)
+				}
+			}
+
+			if len(using) > 0 {
+				// Qualify expands USING against the first scope source carrying the name, so a key
+				// whose value lives elsewhere would bind the join to the wrong table: a same-named
+				// column in an earlier comma group, or a merged value produced by a preceding
+				// RIGHT/FULL join (its carrier is not the leftmost table). Fail closed on both.
+				if outerMerged {
+					panic(fmt.Errorf("NATURAL/USING join after an outer merging join — the merged key needs COALESCE semantics"))
+				}
+				for _, name := range using {
+					folded := p.engine.FoldColumn(name)
+					for _, column := range prefix {
+						if p.engine.FoldColumn(column.name) == folded {
+							panic(fmt.Errorf("NATURAL/USING key %q also names a column outside the joined tables", name))
+						}
+					}
+				}
+				if side == "RIGHT" || side == "FULL" {
+					outerMerged = true
+				}
+			}
+
+			if len(using) == 0 {
+				group = append(append([]naturalStarColumn{}, mergeLeft...), mergeRight...)
+				continue
+			}
+			merged, err := mergeUsingColumns(mergeLeft, mergeRight, using, p.engine.FoldColumn)
+			if err != nil {
+				panic(err)
+			}
+			group = merged
+		}
+		p.naturalStarOrders[scope.Expression] = append(prefix, group...)
+		for _, proj := range scope.Expression.Selects() {
+			if proj.Kind() == exp.KindStar {
+				p.naturalStarPending[scope.Expression] = true
+			}
+		}
+	}
+
+	for _, join := range root.FindAll(exp.KindJoin) {
+		if isNaturalJoin(join) {
+			panic(fmt.Errorf("NATURAL JOIN source shape is unsupported"))
+		}
+	}
+}
+
+func isNaturalJoin(join exp.Expression) bool {
+	return join != nil && (strings.EqualFold(fmt.Sprint(join.Arg("method")), "NATURAL") ||
+		strings.EqualFold(fmt.Sprint(join.Arg("kind")), "NATURAL"))
+}
+
+func isCommaJoin(join exp.Expression) bool {
+	return join != nil && join.Arg("method") == nil && join.Arg("kind") == nil &&
+		join.Arg("side") == nil && join.Arg("on") == nil && len(expressionsFor(join, "using")) == 0
+}
+
+func (p *prober) joinUsingColumns(join exp.Expression) []string {
+	using := expressionsFor(join, "using")
+	out := make([]string, 0, len(using))
+	for _, identifier := range using {
+		identifier = identifier.Copy()
+		p.dialect.NormalizeIdentifier(identifier)
+		out = append(out, identifier.Name())
+	}
+	return out
+}
+
+func naturalCommonColumns(left, right []naturalStarColumn, fold func(string) string) ([]string, error) {
+	leftCounts := map[string]int{}
+	rightCounts := map[string]int{}
+	for _, column := range left {
+		leftCounts[fold(column.name)]++
+	}
+	for _, column := range right {
+		rightCounts[fold(column.name)]++
+	}
+	common := []string{}
+	seen := map[string]bool{}
+	for _, column := range left {
+		key := fold(column.name)
+		if seen[key] || rightCounts[key] == 0 {
+			continue
+		}
+		seen[key] = true
+		if leftCounts[key] != 1 || rightCounts[key] != 1 {
+			return nil, fmt.Errorf("NATURAL JOIN common column %q is ambiguous", column.name)
+		}
+		common = append(common, column.name)
+	}
+	return common, nil
+}
+
+func mergeUsingColumns(left, right []naturalStarColumn, using []string, fold func(string) string) ([]naturalStarColumn, error) {
+	leftByName := map[string][]naturalStarColumn{}
+	rightByName := map[string][]naturalStarColumn{}
+	for _, column := range left {
+		leftByName[fold(column.name)] = append(leftByName[fold(column.name)], column)
+	}
+	for _, column := range right {
+		rightByName[fold(column.name)] = append(rightByName[fold(column.name)], column)
+	}
+
+	merged := make([]naturalStarColumn, 0, len(left)+len(right))
+	usingSet := map[string]bool{}
+	for _, rawName := range using {
+		name := fold(rawName)
+		if usingSet[name] {
+			return nil, fmt.Errorf("JOIN USING column %q appears more than once", rawName)
+		}
+		usingSet[name] = true
+		leftMatches := leftByName[name]
+		rightMatches := rightByName[name]
+		if len(leftMatches) != 1 || len(rightMatches) != 1 {
+			return nil, fmt.Errorf("JOIN USING column %q is missing or ambiguous", rawName)
+		}
+		tables := append([]string(nil), leftMatches[0].tables...)
+		for _, table := range rightMatches[0].tables {
+			found := false
+			for _, existing := range tables {
+				if existing == table {
+					found = true
+					break
+				}
+			}
+			if !found {
+				tables = append(tables, table)
+			}
+		}
+		merged = append(merged, naturalStarColumn{name: leftMatches[0].name, tables: tables})
+	}
+	for _, column := range left {
+		if !usingSet[fold(column.name)] {
+			merged = append(merged, column)
+		}
+	}
+	for _, column := range right {
+		if !usingSet[fold(column.name)] {
+			merged = append(merged, column)
+		}
+	}
+	return merged, nil
 }
 
 func tableNodes(node exp.Expression) []exp.Expression {
@@ -1173,6 +1417,12 @@ func (p *prober) lineage() ProbeResult {
 			}
 			starExpanded = true
 		}
+		// A merged star inside a derived table/CTE never reaches resortBareStarInplace (only the
+		// outer branches are resorted), so its expansion order — and the outer scope's ordinals
+		// with it — would silently disagree with the target.
+		if len(p.naturalStarPending) > 0 {
+			return failResult("VALIDATE", "NATURAL/USING `*` inside a derived scope — column order can't bind to mask ordinals")
+		}
 		if starExpanded {
 			relayRoot := p.qroot
 			// Repair the outermost display labels on a relay-only copy — lineage and mask ordinals
@@ -1586,11 +1836,9 @@ func (p *prober) predicateLiteralRefs() []PredicateLiteralRef {
 // IO/exec/admin function (pg_read_file, dblink, lo_*, load_file, rds_*, keyring_*, get_raw_page, …) parses
 // Anonymous, whereas standard-SQL builtins with dedicated node kinds (Count, Cast, Substring, …) are safe,
 // out of the shipped dangerous set, and carry unreliable Name()s (`count(*)` → "*"). Names are lowercased
-// so the resolver's fold-insensitive match is stable. This fact is the SOLE enforcement path for a FROM'd
-// dangerous builtin: the call resolves + emits here + is forbidden by the control-plane function gate
-// (via the per-version manifest or the version-independent BaselineDangerousFunctions floor). A no-FROM
-// dangerous call is gated separately by noFromFunctionGrants (facts.go), which emits a Function grant the
-// control-plane denies.
+// so the resolver's fold-insensitive match is stable. The control plane classifies these names against the
+// per-version manifest and the version-independent BaselineDangerousFunctions floor; functionCallGrants
+// separately preserves qualifiers and provides the fail-closed Function grant.
 func (p *prober) calledFunctions() []string {
 	seen := map[string]bool{}
 	out := []string{}
@@ -2263,9 +2511,6 @@ func (p *prober) expandableSources(sel exp.Expression) (bool, string) {
 		srcs = append(srcs, frm.This())
 	}
 	for _, j := range expressionsFor(sel, "joins") {
-		if strings.ToUpper(fmt.Sprint(firstNonNil(j.Arg("method"), ""))) == "NATURAL" || j.Arg("kind") == "NATURAL" {
-			return false, "a NATURAL join"
-		}
 		srcs = append(srcs, j.This())
 	}
 	for _, s := range srcs {
@@ -2287,6 +2532,31 @@ func (p *prober) expandableSources(sel exp.Expression) (bool, string) {
 	return true, ""
 }
 
+// Table aliases recorded before Qualify compare folded (MySQL lower_case_table_names folds them
+// during qualification; the projection carries the folded spelling).
+func (p *prober) naturalStarProjectionMatches(projection exp.Expression, expected naturalStarColumn) bool {
+	if projection == nil || projection.AliasOrName() != expected.name {
+		return false
+	}
+	foldTable := func(name string) string { return p.dialect.FoldIdentifierName(name, true) }
+	actualTables := map[string]bool{}
+	for _, column := range projection.FindAll(exp.KindColumn) {
+		if column.Name() != expected.name || column.TableName() == "" {
+			return false
+		}
+		actualTables[foldTable(column.TableName())] = true
+	}
+	if len(actualTables) != len(expected.tables) {
+		return false
+	}
+	for _, table := range expected.tables {
+		if !actualTables[foldTable(table)] {
+			return false
+		}
+	}
+	return true
+}
+
 func (p *prober) resortBareStarInplace(osel, qsel exp.Expression) {
 	starIdx := -1
 	for i, proj := range osel.Selects() {
@@ -2306,6 +2576,45 @@ func (p *prober) resortBareStarInplace(osel, qsel exp.Expression) {
 		pos[alias] = i
 	}
 	block := append([]exp.Expression(nil), qs[nb:len(qs)-na]...)
+	if order, ok := p.naturalStarOrders[qsel]; ok {
+		delete(p.naturalStarPending, qsel)
+		if len(order) != len(block) {
+			panic(fmt.Errorf("NATURAL JOIN star expansion produced %d columns, want %d", len(block), len(order)))
+		}
+		ordered := make([]exp.Expression, 0, len(block))
+		used := make([]bool, len(block))
+		for _, column := range order {
+			matched := -1
+			for i, projection := range block {
+				if !used[i] && p.naturalStarProjectionMatches(projection, column) {
+					matched = i
+					break
+				}
+			}
+			if matched < 0 {
+				panic(fmt.Errorf("NATURAL JOIN star output %q could not be ordered faithfully", column.name))
+			}
+			used[matched] = true
+			ordered = append(ordered, block[matched])
+		}
+		identity := true
+		for i := range ordered {
+			if ordered[i] != block[i] {
+				identity = false
+				break
+			}
+		}
+		// Qualify already rebound positional ORDER BY/GROUP BY ordinals against the pre-merge
+		// expansion; reordering the select list would leave them pointing at the wrong column.
+		if !identity && selectUsesPositionalOrdinals(osel) {
+			panic(fmt.Errorf("positional ORDER BY/GROUP BY over a NATURAL/USING star — ordinals cannot bind faithfully"))
+		}
+		newSelects := append([]exp.Expression(nil), qs[:nb]...)
+		newSelects = append(newSelects, ordered...)
+		newSelects = append(newSelects, qs[len(qs)-na:]...)
+		qsel.Set("expressions", newSelects)
+		return
+	}
 	position := func(proj exp.Expression) int {
 		if col := proj.Find(exp.KindColumn); col != nil {
 			if value, ok := pos[col.TableName()]; ok {
@@ -2321,6 +2630,22 @@ func (p *prober) resortBareStarInplace(osel, qsel exp.Expression) {
 	qsel.Set("expressions", newSelects)
 }
 
+func selectUsesPositionalOrdinals(sel exp.Expression) bool {
+	for _, arg := range []string{"order", "group"} {
+		clause := asExpression(sel.Arg(arg))
+		if clause == nil {
+			continue
+		}
+		for _, lit := range clause.FindAll(exp.KindLiteral) {
+			if !truthy(lit.Arg("is_string")) {
+				if _, err := strconv.Atoi(lit.Name()); err == nil {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
 func (p *prober) cteReferenced(cte exp.Expression, root exp.Expression) bool {
 	if cte == nil || root == nil || cte.This() == nil {
 		return false

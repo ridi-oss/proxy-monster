@@ -13,6 +13,18 @@ import (
 	pb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
 )
 
+// starOrder is a merging join's star-expansion column order: the merged common columns, then the
+// remaining columns of each side.
+type starOrder int
+
+const (
+	// starOrderCommonLeftRight: common columns, the left table's rest, the right's (PostgreSQL).
+	starOrderCommonLeftRight starOrder = iota
+	// starOrderCommonRightLeft: common columns, the RIGHT table's rest, the left's — MySQL expands
+	// `a RIGHT JOIN b` as `b LEFT JOIN a`.
+	starOrderCommonRightLeft
+)
+
 // engine owns every engine-specific analysis decision, built once per Probe call from the caller's
 // EngineConfig — everything an engine needs (server version, MySQL's lower_case_table_names, the
 // sqlglot-go Dialect built from them) is captured at construction, so nothing downstream re-derives
@@ -57,6 +69,9 @@ type engine interface {
 	// or CTE body whose output labels collide (MySQL ER_DUP_FIELDNAME; PostgreSQL allows duplicate
 	// OUTPUT labels and rejects only a reference to one).
 	RejectsDuplicateDerivedOutputLabels() bool
+	// RightJoinStarOrder is how this engine's target DB orders a NATURAL/USING RIGHT JOIN's star
+	// expansion. A plain ON right join is written order on both engines.
+	RightJoinStarOrder() starOrder
 	// NativeOutputLabel computes the output label THIS engine's target DB natively assigns to an
 	// unaliased projection: PostgreSQL derives it from the resolved expression (parse_target.c
 	// FigureColname, written function names from the parse-time SpanText); MySQL uses the
@@ -256,6 +271,8 @@ func (e *mysqlEngine) CommandPassthrough(string) bool { return false }
 // MySQL rejects a derived-table/CTE body with duplicated output labels: ER_DUP_FIELDNAME.
 func (e *mysqlEngine) RejectsDuplicateDerivedOutputLabels() bool { return true }
 
+func (e *mysqlEngine) RightJoinStarOrder() starOrder { return starOrderCommonRightLeft }
+
 type postgresEngine struct {
 	dialect *dialects.Dialect
 }
@@ -327,6 +344,8 @@ func (e *postgresEngine) CommandPassthrough(command string) bool {
 
 // PostgreSQL allows duplicate OUTPUT labels; only a reference to one is ambiguous.
 func (e *postgresEngine) RejectsDuplicateDerivedOutputLabels() bool { return false }
+
+func (e *postgresEngine) RightJoinStarOrder() starOrder { return starOrderCommonLeftRight }
 
 // PostgreSQL names an unaliased projection per parse_target.c FigureColname; a call is labeled by
 // its WRITTEN function name, read from the projection's parse-time SpanText.

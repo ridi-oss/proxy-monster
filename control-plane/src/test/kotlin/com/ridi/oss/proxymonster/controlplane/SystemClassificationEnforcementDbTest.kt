@@ -47,15 +47,21 @@ class SystemClassificationEnforcementDbTest {
         }
     }
 
-    private fun decide(sql: String): EnfAction {
-        val ds = fx.datasourceStore.get(fx.datasource.id)!! // re-fetch so ds.engineVersion reflects setEngineVersion
-        return decideQuery(
-            principal = principal, ds = ds, sql = sql, channel = Channel.WIRE,
-            catalog = fx.datasourceStore.catalog(fx.datasource.id), policyStore = fx.policyStore, accessStore = fx.accessStore,
-            userGroupStore = fx.userGroupStore, roleResolver = fx.roleResolver, authz = fx.authz,
-            systemClassification = classifier,
-        ).action
-    }
+    private fun decideContext(sql: String, who: String = principal) = decideQuery(
+        principal = who,
+        ds = fx.datasourceStore.get(fx.datasource.id)!!,
+        sql = sql,
+        channel = Channel.WIRE,
+        catalog = fx.datasourceStore.catalog(fx.datasource.id),
+        policyStore = fx.policyStore,
+        accessStore = fx.accessStore,
+        userGroupStore = fx.userGroupStore,
+        roleResolver = fx.roleResolver,
+        authz = fx.authz,
+        systemClassification = classifier,
+    )
+
+    private fun decide(sql: String): EnfAction = decideContext(sql).action
 
     @Test
     fun `a column classification may name a product system tag but not invent one`() {
@@ -100,6 +106,24 @@ class SystemClassificationEnforcementDbTest {
     }
 
     @Test
+    fun `only the transaction id column of pg_locks is catalog-readable`() {
+        setEngineVersion("PostgreSQL 17.4 on x86_64-pc-linux-gnu, compiled by gcc")
+        val decision = decideContext(
+            """select L.transactionid::varchar::bigint as transaction_id
+                |from pg_catalog.pg_locks L
+                |where L.transactionid is not null
+                |order by pg_catalog.age(L.transactionid) desc
+                |limit 1
+            """.trimMargin(),
+        )
+        assertEquals(EnfAction.ALLOW, decision.action)
+        assertEquals(null, decision.rewrittenSql, "the target DB must execute the original query")
+        assertEquals(EnfAction.DENY, decide("select pid from pg_catalog.pg_locks"))
+        assertEquals(EnfAction.DENY, decide("select transactionid, pid from pg_catalog.pg_locks"))
+        assertEquals(EnfAction.DENY, decide("select count(*) from pg_catalog.pg_locks"))
+    }
+
+    @Test
     fun `the dangerous forbids override even a broad datasource read grant`() {
         // The DENY cases above are deny-by-default for the ungranted analyst. This case makes the forbids
         // LOAD-BEARING: a principal with a broad any-action grant on the whole datasource. Without the shipped
@@ -115,14 +139,12 @@ class SystemClassificationEnforcementDbTest {
             ),
             updatedBy = "test",
         )
-        fun decideAs(who: String, sql: String) = decideQuery(
-            principal = who, ds = fx.datasourceStore.get(fx.datasource.id)!!, sql = sql, channel = Channel.WIRE,
-            catalog = fx.datasourceStore.catalog(fx.datasource.id), policyStore = fx.policyStore, accessStore = fx.accessStore,
-            userGroupStore = fx.userGroupStore, roleResolver = fx.roleResolver, authz = fx.authz,
-            systemClassification = classifier,
-        ).action
+        fun decideAs(who: String, sql: String) = decideContext(sql, who).action
         // The broad grant genuinely permits: system:catalog browses.
         assertEquals(EnfAction.ALLOW, decideAs(broad, "select count(*) from pg_catalog.pg_class"), "broad grant permits system:catalog")
+        assertEquals(EnfAction.ALLOW, decideAs(broad, "select transactionid from pg_catalog.pg_locks"))
+        assertEquals(EnfAction.DENY, decideAs(broad, "select pid from pg_catalog.pg_locks"))
+        assertEquals(EnfAction.DENY, decideAs(broad, "select count(*) from pg_catalog.pg_locks"))
         // ...but the shipped forbids OVERRIDE that broad grant on every dangerous tag (production floor).
         assertEquals(EnfAction.DENY, decideAs(broad, "select count(*) from pg_catalog.pg_authid"), "critical forbid overrides the broad grant")
         assertEquals(EnfAction.DENY, decideAs(broad, "select count(*) from pg_catalog.pg_stats"), "data-leak forbid overrides the broad grant")

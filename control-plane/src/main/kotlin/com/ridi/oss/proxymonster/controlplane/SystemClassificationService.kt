@@ -61,6 +61,20 @@ class SystemClassificationService(
         return (noManifestDangerousFloor(engine, catalog, schema, table) ?: SystemTag.CRITICAL).id
     }
 
+    fun tagForColumn(
+        engine: Engine,
+        engineVersion: String?,
+        catalog: String,
+        schema: String,
+        table: String,
+        column: String,
+    ): String? {
+        classifierFor(engine, engineVersion)?.let {
+            return it.classifyColumn(catalog, schema, table, column)?.id
+        }
+        return tagForTable(engine, engineVersion, catalog, schema, table)
+    }
+
     /**
      * The strongest EXPLICIT dangerous tag (stronger than [SystemTag.CATALOG]) any shipped manifest of [engine]
      * assigns the relation, or null when no manifest classifies it beyond the catalog default. Used only for a

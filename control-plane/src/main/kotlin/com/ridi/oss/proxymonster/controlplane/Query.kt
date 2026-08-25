@@ -232,8 +232,9 @@ internal fun readsAllUnmasked(
     // Same system-tag attachment as the main column authz — a leak column of pg_authid must keep
     // system:critical, or a datasource-wide unmasked grant would release its failing-row dump raw.
     val systemTags = systemClassification?.let { sc ->
-        refs.map { Triple(it.catalog, it.schema, it.table) }.distinct().mapNotNull { (cat, schema, table) ->
-            sc.tagForTable(ds.engine, ds.engineVersion, cat, schema, table)?.let { Triple(cat, schema, table) to it }
+        refs.mapNotNull { ref ->
+            sc.tagForColumn(ds.engine, ds.engineVersion, ref.catalog, ref.schema, ref.table, ref.column)
+                ?.let { ref.key to it }
         }.toMap()
     } ?: emptyMap()
     return authz.authorizeColumns(principal, roles, ds.name, refs, context.copy(stmtKind = null), systemTags, ds.tags)
@@ -741,9 +742,21 @@ fun decideQuery(
         facts.sourcesList.mapTo(this) { Triple(it.catalog, it.schema, it.table) }
         facts.resultReadsList.filter { it.hasTable() }.mapTo(this) { Triple(it.table.catalog, it.table.schema, it.table.table) }
     }
-    val systemTags = systemClassification?.let { sc ->
+    val tableSystemTags = systemClassification?.let { sc ->
         touchedTableIds.mapNotNull { (cat, schema, table) ->
             sc.tagForTable(ds.engine, ds.engineVersion, cat, schema, table)?.let { Triple(cat, schema, table) to it }
+        }.toMap()
+    } ?: emptyMap()
+    val columnSystemTags = systemClassification?.let { sc ->
+        columnRefs.mapNotNull { ref ->
+            sc.tagForColumn(
+                ds.engine,
+                ds.engineVersion,
+                ref.catalog,
+                ref.schema,
+                ref.table,
+                ref.column,
+            )?.let { ref.key to it }
         }.toMap()
     } ?: emptyMap()
 
@@ -767,7 +780,7 @@ fun decideQuery(
     }
 
     val columnVerdicts = if (columnRefs.isEmpty()) emptyMap() else
-        authz.authorizeColumns(principal, roles, ds.name, columnRefs, context, systemTags, ds.tags)
+        authz.authorizeColumns(principal, roles, ds.name, columnRefs, context, columnSystemTags, ds.tags)
     val masks = ArrayList<ColumnMask>()
     for (grant in columnGrants) {
         val column = grant.column
@@ -819,7 +832,7 @@ fun decideQuery(
             val table = grant.table
             TableRef("${table.catalog}.${table.schema}.${table.table}", table.catalog, table.schema, table.table)
         }.distinctBy { it.key }
-        val verdicts = authz.authorizeTables(principal, roles, ds.name, refs, context, systemTags, ds.tags)
+        val verdicts = authz.authorizeTables(principal, roles, ds.name, refs, context, tableSystemTags, ds.tags)
         refs.firstOrNull { verdicts[it.key] != TableVerdict.READ }?.let {
             return deny("no read grant for scanned table '${it.schema}.${it.table}'")
         }

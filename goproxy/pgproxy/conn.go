@@ -38,15 +38,19 @@ func postgresProtocolNegotiation(startup *pgproto3.StartupMessage) *pgproto3.Neg
 }
 
 type sessionCore struct {
-	targetDb         *pgproto3.Frontend
-	qe               *engine.QueryEngine
-	db               engine.Db
-	lastTxStatus     byte
-	pendingDirty     bool
-	namespaceOverlay []string
-	tempOverlay      []engine.TempColumn
-	forward          func(pgproto3.BackendMessage)
-	flushForward     func() error
+	targetDb                  *pgproto3.Frontend
+	qe                        *engine.QueryEngine
+	db                        engine.Db
+	lastTxStatus              byte
+	pendingDirty              bool
+	namespaceOverlay          []string
+	shadowedFunctions         []string
+	functionShadowingObserved bool
+	postgresSystemXIDVisible  bool
+	typeVisibilityObserved    bool
+	tempOverlay               []engine.TempColumn
+	forward                   func(pgproto3.BackendMessage)
+	flushForward              func() error
 }
 
 type session struct {

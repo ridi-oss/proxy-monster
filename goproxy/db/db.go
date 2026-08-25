@@ -126,10 +126,25 @@ func (MySqlDb) SchemaHashFromRows(rows [][]*string) ([]byte, bool, error) {
 // PgDb is the engine.Db adapter for Postgres.
 type PgDb struct{}
 
-// NamespaceProbeSQL yields the connection's effective search_path schemas, QUALIFIED — distinct from
-// introspect.Run's unqualified namespace probe used at a different call site.
+// NamespaceProbeSQL yields one JSON observation containing the connection's effective search_path,
+// visible non-pg_catalog overloads of polymorphic builtins, and pg_catalog.xid type visibility.
 func (PgDb) NamespaceProbeSQL() string {
-	return "SELECT pg_catalog.unnest(pg_catalog.current_schemas(true))"
+	return `SELECT pg_catalog.json_build_object(
+  'search_path', pg_catalog.current_schemas(true),
+  'shadowed_functions', COALESCE((
+    SELECT pg_catalog.json_agg(visible.proname ORDER BY visible.proname)
+    FROM (
+      SELECT DISTINCT p.proname
+      FROM pg_catalog.pg_proc AS p
+      WHERE p.proname OPERATOR(pg_catalog.=) 'unnest'::pg_catalog.name
+        AND p.pronamespace OPERATOR(pg_catalog.<>) 'pg_catalog'::pg_catalog.regnamespace
+        AND pg_catalog.pg_function_is_visible(p.oid)
+    ) AS visible
+  ), '[]'::pg_catalog.json),
+  'pg_catalog_xid_visible', pg_catalog.pg_type_is_visible(
+    'pg_catalog.xid'::pg_catalog.regtype::pg_catalog.oid
+  )
+)::pg_catalog.text`
 }
 
 func (PgDb) SupportsTempOverlay() bool { return true }

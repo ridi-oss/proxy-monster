@@ -749,6 +749,108 @@ func TestExtendedExecuteRevocationDeniesMutation(t *testing.T) {
 	}
 }
 
+func TestExtendedExecuteAuthorizesUnderBindTimeFunctionVisibility(t *testing.T) {
+	h := startBroker(t)
+	h.fake.decideFn = func(*pb.DecisionRequest) (*pb.WireDecision, error) {
+		return wireVerdict(&pb.Verdict{Decision: pb.EnfAction_ALLOW}), nil
+	}
+	direct := dbtest.OpenPostgres(t, "")
+	schema := "bind_shadow_" + strconv.FormatInt(time.Now().UnixNano(), 10)
+	for _, sql := range []string{
+		"CREATE SCHEMA " + schema,
+		"CREATE FUNCTION " + schema + ".unnest(integer[]) RETURNS SETOF integer LANGUAGE SQL AS 'SELECT 999'",
+	} {
+		if _, err := direct.Exec(sql); err != nil {
+			t.Fatalf("shadow setup %q: %v", sql, err)
+		}
+	}
+	t.Cleanup(func() { _, _ = direct.Exec("DROP SCHEMA IF EXISTS " + schema + " CASCADE") })
+
+	client := newRawPGClient(t, h)
+	const query = "SELECT unnest($1::integer[])"
+	assertNoRawPGError(t, client.simpleQuery(t, "SET search_path TO pg_catalog, "+schema))
+	assertNoRawPGError(t, client.simpleQuery(t, "BEGIN"))
+	assertRawExtendedCompletion(t, client.sendSync(t, &pgproto3.Parse{Name: "shadowed", Query: query}), "ParseComplete", 'T')
+	assertRawExtendedCompletion(t, client.sendSync(t, &pgproto3.Bind{
+		DestinationPortal: "shadowed_portal",
+		PreparedStatement: "shadowed",
+		Parameters:        [][]byte{[]byte("{1}")},
+	}), "BindComplete", 'T')
+	assertNoRawPGError(t, client.simpleQuery(t, "SET search_path TO "+primarySchema))
+
+	frames := client.sendSync(t, &pgproto3.Execute{Portal: "shadowed_portal"})
+	if len(frames) != 3 {
+		t.Fatalf("Execute frames = %d, want DataRow + CommandComplete + ReadyForQuery", len(frames))
+	}
+	row, ok := frames[0].(*pgproto3.DataRow)
+	if !ok || !reflect.DeepEqual(row.Values, [][]byte{[]byte("999")}) {
+		t.Fatalf("Execute frame[0] = %#v, want shadow-function result 999", frames[0])
+	}
+
+	var execute *pb.DecisionRequest
+	for _, request := range h.fake.requests() {
+		if request.GetSql() == query {
+			execute = request
+		}
+	}
+	if execute == nil || !reflect.DeepEqual(execute.GetSearchPath(), []string{"pg_catalog", schema}) ||
+		!execute.GetPostgresFunctionShadowingObserved() ||
+		!reflect.DeepEqual(execute.GetPostgresShadowedFunctions(), []string{"unnest"}) {
+		t.Fatalf("Execute DecisionRequest = %+v, want bind-time path and observed [unnest]", execute)
+	}
+	assertNoRawPGError(t, client.simpleQuery(t, "ROLLBACK"))
+}
+
+func TestExtendedExecuteAuthorizesUnderBindTimeTypeVisibility(t *testing.T) {
+	h := startBroker(t)
+	h.fake.decideFn = func(*pb.DecisionRequest) (*pb.WireDecision, error) {
+		return wireVerdict(&pb.Verdict{Decision: pb.EnfAction_ALLOW}), nil
+	}
+	client := newRawPGClient(t, h)
+	assertNoRawPGError(t, client.simpleQuery(t, "SET search_path TO pg_catalog, "+primarySchema))
+	assertNoRawPGError(t, client.simpleQuery(t, "BEGIN"))
+
+	const visibleSQL = "SELECT 1 AS visible_xid"
+	assertRawExtendedCompletion(t, client.sendSync(t, &pgproto3.Parse{Name: "visible_xid", Query: visibleSQL}), "ParseComplete", 'T')
+	assertRawExtendedCompletion(t, client.sendSync(t, &pgproto3.Bind{
+		DestinationPortal: "visible_xid_portal", PreparedStatement: "visible_xid",
+	}), "BindComplete", 'T')
+
+	assertNoRawPGError(t, client.simpleQuery(t, "CREATE TYPE pg_temp.xid AS ENUM ('x')"))
+	const shadowedSQL = "SELECT 2 AS shadowed_xid"
+	assertRawExtendedCompletion(t, client.sendSync(t, &pgproto3.Parse{Name: "shadowed_xid", Query: shadowedSQL}), "ParseComplete", 'T')
+	assertRawExtendedCompletion(t, client.sendSync(t, &pgproto3.Bind{
+		DestinationPortal: "shadowed_xid_portal", PreparedStatement: "shadowed_xid",
+	}), "BindComplete", 'T')
+
+	assertNoRawPGError(t, client.sendSync(t, &pgproto3.Execute{Portal: "visible_xid_portal"}))
+	assertNoRawPGError(t, client.simpleQuery(t, "DROP TYPE pg_temp.xid"))
+	assertNoRawPGError(t, client.sendSync(t, &pgproto3.Execute{Portal: "shadowed_xid_portal"}))
+
+	lastRequest := func(sql string) *pb.DecisionRequest {
+		t.Helper()
+		var found *pb.DecisionRequest
+		for _, request := range h.fake.requests() {
+			if request.GetSql() == sql {
+				found = request
+			}
+		}
+		if found == nil {
+			t.Fatalf("no DecisionRequest for %q", sql)
+		}
+		return found
+	}
+	visible := lastRequest(visibleSQL)
+	if visible.PostgresSystemXidVisible == nil || !visible.GetPostgresSystemXidVisible() {
+		t.Fatalf("visible portal xid visibility = %v, want present true", visible.PostgresSystemXidVisible)
+	}
+	shadowed := lastRequest(shadowedSQL)
+	if shadowed.PostgresSystemXidVisible == nil || shadowed.GetPostgresSystemXidVisible() {
+		t.Fatalf("shadowed portal xid visibility = %v, want present false", shadowed.PostgresSystemXidVisible)
+	}
+	assertNoRawPGError(t, client.simpleQuery(t, "ROLLBACK"))
+}
+
 func TestExtendedExecuteAuthorizesUnderBindTimeNamespace(t *testing.T) {
 	h := startBroker(t)
 	h.fake.decideFn = func(*pb.DecisionRequest) (*pb.WireDecision, error) {

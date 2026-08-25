@@ -292,6 +292,9 @@ internal fun analyzerAndCatalogIndex(
     tempColumns: List<CatalogColumn>,
     resolvedSearchPath: List<String>,
     liveAnsiQuotes: Boolean,
+    postgresFunctionShadowingObserved: Boolean = false,
+    postgresShadowedFunctions: List<String> = emptyList(),
+    postgresSystemXidVisible: Boolean? = null,
 ): Pair<CatalogColumnIndex, Analyzer> {
     val mysqlCaseMode = ds.engine.requireCaseMode(ds.mysqlLowerCaseTableNames)
     val namespace = pbNamespace {
@@ -305,6 +308,9 @@ internal fun analyzerAndCatalogIndex(
         // Only meaningful for MySQL (the proxy observes ANSI_QUOTES off a MySQL session and leaves this
         // false otherwise); the PostgreSQL engine ignores it regardless.
         if (liveAnsiQuotes) this.mysqlAnsiQuotes = true
+        if (postgresFunctionShadowingObserved) this.postgresFunctionShadowingObserved = true
+        this.postgresShadowedFunctions.addAll(postgresShadowedFunctions)
+        postgresSystemXidVisible?.let { this.postgresSystemXidVisible = it }
     }
     val effectiveCatalog = catalog + tempColumns
     val specs = effectiveCatalog.map { col ->
@@ -432,6 +438,11 @@ fun decideQuery(
     // Forwarded to the analyzer's EngineConfig so a masked column quoted with `"` is parsed as the column
     // and still masked; false for PostgreSQL and default MySQL mode.
     liveAnsiQuotes: Boolean = false,
+    // PostgreSQL function visibility observed on the held target session. An unobserved empty list is not
+    // equivalent to an observed empty list for polymorphic builtins such as unnest.
+    postgresFunctionShadowingObserved: Boolean = false,
+    postgresShadowedFunctions: List<String> = emptyList(),
+    postgresSystemXidVisible: Boolean? = null,
     // The shipped system classifier. Null → no system tags marshaled (system schemas stay deny-by-default).
     // Keyed off ds.engineVersion, path-agnostic (CP-introspect + proxy PushCatalog).
     systemClassification: SystemClassificationService? = null,
@@ -453,7 +464,16 @@ fun decideQuery(
     val resolvedSearchPath = (liveSearchPath ?: ds.defaultSchemas).ifEmpty { listOf(ds.dbName.ifBlank { "public" }) }
 
     val catalogAndFacts = try {
-        val (index, analyzer) = analyzerAndCatalogIndex(ds, catalog, tempColumns, resolvedSearchPath, liveAnsiQuotes)
+        val (index, analyzer) = analyzerAndCatalogIndex(
+            ds,
+            catalog,
+            tempColumns,
+            resolvedSearchPath,
+            liveAnsiQuotes,
+            postgresFunctionShadowingObserved,
+            postgresShadowedFunctions,
+            postgresSystemXidVisible,
+        )
         index to (factsOverride ?: analyzer.analyze(sql))
     } catch (e: Exception) {
         return structuralDeny(

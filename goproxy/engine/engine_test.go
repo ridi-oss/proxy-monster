@@ -229,6 +229,56 @@ func TestMysqlAnsiQuotesForwardedAndCached(t *testing.T) {
 	}
 }
 
+func TestPostgresLookupStateForwardedAndCached(t *testing.T) {
+	dec := &fakeDecider{outcome: okOutcome("ALLOW", nil)}
+	e := NewQueryEngine(pgDb, dec)
+	probes := 0
+	observations := []NamespaceProbe{
+		{
+			Namespace:                         []string{"pg_catalog", "app"},
+			PostgresShadowedFunctions:         []string{"unnest"},
+			PostgresFunctionShadowingObserved: true,
+			PostgresSystemXIDVisible:          true,
+			PostgresTypeVisibilityObserved:    true,
+		},
+		{
+			Namespace:                         []string{"pg_catalog", "app"},
+			PostgresShadowedFunctions:         []string{},
+			PostgresFunctionShadowingObserved: true,
+			PostgresSystemXIDVisible:          false,
+			PostgresTypeVisibilityObserved:    true,
+		},
+	}
+	in := AuthzInput{
+		SQL: "SELECT 1",
+		ProbeNamespace: func() (NamespaceProbe, error) {
+			probe := observations[probes]
+			probes++
+			return probe, nil
+		},
+	}
+
+	e.Authorize(in)
+	if !dec.lastReq.PostgresFunctionShadowingObserved ||
+		!reflect.DeepEqual(dec.lastReq.PostgresShadowedFunctions, []string{"unnest"}) ||
+		!dec.lastReq.PostgresTypeVisibilityObserved || !dec.lastReq.PostgresSystemXIDVisible {
+		t.Fatalf("first Decide PostgreSQL lookup state = %+v, want observed [unnest] and visible xid", dec.lastReq)
+	}
+	e.Authorize(in)
+	if probes != 1 || !reflect.DeepEqual(dec.lastReq.PostgresShadowedFunctions, []string{"unnest"}) ||
+		!dec.lastReq.PostgresTypeVisibilityObserved || !dec.lastReq.PostgresSystemXIDVisible {
+		t.Fatalf("cached PostgreSQL lookup state probes/request = %d/%+v", probes, dec.lastReq)
+	}
+
+	e.MarkNamespaceDirty()
+	e.Authorize(in)
+	if probes != 2 || !dec.lastReq.PostgresFunctionShadowingObserved ||
+		dec.lastReq.PostgresShadowedFunctions == nil || len(dec.lastReq.PostgresShadowedFunctions) != 0 ||
+		!dec.lastReq.PostgresTypeVisibilityObserved || dec.lastReq.PostgresSystemXIDVisible {
+		t.Fatalf("re-probed PostgreSQL lookup state probes/request = %d/%+v", probes, dec.lastReq)
+	}
+}
+
 func TestTempOverlayOnlyWhenSupported(t *testing.T) {
 	temps := []TempColumn{{Schema: "pg_temp_3", Table: "t", Column: "c", Ordinal: 0}}
 	probeTemps := func() ([]TempColumn, error) { return temps, nil }

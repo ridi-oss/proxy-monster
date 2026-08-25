@@ -88,6 +88,9 @@ class SystemClassificationServiceTest {
             assertEquals("system:activity", svc.tagForTable(Engine.POSTGRES, v, "app", "pg_catalog", "pg_statio_user_tables"), v)
             assertEquals("system:activity", svc.tagForTable(Engine.POSTGRES, v, "app", "pg_catalog", "pg_replication_slots"), v)
             assertEquals("system:activity", svc.tagForTable(Engine.POSTGRES, v, "app", "pg_catalog", "pg_replication_origin_status"), v)
+            assertEquals("system:activity", svc.tagForTable(Engine.POSTGRES, v, "app", "pg_catalog", "pg_locks"), v)
+            assertEquals("system:catalog", svc.tagForColumn(Engine.POSTGRES, v, "app", "pg_catalog", "pg_locks", "transactionid"), v)
+            assertEquals("system:activity", svc.tagForColumn(Engine.POSTGRES, v, "app", "pg_catalog", "pg_locks", "pid"), v)
             // FDW option views expose raw srvoptions/fdwoptions — critical, mirroring the already-critical
             // public foreign_server_options / pg_foreign_server twins; _pg_user_mappings exposes umoptions.
             assertEquals("system:critical", svc.tagForTable(Engine.POSTGRES, v, "app", "information_schema", "_pg_user_mappings"), v)
@@ -126,6 +129,11 @@ class SystemClassificationServiceTest {
         assertEquals("system:data-leak", svc.tagForTable(Engine.MYSQL, null, "def", "information_schema", "COLUMN_STATISTICS"))
         // A catalog-default table (structural, no explicit dangerous rule) is closed as critical, not catalog.
         assertEquals("system:critical", svc.tagForTable(Engine.POSTGRES, null, "acme", "pg_catalog", "pg_class"))
+        assertEquals(
+            "system:activity",
+            svc.tagForColumn(Engine.POSTGRES, null, "acme", "pg_catalog", "pg_locks", "transactionid"),
+            "without a governing manifest the column keeps the relation's dangerous floor",
+        )
         // An unrecognized table in a fixed system schema (in no shipped manifest) is likewise closed as critical.
         assertEquals("system:critical", svc.tagForTable(Engine.MYSQL, null, "def", "performance_schema", "not_a_real_pfs_table_xyz"))
         // A table the manifest DOES classify dangerous keeps that explicit tag even with no governing version

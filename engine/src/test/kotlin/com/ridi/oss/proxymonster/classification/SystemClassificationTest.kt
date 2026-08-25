@@ -63,6 +63,35 @@ class SystemClassificationTest {
     }
 
     @Test
+    fun `an exact column override replaces the relation tag only for that column`() {
+        val c = SystemClassifier(
+            SystemManifest(
+                engine = "postgres", series = "17", manifestVersion = 1, curatedThrough = "17.6",
+                systemSchemas = listOf(SystemSchema("*", "pg_catalog")),
+                relations = listOf(ObjectRule("pg_catalog", "pg_locks", "system:activity")),
+                columnOverrides = listOf(ColumnRule("pg_catalog", "pg_locks", "transactionid", "system:catalog")),
+            ),
+        )
+        assertEquals(SystemTag.ACTIVITY, c.classifyRelation("acme", "pg_catalog", "pg_locks"))
+        assertEquals(SystemTag.CATALOG, c.classifyColumn("acme", "PG_CATALOG", "PG_LOCKS", "TRANSACTIONID"))
+        assertEquals(SystemTag.ACTIVITY, c.classifyColumn("acme", "pg_catalog", "pg_locks", "pid"))
+        assertNull(c.classifyColumn("acme", "public", "pg_locks", "transactionid"))
+    }
+
+    @Test
+    fun `a column override outside a system schema aborts`() {
+        assertFailsWith<SystemManifestException> {
+            SystemClassifier(
+                SystemManifest(
+                    engine = "postgres", series = "17", manifestVersion = 1, curatedThrough = "17.6",
+                    systemSchemas = listOf(SystemSchema("*", "pg_catalog")),
+                    columnOverrides = listOf(ColumnRule("public", "users", "id", "system:catalog")),
+                ),
+            )
+        }
+    }
+
+    @Test
     fun `a utility command maps to its resource tag`() {
         val c = SystemClassifier(
             SystemManifest(
@@ -204,6 +233,9 @@ class SystemClassificationTest {
         assertEquals(SystemTag.ACTIVITY, c.classifyRelation("acme", "pg_catalog", "pg_stat_activity"))
         assertEquals(SystemTag.ACTIVITY, c.classifyRelation("acme", "pg_catalog", "pg_stat_progress_vacuum"), "family")
         assertEquals(SystemTag.CATALOG, c.classifyRelation("acme", "pg_catalog", "pg_class"), "ordinary catalog stays open")
+        assertEquals(SystemTag.ACTIVITY, c.classifyRelation("acme", "pg_catalog", "pg_locks"))
+        assertEquals(SystemTag.CATALOG, c.classifyColumn("acme", "pg_catalog", "pg_locks", "transactionid"))
+        assertEquals(SystemTag.ACTIVITY, c.classifyColumn("acme", "pg_catalog", "pg_locks", "pid"))
         assertEquals(SystemTag.CRITICAL, c.classifyFunction("acme", "pg_catalog", "set_config"))
         assertEquals(SystemTag.DATA_LEAK, c.classifyFunction("acme", "pg_catalog", "pg_read_file"), "pg_read_ family")
         assertEquals(SystemTag.DATA_LEAK, c.classifyFunction("acme", "public", "dblink"), "cross-schema extension fn")

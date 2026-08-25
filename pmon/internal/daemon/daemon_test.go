@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ridi-oss/proxy-monster/mysqlwire"
 	"github.com/ridi-oss/proxy-monster/pmon/control"
 	"github.com/ridi-oss/proxy-monster/pmon/state"
 )
@@ -141,6 +142,140 @@ func TestLoginOpensBrokersImmediately(t *testing.T) {
 	c.Close()
 
 	d.closeAllListeners()
+}
+
+func TestFreshLoginClosesExistingSessions(t *testing.T) {
+	isolate(t)
+	cp := newFakeCP(t, []Datasource{
+		{Name: "acme-mysql", Engine: "mysql", DbName: "app", AdvertiseAddr: freePort(t)},
+	})
+	d := New("test")
+	ctx := context.Background()
+	if err := d.Login(ctx, control.LoginRequest{ControlPlane: cp.URL}, func(control.LoginEvent) {}); err != nil {
+		t.Fatalf("first Login: %v", err)
+	}
+	defer d.closeAllListeners()
+
+	client, server := net.Pipe()
+	defer client.Close()
+	closed := make(chan struct{})
+	tracked := &closeObserverConn{Conn: server, onClose: func() { close(closed) }}
+	deregister := d.addConn("acme-mysql", tracked)
+	defer deregister()
+
+	if err := d.Login(ctx, control.LoginRequest{ControlPlane: cp.URL}, func(control.LoginEvent) {}); err != nil {
+		t.Fatalf("second Login: %v", err)
+	}
+	select {
+	case <-closed:
+	case <-time.After(time.Second):
+		t.Fatal("a session opened under the previous login survived the fresh login")
+	}
+	status := d.Status()
+	if len(status.Datasources) != 1 || !status.Datasources[0].Brokered {
+		t.Fatalf("replacement login did not reopen the broker: %+v", status.Datasources)
+	}
+}
+
+func TestFreshLoginDrainKeepsCurrentGeneration(t *testing.T) {
+	d := New("test")
+	oldClient, oldServer := net.Pipe()
+	defer oldClient.Close()
+	oldClosed := make(chan struct{})
+	deregisterOld := d.addConn("acme-mysql", &closeObserverConn{Conn: oldServer, onClose: func() { close(oldClosed) }})
+	defer deregisterOld()
+
+	d.mu.Lock()
+	d.tokenGeneration++
+	currentGeneration := d.tokenGeneration
+	d.mu.Unlock()
+	newClient, newServer := net.Pipe()
+	defer newClient.Close()
+	newClosed := make(chan struct{})
+	deregisterNew := d.addConn("acme-mysql", &closeObserverConn{Conn: newServer, onClose: func() { close(newClosed) }})
+	defer deregisterNew()
+
+	d.closeTokenGenerationsBefore(currentGeneration)
+	select {
+	case <-oldClosed:
+	case <-time.After(time.Second):
+		t.Fatal("the previous login generation survived the fresh-login drain")
+	}
+	select {
+	case <-newClosed:
+		t.Fatal("the fresh-login drain closed a session using the current login generation")
+	case <-time.After(100 * time.Millisecond):
+	}
+	newServer.Close()
+}
+
+func TestConcurrentLoginAndLogoutLeaveLoggedOutState(t *testing.T) {
+	isolate(t)
+	polling := make(chan struct{})
+	releasePoll := make(chan struct{})
+	var pollingOnce, releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(releasePoll) }) }
+	defer release()
+
+	cp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/auth/device/start":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"verificationUri": "https://idp.example/activate", "userCode": "ABCD",
+				"handle": "h-1", "interval": 1,
+			})
+		case "/auth/device/poll":
+			pollingOnce.Do(func() { close(polling) })
+			<-releasePoll
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"principal": "you@example.com", "token": "pmk_tok",
+				"expiresAt":    time.Now().Add(12 * time.Hour).Format(time.RFC3339),
+				"renewalToken": "pmr_abc",
+			})
+		case "/api/datasources":
+			_ = json.NewEncoder(w).Encode([]Datasource{})
+		default:
+			t.Errorf("unexpected control-plane path %q", r.URL.Path)
+		}
+	}))
+	defer cp.Close()
+
+	d := New("test")
+	loginDone := make(chan error, 1)
+	go func() {
+		loginDone <- d.Login(context.Background(), control.LoginRequest{ControlPlane: cp.URL}, func(control.LoginEvent) {})
+	}()
+	select {
+	case <-polling:
+	case <-time.After(2 * time.Second):
+		t.Fatal("login did not reach device polling")
+	}
+
+	logoutDone := make(chan error, 1)
+	go func() { logoutDone <- d.Logout() }()
+	select {
+	case err := <-logoutDone:
+		t.Fatalf("Logout returned before the concurrent Login transition completed: %v", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	release()
+	if err := <-loginDone; err != nil {
+		t.Fatalf("Login: %v", err)
+	}
+	if err := <-logoutDone; err != nil {
+		t.Fatalf("Logout: %v", err)
+	}
+	if d.Status().LoggedIn {
+		t.Fatal("daemon remains logged in after concurrent Login and Logout")
+	}
+	cfg, err := state.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.LoggedIn() || cfg.Token != "" || cfg.RenewalToken != "" {
+		t.Fatalf("credentials remain on disk after concurrent Login and Logout: %+v", cfg)
+	}
 }
 
 // TestBrokeringImpliesALocalPassword locks the invariant a connection string depends on: if any broker is
@@ -646,29 +781,105 @@ func TestLogoutDuringDiscoveryLeavesNoListener(t *testing.T) {
 // `pmon logout` did not actually close the brokers.
 func TestLogoutClosesEstablishedSessions(t *testing.T) {
 	isolate(t)
+	if err := state.Update(func(c *state.Config) error {
+		c.ControlPlane = "https://cp.example"
+		c.Token = "pmk_token"
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
 	d := New("test")
+	d.mu.Lock()
+	d.cfg.ControlPlane = "https://cp.example"
+	d.cfg.Token = "pmk_token"
+	d.mu.Unlock()
 
-	// A registered connection stands in for an established session (the broker registers before piping).
 	client, server := net.Pipe()
 	defer client.Close()
-	defer server.Close()
-	deregister := d.addConn("acme-mysql", server)
+	loggedInAtClose := make(chan bool, 1)
+	tracked := &closeObserverConn{Conn: server, onClose: func() {
+		cfg := d.snapshot()
+		loggedInAtClose <- cfg.LoggedIn()
+	}}
+	deregister := d.addConn("acme-mysql", tracked)
 	defer deregister()
 
-	// The tracked session is visible in the count even with no listener for it, which is what stop/quit read
-	// before dropping live queries.
 	before := d.Status()
 	if got := before.TotalLiveConns(); got != 1 {
-		t.Fatalf("TotalLiveConns() = %d before logout, want 1 (a tracked session must never be invisible)", got)
+		t.Fatalf("TotalLiveConns() = %d before logout, want 1", got)
 	}
 	if err := d.Logout(); err != nil {
 		t.Fatalf("Logout: %v", err)
 	}
-
-	// The session's socket must be closed, which is what unblocks its pipe. A closed net.Pipe returns
-	// io.ErrClosedPipe immediately, so no deadline is needed — and setting one would itself fail.
+	if <-loggedInAtClose {
+		t.Error("logout closed sessions before invalidating in-memory credentials")
+	}
 	if _, err := server.Read(make([]byte, 1)); err == nil {
 		t.Error("the established session survived logout; it must be closed")
+	}
+}
+
+func TestBrokerRejectsConnectionAcceptedBeforeLogout(t *testing.T) {
+	isolate(t)
+	if err := state.Update(func(c *state.Config) error {
+		c.ControlPlane = "https://cp.example"
+		c.Token = "pmk_old"
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	target, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer target.Close()
+
+	d := New("test")
+	d.mu.Lock()
+	d.cfg.ControlPlane = "https://cp.example"
+	d.cfg.Token = "pmk_old"
+	d.cfg.LocalPassword = "pmlocal_test"
+	d.datasources["mysql"] = Datasource{Name: "mysql", Engine: "mysql", AdvertiseAddr: target.Addr().String()}
+	d.nextListenerGeneration++
+	acceptedGeneration := d.nextListenerGeneration
+	d.listenerGenerations["mysql"] = acceptedGeneration
+	d.mu.Unlock()
+	if err := d.Logout(); err != nil {
+		t.Fatal(err)
+	}
+
+	d.mu.Lock()
+	d.cfg.ControlPlane = "https://cp.example"
+	d.cfg.Token = "pmk_new"
+	d.datasources["mysql"] = Datasource{Name: "mysql", Engine: "mysql", AdvertiseAddr: target.Addr().String()}
+	d.nextListenerGeneration++
+	d.listenerGenerations["mysql"] = d.nextListenerGeneration
+	d.mu.Unlock()
+
+	client, server := net.Pipe()
+	defer client.Close()
+	done := make(chan struct{})
+	go func() {
+		d.broker(server, "mysql", acceptedGeneration)
+		close(done)
+	}()
+	_, packet, err := mysqlwire.ReadPacket(client)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(packet) == 0 || packet[0] != 0xff {
+		t.Fatalf("stale accepted connection response = %x, want ERR", packet)
+	}
+	<-done
+
+	if err := target.(*net.TCPListener).SetDeadline(time.Now().Add(100 * time.Millisecond)); err != nil {
+		t.Fatal(err)
+	}
+	if c, err := target.Accept(); err == nil {
+		c.Close()
+		t.Fatal("a connection accepted before logout used the new login")
+	} else if netErr, ok := err.(net.Error); !ok || !netErr.Timeout() {
+		t.Fatalf("accept after stale broker: %v", err)
 	}
 }
 
@@ -885,4 +1096,15 @@ func TestSnapshotDoesNotAliasThePortsMap(t *testing.T) {
 	if _, ok := live["injected"]; ok {
 		t.Error("a key added to a snapshot appeared in the daemon's map (the map is aliased)")
 	}
+}
+
+type closeObserverConn struct {
+	net.Conn
+	once    sync.Once
+	onClose func()
+}
+
+func (c *closeObserverConn) Close() error {
+	c.once.Do(c.onClose)
+	return c.Conn.Close()
 }

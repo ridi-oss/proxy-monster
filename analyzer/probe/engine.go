@@ -34,6 +34,11 @@ type engine interface {
 	// Engine-specific: PostgreSQL's pg_temp; MySQL has no temp-schema convention (its temporary tables
 	// are marked by the TEMPORARY keyword).
 	IsTempSchema(schema exp.Expression) bool
+	// IsTrustedSystemQualifier reports whether a call/type qualifier names THIS engine's trusted system
+	// schema, so a call under it is a system builtin rather than user code. Engine-specific, and the
+	// reason it cannot be a name comparison at the call site: `pg_catalog` is a PostgreSQL schema, so a
+	// MySQL database literally named `pg_catalog` is ordinary user code and never trusted.
+	IsTrustedSystemQualifier(qualifier exp.Expression) bool
 	// RewriteStatement optionally rewrites a parsed statement into the SQL the proxy should relay to the
 	// target DB, returning "" to leave it unchanged.
 	RewriteStatement(root exp.Expression) string
@@ -112,6 +117,11 @@ func (e *mysqlEngine) FoldColumn(column string) string {
 // temporary arg / TemporaryProperty on the DDL), which isTemporaryDDL detects directly off the tree.
 func (e *mysqlEngine) IsTempSchema(exp.Expression) bool { return false }
 
+// MySQL has no trusted system-schema qualifier: its system databases (mysql, information_schema,
+// performance_schema, sys) are access-controlled resources the system-classification manifest covers,
+// not a blanket pass for calls made under them.
+func (e *mysqlEngine) IsTrustedSystemQualifier(exp.Expression) bool { return false }
+
 // RewriteStatement pins a single, session-scoped `SET character_set_results = NULL` — the default MySQL
 // Connector/J (and so DBeaver) session-init, which asks the target DB to return each column in its own charset
 // for client-side decoding — to utf8mb4, so the wire masker keeps decoding results as UTF-8. Only that exact
@@ -186,20 +196,27 @@ func (e *postgresEngine) NormalizeCatalogOnBuild() bool { return false }
 func (e *postgresEngine) FoldColumn(column string) string { return column }
 
 // PostgreSQL places session-temporary objects in pg_temp (a per-backend alias for the numbered
-// pg_temp_<n> temp schema), so a DDL target there is session-local, not catalog-changing. The schema
-// identifier is folded through the dialect's NormalizeIdentifier — the same quote-aware normalization
-// the analyzer applies to every other identifier — so an unquoted pg_temp/PG_TEMP matches (PostgreSQL
-// lowercases unquoted identifiers) while a quoted "PG_TEMP", a distinct case-sensitive user schema,
-// does not. A raw strings.ToLower would wrongly conflate the two and also mis-fold non-ASCII. A
-// deep-copied node is folded so the shared parse tree is never mutated by this read-only check.
+// pg_temp_<n> temp schema), so a DDL target there is session-local, not catalog-changing. Read off the
+// already-folded spelling (EmitFacts normalizes the statement's identifiers up front, quote-aware), so
+// an unquoted pg_temp/PG_TEMP matches while a quoted "PG_TEMP" — a distinct case-sensitive user schema —
+// does not. A raw strings.ToLower here would wrongly conflate the two and mis-fold non-ASCII.
 func (e *postgresEngine) IsTempSchema(schema exp.Expression) bool {
 	if schema == nil {
 		return false
 	}
-	id := schema.Copy()
-	e.dialect.NormalizeIdentifier(id)
-	name := id.Name()
+	name := schema.Name()
 	return name == "pg_temp" || strings.HasPrefix(name, "pg_temp_")
+}
+
+// pg_catalog is PostgreSQL's system schema: a call qualified by it is a builtin, so it carries no
+// unclassified Function grant. Only a single bare identifier qualifies — a quoted "PG_CATALOG" keeps its
+// case and is a DISTINCT user schema PostgreSQL's case-sensitive `pg_` reservation allows to exist, so a
+// user function there must not inherit a builtin's pass.
+func (e *postgresEngine) IsTrustedSystemQualifier(qualifier exp.Expression) bool {
+	if qualifier == nil || qualifier.Kind() != exp.KindIdentifier {
+		return false
+	}
+	return qualifier.Name() == "pg_catalog"
 }
 
 // PostgreSQL has no relay rewrite: client_encoding is handled on the wire, not by an analyzer rewrite,

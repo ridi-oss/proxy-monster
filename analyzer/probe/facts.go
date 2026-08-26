@@ -10,6 +10,7 @@ import (
 	"github.com/ridi-oss/sqlglot-go/dialects"
 	exp "github.com/ridi-oss/sqlglot-go/expressions"
 	"github.com/ridi-oss/sqlglot-go/generator"
+	"github.com/ridi-oss/sqlglot-go/optimizer"
 	"github.com/ridi-oss/sqlglot-go/schema"
 )
 
@@ -118,7 +119,12 @@ func EmitFacts(sql string, engineConfig *pb.EngineConfig, sch *schema.Mapping, n
 	// Peel a whole-statement parenthesized wrapper: `(SELECT 1)` parses to a Subquery whose `this` is the
 	// real statement. Classification/lineage must run on the inner statement, not fail closed on the
 	// wrapper (a wrapped SELECT is ordinary chatter, a wrapped write is still a write).
-	root := unwrapSubquery(stmts[0])
+	// Fold identifiers ONCE, here, so every consumer below reads canonical spellings. Qualify does this
+	// as its own first step (optimizer.Qualify → NormalizeIdentifiers), but Qualify needs the catalog and
+	// runs only in VALIDATE — so the paths that never reach it, or that reach it and fail, were each
+	// left to fold by hand. Quote-aware, so a quoted identifier keeps its case: `"PG_CATALOG"` stays a
+	// distinct user schema from `pg_catalog`, and `"MySchema".fn` from `myschema.fn`.
+	root := optimizer.NormalizeIdentifiers(unwrapSubquery(stmts[0]), eng.Dialect())
 	candidates := schemaQualifierCandidates(root)
 
 	var facts *pb.StatementFacts
@@ -681,7 +687,7 @@ func noFromFunctionGrants(root exp.Expression, eng engine) []*pb.RequireResultRe
 		}
 		qualified[fn] = true
 		leaf := strings.ToLower(fn.Name())
-		if isTrustedSystemQualifier(dot.Left(), eng) {
+		if eng.IsTrustedSystemQualifier(dot.Left()) {
 			if !safeNoFromFunctions[leaf] {
 				emit(leaf)
 			}
@@ -702,29 +708,9 @@ func noFromFunctionGrants(root exp.Expression, eng engine) []*pb.RequireResultRe
 	return out
 }
 
-// isTrustedSystemQualifier reports whether a call/type qualifier is the ONE trusted system-schema form:
-// a single bare identifier that resolves to PostgreSQL's `pg_catalog`. Trust is decided on the qualifier
-// folded through the dialect's quote-aware NormalizeIdentifier, NOT a raw EqualFold — an UNQUOTED
-// `PG_CATALOG` folds to `pg_catalog` (trusted), but a QUOTED `"PG_CATALOG"` stays case-sensitive and is a
-// DISTINCT user schema PostgreSQL's case-sensitive `pg_` reservation allows to exist, so it must NOT be
-// trusted (a user function there would otherwise inherit a system builtin's pass). It is also engine-gated:
-// `pg_catalog` is a PostgreSQL schema, so a MySQL database literally named `pg_catalog` is ordinary user
-// code and never trusted. A multi-part qualifier (its left side is itself a Dot, i.e. `db.pg_catalog` /
-// `current_database().public`) is never trusted either — its leaf spelling `pg_catalog` must not smuggle a
-// call into the safe branch — so it fails this test and its call/type is emitted with a full qualified
-// identity the control-plane cannot classify as safe.
-func isTrustedSystemQualifier(qualifier exp.Expression, eng engine) bool {
-	if qualifier == nil || eng.Type() != pb.Engine_POSTGRES || qualifier.Kind() != exp.KindIdentifier {
-		return false
-	}
-	folded := qualifier.Copy()
-	eng.Dialect().NormalizeIdentifier(folded)
-	return folded.Name() == "pg_catalog"
-}
-
 // qualifiedCallName renders a user-code call's fully-qualified identity so it is always an unclassified
-// Function grant. The single-identifier qualifier is folded through the dialect's quote-aware
-// NormalizeIdentifier — matching how the analyzer resolves every other relation, so the emitted name keys
+// Function grant. The single-identifier qualifier arrives already folded (EmitFacts normalizes up front,
+// quote-aware) — matching how the analyzer resolves every other relation, so the emitted name keys
 // identically to the control-plane's catalog (`"MySchema".fn` and `myschema.fn` stay DISTINCT rather than
 // both collapsing to one lowercased name a classification could ride). A multi-part qualifier is rendered
 // whole (`current_database().public.fn`) so the leaf never stands alone; that rendered form is always an
@@ -735,9 +721,7 @@ func qualifiedCallName(qualifier exp.Expression, leaf string, eng engine) string
 			return strings.ToLower(rendered) + "." + leaf
 		}
 	}
-	folded := qualifier.Copy()
-	eng.Dialect().NormalizeIdentifier(folded)
-	return folded.Name() + "." + leaf
+	return qualifier.Name() + "." + leaf
 }
 
 func unsafeExpression(value any, eng engine) bool {
@@ -777,7 +761,7 @@ func hasUnsafeCall(root exp.Expression, eng engine) bool {
 			continue
 		}
 		qualified[fn] = true
-		if isTrustedSystemQualifier(dot.Left(), eng) {
+		if eng.IsTrustedSystemQualifier(dot.Left()) {
 			if !safeNoFromFunctions[strings.ToLower(fn.Name())] {
 				return true
 			}
@@ -996,6 +980,11 @@ func isAccountObjectDDL(root exp.Expression) bool {
 	return false
 }
 
+// schemaQualifierCandidates collects every schema the statement names, so a caller holding a partial
+// catalog can fetch the ones it lacks. The names are the target DB's own spelling — EmitFacts folds the
+// statement's identifiers before this runs — because a candidate is used to look that schema up: MySQL
+// under lower_case_table_names=1 reports information_schema lowercase, so an unfolded `GOODS_STORE`
+// would match nothing.
 func schemaQualifierCandidates(root exp.Expression) []string {
 	set := map[string]bool{}
 	for _, table := range root.FindAll(exp.KindTable) {

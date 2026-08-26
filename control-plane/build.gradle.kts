@@ -9,7 +9,7 @@ plugins {
 }
 
 val ktorVersion = "3.5.2"
-val flywayVersion = "13.2.0"
+val flywayVersion = "13.3.0"
 val testcontainersVersion = "1.21.4"
 // 0.10.0 is the last official kotlin-sdk line built on Ktor 3.2.x (3.2.3); newer releases require
 // Ktor 3.3/3.4. It provides the official stateless Streamable HTTP server/client and structured tools.
@@ -63,7 +63,7 @@ dependencies {
     implementation("org.flywaydb:flyway-core:$flywayVersion")
     implementation("org.flywaydb:flyway-database-postgresql:$flywayVersion")
 
-    implementation("ch.qos.logback:logback-classic:1.6.1")
+    implementation("ch.qos.logback:logback-classic:1.6.3")
 
     // Cedar policy engine (authz decision service, docs/authz-model.md). `uber` classifier bundles
     // the per-platform JNI native libs (jne/<os>/<arch>/libcedar_java_ffi.*) that the plain jar lacks.
@@ -72,10 +72,10 @@ dependencies {
     // verified empirically (`cedar-java:4.3.1` resolves as a leaf with no children otherwise). Add
     // them explicitly, pinned to the versions cedar-java 4.3.1's POM declares.
     implementation("com.cedarpolicy:cedar-java:$cedarVersion:uber")
-    implementation("com.fasterxml.jackson.core:jackson-databind:2.22.1")
-    implementation("com.fasterxml.jackson.datatype:jackson-datatype-jdk8:2.22.1")
+    implementation("com.fasterxml.jackson.core:jackson-databind:2.22.2")
+    implementation("com.fasterxml.jackson.datatype:jackson-datatype-jdk8:2.22.2")
     implementation("com.fizzed:jne:4.11.0")
-    implementation("com.google.guava:guava:33.6.0-jre")
+    implementation("com.google.guava:guava:33.7.1-jre")
 
     testImplementation(kotlin("test"))
     // Route-level gate tests (requireAdmin wired into cedarPolicyRoutes) exercise real Ktor routing.

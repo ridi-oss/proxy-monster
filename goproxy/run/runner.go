@@ -386,12 +386,13 @@ func sendDecision(stream runStream, decision *engine.Decision) bool {
 	}
 	return stream.Send(&pb.ProxyRunMsg{Kind: &pb.ProxyRunMsg_Decision{
 		Decision: &pb.RunDecision{
-			Decision:       action,
-			DecisionId:     decision.DecisionID,
-			MaskedColumns:  maskedColumns,
-			DenyReason:     decision.DenyReason,
-			EffectiveRoles:    append([]string(nil), decision.EffectiveRoles...),
-			ResultFingerprint: decision.ResultFingerprint,
+			Decision:            action,
+			DecisionId:          decision.DecisionID,
+			MaskedColumns:       maskedColumns,
+			DenyReason:          decision.DenyReason,
+			EffectiveRoles:      append([]string(nil), decision.EffectiveRoles...),
+			ResultFingerprint:   decision.ResultFingerprint,
+			SanitizeDiagnostics: decision.SanitizeDiagnostics,
 		},
 	}}) == nil
 }

@@ -1,5 +1,7 @@
 package com.ridi.oss.proxymonster.controlplane
 
+import com.ridi.oss.proxymonster.grpc.runError
+
 import com.ridi.oss.proxymonster.controlplane.support.SharedPostgres
 import com.ridi.oss.proxymonster.controlplane.support.requireDockerOrSkip
 import org.flywaydb.core.Flyway
@@ -88,7 +90,92 @@ class QueryResultStoreDbTest {
         val failed = store.failRun(id, "approval.execute_denied")
         assertEquals("FAILED", failed?.status)
         assertEquals("approval.execute_denied", failed?.errorCode)
+        assertNull(store.accessFor(id)?.errorDetail, "no backend text unless a target-DB failure carried one")
         assertNull(store.accessFor(id)?.decrypted)
+    }
+
+    @Test
+    fun `a target-DB failure stores the backend error text encrypted, released only via accessFor`() {
+        val id = newTask()
+        assertNotNull(store.startRun(id, "bob@example.com"))
+        val diagnostic = runError { message = "ER_TABLE_EXISTS_ERROR"; rawMessage = "Table 'bom.test' already exists"; targetDbError = true }
+        val failed = store.failRun(id, "approval.query_failed", diagnostic = diagnostic)
+        assertEquals("FAILED", failed?.status)
+        // The stable catalog code stays on metadata; both diagnostic forms move behind the task.assume gate,
+        // released only through accessFor and decrypting back to the stored structure.
+        assertEquals("approval.query_failed", failed?.errorCode)
+        assertEquals(diagnostic, store.accessFor(id)?.errorDetail)
+
+        // At rest error_detail holds AES-GCM ciphertext of the serialized struct, never the plaintext.
+        dataSource.connection.use { c ->
+            c.prepareStatement("SELECT error_detail FROM query_result WHERE task_id = ?").use { ps ->
+                ps.setLong(1, id)
+                ps.executeQuery().use { rs ->
+                    assertTrue(rs.next())
+                    val raw = rs.getBytes("error_detail")
+                    assertNotNull(raw)
+                    val atRest = raw.toString(Charsets.ISO_8859_1)
+                    assertFalse(atRest.contains("already exists"))
+                    assertFalse(atRest.contains("ER_TABLE_EXISTS_ERROR"))
+                }
+            }
+        }
+    }
+
+    @Test
+    fun `error detail is off the metadata path and reachable only through accessFor`() {
+        val id = newTask()
+        assertNotNull(store.startRun(id, "bob@example.com"))
+        val detail = "constraint users_email_key violated"
+        store.failRun(id, "approval.query_failed", diagnostic = runError { message = "ER_DUP_ENTRY"; rawMessage = detail; targetDbError = true })
+        // The metadata poll (task.read) carries the stable code but has no channel for the raw detail — the
+        // field was removed from QueryResultMeta, so a metadata-only reader can never see it.
+        val meta = store.meta(id)
+        assertEquals("approval.query_failed", meta?.errorCode)
+        // Reachable only via accessFor, which the /result routes gate on task.assume.
+        assertEquals(detail, store.accessFor(id)?.errorDetail?.rawMessage)
+    }
+
+    @Test
+    fun `expiry purges the encrypted error detail`() {
+        val id = newTask()
+        assertNotNull(store.startRun(id, "bob@example.com"))
+        store.failRun(id, "approval.query_failed", diagnostic = runError { message = "ER_NO_SUCH_TABLE"; rawMessage = "relation missing does not exist"; targetDbError = true })
+        // failRun stamps expires_at RESULT_RETENTION_SEC ahead; force the row past expiry so the sweep hits it.
+        dataSource.connection.use { c ->
+            c.prepareStatement("UPDATE query_result SET expires_at = now() - interval '1 second' WHERE task_id = ?").use { ps ->
+                ps.setLong(1, id)
+                ps.executeUpdate()
+            }
+        }
+        assertTrue(store.purgeExpired() >= 1)
+        assertNull(store.accessFor(id)?.errorDetail, "expiry must NULL the encrypted detail like the row ciphertext")
+        dataSource.connection.use { c ->
+            c.prepareStatement("SELECT error_detail FROM query_result WHERE task_id = ?").use { ps ->
+                ps.setLong(1, id)
+                ps.executeQuery().use { rs ->
+                    assertTrue(rs.next())
+                    rs.getBytes("error_detail"); assertTrue(rs.wasNull())
+                }
+            }
+        }
+    }
+
+    @Test
+    fun `accessFor withholds the error detail once past expiry, before any purge sweep`() {
+        val id = newTask()
+        assertNotNull(store.startRun(id, "bob@example.com"))
+        store.failRun(id, "approval.query_failed", diagnostic = runError { message = "ER_NO_SUCH_TABLE"; rawMessage = "relation missing does not exist"; targetDbError = true })
+        // Push the row past expiry WITHOUT purging: the ciphertext is still in the row when accessFor reads it.
+        dataSource.connection.use { c ->
+            c.prepareStatement("UPDATE query_result SET expires_at = now() - interval '1 second' WHERE task_id = ?").use { ps ->
+                ps.setLong(1, id)
+                ps.executeUpdate()
+            }
+        }
+        // accessFor withholds the detail on the expiry timestamp alone — the soft path — so a past-expiry row
+        // never releases the backend text, distinct from the purge test which asserts the at-rest column is NULLed.
+        assertNull(store.accessFor(id)?.errorDetail, "past-expiry accessFor must withhold the error detail without an explicit purge")
     }
 
     private fun approve(id: Long) = dataSource.connection.use { c ->

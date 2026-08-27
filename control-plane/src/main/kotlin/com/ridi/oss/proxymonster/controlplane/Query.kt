@@ -1005,6 +1005,9 @@ fun Route.queryRoutes(
             call.respond(HttpStatusCode.ServiceUnavailable, ApiError("query.proxy_stream_wedged"))
         } catch (_: ProxyRunTimeoutException) {
             call.respond(HttpStatusCode.GatewayTimeout, ApiError("query.proxy_timeout"))
+        } catch (e: TargetDbRunException) {
+            // The run's decision already chose the form (raw for a full reader, redacted for a masked one).
+            call.respond(HttpStatusCode.BadGateway, ApiError("query.failed", mapOf("detail" to e.decidedMessage)))
         } catch (e: ProxyRunException) {
             call.respond(HttpStatusCode.BadGateway, ApiError("query.failed", mapOf("detail" to (e.message ?: ""))))
         }

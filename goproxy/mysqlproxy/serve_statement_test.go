@@ -21,13 +21,13 @@ func (runTestDecider) Decide(engine.DecideRequest) engine.DecisionOutcome {
 	return engine.DecisionOutcome{Decision: &engine.Decision{Action: "ALLOW"}}
 }
 
-func scriptedMySQLRun(t *testing.T, maxRows int, response []byte) (*RunSession, <-chan string) {
+func scriptedMySQLRun(t *testing.T, decider engine.Decider, maxRows int, response []byte) (*RunSession, <-chan string) {
 	t.Helper()
 	client, server := net.Pipe()
 	t.Cleanup(func() { _ = client.Close(); _ = server.Close() })
 	_ = client.SetDeadline(time.Now().Add(5 * time.Second))
 	_ = server.SetDeadline(time.Now().Add(5 * time.Second))
-	qe := engine.NewQueryEngine(db.MySqlDb{}, runTestDecider{})
+	qe := engine.NewQueryEngine(db.MySqlDb{}, decider)
 	qe.SetNamespace([]string{"test"})
 	s := &RunSession{conn: client, qe: qe, ref: &engine.Refetcher{}}
 	writes := make(chan string, 3)
@@ -61,7 +61,7 @@ func scriptedMySQLRun(t *testing.T, maxRows int, response []byte) (*RunSession, 
 
 func runMySQLStatement(t *testing.T, maxRows int, response []byte) (engine.StatementResult, error, []string) {
 	t.Helper()
-	s, writes := scriptedMySQLRun(t, maxRows, response)
+	s, writes := scriptedMySQLRun(t, runTestDecider{}, maxRows, response)
 	result, err := s.ServeStatement("SELECT 1", maxRows)
 	var got []string
 	for write := range writes {
@@ -115,6 +115,31 @@ func TestRunStatementMySQLResetsAfterTargetDbError(t *testing.T) {
 	}
 	if len(writes) != 3 || writes[2] != "SET SQL_SELECT_LIMIT = DEFAULT" {
 		t.Fatalf("writes = %v, want reset after ERR", writes)
+	}
+}
+
+// A run result is stored and re-gated per viewer at view time, so a failed run surfaces the target-DB ERR
+// with BOTH forms: the raw message (released to a viewer who reads unmasked) and the redacted essno symbol
+// (released to a masked viewer). The CP picks per viewer; capture does not depend on the decision (#202/#228).
+// The repro raises MySQL 1242.
+func TestRunStatementMySQLCapturesRawAndRedactedTargetDbError(t *testing.T) {
+	response := mysqlPacket(t, mysqlwire.ErrPacketState(1242, "21000", "Subquery returns more than 1 row"))
+	s, writes := scriptedMySQLRun(t, runTestDecider{}, 2, response)
+	_, err := s.ServeStatement("SELECT email FROM tb_user WHERE 1 = (SELECT 1 UNION ALL SELECT 2)", 2)
+	for range writes {
+	}
+	var tdbErr engine.TargetDbError
+	if !errors.As(err, &tdbErr) {
+		t.Fatalf("err = %T, want engine.TargetDbError carrying both forms", err)
+	}
+	if tdbErr.Message != "Subquery returns more than 1 row" {
+		t.Errorf("raw message = %q, want the verbatim target-DB text for a full-reader view", tdbErr.Message)
+	}
+	if tdbErr.Redacted != "ERROR 1242 (21000): ER_SUBQUERY_NO_1_ROW" {
+		t.Errorf("redacted = %q, want the value-free essno + SQLSTATE + symbol for a masked view", tdbErr.Redacted)
+	}
+	if strings.Contains(tdbErr.Redacted, "Subquery returns more than 1 row") {
+		t.Error("raw text leaked into the redacted form")
 	}
 }
 

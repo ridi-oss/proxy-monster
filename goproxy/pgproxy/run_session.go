@@ -89,7 +89,17 @@ func (s *RunSession) ServeStatement(sql string, maxRows int) (result engine.Stat
 			runErr = firstErr(runErr, collector.failed)
 			s.poisoned = runErr != nil
 			s.pendingDirty = true
-			return targetDbErr == nil, firstErr(targetDbErr, runErr)
+			if targetDbErr != nil {
+				// Promote the statement's OWN target-DB ERR to engine.TargetDbError (raw + redacted forms), the
+				// only provenance the control-plane may surface — and re-gate per viewer. A probe/refetch ERR
+				// reaches ServeStatement as a plain error, never a *pgTargetDbErr, so it stays generic.
+				var pgErr *pgTargetDbErr
+				if errors.As(targetDbErr, &pgErr) {
+					return false, engine.TargetDbError{Message: pgErr.message, Redacted: pgErr.redacted}
+				}
+				return false, targetDbErr
+			}
+			return true, runErr
 		})
 	return result, err
 }

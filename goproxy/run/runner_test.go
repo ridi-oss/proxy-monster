@@ -318,7 +318,7 @@ func TestRunnerPostgresTempTablesAreSessionIsolated(t *testing.T) {
 
 	runSendQuery(fake2, readSQL, 20)
 	runExpectDecision(t, runRecv(t, fake2), pb.EnfAction_ALLOW, nil, "")
-	if message := runRecv(t, fake2); message.GetError() == nil || !strings.Contains(message.GetError().GetMessage(), "does not exist") {
+	if message := runRecv(t, fake2); message.GetError() == nil || !strings.Contains(message.GetError().GetRawMessage(), "does not exist") {
 		t.Fatalf("session 2 bare temp read = %v, want target DB relation-does-not-exist error", message)
 	}
 }
@@ -692,8 +692,13 @@ func runCatalogRefreshContract(t *testing.T, fixture runEngineFixture) {
 		})
 
 		runSendQuery(fake, "BEGIN", 20)
-		if message := runRecv(t, fake); message.GetError() == nil {
-			t.Fatalf("unbounded before_decide message = %v, want RunError", message)
+		runErr := runRecv(t, fake).GetError()
+		if runErr == nil {
+			t.Fatalf("unbounded before_decide: want RunError")
+		}
+		// A decision-side (refetch retry-bound) failure is not the target DB's statement error; leave it untagged.
+		if runErr.GetTargetDbError() {
+			t.Fatalf("before_decide retry-bound RunError.target_db_error = true, want false")
 		}
 		waitDone()
 		if got := len(fake.runRecordedRequests()); got != 4 {
@@ -728,8 +733,13 @@ func runCatalogRefreshContract(t *testing.T, fixture runEngineFixture) {
 
 		runSendQuery(fake, ddl, 20)
 		runExpectDecision(t, runRecv(t, fake), pb.EnfAction_ALLOW, nil, "")
-		if message := runRecv(t, fake); message.GetError() == nil {
-			t.Fatalf("push-failed DDL message = %v, want RunError", message)
+		runErr := runRecv(t, fake).GetError()
+		if runErr == nil {
+			t.Fatalf("push-failed DDL: want RunError")
+		}
+		// A proxy-internal fragment-push failure — not the target DB's statement error — must stay untagged.
+		if runErr.GetTargetDbError() {
+			t.Fatalf("push-failure RunError.target_db_error = true, want false")
 		}
 		waitDone()
 		if got := len(fake.runRecordedFragments()); got != initialPushes+1 {
@@ -747,8 +757,20 @@ func runCatalogRefreshContract(t *testing.T, fixture runEngineFixture) {
 
 		runSendQuery(fake, ddl, 20)
 		runExpectDecision(t, runRecv(t, fake), pb.EnfAction_ALLOW, nil, "")
-		if message := runRecv(t, fake); message.GetError() == nil {
-			t.Fatalf("target-DB-failed DDL message = %v, want RunError", message)
+		runErr := runRecv(t, fake).GetError()
+		if runErr == nil {
+			t.Fatalf("target-DB-failed DDL: want RunError")
+		}
+		// The target DB's own ERR for the executed statement: tagged so the control-plane may surface it, with
+		// the value-free redacted text in Message (no generic prefix) and the raw text in RawMessage.
+		if !runErr.GetTargetDbError() {
+			t.Fatalf("target-DB-failed DDL RunError.target_db_error = false, want true")
+		}
+		if runErr.GetMessage() == "" || strings.HasPrefix(runErr.GetMessage(), "query execution failed: ") {
+			t.Fatalf("target-DB error message = %q, want the redacted text without the generic prefix", runErr.GetMessage())
+		}
+		if runErr.GetRawMessage() == "" {
+			t.Fatalf("target-DB error RawMessage empty, want the raw text carried for a full-reader view")
 		}
 		waitDone()
 		if got := len(fake.runRecordedFragments()); got != initialPushes {

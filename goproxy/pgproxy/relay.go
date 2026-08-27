@@ -25,6 +25,18 @@ const clientFlushThreshold = 64
 
 type streamOpts struct{ extended, soft bool }
 
+// pgTargetDbErr carries both forms of a PostgreSQL ErrorResponse — the raw message and the diagnostic-redacted
+// message — from streamResult to its caller. It is NOT engine.TargetDbError: streamResult also serves
+// internal catalog probes and refetches (collectProbe), whose errors must stay proxy-internal and never be
+// surfaced as a query's error detail. Only the statement site (RunSession.ServeStatement) promotes this to
+// engine.TargetDbError, so provenance is decided there, not for every ErrorResponse streamResult sees.
+type pgTargetDbErr struct {
+	message  string
+	redacted string
+}
+
+func (e *pgTargetDbErr) Error() string { return e.message }
+
 func (c *sessionCore) streamResult(masks []*pb.ColumnMask, opts streamOpts, emit func(pgproto3.BackendMessage) error) (targetDbErr error, err error) {
 	var masker *engine.RowMasker
 	columnCount := -1
@@ -88,16 +100,17 @@ func (c *sessionCore) streamResult(masks []*pb.ColumnMask, opts streamOpts, emit
 			columnCount = -1
 		case *pgproto3.ErrorResponse:
 			data = false
-			// The one client-facing target-DB-error site for both relays: on a diagnostic-redacted decision,
-			// strip the value-bearing fields before the frame is emitted (native wire) AND before targetDbErr
-			// is derived (run surfaces targetDbErr) — a PostgreSQL error can echo a masked/denied value the
-			// statement never referenced (the whole-row `DETAIL`). See docs/diagnostic-redaction.md.
+			// The one client-facing target-DB-error site for both relays. A PostgreSQL error can echo a
+			// masked/denied value the statement never referenced (the whole-row `DETAIL`). The run surfaces
+			// targetDbErr and re-gates it per viewer at view time, so it captures BOTH the raw message and the
+			// redacted form; the wire emit below still strips per THIS decision. See docs/diagnostic-redaction.md.
+			if targetDbErr == nil {
+				r := sanitizeError(message)
+				targetDbErr = &pgTargetDbErr{message: message.Message, redacted: r.Severity + ": " + r.Code + " " + r.Message}
+			}
 			if c.qe != nil && c.qe.SanitizeDiagnostics() {
 				message = sanitizeError(message)
 				out = message
-			}
-			if targetDbErr == nil {
-				targetDbErr = errors.New(message.Message)
 			}
 		case *pgproto3.ParameterStatus:
 			data = false

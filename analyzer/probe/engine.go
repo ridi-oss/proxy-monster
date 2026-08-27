@@ -8,6 +8,7 @@ import (
 
 	"github.com/ridi-oss/sqlglot-go/dialects"
 	exp "github.com/ridi-oss/sqlglot-go/expressions"
+	"github.com/ridi-oss/sqlglot-go/schema"
 
 	pb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
 )
@@ -42,6 +43,28 @@ type engine interface {
 	// RewriteStatement optionally rewrites a parsed statement into the SQL the proxy should relay to the
 	// target DB, returning "" to leave it unchanged.
 	RewriteStatement(root exp.Expression) string
+	// DiagnosticLeakKeys is the column keys this statement's target-DB error/warning diagnostic could echo
+	// — engine-specific, since what a diagnostic contains is (MySQL echoes the operated value; PostgreSQL
+	// also dumps a failed write's whole row via `DETAIL: Failing row contains (…)`). Start from
+	// referencedColumnKeys (the shared template) and add engine channels on top.
+	DiagnosticLeakKeys(report ProbeResult, qualifySchema schema.Schema) map[string]bool
+}
+
+// referencedColumnKeys is the shared diagnostic-leak template: every column the statement references —
+// what any engine's diagnostic message can echo (`Truncated incorrect INTEGER value: '010-1234-5678'`).
+func referencedColumnKeys(report ProbeResult) map[string]bool {
+	keys := map[string]bool{}
+	for _, origin := range report.Origins {
+		for _, key := range origin.Origins {
+			keys[key] = true
+		}
+	}
+	for _, refs := range report.References {
+		for _, key := range refs {
+			keys[key] = true
+		}
+	}
+	return keys
 }
 
 // createEngine builds the engine for config, validating its engine-specific settings (MySQL's
@@ -177,6 +200,12 @@ func (e *mysqlEngine) RewriteStatement(root exp.Expression) string {
 	return "SET character_set_results = utf8mb4"
 }
 
+// MySQL diagnostics echo only the operated value (`Truncated incorrect INTEGER value: '010-…'`) —
+// always an already-referenced column — and never dump unreferenced ones, so the template is the whole set.
+func (e *mysqlEngine) DiagnosticLeakKeys(report ProbeResult, _ schema.Schema) map[string]bool {
+	return referencedColumnKeys(report)
+}
+
 type postgresEngine struct {
 	dialect *dialects.Dialect
 }
@@ -222,6 +251,33 @@ func (e *postgresEngine) IsTrustedSystemQualifier(qualifier exp.Expression) bool
 // PostgreSQL has no relay rewrite: client_encoding is handled on the wire, not by an analyzer rewrite,
 // so there is nothing to rewrite here.
 func (e *postgresEngine) RewriteStatement(exp.Expression) string { return "" }
+
+// PostgreSQL adds a failed write's WHOLE target row to the template: `INSERT INTO users (id) …` can fail
+// with `DETAIL: Failing row contains (1, 010-1234-5678, …)` — columns the statement never named. If the
+// row cannot be enumerated, an unresolvable sentinel key emits so the control-plane fails closed.
+func (e *postgresEngine) DiagnosticLeakKeys(report ProbeResult, qualifySchema schema.Schema) map[string]bool {
+	keys := referencedColumnKeys(report)
+	if !report.IsWrite || report.WriteTarget == nil {
+		return keys
+	}
+	id := report.WriteTarget
+	// Quoted identifiers + normalize=false, matching how the prober enumerates a physical table.
+	table := exp.Table(exp.Args{
+		"this":    exp.ToIdentifier(id.table, true),
+		"schema":  exp.ToIdentifier(id.schema, true),
+		"catalog": exp.ToIdentifier(id.catalog, true),
+	})
+	cols, err := qualifySchema.ColumnNames(table, false, e.dialect, boolPtr(false))
+	if err != nil || len(cols) == 0 {
+		// Can't enumerate the row → emit a column no catalog resolves, so the control-plane fails closed.
+		keys[id.String()+".*"] = true
+		return keys
+	}
+	for _, col := range cols {
+		keys[id.String()+"."+col] = true
+	}
+	return keys
+}
 
 // mysqlNormalizationDialect returns a MySQL *Dialect configured with the identifier-normalization
 // strategy for the server's lower_case_table_names. Under lctn=0 the server is case-sensitive for

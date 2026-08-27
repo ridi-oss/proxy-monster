@@ -306,7 +306,30 @@ func emitLineageFacts(root exp.Expression, eng engine, qualifySchema schema.Sche
 	} else {
 		facts.OutputColumns = outputColumnNames(report)
 	}
+	facts.DiagnosticLeakColumns = diagnosticLeakColumns(report, eng, qualifySchema)
 	return facts
+}
+
+// diagnosticLeakColumns converts the engine's leak-key set to sorted ColumnResources, so the
+// control-plane's frozen-facts comparison never churns on order.
+func diagnosticLeakColumns(report ProbeResult, eng engine, qualifySchema schema.Schema) []*pb.ColumnResource {
+	keys := eng.DiagnosticLeakKeys(report, qualifySchema)
+	sorted := make([]string, 0, len(keys))
+	for key := range keys {
+		sorted = append(sorted, key)
+	}
+	sort.Strings(sorted)
+	out := make([]*pb.ColumnResource, 0, len(sorted))
+	for _, key := range sorted {
+		column, ok := columnResourceFromKey(key)
+		if !ok {
+			// A key that doesn't split 4-ways (a column named "ssn.secret") must fail closed, not vanish:
+			// emit it as a column no catalog resolves.
+			column = &pb.ColumnResource{Identity: &pb.RelationIdentity{Column: key}}
+		}
+		out = append(out, column)
+	}
+	return out
 }
 
 // isTemporaryDDL reports whether a DDL root targets only session-local (temporary) objects, whose

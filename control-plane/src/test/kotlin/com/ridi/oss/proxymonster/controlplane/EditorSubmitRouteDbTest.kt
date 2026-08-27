@@ -1,5 +1,6 @@
 package com.ridi.oss.proxymonster.controlplane
 
+
 import com.ridi.oss.proxymonster.controlplane.authz.CedarPolicyInput
 import com.ridi.oss.proxymonster.controlplane.grpc.CONTROL_PROTOCOL_VERSION
 import com.ridi.oss.proxymonster.controlplane.grpc.ControlPlaneGrpcService
@@ -13,6 +14,7 @@ import com.ridi.oss.proxymonster.grpc.ControlRunMsg
 import com.ridi.oss.proxymonster.grpc.EnfAction as WireEnfAction
 import com.ridi.oss.proxymonster.grpc.ProxyRunMsg
 import com.ridi.oss.proxymonster.grpc.runDecision
+import com.ridi.oss.proxymonster.grpc.runError
 import com.ridi.oss.proxymonster.grpc.runDone
 import com.ridi.oss.proxymonster.grpc.runResultRows
 import com.ridi.oss.proxymonster.grpc.runRow
@@ -304,6 +306,39 @@ class EditorSubmitRouteDbTest {
             // shows instead of a generic failure, and what the approval request is composed against. The
             // proxy sent this exact string above; an error code alone leaves the requester nowhere to go.
             assertEquals("policy denies", resultStore.meta(ack.taskId)?.denyReason)
+
+            client.delete("/api/editor/sessions/${session.sessionId}")
+            session.await()
+        }
+    }
+
+    @Test
+    fun `a target-DB failure in an editor run stores BOTH diagnostic forms for the re-gated view`() = testApplication {
+        val client = wire()
+        supervisorScope {
+            val session = openFakeSession(client) { req, _ ->
+                req.send(proxyRunMsg { decision = runDecision { decision = WireEnfAction.ALLOW } })
+                req.send(
+                    proxyRunMsg {
+                        error = runError {
+                            message = "ERROR: 42P01 undefined_table"
+                            targetDbError = true
+                            rawMessage = "ERROR: relation \"nope\" does not exist"
+                        }
+                    },
+                )
+            }
+            val ack = client.post("/api/editor/sessions/${session.sessionId}/query") {
+                contentType(ContentType.Application.Json); setBody(QueryRequest("select 1", 100))
+            }.body<EditorSubmitResponse>()
+
+            awaitUntil("target-DB error marks the editor task FAILED") { resultStore.meta(ack.taskId)?.status == "FAILED" }
+            assertEquals("approval.query_failed", resultStore.meta(ack.taskId)?.errorCode)
+            // Both forms persist, so the FAILED /result view re-gates per viewer like the approval path.
+            assertEquals(
+                runError { message = "ERROR: 42P01 undefined_table"; rawMessage = "ERROR: relation \"nope\" does not exist"; targetDbError = true },
+                resultStore.accessFor(ack.taskId)?.errorDetail,
+            )
 
             client.delete("/api/editor/sessions/${session.sessionId}")
             session.await()

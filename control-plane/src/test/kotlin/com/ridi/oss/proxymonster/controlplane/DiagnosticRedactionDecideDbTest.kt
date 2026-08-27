@@ -11,16 +11,14 @@ import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 /**
- * End-to-end through the real decision path (Cedar + PostgreSQL): the diagnostic-redaction flag on
- * DecisionContext is driven by the `result.read.unmasked`-on-datasource Cedar authorization, NOT a
- * datasource-tag check. On a `system:development` datasource the -200 preset permits unmasked reads, so no
- * redaction; on the production floor an ordinary principal is redacted. PostgreSQL is used because it leaks
- * on ALLOW, so the dev/prod difference shows on a plain SELECT.
+ * End-to-end (analyzer + Cedar + PostgreSQL): redact iff the principal can't read every column in
+ * `diagnostic_leak_columns` unmasked.
  */
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 class DiagnosticRedactionDecideDbTest {
     private lateinit var fx: EnforcementFixture
-    private val principal = "analyst@example.com"
+    private val analyst = "analyst@example.com"
+    private val inserter = "inserter@example.com"
 
     @BeforeAll
     fun setup() {
@@ -34,46 +32,45 @@ class DiagnosticRedactionDecideDbTest {
         }
     }
 
-    private fun decide(sql: String) = decideQuery(
-        principal = principal, ds = fx.datasourceStore.get(fx.datasource.id)!!, sql = sql, channel = Channel.WIRE,
+    private fun decide(sql: String, who: String = analyst) = decideQuery(
+        principal = who, ds = fx.datasourceStore.get(fx.datasource.id)!!, sql = sql, channel = Channel.WIRE,
         catalog = fx.datasourceStore.catalog(fx.datasource.id), policyStore = fx.policyStore, accessStore = fx.accessStore,
         userGroupStore = fx.userGroupStore, roleResolver = fx.roleResolver, authz = fx.authz,
         systemClassification = SystemClassificationService(),
     )
 
     @Test
-    fun `a system-development datasource never redacts (Cedar permits unmasked reads there)`() {
-        setTags("""["system:development"]""")
-        val r = decide("select id from users order by id")
-        assertEquals(EnfAction.ALLOW, r.action)
-        assertFalse(r.sanitizeDiagnostics, "dev holds no PII → the -200 unmasked permit fires → no redaction")
-    }
-
-    @Test
-    fun `a production datasource redacts an ordinary principal, even on an ALLOW (Postgres whole-row leak)`() {
+    fun `a read leaks only its referenced columns`() {
         setTags("""["system:production"]""")
-        val allow = decide("select id from users order by id")
-        assertEquals(EnfAction.ALLOW, allow.action)
-        assertTrue(allow.sanitizeDiagnostics, "production + not a full-cleartext reader + PG leaks on ALLOW → redact")
+        // A read leaks only what it references — `select id` never puts ssn in a diagnostic.
+        val idOnly = decide("select id from users order by id")
+        assertEquals(EnfAction.ALLOW, idOnly.action)
+        assertFalse(idOnly.sanitizeDiagnostics, "a read of only readable columns cannot leak a masked sibling")
 
-        val mask = decide("select id, ssn from users order by id")
-        assertEquals(EnfAction.MASK, mask.action)
-        assertTrue(mask.sanitizeDiagnostics, "a MASK decision touches protected data → redact")
+        val withSsn = decide("select id, ssn from users order by id")
+        assertEquals(EnfAction.MASK, withSsn.action)
+        assertTrue(withSsn.sanitizeDiagnostics, "a MASK decision redacts — the masked column is in the leak set")
+
         setTags("""["system:development"]""")
     }
 
     @Test
-    fun `a no-column relay still carries diagnostic redaction (the path a literal DML write takes)`() {
-        // `SELECT 1` touches no column/table/function, so it relays through the verbatim passthrough — the
-        // same shortcut a literal `UPDATE users SET x='y'` / `DELETE FROM users` reaches (their write target
-        // gates on the kind, not a column grant). That relay must NOT drop sanitizeDiagnostics: a PostgreSQL
-        // constraint error on such a write echoes the whole row (`DETAIL: Failing row contains (…)`), which
-        // the redaction strips for a principal without unmasked read.
+    fun `a PostgreSQL write redacts its whole-row diagnostic for a writer who cannot read the whole row`() {
+        // `insert into users (id)` can fail with `DETAIL: Failing row contains (1, <ssn>, …)` — the leak
+        // set is every users column, and the inserter can't read ssn unmasked.
         setTags("""["system:production"]""")
-        val r = decide("select 1")
-        assertEquals(EnfAction.ALLOW, r.action)
-        assertTrue(r.passthrough, "a no-column statement relays verbatim")
-        assertTrue(r.sanitizeDiagnostics, "production + not a full-cleartext reader + PG leaks on ALLOW → redact even on a relay")
+        val write = decide("insert into users (id) values (1)", inserter)
+        assertEquals(EnfAction.ALLOW, write.action, "the inserter's INSERT is allowed: ${write.denyReason}")
+        assertTrue(write.sanitizeDiagnostics, "the whole-row leak set includes masked ssn → redact")
         setTags("""["system:development"]""")
+    }
+
+    @Test
+    fun `the same write is not redacted for a full reader`() {
+        // On dev (-200 preset) the inserter reads the whole row unmasked — nothing to protect.
+        setTags("""["system:development"]""")
+        val write = decide("insert into users (id) values (1)", inserter)
+        assertEquals(EnfAction.ALLOW, write.action, "the inserter's INSERT is allowed: ${write.denyReason}")
+        assertFalse(write.sanitizeDiagnostics, "a full reader of the whole target row has nothing to redact")
     }
 }

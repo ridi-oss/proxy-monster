@@ -66,6 +66,7 @@ type ProbeResult struct {
 	Sources       []SourceInfo        `json:"sources"`
 	Functions     []string            `json:"functions"`
 	IsWrite       bool                `json:"isWrite"`
+	WriteTarget   *tableID            `json:"-"`
 	RewrittenSQL  *string             `json:"rewrittenSql"`
 	// Base columns a literal is compared against in a predicate, keyed by clause. Deliberately NOT folded
 	// into References: the parity oracle diffs that map field-by-field and produces no such fact.
@@ -114,7 +115,7 @@ type prober struct {
 	scopeOfSelect map[exp.Expression]*optimizer.Scope
 	writeScope    *optimizer.Scope
 
-	references    map[string]map[string]bool
+	references map[string]map[string]bool
 	// column key -> clause, for every base column a literal is compared against in a predicate.
 	predicateLiterals map[string]string
 	opaqueSelects     map[exp.Expression]bool
@@ -1517,18 +1518,27 @@ func (p *prober) lineage() ProbeResult {
 			traced++
 		}
 	}
+	var writeTarget *tableID
+	if p.isWrite {
+		if node := p.writeTargetTable(); node != nil {
+			if id, ok := p.resolvedTableID(node); ok {
+				writeTarget = &id
+			}
+		}
+	}
 	return ProbeResult{
-		Resolved:      true,
-		FailedStage:   nil,
-		Detail:        "ok",
-		OutputColumns: len(origins),
-		TracedColumns: traced,
-		Origins:       origins,
-		References:    refsOut,
-		Sources:       p.scannedSources(origins, refsOut),
-		Functions:     p.calledFunctions(),
-		IsWrite:       p.isWrite,
-		RewrittenSQL:  rewrittenSQL,
+		Resolved:          true,
+		FailedStage:       nil,
+		Detail:            "ok",
+		OutputColumns:     len(origins),
+		TracedColumns:     traced,
+		Origins:           origins,
+		References:        refsOut,
+		Sources:           p.scannedSources(origins, refsOut),
+		Functions:         p.calledFunctions(),
+		IsWrite:           p.isWrite,
+		WriteTarget:       writeTarget,
+		RewrittenSQL:      rewrittenSQL,
 		PredicateLiterals: p.predicateLiteralRefs(),
 	}
 }

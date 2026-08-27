@@ -124,22 +124,12 @@ class AccountManagementEnforcementDbTest {
             // read as a legacy result and fail closed at view.
             resultFingerprint = fingerprintOf(emptyList()),
         )
-        val view = decideResultView(
-            viewer = admin,
-            req = request(),
-            childSql = createUserRandom,
-            ds = datasource,
-            decrypted = stored,
-            callerContext = AuthzContext(requesterIp = "10.23.1.1"),
-            datasourceStore = fx.datasourceStore,
-            policyStore = fx.policyStore,
-            accessStore = fx.accessStore,
-            userGroupStore = fx.userGroupStore,
-            roleResolver = fx.roleResolver,
-            authz = fx.authz,
-            systemClassification = null,
-            channel = Channel.WIRE,
-        )
+        val viewCtx = viewerDecision(
+            admin, request(), createUserRandom, AuthzContext(requesterIp = "10.23.1.1"),
+            fx.datasourceStore, fx.policyStore, fx.accessStore, fx.userGroupStore, fx.roleResolver, fx.authz,
+            null, Channel.WIRE,
+        )!!
+        val view = decideResultView(viewCtx, stored)
         val allowed = assertIs<ResultViewDecision.Allowed>(view)
         assertEquals(stored.columns, allowed.columns, "the generated-password result is released with its columns intact")
         assertEquals(stored.rows, allowed.rows, "the generated password itself is released, not withheld")

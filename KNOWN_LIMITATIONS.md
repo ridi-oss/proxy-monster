@@ -285,6 +285,23 @@ tagging, table detail) and never feeds an enforcement decision.
 
 ## Authz / policy
 
+- 🟡 A stored FAILED query's diagnostic re-decides against the CURRENT catalog,
+  not an execution-time snapshot (unlike rows, #229). Example: `users.ssn` is
+  masked, a write fails with `DETAIL: Failing row contains (1, 010-…)`, then ssn
+  is dropped — a later view re-decides all-unmasked and releases the raw text.
+  Needs DDL within the 24h retention window
+  ([`docs/diagnostic-redaction.md`](./docs/diagnostic-redaction.md)).
+- 🟡 The analyzer's diagnostic leak set covers only the statement's own tables.
+  `DELETE FROM orders …` whose FK `ON DELETE CASCADE` hits a constraint on
+  `order_items` dumps THAT table's row in the `DETAIL` — a column set the check
+  never considered
+  ([`docs/diagnostic-redaction.md`](./docs/diagnostic-redaction.md)).
+- 🟡 A PostgreSQL DEFERRABLE constraint fails at `COMMIT`, and the sanitize flag
+  is per statement: the `UPDATE` that violated it was marked sanitizing, but the
+  `COMMIT` (empty leak set) is not, so its
+  `DETAIL: Key (ssn)=(…) is still referenced` relays raw. The known
+  transactional-deferral class
+  ([`docs/diagnostic-redaction.md`](./docs/diagnostic-redaction.md)).
 - 🟡 An IPv6-literal `PM_MCP_RESOURCE` is reachable only behind a trusted edge.
   The `/mcp` host gate resolves the client-addressed host through Ktor's
   `host()`, which splits a direct `Host: [::1]` at the literal's first colon and

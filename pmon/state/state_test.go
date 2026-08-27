@@ -1,14 +1,18 @@
 package state
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
+	"time"
 )
 
 // isolate points the state directory at a temp dir, so a test never touches the real user config.
@@ -17,6 +21,47 @@ func isolate(t *testing.T) string {
 	dir := t.TempDir()
 	t.Setenv(dirEnv, dir)
 	return dir
+}
+
+func TestDaemonRunningTimesOutWhenPidPublicationStalls(t *testing.T) {
+	isolate(t)
+	if _, err := EnsureDir(); err != nil {
+		t.Fatalf("EnsureDir: %v", err)
+	}
+	pidPath, err := PidPath()
+	if err != nil {
+		t.Fatalf("PidPath: %v", err)
+	}
+	transitionFile, err := os.OpenFile(pidPath+".transition", os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		t.Fatalf("open transition lock: %v", err)
+	}
+	if err := syscall.Flock(int(transitionFile.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		transitionFile.Close()
+		t.Fatalf("lock transition: %v", err)
+	}
+	t.Cleanup(func() {
+		syscall.Flock(int(transitionFile.Fd()), syscall.LOCK_UN)
+		transitionFile.Close()
+	})
+
+	instance, err := DaemonInstance()
+	if err != nil {
+		t.Fatalf("DaemonInstance: %v", err)
+	}
+	result := make(chan error, 1)
+	go func() {
+		_, err := instance.Client().Running(context.Background())
+		result <- err
+	}()
+	select {
+	case err := <-result:
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("DaemonRunning error = %v, want context deadline exceeded", err)
+		}
+	case <-time.After(pidLockOperationTimeout + time.Second):
+		t.Fatal("DaemonRunning did not stop at the pid-lock operation deadline")
+	}
 }
 
 func TestAssignPortIsStickyAndCompact(t *testing.T) {
@@ -406,56 +451,4 @@ func TestSocketPathUsesProductionRoot(t *testing.T) {
 	if got := filepath.Dir(sock); got != want {
 		t.Errorf("socket directory = %q, want %q", got, want)
 	}
-}
-
-// TestPidLockIsExclusiveAndReportsLiveness covers the daemon's single-instance guard: while the lock is held
-// DaemonRunning is true and a second acquire fails without error (so a racing peer's spawn loses gracefully
-// rather than producing two daemons); after release both invert.
-func TestPidLockIsExclusiveAndReportsLiveness(t *testing.T) {
-	isolate(t)
-
-	if DaemonRunning() {
-		t.Fatal("DaemonRunning() true before any lock was taken")
-	}
-	held, err := AcquirePidLock()
-	if err != nil || !held {
-		t.Fatalf("AcquirePidLock() = %v, %v; want true, nil", held, err)
-	}
-	if !DaemonRunning() {
-		t.Error("DaemonRunning() false while the lock is held")
-	}
-	if pid := DaemonPid(); pid != os.Getpid() {
-		t.Errorf("DaemonPid() = %d, want this process %d", pid, os.Getpid())
-	}
-
-	ReleasePidLock()
-	if DaemonRunning() {
-		t.Error("DaemonRunning() true after release")
-	}
-}
-
-// TestReleasePidLockKeepsTheFile locks the reason the pid file is NOT unlinked on release: unlock-then-unlink let
-// a second daemon lock the same inode before the first removed it, after which a third created and locked a fresh
-// one — two daemons each believing it was the singleton, each entitled to unlink the other's control socket.
-// Liveness comes from whether the flock can be taken, never from the pid inside, so stale contents are harmless.
-func TestReleasePidLockKeepsTheFile(t *testing.T) {
-	isolate(t)
-	if _, err := AcquirePidLock(); err != nil {
-		t.Fatalf("AcquirePidLock: %v", err)
-	}
-	p, err := PidPath()
-	if err != nil {
-		t.Fatalf("PidPath: %v", err)
-	}
-	ReleasePidLock()
-
-	if _, err := os.Stat(p); err != nil {
-		t.Errorf("the pid file was removed on release (%v); one stable inode must remain so the flock is the sole arbiter", err)
-	}
-	// And it is re-lockable, so a later daemon still starts.
-	held, err := AcquirePidLock()
-	if err != nil || !held {
-		t.Errorf("AcquirePidLock after release = %v, %v; want true, nil", held, err)
-	}
-	ReleasePidLock()
 }

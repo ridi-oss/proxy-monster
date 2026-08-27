@@ -150,6 +150,9 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/x-ndjson")
 	w.WriteHeader(http.StatusOK)
 	flusher, _ := w.(http.Flusher)
+	if flusher != nil {
+		flusher.Flush()
+	}
 
 	var mu sync.Mutex
 	emit := func(ev LoginEvent) {
@@ -196,7 +199,9 @@ func (s *Server) handleShutdown(w http.ResponseWriter, r *http.Request) {
 }
 
 // eventKeepalive bounds how long /events can sit silent, so a peer notices a dead socket promptly.
-const eventKeepalive = 30 * time.Second
+const defaultEventKeepalive = 30 * time.Second
+
+var eventKeepalive = defaultEventKeepalive
 
 func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	if !requireMethod(w, r, http.MethodGet) {

@@ -37,8 +37,9 @@ type app struct {
 	actionBusy sync.Mutex
 	actionHeld bool
 
-	mu     sync.Mutex
-	status *control.Status // nil means "no daemon reachable"
+	mu          sync.Mutex
+	status      *control.Status
+	unreachable bool
 	// dsItems are the reusable datasource rows, in a fixed order established at startup.
 	dsItems []*dsItem
 
@@ -188,8 +189,7 @@ func (a *app) watchCopy(d *dsItem) {
 	}
 }
 
-// watchDaemon keeps the menu in sync with the daemon, and is also how the tray learns the daemon is gone: the
-// event stream ending means no daemon, which renders as the stopped state rather than a stale last-known one.
+// watchDaemon keeps the menu in sync with the daemon, and is also how the tray learns the daemon is gone.
 //
 // It deliberately does NOT start a daemon. A tray launching at login must not force one up — that is an
 // explicit action (Start / Log in), symmetric with the CLI.
@@ -200,13 +200,14 @@ func (a *app) watchDaemon() {
 		}
 		client, err := control.Connect(a.ctx)
 		if err != nil {
-			a.render(nil)
+			a.renderControlError(err)
 			if !a.sleep(reconnectDelay) {
 				return
 			}
 			continue
 		}
 		// The stream's first event is the current status, so the menu is correct as soon as it opens.
+		shuttingDown := false
 		streamErr := client.Events(a.ctx, func(ev control.Event) {
 			switch ev.Kind {
 			case "status":
@@ -217,15 +218,20 @@ func (a *app) watchDaemon() {
 				a.refresh(client)
 				notify("proxy-monster", "your session expired — log in again from the menu")
 			case "shutdown":
-				a.render(nil)
+				shuttingDown = true
 			default:
 				a.refresh(client)
 			}
 		})
-		if streamErr != nil && !errors.Is(streamErr, context.Canceled) {
-			a.render(nil)
-		} else {
-			a.render(nil) // the stream ended: the daemon is gone until proven otherwise
+		switch {
+		case a.ctx.Err() != nil:
+			return
+		case shuttingDown:
+			a.renderAfterDisconnect(true)
+		case streamErr != nil && !errors.Is(streamErr, context.Canceled):
+			a.renderControlError(streamErr)
+		default:
+			a.renderAfterDisconnect(false)
 		}
 		if !a.sleep(reconnectDelay) {
 			return
@@ -237,10 +243,62 @@ func (a *app) watchDaemon() {
 func (a *app) refresh(client *control.Client) {
 	s, err := client.Status(a.ctx)
 	if err != nil {
-		a.render(nil)
+		a.renderControlError(err)
 		return
 	}
 	a.render(s)
+}
+
+func (a *app) renderAfterDisconnect(shuttingDown bool) {
+	deadline := time.Now()
+	if shuttingDown {
+		deadline = deadline.Add(reconnectDelay)
+	}
+	for {
+		if a.ctx.Err() != nil {
+			return
+		}
+		running, err := daemonIsRunning(a.ctx)
+		if err != nil {
+			a.renderUnreachable()
+			return
+		}
+		if !running {
+			a.render(nil)
+			return
+		}
+		if !shuttingDown || time.Now().After(deadline) {
+			if a.renderConnectedDaemon() {
+				return
+			}
+			a.renderUnreachable()
+			return
+		}
+		if !a.sleep(25 * time.Millisecond) {
+			return
+		}
+	}
+}
+
+func (a *app) renderConnectedDaemon() bool {
+	client, err := control.Connect(a.ctx)
+	if err != nil {
+		return false
+	}
+	status, err := client.Status(a.ctx)
+	if err != nil {
+		return false
+	}
+	a.render(status)
+	return true
+}
+
+func (a *app) renderControlError(err error) {
+	if errors.Is(err, control.ErrDaemonNotRunning) {
+		a.renderAfterDisconnect(false)
+		return
+	}
+	a.renderUnreachable()
 }
 
 // sleep waits d, returning false if the app is shutting down.

@@ -1,13 +1,30 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 
 	"fyne.io/systray"
 
 	"github.com/ridi-oss/proxy-monster/pmon/control"
+	"github.com/ridi-oss/proxy-monster/pmon/state"
 )
+
+var (
+	connectForConfirmation       = control.Connect
+	statusForConfirmation        = (*control.Client).Status
+	daemonRunningForConfirmation = daemonIsRunning
+	confirmConnectionDrop        = confirmDialog
+)
+
+func daemonIsRunning(ctx context.Context) (bool, error) {
+	instance, err := state.DaemonInstance()
+	if err != nil {
+		return false, err
+	}
+	return instance.Client().Running(ctx)
+}
 
 // The tray's actions. Each is the SAME control-API call `pmon` makes — no privileged path, no tray-only
 // behavior — so the two front ends cannot diverge in what they do or in what they protect.
@@ -26,6 +43,7 @@ func (a *app) doLogin() {
 	client, err := control.EnsureDaemon(a.ctx)
 	a.unlockAction()
 	if err != nil {
+		a.renderControlError(err)
 		notify("proxy-monster", fmt.Sprintf("could not start the daemon: %v", err))
 		return
 	}
@@ -66,8 +84,18 @@ func (a *app) doLogout() {
 	defer a.unlockAction()
 
 	client, err := control.Connect(a.ctx)
-	if err != nil {
+	if errors.Is(err, control.ErrDaemonUnreachable) {
+		a.renderUnreachable()
+		notify("proxy-monster", "the daemon control socket is unreachable — restart it before logging out")
+		return
+	}
+	if errors.Is(err, control.ErrDaemonNotRunning) {
 		a.render(nil)
+		return
+	}
+	if err != nil {
+		a.renderControlError(err)
+		notify("proxy-monster", fmt.Sprintf("could not read the daemon status: %v", err))
 		return
 	}
 	// Logging out closes the brokers, which drops live sessions — the same warning the CLI gives.
@@ -93,6 +121,7 @@ func (a *app) doStart() {
 	}
 	client, err := control.EnsureDaemon(a.ctx)
 	if err != nil {
+		a.renderControlError(err)
 		notify("proxy-monster", fmt.Sprintf("could not start the daemon: %v", err))
 		return
 	}
@@ -109,14 +138,17 @@ func (a *app) doRestart() {
 	if !a.confirmDroppingConns("Restart") {
 		return
 	}
-	if err := control.StopDaemon(a.ctx); err != nil && !errors.Is(err, control.ErrDaemonNotRunning) {
+	if err := control.StopDaemon(a.ctx); err != nil &&
+		!errors.Is(err, control.ErrDaemonNotRunning) &&
+		!errors.Is(err, control.ErrDaemonReplaced) {
+		a.renderControlError(err)
 		notify("proxy-monster", fmt.Sprintf("could not stop the daemon: %v", err))
 		return
 	}
 	client, err := control.EnsureDaemon(a.ctx)
 	if err != nil {
 		notify("proxy-monster", fmt.Sprintf("could not restart the daemon: %v", err))
-		a.render(nil)
+		a.renderControlError(err)
 		return
 	}
 	a.refresh(client)
@@ -133,6 +165,7 @@ func (a *app) doStop() {
 		return
 	}
 	if err := control.StopDaemon(a.ctx); err != nil && !errors.Is(err, control.ErrDaemonNotRunning) {
+		a.renderControlError(err)
 		notify("proxy-monster", fmt.Sprintf("could not stop the daemon: %v", err))
 		return
 	}
@@ -148,36 +181,45 @@ func (a *app) doQuit() {
 		return
 	}
 	if err := control.StopDaemon(a.ctx); err != nil && !errors.Is(err, control.ErrDaemonNotRunning) {
-		// Quitting is meant to stop the daemon; if that failed the daemon is still brokering. Under `open
-		// pmontray.app` there is no stderr to read, so say so where the user will see it — otherwise the menu
-		// vanishes and a daemon keeps running with no indication.
+		// The tray has no visible stderr, so report a daemon left running before it exits.
 		a.setErr(fmt.Errorf("could not stop the daemon: %w", err))
 		notify("proxy-monster", fmt.Sprintf("quitting, but the daemon is still running: %v — stop it with `pmon stop`", err))
 	}
 	systray.Quit()
 }
 
-// confirmDroppingConns asks before an action that would cut live database sessions. The daemon is shared — the
-// CLI may have started it, another window may be mid-query — so the honest guard is telling the user what
-// breaks, exactly as `pmon stop` does, rather than tracking who started it.
-// It asks the DAEMON for the count rather than trusting the last render: the cached status can be stale (a
-// reconnect in progress, or a render(nil) that raced an in-flight refresh), and a stale nil would silently skip
-// the dialog and drop someone's in-flight query. Only a daemon that is genuinely unreachable — nothing to
-// disturb — proceeds without asking.
+// confirmDroppingConns reads live status before warning because the tray's cached status may be stale.
 func (a *app) confirmDroppingConns(action string) bool {
-	client, err := control.Connect(a.ctx)
-	if err != nil {
-		return true // no daemon reachable: there are no sessions to cut
-	}
-	s, err := client.Status(a.ctx)
-	if err != nil {
+	client, err := connectForConfirmation(a.ctx)
+	if errors.Is(err, control.ErrDaemonNotRunning) {
 		return true
+	}
+	if err != nil {
+		return confirmConnectionDrop(
+			fmt.Sprintf("%s proxy-monster?", action),
+			"The daemon status cannot be read, so active database connections cannot be checked.",
+			action,
+		)
+	}
+	s, err := statusForConfirmation(client, a.ctx)
+	if errors.Is(err, control.ErrDaemonNotRunning) {
+		running, runningErr := daemonRunningForConfirmation(a.ctx)
+		if runningErr == nil && !running {
+			return true
+		}
+	}
+	if err != nil {
+		return confirmConnectionDrop(
+			fmt.Sprintf("%s proxy-monster?", action),
+			"The daemon status cannot be read, so active database connections cannot be checked.",
+			action,
+		)
 	}
 	n := s.TotalLiveConns()
 	if n == 0 {
 		return true
 	}
-	return confirmDialog(
+	return confirmConnectionDrop(
 		fmt.Sprintf("%s proxy-monster?", action),
 		fmt.Sprintf("%d active database connection(s) will be dropped.", n),
 		action,

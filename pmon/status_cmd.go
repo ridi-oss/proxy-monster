@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"text/tabwriter"
@@ -18,9 +19,16 @@ type statusCmd struct{}
 func (statusCmd) Run() error {
 	ctx := context.Background()
 	client, err := control.Connect(ctx)
-	if err != nil {
+	if errors.Is(err, control.ErrDaemonUnreachable) {
+		fmt.Println("daemon:    running, control socket unreachable (run `pmon restart`)")
+		return nil
+	}
+	if errors.Is(err, control.ErrDaemonNotRunning) {
 		fmt.Println("daemon:    not running (run `pmon start`, or `pmon login` to start it and log in)")
 		return nil
+	}
+	if err != nil {
+		return err
 	}
 	s, err := client.Status(ctx)
 	if err != nil {

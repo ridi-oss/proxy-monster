@@ -125,15 +125,24 @@ func New(version string) *Daemon {
 //
 // Missing credentials are NOT a startup failure: the daemon comes up idle and waits for a login, because a
 // peer must be able to launch it on a fresh machine and then log in through it.
-func (d *Daemon) Run(ctx context.Context) error {
-	held, err := state.AcquirePidLock()
+func (d *Daemon) Run(ctx context.Context) (err error) {
+	if _, err := state.EnsureDir(); err != nil {
+		return fmt.Errorf("pid lock: %w", err)
+	}
+	instance, err := state.DaemonInstance()
 	if err != nil {
 		return fmt.Errorf("pid lock: %w", err)
 	}
-	if !held {
+	owner, acquired, err := instance.Acquire(ctx)
+	if err != nil {
+		return fmt.Errorf("pid lock: %w", err)
+	}
+	if !acquired {
 		return errors.New("another pmon daemon is already running")
 	}
-	defer state.ReleasePidLock()
+	defer func() {
+		err = errors.Join(err, owner.Close())
+	}()
 
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()

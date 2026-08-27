@@ -13,9 +13,11 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sync/atomic"
 	"syscall"
 	"time"
 
+	"github.com/ridi-oss/proxy-monster/pmon/singleinstance"
 	"github.com/ridi-oss/proxy-monster/pmon/state"
 )
 
@@ -23,42 +25,109 @@ import (
 // failing: a stopped daemon is a normal state, and the peer offers to start one.
 var ErrDaemonNotRunning = errors.New("the pmon daemon is not running")
 
+// ErrDaemonUnreachable reports that the pid lock is held but no daemon answers at the current control socket.
+var ErrDaemonUnreachable = errors.New("the pmon daemon is running but its control socket is unreachable; run `pmon restart`")
+
+// ErrDaemonReplaced reports that the original stop target exited but another daemon took its place.
+var ErrDaemonReplaced = errors.New("the pmon daemon changed while stopping; another daemon is still running")
+
+const controlRequestTimeout = 2 * time.Second
+
 // Client speaks the control API over the daemon's unix socket.
 type Client struct {
-	http *http.Client
+	http      *http.Client
+	loginHTTP *http.Client
 }
 
 // NewClient dials the socket lazily per request — so a Client constructed while the daemon is down starts
 // working the moment one comes up, with no reconstruction.
 func NewClient() (*Client, error) {
+	return newClient(0)
+}
+
+func newClient(expectedOwnerPID int) (*Client, error) {
 	sockets, err := state.SocketPaths()
 	if err != nil {
 		return nil, err
 	}
-	return &Client{http: &http.Client{
-		Transport: &http.Transport{
-			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-				var dialErr error
-				for _, socket := range sockets {
-					var d net.Dialer
-					conn, err := d.DialContext(ctx, "unix", socket)
-					if err != nil {
-						dialErr = err
-						if ctx.Err() != nil || !isDialFailure(err) {
-							return nil, err
-						}
-						continue
+	transport := &http.Transport{
+		DisableKeepAlives:     true,
+		ResponseHeaderTimeout: controlRequestTimeout,
+		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+			var dialErr error
+			for _, socket := range sockets {
+				var d net.Dialer
+				conn, err := d.DialContext(ctx, "unix", socket)
+				if err != nil {
+					dialErr = err
+					if ctx.Err() != nil || !isDialFailure(err) {
+						return nil, err
 					}
-					return conn, nil
+					continue
 				}
-				return nil, dialErr
-			},
+				peerPID, err := verifyDaemonPeer(ctx, conn)
+				if err != nil {
+					return nil, errors.Join(err, conn.Close())
+				}
+				if expectedOwnerPID != 0 && peerPID != expectedOwnerPID {
+					return nil, errors.Join(
+						fmt.Errorf("the daemon changed from pid %d to pid %d", expectedOwnerPID, peerPID),
+						conn.Close(),
+					)
+				}
+				return conn, nil
+			}
+			return nil, dialErr
 		},
-	}}, nil
+	}
+	loginTransport := transport.Clone()
+	loginTransport.ResponseHeaderTimeout = 0
+	return &Client{
+		http:      &http.Client{Transport: transport},
+		loginHTTP: &http.Client{Transport: loginTransport},
+	}, nil
+}
+
+func daemonSingleton() (*singleinstance.Client, error) {
+	instance, err := state.DaemonInstance()
+	if err != nil {
+		return nil, err
+	}
+	return instance.Client(), nil
+}
+
+func verifyDaemonPeer(ctx context.Context, conn net.Conn) (int, error) {
+	unixConn, ok := conn.(*net.UnixConn)
+	if !ok {
+		return 0, fmt.Errorf("control socket returned %T, not a Unix connection", conn)
+	}
+	peerPID, err := socketPeerPID(unixConn)
+	if err != nil {
+		return 0, fmt.Errorf("could not identify the control-socket peer: %w", err)
+	}
+	singleton, err := daemonSingleton()
+	if err != nil {
+		return 0, fmt.Errorf("could not identify the daemon lock owner: %w", err)
+	}
+	owner, err := singleton.Owner(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("could not identify the daemon lock owner: %w", err)
+	}
+	if owner == nil {
+		return 0, ErrDaemonNotRunning
+	}
+	if peerPID != owner.PID() {
+		return 0, fmt.Errorf("control-socket peer pid %d does not own the daemon lock held by pid %d", peerPID, owner.PID())
+	}
+	return peerPID, nil
 }
 
 // do issues a control request. A dial failure becomes [ErrDaemonNotRunning] so callers branch on one error.
 func (c *Client) do(ctx context.Context, method, path string, body any) (*http.Response, error) {
+	return c.doWith(c.http, ctx, method, path, body)
+}
+
+func (c *Client) doWith(client *http.Client, ctx context.Context, method, path string, body any) (*http.Response, error) {
 	var rdr io.Reader
 	if body != nil {
 		buf, err := json.Marshal(body)
@@ -75,9 +144,9 @@ func (c *Client) do(ctx context.Context, method, path string, body any) (*http.R
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
-	resp, err := c.http.Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
-		if isDialFailure(err) {
+		if errors.Is(err, ErrDaemonNotRunning) || isDialFailure(err) {
 			return nil, ErrDaemonNotRunning
 		}
 		return nil, err
@@ -107,6 +176,8 @@ func isDialFailure(err error) bool {
 
 // Status fetches the daemon's current state.
 func (c *Client) Status(ctx context.Context) (*Status, error) {
+	ctx, cancel := context.WithTimeout(ctx, controlRequestTimeout)
+	defer cancel()
 	resp, err := c.do(ctx, http.MethodGet, PathStatus, nil)
 	if err != nil {
 		return nil, err
@@ -122,7 +193,7 @@ func (c *Client) Status(ctx context.Context) (*Status, error) {
 // Login runs a device-auth flow in the daemon, calling onEvent for each streamed step. It returns when the
 // flow finishes; a "done" event means the daemon is logged in and its brokers are coming up.
 func (c *Client) Login(ctx context.Context, req LoginRequest, onEvent func(LoginEvent)) error {
-	resp, err := c.do(ctx, http.MethodPost, PathLogin, req)
+	resp, err := c.doWith(c.loginHTTP, ctx, http.MethodPost, PathLogin, req)
 	if err != nil {
 		return err
 	}
@@ -150,6 +221,8 @@ func (c *Client) Login(ctx context.Context, req LoginRequest, onEvent func(Login
 
 // Logout clears the stored credentials and closes every broker, leaving the daemon running and idle.
 func (c *Client) Logout(ctx context.Context) error {
+	ctx, cancel := context.WithTimeout(ctx, controlRequestTimeout)
+	defer cancel()
 	resp, err := c.do(ctx, http.MethodPost, PathLogout, nil)
 	if err != nil {
 		return err
@@ -160,6 +233,8 @@ func (c *Client) Logout(ctx context.Context) error {
 
 // Reload forces an immediate rediscovery instead of waiting for the next cycle.
 func (c *Client) Reload(ctx context.Context) error {
+	ctx, cancel := context.WithTimeout(ctx, controlRequestTimeout)
+	defer cancel()
 	resp, err := c.do(ctx, http.MethodPost, PathReload, nil)
 	if err != nil {
 		return err
@@ -171,9 +246,19 @@ func (c *Client) Reload(ctx context.Context) error {
 // Shutdown asks the daemon to exit gracefully. The daemon closes the connection as it goes, so a dial/EOF
 // error after the request was accepted is success, not failure.
 func (c *Client) Shutdown(ctx context.Context) error {
+	err := c.shutdown(ctx)
+	if errors.Is(err, ErrDaemonNotRunning) {
+		return nil
+	}
+	return err
+}
+
+func (c *Client) shutdown(ctx context.Context) error {
+	ctx, cancel := context.WithTimeout(ctx, controlRequestTimeout)
+	defer cancel()
 	resp, err := c.do(ctx, http.MethodPost, PathShutdown, nil)
 	if err != nil {
-		if errors.Is(err, ErrDaemonNotRunning) || errors.Is(err, io.EOF) {
+		if errors.Is(err, io.EOF) {
 			return nil
 		}
 		return err
@@ -182,16 +267,45 @@ func (c *Client) Shutdown(ctx context.Context) error {
 	return nil
 }
 
-// Events streams daemon state changes until ctx ends or the daemon exits, calling onEvent for each. A
-// returning Events means the daemon is gone or shutting down — which is how a peer learns to render "not
-// running" without polling.
+var errEventStreamIdle = errors.New("the daemon event stream stopped responding")
+
+const eventStreamIdleTimeout = 2 * defaultEventKeepalive
+
+type idleTimeoutReader struct {
+	body    io.ReadCloser
+	timeout time.Duration
+}
+
+func (r idleTimeoutReader) Read(p []byte) (int, error) {
+	var timedOut atomic.Bool
+	timerDone := make(chan struct{})
+	timer := time.AfterFunc(r.timeout, func() {
+		timedOut.Store(true)
+		_ = r.body.Close()
+		close(timerDone)
+	})
+	n, err := r.body.Read(p)
+	if !timer.Stop() {
+		<-timerDone
+	}
+	if timedOut.Load() && n == 0 {
+		return 0, fmt.Errorf("%w after %s", errEventStreamIdle, r.timeout)
+	}
+	return n, err
+}
+
+// Events streams daemon state changes until ctx ends or the daemon stops responding.
 func (c *Client) Events(ctx context.Context, onEvent func(Event)) error {
+	return c.events(ctx, onEvent, eventStreamIdleTimeout)
+}
+
+func (c *Client) events(ctx context.Context, onEvent func(Event), idleTimeout time.Duration) error {
 	resp, err := c.do(ctx, http.MethodGet, PathEvents, nil)
 	if err != nil {
 		return err
 	}
 	defer resp.Body.Close()
-	sc := bufio.NewScanner(resp.Body)
+	sc := bufio.NewScanner(idleTimeoutReader{body: resp.Body, timeout: idleTimeout})
 	sc.Buffer(make([]byte, 0, 8192), 1<<20)
 	for sc.Scan() {
 		line := bytes.TrimSpace(sc.Bytes())
@@ -212,6 +326,12 @@ func (c *Client) Events(ctx context.Context, onEvent func(Event)) error {
 // daemonStartTimeout bounds how long a peer waits for a freshly spawned daemon to answer on its socket.
 const daemonStartTimeout = 10 * time.Second
 
+// daemonStartRaceGrace lets a concurrently starting daemon bind before it is reported unreachable.
+const daemonStartRaceGrace = time.Second
+
+const daemonGracefulShutdownTimeout = 10 * time.Second
+const daemonSignalRaceGrace = time.Second
+
 // EnsureDaemon returns a client to a live daemon, starting one if none is running. Both peers call this, so
 // start-if-needed has exactly one implementation.
 //
@@ -223,12 +343,40 @@ func EnsureDaemon(ctx context.Context) (*Client, error) {
 	if err != nil {
 		return nil, err
 	}
-	if _, err := c.Status(ctx); err == nil {
+	_, statusErr := c.Status(ctx)
+	if statusErr == nil {
 		return c, nil
-	} else if !errors.Is(err, ErrDaemonNotRunning) {
-		return nil, err
 	}
-	if err := StartDaemon(); err != nil {
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return nil, ctxErr
+	}
+	singleton, err := daemonSingleton()
+	if err != nil {
+		return nil, fmt.Errorf("could not inspect the daemon lock: %w", err)
+	}
+	running, err := singleton.Running(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("could not inspect the daemon lock: %w", err)
+	}
+	if running {
+		if err := waitForDaemon(ctx, c, daemonStartRaceGrace); err == nil {
+			return c, nil
+		}
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		running, err = singleton.Running(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("could not recheck the daemon lock: %w", err)
+		}
+		if running {
+			if errors.Is(statusErr, ErrDaemonNotRunning) {
+				return nil, ErrDaemonUnreachable
+			}
+			return nil, fmt.Errorf("%w: %w", ErrDaemonUnreachable, statusErr)
+		}
+	}
+	if err := StartDaemon(ctx); err != nil {
 		return nil, err
 	}
 	if err := waitForDaemon(ctx, c, daemonStartTimeout); err != nil {
@@ -244,8 +392,37 @@ func Connect(ctx context.Context) (*Client, error) {
 	if err != nil {
 		return nil, err
 	}
-	if _, err := c.Status(ctx); err != nil {
-		return nil, err
+	if _, statusErr := c.Status(ctx); statusErr != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, ctxErr
+		}
+		singleton, err := daemonSingleton()
+		if err != nil {
+			return nil, fmt.Errorf("could not inspect the daemon lock: %w", err)
+		}
+		running, err := singleton.Running(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("could not inspect the daemon lock: %w", err)
+		}
+		if running {
+			if err := waitForDaemon(ctx, c, daemonStartRaceGrace); err == nil {
+				return c, nil
+			}
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+			running, err = singleton.Running(ctx)
+			if err != nil {
+				return nil, fmt.Errorf("could not recheck the daemon lock: %w", err)
+			}
+			if running {
+				if errors.Is(statusErr, ErrDaemonNotRunning) {
+					return nil, ErrDaemonUnreachable
+				}
+				return nil, fmt.Errorf("%w: %w", ErrDaemonUnreachable, statusErr)
+			}
+		}
+		return nil, statusErr
 	}
 	return c, nil
 }
@@ -377,7 +554,10 @@ func trustedPathComponent(path, what string) error {
 // [waitForDaemon]). Detached is required, not incidental: the peer that starts the daemon exits immediately
 // (a CLI command returns; a tray may be quit), and the daemon must outlive it. So process-tree death is never
 // the stop mechanism — stopping is always an explicit [Client.Shutdown].
-func StartDaemon() error {
+func StartDaemon(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	exe, err := DaemonBinary()
 	if err != nil {
 		return err
@@ -395,6 +575,9 @@ func StartDaemon() error {
 	// New session: the daemon must not die with the peer's process group, nor take its controlling terminal
 	// signals (a Ctrl-C in the shell that ran `pmon login` must not kill the daemon).
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("could not start the daemon: %w", err)
 	}
@@ -403,59 +586,103 @@ func StartDaemon() error {
 
 // waitForDaemon polls the socket until the daemon answers or the timeout expires.
 func waitForDaemon(ctx context.Context, c *Client, timeout time.Duration) error {
-	deadline := time.Now().Add(timeout)
+	waitCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
 	for {
-		if _, err := c.Status(ctx); err == nil {
+		if _, err := c.Status(waitCtx); err == nil {
 			return nil
 		}
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		if time.Now().After(deadline) {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-waitCtx.Done():
+			if err := ctx.Err(); err != nil {
+				return err
+			}
 			logHint := ""
-			if p, e := state.LogPath(); e == nil {
+			if p, err := state.LogPath(); err == nil {
 				logHint = fmt.Sprintf(" (see %s)", p)
 			}
 			return fmt.Errorf("the daemon did not come up within %s%s", timeout, logHint)
+		case <-time.After(50 * time.Millisecond):
 		}
-		time.Sleep(50 * time.Millisecond)
 	}
 }
 
 // StopDaemon stops a running daemon, falling back to SIGTERM when the control socket is unreachable but the
 // pid lock shows a daemon alive (a wedged or half-crashed daemon still has to be stoppable).
 func StopDaemon(ctx context.Context) error {
-	c, err := NewClient()
+	singleton, err := daemonSingleton()
+	if err != nil {
+		return fmt.Errorf("could not identify the running daemon: %w", err)
+	}
+	owner, err := singleton.Owner(ctx)
+	if err != nil {
+		return fmt.Errorf("could not identify the running daemon: %w", err)
+	}
+	if owner == nil {
+		return ErrDaemonNotRunning
+	}
+	c, err := newClient(owner.PID())
 	if err != nil {
 		return err
 	}
-	if err := c.Shutdown(ctx); err == nil {
-		return waitForExit(ctx, 10*time.Second)
-	}
-	if !state.DaemonRunning() {
-		return ErrDaemonNotRunning
-	}
-	pid := state.DaemonPid()
-	if pid <= 0 {
-		return fmt.Errorf("a daemon is running but its pid is unreadable; stop it by hand")
-	}
-	if err := syscall.Kill(pid, syscall.SIGTERM); err != nil {
-		return fmt.Errorf("could not signal the daemon (pid %d): %w", pid, err)
-	}
-	return waitForExit(ctx, 10*time.Second)
-}
-
-// waitForExit waits for the pid lock to free, which is the daemon's true exit (the socket may linger).
-func waitForExit(ctx context.Context, timeout time.Duration) error {
-	deadline := time.Now().Add(timeout)
-	for state.DaemonRunning() {
+	graceful := c.shutdown(ctx) == nil
+	if !graceful {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		if time.Now().After(deadline) {
-			return fmt.Errorf("the daemon did not exit within %s", timeout)
+	}
+	if graceful {
+		err := waitForOwnerExit(ctx, owner, daemonGracefulShutdownTimeout)
+		if err == nil || errors.Is(err, ErrDaemonReplaced) {
+			return err
 		}
-		time.Sleep(50 * time.Millisecond)
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+	}
+	current, err := owner.Current(ctx)
+	if errors.Is(err, singleinstance.ErrOwnerReplaced) {
+		return ErrDaemonReplaced
+	}
+	if err != nil {
+		return fmt.Errorf("could not revalidate the running daemon: %w", err)
+	}
+	if !current {
+		return nil
+	}
+	if err := owner.Signal(ctx, syscall.SIGTERM); err != nil {
+		if errors.Is(err, singleinstance.ErrOwnerReplaced) {
+			return ErrDaemonReplaced
+		}
+		return handleDaemonSignalError(ctx, owner, fmt.Errorf("could not signal the daemon (pid %d): %w", owner.PID(), err))
+	}
+	return waitForOwnerExit(ctx, owner, daemonGracefulShutdownTimeout)
+}
+
+func handleDaemonSignalError(ctx context.Context, owner *singleinstance.Owner, err error) error {
+	if !errors.Is(err, syscall.ESRCH) {
+		return err
+	}
+	if waitErr := waitForOwnerExit(ctx, owner, daemonSignalRaceGrace); waitErr != nil {
+		return errors.Join(err, waitErr)
 	}
 	return nil
+}
+
+func waitForOwnerExit(ctx context.Context, owner *singleinstance.Owner, timeout time.Duration) error {
+	err := owner.WaitExit(ctx, timeout)
+	switch {
+	case err == nil:
+		return nil
+	case ctx.Err() != nil:
+		return ctx.Err()
+	case errors.Is(err, singleinstance.ErrOwnerReplaced):
+		return ErrDaemonReplaced
+	case errors.Is(err, singleinstance.ErrOwnerExitTimeout):
+		return fmt.Errorf("the daemon did not exit within %s", timeout)
+	default:
+		return fmt.Errorf("could not inspect the daemon lock: %w", err)
+	}
 }

@@ -13,8 +13,32 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ridi-oss/proxy-monster/pmon/singleinstance"
 	"github.com/ridi-oss/proxy-monster/pmon/state"
 )
+
+var daemonLockForTest *singleinstance.Daemon
+
+func acquireDaemonLock(ctx context.Context) (bool, error) {
+	if _, err := state.EnsureDir(); err != nil {
+		return false, err
+	}
+	instance, err := state.DaemonInstance()
+	if err != nil {
+		return false, err
+	}
+	lock, acquired, err := instance.Acquire(ctx)
+	if err == nil && acquired {
+		daemonLockForTest = lock
+	}
+	return acquired, err
+}
+
+func releaseDaemonLock() error {
+	lock := daemonLockForTest
+	daemonLockForTest = nil
+	return lock.Close()
+}
 
 // unixHTTPClient is a raw HTTP client over the control socket, for asserting transport-level behavior the
 // typed Client deliberately hides.
@@ -107,6 +131,15 @@ func (f *fakeBackend) counts() (login, logout, reload, shutdown int) {
 func serve(t *testing.T, backend Backend) *Client {
 	t.Helper()
 	t.Setenv("PMON_CONFIG_DIR", t.TempDir())
+	held, err := acquireDaemonLock(context.Background())
+	if err != nil || !held {
+		t.Fatalf("AcquirePidLock = %v, %v; want true, nil", held, err)
+	}
+	t.Cleanup(func() {
+		if err := releaseDaemonLock(); err != nil {
+			t.Errorf("ReleasePidLock: %v", err)
+		}
+	})
 
 	srv, err := Listen(backend)
 	if err != nil {
@@ -187,11 +220,11 @@ func TestNewClientReachesReleasedDaemonPath(t *testing.T) {
 	if _, err := state.EnsureDir(); err != nil {
 		t.Fatalf("EnsureDir: %v", err)
 	}
-	held, err := state.AcquirePidLock()
+	held, err := acquireDaemonLock(context.Background())
 	if err != nil || !held {
 		t.Fatalf("AcquirePidLock = %v, %v; want true, nil", held, err)
 	}
-	t.Cleanup(state.ReleasePidLock)
+	t.Cleanup(func() { _ = releaseDaemonLock() })
 	paths, err := state.SocketPaths()
 	if err != nil {
 		t.Fatalf("SocketPaths: %v", err)
@@ -240,11 +273,11 @@ func TestBlockedReleasedPathDoesNotDisableCanonicalSocket(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(paths[1], "blocked"), nil, 0o600); err != nil {
 		t.Fatalf("seed blocked released path: %v", err)
 	}
-	held, err := state.AcquirePidLock()
+	held, err := acquireDaemonLock(context.Background())
 	if err != nil || !held {
 		t.Fatalf("AcquirePidLock = %v, %v; want true, nil", held, err)
 	}
-	t.Cleanup(state.ReleasePidLock)
+	t.Cleanup(func() { _ = releaseDaemonLock() })
 
 	server, err := Listen(newFakeBackend())
 	if err != nil {
@@ -657,7 +690,7 @@ func TestStartDaemonUsesTheResolvedBinary(t *testing.T) {
 	}
 	t.Setenv(daemonBinaryEnv, stub)
 
-	if err := StartDaemon(); err != nil {
+	if err := StartDaemon(context.Background()); err != nil {
 		t.Fatalf("StartDaemon: %v", err)
 	}
 	deadline := time.Now().Add(5 * time.Second)

@@ -1388,6 +1388,9 @@ func TestLoginWaitsForReleasedDaemonResponseHeaders(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
 	}
+	if got := c.loginHTTP.Transport.(*http.Transport).ResponseHeaderTimeout; got != 0 {
+		t.Fatalf("Login response-header timeout = %s, want no timeout for released daemons", got)
+	}
 	const shortHeaderTimeout = 50 * time.Millisecond
 	c.http.Transport.(*http.Transport).ResponseHeaderTimeout = shortHeaderTimeout
 	result := make(chan error, 1)
@@ -1490,6 +1493,70 @@ func TestEventsSendsCurrentStateFirst(t *testing.T) {
 		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("no reauth event within 3s")
+	}
+}
+
+type dataOnCloseReader struct {
+	once   sync.Once
+	closed chan struct{}
+}
+
+func (reader *dataOnCloseReader) Read(p []byte) (int, error) {
+	<-reader.closed
+	return copy(p, "x"), nil
+}
+
+func (reader *dataOnCloseReader) Close() error {
+	reader.once.Do(func() { close(reader.closed) })
+	return nil
+}
+
+func TestIdleTimeoutReaderReturnsDataAvailableAtTimeout(t *testing.T) {
+	body := &dataOnCloseReader{closed: make(chan struct{})}
+	buf := make([]byte, 1)
+	n, err := (idleTimeoutReader{body: body, timeout: 10 * time.Millisecond}).Read(buf)
+	if err != nil || n != 1 || string(buf) != "x" {
+		t.Fatalf("Read = %q, %d, %v; want x, 1, nil", buf, n, err)
+	}
+}
+
+func TestEventsHeartbeatsKeepStreamAlive(t *testing.T) {
+	previousKeepalive := eventKeepalive
+	eventKeepalive = 10 * time.Millisecond
+	t.Cleanup(func() { eventKeepalive = previousKeepalive })
+	c := serve(t, newFakeBackend())
+	const idleTimeout = 200 * time.Millisecond
+
+	ctx, cancel := context.WithCancel(context.Background())
+	result := make(chan error, 1)
+	gotStatus := make(chan struct{}, 1)
+	go func() {
+		result <- c.events(ctx, func(ev Event) {
+			if ev.Kind == "status" {
+				select {
+				case gotStatus <- struct{}{}:
+				default:
+				}
+			}
+		}, idleTimeout)
+	}()
+	select {
+	case <-gotStatus:
+	case err := <-result:
+		t.Fatalf("Events returned before the initial status: %v", err)
+	case <-time.After(time.Second):
+		t.Fatal("Events did not receive the initial status")
+	}
+	select {
+	case err := <-result:
+		t.Fatalf("Events returned while server heartbeats were active: %v", err)
+	case <-time.After(3 * idleTimeout):
+	}
+	cancel()
+	select {
+	case <-result:
+	case <-time.After(time.Second):
+		t.Fatal("Events did not stop after cancellation")
 	}
 }
 

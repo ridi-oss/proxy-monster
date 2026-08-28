@@ -2,12 +2,15 @@ package com.ridi.oss.proxymonster.controlplane
 
 import com.ridi.oss.proxymonster.grpc.EnfAction
 import com.ridi.oss.proxymonster.controlplane.authz.CedarPolicyInput
+import com.ridi.oss.proxymonster.controlplane.authz.InvalidCedarPolicyException
 import com.ridi.oss.proxymonster.controlplane.support.EnforcementFixture
 import com.ridi.oss.proxymonster.controlplane.support.requireDockerOrSkip
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.TestInstance
 import kotlin.test.assertEquals
+import kotlin.test.assertTrue
+import kotlin.test.assertFailsWith
 
 /**
  * Utility gate, end-to-end on real MySQL + real Cedar: a data-bearing SHOW command (SHOW
@@ -52,8 +55,6 @@ class UtilityGateDbTest {
         setEngineVersion("8.0.44")
         setTags("""["system:production"]""")
         // Floor: forbidden by the shipped system:activity / system:data-leak guards.
-        assertEquals(EnfAction.DENY, decide("SHOW PROCESSLIST"), "SHOW PROCESSLIST (system:activity) denies on the floor")
-        assertEquals(EnfAction.DENY, decide("SHOW FULL PROCESSLIST"), "SHOW FULL PROCESSLIST denies on the floor")
         assertEquals(EnfAction.DENY, decide("SHOW BINLOG EVENTS"), "SHOW BINLOG EVENTS (system:data-leak) denies on the floor")
         assertEquals(EnfAction.DENY, decide("SHOW WARNINGS"), "SHOW WARNINGS (system:data-leak) denies on the floor")
         // GET DIAGNOSTICS launders a diagnostic string into a user var; it is denied on the floor
@@ -73,7 +74,6 @@ class UtilityGateDbTest {
         assertEquals(EnfAction.DENY, decide("SET PERSIST_ONLY max_connections=5000"), "SET PERSIST_ONLY (system:critical) denies on the floor")
         // Dev datasource: the -110/-120 activity/data-leak permits fire (V32, role-agnostic) → the SHOW is allowed.
         setTags("""["system:development"]""")
-        assertEquals(EnfAction.ALLOW, decide("SHOW PROCESSLIST"), "SHOW PROCESSLIST relaxed on a dev datasource")
         assertEquals(EnfAction.ALLOW, decide("SHOW BINLOG EVENTS"), "SHOW BINLOG EVENTS relaxed on a dev datasource")
         // SHOW WARNINGS relaxes on a dev datasource too (dev has no PII, so its diagnostics buffer
         // carries nothing to leak) — matching the production-posture diagnostic-redaction flag.
@@ -112,20 +112,97 @@ class UtilityGateDbTest {
         // The broad grant is genuinely load-bearing: an ordinary passthrough SHOW (no utility fact) allows.
         assertEquals(EnfAction.ALLOW, decideAs(broad, "SHOW TABLES"), "broad grant permits ordinary metadata (proves it's live)")
         // ...but the unclassified dangerous SHOW is HARD-denied ahead of Cedar — the grant cannot reach it.
-        val processlist = decideQuery(
-            principal = broad, ds = fx.datasourceStore.get(fx.datasource.id)!!, sql = "SHOW PROCESSLIST", channel = Channel.WIRE,
+        val warnings = decideQuery(
+            principal = broad, ds = fx.datasourceStore.get(fx.datasource.id)!!, sql = "SHOW WARNINGS", channel = Channel.WIRE,
             catalog = fx.datasourceStore.catalog(fx.datasource.id), policyStore = fx.policyStore, accessStore = fx.accessStore,
             userGroupStore = fx.userGroupStore, roleResolver = fx.roleResolver, authz = fx.authz,
             systemClassification = SystemClassificationService(),
         )
         assertEquals(
             EnfAction.DENY,
-            processlist.action,
-            "no manifest → unclassified utility hard-denied even WITH a Datasource read grant: ${processlist.detail}",
+            warnings.action,
+            "no manifest → unclassified utility hard-denied even WITH a Datasource read grant: ${warnings.detail}",
         )
         assertEquals(EnfAction.DENY, decideAs(broad, "SHOW BINLOG EVENTS"), "no manifest → hard-denied despite the broad grant")
         // And the analyst (no grant at all) is denied too — deny-by-default AND the hard-deny both hold.
-        assertEquals(EnfAction.DENY, decideAs(principal, "SHOW PROCESSLIST"), "no manifest → denied with no grant")
+        assertEquals(EnfAction.DENY, decideAs(principal, "SHOW WARNINGS"), "no manifest → denied with no grant")
         setEngineVersion("8.0.44")
+    }
+
+    @Test
+    fun `a broad production permit cannot reach a data-leak SHOW, and an operator forbid on it still bites`() {
+        // A statement that still carries a Utility must stay governed by it: a broad action-unscoped
+        // datasource permit must not reach SHOW BINLOG EVENTS, and an operator forbid written against the
+        // Utility EUID must still be evaluated. (SHOW GRANTS / SHOW PROCESSLIST no longer emit one — they
+        // gate on stmt.cat.admin.* alone.)
+        setEngineVersion("8.0.44")
+        setTags("""["system:production"]""")
+        val wide = "wide-prod@example.com"
+        val role = fx.policyStore.createRole(RoleInput("wide-prod-reader"))
+        fx.policyStore.createAssignment(RoleAssignmentInput(wide, role.id))
+        fx.cedarPolicyStore.create(
+            CedarPolicyInput(
+                name = "test-wide-prod-grant",
+                cedarSrc = """permit(principal in Role::"wide-prod-reader", action, resource in Datasource::"${fx.datasource.name}");""",
+            ),
+            updatedBy = "test",
+        )
+        fun decideWide(sql: String) = decideQuery(
+            principal = wide, ds = fx.datasourceStore.get(fx.datasource.id)!!, sql = sql, channel = Channel.WIRE,
+            catalog = fx.datasourceStore.catalog(fx.datasource.id), policyStore = fx.policyStore, accessStore = fx.accessStore,
+            userGroupStore = fx.userGroupStore, roleResolver = fx.roleResolver, authz = fx.authz,
+            systemClassification = SystemClassificationService(),
+        ).action
+        assertEquals(EnfAction.DENY, decideWide("SHOW BINLOG EVENTS"), "the system:data-leak floor must survive a broad datasource permit")
+        assertEquals(EnfAction.DENY, decideWide("SHOW CREATE USER CURRENT_USER()"), "system:critical must survive a broad datasource permit")
+
+        val forbid = fx.cedarPolicyStore.create(
+            CedarPolicyInput(
+                name = "test-operator-binlog-forbid",
+                cedarSrc = """forbid(principal, action in [Action::"result.read.unmasked", Action::"result.read.masked"], resource == Utility::"${fx.datasource.name}/SHOW_BINLOG_EVENTS");""",
+            ),
+            updatedBy = "test",
+        )
+        try {
+            setTags("""["system:development"]""")
+            assertEquals(
+                EnfAction.DENY,
+                decideWide("SHOW BINLOG EVENTS"),
+                "an operator forbid on the Utility EUID must override even the dev relaxation — a dead forbid is fail-open",
+            )
+        } finally {
+            fx.cedarPolicyStore.delete(forbid.id)
+            setTags("""["system:production"]""")
+        }
+    }
+
+    @Test
+    fun `a policy naming a retired Utility command is rejected, not silently inert`() {
+        // Utility is still a valid entity type, so forbid(... resource == Utility::"ds/SHOW_GRANTS") passes
+        // schema validation and then never matches — an operator's carve-out would stop working in silence.
+        // Reject it at write time and name the replacement.
+        val ds = fx.datasource.name
+        for (cmd in listOf("SHOW_GRANTS", "SHOW_PROCESSLIST")) {
+            val e = assertFailsWith<InvalidCedarPolicyException> {
+                fx.cedarPolicyStore.create(
+                    CedarPolicyInput(
+                        name = "retired-$cmd",
+                        cedarSrc = """forbid(principal, action in [Action::"result.read.unmasked"], resource == Utility::"$ds/$cmd");""",
+                    ),
+                    updatedBy = "test",
+                )
+            }
+            assertTrue(e.message.orEmpty().contains("no longer emitted"), "must say why: ${e.message}")
+            assertTrue(e.message.orEmpty().contains("stmt.kind."), "must name the replacement: ${e.message}")
+        }
+        // A utility that IS still emitted stays writable.
+        val ok = fx.cedarPolicyStore.create(
+            CedarPolicyInput(
+                name = "live-utility-policy",
+                cedarSrc = """forbid(principal, action in [Action::"result.read.unmasked"], resource == Utility::"$ds/SHOW_BINLOG_EVENTS");""",
+            ),
+            updatedBy = "test",
+        )
+        fx.cedarPolicyStore.delete(ok.id)
     }
 }

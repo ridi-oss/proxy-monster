@@ -43,7 +43,7 @@ entity Function in [Datasource, Tag];
 
 // A resource-bearing UTILITY command a statement performs (facts-emission.md), keyed off the
 // datasource NAME + the canonical command id: `Utility::"<dsName>/<command>"`. Like Function it gains a
-// `Tag` parent for its shipped `system:` classification (SHOW PROCESSLIST → system:activity, SHOW BINLOG
+// `Tag` parent for its shipped `system:` classification (SHOW CREATE USER → system:critical, SHOW BINLOG
 // EVENTS → system:data-leak, …). Deny-by-default: unlike a Function (only dangerous ones are marshaled), a
 // RECOGNIZED utility with no classification is still marshaled and, carrying no permit, denies — so an
 // un-classifiable utility on an unsupported-version datasource fails closed (utilities are token-recognized,

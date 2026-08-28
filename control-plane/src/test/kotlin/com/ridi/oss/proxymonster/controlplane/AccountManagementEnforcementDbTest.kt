@@ -151,4 +151,57 @@ class AccountManagementEnforcementDbTest {
         val ctx = decide("CREATE USER 'x'@'%'", connector)
         assertEquals(EnfAction.DENY, ctx.action, "CREATE USER must stay denied without stmt.cat.admin.account")
     }
+
+    @Test
+    fun `an admin-account holder reads SHOW GRANTS on production but never SHOW CREATE USER`() {
+        // The production surface this reopened: SHOW GRANTS is in stmt.cat.admin.account, so the holder that
+        // may CREATE USER may now audit privileges — previously impossible, because its system:critical
+        // Utility hit the unconditional -130 forbid no grant can override. SHOW CREATE USER keeps that
+        // Utility (it returns the stored password hash), so it stays denied for the SAME principal on the
+        // SAME datasource: the split is credential-vs-privilege-list, not admin-vs-non-admin.
+        setEngineVersion("8.0.44")
+        for (sql in listOf(
+            "SHOW GRANTS",
+            "SHOW GRANTS FOR 'books-frontend'@'10.23.0.0/255.255.0.0'",
+            "SHOW GRANTS FOR CURRENT_USER()",
+        )) {
+            val ctx = decideClassified(sql, admin)
+            assertEquals(EnfAction.ALLOW, ctx.action, "$sql must be readable by an admin.account holder: ${ctx.denyReason} (stage=${ctx.failedStage})")
+        }
+        assertEquals(
+            EnfAction.DENY,
+            decideClassified("SHOW CREATE USER CURRENT_USER()", admin).action,
+            "SHOW CREATE USER leaks the password hash — denied even for the admin.account holder",
+        )
+        assertEquals(
+            EnfAction.DENY,
+            decideClassified("SHOW GRANTS", connector).action,
+            "SHOW GRANTS still needs stmt.cat.admin.account — a connect-only role is denied at the kind gate",
+        )
+    }
+
+    private fun setEngineVersion(version: String) {
+        fx.dataSource.connection.use { c ->
+            c.prepareStatement("UPDATE datasource SET engine_version = ? WHERE id = ?").use { ps ->
+                ps.setString(1, version); ps.setLong(2, datasource.id); ps.executeUpdate()
+            }
+        }
+        datasource = checkNotNull(fx.datasourceStore.get(datasource.id))
+    }
+
+    // decide() with the shipped manifests loaded, so a system-classified Utility (SHOW CREATE USER) resolves
+    // its tag and the -130 forbid applies. The default helper passes null, which cannot tell the two apart.
+    private fun decideClassified(sql: String, who: String) = decideQuery(
+        principal = who,
+        ds = datasource,
+        sql = sql,
+        channel = Channel.WIRE,
+        catalog = fx.datasourceStore.catalog(datasource.id),
+        policyStore = fx.policyStore,
+        accessStore = fx.accessStore,
+        userGroupStore = fx.userGroupStore,
+        roleResolver = fx.roleResolver,
+        authz = fx.authz,
+        systemClassification = SystemClassificationService(),
+    )
 }

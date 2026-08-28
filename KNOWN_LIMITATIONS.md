@@ -373,6 +373,19 @@ The runtime classification core is shipped (bundled manifests → `system:` tag 
 the shipped forbids/permit). Two completeness/curation surfaces are deferred —
 they refine the "Open presets" caveat above:
 
+- 🟡 `SHOW GRANTS` and `SHOW [FULL] PROCESSLIST` gate on their statement kind
+  only (`stmt.cat.admin.account` / `.process`); they no longer emit a `Utility`,
+  so the `system:activity` / `system:critical` floors do not apply to them. On a
+  datasource carrying an action-unscoped
+  `permit(principal, action, resource in Datasource::"…")` both now relay, where
+  the tag forbid previously denied them — the same permit already reaches
+  `SELECT` and `DROP TABLE`, so scope the actions a role needs. Default
+  production still denies both (no admin preset ships). An existing policy
+  naming `Utility::"<ds>/SHOW_GRANTS"` or `…/SHOW_PROCESSLIST` is rejected on
+  write and listed by `/health`; rewrite it as a `stmt.kind.*` rule. Retiring
+  the remaining kind-duplicate utilities is tracked in
+  [#269](https://github.com/ridi-oss/proxy-monster/issues/269).
+
 - 🟡→🔴 No fail-closed manifest-completeness guard (defense-in-depth). A touched
   system table with no governing manifest gets _no_ `system:` tag — not a hard
   DENY. With only per-resource read grants it stays deny-by-default (🟡,

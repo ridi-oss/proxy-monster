@@ -241,8 +241,30 @@ object CedarSchema {
         val typeErrors = response.success
             .map { success -> success.validationErrors.map { it.error.message } }
             .orElseGet { emptyList() }
-        return parseErrors + typeErrors
+        return parseErrors + typeErrors + retiredUtilityErrors(cedarSrc)
     }
+
+    /**
+     * Reject a policy naming a Utility command the analyzer no longer emits. `Utility` is still a valid
+     * entity type, so `forbid(..., resource == Utility::"prod/SHOW_GRANTS")` passes schema validation and
+     * then never matches — an operator's carve-out silently stops working. Fail closed instead: name the
+     * replacement.
+     */
+    private fun retiredUtilityErrors(cedarSrc: String): List<String> =
+        RETIRED_UTILITY_COMMANDS.filter { (cmd, _) -> Regex("""Utility::"[^"]*/$cmd"""").containsMatchIn(cedarSrc) }
+            .map { (cmd, replacement) ->
+                "Utility::\"…/$cmd\" is no longer emitted — this policy would never match. Use $replacement instead."
+            }
+
+    /** Enabled-policy lint for retired Utility commands — see [retiredUtilityErrors]. */
+    fun retiredUtilityLint(sources: List<Pair<Long, String>>): List<String> =
+        sources.flatMap { (id, src) -> retiredUtilityErrors(src).map { "policy $id: $it" } }.distinct()
+
+    /** Retired utility command id -> the statement action that replaced it. */
+    private val RETIRED_UTILITY_COMMANDS = mapOf(
+        "SHOW_GRANTS" to "Action::\"stmt.kind.show_grants\" (or stmt.cat.admin.account)",
+        "SHOW_PROCESSLIST" to "Action::\"stmt.kind.show_processlist\" (or stmt.cat.admin.process)",
+    )
 }
 
 /**

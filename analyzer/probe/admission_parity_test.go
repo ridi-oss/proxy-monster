@@ -332,8 +332,13 @@ func TestParityShowDescribe(t *testing.T) {
 	// it parses to a Command and is metadata passthrough, tested in TestParityShowPgGuc.)
 	parityUtility(t, "SHOW WARNINGS", "mysql", "SHOW_WARNINGS")
 	parityUtility(t, "SHOW ERRORS", "mysql", "SHOW_ERRORS")
-	parityUtility(t, "SHOW PROCESSLIST", "mysql", "SHOW_PROCESSLIST")
-	parityUtility(t, "SHOW FULL PROCESSLIST", "mysql", "SHOW_PROCESSLIST")
+	// SHOW GRANTS / SHOW PROCESSLIST carry no utility: their kind (stmt.cat.admin.account / .process) is the
+	// gate. The Utility was a second gate over a synthetic resource, read off the same AST field as the kind.
+	// The TABLES they expose stay classified (mysql.global_grants, information_schema.PROCESSLIST), so the
+	// direct-SELECT path is unaffected.
+	parityNoUtility(t, "SHOW PROCESSLIST", "mysql")
+	parityNoUtility(t, "SHOW FULL PROCESSLIST", "mysql")
+	parityNoUtility(t, "SHOW GRANTS", "mysql")
 	parityUtility(t, "SHOW BINLOG EVENTS", "mysql", "SHOW_BINLOG_EVENTS")
 	parityUtility(t, "SHOW RELAYLOG EVENTS", "mysql", "SHOW_RELAYLOG_EVENTS")
 	parityUtility(t, "SHOW ENGINE INNODB STATUS", "mysql", "SHOW_ENGINE_STATUS")

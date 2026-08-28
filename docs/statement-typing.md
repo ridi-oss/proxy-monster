@@ -16,7 +16,8 @@ And the "category" was smeared across three mechanisms of `StatementFacts`:
 
 - `GrantAction` — five `sql.*` verbs, on a datasource grant;
 - a separate relay class field (`session` / `metadata` / `analyzed`);
-- a `Utility` resource tag (`SET_ROLE`, `SHOW_PROCESSLIST`) — a third mechanism.
+- a `Utility` resource tag (`SET_ROLE`, `SHOW_BINLOG_EVENTS`) — a third
+  mechanism.
 
 So "what kind of statement is this?" had no single answer, and sensitivity was
 decided per statement, inline in `facts.go`: `SET ROLE` got a utility tag and

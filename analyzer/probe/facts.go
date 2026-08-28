@@ -792,16 +792,12 @@ func showUtilityCommand(root exp.Expression) string {
 		return "SHOW_WARNINGS"
 	case "ERRORS":
 		return "SHOW_ERRORS"
-	case "PROCESSLIST":
-		return "SHOW_PROCESSLIST"
 	case "BINLOG EVENTS":
 		return "SHOW_BINLOG_EVENTS"
 	case "RELAYLOG EVENTS":
 		return "SHOW_RELAYLOG_EVENTS"
 	case "ENGINE":
 		return "SHOW_ENGINE_STATUS"
-	case "GRANTS":
-		return "SHOW_GRANTS"
 	case "REPLICA STATUS", "SLAVE STATUS":
 		return "SHOW_REPLICA_STATUS"
 	case "CREATE USER":

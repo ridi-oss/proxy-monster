@@ -350,6 +350,10 @@ var mysqlStatements = []mysqlStatement{
 	// utility for them, so they relay connect-only on wire. The statement-typing redesign closes them.
 	{"SHOW PROCESSLIST", "SHOW PROCESSLIST", "stmt.kind.show_processlist", pb.StatementKind_STATEMENT_KIND_SHOW_PROCESSLIST},
 	{"SHOW GRANTS", "SHOW GRANTS", "stmt.kind.show_grants", pb.StatementKind_STATEMENT_KIND_SHOW_GRANTS},
+	{"SHOW GRANTS FOR user@host", "SHOW GRANTS FOR 'store'@'172.27.0.0/255.255.0.0'", "stmt.kind.show_grants", pb.StatementKind_STATEMENT_KIND_SHOW_GRANTS},
+	{"SHOW GRANTS FOR CURRENT_USER()", "SHOW GRANTS FOR CURRENT_USER()", "stmt.kind.show_grants", pb.StatementKind_STATEMENT_KIND_SHOW_GRANTS},
+	{"SHOW GRANTS USING role", "SHOW GRANTS FOR 'store'@'localhost' USING 'r1', 'r2'", "stmt.kind.show_grants", pb.StatementKind_STATEMENT_KIND_SHOW_GRANTS},
+	{"SHOW GRANTS detached host", "SHOW GRANTS FOR 'store'@ 'localhost'", "unanalyzable→exception.unanalyzable", pb.StatementKind_STATEMENT_KIND_STMT_UNKNOWN},
 	{"SHOW CREATE USER", "SHOW CREATE USER CURRENT_USER", "stmt.kind.show_create_user + utility:SHOW_CREATE_USER", pb.StatementKind_STATEMENT_KIND_SHOW_CREATE_USER},
 	{"SHOW ENGINE INNODB STATUS", "SHOW ENGINE INNODB STATUS", "stmt.kind.show_engine_status + utility:SHOW_ENGINE_STATUS", pb.StatementKind_STATEMENT_KIND_SHOW_ENGINE_STATUS},
 	{"SHOW BINLOG EVENTS", "SHOW BINLOG EVENTS", "stmt.kind.show_binlog_events + utility:SHOW_BINLOG_EVENTS", pb.StatementKind_STATEMENT_KIND_SHOW_BINLOG_EVENTS},
@@ -440,6 +444,7 @@ var privilegedNeedingGate = map[string]bool{
 	"SET PASSWORD": true, "SET ROLE": true, "SET DEFAULT ROLE": true, "SET GLOBAL var": true,
 	"SET PERSIST var": true, "SET PERSIST_ONLY var": true, "SET sql_log_bin": true,
 	"SHOW PROCESSLIST": true, "SHOW GRANTS": true, "SHOW CREATE USER": true, "SHOW ENGINE INNODB STATUS": true,
+	"SHOW GRANTS FOR user@host": true, "SHOW GRANTS FOR CURRENT_USER()": true, "SHOW GRANTS USING role": true,
 	"SHOW BINLOG EVENTS": true, "SHOW RELAYLOG EVENTS": true, "SHOW REPLICA STATUS": true, "SHOW SLAVE STATUS": true,
 	"SHOW BINARY LOGS": true, "SHOW MASTER STATUS": true, "SHOW REPLICAS": true, "SHOW SLAVE HOSTS": true,
 }

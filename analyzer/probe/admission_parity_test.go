@@ -339,6 +339,30 @@ func TestParityShowDescribe(t *testing.T) {
 	parityNoUtility(t, "SHOW PROCESSLIST", "mysql")
 	parityNoUtility(t, "SHOW FULL PROCESSLIST", "mysql")
 	parityNoUtility(t, "SHOW GRANTS", "mysql")
+	// The user@host / CURRENT_USER() / USING spellings resolve to the same kind, so they must not pick up a
+	// utility either. Asserting the KIND too is what makes this meaningful: without it, a spelling that
+	// silently degraded to SHOW_METADATA would also carry no utility and pass. A laundering spelling (a host
+	// detached from @, comma slop, a ? placeholder) stays an unmodeled Command → exception.unanalyzable,
+	// which is a DIFFERENT deny path than the kind gate.
+	for _, sql := range []string{
+		"SHOW GRANTS FOR 'store'@'172.27.0.0/255.255.0.0'",
+		"SHOW GRANTS FOR CURRENT_USER()",
+		"SHOW GRANTS FOR 'store'@'localhost' USING 'r1', 'r2'",
+	} {
+		parityNoUtility(t, sql, "mysql")
+		if got := factsKind(factsFor(t, sql, "mysql")); got != pb.StatementKind_STATEMENT_KIND_SHOW_GRANTS {
+			t.Errorf("[mysql] %q: kind %s, want STATEMENT_KIND_SHOW_GRANTS — a degraded kind would gate on the wrong category", sql, got)
+		}
+	}
+	for _, laundered := range []string{
+		"SHOW GRANTS FOR 'store'@ 'localhost'",
+		"SHOW GRANTS FOR 'u'@'h' USING 'r1',,'r2'",
+		"SHOW GRANTS FOR ?",
+	} {
+		if f := factsFor(t, laundered, "mysql"); f.GetResolved() {
+			t.Errorf("[mysql] %q: a laundering spelling must fail closed, got resolved", laundered)
+		}
+	}
 	parityUtility(t, "SHOW BINLOG EVENTS", "mysql", "SHOW_BINLOG_EVENTS")
 	parityUtility(t, "SHOW RELAYLOG EVENTS", "mysql", "SHOW_RELAYLOG_EVENTS")
 	parityUtility(t, "SHOW ENGINE INNODB STATUS", "mysql", "SHOW_ENGINE_STATUS")

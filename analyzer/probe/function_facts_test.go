@@ -206,3 +206,44 @@ func probeFunctions(t *testing.T, sql, dialect string, cols []*pb.ColumnSpec, ns
 	res := analyzeProbe(t, &pb.AnalyzeRequest{Sql: sql, EngineConfig: engineConfig, Namespace: ns, Catalog: cols})
 	return res.Functions, res.Resolved
 }
+
+func TestPostgresInformationSchemaHelpersTrusted(t *testing.T) {
+	for _, sql := range []string{
+		"SELECT (information_schema._pg_expandarray(ARRAY[1,2])).n",
+		"SELECT x.n FROM information_schema._pg_expandarray(ARRAY[1,2]) AS x(x,n)",
+	} {
+		f := postgresFacts(t, sql)
+		if !f.GetResolved() {
+			t.Fatalf("%s did not resolve: detail=%q", sql, f.GetDetail())
+		}
+		for _, g := range f.GetResultReads() {
+			if fn := g.GetFunction(); fn != nil {
+				t.Fatalf("%s: qualified information_schema helper must not emit a Function grant, got %q", sql, fn.GetName())
+			}
+		}
+	}
+
+	// The unqualified spelling could be a same-named user function: it stays gated.
+	f := postgresFacts(t, "SELECT (_pg_expandarray(ARRAY[1,2])).n")
+	gated := false
+	for _, g := range f.GetResultReads() {
+		if fn := g.GetFunction(); fn != nil && fn.GetName() == "_pg_expandarray" {
+			gated = true
+		}
+	}
+	if f.GetResolved() && !gated {
+		t.Fatalf("unqualified _pg_expandarray must stay gated: reads=%v", f.GetResultReads())
+	}
+
+	// A helper outside the fixed set is user code even under the information_schema qualifier.
+	f = postgresFacts(t, "SELECT information_schema.leak(1)")
+	gated = false
+	for _, g := range f.GetResultReads() {
+		if fn := g.GetFunction(); fn != nil {
+			gated = true
+		}
+	}
+	if f.GetResolved() && !gated {
+		t.Fatal("information_schema.<non-helper> must stay gated")
+	}
+}

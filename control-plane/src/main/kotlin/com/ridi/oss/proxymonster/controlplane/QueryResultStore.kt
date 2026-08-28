@@ -1,6 +1,12 @@
 package com.ridi.oss.proxymonster.controlplane
 
 import com.ridi.oss.proxymonster.analyzer.pb.ResultFingerprint
+import com.google.protobuf.InvalidProtocolBufferException
+import com.ridi.oss.proxymonster.storage.StoredResult
+import com.ridi.oss.proxymonster.grpc.runResultRows
+import com.ridi.oss.proxymonster.grpc.runRow
+import com.ridi.oss.proxymonster.grpc.runValue
+import com.ridi.oss.proxymonster.storage.storedResult
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.builtins.serializer
@@ -58,9 +64,50 @@ class ResultAccess(val meta: QueryResultMeta, val sql: String?, decrypt: () -> D
     val decrypted: DecryptedResult? by lazy(decrypt)
 }
 
+/** Protobuf at rest, so a Go control-plane reads the same bytes. The JSON fallback covers results stored
+ *  before the migration and dies with them, one retention window later. */
+internal object ResultPayloadCodec {
+    private val json = Json
+    private val legacySerializer = DecryptedResult.serializer()
+
+    fun encode(result: DecryptedResult): ByteArray = storedResult {
+        rows = runResultRows {
+            columns.addAll(result.columns)
+            rows.addAll(
+                result.rows.map { row ->
+                    runRow {
+                        values.addAll(row.map { cell -> runValue { value = cell ?: ""; isNull = cell == null } })
+                    }
+                },
+            )
+        }
+        result.rowsAffected?.let { rowsAffected = it }
+        result.resultFingerprint?.let { resultFingerprint = it }
+    }.toByteArray()
+
+    fun decode(plaintext: ByteArray): DecryptedResult =
+        try {
+            fromStored(StoredResult.parseFrom(plaintext))
+        } catch (protoFailure: InvalidProtocolBufferException) {
+            // Parsing decides the format, never the leading byte: `{` is itself a valid protobuf tag
+            // (field 15), so a newer schema's unknown field would be misread as JSON.
+            try {
+                json.decodeFromString(legacySerializer, plaintext.toString(Charsets.UTF_8))
+            } catch (jsonFailure: Exception) {
+                throw protoFailure.also { it.addSuppressed(jsonFailure) }
+            }
+        }
+
+    private fun fromStored(stored: StoredResult) = DecryptedResult(
+        columns = stored.rows.columnsList,
+        rows = stored.rows.rowsList.map { row -> row.valuesList.map { if (it.isNull) null else it.value } },
+        rowsAffected = if (stored.hasRowsAffected()) stored.rowsAffected else null,
+        resultFingerprint = if (stored.hasResultFingerprint()) stored.resultFingerprint else null,
+    )
+}
+
 class QueryResultStore(private val dataSource: DataSource, private val crypto: ResultCrypto) {
     private val json = Json
-    private val payloadSerializer = DecryptedResult.serializer()
     private val stringList = ListSerializer(String.serializer())
 
     private fun ResultSet.toMeta() = QueryResultMeta(
@@ -124,7 +171,7 @@ class QueryResultStore(private val dataSource: DataSource, private val crypto: R
         retentionSec: Long,
         audit: (Connection, QueryResultMeta) -> Unit = { _, _ -> },
     ): QueryResultMeta? {
-        val blob = crypto.encrypt(json.encodeToString(payloadSerializer, result).toByteArray(Charsets.UTF_8))
+        val blob = crypto.encrypt(ResultPayloadCodec.encode(result))
         val now = Instant.now()
         return dataSource.inTx { c ->
             val childId = latestChildId(c, taskId, "status = 'RUNNING'")
@@ -244,7 +291,7 @@ class QueryResultStore(private val dataSource: DataSource, private val crypto: R
         // the caller has authorized on [meta].
         val payload = if (meta.status == "DONE" && !expired) ciphertext else null
         return ResultAccess(meta, sql) {
-            payload?.let { json.decodeFromString(payloadSerializer, crypto.decrypt(it).toString(Charsets.UTF_8)) }
+            payload?.let { ResultPayloadCodec.decode(crypto.decrypt(it)) }
         }
     }
 

@@ -1,0 +1,26 @@
+syntax = "proto3";
+
+// Payloads the control-plane stores AT REST, not a wire protocol. A stored payload outlives the process
+// that wrote it and must be readable by a different implementation — the Kotlin control plane is being
+// ported to Go — so it is a schema both languages generate from, never one language's serializer.
+package proxymonster.v1;
+
+import "analyzer.proto";
+import "controlplane.proto";
+
+option java_package = "com.ridi.oss.proxymonster.storage";
+option java_multiple_files = true;
+// No go_package: Go paths come from each module's buf M-options, not from a shared contract.
+
+// One stored query result, encrypted whole as the ciphertext of a `query_result` row.
+message StoredResult {
+  // The rows as they crossed the wire. Mask ordinals index into its columns, so their order is
+  // load-bearing.
+  RunResultRows rows = 1;
+  // Absent for a row-returning statement, where the row count IS the count. `optional` because 0
+  // affected rows is a real answer.
+  optional int32 rows_affected = 2;
+  // `optional` because empty and absent differ: empty means a grant-less passthrough (releases raw),
+  // absent means the result predates fingerprints and fails closed (decideResultView).
+  optional proxymonster.analyzer.v1.ResultFingerprint result_fingerprint = 3;
+}

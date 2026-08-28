@@ -125,6 +125,15 @@ func EmitFacts(sql string, engineConfig *pb.EngineConfig, sch *schema.Mapping, n
 	// left to fold by hand. Quote-aware, so a quoted identifier keeps its case: `"PG_CATALOG"` stays a
 	// distinct user schema from `pg_catalog`, and `"MySchema".fn` from `myschema.fn`.
 	root := optimizer.NormalizeIdentifiers(unwrapSubquery(stmts[0]), eng.Dialect())
+	if !hasSyntheticAlias(root) {
+		// A duplicate-label error is the target DB's own rejection (MySQL ER_DUP_FIELDNAME, a
+		// referenced PostgreSQL ambiguity) — the statement would never run there.
+		if err := stampNativeOutputLabels(root, eng); err != nil {
+			facts := inadmissibleFacts("VALIDATE", err.Error())
+			facts.StatementExec = executeGrant(statementKind(root, eng))
+			return facts
+		}
+	}
 	candidates := schemaQualifierCandidates(root)
 
 	var facts *pb.StatementFacts

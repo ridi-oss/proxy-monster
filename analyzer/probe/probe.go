@@ -169,7 +169,13 @@ func Probe(sql string, engineConfig *pb.EngineConfig, sch *schema.Mapping, names
 	if len(stmts) != 1 {
 		return failResult("PARSE", fmt.Sprintf("expected 1 statement, got %d", len(stmts)))
 	}
-	return probeParsed(stmts[0], eng, qualifySchema, validatedNamespace)
+	root := stmts[0]
+	if !hasSyntheticAlias(root) {
+		if err := stampNativeOutputLabels(root, eng); err != nil {
+			return failResult("VALIDATE", err.Error())
+		}
+	}
+	return probeParsed(root, eng, qualifySchema, validatedNamespace)
 }
 
 func probeParsed(root exp.Expression, eng engine, qualifySchema schema.Schema, namespace NamespaceConfig) (out ProbeResult) {
@@ -1168,7 +1174,18 @@ func (p *prober) lineage() ProbeResult {
 			starExpanded = true
 		}
 		if starExpanded {
-			s, err := generateExecutableSQL(p.qroot, p.dialect)
+			relayRoot := p.qroot
+			// Repair the outermost display labels on a relay-only copy — lineage and mask ordinals
+			// keep reading p.qroot. Only projections the pre-Qualify stamping skipped (duplicate
+			// native labels, legal as OUTPUT) still carry `_col_N` here. Skipped when the client
+			// wrote a `_col_N` alias anywhere: client labels are then indistinguishable.
+			if hasSyntheticAlias(p.qroot) && !hasSyntheticAlias(p.root) {
+				restored := p.qroot.Copy()
+				if restoreRelayOutputLabels(restored, p.engine) {
+					relayRoot = restored
+				}
+			}
+			s, err := generateExecutableSQL(relayRoot, p.dialect)
 			if err != nil {
 				panic(err)
 			}

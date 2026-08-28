@@ -1,8 +1,6 @@
 github.com/google/go-cmp v0.7.0 h1:wk8382ETsv4JYUZwIsn6YpYiWiBsYLSJiTsyBybVuN8=
 github.com/google/go-cmp v0.7.0/go.mod h1:pXiqmnSA92OHEEa9HXL2W4E7lf9JzCmGVUdgjX3N/iU=
-github.com/ridi-oss/sqlglot-go v0.24.0 h1:dq25mbuMyRk2xMZqrw77WUARppsEMhckbuTGQf6uwMY=
-github.com/ridi-oss/sqlglot-go v0.24.0/go.mod h1:uj8jRoyYvCZFR94rVzQs6s5xCKkOqZXlf6Ye9dCXNFE=
-github.com/ridi-oss/sqlglot-go v0.25.0 h1:t+lKLkvzhDYJnN/UQlb9ZT1aXrs4Bjl7cGZxBWcaGR0=
-github.com/ridi-oss/sqlglot-go v0.25.0/go.mod h1:uj8jRoyYvCZFR94rVzQs6s5xCKkOqZXlf6Ye9dCXNFE=
+github.com/ridi-oss/sqlglot-go v0.27.0 h1:bJXqEfVwKbfp4SSw9d2PGkOaasLFXM5+6zTgJN3z9go=
+github.com/ridi-oss/sqlglot-go v0.27.0/go.mod h1:uj8jRoyYvCZFR94rVzQs6s5xCKkOqZXlf6Ye9dCXNFE=
 google.golang.org/protobuf v1.36.11 h1:fV6ZwhNocDyBLK0dj+fg8ektcVegBBuEolpbTQyBNVE=
 google.golang.org/protobuf v1.36.11/go.mod h1:HTf+CrKn2C3g5S8VImy6tdcUvCska2kB7j23XfzDpco=

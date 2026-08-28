@@ -43,6 +43,13 @@ type engine interface {
 	// RewriteStatement optionally rewrites a parsed statement into the SQL the proxy should relay to the
 	// target DB, returning "" to leave it unchanged.
 	RewriteStatement(root exp.Expression) string
+	// NativeOutputLabel computes the output label THIS engine's target DB natively assigns to an
+	// unaliased projection: PostgreSQL derives it from the resolved expression (parse_target.c
+	// FigureColname, written function names from the parse-time SpanText); MySQL uses the
+	// projection's verbatim source spelling (SpanText). query is the SELECT the projection belongs
+	// to, for resolving references to its derived sources. ok=false means the label is unknowable —
+	// the caller leaves Qualify's synthetic name.
+	NativeOutputLabel(projection, query exp.Expression) (string, bool)
 	// DiagnosticLeakKeys is the column keys this statement's target-DB error/warning diagnostic could echo
 	// — engine-specific, since what a diagnostic contains is (MySQL echoes the operated value; PostgreSQL
 	// also dumps a failed write's whole row via `DETAIL: Failing row contains (…)`). Start from
@@ -144,6 +151,20 @@ func (e *mysqlEngine) IsTempSchema(exp.Expression) bool { return false }
 // performance_schema, sys) are access-controlled resources the system-classification manifest covers,
 // not a blanket pass for calls made under them.
 func (e *mysqlEngine) IsTrustedSystemQualifier(exp.Expression) bool { return false }
+
+// MySQL labels an unaliased computed projection with its verbatim source text (`1 +    1` keeps
+// its exact spacing; verified against MySQL 8.0), truncated to 255 runes as the server does for
+// implicit labels. Fails closed on an unstamped node (only parse-time projections carry text).
+func (e *mysqlEngine) NativeOutputLabel(projection, _ exp.Expression) (string, bool) {
+	text, ok := projection.SpanText()
+	if !ok {
+		return "", false
+	}
+	if runes := []rune(text); len(runes) > 255 {
+		text = string(runes[:255])
+	}
+	return text, true
+}
 
 // RewriteStatement pins a single, session-scoped `SET character_set_results = NULL` — the default MySQL
 // Connector/J (and so DBeaver) session-init, which asks the target DB to return each column in its own charset
@@ -251,6 +272,12 @@ func (e *postgresEngine) IsTrustedSystemQualifier(qualifier exp.Expression) bool
 // PostgreSQL has no relay rewrite: client_encoding is handled on the wire, not by an analyzer rewrite,
 // so there is nothing to rewrite here.
 func (e *postgresEngine) RewriteStatement(exp.Expression) string { return "" }
+
+// PostgreSQL names an unaliased projection per parse_target.c FigureColname; a call is labeled by
+// its WRITTEN function name, read from the projection's parse-time SpanText.
+func (e *postgresEngine) NativeOutputLabel(projection, query exp.Expression) (string, bool) {
+	return nativeOutputLabel(projection, query, e, 0)
+}
 
 // PostgreSQL adds a failed write's WHOLE target row to the template: `INSERT INTO users (id) …` can fail
 // with `DETAIL: Failing row contains (1, 010-1234-5678, …)` — columns the statement never named. If the

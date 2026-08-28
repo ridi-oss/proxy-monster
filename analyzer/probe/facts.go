@@ -18,6 +18,7 @@ var safeNoFromFunctions = stringSet(
 	"version", "current_schema", "current_schemas", "current_database", "current_catalog",
 	"current_user", "session_user", "current_role", "user", "database", "schema", "connection_id",
 	"pg_backend_pid", "pg_is_in_recovery", "pg_postmaster_start_time", "current_setting",
+	"txid_current", "pg_current_xact_id",
 	"inet_server_addr", "inet_server_port", "inet_client_addr", "inet_client_port",
 	"last_insert_id", "row_count", "found_rows", "charset", "collation", "coercibility",
 	"now", "current_timestamp", "current_date", "current_time", "localtime", "localtimestamp",

@@ -528,10 +528,10 @@ fun Authz.authorizeColumns(
     datasource: String,
     columns: List<ColumnRef>,
     context: AuthzContext = AuthzContext(),
-    // System tag per touched table identity `(catalog, schema, table)` (system-classification.md):
-    // attached to the Table entity so its Columns inherit it transitively — a column of `pg_authid`
-    // is `in Tag::"system:critical"` through its Table parent. Empty = no system object touched.
-    systemTags: Map<Triple<String, String, String>, String> = emptyMap(),
+    // System tag per touched column key (system-classification.md). Attached directly to the Column so an
+    // exact column override can differ from its relation while ordinary Table grants still apply through the
+    // Column's Table parent. Empty = no system column touched.
+    systemTags: Map<String, String> = emptyMap(),
     // The datasource's own tags. Attached to the Datasource entity so a policy matches transitively (a
     // Column is `in Tag::"…"` through its Datasource parent), which is how the shipped conditional forbids
     // and preset permits reach a column.
@@ -552,15 +552,11 @@ fun Authz.authorizeColumns(
                 tableEuid(datasource, col.catalog, col.schema, col.table)
             }
             val colEuid = columnEuid(datasource, col.catalog, col.schema, col.table, col.column)
-            columnEntities[col.key] = Entity(colEuid, emptyMap(), (setOf(tblEuid, dsEuid) + col.tags.map(tag)).toSet())
+            val parents = (setOf(tblEuid, dsEuid) + col.tags.map(tag)).toMutableSet()
+            systemTags[col.key]?.let { parents += tag(it) }
+            columnEntities[col.key] = Entity(colEuid, emptyMap(), parents)
         }
-        // Each Table entity carries its datasource parent + its system tag, so a Column inherits the system
-        // classification through its Table parent (no second direct system tag on the column).
-        val tableEntities = tableEuids.map { (identity, euid) ->
-            val parents = mutableSetOf(dsEuid)
-            systemTags[identity]?.let { parents += tag(it) }
-            Entity(euid, emptyMap(), parents)
-        }
+        val tableEntities = tableEuids.values.map { euid -> Entity(euid, emptyMap(), setOf(dsEuid)) }
         columnEntities to tableEntities
     },
     verdict = { unmasked, masked ->

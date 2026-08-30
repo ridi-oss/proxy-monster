@@ -682,6 +682,37 @@ func TestExtendedBinaryMaskWithoutPermitFailsClosed(t *testing.T) {
 	}
 }
 
+func TestExtendedBinaryNullMaskWithoutPermitRedacts(t *testing.T) {
+	h := startBroker(t)
+	h.fake.decideFn = func(*pb.DecisionRequest) (*pb.WireDecision, error) {
+		return wireVerdict(&pb.Verdict{
+			Decision: pb.EnfAction_MASK,
+			Masks:    []*pb.ColumnMask{{Column: "ssn", Kind: "NULL", Ordinal: proto.Int32(2)}},
+		}), nil
+	}
+	conn, err := h.connect(t, validToken, false)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	ctx := context.Background()
+	const query = "SELECT id, name, ssn FROM it_pgproxy.people WHERE id = $1"
+	if _, err := conn.Prepare(ctx, "stmt_bin_null", query); err != nil {
+		t.Fatalf("Prepare: %v", err)
+	}
+	var id int
+	var name string
+	var ssn *string
+	if err := conn.QueryRow(ctx, "stmt_bin_null", pgx.QueryResultFormats{1, 1, 1}, 1).Scan(&id, &name, &ssn); err != nil {
+		t.Fatalf("binary QueryRow: %v", err)
+	}
+	if id != 1 || name != "Alice" || ssn != nil {
+		t.Fatalf("row = (%d, %q, %v), want redacted Alice row", id, name, ssn)
+	}
+	if got := len(h.fake.requests()); got != 2 {
+		t.Fatalf("Decide requests = %d, want 2", got)
+	}
+}
+
 func TestExtendedBinaryMaskWithPermitRelaysVerbatim(t *testing.T) {
 	h := startBroker(t)
 	h.fake.decideFn = func(*pb.DecisionRequest) (*pb.WireDecision, error) {

@@ -14,8 +14,9 @@ class SystemManifestException(message: String) : Exception(message)
  * classifier owns only the manifest lookup, never namespace resolution.
  *
  * The constructor VALIDATES and throws [SystemManifestException] on any manifest violation (bad tag, duplicate
- * exact identity with a different tag, overlapping families with different tags, or an exact rule that would
- * downgrade a stronger family by match ordering). A malformed manifest must abort startup like a bad
+ * exact identity with a different tag, overlapping families with different tags, an invalid column scope, or
+ * an exact relation rule that would downgrade a stronger family by match ordering). A malformed manifest must
+ * abort startup like a bad
  * migration.
  */
 class SystemClassifier(val manifest: SystemManifest) {
@@ -27,9 +28,13 @@ class SystemClassifier(val manifest: SystemManifest) {
     // (schema, name) -> tag, deduped strongest-first so the exact-map value is already the winning tag.
     private val relationExact: Map<Pair<String, String>, SystemTag> = exactMap(manifest.relations, "relation")
     private val functionExact: Map<Pair<String, String>, SystemTag> = exactMap(manifest.functions, "function")
+    private val columnOverrides: Map<Triple<String, String, String>, SystemTag> = columnMap(manifest.columnOverrides)
     // schema -> [(prefix, tag)]; a "*" schema (cross-schema function) is keyed under "*".
     private val relationFamilies: Map<String, List<Pair<String, SystemTag>>> = familyMap(manifest.relationFamilies)
     private val functionFamilies: Map<String, List<Pair<String, SystemTag>>> = familyMap(manifest.functionFamilies)
+    private val redactedColumns: Set<Triple<String, String, String>> = manifest.redactedColumns
+        .map { Triple(fold(it.schema), fold(it.table), fold(it.column)) }
+        .toSet()
     private val commandTags: Map<String, SystemTag> = manifest.commands.associate { it.id to requireTag(it.tag, "command ${it.id}") }
     // Cross-schema (schema "*") function rules apply in ANY schema.
     private val functionAnySchema: Map<String, SystemTag> =
@@ -46,6 +51,21 @@ class SystemClassifier(val manifest: SystemManifest) {
      */
     fun classifyRelation(catalog: String, schema: String, name: String): SystemTag? {
         if (!isSystemSchema(catalog, schema)) return null
+        return classifySystemRelation(schema, name)
+    }
+
+    /** The exact column override, or the owning relation's tag when no override exists. */
+    fun classifyColumn(catalog: String, schema: String, table: String, column: String): SystemTag? {
+        if (!isSystemSchema(catalog, schema)) return null
+        return columnOverrides[Triple(fold(schema), fold(table), fold(column))]
+            ?: classifySystemRelation(schema, table)
+    }
+
+    /** True when the shipped manifest requires the catalog column to be output only as NULL. */
+    fun redactsColumn(catalog: String, schema: String, table: String, column: String): Boolean =
+        isSystemSchema(catalog, schema) && Triple(fold(schema), fold(table), fold(column)) in redactedColumns
+
+    private fun classifySystemRelation(schema: String, name: String): SystemTag {
         val s = fold(schema)
         val n = fold(name)
         var tag = SystemTag.CATALOG
@@ -129,6 +149,21 @@ class SystemClassifier(val manifest: SystemManifest) {
         return out
     }
 
+    private fun columnMap(rules: List<ColumnRule>): Map<Triple<String, String, String>, SystemTag> {
+        val out = HashMap<Triple<String, String, String>, SystemTag>()
+        for (r in rules) {
+            val key = Triple(fold(r.schema), fold(r.table), fold(r.column))
+            val tag = requireTag(r.tag, "column ${r.schema}.${r.table}.${r.column}")
+            val previous = out.putIfAbsent(key, tag)
+            if (previous != null && previous != tag) {
+                throw SystemManifestException(
+                    "${manifestId()}: duplicate column ${r.schema}.${r.table}.${r.column} with conflicting tags $previous/$tag",
+                )
+            }
+        }
+        return out
+    }
+
     private fun familyMap(rules: List<FamilyRule>): Map<String, List<Pair<String, SystemTag>>> {
         val out = HashMap<String, MutableList<Pair<String, SystemTag>>>()
         for (r in rules) {
@@ -144,6 +179,25 @@ class SystemClassifier(val manifest: SystemManifest) {
         (manifest.relations.map { it.schema } + manifest.relationFamilies.map { it.schema })
             .firstOrNull { it == "*" }
             ?.let { throw SystemManifestException("${manifestId()}: wildcard schema \"*\" is only valid on a function rule, not a relation") }
+        for (rule in manifest.columnOverrides) {
+            if (fold(rule.schema) !in systemSchemas) {
+                throw SystemManifestException(
+                    "${manifestId()}: column override ${rule.schema}.${rule.table}.${rule.column} is outside a system schema",
+                )
+            }
+        }
+        val redactionKeys = manifest.redactedColumns.map { Triple(fold(it.schema), fold(it.table), fold(it.column)) }
+        if (redactionKeys.size != redactionKeys.toSet().size) {
+            throw SystemManifestException("${manifestId()}: duplicate redacted column")
+        }
+        for (rule in manifest.redactedColumns) {
+            if (fold(rule.schema) !in systemSchemas) {
+                throw SystemManifestException("${manifestId()}: redacted column ${rule.schema}.${rule.table}.${rule.column} is outside a system schema")
+            }
+            if (classifySystemRelation(rule.schema, rule.table) != SystemTag.CATALOG) {
+                throw SystemManifestException("${manifestId()}: redacted column ${rule.schema}.${rule.table}.${rule.column} belongs to a non-catalog relation")
+            }
+        }
         for ((schema, families) in relationFamilies + functionFamilies) {
             // Overlapping families with different tags are ambiguous (which wins?). Reject.
             for (i in families.indices) for (j in families.indices) if (i != j) {

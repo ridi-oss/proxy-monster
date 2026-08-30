@@ -177,6 +177,21 @@ analyzer. A manifest is declarative:
       "tag": "system:activity"
     }
   ],
+  "columnOverrides": [
+    {
+      "schema": "pg_catalog",
+      "table": "pg_locks",
+      "column": "transactionid",
+      "tag": "system:catalog"
+    }
+  ],
+  "redactedColumns": [
+    {
+      "schema": "pg_catalog",
+      "table": "pg_foreign_server",
+      "column": "srvoptions"
+    }
+  ],
   "functions": [{ "schema": "*", "name": "dblink", "tag": "system:data-leak" }],
   "functionFamilies": [
     { "schema": "pg_catalog", "prefix": "pg_read_", "tag": "system:data-leak" }
@@ -197,10 +212,10 @@ Boot validation rejects a manifest whose declared engine/series disagrees with
 its file path; a duplicate manifest for one engine/series; any tag outside the
 four `system:` tags; a wildcard schema on a relation rule (only a function rule
 may be cross-schema); duplicate exact identities with different tags;
-overlapping prefix families with different tags; and an exact rule weaker than a
-family prefix it matches — a category downgrade that would depend on match
-ordering. Anything rejected throws `SystemManifestException`, which aborts
-startup.
+overlapping prefix families with different tags; an exact relation rule weaker
+than a family prefix it matches; a column override outside an exposed system
+schema; and a redacted column outside a catalog-class relation. Anything
+rejected throws `SystemManifestException`, which aborts startup.
 
 Validation does not check command ids against the analyzer: nothing verifies
 that a manifest command id is one `analyzer/probe/facts.go` can actually emit,
@@ -246,15 +261,17 @@ object. Manifests may therefore store the canonical server spelling
   then over-classified — safe (a deny), and the reason `schema: "*"` is refused
   on a relation rule.
 
-Relations are classified whole. A Column receives the owning Table's system
-class through its Cedar Table parent; it is not independently default-tagged
-`system:catalog`. Otherwise a column of `pg_authid` would inherit
-`system:critical` and carry a direct catalog permit at once, and disabling or
-exempting the stronger guard would accidentally create access without an
-ordinary grant. Several security surfaces (`pg_settings`, grant tables) mix
-benign and sensitive rows/columns; with no row-conditional system tags, the
-whole relation takes the strongest necessary class. Over-denying beats exposing
-a credential-bearing row.
+A relation tag governs uncovered Table scans such as `count(*)`. A traced Column
+uses that same tag unless the manifest carries an exact `columnOverrides` entry;
+that entry replaces the relation tag only for the named Column. The Column keeps
+its ordinary Table parent for direct table grants, while its system tag is
+attached directly for Cedar policy. This permits a reviewed structural field of
+a dangerous relation without opening another column or a column-free scan.
+
+`redactedColumns` is separate from classification. A named catalog column may
+appear only as an output, is always masked to SQL `NULL`, and cannot affect a
+predicate, join, ordering, or write. The forced redaction applies even under a
+broad datasource grant.
 
 ## Exposed system surface and catalog boundary
 
@@ -316,13 +333,18 @@ Relations/views:
 | object | why |
 | --- | --- |
 | `pg_catalog.pg_authid`, `pg_catalog.pg_shadow` | password verifiers and privileged role attributes |
-| `pg_catalog.pg_user_mapping`, `pg_catalog.pg_user_mappings` | user-mapping options can include remote credentials |
-| `pg_catalog.pg_foreign_server`, `pg_catalog.pg_foreign_data_wrapper` | server/wrapper options can include connection and handler configuration |
+| `pg_catalog.pg_user_mappings` | public user-mapping view can expose remote credentials |
 | `information_schema.user_mapping_options` | user-mapping option view |
 | `information_schema.foreign_server_options`, `information_schema.foreign_data_wrapper_options` | FDW option views |
 | `pg_catalog.pg_subscription` | logical-subscription connection string (`subconninfo`) |
 | `pg_catalog.pg_hba_file_rules`, `pg_catalog.pg_ident_file_mappings` | authentication/identity-map configuration |
 | `pg_catalog.pg_config`, `pg_catalog.pg_file_settings`, `pg_catalog.pg_settings`, `pg_catalog.pg_db_role_setting` | build/config paths, source files, pending values, per-role/database settings, and potentially sensitive connection/config values |
+
+The structural columns of `pg_catalog.pg_foreign_data_wrapper`,
+`pg_foreign_server`, `pg_user_mapping`, and `pg_foreign_table` are
+`system:catalog`. Their exact option columns (`fdwoptions`, `srvoptions`,
+`umoptions`, and `ftoptions`) always return SQL `NULL` and cannot be used
+outside output.
 
 Privileged functions:
 
@@ -395,7 +417,9 @@ Relations/views:
   `pg_stat_subscription`, `pg_stat_subscription_stats`;
 - `pg_catalog.pg_stat_ssl`, `pg_stat_gssapi`;
 - the `pg_catalog.pg_stat_progress_*` family;
-- `pg_catalog.pg_prepared_statements`, `pg_cursors`, `pg_locks`;
+- `pg_catalog.pg_prepared_statements`, `pg_cursors`, `pg_locks`; the exact
+  `pg_locks.transactionid` column is `system:catalog`, while every other column
+  and uncovered scan remains `system:activity`;
 - extension relations `pg_stat_statements`, `pg_stat_statements_info`; and
 - Aurora `pg_catalog.aurora_replica_status`, `aurora_stat_activity`,
   `aurora_global_db_status`, `aurora_global_db_instance_status`, and the
@@ -665,13 +689,14 @@ function inventory ([facts-emission.md](./facts-emission.md)).
 
 ### Decision time
 
-For each Table/Function/Utility fact the control-plane asks
-`SystemClassificationService.tagForTable` / `tagForFunction` / `tagForCommand`,
-which returns exactly one system tag or none. A Table in an exposed system
-schema gets at least `system:catalog`; a recognized cross-schema dangerous
-function can get a shipped tag outside a system schema. A Column inherits its
-owning Table's system tag through the Cedar entity graph and receives no
-separate shipped system parent; user column tags stay direct Column parents.
+For each Table/Column/Function/Utility fact the control-plane asks
+`SystemClassificationService.tagForTable` / `tagForColumn` / `tagForFunction` /
+`tagForCommand`, which returns exactly one system tag or none. A Table in an
+exposed system schema gets at least `system:catalog`; a Column gets its exact
+override or its Table's tag; and a recognized cross-schema dangerous function
+can get a shipped tag outside a system schema. The Column's resolved system tag
+is a direct Cedar parent, while ordinary Table membership and user column tags
+remain unchanged.
 
 Admin write APIs reject `system:*`: a classification write carrying any tag with
 that prefix fails with `datasource.reserved_tag`
@@ -787,6 +812,7 @@ means rather than which statements pass.
 - `datasource.engine_version`, the raw target DB version string the proxy
   pushed, which is what manifest resolution keys off;
 - canonical Utility grants and manifest command/tag mappings;
+- exact manifest column overrides and forced-NULL redaction rules;
 - `catalog_column` as the physical column inventory, including the system
   schemas; and
 - `column_classification.tags` as user/admin tags only.
@@ -828,9 +854,10 @@ surfaces:
 
 - `SystemClassificationTest` (`engine/`) — manifest validation (bad tag,
   duplicate identity, overlapping family, downgrade-by-ordering, wildcard
-  relation), the strongest-wins combinator, version resolution and fallback, and
-  that all four bundled manifests load and classify a spot-checked set of real
-  PostgreSQL and MySQL objects including the Aurora ones.
+  relation, column override and redaction scope), the strongest-wins combinator,
+  version resolution and fallback, and that all four bundled manifests load and
+  classify a spot-checked set of real PostgreSQL and MySQL objects including the
+  Aurora ones.
 - `ManifestCommandCoverageDbTest` (`control-plane/`) — the fail-closed
   completeness guard in the direction that can be automated: every dangerous
   command id in every shipped manifest must either DENY through the real

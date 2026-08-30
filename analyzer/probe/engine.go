@@ -18,7 +18,6 @@ import (
 // sqlglot-go Dialect built from them) is captured at construction, so nothing downstream re-derives
 // it from a namespace or re-parses it from a bare wire-name string.
 type engine interface {
-	Type() pb.Engine
 	// WireName is the canonical lowercase sqlglot-go dialect name ("mysql" | "postgres").
 	WireName() string
 	// Dialect is the single *dialects.Dialect built once from this engine's config — reused for
@@ -43,6 +42,21 @@ type engine interface {
 	// RewriteStatement optionally rewrites a parsed statement into the SQL the proxy should relay to the
 	// target DB, returning "" to leave it unchanged.
 	RewriteStatement(root exp.Expression) string
+	// IsSafeNoFromFunction reports whether the function name is a safe builtin that may appear
+	// without a FROM clause (version(), now()) — the cross-engine set plus this engine's own
+	// pseudo-functions. Anything else emits an unclassified Function grant, which denies.
+	IsSafeNoFromFunction(name string) bool
+	// IsTrustedInformationSchemaCall reports whether a schema-qualified call is one of this engine's
+	// trusted information_schema helper builtins, needing no Function grant.
+	IsTrustedInformationSchemaCall(qualifier exp.Expression, leaf string) bool
+	// CommandPassthrough reports whether a statement that DEGRADED to an unstructured Command (the
+	// structured node forms never reach it) may relay as a benign session/metadata passthrough for
+	// this engine. False = fail closed.
+	CommandPassthrough(command string) bool
+	// RejectsDuplicateDerivedOutputLabels reports whether this engine's target DB rejects a derived-table
+	// or CTE body whose output labels collide (MySQL ER_DUP_FIELDNAME; PostgreSQL allows duplicate
+	// OUTPUT labels and rejects only a reference to one).
+	RejectsDuplicateDerivedOutputLabels() bool
 	// NativeOutputLabel computes the output label THIS engine's target DB natively assigns to an
 	// unaliased projection: PostgreSQL derives it from the resolved expression (parse_target.c
 	// FigureColname, written function names from the parse-time SpanText); MySQL uses the
@@ -131,7 +145,6 @@ func newMySQLEngine(config *pb.EngineConfig) (*mysqlEngine, error) {
 	return &mysqlEngine{dialect: dialect}, nil
 }
 
-func (e *mysqlEngine) Type() pb.Engine            { return pb.Engine_MYSQL }
 func (e *mysqlEngine) WireName() string           { return "mysql" }
 func (e *mysqlEngine) Dialect() *dialects.Dialect { return e.dialect }
 
@@ -227,6 +240,22 @@ func (e *mysqlEngine) DiagnosticLeakKeys(report ProbeResult, _ schema.Schema) ma
 	return referencedColumnKeys(report)
 }
 
+// `values` is MySQL's INSERT … ON DUPLICATE KEY UPDATE pseudo-function — it names the value that
+// would have been inserted, not a callable function; its lineage is traced in probe.go.
+func (e *mysqlEngine) IsSafeNoFromFunction(name string) bool {
+	return safeNoFromFunctions[name] || name == "values"
+}
+
+// MySQL's information_schema holds tables only — a function call qualified by it is user code.
+func (e *mysqlEngine) IsTrustedInformationSchemaCall(exp.Expression, string) bool { return false }
+
+// A statement that degrades to an unstructured Command is one the analyzer cannot vouch for on
+// MySQL (an unrecognized SHOW carries data; RESET MASTER/REPLICA is a privileged admin op).
+func (e *mysqlEngine) CommandPassthrough(string) bool { return false }
+
+// MySQL rejects a derived-table/CTE body with duplicated output labels: ER_DUP_FIELDNAME.
+func (e *mysqlEngine) RejectsDuplicateDerivedOutputLabels() bool { return true }
+
 type postgresEngine struct {
 	dialect *dialects.Dialect
 }
@@ -235,7 +264,6 @@ func newPostgresEngine(*pb.EngineConfig) (*postgresEngine, error) {
 	return &postgresEngine{dialect: dialects.Postgres()}, nil
 }
 
-func (e *postgresEngine) Type() pb.Engine            { return pb.Engine_POSTGRES }
 func (e *postgresEngine) WireName() string           { return "postgres" }
 func (e *postgresEngine) Dialect() *dialects.Dialect { return e.dialect }
 
@@ -272,6 +300,33 @@ func (e *postgresEngine) IsTrustedSystemQualifier(qualifier exp.Expression) bool
 // PostgreSQL has no relay rewrite: client_encoding is handled on the wire, not by an analyzer rewrite,
 // so there is nothing to rewrite here.
 func (e *postgresEngine) RewriteStatement(exp.Expression) string { return "" }
+
+func (e *postgresEngine) IsSafeNoFromFunction(name string) bool { return safeNoFromFunctions[name] }
+
+// postgresInformationSchemaFunctions are PostgreSQL's information_schema helper builtins — stable,
+// read-only transforms of their arguments (pgJDBC metadata queries call them). Safe ONLY under an
+// explicit `information_schema.` qualifier; the unqualified spelling stays gated so a same-named
+// user function cannot inherit the pass.
+var postgresInformationSchemaFunctions = stringSet(
+	"_pg_char_max_length", "_pg_char_octet_length", "_pg_datetime_precision", "_pg_expandarray",
+	"_pg_index_position", "_pg_interval_type", "_pg_numeric_precision", "_pg_numeric_precision_radix",
+	"_pg_numeric_scale", "_pg_truetypid", "_pg_truetypmod",
+)
+
+func (e *postgresEngine) IsTrustedInformationSchemaCall(qualifier exp.Expression, leaf string) bool {
+	return qualifier != nil && qualifier.Kind() == exp.KindIdentifier &&
+		qualifier.Name() == "information_schema" && postgresInformationSchemaFunctions[leaf]
+}
+
+// A statement that degrades to an unstructured Command on PostgreSQL can only be a benign
+// session/config form: RESET restores defaults (de-escalation), an unmodeled SHOW is a read-only
+// GUC read (no table data). Everything else stays fail-closed at the caller.
+func (e *postgresEngine) CommandPassthrough(command string) bool {
+	return command == "RESET" || command == "SHOW"
+}
+
+// PostgreSQL allows duplicate OUTPUT labels; only a reference to one is ambiguous.
+func (e *postgresEngine) RejectsDuplicateDerivedOutputLabels() bool { return false }
 
 // PostgreSQL names an unaliased projection per parse_target.c FigureColname; a call is labeled by
 // its WRITTEN function name, read from the projection's parse-time SpanText.

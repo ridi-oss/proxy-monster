@@ -5,8 +5,6 @@ import (
 	"regexp"
 
 	exp "github.com/ridi-oss/sqlglot-go/expressions"
-
-	pb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
 )
 
 var syntheticLabelPattern = regexp.MustCompile(`^_col_\d+$`)
@@ -81,8 +79,7 @@ func stampNativeOutputLabels(root exp.Expression, eng engine) error {
 				if len(names) < 2 {
 					continue
 				}
-				if eng.Type() == pb.Engine_MYSQL {
-					// Real MySQL rejects the derived table itself: ER_DUP_FIELDNAME.
+				if eng.RejectsDuplicateDerivedOutputLabels() {
 					return fmt.Errorf("duplicate column name '%s' in derived table", names[0])
 				}
 				// Real PostgreSQL rejects only a reference to the duplicated label.

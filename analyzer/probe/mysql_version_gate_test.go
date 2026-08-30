@@ -147,3 +147,37 @@ func TestCreateEngineRejectsNilConfig(t *testing.T) {
 		t.Fatal("createEngine(nil) unexpectedly succeeded")
 	}
 }
+
+func TestCreateEngineRejectsPostgresTypeVisibilityForMySQL(t *testing.T) {
+	if _, err := createEngine(&pb.EngineConfig{
+		Engine:                   pb.Engine_MYSQL,
+		EngineVersion:            "8.0.46",
+		MysqlLowerCaseTableNames: proto.Int32(0),
+		PostgresSystemXidVisible: proto.Bool(false),
+	}); err == nil {
+		t.Fatal("PostgreSQL type visibility context unexpectedly succeeded for MySQL")
+	}
+}
+
+func TestCreateEngineValidatesPostgresFunctionShadowingContext(t *testing.T) {
+	if _, err := createEngine(&pb.EngineConfig{
+		Engine:                    pb.Engine_POSTGRES,
+		PostgresShadowedFunctions: []string{"unnest"},
+	}); err == nil {
+		t.Fatal("unobserved PostgreSQL function shadow list unexpectedly succeeded")
+	}
+	if _, err := createEngine(&pb.EngineConfig{
+		Engine:                            pb.Engine_POSTGRES,
+		PostgresFunctionShadowingObserved: true,
+	}); err != nil {
+		t.Fatalf("observed empty PostgreSQL function shadow list failed: %v", err)
+	}
+	if _, err := createEngine(&pb.EngineConfig{
+		Engine:                            pb.Engine_MYSQL,
+		EngineVersion:                     "8.0.46",
+		MysqlLowerCaseTableNames:          proto.Int32(0),
+		PostgresFunctionShadowingObserved: true,
+	}); err == nil {
+		t.Fatal("PostgreSQL function shadowing context unexpectedly succeeded for MySQL")
+	}
+}

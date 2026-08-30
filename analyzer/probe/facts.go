@@ -40,23 +40,17 @@ var safeNoFromFunctions = stringSet(
 	"iif", "if", "typeof", "pg_typeof",
 )
 
-// userTypeCast returns the name of the first reference to a non-built-in (user) type anywhere in root, or
-// "" if every type reference is a safe built-in. sqlglot resolves a built-in type to a concrete DType and
-// a user type to DTypeUserDefined, so this is a single AST pass over DataType nodes. It covers every way a
-// statement can name a type — the `::type` and `CAST(x AS type)` forms and the `type 'literal'` typed
-// literal alike (they all parse to the same DataType node), in any position and whether or not the
-// statement has a FROM (a `SELECT 1::public.evil_domain FROM users` runs the domain's code just the same).
-// A `pg_catalog.<builtin>` reference needs no special-case here: sqlglot-go resolves it to the built-in
-// node directly (`pg_catalog.int4` → INT DataType, `pg_catalog.oid`/reg* → ObjectIdentifier — not a
-// DataType at all), so it never reaches the DTypeUserDefined branch. Only a non-catalog builtin ALIAS in
-// pg_catalog (e.g. `pg_catalog.integer`, which PostgreSQL itself rejects as a nonexistent type) still
-// lands here and is fail-closed — an accepted over-deny of invalid SQL.
-func userTypeCast(root exp.Expression) string {
+// userTypeCast returns the first type that may run user coercion or domain code. sqlglot marks unknown
+// types as DTypeUserDefined; PostgreSQL xid is safe only when live type lookup resolves pg_catalog.xid.
+func userTypeCast(root exp.Expression, eng engine, namespace NamespaceConfig) string {
 	for _, dt := range root.FindAll(exp.KindDataType) {
 		if dt.Arg("this") != exp.DTypeUserDefined {
 			continue
 		}
 		kind, _ := dt.Arg("kind").(exp.Expression)
+		if eng.IsSafeTypeReference(dt, kind, namespace) {
+			continue
+		}
 		if kind != nil && kind.Kind() == exp.KindDot {
 			qualifier := strings.ToLower(kind.Left().Name())
 			leaf := strings.ToLower(kind.Right().Name())
@@ -70,8 +64,6 @@ func userTypeCast(root exp.Expression) string {
 	return ""
 }
 
-// EmitFacts parses one statement, classifies its relay behavior, and emits every Cedar requirement.
-// Every return is a valid fail-closed StatementFacts; unresolved statements carry an explicit failure class.
 func EmitFacts(sql string, engineConfig *pb.EngineConfig, sch *schema.Mapping, namespace NamespaceConfig) *pb.StatementFacts {
 	eng, err := createEngine(engineConfig)
 	if err != nil {
@@ -124,25 +116,32 @@ func EmitFacts(sql string, engineConfig *pb.EngineConfig, sch *schema.Mapping, n
 	// left to fold by hand. Quote-aware, so a quoted identifier keeps its case: `"PG_CATALOG"` stays a
 	// distinct user schema from `pg_catalog`, and `"MySchema".fn` from `myschema.fn`.
 	root := optimizer.NormalizeIdentifiers(unwrapSubquery(stmts[0]), eng.Dialect())
+	originalRoot := root
 	if !hasSyntheticAlias(root) {
 		// A duplicate-label error is the target DB's own rejection (MySQL ER_DUP_FIELDNAME, a
 		// referenced PostgreSQL ambiguity) — the statement would never run there.
 		if err := stampNativeOutputLabels(root, eng); err != nil {
 			facts := inadmissibleFacts("VALIDATE", err.Error())
-			facts.StatementExec = executeGrant(statementKind(root, eng))
+			facts.StatementExec = executeGrant(statementKind(originalRoot, eng))
 			return facts
 		}
 	}
 	candidates := schemaQualifierCandidates(root)
+	if err := eng.ValidateStatement(root, sql); err != nil {
+		facts := unanalyzableFacts("VALIDATE", err.Error())
+		facts.StatementExec = executeGrant(statementKind(originalRoot, eng))
+		facts.SchemaQualifierCandidates = candidates
+		return facts
+	}
 
 	var facts *pb.StatementFacts
 	switch root.Kind() {
 	case exp.KindDescribe:
 		facts = emitDescribeFacts(root, eng, qualifySchema, validatedNamespace)
 	case exp.KindShow:
-		facts = emitShowFacts(root, eng)
+		facts = emitShowFacts(root, eng, validatedNamespace)
 	case exp.KindSet:
-		facts = emitSetFacts(root, eng)
+		facts = emitSetFacts(root, eng, validatedNamespace)
 	case exp.KindCommand:
 		facts = emitCommandFacts(root, eng)
 	case exp.KindTransaction, exp.KindCommit, exp.KindRollback, exp.KindSavepoint, exp.KindUse, exp.KindReset:
@@ -187,7 +186,7 @@ func EmitFacts(sql string, engineConfig *pb.EngineConfig, sch *schema.Mapping, n
 		}
 	}
 	facts = eng.FinalizeStatementIdentity(root, sql, facts, validatedNamespace)
-	facts.StatementExec = executeGrant(statementKind(root, eng))
+	facts.StatementExec = executeGrant(statementKind(originalRoot, eng))
 	facts.SchemaQualifierCandidates = candidates
 	return facts
 }
@@ -215,7 +214,7 @@ func emitConfigFailureUtilityFacts(sql string, engineConfig *pb.EngineConfig) *p
 }
 
 func emitLineageFacts(root exp.Expression, eng engine, qualifySchema schema.Schema, namespace NamespaceConfig, explain bool) *pb.StatementFacts {
-	if userTypeCast(root) != "" {
+	if userTypeCast(root, eng, namespace) != "" {
 		return criticalUtilityFacts(cmdUserTypeCast)
 	}
 	report := probeParsed(root, eng, qualifySchema, namespace)
@@ -300,9 +299,10 @@ func emitLineageFacts(root exp.Expression, eng engine, qualifySchema schema.Sche
 			MaskedDisposition: pb.MaskedDisposition_MASKED_DISPOSITION_DENY_STATEMENT,
 		})
 	}
-	if len(report.Sources) == 0 {
-		facts.ResultReads = append(facts.ResultReads, noFromFunctionGrants(root, eng)...)
-	}
+	facts.ResultReads = append(
+		facts.ResultReads,
+		functionCallGrants(root, eng, len(report.Sources) == 0)...,
+	)
 	facts.CatalogChanging = root.Kind() == exp.KindCreate && !isTemporaryDDL(root, eng)
 	if root.Kind() == exp.KindSelect && root.Arg("into") != nil {
 		facts.CatalogChanging = true
@@ -444,11 +444,11 @@ func emitAnalyzeFacts(root exp.Expression, eng engine, qualifySchema schema.Sche
 	return passthroughFacts()
 }
 
-func emitShowFacts(root exp.Expression, eng engine) *pb.StatementFacts {
+func emitShowFacts(root exp.Expression, eng engine, namespace NamespaceConfig) *pb.StatementFacts {
 	if unsafeExpression(root.Arg("where"), eng) || unsafeExpression(root.Arg("query"), eng) {
 		return criticalUtilityFacts(cmdShowSubquery)
 	}
-	if userTypeCast(root) != "" {
+	if userTypeCast(root, eng, namespace) != "" {
 		return criticalUtilityFacts(cmdUserTypeCast)
 	}
 	facts := passthroughFacts()
@@ -546,14 +546,14 @@ func sessionIdentitySetCommand(root exp.Expression) string {
 // time — a literal or a bareword keyword — and never one that changes the lexer.
 var lexerModeGucs = stringSet("sql_mode", "standard_conforming_strings")
 
-func emitSetFacts(root exp.Expression, eng engine) *pb.StatementFacts {
+func emitSetFacts(root exp.Expression, eng engine, namespace NamespaceConfig) *pb.StatementFacts {
 	if command := sessionIdentitySetCommand(root); command != "" {
 		return sessionUtilityFacts(command)
 	}
 	if unsafeExpression(root, eng) {
 		return sessionUtilityFacts(cmdSetSubquery)
 	}
-	if userTypeCast(root) != "" {
+	if userTypeCast(root, eng, namespace) != "" {
 		return sessionUtilityFacts(cmdUserTypeCast)
 	}
 	if command := lexerModeUtilityCommand(root); command != "" {
@@ -689,7 +689,7 @@ func conflictDoesUpdate(root exp.Expression) bool {
 	return false
 }
 
-func noFromFunctionGrants(root exp.Expression, eng engine) []*pb.RequireResultReadGrant {
+func functionCallGrants(root exp.Expression, eng engine, includeUnqualified bool) []*pb.RequireResultReadGrant {
 	seen := map[string]bool{}
 	out := []*pb.RequireResultReadGrant{}
 	emit := func(name string) {
@@ -702,12 +702,9 @@ func noFromFunctionGrants(root exp.Expression, eng engine) []*pb.RequireResultRe
 			MaskedDisposition: pb.MaskedDisposition_MASKED_DISPOSITION_DENY_STATEMENT,
 		})
 	}
-	// Schema-qualified calls carry their qualifier in a wrapping Dot (left = qualifier, right = the
-	// function), even though the function node's own Name() drops it. Only a bare `pg_catalog.<fn>` is a
-	// trusted system builtin; any other qualifier — a user schema, or a multi-part/computed qualifier
-	// whose leaf merely spells `pg_catalog` (`db.pg_catalog.fn`, `current_database().public.fn`) — is user
-	// code and must NOT inherit a safe built-in's name. Emit its fully-qualified identity so it can never
-	// classify to a trusted function and the control-plane hard-denies it (unclassified Function grant).
+	// Scalar qualifiers wrap the function in Dot; FROM-function qualifiers live on the Table node.
+	// Only a bare `pg_catalog.<fn>` is trusted. Emit every other qualifier as user code so it cannot
+	// inherit a safe built-in's classification.
 	qualified := map[exp.Expression]bool{}
 	for _, dot := range root.FindAll(exp.KindDot) {
 		fn := dot.Right()
@@ -715,9 +712,9 @@ func noFromFunctionGrants(root exp.Expression, eng engine) []*pb.RequireResultRe
 			continue
 		}
 		qualified[fn] = true
-		leaf := strings.ToLower(fn.Name())
+		leaf := normalizedFunctionName(fn, eng)
 		if eng.IsTrustedSystemQualifier(dot.Left()) {
-			if !safeNoFromFunctions[leaf] {
+			if includeUnqualified && !safeNoFromFunctions[leaf] && len(eng.ImplicitFunctionColumns(leaf)) == 0 {
 				emit(leaf)
 			}
 			continue
@@ -727,25 +724,44 @@ func noFromFunctionGrants(root exp.Expression, eng engine) []*pb.RequireResultRe
 		}
 		emit(qualifiedCallName(dot.Left(), leaf, eng))
 	}
-	// A FROM-form call carries its qualifier on the Table node, not a Dot wrapper.
 	for _, table := range root.FindAll(exp.KindTable) {
 		fn := table.This()
-		if fn == nil || !fn.Is(exp.TraitFunc) || table.Arg("catalog") != nil {
+		if fn == nil || !fn.Is(exp.TraitFunc) {
 			continue
 		}
 		schema, _ := table.Arg("schema").(exp.Expression)
-		if schema == nil {
+		catalog, _ := table.Arg("catalog").(exp.Expression)
+		if schema == nil && catalog == nil {
 			continue
 		}
-		if eng.IsTrustedInformationSchemaCall(schema, strings.ToLower(fn.Name())) {
-			qualified[fn] = true
+		qualified[fn] = true
+		leaf := normalizedFunctionName(fn, eng)
+		if catalog == nil && eng.IsTrustedSystemQualifier(schema) {
+			if includeUnqualified && !safeNoFromFunctions[leaf] && len(eng.ImplicitFunctionColumns(leaf)) == 0 {
+				emit(leaf)
+			}
+			continue
 		}
+		if catalog == nil && eng.IsTrustedInformationSchemaCall(schema, leaf) {
+			continue
+		}
+		qualifier := schema
+		if catalog != nil {
+			qualifier = catalog
+			if schema != nil {
+				qualifier = exp.Dot(exp.Args{"this": catalog.Copy(), "expression": schema.Copy()})
+			}
+		}
+		emit(qualifiedCallName(qualifier, leaf, eng))
+	}
+	if !includeUnqualified {
+		return out
 	}
 	for _, fn := range root.FindAll(exp.TraitFunc) {
 		if fn.Kind() != exp.KindAnonymous || qualified[fn] {
 			continue
 		}
-		name := strings.ToLower(fn.Name())
+		name := normalizedFunctionName(fn, eng)
 		if eng.IsSafeNoFromFunction(name) {
 			continue
 		}
@@ -795,7 +811,7 @@ func unsafeExpression(value any, eng engine) bool {
 }
 
 // hasUnsafeCall reports whether root contains any function call that is not provably a safe builtin,
-// applying the SAME qualifier rule as noFromFunctionGrants: a qualified call is safe only when it is a
+// applying the SAME qualifier rule as functionCallGrants: a qualified call is safe only when it is a
 // bare `pg_catalog.<safe builtin>`; a user-schema or multi-part qualifier is user code regardless of the
 // leaf's spelling. Without the qualifier check a call like `acme.version()` would fold onto the safe
 // metadata `version()` and let session-state exfil (`SET @x = acme.leak()` then `SELECT @x`) slip through.
@@ -808,7 +824,7 @@ func hasUnsafeCall(root exp.Expression, eng engine) bool {
 		}
 		qualified[fn] = true
 		if eng.IsTrustedSystemQualifier(dot.Left()) {
-			if !safeNoFromFunctions[strings.ToLower(fn.Name())] {
+			if !safeNoFromFunctions[normalizedFunctionName(fn, eng)] {
 				return true
 			}
 			continue
@@ -822,11 +838,11 @@ func hasUnsafeCall(root exp.Expression, eng engine) bool {
 		// Only ANONYMOUS calls are candidates for user code — sqlglot resolves every recognized builtin to
 		// a dedicated kind (Abs, Upper, …) whose Name() is its argument, not the function, so checking it
 		// against the safe set is meaningless and would false-positive `abs(1)`. This mirrors
-		// noFromFunctionGrants: dedicated builtins are inherently safe; an unrecognized Anonymous call is not.
+		// functionCallGrants: dedicated builtins are inherently safe; an unrecognized Anonymous call is not.
 		if qualified[fn] || fn.Kind() != exp.KindAnonymous {
 			continue
 		}
-		name := strings.ToLower(fn.Name())
+		name := normalizedFunctionName(fn, eng)
 		if name != "" && name != "*" && !eng.IsSafeNoFromFunction(name) {
 			return true
 		}

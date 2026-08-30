@@ -27,6 +27,9 @@ type engine interface {
 	Dialect() *dialects.Dialect
 	NormalizeCatalogOnBuild() bool
 	ImplicitNonVisibleColumns() []string
+	ImplicitFunctionColumns(name string) []string
+	ImplicitFunctionUnqualifiedTrusted(name string) bool
+	PostgresSystemXIDVisible() bool
 	FoldColumn(column string) string
 	// IsTempSchema reports whether a DDL target's schema identifier denotes session-local (temporary)
 	// storage for this engine, so the DDL is not catalog-changing. The schema is passed as its parsed
@@ -43,6 +46,9 @@ type engine interface {
 	// RewriteStatement optionally rewrites a parsed statement into the SQL the proxy should relay to the
 	// target DB, returning "" to leave it unchanged.
 	RewriteStatement(root exp.Expression) string
+	// ValidateStatement is the engine's pre-classification veto: a structural form this engine
+	// cannot analyze safely (an error means fail closed as unanalyzable).
+	ValidateStatement(root exp.Expression, sql string) error
 	// FinalizeStatementIdentity is the engine's post-classification pass over a resolved statement:
 	// it may pin identities the target DB would otherwise resolve live (mutating facts.RewrittenSql)
 	// or overwrite facts with a fail-closed denial when an identity cannot be pinned. root is the
@@ -67,6 +73,14 @@ type engine interface {
 	// ExpandsNaturalJoins reports whether the prober expands NATURAL JOIN through this engine's
 	// catalog-backed USING semantics; false fails closed (shared-column lineage stays ambiguous).
 	ExpandsNaturalJoins() bool
+	// IsSafeTypeReference reports whether a DTypeUserDefined type reference is one this engine
+	// trusts anyway (PostgreSQL pg_catalog.xid under live type visibility); false keeps the
+	// user-type fail-close.
+	IsSafeTypeReference(dt, kind exp.Expression, namespace NamespaceConfig) bool
+	// SystemSchemaFirst reports whether an UNQUALIFIED name resolves against this engine's system
+	// schema before any user schema under searchPath — the precondition for trusting an unqualified
+	// implicit-function call as the builtin.
+	SystemSchemaFirst(searchPath []string) bool
 	// NativeOutputLabel computes the output label THIS engine's target DB natively assigns to an
 	// unaliased projection: PostgreSQL derives it from the resolved expression (parse_target.c
 	// FigureColname, written function names from the parse-time SpanText); MySQL uses the
@@ -123,6 +137,12 @@ type mysqlEngine struct {
 }
 
 func newMySQLEngine(config *pb.EngineConfig) (*mysqlEngine, error) {
+	if len(config.GetPostgresShadowedFunctions()) != 0 || config.GetPostgresFunctionShadowingObserved() {
+		return nil, fmt.Errorf("postgres function shadowing context is not valid for mysql")
+	}
+	if config.PostgresSystemXidVisible != nil {
+		return nil, fmt.Errorf("postgres type visibility context is not valid for mysql")
+	}
 	if config.MysqlLowerCaseTableNames == nil {
 		return nil, fmt.Errorf("mysqlLowerCaseTableNames is required for mysql")
 	}
@@ -162,7 +182,10 @@ func (e *mysqlEngine) Dialect() *dialects.Dialect { return e.dialect }
 // spelling follows lower_case_table_names and the information_schema exception.
 func (e *mysqlEngine) NormalizeCatalogOnBuild() bool { return true }
 
-func (e *mysqlEngine) ImplicitNonVisibleColumns() []string { return nil }
+func (e *mysqlEngine) ImplicitNonVisibleColumns() []string            { return nil }
+func (e *mysqlEngine) ImplicitFunctionColumns(string) []string        { return nil }
+func (e *mysqlEngine) ImplicitFunctionUnqualifiedTrusted(string) bool { return false }
+func (e *mysqlEngine) PostgresSystemXIDVisible() bool                 { return false }
 
 func (e *mysqlEngine) FoldColumn(column string) string {
 	return e.dialect.FoldIdentifierName(column, false)
@@ -252,6 +275,8 @@ func (e *mysqlEngine) DiagnosticLeakKeys(report ProbeResult, _ schema.Schema) ma
 	return referencedColumnKeys(report)
 }
 
+func (e *mysqlEngine) ValidateStatement(exp.Expression, string) error { return nil }
+
 // MySQL resolves statement identities at parse time against a fixed namespace — nothing to pin.
 func (e *mysqlEngine) FinalizeStatementIdentity(_ exp.Expression, _ string, facts *pb.StatementFacts, _ NamespaceConfig) *pb.StatementFacts {
 	return facts
@@ -275,12 +300,41 @@ func (e *mysqlEngine) RejectsDuplicateDerivedLabels() bool { return true }
 
 func (e *mysqlEngine) ExpandsNaturalJoins() bool { return false }
 
-type postgresEngine struct {
-	dialect *dialects.Dialect
+// MySQL has no search path; unqualified names resolve in the current database, never a system schema.
+func (e *mysqlEngine) SystemSchemaFirst([]string) bool { return false }
+
+// sqlglot resolves every MySQL builtin type to a concrete DType; a DTypeUserDefined is user code.
+func (e *mysqlEngine) IsSafeTypeReference(exp.Expression, exp.Expression, NamespaceConfig) bool {
+	return false
 }
 
-func newPostgresEngine(*pb.EngineConfig) (*postgresEngine, error) {
-	return &postgresEngine{dialect: dialects.Postgres()}, nil
+type postgresEngine struct {
+	dialect                   *dialects.Dialect
+	shadowedFunctions         map[string]bool
+	functionShadowingObserved bool
+	systemXIDVisible          bool
+}
+
+func newPostgresEngine(config *pb.EngineConfig) (*postgresEngine, error) {
+	if !config.GetPostgresFunctionShadowingObserved() && len(config.GetPostgresShadowedFunctions()) != 0 {
+		return nil, fmt.Errorf("postgresShadowedFunctions requires an observed function-shadowing context")
+	}
+	shadowed := make(map[string]bool, len(config.GetPostgresShadowedFunctions()))
+	for _, name := range config.GetPostgresShadowedFunctions() {
+		if name == "" || name != strings.ToLower(name) {
+			return nil, fmt.Errorf("postgresShadowedFunctions contains invalid function name %q", name)
+		}
+		if shadowed[name] {
+			return nil, fmt.Errorf("postgresShadowedFunctions contains duplicate function name %q", name)
+		}
+		shadowed[name] = true
+	}
+	return &postgresEngine{
+		dialect:                   dialects.Postgres(),
+		shadowedFunctions:         shadowed,
+		functionShadowingObserved: config.GetPostgresFunctionShadowingObserved(),
+		systemXIDVisible:          config.GetPostgresSystemXidVisible(),
+	}, nil
 }
 
 func (e *postgresEngine) WireName() string           { return "postgres" }
@@ -293,6 +347,26 @@ func (e *postgresEngine) NormalizeCatalogOnBuild() bool { return false }
 func (e *postgresEngine) ImplicitNonVisibleColumns() []string {
 	return []string{"tableoid", "xmin", "cmin", "xmax", "cmax", "ctid"}
 }
+
+func (e *postgresEngine) ImplicitFunctionColumns(name string) []string {
+	switch name {
+	case "pg_available_extension_versions":
+		return []string{"name", "version", "superuser", "trusted", "relocatable", "schema", "requires", "comment"}
+	case "unnest":
+		return []string{"unnest"}
+	default:
+		return nil
+	}
+}
+
+func (e *postgresEngine) ImplicitFunctionUnqualifiedTrusted(name string) bool {
+	if name != "unnest" {
+		return true
+	}
+	return e.functionShadowingObserved && !e.shadowedFunctions[name]
+}
+
+func (e *postgresEngine) PostgresSystemXIDVisible() bool { return e.systemXIDVisible }
 
 func (e *postgresEngine) FoldColumn(column string) string { return column }
 
@@ -324,12 +398,6 @@ func (e *postgresEngine) IsTrustedSystemQualifier(qualifier exp.Expression) bool
 // so there is nothing to rewrite here.
 func (e *postgresEngine) RewriteStatement(exp.Expression) string { return "" }
 
-// PostgreSQL resolves object identities live (search_path, type/function visibility), so a fresh
-// statement needs no pinning yet — later work pins trusted resolutions here.
-func (e *postgresEngine) FinalizeStatementIdentity(_ exp.Expression, _ string, facts *pb.StatementFacts, _ NamespaceConfig) *pb.StatementFacts {
-	return facts
-}
-
 func (e *postgresEngine) IsSafeNoFromFunction(name string) bool { return safeNoFromFunctions[name] }
 
 // postgresInformationSchemaFunctions are PostgreSQL's information_schema helper builtins — stable,
@@ -358,6 +426,14 @@ func (e *postgresEngine) CommandPassthrough(command string) bool {
 func (e *postgresEngine) RejectsDuplicateDerivedLabels() bool { return false }
 
 func (e *postgresEngine) ExpandsNaturalJoins() bool { return true }
+
+func (e *postgresEngine) SystemSchemaFirst(searchPath []string) bool {
+	return postgresCatalogFirstAfterTempSchemas(searchPath)
+}
+
+func (e *postgresEngine) IsSafeTypeReference(dt, kind exp.Expression, namespace NamespaceConfig) bool {
+	return e.isSafeXIDType(dt, kind, namespace)
+}
 
 // PostgreSQL names an unaliased projection per parse_target.c FigureColname; a call is labeled by
 // its WRITTEN function name, read from the projection's parse-time SpanText.

@@ -39,6 +39,15 @@ export type WorkflowComposeDraft =
       sourceDecisionError?: string | null
     }
 
+/** The scroll + centered padding every detail view but the query one (which owns its full height) uses. */
+function DetailScroll({ children }: { children: React.ReactNode }) {
+  return (
+    <div className="min-h-0 flex-1 overflow-y-auto">
+      <div className="mx-auto w-full max-w-5xl p-6">{children}</div>
+    </div>
+  )
+}
+
 function DetailPanel({
   selectedId,
   compose,
@@ -65,24 +74,26 @@ function DetailPanel({
   const composeError = compose?.kind === 'QUERY' ? compose.sourceDecisionError : null
 
   if (invalidSelectedId) {
-    return <ErrorState error={t('masterDetail.invalidRequestId')} />
+    return <DetailScroll><ErrorState error={t('masterDetail.invalidRequestId')} /></DetailScroll>
   }
   if (composeError) {
-    return <ErrorState error={composeError} />
+    return <DetailScroll><ErrorState error={composeError} /></DetailScroll>
   }
   if (auxiliary === 'ACTIVE_GRANTS') {
-    return <ActiveRoleGrants />
+    return <DetailScroll><ActiveRoleGrants /></DetailScroll>
   }
   if (compose?.kind === 'ROLE') {
-    return <RoleRequestComposer onCreated={onCreated} onCancel={onCancel} />
+    return <DetailScroll><RoleRequestComposer onCreated={onCreated} onCancel={onCancel} /></DetailScroll>
   }
   if (compose?.kind === 'QUERY') {
     return (
-      <QueryRequestComposer
-        sourceDecisionId={compose.sourceDecisionId}
-        onCreated={onCreated}
-        onCancel={onCancel}
-      />
+      <DetailScroll>
+        <QueryRequestComposer
+          sourceDecisionId={compose.sourceDecisionId}
+          onCreated={onCreated}
+          onCancel={onCancel}
+        />
+      </DetailScroll>
     )
   }
 
@@ -92,20 +103,22 @@ function DetailPanel({
       ?? (selectedEntry?.request.kind === 'ROLE' ? selectedEntry.request : null)
 
     if (selectedRoleRequest) {
-      return <RoleRequestDetail request={selectedRoleRequest} />
+      return <DetailScroll><RoleRequestDetail request={selectedRoleRequest} /></DetailScroll>
     }
     if (selectedEntry?.request.kind === 'QUERY') {
+      // Full height, no wrapper scroll: this one docks its results panel at the bottom and scrolls its
+      // own details pane, the way the editor does.
       return (
-        <div data-workflow-detail-kind="QUERY">
+        <div data-workflow-detail-kind="QUERY" className="flex min-h-0 flex-1 flex-col">
           <ApprovalDetail id={selectedId} />
         </div>
       )
     }
     if (roleLookupLoading) {
-      return <LoadingState label={t('masterDetail.lookingUpType')} />
+      return <DetailScroll><LoadingState label={t('masterDetail.lookingUpType')} /></DetailScroll>
     }
     if (roleLookupError) {
-      return <ErrorState error={roleLookupError} />
+      return <DetailScroll><ErrorState error={roleLookupError} /></DetailScroll>
     }
 
     return (
@@ -116,11 +129,13 @@ function DetailPanel({
   }
 
   return (
-    <EmptyState
-      icon={<Inbox className="size-9" />}
-      title={t('masterDetail.selectRequestTitle')}
-      hint={t('masterDetail.selectRequestHint')}
-    />
+    <DetailScroll>
+      <EmptyState
+        icon={<Inbox className="size-9" />}
+        title={t('masterDetail.selectRequestTitle')}
+        hint={t('masterDetail.selectRequestHint')}
+      />
+    </DetailScroll>
   )
 }
 
@@ -242,20 +257,18 @@ export function WorkflowsMasterDetail({
           </div>
         </div>
 
-        <div data-testid="workflow-detail-panel" className="min-h-0 flex-1 overflow-y-auto">
-          <div className="mx-auto w-full max-w-5xl p-6">
-            <DetailPanel
-              selectedId={selectedId}
-              compose={compose}
-              auxiliary={auxiliary}
-              lists={lists}
-              roleRequestsById={roleRequestsById}
-              roleLookupLoading={roleLookupLoading}
-              roleLookupError={roleLookupError}
-              onCreated={handleCreated}
-              onCancel={() => router.push('/workflows')}
-            />
-          </div>
+        <div data-testid="workflow-detail-panel" className="flex min-h-0 min-w-0 flex-1 flex-col">
+          <DetailPanel
+            selectedId={selectedId}
+            compose={compose}
+            auxiliary={auxiliary}
+            lists={lists}
+            roleRequestsById={roleRequestsById}
+            roleLookupLoading={roleLookupLoading}
+            roleLookupError={roleLookupError}
+            onCreated={handleCreated}
+            onCancel={() => router.push('/workflows')}
+          />
         </div>
       </div>
     </div>

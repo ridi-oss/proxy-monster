@@ -270,11 +270,12 @@ export function QueryRequestComposer({
                     id="approval-sql"
                     value={sql}
                     onChange={(e) => setSql(e.target.value)}
-                    placeholder="SELECT id, ssn FROM users WHERE id = 1"
+                    placeholder={'SELECT id, ssn FROM users WHERE id = 1;\nUPDATE users SET status = 1 WHERE id = 1;'}
                     rows={8}
                     required
                     className="font-mono text-xs"
                   />
+                  <p className="text-muted-foreground text-xs">{t('queryComposer.sqlHint')}</p>
                 </div>
               </CardContent>
             </Card>

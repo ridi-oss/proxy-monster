@@ -341,8 +341,11 @@ export interface AccessRequest {
   rejectionReason?: string | null
   createdAt: string
   kind: 'ROLE' | 'QUERY'
+  /** The task's statements joined in run order — the request's readable form, never what is authorized. */
   sql?: string | null
   sqlHash?: string | null
+  /** How many statements the task holds. 1 for an ordinary single-statement request. */
+  statementCount?: number
   denyReason?: string | null
   sourceDecisionId?: number | null
   title?: string | null
@@ -403,11 +406,16 @@ export interface DiscoverRolesResponse {
 /** Latest task-child metadata — never the rows themselves. */
 export interface QueryResultMeta {
   taskId: number
+  /** The statement's 0-based position in its task's batch. A single-statement task has only ordinal 0. */
+  ordinal: number
+  /** The statement itself. */
+  sql?: string | null
   executedBy?: string | null
   executedAt?: string | null
   rowCount?: number | null
   expiresAt?: string | null
-  status?: 'RUNNING' | 'DONE' | 'FAILED' | 'CANCELLED' | null
+  /** SKIPPED: a statement the batch never reached, because an earlier one denied or failed. */
+  status?: 'RUNNING' | 'DONE' | 'FAILED' | 'CANCELLED' | 'SKIPPED' | null
   errorCode?: string | null
   /**
    * Present only when the failure was a POLICY DENIAL: the reason the decision recorded, and the audit
@@ -423,6 +431,8 @@ export interface ApprovalDetail {
   request: AccessRequest
   canDecide: boolean
   result?: QueryResultMeta | null
+  /** Every statement of the batch, in run order. One entry for a single-statement request. */
+  statements?: QueryResultMeta[]
   canExecute?: boolean
   canCancel?: boolean
 }

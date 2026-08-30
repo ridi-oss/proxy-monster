@@ -126,11 +126,13 @@
     "discoverFailed": "Couldn't check roles.",
     "retry": "Retry",
     "selectRole": "Select a role",
-    "noRolesFound": "No role can run this query.",
+    "noRolesFound": "No role can run every statement.",
     "outcome": {
       "ALLOW": "cleartext",
       "MASK": "masked"
-    }
+    },
+    "sqlHint": "Several statements are allowed — separate them with ;. They run in order, and stop at the first one that is denied.",
+    "statementCount": "{count, plural, one {# statement} other {# statements}}"
   },
   "roleComposer": {
     "submittedToast": "Access request submitted — awaiting approver review",
@@ -174,7 +176,12 @@
     "awaitingApprover": "Awaiting an approver to run this query.",
     "rejectTitle": "Reject query approval",
     "rejectDescription": "Reject this query approval request from {principal}.",
-    "rejectPlaceholder": "Explain why this query should not be approved."
+    "rejectPlaceholder": "Explain why this query should not be approved.",
+    "statementsHeading": "Statements",
+    "statementLabel": "Statement {n} of {total}",
+    "statementTab": "Statement {n}",
+    "statementRows": "{rows, plural, one {# row} other {# rows}}",
+    "batchSummary": "{count, plural, one {# statement} other {# statements}}"
   },
   "approveDialog": {
     "approveFailed": "approve failed",

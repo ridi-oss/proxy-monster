@@ -215,7 +215,7 @@ class RunExecService(
     // outlive the whole exchange it backs (dial + this window + revalidation), else a genuine long query
     // fails UNAUTHENTICATED when the proxy revalidates the token mid-run. Defaulted so the many
     // Config-free test constructions compile unchanged.
-    queryTimeoutSeconds: Long = 600L,
+    private val queryTimeoutSeconds: Long = 600L,
 ) {
     private val activeRuns = ConcurrentHashMap<Long, ActiveRun>()
 
@@ -232,10 +232,8 @@ class RunExecService(
         var sent = false
     }
 
-    // A one-shot run token grows with PM_QUERY_TIMEOUT (keeping the prior 300s as a floor for short
-    // timeouts); an editor SESSION token keeps its generous absolute TTL but is never allowed to expire
-    // before a single query on it could finish.
-    private val runTokenTtlSeconds = runTokenTtlSeconds(queryTimeoutSeconds)
+    // An editor SESSION token keeps its generous absolute TTL but is never allowed to expire before a
+    // single query on it could finish. A one-shot run token is sized per batch, at its mint site.
     private val editorSessionTtlSeconds = editorSessionTtlSeconds(queryTimeoutSeconds)
 
     /**
@@ -311,7 +309,95 @@ class RunExecService(
         noProgressMs: Long = RUN_NO_PROGRESS_TIMEOUT_MS,
         openTimeoutMs: Long = RUN_OPEN_TIMEOUT_MS,
     ): QueryResponse {
-        val started = System.nanoTime()
+        var only: QueryResponse? = null
+        runBatch(
+            principal = principal, ds = ds, statementCount = 1, maxRows = maxRows, approverExec = approverExec,
+            assumeRoles = assumeRoles, requesterIp = requesterIp, taskId = taskId,
+            exchangeTimeoutMs = exchangeTimeoutMs, dialTimeoutMs = dialTimeoutMs, noProgressMs = noProgressMs,
+            openTimeoutMs = openTimeoutMs,
+            statementAt = { sql },
+            preflight = preflight,
+            onStatement = { _, response -> only = response; true },
+        )
+        return only ?: throw RunCanceledBeforeStartException()
+    }
+
+    /**
+     * Send each statement in turn on one already-open channel pair and hand its response to [onStatement],
+     * which returns whether to keep going. The caller owns the connection's lifetime; [onSendFailure] and
+     * [onExchangeFailure] let it tear down what it owns before the exception leaves.
+     *
+     * Enforcement stays per statement — every one round-trips its own Decide.
+     */
+    private suspend fun runStatements(
+        outbound: SendChannel<ControlRunMsg>,
+        inbound: Channel<ProxyRunMsg>,
+        activeRun: ActiveRun?,
+        statementCount: Int,
+        maxRows: Int,
+        exchangeTimeoutMs: Long,
+        preflight: (() -> Boolean)?,
+        statementAt: suspend (Int) -> String?,
+        onStatement: suspend (Int, QueryResponse) -> Boolean,
+        beforeSend: (Int) -> Unit = {},
+        onStreamFailure: () -> Unit = {},
+    ) {
+        // One statement at a time per stream: the next is sent only after this one's response.
+        for (ordinal in 0 until statementCount) {
+            val statement = statementAt(ordinal) ?: return
+            val started = System.nanoTime()
+            beforeSend(ordinal)
+            try {
+                // Sends under the run gate (preflight + cancel re-check), so a concurrent cancel either
+                // vetoes this send or is ordered strictly after it — never a dropped-then-run query.
+                sendRunQuery(activeRun, outbound, preflight, statement, maxRows)
+            } catch (e: RunCanceledBeforeStartException) {
+                // Only ordinal 0 propagates, so the caller tells "nothing ran" from "stopped partway"; the
+                // statements already run keep their stored results.
+                if (ordinal == 0) throw e
+                return
+            } catch (e: Exception) {
+                currentCoroutineContext().ensureActive()
+                onStreamFailure()
+                throw ProxyRunException("proxy run stream closed before the query was sent", e)
+            }
+            val response = try {
+                withTimeout(exchangeTimeoutMs) { collectResponse(inbound, started) }
+            } catch (e: TimeoutCancellationException) {
+                onStreamFailure()
+                throw ProxyRunTimeoutException(e)
+            } catch (e: ProxyRunException) {
+                onStreamFailure()
+                throw e
+            }
+            if (!onStatement(ordinal, response)) return
+        }
+    }
+
+    /**
+     * Run a task's statements in order on ONE target-DB connection, so a `BEGIN` or temp table from
+     * statement k still applies at k+1. Each round-trips its own `Decide` — never authorize-once-run-many.
+     *
+     * [statementAt] gives the statement for an ordinal; [onStatement] returns whether to continue, which
+     * is how the caller stops at the first non-ALLOW.
+     */
+    suspend fun runBatch(
+        principal: String,
+        ds: Datasource,
+        statementCount: Int,
+        maxRows: Int,
+        statementAt: suspend (Int) -> String?,
+        onStatement: suspend (Int, QueryResponse) -> Boolean,
+        approverExec: Boolean = false,
+        assumeRoles: Set<String> = emptySet(),
+        requesterIp: String? = null,
+        taskId: Long? = null,
+        preflight: (() -> Boolean)? = null,
+        exchangeTimeoutMs: Long = EXCHANGE_TIMEOUT_MS,
+        dialTimeoutMs: Long = RUN_DIALBACK_TIMEOUT_MS,
+        noProgressMs: Long = RUN_NO_PROGRESS_TIMEOUT_MS,
+        openTimeoutMs: Long = RUN_OPEN_TIMEOUT_MS,
+    ) {
         val issued = core.dataSource.mintForActivePrincipalLocked(principal, core.userGroupStore) { c ->
             core.tokenStore.issue(
                 kind = if (approverExec) TokenKind.APPROVER_EXEC else TokenKind.EDITOR,
@@ -320,7 +406,7 @@ class RunExecService(
                 // this for the ephemeral kinds, so it can never become a client-asserted role list.
                 roles = assumeRoles.toList(),
                 name = null,
-                ttlSeconds = runTokenTtlSeconds,
+                ttlSeconds = runTokenTtlSeconds(queryTimeoutSeconds, statementCount),
                 c = c,
             )
         } ?: throw ProxyRunException("principal is deprovisioned")
@@ -363,22 +449,18 @@ class RunExecService(
             // Keep 0 as the wire "use the proxy's default (500)" sentinel; the proxy re-coerces to [1,5000]
             // and maps 0 -> 500 (wire contract). The gate below vetoes the send if a cancel already won.
             activeRun = taskId?.let { id -> ActiveRun(channel.outbound).also { activeRuns[id] = it } }
-            try {
-                sendRunQuery(activeRun, channel.outbound, preflight, sql, maxRows)
-            } catch (e: RunCanceledBeforeStartException) {
-                throw e
-            } catch (e: Exception) {
-                currentCoroutineContext().ensureActive()
-                throw ProxyRunException("proxy run stream closed before the query was sent", e)
-            }
-
-            return try {
-                withTimeout(exchangeTimeoutMs) {
-                    collectResponse(channel.inbound, started)
-                }
-            } catch (e: TimeoutCancellationException) {
-                throw ProxyRunTimeoutException(e)
-            }
+            // This run owns the connection, so the finally below is the only teardown needed.
+            runStatements(
+                outbound = channel.outbound,
+                inbound = channel.inbound,
+                activeRun = activeRun,
+                statementCount = statementCount,
+                maxRows = maxRows,
+                exchangeTimeoutMs = exchangeTimeoutMs,
+                preflight = preflight,
+                statementAt = statementAt,
+                onStatement = onStatement,
+            )
         } finally {
             val ar = activeRun
             if (taskId != null && ar != null) activeRuns.remove(taskId, ar)
@@ -498,10 +580,37 @@ class RunExecService(
         preflight: (() -> Boolean)? = null,
         exchangeTimeoutMs: Long = EXCHANGE_TIMEOUT_MS,
     ): QueryResponse {
+        var only: QueryResponse? = null
+        runBatchOnSession(
+            sessionId, principal, statementCount = 1, maxRows = maxRows, requesterIp = requesterIp,
+            taskId = taskId, preflight = preflight, exchangeTimeoutMs = exchangeTimeoutMs,
+            statementAt = { sql },
+            onStatement = { _, response -> only = response; true },
+        )
+        return only ?: throw RunCanceledBeforeStartException()
+    }
+
+    /**
+     * Run a task's statements in order on one open session, holding its mutex for the WHOLE batch:
+     * releasing between statements lets a concurrent submit run inside this batch's open transaction and
+     * settle these writes with its own COMMIT. Enforcement stays per statement.
+     */
+    suspend fun runBatchOnSession(
+        sessionId: String,
+        principal: String,
+        statementCount: Int,
+        maxRows: Int,
+        statementAt: suspend (Int) -> String?,
+        onStatement: suspend (Int, QueryResponse) -> Boolean,
+        requesterIp: String? = null,
+        taskId: Long? = null,
+        preflight: (() -> Boolean)? = null,
+        exchangeTimeoutMs: Long = EXCHANGE_TIMEOUT_MS,
+    ) {
         val session = openSessions[sessionId]?.takeIf { it.principal == principal }
             ?: throw ProxyRunException("no such editor session")
         try {
-            return session.mutex.withLock {
+            session.mutex.withLock {
                 // Re-check under the mutex: a concurrent [closeSession] (DELETE / idle sweep) — which is lock-free
                 // — may have removed + revoked this session while we queued for the lock. If so, bail fail-closed
                 // rather than run a query on (and refresh the registry entry of) a since-revoked token. `!==` is a
@@ -509,35 +618,28 @@ class RunExecService(
                 if (openSessions[sessionId] !== session) throw ProxyRunException("no such editor session")
                 val run = taskId?.let { id -> ActiveRun(session.attached.outbound).also { activeRuns[id] = it } }
                 try {
-                    val started = System.nanoTime()
-                    session.lastUsedNanos = started
-                    // Refresh the requester_ip this session's next decision will see to the CURRENT request's IP,
-                    // under the mutex + before the query is sent — the proxy's decide (keyed by the session token's
-                    // hash) then reads this query's IP, never a stale open-time one.
-                    session.tokenHash?.let { core.runRequesterIps.set(it, requesterIp) }
-                    try {
-                        // Sends under the run gate (preflight + cancel re-check), so a concurrent cancel either
-                        // vetoes this send or is ordered strictly after it — never a dropped-then-run query.
-                        sendRunQuery(run, session.attached.outbound, preflight, sql, maxRows)
-                    } catch (e: RunCanceledBeforeStartException) {
-                        throw e
-                    } catch (e: Exception) {
-                        currentCoroutineContext().ensureActive()
-                        closeSession(sessionId)
-                        throw ProxyRunException("editor session stream closed before the query was sent", e)
-                    }
-                    try {
-                        withTimeout(exchangeTimeoutMs) { collectResponse(session.attached.inbound, started) }
-                    } catch (e: TimeoutCancellationException) {
-                        closeSession(sessionId)
-                        throw ProxyRunTimeoutException(e)
-                    } catch (e: ProxyRunException) {
-                        // A query-level error — a canceled statement, a target-DB error — ends the persistent proxy
-                        // session (the run loop returns on any query error), so drop the CP-side session too. The
-                        // next submit then reopens a fresh one cleanly instead of failing on a since-dead stream.
-                        closeSession(sessionId)
-                        throw e
-                    }
+                    // The session outlives this call, so any stream failure must drop it here: the run loop
+                    // returns on a query error, and the next submit should reopen rather than fail on a dead
+                    // stream.
+                    runStatements(
+                        outbound = session.attached.outbound,
+                        inbound = session.attached.inbound,
+                        activeRun = run,
+                        statementCount = statementCount,
+                        maxRows = maxRows,
+                        exchangeTimeoutMs = exchangeTimeoutMs,
+                        preflight = preflight,
+                        statementAt = statementAt,
+                        onStatement = onStatement,
+                        beforeSend = {
+                            session.lastUsedNanos = System.nanoTime()
+                            // Refresh the requester_ip this statement's decision will see to the CURRENT
+                            // request's IP, under the mutex + before the query is sent, so the proxy's decide
+                            // never reads a stale open-time one.
+                            session.tokenHash?.let { core.runRequesterIps.set(it, requesterIp) }
+                        },
+                        onStreamFailure = { closeSession(sessionId) },
+                    )
                 } finally {
                     if (taskId != null && run != null) activeRuns.remove(taskId, run)
                 }
@@ -758,9 +860,21 @@ class RunExecService(
         // its PM_QUERY_TIMEOUT watchdog aborts a statement, so a timed-out run is attributed as a timeout.
         const val QUERY_TIMEOUT_MESSAGE = "statement aborted: PM_QUERY_TIMEOUT exceeded"
 
-        /** TTL for a one-shot run token, grown so it always outlives a statement running for [queryTimeoutSeconds]. */
-        fun runTokenTtlSeconds(queryTimeoutSeconds: Long): Long =
-            maxOf(RUN_TOKEN_TTL_FLOOR_SECONDS, queryTimeoutSeconds + TOKEN_TTL_GRACE_SECONDS)
+        /**
+         * TTL for a one-shot run token, sized to outlive the whole batch it authorizes: [statementCount]
+         * statements share one token, each able to take a full [queryTimeoutSeconds] window. The token is
+         * revoked when the run ends, so this only has to cover the run that a crash left un-revoked.
+         */
+        fun runTokenTtlSeconds(queryTimeoutSeconds: Long, statementCount: Int): Long {
+            // Saturating: PM_QUERY_TIMEOUT's ceiling is near Long.MAX, so the multiplication would
+            // overflow to a NEGATIVE ttl — a token already expired at issue.
+            val statements = maxOf(1L, statementCount.toLong())
+            val batchWindow = runCatching { Math.multiplyExact(queryTimeoutSeconds, statements) }
+                .getOrDefault(Long.MAX_VALUE - TOKEN_TTL_GRACE_SECONDS)
+            val budget = runCatching { Math.addExact(batchWindow, TOKEN_TTL_GRACE_SECONDS) }
+                .getOrDefault(Long.MAX_VALUE)
+            return maxOf(RUN_TOKEN_TTL_FLOOR_SECONDS, budget)
+        }
 
         /** TTL for a persistent editor-session token, never shorter than a single query could run. */
         fun editorSessionTtlSeconds(queryTimeoutSeconds: Long): Long =

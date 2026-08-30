@@ -198,7 +198,7 @@ class ApprovalExecuteRouteDbTest {
     private fun seedApprovedRoleRequest(roleName: String, decidedBy: String = executor): Long {
         val roleId = core.policyStore.createRole(RoleInput(roleName)).id
         val id = core.accessStore.createQueryRequest(
-            principal = requester, datasourceId = datasource.id, sql = "select ssn from users",
+            principal = requester, datasourceId = datasource.id, statements = listOf("select ssn from users"),
             denyReason = null, sourceDecisionId = null, reason = "need it", title = null,
             evaluatedDecision = "DENY", roleId = roleId,
         ).id
@@ -711,7 +711,7 @@ class ApprovalExecuteRouteDbTest {
                 ps.setLong(1, id); ps.executeUpdate()
             }
         }
-        assertNotNull(resultStore.startRun(id, approver))
+        assertNotNull(resultStore.startNextRun(id, approver))
 
         assertEquals(HttpStatusCode.NoContent, client.post("/test/session/$unrelated").status)
         val denied = client.post("/api/approvals/$id/cancel")

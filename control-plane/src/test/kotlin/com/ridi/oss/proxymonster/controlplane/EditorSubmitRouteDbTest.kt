@@ -482,7 +482,7 @@ class EditorSubmitRouteDbTest {
         // freshly-inserted forbid takes effect live and its deletion restores the baseline.
         val client = wire()
         val task = core.accessStore.createEditorTask(
-            caller, datasource.id, "select id from t", listOf("editor-analyst"), caller,
+            caller, datasource.id, listOf("select id from t"), listOf("editor-analyst"), caller,
         )
         // Baseline: the owner's self-read permit (V33/V38 task.read on own Request) lets the poll through.
         assertEquals(HttpStatusCode.OK, client.get("/api/editor/tasks/${task.id}").status)
@@ -514,7 +514,7 @@ class EditorSubmitRouteDbTest {
         // A task owned by someone OTHER than the signed-in caller: poll is owner-scoped and result is
         // task.assume-scoped, so both 404.
         val other = core.accessStore.createEditorTask(
-            "someone-else@example.com", datasource.id, "select id from t", listOf("editor-analyst"), "someone-else@example.com",
+            "someone-else@example.com", datasource.id, listOf("select id from t"), listOf("editor-analyst"), "someone-else@example.com",
         )
         assertEquals(HttpStatusCode.NotFound, client.get("/api/editor/tasks/${other.id}").status)
         assertEquals(HttpStatusCode.NotFound, client.get("/api/editor/tasks/${other.id}/result").status)

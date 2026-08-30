@@ -39,7 +39,7 @@ class TaskReconcileStartupDbTest {
         // An orphan: claimed for execution and its child moved to RUNNING, then the process "died" before
         // either reached a terminal state.
         val orphan = core.accessStore.createQueryRequest(
-            principal = "requester@example.com", datasourceId = datasource.id, sql = "select 1",
+            principal = "requester@example.com", datasourceId = datasource.id, statements = listOf("select 1"),
             denyReason = null, sourceDecisionId = null, reason = "need it", title = null, evaluatedDecision = "DENY",
         ).id
         execute("UPDATE access_request SET status='APPROVED' WHERE id=$orphan")
@@ -51,7 +51,7 @@ class TaskReconcileStartupDbTest {
         // A task that never started: APPROVED with its statement child still NULL (not-started). Reconcile
         // must not touch it.
         val notStarted = core.accessStore.createQueryRequest(
-            principal = "requester@example.com", datasourceId = datasource.id, sql = "select 2",
+            principal = "requester@example.com", datasourceId = datasource.id, statements = listOf("select 2"),
             denyReason = null, sourceDecisionId = null, reason = "need it", title = null, evaluatedDecision = "DENY",
         ).id
         execute("UPDATE access_request SET status='APPROVED' WHERE id=$notStarted")
@@ -60,7 +60,7 @@ class TaskReconcileStartupDbTest {
         // the only shape a finished run can take). Reconcile sweeps only EXECUTING/RUNNING, so a completed task
         // must survive restart untouched — a DONE child must never be dragged to FAILED under its EXECUTED task.
         val completed = core.accessStore.createQueryRequest(
-            principal = "requester@example.com", datasourceId = datasource.id, sql = "select 3",
+            principal = "requester@example.com", datasourceId = datasource.id, statements = listOf("select 3"),
             denyReason = null, sourceDecisionId = null, reason = "need it", title = null, evaluatedDecision = "DENY",
         ).id
         execute("UPDATE access_request SET status='EXECUTED', executing_at=now(), executed_at=now() WHERE id=$completed")

@@ -427,7 +427,7 @@ class SlackNotificationE2eDbTest {
         val task = core.accessStore.createQueryRequest(
             principal = approver,
             datasourceId = fx.datasource.id,
-            sql = "SELECT id FROM users",
+            statements = listOf("SELECT id FROM users"),
             denyReason = null,
             sourceDecisionId = null,
             reason = "audit",

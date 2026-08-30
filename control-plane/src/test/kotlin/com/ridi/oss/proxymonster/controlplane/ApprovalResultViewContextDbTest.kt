@@ -249,7 +249,7 @@ class ApprovalResultViewContextDbTest {
             }
         }
         fx.dataSource.connection.use { c -> c.prepareStatement("INSERT INTO query_result (task_id, sql, sql_hash) VALUES (?, ?, 'fixture')").use { ps -> ps.setLong(1, reqId); ps.setString(2, sql); ps.executeUpdate() } }
-        assertNotNull(resultStore.startRun(reqId, executor))
+        assertNotNull(resultStore.startNextRun(reqId, executor))
         assertNotNull(resultStore.completeRun(reqId, DecryptedResult(columns, rows, resultFingerprint = resultFingerprint?.let { fingerprintOf(it) }), 3600))
         return reqId
     }
@@ -276,7 +276,7 @@ class ApprovalResultViewContextDbTest {
                 ps.executeUpdate()
             }
         }
-        assertNotNull(resultStore.startRun(reqId, executor))
+        assertNotNull(resultStore.startNextRun(reqId, executor))
         assertNotNull(resultStore.failRun(reqId, "approval.query_failed", diagnostic = runError { message = redactedForm; rawMessage = rawText; targetDbError = true }))
         return reqId
     }

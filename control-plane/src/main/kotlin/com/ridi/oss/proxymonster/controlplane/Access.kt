@@ -38,7 +38,13 @@ data class AccessRequest(
     val requestedDurationSec: Long, val status: String, val decidedBy: String? = null,
     val executedBy: String? = null,
     val decidedAt: String? = null, val rejectionReason: String? = null, val createdAt: String,
-    val kind: String = "ROLE", val sql: String? = null, val sqlHash: String? = null,
+    val kind: String = "ROLE",
+    /** The task's statements joined in run order — the request's readable form. Each statement is
+     *  authorized, executed, and stored on its own child; this text is never the unit of authorization. */
+    val sql: String? = null,
+    val sqlHash: String? = null,
+    /** How many statements the task holds. 1 for an ordinary single-statement request. */
+    val statementCount: Int = 1,
     val denyReason: String? = null, val sourceDecisionId: Long? = null,
     val title: String? = null, val evaluatedDecision: String? = null,
     val approvedAt: String? = null,
@@ -155,7 +161,9 @@ class AccessStore(private val dataSource: DataSource) {
     fun createQueryRequest(
         principal: String,
         datasourceId: Long,
-        sql: String,
+        // The batch's statements, in the order they run — one query_result child each, split server-side by
+        // the analyzer. A single-statement request is the one-element case.
+        statements: List<String>,
         denyReason: String?,
         sourceDecisionId: Long?,
         reason: String?,
@@ -178,9 +186,7 @@ class AccessStore(private val dataSource: DataSource) {
         actor: AuditActor? = null,
         recorder: ManagementAuditRecorder? = null,
     ): AccessRequest {
-        val sqlHash = MessageDigest.getInstance("SHA-256")
-            .digest(sql.toByteArray(Charsets.UTF_8))
-            .joinToString("") { "%02x".format(it) }
+        require(statements.isNotEmpty()) { "a query request needs at least one statement" }
         val id = dataSource.inTx { c ->
             val executeAs = roleId?.let { id ->
                 c.prepareStatement("SELECT name FROM app_role WHERE id = ? AND deleted_at IS NULL").use { ps ->
@@ -213,14 +219,7 @@ class AccessStore(private val dataSource: DataSource) {
                     if (rs.next()) rs.getLong(1) else throw DuplicatePendingQueryRequestException()
                 }
             }
-            c.prepareStatement(
-                "INSERT INTO query_result (task_id, sql, sql_hash) VALUES (?, ?, ?)",
-            ).use { ps ->
-                ps.setLong(1, taskId)
-                ps.setString(2, sql)
-                ps.setString(3, sqlHash)
-                ps.executeUpdate()
-            }
+            insertStatements(c, taskId, statements)
             if (actor != null && recorder != null) {
                 recorder.record(
                     c, actor, AuthzAction.TASK_REQUEST, auditEntity("AccessRequest", taskId.toString()),
@@ -246,13 +245,11 @@ class AccessStore(private val dataSource: DataSource) {
     fun createEditorTask(
         principal: String,
         datasourceId: Long,
-        sql: String,
+        statements: List<String>,
         executeAs: List<String>,
         approver: String,
     ): AccessRequest {
-        val sqlHash = MessageDigest.getInstance("SHA-256")
-            .digest(sql.toByteArray(Charsets.UTF_8))
-            .joinToString("") { "%02x".format(it) }
+        require(statements.isNotEmpty()) { "an editor task needs at least one statement" }
         val id = dataSource.inTx { c ->
             val now = Timestamp.from(Instant.now())
             val taskId = c.prepareStatement(
@@ -271,17 +268,34 @@ class AccessStore(private val dataSource: DataSource) {
                 ps.setString(7, json.encodeToString(stringList, executeAs))
                 ps.executeQuery().use { rs -> rs.next(); rs.getLong(1) }
             }
-            c.prepareStatement(
-                "INSERT INTO query_result (task_id, sql, sql_hash) VALUES (?, ?, ?)",
-            ).use { ps ->
-                ps.setLong(1, taskId)
-                ps.setString(2, sql)
-                ps.setString(3, sqlHash)
-                ps.executeUpdate()
-            }
+            insertStatements(c, taskId, statements)
             taskId
         }
         return getRequest(id)!!
+    }
+
+    /**
+     * Insert a task's statements as its ordered result children — one row per statement, `ordinal` its
+     * 0-based position in the batch. Each child carries its OWN sql and sql_hash: the batch is authorized,
+     * executed, and stored per statement, so a hash over the joined text would identify nothing that runs.
+     */
+    private fun sha256Hex(value: String): String = MessageDigest.getInstance("SHA-256")
+        .digest(value.toByteArray(Charsets.UTF_8))
+        .joinToString("") { "%02x".format(it) }
+
+    private fun insertStatements(c: Connection, taskId: Long, statements: List<String>) {
+        c.prepareStatement(
+            "INSERT INTO query_result (task_id, ordinal, sql, sql_hash) VALUES (?, ?, ?, ?)",
+        ).use { ps ->
+            statements.forEachIndexed { ordinal, statement ->
+                ps.setLong(1, taskId)
+                ps.setInt(2, ordinal)
+                ps.setString(3, statement)
+                ps.setString(4, sha256Hex(statement))
+                ps.addBatch()
+            }
+            ps.executeBatch()
+        }
     }
 
     /**
@@ -331,9 +345,9 @@ class AccessStore(private val dataSource: DataSource) {
         ps.executeQuery().use { rs -> if (rs.next()) rs.getLong(1) else null }
     }
 
-    /** The id of an EDITOR task's single result child (task:child 1:1) — carried in the submit ack. */
+    /** The id of an EDITOR task's FIRST result child — carried in the submit ack. */
     fun editorChildId(taskId: Long): Long? = dataSource.connection.use { c ->
-        c.prepareStatement("SELECT id FROM query_result WHERE task_id = ? ORDER BY id DESC LIMIT 1").use { ps ->
+        c.prepareStatement("SELECT id FROM query_result WHERE task_id = ? ORDER BY ordinal LIMIT 1").use { ps ->
             ps.setLong(1, taskId)
             ps.executeQuery().use { rs -> if (rs.next()) rs.getLong(1) else null }
         }
@@ -521,10 +535,41 @@ class AccessStore(private val dataSource: DataSource) {
             }
             // Set expires_at too, so purgeExpired eventually GCs this orphaned metadata — otherwise a
             // NULL-expiry FAILED row accumulates on every restart-with-orphan (no ciphertext, but unbounded).
+            val expiry = Timestamp.from(Instant.now().plusSeconds(QueryResultStore.RESULT_RETENTION_SEC))
             c.prepareStatement(
                 "UPDATE query_result SET status = 'FAILED', error_code = 'task.orphaned_on_restart', expires_at = ? WHERE status = 'RUNNING'",
             ).use { ps ->
-                ps.setTimestamp(1, Timestamp.from(Instant.now().plusSeconds(QueryResultStore.RESULT_RETENTION_SEC)))
+                ps.setTimestamp(1, expiry)
+                ps.executeUpdate()
+            }
+            // A crash BETWEEN a batch's statements leaves no RUNNING child to carry the orphan reason — the
+            // previous statement is DONE and the next never started. Fail the lowest pending child of each
+            // orphaned task so the failure is attributed to the statement that would have run next, rather
+            // than leaving a FAILED task whose children are all DONE/SKIPPED and explain nothing.
+            c.prepareStatement(
+                """UPDATE query_result SET status = 'FAILED', error_code = 'task.orphaned_on_restart', expires_at = ?
+                   WHERE id IN (
+                       SELECT DISTINCT ON (qr.task_id) qr.id
+                         FROM query_result qr
+                         JOIN access_request ar ON ar.id = qr.task_id
+                        WHERE qr.status IS NULL AND ar.kind = 'QUERY' AND ar.status = 'FAILED'
+                          AND NOT EXISTS (
+                              SELECT 1 FROM query_result done
+                               WHERE done.task_id = qr.task_id AND done.status = 'FAILED'
+                          )
+                        ORDER BY qr.task_id, qr.ordinal
+                   )""",
+            ).use { ps ->
+                ps.setTimestamp(1, expiry)
+                ps.executeUpdate()
+            }
+            // The statements after the orphaned one will never run either — the task is FAILED. Terminalize
+            // them as SKIPPED so no child of a finished task still reads as "not started yet".
+            c.prepareStatement(
+                """UPDATE query_result SET status = 'SKIPPED', expires_at = ?
+                   WHERE status IS NULL AND task_id IN (SELECT id FROM access_request WHERE kind = 'QUERY' AND status = 'FAILED')""",
+            ).use { ps ->
+                ps.setTimestamp(1, expiry)
                 ps.executeUpdate()
             }
         }
@@ -715,6 +760,7 @@ class AccessStore(private val dataSource: DataSource) {
         decidedAt = getTimestamp("decided_at")?.toInstant()?.toString(),
         rejectionReason = getString("rejection_reason"), createdAt = getTimestamp("created_at").toInstant().toString(),
         kind = getString("kind"), sql = getString("task_sql"), sqlHash = getString("task_sql_hash"),
+        statementCount = getInt("statement_count"),
         denyReason = getString("deny_reason"), sourceDecisionId = longOrNull("source_decision_id"),
         title = getString("title"), evaluatedDecision = getString("evaluated_decision"),
         approvedAt = getTimestamp("approved_at")?.toInstant()?.toString(),
@@ -736,9 +782,13 @@ class AccessStore(private val dataSource: DataSource) {
             """SELECT ar.id, ar.principal, ar.role_id, r.name AS role_name, ar.datasource_id, d.name AS datasource_name,
                       ar.reason, ar.requested_duration_sec, ar.status, ar.decided_by, ar.decided_at, ar.rejection_reason, ar.created_at,
                       ar.kind,
-                      (SELECT qr.sql FROM query_result qr WHERE qr.task_id = ar.id ORDER BY qr.id LIMIT 1) AS task_sql,
-                      (SELECT qr.sql_hash FROM query_result qr WHERE qr.task_id = ar.id ORDER BY qr.id LIMIT 1) AS task_sql_hash,
-                      (SELECT qr.executed_by FROM query_result qr WHERE qr.task_id = ar.id ORDER BY qr.id LIMIT 1) AS executed_by,
+                      -- The whole batch as one text, statements in run order. Each child keeps its own sql and
+                      -- sql_hash; this is the request's readable form (list preview, notifications), never the
+                      -- unit of authorization.
+                      (SELECT string_agg(qr.sql, E';\n' ORDER BY qr.ordinal) FROM query_result qr WHERE qr.task_id = ar.id) AS task_sql,
+                      (SELECT count(*) FROM query_result qr WHERE qr.task_id = ar.id) AS statement_count,
+                      (SELECT qr.sql_hash FROM query_result qr WHERE qr.task_id = ar.id ORDER BY qr.ordinal LIMIT 1) AS task_sql_hash,
+                      (SELECT qr.executed_by FROM query_result qr WHERE qr.task_id = ar.id ORDER BY qr.ordinal LIMIT 1) AS executed_by,
                       ar.deny_reason, ar.source_decision_id, ar.title, ar.evaluated_decision,
                       ar.approved_at, ar.executing_at, ar.executed_at, ar.execute_as, ar.creator_kind,
                       ar.statement_carries_protected_literal

@@ -1111,7 +1111,7 @@ fun Route.editorSessionRoutes(
             return@post call.respond(HttpStatusCode.Forbidden, ApiError("common.forbidden"))
         }
 
-        val task = accessStore.createEditorTask(principal, ds.id, sql, ownRoles.toList(), approver = principal)
+        val task = accessStore.createEditorTask(principal, ds.id, listOf(sql), ownRoles.toList(), approver = principal)
         val childId = accessStore.editorChildId(task.id) ?: -1L
         // Same single-execution claim as /execute, atomic so a cancel can't slip into an EXECUTING-but-no-
         // RUNNING-child gap: APPROVED → EXECUTING and the child NULL → RUNNING commit in one transaction.

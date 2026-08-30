@@ -477,7 +477,7 @@ fun Route.approvalRoutes(
                 accessStore.createQueryRequest(
                     principal = principal,
                     datasourceId = datasourceId,
-                    sql = source.statement,
+                    statements = listOf(source.statement),
                     denyReason = source.detail,
                     sourceDecisionId = sourceDecisionId,
                     reason = input.reason.trim(),
@@ -537,7 +537,7 @@ fun Route.approvalRoutes(
         val request = accessStore.createQueryRequest(
             principal = principal,
             datasourceId = ds.id,
-            sql = sql,
+            statements = listOf(sql),
             denyReason = if (decision.action == EnfAction.DENY) (decision.denyReason ?: decision.detail) else null,
             sourceDecisionId = null,
             reason = input.reason.trim(),

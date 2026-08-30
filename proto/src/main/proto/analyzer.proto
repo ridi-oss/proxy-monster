@@ -82,6 +82,29 @@ message AnalyzeRequest {
   EngineConfig engine_config = 6;
 }
 
+// Cut a multi-statement batch into its individual statements at the dialect's own semicolon tokens,
+// so a `;` inside a literal, a quoted identifier, a comment, or a dollar-quoted body is not a
+// boundary. The batch surfaces (the approval workflow, the editor) split here rather than in the
+// client, so the statement boundary the control-plane stores, hashes, and authorizes is the
+// engine's, not a caller's guess.
+message SplitRequest {
+  string sql = 1;
+  // The dialect decides where a statement ends, so this is the same config analysis uses: MySQL's
+  // version gates executable comments (`/*!80000 OR 1=1 */` is SQL the server runs) and ansi_quotes
+  // decides whether `"a;b"` is one literal or a boundary. An engine-invalid config fails closed.
+  EngineConfig engine_config = 2;
+}
+
+// Each statement is a verbatim slice of the request's sql (trimmed, terminator dropped) — never
+// regenerated text, so what is stored and authorized is exactly what the caller wrote. [ok] false
+// leaves [statements] empty and means the batch could not be split safely (bad dialect, invalid
+// UTF-8, an embedded NUL, a tokenizer failure, or no statement at all); the caller denies rather
+// than falling back to its own split.
+message SplitResponse {
+  bool ok = 1;
+  repeated string statements = 2;
+}
+
 // ---- response side ----
 
 // One physical target-DB relation the statement scans (docs/facts-emission.md). catalog/schema/table

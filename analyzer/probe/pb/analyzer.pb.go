@@ -990,6 +990,125 @@ func (x *AnalyzeRequest) GetEngineConfig() *EngineConfig {
 	return nil
 }
 
+// Cut a multi-statement batch into its individual statements at the dialect's own semicolon tokens,
+// so a `;` inside a literal, a quoted identifier, a comment, or a dollar-quoted body is not a
+// boundary. The batch surfaces (the approval workflow, the editor) split here rather than in the
+// client, so the statement boundary the control-plane stores, hashes, and authorizes is the
+// engine's, not a caller's guess.
+type SplitRequest struct {
+	state         protoimpl.MessageState
+	sizeCache     protoimpl.SizeCache
+	unknownFields protoimpl.UnknownFields
+
+	Sql string `protobuf:"bytes,1,opt,name=sql,proto3" json:"sql,omitempty"`
+	// The dialect decides where a statement ends, so this is the same config analysis uses: MySQL's
+	// version gates executable comments (`/*!80000 OR 1=1 */` is SQL the server runs) and ansi_quotes
+	// decides whether `"a;b"` is one literal or a boundary. An engine-invalid config fails closed.
+	EngineConfig *EngineConfig `protobuf:"bytes,2,opt,name=engine_config,json=engineConfig,proto3" json:"engine_config,omitempty"`
+}
+
+func (x *SplitRequest) Reset() {
+	*x = SplitRequest{}
+	mi := &file_analyzer_proto_msgTypes[5]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SplitRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SplitRequest) ProtoMessage() {}
+
+func (x *SplitRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_analyzer_proto_msgTypes[5]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SplitRequest.ProtoReflect.Descriptor instead.
+func (*SplitRequest) Descriptor() ([]byte, []int) {
+	return file_analyzer_proto_rawDescGZIP(), []int{5}
+}
+
+func (x *SplitRequest) GetSql() string {
+	if x != nil {
+		return x.Sql
+	}
+	return ""
+}
+
+func (x *SplitRequest) GetEngineConfig() *EngineConfig {
+	if x != nil {
+		return x.EngineConfig
+	}
+	return nil
+}
+
+// Each statement is a verbatim slice of the request's sql (trimmed, terminator dropped) — never
+// regenerated text, so what is stored and authorized is exactly what the caller wrote. [ok] false
+// leaves [statements] empty and means the batch could not be split safely (bad dialect, invalid
+// UTF-8, an embedded NUL, a tokenizer failure, or no statement at all); the caller denies rather
+// than falling back to its own split.
+type SplitResponse struct {
+	state         protoimpl.MessageState
+	sizeCache     protoimpl.SizeCache
+	unknownFields protoimpl.UnknownFields
+
+	Ok         bool     `protobuf:"varint,1,opt,name=ok,proto3" json:"ok,omitempty"`
+	Statements []string `protobuf:"bytes,2,rep,name=statements,proto3" json:"statements,omitempty"`
+}
+
+func (x *SplitResponse) Reset() {
+	*x = SplitResponse{}
+	mi := &file_analyzer_proto_msgTypes[6]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SplitResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SplitResponse) ProtoMessage() {}
+
+func (x *SplitResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_analyzer_proto_msgTypes[6]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SplitResponse.ProtoReflect.Descriptor instead.
+func (*SplitResponse) Descriptor() ([]byte, []int) {
+	return file_analyzer_proto_rawDescGZIP(), []int{6}
+}
+
+func (x *SplitResponse) GetOk() bool {
+	if x != nil {
+		return x.Ok
+	}
+	return false
+}
+
+func (x *SplitResponse) GetStatements() []string {
+	if x != nil {
+		return x.Statements
+	}
+	return nil
+}
+
 // One physical target-DB relation the statement scans (docs/facts-emission.md). catalog/schema/table
 // is the resolved identity; covered is true once at least one traced column fact names this table
 // (see probe.go's SourceInfo doc comment for the full per-table coverage rationale).
@@ -1006,7 +1125,7 @@ type SourceInfo struct {
 
 func (x *SourceInfo) Reset() {
 	*x = SourceInfo{}
-	mi := &file_analyzer_proto_msgTypes[5]
+	mi := &file_analyzer_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1018,7 +1137,7 @@ func (x *SourceInfo) String() string {
 func (*SourceInfo) ProtoMessage() {}
 
 func (x *SourceInfo) ProtoReflect() protoreflect.Message {
-	mi := &file_analyzer_proto_msgTypes[5]
+	mi := &file_analyzer_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1031,7 +1150,7 @@ func (x *SourceInfo) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SourceInfo.ProtoReflect.Descriptor instead.
 func (*SourceInfo) Descriptor() ([]byte, []int) {
-	return file_analyzer_proto_rawDescGZIP(), []int{5}
+	return file_analyzer_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *SourceInfo) GetCatalog() string {
@@ -1075,7 +1194,7 @@ type RequireStatementExecGrant struct {
 
 func (x *RequireStatementExecGrant) Reset() {
 	*x = RequireStatementExecGrant{}
-	mi := &file_analyzer_proto_msgTypes[6]
+	mi := &file_analyzer_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1087,7 +1206,7 @@ func (x *RequireStatementExecGrant) String() string {
 func (*RequireStatementExecGrant) ProtoMessage() {}
 
 func (x *RequireStatementExecGrant) ProtoReflect() protoreflect.Message {
-	mi := &file_analyzer_proto_msgTypes[6]
+	mi := &file_analyzer_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1100,7 +1219,7 @@ func (x *RequireStatementExecGrant) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RequireStatementExecGrant.ProtoReflect.Descriptor instead.
 func (*RequireStatementExecGrant) Descriptor() ([]byte, []int) {
-	return file_analyzer_proto_rawDescGZIP(), []int{6}
+	return file_analyzer_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *RequireStatementExecGrant) GetStatementKind() StatementKind {
@@ -1121,7 +1240,7 @@ type ColumnResource struct {
 
 func (x *ColumnResource) Reset() {
 	*x = ColumnResource{}
-	mi := &file_analyzer_proto_msgTypes[7]
+	mi := &file_analyzer_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1133,7 +1252,7 @@ func (x *ColumnResource) String() string {
 func (*ColumnResource) ProtoMessage() {}
 
 func (x *ColumnResource) ProtoReflect() protoreflect.Message {
-	mi := &file_analyzer_proto_msgTypes[7]
+	mi := &file_analyzer_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1146,7 +1265,7 @@ func (x *ColumnResource) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ColumnResource.ProtoReflect.Descriptor instead.
 func (*ColumnResource) Descriptor() ([]byte, []int) {
-	return file_analyzer_proto_rawDescGZIP(), []int{7}
+	return file_analyzer_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *ColumnResource) GetCatalog() string {
@@ -1187,7 +1306,7 @@ type PredicateLiteral struct {
 
 func (x *PredicateLiteral) Reset() {
 	*x = PredicateLiteral{}
-	mi := &file_analyzer_proto_msgTypes[8]
+	mi := &file_analyzer_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1199,7 +1318,7 @@ func (x *PredicateLiteral) String() string {
 func (*PredicateLiteral) ProtoMessage() {}
 
 func (x *PredicateLiteral) ProtoReflect() protoreflect.Message {
-	mi := &file_analyzer_proto_msgTypes[8]
+	mi := &file_analyzer_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1212,7 +1331,7 @@ func (x *PredicateLiteral) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PredicateLiteral.ProtoReflect.Descriptor instead.
 func (*PredicateLiteral) Descriptor() ([]byte, []int) {
-	return file_analyzer_proto_rawDescGZIP(), []int{8}
+	return file_analyzer_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *PredicateLiteral) GetColumn() *ColumnResource {
@@ -1241,7 +1360,7 @@ type TableResource struct {
 
 func (x *TableResource) Reset() {
 	*x = TableResource{}
-	mi := &file_analyzer_proto_msgTypes[9]
+	mi := &file_analyzer_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1253,7 +1372,7 @@ func (x *TableResource) String() string {
 func (*TableResource) ProtoMessage() {}
 
 func (x *TableResource) ProtoReflect() protoreflect.Message {
-	mi := &file_analyzer_proto_msgTypes[9]
+	mi := &file_analyzer_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1266,7 +1385,7 @@ func (x *TableResource) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TableResource.ProtoReflect.Descriptor instead.
 func (*TableResource) Descriptor() ([]byte, []int) {
-	return file_analyzer_proto_rawDescGZIP(), []int{9}
+	return file_analyzer_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *TableResource) GetCatalog() string {
@@ -1300,7 +1419,7 @@ type FunctionResource struct {
 
 func (x *FunctionResource) Reset() {
 	*x = FunctionResource{}
-	mi := &file_analyzer_proto_msgTypes[10]
+	mi := &file_analyzer_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1312,7 +1431,7 @@ func (x *FunctionResource) String() string {
 func (*FunctionResource) ProtoMessage() {}
 
 func (x *FunctionResource) ProtoReflect() protoreflect.Message {
-	mi := &file_analyzer_proto_msgTypes[10]
+	mi := &file_analyzer_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1325,7 +1444,7 @@ func (x *FunctionResource) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use FunctionResource.ProtoReflect.Descriptor instead.
 func (*FunctionResource) Descriptor() ([]byte, []int) {
-	return file_analyzer_proto_rawDescGZIP(), []int{10}
+	return file_analyzer_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *FunctionResource) GetName() string {
@@ -1346,7 +1465,7 @@ type UtilityResource struct {
 
 func (x *UtilityResource) Reset() {
 	*x = UtilityResource{}
-	mi := &file_analyzer_proto_msgTypes[11]
+	mi := &file_analyzer_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1358,7 +1477,7 @@ func (x *UtilityResource) String() string {
 func (*UtilityResource) ProtoMessage() {}
 
 func (x *UtilityResource) ProtoReflect() protoreflect.Message {
-	mi := &file_analyzer_proto_msgTypes[11]
+	mi := &file_analyzer_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1371,7 +1490,7 @@ func (x *UtilityResource) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UtilityResource.ProtoReflect.Descriptor instead.
 func (*UtilityResource) Descriptor() ([]byte, []int) {
-	return file_analyzer_proto_rawDescGZIP(), []int{11}
+	return file_analyzer_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *UtilityResource) GetCommand() string {
@@ -1405,7 +1524,7 @@ type RequireResultReadGrant struct {
 
 func (x *RequireResultReadGrant) Reset() {
 	*x = RequireResultReadGrant{}
-	mi := &file_analyzer_proto_msgTypes[12]
+	mi := &file_analyzer_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1417,7 +1536,7 @@ func (x *RequireResultReadGrant) String() string {
 func (*RequireResultReadGrant) ProtoMessage() {}
 
 func (x *RequireResultReadGrant) ProtoReflect() protoreflect.Message {
-	mi := &file_analyzer_proto_msgTypes[12]
+	mi := &file_analyzer_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1430,7 +1549,7 @@ func (x *RequireResultReadGrant) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RequireResultReadGrant.ProtoReflect.Descriptor instead.
 func (*RequireResultReadGrant) Descriptor() ([]byte, []int) {
-	return file_analyzer_proto_rawDescGZIP(), []int{12}
+	return file_analyzer_proto_rawDescGZIP(), []int{14}
 }
 
 func (m *RequireResultReadGrant) GetResource() isRequireResultReadGrant_Resource {
@@ -1525,7 +1644,7 @@ type ResultFingerprint struct {
 
 func (x *ResultFingerprint) Reset() {
 	*x = ResultFingerprint{}
-	mi := &file_analyzer_proto_msgTypes[13]
+	mi := &file_analyzer_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1537,7 +1656,7 @@ func (x *ResultFingerprint) String() string {
 func (*ResultFingerprint) ProtoMessage() {}
 
 func (x *ResultFingerprint) ProtoReflect() protoreflect.Message {
-	mi := &file_analyzer_proto_msgTypes[13]
+	mi := &file_analyzer_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1550,7 +1669,7 @@ func (x *ResultFingerprint) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ResultFingerprint.ProtoReflect.Descriptor instead.
 func (*ResultFingerprint) Descriptor() ([]byte, []int) {
-	return file_analyzer_proto_rawDescGZIP(), []int{13}
+	return file_analyzer_proto_rawDescGZIP(), []int{15}
 }
 
 func (x *ResultFingerprint) GetGrants() []*RequireResultReadGrant {
@@ -1606,7 +1725,7 @@ type StatementFacts struct {
 
 func (x *StatementFacts) Reset() {
 	*x = StatementFacts{}
-	mi := &file_analyzer_proto_msgTypes[14]
+	mi := &file_analyzer_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1618,7 +1737,7 @@ func (x *StatementFacts) String() string {
 func (*StatementFacts) ProtoMessage() {}
 
 func (x *StatementFacts) ProtoReflect() protoreflect.Message {
-	mi := &file_analyzer_proto_msgTypes[14]
+	mi := &file_analyzer_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1631,7 +1750,7 @@ func (x *StatementFacts) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StatementFacts.ProtoReflect.Descriptor instead.
 func (*StatementFacts) Descriptor() ([]byte, []int) {
-	return file_analyzer_proto_rawDescGZIP(), []int{14}
+	return file_analyzer_proto_rawDescGZIP(), []int{16}
 }
 
 func (x *StatementFacts) GetResolved() bool {
@@ -1797,7 +1916,18 @@ var file_analyzer_proto_rawDesc = []byte{
 	0x6e, 0x66, 0x69, 0x67, 0x52, 0x0c, 0x65, 0x6e, 0x67, 0x69, 0x6e, 0x65, 0x43, 0x6f, 0x6e, 0x66,
 	0x69, 0x67, 0x4a, 0x04, 0x08, 0x02, 0x10, 0x03, 0x4a, 0x04, 0x08, 0x05, 0x10, 0x06, 0x52, 0x07,
 	0x64, 0x69, 0x61, 0x6c, 0x65, 0x63, 0x74, 0x52, 0x0e, 0x65, 0x6e, 0x67, 0x69, 0x6e, 0x65, 0x5f,
-	0x76, 0x65, 0x72, 0x73, 0x69, 0x6f, 0x6e, 0x22, 0x6e, 0x0a, 0x0a, 0x53, 0x6f, 0x75, 0x72, 0x63,
+	0x76, 0x65, 0x72, 0x73, 0x69, 0x6f, 0x6e, 0x22, 0x6d, 0x0a, 0x0c, 0x53, 0x70, 0x6c, 0x69, 0x74,
+	0x52, 0x65, 0x71, 0x75, 0x65, 0x73, 0x74, 0x12, 0x10, 0x0a, 0x03, 0x73, 0x71, 0x6c, 0x18, 0x01,
+	0x20, 0x01, 0x28, 0x09, 0x52, 0x03, 0x73, 0x71, 0x6c, 0x12, 0x4b, 0x0a, 0x0d, 0x65, 0x6e, 0x67,
+	0x69, 0x6e, 0x65, 0x5f, 0x63, 0x6f, 0x6e, 0x66, 0x69, 0x67, 0x18, 0x02, 0x20, 0x01, 0x28, 0x0b,
+	0x32, 0x26, 0x2e, 0x70, 0x72, 0x6f, 0x78, 0x79, 0x6d, 0x6f, 0x6e, 0x73, 0x74, 0x65, 0x72, 0x2e,
+	0x61, 0x6e, 0x61, 0x6c, 0x79, 0x7a, 0x65, 0x72, 0x2e, 0x76, 0x31, 0x2e, 0x45, 0x6e, 0x67, 0x69,
+	0x6e, 0x65, 0x43, 0x6f, 0x6e, 0x66, 0x69, 0x67, 0x52, 0x0c, 0x65, 0x6e, 0x67, 0x69, 0x6e, 0x65,
+	0x43, 0x6f, 0x6e, 0x66, 0x69, 0x67, 0x22, 0x3f, 0x0a, 0x0d, 0x53, 0x70, 0x6c, 0x69, 0x74, 0x52,
+	0x65, 0x73, 0x70, 0x6f, 0x6e, 0x73, 0x65, 0x12, 0x0e, 0x0a, 0x02, 0x6f, 0x6b, 0x18, 0x01, 0x20,
+	0x01, 0x28, 0x08, 0x52, 0x02, 0x6f, 0x6b, 0x12, 0x1e, 0x0a, 0x0a, 0x73, 0x74, 0x61, 0x74, 0x65,
+	0x6d, 0x65, 0x6e, 0x74, 0x73, 0x18, 0x02, 0x20, 0x03, 0x28, 0x09, 0x52, 0x0a, 0x73, 0x74, 0x61,
+	0x74, 0x65, 0x6d, 0x65, 0x6e, 0x74, 0x73, 0x22, 0x6e, 0x0a, 0x0a, 0x53, 0x6f, 0x75, 0x72, 0x63,
 	0x65, 0x49, 0x6e, 0x66, 0x6f, 0x12, 0x18, 0x0a, 0x07, 0x63, 0x61, 0x74, 0x61, 0x6c, 0x6f, 0x67,
 	0x18, 0x01, 0x20, 0x01, 0x28, 0x09, 0x52, 0x07, 0x63, 0x61, 0x74, 0x61, 0x6c, 0x6f, 0x67, 0x12,
 	0x16, 0x0a, 0x06, 0x73, 0x63, 0x68, 0x65, 0x6d, 0x61, 0x18, 0x02, 0x20, 0x01, 0x28, 0x09, 0x52,
@@ -2276,7 +2406,7 @@ func file_analyzer_proto_rawDescGZIP() []byte {
 }
 
 var file_analyzer_proto_enumTypes = make([]protoimpl.EnumInfo, 3)
-var file_analyzer_proto_msgTypes = make([]protoimpl.MessageInfo, 15)
+var file_analyzer_proto_msgTypes = make([]protoimpl.MessageInfo, 17)
 var file_analyzer_proto_goTypes = []any{
 	(MaskedDisposition)(0),            // 0: proxymonster.analyzer.v1.MaskedDisposition
 	(StatementKind)(0),                // 1: proxymonster.analyzer.v1.StatementKind
@@ -2286,44 +2416,47 @@ var file_analyzer_proto_goTypes = []any{
 	(*Namespace)(nil),                 // 5: proxymonster.analyzer.v1.Namespace
 	(*EngineConfig)(nil),              // 6: proxymonster.analyzer.v1.EngineConfig
 	(*AnalyzeRequest)(nil),            // 7: proxymonster.analyzer.v1.AnalyzeRequest
-	(*SourceInfo)(nil),                // 8: proxymonster.analyzer.v1.SourceInfo
-	(*RequireStatementExecGrant)(nil), // 9: proxymonster.analyzer.v1.RequireStatementExecGrant
-	(*ColumnResource)(nil),            // 10: proxymonster.analyzer.v1.ColumnResource
-	(*PredicateLiteral)(nil),          // 11: proxymonster.analyzer.v1.PredicateLiteral
-	(*TableResource)(nil),             // 12: proxymonster.analyzer.v1.TableResource
-	(*FunctionResource)(nil),          // 13: proxymonster.analyzer.v1.FunctionResource
-	(*UtilityResource)(nil),           // 14: proxymonster.analyzer.v1.UtilityResource
-	(*RequireResultReadGrant)(nil),    // 15: proxymonster.analyzer.v1.RequireResultReadGrant
-	(*ResultFingerprint)(nil),         // 16: proxymonster.analyzer.v1.ResultFingerprint
-	(*StatementFacts)(nil),            // 17: proxymonster.analyzer.v1.StatementFacts
-	(Engine)(0),                       // 18: proxymonster.v1.Engine
+	(*SplitRequest)(nil),              // 8: proxymonster.analyzer.v1.SplitRequest
+	(*SplitResponse)(nil),             // 9: proxymonster.analyzer.v1.SplitResponse
+	(*SourceInfo)(nil),                // 10: proxymonster.analyzer.v1.SourceInfo
+	(*RequireStatementExecGrant)(nil), // 11: proxymonster.analyzer.v1.RequireStatementExecGrant
+	(*ColumnResource)(nil),            // 12: proxymonster.analyzer.v1.ColumnResource
+	(*PredicateLiteral)(nil),          // 13: proxymonster.analyzer.v1.PredicateLiteral
+	(*TableResource)(nil),             // 14: proxymonster.analyzer.v1.TableResource
+	(*FunctionResource)(nil),          // 15: proxymonster.analyzer.v1.FunctionResource
+	(*UtilityResource)(nil),           // 16: proxymonster.analyzer.v1.UtilityResource
+	(*RequireResultReadGrant)(nil),    // 17: proxymonster.analyzer.v1.RequireResultReadGrant
+	(*ResultFingerprint)(nil),         // 18: proxymonster.analyzer.v1.ResultFingerprint
+	(*StatementFacts)(nil),            // 19: proxymonster.analyzer.v1.StatementFacts
+	(Engine)(0),                       // 20: proxymonster.v1.Engine
 }
 var file_analyzer_proto_depIdxs = []int32{
 	3,  // 0: proxymonster.analyzer.v1.ColumnSpec.identity:type_name -> proxymonster.analyzer.v1.RelationIdentity
-	18, // 1: proxymonster.analyzer.v1.EngineConfig.engine:type_name -> proxymonster.v1.Engine
+	20, // 1: proxymonster.analyzer.v1.EngineConfig.engine:type_name -> proxymonster.v1.Engine
 	5,  // 2: proxymonster.analyzer.v1.AnalyzeRequest.namespace:type_name -> proxymonster.analyzer.v1.Namespace
 	4,  // 3: proxymonster.analyzer.v1.AnalyzeRequest.catalog:type_name -> proxymonster.analyzer.v1.ColumnSpec
 	6,  // 4: proxymonster.analyzer.v1.AnalyzeRequest.engine_config:type_name -> proxymonster.analyzer.v1.EngineConfig
-	1,  // 5: proxymonster.analyzer.v1.RequireStatementExecGrant.statement_kind:type_name -> proxymonster.analyzer.v1.StatementKind
-	3,  // 6: proxymonster.analyzer.v1.ColumnResource.identity:type_name -> proxymonster.analyzer.v1.RelationIdentity
-	10, // 7: proxymonster.analyzer.v1.PredicateLiteral.column:type_name -> proxymonster.analyzer.v1.ColumnResource
-	10, // 8: proxymonster.analyzer.v1.RequireResultReadGrant.column:type_name -> proxymonster.analyzer.v1.ColumnResource
-	12, // 9: proxymonster.analyzer.v1.RequireResultReadGrant.table:type_name -> proxymonster.analyzer.v1.TableResource
-	13, // 10: proxymonster.analyzer.v1.RequireResultReadGrant.function:type_name -> proxymonster.analyzer.v1.FunctionResource
-	14, // 11: proxymonster.analyzer.v1.RequireResultReadGrant.utility:type_name -> proxymonster.analyzer.v1.UtilityResource
-	0,  // 12: proxymonster.analyzer.v1.RequireResultReadGrant.masked_disposition:type_name -> proxymonster.analyzer.v1.MaskedDisposition
-	15, // 13: proxymonster.analyzer.v1.ResultFingerprint.grants:type_name -> proxymonster.analyzer.v1.RequireResultReadGrant
-	2,  // 14: proxymonster.analyzer.v1.StatementFacts.failure_class:type_name -> proxymonster.analyzer.v1.FailureClass
-	8,  // 15: proxymonster.analyzer.v1.StatementFacts.sources:type_name -> proxymonster.analyzer.v1.SourceInfo
-	9,  // 16: proxymonster.analyzer.v1.StatementFacts.statement_exec:type_name -> proxymonster.analyzer.v1.RequireStatementExecGrant
-	15, // 17: proxymonster.analyzer.v1.StatementFacts.result_reads:type_name -> proxymonster.analyzer.v1.RequireResultReadGrant
-	11, // 18: proxymonster.analyzer.v1.StatementFacts.predicate_literals:type_name -> proxymonster.analyzer.v1.PredicateLiteral
-	10, // 19: proxymonster.analyzer.v1.StatementFacts.diagnostic_leak_columns:type_name -> proxymonster.analyzer.v1.ColumnResource
-	20, // [20:20] is the sub-list for method output_type
-	20, // [20:20] is the sub-list for method input_type
-	20, // [20:20] is the sub-list for extension type_name
-	20, // [20:20] is the sub-list for extension extendee
-	0,  // [0:20] is the sub-list for field type_name
+	6,  // 5: proxymonster.analyzer.v1.SplitRequest.engine_config:type_name -> proxymonster.analyzer.v1.EngineConfig
+	1,  // 6: proxymonster.analyzer.v1.RequireStatementExecGrant.statement_kind:type_name -> proxymonster.analyzer.v1.StatementKind
+	3,  // 7: proxymonster.analyzer.v1.ColumnResource.identity:type_name -> proxymonster.analyzer.v1.RelationIdentity
+	12, // 8: proxymonster.analyzer.v1.PredicateLiteral.column:type_name -> proxymonster.analyzer.v1.ColumnResource
+	12, // 9: proxymonster.analyzer.v1.RequireResultReadGrant.column:type_name -> proxymonster.analyzer.v1.ColumnResource
+	14, // 10: proxymonster.analyzer.v1.RequireResultReadGrant.table:type_name -> proxymonster.analyzer.v1.TableResource
+	15, // 11: proxymonster.analyzer.v1.RequireResultReadGrant.function:type_name -> proxymonster.analyzer.v1.FunctionResource
+	16, // 12: proxymonster.analyzer.v1.RequireResultReadGrant.utility:type_name -> proxymonster.analyzer.v1.UtilityResource
+	0,  // 13: proxymonster.analyzer.v1.RequireResultReadGrant.masked_disposition:type_name -> proxymonster.analyzer.v1.MaskedDisposition
+	17, // 14: proxymonster.analyzer.v1.ResultFingerprint.grants:type_name -> proxymonster.analyzer.v1.RequireResultReadGrant
+	2,  // 15: proxymonster.analyzer.v1.StatementFacts.failure_class:type_name -> proxymonster.analyzer.v1.FailureClass
+	10, // 16: proxymonster.analyzer.v1.StatementFacts.sources:type_name -> proxymonster.analyzer.v1.SourceInfo
+	11, // 17: proxymonster.analyzer.v1.StatementFacts.statement_exec:type_name -> proxymonster.analyzer.v1.RequireStatementExecGrant
+	17, // 18: proxymonster.analyzer.v1.StatementFacts.result_reads:type_name -> proxymonster.analyzer.v1.RequireResultReadGrant
+	13, // 19: proxymonster.analyzer.v1.StatementFacts.predicate_literals:type_name -> proxymonster.analyzer.v1.PredicateLiteral
+	12, // 20: proxymonster.analyzer.v1.StatementFacts.diagnostic_leak_columns:type_name -> proxymonster.analyzer.v1.ColumnResource
+	21, // [21:21] is the sub-list for method output_type
+	21, // [21:21] is the sub-list for method input_type
+	21, // [21:21] is the sub-list for extension type_name
+	21, // [21:21] is the sub-list for extension extendee
+	0,  // [0:21] is the sub-list for field type_name
 }
 
 func init() { file_analyzer_proto_init() }
@@ -2333,20 +2466,20 @@ func file_analyzer_proto_init() {
 	}
 	file_engine_proto_init()
 	file_analyzer_proto_msgTypes[3].OneofWrappers = []any{}
-	file_analyzer_proto_msgTypes[12].OneofWrappers = []any{
+	file_analyzer_proto_msgTypes[14].OneofWrappers = []any{
 		(*RequireResultReadGrant_Column)(nil),
 		(*RequireResultReadGrant_Table)(nil),
 		(*RequireResultReadGrant_Function)(nil),
 		(*RequireResultReadGrant_Utility)(nil),
 	}
-	file_analyzer_proto_msgTypes[14].OneofWrappers = []any{}
+	file_analyzer_proto_msgTypes[16].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: file_analyzer_proto_rawDesc,
 			NumEnums:      3,
-			NumMessages:   15,
+			NumMessages:   17,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

@@ -16,6 +16,7 @@ import com.ridi.oss.proxymonster.grpc.EnfAction
 import com.ridi.oss.proxymonster.grpc.RunError
 import com.ridi.oss.proxymonster.probe.Masking
 import com.ridi.oss.proxymonster.probe.bindMasks
+import com.ridi.oss.proxymonster.probe.splitStatements
 import io.ktor.http.HttpStatusCode
 import io.ktor.server.application.ApplicationCall
 import io.ktor.server.request.receive
@@ -96,17 +97,22 @@ data class DiscoverRolesResponse(
  */
 fun discoverRoles(
     allRoles: List<Role>,
-    decide: (roles: Set<String>, channel: Channel) -> DecisionContext,
+    // A role is offered only if EVERY statement runs under it — the batch stops at the first denial.
+    statementCount: Int,
+    decide: (statementIndex: Int, roles: Set<String>, channel: Channel) -> DecisionContext,
 ): DiscoverRolesResponse {
     val options = allRoles.mapNotNull { role ->
-        val underR = decide(setOf(role.name), Channel.WORKFLOW_EXECUTOR)
-        if (underR.action == EnfAction.DENY) return@mapNotNull null
-        val masked = underR.masks.map { it.column }.distinct().sorted()
+        val masked = sortedSetOf<String>()
+        for (index in 0 until statementCount) {
+            val underR = decide(index, setOf(role.name), Channel.WORKFLOW_EXECUTOR)
+            if (underR.action == EnfAction.DENY) return@mapNotNull null
+            masked += underR.masks.map { it.column }
+        }
         RoleOption(
             roleId = role.id,
             roleName = role.name,
             decision = if (masked.isEmpty()) Decision.ALLOW else Decision.MASK,
-            maskedColumns = masked,
+            maskedColumns = masked.toList(),
         )
     }
     return DiscoverRolesResponse(options = options)
@@ -115,8 +121,10 @@ fun discoverRoles(
 @Serializable data class ApprovalDetail(
     val request: AccessRequest,
     val canDecide: Boolean,
-    // The latest child execution metadata. Rows remain behind the result endpoint.
+    // The active statement's execution metadata. Rows remain behind the result endpoint.
     val result: QueryResultMeta? = null,
+    // Every statement, in run order, with its own status.
+    val statements: List<QueryResultMeta> = emptyList(),
     val canExecute: Boolean = false,
     val canCancel: Boolean = false,
 )
@@ -490,6 +498,7 @@ fun Route.approvalRoutes(
                 accessStore.createQueryRequest(
                     principal = principal,
                     datasourceId = datasourceId,
+                    // The source decision authorized one statement, so there is no batch to split.
                     statements = listOf(source.statement),
                     denyReason = source.detail,
                     sourceDecisionId = sourceDecisionId,
@@ -525,32 +534,46 @@ fun Route.approvalRoutes(
         }
         if (input.roleId == null) return@post call.respond(HttpStatusCode.BadRequest, ApiError("approval.role_required"))
 
-        // Server-side analysis only: nothing executes and no audit row is written at compose time.
+        // Split server-side, so the stored boundary is the engine's rather than a client's guess.
+        val splitConfig = ds.splitEngineConfig()
+            ?: return@post call.respond(HttpStatusCode.BadRequest, ApiError("approval.unsplittable_sql"))
+        val statements = splitStatements(sql, splitConfig)
+            ?: return@post call.respond(HttpStatusCode.BadRequest, ApiError("approval.unsplittable_sql"))
+
+        // Analysis only: nothing executes and no audit row is written. Each statement previews on its own.
         val catalog = datasourceStore.catalog(ds.id)
-        val decision = decideQuery(
-            principal = principal,
-            ds = ds,
-            sql = sql,
-            channel = Channel.EDITOR,
-            catalog = catalog,
-            policyStore = policyStore,
-            accessStore = accessStore,
-            userGroupStore = userGroupStore,
-            roleResolver = roleResolver,
-            authz = authz,
-            // This compose preview IS an HTTP request with a datasource in scope, so it carries the
-            // server-attested requester_ip (decideQuery overlays the EDITOR channel + derives tags over it). A
-            // preview that dropped it would report a DIFFERENT verdict than the real editor execution when a
-            // policy conditions on requester_ip / a requester_ip-derived tag.
-            context = call.httpAuthzContext(config),
-            // Classify system tables + the dangerous-function gate here too, so the compose preview's verdict
-            // matches what execution will do.
-            systemClassification = systemClassification,
-        )
+        val composeContext = call.httpAuthzContext(config)
+        val decisions = statements.map { statement ->
+            decideQuery(
+                principal = principal,
+                ds = ds,
+                sql = statement,
+                channel = Channel.EDITOR,
+                catalog = catalog,
+                policyStore = policyStore,
+                accessStore = accessStore,
+                userGroupStore = userGroupStore,
+                roleResolver = roleResolver,
+                authz = authz,
+                // This compose preview IS an HTTP request with a datasource in scope, so it carries the
+                // server-attested requester_ip (decideQuery overlays the EDITOR channel + derives tags over it). A
+                // preview that dropped it would report a DIFFERENT verdict than the real editor execution when a
+                // policy conditions on requester_ip / a requester_ip-derived tag.
+                context = composeContext,
+                // Classify system tables + the dangerous-function gate here too, so the compose preview's verdict
+                // matches what execution will do.
+                systemClassification = systemClassification,
+            )
+        }
+        // Worst statement wins (DENY > MASK > ALLOW): previewing ALLOW would promise a run that cannot
+        // finish, or cleartext the run will not deliver.
+        val decision = decisions.firstOrNull { it.action == EnfAction.DENY }
+            ?: decisions.firstOrNull { it.masks.isNotEmpty() }
+            ?: decisions.first()
         val request = accessStore.createQueryRequest(
             principal = principal,
             datasourceId = ds.id,
-            statements = listOf(sql),
+            statements = statements,
             denyReason = if (decision.action == EnfAction.DENY) (decision.denyReason ?: decision.detail) else null,
             sourceDecisionId = null,
             reason = input.reason.trim(),
@@ -563,8 +586,17 @@ fun Route.approvalRoutes(
             // The disclosure hint runs on its OWN path — reader-neutral, independent of the authorization
             // decision above — because whether the TEXT carries a protected value has nothing to do with
             // whether THIS requester could run it. null (unanalyzable) and true both withhold; only a proven
-            // clean statement (empty) discloses.
-            carriesProtectedLiteral = protectedPredicateLiterals(ds, sql, catalog)?.isNotEmpty(),
+            // clean statement (empty) discloses; one carrying a literal withholds the whole batch, whose
+            // text is delivered as one body. A catalog-changing statement (a DROP) can change what a later
+            // one binds to, so a clean verdict after it is unproven — and AUTO mode Slacks the text on a
+            // false clean. Any such statement makes the hint unknown.
+            carriesProtectedLiteral = if (decisions.any { it.catalogChanging }) {
+                null
+            } else {
+                statements
+                    .map { protectedPredicateLiterals(ds, it, catalog)?.isNotEmpty() }
+                    .reduce { a, b -> if (a == null || b == null) null else a || b }
+            },
             onCreated = { c, taskId, roleName -> notifications?.emitRequested(c, taskId, principal, ds, roleName) },
         )
         notifications?.wake()
@@ -583,10 +615,15 @@ fun Route.approvalRoutes(
         // Candidates preview on WORKFLOW_EXECUTOR, the channel an approved query actually runs on. A grant
         // scoped to that channel — the shipped -259 PII unmask — is invisible from any other, so previewing
         // candidates elsewhere hides roles that would in fact work.
-        val response = discoverRoles(policyStore.listRoles()) { roles, channel ->
+        val splitConfig = ds.splitEngineConfig()
+            ?: return@post call.respond(HttpStatusCode.BadRequest, ApiError("approval.unsplittable_sql"))
+        val statements = splitStatements(input.sql, splitConfig)
+            ?: return@post call.respond(HttpStatusCode.BadRequest, ApiError("approval.unsplittable_sql"))
+        val catalog = datasourceStore.catalog(ds.id)
+        val response = discoverRoles(policyStore.listRoles(), statements.size) { index, roles, channel ->
             decideQuery(
-                principal = principal, ds = ds, sql = input.sql, channel = channel,
-                catalog = datasourceStore.catalog(ds.id), policyStore = policyStore, accessStore = accessStore,
+                principal = principal, ds = ds, sql = statements[index], channel = channel,
+                catalog = catalog, policyStore = policyStore, accessStore = accessStore,
                 userGroupStore = userGroupStore, roleResolver = roleResolver, authz = authz,
                 providedRoles = roles, context = discoverContext, systemClassification = systemClassification,
             )
@@ -620,9 +657,12 @@ fun Route.approvalRoutes(
         // task.read is a metadata gate; result-derived data stays behind task.assume. A caller who cannot
         // assume R sees execution status only (status/executor/timestamps/error) — never the result's row
         // count or output-column shape, which are cardinality/existence oracles the assume gate must close.
-        val visibleMeta = queryResultStore?.meta(id)?.let { meta ->
-            if (mayReadResult(call, principal, req)) meta else meta.copy(rowCount = null, columns = emptyList())
-        }
+        val mayReadRows = mayReadResult(call, principal, req)
+        // Redacts every statement: otherwise a metadata-only reader gets a row count per statement.
+        fun visible(meta: QueryResultMeta) =
+            if (mayReadRows) meta else meta.copy(rowCount = null, columns = emptyList())
+        val visibleMeta = queryResultStore?.meta(id)?.let(::visible)
+        val visibleStatements = queryResultStore?.statements(id).orEmpty().map(::visible)
         // Mirror /execute's gates: only the approver OF RECORD (decided_by) can run it, so a merely-eligible
         // approver who did not approve THIS task gets no Run affordance that would just 403.
         val canExecute = queryResultStore != null && isApprover && req.status == "APPROVED" && req.decidedBy == principal
@@ -632,6 +672,7 @@ fun Route.approvalRoutes(
                 req,
                 canDecide = req.status == "PENDING" && isApprover,
                 result = visibleMeta,
+                statements = visibleStatements,
                 canExecute = canExecute,
                 canCancel = canCancel,
             ),
@@ -766,7 +807,9 @@ fun Route.approvalRoutes(
             ?: return@post call.respond(HttpStatusCode.ServiceUnavailable, ApiError("approval.result_storage_not_configured"))
         val ds = req.datasourceId?.let(datasourceStore::get)
             ?: return@post call.respond(HttpStatusCode.Conflict, ApiError("common.not_found", mapOf("resource" to "datasource")))
-        val sql = req.sql ?: return@post call.respond(HttpStatusCode.Conflict, ApiError("approval.no_sql"))
+        if (store.statements(id).none { it.sql != null }) {
+            return@post call.respond(HttpStatusCode.Conflict, ApiError("approval.no_sql"))
+        }
         val requesterIp = call.httpRequesterIp(config)
         // Only LIVE execute-as roles: a role soft-deleted since approval grants nothing, so it drops out of
         // the run's ceiling here (and an all-deleted snapshot fails closed at the empty check below).
@@ -789,7 +832,7 @@ fun Route.approvalRoutes(
 
         appScope.launch {
             runApprovedTask(
-                id = id, executor = executor, ds = ds, sql = sql, executeAs = executeAs,
+                id = id, executor = executor, ds = ds, executeAs = executeAs,
                 requesterIp = requesterIp, requesterPrincipal = req.principal, req = req,
                 config = config, accessStore = accessStore, store = store, auditStore = auditStore,
                 runExecService = runExecService, taskCompletionHub = taskCompletionHub,
@@ -816,7 +859,14 @@ fun Route.approvalRoutes(
         // first read of access.decrypted below, which happens only AFTER authorization passes — an
         // unauthorized caller never triggers a decrypt. Reading both in one shot also keeps a concurrent
         // re-execute from swapping the row between the authz check and the decrypt (TOCTOU).
-        val access = queryResultStore?.accessFor(id)
+        // ?statement=<ordinal>; absent takes the active one. A malformed value is rejected, never
+        // silently served from a different statement.
+        val ordinalParam = call.request.queryParameters["statement"]
+        val ordinal = if (ordinalParam == null) null else {
+            ordinalParam.toIntOrNull()?.takeIf { it >= 0 }
+                ?: return@get call.respond(HttpStatusCode.BadRequest, ApiError("common.bad_id"))
+        }
+        val access = queryResultStore?.accessFor(id, ordinal)
             ?: return@get call.respond(HttpStatusCode.NotFound, ApiError("common.not_found", mapOf("resource" to "query approval request")))
         val meta = access.meta
         if (!mayReadResult(call, principal, req)) {
@@ -904,7 +954,6 @@ internal suspend fun runApprovedTask(
     id: Long,
     executor: String,
     ds: Datasource,
-    sql: String,
     executeAs: Set<String>,
     requesterIp: String?,
     requesterPrincipal: String,
@@ -926,13 +975,18 @@ internal suspend fun runApprovedTask(
         channel = channel.contextValue, kind = "approval_lifecycle",
     )
 
-    // The target-DB error behind a failure (both forms), stored so the FAILED view releases one per viewer.
+    // Statement 0 is already RUNNING (claimAndStartRun); the rest start as the batch reaches them.
+    val statements = store.statements(id)
+    var batchFailure: String? = null
+    // Stamped onto the child that failed, so a poller tells a denial from an error and can raise a request.
+    var denyReason: String? = null
+    var denyDecisionId: Long? = null
     var diagnostic: RunError? = null
     val failureCode = try {
-        val response = runExecService.run(
+        runExecService.runBatch(
             principal = executor,
             ds = ds,
-            sql = sql,
+            statementCount = statements.size,
             maxRows = 5000,
             approverExec = true,
             assumeRoles = executeAs,
@@ -940,31 +994,41 @@ internal suspend fun runApprovedTask(
             taskId = id,
             preflight = { store.meta(id)?.status == "RUNNING" },
             exchangeTimeoutMs = config.queryExchangeTimeoutMs,
-        )
-        if (response.decision == EnfAction.DENY) {
-            "approval.execute_denied"
-        } else {
-            val result = DecryptedResult(response.columns, response.rows, response.rowsAffected, response.resultFingerprint)
-            // Child DONE, parent EXECUTED, and the execution audit all commit in ONE transaction: a crash can
-            // never leave a readable DONE child under a non-EXECUTED task. If the parent has left EXECUTING
-            // (e.g. a restart already reconciled it to FAILED), the flip fails and aborts the whole commit —
-            // the child stays RUNNING and the failure path below transitions both consistently.
-            val completed = store.completeRun(id, result, QueryResultStore.RESULT_RETENTION_SEC) { conn, _ ->
-                if (!accessStore.markExecuted(id, conn)) {
-                    throw IllegalStateException("task $id left EXECUTING before completion")
+            statementAt = { ordinal ->
+                if (ordinal == 0) statements[0].sql else store.startNextRun(id, executor)?.sql
+            },
+            onStatement = { ordinal, response ->
+                val last = ordinal == statements.lastIndex
+                if (response.decision == EnfAction.DENY) {
+                    // failRun SKIPs the rest in the same transaction.
+                    denyReason = response.denyReason
+                    denyDecisionId = response.decisionId
+                    batchFailure = "approval.execute_denied"
+                    false
+                } else {
+                    val result = DecryptedResult(response.columns, response.rows, response.rowsAffected, response.resultFingerprint)
+                    // The parent flips to EXECUTED only on the LAST statement, so a crash mid-batch cannot
+                    // leave a task EXECUTED with statements unrun.
+                    val completed = store.completeRun(id, result, QueryResultStore.RESULT_RETENTION_SEC) { conn, _ ->
+                        if (last && !accessStore.markExecuted(id, conn)) {
+                            throw IllegalStateException("task $id left EXECUTING before completion")
+                        }
+                        auditStore.insert(conn, lifecycleRecord("result-executed", Channel.WORKFLOW_EXECUTOR))
+                    }
+                    if (completed == null) {
+                        batchFailure = "approval.query_failed"
+                        false
+                    } else {
+                        log.info(
+                            "query approval executed request={} statement={} requester={} executor={} rows={}",
+                            id, ordinal, requesterPrincipal, executor, result.rows.size,
+                        )
+                        true
+                    }
                 }
-                auditStore.insert(conn, lifecycleRecord("result-executed", Channel.WORKFLOW_EXECUTOR))
-            }
-            if (completed != null) {
-                log.info(
-                    "query approval executed request={} requester={} executor={} rows={}",
-                    id, requesterPrincipal, executor, result.rows.size,
-                )
-                null
-            } else {
-                "approval.query_failed"
-            }
-        }
+            },
+        )
+        batchFailure
     } catch (_: RunCanceledBeforeStartException) {
         null
     } catch (_: NoProxyAttachedException) {
@@ -972,6 +1036,7 @@ internal suspend fun runApprovedTask(
     } catch (_: ProxyRunTimeoutException) {
         "query.proxy_timeout"
     } catch (e: TargetDbRunException) {
+        // Must survive the batch walk rather than collapsing into a bare failure code.
         diagnostic = e.toDiagnostic()
         "approval.query_failed"
     } catch (_: ProxyRunException) {
@@ -981,10 +1046,15 @@ internal suspend fun runApprovedTask(
         "approval.query_failed"
     }
     if (failureCode != null) {
-        // Child FAILED and parent FAILED commit in ONE transaction: a crash can never split them.
+        // Child FAILED and parent FAILED commit in ONE transaction (mirrors the success path's single-commit
+        // EXECUTED/DONE): a crash can never leave a FAILED child under a still-EXECUTING task, nor the
+        // inverse — the split that boot reconcile would otherwise have to repair.
         runCatching {
-            store.failRun(id, failureCode, diagnostic = diagnostic) { conn, _ -> accessStore.markFailed(id, conn) }
-        }.onFailure { log.error("task failure transition failed request=$id", it) }
+            store.failRun(id, failureCode, denyReason, denyDecisionId, diagnostic) { conn, _ ->
+                accessStore.markFailed(id, conn)
+            }
+        }
+            .onFailure { log.error("task failure transition failed request=$id", it) }
     }
     // Push the ACTUAL terminal state (EXECUTED / FAILED / or CANCELLED if a cancel raced) to both parties'
     // SSE streams so a watching tab updates at once; best-effort, the tab also polls.

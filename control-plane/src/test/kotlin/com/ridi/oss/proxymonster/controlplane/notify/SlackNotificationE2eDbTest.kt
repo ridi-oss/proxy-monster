@@ -211,7 +211,7 @@ class SlackNotificationE2eDbTest {
             runScope.launch {
                 runApprovedTask(
                     id = approved.id, executor = approved.decidedBy ?: approved.principal,
-                    ds = ds, sql = sql, executeAs = executeAs, requesterIp = null,
+                    ds = ds, executeAs = executeAs, requesterIp = null,
                     requesterPrincipal = approved.principal, req = approved, config = config,
                     accessStore = core.accessStore, store = resultStore, auditStore = core.auditStore,
                     runExecService = runExecService, taskCompletionHub = null, notifications = svc, log = log,

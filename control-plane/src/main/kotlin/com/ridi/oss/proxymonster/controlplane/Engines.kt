@@ -1,5 +1,7 @@
 package com.ridi.oss.proxymonster.controlplane
 
+import com.ridi.oss.proxymonster.analyzer.pb.EngineConfig as PbEngineConfig
+import com.ridi.oss.proxymonster.analyzer.pb.engineConfig as pbEngineConfig
 import com.ridi.oss.proxymonster.grpc.Engine
 import com.ridi.oss.proxymonster.probe.Dialect
 import kotlinx.serialization.KSerializer
@@ -73,6 +75,23 @@ fun Engine.defaultSchema(dbName: String): String = when (this) {
  */
 fun Engine.resolveSchema(requestedSchema: String, dbName: String): String =
     if (requestedSchema == "public") defaultSchema(dbName) else requestedSchema
+
+/**
+ * The analyzer EngineConfig for splitting this datasource's batch, or null when introspection has not
+ * captured what MySQL's dialect needs. ANSI_QUOTES is absent because it is a live per-session mode and a
+ * batch is split before any session exists; under the default mode a `;` inside `"…"` is not a boundary,
+ * so the batch stays whole and the per-statement decision runs with the session's real config.
+ */
+fun Datasource.splitEngineConfig(): PbEngineConfig? {
+    if (engine == Engine.MYSQL && (engineVersion.isNullOrBlank() || mysqlLowerCaseTableNames == null)) {
+        return null
+    }
+    return pbEngineConfig {
+        this.engine = this@splitEngineConfig.engine
+        this.engineVersion = this@splitEngineConfig.engineVersion ?: ""
+        this@splitEngineConfig.mysqlLowerCaseTableNames?.let { this.mysqlLowerCaseTableNames = it }
+    }
+}
 
 /**
  * The MySQL `lower_case_table_names` case-folding mode the analyzer needs, or null for an engine that has

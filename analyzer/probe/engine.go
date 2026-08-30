@@ -64,6 +64,9 @@ type engine interface {
 	// or CTE body whose output labels collide (MySQL ER_DUP_FIELDNAME; PostgreSQL allows duplicate
 	// OUTPUT labels and rejects only a reference to one).
 	RejectsDuplicateDerivedLabels() bool
+	// ExpandsNaturalJoins reports whether the prober expands NATURAL JOIN through this engine's
+	// catalog-backed USING semantics; false fails closed (shared-column lineage stays ambiguous).
+	ExpandsNaturalJoins() bool
 	// NativeOutputLabel computes the output label THIS engine's target DB natively assigns to an
 	// unaliased projection: PostgreSQL derives it from the resolved expression (parse_target.c
 	// FigureColname, written function names from the parse-time SpanText); MySQL uses the
@@ -270,6 +273,8 @@ func (e *mysqlEngine) CommandPassthrough(string) bool { return false }
 // MySQL rejects a derived-table/CTE body with duplicated output labels: ER_DUP_FIELDNAME.
 func (e *mysqlEngine) RejectsDuplicateDerivedLabels() bool { return true }
 
+func (e *mysqlEngine) ExpandsNaturalJoins() bool { return false }
+
 type postgresEngine struct {
 	dialect *dialects.Dialect
 }
@@ -351,6 +356,8 @@ func (e *postgresEngine) CommandPassthrough(command string) bool {
 
 // PostgreSQL allows duplicate OUTPUT labels; only a reference to one is ambiguous.
 func (e *postgresEngine) RejectsDuplicateDerivedLabels() bool { return false }
+
+func (e *postgresEngine) ExpandsNaturalJoins() bool { return true }
 
 // PostgreSQL names an unaliased projection per parse_target.c FigureColname; a call is labeled by
 // its WRITTEN function name, read from the projection's parse-time SpanText.

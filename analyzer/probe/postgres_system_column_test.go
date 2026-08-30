@@ -217,6 +217,118 @@ from pg_catalog.pg_tablespace T
 	}
 }
 
+func TestPostgresDataGripRoutinesNaturalJoin(t *testing.T) {
+	query := `with languages as (
+    select oid as lang_oid, lanname as lang
+    from pg_catalog.pg_language
+),
+routines as (
+    select proname as r_name,
+           prolang as lang_oid,
+           oid as r_id,
+           xmin as r_state_number,
+           proargnames as arg_names,
+           proargmodes as arg_modes,
+           proargtypes::int[] as in_arg_types,
+           proallargtypes::int[] as all_arg_types,
+           pg_catalog.pg_get_expr(proargdefaults, 0) as arg_defaults,
+           provariadic as arg_variadic_id,
+           prorettype as ret_type_id,
+           proretset as ret_set,
+           prokind as kind,
+           provolatile as volatile_kind,
+           proisstrict as is_strict,
+           prosecdef as is_security_definer,
+           proconfig as configuration_parameters,
+           procost as cost,
+           pg_catalog.pg_get_userbyid(proowner) as "owner",
+           prorows as rows,
+           proleakproof as is_leakproof,
+           proparallel as concurrency_kind
+    from pg_catalog.pg_proc
+    where pronamespace = $1::oid
+      and not (prokind = 'a')
+      and pg_catalog.age(xmin) <= coalesce(
+          nullif(greatest(pg_catalog.age($2::varchar::xid), -1), -1),
+          2147483647
+      )
+)
+select *
+from routines natural join languages`
+	catalog := []*pb.ColumnSpec{
+		columnSpec("acme", "pg_catalog", "pg_language", "oid", "OID"),
+		columnSpec("acme", "pg_catalog", "pg_language", "lanname", "NAME"),
+	}
+	for name, kind := range map[string]string{
+		"proname": "NAME", "prolang": "OID", "oid": "OID", "pronamespace": "OID",
+		"proargnames": "TEXT[]", "proargmodes": "CHAR[]", "proargtypes": "OIDVECTOR",
+		"proallargtypes": "OID[]", "proargdefaults": "PG_NODE_TREE", "provariadic": "OID",
+		"prorettype": "OID", "proretset": "BOOLEAN", "prokind": "CHAR", "provolatile": "CHAR",
+		"proisstrict": "BOOLEAN", "prosecdef": "BOOLEAN", "proconfig": "TEXT[]", "procost": "REAL",
+		"proowner": "OID", "prorows": "REAL", "proleakproof": "BOOLEAN", "proparallel": "CHAR",
+	} {
+		catalog = append(catalog, columnSpec("acme", "pg_catalog", "pg_proc", name, kind))
+	}
+	req := &pb.AnalyzeRequest{
+		Sql:          query,
+		EngineConfig: &pb.EngineConfig{Engine: pb.Engine_POSTGRES},
+		Namespace:    &pb.Namespace{Catalog: "acme", SearchPath: []string{"pg_catalog", "public"}},
+		Catalog:      catalog,
+	}
+	result := analyzeProbe(t, req)
+	if !result.Resolved {
+		t.Fatalf("DataGrip routines query must resolve: stage=%v detail=%q", result.FailedStage, result.Detail)
+	}
+	if result.OutputColumns != 23 {
+		t.Fatalf("output columns = %d, want 23: %+v", result.OutputColumns, result.Origins)
+	}
+	langOIDCount := 0
+	for _, origin := range result.Origins {
+		if origin.Column != "lang_oid" {
+			continue
+		}
+		langOIDCount++
+		want := []string{"acme.pg_catalog.pg_language.oid", "acme.pg_catalog.pg_proc.prolang"}
+		if len(origin.Origins) != len(want) || origin.Origins[0] != want[0] || origin.Origins[1] != want[1] {
+			t.Fatalf("lang_oid origins = %v, want %v", origin.Origins, want)
+		}
+	}
+	if langOIDCount != 1 {
+		t.Fatalf("lang_oid outputs = %d, want 1: %+v", langOIDCount, result.Origins)
+	}
+	for _, column := range []string{"acme.pg_catalog.pg_language.oid", "acme.pg_catalog.pg_proc.prolang"} {
+		found := false
+		for _, reference := range result.References[JOIN] {
+			if reference == column {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("JOIN references = %v, missing %s", result.References[JOIN], column)
+		}
+	}
+	if result.RewrittenSQL == nil {
+		t.Fatal("DataGrip routines star must carry an executable rewrite")
+	}
+	rewritten, err := sqlglot.ParseOne(*result.RewrittenSQL, "postgres")
+	if err != nil {
+		t.Fatalf("parse rewritten SQL: %v; sql=%q", err, *result.RewrittenSQL)
+	}
+	selects := rewritten.Selects()
+	if len(selects) != 23 {
+		t.Fatalf("rewritten outputs = %d, want 23: %q", len(selects), *result.RewrittenSQL)
+	}
+	if selects[0].AliasOrName() != "lang_oid" || selects[1].AliasOrName() != "r_name" || selects[22].AliasOrName() != "lang" {
+		t.Fatalf("rewritten output order is not PostgreSQL NATURAL JOIN order: %q", *result.RewrittenSQL)
+	}
+	for _, projection := range selects {
+		if projection.Kind() == exp.KindStar || projection.IsStar() {
+			t.Fatalf("rewritten SQL still contains a star: %q", *result.RewrittenSQL)
+		}
+	}
+}
+
 func TestPostgresCTIDResolutionBoundaries(t *testing.T) {
 	baseCatalog := []*pb.ColumnSpec{
 		columnSpec("acme", "public", "users", "id", "BIGINT"),

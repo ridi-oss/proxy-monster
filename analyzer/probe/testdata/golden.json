@@ -1477,17 +1477,6 @@
     "isWrite": false,
     "rewrittenSql": null
   },
-  "postgres|natural join": {
-    "resolved": false,
-    "failedStage": "VALIDATE",
-    "detail": "NATURAL JOIN not supported (shared-column lineage is ambiguous)",
-    "outputColumns": 0,
-    "tracedColumns": 0,
-    "origins": [],
-    "references": {},
-    "isWrite": false,
-    "rewrittenSql": null
-  },
   "postgres|nested derived": {
     "resolved": true,
     "failedStage": null,

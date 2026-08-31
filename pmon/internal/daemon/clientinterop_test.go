@@ -15,7 +15,7 @@
 // the real thing.
 //
 // Gated behind the `e2e_clients` build tag (it pulls several multi-hundred-MB client images); run with
-// `mise run e2e-clients` or `go test -tags e2e_clients ./pmon/internal/daemon/ -run ClientInterop`.
+// `mise run test-e2e-clients` or `go test -tags e2e_clients ./pmon/internal/daemon/ -run ClientInterop`.
 package daemon
 
 import (
@@ -35,9 +35,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/docker/docker/api/types/container"
-	"github.com/moby/moby/api/types/network"
 	_ "github.com/go-sql-driver/mysql"
+	"github.com/moby/moby/api/types/container"
+	"github.com/moby/moby/api/types/network"
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/wait"
 

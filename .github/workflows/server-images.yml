@@ -103,7 +103,7 @@ jobs:
 
       # Pushed by digest with no tag: a tag naming one architecture would be visible to a puller
       # between here and the merge. Only the merge job makes a tag point at anything.
-      - uses: docker/build-push-action@v6
+      - uses: docker/build-push-action@v7
         id: build
         with:
           context: ${{ matrix.image.context }}

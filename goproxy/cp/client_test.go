@@ -669,8 +669,9 @@ func TestEventsLoopReconnectsFastOnDrain(t *testing.T) {
 	go func() {
 		defer close(loopDone)
 		c.runEventsLoop(ctx, eventLoopTimings{
-			streamMaxAge: time.Minute, // long enough that only the drain path paces this test
-			reconnect:    backoff,
+			streamMaxAge:      time.Minute, // long enough that only the drain path paces this test
+			reconnect:         backoff,
+			rotationReconnect: eventsRotationReconnect,
 		}, func() {}, func() {}, func(spi.RunOpen) {}, func(string, string, string) {})
 	}()
 	t.Cleanup(func() {
@@ -718,6 +719,11 @@ func (f *holdOpenControlPlane) openCount() int {
 }
 
 func startHoldOpenControlPlane(t *testing.T, fake *holdOpenControlPlane) *Client {
+	t.Helper()
+	return startControlPlane(t, fake)
+}
+
+func startControlPlane(t *testing.T, fake pb.ControlPlaneServer) *Client {
 	t.Helper()
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -784,8 +790,9 @@ func TestRunEventsLoopExitsOnEventsVersionRejection(t *testing.T) {
 	errCh := make(chan error, 1)
 	go func() {
 		errCh <- c.runEventsLoop(context.Background(), eventLoopTimings{
-			streamMaxAge: time.Minute,
-			reconnect:    10 * time.Millisecond,
+			streamMaxAge:      time.Minute,
+			reconnect:         10 * time.Millisecond,
+			rotationReconnect: eventsRotationReconnect,
 		}, func() {}, func() {}, func(spi.RunOpen) {}, func(string, string, string) {})
 	}()
 	select {
@@ -817,8 +824,10 @@ func TestStreamEventsEndsAtItsMaxAge(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected the stream to end at its max age")
 	}
-	if status.Code(err) != codes.DeadlineExceeded {
-		t.Fatalf("err = %v, want DeadlineExceeded", err)
+	// errRotated, not a bare DeadlineExceeded: the loop pins the fast reopen to THIS proxy's timer, so a
+	// deadline off the wire keeps the error backoff.
+	if !errors.Is(err, errRotated) {
+		t.Fatalf("err = %v, want errRotated", err)
 	}
 	if elapsed > 3*time.Second {
 		t.Fatalf("took %v — the deadline did not bound the stream", elapsed)
@@ -836,8 +845,9 @@ func TestEventsLoopReopensAfterMaxAge(t *testing.T) {
 	go func() {
 		defer close(loopDone)
 		c.runEventsLoop(ctx, eventLoopTimings{
-			streamMaxAge: 150 * time.Millisecond,
-			reconnect:    10 * time.Millisecond,
+			streamMaxAge:      150 * time.Millisecond,
+			reconnect:         10 * time.Millisecond,
+			rotationReconnect: 10 * time.Millisecond,
 		}, func() {}, func() {}, func(spi.RunOpen) {}, func(string, string, string) {})
 	}()
 	t.Cleanup(func() {
@@ -858,6 +868,115 @@ func TestEventsLoopReopensAfterMaxAge(t *testing.T) {
 	}
 }
 
+// The bug and the fix, in one run. The error backoff is set absurdly high relative to the budget so the
+// two pacings differ by orders of magnitude, not by a margin a stalled CI runner could erase: under the
+// backoff the SECOND open alone needs 30s, under the rotation pace all four land in well under a second.
+func TestEventsLoopRotationGapStaysBoundedAcrossPeriods(t *testing.T) {
+	const backoff = 30 * time.Second
+	const rotationPace = 10 * time.Millisecond
+	const wantOpens = 4 // three reopens
+	const budget = 3 * time.Second
+
+	opensWithin := func(t *testing.T, timings eventLoopTimings) int {
+		t.Helper()
+		fake := &holdOpenControlPlane{done: make(chan struct{})}
+		c := startHoldOpenControlPlane(t, fake)
+		ctx, cancel := context.WithCancel(context.Background())
+		loopDone := make(chan struct{})
+		go func() {
+			defer close(loopDone)
+			c.runEventsLoop(ctx, timings, func() {}, func() {}, func(spi.RunOpen) {}, func(string, string, string) {})
+		}()
+		defer func() {
+			cancel()
+			<-loopDone
+		}()
+		deadline := time.After(budget)
+		for fake.openCount() < wantOpens {
+			select {
+			case <-deadline:
+				return fake.openCount()
+			case <-time.After(2 * time.Millisecond):
+			}
+		}
+		return fake.openCount()
+	}
+
+	// 1. Reproduce: pacing the rotation with the error backoff is the pre-fix behavior. One open fits in the
+	//    budget; the second reopen alone would need 30s.
+	unpaced := opensWithin(t, eventLoopTimings{
+		streamMaxAge:      30 * time.Millisecond,
+		reconnect:         backoff,
+		rotationReconnect: backoff,
+	})
+	if unpaced < 1 || unpaced >= wantOpens {
+		t.Fatalf("backoff-paced rotation opened %d streams in %s, want 1..%d — the bug did not reproduce, "+
+			"so the fixed leg below proves nothing", unpaced, budget, wantOpens-1)
+	}
+	t.Logf("reproduced: backoff-paced rotation opened %d/%d streams in %s", unpaced, wantOpens, budget)
+
+	// 2. Fix: the rotation pace reaches every open inside the same budget, at each period.
+	for _, period := range []time.Duration{30 * time.Millisecond, 75 * time.Millisecond, 200 * time.Millisecond} {
+		t.Run(period.String(), func(t *testing.T) {
+			started := time.Now()
+			got := opensWithin(t, eventLoopTimings{
+				streamMaxAge:      period,
+				reconnect:         backoff,
+				rotationReconnect: rotationPace,
+			})
+			if got < wantOpens {
+				t.Fatalf("maxAge=%s: only %d opens in %s (want %d) — reopen is not paced for a rotation",
+					period, got, budget, wantOpens)
+			}
+			t.Logf("fixed: maxAge=%s opened %d streams in %s", period, got, time.Since(started).Round(time.Millisecond))
+		})
+	}
+}
+
+// A DeadlineExceeded off the WIRE — a server-side stream deadline, an LB timeout — is a fault, not this
+// proxy's rotation. Pacing it at the rotation speed would reconnect at 10Hz against an unwell control
+// plane, launching a resync each time, so it must wait out the error backoff instead.
+// The production defaults, not just injected timings: a rotationReconnect left at zero (spinning) or set
+// back to the error backoff (the outage) would pass every test that supplies its own timings.
+func TestDefaultRotationReconnectIsPacedAndFast(t *testing.T) {
+	got := defaultEventLoopTimings()
+	if got.rotationReconnect <= 0 {
+		t.Fatalf("rotationReconnect = %s; a zero pace spins the loop, since each reopen launches a resync",
+			got.rotationReconnect)
+	}
+	if got.rotationReconnect >= got.reconnect {
+		t.Fatalf("rotationReconnect = %s is not faster than the %s error backoff — every rotation would leave "+
+			"the datasource unattached for that long", got.rotationReconnect, got.reconnect)
+	}
+}
+
+func TestEventsLoopBacksOffOnServerDeadlineExceeded(t *testing.T) {
+	const backoff = 1500 * time.Millisecond
+	fake := &deadlineControlPlane{}
+	c := startControlPlane(t, fake)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	loopDone := make(chan struct{})
+	go func() {
+		defer close(loopDone)
+		c.runEventsLoop(ctx, eventLoopTimings{
+			streamMaxAge:      time.Minute, // long, so only the server's status ends the stream
+			reconnect:         backoff,
+			rotationReconnect: 10 * time.Millisecond,
+		}, func() {}, func() {}, func(spi.RunOpen) {}, func(string, string, string) {})
+	}()
+	t.Cleanup(func() {
+		cancel()
+		<-loopDone
+	})
+
+	// Under the rotation pace this would open ~100 streams in a second; under the backoff, at most two.
+	time.Sleep(backoff - 300*time.Millisecond)
+	if opens := fake.openCount(); opens > 1 {
+		t.Fatalf("opened %d streams before one backoff elapsed — a wire DeadlineExceeded took the rotation pace", opens)
+	}
+}
+
 func TestEventsLoopReopensWithoutWaitingForResync(t *testing.T) {
 	// resync introspects the whole catalog and retries with its own backoff. Run in line it delays the
 	// reopen, and the datasource reads as unattached for that whole time — so a resync that never returns
@@ -874,8 +993,9 @@ func TestEventsLoopReopensWithoutWaitingForResync(t *testing.T) {
 	go func() {
 		defer close(loopDone)
 		c.runEventsLoop(ctx, eventLoopTimings{
-			streamMaxAge: 150 * time.Millisecond,
-			reconnect:    10 * time.Millisecond,
+			streamMaxAge:      150 * time.Millisecond,
+			reconnect:         10 * time.Millisecond,
+			rotationReconnect: 10 * time.Millisecond,
 		}, resync, func() {}, func(spi.RunOpen) {}, func(string, string, string) {})
 	}()
 	t.Cleanup(func() {
@@ -946,8 +1066,9 @@ func TestEventsLoopWaitsTheBackoffBetweenReopens(t *testing.T) {
 	go func() {
 		defer close(loopDone)
 		c.runEventsLoop(ctx, eventLoopTimings{
-			streamMaxAge: time.Minute, // long enough that only the backoff paces this test
-			reconnect:    backoff,
+			streamMaxAge:      time.Minute, // long enough that only the backoff paces this test
+			reconnect:         backoff,
+			rotationReconnect: eventsRotationReconnect,
 		}, func() {}, func() {}, func(spi.RunOpen) {}, func(string, string, string) {})
 	}()
 	t.Cleanup(func() {
@@ -972,4 +1093,25 @@ func TestEventsLoopWaitsTheBackoffBetweenReopens(t *testing.T) {
 			t.Fatalf("reopen %d came %v after the previous one, faster than the %v backoff", i, gap, backoff)
 		}
 	}
+}
+
+// deadlineControlPlane fails every Events call with DeadlineExceeded, standing in for a server-side
+// deadline or an intermediary timeout — a fault that happens to carry the same code as a local rotation.
+type deadlineControlPlane struct {
+	pb.UnimplementedControlPlaneServer
+	mu    sync.Mutex
+	opens int
+}
+
+func (f *deadlineControlPlane) Events(_ *pb.EventsRequest, _ grpc.ServerStreamingServer[pb.ControlEvent]) error {
+	f.mu.Lock()
+	f.opens++
+	f.mu.Unlock()
+	return status.Error(codes.DeadlineExceeded, "server-side deadline")
+}
+
+func (f *deadlineControlPlane) openCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.opens
 }

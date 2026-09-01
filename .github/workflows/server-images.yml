@@ -158,7 +158,7 @@ jobs:
       # This job runs even when a sibling image's build failed, so its own architectures may be
       # missing. continue-on-error keeps the download from being the thing that reports that: the
       # merge step names the missing architecture instead.
-      - uses: actions/download-artifact@v6
+      - uses: actions/download-artifact@v8
         continue-on-error: true
         with:
           pattern: digest-${{ matrix.name }}-*

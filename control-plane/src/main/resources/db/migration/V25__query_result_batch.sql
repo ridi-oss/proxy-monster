@@ -15,6 +15,12 @@ UPDATE query_result qr
 -- A duplicate would make "the statement at position k" ambiguous — run one twice, or skip one.
 CREATE UNIQUE INDEX uq_query_result_task_ordinal ON query_result (task_id, ordinal);
 
+-- A RUNNING row at migration time belongs to no live execution — the process that owned it is gone —
+-- and reconcileOrphanedExecutions fails every one of them on the next boot regardless. Doing it here
+-- too keeps a task that somehow holds two from aborting the index below, and so the upgrade.
+UPDATE query_result SET status = 'FAILED', error_code = 'task.orphaned_on_restart'
+ WHERE status = 'RUNNING';
+
 -- The batch runs one statement at a time. Two RUNNING children would let completeRun store a result
 -- against the wrong statement's SQL, so the database refuses the second rather than trusting callers.
 CREATE UNIQUE INDEX uq_query_result_one_running ON query_result (task_id) WHERE status = 'RUNNING';

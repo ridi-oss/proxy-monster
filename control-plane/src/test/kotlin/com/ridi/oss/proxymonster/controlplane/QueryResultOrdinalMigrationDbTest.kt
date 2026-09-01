@@ -72,4 +72,57 @@ class QueryResultOrdinalMigrationDbTest {
             "plural children are numbered densely by insert order, not all collapsed onto 0",
         )
     }
+
+    // The one-RUNNING index is built over live data, and a RUNNING row survives a crash. Two of them under
+    // one task would abort V25 and leave the schema half-migrated, so the migration fails them first —
+    // the same thing reconcileOrphanedExecutions does to every RUNNING row on the next boot.
+    @Test
+    fun `V25 applies to a task left holding two running children`() {
+        val ds = SharedPostgres.hikari(SharedPostgres.freshDatabase("pm_v25_running"))
+        Flyway.configure().dataSource(ds).target(MigrationVersion.fromVersion("24")).load().migrate()
+        val datasourceId = DatasourceStore(ds).create(
+            DatasourceInput(name = "ds", engine = "postgres", host = "h", port = 5432, dbName = "d"),
+        ).id
+        val taskId = ds.connection.use { c ->
+            val id = c.prepareStatement(
+                """INSERT INTO access_request (principal, kind, datasource_id, requested_duration_sec, creator_kind)
+                   VALUES ('alice@example.com', 'QUERY', ?, 3600, 'WORKFLOW') RETURNING id""",
+            ).use { ps ->
+                ps.setLong(1, datasourceId)
+                ps.executeQuery().use { rs -> rs.next(); rs.getLong(1) }
+            }
+            for (sql in listOf("select 1", "select 2")) {
+                c.prepareStatement(
+                    "INSERT INTO query_result (task_id, sql, sql_hash, status) VALUES (?, ?, ?, 'RUNNING')",
+                ).use { ps ->
+                    ps.setLong(1, id); ps.setString(2, sql); ps.setString(3, "h-$sql")
+                    ps.executeUpdate()
+                }
+            }
+            id
+        }
+
+        Flyway.configure().dataSource(ds).load().migrate()
+
+        val rows = ds.connection.use { c ->
+            c.prepareStatement(
+                "SELECT ordinal, status, error_code FROM query_result WHERE task_id = ? ORDER BY ordinal",
+            ).use { ps ->
+                ps.setLong(1, taskId)
+                ps.executeQuery().use { rs ->
+                    val out = ArrayList<Triple<Int, String, String>>()
+                    while (rs.next()) out += Triple(rs.getInt(1), rs.getString(2), rs.getString(3))
+                    out
+                }
+            }
+        }
+        assertEquals(
+            listOf(
+                Triple(0, "FAILED", "task.orphaned_on_restart"),
+                Triple(1, "FAILED", "task.orphaned_on_restart"),
+            ),
+            rows,
+            "both orphaned RUNNING children are failed, so the one-running index can be built",
+        )
+    }
 }

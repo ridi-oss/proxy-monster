@@ -1,6 +1,8 @@
 package com.ridi.oss.proxymonster.controlplane
 
+import com.ridi.oss.proxymonster.analyzer.pb.StatementKind
 import com.ridi.oss.proxymonster.controlplane.authz.AuthzAction
+import com.ridi.oss.proxymonster.grpc.columnMask
 import com.ridi.oss.proxymonster.controlplane.authz.AuthzContext
 import com.ridi.oss.proxymonster.controlplane.authz.AuthzDecision
 import com.ridi.oss.proxymonster.controlplane.authz.AuthzResource
@@ -21,10 +23,12 @@ class ApprovalResultAssumeMysqlDbTest {
     private lateinit var fx: EnforcementFixture
     private lateinit var datasource: Datasource
     private var roleId = 0L
+    private var prodViewerRoleId = 0L
 
     private val requester = "requester@example.com"
     private val approver = "approver@example.com"
     private val roleName = "system:production-pii-accessor"
+    private val prodViewerRoleName = "system:production-viewer"
     private val rawSsn = "987-65-4320"
     private val maskedSsn = "*******4320"
 
@@ -33,6 +37,7 @@ class ApprovalResultAssumeMysqlDbTest {
         requireDockerOrSkip()
         fx = EnforcementFixture.mysql()
         roleId = fx.policyStore.listRoles().first { it.name == roleName }.id
+        prodViewerRoleId = fx.policyStore.listRoles().first { it.name == prodViewerRoleName }.id
         fx.dataSource.connection.use { c ->
             c.prepareStatement("UPDATE datasource SET tags = ?::jsonb WHERE id = ?").use { ps ->
                 ps.setString(1, "[\"system:production\"]")
@@ -43,7 +48,7 @@ class ApprovalResultAssumeMysqlDbTest {
         // -260 (production-metadata) enabled so SHOW CREATE TABLE / DESCRIBE re-decide as an authorized
         // metadata passthrough: statement-classification gates metadata on stmt.cat.metadata (closing the
         // old connect-only gap), so a viewer's re-decision of a stored SHOW now needs it too.
-        listOf(-250L, -251L, -256L, -257L, -258L, -260L).forEach {
+        listOf(-250L, -251L, -256L, -257L, -258L, -260L, -262L).forEach {
             checkNotNull(fx.cedarPolicyStore.setEnabled(it, true, "test-enable-production"))
         }
         fx.cedarPolicyStore.create(
@@ -83,7 +88,11 @@ class ApprovalResultAssumeMysqlDbTest {
         null, channel,
     )!!
 
-    private fun request() = AccessRequest(
+    private fun request(
+        sql: String = "SELECT ssn FROM users",
+        roleName: String = this.roleName,
+        roleId: Long = this.roleId,
+    ) = AccessRequest(
         id = 1,
         principal = requester,
         roleId = roleId,
@@ -96,7 +105,7 @@ class ApprovalResultAssumeMysqlDbTest {
         executedBy = approver,
         createdAt = "2026-07-23T00:00:00Z",
         kind = "QUERY",
-        sql = "SELECT ssn FROM users",
+        sql = sql,
         executeAs = listOf(roleName),
         creatorKind = "WORKFLOW",
     )
@@ -205,5 +214,154 @@ class ApprovalResultAssumeMysqlDbTest {
         val stored = DecryptedResult(listOf("Table", "Create Table"), listOf(listOf("users")), resultFingerprint = fingerprintOf(emptyList()))
         val view = decideResultView(viewerCtx("SHOW CREATE TABLE users", "100.99.1.10", channel = Channel.EDITOR), stored)
         assertIs<ResultViewDecision.Denied>(view)
+    }
+
+    // A plan-only EXPLAIN result view: freeze the fingerprint the way the real run does, then re-decide
+    // under [roleName] from [ip]. The stored bytes are the target DB's real plan output.
+    private fun viewExplain(
+        sql: String,
+        stored: DecryptedResult,
+        roleName: String = this.roleName,
+        roleId: Long = this.roleId,
+        ip: String = "100.100.1.10",
+    ): ResultViewDecision = decideResultView(
+        viewerCtx(sql, ip, req = request(sql, roleName, roleId), channel = Channel.EDITOR),
+        stored,
+    )
+
+    private fun storedExplain(sql: String, executeIp: String = "100.100.1.10"): DecryptedResult {
+        val plan = fx.execOnTarget(sql)
+        val executed = decideQuery(
+            principal = requester, ds = datasource, sql = sql, channel = Channel.WORKFLOW_EXECUTOR,
+            catalog = fx.datasourceStore.catalog(datasource.id), policyStore = fx.policyStore,
+            accessStore = fx.accessStore, userGroupStore = fx.userGroupStore, roleResolver = fx.roleResolver,
+            authz = fx.authz, providedRoles = setOf(roleName), context = AuthzContext(requesterIp = executeIp),
+        )
+        return DecryptedResult(plan.columns, plan.rows, resultFingerprint = fingerprintOf(executed.resultFingerprint))
+    }
+
+    // The release must come from the plan-only EXPLAIN branch, not passthrough or the projection path.
+    private fun assertPlanOnlyExplain(ctx: DecisionContext) {
+        assertEquals(EnfAction.ALLOW, ctx.action)
+        assertTrue(!ctx.passthrough, "a columnar EXPLAIN must not re-decide as a passthrough")
+        assertEquals(StatementKind.STATEMENT_KIND_EXPLAIN, ctx.statementKind)
+        assertTrue(ctx.masks.isEmpty() && ctx.outputColumns.isEmpty())
+    }
+
+    @Test
+    fun `an allowed plan-only explain releases its target-generated plan columns`() {
+        val stored = storedExplain("EXPLAIN SELECT id FROM users")
+        assertPlanOnlyExplain(viewerCtx("EXPLAIN SELECT id FROM users", "100.100.1.10", req = request("EXPLAIN SELECT id FROM users"), channel = Channel.EDITOR))
+        val allowed = assertIs<ResultViewDecision.Allowed>(viewExplain("EXPLAIN SELECT id FROM users", stored))
+        assertEquals(stored.columns, allowed.columns)
+        assertEquals(stored.rows, allowed.rows)
+        assertTrue(allowed.maskedColumns.isEmpty(), "a released plan masks nothing")
+    }
+
+    @Test
+    fun `an explain with a protected predicate is refused for a role without the unmasked grant`() {
+        // A predicate column emits a DENY_STATEMENT reference grant (its selectivity IS the plan), so the
+        // re-decision needs ssn UNMASKED. The pii-accessor holds it via -262 and the plan releases; the
+        // production-viewer clears datasource.connect and sql.select but not unmasked-PII, so its
+        // re-decision DENIES past the connect gate — at the masking boundary — and the plan is refused.
+        val sql = "EXPLAIN SELECT id FROM users WHERE ssn = '$rawSsn'"
+        val stored = storedExplain(sql)
+        assertIs<ResultViewDecision.Allowed>(viewExplain(sql, stored))
+        val viewerRedecision = viewerCtx(
+            sql, "100.100.1.10",
+            req = request(sql, prodViewerRoleName, prodViewerRoleId), channel = Channel.EDITOR,
+        )
+        assertEquals(EnfAction.DENY, viewerRedecision.action)
+        assertTrue(
+            viewerRedecision.denyReason.orEmpty().contains("cannot be masked"),
+            "the deny is the protected-predicate DENY_STATEMENT, not the connect gate: ${'$'}{viewerRedecision.denyReason}",
+        )
+        assertIs<ResultViewDecision.Denied>(
+            viewExplain(sql, stored, roleName = prodViewerRoleName, roleId = prodViewerRoleId),
+        )
+    }
+
+    @Test
+    fun `a masked-projection explain releases for a role that may only read masked`() {
+        // A PROJECTED column is read to build the plan but never appears in it, so a masked read grant is
+        // enough: the production-viewer's EXPLAIN of ssn re-decides ALLOW with empty masks and releases.
+        val sql = "EXPLAIN SELECT ssn FROM users"
+        val stored = storedExplain(sql)
+        val redecision = viewerCtx(
+            sql, "100.100.1.10",
+            req = request(sql, prodViewerRoleName, prodViewerRoleId), channel = Channel.EDITOR,
+        )
+        assertPlanOnlyExplain(redecision)
+        assertIs<ResultViewDecision.Allowed>(
+            viewExplain(sql, stored, roleName = prodViewerRoleName, roleId = prodViewerRoleId),
+        )
+    }
+
+    @Test
+    fun `an explain with a drifted fingerprint is refused before the release path`() {
+        val stored = storedExplain("EXPLAIN SELECT id FROM users")
+        val drifted = DecryptedResult(stored.columns, stored.rows, resultFingerprint = null)
+        assertIs<ResultViewDecision.Denied>(viewExplain("EXPLAIN SELECT id FROM users", drifted))
+    }
+
+    @Test
+    fun `a malformed-width explain plan is refused`() {
+        val stored = storedExplain("EXPLAIN SELECT id FROM users")
+        check(stored.columns.size > 1)
+        val malformed = DecryptedResult(
+            stored.columns.dropLast(1), stored.rows, resultFingerprint = stored.resultFingerprint,
+        )
+        assertIs<ResultViewDecision.Denied>(viewExplain("EXPLAIN SELECT id FROM users", malformed))
+    }
+
+    @Test
+    fun `an explain analyze of a read releases like a plan-only explain and a protected predicate still denies`() {
+        val stored = storedExplain("EXPLAIN ANALYZE SELECT id FROM users")
+        val allowed = assertIs<ResultViewDecision.Allowed>(viewExplain("EXPLAIN ANALYZE SELECT id FROM users", stored))
+        assertEquals(stored.rows, allowed.rows)
+
+        val predicate = "EXPLAIN ANALYZE SELECT id FROM users WHERE ssn = '$rawSsn'"
+        val denied = storedExplain(predicate)
+        val redenied = viewerCtx(predicate, "100.100.1.10", req = request(predicate, prodViewerRoleName, prodViewerRoleId), channel = Channel.EDITOR)
+        assertEquals(EnfAction.DENY, redenied.action)
+        assertTrue(redenied.denyReason.orEmpty().contains("cannot be masked"))
+        assertIs<ResultViewDecision.Denied>(
+            viewExplain(predicate, denied, roleName = prodViewerRoleName, roleId = prodViewerRoleId),
+        )
+    }
+
+    @Test
+    fun `a formatted explain releases its single-column plan`() {
+        val sql = "EXPLAIN FORMAT=JSON SELECT id FROM users"
+        val stored = storedExplain(sql)
+        assertPlanOnlyExplain(viewerCtx(sql, "100.100.1.10", req = request(sql), channel = Channel.EDITOR))
+        val allowed = assertIs<ResultViewDecision.Allowed>(viewExplain(sql, stored))
+        assertEquals(stored.columns, allowed.columns)
+        assertEquals(stored.rows, allowed.rows)
+
+        // The JSON plan embeds the predicate as attached_condition, so the protected-predicate deny must
+        // survive option handling too.
+        val predicate = "EXPLAIN FORMAT=JSON SELECT id FROM users WHERE ssn = '$rawSsn'"
+        val redenied = viewerCtx(predicate, "100.100.1.10", req = request(predicate, prodViewerRoleName, prodViewerRoleId), channel = Channel.EDITOR)
+        assertEquals(EnfAction.DENY, redenied.action)
+        assertTrue(redenied.denyReason.orEmpty().contains("cannot be masked"))
+    }
+
+    @Test
+    fun `a non-explain allow with empty outputs never takes the plan release`() {
+        // The statementKind conjunct is load-bearing: an ALLOW with empty masks and outputColumns whose
+        // kind is not EXPLAIN (a synthetic non-EXPLAIN context) must fall through to the projection-width
+        // check and refuse the stored plan bytes.
+        val stored = storedExplain("EXPLAIN SELECT id FROM users")
+        val explainCtx = viewerCtx(
+            "EXPLAIN SELECT id FROM users", "100.100.1.10",
+            req = request("EXPLAIN SELECT id FROM users"), channel = Channel.EDITOR,
+        )
+        val nonExplain = explainCtx.copy(statementKind = StatementKind.STATEMENT_KIND_STMT_UNKNOWN)
+        assertIs<ResultViewDecision.Denied>(decideResultView(nonExplain, stored))
+        val maskedExplain = explainCtx.copy(
+            masks = listOf(columnMask { column = "ssn"; maskFn = "mask"; kind = "PARTIAL"; ordinal = 0 }),
+        )
+        assertIs<ResultViewDecision.Denied>(decideResultView(maskedExplain, stored))
     }
 }

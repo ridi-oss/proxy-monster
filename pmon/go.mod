@@ -6,7 +6,6 @@ require github.com/ridi-oss/proxy-monster/mysqlwire v0.1.4
 
 require (
 	github.com/alecthomas/kong v1.16.1
-	github.com/docker/docker v28.5.2+incompatible
 	github.com/go-sql-driver/mysql v1.10.0
 	github.com/moby/moby/api v1.55.0
 	github.com/testcontainers/testcontainers-go v0.44.0

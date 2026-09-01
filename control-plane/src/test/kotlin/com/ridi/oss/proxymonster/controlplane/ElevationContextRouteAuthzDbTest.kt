@@ -174,7 +174,7 @@ class ElevationContextRouteAuthzDbTest {
 
     /** A PENDING QUERY approval request elevating [requester] to `target-role` on the tag-gated datasource. */
     private fun seedQueryRequest(): Long = core.accessStore.createQueryRequest(
-        principal = requester, datasourceId = datasource.id, sql = "select 1", denyReason = "denied",
+        principal = requester, datasourceId = datasource.id, statements = listOf("select 1"), denyReason = "denied",
         sourceDecisionId = null, reason = "need it", title = null,
         evaluatedDecision = "DENY", roleId = targetRoleId,
     ).id

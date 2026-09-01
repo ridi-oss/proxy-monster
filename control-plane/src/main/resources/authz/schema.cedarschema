@@ -301,7 +301,7 @@ action "stmt.kind.delete", "stmt.kind.replace"
 action "stmt.kind.create_table", "stmt.kind.create_view", "stmt.kind.create_index", "stmt.kind.create_database", "stmt.kind.create_trigger", "stmt.kind.create_procedure", "stmt.kind.create_function", "stmt.kind.create_event", "stmt.kind.create_server", "stmt.kind.create_tablespace", "stmt.kind.create_srs", "stmt.kind.alter_table", "stmt.kind.alter_database", "stmt.kind.alter_view", "stmt.kind.alter_event", "stmt.kind.alter_procedure", "stmt.kind.alter_function", "stmt.kind.alter_server", "stmt.kind.alter_tablespace", "stmt.kind.alter_instance", "stmt.kind.drop_table", "stmt.kind.drop_index", "stmt.kind.drop_view", "stmt.kind.drop_database", "stmt.kind.drop_trigger", "stmt.kind.drop_procedure", "stmt.kind.drop_function", "stmt.kind.drop_event", "stmt.kind.drop_server", "stmt.kind.drop_tablespace", "stmt.kind.drop_srs", "stmt.kind.truncate_table", "stmt.kind.rename_table", "stmt.kind.select_into"
   in ["stmt.cat.ddl"]
   appliesTo { principal: [User, Role], resource: [Datasource], context: RequestContext };
-action "stmt.kind.start_transaction", "stmt.kind.commit", "stmt.kind.rollback", "stmt.kind.savepoint", "stmt.kind.set_transaction", "stmt.kind.set_session_var", "stmt.kind.use"
+action "stmt.kind.start_transaction", "stmt.kind.commit", "stmt.kind.rollback", "stmt.kind.savepoint", "stmt.kind.set_transaction", "stmt.kind.set_session_var", "stmt.kind.use", "stmt.kind.empty"
   in ["stmt.cat.session"]
   appliesTo { principal: [User, Role], resource: [Datasource], context: RequestContext };
 action "stmt.kind.describe", "stmt.kind.explain_table", "stmt.kind.show_metadata", "stmt.kind.show_warnings", "stmt.kind.show_errors", "stmt.kind.help"

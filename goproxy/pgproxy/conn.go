@@ -5,6 +5,8 @@ import (
 	"crypto/tls"
 	"log/slog"
 	"net"
+	"sort"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgproto3"
@@ -17,6 +19,23 @@ const (
 	maxFrontendAuthBody      = 8192
 	maxFrontendFrameBody     = 16 << 20
 )
+
+func postgresProtocolNegotiation(startup *pgproto3.StartupMessage) *pgproto3.NegotiateProtocolVersion {
+	unrecognized := make([]string, 0)
+	for name := range startup.Parameters {
+		if strings.HasPrefix(name, "_pq_.") {
+			unrecognized = append(unrecognized, name)
+		}
+	}
+	sort.Strings(unrecognized)
+	if startup.ProtocolVersion&0xffff == 0 && len(unrecognized) == 0 {
+		return nil
+	}
+	return &pgproto3.NegotiateProtocolVersion{
+		NewestMinorProtocol: 0,
+		UnrecognizedOptions: unrecognized,
+	}
+}
 
 type sessionCore struct {
 	targetDb         *pgproto3.Frontend
@@ -122,6 +141,9 @@ func (s *Server) handleConn(rawClientConn net.Conn) {
 			if _, replication := message.Parameters["replication"]; replication {
 				_ = sendError(client, "FATAL", "0A000", "proxy-monster: replication protocol is not supported", false, 0)
 				return
+			}
+			if negotiation := postgresProtocolNegotiation(message); negotiation != nil {
+				client.Send(negotiation)
 			}
 			goto startupComplete
 		default:

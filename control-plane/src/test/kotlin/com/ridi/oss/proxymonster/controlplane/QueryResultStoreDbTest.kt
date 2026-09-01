@@ -37,7 +37,7 @@ class QueryResultStoreDbTest {
     private fun newTask(requester: String = "alice@example.com"): Long = accessStore.createQueryRequest(
         principal = requester,
         datasourceId = datasourceId,
-        sql = "select id, ssn from users",
+        statements = listOf("select id, ssn from users"),
         denyReason = null,
         sourceDecisionId = null,
         reason = "r",
@@ -53,7 +53,7 @@ class QueryResultStoreDbTest {
     @Test
     fun `child transitions from pending to running to done with encrypted rows`() {
         val id = newTask()
-        val running = store.startRun(id, "bob@example.com")
+        val running = store.startNextRun(id, "bob@example.com")
         assertEquals("RUNNING", running?.status)
         assertEquals("bob@example.com", running?.executedBy)
         assertEquals("bob@example.com", accessStore.getRequest(id)?.executedBy)
@@ -77,7 +77,7 @@ class QueryResultStoreDbTest {
     @Test
     fun `DML result stores rowsAffected as row_count, not the empty result-set size`() {
         val id = newTask()
-        assertNotNull(store.startRun(id, "bob@example.com"))
+        assertNotNull(store.startNextRun(id, "bob@example.com"))
         val done = store.completeRun(id, DecryptedResult(emptyList(), emptyList(), rowsAffected = 1), 3600)
         assertEquals("DONE", done?.status)
         assertEquals(1, done?.rowCount)
@@ -86,7 +86,7 @@ class QueryResultStoreDbTest {
     @Test
     fun `failed child stores a stable error code without ciphertext`() {
         val id = newTask()
-        assertNotNull(store.startRun(id, "bob@example.com"))
+        assertNotNull(store.startNextRun(id, "bob@example.com"))
         val failed = store.failRun(id, "approval.execute_denied")
         assertEquals("FAILED", failed?.status)
         assertEquals("approval.execute_denied", failed?.errorCode)
@@ -97,7 +97,7 @@ class QueryResultStoreDbTest {
     @Test
     fun `a target-DB failure stores the backend error text encrypted, released only via accessFor`() {
         val id = newTask()
-        assertNotNull(store.startRun(id, "bob@example.com"))
+        assertNotNull(store.startNextRun(id, "bob@example.com"))
         val diagnostic = runError { message = "ER_TABLE_EXISTS_ERROR"; rawMessage = "Table 'bom.test' already exists"; targetDbError = true }
         val failed = store.failRun(id, "approval.query_failed", diagnostic = diagnostic)
         assertEquals("FAILED", failed?.status)
@@ -125,7 +125,7 @@ class QueryResultStoreDbTest {
     @Test
     fun `error detail is off the metadata path and reachable only through accessFor`() {
         val id = newTask()
-        assertNotNull(store.startRun(id, "bob@example.com"))
+        assertNotNull(store.startNextRun(id, "bob@example.com"))
         val detail = "constraint users_email_key violated"
         store.failRun(id, "approval.query_failed", diagnostic = runError { message = "ER_DUP_ENTRY"; rawMessage = detail; targetDbError = true })
         // The metadata poll (task.read) carries the stable code but has no channel for the raw detail — the
@@ -139,7 +139,7 @@ class QueryResultStoreDbTest {
     @Test
     fun `expiry purges the encrypted error detail`() {
         val id = newTask()
-        assertNotNull(store.startRun(id, "bob@example.com"))
+        assertNotNull(store.startNextRun(id, "bob@example.com"))
         store.failRun(id, "approval.query_failed", diagnostic = runError { message = "ER_NO_SUCH_TABLE"; rawMessage = "relation missing does not exist"; targetDbError = true })
         // failRun stamps expires_at RESULT_RETENTION_SEC ahead; force the row past expiry so the sweep hits it.
         dataSource.connection.use { c ->
@@ -164,7 +164,7 @@ class QueryResultStoreDbTest {
     @Test
     fun `accessFor withholds the error detail once past expiry, before any purge sweep`() {
         val id = newTask()
-        assertNotNull(store.startRun(id, "bob@example.com"))
+        assertNotNull(store.startNextRun(id, "bob@example.com"))
         store.failRun(id, "approval.query_failed", diagnostic = runError { message = "ER_NO_SUCH_TABLE"; rawMessage = "relation missing does not exist"; targetDbError = true })
         // Push the row past expiry WITHOUT purging: the ciphertext is still in the row when accessFor reads it.
         dataSource.connection.use { c ->
@@ -187,8 +187,6 @@ class QueryResultStoreDbTest {
     @Test
     fun `claimAndStartRun atomically claims the parent and starts the child, closing the cancel window`() {
         val id = newTask().also { approve(it) }
-        // While APPROVED there is no RUNNING child yet — a cancel would find nothing to cancel.
-        assertNull(store.cancelRun(id), "no RUNNING child before the run starts")
         // One transaction: parent APPROVED→EXECUTING AND child NULL→RUNNING commit together, so a cancel can
         // never observe an EXECUTING parent without a RUNNING child (the window that let a canceled query run).
         val started = store.claimAndStartRun(id, "bob@example.com") { c -> accessStore.claimExecution(id, c) }
@@ -199,6 +197,17 @@ class QueryResultStoreDbTest {
         val cancelled = store.cancelRun(id) { c, _ -> assertTrue(accessStore.markCancelled(id, c)) }
         assertEquals("CANCELLED", cancelled?.status)
         assertEquals("CANCELLED", accessStore.getRequest(id)?.status)
+    }
+
+    // A cancel that arrives before the run starts — or between a batch's statements — finds no RUNNING
+    // child, but must still stop the task rather than no-op while the run proceeds. It cancels the
+    // statement that was about to run, so claimAndStartRun then finds nothing pending.
+    @Test
+    fun `cancelRun catches a not-yet-started statement`() {
+        val id = newTask().also { approve(it) }
+        val cancelled = assertNotNull(store.cancelRun(id), "a pre-run cancel must not no-op")
+        assertEquals("CANCELLED", cancelled.status)
+        assertEquals(0, cancelled.ordinal)
     }
 
     @Test
@@ -218,7 +227,7 @@ class QueryResultStoreDbTest {
                 ps.setLong(1, id); ps.executeUpdate()
             }
         }
-        assertNotNull(store.startRun(id, "bob@example.com"))
+        assertNotNull(store.startNextRun(id, "bob@example.com"))
         val cancelled = store.cancelRun(id) { c, _ -> assertTrue(accessStore.markCancelled(id, c)) }
         assertEquals("CANCELLED", cancelled?.status)
         assertEquals("approval.canceled", cancelled?.errorCode)
@@ -229,10 +238,10 @@ class QueryResultStoreDbTest {
     }
 
     @Test
-    fun `one task supports multiple children and latest metadata wins`() {
+    fun `one task supports multiple children and metadata follows the active one`() {
         val id = newTask()
         dataSource.connection.use { c ->
-            c.prepareStatement("INSERT INTO query_result (task_id, sql, sql_hash) VALUES (?, 'select 2', 'second')").use { ps ->
+            c.prepareStatement("INSERT INTO query_result (task_id, ordinal, sql, sql_hash) VALUES (?, 1, 'select 2', 'second')").use { ps ->
                 ps.setLong(1, id)
                 ps.executeUpdate()
             }
@@ -244,39 +253,44 @@ class QueryResultStoreDbTest {
             }
         })
         assertNull(store.meta(id)?.status)
-        assertNotNull(store.startRun(id, "bob@example.com"))
+        assertNotNull(store.startNextRun(id, "bob@example.com"))
         assertEquals("FAILED", store.failRun(id, "approval.query_failed")?.status)
     }
 
     @Test
     fun `accessFor binds the released child's own sql to its ciphertext, not the first child's`() {
-        // Regression: a task with plural children whose SQL differs. accessFor returns the LATEST child's
-        // ciphertext, so it must also return that SAME child's sql — the view re-decides the released bytes
-        // against their own statement, never the first child's (which would let a later child's PII be
-        // released under an earlier child's non-PII verdict when the output labels happen to match).
-        val id = newTask() // first child carries "select id, ssn from users"
+        // Regression: a batch whose statements differ. accessFor returns ONE child's ciphertext, so it must
+        // return that SAME child's sql — the view re-decides the released bytes against their own statement,
+        // never another child's (which would let one statement's PII be released under a different
+        // statement's non-PII verdict when the output labels happen to match).
+        val id = newTask() // statement 0 carries "select id, ssn from users"
         dataSource.connection.use { c ->
             c.prepareStatement(
-                "INSERT INTO query_result (task_id, sql, sql_hash) VALUES (?, 'select ssn as v from users', 'second')",
+                "INSERT INTO query_result (task_id, ordinal, sql, sql_hash) VALUES (?, 1, 'select ssn as v from users', 'second')",
             ).use { ps ->
                 ps.setLong(1, id)
                 ps.executeUpdate()
             }
         }
-        assertNotNull(store.startRun(id, "bob@example.com")) // claims the latest NULL child (the second)
+        assertNotNull(store.startNextRun(id, "bob@example.com")) // claims statement 0
+        assertNotNull(store.completeRun(id, result(), 3600))
+        assertNotNull(store.startNextRun(id, "bob@example.com")) // statement 1
         val done = store.completeRun(id, DecryptedResult(listOf("v"), listOf(listOf("PM_SECRET_900101"))), 3600)
         assertEquals("DONE", done?.status)
 
-        val access = store.accessFor(id)
+        val access = store.accessFor(id, 1)
         assertNotNull(access)
-        assertEquals("select ssn as v from users", access?.sql, "accessFor.sql is the latest (released) child's own sql")
+        assertEquals("select ssn as v from users", access?.sql, "accessFor.sql is the released child's own sql")
         assertEquals(listOf(listOf("PM_SECRET_900101")), access?.decrypted?.rows, "and its ciphertext is that same child's")
+        // The other statement's bytes stay bound to ITS own sql — one task, two independently-gated results.
+        assertEquals("select id, ssn from users", store.accessFor(id, 0)?.sql)
+        assertEquals(result().rows, store.accessFor(id, 0)?.decrypted?.rows)
     }
 
     @Test
     fun `expiry purges the payload but keeps the child row and its sql for audit`() {
         val id = newTask()
-        store.startRun(id, "bob@example.com")
+        store.startNextRun(id, "bob@example.com")
         store.completeRun(id, result(), -1) // already expired
         assertTrue(store.purgeExpired() >= 1)
 

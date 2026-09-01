@@ -82,11 +82,15 @@ class TaskStoreDbTest {
         }
     }
 
-    /** A statement child for [taskId] in [status] (null = not started). Leaves the `sql` column unset. */
-    private fun seedChild(taskId: Long, status: String? = null): Long = dataSource.connection.use { c ->
-        c.prepareStatement("INSERT INTO query_result (task_id, status) VALUES (?, ?)", Statement.RETURN_GENERATED_KEYS).use { ps ->
+    /** A statement child for [taskId] at [ordinal], in [status] (null = not started). Leaves `sql` unset. */
+    private fun seedChild(taskId: Long, status: String? = null, ordinal: Int = 0): Long = dataSource.connection.use { c ->
+        c.prepareStatement(
+            "INSERT INTO query_result (task_id, ordinal, status) VALUES (?, ?, ?)",
+            Statement.RETURN_GENERATED_KEYS,
+        ).use { ps ->
             ps.setLong(1, taskId)
-            if (status == null) ps.setNull(2, Types.VARCHAR) else ps.setString(2, status)
+            ps.setInt(2, ordinal)
+            if (status == null) ps.setNull(3, Types.VARCHAR) else ps.setString(3, status)
             ps.executeUpdate()
             ps.generatedKeys.use { rs -> rs.next(); rs.getLong(1) }
         }
@@ -288,12 +292,13 @@ class TaskStoreDbTest {
     }
 
     @Test
-    fun `a task carries one-to-many statement children, latest wins in meta`() {
+    fun `a task carries one child per statement, and meta follows the active one`() {
         val id = seedTask("APPROVED")
-        seedChild(id, status = "FAILED")
-        seedChild(id, status = "RUNNING")
-        assertEquals(2, childCount(id), "a task may accrue multiple children")
-        assertEquals("RUNNING", resultStore.meta(id)?.status, "meta returns the newest child")
+        seedChild(id, status = "FAILED", ordinal = 0)
+        seedChild(id, status = "RUNNING", ordinal = 1)
+        assertEquals(2, childCount(id), "a batch task holds one child per statement")
+        assertEquals("RUNNING", resultStore.meta(id)?.status, "meta follows the batch's active statement")
+        assertEquals(1, resultStore.meta(id)?.ordinal)
     }
 
     @Test
@@ -316,7 +321,7 @@ class TaskStoreDbTest {
     fun `createQueryRequest persists execute_as, creator_kind, and a not-started statement child`() {
         val roleId = fx.policyStore.createRole(RoleInput("task-store-round-trip")).id
         val req = store.createQueryRequest(
-            principal = "alice@example.com", datasourceId = fx.datasource.id, sql = "select 1",
+            principal = "alice@example.com", datasourceId = fx.datasource.id, statements = listOf("select 1"),
             denyReason = null, sourceDecisionId = null, reason = "need it", title = null,
             evaluatedDecision = "DENY", roleId = roleId,
         )

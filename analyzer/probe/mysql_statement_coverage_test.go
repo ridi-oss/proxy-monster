@@ -182,8 +182,10 @@ var mysqlStatements = []mysqlStatement{
 	{"CREATE INDEX", "CREATE INDEX i ON users (id)", "stmt.kind.create_index", pb.StatementKind_STATEMENT_KIND_CREATE_INDEX},
 	{"CREATE VIEW", "CREATE VIEW v AS SELECT 1", "stmt.kind.create_view", pb.StatementKind_STATEMENT_KIND_CREATE_VIEW},
 	{"CREATE DATABASE", "CREATE DATABASE d", "stmt.kind.create_database", pb.StatementKind_STATEMENT_KIND_CREATE_DATABASE},
-	{"CREATE TRIGGER", "CREATE TRIGGER trg BEFORE INSERT ON users FOR EACH ROW SET @a = 1", "unanalyzable→exception.unanalyzable", pb.StatementKind_STATEMENT_KIND_STMT_UNKNOWN},
-	{"CREATE PROCEDURE", "CREATE PROCEDURE p() SELECT 1", "unanalyzable→exception.unanalyzable", pb.StatementKind_STATEMENT_KIND_STMT_UNKNOWN},
+	{"CREATE TRIGGER", "CREATE TRIGGER trg BEFORE INSERT ON users FOR EACH ROW SET @a = 1", "stmt.kind.create_trigger", pb.StatementKind_STATEMENT_KIND_CREATE_TRIGGER},
+	// The body is not analyzable (no lineage through a routine body), but the statement now CLASSIFIES:
+	// Cedar gates it as stmt.kind.create_procedure instead of an anonymous unknown.
+	{"CREATE PROCEDURE", "CREATE PROCEDURE p() SELECT 1", "stmt.kind.create_procedure + unanalyzable→exception.unanalyzable", pb.StatementKind_STATEMENT_KIND_CREATE_PROCEDURE},
 	{"CREATE FUNCTION (stored)", "CREATE FUNCTION f() RETURNS INT RETURN 1", "stmt.kind.create_function", pb.StatementKind_STATEMENT_KIND_CREATE_FUNCTION},
 	// A routine body carrying a query (RETURN (SELECT …)) is not a CTAS: the read happens at invocation,
 	// not at CREATE. Lineage cannot analyze the routine body, so it over-denies (unresolved) rather than

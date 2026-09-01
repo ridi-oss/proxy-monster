@@ -95,7 +95,7 @@ class ApprovalResultDeactivationDbTest {
             }
         }
         fx.dataSource.connection.use { c -> c.prepareStatement("INSERT INTO query_result (task_id, sql, sql_hash) VALUES (?, 'select 1', 'fixture')").use { ps -> ps.setLong(1, reqId); ps.executeUpdate() } }
-        resultStore.startRun(reqId, viewer)!!
+        resultStore.startNextRun(reqId, viewer)!!
         resultStore.completeRun(reqId, DecryptedResult(listOf("id"), listOf(listOf("1"))), 3600)!!
         return reqId
     }

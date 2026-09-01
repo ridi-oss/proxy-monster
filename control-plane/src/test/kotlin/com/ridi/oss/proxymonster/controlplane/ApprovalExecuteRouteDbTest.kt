@@ -1,5 +1,6 @@
 package com.ridi.oss.proxymonster.controlplane
 
+
 import com.ridi.oss.proxymonster.controlplane.authz.CedarPolicyInput
 import com.ridi.oss.proxymonster.controlplane.grpc.CONTROL_PROTOCOL_VERSION
 import com.ridi.oss.proxymonster.controlplane.grpc.ControlPlaneGrpcService
@@ -11,8 +12,10 @@ import com.ridi.oss.proxymonster.controlplane.support.webSessionCookie
 import com.ridi.oss.proxymonster.grpc.ControlPlaneGrpcKt
 import com.ridi.oss.proxymonster.grpc.EnfAction as WireEnfAction
 import com.ridi.oss.proxymonster.grpc.ProxyRunMsg
+import com.ridi.oss.proxymonster.grpc.RunDecision
 import com.ridi.oss.proxymonster.grpc.runDecision
 import com.ridi.oss.proxymonster.grpc.runDone
+import com.ridi.oss.proxymonster.grpc.runError
 import com.ridi.oss.proxymonster.grpc.runResultRows
 import com.ridi.oss.proxymonster.grpc.runRow
 import com.ridi.oss.proxymonster.grpc.runReady
@@ -29,6 +32,7 @@ import io.ktor.client.plugins.cookies.HttpCookies
 import io.ktor.client.request.get
 import io.ktor.client.request.post
 import io.ktor.client.request.setBody
+import io.ktor.client.statement.bodyAsText
 import io.ktor.http.ContentType
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.contentType
@@ -60,7 +64,9 @@ import java.util.concurrent.TimeUnit
 import javax.sql.DataSource
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import kotlin.test.fail
 
@@ -169,6 +175,7 @@ class ApprovalExecuteRouteDbTest {
                     core.userGroupStore, resultStore, core.roleResolver,
                     core.authz, runExecService,
                 )
+                queryRoutes(config, core.datasourceStore, QueryHistoryStore(dataSource), runExecService)
             }
         }
         return createClient {
@@ -191,7 +198,7 @@ class ApprovalExecuteRouteDbTest {
     private fun seedApprovedRoleRequest(roleName: String, decidedBy: String = executor): Long {
         val roleId = core.policyStore.createRole(RoleInput(roleName)).id
         val id = core.accessStore.createQueryRequest(
-            principal = requester, datasourceId = datasource.id, sql = "select ssn from users",
+            principal = requester, datasourceId = datasource.id, statements = listOf("select ssn from users"),
             denyReason = null, sourceDecisionId = null, reason = "need it", title = null,
             evaluatedDecision = "DENY", roleId = roleId,
         ).id
@@ -282,6 +289,218 @@ class ApprovalExecuteRouteDbTest {
                 "execute-under-R runs AS the approver (run(principal = executor)) — the decide token's principal " +
                     "must be the approver who initiated the run, so a run left on the requester's identity is caught here",
             )
+
+            awaitUntil("Events stream detached") { datasource.name !in core.proxyEventsHub.attached() }
+        }
+    }
+
+    @Test
+    fun `a target-DB statement error stores the backend text as assume-gated error_detail`() = testApplication {
+        val client = wireAsExecutor()
+        val id = seedApprovedRoleRequest("exec-targetdb-err-role")
+
+        supervisorScope {
+            val event = async { stub.events(eventsRequest { datasourceName = datasource.name; protocolVersion = CONTROL_PROTOCOL_VERSION }).first() }
+            awaitUntil("Events stream attached") { datasource.name in core.proxyEventsHub.attached() }
+
+            val responseDeferred = async { client.post("/api/approvals/$id/execute") }
+            val open = withTimeout(5_000) { event.await() }.openRunChannel
+
+            val proxyRequests = Channel<ProxyRunMsg>(Channel.UNLIMITED)
+            val proxy = async {
+                stub.runExec(proxyRequests.receiveAsFlow()).collect { control ->
+                    when {
+                        // The runner sends the statement's decision, then the target DB's own ERR tagged with
+                        // its provenance (already diagnostic-redacted at the wire).
+                        control.hasQuery() -> {
+                            proxyRequests.send(proxyRunMsg { decision = runDecision { decision = WireEnfAction.ALLOW } })
+                            proxyRequests.send(
+                                proxyRunMsg {
+                                    error = runError {
+                                        message = "ERROR: 42P01 undefined_table"
+                                        targetDbError = true
+                                        rawMessage = "ERROR: relation \"nope\" does not exist"
+                                    }
+                                },
+                            )
+                        }
+                        control.hasClose() -> proxyRequests.close()
+                        else -> fail("control plane sent an empty editor control message")
+                    }
+                }
+            }
+            proxyRequests.send(proxyRunMsg { sessionReady = runReady { sessionId = open.sessionId } })
+            proxyRequests.send(proxyRunMsg { serving = runServing {} })
+
+            val response = withTimeout(5_000) { responseDeferred.await() }
+            withTimeout(5_000) { proxy.await() }
+
+            assertEquals(HttpStatusCode.Accepted, response.status)
+            awaitUntil("target-DB error marks task and child failed") {
+                core.accessStore.getRequest(id)?.status == "FAILED" && resultStore.meta(id)?.status == "FAILED"
+            }
+            // The metadata poll keeps the generic code; both text forms ride only on accessFor.
+            assertEquals("approval.query_failed", resultStore.meta(id)?.errorCode)
+            assertEquals(
+                runError { message = "ERROR: 42P01 undefined_table"; rawMessage = "ERROR: relation \"nope\" does not exist"; targetDbError = true },
+                resultStore.accessFor(id)?.errorDetail,
+            )
+
+            awaitUntil("Events stream detached") { datasource.name !in core.proxyEventsHub.attached() }
+        }
+    }
+
+    // Drives POST /query against a stub proxy that answers the statement with a target-DB ERR under the given
+    // decision, and returns the HTTP response body.
+    private suspend fun ApplicationTestBuilder.queryFailsWith(
+        client: HttpClient,
+        decision: RunDecision,
+    ): String {
+        var body = ""
+        supervisorScope {
+            val event = async { stub.events(eventsRequest { datasourceName = datasource.name; protocolVersion = CONTROL_PROTOCOL_VERSION }).first() }
+            awaitUntil("Events stream attached") { datasource.name in core.proxyEventsHub.attached() }
+
+            val responseDeferred = async {
+                client.post("/api/datasources/${datasource.id}/query") {
+                    contentType(ContentType.Application.Json); setBody(QueryRequest("select 1", 100))
+                }
+            }
+            val open = withTimeout(5_000) { event.await() }.openRunChannel
+
+            val proxyRequests = Channel<ProxyRunMsg>(Channel.UNLIMITED)
+            val proxy = async {
+                stub.runExec(proxyRequests.receiveAsFlow()).collect { control ->
+                    when {
+                        control.hasQuery() -> {
+                            proxyRequests.send(proxyRunMsg { this.decision = decision })
+                            proxyRequests.send(
+                                proxyRunMsg {
+                                    error = runError {
+                                        message = "ERROR: 42P01 undefined_table"
+                                        targetDbError = true
+                                        rawMessage = "ERROR: relation \"secret_table\" does not exist"
+                                    }
+                                },
+                            )
+                        }
+                        control.hasClose() -> proxyRequests.close()
+                        else -> fail("control plane sent an empty run control message")
+                    }
+                }
+            }
+            proxyRequests.send(proxyRunMsg { sessionReady = runReady { sessionId = open.sessionId } })
+            proxyRequests.send(proxyRunMsg { serving = runServing {} })
+
+            val response = withTimeout(5_000) { responseDeferred.await() }
+            withTimeout(5_000) { proxy.await() }
+
+            assertEquals(HttpStatusCode.BadGateway, response.status)
+            body = response.bodyAsText()
+
+            awaitUntil("Events stream detached") { datasource.name !in core.proxyEventsHub.attached() }
+        }
+        return body
+    }
+
+    @Test
+    fun `the synchronous query route redacts the target-DB error when the decision sanitized diagnostics`() = testApplication {
+        val client = wireAsExecutor()
+        val body = queryFailsWith(
+            client,
+            runDecision { decision = WireEnfAction.MASK; sanitizeDiagnostics = true },
+        )
+        assertTrue(body.contains("ERROR: 42P01 undefined_table"), "the redacted form is returned: $body")
+        assertFalse(body.contains("secret_table"), "the raw target-DB text must never reach a sanitized caller: $body")
+    }
+
+    @Test
+    fun `the synchronous query route returns the raw target-DB error when the decision did not sanitize`() = testApplication {
+        val client = wireAsExecutor()
+        val body = queryFailsWith(
+            client,
+            runDecision { decision = WireEnfAction.ALLOW },
+        )
+        assertTrue(body.contains("secret_table"), "a non-sanitizing decision releases the raw form: $body")
+    }
+
+    @Test
+    fun `the synchronous query route does not leak a pre-decision open failure's internal detail`() = testApplication {
+        // A pre-serving open/connect failure (no query decision made) echoes the target host. The generic
+        // catch must return only the stable code, never that internal text.
+        val client = wireAsExecutor()
+
+        supervisorScope {
+            val event = async { stub.events(eventsRequest { datasourceName = datasource.name; protocolVersion = CONTROL_PROTOCOL_VERSION }).first() }
+            awaitUntil("Events stream attached") { datasource.name in core.proxyEventsHub.attached() }
+
+            val responseDeferred = async {
+                client.post("/api/datasources/${datasource.id}/query") {
+                    contentType(ContentType.Application.Json); setBody(QueryRequest("select 1", 100))
+                }
+            }
+            val open = withTimeout(5_000) { event.await() }.openRunChannel
+
+            val proxyRequests = Channel<ProxyRunMsg>(Channel.UNLIMITED)
+            val proxy = async {
+                stub.runExec(proxyRequests.receiveAsFlow()).collect { control ->
+                    if (control.hasClose()) proxyRequests.close()
+                }
+            }
+            proxyRequests.send(proxyRunMsg { sessionReady = runReady { sessionId = open.sessionId } })
+            // Open fails BEFORE serving (no decision), with a connection error that echoes the target host.
+            proxyRequests.send(proxyRunMsg { error = runError { message = "target-DB connection failed: dial tcp secret-host.internal:5432: connection refused" } })
+
+            val response = withTimeout(5_000) { responseDeferred.await() }
+            proxyRequests.close()
+            withTimeout(5_000) { proxy.await() }
+
+            assertEquals(HttpStatusCode.BadGateway, response.status)
+            assertFalse(
+                response.bodyAsText().contains("secret-host.internal"),
+                "a pre-decision open error must not leak the target host to the caller",
+            )
+            awaitUntil("Events stream detached") { datasource.name !in core.proxyEventsHub.attached() }
+        }
+    }
+
+    @Test
+    fun `a non-target post-serving failure fails with a generic code and NULL error_detail`() = testApplication {
+        val client = wireAsExecutor()
+        val id = seedApprovedRoleRequest("exec-generic-err-role")
+
+        supervisorScope {
+            val event = async { stub.events(eventsRequest { datasourceName = datasource.name; protocolVersion = CONTROL_PROTOCOL_VERSION }).first() }
+            awaitUntil("Events stream attached") { datasource.name in core.proxyEventsHub.attached() }
+
+            val responseDeferred = async { client.post("/api/approvals/$id/execute") }
+            val open = withTimeout(5_000) { event.await() }.openRunChannel
+
+            val proxyRequests = Channel<ProxyRunMsg>(Channel.UNLIMITED)
+            val proxy = async {
+                stub.runExec(proxyRequests.receiveAsFlow()).collect { control ->
+                    when {
+                        // A decode/decision/mask-binding failure the proxy reports post-serving — untagged.
+                        control.hasQuery() -> proxyRequests.send(
+                            proxyRunMsg { error = runError { message = "decision failed: analyzer unavailable" } },
+                        )
+                        control.hasClose() -> proxyRequests.close()
+                        else -> fail("control plane sent an empty editor control message")
+                    }
+                }
+            }
+            proxyRequests.send(proxyRunMsg { sessionReady = runReady { sessionId = open.sessionId } })
+            proxyRequests.send(proxyRunMsg { serving = runServing {} })
+
+            val response = withTimeout(5_000) { responseDeferred.await() }
+            withTimeout(5_000) { proxy.await() }
+
+            assertEquals(HttpStatusCode.Accepted, response.status)
+            awaitUntil("generic failure marks task and child failed") {
+                core.accessStore.getRequest(id)?.status == "FAILED" && resultStore.meta(id)?.status == "FAILED"
+            }
+            assertEquals("approval.query_failed", resultStore.meta(id)?.errorCode)
+            assertNull(resultStore.accessFor(id)?.errorDetail, "a non-target failure's text is never stored or released")
 
             awaitUntil("Events stream detached") { datasource.name !in core.proxyEventsHub.attached() }
         }
@@ -492,7 +711,7 @@ class ApprovalExecuteRouteDbTest {
                 ps.setLong(1, id); ps.executeUpdate()
             }
         }
-        assertNotNull(resultStore.startRun(id, approver))
+        assertNotNull(resultStore.startNextRun(id, approver))
 
         assertEquals(HttpStatusCode.NoContent, client.post("/test/session/$unrelated").status)
         val denied = client.post("/api/approvals/$id/cancel")

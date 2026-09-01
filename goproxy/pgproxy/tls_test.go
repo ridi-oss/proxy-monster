@@ -160,6 +160,43 @@ func TestTLSEnabledAnswersSSLRequestWithS(t *testing.T) {
 	}
 }
 
+func TestProtocol32NegotiatesBeforeAuthentication(t *testing.T) {
+	h := startBroker(t)
+	conn := dialPG(t, h.addr)
+	frontend := pgproto3.NewFrontend(conn, conn)
+	frontend.Send(&pgproto3.StartupMessage{
+		ProtocolVersion: 196610,
+		Parameters: map[string]string{
+			"user":             "pm",
+			"database":         "app",
+			"_pq_.traceparent": "ignored",
+			"_pq_.feature":     "ignored",
+		},
+	})
+	if err := frontend.Flush(); err != nil {
+		t.Fatalf("send protocol 3.2 startup: %v", err)
+	}
+	message, err := frontend.Receive()
+	if err != nil {
+		t.Fatalf("receive protocol negotiation: %v", err)
+	}
+	negotiation, ok := message.(*pgproto3.NegotiateProtocolVersion)
+	if !ok {
+		t.Fatalf("first startup response = %T, want NegotiateProtocolVersion", message)
+	}
+	if negotiation.NewestMinorProtocol != 0 ||
+		!reflect.DeepEqual(negotiation.UnrecognizedOptions, []string{"_pq_.feature", "_pq_.traceparent"}) {
+		t.Fatalf("protocol negotiation = %+v", negotiation)
+	}
+	message, err = frontend.Receive()
+	if err != nil {
+		t.Fatalf("receive authentication request: %v", err)
+	}
+	if _, ok := message.(*pgproto3.AuthenticationCleartextPassword); !ok {
+		t.Fatalf("second startup response = %T, want AuthenticationCleartextPassword", message)
+	}
+}
+
 func TestSSLRequestGetsNWhenTLSDisabled(t *testing.T) {
 	h := startBroker(t)
 	conn := dialPG(t, h.addr)

@@ -35,7 +35,6 @@ import type {
   GroupRoleMapping,
   Identity,
   IssuedToken,
-  EditorResultView,
   EditorSubmitResponse,
   EditorTaskStatus,
   MaskFn,
@@ -292,8 +291,8 @@ export function getEditorTask(taskId: number): Promise<EditorTaskStatus> {
 }
 
 /** GET /api/editor/tasks/{taskId}/result — the saved, re-decided rows once the task is DONE. */
-export function getEditorResult(taskId: number): Promise<EditorResultView> {
-  return request<EditorResultView>(`/api/editor/tasks/${taskId}/result`)
+export function getEditorResult(taskId: number): Promise<QueryResultView> {
+  return request<QueryResultView>(`/api/editor/tasks/${taskId}/result`)
 }
 
 /** POST /api/editor/tasks/{taskId}/cancel — cancel a running editor task. */

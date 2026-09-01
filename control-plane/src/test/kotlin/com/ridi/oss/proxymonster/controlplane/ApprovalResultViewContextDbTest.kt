@@ -1,5 +1,7 @@
 package com.ridi.oss.proxymonster.controlplane
 
+import com.ridi.oss.proxymonster.grpc.runError
+
 import com.ridi.oss.proxymonster.controlplane.authz.CedarPolicyInput
 import com.ridi.oss.proxymonster.controlplane.support.EnforcementFixture
 import com.ridi.oss.proxymonster.controlplane.support.requireDockerOrSkip
@@ -247,8 +249,35 @@ class ApprovalResultViewContextDbTest {
             }
         }
         fx.dataSource.connection.use { c -> c.prepareStatement("INSERT INTO query_result (task_id, sql, sql_hash) VALUES (?, ?, 'fixture')").use { ps -> ps.setLong(1, reqId); ps.setString(2, sql); ps.executeUpdate() } }
-        assertNotNull(resultStore.startRun(reqId, executor))
+        assertNotNull(resultStore.startNextRun(reqId, executor))
         assertNotNull(resultStore.completeRun(reqId, DecryptedResult(columns, rows, resultFingerprint = resultFingerprint?.let { fingerprintOf(it) }), 3600))
+        return reqId
+    }
+
+    private fun seedFailedResult(rawText: String, redactedForm: String): Long {
+        val reqId = fx.dataSource.connection.use { c ->
+            c.prepareStatement(
+                "INSERT INTO access_request (principal, kind, datasource_id, role_id, execute_as, creator_kind, decided_by) VALUES (?, 'QUERY', ?, ?, ?::jsonb, 'WORKFLOW', ?) RETURNING id",
+            ).use { ps ->
+                ps.setString(1, requester)
+                ps.setLong(2, fx.datasource.id)
+                ps.setLong(3, roleId)
+                ps.setString(4, "[\"$roleName\"]")
+                ps.setString(5, approver)
+                ps.executeQuery().use { rs ->
+                    check(rs.next())
+                    rs.getLong(1)
+                }
+            }
+        }
+        fx.dataSource.connection.use { c ->
+            c.prepareStatement("INSERT INTO query_result (task_id, sql, sql_hash) VALUES (?, 'SELECT id, email, ssn FROM users', 'fixture')").use { ps ->
+                ps.setLong(1, reqId)
+                ps.executeUpdate()
+            }
+        }
+        assertNotNull(resultStore.startNextRun(reqId, executor))
+        assertNotNull(resultStore.failRun(reqId, "approval.query_failed", diagnostic = runError { message = redactedForm; rawMessage = rawText; targetDbError = true }))
         return reqId
     }
 
@@ -557,6 +586,38 @@ class ApprovalResultViewContextDbTest {
         assertEquals("approval.result_view_denied", Json.decodeFromString<ApiError>(responseBody).code)
         assertFalse(responseBody.contains(sentinel), "catalog drift must not return a partially rebound row")
     }
+
+    @Test
+    fun `a FAILED run's target-DB detail is re-gated per viewer, never on the metadata poll`() = testApplication {
+        resetMutableAuthzState()
+        val raw = "ERROR: relation \"orders_missing\" does not exist"
+        val redacted = "ERROR: 42P01 undefined_table"
+        val id = seedFailedResult(raw, redacted)
+        val client = wire()
+
+        // The executor masks ssn here, so it gets the redacted form — the #228 leak closed end-to-end.
+        client.login(executor)
+        val viewed = client.get("/api/approvals/$id/result")
+        assertEquals(HttpStatusCode.OK, viewed.status)
+        val view = viewed.body<QueryResultView>()
+        assertEquals(redacted, view.errorDetail, "a masking viewer gets the redacted form")
+        assertFalse(view.errorDetail!!.contains("orders_missing"), "the raw target-DB text must not reach a masking viewer")
+        assertTrue(view.rows.isEmpty(), "a FAILED view carries no rows")
+        assertTrue(view.columns.isEmpty(), "a FAILED view carries no columns")
+
+        // A task.read-only admin: no detail, and neither form on the metadata poll.
+        client.login(admin)
+        assertEquals(HttpStatusCode.NotFound, client.get("/api/approvals/$id/result").status, "admin may not assume R")
+        val adminDetail = client.get("/api/approvals/$id")
+        assertEquals(HttpStatusCode.OK, adminDetail.status, "admin may read metadata")
+        assertFalse(
+            adminDetail.bodyAsText().let { it.contains("orders_missing") || it.contains("undefined_table") },
+            "no target-DB detail rides on the task.read metadata poll",
+        )
+        assertEquals("approval.query_failed", adminDetail.body<ApprovalDetail>().result?.errorCode)
+    }
+
+    // The raw-release branch is covered in PresetPolicyDbTest (full reader → sanitizeDiagnostics=false).
 
     @Test
     fun `stored row-width drift fails closed instead of returning an unbound extra value`() = testApplication {

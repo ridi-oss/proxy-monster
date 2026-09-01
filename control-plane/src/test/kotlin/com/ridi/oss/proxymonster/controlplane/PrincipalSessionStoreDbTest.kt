@@ -215,8 +215,8 @@ class PrincipalSessionStoreDbTest {
         )
         val principal = "teardown@example.com"
         composed.mintWeb(principal, null, 7200, 900, "device-t")
-        val task = accessStore.createEditorTask(principal, dsId, "select 1", listOf("analyst"), principal)
-        resultStore.startRun(task.id, principal)
+        val task = accessStore.createEditorTask(principal, dsId, listOf("select 1"), listOf("analyst"), principal)
+        resultStore.startNextRun(task.id, principal)
         resultStore.completeRun(task.id, DecryptedResult(listOf("c"), listOf(listOf("1"))), 3600)
         assertEquals(1, editorChildCount(principal), "seeded one editor result child")
 

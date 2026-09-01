@@ -435,10 +435,13 @@ export interface QueryResultView {
   /**
    * The verdict of the LIVE view re-decision these rows were released under — the viewer's own context can
    * narrow an execution's ALLOW to a MASK, so this describes the release, not the stored execution. Only
-   * these two values reach a caller holding rows: a denied view is a 403 with no body.
+   * these two values reach a caller holding rows: a denied view is a 403 with no body. Absent on a FAILED
+   * view (no rows to label).
    */
-  decision: 'ALLOW' | 'MASK'
+  decision?: 'ALLOW' | 'MASK' | null
   maskedColumns: string[]
+  /** A FAILED run's target-DB error, raw or redacted per this viewer; null otherwise. */
+  errorDetail?: string | null
 }
 
 /** Submit acknowledgement; completion is observed through task polling. */
@@ -530,16 +533,3 @@ export interface EditorTaskStatus {
   result: QueryResultMeta | null
 }
 
-/** GET /api/editor/tasks/{taskId}/result: the saved, re-decided rows once the task is DONE. */
-export interface EditorResultView {
-  columns: string[]
-  rows: (string | null)[][]
-  meta?: unknown
-  /**
-   * The verdict of the re-decision that released these rows. The editor labels its result panel from this;
-   * inferring it from the presence of rows cannot distinguish a masked result from a clean one. Only these
-   * two values reach a caller holding rows: a denied view is a 403 with no body.
-   */
-  decision: 'ALLOW' | 'MASK'
-  maskedColumns: string[]
-}

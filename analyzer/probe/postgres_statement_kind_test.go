@@ -125,8 +125,10 @@ func TestPostgresStatementKind(t *testing.T) {
 		{"CREATE TYPE ty AS ENUM ('a', 'b')", pb.StatementKind_STATEMENT_KIND_STMT_UNKNOWN},
 		{"CREATE DOMAIN dom AS INT", pb.StatementKind_STATEMENT_KIND_STMT_UNKNOWN},
 		{"CREATE EXTENSION ext", pb.StatementKind_STATEMENT_KIND_STMT_UNKNOWN},
-		{"CREATE FUNCTION f() RETURNS int AS $$ SELECT 1 $$ LANGUAGE sql", pb.StatementKind_STATEMENT_KIND_STMT_UNKNOWN},
-		{"CREATE PROCEDURE p() AS $$ BEGIN END $$ LANGUAGE plpgsql", pb.StatementKind_STATEMENT_KIND_STMT_UNKNOWN},
+		// A dollar-quoted body is an opaque Heredoc — no lineage into it — but the CREATE itself now
+		// classifies, so policy gates it as its own DDL kind rather than through the unknown catch-all.
+		{"CREATE FUNCTION f() RETURNS int AS $$ SELECT 1 $$ LANGUAGE sql", pb.StatementKind_STATEMENT_KIND_CREATE_FUNCTION},
+		{"CREATE PROCEDURE p() AS $$ BEGIN END $$ LANGUAGE plpgsql", pb.StatementKind_STATEMENT_KIND_CREATE_PROCEDURE},
 		{"CREATE RULE r AS ON INSERT TO users DO NOTHING", pb.StatementKind_STATEMENT_KIND_STMT_UNKNOWN},
 		{"CREATE POLICY pol ON users USING (true)", pb.StatementKind_STATEMENT_KIND_STMT_UNKNOWN},
 		{"CREATE FOREIGN TABLE ft (id INT) SERVER srv", pb.StatementKind_STATEMENT_KIND_STMT_UNKNOWN},

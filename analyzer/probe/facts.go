@@ -12,12 +12,14 @@ import (
 	"github.com/ridi-oss/sqlglot-go/generator"
 	"github.com/ridi-oss/sqlglot-go/optimizer"
 	"github.com/ridi-oss/sqlglot-go/schema"
+	"github.com/ridi-oss/sqlglot-go/tokens"
 )
 
 var safeNoFromFunctions = stringSet(
 	"version", "current_schema", "current_schemas", "current_database", "current_catalog",
 	"current_user", "session_user", "current_role", "user", "database", "schema", "connection_id",
 	"pg_backend_pid", "pg_is_in_recovery", "pg_postmaster_start_time", "current_setting",
+	"txid_current", "pg_current_xact_id",
 	"inet_server_addr", "inet_server_port", "inet_client_addr", "inet_client_port",
 	"last_insert_id", "row_count", "found_rows", "charset", "collation", "coercibility",
 	"now", "current_timestamp", "current_date", "current_time", "localtime", "localtimestamp",
@@ -37,6 +39,22 @@ var safeNoFromFunctions = stringSet(
 	"cast", "convert", "coalesce", "nullif", "ifnull", "isnull", "nvl", "greatest", "least",
 	"iif", "if", "typeof", "pg_typeof",
 )
+
+// postgresInformationSchemaFunctions are PostgreSQL's information_schema helper builtins — stable,
+// read-only transforms of their arguments (pgJDBC metadata queries call them). Safe ONLY under an
+// explicit `information_schema.` qualifier; the unqualified spelling stays gated so a same-named
+// user function cannot inherit the pass.
+var postgresInformationSchemaFunctions = stringSet(
+	"_pg_char_max_length", "_pg_char_octet_length", "_pg_datetime_precision", "_pg_expandarray",
+	"_pg_index_position", "_pg_interval_type", "_pg_numeric_precision", "_pg_numeric_precision_radix",
+	"_pg_numeric_scale", "_pg_truetypid", "_pg_truetypmod",
+)
+
+func isTrustedInformationSchemaCall(qualifier exp.Expression, leaf string, eng engine) bool {
+	return eng.Type() == pb.Engine_POSTGRES && qualifier != nil &&
+		qualifier.Kind() == exp.KindIdentifier && qualifier.Name() == "information_schema" &&
+		postgresInformationSchemaFunctions[leaf]
+}
 
 // mysqlOnlySafeFunctions are safe no-FROM function names that exist ONLY on MySQL. `values` is MySQL's
 // INSERT … ON DUPLICATE KEY UPDATE pseudo-function — it names the value that would have been inserted, not a
@@ -102,6 +120,15 @@ func EmitFacts(sql string, engineConfig *pb.EngineConfig, sch *schema.Mapping, n
 		return unanalyzableFacts("VALIDATE", err.Error())
 	}
 
+	if emptyStatement(sql, eng) {
+		// A statement with no statements — "" / ";" / comment-only. Authorized as stmt.kind.empty
+		// under stmt.cat.session, then relayed so the target answers natively (PostgreSQL
+		// EmptyQueryResponse, MySQL ER_EMPTY_QUERY for blank, OK for comment-only).
+		facts := passthroughFacts()
+		facts.StatementExec = executeGrant(pb.StatementKind_STATEMENT_KIND_EMPTY)
+		return facts
+	}
+
 	var parsed []exp.Expression
 	if fail := runStage("PARSE", func() {
 		var parseErr error
@@ -125,6 +152,15 @@ func EmitFacts(sql string, engineConfig *pb.EngineConfig, sch *schema.Mapping, n
 	// left to fold by hand. Quote-aware, so a quoted identifier keeps its case: `"PG_CATALOG"` stays a
 	// distinct user schema from `pg_catalog`, and `"MySchema".fn` from `myschema.fn`.
 	root := optimizer.NormalizeIdentifiers(unwrapSubquery(stmts[0]), eng.Dialect())
+	if !hasSyntheticAlias(root) {
+		// A duplicate-label error is the target DB's own rejection (MySQL ER_DUP_FIELDNAME, a
+		// referenced PostgreSQL ambiguity) — the statement would never run there.
+		if err := stampNativeOutputLabels(root, eng); err != nil {
+			facts := inadmissibleFacts("VALIDATE", err.Error())
+			facts.StatementExec = executeGrant(statementKind(root, eng))
+			return facts
+		}
+	}
 	candidates := schemaQualifierCandidates(root)
 
 	var facts *pb.StatementFacts
@@ -306,7 +342,30 @@ func emitLineageFacts(root exp.Expression, eng engine, qualifySchema schema.Sche
 	} else {
 		facts.OutputColumns = outputColumnNames(report)
 	}
+	facts.DiagnosticLeakColumns = diagnosticLeakColumns(report, eng, qualifySchema)
 	return facts
+}
+
+// diagnosticLeakColumns converts the engine's leak-key set to sorted ColumnResources, so the
+// control-plane's frozen-facts comparison never churns on order.
+func diagnosticLeakColumns(report ProbeResult, eng engine, qualifySchema schema.Schema) []*pb.ColumnResource {
+	keys := eng.DiagnosticLeakKeys(report, qualifySchema)
+	sorted := make([]string, 0, len(keys))
+	for key := range keys {
+		sorted = append(sorted, key)
+	}
+	sort.Strings(sorted)
+	out := make([]*pb.ColumnResource, 0, len(sorted))
+	for _, key := range sorted {
+		column, ok := columnResourceFromKey(key)
+		if !ok {
+			// A key that doesn't split 4-ways (a column named "ssn.secret") must fail closed, not vanish:
+			// emit it as a column no catalog resolves.
+			column = &pb.ColumnResource{Identity: &pb.RelationIdentity{Column: key}}
+		}
+		out = append(out, column)
+	}
+	return out
 }
 
 // isTemporaryDDL reports whether a DDL root targets only session-local (temporary) objects, whose
@@ -693,7 +752,24 @@ func noFromFunctionGrants(root exp.Expression, eng engine) []*pb.RequireResultRe
 			}
 			continue
 		}
+		if isTrustedInformationSchemaCall(dot.Left(), leaf, eng) {
+			continue
+		}
 		emit(qualifiedCallName(dot.Left(), leaf, eng))
+	}
+	// A FROM-form call carries its qualifier on the Table node, not a Dot wrapper.
+	for _, table := range root.FindAll(exp.KindTable) {
+		fn := table.This()
+		if fn == nil || !fn.Is(exp.TraitFunc) || table.Arg("catalog") != nil {
+			continue
+		}
+		schema, _ := table.Arg("schema").(exp.Expression)
+		if schema == nil {
+			continue
+		}
+		if isTrustedInformationSchemaCall(schema, strings.ToLower(fn.Name()), eng) {
+			qualified[fn] = true
+		}
 	}
 	for _, fn := range root.FindAll(exp.TraitFunc) {
 		if fn.Kind() != exp.KindAnonymous || qualified[fn] {
@@ -767,6 +843,9 @@ func hasUnsafeCall(root exp.Expression, eng engine) bool {
 			}
 			continue
 		}
+		if isTrustedInformationSchemaCall(dot.Left(), normalizedFunctionName(fn, eng), eng) {
+			continue
+		}
 		return true
 	}
 	for _, fn := range root.FindAll(exp.TraitFunc) {
@@ -792,16 +871,12 @@ func showUtilityCommand(root exp.Expression) string {
 		return "SHOW_WARNINGS"
 	case "ERRORS":
 		return "SHOW_ERRORS"
-	case "PROCESSLIST":
-		return "SHOW_PROCESSLIST"
 	case "BINLOG EVENTS":
 		return "SHOW_BINLOG_EVENTS"
 	case "RELAYLOG EVENTS":
 		return "SHOW_RELAYLOG_EVENTS"
 	case "ENGINE":
 		return "SHOW_ENGINE_STATUS"
-	case "GRANTS":
-		return "SHOW_GRANTS"
 	case "REPLICA STATUS", "SLAVE STATUS":
 		return "SHOW_REPLICA_STATUS"
 	case "CREATE USER":
@@ -922,6 +997,22 @@ func utilityGrant(command string) *pb.RequireResultReadGrant {
 		Resource:          &pb.RequireResultReadGrant_Utility{Utility: &pb.UtilityResource{Command: command}},
 		MaskedDisposition: pb.MaskedDisposition_MASKED_DISPOSITION_DENY_STATEMENT,
 	}
+}
+
+// emptyStatement reports whether sql tokenizes to nothing but statement separators — the wire
+// protocols' "empty query". A tokenizer error (an unterminated comment) is NOT empty: it goes down
+// the ordinary parse path and fails closed there.
+func emptyStatement(sql string, eng engine) bool {
+	toks, err := sqlglot.Tokenize(sql, eng.Dialect())
+	if err != nil {
+		return false
+	}
+	for _, tok := range toks {
+		if tok.TokenType != tokens.SEMICOLON {
+			return false
+		}
+	}
+	return true
 }
 
 func passthroughFacts() *pb.StatementFacts {

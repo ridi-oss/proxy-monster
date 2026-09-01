@@ -882,11 +882,6 @@
       "tag": "system:critical"
     },
     {
-      "id": "SHOW_GRANTS",
-      "resource": "show-grants",
-      "tag": "system:critical"
-    },
-    {
       "id": "SHOW_VARIABLES",
       "resource": "performance_schema/global_variables",
       "tag": "system:critical"
@@ -915,11 +910,6 @@
       "id": "SHOW_ERRORS",
       "resource": "session-diagnostics",
       "tag": "system:data-leak"
-    },
-    {
-      "id": "SHOW_PROCESSLIST",
-      "resource": "def/information_schema/PROCESSLIST",
-      "tag": "system:activity"
     },
     {
       "id": "SHOW_STATUS",

@@ -15,6 +15,8 @@ import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.TestInstance
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
+import kotlin.test.assertTrue
 
 /**
  * V32 bootstrap-policy package on real PostgreSQL + real Cedar. Central fact: a development datasource holds
@@ -71,9 +73,9 @@ class PresetPolicyDbTest {
     @BeforeEach
     fun reset() {
         setTags("system:development")
-        // Development package enabled (as migrated); production package disabled by default (-259 included).
+        // Dev package on, production off; disabling -262 too so a test that enables it doesn't leak onward.
         (listOf(-200L) + (230L..235L).map { -it }).forEach { fx.cedarPolicyStore.setEnabled(it, true, "test-reset") }
-        (listOf(-300L) + (250L..259L).map { -it }).forEach { fx.cedarPolicyStore.setEnabled(it, false, "test-reset") }
+        (listOf(-300L, -262L) + (250L..259L).map { -it }).forEach { fx.cedarPolicyStore.setEnabled(it, false, "test-reset") }
     }
 
     private fun setTags(posture: String) = exec("UPDATE datasource SET tags = ?::jsonb WHERE id = ?") {
@@ -242,6 +244,43 @@ class PresetPolicyDbTest {
             decide(accessor, "select ssn from users", offNetwork, Channel.WORKFLOW_EXECUTOR).action,
             "-259 disabled (shipped default) -> workflow-executor masks off-network",
         )
+    }
+
+    @Test
+    fun `diagnostic redaction follows the decision, not the datasource-wide unmasked permit`() {
+        setTags("system:production")
+        val viewer = principals.getValue("system:production-viewer")
+        val accessor = principals.getValue("system:production-pii-accessor")
+        val updater = principals.getValue("system:production-updater")
+        val trusted = "100.100.1.10" // inside the shipped -300 trusted range (100.100.0.0/16)
+        val offNetwork = "100.99.1.10"
+        (listOf(-300L) + (250L..258L).map { -it }).forEach { fx.cedarPolicyStore.setEnabled(it, true, "test-enable-production") }
+
+        // #228: the viewer's datasource-wide -256 grant must not unredact a MASK of a pii column.
+        assertTrue(decide(viewer, "select ssn from users").sanitizeDiagnostics, "a MASK redacts its diagnostic")
+        assertFalse(decide(viewer, "select id from users").sanitizeDiagnostics, "a read of only readable columns leaks nothing")
+
+        assertFalse(decide(accessor, "select ssn from users", trusted).sanitizeDiagnostics, "reads ssn unmasked -> no redaction")
+        assertTrue(decide(accessor, "select ssn from users", offNetwork).sanitizeDiagnostics, "loses unmasked ssn off-network -> redact")
+
+        // The whole-row `DETAIL` dump puts masked ssn in the leak set even though the INSERT writes only id.
+        val write = decide(updater, "insert into users (id) values (1)")
+        assertEquals(EnfAction.ALLOW, write.action, "the updater's INSERT is allowed: ${write.denyReason}")
+        assertTrue(write.sanitizeDiagnostics, "the whole-row leak set includes masked ssn -> redact")
+    }
+
+    @Test
+    fun `an EXPLAIN-only unmasked grant does not make a principal a full-cleartext reader for diagnostics`() {
+        setTags("system:production")
+        val accessor = principals.getValue("system:production-pii-accessor")
+        val offNetwork = "100.99.1.10" // outside the shipped -300 trusted range
+        (listOf(-300L, -262L) + (250L..258L).map { -it }).forEach { fx.cedarPolicyStore.setEnabled(it, true, "test-enable-production") }
+
+        assertEquals(EnfAction.MASK, decide(accessor, "select ssn from users", offNetwork).action, "plain SELECT masks off-network")
+        val explain = decide(accessor, "explain select ssn from users", offNetwork)
+        assertEquals(EnfAction.ALLOW, explain.action, "EXPLAIN of pii is unmasked under -262")
+        // Otherwise an EXPLAIN ANALYZE (which executes) would leak the value its conversion error echoes.
+        assertTrue(explain.sanitizeDiagnostics, "an EXPLAIN-only grant must not skip diagnostic redaction")
     }
 
     @Test

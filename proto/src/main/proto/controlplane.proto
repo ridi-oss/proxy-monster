@@ -362,6 +362,9 @@ message RunDecision {
   // Verdict.result_fingerprint. An execute-under-R run freezes them with the stored result so a later view
   // denies authorization drift.
   repeated proxymonster.analyzer.v1.RequireResultReadGrant result_fingerprint = 6;
+  // Verdict.sanitize_diagnostics echoed back, so the caller returns the failure form the decision
+  // dictated: redacted when set, raw otherwise.
+  bool sanitize_diagnostics = 7;
 }
 message RunResultRows {
   repeated string columns = 1;
@@ -376,6 +379,9 @@ message RunValue {
   bool is_null = 2;
 }
 message RunDone { int32 rows_affected = 1; }   // -1 when not applicable (a SELECT)
+// A run's terminal error. Also the at-rest form of a failed run's diagnostic: for a target-DB failure the
+// control-plane serializes this whole message (protobuf) and AES-GCM encrypts it into
+// query_result.error_detail, re-gated per viewer at view time — same field semantics on the wire and at rest.
 message RunError {
   // For a target-DB statement ERR (target_db_error) this is the REDACTED, value-free message (essno +
   // SQLSTATE + symbol, no echoed value); for every other failure it is the plain error text. The safe

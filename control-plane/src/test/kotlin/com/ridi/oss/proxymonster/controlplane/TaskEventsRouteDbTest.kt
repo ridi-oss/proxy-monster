@@ -48,7 +48,7 @@ class TaskEventsRouteDbTest {
     }
 
     private fun newTask(): Long =
-        core.accessStore.createEditorTask(caller, datasource.id, "select 1", listOf("editor-analyst"), caller).id
+        core.accessStore.createEditorTask(caller, datasource.id, listOf("select 1"), listOf("editor-analyst"), caller).id
 
     private fun readable(taskId: Long) =
         taskReadableForPush(caller, taskId, AuthzContext(), core.accessStore, core.authz, core.datasourceStore)

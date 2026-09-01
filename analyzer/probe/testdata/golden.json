@@ -867,56 +867,6 @@
     "isWrite": true,
     "rewrittenSql": null
   },
-  "mysql|window": {
-    "resolved": true,
-    "failedStage": null,
-    "detail": "ok",
-    "outputColumns": 1,
-    "tracedColumns": 0,
-    "origins": [
-      {
-        "column": "_col_0",
-        "origins": []
-      }
-    ],
-    "references": {
-      "PREDICATE": [
-        "users.region"
-      ],
-      "ORDER_BY": [
-        "users.ssn"
-      ],
-      "DERIVED": [
-        "users.region",
-        "users.ssn"
-      ]
-    },
-    "isWrite": false,
-    "rewrittenSql": null
-  },
-  "postgres|aggregate filter": {
-    "resolved": true,
-    "failedStage": null,
-    "detail": "ok",
-    "outputColumns": 1,
-    "tracedColumns": 0,
-    "origins": [
-      {
-        "column": "_col_0",
-        "origins": []
-      }
-    ],
-    "references": {
-      "AGGREGATE": [
-        "users.ssn"
-      ],
-      "DERIVED": [
-        "users.ssn"
-      ]
-    },
-    "isWrite": false,
-    "rewrittenSql": null
-  },
   "postgres|bare star": {
     "resolved": true,
     "failedStage": null,
@@ -1966,33 +1916,6 @@
       ]
     },
     "isWrite": true,
-    "rewrittenSql": null
-  },
-  "postgres|window": {
-    "resolved": true,
-    "failedStage": null,
-    "detail": "ok",
-    "outputColumns": 1,
-    "tracedColumns": 0,
-    "origins": [
-      {
-        "column": "_col_0",
-        "origins": []
-      }
-    ],
-    "references": {
-      "PREDICATE": [
-        "users.region"
-      ],
-      "ORDER_BY": [
-        "users.ssn"
-      ],
-      "DERIVED": [
-        "users.region",
-        "users.ssn"
-      ]
-    },
-    "isWrite": false,
     "rewrittenSql": null
   }
 }

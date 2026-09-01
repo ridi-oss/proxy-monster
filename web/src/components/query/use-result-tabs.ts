@@ -253,10 +253,13 @@ export function useResultTabs(datasourceId: number | null, maxRows: number): Res
                 latencyMs: Math.max(0, Math.round(performance.now() - startedAt)),
               }
             }
-            // Any other failure really is one. errorCode is a catalog code (e.g. query.proxy_timeout) —
-            // localize it here so the panel shows bilingual copy, never the raw code. ApiError messages are
-            // already translated by the fetch wrapper; this covers the polled failure path.
-            throw new Error(translateApiError(child?.errorCode ?? 'approval.query_failed'))
+            // Any other failure really is one. Localize the catalog code, and append the /result errorDetail
+            // when present; the code is the real signal, so any detail-fetch failure falls back to it alone.
+            const code = translateApiError(child?.errorCode ?? 'approval.query_failed')
+            const detail = await getEditorResult(submit.taskId)
+              .then((view) => view.errorDetail)
+              .catch(() => null)
+            throw new Error(detail ? `${code}: ${detail}` : code)
           }
           if (status.status === 'CANCELLED' || child?.status === 'CANCELLED') {
             appendLog(
@@ -289,9 +292,8 @@ export function useResultTabs(datasourceId: number | null, maxRows: number): Res
           if (child?.status === 'DONE') {
             const view = await getEditorResult(submit.taskId)
             return {
-              // From the server's re-decision, never assumed: these rows are released under the viewer's
-              // live context, which can mask columns the execution itself returned in the clear.
-              decision: view.decision,
+              // From the server's re-decision, never assumed. Only a FAILED view omits the verdict.
+              decision: view.decision!,
               decisionId: null,
               denyReason: null,
               maskedColumns: view.maskedColumns,

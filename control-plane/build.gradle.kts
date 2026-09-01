@@ -50,7 +50,7 @@ dependencies {
 
     // JOSE/JWT (id_token signature + JWKS validation, docs/auth-model.md) — no JOSE lib existed
     // in this module before; the prior Okta.kt flow trusted userinfo instead of validating id_token.
-    implementation("com.nimbusds:nimbus-jose-jwt:9.40")
+    implementation("com.nimbusds:nimbus-jose-jwt:10.9.1")
 
     // Control-plane store: PostgreSQL only (plain JDBC + Hikari pooling + Flyway migrations).
     // Db.kt hardcodes org.postgresql.Driver; there is no MySQL store variant.

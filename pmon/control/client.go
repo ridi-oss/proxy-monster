@@ -31,15 +31,27 @@ type Client struct {
 // NewClient dials the socket lazily per request — so a Client constructed while the daemon is down starts
 // working the moment one comes up, with no reconstruction.
 func NewClient() (*Client, error) {
-	sock, err := state.SocketPath()
+	sockets, err := state.SocketPaths()
 	if err != nil {
 		return nil, err
 	}
 	return &Client{http: &http.Client{
 		Transport: &http.Transport{
 			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-				var d net.Dialer
-				return d.DialContext(ctx, "unix", sock)
+				var dialErr error
+				for _, socket := range sockets {
+					var d net.Dialer
+					conn, err := d.DialContext(ctx, "unix", socket)
+					if err != nil {
+						dialErr = err
+						if ctx.Err() != nil || !isDialFailure(err) {
+							return nil, err
+						}
+						continue
+					}
+					return conn, nil
+				}
+				return nil, dialErr
 			},
 		},
 	}}, nil

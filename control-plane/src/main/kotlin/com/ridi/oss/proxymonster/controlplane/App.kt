@@ -6,6 +6,7 @@ import com.ridi.oss.proxymonster.controlplane.authz.AuthzAction
 import com.ridi.oss.proxymonster.controlplane.authz.AuthzContext
 import com.ridi.oss.proxymonster.controlplane.authz.AuthzDecision
 import com.ridi.oss.proxymonster.controlplane.authz.AuthzResource
+import com.ridi.oss.proxymonster.controlplane.authz.CedarSchema
 import com.ridi.oss.proxymonster.controlplane.authz.authorizeWithContext
 import com.ridi.oss.proxymonster.controlplane.authz.cedarPolicyRoutes
 import com.ridi.oss.proxymonster.controlplane.authz.contextTagLint
@@ -600,6 +601,9 @@ fun Application.module(config: Config, core: ControlPlaneCore) {
                 // Dangling-tag lint: warn on a context tag consumed with no producer (a grant that
                 // can never apply — likely a typo) or produced with no consumer (a dead tag rule).
                 addAll(contextTagLint(cedarPolicyStore.enabledSources()))
+                // An enabled policy naming a retired Utility command never matches. New writes are
+                // rejected, but an upgraded install already has them stored.
+                addAll(CedarSchema.retiredUtilityLint(cedarPolicyStore.enabledSources()))
             }
             call.respond(
                 kotlinx.serialization.json.JsonObject(

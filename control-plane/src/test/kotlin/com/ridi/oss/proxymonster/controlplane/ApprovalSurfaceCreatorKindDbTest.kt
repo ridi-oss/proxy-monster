@@ -112,7 +112,7 @@ class ApprovalSurfaceCreatorKindDbTest {
     }
 
     private fun seedWorkflowRequest(): Long = core.accessStore.createQueryRequest(
-        principal = principal, datasourceId = datasource.id, sql = "select id from users",
+        principal = principal, datasourceId = datasource.id, statements = listOf("select id from users"),
         denyReason = "policy denies", sourceDecisionId = null, reason = "need it", title = "t",
         evaluatedDecision = "DENY",
     ).id
@@ -127,7 +127,7 @@ class ApprovalSurfaceCreatorKindDbTest {
     }
 
     private fun seedEditorTask(): Long = core.accessStore.createEditorTask(
-        principal, datasource.id, "select id from users", listOf("analyst"), principal,
+        principal, datasource.id, listOf("select id from users"), listOf("analyst"), principal,
     ).id
 
     @Test

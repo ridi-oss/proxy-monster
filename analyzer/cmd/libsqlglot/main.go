@@ -37,6 +37,21 @@ func AnalyzeStatement(reqBytes *C.char, reqLen C.size_t, outLen *C.size_t) unsaf
 	return C.CBytes(out) // malloc'd; caller frees via FreeCString.
 }
 
+// SplitStatements cuts a multi-statement batch into its statements. Same byte-buffer convention and
+// FreeCString ownership as AnalyzeStatement. A panic becomes ok=false, but a Go stack overflow is a
+// fatal error no recover() catches: ~40k nested parens still aborts the process.
+//
+//export SplitStatements
+func SplitStatements(reqBytes *C.char, reqLen C.size_t, outLen *C.size_t) unsafe.Pointer {
+	req := analyzeRequestBytesFromC(reqBytes, reqLen)
+	out := probe.SplitStatementsSafe(req)
+	*outLen = C.size_t(len(out))
+	if len(out) == 0 {
+		return nil
+	}
+	return C.CBytes(out) // malloc'd; caller frees via FreeCString.
+}
+
 func analyzeRequestBytesFromC(p *C.char, n C.size_t) []byte {
 	// C.GoBytes takes a C.int length. Reject anything that cannot be represented exactly rather than
 	// narrowing it and reading a different byte sequence.

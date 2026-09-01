@@ -2,9 +2,7 @@
 // the tray are SYMMETRIC peers over this API: neither is privileged, both can start and stop the daemon, and
 // both work when it is down. All state and logic live in the daemon; a peer holds none.
 //
-// Transport is a unix socket in the state directory. Not a loopback TCP port: this API can start a login
-// flow, and a localhost port is reachable from any web page in the user's browser. The socket's directory is
-// created 0700, so filesystem permissions ARE the authentication — only the same OS user can connect.
+// Transport is a Unix socket under a per-user 0700 directory, so only the same OS user can connect.
 package control
 
 // Status is the daemon's whole observable state, and the only thing a peer renders. Live listener facts come

@@ -1,5 +1,28 @@
 # Changelog
 
+## [0.1.23](https://github.com/ridi-oss/proxy-monster/compare/server-v0.1.22...server-v0.1.23) (2026-08-28)
+
+
+### Features
+
+* **goproxy:** carry both raw and redacted forms of a failed query's target-DB error ([#261](https://github.com/ridi-oss/proxy-monster/issues/261)) ([279ca2e](https://github.com/ridi-oss/proxy-monster/commit/279ca2e82df806e0e267613b42b580ac1e8eb3d2))
+
+
+### Bug Fixes
+
+* **control-plane:** refetch an unheld schema before relaying it unanalyzed ([#258](https://github.com/ridi-oss/proxy-monster/issues/258)) ([63ae665](https://github.com/ridi-oss/proxy-monster/commit/63ae665fbe945daf631b2a5310a751f1613399b8))
+
+
+### Refactoring
+
+* **analyzer:** fold identifiers once, up front, instead of per consumer ([#257](https://github.com/ridi-oss/proxy-monster/issues/257)) ([70bf790](https://github.com/ridi-oss/proxy-monster/commit/70bf790ad57d918cbd0e06aee83dc7379929c724))
+* **control-plane:** store a query result as protobuf, not kotlinx JSON ([#265](https://github.com/ridi-oss/proxy-monster/issues/265)) ([9ccff9e](https://github.com/ridi-oss/proxy-monster/commit/9ccff9e1ee8efdd5705b98292585d69dfb2639ff))
+
+
+### Build & Dependencies
+
+* **web:** commit the agent files next dev regenerates ([#260](https://github.com/ridi-oss/proxy-monster/issues/260)) ([a4ff9a4](https://github.com/ridi-oss/proxy-monster/commit/a4ff9a4b9d4d08716cf8ac86befa952dc905f25a))
+
 ## [0.1.22](https://github.com/ridi-oss/proxy-monster/compare/server-v0.1.21...server-v0.1.22) (2026-08-24)
 
 

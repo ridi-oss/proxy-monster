@@ -63,5 +63,31 @@ class UnanalyzableGateDbTest {
         assertTrue(permitted.passthrough, "an unanalyzable relay is a verbatim passthrough (no rewrite, no masks)")
         assertTrue(permitted.masks.isEmpty(), "no masks are applied to an unanalyzable relay")
         assertTrue(permitted.detail?.contains("exception.unanalyzable") == true, "the ALLOW is attributed to the exception: ${permitted.detail}")
+        // Both verdicts must ask for a refetch first. A cross-schema statement whose qualifier this connection
+        // never fetched is unresolvable for that reason alone, and reaches this gate indistinguishable from a
+        // genuinely unanalyzable one — so without catalogMiss the relay stands on a catalog that never held
+        // the schema, and every column the analyzer would have masked is relayed in the clear.
+        assertTrue(floor.catalogMiss, "the deny carries catalogMiss so decideConnection refetches + retries first")
+        assertTrue(permitted.catalogMiss, "the relay carries catalogMiss so refetch-first runs before it stands")
+    }
+
+    // The cross-schema case the flag exists for, driven through the REAL analyzer rather than a synthetic
+    // failure: a statement qualifying a schema absent from the decision's catalog resolves nowhere, so it
+    // lands on the unanalyzable gate carrying that schema as a refetch candidate.
+    @Test
+    fun `a statement naming an unheld schema asks for that schema before relaying`() {
+        val candidate = "goods_store"
+        // Assert the premise rather than assume it: were this schema ever added to the fixture, the statement
+        // would resolve and the test would pass without exercising the gate at all.
+        assertTrue(
+            fx.datasourceStore.catalog(fx.datasource.id).none { it.schema == candidate },
+            "the probe schema must be absent from the catalog for this test to mean anything",
+        )
+        val ctx = decide("select id from $candidate.orders")
+        assertTrue(ctx.catalogMiss, "an unheld-schema statement must request a refetch, not stand on the partial catalog")
+        assertTrue(
+            candidate in ctx.schemaCandidates,
+            "the unheld schema must be named for the refetch, got ${ctx.schemaCandidates}",
+        )
     }
 }

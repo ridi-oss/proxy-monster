@@ -4,7 +4,9 @@ import com.google.protobuf.ByteString
 import com.ridi.oss.proxymonster.grpc.ControlRunMsg
 import com.ridi.oss.proxymonster.grpc.EnfAction
 import com.ridi.oss.proxymonster.grpc.ProxyRunMsg
+import com.ridi.oss.proxymonster.grpc.RunError
 import com.ridi.oss.proxymonster.grpc.controlRunMsg
+import com.ridi.oss.proxymonster.grpc.runError
 import com.ridi.oss.proxymonster.grpc.runCancel
 import com.ridi.oss.proxymonster.grpc.runClose
 import com.ridi.oss.proxymonster.grpc.runQuery
@@ -183,7 +185,26 @@ class ProxyStreamWedgedException : RunExecException("the proxy's event stream wo
 class ProxyRunTimeoutException(cause: Throwable? = null) :
     RunExecException("the proxy run channel timed out", cause)
 
-class ProxyRunException(message: String, cause: Throwable? = null) : RunExecException(message, cause)
+open class ProxyRunException(message: String, cause: Throwable? = null) : RunExecException(message, cause)
+
+// The target DB's own ERR for the executed statement. [message] is the RAW backend text (e.g.
+// `duplicate key value (ssn)=(123-45-6789)`) — never log or return it as-is; release [decidedMessage],
+// [redactedMessage], or toDiagnostic().
+class TargetDbRunException(
+    message: String,
+    val redactedMessage: String,
+    val sanitized: Boolean,
+    cause: Throwable? = null,
+) : ProxyRunException(message, cause) {
+    /** The form the run's own decision dictated: redacted when it sanitized diagnostics, raw otherwise. */
+    val decidedMessage: String get() = if (sanitized) redactedMessage else message.orEmpty()
+
+    fun toDiagnostic(): RunError = runError {
+        message = redactedMessage
+        rawMessage = this@TargetDbRunException.message.orEmpty()
+        targetDbError = true
+    }
+}
 
 class RunCanceledBeforeStartException : RunExecException("the run was canceled before it started")
 
@@ -611,6 +632,8 @@ class RunExecService(
                 message.hasServing() -> return
                 message.hasError() -> {
                     if (message.error.message == QUERY_TIMEOUT_MESSAGE) throw ProxyRunTimeoutException()
+                    // An open failure's text can echo the target host (`dial tcp 10.0.3.7:5432: …`) — routes
+                    // must log it, never surface it.
                     throw ProxyRunException(message.error.message.ifBlank { "proxy run open failed" })
                 }
                 else -> throw ProxyRunException("proxy sent a run response before it was ready to serve")
@@ -674,6 +697,15 @@ class RunExecService(
                     // A statement the proxy aborted at PM_QUERY_TIMEOUT carries an exact sentinel — attribute it
                     // as a timeout (→ query.proxy_timeout, task FAILED), never a generic failure or a success.
                     if (message.error.message == QUERY_TIMEOUT_MESSAGE) throw ProxyRunTimeoutException()
+                    // A target ERR implies the statement executed, so a decision must exist; a tagged error
+                    // with none (or after a DENY) is anomalous and falls through to the generic form.
+                    if (message.error.targetDbError && decision != null && action != EnfAction.DENY) {
+                        throw TargetDbRunException(
+                            message.error.rawMessage,
+                            message.error.message,
+                            sanitized = decision.sanitizeDiagnostics,
+                        )
+                    }
                     throw ProxyRunException(message.error.message.ifBlank { "proxy run execution failed" })
                 }
 

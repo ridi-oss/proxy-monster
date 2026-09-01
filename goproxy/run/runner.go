@@ -353,6 +353,12 @@ func (r *Runner) handleQuery(sess spi.TargetDbSession, stream runStream, query *
 			// Send the exact sentinel so the CP attributes a PM_QUERY_TIMEOUT abort, not a generic failure.
 			return sendError(stream, QueryTimeoutMessage)
 		}
+		var targetDbErr engine.TargetDbError
+		if errors.As(err, &targetDbErr) {
+			// The only failure the CP may surface as errorDetail: the target DB's own ERR for the executed
+			// statement. Send BOTH forms (raw + redacted symbol) so the CP re-gates it per viewer at view.
+			return sendTargetDbError(stream, targetDbErr.Message, targetDbErr.Redacted)
+		}
 		message := "query execution failed: " + err.Error()
 		if errors.Is(err, engine.ErrMaskUnbound) {
 			message = "mask binding failed: " + err.Error()
@@ -380,12 +386,13 @@ func sendDecision(stream runStream, decision *engine.Decision) bool {
 	}
 	return stream.Send(&pb.ProxyRunMsg{Kind: &pb.ProxyRunMsg_Decision{
 		Decision: &pb.RunDecision{
-			Decision:       action,
-			DecisionId:     decision.DecisionID,
-			MaskedColumns:  maskedColumns,
-			DenyReason:     decision.DenyReason,
-			EffectiveRoles:    append([]string(nil), decision.EffectiveRoles...),
-			ResultFingerprint: decision.ResultFingerprint,
+			Decision:            action,
+			DecisionId:          decision.DecisionID,
+			MaskedColumns:       maskedColumns,
+			DenyReason:          decision.DenyReason,
+			EffectiveRoles:      append([]string(nil), decision.EffectiveRoles...),
+			ResultFingerprint:   decision.ResultFingerprint,
+			SanitizeDiagnostics: decision.SanitizeDiagnostics,
 		},
 	}}) == nil
 }
@@ -415,8 +422,19 @@ func sendRows(stream runStream, columns []string, rows [][]*string) bool {
 	}
 }
 
+// sendError sends a terminal RunError whose provenance is NOT a target-DB statement ERR — every
+// proxy/decode/decision/mask-binding failure — so target_db_error stays false and the CP keeps it generic.
 func sendError(stream runStream, message string) bool {
-	payload := &pb.RunError{Message: message}
+	_ = stream.Send(&pb.ProxyRunMsg{Kind: &pb.ProxyRunMsg_Error{Error: &pb.RunError{Message: message}}})
+	return false
+}
+
+// sendTargetDbError sends the target DB's own ERR for the executed statement — the ONLY provenance the CP may
+// surface as a query's error detail. Message carries the value-free redacted form (the CP's safe default);
+// raw_message carries the raw text, released only to a viewer who reads unmasked. Both travel so the CP
+// re-gates per viewer at view time.
+func sendTargetDbError(stream runStream, raw, redacted string) bool {
+	payload := &pb.RunError{Message: redacted, TargetDbError: true, RawMessage: raw}
 	_ = stream.Send(&pb.ProxyRunMsg{Kind: &pb.ProxyRunMsg_Error{Error: payload}})
 	return false
 }

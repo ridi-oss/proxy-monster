@@ -27,6 +27,7 @@ import java.nio.file.StandardCopyOption
 object Sqlglot {
     private val linker = Linker.nativeLinker()
     private val analyzeStatementHandle: MethodHandle
+    private val splitStatementsHandle: MethodHandle
     private val sqlNormalizeHandle: MethodHandle
     private val freeHandle: MethodHandle
 
@@ -43,6 +44,17 @@ object Sqlglot {
                 // The native library supports 64-bit Darwin/Linux targets, where C size_t matches JAVA_LONG.
                 ValueLayout.JAVA_LONG, // reqLen
                 ValueLayout.ADDRESS,   // outLen (an out-parameter pointer this call writes the result length into)
+            ),
+        )
+        splitStatementsHandle = linker.downcallHandle(
+            lookup.find("SplitStatements").orElseThrow {
+                IllegalStateException("SplitStatements not exported by native lib")
+            },
+            FunctionDescriptor.of(
+                ValueLayout.ADDRESS,
+                ValueLayout.ADDRESS,
+                ValueLayout.JAVA_LONG,
+                ValueLayout.ADDRESS,
             ),
         )
         sqlNormalizeHandle = linker.downcallHandle(
@@ -71,6 +83,12 @@ object Sqlglot {
      * StatementFacts, so a malformed request yields a `resolved=false` message rather than an error.
      */
     fun analyzeStatement(requestBytes: ByteArray): ByteArray = callByteBufferHandle(analyzeStatementHandle, requestBytes)
+
+    /**
+     * Cut a multi-statement batch into its statements: a marshaled `analyzerv1.SplitRequest` in, a
+     * marshaled `analyzerv1.SplitResponse` out. Same raw-bytes convention as [analyzeStatement].
+     */
+    fun splitStatements(requestBytes: ByteArray): ByteArray = callByteBufferHandle(splitStatementsHandle, requestBytes)
 
     /**
      * The byte-buffer FFM calling convention [analyzeStatement] follows: one byte buffer in (a
@@ -125,7 +143,8 @@ object Sqlglot {
         }
     }
 
-    private fun hasWellFormedUtf16(s: String): Boolean {
+    /** Whether every surrogate in [s] is paired — an unpaired one encodes to `?`, changing the SQL. */
+    fun hasWellFormedUtf16(s: String): Boolean {
         var i = 0
         while (i < s.length) {
             val ch = s[i]

@@ -12,6 +12,7 @@ import com.ridi.oss.proxymonster.controlplane.PendingSession
 import com.ridi.oss.proxymonster.controlplane.ProxyRunException
 import com.ridi.oss.proxymonster.controlplane.ProxyRunTimeoutException
 import com.ridi.oss.proxymonster.controlplane.QueryResponse
+import com.ridi.oss.proxymonster.controlplane.TargetDbRunException
 import com.ridi.oss.proxymonster.controlplane.authz.CedarPolicyInput
 import com.ridi.oss.proxymonster.controlplane.support.SharedPostgres
 import com.ridi.oss.proxymonster.controlplane.support.requireDockerOrSkip
@@ -57,6 +58,7 @@ import java.util.concurrent.TimeUnit
 import javax.sql.DataSource
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertIs
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
@@ -313,6 +315,100 @@ class GrpcRunExecDbTest {
     }
 
     @Test
+    fun `a post-serving RunError tagged target_db_error becomes a surfaceable TargetDbRunException`() = runBlocking {
+        val failure = exchange("select from a missing table") { _, requests ->
+            requests.send(proxyRunMsg { decision = runDecision { decision = WireEnfAction.ALLOW } })
+            requests.send(
+                proxyRunMsg {
+                    error = runError {
+                        message = "ERROR: 42P01 undefined_table"
+                        targetDbError = true
+                        rawMessage = "ERROR: relation \"nope\" does not exist"
+                    }
+                },
+            )
+        }.exceptionOrNull()
+
+        // A tagged target-DB statement ERR that ran under a recorded ALLOW decision is the one provenance the
+        // CP may carry into error_detail — its raw form (raw_message) for a full reader, the redacted `message`
+        // for a masked viewer.
+        val tdbErr = assertIs<TargetDbRunException>(failure)
+        assertEquals("ERROR: relation \"nope\" does not exist", tdbErr.message, "raw text rides on the exception message")
+        assertEquals("ERROR: 42P01 undefined_table", tdbErr.redactedMessage, "the value-free form is the redacted field")
+        assertEquals(tdbErr.message, tdbErr.decidedMessage, "a decision that did not sanitize releases the raw form")
+        // toDiagnostic keeps the two forms in the right RunError fields — raw in raw_message, redacted in
+        // message — so the store persists both and the sync route / view release the correct one.
+        val diagnostic = tdbErr.toDiagnostic()
+        assertEquals("ERROR: relation \"nope\" does not exist", diagnostic.rawMessage)
+        assertEquals("ERROR: 42P01 undefined_table", diagnostic.message)
+        assertTrue(diagnostic.targetDbError)
+    }
+
+    @Test
+    fun `a sanitizing decision's target ERR releases only the redacted form as its decided message`() = runBlocking {
+        val failure = exchange("insert into users values (1)") { _, requests ->
+            requests.send(
+                proxyRunMsg {
+                    decision = runDecision {
+                        decision = WireEnfAction.MASK
+                        sanitizeDiagnostics = true
+                    }
+                },
+            )
+            requests.send(
+                proxyRunMsg {
+                    error = runError {
+                        message = "ERROR: 23505 unique_violation"
+                        targetDbError = true
+                        rawMessage = "ERROR: duplicate key value (ssn)=(123-45-6789)"
+                    }
+                },
+            )
+        }.exceptionOrNull()
+
+        val tdbErr = assertIs<TargetDbRunException>(failure)
+        assertEquals(tdbErr.redactedMessage, tdbErr.decidedMessage, "a sanitizing decision releases the redacted form")
+    }
+
+    @Test
+    fun `a target_db_error with no recorded decision does not surface the raw backend text`() = runBlocking {
+        // A target ERR implies the statement executed under an ALLOW/MASK decision. If the flag arrives with no
+        // decision frame (a protocol violation), the CP must not surface the raw text — it degrades to a generic
+        // failure carrying only the proxy's redacted `message`.
+        val failure = exchange("select from a missing table") { _, requests ->
+            requests.send(
+                proxyRunMsg {
+                    error = runError {
+                        message = "ERROR: 42P01 undefined_table"
+                        targetDbError = true
+                        rawMessage = "ERROR: relation \"nope\" does not exist"
+                    }
+                },
+            )
+        }.exceptionOrNull()
+
+        assertIs<ProxyRunException>(failure)
+        assertFalse(failure is TargetDbRunException, "a target ERR with no decision must not become surfaceable")
+        assertFalse(failure.message!!.contains("nope"), "the raw backend text must not surface without a decision")
+        assertEquals("ERROR: 42P01 undefined_table", failure.message, "only the proxy's redacted form")
+    }
+
+    @Test
+    fun `a post-serving RunError without target_db_error stays a generic ProxyRunException`() = runBlocking {
+        // A decode/decision/mask-binding failure the proxy also reports post-serving — no flag set.
+        val failure = exchange("select 1") { _, requests ->
+            requests.send(proxyRunMsg { error = runError { message = "decision failed: analyzer unavailable" } })
+        }.exceptionOrNull()
+
+        assertIs<ProxyRunException>(failure)
+        assertFalse(
+            failure is TargetDbRunException,
+            "a non-target post-serving failure must never be promoted to a TargetDbRunException",
+        )
+        assertEquals("decision failed: analyzer unavailable", failure.message)
+    }
+
+    @Test
     fun `no attached proxy returns the typed service-unavailable outcome and revokes its token`() = runBlocking {
         awaitUntil("no Events stream attached") { datasource.name !in core.proxyEventsHub.attached() }
         val failure = try {
@@ -477,6 +573,9 @@ class GrpcRunExecDbTest {
 
             val failure = withTimeout(5_000) { result.await() }.exceptionOrNull()
             assertIs<ProxyRunException>(failure)
+            // An open failure carries no target_db_error flag: its text can echo proxy-internal detail, so it
+            // must stay a generic ProxyRunException and never be promoted to a surfaceable TargetDbRunException.
+            assertFalse(failure is TargetDbRunException, "an open failure must never become a TargetDbRunException")
             assertEquals("target-DB connection failed: connection refused", failure.message)
             assertEquals(0, activeEditorTokens("open-err-user"), "a failed target-DB open must revoke its token")
             proxyRequests.close()

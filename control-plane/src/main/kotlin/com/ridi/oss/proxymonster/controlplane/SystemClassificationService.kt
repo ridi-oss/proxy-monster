@@ -132,7 +132,7 @@ class SystemClassificationService(
     }
 
     /**
-     * The `system:` tag id for a utility command id — `SHOW_PROCESSLIST` → `system:activity`,
+     * The `system:` tag id for a utility command id — `SHOW_CREATE_USER` → `system:critical`,
      * `SHOW_BINLOG_EVENTS` → `system:data-leak`, … — or null when no manifest governs the datasource. Unlike a
      * function, a null result does NOT mean "safe": the caller marshals the utility anyway, so an unclassified
      * recognized utility denies-by-default (Authz.authorizeUtilities).

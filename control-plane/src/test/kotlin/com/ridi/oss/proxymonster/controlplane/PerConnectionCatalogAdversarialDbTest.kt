@@ -4,6 +4,7 @@ import com.ridi.oss.proxymonster.grpc.EnfAction
 import com.ridi.oss.proxymonster.controlplane.authz.CedarPolicyInput
 import com.ridi.oss.proxymonster.controlplane.support.EnforcementFixture
 import com.ridi.oss.proxymonster.controlplane.support.PerConnectionCatalogFixture
+import com.ridi.oss.proxymonster.controlplane.support.SharedMySql
 import com.ridi.oss.proxymonster.controlplane.support.requireDocker
 import com.ridi.oss.proxymonster.grpc.schemaFragmentPush
 import kotlinx.coroutines.runBlocking
@@ -67,6 +68,10 @@ abstract class PerConnectionCatalogAdversarialDbContract {
     protected fun qualified(schema: String, table: String): String =
         if (fixture.datasource.engine.isMySql) "`$schema`.`$table`" else "\"$schema\".\"$table\""
 
+    /** A second schema on the target, holding its own `accounts` table; null when the engine fixture has
+     *  only one (the test that needs it then skips rather than asserting on a shape that does not exist). */
+    protected open fun secondSchema(): String? = null
+
     protected fun userSchema(): String = if (fixture.datasource.engine.isMySql) {
         fixture.datasource.dbName
     } else {
@@ -99,6 +104,40 @@ abstract class PerConnectionCatalogAdversarialDbContract {
             val blocked = decide(opened, "writer@example.com", "SELECT id FROM users", listOf(schema))
             assertIs<EnforcementOutcome.BeforeDecide>(blocked)
             assertEquals(afterDdl, auditCount(), "before_decide must not create an audit verdict")
+        }
+    }
+
+    // The cross-schema leak in its real shape: the connection holds only its search-path schema, and the
+    // statement names a SECOND schema that exists on the target. That statement cannot resolve against a
+    // catalog missing the schema, so it reaches the exception.unanalyzable gate — which relays VERBATIM AND
+    // UNMASKED. Nothing about it is unanalyzable except the absent catalog, so the decision must first ask
+    // for that schema and only then stand. Driven through decideConnection (not decideQuery) because the
+    // partial per-connection catalog IS the bug; a decideQuery test sees the whole stored catalog and can
+    // never observe it.
+    @Test
+    fun `a statement naming an unheld schema refetches it instead of relaying unmasked`() = runBlocking {
+        val second = secondSchema() ?: return@runBlocking
+        target().use { connectionTarget ->
+            val schema = userSchema()
+            val opened = openAndPush(connectionTarget, "analyst@example.com", listOf(schema))
+
+            val first = decide(opened, "analyst@example.com", "SELECT id FROM ${qualified(second, "accounts")}", listOf(schema))
+            val refetch = assertIs<EnforcementOutcome.BeforeDecide>(
+                first,
+                "an unheld schema must be requested, not relayed on a catalog that never held it",
+            )
+            assertContains(refetch.commands.map { it.schema }, second, "the unheld schema must be the one requested")
+
+            // Satisfy the refetch exactly as the proxy would, then re-decide: the statement now resolves, so
+            // the verdict is the column policy's — never the unmasked relay.
+            fixture.pushFromTarget(connectionTarget, opened.connectionId, second)
+            val retried = assertIs<EnforcementOutcome.Verdict>(
+                decide(opened, "analyst@example.com", "SELECT id FROM ${qualified(second, "accounts")}", listOf(schema)),
+            )
+            assertFalse(
+                retried.ctx.passthrough,
+                "after the refetch the statement resolves, so it must not relay as an unanalyzable passthrough",
+            )
         }
     }
 
@@ -195,6 +234,13 @@ abstract class PerConnectionCatalogAdversarialDbContract {
 class PerConnectionCatalogMysqlAdversarialDbTest : PerConnectionCatalogAdversarialDbContract() {
     override fun createEnforcement() = EnforcementFixture.mysql()
 
+    // A MySQL "database" IS a schema, so a second one is what makes a cross-schema statement — the shape a
+    // single-schema fixture cannot express — reachable on the priority engine. SharedMySql creates it and
+    // grants the test user, which the datasource's own non-root credentials cannot do.
+    private val second: String by lazy { SharedMySql.freshDatabase("pccat_second") }
+
+    override fun secondSchema() = second
+
     override fun configureFlagship() {
         val schema = enforcement.datasource.dbName
         target().use { c ->
@@ -202,6 +248,8 @@ class PerConnectionCatalogMysqlAdversarialDbTest : PerConnectionCatalogAdversari
                 st.execute("DROP TABLE IF EXISTS `$schema`.accounts")
                 st.execute("CREATE TABLE `$schema`.accounts (id BIGINT PRIMARY KEY)")
                 st.execute("INSERT INTO `$schema`.accounts VALUES (1)")
+                st.execute("CREATE TABLE `$second`.accounts (id BIGINT PRIMARY KEY)")
+                st.execute("INSERT INTO `$second`.accounts VALUES (2)")
                 st.execute("DROP PROCEDURE IF EXISTS pccat_refresh")
                 st.execute("CREATE PROCEDURE pccat_refresh() SELECT 1")
             }
@@ -332,6 +380,8 @@ class PerConnectionCatalogMysqlAdversarialDbTest : PerConnectionCatalogAdversari
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 class PerConnectionCatalogPostgresAdversarialDbTest : PerConnectionCatalogAdversarialDbContract() {
     override fun createEnforcement() = EnforcementFixture.postgres()
+
+    override fun secondSchema() = "restricted"
 
     override fun configureFlagship() {
         target().use { c ->

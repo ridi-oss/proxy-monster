@@ -60,7 +60,7 @@ class EditorTaskStoreDbTest {
     @Test
     fun `createEditorTask is born APPROVED as EDITOR with own roles and one child`() {
         val task = accessStore.createEditorTask(
-            principal = "alice@example.com", datasourceId = datasourceId, sql = "select id from t",
+            principal = "alice@example.com", datasourceId = datasourceId, statements = listOf("select id from t"),
             executeAs = listOf("analyst"), approver = "alice@example.com",
         )
         assertEquals("APPROVED", task.status)
@@ -117,13 +117,13 @@ class EditorTaskStoreDbTest {
     @Test
     fun `the born-APPROVED editor task runs the same single-execution status machine`() {
         val task = accessStore.createEditorTask(
-            "bob@example.com", datasourceId, "select id from t", listOf("analyst"), "bob@example.com",
+            "bob@example.com", datasourceId, listOf("select id from t"), listOf("analyst"), "bob@example.com",
         )
         assertTrue(accessStore.claimExecution(task.id), "APPROVED → EXECUTING")
         assertEquals("EXECUTING", accessStore.getRequest(task.id)?.status)
         assertFalse(accessStore.claimExecution(task.id), "a second claim on a non-APPROVED task loses")
 
-        assertEquals("RUNNING", resultStore.startRun(task.id, "bob@example.com")?.status)
+        assertEquals("RUNNING", resultStore.startNextRun(task.id, "bob@example.com")?.status)
         val done = resultStore.completeRun(task.id, result(), 3600) { conn, _ ->
             assertTrue(accessStore.markExecuted(task.id, conn))
         }
@@ -135,9 +135,9 @@ class EditorTaskStoreDbTest {
     @Test
     fun `deleteResultsForTask drops the child but leaves the task, idempotently`() {
         val task = accessStore.createEditorTask(
-            "carol@example.com", datasourceId, "select id from t", listOf("analyst"), "carol@example.com",
+            "carol@example.com", datasourceId, listOf("select id from t"), listOf("analyst"), "carol@example.com",
         )
-        resultStore.startRun(task.id, "carol@example.com")
+        resultStore.startNextRun(task.id, "carol@example.com")
         resultStore.completeRun(task.id, result(), 3600)
         assertEquals(1, resultStore.deleteResultsForTask(task.id))
         assertEquals(0, childCount(task.id))
@@ -148,14 +148,14 @@ class EditorTaskStoreDbTest {
     @Test
     fun `deleteEditorResultsForPrincipal drops only that principal's editor children`() {
         val mine = accessStore.createEditorTask(
-            "dave@example.com", datasourceId, "select id from t", listOf("analyst"), "dave@example.com",
+            "dave@example.com", datasourceId, listOf("select id from t"), listOf("analyst"), "dave@example.com",
         )
         val other = accessStore.createEditorTask(
-            "erin@example.com", datasourceId, "select id from t", listOf("analyst"), "erin@example.com",
+            "erin@example.com", datasourceId, listOf("select id from t"), listOf("analyst"), "erin@example.com",
         )
         // A WORKFLOW task (creator_kind != EDITOR) owned by dave must be untouched by the editor-scoped delete.
         val workflow = accessStore.createQueryRequest(
-            principal = "dave@example.com", datasourceId = datasourceId, sql = "select id from t",
+            principal = "dave@example.com", datasourceId = datasourceId, statements = listOf("select id from t"),
             denyReason = null, sourceDecisionId = null, reason = "r", title = "t", evaluatedDecision = "MASK",
         )
 
@@ -168,10 +168,10 @@ class EditorTaskStoreDbTest {
     @Test
     fun `purgeExpiredEditorChildren deletes only expired editor children`() {
         val expired = accessStore.createEditorTask(
-            "frank@example.com", datasourceId, "select id from t", listOf("analyst"), "frank@example.com",
+            "frank@example.com", datasourceId, listOf("select id from t"), listOf("analyst"), "frank@example.com",
         )
         val live = accessStore.createEditorTask(
-            "grace@example.com", datasourceId, "select id from t", listOf("analyst"), "grace@example.com",
+            "grace@example.com", datasourceId, listOf("select id from t"), listOf("analyst"), "grace@example.com",
         )
         expireChild(expired.id)
         assertEquals(1, resultStore.purgeExpiredEditorChildren())
@@ -182,7 +182,7 @@ class EditorTaskStoreDbTest {
     @Test
     fun `deleteEditorTask cascades the child and is owner + EDITOR scoped`() {
         val task = accessStore.createEditorTask(
-            "heidi@example.com", datasourceId, "select id from t", listOf("analyst"), "heidi@example.com",
+            "heidi@example.com", datasourceId, listOf("select id from t"), listOf("analyst"), "heidi@example.com",
         )
         assertFalse(accessStore.deleteEditorTask(task.id, "mallory@example.com"), "a non-owner cannot delete it")
         assertTrue(childCount(task.id) == 1 && accessStore.getRequest(task.id) != null)

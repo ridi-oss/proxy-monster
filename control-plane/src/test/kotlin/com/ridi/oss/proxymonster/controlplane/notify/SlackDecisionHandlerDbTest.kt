@@ -67,7 +67,7 @@ class SlackDecisionHandlerDbTest {
     }
 
     private fun pendingRequest(): Long = fx.accessStore.createQueryRequest(
-        principal = requester, datasourceId = fx.datasource.id, sql = "SELECT id FROM users",
+        principal = requester, datasourceId = fx.datasource.id, statements = listOf("SELECT id FROM users"),
         denyReason = null, sourceDecisionId = null, reason = "need it", title = "read users",
         evaluatedDecision = "ALLOW", roleId = roleId,
     ).id

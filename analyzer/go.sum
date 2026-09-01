@@ -1,6 +1,14 @@
 github.com/google/go-cmp v0.7.0 h1:wk8382ETsv4JYUZwIsn6YpYiWiBsYLSJiTsyBybVuN8=
 github.com/google/go-cmp v0.7.0/go.mod h1:pXiqmnSA92OHEEa9HXL2W4E7lf9JzCmGVUdgjX3N/iU=
-github.com/ridi-oss/sqlglot-go v0.24.0 h1:dq25mbuMyRk2xMZqrw77WUARppsEMhckbuTGQf6uwMY=
-github.com/ridi-oss/sqlglot-go v0.24.0/go.mod h1:uj8jRoyYvCZFR94rVzQs6s5xCKkOqZXlf6Ye9dCXNFE=
+github.com/ridi-oss/sqlglot-go v0.27.0 h1:bJXqEfVwKbfp4SSw9d2PGkOaasLFXM5+6zTgJN3z9go=
+github.com/ridi-oss/sqlglot-go v0.27.0/go.mod h1:uj8jRoyYvCZFR94rVzQs6s5xCKkOqZXlf6Ye9dCXNFE=
+github.com/ridi-oss/sqlglot-go v0.28.1 h1:UCKb7gOFU259L3AEsyjcSkjnmfB6HEfz2/Nvz9tENEo=
+github.com/ridi-oss/sqlglot-go v0.28.1/go.mod h1:uj8jRoyYvCZFR94rVzQs6s5xCKkOqZXlf6Ye9dCXNFE=
+github.com/ridi-oss/sqlglot-go v0.28.2 h1:ifFPUa55JRDqru6Bii0ICJKe+5Qyc/dq2eytabg9gPg=
+github.com/ridi-oss/sqlglot-go v0.28.2/go.mod h1:uj8jRoyYvCZFR94rVzQs6s5xCKkOqZXlf6Ye9dCXNFE=
+github.com/ridi-oss/sqlglot-go v0.28.3 h1:UvEUuLs5ChgqguxiRkNmKjJ309bvz63Afhdl9wlHSdE=
+github.com/ridi-oss/sqlglot-go v0.28.3/go.mod h1:uj8jRoyYvCZFR94rVzQs6s5xCKkOqZXlf6Ye9dCXNFE=
+github.com/ridi-oss/sqlglot-go v0.29.0 h1:57pno9UcLVeyNpsyxJMoWdGWkc97N/QEB6NqBU3o7rA=
+github.com/ridi-oss/sqlglot-go v0.29.0/go.mod h1:uj8jRoyYvCZFR94rVzQs6s5xCKkOqZXlf6Ye9dCXNFE=
 google.golang.org/protobuf v1.36.11 h1:fV6ZwhNocDyBLK0dj+fg8ektcVegBBuEolpbTQyBNVE=
 google.golang.org/protobuf v1.36.11/go.mod h1:HTf+CrKn2C3g5S8VImy6tdcUvCska2kB7j23XfzDpco=

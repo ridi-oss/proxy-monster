@@ -35,37 +35,44 @@ type Backend interface {
 type Server struct {
 	backend Backend
 	ln      net.Listener
+	sockets []string
 	srv     *http.Server
 }
 
-// Listen binds the control socket, recovering from a stale one left by a killed daemon.
-//
-// A crashed daemon leaves the socket file behind, so bind fails with EADDRINUSE. The disambiguation is the
-// pid lock, not a connect probe: this is called by a daemon that has ALREADY taken the lock, so any socket
-// file present now is necessarily stale and safe to unlink.
+// Listen binds the control socket, recovering from stale paths after the caller takes the daemon lock.
 func Listen(backend Backend) (*Server, error) {
 	if _, err := state.EnsureDir(); err != nil {
 		return nil, err
 	}
-	sock, err := state.SocketPath()
+	sockets, err := state.SocketPaths()
 	if err != nil {
 		return nil, err
 	}
-	if err := os.Remove(sock); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return nil, fmt.Errorf("could not clear the stale control socket %s: %w", sock, err)
+	canonical := sockets[0]
+	if err := os.Remove(canonical); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return nil, fmt.Errorf("could not clear the stale control socket %s: %w", canonical, err)
 	}
-	ln, err := net.Listen("unix", sock)
+	ln, err := net.Listen("unix", canonical)
 	if err != nil {
-		return nil, fmt.Errorf("listen %s: %w", sock, err)
+		return nil, fmt.Errorf("listen %s: %w", canonical, err)
 	}
-	// Belt to the directory's 0700: even if the directory mode were loosened, the socket itself stays
-	// owner-only. Together with the directory, this IS the control API's authentication.
-	if err := os.Chmod(sock, 0o600); err != nil {
+	if err := os.Chmod(canonical, 0o600); err != nil {
 		ln.Close()
-		return nil, fmt.Errorf("chmod %s: %w", sock, err)
+		os.Remove(canonical)
+		return nil, fmt.Errorf("chmod %s: %w", canonical, err)
+	}
+	activeSockets := []string{canonical}
+	for _, alias := range sockets[1:] {
+		if err := os.Remove(alias); err != nil && !errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err := os.Symlink(canonical, alias); err != nil {
+			continue
+		}
+		activeSockets = append(activeSockets, alias)
 	}
 
-	s := &Server{backend: backend, ln: ln}
+	s := &Server{backend: backend, ln: ln, sockets: activeSockets}
 	mux := http.NewServeMux()
 	mux.HandleFunc(PathStatus, s.handleStatus)
 	mux.HandleFunc(PathLogin, s.handleLogin)
@@ -92,11 +99,15 @@ func (s *Server) Serve(ctx context.Context) error {
 	return err
 }
 
-// Close stops serving and removes the socket file.
+// Close stops serving and removes the socket paths.
 func (s *Server) Close() {
 	s.srv.Close()
-	if sock, err := state.SocketPath(); err == nil {
-		os.Remove(sock)
+	removeSockets(s.sockets)
+}
+
+func removeSockets(sockets []string) {
+	for _, socket := range sockets {
+		os.Remove(socket)
 	}
 }
 

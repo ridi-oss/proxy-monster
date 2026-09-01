@@ -18,3 +18,9 @@ control-plane/src/test/resources/atrail/
 # repo's style would be undone on the next release, and the mismatch fails `verify` on every release PR.
 CHANGELOG.md
 **/CHANGELOG.md
+
+# Rewritten unwrapped by `next dev` on every start (next/dist/server/lib/generate-agent-files.js), so
+# wrapping them to proseWrap:always is undone the next time anyone runs the console — same bind as the
+# release-please files above.
+web/AGENTS.md
+web/CLAUDE.md

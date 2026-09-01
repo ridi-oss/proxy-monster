@@ -6,6 +6,7 @@ syntax = "proto3";
 package proxymonster.v1;
 
 import "engine.proto";
+import "analyzer.proto";
 import "google/protobuf/empty.proto";
 
 option java_package = "com.ridi.oss.proxymonster.grpc";
@@ -259,6 +260,11 @@ message Verdict {
   // decision and NOT latched: the control plane sets it on any decision whose diagnostics could carry a
   // protected value. A blanket bool, deliberately DENY-inclusive and whole-row-safe.
   bool sanitize_diagnostics = 10;
+  // The decision's authorization requirements (the analyzer's result-read grants). The proxy does not read
+  // them — like decision_id, it echoes them back on RunDecision purely so an execute-under-R run freezes
+  // them with the stored result and a later view can deny authorization drift (the control-plane result-view
+  // gate). Empty for a decision that needs no result-read grants.
+  repeated proxymonster.analyzer.v1.RequireResultReadGrant result_fingerprint = 11;
 }
 message BeforeDecide {
   repeated ProxyCommand commands = 1;
@@ -352,6 +358,13 @@ message RunDecision {
   repeated string masked_columns = 3;
   string deny_reason = 4;
   repeated string effective_roles = 5;
+  // The decision's authorization requirements (the analyzer's result-read grants), forwarded from
+  // Verdict.result_fingerprint. An execute-under-R run freezes them with the stored result so a later view
+  // denies authorization drift.
+  repeated proxymonster.analyzer.v1.RequireResultReadGrant result_fingerprint = 6;
+  // Verdict.sanitize_diagnostics echoed back, so the caller returns the failure form the decision
+  // dictated: redacted when set, raw otherwise.
+  bool sanitize_diagnostics = 7;
 }
 message RunResultRows {
   repeated string columns = 1;
@@ -366,12 +379,23 @@ message RunValue {
   bool is_null = 2;
 }
 message RunDone { int32 rows_affected = 1; }   // -1 when not applicable (a SELECT)
+// A run's terminal error. Also the at-rest form of a failed run's diagnostic: for a target-DB failure the
+// control-plane serializes this whole message (protobuf) and AES-GCM encrypts it into
+// query_result.error_detail, re-gated per viewer at view time — same field semantics on the wire and at rest.
 message RunError {
+  // For a target-DB statement ERR (target_db_error) this is the REDACTED, value-free message (essno +
+  // SQLSTATE + symbol, no echoed value); for every other failure it is the plain error text. The safe
+  // default the control-plane surfaces — the raw form is opt-in via raw_message.
   string message = 1;
-  // Set ONLY for a genuine target-DB statement ERR (already diagnostic-redacted); false for every
-  // proxy/control-plane/decode/decision/mask-binding failure. Gates whether the control-plane may surface
-  // the message as a query's error detail (docs/diagnostic-redaction.md).
+  // Set ONLY for a genuine target-DB statement ERR; false for every proxy/control-plane/decode/decision/
+  // mask-binding failure. Gates whether the control-plane may surface an error detail at all
+  // (docs/diagnostic-redaction.md).
   bool target_db_error = 2;
+  // Set ONLY for a target-DB statement ERR: the RAW backend message, which can echo a protected value. The
+  // control-plane stores it beside the redacted [message] and releases it only to a viewer who reads
+  // unmasked — a stored failure is re-gated per viewer like the rows, and an error string cannot be masked
+  // by ordinal.
+  string raw_message = 3;
 }
 
 // ---- Admin table-browser introspection channel ----

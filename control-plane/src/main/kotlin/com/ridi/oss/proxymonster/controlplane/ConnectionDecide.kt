@@ -120,7 +120,12 @@ suspend fun decideConnection(
         ctx
     }
     val afterStatement = if (effectiveCtx.action != EnfAction.DENY && effectiveCtx.catalogChanging) {
-        core.connectionCatalog.markAfterStatement(connection, required + effectiveCtx.referencedSchemas)
+        // schemaCandidates too: DDL reads no column, so its target schema appears in no source or read
+        // grant, and a cross-schema `ALTER` would leave the schema it just changed held and stale.
+        core.connectionCatalog.markAfterStatement(
+            connection,
+            required + effectiveCtx.referencedSchemas + effectiveCtx.schemaCandidates,
+        )
     } else {
         emptyList()
     }

@@ -23,13 +23,18 @@ type FailError struct{ Message string }
 
 func (e FailError) Error() string { return e.Message }
 
-// TargetDbError marks an error as the target DB's own ERR response for the executed statement, already
-// passed through the diagnostic redactor. It is the ONLY error provenance the control-plane may surface as
-// a query's error detail; every proxy/decode/decision/mask-binding failure stays unwrapped and generic.
-type TargetDbError struct{ Err error }
+// TargetDbError marks an error as the target DB's own ERR response for the executed statement. It is the
+// ONLY error provenance the control-plane may surface as a query's error detail; every proxy/decode/decision/
+// mask-binding failure stays unwrapped and generic. A run result is stored and re-gated per viewer, so it
+// carries BOTH forms: [Message] is the raw target-DB text (released to a viewer who reads unmasked) and
+// [Redacted] is the diagnostic-redacted symbol (released to a viewer whose context masks). See
+// docs/diagnostic-redaction.md.
+type TargetDbError struct {
+	Message  string
+	Redacted string
+}
 
-func (e TargetDbError) Error() string { return e.Err.Error() }
-func (e TargetDbError) Unwrap() error { return e.Err }
+func (e TargetDbError) Error() string { return e.Message }
 
 // ServeStatement authorizes, executes, and conditionally runs after-statement refetch commands.
 func ServeStatement(

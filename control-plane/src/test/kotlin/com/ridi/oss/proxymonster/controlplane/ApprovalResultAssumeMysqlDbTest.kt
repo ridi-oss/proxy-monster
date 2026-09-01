@@ -72,6 +72,17 @@ class ApprovalResultAssumeMysqlDbTest {
         context = AuthzContext(requesterIp = ip),
     )
 
+    private fun viewerCtx(
+        childSql: String?,
+        ip: String,
+        req: AccessRequest = request(),
+        channel: Channel = Channel.WORKFLOW_VIEWER,
+    ) = viewerDecision(
+        requester, req, childSql, AuthzContext(requesterIp = ip),
+        fx.datasourceStore, fx.policyStore, fx.accessStore, fx.userGroupStore, fx.roleResolver, fx.authz,
+        null, channel,
+    )!!
+
     private fun request() = AccessRequest(
         id = 1,
         principal = requester,
@@ -106,40 +117,19 @@ class ApprovalResultAssumeMysqlDbTest {
                 ),
             ),
         )
-        val decrypted = DecryptedResult(listOf("ssn"), listOf(listOf(rawSsn)))
-
-        val trusted = decideResultView(
-            viewer = requester,
-            req = request(),
-            childSql = request().sql,
-            ds = datasource,
-            decrypted = decrypted,
-            callerContext = AuthzContext(requesterIp = "100.100.1.10"),
-            datasourceStore = fx.datasourceStore,
-            policyStore = fx.policyStore,
-            accessStore = fx.accessStore,
-            userGroupStore = fx.userGroupStore,
-            roleResolver = fx.roleResolver,
-            authz = fx.authz,
-            systemClassification = null,
+        // Freeze the execution-time requirement digest the way the real run does (R executing on the trusted
+        // network), so the view's re-decision matches and the masks bind (an empty digest would fail closed as
+        // a pre-fingerprint legacy result).
+        val decrypted = DecryptedResult(
+            listOf("ssn"),
+            listOf(listOf(rawSsn)),
+            resultFingerprint = fingerprintOf(decide(Channel.WORKFLOW_EXECUTOR, "100.100.1.10").resultFingerprint),
         )
+
+        val trusted = decideResultView(viewerCtx(request().sql, "100.100.1.10"), decrypted)
         assertEquals(rawSsn, assertIs<ResultViewDecision.Allowed>(trusted).rows.single().single())
 
-        val outside = decideResultView(
-            viewer = requester,
-            req = request(),
-            childSql = request().sql,
-            ds = datasource,
-            decrypted = decrypted,
-            callerContext = AuthzContext(requesterIp = "100.99.1.10"),
-            datasourceStore = fx.datasourceStore,
-            policyStore = fx.policyStore,
-            accessStore = fx.accessStore,
-            userGroupStore = fx.userGroupStore,
-            roleResolver = fx.roleResolver,
-            authz = fx.authz,
-            systemClassification = null,
-        )
+        val outside = decideResultView(viewerCtx(request().sql, "100.99.1.10"), decrypted)
         assertEquals(maskedSsn, assertIs<ResultViewDecision.Allowed>(outside).rows.single().single())
     }
 
@@ -174,7 +164,7 @@ class ApprovalResultAssumeMysqlDbTest {
         // authorizes it, "authorized to run" is "authorized to see": the stored bytes are released verbatim
         // rather than fail-closing on "re-decided as passthrough".
         val ddl = "CREATE TABLE `users` (\n  `ssn` varchar(20) DEFAULT NULL\n)"
-        val stored = DecryptedResult(listOf("Table", "Create Table"), listOf(listOf("users", ddl)))
+        val stored = DecryptedResult(listOf("Table", "Create Table"), listOf(listOf("users", ddl)), resultFingerprint = fingerprintOf(emptyList()))
         val redecide = decideQuery(
             principal = requester, ds = datasource, sql = "SHOW CREATE TABLE users", channel = Channel.EDITOR,
             catalog = fx.datasourceStore.catalog(datasource.id), policyStore = fx.policyStore,
@@ -184,22 +174,7 @@ class ApprovalResultAssumeMysqlDbTest {
         assertEquals(EnfAction.ALLOW, redecide.action)
         assertTrue(redecide.passthrough, "SHOW CREATE TABLE re-decides as a passthrough")
 
-        val view = decideResultView(
-            viewer = requester,
-            req = request(),
-            childSql = "SHOW CREATE TABLE users",
-            ds = datasource,
-            decrypted = stored,
-            callerContext = AuthzContext(requesterIp = "100.99.1.10"),
-            datasourceStore = fx.datasourceStore,
-            policyStore = fx.policyStore,
-            accessStore = fx.accessStore,
-            userGroupStore = fx.userGroupStore,
-            roleResolver = fx.roleResolver,
-            authz = fx.authz,
-            systemClassification = null,
-            channel = Channel.EDITOR,
-        )
+        val view = decideResultView(viewerCtx("SHOW CREATE TABLE users", "100.99.1.10", channel = Channel.EDITOR), stored)
         val allowed = assertIs<ResultViewDecision.Allowed>(view)
         assertEquals(listOf("Table", "Create Table"), allowed.columns)
         assertEquals(listOf(listOf("users", ddl)), allowed.rows)
@@ -212,22 +187,13 @@ class ApprovalResultAssumeMysqlDbTest {
         // role with no datasource.connect on this system:production datasource, SHOW CREATE TABLE re-decides
         // DENY at the Cedar connect gate, so the view refuses it — the DENY branch, not a blanket passthrough
         // deny. (Contrast the released-as-is case above, which runs under the connect-holding {R}.)
-        val stored = DecryptedResult(listOf("Table", "Create Table"), listOf(listOf("users", "CREATE TABLE `users` ()")))
+        val stored = DecryptedResult(listOf("Table", "Create Table"), listOf(listOf("users", "CREATE TABLE `users` ()")), resultFingerprint = fingerprintOf(emptyList()))
         val view = decideResultView(
-            viewer = requester,
-            req = request().copy(roleName = "system:development-viewer", executeAs = listOf("system:development-viewer")),
-            childSql = "SHOW CREATE TABLE users",
-            ds = datasource,
-            decrypted = stored,
-            callerContext = AuthzContext(requesterIp = "100.99.1.10"),
-            datasourceStore = fx.datasourceStore,
-            policyStore = fx.policyStore,
-            accessStore = fx.accessStore,
-            userGroupStore = fx.userGroupStore,
-            roleResolver = fx.roleResolver,
-            authz = fx.authz,
-            systemClassification = null,
-            channel = Channel.EDITOR,
+            viewerCtx(
+                "SHOW CREATE TABLE users", "100.99.1.10", channel = Channel.EDITOR,
+                req = request().copy(roleName = "system:development-viewer", executeAs = listOf("system:development-viewer")),
+            ),
+            stored,
         )
         assertIs<ResultViewDecision.Denied>(view)
     }
@@ -236,23 +202,8 @@ class ApprovalResultAssumeMysqlDbTest {
     fun `a passthrough result with a mismatched row width is refused`() {
         // The passthrough release path's structural check: stored bytes whose row width does not match the
         // column count are refused rather than released (two columns, a one-cell row).
-        val stored = DecryptedResult(listOf("Table", "Create Table"), listOf(listOf("users")))
-        val view = decideResultView(
-            viewer = requester,
-            req = request(),
-            childSql = "SHOW CREATE TABLE users",
-            ds = datasource,
-            decrypted = stored,
-            callerContext = AuthzContext(requesterIp = "100.99.1.10"),
-            datasourceStore = fx.datasourceStore,
-            policyStore = fx.policyStore,
-            accessStore = fx.accessStore,
-            userGroupStore = fx.userGroupStore,
-            roleResolver = fx.roleResolver,
-            authz = fx.authz,
-            systemClassification = null,
-            channel = Channel.EDITOR,
-        )
+        val stored = DecryptedResult(listOf("Table", "Create Table"), listOf(listOf("users")), resultFingerprint = fingerprintOf(emptyList()))
+        val view = decideResultView(viewerCtx("SHOW CREATE TABLE users", "100.99.1.10", channel = Channel.EDITOR), stored)
         assertIs<ResultViewDecision.Denied>(view)
     }
 }

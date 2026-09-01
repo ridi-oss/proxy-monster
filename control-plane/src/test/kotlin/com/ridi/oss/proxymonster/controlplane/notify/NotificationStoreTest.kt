@@ -45,7 +45,7 @@ class NotificationStoreTest {
     /** A fresh access_request the outbox rows can FK to. */
     private fun newTask(principal: String = "req@example.com"): Long =
         fx.accessStore.createQueryRequest(
-            principal = principal, datasourceId = fx.datasource.id, sql = "SELECT 1",
+            principal = principal, datasourceId = fx.datasource.id, statements = listOf("SELECT 1"),
             denyReason = null, sourceDecisionId = null, reason = "r", title = "t", evaluatedDecision = "ALLOW",
         ).id
 

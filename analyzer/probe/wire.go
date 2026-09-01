@@ -53,6 +53,32 @@ func AnalyzeStatementSafe(reqBytes []byte) (out []byte) {
 	return out
 }
 
+// SplitStatementsSafe is the panic-safe FFI entry point for the batch split: anything that goes wrong
+// becomes an encoded ok=false, never a panic crossing into the JVM.
+func SplitStatementsSafe(reqBytes []byte) (out []byte) {
+	defer func() {
+		if r := recover(); r != nil {
+			out = splitFailure
+		}
+	}()
+	var req pb.SplitRequest
+	if err := proto.Unmarshal(reqBytes, &req); err != nil {
+		return splitFailure
+	}
+	statements, ok := SplitStatements(req.GetSql(), req.GetEngineConfig())
+	if !ok {
+		return splitFailure
+	}
+	encoded, err := proto.Marshal(&pb.SplitResponse{Ok: true, Statements: statements})
+	if err != nil {
+		return splitFailure
+	}
+	return encoded
+}
+
+// The encoded fail-closed SplitResponse, computed once so the failure path never has to marshal.
+var splitFailure = must(proto.Marshal(&pb.SplitResponse{Ok: false}))
+
 // marshalErrorFallback is a statically-valid encoded fail-closed StatementFacts, computed once so
 // mustFailProto never has to marshal twice on the (essentially unreachable) path where encoding the
 // real failure result itself errors — proto.Marshal on a well-formed message practically never

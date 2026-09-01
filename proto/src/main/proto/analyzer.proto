@@ -82,6 +82,29 @@ message AnalyzeRequest {
   EngineConfig engine_config = 6;
 }
 
+// Cut a multi-statement batch into its individual statements at the dialect's own semicolon tokens,
+// so a `;` inside a literal, a quoted identifier, a comment, or a dollar-quoted body is not a
+// boundary. The batch surfaces (the approval workflow, the editor) split here rather than in the
+// client, so the statement boundary the control-plane stores, hashes, and authorizes is the
+// engine's, not a caller's guess.
+message SplitRequest {
+  string sql = 1;
+  // The dialect decides where a statement ends, so this is the same config analysis uses: MySQL's
+  // version gates executable comments (`/*!80000 OR 1=1 */` is SQL the server runs) and ansi_quotes
+  // decides whether `"a;b"` is one literal or a boundary. An engine-invalid config fails closed.
+  EngineConfig engine_config = 2;
+}
+
+// Each statement is a verbatim slice of the request's sql (trimmed, terminator dropped) — never
+// regenerated text, so what is stored and authorized is exactly what the caller wrote. [ok] false
+// leaves [statements] empty and means the batch could not be split safely (bad dialect, invalid
+// UTF-8, an embedded NUL, a tokenizer failure, or no statement at all); the caller denies rather
+// than falling back to its own split.
+message SplitResponse {
+  bool ok = 1;
+  repeated string statements = 2;
+}
+
 // ---- response side ----
 
 // One physical target-DB relation the statement scans (docs/facts-emission.md). catalog/schema/table
@@ -309,6 +332,10 @@ enum StatementKind {
   // admin.unanalyzable (opaque; the analyzer cannot decompose)
   STATEMENT_KIND_HANDLER = 136;
   STATEMENT_KIND_XA = 137;
+
+  // session — a statement with no statements: "" / ";" / comment-only. Touches nothing; each
+  // engine's target answers natively (PostgreSQL EmptyQueryResponse, MySQL ER_EMPTY_QUERY or OK).
+  STATEMENT_KIND_EMPTY = 141;
 }
 
 // The security class of an unresolved statement. The zero value is invalid and must hard-deny.
@@ -375,6 +402,15 @@ message RequireResultReadGrant {
   repeated int32 output_ordinals = 6;
 }
 
+// The authorization requirements that identify a stored execute-under-R result — the same result-read
+// grants the analyzer emits. The control-plane serializes this and freezes the bytes with the result, then
+// re-serializes the live re-decision at view time and denies on any difference (a schema/namespace change
+// that would rebind a mask onto a different stored column). Serialized as an opaque payload the proxy just
+// carries; only the control-plane reads it.
+message ResultFingerprint {
+  repeated RequireResultReadGrant grants = 1;
+}
+
 message StatementFacts {
   // True only after complete statement analysis. False requires a non-zero failure_class.
   bool resolved = 1;
@@ -425,5 +461,8 @@ message StatementFacts {
   // statement TEXT may be shown outside the console, never whether the statement runs. Absence never
   // implies safety -- a consumer treats an unanalyzable statement as if it carried one.
   repeated PredicateLiteral predicate_literals = 18;
+  // The columns this statement's target-DB diagnostic could echo: the referenced columns, plus a
+  // PostgreSQL write's whole target row (`DETAIL: Failing row contains (…)`). Empty = nothing to redact.
+  repeated ColumnResource diagnostic_leak_columns = 19;
 
 }

@@ -2223,3 +2223,44 @@ func (c *rawClient) drainResult(t *testing.T) {
 		}
 	}
 }
+
+func TestEmptyQueryDecidesAndRelaysNatively(t *testing.T) {
+	h := startBroker(t)
+	client := openRawClient(t, h.addr, validToken)
+
+	for _, tc := range []struct {
+		name    string
+		sql     string
+		wantErr uint16
+	}{
+		{name: "blank", sql: "   ", wantErr: 1065},
+		{name: "semicolon", sql: ";", wantErr: 1065},
+		{name: "comment-only", sql: "-- just a comment"},
+		{name: "hash-comment", sql: "# just a comment"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			before := h.fake.requests()
+			if err := mysqlwire.WritePacket(client.conn, 0, mysqlwire.ComQueryPayload(tc.sql)); err != nil {
+				t.Fatalf("write query: %v", err)
+			}
+			_, first, err := mysqlwire.ReadPacket(client.conn)
+			if err != nil {
+				t.Fatalf("read result: %v", err)
+			}
+			if tc.wantErr != 0 {
+				if len(first) < 3 || first[0] != 0xff || binary.LittleEndian.Uint16(first[1:3]) != tc.wantErr {
+					t.Fatalf("%q: response = %x, want native ERR %d", tc.sql, first, tc.wantErr)
+				}
+			} else if len(first) == 0 || first[0] != 0x00 {
+				t.Fatalf("%q: response = %x, want OK", tc.sql, first)
+			}
+			after := h.fake.requests()
+			if len(after) != len(before)+1 {
+				t.Fatalf("Decide requests = %d, want %d (empty statements are decided, not bypassed)", len(after), len(before)+1)
+			}
+			if got := after[len(after)-1].GetSql(); got != tc.sql {
+				t.Fatalf("Decide saw %q, want %q", got, tc.sql)
+			}
+		})
+	}
+}

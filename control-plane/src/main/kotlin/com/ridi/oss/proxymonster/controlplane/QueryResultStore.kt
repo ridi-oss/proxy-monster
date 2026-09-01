@@ -1,5 +1,13 @@
 package com.ridi.oss.proxymonster.controlplane
 
+import com.ridi.oss.proxymonster.analyzer.pb.ResultFingerprint
+import com.google.protobuf.InvalidProtocolBufferException
+import com.ridi.oss.proxymonster.storage.StoredResult
+import com.ridi.oss.proxymonster.grpc.RunError
+import com.ridi.oss.proxymonster.grpc.runResultRows
+import com.ridi.oss.proxymonster.grpc.runRow
+import com.ridi.oss.proxymonster.grpc.runValue
+import com.ridi.oss.proxymonster.storage.storedResult
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.builtins.serializer
@@ -14,6 +22,9 @@ import org.postgresql.util.PGobject
 @Serializable
 data class QueryResultMeta(
     val taskId: Long,
+    // The statement's 0-based position in its task's batch. A single-statement task has only ordinal 0.
+    val ordinal: Int = 0,
+    val sql: String? = null,
     val executedBy: String? = null,
     val executedAt: String? = null,
     val rowCount: Int? = null,
@@ -35,35 +46,72 @@ data class DecryptedResult(
     // The backend's own affected-row count for a DML statement (UPDATE/INSERT/DELETE), which has no result
     // set of its own. Null for a statement that returns rows (e.g. SELECT), where [rows].size IS the count.
     val rowsAffected: Int? = null,
+    // The executed decision's requirements (ResultFingerprint), frozen with the bytes so a view denies drift
+    // ([decideResultView]). NULL for a result stored before this field existed (legacy) — distinct from a
+    // present-but-empty fingerprint (a genuine passthrough result), so a legacy view always fails closed
+    // rather than being mistaken for a grant-less passthrough and released raw.
+    @Serializable(with = ResultFingerprintSerializer::class)
+    val resultFingerprint: ResultFingerprint? = null,
 )
 
 /**
- * A single-read snapshot of a task's latest result child: its [meta], the child's own [sql] (the exact
- * statement that produced the ciphertext), plus a payload that is decrypted lazily. Capturing [sql] and the
- * ciphertext from the SAME child in one read is what lets the view re-decide the released bytes against
- * their own statement — not the task's first-child SQL, which can diverge once a task holds plural children.
- * Decryption is deferred to the first read of [decrypted], so a caller that rejects on [meta] alone — an
- * unauthorized viewer, or a not-ready status — never triggers the decrypt. The ciphertext and meta are
- * captured by one read in [QueryResultStore.accessFor], so a concurrent re-execute cannot swap the row
- * between an authorization check on [meta] and this decrypt.
- *
- * [errorDetail] is the FAILED run's target-DB error text, encrypted at rest like the rows and decrypted the
- * same way — lazily, after the same task.assume gate the rows are released behind. Null unless the child is a
- * target-DB failure that carried one (and not yet expired).
+ * A one-read snapshot of a task's latest result child, so a concurrent re-execute cannot swap the row
+ * between the authz check and the decrypt. Decryption is lazy — first read, after the caller authorized
+ * on [meta].
  */
 class ResultAccess(
     val meta: QueryResultMeta,
     val sql: String?,
     decrypt: () -> DecryptedResult?,
-    decryptErrorDetail: () -> String? = { null },
+    decryptError: () -> RunError? = { null },
 ) {
     val decrypted: DecryptedResult? by lazy(decrypt)
-    val errorDetail: String? by lazy(decryptErrorDetail)
+    val errorDetail: RunError? by lazy(decryptError)
+}
+
+/** Protobuf at rest, so a Go control-plane reads the same bytes. The JSON fallback covers results stored
+ *  before the migration and dies with them, one retention window later. */
+internal object ResultPayloadCodec {
+    private val json = Json
+    private val legacySerializer = DecryptedResult.serializer()
+
+    fun encode(result: DecryptedResult): ByteArray = storedResult {
+        rows = runResultRows {
+            columns.addAll(result.columns)
+            rows.addAll(
+                result.rows.map { row ->
+                    runRow {
+                        values.addAll(row.map { cell -> runValue { value = cell ?: ""; isNull = cell == null } })
+                    }
+                },
+            )
+        }
+        result.rowsAffected?.let { rowsAffected = it }
+        result.resultFingerprint?.let { resultFingerprint = it }
+    }.toByteArray()
+
+    fun decode(plaintext: ByteArray): DecryptedResult =
+        try {
+            fromStored(StoredResult.parseFrom(plaintext))
+        } catch (protoFailure: InvalidProtocolBufferException) {
+            // Parsing decides the format, never the leading byte: `{` is itself a valid protobuf tag
+            // (field 15), so a newer schema's unknown field would be misread as JSON.
+            try {
+                json.decodeFromString(legacySerializer, plaintext.toString(Charsets.UTF_8))
+            } catch (jsonFailure: Exception) {
+                throw protoFailure.also { it.addSuppressed(jsonFailure) }
+            }
+        }
+
+    private fun fromStored(stored: StoredResult) = DecryptedResult(
+        columns = stored.rows.columnsList,
+        rows = stored.rows.rowsList.map { row -> row.valuesList.map { if (it.isNull) null else it.value } },
+        rowsAffected = if (stored.hasRowsAffected()) stored.rowsAffected else null,
+        resultFingerprint = if (stored.hasResultFingerprint()) stored.resultFingerprint else null,
+    )
 }
 
 class QueryResultStore(private val dataSource: DataSource, private val crypto: ResultCrypto) {
-    // One-read snapshot backing [accessFor]: the child's meta, its own sql, and the two encrypted blobs
-    // (rows + target-DB detail), captured together so a concurrent re-execute cannot swap the row underneath.
     private class RawResultRow(
         val meta: QueryResultMeta,
         val sql: String?,
@@ -72,11 +120,12 @@ class QueryResultStore(private val dataSource: DataSource, private val crypto: R
     )
 
     private val json = Json
-    private val payloadSerializer = DecryptedResult.serializer()
     private val stringList = ListSerializer(String.serializer())
 
     private fun ResultSet.toMeta() = QueryResultMeta(
         taskId = getLong("task_id"),
+        ordinal = getInt("ordinal"),
+        sql = getString("sql"),
         executedBy = getString("executed_by"),
         executedAt = getTimestamp("executed_at")?.toInstant()?.toString(),
         rowCount = getInt("row_count").let { if (wasNull()) null else it },
@@ -88,28 +137,17 @@ class QueryResultStore(private val dataSource: DataSource, private val crypto: R
         columns = json.decodeFromString(stringList, getString("columns") ?: "[]"),
     )
 
-    fun startRun(taskId: Long, executedBy: String): QueryResultMeta? = dataSource.connection.use { c ->
-        val childId = latestChildId(c, taskId, "status IS NULL") ?: return@use null
-        val started = c.prepareStatement(
-            "UPDATE query_result SET status = 'RUNNING', executed_by = ?, error_code = NULL WHERE id = ? AND status IS NULL",
-        ).use { ps ->
-            ps.setString(1, executedBy)
-            ps.setLong(2, childId)
-            ps.executeUpdate() > 0
-        }
-        if (started) meta(taskId, c) else null
-    }
-
     /**
-     * Atomically claim a task for execution AND start its run: the parent's `APPROVED → EXECUTING` flip
-     * (via [claimParent]) and the child's `NULL → RUNNING` flip commit in ONE transaction. This closes the
-     * window a separate claim-then-start left open — where a cancel arriving between the two saw an
-     * `EXECUTING` parent with no `RUNNING` child yet, so [cancelRun] no-oped and the query ran anyway. After
-     * this, an `EXECUTING` task always has a `RUNNING` child for a cancel to catch.
+     * Atomically claim a task for execution AND start its FIRST statement: the parent's
+     * `APPROVED → EXECUTING` flip (via [claimParent]) and that child's `NULL → RUNNING` flip commit in ONE
+     * transaction. This closes the window a separate claim-then-start left open — where a cancel arriving
+     * between the two saw an `EXECUTING` parent with no `RUNNING` child yet, so [cancelRun] no-oped and the
+     * query ran anyway. After this, an `EXECUTING` task always has a `RUNNING` child for a cancel to catch.
      *
-     * Returns the `RUNNING` child meta on success; `null` when [claimParent] finds the task not `APPROVED`
-     * (already claimed/terminal → the caller treats it as already-executed). A claimed parent with no
-     * pending child is an invariant violation that rolls the whole claim back (leaving the task `APPROVED`).
+     * Returns the `RUNNING` child meta on success (its [QueryResultMeta.ordinal] is where the batch starts);
+     * `null` when [claimParent] finds the task not `APPROVED` (already claimed/terminal → the caller treats
+     * it as already-executed). A claimed parent with no pending child is an invariant violation that rolls
+     * the whole claim back (leaving the task `APPROVED`).
      */
     fun claimAndStartRun(
         taskId: Long,
@@ -117,17 +155,32 @@ class QueryResultStore(private val dataSource: DataSource, private val crypto: R
         claimParent: (Connection) -> Boolean,
     ): QueryResultMeta? = dataSource.inTx { c ->
         if (!claimParent(c)) return@inTx null
-        val childId = latestChildId(c, taskId, "status IS NULL")
+        val child = pendingChild(c, taskId)
             ?: error("task $taskId claimed for execution but has no pending child")
-        val started = c.prepareStatement(
-            "UPDATE query_result SET status = 'RUNNING', executed_by = ?, error_code = NULL WHERE id = ? AND status IS NULL",
-        ).use { ps ->
-            ps.setString(1, executedBy)
-            ps.setLong(2, childId)
-            ps.executeUpdate() > 0
-        }
-        if (!started) error("task $taskId child $childId not startable")
-        meta(taskId, c)
+        if (!startChild(c, child.id, executedBy)) error("task $taskId child ${child.id} not startable")
+        meta(taskId, child.ordinal, c)
+    }
+
+    /**
+     * Start the lowest pending statement, in one transaction so a concurrent caller cannot read the same
+     * child before it flips. Null once none remains, or when the flip lost a race with a cancel.
+     */
+    fun startNextRun(taskId: Long, executedBy: String): QueryResultMeta? = dataSource.inTx { c ->
+        val child = pendingChild(c, taskId) ?: return@inTx null
+        if (!startChild(c, child.id, executedBy)) return@inTx null
+        meta(taskId, child.ordinal, c)
+    }
+
+    /**
+     * Mark the statements the batch never reached SKIPPED, so they stop reading as "not started yet".
+     * Runs in the caller's transaction, so the stop and the skip commit together.
+     */
+    fun skipPendingChildren(taskId: Long, c: Connection): Int = c.prepareStatement(
+        "UPDATE query_result SET status = 'SKIPPED', expires_at = ? WHERE task_id = ? AND status IS NULL",
+    ).use { ps ->
+        ps.setTimestamp(1, Timestamp.from(Instant.now().plusSeconds(RESULT_RETENTION_SEC)))
+        ps.setLong(2, taskId)
+        ps.executeUpdate()
     }
 
     fun completeRun(
@@ -136,11 +189,11 @@ class QueryResultStore(private val dataSource: DataSource, private val crypto: R
         retentionSec: Long,
         audit: (Connection, QueryResultMeta) -> Unit = { _, _ -> },
     ): QueryResultMeta? {
-        val blob = crypto.encrypt(json.encodeToString(payloadSerializer, result).toByteArray(Charsets.UTF_8))
+        val blob = crypto.encrypt(ResultPayloadCodec.encode(result))
         val now = Instant.now()
         return dataSource.inTx { c ->
-            val childId = latestChildId(c, taskId, "status = 'RUNNING'")
-            val updated = childId != null && c.prepareStatement(
+            val child = runningChild(c, taskId)
+            val updated = child != null && c.prepareStatement(
                 """UPDATE query_result
                    SET status = 'DONE', ciphertext = ?, row_count = ?, columns = ?,
                        executed_at = ?, expires_at = ?, error_code = NULL
@@ -156,10 +209,10 @@ class QueryResultStore(private val dataSource: DataSource, private val crypto: R
                 }
                 ps.setTimestamp(4, Timestamp.from(now))
                 ps.setTimestamp(5, Timestamp.from(now.plusSeconds(retentionSec)))
-                ps.setLong(6, childId)
+                ps.setLong(6, child.id)
                 ps.executeUpdate() > 0
             }
-            val meta = if (updated) meta(taskId, c) else null
+            val meta = if (updated) meta(taskId, child.ordinal, c) else null
             if (meta != null) audit(c, meta)
             meta
         }
@@ -173,83 +226,160 @@ class QueryResultStore(private val dataSource: DataSource, private val crypto: R
         // approval for, rather than as an opaque failure.
         denyReason: String? = null,
         decisionId: Long? = null,
-        // Set only on a target-DB failure: the backend error text (redaction-gated at the wire). Stored as
-        // AES-GCM ciphertext, released only behind the task.assume gate on GET /result — never on metadata.
-        errorDetail: String? = null,
-        // Runs in the SAME transaction as the child's RUNNING → FAILED flip (mirrors [completeRun]'s
-        // audit hook) so the caller can terminalize the parent task atomically with the child. A throw
-        // here rolls the child transition back too, keeping the two consistent.
+        // A target-DB failure's error (both forms), encrypted into error_detail.
+        diagnostic: RunError? = null,
+        // Runs in the child's RUNNING → FAILED transaction (mirrors [completeRun]) so the caller can
+        // terminalize the parent atomically; a throw here rolls the child transition back too.
         onFailed: (Connection, QueryResultMeta) -> Unit = { _, _ -> },
     ): QueryResultMeta? = dataSource.inTx { c ->
         val now = Instant.now()
-        val childId = latestChildId(c, taskId, "status = 'RUNNING'")
-        val updated = childId != null && c.prepareStatement(
+        val child = runningChild(c, taskId)
+        val updated = child != null && c.prepareStatement(
             "UPDATE query_result SET status = 'FAILED', error_code = ?, deny_reason = ?, decision_id = ?, " +
                 "error_detail = ?, expires_at = ? WHERE id = ? AND status = 'RUNNING'",
         ).use { ps ->
             ps.setString(1, errorCode)
             ps.setString(2, denyReason)
             if (decisionId == null) ps.setNull(3, java.sql.Types.BIGINT) else ps.setLong(3, decisionId)
-            if (errorDetail == null) {
-                ps.setNull(4, java.sql.Types.BINARY)
-            } else {
-                ps.setBytes(4, crypto.encrypt(errorDetail.toByteArray(Charsets.UTF_8)))
-            }
+            if (diagnostic == null) ps.setNull(4, java.sql.Types.BINARY)
+            else ps.setBytes(4, crypto.encrypt(diagnostic.toByteArray()))
             ps.setTimestamp(5, Timestamp.from(now.plusSeconds(RESULT_RETENTION_SEC)))
-            ps.setLong(6, childId)
+            ps.setLong(6, child.id)
             ps.executeUpdate() > 0
         }
-        val meta = if (updated) meta(taskId, c) else null
-        if (meta != null) onFailed(c, meta)
+        val meta = if (updated) meta(taskId, child.ordinal, c) else null
+        if (meta != null) {
+            skipPendingChildren(taskId, c)
+            onFailed(c, meta)
+        }
         meta
     }
 
+    /**
+     * Cancel the statement in flight, or — between a batch's statements, where none is running — the one
+     * queued next. Without that second case the cancel no-ops and the batch runs on.
+     */
     fun cancelRun(
         taskId: Long,
         onCancelled: (Connection, QueryResultMeta) -> Unit = { _, _ -> },
     ): QueryResultMeta? = dataSource.inTx { c ->
         val now = Instant.now()
-        val childId = latestChildId(c, taskId, "status = 'RUNNING'")
-        val updated = childId != null && c.prepareStatement(
+        val expiry = Timestamp.from(now.plusSeconds(RESULT_RETENTION_SEC))
+        // Locked: without it a statement finishing between this read and the UPDATE below leaves the cancel
+        // updating zero rows, and the batch runs on past a cancel the user was told had landed.
+        val child = runningChild(c, taskId, lockRows = true) ?: pendingChild(c, taskId, lockRows = true)
+        val updated = child != null && c.prepareStatement(
             "UPDATE query_result SET status = 'CANCELLED', error_code = 'approval.canceled', expires_at = ? " +
-                "WHERE id = ? AND status = 'RUNNING'",
+                "WHERE id = ? AND (status = 'RUNNING' OR status IS NULL)",
         ).use { ps ->
-            ps.setTimestamp(1, Timestamp.from(now.plusSeconds(RESULT_RETENTION_SEC)))
-            ps.setLong(2, childId)
+            ps.setTimestamp(1, expiry)
+            ps.setLong(2, child.id)
             ps.executeUpdate() > 0
         }
-        val meta = if (updated) meta(taskId, c) else null
-        if (meta != null) onCancelled(c, meta)
+        val meta = if (updated) meta(taskId, child.ordinal, c) else null
+        if (meta != null) {
+            skipPendingChildren(taskId, c)
+            onCancelled(c, meta)
+        }
         meta
     }
 
+    /** The batch's active statement: the one running, else the furthest one to have reached a terminal
+     *  state — what a poller watching a single-child task has always been shown. */
     fun meta(taskId: Long): QueryResultMeta? = dataSource.connection.use { c -> meta(taskId, c) }
 
-    // The active child is selected by a SEPARATE read, then updated by its own id. The per-status guard
-    // stays on the UPDATE, so the transition is still a race-safe compare-and-set.
-    private fun latestChildId(c: Connection, taskId: Long, statusClause: String): Long? = c.prepareStatement(
-        "SELECT id FROM query_result WHERE task_id = ? AND $statusClause ORDER BY id DESC LIMIT 1",
-    ).use { ps ->
-        ps.setLong(1, taskId)
-        ps.executeQuery().use { rs -> if (rs.next()) rs.getLong(1) else null }
+    /** One statement of a task's batch, addressed by its [ordinal]. */
+    fun meta(taskId: Long, ordinal: Int): QueryResultMeta? =
+        dataSource.connection.use { c -> meta(taskId, ordinal, c) }
+
+    /** Every statement of a task, in batch order. */
+    fun statements(taskId: Long): List<QueryResultMeta> = dataSource.connection.use { c ->
+        c.prepareStatement("SELECT $META_COLS FROM query_result WHERE task_id = ? ORDER BY ordinal").use { ps ->
+            ps.setLong(1, taskId)
+            ps.executeQuery().use { rs ->
+                val out = ArrayList<QueryResultMeta>()
+                while (rs.next()) out += rs.toMeta()
+                out
+            }
+        }
     }
 
-    private fun meta(taskId: Long, c: Connection): QueryResultMeta? = c.prepareStatement(
-        "SELECT $META_COLS FROM query_result WHERE task_id = ? ORDER BY id DESC LIMIT 1",
+    private class ChildRef(val id: Long, val ordinal: Int)
+
+    // The child is selected by a SEPARATE read, then updated by its own id. The per-status guard stays on
+    // the UPDATE, so every transition is still a race-safe compare-and-set. lockRows additionally holds the
+    // row for the caller's transaction, for a caller that must not lose it to a concurrent status flip.
+    private fun childBy(
+        c: Connection,
+        taskId: Long,
+        statusClause: String,
+        order: String,
+        lockRows: Boolean = false,
+    ): ChildRef? =
+        c.prepareStatement(
+            "SELECT id, ordinal FROM query_result WHERE task_id = ? AND $statusClause ORDER BY ordinal $order LIMIT 1" +
+                if (lockRows) " FOR UPDATE" else "",
+        ).use { ps ->
+            ps.setLong(1, taskId)
+            ps.executeQuery().use { rs -> if (rs.next()) ChildRef(rs.getLong(1), rs.getInt(2)) else null }
+        }
+
+    /** The next statement to run: the LOWEST pending ordinal, so a batch executes in the order written. */
+    private fun pendingChild(c: Connection, taskId: Long, lockRows: Boolean = false): ChildRef? =
+        childBy(c, taskId, "status IS NULL", "ASC", lockRows)
+
+    /** The statement currently in flight. At most one per task — the batch runs them one at a time. */
+    private fun runningChild(c: Connection, taskId: Long, lockRows: Boolean = false): ChildRef? =
+        childBy(c, taskId, "status = 'RUNNING'", "ASC", lockRows)
+
+    private fun startChild(c: Connection, childId: Long, executedBy: String): Boolean = c.prepareStatement(
+        "UPDATE query_result SET status = 'RUNNING', executed_by = ?, error_code = NULL WHERE id = ? AND status IS NULL",
+    ).use { ps ->
+        ps.setString(1, executedBy)
+        ps.setLong(2, childId)
+        ps.executeUpdate() > 0
+    }
+
+    private fun meta(taskId: Long, ordinal: Int, c: Connection): QueryResultMeta? = c.prepareStatement(
+        "SELECT $META_COLS FROM query_result WHERE task_id = ? AND ordinal = ?",
     ).use { ps ->
         ps.setLong(1, taskId)
+        ps.setInt(2, ordinal)
         ps.executeQuery().use { rs -> if (rs.next()) rs.toMeta() else null }
     }
 
-    fun accessFor(taskId: Long): ResultAccess? {
+    /**
+     * The furthest statement to have RUN, else the first — what a caller naming no ordinal gets. SKIPPED
+     * is excluded: it holds the highest ordinals, so `[DONE, FAILED, SKIPPED]` would report the skip
+     * instead of the failure. Correlated on task_id, so it takes a second bind.
+     */
+    private fun activeOrdinalClause() =
+        "ordinal = COALESCE((SELECT MAX(ordinal) FROM query_result " +
+            "WHERE task_id = ? AND status IS NOT NULL AND status <> 'SKIPPED'), 0)"
+
+    private fun meta(taskId: Long, c: Connection): QueryResultMeta? = c.prepareStatement(
+        "SELECT $META_COLS FROM query_result WHERE task_id = ? AND ${activeOrdinalClause()}",
+    ).use { ps ->
+        ps.setLong(1, taskId)
+        ps.setLong(2, taskId)
+        ps.executeQuery().use { rs -> if (rs.next()) rs.toMeta() else null }
+    }
+
+    /**
+     * A one-read snapshot of one statement's stored result. [ordinal] selects the statement within its
+     * task's batch; null takes the batch's active statement (the only one a single-statement task has).
+     * Reading the bytes and the meta together is what keeps a concurrent re-execute from swapping the row
+     * between the caller's authz check and its decrypt.
+     */
+    fun accessFor(taskId: Long, ordinal: Int? = null): ResultAccess? {
         val row = dataSource.connection.use { c ->
+            val selector = if (ordinal == null) activeOrdinalClause() else "ordinal = ?"
             c.prepareStatement(
-                // Reading qr.sql in the SAME row as the ciphertext and error_detail binds the view's
-                // re-decision — and the released detail — to those bytes.
                 "SELECT $META_COLS, qr.sql, ciphertext, error_detail FROM query_result qr " +
-                    "WHERE task_id = ? ORDER BY id DESC LIMIT 1",
+                    "WHERE task_id = ? AND $selector",
             ).use { ps ->
                 ps.setLong(1, taskId)
+                if (ordinal == null) ps.setLong(2, taskId) else ps.setInt(2, ordinal)
                 ps.executeQuery().use { rs ->
                     if (!rs.next()) return null
                     RawResultRow(rs.toMeta(), rs.getString("sql"), rs.getBytes("ciphertext"), rs.getBytes("error_detail"))
@@ -259,22 +389,15 @@ class QueryResultStore(private val dataSource: DataSource, private val crypto: R
         val meta = row.meta
         val expired = meta.expiresAt != null && Instant.parse(meta.expiresAt).isBefore(Instant.now())
         if (expired) purgeExpired()
-        // Only a DONE, unexpired, still-populated child holds a decryptable payload; anything else (not
-        // ready, expired, or payload already purged) decrypts to null, so the route surfaces 409/410 rather
-        // than any bytes. The decrypt itself runs lazily on first read of [ResultAccess.decrypted] — after
-        // the caller has authorized on [meta].
+        // Rows and the failure diagnostic release behind the same gate and vanish on expiry; both decrypt
+        // lazily so a caller rejected on [meta] never triggers a decrypt.
         val payload = if (meta.status == "DONE" && !expired) row.ciphertext else null
-        // The FAILED run's target-DB detail is released the same way — behind the same task.assume gate, and
-        // gone once expired (purgeExpired NULLs the column). Decrypt lazily so a caller rejected on [meta]
-        // never triggers it.
-        val errorDetailBytes = if (!expired) row.errorDetail else null
+        val errorBytes = if (!expired) row.errorDetail else null
         return ResultAccess(
             meta,
             row.sql,
-            decrypt = {
-                payload?.let { json.decodeFromString(payloadSerializer, crypto.decrypt(it).toString(Charsets.UTF_8)) }
-            },
-            decryptErrorDetail = { errorDetailBytes?.let { crypto.decrypt(it).toString(Charsets.UTF_8) } },
+            decrypt = { payload?.let { ResultPayloadCodec.decode(crypto.decrypt(it)) } },
+            decryptError = { errorBytes?.let { RunError.parseFrom(crypto.decrypt(it)) } },
         )
     }
 
@@ -345,7 +468,7 @@ class QueryResultStore(private val dataSource: DataSource, private val crypto: R
         // Every column [toMeta] reads. The mapper reads by NAME, so a column added there and missed here
         // fails the read at runtime rather than at compile time — keep the two in step.
         private const val META_COLS =
-            "task_id, executed_by, executed_at, row_count, expires_at, status, error_code, " +
+            "task_id, ordinal, sql, executed_by, executed_at, row_count, expires_at, status, error_code, " +
                 "deny_reason, decision_id, columns"
     }
 }

@@ -253,12 +253,8 @@ export function useResultTabs(datasourceId: number | null, maxRows: number): Res
                 latencyMs: Math.max(0, Math.round(performance.now() - startedAt)),
               }
             }
-            // Any other failure really is one. errorCode is a catalog code (e.g. query.proxy_timeout) —
-            // localize it here so the panel shows bilingual copy, never the raw code. A target-DB error also
-            // carries the backend text (redaction-gated at the proxy), which lives behind the task.assume gate
-            // on /result (never on the metadata poll); fetch and append it when present. This is a terminal
-            // one-shot: the query already failed and the code is the real signal, so ANY detail-fetch failure
-            // (forbidden, absent, or transient/5xx) falls back to the code alone rather than masking it.
+            // Any other failure really is one. Localize the catalog code, and append the /result errorDetail
+            // when present; the code is the real signal, so any detail-fetch failure falls back to it alone.
             const code = translateApiError(child?.errorCode ?? 'approval.query_failed')
             const detail = await getEditorResult(submit.taskId)
               .then((view) => view.errorDetail)
@@ -296,9 +292,7 @@ export function useResultTabs(datasourceId: number | null, maxRows: number): Res
           if (child?.status === 'DONE') {
             const view = await getEditorResult(submit.taskId)
             return {
-              // From the server's re-decision, never assumed: these rows are released under the viewer's
-              // live context, which can mask columns the execution itself returned in the clear. A DONE view
-              // always carries the verdict (only a FAILED view omits it), so it is present here.
+              // From the server's re-decision, never assumed. Only a FAILED view omits the verdict.
               decision: view.decision!,
               decisionId: null,
               denyReason: null,

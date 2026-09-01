@@ -10,10 +10,13 @@ version: v2
 # init ("file already registered") the instant both packages are imported into one process. The
 # M-option below instead points engine.proto's Go package AT analyzer/probe/pb, so RegisterRequest's
 # Engine field resolves to that ALREADY-REGISTERED type — one Go type, shared, not two colliding ones.
+# analyzer.proto is mapped the same way: controlplane.proto now references its RequireResultReadGrant on the
+# result-view fingerprint, and that type is already generated into analyzer/probe/pb — reuse it, don't
+# regenerate a colliding copy.
 plugins:
   - local: protoc-gen-go
     out: internal/pb
-    opt: paths=source_relative,Mcontrolplane.proto=github.com/ridi-oss/proxy-monster/goproxy/internal/pb;proxymonsterv1,Mengine.proto=github.com/ridi-oss/proxy-monster/analyzer/probe/pb
+    opt: paths=source_relative,Mcontrolplane.proto=github.com/ridi-oss/proxy-monster/goproxy/internal/pb;proxymonsterv1,Mengine.proto=github.com/ridi-oss/proxy-monster/analyzer/probe/pb,Manalyzer.proto=github.com/ridi-oss/proxy-monster/analyzer/probe/pb
   - local: protoc-gen-go-grpc
     out: internal/pb
-    opt: paths=source_relative,Mcontrolplane.proto=github.com/ridi-oss/proxy-monster/goproxy/internal/pb;proxymonsterv1,Mengine.proto=github.com/ridi-oss/proxy-monster/analyzer/probe/pb
+    opt: paths=source_relative,Mcontrolplane.proto=github.com/ridi-oss/proxy-monster/goproxy/internal/pb;proxymonsterv1,Mengine.proto=github.com/ridi-oss/proxy-monster/analyzer/probe/pb,Manalyzer.proto=github.com/ridi-oss/proxy-monster/analyzer/probe/pb

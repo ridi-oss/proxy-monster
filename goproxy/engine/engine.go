@@ -215,6 +215,10 @@ type Decision struct {
 	// the proxy strips this statement's target-DB error/notice messages down to code + severity. See
 	// docs/diagnostic-redaction.md.
 	SanitizeDiagnostics bool
+	// ResultFingerprint is the decision's authorization requirements (the analyzer's result-read grants). The
+	// proxy does not interpret them; it only echoes them back on a RunDecision so an execute-under-R run can
+	// freeze them with the stored result (the control plane's result-view drift gate).
+	ResultFingerprint []*enginepb.RequireResultReadGrant
 }
 
 // RedactedDiagnosticMessage is the single generic string that replaces every target-DB diagnostic message on
@@ -500,10 +504,8 @@ func (e *QueryEngine) Authorize(in AuthzInput) Verdict {
 	if out.IsErr() {
 		return Fail{Message: out.Err}
 	}
-	// The control plane decides per statement whether this statement's target-DB diagnostics are
-	// redacted (production posture + engine leak-on-ALLOW capability + the verdict action). Applied
-	// per-decision, NOT latched: a MySQL ALLOW after a MASK is intentionally left un-redacted, because an
-	// ALLOW MySQL query cannot leak a protected value through a diagnostic (docs/diagnostic-redaction.md).
+	// Per-decision, NOT latched: an ALLOW whose leak set is fully readable relays raw even right after a
+	// MASK (docs/diagnostic-redaction.md).
 	e.sanitizeDiag = out.Decision.SanitizeDiagnostics
 	switch out.Decision.Action {
 	case "ALLOW":

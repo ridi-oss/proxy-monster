@@ -66,6 +66,7 @@ type ProbeResult struct {
 	Sources       []SourceInfo        `json:"sources"`
 	Functions     []string            `json:"functions"`
 	IsWrite       bool                `json:"isWrite"`
+	WriteTarget   *tableID            `json:"-"`
 	RewrittenSQL  *string             `json:"rewrittenSql"`
 	// Base columns a literal is compared against in a predicate, keyed by clause. Deliberately NOT folded
 	// into References: the parity oracle diffs that map field-by-field and produces no such fact.
@@ -114,7 +115,7 @@ type prober struct {
 	scopeOfSelect map[exp.Expression]*optimizer.Scope
 	writeScope    *optimizer.Scope
 
-	references    map[string]map[string]bool
+	references map[string]map[string]bool
 	// column key -> clause, for every base column a literal is compared against in a predicate.
 	predicateLiterals map[string]string
 	opaqueSelects     map[exp.Expression]bool
@@ -168,7 +169,13 @@ func Probe(sql string, engineConfig *pb.EngineConfig, sch *schema.Mapping, names
 	if len(stmts) != 1 {
 		return failResult("PARSE", fmt.Sprintf("expected 1 statement, got %d", len(stmts)))
 	}
-	return probeParsed(stmts[0], eng, qualifySchema, validatedNamespace)
+	root := stmts[0]
+	if !hasSyntheticAlias(root) {
+		if err := stampNativeOutputLabels(root, eng); err != nil {
+			return failResult("VALIDATE", err.Error())
+		}
+	}
+	return probeParsed(root, eng, qualifySchema, validatedNamespace)
 }
 
 func probeParsed(root exp.Expression, eng engine, qualifySchema schema.Schema, namespace NamespaceConfig) (out ProbeResult) {
@@ -1167,7 +1174,18 @@ func (p *prober) lineage() ProbeResult {
 			starExpanded = true
 		}
 		if starExpanded {
-			s, err := generateExecutableSQL(p.qroot, p.dialect)
+			relayRoot := p.qroot
+			// Repair the outermost display labels on a relay-only copy — lineage and mask ordinals
+			// keep reading p.qroot. Only projections the pre-Qualify stamping skipped (duplicate
+			// native labels, legal as OUTPUT) still carry `_col_N` here. Skipped when the client
+			// wrote a `_col_N` alias anywhere: client labels are then indistinguishable.
+			if hasSyntheticAlias(p.qroot) && !hasSyntheticAlias(p.root) {
+				restored := p.qroot.Copy()
+				if restoreRelayOutputLabels(restored, p.engine) {
+					relayRoot = restored
+				}
+			}
+			s, err := generateExecutableSQL(relayRoot, p.dialect)
 			if err != nil {
 				panic(err)
 			}
@@ -1517,18 +1535,27 @@ func (p *prober) lineage() ProbeResult {
 			traced++
 		}
 	}
+	var writeTarget *tableID
+	if p.isWrite {
+		if node := p.writeTargetTable(); node != nil {
+			if id, ok := p.resolvedTableID(node); ok {
+				writeTarget = &id
+			}
+		}
+	}
 	return ProbeResult{
-		Resolved:      true,
-		FailedStage:   nil,
-		Detail:        "ok",
-		OutputColumns: len(origins),
-		TracedColumns: traced,
-		Origins:       origins,
-		References:    refsOut,
-		Sources:       p.scannedSources(origins, refsOut),
-		Functions:     p.calledFunctions(),
-		IsWrite:       p.isWrite,
-		RewrittenSQL:  rewrittenSQL,
+		Resolved:          true,
+		FailedStage:       nil,
+		Detail:            "ok",
+		OutputColumns:     len(origins),
+		TracedColumns:     traced,
+		Origins:           origins,
+		References:        refsOut,
+		Sources:           p.scannedSources(origins, refsOut),
+		Functions:         p.calledFunctions(),
+		IsWrite:           p.isWrite,
+		WriteTarget:       writeTarget,
+		RewrittenSQL:      rewrittenSQL,
 		PredicateLiterals: p.predicateLiteralRefs(),
 	}
 }

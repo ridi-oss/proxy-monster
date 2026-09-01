@@ -4,7 +4,9 @@ import com.google.protobuf.ByteString
 import com.ridi.oss.proxymonster.grpc.ControlRunMsg
 import com.ridi.oss.proxymonster.grpc.EnfAction
 import com.ridi.oss.proxymonster.grpc.ProxyRunMsg
+import com.ridi.oss.proxymonster.grpc.RunError
 import com.ridi.oss.proxymonster.grpc.controlRunMsg
+import com.ridi.oss.proxymonster.grpc.runError
 import com.ridi.oss.proxymonster.grpc.runCancel
 import com.ridi.oss.proxymonster.grpc.runClose
 import com.ridi.oss.proxymonster.grpc.runQuery
@@ -185,12 +187,24 @@ class ProxyRunTimeoutException(cause: Throwable? = null) :
 
 open class ProxyRunException(message: String, cause: Throwable? = null) : RunExecException(message, cause)
 
-// A failure the TARGET DB reported for the executed statement (the proxy tagged its RunError
-// target_db_error): a syntax error, a missing table, a constraint violation. Its message is the backend error
-// text, redaction-gated at the wire on the same decision as the client-facing path, so it is safe to surface
-// to the caller as the failure's real cause — unlike a bare [ProxyRunException], which also covers
-// proxy-internal conditions (decode, decision, mask-binding, connection) whose text must not be shown.
-class TargetDbRunException(message: String, cause: Throwable? = null) : ProxyRunException(message, cause)
+// The target DB's own ERR for the executed statement. [message] is the RAW backend text (e.g.
+// `duplicate key value (ssn)=(123-45-6789)`) — never log or return it as-is; release [decidedMessage],
+// [redactedMessage], or toDiagnostic().
+class TargetDbRunException(
+    message: String,
+    val redactedMessage: String,
+    val sanitized: Boolean,
+    cause: Throwable? = null,
+) : ProxyRunException(message, cause) {
+    /** The form the run's own decision dictated: redacted when it sanitized diagnostics, raw otherwise. */
+    val decidedMessage: String get() = if (sanitized) redactedMessage else message.orEmpty()
+
+    fun toDiagnostic(): RunError = runError {
+        message = redactedMessage
+        rawMessage = this@TargetDbRunException.message.orEmpty()
+        targetDbError = true
+    }
+}
 
 class RunCanceledBeforeStartException : RunExecException("the run was canceled before it started")
 
@@ -618,9 +632,8 @@ class RunExecService(
                 message.hasServing() -> return
                 message.hasError() -> {
                     if (message.error.message == QUERY_TIMEOUT_MESSAGE) throw ProxyRunTimeoutException()
-                    // An open/connect/catalog-init failure is not the statement's own target-DB error — it can
-                    // echo proxy-internal detail (a service-account host), so it is NOT surfaced. Only the
-                    // statement-EXEC error below is a genuine target-DB error safe to release.
+                    // An open failure's text can echo the target host (`dial tcp 10.0.3.7:5432: …`) — routes
+                    // must log it, never surface it.
                     throw ProxyRunException(message.error.message.ifBlank { "proxy run open failed" })
                 }
                 else -> throw ProxyRunException("proxy sent a run response before it was ready to serve")
@@ -684,12 +697,16 @@ class RunExecService(
                     // A statement the proxy aborted at PM_QUERY_TIMEOUT carries an exact sentinel — attribute it
                     // as a timeout (→ query.proxy_timeout, task FAILED), never a generic failure or a success.
                     if (message.error.message == QUERY_TIMEOUT_MESSAGE) throw ProxyRunTimeoutException()
-                    val text = message.error.message.ifBlank { "proxy run execution failed" }
-                    // Only a genuine target-DB statement ERR (target_db_error, already diagnostic-redacted at the
-                    // wire) is safe to surface as the failure's real cause; a decode/decision/mask-binding failure
-                    // the proxy also reports post-serving stays a generic ProxyRunException with no error detail.
-                    if (message.error.targetDbError) throw TargetDbRunException(text)
-                    throw ProxyRunException(text)
+                    // A target ERR implies the statement executed, so a decision must exist; a tagged error
+                    // with none (or after a DENY) is anomalous and falls through to the generic form.
+                    if (message.error.targetDbError && decision != null && action != EnfAction.DENY) {
+                        throw TargetDbRunException(
+                            message.error.rawMessage,
+                            message.error.message,
+                            sanitized = decision.sanitizeDiagnostics,
+                        )
+                    }
+                    throw ProxyRunException(message.error.message.ifBlank { "proxy run execution failed" })
                 }
 
                 message.hasSessionReady() -> throw ProxyRunException(
@@ -718,6 +735,9 @@ class RunExecService(
     ): QueryResponse {
         val decisionId = decision.decisionId.takeIf { it != 0L }
         val piiTouched = decisionId?.let { core.auditStore.get(it)?.piiTouched } ?: emptyList()
+        // The decision's requirements, forwarded structured on RunDecision from the Verdict; a stored result
+        // freezes them so a later view denies drift ([decideResultView]).
+        val resultFingerprint = fingerprintOf(decision.resultFingerprintList)
         return QueryResponse(
             decision = action,
             decisionId = decisionId,
@@ -728,6 +748,7 @@ class RunExecService(
             columns = columns,
             rows = rows,
             rowsAffected = rowsAffected,
+            resultFingerprint = resultFingerprint,
             latencyMs = (System.nanoTime() - started) / 1_000_000,
         )
     }

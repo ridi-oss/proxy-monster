@@ -2,6 +2,7 @@ package mysqlproxy
 
 import (
 	"encoding/binary"
+	"fmt"
 
 	"github.com/ridi-oss/proxy-monster/mysqlwire"
 )
@@ -32,4 +33,19 @@ func sanitizeErrPacket(payload []byte) []byte {
 		sqlState = string(payload[4:9])
 	}
 	return mysqlwire.ErrPacketState(essno, sqlState, mysqlDiagnosticMessage(essno))
+}
+
+// redactedErrString renders the value-free "ERROR <essno> (<SQLSTATE>): <symbol>" form of a MySQL ERR packet —
+// the diagnostic-redacted string a run stores for a masked view, carrying the same essno + SQLSTATE + symbol
+// the wire ERR packet keeps, with the message replaced by the code's canonical value-free symbol.
+func redactedErrString(payload []byte) string {
+	if len(payload) < 3 || payload[0] != 0xff {
+		return ""
+	}
+	essno := int(binary.LittleEndian.Uint16(payload[1:3]))
+	sqlState := "HY000"
+	if len(payload) >= 9 && payload[3] == '#' {
+		sqlState = string(payload[4:9])
+	}
+	return fmt.Sprintf("ERROR %d (%s): %s", essno, sqlState, mysqlDiagnosticMessage(essno))
 }

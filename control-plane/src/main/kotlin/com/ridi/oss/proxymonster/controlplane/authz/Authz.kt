@@ -140,7 +140,7 @@ enum class FunctionVerdict { ALLOWED, DENIED }
 
 /** A resource-bearing utility command a query performs (facts-emission.md), marshalled to a
  *  Cedar `Utility` entity by [authorizeUtilities]. [command] is the canonical per-engine command id
- *  (`SHOW_PROCESSLIST`, …); the caller resolves its shipped `system:` tag via the manifest. */
+ *  (`SHOW_BINLOG_EVENTS`, …); the caller resolves its shipped `system:` tag via the manifest. */
 data class UtilityRef(val command: String)
 
 /** Per-utility verdict — deny-by-default. [USE] iff a `result.read.unmasked`/`masked` permit covers the

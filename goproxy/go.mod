@@ -4,11 +4,11 @@ go 1.26.0
 
 require (
 	github.com/alecthomas/kong v1.16.0
-	github.com/docker/go-connections v0.8.1
 	github.com/go-sql-driver/mysql v1.10.0
 	github.com/jackc/pgx/v5 v5.10.0
+	github.com/moby/moby/api v1.55.0
 	github.com/ridi-oss/proxy-monster/analyzer v0.0.0-00010101000000-000000000000
-	github.com/ridi-oss/proxy-monster/mysqlwire v0.1.3
+	github.com/ridi-oss/proxy-monster/mysqlwire v0.1.4
 	github.com/testcontainers/testcontainers-go v0.44.0
 	golang.org/x/crypto v0.54.0
 	google.golang.org/grpc v1.83.0
@@ -38,6 +38,7 @@ require (
 	github.com/cpuguy83/dockercfg v0.3.2 // indirect
 	github.com/davecgh/go-spew v1.1.1 // indirect
 	github.com/distribution/reference v0.6.0 // indirect
+	github.com/docker/go-connections v0.8.1 // indirect
 	github.com/docker/go-units v0.5.0 // indirect
 	github.com/ebitengine/purego v0.10.1 // indirect
 	github.com/felixge/httpsnoop v1.1.0 // indirect
@@ -53,7 +54,6 @@ require (
 	github.com/magiconair/properties v1.8.10 // indirect
 	github.com/moby/docker-image-spec v1.3.1 // indirect
 	github.com/moby/go-archive v0.2.0 // indirect
-	github.com/moby/moby/api v1.55.0 // indirect
 	github.com/moby/moby/client v0.5.0 // indirect
 	github.com/moby/patternmatcher v0.6.1 // indirect
 	github.com/moby/sys/sequential v0.7.0 // indirect
@@ -64,7 +64,7 @@ require (
 	github.com/opencontainers/image-spec v1.1.1 // indirect
 	github.com/pmezard/go-difflib v1.0.0 // indirect
 	github.com/power-devops/perfstat v0.0.0-20240221224432-82ca36839d55 // indirect
-	github.com/ridi-oss/sqlglot-go v0.24.0 // indirect
+	github.com/ridi-oss/sqlglot-go v0.29.0 // indirect
 	github.com/shirou/gopsutil/v4 v4.26.6 // indirect
 	github.com/sirupsen/logrus v1.9.4 // indirect
 	github.com/stretchr/testify v1.11.1 // indirect

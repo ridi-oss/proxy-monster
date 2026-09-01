@@ -173,14 +173,13 @@ configured per proxy under `PM_TARGET_*`.
   PrivateLink, or a VPN/tailnet) and plaintext wire (unset). Set them only for
   an untrusted client↔proxy path (or an encrypt-everywhere policy); then the
   _proxy_ terminates TLS — a generic NLB/ALB can't, because SQL negotiates TLS
-  in-band. With TLS on, the proxy computes its leaf cert's SHA-256 and
-  advertises it at registration (it refuses to boot if it cannot), and pmon pins
-  each connection to exactly that leaf — no CA and no hostname check — so a
-  self-signed cert works and nothing has to reach the client's trust store. Any
-  cert the proxy can present the private key for is therefore fine; ACM Private
-  CA (exportable, unlike public ACM certs) via Secrets Manager is one convenient
-  source. Rotating the cert re-advertises the new fingerprint on the next
-  register, so clients pick it up without redistribution.
+  in-band. With TLS on, the proxy advertises its certificate chain at
+  registration. pmon uses that chain as its trust pool and verifies the
+  advertised hostname; a self-signed leaf works as its own anchor, so nothing
+  has to enter the client's system trust store. ACM Private CA (exportable,
+  unlike public ACM certs) via Secrets Manager is one convenient source.
+  Rotating the cert re-advertises the new chain on the next register, so clients
+  pick it up without redistribution.
 - `PM_SECRET_TOKEN` — _required_. The shared gRPC secret; must equal the CP's.
 
 ### Web console

@@ -16,7 +16,7 @@
   },
   "field": {
     "role": " (역할: *{role}*)",
-    "reason": "_{reason}_",
+    "reason": "> {reason}",
     "statement_hidden": "쿼리",
     "statement_hidden_note": "_전체 구문은 여기에 표시되지 않습니다. 요청을 열어 확인하세요._",
     "notified": "승인 알림 대상: {notified}"

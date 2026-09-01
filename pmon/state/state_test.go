@@ -1,6 +1,8 @@
 package state
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -145,8 +147,7 @@ func TestLoggedInRequiresTokenAndControlPlane(t *testing.T) {
 	}
 }
 
-// TestEnsureDirIsOwnerOnly locks the property the control socket's security rests on: the state directory is
-// 0700, so only the same OS user can reach the socket inside it.
+// The state directory holds bearer credentials and must stay owner-only.
 func TestEnsureDirIsOwnerOnly(t *testing.T) {
 	t.Setenv(dirEnv, filepath.Join(t.TempDir(), "nested", "proxy-monster"))
 	dir, err := EnsureDir()
@@ -186,99 +187,197 @@ func TestEnsureDirTightensALooseExistingDir(t *testing.T) {
 	}
 }
 
-// TestSocketPathFitsTheKernelLimit covers the case a deep worktree hits for real: a unix socket path longer
-// than sun_path fails to bind with EINVAL, so SocketPath must fall back to a short path rather than hand back
-// one the daemon cannot listen on.
-func TestSocketPathFitsTheKernelLimit(t *testing.T) {
-	// A state dir well past the limit on its own.
-	deep := filepath.Join(t.TempDir(), strings.Repeat("nested-directory-segment/", 8), "proxy-monster")
-	t.Setenv(dirEnv, deep)
+func TestSocketPathAlwaysUsesFixedOwnerDirectory(t *testing.T) {
+	stateDir := filepath.Join(t.TempDir(), "proxy-monster")
+	t.Setenv(dirEnv, stateDir)
+	root := t.TempDir()
 
-	sock, err := SocketPath()
+	sock, err := socketPathAt(root)
 	if err != nil {
-		t.Fatalf("SocketPath for a deep state dir: %v", err)
+		t.Fatalf("socketPathAt: %v", err)
+	}
+	wantDir := filepath.Join(root, fmt.Sprintf("pmon-%d", os.Getuid()))
+	if got := filepath.Dir(sock); got != wantDir {
+		t.Errorf("socket directory = %q, want %q", got, wantDir)
 	}
 	if len(sock) > maxSocketPath {
 		t.Errorf("socket path is %d bytes (%q), over the %d-byte limit", len(sock), sock, maxSocketPath)
 	}
-	// Deterministic: every peer must derive the same path from the same state dir, with no coordination.
-	again, err := SocketPath()
+
+	t.Setenv("TMPDIR", t.TempDir())
+	again, err := socketPathAt(root)
 	if err != nil {
-		t.Fatalf("SocketPath (second call): %v", err)
+		t.Fatalf("socketPathAt with a different TMPDIR: %v", err)
 	}
 	if again != sock {
-		t.Errorf("SocketPath is not deterministic: %q then %q", sock, again)
-	}
-	// A different state dir must NOT collide with it.
-	t.Setenv(dirEnv, filepath.Join(t.TempDir(), strings.Repeat("another-long-directory/", 8), "proxy-monster"))
-	other, err := SocketPath()
-	if err != nil {
-		t.Fatalf("SocketPath for a second deep dir: %v", err)
-	}
-	if other == sock {
-		t.Error("two different state dirs derived the same fallback socket path")
+		t.Errorf("socket path changed with TMPDIR: %q then %q", sock, again)
 	}
 
-	// The fallback's directory is owner-only, which is this API's whole authentication.
+	t.Setenv(dirEnv, filepath.Join(t.TempDir(), "proxy-monster"))
+	other, err := socketPathAt(root)
+	if err != nil {
+		t.Fatalf("socketPathAt for a second state directory: %v", err)
+	}
+	if other == sock {
+		t.Error("two state directories derived the same socket path")
+	}
+
 	info, err := os.Stat(filepath.Dir(sock))
 	if err != nil {
-		t.Fatalf("Stat fallback socket dir: %v", err)
+		t.Fatalf("Stat socket directory: %v", err)
 	}
 	if perm := info.Mode().Perm(); perm != 0o700 {
-		t.Errorf("fallback socket dir perm = %o, want 0700", perm)
+		t.Errorf("socket directory mode = %o, want 0700", perm)
 	}
 }
 
-// TestShortSocketDirRefusesADirectoryOwnedByAnotherUser is the multi-user half of the fallback's safety. The
-// temp dir is world-writable + sticky on Linux and the directory name is predictable, so another local user can
-// pre-create it; MkdirAll succeeds on ANY existing directory regardless of owner, which would put a
-// login-capable socket in a path someone else controls. Ownership must be verified, and a mismatch fatal.
-func TestShortSocketDirRefusesADirectoryOwnedByAnotherUser(t *testing.T) {
-	// root's uid (0) stands in for "not us" — a real attacker's dir is the same case. Skip when running AS root,
-	// where the check would legitimately pass.
+func TestSocketPathsIncludeReleasedLocation(t *testing.T) {
+	stateDir := t.TempDir()
+	t.Setenv(dirEnv, stateDir)
+
+	paths, err := SocketPaths()
+	if err != nil {
+		t.Fatalf("SocketPaths: %v", err)
+	}
+	if len(paths) != 2 {
+		t.Fatalf("SocketPaths = %v, want canonical and released paths", paths)
+	}
+	if paths[0] == paths[1] {
+		t.Fatalf("SocketPaths returned duplicate paths: %v", paths)
+	}
+	if want := filepath.Join(stateDir, "daemon.sock"); paths[1] != want {
+		t.Errorf("released socket path = %q, want %q", paths[1], want)
+	}
+}
+
+func TestSocketPathsPreserveReleasedLongLocation(t *testing.T) {
+	root := t.TempDir()
+	t.Chdir(root)
+	stateDir := filepath.Join(strings.Repeat("long-state-dir/", 10), "proxy-monster")
+	t.Setenv(dirEnv, stateDir)
+	tempRoot := t.TempDir()
+	t.Setenv("TMPDIR", tempRoot)
+
+	paths, err := SocketPaths()
+	if err != nil {
+		t.Fatalf("SocketPaths: %v", err)
+	}
+	if len(paths) != 2 {
+		t.Fatalf("SocketPaths = %v, want canonical and released paths", paths)
+	}
+	sum := sha256.Sum256([]byte(stateDir))
+	want := filepath.Join(
+		tempRoot,
+		fmt.Sprintf("pmon-%d", os.Getuid()),
+		fmt.Sprintf("pmon-%s.sock", hex.EncodeToString(sum[:8])),
+	)
+	if paths[1] != want {
+		t.Errorf("released long socket path = %q, want %q", paths[1], want)
+	}
+}
+
+func TestSocketPathsDeduplicateEquivalentRoots(t *testing.T) {
+	stateDir := filepath.Join(t.TempDir(), strings.Repeat("long-state-dir/", 10), "proxy-monster")
+	t.Setenv(dirEnv, stateDir)
+	aliasRoot := filepath.Join(t.TempDir(), "tmp-link")
+	if err := os.Symlink(socketRoot, aliasRoot); err != nil {
+		t.Fatalf("Symlink: %v", err)
+	}
+	t.Setenv("TMPDIR", aliasRoot)
+
+	paths, err := SocketPaths()
+	if err != nil {
+		t.Fatalf("SocketPaths: %v", err)
+	}
+	if len(paths) != 1 {
+		t.Fatalf("SocketPaths = %v, want one path for equivalent roots", paths)
+	}
+}
+
+func TestSocketPathsIgnoreUnavailableReleasedLocation(t *testing.T) {
+	stateDir := filepath.Join(t.TempDir(), strings.Repeat("long-state-dir/", 10), "proxy-monster")
+	t.Setenv(dirEnv, stateDir)
+	blockedTemp := filepath.Join(t.TempDir(), "not-a-directory")
+	if err := os.WriteFile(blockedTemp, nil, 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	t.Setenv("TMPDIR", blockedTemp)
+
+	paths, err := SocketPaths()
+	if err != nil {
+		t.Fatalf("SocketPaths: %v", err)
+	}
+	if len(paths) != 1 {
+		t.Fatalf("SocketPaths = %v, want canonical path only", paths)
+	}
+}
+
+func TestSocketPathDistinguishesRelativeStateDirsAcrossWorkingDirectories(t *testing.T) {
+	root := t.TempDir()
+	firstWD := filepath.Join(root, "first")
+	secondWD := filepath.Join(root, "second")
+	for _, dir := range []string{firstWD, secondWD} {
+		if err := os.Mkdir(dir, 0o700); err != nil {
+			t.Fatalf("Mkdir %s: %v", dir, err)
+		}
+	}
+	relativeStateDir := filepath.Join(strings.Repeat("long-state-dir/", 10), "proxy-monster")
+	t.Setenv(dirEnv, relativeStateDir)
+	shortRoot := "short"
+
+	t.Chdir(firstWD)
+	first, err := socketPathAt(shortRoot)
+	if err != nil {
+		t.Fatalf("SocketPath from first working directory: %v", err)
+	}
+	t.Chdir(secondWD)
+	second, err := socketPathAt(shortRoot)
+	if err != nil {
+		t.Fatalf("SocketPath from second working directory: %v", err)
+	}
+	if first == second {
+		t.Fatalf("relative state dirs in different working directories share %q", first)
+	}
+}
+
+func TestSocketDirEnforcesOwnerAndMode(t *testing.T) {
 	if os.Getuid() == 0 {
 		t.Skip("running as root: uid 0 is not a foreign owner here")
 	}
 	tmp := t.TempDir()
-	t.Setenv("TMPDIR", tmp)
 	d := filepath.Join(tmp, fmt.Sprintf("pmon-%d", os.Getuid()))
 	if err := os.MkdirAll(d, 0o700); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}
-	// A test cannot chown to another user, so drive the guard with a DIFFERENT expected owner — exactly the
-	// comparison it makes when an attacker pre-created the path. Without this the uid branch is never exercised
-	// and could be deleted with the suite still green.
-	if _, err := shortSocketDirFor(os.Getuid() + 1); err == nil {
+	if _, err := socketDirAt(tmp, os.Getuid()+1); err == nil {
 		t.Error("a directory owned by another uid was accepted; it must fail closed")
 	} else if !strings.Contains(err.Error(), "owned by uid") {
 		t.Errorf("refused with %q; want the ownership check to be what rejects it", err)
 	}
 
-	// Ours, so it is accepted — and tightened if loose.
-	if err := os.Chmod(d, 0o777); err != nil {
-		t.Fatalf("Chmod: %v", err)
-	}
-	got, err := shortSocketDir()
-	if err != nil {
-		t.Fatalf("shortSocketDir on our own dir: %v", err)
-	}
-	if got != d {
-		t.Errorf("shortSocketDir = %q, want %q", got, d)
-	}
-	after, err := os.Lstat(d)
-	if err != nil {
-		t.Fatalf("Lstat: %v", err)
-	}
-	if perm := after.Mode().Perm(); perm != 0o700 {
-		t.Errorf("perm = %o after shortSocketDir, want 0700 (a loose dir must be tightened)", perm)
+	for _, mode := range []os.FileMode{0o777, 0o500} {
+		if err := os.Chmod(d, mode); err != nil {
+			t.Fatalf("Chmod %o: %v", mode, err)
+		}
+		got, err := socketDirAt(tmp, os.Getuid())
+		if err != nil {
+			t.Fatalf("socketDirAt on mode %o: %v", mode, err)
+		}
+		if got != d {
+			t.Errorf("socketDir = %q, want %q", got, d)
+		}
+		after, err := os.Lstat(d)
+		if err != nil {
+			t.Fatalf("Lstat: %v", err)
+		}
+		if perm := after.Mode().Perm(); perm != 0o700 {
+			t.Errorf("mode = %o after socketDirAt, want 0700", perm)
+		}
 	}
 }
 
-// TestShortSocketDirRefusesASymlink: a symlink at the predictable path would redirect the socket somewhere the
-// attacker controls, so it must be rejected rather than followed.
-func TestShortSocketDirRefusesASymlink(t *testing.T) {
+func TestSocketDirRefusesASymlink(t *testing.T) {
 	tmp := t.TempDir()
-	t.Setenv("TMPDIR", tmp)
 	target := filepath.Join(tmp, "elsewhere")
 	if err := os.MkdirAll(target, 0o700); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
@@ -288,28 +387,24 @@ func TestShortSocketDirRefusesASymlink(t *testing.T) {
 		t.Fatalf("Symlink: %v", err)
 	}
 
-	_, err := shortSocketDir()
+	_, err := socketDirAt(tmp, os.Getuid())
 	if err == nil {
-		t.Fatal("shortSocketDir followed a symlink at the fallback path; it must refuse")
+		t.Fatal("socketDirAt followed a symlink")
 	}
-	// Pin the SYMLINK check specifically. A symlink-to-directory satisfies MkdirAll and IsDir, so without an
-	// Lstat-based check the refusal would come from somewhere else (or not at all) and this test would pass
-	// while an attacker-controlled redirect went unnoticed.
 	if !strings.Contains(err.Error(), "symlink") {
 		t.Errorf("refused with %q; want the symlink check to be what rejects it", err)
 	}
 }
 
-// TestSocketPathStaysInTheStateDirWhenItFits: the fallback is for long paths only — a normal install keeps its
-// socket beside the config, where it is discoverable.
-func TestSocketPathStaysInTheStateDirWhenItFits(t *testing.T) {
-	dir := isolate(t)
+func TestSocketPathUsesProductionRoot(t *testing.T) {
+	isolate(t)
 	sock, err := SocketPath()
 	if err != nil {
 		t.Fatalf("SocketPath: %v", err)
 	}
-	if filepath.Dir(sock) != dir {
-		t.Errorf("socket = %q, want it inside the state dir %q", sock, dir)
+	want := filepath.Join(socketRoot, fmt.Sprintf("pmon-%d", os.Getuid()))
+	if got := filepath.Dir(sock); got != want {
+		t.Errorf("socket directory = %q, want %q", got, want)
 	}
 }
 

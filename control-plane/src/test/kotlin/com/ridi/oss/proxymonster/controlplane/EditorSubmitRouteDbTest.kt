@@ -1,5 +1,6 @@
 package com.ridi.oss.proxymonster.controlplane
 
+
 import com.ridi.oss.proxymonster.controlplane.authz.CedarPolicyInput
 import com.ridi.oss.proxymonster.controlplane.grpc.CONTROL_PROTOCOL_VERSION
 import com.ridi.oss.proxymonster.controlplane.grpc.ControlPlaneGrpcService
@@ -13,6 +14,7 @@ import com.ridi.oss.proxymonster.grpc.ControlRunMsg
 import com.ridi.oss.proxymonster.grpc.EnfAction as WireEnfAction
 import com.ridi.oss.proxymonster.grpc.ProxyRunMsg
 import com.ridi.oss.proxymonster.grpc.runDecision
+import com.ridi.oss.proxymonster.grpc.runError
 import com.ridi.oss.proxymonster.grpc.runDone
 import com.ridi.oss.proxymonster.grpc.runResultRows
 import com.ridi.oss.proxymonster.grpc.runRow
@@ -311,6 +313,39 @@ class EditorSubmitRouteDbTest {
     }
 
     @Test
+    fun `a target-DB failure in an editor run stores BOTH diagnostic forms for the re-gated view`() = testApplication {
+        val client = wire()
+        supervisorScope {
+            val session = openFakeSession(client) { req, _ ->
+                req.send(proxyRunMsg { decision = runDecision { decision = WireEnfAction.ALLOW } })
+                req.send(
+                    proxyRunMsg {
+                        error = runError {
+                            message = "ERROR: 42P01 undefined_table"
+                            targetDbError = true
+                            rawMessage = "ERROR: relation \"nope\" does not exist"
+                        }
+                    },
+                )
+            }
+            val ack = client.post("/api/editor/sessions/${session.sessionId}/query") {
+                contentType(ContentType.Application.Json); setBody(QueryRequest("select 1", 100))
+            }.body<EditorSubmitResponse>()
+
+            awaitUntil("target-DB error marks the editor task FAILED") { resultStore.meta(ack.taskId)?.status == "FAILED" }
+            assertEquals("approval.query_failed", resultStore.meta(ack.taskId)?.errorCode)
+            // Both forms persist, so the FAILED /result view re-gates per viewer like the approval path.
+            assertEquals(
+                runError { message = "ERROR: 42P01 undefined_table"; rawMessage = "ERROR: relation \"nope\" does not exist"; targetDbError = true },
+                resultStore.accessFor(ack.taskId)?.errorDetail,
+            )
+
+            client.delete("/api/editor/sessions/${session.sessionId}")
+            session.await()
+        }
+    }
+
+    @Test
     fun `result on a still-running task is 409 not_ready then gates status codes`() = testApplication {
         val client = wire()
         supervisorScope {
@@ -447,7 +482,7 @@ class EditorSubmitRouteDbTest {
         // freshly-inserted forbid takes effect live and its deletion restores the baseline.
         val client = wire()
         val task = core.accessStore.createEditorTask(
-            caller, datasource.id, "select id from t", listOf("editor-analyst"), caller,
+            caller, datasource.id, listOf("select id from t"), listOf("editor-analyst"), caller,
         )
         // Baseline: the owner's self-read permit (V33/V38 task.read on own Request) lets the poll through.
         assertEquals(HttpStatusCode.OK, client.get("/api/editor/tasks/${task.id}").status)
@@ -479,7 +514,7 @@ class EditorSubmitRouteDbTest {
         // A task owned by someone OTHER than the signed-in caller: poll is owner-scoped and result is
         // task.assume-scoped, so both 404.
         val other = core.accessStore.createEditorTask(
-            "someone-else@example.com", datasource.id, "select id from t", listOf("editor-analyst"), "someone-else@example.com",
+            "someone-else@example.com", datasource.id, listOf("select id from t"), listOf("editor-analyst"), "someone-else@example.com",
         )
         assertEquals(HttpStatusCode.NotFound, client.get("/api/editor/tasks/${other.id}").status)
         assertEquals(HttpStatusCode.NotFound, client.get("/api/editor/tasks/${other.id}/result").status)

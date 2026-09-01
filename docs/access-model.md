@@ -47,7 +47,7 @@ construction in
 [mapping-schema-construction.md](./mapping-schema-construction.md)). Functions
 and utilities are name-keyed only — `Function::"<datasource>/<name>"`,
 `Utility::"<datasource>/<command>"` (e.g. `Function::"acme-pg/pg_read_file"`,
-`Utility::"acme-mysql/SHOW_PROCESSLIST"`). That is what makes system-catalog
+`Utility::"acme-mysql/SHOW_BINLOG_EVENTS"`). That is what makes system-catalog
 introspection safe: `public.tables` is a different resource from
 `information_schema.tables`. It holds on both engines (a MySQL database is a
 schema).
@@ -75,14 +75,15 @@ guard.
 
 Utility commands map to the resource they expose. `SHOW`/`DESCRIBE` read no
 table, so the analyzer maps each to a canonical command id and the shipped
-manifest tags it: `SHOW [FULL] PROCESSLIST` → `SHOW_PROCESSLIST` /
-`system:activity`, `SHOW CREATE TABLE` / `DESCRIBE` → `system:catalog`,
-`SHOW BINLOG EVENTS` → `system:data-leak`. A command uses the real
-Table/Function when one exists; a command with no mirrored SQL object uses a
-dedicated `Utility::"<datasource>/<command>"` resource. Either way the same tag
-policy decides it. This command→resource map is a small, declarative part of the
-classification — the one place a resource is named rather than derived from
-lineage.
+manifest tags it: `SHOW BINLOG EVENTS` → `SHOW_BINLOG_EVENTS` /
+`system:data-leak`, `SHOW CREATE USER` → `system:critical`, `SHOW CREATE TABLE`
+/ `DESCRIBE` → `system:catalog`. `SHOW GRANTS` and `SHOW [FULL] PROCESSLIST`
+emit no utility — they gate on `stmt.cat.admin.account` / `.process`. A command
+uses the real Table/Function when one exists; a command with no mirrored SQL
+object uses a dedicated `Utility::"<datasource>/<command>"` resource. Either way
+the same tag policy decides it. This command→resource map is a small,
+declarative part of the classification — the one place a resource is named
+rather than derived from lineage.
 
 Only dangerous-classified functions are marshalled as Function resources (safe
 builtins and ordinary UDFs are not gated on this path). General UDF-output

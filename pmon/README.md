@@ -77,7 +77,7 @@ pmon CLI ──┐                        ┌── menu-bar app
            │  connect → else spawn detached → wait for socket
            ▼                        ▼
       pmon daemon  (detached; survives whichever peer started it)
-        ├─ daemon.sock  /status /login /logout /reload /shutdown /events
+        ├─ /tmp/pmon-<uid>/pmon-<hash>.sock  control API
         ├─ daemon.pid   flock: single-instance + liveness
         ├─ 127.0.0.1:6100+  one listener per datasource
         └─ config.json  the daemon is the sole writer

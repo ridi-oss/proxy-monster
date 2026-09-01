@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.5](https://github.com/ridi-oss/proxy-monster/compare/pmon-v0.1.4...pmon-v0.1.5) (2026-08-20)
+
+
+### Build & Dependencies
+
+* bump mysqlwire to v0.1.4 in goproxy and pmon ([#220](https://github.com/ridi-oss/proxy-monster/issues/220)) ([d45f214](https://github.com/ridi-oss/proxy-monster/commit/d45f214010ac98df0ae9b4ae8e27ce23fe8dc6f9))
+
 ## [0.1.4](https://github.com/ridi-oss/proxy-monster/compare/pmon-v0.1.3...pmon-v0.1.4) (2026-08-13)
 
 

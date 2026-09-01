@@ -318,7 +318,7 @@ func TestRunnerPostgresTempTablesAreSessionIsolated(t *testing.T) {
 
 	runSendQuery(fake2, readSQL, 20)
 	runExpectDecision(t, runRecv(t, fake2), pb.EnfAction_ALLOW, nil, "")
-	if message := runRecv(t, fake2); message.GetError() == nil || !strings.Contains(message.GetError().GetMessage(), "does not exist") {
+	if message := runRecv(t, fake2); message.GetError() == nil || !strings.Contains(message.GetError().GetRawMessage(), "does not exist") {
 		t.Fatalf("session 2 bare temp read = %v, want target DB relation-does-not-exist error", message)
 	}
 }
@@ -761,13 +761,16 @@ func runCatalogRefreshContract(t *testing.T, fixture runEngineFixture) {
 		if runErr == nil {
 			t.Fatalf("target-DB-failed DDL: want RunError")
 		}
-		// The target DB's own ERR for the executed statement: it must be tagged so the control-plane may
-		// surface it, and carry the raw (already-redacted) text without the generic execution prefix.
+		// The target DB's own ERR for the executed statement: tagged so the control-plane may surface it, with
+		// the value-free redacted text in Message (no generic prefix) and the raw text in RawMessage.
 		if !runErr.GetTargetDbError() {
 			t.Fatalf("target-DB-failed DDL RunError.target_db_error = false, want true")
 		}
-		if strings.HasPrefix(runErr.GetMessage(), "query execution failed: ") {
-			t.Fatalf("target-DB error = %q, want the raw redacted text without the generic prefix", runErr.GetMessage())
+		if runErr.GetMessage() == "" || strings.HasPrefix(runErr.GetMessage(), "query execution failed: ") {
+			t.Fatalf("target-DB error message = %q, want the redacted text without the generic prefix", runErr.GetMessage())
+		}
+		if runErr.GetRawMessage() == "" {
+			t.Fatalf("target-DB error RawMessage empty, want the raw text carried for a full-reader view")
 		}
 		waitDone()
 		if got := len(fake.runRecordedFragments()); got != initialPushes {

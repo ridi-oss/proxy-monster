@@ -7,6 +7,23 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
+func TestStatementFactsResultReadsAreDeterministic(t *testing.T) {
+	// Reference (predicate/order/join) columns come from a Go map, so without a stable sort the DENY grants
+	// shuffle between runs. The control-plane freezes result_reads as a stored result's fingerprint and
+	// compares them for proto equality at view, so a nondeterministic order would falsely deny an unchanged
+	// query. Use a query whose unprojected refs span multiple clauses (WHERE + ORDER BY).
+	sql := "SELECT id FROM users WHERE email = 'x' ORDER BY ssn"
+	first := postgresFacts(t, sql)
+	if !first.GetResolved() {
+		t.Fatalf("expected resolved facts: %s", first.GetDetail())
+	}
+	for i := 0; i < 50; i++ {
+		if !proto.Equal(first, postgresFacts(t, sql)) {
+			t.Fatalf("result_reads order is nondeterministic across analyzer runs (run %d differs)", i)
+		}
+	}
+}
+
 func postgresFacts(t *testing.T, sql string) *pb.StatementFacts {
 	t.Helper()
 	return analyzeProto(t, &pb.AnalyzeRequest{
@@ -732,5 +749,64 @@ func TestStatementFactsExecutableCommentAndOptimizerHint(t *testing.T) {
 	}
 	if hinted := mysqlFacts(t, "SELECT /*+ MAX_EXECUTION_TIME(1000) */ id FROM users"); !hinted.GetResolved() {
 		t.Fatalf("optimizer hint should remain inert: %+v", hinted)
+	}
+}
+
+// A statement with no statements — "" / ";" / comment-only — classifies as an EMPTY session
+// passthrough (authorized under stmt.cat.session, no grants) and relays so the target answers
+// natively (PostgreSQL EmptyQueryResponse; MySQL ER_EMPTY_QUERY for blank, OK for comment-only).
+// Anything that tokenizes to real content stays on the ordinary path.
+func TestEmptyStatementClassifiesAsPassthrough(t *testing.T) {
+	empties := map[string][]func(*testing.T, string) *pb.StatementFacts{
+		"":                                   {postgresFacts, mysqlFacts},
+		" \t\r\n\f":                          {postgresFacts, mysqlFacts},
+		"-- empty\n":                         {postgresFacts, mysqlFacts},
+		"# empty\n":                          {mysqlFacts},
+		";":                                  {postgresFacts, mysqlFacts},
+		" ; -- empty\n /* still empty */ ; ": {postgresFacts, mysqlFacts},
+		// Comment nesting is engine-specific: PostgreSQL nests, MySQL ends at the first */ leaving
+		// real tokens — so the same text is EMPTY on one engine and live SQL on the other.
+		"/* outer /* nested */ comment */": {postgresFacts},
+	}
+	for sql, engines := range empties {
+		for _, facts := range engines {
+			f := facts(t, sql)
+			if !f.GetResolved() {
+				t.Fatalf("%q: empty statement must resolve, got %q", sql, f.GetDetail())
+			}
+			if kind := f.GetStatementExec().GetStatementKind(); kind != pb.StatementKind_STATEMENT_KIND_EMPTY {
+				t.Fatalf("%q: kind = %v, want STATEMENT_KIND_EMPTY", sql, kind)
+			}
+			if len(f.GetResultReads()) != 0 || f.GetRewrittenSql() != "" {
+				t.Fatalf("%q: empty statement must carry no grants or rewrite", sql)
+			}
+		}
+	}
+	for _, sql := range []string{
+		"SELECT 1",
+		"-- c\nSELECT 1",
+		"';'",
+	} {
+		f := postgresFacts(t, sql)
+		if f.GetStatementExec().GetStatementKind() == pb.StatementKind_STATEMENT_KIND_EMPTY {
+			t.Fatalf("%q must not classify EMPTY", sql)
+		}
+	}
+	// A tokenizer error must fall through to the ordinary parse path and fail closed there.
+	if f := postgresFacts(t, "/* unterminated"); f.GetResolved() ||
+		f.GetStatementExec().GetStatementKind() == pb.StatementKind_STATEMENT_KIND_EMPTY {
+		t.Fatalf("unterminated comment must fail closed, not resolve: %+v", f)
+	}
+	// A trailing empty statement doesn't make the real one EMPTY: the SELECT is what's authorized.
+	if f := postgresFacts(t, "SELECT 1; ;"); !f.GetResolved() ||
+		f.GetStatementExec().GetStatementKind() != pb.StatementKind_STATEMENT_KIND_SELECT {
+		t.Fatalf("SELECT with trailing empty must classify SELECT: %+v", f)
+	}
+	// A whole-statement executable comment is live SQL on MySQL, never EMPTY.
+	for _, sql := range []string{"/*!50100 SELECT 1 */", "/*! DROP TABLE users */"} {
+		f := mysqlFacts(t, sql)
+		if f.GetStatementExec().GetStatementKind() == pb.StatementKind_STATEMENT_KIND_EMPTY {
+			t.Fatalf("%q must not classify EMPTY", sql)
+		}
 	}
 }

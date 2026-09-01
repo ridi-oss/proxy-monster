@@ -217,6 +217,7 @@ class SystemClassificationTest {
     fun `real MySQL classifications (incl Aurora rds_) are correct`() {
         val c = SystemClassificationStore.load().classifierFor("mysql", "8.0")!!
         assertEquals(SystemTag.CRITICAL, c.classifyRelation("def", "mysql", "user"))
+        assertEquals(SystemTag.ACTIVITY, c.classifyRelation("def", "information_schema", "PROCESSLIST"))
         assertEquals(SystemTag.CRITICAL, c.classifyRelation("def", "information_schema", "USER_PRIVILEGES"))
         assertEquals(SystemTag.DATA_LEAK, c.classifyRelation("def", "information_schema", "COLUMN_STATISTICS"))
         assertEquals(SystemTag.ACTIVITY, c.classifyRelation("def", "information_schema", "PROCESSLIST"))
@@ -227,7 +228,14 @@ class SystemClassificationTest {
         // Aurora proprietary management procedures (mysql.rds_* family → critical)
         assertEquals(SystemTag.CRITICAL, c.classifyFunction("def", "mysql", "rds_kill"))
         assertEquals(SystemTag.CRITICAL, c.classifyFunction("def", "mysql", "rds_set_configuration"))
-        assertEquals(SystemTag.ACTIVITY, c.classifyCommand("SHOW_PROCESSLIST"))
+        assertEquals(SystemTag.CRITICAL, c.classifyCommand("SET_GLOBAL"))
+        // SHOW GRANTS / SHOW PROCESSLIST gate on their statement kind, not a Utility, so the shipped manifest
+        // carries no command entry. The tables they expose stay classified below.
+        assertNull(c.classifyCommand("SHOW_GRANTS"))
+        assertNull(c.classifyCommand("SHOW_PROCESSLIST"))
+        assertEquals(SystemTag.CRITICAL, c.classifyRelation("def", "mysql", "global_grants"))
+        assertEquals(SystemTag.CRITICAL, c.classifyRelation("def", "mysql", "user"))
+        assertEquals(SystemTag.ACTIVITY, c.classifyRelation("def", "information_schema", "PROCESSLIST"))
     }
 
     @Test

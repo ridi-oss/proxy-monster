@@ -1,5 +1,6 @@
 package com.ridi.oss.proxymonster.controlplane
 
+import com.ridi.oss.proxymonster.controlplane.authz.CedarPolicyInput
 import com.ridi.oss.proxymonster.grpc.EnfAction
 import com.ridi.oss.proxymonster.classification.SystemClassificationStore
 import com.ridi.oss.proxymonster.classification.SystemTag
@@ -110,13 +111,11 @@ class ManifestCommandCoverageDbTest {
         "LOAD_XML" to (Eng.MY to "LOAD XML INFILE '/tmp/x' INTO TABLE t"),
         // MySQL — data-bearing SHOW (the emission-leak class this guard protects).
         "SHOW_CREATE_USER" to (Eng.MY to "SHOW CREATE USER CURRENT_USER()"),
-        "SHOW_GRANTS" to (Eng.MY to "SHOW GRANTS"),
         "SHOW_BINLOG_EVENTS" to (Eng.MY to "SHOW BINLOG EVENTS"),
         "SHOW_RELAYLOG_EVENTS" to (Eng.MY to "SHOW RELAYLOG EVENTS"),
         "SHOW_ENGINE_STATUS" to (Eng.MY to "SHOW ENGINE INNODB STATUS"),
         "SHOW_WARNINGS" to (Eng.MY to "SHOW WARNINGS"),
         "SHOW_ERRORS" to (Eng.MY to "SHOW ERRORS"),
-        "SHOW_PROCESSLIST" to (Eng.MY to "SHOW PROCESSLIST"),
         "SHOW_REPLICA_STATUS" to (Eng.MY to "SHOW REPLICA STATUS"),
         // PostgreSQL.
         "PG_ALTER_SYSTEM" to (Eng.PG to "ALTER SYSTEM SET work_mem = '1MB'"),
@@ -188,15 +187,72 @@ class ManifestCommandCoverageDbTest {
             }
         }
         // The activity/critical distinction is real: on a CERTIFIED datasource with the system:development
-        // relaxation, SHOW REPLICA STATUS (system:activity) is relaxed to ALLOW, but SHOW CREATE USER /
-        // SHOW GRANTS (system:critical) are NEVER relaxed — proving the emitted commands carry the right tag,
-        // not just "some deny". (No-manifest can't distinguish these — both hard-deny unclassified.)
+        // relaxation, SHOW REPLICA STATUS (system:activity) is relaxed to ALLOW, but SHOW CREATE USER
+        // (system:critical — it returns the account's stored password hash) is NEVER relaxed — proving the
+        // emitted commands carry the right tag, not just "some deny". (No-manifest can't distinguish these —
+        // both hard-deny unclassified.)
         setEngineVersion(Eng.MY, "8.0.44")
         setDevPreset(Eng.MY, true)
         assertEquals(EnfAction.ALLOW, decide(Eng.MY, "SHOW REPLICA STATUS"), "SHOW REPLICA STATUS (activity) relaxes on a dev datasource")
         assertEquals(EnfAction.DENY, decide(Eng.MY, "SHOW CREATE USER CURRENT_USER()"), "SHOW CREATE USER (critical) is NEVER relaxed, even on dev")
-        assertEquals(EnfAction.DENY, decide(Eng.MY, "SHOW GRANTS"), "SHOW GRANTS (critical) is NEVER relaxed, even on dev")
         setDevPreset(Eng.MY, false)
+    }
+
+    @Test
+    fun `SHOW GRANTS and SHOW PROCESSLIST gate on their statement kind, not a Utility`() {
+        // Neither carries a utility grant — stmt.cat.admin.account / .process is the gate. SHOW CREATE USER
+        // still does (system:critical: it returns the stored password hash), so it stays denied on the very
+        // datasource that permits these two.
+        setEngineVersion(Eng.MY, "8.0.44")
+        try {
+            setDevPreset(Eng.MY, false)
+            // Production floor: the analyst holds no admin category, so the kind gate denies.
+            assertEquals(EnfAction.DENY, decide(Eng.MY, "SHOW GRANTS"), "SHOW GRANTS denies on the production floor (no admin.account)")
+            assertEquals(EnfAction.DENY, decide(Eng.MY, "SHOW PROCESSLIST"), "SHOW PROCESSLIST denies on the production floor (no admin.process)")
+            // A grantable capability now: the dev preset's stmt.cat.admin permit reaches it. Under the old
+            // system:critical Utility, SHOW GRANTS denied HERE too — the -130 forbid was unconditional.
+            setDevPreset(Eng.MY, true)
+            assertEquals(EnfAction.ALLOW, decide(Eng.MY, "SHOW GRANTS"), "SHOW GRANTS is grantable — the dev admin preset permits it")
+            assertEquals(EnfAction.ALLOW, decide(Eng.MY, "SHOW PROCESSLIST"), "SHOW PROCESSLIST is grantable — the dev admin preset permits it")
+            // SHOW CREATE USER returns the account's stored password hash, so it keeps its system:critical
+            // Utility and stays denied on the very datasource that now permits SHOW GRANTS.
+            assertEquals(EnfAction.DENY, decide(Eng.MY, "SHOW CREATE USER CURRENT_USER()"), "SHOW CREATE USER stays denied — it leaks the password hash")
+        } finally {
+            setDevPreset(Eng.MY, false)
+        }
+    }
+
+    @Test
+    fun `a datasource-wide permit reaches the kind-gated SHOWs, exactly as it reaches SELECT and DROP`() {
+        // The consequence of gating on the kind alone: a permit whose action is unscoped
+        // (`permit(principal, action, resource in Datasource::"…")`) authorizes stmt.cat.admin.* like any
+        // other kind, so SHOW GRANTS / SHOW FULL PROCESSLIST relay. That is the same over-broad permit
+        // already reaching SELECT and DROP TABLE on that datasource -- an operator scopes the actions they
+        // mean, and a policy written against Utility::"<ds>/SHOW_PROCESSLIST" no longer matches anything.
+        // Pinned here so the trade is explicit rather than discovered in production. The statements that
+        // still carry a utility are unaffected by the same permit (asserted below), and the default
+        // production floor still denies both (the sibling test above).
+        setEngineVersion(Eng.MY, "8.0.44")
+        val fx = fxOf(Eng.MY)
+        val wide = "wide-ds-permit@example.com"
+        val role = fx.policyStore.createRole(RoleInput("wide-ds-role"))
+        fx.policyStore.createAssignment(RoleAssignmentInput(wide, role.id))
+        val dsName = fx.datasource.name
+        val pols = listOf(
+            "test-wide-ds-self" to """permit(principal in Role::"wide-ds-role", action, resource == Datasource::"$dsName");""",
+            "test-wide-ds-under" to """permit(principal in Role::"wide-ds-role", action, resource in Datasource::"$dsName");""",
+        ).map { (n, src) -> fx.cedarPolicyStore.create(CedarPolicyInput(name = n, cedarSrc = src), updatedBy = "test") }
+        try {
+            assertEquals(EnfAction.ALLOW, decide(Eng.MY, "SHOW GRANTS", wide), "a datasource-wide permit reaches SHOW GRANTS")
+            assertEquals(EnfAction.ALLOW, decide(Eng.MY, "SHOW FULL PROCESSLIST", wide), "a datasource-wide permit reaches SHOW FULL PROCESSLIST")
+            // Not a hole this gate opened: the same permit already relays ordinary DML/DDL.
+            assertEquals(EnfAction.ALLOW, decide(Eng.MY, "DROP TABLE users", wide), "the same permit already reaches DROP TABLE")
+            // A statement that still emits a utility is NOT reachable by it — the utility floor holds.
+            assertEquals(EnfAction.DENY, decide(Eng.MY, "SHOW CREATE USER CURRENT_USER()", wide), "system:critical utility still overrides the wide permit")
+            assertEquals(EnfAction.DENY, decide(Eng.MY, "SHOW BINLOG EVENTS", wide), "system:data-leak utility still overrides the wide permit")
+        } finally {
+            pols.forEach { fx.cedarPolicyStore.delete(it.id) }
+        }
     }
 
     private fun setDevPreset(eng: Eng, on: Boolean) {

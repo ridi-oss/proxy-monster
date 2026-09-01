@@ -124,10 +124,7 @@ export function ApprovalDetail({ id }: { id: number }) {
   const runStarted = result != null && result.status != null
   const canViewRows = result?.status === 'DONE'
 
-  // Fetch /result on DONE (rows) and on FAILED (the target-DB errorDetail, which lives behind the
-  // task.assume gate — never on the metadata poll). Only an EXPECTED absence is swallowed to null so the
-  // localized code still shows: 404 (viewer can't assume R / no such result) or 409 (not yet ready).
-  // Anything else — transient or 5xx — re-throws so SWR retries instead of masking it as "no detail".
+  // Only an expected absence (404 can't-assume, 409 not-ready) becomes null; a 5xx re-throws so SWR retries.
   const { data: resultView } = useSWR(
     canViewRows || result?.status === 'FAILED' ? (['approval-result', id] as const) : null,
     () =>
@@ -172,6 +169,10 @@ export function ApprovalDetail({ id }: { id: number }) {
       refresh()
     } catch (err) {
       toast.error(err instanceof Error ? err.message : t('approvalDetail.runFailed'))
+      // A run can commit (APPROVED → EXECUTING) server-side and still fail the response. Refresh so a stale
+      // APPROVED view does not re-enable Run and invite a duplicate submit; the server's CAS is the real
+      // guard, this keeps the UI honest.
+      refresh()
     } finally {
       setBusy(null)
     }
@@ -231,8 +232,12 @@ export function ApprovalDetail({ id }: { id: number }) {
                 >
                   {t('actions.reject')}
                 </Button>
-                <Button onClick={() => setApproveOpen(true)} disabled={busy !== null}>
-                  {t('actions.approve')}
+                <Button
+                  onClick={() => setApproveOpen(true)}
+                  disabled={busy !== null}
+                  className="bg-emerald-600 text-white hover:bg-emerald-700"
+                >
+                  {t('actions.approveAndRun')}
                 </Button>
               </div>
             )}
@@ -299,7 +304,11 @@ export function ApprovalDetail({ id }: { id: number }) {
                   <p className="text-muted-foreground text-sm">
                     {t('approvalDetail.runUnderRole', { principal: request.principal })}
                   </p>
-                  <Button onClick={handleRun} disabled={busy !== null}>
+                  <Button
+                    onClick={handleRun}
+                    disabled={busy !== null}
+                    className="bg-emerald-600 text-white hover:bg-emerald-700"
+                  >
                     {busy === 'run' ? t('actions.running') : t('actions.runQuery')}
                   </Button>
                 </div>
@@ -332,8 +341,6 @@ export function ApprovalDetail({ id }: { id: number }) {
                   {result.status === 'FAILED' && result.errorCode && (
                     <div className="space-y-1 rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-500">
                       <div>{t('approvalDetail.failedCode', { code: translateApiError(result.errorCode) })}</div>
-                      {/* The backend error text (redaction-gated at the proxy) from the assume-gated /result, so
-                          the failure names its real cause. Absent when the viewer can't assume R. */}
                       {resultView?.errorDetail && (
                         <div className="font-mono text-xs break-words opacity-80">{resultView.errorDetail}</div>
                       )}

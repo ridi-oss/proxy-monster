@@ -1,5 +1,76 @@
 # Changelog
 
+## [0.1.23](https://github.com/ridi-oss/proxy-monster/compare/server-v0.1.22...server-v0.1.23) (2026-08-28)
+
+
+### Features
+
+* **goproxy:** carry both raw and redacted forms of a failed query's target-DB error ([#261](https://github.com/ridi-oss/proxy-monster/issues/261)) ([279ca2e](https://github.com/ridi-oss/proxy-monster/commit/279ca2e82df806e0e267613b42b580ac1e8eb3d2))
+
+
+### Bug Fixes
+
+* **control-plane:** refetch an unheld schema before relaying it unanalyzed ([#258](https://github.com/ridi-oss/proxy-monster/issues/258)) ([63ae665](https://github.com/ridi-oss/proxy-monster/commit/63ae665fbe945daf631b2a5310a751f1613399b8))
+
+
+### Refactoring
+
+* **analyzer:** fold identifiers once, up front, instead of per consumer ([#257](https://github.com/ridi-oss/proxy-monster/issues/257)) ([70bf790](https://github.com/ridi-oss/proxy-monster/commit/70bf790ad57d918cbd0e06aee83dc7379929c724))
+* **control-plane:** store a query result as protobuf, not kotlinx JSON ([#265](https://github.com/ridi-oss/proxy-monster/issues/265)) ([9ccff9e](https://github.com/ridi-oss/proxy-monster/commit/9ccff9e1ee8efdd5705b98292585d69dfb2639ff))
+
+
+### Build & Dependencies
+
+* **web:** commit the agent files next dev regenerates ([#260](https://github.com/ridi-oss/proxy-monster/issues/260)) ([a4ff9a4](https://github.com/ridi-oss/proxy-monster/commit/a4ff9a4b9d4d08716cf8ac86befa952dc905f25a))
+
+## [0.1.22](https://github.com/ridi-oss/proxy-monster/compare/server-v0.1.21...server-v0.1.22) (2026-08-24)
+
+
+### Bug Fixes
+
+* **control-plane:** gate stored-result views on a decision fingerprint, not column labels ([#229](https://github.com/ridi-oss/proxy-monster/issues/229)) ([#241](https://github.com/ridi-oss/proxy-monster/issues/241)) ([06c189c](https://github.com/ridi-oss/proxy-monster/commit/06c189c98cc6c288b4ef0956cb580f27c00becfd))
+
+## [0.1.21](https://github.com/ridi-oss/proxy-monster/compare/server-v0.1.20...server-v0.1.21) (2026-08-21)
+
+
+### Reverts
+
+* surface a failed query's target-DB error ([#202](https://github.com/ridi-oss/proxy-monster/issues/202)) ([#227](https://github.com/ridi-oss/proxy-monster/issues/227)) ([203ca88](https://github.com/ridi-oss/proxy-monster/commit/203ca88e720d2c5cb9e5e7767238ed98abea546e))
+
+
+### Build & Dependencies
+
+* **release:** recognize revert-type commits + cut server 0.1.21 ([#233](https://github.com/ridi-oss/proxy-monster/issues/233)) ([f57c488](https://github.com/ridi-oss/proxy-monster/commit/f57c4887897e4e9066e2234908ed4ab49e5aebdc))
+
+## [0.1.20](https://github.com/ridi-oss/proxy-monster/compare/server-v0.1.19...server-v0.1.20) (2026-08-20)
+
+
+### Bug Fixes
+
+* **analyzer:** allow VALUES() in INSERT … ON DUPLICATE KEY UPDATE ([#224](https://github.com/ridi-oss/proxy-monster/issues/224)) ([44944af](https://github.com/ridi-oss/proxy-monster/commit/44944af2a409ecdf49dc50615276c92603c0ff5b))
+* uncorrupt Slack reason links + one Approve & run button ([#226](https://github.com/ridi-oss/proxy-monster/issues/226)) ([94f99c0](https://github.com/ridi-oss/proxy-monster/commit/94f99c0bf4f34bc822c6e21daea0255a6819d8fb))
+
+## [0.1.19](https://github.com/ridi-oss/proxy-monster/compare/server-v0.1.18...server-v0.1.19) (2026-08-20)
+
+
+### Features
+
+* **control-plane:** surface a failed query's target-DB error, confidential like the rows ([#202](https://github.com/ridi-oss/proxy-monster/issues/202)) ([ef0c271](https://github.com/ridi-oss/proxy-monster/commit/ef0c271bce0a55ca3d2313b80cc93da141b03880))
+* **web:** list every role a query can run under, auto-discovered in the composer ([#201](https://github.com/ridi-oss/proxy-monster/issues/201)) ([b5d0280](https://github.com/ridi-oss/proxy-monster/commit/b5d02802fe2495a5ce8c403a3957a2db49f215be))
+
+
+### Bug Fixes
+
+* **goproxy:** hex BIT/GEOMETRY and any non-UTF-8 result cell ([#219](https://github.com/ridi-oss/proxy-monster/issues/219)) ([cf5069a](https://github.com/ridi-oss/proxy-monster/commit/cf5069ab0b1a45ab6876c5ce7aa705cedde31f61))
+* **mysqlproxy:** show binary values in web results ([#205](https://github.com/ridi-oss/proxy-monster/issues/205)) ([d785d9b](https://github.com/ridi-oss/proxy-monster/commit/d785d9b70206eb9cc2386813d2f68fd7477bc842))
+* **web:** reload the page on same-window identity changes ([#207](https://github.com/ridi-oss/proxy-monster/issues/207)) ([8456af7](https://github.com/ridi-oss/proxy-monster/commit/8456af70864172fd497f89487f9e6cf0ef5fcd0f))
+* **web:** session-routing e2e accepts the ?next= login redirect ([#199](https://github.com/ridi-oss/proxy-monster/issues/199)) ([efd69df](https://github.com/ridi-oss/proxy-monster/commit/efd69dfe2e0e3f7dbe5dc7fb377dcf3e14127869))
+
+
+### Build & Dependencies
+
+* bump mysqlwire to v0.1.4 in goproxy and pmon ([#220](https://github.com/ridi-oss/proxy-monster/issues/220)) ([d45f214](https://github.com/ridi-oss/proxy-monster/commit/d45f214010ac98df0ae9b4ae8e27ce23fe8dc6f9))
+
 ## [0.1.18](https://github.com/ridi-oss/proxy-monster/compare/server-v0.1.17...server-v0.1.18) (2026-08-14)
 
 

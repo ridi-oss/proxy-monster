@@ -321,17 +321,76 @@ class GrpcRunExecDbTest {
             requests.send(
                 proxyRunMsg {
                     error = runError {
-                        message = "ERROR: relation \"nope\" does not exist"
+                        message = "ERROR: 42P01 undefined_table"
                         targetDbError = true
+                        rawMessage = "ERROR: relation \"nope\" does not exist"
                     }
                 },
             )
         }.exceptionOrNull()
 
-        // The flag is the sole discriminator: a tagged target-DB statement ERR is the one provenance whose
-        // text (already diagnostic-redacted at the wire) the CP may carry into error_detail.
-        assertIs<TargetDbRunException>(failure)
-        assertEquals("ERROR: relation \"nope\" does not exist", failure.message)
+        // A tagged target-DB statement ERR that ran under a recorded ALLOW decision is the one provenance the
+        // CP may carry into error_detail — its raw form (raw_message) for a full reader, the redacted `message`
+        // for a masked viewer.
+        val tdbErr = assertIs<TargetDbRunException>(failure)
+        assertEquals("ERROR: relation \"nope\" does not exist", tdbErr.message, "raw text rides on the exception message")
+        assertEquals("ERROR: 42P01 undefined_table", tdbErr.redactedMessage, "the value-free form is the redacted field")
+        assertEquals(tdbErr.message, tdbErr.decidedMessage, "a decision that did not sanitize releases the raw form")
+        // toDiagnostic keeps the two forms in the right RunError fields — raw in raw_message, redacted in
+        // message — so the store persists both and the sync route / view release the correct one.
+        val diagnostic = tdbErr.toDiagnostic()
+        assertEquals("ERROR: relation \"nope\" does not exist", diagnostic.rawMessage)
+        assertEquals("ERROR: 42P01 undefined_table", diagnostic.message)
+        assertTrue(diagnostic.targetDbError)
+    }
+
+    @Test
+    fun `a sanitizing decision's target ERR releases only the redacted form as its decided message`() = runBlocking {
+        val failure = exchange("insert into users values (1)") { _, requests ->
+            requests.send(
+                proxyRunMsg {
+                    decision = runDecision {
+                        decision = WireEnfAction.MASK
+                        sanitizeDiagnostics = true
+                    }
+                },
+            )
+            requests.send(
+                proxyRunMsg {
+                    error = runError {
+                        message = "ERROR: 23505 unique_violation"
+                        targetDbError = true
+                        rawMessage = "ERROR: duplicate key value (ssn)=(123-45-6789)"
+                    }
+                },
+            )
+        }.exceptionOrNull()
+
+        val tdbErr = assertIs<TargetDbRunException>(failure)
+        assertEquals(tdbErr.redactedMessage, tdbErr.decidedMessage, "a sanitizing decision releases the redacted form")
+    }
+
+    @Test
+    fun `a target_db_error with no recorded decision does not surface the raw backend text`() = runBlocking {
+        // A target ERR implies the statement executed under an ALLOW/MASK decision. If the flag arrives with no
+        // decision frame (a protocol violation), the CP must not surface the raw text — it degrades to a generic
+        // failure carrying only the proxy's redacted `message`.
+        val failure = exchange("select from a missing table") { _, requests ->
+            requests.send(
+                proxyRunMsg {
+                    error = runError {
+                        message = "ERROR: 42P01 undefined_table"
+                        targetDbError = true
+                        rawMessage = "ERROR: relation \"nope\" does not exist"
+                    }
+                },
+            )
+        }.exceptionOrNull()
+
+        assertIs<ProxyRunException>(failure)
+        assertFalse(failure is TargetDbRunException, "a target ERR with no decision must not become surfaceable")
+        assertFalse(failure.message!!.contains("nope"), "the raw backend text must not surface without a decision")
+        assertEquals("ERROR: 42P01 undefined_table", failure.message, "only the proxy's redacted form")
     }
 
     @Test

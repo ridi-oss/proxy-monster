@@ -1,6 +1,7 @@
 package mysqlproxy
 
 import (
+	"encoding/binary"
 	"errors"
 	"io"
 	"net"
@@ -20,13 +21,13 @@ func (runTestDecider) Decide(engine.DecideRequest) engine.DecisionOutcome {
 	return engine.DecisionOutcome{Decision: &engine.Decision{Action: "ALLOW"}}
 }
 
-func scriptedMySQLRun(t *testing.T, maxRows int, response []byte) (*RunSession, <-chan string) {
+func scriptedMySQLRun(t *testing.T, decider engine.Decider, maxRows int, response []byte) (*RunSession, <-chan string) {
 	t.Helper()
 	client, server := net.Pipe()
 	t.Cleanup(func() { _ = client.Close(); _ = server.Close() })
 	_ = client.SetDeadline(time.Now().Add(5 * time.Second))
 	_ = server.SetDeadline(time.Now().Add(5 * time.Second))
-	qe := engine.NewQueryEngine(db.MySqlDb{}, runTestDecider{})
+	qe := engine.NewQueryEngine(db.MySqlDb{}, decider)
 	qe.SetNamespace([]string{"test"})
 	s := &RunSession{conn: client, qe: qe, ref: &engine.Refetcher{}}
 	writes := make(chan string, 3)
@@ -60,7 +61,7 @@ func scriptedMySQLRun(t *testing.T, maxRows int, response []byte) (*RunSession, 
 
 func runMySQLStatement(t *testing.T, maxRows int, response []byte) (engine.StatementResult, error, []string) {
 	t.Helper()
-	s, writes := scriptedMySQLRun(t, maxRows, response)
+	s, writes := scriptedMySQLRun(t, runTestDecider{}, maxRows, response)
 	result, err := s.ServeStatement("SELECT 1", maxRows)
 	var got []string
 	for write := range writes {
@@ -117,6 +118,31 @@ func TestRunStatementMySQLResetsAfterTargetDbError(t *testing.T) {
 	}
 }
 
+// A run result is stored and re-gated per viewer at view time, so a failed run surfaces the target-DB ERR
+// with BOTH forms: the raw message (released to a viewer who reads unmasked) and the redacted essno symbol
+// (released to a masked viewer). The CP picks per viewer; capture does not depend on the decision (#202/#228).
+// The repro raises MySQL 1242.
+func TestRunStatementMySQLCapturesRawAndRedactedTargetDbError(t *testing.T) {
+	response := mysqlPacket(t, mysqlwire.ErrPacketState(1242, "21000", "Subquery returns more than 1 row"))
+	s, writes := scriptedMySQLRun(t, runTestDecider{}, 2, response)
+	_, err := s.ServeStatement("SELECT email FROM tb_user WHERE 1 = (SELECT 1 UNION ALL SELECT 2)", 2)
+	for range writes {
+	}
+	var tdbErr engine.TargetDbError
+	if !errors.As(err, &tdbErr) {
+		t.Fatalf("err = %T, want engine.TargetDbError carrying both forms", err)
+	}
+	if tdbErr.Message != "Subquery returns more than 1 row" {
+		t.Errorf("raw message = %q, want the verbatim target-DB text for a full-reader view", tdbErr.Message)
+	}
+	if tdbErr.Redacted != "ERROR 1242 (21000): ER_SUBQUERY_NO_1_ROW" {
+		t.Errorf("redacted = %q, want the value-free essno + SQLSTATE + symbol for a masked view", tdbErr.Redacted)
+	}
+	if strings.Contains(tdbErr.Redacted, "Subquery returns more than 1 row") {
+		t.Error("raw text leaked into the redacted form")
+	}
+}
+
 func TestTextResultCollectorRejectsMalformedRowWidth(t *testing.T) {
 	result := engine.StatementResult{Rows: make([][]*string, 0)}
 	collect := textResultCollector{maxRows: 1, result: &result}
@@ -129,7 +155,124 @@ func TestTextResultCollectorRejectsMalformedRowWidth(t *testing.T) {
 	}
 }
 
+func TestTextResultCollectorDisplaysBinaryValuesAsHex(t *testing.T) {
+	result := engine.StatementResult{Rows: make([][]*string, 0)}
+	collect := textResultCollector{maxRows: 1, result: &result}
+	if err := collect.onColumns(2); err != nil {
+		t.Fatal(err)
+	}
+	if err := collect.onColumnDef(mysqlColumnDef("uuid", mysqlwire.CharsetBinary, mysqlwire.ColumnTypeString)); err != nil {
+		t.Fatal(err)
+	}
+	if err := collect.onColumnDef(mysqlColumnDef("name", 45, mysqlwire.ColumnTypeVarString)); err != nil {
+		t.Fatal(err)
+	}
+	raw := string([]byte{0x12, 0x34, 0x56, 0x78, 0x90, 0xab, 0xcd, 0xef, 0x12, 0x34, 0x56, 0x78, 0x90, 0xab, 0xcd, 0xef})
+	if _, err := collect.onRow(mysqlwire.TextRowPayload([]*string{&raw, ptrMySQL("Alice")})); err != nil {
+		t.Fatal(err)
+	}
+	got := derefMySQL(result.Rows[0][0])
+	if got != "0x1234567890abcdef1234567890abcdef" {
+		t.Fatalf("binary value = %q, want visible hex", got)
+	}
+	if got := derefMySQL(result.Rows[0][1]); got != "Alice" {
+		t.Fatalf("text value = %q, want Alice", got)
+	}
+}
+
+func TestTextResultCollectorHexesBitAndGeometry(t *testing.T) {
+	// BIT (0x10) and GEOMETRY (0xff) carry a binary charset; their bytes must always render as hex like every
+	// other binary column, even when a value happens to be valid UTF-8 (e.g. BIT(1) = 0x01) — otherwise it
+	// would reach the UI as an invisible control character.
+	result := engine.StatementResult{Rows: make([][]*string, 0)}
+	collect := textResultCollector{maxRows: 1, result: &result}
+	if err := collect.onColumns(2); err != nil {
+		t.Fatal(err)
+	}
+	for _, typ := range []byte{0x10, 0xff} {
+		if err := collect.onColumnDef(mysqlColumnDef("c", mysqlwire.CharsetBinary, typ)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	bit := string([]byte{0x01})                                      // BIT(1) = b'1' — valid UTF-8, still binary
+	geom := string([]byte{0x00, 0x00, 0x00, 0x00, 0x01, 0x01, 0x00}) // WKB-ish, all valid UTF-8
+	if _, err := collect.onRow(mysqlwire.TextRowPayload([]*string{&bit, &geom})); err != nil {
+		t.Fatal(err)
+	}
+	if got := derefMySQL(result.Rows[0][0]); got != "0x01" {
+		t.Fatalf("BIT value = %q, want 0x01", got)
+	}
+	if got := derefMySQL(result.Rows[0][1]); got != "0x00000000010100" {
+		t.Fatalf("GEOMETRY value = %q, want hex", got)
+	}
+}
+
+func TestTextResultCollectorHexesNonUTF8Fallback(t *testing.T) {
+	// A cell whose bytes are not valid UTF-8 must be hexed even when its column is not classified binary, so
+	// an unnamed or future binary type cannot revive the proto3-string marshal failure.
+	result := engine.StatementResult{Rows: make([][]*string, 0)}
+	collect := textResultCollector{maxRows: 1, result: &result}
+	if err := collect.onColumns(1); err != nil {
+		t.Fatal(err)
+	}
+	// charset 45 (utf8mb4) is not binary, so only the invalid-UTF-8 fallback can hex this value.
+	if err := collect.onColumnDef(mysqlColumnDef("c", 45, mysqlwire.ColumnTypeVarString)); err != nil {
+		t.Fatal(err)
+	}
+	raw := string([]byte{0xff, 0xfe})
+	if _, err := collect.onRow(mysqlwire.TextRowPayload([]*string{&raw})); err != nil {
+		t.Fatal(err)
+	}
+	if got := derefMySQL(result.Rows[0][0]); got != "0xfffe" {
+		t.Fatalf("non-utf8 value = %q, want 0xfffe", got)
+	}
+}
+
+func TestTextResultCollectorLeavesMaskedBinaryValuesMasked(t *testing.T) {
+	ordinal := int32(0)
+	result := engine.StatementResult{Rows: make([][]*string, 0)}
+	collect := textResultCollector{
+		maxRows: 1,
+		result:  &result,
+		masks:   []*pb.ColumnMask{{Kind: "FIXED", Ordinal: &ordinal}},
+	}
+	if err := collect.onColumns(1); err != nil {
+		t.Fatal(err)
+	}
+	if err := collect.onColumnDef(mysqlColumnDef("uuid", mysqlwire.CharsetBinary, mysqlwire.ColumnTypeString)); err != nil {
+		t.Fatal(err)
+	}
+	raw := string([]byte{0x12, 0x34, 0x56, 0x78})
+	if _, err := collect.onRow(mysqlwire.TextRowPayload([]*string{&raw})); err != nil {
+		t.Fatal(err)
+	}
+	if got := derefMySQL(result.Rows[0][0]); got != "####" {
+		t.Fatalf("masked binary value = %q, want mask", got)
+	}
+}
+
 func ptrMySQL(value string) *string { return &value }
+
+func derefMySQL(value *string) string {
+	if value == nil {
+		return "<nil>"
+	}
+	return *value
+}
+
+func mysqlColumnDef(name string, charset uint16, typ byte) []byte {
+	var payload []byte
+	for _, value := range []string{"def", "app", "people", "people", name, name} {
+		payload = mysqlwire.AppendLenencStr(payload, value)
+	}
+	payload = mysqlwire.AppendLenenc(payload, 0x0c)
+	payload = binary.LittleEndian.AppendUint16(payload, charset)
+	payload = binary.LittleEndian.AppendUint32(payload, 16)
+	payload = append(payload, typ)
+	payload = binary.LittleEndian.AppendUint16(payload, 0)
+	payload = append(payload, 0, 0, 0)
+	return payload
+}
 
 func TestTextResultCollectorMaskUnboundBeforeRows(t *testing.T) {
 	ordinal := int32(3)

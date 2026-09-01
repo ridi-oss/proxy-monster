@@ -151,8 +151,123 @@ func TestStatusRoundTrips(t *testing.T) {
 	}
 }
 
-// TestSocketIsOwnerOnly locks the control API's whole authentication model: there is no token, so the socket's
-// mode (inside a 0700 dir) is what keeps another OS user out.
+func TestReleasedClientPathReachesNewDaemon(t *testing.T) {
+	backend := newFakeBackend()
+	serve(t, backend)
+	paths, err := state.SocketPaths()
+	if err != nil {
+		t.Fatalf("SocketPaths: %v", err)
+	}
+	if len(paths) != 2 {
+		t.Fatalf("SocketPaths = %v, want canonical and released paths", paths)
+	}
+	info, err := os.Lstat(paths[1])
+	if err != nil {
+		t.Fatalf("Lstat released path: %v", err)
+	}
+	if info.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("released path mode = %v, want symlink", info.Mode())
+	}
+	if target, err := os.Readlink(paths[1]); err != nil || target != paths[0] {
+		t.Fatalf("released path target = %q, %v; want %q", target, err, paths[0])
+	}
+
+	resp, err := unixHTTPClient(paths[1]).Get("http://pmon" + PathStatus)
+	if err != nil {
+		t.Fatalf("GET status through released path: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET status through released path = HTTP %d, want 200", resp.StatusCode)
+	}
+}
+
+func TestNewClientReachesReleasedDaemonPath(t *testing.T) {
+	t.Setenv("PMON_CONFIG_DIR", t.TempDir())
+	if _, err := state.EnsureDir(); err != nil {
+		t.Fatalf("EnsureDir: %v", err)
+	}
+	held, err := state.AcquirePidLock()
+	if err != nil || !held {
+		t.Fatalf("AcquirePidLock = %v, %v; want true, nil", held, err)
+	}
+	t.Cleanup(state.ReleasePidLock)
+	paths, err := state.SocketPaths()
+	if err != nil {
+		t.Fatalf("SocketPaths: %v", err)
+	}
+	if len(paths) != 2 {
+		t.Fatalf("SocketPaths = %v, want canonical and released paths", paths)
+	}
+	ln, err := net.Listen("unix", paths[1])
+	if err != nil {
+		t.Fatalf("listen on released path: %v", err)
+	}
+	srv := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(w, http.StatusOK, Status{Principal: "released-daemon"})
+	})}
+	go func() { _ = srv.Serve(ln) }()
+	t.Cleanup(func() { _ = srv.Close() })
+
+	client, err := NewClient()
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	status, err := client.Status(context.Background())
+	if err != nil {
+		t.Fatalf("Status through released daemon path: %v", err)
+	}
+	if status.Principal != "released-daemon" {
+		t.Errorf("Status principal = %q, want released-daemon", status.Principal)
+	}
+}
+
+func TestBlockedReleasedPathDoesNotDisableCanonicalSocket(t *testing.T) {
+	t.Setenv("PMON_CONFIG_DIR", t.TempDir())
+	if _, err := state.EnsureDir(); err != nil {
+		t.Fatalf("EnsureDir: %v", err)
+	}
+	paths, err := state.SocketPaths()
+	if err != nil {
+		t.Fatalf("SocketPaths: %v", err)
+	}
+	if len(paths) != 2 {
+		t.Fatalf("SocketPaths = %v, want canonical and released paths", paths)
+	}
+	if err := os.Mkdir(paths[1], 0o700); err != nil {
+		t.Fatalf("Mkdir released path: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(paths[1], "blocked"), nil, 0o600); err != nil {
+		t.Fatalf("seed blocked released path: %v", err)
+	}
+	held, err := state.AcquirePidLock()
+	if err != nil || !held {
+		t.Fatalf("AcquirePidLock = %v, %v; want true, nil", held, err)
+	}
+	t.Cleanup(state.ReleasePidLock)
+
+	server, err := Listen(newFakeBackend())
+	if err != nil {
+		t.Fatalf("Listen with blocked released path: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { _ = server.Serve(ctx); close(done) }()
+	t.Cleanup(func() {
+		cancel()
+		server.Close()
+		<-done
+	})
+	client, err := NewClient()
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	if _, err := client.Status(context.Background()); err != nil {
+		t.Fatalf("Status through canonical socket: %v", err)
+	}
+}
+
+// The socket mode and its 0700 parent directory authenticate the control API.
 func TestSocketIsOwnerOnly(t *testing.T) {
 	serve(t, newFakeBackend())
 

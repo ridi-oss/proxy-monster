@@ -532,6 +532,27 @@ func TestParseColumnName(t *testing.T) {
 	}
 }
 
+func TestParseColumnDefinition(t *testing.T) {
+	var payload []byte
+	for _, value := range []string{"def", "app", "people", "people", "uuid", "uuid"} {
+		payload = AppendLenencStr(payload, value)
+	}
+	payload = AppendLenenc(payload, 0x0c)
+	payload = binary.LittleEndian.AppendUint16(payload, CharsetBinary)
+	payload = binary.LittleEndian.AppendUint32(payload, 16)
+	payload = append(payload, ColumnTypeString)
+	payload = binary.LittleEndian.AppendUint16(payload, 0x80)
+	payload = append(payload, 0, 0, 0)
+
+	got, err := ParseColumnDefinition(payload)
+	if err != nil {
+		t.Fatalf("ParseColumnDefinition: %v", err)
+	}
+	if got.Name != "uuid" || got.Charset != CharsetBinary || got.ColumnLength != 16 || got.Type != ColumnTypeString || got.Flags != 0x80 {
+		t.Fatalf("definition = %+v, want uuid binary string metadata", got)
+	}
+}
+
 func TestErrPacketRetainsExistingBytes(t *testing.T) {
 	want := append([]byte{0xff, 0x15, 0x04, '#'}, "HY000boom"...)
 	if got := ErrPacket(1045, "boom"); !reflect.DeepEqual(got, want) {

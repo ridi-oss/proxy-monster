@@ -73,9 +73,7 @@ const localPasswordBytes = 24
 // (parallel dev worktrees), or to keep a test off the real user config dir.
 const dirEnv = "PMON_CONFIG_DIR"
 
-// Dir is the directory holding every piece of pmon state: the config, the pid lock, the control socket, and
-// the daemon log. Created 0700, which is also what protects the control socket — a peer is authenticated by
-// its ability to open the socket at all, so the directory mode IS the access control.
+// Dir is the directory holding pmon's config, pid lock, and daemon log.
 func Dir() (string, error) {
 	if d := os.Getenv(dirEnv); d != "" {
 		return d, nil
@@ -87,9 +85,7 @@ func Dir() (string, error) {
 	return filepath.Join(base, "proxy-monster"), nil
 }
 
-// EnsureDir creates the state directory 0700 and returns it. It also TIGHTENS a pre-existing directory that
-// is looser than 0700: MkdirAll's mode applies only on create, and this directory's mode is what keeps another
-// OS user away from the control socket and the config's bearer secrets.
+// EnsureDir creates the state directory 0700 and tightens a pre-existing directory that is looser.
 func EnsureDir() (string, error) {
 	d, err := Dir()
 	if err != nil {
@@ -104,7 +100,7 @@ func EnsureDir() (string, error) {
 	}
 	if perm := info.Mode().Perm(); perm&0o077 != 0 {
 		if err := os.Chmod(d, 0o700); err != nil {
-			return "", fmt.Errorf("could not tighten %s to 0700 (it is %o and holds the control socket): %w", d, perm, err)
+			return "", fmt.Errorf("could not tighten %s to 0700 (it is %o): %w", d, perm, err)
 		}
 	}
 	return d, nil
@@ -130,14 +126,63 @@ const ConfigName = "config.json"
 // Linux), minus room for the NUL. A bind past it fails with EINVAL, so the path is checked, never assumed.
 const maxSocketPath = 100
 
-// SocketPath is the daemon's control socket, which the CLI and the tray both drive.
-//
-// A unix socket path is length-limited by the kernel, and the state directory can be deep (a nested worktree,
-// a long PMON_CONFIG_DIR). When the in-directory path would not fit, this falls back to a short path in the
-// temp dir, named from a hash of the state directory — deterministic, so every peer derives the SAME path
-// without coordination. The fallback is created 0700 and owner-scoped, keeping the "only the same OS user can
-// connect" property that is this API's entire authentication.
-func SocketPath() (string, error) {
+const socketRoot = "/tmp"
+
+func SocketPath() (string, error) { return socketPathAt(socketRoot) }
+
+// SocketPaths returns the canonical path followed by paths used by released peers.
+func SocketPaths() ([]string, error) {
+	canonical, err := SocketPath()
+	if err != nil {
+		return nil, err
+	}
+	legacy, err := legacySocketPath()
+	if err != nil {
+		return []string{canonical}, nil
+	}
+	if sameSocketPath(canonical, legacy) {
+		return []string{canonical}, nil
+	}
+	return []string{canonical, legacy}, nil
+}
+
+func sameSocketPath(a, b string) bool {
+	if a == b {
+		return true
+	}
+	if filepath.Base(a) != filepath.Base(b) {
+		return false
+	}
+	aDir, err := os.Stat(filepath.Dir(a))
+	if err != nil {
+		return false
+	}
+	bDir, err := os.Stat(filepath.Dir(b))
+	return err == nil && os.SameFile(aDir, bDir)
+}
+
+func socketPathAt(root string) (string, error) {
+	dir, err := Dir()
+	if err != nil {
+		return "", err
+	}
+	dir, err = filepath.Abs(dir)
+	if err != nil {
+		return "", err
+	}
+	short, err := socketDirAt(root, os.Getuid())
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256([]byte(dir))
+	p := filepath.Join(short, fmt.Sprintf("pmon-%s.sock", hex.EncodeToString(sum[:8])))
+	if len(p) > maxSocketPath {
+		return "", fmt.Errorf("no control-socket path fits the %d-byte limit (tried %q)", maxSocketPath, p)
+	}
+	return p, nil
+}
+
+func legacySocketPath() (string, error) {
 	p, err := pathIn("daemon.sock")
 	if err != nil {
 		return "", err
@@ -149,35 +194,21 @@ func SocketPath() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	short, err := shortSocketDir()
+	short, err := socketDirAt(os.TempDir(), os.Getuid())
 	if err != nil {
 		return "", err
 	}
 	sum := sha256.Sum256([]byte(dir))
 	p = filepath.Join(short, fmt.Sprintf("pmon-%s.sock", hex.EncodeToString(sum[:8])))
 	if len(p) > maxSocketPath {
-		return "", fmt.Errorf("no control-socket path fits the %d-byte limit (tried %q)", maxSocketPath, p)
+		return "", fmt.Errorf("no compatible control-socket path fits the %d-byte limit (tried %q)", maxSocketPath, p)
 	}
 	return p, nil
 }
 
-// shortSocketDir is the owner-only directory holding fallback sockets, under the temp dir because that is the
-// only reliably-short writable path.
-//
-// The temp dir is usually world-writable + sticky (/tmp on Linux; macOS gives each user a private one), so a
-// pre-existing entry cannot be trusted: MkdirAll succeeds on ANY existing directory regardless of its owner or
-// mode, which would let another local user own the path where a login-capable socket lands. So the directory is
-// VERIFIED after creation — owned by us, and not group/other-accessible — and a failure is fatal rather than
-// silently accepted. A symlink is rejected too (Lstat, not Stat), so it cannot be redirected somewhere the
-// attacker controls.
-func shortSocketDir() (string, error) {
-	return shortSocketDirFor(os.Getuid())
-}
-
-// shortSocketDirFor is [shortSocketDir] with the expected owner injected, so the ownership refusal is testable
-// (a test cannot chown a directory to another user).
-func shortSocketDirFor(wantUID int) (string, error) {
-	d := filepath.Join(os.TempDir(), fmt.Sprintf("pmon-%d", os.Getuid()))
+// Socket directories must be owned by the current user, mode 0700, and not symlinks.
+func socketDirAt(root string, wantUID int) (string, error) {
+	d := filepath.Join(root, fmt.Sprintf("pmon-%d", os.Getuid()))
 	if err := os.MkdirAll(d, 0o700); err != nil {
 		return "", err
 	}
@@ -198,10 +229,9 @@ func shortSocketDirFor(wantUID int) (string, error) {
 	if int(st.Uid) != wantUID {
 		return "", fmt.Errorf("control-socket directory %s is owned by uid %d, not %d; refusing to use it", d, st.Uid, wantUID)
 	}
-	if perm := info.Mode().Perm(); perm&0o077 != 0 {
-		// Ours, but loose — tighten it. Safe now that ownership is proven.
+	if perm := info.Mode().Perm(); perm != 0o700 {
 		if err := os.Chmod(d, 0o700); err != nil {
-			return "", fmt.Errorf("could not tighten the control-socket directory %s (it is %o): %w", d, perm, err)
+			return "", fmt.Errorf("could not set the control-socket directory %s to 0700 (it is %o): %w", d, perm, err)
 		}
 	}
 	return d, nil

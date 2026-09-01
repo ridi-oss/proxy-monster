@@ -65,7 +65,7 @@ class NotificationServiceDbTest {
 
     private fun newTask(principal: String = "req@example.com"): AccessRequest =
         fx.accessStore.createQueryRequest(
-            principal = principal, datasourceId = fx.datasource.id, sql = "SELECT 1",
+            principal = principal, datasourceId = fx.datasource.id, statements = listOf("SELECT 1"),
             denyReason = null, sourceDecisionId = null, reason = "r", title = "t", evaluatedDecision = "ALLOW",
         )
 
@@ -327,7 +327,7 @@ class NotificationServiceDbTest {
         // AccessRequest.executedBy is derived from it, so owner@x becomes both requester and executor.
         val req = newTask(principal = "owner@x")
         val resultStore = QueryResultStore(fx.dataSource, ResultCrypto(ByteArray(32) { it.toByte() }))
-        resultStore.startRun(req.id, "owner@x")
+        resultStore.startNextRun(req.id, "owner@x")
         resultStore.completeRun(req.id, DecryptedResult(listOf("id"), listOf(listOf("1"), listOf("2"), listOf("3"))), retentionSec = 3600)
 
         val svcWithResults = NotificationService(

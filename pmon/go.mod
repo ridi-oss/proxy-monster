@@ -2,13 +2,13 @@ module github.com/ridi-oss/proxy-monster/pmon
 
 go 1.26.0
 
-require github.com/ridi-oss/proxy-monster/mysqlwire v0.1.3
+require github.com/ridi-oss/proxy-monster/mysqlwire v0.1.4
 
 require (
 	github.com/alecthomas/kong v1.16.0
 	github.com/docker/docker v27.1.1+incompatible
-	github.com/docker/go-connections v0.8.1
 	github.com/go-sql-driver/mysql v1.10.0
+	github.com/moby/moby/api v1.55.0
 	github.com/testcontainers/testcontainers-go v0.44.0
 )
 
@@ -26,6 +26,7 @@ require (
 	github.com/cpuguy83/dockercfg v0.3.2 // indirect
 	github.com/davecgh/go-spew v1.1.1 // indirect
 	github.com/distribution/reference v0.6.0 // indirect
+	github.com/docker/go-connections v0.8.1 // indirect
 	github.com/docker/go-units v0.5.0 // indirect
 	github.com/ebitengine/purego v0.10.1 // indirect
 	github.com/felixge/httpsnoop v1.1.0 // indirect
@@ -38,7 +39,6 @@ require (
 	github.com/magiconair/properties v1.8.10 // indirect
 	github.com/moby/docker-image-spec v1.3.1 // indirect
 	github.com/moby/go-archive v0.2.0 // indirect
-	github.com/moby/moby/api v1.55.0 // indirect
 	github.com/moby/moby/client v0.5.0 // indirect
 	github.com/moby/patternmatcher v0.6.1 // indirect
 	github.com/moby/sys/sequential v0.7.0 // indirect

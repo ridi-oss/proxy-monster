@@ -401,9 +401,10 @@ Development datasource (`system:development`) — connect via any dev role;
 | user table, non-PII column (`users.id`) | cleartext (`-200`) |
 | user table, PII column (`users.ssn`) | cleartext — dev holds no PII, nothing is masked (`-200`) |
 | system table — catalog (`pg_class`, `information_schema`) | readable (`-100`) |
-| system table — activity (`pg_stat_activity`, `SHOW PROCESSLIST`) | readable (`-110` relaxed on dev, `-200` permits) |
+| system table — activity (`pg_stat_activity`, `information_schema.PROCESSLIST`) | readable (`-110` relaxed on dev, `-200` permits) |
 | system table — data-leak (`pg_stats`, `SHOW BINLOG EVENTS`) | readable (`-120` relaxed on dev) |
-| system — critical (`pg_authid`, `SET GLOBAL`, `SHOW GRANTS`, `SET PASSWORD`) | DENIED even on dev (`-130`) |
+| system — critical (`pg_authid`, `SET GLOBAL`, `SHOW CREATE USER`, `SET PASSWORD`) | DENIED even on dev (`-130`) |
+| admin statement kind (`SHOW GRANTS`, `SHOW PROCESSLIST`) | permitted by the dev admin preset (`-238`); prod ships none |
 | dangerous function — file/remote read (`pg_read_file`, `dblink`, `get_raw_page`) | allowed (data-leak, relaxed on dev) |
 | dangerous function — critical (`dblink_exec`, `pg_terminate_backend`, `lo_export`) | DENIED even on dev (`-130`) |
 | un-analyzable statement / binary-result relay | relayed (`-201`/`-202`); a hidden critical function is still denied first |

@@ -54,7 +54,7 @@ class JitApprovalAuditDbTest {
     )
 
     private fun seedQueryRequest() = core.accessStore.createQueryRequest(
-        principal = requester, datasourceId = datasource.id, sql = "select 1", denyReason = "denied",
+        principal = requester, datasourceId = datasource.id, statements = listOf("select 1"), denyReason = "denied",
         sourceDecisionId = null, reason = "need it", title = null, evaluatedDecision = "DENY", roleId = role.id,
     )
 
@@ -101,7 +101,7 @@ class JitApprovalAuditDbTest {
         val actor = actor()
 
         val request = core.accessStore.createQueryRequest(
-            principal = requester, datasourceId = datasource.id, sql = "select 1", denyReason = "denied",
+            principal = requester, datasourceId = datasource.id, statements = listOf("select 1"), denyReason = "denied",
             sourceDecisionId = null, reason = "need it", title = null, evaluatedDecision = "DENY", roleId = role.id,
             actor = actor, recorder = recorder,
         )

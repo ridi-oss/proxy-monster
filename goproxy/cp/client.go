@@ -41,7 +41,7 @@ import (
 // error instead of a stalled run channel. Bump it on any incompatible wire change. It MUST match the
 // control-plane's CONTROL_PROTOCOL_VERSION; the two are separate constants in separate languages kept in
 // lockstep by hand — a server-v* release always ships both at the same value.
-const ProtocolVersion int32 = 1
+const ProtocolVersion int32 = 2
 
 // ErrIncompatibleControlPlane means the control-plane speaks a different wire-protocol version than this
 // proxy — a PERMANENT deploy-skew condition, not a transient failure. boot treats it as fatal (refuse to
@@ -253,6 +253,7 @@ func decisionFromWire(d *pb.WireDecision) ([]*pb.Refetch, *engine.Decision) {
 		AfterStatement:      afterStatement,
 		Generation:          v.GetGeneration(),
 		SanitizeDiagnostics: v.GetSanitizeDiagnostics(),
+		ResultFingerprint:   v.GetResultFingerprint(),
 	}
 }
 

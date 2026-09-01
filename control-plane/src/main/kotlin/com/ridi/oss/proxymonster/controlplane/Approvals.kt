@@ -12,6 +12,7 @@ import com.ridi.oss.proxymonster.controlplane.management.ManagementAuditRecorder
 import com.ridi.oss.proxymonster.controlplane.notify.NotificationEvent
 import com.ridi.oss.proxymonster.controlplane.notify.NotificationService
 import com.ridi.oss.proxymonster.grpc.EnfAction
+import com.ridi.oss.proxymonster.grpc.RunError
 import com.ridi.oss.proxymonster.probe.Masking
 import com.ridi.oss.proxymonster.probe.bindMasks
 import io.ktor.http.HttpStatusCode
@@ -131,12 +132,10 @@ fun discoverRoles(
     val meta: QueryResultMeta,
     val columns: List<String>,
     val rows: List<List<String?>>,
-    // Null for a FAILED view (no rows were released, so there is no release to label); set to the view
-    // re-decision's verdict on the DONE path. explicitNulls=false drops it from the FAILED response body.
+    // The view re-decision's verdict; null on a FAILED view (no rows released to label).
     val decision: Decision? = null,
     val maskedColumns: List<String> = emptyList(),
-    // The raw target-DB error behind a FAILED run, released only behind the task.assume gate (like the rows) —
-    // never on the task.read metadata poll. Null on a DONE view; set only when a FAILED run is viewed.
+    // A FAILED run's target-DB error — raw or redacted per this viewer (failedDiagnosticForViewer).
     val errorDetail: String? = null,
 )
 
@@ -176,21 +175,23 @@ internal sealed class ResultViewDecision {
 }
 
 /**
- * Re-evaluate a stored execute-under-R result for the actual viewer in their live HTTP context. The store
- * holds R's execution-enforced output; this function re-applies R's masks for the viewer's current context,
- * narrowing further where it requires. Every uncertainty is a deny: no role/SQL, policy DENY, passthrough,
- * output-column drift, or an unbound mask.
- *
- * [childSql] is the statement of the SAME result child whose bytes are in [decrypted] (from
- * [ResultAccess.sql]) — NOT the task's first-child `req.sql`, which can diverge once a task holds plural
- * children. Re-deciding the released child's own statement keeps the masking verdict bound to those bytes.
+ * Which form of a FAILED run's stored [diagnostic] this viewer may see: the raw message when their view
+ * decision relays raw, the redacted one when it sanitizes, neither on a deny or a missing re-decision.
  */
-internal fun decideResultView(
+internal fun failedDiagnosticForViewer(ctx: DecisionContext?, diagnostic: RunError?): String? = when {
+    ctx == null || diagnostic == null || ctx.action == EnfAction.DENY -> null
+    ctx.sanitizeDiagnostics -> diagnostic.message
+    else -> diagnostic.rawMessage
+}
+
+/**
+ * The GET /result view's re-decision: decide [childSql] as [viewer] under its live execute-as roles {R}.
+ * Null if the SQL, datasource, or roles are gone (a soft-deleted role grants nothing).
+ */
+internal fun viewerDecision(
     viewer: String,
     req: AccessRequest,
     childSql: String?,
-    ds: Datasource,
-    decrypted: DecryptedResult,
     callerContext: AuthzContext,
     datasourceStore: DatasourceStore,
     policyStore: PolicyStore,
@@ -199,33 +200,35 @@ internal fun decideResultView(
     roleResolver: RoleResolver,
     authz: Authz,
     systemClassification: SystemClassificationService?,
-    // The decide-channel the released bytes are re-masked under. WORKFLOW_VIEWER for an approval view; the
-    // editor result view passes EDITOR so its re-decision matches how runOnSession enforced the run (both on
-    // the editor channel, under the same own-roles set), rather than a workflow viewer's context.
-    channel: Channel = Channel.WORKFLOW_VIEWER,
-): ResultViewDecision {
-    val sql = childSql ?: return ResultViewDecision.Denied("saved result child has no SQL")
-    // Drop any execute-as role soft-deleted since the snapshot was frozen: it must grant nothing, so a
-    // stored result never re-decides under a role that no longer exists (an empty result denies below).
-    val roles = policyStore.liveRoleNames(req.executeAs)
-    if (roles.isEmpty()) return ResultViewDecision.Denied("approval request has no live execute-as roles")
-    val ctx = decideQuery(
-        principal = viewer,
-        ds = ds,
-        sql = sql,
-        channel = channel,
-        catalog = datasourceStore.catalog(ds.id),
-        policyStore = policyStore,
-        accessStore = accessStore,
-        userGroupStore = userGroupStore,
-        roleResolver = roleResolver,
-        authz = authz,
-        providedRoles = roles,
-        context = callerContext,
-        systemClassification = systemClassification,
+    channel: Channel,
+): DecisionContext? {
+    val sql = childSql ?: return null
+    val ds = req.datasourceId?.let(datasourceStore::get) ?: return null
+    val roles = policyStore.liveRoleNames(req.executeAs).ifEmpty { return null }
+    return decideQuery(
+        principal = viewer, ds = ds, sql = sql, channel = channel,
+        catalog = datasourceStore.catalog(ds.id), policyStore = policyStore, accessStore = accessStore,
+        userGroupStore = userGroupStore, roleResolver = roleResolver, authz = authz,
+        providedRoles = roles, context = callerContext, systemClassification = systemClassification,
     )
+}
+
+/**
+ * Re-apply R's masks to a stored result's [decrypted] bytes under the viewer's live [ctx]. Every
+ * uncertainty denies: policy DENY, passthrough mismatch, fingerprint drift, an unbound mask.
+ */
+internal fun decideResultView(ctx: DecisionContext, decrypted: DecryptedResult): ResultViewDecision {
     if (ctx.action == EnfAction.DENY) {
         return ResultViewDecision.Denied(ctx.denyReason ?: ctx.detail ?: "view decision denied")
+    }
+    // A stored result must never be released through the passthrough relay unless it was itself frozen as a
+    // grant-less passthrough. If its SQL became unanalyzable since execution (a dropped table/column →
+    // exception.unanalyzable), the live re-decision turns passthrough while the stored bytes still hold the
+    // columnar, possibly masked, result. A legacy result (null fingerprint) is likewise unverifiable. Both
+    // fail closed — only a present, grant-less fingerprint takes the raw-release path below.
+    val storedFingerprint = decrypted.resultFingerprint
+    if (ctx.passthrough && (storedFingerprint == null || storedFingerprint.grantsList.isNotEmpty())) {
+        return ResultViewDecision.Denied("stored result no longer matches the live query decision")
     }
     if (ctx.passthrough) {
         // The re-decision already ran full Cedar authorization under {R} in the viewer's live context and
@@ -246,10 +249,18 @@ internal fun decideResultView(
         }
         return ResultViewDecision.Allowed(decrypted.columns, decrypted.rows)
     }
-    if (
-        ctx.outputColumns.size != decrypted.columns.size ||
-        ctx.outputColumns.zip(decrypted.columns).any { (decided, stored) -> !decided.equals(stored, ignoreCase = true) }
-    ) {
+    // Apply the re-decided masks only when the frozen requirements still match the live re-decision — then
+    // each masked column keeps the same output ordinals, so ctx.masks bind to the same stored columns they
+    // did at execution ([resultFingerprint]). Any drift (a reorder, a namespace change, a legacy result with
+    // no frozen fingerprint) denies fail-closed. This does NOT freeze the mask FUNCTIONS or Cedar verdicts:
+    // masking is re-decided under {R} at view, so a policy that liberalizes between execute and view can
+    // still narrow (or widen) the masks — matched requirements only prove the ordinal binding is sound.
+    if (storedFingerprint == null || storedFingerprint != fingerprintOf(ctx.resultFingerprint)) {
+        return ResultViewDecision.Denied("stored result no longer matches the live query decision")
+    }
+    // The live projection must be the same width as the stored bytes a mask ordinal indexes into; this also
+    // denies a plan-shaped result (EXPLAIN emits no output columns) rather than releasing it raw.
+    if (ctx.outputColumns.size != decrypted.columns.size) {
         return ResultViewDecision.Denied("stored result columns no longer match the live query decision")
     }
     if (decrypted.rows.any { it.size != decrypted.columns.size }) {
@@ -466,7 +477,7 @@ fun Route.approvalRoutes(
                 accessStore.createQueryRequest(
                     principal = principal,
                     datasourceId = datasourceId,
-                    sql = source.statement,
+                    statements = listOf(source.statement),
                     denyReason = source.detail,
                     sourceDecisionId = sourceDecisionId,
                     reason = input.reason.trim(),
@@ -526,7 +537,7 @@ fun Route.approvalRoutes(
         val request = accessStore.createQueryRequest(
             principal = principal,
             datasourceId = ds.id,
-            sql = sql,
+            statements = listOf(sql),
             denyReason = if (decision.action == EnfAction.DENY) (decision.denyReason ?: decision.detail) else null,
             sourceDecisionId = null,
             reason = input.reason.trim(),
@@ -798,9 +809,15 @@ fun Route.approvalRoutes(
         if (!mayReadResult(call, principal, req)) {
             return@get call.respond(HttpStatusCode.NotFound, ApiError("common.not_found", mapOf("resource" to "query approval request")))
         }
-        // A FAILED run's raw target-DB detail is released here, behind the SAME task.assume gate as the rows —
-        // never on the task.read metadata poll. There are no rows to re-decide, so the gate is the boundary;
-        // audit the release like a normal view (before responding) so it is never returned without a record.
+        // One re-decision on access.sql (the released child's own statement, not req.sql) gates both the
+        // FAILED diagnostic and the DONE rows. Null withholds.
+        val ctx = viewerDecision(
+            principal, req, access.sql, call.httpAuthzContext(config),
+            datasourceStore, policyStore, accessStore, userGroupStore, roleResolver, authz,
+            systemClassification, Channel.WORKFLOW_VIEWER,
+        )
+        // The failure detail releases only here, behind the same gate as the rows (never on the metadata
+        // poll). Audit before responding so it is never returned unrecorded.
         if (meta.status == "FAILED" && access.errorDetail != null) {
             val viewEvent = when (principal) {
                 req.principal -> "result-failure-viewed-by-requester"
@@ -809,7 +826,7 @@ fun Route.approvalRoutes(
             }
             auditStore.insert(e3Record(principal, req, viewEvent, Channel.WORKFLOW_VIEWER))
             return@get call.respond(
-                QueryResultView(meta, emptyList(), emptyList(), errorDetail = access.errorDetail),
+                QueryResultView(meta, emptyList(), emptyList(), errorDetail = failedDiagnosticForViewer(ctx, access.errorDetail)),
             )
         }
         if (meta.status != "DONE") {
@@ -817,39 +834,9 @@ fun Route.approvalRoutes(
         }
         val decrypted = access.decrypted
             ?: return@get call.respond(HttpStatusCode.Gone, ApiError("approval.result_expired"))
-
-        // No raw side-channel: EVERY view re-decides under exactly the task's execute-as role set {R}
-        // (approval-execute-view-model). A row with an empty {R} — which a new request can never produce,
-        // since it must name its role — has no basis to re-decide under, so decideResultView denies it
-        // fail-closed rather than returning the stored bytes unmasked.
-        val viewDecision = when {
-            req.datasourceId == null -> ResultViewDecision.Denied("approval request has no datasource")
-            // Bind the re-decision to the SAME child whose bytes were just decrypted (access.sql), not the
-            // task's first-child req.sql — the two diverge once a task holds plural children.
-            access.sql == null -> ResultViewDecision.Denied("saved result child has no SQL")
-            else -> {
-                val ds = datasourceStore.get(req.datasourceId)
-                if (ds == null) {
-                    ResultViewDecision.Denied("approval request datasource no longer exists")
-                } else {
-                    decideResultView(
-                        viewer = principal,
-                        req = req,
-                        childSql = access.sql,
-                        ds = ds,
-                        decrypted = decrypted,
-                        callerContext = call.httpAuthzContext(config),
-                        datasourceStore = datasourceStore,
-                        policyStore = policyStore,
-                        accessStore = accessStore,
-                        userGroupStore = userGroupStore,
-                        roleResolver = roleResolver,
-                        authz = authz,
-                        systemClassification = systemClassification,
-                    )
-                }
-            }
-        }
+        val viewDecision =
+            if (ctx == null) ResultViewDecision.Denied("stored result has no live decision to re-mask under")
+            else decideResultView(ctx, decrypted)
         when (viewDecision) {
             is ResultViewDecision.Denied -> {
                 call.application.environment.log.warn(
@@ -926,8 +913,8 @@ internal suspend fun runApprovedTask(
         channel = channel.contextValue, kind = "approval_lifecycle",
     )
 
-    // The target-DB error behind a failure, surfaced under the localized code so the run names its real cause.
-    var errorDetail: String? = null
+    // The target-DB error behind a failure (both forms), stored so the FAILED view releases one per viewer.
+    var diagnostic: RunError? = null
     val failureCode = try {
         val response = runExecService.run(
             principal = executor,
@@ -944,7 +931,7 @@ internal suspend fun runApprovedTask(
         if (response.decision == EnfAction.DENY) {
             "approval.execute_denied"
         } else {
-            val result = DecryptedResult(response.columns, response.rows, response.rowsAffected)
+            val result = DecryptedResult(response.columns, response.rows, response.rowsAffected, response.resultFingerprint)
             // Child DONE, parent EXECUTED, and the execution audit all commit in ONE transaction: a crash can
             // never leave a readable DONE child under a non-EXECUTED task. If the parent has left EXECUTING
             // (e.g. a restart already reconciled it to FAILED), the flip fails and aborts the whole commit —
@@ -972,7 +959,7 @@ internal suspend fun runApprovedTask(
     } catch (_: ProxyRunTimeoutException) {
         "query.proxy_timeout"
     } catch (e: TargetDbRunException) {
-        errorDetail = e.message
+        diagnostic = e.toDiagnostic()
         "approval.query_failed"
     } catch (_: ProxyRunException) {
         "approval.query_failed"
@@ -981,11 +968,10 @@ internal suspend fun runApprovedTask(
         "approval.query_failed"
     }
     if (failureCode != null) {
-        // Child FAILED and parent FAILED commit in ONE transaction (mirrors the success path's single-commit
-        // EXECUTED/DONE): a crash can never leave a FAILED child under a still-EXECUTING task, nor the
-        // inverse — the split that boot reconcile would otherwise have to repair.
-        runCatching { store.failRun(id, failureCode, errorDetail = errorDetail) { conn, _ -> accessStore.markFailed(id, conn) } }
-            .onFailure { log.error("task failure transition failed request=$id", it) }
+        // Child FAILED and parent FAILED commit in ONE transaction: a crash can never split them.
+        runCatching {
+            store.failRun(id, failureCode, diagnostic = diagnostic) { conn, _ -> accessStore.markFailed(id, conn) }
+        }.onFailure { log.error("task failure transition failed request=$id", it) }
     }
     // Push the ACTUAL terminal state (EXECUTED / FAILED / or CANCELLED if a cancel raced) to both parties'
     // SSE streams so a watching tab updates at once; best-effort, the tab also polls.

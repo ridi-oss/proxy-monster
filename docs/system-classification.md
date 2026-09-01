@@ -183,9 +183,9 @@ analyzer. A manifest is declarative:
   ],
   "commands": [
     {
-      "id": "SHOW_PROCESSLIST",
-      "resource": "information_schema/PROCESSLIST",
-      "tag": "system:activity"
+      "id": "SHOW_BINLOG_EVENTS",
+      "resource": "show-binlog-events",
+      "tag": "system:data-leak"
     }
   ]
 }
@@ -458,7 +458,7 @@ Utility command ids:
 - account administration: `SET_PASSWORD`, `CREATE_USER`, `ALTER_USER`,
   `DROP_USER`, `RENAME_USER`, `GRANT`, `REVOKE`, `SET_DEFAULT_ROLE`, `SET_ROLE`;
 - credential-bearing reads: `SHOW_CREATE_USER` (an account's stored password
-  hash), `SHOW_GRANTS`;
+  hash);
 - server-state mutation: `SET_GLOBAL`, `SET_PERSIST`, `SET_PERSIST_ONLY`,
   `RESET_PERSIST`, `ALTER_INSTANCE`, `CLONE_INSTANCE`, `RESTART`, `SHUTDOWN`;
 - replication and binary log: `CHANGE_REPLICATION_SOURCE`, `RESET_REPLICA`,
@@ -531,10 +531,11 @@ Relations/views and prefix families:
 The `sys.io_*` and latest-file-I/O views are not classified, so they are
 `system:catalog`.
 
-Utility commands: `SHOW [FULL] PROCESSLIST` (`SHOW_PROCESSLIST`) and
-`SHOW REPLICA STATUS` / `SHOW SLAVE STATUS` (`SHOW_REPLICA_STATUS`).
-`SHOW_STATUS` carries this tag in the manifest but is a passthrough the analyzer
-never emits.
+Utility commands: `SHOW REPLICA STATUS` / `SHOW SLAVE STATUS`
+(`SHOW_REPLICA_STATUS`). `SHOW_STATUS` carries this tag in the manifest but is a
+passthrough the analyzer never emits. `SHOW [FULL] PROCESSLIST` emits no utility
+(it gates on `stmt.cat.admin.process`); `information_schema.PROCESSLIST` and the
+`sys`/`performance_schema` views keep this tag.
 
 ### Explicit catalog examples
 
@@ -563,7 +564,6 @@ EUID is always `Utility::"<datasource>/<command>"`:
 <!-- prettier-ignore -->
 | statement | emitted command id | tag |
 | --- | --- | --- |
-| MySQL `SHOW [FULL] PROCESSLIST` | `SHOW_PROCESSLIST` | `system:activity` |
 | MySQL `SHOW BINLOG EVENTS` | `SHOW_BINLOG_EVENTS` | `system:data-leak` |
 | MySQL `SHOW WARNINGS` / `SHOW ERRORS` | `SHOW_WARNINGS` / `SHOW_ERRORS` | `system:data-leak` |
 | MySQL `SHOW CREATE USER u` | `SHOW_CREATE_USER` | `system:critical` |
@@ -574,13 +574,24 @@ EUID is always `Utility::"<datasource>/<command>"`:
 | PostgreSQL `SET ROLE` / `SET SESSION AUTH…` | `SET_ROLE` / `SET_SESSION_AUTHORIZATION` | `system:critical` |
 | MySQL `SET sql_mode` / PostgreSQL lexer-mode GUC | `SET_SQL_MODE` / `SET_STANDARD_CONFORMING_STRINGS` | `system:critical` |
 | MySQL `SHOW CREATE TABLE users`, `DESCRIBE users` | metadata passthrough (no utility grant) | — |
+| MySQL `SHOW GRANTS`, `SHOW [FULL] PROCESSLIST` | no utility — gated by kind (`stmt.cat.admin.account` / `.process`) | — |
 | PostgreSQL `SHOW ALL` / `SHOW <guc>` | intentional passthrough (`PG_SHOW_GUC` never emitted) | — |
 
 ```text
 Utility::"acme-mysql/SET_GLOBAL"
 Utility::"acme-pg/PG_ALTER_SYSTEM"
-Utility::"acme-mysql/SHOW_PROCESSLIST"
+Utility::"acme-mysql/SHOW_BINLOG_EVENTS"
 ```
+
+A statement is authorized by its kind. `SHOW GRANTS` and
+`SHOW [FULL] PROCESSLIST` emit no utility and gate on `stmt.cat.admin.account` /
+`stmt.cat.admin.process`.
+
+One trap: `permit(principal, action, resource in Datasource::"prod")` now
+reaches both, as it already reaches `SELECT` and `DROP TABLE` — scope the
+actions. A policy naming `Utility::"prod/SHOW_GRANTS"` is rejected on write and
+listed by `/health`, so an old carve-out fails loudly rather than silently never
+matching.
 
 The key is datasource / canonical command id, outside the SQL catalog/schema
 namespace, so a quoted user schema or function cannot collide with it. The
@@ -738,16 +749,18 @@ policies are enabled:
 | `SELECT most_common_vals FROM pg_stats` | Table `system:data-leak` | DENY | dev policy may permit |
 | `SELECT rolpassword FROM pg_authid` | Table `system:critical` | DENY | DENY — critical is never relaxed by the dev preset |
 | `SELECT LOAD_FILE('/etc/passwd')` | Function `system:data-leak` | DENY | dev policy may permit |
-| `SHOW FULL PROCESSLIST` | Utility `SHOW_PROCESSLIST`, `system:activity` | DENY | dev policy may permit |
+| `SHOW FULL PROCESSLIST` | kind `stmt.cat.admin.process` (no utility) | DENY | dev policy may permit |
+| `SHOW GRANTS` | kind `stmt.cat.admin.account` (no utility) | DENY | dev policy may permit |
+| `SHOW CREATE USER u` | Utility `SHOW_CREATE_USER`, `system:critical` | DENY | DENY — it returns the stored password hash |
 | `SHOW CREATE TABLE users` | no grant at all (metadata passthrough) | ALLOW | ALLOW |
 | `SHOW BINLOG EVENTS` | Utility `SHOW_BINLOG_EVENTS`, `system:data-leak` | DENY | dev policy may permit |
 | `SET GLOBAL general_log = ON` | Utility `SET_GLOBAL`, `system:critical` | DENY | DENY — critical is never relaxed by the dev preset |
 
 The `system:critical` rows are unconditional: `ManifestCommandCoverageDbTest`
-asserts that `SHOW CREATE USER` and `SHOW GRANTS` deny even on a
-`system:development` datasource, while `SHOW REPLICA STATUS` (`system:activity`)
-relaxes to ALLOW there. Relaxing a critical tag takes an admin editing or
-disabling the shipped forbid, not a preset.
+asserts that `SHOW CREATE USER` denies even on a `system:development`
+datasource, while `SHOW REPLICA STATUS` (`system:activity`) relaxes to ALLOW
+there. Relaxing a critical tag takes an admin editing or disabling the shipped
+forbid, not a preset.
 
 Two things the table's shape can mislead about. First, catalog policy does not
 bypass the statement-kind gate: a principal still needs `stmt.kind.select` (or

@@ -47,9 +47,10 @@ message:
   or are empty, not row values. Those fields are kept; the only reachable
   value-carriers are stripped — the target DB's own `M` (conversion) and `D`
   (the whole-row `DETAIL` dump).
-- The editor/HTTP path also surfaces raw target-DB errors
-  (`goproxy/run/runner.go` returns the target-DB error to the control plane), so
-  native-wire handling alone does not cover it.
+- The editor/approval run path stores a failed statement's target-DB error, so
+  `goproxy/run/runner.go` carries both forms (raw + redacted strip) and the
+  control plane picks one per viewer at view time — an error string cannot be
+  re-masked by ordinal the way rows are.
 
 ## Why an enumerated denylist is unsafe
 
@@ -193,31 +194,29 @@ allowed statement).
 
 ## The redact predicate
 
-The redact flag is computed per decision in `decideQuery` and applied per
-decision — not a monotonic latch, so a later `ALLOW` can go un-redacted.
-`redactsDiagnostics(engine, action, mayReadUnmasked)` (`Query.kt`) redacts iff
-the diagnostic could carry a protected value AND the principal is not a
-full-cleartext reader of the datasource.
+The analyzer (Go) decides what a statement could leak; the control-plane
+(Kotlin) only authorizes it. Per engine (`engine.DiagnosticLeakKeys`), the
+analyzer emits `StatementFacts.diagnostic_leak_columns`: the referenced columns,
+plus — PostgreSQL writes only — the whole target row, because
+`INSERT INTO users (id) VALUES (1)` can fail with
+`DETAIL: Failing row contains (1, 010-1234-5678, …)`.
 
-- Could the diagnostic carry a protected value? Yes when the decision touches
-  protected data (`MASK`/`DENY`) or the engine can leak even on an `ALLOW`. That
-  is an engine capability, `Engine.leaksDiagnosticsOnAllow`, never an
-  engine-name branch: PostgreSQL leaks on `ALLOW` (a constraint error's
-  whole-row `DETAIL` dumps columns the statement never named, so even a
-  fully-authorized ALLOW can expose a masked/denied sibling), so every
-  PostgreSQL decision redacts; MySQL does not (it echoes only the operated-on
-  value or client input, and any value-exposing read of a protected column is
-  denied before it runs), so an `ALLOW` relays verbatim and only `MASK`/`DENY`
-  redact.
-- Is the principal a full-cleartext reader? This is a Cedar authorization, not a
-  tag check: `result.read.unmasked` on the Datasource
-  (`authorizeDatasourceAction`). It is ALLOW on a `system:development`
-  datasource (the `-200` preset permits unmasked reads there — dev holds no PII)
-  and on any datasource where the principal holds a datasource-wide unmasked
-  grant (a production pii-accessor). Such a reader is someone no diagnostic can
-  leak a protected value to, so their diagnostics are never redacted.
-  `mayReadUnmasked` is a thunk, so this Cedar call is skipped when the
-  diagnostic cannot carry a protected value anyway (MySQL + `ALLOW`).
+`decideQuery` computes the flag per decision: `MASK`/`DENY` always redacts; an
+`ALLOW` redacts iff the principal cannot read every leak column **unmasked**
+(`readsAllUnmasked`, `Query.kt`). So `select id from users` relays raw while the
+INSERT above redacts for anyone masked on `ssn`. `result.read.unmasked` is
+checked per column, never against the Datasource entity — the datasource-level
+grant that let a `MASK` diagnostic surface raw was #228.
+
+An `ALLOW` with no analyzable leak set (`exception.unanalyzable`, an uncovered
+column) fails closed and redacts. Not covered: an FK `ON DELETE CASCADE` dumping
+a child table's row (KNOWN_LIMITATIONS.md).
+
+The synchronous `POST /api/datasources/{id}/query` route returns the result
+inline, so a target-DB failure surfaces the form the run's own decision dictated
+— raw unless it sanitized diagnostics (the proxy echoes the flag back on
+`RunDecision`). The async editor/approval paths instead store both forms and
+re-gate per viewer at view (above).
 
 The control plane carries the per-decision result as
 `Verdict.sanitize_diagnostics` — an imperative command the proxy executes

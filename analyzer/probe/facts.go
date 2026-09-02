@@ -40,34 +40,6 @@ var safeNoFromFunctions = stringSet(
 	"iif", "if", "typeof", "pg_typeof",
 )
 
-// postgresInformationSchemaFunctions are PostgreSQL's information_schema helper builtins — stable,
-// read-only transforms of their arguments (pgJDBC metadata queries call them). Safe ONLY under an
-// explicit `information_schema.` qualifier; the unqualified spelling stays gated so a same-named
-// user function cannot inherit the pass.
-var postgresInformationSchemaFunctions = stringSet(
-	"_pg_char_max_length", "_pg_char_octet_length", "_pg_datetime_precision", "_pg_expandarray",
-	"_pg_index_position", "_pg_interval_type", "_pg_numeric_precision", "_pg_numeric_precision_radix",
-	"_pg_numeric_scale", "_pg_truetypid", "_pg_truetypmod",
-)
-
-func isTrustedInformationSchemaCall(qualifier exp.Expression, leaf string, eng engine) bool {
-	return eng.Type() == pb.Engine_POSTGRES && qualifier != nil &&
-		qualifier.Kind() == exp.KindIdentifier && qualifier.Name() == "information_schema" &&
-		postgresInformationSchemaFunctions[leaf]
-}
-
-// mysqlOnlySafeFunctions are safe no-FROM function names that exist ONLY on MySQL. `values` is MySQL's
-// INSERT … ON DUPLICATE KEY UPDATE pseudo-function — it names the value that would have been inserted, not a
-// callable function, and its lineage is traced in probe.go. PostgreSQL has no `values` builtin, so keeping
-// it out of the cross-engine set leaves a quoted PostgreSQL `"values"()` (a user function) gated.
-var mysqlOnlySafeFunctions = stringSet("values")
-
-// isSafeNoFromFunction reports whether a bare (unqualified) anonymous function name is a known-safe builtin
-// that needs no no-FROM Function grant — the cross-engine set plus any engine-specific pseudo-functions.
-func isSafeNoFromFunction(name string, eng engine) bool {
-	return safeNoFromFunctions[name] || (eng.Type() == pb.Engine_MYSQL && mysqlOnlySafeFunctions[name])
-}
-
 // userTypeCast returns the name of the first reference to a non-built-in (user) type anywhere in root, or
 // "" if every type reference is a safe built-in. sqlglot resolves a built-in type to a concrete DType and
 // a user type to DTypeUserDefined, so this is a single AST pass over DataType nodes. It covers every way a
@@ -680,20 +652,17 @@ func emitCommandFacts(root exp.Expression, eng engine) *pb.StatementFacts {
 		// engine-specific passthrough.
 		return inadmissibleFacts("VALIDATE", "SET statement is not structurally analyzable")
 	case "RESET":
-		if eng.Type() == pb.Engine_POSTGRES {
-			// A PostgreSQL RESET that degrades to Command (rather than the structured Reset node) is an
-			// unusual/laundering spelling; RESET only ever restores defaults (de-escalation), so it stays a
-			// benign session passthrough.
+		// The structured Reset node never reaches here; a RESET degraded to Command is an unusual
+		// spelling the engine may still vouch for as pure de-escalation.
+		if eng.CommandPassthrough(command) {
 			return passthroughFacts()
 		}
 		return inadmissibleFacts("VALIDATE", "RESET is not allowed on MySQL")
 	case "SHOW":
-		// The data-bearing MySQL SHOWs (WARNINGS/PROCESSLIST/BINLOG/… and SHOW CREATE USER) and PostgreSQL
-		// SHOW <guc> all parse as structured Show/Reset nodes and are handled in emitShowFacts, so they
-		// never reach here. A SHOW that still degrades to Command is a form sqlglot-go did not model: on
-		// PostgreSQL it can only be a read-only GUC/config read (no table data) → metadata passthrough; on
-		// MySQL an unrecognized SHOW is one the proxy cannot vouch for → fail closed.
-		if eng.Type() == pb.Engine_POSTGRES {
+		// The data-bearing SHOWs parse as structured Show/Reset nodes and are handled in
+		// emitShowFacts; a SHOW that still degrades to Command is a form sqlglot-go did not model,
+		// relayable only where the engine vouches it carries no table data.
+		if eng.CommandPassthrough(command) {
 			return passthroughFacts()
 		}
 		return unanalyzableFacts("PARSE", "unsupported SHOW command")
@@ -752,7 +721,7 @@ func noFromFunctionGrants(root exp.Expression, eng engine) []*pb.RequireResultRe
 			}
 			continue
 		}
-		if isTrustedInformationSchemaCall(dot.Left(), leaf, eng) {
+		if eng.IsTrustedInformationSchemaCall(dot.Left(), leaf) {
 			continue
 		}
 		emit(qualifiedCallName(dot.Left(), leaf, eng))
@@ -767,7 +736,7 @@ func noFromFunctionGrants(root exp.Expression, eng engine) []*pb.RequireResultRe
 		if schema == nil {
 			continue
 		}
-		if isTrustedInformationSchemaCall(schema, strings.ToLower(fn.Name()), eng) {
+		if eng.IsTrustedInformationSchemaCall(schema, strings.ToLower(fn.Name())) {
 			qualified[fn] = true
 		}
 	}
@@ -776,7 +745,7 @@ func noFromFunctionGrants(root exp.Expression, eng engine) []*pb.RequireResultRe
 			continue
 		}
 		name := strings.ToLower(fn.Name())
-		if isSafeNoFromFunction(name, eng) {
+		if eng.IsSafeNoFromFunction(name) {
 			continue
 		}
 		emit(name)
@@ -843,7 +812,7 @@ func hasUnsafeCall(root exp.Expression, eng engine) bool {
 			}
 			continue
 		}
-		if isTrustedInformationSchemaCall(dot.Left(), normalizedFunctionName(fn, eng), eng) {
+		if eng.IsTrustedInformationSchemaCall(dot.Left(), normalizedFunctionName(fn, eng)) {
 			continue
 		}
 		return true
@@ -857,7 +826,7 @@ func hasUnsafeCall(root exp.Expression, eng engine) bool {
 			continue
 		}
 		name := strings.ToLower(fn.Name())
-		if name != "" && name != "*" && !isSafeNoFromFunction(name, eng) {
+		if name != "" && name != "*" && !eng.IsSafeNoFromFunction(name) {
 			return true
 		}
 	}

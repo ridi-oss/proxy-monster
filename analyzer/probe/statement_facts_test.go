@@ -268,10 +268,12 @@ func TestStatementFactsExplainKind(t *testing.T) {
 		{"mysql describe table shorthand", mysqlFacts(t, "DESCRIBE TABLE users"), true, pb.StatementKind_STATEMENT_KIND_EXPLAIN},
 		{"mysql desc table shorthand", mysqlFacts(t, "DESC TABLE users"), true, pb.StatementKind_STATEMENT_KIND_EXPLAIN},
 		{"mysql describe table", mysqlFacts(t, "DESCRIBE users"), true, pb.StatementKind_STATEMENT_KIND_DESCRIBE},
-		// The pinned parser degrades EXPLAIN ANALYZE/FORMAT=JSON over TABLE shorthand to Command → the
-		// accepted over-deny (unanalyzable, fail-closed), not a silent metadata pass.
-		{"mysql explain analyze table fail-closed", mysqlFacts(t, "EXPLAIN ANALYZE TABLE users"), true, pb.StatementKind_STATEMENT_KIND_STMT_UNKNOWN},
-		{"mysql explain format table fail-closed", mysqlFacts(t, "EXPLAIN FORMAT=JSON TABLE users"), true, pb.StatementKind_STATEMENT_KIND_STMT_UNKNOWN},
+		{"mysql explain analyze table", mysqlFacts(t, "EXPLAIN ANALYZE TABLE users"), true, pb.StatementKind_STATEMENT_KIND_EXPLAIN},
+		{"mysql explain format table", mysqlFacts(t, "EXPLAIN FORMAT=JSON TABLE users"), true, pb.StatementKind_STATEMENT_KIND_EXPLAIN},
+		// PostgreSQL parses TABLE-shorthand under EXPLAIN as kind=EXPLAIN over a Table target — the same
+		// plan-of-a-scan, so it must route through lineage, never the bare-table metadata passthrough.
+		{"pg explain table", postgresFacts(t, "EXPLAIN TABLE users"), true, pb.StatementKind_STATEMENT_KIND_EXPLAIN},
+		{"pg explain analyze table", postgresFacts(t, "EXPLAIN ANALYZE TABLE users"), true, pb.StatementKind_STATEMENT_KIND_EXPLAIN},
 		// A write keeps its own kind, plan-only or ANALYZE, so it gates + denies as the write. The
 		// MATERIALIZING forms are the security boundary — an EXPLAIN ANALYZE that copies masked PII into a
 		// new/other table must NOT classify as the read-shaped EXPLAIN kind (which would run unmasked). Each

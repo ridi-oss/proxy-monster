@@ -1,6 +1,5 @@
 package com.ridi.oss.proxymonster.controlplane
 
-
 import com.ridi.oss.proxymonster.controlplane.authz.CedarPolicyInput
 import com.ridi.oss.proxymonster.controlplane.grpc.CONTROL_PROTOCOL_VERSION
 import com.ridi.oss.proxymonster.controlplane.grpc.ControlPlaneGrpcService
@@ -256,6 +255,92 @@ class EditorSubmitRouteDbTest {
             assertEquals(HttpStatusCode.NoContent, client.delete("/api/editor/tasks/${ack.taskId}").status)
             assertNull(core.accessStore.getRequest(ack.taskId))
             assertEquals(HttpStatusCode.NoContent, client.delete("/api/editor/tasks/${ack.taskId}").status)
+
+            client.delete("/api/editor/sessions/${session.sessionId}")
+            session.await()
+        }
+    }
+
+    @Test
+    fun `a multi-statement submit runs each statement in order on the one held session`() = testApplication {
+        val client = wire()
+        supervisorScope {
+            // Each statement gets its own single-column result, so the saved rows identify which ran.
+            val seen = java.util.concurrent.CopyOnWriteArrayList<String>()
+            val session = openFakeSession(client) { req, control ->
+                seen += control.query.sql
+                req.send(proxyRunMsg { decision = runDecision { decision = WireEnfAction.ALLOW } })
+                req.send(rowsChunk(listOf("v"), listOf(listOf(control.query.sql))))
+                req.send(proxyRunMsg { done = runDone { rowsAffected = -1 } })
+            }
+
+            val submit = client.post("/api/editor/sessions/${session.sessionId}/query") {
+                contentType(ContentType.Application.Json)
+                setBody(QueryRequest("select 1; select 'a;b' from t; select 3", 100))
+            }
+            assertEquals(HttpStatusCode.Accepted, submit.status)
+            val ack = submit.body<EditorSubmitResponse>()
+            // Split server-side at the ENGINE's boundaries: the `;` inside the literal is not one.
+            assertEquals(listOf("select 1", "select 'a;b' from t", "select 3"), ack.statements)
+
+            awaitUntil("every statement DONE") {
+                core.accessStore.getRequest(ack.taskId)?.status == "EXECUTED" &&
+                    resultStore.statements(ack.taskId).all { it.status == "DONE" }
+            }
+            // One task, one child per statement, run in the order written — on the SAME session (a single
+            // held connection), which is what lets a batch's earlier statement affect a later one.
+            assertEquals(ack.statements, seen.toList())
+            val children = resultStore.statements(ack.taskId)
+            assertEquals(listOf(0, 1, 2), children.map { it.ordinal })
+            assertEquals(ack.statements, children.map { it.sql })
+            // Each statement's OWN rows are stored under its own ordinal.
+            for ((ordinal, statement) in ack.statements.withIndex()) {
+                assertEquals(
+                    listOf(listOf(statement)),
+                    resultStore.accessFor(ack.taskId, ordinal)!!.decrypted!!.rows,
+                    "statement $ordinal must hold its own result",
+                )
+            }
+            // The poll reports every statement, so a tab per statement can read its own verdict.
+            val status = client.get("/api/editor/tasks/${ack.taskId}").body<EditorTaskStatus>()
+            assertEquals(listOf("DONE", "DONE", "DONE"), status.statements.map { it.status })
+
+            client.delete("/api/editor/sessions/${session.sessionId}")
+            session.await()
+        }
+    }
+
+    @Test
+    fun `a DENY mid-batch stops the run and skips the statements after it`() = testApplication {
+        val client = wire()
+        supervisorScope {
+            val seen = java.util.concurrent.CopyOnWriteArrayList<String>()
+            val session = openFakeSession(client) { req, control ->
+                seen += control.query.sql
+                // The SECOND statement is denied at execute; the third must never be sent.
+                if (control.query.sql.contains("ssn")) {
+                    req.send(proxyRunMsg { decision = runDecision { decision = WireEnfAction.DENY; denyReason = "no" } })
+                } else {
+                    req.send(proxyRunMsg { decision = runDecision { decision = WireEnfAction.ALLOW } })
+                    req.send(rowsChunk(listOf("v"), listOf(listOf("1"))))
+                    req.send(proxyRunMsg { done = runDone { rowsAffected = -1 } })
+                }
+            }
+
+            val submit = client.post("/api/editor/sessions/${session.sessionId}/query") {
+                contentType(ContentType.Application.Json)
+                setBody(QueryRequest("select id from t; select ssn from t; select 3", 100))
+            }
+            val ack = submit.body<EditorSubmitResponse>()
+            awaitUntil("task FAILED") { core.accessStore.getRequest(ack.taskId)?.status == "FAILED" }
+
+            // The statement after the denial was never sent to the proxy.
+            assertEquals(listOf("select id from t", "select ssn from t"), seen.toList())
+            val children = resultStore.statements(ack.taskId)
+            assertEquals(listOf("DONE", "FAILED", "SKIPPED"), children.map { it.status })
+            // The statement that ran BEFORE the denial keeps its result.
+            assertEquals(listOf(listOf("1")), resultStore.accessFor(ack.taskId, 0)!!.decrypted!!.rows)
+            assertEquals("approval.execute_denied", children[1].errorCode)
 
             client.delete("/api/editor/sessions/${session.sessionId}")
             session.await()

@@ -48,7 +48,10 @@ interface BaseTab {
   res: ResultState
   // The async editor task backing this tab's current run: the tab polls it to completion and
   // deletes it on re-run/close. Null before the first submit (or for a table tab yet to load).
+  // Tabs of one batch share a taskId; it is reaped when the last of them closes.
   taskId: number | null
+  // Which statement of [taskId] this tab shows.
+  ordinal: number
 }
 export interface QueryTab extends BaseTab {
   kind: 'query'
@@ -166,8 +169,15 @@ export function useResultTabs(datasourceId: number | null, maxRows: number): Res
     setTabs((ts) => ts.map((t) => (t.id === id ? { ...t, res: { ...t.res, ...res } } : t)))
   }, [])
 
-  const setTabTaskId = useCallback((id: string, taskId: number | null) => {
-    setTabs((ts) => ts.map((t) => (t.id === id ? { ...t, taskId } : t)))
+  const setTabTaskId = useCallback((id: string, taskId: number | null, ordinal = 0) => {
+    setTabs((ts) => ts.map((t) => (t.id === id ? { ...t, taskId, ordinal } : t)))
+  }, [])
+
+  /** Drop a task's saved results, but only once no tab still shows one of its statements. */
+  const releaseTask = useCallback((taskId: number | null, keepTabIds: string[] = []) => {
+    if (taskId == null) return
+    const stillUsed = tabsRef.current.some((t) => t.taskId === taskId && !keepTabIds.includes(t.id))
+    if (!stillUsed) void deleteEditorTask(taskId).catch(() => {})
   }, [])
 
   const appendLog = useCallback((entry: QueryLogEntry, execution: number) => {
@@ -186,8 +196,44 @@ export function useResultTabs(datasourceId: number | null, maxRows: number): Res
     executionOrderRef.current.clear()
   }, [])
 
+  // fetchInto and openSiblingTabs are mutually recursive, so siblings reach it through a ref.
+  const fetchIntoRef = useRef<
+    (id: string, sql: string, rows: number, attach?: { taskId: number; ordinal: number }) => void
+  >(() => {})
+
+  /** Open a tab per remaining statement (1..N-1), each on the same task at its own ordinal. */
+  const openSiblingTabs = useCallback(
+    (afterTabId: string, taskId: number, statements: string[], rows: number) => {
+      const siblings = statements.map((sql, index) => ({
+        tab: {
+          id: newId(),
+          kind: 'query' as const,
+          key: `${norm(sql)}#${taskId}:${index + 1}`,
+          title: label(sql),
+          sql,
+          pinned: false,
+          taskId,
+          ordinal: index + 1,
+          res: { ...EMPTY, loading: true },
+        },
+        ordinal: index + 1,
+      }))
+      setTabs((ts) => {
+        const at = ts.findIndex((t) => t.id === afterTabId)
+        const next = [...ts]
+        next.splice(at < 0 ? next.length : at + 1, 0, ...siblings.map((s) => s.tab))
+        return next
+      })
+      for (const { tab, ordinal } of siblings) {
+        fetchIntoRef.current(tab.id, tab.sql, rows, { taskId, ordinal })
+      }
+    },
+    [],
+  )
+
   const fetchInto = useCallback(
-    (id: string, sql: string, rows: number) => {
+    // [attach] binds this tab to a statement of an already-submitted batch instead of submitting.
+    (id: string, sql: string, rows: number, attach?: { taskId: number; ordinal: number }) => {
       if (datasourceId == null) return
       const token = (tokenRef.current[id] = (tokenRef.current[id] ?? 0) + 1)
       const statement = norm(sql)
@@ -201,32 +247,51 @@ export function useResultTabs(datasourceId: number | null, maxRows: number): Res
 
       // Submit the run; supersede the tab's previous task first (best-effort) so a re-run REPLACES it.
       const submitOnce = async (sid: string) => {
-        const prev = tabsRef.current.find((t) => t.id === id)?.taskId
-        if (prev != null) void deleteEditorTask(prev).catch(() => {})
+        releaseTask(tabsRef.current.find((t) => t.id === id)?.taskId ?? null, [id])
         return submitEditorQuery(sid, { sql: statement, maxRows: rows })
       }
 
       const run = async (): Promise<QueryResponse | null> => {
-        let submit
-        try {
-          submit = await submitOnce(await ensureSession())
-        } catch (e) {
-          // The held session may have been reaped (idle) or expired — reopen once and retry.
-          if (e instanceof Error && /session/i.test(e.message)) {
-            sessionIdRef.current = null
-            submit = await submitOnce(await ensureSession())
-          } else {
-            throw e
+        let submit: { taskId: number; ordinal: number }
+        if (attach) {
+          submit = attach
+        } else {
+          let posted
+          try {
+            posted = await submitOnce(await ensureSession())
+          } catch (e) {
+            // The held session may have been reaped (idle) or expired — reopen once and retry.
+            if (e instanceof Error && /session/i.test(e.message)) {
+              sessionIdRef.current = null
+              posted = await submitOnce(await ensureSession())
+            } else {
+              throw e
+            }
+          }
+          if (!current()) {
+            // The tab was superseded (re-run) or closed while this POST was in flight — the server task now
+            // exists but no tab owns its id, so delete-on-close/re-run can never reach it. Reap it here
+            // (best-effort) before unwinding, so a slow submit can't leak a persisted result.
+            void deleteEditorTask(posted.taskId).catch(() => {})
+            throw SUPERSEDED
+          }
+          submit = { taskId: posted.taskId, ordinal: 0 }
+          const split = posted.statements ?? []
+          const rest = split.slice(1)
+          if (rest.length > 0) {
+            // Relabel: left as the whole selection it would title the batch while holding only its rows.
+            const own = split[0]!
+            setTabs((ts) =>
+              ts.map((t) =>
+                t.id === id && t.kind === 'query'
+                  ? { ...t, sql: own, title: label(own), key: `${norm(own)}#${posted.taskId}:0` }
+                  : t,
+              ),
+            )
+            openSiblingTabs(id, posted.taskId, rest, rows)
           }
         }
-        if (!current()) {
-          // The tab was superseded (re-run) or closed while this POST was in flight — the server task now
-          // exists but no tab owns its id, so delete-on-close/re-run can never reach it. Reap it here
-          // (best-effort) before unwinding, so a slow submit can't leak a persisted result.
-          void deleteEditorTask(submit.taskId).catch(() => {})
-          throw SUPERSEDED
-        }
-        setTabTaskId(id, submit.taskId)
+        setTabTaskId(id, submit.taskId, submit.ordinal)
 
         // Poll the task to a terminal state, then fetch the saved rows on DONE (the editor never blocks —
         // each tab polls independently). A FAILED task (incl. a DENY at execute) surfaces its error code.
@@ -234,7 +299,40 @@ export function useResultTabs(datasourceId: number | null, maxRows: number): Res
           if (!current()) throw SUPERSEDED
           const status = await getEditorTask(submit.taskId)
           if (!current()) throw SUPERSEDED
-          const child = status.result
+          // THIS tab's statement: the active child would show another statement's verdict here.
+          const child =
+            status.statements?.find((sc) => sc.ordinal === submit.ordinal) ??
+            (submit.ordinal === 0 ? status.result : null)
+          if (child?.status === 'SKIPPED') {
+            if (current()) {
+              patch(id, {
+                loading: false,
+                canceling: false,
+                canceled: false,
+                result: null,
+                error: translateApiError('approval.statement_skipped'),
+              })
+            }
+            return null
+          }
+          if (child?.status === 'DONE') {
+            const view = await getEditorResult(submit.taskId, submit.ordinal)
+            return {
+              // From the server's re-decision, never assumed: these rows are released under the viewer's
+              // live context, which can mask columns the execution itself returned in the clear. Only a
+              // FAILED view omits the verdict, and this branch is DONE.
+              decision: view.decision!,
+              decisionId: null,
+              denyReason: null,
+              maskedColumns: view.maskedColumns,
+              piiTouched: [],
+              effectiveRoles: [],
+              columns: view.columns,
+              rows: view.rows,
+              rowsAffected: null,
+              latencyMs: Math.max(0, Math.round(performance.now() - startedAt)),
+            }
+          }
           if (status.status === 'FAILED' || child?.status === 'FAILED') {
             // A policy DENY is a decision, not an error: returning it as a DENY result is what gives the
             // panel the reason and the decisionId it needs to offer "request approval". Throwing here
@@ -256,7 +354,7 @@ export function useResultTabs(datasourceId: number | null, maxRows: number): Res
             // Any other failure really is one. Localize the catalog code, and append the /result errorDetail
             // when present; the code is the real signal, so any detail-fetch failure falls back to it alone.
             const code = translateApiError(child?.errorCode ?? 'approval.query_failed')
-            const detail = await getEditorResult(submit.taskId)
+            const detail = await getEditorResult(submit.taskId, submit.ordinal)
               .then((view) => view.errorDetail)
               .catch(() => null)
             throw new Error(detail ? `${code}: ${detail}` : code)
@@ -288,22 +386,6 @@ export function useResultTabs(datasourceId: number | null, maxRows: number): Res
               })
             }
             return null
-          }
-          if (child?.status === 'DONE') {
-            const view = await getEditorResult(submit.taskId)
-            return {
-              // From the server's re-decision, never assumed. Only a FAILED view omits the verdict.
-              decision: view.decision!,
-              decisionId: null,
-              denyReason: null,
-              maskedColumns: view.maskedColumns,
-              piiTouched: [],
-              effectiveRoles: [],
-              columns: view.columns,
-              rows: view.rows,
-              rowsAffected: null,
-              latencyMs: Math.max(0, Math.round(performance.now() - startedAt)),
-            }
           }
           // Wait for this task's push (instant on completion) or the fallback tick, whichever comes first.
           await waitForTaskEvent(submit.taskId, POLL_INTERVAL_MS)
@@ -367,8 +449,9 @@ export function useResultTabs(datasourceId: number | null, maxRows: number): Res
           }
         })
     },
-    [appendLog, datasourceId, patch, ensureSession, setTabTaskId, t],
+    [appendLog, datasourceId, patch, ensureSession, setTabTaskId, openSiblingTabs, releaseTask, t],
   )
+  fetchIntoRef.current = fetchInto
 
   const run = useCallback(
     (sql: string) => {
@@ -384,7 +467,7 @@ export function useResultTabs(datasourceId: number | null, maxRows: number): Res
         return
       }
       const id = newId()
-      const tab: QueryTab = { id, kind: 'query', key, title: label(sql), sql, pinned: false, taskId: null, res: { ...EMPTY, loading: true } }
+      const tab: QueryTab = { id, kind: 'query', key, title: label(sql), sql, pinned: false, taskId: null, ordinal: 0, res: { ...EMPTY, loading: true } }
       setTabs((ts) => [...ts, tab])
       setActiveId(id)
       fetchInto(id, sql, maxRows)
@@ -411,6 +494,7 @@ export function useResultTabs(datasourceId: number | null, maxRows: number): Res
         table,
         pinned: false,
         taskId: null,
+        ordinal: 0,
         res: { ...EMPTY, loading: true },
       }
       setTabs((ts) => [...ts, tab])
@@ -439,9 +523,10 @@ export function useResultTabs(datasourceId: number | null, maxRows: number): Res
 
   const close = useCallback(
     (id: string) => {
-      // Delete-on-close: drop the tab's saved result server-side (best-effort, idempotent).
+      // Delete-on-close: drop the tab's saved result server-side (best-effort, idempotent). The statements
+      // of one batch share a task, so it is released only once no other tab still shows one of them.
       const closing = tabsRef.current.find((t) => t.id === id)
-      if (closing?.taskId != null) void deleteEditorTask(closing.taskId).catch(() => {})
+      releaseTask(closing?.taskId ?? null, [id])
       setTabs((ts) => {
         const idx = ts.findIndex((t) => t.id === id)
         const next = ts.filter((t) => t.id !== id)
@@ -453,7 +538,7 @@ export function useResultTabs(datasourceId: number | null, maxRows: number): Res
         return next
       })
     },
-    [],
+    [releaseTask],
   )
 
   const active = tabs.find((t) => t.id === activeId) ?? null

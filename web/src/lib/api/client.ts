@@ -291,8 +291,9 @@ export function getEditorTask(taskId: number): Promise<EditorTaskStatus> {
 }
 
 /** GET /api/editor/tasks/{taskId}/result — the saved, re-decided rows once the task is DONE. */
-export function getEditorResult(taskId: number): Promise<QueryResultView> {
-  return request<QueryResultView>(`/api/editor/tasks/${taskId}/result`)
+export function getEditorResult(taskId: number, ordinal?: number): Promise<QueryResultView> {
+  const qs = ordinal == null ? '' : `?statement=${ordinal}`
+  return request<QueryResultView>(`/api/editor/tasks/${taskId}/result${qs}`)
 }
 
 /** POST /api/editor/tasks/{taskId}/cancel — cancel a running editor task. */

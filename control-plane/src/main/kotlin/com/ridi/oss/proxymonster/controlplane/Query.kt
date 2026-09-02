@@ -175,6 +175,8 @@ data class DecisionContext(
     /** The analyzer's ordered output column names for this decision (an empty list for a passthrough /
      * unanalyzed statement). */
     val outputColumns: List<String> = emptyList(),
+    /** The analyzer's classified statement kind (STMT_UNKNOWN for a passthrough / pre-parse failure). */
+    val statementKind: StatementKind = StatementKind.STATEMENT_KIND_STMT_UNKNOWN,
     /** The decision's authorization requirements — the analyzer's result-read grants (empty for a
      * passthrough / unanalyzed statement). Carried structured to the proxy and back; an execute-under-R
      * result freezes them ([fingerprintOf]) and the view denies if the live re-decision's differ.
@@ -835,6 +837,7 @@ fun decideQuery(
         detail = facts.detail,
         passthrough = false,
         outputColumns = facts.outputColumnsList,
+        statementKind = statementKind,
         resultFingerprint = facts.resultReadsList,
         contextTags = derivedTags,
         unmaskablePermitted = unmaskablePermitted,

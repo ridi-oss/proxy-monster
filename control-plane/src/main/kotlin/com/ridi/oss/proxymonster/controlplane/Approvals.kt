@@ -1,5 +1,6 @@
 package com.ridi.oss.proxymonster.controlplane
 
+import com.ridi.oss.proxymonster.analyzer.pb.StatementKind
 import com.ridi.oss.proxymonster.controlplane.authz.Authz
 import com.ridi.oss.proxymonster.controlplane.authz.AuthzAction
 import com.ridi.oss.proxymonster.controlplane.authz.AuthzContext
@@ -258,8 +259,20 @@ internal fun decideResultView(ctx: DecisionContext, decrypted: DecryptedResult):
     if (storedFingerprint == null || storedFingerprint != fingerprintOf(ctx.resultFingerprint)) {
         return ResultViewDecision.Denied("stored result no longer matches the live query decision")
     }
+    // A plan-only EXPLAIN's stored bytes are the target DB's plan output, not the inner query's columns
+    // (the analyzer emits no output_columns for it), so the projection-width check below can never hold.
+    // Release it only on a clean ALLOW: a protected predicate column (whose selectivity the plan leaks)
+    // re-decides DENY via its DENY_STATEMENT grant and never reaches here.
+    val planOnlyExplain = ctx.statementKind == StatementKind.STATEMENT_KIND_EXPLAIN &&
+        ctx.action == EnfAction.ALLOW && ctx.masks.isEmpty() && ctx.outputColumns.isEmpty()
+    if (planOnlyExplain) {
+        if (decrypted.rows.any { it.size != decrypted.columns.size }) {
+            return ResultViewDecision.Denied("stored result row width does not match its columns")
+        }
+        return ResultViewDecision.Allowed(decrypted.columns, decrypted.rows)
+    }
     // The live projection must be the same width as the stored bytes a mask ordinal indexes into; this also
-    // denies a plan-shaped result (EXPLAIN emits no output columns) rather than releasing it raw.
+    // denies a plan-shaped result rather than releasing it raw when the EXPLAIN release above did not take it.
     if (ctx.outputColumns.size != decrypted.columns.size) {
         return ResultViewDecision.Denied("stored result columns no longer match the live query decision")
     }

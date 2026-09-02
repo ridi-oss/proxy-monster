@@ -145,9 +145,9 @@ func insertKind(root exp.Expression) pb.StatementKind {
 // returns the plan, not rows: a READ is the read-shaped STATEMENT_KIND_EXPLAIN (the body), a WRITE keeps
 // its own kind. `DESCRIBE <table>`, `DESC <table>`, and `EXPLAIN <table>` are all table introspection and
 // parse to an identical Describe{this:Table} node — indistinguishable, so all three are DESCRIBE.
-// `EXPLAIN TABLE t` is distinct: its Describe carries kind=TABLE (`TABLE t` is `SELECT * FROM t`
-// shorthand), so it plans a scan of t — the same plan-only read EXPLAIN of that SELECT is, and the same
-// signal emitDescribeFacts routes through lineage.
+// The `TABLE t` SELECT-shorthand target is distinct (MySQL kind=TABLE, PostgreSQL kind=EXPLAIN over a
+// Table — see isTableShorthandDescribe): it plans a scan of t, the same plan-only read EXPLAIN of that
+// SELECT is, and the same predicate emitDescribeFacts routes through lineage.
 func describeKind(root exp.Expression, eng engine) pb.StatementKind {
 	if isTableShorthandDescribe(root) {
 		return pb.StatementKind_STATEMENT_KIND_EXPLAIN

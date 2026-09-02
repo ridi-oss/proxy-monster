@@ -378,13 +378,18 @@ func factsFromProbe(report ProbeResult) *pb.StatementFacts {
 	return facts
 }
 
-// isTableShorthandDescribe reports a Describe carrying kind=TABLE over a Table target — MySQL's
-// `EXPLAIN TABLE t` (`TABLE t` is `SELECT * FROM t` shorthand), a plan of a scan. The one predicate is
+// isTableShorthandDescribe reports a Describe planning the `TABLE t` SELECT-shorthand — a plan of a
+// scan, never table metadata. MySQL parses it as kind=TABLE; PostgreSQL as kind=EXPLAIN over a Table
+// target (PG has no DESCRIBE, so that shape is always `EXPLAIN [opts] TABLE t`). The one predicate is
 // shared by classification (describeKind → EXPLAIN) and emission (emitDescribeFacts → lineage) so the
 // two can never disagree about which arm a statement takes.
 func isTableShorthandDescribe(root exp.Expression) bool {
 	this := root.This()
-	return strings.EqualFold(root.Text("kind"), "TABLE") && this != nil && this.Kind() == exp.KindTable
+	if this == nil || this.Kind() != exp.KindTable {
+		return false
+	}
+	kind := root.Text("kind")
+	return strings.EqualFold(kind, "TABLE") || strings.EqualFold(kind, "EXPLAIN")
 }
 
 func emitDescribeFacts(root exp.Expression, eng engine, qualifySchema schema.Schema, namespace NamespaceConfig) *pb.StatementFacts {

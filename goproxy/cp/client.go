@@ -69,6 +69,11 @@ const (
 	// stream, and that is what makes this reopen dial a FRESH connection rather than reuse this one —
 	// re-homing to a live instance where a load balancer fronts several, or reconnecting once it is back.
 	eventsDrainReconnect = 500 * time.Millisecond
+	// eventsRotationReconnect paces the reopen after the max-age expiry below. The proxy reads as UNATTACHED
+	// until the stream is back, and every run dispatched in that window fails "no proxy is attached", so the
+	// error backoff would spend 5s of every rotation refusing queries. Non-zero for the same reason as the
+	// drain pace: the reopen launches a resync, so a stream that expires instantly must not spin the loop.
+	eventsRotationReconnect = 100 * time.Millisecond
 	// eventsStreamMaxAge bounds how long one Events stream is used before it is replaced. HTTP/2 keepalive
 	// proves the CONNECTION is alive, not that the stream on it still reaches a live control plane: a
 	// load balancer that keeps a connection open toward a replaced target DB leaves the proxy holding a
@@ -85,14 +90,16 @@ const (
 )
 
 type eventLoopTimings struct {
-	reconnect    time.Duration
-	streamMaxAge time.Duration
+	reconnect         time.Duration
+	rotationReconnect time.Duration
+	streamMaxAge      time.Duration
 }
 
 func defaultEventLoopTimings() eventLoopTimings {
 	return eventLoopTimings{
-		reconnect:    eventsReconnectDefault,
-		streamMaxAge: eventsStreamMaxAgeDefault,
+		reconnect:         eventsReconnectDefault,
+		rotationReconnect: eventsRotationReconnect,
+		streamMaxAge:      eventsStreamMaxAgeDefault,
 	}
 }
 
@@ -455,6 +462,11 @@ func (c *Client) StreamEvents(
 // what points that reconnect at a fresh connection.
 var errDraining = errors.New("cp: control plane draining")
 
+// errRotated is returned by streamEvents when THIS proxy's own max-age deadline ended the stream. The
+// distinction matters for pacing: a DeadlineExceeded off the wire (a server-side deadline, an LB timeout)
+// is a fault deserving the error backoff, while the local rotation is routine and reopens promptly.
+var errRotated = errors.New("cp: events stream reached its max age")
+
 func (c *Client) streamEvents(
 	parent context.Context,
 	maxAge time.Duration,
@@ -474,6 +486,13 @@ func (c *Client) streamEvents(
 	for {
 		ev, err := stream.Recv()
 		if err != nil {
+			// Attribute by whose deadline fired, not by the status code: a wire DeadlineExceeded from a
+			// server-side deadline stays an error. Compared against the deadline itself rather than
+			// ctx.Err(), which Recv can beat back — the stream error surfaces before the cancellation is
+			// visible on the context, and a rotation read as a fault waits out the error backoff.
+			if deadline, hasDeadline := ctx.Deadline(); hasDeadline && !time.Now().Before(deadline) {
+				return errRotated
+			}
 			return err
 		}
 		switch {
@@ -554,7 +573,10 @@ func (c *Client) runEventsLoop(
 		case errors.Is(err, errDraining):
 			slog.Info("control plane draining; reconnecting to re-home", "reconnect_in", eventsDrainReconnect)
 			reconnectIn = eventsDrainReconnect
-		case errors.Is(err, context.DeadlineExceeded) || status.Code(err) == codes.DeadlineExceeded:
+		case errors.Is(err, errRotated):
+			// This proxy's own timer firing, not a fault, so it reopens promptly rather than waiting out a
+			// backoff meant for a control plane that is actually unwell.
+			reconnectIn = timings.rotationReconnect
 			slog.Info("events stream reached its max age; reopening", "max_age", timings.streamMaxAge)
 		default:
 			slog.Info("events stream ended; reconnecting", "error", err, "reconnect_in", timings.reconnect)

@@ -43,6 +43,7 @@ import com.ridi.oss.proxymonster.probe.Dialect
 import com.ridi.oss.proxymonster.probe.Masking
 import com.ridi.oss.proxymonster.probe.analyzerFor
 import com.ridi.oss.proxymonster.probe.bindMasks
+import com.ridi.oss.proxymonster.probe.splitStatements
 import io.ktor.http.HttpStatusCode
 import io.ktor.server.request.receive
 import io.ktor.server.response.respond
@@ -1032,11 +1033,23 @@ data class EditorSessionOpened(val sessionId: String)
 /** Async editor SUBMIT ack: the born-APPROVED EDITOR task and its single result child (task:child 1:1). No
  *  rows inline — completion is observed by polling the task/result endpoints. */
 @Serializable
-data class EditorSubmitResponse(val taskId: Long, val childId: Long)
+data class EditorSubmitResponse(
+    val taskId: Long,
+    val childId: Long,
+    /** The statements the submit was split into, in run order — one result child each. */
+    val statements: List<String> = emptyList(),
+)
 
 /** Editor task poll: the parent task status plus its child result metadata (rows stay behind /result). */
 @Serializable
-data class EditorTaskStatus(val taskId: Long, val status: String, val result: QueryResultMeta? = null)
+data class EditorTaskStatus(
+    val taskId: Long,
+    val status: String,
+    /** The batch's active statement. */
+    val result: QueryResultMeta? = null,
+    /** Every statement of the batch, in run order, each with its own status. */
+    val statements: List<QueryResultMeta> = emptyList(),
+)
 
 /**
  * Persistent editor SESSION + async task routes (connection-model.md; editor-as-task). Open
@@ -1114,7 +1127,12 @@ fun Route.editorSessionRoutes(
             return@post call.respond(HttpStatusCode.Forbidden, ApiError("common.forbidden"))
         }
 
-        val task = accessStore.createEditorTask(principal, ds.id, listOf(sql), ownRoles.toList(), approver = principal)
+        // Split server-side, like the workflow: one task, one child per statement.
+        val splitConfig = ds.splitEngineConfig()
+            ?: return@post call.respond(HttpStatusCode.BadRequest, ApiError("approval.unsplittable_sql"))
+        val statements = splitStatements(sql, splitConfig)
+            ?: return@post call.respond(HttpStatusCode.BadRequest, ApiError("approval.unsplittable_sql"))
+        val task = accessStore.createEditorTask(principal, ds.id, statements, ownRoles.toList(), approver = principal)
         val childId = accessStore.editorChildId(task.id) ?: -1L
         // Same single-execution claim as /execute, atomic so a cancel can't slip into an EXECUTING-but-no-
         // RUNNING-child gap: APPROVED → EXECUTING and the child NULL → RUNNING commit in one transaction.
@@ -1132,35 +1150,49 @@ fun Route.editorSessionRoutes(
             // The target-DB error behind a failure (both forms), stored so the FAILED view releases one per viewer.
             var diagnostic: RunError? = null
             val failureCode = try {
-                // runOnSession decides on the EDITOR channel under empty assumeRoles (the caller's own roles)
-                // and saves the enforced result instead of returning it inline.
-                val response = runExecService.runOnSession(
-                    sessionId, principal, sql, maxRows,
+                var batchFailure: String? = null
+                // One mutex hold for the batch, so a concurrent submit cannot land inside its transaction.
+                // Decides on the EDITOR channel under the caller's own roles and saves each result.
+                runExecService.runBatchOnSession(
+                    sessionId, principal, statementCount = statements.size, maxRows = maxRows,
                     requesterIp = requesterIp,
                     taskId = task.id,
                     preflight = { store.meta(task.id)?.status == "RUNNING" },
                     exchangeTimeoutMs = config.queryExchangeTimeoutMs,
-                )
-                if (response.decision == EnfAction.DENY) {
-                    denyReason = response.denyReason
-                    denyDecisionId = response.decisionId
-                    // Reuse the already-translated approval.* result codes (en/ko errors.json) — the messages
-                    // ("denied at execution time" / "execution failed") are channel-agnostic, so the web
-                    // localizes the polled code with no editor-specific catalog entries.
-                    "approval.execute_denied"
-                } else {
+                    // Statement 0 is RUNNING from the claim; a cancel between statements leaves none
+                    // pending, so the batch stops here.
+                    statementAt = { ordinal ->
+                        if (ordinal == 0) statements[0] else store.startNextRun(task.id, principal)?.sql
+                    },
+                    onStatement = { ordinal, response ->
+                    if (response.decision == EnfAction.DENY) {
+                        denyReason = response.denyReason
+                        denyDecisionId = response.decisionId
+                        // Reuse the already-translated approval.* result codes (en/ko errors.json) — the messages
+                        // ("denied at execution time" / "execution failed") are channel-agnostic, so the web
+                        // localizes the polled code with no editor-specific catalog entries.
+                        batchFailure = "approval.execute_denied"
+                        false
+                    } else {
                     val result = DecryptedResult(response.columns, response.rows, response.rowsAffected, response.resultFingerprint)
-                    // Child DONE + parent EXECUTED commit in ONE transaction (see /execute): a crash can never
-                    // leave a readable DONE child under a non-EXECUTED task. The run's per-statement Decide
-                    // round-trip already wrote the real audit decision (ALLOW/MASK/DENY + decisionId), so no
-                    // task-level audit row is added here — it would only duplicate that as a false ALLOW.
+                    // The parent flips to EXECUTED only on the LAST statement. The per-statement Decide
+                    // already wrote the real audit decision, so no task-level row is added here.
+                    val last = ordinal == statements.lastIndex
                     val completed = store.completeRun(task.id, result, QueryResultStore.RESULT_RETENTION_SEC) { conn, _ ->
-                        if (!accessStore.markExecuted(task.id, conn)) {
+                        if (last && !accessStore.markExecuted(task.id, conn)) {
                             throw IllegalStateException("editor task ${task.id} left EXECUTING before completion")
                         }
                     }
-                    if (completed != null) null else "approval.query_failed"
-                }
+                    if (completed == null) {
+                        batchFailure = "approval.query_failed"
+                        false
+                    } else {
+                        true
+                    }
+                    }
+                    },
+                )
+                batchFailure
             } catch (_: RunCanceledBeforeStartException) {
                 null
             } catch (_: NoProxyAttachedException) {
@@ -1170,6 +1202,9 @@ fun Route.editorSessionRoutes(
             } catch (_: ProxyRunTimeoutException) {
                 "query.proxy_timeout"
             } catch (e: TargetDbRunException) {
+                // The target DB's own error for the statement that failed, in the form the run's decision
+                // chose. Stored encrypted on the failed child and re-gated per viewer, so it must survive
+                // the batch walk rather than collapsing into a bare failure code.
                 diagnostic = e.toDiagnostic()
                 "approval.query_failed"
             } catch (_: ProxyRunException) {
@@ -1191,7 +1226,10 @@ fun Route.editorSessionRoutes(
             // SSE stream so the tab updates at once; best-effort, the tab also polls (see TaskCompletionHub).
             accessStore.getRequest(task.id)?.status?.let { taskCompletionHub?.publish(principal, TaskEvent(task.id, it)) }
         }
-        call.respond(HttpStatusCode.Accepted, EditorSubmitResponse(taskId = task.id, childId = childId))
+        call.respond(
+            HttpStatusCode.Accepted,
+            EditorSubmitResponse(taskId = task.id, childId = childId, statements = statements),
+        )
     }
 
     // Poll: task status + child metadata. Owner-scoped to the caller's own EDITOR tasks (task.read/own);
@@ -1216,7 +1254,12 @@ fun Route.editorSessionRoutes(
         if (mayRead is AuthzDecision.Deny) {
             return@get call.respond(HttpStatusCode.NotFound, ApiError("common.not_found", mapOf("resource" to "editor task")))
         }
-        call.respond(EditorTaskStatus(task.id, task.status, queryResultStore?.meta(taskId)))
+        call.respond(
+            EditorTaskStatus(
+                task.id, task.status, queryResultStore?.meta(taskId),
+                statements = queryResultStore?.statements(taskId).orEmpty(),
+            ),
+        )
     }
 
     post("/api/editor/tasks/{taskId}/cancel") {
@@ -1237,7 +1280,12 @@ fun Route.editorSessionRoutes(
             return@post call.respond(HttpStatusCode.Forbidden, ApiError("approval.cancel_forbidden"))
         }
         if (task.status != "EXECUTING") {
-            return@post call.respond(EditorTaskStatus(task.id, task.status, queryResultStore?.meta(taskId)))
+            return@post call.respond(
+                EditorTaskStatus(
+                    task.id, task.status, queryResultStore?.meta(taskId),
+                    statements = queryResultStore?.statements(taskId).orEmpty(),
+                ),
+            )
         }
         val store = queryResultStore
             ?: return@post call.respond(HttpStatusCode.ServiceUnavailable, ApiError("approval.result_storage_not_configured"))
@@ -1254,7 +1302,12 @@ fun Route.editorSessionRoutes(
         }
         val updated = accessStore.getRequest(taskId)
             ?: return@post call.respond(HttpStatusCode.NotFound, ApiError("common.not_found", mapOf("resource" to "editor task")))
-        call.respond(EditorTaskStatus(updated.id, updated.status, store.meta(taskId)))
+        call.respond(
+            EditorTaskStatus(
+                updated.id, updated.status, store.meta(taskId),
+                statements = store.statements(taskId),
+            ),
+        )
     }
 
     // Rows: task.assume gates the viewer (no authDebug bypass — data confidentiality), then the stored result
@@ -1277,7 +1330,13 @@ fun Route.editorSessionRoutes(
         }
         // One read captures ciphertext + meta; decrypt is lazy (only after authz passes → an unauthorized
         // viewer never triggers a decrypt, and a concurrent re-run can't swap the row between check + decrypt).
-        val access = queryResultStore?.accessFor(taskId)
+        // ?statement=<ordinal> selects one statement of a batch; absent takes the active one.
+        val ordinalParam = call.request.queryParameters["statement"]
+        val ordinal = if (ordinalParam == null) null else {
+            ordinalParam.toIntOrNull()?.takeIf { it >= 0 }
+                ?: return@get call.respond(HttpStatusCode.BadRequest, ApiError("common.bad_id"))
+        }
+        val access = queryResultStore?.accessFor(taskId, ordinal)
             ?: return@get call.respond(HttpStatusCode.NotFound, ApiError("common.not_found", mapOf("resource" to "editor task")))
         val mayAssume = authz.authorizeWithContext(
             principal, AuthzAction.TASK_ASSUME,

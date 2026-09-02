@@ -530,6 +530,8 @@ export interface QueryResponse {
 export interface EditorSubmitResponse {
   taskId: number
   childId: number
+  /** The statements the submit was split into, in run order — one result child each. */
+  statements?: string[]
 }
 
 /** GET /api/editor/tasks/{taskId}: the parent task status + its child result metadata (rows are behind
@@ -541,5 +543,7 @@ export interface EditorTaskStatus {
   // The child metadata the server actually sends here IS QueryResultMeta; a structural copy of it drifted
   // from the real shape and silently hid the fields a denial needs.
   result: QueryResultMeta | null
+  /** Every statement of the batch, in run order, each with its own status. */
+  statements?: QueryResultMeta[]
 }
 

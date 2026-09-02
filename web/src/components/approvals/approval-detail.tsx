@@ -2,15 +2,15 @@
 
 import { useEffect, useState, type ReactNode } from 'react'
 import { useTranslations } from 'next-intl'
-import useSWR, { mutate as globalMutate } from 'swr'
+import { mutate as globalMutate } from 'swr'
 import { toast } from 'sonner'
-import { ApiError, cancelApproval, executeApproval, getApprovalResult, rejectApproval } from '@/lib/api/client'
+import { cancelApproval, executeApproval, rejectApproval } from '@/lib/api/client'
 import { onTaskEvent, subscribeTaskEvents } from '@/lib/api/task-events'
-import { translateApiError } from '@/lib/i18n/errors'
 import { swrKeys, useApproval } from '@/lib/hooks'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from '@/components/ui/resizable'
 import {
   Dialog,
   DialogContent,
@@ -22,6 +22,7 @@ import {
 import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
 import { ErrorState, LoadingState } from '@/components/page-scaffold'
+import { ApprovalResultTabs } from './approval-result-tabs'
 import { ApproveQueryDialog } from './approve-query-dialog'
 
 const STATUS_STYLE: Record<string, string> = {
@@ -34,6 +35,7 @@ const STATUS_STYLE: Record<string, string> = {
   FAILED: 'border-red-500/30 bg-red-500/10 text-red-500',
   CANCELLED: 'border-border text-muted-foreground',
   DELETED: 'border-border text-muted-foreground',
+  SKIPPED: 'border-border text-muted-foreground',
 }
 
 const DECISION_STYLE: Record<string, string> = {
@@ -57,42 +59,11 @@ function Field({ label, children }: { label: string; children: ReactNode }) {
   )
 }
 
-function ResultGrid({ columns, rows }: { columns: string[]; rows: (string | null)[][] }) {
-  const t = useTranslations('Workflows')
-  return (
-    <div className="border-border overflow-x-auto rounded-lg border">
-      <table className="w-full text-left text-xs">
-        <thead className="bg-muted/50 text-muted-foreground">
-          <tr>
-            {columns.map((c) => (
-              <th key={c} className="px-3 py-2 font-mono font-medium whitespace-nowrap">{c}</th>
-            ))}
-          </tr>
-        </thead>
-        <tbody>
-          {rows.length === 0 ? (
-            <tr>
-              <td colSpan={Math.max(columns.length, 1)} className="text-muted-foreground px-3 py-3">
-                {t('approvalDetail.noRows')}
-              </td>
-            </tr>
-          ) : (
-            rows.map((row, i) => (
-              <tr key={i} className="border-border/60 border-t">
-                {row.map((v, j) => (
-                  <td key={j} className="text-foreground/90 px-3 py-1.5 font-mono whitespace-pre">
-                    {v ?? <span className="text-muted-foreground">NULL</span>}
-                  </td>
-                ))}
-              </tr>
-            ))
-          )}
-        </tbody>
-      </table>
-    </div>
-  )
-}
-
+/**
+ * One statement of the request, with its own status and — once it has rows and the viewer may see them —
+ * its own result grid. Each statement is authorized and stored separately, so it is labelled by what
+ * happened to IT, never by the task's overall status.
+ */
 function Pill({ value, styles }: { value?: string | null; styles: Record<string, string> }) {
   if (!value) return <span className="text-muted-foreground">—</span>
   return (
@@ -122,17 +93,10 @@ export function ApprovalDetail({ id }: { id: number }) {
   // (RUNNING → DONE | FAILED). Gating on `runStarted` — not on `result` — keeps the Run button visible
   // while APPROVED-not-yet-run, and keeps progress/rows/error visible once the parent leaves APPROVED.
   const runStarted = result != null && result.status != null
-  const canViewRows = result?.status === 'DONE'
-
-  // Only an expected absence (404 can't-assume, 409 not-ready) becomes null; a 5xx re-throws so SWR retries.
-  const { data: resultView } = useSWR(
-    canViewRows || result?.status === 'FAILED' ? (['approval-result', id] as const) : null,
-    () =>
-      getApprovalResult(id).catch((e) => {
-        if (e instanceof ApiError && (e.status === 404 || e.status === 409)) return null
-        throw e
-      }),
-  )
+  // Every statement of the batch, in run order. A single-statement request has one entry, so the same
+  // rendering covers both without a special case. Each statement fetches its own rows and error detail
+  // (StatementResult), so there is no task-level result fetch here.
+  const statements = data?.statements ?? []
 
   // Task-event push: revalidate the moment this task terminalizes (execute done, cancel) instead of waiting
   // for the 15s poll. Best-effort accelerator — the refreshInterval above remains the fallback on stream absence.
@@ -210,8 +174,16 @@ export function ApprovalDetail({ id }: { id: number }) {
 
   const approvedCopy = t('approvalDetail.approvedExecuteUnderR')
 
+  const ranStatements = statements.filter((s) => s.status === 'DONE' || s.status === 'FAILED')
+
   return (
-    <>
+    <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+      {/* Details scroll above, results dock below on a drag handle — the editor's editor-over-results
+          split, so a long script never pushes the rows off-screen. */}
+      <ResizablePanelGroup orientation="vertical" className="min-h-0 flex-1">
+        <ResizablePanel defaultSize={ranStatements.length > 0 ? 55 : 100} minSize={20}>
+          <div className="h-full min-h-0 overflow-y-auto">
+            <div className="mx-auto w-full max-w-5xl p-6">
       <Card>
         <CardHeader>
           <div className="flex flex-wrap items-start justify-between gap-3">
@@ -270,11 +242,22 @@ export function ApprovalDetail({ id }: { id: number }) {
             </Field>
           </div>
 
-          <Field label={t('fields.sql')}>
-            <pre className="border-border bg-muted/40 text-foreground/90 mt-1 overflow-x-auto rounded-lg border p-3 font-mono text-xs leading-relaxed whitespace-pre-wrap break-words">
+          <div className="space-y-3">
+            <div className="flex items-center justify-between gap-2">
+              <p className="text-muted-foreground text-[10px] font-semibold tracking-widest uppercase">
+                {t('approvalDetail.statementsHeading')}
+              </p>
+              {statements.length > 1 && (
+                <span className="text-muted-foreground text-xs">
+                  {t('approvalDetail.batchSummary', { count: statements.length })}
+                </span>
+              )}
+            </div>
+            {/* The submitted script verbatim, terminators and all — what the requester actually wrote. */}
+            <pre className="border-border bg-muted/40 text-foreground/90 overflow-x-auto rounded-lg border p-3 font-mono text-xs leading-relaxed whitespace-pre-wrap break-words">
               {request.sql ?? '—'}
             </pre>
-          </Field>
+          </div>
 
           <div className="grid gap-4 sm:grid-cols-2">
             <Field label={t('fields.denyReason')}>{request.denyReason ?? '—'}</Field>
@@ -338,18 +321,6 @@ export function ApprovalDetail({ id }: { id: number }) {
                     )}
                   </div>
 
-                  {result.status === 'FAILED' && result.errorCode && (
-                    <div className="space-y-1 rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-500">
-                      <div>{t('approvalDetail.failedCode', { code: translateApiError(result.errorCode) })}</div>
-                      {resultView?.errorDetail && (
-                        <div className="font-mono text-xs break-words opacity-80">{resultView.errorDetail}</div>
-                      )}
-                    </div>
-                  )}
-
-                  {canViewRows && resultView && (
-                    <ResultGrid columns={resultView.columns} rows={resultView.rows} />
-                  )}
                 </div>
               )}
 
@@ -362,6 +333,23 @@ export function ApprovalDetail({ id }: { id: number }) {
           )}
         </CardContent>
       </Card>
+            </div>
+          </div>
+        </ResizablePanel>
+
+        {ranStatements.length > 0 && (
+          <>
+            <ResizableHandle />
+            <ResizablePanel defaultSize={45} minSize={15}>
+              <ApprovalResultTabs
+                taskId={id}
+                datasourceId={request.datasourceId ?? null}
+                statements={statements}
+              />
+            </ResizablePanel>
+          </>
+        )}
+      </ResizablePanelGroup>
 
       <ApproveQueryDialog
         key={approveOpen ? request.id : 'closed'}
@@ -407,6 +395,6 @@ export function ApprovalDetail({ id }: { id: number }) {
           </DialogFooter>
         </DialogContent>
       </Dialog>
-    </>
+    </div>
   )
 }

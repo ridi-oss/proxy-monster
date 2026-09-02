@@ -593,8 +593,10 @@ export function cancelApproval(id: number): Promise<AccessRequest> {
 }
 
 /** Fetch decrypted rows after the latest child reaches DONE. */
-export function getApprovalResult(id: number): Promise<QueryResultView> {
-  return request<QueryResultView>(`/api/approvals/${id}/result`)
+/** [ordinal] selects one statement of a batch; omit it for the active statement. */
+export function getApprovalResult(id: number, ordinal?: number): Promise<QueryResultView> {
+  const qs = ordinal == null ? '' : `?statement=${ordinal}`
+  return request<QueryResultView>(`/api/approvals/${id}/result${qs}`)
 }
 
 // ---- Wire tokens (expiring-only) -------------------------------------------

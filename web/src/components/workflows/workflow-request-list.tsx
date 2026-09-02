@@ -50,9 +50,12 @@ function requestContext(entry: WorkflowRequestEntry, t: Translator): string {
 
 function requestPreview(entry: WorkflowRequestEntry, t: Translator): string {
   const { request } = entry
-  if (request.kind === 'QUERY') return oneLine(request.sql, t)
-
-  return request.reason ?? ''
+  if (request.kind !== 'QUERY') return request.reason ?? ''
+  const preview = oneLine(request.sql, t)
+  // A batch collapses to one line, so say how many statements it holds — otherwise the preview reads as a
+  // single statement that happens to be long.
+  const count = request.statementCount ?? 1
+  return count > 1 ? `${preview} (${t('queryComposer.statementCount', { count })})` : preview
 }
 
 export function WorkflowRequestList({

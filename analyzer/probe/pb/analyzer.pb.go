@@ -1110,8 +1110,8 @@ func (x *SplitResponse) GetStatements() []string {
 }
 
 // One physical target-DB relation the statement scans (docs/facts-emission.md). catalog/schema/table
-// is the resolved identity; covered is true once at least one traced column fact names this table
-// (see probe.go's SourceInfo doc comment for the full per-table coverage rationale).
+// is the resolved identity; covered is true when emitted Column grants fully gate the scan. A read of an
+// implicit non-visible column without a catalog identity leaves the table uncovered.
 type SourceInfo struct {
 	state         protoimpl.MessageState
 	sizeCache     protoimpl.SizeCache

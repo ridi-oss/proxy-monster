@@ -374,7 +374,8 @@ var mysqlStatements = []mysqlStatement{
 	{"DESC", "DESC users", "stmt.kind.describe", pb.StatementKind_STATEMENT_KIND_DESCRIBE},
 	{"EXPLAIN (query)", "EXPLAIN SELECT id FROM users", "result.read + stmt.kind.explain", pb.StatementKind_STATEMENT_KIND_EXPLAIN},
 	{"EXPLAIN ANALYZE", "EXPLAIN ANALYZE SELECT id FROM users", "result.read + stmt.kind.explain", pb.StatementKind_STATEMENT_KIND_EXPLAIN},
-	{"EXPLAIN (table)", "EXPLAIN users", "stmt.kind.describe", pb.StatementKind_STATEMENT_KIND_DESCRIBE}, // EXPLAIN <table> is AST-identical to DESCRIBE <table>
+	{"EXPLAIN (table)", "EXPLAIN users", "stmt.kind.describe", pb.StatementKind_STATEMENT_KIND_DESCRIBE},                 // EXPLAIN <table> is AST-identical to DESCRIBE <table>
+	{"EXPLAIN TABLE", "EXPLAIN TABLE users", "result.read + stmt.kind.explain", pb.StatementKind_STATEMENT_KIND_EXPLAIN}, // TABLE t is SELECT * FROM t shorthand — a plan of a scan, gated as a read
 	{"HELP", "HELP 'contents'", "stmt.kind.help + unanalyzable→exception.unanalyzable", pb.StatementKind_STATEMENT_KIND_HELP},
 	{"USE", "USE acme", "stmt.kind.use", pb.StatementKind_STATEMENT_KIND_USE},
 

@@ -83,9 +83,26 @@ class ConfigGuardTest {
         // 616 is the smallest timeout at which the old floor-only grace under-budgeted the full run.
         for (timeout in listOf(1L, 600L, 616L, 3600L, 36_000L, Config.MAX_QUERY_TIMEOUT_SECONDS)) {
             assertTrue(
-                RunExecService.runTokenTtlSeconds(timeout) >= timeout + runOverheadSeconds,
+                RunExecService.runTokenTtlSeconds(timeout, 1) >= timeout + runOverheadSeconds,
                 "run token TTL must cover dial-back + target-DB open + exchange for timeout=$timeout",
             )
+            // A run is a BATCH whose statements share one token, each able to take a full query window.
+            // Budgeting for one would expire the token partway through, after earlier statements had
+            // already run on the target. Saturating, since the timeout ceiling is near Long.MAX and the
+            // multiplication would otherwise overflow negative.
+            for (statements in listOf(1, 2, 50, 1_000, Int.MAX_VALUE)) {
+                val batchBudget = runCatching {
+                    Math.multiplyExact(timeout, statements.toLong())
+                }.getOrDefault(Long.MAX_VALUE)
+                assertTrue(
+                    RunExecService.runTokenTtlSeconds(timeout, statements) >= minOf(batchBudget, Long.MAX_VALUE - 1),
+                    "run token TTL must cover a $statements-statement batch for timeout=$timeout",
+                )
+                assertTrue(
+                    RunExecService.runTokenTtlSeconds(timeout, statements) > 0,
+                    "run token TTL must never overflow negative for timeout=$timeout, statements=$statements",
+                )
+            }
             assertTrue(
                 RunExecService.editorSessionTtlSeconds(timeout) > timeout,
                 "editor session TTL must exceed the query window for timeout=$timeout",

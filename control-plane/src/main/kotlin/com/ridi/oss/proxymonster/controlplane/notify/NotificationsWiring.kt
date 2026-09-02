@@ -95,7 +95,7 @@ fun Application.installNotifications(
                         runApprovedTask(
                             id = approved.id,
                             executor = approved.decidedBy ?: approved.principal,
-                            ds = ds, sql = sql, executeAs = executeAs,
+                            ds = ds, executeAs = executeAs,
                             requesterIp = null, // a Slack click carries no attested address
                             requesterPrincipal = approved.principal, req = approved,
                             config = config, accessStore = accessStore, store = queryResultStore,

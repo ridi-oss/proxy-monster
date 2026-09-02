@@ -348,6 +348,18 @@ class ApprovalResultAssumeMysqlDbTest {
     }
 
     @Test
+    fun `an explain table result releases like a plan-only explain`() {
+        // MySQL's `EXPLAIN TABLE t` plans the `SELECT * FROM t` shorthand, so it classifies as the
+        // plan-only EXPLAIN kind and its stored plan releases under the same clean-ALLOW gate.
+        val sql = "EXPLAIN TABLE users"
+        val stored = storedExplain(sql)
+        assertPlanOnlyExplain(viewerCtx(sql, "100.100.1.10", req = request(sql), channel = Channel.EDITOR))
+        val allowed = assertIs<ResultViewDecision.Allowed>(viewExplain(sql, stored))
+        assertEquals(stored.columns, allowed.columns)
+        assertEquals(stored.rows, allowed.rows)
+    }
+
+    @Test
     fun `a non-explain allow with empty outputs never takes the plan release`() {
         // The statementKind conjunct is load-bearing: an ALLOW with empty masks and outputColumns whose
         // kind is not EXPLAIN (a synthetic non-EXPLAIN context) must fall through to the projection-width

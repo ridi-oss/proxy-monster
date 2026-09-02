@@ -122,6 +122,11 @@ class GateSqlglotRegressionTest {
         // EXPLAIN TABLE analyzes SELECT * over the ungranted orders table, so its columns resolve DENIED;
         // RESET MASTER is administrative. (A plan-only EXPLAIN of a GRANTED read is exercised separately.)
         denied(mysql, "EXPLAIN TABLE orders")
+        // EXPLAIN TABLE gates as a read (stmt.kind.explain), not metadata: the explainer role holds
+        // cat.read and NO cat.metadata, so this ALLOW pins the category move.
+        val planned = mysql.decide("EXPLAIN TABLE users", principal = "explainer@example.com")
+        assertEquals(EnfAction.ALLOW, planned.action, "a read grant clears EXPLAIN TABLE: ${'$'}{planned.denyReason}")
+        assertTrue(planned.masks.isEmpty(), "a released plan binds no masks")
         denied(mysql, "RESET MASTER")
         denied(postgres, """SELECT U&"set_confi\0067"('search_path','restricted',false)""")
     }

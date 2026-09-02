@@ -378,10 +378,18 @@ func factsFromProbe(report ProbeResult) *pb.StatementFacts {
 	return facts
 }
 
+// isTableShorthandDescribe reports a Describe carrying kind=TABLE over a Table target — MySQL's
+// `EXPLAIN TABLE t` (`TABLE t` is `SELECT * FROM t` shorthand), a plan of a scan. The one predicate is
+// shared by classification (describeKind → EXPLAIN) and emission (emitDescribeFacts → lineage) so the
+// two can never disagree about which arm a statement takes.
+func isTableShorthandDescribe(root exp.Expression) bool {
+	this := root.This()
+	return strings.EqualFold(root.Text("kind"), "TABLE") && this != nil && this.Kind() == exp.KindTable
+}
+
 func emitDescribeFacts(root exp.Expression, eng engine, qualifySchema schema.Schema, namespace NamespaceConfig) *pb.StatementFacts {
 	this := root.This()
-	kind := strings.ToUpper(fmt.Sprint(root.Arg("kind")))
-	if kind == "TABLE" && this != nil && this.Kind() == exp.KindTable {
+	if isTableShorthandDescribe(root) {
 		selectRoot := exp.Select(exp.Args{"expressions": []exp.Expression{exp.Star(nil)}, "from_": exp.From(exp.Args{"this": this.Copy()})})
 		return emitLineageFacts(selectRoot, eng, qualifySchema, namespace, true)
 	}

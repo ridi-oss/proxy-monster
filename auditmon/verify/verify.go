@@ -62,10 +62,14 @@ func VerifyTail(head store.ChainHead, events []store.StoredEvent) (*Finding, err
 }
 
 // ChainedEventSource is the paging read side VerifyFromGenesis walks: chained rows only (chain_version IS
-// NOT NULL), in id order. Satisfied by *store.Reader.
+// NOT NULL), in id order, at most limit per call. Satisfied by *store.Reader.
 type ChainedEventSource interface {
-	ChainedEventsAfter(ctx context.Context, afterID int64) ([]store.StoredEvent, error)
+	ChainedEventsAfter(ctx context.Context, afterID int64, limit int) ([]store.StoredEvent, error)
 }
+
+// pageSize bounds each read of the from-genesis walk, so peak memory depends on the page, not on how long
+// the trail is.
+const pageSize = 5000
 
 // AnchorCheck is a signed off-box witness to cross-check the walk against: the head_hash a valid anchor
 // recorded at UpToID. A recomputed head that no longer matches, or an UpToID the chain no longer reaches,
@@ -140,7 +144,7 @@ func VerifyFromGenesisAccepting(ctx context.Context, src ChainedEventSource, gen
 	head := store.ChainHead{LastID: 0, HeadHash: genesis}
 	cursor := int64(0)
 	for {
-		events, err := src.ChainedEventsAfter(ctx, cursor)
+		events, err := src.ChainedEventsAfter(ctx, cursor, pageSize)
 		if err != nil {
 			return nil, nil, fmt.Errorf("verify: read chained tail after %d: %w", cursor, err)
 		}

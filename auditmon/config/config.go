@@ -204,7 +204,10 @@ type SinkConfig struct {
 
 // MonitorConfig is the poll/sign loop and its off-box store + signer.
 type MonitorConfig struct {
-	PollInterval       time.Duration `koanf:"poll_interval"`
+	PollInterval time.Duration `koanf:"poll_interval"`
+	// TailBatch bounds each tail read of the verify/export loop, so a backlog accumulated while the
+	// monitor was down is walked in batches instead of materialized in memory at once.
+	TailBatch          int           `koanf:"tail_batch"`
 	SignInterval       time.Duration `koanf:"sign_interval"`
 	FullVerifyInterval time.Duration `koanf:"full_verify_interval"`
 	Bucket             string        `koanf:"bucket"`
@@ -228,6 +231,7 @@ type SignerConfig struct {
 // that itself contains underscores (poll_interval, key_path) is never mis-split into extra nesting levels.
 var envKeyMap = map[string]string{
 	"AUDITMON_MONITOR_POLL_INTERVAL":        "monitor.poll_interval",
+	"AUDITMON_MONITOR_TAIL_BATCH":           "monitor.tail_batch",
 	"AUDITMON_MONITOR_SIGN_INTERVAL":        "monitor.sign_interval",
 	"AUDITMON_MONITOR_FULL_VERIFY_INTERVAL": "monitor.full_verify_interval",
 	"AUDITMON_MONITOR_BUCKET":               "monitor.bucket",
@@ -247,6 +251,7 @@ const (
 	// boots and monitors. A monitor that refuses to start is worth strictly less than one polling at a
 	// sensible cadence, and every value here is overridable.
 	defaultPollInterval = 90 * time.Second
+	defaultTailBatch    = 5000
 	defaultSignInterval = time.Hour
 	// filekey is the dev signer; a real deployment sets signer.type: kms and a key id. Choosing filekey as
 	// the default keeps the fallback the one that cannot silently sign with someone else's key.
@@ -288,6 +293,9 @@ func Load(path string) (*Config, error) {
 	}
 	if cfg.Monitor.PollInterval == 0 {
 		cfg.Monitor.PollInterval = defaultPollInterval
+	}
+	if cfg.Monitor.TailBatch == 0 {
+		cfg.Monitor.TailBatch = defaultTailBatch
 	}
 	if cfg.Monitor.SignInterval == 0 {
 		cfg.Monitor.SignInterval = defaultSignInterval
@@ -378,6 +386,9 @@ func (c *Config) Validate() error {
 	m := c.Monitor
 	if m.PollInterval <= 0 {
 		return fmt.Errorf("config: monitor.poll_interval must be > 0")
+	}
+	if c.Monitor.TailBatch < 0 {
+		return fmt.Errorf("config: monitor.tail_batch must be >= 0 (0 means the default)")
 	}
 	if m.SignInterval <= 0 {
 		return fmt.Errorf("config: monitor.sign_interval must be > 0")

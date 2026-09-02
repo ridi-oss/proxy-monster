@@ -56,7 +56,7 @@ func TestTailEventsReadsRowsAndChainColumns(t *testing.T) {
 	}
 	defer reader.Close()
 
-	got, err := reader.TailEvents(ctx, 0)
+	got, err := reader.TailEvents(ctx, 0, 10000)
 	if err != nil {
 		t.Fatalf("tail events: %v", err)
 	}
@@ -132,7 +132,7 @@ func TestTailEventsRespectsCursor(t *testing.T) {
 	}
 	defer reader.Close()
 
-	got, err := reader.TailEvents(ctx, 2)
+	got, err := reader.TailEvents(ctx, 2, 10000)
 	if err != nil {
 		t.Fatalf("tail after cursor: %v", err)
 	}

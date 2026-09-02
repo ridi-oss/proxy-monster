@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -39,6 +40,8 @@ type spyDetector struct {
 	called bool
 	count  int
 }
+
+func (d *spyDetector) InspectCatchUp(events []store.StoredEvent) error { return d.Inspect(events) }
 
 func (d *spyDetector) Inspect(events []store.StoredEvent) error {
 	d.called = true
@@ -1746,3 +1749,212 @@ func TestAnInvalidAnchorMakesEvidenceIncomplete(t *testing.T) {
 			"skipped instead of counting as missing evidence, so a rewrite above the older anchors would pass")
 	}
 }
+
+// TestPollCatchesUpLongBacklogInBatches proves the tail walk is bounded AND checkpointed: starting from a
+// prior signed anchor at id 2 with a 7-row backlog behind it and tail_batch=2, one Poll verifies, exports,
+// and re-anchors batch by batch — checkpoint anchors land at every full-batch boundary, every row reaches
+// the store exactly once, and a fresh Monitor (a simulated crash) resumes from the last checkpoint rather
+// than re-walking the backlog (issue #240's OOM crash loop).
+func TestPollCatchesUpLongBacklogInBatches(t *testing.T) {
+	ctx := context.Background()
+	pool, dsn := dbtest.OpenPostgres(t)
+	dbtest.ApplySchema(t, ctx, pool)
+	genesis := canon.GenesisHash()
+
+	reader, err := store.Open(ctx, dsn)
+	if err != nil {
+		t.Fatalf("open reader: %v", err)
+	}
+	defer reader.Close()
+	signer, err := sign.NewFileKey(filepath.Join(t.TempDir(), "key"))
+	if err != nil {
+		t.Fatalf("new file key: %v", err)
+	}
+	objStore := worm.NewMemory()
+	reporter := &spyReporter{}
+	cfg := config.MonitorConfig{PollInterval: time.Second, SignInterval: time.Hour, TailBatch: 2}
+
+	// A steady-state monitor anchors at id 2, then goes down while 7 more rows land.
+	baseID, baseHead := dbtest.SeedChain(t, ctx, pool, genesis, []canon.AuditEvent{
+		decisionEvent("alice", "select 0"), decisionEvent("alice", "select 00"),
+	})
+	m0 := monitor.New(reader, signer, objStore, genesis, cfg, monitor.NoopDetector{}, reporter)
+	if err := m0.Poll(ctx); err != nil {
+		t.Fatalf("baseline poll: %v", err)
+	}
+	backlog := make([]canon.AuditEvent, 7)
+	for i := range backlog {
+		backlog[i] = decisionEvent("alice", fmt.Sprintf("select %d", i+1))
+	}
+	lastID, head := dbtest.AppendChain(t, ctx, pool, baseID+1, baseHead, backlog)
+
+	// A fresh Monitor (the restart after the outage) catches up in one Poll.
+	m := monitor.New(reader, signer, objStore, genesis, cfg, monitor.NoopDetector{}, reporter)
+	if err := m.Poll(ctx); err != nil {
+		t.Fatalf("catch-up poll: %v", err)
+	}
+	if len(reporter.findings) != 0 {
+		t.Fatalf("expected no findings, got %+v", reporter.findings)
+	}
+	ids := exportedIDs(t, objStore)
+	if len(ids) != 2+len(backlog) {
+		t.Fatalf("exported %d events, want %d: %v", len(ids), 2+len(backlog), ids)
+	}
+	seen := map[int64]bool{}
+	for _, id := range ids {
+		if seen[id] {
+			t.Fatalf("event %d exported more than once: %v", id, ids)
+		}
+		seen[id] = true
+	}
+	// Checkpoint anchors exist at every full-batch boundary of the catch-up (4, 6, 8), plus the baseline 2.
+	anchors, err := worm.ReadAnchors(objStore)
+	if err != nil {
+		t.Fatalf("read anchors: %v", err)
+	}
+	got := map[int64]bool{}
+	for _, a := range anchors {
+		got[a.UpToID] = true
+	}
+	for _, want := range []int64{2, 4, 6, 8} {
+		if !got[want] {
+			t.Fatalf("missing checkpoint anchor at %d; anchors=%v", want, got)
+		}
+	}
+	if got[lastID] {
+		t.Fatalf("the short final batch must not checkpoint; anchors=%v", got)
+	}
+
+	// A crash after the walk resumes from the LAST checkpoint: a fresh Monitor's first tail read starts
+	// after id 8, so only the final short batch is re-shipped — to its existing object key (idempotent) —
+	// and nothing below the checkpoint is re-read or re-exported.
+	spy := &spyDetector{}
+	m2 := monitor.New(reader, signer, objStore, genesis, cfg, spy, reporter)
+	if err := m2.Poll(ctx); err != nil {
+		t.Fatalf("resume poll: %v", err)
+	}
+	if spy.count != 1 {
+		t.Fatalf("resume inspected %d rows, want only the post-checkpoint row", spy.count)
+	}
+	after := exportedIDs(t, objStore)
+	if len(after) != 2+len(backlog) {
+		t.Fatalf("resume changed the exported set: %v", after)
+	}
+	if err := m2.SignHead(ctx); err != nil {
+		t.Fatalf("sign head: %v", err)
+	}
+	anchor, ok, err := readLastAnchor(t, objStore)
+	if err != nil || !ok {
+		t.Fatalf("read last anchor: ok=%v err=%v", ok, err)
+	}
+	if anchor.UpToID != lastID || anchor.HeadHash != hex.EncodeToString(head) {
+		t.Fatalf("final anchor = %+v, want head %d", anchor, lastID)
+	}
+}
+
+// TestPollBreakInLaterBatchStopsThere pins the batched walk's break semantics: a chain break in a LATER
+// batch leaves the earlier verified batches exported (and checkpointed), refuses everything from the broken
+// batch on, and reports the finding.
+func TestPollBreakInLaterBatchStopsThere(t *testing.T) {
+	ctx := context.Background()
+	pool, dsn := dbtest.OpenPostgres(t)
+	dbtest.ApplySchema(t, ctx, pool)
+	genesis := canon.GenesisHash()
+
+	events := make([]canon.AuditEvent, 6)
+	for i := range events {
+		events[i] = decisionEvent("alice", fmt.Sprintf("select %d", i))
+	}
+	dbtest.SeedChain(t, ctx, pool, genesis, events)
+	// Tamper row 5 (third batch of two) so batches 1-2 verify and the third breaks.
+	if _, err := pool.Exec(ctx, "UPDATE audit_event SET principal = 'mallory' WHERE id = 5"); err != nil {
+		t.Fatalf("tamper: %v", err)
+	}
+
+	reader, err := store.Open(ctx, dsn)
+	if err != nil {
+		t.Fatalf("open reader: %v", err)
+	}
+	defer reader.Close()
+	signer, err := sign.NewFileKey(filepath.Join(t.TempDir(), "key"))
+	if err != nil {
+		t.Fatalf("new file key: %v", err)
+	}
+	objStore := worm.NewMemory()
+	reporter := &spyReporter{}
+	cfg := config.MonitorConfig{PollInterval: time.Second, SignInterval: time.Hour, TailBatch: 2}
+	m := monitor.New(reader, signer, objStore, genesis, cfg, monitor.NoopDetector{}, reporter)
+
+	if err := m.Poll(ctx); err != nil {
+		t.Fatalf("poll: %v", err)
+	}
+	if len(reporter.findings) != 1 || reporter.findings[0].DivergentID != 5 ||
+		reporter.findings[0].Reason != verify.ReasonRowHashMismatch {
+		t.Fatalf("findings = %+v, want row_hash_mismatch at 5", reporter.findings)
+	}
+	ids := exportedIDs(t, objStore)
+	if len(ids) != 4 || ids[len(ids)-1] != 4 {
+		t.Fatalf("exported %v, want exactly the verified prefix 1-4", ids)
+	}
+	anchor, ok, err := readLastAnchor(t, objStore)
+	if err != nil {
+		t.Fatalf("read last anchor: %v", err)
+	}
+	if ok && anchor.UpToID > 4 {
+		t.Fatalf("anchor advanced past the break: %+v", anchor)
+	}
+}
+
+// TestPollReportsMidWalkTruncation pins the pinned-target rule: rows deleted between page reads (each page
+// is its own snapshot) surface as a tail_truncated finding, never as a short clean walk.
+func TestPollReportsMidWalkTruncation(t *testing.T) {
+	ctx := context.Background()
+	pool, dsn := dbtest.OpenPostgres(t)
+	dbtest.ApplySchema(t, ctx, pool)
+	genesis := canon.GenesisHash()
+
+	events := make([]canon.AuditEvent, 5)
+	for i := range events {
+		events[i] = decisionEvent("alice", fmt.Sprintf("select %d", i))
+	}
+	dbtest.SeedChain(t, ctx, pool, genesis, events)
+
+	reader, err := store.Open(ctx, dsn)
+	if err != nil {
+		t.Fatalf("open reader: %v", err)
+	}
+	defer reader.Close()
+	signer, err := sign.NewFileKey(filepath.Join(t.TempDir(), "key"))
+	if err != nil {
+		t.Fatalf("new file key: %v", err)
+	}
+	objStore := worm.NewMemory()
+	reporter := &spyReporter{}
+	cfg := config.MonitorConfig{PollInterval: time.Second, SignInterval: time.Hour, TailBatch: 2}
+
+	// deleteTailDetector simulates the race: after the first batch is inspected, rows 4-5 vanish.
+	deleted := false
+	det := detectFunc(func([]store.StoredEvent) error {
+		if !deleted {
+			deleted = true
+			if _, err := pool.Exec(ctx, "DELETE FROM audit_event WHERE id >= 4"); err != nil {
+				t.Errorf("delete tail: %v", err)
+			}
+		}
+		return nil
+	})
+	m := monitor.New(reader, signer, objStore, genesis, cfg, det, reporter)
+
+	if err := m.Poll(ctx); err != nil {
+		t.Fatalf("poll: %v", err)
+	}
+	if len(reporter.findings) != 1 || reporter.findings[0].Reason != monitor.ReasonTailTruncated {
+		t.Fatalf("findings = %+v, want one tail_truncated", reporter.findings)
+	}
+}
+
+// detectFunc adapts a func to the Detector interface (both hooks call it).
+type detectFunc func([]store.StoredEvent) error
+
+func (f detectFunc) Inspect(events []store.StoredEvent) error        { return f(events) }
+func (f detectFunc) InspectCatchUp(events []store.StoredEvent) error { return f(events) }

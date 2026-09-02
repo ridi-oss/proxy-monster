@@ -29,6 +29,7 @@ import (
 // deliberately runs without rules.
 type Detector interface {
 	Inspect(events []store.StoredEvent) error
+	InspectCatchUp(fresh []store.StoredEvent) error
 }
 
 // NoopDetector does nothing.
@@ -36,6 +37,8 @@ type NoopDetector struct{}
 
 // Inspect is a no-op.
 func (NoopDetector) Inspect([]store.StoredEvent) error { return nil }
+
+func (NoopDetector) InspectCatchUp([]store.StoredEvent) error { return nil }
 
 // IntegrityReporter delivers an integrity finding. cmd/auditmon supplies the webhook reporter
 // (alert.NewReporter); LoggingReporter (slog) is the fallback that only records it.
@@ -191,11 +194,28 @@ func (m *Monitor) selectBaseline() (baseline store.ChainHead, present bool, find
 	return store.ChainHead{LastID: 0, HeadHash: m.genesis}, false, nil, nil
 }
 
-// verifyChain selects the trusted baseline anchor, reads the committed tail after it, and re-walks that
-// tail. A bad anchor signature or a chain break is reported and returns ok=false, so no caller exports or
-// signs past a detected break. It never blocks: a tamper finding is reported and swallowed, and only an
-// infrastructure failure (DB/store unreachable) is returned as an error for the Run loop to retry.
-func (m *Monitor) verifyChain(ctx context.Context) (verifiedTail, bool, error) {
+// tailBatch bounds each tail read; the config default applies when a caller (tests) left it zero.
+func (m *Monitor) tailBatch() int {
+	if m.cfg.TailBatch > 0 {
+		return m.cfg.TailBatch
+	}
+	return 5000
+}
+
+// ReasonTailTruncated: rows the walk pinned as its target before the first page were gone by the time it
+// got there — a deletion between page reads, which a short final read must not pass off as completion.
+const ReasonTailTruncated = "tail_truncated"
+
+// verifyChain selects the trusted baseline anchor, pins the walk's target (the highest committed id at the
+// start), then reads and re-walks the tail after the anchor in bounded batches, calling each on every
+// verified batch — so peak memory depends on the batch size, never on how far behind the monitor is (a long
+// outage used to OOM here and crash-loop unrecoverably). Rows appended after the pin are left for the next
+// poll, so a sustained writer cannot keep the walk from returning. A walk that ends short of its pinned
+// target means rows were deleted between page reads (each page is its own snapshot) — reported as a finding,
+// never returned as success. A verified batch is exported/anchored by each BEFORE the next page is read:
+// never a byte of an unverified segment, but a clean prefix does commit before a later batch's break is
+// found (that prefix is exactly what a restart resumes from).
+func (m *Monitor) verifyChain(ctx context.Context, each func(verifiedTail) error) (verifiedTail, bool, error) {
 	head, present, finding, err := m.selectBaseline()
 	if err != nil {
 		return verifiedTail{}, false, err
@@ -205,47 +225,84 @@ func (m *Monitor) verifyChain(ctx context.Context) (verifiedTail, bool, error) {
 		return verifiedTail{}, false, nil
 	}
 
-	events, err := m.reader.TailEvents(ctx, head.LastID)
+	target, err := m.reader.MaxEventID(ctx)
 	if err != nil {
-		return verifiedTail{}, false, fmt.Errorf("monitor: read tail: %w", err)
+		return verifiedTail{}, false, fmt.Errorf("monitor: pin tail target: %w", err)
 	}
 
-	f, err := verify.VerifyTail(head, events)
-	if err != nil {
-		return verifiedTail{}, false, fmt.Errorf("monitor: verify tail: %w", err)
-	}
-	if f != nil {
-		m.report.Report(*f)
-		return verifiedTail{}, false, nil
-	}
+	batch := m.tailBatch()
+	for {
+		events, err := m.reader.TailEvents(ctx, head.LastID, batch)
+		if err != nil {
+			return verifiedTail{}, false, fmt.Errorf("monitor: read tail: %w", err)
+		}
 
-	verified := head
-	if len(events) > 0 {
-		last := events[len(events)-1]
-		verified = store.ChainHead{LastID: last.ID, HeadHash: last.RowHash}
+		f, err := verify.VerifyTail(head, events)
+		if err != nil {
+			return verifiedTail{}, false, fmt.Errorf("monitor: verify tail: %w", err)
+		}
+		if f != nil {
+			m.report.Report(*f)
+			return verifiedTail{}, false, nil
+		}
+
+		if len(events) > 0 {
+			last := events[len(events)-1]
+			head = store.ChainHead{LastID: last.ID, HeadHash: last.RowHash}
+		}
+		vt := verifiedTail{anchorPresent: present, head: head, events: events}
+		if each != nil && len(events) > 0 {
+			if err := each(vt); err != nil {
+				return verifiedTail{}, false, err
+			}
+		}
+		if head.LastID >= target {
+			return vt, true, nil
+		}
+		if len(events) < batch {
+			m.report.Report(verify.Finding{DivergentID: head.LastID + 1, Reason: ReasonTailTruncated})
+			return verifiedTail{}, false, nil
+		}
 	}
-	return verifiedTail{anchorPresent: present, head: verified, events: events}, true, nil
 }
 
-// Poll re-verifies the committed tail against the last anchor, runs detection, and exports the rows not yet
-// exported. On the very first run (no anchor yet) it verifies from genesis and writes the initial anchor. A
-// verification break or a bad anchor signature is reported and the poll returns without exporting — the
-// break is the finding; it never blocks. A returned error is an infrastructure failure (DB/store
-// unreachable), which the Run loop logs and retries.
+// catchUpBatch is the per-batch work of a verified tail walk: detection + export of the batch's fresh rows,
+// and — while catching up through a full batch (a backlog) — a checkpoint anchor over the verified head, so
+// a crash mid-catch-up resumes from the last exported batch instead of re-walking (and re-exporting) the
+// whole backlog; the first-ever walk checkpoints the same way. The export always precedes the anchor, so no
+// row is ever stranded below an anchor. A checkpoint the store refuses (a conflicting object already at
+// that id) is logged and skipped, not fatal: the checkpoint only buys resume granularity, and wedging the
+// walk on it would trade the backlog's export for a nicer restart. Steady-state batches (shorter than the
+// batch size) leave anchor cadence to SignHead.
+func (m *Monitor) catchUpBatch(vt verifiedTail) error {
+	catchUp := len(vt.events) == m.tailBatch()
+	if err := m.processFreshMode(vt, catchUp); err != nil {
+		return err
+	}
+	if catchUp {
+		if err := m.signAnchor(vt.head); err != nil {
+			m.log.Warn("monitor: catch-up checkpoint not written; continuing", "up_to_id", vt.head.LastID, "err", err)
+		}
+	}
+	return nil
+}
+
+// Poll re-verifies the committed tail against the last anchor in bounded batches, running detection on and
+// exporting each verified batch as it goes. On the very first run (no anchor yet) it verifies from genesis,
+// checkpointing full batches the same way, and writes the final anchor at the head. A verification break or
+// a bad anchor signature is reported and the poll stops — nothing of the broken batch (or beyond) is
+// exported or signed; batches verified before it remain committed, which is what a retry resumes from. A
+// returned error is an infrastructure failure (DB/store unreachable), which the Run loop logs and retries.
 func (m *Monitor) Poll(ctx context.Context) error {
 	if m.halted.Load() {
 		return nil
 	}
-	vt, ok, err := m.verifyChain(ctx)
+	vt, ok, err := m.verifyChain(ctx, m.catchUpBatch)
 	if err != nil {
 		return err
 	}
 	if !ok {
 		return nil
-	}
-
-	if err := m.processFresh(vt); err != nil {
-		return err
 	}
 
 	// First run: establish the initial signed anchor over the verified head so later polls have a baseline
@@ -265,14 +322,23 @@ func (m *Monitor) Poll(ctx context.Context) error {
 // they would be silently dropped from the SIEM/detection feed. Running it before every signAnchor keeps the
 // anchor from ever getting ahead of the export (exportedThrough >= anchor.UpToID), which is the invariant
 // that makes the anchor safe to floor the tail read at.
-func (m *Monitor) processFresh(vt verifiedTail) error {
+func (m *Monitor) processFresh(vt verifiedTail) error { return m.processFreshMode(vt, false) }
+
+// processFreshMode: catchUp batches run only the per-event rules (InspectCatchUp) — the window rules would
+// re-read the whole durable window per batch and see rows the walk has not verified yet; the walk's final
+// batch runs the full Inspect over a window that then covers everything the catch-up shipped.
+func (m *Monitor) processFreshMode(vt verifiedTail, catchUp bool) error {
 	// Only the rows past the export watermark are new work; the rest were already shipped.
 	fresh := eventsAfter(vt.events, m.exportedThrough)
 	if len(fresh) == 0 {
 		return nil
 	}
 
-	if err := m.detect.Inspect(fresh); err != nil {
+	inspect := m.detect.Inspect
+	if catchUp {
+		inspect = m.detect.InspectCatchUp
+	}
+	if err := inspect(fresh); err != nil {
 		m.log.Warn("monitor: detector error", "err", err)
 	}
 
@@ -296,15 +362,12 @@ func (m *Monitor) SignHead(ctx context.Context) error {
 	if m.halted.Load() {
 		return nil
 	}
-	vt, ok, err := m.verifyChain(ctx)
+	vt, ok, err := m.verifyChain(ctx, m.catchUpBatch)
 	if err != nil {
 		return err
 	}
 	if !ok {
 		return nil
-	}
-	if err := m.processFresh(vt); err != nil {
-		return err
 	}
 	return m.signAnchor(vt.head)
 }
@@ -630,14 +693,12 @@ func sameFinding(a, b verify.Finding) bool {
 // A finding derived from an anchor (a witnessed row that no longer exists) has no such row, in which case the
 // resume head is the anchor's own witnessed head and the walk simply continues from where it was.
 func (m *Monitor) resumeHashAt(ctx context.Context, id int64) ([]byte, error) {
-	events, err := m.reader.ChainedEventsAfter(ctx, id-1)
+	events, err := m.reader.ChainedEventsAfter(ctx, id-1, 1)
 	if err != nil {
 		return nil, fmt.Errorf("monitor: accept: read row %d: %w", id, err)
 	}
-	for _, ev := range events {
-		if ev.ID == id {
-			return ev.RowHash, nil
-		}
+	if len(events) == 1 && events[0].ID == id {
+		return events[0].RowHash, nil
 	}
 	return nil, nil
 }
@@ -653,15 +714,12 @@ func (m *Monitor) ResumeCoverage(ctx context.Context) error {
 	if m.halted.Load() {
 		return fmt.Errorf("monitor: resume coverage: still halted by an unaccepted break")
 	}
-	vt, ok, err := m.verifyChain(ctx)
+	vt, ok, err := m.verifyChain(ctx, m.catchUpBatch)
 	if err != nil {
 		return err
 	}
 	if !ok {
 		return fmt.Errorf("monitor: resume coverage: the tail no longer verifies")
-	}
-	if err := m.processFresh(vt); err != nil {
-		return err
 	}
 	return m.signAnchor(vt.head)
 }

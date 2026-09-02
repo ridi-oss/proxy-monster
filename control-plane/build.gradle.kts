@@ -9,7 +9,7 @@ plugins {
 }
 
 val ktorVersion = "3.5.2"
-val flywayVersion = "13.3.0"
+val flywayVersion = "13.4.0"
 val testcontainersVersion = "1.21.4"
 // 0.10.0 is the last official kotlin-sdk line built on Ktor 3.2.x (3.2.3); newer releases require
 // Ktor 3.3/3.4. It provides the official stateless Streamable HTTP server/client and structured tools.
@@ -59,7 +59,7 @@ dependencies {
     // Target databases (what the proxy protects) are a separate axis from the store above.
     // MySQL is the primary target engine. Connector/J drives the MySQL-target DB-backed tests;
     // the control plane itself opens no JDBC connection to a target (the Go proxy introspects).
-    implementation("com.mysql:mysql-connector-j:9.1.0")
+    implementation("com.mysql:mysql-connector-j:9.7.0")
     implementation("org.flywaydb:flyway-core:$flywayVersion")
     implementation("org.flywaydb:flyway-database-postgresql:$flywayVersion")
 

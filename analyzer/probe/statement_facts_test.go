@@ -263,7 +263,17 @@ func TestStatementFactsExplainKind(t *testing.T) {
 		// A parenthesized target wraps the query in a Subquery; it must still classify, not fall unresolved.
 		{"mysql read parenthesized", mysqlFacts(t, "EXPLAIN (SELECT ssn FROM users)"), true, pb.StatementKind_STATEMENT_KIND_EXPLAIN},
 		{"mysql read analyze parenthesized", mysqlFacts(t, "EXPLAIN ANALYZE (SELECT ssn FROM users)"), true, pb.StatementKind_STATEMENT_KIND_EXPLAIN},
-		{"mysql explain table", mysqlFacts(t, "EXPLAIN TABLE users"), true, pb.StatementKind_STATEMENT_KIND_DESCRIBE},
+		{"mysql explain table", mysqlFacts(t, "EXPLAIN TABLE users"), true, pb.StatementKind_STATEMENT_KIND_EXPLAIN},
+		// DESCRIBE/DESC TABLE t parse to the same kind=TABLE shape as EXPLAIN TABLE t and plan the same scan.
+		{"mysql describe table shorthand", mysqlFacts(t, "DESCRIBE TABLE users"), true, pb.StatementKind_STATEMENT_KIND_EXPLAIN},
+		{"mysql desc table shorthand", mysqlFacts(t, "DESC TABLE users"), true, pb.StatementKind_STATEMENT_KIND_EXPLAIN},
+		{"mysql describe table", mysqlFacts(t, "DESCRIBE users"), true, pb.StatementKind_STATEMENT_KIND_DESCRIBE},
+		{"mysql explain analyze table", mysqlFacts(t, "EXPLAIN ANALYZE TABLE users"), true, pb.StatementKind_STATEMENT_KIND_EXPLAIN},
+		{"mysql explain format table", mysqlFacts(t, "EXPLAIN FORMAT=JSON TABLE users"), true, pb.StatementKind_STATEMENT_KIND_EXPLAIN},
+		// PostgreSQL parses TABLE-shorthand under EXPLAIN as kind=EXPLAIN over a Table target — the same
+		// plan-of-a-scan, so it must route through lineage, never the bare-table metadata passthrough.
+		{"pg explain table", postgresFacts(t, "EXPLAIN TABLE users"), true, pb.StatementKind_STATEMENT_KIND_EXPLAIN},
+		{"pg explain analyze table", postgresFacts(t, "EXPLAIN ANALYZE TABLE users"), true, pb.StatementKind_STATEMENT_KIND_EXPLAIN},
 		// A write keeps its own kind, plan-only or ANALYZE, so it gates + denies as the write. The
 		// MATERIALIZING forms are the security boundary — an EXPLAIN ANALYZE that copies masked PII into a
 		// new/other table must NOT classify as the read-shaped EXPLAIN kind (which would run unmasked). Each

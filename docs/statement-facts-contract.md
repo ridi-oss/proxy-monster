@@ -201,8 +201,9 @@ describes the table and `DESCRIBE SELECT …` explains a query. Both parse to a
    MySQL's `TABLE t` is shorthand for `SELECT * FROM t`, so `EXPLAIN TABLE t`
    scans `t`. Checking `this.Kind()==Table` alone would misclassify this as
    harmless metadata and let the scan bypass lineage — a leak. So
-   `kind=="TABLE"` is decided first and routed as a query-explain over the
-   scanned table.
+   `kind=="TABLE"` is decided first, routed as a query-explain over the scanned
+   table, and classified `stmt.kind.explain` like any other plan-only read
+   EXPLAIN.
 2. else `Describe.this.Kind() == Table` → describe of a table (metadata; allow),
    including the column/wildcard forms `DESCRIBE tbl col` /
    `DESCRIBE tbl 'wild%'`. The column slot is a single identifier only:

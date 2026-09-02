@@ -33,7 +33,9 @@
     "result_expired": "이 결과는 만료되었습니다.",
     "result_storage_not_configured": "이 서버에는 결과 저장소가 설정되어 있지 않습니다.",
     "result_view_denied": "이 결과를 볼 수 있는 권한이 없습니다.",
-    "use_query_approval_endpoint": "쿼리 승인은 /api/approvals/{id}를 통해 처리됩니다."
+    "use_query_approval_endpoint": "쿼리 승인은 /api/approvals/{id}를 통해 처리됩니다.",
+    "unsplittable_sql": "SQL을 문장 단위로 나눌 수 없습니다. 닫히지 않은 따옴표나 주석이 있는지 확인하세요.",
+    "statement_skipped": "건너뜀 — 앞선 문장에서 실행이 중단되었습니다."
   },
   "auth": {
     "invalid_id_token": "유효하지 않은 ID 토큰입니다.",

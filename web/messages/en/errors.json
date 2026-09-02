@@ -33,7 +33,9 @@
     "result_expired": "This result has expired.",
     "result_storage_not_configured": "Result storage is not configured on this server.",
     "result_view_denied": "You do not have permission to view this result.",
-    "use_query_approval_endpoint": "Query approvals are decided via /api/approvals/{id}."
+    "use_query_approval_endpoint": "Query approvals are decided via /api/approvals/{id}.",
+    "unsplittable_sql": "This SQL could not be split into statements. Check for an unterminated quote or comment.",
+    "statement_skipped": "Skipped — an earlier statement stopped the batch."
   },
   "auth": {
     "invalid_id_token": "Invalid ID token.",

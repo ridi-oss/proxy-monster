@@ -191,7 +191,7 @@ class DdlEnforcementDbTest {
      */
     @Test
     fun `role discovery offers the ddl role for a DDL statement`() {
-        val response = discoverRoles(allRoles = fx.policyStore.listRoles()) { roles, channel ->
+        val response = discoverRoles(allRoles = fx.policyStore.listRoles(), statementCount = 1) { _, roles, channel ->
             decideQuery(
                 principal = noRole,
                 ds = fx.datasourceStore.get(fx.datasource.id)!!,

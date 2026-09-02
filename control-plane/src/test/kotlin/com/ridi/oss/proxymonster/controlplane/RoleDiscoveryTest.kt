@@ -30,15 +30,15 @@ class RoleDiscoveryTest {
 
     @Test
     fun `every role that runs the statement is listed`() {
-        val decide = { _: Set<String>, _: Channel -> ctx(EnfAction.ALLOW) }
-        val res = discoverRoles(roles, decide)
+        val decide = { _: Int, _: Set<String>, _: Channel -> ctx(EnfAction.ALLOW) }
+        val res = discoverRoles(roles, statementCount = 1, decide = decide)
         assertEquals(listOf("analyst", "pii-reader", "auditor"), res.options.map { it.roleName })
     }
 
     @Test
     fun `a role that runs but still masks is listed, marked masked`() {
-        val decide = { _: Set<String>, _: Channel -> ctx(EnfAction.MASK, listOf("ssn")) }
-        val res = discoverRoles(roles, decide)
+        val decide = { _: Int, _: Set<String>, _: Channel -> ctx(EnfAction.MASK, listOf("ssn")) }
+        val res = discoverRoles(roles, statementCount = 1, decide = decide)
         val option = res.options.first()
         assertEquals(Decision.MASK, option.decision)
         assertEquals(listOf("ssn"), option.maskedColumns)
@@ -46,10 +46,10 @@ class RoleDiscoveryTest {
 
     @Test
     fun `a role that returns cleartext is marked ALLOW`() {
-        val decide = { r: Set<String>, _: Channel ->
+        val decide = { _: Int, r: Set<String>, _: Channel ->
             if ("pii-reader" in r) ctx(EnfAction.ALLOW) else ctx(EnfAction.MASK, listOf("ssn"))
         }
-        val res = discoverRoles(roles, decide)
+        val res = discoverRoles(roles, statementCount = 1, decide = decide)
         val option = res.options.single { it.roleName == "pii-reader" }
         assertEquals(Decision.ALLOW, option.decision)
         assertEquals(emptyList(), option.maskedColumns)
@@ -57,8 +57,8 @@ class RoleDiscoveryTest {
 
     @Test
     fun `a role that denies the statement is not listed`() {
-        val decide = { r: Set<String>, _: Channel -> if ("auditor" in r) ctx(EnfAction.DENY) else ctx(EnfAction.ALLOW) }
-        val res = discoverRoles(roles, decide)
+        val decide = { _: Int, r: Set<String>, _: Channel -> if ("auditor" in r) ctx(EnfAction.DENY) else ctx(EnfAction.ALLOW) }
+        val res = discoverRoles(roles, statementCount = 1, decide = decide)
         assertTrue(res.options.none { it.roleName == "auditor" }, "a role that denies cannot run the statement")
         assertEquals(listOf("analyst", "pii-reader"), res.options.map { it.roleName })
     }
@@ -67,10 +67,10 @@ class RoleDiscoveryTest {
     fun `a candidate is previewed on the channel an approved query executes on`() {
         // The shipped -259 unmasks production PII for a pii-accessor on WORKFLOW_EXECUTOR alone. Previewed on
         // any other channel that grant never fires, so the role would read as denied/masked and be dropped.
-        val decide = { r: Set<String>, channel: Channel ->
+        val decide = { _: Int, r: Set<String>, channel: Channel ->
             if ("pii-reader" in r && channel == Channel.WORKFLOW_EXECUTOR) ctx(EnfAction.ALLOW) else ctx(EnfAction.DENY)
         }
-        val res = discoverRoles(roles, decide)
+        val res = discoverRoles(roles, statementCount = 1, decide = decide)
         assertEquals(listOf("pii-reader"), res.options.map { it.roleName })
         assertEquals(Decision.ALLOW, res.options.single().decision)
     }
@@ -80,8 +80,8 @@ class RoleDiscoveryTest {
         // decide ALLOWs only when BOTH "analyst" AND "pii-reader" are present — a policy whose grant only fires
         // on the union. A unioned preview would offer pii-reader, but execution decides under {pii-reader}
         // ALONE and would DENY there, so offering it would be a lie.
-        val decide = { r: Set<String>, _: Channel -> if ("analyst" in r && "pii-reader" in r) ctx(EnfAction.ALLOW) else ctx(EnfAction.DENY) }
-        val res = discoverRoles(roles, decide)
+        val decide = { _: Int, r: Set<String>, _: Channel -> if ("analyst" in r && "pii-reader" in r) ctx(EnfAction.ALLOW) else ctx(EnfAction.DENY) }
+        val res = discoverRoles(roles, statementCount = 1, decide = decide)
         assertTrue(res.options.isEmpty(), "R-alone preview must DENY, so no role is offered")
     }
 }

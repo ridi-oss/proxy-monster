@@ -63,13 +63,13 @@ authority and enforces exhaustiveness.
 <!-- prettier-ignore -->
 | Category | Kinds |
 | --- | --- |
-| `read` | `select`, `table`, `values`, `with_select`, `set_op` (union/intersect/except) |
+| `read` | `select`, `table`, `values`, `with_select`, `set_op` (union/intersect/except), `explain` (a plan-only EXPLAIN of a read, `EXPLAIN TABLE t` included) |
 | `write.insert` | `insert`, `insert_select` |
 | `write.update` | `update`, `insert_on_dup` (an upsert can modify an existing row, so it needs the higher-privilege leaf) |
 | `write.delete` | `delete`, `replace` (delete+insert) |
 | `ddl` | `create_table`, `create_view`, `create_index`, `alter_table`, `drop_table`, `truncate_table`, `rename_table`, `select_into` (a `SELECT … INTO @var`/`<table>` — a write to an unmaskable target), … (every CREATE/ALTER/DROP/TRUNCATE of a schema object) |
 | `session` | `start_transaction`, `commit`, `rollback`, `savepoint`, `set_transaction`, `set_var`, `set_names`, `set_charset`, `use`, `empty` (a statement with no statements — blank/comment-only, answered natively by the target) — connection-local, exposes no rows/credentials, changes no privilege |
-| `metadata` | `show_tables`, `show_columns`, `show_create_table`, `describe`, `explain_table`, … — schema introspection that exposes no rows, credentials, or topology |
+| `metadata` | `show_tables`, `show_columns`, `show_create_table`, `describe`, … — schema introspection that exposes no rows, credentials, or topology |
 | `admin.account` | `create_user`, `alter_user`, `drop_user`, `rename_user`, `create_role`, `drop_role`, `grant_priv`, `grant_role`, `revoke_priv`, `revoke_role`, `set_password`, `set_role`, `set_default_role`, `show_grants`, `show_create_user` |
 | `admin.replication` | `change_replication_source`, `start_replica`, `stop_replica`, `reset_replica`, `start_group_replication`, `purge_binary_logs`, `reset_master`, `set_sql_log_bin`, `binlog`, `show_master_status`, `show_binary_logs`, `show_binlog_events`, `show_replica_status`, `show_replicas` |
 | `admin.process` | `kill`, `show_processlist`, `show_engine_status` — the MySQL PROCESS privilege: inspect and terminate other sessions |

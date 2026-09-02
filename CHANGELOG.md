@@ -1,5 +1,61 @@
 # Changelog
 
+## [0.1.24](https://github.com/ridi-oss/proxy-monster/compare/server-v0.1.23...server-v0.1.24) (2026-09-02)
+
+
+### Features
+
+* **analyzer:** split a multi-statement batch at statement boundaries ([#278](https://github.com/ridi-oss/proxy-monster/issues/278)) ([ec81e29](https://github.com/ridi-oss/proxy-monster/commit/ec81e2925a014ba244bb043b22721e935d7b74ff))
+* **control-plane:** accept a workflow request of several statements ([#287](https://github.com/ridi-oss/proxy-monster/issues/287)) ([4374ebd](https://github.com/ridi-oss/proxy-monster/commit/4374ebd537e95249382273eb8c43c92ee50405c9))
+* **control-plane:** run a task's statements in order on one connection ([#286](https://github.com/ridi-oss/proxy-monster/issues/286)) ([c66937a](https://github.com/ridi-oss/proxy-monster/commit/c66937a7543e10eb26422331b430bc4e6de0005d))
+* **control-plane:** store a failed query's target-DB diagnostic, encrypted and re-gatable ([#267](https://github.com/ridi-oss/proxy-monster/issues/267)) ([6f24b54](https://github.com/ridi-oss/proxy-monster/commit/6f24b54eaa5d301deff8c9d035adbd9798c43b2e))
+* **editor:** run an editor submit's statements as one task, one result tab each ([#294](https://github.com/ridi-oss/proxy-monster/issues/294)) ([7a7d27e](https://github.com/ridi-oss/proxy-monster/commit/7a7d27e6d983ae25676a4166dc7a2d8671376165))
+* **web:** review a workflow request statement by statement ([#292](https://github.com/ridi-oss/proxy-monster/issues/292)) ([1c6d302](https://github.com/ridi-oss/proxy-monster/commit/1c6d302d7dac49bd6904f13b04a4b59d0b14ee2e))
+
+
+### Bug Fixes
+
+* **analyzer:** classify EXPLAIN TABLE as a plan-only EXPLAIN ([#285](https://github.com/ridi-oss/proxy-monster/issues/285)) ([c338b4e](https://github.com/ridi-oss/proxy-monster/commit/c338b4ea81bcdad8ab718571be3090ac0d1af2a6))
+* **analyzer:** keep output labels native across rewrites and references ([#273](https://github.com/ridi-oss/proxy-monster/issues/273)) ([0bcb57e](https://github.com/ridi-oss/proxy-monster/commit/0bcb57eea74682c2964728411da2ea6adffa0eb5))
+* **analyzer:** trust information_schema helpers and txid_current ([#275](https://github.com/ridi-oss/proxy-monster/issues/275)) ([5bac93c](https://github.com/ridi-oss/proxy-monster/commit/5bac93c0d0f226f7fcb32acb6b0fa6e44801c608))
+* **auditmon:** walk the tail in bounded batches ([#293](https://github.com/ridi-oss/proxy-monster/issues/293)) ([5190e51](https://github.com/ridi-oss/proxy-monster/commit/5190e5153548d7760e96e709c017da4f4a183149))
+* **control-plane:** fail orphaned RUNNING children before V25 builds its index ([#280](https://github.com/ridi-oss/proxy-monster/issues/280)) ([9ad9254](https://github.com/ridi-oss/proxy-monster/commit/9ad92544b93e20cd478f3984f2335ed1e051da2d))
+* **control-plane:** redact a failed query's diagnostic per decision and per viewer ([#228](https://github.com/ridi-oss/proxy-monster/issues/228)) ([#253](https://github.com/ridi-oss/proxy-monster/issues/253)) ([fb09aa3](https://github.com/ridi-oss/proxy-monster/commit/fb09aa3823cfdc21043e05e3983030594255ccaa))
+* **control-plane:** release saved plan-only EXPLAIN results ([#283](https://github.com/ridi-oss/proxy-monster/issues/283)) ([316bc11](https://github.com/ridi-oss/proxy-monster/commit/316bc118bf7423c3f81e2f4d827eacaac51192f2))
+* **engine:** gate SHOW GRANTS and SHOW PROCESSLIST by statement kind ([#266](https://github.com/ridi-oss/proxy-monster/issues/266)) ([1a1f6ba](https://github.com/ridi-oss/proxy-monster/commit/1a1f6ba39e7a46edaff53eac8567ad4c30b2a23f))
+* **goproxy:** bound catalog reconciliation concurrency ([#87](https://github.com/ridi-oss/proxy-monster/issues/87)) ([81a5d16](https://github.com/ridi-oss/proxy-monster/commit/81a5d1629ea5ae41e17f71252976946ce0806362))
+* **goproxy:** reopen the events stream promptly after a max-age rotation ([#282](https://github.com/ridi-oss/proxy-monster/issues/282)) ([4775e82](https://github.com/ridi-oss/proxy-monster/commit/4775e82d2773ac30babdc9fbdbc25b67c9c869d7))
+* **pgproxy:** handle PostgreSQL protocol edge cases ([#245](https://github.com/ridi-oss/proxy-monster/issues/245)) ([0b9aaf5](https://github.com/ridi-oss/proxy-monster/commit/0b9aaf55d719cdff9d1a1da55a92579248c2b41c))
+
+
+### Refactoring
+
+* **analyzer:** engine behavior goes through the SPI, never a type check ([#274](https://github.com/ridi-oss/proxy-monster/issues/274)) ([36930b7](https://github.com/ridi-oss/proxy-monster/commit/36930b7bbd4fedda39f3c7c8e75859c710ff2240))
+* **control-plane:** address a task's result children by ordinal ([#279](https://github.com/ridi-oss/proxy-monster/issues/279)) ([6956342](https://github.com/ridi-oss/proxy-monster/commit/6956342f62d97b73ff7736ba33b6b67edfd04370))
+
+
+### Build & Dependencies
+
+* **analyzer:** adopt sqlglot-go v0.29.0 ([#277](https://github.com/ridi-oss/proxy-monster/issues/277)) ([b90050d](https://github.com/ridi-oss/proxy-monster/commit/b90050d0faadbdae56adf66eb45692a1d6e5660f))
+* **analyzer:** adopt sqlglot-go v0.33.0 ([#291](https://github.com/ridi-oss/proxy-monster/issues/291)) ([9ab16ac](https://github.com/ridi-oss/proxy-monster/commit/9ab16ac6555d8b3516e6e81fb13a06559df18d0e))
+* **deps:** bump actions/download-artifact from 6 to 8 ([#210](https://github.com/ridi-oss/proxy-monster/issues/210)) ([33573fd](https://github.com/ridi-oss/proxy-monster/commit/33573fd91c8df2c4872f688b3d96018487d0487f))
+* **deps:** bump aws-actions/amazon-ecr-login from 2.1.6 to 2.1.7 ([#255](https://github.com/ridi-oss/proxy-monster/issues/255)) ([641eb17](https://github.com/ridi-oss/proxy-monster/commit/641eb179d558d1d80a083714cb2c61b66f19bd13))
+* **deps:** bump com.nimbusds:nimbus-jose-jwt from 9.40 to 10.9.1 ([#211](https://github.com/ridi-oss/proxy-monster/issues/211)) ([eaebe1c](https://github.com/ridi-oss/proxy-monster/commit/eaebe1c9e4bc706d7f3eb0fe031114d722deef1b))
+* **deps:** bump docker/build-push-action from 6 to 7 ([#213](https://github.com/ridi-oss/proxy-monster/issues/213)) ([1f64281](https://github.com/ridi-oss/proxy-monster/commit/1f64281db2c8469b9b33c690fc1ae8dd43928657))
+* **deps:** bump docker/login-action from 3 to 4 ([#208](https://github.com/ridi-oss/proxy-monster/issues/208)) ([97398e5](https://github.com/ridi-oss/proxy-monster/commit/97398e5bf39688e9b0186692c52da476cf99f9e0))
+* **deps:** bump the go group across 1 directory with 4 updates ([#290](https://github.com/ridi-oss/proxy-monster/issues/290)) ([8ac895d](https://github.com/ridi-oss/proxy-monster/commit/8ac895d322c05399b01114d6da4f3952d197419e))
+* **deps:** bump the go group across 4 directories with 8 updates ([#256](https://github.com/ridi-oss/proxy-monster/issues/256)) ([d431547](https://github.com/ridi-oss/proxy-monster/commit/d431547ff28646ad24ec82226b8387510ba3ce5a))
+* **deps:** bump the jvm group across 1 directory with 10 updates ([#254](https://github.com/ridi-oss/proxy-monster/issues/254)) ([e3de0b5](https://github.com/ridi-oss/proxy-monster/commit/e3de0b540a6d5e5a7fdafcefc22c4616055798cc))
+* **deps:** bump the jvm group with 3 updates ([#288](https://github.com/ridi-oss/proxy-monster/issues/288)) ([4a16407](https://github.com/ridi-oss/proxy-monster/commit/4a16407f63abc947a82b7f40bd0a461d27d0b68d))
+* **deps:** bump the web group across 1 directory with 10 updates ([#268](https://github.com/ridi-oss/proxy-monster/issues/268)) ([3af3fa4](https://github.com/ridi-oss/proxy-monster/commit/3af3fa440545eac963c701da0abbb9d5d9b0f949))
+* **deps:** bump the web group in /web with 2 updates ([#289](https://github.com/ridi-oss/proxy-monster/issues/289)) ([8d2533f](https://github.com/ridi-oss/proxy-monster/commit/8d2533f9986a37f8cbd38fb8d6ade57803116c45))
+
+
+### Documentation
+
+* describe pmon upstream TLS as chain verification, not pinning ([#276](https://github.com/ridi-oss/proxy-monster/issues/276)) ([abdff7b](https://github.com/ridi-oss/proxy-monster/commit/abdff7b22afefc11eee94d30b7303f0446450a5f))
+* trim KNOWN_LIMITATIONS to concrete, example-first entries ([#272](https://github.com/ridi-oss/proxy-monster/issues/272)) ([d93038d](https://github.com/ridi-oss/proxy-monster/commit/d93038d94f74dcfc6b44f084976ec3fb34fc66a2))
+
 ## [0.1.23](https://github.com/ridi-oss/proxy-monster/compare/server-v0.1.22...server-v0.1.23) (2026-08-28)
 
 

@@ -82,6 +82,17 @@ func New(reader WindowReader, sink AlertSink, rules config.RulesConfig) (*Detect
 // needsWindow reports whether any rate rule is enabled (and so a window read is worthwhile this poll).
 func (d *Detector) needsWindow() bool { return d.maxWindow > 0 }
 
+// InspectCatchUp evaluates only the per-event rules on a mid-catch-up batch. The rate rules re-read the
+// whole durable window on every call, so running them once per backlog batch would multiply that read by
+// the batch count — and mid-walk the window can hold rows the chain walk has not verified yet. Catch-up
+// batches take this path; the walk's final batch runs the full Inspect, whose window then covers every row
+// the catch-up shipped.
+func (d *Detector) InspectCatchUp(fresh []store.StoredEvent) error {
+	d.evalOffHours(fresh)
+	d.evalOffHoursAdmin(fresh)
+	return nil
+}
+
 // Inspect evaluates every enabled rule for the poll. off_hours runs on the fresh batch alone; the rate rules
 // read one window of the durable trail (widest rule window) and each re-floors it to its own window. A window
 // read failure is returned for the monitor to log and retry; it never blocks the loop.

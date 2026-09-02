@@ -54,7 +54,7 @@ func seedAndInspect(t *testing.T, rules config.RulesConfig, events []canon.Audit
 	}
 	t.Cleanup(reader.Close)
 
-	fresh, err := reader.TailEvents(ctx, 0)
+	fresh, err := reader.TailEvents(ctx, 0, 10000)
 	if err != nil {
 		t.Fatalf("read fresh: %v", err)
 	}

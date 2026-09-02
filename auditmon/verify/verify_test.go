@@ -43,7 +43,7 @@ func TestVerifyTailIntact(t *testing.T) {
 	reader := openReader(t, ctx, dsn)
 
 	// Verifying the whole trail against the genesis-based head (tail from 0) must be clean.
-	events, err := reader.TailEvents(ctx, 0)
+	events, err := reader.TailEvents(ctx, 0, 10000)
 	if err != nil {
 		t.Fatalf("tail: %v", err)
 	}
@@ -159,7 +159,7 @@ func TestVerifyDetectsMutatedStatement(t *testing.T) {
 	}
 	reader := openReader(t, ctx, dsn)
 
-	events, err := reader.TailEvents(ctx, 0)
+	events, err := reader.TailEvents(ctx, 0, 10000)
 	if err != nil {
 		t.Fatalf("tail: %v", err)
 	}
@@ -192,7 +192,7 @@ VALUES (2, 'b', 'warehouse', 'q2', 'ALLOW', $1, $2, NULL)`,
 	}
 	reader := openReader(t, ctx, dsn)
 
-	events, err := reader.TailEvents(ctx, 0)
+	events, err := reader.TailEvents(ctx, 0, 10000)
 	if err != nil {
 		t.Fatalf("tail: %v", err)
 	}
@@ -222,7 +222,7 @@ func TestVerifyDetectsDeletedRow(t *testing.T) {
 	}
 	reader := openReader(t, ctx, dsn)
 
-	events, err := reader.TailEvents(ctx, 0)
+	events, err := reader.TailEvents(ctx, 0, 10000)
 	if err != nil {
 		t.Fatalf("tail: %v", err)
 	}

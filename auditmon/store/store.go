@@ -65,29 +65,30 @@ const eventColumns = `id, ts, principal, roles, datasource, client_addr, stateme
        action, resource, outcome, kind, rows_returned, bytes_returned, decision_id,
        chain_version, prev_hash, row_hash`
 
-const tailQuery = `SELECT ` + eventColumns + ` FROM audit_event WHERE id > $1 ORDER BY id`
+const tailQuery = `SELECT ` + eventColumns + ` FROM audit_event WHERE id > $1 ORDER BY id LIMIT $2`
 
 const chainedTailQuery = `SELECT ` + eventColumns + `
-       FROM audit_event WHERE id > $1 AND chain_version IS NOT NULL ORDER BY id`
+       FROM audit_event WHERE id > $1 AND chain_version IS NOT NULL ORDER BY id LIMIT $2`
 
 const windowQuery = `SELECT ` + eventColumns + ` FROM audit_event WHERE ts >= $1 ORDER BY id`
 
-// TailEvents returns every audit_event with id greater than afterID, in id order. Because id is gap-free
-// and commit-ordered, id > cursor cannot skip a late-committing row.
-func (r *Reader) TailEvents(ctx context.Context, afterID int64) ([]StoredEvent, error) {
-	rows, err := r.pool.Query(ctx, tailQuery, afterID)
+// TailEvents returns up to limit audit_events with id greater than afterID, in id order — bounded so a
+// long backlog is walked in batches instead of materialized at once. Because id is gap-free and
+// commit-ordered, id > cursor cannot skip a late-committing row.
+func (r *Reader) TailEvents(ctx context.Context, afterID int64, limit int) ([]StoredEvent, error) {
+	rows, err := r.pool.Query(ctx, tailQuery, afterID, limit)
 	if err != nil {
 		return nil, fmt.Errorf("store: query tail: %w", err)
 	}
 	return scanEvents(rows)
 }
 
-// ChainedEventsAfter returns every audit_event with id greater than afterID that carries a chain_version,
-// in id order. It is the from-genesis full-verify read: pre-chain historical rows (chain_version NULL) are
+// ChainedEventsAfter returns up to limit audit_events with id greater than afterID that carry a
+// chain_version, in id order. It is the from-genesis full-verify read: pre-chain historical rows (chain_version NULL) are
 // skipped so a non-greenfield database — where the earliest rows predate the hash chain — is not falsely
 // flagged, and the walk begins at the first chained row (whose prev_hash is the pinned genesis).
-func (r *Reader) ChainedEventsAfter(ctx context.Context, afterID int64) ([]StoredEvent, error) {
-	rows, err := r.pool.Query(ctx, chainedTailQuery, afterID)
+func (r *Reader) ChainedEventsAfter(ctx context.Context, afterID int64, limit int) ([]StoredEvent, error) {
+	rows, err := r.pool.Query(ctx, chainedTailQuery, afterID, limit)
 	if err != nil {
 		return nil, fmt.Errorf("store: query chained tail: %w", err)
 	}
@@ -174,6 +175,17 @@ func scanEvents(rows pgx.Rows) ([]StoredEvent, error) {
 		return nil, fmt.Errorf("store: iterate rows: %w", err)
 	}
 	return out, nil
+}
+
+// MaxEventID returns the highest audit_event id (0 when the table is empty). The tail walk pins it as its
+// target before the first page: a walk that cannot reach the target it pinned means rows vanished between
+// pages, which must surface as a finding rather than a short, clean-looking read.
+func (r *Reader) MaxEventID(ctx context.Context) (int64, error) {
+	var id int64
+	if err := r.pool.QueryRow(ctx, `SELECT COALESCE(MAX(id), 0) FROM audit_event`).Scan(&id); err != nil {
+		return 0, fmt.Errorf("store: max event id: %w", err)
+	}
+	return id, nil
 }
 
 // ReadChainHead returns the singleton audit_chain_head row.

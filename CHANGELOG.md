@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.25](https://github.com/ridi-oss/proxy-monster/compare/server-v0.1.24...server-v0.1.25) (2026-09-03)
+
+
+### Bug Fixes
+
+* **analyzer:** support NATURAL JOIN lineage ([#295](https://github.com/ridi-oss/proxy-monster/issues/295)) ([0b51fc0](https://github.com/ridi-oss/proxy-monster/commit/0b51fc0d31f42f5b6c47594bd7d08d64e5666993))
+
 ## [0.1.24](https://github.com/ridi-oss/proxy-monster/compare/server-v0.1.23...server-v0.1.24) (2026-09-02)
 
 

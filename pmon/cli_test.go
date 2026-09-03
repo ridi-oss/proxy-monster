@@ -324,21 +324,48 @@ func TestShowRejectsAnUnknownDatasourceWithTheKnownOnes(t *testing.T) {
 	}
 }
 
-// TestShowExplainsAnUnbrokeredDatasource: a PG datasource is discovered but not fronted, so show must say why
-// rather than emit a connection string that cannot work.
-func TestShowExplainsAnUnbrokeredDatasource(t *testing.T) {
+func TestPostgresShowFormats(t *testing.T) {
 	e := newEnv(t)
 	cp := fakeCP(t, []map[string]any{
-		{"name": "pg", "engine": "postgres", "dbName": "app", "advertiseAddr": dummyProxy(t)},
+		{"name": "acme-postgres", "engine": "postgres", "dbName": "app", "advertiseAddr": dummyProxy(t)},
+	})
+	if out := e.mustRun(t, "login", "--url", cp.URL); !strings.Contains(out, "1 datasource(s) brokered") {
+		t.Fatalf("login = %q, want the PostgreSQL broker to open", out)
+	}
+
+	cases := []struct {
+		flag string
+		want string
+	}{
+		{"", "postgresql://"},
+		{"--jdbc", "jdbc:postgresql://"},
+		{"--go-dsn", "host=127.0.0.1"},
+		{"--cli", "psql 'host=127.0.0.1"},
+	}
+	for _, tc := range cases {
+		args := []string{"show", "acme-postgres"}
+		if tc.flag != "" {
+			args = append(args, tc.flag)
+		}
+		if got := strings.TrimSpace(e.mustRun(t, args...)); !strings.HasPrefix(got, tc.want) {
+			t.Errorf("pmon %s = %q, want prefix %q", strings.Join(args, " "), got, tc.want)
+		}
+	}
+}
+
+func TestShowExplainsAnUnsupportedDatasource(t *testing.T) {
+	e := newEnv(t)
+	cp := fakeCP(t, []map[string]any{
+		{"name": "unsupported", "engine": "sqlite", "dbName": "app", "advertiseAddr": dummyProxy(t)},
 	})
 	e.mustRun(t, "login", "--url", cp.URL)
 
-	out, err := e.run("show", "pg")
+	out, err := e.run("show", "unsupported")
 	if err == nil {
-		t.Fatal("show for an unbrokered datasource succeeded")
+		t.Fatal("show for an unsupported datasource succeeded")
 	}
-	if !strings.Contains(out, "postgres") {
-		t.Errorf("show error = %q, want the reason it is not brokered", out)
+	if !strings.Contains(out, "sqlite") {
+		t.Errorf("show error = %q, want the unsupported engine named", out)
 	}
 }
 

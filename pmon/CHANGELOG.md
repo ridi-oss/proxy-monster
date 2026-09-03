@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.1.21](https://github.com/ridi-oss/proxy-monster/compare/pmon-v0.1.5...pmon-v0.1.21) (2026-09-03)
+
+
+### Bug Fixes
+
+* **pmon:** stabilize daemon control sockets ([#262](https://github.com/ridi-oss/proxy-monster/issues/262)) ([be370d3](https://github.com/ridi-oss/proxy-monster/commit/be370d346fe4cc5cbd6acf4149890145651f4195))
+* **pmon:** use moby/moby HostConfig in client interop test ([#281](https://github.com/ridi-oss/proxy-monster/issues/281)) ([b1de20a](https://github.com/ridi-oss/proxy-monster/commit/b1de20a7e4a9949abc25429d22f26a83cd7a7f95))
+
+
+### Build & Dependencies
+
+* **deps:** bump github.com/docker/docker in /pmon ([#216](https://github.com/ridi-oss/proxy-monster/issues/216)) ([ee1babd](https://github.com/ridi-oss/proxy-monster/commit/ee1babd8d3487fda7eaf7ba99d8c37c3a1d29823))
+* **deps:** bump the go group across 4 directories with 8 updates ([#256](https://github.com/ridi-oss/proxy-monster/issues/256)) ([d431547](https://github.com/ridi-oss/proxy-monster/commit/d431547ff28646ad24ec82226b8387510ba3ce5a))
+
+
+### Chores
+
+* cut server 0.1.21 for the [#202](https://github.com/ridi-oss/proxy-monster/issues/202) revert ([#230](https://github.com/ridi-oss/proxy-monster/issues/230)) ([5001b8c](https://github.com/ridi-oss/proxy-monster/commit/5001b8ccd91a3a9f9ef47f5fc6efe50f0a86f715))
+
 ## [0.1.5](https://github.com/ridi-oss/proxy-monster/compare/pmon-v0.1.4...pmon-v0.1.5) (2026-08-20)
 
 

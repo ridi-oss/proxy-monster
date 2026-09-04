@@ -113,7 +113,7 @@ func isSafeMySQLCharset(value string) bool {
 	}
 }
 
-// mysqlParseSafeSqlModes are the MySQL 8.0 sql_mode flags known NOT to affect how a statement is TOKENIZED
+// mysqlParseSafeSqlModes are the MySQL 8.0 and MariaDB sql_mode flags known NOT to affect how a statement is TOKENIZED
 // or PARSED — they change runtime/execution semantics only (strictness, zero-date handling, GROUP BY
 // validation, type mapping, CHAR padding, …), so the analyzer parses the same text the same way whether or
 // not they are set. Everything the analyzer's lexer/grammar is sensitive to is handled explicitly by
@@ -127,6 +127,7 @@ func isSafeMySQLCharset(value string) bool {
 var mysqlParseSafeSqlModes = map[string]bool{
 	"ALLOW_INVALID_DATES":        true,
 	"ERROR_FOR_DIVISION_BY_ZERO": true,
+	"NO_AUTO_CREATE_USER":        true,
 	"NO_AUTO_VALUE_ON_ZERO":      true,
 	"NO_DIR_IN_CREATE":           true,
 	"NO_ENGINE_SUBSTITUTION":     true,

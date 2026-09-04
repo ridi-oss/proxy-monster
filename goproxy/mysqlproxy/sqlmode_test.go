@@ -15,7 +15,8 @@ import (
 func TestSqlModeClassifyUnit(t *testing.T) {
 	// Known parse-safe flags: ansiQuotes=false, no error.
 	safe := []string{"", "STRICT_TRANS_TABLES", "STRICT_TRANS_TABLES,NO_ZERO_DATE",
-		"ONLY_FULL_GROUP_BY,STRICT_TRANS_TABLES,NO_ZERO_IN_DATE,NO_ZERO_DATE,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION"}
+		"ONLY_FULL_GROUP_BY,STRICT_TRANS_TABLES,NO_ZERO_IN_DATE,NO_ZERO_DATE,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION",
+		"STRICT_TRANS_TABLES,ERROR_FOR_DIVISION_BY_ZERO,NO_AUTO_CREATE_USER,NO_ENGINE_SUBSTITUTION"}
 	for _, m := range safe {
 		if aq, err := classifyMySQLSqlMode(m); err != nil || aq {
 			t.Errorf("classifyMySQLSqlMode(%q) = (%v, %v), want (false, nil)", m, aq, err)

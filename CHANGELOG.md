@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.1.25](https://github.com/ridi-oss/proxy-monster/compare/server-v0.1.24...server-v0.1.25) (2026-09-07)
+
+
+### Bug Fixes
+
+* **analyzer:** support NATURAL JOIN lineage ([#295](https://github.com/ridi-oss/proxy-monster/issues/295)) ([0b51fc0](https://github.com/ridi-oss/proxy-monster/commit/0b51fc0d31f42f5b6c47594bd7d08d64e5666993))
+* **mysqlproxy:** allow MariaDB's default NO_AUTO_CREATE_USER sql_mode flag ([#298](https://github.com/ridi-oss/proxy-monster/issues/298)) ([072c196](https://github.com/ridi-oss/proxy-monster/commit/072c19635318ba8f63fe43304573937cd2bb6a9b)), closes [#297](https://github.com/ridi-oss/proxy-monster/issues/297)
+
 ## [0.1.24](https://github.com/ridi-oss/proxy-monster/compare/server-v0.1.23...server-v0.1.24) (2026-09-02)
 
 

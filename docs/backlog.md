@@ -283,6 +283,20 @@ Fixes for gaps documented in
   locked fail-closed by a coverage test, so this is consolidation rather than a
   security fix.
 
+## Athena
+
+- Add Redis or control-plane DB adapters for the minimal enforcement-context
+  cache in the [forwarding design](./athena.md). Preserve owner/instruction
+  bindings and expiry; Athena still owns execution state and idempotency.
+- Reanalyze or recover original enforcement context after cache loss. Bind it to
+  what the stored result actually read, not just today's SQL/view definitions.
+  Stable-token retries can return old AWS execution IDs without a replay marker;
+  never attach a newly computed mask plan merely because an ID is unknown
+  locally.
+- Measure the finalized context cache and response buffers. Count retained
+  contexts, not polls or result rows; a separate query-registry sizing model
+  does not describe the forwarding design.
+
 ## Data plane
 
 - Unmaskable-feature relay: a verbatim passthrough for `COPY OUT`, PostgreSQL

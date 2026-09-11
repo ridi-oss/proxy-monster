@@ -346,6 +346,14 @@
       "tag": "system:activity"
     }
   ],
+  "columnOverrides": [
+    {
+      "schema": "pg_catalog",
+      "table": "pg_locks",
+      "column": "transactionid",
+      "tag": "system:catalog"
+    }
+  ],
   "relationFamilies": [
     {
       "schema": "pg_catalog",

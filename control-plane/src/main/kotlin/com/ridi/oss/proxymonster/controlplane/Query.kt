@@ -192,6 +192,8 @@ data class DecisionContext(
      * early denies (admission-reject / deactivated principal), which return before any `context.tags` is
      * derived and so were evaluated under none. */
     val contextTags: List<String> = emptyList(),
+    val unbounded: Boolean = false,
+    val unmaskedTags: Set<String> = emptySet(),
     /** MASK-only capability grant. A proxy may relay an unmaskable binary result unmasked iff this is true
      * AND the proxy's local feature capability says that relay path is supported. */
     val unmaskablePermitted: Boolean = false,
@@ -809,6 +811,24 @@ fun decideQuery(
     }
 
     val action = if (masks.isEmpty()) EnfAction.ALLOW else EnfAction.MASK
+    val unmaskablePermitted = action == EnfAction.MASK && authz.authorizeDatasourceAction(
+        principal, roles, AuthzAction.EXCEPTION_UNMASKABLE, ds.name, context, ds.tags,
+    ) is AuthzDecision.Allow
+    // The tags whose values reach the client in the clear: a returned tagged column this principal reads
+    // unmasked through an output no mask covers, plus masked outputs `exception.unmaskable` may relay raw.
+    val maskedOrdinals = masks.mapTo(HashSet()) { it.ordinal }
+    val unmaskedTags = LinkedHashSet<String>()
+    for (rc in facts.returnedColumnsList) {
+        val c = rc.column
+        val key = listOf(c.catalog, c.identity.schema, c.identity.table, c.identity.column).joinToString(".")
+        val row = catalogIndex.rowsByKey[key] ?: continue
+        val tags = row.classification?.tags.orEmpty()
+        if (row.isTemp || tags.isEmpty()) continue
+        val bare = rc.outputOrdinalsList.isEmpty() || rc.outputOrdinalsList.any { it !in maskedOrdinals }
+        val clear = columnVerdicts[key] == ColumnVerdict.UNMASKED && bare
+        val rawRelay = unmaskablePermitted && columnVerdicts[key] == ColumnVerdict.MASKED && rc.outputOrdinalsList.isNotEmpty()
+        if (clear || rawRelay) unmaskedTags += tags
+    }
     // Every classified column the statement touched, whatever its tags are named: `pii` is a deployment's
     // own tag, so keying this on that one string leaves auditmon's mass-export detector blind on a
     // deployment that classifies with `pci`.
@@ -821,9 +841,6 @@ fun decideQuery(
         facts.sourcesList.mapTo(this) { it.schema }
         columnGrants.mapTo(this) { it.column.identity.schema }
     }.filterNotTo(LinkedHashSet()) { it.startsWith("pg_temp", ignoreCase = true) }
-    val unmaskablePermitted = action == EnfAction.MASK && authz.authorizeDatasourceAction(
-        principal, roles, AuthzAction.EXCEPTION_UNMASKABLE, ds.name, context, ds.tags,
-    ) is AuthzDecision.Allow
     // MASK/DENY always redacts; an ALLOW redacts iff the analyzer's leak set holds a column the viewer
     // can't read unmasked. `select id from users` (all readable) relays raw.
     val sanitizeDiagnostics = action != EnfAction.ALLOW ||
@@ -832,6 +849,7 @@ fun decideQuery(
         action = action,
         denyReason = null,
         masks = masks,
+        unmaskedTags = unmaskedTags,
         piiTouched = tagged,
         effectiveRoles = roleList,
         failedStage = facts.failedStage.takeIf { facts.hasFailedStage() }?.lowercase(),
@@ -855,6 +873,7 @@ private val MALFORMED_DISPOSITIONS = setOf(
     MaskedDisposition.MASKED_DISPOSITION_UNSPECIFIED,
     MaskedDisposition.UNRECOGNIZED,
 )
+
 
 internal const val MASK_BIND_DENY = "required mask could not be bound to a result column"
 private const val SYSTEM_FUNCTION_DENY = "dangerous system function is not allowed:"

@@ -90,7 +90,7 @@ func tableDetailStartFakeCP(t *testing.T) (*cp.Client, *tableDetailFakeCP) {
 	go func() { _ = tableDetailServer.Serve(tableDetailListener) }()
 	t.Cleanup(tableDetailServer.Stop)
 
-	tableDetailClient, err := cp.New(tableDetailListener.Addr().String(), "table-detail-secret", "pm_tdetail_ds")
+	tableDetailClient, err := cp.New(tableDetailListener.Addr().String(), "table-detail-secret", "pm_tdetail_ds", testResultCaps())
 	if err != nil {
 		t.Fatalf("cp.New: %v", err)
 	}

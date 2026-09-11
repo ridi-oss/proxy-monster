@@ -265,6 +265,27 @@ message Verdict {
   // them with the stored result and a later view can deny authorization drift (the control-plane result-view
   // gate). Empty for a decision that needs no result-read grants.
   repeated proxymonster.analyzer.v1.RequireResultReadGrant result_fingerprint = 11;
+  reserved 12, 13;
+  reserved "max_rows", "max_bytes";
+  // Result caps (docs/result-caps.md). The control plane names WHAT reaches the client, the proxy owns the
+  // numbers (PM_RESULT_CAPS): unbounded lifts every cap (an ALLOW on result.read.unbounded); otherwise
+  // unmasked_tags are the classification tags whose values this statement returns in the clear, and the
+  // proxy applies the tightest configured cap among them and its default.
+  bool unbounded = 14;
+  repeated string unmasked_tags = 15;
+}
+
+// A row/byte ceiling. 0 on a dimension means no bound from this entry.
+message RowsBytes {
+  int64 rows = 1;
+  int64 bytes = 2;
+}
+// The proxy's cap table (PM_RESULT_CAPS): the default every statement gets, tightened per classification
+// tag returned unmasked. Frozen with a stored result so a view resolves against the table its execution
+// ran under.
+message ResultCaps {
+  RowsBytes default = 1;
+  map<string, RowsBytes> by_tag = 2;
 }
 message BeforeDecide {
   repeated ProxyCommand commands = 1;

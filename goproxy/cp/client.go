@@ -41,7 +41,7 @@ import (
 // error instead of a stalled run channel. Bump it on any incompatible wire change. It MUST match the
 // control-plane's CONTROL_PROTOCOL_VERSION; the two are separate constants in separate languages kept in
 // lockstep by hand — a server-v* release always ships both at the same value.
-const ProtocolVersion int32 = 2
+const ProtocolVersion int32 = 3
 
 // ErrIncompatibleControlPlane means the control-plane speaks a different wire-protocol version than this
 // proxy — a PERMANENT deploy-skew condition, not a transient failure. boot treats it as fatal (refuse to
@@ -109,11 +109,12 @@ type Client struct {
 	stub           pb.ControlPlaneClient
 	secretToken    string
 	datasourceName string
+	caps           engine.ResultCaps
 }
 
 // New dials the control plane at grpcTarget (plaintext — internal/trusted hop) and returns a Client
-// scoped to one datasource.
-func New(grpcTarget, secretToken, datasourceName string) (*Client, error) {
+// scoped to one datasource. caps is the proxy's result cap table, resolved into every decision.
+func New(grpcTarget, secretToken, datasourceName string, caps engine.ResultCaps) (*Client, error) {
 	conn, err := grpc.NewClient(
 		grpcTarget,
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
@@ -131,6 +132,7 @@ func New(grpcTarget, secretToken, datasourceName string) (*Client, error) {
 		stub:           pb.NewControlPlaneClient(conn),
 		secretToken:    secretToken,
 		datasourceName: datasourceName,
+		caps:           caps,
 	}, nil
 }
 
@@ -219,7 +221,7 @@ func denyClosed(reason string) *engine.Decision {
 
 // decisionFromWire maps the control plane's WireDecision onto the engine's dialect-agnostic outcome.
 // Before-decision commands are returned separately and take precedence over any verdict accessor.
-func decisionFromWire(d *pb.WireDecision) ([]*pb.Refetch, *engine.Decision) {
+func decisionFromWire(d *pb.WireDecision, caps engine.ResultCaps) ([]*pb.Refetch, *engine.Decision) {
 	if before := d.GetBeforeDecide(); before != nil {
 		commands, err := refetchesFromWire(before.GetCommands())
 		if err != nil {
@@ -249,8 +251,13 @@ func decisionFromWire(d *pb.WireDecision) ([]*pb.Refetch, *engine.Decision) {
 		return nil, denyClosed("control plane returned malformed after-statement commands: " + err.Error())
 	}
 
+	resolved := caps.Resolve(v.GetUnbounded(), v.GetUnmaskedTags())
 	return nil, &engine.Decision{
 		Action:              action,
+		Unbounded:           v.GetUnbounded(),
+		UnmaskedTags:        append([]string(nil), v.GetUnmaskedTags()...),
+		MaxRows:             resolved.Rows,
+		MaxBytes:            resolved.Bytes,
 		DecisionID:          v.GetDecisionId(),
 		DenyReason:          v.GetDenyReason(),
 		Masks:               masks,
@@ -263,6 +270,9 @@ func decisionFromWire(d *pb.WireDecision) ([]*pb.Refetch, *engine.Decision) {
 		ResultFingerprint:   v.GetResultFingerprint(),
 	}
 }
+
+// Caps is the proxy's result cap table, frozen with a stored run result (RunDone.caps).
+func (c *Client) Caps() engine.ResultCaps { return c.caps }
 
 // Decide satisfies engine.Decider: it re-sends the same raw request after mechanically satisfying at
 // most three before_decide command rounds. Every failure path yields a non-empty Err (fail closed).
@@ -306,7 +316,7 @@ func (c *Client) Decide(req engine.DecideRequest) engine.DecisionOutcome {
 			return engine.DecisionOutcome{Err: "control plane returned an empty decision"}
 		}
 
-		commands, decision := decisionFromWire(resp)
+		commands, decision := decisionFromWire(resp, c.caps)
 		if commands == nil {
 			return engine.DecisionOutcome{Decision: decision}
 		}

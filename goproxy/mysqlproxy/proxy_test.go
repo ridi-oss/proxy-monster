@@ -235,7 +235,7 @@ func startFakeCP(t *testing.T) (*fakeControlPlane, *cp.Client) {
 		_ = lis.Close()
 	})
 
-	client, err := cp.New(lis.Addr().String(), "secret-abc", "ds-it")
+	client, err := cp.New(lis.Addr().String(), "secret-abc", "ds-it", testResultCaps())
 	if err != nil {
 		t.Fatalf("cp.New: %v", err)
 	}
@@ -2263,4 +2263,13 @@ func TestEmptyQueryDecidesAndRelaysNatively(t *testing.T) {
 			}
 		})
 	}
+}
+
+// testResultCaps is the proxy cap table the harness runs under (the shipped default).
+func testResultCaps() engine.ResultCaps {
+	caps, err := engine.ParseResultCaps(engine.DefaultResultCaps)
+	if err != nil {
+		panic(err)
+	}
+	return caps
 }

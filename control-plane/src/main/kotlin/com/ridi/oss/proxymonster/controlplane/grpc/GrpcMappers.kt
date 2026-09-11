@@ -24,6 +24,8 @@ internal fun DecisionContext.toWireDecision(
     return wireDecision {
         verdict = verdict {
             decision = ctx.action
+            unbounded = ctx.unbounded
+            unmaskedTags.addAll(ctx.unmaskedTags)
             ctx.denyReason?.let { denyReason = it }
             masks.addAll(ctx.masks)
             effectiveRoles.addAll(ctx.effectiveRoles)

@@ -23,6 +23,15 @@ import (
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
 )
 
+// testCaps is the default table; the decoder resolves a verdict's tags against it.
+var testCaps = func() engine.ResultCaps {
+	caps, err := engine.ParseResultCaps(engine.DefaultResultCaps)
+	if err != nil {
+		panic(err)
+	}
+	return caps
+}()
+
 func wireVerdict(v *pb.Verdict) *pb.WireDecision {
 	return &pb.WireDecision{Outcome: &pb.WireDecision_Verdict{Verdict: v}}
 }
@@ -37,7 +46,7 @@ func refetch(schema string, hash []byte) *pb.ProxyCommand {
 
 func TestDecisionFromWire(t *testing.T) {
 	t.Run("before decide returns commands", func(t *testing.T) {
-		commands, decision := decisionFromWire(wireBefore(refetch("app", []byte{1, 2})))
+		commands, decision := decisionFromWire(wireBefore(refetch("app", []byte{1, 2})), testCaps)
 		if decision != nil {
 			t.Fatalf("decision = %+v, want nil", decision)
 		}
@@ -51,6 +60,7 @@ func TestDecisionFromWire(t *testing.T) {
 		commands, got := decisionFromWire(wireVerdict(&pb.Verdict{
 			Decision:            pb.EnfAction_MASK,
 			DecisionId:          42,
+			UnmaskedTags:        []string{"pii"},
 			DenyReason:          "reason",
 			EffectiveRoles:      []string{"analyst"},
 			RewrittenSql:        proto.String("SELECT c FROM t"),
@@ -59,13 +69,16 @@ func TestDecisionFromWire(t *testing.T) {
 			AfterStatement:      []*pb.ProxyCommand{refetch("app", []byte("hash"))},
 			Generation:          9,
 			ResultFingerprint:   []*enginepb.RequireResultReadGrant{{Resource: &enginepb.RequireResultReadGrant_Function{Function: &enginepb.FunctionResource{Name: "now"}}}},
-		}))
+		}), testCaps)
 		if commands != nil {
 			t.Fatalf("commands = %+v, want nil", commands)
 		}
 		want := &engine.Decision{
 			Action:              "MASK",
 			DecisionID:          42,
+			UnmaskedTags:        []string{"pii"},
+			MaxRows:             500,
+			MaxBytes:            5_000_000,
 			DenyReason:          "reason",
 			Masks:               []*pb.ColumnMask{{Column: "c", MaskFn: "mask", Kind: "FIXED", Ordinal: proto.Int32(2)}},
 			EffectiveRoles:      []string{"analyst"},
@@ -93,7 +106,7 @@ func TestDecisionFromWire(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			commands, got := decisionFromWire(tc.wire)
+			commands, got := decisionFromWire(tc.wire, testCaps)
 			if commands != nil {
 				t.Fatalf("commands = %+v, want nil on malformed outcome", commands)
 			}
@@ -104,13 +117,13 @@ func TestDecisionFromWire(t *testing.T) {
 	}
 
 	t.Run("unknown verdict enum denies", func(t *testing.T) {
-		_, got := decisionFromWire(wireVerdict(&pb.Verdict{Decision: pb.EnfAction_ENF_ACTION_UNSPECIFIED}))
+		_, got := decisionFromWire(wireVerdict(&pb.Verdict{Decision: pb.EnfAction_ENF_ACTION_UNSPECIFIED}), testCaps)
 		if got.Action != "DENY" {
 			t.Fatalf("Action = %q, want DENY", got.Action)
 		}
 	})
 	t.Run("absent mask ordinal stays unbound", func(t *testing.T) {
-		_, got := decisionFromWire(wireVerdict(&pb.Verdict{Decision: pb.EnfAction_MASK, Masks: []*pb.ColumnMask{{Column: "c"}}}))
+		_, got := decisionFromWire(wireVerdict(&pb.Verdict{Decision: pb.EnfAction_MASK, Masks: []*pb.ColumnMask{{Column: "c"}}}), testCaps)
 		if got.Masks[0].Ordinal != nil {
 			t.Fatalf("ordinal = %v, want nil (absent, fails closed to unbound)", got.Masks[0].Ordinal)
 		}
@@ -162,7 +175,7 @@ func TestIdentityFromWire(t *testing.T) {
 }
 
 func TestValidateTokenAndDecideUnreachable(t *testing.T) {
-	c, err := New("127.0.0.1:1", "", "ds")
+	c, err := New("127.0.0.1:1", "", "ds", testCaps)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -330,7 +343,7 @@ func startFakeControlPlane(t *testing.T, fake *fakeControlPlane) *Client {
 	go func() { _ = server.Serve(listener) }()
 	t.Cleanup(server.Stop)
 
-	client, err := New(listener.Addr().String(), "secret-abc", "ds-1")
+	client, err := New(listener.Addr().String(), "secret-abc", "ds-1", testCaps)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -657,7 +670,7 @@ func TestEventsLoopReconnectsFastOnDrain(t *testing.T) {
 	go func() { _ = server.Serve(listener) }()
 	t.Cleanup(server.Stop)
 
-	c, err := New(listener.Addr().String(), "secret-abc", "ds-1")
+	c, err := New(listener.Addr().String(), "secret-abc", "ds-1", testCaps)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -734,7 +747,7 @@ func startControlPlane(t *testing.T, fake pb.ControlPlaneServer) *Client {
 	go func() { _ = server.Serve(listener) }()
 	t.Cleanup(server.Stop)
 
-	client, err := New(listener.Addr().String(), "secret-abc", "ds-1")
+	client, err := New(listener.Addr().String(), "secret-abc", "ds-1", testCaps)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -781,7 +794,7 @@ func TestRunEventsLoopExitsOnEventsVersionRejection(t *testing.T) {
 	pb.RegisterControlPlaneServer(server, fake)
 	go func() { _ = server.Serve(listener) }()
 	t.Cleanup(server.Stop)
-	c, err := New(listener.Addr().String(), "secret-abc", "ds-1")
+	c, err := New(listener.Addr().String(), "secret-abc", "ds-1", testCaps)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -1055,7 +1068,7 @@ func TestEventsLoopWaitsTheBackoffBetweenReopens(t *testing.T) {
 	go func() { _ = server.Serve(listener) }()
 	t.Cleanup(server.Stop)
 
-	c, err := New(listener.Addr().String(), "secret-abc", "ds-1")
+	c, err := New(listener.Addr().String(), "secret-abc", "ds-1", testCaps)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -1114,4 +1127,25 @@ func (f *deadlineControlPlane) openCount() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.opens
+}
+
+func TestDecisionFromWireResolvesCaps(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		verdict *pb.Verdict
+		rows    int64
+		bytes   int64
+	}{
+		{"default", &pb.Verdict{Decision: pb.EnfAction_ALLOW}, 5000, 50_000_000},
+		{"tag", &pb.Verdict{Decision: pb.EnfAction_ALLOW, UnmaskedTags: []string{"pii"}}, 500, 5_000_000},
+		{"unknown tag", &pb.Verdict{Decision: pb.EnfAction_ALLOW, UnmaskedTags: []string{"pci"}}, 5000, 50_000_000},
+		{"unbounded", &pb.Verdict{Decision: pb.EnfAction_ALLOW, Unbounded: true, UnmaskedTags: []string{"pii"}}, 0, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, got := decisionFromWire(wireVerdict(tc.verdict), testCaps)
+			if got.MaxRows != tc.rows || got.MaxBytes != tc.bytes {
+				t.Fatalf("caps = %d/%d, want %d/%d", got.MaxRows, got.MaxBytes, tc.rows, tc.bytes)
+			}
+		})
+	}
 }

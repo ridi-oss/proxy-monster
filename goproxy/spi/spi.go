@@ -76,6 +76,7 @@ type RunClient interface {
 	SessionClient
 	OpenRunStream(context.Context) (RunStream, error)
 	CloseConnection(connectionID []byte) error
+	Caps() engine.ResultCaps
 }
 
 // TableDetailClient is the control-plane capability used by the dialect-neutral table-detail runner.

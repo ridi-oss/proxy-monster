@@ -15,6 +15,7 @@ import (
 	"github.com/ridi-oss/proxy-monster/goproxy/config"
 	"github.com/ridi-oss/proxy-monster/goproxy/cp"
 	"github.com/ridi-oss/proxy-monster/goproxy/drain"
+	"github.com/ridi-oss/proxy-monster/goproxy/engine"
 	"github.com/ridi-oss/proxy-monster/goproxy/proxytls"
 	"github.com/ridi-oss/proxy-monster/goproxy/run"
 	"github.com/ridi-oss/proxy-monster/goproxy/spi"
@@ -44,12 +45,16 @@ func Run(registry spi.Registry) error {
 		return err
 	}
 
-	enforcementClient, err := cp.New(cfg.ControlPlaneGrpcTarget, cfg.SecretToken, cfg.DatasourceName)
+	caps, err := engine.ParseResultCaps(engine.DefaultResultCaps)
+	if err != nil {
+		return err
+	}
+	enforcementClient, err := cp.New(cfg.ControlPlaneGrpcTarget, cfg.SecretToken, cfg.DatasourceName, caps)
 	if err != nil {
 		return fmt.Errorf("failed to create enforcement control-plane client: %w", err)
 	}
 	defer enforcementClient.Close()
-	configClient, err := cp.New(cfg.ControlPlaneGrpcTarget, cfg.SecretToken, cfg.DatasourceName)
+	configClient, err := cp.New(cfg.ControlPlaneGrpcTarget, cfg.SecretToken, cfg.DatasourceName, caps)
 	if err != nil {
 		return fmt.Errorf("failed to create config control-plane client: %w", err)
 	}

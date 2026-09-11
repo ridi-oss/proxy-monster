@@ -253,7 +253,7 @@ func (s *Server) handleConn(clientConn net.Conn) {
 				ConnectionID:   identity.ConnectionID,
 				ProbeNamespace: func() (engine.NamespaceProbe, error) { return probeNamespaceObservation(targetDbConn, deprecateEOF) },
 				RunCommands:    refetcher.RunAll,
-			}, refetcher, nil, func(toSend string, masks []*pb.ColumnMask) (bool, error) {
+			}, refetcher, nil, func(toSend string, masks []*pb.ColumnMask, dec *engine.Decision) (bool, error) {
 				queryPayload := mysqlwire.ComQueryPayload(toSend)
 				if len(queryPayload) >= maxPacketPayload {
 					if err := mysqlwire.WritePacket(clientConn, seq+1, mysqlwire.ErrPacketState(

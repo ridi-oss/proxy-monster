@@ -1560,7 +1560,7 @@ func runStartFakeCP(t *testing.T, datasourceName string) (*runFakeCP, *cp.Client
 		_ = listener.Close()
 	})
 
-	client, err := cp.New(listener.Addr().String(), "run-secret", datasourceName)
+	client, err := cp.New(listener.Addr().String(), "run-secret", datasourceName, testResultCaps())
 	if err != nil {
 		t.Fatalf("cp.New: %v", err)
 	}
@@ -1980,4 +1980,13 @@ func runExpectNoServing(t *testing.T, fake *runFakeCP) {
 		t.Fatal("RunServing was sent for a run that should have been aborted before it was ready to serve")
 	default:
 	}
+}
+
+// testResultCaps is the proxy cap table the harness runs under (the shipped default).
+func testResultCaps() engine.ResultCaps {
+	caps, err := engine.ParseResultCaps(engine.DefaultResultCaps)
+	if err != nil {
+		panic(err)
+	}
+	return caps
 }

@@ -251,7 +251,7 @@ func (s *Server) handleQuery(sess *session, sql string) error {
 	relayStatus := engine.StatusError
 	decision, denied, err := engine.ServeStatement(sess.qe,
 		sess.authzInput(sql, sess.token, sess.clientAddr, sess.connectionID, ref.RunAll), ref, nil,
-		func(toSend string, masks []*pb.ColumnMask) (bool, error) {
+		func(toSend string, masks []*pb.ColumnMask, dec *engine.Decision) (bool, error) {
 			sess.targetDb.Send(&pgproto3.Query{String: toSend})
 			if err := sess.targetDb.Flush(); err != nil {
 				return false, err

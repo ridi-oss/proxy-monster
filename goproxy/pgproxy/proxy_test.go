@@ -22,6 +22,7 @@ import (
 
 	"github.com/ridi-oss/proxy-monster/goproxy/cp"
 	"github.com/ridi-oss/proxy-monster/goproxy/db"
+	"github.com/ridi-oss/proxy-monster/goproxy/engine"
 	"github.com/ridi-oss/proxy-monster/goproxy/internal/dbtest"
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
 	"github.com/ridi-oss/proxy-monster/goproxy/pgproxy"
@@ -216,7 +217,7 @@ func startFakeCP(t *testing.T) (*fakeControlPlane, *cp.Client) {
 		_ = listener.Close()
 	})
 
-	client, err := cp.New(listener.Addr().String(), "secret-abc", "ds-it")
+	client, err := cp.New(listener.Addr().String(), "secret-abc", "ds-it", testResultCaps())
 	if err != nil {
 		t.Fatalf("cp.New: %v", err)
 	}
@@ -1295,4 +1296,13 @@ func assertPgError(t *testing.T, err error, code, message string) {
 	if pgErr.Code != code || !strings.Contains(pgErr.Message, message) {
 		t.Fatalf("PgError = code %q message %q, want %q containing %q", pgErr.Code, pgErr.Message, code, message)
 	}
+}
+
+// testResultCaps is the proxy cap table the harness runs under (the shipped default).
+func testResultCaps() engine.ResultCaps {
+	caps, err := engine.ParseResultCaps(engine.DefaultResultCaps)
+	if err != nil {
+		panic(err)
+	}
+	return caps
 }

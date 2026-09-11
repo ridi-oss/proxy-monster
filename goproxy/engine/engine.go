@@ -219,6 +219,13 @@ type Decision struct {
 	// proxy does not interpret them; it only echoes them back on a RunDecision so an execute-under-R run can
 	// freeze them with the stored result (the control plane's result-view drift gate).
 	ResultFingerprint []*enginepb.RequireResultReadGrant
+	// Unbounded / UnmaskedTags are the control plane's cap inputs (Verdict.unbounded / unmasked_tags);
+	// MaxRows / MaxBytes are what the proxy RESOLVED from its cap table for them, 0 = uncapped. See
+	// docs/result-caps.md.
+	Unbounded    bool
+	UnmaskedTags []string
+	MaxRows      int64
+	MaxBytes     int64
 }
 
 // RedactedDiagnosticMessage is the single generic string that replaces every target-DB diagnostic message on

@@ -58,6 +58,16 @@ class GrpcMappersTest {
     }
 
     @Test
+    fun `result cap inputs cross as unbounded and the unmasked tag set`() {
+        val capped = ctx(EnfAction.ALLOW).copy(unmaskedTags = setOf("pii", "pci")).toWireDecision(1, 0, emptyList()).verdict
+        assertFalse(capped.unbounded)
+        assertEquals(listOf("pii", "pci"), capped.unmaskedTagsList)
+        val unbounded = ctx(EnfAction.ALLOW).copy(unbounded = true).toWireDecision(1, 0, emptyList()).verdict
+        assertTrue(unbounded.unbounded)
+        assertTrue(unbounded.unmaskedTagsList.isEmpty())
+    }
+
+    @Test
     fun `targeted after-statement refetch maps schema and hash`() {
         val hash = ByteString.copyFromUtf8("h1")
         val d = ctx(EnfAction.ALLOW).toWireDecision(

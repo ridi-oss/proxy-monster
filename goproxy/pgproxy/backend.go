@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"strconv"
@@ -368,5 +369,10 @@ func sendCancelRequest(host string, port int, processID uint32, secretKey []byte
 	if _, err := conn.Write(encoded); err != nil {
 		return fmt.Errorf("write CancelRequest: %w", err)
 	}
-	return nil
+	if err := conn.SetReadDeadline(time.Now().Add(targetDbHandshakeTimeout)); err != nil {
+		return err
+	}
+	// Wait for the cancel connection to close before the held session can start another query.
+	_, err = io.Copy(io.Discard, conn)
+	return err
 }

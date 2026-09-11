@@ -244,6 +244,24 @@ func firstErr(errs ...error) error {
 	return nil
 }
 
+func resultCapError(dec *engine.Decision, stats *engine.RelayStats, rowBytes int64) *pgproto3.ErrorResponse {
+	var message string
+	if dec.MaxRows > 0 && stats.Rows >= dec.MaxRows {
+		message = fmt.Sprintf("proxy-monster: result exceeds the row cap (%d rows); request unbounded access", dec.MaxRows)
+	} else if dec.MaxBytes > 0 && rowBytes > dec.MaxBytes-stats.Bytes {
+		message = fmt.Sprintf("proxy-monster: result exceeds the byte cap (%d bytes); request unbounded access", dec.MaxBytes)
+	} else {
+		return nil
+	}
+	return &pgproto3.ErrorResponse{Severity: "ERROR", Code: "57014", Message: message, Hint: "Request unbounded access to read the full result."}
+}
+
+func (s *Server) cancelCappedQuery(sess *session) {
+	if sess.keyData.ProcessID != 0 {
+		_ = sendCancelRequest(s.targetDb.Host, s.targetDb.Port, sess.keyData.ProcessID, sess.keyData.SecretKey)
+	}
+}
+
 func (s *Server) handleQuery(sess *session, sql string) error {
 	ref := s.refetcher(sess, false)
 	start := time.Now()
@@ -257,10 +275,28 @@ func (s *Server) handleQuery(sess *session, sql string) error {
 				return false, err
 			}
 			bufferedFrames := 0
+			var capped *pgproto3.ErrorResponse
 			targetDbErr, streamErr := sess.streamResult(masks, streamOpts{}, func(message pgproto3.BackendMessage) error {
-				if row, ok := message.(*pgproto3.DataRow); ok {
+				switch row := message.(type) {
+				case *pgproto3.DataRow:
+					if capped != nil {
+						return nil
+					}
+					capped = resultCapError(dec, &relayStats, dataRowBytes(row))
+					if capped != nil {
+						s.cancelCappedQuery(sess)
+						return nil
+					}
 					relayStats.Rows++
 					relayStats.Bytes += dataRowBytes(row)
+				case *pgproto3.CommandComplete, *pgproto3.ErrorResponse:
+					if capped != nil {
+						return nil
+					}
+				case *pgproto3.ReadyForQuery:
+					if capped != nil {
+						sess.client.Send(capped)
+					}
 				}
 				sess.client.Send(message)
 				bufferedFrames++
@@ -277,8 +313,8 @@ func (s *Server) handleQuery(sess *session, sql string) error {
 			if err := sess.client.Flush(); err != nil {
 				return false, err
 			}
-			relayStatus = engine.RelayStatus(targetDbErr == nil, nil)
-			return targetDbErr == nil, nil
+			relayStatus = engine.RelayStatus(targetDbErr == nil && capped == nil, nil)
+			return targetDbErr == nil && capped == nil, nil
 		})
 	// Post-relay, best-effort completion: only a relayed (Proceed) statement reports. A DENY relayed
 	// nothing, and EmitCompletion additionally no-ops for a decision with no audit id.

@@ -1298,9 +1298,10 @@ func assertPgError(t *testing.T, err error, code, message string) {
 	}
 }
 
-// testResultCaps is the proxy cap table the harness runs under (the shipped default).
+// testResultCaps is the proxy cap table the harness runs under. Tests pick a cap by naming its tag in the
+// verdict's unmasked_tags (cap-rows-500 → 500 rows, cap-bytes-55 → 55 bytes, …).
 func testResultCaps() engine.ResultCaps {
-	caps, err := engine.ParseResultCaps(engine.DefaultResultCaps)
+	caps, err := engine.ParseResultCaps("10000/1GB,cap-rows-500:500,cap-rows-250:250,cap-bytes-55:100000/55,cap-bytes-50:100000/50,cap-run:100/4000")
 	if err != nil {
 		panic(err)
 	}

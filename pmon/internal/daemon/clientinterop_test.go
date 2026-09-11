@@ -15,7 +15,7 @@
 // the real thing.
 //
 // Gated behind the `e2e_clients` build tag (it pulls several multi-hundred-MB client images); run with
-// `mise run e2e-clients` or `go test -tags e2e_clients ./pmon/internal/daemon/ -run ClientInterop`.
+// `mise run test-e2e-clients` or `go test -tags e2e_clients ./pmon/internal/daemon/ -run ClientInterop`.
 package daemon
 
 import (

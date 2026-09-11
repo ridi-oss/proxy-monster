@@ -103,7 +103,7 @@ func (s *RunSession) ServeStatement(sql string, maxRows int) (result engine.Stat
 			rawErrPacket = append([]byte(nil), raw...)
 			return sanitizeErrPacket(raw)
 		}
-		clean, relayErr := relayResultSet(s.conn, true, h)
+		clean, _, relayErr := relayResultSet(s.conn, true, h)
 		s.qe.MarkNamespaceDirty()
 		resetErr := reset()
 		if relayErr != nil {

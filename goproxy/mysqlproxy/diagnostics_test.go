@@ -54,7 +54,7 @@ func TestRelayResultSetRedactsTargetDbError(t *testing.T) {
 	writeTestPacket(t, &targetDb, 1, mysqlwire.ErrPacketState(1146, "42S02", "Table 'db.secret_010_1234_5678' doesn't exist"))
 
 	var relayed []byte
-	ok, err := relayResultSet(&targetDb, true, resultHooks{
+	ok, _, err := relayResultSet(&targetDb, true, resultHooks{
 		Sink: func(_ byte, payload []byte) error {
 			relayed = append([]byte(nil), payload...)
 			return nil
@@ -85,7 +85,7 @@ func TestRelayResultSetForwardsTargetDbErrorVerbatimWhenNotRedacting(t *testing.
 	writeTestPacket(t, &targetDb, 1, mysqlwire.ErrPacketState(1146, "42S02", "Table 'db.t' doesn't exist"))
 
 	var relayed []byte
-	if _, err := relayResultSet(&targetDb, true, resultHooks{
+	if _, _, err := relayResultSet(&targetDb, true, resultHooks{
 		Sink: func(_ byte, payload []byte) error {
 			relayed = append([]byte(nil), payload...)
 			return nil

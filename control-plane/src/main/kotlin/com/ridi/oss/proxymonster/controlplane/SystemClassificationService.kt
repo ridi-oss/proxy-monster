@@ -75,6 +75,15 @@ class SystemClassificationService(
         return tagForTable(engine, engineVersion, catalog, schema, table)
     }
 
+    fun redactsColumn(
+        engine: Engine,
+        engineVersion: String?,
+        catalog: String,
+        schema: String,
+        table: String,
+        column: String,
+    ): Boolean = classifierFor(engine, engineVersion)?.redactsColumn(catalog, schema, table, column) == true
+
     /**
      * The strongest EXPLICIT dangerous tag (stronger than [SystemTag.CATALOG]) any shipped manifest of [engine]
      * assigns the relation, or null when no manifest classifies it beyond the catalog default. Used only for a

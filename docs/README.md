@@ -44,6 +44,7 @@ a facts layer.
 | [`diagnostic-redaction.md`](./diagnostic-redaction.md) | Closes the DB error/warning value-leak side-channel; fail-closed field strip; message tables from catalogs. |
 | [`derived-masking.md`](./derived-masking.md) | Lets a masked column pass through a provably-total builtin string transform and stay masked. |
 | [`relation-model.md`](./relation-model.md) | Whole-row / composite-value resolution: how a relation used in value position never leaks a protected column. |
+| [`result-caps.md`](./result-caps.md) | Per-statement row/byte caps from the proxy's tag-keyed table, rolling per-principal volume budgets; `result.read.unbounded` lifts both. |
 
 ### Identity and authorization
 

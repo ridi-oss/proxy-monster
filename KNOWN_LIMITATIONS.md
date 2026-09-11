@@ -202,6 +202,38 @@ connection so `SET`/`USE`/temp/`BEGIN` persist across queries.
   opening many sessions can exhaust the target's `max_connections`. A
   per-principal cap is a follow-up.
 
+## Result caps and volume budgets
+
+Every non-DENY verdict names what a statement returns in the clear, the proxy
+caps it from its own table, and a principal's relayed volume over rolling
+windows feeds Cedar as context ([`docs/result-caps.md`](./docs/result-caps.md)).
+
+- 🟡 A run-channel result (the editor and the approval workflow) is bounded by
+  the channel's own 5,000-row ceiling even under an uncapped verdict. Reading a
+  larger result unbounded goes over the wire, through `pmon`.
+- 🟡 A budget is charged after the relay, from the completion report. One
+  connection's next `Decide` waits for its own previous report, so a sequential
+  script sees its spend, but N parallel connections can each pass `Decide` on
+  the same stale total and each relay up to the statement cap, and a completion
+  report the control plane never receives is never charged. The overshoot is
+  bounded by N × the statement cap and stays visible in the audit trail; a
+  reservation charged at `Decide` and settled on completion would close it.
+- 🟡 A target-DB error message can echo a value fragment, and it is counted
+  toward neither the caps nor the budgets. Diagnostics relay raw only when the
+  reader may read every referenced column unmasked
+  ([`docs/diagnostic-redaction.md`](./docs/diagnostic-redaction.md)).
+- 🟡 A PostgreSQL cap hit inside an explicit transaction can leave it aborted,
+  so the client must `ROLLBACK` — the same behavior a native `57014`
+  cancellation produces.
+- 🟡 The shipped budget forbids apply to `result.read.unmasked` /
+  `result.read.masked`, so a statement that reads no column through them — a
+  passthrough `SHOW`, or an `exception.unanalyzable` relay — is still capped per
+  statement but never budget-denied.
+- 🟡 A principal holding `exception.unmaskable` takes a masked tagged column's
+  cap on any masked read of it, even on a relay path that does mask it: the
+  decision sees only that the raw relay is permitted, not which path the proxy
+  takes.
+
 ---
 
 _Add an entry here whenever a fix ships with an accepted caveat or a deferred

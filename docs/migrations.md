@@ -43,7 +43,7 @@ their final shape: every column is inline in its `CREATE TABLE`, so there is no
 | File | Owns |
 | --- | --- |
 | `V1__identity.sql` | `app_role`, `app_user`, `app_group`, `group_member`, `group_role`, `principal_role` |
-| `V2__catalog.sql` | `datasource`, `catalog_column`, `mask_fn`, `column_classification` |
+| `V2__catalog.sql` | `datasource`, `catalog_column` (dropped by `V26`), `mask_fn`, `column_classification` |
 | `V3__policy.sql` | `policy` (the Cedar store, with its origin constraints), `allowlist` |
 | `V4__audit.sql` | `audit_event`, `audit_chain_head` and its genesis row |
 | `V5__tasks.sql` | `access_request`, `access_grant`, `query_result`, `query_history` |

@@ -1,7 +1,5 @@
 package com.ridi.oss.proxymonster.controlplane.support
 
-import com.ridi.oss.proxymonster.analyzer.pb.column
-import com.ridi.oss.proxymonster.analyzer.pb.Column
 import com.ridi.oss.proxymonster.controlplane.AccessStore
 import com.ridi.oss.proxymonster.controlplane.AuditStore
 import com.ridi.oss.proxymonster.controlplane.Channel
@@ -29,6 +27,10 @@ import com.ridi.oss.proxymonster.controlplane.authz.CedarPolicyInput
 import com.ridi.oss.proxymonster.controlplane.authz.CedarPolicyStore
 import com.ridi.oss.proxymonster.controlplane.authz.RoleSource
 import org.flywaydb.core.Flyway
+import com.ridi.oss.proxymonster.analyzer.pb.CatalogSnapshot
+import com.ridi.oss.proxymonster.analyzer.pb.Column
+import com.ridi.oss.proxymonster.analyzer.pb.catalogSnapshot
+import com.ridi.oss.proxymonster.analyzer.pb.column
 import java.sql.DriverManager
 import javax.sql.DataSource
 
@@ -107,7 +109,7 @@ internal fun DatasourceStore.pushTestCatalog(
         defaultSchemas = namespace.defaultSchemas,
         mysqlLowerCaseTableNames = namespace.mysqlLowerCaseTableNames,
         engineVersion = namespace.engineVersion,
-        columns = columns,
+        catalog = catalogSnapshot { this.columns.addAll(columns) },
     )
 }
 
@@ -518,3 +520,5 @@ internal fun pushedColumn(schema: String, table: String, column: String, dataTyp
         this.ordinal = ordinal
         this.nullable = nullable
     }
+
+internal fun snapshotOf(vararg columns: Column): CatalogSnapshot = catalogSnapshot { this.columns.addAll(columns.toList()) }

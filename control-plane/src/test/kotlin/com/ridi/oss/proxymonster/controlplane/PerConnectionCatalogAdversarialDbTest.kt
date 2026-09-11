@@ -1,8 +1,9 @@
 package com.ridi.oss.proxymonster.controlplane
 
-import com.ridi.oss.proxymonster.controlplane.support.pushedColumn
 import com.ridi.oss.proxymonster.grpc.EnfAction
 import com.ridi.oss.proxymonster.controlplane.authz.CedarPolicyInput
+import com.ridi.oss.proxymonster.controlplane.support.pushedColumn
+import com.ridi.oss.proxymonster.analyzer.pb.catalogSnapshot
 import com.ridi.oss.proxymonster.controlplane.support.EnforcementFixture
 import com.ridi.oss.proxymonster.controlplane.support.PerConnectionCatalogFixture
 import com.ridi.oss.proxymonster.controlplane.support.SharedMySql
@@ -262,7 +263,8 @@ class PerConnectionCatalogMysqlAdversarialDbTest : PerConnectionCatalogAdversari
             defaultSchemas = listOf(schema),
             mysqlLowerCaseTableNames = enforcement.datasource.mysqlLowerCaseTableNames,
             engineVersion = enforcement.datasource.engineVersion.orEmpty(),
-            columns = enforcement.datasourceStore.catalog(enforcement.datasource.id).map { row ->
+            catalog = catalogSnapshot {
+                columns += enforcement.datasourceStore.catalog(enforcement.datasource.id).map { row ->
                 pushedColumn(row.schema, row.table, row.column, row.dataType, row.ordinal, row.nullable)
             } + accounts.rows.map { row ->
                 pushedColumn(
@@ -273,6 +275,7 @@ class PerConnectionCatalogMysqlAdversarialDbTest : PerConnectionCatalogAdversari
                     row[2]!!.toInt(),
                     row[3] == "YES",
                 )
+                }
             },
         )
         enforcement.cedarPolicyStore.create(
@@ -404,17 +407,13 @@ class PerConnectionCatalogPostgresAdversarialDbTest : PerConnectionCatalogAdvers
             defaultSchemas = enforcement.datasource.defaultSchemas,
             mysqlLowerCaseTableNames = null,
             engineVersion = enforcement.datasource.engineVersion.orEmpty(),
-            columns = enforcement.datasourceStore.catalog(enforcement.datasource.id).map { row ->
-                pushedColumn(row.schema, row.table, row.column, row.dataType, row.ordinal, row.nullable)
-            } + accounts.rows.map { row ->
-                pushedColumn(
-                    row[0]!!,
-                    "accounts",
-                    row[1]!!,
-                    row[2]!!,
-                    row[3]!!.toInt(),
-                    row[4] == "YES",
-                )
+            catalog = catalogSnapshot {
+                columns += enforcement.datasourceStore.catalog(enforcement.datasource.id).map { row ->
+                    pushedColumn(row.schema, row.table, row.column, row.dataType, row.ordinal, row.nullable)
+                }
+                columns += accounts.rows.map { row ->
+                    pushedColumn(row[0]!!, "accounts", row[1]!!, row[2]!!, row[3]!!.toInt(), row[4] == "YES")
+                }
             },
         )
         enforcement.cedarPolicyStore.create(

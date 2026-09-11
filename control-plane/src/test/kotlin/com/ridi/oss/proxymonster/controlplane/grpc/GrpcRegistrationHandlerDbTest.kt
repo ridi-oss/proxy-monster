@@ -1,7 +1,6 @@
 package com.ridi.oss.proxymonster.controlplane.grpc
 
 import com.google.protobuf.ByteString
-import com.ridi.oss.proxymonster.analyzer.pb.catalogSnapshot
 import com.ridi.oss.proxymonster.controlplane.Binding
 import com.ridi.oss.proxymonster.controlplane.CatalogMutationResult
 import com.ridi.oss.proxymonster.controlplane.ControlPlaneCore
@@ -13,6 +12,7 @@ import com.ridi.oss.proxymonster.controlplane.support.requireDockerOrSkip
 import com.ridi.oss.proxymonster.grpc.ControlPlaneGrpcKt
 import com.ridi.oss.proxymonster.grpc.Engine
 import com.ridi.oss.proxymonster.grpc.catalogRequest
+import com.ridi.oss.proxymonster.analyzer.pb.catalogSnapshot
 import com.ridi.oss.proxymonster.analyzer.pb.column
 import com.ridi.oss.proxymonster.grpc.RegisterRequest
 import com.ridi.oss.proxymonster.grpc.registerRequest

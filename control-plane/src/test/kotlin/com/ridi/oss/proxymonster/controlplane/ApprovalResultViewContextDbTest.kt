@@ -1,9 +1,13 @@
 package com.ridi.oss.proxymonster.controlplane
 
+import com.ridi.oss.proxymonster.grpc.ResultCaps
+import com.ridi.oss.proxymonster.grpc.resultCaps
+import com.ridi.oss.proxymonster.grpc.rowsBytes
 import com.ridi.oss.proxymonster.grpc.runError
 
 import com.ridi.oss.proxymonster.controlplane.authz.CedarPolicyInput
 import com.ridi.oss.proxymonster.controlplane.support.EnforcementFixture
+import com.ridi.oss.proxymonster.controlplane.support.TEST_RESULT_CAPS
 import com.ridi.oss.proxymonster.controlplane.support.requireDockerOrSkip
 import com.ridi.oss.proxymonster.controlplane.support.webSessionCookie
 import io.ktor.client.HttpClient
@@ -228,6 +232,9 @@ class ApprovalResultViewContextDbTest {
         sql: String = "SELECT id, email, ssn FROM users",
         columns: List<String> = listOf("id", "email", "ssn"),
         rows: List<List<String?>> = listOf(listOf("1", "a@x", rawSsn)),
+        truncatedByCap: Boolean = false,
+        // The proxy cap table frozen with the result.
+        caps: ResultCaps = TEST_RESULT_CAPS,
         // The execution-time requirements frozen with the result. Defaults to what the real decision emits
         // for [sql] under the execute-as role, so a same-schema view matches and releases; a test that
         // simulates a schema change between execute and view passes a different (drifted/empty) set.
@@ -250,7 +257,7 @@ class ApprovalResultViewContextDbTest {
         }
         fx.dataSource.connection.use { c -> c.prepareStatement("INSERT INTO query_result (task_id, sql, sql_hash) VALUES (?, ?, 'fixture')").use { ps -> ps.setLong(1, reqId); ps.setString(2, sql); ps.executeUpdate() } }
         assertNotNull(resultStore.startNextRun(reqId, executor))
-        assertNotNull(resultStore.completeRun(reqId, DecryptedResult(columns, rows, resultFingerprint = resultFingerprint?.let { fingerprintOf(it) }), 3600))
+        assertNotNull(resultStore.completeRun(reqId, DecryptedResult(columns, rows, resultFingerprint = resultFingerprint?.let { fingerprintOf(it) }, truncatedByCap = truncatedByCap, caps = caps), 3600))
         return reqId
     }
 
@@ -413,6 +420,35 @@ class ApprovalResultViewContextDbTest {
         } finally {
             fx.cedarPolicyStore.setEnabled(segregatedUnmaskPolicyId, true, "test-fixture")
         }
+    }
+
+    @Test
+    fun `a stored-result view charges the viewer's volume budget against the execution decision`() = testApplication {
+        resetMutableAuthzState()
+        val id = seedResult(rows = listOf(listOf("1", "a@x", rawSsn), listOf("2", "b@x", rawSsn)))
+        val decisionId = fx.auditStore.insert(
+            AuditEvent(principal = executor, datasource = fx.datasource.name, statement = "SELECT id, email, ssn FROM users", decision = Decision.ALLOW, channel = "workflow-executor"),
+        )
+        fx.dataSource.connection.use { c ->
+            c.prepareStatement("UPDATE query_result SET decision_id = ? WHERE task_id = ?").use { ps -> ps.setLong(1, decisionId); ps.setLong(2, id); ps.executeUpdate() }
+        }
+        val client = wire()
+        client.login(requester)
+        val before = fx.auditStore.completionBudget(requester, java.time.Instant.now())
+        val response = client.get("/api/approvals/$id/result")
+        assertEquals(HttpStatusCode.OK, response.status)
+        val released = response.body<QueryResultView>().rows
+        assertEquals(2, released.size)
+        val after = fx.auditStore.completionBudget(requester, java.time.Instant.now())
+        assertEquals(before.rows1h + 2, after.rows1h, "the viewer, not the executor, is charged the released rows")
+        val releasedBytes = released.sumOf { row -> row.sumOf { it?.toByteArray(Charsets.UTF_8)?.size ?: 0 } }.toLong()
+        assertEquals(before.bytes1h + releasedBytes, after.bytes1h, "bytes charged are the released (masked) cells")
+        val charge = fx.auditStore.recent(50).first { it.kind == "completion" && it.principal == requester && it.decisionId == decisionId }
+        assertEquals("workflow-viewer", charge.channel)
+        assertTrue(
+            fx.auditStore.recent(50).none { it.kind == "completion" && it.principal == executor && it.decisionId == decisionId },
+            "the executor is not charged for someone else's view",
+        )
     }
 
     @Test
@@ -744,6 +780,63 @@ class ApprovalResultViewContextDbTest {
         val responseBody = response.bodyAsText()
         assertEquals("approval.result_view_denied", Json.decodeFromString<ApiError>(responseBody).code)
         assertFalse(responseBody.contains(sentinel), "a legacy result must not release raw through a passthrough re-decision")
+    }
+
+    // The viewer's own cap bounds the release: the executor ran unbounded (a channel-scoped
+    // result.read.unbounded permit) and stored every row under a frozen cap table, so only the
+    // workflow-viewer re-decision truncates, against THAT table.
+    @Test
+    fun `a capped viewer receives the first rows and an unbounded one the whole stored result`() = testApplication {
+        resetMutableAuthzState()
+        val storedRows = (1..12).map { listOf(it.toString(), "u$it@x", rawSsn) }
+        val cap = 5
+        // The viewer reads ssn masked here, so only the default entry can bind.
+        val table = resultCaps {
+            default = rowsBytes { rows = cap.toLong(); bytes = 1_000_000 }
+            byTag.put("pii", rowsBytes { rows = 1; bytes = 1_000_000 })
+        }
+        val id = seedResult(rows = storedRows, caps = table)
+        val storedBefore = ciphertext(id)
+        val client = wire()
+        client.login(executor)
+        val capped = client.get("/api/approvals/$id/result").body<QueryResultView>()
+        assertEquals(cap, capped.rows.size)
+        assertEquals(cap, capped.truncatedAt)
+        assertContentEquals(storedRows.take(cap).map { it.take(2) }, capped.rows.map { it.take(2) })
+
+        val unbounded = fx.cedarPolicyStore.create(
+            CedarPolicyInput(
+                name = "approval-view-unbounded-viewer",
+                cedarSrc = """permit(
+                    principal in Role::"$roleName", action == Action::"result.read.unbounded", resource
+                );""",
+            ),
+            updatedBy = "test-fixture",
+        )
+        try {
+            val full = client.get("/api/approvals/$id/result").body<QueryResultView>()
+            assertEquals(storedRows.size, full.rows.size)
+            assertNull(full.truncatedAt)
+        } finally {
+            fx.cedarPolicyStore.delete(unbounded.id)
+        }
+        assertContentEquals(storedBefore, ciphertext(id), "truncating a view must not rewrite stored ciphertext")
+    }
+
+    @Test
+    fun `a result the execution capped stays marked incomplete even when the view releases every stored row`() = testApplication {
+        resetMutableAuthzState()
+        val id = seedResult(truncatedByCap = true)
+        val client = wire()
+        client.login(executor)
+
+        val view = client.get("/api/approvals/$id/result").body<QueryResultView>()
+        assertEquals(1, view.rows.size)
+        // The view released every stored row, so only the execution's own flag can report the cut.
+        assertNull(view.truncatedAt)
+        assertTrue(view.truncatedByCap)
+
+        assertFalse(client.get("/api/approvals/${seedResult()}/result").body<QueryResultView>().truncatedByCap)
     }
 
     // The digest freezes the WHOLE analyzer requirement set, not just projected columns — a scanned table

@@ -8,7 +8,13 @@ import com.ridi.oss.proxymonster.grpc.runResultRows
 import com.ridi.oss.proxymonster.grpc.runRow
 import com.ridi.oss.proxymonster.grpc.runValue
 import com.ridi.oss.proxymonster.storage.storedResult
+import com.ridi.oss.proxymonster.grpc.ResultCaps
+import kotlinx.serialization.KSerializer
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.descriptors.PrimitiveKind
+import kotlinx.serialization.descriptors.PrimitiveSerialDescriptor
+import kotlinx.serialization.encoding.Decoder
+import kotlinx.serialization.encoding.Encoder
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.builtins.serializer
 import kotlinx.serialization.json.Json
@@ -52,7 +58,21 @@ data class DecryptedResult(
     // rather than being mistaken for a grant-less passthrough and released raw.
     @Serializable(with = ResultFingerprintSerializer::class)
     val resultFingerprint: ResultFingerprint? = null,
+    /** The EXECUTION's verdict cap ended this result, which a view over the stored rows cannot re-derive. */
+    val truncatedByCap: Boolean = false,
+    /** The proxy's cap table the execution ran under; a view resolves the viewer's caps against it. Null for
+     *  a result stored before the field existed. */
+    @Serializable(with = ResultCapsSerializer::class)
+    val caps: ResultCaps? = null,
 )
+
+object ResultCapsSerializer : KSerializer<ResultCaps> {
+    override val descriptor = PrimitiveSerialDescriptor("ResultCaps", PrimitiveKind.STRING)
+    override fun serialize(encoder: Encoder, value: ResultCaps) =
+        encoder.encodeString(java.util.Base64.getEncoder().encodeToString(value.toByteArray()))
+    override fun deserialize(decoder: Decoder): ResultCaps =
+        ResultCaps.parseFrom(java.util.Base64.getDecoder().decode(decoder.decodeString()))
+}
 
 /**
  * A one-read snapshot of a task's latest result child, so a concurrent re-execute cannot swap the row
@@ -88,6 +108,8 @@ internal object ResultPayloadCodec {
         }
         result.rowsAffected?.let { rowsAffected = it }
         result.resultFingerprint?.let { resultFingerprint = it }
+        truncatedByCap = result.truncatedByCap
+        result.caps?.let { caps = it }
     }.toByteArray()
 
     fun decode(plaintext: ByteArray): DecryptedResult =
@@ -108,6 +130,8 @@ internal object ResultPayloadCodec {
         rows = stored.rows.rowsList.map { row -> row.valuesList.map { if (it.isNull) null else it.value } },
         rowsAffected = if (stored.hasRowsAffected()) stored.rowsAffected else null,
         resultFingerprint = if (stored.hasResultFingerprint()) stored.resultFingerprint else null,
+        truncatedByCap = stored.truncatedByCap,
+        caps = if (stored.hasCaps()) stored.caps else null,
     )
 }
 

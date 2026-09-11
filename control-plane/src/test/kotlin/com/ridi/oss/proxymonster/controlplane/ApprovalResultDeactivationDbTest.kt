@@ -1,6 +1,7 @@
 package com.ridi.oss.proxymonster.controlplane
 
 import com.ridi.oss.proxymonster.controlplane.support.EnforcementFixture
+import com.ridi.oss.proxymonster.controlplane.support.TEST_RESULT_CAPS
 import com.ridi.oss.proxymonster.controlplane.support.requireDockerOrSkip
 import com.ridi.oss.proxymonster.controlplane.support.testLoginRoute
 import com.ridi.oss.proxymonster.controlplane.support.webSessionCookie
@@ -96,7 +97,7 @@ class ApprovalResultDeactivationDbTest {
         }
         fx.dataSource.connection.use { c -> c.prepareStatement("INSERT INTO query_result (task_id, sql, sql_hash) VALUES (?, 'select 1', 'fixture')").use { ps -> ps.setLong(1, reqId); ps.executeUpdate() } }
         resultStore.startNextRun(reqId, viewer)!!
-        resultStore.completeRun(reqId, DecryptedResult(listOf("id"), listOf(listOf("1"))), 3600)!!
+        resultStore.completeRun(reqId, DecryptedResult(listOf("id"), listOf(listOf("1")), caps = TEST_RESULT_CAPS), 3600)!!
         return reqId
     }
 

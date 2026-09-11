@@ -128,7 +128,7 @@ can tell a result the cap cut short from one the client's own page size ended
 `unmaskedTags` against the stored table the same way the proxy does
 (`resolveCaps` mirrors `ResultCaps.Resolve`), releases the longest prefix within
 rows and bytes, and `ResultViewDecision.Allowed` carries `truncatedAt`. A result
-stored without a table takes the shipped default table.
+stored without a table is refused: every run freezes one.
 
 ### Cedar
 

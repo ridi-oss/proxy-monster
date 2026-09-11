@@ -1130,6 +1130,8 @@ fun Route.editorSessionRoutes(
     // Pushes a task's terminal transition to the owner's SSE stream so the tab updates without waiting for
     // its next poll (null in the many Config-free test constructions — publish is then a no-op).
     taskCompletionHub: TaskCompletionHub? = null,
+    // Feeds the stored-result re-decision the viewer's spent result-read budget, as the wire path does.
+    auditStore: AuditStore? = null,
 ) {
     post("/api/editor/sessions") {
         val principal = call.requireApi() ?: return@post
@@ -1407,7 +1409,7 @@ fun Route.editorSessionRoutes(
         val ctx = viewerDecision(
             principal, task, access.sql, call.httpAuthzContext(config),
             datasourceStore, policyStore, accessStore, userGroupStore, roleResolver, authz,
-            systemClassification, Channel.EDITOR,
+            systemClassification, Channel.EDITOR, auditStore,
         )
         if (meta.status == "FAILED" && access.errorDetail != null) {
             return@get call.respond(
@@ -1438,6 +1440,8 @@ fun Route.editorSessionRoutes(
                         // display as a clean ALLOW.
                         decision = if (viewDecision.maskedColumns.isEmpty()) Decision.ALLOW else Decision.MASK,
                         maskedColumns = viewDecision.maskedColumns,
+                        truncatedAt = viewDecision.truncatedAt,
+                        truncatedByCap = decrypted.truncatedByCap,
                     ),
                 )
         }

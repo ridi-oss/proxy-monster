@@ -13,6 +13,10 @@ import com.ridi.oss.proxymonster.controlplane.management.ManagementAuditRecorder
 import com.ridi.oss.proxymonster.controlplane.notify.NotificationEvent
 import com.ridi.oss.proxymonster.controlplane.notify.NotificationService
 import com.ridi.oss.proxymonster.grpc.EnfAction
+import com.ridi.oss.proxymonster.grpc.rowsBytes
+import com.ridi.oss.proxymonster.grpc.resultCaps
+import com.ridi.oss.proxymonster.grpc.RowsBytes
+import com.ridi.oss.proxymonster.grpc.ResultCaps
 import com.ridi.oss.proxymonster.grpc.RunError
 import com.ridi.oss.proxymonster.probe.Masking
 import com.ridi.oss.proxymonster.probe.bindMasks
@@ -146,6 +150,10 @@ fun discoverRoles(
     val maskedColumns: List<String> = emptyList(),
     // A FAILED run's target-DB error — raw or redacted per this viewer (failedDiagnosticForViewer).
     val errorDetail: String? = null,
+    val truncatedAt: Int? = null,
+    // The EXECUTION's cap, not this view's, ended the stored rows. Independent of [truncatedAt]: a view can
+    // narrow an already-capped result further, and either alone means the viewer is seeing a prefix.
+    val truncatedByCap: Boolean = false,
 )
 
 /** Submit acknowledgement. Completion is observed by polling the task detail/result endpoints. */
@@ -172,6 +180,20 @@ fun validateApprovalSource(decision: AuditEvent?, requestingPrincipal: String): 
         else -> SourceValidation.OK
     }
 
+/** Mirror of goproxy `ResultCaps.Resolve`: no cap when unbounded, else the tightest rows and bytes among
+ *  the default and every entry for a returned unmasked tag. */
+internal fun resolveCaps(table: ResultCaps, unbounded: Boolean, unmaskedTags: Set<String>): RowsBytes {
+    if (unbounded) return RowsBytes.getDefaultInstance()
+    var rows = table.default.rows
+    var bytes = table.default.bytes
+    for (tag in unmaskedTags) {
+        val rb = table.byTagMap[tag] ?: continue
+        if (rb.rows > 0 && (rows == 0L || rb.rows < rows)) rows = rb.rows
+        if (rb.bytes > 0 && (bytes == 0L || rb.bytes < bytes)) bytes = rb.bytes
+    }
+    return rowsBytes { this.rows = rows; this.bytes = bytes }
+}
+
 internal sealed class ResultViewDecision {
     /** [maskedColumns] are the columns this VIEW masked — the viewer's context can narrow an execution's
      *  ALLOW to a MASK, so the released rows are labelled by what happened to them, not by what was stored. */
@@ -179,6 +201,8 @@ internal sealed class ResultViewDecision {
         val columns: List<String>,
         val rows: List<List<String?>>,
         val maskedColumns: List<String> = emptyList(),
+        /** Row count the viewer's own result cap cut the release to; null when every stored row is released. */
+        val truncatedAt: Int? = null,
     ) : ResultViewDecision()
     data class Denied(val reason: String) : ResultViewDecision()
 }
@@ -228,6 +252,33 @@ internal fun viewerDecision(
  * uncertainty denies: policy DENY, passthrough mismatch, fingerprint drift, an unbound mask.
  */
 internal fun decideResultView(ctx: DecisionContext, decrypted: DecryptedResult): ResultViewDecision {
+    // The viewer's caps come from the table the EXECUTION ran under (frozen with the result), resolved for
+    // the viewer's own unbounded/unmasked-tags decision: the longest prefix within rows and bytes is released,
+    // the rest stays encrypted.
+    val storedCaps = decrypted.caps
+        ?: return ResultViewDecision.Denied("stored result carries no cap table")
+    val caps = resolveCaps(storedCaps, ctx.unbounded, ctx.unmaskedTags)
+    fun allowed(columns: List<String>, rows: List<List<String?>>, maskedColumns: List<String> = emptyList()):
+        ResultViewDecision.Allowed {
+        var released = rows.size
+        if (caps.rows > 0) released = minOf(released.toLong(), caps.rows).toInt()
+        if (caps.bytes > 0) {
+            var bytes = 0L
+            for ((index, row) in rows.withIndex()) {
+                if (index >= released) break
+                bytes += resultVolume(listOf(row)).second
+                if (bytes > caps.bytes) {
+                    released = index
+                    break
+                }
+            }
+        }
+        return if (released < rows.size) {
+            ResultViewDecision.Allowed(columns, rows.take(released), maskedColumns, truncatedAt = released)
+        } else {
+            ResultViewDecision.Allowed(columns, rows, maskedColumns)
+        }
+    }
     if (ctx.action == EnfAction.DENY) {
         return ResultViewDecision.Denied(ctx.denyReason ?: ctx.detail ?: "view decision denied")
     }
@@ -257,7 +308,7 @@ internal fun decideResultView(ctx: DecisionContext, decrypted: DecryptedResult):
         if (decrypted.rows.any { it.size != decrypted.columns.size }) {
             return ResultViewDecision.Denied("stored result row width does not match its columns")
         }
-        return ResultViewDecision.Allowed(decrypted.columns, decrypted.rows)
+        return allowed(decrypted.columns, decrypted.rows)
     }
     // Apply the re-decided masks only when the frozen requirements still match the live re-decision — then
     // each masked column keeps the same output ordinals, so ctx.masks bind to the same stored columns they
@@ -278,7 +329,7 @@ internal fun decideResultView(ctx: DecisionContext, decrypted: DecryptedResult):
         if (decrypted.rows.any { it.size != decrypted.columns.size }) {
             return ResultViewDecision.Denied("stored result row width does not match its columns")
         }
-        return ResultViewDecision.Allowed(decrypted.columns, decrypted.rows)
+        return allowed(decrypted.columns, decrypted.rows)
     }
     // The live projection must be the same width as the stored bytes a mask ordinal indexes into; this also
     // denies a plan-shaped result rather than releasing it raw when the EXPLAIN release above did not take it.
@@ -305,7 +356,7 @@ internal fun decideResultView(ctx: DecisionContext, decrypted: DecryptedResult):
     // the decision asked for but could not bind can never be reported as applied. (An unbound one denies
     // above, so the two agree here — reading the binding keeps them agreeing if that ever changes.)
     val maskedColumns = binding.byIndex.keys.sorted().map { decrypted.columns[it] }
-    return ResultViewDecision.Allowed(decrypted.columns, rows, maskedColumns)
+    return allowed(decrypted.columns, rows, maskedColumns)
 }
 
 /**
@@ -946,6 +997,8 @@ fun Route.approvalRoutes(
                         // not the execution that produced it.
                         decision = if (viewDecision.maskedColumns.isEmpty()) Decision.ALLOW else Decision.MASK,
                         maskedColumns = viewDecision.maskedColumns,
+                        truncatedAt = viewDecision.truncatedAt,
+                        truncatedByCap = decrypted.truncatedByCap,
                     ),
                 )
             }

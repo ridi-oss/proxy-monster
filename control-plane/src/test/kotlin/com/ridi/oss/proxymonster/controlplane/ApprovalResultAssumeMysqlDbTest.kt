@@ -8,9 +8,12 @@ import com.ridi.oss.proxymonster.controlplane.authz.AuthzDecision
 import com.ridi.oss.proxymonster.controlplane.authz.AuthzResource
 import com.ridi.oss.proxymonster.controlplane.authz.CedarPolicyInput
 import com.ridi.oss.proxymonster.controlplane.support.EnforcementFixture
+import com.ridi.oss.proxymonster.controlplane.support.TEST_RESULT_CAPS
 import com.ridi.oss.proxymonster.grpc.EnfAction
 import com.ridi.oss.proxymonster.controlplane.support.requireDockerOrSkip
 import org.junit.jupiter.api.BeforeAll
+import com.ridi.oss.proxymonster.grpc.resultCaps
+import com.ridi.oss.proxymonster.grpc.rowsBytes
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.TestInstance
 import kotlin.test.assertEquals
@@ -133,6 +136,7 @@ class ApprovalResultAssumeMysqlDbTest {
             listOf("ssn"),
             listOf(listOf(rawSsn)),
             resultFingerprint = fingerprintOf(decide(Channel.WORKFLOW_EXECUTOR, "100.100.1.10").resultFingerprint),
+            caps = TEST_RESULT_CAPS,
         )
 
         val trusted = decideResultView(viewerCtx(request().sql, "100.100.1.10"), decrypted)
@@ -173,7 +177,7 @@ class ApprovalResultAssumeMysqlDbTest {
         // authorizes it, "authorized to run" is "authorized to see": the stored bytes are released verbatim
         // rather than fail-closing on "re-decided as passthrough".
         val ddl = "CREATE TABLE `users` (\n  `ssn` varchar(20) DEFAULT NULL\n)"
-        val stored = DecryptedResult(listOf("Table", "Create Table"), listOf(listOf("users", ddl)), resultFingerprint = fingerprintOf(emptyList()))
+        val stored = DecryptedResult(listOf("Table", "Create Table"), listOf(listOf("users", ddl)), resultFingerprint = fingerprintOf(emptyList()), caps = TEST_RESULT_CAPS)
         val redecide = decideQuery(
             principal = requester, ds = datasource, sql = "SHOW CREATE TABLE users", channel = Channel.EDITOR,
             catalog = fx.datasourceStore.catalog(datasource.id), policyStore = fx.policyStore,
@@ -191,12 +195,42 @@ class ApprovalResultAssumeMysqlDbTest {
     }
 
     @Test
+    fun `the view resolves the viewer's caps from the table frozen with the result`() {
+        val fingerprint = fingerprintOf(decide(Channel.WORKFLOW_EXECUTOR, "100.100.1.10").resultFingerprint)
+        val rows = List(6) { listOf("x".repeat(10)) }
+        val table = resultCaps {
+            default = rowsBytes { this.rows = 4; bytes = 1_000 }
+            byTag.put("pii", rowsBytes { this.rows = 100; bytes = 25 })
+        }
+        val stored = DecryptedResult(listOf("ssn"), rows, resultFingerprint = fingerprint, caps = table)
+        val ctx = viewerCtx(request().sql, "100.100.1.10")
+
+        // No tagged value in the clear: the default row bound binds.
+        val byRows = assertIs<ResultViewDecision.Allowed>(decideResultView(ctx.copy(unmaskedTags = emptySet()), stored))
+        assertEquals(4, byRows.rows.size)
+        assertEquals(4, byRows.truncatedAt)
+
+        // A pii value in the clear: the tag's 25 bytes admit two 10-byte rows and win over the default rows.
+        val byBytes = assertIs<ResultViewDecision.Allowed>(decideResultView(ctx.copy(unmaskedTags = setOf("pii")), stored))
+        assertEquals(2, byBytes.rows.size)
+        assertEquals(2, byBytes.truncatedAt)
+
+        val whole = assertIs<ResultViewDecision.Allowed>(decideResultView(ctx.copy(unbounded = true, unmaskedTags = setOf("pii")), stored))
+        assertEquals(6, whole.rows.size)
+        assertEquals(null, whole.truncatedAt)
+
+        // Every run freezes its table; a result without one is a contract violation and is refused.
+        val capless = DecryptedResult(listOf("ssn"), rows, resultFingerprint = fingerprint)
+        assertIs<ResultViewDecision.Denied>(decideResultView(ctx.copy(unbounded = true), capless))
+    }
+
+    @Test
     fun `a passthrough that re-decides DENY via Cedar is refused, not released`() {
         // A passthrough is released only when the live re-decision authorizes it. Under a development-only
         // role with no datasource.connect on this system:production datasource, SHOW CREATE TABLE re-decides
         // DENY at the Cedar connect gate, so the view refuses it — the DENY branch, not a blanket passthrough
         // deny. (Contrast the released-as-is case above, which runs under the connect-holding {R}.)
-        val stored = DecryptedResult(listOf("Table", "Create Table"), listOf(listOf("users", "CREATE TABLE `users` ()")), resultFingerprint = fingerprintOf(emptyList()))
+        val stored = DecryptedResult(listOf("Table", "Create Table"), listOf(listOf("users", "CREATE TABLE `users` ()")), resultFingerprint = fingerprintOf(emptyList()), caps = TEST_RESULT_CAPS)
         val view = decideResultView(
             viewerCtx(
                 "SHOW CREATE TABLE users", "100.99.1.10", channel = Channel.EDITOR,
@@ -211,7 +245,7 @@ class ApprovalResultAssumeMysqlDbTest {
     fun `a passthrough result with a mismatched row width is refused`() {
         // The passthrough release path's structural check: stored bytes whose row width does not match the
         // column count are refused rather than released (two columns, a one-cell row).
-        val stored = DecryptedResult(listOf("Table", "Create Table"), listOf(listOf("users")), resultFingerprint = fingerprintOf(emptyList()))
+        val stored = DecryptedResult(listOf("Table", "Create Table"), listOf(listOf("users")), resultFingerprint = fingerprintOf(emptyList()), caps = TEST_RESULT_CAPS)
         val view = decideResultView(viewerCtx("SHOW CREATE TABLE users", "100.99.1.10", channel = Channel.EDITOR), stored)
         assertIs<ResultViewDecision.Denied>(view)
     }
@@ -237,7 +271,7 @@ class ApprovalResultAssumeMysqlDbTest {
             accessStore = fx.accessStore, userGroupStore = fx.userGroupStore, roleResolver = fx.roleResolver,
             authz = fx.authz, providedRoles = setOf(roleName), context = AuthzContext(requesterIp = executeIp),
         )
-        return DecryptedResult(plan.columns, plan.rows, resultFingerprint = fingerprintOf(executed.resultFingerprint))
+        return DecryptedResult(plan.columns, plan.rows, resultFingerprint = fingerprintOf(executed.resultFingerprint), caps = TEST_RESULT_CAPS)
     }
 
     // The release must come from the plan-only EXPLAIN branch, not passthrough or the projection path.
@@ -300,7 +334,7 @@ class ApprovalResultAssumeMysqlDbTest {
     @Test
     fun `an explain with a drifted fingerprint is refused before the release path`() {
         val stored = storedExplain("EXPLAIN SELECT id FROM users")
-        val drifted = DecryptedResult(stored.columns, stored.rows, resultFingerprint = null)
+        val drifted = DecryptedResult(stored.columns, stored.rows, resultFingerprint = null, caps = TEST_RESULT_CAPS)
         assertIs<ResultViewDecision.Denied>(viewExplain("EXPLAIN SELECT id FROM users", drifted))
     }
 
@@ -309,7 +343,7 @@ class ApprovalResultAssumeMysqlDbTest {
         val stored = storedExplain("EXPLAIN SELECT id FROM users")
         check(stored.columns.size > 1)
         val malformed = DecryptedResult(
-            stored.columns.dropLast(1), stored.rows, resultFingerprint = stored.resultFingerprint,
+            stored.columns.dropLast(1), stored.rows, resultFingerprint = stored.resultFingerprint, caps = TEST_RESULT_CAPS,
         )
         assertIs<ResultViewDecision.Denied>(viewExplain("EXPLAIN SELECT id FROM users", malformed))
     }

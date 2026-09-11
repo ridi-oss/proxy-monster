@@ -1,10 +1,12 @@
 package com.ridi.oss.proxymonster.controlplane
 
+import com.ridi.oss.proxymonster.analyzer.pb.ResultFingerprint
 import com.ridi.oss.proxymonster.controlplane.authz.CedarPolicyInput
 import com.ridi.oss.proxymonster.controlplane.grpc.CONTROL_PROTOCOL_VERSION
 import com.ridi.oss.proxymonster.controlplane.grpc.ControlPlaneGrpcService
 import com.ridi.oss.proxymonster.controlplane.grpc.GrpcServer
 import com.ridi.oss.proxymonster.controlplane.support.SharedPostgres
+import com.ridi.oss.proxymonster.controlplane.support.TEST_RESULT_CAPS
 import com.ridi.oss.proxymonster.controlplane.support.requireDockerOrSkip
 import com.ridi.oss.proxymonster.controlplane.support.testLoginRoute
 import com.ridi.oss.proxymonster.controlplane.support.webSessionCookie
@@ -156,7 +158,7 @@ class EditorSubmitRouteDbTest {
                 editorSessionRoutes(
                     config, core.datasourceStore, core.accessStore, resultStore,
                     core.policyStore, core.userGroupStore, core.roleResolver, core.authz, runExecService,
-                    appScope, core.systemClassification, hub,
+                    appScope, core.systemClassification, hub, core.auditStore,
                 )
             }
         }
@@ -591,6 +593,90 @@ class EditorSubmitRouteDbTest {
         // With the forbid gone the owner polls again — proving the 404 was the forbid, not a route bug.
         assertEquals(HttpStatusCode.OK, client.get("/api/editor/tasks/${task.id}").status)
         core.accessStore.deleteEditorTask(task.id, caller)
+    }
+
+    @Test
+    fun `the editor result re-decision carries the viewer's spent result-read budget`() = testApplication {
+        val client = wire()
+        core.auditStore.insert(
+            AuditEvent(
+                principal = caller, datasource = datasource.name, statement = "select 42",
+                decision = Decision.ALLOW, kind = "completion", rowsReturned = 7, bytesReturned = 70,
+            ),
+        )
+        // A catalog-free statement, so the view releases on its own merits and the budget forbid below is
+        // the only thing that can deny it.
+        val task = core.accessStore.createEditorTask(
+            caller, datasource.id, listOf("select 42"), listOf("editor-analyst"), caller,
+        )
+        resultStore.startNextRun(task.id, caller)
+        // A present-but-empty fingerprint is a grant-less passthrough, which releases raw; an ABSENT one is
+        // legacy and fails closed, which would mask the gate under test.
+        resultStore.completeRun(
+            task.id,
+            DecryptedResult(listOf("n"), listOf(listOf("42")), resultFingerprint = ResultFingerprint.getDefaultInstance(), caps = TEST_RESULT_CAPS),
+            3600,
+        )
+        val connect = core.cedarPolicyStore.create(
+            CedarPolicyInput(
+                name = "editor-view-connect",
+                cedarSrc = """permit(
+                    principal == User::"$caller",
+                    action in [Action::"datasource.connect", Action::"stmt.cat.read"],
+                    resource
+                );""",
+            ),
+            updatedBy = "test",
+        )
+        assertEquals(HttpStatusCode.OK, client.get("/api/editor/tasks/${task.id}/result").status)
+
+        val gate = core.cedarPolicyStore.create(
+            CedarPolicyInput(
+                name = "editor-view-requires-budget",
+                cedarSrc = """forbid(principal, action == Action::"datasource.connect", resource)
+                    when { context has budget_rows_1h && context.budget_rows_1h >= 7 };""",
+            ),
+            updatedBy = "test",
+        )
+        try {
+            // Only reachable if the route fed the re-decision an AuditStore: absent attributes skip the guard.
+            assertEquals(HttpStatusCode.Forbidden, client.get("/api/editor/tasks/${task.id}/result").status)
+        } finally {
+            core.cedarPolicyStore.delete(gate.id)
+            core.cedarPolicyStore.delete(connect.id)
+        }
+    }
+
+    @Test
+    fun `an editor result charges the caller's volume budget with one completion per statement`() = testApplication {
+        val client = wire()
+        val before = core.auditStore.completionBudget(caller, java.time.Instant.now())
+        // The run channel emits no completion report, so the decision row the proxy names is what the
+        // control plane charges the released rows against.
+        val decisionId = core.auditStore.insert(
+            AuditEvent(principal = caller, datasource = datasource.name, statement = "select id from t", decision = Decision.ALLOW, channel = "editor"),
+        )
+        supervisorScope {
+            val session = openFakeSession(client) { req, _ ->
+                req.send(proxyRunMsg { decision = runDecision { decision = WireEnfAction.ALLOW; this.decisionId = decisionId } })
+                req.send(rowsChunk(listOf("id"), listOf(listOf("1"), listOf("22"), listOf(null))))
+                req.send(proxyRunMsg { done = runDone { rowsAffected = -1 } })
+            }
+            val ack = client.post("/api/editor/sessions/${session.sessionId}/query") {
+                contentType(ContentType.Application.Json); setBody(QueryRequest("select id from t", 100))
+            }.body<EditorSubmitResponse>()
+            awaitUntil("child DONE") { resultStore.meta(ack.taskId)?.status == "DONE" }
+            assertEquals(decisionId, resultStore.meta(ack.taskId)?.decisionId, "a DONE result keeps its execution decision")
+            val after = core.auditStore.completionBudget(caller, java.time.Instant.now())
+            assertEquals(before.rows1h + 3, after.rows1h)
+            assertEquals(before.bytes1h + 3, after.bytes1h, "bytes are the UTF-8 size of the non-null cells")
+            val completions = core.auditStore.recent(50).filter { it.kind == "completion" && it.decisionId == decisionId }
+            assertEquals(1, completions.size, "exactly one completion charges the statement")
+            assertEquals(caller, completions.single().principal)
+            client.delete("/api/editor/tasks/${ack.taskId}")
+            client.delete("/api/editor/sessions/${session.sessionId}")
+            session.await()
+        }
     }
 
     @Test

@@ -3,6 +3,7 @@ package com.ridi.oss.proxymonster.controlplane
 import com.ridi.oss.proxymonster.controlplane.authz.AuthzContext
 import com.ridi.oss.proxymonster.controlplane.authz.CedarPolicyInput
 import com.ridi.oss.proxymonster.controlplane.support.EnforcementFixture
+import com.ridi.oss.proxymonster.controlplane.support.TEST_RESULT_CAPS
 import com.ridi.oss.proxymonster.controlplane.support.requireDockerOrSkip
 import com.ridi.oss.proxymonster.grpc.EnfAction
 import org.junit.jupiter.api.BeforeAll
@@ -123,6 +124,7 @@ class AccountManagementEnforcementDbTest {
             // A genuine passthrough stores a present-but-empty fingerprint (no result-read grants); null would
             // read as a legacy result and fail closed at view.
             resultFingerprint = fingerprintOf(emptyList()),
+            caps = TEST_RESULT_CAPS,
         )
         val viewCtx = viewerDecision(
             admin, request(), createUserRandom, AuthzContext(requesterIp = "10.23.1.1"),

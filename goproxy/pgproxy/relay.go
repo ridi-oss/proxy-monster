@@ -319,7 +319,7 @@ func (s *Server) handleQuery(sess *session, sql string) error {
 	// Post-relay, best-effort completion: only a relayed (Proceed) statement reports. A DENY relayed
 	// nothing, and EmitCompletion additionally no-ops for a decision with no audit id.
 	if !denied {
-		engine.EmitCompletion(s.client, decision, relayStats, relayStatus, start)
+		sess.qe.AwaitCompletion(engine.EmitCompletion(s.client, decision, relayStats, relayStatus, start))
 	}
 	if err != nil {
 		var fail engine.FailError

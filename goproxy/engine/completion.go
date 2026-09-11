@@ -51,15 +51,18 @@ func RelayStatus(clean bool, err error) string {
 	return StatusError
 }
 
-// EmitCompletion fires a best-effort post-relay completion report and returns immediately. It NEVER blocks
-// the caller — the report goes on its own goroutine, off the client session's critical path — and NEVER
-// surfaces an error, because a completion is an audit-only signal. No report is sent for a statement that
-// was never relayed to the client (dec is nil) or whose decision carries no audit id (DecisionID 0 — a
-// decision the control plane did not record, e.g. a fail-closed path); a DENY relays nothing and so is
-// never reached here. duration is measured from start to now.
-func EmitCompletion(reporter CompletionReporter, dec *Decision, stats RelayStats, status string, start time.Time) {
+// EmitCompletion fires a post-relay completion report on its own goroutine and returns a channel that closes
+// when the report has been sent (or given up on). It never blocks the caller and never surfaces an error: a
+// lost completion degrades the audit volume signal, not the client session. The returned channel is what
+// lets the SAME connection's next Decide see this statement's volume (QueryEngine.AwaitCompletion): a
+// sequential dump script must not outrun its own budget. No report is sent for a statement that was never
+// relayed (dec nil) or whose decision carries no audit id (DecisionID 0, a fail-closed path); the channel is
+// then already closed.
+func EmitCompletion(reporter CompletionReporter, dec *Decision, stats RelayStats, status string, start time.Time) <-chan struct{} {
+	done := make(chan struct{})
 	if reporter == nil || dec == nil || dec.DecisionID == 0 {
-		return
+		close(done)
+		return done
 	}
 	report := CompletionReport{
 		DecisionID:    dec.DecisionID,
@@ -68,5 +71,9 @@ func EmitCompletion(reporter CompletionReporter, dec *Decision, stats RelayStats
 		Status:        status,
 		DurationMs:    time.Since(start).Milliseconds(),
 	}
-	go reporter.ReportCompletion(report)
+	go func() {
+		defer close(done)
+		reporter.ReportCompletion(report)
+	}()
+	return done
 }

@@ -6,10 +6,12 @@ import com.cedarpolicy.value.CedarList
 import com.cedarpolicy.value.EntityTypeName
 import com.cedarpolicy.value.EntityUID
 import com.cedarpolicy.value.IpAddress
+import com.cedarpolicy.value.PrimLong
 import com.cedarpolicy.value.PrimString
 import com.cedarpolicy.value.Unknown
 import com.cedarpolicy.value.Value
 import com.ridi.oss.proxymonster.controlplane.ApiError
+import com.ridi.oss.proxymonster.controlplane.CompletionBudget
 import com.ridi.oss.proxymonster.controlplane.Config
 import com.ridi.oss.proxymonster.controlplane.TokenKind
 import com.ridi.oss.proxymonster.controlplane.httpAuthzContext
@@ -42,6 +44,7 @@ enum class AuthzAction(val cedarId: String) {
     AUDIT_READ("audit.read"),
     RESULT_READ_UNMASKED("result.read.unmasked"),
     RESULT_READ_MASKED("result.read.masked"),
+    RESULT_READ_UNBOUNDED("result.read.unbounded"),
     DATASOURCE_CONNECT("datasource.connect"),
     // Statement categories (stmt.cat.*) are NOT enumerated here: a statement is authorized by its kind
     // (stmt.kind.<k>, from the statement_exec grant) and the Cedar schema alone maps a kind to its category.
@@ -164,7 +167,22 @@ data class AuthzContext(
     // The statement's classified kind leaf (`select`, `explain`, `insert`, …). Lets a read policy condition
     // on HOW a column is read — e.g. `result.read.unmasked` only under a plan-only EXPLAIN. Server-attested.
     val stmtKind: String? = null,
+    // The principal's already-relayed result volume per rolling window (docs/result-caps.md), so the shipped
+    // budget forbids can deny a read once a window is spent. Absent (all null) means the caller either holds
+    // `result.read.unbounded` or is not a per-statement decision at all.
+    val budgetRows1h: Long? = null,
+    val budgetBytes1h: Long? = null,
+    val budgetRows24h: Long? = null,
+    val budgetBytes24h: Long? = null,
 ) {
+    fun withBudget(budget: CompletionBudget): AuthzContext = copy(
+        budgetRows1h = budget.rows1h, budgetBytes1h = budget.bytes1h,
+        budgetRows24h = budget.rows24h, budgetBytes24h = budget.bytes24h,
+    )
+
+    fun withoutBudgets(): AuthzContext =
+        copy(budgetRows1h = null, budgetBytes1h = null, budgetRows24h = null, budgetBytes24h = null)
+
     /**
      * The Cedar `context` map. `network_zones` is always present (empty set if none); `tags` too UNLESS
      * [includeTags] is false — pass-1 tag derivation ([resolveContextTags]) omits it so a tag rule can't read
@@ -177,6 +195,10 @@ data class AuthzContext(
         if (includeTags) put("tags", CedarList(tags.map { PrimString(it) as Value }))
         channel?.let { put("channel", PrimString(it)) }
         stmtKind?.let { put("stmt_kind", PrimString(it)) }
+        budgetRows1h?.let { put("budget_rows_1h", PrimLong(it)) }
+        budgetBytes1h?.let { put("budget_bytes_1h", PrimLong(it)) }
+        budgetRows24h?.let { put("budget_rows_24h", PrimLong(it)) }
+        budgetBytes24h?.let { put("budget_bytes_24h", PrimLong(it)) }
         requesterIp?.let { ip ->
             // Defensive: a malformed IP must NEVER break the whole decision. Fail-closed means the attribute
             // is simply absent (a policy conditioning on it then denies), not a thrown IpAddress constructor

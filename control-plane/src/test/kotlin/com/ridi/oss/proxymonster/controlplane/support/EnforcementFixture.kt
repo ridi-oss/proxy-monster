@@ -171,11 +171,12 @@ class EnforcementFixture(
         // execute + stored-result view path), exercising the decision's own live-role re-filter.
         providedRoles: Set<String>? = null,
         datasource: Datasource = this.datasource,
+        auditStore: AuditStore? = null,
     ): DecisionContext =
         decideQuery(
             principal, datasource, sql, channel, datasourceStore.catalog(datasource.id),
             policyStore, accessStore, userGroupStore, roleResolver, authz,
-            providedRoles = providedRoles,
+            providedRoles = providedRoles, auditStore = auditStore,
         )
 
     /** Run raw SQL directly against the target (test setup/teardown; no enforcement gate). */

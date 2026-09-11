@@ -83,4 +83,32 @@ class ChannelContextAuthzTest {
         )
         assertFailsWith<IllegalStateException> { CedarEngine(unguarded) }
     }
+
+    @Test
+    fun `budget longs reach the real Cedar engine and absent attributes fail their guards`() {
+        val gate = authz(
+            listOf(
+                1L to """
+                    permit(principal, action == Action::"result.read.unbounded", resource) when {
+                        context has budget_rows_1h && context.budget_rows_1h == 11 &&
+                        context has budget_bytes_1h && context.budget_bytes_1h == 2200000000 &&
+                        context has budget_rows_24h && context.budget_rows_24h == 33 &&
+                        context has budget_bytes_24h && context.budget_bytes_24h == 4400000000
+                    };
+                """,
+            ),
+        )
+        // Values above Int range: a budget is a Cedar Long, not a narrowed number.
+        val budget = CompletionBudget(rows1h = 11, bytes1h = 2_200_000_000, rows24h = 33, bytes24h = 4_400_000_000)
+        val context = AuthzContext().withBudget(budget)
+        fun decide(ctx: AuthzContext) =
+            gate.authorizeDatasourceAction("alice", emptySet(), AuthzAction.RESULT_READ_UNBOUNDED, "acme-mysql", ctx)
+
+        assertEquals(AuthzDecision.Allow, decide(context))
+        assertIs<AuthzDecision.Deny>(decide(context.withoutBudgets()))
+        assertIs<AuthzDecision.Deny>(decide(context.copy(budgetRows1h = null)))
+        assertIs<AuthzDecision.Deny>(decide(context.copy(budgetBytes1h = null)))
+        assertIs<AuthzDecision.Deny>(decide(context.copy(budgetRows24h = null)))
+        assertIs<AuthzDecision.Deny>(decide(context.copy(budgetBytes24h = null)))
+    }
 }

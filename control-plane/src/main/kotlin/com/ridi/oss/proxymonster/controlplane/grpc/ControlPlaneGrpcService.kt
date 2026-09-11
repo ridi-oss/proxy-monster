@@ -6,7 +6,7 @@ import com.ridi.oss.proxymonster.controlplane.AuthAuditRecorder.Companion.CHANNE
 import com.ridi.oss.proxymonster.controlplane.AuthAuditRecorder.Companion.PRINCIPAL_UNATTRIBUTED
 import com.ridi.oss.proxymonster.controlplane.auditedValue
 import com.ridi.oss.proxymonster.controlplane.AttachedTableDetail
-import com.ridi.oss.proxymonster.controlplane.AuditEvent
+import com.ridi.oss.proxymonster.controlplane.completionEvent
 import com.ridi.oss.proxymonster.controlplane.CatalogColumn
 import com.ridi.oss.proxymonster.controlplane.FragmentColumn
 import com.ridi.oss.proxymonster.controlplane.Binding
@@ -296,18 +296,8 @@ class ControlPlaneGrpcService(
         }
         val decision = core.auditStore.get(request.decisionId)
             ?: throw StatusException(Status.NOT_FOUND.withDescription("unknown decision_id ${request.decisionId}"))
-        val completionEvent = AuditEvent(
-            principal = decision.principal,
-            datasource = decision.datasource,
-            statement = decision.statement,
-            decision = decision.decision,
-            channel = decision.channel,
-            kind = "completion",
-            decisionId = request.decisionId,
-            rowsReturned = request.rowsReturned,
-            bytesReturned = request.bytesReturned,
-            outcome = status,
-            latencyMs = request.durationMs,
+        val completionEvent = completionEvent(
+            decision, request.decisionId, request.rowsReturned, request.bytesReturned, status, request.durationMs,
         )
         core.dataSource.inTx { conn ->
             core.auditStore.insert(conn, completionEvent)

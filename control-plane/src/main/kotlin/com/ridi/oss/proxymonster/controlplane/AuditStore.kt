@@ -6,11 +6,18 @@ import kotlinx.serialization.json.Json
 import java.sql.Connection
 import java.sql.ResultSet
 import java.sql.Types
+import java.time.Duration
 import java.time.Instant
 import java.time.OffsetDateTime
 import java.time.ZoneOffset
 import java.time.temporal.ChronoUnit
 import javax.sql.DataSource
+
+val BUDGET_WINDOW_1H: Duration = Duration.ofHours(1)
+val BUDGET_WINDOW_24H: Duration = Duration.ofHours(24)
+
+/** One principal's relayed result volume over both budget windows (docs/result-caps.md). */
+data class CompletionBudget(val rows1h: Long, val bytes1h: Long, val rows24h: Long, val bytes24h: Long)
 
 /**
  * Plain-JDBC persistence for [AuditEvent]s. Every new event is linked to the current chain head while
@@ -20,8 +27,29 @@ class AuditStore(private val dataSource: DataSource) {
     private val json = Json
     private val stringList = ListSerializer(String.serializer())
 
+    /**
+     * The rolling result volume this principal has already drawn, summed over the completion events the
+     * wire relay writes. Both windows come from one scan of the widest one (`audit_event_completion_principal_ts`).
+     */
+    fun completionBudget(principal: String, now: Instant): CompletionBudget = dataSource.connection.use { c ->
+        c.prepareStatement(COMPLETION_BUDGET_SQL).use { ps ->
+            val since1h = OffsetDateTime.ofInstant(now.minus(BUDGET_WINDOW_1H), ZoneOffset.UTC)
+            ps.setObject(1, since1h)
+            ps.setObject(2, since1h)
+            ps.setString(3, principal)
+            ps.setObject(4, OffsetDateTime.ofInstant(now.minus(BUDGET_WINDOW_24H), ZoneOffset.UTC))
+            ps.executeQuery().use { rs ->
+                check(rs.next()) { "audit completion budget aggregate returned no row" }
+                CompletionBudget(rs.getLong(1), rs.getLong(2), rs.getLong(3), rs.getLong(4))
+            }
+        }
+    }
+
     /** Insert one audit event in its own transaction and return its app-allocated id. */
     fun insert(rec: AuditEvent): Long = dataSource.inTx { insert(it, rec) }
+
+    /** Insert several events in one transaction, in order. */
+    fun insertAll(recs: List<AuditEvent>) = dataSource.inTx { c -> recs.forEach { insert(c, it) } }
 
     /**
      * Insert on a caller-provided transaction so an audit event can commit atomically with its state change.
@@ -168,6 +196,14 @@ class AuditStore(private val dataSource: DataSource) {
 
     private companion object {
         const val SHA256_BYTES = 32
+        const val COMPLETION_BUDGET_SQL = """
+            SELECT COALESCE(SUM(rows_returned) FILTER (WHERE ts >= ?), 0),
+                   COALESCE(SUM(bytes_returned) FILTER (WHERE ts >= ?), 0),
+                   COALESCE(SUM(rows_returned), 0),
+                   COALESCE(SUM(bytes_returned), 0)
+            FROM audit_event
+            WHERE kind = 'completion' AND principal = ? AND ts >= ?
+        """
         const val CHAIN_HEAD_LOCK_SQL =
             "SELECT last_id, head_hash FROM audit_chain_head WHERE id = 1 FOR UPDATE"
         const val CHAIN_HEAD_UPDATE_SQL =

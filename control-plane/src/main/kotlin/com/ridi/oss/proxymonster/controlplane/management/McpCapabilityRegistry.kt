@@ -43,6 +43,7 @@ object McpCapabilityRegistry {
         AuthzAction.AUDIT_READ,
         AuthzAction.RESULT_READ_UNMASKED,
         AuthzAction.RESULT_READ_MASKED,
+        AuthzAction.RESULT_READ_UNBOUNDED,
         AuthzAction.DATASOURCE_CONNECT,
         AuthzAction.EXCEPTION_UNANALYZABLE,
         AuthzAction.EXCEPTION_UNMASKABLE,

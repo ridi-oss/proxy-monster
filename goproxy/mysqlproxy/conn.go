@@ -282,7 +282,7 @@ func (s *Server) handleConn(clientConn net.Conn) {
 			// Post-relay, best-effort completion: only a relayed (Proceed) statement reports. A DENY relayed
 			// nothing, and EmitCompletion additionally no-ops for a decision with no audit id.
 			if !denied {
-				engine.EmitCompletion(s.client, decision, relayStats, relayStatus, start)
+				qe.AwaitCompletion(engine.EmitCompletion(s.client, decision, relayStats, relayStatus, start))
 			}
 			if serveErr != nil {
 				var fail engine.FailError
@@ -450,7 +450,7 @@ func (s *Server) handleConn(clientConn net.Conn) {
 			}
 			ok, stats, err := relayQueryResponseTracked(clientConn, targetDbConn, deprecateEOF, nil, errRedactor(qe), proceed.Decision.MaxRows, proceed.Decision.MaxBytes, cancelQuery)
 			// Post-relay, best-effort completion for this binary-protocol EXECUTE (no-op if unaudited).
-			engine.EmitCompletion(s.client, proceed.Decision, stats, engine.RelayStatus(ok, err), start)
+			qe.AwaitCompletion(engine.EmitCompletion(s.client, proceed.Decision, stats, engine.RelayStatus(ok, err), start))
 			if err != nil {
 				return
 			}

@@ -61,6 +61,7 @@ import kotlinx.serialization.descriptors.SerialDescriptor
 import kotlinx.serialization.encoding.Decoder
 import kotlinx.serialization.encoding.Encoder
 import org.slf4j.LoggerFactory
+import java.time.Instant
 
 private val queryLog = LoggerFactory.getLogger("com.ridi.oss.proxymonster.controlplane.Query")
 
@@ -192,6 +193,9 @@ data class DecisionContext(
      * early denies (admission-reject / deactivated principal), which return before any `context.tags` is
      * derived and so were evaluated under none. */
     val contextTags: List<String> = emptyList(),
+    /** Result-cap inputs (docs/result-caps.md): [unbounded] lifts every cap (an ALLOW on `result.read.unbounded`);
+     * [unmaskedTags] are the classification tags whose values this statement returns in the clear. The proxy
+     * owns the numbers and resolves them from its cap table. */
     val unbounded: Boolean = false,
     val unmaskedTags: Set<String> = emptySet(),
     /** MASK-only capability grant. A proxy may relay an unmaskable binary result unmasked iff this is true
@@ -424,6 +428,7 @@ fun decideQuery(
     userGroupStore: UserGroupStore,
     roleResolver: RoleResolver,
     authz: Authz,
+    auditStore: AuditStore? = null,
     // Almost always null (resolve server-side below). Tests that already resolved roles once and
     // want decideQuery + authz.authorizeColumns to see the EXACT same set (no risk of a second,
     // out-of-band resolve() disagreeing with the first) may pass them explicitly.
@@ -495,8 +500,8 @@ fun decideQuery(
     val statementKind = if (facts.hasStatementExec()) facts.statementExec.statementKind
     else StatementKind.STATEMENT_KIND_STMT_UNKNOWN
     @Suppress("NAME_SHADOWING")
-    val context = effectiveAuthzContext(
-        context, channel, authz, principal, roles, ds.name, ds.tags,
+    var context = effectiveAuthzContext(
+        context.withoutBudgets(), channel, authz, principal, roles, ds.name, ds.tags,
         stmtKind = statementKind
             .takeIf {
                 it != StatementKind.STATEMENT_KIND_UNSPECIFIED &&
@@ -505,6 +510,14 @@ fun decideQuery(
             }
             ?.name?.removePrefix("STATEMENT_KIND_")?.lowercase(),
     )
+    // Result caps and volume budgets are one gate (docs/result-caps.md): an ALLOW on result.read.unbounded
+    // both lifts the per-statement cap and withholds the budget attributes, so the shipped budget forbids
+    // cannot fire. Read once here, before the column/table decisions that evaluate against them.
+    val unbounded = authz.authorizeDatasourceAction(
+        principal, roles, AuthzAction.RESULT_READ_UNBOUNDED, ds.name, context, ds.tags,
+    ) is AuthzDecision.Allow
+    val budget = if (unbounded) null else auditStore?.completionBudget(principal, Instant.now())
+    budget?.let { context = context.withBudget(it) }
     val derivedTags = context.tags.toList()
 
     // Fail-closed contract validation (analyzer.proto): the single statement-execution grant is the sole
@@ -547,6 +560,20 @@ fun decideQuery(
     fun deny(reason: String, catalogMiss: Boolean = false): DecisionContext =
         policyDeny(reason, roleList, derivedTags)
             .copy(catalogMiss = catalogMiss, schemaCandidates = facts.schemaQualifierCandidatesList.toSet())
+
+    // A spent budget denies through the same Cedar read gate as any other policy, so the reason has to be
+    // recovered: re-decide this ONE resource with the budget attributes withheld, and when that flips to
+    // ALLOW name the window whose numbers alone still deny. Deny path only — allows pay nothing.
+    fun budgetDenyReason(fallback: String, allows: (AuthzContext) -> Boolean): String {
+        val spent = budget ?: return fallback
+        val unbudgeted = context.withoutBudgets()
+        if (!allows(unbudgeted)) return fallback
+        val windows = buildList {
+            if (!allows(unbudgeted.withBudget(spent.copy(rows24h = 0, bytes24h = 0)))) add("1h")
+            if (!allows(unbudgeted.withBudget(spent.copy(rows1h = 0, bytes1h = 0)))) add("24h")
+        }.ifEmpty { listOf("1h", "24h") }
+        return "$BUDGET_SPENT_DENY (${windows.joinToString(" and ")})"
+    }
 
     when (authz.authorizeDatasourceAction(principal, roles, AuthzAction.DATASOURCE_CONNECT, ds.name, context, ds.tags)) {
         is AuthzDecision.Deny -> return policyDeny("no access to datasource '${ds.name}'", roleList, derivedTags)
@@ -617,6 +644,7 @@ fun decideQuery(
             .copy(
                 sanitizeDiagnostics = !readsAllUnmasked(principal, roles, ds, catalog, facts.diagnosticLeakColumnsList, context, authz, systemClassification),
                 schemaCandidates = facts.schemaQualifierCandidatesList.toSet(),
+                unbounded = unbounded,
             )
             .withAnalyzerRewrite(facts)
     }
@@ -658,6 +686,7 @@ fun decideQuery(
                 catalogMiss = true,
                 // Unanalyzable: no leak set to authorize, so fail closed and redact the diagnostic.
                 sanitizeDiagnostics = true,
+                unbounded = unbounded,
             )
             is AuthzDecision.Deny -> deny(reason, catalogMiss = true)
         }
@@ -704,6 +733,7 @@ fun decideQuery(
                 schemaCandidates = facts.schemaQualifierCandidatesList.toSet(),
                 // An uncovered column means the leak set can't be authorized — fail closed and redact.
                 sanitizeDiagnostics = true,
+                unbounded = unbounded,
             )
             is AuthzDecision.Deny -> structuralDeny(
                 coverage.reason, roleList, failedStage = "catalog", contextTags = derivedTags,
@@ -761,7 +791,9 @@ fun decideQuery(
         val verdict = if (row.isTemp) ColumnVerdict.UNMASKED else columnVerdicts[key] ?: ColumnVerdict.DENIED
         when (verdict) {
             ColumnVerdict.UNMASKED -> Unit
-            ColumnVerdict.DENIED -> return deny("policy denies column $key")
+            ColumnVerdict.DENIED -> return deny(budgetDenyReason("policy denies column $key") { retryContext ->
+                authz.authorizeColumns(principal, roles, ds.name, listOf(columnRefs.first { it.key == key }), retryContext, systemTags, ds.tags)[key] in setOf(ColumnVerdict.UNMASKED, ColumnVerdict.MASKED)
+            })
             ColumnVerdict.MASKED -> when (grant.maskedDisposition) {
                 MaskedDisposition.MASKED_DISPOSITION_DENY_STATEMENT,
                 MaskedDisposition.MASKED_DISPOSITION_UNSPECIFIED,
@@ -806,7 +838,9 @@ fun decideQuery(
         }.distinctBy { it.key }
         val verdicts = authz.authorizeTables(principal, roles, ds.name, refs, context, systemTags, ds.tags)
         refs.firstOrNull { verdicts[it.key] != TableVerdict.READ }?.let {
-            return deny("no read grant for scanned table '${it.schema}.${it.table}'")
+            return deny(budgetDenyReason("no read grant for scanned table '${it.schema}.${it.table}'") { retryContext ->
+                authz.authorizeTables(principal, roles, ds.name, listOf(it), retryContext, systemTags, ds.tags)[it.key] == TableVerdict.READ
+            })
         }
     }
 
@@ -849,6 +883,7 @@ fun decideQuery(
         action = action,
         denyReason = null,
         masks = masks,
+        unbounded = unbounded,
         unmaskedTags = unmaskedTags,
         piiTouched = tagged,
         effectiveRoles = roleList,
@@ -874,12 +909,12 @@ private val MALFORMED_DISPOSITIONS = setOf(
     MaskedDisposition.UNRECOGNIZED,
 )
 
-
 internal const val MASK_BIND_DENY = "required mask could not be bound to a result column"
 private const val SYSTEM_FUNCTION_DENY = "dangerous system function is not allowed:"
 private const val SYSTEM_UTILITY_DENY = "utility command is not allowed on this datasource:"
 private const val DEACTIVATED_PRINCIPAL_DENY = "principal is deprovisioned (deactivated) — access denied"
 private const val CATALOG_CONFIGURATION_DENY = "fail-closed: invalid catalog or analyzer namespace configuration"
+internal const val BUDGET_SPENT_DENY = "principal result-read budget is spent"
 private const val WIRE_TASK_FORBIDDEN_DENY = "automatic task approval is not permitted for this datasource"
 
 private fun structuralDeny(
@@ -1197,7 +1232,7 @@ fun Route.editorSessionRoutes(
                     // The parent flips to EXECUTED only on the LAST statement. The per-statement Decide
                     // already wrote the real audit decision, so no task-level row is added here.
                     val last = ordinal == statements.lastIndex
-                    val completed = store.completeRun(task.id, result, QueryResultStore.RESULT_RETENTION_SEC) { conn, _ ->
+                    val completed = store.completeRun(task.id, result, QueryResultStore.RESULT_RETENTION_SEC, response.decisionId) { conn, _ ->
                         if (last && !accessStore.markExecuted(task.id, conn)) {
                             throw IllegalStateException("editor task ${task.id} left EXECUTING before completion")
                         }

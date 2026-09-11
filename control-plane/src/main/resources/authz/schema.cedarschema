@@ -120,6 +120,10 @@ type RequestContext = {
     // condition on HOW a column is read — e.g. permit `result.read.unmasked` only under a plan-only
     // EXPLAIN (`context.stmt_kind == "explain"`), which returns no rows.
     stmt_kind?: String,
+    budget_rows_1h?: Long,
+    budget_bytes_1h?: Long,
+    budget_rows_24h?: Long,
+    budget_bytes_24h?: Long,
 };
 
 // Global admin surfaces (App.kt route groups gated via requireAdmin). No per-resource scoping —
@@ -218,6 +222,13 @@ action "result.read.unmasked", "result.read.masked"
 // authorization is the statement-classification gate (stmt.cat.* / stmt.kind.*, below), the only
 // datasource-statement vocabulary — a policy naming any other statement action fails validation.
 action "datasource.connect"
+  appliesTo {
+    principal: [User, Role],
+    resource: [Datasource],
+    context: RequestContext,
+  };
+
+action "result.read.unbounded"
   appliesTo {
     principal: [User, Role],
     resource: [Datasource],

@@ -27,22 +27,18 @@ type Datasource struct {
 	WireTLS bool `json:"advertiseWireTls"`
 }
 
-// Brokerable reports whether this datasource can be fronted by a local broker: it needs an advertised proxy
-// address (so the daemon knows where to dial) and a wire protocol the broker speaks. Only MySQL is brokered
-// today — Postgres brokering is backlogged, so PG datasources are discovered but skipped.
+// Brokerable reports whether this datasource has an address and a wire protocol the local broker speaks.
 func (d Datasource) Brokerable() bool {
-	return d.AdvertiseAddr != "" && d.Engine == "mysql"
+	return d.AdvertiseAddr != "" && (d.Engine == "mysql" || d.Engine == "postgres")
 }
 
 // UnbrokerableReason explains why a discovered datasource has no local listener, for a peer to show in place
 // of a connection string.
 func (d Datasource) UnbrokerableReason() string {
 	switch {
-	case d.Engine == "postgres":
-		return "postgres brokering not yet supported"
 	case d.AdvertiseAddr == "":
 		return "no advertised proxy address"
-	case d.Engine != "mysql":
+	case d.Engine != "mysql" && d.Engine != "postgres":
 		return fmt.Sprintf("engine %q not brokered", d.Engine)
 	default:
 		return ""

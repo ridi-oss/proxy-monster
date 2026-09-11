@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -168,12 +169,12 @@ func TestBrokeringImpliesALocalPassword(t *testing.T) {
 	}
 }
 
-// TestStatusReportsUnbrokerableDatasourcesWithAReason: a PG or address-less datasource must still appear, with
-// an explanation — a silently short list would read as "you have no access".
+// TestStatusReportsUnbrokerableDatasourcesWithAReason: an unsupported or address-less datasource must still
+// appear with an explanation rather than silently shortening the list.
 func TestStatusReportsUnbrokerableDatasourcesWithAReason(t *testing.T) {
 	isolate(t)
 	cp := newFakeCP(t, []Datasource{
-		{Name: "pg", Engine: "postgres", DbName: "app", AdvertiseAddr: freePort(t)},
+		{Name: "unsupported", Engine: "sqlite", DbName: "app", AdvertiseAddr: freePort(t)},
 		{Name: "no-addr", Engine: "mysql", DbName: "app"},
 	})
 
@@ -245,6 +246,196 @@ func TestRediscoveryClosesARevokedDatasource(t *testing.T) {
 	}
 	if cfg.Ports["acme-mysql"] != port {
 		t.Errorf("sticky port for a revoked datasource = %d, want it kept at %d", cfg.Ports["acme-mysql"], port)
+	}
+}
+
+func TestRediscoveryReplacesListenerWhenEngineChanges(t *testing.T) {
+	isolate(t)
+	cp := newFakeCP(t, []Datasource{
+		{Name: "acme", Engine: "mysql", DbName: "app", AdvertiseAddr: freePort(t)},
+	})
+
+	d := New("test")
+	ctx := context.Background()
+	if err := d.Login(ctx, control.LoginRequest{ControlPlane: cp.URL}, func(control.LoginEvent) {}); err != nil {
+		t.Fatalf("Login: %v", err)
+	}
+	defer d.closeAllListeners()
+
+	before := d.Status().Datasources[0]
+	client, server := net.Pipe()
+	defer client.Close()
+	defer server.Close()
+	deregister := d.addConn("acme", server)
+	defer deregister()
+
+	cp.datasources = []Datasource{
+		{Name: "acme", Engine: "postgres", DbName: "app", AdvertiseAddr: freePort(t)},
+	}
+	d.openListeners(ctx)
+
+	if _, err := server.Read(make([]byte, 1)); err == nil {
+		t.Error("a session using the old engine survived the listener replacement")
+	}
+	after := d.Status().Datasources[0]
+	if after.Engine != "postgres" || !after.Brokered {
+		t.Fatalf("datasource after engine change = %+v, want a brokered PostgreSQL datasource", after)
+	}
+	if after.LocalPort != before.LocalPort {
+		t.Errorf("local port changed from %d to %d with the engine; saved connections must keep the sticky port",
+			before.LocalPort, after.LocalPort)
+	}
+
+	c, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", after.LocalPort), 2*time.Second)
+	if err != nil {
+		t.Fatalf("dial replacement broker: %v", err)
+	}
+	defer c.Close()
+	if err := c.SetDeadline(time.Now().Add(2 * time.Second)); err != nil {
+		t.Fatalf("set deadline: %v", err)
+	}
+	if _, err := c.Write(postgresStartupPacket(pgSSLRequest)); err != nil {
+		t.Fatalf("write PostgreSQL SSLRequest: %v", err)
+	}
+	var response [1]byte
+	if _, err := c.Read(response[:]); err != nil {
+		t.Fatalf("read PostgreSQL SSL response: %v", err)
+	}
+	if response[0] != 'N' {
+		t.Fatalf("replacement broker answered %#x, want PostgreSQL SSL response 'N'", response[0])
+	}
+}
+
+func TestRediscoveryRestartsPostgresWhenProxyRouteChanges(t *testing.T) {
+	isolate(t)
+	oldAddr := freePort(t)
+	newAddr := freePort(t)
+	cp := newFakeCP(t, []Datasource{
+		{Name: "acme", Engine: "postgres", DbName: "app", AdvertiseAddr: oldAddr},
+	})
+
+	d := New("test")
+	ctx := context.Background()
+	if err := d.Login(ctx, control.LoginRequest{ControlPlane: cp.URL}, func(control.LoginEvent) {}); err != nil {
+		t.Fatalf("Login: %v", err)
+	}
+	defer d.closeAllListeners()
+
+	before := d.Status().Datasources[0]
+
+	client, server := net.Pipe()
+	defer client.Close()
+	deregister := d.addConn("acme", server)
+	defer deregister()
+
+	cp.datasources = []Datasource{
+		{Name: "acme", Engine: "postgres", DbName: "app", AdvertiseAddr: newAddr},
+	}
+	d.openListeners(ctx)
+
+	if _, err := server.Read(make([]byte, 1)); err == nil {
+		t.Error("a PostgreSQL session tied to the old proxy route survived rediscovery")
+	}
+	after := d.Status().Datasources[0]
+	if !after.Brokered || after.AdvertiseAddr != newAddr {
+		t.Fatalf("datasource after route change = %+v, want the replacement PostgreSQL route", after)
+	}
+	if after.LocalPort != before.LocalPort {
+		t.Errorf("local port changed from %d to %d with the proxy route", before.LocalPort, after.LocalPort)
+	}
+}
+
+func TestPostgresBrokerRouteIdentity(t *testing.T) {
+	base := Datasource{
+		Name: "acme", Engine: "postgres", AdvertiseAddr: "proxy-a:5432", WireTLS: true, CertChainPEM: "cert-a",
+	}
+	for _, tc := range []struct {
+		name    string
+		mutate  func(*Datasource)
+		changed bool
+	}{
+		{name: "address", mutate: func(ds *Datasource) { ds.AdvertiseAddr = "proxy-b:5432" }, changed: true},
+		{name: "TLS mode", mutate: func(ds *Datasource) { ds.WireTLS = false }, changed: true},
+		{name: "certificate chain", mutate: func(ds *Datasource) { ds.CertChainPEM = "cert-b" }, changed: true},
+		{name: "database name", mutate: func(ds *Datasource) { ds.DbName = "other" }, changed: false},
+		{name: "MySQL route", mutate: func(ds *Datasource) { ds.Engine = "mysql" }, changed: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			current := base
+			tc.mutate(&current)
+			if got := postgresBrokerRouteChanged(base, current); got != tc.changed {
+				t.Errorf("postgresBrokerRouteChanged() = %v, want %v", got, tc.changed)
+			}
+		})
+	}
+}
+
+func TestBrokerBoundsAndClearsUpstreamStartup(t *testing.T) {
+	proxyAddr, proxyDone := postgresProxyStub(t, func(c net.Conn) error {
+		if _, code, err := readPostgresStartup(c); err != nil || code != pgSSLRequest {
+			return fmt.Errorf("SSL request code = %d, err %v", code, err)
+		}
+		if _, err := c.Write([]byte{'N'}); err != nil {
+			return err
+		}
+		if _, _, err := readPostgresStartup(c); err != nil {
+			return err
+		}
+		if err := writePostgresFrame(c, 'R', uint32Bytes(3)); err != nil {
+			return err
+		}
+		if _, _, _, err := readPostgresFrame(c, maxPGAuthBody); err != nil {
+			return err
+		}
+		if err := writePostgresFrame(c, 'R', uint32Bytes(0)); err != nil {
+			return err
+		}
+		return writePostgresFrame(c, 'Z', []byte{'I'})
+	})
+
+	d := New("test")
+	d.mu.Lock()
+	d.cfg.ControlPlane = "https://cp.example"
+	d.cfg.Token = "pmk_token"
+	d.cfg.LocalPassword = "pmlocal_test"
+	d.datasources["pg"] = Datasource{
+		Name: "pg", Engine: "postgres", DbName: "app", AdvertiseAddr: proxyAddr,
+	}
+	d.mu.Unlock()
+
+	client, server := net.Pipe()
+	defer client.Close()
+	tracked := &deadlineRecordingConn{Conn: server}
+	done := make(chan struct{})
+	go func() {
+		d.broker(tracked, "pg", "postgres")
+		close(done)
+	}()
+
+	if _, err := client.Write(postgresStartup("alice", "app")); err != nil {
+		t.Fatal(err)
+	}
+	assertPostgresAuthCode(t, client, 3)
+	if err := writePostgresFrame(client, 'p', []byte("pmlocal_test\x00")); err != nil {
+		t.Fatal(err)
+	}
+	assertPostgresAuthCode(t, client, 0)
+	if typ, body, _, err := readPostgresFrame(client, maxPGAuthBody); err != nil || typ != 'Z' || !bytes.Equal(body, []byte{'I'}) {
+		t.Fatalf("ready frame = %q %x, err %v", typ, body, err)
+	}
+	<-done
+	if err := <-proxyDone; err != nil {
+		t.Fatal(err)
+	}
+
+	if len(tracked.deadlines) < 2 {
+		t.Fatalf("local deadline changes = %v, want upstream startup bound, then clear", tracked.deadlines)
+	}
+	if tracked.deadlines[0].IsZero() {
+		t.Errorf("local deadline during upstream startup = zero, want bounded")
+	}
+	if !tracked.deadlines[len(tracked.deadlines)-1].IsZero() {
+		t.Errorf("deadline after ReadyForQuery = %s, want cleared", tracked.deadlines[len(tracked.deadlines)-1])
 	}
 }
 
@@ -860,6 +1051,16 @@ func TestAPortCollisionIsVisibleNotSilent(t *testing.T) {
 	if !strings.Contains(ds.Reason, "in use") {
 		t.Errorf("Reason = %q, want it to name the port collision", ds.Reason)
 	}
+}
+
+type deadlineRecordingConn struct {
+	net.Conn
+	deadlines []time.Time
+}
+
+func (c *deadlineRecordingConn) SetDeadline(deadline time.Time) error {
+	c.deadlines = append(c.deadlines, deadline)
+	return c.Conn.SetDeadline(deadline)
 }
 
 // TestSnapshotDoesNotAliasThePortsMap: a bare struct copy shares the map header, so a caller reading Ports off a

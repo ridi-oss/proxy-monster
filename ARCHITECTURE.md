@@ -141,7 +141,6 @@ registers itself, and why the control plane holds no target credentials).
   datasource marked as serving wire TLS is refused if the proxy declines the
   upgrade, before the token is sent. A proxy configured without wire TLS is
   brokered in plaintext, which is acceptable only over a trusted network.
-  Brokering is MySQL-only today.
 
 Only the CP's HTTP surface should be public, and only these paths; keep the gRPC
 port internal (nothing in the code enforces either):

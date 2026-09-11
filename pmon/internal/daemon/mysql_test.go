@@ -70,9 +70,8 @@ func TestLocalServerGreetAdvertisesConnectWithDB(t *testing.T) {
 	}
 }
 
-// selfSignedServer builds a server TLS config with a fresh self-signed leaf and returns it alongside the
-// leaf DER — the exact bytes a client receives as rawCerts[0] and the proxy would advertise as its SHA-256
-// Self-signed on purpose: it is its own trust anchor, which is the ordinary proxy case.
+// selfSignedServer builds a server TLS config with a fresh self-signed leaf and returns its DER for the
+// advertised trust pool. The leaf covers both test host forms and is its own trust anchor.
 func selfSignedServer(t *testing.T) (*tls.Config, []byte) {
 	t.Helper()
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
@@ -80,10 +79,10 @@ func selfSignedServer(t *testing.T) (*tls.Config, []byte) {
 		t.Fatalf("GenerateKey: %v", err)
 	}
 	tmpl := &x509.Certificate{
-		SerialNumber: big.NewInt(1),
-		Subject:      pkix.Name{CommonName: "proxy.example"},
-		// A DNS SAN is required now that verification checks the hostname — the pin it replaced did not.
+		SerialNumber:          big.NewInt(1),
+		Subject:               pkix.Name{CommonName: "proxy.example"},
 		DNSNames:              []string{"proxy.example"},
+		IPAddresses:           []net.IP{net.ParseIP("127.0.0.1")},
 		NotBefore:             time.Now().Add(-time.Hour),
 		NotAfter:              time.Now().Add(time.Hour),
 		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageCertSign,

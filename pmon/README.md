@@ -13,6 +13,7 @@ brew install ridi-oss/tap/pmon   # or: go build -o /usr/local/bin/pmon ./pmon
 pmon login                     # device-auth in your browser; starts the daemon + opens the brokers
 pmon status                    # principal, token expiry, every brokered datasource
 pmon show acme-mysql            # mysql://you@example.com:pmlocal_…@127.0.0.1:6100/my_database
+pmon show acme-postgres         # postgresql://you@example.com:pmlocal_…@127.0.0.1:6101/app?sslmode=disable
 ```
 
 Point any SQL client at the address `pmon show` prints. Logging in is the only
@@ -41,6 +42,9 @@ pmon show acme-mysql --jdbc     # jdbc:mysql://127.0.0.1:6100/my_database?user=�
 pmon show acme-mysql --jdbc --jdbc-with-truncation-diagnostics
 pmon show acme-mysql --go-dsn   # user:pw@tcp(127.0.0.1:6100)/my_database?parseTime=true&charset=utf8mb4
 pmon show acme-mysql --cli      # mysql -h 127.0.0.1 -P 6100 -u 'user' -p'pw' 'my_database'
+pmon show acme-postgres --url   # postgresql://user:pw@127.0.0.1:6101/app?sslmode=disable
+pmon show acme-postgres --jdbc  # jdbc:postgresql://127.0.0.1:6101/app?user=…&password=…&sslmode=disable
+pmon show acme-postgres --cli   # psql 'host=127.0.0.1 port=6101 dbname=app user=user password=pw sslmode=disable'
 ```
 
 Output is the bare string, so it pipes straight into a client or an env var.
@@ -55,7 +59,10 @@ The daemon checks that password. It answers `mysql_native_password` and
 `caching_sha2_password` directly, and switches any other plugin to
 `mysql_clear_password` — which the `mysql` CLI only permits with
 `--enable-cleartext-plugin`. A saved connection carrying a stale or blank
-password fails with access denied; re-copy it from `pmon show`.
+password fails with access denied; re-copy it from `pmon show`. PostgreSQL
+clients use the same local password through the protocol's cleartext-password
+exchange on loopback. PostgreSQL cancel requests are forwarded to the proxy, so
+`psql` Ctrl-C keeps working.
 
 `pmon --version` reports the release and the commit it was built from —
 `0.1.1+87d3156f2cb7`, or a `.dirty` suffix when the tree had uncommitted
@@ -111,10 +118,10 @@ pmon CLI ──┐                        ┌── menu-bar app
   localhost TCP port is reachable from any web page. The socket sits in a `0700`
   directory at mode `0600` — filesystem permissions are the authentication, so
   only the same OS user can connect.
-- **Upstream TLS.** When the control plane advertises the proxy's leaf-cert
-  SHA-256, the broker pins exactly that fingerprint (no CA, no system trust) and
-  refuses a pinned datasource whose proxy offers no TLS rather than sending the
-  token in plaintext. The loopback hop stays plaintext by design.
+- **Upstream TLS.** When the control plane advertises the proxy's certificate
+  chain, the broker verifies that chain and the advertised host. A datasource
+  marked as serving wire TLS is refused if the proxy declines TLS, before the
+  token is sent. The loopback hop stays plaintext by design.
 - **Credentials at rest.** `config.json` is written `0600` via an atomic rename,
   so the token and the renewal secret never land in a world-readable inode.
 
@@ -129,8 +136,6 @@ pmon CLI ──┐                        ┌── menu-bar app
 
 ## Not yet
 
-- **Postgres brokering** — PG datasources are discovered and listed with a
-  reason, not fronted.
 - **Notarized menu-bar app** — [`pmontray/`](../pmontray) is built and ad-hoc
   signed; distributing it to other machines needs a Developer ID signature +
   notarization.

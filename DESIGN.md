@@ -194,12 +194,10 @@ mechanism). Authoritative: [docs/auth-model.md](docs/auth-model.md).
   binary) runs the OIDC device-auth flow and the control-plane mints a
   short-lived opaque, revocable credential bound to principal + roles.
   - Default — background daemon + local broker: the daemon opens one loopback
-    listener per MySQL datasource on a sticky port as soon as credentials exist
-    (`pmon login` is the only step), so a saved `mysql` or JDBC connection keeps
+    listener per datasource on a sticky port as soon as credentials exist
+    (`pmon login` is the only step), so a saved native or JDBC connection keeps
     a fixed `127.0.0.1:<port>` and a localhost password that never rotates,
-    while the daemon injects the current token on the upstream hop. Only MySQL
-    is brokered — a PostgreSQL datasource is discovered then skipped, so `psql`
-    connects to the proxy directly with a token as its password. The daemon
+    while the daemon injects the current token on the upstream hop. The daemon
     renews the wire token before expiry until the server-side session window
     closes, then requires a fresh `pmon login`.
   - One-shot token: the console's Access page (`/access`) mints a short-lived

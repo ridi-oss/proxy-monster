@@ -314,9 +314,6 @@ Fixes for gaps documented in
 - Wire-cert rotation refresh: a rotated proxy leaf cert is only re-advertised on
   the next reconnect resync. Push the new chain on rotation so a verifying
   client is never left with stale trust material.
-- PostgreSQL brokering in `pmon`: the daemon fronts MySQL only, so PostgreSQL
-  datasources are discovered but skipped and their connection strings are
-  rendered without a broker behind them.
 - Bound the native-wire relay by `PM_QUERY_TIMEOUT`. The control-plane-driven
   editor and workflow runs honor it; the wire relay passes no execution guard
   and keeps a fixed socket-inactivity cap, so a direct statement through `pmon`

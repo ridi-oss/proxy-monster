@@ -155,8 +155,13 @@ func (c *sessionCore) streamResult(masks []*pb.ColumnMask, opts streamOpts, emit
 
 type rowsCollector struct {
 	expected, maxRows int
-	result            *engine.StatementResult
-	failed            error
+	// maxBytes bounds the collected result's size; 0 is uncapped. Collection stops at the first row that
+	// would cross it, which — like a row overflow — sets overflowed.
+	maxBytes               int64
+	bytes                  int64
+	overflowed, byteCapped bool
+	result                 *engine.StatementResult
+	failed                 error
 }
 
 func (c *rowsCollector) emit(message pgproto3.BackendMessage) error {
@@ -178,7 +183,14 @@ func (c *rowsCollector) emit(message pgproto3.BackendMessage) error {
 		if c.expected > 0 && len(message.Values) != c.expected {
 			return fail(fmt.Errorf("probe row returned %d columns, want %d", len(message.Values), c.expected))
 		}
-		if c.maxRows <= 0 || len(c.result.Rows) < c.maxRows {
+		rowBytes := dataRowBytes(message)
+		switch {
+		case c.maxRows > 0 && len(c.result.Rows) >= c.maxRows:
+			c.overflowed = true
+		case c.maxBytes > 0 && rowBytes > c.maxBytes-c.bytes:
+			c.overflowed, c.byteCapped = true, true
+		default:
+			c.bytes += rowBytes
 			c.result.Rows = append(c.result.Rows, decodeTextRow(message))
 		}
 	case *pgproto3.CommandComplete:

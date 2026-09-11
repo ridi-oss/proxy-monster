@@ -421,6 +421,7 @@ func runEngineContract(t *testing.T, fixture runEngineFixture) {
 	denySQL := fmt.Sprintf("SELECT secret FROM %s WHERE id = 1", fixture.runTable)
 	badMaskSQL := fmt.Sprintf("SELECT id FROM %s WHERE id = 1", fixture.runTable)
 	capsSQL := fmt.Sprintf("SELECT id FROM %s ORDER BY id", fixture.runTable)
+	verdictCapSQL := fmt.Sprintf("SELECT id FROM %s WHERE id > 0 ORDER BY id", fixture.runTable)
 	writeSQL := fmt.Sprintf("UPDATE %s SET note = 'updated' WHERE id IN (1, 2)", fixture.runTable)
 
 	fake.runSetDecide(func(req *pb.DecisionRequest) *pb.WireDecision {
@@ -441,6 +442,11 @@ func runEngineContract(t *testing.T, fixture runEngineFixture) {
 				Decision:   pb.EnfAction_MASK,
 				DecisionId: 104,
 				Masks:      []*pb.ColumnMask{{Column: "missing", Kind: "FIXED", Ordinal: &ordinal}},
+			})
+		case verdictCapSQL:
+			return wireVerdict(&pb.Verdict{
+				Decision: pb.EnfAction_ALLOW, DecisionId: 105, EffectiveRoles: []string{"analyst"},
+				UnmaskedTags: []string{"cap-run"},
 			})
 		default:
 			return wireVerdict(&pb.Verdict{Decision: pb.EnfAction_ALLOW, DecisionId: 101, EffectiveRoles: []string{"analyst"}})
@@ -515,6 +521,26 @@ func runEngineContract(t *testing.T, fixture runEngineFixture) {
 		t.Fatalf("negative maxRows returned %d rows", got)
 	}
 	runExpectDone(t, runRecv(t, fake), -1)
+
+	// The verdict cap is below the client's page size, so it — not the page end — bounds the result.
+	runSendQuery(fake, verdictCapSQL, 500)
+	capDecision := runRecv(t, fake)
+	runExpectDecision(t, capDecision, pb.EnfAction_ALLOW, nil, "")
+	if got := capDecision.GetDecision(); got.GetMaxRows() != 100 || got.GetMaxBytes() != 4000 || !reflect.DeepEqual(got.GetUnmaskedTags(), []string{"cap-run"}) {
+		t.Fatalf("RunDecision caps = %d/%d tags %v, want 100/4000 [cap-run]", got.GetMaxRows(), got.GetMaxBytes(), got.GetUnmaskedTags())
+	}
+	if got := len(runExpectRows(t, runRecv(t, fake), []string{"id"})); got != 100 {
+		t.Fatalf("verdict cap returned %d rows, want 100", got)
+	}
+	runExpectTruncatedDone(t, runRecv(t, fake), true)
+
+	// The client asked for fewer rows than the cap allows, so this is a plain page end.
+	runSendQuery(fake, verdictCapSQL, 50)
+	runExpectDecision(t, runRecv(t, fake), pb.EnfAction_ALLOW, nil, "")
+	if got := len(runExpectRows(t, runRecv(t, fake), []string{"id"})); got != 50 {
+		t.Fatalf("client limit returned %d rows, want 50", got)
+	}
+	runExpectTruncatedDone(t, runRecv(t, fake), false)
 
 	runSendQuery(fake, writeSQL, 20)
 	runExpectDecision(t, runRecv(t, fake), pb.EnfAction_ALLOW, nil, "")
@@ -1899,6 +1925,18 @@ func runExpectDone(t *testing.T, message *pb.ProxyRunMsg, rowsAffected int32) {
 	}
 }
 
+func runExpectTruncatedDone(t *testing.T, message *pb.ProxyRunMsg, truncated bool) {
+	t.Helper()
+	runExpectDone(t, message, -1)
+	if got := message.GetDone().GetTruncatedByCap(); got != truncated {
+		t.Fatalf("RunDone truncated_by_cap = %v, want %v", got, truncated)
+	}
+	// Every RunDone freezes the proxy's whole cap table with the result.
+	if caps := message.GetDone().GetCaps(); caps.GetDefault().GetRows() != 5000 || caps.GetByTag()["cap-run"].GetRows() != 100 {
+		t.Fatalf("RunDone caps = %v, want the harness table", caps)
+	}
+}
+
 type runExpectedValue struct {
 	value  string
 	isNull bool
@@ -1982,9 +2020,10 @@ func runExpectNoServing(t *testing.T, fake *runFakeCP) {
 	}
 }
 
-// testResultCaps is the proxy cap table the harness runs under (the shipped default).
+// testResultCaps is the proxy cap table the harness runs under: the shipped default plus a `cap-run` entry a
+// verdict names to exercise a cap below the client's page size.
 func testResultCaps() engine.ResultCaps {
-	caps, err := engine.ParseResultCaps(engine.DefaultResultCaps)
+	caps, err := engine.ParseResultCaps(engine.DefaultResultCaps + ",cap-run:100/4000")
 	if err != nil {
 		panic(err)
 	}

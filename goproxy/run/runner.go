@@ -371,7 +371,7 @@ func (r *Runner) handleQuery(sess spi.TargetDbSession, stream runStream, query *
 	if !sendDecision(stream, result.Decision) || !sendRows(stream, result.Columns, result.Rows) {
 		return false
 	}
-	done := &pb.RunDone{RowsAffected: int32(result.RowsAffected)}
+	done := &pb.RunDone{RowsAffected: int32(result.RowsAffected), TruncatedByCap: result.TruncatedByCap, Caps: r.client.Caps().Proto()}
 	return stream.Send(&pb.ProxyRunMsg{Kind: &pb.ProxyRunMsg_Done{Done: done}}) == nil
 }
 
@@ -393,6 +393,10 @@ func sendDecision(stream runStream, decision *engine.Decision) bool {
 			EffectiveRoles:      append([]string(nil), decision.EffectiveRoles...),
 			ResultFingerprint:   decision.ResultFingerprint,
 			SanitizeDiagnostics: decision.SanitizeDiagnostics,
+			Unbounded:           decision.Unbounded,
+			UnmaskedTags:        append([]string(nil), decision.UnmaskedTags...),
+			MaxRows:             decision.MaxRows,
+			MaxBytes:            decision.MaxBytes,
 		},
 	}}) == nil
 }

@@ -13,6 +13,8 @@ type StatementResult struct {
 	Columns      []string
 	Rows         [][]*string
 	RowsAffected int
+	// The verdict's result cap, not the caller's page size, ended this result.
+	TruncatedByCap bool
 }
 
 // ExecGuard optionally wraps only target-DB execution. Authorization and catalog probes run outside it.

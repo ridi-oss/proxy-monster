@@ -31,6 +31,7 @@ import com.ridi.oss.proxymonster.analyzer.pb.FailureClass
 import com.ridi.oss.proxymonster.analyzer.pb.MaskedDisposition
 import com.ridi.oss.proxymonster.analyzer.pb.RequireResultReadGrant
 import com.ridi.oss.proxymonster.analyzer.pb.ResultFingerprint
+import com.ridi.oss.proxymonster.grpc.ResultCaps
 import com.ridi.oss.proxymonster.analyzer.pb.StatementFacts
 import com.ridi.oss.proxymonster.analyzer.pb.StatementKind
 import com.ridi.oss.proxymonster.analyzer.pb.columnSpec
@@ -112,6 +113,11 @@ data class QueryResponse(
     // view can deny drift ([decideResultView]). Carried back from the Decide handler on the RunDecision.
     @Serializable(with = ResultFingerprintSerializer::class)
     val resultFingerprint: ResultFingerprint = ResultFingerprint.getDefaultInstance(),
+    // The verdict's row cap, and whether it — not the requested page size — ended this result.
+    val truncatedByCap: Boolean = false,
+    val capRows: Long? = null,
+    /** The proxy's cap table at execution (RunDone.caps), frozen with a stored result. Not sent to the web. */
+    @kotlinx.serialization.Transient val caps: ResultCaps? = null,
     val latencyMs: Long = 0,
 )
 
@@ -1230,7 +1236,7 @@ fun Route.editorSessionRoutes(
                         batchFailure = "approval.execute_denied"
                         false
                     } else {
-                    val result = DecryptedResult(response.columns, response.rows, response.rowsAffected, response.resultFingerprint)
+                    val result = DecryptedResult(response.columns, response.rows, response.rowsAffected, response.resultFingerprint, response.truncatedByCap, response.caps)
                     // The parent flips to EXECUTED only on the LAST statement. The per-statement Decide
                     // already wrote the real audit decision, so no task-level row is added here.
                     val last = ordinal == statements.lastIndex

@@ -72,17 +72,18 @@ func (s *RunSession) ServeStatement(sql string, maxRows int) (result engine.Stat
 		if len(payload) >= mysqlwire.MaxPacketPayload {
 			return false, errors.New("query exceeds the maximum MySQL packet payload")
 		}
-		capped := maxRows > 0
-		if capped {
-			if maxRows == math.MaxInt {
+		pageRows := dec.PageRows(maxRows)
+		limited := pageRows > 0
+		if limited {
+			if pageRows == math.MaxInt {
 				return false, errors.New("max rows exceeds MySQL SQL_SELECT_LIMIT range")
 			}
-			if err := execTargetDbSet(s.conn, "SET SQL_SELECT_LIMIT = "+strconv.Itoa(maxRows+1)); err != nil {
+			if err := execTargetDbSet(s.conn, "SET SQL_SELECT_LIMIT = "+strconv.Itoa(pageRows+1)); err != nil {
 				return false, err
 			}
 		}
 		reset := func() error {
-			if !capped {
+			if !limited {
 				return nil
 			}
 			return execTargetDbSet(s.conn, "SET SQL_SELECT_LIMIT = DEFAULT")
@@ -92,7 +93,7 @@ func (s *RunSession) ServeStatement(sql string, maxRows int) (result engine.Stat
 			_ = reset()
 			return false, err
 		}
-		collect := textResultCollector{maxRows: maxRows, masks: masks, result: &result}
+		collect := textResultCollector{maxRows: pageRows, maxBytes: dec.MaxBytes, masks: masks, result: &result}
 		h := collect.hooks()
 		h.OnSysVars = checkSysVarInvariants
 		// A run result is stored and re-gated per viewer at view time, so — unlike the wire path — redaction
@@ -123,6 +124,7 @@ func (s *RunSession) ServeStatement(sql string, maxRows int) (result engine.Stat
 		if resetErr != nil {
 			return false, resetErr
 		}
+		result.TruncatedByCap = collect.overflowed && (collect.byteCapped || dec.CapBinds(maxRows))
 		return clean, nil
 	})
 	return result, err

@@ -71,7 +71,8 @@ func (s *RunSession) ServeStatement(sql string, maxRows int) (result engine.Stat
 	result.Decision, result.Denied, err = engine.ServeStatement(s.qe,
 		s.authzInput(sql, s.token, "", s.connectionID, s.ref.RunAll), s.ref, s.guard,
 		func(toSend string, masks []*pb.ColumnMask, dec *engine.Decision) (bool, error) {
-			max, runErr := executeMaxRows(maxRows)
+			pageRows := dec.PageRows(maxRows)
+			max, runErr := executeMaxRows(pageRows)
 			if runErr != nil {
 				return false, runErr
 			}
@@ -84,7 +85,7 @@ func (s *RunSession) ServeStatement(sql string, maxRows int) (result engine.Stat
 			if runErr = s.targetDb.Flush(); runErr != nil {
 				return false, runErr
 			}
-			collector := rowsCollector{maxRows: maxRows, result: &result}
+			collector := rowsCollector{maxRows: pageRows, maxBytes: dec.MaxBytes, result: &result}
 			targetDbErr, runErr := s.streamResult(masks, streamOpts{extended: true}, collector.emit)
 			runErr = firstErr(runErr, collector.failed)
 			s.poisoned = runErr != nil
@@ -99,6 +100,7 @@ func (s *RunSession) ServeStatement(sql string, maxRows int) (result engine.Stat
 				}
 				return false, targetDbErr
 			}
+			result.TruncatedByCap = collector.overflowed && (collector.byteCapped || dec.CapBinds(maxRows))
 			return true, runErr
 		})
 	return result, err

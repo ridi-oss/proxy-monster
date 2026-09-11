@@ -111,6 +111,32 @@ func TestServeStatementGuardWrapsOnlyRun(t *testing.T) {
 	}
 }
 
+func TestDecisionPageRowsAndCapBinds(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		decision   *Decision
+		clientRows int
+		wantRows   int
+		wantBinds  bool
+	}{
+		{name: "nil decision leaves the client page size", clientRows: 500, wantRows: 500},
+		{name: "uncapped verdict", decision: &Decision{}, clientRows: 500, wantRows: 500},
+		{name: "cap below the page size binds", decision: &Decision{MaxRows: 100}, clientRows: 500, wantRows: 100, wantBinds: true},
+		{name: "page size below the cap is a page end", decision: &Decision{MaxRows: 100}, clientRows: 50, wantRows: 50},
+		{name: "equal cap and page size binds", decision: &Decision{MaxRows: 100}, clientRows: 100, wantRows: 100, wantBinds: true},
+		{name: "unpaged caller takes the cap", decision: &Decision{MaxRows: 100}, wantRows: 100, wantBinds: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := test.decision.PageRows(test.clientRows); got != test.wantRows {
+				t.Fatalf("PageRows = %d, want %d", got, test.wantRows)
+			}
+			if got := test.decision.CapBinds(test.clientRows); got != test.wantBinds {
+				t.Fatalf("CapBinds = %v, want %v", got, test.wantBinds)
+			}
+		})
+	}
+}
+
 // A connection's next Decide waits for its previous statement's completion report, so a sequential script
 // cannot outrun its own volume budget.
 func TestAuthorizeWaitsForPendingCompletion(t *testing.T) {

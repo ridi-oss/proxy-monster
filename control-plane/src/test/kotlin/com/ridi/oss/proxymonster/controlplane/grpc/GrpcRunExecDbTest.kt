@@ -24,6 +24,8 @@ import com.ridi.oss.proxymonster.grpc.ProxyRunMsg
 import com.ridi.oss.proxymonster.grpc.decisionRequest
 import com.ridi.oss.proxymonster.grpc.runDecision
 import com.ridi.oss.proxymonster.grpc.runDone
+import com.ridi.oss.proxymonster.grpc.rowsBytes
+import com.ridi.oss.proxymonster.grpc.resultCaps
 import com.ridi.oss.proxymonster.grpc.runError
 import com.ridi.oss.proxymonster.grpc.runResultRows
 import com.ridi.oss.proxymonster.grpc.runRow
@@ -247,6 +249,50 @@ class GrpcRunExecDbTest {
         assertEquals(listOf("ssn"), response.columns)
         assertEquals(listOf(listOf("######-#######")), response.rows)
         assertNull(response.rowsAffected)
+    }
+
+    @Test
+    fun `a cap-truncated run carries the verdict cap and its notice flag`() = runBlocking {
+        val decisionId = audit(Decision.ALLOW, emptyList())
+        val response = exchange("select id from users") { _, requests ->
+            requests.send(
+                proxyRunMsg {
+                    decision = runDecision {
+                        decision = WireEnfAction.ALLOW
+                        this.decisionId = decisionId
+                        maxRows = 100
+                        maxBytes = 4000
+                    }
+                },
+            )
+            requests.send(rowsChunk(listOf("id"), listOf(listOf("1"))))
+            requests.send(
+                proxyRunMsg {
+                    done = runDone {
+                        rowsAffected = -1; truncatedByCap = true
+                        caps = resultCaps { default = rowsBytes { rows = 100; bytes = 4000 } }
+                    }
+                },
+            )
+        }.getOrThrow()
+
+        assertEquals(EnfAction.ALLOW, response.decision)
+        assertEquals(100L, response.capRows)
+        assertTrue(response.truncatedByCap)
+        assertEquals(100L, response.caps?.default?.rows, "the proxy's cap table rides the response for storage")
+
+        val uncapped = exchange("select id from users") { _, requests ->
+            requests.send(
+                proxyRunMsg {
+                    decision = runDecision { decision = WireEnfAction.ALLOW; this.decisionId = decisionId }
+                },
+            )
+            requests.send(rowsChunk(listOf("id"), listOf(listOf("1"))))
+            requests.send(proxyRunMsg { done = runDone { rowsAffected = -1 } })
+        }.getOrThrow()
+
+        assertNull(uncapped.capRows)
+        assertFalse(uncapped.truncatedByCap)
     }
 
     @Test

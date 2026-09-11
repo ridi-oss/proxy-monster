@@ -10,6 +10,7 @@ package engine
 import (
 	"errors"
 	"fmt"
+	"math"
 	"strconv"
 	"time"
 
@@ -227,6 +228,25 @@ type Decision struct {
 	UnmaskedTags []string
 	MaxRows      int64
 	MaxBytes     int64
+}
+
+// PageRows is the row count a paging caller should ask the target DB for: its own page size narrowed by the
+// verdict cap. A zero on either side means that side sets no bound.
+func (d *Decision) PageRows(clientRows int) int {
+	if d == nil || d.MaxRows <= 0 {
+		return clientRows
+	}
+	capRows := int(min(d.MaxRows, int64(math.MaxInt)))
+	if clientRows <= 0 {
+		return capRows
+	}
+	return min(clientRows, capRows)
+}
+
+// CapBinds reports whether the verdict cap — not the caller's page size — is what ended a result of
+// [clientRows] page size. A result the client's own paging cut short is a plain page end, not a cap hit.
+func (d *Decision) CapBinds(clientRows int) bool {
+	return d != nil && d.MaxRows > 0 && (clientRows <= 0 || d.MaxRows <= int64(clientRows))
 }
 
 // RedactedDiagnosticMessage is the single generic string that replaces every target-DB diagnostic message on

@@ -1074,7 +1074,7 @@ internal suspend fun runApprovedTask(
                     batchFailure = "approval.execute_denied"
                     false
                 } else {
-                    val result = DecryptedResult(response.columns, response.rows, response.rowsAffected, response.resultFingerprint)
+                    val result = DecryptedResult(response.columns, response.rows, response.rowsAffected, response.resultFingerprint, response.truncatedByCap, response.caps)
                     // The parent flips to EXECUTED only on the LAST statement, so a crash mid-batch cannot
                     // leave a task EXECUTED with statements unrun.
                     val completed = store.completeRun(id, result, QueryResultStore.RESULT_RETENTION_SEC, response.decisionId) { conn, _ ->

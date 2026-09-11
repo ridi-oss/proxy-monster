@@ -792,7 +792,11 @@ class RunExecService(
                         throw ProxyRunException("proxy sent RunDone after a deny decision")
                     }
                     val rowsAffected = message.done.rowsAffected.let { if (it == -1) null else it }
-                    return response(received, receivedAction, columns ?: emptyList(), rows, rowsAffected, started)
+                    return response(
+                        received, receivedAction, columns ?: emptyList(), rows, rowsAffected, started,
+                        truncatedByCap = message.done.truncatedByCap,
+                        caps = message.done.takeIf { it.hasCaps() }?.caps,
+                    )
                 }
 
                 message.hasError() -> {
@@ -834,6 +838,8 @@ class RunExecService(
         rows: List<List<String?>>,
         rowsAffected: Int?,
         started: Long,
+        truncatedByCap: Boolean = false,
+        caps: com.ridi.oss.proxymonster.grpc.ResultCaps? = null,
     ): QueryResponse {
         val decisionId = decision.decisionId.takeIf { it != 0L }
         val recorded = decisionId?.let { core.auditStore.get(it) }
@@ -859,6 +865,9 @@ class RunExecService(
             rows = rows,
             rowsAffected = rowsAffected,
             resultFingerprint = resultFingerprint,
+            truncatedByCap = truncatedByCap,
+            capRows = decision.maxRows.takeIf { it > 0 },
+            caps = caps,
             latencyMs = latencyMs,
         )
     }

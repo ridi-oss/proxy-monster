@@ -273,7 +273,7 @@ func (c *sessionCore) collectProbe(expectedColumns int, quiet bool) ([][]*string
 	collector := rowsCollector{expected: expectedColumns, result: &result}
 	emit := collector.emit
 	if !quiet && c.forward != nil {
-		emit = func(message pgproto3.BackendMessage) error {
+		emit = func(message pgproto3.BackendMessage, rowBytes int64) error {
 			switch message.(type) {
 			case *pgproto3.ParameterStatus, *pgproto3.NoticeResponse, *pgproto3.NotificationResponse:
 				c.forward(message)
@@ -282,7 +282,7 @@ func (c *sessionCore) collectProbe(expectedColumns int, quiet bool) ([][]*string
 					return c.flushForward()
 				}
 			}
-			return collector.emit(message)
+			return collector.emit(message, rowBytes)
 		}
 	}
 	targetDbErr, streamErr := c.streamResult(nil, streamOpts{soft: true}, emit)

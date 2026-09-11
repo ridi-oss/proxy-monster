@@ -85,7 +85,10 @@ func (s *RunSession) ServeStatement(sql string, maxRows int) (result engine.Stat
 			if runErr = s.targetDb.Flush(); runErr != nil {
 				return false, runErr
 			}
-			collector := rowsCollector{maxRows: pageRows, maxBytes: dec.MaxBytes, result: &result}
+			collector := rowsCollector{
+				budget: engine.RowBudget{MaxRows: pageRows, MaxBytes: dec.MaxBytes},
+				result: &result,
+			}
 			targetDbErr, runErr := s.streamResult(masks, streamOpts{extended: true}, collector.emit)
 			runErr = firstErr(runErr, collector.failed)
 			s.poisoned = runErr != nil
@@ -100,7 +103,7 @@ func (s *RunSession) ServeStatement(sql string, maxRows int) (result engine.Stat
 				}
 				return false, targetDbErr
 			}
-			result.TruncatedByCap = collector.overflowed && (collector.byteCapped || dec.CapBinds(maxRows))
+			result.TruncatedByCap = collector.budget.CapTruncated(dec, maxRows)
 			return true, runErr
 		})
 	return result, err

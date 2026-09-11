@@ -43,6 +43,9 @@ type boundPortal struct {
 	namespace []string
 	temps     []engine.TempColumn
 	binary    bool
+	// Volume already relayed from this portal. A suspended portal resumes on a further Execute, so the cap
+	// is measured against the portal's whole output rather than restarting with each page.
+	relayed engine.RelayStats
 }
 
 func renderExtendedVerdict(sess *session, verdict engine.Verdict) (engine.Proceed, bool, error) {
@@ -402,7 +405,10 @@ func (s *Server) handleExecute(sess *session, message *pgproto3.Execute) error {
 		return err
 	}
 	var relayStats engine.RelayStats
-	terminal, err := s.relayExecuteStream(sess, masks, &relayStats, proceed.Decision)
+	terminal, err := s.relayExecuteStream(sess, masks, &relayStats, portal.relayed, proceed.Decision)
+	// A re-Bind of the same name replaces this entry, which is what resets the tally for a new portal.
+	portal.relayed = portal.relayed.Plus(relayStats)
+	sess.portals[message.Portal] = portal
 	// Post-relay, best-effort completion for this extended-protocol Execute (no-op if unaudited). A
 	// CommandComplete / EmptyQueryResponse / PortalSuspended is a clean finish; an ErrorResponse or a
 	// transport fault is an error carrying the partial counts relayed before it.
@@ -418,7 +424,9 @@ func (s *Server) handleExecute(sess *session, message *pgproto3.Execute) error {
 	return nil
 }
 
-func (s *Server) relayExecuteStream(sess *session, masks []*pb.ColumnMask, stats *engine.RelayStats, dec *engine.Decision) (pgproto3.BackendMessage, error) {
+// carried is the volume earlier Executes already drew from this portal; stats stays this Execute's own
+// tally so each page audits its own completion.
+func (s *Server) relayExecuteStream(sess *session, masks []*pb.ColumnMask, stats *engine.RelayStats, carried engine.RelayStats, dec *engine.Decision) (pgproto3.BackendMessage, error) {
 	var masker *engine.RowMasker
 	var capped *pgproto3.ErrorResponse
 	bufferedFrames := 0
@@ -432,7 +440,7 @@ func (s *Server) relayExecuteStream(sess *session, masks []*pb.ColumnMask, stats
 			if capped != nil {
 				continue
 			}
-			capped = resultCapError(dec, stats, dataRowBytes(message))
+			capped = resultCapError(dec, carried.Plus(*stats), dataRowBytes(message))
 			if capped != nil {
 				s.cancelCappedQuery(sess)
 				continue

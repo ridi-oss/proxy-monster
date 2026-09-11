@@ -19,7 +19,7 @@ func TestByteCapRejectsWholeFragmentedRow(t *testing.T) {
 		var stats engine.RelayStats
 		cancels, packets := 0, 0
 		_, capped, err := relayResultSet(&target, true, resultHooks{
-			MaxBytes: limit, Stats: &stats,
+			Cap: &engine.Decision{MaxBytes: limit}, Stats: &stats,
 			OnCapExceeded: func() { cancels++ },
 			Sink:          func(_ byte, _ []byte) error { packets++; return nil },
 		})
@@ -44,7 +44,7 @@ func TestRowCapSwallowsCancellationError(t *testing.T) {
 	var stats engine.RelayStats
 	cancels, rows, packets := 0, 0, 0
 	ok, capped, err := relayResultSet(&target, true, resultHooks{
-		MaxRows: 1, Stats: &stats,
+		Cap: &engine.Decision{MaxRows: 1}, Stats: &stats,
 		OnCapExceeded: func() { cancels++ },
 		OnRow:         func(payload []byte) ([]byte, error) { rows++; return payload, nil },
 		Sink:          func(_ byte, _ []byte) error { packets++; return nil },

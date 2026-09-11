@@ -36,15 +36,17 @@ var (
 )
 
 type resultHooks struct {
-	MaxRows, MaxBytes int64
-	OnCapExceeded     func()
-	Sink              func(seq byte, payload []byte) error
-	OnColumns         func(int) error
-	OnColumnDef       func([]byte) error
-	OnRow             func([]byte) ([]byte, error)
-	OnOK              func(uint64)
-	OnSchema          func(string)
-	OnSysVars         func([]sysVarChange) error
+	// Cap, when non-nil, bounds how much of this result may reach the client; OnCapExceeded fires once when
+	// the bound is first crossed, so the relay can cancel the statement on the target.
+	Cap           *engine.Decision
+	OnCapExceeded func()
+	Sink          func(seq byte, payload []byte) error
+	OnColumns     func(int) error
+	OnColumnDef   func([]byte) error
+	OnRow         func([]byte) ([]byte, error)
+	OnOK          func(uint64)
+	OnSchema      func(string)
+	OnSysVars     func([]sysVarChange) error
 	// RedactErr, when non-nil, rewrites a standalone target-DB ERR packet before it reaches the sink — the one
 	// client-facing ERR site for both the wire relay and the run collector, so redaction here covers both.
 	RedactErr func([]byte) []byte
@@ -55,24 +57,30 @@ type resultHooks struct {
 }
 
 // relayResultSet consumes one complete COM_QUERY text result for both wire relay and in-memory collection.
-func relayResultSet(targetDb io.Reader, deprecateEOF bool, h resultHooks) (bool, error, error) {
+// [capped] is the cap terminator the client must receive INSTEAD of the result's own OK/EOF: the target
+// stream is always drained to its terminator either way, so the connection stays reusable. It is distinct
+// from [err], which is a malformed stream or a transport fault and does not leave the session usable.
+func relayResultSet(targetDb io.Reader, deprecateEOF bool, h resultHooks) (clean bool, capErr, err error) {
 	var capped error
 	stats := h.Stats
 	if stats == nil {
 		stats = &engine.RelayStats{}
 	}
-	capResult := func(rows bool) {
+	// Reports whether one more row of rowBytes crosses the cap, latching the terminator and cancelling the
+	// target statement the first time it does.
+	capCrossed := func(rowBytes int64) bool {
 		if capped != nil {
-			return
+			return true
 		}
-		if rows {
-			capped = fmt.Errorf("proxy-monster: result exceeds the row cap (%d rows); request unbounded access", h.MaxRows)
-		} else {
-			capped = fmt.Errorf("proxy-monster: result exceeds the byte cap (%d bytes); request unbounded access", h.MaxBytes)
+		message := h.Cap.CapExceeded(*stats, rowBytes)
+		if message == "" {
+			return false
 		}
+		capped = errors.New(message)
 		if h.OnCapExceeded != nil {
 			h.OnCapExceeded()
 		}
+		return true
 	}
 	phase, columnCount, columnsSeen := resultFirst, 0, 0
 	fragmenting, fragmentPhase := false, resultFirst
@@ -229,17 +237,14 @@ func relayResultSet(targetDb io.Reader, deprecateEOF bool, h resultHooks) (bool,
 				}
 				return true, capped, nil
 			}
-			if h.MaxRows > 0 && stats.Rows >= h.MaxRows {
-				capResult(true)
-			} else if h.MaxBytes > 0 && int64(len(payload)) > h.MaxBytes-stats.Bytes {
-				capResult(false)
-			}
-			if capped != nil {
+			if capCrossed(int64(len(payload))) {
 				fragmenting, fragmentPhase = len(payload) == maxPacketPayload, resultRows
 				continue
 			}
-			// A byte cap must admit the whole logical row before its first fragment reaches the client.
-			if h.MaxBytes > 0 && len(payload) == maxPacketPayload && h.OnRow == nil {
+			// A byte cap must admit the WHOLE logical row before its first fragment reaches the client:
+			// forwarding fragments as they arrive would ship most of an over-cap row and then cut it off
+			// mid-value. Read the continuations first, then either sink them all or drop the row.
+			if h.Cap != nil && h.Cap.MaxBytes > 0 && len(payload) == maxPacketPayload && h.OnRow == nil {
 				parts := [][]byte{payload}
 				firstSeq, size := seq, int64(len(payload))
 				for len(payload) == maxPacketPayload {
@@ -247,14 +252,11 @@ func relayResultSet(targetDb io.Reader, deprecateEOF bool, h resultHooks) (bool,
 					if err != nil {
 						return false, capped, err
 					}
-					if capped == nil {
-						if int64(len(payload)) > h.MaxBytes-stats.Bytes-size {
-							capResult(false)
-							parts = nil
-						} else {
-							size += int64(len(payload))
-							parts = append(parts, payload)
-						}
+					if capped == nil && capCrossed(size+int64(len(payload))) {
+						parts = nil
+					} else if capped == nil {
+						size += int64(len(payload))
+						parts = append(parts, payload)
 					}
 				}
 				if capped == nil {
@@ -312,7 +314,7 @@ func relayQueryResponseTracked(
 	deprecateEOF bool,
 	masks []*pb.ColumnMask,
 	redactErr func([]byte) []byte,
-	maxRows, maxBytes int64,
+	dec *engine.Decision,
 	cancel func(),
 ) (bool, engine.RelayStats, error) {
 	columnCount := 0
@@ -337,8 +339,7 @@ func relayQueryResponseTracked(
 
 	var lastSeq byte
 	ok, capped, err := relayResultSet(targetDb, deprecateEOF, resultHooks{
-		MaxRows:       maxRows,
-		MaxBytes:      maxBytes,
+		Cap:           dec,
 		OnCapExceeded: cancel,
 		Sink: func(seq byte, payload []byte) error {
 			if err := mysqlwire.WritePacket(client, seq, payload); err != nil {

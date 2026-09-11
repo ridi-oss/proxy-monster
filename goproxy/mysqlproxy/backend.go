@@ -348,12 +348,8 @@ func interpretSessionProbeRow(values []*string) (namespace []string, ansiQuotes 
 
 // textResultCollector decodes one COM_QUERY text result for probes and run execution.
 type textResultCollector struct {
-	expected, maxRows, columns int
-	// maxBytes bounds the collected result's size; 0 is uncapped. Collection stops at the first row that
-	// would cross it, which — like a row overflow — sets overflowed.
-	maxBytes                 int64
-	bytes                    int64
-	overflowed, byteCapped   bool
+	expected, columns        int
+	budget                   engine.RowBudget
 	masks                    []*pb.ColumnMask
 	columnDefs               []mysqlwire.ColumnDefinition
 	result                   *engine.StatementResult
@@ -416,16 +412,8 @@ func (c *textResultCollector) onRow(payload []byte) ([]byte, error) {
 	if c.masker != nil {
 		values = c.masker.Apply(values)
 	}
-	if c.result != nil {
-		switch {
-		case c.maxRows > 0 && len(c.result.Rows) >= c.maxRows:
-			c.overflowed = true
-		case c.maxBytes > 0 && int64(len(payload)) > c.maxBytes-c.bytes:
-			c.overflowed, c.byteCapped = true, true
-		default:
-			c.bytes += int64(len(payload))
-			c.result.Rows = append(c.result.Rows, c.displayValues(values))
-		}
+	if c.result != nil && c.budget.Admit(len(c.result.Rows), int64(len(payload))) {
+		c.result.Rows = append(c.result.Rows, c.displayValues(values))
 	}
 	return payload, nil
 }

@@ -93,7 +93,11 @@ func (s *RunSession) ServeStatement(sql string, maxRows int) (result engine.Stat
 			_ = reset()
 			return false, err
 		}
-		collect := textResultCollector{maxRows: pageRows, maxBytes: dec.MaxBytes, masks: masks, result: &result}
+		collect := textResultCollector{
+			budget: engine.RowBudget{MaxRows: pageRows, MaxBytes: dec.MaxBytes},
+			masks:  masks,
+			result: &result,
+		}
 		h := collect.hooks()
 		h.OnSysVars = checkSysVarInvariants
 		// A run result is stored and re-gated per viewer at view time, so — unlike the wire path — redaction
@@ -124,7 +128,7 @@ func (s *RunSession) ServeStatement(sql string, maxRows int) (result engine.Stat
 		if resetErr != nil {
 			return false, resetErr
 		}
-		result.TruncatedByCap = collect.overflowed && (collect.byteCapped || dec.CapBinds(maxRows))
+		result.TruncatedByCap = collect.budget.CapTruncated(dec, maxRows)
 		return clean, nil
 	})
 	return result, err

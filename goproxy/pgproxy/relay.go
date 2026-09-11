@@ -37,7 +37,10 @@ type pgTargetDbErr struct {
 
 func (e *pgTargetDbErr) Error() string { return e.message }
 
-func (c *sessionCore) streamResult(masks []*pb.ColumnMask, opts streamOpts, emit func(pgproto3.BackendMessage) error) (targetDbErr error, err error) {
+// emit receives each frame as the CLIENT should see it (masks already applied) plus the byte size of the
+// TARGET-DB row it came from, so a caller measuring result volume charges the target's row rather than the
+// rewritten one. rowBytes is 0 for every frame that is not a DataRow.
+func (c *sessionCore) streamResult(masks []*pb.ColumnMask, opts streamOpts, emit func(message pgproto3.BackendMessage, rowBytes int64) error) (targetDbErr error, err error) {
 	var masker *engine.RowMasker
 	columnCount := -1
 	fail := func(cause error) bool {
@@ -46,12 +49,13 @@ func (c *sessionCore) streamResult(masks []*pb.ColumnMask, opts streamOpts, emit
 		}
 		return opts.soft
 	}
+	rowBytes := int64(0)
 	emitFrame := func(message pgproto3.BackendMessage, data bool) bool {
 		if data && (targetDbErr != nil || opts.soft && err != nil) {
 			return true
 		}
 		if emit != nil {
-			if cause := emit(message); cause != nil {
+			if cause := emit(message, rowBytes); cause != nil {
 				return fail(cause)
 			}
 		}
@@ -65,6 +69,7 @@ func (c *sessionCore) streamResult(masks []*pb.ColumnMask, opts streamOpts, emit
 		}
 		out := message
 		data := true
+		rowBytes = 0
 		switch message := message.(type) {
 		case *pgproto3.RowDescription:
 			columnCount = len(message.Fields)
@@ -92,6 +97,7 @@ func (c *sessionCore) streamResult(masks []*pb.ColumnMask, opts streamOpts, emit
 				}
 				continue
 			}
+			rowBytes = dataRowBytes(message)
 			if masker != nil {
 				out = maskDataRow(message, masker)
 			}
@@ -154,17 +160,13 @@ func (c *sessionCore) streamResult(masks []*pb.ColumnMask, opts streamOpts, emit
 }
 
 type rowsCollector struct {
-	expected, maxRows int
-	// maxBytes bounds the collected result's size; 0 is uncapped. Collection stops at the first row that
-	// would cross it, which — like a row overflow — sets overflowed.
-	maxBytes               int64
-	bytes                  int64
-	overflowed, byteCapped bool
-	result                 *engine.StatementResult
-	failed                 error
+	expected int
+	budget   engine.RowBudget
+	result   *engine.StatementResult
+	failed   error
 }
 
-func (c *rowsCollector) emit(message pgproto3.BackendMessage) error {
+func (c *rowsCollector) emit(message pgproto3.BackendMessage, rowBytes int64) error {
 	if c.failed != nil {
 		return nil
 	}
@@ -183,14 +185,7 @@ func (c *rowsCollector) emit(message pgproto3.BackendMessage) error {
 		if c.expected > 0 && len(message.Values) != c.expected {
 			return fail(fmt.Errorf("probe row returned %d columns, want %d", len(message.Values), c.expected))
 		}
-		rowBytes := dataRowBytes(message)
-		switch {
-		case c.maxRows > 0 && len(c.result.Rows) >= c.maxRows:
-			c.overflowed = true
-		case c.maxBytes > 0 && rowBytes > c.maxBytes-c.bytes:
-			c.overflowed, c.byteCapped = true, true
-		default:
-			c.bytes += rowBytes
+		if c.budget.Admit(len(c.result.Rows), rowBytes) {
 			c.result.Rows = append(c.result.Rows, decodeTextRow(message))
 		}
 	case *pgproto3.CommandComplete:
@@ -256,16 +251,17 @@ func firstErr(errs ...error) error {
 	return nil
 }
 
-func resultCapError(dec *engine.Decision, stats *engine.RelayStats, rowBytes int64) *pgproto3.ErrorResponse {
-	var message string
-	if dec.MaxRows > 0 && stats.Rows >= dec.MaxRows {
-		message = fmt.Sprintf("proxy-monster: result exceeds the row cap (%d rows); request unbounded access", dec.MaxRows)
-	} else if dec.MaxBytes > 0 && rowBytes > dec.MaxBytes-stats.Bytes {
-		message = fmt.Sprintf("proxy-monster: result exceeds the byte cap (%d bytes); request unbounded access", dec.MaxBytes)
-	} else {
+// resultCapError is the 57014 a client sees INSTEAD of the capped statement's own terminator — the same
+// SQLSTATE PostgreSQL itself sends for a cancelled query. Nil while the next row still fits.
+func resultCapError(dec *engine.Decision, relayed engine.RelayStats, rowBytes int64) *pgproto3.ErrorResponse {
+	message := dec.CapExceeded(relayed, rowBytes)
+	if message == "" {
 		return nil
 	}
-	return &pgproto3.ErrorResponse{Severity: "ERROR", Code: "57014", Message: message, Hint: "Request unbounded access to read the full result."}
+	return &pgproto3.ErrorResponse{
+		Severity: "ERROR", Code: "57014", Message: message,
+		Hint: "Request unbounded access to read the full result.",
+	}
 }
 
 func (s *Server) cancelCappedQuery(sess *session) {
@@ -288,26 +284,28 @@ func (s *Server) handleQuery(sess *session, sql string) error {
 			}
 			bufferedFrames := 0
 			var capped *pgproto3.ErrorResponse
-			targetDbErr, streamErr := sess.streamResult(masks, streamOpts{}, func(message pgproto3.BackendMessage) error {
-				switch row := message.(type) {
+			targetDbErr, streamErr := sess.streamResult(masks, streamOpts{}, func(message pgproto3.BackendMessage, rowBytes int64) error {
+				switch message.(type) {
 				case *pgproto3.DataRow:
 					if capped != nil {
 						return nil
 					}
-					capped = resultCapError(dec, &relayStats, dataRowBytes(row))
+					capped = resultCapError(dec, relayStats, rowBytes)
 					if capped != nil {
 						s.cancelCappedQuery(sess)
 						return nil
 					}
 					relayStats.Rows++
-					relayStats.Bytes += dataRowBytes(row)
-				case *pgproto3.CommandComplete, *pgproto3.ErrorResponse:
-					if capped != nil {
-						return nil
-					}
+					relayStats.Bytes += rowBytes
 				case *pgproto3.ReadyForQuery:
 					if capped != nil {
 						sess.client.Send(capped)
+					}
+				default:
+					// Past the cap the 57014 IS the client's terminator, so every remaining frame of this
+					// Query is swallowed — including a following statement's own result frames.
+					if capped != nil {
+						return nil
 					}
 				}
 				sess.client.Send(message)

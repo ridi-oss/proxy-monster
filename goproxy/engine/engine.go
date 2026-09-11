@@ -249,6 +249,22 @@ func (d *Decision) CapBinds(clientRows int) bool {
 	return d != nil && d.MaxRows > 0 && (clientRows <= 0 || d.MaxRows <= int64(clientRows))
 }
 
+// CapExceeded is the client-facing terminator text when relaying one more row of [rowBytes] would cross
+// this decision's caps, or "" when it fits. Both wire relays build their engine-specific error around this
+// one string, so a MySQL 1317 and a PostgreSQL 57014 say the same thing.
+func (d *Decision) CapExceeded(relayed RelayStats, rowBytes int64) string {
+	switch {
+	case d == nil:
+		return ""
+	case d.MaxRows > 0 && relayed.Rows >= d.MaxRows:
+		return fmt.Sprintf("proxy-monster: result exceeds the row cap (%d rows); request unbounded access", d.MaxRows)
+	case d.MaxBytes > 0 && rowBytes > d.MaxBytes-relayed.Bytes:
+		return fmt.Sprintf("proxy-monster: result exceeds the byte cap (%d bytes); request unbounded access", d.MaxBytes)
+	default:
+		return ""
+	}
+}
+
 // RedactedDiagnosticMessage is the single generic string that replaces every target-DB diagnostic message on
 // a diagnostic-redacted connection. It carries no stored value; the proxy keeps only the
 // machine-readable code + severity beside it. See docs/diagnostic-redaction.md.

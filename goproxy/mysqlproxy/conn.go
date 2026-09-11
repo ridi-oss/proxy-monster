@@ -270,7 +270,7 @@ func (s *Server) handleConn(clientConn net.Conn) {
 				if err := mysqlwire.WritePacket(targetDbConn, 0, queryPayload); err != nil {
 					return false, err
 				}
-				clean, stats, err := relayQueryResponseTracked(clientConn, targetDbConn, deprecateEOF, masks, errRedactor(qe), dec.MaxRows, dec.MaxBytes, cancelQuery)
+				clean, stats, err := relayQueryResponseTracked(clientConn, targetDbConn, deprecateEOF, masks, errRedactor(qe), dec, cancelQuery)
 				relayStats = stats
 				relayStatus = engine.RelayStatus(clean, err)
 				if err != nil {
@@ -448,7 +448,7 @@ func (s *Server) handleConn(clientConn net.Conn) {
 			if err := mysqlwire.WritePacket(targetDbConn, 0, payload); err != nil {
 				return
 			}
-			ok, stats, err := relayQueryResponseTracked(clientConn, targetDbConn, deprecateEOF, nil, errRedactor(qe), proceed.Decision.MaxRows, proceed.Decision.MaxBytes, cancelQuery)
+			ok, stats, err := relayQueryResponseTracked(clientConn, targetDbConn, deprecateEOF, nil, errRedactor(qe), proceed.Decision, cancelQuery)
 			// Post-relay, best-effort completion for this binary-protocol EXECUTE (no-op if unaudited).
 			qe.AwaitCompletion(engine.EmitCompletion(s.client, proceed.Decision, stats, engine.RelayStatus(ok, err), start))
 			if err != nil {

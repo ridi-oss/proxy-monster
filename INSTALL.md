@@ -167,6 +167,14 @@ configured per proxy under `PM_TARGET_*`.
   address"). It must parse as `host:port` with a port in 1-65535 or the proxy
   refuses to start. Example: `127.0.0.1:6033` locally ·
   `analytics-prod.pm.example.com:6432` in production
+- `PM_RESULT_CAPS` — _optional_. How much of one statement's result this proxy
+  relays before it stops with an error (`docs/result-caps.md`). Comma-separated
+  entries: `<rows>[/<bytes>]` is the default every statement gets, and
+  `<tag>:<rows>[/<bytes>]` tightens it when the statement returns a column with
+  that classification tag in the clear; the tightest applicable rows and bytes
+  win. Bytes take a bare count or `K`/`M`/`G`. Default `5000/50MB,pii:500/5MB`.
+  A malformed or non-positive value refuses to start. Example:
+  `5000/50MB,pii:500/5MB,pci:300`
 - `PM_TLS_CERT` / `PM_TLS_KEY` — _optional (both or neither; one alone ⇒ refuses
   to start)_. TLS cert+key file paths for the wire listener. Wire TLS is
   optional — the cleaner pattern is a private transport (peered VPC,

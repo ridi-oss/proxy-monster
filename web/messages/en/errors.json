@@ -45,6 +45,7 @@
     "session_window_expired": "Your session has expired or your account was deprovisioned. Please sign in again."
   },
   "datasource": {
+    "capInvalid": "Result caps must be positive whole numbers or blank to use the defaults.",
     "table_introspection_failed": "Table introspection failed: {detail}",
     "schema_required": "A schema is required until the datasource is introspected (which captures a default schema).",
     "reserved_tag": "The tag \"{tag}\" is reserved for system classification and can't be set on a column.",

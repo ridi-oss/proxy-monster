@@ -31,4 +31,5 @@ class ResultCapDecideDbTest {
         check("select 42", EnfAction.ALLOW, emptySet<String>())
         check("show databases", EnfAction.ALLOW, emptySet<String>())
     }
+
 }

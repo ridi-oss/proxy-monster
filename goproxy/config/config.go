@@ -38,6 +38,7 @@ type rawFlags struct {
 	TLSKeyPath             string `env:"PM_TLS_KEY"`
 	TLSNoAdvertise         string `env:"PM_TLS_NO_ADVERTISE"`
 	QueryTimeout           string `env:"PM_QUERY_TIMEOUT"`
+	ResultCaps             string `env:"PM_RESULT_CAPS"`
 }
 
 // parsePort turns a blank, non-numeric, or out-of-range value into 0, which Load() then replaces with the
@@ -100,6 +101,8 @@ type Config struct {
 	// this exists for deployments that prefer the control plane hold nothing it does not need.
 	TLSNoAdvertise bool
 	QueryTimeout   time.Duration
+	// ResultCaps is the parsed PM_RESULT_CAPS table (docs/result-caps.md).
+	ResultCaps engine.ResultCaps
 }
 
 // Load reads the proxy configuration from the environment, applying the engine-dependent port defaults
@@ -149,6 +152,15 @@ func Load(registry spi.Registry) (*Config, error) {
 		queryTimeout = time.Duration(seconds) * time.Second
 	}
 
+	capsSpec := strings.TrimSpace(raw.ResultCaps)
+	if capsSpec == "" {
+		capsSpec = engine.DefaultResultCaps
+	}
+	resultCaps, err := engine.ParseResultCaps(capsSpec)
+	if err != nil {
+		return nil, fmt.Errorf("PM_RESULT_CAPS: %w", err)
+	}
+
 	var tags []string
 	for _, tag := range strings.Split(raw.DatasourceTags, ",") {
 		tag = strings.TrimSpace(tag)
@@ -185,6 +197,7 @@ func Load(registry spi.Registry) (*Config, error) {
 		TLSKeyPath:     blankToAbsent(raw.TLSKeyPath),
 		TLSNoAdvertise: parseBoolEnv(raw.TLSNoAdvertise),
 		QueryTimeout:   queryTimeout,
+		ResultCaps:     resultCaps,
 	}, nil
 }
 

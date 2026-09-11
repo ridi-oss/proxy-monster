@@ -79,7 +79,7 @@ class UnanalyzableGateDbTest {
         // Assert the premise rather than assume it: were this schema ever added to the fixture, the statement
         // would resolve and the test would pass without exercising the gate at all.
         assertTrue(
-            fx.datasourceStore.catalog(fx.datasource.id).none { it.schema == candidate },
+            fx.datasourceStore.catalog(fx.datasource.id).columns.none { it.schema == candidate },
             "the probe schema must be absent from the catalog for this test to mean anything",
         )
         val ctx = decide("select id from $candidate.orders")

@@ -33,6 +33,8 @@ func (refetchDb) SchemaHashFromRows(rows [][]*string) ([]byte, bool, error) {
 }
 func (refetchDb) SchemaColumnsSQL(schema string) string { return "columns:" + schema }
 func (refetchDb) LowerCaseTableNamesProbeSQL() string   { return "" }
+func (refetchDb) FoldFunctionName(name string) string   { return name }
+
 func (refetchDb) NormalizeColumns(_ int, columns []*analyzerpb.Column) []*analyzerpb.Column {
 	return columns
 }
@@ -111,6 +113,8 @@ type normalizingRefetchDb struct {
 }
 
 func (d *normalizingRefetchDb) LowerCaseTableNamesProbeSQL() string { return "lctn" }
+func (d *normalizingRefetchDb) FoldFunctionName(name string) string { return name }
+
 func (d *normalizingRefetchDb) NormalizeColumns(mode int, columns []*analyzerpb.Column) []*analyzerpb.Column {
 	d.gotMode = &mode
 	out := make([]*analyzerpb.Column, len(columns))

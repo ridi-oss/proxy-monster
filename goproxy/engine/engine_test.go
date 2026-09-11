@@ -30,6 +30,8 @@ func (f fakeDb) SchemaHashSQL(string, [][]*string) (string, int, error) {
 func (f fakeDb) SchemaHashFromRows([][]*string) ([]byte, bool, error) { return nil, false, nil }
 func (f fakeDb) SchemaColumnsSQL(string) string                       { return "columns" }
 func (f fakeDb) LowerCaseTableNamesProbeSQL() string                  { return "" }
+func (f fakeDb) FoldFunctionName(name string) string                  { return name }
+
 func (f fakeDb) NormalizeColumns(_ int, columns []*analyzerpb.Column) []*analyzerpb.Column {
 	return columns
 }

@@ -93,7 +93,7 @@ abstract class WireTaskDecideDbContract {
             ds = fixture.datasource,
             sql = sql,
             channel = Channel.WIRE,
-            catalog = catalog,
+            catalog = fixture.core.datasourceStore.connectionCatalog(fixture.datasource.id, catalog),
             policyStore = fixture.core.policyStore,
             accessStore = fixture.core.accessStore,
             userGroupStore = fixture.core.userGroupStore,

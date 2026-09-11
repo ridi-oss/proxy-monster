@@ -325,6 +325,9 @@ type Db interface {
 	// pushed to the control plane matches the same canonical spelling introspect's bulk catalog push
 	// uses — no caller decides whether/how to fold.
 	NormalizeColumns(lowerCaseTableNames int, columns []*enginepb.Column) []*enginepb.Column
+	// FoldFunctionName folds an introspected function name the way the analyzer resolves an
+	// unquoted call for this dialect.
+	FoldFunctionName(name string) string
 }
 
 // FragmentColumnsFromRows strictly maps six-column information_schema rows into a canonical schema

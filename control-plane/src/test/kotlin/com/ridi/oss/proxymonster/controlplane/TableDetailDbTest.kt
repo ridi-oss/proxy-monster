@@ -252,7 +252,7 @@ class TableDetailDbTest {
     private suspend fun ApplicationTestBuilder.assertRouteContract(fixture: Fixture) {
         val beforeCatalog = datasourceStore.catalog(fixture.datasource.id)
         val beforeSyncedAt = datasourceStore.get(fixture.datasource.id)?.catalogSyncedAt
-        assertFalse(beforeCatalog.any { it.schema == fixture.requestSchema && it.table == fixture.middle && it.column == "live_only" })
+        assertFalse(beforeCatalog.columns.any { it.schema == fixture.requestSchema && it.table == fixture.middle && it.column == "live_only" })
 
         val response = wireTableDetailApp().tableDetail(fixture)
         assertEquals(HttpStatusCode.OK, response.status)
@@ -286,7 +286,7 @@ class TableDetailDbTest {
         assertEquals(beforeCatalog, datasourceStore.catalog(fixture.datasource.id))
         assertEquals(beforeSyncedAt, datasourceStore.get(fixture.datasource.id)?.catalogSyncedAt)
         assertFalse(
-            datasourceStore.catalog(fixture.datasource.id).any { it.table == fixture.middle && it.column == "live_only" },
+            datasourceStore.catalog(fixture.datasource.id).columns.any { it.table == fixture.middle && it.column == "live_only" },
             "live detail must not persist post-sync columns",
         )
     }

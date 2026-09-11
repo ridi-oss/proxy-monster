@@ -228,7 +228,7 @@ object SchemaThreadingFixtures {
         stores.datasourceStore.pushTestCatalog(created, targetJdbcUrl, targetUser, targetPassword)
         val refreshed = stores.datasourceStore.get(created.id)
             ?: error("datasource disappeared after catalog push")
-        val schemas = stores.datasourceStore.catalog(created.id)
+        val schemas = stores.datasourceStore.catalog(created.id).columns
             .filter { it.table == "users" }
             .map { it.schema }
             .toSet()
@@ -271,6 +271,8 @@ object SchemaThreadingFixtures {
         // One shared graph for the fixture (policies were seeded above via `stores`, i.e. committed to
         // the same DB, so this core reads them on its first decision).
         val core = ControlPlaneCore(stores.metadata)
+        // A new control plane requires a fresh push before trusting stored functions.
+        core.datasourceStore.pushTestCatalog(created, targetJdbcUrl, targetUser, targetPassword)
         return SchemaThreadingFixture(
             engine = created.engine.wireName,
             datasource = refreshed,
@@ -608,7 +610,7 @@ class SchemaThreadingPostgresDbTest : SchemaThreadingDbContract() {
         // mapping makes a bare name the target DB binds there fall through to a user schema (shadow
         // leak). System schemas must be introspected — this assertion fails if the NOT IN (...)
         // exclusion is re-added.
-        val schemas = fx.datasourceStore.catalog(fx.datasource.id).map { it.schema }.toSet()
+        val schemas = fx.datasourceStore.catalog(fx.datasource.id).columns.map { it.schema }.toSet()
         assertTrue("pg_catalog" in schemas, "pg_catalog was excluded from introspection (shadowing): $schemas")
         assertTrue("information_schema" in schemas, "information_schema was excluded from introspection")
         // A bare reference to a pg_catalog table resolves THERE (pg_catalog is implicit-first) and is

@@ -99,7 +99,7 @@ class DatasourceManagementService(
 
     fun browseCatalog(name: String): List<CatalogColumn> {
         val datasource = datasource(name)
-        return store.catalog(datasource.id)
+        return store.catalog(datasource.id).columns
     }
 
     suspend fun getTableDetail(name: String, schema: String, table: String): TableDetail {

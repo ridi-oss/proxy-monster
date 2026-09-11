@@ -1,5 +1,10 @@
 package com.ridi.oss.proxymonster.controlplane.grpc
 
+import com.ridi.oss.proxymonster.analyzer.pb.FunctionCatalog
+import com.ridi.oss.proxymonster.analyzer.pb.functionCatalog
+import com.ridi.oss.proxymonster.analyzer.pb.schemaFunctions
+import com.ridi.oss.proxymonster.controlplane.DatasourceStore
+import com.ridi.oss.proxymonster.analyzer.pb.CatalogSnapshot
 import com.google.protobuf.ByteString
 import com.ridi.oss.proxymonster.controlplane.Binding
 import com.ridi.oss.proxymonster.controlplane.CatalogMutationResult
@@ -24,6 +29,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.channels.Channel as CoroutineChannel
 import org.flywaydb.core.Flyway
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
@@ -336,7 +342,7 @@ class GrpcRegistrationHandlerDbTest {
         assertEquals("h", after.host, "no field is touched by a rejected register, not just engine")
         assertEquals(5432, after.port)
         assertEquals("d", after.dbName)
-        assertTrue(core.datasourceStore.catalog(before.id).isNotEmpty(), "a rejected engine change must not invalidate the catalog")
+        assertTrue(core.datasourceStore.catalog(before.id).columns.isNotEmpty(), "a rejected engine change must not invalidate the catalog")
         assertEquals(before.catalogSyncedAt, after.catalogSyncedAt, "catalog_synced_at is retained on a rejected register")
     }
 
@@ -452,7 +458,7 @@ class GrpcRegistrationHandlerDbTest {
         }
         val afterReject = core.datasourceStore.get(ds.id)!!
         assertEquals(Engine.POSTGRES, afterReject.engine, "a rejected admin engine change must not mutate the row")
-        assertTrue(core.datasourceStore.catalog(ds.id).isNotEmpty(), "a rejected engine change must not touch the catalog")
+        assertTrue(core.datasourceStore.catalog(ds.id).columns.isNotEmpty(), "a rejected engine change must not touch the catalog")
 
         // A same-engine edit that retargets db_name invalidates the stale catalog (fail-closed), exactly as a
         // Register retarget does — the retained catalog now describes a DIFFERENT schema.
@@ -461,7 +467,7 @@ class GrpcRegistrationHandlerDbTest {
         )!!
         assertEquals("h2", edited.host)
         assertEquals("app2", edited.dbName)
-        assertTrue(core.datasourceStore.catalog(ds.id).isEmpty(), "a db_name retarget via admin PUT must invalidate the stale catalog")
+        assertTrue(core.datasourceStore.catalog(ds.id).columns.isEmpty(), "a db_name retarget via admin PUT must invalidate the stale catalog")
         assertEquals(null, edited.catalogSyncedAt, "catalog_synced_at is cleared on invalidation")
     }
 
@@ -527,7 +533,7 @@ class GrpcRegistrationHandlerDbTest {
         assertEquals(listOf("pg_catalog", "public"), ds.defaultSchemas)
         assertEquals("PostgreSQL 16.3 (aurora 16.3)", ds.engineVersion, "the proxy-pushed engine version is stored for system-classification")
         assertTrue(ds.catalogSyncedAt != null, "catalog_synced_at is stamped on push")
-        val cols = core.datasourceStore.catalog(ds.id)
+        val cols = core.datasourceStore.catalog(ds.id).columns
         val ssn = cols.single { it.table == "users" && it.column == "ssn" }
         assertEquals("text", ssn.dataType)
         assertEquals("VARCHAR", ssn.sqlType, "the control-plane derives sql_type from the raw data_type")
@@ -618,7 +624,7 @@ class GrpcRegistrationHandlerDbTest {
         stub.register(regReq { name = "reg-preserve"; engine = Engine.POSTGRES; host = "h2"; port = 5432; dbName = "app" })
         val after = core.datasourceStore.getByName("reg-preserve")!!
         assertEquals("h2", after.host, "advisory host is still updated")
-        assertTrue(core.datasourceStore.catalog(ds.id).any { it.table == "keep" }, "same-target re-register must not wipe the catalog")
+        assertTrue(core.datasourceStore.catalog(ds.id).columns.any { it.table == "keep" }, "same-target re-register must not wipe the catalog")
         assertTrue(after.catalogSyncedAt != null, "catalog_synced_at is retained on a same-target re-register")
     }
 
@@ -635,14 +641,14 @@ class GrpcRegistrationHandlerDbTest {
             },
         )
         val ds = core.datasourceStore.getByName("reg-retarget")!!
-        assertTrue(core.datasourceStore.catalog(ds.id).isNotEmpty())
+        assertTrue(core.datasourceStore.catalog(ds.id).columns.isNotEmpty())
 
         // Reuse the name for a DIFFERENT database — the old catalog describes the wrong schema now, so it must
         // be dropped and catalog_synced_at cleared until a fresh push lands (decisions fail closed meanwhile).
         stub.register(regReq { name = "reg-retarget"; engine = Engine.POSTGRES; host = "h"; port = 5432; dbName = "db_b" })
         val after = core.datasourceStore.getByName("reg-retarget")!!
         assertEquals("db_b", after.dbName)
-        assertTrue(core.datasourceStore.catalog(ds.id).isEmpty(), "a retarget must invalidate the stale catalog")
+        assertTrue(core.datasourceStore.catalog(ds.id).columns.isEmpty(), "a retarget must invalidate the stale catalog")
         assertEquals(null, after.catalogSyncedAt, "catalog_synced_at is cleared on invalidation")
         assertTrue(after.defaultSchemas.isEmpty(), "default_schemas is cleared on invalidation")
     }
@@ -675,7 +681,7 @@ class GrpcRegistrationHandlerDbTest {
             )
         }
         assertTrue(code != Status.Code.OK, "a duplicate-column push must fail, not silently succeed")
-        val cols = core.datasourceStore.catalog(ds.id)
+        val cols = core.datasourceStore.catalog(ds.id).columns
         assertTrue(cols.any { it.table == "orig" }, "the prior catalog must survive a rolled-back push")
         assertTrue(cols.none { it.table == "dup" }, "no partial rows from the failed push may remain")
     }
@@ -704,7 +710,7 @@ class GrpcRegistrationHandlerDbTest {
         )
         assertEquals(1, ack.columns)
         val ds = core.datasourceStore.getByName("reg-replace")!!
-        val cols = core.datasourceStore.catalog(ds.id)
+        val cols = core.datasourceStore.catalog(ds.id).columns
         assertTrue(cols.none { it.table == "b" }, "the replaced catalog must not retain table b")
         assertEquals(1, cols.count { it.table == "a" })
     }
@@ -746,8 +752,145 @@ class GrpcRegistrationHandlerDbTest {
             },
         )
 
-        val ssn = core.datasourceStore.catalog(ds.id).single { it.schema == "public" && it.table == "users" && it.column == "ssn" }
+        val ssn = core.datasourceStore.catalog(ds.id).columns.single { it.schema == "public" && it.table == "users" && it.column == "ssn" }
         val classification = assertNotNull(ssn.classification, "the surviving ssn identity must stay attached to its classification")
         assertEquals(listOf("pii", "government-id"), classification.tags)
     }
+    private suspend fun pushFunctions(name: String, functions: FunctionCatalog?, table: String = "users", duplicate: Boolean = false) {
+        stub.pushCatalog(catalogRequest {
+            datasourceName = name
+            defaultSchemas.add("public")
+            engineVersion = "PostgreSQL 16.4"
+            catalog = catalogSnapshot {
+                functions?.let { this.functions = it }
+                val row = column {
+                    schema = "public"
+                    this.table = table
+                    column = "id"
+                    dataType = "integer"
+                    ordinal = 1
+                }
+                columns.add(row)
+                if (duplicate) columns.add(row)
+            }
+        })
+    }
+
+    private fun storedFunctions(id: Long): FunctionCatalog? = dataSource.connection.use { c ->
+        c.prepareStatement("SELECT catalog FROM datasource WHERE id = ?").use { ps ->
+            ps.setLong(1, id)
+            ps.executeQuery().use { rs ->
+                rs.next()
+                rs.getBytes(1)?.let(CatalogSnapshot::parseFrom)?.takeIf { it.hasFunctions() }?.functions
+            }
+        }
+    }
+
+    @Test
+    fun `function inventory persists through grpc with absent and observed empty distinct`() = runBlocking {
+        val name = "functions-presence"
+        stub.register(regReq { this.name = name; engine = Engine.POSTGRES; dbName = "app" })
+        val ds = core.datasourceStore.getByName(name)!!
+        val functions = functionCatalog {
+            builtinFunctions.add("lower")
+            systemFunctionSchemas.add(schemaFunctions { schema = "pg_catalog"; names.add("lower") })
+            udfSchemas.add(schemaFunctions { schema = "public"; names.add("normalize") })
+            loadableFunctions.add("plugin_function")
+        }
+        pushFunctions(name, functions)
+        assertEquals(functions, storedFunctions(ds.id))
+        assertEquals(functions, core.datasourceStore.catalog(ds.id).functions)
+        assertEquals(functions, core.datasourceStore.connectionCatalog(ds.id, emptyList()).functions)
+
+        pushFunctions(name, FunctionCatalog.getDefaultInstance())
+        assertEquals(FunctionCatalog.getDefaultInstance(), storedFunctions(ds.id))
+        assertEquals(FunctionCatalog.getDefaultInstance(), core.datasourceStore.catalog(ds.id).functions)
+
+        stub.pushCatalog(catalogRequest {
+            datasourceName = name
+            catalog = catalogSnapshot { this.functions = functions }
+        })
+        val noColumns = core.datasourceStore.catalog(ds.id)
+        assertTrue(noColumns.columns.isEmpty())
+        assertEquals(functions, noColumns.functions)
+
+        pushFunctions(name, null)
+        assertNull(storedFunctions(ds.id))
+        assertNull(core.datasourceStore.catalog(ds.id).functions)
+        assertNull(core.datasourceStore.connectionCatalog(ds.id, emptyList()).functions)
+    }
+
+    @Test
+    fun `failed catalog replacement rolls back functions and columns together`() = runBlocking {
+        val name = "functions-rollback"
+        stub.register(regReq { this.name = name; engine = Engine.POSTGRES; dbName = "app" })
+        val ds = core.datasourceStore.getByName(name)!!
+        val functions = functionCatalog { builtinFunctions.add("lower") }
+        pushFunctions(name, functions)
+        val before = core.datasourceStore.catalog(ds.id)
+        assertFailsWith<StatusException> { pushFunctions(name, null, table = "replacement", duplicate = true) }
+        assertEquals(before, core.datasourceStore.catalog(ds.id))
+        assertEquals(functions, storedFunctions(ds.id))
+        assertEquals(functions, core.datasourceStore.connectionCatalog(ds.id, emptyList()).functions)
+    }
+
+    @Test
+    fun `restart needs a fresh function push and both retarget paths clear persisted bytes`() = runBlocking {
+        val name = "functions-restart-retarget"
+        stub.register(regReq { this.name = name; engine = Engine.POSTGRES; dbName = "app" })
+        val ds = core.datasourceStore.getByName(name)!!
+        val functions = functionCatalog { builtinFunctions.add("lower") }
+        pushFunctions(name, functions)
+        val restarted = DatasourceStore(dataSource)
+        assertEquals(functions, storedFunctions(ds.id))
+        assertNull(restarted.catalog(ds.id).functions)
+        assertNull(restarted.connectionCatalog(ds.id, emptyList()).functions)
+        assertTrue(restarted.catalog(ds.id).columns.isNotEmpty())
+        pushFunctions(name, null, table = "columns_only")
+        assertNull(storedFunctions(ds.id))
+        assertNull(restarted.catalog(ds.id).functions)
+        assertNull(restarted.connectionCatalog(ds.id, emptyList()).functions)
+        assertEquals("columns_only", restarted.catalog(ds.id).columns.single().table)
+        pushFunctions(name, functions)
+        assertEquals(functions, restarted.catalog(ds.id).functions)
+        assertEquals(functions, restarted.connectionCatalog(ds.id, emptyList()).functions)
+
+        stub.register(regReq { this.name = name; engine = Engine.POSTGRES; dbName = "other" })
+        assertNull(storedFunctions(ds.id))
+        assertTrue(restarted.catalog(ds.id).columns.isEmpty())
+        pushFunctions(name, functions)
+        core.datasourceStore.update(ds.id, DatasourceInput(name = name, engine = "postgres", dbName = "third"))
+        assertNull(storedFunctions(ds.id))
+        assertNull(restarted.catalog(ds.id).functions)
+        assertTrue(restarted.catalog(ds.id).columns.isEmpty())
+    }
+
+    @Test
+    fun `catalog read never mixes concurrently pushed functions and columns`() = runBlocking {
+        val name = "functions-snapshot"
+        stub.register(regReq { this.name = name; engine = Engine.POSTGRES; dbName = "app" })
+        val ds = core.datasourceStore.getByName(name)!!
+        pushFunctions(name, functionCatalog { builtinFunctions.add("v0") }, table = "v0")
+        val published = CoroutineChannel<Unit>()
+        val writer = async(Dispatchers.IO) {
+            repeat(25) { index ->
+                val marker = "v${index + 1}"
+                pushFunctions(name, functionCatalog { builtinFunctions.add(marker) }, table = marker)
+                published.send(Unit)
+            }
+        }
+        val observed = mutableSetOf<String>()
+        repeat(25) {
+            published.receive()
+            repeat(3) {
+                val catalog = core.datasourceStore.catalog(ds.id)
+                val marker = catalog.columns.single().table
+                observed += marker
+                assertEquals(marker, catalog.functions!!.builtinFunctionsList.single())
+            }
+        }
+        writer.await()
+        assertTrue(observed.size >= 2, "reader observed only $observed")
+    }
+
 }

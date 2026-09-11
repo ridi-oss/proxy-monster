@@ -12,6 +12,7 @@ import com.ridi.oss.proxymonster.controlplane.grpc.inspectTrustChain
 import com.ridi.oss.proxymonster.controlplane.management.ManagementAuditRecorder
 import com.ridi.oss.proxymonster.controlplane.management.ManagementException
 import com.ridi.oss.proxymonster.analyzer.pb.CatalogSnapshot
+import com.ridi.oss.proxymonster.analyzer.pb.FunctionCatalog
 import com.ridi.oss.proxymonster.grpc.Engine
 import com.ridi.oss.proxymonster.probe.Classification
 import com.ridi.oss.proxymonster.probe.TableDetail
@@ -93,6 +94,11 @@ data class DatasourceInput(
     val dbName: String = "",
 )
 
+data class Catalog(
+    val columns: List<CatalogColumn>,
+    val functions: FunctionCatalog? = null,
+)
+
 @Serializable
 data class CatalogColumn(
     val catalog: String,
@@ -163,6 +169,13 @@ fun sqlTypeFor(dataType: String): String = when (dataType.lowercase().trim()) {
 class DatasourceStore(internal val dataSource: DataSource) {
     private val json = Json
     private val stringList = ListSerializer(String.serializer())
+
+    // Persisted functions require a fresh push after this store starts.
+    private val startedAt = dataSource.connection.use { c ->
+        c.createStatement().use { ps ->
+            ps.executeQuery("SELECT clock_timestamp()").use { rs -> rs.next(); rs.getTimestamp(1) }
+        }
+    }
 
     companion object {
         /** The `system:` tag namespace is owned by the product — an operator may not coin a name in it. */
@@ -429,7 +442,7 @@ class DatasourceStore(internal val dataSource: DataSource) {
             c.prepareStatement(
                 """UPDATE datasource
                    SET catalog = ?, default_schemas = ?::jsonb, mysql_lower_case_table_names = ?, engine_version = ?,
-                       catalog_synced_at = now()
+                       catalog_synced_at = clock_timestamp()
                    WHERE id = ? AND deleted_at IS NULL""",
             ).use { ps ->
                 ps.setBytes(1, catalog.toByteArray())
@@ -532,7 +545,7 @@ class DatasourceStore(internal val dataSource: DataSource) {
         }
     }
 
-    fun catalog(id: Long): List<CatalogColumn> = dataSource.connection.use { c -> catalog(id, c) }
+    fun catalog(id: Long): Catalog = dataSource.connection.use { c -> catalog(id, c) }
 
     /**
      * The stored certificate chain for one datasource. Read on its own rather than joined into the list/get
@@ -547,32 +560,55 @@ class DatasourceStore(internal val dataSource: DataSource) {
     }
 
 
-    fun catalog(id: Long, c: java.sql.Connection): List<CatalogColumn> = c.prepareStatement(
+    fun catalog(id: Long, c: java.sql.Connection): Catalog = readCatalog(id, c) { snapshot, catalogName, classifications ->
+        snapshot.columnsList
+            .sortedWith(compareBy({ it.schema }, { it.table }, { it.ordinal }))
+            .map { col ->
+                CatalogColumn(
+                    catalogName, col.schema, col.table, col.column, col.dataType, sqlTypeFor(col.dataType),
+                    col.ordinal, col.nullable, classifications[Triple(col.schema, col.table, col.column)],
+                )
+            }
+    }
+
+    /** The catalog for one held connection: its own structural [columns], the live classifications, and the
+     *  datasource-wide functions. */
+    fun connectionCatalog(id: Long, columns: List<CatalogColumn>): Catalog = dataSource.connection.use { c ->
+        readCatalog(id, c) { _, _, classifications ->
+            columns.map { row -> row.copy(classification = classifications[Triple(row.schema, row.table, row.column)]) }
+        }
+    }
+
+    private fun readCatalog(
+        id: Long,
+        c: java.sql.Connection,
+        columns: (CatalogSnapshot, String, Map<Triple<String, String, String>, Classification>) -> List<CatalogColumn>,
+    ): Catalog = c.prepareStatement(
         """SELECT CASE WHEN lower(d.engine) = 'mysql' THEN 'def' ELSE d.db_name END AS catalog_name, d.catalog,
+                  d.catalog_synced_at >= ? AS functions_fresh,
                   cl.schema_name, cl.table_name, cl.column_name, cl.tags, cl.mask_fn_id, m.name AS mask_fn_name
            FROM datasource d
            LEFT JOIN column_classification cl ON cl.datasource_id = d.id
            LEFT JOIN mask_fn m ON m.id = cl.mask_fn_id AND m.deleted_at IS NULL
            WHERE d.id = ?""",
     ).use { ps ->
-        ps.setLong(1, id)
+        ps.setTimestamp(1, startedAt)
+        ps.setLong(2, id)
         ps.executeQuery().use { rs ->
-            var catalogName: String? = null
+            var catalogName = ""
             var snapshot = CatalogSnapshot.getDefaultInstance()
+            var functionsFresh = false
             val classifications = HashMap<Triple<String, String, String>, Classification>()
             while (rs.next()) {
                 catalogName = rs.getString("catalog_name")
                 rs.getBytes("catalog")?.let { snapshot = CatalogSnapshot.parseFrom(it) }
+                functionsFresh = rs.getBoolean("functions_fresh")
                 rs.classification()?.let { classifications[Triple(it.schema, it.table, it.column)] = it }
             }
-            snapshot.columnsList
-                .sortedWith(compareBy({ it.schema }, { it.table }, { it.ordinal }))
-                .map { col ->
-                    CatalogColumn(
-                        catalogName!!, col.schema, col.table, col.column, col.dataType, sqlTypeFor(col.dataType),
-                        col.ordinal, col.nullable, classifications[Triple(col.schema, col.table, col.column)],
-                    )
-                }
+            Catalog(
+                columns(snapshot, catalogName, classifications),
+                if (functionsFresh && snapshot.hasFunctions()) snapshot.functions else null,
+            )
         }
     }
 

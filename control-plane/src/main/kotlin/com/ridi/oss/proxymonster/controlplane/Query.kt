@@ -292,7 +292,7 @@ internal fun buildCatalogColumnIndex(
  */
 internal fun analyzerAndCatalogIndex(
     ds: Datasource,
-    catalog: List<CatalogColumn>,
+    catalog: Catalog,
     tempColumns: List<CatalogColumn>,
     resolvedSearchPath: List<String>,
     liveAnsiQuotes: Boolean,
@@ -310,7 +310,7 @@ internal fun analyzerAndCatalogIndex(
         // false otherwise); the PostgreSQL engine ignores it regardless.
         if (liveAnsiQuotes) this.mysqlAnsiQuotes = true
     }
-    val effectiveCatalog = catalog + tempColumns
+    val effectiveCatalog = catalog.columns + tempColumns
     val snapshot = catalogSnapshot {
         columns += effectiveCatalog.map { col ->
             column {
@@ -347,7 +347,7 @@ internal fun analyzerAndCatalogIndex(
 fun protectedPredicateLiterals(
     ds: Datasource,
     sql: String,
-    catalog: List<CatalogColumn>,
+    catalog: Catalog,
     tempColumns: List<CatalogColumn> = emptyList(),
     liveSearchPath: List<String>? = null,
     liveAnsiQuotes: Boolean = false,
@@ -418,7 +418,7 @@ fun decideQuery(
     ds: Datasource,
     sql: String,
     channel: Channel,
-    catalog: List<CatalogColumn>,
+    catalog: Catalog,
     policyStore: PolicyStore,
     accessStore: AccessStore,
     userGroupStore: UserGroupStore,
@@ -452,7 +452,7 @@ fun decideQuery(
 ): DecisionContext {
     val id = ds.id
     val dialect = ds.engine.dialect
-    if (liveSearchPath != null && liveSearchPath.isEmpty() && catalog.isNotEmpty()) {
+    if (liveSearchPath != null && liveSearchPath.isEmpty() && catalog.columns.isNotEmpty()) {
         return structuralDeny(CATALOG_CONFIGURATION_DENY, emptyList(), failedStage = "catalog").copy(catalogMiss = true)
     }
     val resolvedSearchPath = (liveSearchPath ?: ds.defaultSchemas).ifEmpty { listOf(ds.dbName.ifBlank { "public" }) }
@@ -615,7 +615,7 @@ fun decideQuery(
         // dumps the whole target row) — gate on the analyzer's leak set. `SELECT 1` has an empty set: raw.
         return passthroughAllow(roleList, "passthrough (no data touched)", derivedTags)
             .copy(
-                sanitizeDiagnostics = !readsAllUnmasked(principal, roles, ds, catalog, facts.diagnosticLeakColumnsList, context, authz, systemClassification),
+                sanitizeDiagnostics = !readsAllUnmasked(principal, roles, ds, catalog.columns, facts.diagnosticLeakColumnsList, context, authz, systemClassification),
                 schemaCandidates = facts.schemaQualifierCandidatesList.toSet(),
             )
             .withAnalyzerRewrite(facts)
@@ -829,7 +829,7 @@ fun decideQuery(
     // MASK/DENY always redacts; an ALLOW redacts iff the analyzer's leak set holds a column the viewer
     // can't read unmasked. `select id from users` (all readable) relays raw.
     val sanitizeDiagnostics = action != EnfAction.ALLOW ||
-        !readsAllUnmasked(principal, roles, ds, catalog, facts.diagnosticLeakColumnsList, context, authz, systemClassification)
+        !readsAllUnmasked(principal, roles, ds, catalog.columns, facts.diagnosticLeakColumnsList, context, authz, systemClassification)
     return DecisionContext(
         action = action,
         denyReason = null,

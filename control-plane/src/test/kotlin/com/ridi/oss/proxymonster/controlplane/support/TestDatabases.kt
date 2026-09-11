@@ -180,7 +180,12 @@ object SharedMySql {
     }
 
     private val container: MySQLContainer<*> by lazy {
-        MySQLContainer(IMAGE).apply { start() }
+        MySQLContainer(IMAGE).apply {
+            start()
+            DriverManager.getConnection(jdbcUrl, "root", password).use { c ->
+                c.createStatement().use { it.executeUpdate("GRANT SELECT ON mysql.func TO '$username'@'%'") }
+            }
+        }
     }
 
     /** The container's original database, retained for the older single-schema fixtures. */
@@ -221,6 +226,8 @@ object SharedMySql {
     fun port(): Int = container.getMappedPort(3306)
     fun username(): String = container.username
     fun password(): String = container.password
+
+    fun executeAdmin(sql: String) = adminConnection().use { c -> c.createStatement().use { it.execute(sql) } }
 
     /** MySQLContainer configures root with the same generated test password. */
     private fun adminConnection() = DriverManager.getConnection(jdbcUrlFor("mysql"), "root", container.password)

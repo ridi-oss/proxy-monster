@@ -56,7 +56,7 @@ class CatalogCoverageGateDbTest {
         runGate(my, "test-coverage-unanalyzable-my")
 
     private fun coverageMissFacts(fx: EnforcementFixture): StatementFacts {
-        val users = fx.datasourceStore.catalog(fx.datasource.id).first { it.table == "users" }
+        val users = fx.datasourceStore.catalog(fx.datasource.id).columns.first { it.table == "users" }
         return statementFacts {
             resolved = true
             detail = "synthetic coverage miss"
@@ -94,7 +94,7 @@ class CatalogCoverageGateDbTest {
     // (the permit persists on the PER_CLASS fixture). Each engine has its own fixture, so its permit does
     // not contaminate the other.
     private fun runGate(fx: EnforcementFixture, permitName: String) {
-        val missSchema = fx.datasourceStore.catalog(fx.datasource.id).first { it.table == "users" }.schema
+        val missSchema = fx.datasourceStore.catalog(fx.datasource.id).columns.first { it.table == "users" }.schema
 
         // 1. No exception policy → fail-closed deny, carrying catalogMiss + the qualifier so decideConnection
         //    runs refetch-first before this verdict can stand. A regular analyst has no exception.unanalyzable.

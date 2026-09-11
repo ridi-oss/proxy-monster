@@ -18,22 +18,32 @@ option java_multiple_files = true;
 
 // ---- request side ----
 
-// A schema/table/column identity — a catalog column's own identity (ColumnSpec, below). No catalog:
-// a bare schema/table/column identity never deals in a cross-catalog identity.
+// A schema/table/column identity of an emitted column resource. No catalog: a bare
+// schema/table/column identity never deals in a cross-catalog identity.
 message RelationIdentity {
   string schema = 1;
   string table = 2;
   string column = 3;
 }
 
-// A physical catalog column, flat (no nested tree) — Go builds its own schema.Mapping tree from the
-// flat list; the Kotlin caller already holds a flat List<ColumnSpec> natively (CatalogApi.kt), so this
-// needs no tree-walking encoder or decoder on either side.
-message ColumnSpec {
-  string catalog = 1;
-  RelationIdentity identity = 2;
-  string data_type = 3;
-  bool pii = 4;
+// A physical catalog column as the proxy introspects it: the same message on every catalog boundary
+// (PushCatalog, the per-connection fragment push, the stored snapshot, AnalyzeRequest). Flat, no nested
+// tree: Go builds its own schema.Mapping from the list.
+message Column {
+  string schema = 1;
+  string table = 2;
+  string column = 3;
+  string data_type = 4;
+  int32 ordinal = 5;
+  bool nullable = 6;
+  // The column's catalog. Empty means the Namespace catalog (the only catalog on MySQL/PostgreSQL); a
+  // multi-catalog engine names it so columns from two catalogs stay distinct identities.
+  string catalog = 7;
+}
+
+// The introspected catalog: pushed whole, stored whole, and analyzed whole.
+message CatalogSnapshot {
+  repeated Column columns = 1;
 }
 
 // The datasource namespace used to resolve unqualified table names. Engine-specific settings (case
@@ -76,10 +86,11 @@ message AnalyzeRequest {
   reserved 2;
   reserved "dialect";
   Namespace namespace = 3;
-  repeated ColumnSpec catalog = 4;
+  reserved 4;
   reserved 5;
   reserved "engine_version";
   EngineConfig engine_config = 6;
+  CatalogSnapshot catalog = 7;
 }
 
 // Cut a multi-statement batch into its individual statements at the dialect's own semicolon tokens,

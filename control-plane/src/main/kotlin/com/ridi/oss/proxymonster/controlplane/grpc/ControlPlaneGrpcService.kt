@@ -80,7 +80,7 @@ private const val TABLE_DETAIL_STREAM_TIMEOUT_MS = 60_000L
 // error instead of a stalled run channel. Bump it on any incompatible wire change. It MUST match the proxy's
 // goproxy cp.ProtocolVersion; the two are separate constants in separate languages kept in lockstep by hand —
 // a server-v* release always ships both at the same value.
-internal const val CONTROL_PROTOCOL_VERSION = 2
+internal const val CONTROL_PROTOCOL_VERSION = 3
 
 // The completion-event terminal statuses the proxy reports: a clean finish, a target DB/relay error carrying
 // partial counts, or a canceled statement. Any other value is rejected fail-closed so a malformed report
@@ -453,9 +453,7 @@ class ControlPlaneGrpcService(
             ?: throw StatusException(
                 Status.NOT_FOUND.withDescription("unknown datasource '${request.datasourceName}' — Register first"),
             )
-        val pushedColumns = request.columnsList.map {
-            DatasourceStore.PushedColumn(it.schema, it.table, it.column, it.dataType, it.ordinal, it.nullable)
-        }
+        val pushedColumns = request.catalog.columnsList
         val mysqlLowerCaseTableNames =
             if (request.hasMysqlLowerCaseTableNames()) request.mysqlLowerCaseTableNames else null
         val stored = core.datasourceStore.storePushedCatalog(

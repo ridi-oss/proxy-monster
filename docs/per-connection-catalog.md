@@ -277,8 +277,7 @@ message SchemaFragmentPush {
   string schema             = 3;
   bytes  content_hash       = 4;  // the live DB-side hash the proxy just measured for this schema
   bool   unchanged          = 5;  // true = live hash matched H; columns omitted (no-op ack)
-  repeated Column columns   = 6;  // enforcement-relevant fields only (schema/table/column/
-                                  // data_type/ordinal/nullable) — the same Column message as PushCatalog
+  repeated Column columns   = 6;  // the analyzer's Column message, the same one PushCatalog carries
   uint64 backend_generation = 7;  // which target-DB-connection instance measured this
 }
 message SchemaFragmentAck { uint64 generation = 1; }  // per-connection generation after applying

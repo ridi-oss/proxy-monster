@@ -30,13 +30,13 @@ func postgresFacts(t *testing.T, sql string) *pb.StatementFacts {
 		Sql:          sql,
 		EngineConfig: &pb.EngineConfig{Engine: pb.Engine_POSTGRES},
 		Namespace:    &pb.Namespace{Catalog: "acme", SearchPath: []string{"public"}},
-		Catalog: []*pb.ColumnSpec{
-			columnSpec("acme", "public", "users", "id", "BIGINT"),
-			columnSpec("acme", "public", "users", "ssn", "VARCHAR"),
-			columnSpec("acme", "public", "users", "email", "VARCHAR"),
-			columnSpec("acme", "public", "sink", "id", "BIGINT"),
-			columnSpec("acme", "public", "sink", "value", "VARCHAR"),
-		},
+		Catalog: snapshot([]*pb.Column{
+			pbColumn("public", "users", "id", "BIGINT"),
+			pbColumn("public", "users", "ssn", "VARCHAR"),
+			pbColumn("public", "users", "email", "VARCHAR"),
+			pbColumn("public", "sink", "id", "BIGINT"),
+			pbColumn("public", "sink", "value", "VARCHAR"),
+		}),
 	})
 }
 
@@ -54,13 +54,13 @@ func mysqlFactsMode(t *testing.T, sql string, ansiQuotes bool) *pb.StatementFact
 		Sql:          sql,
 		EngineConfig: cfg,
 		Namespace:    &pb.Namespace{Catalog: "def", SearchPath: []string{"acme"}},
-		Catalog: []*pb.ColumnSpec{
-			columnSpec("def", "acme", "users", "id", "BIGINT"),
-			columnSpec("def", "acme", "users", "ssn", "VARCHAR"),
-			columnSpec("def", "acme", "users", "email", "VARCHAR"),
-			columnSpec("def", "acme", "sink", "id", "BIGINT"),
-			columnSpec("def", "acme", "sink", "value", "VARCHAR"),
-		},
+		Catalog: snapshot([]*pb.Column{
+			pbColumn("acme", "users", "id", "BIGINT"),
+			pbColumn("acme", "users", "ssn", "VARCHAR"),
+			pbColumn("acme", "users", "email", "VARCHAR"),
+			pbColumn("acme", "sink", "id", "BIGINT"),
+			pbColumn("acme", "sink", "value", "VARCHAR"),
+		}),
 	})
 }
 

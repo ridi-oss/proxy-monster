@@ -1,6 +1,7 @@
 package com.ridi.oss.proxymonster.controlplane.grpc
 
 import com.google.protobuf.ByteString
+import com.ridi.oss.proxymonster.analyzer.pb.catalogSnapshot
 import com.ridi.oss.proxymonster.controlplane.Binding
 import com.ridi.oss.proxymonster.controlplane.CatalogMutationResult
 import com.ridi.oss.proxymonster.controlplane.ControlPlaneCore
@@ -12,7 +13,7 @@ import com.ridi.oss.proxymonster.controlplane.support.requireDockerOrSkip
 import com.ridi.oss.proxymonster.grpc.ControlPlaneGrpcKt
 import com.ridi.oss.proxymonster.grpc.Engine
 import com.ridi.oss.proxymonster.grpc.catalogRequest
-import com.ridi.oss.proxymonster.grpc.column
+import com.ridi.oss.proxymonster.analyzer.pb.column
 import com.ridi.oss.proxymonster.grpc.RegisterRequest
 import com.ridi.oss.proxymonster.grpc.registerRequest
 import com.ridi.oss.proxymonster.grpc.schemaFragmentPush
@@ -317,7 +318,9 @@ class GrpcRegistrationHandlerDbTest {
             catalogRequest {
                 datasourceName = "reg-engine-lock"
                 defaultSchemas.add("public")
-                columns.add(column { schema = "public"; table = "t"; this.column = "c"; dataType = "text"; ordinal = 1; nullable = true })
+                catalog = catalogSnapshot {
+                    columns.add(column { schema = "public"; table = "t"; this.column = "c"; dataType = "text"; ordinal = 1; nullable = true })
+                }
             },
         )
         val before = core.datasourceStore.getByName("reg-engine-lock")!!
@@ -437,7 +440,9 @@ class GrpcRegistrationHandlerDbTest {
             catalogRequest {
                 datasourceName = "upd-engine-lock"
                 defaultSchemas.add("public")
-                columns.add(column { schema = "public"; table = "t"; this.column = "c"; dataType = "text"; ordinal = 1; nullable = true })
+                catalog = catalogSnapshot {
+                    columns.add(column { schema = "public"; table = "t"; this.column = "c"; dataType = "text"; ordinal = 1; nullable = true })
+                }
             },
         )
         // A PUT that flips engine is rejected fail-closed (the admin surface is not a bypass of engine immutability) — the row
@@ -511,8 +516,10 @@ class GrpcRegistrationHandlerDbTest {
                 datasourceName = "reg-cat"
                 defaultSchemas.addAll(listOf("pg_catalog", "public"))
                 engineVersion = "PostgreSQL 16.3 (aurora 16.3)"
-                columns.add(column { schema = "public"; table = "users"; this.column = "id"; dataType = "integer"; ordinal = 1; nullable = false })
-                columns.add(column { schema = "public"; table = "users"; this.column = "ssn"; dataType = "text"; ordinal = 2; nullable = true })
+                catalog = catalogSnapshot {
+                    columns.add(column { schema = "public"; table = "users"; this.column = "id"; dataType = "integer"; ordinal = 1; nullable = false })
+                    columns.add(column { schema = "public"; table = "users"; this.column = "ssn"; dataType = "text"; ordinal = 2; nullable = true })
+                }
             },
         )
         assertEquals(2, ack.columns)
@@ -558,9 +565,11 @@ class GrpcRegistrationHandlerDbTest {
             catalogRequest {
                 datasourceName = ds.name
                 defaultSchemas.add("app")
-                columns.add(
-                    column { schema = "app"; table = "users"; this.column = "id"; dataType = "bigint"; ordinal = 1; nullable = false },
-                )
+                catalog = catalogSnapshot {
+                    columns.add(
+                        column { schema = "app"; table = "users"; this.column = "id"; dataType = "bigint"; ordinal = 1; nullable = false },
+                    )
+                }
             },
         )
 
@@ -599,7 +608,9 @@ class GrpcRegistrationHandlerDbTest {
             catalogRequest {
                 datasourceName = "reg-preserve"
                 defaultSchemas.add("public")
-                columns.add(column { schema = "public"; table = "keep"; this.column = "c"; dataType = "text"; ordinal = 1; nullable = true })
+                catalog = catalogSnapshot {
+                    columns.add(column { schema = "public"; table = "keep"; this.column = "c"; dataType = "text"; ordinal = 1; nullable = true })
+                }
             },
         )
         // A proxy self-registers by the same name, same engine+db, host moved. The catalog survives because
@@ -618,7 +629,9 @@ class GrpcRegistrationHandlerDbTest {
             catalogRequest {
                 datasourceName = "reg-retarget"
                 defaultSchemas.add("public")
-                columns.add(column { schema = "public"; table = "old_table"; this.column = "c"; dataType = "text"; ordinal = 1; nullable = true })
+                catalog = catalogSnapshot {
+                    columns.add(column { schema = "public"; table = "old_table"; this.column = "c"; dataType = "text"; ordinal = 1; nullable = true })
+                }
             },
         )
         val ds = core.datasourceStore.getByName("reg-retarget")!!
@@ -641,7 +654,9 @@ class GrpcRegistrationHandlerDbTest {
             catalogRequest {
                 datasourceName = "reg-rollback"
                 defaultSchemas.add("public")
-                columns.add(column { schema = "public"; table = "orig"; this.column = "c"; dataType = "text"; ordinal = 1; nullable = true })
+                catalog = catalogSnapshot {
+                    columns.add(column { schema = "public"; table = "orig"; this.column = "c"; dataType = "text"; ordinal = 1; nullable = true })
+                }
             },
         )
         val ds = core.datasourceStore.getByName("reg-rollback")!!
@@ -652,8 +667,10 @@ class GrpcRegistrationHandlerDbTest {
                 catalogRequest {
                     datasourceName = "reg-rollback"
                     defaultSchemas.add("public")
-                    columns.add(column { schema = "public"; table = "dup"; this.column = "x"; dataType = "text"; ordinal = 1; nullable = true })
-                    columns.add(column { schema = "public"; table = "dup"; this.column = "x"; dataType = "text"; ordinal = 2; nullable = true })
+                    catalog = catalogSnapshot {
+                        columns.add(column { schema = "public"; table = "dup"; this.column = "x"; dataType = "text"; ordinal = 1; nullable = true })
+                        columns.add(column { schema = "public"; table = "dup"; this.column = "x"; dataType = "text"; ordinal = 2; nullable = true })
+                    }
                 },
             )
         }
@@ -670,15 +687,19 @@ class GrpcRegistrationHandlerDbTest {
             catalogRequest {
                 datasourceName = "reg-replace"
                 defaultSchemas.add("public")
-                columns.add(column { schema = "public"; table = "a"; this.column = "x"; dataType = "integer"; ordinal = 1; nullable = true })
-                columns.add(column { schema = "public"; table = "b"; this.column = "y"; dataType = "integer"; ordinal = 1; nullable = true })
+                catalog = catalogSnapshot {
+                    columns.add(column { schema = "public"; table = "a"; this.column = "x"; dataType = "integer"; ordinal = 1; nullable = true })
+                    columns.add(column { schema = "public"; table = "b"; this.column = "y"; dataType = "integer"; ordinal = 1; nullable = true })
+                }
             },
         )
         val ack = stub.pushCatalog(
             catalogRequest {
                 datasourceName = "reg-replace"
                 defaultSchemas.add("public")
-                columns.add(column { schema = "public"; table = "a"; this.column = "x"; dataType = "integer"; ordinal = 1; nullable = true })
+                catalog = catalogSnapshot {
+                    columns.add(column { schema = "public"; table = "a"; this.column = "x"; dataType = "integer"; ordinal = 1; nullable = true })
+                }
             },
         )
         assertEquals(1, ack.columns)
@@ -695,8 +716,10 @@ class GrpcRegistrationHandlerDbTest {
             catalogRequest {
                 datasourceName = "reg-replace-classified"
                 defaultSchemas.add("public")
-                columns.add(column { schema = "public"; table = "users"; this.column = "ssn"; dataType = "text"; ordinal = 1; nullable = false })
-                columns.add(column { schema = "public"; table = "users"; this.column = "display_name"; dataType = "text"; ordinal = 2; nullable = true })
+                catalog = catalogSnapshot {
+                    columns.add(column { schema = "public"; table = "users"; this.column = "ssn"; dataType = "text"; ordinal = 1; nullable = false })
+                    columns.add(column { schema = "public"; table = "users"; this.column = "display_name"; dataType = "text"; ordinal = 2; nullable = true })
+                }
             },
         )
         val ds = core.datasourceStore.getByName("reg-replace-classified")!!
@@ -715,9 +738,11 @@ class GrpcRegistrationHandlerDbTest {
             catalogRequest {
                 datasourceName = "reg-replace-classified"
                 defaultSchemas.add("public")
-                columns.add(column { schema = "public"; table = "users"; this.column = "ssn"; dataType = "text"; ordinal = 1; nullable = false })
-                columns.add(column { schema = "public"; table = "users"; this.column = "display_name"; dataType = "character varying"; ordinal = 2; nullable = false })
-                columns.add(column { schema = "public"; table = "users"; this.column = "created_at"; dataType = "timestamp"; ordinal = 3; nullable = false })
+                catalog = catalogSnapshot {
+                    columns.add(column { schema = "public"; table = "users"; this.column = "ssn"; dataType = "text"; ordinal = 1; nullable = false })
+                    columns.add(column { schema = "public"; table = "users"; this.column = "display_name"; dataType = "character varying"; ordinal = 2; nullable = false })
+                    columns.add(column { schema = "public"; table = "users"; this.column = "created_at"; dataType = "timestamp"; ordinal = 3; nullable = false })
+                }
             },
         )
 

@@ -1,6 +1,6 @@
 package com.ridi.oss.proxymonster.probe
 
-import com.ridi.oss.proxymonster.analyzer.pb.ColumnSpec as PbColumnSpec
+import com.ridi.oss.proxymonster.analyzer.pb.CatalogSnapshot as PbCatalogSnapshot
 import com.ridi.oss.proxymonster.analyzer.pb.EngineConfig as PbEngineConfig
 import com.ridi.oss.proxymonster.analyzer.pb.Namespace as PbNamespace
 import com.ridi.oss.proxymonster.analyzer.pb.FailureClass
@@ -24,18 +24,18 @@ import com.ridi.oss.sqlglotgo.Sqlglot
  */
 object SqlglotProbe {
     /**
-     * Analyze [sql] against the [namespace], flat [catalog], and [engineConfig] an [Analyzer] built
+     * Analyze [sql] against the [namespace], [catalog], and [engineConfig] an [Analyzer] built
      * once at construction (reused across calls; only sql varies per call — the engine identity,
      * version, and settings are fixed for the request). Go owns all engine-specific validation from
      * engineConfig alone (e.g. failing MySQL analysis closed without a parseable version). Analyzer
      * output identities are always `catalog.schema.table.column`.
      */
-    fun analyze(sql: String, namespace: PbNamespace, catalog: List<PbColumnSpec>, engineConfig: PbEngineConfig): StatementFacts =
+    fun analyze(sql: String, namespace: PbNamespace, catalog: PbCatalogSnapshot, engineConfig: PbEngineConfig): StatementFacts =
         try {
             val request = analyzeRequest {
                 this.sql = sql
                 this.namespace = namespace
-                this.catalog.addAll(catalog)
+                this.catalog = catalog
                 this.engineConfig = engineConfig
             }
             StatementFacts.parseFrom(Sqlglot.analyzeStatement(request.toByteArray()))

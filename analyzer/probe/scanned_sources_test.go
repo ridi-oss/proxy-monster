@@ -16,14 +16,14 @@ import (
 // that reads the real table must — resolved by the scope graph, not a global name set.
 func TestScannedSources(t *testing.T) {
 	// PG-style catalog. orders/sink carry no PII; users.ssn is the protected column used elsewhere.
-	cols := []*pb.ColumnSpec{
-		columnSpec("acme", "public", "users", "id", "BIGINT"),
-		columnSpec("acme", "public", "users", "ssn", "VARCHAR"),
-		columnSpec("acme", "public", "users", "email", "VARCHAR"),
-		columnSpec("acme", "public", "orders", "id", "BIGINT"),
-		columnSpec("acme", "public", "orders", "uid", "BIGINT"),
-		columnSpec("acme", "public", "sink", "id", "BIGINT"),
-		columnSpec("acme", "public", "sink", "data", "VARCHAR"),
+	cols := []*pb.Column{
+		pbColumn("public", "users", "id", "BIGINT"),
+		pbColumn("public", "users", "ssn", "VARCHAR"),
+		pbColumn("public", "users", "email", "VARCHAR"),
+		pbColumn("public", "orders", "id", "BIGINT"),
+		pbColumn("public", "orders", "uid", "BIGINT"),
+		pbColumn("public", "sink", "id", "BIGINT"),
+		pbColumn("public", "sink", "data", "VARCHAR"),
 	}
 	ns := &pb.Namespace{Catalog: "acme", SearchPath: []string{"public"}}
 
@@ -68,11 +68,11 @@ func TestScannedSources(t *testing.T) {
 // TestScannedSourcesMySQL re-runs the safety pair + the base leak on MySQL to prove the physical/CTE
 // distinction holds on both engines (the resolution report drives it, not engine-specific parsing).
 func TestScannedSourcesMySQL(t *testing.T) {
-	cols := []*pb.ColumnSpec{
-		columnSpec("def", "app", "users", "id", "BIGINT"),
-		columnSpec("def", "app", "users", "ssn", "VARCHAR"),
-		columnSpec("def", "app", "orders", "id", "BIGINT"),
-		columnSpec("def", "app", "orders", "uid", "BIGINT"),
+	cols := []*pb.Column{
+		pbColumn("app", "users", "id", "BIGINT"),
+		pbColumn("app", "users", "ssn", "VARCHAR"),
+		pbColumn("app", "orders", "id", "BIGINT"),
+		pbColumn("app", "orders", "uid", "BIGINT"),
 	}
 	ns := &pb.Namespace{Catalog: "def", SearchPath: []string{"app"}}
 	o := "def.app.orders"
@@ -102,9 +102,9 @@ func TestScannedSourcesMySQL(t *testing.T) {
 // table `x` — scanned with zero traced columns — appear covered. The dotted name is pathological and
 // denied downstream anyway, but the analyzer's `covered` flag must be correct on its own (fail-closed).
 func TestScannedSourcesDottedNameDoesNotPolluteSibling(t *testing.T) {
-	cols := []*pb.ColumnSpec{
-		columnSpec("acme", "public", "x", "id", "BIGINT"),
-		columnSpec("acme", "public", "x.foo", "id", "BIGINT"),
+	cols := []*pb.Column{
+		pbColumn("public", "x", "id", "BIGINT"),
+		pbColumn("public", "x.foo", "id", "BIGINT"),
 	}
 	ns := &pb.Namespace{Catalog: "acme", SearchPath: []string{"public"}}
 	got, resolved := probeSources(t, `SELECT f.id FROM "x.foo" f CROSS JOIN x`, "postgres", cols, ns)
@@ -119,13 +119,13 @@ func TestScannedSourcesDottedNameDoesNotPolluteSibling(t *testing.T) {
 	}, got)
 }
 
-func probeSources(t *testing.T, sql, dialect string, cols []*pb.ColumnSpec, ns *pb.Namespace) (map[string]bool, bool) {
+func probeSources(t *testing.T, sql, dialect string, cols []*pb.Column, ns *pb.Namespace) (map[string]bool, bool) {
 	t.Helper()
 	engineConfig := &pb.EngineConfig{Engine: pb.Engine_POSTGRES}
 	if dialect == "mysql" {
 		engineConfig = &pb.EngineConfig{Engine: pb.Engine_MYSQL, EngineVersion: "8.0.46", MysqlLowerCaseTableNames: proto.Int32(1)}
 	}
-	res := analyzeProbe(t, &pb.AnalyzeRequest{Sql: sql, EngineConfig: engineConfig, Namespace: ns, Catalog: cols})
+	res := analyzeProbe(t, &pb.AnalyzeRequest{Sql: sql, EngineConfig: engineConfig, Namespace: ns, Catalog: snapshot(cols)})
 	got := map[string]bool{}
 	for _, s := range res.Sources {
 		key := s.Catalog + "." + s.Schema + "." + s.Table

@@ -21,6 +21,7 @@ import (
 	// The named mysql import both registers the "mysql" driver (via init()) AND gives us mysql.Config
 	// for safe DSN construction, so no separate blank import is needed.
 	mysqldriver "github.com/go-sql-driver/mysql"
+	analyzerpb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
 	"github.com/ridi-oss/proxy-monster/goproxy/engine"
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
 	"github.com/ridi-oss/proxy-monster/goproxy/spi"
@@ -183,8 +184,8 @@ func Run(opener TargetOpener, target spi.TargetDb) (*pb.CatalogRequest, error) {
 	return &pb.CatalogRequest{
 		DefaultSchemas:           defaultSchemas,
 		MysqlLowerCaseTableNames: mysqlLowerCaseTableNames,
-		Columns:                  columns,
 		EngineVersion:            engineVersion,
+		Catalog:                  &analyzerpb.CatalogSnapshot{Columns: columns},
 	}, nil
 }
 
@@ -194,9 +195,9 @@ func Run(opener TargetOpener, target spi.TargetDb) (*pb.CatalogRequest, error) {
 // regardless of the table argument). One call folds the whole list, so a dialect that memoizes
 // per-(schema, table) work does it once here too.
 func normalizeSchemas(dbImpl engine.Db, lctnMode int, schemas []string) []string {
-	placeholders := make([]*pb.Column, len(schemas))
+	placeholders := make([]*analyzerpb.Column, len(schemas))
 	for i, s := range schemas {
-		placeholders[i] = &pb.Column{Schema: s, Table: "_", Column: "_"}
+		placeholders[i] = &analyzerpb.Column{Schema: s, Table: "_", Column: "_"}
 	}
 	out := make([]string, len(schemas))
 	for i, c := range dbImpl.NormalizeColumns(lctnMode, placeholders) {
@@ -256,8 +257,8 @@ func ProbePostgresNamespace(conn *sql.Conn, _ string) (defaultSchemas []string, 
 	return schemas, nil, nil
 }
 
-// introspectColumns runs columnsSQL on the pinned connection and scans every row into a *pb.Column.
-func introspectColumns(conn *sql.Conn) ([]*pb.Column, error) {
+// introspectColumns runs columnsSQL on the pinned connection and scans every row into a *analyzerpb.Column.
+func introspectColumns(conn *sql.Conn) ([]*analyzerpb.Column, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), queryTimeout)
 	defer cancel()
 
@@ -267,14 +268,14 @@ func introspectColumns(conn *sql.Conn) ([]*pb.Column, error) {
 	}
 	defer rows.Close()
 
-	var columns []*pb.Column
+	var columns []*analyzerpb.Column
 	for rows.Next() {
 		var schema, table, column, dataType, isNullable string
 		var ordinal int32
 		if err := rows.Scan(&schema, &table, &column, &dataType, &ordinal, &isNullable); err != nil {
 			return nil, fmt.Errorf("introspect: scanning column row: %w", err)
 		}
-		columns = append(columns, &pb.Column{
+		columns = append(columns, &analyzerpb.Column{
 			Schema:   schema,
 			Table:    table,
 			Column:   column,

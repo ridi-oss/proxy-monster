@@ -1,5 +1,6 @@
 package com.ridi.oss.proxymonster.controlplane
 
+import com.ridi.oss.proxymonster.controlplane.support.pushedColumn
 import com.ridi.oss.proxymonster.grpc.EnfAction
 import com.ridi.oss.proxymonster.controlplane.authz.CedarPolicyInput
 import com.ridi.oss.proxymonster.controlplane.support.EnforcementFixture
@@ -262,9 +263,9 @@ class PerConnectionCatalogMysqlAdversarialDbTest : PerConnectionCatalogAdversari
             mysqlLowerCaseTableNames = enforcement.datasource.mysqlLowerCaseTableNames,
             engineVersion = enforcement.datasource.engineVersion.orEmpty(),
             columns = enforcement.datasourceStore.catalog(enforcement.datasource.id).map { row ->
-                DatasourceStore.PushedColumn(row.schema, row.table, row.column, row.dataType, row.ordinal, row.nullable)
+                pushedColumn(row.schema, row.table, row.column, row.dataType, row.ordinal, row.nullable)
             } + accounts.rows.map { row ->
-                DatasourceStore.PushedColumn(
+                pushedColumn(
                     schema,
                     "accounts",
                     row[0]!!,
@@ -404,9 +405,9 @@ class PerConnectionCatalogPostgresAdversarialDbTest : PerConnectionCatalogAdvers
             mysqlLowerCaseTableNames = null,
             engineVersion = enforcement.datasource.engineVersion.orEmpty(),
             columns = enforcement.datasourceStore.catalog(enforcement.datasource.id).map { row ->
-                DatasourceStore.PushedColumn(row.schema, row.table, row.column, row.dataType, row.ordinal, row.nullable)
+                pushedColumn(row.schema, row.table, row.column, row.dataType, row.ordinal, row.nullable)
             } + accounts.rows.map { row ->
-                DatasourceStore.PushedColumn(
+                pushedColumn(
                     row[0]!!,
                     "accounts",
                     row[1]!!,

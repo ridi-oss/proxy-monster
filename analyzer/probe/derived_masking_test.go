@@ -21,7 +21,7 @@ func TestDerivedProjectionFacts(t *testing.T) {
 		name  string
 		ec    *pb.EngineConfig
 		ns    *pb.Namespace
-		cols  []*pb.ColumnSpec
+		cols  []*pb.Column
 		ssn   string // fully-qualified base key of the protected column
 		email string
 		id    string
@@ -30,10 +30,10 @@ func TestDerivedProjectionFacts(t *testing.T) {
 			name: "mysql",
 			ec:   &pb.EngineConfig{Engine: pb.Engine_MYSQL, EngineVersion: "8.0.46", MysqlLowerCaseTableNames: proto.Int32(1)},
 			ns:   &pb.Namespace{Catalog: "def", SearchPath: []string{"app"}},
-			cols: []*pb.ColumnSpec{
-				columnSpec("def", "app", "users", "id", "BIGINT"),
-				columnSpec("def", "app", "users", "ssn", "VARCHAR"),
-				columnSpec("def", "app", "users", "email", "VARCHAR"),
+			cols: []*pb.Column{
+				pbColumn("app", "users", "id", "BIGINT"),
+				pbColumn("app", "users", "ssn", "VARCHAR"),
+				pbColumn("app", "users", "email", "VARCHAR"),
 			},
 			ssn: "def.app.users.ssn", email: "def.app.users.email", id: "def.app.users.id",
 		},
@@ -41,10 +41,10 @@ func TestDerivedProjectionFacts(t *testing.T) {
 			name: "postgres",
 			ec:   &pb.EngineConfig{Engine: pb.Engine_POSTGRES},
 			ns:   &pb.Namespace{Catalog: "acme", SearchPath: []string{"public"}},
-			cols: []*pb.ColumnSpec{
-				columnSpec("acme", "public", "users", "id", "BIGINT"),
-				columnSpec("acme", "public", "users", "ssn", "VARCHAR"),
-				columnSpec("acme", "public", "users", "email", "VARCHAR"),
+			cols: []*pb.Column{
+				pbColumn("public", "users", "id", "BIGINT"),
+				pbColumn("public", "users", "ssn", "VARCHAR"),
+				pbColumn("public", "users", "email", "VARCHAR"),
 			},
 			ssn: "acme.public.users.ssn", email: "acme.public.users.email", id: "acme.public.users.id",
 		},
@@ -133,7 +133,7 @@ func TestDerivedProjectionFacts(t *testing.T) {
 
 			for _, tc := range cases {
 				t.Run(tc.name, func(t *testing.T) {
-					r := analyzeProbe(t, &pb.AnalyzeRequest{Sql: tc.sql, EngineConfig: e.ec, Namespace: e.ns, Catalog: e.cols})
+					r := analyzeProbe(t, &pb.AnalyzeRequest{Sql: tc.sql, EngineConfig: e.ec, Namespace: e.ns, Catalog: snapshot(e.cols)})
 					if !r.Resolved {
 						t.Fatalf("expected resolved=true; sql=%q detail=%q", tc.sql, r.Detail)
 					}
@@ -183,16 +183,16 @@ func TestRedactableWhitelistGate(t *testing.T) {
 		{"postgres", "acme", "public", &pb.EngineConfig{Engine: pb.Engine_POSTGRES}, &pb.Namespace{Catalog: "acme", SearchPath: []string{"public"}}},
 	} {
 		t.Run(e.name, func(t *testing.T) {
-			cols := []*pb.ColumnSpec{
-				columnSpec(e.cat, e.sch, "users", "id", "BIGINT"),
-				columnSpec(e.cat, e.sch, "users", "ssn", "VARCHAR"),
-				columnSpec(e.cat, e.sch, "users", "email", "VARCHAR"),
+			cols := []*pb.Column{
+				pbColumn(e.sch, "users", "id", "BIGINT"),
+				pbColumn(e.sch, "users", "ssn", "VARCHAR"),
+				pbColumn(e.sch, "users", "email", "VARCHAR"),
 			}
 			ssn := e.cat + "." + e.sch + ".users.ssn"
 			// redactable returns true iff output ordinal 0 is a redactable derived transform (derived=true
 			// and the masked column is NOT in any reference bucket).
 			redactable := func(sql string) bool {
-				r := analyzeProbe(t, &pb.AnalyzeRequest{Sql: sql, EngineConfig: e.ec, Namespace: e.ns, Catalog: cols})
+				r := analyzeProbe(t, &pb.AnalyzeRequest{Sql: sql, EngineConfig: e.ec, Namespace: e.ns, Catalog: snapshot(cols)})
 				if !r.Resolved || len(r.Origins) == 0 || !r.Origins[0].Derived {
 					return false
 				}

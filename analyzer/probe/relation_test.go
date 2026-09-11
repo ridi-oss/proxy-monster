@@ -12,7 +12,7 @@ func runProbe(t *testing.T, sql string) *ProbeResult {
 		Sql:          sql,
 		EngineConfig: &pb.EngineConfig{Engine: pb.Engine_POSTGRES},
 		Namespace:    canonicalPostgresNamespace,
-		Catalog:      canonicalPostgresCatalog,
+		Catalog:      snapshot(canonicalPostgresCatalog),
 	})
 }
 

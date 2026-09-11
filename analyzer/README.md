@@ -110,12 +110,12 @@ the engine calls:
 val facts: StatementFacts = SqlglotProbe.analyze(
     sql,
     namespace,     // catalog + ordered search_path
-    catalog,       // flat List<ColumnSpec> (catalog.schema.table.column + type)
+    catalog,       // CatalogSnapshot: flat Column rows (schema.table.column + type) under the namespace catalog
     engineConfig,  // engine identity + version + MySQL lower_case_table_names
 )
 ```
 
-`AnalyzeRequest` carries `sql`, `namespace`, the flat `catalog`, and
+`AnalyzeRequest` carries `sql`, `namespace`, the `catalog` snapshot, and
 `engine_config`. The response `StatementFacts` carries `resolved`, the
 `failure_class` / `failed_stage` / `detail` for an unresolved statement, the
 `statement_class` (ANALYZED / METADATA / SESSION), the ordered `output_columns`,

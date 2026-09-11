@@ -60,8 +60,8 @@ func TestUpfrontFoldKeepsQualifierTrustQuoteAware(t *testing.T) {
 // lower_case_table_names=1 folds relation names, so an uppercase statement resolves and its scanned-table
 // identity carries the folded spelling the catalog is keyed by.
 func TestUpfrontFoldReachesRelationIdentities(t *testing.T) {
-	mapping, err := schemaMappingFromProto([]*pb.ColumnSpec{
-		columnSpec("def", "bom", "tb_user", "id", "BIGINT"),
+	mapping, err := schemaMappingFromProto("def", []*pb.Column{
+		pbColumn("bom", "tb_user", "id", "BIGINT"),
 	})
 	if err != nil {
 		t.Fatalf("build schema: %v", err)
@@ -94,9 +94,9 @@ func TestUpfrontFoldReachesRelationIdentities(t *testing.T) {
 // completes: [TestSchemaQualifierCandidatesFoldToTheStoredSpelling] (candidates from a statement whose
 // schema is absent) and [TestUpfrontFoldKeepsQualifierTrustQuoteAware] (a qualifier read before Qualify).
 func TestUpfrontFoldRespectsEngineEquivalence(t *testing.T) {
-	mysqlMapping, err := schemaMappingFromProto([]*pb.ColumnSpec{
-		columnSpec("def", "bom", "tb_user", "id", "BIGINT"),
-		columnSpec("def", "bom", "tb_user", "email", "VARCHAR"),
+	mysqlMapping, err := schemaMappingFromProto("def", []*pb.Column{
+		pbColumn("bom", "tb_user", "id", "BIGINT"),
+		pbColumn("bom", "tb_user", "email", "VARCHAR"),
 	})
 	if err != nil {
 		t.Fatalf("build mysql schema: %v", err)
@@ -144,9 +144,9 @@ func TestUpfrontFoldRespectsEngineEquivalence(t *testing.T) {
 // unquoted relation of the same letters are genuinely TWO tables. Folding them together would merge two
 // catalog rows into one key and mask (or expose) the wrong column.
 func TestUpfrontFoldKeepsPostgresQuotedRelationsDistinct(t *testing.T) {
-	mapping, err := schemaMappingFromProto([]*pb.ColumnSpec{
-		columnSpec("acme", "public", "mixedcase", "id", "BIGINT"),
-		columnSpec("acme", "public", "MixedCase", "id", "BIGINT"),
+	mapping, err := schemaMappingFromProto("acme", []*pb.Column{
+		pbColumn("public", "mixedcase", "id", "BIGINT"),
+		pbColumn("public", "MixedCase", "id", "BIGINT"),
 	})
 	if err != nil {
 		t.Fatalf("build schema: %v", err)

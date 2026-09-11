@@ -11,7 +11,7 @@ import (
 	"strings"
 
 	"github.com/ridi-oss/proxy-monster/analyzer/probe"
-	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
+	analyzerpb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
 )
 
 // MySqlDb is the engine.Db adapter for MySQL.
@@ -37,7 +37,7 @@ func (MySqlDb) LowerCaseTableNamesProbeSQL() string { return "SELECT @@lower_cas
 // re-parsed the same two identifiers thousands of times: ~13s of CPU on a 4,390-column schema, enough
 // to push a catalog refetch past the control plane's run-open deadline and fail every query on the
 // datasource. The batched fold is O(distinct tables) parses instead of O(columns).
-func (MySqlDb) NormalizeColumns(lowerCaseTableNames int, columns []*pb.Column) []*pb.Column {
+func (MySqlDb) NormalizeColumns(lowerCaseTableNames int, columns []*analyzerpb.Column) []*analyzerpb.Column {
 	schemas := make([]string, len(columns))
 	tables := make([]string, len(columns))
 	names := make([]string, len(columns))
@@ -45,9 +45,9 @@ func (MySqlDb) NormalizeColumns(lowerCaseTableNames int, columns []*pb.Column) [
 		schemas[i], tables[i], names[i] = c.GetSchema(), c.GetTable(), c.GetColumn()
 	}
 	outSchemas, outTables, outColumns := probe.NormalizeMySQLColumns(lowerCaseTableNames, schemas, tables, names)
-	out := make([]*pb.Column, len(columns))
+	out := make([]*analyzerpb.Column, len(columns))
 	for i, c := range columns {
-		out[i] = &pb.Column{
+		out[i] = &analyzerpb.Column{
 			Schema: outSchemas[i], Table: outTables[i], Column: outColumns[i],
 			DataType: c.GetDataType(), Ordinal: c.GetOrdinal(), Nullable: c.GetNullable(),
 		}
@@ -160,7 +160,9 @@ func (PgDb) LowerCaseTableNamesProbeSQL() string { return "" }
 // NormalizeColumns is an identity function: Postgres never folds — a quoted-vs-unquoted identifier
 // pair is genuinely two distinct columns, and introspection already reports each one's real, resolved
 // spelling (analyzer/probe.NormalizeRelation's contract for any non-MySQL dialect).
-func (PgDb) NormalizeColumns(_ int, columns []*pb.Column) []*pb.Column { return columns }
+func (PgDb) NormalizeColumns(_ int, columns []*analyzerpb.Column) []*analyzerpb.Column {
+	return columns
+}
 
 func (PgDb) SchemaColumnsSQL(schema string) string {
 	return fmt.Sprintf(`SELECT table_schema, table_name, column_name, data_type, ordinal_position, is_nullable

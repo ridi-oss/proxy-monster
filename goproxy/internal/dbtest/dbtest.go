@@ -17,9 +17,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/moby/moby/api/types/network"
 	_ "github.com/go-sql-driver/mysql"
 	_ "github.com/jackc/pgx/v5/stdlib"
+	"github.com/moby/moby/api/types/network"
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/wait"
 )

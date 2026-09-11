@@ -1,5 +1,7 @@
 package com.ridi.oss.proxymonster.controlplane.support
 
+import com.ridi.oss.proxymonster.analyzer.pb.column
+import com.ridi.oss.proxymonster.analyzer.pb.Column
 import com.ridi.oss.proxymonster.controlplane.AccessStore
 import com.ridi.oss.proxymonster.controlplane.AuditStore
 import com.ridi.oss.proxymonster.controlplane.Channel
@@ -47,7 +49,7 @@ internal fun DatasourceStore.pushTestCatalog(
         val engineVersion: String,
     )
 
-    val columns = ArrayList<DatasourceStore.PushedColumn>()
+    val columns = ArrayList<Column>()
     val isMysql = datasource.engine.isMySql
     val columnSql =
         """SELECT table_schema, table_name, column_name, data_type, ordinal_position, is_nullable
@@ -87,7 +89,7 @@ internal fun DatasourceStore.pushTestCatalog(
         target.prepareStatement(columnSql).use { ps ->
             ps.executeQuery().use { rs ->
                 while (rs.next()) {
-                    columns += DatasourceStore.PushedColumn(
+                    columns += pushedColumn(
                         schema = rs.getString(1),
                         table = rs.getString(2),
                         column = rs.getString(3),
@@ -506,3 +508,13 @@ class EnforcementFixture(
         }
     }
 }
+
+internal fun pushedColumn(schema: String, table: String, column: String, dataType: String, ordinal: Int, nullable: Boolean): Column =
+    column {
+        this.schema = schema
+        this.table = table
+        this.column = column
+        this.dataType = dataType
+        this.ordinal = ordinal
+        this.nullable = nullable
+    }

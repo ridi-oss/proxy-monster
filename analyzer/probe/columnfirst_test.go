@@ -46,7 +46,7 @@ func TestColumnFirstCanonical(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.id, func(t *testing.T) {
-			res := analyzeProbe(t, &pb.AnalyzeRequest{Sql: tc.sql, EngineConfig: &pb.EngineConfig{Engine: pb.Engine_POSTGRES}, Namespace: canonicalPostgresNamespace, Catalog: canonicalPostgresCatalog})
+			res := analyzeProbe(t, &pb.AnalyzeRequest{Sql: tc.sql, EngineConfig: &pb.EngineConfig{Engine: pb.Engine_POSTGRES}, Namespace: canonicalPostgresNamespace, Catalog: snapshot(canonicalPostgresCatalog)})
 			caught := !res.Resolved
 			for _, cols := range res.References {
 				for _, c := range cols {

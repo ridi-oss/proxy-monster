@@ -126,25 +126,18 @@ message RegisterResponse {
 }
 
 // ---- Catalog ----
-message Column {
-  string schema = 1;
-  string table = 2;
-  string column = 3;
-  string data_type = 4;
-  int32 ordinal = 5;
-  bool nullable = 6;
-}
 message CatalogRequest {
   string datasource_name = 1;
   repeated string default_schemas = 2;               // load-bearing: PG current_schemas(true)
   optional int32 mysql_lower_case_table_names = 3;    // load-bearing on MySQL
-  repeated Column columns = 4;
+  reserved 4;
   // The target's live server version (`SELECT version()`, with an `(aurora <v>)` suffix when the
   // Aurora-only `aurora_version()` resolves). The control-plane cannot probe this itself (it never
   // dials the target), yet system-classification (docs/system-classification.md) resolves its manifest by
   // the datasource's major engine version + Aurora-ness — so the proxy, the only side with a live
   // connection, supplies it. Raw string; the control-plane owns parsing the major + Aurora marker.
   string engine_version = 5;
+  proxymonster.analyzer.v1.CatalogSnapshot catalog = 6;
 }
 message CatalogResponse {
   int32 columns = 1;   // ack: rows stored
@@ -170,7 +163,7 @@ message SchemaFragmentPush {
   string schema = 3;
   bytes content_hash = 4;               // the live DB-side hash the proxy just measured for this schema
   bool unchanged = 5;                   // true = live hash matched the REFETCH hash; columns omitted (no-op ack)
-  repeated Column columns = 6;          // enforcement-relevant fields; reuses the catalog Column shape
+  repeated proxymonster.analyzer.v1.Column columns = 6;  // the same Column as PushCatalog
   uint64 backend_generation = 7;        // target-DB-connection instance that measured this fragment
 }
 message SchemaFragmentAck {

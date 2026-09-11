@@ -286,7 +286,7 @@ func (f *fakeControlPlane) PushCatalog(ctx context.Context, req *pb.CatalogReque
 	defer f.mu.Unlock()
 	f.lastCatalog = proto.Clone(req).(*pb.CatalogRequest)
 	f.lastCatalogMeta = metaValue(ctx)
-	return &pb.CatalogResponse{Columns: int32(len(req.GetColumns()))}, nil
+	return &pb.CatalogResponse{Columns: int32(len(req.GetCatalog().GetColumns()))}, nil
 }
 
 func (f *fakeControlPlane) PushSchemaFragment(ctx context.Context, req *pb.SchemaFragmentPush) (*pb.SchemaFragmentAck, error) {
@@ -465,7 +465,7 @@ func TestRegisterAndPushCatalog(t *testing.T) {
 	if err := c.Register(enginepb.Engine_MYSQL, "target DB", 3306, "app", []string{"tag"}, "127.0.0.1:6033", &chain, true); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
-	catalog := &pb.CatalogRequest{Columns: []*pb.Column{{Schema: "s", Table: "t", Column: "c"}}}
+	catalog := &pb.CatalogRequest{Catalog: &enginepb.CatalogSnapshot{Columns: []*enginepb.Column{{Schema: "s", Table: "t", Column: "c"}}}}
 	if err := c.PushCatalog(catalog); err != nil {
 		t.Fatalf("PushCatalog: %v", err)
 	}
@@ -539,7 +539,7 @@ func TestPushSchemaFragmentAndCloseConnection(t *testing.T) {
 		Schema:            "app",
 		ContentHash:       []byte("hash"),
 		Unchanged:         false,
-		Columns:           []*pb.Column{{Schema: "app", Table: "t", Column: "c", DataType: "text", Ordinal: 2, Nullable: true}},
+		Columns:           []*enginepb.Column{{Schema: "app", Table: "t", Column: "c", DataType: "text", Ordinal: 2, Nullable: true}},
 		BackendGeneration: 7,
 	})
 	if err != nil || generation != 11 {

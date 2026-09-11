@@ -103,12 +103,12 @@ func TestPostgresNaturalJoinExpandsWithPhysicalLineage(t *testing.T) {
 		Sql:          "SELECT * FROM public.left_table l NATURAL JOIN public.right_table r",
 		EngineConfig: &pb.EngineConfig{Engine: pb.Engine_POSTGRES},
 		Namespace:    &pb.Namespace{Catalog: "acme", SearchPath: []string{"public"}},
-		Catalog: []*pb.ColumnSpec{
-			columnSpec("acme", "public", "left_table", "left_value", "TEXT"),
-			columnSpec("acme", "public", "left_table", "id", "BIGINT"),
-			columnSpec("acme", "public", "right_table", "id", "BIGINT"),
-			columnSpec("acme", "public", "right_table", "right_value", "TEXT"),
-		},
+		Catalog: snapshot([]*pb.Column{
+			pbColumn("public", "left_table", "left_value", "TEXT"),
+			pbColumn("public", "left_table", "id", "BIGINT"),
+			pbColumn("public", "right_table", "id", "BIGINT"),
+			pbColumn("public", "right_table", "right_value", "TEXT"),
+		}),
 	})
 	if !result.Resolved {
 		t.Fatalf("NATURAL JOIN must resolve: stage=%v detail=%q", result.FailedStage, result.Detail)
@@ -157,15 +157,15 @@ func TestPostgresNaturalJoinChainsAfterUsing(t *testing.T) {
 		Sql:          "SELECT * FROM public.a JOIN public.b USING (id) NATURAL JOIN public.c",
 		EngineConfig: &pb.EngineConfig{Engine: pb.Engine_POSTGRES},
 		Namespace:    &pb.Namespace{Catalog: "acme", SearchPath: []string{"public"}},
-		Catalog: []*pb.ColumnSpec{
-			columnSpec("acme", "public", "a", "id", "BIGINT"),
-			columnSpec("acme", "public", "a", "a_value", "TEXT"),
-			columnSpec("acme", "public", "b", "id", "BIGINT"),
-			columnSpec("acme", "public", "b", "shared", "TEXT"),
-			columnSpec("acme", "public", "b", "b_value", "TEXT"),
-			columnSpec("acme", "public", "c", "shared", "TEXT"),
-			columnSpec("acme", "public", "c", "c_value", "TEXT"),
-		},
+		Catalog: snapshot([]*pb.Column{
+			pbColumn("public", "a", "id", "BIGINT"),
+			pbColumn("public", "a", "a_value", "TEXT"),
+			pbColumn("public", "b", "id", "BIGINT"),
+			pbColumn("public", "b", "shared", "TEXT"),
+			pbColumn("public", "b", "b_value", "TEXT"),
+			pbColumn("public", "c", "shared", "TEXT"),
+			pbColumn("public", "c", "c_value", "TEXT"),
+		}),
 	})
 	if !result.Resolved {
 		t.Fatalf("chained NATURAL JOIN must resolve: stage=%v detail=%q", result.FailedStage, result.Detail)
@@ -186,15 +186,15 @@ func TestPostgresNaturalJoinRespectsCommaPrecedence(t *testing.T) {
 		Sql:          "SELECT * FROM public.a, public.b NATURAL JOIN public.c",
 		EngineConfig: &pb.EngineConfig{Engine: pb.Engine_POSTGRES},
 		Namespace:    &pb.Namespace{Catalog: "acme", SearchPath: []string{"public"}},
-		Catalog: []*pb.ColumnSpec{
-			columnSpec("acme", "public", "a", "id", "BIGINT"),
-			columnSpec("acme", "public", "a", "a_value", "TEXT"),
-			columnSpec("acme", "public", "b", "shared", "TEXT"),
-			columnSpec("acme", "public", "b", "b_value", "TEXT"),
-			columnSpec("acme", "public", "c", "id", "BIGINT"),
-			columnSpec("acme", "public", "c", "shared", "TEXT"),
-			columnSpec("acme", "public", "c", "c_value", "TEXT"),
-		},
+		Catalog: snapshot([]*pb.Column{
+			pbColumn("public", "a", "id", "BIGINT"),
+			pbColumn("public", "a", "a_value", "TEXT"),
+			pbColumn("public", "b", "shared", "TEXT"),
+			pbColumn("public", "b", "b_value", "TEXT"),
+			pbColumn("public", "c", "id", "BIGINT"),
+			pbColumn("public", "c", "shared", "TEXT"),
+			pbColumn("public", "c", "c_value", "TEXT"),
+		}),
 	})
 	if !result.Resolved {
 		t.Fatalf("comma-bound NATURAL JOIN must resolve: stage=%v detail=%q", result.FailedStage, result.Detail)
@@ -211,9 +211,9 @@ func TestPostgresNaturalJoinRespectsCommaPrecedence(t *testing.T) {
 }
 
 func TestPostgresNaturalJoinWithoutCommonColumns(t *testing.T) {
-	catalog := []*pb.ColumnSpec{
-		columnSpec("acme", "public", "a", "a_id", "BIGINT"),
-		columnSpec("acme", "public", "b", "b_id", "BIGINT"),
+	catalog := []*pb.Column{
+		pbColumn("public", "a", "a_id", "BIGINT"),
+		pbColumn("public", "b", "b_id", "BIGINT"),
 	}
 	for _, tc := range []struct {
 		name string
@@ -228,7 +228,7 @@ func TestPostgresNaturalJoinWithoutCommonColumns(t *testing.T) {
 				Sql:          tc.sql,
 				EngineConfig: &pb.EngineConfig{Engine: pb.Engine_POSTGRES},
 				Namespace:    &pb.Namespace{Catalog: "acme", SearchPath: []string{"public"}},
-				Catalog:      catalog,
+				Catalog:      snapshot(catalog),
 			})
 			if !result.Resolved || result.RewrittenSQL == nil {
 				t.Fatalf("empty-intersection NATURAL JOIN must resolve with a rewrite: %+v", result)
@@ -245,10 +245,10 @@ func TestPostgresNaturalJoinRejectsAmbiguousCommonColumn(t *testing.T) {
 		Sql:          "SELECT * FROM (SELECT id, id AS id FROM public.a) l NATURAL JOIN public.b",
 		EngineConfig: &pb.EngineConfig{Engine: pb.Engine_POSTGRES},
 		Namespace:    &pb.Namespace{Catalog: "acme", SearchPath: []string{"public"}},
-		Catalog: []*pb.ColumnSpec{
-			columnSpec("acme", "public", "a", "id", "BIGINT"),
-			columnSpec("acme", "public", "b", "id", "BIGINT"),
-		},
+		Catalog: snapshot([]*pb.Column{
+			pbColumn("public", "a", "id", "BIGINT"),
+			pbColumn("public", "b", "id", "BIGINT"),
+		}),
 	})
 	if result.Resolved || result.FailedStage == nil || *result.FailedStage != "VALIDATE" || !strings.Contains(result.Detail, "ambiguous") {
 		t.Fatalf("ambiguous NATURAL JOIN must fail closed in validation: %+v", result)
@@ -256,16 +256,16 @@ func TestPostgresNaturalJoinRejectsAmbiguousCommonColumn(t *testing.T) {
 }
 
 func TestMySQLPlaceholderResolvesAndTracesColumns(t *testing.T) {
-	cols := []*pb.ColumnSpec{
-		columnSpec("def", "app", "users", "id", "BIGINT"),
-		columnSpec("def", "app", "users", "ssn", "VARCHAR"),
+	cols := []*pb.Column{
+		pbColumn("app", "users", "id", "BIGINT"),
+		pbColumn("app", "users", "ssn", "VARCHAR"),
 	}
 	ns := &pb.Namespace{Catalog: "def", SearchPath: []string{"app"}}
 
 	result := analyzeProbe(t, &pb.AnalyzeRequest{
 		Sql:          "SELECT ssn FROM users WHERE id = ?",
 		EngineConfig: &pb.EngineConfig{Engine: pb.Engine_MYSQL, EngineVersion: "8.0.46", MysqlLowerCaseTableNames: proto.Int32(1)},
-		Namespace:    ns, Catalog: cols,
+		Namespace:    ns, Catalog: snapshot(cols),
 	})
 	requireResolvedKeys(t, result, "def.app.users.ssn", "def.app.users.id")
 }
@@ -290,14 +290,14 @@ func TestMysqlNaturalJoinExpandsWithPhysicalLineage(t *testing.T) {
 		Sql:          "SELECT * FROM a NATURAL JOIN b",
 		EngineConfig: &pb.EngineConfig{Engine: pb.Engine_MYSQL, EngineVersion: "8.0.46", MysqlLowerCaseTableNames: proto.Int32(1)},
 		Namespace:    &pb.Namespace{Catalog: "def", SearchPath: []string{"app"}},
-		Catalog: []*pb.ColumnSpec{
-			columnSpec("def", "app", "a", "id", "BIGINT"),
-			columnSpec("def", "app", "a", "name", "VARCHAR"),
-			columnSpec("def", "app", "a", "a_only", "BIGINT"),
-			columnSpec("def", "app", "b", "b_only", "BIGINT"),
-			columnSpec("def", "app", "b", "id", "BIGINT"),
-			columnSpec("def", "app", "b", "name", "VARCHAR"),
-		},
+		Catalog: snapshot([]*pb.Column{
+			pbColumn("app", "a", "id", "BIGINT"),
+			pbColumn("app", "a", "name", "VARCHAR"),
+			pbColumn("app", "a", "a_only", "BIGINT"),
+			pbColumn("app", "b", "b_only", "BIGINT"),
+			pbColumn("app", "b", "id", "BIGINT"),
+			pbColumn("app", "b", "name", "VARCHAR"),
+		}),
 	})
 	if !result.Resolved {
 		t.Fatalf("NATURAL JOIN must resolve: stage=%v detail=%q", result.FailedStage, result.Detail)
@@ -320,13 +320,13 @@ func TestMysqlNaturalJoinExpandsWithPhysicalLineage(t *testing.T) {
 // A MySQL NATURAL/USING RIGHT JOIN's star puts the right table's columns first — merged columns,
 // then b's remaining columns, then a's. PostgreSQL keeps the written table order instead.
 func TestMysqlNaturalRightJoinStarOrderCommonRightLeft(t *testing.T) {
-	catalog := []*pb.ColumnSpec{
-		columnSpec("def", "app", "a", "id", "BIGINT"),
-		columnSpec("def", "app", "a", "name", "VARCHAR"),
-		columnSpec("def", "app", "a", "a_only", "BIGINT"),
-		columnSpec("def", "app", "b", "b_only", "BIGINT"),
-		columnSpec("def", "app", "b", "id", "BIGINT"),
-		columnSpec("def", "app", "b", "name", "VARCHAR"),
+	catalog := []*pb.Column{
+		pbColumn("app", "a", "id", "BIGINT"),
+		pbColumn("app", "a", "name", "VARCHAR"),
+		pbColumn("app", "a", "a_only", "BIGINT"),
+		pbColumn("app", "b", "b_only", "BIGINT"),
+		pbColumn("app", "b", "id", "BIGINT"),
+		pbColumn("app", "b", "name", "VARCHAR"),
 	}
 	for _, tc := range []struct {
 		sql  string
@@ -340,7 +340,7 @@ func TestMysqlNaturalRightJoinStarOrderCommonRightLeft(t *testing.T) {
 			Sql:          tc.sql,
 			EngineConfig: &pb.EngineConfig{Engine: pb.Engine_MYSQL, EngineVersion: "8.0.46", MysqlLowerCaseTableNames: proto.Int32(1)},
 			Namespace:    &pb.Namespace{Catalog: "def", SearchPath: []string{"app"}},
-			Catalog:      catalog,
+			Catalog:      snapshot(catalog),
 		})
 		if !result.Resolved {
 			t.Fatalf("%q must resolve: stage=%v detail=%q", tc.sql, result.FailedStage, result.Detail)
@@ -362,12 +362,12 @@ func TestMysqlNaturalJoinFoldsColumnCase(t *testing.T) {
 		Sql:          "SELECT * FROM u1 NATURAL JOIN u2",
 		EngineConfig: &pb.EngineConfig{Engine: pb.Engine_MYSQL, EngineVersion: "8.0.46", MysqlLowerCaseTableNames: proto.Int32(1)},
 		Namespace:    &pb.Namespace{Catalog: "def", SearchPath: []string{"app"}},
-		Catalog: []*pb.ColumnSpec{
-			columnSpec("def", "app", "u1", "ID", "BIGINT"),
-			columnSpec("def", "app", "u1", "x", "BIGINT"),
-			columnSpec("def", "app", "u2", "id", "BIGINT"),
-			columnSpec("def", "app", "u2", "y", "BIGINT"),
-		},
+		Catalog: snapshot([]*pb.Column{
+			pbColumn("app", "u1", "ID", "BIGINT"),
+			pbColumn("app", "u1", "x", "BIGINT"),
+			pbColumn("app", "u2", "id", "BIGINT"),
+			pbColumn("app", "u2", "y", "BIGINT"),
+		}),
 	})
 	if !result.Resolved {
 		t.Fatalf("case-folded NATURAL JOIN must resolve: stage=%v detail=%q", result.FailedStage, result.Detail)
@@ -394,10 +394,10 @@ func TestMysqlNaturalJoinWithoutCommonColumns(t *testing.T) {
 		Sql:          "SELECT * FROM n1 NATURAL JOIN n2",
 		EngineConfig: &pb.EngineConfig{Engine: pb.Engine_MYSQL, EngineVersion: "8.0.46", MysqlLowerCaseTableNames: proto.Int32(1)},
 		Namespace:    &pb.Namespace{Catalog: "def", SearchPath: []string{"app"}},
-		Catalog: []*pb.ColumnSpec{
-			columnSpec("def", "app", "n1", "p", "BIGINT"),
-			columnSpec("def", "app", "n2", "q", "BIGINT"),
-		},
+		Catalog: snapshot([]*pb.Column{
+			pbColumn("app", "n1", "p", "BIGINT"),
+			pbColumn("app", "n2", "q", "BIGINT"),
+		}),
 	})
 	if !result.Resolved {
 		t.Fatalf("no-common-column NATURAL JOIN must resolve as cross: stage=%v detail=%q", result.FailedStage, result.Detail)
@@ -416,13 +416,13 @@ func TestMysqlNaturalJoinWithoutCommonColumns(t *testing.T) {
 // engines; the empty-common NATURAL RIGHT degrades to a cross with the right table's columns
 // first on MySQL; folded table aliases still match after qualification.
 func TestMysqlUsingAndNaturalStarOrderEdgeCases(t *testing.T) {
-	catalog := []*pb.ColumnSpec{
-		columnSpec("def", "app", "a", "a_only", "BIGINT"),
-		columnSpec("def", "app", "a", "id", "BIGINT"),
-		columnSpec("def", "app", "b", "id", "BIGINT"),
-		columnSpec("def", "app", "b", "b_only", "BIGINT"),
-		columnSpec("def", "app", "n1", "p", "BIGINT"),
-		columnSpec("def", "app", "n2", "q", "BIGINT"),
+	catalog := []*pb.Column{
+		pbColumn("app", "a", "a_only", "BIGINT"),
+		pbColumn("app", "a", "id", "BIGINT"),
+		pbColumn("app", "b", "id", "BIGINT"),
+		pbColumn("app", "b", "b_only", "BIGINT"),
+		pbColumn("app", "n1", "p", "BIGINT"),
+		pbColumn("app", "n2", "q", "BIGINT"),
 	}
 	for _, tc := range []struct {
 		sql  string
@@ -438,7 +438,7 @@ func TestMysqlUsingAndNaturalStarOrderEdgeCases(t *testing.T) {
 			Sql:          tc.sql,
 			EngineConfig: &pb.EngineConfig{Engine: pb.Engine_MYSQL, EngineVersion: "8.0.46", MysqlLowerCaseTableNames: proto.Int32(1)},
 			Namespace:    &pb.Namespace{Catalog: "def", SearchPath: []string{"app"}},
-			Catalog:      catalog,
+			Catalog:      snapshot(catalog),
 		})
 		if !result.Resolved {
 			t.Fatalf("%q must resolve: stage=%v detail=%q", tc.sql, result.FailedStage, result.Detail)
@@ -456,19 +456,19 @@ func TestMysqlUsingAndNaturalStarOrderEdgeCases(t *testing.T) {
 // Shapes whose expansion cannot bind mask ordinals faithfully — or that the target itself
 // rejects — must fail closed rather than resolve with a divergent order.
 func TestNaturalJoinFailClosedShapes(t *testing.T) {
-	catalog := []*pb.ColumnSpec{
-		columnSpec("def", "app", "a", "a_only", "BIGINT"),
-		columnSpec("def", "app", "a", "id", "BIGINT"),
-		columnSpec("def", "app", "b", "id", "BIGINT"),
-		columnSpec("def", "app", "b", "b_only", "BIGINT"),
-		columnSpec("def", "app", "c", "id", "BIGINT"),
-		columnSpec("def", "app", "c", "c_only", "BIGINT"),
-		columnSpec("def", "app", "sa", "shared", "BIGINT"),
-		columnSpec("def", "app", "sa", "a1", "BIGINT"),
-		columnSpec("def", "app", "sb", "shared", "BIGINT"),
-		columnSpec("def", "app", "sb", "b1", "BIGINT"),
-		columnSpec("def", "app", "sc", "shared", "BIGINT"),
-		columnSpec("def", "app", "sc", "c1", "BIGINT"),
+	catalog := []*pb.Column{
+		pbColumn("app", "a", "a_only", "BIGINT"),
+		pbColumn("app", "a", "id", "BIGINT"),
+		pbColumn("app", "b", "id", "BIGINT"),
+		pbColumn("app", "b", "b_only", "BIGINT"),
+		pbColumn("app", "c", "id", "BIGINT"),
+		pbColumn("app", "c", "c_only", "BIGINT"),
+		pbColumn("app", "sa", "shared", "BIGINT"),
+		pbColumn("app", "sa", "a1", "BIGINT"),
+		pbColumn("app", "sb", "shared", "BIGINT"),
+		pbColumn("app", "sb", "b1", "BIGINT"),
+		pbColumn("app", "sc", "shared", "BIGINT"),
+		pbColumn("app", "sc", "c1", "BIGINT"),
 	}
 	for _, tc := range []struct{ name, sql string }{
 		{"merged star inside a derived scope", "SELECT * FROM (SELECT * FROM a NATURAL JOIN b) ab"},
@@ -481,7 +481,7 @@ func TestNaturalJoinFailClosedShapes(t *testing.T) {
 			Sql:          tc.sql,
 			EngineConfig: &pb.EngineConfig{Engine: pb.Engine_MYSQL, EngineVersion: "8.0.46", MysqlLowerCaseTableNames: proto.Int32(1)},
 			Namespace:    &pb.Namespace{Catalog: "def", SearchPath: []string{"app"}},
-			Catalog:      catalog,
+			Catalog:      snapshot(catalog),
 		})
 		if result.Resolved {
 			t.Fatalf("%s must fail closed: %q", tc.name, tc.sql)

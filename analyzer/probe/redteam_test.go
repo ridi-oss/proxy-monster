@@ -39,7 +39,7 @@ func TestRelationRedTeam(t *testing.T) {
 	for _, tc := range cases {
 		res := analyzeProbe(t, &pb.AnalyzeRequest{
 			Sql: tc.sql, EngineConfig: &pb.EngineConfig{Engine: pb.Engine_POSTGRES},
-			Namespace: canonicalPostgresNamespace, Catalog: canonicalPostgresCatalog,
+			Namespace: canonicalPostgresNamespace, Catalog: snapshot(canonicalPostgresCatalog),
 		})
 		inRefs, inOrigins := false, false
 		for _, cols := range res.References {

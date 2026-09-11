@@ -324,7 +324,7 @@ type Db interface {
 	// MySQL, an identity function for Postgres. The refetch path calls this so the schema-fragment pool
 	// pushed to the control plane matches the same canonical spelling introspect's bulk catalog push
 	// uses — no caller decides whether/how to fold.
-	NormalizeColumns(lowerCaseTableNames int, columns []*pb.Column) []*pb.Column
+	NormalizeColumns(lowerCaseTableNames int, columns []*enginepb.Column) []*enginepb.Column
 }
 
 // FragmentColumnsFromRows strictly maps six-column information_schema rows into a canonical schema
@@ -336,9 +336,9 @@ type Db interface {
 // the only configuration where canonical spelling can legitimately diverge in case from live storage
 // (case-insensitive lookup, case-preserving storage), so it's the only one where this tolerates a case
 // difference — Postgres and MySQL modes 0/1 require an exact match, same as before this normalized the
-// comparison at all. The column is the proto Column (pb.Column) used AS the data class.
-func FragmentColumnsFromRows(db Db, lowerCaseTableNames int, schema string, rows [][]*string) ([]*pb.Column, error) {
-	raw := make([]*pb.Column, 0, len(rows))
+// comparison at all. The column is the proto Column (enginepb.Column) used AS the data class.
+func FragmentColumnsFromRows(db Db, lowerCaseTableNames int, schema string, rows [][]*string) ([]*enginepb.Column, error) {
+	raw := make([]*enginepb.Column, 0, len(rows))
 	for i, row := range rows {
 		if len(row) != 6 {
 			return nil, fmt.Errorf("fragment row %d has %d columns, want 6", i, len(row))
@@ -361,7 +361,7 @@ func FragmentColumnsFromRows(db Db, lowerCaseTableNames int, schema string, rows
 		default:
 			return nil, fmt.Errorf("fragment row %d nullable %q is not YES or NO", i, *row[5])
 		}
-		raw = append(raw, &pb.Column{
+		raw = append(raw, &enginepb.Column{
 			Schema:   *row[0],
 			Table:    *row[1],
 			Column:   *row[2],
@@ -371,7 +371,7 @@ func FragmentColumnsFromRows(db Db, lowerCaseTableNames int, schema string, rows
 		})
 	}
 
-	canonicalSchema := db.NormalizeColumns(lowerCaseTableNames, []*pb.Column{{Schema: schema, Table: "_", Column: "_"}})[0].GetSchema()
+	canonicalSchema := db.NormalizeColumns(lowerCaseTableNames, []*enginepb.Column{{Schema: schema, Table: "_", Column: "_"}})[0].GetSchema()
 	columns := db.NormalizeColumns(lowerCaseTableNames, raw)
 	for i, column := range columns {
 		if column.GetSchema() != canonicalSchema {

@@ -5,8 +5,8 @@ import (
 	"strings"
 	"testing"
 
+	analyzerpb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
 	"github.com/ridi-oss/proxy-monster/goproxy/engine"
-	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
 )
 
 func TestMySqlDbConstants(t *testing.T) {
@@ -85,7 +85,7 @@ func TestMySqlSchemaHashSQL(t *testing.T) {
 }
 
 func TestMySqlNormalizeColumns(t *testing.T) {
-	in := []*pb.Column{
+	in := []*analyzerpb.Column{
 		{Schema: "AppDB", Table: "UserRows", Column: "CustomerID", DataType: "int", Ordinal: 1, Nullable: true},
 	}
 	// mode 1 (case-insensitive): schema/table fold too, alongside the always-unconditional column fold.
@@ -100,7 +100,7 @@ func TestMySqlNormalizeColumns(t *testing.T) {
 	if got.GetDataType() != "int" || got.GetOrdinal() != 1 || !got.GetNullable() {
 		t.Errorf("NormalizeColumns must preserve non-identity fields, got %+v", got)
 	}
-	// Input must not be mutated (NormalizeColumns builds new pb.Column values).
+	// Input must not be mutated (NormalizeColumns builds new analyzerpb.Column values).
 	if in[0].GetSchema() != "AppDB" {
 		t.Errorf("NormalizeColumns mutated its input: %+v", in[0])
 	}
@@ -114,7 +114,7 @@ func TestMySqlNormalizeColumns(t *testing.T) {
 	// A multi-row fragment with a repeated (schema, table) exercises the batched path (one sqlglot
 	// parse per distinct table, memoized; column folded per row). Row order and each row's non-identity
 	// fields must be preserved.
-	multi := []*pb.Column{
+	multi := []*analyzerpb.Column{
 		{Schema: "AppDB", Table: "UserRows", Column: "CustomerID", DataType: "int", Ordinal: 1, Nullable: false},
 		{Schema: "AppDB", Table: "UserRows", Column: "EmailAddr", DataType: "varchar", Ordinal: 2, Nullable: true},
 		{Schema: "AppDB", Table: "OrderRows", Column: "OrderID", DataType: "bigint", Ordinal: 1, Nullable: false},
@@ -138,7 +138,7 @@ func TestMySqlNormalizeColumns(t *testing.T) {
 }
 
 func TestPgNormalizeColumnsIsIdentity(t *testing.T) {
-	in := []*pb.Column{{Schema: "Sales", Table: "OrderItems", Column: "CustomerID"}}
+	in := []*analyzerpb.Column{{Schema: "Sales", Table: "OrderItems", Column: "CustomerID"}}
 	out := (PgDb{}).NormalizeColumns(0, in)
 	if len(out) != 1 || out[0] != in[0] {
 		t.Errorf("PgDb.NormalizeColumns must be an identity passthrough, got %+v", out)

@@ -13,10 +13,10 @@ func pgFacts(t *testing.T, sql string) *pb.StatementFacts {
 		Sql:          sql,
 		EngineConfig: &pb.EngineConfig{Engine: pb.Engine_POSTGRES},
 		Namespace:    &pb.Namespace{Catalog: "def", SearchPath: []string{"public"}},
-		Catalog: []*pb.ColumnSpec{
-			columnSpec("def", "public", "users", "id", "BIGINT"),
-			columnSpec("def", "public", "users", "ssn", "VARCHAR"),
-		},
+		Catalog: snapshot([]*pb.Column{
+			pbColumn("public", "users", "id", "BIGINT"),
+			pbColumn("public", "users", "ssn", "VARCHAR"),
+		}),
 	})
 }
 

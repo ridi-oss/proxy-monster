@@ -164,11 +164,11 @@ func TestAlterTableDropIndexProductionShape(t *testing.T) {
 			Engine: pb.Engine_MYSQL, EngineVersion: "8.0.44", MysqlLowerCaseTableNames: proto.Int32(0),
 		},
 		Namespace: &pb.Namespace{Catalog: "def", SearchPath: []string{"bom"}},
-		Catalog: []*pb.ColumnSpec{
-			columnSpec("def", "bom", "tb_set_book_sell_history", "id", "BIGINT"),
-			columnSpec("def", "bom", "tb_set_book_sell_history", "u_idx", "BIGINT"),
-			columnSpec("def", "bom", "tb_set_book_sell_history", "set_b_id", "VARCHAR"),
-		},
+		Catalog: snapshot([]*pb.Column{
+			pbColumn("bom", "tb_set_book_sell_history", "id", "BIGINT"),
+			pbColumn("bom", "tb_set_book_sell_history", "u_idx", "BIGINT"),
+			pbColumn("bom", "tb_set_book_sell_history", "set_b_id", "VARCHAR"),
+		}),
 	})
 
 	if !f.Resolved {

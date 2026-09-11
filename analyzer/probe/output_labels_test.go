@@ -19,7 +19,7 @@ func TestNativeLabelReferencesResolve(t *testing.T) {
 			Sql:          sql,
 			EngineConfig: &pb.EngineConfig{Engine: pb.Engine_POSTGRES},
 			Namespace:    &pb.Namespace{Catalog: "acme", SearchPath: []string{"pg_catalog", "public"}},
-			Catalog:      []*pb.ColumnSpec{columnSpec("acme", "public", "users", "id", "BIGINT")},
+			Catalog:      snapshot([]*pb.Column{pbColumn("public", "users", "id", "BIGINT")}),
 		})
 	}
 	my := func(sql string) *pb.StatementFacts {
@@ -27,7 +27,7 @@ func TestNativeLabelReferencesResolve(t *testing.T) {
 			Sql:          sql,
 			EngineConfig: &pb.EngineConfig{Engine: pb.Engine_MYSQL, EngineVersion: "8.0.42", MysqlLowerCaseTableNames: proto.Int32(0)},
 			Namespace:    &pb.Namespace{Catalog: "def", SearchPath: []string{"acme"}},
-			Catalog:      []*pb.ColumnSpec{columnSpec("def", "acme", "users", "id", "BIGINT")},
+			Catalog:      snapshot([]*pb.Column{pbColumn("acme", "users", "id", "BIGINT")}),
 		})
 	}
 
@@ -56,7 +56,7 @@ func TestMySQLRewriteKeepsVerbatimLabels(t *testing.T) {
 		Sql:          "SELECT * FROM (SELECT database( ), u.id FROM users u) c",
 		EngineConfig: &pb.EngineConfig{Engine: pb.Engine_MYSQL, EngineVersion: "8.0.42", MysqlLowerCaseTableNames: proto.Int32(0)},
 		Namespace:    &pb.Namespace{Catalog: "def", SearchPath: []string{"acme"}},
-		Catalog:      []*pb.ColumnSpec{columnSpec("def", "acme", "users", "id", "BIGINT")},
+		Catalog:      snapshot([]*pb.Column{pbColumn("acme", "users", "id", "BIGINT")}),
 	})
 	if !f.GetResolved() {
 		t.Fatalf("must resolve: %q", f.GetDetail())
@@ -73,7 +73,7 @@ func TestClientSyntheticAliasDisablesStamping(t *testing.T) {
 		Sql:          `SELECT * FROM (SELECT current_database() AS _col_99, oid FROM pg_catalog.pg_namespace) c`,
 		EngineConfig: &pb.EngineConfig{Engine: pb.Engine_POSTGRES},
 		Namespace:    &pb.Namespace{Catalog: "acme", SearchPath: []string{"pg_catalog", "public"}},
-		Catalog:      []*pb.ColumnSpec{columnSpec("acme", "pg_catalog", "pg_namespace", "oid", "OID")},
+		Catalog:      snapshot([]*pb.Column{pbColumn("pg_catalog", "pg_namespace", "oid", "OID")}),
 	})
 	if !f.GetResolved() {
 		t.Fatalf("must resolve: %q", f.GetDetail())
@@ -100,10 +100,10 @@ func TestPostgresWrittenFunctionLabels(t *testing.T) {
 			Sql:          tc.sql,
 			EngineConfig: &pb.EngineConfig{Engine: pb.Engine_POSTGRES},
 			Namespace:    &pb.Namespace{Catalog: "acme", SearchPath: []string{"pg_catalog", "public"}},
-			Catalog: []*pb.ColumnSpec{
-				columnSpec("acme", "pg_catalog", "pg_namespace", "oid", "OID"),
-				columnSpec("acme", "pg_catalog", "pg_namespace", "nspname", "NAME"),
-			},
+			Catalog: snapshot([]*pb.Column{
+				pbColumn("pg_catalog", "pg_namespace", "oid", "OID"),
+				pbColumn("pg_catalog", "pg_namespace", "nspname", "NAME"),
+			}),
 		})
 		if !f.GetResolved() {
 			t.Fatalf("%s: did not resolve: %q", tc.sql, f.GetDetail())
@@ -122,7 +122,7 @@ func TestMySQLDuplicateDerivedLabelsFailClosed(t *testing.T) {
 			Sql:          sql,
 			EngineConfig: &pb.EngineConfig{Engine: pb.Engine_MYSQL, EngineVersion: "8.0.42", MysqlLowerCaseTableNames: proto.Int32(0)},
 			Namespace:    &pb.Namespace{Catalog: "def", SearchPath: []string{"acme"}},
-			Catalog:      []*pb.ColumnSpec{columnSpec("def", "acme", "users", "id", "BIGINT")},
+			Catalog:      snapshot([]*pb.Column{pbColumn("acme", "users", "id", "BIGINT")}),
 		})
 	}
 	for _, sql := range []string{
@@ -148,7 +148,7 @@ func TestPostgresReferencedDuplicateStaysAmbiguous(t *testing.T) {
 			Sql:          sql,
 			EngineConfig: &pb.EngineConfig{Engine: pb.Engine_POSTGRES},
 			Namespace:    &pb.Namespace{Catalog: "acme", SearchPath: []string{"pg_catalog", "public"}},
-			Catalog:      []*pb.ColumnSpec{columnSpec("acme", "public", "users", "id", "BIGINT")},
+			Catalog:      snapshot([]*pb.Column{pbColumn("public", "users", "id", "BIGINT")}),
 		})
 	}
 	for _, sql := range []string{

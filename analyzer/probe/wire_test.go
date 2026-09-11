@@ -2,7 +2,7 @@ package probe
 
 // Coverage for the protobuf FFM entry point (wire.go, docs/statement-facts-contract.md) —
 // the analyzer<->JVM contract every test in this package exercises directly (no JSON anywhere in
-// this module). columnSpec
+// this module). pbColumn, snapshot,
 // and analyzeProto below are the shared fixture-building/call helpers every other test file in this
 // package reuses. These tests specifically cover the proto encode/decode path itself: the flat-catalog
 // schema.Mapping build, namespace validation, and the total/fail-closed AnalyzeStatementSafe contract —
@@ -15,12 +15,12 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-func columnSpec(catalog, schemaName, table, column, dataType string) *pb.ColumnSpec {
-	return &pb.ColumnSpec{
-		Catalog:  catalog,
-		Identity: &pb.RelationIdentity{Schema: schemaName, Table: table, Column: column},
-		DataType: dataType,
-	}
+func pbColumn(schemaName, table, column, dataType string) *pb.Column {
+	return &pb.Column{Schema: schemaName, Table: table, Column: column, DataType: dataType}
+}
+
+func snapshot(columns []*pb.Column) *pb.CatalogSnapshot {
+	return &pb.CatalogSnapshot{Columns: columns}
 }
 
 func analyzeProto(t *testing.T, req *pb.AnalyzeRequest) *pb.StatementFacts {
@@ -45,18 +45,47 @@ func stageString(stage *string) string {
 
 func analyzeProbe(t *testing.T, req *pb.AnalyzeRequest) *ProbeResult {
 	t.Helper()
-	sch, err := schemaMappingFromProto(req.GetCatalog())
+	namespace, err := namespaceConfigFromProto(req.GetNamespace())
 	if err != nil {
 		result := failResult("VALIDATE", err.Error())
 		return &result
 	}
-	namespace, err := namespaceConfigFromProto(req.GetNamespace())
+	sch, err := schemaMappingFromProto(namespace.Catalog, req.GetCatalog().GetColumns())
 	if err != nil {
 		result := failResult("VALIDATE", err.Error())
 		return &result
 	}
 	result := Probe(req.GetSql(), req.GetEngineConfig(), sch, namespace)
 	return &result
+}
+
+// A column with no catalog of its own belongs to the namespace catalog; a column naming another
+// catalog keeps that identity, so the two never collapse into one mapping entry.
+func TestSchemaMappingColumnCatalogDefaultsToNamespace(t *testing.T) {
+	sch, err := schemaMappingFromProto("acme", []*pb.Column{
+		pbColumn("public", "users", "id", "BIGINT"),
+		{Catalog: "acme", Schema: "public", Table: "users", Column: "ssn", DataType: "VARCHAR"},
+		{Catalog: "reporting", Schema: "public", Table: "users", Column: "id", DataType: "BIGINT"},
+	})
+	if err != nil {
+		t.Fatalf("build schema: %v", err)
+	}
+	if len(sch.Keys()) != 2 {
+		t.Fatalf("catalogs = %v, want acme and reporting", sch.Keys())
+	}
+	acme := getOrNewMapping(getOrNewMapping(getOrNewMapping(sch, "acme"), "public"), "users")
+	if _, ok := acme.Get("id"); !ok {
+		t.Fatal("empty-catalog column must land under the namespace catalog")
+	}
+	if _, ok := acme.Get("ssn"); !ok {
+		t.Fatal("explicit namespace-catalog column must land under the namespace catalog")
+	}
+	if _, err := schemaMappingFromProto("acme", []*pb.Column{
+		pbColumn("public", "users", "id", "BIGINT"),
+		{Catalog: "acme", Schema: "public", Table: "users", Column: "id", DataType: "BIGINT"},
+	}); err == nil {
+		t.Fatal("empty and explicit spellings of the same column must be a duplicate")
+	}
 }
 
 func TestAnalyzeStatementResolvesOrdinaryQuery(t *testing.T) {
@@ -67,10 +96,10 @@ func TestAnalyzeStatementResolvesOrdinaryQuery(t *testing.T) {
 			Catalog:    "acme",
 			SearchPath: []string{"public"},
 		},
-		Catalog: []*pb.ColumnSpec{
-			columnSpec("acme", "public", "users", "id", "BIGINT"),
-			columnSpec("acme", "public", "users", "ssn", "VARCHAR"),
-		},
+		Catalog: snapshot([]*pb.Column{
+			pbColumn("public", "users", "id", "BIGINT"),
+			pbColumn("public", "users", "ssn", "VARCHAR"),
+		}),
 	})
 	if !out.Resolved {
 		t.Fatalf("expected resolved, got detail=%q stage=%v", out.Detail, out.FailedStage)
@@ -88,9 +117,9 @@ func TestAnalyzeStatementMySQLRequiresLowerCaseTableNames(t *testing.T) {
 		Sql:          "SELECT id FROM users",
 		EngineConfig: &pb.EngineConfig{Engine: pb.Engine_MYSQL, EngineVersion: "8.0.46"}, // no mysql_lower_case_table_names
 		Namespace:    &pb.Namespace{Catalog: "acme", SearchPath: []string{"acme"}},
-		Catalog: []*pb.ColumnSpec{
-			columnSpec("acme", "acme", "users", "id", "BIGINT"),
-		},
+		Catalog: snapshot([]*pb.Column{
+			pbColumn("acme", "users", "id", "BIGINT"),
+		}),
 	})
 	if out.Resolved {
 		t.Fatalf("expected fail-closed without mysqlLowerCaseTableNames, got resolved=true")
@@ -105,7 +134,7 @@ func TestAnalyzeStatementMySQLRequiresEngineVersion(t *testing.T) {
 		Sql:          "SELECT id FROM users",
 		EngineConfig: &pb.EngineConfig{Engine: pb.Engine_MYSQL, MysqlLowerCaseTableNames: proto.Int32(0)},
 		Namespace:    &pb.Namespace{Catalog: "def", SearchPath: []string{"acme"}},
-		Catalog:      []*pb.ColumnSpec{columnSpec("def", "acme", "users", "id", "BIGINT")},
+		Catalog:      snapshot([]*pb.Column{pbColumn("acme", "users", "id", "BIGINT")}),
 	})
 	if out.Resolved || stageString(out.FailedStage) != "VALIDATE" {
 		t.Fatalf("expected VALIDATE failure without engine_version, got %+v", out)
@@ -119,10 +148,10 @@ func TestAnalyzeStatementEngineVersionReachesMySQLParser(t *testing.T) {
 			Engine: pb.Engine_MYSQL, EngineVersion: "8.0.46", MysqlLowerCaseTableNames: proto.Int32(0),
 		},
 		Namespace: &pb.Namespace{Catalog: "def", SearchPath: []string{"acme"}},
-		Catalog: []*pb.ColumnSpec{
-			columnSpec("def", "acme", "users", "id", "BIGINT"),
-			columnSpec("def", "acme", "users", "ssn", "VARCHAR"),
-		},
+		Catalog: snapshot([]*pb.Column{
+			pbColumn("acme", "users", "id", "BIGINT"),
+			pbColumn("acme", "users", "ssn", "VARCHAR"),
+		}),
 	})
 	if !out.Resolved {
 		t.Fatalf("expected resolved executable comment, got stage=%q detail=%q", stageString(out.FailedStage), out.Detail)
@@ -145,7 +174,7 @@ func TestAnalyzeStatementRejectsUnspecifiedEngine(t *testing.T) {
 		Sql:          "SELECT id FROM users",
 		EngineConfig: &pb.EngineConfig{EngineVersion: "8.0.46", MysqlLowerCaseTableNames: proto.Int32(0)}, // engine left ENGINE_UNSPECIFIED
 		Namespace:    &pb.Namespace{Catalog: "def", SearchPath: []string{"acme"}},
-		Catalog:      []*pb.ColumnSpec{columnSpec("def", "acme", "users", "id", "BIGINT")},
+		Catalog:      snapshot([]*pb.Column{pbColumn("acme", "users", "id", "BIGINT")}),
 	})
 	if out.Resolved || stageString(out.FailedStage) != "VALIDATE" {
 		t.Fatalf("expected ENGINE_UNSPECIFIED to fail VALIDATE, got %+v", out)
@@ -157,10 +186,10 @@ func TestAnalyzeStatementRejectsDuplicateCatalogColumn(t *testing.T) {
 		Sql:          "SELECT id FROM users",
 		EngineConfig: &pb.EngineConfig{Engine: pb.Engine_POSTGRES},
 		Namespace:    &pb.Namespace{Catalog: "acme", SearchPath: []string{"public"}},
-		Catalog: []*pb.ColumnSpec{
-			columnSpec("acme", "public", "users", "id", "BIGINT"),
-			columnSpec("acme", "public", "users", "id", "VARCHAR"), // duplicate
-		},
+		Catalog: snapshot([]*pb.Column{
+			pbColumn("public", "users", "id", "BIGINT"),
+			pbColumn("public", "users", "id", "VARCHAR"), // duplicate
+		}),
 	})
 	if out.Resolved {
 		t.Fatalf("expected fail-closed on duplicate catalog column, got resolved=true")

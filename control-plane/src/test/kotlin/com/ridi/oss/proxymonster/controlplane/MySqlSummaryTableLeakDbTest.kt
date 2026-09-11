@@ -1,5 +1,6 @@
 package com.ridi.oss.proxymonster.controlplane
 
+import com.ridi.oss.proxymonster.controlplane.support.pushedColumn
 import com.ridi.oss.proxymonster.grpc.EnfAction
 import com.ridi.oss.proxymonster.controlplane.authz.CedarPolicyInput
 import com.ridi.oss.proxymonster.controlplane.support.EnforcementFixture
@@ -36,11 +37,11 @@ class MySqlSummaryTableLeakDbTest {
             mysqlLowerCaseTableNames = 0,
             engineVersion = "8.0.44",
             columns = listOf(
-                DatasourceStore.PushedColumn("performance_schema", "user_variables_by_thread", "VARIABLE_NAME", "varchar", 1, true),
-                DatasourceStore.PushedColumn("performance_schema", "user_variables_by_thread", "VARIABLE_VALUE", "longtext", 2, true),
-                DatasourceStore.PushedColumn("sys", "x\$schema_table_statistics", "table_name", "varchar", 1, true),
+                pushedColumn("performance_schema", "user_variables_by_thread", "VARIABLE_NAME", "varchar", 1, true),
+                pushedColumn("performance_schema", "user_variables_by_thread", "VARIABLE_VALUE", "longtext", 2, true),
+                pushedColumn("sys", "x\$schema_table_statistics", "table_name", "varchar", 1, true),
                 // A genuinely structural catalog view stays browsable — proves the fix did not over-classify.
-                DatasourceStore.PushedColumn("information_schema", "TABLES", "TABLE_NAME", "varchar", 1, true),
+                pushedColumn("information_schema", "TABLES", "TABLE_NAME", "varchar", 1, true),
             ),
         )
         fx.dataSource.connection.use { c ->

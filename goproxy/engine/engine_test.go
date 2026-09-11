@@ -7,6 +7,7 @@ import (
 
 	"google.golang.org/protobuf/proto"
 
+	analyzerpb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
 )
 
@@ -26,10 +27,12 @@ func (f fakeDb) HashSetupColumns() int       { return 0 }
 func (f fakeDb) SchemaHashSQL(string, [][]*string) (string, int, error) {
 	return "hash", 1, nil
 }
-func (f fakeDb) SchemaHashFromRows([][]*string) ([]byte, bool, error)      { return nil, false, nil }
-func (f fakeDb) SchemaColumnsSQL(string) string                            { return "columns" }
-func (f fakeDb) LowerCaseTableNamesProbeSQL() string                       { return "" }
-func (f fakeDb) NormalizeColumns(_ int, columns []*pb.Column) []*pb.Column { return columns }
+func (f fakeDb) SchemaHashFromRows([][]*string) ([]byte, bool, error) { return nil, false, nil }
+func (f fakeDb) SchemaColumnsSQL(string) string                       { return "columns" }
+func (f fakeDb) LowerCaseTableNamesProbeSQL() string                  { return "" }
+func (f fakeDb) NormalizeColumns(_ int, columns []*analyzerpb.Column) []*analyzerpb.Column {
+	return columns
+}
 
 var mysqlDb = fakeDb{dialect: MySQL, nsProbeSQL: "SELECT DATABASE()"}
 var pgDb = fakeDb{dialect: Postgres, nsProbeSQL: "probe", tempOverlay: true, tempProbeSQL: "temps"}
@@ -259,7 +262,7 @@ func TestFragmentColumnsFromRowsStrict(t *testing.T) {
 	if err != nil {
 		t.Fatalf("FragmentColumnsFromRows: %v", err)
 	}
-	want := []*pb.Column{{Schema: "app", Table: "users", Column: "id", DataType: "integer", Ordinal: 1}, {Schema: "app", Table: "users", Column: "email", DataType: "text", Ordinal: 2, Nullable: true}}
+	want := []*analyzerpb.Column{{Schema: "app", Table: "users", Column: "id", DataType: "integer", Ordinal: 1}, {Schema: "app", Table: "users", Column: "email", DataType: "text", Ordinal: 2, Nullable: true}}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("columns = %+v, want %+v", got, want)
 	}

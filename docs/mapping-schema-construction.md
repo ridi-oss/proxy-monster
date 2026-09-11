@@ -82,15 +82,16 @@ keys.
 
 ## Construction
 
-Input: the curated catalog as flat `ColumnSpec` rows
-`(catalog, schema, table, column, dataType)` across every introspected schema
-(which system relations are included is the access-model curation's call —
+Input: the curated catalog as flat `Column` rows
+`(catalog, schema, table, column, dataType)` across every introspected schema;
+an empty catalog means the namespace catalog (which system relations are
+included is the access-model curation's call —
 [access-model.md](./access-model.md)). Go nests them into a depth-3
 `schema.Mapping` (`analyzer/probe/wire.go`):
 
 ```
 mapping := schema.NewMapping()                     // sqlglot-go schema pkg — depth-3
-for each ColumnSpec col:
+for each Column col:
     schemas := getOrNewMapping(mapping, col.catalog)
     tables  := getOrNewMapping(schemas, col.schema)
     cols    := getOrNewMapping(tables,  col.table)

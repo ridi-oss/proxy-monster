@@ -15,16 +15,16 @@ import (
 // kinds (count/cast/substring) are NOT emitted (they are safe and carry unreliable names). The `functions`
 // fact must be present ONLY for names actually called, deduped, and lowercased.
 func TestCalledFunctions(t *testing.T) {
-	pgCatalog := []*pb.ColumnSpec{
-		columnSpec("acme", "public", "t", "id", "BIGINT"),
-		columnSpec("acme", "public", "t", "c", "VARCHAR"),
+	pgCatalog := []*pb.Column{
+		pbColumn("public", "t", "id", "BIGINT"),
+		pbColumn("public", "t", "c", "VARCHAR"),
 	}
 	pgNs := &pb.Namespace{Catalog: "acme", SearchPath: []string{"public"}}
 
 	cases := []struct {
 		name    string
 		dialect string
-		catalog []*pb.ColumnSpec
+		catalog []*pb.Column
 		ns      *pb.Namespace
 		sql     string
 		want    []string
@@ -43,7 +43,7 @@ func TestCalledFunctions(t *testing.T) {
 		// MySQL: rds_kill is Aurora-management (mysql.rds_ family); the bare name must be emitted so the
 		// resolver classifies it. keyring_ is a __builtin__ family.
 		{"mysql rds_kill", "mysql",
-			[]*pb.ColumnSpec{columnSpec("def", "app", "t", "id", "BIGINT")},
+			[]*pb.Column{pbColumn("app", "t", "id", "BIGINT")},
 			&pb.Namespace{Catalog: "def", SearchPath: []string{"app"}},
 			"SELECT rds_kill(1)", []string{"rds_kill"}},
 	}
@@ -75,18 +75,18 @@ func TestCalledFunctions(t *testing.T) {
 // (`SELECT pg_read_file('/x') FROM t`); the no-FROM form is gated separately by noFromFunctionGrants
 // (facts.go).
 func TestFormerDangerousFuncsResolveAndEmit(t *testing.T) {
-	pgCatalog := []*pb.ColumnSpec{
-		columnSpec("acme", "public", "t", "id", "BIGINT"),
-		columnSpec("acme", "public", "t", "c", "VARCHAR"),
+	pgCatalog := []*pb.Column{
+		pbColumn("public", "t", "id", "BIGINT"),
+		pbColumn("public", "t", "c", "VARCHAR"),
 	}
 	pgNs := &pb.Namespace{Catalog: "acme", SearchPath: []string{"public"}}
-	myCatalog := []*pb.ColumnSpec{columnSpec("def", "app", "t", "id", "BIGINT")}
+	myCatalog := []*pb.Column{pbColumn("app", "t", "id", "BIGINT")}
 	myNs := &pb.Namespace{Catalog: "def", SearchPath: []string{"app"}}
 
 	cases := []struct {
 		name    string
 		dialect string
-		catalog []*pb.ColumnSpec
+		catalog []*pb.Column
 		ns      *pb.Namespace
 		sql     string
 		want    string
@@ -197,13 +197,13 @@ func TestPostgresQuotedValuesStaysGated(t *testing.T) {
 	}
 }
 
-func probeFunctions(t *testing.T, sql, dialect string, cols []*pb.ColumnSpec, ns *pb.Namespace) ([]string, bool) {
+func probeFunctions(t *testing.T, sql, dialect string, cols []*pb.Column, ns *pb.Namespace) ([]string, bool) {
 	t.Helper()
 	engineConfig := &pb.EngineConfig{Engine: pb.Engine_POSTGRES}
 	if dialect == "mysql" {
 		engineConfig = &pb.EngineConfig{Engine: pb.Engine_MYSQL, EngineVersion: "8.0.46", MysqlLowerCaseTableNames: proto.Int32(1)}
 	}
-	res := analyzeProbe(t, &pb.AnalyzeRequest{Sql: sql, EngineConfig: engineConfig, Namespace: ns, Catalog: cols})
+	res := analyzeProbe(t, &pb.AnalyzeRequest{Sql: sql, EngineConfig: engineConfig, Namespace: ns, Catalog: snapshot(cols)})
 	return res.Functions, res.Resolved
 }
 

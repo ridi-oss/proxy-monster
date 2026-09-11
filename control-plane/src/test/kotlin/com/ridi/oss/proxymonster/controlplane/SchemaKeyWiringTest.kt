@@ -1,9 +1,9 @@
 package com.ridi.oss.proxymonster.controlplane
 
-import com.ridi.oss.proxymonster.analyzer.pb.columnSpec
+import com.ridi.oss.proxymonster.analyzer.pb.catalogSnapshot
+import com.ridi.oss.proxymonster.analyzer.pb.column
 import com.ridi.oss.proxymonster.analyzer.pb.engineConfig as pbEngineConfig
 import com.ridi.oss.proxymonster.analyzer.pb.namespace as pbNamespace
-import com.ridi.oss.proxymonster.analyzer.pb.relationIdentity
 import com.ridi.oss.proxymonster.grpc.Engine
 import com.ridi.oss.proxymonster.probe.analyzerFor
 import kotlin.test.Test
@@ -31,16 +31,16 @@ class SchemaKeyWiringTest {
         nullable = false,
     )
 
-    private fun specsFor(catalog: List<CatalogColumn>) = catalog.map { col ->
-        columnSpec {
-            this.catalog = col.catalog
-            identity = relationIdentity {
+    private fun specsFor(catalog: List<CatalogColumn>) = catalogSnapshot {
+        columns += catalog.map { col ->
+            column {
                 schema = col.schema
                 table = col.table
-                column = col.column
+                this.column = col.column
+                dataType = col.sqlType
+                ordinal = col.ordinal
+                nullable = col.nullable
             }
-            dataType = col.sqlType
-            pii = col.classification != null
         }
     }
 

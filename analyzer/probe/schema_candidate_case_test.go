@@ -13,8 +13,8 @@ import (
 // candidate matches zero rows: the fetch records an empty fragment as held, and the retry relays the
 // statement unanalyzed — unmasked. The candidate must therefore carry the spelling the target DB stores.
 func TestSchemaQualifierCandidatesFoldToTheStoredSpelling(t *testing.T) {
-	mapping, err := schemaMappingFromProto([]*pb.ColumnSpec{
-		columnSpec("def", "bom", "tb_user", "id", "BIGINT"),
+	mapping, err := schemaMappingFromProto("def", []*pb.Column{
+		pbColumn("bom", "tb_user", "id", "BIGINT"),
 	})
 	if err != nil {
 		t.Fatalf("build schema: %v", err)

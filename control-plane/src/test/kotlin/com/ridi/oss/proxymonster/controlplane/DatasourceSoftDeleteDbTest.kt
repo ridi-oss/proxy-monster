@@ -9,7 +9,7 @@ import com.ridi.oss.proxymonster.controlplane.support.SharedPostgres
 import com.ridi.oss.proxymonster.controlplane.support.requireDockerOrSkip
 import com.ridi.oss.proxymonster.grpc.ControlEvent
 import com.ridi.oss.proxymonster.grpc.Engine
-import com.ridi.oss.proxymonster.grpc.column
+import com.ridi.oss.proxymonster.analyzer.pb.column
 import com.ridi.oss.proxymonster.grpc.schemaFragmentPush
 import com.google.protobuf.ByteString
 import kotlinx.coroutines.channels.Channel

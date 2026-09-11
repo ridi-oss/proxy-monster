@@ -8,10 +8,10 @@ import (
 	"testing"
 	"time"
 
+	analyzerpb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
 	"github.com/ridi-oss/proxy-monster/goproxy/db"
 	"github.com/ridi-oss/proxy-monster/goproxy/engine"
 	"github.com/ridi-oss/proxy-monster/goproxy/internal/dbtest"
-	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
 	"github.com/ridi-oss/proxy-monster/goproxy/spi"
 )
 
@@ -128,7 +128,7 @@ func TestRunPinsOneConnectionOnDeadTarget(t *testing.T) {
 }
 
 // hasColumn reports whether cols contains a column matching schema/table/column.
-func hasColumn(cols []*pb.Column, schema, table, column string) bool {
+func hasColumn(cols []*analyzerpb.Column, schema, table, column string) bool {
 	for _, c := range cols {
 		if c.GetSchema() == schema && c.GetTable() == table && c.GetColumn() == column {
 			return true
@@ -139,7 +139,7 @@ func hasColumn(cols []*pb.Column, schema, table, column string) bool {
 
 // hasSchema reports whether any column belongs to schema — the signal that a schema was captured (i.e.
 // NOT excluded).
-func hasSchema(cols []*pb.Column, schema string) bool {
+func hasSchema(cols []*analyzerpb.Column, schema string) bool {
 	for _, c := range cols {
 		if c.GetSchema() == schema {
 			return true
@@ -187,7 +187,7 @@ func TestIntrospectMySQL(t *testing.T) {
 		if !strings.Contains(cat.GetEngineVersion(), ".") {
 			t.Errorf("EngineVersion = %q, want a non-empty server version", cat.GetEngineVersion())
 		}
-		cols := cat.GetColumns()
+		cols := cat.GetCatalog().GetColumns()
 		if !hasColumn(cols, itMySQLSchema, "customers", "email") {
 			t.Errorf("columns missing %s.customers.email (user table not introspected)", itMySQLSchema)
 		}
@@ -208,7 +208,7 @@ func TestIntrospectMySQL(t *testing.T) {
 		if got := cat.GetDefaultSchemas(); len(got) != 1 || got[0] != itMySQLSchema {
 			t.Errorf("DefaultSchemas = %v, want [%s]", got, itMySQLSchema)
 		}
-		if !hasColumn(cat.GetColumns(), itMySQLSchema, "customers", "email") {
+		if !hasColumn(cat.GetCatalog().GetColumns(), itMySQLSchema, "customers", "email") {
 			t.Errorf("delimiter-cred introspection missing %s.customers.email", itMySQLSchema)
 		}
 	})
@@ -224,7 +224,7 @@ func TestIntrospectMySQL(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Run: %v", err)
 		}
-		cols := cat.GetColumns()
+		cols := cat.GetCatalog().GetColumns()
 		if hasColumn(cols, itMySQLSchema, "orders", "CustomerID") {
 			t.Errorf("catalog kept raw spelling %q.orders.CustomerID — column names must fold unconditionally", itMySQLSchema)
 		}
@@ -268,7 +268,7 @@ func TestIntrospectPostgres(t *testing.T) {
 		if !strings.Contains(cat.GetEngineVersion(), "PostgreSQL") {
 			t.Errorf("EngineVersion = %q, want to contain PostgreSQL", cat.GetEngineVersion())
 		}
-		cols := cat.GetColumns()
+		cols := cat.GetCatalog().GetColumns()
 		if !hasColumn(cols, "public", itPGTable, "note") {
 			t.Errorf("columns missing public.%s.note (user table not introspected)", itPGTable)
 		}
@@ -290,7 +290,7 @@ func TestIntrospectPostgres(t *testing.T) {
 		if !contains(cat.GetDefaultSchemas(), "public") || !contains(cat.GetDefaultSchemas(), "pg_catalog") {
 			t.Errorf("DefaultSchemas = %v, want to contain both public and pg_catalog", cat.GetDefaultSchemas())
 		}
-		if !hasColumn(cat.GetColumns(), "public", itPGTable, "note") {
+		if !hasColumn(cat.GetCatalog().GetColumns(), "public", itPGTable, "note") {
 			t.Errorf("special-char-cred introspection missing public.%s.note", itPGTable)
 		}
 	})

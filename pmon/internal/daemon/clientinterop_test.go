@@ -43,6 +43,8 @@ import (
 
 	"github.com/ridi-oss/proxy-monster/mysqlwire"
 	"github.com/ridi-oss/proxy-monster/pmon/conn"
+	"github.com/ridi-oss/proxy-monster/pmon/driver"
+	"github.com/ridi-oss/proxy-monster/pmon/providers"
 )
 
 // The fixed identity the broker checks locally. The values are cosmetic to the upstream (the stub
@@ -262,30 +264,28 @@ func parseAuthSwitchRequest(p []byte) (plugin string, scramble []byte) {
 	return string(body[:i]), bytes.TrimSuffix(body[i+1:], []byte{0})
 }
 
-// startBroker runs the REAL brokerMySQL in front of the proxy stub and returns the loopback port clients
-// connect to. This is the code under test.
+// startBroker serves the registered MySQL provider in front of the proxy stub.
 func startBroker(t *testing.T, proxyAddr string) int {
 	t.Helper()
 	ln, err := net.Listen("tcp", "0.0.0.0:0")
 	if err != nil {
 		t.Fatalf("listen broker: %v", err)
 	}
-	t.Cleanup(func() { _ = ln.Close() })
+	provider, _ := providers.Builtins().Lookup("mysql")
+	done := make(chan error, 1)
 	go func() {
-		for {
-			c, err := ln.Accept()
-			if err != nil {
-				return
-			}
-			// Close the client conn when the session ends, as the daemon does (daemon.go's
-			// `defer local.Close()`). Without it a client that quits gracefully — mysql2 awaits the
-			// server's close after COM_QUIT — hangs forever waiting for a close that never comes.
-			go func() {
-				defer c.Close()
-				_ = brokerMySQL(c, proxyAddr, "", false, itPrincipal, itToken, itLocalPassword)
-			}()
-		}
+		done <- provider.Broker.Serve(context.Background(), ln, func() (driver.Endpoint, driver.Credentials, bool) {
+			return driver.Endpoint{Engine: "mysql", AdvertiseAddr: proxyAddr}, driver.Credentials{
+				Principal: itPrincipal, Token: itToken, LocalPassword: itLocalPassword,
+			}, true
+		})
 	}()
+	t.Cleanup(func() {
+		ln.Close()
+		if err := <-done; err != nil {
+			t.Errorf("serve broker: %v", err)
+		}
+	})
 	return ln.Addr().(*net.TCPAddr).Port
 }
 

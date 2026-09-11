@@ -19,8 +19,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/ridi-oss/proxy-monster/mysqlwire"
 	"github.com/ridi-oss/proxy-monster/pmon/control"
+	"github.com/ridi-oss/proxy-monster/pmon/driver"
 	"github.com/ridi-oss/proxy-monster/pmon/internal/login"
 	"github.com/ridi-oss/proxy-monster/pmon/state"
 )
@@ -39,16 +39,6 @@ const (
 	// plane clamps TTL to a 60s floor, so a fixed 30-minute lead would put any token under that permanently past
 	// its threshold — renewing on every tick for the token's whole life instead of once near the end.
 	renewLeadFraction = 4
-	// dialTimeout bounds a broker's dial to a proxy. It covers refusal only — see handshakeTimeout for silence
-	// after accept.
-	dialTimeout = 10 * time.Second
-	// handshakeTimeout bounds the whole upstream handshake (greeting, TLS, auth). A proxy that accepts and then
-	// goes silent would otherwise park a goroutine and its two sockets forever, unreachable by logout or
-	// revocation, since closing the local side does not unblock a read on the upstream one.
-	handshakeTimeout = 20 * time.Second
-	// acceptBackoff is the pause after a transient Accept error, so a persistent failure (e.g. fd
-	// exhaustion) can't spin the CPU.
-	acceptBackoff = 50 * time.Millisecond
 )
 
 // Daemon is the running broker. It is the sole owner of pmon's state: peers read it through the control API
@@ -57,6 +47,8 @@ type Daemon struct {
 	httpClient *http.Client
 	startedAt  time.Time
 	version    string
+	providers  *driver.Registry
+	ctx        context.Context
 
 	// stop ends the daemon's run; it is what a control-API shutdown triggers.
 	stop context.CancelFunc
@@ -77,7 +69,7 @@ type Daemon struct {
 	// listeners maps a datasource name to its loopback listener; presence here means "brokered right now",
 	// which is what /status reports (the sticky port map on disk keeps revoked datasources, so counting it
 	// would over-report).
-	listeners map[string]net.Listener
+	listeners map[string]*brokerListener
 	// datasources maps a datasource name to its CURRENT discovered form, so a broker always dials the
 	// freshly-advertised address rather than the one captured when its listener opened.
 	datasources map[string]Datasource
@@ -105,13 +97,15 @@ type Daemon struct {
 }
 
 // New builds a daemon with no credentials loaded. version is what it reports over the control socket.
-func New(version string) *Daemon {
+func New(version string, providers *driver.Registry) *Daemon {
 	return &Daemon{
 		version:     version,
+		providers:   providers,
+		ctx:         context.Background(),
 		httpClient:  &http.Client{Timeout: 15 * time.Second},
 		startedAt:   time.Now(),
 		rediscover:  make(chan struct{}, 1),
-		listeners:   map[string]net.Listener{},
+		listeners:   map[string]*brokerListener{},
 		datasources: map[string]Datasource{},
 		unbrokered:  map[string]Datasource{},
 		bindErrors:  map[string]string{},
@@ -138,6 +132,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	d.stop = cancel
+	d.ctx = ctx
 
 	srv, err := control.Listen(d)
 	if err != nil {
@@ -283,7 +278,7 @@ func (d *Daemon) Status() control.Status {
 			TLSVerified:   ds.CertChainPEM != "",
 			WireTLS:       ds.WireTLS,
 			Brokered:      false,
-			Reason:        cmp.Or(d.bindErrors[name], ds.UnbrokerableReason()),
+			Reason:        cmp.Or(d.bindErrors[name], d.providers.UnavailableReason(ds)),
 			LiveConns:     len(d.liveConns[name]),
 		})
 		counted[name] = true
@@ -502,15 +497,22 @@ func (d *Daemon) openListeners(ctx context.Context) {
 	brokerableNow := make(map[string]bool, len(dss))
 	needsListener := make([]Datasource, 0, len(dss))
 	var stale []net.Listener
+	var revoked []string
 
 	d.mu.Lock()
 	d.lastDiscoveryErr = ""
 	d.unbrokered = map[string]Datasource{}
 	d.bindErrors = map[string]string{}
 	for _, ds := range dss {
-		if !ds.Brokerable() {
+		if d.providers.UnavailableReason(ds) != "" {
 			d.unbrokered[ds.Name] = ds
 			continue
+		}
+		provider, _ := d.providers.Lookup(ds.Engine)
+		if ln := d.listeners[ds.Name]; ln != nil && (ln.engine != ds.Engine || ln.routeKey != provider.Broker.RouteKey(ds)) {
+			stale = append(stale, ln)
+			revoked = append(revoked, ds.Name)
+			delete(d.listeners, ds.Name)
 		}
 		brokerableNow[ds.Name] = true
 		d.datasources[ds.Name] = ds
@@ -523,7 +525,6 @@ func (d *Daemon) openListeners(ctx context.Context) {
 	// daemon would keep handing the wire token to a stale/unauthorized address. Close its listener (its serve
 	// loop exits on the closed listener) and forget its current form. The sticky port in the config is kept,
 	// so a later re-grant reuses the same local port + saved connection string.
-	var revoked []string
 	for name, ln := range d.listeners {
 		if !brokerableNow[name] {
 			stale = append(stale, ln)
@@ -585,19 +586,26 @@ func (d *Daemon) openListeners(ctx context.Context) {
 		// network I/O, and a logout landing during it clears the credentials — binding afterwards would leave an
 		// open loopback port the operator was told was closed, which no later pass reaps (every one returns
 		// early on !LoggedIn) and which serves under whatever the config holds at accept time.
+		provider, _ := d.providers.Lookup(ds.Engine)
+		listenerCtx, cancel := context.WithCancel(d.ctx)
+		broker := &brokerListener{
+			Listener: ln, ctx: listenerCtx, cancel: cancel,
+			engine: ds.Engine, routeKey: provider.Broker.RouteKey(ds),
+			track: func(conn net.Conn) net.Conn { return d.trackConn(ds.Name, conn) },
+		}
 		d.mu.Lock()
 		stillLoggedIn := d.cfg.LoggedIn()
 		if stillLoggedIn {
-			d.listeners[ds.Name] = ln
+			d.listeners[ds.Name] = broker
 		}
 		d.mu.Unlock()
 		if !stillLoggedIn {
-			ln.Close()
+			broker.Close()
 			fmt.Fprintf(os.Stderr, "discarding the broker for %q: logged out while discovering\n", ds.Name)
 			continue
 		}
 		fmt.Printf("broker %s -> %s (%s)\n", addr, ds.AdvertiseAddr, ds.Engine)
-		go d.serve(ctx, ln, ds.Name)
+		go d.serve(broker, ds.Name, provider.Broker)
 	}
 	if len(needsListener) > 0 || len(stale) > 0 {
 		d.publishStatus()
@@ -617,83 +625,43 @@ func (d *Daemon) closeAllListeners() {
 	}
 }
 
-func (d *Daemon) serve(ctx context.Context, ln net.Listener, name string) {
-	for {
-		c, err := ln.Accept()
-		if err != nil {
-			if errors.Is(err, net.ErrClosed) {
-				return // listener closed — shutdown, logout, or this datasource was pruned
-			}
-			select {
-			case <-ctx.Done():
-				return
-			default:
-				time.Sleep(acceptBackoff)
-				continue
-			}
-		}
-		go d.broker(c, name)
+func (d *Daemon) serve(ln *brokerListener, name string, broker driver.Broker) {
+	err := broker.Serve(ln.ctx, ln, func() (driver.Endpoint, driver.Credentials, bool) {
+		return d.resolveSession(name, ln)
+	})
+	ln.Close()
+
+	d.discoveryMu.Lock()
+	defer d.discoveryMu.Unlock()
+	d.mu.Lock()
+	if d.listeners[name] != ln {
+		d.mu.Unlock()
+		return
 	}
+	delete(d.listeners, name)
+	d.unbrokered[name] = d.datasources[name]
+	d.bindErrors[name] = "broker stopped"
+	if err != nil {
+		d.bindErrors[name] = err.Error()
+	}
+	d.mu.Unlock()
+	d.closeConns(name)
+	d.publishStatus()
 }
 
-// current returns the freshest discovered form of a datasource by name (false if it is gone).
-func (d *Daemon) current(name string) (Datasource, bool) {
+func (d *Daemon) resolveSession(name string, ln *brokerListener) (driver.Endpoint, driver.Credentials, bool) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	ds, ok := d.datasources[name]
-	return ds, ok
+	if !ok || d.listeners[name] != ln || ln.ctx.Err() != nil || ds.Engine != ln.engine || d.providers.UnavailableReason(ds) != "" {
+		return driver.Endpoint{}, driver.Credentials{}, false
+	}
+	return ds, driver.Credentials{
+		Principal: d.cfg.Principal, Token: d.cfg.Token, LocalPassword: d.cfg.LocalPassword,
+	}, true
 }
 
-// broker fronts one client connection: it looks up the datasource's CURRENT advertised address (so a proxy
-// that re-registered from A to B is followed without a daemon restart), speaks its wire protocol to the local
-// client, and dials the proxy with the current token. The local client is checked against the sticky
-// local password before the proxy is dialed.
-func (d *Daemon) broker(local net.Conn, name string) {
-	defer local.Close()
-	// Register now (so a logout/revocation mid-session can close this socket) and deregister on return.
-	deregister := d.addConn(name, local)
-	defer deregister()
-
-	ds, ok := d.current(name)
-	if !ok || ds.Engine != "mysql" || ds.AdvertiseAddr == "" {
-		// Deleted, lost its advertised address, or no longer brokerable since the listener opened — reject
-		// rather than dial a stale/empty address.
-		_ = mysqlwire.WritePacket(local, 2, mysqlwire.ErrPacket(1045, "proxy-monster: datasource no longer available"))
-		return
-	}
-	cfg := d.snapshot()
-	// cfg.LocalPassword is the same value `pmon show` puts in its connection strings, so the client is
-	// checked against the password it was handed.
-	if err := brokerMySQL(local, ds.AdvertiseAddr, ds.CertChainPEM, ds.WireTLS, cfg.Principal, cfg.Token, cfg.LocalPassword); err != nil {
-		fmt.Fprintf(os.Stderr, "broker %q: %v\n", name, err)
-	}
-}
-
-// addConn registers an open client connection and returns a function that deregisters it.
-func (d *Daemon) addConn(name string, c net.Conn) func() {
-	d.mu.Lock()
-	id := d.nextConnID
-	d.nextConnID++
-	if d.liveConns[name] == nil {
-		d.liveConns[name] = map[uint64]net.Conn{}
-	}
-	d.liveConns[name][id] = c
-	d.mu.Unlock()
-	return func() {
-		d.mu.Lock()
-		if conns := d.liveConns[name]; conns != nil {
-			delete(conns, id)
-			if len(conns) == 0 {
-				delete(d.liveConns, name)
-			}
-		}
-		d.mu.Unlock()
-	}
-}
-
-// closeConns closes every open client connection for the named datasources (all of them when names is empty),
-// so a logout or a revocation actually ends established sessions instead of only refusing new ones. Each
-// broker's own defer removes its entry; this just forces the socket shut so the pipe unblocks.
+// closeConns closes established sessions for the named datasources, or all sessions when names is empty.
 func (d *Daemon) closeConns(names ...string) {
 	d.mu.Lock()
 	var doomed []net.Conn

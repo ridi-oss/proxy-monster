@@ -134,7 +134,7 @@ message CatalogRequest {
   repeated string default_schemas = 2;               // PG: unnest(current_schemas(true))
   optional int32 mysql_lower_case_table_names = 3;   // MySQL: @@lower_case_table_names
   string engine_version = 5;                         // SELECT version() (+ aurora marker)
-  proxymonster.analyzer.v1.CatalogSnapshot catalog = 6;  // the Column rows the analyzer consumes as-is
+  proxymonster.analyzer.v1.CatalogSnapshot catalog = 6;  // columns + functions, consumed by the analyzer as-is
 }
 ```
 

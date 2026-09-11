@@ -39,11 +39,36 @@ message Column {
   // The column's catalog. Empty means the Namespace catalog (the only catalog on MySQL/PostgreSQL); a
   // multi-catalog engine names it so columns from two catalogs stay distinct identities.
   string catalog = 7;
+  // An engine-implicit system column (PostgreSQL ctid/xmin/…): resolvable when named explicitly,
+  // excluded from * and whole-row expansion, never classifiable.
+  bool implicit = 8;
 }
 
 // The introspected catalog: pushed whole, stored whole, and analyzed whole.
 message CatalogSnapshot {
   repeated Column columns = 1;
+  // Absent means function introspection failed; an observed empty inventory is authoritative. The
+  // control plane supplies MySQL natives from its pinned list.
+  FunctionCatalog functions = 2;
+}
+
+// Function names used to resolve SQL calls.
+message FunctionCatalog {
+  // Priority builtin function names: MySQL natives (builtin > loadable > stored, unshadowable) or PG's
+  // pg_catalog functions (implicitly first unless pg_catalog is explicitly demoted on the search path).
+  repeated string builtin_functions = 1;
+  // Qualified-call classification: system schema -> function names (pg_catalog, information_schema).
+  repeated SchemaFunctions system_function_schemas = 2;
+  // User function catalog: schema (PG) / database (MySQL) -> names.
+  repeated SchemaFunctions udf_schemas = 3;
+  // MySQL loadable (plugin) function tier: ranks below natives, above stored; classified UDF, never builtin.
+  repeated string loadable_functions = 4;
+}
+
+// A schema/database and its function names.
+message SchemaFunctions {
+  string schema = 1;
+  repeated string names = 2;
 }
 
 // The datasource namespace used to resolve unqualified table names. Engine-specific settings (case
@@ -79,6 +104,16 @@ message EngineConfig {
   // session, so this is observed and forwarded per statement. Absent/false for PostgreSQL and for the
   // default MySQL mode (`"` is a string).
   optional bool mysql_ansi_quotes = 4;
+  // Unqualified PostgreSQL functions whose live resolution can select a visible non-pg_catalog
+  // overload instead of the builtin whose implicit output schema the analyzer knows. The proxy observes
+  // this per statement; explicit pg_catalog qualification remains trusted. Empty for MySQL.
+  repeated string postgres_shadowed_functions = 5;
+  // True only after the proxy successfully observed function visibility on the held PostgreSQL session.
+  // False is distinct from an observed empty shadow list and keeps implicit polymorphic schemas closed.
+  bool postgres_function_shadowing_observed = 6;
+  // Whether pg_catalog.xid is the type PostgreSQL resolves for an unqualified xid on the held session.
+  // Absence means the proxy did not observe type visibility and keeps the cast gated fail-closed.
+  optional bool postgres_system_xid_visible = 7;
 }
 
 message AnalyzeRequest {
@@ -119,8 +154,8 @@ message SplitResponse {
 // ---- response side ----
 
 // One physical target-DB relation the statement scans (docs/facts-emission.md). catalog/schema/table
-// is the resolved identity; covered is true once at least one traced column fact names this table
-// (see probe.go's SourceInfo doc comment for the full per-table coverage rationale).
+// is the resolved identity; covered is true when emitted Column grants fully gate the scan (implicit
+// system columns like PostgreSQL ctid carry ordinary Column grants and cover like any column).
 message SourceInfo {
   string catalog = 1;
   string schema = 2;
@@ -388,7 +423,13 @@ message TableResource {
 }
 
 message FunctionResource {
+  // The resolved canonical identity ("schema.name", folded) when resolution ran, else the bare call name.
   string name = 1;
+  // True when the call resolved to a priority builtin (FunctionCatalog): the control plane allows it unless
+  // its identity carries a dangerous system tag. False = a user function (UDF) or an unvouched call, which
+  // the control plane denies unless a policy grants it. An Unknown call never reaches here — it fails the
+  // whole statement closed as unanalyzable.
+  bool builtin = 2;
 }
 
 message UtilityResource {

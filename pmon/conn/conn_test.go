@@ -33,10 +33,10 @@ func TestMySQLJDBCTruncationDiagnostics(t *testing.T) {
 func TestPostgresFormats(t *testing.T) {
 	target := driver.Target{Engine: "postgres", DbName: "app", Port: 6101, User: "you@example.com", Password: "pw"}
 	cases := map[driver.Format]string{
-		driver.URL:   "postgresql://you%40example.com:pw@127.0.0.1:6101/app",
-		driver.JDBC:  "jdbc:postgresql://127.0.0.1:6101/app?user=you%40example.com&password=pw",
+		driver.URL:   "postgresql://you%40example.com:pw@127.0.0.1:6101/app?sslmode=disable",
+		driver.JDBC:  "jdbc:postgresql://127.0.0.1:6101/app?user=you%40example.com&password=pw&sslmode=disable",
 		driver.GoDSN: "host=127.0.0.1 port=6101 user=you@example.com password=pw dbname=app sslmode=disable",
-		driver.CLI:   `psql 'host=127.0.0.1 port=6101 dbname=app user=you@example.com password=pw'`,
+		driver.CLI:   `psql 'host=127.0.0.1 port=6101 dbname=app user=you@example.com password=pw sslmode=disable'`,
 	}
 	for format, want := range cases {
 		if got := String(format, target); got != want {

@@ -386,9 +386,12 @@ func (s *Server) handleExecute(sess *session, message *pgproto3.Execute) error {
 	masks := proceed.Masks
 	if portal.binary {
 		if proceed.Decision.Action == "MASK" && !proceed.Decision.UnmaskablePermitted {
-			return refuseExtended(sess, "0A000", "binary result format is not supported for a masked statement")
+			if !nullOnlyMasks(masks) {
+				return refuseExtended(sess, "0A000", "binary result format is not supported for a masked statement")
+			}
+		} else {
+			masks = nil
 		}
-		masks = nil
 	}
 	// The fresh verdict authorizes the SQL already parsed on the target DB. A fresh rewrite cannot replace
 	// that prepared statement, so RewrittenSQL is deliberately ignored at Execute.
@@ -416,6 +419,19 @@ func (s *Server) handleExecute(sess *session, message *pgproto3.Execute) error {
 		}
 	}
 	return nil
+}
+
+// A NULL marker is the same in text and binary format, so NULL-only masks apply to a binary row too.
+func nullOnlyMasks(masks []*pb.ColumnMask) bool {
+	if len(masks) == 0 {
+		return false
+	}
+	for _, mask := range masks {
+		if mask.GetKind() != "NULL" {
+			return false
+		}
+	}
+	return true
 }
 
 // carried is the volume earlier Executes already drew from this portal; stats stays this Execute's own

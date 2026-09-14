@@ -12,6 +12,9 @@ active connections. Protocol behavior belongs to providers.
   brokering.
 - `providers/mysql/` owns MySQL rendering, handshakes, TLS negotiation, and
   relay. `providers/postgres/` currently supplies rendering only.
+- `providers/athena/` verifies local SigV4 requests and forwards them over
+  verified HTTPS with the current PM token. Local credentials bind to
+  principal + datasource.
 - `conn/` preserves the public rendering API. Its unknown-engine MySQL fallback
   is compatibility behavior, not a broker-selection or format-capability rule.
 - `pmon show --format <name>` uses provider-declared formats; no flag uses the

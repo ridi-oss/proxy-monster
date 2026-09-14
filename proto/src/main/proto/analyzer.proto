@@ -12,6 +12,7 @@ syntax = "proto3";
 package proxymonster.analyzer.v1;
 
 import "engine.proto";
+import "athena.proto";
 
 option java_package = "com.ridi.oss.proxymonster.analyzer.pb";
 option java_multiple_files = true;
@@ -126,6 +127,7 @@ message AnalyzeRequest {
   reserved "engine_version";
   EngineConfig engine_config = 6;
   CatalogSnapshot catalog = 7;
+  proxymonster.athena.v1.AthenaSqlContext athena_context = 8;
 }
 
 // Cut a multi-statement batch into its individual statements at the dialect's own semicolon tokens,
@@ -517,5 +519,8 @@ message StatementFacts {
   // The columns this statement's target-DB diagnostic could echo: the referenced columns, plus a
   // PostgreSQL write's whole target row (`DETAIL: Failing row contains (…)`). Empty = nothing to redact.
   repeated ColumnResource diagnostic_leak_columns = 19;
+  // Missing trusted definition: fetch it and retry the same analysis, never assume it is harmless.
+  proxymonster.athena.v1.AthenaPreparedDefinitionNeed athena_prepared_definition_need = 21;
+  proxymonster.athena.v1.AthenaSubmission athena_submission = 22;
 
 }

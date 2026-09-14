@@ -7,6 +7,7 @@ import com.ridi.oss.proxymonster.analyzer.pb.FailureClass
 import com.ridi.oss.proxymonster.analyzer.pb.StatementFacts
 import com.ridi.oss.proxymonster.analyzer.pb.statementFacts
 import com.ridi.oss.proxymonster.analyzer.pb.analyzeRequest
+import com.ridi.oss.proxymonster.athena.pb.AthenaSqlContext
 import com.ridi.oss.sqlglotgo.Sqlglot
 
 /**
@@ -30,13 +31,20 @@ object SqlglotProbe {
      * engineConfig alone (e.g. failing MySQL analysis closed without a parseable version). Analyzer
      * output identities are always `catalog.schema.table.column`.
      */
-    fun analyze(sql: String, namespace: PbNamespace, catalog: PbCatalogSnapshot, engineConfig: PbEngineConfig): StatementFacts =
+    fun analyze(
+        sql: String,
+        namespace: PbNamespace,
+        catalog: PbCatalogSnapshot,
+        engineConfig: PbEngineConfig,
+        athenaContext: AthenaSqlContext? = null,
+    ): StatementFacts =
         try {
             val request = analyzeRequest {
                 this.sql = sql
                 this.namespace = namespace
                 this.catalog = catalog
                 this.engineConfig = engineConfig
+                if (athenaContext != null) this.athenaContext = athenaContext
             }
             StatementFacts.parseFrom(Sqlglot.analyzeStatement(request.toByteArray()))
         } catch (e: Throwable) {

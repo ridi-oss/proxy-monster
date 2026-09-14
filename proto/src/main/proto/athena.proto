@@ -1,0 +1,37 @@
+syntax = "proto3";
+
+package proxymonster.athena.v1;
+
+option java_package = "com.ridi.oss.proxymonster.athena.pb";
+option java_multiple_files = true;
+
+message AthenaSqlContext {
+  string workgroup = 1;
+  repeated string execution_parameters = 2;
+  // Request-scoped definitions observed by the proxy, never supplied by the client.
+  repeated AthenaPreparedDefinition prepared_definitions = 3;
+  // Editor row cap; a resolved query gets LIMIT max_rows when it has none or a larger one. 0 = no cap.
+  uint32 max_rows = 4;
+}
+
+message AthenaPreparedDefinition {
+  string workgroup = 1;
+  string name = 2;
+  string query_string = 3;
+}
+
+message FetchAthenaPreparedDefinition {
+  string workgroup = 1;
+  string name = 2;
+}
+
+message AthenaPreparedDefinitionNeed {
+  string workgroup = 1;
+  string name = 2;
+}
+
+// Presence replaces both fields of the native submission, including an empty parameter list.
+message AthenaSubmission {
+  string query_string = 1;
+  repeated string execution_parameters = 2;
+}

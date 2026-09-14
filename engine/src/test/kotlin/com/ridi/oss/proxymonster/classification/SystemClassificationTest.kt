@@ -187,13 +187,23 @@ class SystemClassificationTest {
     // ---- the real bundled Aurora manifests ----------------------------------------------------------
 
     @Test
-    fun `all four bundled Aurora manifests load, validate, and index`() {
+    fun `bundled manifests load, validate, and index`() {
         val s = SystemClassificationStore.load() // throws on any manifest validation failure → this is the boot check
         assertEquals(
-            setOf("postgres" to "16", "postgres" to "17", "mysql" to "8.0", "mysql" to "8.4"),
+            setOf("postgres" to "16", "postgres" to "17", "mysql" to "8.0", "mysql" to "8.4", "athena" to "3"),
             s.supported(),
         )
         assertTrue(s.checksum.length == 64, "a sha-256 checksum is exposed for diagnostics")
+    }
+
+    @Test
+    fun `Athena information schema repeats across catalogs without trusting user schemas`() {
+        val c = SystemClassificationStore.load().classifierFor("athena", "3")!!
+        assertEquals(SystemTag.CATALOG, c.classifyRelation("awsdatacatalog", "information_schema", "columns"))
+        assertEquals(SystemTag.CATALOG, c.classifyRelation("archive", "information_schema", "tables"))
+        assertNull(c.classifyRelation("awsdatacatalog", "sample", "columns"))
+        assertNull(c.classifyFunction("awsdatacatalog", "sample", "custom_function"))
+        assertEquals(SystemTag.DATA_LEAK, c.classifyCommand("SHOW_PARTITIONS"))
     }
 
     @Test

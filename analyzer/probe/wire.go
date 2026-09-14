@@ -24,6 +24,12 @@ func AnalyzeStatement(req *pb.AnalyzeRequest) (*pb.StatementFacts, error) {
 	if err != nil {
 		return nil, err
 	}
+	if req.GetEngineConfig().GetEngine() == pb.Engine_ATHENA {
+		return emitAthenaFacts(req, sch, namespace), nil
+	}
+	if req.GetAthenaContext() != nil {
+		return unanalyzableFacts("VALIDATE", "Athena context requires the Athena engine"), nil
+	}
 	return EmitFacts(req.GetSql(), req.GetEngineConfig(), sch, namespace), nil
 }
 

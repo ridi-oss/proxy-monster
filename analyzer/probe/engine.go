@@ -8,6 +8,7 @@ import (
 
 	"github.com/ridi-oss/sqlglot-go/dialects"
 	exp "github.com/ridi-oss/sqlglot-go/expressions"
+	"github.com/ridi-oss/sqlglot-go/optimizer"
 	"github.com/ridi-oss/sqlglot-go/schema"
 
 	pb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
@@ -38,6 +39,9 @@ type engine interface {
 	// no separate parse-only string form to keep in sync with this one).
 	Dialect() *dialects.Dialect
 	NormalizeCatalogOnBuild() bool
+	AllowsCrossCatalog() bool
+	PreservesCatalogQualifier() bool
+	ConfigureNamespace(opts *optimizer.QualifyOpts, namespace NamespaceConfig)
 	FoldColumn(column string) string
 	// IsTempSchema reports whether a DDL target's schema identifier denotes session-local (temporary)
 	// storage for this engine, so the DDL is not catalog-changing. The schema is passed as its parsed
@@ -65,6 +69,7 @@ type engine interface {
 	// structured node forms never reach it) may relay as a benign session/metadata passthrough for
 	// this engine. False = fail closed.
 	CommandPassthrough(command string) bool
+	ShowUtilityCommand(root exp.Expression) string
 	// RejectsDuplicateDerivedOutputLabels reports whether this engine's target DB rejects a derived-table
 	// or CTE body whose output labels collide (MySQL ER_DUP_FIELDNAME; PostgreSQL allows duplicate
 	// OUTPUT labels and rejects only a reference to one).
@@ -116,6 +121,8 @@ func createEngine(config *pb.EngineConfig) (engine, error) {
 		return newMySQLEngine(config)
 	case pb.Engine_POSTGRES:
 		return newPostgresEngine(config)
+	case pb.Engine_ATHENA:
+		return newAthenaEngine(config)
 	default:
 		return nil, fmt.Errorf("unsupported engine %s", config.GetEngine())
 	}
@@ -165,7 +172,13 @@ func (e *mysqlEngine) Dialect() *dialects.Dialect { return e.dialect }
 
 // MySQL's catalog needs build-time folding: columns are always case-insensitive, while relation
 // spelling follows lower_case_table_names and the information_schema exception.
-func (e *mysqlEngine) NormalizeCatalogOnBuild() bool { return true }
+func (e *mysqlEngine) NormalizeCatalogOnBuild() bool   { return true }
+func (e *mysqlEngine) AllowsCrossCatalog() bool        { return false }
+func (e *mysqlEngine) PreservesCatalogQualifier() bool { return false }
+
+func (e *mysqlEngine) ConfigureNamespace(opts *optimizer.QualifyOpts, namespace NamespaceConfig) {
+	opts.SearchPath = namespace.SearchPath
+}
 
 func (e *mysqlEngine) FoldColumn(column string) string {
 	return e.dialect.FoldIdentifierName(column, false)
@@ -266,7 +279,8 @@ func (e *mysqlEngine) IsTrustedInformationSchemaCall(exp.Expression, string) boo
 
 // A statement that degrades to an unstructured Command is one the analyzer cannot vouch for on
 // MySQL (an unrecognized SHOW carries data; RESET MASTER/REPLICA is a privileged admin op).
-func (e *mysqlEngine) CommandPassthrough(string) bool { return false }
+func (e *mysqlEngine) CommandPassthrough(string) bool                { return false }
+func (e *mysqlEngine) ShowUtilityCommand(root exp.Expression) string { return showUtilityCommand(root) }
 
 // MySQL rejects a derived-table/CTE body with duplicated output labels: ER_DUP_FIELDNAME.
 func (e *mysqlEngine) RejectsDuplicateDerivedOutputLabels() bool { return true }
@@ -286,7 +300,13 @@ func (e *postgresEngine) Dialect() *dialects.Dialect { return e.dialect }
 
 // PostgreSQL does not fold the introspected catalog: quoted and unquoted names can identify distinct
 // real columns, while query-side qualification already preserves quoted names and folds unquoted ones.
-func (e *postgresEngine) NormalizeCatalogOnBuild() bool { return false }
+func (e *postgresEngine) NormalizeCatalogOnBuild() bool   { return false }
+func (e *postgresEngine) AllowsCrossCatalog() bool        { return false }
+func (e *postgresEngine) PreservesCatalogQualifier() bool { return false }
+
+func (e *postgresEngine) ConfigureNamespace(opts *optimizer.QualifyOpts, namespace NamespaceConfig) {
+	opts.SearchPath = namespace.SearchPath
+}
 
 func (e *postgresEngine) FoldColumn(column string) string { return column }
 
@@ -340,6 +360,9 @@ func (e *postgresEngine) IsTrustedInformationSchemaCall(qualifier exp.Expression
 // GUC read (no table data). Everything else stays fail-closed at the caller.
 func (e *postgresEngine) CommandPassthrough(command string) bool {
 	return command == "RESET" || command == "SHOW"
+}
+func (e *postgresEngine) ShowUtilityCommand(root exp.Expression) string {
+	return showUtilityCommand(root)
 }
 
 // PostgreSQL allows duplicate OUTPUT labels; only a reference to one is ambiguous.

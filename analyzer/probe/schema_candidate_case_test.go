@@ -52,7 +52,7 @@ func TestSchemaQualifierCandidatesFoldToTheStoredSpelling(t *testing.T) {
 
 func TestNamespaceCandidatesPreserveQuotedParts(t *testing.T) {
 	mapping, err := schemaMappingFromProto("current", []*pb.Column{
-		{Catalog: "current", Schema: "public", Table: "users", Column: "id", DataType: "BIGINT"},
+		catalogColumn("current", "public", "users", "id", "BIGINT"),
 	})
 	if err != nil {
 		t.Fatal(err)

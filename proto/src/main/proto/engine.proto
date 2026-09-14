@@ -1,6 +1,6 @@
 syntax = "proto3";
 
-// The canonical MySQL/Postgres engine identity, shared by every wire boundary in this repo: the
+// The canonical engine identity, shared by every wire boundary in this repo: the
 // proxy registers with it (controlplane.proto's RegisterRequest/CatalogRequest), and the
 // control-plane forwards it to the Go analyzer (analyzer.proto's EngineConfig). One enum, imported
 // wherever an engine identity crosses a wire, instead of a parallel hand-rolled type per boundary.
@@ -24,4 +24,5 @@ enum Engine {
   ENGINE_UNSPECIFIED = 0;
   POSTGRES = 1;
   MYSQL = 2;
+  ATHENA = 3;
 }

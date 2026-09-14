@@ -90,6 +90,7 @@ class SystemClassificationStore private constructor(
             "postgres/17",
             "mysql/8.0",
             "mysql/8.4",
+            "athena/3",
         )
 
         private const val RESOURCE_DIR = "/system-classification"

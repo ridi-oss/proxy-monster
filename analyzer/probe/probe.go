@@ -574,7 +574,7 @@ func (p *prober) qualifyOptions(report map[exp.Expression]optimizer.ResolvedSour
 	opts := optimizer.DefaultQualifyOpts()
 	opts.Dialect = p.dialect
 	opts.Schema = p.qualifySchema
-	opts.SearchPath = p.namespace.SearchPath
+	p.engine.ConfigureNamespace(&opts, p.namespace)
 	opts.ResolutionReport = report
 	opts.InferSchema = boolPtr(false)
 	opts.ValidateQualifyColumns = !p.isWrite
@@ -726,7 +726,7 @@ func (p *prober) consumeResolutionReport(report map[exp.Expression]optimizer.Res
 			catalog := resolved.Catalog
 			if catalog == "" {
 				catalog = p.namespace.Catalog
-			} else if catalog != p.namespace.Catalog {
+			} else if catalog != p.namespace.Catalog && !p.engine.AllowsCrossCatalog() {
 				return fmt.Errorf("foreign catalog %q", resolved.Catalog)
 			}
 			if resolved.Schema == "" || resolved.Table == "" {
@@ -1021,15 +1021,14 @@ func firstNonNil(values ...any) any {
 // lose the NormalizationStrategy this query was actually qualified under (Generate resolves any
 // non-*Dialect value via dialects.GetOrRaise, which builds a fresh DEFAULT dialect on every call), so
 // a lower_case_table_names=1/2 table could regenerate with the wrong identifier casing.
-func generateExecutableSQL(root exp.Expression, dialect *dialects.Dialect) (string, error) {
+func generateExecutableSQL(root exp.Expression, eng engine) (string, error) {
 	executable := root.Copy()
-	// Catalog is part of the analyzer's identity, but neither PostgreSQL nor MySQL accepts it as an
-	// executable third table-name component. Keep the real schema/database qualification and remove only
-	// the analyzer-only catalog from the copy rendered for target-DB execution.
-	for _, table := range executable.FindAll(exp.KindTable) {
-		table.Set("catalog", nil)
+	if !eng.PreservesCatalogQualifier() {
+		for _, table := range executable.FindAll(exp.KindTable) {
+			table.Set("catalog", nil)
+		}
 	}
-	return sqlglot.Generate(executable, dialect, generator.Options{})
+	return sqlglot.Generate(executable, eng.Dialect(), generator.Options{})
 }
 
 func (p *prober) buildScopes() {
@@ -1435,7 +1434,7 @@ func (p *prober) lineage() ProbeResult {
 					relayRoot = restored
 				}
 			}
-			s, err := generateExecutableSQL(relayRoot, p.dialect)
+			s, err := generateExecutableSQL(relayRoot, p.engine)
 			if err != nil {
 				panic(err)
 			}

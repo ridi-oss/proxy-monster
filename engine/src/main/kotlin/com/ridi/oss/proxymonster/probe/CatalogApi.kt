@@ -5,6 +5,7 @@ import com.ridi.oss.proxymonster.analyzer.pb.Column
 import com.ridi.oss.proxymonster.analyzer.pb.EngineConfig
 import com.ridi.oss.proxymonster.analyzer.pb.Namespace
 import com.ridi.oss.proxymonster.analyzer.pb.StatementFacts
+import com.ridi.oss.proxymonster.athena.pb.AthenaSqlContext
 
 /**
  * Render the catalog identity used by analyzer output and control-plane catalog matching.
@@ -40,8 +41,8 @@ class Analyzer internal constructor(
     // sqlglot parses a trailing terminator ';', surrounding whitespace, and a ';' inside a string
     // literal on its own, and fail-closes a genuine multi-statement (>1 parsed statement) — so no
     // pre-cleaning is needed here.
-    fun analyze(sql: String): StatementFacts =
-        SqlglotProbe.analyze(sql, namespaceProto, catalogProto, engineConfigProto)
+    fun analyze(sql: String, athenaContext: AthenaSqlContext? = null): StatementFacts =
+        SqlglotProbe.analyze(sql, namespaceProto, catalogProto, engineConfigProto, athenaContext)
 }
 
 /** Build an [Analyzer] from an insertion-ordered flat catalog and engine config snapshot. */

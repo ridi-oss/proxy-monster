@@ -115,6 +115,10 @@ func EmitFacts(sql string, engineConfig *pb.EngineConfig, sch *schema.Mapping, n
 	if len(stmts) != 1 {
 		return inadmissibleFacts("PARSE", fmt.Sprintf("expected 1 statement, got %d", len(stmts)))
 	}
+	return emitParsedFacts(stmts[0], eng, qualifySchema, validatedNamespace)
+}
+
+func emitParsedFacts(parsed exp.Expression, eng engine, qualifySchema schema.Schema, validatedNamespace NamespaceConfig) *pb.StatementFacts {
 	// Peel a whole-statement parenthesized wrapper: `(SELECT 1)` parses to a Subquery whose `this` is the
 	// real statement. Classification/lineage must run on the inner statement, not fail closed on the
 	// wrapper (a wrapped SELECT is ordinary chatter, a wrapped write is still a write).
@@ -123,7 +127,7 @@ func EmitFacts(sql string, engineConfig *pb.EngineConfig, sch *schema.Mapping, n
 	// runs only in VALIDATE — so the paths that never reach it, or that reach it and fail, were each
 	// left to fold by hand. Quote-aware, so a quoted identifier keeps its case: `"PG_CATALOG"` stays a
 	// distinct user schema from `pg_catalog`, and `"MySchema".fn` from `myschema.fn`.
-	root := optimizer.NormalizeIdentifiers(unwrapSubquery(stmts[0]), eng.Dialect())
+	root := optimizer.NormalizeIdentifiers(unwrapSubquery(parsed), eng.Dialect())
 	if !hasSyntheticAlias(root) {
 		// A duplicate-label error is the target DB's own rejection (MySQL ER_DUP_FIELDNAME, a
 		// referenced PostgreSQL ambiguity) — the statement would never run there.
@@ -466,7 +470,7 @@ func emitShowFacts(root exp.Expression, eng engine) *pb.StatementFacts {
 		return criticalUtilityFacts(cmdUserTypeCast)
 	}
 	facts := passthroughFacts()
-	command := showUtilityCommand(root)
+	command := eng.ShowUtilityCommand(root)
 	if command != "" {
 		facts.ResultReads = append(facts.ResultReads, utilityGrant(command))
 	}

@@ -38,6 +38,15 @@ type engine interface {
 	// no separate parse-only string form to keep in sync with this one).
 	Dialect() *dialects.Dialect
 	NormalizeCatalogOnBuild() bool
+	// BuiltinFunctionRow: the columns a builtin function table returns when called without an
+	// alias column list: `FROM unnest(arr)` -> [unnest], `FROM pg_available_extension_versions()` ->
+	// [name, version, ...]. nil = not a builtin we know; the call then needs an explicit `AS f(a, b)`.
+	BuiltinFunctionRow(name string) []string
+	// BareCallIsBuiltin: is a bare call (`unnest(...)`, no schema) guaranteed to be the
+	// pg_catalog builtin? PostgreSQL picks a function across every search_path schema by argument
+	// type, so a user `public.unnest(int[])` beats `pg_catalog.unnest(anyarray)` for an int[] argument
+	// even with pg_catalog first. false = fail closed, the row stays unknown.
+	BareCallIsBuiltin(name string) bool
 	PostgresSystemXIDVisible() bool
 	FoldColumn(column string) string
 	// IsTempSchema reports whether a DDL target's schema identifier denotes session-local (temporary)
@@ -69,6 +78,9 @@ type engine interface {
 	// IsSafeTypeReference: a type sqlglot marked user-defined that is trusted anyway (`'1'::xid` when
 	// it must be pg_catalog.xid). False keeps the user-type fail-close.
 	IsSafeTypeReference(dt, kind exp.Expression, namespace NamespaceConfig) bool
+	// SystemSchemaFirst: an unqualified name resolves in the system schema first (PostgreSQL: pg_catalog
+	// precedes every user schema on searchPath, pg_temp aside; MySQL: never).
+	SystemSchemaFirst(searchPath []string) bool
 	// NativeOutputLabel computes the output label THIS engine's target DB natively assigns to an
 	// unaliased projection: PostgreSQL derives it from the resolved expression (parse_target.c
 	// FigureColname, written function names from the parse-time SpanText); MySQL uses the
@@ -170,7 +182,9 @@ func (e *mysqlEngine) Dialect() *dialects.Dialect { return e.dialect }
 // spelling follows lower_case_table_names and the information_schema exception.
 func (e *mysqlEngine) NormalizeCatalogOnBuild() bool { return true }
 
-func (e *mysqlEngine) PostgresSystemXIDVisible() bool { return false }
+func (e *mysqlEngine) BuiltinFunctionRow(string) []string { return nil }
+func (e *mysqlEngine) BareCallIsBuiltin(string) bool      { return false }
+func (e *mysqlEngine) PostgresSystemXIDVisible() bool     { return false }
 
 func (e *mysqlEngine) FoldColumn(column string) string {
 	return e.dialect.FoldIdentifierName(column, false)
@@ -269,6 +283,9 @@ func (e *mysqlEngine) RejectsDuplicateDerivedOutputLabels() bool { return true }
 
 func (e *mysqlEngine) RightJoinStarOrder() starOrder { return starOrderCommonRightLeft }
 
+// MySQL has no search path; a bare name never resolves in a system schema.
+func (e *mysqlEngine) SystemSchemaFirst([]string) bool { return false }
+
 func (e *mysqlEngine) IsSafeTypeReference(exp.Expression, exp.Expression, NamespaceConfig) bool {
 	return false
 }
@@ -317,6 +334,26 @@ func (e *postgresEngine) Dialect() *dialects.Dialect { return e.dialect }
 // real columns, while query-side qualification already preserves quoted names and folds unquoted ones.
 func (e *postgresEngine) NormalizeCatalogOnBuild() bool { return false }
 
+func (e *postgresEngine) BuiltinFunctionRow(name string) []string {
+	switch name {
+	case "pg_available_extension_versions":
+		return []string{"name", "version", "superuser", "trusted", "relocatable", "schema", "requires", "comment"}
+	case "unnest":
+		return []string{"unnest"}
+	default:
+		return nil
+	}
+}
+
+// A zero-argument builtin has one signature, so the earliest schema wins and pg_catalog first settles
+// it. unnest is polymorphic: trusted only when the session's namespace probe ran and listed no user unnest.
+func (e *postgresEngine) BareCallIsBuiltin(name string) bool {
+	if name != "unnest" {
+		return true
+	}
+	return e.functionShadowingObserved && !e.shadowedFunctions[name]
+}
+
 func (e *postgresEngine) PostgresSystemXIDVisible() bool { return e.systemXIDVisible }
 
 func (e *postgresEngine) FoldColumn(column string) string { return column }
@@ -361,6 +398,10 @@ func (e *postgresEngine) RejectsDuplicateDerivedOutputLabels() bool { return fal
 
 func (e *postgresEngine) RightJoinStarOrder() starOrder { return starOrderCommonLeftRight }
 
+func (e *postgresEngine) SystemSchemaFirst(searchPath []string) bool {
+	return postgresCatalogFirstAfterTempSchemas(searchPath)
+}
+
 func (e *postgresEngine) IsSafeTypeReference(dt, kind exp.Expression, namespace NamespaceConfig) bool {
 	return e.isSafeXIDType(dt, kind, namespace)
 }
@@ -393,16 +434,6 @@ func (e *postgresEngine) isSafeXIDType(dt, kind exp.Expression, namespace Namesp
 	return e.PostgresSystemXIDVisible() && postgresCatalogFirstAfterTempSchemas(namespace.SearchPath)
 }
 
-func postgresCatalogFirstAfterTempSchemas(searchPath []string) bool {
-	for _, schema := range searchPath {
-		if schema == "pg_temp" || strings.HasPrefix(schema, "pg_temp_") {
-			continue
-		}
-		return schema == "pg_catalog"
-	}
-	return false
-}
-
 // PostgreSQL names an unaliased projection per parse_target.c FigureColname; a call is labeled by
 // its WRITTEN function name, read from the projection's parse-time SpanText.
 func (e *postgresEngine) NativeOutputLabel(projection, query exp.Expression) (string, bool) {
@@ -424,7 +455,8 @@ func (e *postgresEngine) DiagnosticLeakKeys(report ProbeResult, qualifySchema sc
 		"schema":  exp.ToIdentifier(id.schema, true),
 		"catalog": exp.ToIdentifier(id.catalog, true),
 	})
-	cols, err := qualifySchema.ColumnNames(table, false, e.dialect, boolPtr(false))
+	// onlyVisible: "Failing row contains (...)" never lists ctid or xmin.
+	cols, err := qualifySchema.ColumnNames(table, true, e.dialect, boolPtr(false))
 	if err != nil || len(cols) == 0 {
 		// Can't enumerate the row → emit a column no catalog resolves, so the control-plane fails closed.
 		keys[id.String()+".*"] = true

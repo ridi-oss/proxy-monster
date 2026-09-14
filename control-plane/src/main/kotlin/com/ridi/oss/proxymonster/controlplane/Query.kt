@@ -323,7 +323,7 @@ internal fun analyzerAndCatalogIndex(
         mysqlCaseMode?.let { this.mysqlLowerCaseTableNames = it }
         this.session = session
     }
-    val effectiveCatalog = catalog.columns + tempColumns
+    val effectiveCatalog = (catalog.columns + tempColumns).let { it + ds.engine.implicitColumns(it) }
     val snapshot = catalogSnapshot {
         functions = catalog.functions
         columns += effectiveCatalog.map { col ->
@@ -335,6 +335,7 @@ internal fun analyzerAndCatalogIndex(
                 dataType = col.sqlType
                 ordinal = col.ordinal
                 nullable = col.nullable
+                implicit = col.implicit
             }
         }
     }
@@ -635,7 +636,7 @@ fun decideQuery(
         }
         return passthroughAllow(roleList, "passthrough (no data touched)", derivedTags)
             .copy(
-                sanitizeDiagnostics = !readsAllUnmasked(principal, roles, ds, catalog.columns, facts.diagnosticLeakColumnsList, context, authz, systemClassification),
+                sanitizeDiagnostics = !readsAllUnmasked(principal, roles, ds, catalogIndex.rowsByKey.values.toList(), facts.diagnosticLeakColumnsList, context, authz, systemClassification),
                 schemaCandidates = facts.schemaQualifierCandidatesList.toSet(),
             )
             .withCaps(datasourceCaps)
@@ -919,7 +920,7 @@ fun decideQuery(
     // MASK/DENY always redacts; an ALLOW redacts iff the analyzer's leak set holds a column the viewer
     // can't read unmasked. `select id from users` (all readable) relays raw.
     val sanitizeDiagnostics = action != EnfAction.ALLOW ||
-        !readsAllUnmasked(principal, roles, ds, catalog.columns, facts.diagnosticLeakColumnsList, context, authz, systemClassification)
+        !readsAllUnmasked(principal, roles, ds, catalogIndex.rowsByKey.values.toList(), facts.diagnosticLeakColumnsList, context, authz, systemClassification)
     return DecisionContext(
         action = action,
         denyReason = null,

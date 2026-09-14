@@ -164,13 +164,19 @@ and read-side sources synthesized for write analysis. A write target is not a
 scanned Table solely because it is the target — `INSERT INTO t VALUES (...)` is
 gated by its kind (`stmt.kind.insert` ∈ `stmt.cat.write.insert`), not a new
 result-read grant. Any target data actually read (`RETURNING`, `ON CONFLICT`,
-expressions reading old values, write-payload lineage) already emits Column or
-physical-read facts.
+expressions reading old values, write-payload lineage) emits Column facts.
 
-`covered` is computed from the final emitted facts: a table with any traced
-column is already exposed through it and needs no separate Table grant; a scan
-with no covering column fact requires `result.read.unmasked` or
-`result.read.masked` on the Table.
+PostgreSQL's implicit system columns (`ctid`, `xmin`, `xmax`, `cmin`, `cmax`,
+`tableoid`) are synthesized into the analyzer catalog marked implicit: an
+explicit reference emits an ordinary Column grant with full lineage, while
+`SELECT *`, `t.*`, NATURAL JOIN / USING, and whole-row references exclude them
+(engine behavior — they are not part of the row type, and never appear in a
+derived table's output unless explicitly projected).
+
+`covered` is computed from the final emitted facts. A traced column — implicit
+or not — covers its table. A scan with no covering column fact requires
+`result.read.unmasked` or `result.read.masked` on the Table; that Table grant
+exists ONLY for such zero-column scans.
 
 <!-- prettier-ignore -->
 | statement | facts | result |
@@ -178,6 +184,8 @@ with no covering column fact requires `result.read.unmasked` or
 | `SELECT ssn FROM users` | `users.ssn`; `users` covered by the column | column verdict |
 | `SELECT count(*) FROM users` | uncovered `users` scan | require read on `Table::.../users` |
 | `SELECT u.id FROM users u, orders o` | `users` covered; `orders` uncovered | require `users.id` and `orders` |
+| `SELECT id, ctid FROM users` | `users.id`, `users.ctid`; `users` covered | column verdicts |
+| `UPDATE users SET email = 'x' WHERE ctid = '(0,1)'` | `users.ctid` | require `stmt.kind.update` and `users.ctid` |
 | `WITH orders AS (SELECT 1) SELECT count(*) FROM orders` | no physical Table | no table-read gate |
 
 Verified by `KnownGapsTest` and `ScannedTableMySqlTest` (control-plane) and

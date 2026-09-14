@@ -106,6 +106,7 @@ func testFunctionCatalog(mysql bool, searchPath []string) *pb.FunctionCatalog {
 
 func analyzeProto(t *testing.T, req *pb.AnalyzeRequest) *pb.StatementFacts {
 	t.Helper()
+	withTestImplicitColumns(req)
 	reqBytes, err := proto.Marshal(req)
 	if err != nil {
 		t.Fatalf("marshal request: %v", err)
@@ -126,25 +127,26 @@ func stageString(stage *string) string {
 
 func analyzeProbe(t *testing.T, req *pb.AnalyzeRequest) *ProbeResult {
 	t.Helper()
+	withTestImplicitColumns(req)
 	namespace, err := namespaceConfigFromProto(req.GetNamespace())
 	if err != nil {
 		result := failResult("VALIDATE", err.Error())
 		return &result
 	}
-	sch, err := schemaMappingFromProto(namespace.Catalog, req.GetCatalog().GetColumns())
+	sch, implicit, err := schemaMappingFromProto(namespace.Catalog, req.GetCatalog().GetColumns())
 	if err != nil {
 		result := failResult("VALIDATE", err.Error())
 		return &result
 	}
 	namespace.EngineCatalog = engineCatalogFromProto(req.GetCatalog().GetFunctions(), namespace.SearchPath)
-	result := Probe(req.GetSql(), req.GetEngineConfig(), sch, namespace)
+	result := Probe(req.GetSql(), req.GetEngineConfig(), sch, implicit, namespace)
 	return &result
 }
 
 // A column with no catalog of its own belongs to the namespace catalog; a column naming another
 // catalog keeps that identity, so the two never collapse into one mapping entry.
 func TestSchemaMappingColumnCatalogDefaultsToNamespace(t *testing.T) {
-	sch, err := schemaMappingFromProto("acme", []*pb.Column{
+	sch, _, err := schemaMappingFromProto("acme", []*pb.Column{
 		pbColumn("public", "users", "id", "BIGINT"),
 		{Catalog: "acme", Schema: "public", Table: "users", Column: "ssn", DataType: "VARCHAR"},
 		{Catalog: "reporting", Schema: "public", Table: "users", Column: "id", DataType: "BIGINT"},
@@ -162,11 +164,48 @@ func TestSchemaMappingColumnCatalogDefaultsToNamespace(t *testing.T) {
 	if _, ok := acme.Get("ssn"); !ok {
 		t.Fatal("explicit namespace-catalog column must land under the namespace catalog")
 	}
-	if _, err := schemaMappingFromProto("acme", []*pb.Column{
+	if _, _, err := schemaMappingFromProto("acme", []*pb.Column{
 		pbColumn("public", "users", "id", "BIGINT"),
 		{Catalog: "acme", Schema: "public", Table: "users", Column: "id", DataType: "BIGINT"},
 	}); err == nil {
 		t.Fatal("empty and explicit spellings of the same column must be a duplicate")
+	}
+}
+
+// withTestImplicitColumns mirrors the control plane's synthesis: every PostgreSQL catalog table gets
+// the implicit system columns, so tests exercise the same schema shape production decides with.
+func withTestImplicitColumns(req *pb.AnalyzeRequest) {
+	if req.GetEngineConfig().GetEngine() != pb.Engine_POSTGRES || req.GetCatalog() == nil {
+		return
+	}
+	type tbl struct{ catalog, schema, table string }
+	seen := map[tbl]bool{}
+	existing := map[tbl]map[string]bool{}
+	for _, col := range req.GetCatalog().GetColumns() {
+		if col.GetImplicit() {
+			return // caller already shaped the catalog
+		}
+		id := tbl{col.GetCatalog(), col.GetSchema(), col.GetTable()}
+		seen[id] = true
+		if existing[id] == nil {
+			existing[id] = map[string]bool{}
+		}
+		existing[id][col.GetColumn()] = true
+	}
+	implicit := []struct{ name, dataType string }{
+		{"ctid", "tid"}, {"xmin", "xid"}, {"xmax", "xid"}, {"cmin", "cid"}, {"cmax", "cid"}, {"tableoid", "oid"},
+	}
+	for id := range seen {
+		for _, ic := range implicit {
+			// A caller-supplied real column of the same name wins (cannot exist on live PG).
+			if existing[id][ic.name] {
+				continue
+			}
+			col := pbColumn(id.schema, id.table, ic.name, ic.dataType)
+			col.Catalog = id.catalog
+			col.Implicit = true
+			req.Catalog.Columns = append(req.Catalog.Columns, col)
+		}
 	}
 }
 

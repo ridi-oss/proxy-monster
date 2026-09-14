@@ -112,7 +112,7 @@ func TestProbeGolden(t *testing.T) {
 		if err := json.Unmarshal(raw, &want); err != nil {
 			t.Fatalf("unmarshal golden %s/%s: %v", tc.dialect, tc.name, err)
 		}
-		got := Probe(tc.sql, parityEngineConfig(t, tc.dialect), qualifyParitySchema(tc.sch, tc.dialect), parityNamespace(tc.dialect))
+		got := Probe(tc.sql, parityEngineConfig(t, tc.dialect), qualifyParitySchema(tc.sch, tc.dialect), nil, parityNamespace(tc.dialect))
 		ok2, _, diffs := compareProbeResults(want, got, tc.dialect)
 		if !ok2 {
 			t.Errorf("%s/%s golden mismatch (sql=%q):\n  %s", tc.dialect, tc.name, tc.sql, strings.Join(diffs, "\n  "))

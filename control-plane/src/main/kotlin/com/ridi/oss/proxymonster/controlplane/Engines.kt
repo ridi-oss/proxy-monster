@@ -7,6 +7,7 @@ import com.ridi.oss.proxymonster.analyzer.pb.functionCatalog as pbFunctionCatalo
 import com.ridi.oss.proxymonster.analyzer.pb.schemaFunctions as pbSchemaFunctions
 import com.ridi.oss.proxymonster.classification.MysqlNativeFunctions
 import com.ridi.oss.proxymonster.classification.PostgresGrammarFunctions
+import com.ridi.oss.proxymonster.classification.PostgresSystemColumns
 import com.ridi.oss.proxymonster.grpc.Engine
 import com.ridi.oss.proxymonster.probe.Dialect
 import kotlinx.serialization.KSerializer
@@ -227,4 +228,31 @@ fun Engine.functionCatalog(routines: Map<String, List<String>>, engineVersion: S
         }
     }
     else -> error("engine has no function catalog: $this")
+}
+
+/**
+ * The system columns every table has beyond its introspected ones: PostgreSQL ctid/xmin/xmax/cmin/cmax/
+ * tableoid (a real column of that name wins; some system views have an ordinary xmin), MySQL none.
+ * They resolve when written, never expand from `*`, and cannot be classified.
+ */
+fun Engine.implicitColumns(rows: List<CatalogColumn>): List<CatalogColumn> = when (this) {
+    Engine.MYSQL -> emptyList()
+    Engine.POSTGRES -> {
+        data class TableId(val catalog: String, val schema: String, val table: String, val isTemp: Boolean)
+        val existing = HashMap<TableId, MutableSet<String>>()
+        for (row in rows) {
+            existing.getOrPut(TableId(row.catalog, row.schema, row.table, row.isTemp)) { HashSet() } += row.column
+        }
+        existing.flatMap { (id, columns) ->
+            PostgresSystemColumns.byName.mapNotNull { (name, type) ->
+                if (name in columns) return@mapNotNull null
+                CatalogColumn(
+                    catalog = id.catalog, schema = id.schema, table = id.table, column = name,
+                    dataType = type, sqlType = type, ordinal = 0, nullable = false,
+                    isTemp = id.isTemp, implicit = true,
+                )
+            }
+        }
+    }
+    else -> error("engine has no implicit columns: $this")
 }

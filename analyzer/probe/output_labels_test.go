@@ -169,7 +169,7 @@ func TestPostgresReferencedDuplicateStaysAmbiguous(t *testing.T) {
 // _col_0), which also removed their lineage coverage from the golden harness — keep it here.
 func TestDeferredParityCasesKeepLineage(t *testing.T) {
 	window := Probe("SELECT row_number() OVER (PARTITION BY region ORDER BY ssn) FROM users",
-		parityEngineConfig(t, "postgres"), qualifyParitySchema(defaultProbeSchema(), "postgres"), parityNamespace("postgres"))
+		parityEngineConfig(t, "postgres"), qualifyParitySchema(defaultProbeSchema(), "postgres"), nil, parityNamespace("postgres"))
 	if !window.Resolved {
 		t.Fatalf("window: %q", window.Detail)
 	}
@@ -181,7 +181,7 @@ func TestDeferredParityCasesKeepLineage(t *testing.T) {
 	}
 
 	filter := Probe("SELECT count(*) FILTER (WHERE ssn IS NOT NULL) FROM users",
-		parityEngineConfig(t, "postgres"), qualifyParitySchema(defaultProbeSchema(), "postgres"), parityNamespace("postgres"))
+		parityEngineConfig(t, "postgres"), qualifyParitySchema(defaultProbeSchema(), "postgres"), nil, parityNamespace("postgres"))
 	if !filter.Resolved {
 		t.Fatalf("filter: %q", filter.Detail)
 	}

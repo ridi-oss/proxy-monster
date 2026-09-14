@@ -16,7 +16,7 @@ func TestDiagnosticLeakColumns(t *testing.T) {
 		pbColumn("public", "users", "ssn", "VARCHAR"),
 		pbColumn("public", "users", "email", "VARCHAR"),
 	}
-	pgMapping, err := schemaMappingFromProto("acme", cols)
+	pgMapping, _, err := schemaMappingFromProto("acme", cols)
 	if err != nil {
 		t.Fatalf("build pg schema: %v", err)
 	}
@@ -28,7 +28,7 @@ func TestDiagnosticLeakColumns(t *testing.T) {
 		pbColumn("app", "users", "ssn", "VARCHAR"),
 		pbColumn("app", "users", "email", "VARCHAR"),
 	}
-	mysqlMapping, err := schemaMappingFromProto("def", mysqlCols)
+	mysqlMapping, _, err := schemaMappingFromProto("def", mysqlCols)
 	if err != nil {
 		t.Fatalf("build mysql schema: %v", err)
 	}
@@ -36,7 +36,7 @@ func TestDiagnosticLeakColumns(t *testing.T) {
 	mysql := &pb.EngineConfig{Engine: pb.Engine_MYSQL, EngineVersion: "8.0.46", MysqlLowerCaseTableNames: proto.Int32(1)}
 
 	t.Run("postgres write leaks the whole target row", func(t *testing.T) {
-		facts := EmitFacts("UPDATE users SET id = 1 WHERE id = 5", pg, pgMapping, pgNs)
+		facts := EmitFacts("UPDATE users SET id = 1 WHERE id = 5", pg, pgMapping, nil, pgNs)
 		if !facts.GetResolved() {
 			t.Fatalf("must resolve: %s", facts.GetDetail())
 		}
@@ -48,7 +48,7 @@ func TestDiagnosticLeakColumns(t *testing.T) {
 	})
 
 	t.Run("postgres read leaks only referenced columns", func(t *testing.T) {
-		facts := EmitFacts("SELECT id FROM users", pg, pgMapping, pgNs)
+		facts := EmitFacts("SELECT id FROM users", pg, pgMapping, nil, pgNs)
 		if !facts.GetResolved() {
 			t.Fatalf("must resolve: %s", facts.GetDetail())
 		}
@@ -56,7 +56,7 @@ func TestDiagnosticLeakColumns(t *testing.T) {
 	})
 
 	t.Run("mysql write leaks only referenced columns (no whole-row dump)", func(t *testing.T) {
-		facts := EmitFacts("UPDATE users SET id = 1 WHERE id = 5", mysql, mysqlMapping, mysqlNs)
+		facts := EmitFacts("UPDATE users SET id = 1 WHERE id = 5", mysql, mysqlMapping, nil, mysqlNs)
 		if !facts.GetResolved() {
 			t.Fatalf("must resolve: %s", facts.GetDetail())
 		}
@@ -64,7 +64,7 @@ func TestDiagnosticLeakColumns(t *testing.T) {
 	})
 
 	t.Run("postgres INSERT with an empty reference set still leaks the whole row", func(t *testing.T) {
-		facts := EmitFacts("INSERT INTO users (id) VALUES (1)", pg, pgMapping, pgNs)
+		facts := EmitFacts("INSERT INTO users (id) VALUES (1)", pg, pgMapping, nil, pgNs)
 		if !facts.GetResolved() {
 			t.Fatalf("must resolve: %s", facts.GetDetail())
 		}
@@ -77,11 +77,11 @@ func TestDiagnosticLeakColumns(t *testing.T) {
 
 	t.Run("a dotted column name emits an unresolvable key instead of vanishing", func(t *testing.T) {
 		dottedCols := append(cols, pbColumn("public", "users", "ssn.secret", "VARCHAR"))
-		dottedMapping, err := schemaMappingFromProto("acme", dottedCols)
+		dottedMapping, _, err := schemaMappingFromProto("acme", dottedCols)
 		if err != nil {
 			t.Fatalf("build schema: %v", err)
 		}
-		facts := EmitFacts("UPDATE users SET id = 1 WHERE id = 5", pg, dottedMapping, pgNs)
+		facts := EmitFacts("UPDATE users SET id = 1 WHERE id = 5", pg, dottedMapping, nil, pgNs)
 		if !facts.GetResolved() {
 			t.Fatalf("must resolve: %s", facts.GetDetail())
 		}

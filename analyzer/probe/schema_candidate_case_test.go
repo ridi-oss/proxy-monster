@@ -13,7 +13,7 @@ import (
 // candidate matches zero rows: the fetch records an empty fragment as held, and the retry relays the
 // statement unanalyzed — unmasked. The candidate must therefore carry the spelling the target DB stores.
 func TestSchemaQualifierCandidatesFoldToTheStoredSpelling(t *testing.T) {
-	mapping, err := schemaMappingFromProto("def", []*pb.Column{
+	mapping, _, err := schemaMappingFromProto("def", []*pb.Column{
 		pbColumn("bom", "tb_user", "id", "BIGINT"),
 	})
 	if err != nil {
@@ -36,6 +36,7 @@ func TestSchemaQualifierCandidatesFoldToTheStoredSpelling(t *testing.T) {
 				MysqlLowerCaseTableNames: proto.Int32(tc.lowerCaseTableNames),
 			},
 			mapping,
+			nil,
 			NamespaceConfig{Catalog: "def", SearchPath: []string{"bom"}},
 		)
 		got := facts.GetSchemaQualifierCandidates()
@@ -49,7 +50,7 @@ func TestSchemaQualifierCandidatesFoldToTheStoredSpelling(t *testing.T) {
 // `SELECT app.get_ssn()` names no table, so the qualifier of the call is the only thing that can make the
 // control plane fetch `app`; without it the statement stays unresolved on every retry.
 func TestSchemaQualifierCandidatesIncludeFunctionQualifiers(t *testing.T) {
-	mapping, err := schemaMappingFromProto("db", []*pb.Column{pbColumn("public", "users", "id", "integer")})
+	mapping, _, err := schemaMappingFromProto("db", []*pb.Column{pbColumn("public", "users", "id", "integer")})
 	if err != nil {
 		t.Fatalf("build schema: %v", err)
 	}
@@ -57,6 +58,7 @@ func TestSchemaQualifierCandidatesIncludeFunctionQualifiers(t *testing.T) {
 		"SELECT app.get_ssn()",
 		&pb.EngineConfig{Engine: pb.Engine_POSTGRES, EngineVersion: "16.4"},
 		mapping,
+		nil,
 		NamespaceConfig{Catalog: "db", SearchPath: []string{"pg_catalog", "public"}, EngineCatalog: engineCatalogFromProto(&pb.FunctionCatalog{}, nil)},
 	)
 	if facts.GetResolved() {

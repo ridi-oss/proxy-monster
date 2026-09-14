@@ -141,8 +141,8 @@ configured per proxy under `PM_TARGET_*`.
 ### Proxy — one set per datasource
 
 - `PM_ENGINE` — _optional_. The target database's engine, and so the wire
-  dialect this proxy speaks: `postgres` or `mysql`. Default `mysql`. Unrelated
-  to `PM_DB_URL`, which is always PostgreSQL.
+  dialect this proxy speaks: `postgres`, `mysql`, or `athena`. Default `mysql`.
+  Unrelated to `PM_DB_URL`, which is always PostgreSQL.
 - `PM_DATASOURCE_NAME` / `PM_DATASOURCE_TAGS` — _name required_. Logical id
   (must match the CP's) + the tags policy keys off. Example: `analytics-prod` ·
   `system:production`. These reach Cedar as written and every table and column
@@ -167,6 +167,13 @@ configured per proxy under `PM_TARGET_*`.
   address"). It must parse as `host:port` with a port in 1-65535 or the proxy
   refuses to start. Example: `127.0.0.1:6033` locally ·
   `analytics-prod.pm.example.com:6432` in production
+- Athena (`PM_ENGINE=athena`) replaces `PM_TARGET_*` with the AWS SDK's own
+  credential chain (`AWS_PROFILE`, instance role, …) plus `AWS_REGION`,
+  `PM_ATHENA_WORKGROUP` (default `primary`), `PM_ATHENA_CATALOG` (default
+  `AwsDataCatalog`), `PM_ATHENA_DATABASE` (default `default`), and
+  `PM_ATHENA_CONTEXT_PATH` (default `:memory:`; an absolute path in a private
+  directory persists the enforcement-context cache across restarts). Wire TLS is
+  required: Athena clients speak HTTPS to the proxy. Default port `6443`.
 - `PM_TLS_CERT` / `PM_TLS_KEY` — _optional (both or neither; one alone ⇒ refuses
   to start)_. TLS cert+key file paths for the wire listener. Wire TLS is
   optional — the cleaner pattern is a private transport (peered VPC,

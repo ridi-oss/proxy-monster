@@ -1,6 +1,8 @@
 # Athena forwarding proxy
 
-Status: proposed; not implemented.
+Status: implemented for the JSON API path (SQL admission, paginated result
+masking, status/cancel/history/metadata gates, editor runs). Streaming and S3
+result retrieval stay closed; clients must read through `GetQueryResults`.
 
 ## Decision
 

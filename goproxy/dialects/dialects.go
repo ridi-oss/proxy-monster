@@ -10,6 +10,7 @@ import (
 
 	enginepb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
 	"github.com/ridi-oss/proxy-monster/goproxy/db"
+	"github.com/ridi-oss/proxy-monster/goproxy/dialects/athena"
 	"github.com/ridi-oss/proxy-monster/goproxy/engine"
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
 	"github.com/ridi-oss/proxy-monster/goproxy/introspect"
@@ -115,6 +116,7 @@ func (t *sqlTarget) NewRunSession(ctx context.Context, options spi.RunSessionOpt
 func (t *sqlTarget) Close() error { return t.pool.Close() }
 
 var registry = spi.MustRegistry(
+	athena.Provider{},
 	sqlProvider{
 		definition:        spi.Definition{Name: "mysql", Engine: engine.MySQL.Proto(), DefaultProxyPort: 6033},
 		dialect:           engine.MySQL,

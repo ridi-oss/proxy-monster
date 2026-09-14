@@ -194,7 +194,7 @@ func Run(registry spi.Registry) error {
 		}
 	}()
 
-	server := target.NewNativeServer(spi.NativeServerOptions{Port: cfg.ProxyPort, Client: enforcementClient, TLSProvider: tlsProvider})
+	server := target.NewNativeServer(spi.NativeServerOptions{Port: cfg.ProxyPort, DatasourceName: cfg.DatasourceName, Client: enforcementClient, TLSProvider: tlsProvider})
 	slog.Info("starting proxy-monster data plane", "engine", cfg.Engine, "control_plane", cfg.ControlPlaneGrpcTarget)
 
 	serveErr := make(chan error, 1)

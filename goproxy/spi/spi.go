@@ -197,9 +197,10 @@ type TargetInfo struct {
 }
 
 type NativeServerOptions struct {
-	Port        int
-	Client      EnforcementClient
-	TLSProvider func() (*tls.Config, error)
+	Port           int
+	DatasourceName string
+	Client         EnforcementClient
+	TLSProvider    func() (*tls.Config, error)
 }
 
 type RunSessionOptions struct {

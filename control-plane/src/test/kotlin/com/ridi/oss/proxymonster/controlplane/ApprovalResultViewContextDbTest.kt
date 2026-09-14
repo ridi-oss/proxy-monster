@@ -747,6 +747,54 @@ class ApprovalResultViewContextDbTest {
         assertFalse(responseBody.contains(sentinel), "a legacy result must not release raw through a passthrough re-decision")
     }
 
+    // The viewer's own result.cap rows cap the release: the stored rows outnumber the viewer's cap, so the
+    // workflow-viewer re-decision truncates; a result.cap forbid releases every stored row.
+    @Test
+    fun `a capped viewer receives the first rows and an unbounded one the whole stored result`() = testApplication {
+        resetMutableAuthzState()
+        val storedRows = (1..12).map { listOf(it.toString(), "u$it@x", rawSsn) }
+        val cap = 5
+        val id = seedResult(rows = storedRows)
+        val storedBefore = ciphertext(id)
+        val client = wire()
+        client.login(executor)
+        val capped = fx.cedarPolicyStore.create(
+            CedarPolicyInput(
+                name = "approval-view-capped-viewer",
+                cedarSrc = """@cap("$cap") permit(
+                    principal in Role::"$roleName", action == Action::"result.cap", resource
+                );""",
+            ),
+            updatedBy = "test-fixture",
+        )
+        try {
+            val view = client.get("/api/approvals/$id/result").body<QueryResultView>()
+            assertEquals(cap, view.rows.size)
+            assertEquals(cap, view.truncatedAt)
+            assertContentEquals(storedRows.take(cap).map { it.take(2) }, view.rows.map { it.take(2) })
+        } finally {
+            fx.cedarPolicyStore.delete(capped.id)
+        }
+
+        val unbounded = fx.cedarPolicyStore.create(
+            CedarPolicyInput(
+                name = "approval-view-unbounded-viewer",
+                cedarSrc = """forbid(
+                    principal in Role::"$roleName", action == Action::"result.cap", resource
+                );""",
+            ),
+            updatedBy = "test-fixture",
+        )
+        try {
+            val full = client.get("/api/approvals/$id/result").body<QueryResultView>()
+            assertEquals(storedRows.size, full.rows.size)
+            assertNull(full.truncatedAt)
+        } finally {
+            fx.cedarPolicyStore.delete(unbounded.id)
+        }
+        assertContentEquals(storedBefore, ciphertext(id), "truncating a view must not rewrite stored ciphertext")
+    }
+
     @Test
     fun `a result the execution capped stays marked incomplete even when the view releases every stored row`() = testApplication {
         resetMutableAuthzState()
@@ -756,6 +804,8 @@ class ApprovalResultViewContextDbTest {
 
         val view = client.get("/api/approvals/$id/result").body<QueryResultView>()
         assertEquals(1, view.rows.size)
+        // The view released every stored row, so only the execution's own flag can report the cut.
+        assertNull(view.truncatedAt)
         assertTrue(view.truncatedByCap)
 
         assertFalse(client.get("/api/approvals/${seedResult()}/result").body<QueryResultView>().truncatedByCap)

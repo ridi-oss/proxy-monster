@@ -840,7 +840,15 @@ class RunExecService(
         truncatedByCap: Boolean = false,
     ): QueryResponse {
         val decisionId = decision.decisionId.takeIf { it != 0L }
-        val piiTouched = decisionId?.let { core.auditStore.get(it)?.piiTouched } ?: emptyList()
+        val recorded = decisionId?.let { core.auditStore.get(it) }
+        val piiTouched = recorded?.piiTouched ?: emptyList()
+        val latencyMs = (System.nanoTime() - started) / 1_000_000
+        // The proxy's run channel sends no completion report, so this is the one writer that charges a
+        // run-channel result to the principal's relayed volume; synchronous so the next Decide sees it.
+        if (recorded != null && decisionId != null && action != EnfAction.DENY) {
+            val (rowCount, bytes) = resultVolume(rows)
+            core.auditStore.insert(completionEvent(recorded, decisionId, rowCount, bytes, "ok", latencyMs))
+        }
         // The decision's requirements, forwarded structured on RunDecision from the Verdict; a stored result
         // freezes them so a later view denies drift ([decideResultView]).
         val resultFingerprint = fingerprintOf(decision.resultFingerprintList)
@@ -857,7 +865,7 @@ class RunExecService(
             resultFingerprint = resultFingerprint,
             truncatedByCap = truncatedByCap,
             capRows = decision.maxRows.takeIf { it > 0 },
-            latencyMs = (System.nanoTime() - started) / 1_000_000,
+            latencyMs = latencyMs,
         )
     }
 

@@ -696,6 +696,7 @@ fun Application.module(config: Config, core: ControlPlaneCore) {
         editorSessionRoutes(
             config, datasourceStore, accessStore, queryResultStore, policyStore, userGroupStore,
             roleResolver, authz, runExecService, this@module, core.systemClassification, taskCompletionHub,
+            core.auditStore,
         )
 
         taskEventsRoute(config, taskCompletionHub, accessStore, authz, datasourceStore, principalSessionStore, appJson)

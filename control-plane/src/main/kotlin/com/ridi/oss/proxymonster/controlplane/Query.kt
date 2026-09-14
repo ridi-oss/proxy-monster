@@ -65,6 +65,7 @@ import kotlinx.serialization.descriptors.SerialDescriptor
 import kotlinx.serialization.encoding.Decoder
 import kotlinx.serialization.encoding.Encoder
 import org.slf4j.LoggerFactory
+import java.time.Instant
 
 private val queryLog = LoggerFactory.getLogger("com.ridi.oss.proxymonster.controlplane.Query")
 
@@ -435,6 +436,7 @@ fun decideQuery(
     userGroupStore: UserGroupStore,
     roleResolver: RoleResolver,
     authz: Authz,
+    auditStore: AuditStore? = null,
     // Almost always null (resolve server-side below). Tests that already resolved roles once and
     // want decideQuery + authz.authorizeColumns to see the EXACT same set (no risk of a second,
     // out-of-band resolve() disagreeing with the first) may pass them explicitly.
@@ -629,6 +631,7 @@ fun decideQuery(
     ) {
         // A literal write reaches this relay too, and its diagnostic can leak (a PostgreSQL constraint ERR
         // dumps the whole target row) — gate on the analyzer's leak set. `SELECT 1` has an empty set: raw.
+        spentRate(auditStore, principal, datasourceCaps)?.let { return policyDeny(it, roleList, derivedTags) }
         return passthroughAllow(roleList, "passthrough (no data touched)", derivedTags)
             .copy(
                 sanitizeDiagnostics = !readsAllUnmasked(principal, roles, ds, catalog.columns, facts.diagnosticLeakColumnsList, context, authz, systemClassification),
@@ -675,7 +678,7 @@ fun decideQuery(
                 catalogMiss = true,
                 // Unanalyzable: no leak set to authorize, so fail closed and redact the diagnostic.
                 sanitizeDiagnostics = true,
-            ).withCaps(datasourceCaps)
+            ).withCaps(datasourceCaps).let { relay -> spentRate(auditStore, principal, datasourceCaps)?.let { deny(it) } ?: relay }
             is AuthzDecision.Deny -> deny(reason, catalogMiss = true)
         }
     }
@@ -721,7 +724,7 @@ fun decideQuery(
                 schemaCandidates = facts.schemaQualifierCandidatesList.toSet(),
                 // An uncovered column means the leak set can't be authorized — fail closed and redact.
                 sanitizeDiagnostics = true,
-            ).withCaps(datasourceCaps)
+            ).withCaps(datasourceCaps).let { relay -> spentRate(auditStore, principal, datasourceCaps)?.let { deny(it) } ?: relay }
             is AuthzDecision.Deny -> structuralDeny(
                 coverage.reason, roleList, failedStage = "catalog", contextTags = derivedTags,
             ).copy(catalogMiss = true, schemaCandidates = facts.schemaQualifierCandidatesList.toSet())
@@ -860,6 +863,7 @@ fun decideQuery(
         for ((command, tagId) in usedUtilityTags) add(CapResource.Utility(UtilityRef(command), tagId))
     }
     val statementCaps = authz.resolveResultCaps(principal, roles, ds.name, capResources, context, ds.tags)
+    spentRate(auditStore, principal, datasourceCaps, statementCaps)?.let { return deny(it) }
     // Every classified column the statement touched, whatever its tags are named: `pii` is a deployment's
     // own tag, so keying this on that one string leaves auditmon's mass-export detector blind on a
     // deployment that classifies with `pci`.
@@ -924,6 +928,23 @@ internal fun resultCaps(vararg resolved: ResolvedCaps): ResultCaps {
     )
 }
 
+/**
+ * The deny reason when a rate entry the statement's `result.cap` permits carry is already spent, else null.
+ * A forbid on any ask lifts every rate; with no rate collected no audit scan runs. The scan is one query
+ * over the widest window (AuditStore.relayedVolume).
+ */
+internal fun spentRate(auditStore: AuditStore?, principal: String, vararg resolved: ResolvedCaps): String? {
+    if (auditStore == null || resolved.any { it.unbounded }) return null
+    val rates = resolved.flatMap { it.rates }
+    if (rates.isEmpty()) return null
+    val relayed = auditStore.relayedVolume(principal, rates.map { it.window }, Instant.now())
+    val spent = rates.firstOrNull { rate ->
+        val volume = relayed.getValue(rate.window)
+        (rate.rows != null && volume.rows >= rate.rows) || (rate.bytes != null && volume.bytes >= rate.bytes)
+    } ?: return null
+    return "$RATE_SPENT_DENY ${spent.spec} spent"
+}
+
 private fun DecisionContext.withCaps(vararg resolved: ResolvedCaps): DecisionContext {
     val caps = resultCaps(*resolved)
     return copy(maxRows = caps.rows, maxBytes = caps.bytes)
@@ -934,6 +955,7 @@ private const val SYSTEM_FUNCTION_DENY = "dangerous system function is not allow
 private const val SYSTEM_UTILITY_DENY = "utility command is not allowed on this datasource:"
 private const val DEACTIVATED_PRINCIPAL_DENY = "principal is deprovisioned (deactivated) — access denied"
 private const val CATALOG_CONFIGURATION_DENY = "fail-closed: invalid catalog or analyzer namespace configuration"
+internal const val RATE_SPENT_DENY = "rate"
 private const val WIRE_TASK_FORBIDDEN_DENY = "automatic task approval is not permitted for this datasource"
 
 private fun structuralDeny(
@@ -1149,6 +1171,8 @@ fun Route.editorSessionRoutes(
     // Pushes a task's terminal transition to the owner's SSE stream so the tab updates without waiting for
     // its next poll (null in the many Config-free test constructions — publish is then a no-op).
     taskCompletionHub: TaskCompletionHub? = null,
+    // Feeds the stored-result re-decision the viewer's relayed volume for its rate entries, as the wire path does.
+    auditStore: AuditStore? = null,
 ) {
     post("/api/editor/sessions") {
         val principal = call.requireApi() ?: return@post
@@ -1251,7 +1275,7 @@ fun Route.editorSessionRoutes(
                     // The parent flips to EXECUTED only on the LAST statement. The per-statement Decide
                     // already wrote the real audit decision, so no task-level row is added here.
                     val last = ordinal == statements.lastIndex
-                    val completed = store.completeRun(task.id, result, QueryResultStore.RESULT_RETENTION_SEC) { conn, _ ->
+                    val completed = store.completeRun(task.id, result, QueryResultStore.RESULT_RETENTION_SEC, response.decisionId) { conn, _ ->
                         if (last && !accessStore.markExecuted(task.id, conn)) {
                             throw IllegalStateException("editor task ${task.id} left EXECUTING before completion")
                         }
@@ -1426,7 +1450,7 @@ fun Route.editorSessionRoutes(
         val ctx = viewerDecision(
             principal, task, access.sql, call.httpAuthzContext(config),
             datasourceStore, policyStore, accessStore, userGroupStore, roleResolver, authz,
-            systemClassification, Channel.EDITOR,
+            systemClassification, Channel.EDITOR, auditStore,
         )
         if (meta.status == "FAILED" && access.errorDetail != null) {
             return@get call.respond(

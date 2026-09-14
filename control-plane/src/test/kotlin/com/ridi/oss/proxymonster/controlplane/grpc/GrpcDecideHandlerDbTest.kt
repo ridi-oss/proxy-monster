@@ -3,7 +3,9 @@ package com.ridi.oss.proxymonster.controlplane.grpc
 import com.ridi.oss.proxymonster.controlplane.TokenKind
 
 import com.ridi.oss.proxymonster.controlplane.AppUserInput
+import com.ridi.oss.proxymonster.controlplane.AuditEvent
 import com.ridi.oss.proxymonster.controlplane.ControlPlaneCore
+import com.ridi.oss.proxymonster.controlplane.Decision
 import com.ridi.oss.proxymonster.controlplane.PrincipalSessionStore
 import com.ridi.oss.proxymonster.controlplane.Datasource
 import com.ridi.oss.proxymonster.controlplane.DatasourceInput
@@ -408,5 +410,42 @@ class GrpcDecideHandlerDbTest {
             "statement kind 'select' is not permitted" in decision.verdict.denyReason,
             "a WIRE token's client_addr must satisfy the ip-gated connect permit: ${decision.verdict.denyReason}",
         )
+    }
+
+    @Test
+    fun `decide stamps the shipped default cap and denies a spent shipped rate`() = runBlocking {
+        val datasource = core.datasourceStore.create(
+            DatasourceInput("caps-grpc-ds", "postgres", dbName = "app"),
+        )
+        val principal = "caps-grpc-user"
+        val tok = core.tokenStore.issue(TokenKind.USER, principal, emptyList(), null, 3600).token
+        core.cedarPolicyStore.create(
+            CedarPolicyInput(
+                "caps-grpc-read",
+                """permit(principal == User::"$principal",
+                          action in [Action::"datasource.connect", Action::"stmt.cat.read"],
+                          resource == Datasource::"${datasource.name}");""",
+            ),
+            updatedBy = "test",
+        )
+        val conn = open(tok, datasource)
+        val verdict = stub.decide(
+            decisionRequest { token = tok; datasourceName = datasource.name; connectionId = conn; sql = "select 42" },
+        ).verdict
+        assertEquals(EnfAction.ALLOW, verdict.decision, verdict.denyReason)
+        assertEquals(5_000L, verdict.maxRows)
+        assertEquals(50_000_000L, verdict.maxBytes)
+        // The -305 rate: 100MB relayed this hour denies the next read over the wire, naming the rate.
+        core.auditStore.insert(
+            AuditEvent(
+                principal = principal, datasource = datasource.name, statement = "select 1",
+                decision = Decision.ALLOW, kind = "completion", rowsReturned = 9, bytesReturned = 100_000_000,
+            ),
+        )
+        val spent = stub.decide(
+            decisionRequest { token = tok; datasourceName = datasource.name; connectionId = conn; sql = "select 42" },
+        ).verdict
+        assertEquals(EnfAction.DENY, spent.decision)
+        assertEquals("rate 100MB/1h spent", spent.denyReason)
     }
 }

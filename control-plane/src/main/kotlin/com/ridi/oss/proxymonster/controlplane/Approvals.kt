@@ -217,6 +217,7 @@ internal fun viewerDecision(
     authz: Authz,
     systemClassification: SystemClassificationService?,
     channel: Channel,
+    auditStore: AuditStore? = null,
 ): DecisionContext? {
     val sql = childSql ?: return null
     val ds = req.datasourceId?.let(datasourceStore::get) ?: return null
@@ -224,7 +225,7 @@ internal fun viewerDecision(
     return decideQuery(
         principal = viewer, ds = ds, sql = sql, channel = channel,
         catalog = datasourceStore.catalog(ds.id), policyStore = policyStore, accessStore = accessStore,
-        userGroupStore = userGroupStore, roleResolver = roleResolver, authz = authz,
+        userGroupStore = userGroupStore, roleResolver = roleResolver, authz = authz, auditStore = auditStore,
         providedRoles = roles, context = callerContext, systemClassification = systemClassification,
     )
 }
@@ -584,7 +585,7 @@ fun Route.approvalRoutes(
                 accessStore = accessStore,
                 userGroupStore = userGroupStore,
                 roleResolver = roleResolver,
-                authz = authz,
+                authz = authz, auditStore = auditStore,
                 // This compose preview IS an HTTP request with a datasource in scope, so it carries the
                 // server-attested requester_ip (decideQuery overlays the EDITOR channel + derives tags over it). A
                 // preview that dropped it would report a DIFFERENT verdict than the real editor execution when a
@@ -654,7 +655,7 @@ fun Route.approvalRoutes(
             decideQuery(
                 principal = principal, ds = ds, sql = statements[index], channel = channel,
                 catalog = catalog, policyStore = policyStore, accessStore = accessStore,
-                userGroupStore = userGroupStore, roleResolver = roleResolver, authz = authz,
+                userGroupStore = userGroupStore, roleResolver = roleResolver, authz = authz, auditStore = auditStore,
                 providedRoles = roles, context = discoverContext, systemClassification = systemClassification,
             )
         }
@@ -907,7 +908,7 @@ fun Route.approvalRoutes(
         val ctx = viewerDecision(
             principal, req, access.sql, call.httpAuthzContext(config),
             datasourceStore, policyStore, accessStore, userGroupStore, roleResolver, authz,
-            systemClassification, Channel.WORKFLOW_VIEWER,
+            systemClassification, Channel.WORKFLOW_VIEWER, auditStore,
         )
         // The failure detail releases only here, behind the same gate as the rows (never on the metadata
         // poll). Audit before responding so it is never returned unrecorded.
@@ -951,8 +952,22 @@ fun Route.approvalRoutes(
                     else -> "result-viewed-by-assumer"
                 }
                 // Audit the view BEFORE returning rows — a failed audit insert propagates (500) so PII is never
-                // returned without a durable record.
-                auditStore.insert(e3Record(principal, req, viewEvent, Channel.WORKFLOW_VIEWER))
+                // returned without a durable record. The same transaction charges the released volume to the
+                // viewer's relayed volume, against the decision the stored rows came from.
+                val (rowCount, bytes) = resultVolume(viewDecision.rows)
+                val chargeDecision = listOfNotNull(meta.decisionId, req.sourceDecisionId)
+                    .firstNotNullOfOrNull { id -> auditStore.get(id)?.let { id to it } }
+                auditStore.insertAll(
+                    listOfNotNull(
+                        e3Record(principal, req, viewEvent, Channel.WORKFLOW_VIEWER),
+                        chargeDecision?.let { (decisionId, decision) ->
+                            completionEvent(
+                                decision, decisionId, rowCount, bytes, "ok", 0,
+                                principal = principal, channel = Channel.WORKFLOW_VIEWER.contextValue,
+                            )
+                        },
+                    ),
+                )
                 call.respond(
                     QueryResultView(
                         meta, viewDecision.columns, viewDecision.rows,
@@ -1041,7 +1056,7 @@ internal suspend fun runApprovedTask(
                     val result = DecryptedResult(response.columns, response.rows, response.rowsAffected, response.resultFingerprint, response.truncatedByCap)
                     // The parent flips to EXECUTED only on the LAST statement, so a crash mid-batch cannot
                     // leave a task EXECUTED with statements unrun.
-                    val completed = store.completeRun(id, result, QueryResultStore.RESULT_RETENTION_SEC) { conn, _ ->
+                    val completed = store.completeRun(id, result, QueryResultStore.RESULT_RETENTION_SEC, response.decisionId) { conn, _ ->
                         if (last && !accessStore.markExecuted(id, conn)) {
                             throw IllegalStateException("task $id left EXECUTING before completion")
                         }

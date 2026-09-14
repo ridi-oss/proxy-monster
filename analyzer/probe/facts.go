@@ -315,6 +315,15 @@ func emitLineageFacts(root exp.Expression, eng engine, qualifySchema schema.Sche
 		facts.OutputColumns = outputColumnNames(report)
 	}
 	facts.DiagnosticLeakColumns = diagnosticLeakColumns(report, eng, qualifySchema)
+	if !explain {
+		for _, rc := range report.Returned {
+			column, ok := columnResourceFromKey(rc.Column)
+			if !ok {
+				return unanalyzableFacts("LINEAGE", "invalid column identity emitted by analyzer")
+			}
+			facts.ReturnedColumns = append(facts.ReturnedColumns, &pb.ReturnedColumn{Column: column, OutputOrdinals: rc.Ordinals})
+		}
+	}
 	return facts
 }
 

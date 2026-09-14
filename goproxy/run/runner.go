@@ -130,14 +130,21 @@ func (r *Runner) Run(open spi.RunOpen, draining <-chan struct{}) {
 		return
 	}
 
+	// A query that arrives after a statement's RunDone went out but before its handler reported back is the
+	// next statement, not a concurrent one: hold it rather than drop it.
+	var pending *pb.ControlRunMsg
 	for {
 		var message *pb.ControlRunMsg
 		var ok bool
-		select {
-		case <-draining:
-			// Idle between statements while shutting down: stop so the session ends and the editor re-homes.
-			return
-		case message, ok = <-messages:
+		if pending != nil {
+			message, ok, pending = pending, true, nil
+		} else {
+			select {
+			case <-draining:
+				// Idle between statements while shutting down: stop so the session ends and the editor re-homes.
+				return
+			case message, ok = <-messages:
+			}
 		}
 		if !ok || message.GetClose() != nil {
 			return
@@ -178,7 +185,11 @@ func (r *Runner) Run(open spi.RunOpen, draining <-chan struct{}) {
 				case message.GetCancel() != nil:
 					r.cancelSession(sess)
 				case message.GetQuery() != nil:
-					slog.Warn("run query received while another query is in flight; ignoring")
+					if pending != nil {
+						slog.Warn("run query received while another query is already queued; ignoring")
+						continue
+					}
+					pending = message
 				}
 			}
 		}

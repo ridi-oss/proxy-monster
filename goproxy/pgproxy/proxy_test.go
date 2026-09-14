@@ -603,6 +603,65 @@ func TestCopyOutResponseFailsClosed(t *testing.T) {
 	assertPgError(t, err, "0A000", "COPY is not supported")
 }
 
+func TestFunctionShadowingIsReprobedOnSameConnection(t *testing.T) {
+	h := startBroker(t)
+	h.fake.decideFn = func(*pb.DecisionRequest) (*pb.WireDecision, error) {
+		return wireVerdict(&pb.Verdict{Decision: pb.EnfAction_ALLOW}), nil
+	}
+	conn, err := h.connect(t, validToken, true)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	ctx := context.Background()
+	schema := fmt.Sprintf("fn_shadow_%d", time.Now().UnixNano())
+	createSchemaSQL := "CREATE SCHEMA " + schema
+	createFunctionSQL := "CREATE FUNCTION " + schema + ".unnest(integer[]) RETURNS SETOF integer LANGUAGE SQL AS 'SELECT 999'"
+	dropFunctionSQL := "DROP FUNCTION " + schema + ".unnest(integer[])"
+	direct := dbtest.OpenPostgres(t, "")
+	t.Cleanup(func() { _, _ = direct.Exec("DROP SCHEMA IF EXISTS " + schema + " CASCADE") })
+
+	for _, sql := range []string{
+		createSchemaSQL,
+		"SET search_path TO pg_catalog, " + schema,
+		"SELECT 1",
+		createFunctionSQL,
+		"SELECT unnest(ARRAY[1])",
+		dropFunctionSQL,
+		"SELECT 1",
+	} {
+		if _, err := conn.Exec(ctx, sql); err != nil {
+			t.Fatalf("%s: %v", sql, err)
+		}
+	}
+
+	requests := h.fake.requests()
+	bySQL := func(sql string) []*pb.DecisionRequest {
+		var matches []*pb.DecisionRequest
+		for _, request := range requests {
+			if request.GetSql() == sql {
+				matches = append(matches, request)
+			}
+		}
+		return matches
+	}
+	selectOne := bySQL("SELECT 1")
+	if len(selectOne) != 2 {
+		t.Fatalf("SELECT 1 decisions = %d, want 2", len(selectOne))
+	}
+	beforeCreate := selectOne[0]
+	if !beforeCreate.GetPostgresFunctionShadowingObserved() || len(beforeCreate.GetPostgresShadowedFunctions()) != 0 {
+		t.Fatalf("pre-CREATE shadow state = %v/%#v, want observed empty", beforeCreate.GetPostgresFunctionShadowingObserved(), beforeCreate.GetPostgresShadowedFunctions())
+	}
+	shadowed := bySQL("SELECT unnest(ARRAY[1])")
+	if len(shadowed) != 1 || !shadowed[0].GetPostgresFunctionShadowingObserved() || !reflect.DeepEqual(shadowed[0].GetPostgresShadowedFunctions(), []string{"unnest"}) {
+		t.Fatalf("post-CREATE shadow state = %+v, want observed [unnest]", shadowed)
+	}
+	afterDrop := selectOne[1]
+	if !afterDrop.GetPostgresFunctionShadowingObserved() || len(afterDrop.GetPostgresShadowedFunctions()) != 0 {
+		t.Fatalf("post-DROP shadow state = %v/%#v, want observed empty", afterDrop.GetPostgresFunctionShadowingObserved(), afterDrop.GetPostgresShadowedFunctions())
+	}
+}
+
 func TestSearchPathChangeIsReprobedOnSameConnection(t *testing.T) {
 	h := startBroker(t)
 	h.fake.decideFn = func(*pb.DecisionRequest) (*pb.WireDecision, error) {

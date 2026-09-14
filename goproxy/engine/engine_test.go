@@ -212,7 +212,7 @@ func TestMysqlAnsiQuotesForwardedAndCached(t *testing.T) {
 	}}
 
 	e.Authorize(in)
-	if !dec.lastReq.MysqlAnsiQuotes {
+	if !dec.lastReq.MySQLAnsiQuotes {
 		t.Fatal("an observed ANSI_QUOTES session must be forwarded to Decide")
 	}
 	// The observation rides the namespace cache: a second authorize without a re-probe reuses it.
@@ -220,7 +220,7 @@ func TestMysqlAnsiQuotesForwardedAndCached(t *testing.T) {
 	if probes != 1 {
 		t.Fatalf("ANSI_QUOTES observation should ride the namespace cache; probes=%d", probes)
 	}
-	if !dec.lastReq.MysqlAnsiQuotes {
+	if !dec.lastReq.MySQLAnsiQuotes {
 		t.Fatal("the cached ANSI_QUOTES observation must still be forwarded")
 	}
 
@@ -229,8 +229,58 @@ func TestMysqlAnsiQuotesForwardedAndCached(t *testing.T) {
 	e.MarkNamespaceDirty()
 	in.ProbeNamespace = func() (NamespaceProbe, error) { return NamespaceProbe{Namespace: []string{"app"}}, nil }
 	e.Authorize(in)
-	if dec.lastReq.MysqlAnsiQuotes {
+	if dec.lastReq.MySQLAnsiQuotes {
 		t.Fatal("a probe that no longer observes ANSI_QUOTES must clear the forwarded flag")
+	}
+}
+
+func TestPostgresLookupStateForwardedAndCached(t *testing.T) {
+	dec := &fakeDecider{outcome: okOutcome("ALLOW", nil)}
+	e := NewQueryEngine(pgDb, dec)
+	probes := 0
+	observations := []NamespaceProbe{
+		{
+			Namespace:                         []string{"pg_catalog", "app"},
+			PostgresShadowedFunctions:         []string{"unnest"},
+			PostgresFunctionShadowingObserved: true,
+			PostgresSystemXIDVisible:          true,
+			PostgresTypeVisibilityObserved:    true,
+		},
+		{
+			Namespace:                         []string{"pg_catalog", "app"},
+			PostgresShadowedFunctions:         []string{},
+			PostgresFunctionShadowingObserved: true,
+			PostgresSystemXIDVisible:          false,
+			PostgresTypeVisibilityObserved:    true,
+		},
+	}
+	in := AuthzInput{
+		SQL: "SELECT 1",
+		ProbeNamespace: func() (NamespaceProbe, error) {
+			probe := observations[probes]
+			probes++
+			return probe, nil
+		},
+	}
+
+	e.Authorize(in)
+	if !dec.lastReq.PostgresFunctionShadowingObserved ||
+		!reflect.DeepEqual(dec.lastReq.PostgresShadowedFunctions, []string{"unnest"}) ||
+		!dec.lastReq.PostgresTypeVisibilityObserved || !dec.lastReq.PostgresSystemXIDVisible {
+		t.Fatalf("first Decide PostgreSQL lookup state = %+v, want observed [unnest] and visible xid", dec.lastReq)
+	}
+	e.Authorize(in)
+	if probes != 1 || !reflect.DeepEqual(dec.lastReq.PostgresShadowedFunctions, []string{"unnest"}) ||
+		!dec.lastReq.PostgresTypeVisibilityObserved || !dec.lastReq.PostgresSystemXIDVisible {
+		t.Fatalf("cached PostgreSQL lookup state probes/request = %d/%+v", probes, dec.lastReq)
+	}
+
+	e.MarkNamespaceDirty()
+	e.Authorize(in)
+	if probes != 2 || !dec.lastReq.PostgresFunctionShadowingObserved ||
+		dec.lastReq.PostgresShadowedFunctions == nil || len(dec.lastReq.PostgresShadowedFunctions) != 0 ||
+		!dec.lastReq.PostgresTypeVisibilityObserved || dec.lastReq.PostgresSystemXIDVisible {
+		t.Fatalf("re-probed PostgreSQL lookup state probes/request = %d/%+v", probes, dec.lastReq)
 	}
 }
 

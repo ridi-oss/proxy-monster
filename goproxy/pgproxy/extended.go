@@ -25,24 +25,19 @@ func isCleanExecuteTerminal(terminal pgproto3.BackendMessage) bool {
 
 var extendedProbeSequence atomic.Uint64
 
-// preparedStatement stores only the SQL confirmed by ParseComplete. PostgreSQL resolves and plans a
-// portal under the search_path in force at Bind: plancache revalidation can re-resolve a named statement
-// whose path changed after Parse (verified against PostgreSQL 16). Therefore Parse never freezes the
-// authorization context and no control-plane decision is stored (docs/datasource-registration.md).
+// preparedStatement stores only the SQL confirmed by ParseComplete. Bind can revalidate a prepared
+// statement after namespace or plan invalidation, so its authorization context is captured at Bind.
 type preparedStatement struct {
 	sql string
 }
 
-// boundPortal snapshots the namespace and temporary-column context immediately before its confirmed Bind.
-// Every Execute re-decides the portal SQL against this snapshot, matching PostgreSQL's resolution point.
-// This is the PostgreSQL analog of MySQL's Prepare-time freeze (goproxy/mysqlproxy/stmt.go). Capturing the
-// context at Bind (rather than refusing a Parse-to-Bind path drift) lets the probe-always model authorize
-// the true Bind context with a fail-closed guarantee. No decision is ever stored.
+// boundPortal snapshots the context PostgreSQL used for its confirmed Bind. Every Execute re-decides the
+// portal SQL against that snapshot, and no decision is ever stored.
 type boundPortal struct {
-	sql       string
-	namespace []string
-	temps     []engine.TempColumn
-	binary    bool
+	sql    string
+	probe  engine.NamespaceProbe
+	temps  []engine.TempColumn
+	binary bool
 }
 
 func renderExtendedVerdict(sess *session, verdict engine.Verdict) (engine.Proceed, bool, error) {
@@ -164,7 +159,7 @@ func (s *Server) handleBind(sess *session, message *pgproto3.Bind) error {
 	// target DB between this probe and Bind, so the captured context is exactly the one PostgreSQL binds under.
 	// Probing first also leaves no registry/target DB inconsistency if capture fails. An aborted transaction
 	// fails here before PostgreSQL's equivalent 25P02 Bind, retaining the prior portal snapshot and target DB portal.
-	namespace, temps, err := s.probeBindContext(sess)
+	namespaceProbe, temps, err := s.probeBindContext(sess)
 	if err != nil {
 		if errors.Is(err, errClientEncoding) || errors.Is(err, errStdConformingStrings) {
 			return err
@@ -190,10 +185,10 @@ func (s *Server) handleBind(sess *session, message *pgproto3.Bind) error {
 	}
 	if _, complete := terminal.(*pgproto3.BindComplete); complete {
 		sess.portals[message.DestinationPortal] = boundPortal{
-			sql:       statement.sql,
-			namespace: namespace,
-			temps:     temps,
-			binary:    binary,
+			sql:    statement.sql,
+			probe:  namespaceProbe.Clone(),
+			temps:  temps,
+			binary: binary,
 		}
 	}
 	return sess.client.Flush()
@@ -326,33 +321,34 @@ func (s *Server) runExtendedProbe(sess *session, sql string, expectedColumns int
 	}
 }
 
-// probeBindContext captures the namespace and temporary-column context PostgreSQL will bind the next portal under.
-func (s *Server) probeBindContext(sess *session) ([]string, []engine.TempColumn, error) {
+// probeBindContext captures the namespace, function visibility, and temporary columns PostgreSQL will
+// bind the next portal under.
+func (s *Server) probeBindContext(sess *session) (engine.NamespaceProbe, []engine.TempColumn, error) {
 	if sess.lastTxStatus == 'E' {
 		// Aborted transaction: both injected probes would fail with 25P02 and block an extended-protocol
-		// ROLLBACK's Bind. Reuse the last namespace + temp overlay (symmetric with handleQuery / handleParse).
-		return append([]string{}, sess.namespaceOverlay...), append([]engine.TempColumn{}, sess.tempOverlay...), nil
+		// ROLLBACK's Bind. Reuse the last context snapshot (symmetric with handleQuery / handleParse).
+		return sess.namespaceProbe.Clone(), append([]engine.TempColumn{}, sess.tempOverlay...), nil
 	}
 	namespaceRows, err := s.runExtendedProbe(sess, s.db.NamespaceProbeSQL(), 1)
 	if err != nil {
-		return nil, nil, fmt.Errorf("target-DB namespace probe: %w", err)
+		return engine.NamespaceProbe{}, nil, fmt.Errorf("target-DB namespace probe: %w", err)
 	}
-	namespace, err := namespaceFromRows(namespaceRows)
+	namespaceProbe, err := namespaceProbeFromRows(namespaceRows)
 	if err != nil {
-		return nil, nil, err
+		return engine.NamespaceProbe{}, nil, err
 	}
-	sess.namespaceOverlay = append([]string{}, namespace...)
+	sess.namespaceProbe = namespaceProbe.Clone()
 
 	tempRows, err := s.runExtendedProbe(sess, s.db.TempColumnsProbeSQL(), 5)
 	if err != nil {
-		return nil, nil, fmt.Errorf("target DB temp-column probe: %w", err)
+		return engine.NamespaceProbe{}, nil, fmt.Errorf("target DB temp-column probe: %w", err)
 	}
 	temps, err := tempColumnsFromRows(tempRows)
 	if err != nil {
-		return nil, nil, err
+		return engine.NamespaceProbe{}, nil, err
 	}
 	sess.tempOverlay = append([]engine.TempColumn{}, temps...)
-	return namespace, temps, nil
+	return namespaceProbe, temps, nil
 }
 
 func (s *Server) handleExecute(sess *session, message *pgproto3.Execute) error {
@@ -365,14 +361,12 @@ func (s *Server) handleExecute(sess *session, message *pgproto3.Execute) error {
 	// diverge from the bound plan after post-Bind search_path drift and authorize a different resource.
 	sess.qe.MarkNamespaceDirty()
 	verdict := sess.qe.Authorize(engine.AuthzInput{
-		SQL:          portal.sql,
-		Token:        sess.token,
-		ClientAddr:   sess.clientAddr,
-		ConnectionID: sess.connectionID,
-		RunCommands:  s.refetcher(sess, true).RunAll,
-		ProbeNamespace: func() (engine.NamespaceProbe, error) {
-			return engine.NamespaceProbe{Namespace: portal.namespace}, nil
-		},
+		SQL:            portal.sql,
+		Token:          sess.token,
+		ClientAddr:     sess.clientAddr,
+		ConnectionID:   sess.connectionID,
+		RunCommands:    s.refetcher(sess, true).RunAll,
+		ProbeNamespace: func() (engine.NamespaceProbe, error) { return portal.probe, nil },
 		ProbeTempColumns: func() ([]engine.TempColumn, error) {
 			return portal.temps, nil
 		},

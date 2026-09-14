@@ -452,6 +452,10 @@ export interface QueryResultView {
   maskedColumns: string[]
   /** A FAILED run's target-DB error, raw or redacted per this viewer; null otherwise. */
   errorDetail?: string | null
+  /** Row count the viewer's own result cap cut this release to; null when every stored row was released. */
+  truncatedAt?: number | null
+  /** The EXECUTION's cap ended the stored rows — independent of a further view-time truncation. */
+  truncatedByCap?: boolean
 }
 
 /** Submit acknowledgement; completion is observed through task polling. */
@@ -519,6 +523,9 @@ export interface QueryResponse {
   columns: string[]
   rows: (string | null)[][]
   rowsAffected?: number | null
+  /** The verdict's row cap, and whether it — not the requested page size — ended this result. */
+  truncatedByCap?: boolean
+  capRows?: number | null
   latencyMs: number
 }
 

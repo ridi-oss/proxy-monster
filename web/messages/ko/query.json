@@ -61,6 +61,7 @@
     "masked": "마스킹됨",
     "rowCount": "행 {count}개",
     "rowsAffectedSuffix": " · 영향받은 행 {count}개",
+    "cappedAt": "결과 상한에 걸려 {count}행에서 멈췄습니다. 전체 결과가 아닙니다.",
     "requestApproval": "승인 요청",
     "requestAccess": "접근 요청",
     "tabResults": "결과",

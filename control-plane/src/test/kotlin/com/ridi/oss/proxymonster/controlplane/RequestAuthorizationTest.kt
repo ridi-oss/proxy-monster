@@ -8,6 +8,7 @@ import com.ridi.oss.proxymonster.controlplane.authz.CedarEngine
 import com.ridi.oss.proxymonster.controlplane.authz.CedarPolicyStore
 import com.ridi.oss.proxymonster.controlplane.authz.RoleSource
 import com.ridi.oss.proxymonster.grpc.Engine
+import com.ridi.oss.proxymonster.grpc.NativeRequestAuthorization
 import com.ridi.oss.proxymonster.grpc.RequestAuthorization
 import com.ridi.oss.proxymonster.grpc.namespaceRef
 import com.ridi.oss.proxymonster.grpc.readCatalog
@@ -118,13 +119,73 @@ class RequestAuthorizationTest {
         assertFalse(authorize(tableOperation, allow, ds))
     }
 
+    @Test
+    fun `MySQL and PostgreSQL reject native envelopes even with broad metadata access`() {
+        for (ds in listOf(datasource, datasource.copy(engine = Engine.POSTGRES))) {
+            val request = RequestAuthorization.newBuilder().setDatasourceName(ds.name)
+                .setNative(NativeRequestAuthorization.newBuilder().setDescriptorVersion(1).setDescriptorPayload(ByteString.copyFromUtf8("native")))
+                .build()
+            assertFalse(authorize(request, allow, ds))
+        }
+    }
+
+    @Test
+    fun `common native dispatch bounds payload without interpreting provider operations`() {
+        var calls = 0
+        val provider = RequestAuthorizer { request, _, principal, roles, context, _ ->
+            calls++
+            assertTrue(request.hasNative())
+            assertTrue(principal == "alice" && roles == setOf("reader"))
+            assertTrue(context.channel == "workflow-executor" && context.requesterIp == "10.2.3.4")
+            assertTrue(context.tags.isEmpty() && context.stmtKind == null && context.nativeOperation == null)
+            RequestAdmission.Allowed(ByteString.copyFromUtf8("opaque-instructions"))
+        }
+        val request = RequestAuthorization.newBuilder().setDatasourceName(datasource.name)
+            .setNative(NativeRequestAuthorization.newBuilder().setDescriptorVersion(1).setDescriptorPayload(ByteString.copyFromUtf8("opaque")))
+            .build()
+        val context = AuthzContext(channel = "workflow-executor", requesterIp = "10.2.3.4", tags = setOf("forged"), stmtKind = "select", nativeOperation = "forged")
+        fun dispatch(value: RequestAuthorization) = provider.authorizeBounded(value, datasource, "alice", setOf("reader"), context, allow) is RequestAdmission.Allowed
+        assertTrue(dispatch(request))
+        val invalid = listOf(
+            request.toBuilder().clearOperation().build(),
+            request.toBuilder().setDatasourceName("other").build(),
+            request.toBuilder().setNative(request.native.toBuilder().clearDescriptorVersion()).build(),
+            request.toBuilder().setNative(request.native.toBuilder().clearDescriptorPayload()).build(),
+            request.toBuilder().setNative(request.native.toBuilder().setDescriptorPayload(ByteString.copyFrom(ByteArray(MAX_NATIVE_DESCRIPTOR_BYTES + 1)))).build(),
+        )
+        invalid.forEach { assertFalse(dispatch(it)) }
+        assertTrue(calls == 1)
+        assertTrue(dispatch(request.toBuilder().setNative(request.native.toBuilder().setDescriptorPayload(ByteString.copyFrom(ByteArray(MAX_NATIVE_DESCRIPTOR_BYTES)))).build()))
+        assertTrue(calls == 2)
+    }
+
+    @Test
+    fun `native admission requires bounded instructions and metadata keeps them absent`() {
+        val request = RequestAuthorization.newBuilder().setDatasourceName(datasource.name)
+            .setNative(NativeRequestAuthorization.newBuilder().setDescriptorVersion(1).setDescriptorPayload(ByteString.copyFromUtf8("opaque")))
+            .build()
+        fun dispatch(request: RequestAuthorization, instructions: ByteString): RequestAdmission =
+            RequestAuthorizer { _, _, _, _, _, _ -> RequestAdmission.Allowed(instructions) }
+                .authorizeBounded(request, datasource, "alice", setOf("reader"), AuthzContext(), allow)
+        assertTrue(dispatch(request, ByteString.EMPTY) is RequestAdmission.Denied)
+        assertTrue(dispatch(request, ByteString.copyFrom(ByteArray(MAX_NATIVE_DESCRIPTOR_BYTES + 1))) is RequestAdmission.Denied)
+        val payload = ByteString.copyFromUtf8("provider-owned instructions")
+        val admission = dispatch(request, payload)
+        assertTrue(admission is RequestAdmission.Allowed && admission.providerInstructions == payload)
+        assertTrue(dispatch(catalogRequest(datasource), payload) is RequestAdmission.Denied)
+        assertTrue(dispatch(catalogRequest(datasource), ByteString.EMPTY) is RequestAdmission.Allowed)
+        val denied = RequestAuthorizer { _, _, _, _, _, _ -> RequestAdmission.Denied("common.forbidden") }
+            .authorizeBounded(request, datasource, "alice", setOf("reader"), AuthzContext(), allow)
+        assertTrue(denied == RequestAdmission.Denied("common.forbidden"))
+    }
+
     private fun authorize(
         request: RequestAuthorization,
         authz: Authz,
         ds: Datasource = datasource,
         roles: Set<String> = setOf("reader"),
         context: AuthzContext = AuthzContext(),
-    ) = ds.engine.definition.requestAuthorizer.authorize(request, ds, "alice", roles, context, authz)
+    ) = ds.engine.definition.requestAuthorizer.authorize(request, ds, "alice", roles, context, authz) is RequestAdmission.Allowed
 
     private fun catalogRequest(ds: Datasource): RequestAuthorization = RequestAuthorization.newBuilder()
         .setDatasourceName(ds.name)

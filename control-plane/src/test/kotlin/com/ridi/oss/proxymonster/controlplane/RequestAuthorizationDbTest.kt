@@ -2,12 +2,15 @@ package com.ridi.oss.proxymonster.controlplane
 
 import com.google.protobuf.ByteString
 import com.google.protobuf.UnknownFieldSet
+import com.ridi.oss.proxymonster.athena.pb.AthenaSqlContext
+import com.ridi.oss.proxymonster.grpc.DecisionRequest
 import com.ridi.oss.proxymonster.controlplane.authz.CedarPolicyInput
 import com.ridi.oss.proxymonster.controlplane.grpc.ControlPlaneGrpcService
 import com.ridi.oss.proxymonster.controlplane.grpc.GrpcServer
 import com.ridi.oss.proxymonster.controlplane.support.SharedPostgres
 import com.ridi.oss.proxymonster.controlplane.support.requireDockerOrSkip
 import com.ridi.oss.proxymonster.grpc.ControlPlaneGrpcKt
+import com.ridi.oss.proxymonster.grpc.NativeRequestAuthorization
 import com.ridi.oss.proxymonster.grpc.RequestAuthorization
 import com.ridi.oss.proxymonster.grpc.namespaceRef
 import com.ridi.oss.proxymonster.grpc.readCatalog
@@ -223,6 +226,47 @@ class RequestAuthorizationDbTest {
         }
         assertEquals(0, core.connectionCatalog.connectionCount())
         assertEquals(0, core.connectionCatalog.poolSize())
+    }
+
+    @Test
+    fun `native RPC refuses task tokens and relational engines refuse its descriptor`() {
+        val principal = principal()
+        val own = role()
+        val assumed = role()
+        core.policyStore.createAssignment(RoleAssignmentInput(principal, own.id))
+        val ds = core.datasourceStore.create(DatasourceInput("native-${UUID.randomUUID()}", engine = "mysql", dbName = "app"))
+        val request = RequestAuthorization.newBuilder().setDatasourceName(ds.name)
+            .setNative(NativeRequestAuthorization.newBuilder().setDescriptorVersion(1).setDescriptorPayload(ByteString.copyFromUtf8("opaque")))
+        for (kind in listOf(TokenKind.EDITOR, TokenKind.APPROVER_EXEC)) {
+            val token = issue(kind, principal, listOf(assumed.name)).token
+            val failure = assertFailsWith<StatusException> { runBlocking { stub.authorizeRequest(request.setToken(token).build()) } }
+            assertEquals(Status.Code.UNAUTHENTICATED, failure.status.code)
+        }
+        val token = issue(TokenKind.USER, principal, listOf("system:admin")).token
+        val result = runBlocking { stub.authorizeRequest(request.setToken(token).build()) }
+        assertFalse(result.allowed)
+        assertEquals(setOf(own.name), result.effectiveRolesList.toSet())
+        core.userGroupStore.createUser(
+            AppUserInput(principal = principal), core.tokenStore, core.accessStore, PrincipalSessionStore(database, null),
+        )
+        core.userGroupStore.setUserActive(principal, false)
+        val failure = assertFailsWith<StatusException> { runBlocking { stub.authorizeRequest(request.build()) } }
+        assertEquals(Status.Code.UNAUTHENTICATED, failure.status.code)
+        assertEquals(0, core.connectionCatalog.connectionCount())
+    }
+
+    @Test
+    fun `MySQL and PostgreSQL Decide reject present Athena context before allocating a connection`() {
+        val token = issue(TokenKind.USER, principal()).token
+        for (engine in listOf("mysql", "postgres")) {
+            val ds = core.datasourceStore.create(DatasourceInput("context-${UUID.randomUUID()}", engine = engine, dbName = "app"))
+            val request = DecisionRequest.newBuilder().setToken(token).setDatasourceName(ds.name).setSql("SELECT 1")
+                .setAthenaContext(AthenaSqlContext.getDefaultInstance()).build()
+            val failure = assertFailsWith<StatusException> { runBlocking { stub.decide(request) } }
+            assertEquals(Status.Code.INVALID_ARGUMENT, failure.status.code)
+            assertEquals("native.unsupported_sql_context", failure.status.description)
+        }
+        assertEquals(0, core.connectionCatalog.connectionCount())
     }
 
     private fun assertUnauthenticated(token: String) {

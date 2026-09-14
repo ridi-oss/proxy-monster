@@ -175,7 +175,7 @@ object CedarSchema {
         // the same action, so emitting both declares it twice and the whole schema fails to parse.
         val decls = tagNames.distinctBy(::unescapeCedarString).sorted().joinToString("\n") { name ->
             "action \"context.tag::$name\" appliesTo { principal: [User, Role], resource: [Datasource], " +
-                "context: { channel?: String, requester_ip?: ipaddr, tailscale_caps?: Set<String> } };"
+                "context: { channel?: String, requester_ip?: ipaddr, tailscale_caps?: Set<String>, native_operation?: String } };"
         }
         return "$text\n$decls"
     }

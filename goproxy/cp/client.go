@@ -42,7 +42,7 @@ import (
 // error instead of a stalled run channel. Bump it on any incompatible wire change. It MUST match the
 // control-plane's CONTROL_PROTOCOL_VERSION; the two are separate constants in separate languages kept in
 // lockstep by hand — a server-v* release always ships both at the same value.
-const ProtocolVersion int32 = 3
+const ProtocolVersion int32 = 4
 
 // ErrIncompatibleControlPlane means the control-plane speaks a different wire-protocol version than this
 // proxy — a PERMANENT deploy-skew condition, not a transient failure. boot treats it as fatal (refuse to
@@ -152,26 +152,59 @@ func (c *Client) outCtx(parent context.Context) context.Context {
 // ProxyCommand envelope. Unknown arms and blank schemas are malformed and fail closed rather than degrading
 // to a broader refresh. Each Refetch is deep-copied so the returned commands never alias the wire message's
 // mutable backing arrays.
+// beforeDecideCommands is one before-decide round split by command kind; a command of neither kind fails closed.
+type beforeDecideCommands struct {
+	refetches   []*pb.Refetch
+	definitions []*enginepb.FetchAthenaPreparedDefinition
+}
+
+func beforeDecideFromWire(commands []*pb.ProxyCommand) (*beforeDecideCommands, error) {
+	mapped := &beforeDecideCommands{}
+	for i, command := range commands {
+		if fetch := command.GetFetchAthenaPreparedDefinition(); fetch != nil {
+			if fetch.GetWorkgroup() == "" || fetch.GetName() == "" {
+				return nil, fmt.Errorf("command %d has a blank prepared definition selector", i)
+			}
+			mapped.definitions = append(mapped.definitions, &enginepb.FetchAthenaPreparedDefinition{Workgroup: fetch.GetWorkgroup(), Name: fetch.GetName()})
+			continue
+		}
+		refetch, err := refetchFromWire(i, command)
+		if err != nil {
+			return nil, err
+		}
+		mapped.refetches = append(mapped.refetches, refetch)
+	}
+	return mapped, nil
+}
+
 func refetchesFromWire(commands []*pb.ProxyCommand) ([]*pb.Refetch, error) {
 	mapped := make([]*pb.Refetch, 0, len(commands))
 	for i, command := range commands {
-		refetch := command.GetRefetch()
-		if refetch == nil {
-			return nil, fmt.Errorf("command %d is not a refetch", i)
+		refetch, err := refetchFromWire(i, command)
+		if err != nil {
+			return nil, err
 		}
-		if refetch.Catalog != nil && refetch.GetCatalog() == "" {
-			return nil, fmt.Errorf("command %d has blank catalog", i)
-		}
-		if refetch.GetSchema() == "" {
-			return nil, fmt.Errorf("command %d has blank schema", i)
-		}
-		mapped = append(mapped, &pb.Refetch{
-			Schema:        refetch.GetSchema(),
-			IfHashDiffers: append([]byte(nil), refetch.GetIfHashDiffers()...),
-			Catalog:       copyString(refetch.Catalog),
-		})
+		mapped = append(mapped, refetch)
 	}
 	return mapped, nil
+}
+
+func refetchFromWire(i int, command *pb.ProxyCommand) (*pb.Refetch, error) {
+	refetch := command.GetRefetch()
+	if refetch == nil {
+		return nil, fmt.Errorf("command %d is not a refetch", i)
+	}
+	if refetch.Catalog != nil && refetch.GetCatalog() == "" {
+		return nil, fmt.Errorf("command %d has blank catalog", i)
+	}
+	if refetch.GetSchema() == "" {
+		return nil, fmt.Errorf("command %d has blank schema", i)
+	}
+	return &pb.Refetch{
+		Schema:        refetch.GetSchema(),
+		IfHashDiffers: append([]byte(nil), refetch.GetIfHashDiffers()...),
+		Catalog:       copyString(refetch.Catalog),
+	}, nil
 }
 
 func nonemptyString(value string) *string {
@@ -256,9 +289,9 @@ func denyClosed(reason string) *engine.Decision {
 
 // decisionFromWire maps the control plane's WireDecision onto the engine's dialect-agnostic outcome.
 // Before-decision commands are returned separately and take precedence over any verdict accessor.
-func decisionFromWire(d *pb.WireDecision) ([]*pb.Refetch, *engine.Decision) {
+func decisionFromWire(d *pb.WireDecision) (*beforeDecideCommands, *engine.Decision) {
 	if before := d.GetBeforeDecide(); before != nil {
-		commands, err := refetchesFromWire(before.GetCommands())
+		commands, err := beforeDecideFromWire(before.GetCommands())
 		if err != nil {
 			return nil, denyClosed("control plane returned malformed before-decision commands: " + err.Error())
 		}
@@ -281,6 +314,18 @@ func decisionFromWire(d *pb.WireDecision) ([]*pb.Refetch, *engine.Decision) {
 		rewrittenSQL := *v.RewrittenSql
 		rewritten = &rewrittenSQL
 	}
+	var submission *enginepb.AthenaSubmission
+	if v.AthenaSubmission != nil {
+		if rewritten != nil {
+			return nil, denyClosed("control plane combined an Athena submission with rewritten SQL")
+		}
+		if v.AthenaSubmission.GetQueryString() == "" {
+			return nil, denyClosed("control plane returned an empty Athena submission")
+		}
+		submission = proto.Clone(v.AthenaSubmission).(*enginepb.AthenaSubmission)
+		query := submission.GetQueryString()
+		rewritten = &query
+	}
 	afterStatement, err := refetchesFromWire(v.GetAfterStatement())
 	if err != nil {
 		return nil, denyClosed("control plane returned malformed after-statement commands: " + err.Error())
@@ -297,6 +342,7 @@ func decisionFromWire(d *pb.WireDecision) ([]*pb.Refetch, *engine.Decision) {
 		AfterStatement:      afterStatement,
 		Generation:          v.GetGeneration(),
 		SanitizeDiagnostics: v.GetSanitizeDiagnostics(),
+		AthenaSubmission:    submission,
 		ResultFingerprint:   v.GetResultFingerprint(),
 	}
 }
@@ -331,6 +377,9 @@ func (c *Client) Decide(req engine.DecideRequest) engine.DecisionOutcome {
 	if req.PostgresTypeVisibilityObserved {
 		wireReq.PostgresSystemXidVisible = &req.PostgresSystemXIDVisible
 	}
+	if req.AthenaContext != nil {
+		wireReq.AthenaContext = proto.Clone(req.AthenaContext).(*enginepb.AthenaSqlContext)
+	}
 
 	for round := 0; ; round++ {
 		ctx, cancel := context.WithTimeout(context.Background(), rpcDeadline)
@@ -357,13 +406,51 @@ func (c *Client) Decide(req engine.DecideRequest) engine.DecisionOutcome {
 		if round >= 3 {
 			return engine.DecisionOutcome{Err: fmt.Sprintf("control plane demanded pre-decision commands %d times", round+1)}
 		}
-		if req.RunCommands == nil {
-			return engine.DecisionOutcome{Err: "control plane demanded pre-decision commands but no runner is configured"}
-		}
-		if err := req.RunCommands(commands); err != nil {
+		if err := runBeforeDecide(commands, req, wireReq); err != nil {
 			return engine.DecisionOutcome{Err: "pre-decision commands failed: " + err.Error()}
 		}
 	}
+}
+
+// maxPreparedDefinitions bounds the definitions one Decide may accumulate across its before-decide rounds.
+const maxPreparedDefinitions = 8
+
+// runBeforeDecide executes one before-decide round: catalog refetches through the session's runner and
+// prepared-definition fetches through the target, the latter attached to the request that is re-sent.
+func runBeforeDecide(commands *beforeDecideCommands, req engine.DecideRequest, wireReq *pb.DecisionRequest) error {
+	if len(commands.refetches) > 0 {
+		if req.RunCommands == nil {
+			return errors.New("control plane demanded catalog refetches but no runner is configured")
+		}
+		if err := req.RunCommands(commands.refetches); err != nil {
+			return err
+		}
+	}
+	for _, fetch := range commands.definitions {
+		if req.FetchAthenaPreparedDefinition == nil || wireReq.AthenaContext == nil {
+			return errors.New("control plane demanded a prepared definition but the request carries no Athena context")
+		}
+		if fetch.GetWorkgroup() != wireReq.AthenaContext.GetWorkgroup() {
+			return errors.New("prepared definition fetch names a workgroup outside the request scope")
+		}
+		for _, held := range wireReq.AthenaContext.PreparedDefinitions {
+			if held.GetName() == fetch.GetName() && held.GetWorkgroup() == fetch.GetWorkgroup() {
+				return fmt.Errorf("control plane re-demanded prepared definition %q", fetch.GetName())
+			}
+		}
+		if len(wireReq.AthenaContext.PreparedDefinitions) >= maxPreparedDefinitions {
+			return errors.New("too many prepared definitions for one decision")
+		}
+		definition, err := req.FetchAthenaPreparedDefinition(fetch)
+		if err != nil {
+			return err
+		}
+		if definition == nil || definition.GetName() != fetch.GetName() || definition.GetWorkgroup() != fetch.GetWorkgroup() || definition.GetQueryString() == "" {
+			return fmt.Errorf("target returned a prepared definition that does not match %q", fetch.GetName())
+		}
+		wireReq.AthenaContext.PreparedDefinitions = append(wireReq.AthenaContext.PreparedDefinitions, proto.Clone(definition).(*enginepb.AthenaPreparedDefinition))
+	}
+	return nil
 }
 
 // ReportCompletion sends a post-relay completion report (audit-only result volume) to the control plane.

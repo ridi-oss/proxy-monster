@@ -7,6 +7,7 @@ package proxymonster.v1;
 
 import "engine.proto";
 import "analyzer.proto";
+import "athena.proto";
 import "google/protobuf/empty.proto";
 
 option java_package = "com.ridi.oss.proxymonster.grpc";
@@ -22,10 +23,11 @@ enum EnfAction {
   DENY = 3;
 }
 
-// Generic, extensible command the proxy executes mechanically. REFETCH is today's only value.
+// Commands are executed mechanically; an unsupported command fails closed.
 message ProxyCommand {
   oneof command {
-    Refetch refetch = 1;   // future commands add arms here
+    Refetch refetch = 1;
+    proxymonster.athena.v1.FetchAthenaPreparedDefinition fetch_athena_prepared_definition = 2;
   }
 }
 message Refetch {
@@ -46,7 +48,7 @@ service ControlPlane {
   // Per-query enforcement decision. Takes the RAW token, re-validated +
   // re-resolved server-side every call — never a client-cached principal.
   rpc Decide(DecisionRequest) returns (WireDecision);
-  // Metadata authorization without opening a database session or allocating a connection catalog.
+  // Metadata or provider-native admission without opening a database session or allocating a connection catalog.
   rpc AuthorizeRequest(RequestAuthorization) returns (RequestAuthorizationResult);
   // Per-connection schema fragment push on the enforcement channel.
   rpc PushSchemaFragment(SchemaFragmentPush) returns (SchemaFragmentAck);
@@ -150,7 +152,14 @@ message RequestAuthorization {
   oneof operation {
     ReadCatalog read_catalog = 4;
     ReadTableMetadata read_table_metadata = 5;
+    NativeRequestAuthorization native = 6;
   }
+}
+
+// The registered engine owns the versioned descriptor's decoding and authorization.
+message NativeRequestAuthorization {
+  uint32 descriptor_version = 1;
+  bytes descriptor_payload = 2;
 }
 
 message RequestAuthorizationResult {
@@ -158,6 +167,8 @@ message RequestAuthorizationResult {
   string deny_reason = 2;
   repeated string effective_roles = 3;
   string principal = 4;
+  // Native callers must execute these provider-owned instructions; allowed never grants arbitrary response bytes.
+  bytes provider_instructions = 5;
 }
 
 // ---- Catalog ----
@@ -173,8 +184,8 @@ message CatalogRequest {
   // connection, supplies it. Raw string; the control-plane owns parsing the major + Aurora marker.
   string engine_version = 5;
   proxymonster.analyzer.v1.CatalogSnapshot catalog = 6;
-  // The catalog identity the target measured (MySQL `def`, PostgreSQL current_database()); every snapshot
-  // column with an empty catalog belongs to it.
+  // The catalog identity the target measured (MySQL `def`, PostgreSQL current_database(), Athena the
+  // configured data catalog); every snapshot column with an empty catalog belongs to it.
   optional string current_catalog = 7;
 }
 message CatalogResponse {
@@ -244,6 +255,7 @@ message DecisionRequest {
   // Absence means type visibility was not observed and the analyzer keeps the cast gated fail-closed.
   optional bool postgres_system_xid_visible = 11;
   optional string current_catalog = 12;
+  proxymonster.athena.v1.AthenaSqlContext athena_context = 13;
 }
 
 // One column of a session-temp table on a connection. Carries no classification — a temp is
@@ -309,6 +321,8 @@ message Verdict {
   // them with the stored result and a later view can deny authorization drift (the control-plane result-view
   // gate). Empty for a decision that needs no result-read grants.
   repeated proxymonster.analyzer.v1.RequireResultReadGrant result_fingerprint = 11;
+  // Replaces native query_string AND execution_parameters; never combine with rewritten_sql.
+  proxymonster.athena.v1.AthenaSubmission athena_submission = 12;
 }
 message BeforeDecide {
   repeated ProxyCommand commands = 1;

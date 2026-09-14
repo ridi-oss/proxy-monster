@@ -42,8 +42,35 @@ func TestDecisionFromWire(t *testing.T) {
 			t.Fatalf("decision = %+v, want nil", decision)
 		}
 		want := []*pb.Refetch{{Schema: "app", IfHashDiffers: []byte{1, 2}}}
-		if !reflect.DeepEqual(commands, want) {
+		if !reflect.DeepEqual(commands.refetches, want) || len(commands.definitions) != 0 {
 			t.Fatalf("commands = %+v, want %+v", commands, want)
+		}
+	})
+
+	t.Run("before decide separates prepared definition fetches", func(t *testing.T) {
+		fetch := &pb.ProxyCommand{Command: &pb.ProxyCommand_FetchAthenaPreparedDefinition{FetchAthenaPreparedDefinition: &enginepb.FetchAthenaPreparedDefinition{Workgroup: "wg", Name: "stmt"}}}
+		commands, decision := decisionFromWire(wireBefore(refetch("app", nil), fetch))
+		if decision != nil || len(commands.refetches) != 1 || len(commands.definitions) != 1 || commands.definitions[0].GetName() != "stmt" {
+			t.Fatalf("commands = %+v decision = %+v", commands, decision)
+		}
+		blank := &pb.ProxyCommand{Command: &pb.ProxyCommand_FetchAthenaPreparedDefinition{FetchAthenaPreparedDefinition: &enginepb.FetchAthenaPreparedDefinition{Workgroup: "wg"}}}
+		if commands, got := decisionFromWire(wireBefore(blank)); commands != nil || got.Action != "DENY" {
+			t.Fatalf("blank prepared definition selector accepted: %+v %+v", commands, got)
+		}
+	})
+
+	t.Run("athena submission replaces the query and never rides rewritten sql", func(t *testing.T) {
+		_, got := decisionFromWire(wireVerdict(&pb.Verdict{Decision: pb.EnfAction_ALLOW, AthenaSubmission: &enginepb.AthenaSubmission{QueryString: "SELECT 1", ExecutionParameters: []string{"'x'"}}}))
+		if got.Action != "ALLOW" || got.RewrittenSQL == nil || *got.RewrittenSQL != "SELECT 1" || got.AthenaSubmission == nil || len(got.AthenaSubmission.ExecutionParameters) != 1 {
+			t.Fatalf("submission not mapped: %+v", got)
+		}
+		_, got = decisionFromWire(wireVerdict(&pb.Verdict{Decision: pb.EnfAction_ALLOW, RewrittenSql: proto.String("SELECT 2"), AthenaSubmission: &enginepb.AthenaSubmission{QueryString: "SELECT 1"}}))
+		if got.Action != "DENY" {
+			t.Fatalf("combined submission and rewrite accepted: %+v", got)
+		}
+		_, got = decisionFromWire(wireVerdict(&pb.Verdict{Decision: pb.EnfAction_ALLOW, AthenaSubmission: &enginepb.AthenaSubmission{}}))
+		if got.Action != "DENY" {
+			t.Fatalf("empty submission accepted: %+v", got)
 		}
 	})
 

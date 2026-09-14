@@ -219,6 +219,9 @@ type Decision struct {
 	// proxy does not interpret them; it only echoes them back on a RunDecision so an execute-under-R run can
 	// freeze them with the stored result (the control plane's result-view drift gate).
 	ResultFingerprint []*enginepb.RequireResultReadGrant
+	// AthenaSubmission replaces the native query string AND execution parameters when present; RewrittenSQL
+	// then carries the same query string so dialect-neutral callers send the right text.
+	AthenaSubmission *enginepb.AthenaSubmission
 }
 
 // RedactedDiagnosticMessage is the single generic string that replaces every target-DB diagnostic message on
@@ -283,6 +286,11 @@ type DecideRequest struct {
 	TempColumns  []TempColumn
 	ConnectionID []byte
 	RunCommands  func([]*pb.Refetch) error
+	// AthenaContext carries the Athena request scope (workgroup, ordered execution parameters, fetched
+	// prepared definitions); nil for every other engine.
+	AthenaContext *enginepb.AthenaSqlContext
+	// FetchAthenaPreparedDefinition resolves a fetch_athena_prepared_definition command from the target.
+	FetchAthenaPreparedDefinition func(*enginepb.FetchAthenaPreparedDefinition) (*enginepb.AthenaPreparedDefinition, error)
 }
 
 // Decider performs the per-query control-plane decision. It is injected so the engine is unit-testable;
@@ -465,13 +473,15 @@ func (p NamespaceProbe) Clone() NamespaceProbe {
 
 // AuthzInput carries namespace, optional temp-column, and command callbacks for one statement.
 type AuthzInput struct {
-	SQL              string
-	Token            string
-	ClientAddr       string
-	ConnectionID     []byte
-	ProbeNamespace   func() (NamespaceProbe, error)
-	ProbeTempColumns func() ([]TempColumn, error)
-	RunCommands      func([]*pb.Refetch) error
+	SQL                           string
+	Token                         string
+	ClientAddr                    string
+	ConnectionID                  []byte
+	ProbeNamespace                func() (NamespaceProbe, error)
+	ProbeTempColumns              func() ([]TempColumn, error)
+	RunCommands                   func([]*pb.Refetch) error
+	AthenaContext                 *enginepb.AthenaSqlContext
+	FetchAthenaPreparedDefinition func(*enginepb.FetchAthenaPreparedDefinition) (*enginepb.AthenaPreparedDefinition, error)
 }
 
 // Authorize gathers session context and returns the control plane's decision to the protocol.
@@ -494,13 +504,15 @@ func (e *QueryEngine) Authorize(in AuthzInput) Verdict {
 	}
 
 	out := e.decider.Decide(DecideRequest{
-		NamespaceProbe: e.probe.Clone(),
-		Token:          in.Token,
-		SQL:            in.SQL,
-		ClientAddr:     in.ClientAddr,
-		TempColumns:    temps,
-		ConnectionID:   in.ConnectionID,
-		RunCommands:    in.RunCommands,
+		NamespaceProbe:                e.probe.Clone(),
+		Token:                         in.Token,
+		SQL:                           in.SQL,
+		ClientAddr:                    in.ClientAddr,
+		TempColumns:                   temps,
+		ConnectionID:                  in.ConnectionID,
+		RunCommands:                   in.RunCommands,
+		AthenaContext:                 in.AthenaContext,
+		FetchAthenaPreparedDefinition: in.FetchAthenaPreparedDefinition,
 	})
 	if out.IsErr() {
 		return Fail{Message: out.Err}

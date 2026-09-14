@@ -50,6 +50,18 @@ entity Function in [Datasource, Tag];
 // not catalog-resolved, so this needs no function catalog).
 entity Utility in [Datasource, Tag];
 
+entity NativeResource in [Datasource] = {
+    kind: String,
+    id: String,
+    owner?: User,
+};
+
+action "native.invoke" appliesTo {
+    principal: [User, Role],
+    resource: [NativeResource],
+    context: RequestContext,
+};
+
 // The authenticated principal. Its Cedar parents are the role set RoleSource.rolesOf(principal)
 // resolved (Layer 1); "member of Role" is exactly that "principal in Role::..." relationship.
 entity User in [Role];
@@ -120,6 +132,7 @@ type RequestContext = {
     // condition on HOW a column is read — e.g. permit `result.read.unmasked` only under a plan-only
     // EXPLAIN (`context.stmt_kind == "explain"`), which returns no rows.
     stmt_kind?: String,
+    native_operation?: String,
 };
 
 // Global admin surfaces (App.kt route groups gated via requireAdmin). No per-resource scoping —

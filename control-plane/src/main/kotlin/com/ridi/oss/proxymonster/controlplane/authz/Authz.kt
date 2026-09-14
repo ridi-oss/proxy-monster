@@ -43,6 +43,7 @@ enum class AuthzAction(val cedarId: String) {
     RESULT_READ_UNMASKED("result.read.unmasked"),
     RESULT_READ_MASKED("result.read.masked"),
     DATASOURCE_CONNECT("datasource.connect"),
+    NATIVE_INVOKE("native.invoke"),
     // Statement categories (stmt.cat.*) are NOT enumerated here: a statement is authorized by its kind
     // (stmt.kind.<k>, from the statement_exec grant) and the Cedar schema alone maps a kind to its category.
     // The control-plane never names a category — only the schema and operator policies do.
@@ -89,6 +90,14 @@ sealed interface AuthzResource {
      *  PATs — null when the operation isn't tied to one token (e.g. listing a principal's tokens), which
      *  leaves the Cedar `kind` attribute absent. Prospective at mint time (no id), so it is Token{owner, kind}. */
     data class Token(val owner: String, val kind: TokenKind?) : AuthzResource
+
+    data class NativeResource(
+        val datasourceName: String,
+        val kind: String,
+        val id: String,
+        val owner: String? = null,
+        val datasourceTags: List<String> = emptyList(),
+    ) : AuthzResource
 }
 
 /** A column touched by a query, marshalled to Cedar entities by [authorizeColumns]. [key] is the
@@ -164,6 +173,7 @@ data class AuthzContext(
     // The statement's classified kind leaf (`select`, `explain`, `insert`, …). Lets a read policy condition
     // on HOW a column is read — e.g. `result.read.unmasked` only under a plan-only EXPLAIN. Server-attested.
     val stmtKind: String? = null,
+    val nativeOperation: String? = null,
 ) {
     /**
      * The Cedar `context` map. `network_zones` is always present (empty set if none); `tags` too UNLESS
@@ -177,6 +187,7 @@ data class AuthzContext(
         if (includeTags) put("tags", CedarList(tags.map { PrimString(it) as Value }))
         channel?.let { put("channel", PrimString(it)) }
         stmtKind?.let { put("stmt_kind", PrimString(it)) }
+        nativeOperation?.let { put("native_operation", PrimString(it)) }
         requesterIp?.let { ip ->
             // Defensive: a malformed IP must NEVER break the whole decision. Fail-closed means the attribute
             // is simply absent (a policy conditioning on it then denies), not a thrown IpAddress constructor
@@ -215,6 +226,7 @@ private val COLUMN_TYPE: EntityTypeName = EntityTypeName.parse("Column").get()
 private val TAG_TYPE: EntityTypeName = EntityTypeName.parse("Tag").get()
 private val FUNCTION_TYPE: EntityTypeName = EntityTypeName.parse("Function").get()
 private val UTILITY_TYPE: EntityTypeName = EntityTypeName.parse("Utility").get()
+private val NATIVE_RESOURCE_TYPE: EntityTypeName = EntityTypeName.parse("NativeResource").get()
 
 /**
  * Marshalling attaches every tag a resource carries, whatever it is named and whatever type carries it. What
@@ -430,6 +442,10 @@ class Authz(
         resource: AuthzResource,
         context: AuthzContext = AuthzContext(),
     ): AuthzDecision {
+        if (resource is AuthzResource.NativeResource &&
+            (resource.datasourceName.isBlank() || resource.kind.isBlank() || resource.id.isBlank() ||
+                resource.owner?.isBlank() == true || context.nativeOperation.isNullOrBlank())
+        ) return AuthzDecision.Deny("invalid native resource or operation")
         val (resourceEntity, auxEntities) = marshalResource(resource)
         val request = marshal(principal, roles, auxEntities)
         return engine.isAuthorized(request, ACTION_TYPE.of(action.cedarId), resourceEntity, context.toCedarMap()).toAuthzDecision()
@@ -489,6 +505,21 @@ class Authz(
             }
             val grantEuid = ACCESS_GRANT_TYPE.of("${resource.owner}#${resource.id}")
             Entity(grantEuid, mapOf("owner" to ownerEuid), parents) to extraEntities
+        }
+
+        is AuthzResource.NativeResource -> {
+            val dsEuid = DATASOURCE_TYPE.of(resource.datasourceName)
+            val tags = HashMap<String, EntityUID>()
+            val ds = datasourceEntity(dsEuid, resource.datasourceName, resource.datasourceTags, tags)
+            val attrs = buildMap<String, Value> {
+                put("kind", PrimString(resource.kind))
+                put("id", PrimString(resource.id))
+                resource.owner?.let { put("owner", USER_TYPE.of(it)) }
+            }
+            val id = listOf(resource.datasourceName, resource.kind, resource.id).joinToString("/") {
+                java.net.URLEncoder.encode(it, Charsets.UTF_8)
+            }
+            Entity(NATIVE_RESOURCE_TYPE.of(id), attrs, setOf(dsEuid)) to (listOf(ds) + tags.values.map { Entity(it) })
         }
 
         is AuthzResource.Token -> {
@@ -790,6 +821,18 @@ fun Authz.resolveContextTags(
         engine.isAuthorized(request, ACTION_TYPE.of("context.tag::$tag"), dsEntity, contextMap)
             .success.orElse(null)?.isAllowed == true
     }
+}
+
+fun Authz.authorizeNativeResource(
+    principal: String,
+    roles: Set<String>,
+    resource: AuthzResource.NativeResource,
+    operation: String,
+    context: AuthzContext,
+): AuthzDecision {
+    val raw = context.copy(tags = emptySet(), stmtKind = null, nativeOperation = operation)
+    val tags = resolveContextTags(principal, roles, resource.datasourceName, raw, resource.datasourceTags)
+    return authorizeAs(principal, roles, AuthzAction.NATIVE_INVOKE, resource, raw.copy(tags = tags))
 }
 
 /**

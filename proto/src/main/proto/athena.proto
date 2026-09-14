@@ -2,6 +2,8 @@ syntax = "proto3";
 
 package proxymonster.athena.v1;
 
+import "google/protobuf/timestamp.proto";
+
 option java_package = "com.ridi.oss.proxymonster.athena.pb";
 option java_multiple_files = true;
 
@@ -34,4 +36,89 @@ message AthenaPreparedDefinitionNeed {
 message AthenaSubmission {
   string query_string = 1;
   repeated string execution_parameters = 2;
+}
+
+enum NativeAuthorizationPhase {
+  NATIVE_AUTHORIZATION_PHASE_UNSPECIFIED = 0;
+  NATIVE_AUTHORIZATION_PHASE_REQUEST = 1;
+  NATIVE_AUTHORIZATION_PHASE_RESPONSE = 2;
+}
+
+message NativeHeader {
+  string name = 1;
+  repeated string values = 2;
+}
+
+enum AthenaObservationSource {
+  ATHENA_OBSERVATION_SOURCE_UNSPECIFIED = 0;
+  ATHENA_OBSERVATION_SOURCE_AWS_RESPONSE = 2;
+}
+
+message AthenaResourceObservation {
+  AthenaObservationSource source = 1;
+  string kind = 2;
+  string id = 3;
+  optional string owner = 4;
+  string workgroup = 5;
+}
+
+// Decoded only by the Athena provider; credentials, cookies, signatures, and result rows are forbidden.
+message AthenaNativeDescriptor {
+  string service = 1;
+  string operation = 2;
+  string method = 3;
+  string path = 4;
+  string raw_query = 5;
+  repeated NativeHeader functional_headers = 6;
+  // The sanitized request body in both phases; response resources belong in observations, never result cells.
+  bytes body = 7;
+  NativeAuthorizationPhase phase = 8;
+  // AWS-observed resource identities, never client assertions or cached ownership claims.
+  repeated AthenaResourceObservation observations = 9;
+  repeated AthenaCachedContext cached_contexts = 10;
+  AthenaTarget target = 11;
+}
+
+message AthenaTarget {
+  string region = 1;
+  string default_workgroup = 2;
+  string default_catalog = 3;
+  string default_database = 4;
+  string endpoint = 5;
+  // Canonical configured target and stable upstream account/principal identity, attested by the proxy.
+  bytes target_binding = 6;
+}
+
+message AthenaCachedContext {
+  uint32 version = 1;
+  string context_id = 2;
+  string resource_id = 3;
+  string owner = 4;
+  bytes target_binding = 5;
+  google.protobuf.Timestamp expires_at = 6;
+  optional uint32 expected_width = 7;
+  bytes metadata_digest = 8;
+  bytes request_binding = 9;
+  // Canonical Verdict containing only decision, masks, unmaskable_permitted, sanitize_diagnostics, decision_id.
+  bytes enforcement_instructions = 10;
+}
+
+enum AthenaNativeInstruction {
+  ATHENA_NATIVE_INSTRUCTION_UNSPECIFIED = 0;
+  ATHENA_NATIVE_INSTRUCTION_FORWARD_REQUEST = 1;
+  ATHENA_NATIVE_INSTRUCTION_REQUIRE_SQL_ADMISSION = 2;
+  ATHENA_NATIVE_INSTRUCTION_RELEASE_METADATA = 3;
+  ATHENA_NATIVE_INSTRUCTION_APPLY_ORIGINAL_CONTEXT = 4;
+}
+
+message AthenaContextRef {
+  string resource_id = 1;
+  string context_id = 2;
+}
+
+// Permission applies only to this instruction and phase, never arbitrary response bytes.
+message AthenaNativeInstructions {
+  uint32 version = 1;
+  AthenaNativeInstruction action = 2;
+  repeated AthenaContextRef contexts = 3;
 }

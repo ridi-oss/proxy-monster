@@ -50,7 +50,7 @@ type ControlPlaneClient interface {
 	// Per-query enforcement decision. Takes the RAW token, re-validated +
 	// re-resolved server-side every call — never a client-cached principal.
 	Decide(ctx context.Context, in *DecisionRequest, opts ...grpc.CallOption) (*WireDecision, error)
-	// Metadata authorization without opening a database session or allocating a connection catalog.
+	// Metadata or provider-native admission without opening a database session or allocating a connection catalog.
 	AuthorizeRequest(ctx context.Context, in *RequestAuthorization, opts ...grpc.CallOption) (*RequestAuthorizationResult, error)
 	// Per-connection schema fragment push on the enforcement channel.
 	PushSchemaFragment(ctx context.Context, in *SchemaFragmentPush, opts ...grpc.CallOption) (*SchemaFragmentAck, error)
@@ -220,7 +220,7 @@ type ControlPlaneServer interface {
 	// Per-query enforcement decision. Takes the RAW token, re-validated +
 	// re-resolved server-side every call — never a client-cached principal.
 	Decide(context.Context, *DecisionRequest) (*WireDecision, error)
-	// Metadata authorization without opening a database session or allocating a connection catalog.
+	// Metadata or provider-native admission without opening a database session or allocating a connection catalog.
 	AuthorizeRequest(context.Context, *RequestAuthorization) (*RequestAuthorizationResult, error)
 	// Per-connection schema fragment push on the enforcement channel.
 	PushSchemaFragment(context.Context, *SchemaFragmentPush) (*SchemaFragmentAck, error)

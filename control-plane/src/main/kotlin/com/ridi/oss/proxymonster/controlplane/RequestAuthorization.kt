@@ -1,5 +1,6 @@
 package com.ridi.oss.proxymonster.controlplane
 
+import com.google.protobuf.ByteString
 import com.ridi.oss.proxymonster.controlplane.authz.Authz
 import com.ridi.oss.proxymonster.controlplane.authz.AuthzAction
 import com.ridi.oss.proxymonster.controlplane.authz.AuthzContext
@@ -45,8 +46,38 @@ internal fun ControlPlaneCore.resolveRequestIdentity(token: String, clientAddr: 
     ) { providedRoles?.let(policyStore::liveRoleNames) ?: roleResolver.resolve(identity.principal) }
 }
 
+sealed interface RequestAdmission {
+    data class Denied(val denyCode: String) : RequestAdmission
+    data class Allowed(val providerInstructions: ByteString = ByteString.EMPTY) : RequestAdmission
+}
+
 fun interface RequestAuthorizer {
-    fun authorize(request: RequestAuthorization, datasource: Datasource, principal: String, roles: Set<String>, context: AuthzContext, authz: Authz): Boolean
+    fun authorize(request: RequestAuthorization, datasource: Datasource, principal: String, roles: Set<String>, context: AuthzContext, authz: Authz): RequestAdmission
+}
+
+internal fun RequestAuthorization.deniedAdmission() =
+    RequestAdmission.Denied(if (hasNative()) "native.not_authorized" else "datasource.not_connectable")
+
+internal const val MAX_NATIVE_DESCRIPTOR_BYTES = 1024 * 1024
+
+internal fun RequestAuthorizer.authorizeBounded(
+    request: RequestAuthorization,
+    datasource: Datasource,
+    principal: String,
+    roles: Set<String>,
+    context: AuthzContext,
+    authz: Authz,
+): RequestAdmission {
+    if (request.datasourceName.isBlank() || request.datasourceName != datasource.name) return request.deniedAdmission()
+    if (request.operationCase == RequestAuthorization.OperationCase.OPERATION_NOT_SET) return request.deniedAdmission()
+    if (request.hasNative() && (request.native.descriptorVersion == 0 || request.native.descriptorPayload.isEmpty ||
+            request.native.descriptorPayload.size() > MAX_NATIVE_DESCRIPTOR_BYTES)
+    ) return request.deniedAdmission()
+    val admission = authorize(request, datasource, principal, roles, context.copy(tags = emptySet(), stmtKind = null, nativeOperation = null), authz)
+    if (admission is RequestAdmission.Allowed && (admission.providerInstructions.size() > MAX_NATIVE_DESCRIPTOR_BYTES ||
+            request.hasNative() != !admission.providerInstructions.isEmpty)
+    ) return request.deniedAdmission()
+    return admission
 }
 
 internal object MetadataRequestAuthorizer : RequestAuthorizer {
@@ -57,32 +88,32 @@ internal object MetadataRequestAuthorizer : RequestAuthorizer {
         roles: Set<String>,
         context: AuthzContext,
         authz: Authz,
-    ): Boolean {
-        if (request.datasourceName.isBlank() || request.datasourceName != datasource.name) return false
+    ): RequestAdmission {
+        if (request.datasourceName.isBlank() || request.datasourceName != datasource.name) return request.deniedAdmission()
         val catalog = when (request.operationCase) {
             RequestAuthorization.OperationCase.READ_CATALOG -> {
                 val namespace = request.readCatalog.namespace
-                if (namespace.catalog.isBlank() || namespace.schema.isBlank()) return false
+                if (namespace.catalog.isBlank() || namespace.schema.isBlank()) return request.deniedAdmission()
                 namespace.catalog
             }
             RequestAuthorization.OperationCase.READ_TABLE_METADATA -> {
                 val table = request.readTableMetadata.table
-                if (table.catalog.isBlank() || table.schema.isBlank() || table.table.isBlank()) return false
+                if (table.catalog.isBlank() || table.schema.isBlank() || table.table.isBlank()) return request.deniedAdmission()
                 table.catalog
             }
-            else -> return false
+            else -> return request.deniedAdmission()
         }
         try {
             datasource.resolveCatalog(catalog)
         } catch (_: ManagementException) {
-            return false
+            return request.deniedAdmission()
         }
-        return authorizeMetadata(authz, principal, roles, datasource, context)
+        return if (authorizeMetadata(authz, principal, roles, datasource, context)) RequestAdmission.Allowed() else request.deniedAdmission()
     }
 }
 
 internal fun authorizeMetadata(authz: Authz, principal: String, roles: Set<String>, datasource: Datasource, context: AuthzContext): Boolean {
-    val raw = context.copy(tags = emptySet(), stmtKind = null)
+    val raw = context.copy(tags = emptySet(), stmtKind = null, nativeOperation = null)
     val tags = authz.resolveContextTags(principal, roles, datasource.name, raw, datasource.tags)
     return authz.authorizeDatasourceAction(
         principal, roles, AuthzAction.DATASOURCE_CONNECT, datasource.name, raw.copy(tags = tags), datasource.tags,

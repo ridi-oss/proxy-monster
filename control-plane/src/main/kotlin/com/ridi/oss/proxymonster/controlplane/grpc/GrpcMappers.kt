@@ -1,5 +1,6 @@
 package com.ridi.oss.proxymonster.controlplane.grpc
 
+import com.ridi.oss.proxymonster.athena.pb.FetchAthenaPreparedDefinition
 import com.ridi.oss.proxymonster.controlplane.DecisionContext
 import com.ridi.oss.proxymonster.grpc.Refetch
 import com.ridi.oss.proxymonster.grpc.WireDecision
@@ -38,10 +39,17 @@ internal fun DecisionContext.toWireDecision(
             // Echoed back on RunDecision so an execute-under-R run freezes it with the stored result and a
             // later view denies authorization drift (decideResultView). The proxy does not read these.
             resultFingerprint.addAll(ctx.resultFingerprint)
+            ctx.athenaSubmission?.let { athenaSubmission = it }
         }
     }
 }
 
-internal fun beforeDecideDecision(commands: List<Refetch>): WireDecision = wireDecision {
-    beforeDecide = beforeDecide { this.commands.addAll(commands.map { proxyCommand { refetch = it } }) }
+internal fun beforeDecideDecision(
+    commands: List<Refetch>,
+    preparedDefinitions: List<FetchAthenaPreparedDefinition> = emptyList(),
+): WireDecision = wireDecision {
+    beforeDecide = beforeDecide {
+        this.commands.addAll(commands.map { proxyCommand { refetch = it } })
+        this.commands.addAll(preparedDefinitions.map { proxyCommand { fetchAthenaPreparedDefinition = it } })
+    }
 }

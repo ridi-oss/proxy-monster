@@ -28,6 +28,9 @@ import com.ridi.oss.proxymonster.grpc.RunError
 import com.ridi.oss.proxymonster.grpc.columnMask
 import com.ridi.oss.proxymonster.analyzer.pb.CatalogSnapshot
 import com.ridi.oss.proxymonster.analyzer.pb.Column
+import com.ridi.oss.proxymonster.athena.pb.AthenaPreparedDefinitionNeed
+import com.ridi.oss.proxymonster.athena.pb.AthenaSqlContext
+import com.ridi.oss.proxymonster.athena.pb.AthenaSubmission
 import com.ridi.oss.proxymonster.analyzer.pb.FailureClass
 import com.ridi.oss.proxymonster.analyzer.pb.MaskedDisposition
 import com.ridi.oss.proxymonster.analyzer.pb.RequireResultReadGrant
@@ -173,6 +176,10 @@ data class DecisionContext(
     /** ALLOW/MASK only: the `*`-expanded query the wire proxy must send instead of the client's original
      * so target-DB column order matches the mask ordinals. Null = send verbatim. */
     val rewrittenSql: String? = null,
+    /** Athena only: replaces the native query string AND execution parameters; never set with [rewrittenSql]. */
+    val athenaSubmission: AthenaSubmission? = null,
+    /** Athena only: the analysis needs this prepared definition fetched from the target, then a retry. */
+    val athenaPreparedDefinitionNeed: AthenaPreparedDefinitionNeed? = null,
     /** The analyzer's ordered output column names for this decision (an empty list for a passthrough /
      * unanalyzed statement). */
     val outputColumns: List<String> = emptyList(),
@@ -440,6 +447,8 @@ fun decideQuery(
     // never emit. Production callers leave it null; the catalog/analyzer are still built so column-grant
     // resolution is real.
     factsOverride: StatementFacts? = null,
+    // Athena request scope (workgroup, ordered parameters, fetched prepared definitions); null elsewhere.
+    athenaContext: AthenaSqlContext? = null,
 ): DecisionContext {
     val id = ds.id
     val dialect = ds.engine.dialect
@@ -450,7 +459,7 @@ fun decideQuery(
 
     val catalogAndFacts = try {
         val (index, analyzer) = analyzerAndCatalogIndex(ds, catalog, tempColumns, resolvedSearchPath, liveAnsiQuotes)
-        index to (factsOverride ?: analyzer.analyze(sql))
+        index to (factsOverride ?: analyzer.analyze(sql, athenaContext ?: ds.defaultAthenaContext()))
     } catch (e: Exception) {
         return structuralDeny(
             "$CATALOG_CONFIGURATION_DENY: ${e.message ?: e.javaClass.simpleName}",
@@ -465,6 +474,11 @@ fun decideQuery(
         facts.failureClass == FailureClass.FAILURE_CLASS_UNSPECIFIED && !facts.resolved
     ) {
         return structuralDeny(facts.detail.ifBlank { "statement is inadmissible" }, emptyList())
+    }
+    // The analyzer cannot judge EXECUTE without the target-owned definition: no verdict, fetch and retry.
+    if (facts.hasAthenaPreparedDefinitionNeed()) {
+        return structuralDeny(facts.detail.ifBlank { "prepared definition is required" }, emptyList())
+            .copy(athenaPreparedDefinitionNeed = facts.athenaPreparedDefinitionNeed)
     }
 
     if (userGroupStore.isDeactivated(principal)) {
@@ -842,6 +856,12 @@ fun decideQuery(
     ).withAnalyzerRewrite(facts)
 }
 
+// The datasource's registered Athena scope, for decisions that carry no request (editor runs, stored-result
+// views); null for every other engine, and a blank workgroup fails closed in the analyzer.
+private fun Datasource.defaultAthenaContext(): AthenaSqlContext? =
+    if (engine != Engine.ATHENA) null
+    else AthenaSqlContext.newBuilder().setWorkgroup(connectionInfo?.propertiesMap?.get("workgroup").orEmpty()).build()
+
 // A column grant must carry a real masking disposition; an absent/unrecognized one is a malformed effect
 // the walk would otherwise treat as a plain unmasked read, so it fails closed.
 private val MALFORMED_DISPOSITIONS = setOf(
@@ -918,8 +938,12 @@ internal fun wireTaskForbiddenDeny(
 // than each building its own. An EXPLAIN/DESCRIBE keeps its original text — the analyzer emits no
 // rewritten_sql for it (the rewrite is for the inner query it plans). The exception.unanalyzable escape
 // hatches deliberately relay the original whole statement, so they do not call this.
-private fun DecisionContext.withAnalyzerRewrite(facts: StatementFacts): DecisionContext =
-    if (facts.hasRewrittenSql()) copy(rewrittenSql = facts.rewrittenSql) else this
+private fun DecisionContext.withAnalyzerRewrite(facts: StatementFacts): DecisionContext = when {
+    // An Athena submission carries the rewrite (and the bound parameters) itself.
+    facts.hasAthenaSubmission() -> copy(rewrittenSql = null, athenaSubmission = facts.athenaSubmission)
+    facts.hasRewrittenSql() -> copy(rewrittenSql = facts.rewrittenSql)
+    else -> this
+}
 
 // The Cedar action a statement's kind is gated by. "stmt.kind.<k>" is a member of its category action in
 // the schema, so a category or kind preset matches it; an admin-category kind with no preset denies —

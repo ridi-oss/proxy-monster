@@ -30,6 +30,9 @@ import com.ridi.oss.proxymonster.controlplane.decideConnection
 import com.ridi.oss.proxymonster.controlplane.inTx
 import com.ridi.oss.proxymonster.controlplane.systemSchemas
 import com.ridi.oss.proxymonster.controlplane.resolveRequestIdentity
+import com.ridi.oss.proxymonster.controlplane.authorizeBounded
+import com.ridi.oss.proxymonster.controlplane.RequestAdmission
+import com.ridi.oss.proxymonster.controlplane.deniedAdmission
 import com.ridi.oss.proxymonster.controlplane.definition
 import com.ridi.oss.proxymonster.grpc.RequestAuthorization
 import com.ridi.oss.proxymonster.grpc.RequestAuthorizationResult
@@ -199,19 +202,25 @@ class ControlPlaneGrpcService(
     override suspend fun authorizeRequest(request: RequestAuthorization): RequestAuthorizationResult {
         val resolved = core.resolveRequestIdentity(request.token, request.clientAddr.ifBlank { null })
         if (resolved.kind != TokenKind.SESSION && resolved.kind != TokenKind.USER) {
-            throw StatusException(Status.UNAUTHENTICATED.withDescription("metadata requires a native credential"))
+            throw StatusException(Status.UNAUTHENTICATED.withDescription("request authorization requires a wire credential"))
         }
         val ds = core.datasourceStore.getByName(request.datasourceName)
             ?: throw StatusException(Status.NOT_FOUND.withDescription("unknown datasource"))
         val roles = resolved.effectiveRoles
-        val allowed = try {
-            ds.engine.definition.requestAuthorizer.authorize(request, ds, resolved.identity.principal, roles, resolved.context, core.authz)
+        val admission = try {
+            ds.engine.definition.requestAuthorizer.authorizeBounded(request, ds, resolved.identity.principal, roles, resolved.context, core.authz)
         } catch (_: ManagementException) {
-            false
+            request.deniedAdmission()
         }
         return requestAuthorizationResult {
-            this.allowed = allowed
-            if (allowed) principal = resolved.identity.principal else denyReason = "datasource.not_connectable"
+            allowed = admission is RequestAdmission.Allowed
+            when (admission) {
+                is RequestAdmission.Allowed -> {
+                    principal = resolved.identity.principal
+                    providerInstructions = admission.providerInstructions
+                }
+                is RequestAdmission.Denied -> denyReason = admission.denyCode
+            }
             effectiveRoles.addAll(roles)
         }
     }
@@ -221,6 +230,9 @@ class ControlPlaneGrpcService(
         val id = resolved.identity
         val ds = core.datasourceStore.getByName(request.datasourceName)
             ?: throw StatusException(Status.NOT_FOUND.withDescription("unknown datasource '${request.datasourceName}'"))
+        if (request.hasAthenaContext() && ds.engine != Engine.ATHENA) {
+            throw StatusException(Status.INVALID_ARGUMENT.withDescription("native.unsupported_sql_context"))
+        }
         try {
             ds.resolveCatalog(if (request.hasCurrentCatalog()) request.currentCatalog else null)
             request.tempColumnsList.forEach { if (it.hasCatalog()) ds.resolveCatalog(it.catalog) }
@@ -258,9 +270,10 @@ class ControlPlaneGrpcService(
             val outcome = decideConnection(
                 core, request.connectionId, id.principal, ds, request.sql, request.searchPathList,
                 clientAddr, request.mysqlAnsiQuotes, channel, assumeRoles, tempColumns, httpRequesterIp = httpIp,
+                athenaContext = if (request.hasAthenaContext()) request.athenaContext else null,
             ) ?: throw StatusException(Status.NOT_FOUND.withDescription("connection disappeared during Decide"))
         ) {
-            is EnforcementOutcome.BeforeDecide -> beforeDecideDecision(outcome.commands)
+            is EnforcementOutcome.BeforeDecide -> beforeDecideDecision(outcome.commands, outcome.preparedDefinitions)
             is EnforcementOutcome.Verdict -> outcome.ctx.toWireDecision(
                 outcome.decisionId,
                 outcome.generation,

@@ -70,7 +70,7 @@ func (s *RunSession) ServeStatement(sql string, maxRows int) (result engine.Stat
 	}
 	result.Decision, result.Denied, err = engine.ServeStatement(s.qe,
 		s.authzInput(sql, s.token, "", s.connectionID, s.ref.RunAll), s.ref, s.guard,
-		func(toSend string, masks []*pb.ColumnMask) (bool, error) {
+		func(toSend string, masks []*pb.ColumnMask, _ *engine.Decision) (bool, error) {
 			max, runErr := executeMaxRows(maxRows)
 			if runErr != nil {
 				return false, runErr

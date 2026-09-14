@@ -67,7 +67,7 @@ func (s *RunSession) ServeStatement(sql string, maxRows int) (result engine.Stat
 		ConnectionID:   s.connectionID,
 		ProbeNamespace: func() (engine.NamespaceProbe, error) { return probeNamespaceObservation(s.conn, true) },
 		RunCommands:    s.ref.RunAll,
-	}, s.ref, s.guard, func(toSend string, masks []*pb.ColumnMask) (clean bool, runErr error) {
+	}, s.ref, s.guard, func(toSend string, masks []*pb.ColumnMask, _ *engine.Decision) (clean bool, runErr error) {
 		payload := mysqlwire.ComQueryPayload(toSend)
 		if len(payload) >= mysqlwire.MaxPacketPayload {
 			return false, errors.New("query exceeds the maximum MySQL packet payload")
@@ -103,7 +103,7 @@ func (s *RunSession) ServeStatement(sql string, maxRows int) (result engine.Stat
 			rawErrPacket = append([]byte(nil), raw...)
 			return sanitizeErrPacket(raw)
 		}
-		clean, relayErr := relayResultSet(s.conn, true, h)
+		clean, _, relayErr := relayResultSet(s.conn, true, h)
 		s.qe.MarkNamespaceDirty()
 		resetErr := reset()
 		if relayErr != nil {

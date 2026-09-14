@@ -3,16 +3,14 @@ package com.ridi.oss.proxymonster.controlplane
 import com.ridi.oss.proxymonster.classification.SystemTag
 import com.ridi.oss.proxymonster.controlplane.authz.Authz
 import com.ridi.oss.proxymonster.controlplane.authz.AuthzAction
-import com.ridi.oss.proxymonster.controlplane.authz.AuthzDecision
-import com.ridi.oss.proxymonster.controlplane.authz.authorizeDatasourceAction
 import com.ridi.oss.proxymonster.controlplane.authz.requireAdmin
-import com.ridi.oss.proxymonster.controlplane.authz.resolveContextTags
 import com.ridi.oss.proxymonster.controlplane.management.DatasourceManagementService
 import com.ridi.oss.proxymonster.controlplane.grpc.inspectTrustChain
 import com.ridi.oss.proxymonster.controlplane.management.ManagementAuditRecorder
 import com.ridi.oss.proxymonster.controlplane.management.ManagementException
 import com.ridi.oss.proxymonster.analyzer.pb.CatalogSnapshot
 import com.ridi.oss.proxymonster.analyzer.pb.FunctionCatalog
+import com.ridi.oss.proxymonster.grpc.ConnectionInfo
 import com.ridi.oss.proxymonster.grpc.Engine
 import com.ridi.oss.proxymonster.probe.Classification
 import com.ridi.oss.proxymonster.probe.TableDetail
@@ -70,6 +68,8 @@ data class Datasource(
     // proxy may serve a publicly-trusted certificate and publish nothing. A client reads this to know a
     // plaintext greeting must be refused; false means plaintext.
     val advertiseWireTls: Boolean = false,
+    val currentCatalog: String? = null,
+    @Serializable(with = ConnectionInfoSerializer::class) val connectionInfo: ConnectionInfo? = null,
 ) {
     /**
      * The same row with everything a caller would need to reach the proxy removed — the advertised address
@@ -78,6 +78,7 @@ data class Datasource(
      */
     fun withoutConnectionMaterial(): Datasource = copy(
         host = "", port = 0, dbName = "", advertiseAddr = null, advertiseCertChain = null,
+        currentCatalog = null, connectionInfo = null,
     )
 }
 
@@ -125,10 +126,11 @@ data class ClassificationInput(
     val column: String,
     val tags: List<String> = emptyList(),
     val maskFnId: Long? = null,
+    val catalog: String? = null,
 )
 
 @Serializable
-data class ClassificationDelete(val schema: String? = null, val table: String, val column: String)
+data class ClassificationDelete(val schema: String? = null, val table: String, val column: String, val catalog: String? = null)
 
 @Serializable
 data class TestResult(val ok: Boolean, val message: String)
@@ -205,7 +207,7 @@ class DatasourceStore(internal val dataSource: DataSource) {
 
     fun list(): List<Datasource> = dataSource.connection.use { c ->
         c.prepareStatement(
-            "SELECT id, name, engine, host, port, db_name, tags, default_schemas, mysql_lower_case_table_names, catalog_synced_at, last_seen_at, engine_version, advertise_addr, advertise_cert_chain, advertise_wire_tls FROM datasource WHERE deleted_at IS NULL ORDER BY id",
+            "SELECT id, name, engine, host, port, db_name, tags, default_schemas, mysql_lower_case_table_names, catalog_synced_at, last_seen_at, engine_version, advertise_addr, advertise_cert_chain, advertise_wire_tls, current_catalog_name, connection_info FROM datasource WHERE deleted_at IS NULL ORDER BY id",
         ).use { ps ->
             ps.executeQuery().use { rs ->
                 val out = ArrayList<Datasource>()
@@ -218,7 +220,7 @@ class DatasourceStore(internal val dataSource: DataSource) {
     fun get(id: Long): Datasource? = dataSource.connection.use { c -> get(id, c) }
 
     fun get(id: Long, c: java.sql.Connection): Datasource? = c.prepareStatement(
-        "SELECT id, name, engine, host, port, db_name, tags, default_schemas, mysql_lower_case_table_names, catalog_synced_at, last_seen_at, engine_version, advertise_addr, advertise_cert_chain, advertise_wire_tls FROM datasource WHERE id = ? AND deleted_at IS NULL",
+        "SELECT id, name, engine, host, port, db_name, tags, default_schemas, mysql_lower_case_table_names, catalog_synced_at, last_seen_at, engine_version, advertise_addr, advertise_cert_chain, advertise_wire_tls, current_catalog_name, connection_info FROM datasource WHERE id = ? AND deleted_at IS NULL",
     ).use { ps ->
         ps.setLong(1, id)
         ps.executeQuery().use { rs -> if (rs.next()) rs.toDatasource() else null }
@@ -234,7 +236,7 @@ class DatasourceStore(internal val dataSource: DataSource) {
     fun getByName(name: String): Datasource? = dataSource.connection.use { c -> getByName(name, c) }
 
     fun getByName(name: String, c: java.sql.Connection): Datasource? = c.prepareStatement(
-        "SELECT id, name, engine, host, port, db_name, tags, default_schemas, mysql_lower_case_table_names, catalog_synced_at, last_seen_at, engine_version, advertise_addr, advertise_cert_chain, advertise_wire_tls FROM datasource WHERE name = ? AND deleted_at IS NULL",
+        "SELECT id, name, engine, host, port, db_name, tags, default_schemas, mysql_lower_case_table_names, catalog_synced_at, last_seen_at, engine_version, advertise_addr, advertise_cert_chain, advertise_wire_tls, current_catalog_name, connection_info FROM datasource WHERE name = ? AND deleted_at IS NULL",
     ).use { ps ->
         ps.setString(1, name)
         ps.executeQuery().use { rs -> if (rs.next()) rs.toDatasource() else null }
@@ -250,7 +252,7 @@ class DatasourceStore(internal val dataSource: DataSource) {
      */
     fun getIncludingDeleted(id: Long): Datasource? = dataSource.connection.use { c ->
         c.prepareStatement(
-            "SELECT id, name, engine, host, port, db_name, tags, default_schemas, mysql_lower_case_table_names, catalog_synced_at, last_seen_at, engine_version, advertise_addr, advertise_cert_chain, advertise_wire_tls FROM datasource WHERE id = ?",
+            "SELECT id, name, engine, host, port, db_name, tags, default_schemas, mysql_lower_case_table_names, catalog_synced_at, last_seen_at, engine_version, advertise_addr, advertise_cert_chain, advertise_wire_tls, current_catalog_name, connection_info FROM datasource WHERE id = ?",
         ).use { ps ->
             ps.setLong(1, id)
             ps.executeQuery().use { rs -> if (rs.next()) rs.toDatasource() else null }
@@ -304,7 +306,9 @@ class DatasourceStore(internal val dataSource: DataSource) {
         // clears it, so an operator who stops publishing does not strand clients on roots the proxy dropped.
         advertiseCertChain: String?,
         advertiseWireTls: Boolean,
+        connectionInfo: ConnectionInfo? = null,
     ): Datasource {
+        engine.validateConnectionInfo(connectionInfo)
         // A proxy declaring its own posture (`PM_DATASOURCE_TAGS=system:production`) passes; an invented
         // `system:*` name is refused here as on the admin surfaces, so no write path can coin one.
         requireWritableTags(tags)
@@ -351,8 +355,8 @@ class DatasourceStore(internal val dataSource: DataSource) {
                 // coverage (an admin create/rename that doesn't take it can't interleave a stale decision). The
                 // A fresh insert leaves catalog_synced_at NULL.
                 val upsertedId = c.prepareStatement(
-                    """INSERT INTO datasource (name, engine, host, port, db_name, tags, advertise_addr, advertise_cert_chain, advertise_wire_tls)
-                       VALUES (?, ?, ?, ?, ?, ?::jsonb, ?, ?, ?)
+                    """INSERT INTO datasource (name, engine, host, port, db_name, tags, advertise_addr, advertise_cert_chain, advertise_wire_tls, connection_info)
+                       VALUES (?, ?, ?, ?, ?, ?::jsonb, ?, ?, ?, ?::jsonb)
                        ON CONFLICT (name) WHERE deleted_at IS NULL DO UPDATE SET
                            engine  = EXCLUDED.engine,
                            host    = EXCLUDED.host,
@@ -370,7 +374,9 @@ class DatasourceStore(internal val dataSource: DataSource) {
                            END,
                            -- Authoritative every register, so TLS-on -> TLS-off is observable rather than sticky.
                            advertise_wire_tls = EXCLUDED.advertise_wire_tls,
+                           connection_info = COALESCE(EXCLUDED.connection_info, datasource.connection_info),
                            catalog           = CASE WHEN datasource.db_name IS DISTINCT FROM EXCLUDED.db_name THEN NULL ELSE datasource.catalog END,
+                           current_catalog_name = CASE WHEN datasource.db_name IS DISTINCT FROM EXCLUDED.db_name THEN NULL ELSE datasource.current_catalog_name END,
                            catalog_synced_at = CASE WHEN datasource.db_name IS DISTINCT FROM EXCLUDED.db_name THEN NULL ELSE datasource.catalog_synced_at END,
                            default_schemas   = CASE WHEN datasource.db_name IS DISTINCT FROM EXCLUDED.db_name THEN '[]'::jsonb ELSE datasource.default_schemas END,
                            mysql_lower_case_table_names = CASE WHEN datasource.db_name IS DISTINCT FROM EXCLUDED.db_name THEN NULL ELSE datasource.mysql_lower_case_table_names END
@@ -392,6 +398,7 @@ class DatasourceStore(internal val dataSource: DataSource) {
                     // "stop publishing" unexpressible.
                     ps.setString(8, advertiseCertChain)
                     ps.setBoolean(9, advertiseWireTls)
+                    ps.setString(10, connectionInfo?.let { json.encodeToString(ConnectionInfoSerializer, it) })
                     ps.executeQuery().use { rs -> if (rs.next()) rs.getLong(1) else null }
                 }
                 if (upsertedId == null) {
@@ -426,7 +433,8 @@ class DatasourceStore(internal val dataSource: DataSource) {
      * gRPC PushCatalog: replace datasource [id]'s catalog with the snapshot the PROXY introspected and
      * pushed — the control-plane never connects to the target itself. The snapshot is one blob on the
      * datasource row, replaced whole together with the connection's live `default_schemas` /
-     * `mysql_lower_case_table_names` / `catalog_synced_at`. Returns the number of columns stored.
+     * `mysql_lower_case_table_names` / `catalog_synced_at` / `current_catalog_name`. Every column names
+     * the measured catalog or none. Returns the number of columns stored.
      */
     fun storePushedCatalog(
         id: Long,
@@ -434,22 +442,27 @@ class DatasourceStore(internal val dataSource: DataSource) {
         mysqlLowerCaseTableNames: Int?,
         engineVersion: String,
         catalog: CatalogSnapshot,
+        currentCatalog: String? = null,
     ): Int {
-        val duplicate = catalog.columnsList.groupingBy { Triple(it.schema, it.table, it.column) }.eachCount()
+        val duplicate = catalog.columnsList.groupingBy { listOf(it.catalog, it.schema, it.table, it.column) }.eachCount()
             .entries.firstOrNull { it.value > 1 }
         require(duplicate == null) { "duplicate catalog column ${duplicate!!.key}" }
         dataSource.connection.use { c ->
+            val ds = checkNotNull(get(id, c)) { "datasource $id disappeared before catalog push" }
+            val measuredCatalog = ds.measuredCatalog(currentCatalog)
+            catalog.columnsList.forEach { ds.resolveCatalog(it.catalog.ifBlank { null }, measuredCatalog) }
             c.prepareStatement(
                 """UPDATE datasource
                    SET catalog = ?, default_schemas = ?::jsonb, mysql_lower_case_table_names = ?, engine_version = ?,
-                       catalog_synced_at = clock_timestamp()
+                       catalog_synced_at = clock_timestamp(), current_catalog_name = ?
                    WHERE id = ? AND deleted_at IS NULL""",
             ).use { ps ->
                 ps.setBytes(1, catalog.toByteArray())
                 ps.setString(2, json.encodeToString(stringList, defaultSchemas))
                 setNullableInt(ps, 3, mysqlLowerCaseTableNames)
                 ps.setString(4, engineVersion.ifBlank { null })
-                ps.setLong(5, id)
+                ps.setString(5, measuredCatalog)
+                ps.setLong(6, id)
                 check(ps.executeUpdate() == 1) { "datasource $id disappeared before catalog push" }
             }
         }
@@ -478,7 +491,7 @@ class DatasourceStore(internal val dataSource: DataSource) {
      *  both leave a catalog that now describes a DIFFERENT schema, a fail-OPEN unless invalidated. */
     private fun invalidateCatalog(c: java.sql.Connection, id: Long) {
         c.prepareStatement(
-            "UPDATE datasource SET catalog = NULL, catalog_synced_at = NULL, default_schemas = '[]'::jsonb, mysql_lower_case_table_names = NULL WHERE id = ?",
+            "UPDATE datasource SET catalog = NULL, current_catalog_name = NULL, catalog_synced_at = NULL, default_schemas = '[]'::jsonb, mysql_lower_case_table_names = NULL WHERE id = ?",
         ).use { ps -> ps.setLong(1, id); ps.executeUpdate() }
     }
 
@@ -560,13 +573,14 @@ class DatasourceStore(internal val dataSource: DataSource) {
     }
 
 
-    fun catalog(id: Long, c: java.sql.Connection): Catalog = readCatalog(id, c) { snapshot, catalogName, classifications ->
+    fun catalog(id: Long, c: java.sql.Connection): Catalog = readCatalog(id, c) { snapshot, currentCatalog, classifications ->
         snapshot.columnsList
-            .sortedWith(compareBy({ it.schema }, { it.table }, { it.ordinal }))
-            .map { col ->
+            .map { col -> (col.catalog.ifBlank { currentCatalog ?: "" }) to col }
+            .sortedWith(compareBy({ it.first }, { it.second.schema }, { it.second.table }, { it.second.ordinal }))
+            .map { (catalog, col) ->
                 CatalogColumn(
-                    catalogName, col.schema, col.table, col.column, col.dataType, sqlTypeFor(col.dataType),
-                    col.ordinal, col.nullable, classifications[Triple(col.schema, col.table, col.column)],
+                    catalog, col.schema, col.table, col.column, col.dataType, sqlTypeFor(col.dataType),
+                    col.ordinal, col.nullable, classifications[ColumnIdentity(catalog, col.schema, col.table, col.column)],
                 )
             }
     }
@@ -575,18 +589,18 @@ class DatasourceStore(internal val dataSource: DataSource) {
      *  datasource-wide functions. */
     fun connectionCatalog(id: Long, columns: List<CatalogColumn>): Catalog = dataSource.connection.use { c ->
         readCatalog(id, c) { _, _, classifications ->
-            columns.map { row -> row.copy(classification = classifications[Triple(row.schema, row.table, row.column)]) }
+            columns.map { row -> row.copy(classification = classifications[ColumnIdentity(row.catalog, row.schema, row.table, row.column)]) }
         }
     }
 
     private fun readCatalog(
         id: Long,
         c: java.sql.Connection,
-        columns: (CatalogSnapshot, String, Map<Triple<String, String, String>, Classification>) -> List<CatalogColumn>,
+        columns: (CatalogSnapshot, String?, Map<ColumnIdentity, Classification>) -> List<CatalogColumn>,
     ): Catalog = c.prepareStatement(
-        """SELECT CASE WHEN lower(d.engine) = 'mysql' THEN 'def' ELSE d.db_name END AS catalog_name, d.catalog,
+        """SELECT d.current_catalog_name, d.catalog,
                   d.catalog_synced_at >= ? AS functions_fresh,
-                  cl.schema_name, cl.table_name, cl.column_name, cl.tags, cl.mask_fn_id, m.name AS mask_fn_name
+                  cl.catalog_name, cl.schema_name, cl.table_name, cl.column_name, cl.tags, cl.mask_fn_id, m.name AS mask_fn_name
            FROM datasource d
            LEFT JOIN column_classification cl ON cl.datasource_id = d.id
            LEFT JOIN mask_fn m ON m.id = cl.mask_fn_id AND m.deleted_at IS NULL
@@ -595,18 +609,18 @@ class DatasourceStore(internal val dataSource: DataSource) {
         ps.setTimestamp(1, startedAt)
         ps.setLong(2, id)
         ps.executeQuery().use { rs ->
-            var catalogName = ""
+            var currentCatalog: String? = null
             var snapshot = CatalogSnapshot.getDefaultInstance()
             var functionsFresh = false
-            val classifications = HashMap<Triple<String, String, String>, Classification>()
+            val classifications = HashMap<ColumnIdentity, Classification>()
             while (rs.next()) {
-                catalogName = rs.getString("catalog_name")
+                currentCatalog = rs.getString("current_catalog_name")
                 rs.getBytes("catalog")?.let { snapshot = CatalogSnapshot.parseFrom(it) }
                 functionsFresh = rs.getBoolean("functions_fresh")
-                rs.classification()?.let { classifications[Triple(it.schema, it.table, it.column)] = it }
+                rs.classification()?.let { classifications[ColumnIdentity(it.catalog!!, it.schema, it.table, it.column)] = it }
             }
             Catalog(
-                columns(snapshot, catalogName, classifications),
+                columns(snapshot, currentCatalog, classifications),
                 if (functionsFresh && snapshot.hasFunctions()) snapshot.functions else null,
             )
         }
@@ -615,7 +629,7 @@ class DatasourceStore(internal val dataSource: DataSource) {
     private fun java.sql.ResultSet.classification(): Classification? = getString("tags")?.let { tags ->
         Classification(
             getString("schema_name"), getString("table_name"), getString("column_name"),
-            json.decodeFromString(stringList, tags), longOrNull("mask_fn_id"), getString("mask_fn_name"),
+            json.decodeFromString(stringList, tags), longOrNull("mask_fn_id"), getString("mask_fn_name"), getString("catalog_name"),
         )
     }
 
@@ -623,10 +637,10 @@ class DatasourceStore(internal val dataSource: DataSource) {
      * Live classification metadata keyed independently of the pushed catalog. Enforcement fragments provide the
      * structural rows; classifications remain CP-owned and can change without a connection re-introspection.
      */
-    fun classificationsFor(id: Long): Map<Triple<String, String, String>, Classification> =
+    fun classificationsFor(id: Long): Map<ColumnIdentity, Classification> =
         dataSource.connection.use { c ->
             c.prepareStatement(
-                """SELECT cl.schema_name, cl.table_name, cl.column_name, cl.tags, cl.mask_fn_id,
+                """SELECT cl.catalog_name, cl.schema_name, cl.table_name, cl.column_name, cl.tags, cl.mask_fn_id,
                           m.name AS mask_fn_name
                    FROM column_classification cl
                    LEFT JOIN mask_fn m ON m.id = cl.mask_fn_id AND m.deleted_at IS NULL
@@ -640,7 +654,7 @@ class DatasourceStore(internal val dataSource: DataSource) {
                             val table = rs.getString("table_name")
                             val column = rs.getString("column_name")
                             put(
-                                Triple(schema, table, column),
+                                ColumnIdentity(rs.getString("catalog_name"), schema, table, column),
                                 Classification(
                                     schema,
                                     table,
@@ -648,6 +662,7 @@ class DatasourceStore(internal val dataSource: DataSource) {
                                     json.decodeFromString(stringList, rs.getString("tags")),
                                     rs.longOrNull("mask_fn_id"),
                                     rs.getString("mask_fn_name"),
+                                    rs.getString("catalog_name"),
                                 ),
                             )
                         }
@@ -672,11 +687,12 @@ class DatasourceStore(internal val dataSource: DataSource) {
         // so the caller sees a tagged column while the real one stays untagged and reads cleartext.
         val schema = input.schema?.takeIf(String::isNotBlank) ?: defaultSchema(id, c)
             ?: throw IllegalArgumentException("schema is required until datasource introspection captures a default schema")
+        val catalog = checkNotNull(get(id, c)).resolveCatalog(input.catalog)
         c.prepareStatement(
             """INSERT INTO column_classification
-               (datasource_id, schema_name, table_name, column_name, tags, mask_fn_id, updated_at)
-               VALUES (?, ?, ?, ?, ?::jsonb, ?, now())
-               ON CONFLICT (datasource_id, schema_name, table_name, column_name)
+               (datasource_id, schema_name, table_name, column_name, tags, mask_fn_id, updated_at, catalog_name)
+               VALUES (?, ?, ?, ?, ?::jsonb, ?, now(), ?)
+               ON CONFLICT (datasource_id, catalog_name, schema_name, table_name, column_name)
                DO UPDATE SET tags = EXCLUDED.tags, mask_fn_id = EXCLUDED.mask_fn_id, updated_at = now()""",
         ).use { ps ->
             ps.setLong(1, id)
@@ -685,9 +701,10 @@ class DatasourceStore(internal val dataSource: DataSource) {
             ps.setString(4, input.column)
             ps.setString(5, json.encodeToString(stringList, input.tags))
             setNullableLong(ps, 6, input.maskFnId)
+            ps.setString(7, catalog)
             ps.executeUpdate()
         }
-        return Classification(schema, input.table, input.column, input.tags, input.maskFnId, maskFnName(input.maskFnId, c))
+        return Classification(schema, input.table, input.column, input.tags, input.maskFnId, maskFnName(input.maskFnId, c), catalog)
     }
 
     private fun maskFnName(id: Long?, c: java.sql.Connection): String? {
@@ -710,16 +727,18 @@ class DatasourceStore(internal val dataSource: DataSource) {
 
     private fun java.sql.ResultSet.intOrNull(col: String): Int? = getInt(col).let { if (wasNull()) null else it }
 
-    fun deleteClassification(id: Long, schema: String, table: String, column: String): Boolean =
-        dataSource.connection.use { c -> deleteClassification(id, schema, table, column, c) }
+    fun deleteClassification(id: Long, schema: String, table: String, column: String, catalog: String? = null): Boolean =
+        dataSource.connection.use { c -> deleteClassification(id, schema, table, column, c, catalog) }
 
-    fun deleteClassification(id: Long, schema: String, table: String, column: String, c: java.sql.Connection): Boolean =
-        c.prepareStatement(
-            "DELETE FROM column_classification WHERE datasource_id=? AND schema_name=? AND table_name=? AND column_name=?",
+    fun deleteClassification(id: Long, schema: String, table: String, column: String, c: java.sql.Connection, catalog: String? = null): Boolean {
+        val resolvedCatalog = checkNotNull(get(id, c)).resolveCatalog(catalog)
+        return c.prepareStatement(
+            "DELETE FROM column_classification WHERE datasource_id=? AND schema_name=? AND table_name=? AND column_name=? AND catalog_name=?",
         ).use { ps ->
-            ps.setLong(1, id); ps.setString(2, schema); ps.setString(3, table); ps.setString(4, column)
+            ps.setLong(1, id); ps.setString(2, schema); ps.setString(3, table); ps.setString(4, column); ps.setString(5, resolvedCatalog)
             ps.executeUpdate() > 0
         }
+    }
 
     private fun java.sql.ResultSet.toDatasource() = Datasource(
         id = getLong("id"),
@@ -737,6 +756,8 @@ class DatasourceStore(internal val dataSource: DataSource) {
         advertiseAddr = getString("advertise_addr"),
         advertiseCertChain = getString("advertise_cert_chain"),
         advertiseWireTls = getBoolean("advertise_wire_tls"),
+        currentCatalog = getString("current_catalog_name"),
+        connectionInfo = getString("connection_info")?.let { json.decodeFromString(ConnectionInfoSerializer, it) },
     )
 }
 
@@ -782,13 +803,9 @@ private fun ApplicationCall.bearerWirePrincipal(tokenStore: TokenStore, userGrou
     val header = request.headers[HttpHeaders.Authorization] ?: return null
     if (!header.startsWith("Bearer ", ignoreCase = true)) return null
     val token = header.substring(7).trim().ifBlank { return null }
-    val id = tokenStore.resolve(token) ?: return null
+    val id = resolveActiveToken(tokenStore, userGroupStore, token) ?: return null
     val kind = TokenKind.fromWire(id.kind)
     if (kind != TokenKind.SESSION && kind != TokenKind.USER) return null
-    // Fail closed for a deactivated principal even if a token row survived — matches the gRPC decide path
-    // (a SCIM active=false push or a failed IdP liveness recheck can mark the app_user inactive without the
-    // credential revoke having raced in yet).
-    if (userGroupStore.isDeactivated(id.principal)) return null
     return id.principal
 }
 
@@ -825,12 +842,8 @@ fun Route.datasourceRoutes(
     // claimed roles as real assignments so Cedar can evaluate them, so short-circuiting the decision here
     // would only hide the policy dev is configured to exercise.
     fun mayConnect(call: ApplicationCall, principal: String, ds: Datasource): Boolean {
-        val roles = roleResolver.resolve(principal)
-        val raw = call.httpAuthzContext(config)
-        val tags = authz.resolveContextTags(principal, roles, ds.name, raw, ds.tags)
-        return authz.authorizeDatasourceAction(
-            principal, roles, AuthzAction.DATASOURCE_CONNECT, ds.name, raw.copy(tags = tags), ds.tags,
-        ) !is AuthzDecision.Deny
+        if (userGroupStore.isDeactivated(principal)) return false
+        return authorizeMetadata(authz, principal, roleResolver.resolve(principal), ds, call.httpAuthzContext(config))
     }
 
     // The datasource LIST stays open to every authenticated principal: the SQL editor's picker,
@@ -1015,7 +1028,7 @@ fun Route.datasourceRoutes(
             return@get call.respond(HttpStatusCode.Forbidden, ApiError("datasource.not_connectable"))
         }
         try {
-            call.respond(management.getTableDetail(datasource.name, schema, table))
+            call.respond(management.getTableDetail(datasource.name, schema, table, call.request.queryParameters["catalog"]))
         } catch (e: ManagementException) {
             call.respondManagementError(e)
         }
@@ -1027,7 +1040,7 @@ fun Route.datasourceRoutes(
         try {
             call.respond(
                 management.setColumnClassification(
-                    id, input.schema, input.table, input.column, input.tags, input.maskFnId, call.auditActor(config),
+                    id, input.schema, input.table, input.column, input.tags, input.maskFnId, call.auditActor(config), input.catalog,
                 ),
             )
         } catch (e: ManagementException) {
@@ -1039,7 +1052,7 @@ fun Route.datasourceRoutes(
         val id = call.idParam() ?: return@delete call.respond(HttpStatusCode.BadRequest, ApiError("common.bad_id"))
         val body = call.receive<ClassificationDelete>()
         try {
-            management.clearColumnClassification(id, body.schema, body.table, body.column, call.auditActor(config))
+            management.clearColumnClassification(id, body.schema, body.table, body.column, call.auditActor(config), body.catalog)
             call.respond(HttpStatusCode.NoContent)
         } catch (e: ManagementException) {
             call.respondManagementError(e)

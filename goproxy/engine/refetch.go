@@ -8,10 +8,12 @@ import (
 	"strconv"
 
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
+	"google.golang.org/protobuf/proto"
 )
 
 // Refetcher executes connection-local catalog commands through callback-injected held-target DB I/O.
 type Refetcher struct {
+	Catalog           string
 	Db                Db
 	ConnectionID      []byte
 	BackendGeneration uint64
@@ -39,6 +41,10 @@ func (r *Refetcher) Run(cmd *pb.Refetch) error {
 		return errors.New("refetcher has no push callback")
 	}
 
+	if cmd.Catalog != nil && (cmd.GetCatalog() == "" || cmd.GetCatalog() != r.Catalog) {
+		return fmt.Errorf("refetch catalog %q does not match target catalog %q", cmd.GetCatalog(), r.Catalog)
+	}
+
 	var setupRows [][]*string
 	if setupSQL := r.Db.HashSetupProbeSQL(); setupSQL != "" {
 		rows, err := r.Probe(setupSQL, r.Db.HashSetupColumns())
@@ -47,12 +53,17 @@ func (r *Refetcher) Run(cmd *pb.Refetch) error {
 		}
 	}
 
+	var catalog *string
+	if r.Catalog != "" {
+		catalog = proto.String(r.Catalog)
+	}
 	hashSQL, hashColumns, hashSQLErr := r.Db.SchemaHashSQL(cmd.GetSchema(), setupRows)
 	h1, trusted1 := r.measureHash(hashSQL, hashColumns, hashSQLErr)
 	if trusted1 && len(cmd.GetIfHashDiffers()) > 0 && bytes.Equal(h1, cmd.GetIfHashDiffers()) {
 		_, err := r.Push(&pb.SchemaFragmentPush{
 			ConnectionId:      append([]byte(nil), r.ConnectionID...),
 			Schema:            cmd.GetSchema(),
+			Catalog:           catalog,
 			ContentHash:       append([]byte(nil), h1...),
 			Unchanged:         true,
 			BackendGeneration: r.BackendGeneration,
@@ -69,6 +80,9 @@ func (r *Refetcher) Run(cmd *pb.Refetch) error {
 		return fmt.Errorf("mapping schema %q fragment: %w", cmd.GetSchema(), err)
 	}
 
+	for _, column := range columns {
+		column.Catalog = r.Catalog
+	}
 	h2, trusted2 := r.measureHash(hashSQL, hashColumns, hashSQLErr)
 	contentHash := make([]byte, 32)
 	if _, err := rand.Read(contentHash); err != nil {
@@ -81,6 +95,7 @@ func (r *Refetcher) Run(cmd *pb.Refetch) error {
 	_, err = r.Push(&pb.SchemaFragmentPush{
 		ConnectionId:      append([]byte(nil), r.ConnectionID...),
 		Schema:            cmd.GetSchema(),
+		Catalog:           catalog,
 		ContentHash:       contentHash,
 		Columns:           columns,
 		BackendGeneration: r.BackendGeneration,

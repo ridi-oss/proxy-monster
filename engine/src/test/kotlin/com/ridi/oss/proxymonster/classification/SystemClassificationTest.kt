@@ -144,12 +144,12 @@ class SystemClassificationTest {
     )
 
     @Test
-    fun `an exact major and a newer minor both resolve to the series manifest, no fallback`() {
+    fun `an exact series resolves without fallback`() {
         val s = store()
-        s.resolve("postgres", "17.9", allowFallback = false)!!.let {
+        s.resolveSeries("postgres", "17", allowFallback = false)!!.let {
             assertEquals("17", it.resolvedSeries); assertFalse(it.isFallback)
         }
-        s.resolve("mysql", "8.0.44", allowFallback = false)!!.let {
+        s.resolveSeries("mysql", "8.0", allowFallback = false)!!.let {
             assertEquals("8.0", it.resolvedSeries); assertFalse(it.isFallback)
         }
     }
@@ -157,8 +157,8 @@ class SystemClassificationTest {
     @Test
     fun `an unsupported major is unavailable without fallback, and falls back to the nearest lower with it`() {
         val s = store()
-        assertNull(s.resolve("postgres", "18.3", allowFallback = false), "uncertified major → no manifest (fail-closed)")
-        s.resolve("postgres", "18.3", allowFallback = true)!!.let {
+        assertNull(s.resolveSeries("postgres", "18", allowFallback = false), "uncertified major → no manifest (fail-closed)")
+        s.resolveSeries("postgres", "18", allowFallback = true)!!.let {
             assertEquals("18", it.requestedSeries)
             assertEquals("17", it.resolvedSeries) // nearest lower supported major
             assertTrue(it.isFallback)
@@ -168,7 +168,7 @@ class SystemClassificationTest {
     @Test
     fun `a datasource older than every supported major falls back to the lowest`() {
         val s = store()
-        s.resolve("postgres", "14.22", allowFallback = true)!!.let {
+        s.resolveSeries("postgres", "14", allowFallback = true)!!.let {
             assertEquals("16", it.resolvedSeries) // lowest supported, since 14 < all
             assertTrue(it.isFallback)
         }
@@ -177,8 +177,8 @@ class SystemClassificationTest {
     @Test
     fun `mysql 8_4 falls back to 8_0 nearest-lower reasoning stays within engine`() {
         val s = store()
-        assertNull(s.resolve("mysql", "9.0.0", allowFallback = false))
-        s.resolve("mysql", "9.0.0", allowFallback = true)!!.let {
+        assertNull(s.resolveSeries("mysql", "9.0", allowFallback = false))
+        s.resolveSeries("mysql", "9.0", allowFallback = true)!!.let {
             assertEquals("8.4", it.resolvedSeries) // nearest lower mysql family; never crosses to postgres
             assertTrue(it.isFallback)
         }
@@ -284,13 +284,13 @@ class SystemClassificationTest {
     }
 
     @Test
-    fun `real version resolution + Aurora fallback`() {
+    fun `bundled manifest series resolution and fallback`() {
         val s = SystemClassificationStore.load()
-        assertEquals("17", s.resolve("postgres", "17.9", allowFallback = false)!!.resolvedSeries)
-        assertEquals("8.0", s.resolve("mysql", "8.0.44", allowFallback = false)!!.resolvedSeries)
+        assertEquals("17", s.resolveSeries("postgres", "17", allowFallback = false)!!.resolvedSeries)
+        assertEquals("8.0", s.resolveSeries("mysql", "8.0", allowFallback = false)!!.resolvedSeries)
         // Aurora PG 18 (added Jun 2026) has no manifest yet → nearest-lower fallback to 17
-        assertNull(s.resolve("postgres", "18.3", allowFallback = false))
-        s.resolve("postgres", "18.3", allowFallback = true)!!.let {
+        assertNull(s.resolveSeries("postgres", "18", allowFallback = false))
+        s.resolveSeries("postgres", "18", allowFallback = true)!!.let {
             assertEquals("17", it.resolvedSeries); assertTrue(it.isFallback)
         }
     }

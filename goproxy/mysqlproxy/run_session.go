@@ -11,6 +11,7 @@ import (
 	"github.com/ridi-oss/proxy-monster/goproxy/engine"
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
 	"github.com/ridi-oss/proxy-monster/goproxy/spi"
+	"github.com/ridi-oss/proxy-monster/goproxy/sqltarget"
 	"github.com/ridi-oss/proxy-monster/goproxy/wire"
 	"github.com/ridi-oss/proxy-monster/mysqlwire"
 )
@@ -18,7 +19,7 @@ import (
 type RunSession struct {
 	conn         net.Conn
 	connID       uint32
-	target       spi.TargetDb
+	target       sqltarget.Config
 	token        string
 	connectionID []byte
 	qe           *engine.QueryEngine
@@ -26,7 +27,7 @@ type RunSession struct {
 	guard        engine.ExecGuard
 }
 
-func NewRunSession(ctx context.Context, target spi.TargetDb, db engine.Db, client spi.SessionClient, token string, connectionID []byte, guard engine.ExecGuard, readTimeout time.Duration) (*RunSession, error) {
+func NewRunSession(ctx context.Context, target sqltarget.Config, db engine.Db, client spi.SessionClient, token string, connectionID []byte, guard engine.ExecGuard, readTimeout time.Duration) (*RunSession, error) {
 	conn, connID, err := dialTargetDbAuthID(ctx, target, true)
 	if err != nil {
 		return nil, err
@@ -43,12 +44,13 @@ func NewRunSession(ctx context.Context, target spi.TargetDb, db engine.Db, clien
 		target:       target,
 		token:        token,
 		connectionID: append([]byte(nil), connectionID...),
-		qe:           engine.NewQueryEngine(db, client),
+		qe:           engine.NewQueryEngine(client),
 		guard:        guard,
 	}
 	s.ref = engine.NewRefetcher(db, s.connectionID, generation, func(sql string, expectedColumns int) ([][]*string, error) {
 		return runInternalQuery(s.conn, true, sql, expectedColumns)
 	}, client.PushSchemaFragment)
+	s.ref.Catalog = "def"
 	return s, nil
 }
 

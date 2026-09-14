@@ -272,12 +272,12 @@ class StatementFactsGrantLoopTest {
                 resolved = false
                 statementExec = executeGrant(StatementKind.STATEMENT_KIND_SELECT)
                 failureClass = FailureClass.FAILURE_CLASS_UNANALYZABLE
-                schemaQualifierCandidates.add("newly_created_schema")
+                namespaceQualifierCandidates.add(namespace("app", "newly_created_schema"))
             },
         )
         assertEquals(EnfAction.DENY, ctx.action)
         assertTrue(ctx.catalogMiss)
-        assertEquals(setOf("newly_created_schema"), ctx.schemaCandidates)
+        assertEquals(setOf(namespace("app", "newly_created_schema")), ctx.schemaCandidates)
     }
 
     @Test
@@ -334,12 +334,12 @@ class StatementFactsGrantLoopTest {
         val facts = statementFacts {
             resolved = true
             statementExec = executeGrant(StatementKind.STATEMENT_KIND_SHOW_METADATA)
-            schemaQualifierCandidates.add("public")
+            namespaceQualifierCandidates.add(namespace("app", "public"))
         }
         val ctx = decide(facts)
         assertEquals(EnfAction.ALLOW, ctx.action)
         assertTrue(ctx.passthrough)
-        assertEquals(setOf("public"), ctx.schemaCandidates)
+        assertEquals(setOf(namespace("app", "public")), ctx.schemaCandidates)
     }
 
     @Test

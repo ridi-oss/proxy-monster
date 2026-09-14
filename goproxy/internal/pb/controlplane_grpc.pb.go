@@ -28,6 +28,7 @@ const (
 	ControlPlane_PushCatalog_FullMethodName        = "/proxymonster.v1.ControlPlane/PushCatalog"
 	ControlPlane_ValidateToken_FullMethodName      = "/proxymonster.v1.ControlPlane/ValidateToken"
 	ControlPlane_Decide_FullMethodName             = "/proxymonster.v1.ControlPlane/Decide"
+	ControlPlane_AuthorizeRequest_FullMethodName   = "/proxymonster.v1.ControlPlane/AuthorizeRequest"
 	ControlPlane_PushSchemaFragment_FullMethodName = "/proxymonster.v1.ControlPlane/PushSchemaFragment"
 	ControlPlane_CloseConnection_FullMethodName    = "/proxymonster.v1.ControlPlane/CloseConnection"
 	ControlPlane_Events_FullMethodName             = "/proxymonster.v1.ControlPlane/Events"
@@ -49,6 +50,8 @@ type ControlPlaneClient interface {
 	// Per-query enforcement decision. Takes the RAW token, re-validated +
 	// re-resolved server-side every call — never a client-cached principal.
 	Decide(ctx context.Context, in *DecisionRequest, opts ...grpc.CallOption) (*WireDecision, error)
+	// Metadata authorization without opening a database session or allocating a connection catalog.
+	AuthorizeRequest(ctx context.Context, in *RequestAuthorization, opts ...grpc.CallOption) (*RequestAuthorizationResult, error)
 	// Per-connection schema fragment push on the enforcement channel.
 	PushSchemaFragment(ctx context.Context, in *SchemaFragmentPush, opts ...grpc.CallOption) (*SchemaFragmentAck, error)
 	// Proxy-initiated connection close; the control-plane idle-sweep is the backstop.
@@ -113,6 +116,16 @@ func (c *controlPlaneClient) Decide(ctx context.Context, in *DecisionRequest, op
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(WireDecision)
 	err := c.cc.Invoke(ctx, ControlPlane_Decide_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *controlPlaneClient) AuthorizeRequest(ctx context.Context, in *RequestAuthorization, opts ...grpc.CallOption) (*RequestAuthorizationResult, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(RequestAuthorizationResult)
+	err := c.cc.Invoke(ctx, ControlPlane_AuthorizeRequest_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -207,6 +220,8 @@ type ControlPlaneServer interface {
 	// Per-query enforcement decision. Takes the RAW token, re-validated +
 	// re-resolved server-side every call — never a client-cached principal.
 	Decide(context.Context, *DecisionRequest) (*WireDecision, error)
+	// Metadata authorization without opening a database session or allocating a connection catalog.
+	AuthorizeRequest(context.Context, *RequestAuthorization) (*RequestAuthorizationResult, error)
 	// Per-connection schema fragment push on the enforcement channel.
 	PushSchemaFragment(context.Context, *SchemaFragmentPush) (*SchemaFragmentAck, error)
 	// Proxy-initiated connection close; the control-plane idle-sweep is the backstop.
@@ -248,6 +263,9 @@ func (UnimplementedControlPlaneServer) ValidateToken(context.Context, *ValidateT
 }
 func (UnimplementedControlPlaneServer) Decide(context.Context, *DecisionRequest) (*WireDecision, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method Decide not implemented")
+}
+func (UnimplementedControlPlaneServer) AuthorizeRequest(context.Context, *RequestAuthorization) (*RequestAuthorizationResult, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method AuthorizeRequest not implemented")
 }
 func (UnimplementedControlPlaneServer) PushSchemaFragment(context.Context, *SchemaFragmentPush) (*SchemaFragmentAck, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method PushSchemaFragment not implemented")
@@ -360,6 +378,24 @@ func _ControlPlane_Decide_Handler(srv interface{}, ctx context.Context, dec func
 	return interceptor(ctx, in, info, handler)
 }
 
+func _ControlPlane_AuthorizeRequest_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RequestAuthorization)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ControlPlaneServer).AuthorizeRequest(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ControlPlane_AuthorizeRequest_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ControlPlaneServer).AuthorizeRequest(ctx, req.(*RequestAuthorization))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _ControlPlane_PushSchemaFragment_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(SchemaFragmentPush)
 	if err := dec(in); err != nil {
@@ -461,6 +497,10 @@ var ControlPlane_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "Decide",
 			Handler:    _ControlPlane_Decide_Handler,
+		},
+		{
+			MethodName: "AuthorizeRequest",
+			Handler:    _ControlPlane_AuthorizeRequest_Handler,
 		},
 		{
 			MethodName: "PushSchemaFragment",

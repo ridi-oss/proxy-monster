@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/alecthomas/kong"
-	"github.com/ridi-oss/proxy-monster/goproxy/engine"
 	"github.com/ridi-oss/proxy-monster/goproxy/spi"
 )
 
@@ -24,11 +23,6 @@ import (
 type rawFlags struct {
 	Engine                 string `env:"PM_ENGINE" default:"mysql"`
 	ProxyPort              string `env:"PM_PROXY_PORT"`
-	TargetHost             string `env:"PM_TARGET_HOST" default:"localhost"`
-	TargetPort             string `env:"PM_TARGET_PORT"`
-	TargetDb               string `env:"PM_TARGET_DB" default:"acme"`
-	TargetUser             string `env:"PM_TARGET_USER" default:"acme"`
-	TargetPassword         string `env:"PM_TARGET_PASSWORD" default:"acme"`
 	ControlPlaneGrpcTarget string `env:"PM_CONTROL_PLANE_GRPC" default:"localhost:9090"`
 	DatasourceName         string `env:"PM_DATASOURCE_NAME"`
 	DatasourceTags         string `env:"PM_DATASOURCE_TAGS"`
@@ -69,18 +63,10 @@ func blankToAbsent(s string) string {
 // Config is the proxy's normalized configuration. A blank string field means "absent"; there is no
 // separate presence flag.
 type Config struct {
-	// Engine is the raw, lowercased PM_ENGINE value — the genuine string source kept for error messages
-	// and the boot log. Dialect is the typed form every downstream consumer uses; the string is parsed to
-	// it exactly once, here at the config boundary.
+	// Engine is the canonical provider name from PM_ENGINE.
 	Engine                 string
-	Dialect                engine.Dialect
 	Provider               spi.Provider
 	ProxyPort              int
-	TargetHost             string
-	TargetPort             int
-	TargetDb               string
-	TargetUser             string
-	TargetPassword         string
 	ControlPlaneGrpcTarget string
 	DatasourceName         string
 	DatasourceTags         []string
@@ -120,20 +106,11 @@ func Load(registry spi.Registry) (*Config, error) {
 	}
 
 	engineName := strings.ToLower(raw.Engine)
-	dialect, parseErr := engine.ParseDialect(engineName)
-	var provider spi.Provider
-	if parseErr == nil {
-		provider, _ = registry.For(dialect)
-	}
+	provider, _ := registry.For(engineName)
 
 	proxyPort := parsePort(raw.ProxyPort)
 	if proxyPort == 0 && provider != nil {
-		proxyPort = dialect.DefaultProxyPort()
-	}
-
-	targetPort := parsePort(raw.TargetPort)
-	if targetPort == 0 && provider != nil {
-		targetPort = dialect.DefaultTargetPort()
+		proxyPort = provider.Definition().DefaultProxyPort
 	}
 
 	queryTimeout := 600 * time.Second
@@ -166,14 +143,8 @@ func Load(registry spi.Registry) (*Config, error) {
 
 	return &Config{
 		Engine:                 engineName,
-		Dialect:                dialect,
 		Provider:               provider,
 		ProxyPort:              proxyPort,
-		TargetHost:             raw.TargetHost,
-		TargetPort:             targetPort,
-		TargetDb:               raw.TargetDb,
-		TargetUser:             raw.TargetUser,
-		TargetPassword:         raw.TargetPassword,
 		ControlPlaneGrpcTarget: raw.ControlPlaneGrpcTarget,
 		// A whitespace-only value is absent, so Validate()/TLSEnabled() treat it as unset rather than a
 		// usable name/path.
@@ -220,7 +191,7 @@ func (c *Config) Validate() error {
 
 	// (3) Validate the engine BEFORE any register. The injected registry is the supported-engine authority;
 	// adding a provider changes only its wiring row, not config or the engine core.
-	if !c.Dialect.Valid() || c.Provider == nil {
+	if c.Provider == nil {
 		return fmt.Errorf("unsupported PM_ENGINE=%s", c.Engine)
 	}
 

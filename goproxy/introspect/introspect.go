@@ -25,7 +25,7 @@ import (
 	"github.com/ridi-oss/proxy-monster/goproxy/db"
 	"github.com/ridi-oss/proxy-monster/goproxy/engine"
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
-	"github.com/ridi-oss/proxy-monster/goproxy/spi"
+	"github.com/ridi-oss/proxy-monster/goproxy/sqltarget"
 )
 
 // queryTimeout bounds every introspection query. A full catalog scan of a large schema on a remote
@@ -49,7 +49,7 @@ FROM information_schema.columns
 ORDER BY table_schema, table_name, ordinal_position`
 
 // OpenMySQLTarget opens a database/sql handle to a MySQL target (plaintext link, 5s connect / 30s socket).
-func OpenMySQLTarget(target spi.TargetDb) (*sql.DB, error) {
+func OpenMySQLTarget(target sqltarget.Config) (*sql.DB, error) {
 	cfg := mysqldriver.NewConfig()
 	cfg.User = target.User
 	cfg.Passwd = target.Password
@@ -75,7 +75,7 @@ func OpenMySQLTarget(target spi.TargetDb) (*sql.DB, error) {
 }
 
 // OpenPostgresTarget opens a database/sql handle to a Postgres target.
-func OpenPostgresTarget(target spi.TargetDb) (*sql.DB, error) {
+func OpenPostgresTarget(target sqltarget.Config) (*sql.DB, error) {
 	// pgx has no socket-timeout DSN param; the per-query 30s context below carries that intent.
 	u := url.URL{
 		Scheme:   "postgres",
@@ -91,31 +91,17 @@ func OpenPostgresTarget(target spi.TargetDb) (*sql.DB, error) {
 	return db, nil
 }
 
-// TargetOpener supplies the dialect-specific open + namespace-probe capabilities Run needs, plus the
-// dialect's engine.Db — whose NormalizeColumns is the one place that decides how a dialect folds
-// identifiers, so Run never branches on a dialect name to normalize.
-type TargetOpener interface {
-	OpenTarget(target spi.TargetDb) (*sql.DB, error)
-	ProbeNamespace(conn *sql.Conn, targetDb string) (defaultSchemas []string, mysqlLowerCaseTableNames *int32, err error)
-	NewDb() engine.Db
-}
+type NamespaceProbe func(context.Context, *sql.Conn, string) (*pb.CatalogRequest, error)
 
-// Run introspects the target's information_schema over a live connection and returns the catalog to
-// push to the control plane. DatasourceName is left blank — the caller (cp.PushCatalog) stamps it.
-func Run(opener TargetOpener, target spi.TargetDb) (*pb.CatalogRequest, error) {
-	db, err := opener.OpenTarget(target)
-	if err != nil {
-		return nil, err
-	}
-	defer db.Close()
-
+// ReadCatalog pins one physical SQL connection for the complete metadata scan.
+func ReadCatalog(ctx context.Context, db *sql.DB, dbImpl engine.Db, probe NamespaceProbe, targetDb string) (*pb.CatalogRequest, error) {
 	// Pin ONE physical connection for the whole introspection and verify it up front. The *sql.DB handle
 	// is a lazy pool: without pinning, each of probeVersion's two queries and the namespace/columns probes
 	// would independently dial the target, so a dead or misauthenticated target would incur several failed
 	// logins per refresh (and, across the boot retries, several times that) — risking service-account
 	// lockout and tripling dead-target boot latency. db.Conn(ctx) establishes exactly one connection here
 	// (a dial failure returns immediately, no reconnect), and every probe runs on it.
-	connectCtx, connectCancel := context.WithTimeout(context.Background(), connectTimeout+queryTimeout)
+	connectCtx, connectCancel := context.WithTimeout(ctx, connectTimeout+queryTimeout)
 	defer connectCancel()
 	started := time.Now()
 	conn, err := db.Conn(connectCtx)
@@ -126,18 +112,18 @@ func Run(opener TargetOpener, target spi.TargetDb) (*pb.CatalogRequest, error) {
 	connectMs := time.Since(started).Milliseconds()
 
 	phase := time.Now()
-	engineVersion := probeVersion(conn)
+	engineVersion := probeVersion(ctx, conn)
 	versionMs := time.Since(phase).Milliseconds()
 
 	phase = time.Now()
-	defaultSchemas, mysqlLowerCaseTableNames, err := opener.ProbeNamespace(conn, target.Db)
+	catalog, err := probe(ctx, conn, targetDb)
 	if err != nil {
 		return nil, err
 	}
 	namespaceMs := time.Since(phase).Milliseconds()
 
 	phase = time.Now()
-	columns, err := introspectColumns(conn)
+	columns, err := introspectColumns(ctx, conn)
 	if err != nil {
 		return nil, err
 	}
@@ -153,13 +139,15 @@ func Run(opener TargetOpener, target spi.TargetDb) (*pb.CatalogRequest, error) {
 	// namespace probe sets mysqlLowerCaseTableNames (the Postgres probe returns nil), and it carries the
 	// fold mode MySQL's NormalizeColumns is gated by; Postgres ignores the argument.
 	lctnMode := 0
-	if mysqlLowerCaseTableNames != nil {
-		lctnMode = int(*mysqlLowerCaseTableNames)
+	if catalog.MysqlLowerCaseTableNames != nil {
+		lctnMode = int(catalog.GetMysqlLowerCaseTableNames())
 	}
 	phase = time.Now()
-	dbImpl := opener.NewDb()
 	columns = dbImpl.NormalizeColumns(lctnMode, columns)
-	defaultSchemas = normalizeSchemas(dbImpl, lctnMode, defaultSchemas)
+	catalog.DefaultSchemas = normalizeSchemas(dbImpl, lctnMode, catalog.DefaultSchemas)
+	for _, column := range columns {
+		column.Catalog = catalog.GetCurrentCatalog()
+	}
 	normalizeMs := time.Since(phase).Milliseconds()
 
 	phase = time.Now()
@@ -176,7 +164,7 @@ func Run(opener TargetOpener, target spi.TargetDb) (*pb.CatalogRequest, error) {
 	slog.Info("introspected catalog",
 		"columns", len(columns),
 		"tables", len(distinctTables),
-		"default_schemas", defaultSchemas,
+		"default_schemas", catalog.DefaultSchemas,
 		"engine_version", engineVersion,
 		"total_ms", time.Since(started).Milliseconds(),
 		"connect_ms", connectMs,
@@ -187,12 +175,9 @@ func Run(opener TargetOpener, target spi.TargetDb) (*pb.CatalogRequest, error) {
 		"functions_ms", functionCatalogMs,
 	)
 
-	return &pb.CatalogRequest{
-		DefaultSchemas:           defaultSchemas,
-		MysqlLowerCaseTableNames: mysqlLowerCaseTableNames,
-		EngineVersion:            engineVersion,
-		Catalog:                  &analyzerpb.CatalogSnapshot{Columns: columns, Functions: functionCatalog},
-	}, nil
+	catalog.Catalog = &analyzerpb.CatalogSnapshot{Columns: columns, Functions: functionCatalog}
+	catalog.EngineVersion = engineVersion
+	return catalog, nil
 }
 
 type functionCatalogProber interface {
@@ -369,8 +354,8 @@ func normalizeSchemas(dbImpl engine.Db, lctnMode int, schemas []string) []string
 
 // ProbeMySQLNamespace captures the current database plus the load-bearing
 // @@lower_case_table_names and verifies the connection's database matches the bound one.
-func ProbeMySQLNamespace(conn *sql.Conn, targetDb string) (defaultSchemas []string, mysqlLowerCaseTableNames *int32, err error) {
-	ctx, cancel := context.WithTimeout(context.Background(), queryTimeout)
+func ProbeMySQLNamespace(ctx context.Context, conn *sql.Conn, targetDb string) (*pb.CatalogRequest, error) {
+	ctx, cancel := context.WithTimeout(ctx, queryTimeout)
 	defer cancel()
 
 	row := conn.QueryRowContext(ctx, "SELECT DATABASE(), @@lower_case_table_names, DATABASE() = ?", targetDb)
@@ -378,49 +363,68 @@ func ProbeMySQLNamespace(conn *sql.Conn, targetDb string) (defaultSchemas []stri
 	var lctn int
 	var matches sql.NullBool
 	if err := row.Scan(&currentDb, &lctn, &matches); err != nil {
-		return nil, nil, fmt.Errorf("introspect: MySQL namespace probe: %w", err)
+		return nil, fmt.Errorf("introspect: MySQL namespace probe: %w", err)
 	}
 	if !currentDb.Valid {
-		return nil, nil, errors.New("introspect: MySQL connection has no current database")
+		return nil, errors.New("introspect: MySQL connection has no current database")
 	}
 	if lctn < 0 || lctn > 2 {
-		return nil, nil, fmt.Errorf("introspect: MySQL returned invalid lower_case_table_names: %d", lctn)
+		return nil, fmt.Errorf("introspect: MySQL returned invalid lower_case_table_names: %d", lctn)
 	}
 	if !matches.Valid || !matches.Bool {
-		return nil, nil, fmt.Errorf("introspect: MySQL current database %q does not match bound database %q", currentDb.String, targetDb)
+		return nil, fmt.Errorf("introspect: MySQL current database %q does not match bound database %q", currentDb.String, targetDb)
 	}
-	return []string{currentDb.String}, proto.Int32(int32(lctn)), nil
+	return &pb.CatalogRequest{DefaultSchemas: []string{currentDb.String}, MysqlLowerCaseTableNames: proto.Int32(int32(lctn)), CurrentCatalog: proto.String("def")}, nil
+}
+
+func ReadPostgresCatalog(ctx context.Context, conn *sql.Conn) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, queryTimeout)
+	defer cancel()
+	var catalog string
+	if err := conn.QueryRowContext(ctx, "SELECT pg_catalog.current_database()").Scan(&catalog); err != nil {
+		return "", fmt.Errorf("introspect: Postgres catalog probe: %w", err)
+	}
+	if catalog == "" {
+		return "", errors.New("introspect: Postgres connection has no current database")
+	}
+
+	return catalog, nil
 }
 
 // ProbePostgresNamespace captures the effective search_path.
-func ProbePostgresNamespace(conn *sql.Conn, _ string) (defaultSchemas []string, mysqlLowerCaseTableNames *int32, err error) {
-	ctx, cancel := context.WithTimeout(context.Background(), queryTimeout)
+func ProbePostgresNamespace(ctx context.Context, conn *sql.Conn, _ string) (*pb.CatalogRequest, error) {
+	ctx, cancel := context.WithTimeout(ctx, queryTimeout)
 	defer cancel()
+
+	catalog, err := ReadPostgresCatalog(ctx, conn)
+	if err != nil {
+		return nil, err
+	}
 
 	// This literal is UNQUALIFIED — deliberately distinct from the qualified namespace-probe form used
 	// elsewhere; do not swap it in here.
 	rows, err := conn.QueryContext(ctx, "SELECT unnest(current_schemas(true))")
 	if err != nil {
-		return nil, nil, fmt.Errorf("introspect: Postgres namespace probe: %w", err)
+		return nil, fmt.Errorf("introspect: Postgres namespace probe: %w", err)
 	}
 	defer rows.Close()
 	var schemas []string
 	for rows.Next() {
 		var schema string
 		if err := rows.Scan(&schema); err != nil {
-			return nil, nil, fmt.Errorf("introspect: scanning Postgres namespace row: %w", err)
+			return nil, fmt.Errorf("introspect: scanning Postgres namespace row: %w", err)
 		}
 		schemas = append(schemas, schema)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, nil, fmt.Errorf("introspect: Postgres namespace probe: %w", err)
+		return nil, fmt.Errorf("introspect: Postgres namespace probe: %w", err)
 	}
-	return schemas, nil, nil
+	return &pb.CatalogRequest{DefaultSchemas: schemas, CurrentCatalog: proto.String(catalog)}, nil
 }
 
 // introspectColumns runs columnsSQL on the pinned connection and scans every row into a *analyzerpb.Column.
-func introspectColumns(conn *sql.Conn) ([]*analyzerpb.Column, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), queryTimeout)
+func introspectColumns(ctx context.Context, conn *sql.Conn) ([]*analyzerpb.Column, error) {
+	ctx, cancel := context.WithTimeout(ctx, queryTimeout)
 	defer cancel()
 
 	rows, err := conn.QueryContext(ctx, columnsSQL)
@@ -456,10 +460,10 @@ func introspectColumns(conn *sql.Conn) ([]*analyzerpb.Column, error) {
 // additionally exposes `aurora_version()` (vanilla PG/MySQL don't — a failure there simply means "not
 // Aurora"); when it resolves the suffix "(aurora <v>)" is appended. Best-effort: an empty string on probe
 // failure. Runs on the pinned connection so it adds no extra dials.
-func probeVersion(conn *sql.Conn) string {
+func probeVersion(ctx context.Context, conn *sql.Conn) string {
 	base := ""
 	func() {
-		ctx, cancel := context.WithTimeout(context.Background(), queryTimeout)
+		ctx, cancel := context.WithTimeout(ctx, queryTimeout)
 		defer cancel()
 		row := conn.QueryRowContext(ctx, "SELECT version()")
 		var v sql.NullString
@@ -472,7 +476,7 @@ func probeVersion(conn *sql.Conn) string {
 
 	var aurora string
 	func() {
-		ctx, cancel := context.WithTimeout(context.Background(), queryTimeout)
+		ctx, cancel := context.WithTimeout(ctx, queryTimeout)
 		defer cancel()
 		row := conn.QueryRowContext(ctx, "SELECT aurora_version()")
 		var v sql.NullString

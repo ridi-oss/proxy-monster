@@ -85,7 +85,7 @@ private val POLICY_MUTATION_TOOLS = setOf(
 private val CLASSIFICATION_TOOLS = setOf(
     "set_column_classification", "set_column_classifications", "clear_column_classification",
 )
-private val CLASSIFICATION_ENTRY_KEYS = setOf("schema", "table", "column", "tags", "maskFnName")
+private val CLASSIFICATION_ENTRY_KEYS = setOf("catalog", "schema", "table", "column", "tags", "maskFnName")
 
 data class McpRequestContext(
     val principal: String,
@@ -465,7 +465,7 @@ private suspend fun executeRead(
     "get_datasource_liveness" -> structured(datasources.getDatasourceLiveness(args.requiredString("datasource")))
     "browse_catalog" -> structured(datasources.browseCatalog(args.requiredString("datasource")))
     "get_table_detail" -> structured(
-        datasources.getTableDetail(args.requiredString("datasource"), args.requiredString("schema"), args.requiredString("table")),
+        datasources.getTableDetail(args.requiredString("datasource"), args.requiredString("schema"), args.requiredString("table"), args.string("catalog")),
     )
     "list_column_tags" -> structured(datasources.listColumnTags(args.requiredString("datasource")))
     "list_policies" -> structured(policies.listPolicies())
@@ -502,7 +502,7 @@ private fun executeWrite(
                 structured(
                     datasources.setColumnClassification(
                         args.requiredString("datasource"), args.string("schema"), args.requiredString("table"),
-                        args.requiredString("column"), args.stringSet("tags").toList(), maskFnId, actor, connection,
+                        args.requiredString("column"), args.stringSet("tags").toList(), maskFnId, actor, connection, args.string("catalog"),
                     ),
                 )
             }
@@ -530,6 +530,7 @@ private fun executeWrite(
                                     entry.requiredString("column"),
                                     entry.stringSet("tags").toList(),
                                     entry.string("maskFnName")?.let(maskFnIds::getValue),
+                                    entry.string("catalog"),
                                 )
                             },
                             actor, connection,
@@ -540,7 +541,7 @@ private fun executeWrite(
             "clear_column_classification" -> structured(
                 datasources.clearColumnClassification(
                     args.requiredString("datasource"), args.string("schema"), args.requiredString("table"),
-                    args.requiredString("column"), actor, connection,
+                    args.requiredString("column"), actor, connection, args.string("catalog"),
                 ),
             )
             "create_policy" -> structured(
@@ -647,12 +648,12 @@ private fun schemaFor(tool: String): ToolSchema {
         }
         when (tool) {
             "get_datasource_liveness", "browse_catalog", "list_column_tags" -> string("datasource")
-            "get_table_detail" -> { string("datasource"); string("schema"); string("table") }
+            "get_table_detail" -> { string("datasource"); string("catalog"); string("schema"); string("table") }
             "get_policy", "enable_policy", "disable_policy", "delete_policy", "delete_role", "delete_group", "delete_mask_fn" -> string("name")
             "validate_policy" -> string("cedarSrc")
             "list_role_assignments" -> { string("principal"); string("roleName") }
             "set_column_classification" -> {
-                string("datasource"); string("schema"); string("table"); string("column"); strings("tags"); string("maskFnName"); string("idempotencyKey")
+                string("datasource"); string("catalog"); string("schema"); string("table"); string("column"); strings("tags"); string("maskFnName"); string("idempotencyKey")
             }
             "set_column_classifications" -> {
                 string("datasource")
@@ -665,6 +666,7 @@ private fun schemaFor(tool: String): ToolSchema {
                         put("additionalProperties", false)
                         put("required", buildJsonArray { add(JsonPrimitive("table")); add(JsonPrimitive("column")); add(JsonPrimitive("tags")) })
                         putJsonObject("properties") {
+                            putJsonObject("catalog") { put("type", "string") }
                             putJsonObject("schema") { put("type", "string") }
                             putJsonObject("table") { put("type", "string") }
                             putJsonObject("column") { put("type", "string") }
@@ -677,7 +679,7 @@ private fun schemaFor(tool: String): ToolSchema {
                     })
                 }
             }
-            "clear_column_classification" -> { string("datasource"); string("schema"); string("table"); string("column"); string("idempotencyKey") }
+            "clear_column_classification" -> { string("datasource"); string("catalog"); string("schema"); string("table"); string("column"); string("idempotencyKey") }
             "create_policy" -> { string("name"); string("cedarSrc"); boolean("enabled"); string("idempotencyKey") }
             "update_policy" -> { string("name"); string("newName"); string("cedarSrc"); boolean("enabled"); string("idempotencyKey") }
             "create_role" -> { string("name"); string("description"); string("idempotencyKey") }

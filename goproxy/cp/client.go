@@ -29,6 +29,7 @@ import (
 
 	"github.com/ridi-oss/proxy-monster/goproxy/engine"
 	"github.com/ridi-oss/proxy-monster/goproxy/spi"
+	"google.golang.org/protobuf/proto"
 
 	// The shared proxymonster.v1.Engine enum lives in analyzer/probe/pb (see engine/engine.go's
 	// import comment for why goproxy resolves it there instead of generating a second copy).
@@ -158,15 +159,51 @@ func refetchesFromWire(commands []*pb.ProxyCommand) ([]*pb.Refetch, error) {
 		if refetch == nil {
 			return nil, fmt.Errorf("command %d is not a refetch", i)
 		}
+		if refetch.Catalog != nil && refetch.GetCatalog() == "" {
+			return nil, fmt.Errorf("command %d has blank catalog", i)
+		}
 		if refetch.GetSchema() == "" {
 			return nil, fmt.Errorf("command %d has blank schema", i)
 		}
 		mapped = append(mapped, &pb.Refetch{
 			Schema:        refetch.GetSchema(),
 			IfHashDiffers: append([]byte(nil), refetch.GetIfHashDiffers()...),
+			Catalog:       copyString(refetch.Catalog),
 		})
 	}
 	return mapped, nil
+}
+
+func nonemptyString(value string) *string {
+	if value == "" {
+		return nil
+	}
+	return proto.String(value)
+}
+
+func copyString(value *string) *string {
+	if value == nil {
+		return nil
+	}
+	return proto.String(*value)
+}
+
+func (c *Client) AuthorizeRequest(parent context.Context, request *pb.RequestAuthorization) (*pb.RequestAuthorizationResult, error) {
+	if request == nil {
+		return nil, errors.New("request authorization input is required")
+	}
+	ctx, cancel := context.WithTimeout(parent, rpcDeadline)
+	defer cancel()
+	wireRequest := proto.Clone(request).(*pb.RequestAuthorization)
+	wireRequest.DatasourceName = c.datasourceName
+	response, err := c.stub.AuthorizeRequest(c.outCtx(ctx), wireRequest)
+	if err != nil {
+		return nil, fmt.Errorf("request authorization failed: %w", err)
+	}
+	if response == nil {
+		return nil, errors.New("control plane returned an empty request authorization")
+	}
+	return response, nil
 }
 
 // identityFromWire maps the control plane's WireIdentity into the proxy's session identity. PURE function
@@ -275,6 +312,7 @@ func (c *Client) Decide(req engine.DecideRequest) engine.DecisionOutcome {
 			Column:  t.Column,
 			SqlType: t.SqlType,
 			Ordinal: int32(t.Ordinal),
+			Catalog: nonemptyString(t.Catalog),
 		})
 	}
 	wireReq := &pb.DecisionRequest{
@@ -288,6 +326,7 @@ func (c *Client) Decide(req engine.DecideRequest) engine.DecisionOutcome {
 		MysqlAnsiQuotes:                   req.MySQLAnsiQuotes,
 		PostgresShadowedFunctions:         append([]string(nil), req.PostgresShadowedFunctions...),
 		PostgresFunctionShadowingObserved: req.PostgresFunctionShadowingObserved,
+		CurrentCatalog:                    nonemptyString(req.CurrentCatalog),
 	}
 	if req.PostgresTypeVisibilityObserved {
 		wireReq.PostgresSystemXidVisible = &req.PostgresSystemXIDVisible
@@ -355,7 +394,7 @@ func (c *Client) ReportCompletion(report engine.CompletionReport) {
 // advertiseCertChain is a pointer for explicit presence. nil means "no opinion" and preserves whatever the
 // control plane stores (a transient read at re-register); a non-nil empty string is authoritative and CLEARS
 // the stored chain, so an operator who stops publishing does not leave clients on dead roots.
-func (c *Client) Register(registrationEngine enginepb.Engine, host string, port int, dbName string, tags []string, advertiseAddr string, advertiseCertChain *string, wireTLS bool) error {
+func (c *Client) Register(registrationEngine enginepb.Engine, host string, port int, dbName string, tags []string, advertiseAddr string, advertiseCertChain *string, wireTLS bool, connectionInfo *pb.ConnectionInfo) error {
 	// Fail-closed defense-in-depth — never send an unspecified engine (boot already validated the provider).
 	if registrationEngine == enginepb.Engine_ENGINE_UNSPECIFIED {
 		return fmt.Errorf("cp: refusing to register datasource %q with an unspecified engine", c.datasourceName)
@@ -375,6 +414,7 @@ func (c *Client) Register(registrationEngine enginepb.Engine, host string, port 
 		AdvertiseCertChain: advertiseCertChain,
 		AdvertiseWireTls:   wireTLS,
 		ProtocolVersion:    ProtocolVersion,
+		ConnectionInfo:     connectionInfo,
 	})
 	if err != nil {
 		// A control-plane on a LATER protocol rejects our version with FAILED_PRECONDITION — a permanent
@@ -455,7 +495,7 @@ func (c *Client) CloseConnection(connectionID []byte) error {
 func (c *Client) StreamEvents(
 	onRefresh func(),
 	onOpenRun func(spi.RunOpen),
-	onOpenTableDetail func(sessionID, schema, table string),
+	onOpenTableDetail func(*pb.OpenTableDetailChannel),
 ) error {
 	timings := defaultEventLoopTimings()
 	return c.streamEvents(context.Background(), timings.streamMaxAge, onRefresh, onOpenRun, onOpenTableDetail)
@@ -477,7 +517,7 @@ func (c *Client) streamEvents(
 	maxAge time.Duration,
 	onRefresh func(),
 	onOpenRun func(spi.RunOpen),
-	onOpenTableDetail func(sessionID, schema, table string),
+	onOpenTableDetail func(*pb.OpenTableDetailChannel),
 ) error {
 	ctx, cancel := context.WithTimeout(c.outCtx(parent), maxAge)
 	defer cancel()
@@ -524,7 +564,7 @@ func (c *Client) streamEvents(
 			})
 		case ev.GetOpenTableDetailChannel() != nil:
 			t := ev.GetOpenTableDetailChannel()
-			onOpenTableDetail(t.GetSessionId(), t.GetSchema(), t.GetTable())
+			onOpenTableDetail(proto.Clone(t).(*pb.OpenTableDetailChannel))
 		}
 	}
 }
@@ -547,7 +587,7 @@ func (c *Client) RunEventsLoop(
 	resync func(),
 	onRefresh func(),
 	onOpenRun func(spi.RunOpen),
-	onOpenTableDetail func(sessionID, schema, table string),
+	onOpenTableDetail func(*pb.OpenTableDetailChannel),
 ) error {
 	return c.runEventsLoop(ctx, defaultEventLoopTimings(), resync, onRefresh, onOpenRun, onOpenTableDetail)
 }
@@ -558,7 +598,7 @@ func (c *Client) runEventsLoop(
 	resync func(),
 	onRefresh func(),
 	onOpenRun func(spi.RunOpen),
-	onOpenTableDetail func(sessionID, schema, table string),
+	onOpenTableDetail func(*pb.OpenTableDetailChannel),
 ) error {
 	for {
 		err := c.streamEvents(ctx, timings.streamMaxAge, onRefresh, onOpenRun, onOpenTableDetail)

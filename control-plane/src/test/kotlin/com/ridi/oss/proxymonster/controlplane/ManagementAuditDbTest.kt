@@ -286,7 +286,7 @@ class ManagementAuditDbTest {
     }
 
     private fun defaultSchemaPublic(datasourceId: Long) = dataSource.connection.use { c ->
-        c.prepareStatement("UPDATE datasource SET default_schemas='[\"public\"]'::jsonb WHERE id=?").use { ps ->
+        c.prepareStatement("UPDATE datasource SET current_catalog_name='app', default_schemas='[\"public\"]'::jsonb WHERE id=?").use { ps ->
             ps.setLong(1, datasourceId)
             ps.executeUpdate()
         }

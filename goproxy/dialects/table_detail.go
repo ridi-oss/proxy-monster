@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ridi-oss/proxy-monster/goproxy/engine"
 	"github.com/ridi-oss/proxy-monster/goproxy/spi"
 )
 
@@ -20,13 +21,13 @@ type tableDetailIndexes struct {
 	indexedColumns map[string]struct{}
 }
 
-func tableDetailTableExists(conn *sql.Conn, provider spi.Provider, schema, table string) (bool, error) {
+func tableDetailTableExists(ctx context.Context, conn *sql.Conn, dialect engine.Dialect, schema, table string) (bool, error) {
 	query := fmt.Sprintf(
 		"SELECT table_schema, table_name FROM information_schema.tables WHERE table_schema = %s AND table_name = %s",
-		provider.Dialect().Placeholder(1), provider.Dialect().Placeholder(2),
+		dialect.Placeholder(1), dialect.Placeholder(2),
 	)
 	found := false
-	err := tableDetailQuery(conn, query, []any{schema, table}, func(rows *sql.Rows) error {
+	err := tableDetailQuery(ctx, conn, query, []any{schema, table}, func(rows *sql.Rows) error {
 		for rows.Next() {
 			var rowSchema, rowTable string
 			if err := rows.Scan(&rowSchema, &rowTable); err != nil {
@@ -41,24 +42,24 @@ func tableDetailTableExists(conn *sql.Conn, provider spi.Provider, schema, table
 	return found, err
 }
 
-func readMySQLTableDetail(conn *sql.Conn, schema, table string) (*spi.TableDetail, error) {
-	indexes, err := readMySQLIndexes(conn, schema, table)
+func readMySQLTableDetail(ctx context.Context, conn *sql.Conn, schema, table string) (*spi.TableDetail, error) {
+	indexes, err := readMySQLIndexes(ctx, conn, schema, table)
 	if err != nil {
 		return nil, err
 	}
-	columns, err := readMySQLColumns(conn, schema, table, indexes.indexedColumns)
+	columns, err := readMySQLColumns(ctx, conn, schema, table, indexes.indexedColumns)
 	if err != nil {
 		return nil, err
 	}
-	foreignKeys, err := readMySQLRelations(conn, schema, table, false)
+	foreignKeys, err := readMySQLRelations(ctx, conn, schema, table, false)
 	if err != nil {
 		return nil, err
 	}
-	referencedBy, err := readMySQLRelations(conn, schema, table, true)
+	referencedBy, err := readMySQLRelations(ctx, conn, schema, table, true)
 	if err != nil {
 		return nil, err
 	}
-	metadata, err := readMySQLMetadata(conn, schema, table)
+	metadata, err := readMySQLMetadata(ctx, conn, schema, table)
 	if err != nil {
 		return nil, err
 	}
@@ -73,7 +74,7 @@ func readMySQLTableDetail(conn *sql.Conn, schema, table string) (*spi.TableDetai
 	}, nil
 }
 
-func readMySQLColumns(conn *sql.Conn, schema, table string, indexedColumns map[string]struct{}) ([]spi.TableDetailColumn, error) {
+func readMySQLColumns(ctx context.Context, conn *sql.Conn, schema, table string, indexedColumns map[string]struct{}) ([]spi.TableDetailColumn, error) {
 	const query = `SELECT column_name, data_type, ordinal_position, is_nullable, column_default,
                   character_maximum_length, numeric_precision, numeric_scale, extra, column_comment,
                   character_set_name, collation_name
@@ -81,7 +82,7 @@ func readMySQLColumns(conn *sql.Conn, schema, table string, indexedColumns map[s
            WHERE table_schema = ? AND table_name = ?
            ORDER BY ordinal_position`
 	columns := make([]spi.TableDetailColumn, 0)
-	err := tableDetailQuery(conn, query, []any{schema, table}, func(rows *sql.Rows) error {
+	err := tableDetailQuery(ctx, conn, query, []any{schema, table}, func(rows *sql.Rows) error {
 		for rows.Next() {
 			var name, dataType, nullable string
 			var ordinal int
@@ -133,13 +134,13 @@ type tableDetailIndexAccumulator struct {
 	typeName string
 }
 
-func readMySQLIndexes(conn *sql.Conn, schema, table string) (tableDetailIndexes, error) {
+func readMySQLIndexes(ctx context.Context, conn *sql.Conn, schema, table string) (tableDetailIndexes, error) {
 	indexedColumns := make(map[string]struct{})
 	const indexedColumnsQuery = `SELECT column_name, seq_in_index
                FROM information_schema.statistics
                WHERE table_schema = ? AND table_name = ?
                ORDER BY index_name, seq_in_index`
-	if err := tableDetailQuery(conn, indexedColumnsQuery, []any{schema, table}, func(rows *sql.Rows) error {
+	if err := tableDetailQuery(ctx, conn, indexedColumnsQuery, []any{schema, table}, func(rows *sql.Rows) error {
 		for rows.Next() {
 			var columnName sql.NullString
 			var sequence int
@@ -158,7 +159,7 @@ func readMySQLIndexes(conn *sql.Conn, schema, table string) (tableDetailIndexes,
 	query := "SHOW INDEX FROM " + mysqlIdentifier(table) + " FROM " + mysqlIdentifier(schema)
 	grouped := make(map[string]*tableDetailIndexAccumulator)
 	order := make([]string, 0)
-	if err := tableDetailQueryMaps(conn, query, nil, func(row map[string]*string) error {
+	if err := tableDetailQueryMaps(ctx, conn, query, nil, func(row map[string]*string) error {
 		name, ok := tableDetailMapString(row, "key_name")
 		if !ok {
 			return fmt.Errorf("index has no name metadata")
@@ -239,7 +240,7 @@ type tableDetailRelationAccumulator struct {
 	onDelete      *string
 }
 
-func readMySQLRelations(conn *sql.Conn, schema, table string, incoming bool) ([]spi.TableRelation, error) {
+func readMySQLRelations(ctx context.Context, conn *sql.Conn, schema, table string, incoming bool) ([]spi.TableRelation, error) {
 	directionPredicate := "kcu.table_schema = ? AND kcu.table_name = ? AND kcu.referenced_table_schema = ?"
 	if incoming {
 		directionPredicate = "kcu.referenced_table_schema = ? AND kcu.referenced_table_name = ? AND kcu.table_schema = ?"
@@ -260,7 +261,7 @@ func readMySQLRelations(conn *sql.Conn, schema, table string, incoming bool) ([]
 
 	grouped := make(map[tableDetailRelationIdentity]*tableDetailRelationAccumulator)
 	order := make([]tableDetailRelationIdentity, 0)
-	err := tableDetailQuery(conn, query, []any{schema, table, schema}, func(rows *sql.Rows) error {
+	err := tableDetailQuery(ctx, conn, query, []any{schema, table, schema}, func(rows *sql.Rows) error {
 		for rows.Next() {
 			var identity tableDetailRelationIdentity
 			var sourceColumn, targetColumn string
@@ -308,10 +309,10 @@ func readMySQLRelations(conn *sql.Conn, schema, table string, incoming bool) ([]
 	return tableDetailRelations(grouped, order), nil
 }
 
-func readMySQLMetadata(conn *sql.Conn, schema, table string) (spi.TableMetadata, error) {
+func readMySQLMetadata(ctx context.Context, conn *sql.Conn, schema, table string) (spi.TableMetadata, error) {
 	query := "SHOW TABLE STATUS FROM " + mysqlIdentifier(schema) + " WHERE Name = ?"
 	var metadata *spi.TableMetadata
-	err := tableDetailQueryMaps(conn, query, []any{table}, func(row map[string]*string) error {
+	err := tableDetailQueryMaps(ctx, conn, query, []any{table}, func(row map[string]*string) error {
 		name, ok := tableDetailMapString(row, "name")
 		if !ok || name != table {
 			return nil
@@ -366,24 +367,24 @@ func readMySQLMetadata(conn *sql.Conn, schema, table string) (spi.TableMetadata,
 	return *metadata, nil
 }
 
-func readPostgresTableDetail(conn *sql.Conn, schema, table string) (*spi.TableDetail, error) {
-	indexes, err := readPostgresIndexes(conn, schema, table)
+func readPostgresTableDetail(ctx context.Context, conn *sql.Conn, schema, table string) (*spi.TableDetail, error) {
+	indexes, err := readPostgresIndexes(ctx, conn, schema, table)
 	if err != nil {
 		return nil, err
 	}
-	columns, err := readPostgresColumns(conn, schema, table, indexes.indexedColumns)
+	columns, err := readPostgresColumns(ctx, conn, schema, table, indexes.indexedColumns)
 	if err != nil {
 		return nil, err
 	}
-	foreignKeys, err := readPostgresRelations(conn, schema, table, false)
+	foreignKeys, err := readPostgresRelations(ctx, conn, schema, table, false)
 	if err != nil {
 		return nil, err
 	}
-	referencedBy, err := readPostgresRelations(conn, schema, table, true)
+	referencedBy, err := readPostgresRelations(ctx, conn, schema, table, true)
 	if err != nil {
 		return nil, err
 	}
-	metadata, err := readPostgresMetadata(conn, schema, table)
+	metadata, err := readPostgresMetadata(ctx, conn, schema, table)
 	if err != nil {
 		return nil, err
 	}
@@ -398,7 +399,7 @@ func readPostgresTableDetail(conn *sql.Conn, schema, table string) (*spi.TableDe
 	}, nil
 }
 
-func readPostgresColumns(conn *sql.Conn, schema, table string, indexedColumns map[string]struct{}) ([]spi.TableDetailColumn, error) {
+func readPostgresColumns(ctx context.Context, conn *sql.Conn, schema, table string, indexedColumns map[string]struct{}) ([]spi.TableDetailColumn, error) {
 	const query = `SELECT cols.column_name, cols.data_type, cols.ordinal_position, cols.is_nullable,
                   cols.column_default, cols.character_maximum_length, cols.numeric_precision,
                   cols.numeric_scale, cols.character_set_name, cols.collation_name,
@@ -416,7 +417,7 @@ func readPostgresColumns(conn *sql.Conn, schema, table string, indexedColumns ma
            WHERE cols.table_schema = $1 AND cols.table_name = $2
            ORDER BY cols.ordinal_position`
 	columns := make([]spi.TableDetailColumn, 0)
-	err := tableDetailQuery(conn, query, []any{schema, table}, func(rows *sql.Rows) error {
+	err := tableDetailQuery(ctx, conn, query, []any{schema, table}, func(rows *sql.Rows) error {
 		for rows.Next() {
 			var name, dataType, nullable string
 			var ordinal int
@@ -462,7 +463,7 @@ func readPostgresColumns(conn *sql.Conn, schema, table string, indexedColumns ma
 	return columns, err
 }
 
-func readPostgresIndexes(conn *sql.Conn, schema, table string) (tableDetailIndexes, error) {
+func readPostgresIndexes(ctx context.Context, conn *sql.Conn, schema, table string) (tableDetailIndexes, error) {
 	const indexedColumnsQuery = `SELECT DISTINCT attribute.attname AS column_name
                FROM pg_namespace namespace
                JOIN pg_class table_class ON table_class.relnamespace = namespace.oid
@@ -474,7 +475,7 @@ func readPostgresIndexes(conn *sql.Conn, schema, table string) (tableDetailIndex
                WHERE namespace.nspname = $1 AND table_class.relname = $2
                ORDER BY attribute.attname`
 	indexedColumns := make(map[string]struct{})
-	if err := tableDetailQuery(conn, indexedColumnsQuery, []any{schema, table}, func(rows *sql.Rows) error {
+	if err := tableDetailQuery(ctx, conn, indexedColumnsQuery, []any{schema, table}, func(rows *sql.Rows) error {
 		for rows.Next() {
 			var name string
 			if err := rows.Scan(&name); err != nil {
@@ -504,7 +505,7 @@ func readPostgresIndexes(conn *sql.Conn, schema, table string) (tableDetailIndex
                ORDER BY index_class.relname, ordinal.key_offset`
 	grouped := make(map[string]*tableDetailIndexAccumulator)
 	order := make([]string, 0)
-	if err := tableDetailQuery(conn, indexesQuery, []any{schema, table}, func(rows *sql.Rows) error {
+	if err := tableDetailQuery(ctx, conn, indexesQuery, []any{schema, table}, func(rows *sql.Rows) error {
 		for rows.Next() {
 			var name, typeName, columnName string
 			var unique bool
@@ -554,7 +555,7 @@ func readPostgresIndexes(conn *sql.Conn, schema, table string) (tableDetailIndex
 	return tableDetailIndexes{indexes: indexes, indexedColumns: indexedColumns}, nil
 }
 
-func readPostgresRelations(conn *sql.Conn, schema, table string, incoming bool) ([]spi.TableRelation, error) {
+func readPostgresRelations(ctx context.Context, conn *sql.Conn, schema, table string, incoming bool) ([]spi.TableRelation, error) {
 	directionPredicate := "source_namespace.nspname = $1 AND source_table.relname = $2"
 	if incoming {
 		directionPredicate = "target_namespace.nspname = $1 AND target_table.relname = $2"
@@ -588,7 +589,7 @@ func readPostgresRelations(conn *sql.Conn, schema, table string, incoming bool) 
 
 	grouped := make(map[int64]*tableDetailRelationAccumulator)
 	order := make([]int64, 0)
-	err := tableDetailQuery(conn, query, []any{schema, table}, func(rows *sql.Rows) error {
+	err := tableDetailQuery(ctx, conn, query, []any{schema, table}, func(rows *sql.Rows) error {
 		for rows.Next() {
 			var oid int64
 			var identity tableDetailRelationIdentity
@@ -649,7 +650,7 @@ func readPostgresRelations(conn *sql.Conn, schema, table string, incoming bool) 
 	return relations, nil
 }
 
-func readPostgresMetadata(conn *sql.Conn, schema, table string) (spi.TableMetadata, error) {
+func readPostgresMetadata(ctx context.Context, conn *sql.Conn, schema, table string) (spi.TableMetadata, error) {
 	const query = `SELECT CASE WHEN table_class.reltuples < 0 THEN NULL
                            ELSE table_class.reltuples::bigint END AS estimated_rows,
                       pg_total_relation_size(table_class.oid) AS on_disk_bytes,
@@ -658,7 +659,7 @@ func readPostgresMetadata(conn *sql.Conn, schema, table string) (spi.TableMetada
                JOIN pg_class table_class ON table_class.relnamespace = namespace.oid
                WHERE namespace.nspname = $1 AND table_class.relname = $2`
 	var metadata *spi.TableMetadata
-	err := tableDetailQuery(conn, query, []any{schema, table}, func(rows *sql.Rows) error {
+	err := tableDetailQuery(ctx, conn, query, []any{schema, table}, func(rows *sql.Rows) error {
 		if !rows.Next() {
 			return fmt.Errorf("validated table disappeared while reading table metadata")
 		}
@@ -686,8 +687,8 @@ func readPostgresMetadata(conn *sql.Conn, schema, table string) (spi.TableMetada
 	return *metadata, nil
 }
 
-func tableDetailQuery(conn *sql.Conn, query string, args []any, consume func(*sql.Rows) error) error {
-	ctx, cancel := context.WithTimeout(context.Background(), tableDetailQueryTimeout)
+func tableDetailQuery(ctx context.Context, conn *sql.Conn, query string, args []any, consume func(*sql.Rows) error) error {
+	ctx, cancel := context.WithTimeout(ctx, tableDetailQueryTimeout)
 	defer cancel()
 	statement, err := conn.PrepareContext(ctx, query)
 	if err != nil {
@@ -705,8 +706,8 @@ func tableDetailQuery(conn *sql.Conn, query string, args []any, consume func(*sq
 	return rows.Err()
 }
 
-func tableDetailQueryMaps(conn *sql.Conn, query string, args []any, consume func(map[string]*string) error) error {
-	return tableDetailQuery(conn, query, args, func(rows *sql.Rows) error {
+func tableDetailQueryMaps(ctx context.Context, conn *sql.Conn, query string, args []any, consume func(map[string]*string) error) error {
+	return tableDetailQuery(ctx, conn, query, args, func(rows *sql.Rows) error {
 		columns, err := rows.Columns()
 		if err != nil {
 			return err

@@ -30,7 +30,8 @@ stream is the natural fit for liveness and refresh push.
 service ControlPlane {
   rpc Register(RegisterRequest) returns (RegisterResponse);            // boot: declare identity
   rpc PushCatalog(CatalogRequest) returns (CatalogResponse);          // push the introspected catalog
-  rpc ValidateToken(ValidateTokenRequest) returns (WireIdentity);     // wire-auth handshake, once per session
+  rpc ValidateToken(ValidateTokenRequest) returns (WireIdentity);     // wire-auth handshake + datasource access
+  rpc AuthorizeRequest(RequestAuthorization) returns (RequestAuthorizationResult); // metadata access, no SQL session
   rpc Decide(DecisionRequest) returns (WireDecision);                 // per-query enforcement decision
   rpc PushSchemaFragment(SchemaFragmentPush) returns (SchemaFragmentAck);  // per-connection catalog fragment
   rpc CloseConnection(CloseConnectionRequest) returns (CloseConnectionResponse);
@@ -43,7 +44,15 @@ service ControlPlane {
 
 The Go proxy client is `goproxy/cp/client.go`; the control-plane gRPC server is
 `grpc/GrpcServer.kt` + `grpc/ControlPlaneGrpcService.kt`. Every RPC carries the
-shared secret as call metadata (see [Trust model](#trust-model)).
+shared secret as call metadata (see [Trust model](#trust-model)). Both sides
+require control protocol 3; registration and events reject mismatched versions.
+
+`AuthorizeRequest` accepts typed catalog or table-metadata operations and checks
+current token, roles, requester context, and datasource access without
+allocating a SQL session or catalog connection. Missing or unsupported
+operations deny. Qualified selectors carry catalog and schema explicitly;
+catalog measurements come from the target connection, not the advisory
+registration database name.
 
 ## Registration
 
@@ -63,12 +72,19 @@ message RegisterRequest {
   reserved 8, 9;                                // a leaf SHA-256 clients pinned against, and the leaf alone
   optional string advertise_cert_chain = 10;    // PEM chain to trust for this proxy, leaf first; absent = no opinion, present-blank = clear
   bool advertise_wire_tls = 11;                 // whether this proxy serves client-facing TLS at all
+  int32 protocol_version = 12;
+  ConnectionInfo connection_info = 13;          // optional nonsecret provider connection metadata
+}
+message ConnectionInfo {
+  string endpoint = 1;
+  map<string, string> properties = 2;
 }
 ```
 
-`host`/`port`/`db_name` are descriptive: nothing in enforcement reads them
-(Cedar keys on `name`; lineage reads the pushed catalog). They exist for the
-admin UI and incident triage — which physical instance a datasource points at.
+`host`/`port` describe the target for the admin UI; they are not dialed by the
+control plane. `db_name` also supplies legacy defaults for omitted selectors.
+Measured `current_catalog` and qualified catalog rows carry the actual catalog
+identity; Cedar datasource resources remain keyed by `name`.
 
 The three `advertise_*` fields are the opposite — client-facing and consumed.
 `advertise_addr` is the `host:port` a wire client dials to reach this
@@ -96,8 +112,13 @@ verifies with the downloaded file instead.
 
 `GET /api/datasources` surfaces all three (`advertiseAddr`,
 `advertiseCertChain`, `advertiseWireTls`). That is how a client finds them:
-`pmon` lists `?connectable=true`, and an entry carrying an `advertiseAddr` is
-enough to open a local broker port for that datasource.
+`pmon` lists `?connectable=true` and opens a local port only when a registered
+broker provider supports the advertised datasource.
+
+`connection_info` carries provider-declared nonsecret endpoint/properties.
+Omission retains the stored value; an explicit empty message clears it.
+Definitions validate the accepted fields, and non-connectable listings omit this
+connection material along with the legacy advertisement fields.
 
 Only a proxy sets them; the admin REST create/update does not. A proxy with wire
 TLS fails to boot only if its certificate cannot be READ — whether the chain is

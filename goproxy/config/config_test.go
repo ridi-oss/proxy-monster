@@ -1,14 +1,10 @@
 package config
 
 import (
-	"context"
 	"os"
 	"strings"
 	"testing"
 	"time"
-
-	"crypto/tls"
-	"database/sql"
 
 	"github.com/ridi-oss/proxy-monster/goproxy/engine"
 	"github.com/ridi-oss/proxy-monster/goproxy/spi"
@@ -17,8 +13,7 @@ import (
 // clearPMEnv resets every PM_* var this package reads, so a developer's ambient environment can never
 // leak into a test's expectations.
 //
-// Vars with a kong `default:` tag (Engine, TargetHost, TargetDb, TargetUser, TargetPassword,
-// ControlPlaneGrpcTarget) must be genuinely UNSET, not set-to-"": kong only applies the default when the
+// Vars with a kong `default:` tag (Engine, ControlPlaneGrpcTarget) must be genuinely UNSET, not set-to-"": kong only applies the default when the
 // var is absent — a var explicitly set to "" is treated as present with an empty value. Vars with no
 // default (blank == absent either way, including the string-typed ports which Load(testRegistry()) parses
 // via parsePort) are set to "" via t.Setenv.
@@ -26,21 +21,10 @@ type configTestProvider struct {
 	dialect engine.Dialect
 }
 
-func (p configTestProvider) Dialect() engine.Dialect                { return p.dialect }
-func (configTestProvider) NewDb() engine.Db                         { return nil }
-func (configTestProvider) OpenTarget(spi.TargetDb) (*sql.DB, error) { return nil, nil }
-func (configTestProvider) ProbeNamespace(*sql.Conn, string) ([]string, *int32, error) {
-	return nil, nil, nil
+func (p configTestProvider) Definition() spi.Definition {
+	return spi.Definition{Name: p.dialect.WireName(), Engine: p.dialect.Proto(), DefaultProxyPort: p.dialect.DefaultProxyPort()}
 }
-func (configTestProvider) ReadTableDetail(*sql.Conn, string, string) (*spi.TableDetail, error) {
-	return nil, nil
-}
-func (configTestProvider) NewWireServer(int, spi.TargetDb, spi.EnforcementClient, engine.Db, func() (*tls.Config, error)) spi.WireServer {
-	return nil
-}
-func (configTestProvider) NewRunSession(context.Context, spi.TargetDb, engine.Db, spi.SessionClient, string, []byte, engine.ExecGuard, time.Duration) (spi.TargetDbSession, error) {
-	return nil, nil
-}
+func (configTestProvider) Configure(spi.LookupEnv) (spi.Target, error) { return nil, nil }
 
 func testRegistry() spi.Registry {
 	return spi.MustRegistry(
@@ -95,15 +79,6 @@ func TestLoadDefaults(t *testing.T) {
 	}
 	if cfg.ProxyPort != 6033 {
 		t.Errorf("ProxyPort = %d, want 6033 (mysql default)", cfg.ProxyPort)
-	}
-	if cfg.TargetPort != 3307 {
-		t.Errorf("TargetPort = %d, want 3307 (mysql default)", cfg.TargetPort)
-	}
-	if cfg.TargetHost != "localhost" {
-		t.Errorf("TargetHost = %q, want localhost", cfg.TargetHost)
-	}
-	if cfg.TargetDb != "acme" || cfg.TargetUser != "acme" || cfg.TargetPassword != "acme" {
-		t.Errorf("target creds = %q/%q/%q, want acme/acme/acme", cfg.TargetDb, cfg.TargetUser, cfg.TargetPassword)
 	}
 	if cfg.ControlPlaneGrpcTarget != "localhost:9090" {
 		t.Errorf("ControlPlaneGrpcTarget = %q, want localhost:9090", cfg.ControlPlaneGrpcTarget)
@@ -217,9 +192,6 @@ func TestLoadPostgresDefaults(t *testing.T) {
 	if cfg.ProxyPort != 6432 {
 		t.Errorf("ProxyPort = %d, want 6432 (postgres default)", cfg.ProxyPort)
 	}
-	if cfg.TargetPort != 5433 {
-		t.Errorf("TargetPort = %d, want 5433 (postgres default)", cfg.TargetPort)
-	}
 }
 
 func TestLoadExplicitPortsAreNotOverridden(t *testing.T) {
@@ -233,9 +205,6 @@ func TestLoadExplicitPortsAreNotOverridden(t *testing.T) {
 	}
 	if cfg.ProxyPort != 1234 {
 		t.Errorf("ProxyPort = %d, want 1234", cfg.ProxyPort)
-	}
-	if cfg.TargetPort != 5678 {
-		t.Errorf("TargetPort = %d, want 5678", cfg.TargetPort)
 	}
 }
 
@@ -252,9 +221,6 @@ func TestLoadBlankPortsFallBackToEngineDefaults(t *testing.T) {
 	}
 	if cfg.ProxyPort != 6033 {
 		t.Errorf("ProxyPort = %d, want 6033 (mysql default for a blank var)", cfg.ProxyPort)
-	}
-	if cfg.TargetPort != 3307 {
-		t.Errorf("TargetPort = %d, want 3307 (mysql default for a whitespace-only var)", cfg.TargetPort)
 	}
 }
 
@@ -285,9 +251,6 @@ func TestLoadOutOfInt32PortFallsBackToEngineDefault(t *testing.T) {
 	cfg, err := Load(testRegistry())
 	if err != nil {
 		t.Fatalf("Load with out-of-int32 ports: %v", err)
-	}
-	if cfg.TargetPort != 3307 {
-		t.Errorf("TargetPort = %d, want 3307 (out-of-int32 value must fall back to the mysql default, not truncate)", cfg.TargetPort)
 	}
 	if cfg.ProxyPort != 6033 {
 		t.Errorf("ProxyPort = %d, want 6033 (out-of-int32 value must fall back to the mysql default)", cfg.ProxyPort)
@@ -406,22 +369,20 @@ func TestValidateRejectsPartialTLSConfig(t *testing.T) {
 }
 
 func TestValidateAllowsCompleteOrAbsentTLSConfig(t *testing.T) {
-	provider, _ := testRegistry().For(engine.MySQL)
-	both := &Config{Engine: "mysql", Dialect: engine.MySQL, Provider: provider, DatasourceName: "ds", TLSCertPath: "/cert.pem", TLSKeyPath: "/key.pem"}
+	provider, _ := testRegistry().For("mysql")
+	both := &Config{Engine: "mysql", Provider: provider, DatasourceName: "ds", TLSCertPath: "/cert.pem", TLSKeyPath: "/key.pem"}
 	if err := both.Validate(); err != nil {
 		t.Errorf("Validate() with both TLS paths set = %v, want nil", err)
 	}
-	neither := &Config{Engine: "mysql", Dialect: engine.MySQL, Provider: provider, DatasourceName: "ds"}
+	neither := &Config{Engine: "mysql", Provider: provider, DatasourceName: "ds"}
 	if err := neither.Validate(); err != nil {
 		t.Errorf("Validate() with no TLS paths set = %v, want nil", err)
 	}
 }
 
 func TestValidateRejectsUnsupportedEngine(t *testing.T) {
-	// Load parses PM_ENGINE to Dialect once; an unrecognized value yields the fail-closed sentinel, which
-	// Validate must reject.
-	badDialect, _ := engine.ParseDialect("oracle")
-	cfg := &Config{Engine: "oracle", Dialect: badDialect, DatasourceName: "ds"}
+	// Unknown names have no registered provider.
+	cfg := &Config{Engine: "oracle", DatasourceName: "ds"}
 	if err := cfg.Validate(); err == nil {
 		t.Fatal("Validate() = nil, want error for an unsupported engine")
 	}
@@ -430,8 +391,8 @@ func TestValidateRejectsUnsupportedEngine(t *testing.T) {
 func TestValidateAcceptsMySQLAndPostgres(t *testing.T) {
 	for _, name := range []string{"mysql", "postgres"} {
 		dialect, _ := engine.ParseDialect(name)
-		provider, _ := testRegistry().For(dialect)
-		cfg := &Config{Engine: name, Dialect: dialect, Provider: provider, DatasourceName: "ds"}
+		provider, _ := testRegistry().For(dialect.WireName())
+		cfg := &Config{Engine: name, Provider: provider, DatasourceName: "ds"}
 		if err := cfg.Validate(); err != nil {
 			t.Errorf("Validate() for engine %q = %v, want nil", name, err)
 		}
@@ -441,8 +402,7 @@ func TestValidateAcceptsMySQLAndPostgres(t *testing.T) {
 func TestValidateOrderDatasourceNameCheckedBeforeEngine(t *testing.T) {
 	// Both the datasource name AND the engine are invalid; the datasource-name error must win (it is
 	// checked first), so a caller logging only the first error still gets the actionable one.
-	badDialect, _ := engine.ParseDialect("oracle")
-	cfg := &Config{Engine: "oracle", Dialect: badDialect}
+	cfg := &Config{Engine: "oracle"}
 	err := cfg.Validate()
 	if err == nil {
 		t.Fatal("Validate() = nil, want error")

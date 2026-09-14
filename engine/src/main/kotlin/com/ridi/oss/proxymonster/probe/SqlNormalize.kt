@@ -17,11 +17,7 @@ import java.security.MessageDigest
 
 /** Normalize [sql] under [dialect] to its canonical token string, or null on any failure. */
 fun normalizeSql(sql: String, dialect: Dialect): String? = try {
-    val dialectName = when (dialect) {
-        Dialect.MYSQL -> "mysql"
-        Dialect.POSTGRES -> "postgres"
-    }
-    Sqlglot.sqlNormalize(sql, dialectName)
+    Sqlglot.sqlNormalize(sql, dialect.wireName)
 } catch (_: Throwable) {
     null
 }

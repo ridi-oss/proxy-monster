@@ -9,6 +9,17 @@ package proxymonster.v1;
 option java_package = "com.ridi.oss.proxymonster.grpc";
 option java_multiple_files = true;
 
+message NamespaceRef {
+  string catalog = 1;
+  string schema = 2;
+}
+
+message TableRef {
+  string catalog = 1;
+  string schema = 2;
+  string table = 3;
+}
+
 enum Engine {
   ENGINE_UNSPECIFIED = 0;
   POSTGRES = 1;

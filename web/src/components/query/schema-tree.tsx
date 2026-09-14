@@ -7,6 +7,7 @@
 import { useMemo, useState } from 'react'
 import { useTranslations } from 'next-intl'
 import { ChevronRight, Database, KeyRound, Search, Table2 } from 'lucide-react'
+import { schemaKey } from '@/lib/catalog'
 import { cn } from '@/lib/utils'
 import { Input } from '@/components/ui/input'
 import type { TreeColumn, TreeTable } from './catalog-schema'
@@ -27,6 +28,9 @@ interface VisibleTable {
 }
 
 interface SchemaGroup {
+  key: string
+  catalog: string
+  label: string
   schema: string
   tables: VisibleTable[]
 }
@@ -40,11 +44,12 @@ export function SchemaTree({ datasourceId, tables, onInsert, onOpenTable }: Prop
   const groups = useMemo(() => {
     const q = filter.trim().toLowerCase()
     const bySchema = new Map<string, SchemaGroup>()
+    const multipleCatalogs = new Set(tables.map((table) => table.catalog)).size > 1
 
     for (const table of tables) {
       let columns = table.columns
       if (q) {
-        const schemaMatches = table.schema.toLowerCase().includes(q)
+        const schemaMatches = table.schema.toLowerCase().includes(q) || table.catalog.toLowerCase().includes(q)
         const tableMatches =
           table.name.toLowerCase().includes(q) || table.qualified.toLowerCase().includes(q)
         if (!schemaMatches && !tableMatches) {
@@ -53,10 +58,15 @@ export function SchemaTree({ datasourceId, tables, onInsert, onOpenTable }: Prop
         }
       }
 
-      let group = bySchema.get(table.schema)
+      const key = schemaKey(table.catalog, table.schema)
+      let group = bySchema.get(key)
       if (!group) {
-        group = { schema: table.schema, tables: [] }
-        bySchema.set(table.schema, group)
+        group = {
+          key, catalog: table.catalog, schema: table.schema,
+          label: multipleCatalogs ? `${table.schema} (${table.catalog})` : table.schema,
+          tables: [],
+        }
+        bySchema.set(key, group)
       }
       group.tables.push({ table, columns })
     }
@@ -88,11 +98,11 @@ export function SchemaTree({ datasourceId, tables, onInsert, onOpenTable }: Prop
         ) : (
           groups.map((group) => (
             <SchemaGroupNode
-              key={group.schema}
+              key={group.key}
               group={group}
-              expanded={filterActive || expandedSchemas[group.schema] !== false}
+              expanded={filterActive || expandedSchemas[group.key] !== false}
               forceTablesOpen={filterActive}
-              onToggle={() => toggleSchema(group.schema)}
+              onToggle={() => toggleSchema(group.key)}
               onInsert={onInsert}
               onOpenTable={onOpenTable}
             />
@@ -120,7 +130,7 @@ function SchemaGroupNode({
 }) {
   const t = useTranslations('Query')
   return (
-    <div data-testid="schema-group" data-schema={group.schema}>
+    <div data-testid="schema-group" data-catalog={group.catalog} data-schema={group.schema}>
       <div className="hover:bg-accent flex items-center gap-1 rounded-md pr-1.5 pl-1">
         <button
           type="button"
@@ -128,8 +138,8 @@ function SchemaGroupNode({
           aria-expanded={expanded}
           aria-label={
             expanded
-              ? t('schema.collapseSchema', { schema: group.schema })
-              : t('schema.expandSchema', { schema: group.schema })
+              ? t('schema.collapseSchema', { schema: group.label })
+              : t('schema.expandSchema', { schema: group.label })
           }
           className="text-muted-foreground flex size-5 shrink-0 items-center justify-center"
         >
@@ -137,17 +147,17 @@ function SchemaGroupNode({
         </button>
         <Database className="text-muted-foreground size-3.5 shrink-0" />
         <span
-          title={t('schema.schemaTitle', { schema: group.schema })}
+          title={t('schema.schemaTitle', { schema: group.label })}
           className="min-w-0 flex-1 truncate py-1 font-mono text-xs font-medium"
         >
-          {group.schema}
+          {group.label}
         </span>
       </div>
       {expanded && (
         <div className="ml-[14px] border-l pl-2">
           {group.tables.map(({ table, columns }) => (
             <TableNode
-              key={table.qualified}
+              key={table.key}
               table={table}
               columns={columns}
               onInsert={onInsert}
@@ -181,6 +191,7 @@ function TableNode({
   return (
     <div
       data-testid="schema-table"
+      data-catalog={table.catalog}
       data-schema={table.schema}
       data-table={table.name}
     >

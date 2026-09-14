@@ -19,6 +19,7 @@ import com.ridi.oss.proxymonster.grpc.EnfAction
 import com.ridi.oss.proxymonster.grpc.decisionRequest
 import com.ridi.oss.proxymonster.grpc.schemaFragmentPush
 import com.ridi.oss.proxymonster.grpc.validateTokenRequest
+import com.ridi.oss.proxymonster.controlplane.namespaces
 import com.google.protobuf.ByteString
 import io.grpc.Status
 import io.grpc.StatusException
@@ -81,7 +82,7 @@ class GrpcDecideHandlerDbTest {
         val resolved = core.tokenStore.resolve(token)!!
         val opened = core.connectionCatalog.open(
             com.ridi.oss.proxymonster.controlplane.Binding(datasource.name, resolved.principal, resolved.kind),
-            datasource.defaultSchemas + datasource.engine.systemSchemas,
+            datasource.namespaces(datasource.defaultSchemas + datasource.engine.systemSchemas),
         )
         val identity = com.ridi.oss.proxymonster.grpc.wireIdentity {
             connectionId = opened.connectionId

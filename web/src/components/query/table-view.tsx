@@ -79,6 +79,7 @@ export function TableView({
     tab.datasourceId,
     tab.table.schema,
     tab.table.name,
+    tab.table.catalog,
   )
   // First-load only: keep the rendered detail visible during SWR background revalidation
   // (useTableDetail runs revalidateOnFocus), instead of flashing "Loading…" over all four tabs
@@ -333,12 +334,16 @@ export function TableView({
       </TabsContent>
 
       <TabsContent value="data" className="min-h-0 flex-1 overflow-hidden">
-        <ResultsPanel
-          result={tab.res.result}
-          running={tab.res.loading}
-          error={tab.res.error}
-          onRequestAccess={() => onRequestAccess(tab.res.result?.denyReason)}
-        />
+        {tab.table.insert == null ? (
+          <p className="text-muted-foreground p-6 text-xs">{t('table.previewUnavailable')}</p>
+        ) : (
+          <ResultsPanel
+            result={tab.res.result}
+            running={tab.res.loading}
+            error={tab.res.error}
+            onRequestAccess={() => onRequestAccess(tab.res.result?.denyReason)}
+          />
+        )}
       </TabsContent>
     </Tabs>
   )
@@ -351,8 +356,10 @@ function RelationCard({ relation }: { relation: TableRelation }) {
       <p className="font-mono font-medium">{relation.name}</p>
       <p className="mt-1 font-mono">
         {relation.sourceSchema}.{relation.sourceTable}
+        {relation.sourceCatalog != null && ` (${relation.sourceCatalog})`}
         <span className="text-muted-foreground mx-2">→</span>
         {relation.targetSchema}.{relation.targetTable}
+        {relation.targetCatalog != null && ` (${relation.targetCatalog})`}
       </p>
       <ol className="mt-2 space-y-1 font-mono">
         {relation.sourceColumns.map((sourceColumn, index) => (

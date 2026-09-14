@@ -134,6 +134,7 @@ func EmitFacts(sql string, engineConfig *pb.EngineConfig, sch *schema.Mapping, n
 		}
 	}
 	candidates := schemaQualifierCandidates(root)
+	namespaces := namespaceQualifierCandidates(root, validatedNamespace.Catalog)
 
 	var facts *pb.StatementFacts
 	switch root.Kind() {
@@ -188,6 +189,7 @@ func EmitFacts(sql string, engineConfig *pb.EngineConfig, sch *schema.Mapping, n
 	}
 	facts.StatementExec = executeGrant(statementKind(root, eng))
 	facts.SchemaQualifierCandidates = candidates
+	facts.NamespaceQualifierCandidates = namespaces
 	return facts
 }
 
@@ -1075,5 +1077,35 @@ func schemaQualifierCandidates(root exp.Expression) []string {
 	}
 	out := sortedSet(set)
 	sort.Strings(out)
+	return out
+}
+
+func namespaceQualifierCandidates(root exp.Expression, currentCatalog string) []*pb.NamespaceRef {
+	type key struct{ catalog, schema string }
+	seen := map[key]bool{}
+	var out []*pb.NamespaceRef
+	for _, kind := range []exp.Kind{exp.KindTable, exp.KindColumn} {
+		for _, node := range root.FindAll(kind) {
+			schema := node.SchemaName()
+			if schema == "" {
+				continue
+			}
+			catalog := node.CatalogName()
+			if catalog == "" {
+				catalog = currentCatalog
+			}
+			k := key{catalog, schema}
+			if !seen[k] {
+				seen[k] = true
+				out = append(out, &pb.NamespaceRef{Catalog: catalog, Schema: schema})
+			}
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Catalog != out[j].Catalog {
+			return out[i].Catalog < out[j].Catalog
+		}
+		return out[i].Schema < out[j].Schema
+	})
 	return out
 }

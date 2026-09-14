@@ -26,7 +26,7 @@ import (
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
 	"github.com/ridi-oss/proxy-monster/goproxy/mysqlproxy"
 	"github.com/ridi-oss/proxy-monster/goproxy/proxytls"
-	"github.com/ridi-oss/proxy-monster/goproxy/spi"
+	"github.com/ridi-oss/proxy-monster/goproxy/sqltarget"
 	"github.com/ridi-oss/proxy-monster/mysqlwire"
 )
 
@@ -309,7 +309,7 @@ func startBrokerConfigured(t *testing.T, tlsProvider func() (*tls.Config, error)
 	t.Helper()
 	targetDb := seedTargetDb(t)
 	fake, cpClient := startFakeCP(t)
-	target := spi.TargetDb{
+	target := sqltarget.Config{
 		Host:     targetDb.Host,
 		Port:     targetDb.Port,
 		Db:       primarySchema,
@@ -1064,6 +1064,9 @@ func TestAllowRelaysRowsAndDecisionContext(t *testing.T) {
 		t.Fatalf("Decide requests = %d, want 1", len(requests))
 	}
 	req := requests[0]
+	if req.CurrentCatalog == nil || req.GetCurrentCatalog() != "def" {
+		t.Fatalf("DecisionRequest catalog = %v, want def", req.CurrentCatalog)
+	}
 	if req.GetToken() != validToken || req.GetSql() != query || !reflect.DeepEqual(req.GetSearchPath(), []string{primarySchema}) {
 		t.Fatalf("DecisionRequest = %+v, want token/query/SearchPath [%s]", req, primarySchema)
 	}
@@ -1404,7 +1407,7 @@ func TestLegacyEOFRelayRewriteAndPing(t *testing.T) {
 }
 
 func TestOversizedUnauthenticatedHandshakeIsRejectedWithoutBody(t *testing.T) {
-	server := mysqlproxy.New(0, spi.TargetDb{}, nil, nil, nil)
+	server := mysqlproxy.New(0, sqltarget.Config{}, nil, nil, nil)
 	if err := server.Listen(); err != nil {
 		t.Fatalf("Listen: %v", err)
 	}

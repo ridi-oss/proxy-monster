@@ -31,7 +31,8 @@ Modules:
 
 - `goproxy/` — Go data-plane wire proxy: MySQL/PostgreSQL codecs, token auth,
   the per-statement `Decide` call, inline result masking, and the target-DB
-  broker.
+  broker. `spi/` defines registered providers and configured target operations;
+  SQL configuration and connections stay inside the SQL implementations.
 - `control-plane/` — Kotlin control plane: identity and roles, Cedar
   authorization, the catalog, the per-statement decision, and the admin +
   console API (HTTP and gRPC).
@@ -45,7 +46,8 @@ Modules:
 - `auditmon/` — Go audit-trail monitor: verifies the hash chain, anchors
   off-box, detects anomalies, and exports to a SIEM.
 - `pmon/` — Go client daemon: connect with a saved password while it brokers a
-  short-lived token upstream.
+  short-lived token upstream. Protocol renderers and brokers use its
+  [provider SPI](./pmon/AGENTS.md).
 - `mysqlwire/` — Go MySQL wire-protocol codec library (shared by `goproxy` and
   `pmon`).
 - `proto/` — protobuf contracts: the proxy↔control-plane gRPC surface and the

@@ -165,7 +165,7 @@ func (s *Server) handleConn(clientConn net.Conn) {
 	targetDbConn = s.WrapTargetDbConn(targetDbConn)
 	defer targetDbConn.Close()
 
-	qe := engine.NewQueryEngine(s.db, s.client)
+	qe := engine.NewQueryEngine(s.client)
 	preparedStmts := make(map[uint32]preparedStmt)
 	if handshake.Database != "" {
 		// The client selected a database at connect time. Switching the current database is not a gated
@@ -198,6 +198,7 @@ func (s *Server) handleConn(clientConn net.Conn) {
 	refetcher := engine.NewRefetcher(s.db, identity.ConnectionID, generation, func(sql string, expectedColumns int) ([][]*string, error) {
 		return runInternalQuery(targetDbConn, deprecateEOF, sql, expectedColumns)
 	}, s.client.PushSchemaFragment)
+	refetcher.Catalog = "def"
 	if err := refetcher.RunAll(identity.OnOpen); err != nil {
 		slog.Warn("mysql catalog initialization failed", "error", err)
 		_ = mysqlwire.WritePacket(clientConn, tokenSeq+1, mysqlwire.ErrPacketState(
@@ -409,7 +410,7 @@ func (s *Server) handleConn(clientConn net.Conn) {
 			// leak into the next statement's decision.
 			qe.MarkNamespaceDirty()
 			proceed, allowed, err := s.authorize(qe, clientConn, seq, ps.sql, token, clientAddr, identity.ConnectionID, refetcher.RunAll, func() (engine.NamespaceProbe, error) {
-				return engine.NamespaceProbe{Namespace: ps.namespace, MySQLAnsiQuotes: ps.ansiQuotes}, nil
+				return engine.NamespaceProbe{CurrentCatalog: "def", Namespace: ps.namespace, MySQLAnsiQuotes: ps.ansiQuotes}, nil
 			})
 			qe.MarkNamespaceDirty()
 			if err != nil {

@@ -1,6 +1,7 @@
 package boot
 
 import (
+	"context"
 	"errors"
 	"log/slog"
 	"sync/atomic"
@@ -8,7 +9,6 @@ import (
 
 	"github.com/ridi-oss/proxy-monster/goproxy/config"
 	"github.com/ridi-oss/proxy-monster/goproxy/cp"
-	"github.com/ridi-oss/proxy-monster/goproxy/introspect"
 	"github.com/ridi-oss/proxy-monster/goproxy/spi"
 )
 
@@ -18,8 +18,8 @@ const maxResyncConcurrency = 1
 type datasourceReconciler struct {
 	configClient  *cp.Client
 	cfg           *config.Config
-	targetDb      spi.TargetDb
-	provider      spi.Provider
+	target        spi.Target
+	definition    spi.Definition
 	certChain     func() *string
 	registerSlots chan struct{}
 	refreshBatch  atomic.Pointer[refreshBatch]
@@ -30,12 +30,12 @@ type refreshBatch struct {
 	ok   bool
 }
 
-func newDatasourceReconciler(configClient *cp.Client, cfg *config.Config, targetDb spi.TargetDb, provider spi.Provider, certChain func() *string, resyncConcurrency int) *datasourceReconciler {
+func newDatasourceReconciler(configClient *cp.Client, cfg *config.Config, target spi.Target, definition spi.Definition, certChain func() *string, resyncConcurrency int) *datasourceReconciler {
 	return &datasourceReconciler{
 		configClient:  configClient,
 		cfg:           cfg,
-		targetDb:      targetDb,
-		provider:      provider,
+		target:        target,
+		definition:    definition,
 		certChain:     certChain,
 		registerSlots: make(chan struct{}, resyncConcurrency),
 	}
@@ -53,8 +53,9 @@ func (d *datasourceReconciler) tryRegisterAndPushCatalog() error {
 // control-plane protocol-version mismatch is permanent, so it is the only error returned to make boot or a
 // reconnect exit; all other failures leave the proxy running fail-closed until the next resync can recover.
 func (d *datasourceReconciler) registerAndPushCatalog() error {
+	info := d.target.TargetInfo()
 	for attempt := 0; attempt < bootRegisterAttempts; attempt++ {
-		err := d.configClient.Register(d.provider.Dialect().Proto(), d.targetDb.Host, d.targetDb.Port, d.targetDb.Db, d.cfg.DatasourceTags, d.cfg.AdvertiseAddr, d.certChain(), d.cfg.TLSEnabled())
+		err := d.configClient.Register(d.definition.Engine, info.Host, info.Port, info.Database, d.cfg.DatasourceTags, d.cfg.AdvertiseAddr, d.certChain(), d.cfg.TLSEnabled(), d.target.ConnectionInfo())
 		if errors.Is(err, cp.ErrIncompatibleControlPlane) {
 			return err
 		}
@@ -79,7 +80,7 @@ func (d *datasourceReconciler) refreshCatalog() bool {
 }
 
 func (d *datasourceReconciler) refreshCatalogNow() bool {
-	catalog, err := introspect.Run(d.provider, d.targetDb)
+	catalog, err := d.target.ReadCatalog(context.Background())
 	if err == nil {
 		err = d.configClient.PushCatalog(catalog)
 	}

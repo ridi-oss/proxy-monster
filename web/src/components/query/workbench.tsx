@@ -9,7 +9,7 @@
 import { useMemo, useRef, useState } from 'react'
 import { useTranslations } from 'next-intl'
 import { Loader2, Play } from 'lucide-react'
-import { useCatalog } from '@/lib/hooks'
+import { useCatalog, useDatasources } from '@/lib/hooks'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import {
@@ -48,8 +48,10 @@ export function Workbench() {
   const editorRef = useRef<SqlEditorHandle>(null)
 
   const { data: catalog, isLoading: catalogLoading, error: catalogError } = useCatalog(datasourceId)
-  const tree = useMemo(() => buildTree(catalog ?? []), [catalog])
-  const schemaMap = useMemo(() => buildSchemaMap(tree), [tree])
+  const { data: datasources, isLoading: datasourcesLoading, error: datasourcesError } = useDatasources(true)
+  const datasource = datasources?.find((item) => item.id === datasourceId)
+  const tree = useMemo(() => buildTree(catalog ?? [], datasource), [catalog, datasource])
+  const schemaMap = useMemo(() => buildSchemaMap(tree, datasource?.engine), [tree, datasource?.engine])
 
   const resultTabs = useResultTabs(datasourceId, Number(maxRows))
   const running = resultTabs.active?.res.loading ?? false
@@ -84,11 +86,11 @@ export function Workbench() {
             </div>
             {datasourceId == null ? (
               <p className="text-muted-foreground p-3 text-xs">{t('workbench.selectDatasource')}</p>
-            ) : catalogLoading && !catalog ? (
+            ) : (catalogLoading && !catalog) || datasourcesLoading ? (
               <div className="p-2">
                 <LoadingState label={t('workbench.loadingSchema')} />
               </div>
-            ) : catalogError ? (
+            ) : catalogError || datasourcesError ? (
               <p className="p-3 text-xs text-red-500">{t('workbench.catalogError')}</p>
             ) : tree.length === 0 ? (
               <p className="text-muted-foreground p-3 text-xs">
@@ -157,6 +159,7 @@ export function Workbench() {
                     value={sql}
                     onChange={setSql}
                     schema={schemaMap}
+                    engine={datasource?.engine}
                     onRun={handleRun}
                     linkedQuery={resultTabs.active?.kind === 'query' ? resultTabs.active.sql : null}
                   />

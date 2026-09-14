@@ -13,7 +13,7 @@ func serveInput() AuthzInput {
 }
 
 func TestServeStatementFailHasNoDecision(t *testing.T) {
-	qe := NewQueryEngine(mysqlDb, &fakeDecider{outcome: DecisionOutcome{Err: "unreachable"}})
+	qe := NewQueryEngine(&fakeDecider{outcome: DecisionOutcome{Err: "unreachable"}})
 	dec, denied, err := ServeStatement(qe, serveInput(), nil, nil, func(string, []*pb.ColumnMask) (bool, error) {
 		t.Fatal("run called for Fail")
 		return false, nil
@@ -26,7 +26,7 @@ func TestServeStatementFailHasNoDecision(t *testing.T) {
 
 func TestServeStatementDenySkipsRun(t *testing.T) {
 	want := &Decision{Action: "DENY", DenyReason: "policy"}
-	qe := NewQueryEngine(mysqlDb, &fakeDecider{outcome: DecisionOutcome{Decision: want}})
+	qe := NewQueryEngine(&fakeDecider{outcome: DecisionOutcome{Decision: want}})
 	dec, denied, err := ServeStatement(qe, serveInput(), nil, nil, func(string, []*pb.ColumnMask) (bool, error) {
 		t.Fatal("run called for Deny")
 		return false, nil
@@ -39,7 +39,7 @@ func TestServeStatementDenySkipsRun(t *testing.T) {
 func TestServeStatementRunErrorRetainsDecision(t *testing.T) {
 	want := &Decision{Action: "ALLOW"}
 	runErr := errors.New("target DB failed")
-	qe := NewQueryEngine(mysqlDb, &fakeDecider{outcome: DecisionOutcome{Decision: want}})
+	qe := NewQueryEngine(&fakeDecider{outcome: DecisionOutcome{Decision: want}})
 	dec, denied, err := ServeStatement(qe, serveInput(), nil, nil, func(string, []*pb.ColumnMask) (bool, error) {
 		return false, runErr
 	})
@@ -71,7 +71,7 @@ func TestServeStatementRefetchesOnlyAfterCleanCompletion(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			calls := 0
 			decision := &Decision{Action: "ALLOW", AfterStatement: []*pb.Refetch{{Schema: "app"}}}
-			qe := NewQueryEngine(mysqlDb, &fakeDecider{outcome: DecisionOutcome{Decision: decision}})
+			qe := NewQueryEngine(&fakeDecider{outcome: DecisionOutcome{Decision: decision}})
 			_, _, err := ServeStatement(qe, serveInput(), newRef(&calls), nil, func(string, []*pb.ColumnMask) (bool, error) {
 				return tc.clean, nil
 			})
@@ -89,7 +89,7 @@ func TestServeStatementGuardWrapsOnlyRun(t *testing.T) {
 		events = append(events, "authorize")
 		return NamespaceProbe{Namespace: []string{"app"}}, nil
 	}
-	qe := NewQueryEngine(mysqlDb, &fakeDecider{outcome: okOutcome("ALLOW", nil)})
+	qe := NewQueryEngine(&fakeDecider{outcome: okOutcome("ALLOW", nil)})
 	guard := func(exec func() error) error {
 		events = append(events, "guard-enter")
 		err := exec()

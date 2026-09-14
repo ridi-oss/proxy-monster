@@ -80,11 +80,13 @@ export interface AuthConfig {
 /** Supported target engines. */
 export type Engine = 'postgres' | 'mysql'
 
-/**
- * A registered target database. Carries NO credential: the control-plane never dials a target (the proxy
- * executes every query), so there is zero target secret at rest. host/port/dbName are advisory — the proxy
- * is authoritative and overwrites them on registration.
- */
+/** Nonsecret display metadata; never a connection credential. */
+export interface ConnectionInfo {
+  endpoint: string
+  properties: Record<string, string>
+}
+
+/** A registered target database; the proxy owns its connection credentials. */
 export interface Datasource {
   id: number
   name: string
@@ -92,6 +94,8 @@ export interface Datasource {
   host: string
   port: number
   dbName: string
+  currentCatalog?: string | null
+  connectionInfo?: ConnectionInfo | null
   /** Policy-posture tags (`preset:*`, docs/access-model.md) — set by the proxy's `PM_DATASOURCE_TAGS` at
    *  registration, or by an admin edit. Empty by default (safe "production" posture). */
   tags: string[]
@@ -142,6 +146,7 @@ export interface TestResult {
 
 /** A column's classification (tags + optional mask function), upserted by table+column. */
 export interface Classification {
+  catalog?: string
   schema: string
   table: string
   column: string
@@ -197,9 +202,11 @@ export interface TableIndex {
 
 export interface TableRelation {
   name: string
+  sourceCatalog?: string | null
   sourceSchema: string
   sourceTable: string
   sourceColumns: string[]
+  targetCatalog?: string | null
   targetSchema: string
   targetTable: string
   targetColumns: string[]
@@ -217,6 +224,7 @@ export interface TableMetadata {
 }
 
 export interface TableDetail {
+  catalog?: string | null
   schema: string
   table: string
   columns: TableDetailColumn[]
@@ -228,6 +236,7 @@ export interface TableDetail {
 
 /** Upsert body for a classification. Omitted `schema` uses the captured non-system datasource default; it is required before introspection captures one. */
 export interface ClassificationInput {
+  catalog?: string
   schema?: string
   table: string
   column: string
@@ -237,6 +246,7 @@ export interface ClassificationInput {
 
 /** Delete body for a classification. Omitted `schema` uses the same captured default as upsert. */
 export interface ClassificationDelete {
+  catalog?: string
   schema?: string
   table: string
   column: string

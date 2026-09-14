@@ -15,7 +15,7 @@ import (
 
 	"github.com/ridi-oss/proxy-monster/goproxy/engine"
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
-	"github.com/ridi-oss/proxy-monster/goproxy/spi"
+	"github.com/ridi-oss/proxy-monster/goproxy/sqltarget"
 	"github.com/ridi-oss/proxy-monster/mysqlwire"
 )
 
@@ -41,7 +41,7 @@ var testHookCachingSHA2FullAuth func(viaPublicKey bool)
 // (RSA public-key over a plaintext link, cleartext over TLS) when the server's fast-auth cache misses.
 // CLIENT_SESSION_TRACK is required so text-protocol database changes arrive as protocol signals instead
 // of requiring an interposed SELECT DATABASE() that would corrupt ROW_COUNT/FOUND_ROWS diagnostics.
-func dialTargetDbAuth(target spi.TargetDb, mirrorDeprecateEOF bool) (net.Conn, error) {
+func dialTargetDbAuth(target sqltarget.Config, mirrorDeprecateEOF bool) (net.Conn, error) {
 	conn, _, err := dialTargetDbAuthID(context.Background(), target, mirrorDeprecateEOF)
 	return conn, err
 }
@@ -50,7 +50,7 @@ func dialTargetDbAuth(target spi.TargetDb, mirrorDeprecateEOF bool) (net.Conn, e
 // (deadline-bounded) auth exchange runs, an AfterFunc closes the conn on cancel so a blocked read unwinds at
 // once. On the run path ctx is the target-DB open context, so a run the control-plane already closed does not
 // finish a target-DB handshake nobody is waiting for; the wire path passes a background ctx (never cancelled).
-func dialTargetDbAuthID(ctx context.Context, target spi.TargetDb, mirrorDeprecateEOF bool) (net.Conn, uint32, error) {
+func dialTargetDbAuthID(ctx context.Context, target sqltarget.Config, mirrorDeprecateEOF bool) (net.Conn, uint32, error) {
 	dialer := net.Dialer{Timeout: targetDbHandshakeTimeout}
 	conn, err := dialer.DialContext(ctx, "tcp", net.JoinHostPort(target.Host, strconv.Itoa(target.Port)))
 	if err != nil {
@@ -521,5 +521,5 @@ func probeNamespaceObservation(targetDb net.Conn, deprecateEOF bool) (engine.Nam
 	if err != nil {
 		return engine.NamespaceProbe{}, err
 	}
-	return engine.NamespaceProbe{Namespace: namespace, MySQLAnsiQuotes: ansiQuotes}, nil
+	return engine.NamespaceProbe{CurrentCatalog: "def", Namespace: namespace, MySQLAnsiQuotes: ansiQuotes}, nil
 }

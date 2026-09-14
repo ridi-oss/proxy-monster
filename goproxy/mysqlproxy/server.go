@@ -11,6 +11,7 @@ import (
 
 	"github.com/ridi-oss/proxy-monster/goproxy/engine"
 	"github.com/ridi-oss/proxy-monster/goproxy/spi"
+	"github.com/ridi-oss/proxy-monster/goproxy/sqltarget"
 	"github.com/ridi-oss/proxy-monster/goproxy/wire"
 )
 
@@ -18,7 +19,7 @@ import (
 // graceful drain) plus this protocol's per-connection handler and its target DB/enforcement dependencies.
 type Server struct {
 	*wire.Server
-	targetDb    spi.TargetDb
+	targetDb    sqltarget.Config
 	client      spi.EnforcementClient
 	db          engine.Db
 	tlsProvider func() (*tls.Config, error)
@@ -26,7 +27,7 @@ type Server struct {
 }
 
 // New constructs a MySQL wire broker for one target DB datasource.
-func New(port int, targetDb spi.TargetDb, client spi.EnforcementClient, dbImpl engine.Db, tlsProvider func() (*tls.Config, error)) *Server {
+func New(port int, targetDb sqltarget.Config, client spi.EnforcementClient, dbImpl engine.Db, tlsProvider func() (*tls.Config, error)) *Server {
 	s := &Server{targetDb: targetDb, client: client, db: dbImpl, tlsProvider: tlsProvider}
 	s.Server = wire.New(port, "mysqlproxy", s.handleConn)
 	return s

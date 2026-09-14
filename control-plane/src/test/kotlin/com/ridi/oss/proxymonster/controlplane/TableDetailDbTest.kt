@@ -147,6 +147,65 @@ class TableDetailDbTest {
     }
 
     @Test
+    fun `explicit MySQL public users stays distinct from app users`() = testApplication {
+        val client = wireTableDetailApp()
+        val ds = datasourceStore.create(DatasourceInput("literal-mysql", "mysql", dbName = "app"))
+        val details = listOf("app", "public").associateWith { schema ->
+            mysql.detail.copy(
+                catalog = "def", schema = schema, table = "users",
+                columns = listOf(mysql.detail.columns.first().copy(name = "${schema}_marker")),
+                indexes = emptyList(), foreignKeys = emptyList(), referencedBy = emptyList(),
+            )
+        }
+        val proxy = FakeTableDetailProxy(core, ds.name) { schema, table ->
+            if (table == "users") details[schema]?.let { ProxyReply.Detail(it) } ?: ProxyReply.NotFound else ProxyReply.NotFound
+        }
+        fakeProxies += proxy
+        for ((catalog, requestedSchema, expectedSchema) in listOf(
+            Triple("def", "public", "public"),
+            Triple("def", "app", "app"),
+            Triple(null, "public", "app"),
+        )) {
+            val response = client.get("/api/datasources/${ds.id}/table-detail") {
+                catalog?.let { parameter("catalog", it) }
+                parameter("schema", requestedSchema)
+                parameter("table", "users")
+            }
+            assertEquals(HttpStatusCode.OK, response.status)
+            val detail = Json.decodeFromString<TableDetail>(response.bodyAsText())
+            assertEquals("def", detail.catalog)
+            assertEquals(expectedSchema, detail.schema)
+            assertEquals("${expectedSchema}_marker", detail.columns.single().name)
+            val dispatched = proxy.requests.last()
+            assertEquals("def", dispatched.catalog)
+            assertEquals(expectedSchema, dispatched.schema)
+            assertEquals("users", dispatched.table)
+        }
+    }
+
+    @Test
+    fun `PostgreSQL public is literal with or without a catalog selector`() = testApplication {
+        val client = wireTableDetailApp()
+        val ds = datasourceStore.create(DatasourceInput("literal-postgres", "postgres", dbName = "app"))
+        val detail = postgres.detail.copy(catalog = "app", schema = "public", table = "users")
+        val proxy = FakeTableDetailProxy(core, ds.name) { schema, table ->
+            if (schema == "public" && table == "users") ProxyReply.Detail(detail) else ProxyReply.NotFound
+        }
+        fakeProxies += proxy
+        for (catalog in listOf(null, "app")) {
+            val response = client.get("/api/datasources/${ds.id}/table-detail") {
+                catalog?.let { parameter("catalog", it) }
+                parameter("schema", "public")
+                parameter("table", "users")
+            }
+            assertEquals(HttpStatusCode.OK, response.status)
+            assertEquals("public", Json.decodeFromString<TableDetail>(response.bodyAsText()).schema)
+            assertEquals("app", proxy.requests.last().catalog)
+            assertEquals("public", proxy.requests.last().schema)
+        }
+    }
+
+    @Test
     fun `grpc table-detail stream claims once and relays both directions`() = runBlocking {
         val pending = PendingTableDetail("grpc-table-detail", CompletableDeferred())
         core.tableDetailChannels.register(pending)
@@ -259,7 +318,7 @@ class TableDetailDbTest {
         val body = response.bodyAsText()
         val detail = Json.decodeFromString<TableDetail>(body)
         assertEquals(
-            setOf("schema", "table", "columns", "indexes", "foreignKeys", "referencedBy", "metadata"),
+            setOf("schema", "table", "columns", "indexes", "foreignKeys", "referencedBy", "metadata", "catalog"),
             Json.parseToJsonElement(body).jsonObject.keys,
         )
         assertEquals(fixture.requestSchema, detail.schema)
@@ -424,7 +483,7 @@ class TableDetailDbTest {
         val datasourceName: String,
         private val responder: (schema: String, table: String) -> ProxyReply,
     ) : AutoCloseable {
-        val requests = CopyOnWriteArrayList<Pair<String, String>>()
+        val requests = CopyOnWriteArrayList<com.ridi.oss.proxymonster.grpc.OpenTableDetailChannel>()
         private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
         private val events = Channel<ControlEvent>(Channel.UNLIMITED)
 
@@ -434,7 +493,7 @@ class TableDetailDbTest {
                 for (event in events) {
                     if (!event.hasOpenTableDetailChannel()) continue
                     val open = event.openTableDetailChannel
-                    requests += open.schema to open.table
+                    requests += open
                     val outbound = Channel<com.ridi.oss.proxymonster.grpc.ControlTableDetailMsg>(Channel.BUFFERED)
                     val attached = core.tableDetailChannels.attach(open.sessionId, outbound) ?: continue
                     attached.inbound.send(responseMessage(responder(open.schema, open.table)))

@@ -143,7 +143,7 @@ class SystemClassificationService(
     private fun classifierFor(engine: Engine, engineVersion: String?): com.ridi.oss.proxymonster.classification.SystemClassifier? {
         val (version, _) = engine.parseServerVersion(engineVersion)
         if (version == null) return null
-        return store.resolve(engine.wireName, version, allowFallback)?.classifier
+        return store.resolveSeries(engine.wireName, engine.definition.manifestSeries(version), allowFallback)?.classifier
     }
 
     /**
@@ -155,7 +155,7 @@ class SystemClassificationService(
         val engineName = engine.wireName
         val parsed = engine.parseServerVersion(engineVersion).first
             ?: return "$engineName (version unreported) → no manifest (system schemas deny-by-default)"
-        val resolved = store.resolve(engineName, parsed, allowFallback)
+        val resolved = store.resolveSeries(engineName, engine.definition.manifestSeries(parsed), allowFallback)
             ?: return "$engineName $parsed → no manifest (uncertified series → system schemas deny-by-default)"
         return if (resolved.isFallback) {
             "$engineName $parsed → manifest $engineName/${resolved.resolvedSeries} (FALLBACK — series ${resolved.requestedSeries} uncertified)"
@@ -167,31 +167,4 @@ class SystemClassificationService(
     companion object {
         private val log = LoggerFactory.getLogger(SystemClassificationService::class.java)
     }
-}
-
-/**
- * Extract the comparable server version + the Aurora marker from a `datasource.engine_version` string
- * (the raw `SELECT version()` output, with `(aurora <v>)` appended when `aurora_version()` resolves).
- * PostgreSQL `version()` is `PostgreSQL 17.4 on …`; MySQL `version()` is `8.0.44` / `8.0.44-log`.
- * Returns (versionForResolution, isAurora); null version when nothing parseable.
- */
-fun Engine.parseServerVersion(raw: String?): Pair<String?, Boolean> {
-    if (raw.isNullOrBlank()) return null to false
-    val isAurora = raw.contains("aurora", ignoreCase = true)
-    val version = when (this) {
-        // MySQL: the base MySQL release. Aurora MySQL `version()` embeds the MySQL major.minor BEFORE a
-        // `mysql_aurora` infix — `8.0.mysql_aurora.3.04.0` → 8.0, `5.7.mysql_aurora.2.11.4` → 5.7 —
-        // and the datasource-registration `engine_version` also appends a `(aurora <v>)` marker.
-        // Take the base BEFORE either, so the Aurora engine version (3.04.0) is never grabbed as the
-        // server version. Vanilla is `8.0.44` / `8.0.44-log`.
-        Engine.MYSQL -> {
-            val base = raw.substringBefore("mysql_aurora").substringBefore("(aurora")
-            Regex("""\d+\.\d+\.\d+""").find(base)?.value ?: Regex("""\d+\.\d+""").find(base)?.value
-        }
-        // PostgreSQL (and any other value): the number right after "PostgreSQL " (17.4); fall back to the
-        // first version-like token.
-        else -> Regex("""PostgreSQL\s+(\d+(?:\.\d+)?)""").find(raw)?.groupValues?.get(1)
-            ?: Regex("""\d+(?:\.\d+)?""").find(raw)?.value
-    }
-    return version to isAurora
 }

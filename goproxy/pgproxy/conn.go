@@ -38,6 +38,7 @@ func postgresProtocolNegotiation(startup *pgproto3.StartupMessage) *pgproto3.Neg
 }
 
 type sessionCore struct {
+	currentCatalog string
 	targetDb       *pgproto3.Frontend
 	qe             *engine.QueryEngine
 	db             engine.Db
@@ -184,7 +185,7 @@ startupComplete:
 	defer func() { _ = s.client.CloseConnection(identity.ConnectionID) }()
 	slog.Info("authenticated postgres client", "client", rawClientConn.RemoteAddr().String(), "principal", identity.Principal, "roles", identity.Roles)
 
-	targetDbConn, parameters, keyData, txStatus, err := dialTargetDbAuth(context.Background(), s.targetDb)
+	targetDbConn, parameters, keyData, txStatus, catalog, err := dialTargetDbAuth(context.Background(), s.targetDb)
 	if err != nil {
 		slog.Warn("postgres target DB unavailable", "host", s.targetDb.Host, "port", s.targetDb.Port, "error", err)
 		_ = sendError(client, "FATAL", "08004", "proxy-monster: target DB unavailable", false, 0)
@@ -205,12 +206,13 @@ startupComplete:
 	}
 	sess := &session{
 		sessionCore: sessionCore{
-			targetDb:     targetDb,
-			qe:           engine.NewQueryEngine(s.db, s.client),
-			db:           s.db,
-			lastTxStatus: txStatus,
-			forward:      client.Send,
-			flushForward: client.Flush,
+			currentCatalog: catalog,
+			targetDb:       targetDb,
+			qe:             engine.NewQueryEngine(s.client),
+			db:             s.db,
+			lastTxStatus:   txStatus,
+			forward:        client.Send,
+			flushForward:   client.Flush,
 		},
 		client:       client,
 		clientConn:   clientIO,

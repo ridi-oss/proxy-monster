@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ridi-oss/proxy-monster/goproxy/spi"
+	"github.com/ridi-oss/proxy-monster/goproxy/sqltarget"
 )
 
 // TestDialTargetDbAuthIDAbortsOnContextCancel proves the real MySQL dial honors the target-DB open context: a
@@ -39,7 +39,7 @@ func TestDialTargetDbAuthIDAbortsOnContextCancel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse listener port: %v", err)
 	}
-	target := spi.TargetDb{Host: host, Port: port, User: "u", Password: "p", Db: "d"}
+	target := sqltarget.Config{Host: host, Port: port, User: "u", Password: "p", Db: "d"}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	dialErr := make(chan error, 1)

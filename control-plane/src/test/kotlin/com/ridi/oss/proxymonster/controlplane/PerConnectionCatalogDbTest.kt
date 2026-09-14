@@ -58,7 +58,7 @@ abstract class PerConnectionCatalogDbContract {
         // Introspect the fragment straight from the target (not fixture.openAndPush, which reads the global
         // catalog a sibling test deletes) — this also mirrors the proxy's real push flow exactly.
         val opened = fixture.core.connectionCatalog.open(
-            Binding(fixture.datasource.name, "analyst@example.com", "USER"), listOf(schema),
+            Binding(fixture.datasource.name, "analyst@example.com", "USER"), fixture.datasource.namespaces(listOf(schema)),
         )
         java.sql.DriverManager.getConnection(
             fixture.enforcement.targetJdbcUrl, fixture.enforcement.targetUser, fixture.enforcement.targetPassword,

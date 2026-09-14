@@ -153,12 +153,13 @@ class ProxyEventsHub {
     }
 
     /** Ask exactly one attached proxy replica to dial an on-demand table-detail stream. */
-    fun requestOpenTableDetail(name: String, sessionId: String, schema: String, table: String): Dispatch {
+    fun requestOpenTableDetail(name: String, sessionId: String, schema: String, table: String, catalog: String? = null): Dispatch {
         val event = controlEvent {
             openTableDetailChannel = openTableDetailChannel {
                 this.sessionId = sessionId
                 this.schema = schema
                 this.table = table
+                catalog?.let { this.catalog = it }
             }
         }
         return dispatch(name, "a table-detail request", event)

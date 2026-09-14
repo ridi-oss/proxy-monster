@@ -548,8 +548,9 @@ class EnforcementFixture(
     }
 }
 
-internal fun pushedColumn(schema: String, table: String, column: String, dataType: String, ordinal: Int, nullable: Boolean): Column =
+internal fun pushedColumn(schema: String, table: String, column: String, dataType: String, ordinal: Int, nullable: Boolean, catalog: String = ""): Column =
     column {
+        this.catalog = catalog
         this.schema = schema
         this.table = table
         this.column = column

@@ -12,7 +12,8 @@ import (
 	"github.com/ridi-oss/proxy-monster/goproxy/db"
 	"github.com/ridi-oss/proxy-monster/goproxy/engine"
 	"github.com/ridi-oss/proxy-monster/goproxy/internal/dbtest"
-	"github.com/ridi-oss/proxy-monster/goproxy/spi"
+	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
+	"github.com/ridi-oss/proxy-monster/goproxy/sqltarget"
 )
 
 // These are real DB-backed tests: the introspection path (namespace probes, the load-bearing MySQL
@@ -32,23 +33,38 @@ const (
 
 type mysqlTestOpener struct{}
 
-func (mysqlTestOpener) OpenTarget(target spi.TargetDb) (*sql.DB, error) {
+func (mysqlTestOpener) OpenTarget(target sqltarget.Config) (*sql.DB, error) {
 	return OpenMySQLTarget(target)
 }
-func (mysqlTestOpener) ProbeNamespace(conn *sql.Conn, targetDb string) ([]string, *int32, error) {
-	return ProbeMySQLNamespace(conn, targetDb)
+func (mysqlTestOpener) ProbeNamespace(conn *sql.Conn, targetDb string) (*pb.CatalogRequest, error) {
+	return ProbeMySQLNamespace(context.Background(), conn, targetDb)
 }
 func (mysqlTestOpener) NewDb() engine.Db { return db.MySqlDb{} }
 
 type pgTestOpener struct{}
 
-func (pgTestOpener) OpenTarget(target spi.TargetDb) (*sql.DB, error) {
+func (pgTestOpener) OpenTarget(target sqltarget.Config) (*sql.DB, error) {
 	return OpenPostgresTarget(target)
 }
-func (pgTestOpener) ProbeNamespace(conn *sql.Conn, targetDb string) ([]string, *int32, error) {
-	return ProbePostgresNamespace(conn, targetDb)
+func (pgTestOpener) ProbeNamespace(conn *sql.Conn, targetDb string) (*pb.CatalogRequest, error) {
+	return ProbePostgresNamespace(context.Background(), conn, targetDb)
 }
 func (pgTestOpener) NewDb() engine.Db { return db.PgDb{} }
+
+func Run(opener interface {
+	OpenTarget(sqltarget.Config) (*sql.DB, error)
+	ProbeNamespace(*sql.Conn, string) (*pb.CatalogRequest, error)
+	NewDb() engine.Db
+}, target sqltarget.Config) (*pb.CatalogRequest, error) {
+	pool, err := opener.OpenTarget(target)
+	if err != nil {
+		return nil, err
+	}
+	defer pool.Close()
+	return ReadCatalog(context.Background(), pool, opener.NewDb(), func(_ context.Context, conn *sql.Conn, database string) (*pb.CatalogRequest, error) {
+		return opener.ProbeNamespace(conn, database)
+	}, target.Db)
+}
 
 // TestRunPinsOneConnectionOnDeadTarget is the regression test for the pinned-connection fix.
 // Introspection acquires ONE physical connection (db.Conn) for the whole refresh, so a dead or
@@ -95,7 +111,7 @@ func TestRunPinsOneConnectionOnDeadTarget(t *testing.T) {
 	}
 
 	addr := ln.Addr().(*net.TCPAddr)
-	target := spi.TargetDb{Host: "127.0.0.1", Port: addr.Port, Db: "appdb", User: "svc", Password: "pw"}
+	target := sqltarget.Config{Host: "127.0.0.1", Port: addr.Port, Db: "appdb", User: "svc", Password: "pw"}
 
 	// Baseline: the dials a single connection acquisition costs against this dead target.
 	baseDB, err := OpenMySQLTarget(target)
@@ -191,7 +207,7 @@ func TestIntrospectMySQL(t *testing.T) {
 	}
 
 	t.Run("root captures seeded + system schemas and load-bearing facts", func(t *testing.T) {
-		cat, err := Run(mysqlTestOpener{}, spi.TargetDb{Host: targetDb.Host, Port: targetDb.Port, Db: itMySQLSchema, User: targetDb.User, Password: targetDb.Password})
+		cat, err := Run(mysqlTestOpener{}, sqltarget.Config{Host: targetDb.Host, Port: targetDb.Port, Db: itMySQLSchema, User: targetDb.User, Password: targetDb.Password})
 		if err != nil {
 			t.Fatalf("Run: %v", err)
 		}
@@ -225,7 +241,7 @@ func TestIntrospectMySQL(t *testing.T) {
 		if _, err := seed.Exec(`CREATE FUNCTION IF NOT EXISTS ` + itMySQLSchema + `.AddTax (amount INT) RETURNS INT DETERMINISTIC RETURN amount * 11 / 10`); err != nil {
 			t.Fatalf("seed stored function: %v", err)
 		}
-		cat, err := Run(mysqlTestOpener{}, spi.TargetDb{Host: targetDb.Host, Port: targetDb.Port, Db: itMySQLSchema, User: targetDb.User, Password: targetDb.Password})
+		cat, err := Run(mysqlTestOpener{}, sqltarget.Config{Host: targetDb.Host, Port: targetDb.Port, Db: itMySQLSchema, User: targetDb.User, Password: targetDb.Password})
 		if err != nil {
 			t.Fatalf("Run: %v", err)
 		}
@@ -247,7 +263,7 @@ func TestIntrospectMySQL(t *testing.T) {
 	})
 
 	t.Run("delimiter-bearing credentials authenticate (connector path, no DSN round-trip)", func(t *testing.T) {
-		cat, err := Run(mysqlTestOpener{}, spi.TargetDb{Host: targetDb.Host, Port: targetDb.Port, Db: itMySQLSchema, User: "svc:reader", Password: "p@s:s/w@rd"})
+		cat, err := Run(mysqlTestOpener{}, sqltarget.Config{Host: targetDb.Host, Port: targetDb.Port, Db: itMySQLSchema, User: "svc:reader", Password: "p@s:s/w@rd"})
 		if err != nil {
 			t.Fatalf("Run with delimiter-bearing credentials: %v (FormatDSN round-trip would corrupt them)", err)
 		}
@@ -269,7 +285,7 @@ func TestIntrospectMySQL(t *testing.T) {
 		if _, err := seed.Exec(`CREATE TABLE IF NOT EXISTS ` + itMySQLSchema + `.orders (id INT PRIMARY KEY, CustomerID INT NOT NULL)`); err != nil {
 			t.Fatalf("seed mixed-case column: %v", err)
 		}
-		cat, err := Run(mysqlTestOpener{}, spi.TargetDb{Host: targetDb.Host, Port: targetDb.Port, Db: itMySQLSchema, User: targetDb.User, Password: targetDb.Password})
+		cat, err := Run(mysqlTestOpener{}, sqltarget.Config{Host: targetDb.Host, Port: targetDb.Port, Db: itMySQLSchema, User: targetDb.User, Password: targetDb.Password})
 		if err != nil {
 			t.Fatalf("Run: %v", err)
 		}
@@ -303,7 +319,7 @@ func TestIntrospectPostgres(t *testing.T) {
 	}
 
 	t.Run("captures seeded + system schemas and load-bearing facts", func(t *testing.T) {
-		cat, err := Run(pgTestOpener{}, spi.TargetDb{Host: targetDb.Host, Port: targetDb.Port, Db: targetDb.DB, User: targetDb.User, Password: targetDb.Password})
+		cat, err := Run(pgTestOpener{}, sqltarget.Config{Host: targetDb.Host, Port: targetDb.Port, Db: targetDb.DB, User: targetDb.User, Password: targetDb.Password})
 		if err != nil {
 			t.Fatalf("Run: %v", err)
 		}
@@ -331,7 +347,7 @@ func TestIntrospectPostgres(t *testing.T) {
 	})
 
 	t.Run("functions: builtins and system schemas", func(t *testing.T) {
-		cat, err := Run(pgTestOpener{}, spi.TargetDb{Host: targetDb.Host, Port: targetDb.Port, Db: targetDb.DB, User: targetDb.User, Password: targetDb.Password})
+		cat, err := Run(pgTestOpener{}, sqltarget.Config{Host: targetDb.Host, Port: targetDb.Port, Db: targetDb.DB, User: targetDb.User, Password: targetDb.Password})
 		if err != nil {
 			t.Fatalf("Run: %v", err)
 		}
@@ -354,7 +370,7 @@ func TestIntrospectPostgres(t *testing.T) {
 
 	t.Run("special-char credentials authenticate (url.UserPassword escaping)", func(t *testing.T) {
 		// Auth failing here would flag broken url.UserPassword escaping of the special-char password.
-		cat, err := Run(pgTestOpener{}, spi.TargetDb{Host: targetDb.Host, Port: targetDb.Port, Db: targetDb.DB, User: itPGRole, Password: "p@ss/w:rd"})
+		cat, err := Run(pgTestOpener{}, sqltarget.Config{Host: targetDb.Host, Port: targetDb.Port, Db: targetDb.DB, User: itPGRole, Password: "p@ss/w:rd"})
 		if err != nil {
 			t.Fatalf("Run with special-char credentials: %v (a naive DSN would mangle them)", err)
 		}

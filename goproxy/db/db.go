@@ -13,6 +13,7 @@ import (
 	"github.com/ridi-oss/proxy-monster/analyzer/probe"
 	analyzerpb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
 	"github.com/ridi-oss/sqlglot-go/dialects"
+	"google.golang.org/protobuf/proto"
 )
 
 // Queries yield names or (schema, name) pairs; an empty query denotes an unused tier.
@@ -56,10 +57,8 @@ func (MySqlDb) NormalizeColumns(lowerCaseTableNames int, columns []*analyzerpb.C
 	outSchemas, outTables, outColumns := probe.NormalizeMySQLColumns(lowerCaseTableNames, schemas, tables, names)
 	out := make([]*analyzerpb.Column, len(columns))
 	for i, c := range columns {
-		out[i] = &analyzerpb.Column{
-			Schema: outSchemas[i], Table: outTables[i], Column: outColumns[i],
-			DataType: c.GetDataType(), Ordinal: c.GetOrdinal(), Nullable: c.GetNullable(),
-		}
+		out[i] = proto.Clone(c).(*analyzerpb.Column)
+		out[i].Schema, out[i].Table, out[i].Column = outSchemas[i], outTables[i], outColumns[i]
 	}
 	return out
 }

@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ridi-oss/proxy-monster/goproxy/spi"
+	"github.com/ridi-oss/proxy-monster/goproxy/sqltarget"
 )
 
 // TestDialTargetDbAuthAbortsOnContextCancel proves the real PostgreSQL dial honors the target-DB open context: a
@@ -38,12 +38,12 @@ func TestDialTargetDbAuthAbortsOnContextCancel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse listener port: %v", err)
 	}
-	target := spi.TargetDb{Host: host, Port: port, User: "u", Password: "p", Db: "d"}
+	target := sqltarget.Config{Host: host, Port: port, User: "u", Password: "p", Db: "d"}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	dialErr := make(chan error, 1)
 	go func() {
-		_, _, _, _, err := dialTargetDbAuth(ctx, target)
+		_, _, _, _, _, err := dialTargetDbAuth(ctx, target)
 		dialErr <- err
 	}()
 

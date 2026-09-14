@@ -67,11 +67,11 @@ class ProxyTableDetailException(message: String, cause: Throwable? = null) :
 class TableDetailService(private val core: ControlPlaneCore) {
     private val json = Json
 
-    suspend fun fetch(dsName: String, schema: String, table: String): TableDetail? {
+    suspend fun fetch(dsName: String, schema: String, table: String, catalog: String? = null): TableDetail? {
         val datasource = core.datasourceStore.getByName(dsName) ?: return null
-        // The schema the proxy's live detail must report back under: the "public" default selector maps to
-        // this engine's default schema (MySQL's database), any other value is an explicit schema/database.
-        val expectedSchema = datasource.engine.resolveSchema(schema, datasource.dbName)
+        val expectedCatalog = datasource.resolveCatalog(catalog)
+        // Only legacy selectors without a catalog use "public" as the default-schema sentinel.
+        val expectedSchema = if (catalog == null) datasource.engine.resolveSchema(schema, datasource.dbName) else schema
         val sessionId = UUID.randomUUID().toString()
         val pending = PendingTableDetail(sessionId, CompletableDeferred())
         var registered = false
@@ -80,7 +80,7 @@ class TableDetailService(private val core: ControlPlaneCore) {
         try {
             core.tableDetailChannels.register(pending)
             registered = true
-            when (core.proxyEventsHub.requestOpenTableDetail(dsName, sessionId, schema, table)) {
+            when (core.proxyEventsHub.requestOpenTableDetail(dsName, sessionId, expectedSchema, table, expectedCatalog)) {
                 ProxyEventsHub.Dispatch.SENT -> Unit
                 ProxyEventsHub.Dispatch.NOT_ATTACHED, ProxyEventsHub.Dispatch.WEDGED -> {
                 throw NoTableDetailProxyAttachedException()
@@ -101,15 +101,16 @@ class TableDetailService(private val core: ControlPlaneCore) {
             if (detail == null) return null
             // The proxy's live detail must come back under the resolved schema and for the requested table;
             // anything else is a channel/response mixup.
-            if (detail.schema != expectedSchema || detail.table != table) {
+            if ((detail.catalog != null && detail.catalog != expectedCatalog) || detail.schema != expectedSchema || detail.table != table) {
                 throw ProxyTableDetailException("proxy returned table detail for an unexpected table")
             }
 
             val classifications = core.datasourceStore.catalog(datasource.id).columns
                 .asSequence()
-                .filter { it.schema == detail.schema && it.table == detail.table }
+                .filter { it.catalog == expectedCatalog && it.schema == detail.schema && it.table == detail.table }
                 .associate { it.column to it.classification }
             return detail.copy(
+                catalog = expectedCatalog,
                 columns = detail.columns.map { column ->
                     column.copy(classification = classifications[column.name])
                 },

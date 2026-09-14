@@ -47,7 +47,7 @@ abstract class PerConnectionCatalogAdversarialDbContract {
         principal: String,
         schemas: List<String>,
     ): OpenConnection {
-        val opened = fixture.core.connectionCatalog.open(Binding(fixture.datasource.name, principal, "USER"), schemas)
+        val opened = fixture.core.connectionCatalog.open(Binding(fixture.datasource.name, principal, "USER"), fixture.datasource.namespaces(schemas))
         schemas.distinct().forEach { fixture.pushFromTarget(target, opened.connectionId, it) }
         return opened
     }
@@ -164,7 +164,7 @@ abstract class PerConnectionCatalogAdversarialDbContract {
                 assertEquals(listOf(schema), stale.commands.map { it.schema })
 
                 val heldConnection = fixture.core.connectionCatalog.find(held.connectionId)!!
-                val heldHash = heldConnection.held.getValue(schema).hash.bytes
+                val heldHash = heldConnection.held.getValue(namespace(fixture.datasource.effectiveCatalog, schema)).hash.bytes
                 val unchanged = fixture.core.connectionCatalog.applyPush(
                     schemaFragmentPush {
                         connectionId = held.connectionId

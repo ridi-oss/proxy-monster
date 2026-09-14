@@ -7,7 +7,7 @@ import (
 	"github.com/ridi-oss/proxy-monster/goproxy/db"
 	"github.com/ridi-oss/proxy-monster/goproxy/engine"
 	"github.com/ridi-oss/proxy-monster/goproxy/internal/dbtest"
-	"github.com/ridi-oss/proxy-monster/goproxy/spi"
+	"github.com/ridi-oss/proxy-monster/goproxy/sqltarget"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -37,7 +37,7 @@ func TestFunctionCatalogObservation(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	target := spi.TargetDb{Host: targetDb.Host, Port: targetDb.Port, Db: schema, User: targetDb.User, Password: targetDb.Password}
+	target := sqltarget.Config{Host: targetDb.Host, Port: targetDb.Port, Db: schema, User: targetDb.User, Password: targetDb.Password}
 	queries := db.FunctionCatalogSQL{
 		BuiltinFunctions:      "SELECT 'LOWER'",
 		SystemFunctionSchemas: "SELECT 'helpers', 'LOOKUP'",

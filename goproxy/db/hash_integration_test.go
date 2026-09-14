@@ -176,7 +176,7 @@ func TestMySqlSchemaHashIntegration(t *testing.T) {
 		exec("CREATE TABLE " + quote(hostile) + ".t (id INT NOT NULL)")
 		_ = hash(hostile)
 		want := []*analyzerpb.Column{{Schema: hostile, Table: "t", Column: "id", DataType: "int", Ordinal: 1}}
-		if got := fragments(hostile); !reflect.DeepEqual(got, want) {
+		if got := fragments(hostile); !equalColumns(got, want) {
 			t.Fatalf("hostile schema fragment = %+v, want %+v", got, want)
 		}
 		missing := uniqueFixtureName("pm_hash_mysql_missing")
@@ -196,7 +196,7 @@ func TestMySqlSchemaHashIntegration(t *testing.T) {
 			{Schema: fragmentSchema, Table: "sample", Column: "id", DataType: "int", Ordinal: 1},
 			{Schema: fragmentSchema, Table: "sample", Column: "note", DataType: "varchar", Ordinal: 2, Nullable: true},
 		}
-		if got := fragments(fragmentSchema); !reflect.DeepEqual(got, want) {
+		if got := fragments(fragmentSchema); !equalColumns(got, want) {
 			t.Fatalf("fragment = %+v, want %+v", got, want)
 		}
 		if got := fragments("information_schema"); len(got) == 0 {
@@ -317,7 +317,7 @@ func verifyPostgresHashAndFragment(t *testing.T, database *sql.DB, wantCrypto bo
 		{Schema: schema, Table: "sample", Column: "id", DataType: "integer", Ordinal: 1},
 		{Schema: schema, Table: "sample", Column: "note", DataType: "text", Ordinal: 2, Nullable: true},
 	}
-	if !reflect.DeepEqual(fragment, want) {
+	if !equalColumns(fragment, want) {
 		t.Fatalf("Postgres fragment = %+v, want %+v", fragment, want)
 	}
 

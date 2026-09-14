@@ -21,6 +21,7 @@ import (
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
 	"github.com/ridi-oss/proxy-monster/goproxy/run"
 	"github.com/ridi-oss/proxy-monster/goproxy/spi"
+	"github.com/ridi-oss/proxy-monster/goproxy/sqltarget"
 )
 
 const tableDetailTestTimeout = 10 * time.Second
@@ -103,12 +104,12 @@ func tableDetailRun(
 	tableDetailClient *cp.Client,
 	tableDetailFake *tableDetailFakeCP,
 	provider spi.Provider,
-	tableDetailTargetDb spi.TargetDb,
+	tableDetailTargetDb sqltarget.Config,
 	tableDetailSessionID, schema, table string,
 ) *pb.ProxyTableDetailMsg {
 	t.Helper()
 	tableDetailFake.tableDetailExpect(tableDetailSessionID)
-	run.NewTableDetailRunner(tableDetailClient, tableDetailTargetDb, provider).Run(tableDetailSessionID, schema, table)
+	run.NewTableDetailRunner(tableDetailClient, mustTarget(t, provider, tableDetailTargetDb)).Run(&pb.OpenTableDetailChannel{SessionId: tableDetailSessionID, Schema: schema, Table: table})
 	select {
 	case tableDetailObservation := <-tableDetailFake.observed:
 		if tableDetailObservation.err != nil {
@@ -124,8 +125,8 @@ func tableDetailRun(
 	}
 }
 
-func tableDetailTargetDb(tableDetailDBTargetDb dbtest.TargetDb) spi.TargetDb {
-	return spi.TargetDb{
+func tableDetailTargetDb(tableDetailDBTargetDb dbtest.TargetDb) sqltarget.Config {
+	return sqltarget.Config{
 		Host:     tableDetailDBTargetDb.Host,
 		Port:     tableDetailDBTargetDb.Port,
 		Db:       tableDetailDBTargetDb.DB,
@@ -172,7 +173,7 @@ func tableDetailDecode(t *testing.T, tableDetailPayload string) (spi.TableDetail
 	}
 	tableDetailWantKeys := map[string]struct{}{
 		"schema": {}, "table": {}, "columns": {}, "indexes": {},
-		"foreignKeys": {}, "referencedBy": {}, "metadata": {},
+		"foreignKeys": {}, "referencedBy": {}, "metadata": {}, "catalog": {},
 	}
 	tableDetailGotKeys := make(map[string]struct{}, len(tableDetailTop))
 	for tableDetailKey := range tableDetailTop {
@@ -289,6 +290,9 @@ CREATE TABLE pm_tdetail_plain (
 		"pm_tdetail_mysql_users", "public", "pm_tdetail_users",
 	))
 	tableDetailUsers, tableDetailUsersTop := tableDetailDecode(t, tableDetailUsersPayload)
+	if tableDetailUsers.Catalog == nil || *tableDetailUsers.Catalog != "def" {
+		t.Fatalf("catalog = %v, want def", tableDetailUsers.Catalog)
+	}
 	if tableDetailUsers.Schema != tableDetailDBTargetDb.DB || tableDetailUsers.Table != "pm_tdetail_users" {
 		t.Fatalf("MySQL public selector resolved to %s.%s, want %s.pm_tdetail_users", tableDetailUsers.Schema, tableDetailUsers.Table, tableDetailDBTargetDb.DB)
 	}

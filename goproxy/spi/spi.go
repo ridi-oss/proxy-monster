@@ -4,24 +4,15 @@ package spi
 import (
 	"context"
 	"crypto/tls"
-	"database/sql"
 	"fmt"
 	"sort"
 	"strings"
 	"time"
 
+	enginepb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
 	"github.com/ridi-oss/proxy-monster/goproxy/engine"
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
 )
-
-// TargetDb is the per-datasource target-DB connection details (the service-account broker target).
-type TargetDb struct {
-	Host     string
-	Port     int
-	Db       string
-	User     string
-	Password string
-}
 
 // Identity is the authenticated wire identity retained for a client session.
 type Identity struct {
@@ -64,7 +55,12 @@ type SessionClient interface {
 // EnforcementClient is the complete control-plane capability used by a native-wire server. It adds the
 // post-relay completion report (engine.CompletionReporter) that only the native-wire path emits — the
 // editor path streams to the control plane, which records its own completion, so SessionClient omits it.
+type RequestAuthorizer interface {
+	AuthorizeRequest(context.Context, *pb.RequestAuthorization) (*pb.RequestAuthorizationResult, error)
+}
+
 type EnforcementClient interface {
+	RequestAuthorizer
 	SessionClient
 	engine.CompletionReporter
 	ValidateToken(token, clientAddr string) (Identity, error)
@@ -106,6 +102,7 @@ type TargetDbSession interface {
 
 // TableDetail is the canonical metadata-only table-browser response shared with the control plane.
 type TableDetail struct {
+	Catalog      *string             `json:"catalog"`
 	Schema       string              `json:"schema"`
 	Table        string              `json:"table"`
 	Columns      []TableDetailColumn `json:"columns"`
@@ -151,6 +148,8 @@ type TableIndex struct {
 
 // TableRelation describes one foreign-key relation.
 type TableRelation struct {
+	SourceCatalog *string  `json:"sourceCatalog"`
+	TargetCatalog *string  `json:"targetCatalog"`
 	Name          string   `json:"name"`
 	SourceSchema  string   `json:"sourceSchema"`
 	SourceTable   string   `json:"sourceTable"`
@@ -182,57 +181,83 @@ type Classification struct {
 	MaskFnName *string  `json:"maskFnName"`
 }
 
-// Provider bundles the per-dialect capabilities (target-DB connection, wire server, run session,
-// introspection) used by dialect-neutral consumers. The pure per-dialect facts (registration engine,
-// default ports, placeholder, schema resolution) live on engine.Dialect; a new dialect is one Provider
-// implementation plus one registry row.
-type Provider interface {
-	Dialect() engine.Dialect
-	NewDb() engine.Db
-	OpenTarget(target TargetDb) (*sql.DB, error)
-	ProbeNamespace(conn *sql.Conn, targetDb string) (defaultSchemas []string, mysqlLowerCaseTableNames *int32, err error)
-	ReadTableDetail(conn *sql.Conn, schema, table string) (*TableDetail, error)
-	NewWireServer(port int, targetDb TargetDb, client EnforcementClient, db engine.Db, tlsProvider func() (*tls.Config, error)) WireServer
-	// NewRunSession dials and authenticates the target DB. ctx is the target-DB open context: cancelling it aborts
-	// an in-flight dial/auth so a run the control-plane already closed does not finish a target-DB handshake.
-	NewRunSession(ctx context.Context, target TargetDb, db engine.Db, client SessionClient, token string, connectionID []byte, guard engine.ExecGuard, readTimeout time.Duration) (TargetDbSession, error)
+type Definition struct {
+	Name             string
+	Engine           enginepb.Engine
+	DefaultProxyPort int
 }
 
-// Registry resolves the canonical PM_ENGINE name to its Provider. Consumers depend on this interface and
-// receive it from the executable composition root; they never import the concrete dialect wiring package.
+type LookupEnv func(string) (string, bool)
+
+// TargetInfo contains only advisory, nonsecret target metadata.
+type TargetInfo struct {
+	Host     string
+	Port     int
+	Database string
+}
+
+type NativeServerOptions struct {
+	Port        int
+	Client      EnforcementClient
+	TLSProvider func() (*tls.Config, error)
+}
+
+type RunSessionOptions struct {
+	Client       SessionClient
+	Token        string
+	ConnectionID []byte
+	Guard        engine.ExecGuard
+	ReadTimeout  time.Duration
+}
+
+type Provider interface {
+	Definition() Definition
+	Configure(LookupEnv) (Target, error)
+}
+
+// Target owns its configured resources; consumers request operations, not SQL connections.
+type Target interface {
+	ReadCatalog(context.Context) (*pb.CatalogRequest, error)
+	ReadTableDetail(context.Context, *enginepb.TableRef) (*TableDetail, error)
+	TargetInfo() TargetInfo
+	ConnectionInfo() *pb.ConnectionInfo
+	NewNativeServer(NativeServerOptions) WireServer
+	NewRunSession(context.Context, RunSessionOptions) (TargetDbSession, error)
+	Close() error
+}
+
 type Registry interface {
-	For(engine.Dialect) (Provider, error)
+	For(string) (Provider, error)
 	Names() []string
 }
 
 type registry struct {
-	providers map[engine.Dialect]Provider
+	providers map[string]Provider
 	names     []string
 }
 
-// NewRegistry constructs an immutable provider registry. Duplicate or invalid dialect rows are rejected.
 func NewRegistry(providers ...Provider) (Registry, error) {
-	registered := make(map[engine.Dialect]Provider, len(providers))
+	registered := make(map[string]Provider, len(providers))
 	names := make([]string, 0, len(providers))
 	for i, provider := range providers {
 		if provider == nil {
 			return nil, fmt.Errorf("spi: provider row %d is nil", i)
 		}
-		dialect := provider.Dialect()
-		if !dialect.Valid() {
-			return nil, fmt.Errorf("spi: provider row %d has an invalid dialect", i)
+		definition := provider.Definition()
+		name := definition.Name
+		if name == "" || name != strings.ToLower(strings.TrimSpace(name)) || definition.Engine == enginepb.Engine_ENGINE_UNSPECIFIED {
+			return nil, fmt.Errorf("spi: provider row %d has an invalid definition", i)
 		}
-		if _, exists := registered[dialect]; exists {
-			return nil, fmt.Errorf("spi: duplicate provider for engine %q", dialect.WireName())
+		if _, exists := registered[name]; exists {
+			return nil, fmt.Errorf("spi: duplicate provider for engine %q", name)
 		}
-		registered[dialect] = provider
-		names = append(names, dialect.WireName())
+		registered[name] = provider
+		names = append(names, name)
 	}
 	sort.Strings(names)
 	return &registry{providers: registered, names: names}, nil
 }
 
-// MustRegistry is NewRegistry for static executable wiring; invalid rows panic during process startup.
 func MustRegistry(providers ...Provider) Registry {
 	registry, err := NewRegistry(providers...)
 	if err != nil {
@@ -241,10 +266,10 @@ func MustRegistry(providers ...Provider) Registry {
 	return registry
 }
 
-func (r *registry) For(dialect engine.Dialect) (Provider, error) {
-	provider, ok := r.providers[dialect]
+func (r *registry) For(name string) (Provider, error) {
+	provider, ok := r.providers[name]
 	if !ok {
-		return nil, fmt.Errorf("unsupported engine %q (registered: %s)", dialect.WireName(), strings.Join(r.names, ", "))
+		return nil, fmt.Errorf("unsupported engine %q (registered: %s)", name, strings.Join(r.names, ", "))
 	}
 	return provider, nil
 }

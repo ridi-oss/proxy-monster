@@ -19,13 +19,21 @@ import com.ridi.oss.proxymonster.controlplane.management.ManagementException
 import com.ridi.oss.proxymonster.controlplane.management.auditEntity
 import com.ridi.oss.proxymonster.controlplane.catalogIsConnectionIndependent
 import com.ridi.oss.proxymonster.controlplane.catalogName
+import com.ridi.oss.proxymonster.controlplane.effectiveCatalog
+import com.ridi.oss.proxymonster.controlplane.resolveCatalog
+import com.ridi.oss.proxymonster.controlplane.measuredCatalog
+import com.ridi.oss.proxymonster.controlplane.namespaces
+import com.ridi.oss.proxymonster.controlplane.namespace
 import com.ridi.oss.proxymonster.controlplane.EnforcementOutcome
-import com.ridi.oss.proxymonster.controlplane.DatasourceStore
 import com.ridi.oss.proxymonster.controlplane.TokenKind
 import com.ridi.oss.proxymonster.controlplane.decideConnection
 import com.ridi.oss.proxymonster.controlplane.inTx
 import com.ridi.oss.proxymonster.controlplane.systemSchemas
-import com.ridi.oss.proxymonster.controlplane.tokenHash
+import com.ridi.oss.proxymonster.controlplane.resolveRequestIdentity
+import com.ridi.oss.proxymonster.controlplane.definition
+import com.ridi.oss.proxymonster.grpc.RequestAuthorization
+import com.ridi.oss.proxymonster.grpc.RequestAuthorizationResult
+import com.ridi.oss.proxymonster.grpc.requestAuthorizationResult
 import com.google.protobuf.Empty
 import com.ridi.oss.proxymonster.grpc.CatalogRequest
 import com.ridi.oss.proxymonster.grpc.CatalogResponse
@@ -80,7 +88,7 @@ private const val TABLE_DETAIL_STREAM_TIMEOUT_MS = 60_000L
 // error instead of a stalled run channel. Bump it on any incompatible wire change. It MUST match the proxy's
 // goproxy cp.ProtocolVersion; the two are separate constants in separate languages kept in lockstep by hand —
 // a server-v* release always ships both at the same value.
-internal const val CONTROL_PROTOCOL_VERSION = 3
+internal const val CONTROL_PROTOCOL_VERSION = 4
 
 // The completion-event terminal statuses the proxy reports: a clean finish, a target DB/relay error carrying
 // partial counts, or a canceled statement. Any other value is rejected fail-closed so a malformed report
@@ -111,10 +119,10 @@ internal fun editorTempOverlay(
     if (channel != Channel.EDITOR || temps.isEmpty()) return emptyList()
     val catalogName = engine.catalogName(dbName)
     return temps
-        .filter { it.schema.startsWith("pg_temp") }
+        .filter { it.schema.startsWith("pg_temp") && (!it.hasCatalog() || it.catalog == catalogName) }
         .map { t ->
             CatalogColumn(
-                catalog = catalogName, schema = t.schema, table = t.table, column = t.column,
+                catalog = if (t.hasCatalog()) t.catalog else catalogName, schema = t.schema, table = t.table, column = t.column,
                 dataType = t.sqlType, sqlType = t.sqlType, ordinal = t.ordinal, nullable = true,
                 isTemp = true,
             )
@@ -177,7 +185,7 @@ class ControlPlaneGrpcService(
             ?: throw StatusException(Status.NOT_FOUND.withDescription("unknown datasource '${request.datasourceName}'"))
         val opened = core.connectionCatalog.open(
             Binding(ds.name, id.principal, id.kind),
-            ds.defaultSchemas + ds.engine.systemSchemas,
+            ds.namespaces(ds.defaultSchemas + ds.engine.systemSchemas),
             adoptHeldContent = ds.engine.catalogIsConnectionIndependent,
         )
         return wireIdentity {
@@ -188,58 +196,47 @@ class ControlPlaneGrpcService(
         }
     }
 
-    override suspend fun decide(request: DecisionRequest): WireDecision {
-        // Re-validate the RAW token on every query so a mid-session revocation takes effect on the next
-        // query, not at session end — the proxy-asserted principal is never trusted for the life of the
-        // connection. Read-only (resolve, not validate) so the per-query check doesn't
-        // serialize concurrent queries on the token row's last_used_at write. An authN failure
-        // (bad/revoked/expired token, deprovisioned principal) is UNAUTHENTICATED so the proxy can tear
-        // the session down, distinct from an authZ policy DENY.
-        val id = core.tokenStore.resolve(request.token)
-            ?: throw StatusException(Status.UNAUTHENTICATED.withDescription("invalid, expired, or revoked wire token"))
-        if (core.userGroupStore.isDeactivated(id.principal)) {
-            throw StatusException(Status.UNAUTHENTICATED.withDescription("principal is deprovisioned"))
+    override suspend fun authorizeRequest(request: RequestAuthorization): RequestAuthorizationResult {
+        val resolved = core.resolveRequestIdentity(request.token, request.clientAddr.ifBlank { null })
+        if (resolved.kind != TokenKind.SESSION && resolved.kind != TokenKind.USER) {
+            throw StatusException(Status.UNAUTHENTICATED.withDescription("metadata requires a native credential"))
         }
         val ds = core.datasourceStore.getByName(request.datasourceName)
+            ?: throw StatusException(Status.NOT_FOUND.withDescription("unknown datasource"))
+        val roles = resolved.effectiveRoles
+        val allowed = try {
+            ds.engine.definition.requestAuthorizer.authorize(request, ds, resolved.identity.principal, roles, resolved.context, core.authz)
+        } catch (_: ManagementException) {
+            false
+        }
+        return requestAuthorizationResult {
+            this.allowed = allowed
+            if (allowed) principal = resolved.identity.principal else denyReason = "datasource.not_connectable"
+            effectiveRoles.addAll(roles)
+        }
+    }
+
+    override suspend fun decide(request: DecisionRequest): WireDecision {
+        val resolved = core.resolveRequestIdentity(request.token, request.clientAddr.ifBlank { null })
+        val id = resolved.identity
+        val ds = core.datasourceStore.getByName(request.datasourceName)
             ?: throw StatusException(Status.NOT_FOUND.withDescription("unknown datasource '${request.datasourceName}'"))
+        try {
+            ds.resolveCatalog(if (request.hasCurrentCatalog()) request.currentCatalog else null)
+            request.tempColumnsList.forEach { if (it.hasCatalog()) ds.resolveCatalog(it.catalog) }
+        } catch (e: ManagementException) {
+            throw StatusException(Status.INVALID_ARGUMENT.withDescription(e.error.code))
+        }
         // The proxy always sends its live namespace. Pass search_path through verbatim — do NOT
         // collapse an empty list to the datasource default: treating "absent = default" would be
         // fail-OPEN here, since a failed/empty namespace probe would authorize against the stored
         // default (possibly the wrong schema). An empty namespace reaches decideQuery as-is and resolves
         // fail-closed (unqualified references can't resolve -> DENY).
         val clientAddr = request.clientAddr.ifBlank { null }
-        // Derive the channel and assume-role set from the resolved token's KIND (the
-        // control-plane minted it; the proxy can't assert it). A native-wire token (SESSION/USER) is
-        // channel=wire, and its roles are ALWAYS resolved server-side (never taken from the token). The
-        // ephemeral editor/approver-exec kinds map to editor/workflow-executor; only they may carry a
-        // CP-computed assume-role set (execute-under-R).
-        val kind = TokenKind.fromWire(id.kind)
-            ?: throw StatusException(Status.UNAUTHENTICATED.withDescription("token kind is not valid for query decisions"))
-        val assumeRoles = if (kind == TokenKind.EDITOR || kind == TokenKind.APPROVER_EXEC) {
-            id.roles.toSet().takeIf { it.isNotEmpty() }
-        } else {
-            null
-        }
-        val channel = when (kind) {
-            TokenKind.SESSION, TokenKind.USER -> Channel.WIRE
-            TokenKind.EDITOR -> Channel.EDITOR
-            // workflow-executor (where a policy may unmask R at execute) is reachable ONLY by an approver-exec
-            // token that actually carries an assume-role set (execute-under-R). A no-R approver-exec (approver
-            // runs as themselves, no elevation) decides at the editor channel with NORMAL enforcement.
-            TokenKind.APPROVER_EXEC -> if (assumeRoles != null) Channel.WORKFLOW_EXECUTOR else Channel.EDITOR
-        }
-        // The connection's session/temp columns, overlaid onto the base catalog. Both trust
-        // gates (EDITOR-channel-only + pg_temp* filter) live in [editorTempOverlay] so they're unit-testable.
-        val tempColumns = editorTempOverlay(channel, request.tempColumnsList, ds.engine, ds.dbName)
-        // The HTTP requester IP recorded on [ControlPlaneCore.runRequesterIps] at ephemeral
-        // token mint time, keyed by this token's hash. Gated strictly on KIND (never just "an entry exists")
-        // so a native-wire (SESSION/USER) token can never pick up a registry entry — the registry is only ever
-        // populated for EDITOR/APPROVER_EXEC tokens, but this keeps the read itself honest about that intent.
-        val httpIp = if (kind == TokenKind.EDITOR || kind == TokenKind.APPROVER_EXEC) {
-            core.runRequesterIps.get(tokenHash(request.token))
-        } else {
-            null
-        }
+        val channel = resolved.channel
+        val assumeRoles = resolved.providedRoles
+        val tempColumns = editorTempOverlay(channel, request.tempColumnsList, ds.engine, ds.effectiveCatalog)
+        val httpIp = resolved.httpRequesterIp
         if (request.connectionId.size() != 16) {
             throw StatusException(Status.INVALID_ARGUMENT.withDescription("connection_id must be exactly 16 bytes"))
         }
@@ -249,7 +246,7 @@ class ControlPlaneGrpcService(
             val recovered = core.connectionCatalog.recover(
                 request.connectionId,
                 binding,
-                request.searchPathList + ds.defaultSchemas + ds.engine.systemSchemas,
+                ds.namespaces(request.searchPathList + ds.defaultSchemas + ds.engine.systemSchemas),
                 adoptHeldContent = ds.engine.catalogIsConnectionIndependent,
             ) ?: throw StatusException(Status.ABORTED.withDescription("connection recovery raced with another request"))
             return beforeDecideDecision(recovered.onOpen)
@@ -374,16 +371,10 @@ class ControlPlaneGrpcService(
         // let it surface later as a stalled run channel. The proxy makes the mirror check against
         // RegisterResponse.protocol_version, so an OLDER control-plane is refused on that side.
         requireCompatibleProtocolVersion(request.protocolVersion)
-        // Pass the proto Engine through as the domain type, rejecting only the invalid sentinels (the proto3
-        // zero value and the generated unrecognized value) — an unset/garbage engine must not silently
-        // default to postgres and mis-drive introspection/dialect resolution. Inverting the check this way
-        // lets a future proto engine pass through untouched instead of being rejected by an enumeration of
-        // the currently-known ones.
-        val engine = when (request.engine) {
-            Engine.ENGINE_UNSPECIFIED, Engine.UNRECOGNIZED -> throw StatusException(
-                Status.INVALID_ARGUMENT.withDescription("engine must be POSTGRES or MYSQL"),
-            )
-            else -> request.engine
+        val engine = try {
+            request.engine.definition.engine
+        } catch (_: IllegalStateException) {
+            throw StatusException(Status.INVALID_ARGUMENT.withDescription("unregistered engine"))
         }
         // The advertised chain is inspected, never refused. Whether a chain is usable is the CLIENT's
         // verification to make, and it will fail loudly on its own if it cannot build a path. Rejecting at
@@ -420,6 +411,7 @@ class ControlPlaneGrpcService(
                 advertiseAddr = request.advertiseAddr,
                 advertiseCertChain = certChain,
                 advertiseWireTls = request.advertiseWireTls,
+                connectionInfo = if (request.hasConnectionInfo()) request.connectionInfo else null,
             )
         } catch (e: DatasourceEngineConflictException) {
             // Engine is immutable at register — a mismatched re-register is a client precondition
@@ -453,6 +445,11 @@ class ControlPlaneGrpcService(
             ?: throw StatusException(
                 Status.NOT_FOUND.withDescription("unknown datasource '${request.datasourceName}' — Register first"),
             )
+        val currentCatalog = try {
+            ds.measuredCatalog(if (request.hasCurrentCatalog()) request.currentCatalog else null)
+        } catch (e: ManagementException) {
+            throw StatusException(Status.INVALID_ARGUMENT.withDescription(e.error.code))
+        }
         val mysqlLowerCaseTableNames =
             if (request.hasMysqlLowerCaseTableNames()) request.mysqlLowerCaseTableNames else null
         val stored = try {
@@ -462,9 +459,12 @@ class ControlPlaneGrpcService(
                 mysqlLowerCaseTableNames = mysqlLowerCaseTableNames,
                 engineVersion = request.engineVersion,
                 catalog = request.catalog,
+                currentCatalog = currentCatalog,
             )
         } catch (e: IllegalArgumentException) {
             throw StatusException(Status.INVALID_ARGUMENT.withDescription(e.message))
+        } catch (e: ManagementException) {
+            throw StatusException(Status.INVALID_ARGUMENT.withDescription(e.error.code))
         }
         // This push is a fresh whole-catalog read of the target DB, so where it agrees with content the
         // enforcement pool already holds it re-measures that content — the ambient refresh keeps held
@@ -472,8 +472,8 @@ class ControlPlaneGrpcService(
         // re-probe a schema the proxy just confirmed.
         val confirmed = core.connectionCatalog.recordAmbientMeasurement(
             ds.name,
-            request.catalog.columnsList.groupBy({ it.schema }) {
-                FragmentColumn(it.schema, it.table, it.column, it.dataType, it.ordinal, it.nullable)
+            request.catalog.columnsList.groupBy({ namespace(it.catalog.ifBlank { currentCatalog }, it.schema) }) {
+                FragmentColumn(it.schema, it.table, it.column, it.dataType, it.ordinal, it.nullable, it.catalog.ifBlank { currentCatalog })
             },
         )
         if (confirmed.isNotEmpty()) {

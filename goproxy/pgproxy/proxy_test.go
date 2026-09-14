@@ -26,7 +26,7 @@ import (
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
 	"github.com/ridi-oss/proxy-monster/goproxy/pgproxy"
 	"github.com/ridi-oss/proxy-monster/goproxy/proxytls"
-	"github.com/ridi-oss/proxy-monster/goproxy/spi"
+	"github.com/ridi-oss/proxy-monster/goproxy/sqltarget"
 )
 
 const (
@@ -275,7 +275,7 @@ func startBrokerForDBSetup(t *testing.T, targetDb dbtest.TargetDb, database stri
 	if setup != nil {
 		setup(fake)
 	}
-	target := spi.TargetDb{
+	target := sqltarget.Config{
 		Host:     targetDb.Host,
 		Port:     targetDb.Port,
 		Db:       database,
@@ -291,7 +291,7 @@ func startBrokerTLS(t *testing.T) *brokerHarness {
 	targetDb := seedTargetDb(t)
 	fake, cpClient := startFakeCP(t)
 	tlsProvider := proxytls.NewReloading("../proxytls/testdata/ec.crt", "../proxytls/testdata/ec-sec1.key")
-	target := spi.TargetDb{
+	target := sqltarget.Config{
 		Host:     targetDb.Host,
 		Port:     targetDb.Port,
 		Db:       "app",
@@ -431,6 +431,9 @@ func TestAllowRelaysRowsAndDecisionContext(t *testing.T) {
 		t.Fatalf("Decide requests = %d, want 1", len(requests))
 	}
 	request := requests[0]
+	if request.CurrentCatalog == nil || request.GetCurrentCatalog() != "app" {
+		t.Fatalf("DecisionRequest catalog = %v, want app", request.CurrentCatalog)
+	}
 	if request.GetToken() != validToken || request.GetSql() != query || !reflect.DeepEqual(request.GetSearchPath(), []string{"pg_catalog", "public"}) {
 		t.Fatalf("DecisionRequest = %+v, want token/query/default search path", request)
 	}

@@ -478,7 +478,7 @@ export function useResultTabs(datasourceId: number | null, maxRows: number): Res
   const openTable = useCallback(
     (table: TreeTable) => {
       if (datasourceId == null) return
-      const key = `tbl:${table.qualified}`
+      const key = JSON.stringify(['table', datasourceId, table.key])
       const existing = tabsRef.current.find((t) => t.kind === 'table' && t.key === key)
       if (existing) {
         setActiveId(existing.id)
@@ -495,11 +495,13 @@ export function useResultTabs(datasourceId: number | null, maxRows: number): Res
         pinned: false,
         taskId: null,
         ordinal: 0,
-        res: { ...EMPTY, loading: true },
+        res: { ...EMPTY, loading: table.insert != null },
       }
       setTabs((ts) => [...ts, tab])
       setActiveId(id)
-      fetchInto(id, `SELECT * FROM ${table.insert} LIMIT ${TABLE_PREVIEW_ROWS}`, TABLE_PREVIEW_ROWS)
+      if (table.insert != null) {
+        fetchInto(id, `SELECT * FROM ${table.insert} LIMIT ${TABLE_PREVIEW_ROWS}`, TABLE_PREVIEW_ROWS)
+      }
     },
     [datasourceId, fetchInto],
   )

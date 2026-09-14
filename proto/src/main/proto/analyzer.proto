@@ -499,6 +499,7 @@ message StatementFacts {
   repeated string functions = 13;
   // Dotted identifier schema candidates used only to retry a catalog miss with refreshed metadata.
   repeated string schema_qualifier_candidates = 14;
+  repeated proxymonster.v1.NamespaceRef namespace_qualifier_candidates = 20;
   reserved 15; // was statement_kind (top-level) — it lives on statement_exec below
   // The single statement-execution grant: authorize stmt.kind.<k> on the datasource. The analyzer sets it
   // whenever a statement parses to a classifiable root — including an unresolved-but-classified one (KILL,

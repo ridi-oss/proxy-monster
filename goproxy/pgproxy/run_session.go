@@ -10,6 +10,7 @@ import (
 	"github.com/ridi-oss/proxy-monster/goproxy/engine"
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
 	"github.com/ridi-oss/proxy-monster/goproxy/spi"
+	"github.com/ridi-oss/proxy-monster/goproxy/sqltarget"
 	"github.com/ridi-oss/proxy-monster/goproxy/wire"
 )
 
@@ -17,7 +18,7 @@ type RunSession struct {
 	sessionCore
 	conn         net.Conn
 	keyData      pgproto3.BackendKeyData
-	target       spi.TargetDb
+	target       sqltarget.Config
 	token        string
 	connectionID []byte
 	ref          *engine.Refetcher
@@ -25,8 +26,8 @@ type RunSession struct {
 	poisoned     bool
 }
 
-func NewRunSession(ctx context.Context, target spi.TargetDb, db engine.Db, client spi.SessionClient, token string, connectionID []byte, guard engine.ExecGuard, readTimeout time.Duration) (*RunSession, error) {
-	conn, _, keyData, txStatus, err := dialTargetDbAuth(ctx, target)
+func NewRunSession(ctx context.Context, target sqltarget.Config, db engine.Db, client spi.SessionClient, token string, connectionID []byte, guard engine.ExecGuard, readTimeout time.Duration) (*RunSession, error) {
+	conn, _, keyData, txStatus, catalog, err := dialTargetDbAuth(ctx, target)
 	if err != nil {
 		return nil, err
 	}
@@ -38,10 +39,11 @@ func NewRunSession(ctx context.Context, target spi.TargetDb, db engine.Db, clien
 	}
 	s := &RunSession{
 		sessionCore: sessionCore{
-			targetDb:     pgproto3.NewFrontend(conn, conn),
-			qe:           engine.NewQueryEngine(db, client),
-			db:           db,
-			lastTxStatus: txStatus,
+			currentCatalog: catalog,
+			targetDb:       pgproto3.NewFrontend(conn, conn),
+			qe:             engine.NewQueryEngine(client),
+			db:             db,
+			lastTxStatus:   txStatus,
 		},
 		conn:         conn,
 		keyData:      keyData,
@@ -53,6 +55,7 @@ func NewRunSession(ctx context.Context, target spi.TargetDb, db engine.Db, clien
 	s.ref = engine.NewRefetcher(db, s.connectionID, generation, func(sql string, expectedColumns int) ([][]*string, error) {
 		return s.runProbe(sql, expectedColumns, true)
 	}, client.PushSchemaFragment)
+	s.ref.Catalog = catalog
 	return s, nil
 }
 

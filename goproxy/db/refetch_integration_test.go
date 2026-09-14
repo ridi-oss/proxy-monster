@@ -5,7 +5,6 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"reflect"
 	"strings"
 	"testing"
 
@@ -335,7 +334,7 @@ func TestMySqlRefetcherTruncationFallsBackToFullFetch(t *testing.T) {
 		if push.Unchanged {
 			t.Fatalf("run %d emitted Unchanged=true for matching truncated hash", i+1)
 		}
-		if !reflect.DeepEqual(push.Columns, wantColumns) {
+		if !equalColumns(push.Columns, wantColumns) {
 			t.Fatalf("run %d columns = %+v, want complete %+v", i+1, push.Columns, wantColumns)
 		}
 		if len(push.ContentHash) != 32 {
@@ -428,7 +427,7 @@ func assertFullRefetch(t *testing.T, push *pb.SchemaFragmentPush, currentHash []
 	if !bytes.Equal(push.ContentHash, currentHash) {
 		t.Fatalf("push hash = %x, want new trusted hash %x", push.ContentHash, currentHash)
 	}
-	if !reflect.DeepEqual(push.Columns, wantColumns) {
+	if !equalColumns(push.Columns, wantColumns) {
 		t.Fatalf("push columns = %+v, want %+v", push.Columns, wantColumns)
 	}
 }

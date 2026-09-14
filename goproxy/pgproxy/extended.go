@@ -337,6 +337,7 @@ func (s *Server) probeBindContext(sess *session) (engine.NamespaceProbe, []engin
 	if err != nil {
 		return engine.NamespaceProbe{}, nil, err
 	}
+	namespaceProbe.CurrentCatalog = sess.currentCatalog
 	sess.namespaceProbe = namespaceProbe.Clone()
 
 	tempRows, err := s.runExtendedProbe(sess, s.db.TempColumnsProbeSQL(), 5)
@@ -344,6 +345,9 @@ func (s *Server) probeBindContext(sess *session) (engine.NamespaceProbe, []engin
 		return engine.NamespaceProbe{}, nil, fmt.Errorf("target DB temp-column probe: %w", err)
 	}
 	temps, err := tempColumnsFromRows(tempRows)
+	for i := range temps {
+		temps[i].Catalog = sess.currentCatalog
+	}
 	if err != nil {
 		return engine.NamespaceProbe{}, nil, err
 	}

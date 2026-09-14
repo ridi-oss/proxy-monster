@@ -37,7 +37,6 @@ import com.ridi.oss.proxymonster.analyzer.pb.StatementKind
 import com.ridi.oss.proxymonster.analyzer.pb.catalogSnapshot
 import com.ridi.oss.proxymonster.analyzer.pb.column
 import com.ridi.oss.proxymonster.analyzer.pb.resultFingerprint
-import com.ridi.oss.proxymonster.analyzer.pb.engineConfig as pbEngineConfig
 import com.ridi.oss.proxymonster.analyzer.pb.namespace as pbNamespace
 import com.ridi.oss.proxymonster.probe.Analyzer
 import com.ridi.oss.proxymonster.probe.Dialect
@@ -204,9 +203,9 @@ data class DecisionContext(
     /** True when the deny may be caused by absent structural catalog rows. */
     val catalogMiss: Boolean = false,
     /** Non-temp schemas the analyzer resolved or touched. */
-    val referencedSchemas: Set<String> = emptySet(),
+    val referencedSchemas: Set<com.ridi.oss.proxymonster.grpc.NamespaceRef> = emptySet(),
     /** Parsed dotted-identifier candidates used by the catalog-miss retry path. */
-    val schemaCandidates: Set<String> = emptySet(),
+    val schemaCandidates: Set<com.ridi.oss.proxymonster.grpc.NamespaceRef> = emptySet(),
 )
 
 /**
@@ -297,19 +296,11 @@ internal fun analyzerAndCatalogIndex(
     resolvedSearchPath: List<String>,
     liveAnsiQuotes: Boolean,
 ): Pair<CatalogColumnIndex, Analyzer> {
-    val mysqlCaseMode = ds.engine.requireCaseMode(ds.mysqlLowerCaseTableNames)
     val namespace = pbNamespace {
-        this.catalog = ds.engine.catalogName(ds.dbName)
+        this.catalog = ds.effectiveCatalog
         this.searchPath.addAll(resolvedSearchPath)
     }
-    val engineConfig = pbEngineConfig {
-        this.engine = ds.engine
-        this.engineVersion = ds.engineVersion ?: ""
-        mysqlCaseMode?.let { this.mysqlLowerCaseTableNames = it }
-        // Only meaningful for MySQL (the proxy observes ANSI_QUOTES off a MySQL session and leaves this
-        // false otherwise); the PostgreSQL engine ignores it regardless.
-        if (liveAnsiQuotes) this.mysqlAnsiQuotes = true
-    }
+    val engineConfig = ds.engine.definition.analyzerEngineConfig(ds, liveAnsiQuotes)
     val effectiveCatalog = catalog.columns + tempColumns
     val snapshot = catalogSnapshot {
         columns += effectiveCatalog.map { col ->
@@ -546,7 +537,7 @@ fun decideQuery(
     // without them the query stays denied until an unrelated refresh (ConnectionDecide.markCatalogMiss).
     fun deny(reason: String, catalogMiss: Boolean = false): DecisionContext =
         policyDeny(reason, roleList, derivedTags)
-            .copy(catalogMiss = catalogMiss, schemaCandidates = facts.schemaQualifierCandidatesList.toSet())
+            .copy(catalogMiss = catalogMiss, schemaCandidates = facts.namespaceQualifierCandidatesList.toSet())
 
     when (authz.authorizeDatasourceAction(principal, roles, AuthzAction.DATASOURCE_CONNECT, ds.name, context, ds.tags)) {
         is AuthzDecision.Deny -> return policyDeny("no access to datasource '${ds.name}'", roleList, derivedTags)
@@ -616,7 +607,7 @@ fun decideQuery(
         return passthroughAllow(roleList, "passthrough (no data touched)", derivedTags)
             .copy(
                 sanitizeDiagnostics = !readsAllUnmasked(principal, roles, ds, catalog.columns, facts.diagnosticLeakColumnsList, context, authz, systemClassification),
-                schemaCandidates = facts.schemaQualifierCandidatesList.toSet(),
+                schemaCandidates = facts.namespaceQualifierCandidatesList.toSet(),
             )
             .withAnalyzerRewrite(facts)
     }
@@ -652,7 +643,7 @@ fun decideQuery(
                 passthrough = true,
                 contextTags = derivedTags,
                 catalogChanging = facts.catalogChanging || facts.functionsList.isNotEmpty(),
-                schemaCandidates = facts.schemaQualifierCandidatesList.toSet(),
+                schemaCandidates = facts.namespaceQualifierCandidatesList.toSet(),
                 // A statement may be unresolvable only because this connection never fetched the schema it
                 // names, so refetch the qualifiers before relaying it unmasked.
                 catalogMiss = true,
@@ -701,13 +692,13 @@ fun decideQuery(
                 contextTags = derivedTags,
                 catalogChanging = facts.catalogChanging || facts.functionsList.isNotEmpty(),
                 catalogMiss = true,
-                schemaCandidates = facts.schemaQualifierCandidatesList.toSet(),
+                schemaCandidates = facts.namespaceQualifierCandidatesList.toSet(),
                 // An uncovered column means the leak set can't be authorized — fail closed and redact.
                 sanitizeDiagnostics = true,
             )
             is AuthzDecision.Deny -> structuralDeny(
                 coverage.reason, roleList, failedStage = "catalog", contextTags = derivedTags,
-            ).copy(catalogMiss = true, schemaCandidates = facts.schemaQualifierCandidatesList.toSet())
+            ).copy(catalogMiss = true, schemaCandidates = facts.namespaceQualifierCandidatesList.toSet())
         }
     }
 
@@ -715,7 +706,7 @@ fun decideQuery(
         policyStore.listMaskFns().associate { it.name to it.kind }
     } catch (_: Exception) {
         return structuralDeny(CATALOG_CONFIGURATION_DENY, roleList, failedStage = "catalog", contextTags = derivedTags)
-            .copy(catalogMiss = true, schemaCandidates = facts.schemaQualifierCandidatesList.toSet())
+            .copy(catalogMiss = true, schemaCandidates = facts.namespaceQualifierCandidatesList.toSet())
     }
     val columnRefs = columnKeys.keys.map { key ->
         val row = catalogIndex.rowsByKey.getValue(key)
@@ -820,9 +811,9 @@ fun decideQuery(
         catalogIndex.rowsByKey.getValue(it).classification?.tags?.isNotEmpty() == true
     }
     val referencedSchemas = buildSet {
-        facts.sourcesList.mapTo(this) { it.schema }
-        columnGrants.mapTo(this) { it.column.identity.schema }
-    }.filterNotTo(LinkedHashSet()) { it.startsWith("pg_temp", ignoreCase = true) }
+        facts.sourcesList.mapTo(this) { namespace(it.catalog, it.schema) }
+        columnGrants.mapTo(this) { namespace(it.column.catalog, it.column.identity.schema) }
+    }.filterNotTo(LinkedHashSet()) { it.schema.startsWith("pg_temp", ignoreCase = true) }
     val unmaskablePermitted = action == EnfAction.MASK && authz.authorizeDatasourceAction(
         principal, roles, AuthzAction.EXCEPTION_UNMASKABLE, ds.name, context, ds.tags,
     ) is AuthzDecision.Allow
@@ -847,7 +838,7 @@ fun decideQuery(
         sanitizeDiagnostics = sanitizeDiagnostics,
         catalogChanging = facts.catalogChanging || facts.functionsList.isNotEmpty(),
         referencedSchemas = referencedSchemas,
-        schemaCandidates = facts.schemaQualifierCandidatesList.toSet(),
+        schemaCandidates = facts.namespaceQualifierCandidatesList.toSet(),
     ).withAnalyzerRewrite(facts)
 }
 

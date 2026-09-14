@@ -15,6 +15,7 @@ import (
 	"github.com/ridi-oss/proxy-monster/goproxy/config"
 	"github.com/ridi-oss/proxy-monster/goproxy/cp"
 	"github.com/ridi-oss/proxy-monster/goproxy/drain"
+	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
 	"github.com/ridi-oss/proxy-monster/goproxy/proxytls"
 	"github.com/ridi-oss/proxy-monster/goproxy/run"
 	"github.com/ridi-oss/proxy-monster/goproxy/spi"
@@ -59,14 +60,11 @@ func Run(registry spi.Registry) error {
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 
 	provider := cfg.Provider
-	dbImpl := provider.NewDb()
-	targetDb := spi.TargetDb{
-		Host:     cfg.TargetHost,
-		Port:     cfg.TargetPort,
-		Db:       cfg.TargetDb,
-		User:     cfg.TargetUser,
-		Password: cfg.TargetPassword,
+	target, err := provider.Configure(os.LookupEnv)
+	if err != nil {
+		return fmt.Errorf("failed to configure target: %w", err)
 	}
+	defer target.Close()
 
 	// Build the client-facing TLS config BEFORE registering, so the proxy can advertise the certificate chain
 	// a client should trust alongside its address. certChain is re-read at every (re)register, so a rotated
@@ -133,8 +131,8 @@ func Run(registry spi.Registry) error {
 	reconciler := newDatasourceReconciler(
 		configClient,
 		cfg,
-		targetDb,
-		provider,
+		target,
+		provider.Definition(),
 		certChain,
 		maxResyncConcurrency,
 	)
@@ -170,11 +168,11 @@ func Run(registry spi.Registry) error {
 				runs.Add()
 				go func() {
 					defer runs.Done()
-					run.NewRunner(enforcementClient, dbImpl, targetDb, provider, cfg.QueryTimeout).Run(open, runs.Signal())
+					run.NewRunner(enforcementClient, target, cfg.QueryTimeout).Run(open, runs.Signal())
 				}()
 			},
-			func(sessionID, schema, table string) {
-				go run.NewTableDetailRunner(configClient, targetDb, provider).Run(sessionID, schema, table)
+			func(open *pb.OpenTableDetailChannel) {
+				go run.NewTableDetailRunner(configClient, target).Run(open)
 			},
 		)
 		// A version rejection on the events stream is fatal even when a resync Register races to a still-
@@ -196,7 +194,7 @@ func Run(registry spi.Registry) error {
 		}
 	}()
 
-	server := provider.NewWireServer(cfg.ProxyPort, targetDb, enforcementClient, dbImpl, tlsProvider)
+	server := target.NewNativeServer(spi.NativeServerOptions{Port: cfg.ProxyPort, Client: enforcementClient, TLSProvider: tlsProvider})
 	slog.Info("starting proxy-monster data plane", "engine", cfg.Engine, "control_plane", cfg.ControlPlaneGrpcTarget)
 
 	serveErr := make(chan error, 1)
@@ -221,6 +219,7 @@ func Run(registry spi.Registry) error {
 	if serveExitErr != nil {
 		slog.Error("data plane serve error during shutdown", "error", serveExitErr)
 	}
+	_ = target.Close()
 	_ = enforcementClient.Close()
 	_ = configClient.Close()
 	if serveExitErr != nil {

@@ -44,13 +44,13 @@ type Runner struct {
 	queryTimeout time.Duration
 }
 
-func NewRunner(client spi.RunClient, dbImpl engine.Db, targetDb spi.TargetDb, provider spi.Provider, queryTimeout time.Duration) *Runner {
+func NewRunner(client spi.RunClient, target spi.Target, queryTimeout time.Duration) *Runner {
 	if queryTimeout == 0 {
 		queryTimeout = defaultQueryTimeout
 	}
 	readTimeout := queryTimeout + runSocketTimeoutGrace
 	factory := func(ctx context.Context, token string, connectionID []byte, guard engine.ExecGuard) (spi.TargetDbSession, error) {
-		return provider.NewRunSession(ctx, targetDb, dbImpl, client, token, connectionID, guard, readTimeout)
+		return target.NewRunSession(ctx, spi.RunSessionOptions{Client: client, Token: token, ConnectionID: connectionID, Guard: guard, ReadTimeout: readTimeout})
 	}
 	return &Runner{client: client, factory: factory, queryTimeout: queryTimeout}
 }

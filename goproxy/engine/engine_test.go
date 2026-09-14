@@ -79,7 +79,7 @@ func TestAuthorizeReducesControlPlaneVerdict(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			dec := &fakeDecider{outcome: c.outcome}
-			e := NewQueryEngine(mysqlDb, dec)
+			e := NewQueryEngine(dec)
 			got := e.Authorize(AuthzInput{SQL: "SELECT 1", ProbeNamespace: staticNamespace([]string{"app"}, new(int))})
 			if reflect.TypeOf(got) != reflect.TypeOf(c.want) {
 				t.Fatalf("verdict type: got %T, want %T", got, c.want)
@@ -93,7 +93,7 @@ func TestAuthorizeReducesControlPlaneVerdict(t *testing.T) {
 
 func TestAuthorizeSanitizeDiagnosticsIsPerDecision(t *testing.T) {
 	dec := &fakeDecider{outcome: DecisionOutcome{Decision: &Decision{Action: "ALLOW", SanitizeDiagnostics: true}}}
-	e := NewQueryEngine(mysqlDb, dec)
+	e := NewQueryEngine(dec)
 	if e.SanitizeDiagnostics() {
 		t.Fatal("must start clear")
 	}
@@ -115,7 +115,7 @@ func TestAuthorizeSanitizeDiagnosticsStaysClearWhenNeverRequested(t *testing.T) 
 	// A decision that never requests redaction (e.g. a system:development datasource, or a MySQL ALLOW)
 	// leaves diagnostics relaying verbatim for debugging.
 	dec := &fakeDecider{outcome: okOutcome("ALLOW", nil)}
-	e := NewQueryEngine(mysqlDb, dec)
+	e := NewQueryEngine(dec)
 	e.Authorize(AuthzInput{SQL: "SELECT 1", ProbeNamespace: staticNamespace([]string{"app"}, new(int))})
 	if e.SanitizeDiagnostics() {
 		t.Fatal("must stay clear when no decision requests redaction")
@@ -126,7 +126,7 @@ func TestAuthorizePassesConnectionCatalogCallbacks(t *testing.T) {
 	dec := &fakeDecider{outcome: okOutcome("ALLOW", nil)}
 	connectionID := []byte("0123456789abcdef")
 	runCommands := func([]*pb.Refetch) error { return nil }
-	got := NewQueryEngine(mysqlDb, dec).Authorize(AuthzInput{
+	got := NewQueryEngine(dec).Authorize(AuthzInput{
 		SQL:              "SELECT 1",
 		Token:            "token",
 		ClientAddr:       "127.0.0.1:1234",
@@ -151,7 +151,7 @@ func TestAuthorizePassesConnectionCatalogCallbacks(t *testing.T) {
 
 func TestAuthorizeNamespaceProbeFailureFailsClosed(t *testing.T) {
 	dec := &fakeDecider{outcome: okOutcome("ALLOW", nil)}
-	e := NewQueryEngine(mysqlDb, dec)
+	e := NewQueryEngine(dec)
 	got := e.Authorize(AuthzInput{SQL: "SELECT 1", ProbeNamespace: func() (NamespaceProbe, error) { return NamespaceProbe{}, errors.New("boom") }})
 	if _, ok := got.(Fail); !ok {
 		t.Fatalf("want Fail on namespace probe error, got %T", got)
@@ -163,7 +163,7 @@ func TestAuthorizeNamespaceProbeFailureFailsClosed(t *testing.T) {
 
 func TestNamespaceCachedUntilDirty(t *testing.T) {
 	dec := &fakeDecider{outcome: okOutcome("ALLOW", nil)}
-	e := NewQueryEngine(mysqlDb, dec)
+	e := NewQueryEngine(dec)
 	probes := 0
 	in := AuthzInput{SQL: "SELECT 1", ProbeNamespace: staticNamespace([]string{"app"}, &probes)}
 
@@ -204,7 +204,7 @@ func TestNamespaceCachedUntilDirty(t *testing.T) {
 
 func TestMysqlAnsiQuotesForwardedAndCached(t *testing.T) {
 	dec := &fakeDecider{outcome: okOutcome("ALLOW", nil)}
-	e := NewQueryEngine(mysqlDb, dec)
+	e := NewQueryEngine(dec)
 	probes := 0
 	in := AuthzInput{SQL: `SELECT "card_number" FROM cards`, ProbeNamespace: func() (NamespaceProbe, error) {
 		probes++
@@ -236,7 +236,7 @@ func TestMysqlAnsiQuotesForwardedAndCached(t *testing.T) {
 
 func TestPostgresLookupStateForwardedAndCached(t *testing.T) {
 	dec := &fakeDecider{outcome: okOutcome("ALLOW", nil)}
-	e := NewQueryEngine(pgDb, dec)
+	e := NewQueryEngine(dec)
 	probes := 0
 	observations := []NamespaceProbe{
 		{
@@ -284,14 +284,14 @@ func TestPostgresLookupStateForwardedAndCached(t *testing.T) {
 	}
 }
 
-func TestTempOverlayOnlyWhenSupported(t *testing.T) {
+func TestTempOverlayOnlyWhenProvided(t *testing.T) {
 	temps := []TempColumn{{Schema: "pg_temp_3", Table: "t", Column: "c", Ordinal: 0}}
 	probeTemps := func() ([]TempColumn, error) { return temps, nil }
 
 	// MySQL: no overlay -> temp probe never consulted.
 	decMy := &fakeDecider{outcome: okOutcome("ALLOW", nil)}
-	NewQueryEngine(mysqlDb, decMy).Authorize(AuthzInput{
-		SQL: "SELECT 1", ProbeNamespace: staticNamespace([]string{"app"}, new(int)), ProbeTempColumns: probeTemps,
+	NewQueryEngine(decMy).Authorize(AuthzInput{
+		SQL: "SELECT 1", ProbeNamespace: staticNamespace([]string{"app"}, new(int)),
 	})
 	if len(decMy.lastReq.TempColumns) != 0 {
 		t.Fatalf("MySQL (no overlay) must send no temp columns; got %+v", decMy.lastReq.TempColumns)
@@ -299,7 +299,7 @@ func TestTempOverlayOnlyWhenSupported(t *testing.T) {
 
 	// PG: overlay supported -> temp columns forwarded.
 	decPg := &fakeDecider{outcome: okOutcome("ALLOW", nil)}
-	NewQueryEngine(pgDb, decPg).Authorize(AuthzInput{
+	NewQueryEngine(decPg).Authorize(AuthzInput{
 		SQL: "SELECT 1", ProbeNamespace: staticNamespace([]string{"public"}, new(int)), ProbeTempColumns: probeTemps,
 	})
 	if !reflect.DeepEqual(decPg.lastReq.TempColumns, temps) {
@@ -340,7 +340,7 @@ func TestFragmentColumnsFromRowsStrict(t *testing.T) {
 
 func TestTempProbeIsBestEffort(t *testing.T) {
 	dec := &fakeDecider{outcome: okOutcome("ALLOW", nil)}
-	e := NewQueryEngine(pgDb, dec)
+	e := NewQueryEngine(dec)
 	got := e.Authorize(AuthzInput{
 		SQL:              "SELECT 1",
 		ProbeNamespace:   staticNamespace([]string{"public"}, new(int)),

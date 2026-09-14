@@ -1,5 +1,6 @@
 package com.ridi.oss.proxymonster.controlplane.grpc
 
+import com.ridi.oss.proxymonster.controlplane.namespaces
 import com.google.protobuf.ByteString
 import com.ridi.oss.proxymonster.controlplane.Binding
 import com.ridi.oss.proxymonster.controlplane.ControlPlaneCore
@@ -98,6 +99,35 @@ class GrpcPerConnectionCatalogDbTest {
     }
 
     @Test
+    fun `Decide rejects explicit blank and wrong catalog selectors before allocating state`() = runBlocking {
+        val count = core.connectionCatalog.connectionCount()
+        for (invalid in listOf("", "other")) {
+            assertEquals(Status.Code.INVALID_ARGUMENT, status {
+                stub.decide(decisionRequest {
+                    token = this@GrpcPerConnectionCatalogDbTest.token
+                    datasourceName = ds.name
+                    connectionId = ByteString.copyFrom(ByteArray(16) { 7 })
+                    currentCatalog = invalid
+                    sql = "SELECT 1"
+                })
+            })
+            assertEquals(Status.Code.INVALID_ARGUMENT, status {
+                stub.decide(decisionRequest {
+                    token = this@GrpcPerConnectionCatalogDbTest.token
+                    datasourceName = ds.name
+                    connectionId = ByteString.copyFrom(ByteArray(16) { 7 })
+                    currentCatalog = "app"
+                    tempColumns.add(com.ridi.oss.proxymonster.grpc.tempColumn {
+                        catalog = invalid; schema = "pg_temp_1"; table = "t"; column = "id"; sqlType = "BIGINT"
+                    })
+                    sql = "SELECT 1"
+                })
+            })
+        }
+        assertEquals(count, core.connectionCatalog.connectionCount())
+    }
+
+    @Test
     fun `validate mints connection id and system on-open commands`() = runBlocking {
         val identity = stub.validateToken(validateTokenRequest { token = this@GrpcPerConnectionCatalogDbTest.token; datasourceName = ds.name })
         assertEquals(16, identity.connectionId.size())
@@ -124,7 +154,7 @@ class GrpcPerConnectionCatalogDbTest {
         satisfyOnOpen(identity)
         val schema = identity.onOpenList.first().refetch.schema
         val connection = core.connectionCatalog.find(identity.connectionId)!!
-        core.connectionCatalog.markAfterStatement(connection, listOf(schema))
+        core.connectionCatalog.markAfterStatement(connection, ds.namespaces(listOf(schema)))
         assertEquals(Status.Code.FAILED_PRECONDITION, status { push(identity.connectionId, schema, "old", backendGeneration = 0) })
         assertEquals(Status.Code.FAILED_PRECONDITION, status { push(identity.connectionId, schema, "wrong", backendGeneration = 10, unchanged = true) })
     }
@@ -136,7 +166,7 @@ class GrpcPerConnectionCatalogDbTest {
         satisfyOnOpen(identity)
         val schema = identity.onOpenList.first().refetch.schema
         val connection = core.connectionCatalog.find(identity.connectionId)!!
-        core.connectionCatalog.markAfterStatement(connection, listOf(schema))
+        core.connectionCatalog.markAfterStatement(connection, ds.namespaces(listOf(schema)))
         assertEquals(Status.Code.FAILED_PRECONDITION, status { push(identity.connectionId, schema, "open:$schema", backendGeneration = 10) })
     }
 
@@ -147,7 +177,7 @@ class GrpcPerConnectionCatalogDbTest {
         satisfyOnOpen(identity)
         val schema = identity.onOpenList.first().refetch.schema
         val connection = core.connectionCatalog.find(identity.connectionId)!!
-        core.connectionCatalog.markAfterStatement(connection, listOf(schema))
+        core.connectionCatalog.markAfterStatement(connection, ds.namespaces(listOf(schema)))
         val ack = push(identity.connectionId, schema, "open:$schema", backendGeneration = 10)
         assertTrue(ack.generation > 0)
     }

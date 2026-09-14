@@ -1,5 +1,7 @@
 package com.ridi.oss.proxymonster.controlplane.support
 
+import com.ridi.oss.proxymonster.controlplane.namespaces
+import com.ridi.oss.proxymonster.controlplane.effectiveCatalog
 import com.google.protobuf.ByteString
 import com.ridi.oss.proxymonster.controlplane.Binding
 import com.ridi.oss.proxymonster.controlplane.CatalogMutationResult
@@ -31,11 +33,11 @@ class PerConnectionCatalogFixture(val enforcement: EnforcementFixture) {
         principal: String = "analyst@example.com",
         schemas: Collection<String> = datasource.defaultSchemas,
     ): OpenConnection {
-        val opened = core.connectionCatalog.open(Binding(datasource.name, principal, "USER"), schemas)
+        val opened = core.connectionCatalog.open(Binding(datasource.name, principal, "USER"), datasource.namespaces(schemas))
         val bySchema = enforcement.datasourceStore.catalog(datasource.id).columns.groupBy { it.schema }
         for (schema in schemas.distinct()) {
             val rows = bySchema[schema].orEmpty().map { row ->
-                FragmentColumn(row.schema, row.table, row.column, row.sqlType, row.ordinal, row.nullable)
+                FragmentColumn(row.schema, row.table, row.column, row.sqlType, row.ordinal, row.nullable, row.catalog)
             }
             push(opened.connectionId, schema, rows, backendGeneration = 1)
         }
@@ -70,6 +72,7 @@ class PerConnectionCatalogFixture(val enforcement: EnforcementFixture) {
                         dataType = sqlTypeFor(rs.getString(4)),
                         ordinal = rs.getInt(5),
                         nullable = rs.getString(6) == "YES",
+                        catalog = datasource.effectiveCatalog,
                     )
                 }
             }
@@ -89,12 +92,14 @@ class PerConnectionCatalogFixture(val enforcement: EnforcementFixture) {
                 this.connectionId = connectionId
                 datasourceName = datasource.name
                 this.schema = schema
+                this.catalog = datasource.effectiveCatalog
                 contentHash = hash(rows)
                 this.unchanged = unchanged
                 this.backendGeneration = backendGeneration
                 if (!unchanged) {
                     columns.addAll(rows.map { row ->
                         column {
+                            this.catalog = row.catalog
                             this.schema = row.schema
                             table = row.table
                             this.column = row.column

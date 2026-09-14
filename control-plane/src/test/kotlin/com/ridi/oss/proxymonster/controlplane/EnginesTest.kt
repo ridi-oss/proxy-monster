@@ -69,6 +69,37 @@ class EnginesTest {
         assertFailsWith<IllegalStateException> { Engine.ENGINE_UNSPECIFIED.isFixedSystemSchema("x") }
     }
 
+    @Test fun `registered definitions own analyzer configuration and manifest series`() {
+        val mysql = Datasource(1, "mysql", Engine.MYSQL, "", 0, "app", engineVersion = "8.0.44", mysqlLowerCaseTableNames = 1)
+        val postgres = mysql.copy(engine = Engine.POSTGRES, engineVersion = "17.9", mysqlLowerCaseTableNames = null)
+        val mysqlConfig = mysql.engine.definition.analyzerEngineConfig(mysql, true)
+        assertEquals(Engine.MYSQL, mysqlConfig.engine)
+        assertEquals("8.0.44", mysqlConfig.engineVersion)
+        assertEquals(1, mysqlConfig.mysqlLowerCaseTableNames)
+        assertTrue(mysqlConfig.mysqlAnsiQuotes)
+        assertEquals("8.0", mysql.engine.definition.manifestSeries(mysqlConfig.engineVersion))
+        assertFalse(mysql.splitEngineConfig()!!.hasMysqlAnsiQuotes())
+        assertNull(mysql.copy(engineVersion = null).splitEngineConfig())
+        assertNull(mysql.copy(mysqlLowerCaseTableNames = null).splitEngineConfig())
+        assertFailsWith<IllegalArgumentException> {
+            mysql.engine.definition.analyzerEngineConfig(mysql.copy(mysqlLowerCaseTableNames = null), false)
+        }
+        val postgresConfig = postgres.splitEngineConfig()!!
+        assertEquals(Engine.POSTGRES, postgresConfig.engine)
+        assertEquals("17.9", postgresConfig.engineVersion)
+        assertFalse(postgresConfig.hasMysqlLowerCaseTableNames())
+        assertEquals("17", postgres.engine.definition.manifestSeries(postgresConfig.engineVersion))
+        assertEquals("", postgres.copy(engineVersion = null).splitEngineConfig()!!.engineVersion)
+    }
+
+    @Test fun `unregistered engines have no metadata or version fallback`() {
+        for (engine in listOf(Engine.ENGINE_UNSPECIFIED, Engine.UNRECOGNIZED)) {
+            assertFailsWith<IllegalStateException> { engine.definition }
+            assertFailsWith<IllegalStateException> { engine.parseServerVersion("17.9") }
+            assertFailsWith<IllegalStateException> { engine.parseServerVersion(null) }
+        }
+    }
+
     @Test fun `systemSchemas is the concrete enumerable set per engine`() {
         assertEquals(setOf("information_schema", "mysql", "performance_schema", "sys"), Engine.MYSQL.systemSchemas)
         assertEquals(setOf("pg_catalog", "information_schema"), Engine.POSTGRES.systemSchemas)

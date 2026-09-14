@@ -12,6 +12,8 @@ import com.ridi.oss.proxymonster.controlplane.ConnectionCatalogRegistry
 import com.ridi.oss.proxymonster.controlplane.PrincipalSessionStore
 import com.ridi.oss.proxymonster.controlplane.Datasource
 import com.ridi.oss.proxymonster.controlplane.DatasourceInput
+import com.ridi.oss.proxymonster.controlplane.resolveCatalog
+import com.ridi.oss.proxymonster.controlplane.ColumnIdentity
 import com.ridi.oss.proxymonster.controlplane.DatasourceStore
 import com.ridi.oss.proxymonster.controlplane.GroupMemberEntry
 import com.ridi.oss.proxymonster.controlplane.GroupRoleEntry
@@ -72,6 +74,7 @@ data class ColumnTagEntry(
     val column: String,
     val tags: List<String>,
     val maskFnName: String? = null,
+    val catalog: String,
 )
 
 @Serializable
@@ -102,12 +105,12 @@ class DatasourceManagementService(
         return store.catalog(datasource.id).columns
     }
 
-    suspend fun getTableDetail(name: String, schema: String, table: String): TableDetail {
+    suspend fun getTableDetail(name: String, schema: String, table: String, catalog: String? = null): TableDetail {
         required("schema", schema)
         required("table", table)
         datasource(name)
         return try {
-            tableDetailService.fetch(name, schema, table)
+            tableDetailService.fetch(name, schema, table, catalog)
                 ?: throw ManagementException(ApiError("common.not_found", mapOf("resource" to "table")))
         } catch (e: TableDetailExecException) {
             throw ManagementException(ApiError("datasource.table_introspection_failed", mapOf("detail" to (e.message ?: ""))))
@@ -116,7 +119,7 @@ class DatasourceManagementService(
 
     fun listColumnTags(name: String): List<ColumnTagEntry> = browseCatalog(name).mapNotNull { column ->
         column.classification?.let { classification ->
-            ColumnTagEntry(name, column.schema, column.table, column.column, classification.tags, classification.maskFnName)
+            ColumnTagEntry(name, column.schema, column.table, column.column, classification.tags, classification.maskFnName, column.catalog)
         }
     }
 
@@ -177,6 +180,7 @@ class DatasourceManagementService(
         tags: List<String>,
         maskFnId: Long?,
         actor: AuditActor,
+        catalog: String? = null,
     ): Classification = store.dataSource.inTx { connection ->
         required("table", table)
         required("column", column)
@@ -185,7 +189,7 @@ class DatasourceManagementService(
             throw ManagementException(ApiError("datasource.schema_required"))
         }
         DatasourceStore.requireWritableTags(tags)
-        val written = store.upsertClassification(datasource.id, ClassificationInput(schema, table, column, tags, maskFnId), connection)
+        val written = store.upsertClassification(datasource.id, ClassificationInput(schema, table, column, tags, maskFnId, catalog), connection)
         recordClassification(connection, actor, datasource.name, written)
         written
     }
@@ -199,6 +203,7 @@ class DatasourceManagementService(
         maskFnId: Long?,
         actor: AuditActor,
         connection: Connection,
+        catalog: String? = null,
     ): Classification {
         required("table", table)
         required("column", column)
@@ -207,7 +212,7 @@ class DatasourceManagementService(
             throw ManagementException(ApiError("datasource.schema_required"))
         }
         DatasourceStore.requireWritableTags(tags)
-        val written = store.upsertClassification(datasource.id, ClassificationInput(schema, table, column, tags, maskFnId), connection)
+        val written = store.upsertClassification(datasource.id, ClassificationInput(schema, table, column, tags, maskFnId, catalog), connection)
         recordClassification(connection, actor, datasource.name, written)
         return written
     }
@@ -238,7 +243,7 @@ class DatasourceManagementService(
         }
         val datasource = datasource(datasourceName, connection)
         val defaultSchema = store.defaultSchema(datasource.id, connection)
-        val seen = HashSet<Triple<String, String, String>>(columns.size)
+        val seen = HashSet<ColumnIdentity>(columns.size)
         // Resolve every entry to the identity it will actually be written under, so the duplicate check
         // and the write agree — dedup on the submitted schema would let an explicit "public" and an
         // omitted one both through and silently apply whichever ran last.
@@ -248,7 +253,8 @@ class DatasourceManagementService(
             val schema = input.schema?.takeIf(String::isNotBlank) ?: defaultSchema
                 ?: throw ManagementException(ApiError("datasource.schema_required"))
             DatasourceStore.requireWritableTags(input.tags)
-            if (!seen.add(Triple(schema, input.table, input.column))) {
+            val catalog = datasource.resolveCatalog(input.catalog)
+            if (!seen.add(ColumnIdentity(catalog, schema, input.table, input.column))) {
                 throw ManagementException(
                     ApiError(
                         "datasource.duplicate_column",
@@ -256,12 +262,12 @@ class DatasourceManagementService(
                     ),
                 )
             }
-            ClassificationInput(schema, input.table, input.column, input.tags, input.maskFnId)
+            ClassificationInput(schema, input.table, input.column, input.tags, input.maskFnId, catalog)
         }
         // Written in a canonical order, not the caller's: each upsert row-locks its classification, so
         // two overlapping batches submitted in opposite orders would deadlock and one would die with an
         // internal error. A total order over the key means concurrent batches queue instead.
-        val written = resolved.sortedWith(compareBy({ it.schema }, { it.table }, { it.column }))
+        val written = resolved.sortedWith(compareBy({ it.catalog }, { it.schema }, { it.table }, { it.column }))
             .map { input -> store.upsertClassification(datasource.id, input, connection) }
         recordDatasource(
             connection, actor, datasource.name,
@@ -276,13 +282,14 @@ class DatasourceManagementService(
         table: String,
         column: String,
         actor: AuditActor,
+        catalog: String? = null,
     ): DeleteResult = store.dataSource.inTx { connection ->
         required("table", table)
         required("column", column)
         val datasource = store.get(datasourceId, connection) ?: notFound("datasource")
         val resolvedSchema = schema ?: store.defaultSchema(datasource.id, connection)
             ?: throw ManagementException(ApiError("datasource.schema_required"))
-        clearResolved(datasource.name, datasource.id, resolvedSchema, table, column, actor, connection)
+        clearResolved(datasource.name, datasource.id, resolvedSchema, table, column, actor, connection, datasource.resolveCatalog(catalog))
     }
 
     fun clearColumnClassification(
@@ -292,13 +299,14 @@ class DatasourceManagementService(
         column: String,
         actor: AuditActor,
         connection: Connection,
+        catalog: String? = null,
     ): DeleteResult {
         required("table", table)
         required("column", column)
         val datasource = datasource(datasourceName, connection)
         val resolvedSchema = schema ?: store.defaultSchema(datasource.id, connection)
             ?: throw ManagementException(ApiError("datasource.schema_required"))
-        return clearResolved(datasource.name, datasource.id, resolvedSchema, table, column, actor, connection)
+        return clearResolved(datasource.name, datasource.id, resolvedSchema, table, column, actor, connection, datasource.resolveCatalog(catalog))
     }
 
     private fun clearResolved(
@@ -309,8 +317,9 @@ class DatasourceManagementService(
         column: String,
         actor: AuditActor,
         c: Connection,
+        catalog: String,
     ): DeleteResult {
-        val result = DeleteResult(store.deleteClassification(datasourceId, schema, table, column, c))
+        val result = DeleteResult(store.deleteClassification(datasourceId, schema, table, column, c, catalog))
         if (result.deleted) {
             recordColumn(c, actor, datasourceName, schema, table, column, "clear tags on $datasourceName.$schema.$table.$column")
         }

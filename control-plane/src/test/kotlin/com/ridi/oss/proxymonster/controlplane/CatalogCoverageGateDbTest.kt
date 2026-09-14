@@ -60,7 +60,7 @@ class CatalogCoverageGateDbTest {
         return statementFacts {
             resolved = true
             detail = "synthetic coverage miss"
-            schemaQualifierCandidates.add(users.schema)
+            namespaceQualifierCandidates.add(namespace(users.catalog, users.schema))
             statementExec = requireStatementExecGrant {
                 statementKind = StatementKind.STATEMENT_KIND_SELECT
             }
@@ -101,7 +101,7 @@ class CatalogCoverageGateDbTest {
         val floor = decide(fx)
         assertEquals(EnfAction.DENY, floor.action, "no exception.unanalyzable policy → coverage miss denies fail-closed")
         assertTrue(floor.catalogMiss, "the deny carries catalogMiss so decideConnection refetches + retries first")
-        assertEquals(setOf(missSchema), floor.schemaCandidates, "the miss surfaces its qualifier schema for the refetch")
+        assertEquals(setOf(namespace(fx.datasource.effectiveCatalog, missSchema)), floor.schemaCandidates, "the miss surfaces its qualifier schema for the refetch")
         assertTrue(floor.detail?.contains("absent from catalog") == true, "the fail-closed reason is preserved: ${floor.detail}")
 
         // 2. A datasource that shipped the exception.unanalyzable exception → relay the uncovered read verbatim.

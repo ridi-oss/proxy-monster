@@ -20,7 +20,7 @@ import { toast } from 'sonner'
 import { mutate } from 'swr'
 import { refreshDatasource, putClassification } from '@/lib/api/client'
 import { useCatalog, useDatasources, swrKeys } from '@/lib/hooks'
-import type { CatalogColumn } from '@/lib/api/types'
+import { connectionEndpoint, groupCatalogTables, tableKey } from '@/lib/catalog'
 import { cn } from '@/lib/utils'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -28,34 +28,13 @@ import { Input } from '@/components/ui/input'
 import { LoadingState, ErrorState, EmptyState } from '@/components/page-scaffold'
 import { ClassifyPopover } from './classify-popover'
 
-interface TableGroup {
-  key: string
-  label: string
-  columns: CatalogColumn[]
-  piiCount: number
-}
-
-function groupByTable(cols: CatalogColumn[]): TableGroup[] {
-  const m = new Map<string, TableGroup>()
-  for (const c of cols) {
-    const key = `${c.schema}.${c.table}`
-    const label = c.schema && c.schema !== 'public' ? `${c.schema}.${c.table}` : c.table
-    let g = m.get(key)
-    if (!g) m.set(key, (g = { key, label, columns: [], piiCount: 0 }))
-    g.columns.push(c)
-    // The badge counts classified columns, whatever the tag is named.
-    if ((c.classification?.tags?.length ?? 0) > 0) g.piiCount += 1
-  }
-  return [...m.values()]
-}
-
 export function DatasourceCatalog({ id }: { id: number }) {
   const t = useTranslations('Datasources')
   const { data: datasources } = useDatasources()
   const { data: catalog, isLoading, error } = useCatalog(id)
   const ds = datasources?.find((d) => d.id === id)
 
-  const tables = useMemo(() => groupByTable(catalog ?? []), [catalog])
+  const tables = useMemo(() => groupCatalogTables(catalog ?? []), [catalog])
   const [selectedKey, setSelectedKey] = useState<string | null>(null)
   const [filter, setFilter] = useState('')
   const [importing, setImporting] = useState(false)
@@ -73,6 +52,7 @@ export function DatasourceCatalog({ id }: { id: number }) {
     const classifications = (catalog ?? [])
       .filter((c) => c.classification)
       .map((c) => ({
+        catalog: c.catalog,
         schema: c.schema,
         table: c.table,
         column: c.column,
@@ -94,6 +74,7 @@ export function DatasourceCatalog({ id }: { id: number }) {
     try {
       const data = JSON.parse(await file.text())
       const list: Array<{
+        catalog?: string
         schema?: string
         table: string
         column: string
@@ -104,6 +85,7 @@ export function DatasourceCatalog({ id }: { id: number }) {
       for (const c of list) {
         if (!c.table || !c.column) continue
         await putClassification(id, {
+          catalog: c.catalog,
           schema: c.schema,
           table: c.table,
           column: c.column,
@@ -158,7 +140,7 @@ export function DatasourceCatalog({ id }: { id: number }) {
         </h1>
         {ds && (
           <span className="text-muted-foreground font-mono text-xs">
-            {ds.host}:{ds.port}/{ds.dbName}
+            {connectionEndpoint(ds)}
           </span>
         )}
         {ds && ds.tags.length > 0 && (
@@ -273,7 +255,7 @@ export function DatasourceCatalog({ id }: { id: number }) {
                   {selected.columns.map((c) => {
                     const pii = c.classification?.tags?.includes('pii') ?? false
                     return (
-                      <tr key={`${c.table}.${c.column}`} className="hover:bg-muted/40">
+                      <tr key={JSON.stringify([tableKey(c), c.column])} className="hover:bg-muted/40">
                         <td className="border-b px-4 py-1.5">
                           <span className="flex items-center gap-1.5">
                             {pii && <KeyRound className="size-3 text-red-500" />}

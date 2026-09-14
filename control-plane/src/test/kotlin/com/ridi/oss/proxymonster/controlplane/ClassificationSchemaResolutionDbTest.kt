@@ -48,7 +48,7 @@ class ClassificationSchemaResolutionDbTest {
         assertEquals(1L, rowsUnderSchema(id, "public"))
         assertEquals(
             listOf("contact"),
-            store.classificationsFor(id).getValue(Triple("public", "users", "ssn")).tags,
+            store.classificationsFor(id).getValue(ColumnIdentity(store.get(id)!!.effectiveCatalog, "public", "users", "ssn")).tags,
         )
     }
 

@@ -106,6 +106,7 @@
     "notNullSuffix": " · not null"
   },
   "table": {
+    "previewUnavailable": "Data preview is unavailable for this catalog.",
     "unavailable": "Unavailable",
     "loadErrorFallback": "The live table detail request failed.",
     "loadErrorTitle": "Unable to load live table detail",

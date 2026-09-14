@@ -179,7 +179,7 @@ func TestValidateTokenAndDecideUnreachable(t *testing.T) {
 func TestRegisterUnspecifiedEngineRejectedBeforeRPC(t *testing.T) {
 	fake := &fakeControlPlane{}
 	c := startFakeControlPlane(t, fake)
-	if err := c.Register(enginepb.Engine_ENGINE_UNSPECIFIED, "localhost", 1234, "db", nil, "", nil, false); err == nil || !strings.Contains(err.Error(), "unspecified engine") {
+	if err := c.Register(enginepb.Engine_ENGINE_UNSPECIFIED, "localhost", 1234, "db", nil, "", nil, false, nil); err == nil || !strings.Contains(err.Error(), "unspecified engine") {
 		t.Fatalf("Register error = %v, want local unspecified-engine error", err)
 	}
 	fake.mu.Lock()
@@ -533,7 +533,7 @@ func TestRegisterAndPushCatalog(t *testing.T) {
 	fake := &fakeControlPlane{}
 	c := startFakeControlPlane(t, fake)
 	chain := "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n"
-	if err := c.Register(enginepb.Engine_MYSQL, "target DB", 3306, "app", []string{"tag"}, "127.0.0.1:6033", &chain, true); err != nil {
+	if err := c.Register(enginepb.Engine_MYSQL, "target DB", 3306, "app", []string{"tag"}, "127.0.0.1:6033", &chain, true, nil); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
 	catalog := &pb.CatalogRequest{Catalog: &enginepb.CatalogSnapshot{Columns: []*enginepb.Column{{Schema: "s", Table: "t", Column: "c"}}}}
@@ -578,7 +578,7 @@ func TestRegisterRejectsIncompatibleControlPlaneVersion(t *testing.T) {
 	bad := ProtocolVersion + 1
 	fake := &fakeControlPlane{registerRespVersion: &bad}
 	c := startFakeControlPlane(t, fake)
-	err := c.Register(enginepb.Engine_MYSQL, "target DB", 3306, "app", nil, "", nil, false)
+	err := c.Register(enginepb.Engine_MYSQL, "target DB", 3306, "app", nil, "", nil, false, nil)
 	if !errors.Is(err, ErrIncompatibleControlPlane) {
 		t.Fatalf("Register against a version-skewed control plane must return ErrIncompatibleControlPlane: %v", err)
 	}
@@ -595,7 +595,7 @@ func TestRegisterTreatsControlPlaneRejectionAsIncompatible(t *testing.T) {
 		"proxy wire-protocol version 1 is incompatible with this control-plane's version 2 — deploy the proxy and control-plane from the same server-v* release",
 	)}
 	c := startFakeControlPlane(t, fake)
-	err := c.Register(enginepb.Engine_MYSQL, "target DB", 3306, "app", nil, "", nil, false)
+	err := c.Register(enginepb.Engine_MYSQL, "target DB", 3306, "app", nil, "", nil, false, nil)
 	if !errors.Is(err, ErrIncompatibleControlPlane) {
 		t.Fatalf("a control-plane version rejection must surface as ErrIncompatibleControlPlane: %v", err)
 	}
@@ -648,7 +648,8 @@ func TestStreamEventsDispatchesMappedRunOpen(t *testing.T) {
 	var refreshes int
 	var openedRun spi.RunOpen
 	var table []string
-	err := c.StreamEvents(func() { refreshes++ }, func(open spi.RunOpen) { openedRun = open }, func(sessionID, schema, tableName string) {
+	err := c.StreamEvents(func() { refreshes++ }, func(open spi.RunOpen) { openedRun = open }, func(open *pb.OpenTableDetailChannel) {
+		sessionID, schema, tableName := open.GetSessionId(), open.GetSchema(), open.GetTable()
 		table = []string{sessionID, schema, tableName}
 	})
 	if err == nil {
@@ -672,7 +673,7 @@ func TestStreamEventsDispatchesMalformedRunOpen(t *testing.T) {
 	}}}}}
 	c := startFakeControlPlane(t, fake)
 	var openedRun spi.RunOpen
-	_ = c.StreamEvents(func() {}, func(open spi.RunOpen) { openedRun = open }, func(string, string, string) {})
+	_ = c.StreamEvents(func() {}, func(open spi.RunOpen) { openedRun = open }, func(*pb.OpenTableDetailChannel) {})
 	if openedRun.SessionID != "bad" || openedRun.MapErr == nil {
 		t.Fatalf("malformed run open was not dispatched with MapErr: %+v", openedRun)
 	}
@@ -685,7 +686,7 @@ func TestStreamEventsReturnsErrDrainingOnDrainSignal(t *testing.T) {
 		{Kind: &pb.ControlEvent_Draining{Draining: &pb.Draining{}}},
 	}}
 	c := startFakeControlPlane(t, fake)
-	err := c.StreamEvents(func() {}, func(spi.RunOpen) {}, func(string, string, string) {})
+	err := c.StreamEvents(func() {}, func(spi.RunOpen) {}, func(*pb.OpenTableDetailChannel) {})
 	if !errors.Is(err, errDraining) {
 		t.Fatalf("StreamEvents err = %v, want errDraining", err)
 	}
@@ -743,7 +744,7 @@ func TestEventsLoopReconnectsFastOnDrain(t *testing.T) {
 			streamMaxAge:      time.Minute, // long enough that only the drain path paces this test
 			reconnect:         backoff,
 			rotationReconnect: eventsRotationReconnect,
-		}, func() {}, func() {}, func(spi.RunOpen) {}, func(string, string, string) {})
+		}, func() {}, func() {}, func(spi.RunOpen) {}, func(*pb.OpenTableDetailChannel) {})
 	}()
 	t.Cleanup(func() {
 		cancel()
@@ -864,7 +865,7 @@ func TestRunEventsLoopExitsOnEventsVersionRejection(t *testing.T) {
 			streamMaxAge:      time.Minute,
 			reconnect:         10 * time.Millisecond,
 			rotationReconnect: eventsRotationReconnect,
-		}, func() {}, func() {}, func(spi.RunOpen) {}, func(string, string, string) {})
+		}, func() {}, func() {}, func(spi.RunOpen) {}, func(*pb.OpenTableDetailChannel) {})
 	}()
 	select {
 	case err := <-errCh:
@@ -889,7 +890,7 @@ func TestStreamEventsEndsAtItsMaxAge(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	start := time.Now()
-	err := c.streamEvents(ctx, 300*time.Millisecond, func() {}, func(spi.RunOpen) {}, func(string, string, string) {})
+	err := c.streamEvents(ctx, 300*time.Millisecond, func() {}, func(spi.RunOpen) {}, func(*pb.OpenTableDetailChannel) {})
 	elapsed := time.Since(start)
 
 	if err == nil {
@@ -919,7 +920,7 @@ func TestEventsLoopReopensAfterMaxAge(t *testing.T) {
 			streamMaxAge:      150 * time.Millisecond,
 			reconnect:         10 * time.Millisecond,
 			rotationReconnect: 10 * time.Millisecond,
-		}, func() {}, func() {}, func(spi.RunOpen) {}, func(string, string, string) {})
+		}, func() {}, func() {}, func(spi.RunOpen) {}, func(*pb.OpenTableDetailChannel) {})
 	}()
 	t.Cleanup(func() {
 		cancel()
@@ -956,7 +957,7 @@ func TestEventsLoopRotationGapStaysBoundedAcrossPeriods(t *testing.T) {
 		loopDone := make(chan struct{})
 		go func() {
 			defer close(loopDone)
-			c.runEventsLoop(ctx, timings, func() {}, func() {}, func(spi.RunOpen) {}, func(string, string, string) {})
+			c.runEventsLoop(ctx, timings, func() {}, func() {}, func(spi.RunOpen) {}, func(*pb.OpenTableDetailChannel) {})
 		}()
 		defer func() {
 			cancel()
@@ -1034,7 +1035,7 @@ func TestEventsLoopBacksOffOnServerDeadlineExceeded(t *testing.T) {
 			streamMaxAge:      time.Minute, // long, so only the server's status ends the stream
 			reconnect:         backoff,
 			rotationReconnect: 10 * time.Millisecond,
-		}, func() {}, func() {}, func(spi.RunOpen) {}, func(string, string, string) {})
+		}, func() {}, func() {}, func(spi.RunOpen) {}, func(*pb.OpenTableDetailChannel) {})
 	}()
 	t.Cleanup(func() {
 		cancel()
@@ -1067,7 +1068,7 @@ func TestEventsLoopReopensWithoutWaitingForResync(t *testing.T) {
 			streamMaxAge:      150 * time.Millisecond,
 			reconnect:         10 * time.Millisecond,
 			rotationReconnect: 10 * time.Millisecond,
-		}, resync, func() {}, func(spi.RunOpen) {}, func(string, string, string) {})
+		}, resync, func() {}, func(spi.RunOpen) {}, func(*pb.OpenTableDetailChannel) {})
 	}()
 	t.Cleanup(func() {
 		cancel()
@@ -1140,7 +1141,7 @@ func TestEventsLoopWaitsTheBackoffBetweenReopens(t *testing.T) {
 			streamMaxAge:      time.Minute, // long enough that only the backoff paces this test
 			reconnect:         backoff,
 			rotationReconnect: eventsRotationReconnect,
-		}, func() {}, func() {}, func(spi.RunOpen) {}, func(string, string, string) {})
+		}, func() {}, func() {}, func(spi.RunOpen) {}, func(*pb.OpenTableDetailChannel) {})
 	}()
 	t.Cleanup(func() {
 		cancel()

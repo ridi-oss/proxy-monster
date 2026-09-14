@@ -254,15 +254,16 @@ func (d *Daemon) Status() control.Status {
 			continue
 		}
 		out.Datasources = append(out.Datasources, control.Datasource{
-			Name:          ds.Name,
-			Engine:        ds.Engine,
-			DbName:        ds.DbName,
-			LocalPort:     d.cfg.Ports[name],
-			AdvertiseAddr: ds.AdvertiseAddr,
-			TLSVerified:   ds.CertChainPEM != "",
-			WireTLS:       ds.WireTLS,
-			Brokered:      true,
-			LiveConns:     len(d.liveConns[name]),
+			Name:           ds.Name,
+			Engine:         ds.Engine,
+			DbName:         ds.DbName,
+			ConnectionInfo: ds.ConnectionInfo.Clone(),
+			LocalPort:      d.cfg.Ports[name],
+			AdvertiseAddr:  ds.AdvertiseAddr,
+			TLSVerified:    ds.CertChainPEM != "",
+			WireTLS:        ds.WireTLS,
+			Brokered:       true,
+			LiveConns:      len(d.liveConns[name]),
 		})
 		counted[name] = true
 	}
@@ -271,15 +272,16 @@ func (d *Daemon) Status() control.Status {
 			continue
 		}
 		out.Datasources = append(out.Datasources, control.Datasource{
-			Name:          ds.Name,
-			Engine:        ds.Engine,
-			DbName:        ds.DbName,
-			AdvertiseAddr: ds.AdvertiseAddr,
-			TLSVerified:   ds.CertChainPEM != "",
-			WireTLS:       ds.WireTLS,
-			Brokered:      false,
-			Reason:        cmp.Or(d.bindErrors[name], d.providers.UnavailableReason(ds)),
-			LiveConns:     len(d.liveConns[name]),
+			Name:           ds.Name,
+			Engine:         ds.Engine,
+			DbName:         ds.DbName,
+			ConnectionInfo: ds.ConnectionInfo.Clone(),
+			AdvertiseAddr:  ds.AdvertiseAddr,
+			TLSVerified:    ds.CertChainPEM != "",
+			WireTLS:        ds.WireTLS,
+			Brokered:       false,
+			Reason:         cmp.Or(d.bindErrors[name], d.providers.UnavailableReason(ds.Clone())),
+			LiveConns:      len(d.liveConns[name]),
 		})
 		counted[name] = true
 	}
@@ -504,18 +506,18 @@ func (d *Daemon) openListeners(ctx context.Context) {
 	d.unbrokered = map[string]Datasource{}
 	d.bindErrors = map[string]string{}
 	for _, ds := range dss {
-		if d.providers.UnavailableReason(ds) != "" {
-			d.unbrokered[ds.Name] = ds
+		if d.providers.UnavailableReason(ds.Clone()) != "" {
+			d.unbrokered[ds.Name] = ds.Clone()
 			continue
 		}
 		provider, _ := d.providers.Lookup(ds.Engine)
-		if ln := d.listeners[ds.Name]; ln != nil && (ln.engine != ds.Engine || ln.routeKey != provider.Broker.RouteKey(ds)) {
+		if ln := d.listeners[ds.Name]; ln != nil && (ln.engine != ds.Engine || ln.routeKey != provider.Broker.RouteKey(ds.Clone())) {
 			stale = append(stale, ln)
 			revoked = append(revoked, ds.Name)
 			delete(d.listeners, ds.Name)
 		}
 		brokerableNow[ds.Name] = true
-		d.datasources[ds.Name] = ds
+		d.datasources[ds.Name] = ds.Clone()
 		if _, already := d.listeners[ds.Name]; !already {
 			needsListener = append(needsListener, ds)
 		}
@@ -590,7 +592,7 @@ func (d *Daemon) openListeners(ctx context.Context) {
 		listenerCtx, cancel := context.WithCancel(d.ctx)
 		broker := &brokerListener{
 			Listener: ln, ctx: listenerCtx, cancel: cancel,
-			engine: ds.Engine, routeKey: provider.Broker.RouteKey(ds),
+			engine: ds.Engine, routeKey: provider.Broker.RouteKey(ds.Clone()),
 			track: func(conn net.Conn) net.Conn { return d.trackConn(ds.Name, conn) },
 		}
 		d.mu.Lock()
@@ -653,10 +655,10 @@ func (d *Daemon) resolveSession(name string, ln *brokerListener) (driver.Endpoin
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	ds, ok := d.datasources[name]
-	if !ok || d.listeners[name] != ln || ln.ctx.Err() != nil || ds.Engine != ln.engine || d.providers.UnavailableReason(ds) != "" {
+	if !ok || d.listeners[name] != ln || ln.ctx.Err() != nil || ds.Engine != ln.engine || d.providers.UnavailableReason(ds.Clone()) != "" {
 		return driver.Endpoint{}, driver.Credentials{}, false
 	}
-	return ds, driver.Credentials{
+	return ds.Clone(), driver.Credentials{
 		Principal: d.cfg.Principal, Token: d.cfg.Token, LocalPassword: d.cfg.LocalPassword,
 	}, true
 }

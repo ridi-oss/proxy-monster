@@ -2,6 +2,7 @@ package driver
 
 import (
 	"context"
+	"maps"
 	"net"
 )
 
@@ -12,7 +13,25 @@ type Endpoint struct {
 	AdvertiseAddr string `json:"advertiseAddr"`
 	CertChainPEM  string `json:"advertiseCertChain"`
 	// TLS can be required even when the proxy publishes no certificate chain.
-	WireTLS bool `json:"advertiseWireTls"`
+	WireTLS        bool            `json:"advertiseWireTls"`
+	ConnectionInfo *ConnectionInfo `json:"connectionInfo,omitempty"`
+}
+
+func (e Endpoint) Clone() Endpoint {
+	e.ConnectionInfo = e.ConnectionInfo.Clone()
+	return e
+}
+
+type ConnectionInfo struct {
+	Endpoint   string            `json:"endpoint"`
+	Properties map[string]string `json:"properties"`
+}
+
+func (info *ConnectionInfo) Clone() *ConnectionInfo {
+	if info == nil {
+		return nil
+	}
+	return &ConnectionInfo{Endpoint: info.Endpoint, Properties: maps.Clone(info.Properties)}
 }
 
 type Credentials struct {
@@ -42,11 +61,13 @@ const (
 )
 
 type Target struct {
-	Engine   string
-	DbName   string
-	Port     int
-	User     string
-	Password string
+	Name           string
+	ConnectionInfo *ConnectionInfo
+	Engine         string
+	DbName         string
+	Port           int
+	User           string
+	Password       string
 }
 
 type Options struct {
@@ -59,6 +80,8 @@ type Renderer interface {
 
 type Provider struct {
 	Engine            string
+	SupportedFormats  []Format
+	DefaultFormat     Format
 	Renderer          Renderer
 	Broker            Broker
 	UnavailableReason string

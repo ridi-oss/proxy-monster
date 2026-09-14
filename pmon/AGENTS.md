@@ -7,12 +7,19 @@ active connections. Protocol behavior belongs to providers.
 
 - `driver/` defines endpoints, credentials, renderers, listener-level brokers,
   and the immutable registry.
-- `providers/` is the composition root. Register a renderer and an optional
-  broker for each engine; renderer availability does not imply broker support.
+- `providers/` is the composition root. Register a renderer with its supported
+  formats and default, plus an optional broker; rendering does not imply
+  brokering.
 - `providers/mysql/` owns MySQL rendering, handshakes, TLS negotiation, and
   relay. `providers/postgres/` currently supplies rendering only.
 - `conn/` preserves the public rendering API. Its unknown-engine MySQL fallback
-  is compatibility behavior, not a broker-selection rule.
+  is compatibility behavior, not a broker-selection or format-capability rule.
+- `pmon show --format <name>` uses provider-declared formats; no flag uses the
+  provider default. Existing `--url`, `--jdbc`, `--go-dsn`, and `--cli` remain
+  aliases.
+- `ConnectionInfo` carries an optional endpoint + properties object. Its
+  contents belong to the provider; clone it when passing mutable state across
+  boundaries.
 
 A broker receives a real `net.Listener` and owns its native serving loop. The
 listener tracks accepted connections so logout, revocation, and replacement can

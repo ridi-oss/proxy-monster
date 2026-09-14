@@ -27,6 +27,41 @@ func (s RelayStats) Plus(other RelayStats) RelayStats {
 	return RelayStats{Rows: s.Rows + other.Rows, Bytes: s.Bytes + other.Bytes}
 }
 
+// RowBudget bounds an in-memory result collection (the run channel's paged reads) the way [RelayStats]
+// plus a [Decision] bounds a wire relay. A zero MaxRows/MaxBytes is uncapped on that dimension.
+type RowBudget struct {
+	MaxRows  int
+	MaxBytes int64
+	bytes    int64
+	// Overflowed is set once a row was left out; ByteCapped distinguishes the byte bound from the row one,
+	// since only the byte bound is the verdict's alone (a row bound may be the caller's own page size).
+	Overflowed, ByteCapped bool
+}
+
+// Admit reports whether a row of [rowBytes] fits, given [collected] rows already taken, and charges it to
+// the budget when it does. Overflow LATCHES: once a row is refused every later one is too, even a narrow
+// one that would still fit, so the collected rows are the result's contiguous prefix rather than whichever
+// of its rows happened to be small.
+func (b *RowBudget) Admit(collected int, rowBytes int64) bool {
+	switch {
+	case b.Overflowed:
+	case b.MaxRows > 0 && collected >= b.MaxRows:
+		b.Overflowed = true
+	case b.MaxBytes > 0 && rowBytes > b.MaxBytes-b.bytes:
+		b.Overflowed, b.ByteCapped = true, true
+	default:
+		b.bytes += rowBytes
+		return true
+	}
+	return false
+}
+
+// CapTruncated reports whether the VERDICT's cap, not the caller's [clientRows] page size, is why this
+// budget left rows out.
+func (b *RowBudget) CapTruncated(dec *Decision, clientRows int) bool {
+	return b.Overflowed && (b.ByteCapped || dec.CapBinds(clientRows))
+}
+
 // CompletionReport is the proxy's post-relay result-volume signal for one statement, correlated to its
 // decision by DecisionID (the audit id the Decide response carried). It mirrors the proto CompletionReport.
 type CompletionReport struct {

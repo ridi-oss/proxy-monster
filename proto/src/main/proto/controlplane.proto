@@ -363,6 +363,10 @@ message RunDecision {
   // Verdict.sanitize_diagnostics echoed back, so the caller returns the failure form the decision
   // dictated: redacted when set, raw otherwise.
   bool sanitize_diagnostics = 7;
+  // Verdict.max_rows / max_bytes echoed back (0 = uncapped), so the caller can tell a result the cap cut
+  // short from one the client's own page size ended.
+  int64 max_rows = 8;
+  int64 max_bytes = 9;
 }
 message RunResultRows {
   repeated string columns = 1;
@@ -376,7 +380,11 @@ message RunValue {
   string value = 1;
   bool is_null = 2;
 }
-message RunDone { int32 rows_affected = 1; }   // -1 when not applicable (a SELECT)
+message RunDone {
+  int32 rows_affected = 1;   // -1 when not applicable (a SELECT)
+  // The verdict's result cap, not the client's page size, ended this result.
+  bool truncated_by_cap = 2;
+}
 // A run's terminal error. Also the at-rest form of a failed run's diagnostic: for a target-DB failure the
 // control-plane serializes this whole message (protobuf) and AES-GCM encrypts it into
 // query_result.error_detail, re-gated per viewer at view time — same field semantics on the wire and at rest.

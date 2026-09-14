@@ -146,6 +146,8 @@ fun discoverRoles(
     val maskedColumns: List<String> = emptyList(),
     // A FAILED run's target-DB error — raw or redacted per this viewer (failedDiagnosticForViewer).
     val errorDetail: String? = null,
+    // The EXECUTION's cap, not this view's, ended the stored rows: the viewer is seeing a prefix.
+    val truncatedByCap: Boolean = false,
 )
 
 /** Submit acknowledgement. Completion is observed by polling the task detail/result endpoints. */
@@ -931,6 +933,7 @@ fun Route.approvalRoutes(
                         // not the execution that produced it.
                         decision = if (viewDecision.maskedColumns.isEmpty()) Decision.ALLOW else Decision.MASK,
                         maskedColumns = viewDecision.maskedColumns,
+                        truncatedByCap = decrypted.truncatedByCap,
                     ),
                 )
             }
@@ -1006,7 +1009,7 @@ internal suspend fun runApprovedTask(
                     batchFailure = "approval.execute_denied"
                     false
                 } else {
-                    val result = DecryptedResult(response.columns, response.rows, response.rowsAffected, response.resultFingerprint)
+                    val result = DecryptedResult(response.columns, response.rows, response.rowsAffected, response.resultFingerprint, response.truncatedByCap)
                     // The parent flips to EXECUTED only on the LAST statement, so a crash mid-batch cannot
                     // leave a task EXECUTED with statements unrun.
                     val completed = store.completeRun(id, result, QueryResultStore.RESULT_RETENTION_SEC) { conn, _ ->

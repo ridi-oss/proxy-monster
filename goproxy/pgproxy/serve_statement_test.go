@@ -51,7 +51,7 @@ func (s *RunSession) execute(sql string, maxRows int) ([]string, [][]*string, in
 		return nil, nil, 0, err
 	}
 	result := engine.StatementResult{Rows: make([][]*string, 0)}
-	collector := rowsCollector{maxRows: maxRows, result: &result}
+	collector := rowsCollector{budget: engine.RowBudget{MaxRows: maxRows}, result: &result}
 	targetDbErr, streamErr := s.streamResult(nil, streamOpts{extended: true}, collector.emit)
 	err = firstErr(targetDbErr, streamErr, collector.failed)
 	if streamErr != nil || collector.failed != nil {

@@ -349,12 +349,13 @@ func interpretSessionProbeRow(values []*string) (namespace []string, ansiQuotes 
 
 // textResultCollector decodes one COM_QUERY text result for probes and run execution.
 type textResultCollector struct {
-	expected, maxRows, columns int
-	masks                      []*pb.ColumnMask
-	columnDefs                 []mysqlwire.ColumnDefinition
-	result                     *engine.StatementResult
-	masker                     *engine.RowMasker
-	targetDbErr, affectedErr   error
+	expected, columns        int
+	budget                   engine.RowBudget
+	masks                    []*pb.ColumnMask
+	columnDefs               []mysqlwire.ColumnDefinition
+	result                   *engine.StatementResult
+	masker                   *engine.RowMasker
+	targetDbErr, affectedErr error
 }
 
 func (c *textResultCollector) hooks() resultHooks {
@@ -412,7 +413,7 @@ func (c *textResultCollector) onRow(payload []byte) ([]byte, error) {
 	if c.masker != nil {
 		values = c.masker.Apply(values)
 	}
-	if c.result != nil && (c.maxRows <= 0 || len(c.result.Rows) < c.maxRows) {
+	if c.result != nil && c.budget.Admit(len(c.result.Rows), int64(len(payload))) {
 		c.result.Rows = append(c.result.Rows, c.displayValues(values))
 	}
 	return payload, nil

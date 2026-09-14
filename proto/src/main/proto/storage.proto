@@ -23,4 +23,7 @@ message StoredResult {
   // `optional` because empty and absent differ: empty means a grant-less passthrough (releases raw),
   // absent means the result predates fingerprints and fails closed (decideResultView).
   optional proxymonster.analyzer.v1.ResultFingerprint result_fingerprint = 3;
+  // The EXECUTION's verdict cap ended this result. A view cannot re-derive it: stored rows equal to the
+  // viewer's cap look identical to a result that simply ended.
+  bool truncated_by_cap = 4;
 }

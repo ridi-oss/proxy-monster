@@ -421,6 +421,7 @@ func runEngineContract(t *testing.T, fixture runEngineFixture) {
 	denySQL := fmt.Sprintf("SELECT secret FROM %s WHERE id = 1", fixture.runTable)
 	badMaskSQL := fmt.Sprintf("SELECT id FROM %s WHERE id = 1", fixture.runTable)
 	capsSQL := fmt.Sprintf("SELECT id FROM %s ORDER BY id", fixture.runTable)
+	verdictCapSQL := fmt.Sprintf("SELECT id FROM %s WHERE id > 0 ORDER BY id", fixture.runTable)
 	writeSQL := fmt.Sprintf("UPDATE %s SET note = 'updated' WHERE id IN (1, 2)", fixture.runTable)
 
 	fake.runSetDecide(func(req *pb.DecisionRequest) *pb.WireDecision {
@@ -441,6 +442,11 @@ func runEngineContract(t *testing.T, fixture runEngineFixture) {
 				Decision:   pb.EnfAction_MASK,
 				DecisionId: 104,
 				Masks:      []*pb.ColumnMask{{Column: "missing", Kind: "FIXED", Ordinal: &ordinal}},
+			})
+		case verdictCapSQL:
+			return wireVerdict(&pb.Verdict{
+				Decision: pb.EnfAction_ALLOW, DecisionId: 105, EffectiveRoles: []string{"analyst"},
+				MaxRows: 100, MaxBytes: 4000,
 			})
 		default:
 			return wireVerdict(&pb.Verdict{Decision: pb.EnfAction_ALLOW, DecisionId: 101, EffectiveRoles: []string{"analyst"}})
@@ -515,6 +521,26 @@ func runEngineContract(t *testing.T, fixture runEngineFixture) {
 		t.Fatalf("negative maxRows returned %d rows", got)
 	}
 	runExpectDone(t, runRecv(t, fake), -1)
+
+	// The verdict cap is below the client's page size, so it — not the page end — bounds the result.
+	runSendQuery(fake, verdictCapSQL, 500)
+	capDecision := runRecv(t, fake)
+	runExpectDecision(t, capDecision, pb.EnfAction_ALLOW, nil, "")
+	if got := capDecision.GetDecision(); got.GetMaxRows() != 100 || got.GetMaxBytes() != 4000 {
+		t.Fatalf("RunDecision caps = %d/%d, want 100/4000", got.GetMaxRows(), got.GetMaxBytes())
+	}
+	if got := len(runExpectRows(t, runRecv(t, fake), []string{"id"})); got != 100 {
+		t.Fatalf("verdict cap returned %d rows, want 100", got)
+	}
+	runExpectTruncatedDone(t, runRecv(t, fake), true)
+
+	// The client asked for fewer rows than the cap allows, so this is a plain page end.
+	runSendQuery(fake, verdictCapSQL, 50)
+	runExpectDecision(t, runRecv(t, fake), pb.EnfAction_ALLOW, nil, "")
+	if got := len(runExpectRows(t, runRecv(t, fake), []string{"id"})); got != 50 {
+		t.Fatalf("client limit returned %d rows, want 50", got)
+	}
+	runExpectTruncatedDone(t, runRecv(t, fake), false)
 
 	runSendQuery(fake, writeSQL, 20)
 	runExpectDecision(t, runRecv(t, fake), pb.EnfAction_ALLOW, nil, "")
@@ -1896,6 +1922,14 @@ func runExpectDone(t *testing.T, message *pb.ProxyRunMsg, rowsAffected int32) {
 	done := message.GetDone()
 	if done == nil || done.GetRowsAffected() != rowsAffected {
 		t.Fatalf("RunDone = %v, want rowsAffected=%d", done, rowsAffected)
+	}
+}
+
+func runExpectTruncatedDone(t *testing.T, message *pb.ProxyRunMsg, truncated bool) {
+	t.Helper()
+	runExpectDone(t, message, -1)
+	if got := message.GetDone().GetTruncatedByCap(); got != truncated {
+		t.Fatalf("RunDone truncated_by_cap = %v, want %v", got, truncated)
 	}
 }
 

@@ -150,3 +150,36 @@ func TestDecisionCapExceededNamesTheCrossedBound(t *testing.T) {
 		t.Fatalf("nil decision = %q, want uncapped", got)
 	}
 }
+
+func TestRowBudgetAdmitsUntilItsBoundThenRefusesEveryLaterRow(t *testing.T) {
+	budget := RowBudget{MaxBytes: 10}
+	for _, want := range []bool{true, true, false} {
+		if got := budget.Admit(0, 4); got != want {
+			t.Fatalf("Admit = %v, want %v", got, want)
+		}
+	}
+	// A row that fits the remaining 2 bytes is still refused: a budget that overflowed stays overflowed,
+	// so the collected prefix is contiguous.
+	if budget.Admit(0, 1) {
+		t.Fatal("a budget that overflowed must refuse every later row")
+	}
+	if !budget.Overflowed || !budget.ByteCapped {
+		t.Fatalf("budget = %+v, want overflowed by the byte bound", budget)
+	}
+
+	rows := RowBudget{MaxRows: 2}
+	if !rows.Admit(1, 1_000_000) || rows.Admit(2, 1) {
+		t.Fatalf("row bound = %+v, want the third row refused", rows)
+	}
+	if rows.ByteCapped {
+		t.Fatal("a row-bound overflow is not a byte cap")
+	}
+	// The row bound can be the caller's own page size, so it only counts as a cap when the verdict's is
+	// at or below it; the byte bound is the verdict's alone.
+	if rows.CapTruncated(&Decision{MaxRows: 100}, 2) {
+		t.Fatal("a page end under a looser verdict cap is not a cap truncation")
+	}
+	if !rows.CapTruncated(&Decision{MaxRows: 2}, 2) {
+		t.Fatal("a verdict cap at the page size IS a cap truncation")
+	}
+}

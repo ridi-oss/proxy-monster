@@ -23,6 +23,10 @@ type RelayStats struct {
 	Bytes int64
 }
 
+func (s RelayStats) Plus(other RelayStats) RelayStats {
+	return RelayStats{Rows: s.Rows + other.Rows, Bytes: s.Bytes + other.Bytes}
+}
+
 // CompletionReport is the proxy's post-relay result-volume signal for one statement, correlated to its
 // decision by DecisionID (the audit id the Decide response carried). It mirrors the proto CompletionReport.
 type CompletionReport struct {

@@ -160,9 +160,10 @@ func (c *sessionCore) streamResult(masks []*pb.ColumnMask, opts streamOpts, emit
 }
 
 type rowsCollector struct {
-	expected, maxRows int
-	result            *engine.StatementResult
-	failed            error
+	expected int
+	budget   engine.RowBudget
+	result   *engine.StatementResult
+	failed   error
 }
 
 func (c *rowsCollector) emit(message pgproto3.BackendMessage, rowBytes int64) error {
@@ -184,7 +185,7 @@ func (c *rowsCollector) emit(message pgproto3.BackendMessage, rowBytes int64) er
 		if c.expected > 0 && len(message.Values) != c.expected {
 			return fail(fmt.Errorf("probe row returned %d columns, want %d", len(message.Values), c.expected))
 		}
-		if c.maxRows <= 0 || len(c.result.Rows) < c.maxRows {
+		if c.budget.Admit(len(c.result.Rows), rowBytes) {
 			c.result.Rows = append(c.result.Rows, decodeTextRow(message))
 		}
 	case *pgproto3.CommandComplete:

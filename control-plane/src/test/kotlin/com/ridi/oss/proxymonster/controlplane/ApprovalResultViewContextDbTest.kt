@@ -228,6 +228,7 @@ class ApprovalResultViewContextDbTest {
         sql: String = "SELECT id, email, ssn FROM users",
         columns: List<String> = listOf("id", "email", "ssn"),
         rows: List<List<String?>> = listOf(listOf("1", "a@x", rawSsn)),
+        truncatedByCap: Boolean = false,
         // The execution-time requirements frozen with the result. Defaults to what the real decision emits
         // for [sql] under the execute-as role, so a same-schema view matches and releases; a test that
         // simulates a schema change between execute and view passes a different (drifted/empty) set.
@@ -250,7 +251,7 @@ class ApprovalResultViewContextDbTest {
         }
         fx.dataSource.connection.use { c -> c.prepareStatement("INSERT INTO query_result (task_id, sql, sql_hash) VALUES (?, ?, 'fixture')").use { ps -> ps.setLong(1, reqId); ps.setString(2, sql); ps.executeUpdate() } }
         assertNotNull(resultStore.startNextRun(reqId, executor))
-        assertNotNull(resultStore.completeRun(reqId, DecryptedResult(columns, rows, resultFingerprint = resultFingerprint?.let { fingerprintOf(it) }), 3600))
+        assertNotNull(resultStore.completeRun(reqId, DecryptedResult(columns, rows, resultFingerprint = resultFingerprint?.let { fingerprintOf(it) }, truncatedByCap = truncatedByCap), 3600))
         return reqId
     }
 
@@ -744,6 +745,20 @@ class ApprovalResultViewContextDbTest {
         val responseBody = response.bodyAsText()
         assertEquals("approval.result_view_denied", Json.decodeFromString<ApiError>(responseBody).code)
         assertFalse(responseBody.contains(sentinel), "a legacy result must not release raw through a passthrough re-decision")
+    }
+
+    @Test
+    fun `a result the execution capped stays marked incomplete even when the view releases every stored row`() = testApplication {
+        resetMutableAuthzState()
+        val id = seedResult(truncatedByCap = true)
+        val client = wire()
+        client.login(executor)
+
+        val view = client.get("/api/approvals/$id/result").body<QueryResultView>()
+        assertEquals(1, view.rows.size)
+        assertTrue(view.truncatedByCap)
+
+        assertFalse(client.get("/api/approvals/${seedResult()}/result").body<QueryResultView>().truncatedByCap)
     }
 
     // The digest freezes the WHOLE analyzer requirement set, not just projected columns — a scanned table

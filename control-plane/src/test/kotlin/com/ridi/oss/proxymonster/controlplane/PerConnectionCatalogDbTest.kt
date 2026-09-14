@@ -22,12 +22,12 @@ abstract class PerConnectionCatalogDbContract {
     }
 
     @Test
-    fun `decision uses held structure after global catalog rows are deleted`() = runBlocking {
+    fun `decision uses held structure after the global catalog is cleared`() = runBlocking {
         if (fixture.datasource.engine.isPostgres) return@runBlocking
         val schema = fixture.datasource.defaultSchemas.first()
         val opened = fixture.openAndPush(schemas = listOf(schema))
         enforcement.dataSource.connection.use { c ->
-            c.prepareStatement("DELETE FROM catalog_column WHERE datasource_id = ?").use { ps ->
+            c.prepareStatement("UPDATE datasource SET catalog = NULL WHERE id = ?").use { ps ->
                 ps.setLong(1, fixture.datasource.id)
                 ps.executeUpdate()
             }

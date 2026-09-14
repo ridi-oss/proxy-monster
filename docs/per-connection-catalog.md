@@ -68,7 +68,7 @@ the DB-side hash (`goproxy/db/db.go`), and the config-channel split (a second
 | Kept current by | control-plane `REFETCH` commands, DB-hash-gated | proxy timer + Events `RefreshCatalog` |
 | Introspected on | the connection's held target-DB connection | a dedicated short-lived connection (`introspect.Run`) |
 | Channel | enforcement (`ValidateToken`/`Decide`/`PushSchemaFragment`/`CloseConnection`/`RunExec`/`ReportCompletion`) | config (`Register`/`PushCatalog`/`Events`/`TableDetailExec`) |
-| Control-plane storage | in-memory content-addressed fragments + per-connection held-hash map | `catalog_column` + `datasource` rows |
+| Control-plane storage | in-memory content-addressed fragments + per-connection held-hash map | the `datasource` row and its `catalog` snapshot |
 | Read by | `decideConnection` → `decideQuery` (wire/editor/`RunExec`) | catalog browser, classification writes/reads, MCP `browse_catalog`, table detail, approval dry-run previews, manifest logging, liveness UI |
 
 Their correctness contracts are opposite: enforcement must never serve a stale

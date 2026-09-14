@@ -1,11 +1,12 @@
 package com.ridi.oss.proxymonster.controlplane
 
-import com.ridi.oss.proxymonster.controlplane.support.pushedColumn
 import com.ridi.oss.proxymonster.controlplane.authz.Authz
 import com.ridi.oss.proxymonster.controlplane.authz.CedarEngine
 import com.ridi.oss.proxymonster.controlplane.authz.CedarPolicyStore
 import com.ridi.oss.proxymonster.controlplane.authz.RoleSource
 import com.ridi.oss.proxymonster.controlplane.grpc.ControlPlaneGrpcService
+import com.ridi.oss.proxymonster.controlplane.support.snapshotOf
+import com.ridi.oss.proxymonster.controlplane.support.pushedColumn
 import com.ridi.oss.proxymonster.controlplane.support.SharedPostgres
 import com.ridi.oss.proxymonster.controlplane.support.requireDockerOrSkip
 import com.ridi.oss.proxymonster.controlplane.support.testLoginRoute
@@ -284,20 +285,10 @@ class TableDetailDbTest {
 
         assertEquals(beforeCatalog, datasourceStore.catalog(fixture.datasource.id))
         assertEquals(beforeSyncedAt, datasourceStore.get(fixture.datasource.id)?.catalogSyncedAt)
-        metadata.connection.use { connection ->
-            connection.prepareStatement(
-                """SELECT count(*) FROM catalog_column
-                   WHERE datasource_id=? AND schema_name=? AND table_name=? AND column_name='live_only'""",
-            ).use { statement ->
-                statement.setLong(1, fixture.datasource.id)
-                statement.setString(2, fixture.requestSchema)
-                statement.setString(3, fixture.middle)
-                statement.executeQuery().use { rows ->
-                    rows.next()
-                    assertEquals(0L, rows.getLong(1), "live detail must not persist post-sync columns")
-                }
-            }
-        }
+        assertFalse(
+            datasourceStore.catalog(fixture.datasource.id).any { it.table == fixture.middle && it.column == "live_only" },
+            "live detail must not persist post-sync columns",
+        )
     }
 
     private fun createFixture(name: String, engine: String, schema: String, prefix: String): Fixture {
@@ -322,7 +313,7 @@ class TableDetailDbTest {
             defaultSchemas = listOf(schema),
             mysqlLowerCaseTableNames = if (engine == "mysql") 0 else null,
             engineVersion = if (engine == "mysql") "8.4.0" else "PostgreSQL 17.6",
-            columns = listOf(
+            catalog = snapshotOf(
                 pushedColumn(schema, middle, "id", "bigint", 1, false),
                 pushedColumn(schema, middle, "classified_secret", "varchar", 2, false),
                 pushedColumn(schema, middle, "amount", if (engine == "mysql") "decimal" else "numeric", 3, false),

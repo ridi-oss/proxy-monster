@@ -3,6 +3,8 @@ package com.ridi.oss.proxymonster.controlplane
 import com.ridi.oss.proxymonster.controlplane.support.pushedColumn
 import com.ridi.oss.proxymonster.grpc.EnfAction
 import com.ridi.oss.proxymonster.controlplane.authz.CedarPolicyInput
+import com.ridi.oss.proxymonster.controlplane.support.snapshotOf
+import com.ridi.oss.proxymonster.controlplane.support.pushedColumn
 import com.ridi.oss.proxymonster.controlplane.support.EnforcementFixture
 import com.ridi.oss.proxymonster.controlplane.support.requireDockerOrSkip
 import org.junit.jupiter.api.BeforeAll
@@ -42,7 +44,7 @@ class SystemClassificationEnforcementMySqlDbTest {
             defaultSchemas = listOf(fx.datasource.dbName),
             mysqlLowerCaseTableNames = 0,
             engineVersion = "5.7.44",
-            columns = listOf(
+            catalog = snapshotOf(
                 // An explicit system:critical credential table.
                 pushedColumn("mysql", "user", "User", "char", 1, false),
                 pushedColumn("mysql", "user", "authentication_string", "text", 2, true),

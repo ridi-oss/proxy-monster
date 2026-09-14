@@ -453,23 +453,26 @@ class ControlPlaneGrpcService(
             ?: throw StatusException(
                 Status.NOT_FOUND.withDescription("unknown datasource '${request.datasourceName}' — Register first"),
             )
-        val pushedColumns = request.catalog.columnsList
         val mysqlLowerCaseTableNames =
             if (request.hasMysqlLowerCaseTableNames()) request.mysqlLowerCaseTableNames else null
-        val stored = core.datasourceStore.storePushedCatalog(
-            id = ds.id,
-            defaultSchemas = request.defaultSchemasList,
-            mysqlLowerCaseTableNames = mysqlLowerCaseTableNames,
-            engineVersion = request.engineVersion,
-            columns = pushedColumns,
-        )
+        val stored = try {
+            core.datasourceStore.storePushedCatalog(
+                id = ds.id,
+                defaultSchemas = request.defaultSchemasList,
+                mysqlLowerCaseTableNames = mysqlLowerCaseTableNames,
+                engineVersion = request.engineVersion,
+                catalog = request.catalog,
+            )
+        } catch (e: IllegalArgumentException) {
+            throw StatusException(Status.INVALID_ARGUMENT.withDescription(e.message))
+        }
         // This push is a fresh whole-catalog read of the target DB, so where it agrees with content the
         // enforcement pool already holds it re-measures that content — the ambient refresh keeps held
         // fragments verified instead of only feeding the config catalog, and a connection is not made to
         // re-probe a schema the proxy just confirmed.
         val confirmed = core.connectionCatalog.recordAmbientMeasurement(
             ds.name,
-            pushedColumns.groupBy({ it.schema }) {
+            request.catalog.columnsList.groupBy({ it.schema }) {
                 FragmentColumn(it.schema, it.table, it.column, it.dataType, it.ordinal, it.nullable)
             },
         )

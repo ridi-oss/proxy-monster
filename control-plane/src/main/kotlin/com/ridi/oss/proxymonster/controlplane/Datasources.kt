@@ -11,7 +11,7 @@ import com.ridi.oss.proxymonster.controlplane.management.DatasourceManagementSer
 import com.ridi.oss.proxymonster.controlplane.grpc.inspectTrustChain
 import com.ridi.oss.proxymonster.controlplane.management.ManagementAuditRecorder
 import com.ridi.oss.proxymonster.controlplane.management.ManagementException
-import com.ridi.oss.proxymonster.analyzer.pb.Column
+import com.ridi.oss.proxymonster.analyzer.pb.CatalogSnapshot
 import com.ridi.oss.proxymonster.grpc.Engine
 import com.ridi.oss.proxymonster.probe.Classification
 import com.ridi.oss.proxymonster.probe.TableDetail
@@ -135,7 +135,7 @@ data class RefreshResult(val notified: Int)
  * Thrown by [DatasourceStore.register] when a caller tries to re-register an EXISTING [name] under a
  * different [requestedEngine] than its stored [existingEngine] (docs/datasource-registration.md).
  * Engine is immutable at register: silently flipping it would repoint every FK keyed off `datasource_id`
- * (catalog_column, column_classification, query_history, access_request) at a schema from a different
+ * (column_classification, query_history, access_request) at a schema from a different
  * dialect, and the analyzer/system-classification manifest resolution keyed off engine would go stale —
  * all fail-open. Thrown BEFORE any write, so the row/catalog are left untouched; the gRPC layer maps this
  * to `FAILED_PRECONDITION`.
@@ -336,9 +336,8 @@ class DatasourceStore(internal val dataSource: DataSource) {
                 // row (`datasource.db_name`) to the NEW (`EXCLUDED.db_name`) inside the atomic UPDATE removes the
                 // TOCTOU of deciding from the pre-read `prior` — correct regardless of the advisory lock's
                 // coverage (an admin create/rename that doesn't take it can't interleave a stale decision). The
-                // datasource-row catalog fields clear here; the RETURNING flag drives the orphaned catalog_column
-                // delete below (delete can't live in the INSERT). A fresh insert leaves catalog_synced_at NULL.
-                val (upsertedId, catalogCleared) = c.prepareStatement(
+                // A fresh insert leaves catalog_synced_at NULL.
+                val upsertedId = c.prepareStatement(
                     """INSERT INTO datasource (name, engine, host, port, db_name, tags, advertise_addr, advertise_cert_chain, advertise_wire_tls)
                        VALUES (?, ?, ?, ?, ?, ?::jsonb, ?, ?, ?)
                        ON CONFLICT (name) WHERE deleted_at IS NULL DO UPDATE SET
@@ -358,11 +357,12 @@ class DatasourceStore(internal val dataSource: DataSource) {
                            END,
                            -- Authoritative every register, so TLS-on -> TLS-off is observable rather than sticky.
                            advertise_wire_tls = EXCLUDED.advertise_wire_tls,
+                           catalog           = CASE WHEN datasource.db_name IS DISTINCT FROM EXCLUDED.db_name THEN NULL ELSE datasource.catalog END,
                            catalog_synced_at = CASE WHEN datasource.db_name IS DISTINCT FROM EXCLUDED.db_name THEN NULL ELSE datasource.catalog_synced_at END,
                            default_schemas   = CASE WHEN datasource.db_name IS DISTINCT FROM EXCLUDED.db_name THEN '[]'::jsonb ELSE datasource.default_schemas END,
                            mysql_lower_case_table_names = CASE WHEN datasource.db_name IS DISTINCT FROM EXCLUDED.db_name THEN NULL ELSE datasource.mysql_lower_case_table_names END
                        WHERE datasource.engine = EXCLUDED.engine
-                       RETURNING id, (catalog_synced_at IS NULL) AS catalog_cleared""",
+                       RETURNING id""",
                 ).use { ps ->
                     ps.setString(1, name)
                     ps.setString(2, engine.wireName)
@@ -379,7 +379,7 @@ class DatasourceStore(internal val dataSource: DataSource) {
                     // "stop publishing" unexpressible.
                     ps.setString(8, advertiseCertChain)
                     ps.setBoolean(9, advertiseWireTls)
-                    ps.executeQuery().use { rs -> if (rs.next()) rs.getLong(1) to rs.getBoolean(2) else null to false }
+                    ps.executeQuery().use { rs -> if (rs.next()) rs.getLong(1) else null }
                 }
                 if (upsertedId == null) {
                     // The conflict arm's engine guard refused the flip: a row under this name exists with a
@@ -391,18 +391,6 @@ class DatasourceStore(internal val dataSource: DataSource) {
                         ps.executeQuery().use { rs -> if (rs.next()) rs.getString(1) else engine.wireName }
                     }
                     throw DatasourceEngineConflictException(name, existingEngine, engine.wireName)
-                }
-                // The upsert already cleared the datasource-row catalog stamp atomically iff db_name changed
-                // (a retarget makes the retained catalog describe a DIFFERENT schema — `catalog()` builds the
-                // analyzer catalog name from db_name — so leaving it would authorize the new target against the
-                // wrong schema, a fail-OPEN). Now drop the orphaned catalog_column rows for exactly that case.
-                // `catalogCleared` reflects the ATOMIC old→new transition (RETURNING catalog_synced_at IS NULL),
-                // not the pre-read `prior`, so it's race-free; the delete is idempotent (a fresh insert or a
-                // same-db_name re-register has no rows to drop). A host/port-only move keeps the catalog.
-                if (catalogCleared) {
-                    c.prepareStatement("DELETE FROM catalog_column WHERE datasource_id = ?").use { ps ->
-                        ps.setLong(1, upsertedId); ps.executeUpdate()
-                    }
                 }
                 c.commit()
             } catch (e: Exception) {
@@ -422,10 +410,9 @@ class DatasourceStore(internal val dataSource: DataSource) {
     }
 
     /**
-     * gRPC PushCatalog: replace datasource [id]'s catalog with the columns the PROXY introspected and
-     * pushed — the control-plane never connects to the target itself (that's the headline of this design).
-     * Transactionally delete-then-batch-insert `catalog_column` (deriving each `sql_type` from the raw
-     * `data_type` via [sqlTypeFor]), then stamp the connection's live `default_schemas` /
+     * gRPC PushCatalog: replace datasource [id]'s catalog with the snapshot the PROXY introspected and
+     * pushed — the control-plane never connects to the target itself. The snapshot is one blob on the
+     * datasource row, replaced whole together with the connection's live `default_schemas` /
      * `mysql_lower_case_table_names` / `catalog_synced_at`. Returns the number of columns stored.
      */
     fun storePushedCatalog(
@@ -433,60 +420,27 @@ class DatasourceStore(internal val dataSource: DataSource) {
         defaultSchemas: List<String>,
         mysqlLowerCaseTableNames: Int?,
         engineVersion: String,
-        columns: List<Column>,
+        catalog: CatalogSnapshot,
     ): Int {
+        val duplicate = catalog.columnsList.groupingBy { Triple(it.schema, it.table, it.column) }.eachCount()
+            .entries.firstOrNull { it.value > 1 }
+        require(duplicate == null) { "duplicate catalog column ${duplicate!!.key}" }
         dataSource.connection.use { c ->
-            c.autoCommit = false
-            try {
-                // Lock the datasource row so concurrent pushes (multiple proxy replicas fronting one name)
-                // serialize instead of interleaving their DELETE/INSERT — otherwise the second push's insert
-                // races the first's delete and trips the (datasource, schema, table, column) UNIQUE. Also
-                // doubles as the disappeared-datasource check.
-                c.prepareStatement("SELECT id FROM datasource WHERE id = ? AND deleted_at IS NULL FOR UPDATE").use { ps ->
-                    ps.setLong(1, id)
-                    ps.executeQuery().use { rs -> check(rs.next()) { "datasource $id disappeared before catalog push" } }
-                }
-                c.prepareStatement("DELETE FROM catalog_column WHERE datasource_id = ?").use { ps ->
-                    ps.setLong(1, id); ps.executeUpdate()
-                }
-                c.prepareStatement(
-                    """INSERT INTO catalog_column
-                       (datasource_id, schema_name, table_name, column_name, data_type, sql_type, ordinal, nullable)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-                ).use { ps ->
-                    for (col in columns) {
-                        ps.setLong(1, id)
-                        ps.setString(2, col.schema)
-                        ps.setString(3, col.table)
-                        ps.setString(4, col.column)
-                        ps.setString(5, col.dataType)
-                        ps.setString(6, sqlTypeFor(col.dataType))
-                        ps.setInt(7, col.ordinal)
-                        ps.setBoolean(8, col.nullable)
-                        ps.addBatch()
-                    }
-                    ps.executeBatch()
-                }
-                c.prepareStatement(
-                    """UPDATE datasource
-                       SET default_schemas = ?::jsonb, mysql_lower_case_table_names = ?, engine_version = ?,
-                           catalog_synced_at = now()
-                       WHERE id = ?""",
-                ).use { ps ->
-                    ps.setString(1, json.encodeToString(stringList, defaultSchemas))
-                    setNullableInt(ps, 2, mysqlLowerCaseTableNames)
-                    ps.setString(3, engineVersion.ifBlank { null })
-                    ps.setLong(4, id)
-                    check(ps.executeUpdate() == 1) { "datasource $id disappeared during catalog push" }
-                }
-                c.commit()
-            } catch (e: Exception) {
-                c.rollback(); throw e
-            } finally {
-                c.autoCommit = true
+            c.prepareStatement(
+                """UPDATE datasource
+                   SET catalog = ?, default_schemas = ?::jsonb, mysql_lower_case_table_names = ?, engine_version = ?,
+                       catalog_synced_at = now()
+                   WHERE id = ? AND deleted_at IS NULL""",
+            ).use { ps ->
+                ps.setBytes(1, catalog.toByteArray())
+                ps.setString(2, json.encodeToString(stringList, defaultSchemas))
+                setNullableInt(ps, 3, mysqlLowerCaseTableNames)
+                ps.setString(4, engineVersion.ifBlank { null })
+                ps.setLong(5, id)
+                check(ps.executeUpdate() == 1) { "datasource $id disappeared before catalog push" }
             }
         }
-        return columns.size
+        return catalog.columnsCount
     }
 
     fun create(input: DatasourceInput): Datasource = dataSource.inTx { create(input, it) }
@@ -510,11 +464,8 @@ class DatasourceStore(internal val dataSource: DataSource) {
      *  PushCatalog lands. Shared by [register]'s db_name retarget and [update]'s admin db_name change —
      *  both leave a catalog that now describes a DIFFERENT schema, a fail-OPEN unless invalidated. */
     private fun invalidateCatalog(c: java.sql.Connection, id: Long) {
-        c.prepareStatement("DELETE FROM catalog_column WHERE datasource_id = ?").use { ps ->
-            ps.setLong(1, id); ps.executeUpdate()
-        }
         c.prepareStatement(
-            "UPDATE datasource SET catalog_synced_at = NULL, default_schemas = '[]'::jsonb, mysql_lower_case_table_names = NULL WHERE id = ?",
+            "UPDATE datasource SET catalog = NULL, catalog_synced_at = NULL, default_schemas = '[]'::jsonb, mysql_lower_case_table_names = NULL WHERE id = ?",
         ).use { ps -> ps.setLong(1, id); ps.executeUpdate() }
     }
 
@@ -597,45 +548,43 @@ class DatasourceStore(internal val dataSource: DataSource) {
 
 
     fun catalog(id: Long, c: java.sql.Connection): List<CatalogColumn> = c.prepareStatement(
-        """SELECT CASE WHEN lower(d.engine) = 'mysql' THEN 'def' ELSE d.db_name END AS catalog_name,
-                  c.schema_name, c.table_name, c.column_name, c.data_type, c.sql_type, c.ordinal, c.nullable,
-                  cl.tags, cl.mask_fn_id, m.name AS mask_fn_name
-           FROM catalog_column c
-           JOIN datasource d ON d.id = c.datasource_id
-           LEFT JOIN column_classification cl
-             ON cl.datasource_id = c.datasource_id AND cl.schema_name = c.schema_name
-            AND cl.table_name = c.table_name AND cl.column_name = c.column_name
+        """SELECT CASE WHEN lower(d.engine) = 'mysql' THEN 'def' ELSE d.db_name END AS catalog_name, d.catalog,
+                  cl.schema_name, cl.table_name, cl.column_name, cl.tags, cl.mask_fn_id, m.name AS mask_fn_name
+           FROM datasource d
+           LEFT JOIN column_classification cl ON cl.datasource_id = d.id
            LEFT JOIN mask_fn m ON m.id = cl.mask_fn_id AND m.deleted_at IS NULL
-           WHERE c.datasource_id = ?
-           ORDER BY c.schema_name, c.table_name, c.ordinal""",
+           WHERE d.id = ?""",
     ).use { ps ->
         ps.setLong(1, id)
         ps.executeQuery().use { rs ->
-            val out = ArrayList<CatalogColumn>()
+            var catalogName: String? = null
+            var snapshot = CatalogSnapshot.getDefaultInstance()
+            val classifications = HashMap<Triple<String, String, String>, Classification>()
             while (rs.next()) {
-                val schema = rs.getString("schema_name")
-                val table = rs.getString("table_name")
-                val column = rs.getString("column_name")
-                val tagsRaw = rs.getString("tags")
-                val classification = if (tagsRaw != null) {
-                    Classification(
-                        schema, table, column,
-                        json.decodeFromString(stringList, tagsRaw),
-                        rs.longOrNull("mask_fn_id"), rs.getString("mask_fn_name"),
-                    )
-                } else null
-                out += CatalogColumn(
-                    rs.getString("catalog_name"), schema, table, column,
-                    rs.getString("data_type"), rs.getString("sql_type"),
-                    rs.getInt("ordinal"), rs.getBoolean("nullable"), classification,
-                )
+                catalogName = rs.getString("catalog_name")
+                rs.getBytes("catalog")?.let { snapshot = CatalogSnapshot.parseFrom(it) }
+                rs.classification()?.let { classifications[Triple(it.schema, it.table, it.column)] = it }
             }
-            out
+            snapshot.columnsList
+                .sortedWith(compareBy({ it.schema }, { it.table }, { it.ordinal }))
+                .map { col ->
+                    CatalogColumn(
+                        catalogName!!, col.schema, col.table, col.column, col.dataType, sqlTypeFor(col.dataType),
+                        col.ordinal, col.nullable, classifications[Triple(col.schema, col.table, col.column)],
+                    )
+                }
         }
     }
 
+    private fun java.sql.ResultSet.classification(): Classification? = getString("tags")?.let { tags ->
+        Classification(
+            getString("schema_name"), getString("table_name"), getString("column_name"),
+            json.decodeFromString(stringList, tags), longOrNull("mask_fn_id"), getString("mask_fn_name"),
+        )
+    }
+
     /**
-     * Live classification metadata keyed independently of catalog_column. Enforcement fragments provide the
+     * Live classification metadata keyed independently of the pushed catalog. Enforcement fragments provide the
      * structural rows; classifications remain CP-owned and can change without a connection re-introspection.
      */
     fun classificationsFor(id: Long): Map<Triple<String, String, String>, Classification> =

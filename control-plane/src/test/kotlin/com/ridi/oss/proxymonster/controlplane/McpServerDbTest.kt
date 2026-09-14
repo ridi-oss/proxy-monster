@@ -11,6 +11,8 @@ import com.ridi.oss.proxymonster.controlplane.management.ManagementAuditRecorder
 import com.ridi.oss.proxymonster.controlplane.management.McpCapabilityRegistry
 import com.ridi.oss.proxymonster.controlplane.management.PolicyManagementService
 import com.ridi.oss.proxymonster.controlplane.mcp.installMcp
+import com.ridi.oss.proxymonster.controlplane.support.pushedColumn
+import com.ridi.oss.proxymonster.analyzer.pb.catalogSnapshot
 import com.ridi.oss.proxymonster.controlplane.support.SharedPostgres
 import com.ridi.oss.proxymonster.controlplane.support.requireDockerOrSkip
 import io.ktor.client.call.body
@@ -941,19 +943,17 @@ class McpServerDbTest {
                 statement.setString(1, name)
                 statement.executeQuery().use { result -> result.next(); result.getLong(1) }
             }
-            connection.prepareStatement(
-                """INSERT INTO catalog_column
-                   (datasource_id, schema_name, table_name, column_name, data_type, sql_type, ordinal, nullable)
-                   VALUES (?, 'public', 'users', ?, 'text', 'VARCHAR', ?, true)""",
-            ).use { statement ->
-                columns.forEachIndexed { index, column ->
-                    statement.setLong(1, id)
-                    statement.setString(2, column)
-                    statement.setInt(3, index + 1)
-                    statement.addBatch()
-                }
-                statement.executeBatch()
-            }
+            core.datasourceStore.storePushedCatalog(
+                id = id,
+                defaultSchemas = listOf("public"),
+                mysqlLowerCaseTableNames = null,
+                engineVersion = "PostgreSQL 16.4",
+                catalog = catalogSnapshot {
+                    this.columns += columns.mapIndexed { index, column ->
+                        pushedColumn("public", "users", column, "text", index + 1, true)
+                    }
+                },
+            )
         }
     }
 

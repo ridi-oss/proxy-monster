@@ -787,7 +787,7 @@ means rather than which statements pass.
 - `datasource.engine_version`, the raw target DB version string the proxy
   pushed, which is what manifest resolution keys off;
 - canonical Utility grants and manifest command/tag mappings;
-- `catalog_column` as the physical column inventory, including the system
+- `datasource.catalog` as the physical column inventory, including the system
   schemas; and
 - `column_classification.tags` as user/admin tags only.
 

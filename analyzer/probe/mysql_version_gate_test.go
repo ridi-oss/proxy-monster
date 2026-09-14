@@ -10,7 +10,7 @@ import (
 
 func usersSchema(t *testing.T) *schema.Mapping {
 	t.Helper()
-	m, err := schemaMappingFromProto("def", []*pb.Column{
+	m, _, err := schemaMappingFromProto("def", []*pb.Column{
 		pbColumn("acme", "users", "id", "BIGINT"),
 		pbColumn("acme", "users", "ssn", "VARCHAR"),
 	})
@@ -25,6 +25,7 @@ func TestMySQLWithoutKnownVersionFailsValidation(t *testing.T) {
 		"SELECT 1 /*!50700 , ssn */ FROM users",
 		&pb.EngineConfig{Engine: pb.Engine_MYSQL, MysqlLowerCaseTableNames: proto.Int32(0)},
 		usersSchema(t),
+		nil,
 		NamespaceConfig{Catalog: "def", SearchPath: []string{"acme"}},
 	)
 	if out.Resolved || out.FailedStage == nil || *out.FailedStage != "VALIDATE" {
@@ -37,6 +38,7 @@ func TestMySQLWithUnparseableVersionFailsValidation(t *testing.T) {
 		"SELECT id FROM users",
 		&pb.EngineConfig{Engine: pb.Engine_MYSQL, EngineVersion: "not-a-version", MysqlLowerCaseTableNames: proto.Int32(0)},
 		usersSchema(t),
+		nil,
 		NamespaceConfig{Catalog: "def", SearchPath: []string{"acme"}},
 	)
 	if out.Resolved || out.FailedStage == nil || *out.FailedStage != "VALIDATE" {
@@ -49,6 +51,7 @@ func TestMySQLWithValidVersionRequiresLowerCaseTableNames(t *testing.T) {
 		"SELECT id FROM users",
 		&pb.EngineConfig{Engine: pb.Engine_MYSQL, EngineVersion: "8.0.46"},
 		usersSchema(t),
+		nil,
 		NamespaceConfig{Catalog: "def", SearchPath: []string{"acme"}},
 	)
 	if out.Resolved || out.FailedStage == nil || *out.FailedStage != "VALIDATE" {
@@ -57,7 +60,7 @@ func TestMySQLWithValidVersionRequiresLowerCaseTableNames(t *testing.T) {
 }
 
 func TestPostgresWithoutVersionOrMySQLModeResolves(t *testing.T) {
-	sch, err := schemaMappingFromProto("acme", []*pb.Column{
+	sch, _, err := schemaMappingFromProto("acme", []*pb.Column{
 		pbColumn("public", "users", "id", "BIGINT"),
 	})
 	if err != nil {
@@ -67,6 +70,7 @@ func TestPostgresWithoutVersionOrMySQLModeResolves(t *testing.T) {
 		"SELECT id FROM users",
 		&pb.EngineConfig{Engine: pb.Engine_POSTGRES},
 		sch,
+		nil,
 		NamespaceConfig{Catalog: "acme", SearchPath: []string{"public"}},
 	)
 	if !out.Resolved {
@@ -79,6 +83,7 @@ func TestExecutableCommentAnalyzableWithKnownVersion(t *testing.T) {
 		"SELECT 1 /*!50700 , ssn */ FROM users",
 		&pb.EngineConfig{Engine: pb.Engine_MYSQL, EngineVersion: "8.0.46", MysqlLowerCaseTableNames: proto.Int32(0)},
 		usersSchema(t),
+		nil,
 		NamespaceConfig{Catalog: "def", SearchPath: []string{"acme"}},
 	)
 	if !out.Resolved {
@@ -122,6 +127,7 @@ func TestExecutableCommentGateRespectsVersionThreshold(t *testing.T) {
 		"SELECT 1 /*!50700 , ssn */ FROM users",
 		&pb.EngineConfig{Engine: pb.Engine_MYSQL, EngineVersion: "5.6.0", MysqlLowerCaseTableNames: proto.Int32(0)},
 		usersSchema(t),
+		nil,
 		NamespaceConfig{Catalog: "def", SearchPath: []string{"acme"}},
 	)
 	if !out.Resolved {

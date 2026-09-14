@@ -175,7 +175,7 @@ func TestProbeParity(t *testing.T) {
 		if err := json.Unmarshal([]byte(pyJSONResults[i]), &py); err != nil {
 			t.Fatalf("unmarshal oracle result %s/%s: %v\n%s", tc.dialect, tc.name, err, pyJSONResults[i])
 		}
-		goResult := Probe(tc.sql, parityEngineConfig(t, tc.dialect), qualifyParitySchema(tc.schema, tc.dialect), parityNamespace(tc.dialect))
+		goResult := Probe(tc.sql, parityEngineConfig(t, tc.dialect), qualifyParitySchema(tc.schema, tc.dialect), nil, parityNamespace(tc.dialect))
 		ok, detailOK, diffs := compareProbeResults(py, goResult, tc.dialect)
 		if detailOK {
 			detailExact++

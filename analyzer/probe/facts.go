@@ -38,7 +38,7 @@ func userTypeCast(root exp.Expression, eng engine, namespace NamespaceConfig) st
 	return ""
 }
 
-func EmitFacts(sql string, engineConfig *pb.EngineConfig, sch *schema.Mapping, namespace NamespaceConfig) *pb.StatementFacts {
+func EmitFacts(sql string, engineConfig *pb.EngineConfig, sch, implicit *schema.Mapping, namespace NamespaceConfig) *pb.StatementFacts {
 	eng, err := createEngine(engineConfig)
 	if err != nil {
 		if utility := emitConfigFailureUtilityFacts(sql, engineConfig); utility != nil {
@@ -53,7 +53,7 @@ func EmitFacts(sql string, engineConfig *pb.EngineConfig, sch *schema.Mapping, n
 	if err := detectRenderCollisions(sch); err != nil {
 		return unanalyzableFacts("VALIDATE", err.Error())
 	}
-	qualifySchema, err := schema.NewMappingSchema(sch, eng.Dialect(), eng.NormalizeCatalogOnBuild())
+	qualifySchema, err := newQualifySchema(sch, implicit, eng)
 	if err != nil {
 		return unanalyzableFacts("VALIDATE", err.Error())
 	}

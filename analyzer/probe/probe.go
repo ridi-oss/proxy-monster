@@ -38,8 +38,8 @@ type OriginInfo struct {
 }
 
 // SourceInfo is one physical target-DB relation the statement scans (docs/facts-emission.md).
-// `Table` is `catalog.schema.table`. `Covered` = some emitted column fact gates the scan; `SELECT count(*)
-// FROM users` reads no column, stays uncovered, and needs a `result.read` grant on the Table.
+// `Table` is `catalog.schema.table`. `Covered` = some emitted column fact (ctid included) gates the scan;
+// `SELECT count(*) FROM users` reads no column, stays uncovered, and needs a `result.read` grant on the Table.
 type SourceInfo struct {
 	Catalog string `json:"catalog"`
 	Schema  string `json:"schema"`
@@ -108,36 +108,37 @@ type prober struct {
 	engine    engine
 	namespace NamespaceConfig
 
-	root         exp.Expression
-	qroot        exp.Expression
-	analyzeQuery exp.Expression
-	payloadQuery exp.Expression
+	root         exp.Expression // the parsed statement, untouched
+	qroot        exp.Expression // a copy of root after Qualify: every column bound to its table, `*` expanded
+	analyzeQuery exp.Expression // the SELECT whose lineage is traced: root, a CTAS body, nil for INSERT/UPDATE/DELETE/MERGE
+	payloadQuery exp.Expression // the SELECT whose rows a write copies (INSERT ... SELECT, SELECT INTO); nil otherwise
 	isWrite      bool
-	relOverflow  bool // set when the relation resolver hits its depth guard → fail closed (resolved=false)
+	relAmbiguous bool // an unqualified column matched two FROM sources (`FROM orders o, orders p WHERE ctid = …`) → fail closed
+	relOverflow  bool // the relation resolver hit its depth guard → fail closed
 
-	scopes        []*optimizer.Scope
-	col2scope     map[exp.Expression]*optimizer.Scope
-	scopeOfSelect map[exp.Expression]*optimizer.Scope
-	writeScope    *optimizer.Scope
+	scopes        []*optimizer.Scope                  // every scope of qroot, sqlglot-go's Scope tree flattened
+	col2scope     map[exp.Expression]*optimizer.Scope // column node -> the scope it is written in
+	scopeOfSelect map[exp.Expression]*optimizer.Scope // SELECT node -> its scope
+	writeScope    *optimizer.Scope                    // the UPDATE/DELETE/MERGE root's own scope; nil for reads
 
-	references map[string]map[string]bool
+	references map[string]map[string]bool // clause (SELECT, WHERE, SUBQUERY, …) -> base columns it reads
 	// column key -> clause, for every base column a literal is compared against in a predicate.
 	predicateLiterals map[string]string
-	opaqueSelects     map[exp.Expression]bool
+	opaqueSelects     map[exp.Expression]bool // subqueries used as a value (`WHERE x IN (SELECT …)`); their columns count as SUBQUERY reads
 
 	qualifySchema     schema.Schema
-	dialect           *dialects.Dialect // the engine's resolved Dialect — parse, qualify, and generate all share this one instance
-	physicalTables    map[exp.Expression]tableID
-	nonPhysicalTables map[exp.Expression]bool
-	newTargets        map[exp.Expression]bool
+	dialect           *dialects.Dialect          // the engine's resolved Dialect — parse, qualify, and generate all share this one instance
+	physicalTables    map[exp.Expression]tableID // table node -> its resolved catalog.schema.table
+	nonPhysicalTables map[exp.Expression]bool    // table nodes that name no relation: MySQL's `DELETE alias FROM t AS alias` selector
+	newTargets        map[exp.Expression]bool    // the table a CREATE TABLE AS / SELECT INTO creates: not in the catalog yet
 
-	naturalStarOrders  map[exp.Expression][]naturalStarColumn
-	naturalStarPending map[exp.Expression]bool
+	naturalStarOrders  map[exp.Expression][]naturalStarColumn // SELECT -> the column order `*` expands to under NATURAL/USING joins
+	naturalStarPending map[exp.Expression]bool                // SELECTs whose `*` still has to be expanded in that order
 	// lateCallReport: calls Qualify creates itself (star expansion); merged into callReport after Qualify.
 	callReport     map[exp.Expression]optimizer.ResolvedCall
 	lateCallReport map[exp.Expression]optimizer.ResolvedCall
-	builtinCalls   []string
-	udfCalls       []string
+	builtinCalls   []string // sorted names of the resolved builtin calls
+	udfCalls       []string // sorted names of the resolved user-defined function calls
 }
 
 type resolveKey struct {
@@ -157,7 +158,7 @@ type naturalStarColumn struct {
 	tables []string
 }
 
-func Probe(sql string, engineConfig *pb.EngineConfig, sch *schema.Mapping, namespace NamespaceConfig) ProbeResult {
+func Probe(sql string, engineConfig *pb.EngineConfig, sch, implicit *schema.Mapping, namespace NamespaceConfig) ProbeResult {
 	eng, err := createEngine(engineConfig)
 	if err != nil {
 		return failResult("VALIDATE", err.Error())
@@ -169,7 +170,7 @@ func Probe(sql string, engineConfig *pb.EngineConfig, sch *schema.Mapping, names
 	if err := detectRenderCollisions(sch); err != nil {
 		return failResult("VALIDATE", err.Error())
 	}
-	qualifySchema, err := schema.NewMappingSchema(sch, eng.Dialect(), eng.NormalizeCatalogOnBuild())
+	qualifySchema, err := newQualifySchema(sch, implicit, eng)
 	if err != nil {
 		return failResult("VALIDATE", err.Error())
 	}
@@ -250,6 +251,8 @@ func probeParsed(root exp.Expression, eng engine, qualifySchema schema.Schema, n
 	}
 	if fail := runStage("VALIDATE", func() {
 		p.qroot = p.root.Copy()
+		p.rejectImplicitShadowingAliases(p.qroot)
+		p.markBuiltinFunctionRow(p.qroot)
 		p.expandNaturalJoins(p.qroot)
 		p.markNewTargets(p.qroot)
 		// MySQL's DELETE target-alias list names sources already present under FROM. Keeping the
@@ -326,6 +329,115 @@ func probeParsed(root exp.Expression, eng engine, qualifySchema schema.Schema, n
 		return *fail
 	}
 	return result
+}
+
+// `SELECT ctid FROM users AS u(ctid, x)`: PostgreSQL binds ctid to users' first real column, our
+// resolver to the implicit one, so a masked column could relay under a ctid grant. Fail closed.
+func (p *prober) rejectImplicitShadowingAliases(root exp.Expression) {
+	for _, table := range root.FindAll(exp.KindTable) {
+		aliases := table.AliasColumnNames()
+		if len(aliases) == 0 {
+			continue
+		}
+		if this := table.This(); this == nil || this.Is(exp.TraitFunc) {
+			continue // a function-table's row IS its alias list; nothing implicit to shadow
+		}
+		all, err := p.qualifySchema.ColumnNames(table, false, p.dialect, boolPtr(false))
+		if err != nil {
+			continue
+		}
+		visible, err := p.qualifySchema.ColumnNames(table, true, p.dialect, boolPtr(false))
+		if err != nil {
+			continue
+		}
+		implicit := map[string]bool{}
+		for _, col := range all {
+			implicit[col] = true
+		}
+		for _, col := range visible {
+			delete(implicit, col)
+		}
+		if len(implicit) == 0 {
+			continue
+		}
+		for _, alias := range aliases {
+			if implicit[p.engine.FoldColumn(alias)] {
+				panic(fmt.Errorf("table alias column %q shadows an implicit system column", alias))
+			}
+		}
+	}
+}
+
+// A builtin function table's row: `FROM unnest(arr)` -> [unnest], `FROM pg_available_extension_versions()`
+// -> [name, version, ...]. Only when the call must be the builtin: pg_catalog-qualified, or bare with
+// pg_catalog first on search_path and no user `unnest` observed on the session.
+func (p *prober) markBuiltinFunctionRow(root exp.Expression) {
+	systemFirst := p.engine.SystemSchemaFirst(p.namespace.SearchPath)
+	for _, table := range root.FindAll(exp.KindTable) {
+		function := table.This()
+		if function == nil || !function.Is(exp.TraitFunc) || table.Arg("catalog") != nil {
+			continue
+		}
+		name := function.Name()
+		if identifier, ok := function.Arg("this").(exp.Expression); ok {
+			identifier = identifier.Copy()
+			p.dialect.NormalizeIdentifier(identifier)
+			name = identifier.Name()
+		} else {
+			name = strings.ToLower(name)
+		}
+		schema, _ := table.Arg("schema").(exp.Expression)
+		if schema == nil {
+			if !systemFirst || !p.engine.BareCallIsBuiltin(name) {
+				continue
+			}
+		} else if !p.engine.IsTrustedSystemQualifier(schema) {
+			continue
+		}
+		columns := p.engine.BuiltinFunctionRow(name)
+		if len(columns) == 0 || (name == "unnest" && len(function.Expressions()) != 1) {
+			continue
+		}
+		setImplicitRelationColumns(table, columns)
+	}
+	if !systemFirst || !p.engine.BareCallIsBuiltin("unnest") {
+		return
+	}
+	for _, unnest := range root.FindAll(exp.KindUnnest) {
+		if len(unnest.Expressions()) == 1 {
+			setImplicitRelationColumns(unnest, p.engine.BuiltinFunctionRow("unnest"))
+		}
+	}
+}
+
+func postgresCatalogFirstAfterTempSchemas(searchPath []string) bool {
+	for _, schema := range searchPath {
+		if schema == "pg_temp" || strings.HasPrefix(schema, "pg_temp_") {
+			continue
+		}
+		return schema == "pg_catalog"
+	}
+	return false
+}
+
+// A client-written alias list (`AS u(a, b)`) wins.
+func setImplicitRelationColumns(relation exp.Expression, names []string) {
+	if len(names) == 0 {
+		return
+	}
+	alias, _ := relation.Arg("alias").(exp.Expression)
+	if len(relation.AliasColumnNames()) != 0 {
+		return
+	}
+	if alias == nil {
+		alias = exp.TableAlias(exp.Args{})
+	}
+	columns := make([]exp.Expression, 0, len(names))
+	for _, name := range names {
+		columns = append(columns, exp.ToIdentifier(name))
+	}
+	alias.Set("columns", columns)
+	relation.Set("alias", alias)
 }
 
 func (p *prober) expandNaturalJoins(root exp.Expression) {
@@ -806,8 +918,9 @@ func (p *prober) canonicalColumn(table exp.Expression, column string) (string, b
 // tableColumns returns every column of an already-resolved physical table, for whole-row/`*`
 // expansion. table is already fully qualified (it comes from p.physicalTables), so normalize=false —
 // this is a pure lookup against sqlglot-go's own catalog, not a fold decision.
+// tableColumns is the visible row: `row_to_json(u)` and `*` never include ctid or xmin.
 func (p *prober) tableColumns(table exp.Expression) []string {
-	columns, err := p.qualifySchema.ColumnNames(table, false, p.dialect, boolPtr(false))
+	columns, err := p.qualifySchema.ColumnNames(table, true, p.dialect, boolPtr(false))
 	if err != nil {
 		return nil
 	}
@@ -1065,10 +1178,9 @@ func generateExecutableSQL(root exp.Expression, dialect *dialects.Dialect) (stri
 
 func (p *prober) buildScopes() {
 	p.scopes = optimizer.TraverseScope(p.qroot)
-	// INSERT has no native root query, and the root traversal can omit SELECTs nested under VALUES/SET,
-	// so retain those query scopes as independent analysis graphs for the INSERT conservation
-	// paths. UPDATE/DELETE/MERGE stay on the single native traversal graph validated below.
-	if p.qroot.Kind() == exp.KindInsert {
+	// A SELECT nested in INSERT VALUES or UPDATE SET is skipped by the DML traversal; keep its scope and
+	// let scopeChainFor link it back to the write root.
+	if p.isWrite {
 		seenExpressions := map[exp.Expression]bool{}
 		for _, sc := range p.scopes {
 			seenExpressions[sc.Expression] = true
@@ -1771,6 +1883,11 @@ func (p *prober) lineage() ProbeResult {
 			if c.This() != nil && c.This().Kind() == exp.KindStar {
 				continue
 			}
+			if dot := c.FindAncestor(exp.KindDot); dot != nil && c == dot.This() {
+				if _, isRelation := p.relationOfNode(c, 0); isRelation {
+					continue // (u).f on a relation — the Dot walker already emitted the field's grant
+				}
+			}
 			if within(c, payloadBody) || c.FindAncestor(exp.KindCTE) != nil {
 				continue // inside the payload SELECT body, or a CTE definition — its consumers in the
 				// write clauses are swept separately, so dead CTE columns don't over-deny.
@@ -1829,6 +1946,9 @@ func (p *prober) lineage() ProbeResult {
 		}
 	}
 
+	if p.relAmbiguous {
+		return failResult("VALIDATE", "ambiguous relation column")
+	}
 	if p.relOverflow {
 		return failResult("LINEAGE", "relation-resolution depth exceeded (possible composite cycle)")
 	}
@@ -2076,8 +2196,8 @@ func sortedStringSet(m map[string]bool) []string {
 // SELECT count(*) FROM t` emits no physical `t` (ALLOW), while a CTE BODY that reads the real table
 // does (a scanned source, gated). A write target is never a scanned source (its kind gates it).
 //
-// Coverage is per table and computed from the final emitted facts: any traced origin/reference
-// covers its table. The trailing dot keeps the base-key prefix
+// Coverage is per table and computed from the final emitted facts: any traced origin/reference —
+// implicit system columns included — covers its table. The trailing dot keeps the base-key prefix
 // injective (`users.` never matches `users_archive.col`). Anything unresolved stays uncovered and gated.
 func (p *prober) scannedSources(origins []OriginInfo, refs map[string][]string) []SourceInfo {
 	baseKeys := map[string]bool{}

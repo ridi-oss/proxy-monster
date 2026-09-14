@@ -31,7 +31,7 @@ func TestUpfrontFoldKeepsQualifierTrustQuoteAware(t *testing.T) {
 // lower_case_table_names=1 folds relation names, so an uppercase statement resolves and its scanned-table
 // identity carries the folded spelling the catalog is keyed by.
 func TestUpfrontFoldReachesRelationIdentities(t *testing.T) {
-	mapping, err := schemaMappingFromProto("def", []*pb.Column{
+	mapping, _, err := schemaMappingFromProto("def", []*pb.Column{
 		pbColumn("bom", "tb_user", "id", "BIGINT"),
 	})
 	if err != nil {
@@ -41,6 +41,7 @@ func TestUpfrontFoldReachesRelationIdentities(t *testing.T) {
 		"SELECT id FROM BOM.TB_USER",
 		&pb.EngineConfig{Engine: pb.Engine_MYSQL, EngineVersion: "8.0.44", MysqlLowerCaseTableNames: proto.Int32(1)},
 		mapping,
+		nil,
 		NamespaceConfig{Catalog: "def", SearchPath: []string{"bom"}},
 	)
 	if !facts.GetResolved() {
@@ -65,7 +66,7 @@ func TestUpfrontFoldReachesRelationIdentities(t *testing.T) {
 // completes: [TestSchemaQualifierCandidatesFoldToTheStoredSpelling] (candidates from a statement whose
 // schema is absent) and [TestUpfrontFoldKeepsQualifierTrustQuoteAware] (a qualifier read before Qualify).
 func TestUpfrontFoldRespectsEngineEquivalence(t *testing.T) {
-	mysqlMapping, err := schemaMappingFromProto("def", []*pb.Column{
+	mysqlMapping, _, err := schemaMappingFromProto("def", []*pb.Column{
 		pbColumn("bom", "tb_user", "id", "BIGINT"),
 		pbColumn("bom", "tb_user", "email", "VARCHAR"),
 	})
@@ -78,7 +79,7 @@ func TestUpfrontFoldRespectsEngineEquivalence(t *testing.T) {
 		return EmitFacts(sql, &pb.EngineConfig{
 			Engine: pb.Engine_MYSQL, EngineVersion: "8.0.44",
 			MysqlLowerCaseTableNames: proto.Int32(lctn),
-		}, mysqlMapping, mysqlNs)
+		}, mysqlMapping, nil, mysqlNs)
 	}
 
 	// lower_case_table_names=1: relation names are case-insensitive, so the uppercase spelling is the
@@ -115,7 +116,7 @@ func TestUpfrontFoldRespectsEngineEquivalence(t *testing.T) {
 // unquoted relation of the same letters are genuinely TWO tables. Folding them together would merge two
 // catalog rows into one key and mask (or expose) the wrong column.
 func TestUpfrontFoldKeepsPostgresQuotedRelationsDistinct(t *testing.T) {
-	mapping, err := schemaMappingFromProto("acme", []*pb.Column{
+	mapping, _, err := schemaMappingFromProto("acme", []*pb.Column{
 		pbColumn("public", "mixedcase", "id", "BIGINT"),
 		pbColumn("public", "MixedCase", "id", "BIGINT"),
 	})
@@ -126,8 +127,8 @@ func TestUpfrontFoldKeepsPostgresQuotedRelationsDistinct(t *testing.T) {
 	ns := NamespaceConfig{Catalog: "acme", SearchPath: []string{"public"}}
 
 	// Unquoted folds to the lowercase table; quoted resolves to the case-preserved one.
-	unquoted := EmitFacts(`SELECT id FROM MixedCase`, pg, mapping, ns)
-	quoted := EmitFacts(`SELECT id FROM "MixedCase"`, pg, mapping, ns)
+	unquoted := EmitFacts(`SELECT id FROM MixedCase`, pg, mapping, nil, ns)
+	quoted := EmitFacts(`SELECT id FROM "MixedCase"`, pg, mapping, nil, ns)
 	if !unquoted.GetResolved() || !quoted.GetResolved() {
 		t.Fatalf("both relations exist: %q / %q", unquoted.GetDetail(), quoted.GetDetail())
 	}

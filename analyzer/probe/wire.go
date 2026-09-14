@@ -21,12 +21,12 @@ func AnalyzeStatement(req *pb.AnalyzeRequest) (*pb.StatementFacts, error) {
 	if err != nil {
 		return nil, err
 	}
-	sch, err := schemaMappingFromProto(namespace.Catalog, req.GetCatalog().GetColumns())
+	sch, implicit, err := schemaMappingFromProto(namespace.Catalog, req.GetCatalog().GetColumns())
 	if err != nil {
 		return nil, err
 	}
 	namespace.EngineCatalog = engineCatalogFromProto(req.GetCatalog().GetFunctions(), namespace.SearchPath)
-	return EmitFacts(req.GetSql(), req.GetEngineConfig(), sch, namespace), nil
+	return EmitFacts(req.GetSql(), req.GetEngineConfig(), sch, implicit, namespace), nil
 }
 
 // Names arrive folded. Nil stays nil, which makes every call unknown.
@@ -142,15 +142,17 @@ func strPtr(s string) *string { return &s }
 
 // schemaMappingFromProto builds a depth-3 schema.Mapping (catalog -> schema -> table -> column ->
 // SQL type) from the flat Column list — the Go-side half of the flat-catalog contract: no tree-walking
-// encoder or decoder on either side. A column with no catalog of its own belongs to the namespace catalog.
-func schemaMappingFromProto(namespaceCatalog string, cols []*pb.Column) (*schema.Mapping, error) {
+// encoder or decoder on either side. A column with no catalog of its own belongs to the namespace
+// catalog. Implicit columns (ctid, xmin) also collect into the implicit Mapping ([]string leaves).
+func schemaMappingFromProto(namespaceCatalog string, cols []*pb.Column) (*schema.Mapping, *schema.Mapping, error) {
 	root := schema.NewMapping()
+	implicit := schema.NewMapping()
 	if namespaceCatalog == "" {
-		return nil, fmt.Errorf("namespace catalog is required")
+		return nil, nil, fmt.Errorf("namespace catalog is required")
 	}
 	for _, col := range cols {
 		if col.GetSchema() == "" || col.GetTable() == "" || col.GetColumn() == "" {
-			return nil, fmt.Errorf("catalog column entry is missing schema/table/column")
+			return nil, nil, fmt.Errorf("catalog column entry is missing schema/table/column")
 		}
 		catalog := col.GetCatalog()
 		if catalog == "" {
@@ -160,14 +162,20 @@ func schemaMappingFromProto(namespaceCatalog string, cols []*pb.Column) (*schema
 		tables := getOrNewMapping(schemas, col.GetSchema())
 		tableColumns := getOrNewMapping(tables, col.GetTable())
 		if _, exists := tableColumns.Get(col.GetColumn()); exists {
-			return nil, fmt.Errorf(
+			return nil, nil, fmt.Errorf(
 				"catalog contains duplicate column entry: %s.%s.%s.%s",
 				catalog, col.GetSchema(), col.GetTable(), col.GetColumn(),
 			)
 		}
 		tableColumns.Set(col.GetColumn(), col.GetDataType())
+		if col.GetImplicit() {
+			tables := getOrNewMapping(getOrNewMapping(implicit, catalog), col.GetSchema())
+			names, _ := tables.Get(col.GetTable())
+			list, _ := names.([]string)
+			tables.Set(col.GetTable(), append(list, col.GetColumn()))
+		}
 	}
-	return root, nil
+	return root, implicit, nil
 }
 
 func getOrNewMapping(m *schema.Mapping, key string) *schema.Mapping {

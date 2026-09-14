@@ -116,6 +116,9 @@ data class CatalogColumn(
     // masked/denied source into it), so decideQuery reads it UNMASKED without a Cedar grant. Base catalog
     // columns are always false.
     val isTemp: Boolean = false,
+    // An engine-implicit system column (PostgreSQL ctid/xmin/…), synthesized at analysis time — never
+    // stored, never classifiable; resolves like a normal column but is excluded from * expansion.
+    val implicit: Boolean = false,
 )
 
 @Serializable

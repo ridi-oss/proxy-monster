@@ -161,6 +161,53 @@ abstract class PerConnectionCatalogDbContract {
         }
     }
 
+
+    @Test
+    fun `PostgreSQL function visibility threads through decideConnection`() = runBlocking {
+        if (!fixture.datasource.engine.isPostgres) return@runBlocking
+        val schema = fixture.datasource.defaultSchemas.first()
+        val opened = fixture.openAndPush(schemas = listOf(schema))
+        val sql = "select unnest from unnest(array[1])"
+
+        // unnest resolves to the pg_catalog builtin through the live engine catalog and relays
+        // VERBATIM — resolution is report-only, no pin rewrite.
+        val observed = assertIs<EnforcementOutcome.Verdict>(
+            decideConnection(
+                fixture.core,
+                opened.connectionId,
+                "analyst@example.com",
+                fixture.datasource,
+                sql,
+                listOf("pg_catalog", schema),
+                null,
+                session = sessionObservation { postgresFunctionShadowingObserved = true },
+            ),
+        )
+        assertEquals(EnfAction.ALLOW, observed.ctx.action, observed.ctx.denyReason)
+        assertEquals(null, observed.ctx.rewrittenSql, observed.ctx.toString())
+    }
+
+    @Test
+    fun `missing search path fragment returns before-decide without audit`() = runBlocking {
+        val opened = fixture.core.connectionCatalog.open(
+            Binding(fixture.datasource.name, "analyst@example.com", "USER"),
+            emptyList(),
+        )
+        val outcome = decideConnection(
+            fixture.core,
+            opened.connectionId,
+            "analyst@example.com",
+            fixture.datasource,
+            "select id from users",
+            listOf("missing_schema"),
+            null,
+        )
+        val before = assertIs<EnforcementOutcome.BeforeDecide>(outcome)
+        assertEquals(listOf("missing_schema"), before.commands.map { it.schema })
+    }
+
+
+
     @Test
     fun `the gRPC Decide handler forwards the session observation`() = runBlocking {
         // The one proxy-to-analyzer handoff: DecisionRequest.session must reach EngineConfig unchanged. A handler
@@ -262,25 +309,6 @@ abstract class PerConnectionCatalogDbContract {
         assertEquals(EnfAction.DENY, decide(false).ctx.action)
         val userFirst = decide(true, listOf(schema, "pg_catalog"))
         assertEquals(EnfAction.DENY, userFirst.ctx.action, userFirst.ctx.toString())
-    }
-
-    @Test
-    fun `missing search path fragment returns before-decide without audit`() = runBlocking {
-        val opened = fixture.core.connectionCatalog.open(
-            Binding(fixture.datasource.name, "analyst@example.com", "USER"),
-            emptyList(),
-        )
-        val outcome = decideConnection(
-            fixture.core,
-            opened.connectionId,
-            "analyst@example.com",
-            fixture.datasource,
-            "select id from users",
-            listOf("missing_schema"),
-            null,
-        )
-        val before = assertIs<EnforcementOutcome.BeforeDecide>(outcome)
-        assertEquals(listOf("missing_schema"), before.commands.map { it.schema })
     }
 
 }

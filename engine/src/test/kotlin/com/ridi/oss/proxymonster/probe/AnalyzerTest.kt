@@ -1,11 +1,11 @@
 package com.ridi.oss.proxymonster.probe
 
-import com.ridi.oss.proxymonster.analyzer.pb.ColumnSpec
+import com.ridi.oss.proxymonster.analyzer.pb.Column
+import com.ridi.oss.proxymonster.analyzer.pb.catalogSnapshot
 import com.ridi.oss.proxymonster.analyzer.pb.FailureClass
-import com.ridi.oss.proxymonster.analyzer.pb.columnSpec
+import com.ridi.oss.proxymonster.analyzer.pb.column
 import com.ridi.oss.proxymonster.analyzer.pb.engineConfig
 import com.ridi.oss.proxymonster.analyzer.pb.namespace
-import com.ridi.oss.proxymonster.analyzer.pb.relationIdentity
 import com.ridi.oss.proxymonster.grpc.Engine
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -14,16 +14,12 @@ import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 class AnalyzerTest {
-    private fun column(catalog: String, schema: String, table: String, name: String, pii: Boolean = false): ColumnSpec =
-        columnSpec {
-            this.catalog = catalog
-            identity = relationIdentity {
-                this.schema = schema
-                this.table = table
-                column = name
-            }
+    private fun column(schema: String, table: String, name: String): Column =
+        column {
+            this.schema = schema
+            this.table = table
+            column = name
             dataType = "VARCHAR"
-            this.pii = pii
         }
 
     private val ns = namespace {
@@ -31,10 +27,10 @@ class AnalyzerTest {
         searchPath.add("public")
     }
     private val config = engineConfig { engine = Engine.POSTGRES }
-    private val columns = listOf(
-        column("acme", "public", "users", "id"),
-        column("acme", "public", "users", "ssn", pii = true),
-    )
+    private val columns = catalogSnapshot {
+        columns += column("public", "users", "id")
+        columns += column("public", "users", "ssn")
+    }
 
     @Test
     fun `analyzer retains validated request snapshot and returns StatementFacts`() {
@@ -43,7 +39,7 @@ class AnalyzerTest {
         assertTrue(facts.resolved)
         assertEquals(ns, analyzer.namespaceProto)
         assertEquals(columns, analyzer.catalogProto)
-        assertEquals(setOf("acme.public.users.ssn"), analyzer.piiColumns)
+        assertEquals(listOf("acme.public.users.id", "acme.public.users.ssn"), analyzer.columnKeys)
         assertTrue(facts.resultReadsList.any { it.hasColumn() && it.column.identity.column == "ssn" })
     }
 
@@ -52,7 +48,7 @@ class AnalyzerTest {
         assertFailsWith<IllegalArgumentException> {
             analyzerFor(
                 ns,
-                listOf(column("acme", "public", "users", "id"), column("acme", "public", "users", "id")),
+                catalogSnapshot { columns += column("public", "users", "id"); columns += column("public", "users", "id") },
                 config,
             )
         }

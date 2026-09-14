@@ -18,24 +18,24 @@ import (
 // class: a bump that widens parse coverage must not open a lineage hole in the constructs it unlocks.
 // Each query reads users.ssn; a resolved result with ssn nowhere is a leak.
 func TestNewlyParseableConservation(t *testing.T) {
-	mysqlCatalog := []*pb.ColumnSpec{
-		columnSpec("def", "acme", "users", "id", "BIGINT"),
-		columnSpec("def", "acme", "users", "ssn", "VARCHAR"),
+	mysqlCatalog := []*pb.Column{
+		pbColumn("acme", "users", "id", "BIGINT"),
+		pbColumn("acme", "users", "ssn", "VARCHAR"),
 	}
 	mysqlNs := &pb.Namespace{Catalog: "def", SearchPath: []string{"acme"}}
 	const mysqlSSNKey = "def.acme.users.ssn"
 
-	writeCatalog := []*pb.ColumnSpec{
-		columnSpec("def", "acme", "users", "id", "BIGINT"),
-		columnSpec("def", "acme", "users", "ssn", "VARCHAR"),
-		columnSpec("def", "acme", "users", "name", "VARCHAR"),
+	writeCatalog := []*pb.Column{
+		pbColumn("acme", "users", "id", "BIGINT"),
+		pbColumn("acme", "users", "ssn", "VARCHAR"),
+		pbColumn("acme", "users", "name", "VARCHAR"),
 	}
 
 	cases := []struct {
 		id      string
 		sql     string
 		dialect string
-		catalog []*pb.ColumnSpec
+		catalog []*pb.Column
 		ns      *pb.Namespace
 		ssnKey  string
 	}{
@@ -57,7 +57,7 @@ func TestNewlyParseableConservation(t *testing.T) {
 			if tc.dialect == "mysql" {
 				engineConfig = &pb.EngineConfig{Engine: pb.Engine_MYSQL, EngineVersion: "8.0.46", MysqlLowerCaseTableNames: proto.Int32(0)}
 			}
-			res := analyzeProbe(t, &pb.AnalyzeRequest{Sql: tc.sql, EngineConfig: engineConfig, Namespace: tc.ns, Catalog: tc.catalog})
+			res := analyzeProbe(t, &pb.AnalyzeRequest{Sql: tc.sql, EngineConfig: engineConfig, Namespace: tc.ns, Catalog: snapshot(tc.catalog)})
 			caught := !res.Resolved // unresolved = fail-closed = safe
 			for _, refs := range res.References {
 				for _, c := range refs {
@@ -84,11 +84,11 @@ func TestNewlyParseableConservation(t *testing.T) {
 // These supported write shapes must reach analysis, classify as writes, and conserve protected reads;
 // unresolved is fail-safe but would not prove the parser covers them.
 func TestV050MySQLWriteExtensionsConserveProtectedSource(t *testing.T) {
-	cols := []*pb.ColumnSpec{
-		columnSpec("def", "acme", "users", "id", "BIGINT"),
-		columnSpec("def", "acme", "users", "ssn", "VARCHAR"),
-		columnSpec("def", "acme", "sink", "id", "BIGINT"),
-		columnSpec("def", "acme", "sink", "data", "VARCHAR"),
+	cols := []*pb.Column{
+		pbColumn("acme", "users", "id", "BIGINT"),
+		pbColumn("acme", "users", "ssn", "VARCHAR"),
+		pbColumn("acme", "sink", "id", "BIGINT"),
+		pbColumn("acme", "sink", "data", "VARCHAR"),
 	}
 	ns := &pb.Namespace{Catalog: "def", SearchPath: []string{"acme"}}
 	const ssnKey = "def.acme.users.ssn"

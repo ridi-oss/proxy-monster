@@ -1,5 +1,6 @@
 package com.ridi.oss.proxymonster.controlplane
 
+import com.ridi.oss.proxymonster.controlplane.support.pushedColumn
 import com.ridi.oss.proxymonster.controlplane.authz.Authz
 import com.ridi.oss.proxymonster.controlplane.authz.CedarEngine
 import com.ridi.oss.proxymonster.controlplane.authz.CedarPolicyStore
@@ -322,10 +323,10 @@ class TableDetailDbTest {
             mysqlLowerCaseTableNames = if (engine == "mysql") 0 else null,
             engineVersion = if (engine == "mysql") "8.4.0" else "PostgreSQL 17.6",
             columns = listOf(
-                DatasourceStore.PushedColumn(schema, middle, "id", "bigint", 1, false),
-                DatasourceStore.PushedColumn(schema, middle, "classified_secret", "varchar", 2, false),
-                DatasourceStore.PushedColumn(schema, middle, "amount", if (engine == "mysql") "decimal" else "numeric", 3, false),
-                DatasourceStore.PushedColumn(schema, middle, "optional_note", "varchar", 4, true),
+                pushedColumn(schema, middle, "id", "bigint", 1, false),
+                pushedColumn(schema, middle, "classified_secret", "varchar", 2, false),
+                pushedColumn(schema, middle, "amount", if (engine == "mysql") "decimal" else "numeric", 3, false),
+                pushedColumn(schema, middle, "optional_note", "varchar", 4, true),
             ),
         )
         val mask = policyStore.createMaskFn(MaskFnInput(maskName, "LAST_N"))

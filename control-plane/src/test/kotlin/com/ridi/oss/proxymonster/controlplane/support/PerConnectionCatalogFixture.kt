@@ -8,7 +8,7 @@ import com.ridi.oss.proxymonster.controlplane.Datasource
 import com.ridi.oss.proxymonster.controlplane.FragmentColumn
 import com.ridi.oss.proxymonster.controlplane.OpenConnection
 import com.ridi.oss.proxymonster.controlplane.sqlTypeFor
-import com.ridi.oss.proxymonster.grpc.column
+import com.ridi.oss.proxymonster.analyzer.pb.column
 import com.ridi.oss.proxymonster.grpc.schemaFragmentPush
 import java.io.ByteArrayOutputStream
 import java.io.DataOutputStream

@@ -2,7 +2,7 @@ package com.ridi.oss.proxymonster.controlplane
 
 import com.google.protobuf.ByteString
 import com.ridi.oss.proxymonster.grpc.Engine
-import com.ridi.oss.proxymonster.grpc.column
+import com.ridi.oss.proxymonster.analyzer.pb.column
 import com.ridi.oss.proxymonster.grpc.schemaFragmentPush
 import io.grpc.Status
 import kotlinx.coroutines.runBlocking

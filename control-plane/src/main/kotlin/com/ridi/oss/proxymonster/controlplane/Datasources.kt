@@ -11,6 +11,7 @@ import com.ridi.oss.proxymonster.controlplane.management.DatasourceManagementSer
 import com.ridi.oss.proxymonster.controlplane.grpc.inspectTrustChain
 import com.ridi.oss.proxymonster.controlplane.management.ManagementAuditRecorder
 import com.ridi.oss.proxymonster.controlplane.management.ManagementException
+import com.ridi.oss.proxymonster.analyzer.pb.Column
 import com.ridi.oss.proxymonster.grpc.Engine
 import com.ridi.oss.proxymonster.probe.Classification
 import com.ridi.oss.proxymonster.probe.TableDetail
@@ -420,16 +421,6 @@ class DatasourceStore(internal val dataSource: DataSource) {
         }
     }
 
-    /** A column the proxy introspected and pushed over gRPC PushCatalog. */
-    data class PushedColumn(
-        val schema: String,
-        val table: String,
-        val column: String,
-        val dataType: String,
-        val ordinal: Int,
-        val nullable: Boolean,
-    )
-
     /**
      * gRPC PushCatalog: replace datasource [id]'s catalog with the columns the PROXY introspected and
      * pushed — the control-plane never connects to the target itself (that's the headline of this design).
@@ -442,7 +433,7 @@ class DatasourceStore(internal val dataSource: DataSource) {
         defaultSchemas: List<String>,
         mysqlLowerCaseTableNames: Int?,
         engineVersion: String,
-        columns: List<PushedColumn>,
+        columns: List<Column>,
     ): Int {
         dataSource.connection.use { c ->
             c.autoCommit = false

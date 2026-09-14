@@ -1,5 +1,6 @@
 package com.ridi.oss.proxymonster.controlplane
 
+import com.ridi.oss.proxymonster.controlplane.support.pushedColumn
 import com.ridi.oss.proxymonster.grpc.EnfAction
 import com.ridi.oss.proxymonster.controlplane.authz.CedarPolicyInput
 import com.ridi.oss.proxymonster.controlplane.support.EnforcementFixture
@@ -43,14 +44,14 @@ class SystemClassificationEnforcementMySqlDbTest {
             engineVersion = "5.7.44",
             columns = listOf(
                 // An explicit system:critical credential table.
-                DatasourceStore.PushedColumn("mysql", "user", "User", "char", 1, false),
-                DatasourceStore.PushedColumn("mysql", "user", "authentication_string", "text", 2, true),
+                pushedColumn("mysql", "user", "User", "char", 1, false),
+                pushedColumn("mysql", "user", "authentication_string", "text", 2, true),
                 // A value-bearing table NO shipped manifest classifies — the fail-closed critical default; the
                 // raw cross-session-variable surface the advisory closes.
-                DatasourceStore.PushedColumn("performance_schema", "user_variables_by_thread", "VARIABLE_NAME", "varchar", 1, true),
-                DatasourceStore.PushedColumn("performance_schema", "user_variables_by_thread", "VARIABLE_VALUE", "longtext", 2, true),
+                pushedColumn("performance_schema", "user_variables_by_thread", "VARIABLE_NAME", "varchar", 1, true),
+                pushedColumn("performance_schema", "user_variables_by_thread", "VARIABLE_VALUE", "longtext", 2, true),
                 // An explicit system:data-leak table — kept at its tag (not force-critical), so system:development still relaxes it.
-                DatasourceStore.PushedColumn("information_schema", "COLUMN_STATISTICS", "SCHEMA_NAME", "varchar", 1, true),
+                pushedColumn("information_schema", "COLUMN_STATISTICS", "SCHEMA_NAME", "varchar", 1, true),
             ),
         )
         val role = fx.policyStore.createRole(RoleInput("broad-mysql-reader"))

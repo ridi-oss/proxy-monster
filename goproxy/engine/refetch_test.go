@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	analyzerpb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
 )
 
@@ -30,9 +31,11 @@ func (refetchDb) SchemaHashFromRows(rows [][]*string) ([]byte, bool, error) {
 	}
 	return []byte(*rows[0][0]), true, nil
 }
-func (refetchDb) SchemaColumnsSQL(schema string) string                     { return "columns:" + schema }
-func (refetchDb) LowerCaseTableNamesProbeSQL() string                       { return "" }
-func (refetchDb) NormalizeColumns(_ int, columns []*pb.Column) []*pb.Column { return columns }
+func (refetchDb) SchemaColumnsSQL(schema string) string { return "columns:" + schema }
+func (refetchDb) LowerCaseTableNamesProbeSQL() string   { return "" }
+func (refetchDb) NormalizeColumns(_ int, columns []*analyzerpb.Column) []*analyzerpb.Column {
+	return columns
+}
 
 func ptr(s string) *string { return &s }
 
@@ -108,11 +111,11 @@ type normalizingRefetchDb struct {
 }
 
 func (d *normalizingRefetchDb) LowerCaseTableNamesProbeSQL() string { return "lctn" }
-func (d *normalizingRefetchDb) NormalizeColumns(mode int, columns []*pb.Column) []*pb.Column {
+func (d *normalizingRefetchDb) NormalizeColumns(mode int, columns []*analyzerpb.Column) []*analyzerpb.Column {
 	d.gotMode = &mode
-	out := make([]*pb.Column, len(columns))
+	out := make([]*analyzerpb.Column, len(columns))
 	for i, c := range columns {
-		out[i] = &pb.Column{Schema: strings.ToUpper(c.GetSchema()), Table: strings.ToUpper(c.GetTable()), Column: strings.ToUpper(c.GetColumn())}
+		out[i] = &analyzerpb.Column{Schema: strings.ToUpper(c.GetSchema()), Table: strings.ToUpper(c.GetTable()), Column: strings.ToUpper(c.GetColumn())}
 	}
 	return out
 }

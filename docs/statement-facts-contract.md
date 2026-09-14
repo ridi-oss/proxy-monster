@@ -34,8 +34,9 @@ hand-rolled JSON at this boundary. `protoc-gen-go` generates the Go bindings and
 the `com.google.protobuf` Gradle plugin generates the Kotlin ones from the same
 `proto/src/main/proto/analyzer.proto`, so schema drift is a compile-time
 mismatch, not a silent runtime one. The catalog crossing the boundary is a flat
-`repeated ColumnSpec` (matching what Kotlin already holds), not a nested tree,
-so Go builds its own `schema.Mapping` from the flat list directly.
+a `CatalogSnapshot` of flat `Column` rows (the same message the proxy pushes),
+not a nested tree, so Go builds its own `schema.Mapping` from the flat list
+directly.
 
 ### Message shape
 

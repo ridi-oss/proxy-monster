@@ -21,9 +21,9 @@ func TestAnalyzeStatementDecodesCatalogAndNamespace(t *testing.T) {
 				MysqlLowerCaseTableNames: proto.Int32(0),
 			},
 			Namespace: &pb.Namespace{Catalog: "def", SearchPath: []string{"acme"}},
-			Catalog: []*pb.ColumnSpec{
-				columnSpec("def", "acme", "users", "id", "BIGINT"),
-			},
+			Catalog: snapshot([]*pb.Column{
+				pbColumn("acme", "users", "id", "BIGINT"),
+			}),
 		}
 	}
 
@@ -45,7 +45,7 @@ func TestAnalyzeStatementDecodesCatalogAndNamespace(t *testing.T) {
 
 	// A duplicate catalog column makes the mapping ambiguous — a lineage key could bind either row.
 	dup := base()
-	dup.Catalog = append(dup.Catalog, columnSpec("def", "acme", "users", "id", "BIGINT"))
+	dup.Catalog.Columns = append(dup.Catalog.Columns, pbColumn("acme", "users", "id", "BIGINT"))
 	if _, err := AnalyzeStatement(dup); err == nil {
 		t.Error("a duplicate catalog column must be refused at the decode boundary, got no error")
 	}
@@ -55,7 +55,7 @@ func TestAnalyzeStatementDecodesCatalogAndNamespace(t *testing.T) {
 // must therefore be TOTAL — every input yields a decodable StatementFacts, and a failure is expressed
 // as resolved=false rather than an error or a panic.
 func TestAnalyzeStatementSafeIsTotal(t *testing.T) {
-	catalog := []*pb.ColumnSpec{columnSpec("def", "acme", "users", "id", "BIGINT")}
+	catalog := []*pb.Column{pbColumn("acme", "users", "id", "BIGINT")}
 	engine := &pb.EngineConfig{
 		Engine: pb.Engine_MYSQL, EngineVersion: "8.0.44",
 		MysqlLowerCaseTableNames: proto.Int32(0),
@@ -77,7 +77,7 @@ func TestAnalyzeStatementSafeIsTotal(t *testing.T) {
 		wantResolved bool
 	}{
 		{"well-formed", encode(t, &pb.AnalyzeRequest{
-			Sql: "SELECT id FROM users", EngineConfig: engine, Namespace: namespace, Catalog: catalog,
+			Sql: "SELECT id FROM users", EngineConfig: engine, Namespace: namespace, Catalog: snapshot(catalog),
 		}), true},
 		// Not a valid proto at all — the decode itself fails.
 		{"garbage bytes", []byte{0xff, 0xfe, 0xfd, 0x01, 0x02}, false},
@@ -87,7 +87,7 @@ func TestAnalyzeStatementSafeIsTotal(t *testing.T) {
 		{"empty request", encode(t, &pb.AnalyzeRequest{}), false},
 		// Decodes and is well-formed, but the statement cannot be parsed.
 		{"unparseable sql", encode(t, &pb.AnalyzeRequest{
-			Sql: "SELECT FROM WHERE ((", EngineConfig: engine, Namespace: namespace, Catalog: catalog,
+			Sql: "SELECT FROM WHERE ((", EngineConfig: engine, Namespace: namespace, Catalog: snapshot(catalog),
 		}), false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

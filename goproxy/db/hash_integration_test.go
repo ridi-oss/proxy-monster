@@ -12,9 +12,9 @@ import (
 	"testing"
 	"time"
 
+	analyzerpb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
 	"github.com/ridi-oss/proxy-monster/goproxy/engine"
 	"github.com/ridi-oss/proxy-monster/goproxy/internal/dbtest"
-	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
 )
 
 const hashTestTimeout = 30 * time.Second
@@ -74,7 +74,7 @@ func TestMySqlSchemaHashIntegration(t *testing.T) {
 		}
 		return value
 	}
-	fragments := func(schema string) []*pb.Column {
+	fragments := func(schema string) []*analyzerpb.Column {
 		t.Helper()
 		rows, err := queryStrings(conn, db.SchemaColumnsSQL(schema), 6)
 		if err != nil {
@@ -175,7 +175,7 @@ func TestMySqlSchemaHashIntegration(t *testing.T) {
 		t.Cleanup(func() { cleanupExec("DROP DATABASE IF EXISTS " + quote(hostile)) })
 		exec("CREATE TABLE " + quote(hostile) + ".t (id INT NOT NULL)")
 		_ = hash(hostile)
-		want := []*pb.Column{{Schema: hostile, Table: "t", Column: "id", DataType: "int", Ordinal: 1}}
+		want := []*analyzerpb.Column{{Schema: hostile, Table: "t", Column: "id", DataType: "int", Ordinal: 1}}
 		if got := fragments(hostile); !reflect.DeepEqual(got, want) {
 			t.Fatalf("hostile schema fragment = %+v, want %+v", got, want)
 		}
@@ -192,7 +192,7 @@ func TestMySqlSchemaHashIntegration(t *testing.T) {
 		exec("CREATE DATABASE " + quote(fragmentSchema))
 		t.Cleanup(func() { cleanupExec("DROP DATABASE IF EXISTS " + quote(fragmentSchema)) })
 		exec("CREATE TABLE " + quote(fragmentSchema) + ".sample (id INT NOT NULL, note VARCHAR(20) NULL)")
-		want := []*pb.Column{
+		want := []*analyzerpb.Column{
 			{Schema: fragmentSchema, Table: "sample", Column: "id", DataType: "int", Ordinal: 1},
 			{Schema: fragmentSchema, Table: "sample", Column: "note", DataType: "varchar", Ordinal: 2, Nullable: true},
 		}
@@ -313,7 +313,7 @@ func verifyPostgresHashAndFragment(t *testing.T, database *sql.DB, wantCrypto bo
 	if err != nil {
 		t.Fatalf("Postgres fragment mapping: %v", err)
 	}
-	want := []*pb.Column{
+	want := []*analyzerpb.Column{
 		{Schema: schema, Table: "sample", Column: "id", DataType: "integer", Ordinal: 1},
 		{Schema: schema, Table: "sample", Column: "note", DataType: "text", Ordinal: 2, Nullable: true},
 	}

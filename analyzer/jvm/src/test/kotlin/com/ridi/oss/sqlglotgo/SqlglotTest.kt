@@ -1,15 +1,15 @@
 package com.ridi.oss.sqlglotgo
 
-import com.ridi.oss.proxymonster.analyzer.pb.ColumnSpec
+import com.ridi.oss.proxymonster.analyzer.pb.Column
+import com.ridi.oss.proxymonster.analyzer.pb.catalogSnapshot
 import com.ridi.oss.proxymonster.analyzer.pb.EngineConfig
 import com.ridi.oss.proxymonster.analyzer.pb.Namespace
 import com.ridi.oss.proxymonster.analyzer.pb.StatementFacts
 import com.ridi.oss.proxymonster.analyzer.pb.StatementKind
 import com.ridi.oss.proxymonster.analyzer.pb.analyzeRequest
-import com.ridi.oss.proxymonster.analyzer.pb.columnSpec
+import com.ridi.oss.proxymonster.analyzer.pb.column
 import com.ridi.oss.proxymonster.analyzer.pb.engineConfig
 import com.ridi.oss.proxymonster.analyzer.pb.namespace
-import com.ridi.oss.proxymonster.analyzer.pb.relationIdentity
 import com.ridi.oss.proxymonster.grpc.Engine
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
@@ -22,32 +22,29 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class SqlglotTest {
-    private fun column(catalog: String, schema: String, table: String, column: String, dataType: String): ColumnSpec =
-        columnSpec {
-            this.catalog = catalog
-            identity = relationIdentity {
-                this.schema = schema
-                this.table = table
-                this.column = column
-            }
+    private fun column(schema: String, table: String, column: String, dataType: String): Column =
+        column {
+            this.schema = schema
+            this.table = table
+            this.column = column
             this.dataType = dataType
         }
 
     private val postgresCatalog = listOf(
-        column("acme", "public", "users", "id", "BIGINT"),
-        column("acme", "public", "users", "name", "VARCHAR"),
-        column("acme", "public", "users", "ssn", "VARCHAR"),
-        column("acme", "public", "orders", "id", "BIGINT"),
-        column("acme", "public", "orders", "user_id", "BIGINT"),
-        column("acme", "analytics", "users", "id", "BIGINT"),
-        column("acme", "analytics", "users", "score", "BIGINT"),
+        column("public", "users", "id", "BIGINT"),
+        column("public", "users", "name", "VARCHAR"),
+        column("public", "users", "ssn", "VARCHAR"),
+        column("public", "orders", "id", "BIGINT"),
+        column("public", "orders", "user_id", "BIGINT"),
+        column("analytics", "users", "id", "BIGINT"),
+        column("analytics", "users", "score", "BIGINT"),
     )
     private val postgresNamespace: Namespace = namespace {
         catalog = "acme"
         searchPath.add("public")
     }
     private val mysqlCatalog = postgresCatalog.map {
-        it.toBuilder().setCatalog("def").setIdentity(it.identity.toBuilder().setSchema(if (it.identity.schema == "public") "app" else it.identity.schema)).build()
+        it.toBuilder().setSchema(if (it.schema == "public") "app" else it.schema).build()
     }
     private val mysqlNamespace: Namespace = namespace {
         catalog = "def"
@@ -70,7 +67,7 @@ class SqlglotTest {
         val request = analyzeRequest {
             this.sql = sql
             this.namespace = namespace
-            catalog.addAll(catalog(dialect))
+            catalog = catalogSnapshot { columns.addAll(catalog(dialect)) }
             engineConfig = engineConfigFor(dialect)
         }
         return StatementFacts.parseFrom(Sqlglot.analyzeStatement(request.toByteArray()))

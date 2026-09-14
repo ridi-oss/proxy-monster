@@ -18,17 +18,17 @@ func TestCteShadowsPhysicalDecoyMustDeny(t *testing.T) {
 	// Every CTE name below ALSO exists as a physical table (with an ssn column, so a wrong bind resolves
 	// to the decoy's ssn instead of users.ssn) — otherwise the test would pass vacuously via a
 	// column-not-found fail-close rather than by proving the CTE bind.
-	cols := []*pb.ColumnSpec{
-		columnSpec("def", "App", "users", "id", "BIGINT"),
-		columnSpec("def", "App", "users", "ssn", "VARCHAR"),
-		columnSpec("def", "App", "sink", "id", "BIGINT"),
-		columnSpec("def", "App", "sink", "data", "VARCHAR"),
-		columnSpec("def", "App", "protected", "x", "VARCHAR"),
-		columnSpec("def", "App", "protected", "ssn", "VARCHAR"),
-		columnSpec("def", "App", "a", "x", "VARCHAR"),
-		columnSpec("def", "App", "a", "ssn", "VARCHAR"),
-		columnSpec("def", "App", "b", "y", "VARCHAR"),
-		columnSpec("def", "App", "b", "ssn", "VARCHAR"),
+	cols := []*pb.Column{
+		pbColumn("App", "users", "id", "BIGINT"),
+		pbColumn("App", "users", "ssn", "VARCHAR"),
+		pbColumn("App", "sink", "id", "BIGINT"),
+		pbColumn("App", "sink", "data", "VARCHAR"),
+		pbColumn("App", "protected", "x", "VARCHAR"),
+		pbColumn("App", "protected", "ssn", "VARCHAR"),
+		pbColumn("App", "a", "x", "VARCHAR"),
+		pbColumn("App", "a", "ssn", "VARCHAR"),
+		pbColumn("App", "b", "y", "VARCHAR"),
+		pbColumn("App", "b", "ssn", "VARCHAR"),
 	}
 	ns := &pb.Namespace{Catalog: "def", SearchPath: []string{"App"}}
 	const ssnKey = "def.App.users.ssn"
@@ -50,7 +50,7 @@ func TestCteShadowsPhysicalDecoyMustDeny(t *testing.T) {
 			res := analyzeProbe(t, &pb.AnalyzeRequest{
 				Sql:          tc.sql,
 				EngineConfig: &pb.EngineConfig{Engine: pb.Engine_MYSQL, EngineVersion: "8.0.46", MysqlLowerCaseTableNames: proto.Int32(0)},
-				Namespace:    ns, Catalog: cols,
+				Namespace:    ns, Catalog: snapshot(cols),
 			})
 			caught := !res.Resolved
 			for _, refs := range res.References {

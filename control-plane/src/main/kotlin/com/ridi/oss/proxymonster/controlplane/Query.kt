@@ -26,18 +26,19 @@ import com.ridi.oss.proxymonster.grpc.EnfAction
 import com.ridi.oss.proxymonster.grpc.Engine
 import com.ridi.oss.proxymonster.grpc.RunError
 import com.ridi.oss.proxymonster.grpc.columnMask
-import com.ridi.oss.proxymonster.analyzer.pb.ColumnSpec
+import com.ridi.oss.proxymonster.analyzer.pb.CatalogSnapshot
+import com.ridi.oss.proxymonster.analyzer.pb.Column
 import com.ridi.oss.proxymonster.analyzer.pb.FailureClass
 import com.ridi.oss.proxymonster.analyzer.pb.MaskedDisposition
 import com.ridi.oss.proxymonster.analyzer.pb.RequireResultReadGrant
 import com.ridi.oss.proxymonster.analyzer.pb.ResultFingerprint
 import com.ridi.oss.proxymonster.analyzer.pb.StatementFacts
 import com.ridi.oss.proxymonster.analyzer.pb.StatementKind
-import com.ridi.oss.proxymonster.analyzer.pb.columnSpec
+import com.ridi.oss.proxymonster.analyzer.pb.catalogSnapshot
+import com.ridi.oss.proxymonster.analyzer.pb.column
 import com.ridi.oss.proxymonster.analyzer.pb.resultFingerprint
 import com.ridi.oss.proxymonster.analyzer.pb.engineConfig as pbEngineConfig
 import com.ridi.oss.proxymonster.analyzer.pb.namespace as pbNamespace
-import com.ridi.oss.proxymonster.analyzer.pb.relationIdentity
 import com.ridi.oss.proxymonster.probe.Analyzer
 import com.ridi.oss.proxymonster.probe.Dialect
 import com.ridi.oss.proxymonster.probe.Masking
@@ -254,20 +255,20 @@ fun effectiveRoles(baseRoles: List<String>, grantRoles: List<String>, groupRoles
 
 /** The one catalog representation shared by analyzer construction and exact lineage-key matching. */
 internal data class CatalogColumnIndex(
-    val specs: List<ColumnSpec>,
+    val snapshot: CatalogSnapshot,
     val rowsByKey: Map<String, CatalogColumn>,
 )
 
 /**
- * Build the catalog's exact normalized-key index from an [analyzer] already built over [specs] (the
- * same list, in the same order, as [catalog] maps to) — reusing [Analyzer.columnKeys] rather than
+ * Build the catalog's exact normalized-key index from an [analyzer] already built over [snapshot] (the
+ * same columns, in the same order, as [catalog] maps to) — reusing [Analyzer.columnKeys] rather than
  * re-deriving every row's key via a second full-catalog walk. Key uniqueness is already guaranteed by
  * [analyzerFor]'s own validation (it would have thrown), so [decideQuery] never observes a duplicate
  * here; the check below is defense-in-depth against a wiring bug, not a fold-drift concern.
  */
 internal fun buildCatalogColumnIndex(
     catalog: List<CatalogColumn>,
-    specs: List<ColumnSpec>,
+    snapshot: CatalogSnapshot,
     analyzer: Analyzer,
 ): CatalogColumnIndex {
     require(catalog.size == analyzer.columnKeys.size) {
@@ -279,7 +280,7 @@ internal fun buildCatalogColumnIndex(
             "catalog contains ambiguous normalized column key '$key'"
         }
     }
-    return CatalogColumnIndex(specs, rowsByKey)
+    return CatalogColumnIndex(snapshot, rowsByKey)
 }
 
 /**
@@ -310,20 +311,21 @@ internal fun analyzerAndCatalogIndex(
         if (liveAnsiQuotes) this.mysqlAnsiQuotes = true
     }
     val effectiveCatalog = catalog + tempColumns
-    val specs = effectiveCatalog.map { col ->
-        columnSpec {
-            this.catalog = col.catalog
-            this.identity = relationIdentity {
-                this.schema = col.schema
-                this.table = col.table
-                this.column = col.column
+    val snapshot = catalogSnapshot {
+        columns += effectiveCatalog.map { col ->
+            column {
+                this.catalog = col.catalog
+                schema = col.schema
+                table = col.table
+                column = col.column
+                dataType = col.sqlType
+                ordinal = col.ordinal
+                nullable = col.nullable
             }
-            this.dataType = col.sqlType
-            this.pii = col.classification != null
         }
     }
-    val analyzer = analyzerFor(namespace, specs, engineConfig)
-    return buildCatalogColumnIndex(effectiveCatalog, specs, analyzer) to analyzer
+    val analyzer = analyzerFor(namespace, snapshot, engineConfig)
+    return buildCatalogColumnIndex(effectiveCatalog, snapshot, analyzer) to analyzer
 }
 
 /**

@@ -60,8 +60,8 @@ been captured. The catalog level is derived, never caller-selectable.
 
 The analyzer boundary (`AnalyzeRequest` in `analyzer.proto`) receives four
 inputs: SQL, a `Namespace` descriptor (`catalog` + ordered `search_path`), a
-flat `repeated ColumnSpec` catalog (Go nests it into the depth-3 mapping), and
-an `EngineConfig` (engine identity, version, and — for MySQL —
+flat `CatalogSnapshot` of `Column` rows (Go nests it into the depth-3 mapping),
+and an `EngineConfig` (engine identity, version, and — for MySQL —
 `mysql_lower_case_table_names` / `mysql_ansi_quotes`). Each catalog column
 carries structured `catalog`, `schema`, `table`, `column`, and SQL-type fields.
 The namespace descriptor is the namespace observed at introspection (or the

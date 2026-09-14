@@ -11,24 +11,24 @@ import (
 // Locks the diagnostic_leak_columns contract: referenced columns, plus a PostgreSQL write's whole target
 // row (the `DETAIL: Failing row contains (…)` dump). See docs/diagnostic-redaction.md.
 func TestDiagnosticLeakColumns(t *testing.T) {
-	cols := []*pb.ColumnSpec{
-		columnSpec("acme", "public", "users", "id", "BIGINT"),
-		columnSpec("acme", "public", "users", "ssn", "VARCHAR"),
-		columnSpec("acme", "public", "users", "email", "VARCHAR"),
+	cols := []*pb.Column{
+		pbColumn("public", "users", "id", "BIGINT"),
+		pbColumn("public", "users", "ssn", "VARCHAR"),
+		pbColumn("public", "users", "email", "VARCHAR"),
 	}
-	pgMapping, err := schemaMappingFromProto(cols)
+	pgMapping, err := schemaMappingFromProto("acme", cols)
 	if err != nil {
 		t.Fatalf("build pg schema: %v", err)
 	}
 	pgNs := NamespaceConfig{Catalog: "acme", SearchPath: []string{"public"}}
 	pg := &pb.EngineConfig{Engine: pb.Engine_POSTGRES, EngineVersion: "16.0"}
 
-	mysqlCols := []*pb.ColumnSpec{
-		columnSpec("def", "app", "users", "id", "BIGINT"),
-		columnSpec("def", "app", "users", "ssn", "VARCHAR"),
-		columnSpec("def", "app", "users", "email", "VARCHAR"),
+	mysqlCols := []*pb.Column{
+		pbColumn("app", "users", "id", "BIGINT"),
+		pbColumn("app", "users", "ssn", "VARCHAR"),
+		pbColumn("app", "users", "email", "VARCHAR"),
 	}
-	mysqlMapping, err := schemaMappingFromProto(mysqlCols)
+	mysqlMapping, err := schemaMappingFromProto("def", mysqlCols)
 	if err != nil {
 		t.Fatalf("build mysql schema: %v", err)
 	}
@@ -76,8 +76,8 @@ func TestDiagnosticLeakColumns(t *testing.T) {
 	})
 
 	t.Run("a dotted column name emits an unresolvable key instead of vanishing", func(t *testing.T) {
-		dottedCols := append(cols, columnSpec("acme", "public", "users", "ssn.secret", "VARCHAR"))
-		dottedMapping, err := schemaMappingFromProto(dottedCols)
+		dottedCols := append(cols, pbColumn("public", "users", "ssn.secret", "VARCHAR"))
+		dottedMapping, err := schemaMappingFromProto("acme", dottedCols)
 		if err != nil {
 			t.Fatalf("build schema: %v", err)
 		}

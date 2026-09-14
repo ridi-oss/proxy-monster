@@ -24,7 +24,7 @@ func TestPredicateLiteralFacts(t *testing.T) {
 		name string
 		ec   *pb.EngineConfig
 		ns   *pb.Namespace
-		cols []*pb.ColumnSpec
+		cols []*pb.Column
 		ssn  string
 		id   string
 		reg  string
@@ -33,11 +33,11 @@ func TestPredicateLiteralFacts(t *testing.T) {
 			name: "mysql",
 			ec:   &pb.EngineConfig{Engine: pb.Engine_MYSQL, EngineVersion: "8.0.46", MysqlLowerCaseTableNames: proto.Int32(1)},
 			ns:   &pb.Namespace{Catalog: "def", SearchPath: []string{"app"}},
-			cols: []*pb.ColumnSpec{
-				columnSpec("def", "app", "users", "id", "BIGINT"),
-				columnSpec("def", "app", "users", "ssn", "VARCHAR"),
-				columnSpec("def", "app", "users", "region", "VARCHAR"),
-				columnSpec("def", "app", "orders", "user_id", "BIGINT"),
+			cols: []*pb.Column{
+				pbColumn("app", "users", "id", "BIGINT"),
+				pbColumn("app", "users", "ssn", "VARCHAR"),
+				pbColumn("app", "users", "region", "VARCHAR"),
+				pbColumn("app", "orders", "user_id", "BIGINT"),
 			},
 			ssn: "def.app.users.ssn", id: "def.app.users.id", reg: "def.app.users.region",
 		},
@@ -45,11 +45,11 @@ func TestPredicateLiteralFacts(t *testing.T) {
 			name: "postgres",
 			ec:   &pb.EngineConfig{Engine: pb.Engine_POSTGRES},
 			ns:   &pb.Namespace{Catalog: "acme", SearchPath: []string{"public"}},
-			cols: []*pb.ColumnSpec{
-				columnSpec("acme", "public", "users", "id", "BIGINT"),
-				columnSpec("acme", "public", "users", "ssn", "VARCHAR"),
-				columnSpec("acme", "public", "users", "region", "VARCHAR"),
-				columnSpec("acme", "public", "orders", "user_id", "BIGINT"),
+			cols: []*pb.Column{
+				pbColumn("public", "users", "id", "BIGINT"),
+				pbColumn("public", "users", "ssn", "VARCHAR"),
+				pbColumn("public", "users", "region", "VARCHAR"),
+				pbColumn("public", "orders", "user_id", "BIGINT"),
 			},
 			ssn: "acme.public.users.ssn", id: "acme.public.users.id", reg: "acme.public.users.region",
 		},
@@ -143,7 +143,7 @@ func TestPredicateLiteralFacts(t *testing.T) {
 						want = []string{prefix + "orders.user_id"}
 					}
 
-					r := analyzeProbe(t, &pb.AnalyzeRequest{Sql: tc.sql, EngineConfig: e.ec, Namespace: e.ns, Catalog: e.cols})
+					r := analyzeProbe(t, &pb.AnalyzeRequest{Sql: tc.sql, EngineConfig: e.ec, Namespace: e.ns, Catalog: snapshot(e.cols)})
 					if !r.Resolved {
 						t.Fatalf("expected resolved=true; sql=%q detail=%q", tc.sql, r.Detail)
 					}
@@ -170,15 +170,15 @@ func TestPredicateLiteralFacts(t *testing.T) {
 func TestPredicateLiteralClause(t *testing.T) {
 	ec := &pb.EngineConfig{Engine: pb.Engine_MYSQL, EngineVersion: "8.0.46", MysqlLowerCaseTableNames: proto.Int32(1)}
 	ns := &pb.Namespace{Catalog: "def", SearchPath: []string{"app"}}
-	cols := []*pb.ColumnSpec{
-		columnSpec("def", "app", "users", "id", "BIGINT"),
-		columnSpec("def", "app", "users", "ssn", "VARCHAR"),
-		columnSpec("def", "app", "orders", "user_id", "BIGINT"),
+	cols := []*pb.Column{
+		pbColumn("app", "users", "id", "BIGINT"),
+		pbColumn("app", "users", "ssn", "VARCHAR"),
+		pbColumn("app", "orders", "user_id", "BIGINT"),
 	}
 
 	r := analyzeProbe(t, &pb.AnalyzeRequest{
 		Sql:          "SELECT u.id FROM users u JOIN orders o ON o.user_id = 7 WHERE u.ssn = 'x'",
-		EngineConfig: ec, Namespace: ns, Catalog: cols,
+		EngineConfig: ec, Namespace: ns, Catalog: snapshot(cols),
 	})
 	if !r.Resolved {
 		t.Fatalf("expected resolved=true; detail=%q", r.Detail)

@@ -16,10 +16,10 @@ func labelFacts(t *testing.T, sql string) *pb.StatementFacts {
 		Sql:          sql,
 		EngineConfig: &pb.EngineConfig{Engine: pb.Engine_POSTGRES},
 		Namespace:    &pb.Namespace{Catalog: "acme", SearchPath: []string{"pg_catalog", "public"}},
-		Catalog: []*pb.ColumnSpec{
-			columnSpec("acme", "pg_catalog", "pg_namespace", "oid", "OID"),
-			columnSpec("acme", "pg_catalog", "pg_namespace", "nspname", "NAME"),
-		},
+		Catalog: snapshot([]*pb.Column{
+			pbColumn("pg_catalog", "pg_namespace", "oid", "OID"),
+			pbColumn("pg_catalog", "pg_namespace", "nspname", "NAME"),
+		}),
 	})
 }
 

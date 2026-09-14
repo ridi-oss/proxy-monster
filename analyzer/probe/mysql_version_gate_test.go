@@ -10,9 +10,9 @@ import (
 
 func usersSchema(t *testing.T) *schema.Mapping {
 	t.Helper()
-	m, err := schemaMappingFromProto([]*pb.ColumnSpec{
-		columnSpec("def", "acme", "users", "id", "BIGINT"),
-		columnSpec("def", "acme", "users", "ssn", "VARCHAR"),
+	m, err := schemaMappingFromProto("def", []*pb.Column{
+		pbColumn("acme", "users", "id", "BIGINT"),
+		pbColumn("acme", "users", "ssn", "VARCHAR"),
 	})
 	if err != nil {
 		t.Fatalf("build schema: %v", err)
@@ -57,8 +57,8 @@ func TestMySQLWithValidVersionRequiresLowerCaseTableNames(t *testing.T) {
 }
 
 func TestPostgresWithoutVersionOrMySQLModeResolves(t *testing.T) {
-	sch, err := schemaMappingFromProto([]*pb.ColumnSpec{
-		columnSpec("acme", "public", "users", "id", "BIGINT"),
+	sch, err := schemaMappingFromProto("acme", []*pb.Column{
+		pbColumn("public", "users", "id", "BIGINT"),
 	})
 	if err != nil {
 		t.Fatalf("build schema: %v", err)

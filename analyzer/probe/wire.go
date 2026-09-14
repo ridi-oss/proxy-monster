@@ -16,11 +16,11 @@ import (
 // AnalyzeStatement decodes req's typed fields, runs Probe, and returns the response as a typed
 // proto message — no (un)marshaling here. AnalyzeStatementSafe below owns the byte-buffer boundary.
 func AnalyzeStatement(req *pb.AnalyzeRequest) (*pb.StatementFacts, error) {
-	sch, err := schemaMappingFromProto(req.GetCatalog())
+	namespace, err := namespaceConfigFromProto(req.GetNamespace())
 	if err != nil {
 		return nil, err
 	}
-	namespace, err := namespaceConfigFromProto(req.GetNamespace())
+	sch, err := schemaMappingFromProto(namespace.Catalog, req.GetCatalog().GetColumns())
 	if err != nil {
 		return nil, err
 	}
@@ -103,26 +103,31 @@ func must(b []byte, err error) []byte {
 func strPtr(s string) *string { return &s }
 
 // schemaMappingFromProto builds a depth-3 schema.Mapping (catalog -> schema -> table -> column ->
-// SQL type) from a flat ColumnSpec list — the Go-side half of the flat-catalog simplification: the
-// JVM caller already holds a flat List<ColumnSpec> natively (CatalogApi.kt), so no tree-walking
-// decoder is needed on either side, just this direct nested-Set build.
-func schemaMappingFromProto(cols []*pb.ColumnSpec) (*schema.Mapping, error) {
+// SQL type) from the flat Column list — the Go-side half of the flat-catalog contract: no tree-walking
+// encoder or decoder on either side. A column with no catalog of its own belongs to the namespace catalog.
+func schemaMappingFromProto(namespaceCatalog string, cols []*pb.Column) (*schema.Mapping, error) {
 	root := schema.NewMapping()
+	if namespaceCatalog == "" {
+		return nil, fmt.Errorf("namespace catalog is required")
+	}
 	for _, col := range cols {
-		id := col.GetIdentity()
-		if col.GetCatalog() == "" || id.GetSchema() == "" || id.GetTable() == "" || id.GetColumn() == "" {
-			return nil, fmt.Errorf("catalog column entry is missing catalog/schema/table/column")
+		if col.GetSchema() == "" || col.GetTable() == "" || col.GetColumn() == "" {
+			return nil, fmt.Errorf("catalog column entry is missing schema/table/column")
 		}
-		schemas := getOrNewMapping(root, col.GetCatalog())
-		tables := getOrNewMapping(schemas, id.GetSchema())
-		tableColumns := getOrNewMapping(tables, id.GetTable())
-		if _, exists := tableColumns.Get(id.GetColumn()); exists {
+		catalog := col.GetCatalog()
+		if catalog == "" {
+			catalog = namespaceCatalog
+		}
+		schemas := getOrNewMapping(root, catalog)
+		tables := getOrNewMapping(schemas, col.GetSchema())
+		tableColumns := getOrNewMapping(tables, col.GetTable())
+		if _, exists := tableColumns.Get(col.GetColumn()); exists {
 			return nil, fmt.Errorf(
 				"catalog contains duplicate column entry: %s.%s.%s.%s",
-				col.GetCatalog(), id.GetSchema(), id.GetTable(), id.GetColumn(),
+				catalog, col.GetSchema(), col.GetTable(), col.GetColumn(),
 			)
 		}
-		tableColumns.Set(id.GetColumn(), col.GetDataType())
+		tableColumns.Set(col.GetColumn(), col.GetDataType())
 	}
 	return root, nil
 }

@@ -12,6 +12,7 @@ import type { QueryResponse, QueryResultMeta, QueryResultView } from '@/lib/api/
 import { translateApiError } from '@/lib/i18n/errors'
 import { cn } from '@/lib/utils'
 import { QueryLogs } from '@/components/query/query-logs'
+import { RequestAccessDialog } from '@/components/query/request-access-dialog'
 import { ResultsPanel } from '@/components/query/results-panel'
 import type { QueryLogEntry } from '@/components/query/use-result-tabs'
 
@@ -27,6 +28,8 @@ function asQueryResponse(view: QueryResultView, meta: QueryResultMeta): QueryRes
     columns: view.columns ?? [],
     rows: view.rows ?? [],
     rowsAffected: meta.rowCount ?? null,
+    truncatedByCap: view.truncatedByCap ?? false,
+    capRows: view.truncatedAt ?? null,
     latencyMs: 0,
   }
 }
@@ -36,11 +39,13 @@ function StatementTab({
   statement,
   datasourceId,
   onLog,
+  onRequestAccess,
 }: {
   taskId: number
   statement: QueryResultMeta
   datasourceId: number | null
   onLog: (entry: QueryLogEntry) => void
+  onRequestAccess: () => void
 }) {
   const canViewRows = statement.status === 'DONE'
   // FAILED is fetched too: the view carries this statement's target-DB errorDetail, released per viewer.
@@ -89,7 +94,8 @@ function StatementTab({
       result={view && canViewRows ? asQueryResponse(view, statement) : null}
       running={false}
       error={failure ?? (error ? String(error) : null)}
-      onRequestAccess={() => {}}
+      truncatedAt={canViewRows ? (view?.truncatedAt ?? null) : null}
+      onRequestAccess={onRequestAccess}
     />
   )
 }
@@ -110,6 +116,7 @@ export function ApprovalResultTabs({
   const [activeOrdinal, setActiveOrdinal] = useState<number | null>(ran[0]?.ordinal ?? null)
   const [viewingLogs, setViewingLogs] = useState(false)
   const [logs, setLogs] = useState<Record<string, QueryLogEntry>>({})
+  const [requestOpen, setRequestOpen] = useState(false)
 
   // Compared by VALUE and stable across renders: the effect below rebuilds its entry object every render,
   // so an identity check would set state forever.
@@ -175,6 +182,7 @@ export function ApprovalResultTabs({
             statement={active}
             datasourceId={datasourceId}
             onLog={addLog}
+            onRequestAccess={() => setRequestOpen(true)}
           />
         )}
         {/* Every statement mounts so the Logs tab is complete without visiting each one; only the
@@ -189,10 +197,18 @@ export function ApprovalResultTabs({
                 statement={s}
                 datasourceId={datasourceId}
                 onLog={addLog}
+                onRequestAccess={() => setRequestOpen(true)}
               />
             ))}
         </div>
       </div>
+      {datasourceId != null && (
+        <RequestAccessDialog
+          open={requestOpen}
+          onOpenChange={setRequestOpen}
+          datasourceId={datasourceId}
+        />
+      )}
     </div>
   )
 }

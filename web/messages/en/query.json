@@ -61,6 +61,7 @@
     "masked": "masked",
     "rowCount": "{count, plural, one {# row} other {# rows}}",
     "rowsAffectedSuffix": " · {count} affected",
+    "cappedAt": "The result cap stopped this at {count, plural, one {# row} other {# rows}} — the set is incomplete.",
     "requestApproval": "Request approval",
     "requestAccess": "Request access",
     "tabResults": "Results",

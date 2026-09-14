@@ -36,7 +36,10 @@ import { ResultTabs } from './result-tabs'
 import { QueryHistoryMenu } from './query-history-menu'
 import { RequestAccessDialog } from './request-access-dialog'
 
-const ROW_LIMITS = ['100', '200', '500', '1000', '5000']
+const ROW_LIMITS = [100, 200, 500, 1000, 5000]
+
+// The proxy's shipped default row cap (docs/result-caps.md): a page size above it can only produce a capped run.
+const DEFAULT_CAP_ROWS = 5000
 
 export function Workbench() {
   const t = useTranslations('Query')
@@ -51,7 +54,10 @@ export function Workbench() {
   const tree = useMemo(() => buildTree(catalog ?? []), [catalog])
   const schemaMap = useMemo(() => buildSchemaMap(tree), [tree])
 
-  const resultTabs = useResultTabs(datasourceId, Number(maxRows))
+  const rowLimits = useMemo(() => ROW_LIMITS.filter((n) => n <= DEFAULT_CAP_ROWS).map(String), [])
+  const effectiveMaxRows = rowLimits.includes(maxRows) ? maxRows : rowLimits[rowLimits.length - 1]
+
+  const resultTabs = useResultTabs(datasourceId, Number(effectiveMaxRows))
   const running = resultTabs.active?.res.loading ?? false
   const canRun = datasourceId != null && sql.trim().length > 0
 
@@ -135,12 +141,15 @@ export function Workbench() {
                     </span>
                     <div className="flex items-center gap-1.5">
                       <span className="text-muted-foreground text-xs">{t('workbench.limit')}</span>
-                      <Select value={maxRows} onValueChange={(v: string | null) => setMaxRows(v ?? '200')}>
+                      <Select
+                        value={effectiveMaxRows}
+                        onValueChange={(v: string | null) => setMaxRows(v ?? '200')}
+                      >
                         <SelectTrigger size="sm" className="w-20">
                           <SelectValue />
                         </SelectTrigger>
                         <SelectContent>
-                          {ROW_LIMITS.map((n) => (
+                          {rowLimits.map((n) => (
                             <SelectItem key={n} value={n}>
                               {n}
                             </SelectItem>

@@ -330,6 +330,8 @@ export function useResultTabs(datasourceId: number | null, maxRows: number): Res
               columns: view.columns,
               rows: view.rows,
               rowsAffected: null,
+              truncatedByCap: view.truncatedByCap || view.truncatedAt != null,
+              capRows: view.truncatedAt ?? null,
               latencyMs: Math.max(0, Math.round(performance.now() - startedAt)),
             }
           }

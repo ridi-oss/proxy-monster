@@ -322,7 +322,9 @@ internal fun analyzerAndCatalogIndex(
         this.session = session
     }
     val effectiveCatalog = catalog.columns + tempColumns
+    val functions = ds.engine.functionCatalog(catalog.functions, ds.engineVersion)
     val snapshot = catalogSnapshot {
+        functions?.let { this.functions = it }
         columns += effectiveCatalog.map { col ->
             column {
                 this.catalog = col.catalog

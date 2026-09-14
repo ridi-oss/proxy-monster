@@ -268,6 +268,10 @@ message Verdict {
   // them with the stored result and a later view can deny authorization drift (the control-plane result-view
   // gate). Empty for a decision that needs no result-read grants.
   repeated proxymonster.analyzer.v1.RequireResultReadGrant result_fingerprint = 11;
+  // The result caps this statement's result.cap policies annotate (docs/result-caps.md), resolved by the
+  // control plane: 0 = uncapped, which only a result.cap forbid produces. Set explicitly on every verdict.
+  int64 max_rows = 12;
+  int64 max_bytes = 13;
 }
 message BeforeDecide {
   repeated ProxyCommand commands = 1;

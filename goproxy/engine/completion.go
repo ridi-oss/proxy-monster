@@ -14,9 +14,10 @@ const (
 	StatusCanceled = "canceled"
 )
 
-// RelayStats is the post-relay result-volume tally for one statement: the number of data rows that reached
+// RelayStats is the running result-volume tally for one statement: the number of data rows that reached
 // the client and the byte size of that row data. Rows catch "many records"; bytes catch "few wide rows /
-// big blob". It is audit signal for the mass-export rule, never an enforcement input.
+// big blob". It is both the audit signal for the mass-export rule and — as the relay accumulates it — what
+// the verdict's result caps are measured against ([Decision.CapExceeded]).
 type RelayStats struct {
 	Rows  int64
 	Bytes int64

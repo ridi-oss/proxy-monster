@@ -211,6 +211,7 @@ class EnforcementFixture(
         // A task's frozen execute_as snapshot: when set it REPLACES server role resolution (the approval
         // execute + stored-result view path), exercising the decision's own live-role re-filter.
         providedRoles: Set<String>? = null,
+        datasource: Datasource = this.datasource,
     ): DecisionContext =
         decideQuery(
             principal, datasource, sql, channel, datasourceStore.catalog(datasource.id),

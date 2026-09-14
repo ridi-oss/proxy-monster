@@ -24,6 +24,8 @@ internal fun DecisionContext.toWireDecision(
     return wireDecision {
         verdict = verdict {
             decision = ctx.action
+            maxRows = ctx.maxRows ?: 0
+            maxBytes = ctx.maxBytes ?: 0
             ctx.denyReason?.let { denyReason = it }
             masks.addAll(ctx.masks)
             effectiveRoles.addAll(ctx.effectiveRoles)

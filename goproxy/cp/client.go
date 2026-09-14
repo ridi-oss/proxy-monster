@@ -249,8 +249,14 @@ func decisionFromWire(d *pb.WireDecision) ([]*pb.Refetch, *engine.Decision) {
 		return nil, denyClosed("control plane returned malformed after-statement commands: " + err.Error())
 	}
 
+	// A negative cap is malformed and must never read as "uncapped": deny closed.
+	if v.GetMaxRows() < 0 || v.GetMaxBytes() < 0 {
+		return nil, denyClosed("control plane returned a negative result cap")
+	}
 	return nil, &engine.Decision{
 		Action:              action,
+		MaxRows:             v.GetMaxRows(),
+		MaxBytes:            v.GetMaxBytes(),
 		DecisionID:          v.GetDecisionId(),
 		DenyReason:          v.GetDenyReason(),
 		Masks:               masks,

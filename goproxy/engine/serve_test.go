@@ -108,3 +108,45 @@ func TestServeStatementGuardWrapsOnlyRun(t *testing.T) {
 		t.Fatalf("events = %v, want %v", events, want)
 	}
 }
+
+func TestDecisionPageRowsAndCapBinds(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		decision   *Decision
+		clientRows int
+		wantRows   int
+		wantBinds  bool
+	}{
+		{name: "nil decision leaves the client page size", clientRows: 500, wantRows: 500},
+		{name: "uncapped verdict", decision: &Decision{}, clientRows: 500, wantRows: 500},
+		{name: "cap below the page size binds", decision: &Decision{MaxRows: 100}, clientRows: 500, wantRows: 100, wantBinds: true},
+		{name: "page size below the cap is a page end", decision: &Decision{MaxRows: 100}, clientRows: 50, wantRows: 50},
+		{name: "equal cap and page size binds", decision: &Decision{MaxRows: 100}, clientRows: 100, wantRows: 100, wantBinds: true},
+		{name: "unpaged caller takes the cap", decision: &Decision{MaxRows: 100}, wantRows: 100, wantBinds: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := test.decision.PageRows(test.clientRows); got != test.wantRows {
+				t.Fatalf("PageRows = %d, want %d", got, test.wantRows)
+			}
+			if got := test.decision.CapBinds(test.clientRows); got != test.wantBinds {
+				t.Fatalf("CapBinds = %v, want %v", got, test.wantBinds)
+			}
+		})
+	}
+}
+
+func TestDecisionCapExceededNamesTheCrossedBound(t *testing.T) {
+	dec := &Decision{MaxRows: 2, MaxBytes: 100}
+	if got := dec.CapExceeded(RelayStats{Rows: 1, Bytes: 10}, 10); got != "" {
+		t.Fatalf("CapExceeded = %q, want it to fit", got)
+	}
+	if got := dec.CapExceeded(RelayStats{Rows: 2, Bytes: 10}, 10); got != "proxy-monster: result exceeds the row cap (2 rows); request unbounded access" {
+		t.Fatalf("row bound message = %q", got)
+	}
+	if got := dec.CapExceeded(RelayStats{Rows: 1, Bytes: 95}, 10); got != "proxy-monster: result exceeds the byte cap (100 bytes); request unbounded access" {
+		t.Fatalf("byte bound message = %q", got)
+	}
+	if got := (*Decision)(nil).CapExceeded(RelayStats{Rows: 9}, 9); got != "" {
+		t.Fatalf("nil decision = %q, want uncapped", got)
+	}
+}

@@ -16,6 +16,7 @@ import (
 	"github.com/ridi-oss/proxy-monster/goproxy/engine"
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
 	"github.com/ridi-oss/proxy-monster/goproxy/spi"
+	"github.com/ridi-oss/proxy-monster/goproxy/wire"
 	"github.com/ridi-oss/proxy-monster/mysqlwire"
 )
 
@@ -490,7 +491,7 @@ func runInternalQuery(targetDb net.Conn, deprecateEOF bool, sql string, expected
 	}
 	result := engine.StatementResult{Rows: make([][]*string, 0)}
 	collect := textResultCollector{expected: expectedColumns, result: &result}
-	_, err := relayResultSet(targetDb, deprecateEOF, collect.hooks())
+	_, _, err := relayResultSet(targetDb, deprecateEOF, collect.hooks())
 	if err != nil {
 		return nil, err
 	}
@@ -522,4 +523,16 @@ func probeNamespaceObservation(targetDb net.Conn, deprecateEOF bool) (engine.Nam
 		return engine.NamespaceProbe{}, err
 	}
 	return engine.NamespaceProbe{Namespace: namespace, MySQLAnsiQuotes: ansiQuotes}, nil
+}
+
+func cancelTargetDbQuery(target spi.TargetDb, connID uint32) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	conn, _, err := dialTargetDbAuthID(ctx, target, true)
+	if err != nil {
+		return err
+	}
+	conn = wire.WithIODeadlines(conn, 5*time.Second, 5*time.Second)
+	defer conn.Close()
+	return execTargetDbSet(conn, "KILL QUERY "+strconv.FormatUint(uint64(connID), 10))
 }

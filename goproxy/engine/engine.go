@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"math"
 	"strconv"
+	"time"
 
 	// The shared proxymonster.v1.Engine enum (engine.proto) is generated once, into analyzer/probe/pb —
 	// goproxy links analyzer/probe into this same binary in-process (introspect.go, db.go), and two
@@ -456,6 +457,9 @@ type QueryEngine struct {
 	session      SessionObservation
 	nsDirty      bool
 	sanitizeDiag bool
+	// The previous statement's in-flight completion report; Authorize waits for it so the control plane's
+	// budget read includes this connection's own last relay.
+	pendingCompletion <-chan struct{}
 }
 
 // NewQueryEngine creates the per-connection engine. The namespace starts dirty so the first query
@@ -468,6 +472,14 @@ func NewQueryEngine(db Db, decider Decider) *QueryEngine {
 // target DB signal says the namespace may have changed but does not include its new value, never by
 // classifying SQL text.
 func (e *QueryEngine) MarkNamespaceDirty() { e.nsDirty = true }
+
+// AwaitCompletion makes the next Authorize wait until done closes (the statement's completion report has
+// been delivered or abandoned), bounded by completionWait.
+func (e *QueryEngine) AwaitCompletion(done <-chan struct{}) { e.pendingCompletion = done }
+
+// completionWait bounds how long a Decide waits for the previous statement's completion report. The
+// reporter's own RPC deadline is shorter, so this only guards a reporter that hangs.
+const completionWait = 35 * time.Second
 
 // SanitizeDiagnostics reports whether the CURRENT statement's target-DB diagnostics must be redacted
 // — the value from the most recent decision, so the protocol can gate each target-DB error/notice forward on
@@ -517,6 +529,13 @@ type AuthzInput struct {
 // apply. It makes no enforcement decision of its own; the only local outcomes are fail-closed (Fail) on
 // a mechanical impossibility and the reduction of the control plane's Action to Deny/Proceed.
 func (e *QueryEngine) Authorize(in AuthzInput) Verdict {
+	if e.pendingCompletion != nil {
+		select {
+		case <-e.pendingCompletion:
+		case <-time.After(completionWait):
+		}
+		e.pendingCompletion = nil
+	}
 	if e.nsDirty || e.session.Namespace == nil {
 		session, err := in.ProbeSession()
 		if err != nil {

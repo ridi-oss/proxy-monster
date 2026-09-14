@@ -3,7 +3,9 @@ package engine
 import (
 	"errors"
 	"reflect"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
 )
@@ -182,4 +184,47 @@ func TestRowBudgetAdmitsUntilItsBoundThenRefusesEveryLaterRow(t *testing.T) {
 	if !rows.CapTruncated(&Decision{MaxRows: 2}, 2) {
 		t.Fatal("a verdict cap at the page size IS a cap truncation")
 	}
+}
+
+// A connection's next Decide waits for its previous statement's completion report, so a sequential script
+// cannot outrun its own volume budget.
+func TestAuthorizeWaitsForPendingCompletion(t *testing.T) {
+	release := make(chan struct{})
+	reporter := &blockingReporter{release: release}
+	decider := &fakeDecider{outcome: okOutcome("ALLOW", nil)}
+	qe := NewQueryEngine(mysqlDb, decider)
+	qe.AwaitCompletion(EmitCompletion(reporter, &Decision{DecisionID: 7}, RelayStats{Rows: 3}, StatusOK, time.Now()))
+
+	decided := make(chan struct{})
+	go func() {
+		qe.Authorize(serveInput())
+		close(decided)
+	}()
+	select {
+	case <-decided:
+		t.Fatal("Authorize ran before the completion report was delivered")
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(release)
+	select {
+	case <-decided:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Authorize did not resume after the completion report")
+	}
+	if got := reporter.reports.Load(); got != 1 {
+		t.Fatalf("reports = %d, want 1", got)
+	}
+	// A nil decision emits nothing and must not block the next Decide.
+	qe.AwaitCompletion(EmitCompletion(reporter, nil, RelayStats{}, StatusOK, time.Now()))
+	qe.Authorize(serveInput())
+}
+
+type blockingReporter struct {
+	release <-chan struct{}
+	reports atomic.Int32
+}
+
+func (r *blockingReporter) ReportCompletion(CompletionReport) {
+	<-r.release
+	r.reports.Add(1)
 }

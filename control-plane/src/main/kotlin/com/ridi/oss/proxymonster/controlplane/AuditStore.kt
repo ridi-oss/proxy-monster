@@ -6,11 +6,15 @@ import kotlinx.serialization.json.Json
 import java.sql.Connection
 import java.sql.ResultSet
 import java.sql.Types
+import java.time.Duration
 import java.time.Instant
 import java.time.OffsetDateTime
 import java.time.ZoneOffset
 import java.time.temporal.ChronoUnit
 import javax.sql.DataSource
+
+/** One principal's relayed rows and bytes over one rolling window (docs/result-caps.md). */
+data class RelayedVolume(val rows: Long, val bytes: Long)
 
 /**
  * Plain-JDBC persistence for [AuditEvent]s. Every new event is linked to the current chain head while
@@ -20,8 +24,44 @@ class AuditStore(private val dataSource: DataSource) {
     private val json = Json
     private val stringList = ListSerializer(String.serializer())
 
+    /**
+     * This principal's relayed volume over each of [windows], summed from the completion events every relay
+     * and release writes, in ONE scan bounded by the widest window (`audit_event_completion_principal_ts`).
+     */
+    fun relayedVolume(principal: String, windows: Collection<Duration>, now: Instant): Map<Duration, RelayedVolume> {
+        val distinct = windows.toSortedSet()
+        if (distinct.isEmpty()) return emptyMap()
+        val filters = distinct.joinToString(",\n") {
+            "COALESCE(SUM(rows_returned) FILTER (WHERE ts >= ?), 0), COALESCE(SUM(bytes_returned) FILTER (WHERE ts >= ?), 0)"
+        }
+        val sql = """
+            SELECT $filters
+            FROM audit_event
+            WHERE kind = 'completion' AND principal = ? AND ts >= ?
+        """
+        return dataSource.connection.use { c ->
+            c.prepareStatement(sql).use { ps ->
+                var i = 1
+                for (w in distinct) {
+                    val since = OffsetDateTime.ofInstant(now.minus(w), ZoneOffset.UTC)
+                    ps.setObject(i++, since)
+                    ps.setObject(i++, since)
+                }
+                ps.setString(i++, principal)
+                ps.setObject(i, OffsetDateTime.ofInstant(now.minus(distinct.last()), ZoneOffset.UTC))
+                ps.executeQuery().use { rs ->
+                    check(rs.next()) { "audit relayed-volume aggregate returned no row" }
+                    distinct.withIndex().associate { (k, w) -> w to RelayedVolume(rs.getLong(2 * k + 1), rs.getLong(2 * k + 2)) }
+                }
+            }
+        }
+    }
+
     /** Insert one audit event in its own transaction and return its app-allocated id. */
     fun insert(rec: AuditEvent): Long = dataSource.inTx { insert(it, rec) }
+
+    /** Insert several events in one transaction, in order. */
+    fun insertAll(recs: List<AuditEvent>) = dataSource.inTx { c -> recs.forEach { insert(c, it) } }
 
     /**
      * Insert on a caller-provided transaction so an audit event can commit atomically with its state change.

@@ -406,7 +406,7 @@ func (s *Server) handleExecute(sess *session, message *pgproto3.Execute) error {
 	// Post-relay, best-effort completion for this extended-protocol Execute (no-op if unaudited). A
 	// CommandComplete / EmptyQueryResponse / PortalSuspended is a clean finish; an ErrorResponse or a
 	// transport fault is an error carrying the partial counts relayed before it.
-	engine.EmitCompletion(s.client, proceed.Decision, relayStats, engine.RelayStatus(isCleanExecuteTerminal(terminal), err), start)
+	sess.qe.AwaitCompletion(engine.EmitCompletion(s.client, proceed.Decision, relayStats, engine.RelayStatus(isCleanExecuteTerminal(terminal), err), start))
 	if err != nil {
 		return err
 	}

@@ -52,3 +52,31 @@ fun resultVolume(rows: List<List<String?>>): Pair<Long, Long> {
     for (row in rows) for (cell in row) if (cell != null) bytes += cell.toByteArray(Charsets.UTF_8).size
     return rows.size.toLong() to bytes
 }
+
+/**
+ * The completion row that charges [decision]'s volume to its principal (the rate input,
+ * docs/result-caps.md). Every writer builds it here so the wire relay, the run channel, and a stored-result
+ * view charge the same shape. [principal] overrides the decision's when someone else consumes its rows.
+ */
+fun completionEvent(
+    decision: AuditEvent,
+    decisionId: Long,
+    rowsReturned: Long,
+    bytesReturned: Long,
+    outcome: String,
+    latencyMs: Long,
+    principal: String = decision.principal,
+    channel: String? = decision.channel,
+): AuditEvent = AuditEvent(
+    principal = principal,
+    datasource = decision.datasource,
+    statement = decision.statement,
+    decision = decision.decision,
+    channel = channel,
+    kind = "completion",
+    decisionId = decisionId,
+    rowsReturned = rowsReturned,
+    bytesReturned = bytesReturned,
+    outcome = outcome,
+    latencyMs = latencyMs,
+)

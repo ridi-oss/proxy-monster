@@ -53,13 +53,14 @@ rows; reading it masked matches only `-305`, 5,000; `SELECT id FROM users`,
 5,000.
 
 **Rates** count everything the principal relays, whatever permit carries them,
-so scope a rate by role or datasource, not by tag. A connection's next `Decide`
-waits for its own previous completion report; parallel connections can overshoot
-by up to one statement cap each (`KNOWN_LIMITATIONS.md`). A rate is reset by a
-marker row (`result_rate_reset`), never by touching the audit trail: an admin
-writes it from the principal's access page, or the user files a `RATE_RESET`
-request through the approval workflow. A reset clears every window; it never
-touches a cap.
+so scope a rate by role or datasource, not by tag. A spent rate denies
+statements that return rows; `COMMIT`, `ROLLBACK`, `SET`, and `USE` still pass.
+A connection's next `Decide` waits for its own previous completion report;
+parallel connections can overshoot by up to one statement cap each
+(`KNOWN_LIMITATIONS.md`). A rate is reset by a marker row (`result_rate_reset`),
+never by touching the audit trail: an admin writes it from the principal's
+access page, or the user files a `RATE_RESET` request through the approval
+workflow. A reset clears every window; it never touches a cap.
 
 **Unbounded** is the shipped `forbid` for `system:production-exporter`, a
 pii-accessor with no cap or rate: request it in a workflow, or hold it for a

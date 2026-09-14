@@ -143,7 +143,7 @@ func TestPredicateLiteralFacts(t *testing.T) {
 						want = []string{prefix + "orders.user_id"}
 					}
 
-					r := analyzeProbe(t, &pb.AnalyzeRequest{Sql: tc.sql, EngineConfig: e.ec, Namespace: e.ns, Catalog: snapshot(e.cols)})
+					r := analyzeProbe(t, &pb.AnalyzeRequest{Sql: tc.sql, EngineConfig: e.ec, Namespace: e.ns, Catalog: snapshotWith(e.cols, &pb.FunctionCatalog{BuiltinFunctions: []string{"count"}})})
 					if !r.Resolved {
 						t.Fatalf("expected resolved=true; sql=%q detail=%q", tc.sql, r.Detail)
 					}

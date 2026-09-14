@@ -54,13 +54,6 @@ type engine interface {
 	// RewriteStatement optionally rewrites a parsed statement into the SQL the proxy should relay to the
 	// target DB, returning "" to leave it unchanged.
 	RewriteStatement(root exp.Expression) string
-	// IsSafeNoFromFunction reports whether the function name is a safe builtin that may appear
-	// without a FROM clause (version(), now()) — the cross-engine set plus this engine's own
-	// pseudo-functions. Anything else emits an unclassified Function grant, which denies.
-	IsSafeNoFromFunction(name string) bool
-	// IsTrustedInformationSchemaCall reports whether a schema-qualified call is one of this engine's
-	// trusted information_schema helper builtins, needing no Function grant.
-	IsTrustedInformationSchemaCall(qualifier exp.Expression, leaf string) bool
 	// CommandPassthrough reports whether a statement that DEGRADED to an unstructured Command (the
 	// structured node forms never reach it) may relay as a benign session/metadata passthrough for
 	// this engine. False = fail closed.
@@ -128,6 +121,9 @@ type mysqlEngine struct {
 }
 
 func newMySQLEngine(config *pb.EngineConfig) (*mysqlEngine, error) {
+	if len(config.GetSession().GetPostgresShadowedFunctions()) != 0 || config.GetSession().GetPostgresFunctionShadowingObserved() {
+		return nil, fmt.Errorf("postgres function shadowing context is not valid for mysql")
+	}
 	if config.MysqlLowerCaseTableNames == nil {
 		return nil, fmt.Errorf("mysqlLowerCaseTableNames is required for mysql")
 	}
@@ -149,7 +145,7 @@ func newMySQLEngine(config *pb.EngineConfig) (*mysqlEngine, error) {
 	// fail the connection closed). mysqlNormalizationDialect only ever sets the strategy, so its
 	// SettingsString round-trips losslessly as the base.
 	settings := mysqlNormalizationDialect(lowerCaseTableNames).SettingsString() +
-		fmt.Sprintf(", mysql_version=%d", versionID)
+		fmt.Sprintf(", mysql_version=%d, opaque_functions=true", versionID)
 	if config.GetSession().GetMysqlAnsiQuotes() {
 		settings += ", mysql_ansi_quotes=true"
 	}
@@ -255,15 +251,6 @@ func (e *mysqlEngine) DiagnosticLeakKeys(report ProbeResult, _ schema.Schema) ma
 	return referencedColumnKeys(report)
 }
 
-// `values` is MySQL's INSERT … ON DUPLICATE KEY UPDATE pseudo-function — it names the value that
-// would have been inserted, not a callable function; its lineage is traced in probe.go.
-func (e *mysqlEngine) IsSafeNoFromFunction(name string) bool {
-	return safeNoFromFunctions[name] || name == "values"
-}
-
-// MySQL's information_schema holds tables only — a function call qualified by it is user code.
-func (e *mysqlEngine) IsTrustedInformationSchemaCall(exp.Expression, string) bool { return false }
-
 // A statement that degrades to an unstructured Command is one the analyzer cannot vouch for on
 // MySQL (an unrecognized SHOW carries data; RESET MASTER/REPLICA is a privileged admin op).
 func (e *mysqlEngine) CommandPassthrough(string) bool { return false }
@@ -274,11 +261,38 @@ func (e *mysqlEngine) RejectsDuplicateDerivedOutputLabels() bool { return true }
 func (e *mysqlEngine) RightJoinStarOrder() starOrder { return starOrderCommonRightLeft }
 
 type postgresEngine struct {
-	dialect *dialects.Dialect
+	dialect                   *dialects.Dialect
+	shadowedFunctions         map[string]bool
+	functionShadowingObserved bool
 }
 
-func newPostgresEngine(*pb.EngineConfig) (*postgresEngine, error) {
-	return &postgresEngine{dialect: dialects.Postgres()}, nil
+func postgresOpaqueDialect() *dialects.Dialect {
+	d, err := dialects.GetOrRaise("postgres, opaque_functions=true")
+	if err != nil {
+		panic(err)
+	}
+	return d
+}
+
+func newPostgresEngine(config *pb.EngineConfig) (*postgresEngine, error) {
+	if !config.GetSession().GetPostgresFunctionShadowingObserved() && len(config.GetSession().GetPostgresShadowedFunctions()) != 0 {
+		return nil, fmt.Errorf("postgresShadowedFunctions requires an observed function-shadowing context")
+	}
+	shadowed := make(map[string]bool, len(config.GetSession().GetPostgresShadowedFunctions()))
+	for _, name := range config.GetSession().GetPostgresShadowedFunctions() {
+		if name == "" || name != strings.ToLower(name) {
+			return nil, fmt.Errorf("postgresShadowedFunctions contains invalid function name %q", name)
+		}
+		if shadowed[name] {
+			return nil, fmt.Errorf("postgresShadowedFunctions contains duplicate function name %q", name)
+		}
+		shadowed[name] = true
+	}
+	return &postgresEngine{
+		dialect:                   postgresOpaqueDialect(),
+		shadowedFunctions:         shadowed,
+		functionShadowingObserved: config.GetSession().GetPostgresFunctionShadowingObserved(),
+	}, nil
 }
 
 func (e *postgresEngine) WireName() string           { return "postgres" }
@@ -317,23 +331,6 @@ func (e *postgresEngine) IsTrustedSystemQualifier(qualifier exp.Expression) bool
 // PostgreSQL has no relay rewrite: client_encoding is handled on the wire, not by an analyzer rewrite,
 // so there is nothing to rewrite here.
 func (e *postgresEngine) RewriteStatement(exp.Expression) string { return "" }
-
-func (e *postgresEngine) IsSafeNoFromFunction(name string) bool { return safeNoFromFunctions[name] }
-
-// postgresInformationSchemaFunctions are PostgreSQL's information_schema helper builtins — stable,
-// read-only transforms of their arguments (pgJDBC metadata queries call them). Safe ONLY under an
-// explicit `information_schema.` qualifier; the unqualified spelling stays gated so a same-named
-// user function cannot inherit the pass.
-var postgresInformationSchemaFunctions = stringSet(
-	"_pg_char_max_length", "_pg_char_octet_length", "_pg_datetime_precision", "_pg_expandarray",
-	"_pg_index_position", "_pg_interval_type", "_pg_numeric_precision", "_pg_numeric_precision_radix",
-	"_pg_numeric_scale", "_pg_truetypid", "_pg_truetypmod",
-)
-
-func (e *postgresEngine) IsTrustedInformationSchemaCall(qualifier exp.Expression, leaf string) bool {
-	return qualifier != nil && qualifier.Kind() == exp.KindIdentifier &&
-		qualifier.Name() == "information_schema" && postgresInformationSchemaFunctions[leaf]
-}
 
 // A statement that degrades to an unstructured Command on PostgreSQL can only be a benign
 // session/config form: RESET restores defaults (de-escalation), an unmodeled SHOW is a read-only

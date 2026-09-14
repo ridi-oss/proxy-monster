@@ -5,54 +5,25 @@ import (
 	"testing"
 
 	pb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
-	sqlglot "github.com/ridi-oss/sqlglot-go"
-	exp "github.com/ridi-oss/sqlglot-go/expressions"
-	"github.com/ridi-oss/sqlglot-go/optimizer"
 	"google.golang.org/protobuf/proto"
 )
 
-// EmitFacts folds identifiers once, up front, so every consumer below reads one canonical spelling
-// rather than re-deriving the fold. The property that makes that safe is quote-awareness — an unquoted
-// identifier folds, a quoted one keeps its case — and two authorization decisions depend on exactly it:
-// `pg_catalog` trust ([engine.IsTrustedSystemQualifier]) and a call's emitted identity ([qualifiedCallName]).
-// A blanket fold that lost it would hand a user schema a system builtin's pass. Asserted against those
-// two helpers directly, on a root normalized the way EmitFacts normalizes it.
+// Call-qualifier trust is quote-aware through the ENGINE-CATALOG resolver (opaque_functions
+// preserves call qualifiers through NormalizeIdentifiers so the resolver folds them engine-true
+// itself): an unquoted PG_CATALOG folds to the system schema and resolves Builtin, while a QUOTED
+// "PG_CATALOG" is a DISTINCT case-sensitive user schema — absent from the catalog, the call is
+// unresolvable and the statement fails closed. A blanket fold would hand a user schema a system
+// builtin's pass.
 func TestUpfrontFoldKeepsQualifierTrustQuoteAware(t *testing.T) {
-	eng, err := createEngine(&pb.EngineConfig{Engine: pb.Engine_POSTGRES, EngineVersion: "16.0"})
-	if err != nil {
-		t.Fatalf("build engine: %v", err)
+	if f := postgresFacts(t, "SELECT PG_CATALOG.version()"); !f.GetResolved() ||
+		len(f.GetFunctions()) != 1 || f.GetFunctions()[0] != "pg_catalog.version" {
+		t.Errorf("unquoted PG_CATALOG must fold to the trusted system schema: %+v", f)
 	}
-	for _, tc := range []struct {
-		sql         string
-		wantName    string
-		wantTrusted bool
-	}{
-		{`SELECT PG_CATALOG.f(1)`, "pg_catalog", true},
-		// A quoted "PG_CATALOG" is a DISTINCT user schema PostgreSQL's case-sensitive `pg_` reservation
-		// allows to exist; trusting it would give a user function a system builtin's pass.
-		{`SELECT "PG_CATALOG".f(1)`, "PG_CATALOG", false},
-		{`SELECT MySchema.f(1)`, "myschema", false},
-		{`SELECT "MySchema".f(1)`, "MySchema", false},
-	} {
-		parsed, err := sqlglot.Parse(tc.sql, eng.Dialect())
-		if err != nil {
-			t.Fatalf("parse %s: %v", tc.sql, err)
-		}
-		root := optimizer.NormalizeIdentifiers(parsed[0], eng.Dialect())
-		dots := root.FindAll(exp.KindDot)
-		if len(dots) == 0 {
-			t.Fatalf("%s: expected a qualified call", tc.sql)
-		}
-		qualifier := dots[0].Left()
-		if got := qualifier.Name(); got != tc.wantName {
-			t.Errorf("%s: qualifier spelling = %q, want %q", tc.sql, got, tc.wantName)
-		}
-		if got := eng.IsTrustedSystemQualifier(qualifier); got != tc.wantTrusted {
-			t.Errorf("%s: trusted = %v, want %v", tc.sql, got, tc.wantTrusted)
-		}
-		if got, want := qualifiedCallName(qualifier, "f", eng), tc.wantName+".f"; got != want {
-			t.Errorf("%s: call identity = %q, want %q", tc.sql, got, want)
-		}
+	if f := postgresFacts(t, `SELECT "PG_CATALOG".version()`); f.GetResolved() {
+		t.Errorf(`quoted "PG_CATALOG" is a distinct unknown schema and must fail closed: %+v`, f)
+	}
+	if f := postgresFacts(t, `SELECT "MySchema".fn()`); f.GetResolved() {
+		t.Errorf(`quoted unknown user schema must fail closed: %+v`, f)
 	}
 }
 

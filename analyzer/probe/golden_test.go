@@ -25,10 +25,12 @@ type expandedProbeCase struct {
 func goldenKey(dialect, name string) string { return dialect + "|" + name }
 
 func parityNamespace(dialect string) NamespaceConfig {
+	ns := NamespaceConfig{Catalog: "acme", SearchPath: []string{"public"}}
 	if dialect == "mysql" {
-		return NamespaceConfig{Catalog: "def", SearchPath: []string{"public"}}
+		ns = NamespaceConfig{Catalog: "def", SearchPath: []string{"public"}}
 	}
-	return NamespaceConfig{Catalog: "acme", SearchPath: []string{"public"}}
+	ns.EngineCatalog = engineCatalogFromProto(testFunctionCatalog(dialect == "mysql", ns.SearchPath), ns.SearchPath)
+	return ns
 }
 
 func parityEngineConfig(t *testing.T, dialect string) *pb.EngineConfig {

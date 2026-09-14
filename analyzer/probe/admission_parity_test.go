@@ -72,7 +72,7 @@ func parityFunctionGated(t *testing.T, sql, dialect, name string) {
 		}
 	}
 	for _, fn := range f.Functions {
-		if fn == name {
+		if fn == name || fn == "pg_catalog."+name {
 			return
 		}
 	}
@@ -217,10 +217,12 @@ func TestParityPrivilegeAndLexerMutation(t *testing.T) {
 	bothDialects(func(d string) {
 		for _, sql := range []string{
 			"SET @x = (SELECT ssn FROM users LIMIT 1)", "SET @x = leak_ssn()", "SET @x = acme.leak_ssn()",
-			"SET @x = query_to_xml('SELECT ssn FROM users', true, false, '')", "SET @x = (VALUES ROW(1))",
+			"SET @x = (VALUES ROW(1))",
 		} {
 			parityUtility(t, sql, d, "SET_SUBQUERY")
 		}
+		// A dangerous BUILTIN in the RHS resolves; the control plane danger-checks its identity.
+		parityFunctionGated(t, "SET @x = query_to_xml('SELECT ssn FROM users', true, false, '')", d, "query_to_xml")
 		parityDenied(t, "SET @x = (TABLE users LIMIT 1)", d)
 		// set_config() is a dangerous function — gated via the Function path (already Cedar-decided).
 		parityFunctionGated(t, "SELECT set_config('search_path','restricted',false)", d, "set_config")
@@ -286,9 +288,10 @@ func TestParityPGTransactionCharacteristics(t *testing.T) {
 }
 
 func TestParityUnicodeEscape(t *testing.T) {
-	// U& literals now DECODE (v0.10.0): the set_config alias resolves to the real function and is gated.
-	parityFunctionGrant(t, "SELECT U&\"set_confi\\0067\"('search_path','x',false)", "postgres")
-	parityFunctionGrant(t, "SELECT x FROM (SELECT U&\"set_confi\\0067\"('search_path','x',false) AS x) t", "postgres")
+	// U& literals now DECODE (v0.10.0): the set_config alias resolves to the real builtin and is
+	// gated by its identity (the control plane's danger check on facts.functions).
+	parityFunctionGated(t, "SELECT U&\"set_confi\\0067\"('search_path','x',false)", "postgres", "set_config")
+	parityFunctionGated(t, "SELECT x FROM (SELECT U&\"set_confi\\0067\"('search_path','x',false) AS x) t", "postgres", "set_config")
 	// Benign bitwise-and is unaffected (not mistaken for a U& literal).
 	if f := postgresFacts(t, "SELECT id & 1 FROM users"); !f.Resolved {
 		t.Errorf("benign & wrongly denied: %s", f.Detail)
@@ -410,28 +413,30 @@ func TestParityShowDescribe(t *testing.T) {
 }
 
 func TestParityNoFromDataReaders(t *testing.T) {
-	// no-FROM SELECT calling a data/file reader → a Function grant the control-plane denies.
+	// no-FROM SELECT calling a data/file reader: a dangerous BUILTIN resolves and is gated by its
+	// emitted identity (control-plane danger check); a USER function emits a fail-closed Function
+	// grant; a name the engine catalog cannot resolve fails the statement closed.
 	bothDialects(func(d string) {
-		for _, sql := range []string{
-			"SELECT query_to_xml('SELECT ssn FROM users WHERE id = 1', true, false, '')",
-			"SELECT leak_ssn()",
-		} {
-			parityFunctionGrant(t, sql, d)
-		}
+		parityFunctionGated(t, "SELECT query_to_xml('SELECT ssn FROM users WHERE id = 1', true, false, '')", d, "query_to_xml")
+		parityFunctionGrant(t, "SELECT leak_ssn()", d)
 	})
-	for _, sql := range []string{
-		"SELECT table_to_xml('users', true, false, '')",
-		"SELECT database_to_xml(true, false, '')",
-		"SELECT pg_read_file('/etc/passwd')",
-		"SELECT \"query_to_xml\"('SELECT ssn FROM users', true, false, '')",
-		"SELECT public.version()", "SELECT public.now()", "SELECT app.get_ssn()",
-		"SELECT pm_leak.filter()", "SELECT pm_leak.\"text\"('x')",
+	for _, tc := range []struct{ sql, name string }{
+		{"SELECT table_to_xml('users', true, false, '')", "table_to_xml"},
+		{"SELECT database_to_xml(true, false, '')", "database_to_xml"},
+		{"SELECT pg_read_file('/etc/passwd')", "pg_read_file"},
+		{"SELECT \"query_to_xml\"('SELECT ssn FROM users', true, false, '')", "query_to_xml"},
 	} {
+		parityFunctionGated(t, tc.sql, "postgres", tc.name)
+	}
+	for _, sql := range []string{"SELECT app.get_ssn()", "SELECT pm_leak.filter()", "SELECT pm_leak.\"text\"('x')"} {
 		parityFunctionGrant(t, sql, "postgres")
 	}
-	for _, sql := range []string{"SELECT load_file('/etc/passwd')", "SELECT mydb.leak()"} {
-		parityFunctionGrant(t, sql, "mysql")
+	// A qualified name the engine catalog does not know fails closed — never a silent pass.
+	for _, sql := range []string{"SELECT public.version()", "SELECT public.now()"} {
+		parityDenied(t, sql, "postgres")
 	}
+	parityFunctionGated(t, "SELECT load_file('/etc/passwd')", "mysql", "load_file")
+	parityFunctionGrant(t, "SELECT mydb.leak()", "mysql")
 	// A keyword-argument FROM must NOT mask an unsafe function (old KNOWN GAP, closed by the migration).
 	parityFunctionGrant(t, "select substring('abc' from 1), leak_ssn()", "postgres")
 }

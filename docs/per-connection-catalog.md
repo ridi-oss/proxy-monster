@@ -1,18 +1,22 @@
 # Per-connection enforcement catalog
 
-Two catalogs with opposite freshness contracts run on separate gRPC channels:
+Column catalogs with different freshness contracts run on separate gRPC
+channels:
 
 - The **enforcement catalog** is per-connection, control-plane-commanded, and
   transactionally current. Every wire/editor connection resolves decisions
   against catalog fragments the proxy introspected on that connection's own held
   target-DB connection, so they reflect uncommitted in-transaction DDL. The
-  control plane always decides against exactly what _that_ connection's target
-  DB will bind.
+  control plane resolves columns against that connection's view.
 - The **config catalog** is datasource-global and SWR-refreshed (~12 min), on
   its own channel. It feeds the config/admin surfaces — catalog browsing,
   tagging/classification, table detail, the system-classification manifest, the
   liveness UI, and HTTP approval dry-run previews — and is never the structure
   source for connection-scoped wire/editor/`RunExec` Decide.
+
+Routine names travel with the columns, both in `CatalogRequest.catalog` and in
+each per-connection fragment, so function freshness rides the same generation
+checks as column freshness.
 
 The enforcement catalog is built from content-addressed, immutable, per-schema
 fragments, kept current by one command primitive —
@@ -392,10 +396,10 @@ catalog).
   `after_statement = [REFETCH(schemas)]` and marks those schemas pending. The
   affected-schema set is the connection's active schemas (search_path ∪ explicit
   qualifiers) — conservative, cheap under the hash gate.
-- Config catalog. `Register`/`PushCatalog`/`storePushedCatalog`/`Events` stay as
-  they are. Connection-scoped Decide builds structure from held fragments only;
-  the global catalog still feeds config/admin surfaces and HTTP approval dry-run
-  previews that call `decideQuery` without a connection.
+- Config catalog. `Register`/`PushCatalog`/`storePushedCatalog`/`Events` serve
+  the global catalog. Connection-scoped Decide builds columns and the function
+  inventory from held fragments only. The global catalog feeds config/admin
+  surfaces and HTTP approval dry-run previews without a connection.
 
 ## Go proxy
 

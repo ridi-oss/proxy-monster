@@ -683,9 +683,14 @@ catalog scan or blocks existing connections on a full refresh. The manifest does
 not write system tags into `column_classification`; the object identity is
 enough.
 
-There is no function catalog. Functions are classified from the bare name the
-analyzer emits, against the manifest rules — no routine introspection, no stored
-function inventory ([facts-emission.md](./facts-emission.md)).
+`CatalogRequest.catalog` carries the shared `FunctionCatalog` alongside the
+columns. `storePushedCatalog` stores it inside the `CatalogSnapshot` on the
+datasource row together with the columns, so a catalog read is one consistent
+snapshot. The control plane supplements introspected names with pinned MySQL
+natives or PostgreSQL grammar functions, then passes the same snapshot through
+`AnalyzeRequest.catalog`. Relations still resolve from the column catalog.
+Function resolution and gating are defined in
+[facts-emission.md](./facts-emission.md#functions--catalog-resolution-and-cedar-gating).
 
 ### Decision time
 
@@ -794,15 +799,12 @@ Second, a system relation with no manifest — an uncertified engine version —
 not `system:catalog`, it is untagged, and `SELECT relname FROM pg_class` then
 denies along with everything else.
 
-A no-FROM call carries its own gate. `SELECT pg_get_viewdef('v')` emits a
-`pg_get_viewdef` Function grant, because the analyzer's no-FROM allowlist covers
-session/time/math builtins and not the DDL-reconstruction functions. Nothing
-classifies that name, so `decideQuery` hard-denies the unclassified Function
-grant. Add a FROM — `SELECT pg_get_viewdef(oid) FROM pg_class` — and no Function
-grant is emitted and the statement allows on `system:catalog`. Calling a
-catalog-class function with no FROM is therefore denied in practice, which is
-why the [catalog boundary](#what-systemcatalog-means) describes what the tag
-means rather than which statements pass.
+`SELECT pg_get_viewdef('v')` emits a builtin Function grant when the catalog
+resolves it to `pg_catalog.pg_get_viewdef`. With no dangerous classification it
+needs no Function permit. Adding FROM does not change function authorization;
+`SELECT pg_get_viewdef(oid) FROM pg_class` also requires the column read permit.
+A same-named user function requires a Cedar Function permit, and a name absent
+from the inventory routes through `exception.unanalyzable`.
 
 ## Data model
 
@@ -814,7 +816,7 @@ means rather than which statements pass.
 - canonical Utility grants and manifest command/tag mappings;
 - exact manifest column overrides and forced-NULL redaction rules;
 - `datasource.catalog` as the physical column inventory, including the system
-  schemas; and
+  schemas, and the function inventory, stored and read as one snapshot; and
 - `column_classification.tags` as user/admin tags only.
 
 ## Failure modes
@@ -828,19 +830,20 @@ means rather than which statements pass.
    exists.
 4. New object after `curatedThrough`: defaults catalog. No health signal, no
    audit field, no test failure.
-5. Unknown extension function in a user schema: unclassified, so no Function
-   forbid applies to it; a data-reading UDF's output passes unmasked (the UDF
-   gap in [facts-emission.md](./facts-emission.md)). Known dangerous
+5. A cataloged extension/user function needs a Cedar Function permit even
+   without a manifest classification. A permitted UDF can still read masked data
+   inside its body ([facts-emission.md](./facts-emission.md)). A name absent
+   from the inventory routes through `exception.unanalyzable`. Dangerous
    cross-schema names match the shipped `schema: "*"` rules.
 6. Invented `system:` user tag: rejected at classification write time, so only
    the six names the product defines can be stored. Those are marshalled as
    written — a stored `system:critical` reaches the shipped critical forbid and
    denies — and writing one takes the same `admin.datasources` authority as the
    rest of classification.
-7. Same name in two schemas: relations match on the fully-qualified identity.
-   Functions are the exception — sqlglot drops the schema qualifier, so a bare
-   name resolves against every system and logical schema the manifest governs,
-   which can over-classify a same-named user function (a deny).
+7. Same name in two schemas: relations and functions resolve qualified
+   identities. The dangerous-function floor also checks the bare name against
+   shipped manifests, which can over-classify a same-named user function (a
+   deny).
 8. Rule overlap: overlapping families with different tags fail boot; an exact
    rule weaker than a family it matches fails boot. A surviving overlap resolves
    to the strongest tag.
@@ -864,8 +867,8 @@ surfaces:
   `decideQuery` on a representative statement, or hold an explicit passthrough
   entry with a reason. A new manifest command id with neither fails the test.
 - `BaselineDangerousFunctionEnforcementDbTest` — dangerous functions deny on
-  both a governed and a no-manifest datasource, and safe functions and user UDFs
-  are untouched.
+  both a governed and a no-manifest datasource; safe builtins remain allowed,
+  while user UDFs require a Cedar read permit.
 - `SystemClassificationEnforcementDbTest` — Cedar decision matrices on a real
   PostgreSQL 17 datasource: catalog structure browses, the dangerous tags deny,
   the forbid beats a broad datasource grant, and a missing engine version keeps

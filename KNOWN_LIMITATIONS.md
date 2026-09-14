@@ -90,12 +90,9 @@ depends on are pinned fail-closed:
 
 ## Catalog freshness
 
-Enforcement decides against a per-connection catalog captured on the
-connection's own held target-DB connection (design:
-[`docs/per-connection-catalog.md`](./docs/per-connection-catalog.md)) — the
-control plane always decides against exactly what that connection's target DB
-binds. The datasource-global catalog is now config-only (catalog browser,
-tagging, table detail) and never feeds an enforcement decision.
+Connection-scoped enforcement resolves columns and functions from the fragments
+captured on the connection's own held target-DB connection (design:
+[`docs/per-connection-catalog.md`](./docs/per-connection-catalog.md)).
 
 - Enforcement-path residuals (detail + severities in
   [`docs/per-connection-catalog.md`](./docs/per-connection-catalog.md)): 🔴
@@ -105,14 +102,14 @@ tagging, table detail) and never feeds an enforcement decision.
   MySQL temp-table shadowing; PostgreSQL transactional-DDL probe edges. External
   out-of-band DDL is corrected on the next re-check past the staleness bound,
   not immediately.
-- 🟡 A UDF whose BODY reads a masked column leaks it: `SELECT my_udf(id) FROM t`
-  where `my_udf` internally reads `ssn` returns ssn in the clear — the read
-  happens on the service-account connection the proxy never sees. Passing the
+- 🟡 A permitted UDF whose body reads a masked column leaks it:
+  `SELECT my_udf(id) FROM t` where `my_udf` internally reads `ssn` returns ssn
+  in the clear. The UDF requires a Cedar Function permit, but the proxy cannot
+  see reads inside its body on the service-account connection. Passing the
   column as an argument is still caught (`SELECT custom_udf(ssn)` DENYs,
-  [`docs/derived-masking.md`](./docs/derived-masking.md)). Accepted because
-  functions are admin-authored (creating one is DDL a restricted principal can't
-  run); a UDF on a masking datasource must not read PII. Auto-closing is
-  backlogged ([`docs/backlog.md`](./docs/backlog.md)).
+  [`docs/derived-masking.md`](./docs/derived-masking.md)). A permitted UDF on a
+  masking datasource must not read PII. Output vouching is backlogged
+  ([`docs/backlog.md`](./docs/backlog.md)).
 
 ## Query coverage
 

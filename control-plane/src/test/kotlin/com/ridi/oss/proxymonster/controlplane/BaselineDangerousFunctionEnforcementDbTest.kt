@@ -51,6 +51,8 @@ class BaselineDangerousFunctionEnforcementDbTest {
         "query_to_xml('SELECT 1', true, false, '')",
         "query_to_xml_and_xmlschema('SELECT 1', true, false, '')",
         "xpath_table('a', 'b', 'c', 'd', 'e')",
+        "set_config('search_path', 'evil', false)",
+        "pg_catalog.set_config('search_path', 'evil', false)",
     )
 
     @BeforeAll
@@ -161,7 +163,8 @@ class BaselineDangerousFunctionEnforcementDbTest {
         assertEquals(EnfAction.ALLOW, decide(pg, "select now() from users").action, "now() unaffected")
         assertEquals(EnfAction.ALLOW, decide(pg, "select count(*) from users").action, "count(*) unaffected")
         assertEquals(EnfAction.ALLOW, decide(pg, "select lower(email) from users").action, "lower(email) unaffected")
-        assertEquals(EnfAction.ALLOW, decide(pg, "select my_udf(id) from users").action, "a user UDF is not classified/denied")
+        // A name the live engine catalog cannot resolve (no such function on the target) fails closed.
+        assertEquals(EnfAction.DENY, decide(pg, "select my_udf(id) from users").action, "an unresolvable function name fails the statement closed")
     }
 
     @Test

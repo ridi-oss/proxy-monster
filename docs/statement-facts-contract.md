@@ -121,8 +121,7 @@ impossibility; every policy decision is a Cedar verdict. Four outcomes:
   `SET_SQL_MODE`, `SET_STANDARD_CONFORMING_STRINGS`, `USER_TYPE_CAST`,
   `SET_SUBQUERY`, `SHOW_SUBQUERY`) the manifest tags `system:critical`; the
   shipped bootstrap forbid denies it unconditionally. These deliberately do not
-  use the Function path — an arbitrary user type or function is in no manifest,
-  so a Function grant would hit the no-classifier deny rather than the
+  use the Function path — an unclassified Function permit would not enforce the
   `system:critical` floor; a fixed Utility command routes straight to the floor.
   Never a Kotlin hard-deny, never a new resource kind or tag. (Example 2.)
 - Uncertainty → `exception.unanalyzable`. Anything Go cannot analyze — an

@@ -38,16 +38,8 @@ type OriginInfo struct {
 }
 
 // SourceInfo is one physical target-DB relation the statement scans (docs/facts-emission.md).
-// `Table` is the fully-qualified `catalog.schema.table` identity. `Covered` is true when at least one
-// traced column fact (an origin base or a reference) names this table — meaning the existing column
-// authorization already gates the scan. An UNCOVERED table (Covered=false) is a scan that reads the
-// relation while tracing zero of its columns (`count(*)`, `SELECT 1`, `EXISTS`, a cross-join side that
-// only multiplies cardinality); its existence/row-count leaks unless a `result.read` grant covers the
-// Table resource, so the control-plane must gate it. Coverage is per-TABLE (not per scan occurrence):
-// once any column of a table is a granted fact, the principal can already observe that table's
-// cardinality, so no additional Table grant is required for another uncovered occurrence of the SAME
-// table. Computed from the FINAL emitted facts (not speculative resolution), so an ambiguous unqualified
-// column that resolves to nothing leaves its table uncovered → gated, fail-closed.
+// `Table` is `catalog.schema.table`. `Covered` = some emitted column fact gates the scan; `SELECT count(*)
+// FROM users` reads no column, stays uncovered, and needs a `result.read` grant on the Table.
 type SourceInfo struct {
 	Catalog string `json:"catalog"`
 	Schema  string `json:"schema"`
@@ -65,9 +57,11 @@ type ProbeResult struct {
 	References    map[string][]string `json:"references"`
 	Sources       []SourceInfo        `json:"sources"`
 	Functions     []string            `json:"functions"`
-	IsWrite       bool                `json:"isWrite"`
-	WriteTarget   *tableID            `json:"-"`
-	RewrittenSQL  *string             `json:"rewrittenSql"`
+	// UDFCalls: user functions called, as "public.add_tax"; each needs a Function grant.
+	UDFCalls     []string `json:"udfCalls,omitempty"`
+	IsWrite      bool     `json:"isWrite"`
+	WriteTarget  *tableID `json:"-"`
+	RewrittenSQL *string  `json:"rewrittenSql"`
 	// Base columns a literal is compared against in a predicate, keyed by clause. Deliberately NOT folded
 	// into References: the parity oracle diffs that map field-by-field and produces no such fact.
 	PredicateLiterals []PredicateLiteralRef `json:"predicateLiterals,omitempty"`
@@ -96,6 +90,8 @@ type PredicateLiteralRef struct {
 type NamespaceConfig struct {
 	Catalog    string   `json:"catalog"`
 	SearchPath []string `json:"searchPath"`
+	// Nil = no inventory pushed; every call is then unknown.
+	EngineCatalog *optimizer.EngineCatalog `json:"-"`
 }
 
 type tableID struct {
@@ -137,6 +133,11 @@ type prober struct {
 
 	naturalStarOrders  map[exp.Expression][]naturalStarColumn
 	naturalStarPending map[exp.Expression]bool
+	// lateCallReport: calls Qualify creates itself (star expansion); merged into callReport after Qualify.
+	callReport     map[exp.Expression]optimizer.ResolvedCall
+	lateCallReport map[exp.Expression]optimizer.ResolvedCall
+	builtinCalls   []string
+	udfCalls       []string
 }
 
 type resolveKey struct {
@@ -210,6 +211,8 @@ func probeParsed(root exp.Expression, eng engine, qualifySchema schema.Schema, n
 
 		naturalStarOrders:  map[exp.Expression][]naturalStarColumn{},
 		naturalStarPending: map[exp.Expression]bool{},
+		callReport:         map[exp.Expression]optimizer.ResolvedCall{},
+		lateCallReport:     map[exp.Expression]optimizer.ResolvedCall{},
 	}
 	// Emit the called-function facts even when analysis FAILS after parsing — an unsupported/
 	// unresolved statement (`SELECT * FROM dblink(...)`, a data-modifying CTE, PIVOT, …) that resolves=false.
@@ -257,7 +260,18 @@ func probeParsed(root exp.Expression, eng engine, qualifySchema schema.Schema, n
 		}
 		report := make(map[exp.Expression]optimizer.ResolvedSource)
 		opts := p.qualifyOptions(report)
+		// Before Qualify quotes every identifier: unquoted PG_CATALOG.abs folds, quoted "PG_CATALOG".abs must not.
+		if p.namespace.EngineCatalog != nil {
+			optimizer.ResolveEngineIdentities(p.qroot, p.namespace.EngineCatalog,
+				dialects.DialectType(p.dialect.SettingsString()), p.namespace.SearchPath,
+				p.callReport, nil)
+		}
 		p.qroot = optimizer.Qualify(p.qroot, opts)
+		for node, call := range p.lateCallReport {
+			if _, seen := p.callReport[node]; !seen {
+				p.callReport[node] = call
+			}
+		}
 		if err := p.completeResolutionReport(report); err != nil {
 			panic(err)
 		}
@@ -265,6 +279,10 @@ func probeParsed(root exp.Expression, eng engine, qualifySchema schema.Schema, n
 			panic(err)
 		}
 	}); fail != nil {
+		return *fail
+	}
+
+	if fail := p.resolveCalls(); fail != nil {
 		return *fail
 	}
 
@@ -587,6 +605,10 @@ func (p *prober) qualifyOptions(report map[exp.Expression]optimizer.ResolvedSour
 	opts.ResolutionReport = report
 	opts.InferSchema = boolPtr(false)
 	opts.ValidateQualifyColumns = !p.isWrite
+	if p.namespace.EngineCatalog != nil {
+		opts.EngineCatalog = p.namespace.EngineCatalog
+		opts.CallReport = p.lateCallReport
+	}
 	return opts
 }
 
@@ -822,7 +844,7 @@ func (p *prober) writeTargetTable() exp.Expression {
 }
 
 // writeTargetNodes is the set of table NODES that are the write target of an INSERT/UPDATE/DELETE/
-// MERGE/CREATE (or SELECT ... INTO) — the mutated relation, gated by sql.<kind>. Excludes the
+// MERGE/CREATE (or SELECT ... INTO) — the mutated relation, gated by stmt.kind.<kind>. Excludes the
 // target occurrence from scanned-source facts; a distinct read occurrence of the same table is
 // unaffected. Node-keyed (not tableID) so the target and an aliased self-read stay distinguishable.
 func (p *prober) writeTargetNodes() map[exp.Expression]bool {
@@ -1807,6 +1829,10 @@ func (p *prober) lineage() ProbeResult {
 		}
 	}
 
+	if p.relOverflow {
+		return failResult("LINEAGE", "relation-resolution depth exceeded (possible composite cycle)")
+	}
+
 	refsOut := map[string][]string{}
 	for key, values := range p.references {
 		if len(values) > 0 {
@@ -1836,7 +1862,8 @@ func (p *prober) lineage() ProbeResult {
 		Origins:           origins,
 		References:        refsOut,
 		Sources:           p.scannedSources(origins, refsOut),
-		Functions:         p.calledFunctions(),
+		Functions:         p.builtinCalls,
+		UDFCalls:          p.udfCalls,
 		IsWrite:           p.isWrite,
 		WriteTarget:       writeTarget,
 		RewrittenSQL:      rewrittenSQL,
@@ -1899,18 +1926,125 @@ func (p *prober) predicateLiteralRefs() []PredicateLiteralRef {
 	return out
 }
 
-// calledFunctions emits the DISTINCT bare names of Anonymous function calls in the statement
-// (docs/facts-emission.md). sqlglot drops a function's schema qualifier at parse time — `pg_catalog.
-// pg_read_file`, `mysql.rds_kill`, and a bare `pg_read_file` are indistinguishable post-parse — so only the
-// bare name is emitted; the control-plane resolver (SystemClassificationService.tagForFunction) classifies
-// it against the datasource's system/logical schemas. Only Anonymous nodes are emitted: every vendor
-// IO/exec/admin function (pg_read_file, dblink, lo_*, load_file, rds_*, keyring_*, get_raw_page, …) parses
-// Anonymous, whereas standard-SQL builtins with dedicated node kinds (Count, Cast, Substring, …) are safe,
-// out of the shipped dangerous set, and carry unreliable Name()s (`count(*)` → "*"). Names are lowercased
-// so the resolver's fold-insensitive match is stable. The control plane classifies these names against the
-// per-version manifest and the version-independent BaselineDangerousFunctions floor; functionCallGrants
-// separately preserves qualifiers and provides the fail-closed Function grant.
+// resolveCalls classifies every call against the pushed inventory:
+//
+//	pg_catalog.lower  -> Functions (control plane checks for danger)
+//	public.add_tax    -> UDFCalls  (needs a Function grant)
+//	unknown name      -> the statement fails closed
+func (p *prober) resolveCalls() *ProbeResult {
+	builtins := map[string]bool{}
+	udfs := map[string]bool{}
+	for _, fn := range p.qroot.FindAll(exp.KindAnonymous) {
+		if !fn.Is(exp.TraitFunc) {
+			continue
+		}
+		if skipCallResolution(fn) || p.isGrammarConstructor(fn) {
+			continue
+		}
+		c, tableQualified := p.resolveTableQualifiedCall(fn)
+		if !tableQualified {
+			c = p.callReport[fn]
+		}
+		if c.Kind == optimizer.CallUnknown {
+			fr := failResult("VALIDATE", "unresolved function call: "+normalizedFunctionName(fn, p.engine))
+			return &fr
+		}
+		switch c.Kind {
+		case optimizer.CallBuiltin:
+			builtins[c.Identity] = true
+		case optimizer.CallUDF:
+			udfs[c.Identity] = true
+		}
+	}
+	p.builtinCalls = sortedStringSet(builtins)
+	p.udfCalls = sortedStringSet(udfs)
+	return nil
+}
+
+// Parses as a call but is not one: `/*+ MAX_EXECUTION_TIME(1000) */`, and `VALUES(col)` in ON DUPLICATE KEY UPDATE.
+func skipCallResolution(fn exp.Expression) bool {
+	odkuValues := strings.EqualFold(fn.Name(), "values")
+	for parent := fn.Parent(); parent != nil; parent = parent.Parent() {
+		switch parent.Kind() {
+		case exp.KindHint:
+			return true
+		case exp.KindOnConflict:
+			if odkuValues && truthy(parent.Arg("duplicate")) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// PostgreSQL `ARRAY(SELECT ...)` is syntax, not a pg_proc function; only that shape is exempt.
+func (p *prober) isGrammarConstructor(fn exp.Expression) bool {
+	if _, pg := p.engine.(*postgresEngine); !pg || !strings.EqualFold(fn.Name(), "array") {
+		return false
+	}
+	args := fn.Expressions()
+	if len(args) != 1 || args[0] == nil {
+		return false
+	}
+	switch args[0].Kind() {
+	case exp.KindSelect, exp.KindSubquery:
+		return true
+	}
+	return false
+}
+
+// `FROM sch.fn(...)` keeps its qualifier on the Table node, so the optimizer would see bare `fn` and
+// resolve `FROM attacker.unnest(...)` as the builtin. Quoted parts as written, unquoted parts folded;
+// a 3-part name or a schema.name the inventory lacks is unknown.
+func (p *prober) resolveTableQualifiedCall(fn exp.Expression) (optimizer.ResolvedCall, bool) {
+	table := fn.Parent()
+	if table == nil || table.Kind() != exp.KindTable || table.This() != fn {
+		return optimizer.ResolvedCall{}, false
+	}
+	schema, _ := table.Arg("schema").(exp.Expression)
+	if schema == nil && table.Arg("catalog") == nil {
+		return optimizer.ResolvedCall{}, false
+	}
+	ec := p.namespace.EngineCatalog
+	if ec == nil || table.Arg("catalog") != nil || schema == nil || schema.Kind() != exp.KindIdentifier {
+		return optimizer.ResolvedCall{}, true
+	}
+	qualifier := p.foldCallComponent(schema, true)
+	name := ""
+	if identifier, ok := fn.Arg("this").(exp.Expression); ok && identifier.Kind() == exp.KindIdentifier {
+		name = p.foldCallComponent(identifier, false)
+	} else {
+		name = strings.ToLower(fn.Name())
+	}
+	if qualifier == "" || name == "" || strings.ContainsAny(qualifier+name, `."`) {
+		return optimizer.ResolvedCall{}, true
+	}
+	system := ec.SystemFunctionSchemas[qualifier][name]
+	udf := ec.UDFSchemas[qualifier][name]
+	switch {
+	case system && udf:
+		return optimizer.ResolvedCall{}, true
+	case system:
+		return optimizer.ResolvedCall{Kind: optimizer.CallBuiltin, Identity: qualifier + "." + name}, true
+	case udf:
+		return optimizer.ResolvedCall{Kind: optimizer.CallUDF, Identity: qualifier + "." + name}, true
+	}
+	return optimizer.ResolvedCall{}, true
+}
+
+func (p *prober) foldCallComponent(identifier exp.Expression, isTable bool) string {
+	if truthy(identifier.Arg("quoted")) {
+		return identifier.Name()
+	}
+	return p.dialect.FoldIdentifierName(identifier.Name(), isTable)
+}
+
+// calledFunctions: bare call names when analysis failed before resolveCalls, so `load_file` in an
+// unanalyzable statement is still danger-checked.
 func (p *prober) calledFunctions() []string {
+	if len(p.builtinCalls) > 0 {
+		return p.builtinCalls
+	}
 	seen := map[string]bool{}
 	out := []string{}
 	for _, fn := range p.root.FindAll(exp.TraitFunc) {
@@ -1927,19 +2061,24 @@ func (p *prober) calledFunctions() []string {
 	return out
 }
 
+func sortedStringSet(m map[string]bool) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
+
 // scannedSources emits one SourceInfo per DISTINCT physical relation the statement scans
 // (docs/facts-emission.md). p.physicalTables holds only relations the resolution report proved
 // Physical — a shadowed CTE reference resolves to CTE/Derived and is absent, so `WITH t AS (...)
 // SELECT count(*) FROM t` emits no physical `t` (ALLOW), while a CTE BODY that reads the real table
-// does (a scanned source, gated). Write TARGETS are excluded upstream (p.newTargets is skipped in
-// consumeResolutionReport), so an INSERT/UPDATE/DELETE target is never a scanned source.
+// does (a scanned source, gated). A write target is never a scanned source (its kind gates it).
 //
-// Coverage is per-TABLE and computed from the FINAL emitted facts: a table is covered iff some origin
-// base or reference key begins with `<catalog.schema.table>.` — i.e. a column of it is a traced fact
-// the column gate already authorizes. The trailing dot makes the prefix injective (a `users.` prefix
-// never matches `users_archive.col`). An unqualified column that stays ambiguous resolves to no base
-// key, so its table is left uncovered → gated, never silently covered. Over-attribution can only make
-// a table appear UNCOVERED (a dotted pathological name failing the prefix) → over-deny, fail-closed.
+// Coverage is per table and computed from the final emitted facts: any traced origin/reference
+// covers its table. The trailing dot keeps the base-key prefix
+// injective (`users.` never matches `users_archive.col`). Anything unresolved stays uncovered and gated.
 func (p *prober) scannedSources(origins []OriginInfo, refs map[string][]string) []SourceInfo {
 	baseKeys := map[string]bool{}
 	for _, origin := range origins {
@@ -1952,7 +2091,7 @@ func (p *prober) scannedSources(origins []OriginInfo, refs map[string][]string) 
 			baseKeys[base] = true
 		}
 	}
-	// The write TARGET occurrence is gated by sql.<kind>, not result.read (docs/facts-emission.md:
+	// The write TARGET occurrence is gated by stmt.kind.<kind>, not result.read (docs/facts-emission.md:
 	// "A write target is not a scanned Table solely because it is the target"). Exclude the target
 	// NODE(s), not the tableID — a DIFFERENT occurrence of the same table (a subquery reading old
 	// values) is a genuine scanned source and its column reads still emit facts / conservation applies.
@@ -1969,16 +2108,14 @@ func (p *prober) scannedSources(origins []OriginInfo, refs map[string][]string) 
 		seen[id] = true
 		prefix := id.String() + "."
 		covered := false
-		for base := range baseKeys {
-			// A base key is `<catalog>.<schema>.<table>.<column>`. Coverage requires the prefix AND that
-			// the remainder (the column) carries no further '.', so a table literally named "x.foo" (a
-			// dot in the name) cannot make a clean sibling `x` look covered — its base key `…x.foo.col`
-			// has a dotted remainder past the `x.` prefix. A delimiter-bearing identity therefore reads
-			// as UNCOVERED → gated → DENIED downstream (authorizeTables/authorizeColumns reject it),
-			// fail-closed, instead of relying on that Kotlin guard for correctness.
-			if strings.HasPrefix(base, prefix) && !strings.Contains(base[len(prefix):], ".") {
-				covered = true
-				break
+		{
+			for base := range baseKeys {
+				// Base keys are `<catalog>.<schema>.<table>.<column>`; a dotted remainder means a
+				// dot-bearing table name (`x.foo`), which must not make sibling `x` look covered.
+				if strings.HasPrefix(base, prefix) && !strings.Contains(base[len(prefix):], ".") {
+					covered = true
+					break
+				}
 			}
 		}
 		out = append(out, SourceInfo{Catalog: id.catalog, Schema: id.schema, Table: id.table, Covered: covered})
@@ -2377,8 +2514,12 @@ var redactAnonFns = map[string]int{
 	// single string arg
 	"upper": 1, "lower": 1, "ucase": 1, "lcase": 1, "reverse": 1, "initcap": 1,
 	"length": 1, "char_length": 1, "character_length": 1, "octet_length": 1, "bit_length": 1,
-	"ltrim": 1, "rtrim": 1, "md5": 1, "sha": 1, "sha1": 1, "hex": 1, "quote": 1,
+	"ltrim": 1, "rtrim": 1, "trim": 1, "md5": 1, "sha": 1, "sha1": 1, "hex": 1, "quote": 1,
+	"concat": allStringArgs, "coalesce": allStringArgs,
 }
+
+// allStringArgs: every argument must be a string operand (`concat(a, 'x')` yes, `concat(a, 1)` no).
+const allStringArgs = 1 << 30
 
 func isLiteralNode(e exp.Expression) bool {
 	if e == nil {
@@ -2426,6 +2567,10 @@ func (p *prober) redactableTransform(node exp.Expression) bool {
 		_, isID := p.projIdent(node, map[identKey]bool{})
 		return isID
 	case exp.KindAnonymous:
+		// A UDF named lcase would receive the unredacted value; only the resolved builtin is redactable.
+		if p.callReport[node].Kind != optimizer.CallBuiltin {
+			return false
+		}
 		n := redactAnonFns[strings.ToLower(node.Name())]
 		if n == 0 {
 			return false

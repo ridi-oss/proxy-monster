@@ -125,7 +125,7 @@ func probeSources(t *testing.T, sql, dialect string, cols []*pb.Column, ns *pb.N
 	if dialect == "mysql" {
 		engineConfig = &pb.EngineConfig{Engine: pb.Engine_MYSQL, EngineVersion: "8.0.46", MysqlLowerCaseTableNames: proto.Int32(1)}
 	}
-	res := analyzeProbe(t, &pb.AnalyzeRequest{Sql: sql, EngineConfig: engineConfig, Namespace: ns, Catalog: snapshot(cols)})
+	res := analyzeProbe(t, &pb.AnalyzeRequest{Sql: sql, EngineConfig: engineConfig, Namespace: ns, Catalog: snapshotWith(cols, &pb.FunctionCatalog{BuiltinFunctions: []string{"count"}})})
 	got := map[string]bool{}
 	for _, s := range res.Sources {
 		key := s.Catalog + "." + s.Schema + "." + s.Table

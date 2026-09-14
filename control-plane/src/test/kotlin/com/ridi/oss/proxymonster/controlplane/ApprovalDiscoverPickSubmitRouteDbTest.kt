@@ -230,4 +230,30 @@ class ApprovalDiscoverPickSubmitRouteDbTest {
         assertEquals(HttpStatusCode.BadRequest, response.status)
         assertEquals("approval.role_required", response.body<ApiError>().code)
     }
+    @Test
+    fun `approval discovery preview and disclosure use the pushed function inventory`() = testApplication {
+        val client = wire()
+        val sql = "SELECT LOWER(region) FROM users WHERE id = 1"
+        val discover = client.post("/api/approvals/discover-roles") {
+            contentType(ContentType.Application.Json)
+            setBody(DiscoverRolesRequest(datasourceId = fx.datasource.id, sql = sql))
+        }
+        assertEquals(HttpStatusCode.OK, discover.status)
+        val fullReader = discover.body<DiscoverRolesResponse>().options.single { it.roleName == "full-reader" }
+        assertEquals(Decision.ALLOW, fullReader.decision)
+        for ((statement, protected) in listOf(sql to false, "SELECT LOWER(region) FROM users WHERE ssn = 'secret'" to true)) {
+            val submit = client.post("/api/approvals") {
+                contentType(ContentType.Application.Json)
+                setBody(CreateApprovalInput(
+                    datasourceId = fx.datasource.id, sql = statement, title = "function preview",
+                    reason = "catalog forwarding test", roleId = fullReader.roleId,
+                ))
+            }
+            assertEquals(HttpStatusCode.Created, submit.status)
+            val created = submit.body<CreateApprovalResponse>()
+            if (!protected) assertTrue(created.wouldAllow, created.toString())
+            assertEquals(if (protected) true else null, fx.accessStore.getRequest(created.request.id)!!.statementCarriesProtectedLiteral)
+        }
+    }
+
 }

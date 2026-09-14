@@ -46,7 +46,7 @@ func decodeProbeResult(t *testing.T, sql, dialect string, cols []*pb.Column, ns 
 			engineConfig.MysqlLowerCaseTableNames = proto.Int32(mysqlLowerCaseTableNames[0])
 		}
 	}
-	return analyzeProbe(t, &pb.AnalyzeRequest{Sql: sql, EngineConfig: engineConfig, Namespace: ns, Catalog: snapshot(cols)})
+	return analyzeProbe(t, &pb.AnalyzeRequest{Sql: sql, EngineConfig: engineConfig, Namespace: ns, Catalog: snapshotWith(cols, testFunctionCatalog(dialect == "mysql", ns.GetSearchPath()))})
 }
 
 func allLineageKeys(result *ProbeResult) map[string]bool {

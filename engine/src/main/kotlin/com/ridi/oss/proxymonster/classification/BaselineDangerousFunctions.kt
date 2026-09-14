@@ -34,6 +34,7 @@ object BaselineDangerousFunctions {
     // SystemClassificationTest's dangerousFuncs-superset test).
     private val byName: Map<String, SystemTag> = mapOf(
         // PostgreSQL dblink — runs SQL on a remote server (exec) / fetches its results (leak).
+        "set_config" to SystemTag.CRITICAL,
         "dblink" to SystemTag.DATA_LEAK,
         "dblink_exec" to SystemTag.CRITICAL,
         "dblink_open" to SystemTag.DATA_LEAK,

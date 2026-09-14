@@ -117,6 +117,25 @@ class SystemClassificationService(
      */
     fun tagForFunction(engine: Engine, engineVersion: String?, name: String): String? {
         val governing = classifierFor(engine, engineVersion)
+        // Manifests key on "set_config"; the identity may be "pg_catalog.set_config". Classify both, keep the stronger.
+        val candidates = if ('.' in name) listOf(name, name.substringAfterLast('.')) else listOf(name)
+        var strongest: SystemTag? = null
+        for (candidate in candidates) {
+            val tag = classifyOneFunctionCandidate(governing, engine, candidate)
+            strongest = when {
+                strongest == null -> tag
+                tag == null -> strongest
+                else -> SystemTag.stronger(strongest, tag)
+            }
+        }
+        return strongest?.id
+    }
+
+    private fun classifyOneFunctionCandidate(
+        governing: com.ridi.oss.proxymonster.classification.SystemClassifier?,
+        engine: Engine,
+        name: String,
+    ): SystemTag? {
         // A GOVERNED datasource trusts its own certified manifest; a NO-manifest datasource (uncertified/
         // absent major, fallback off) falls back to the version-INDEPENDENT union floor of every shipped
         // manifest of this engine — strongest tag per name. That brings no-manifest function-gating to
@@ -132,7 +151,7 @@ class SystemClassificationService(
             noManifestFunctionFloor(engine, name)
         }
         val baselineTag = BaselineDangerousFunctions.classify(name)
-        return floor(manifestTag, baselineTag)?.id
+        return floor(manifestTag, baselineTag)
     }
 
     /** The strongest dangerous-function tag any shipped manifest of [engine] assigns [name] — the
@@ -141,7 +160,7 @@ class SystemClassificationService(
     private fun noManifestFunctionFloor(engine: Engine, name: String): SystemTag? {
         var tag: SystemTag? = null
         for (classifier in store.classifiersForEngine(engine.wireName)) {
-            classifier.classifyBareFunction(name)?.let { tag = if (tag == null) it else SystemTag.stronger(tag!!, it) }
+            classifier.classifyBareFunction(name)?.let { t -> tag = tag?.let { SystemTag.stronger(it, t) } ?: t }
         }
         return tag
     }

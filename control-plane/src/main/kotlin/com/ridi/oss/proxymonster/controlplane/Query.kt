@@ -797,9 +797,13 @@ fun decideQuery(
         val verdict = if (row.isTemp) ColumnVerdict.UNMASKED else columnVerdicts[key] ?: ColumnVerdict.DENIED
         when (verdict) {
             ColumnVerdict.UNMASKED -> Unit
-            ColumnVerdict.DENIED -> return deny(budgetDenyReason("policy denies column $key") { retryContext ->
-                authz.authorizeColumns(principal, roles, ds.name, listOf(columnRefs.first { it.key == key }), retryContext, systemTags, ds.tags)[key] in setOf(ColumnVerdict.UNMASKED, ColumnVerdict.MASKED)
-            })
+            ColumnVerdict.DENIED -> return deny(
+                budgetDenyReason("policy denies column $key") { retryContext ->
+                    val ref = columnRefs.first { it.key == key }
+                    authz.authorizeColumns(principal, roles, ds.name, listOf(ref), retryContext, systemTags, ds.tags)[key] !=
+                        ColumnVerdict.DENIED
+                },
+            )
             ColumnVerdict.MASKED -> when (grant.maskedDisposition) {
                 MaskedDisposition.MASKED_DISPOSITION_DENY_STATEMENT,
                 MaskedDisposition.MASKED_DISPOSITION_UNSPECIFIED,
@@ -844,9 +848,12 @@ fun decideQuery(
         }.distinctBy { it.key }
         val verdicts = authz.authorizeTables(principal, roles, ds.name, refs, context, systemTags, ds.tags)
         refs.firstOrNull { verdicts[it.key] != TableVerdict.READ }?.let {
-            return deny(budgetDenyReason("no read grant for scanned table '${it.schema}.${it.table}'") { retryContext ->
-                authz.authorizeTables(principal, roles, ds.name, listOf(it), retryContext, systemTags, ds.tags)[it.key] == TableVerdict.READ
-            })
+            return deny(
+                budgetDenyReason("no read grant for scanned table '${it.schema}.${it.table}'") { retryContext ->
+                    authz.authorizeTables(principal, roles, ds.name, listOf(it), retryContext, systemTags, ds.tags)[it.key] ==
+                        TableVerdict.READ
+                },
+            )
         }
     }
 

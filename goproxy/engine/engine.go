@@ -10,6 +10,7 @@ package engine
 import (
 	"errors"
 	"fmt"
+	"math"
 	"strconv"
 
 	// The shared proxymonster.v1.Engine enum (engine.proto) is generated once, into analyzer/probe/pb —
@@ -219,6 +220,45 @@ type Decision struct {
 	// proxy does not interpret them; it only echoes them back on a RunDecision so an execute-under-R run can
 	// freeze them with the stored result (the control plane's result-view drift gate).
 	ResultFingerprint []*enginepb.RequireResultReadGrant
+	// MaxRows / MaxBytes are the result caps the control plane resolved from the statement's Cedar permits
+	// (Verdict.max_rows / max_bytes); 0 = uncapped. See docs/result-caps.md.
+	MaxRows  int64
+	MaxBytes int64
+}
+
+// PageRows is the row count a paging caller should ask the target DB for: its own page size narrowed by the
+// verdict cap. A zero on either side means that side sets no bound.
+func (d *Decision) PageRows(clientRows int) int {
+	if d == nil || d.MaxRows <= 0 {
+		return clientRows
+	}
+	capRows := int(min(d.MaxRows, int64(math.MaxInt)))
+	if clientRows <= 0 {
+		return capRows
+	}
+	return min(clientRows, capRows)
+}
+
+// CapBinds reports whether the verdict cap — not the caller's page size — is what ended a result of
+// [clientRows] page size. A result the client's own paging cut short is a plain page end, not a cap hit.
+func (d *Decision) CapBinds(clientRows int) bool {
+	return d != nil && d.MaxRows > 0 && (clientRows <= 0 || d.MaxRows <= int64(clientRows))
+}
+
+// CapExceeded is the client-facing terminator text when relaying one more row of [rowBytes] would cross
+// this decision's caps, or "" when it fits. Both wire relays build their engine-specific error around this
+// one string, so a MySQL 1317 and a PostgreSQL 57014 say the same thing.
+func (d *Decision) CapExceeded(relayed RelayStats, rowBytes int64) string {
+	switch {
+	case d == nil:
+		return ""
+	case d.MaxRows > 0 && relayed.Rows >= d.MaxRows:
+		return fmt.Sprintf("proxy-monster: result exceeds the row cap (%d rows); request unbounded access", d.MaxRows)
+	case d.MaxBytes > 0 && rowBytes > d.MaxBytes-relayed.Bytes:
+		return fmt.Sprintf("proxy-monster: result exceeds the byte cap (%d bytes); request unbounded access", d.MaxBytes)
+	default:
+		return ""
+	}
 }
 
 // RedactedDiagnosticMessage is the single generic string that replaces every target-DB diagnostic message on

@@ -1,6 +1,9 @@
 package com.ridi.oss.proxymonster.controlplane
 
 import com.ridi.oss.proxymonster.controlplane.authz.Authz
+import com.ridi.oss.proxymonster.controlplane.authz.CapResource
+import com.ridi.oss.proxymonster.controlplane.authz.ResolvedCaps
+import com.ridi.oss.proxymonster.controlplane.authz.resolveResultCaps
 import com.ridi.oss.proxymonster.controlplane.authz.AuthzAction
 import com.ridi.oss.proxymonster.controlplane.authz.AuthzContext
 import com.ridi.oss.proxymonster.controlplane.authz.AuthzDecision
@@ -193,6 +196,11 @@ data class DecisionContext(
      * early denies (admission-reject / deactivated principal), which return before any `context.tags` is
      * derived and so were evaluated under none. */
     val contextTags: List<String> = emptyList(),
+    /** How much of this statement's result may be relayed, folded from the `result.cap` policies that
+     * answer for its datasource and its returned columns (docs/result-caps.md). Null = unbounded, which only
+     * a `result.cap` forbid produces; a DENY relays nothing and leaves both null. */
+    val maxRows: Long? = null,
+    val maxBytes: Long? = null,
     /** MASK-only capability grant. A proxy may relay an unmaskable binary result unmasked iff this is true
      * AND the proxy's local feature capability says that relay path is supported. */
     val unmaskablePermitted: Boolean = false,
@@ -506,6 +514,8 @@ fun decideQuery(
             ?.name?.removePrefix("STATEMENT_KIND_")?.lowercase(),
     )
     val derivedTags = context.tags.toList()
+    // The datasource-level `result.cap` answer, asked up front: it alone decides a passthrough or relay's cap.
+    val datasourceCaps = authz.resolveResultCaps(principal, roles, ds.name, emptyList(), context, ds.tags)
 
     // Fail-closed contract validation (analyzer.proto): the single statement-execution grant is the sole
     // per-statement authorization signal. A RESOLVED statement without it would default to the grantable
@@ -553,6 +563,8 @@ fun decideQuery(
         AuthzDecision.Allow -> Unit
     }
 
+    var usedUtilityTags: Map<String, String> = emptyMap()
+    var allowedFunctionTags: Map<String, String> = emptyMap()
     val utilityGrants = facts.resultReadsList.filter { it.hasUtility() }
     if (utilityGrants.isNotEmpty()) {
         if (systemClassification == null || ds.engineVersion.isNullOrBlank()) {
@@ -577,6 +589,7 @@ fun decideQuery(
         }
         val utilRefs = utilityTags.keys.map(::UtilityRef)
         val verdicts = authz.authorizeUtilities(principal, roles, ds.name, utilRefs, context, utilityTags, ds.tags)
+        usedUtilityTags = utilityTags
         utilRefs.firstOrNull { verdicts[it.command] != UtilityVerdict.USE }?.let {
             return structuralDeny(
                 "$SYSTEM_UTILITY_DENY '${it.command}'",
@@ -618,6 +631,7 @@ fun decideQuery(
                 sanitizeDiagnostics = !readsAllUnmasked(principal, roles, ds, catalog.columns, facts.diagnosticLeakColumnsList, context, authz, systemClassification),
                 schemaCandidates = facts.schemaQualifierCandidatesList.toSet(),
             )
+            .withCaps(datasourceCaps)
             .withAnalyzerRewrite(facts)
     }
 
@@ -658,7 +672,7 @@ fun decideQuery(
                 catalogMiss = true,
                 // Unanalyzable: no leak set to authorize, so fail closed and redact the diagnostic.
                 sanitizeDiagnostics = true,
-            )
+            ).withCaps(datasourceCaps)
             is AuthzDecision.Deny -> deny(reason, catalogMiss = true)
         }
     }
@@ -704,7 +718,7 @@ fun decideQuery(
                 schemaCandidates = facts.schemaQualifierCandidatesList.toSet(),
                 // An uncovered column means the leak set can't be authorized — fail closed and redact.
                 sanitizeDiagnostics = true,
-            )
+            ).withCaps(datasourceCaps)
             is AuthzDecision.Deny -> structuralDeny(
                 coverage.reason, roleList, failedStage = "catalog", contextTags = derivedTags,
             ).copy(catalogMiss = true, schemaCandidates = facts.schemaQualifierCandidatesList.toSet())
@@ -748,6 +762,7 @@ fun decideQuery(
             refs.firstOrNull { verdicts[it.name] != FunctionVerdict.ALLOWED }?.let {
                 return structuralDeny("$SYSTEM_FUNCTION_DENY '${it.name}'", roleList, failedStage = "policy", contextTags = derivedTags)
             }
+            allowedFunctionTags = functionTags
         }
     }
 
@@ -811,6 +826,37 @@ fun decideQuery(
     }
 
     val action = if (masks.isEmpty()) EnfAction.ALLOW else EnfAction.MASK
+    // Ask result.cap on every returned column, with context.masked telling a cap policy whether this
+    // principal's read reaches the client in the clear: an UNMASKED read feeding an output no mask covers
+    // (RETURNING has no ordinals and counts as bare). A column read only in a predicate returns nothing and is
+    // not asked.
+    val maskedOrdinals = masks.mapTo(HashSet()) { it.ordinal }
+    // A permitted exception.unmaskable lets the proxy relay a masked result raw, so for the cap ask a masked
+    // column counts as reaching the client in the clear.
+    val unmaskablePermitted = masks.isNotEmpty() && authz.authorizeDatasourceAction(
+        principal, roles, AuthzAction.EXCEPTION_UNMASKABLE, ds.name, context, ds.tags,
+    ) is AuthzDecision.Allow
+    val returnedMasked = LinkedHashMap<String, Boolean>()
+    for (rc in facts.returnedColumnsList) {
+        val c = rc.column
+        val key = listOf(c.catalog, c.identity.schema, c.identity.table, c.identity.column).joinToString(".")
+        val clear = unmaskablePermitted || columnVerdicts[key] == ColumnVerdict.UNMASKED &&
+            (rc.outputOrdinalsList.isEmpty() || rc.outputOrdinalsList.any { o -> o !in maskedOrdinals })
+        returnedMasked[key] = (returnedMasked[key] ?: true) && !clear
+    }
+    val capResources = buildList<CapResource> {
+        for (ref in columnRefs) {
+            val masked = returnedMasked[ref.key] ?: continue
+            add(CapResource.Column(ref, systemTags[Triple(ref.catalog, ref.schema, ref.table)], masked))
+        }
+        for (grant in tableGrants) {
+            val t = grant.table
+            add(CapResource.Table(TableRef("${t.catalog}.${t.schema}.${t.table}", t.catalog, t.schema, t.table), systemTags[Triple(t.catalog, t.schema, t.table)]))
+        }
+        for ((name, tagId) in allowedFunctionTags) add(CapResource.Function(FunctionRef(name), tagId))
+        for ((command, tagId) in usedUtilityTags) add(CapResource.Utility(UtilityRef(command), tagId))
+    }
+    val statementCaps = authz.resolveResultCaps(principal, roles, ds.name, capResources, context, ds.tags)
     // Every classified column the statement touched, whatever its tags are named: `pii` is a deployment's
     // own tag, so keying this on that one string leaves auditmon's mass-export detector blind on a
     // deployment that classifies with `pci`.
@@ -823,9 +869,6 @@ fun decideQuery(
         facts.sourcesList.mapTo(this) { it.schema }
         columnGrants.mapTo(this) { it.column.identity.schema }
     }.filterNotTo(LinkedHashSet()) { it.startsWith("pg_temp", ignoreCase = true) }
-    val unmaskablePermitted = action == EnfAction.MASK && authz.authorizeDatasourceAction(
-        principal, roles, AuthzAction.EXCEPTION_UNMASKABLE, ds.name, context, ds.tags,
-    ) is AuthzDecision.Allow
     // MASK/DENY always redacts; an ALLOW redacts iff the analyzer's leak set holds a column the viewer
     // can't read unmasked. `select id from users` (all readable) relays raw.
     val sanitizeDiagnostics = action != EnfAction.ALLOW ||
@@ -848,7 +891,7 @@ fun decideQuery(
         catalogChanging = facts.catalogChanging || facts.functionsList.isNotEmpty(),
         referencedSchemas = referencedSchemas,
         schemaCandidates = facts.schemaQualifierCandidatesList.toSet(),
-    ).withAnalyzerRewrite(facts)
+    ).withCaps(datasourceCaps, statementCaps).withAnalyzerRewrite(facts)
 }
 
 // A column grant must carry a real masking disposition; an absent/unrecognized one is a malformed effect
@@ -857,6 +900,31 @@ private val MALFORMED_DISPOSITIONS = setOf(
     MaskedDisposition.MASKED_DISPOSITION_UNSPECIFIED,
     MaskedDisposition.UNRECOGNIZED,
 )
+
+/** The cap when no `result.cap` policy answers on that dimension: fail closed, never uncapped. */
+internal const val DEFAULT_CAP_ROWS = 5_000L
+internal const val DEFAULT_CAP_BYTES = 50_000_000L
+
+/** The resolved per-statement cap; null on a dimension = unbounded (only a `result.cap` forbid produces it). */
+internal data class ResultCaps(val rows: Long?, val bytes: Long?)
+
+/**
+ * Fold the `result.cap` answers a statement collected (docs/result-caps.md): a forbid that matched any ask
+ * lifts both; else the tightest cap rows and the tightest cap bytes, falling back to the shipped default on a
+ * dimension nothing answered.
+ */
+internal fun resultCaps(vararg resolved: ResolvedCaps): ResultCaps {
+    if (resolved.any { it.unbounded }) return ResultCaps(null, null)
+    return ResultCaps(
+        resolved.mapNotNull { it.rows }.minOrNull() ?: DEFAULT_CAP_ROWS,
+        resolved.mapNotNull { it.bytes }.minOrNull() ?: DEFAULT_CAP_BYTES,
+    )
+}
+
+private fun DecisionContext.withCaps(vararg resolved: ResolvedCaps): DecisionContext {
+    val caps = resultCaps(*resolved)
+    return copy(maxRows = caps.rows, maxBytes = caps.bytes)
+}
 
 internal const val MASK_BIND_DENY = "required mask could not be bound to a result column"
 private const val SYSTEM_FUNCTION_DENY = "dangerous system function is not allowed:"

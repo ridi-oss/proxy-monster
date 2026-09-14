@@ -45,3 +45,10 @@ data class AuditEvent(
     val bytesReturned: Long? = null,
     val decisionId: Long? = null,
 )
+
+/** The volume a result relayed or released to a principal: the rows and the UTF-8 bytes of their non-null cells. */
+fun resultVolume(rows: List<List<String?>>): Pair<Long, Long> {
+    var bytes = 0L
+    for (row in rows) for (cell in row) if (cell != null) bytes += cell.toByteArray(Charsets.UTF_8).size
+    return rows.size.toLong() to bytes
+}

@@ -1454,6 +1454,7 @@ fun Route.editorSessionRoutes(
                         // display as a clean ALLOW.
                         decision = if (viewDecision.maskedColumns.isEmpty()) Decision.ALLOW else Decision.MASK,
                         maskedColumns = viewDecision.maskedColumns,
+                        truncatedAt = viewDecision.truncatedAt,
                         truncatedByCap = decrypted.truncatedByCap,
                     ),
                 )

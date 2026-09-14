@@ -52,6 +52,8 @@ data class DecryptedResult(
     // rather than being mistaken for a grant-less passthrough and released raw.
     @Serializable(with = ResultFingerprintSerializer::class)
     val resultFingerprint: ResultFingerprint? = null,
+    /** The EXECUTION's verdict cap ended this result, which a view over the stored rows cannot re-derive. */
+    val truncatedByCap: Boolean = false,
 )
 
 /**
@@ -88,6 +90,7 @@ internal object ResultPayloadCodec {
         }
         result.rowsAffected?.let { rowsAffected = it }
         result.resultFingerprint?.let { resultFingerprint = it }
+        truncatedByCap = result.truncatedByCap
     }.toByteArray()
 
     fun decode(plaintext: ByteArray): DecryptedResult =
@@ -108,6 +111,7 @@ internal object ResultPayloadCodec {
         rows = stored.rows.rowsList.map { row -> row.valuesList.map { if (it.isNull) null else it.value } },
         rowsAffected = if (stored.hasRowsAffected()) stored.rowsAffected else null,
         resultFingerprint = if (stored.hasResultFingerprint()) stored.resultFingerprint else null,
+        truncatedByCap = stored.truncatedByCap,
     )
 }
 

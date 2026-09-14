@@ -792,7 +792,10 @@ class RunExecService(
                         throw ProxyRunException("proxy sent RunDone after a deny decision")
                     }
                     val rowsAffected = message.done.rowsAffected.let { if (it == -1) null else it }
-                    return response(received, receivedAction, columns ?: emptyList(), rows, rowsAffected, started)
+                    return response(
+                        received, receivedAction, columns ?: emptyList(), rows, rowsAffected, started,
+                        truncatedByCap = message.done.truncatedByCap,
+                    )
                 }
 
                 message.hasError() -> {
@@ -834,6 +837,7 @@ class RunExecService(
         rows: List<List<String?>>,
         rowsAffected: Int?,
         started: Long,
+        truncatedByCap: Boolean = false,
     ): QueryResponse {
         val decisionId = decision.decisionId.takeIf { it != 0L }
         val piiTouched = decisionId?.let { core.auditStore.get(it)?.piiTouched } ?: emptyList()
@@ -851,6 +855,8 @@ class RunExecService(
             rows = rows,
             rowsAffected = rowsAffected,
             resultFingerprint = resultFingerprint,
+            truncatedByCap = truncatedByCap,
+            capRows = decision.maxRows.takeIf { it > 0 },
             latencyMs = (System.nanoTime() - started) / 1_000_000,
         )
     }

@@ -1,7 +1,11 @@
 package com.ridi.oss.proxymonster.controlplane
 
 import com.ridi.oss.proxymonster.analyzer.pb.EngineConfig as PbEngineConfig
+import com.ridi.oss.proxymonster.analyzer.pb.FunctionCatalog
 import com.ridi.oss.proxymonster.analyzer.pb.engineConfig as pbEngineConfig
+import com.ridi.oss.proxymonster.analyzer.pb.schemaFunctions as pbSchemaFunctions
+import com.ridi.oss.proxymonster.classification.MysqlNativeFunctions
+import com.ridi.oss.proxymonster.classification.PostgresGrammarFunctions
 import com.ridi.oss.proxymonster.grpc.Engine
 import com.ridi.oss.proxymonster.probe.Dialect
 import kotlinx.serialization.KSerializer
@@ -189,4 +193,30 @@ object EngineWireSerializer : KSerializer<Engine> {
     override val descriptor: SerialDescriptor = PrimitiveSerialDescriptor("Engine", PrimitiveKind.STRING)
     override fun serialize(encoder: Encoder, value: Engine) = encoder.encodeString(value.wireName)
     override fun deserialize(decoder: Decoder): Engine = engineFromWire(decoder.decodeString())
+}
+
+/**
+ * The function inventory the analyzer resolves calls against: [pushed] with its builtin list fixed up.
+ * MySQL replaces the builtins with the pinned native list for this server version (natives are not in
+ * any table, so the proxy cannot push them); the pushed UDFs and loadables stay. PostgreSQL adds the
+ * grammar keyword functions (coalesce, greatest, ...) that have no pg_proc row. Null when nothing was
+ * pushed, except MySQL, which always has its natives.
+ */
+fun Engine.functionCatalog(pushed: FunctionCatalog?, engineVersion: String?): FunctionCatalog? = when (this) {
+    Engine.MYSQL -> (pushed ?: FunctionCatalog.getDefaultInstance()).toBuilder().apply {
+        clearBuiltinFunctions()
+        addAllBuiltinFunctions(MysqlNativeFunctions.forVersion(engineVersion))
+    }.build()
+    Engine.POSTGRES -> pushed?.toBuilder()?.apply {
+        addAllBuiltinFunctions(PostgresGrammarFunctions.names)
+        val schemas = pushed.systemFunctionSchemasList.filterNot { it.schema == "pg_catalog" }
+        val names = pushed.systemFunctionSchemasList.filter { it.schema == "pg_catalog" }.flatMap { it.namesList }
+        clearSystemFunctionSchemas()
+        addAllSystemFunctionSchemas(schemas)
+        addSystemFunctionSchemas(pbSchemaFunctions {
+            schema = "pg_catalog"
+            this.names.addAll((names + PostgresGrammarFunctions.names).distinct())
+        })
+    }?.build()
+    else -> error("engine has no function catalog: $this")
 }

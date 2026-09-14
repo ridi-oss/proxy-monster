@@ -24,6 +24,9 @@ Raw attested inputs, set by the control-plane from what the client cannot forge:
   condition on _how_ a column is read — e.g. permit `result.read.unmasked` only
   under a plan-only EXPLAIN (`context.stmt_kind == "explain"`), which returns a
   plan, not rows. Absent on a pre-parse failure (`STMT_UNKNOWN`).
+- `masked` — on a `result.cap` ask for a returned column only: whether this
+  principal's read of it is masked. With `Column.tagged` it lets a cap policy
+  say "a tagged value in the clear" ([result-caps.md](./result-caps.md)).
 
 Derived `context.tags` — a `Set<String>` of stable tag names
 (`"trusted-network"`, …) the control-plane computes before the real decision by

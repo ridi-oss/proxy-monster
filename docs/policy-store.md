@@ -301,13 +301,14 @@ both ways:
 
 Classify columns to decide columns; a datasource tag decides the datasource.
 
-Roles: ten predefined roles in the `system:` namespace — five
-`system:development-{viewer, pii-accessor, updater, deleter, architect}` and
-five `system:production-{…same five…}` — plus the admin role `system:admin`. The
-protected group `system:developer` aggregates the five development roles (map an
-IdP group to it with `PM_OIDC_GROUP_MAP`); each production role has its own 1:1
-`system:production-*` group so an IdP group can be mapped to a single production
-capability.
+Roles: eleven predefined roles in the `system:` namespace — five
+`system:development-{viewer, pii-accessor, updater, deleter, architect}`, six
+`system:production-{…same five…, exporter}` — plus `system:admin` and
+`system:auditor`. The exporter is a pii-accessor with no result cap or rate
+([`result-caps.md`](./result-caps.md)). The protected group `system:developer`
+aggregates the five development roles (map an IdP group to it with
+`PM_OIDC_GROUP_MAP`); each production role has its own 1:1 `system:production-*`
+group so an IdP group can be mapped to a single production capability.
 
 A `system:development` datasource holds no real PII — that is the definition of
 dev. So development reads are cleartext and there is no dev masking; PII
@@ -339,15 +340,15 @@ explicit, audited toggle; ships through `-261`):
 | id | `system_key` | effect |
 | --- | --- | --- |
 | `-250` | `preset.production-connect` | any `system:production-*` role → `datasource.connect` |
-| `-251` | `preset.production-select` | `system:production-viewer` / `-pii-accessor` → `stmt.cat.read` |
+| `-251` | `preset.production-select` | `system:production-viewer` / `-pii-accessor` / `-exporter` → `stmt.cat.read` |
 | `-252` | `preset.production-insert` | `system:production-updater` → `stmt.cat.write.insert` |
 | `-253` | `preset.production-update` | `system:production-updater` → `stmt.cat.write.update` |
 | `-254` | `preset.production-delete` | `system:production-deleter` → `stmt.cat.write.delete` |
 | `-255` | `preset.production-ddl` | `system:production-architect` → `stmt.cat.ddl` |
 | `-256` | `preset.production-non-pii-read` | `system:production-*` roles → `result.read.unmasked` unless `pii`/`system:*` |
 | `-257` | `preset.production-pii-masked` | `system:production-*` roles → `result.read.masked` on `pii` unless `system:*` |
-| `-258` | `preset.production-pii-unmasked` | `system:production-pii-accessor` → `result.read.unmasked` on `pii` when `context.tags` has `trusted-network` unless `system:*` |
-| `-259` | `preset.production-pii-unmasked-workflow` | `system:production-pii-accessor` → `result.read.unmasked` on `pii` when `context.channel == "workflow-executor"` unless `system:*` |
+| `-258` | `preset.production-pii-unmasked` | `system:production-pii-accessor` / `-exporter` → `result.read.unmasked` on `pii` when `context.tags` has `trusted-network` unless `system:*` |
+| `-259` | `preset.production-pii-unmasked-workflow` | `system:production-pii-accessor` / `-exporter` → `result.read.unmasked` on `pii` when `context.channel == "workflow-executor"` unless `system:*` |
 | `-260` | `preset.production-metadata` | any principal → `stmt.cat.metadata` on `system:production` |
 | `-261` | `preset.production-session` | any principal → `stmt.cat.session` on `system:production` |
 
@@ -364,6 +365,22 @@ trip the readiness dangling-tag lint (a producer with no enabled consumer) and
 buy nothing. Enable it with the production package, or replace the CIDR / author
 a USER rule for a tighter posture. Production PII visibility keys off the
 ordinary `pii` column-classification tag, not a reserved posture tag.
+
+### Result cap policies
+
+A limit is a `@cap("…")` annotation on a `permit` for `Action::"result.cap"`, an
+action no enforcement path consults, so a limit can be added without touching a
+read permit ([`result-caps.md`](./result-caps.md)). A `forbid` on it clears
+every limit for whoever it names.
+
+Shipped cap rows (all enabled):
+
+<!-- prettier-ignore -->
+| id | `system_key` | effect |
+| --- | --- | --- |
+| `-305` | `guardrail.result-cap-default` | permit `result.cap` on every resource: `@cap("5000, 50MB, 10000/1h, 50000/1d, 100MB/1h, 500MB/1d")` |
+| `-306` | `guardrail.result-cap-clear` | permit `result.cap` `when { resource is Column && resource.tagged && context has masked && !context.masked }` (a tagged value in the clear): `@cap("500, 5MB")` |
+| `-307` | `guardrail.result-cap-exporter` | `forbid` `result.cap` for `system:production-exporter` |
 
 ### Trust boundary — posture is a cleartext lever
 

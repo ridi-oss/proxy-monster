@@ -23,6 +23,8 @@ interface Props {
   error: string | null
   onCancel?: () => void
   onRequestAccess: () => void
+  /** Row count a stored result's view cap cut the release to (`QueryResultView.truncatedAt`). */
+  truncatedAt?: number | null
 }
 
 export function ResultsPanel({
@@ -33,9 +35,11 @@ export function ResultsPanel({
   error,
   onCancel,
   onRequestAccess,
+  truncatedAt = null,
 }: Props) {
   const t = useTranslations('Query')
   const tone = result ? decisionTone[result.decision] : null
+  const cappedAt = result?.truncatedByCap ? (result.capRows ?? result.rows.length) : truncatedAt
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
@@ -163,7 +167,12 @@ export function ResultsPanel({
           ) : result.decision === 'DENY' ? (
             <DenyCallout result={result} onRequestAccess={onRequestAccess} />
           ) : (
-            <ResultGrid result={result} />
+            <div className="flex h-full min-h-0 flex-col">
+              {cappedAt != null && (
+                <CapNotice rows={cappedAt} onRequestAccess={onRequestAccess} />
+              )}
+              <ResultGrid result={result} />
+            </div>
           )}
         </TabsContent>
 
@@ -183,6 +192,23 @@ export function ResultsPanel({
 
 function Centered({ children }: { children: React.ReactNode }) {
   return <div className="flex min-h-0 flex-1 items-center justify-center p-6">{children}</div>
+}
+
+/** A result the verdict's cap ended, not the requested page size — so the set is INCOMPLETE. */
+function CapNotice({ rows, onRequestAccess }: { rows: number; onRequestAccess: () => void }) {
+  const t = useTranslations('Query')
+  return (
+    <div
+      data-testid="result-cap-notice"
+      className="flex shrink-0 flex-wrap items-center gap-2 border-b border-amber-500/30 bg-amber-500/10 px-4 py-2 text-xs"
+    >
+      <AlertTriangle className="size-3.5 shrink-0 text-amber-500" />
+      <span>{t('results.cappedAt', { count: rows })}</span>
+      <Button size="xs" variant="outline" onClick={onRequestAccess}>
+        {t('results.requestAccess')}
+      </Button>
+    </div>
+  )
 }
 
 function DenyCallout({

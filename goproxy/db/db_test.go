@@ -207,8 +207,20 @@ func TestMySqlSchemaHashFromRows(t *testing.T) {
 
 func TestPgDbConstants(t *testing.T) {
 	p := PgDb{}
-	if p.NamespaceProbeSQL() != "SELECT pg_catalog.unnest(pg_catalog.current_schemas(true))" {
-		t.Errorf("NamespaceProbeSQL() = %q", p.NamespaceProbeSQL())
+	namespaceSQL := p.NamespaceProbeSQL()
+	for _, fragment := range []string{
+		"pg_catalog.current_schemas(true)",
+		"pg_catalog.pg_proc",
+		"p.proname OPERATOR(pg_catalog.=) 'unnest'::pg_catalog.name",
+		"p.pronamespace OPERATOR(pg_catalog.<>) 'pg_catalog'::pg_catalog.regnamespace",
+		"pg_catalog.pg_function_is_visible(p.oid)",
+		"pg_catalog.pg_type_is_visible(",
+		"'pg_catalog.xid'::pg_catalog.regtype::pg_catalog.oid",
+		"'[]'::pg_catalog.json",
+	} {
+		if !strings.Contains(namespaceSQL, fragment) {
+			t.Errorf("NamespaceProbeSQL missing %q:\n%s", fragment, namespaceSQL)
+		}
 	}
 	if !p.SupportsTempOverlay() {
 		t.Error("SupportsTempOverlay() = false, want true for Postgres")

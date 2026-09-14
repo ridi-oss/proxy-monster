@@ -275,18 +275,13 @@ type TempColumn struct {
 // DecideRequest is the complete per-query control-plane request plus the callback used to satisfy
 // before_decide commands on the held target-DB connection.
 type DecideRequest struct {
-	Token      string
-	SQL        string
-	ClientAddr string
-	Namespace  []string
-	// MysqlAnsiQuotes reports that the connection's live MySQL session runs under sql_mode=ANSI_QUOTES, so
-	// `"x"` is a quoted identifier rather than a string literal. The control plane forwards it to the
-	// analyzer's EngineConfig (mysql_ansi_quotes) so a masked column quoted with `"` is still masked.
-	// Always false for Postgres and for MySQL's default mode.
-	MysqlAnsiQuotes bool
-	TempColumns     []TempColumn
-	ConnectionID    []byte
-	RunCommands     func([]*pb.Refetch) error
+	NamespaceProbe
+	Token        string
+	SQL          string
+	ClientAddr   string
+	TempColumns  []TempColumn
+	ConnectionID []byte
+	RunCommands  func([]*pb.Refetch) error
 }
 
 // Decider performs the per-query control-plane decision. It is injected so the engine is unit-testable;
@@ -415,12 +410,11 @@ func (Fail) isVerdict()    {}
 // signals via MarkNamespaceDirty, never by inspecting SQL). It is created with a dumb Db and an
 // injected Decider and never touches sockets — the protocol supplies probe I/O via callbacks.
 type QueryEngine struct {
-	db              Db
-	decider         Decider
-	namespace       []string
-	mysqlAnsiQuotes bool
-	nsDirty         bool
-	sanitizeDiag    bool
+	db           Db
+	decider      Decider
+	probe        NamespaceProbe
+	nsDirty      bool
+	sanitizeDiag bool
 }
 
 // NewQueryEngine creates the per-connection engine. The namespace starts dirty so the first query
@@ -443,19 +437,31 @@ func (e *QueryEngine) SanitizeDiagnostics() bool { return e.sanitizeDiag }
 // SetNamespace replaces the cached namespace from an authoritative target DB protocol signal. It copies
 // namespace so a caller cannot mutate the authorization context after the signal is consumed.
 func (e *QueryEngine) SetNamespace(namespace []string) {
-	e.namespace = append([]string{}, namespace...)
+	e.probe.Namespace = append([]string{}, namespace...)
 	e.nsDirty = false
 }
 
 // NamespaceProbe is the pre-statement session observation the protocol returns to the engine: the
-// connection's effective namespace, plus (MySQL only) whether the live session sql_mode has ANSI_QUOTES
-// active so `"x"` is a quoted identifier rather than a string literal. The engine caches both together and
-// forwards MySQLAnsiQuotes to the control plane, which hands it to the analyzer's EngineConfig so a masked
-// column quoted with `"` is still masked. Postgres reports false: it has no ANSI_QUOTES equivalent, and its
-// standard_conforming_strings divergence fails the connection closed instead of forwarding a flag.
+// connection's effective namespace plus engine-specific lookup state. The engine caches it as one value
+// and the decision carries it whole, so every lookup fact reaches the control plane from the same probe.
 type NamespaceProbe struct {
-	Namespace       []string
+	Namespace []string
+	// MySQLAnsiQuotes reports sql_mode=ANSI_QUOTES, so `"x"` is a quoted identifier rather than a string
+	// literal. Always false for PostgreSQL.
 	MySQLAnsiQuotes bool
+	// PostgresShadowedFunctions lists polymorphic builtins with a visible non-pg_catalog overload; the
+	// Observed flags say the probe answered at all, so an absent fact is distinct from a false one.
+	PostgresShadowedFunctions         []string
+	PostgresFunctionShadowingObserved bool
+	PostgresSystemXIDVisible          bool
+	PostgresTypeVisibilityObserved    bool
+}
+
+// Clone copies the observation so a cached snapshot cannot be mutated through a shared slice.
+func (p NamespaceProbe) Clone() NamespaceProbe {
+	p.Namespace = append([]string{}, p.Namespace...)
+	p.PostgresShadowedFunctions = append([]string{}, p.PostgresShadowedFunctions...)
+	return p
 }
 
 // AuthzInput is one statement to authorize plus the probe callbacks the protocol wires up. The Db
@@ -476,13 +482,12 @@ type AuthzInput struct {
 // apply. It makes no enforcement decision of its own; the only local outcomes are fail-closed (Fail) on
 // a mechanical impossibility and the reduction of the control plane's Action to Deny/Proceed.
 func (e *QueryEngine) Authorize(in AuthzInput) Verdict {
-	if e.nsDirty || e.namespace == nil {
+	if e.nsDirty || e.probe.Namespace == nil {
 		probe, err := in.ProbeNamespace()
 		if err != nil {
 			return Fail{Message: "namespace probe failed: " + err.Error()}
 		}
-		e.namespace = append([]string{}, probe.Namespace...)
-		e.mysqlAnsiQuotes = probe.MySQLAnsiQuotes
+		e.probe = probe.Clone()
 		e.nsDirty = false
 	}
 
@@ -495,14 +500,13 @@ func (e *QueryEngine) Authorize(in AuthzInput) Verdict {
 	}
 
 	out := e.decider.Decide(DecideRequest{
-		Token:           in.Token,
-		SQL:             in.SQL,
-		ClientAddr:      in.ClientAddr,
-		Namespace:       e.namespace,
-		MysqlAnsiQuotes: e.mysqlAnsiQuotes,
-		TempColumns:     temps,
-		ConnectionID:    in.ConnectionID,
-		RunCommands:     in.RunCommands,
+		NamespaceProbe: e.probe.Clone(),
+		Token:          in.Token,
+		SQL:            in.SQL,
+		ClientAddr:     in.ClientAddr,
+		TempColumns:    temps,
+		ConnectionID:   in.ConnectionID,
+		RunCommands:    in.RunCommands,
 	})
 	if out.IsErr() {
 		return Fail{Message: out.Err}

@@ -749,6 +749,108 @@ func TestExtendedExecuteRevocationDeniesMutation(t *testing.T) {
 	}
 }
 
+func TestExtendedExecuteAuthorizesUnderBindTimeFunctionVisibility(t *testing.T) {
+	h := startBroker(t)
+	h.fake.decideFn = func(*pb.DecisionRequest) (*pb.WireDecision, error) {
+		return wireVerdict(&pb.Verdict{Decision: pb.EnfAction_ALLOW}), nil
+	}
+	direct := dbtest.OpenPostgres(t, "")
+	schema := "bind_shadow_" + strconv.FormatInt(time.Now().UnixNano(), 10)
+	for _, sql := range []string{
+		"CREATE SCHEMA " + schema,
+		"CREATE FUNCTION " + schema + ".unnest(integer[]) RETURNS SETOF integer LANGUAGE SQL AS 'SELECT 999'",
+	} {
+		if _, err := direct.Exec(sql); err != nil {
+			t.Fatalf("shadow setup %q: %v", sql, err)
+		}
+	}
+	t.Cleanup(func() { _, _ = direct.Exec("DROP SCHEMA IF EXISTS " + schema + " CASCADE") })
+
+	client := newRawPGClient(t, h)
+	const query = "SELECT unnest($1::integer[])"
+	assertNoRawPGError(t, client.simpleQuery(t, "SET search_path TO pg_catalog, "+schema))
+	assertNoRawPGError(t, client.simpleQuery(t, "BEGIN"))
+	assertRawExtendedCompletion(t, client.sendSync(t, &pgproto3.Parse{Name: "shadowed", Query: query}), "ParseComplete", 'T')
+	assertRawExtendedCompletion(t, client.sendSync(t, &pgproto3.Bind{
+		DestinationPortal: "shadowed_portal",
+		PreparedStatement: "shadowed",
+		Parameters:        [][]byte{[]byte("{1}")},
+	}), "BindComplete", 'T')
+	assertNoRawPGError(t, client.simpleQuery(t, "SET search_path TO "+primarySchema))
+
+	frames := client.sendSync(t, &pgproto3.Execute{Portal: "shadowed_portal"})
+	if len(frames) != 3 {
+		t.Fatalf("Execute frames = %d, want DataRow + CommandComplete + ReadyForQuery", len(frames))
+	}
+	row, ok := frames[0].(*pgproto3.DataRow)
+	if !ok || !reflect.DeepEqual(row.Values, [][]byte{[]byte("999")}) {
+		t.Fatalf("Execute frame[0] = %#v, want shadow-function result 999", frames[0])
+	}
+
+	var execute *pb.DecisionRequest
+	for _, request := range h.fake.requests() {
+		if request.GetSql() == query {
+			execute = request
+		}
+	}
+	if execute == nil || !reflect.DeepEqual(execute.GetSearchPath(), []string{"pg_catalog", schema}) ||
+		!execute.GetPostgresFunctionShadowingObserved() ||
+		!reflect.DeepEqual(execute.GetPostgresShadowedFunctions(), []string{"unnest"}) {
+		t.Fatalf("Execute DecisionRequest = %+v, want bind-time path and observed [unnest]", execute)
+	}
+	assertNoRawPGError(t, client.simpleQuery(t, "ROLLBACK"))
+}
+
+func TestExtendedExecuteAuthorizesUnderBindTimeTypeVisibility(t *testing.T) {
+	h := startBroker(t)
+	h.fake.decideFn = func(*pb.DecisionRequest) (*pb.WireDecision, error) {
+		return wireVerdict(&pb.Verdict{Decision: pb.EnfAction_ALLOW}), nil
+	}
+	client := newRawPGClient(t, h)
+	assertNoRawPGError(t, client.simpleQuery(t, "SET search_path TO pg_catalog, "+primarySchema))
+	assertNoRawPGError(t, client.simpleQuery(t, "BEGIN"))
+
+	const visibleSQL = "SELECT 1 AS visible_xid"
+	assertRawExtendedCompletion(t, client.sendSync(t, &pgproto3.Parse{Name: "visible_xid", Query: visibleSQL}), "ParseComplete", 'T')
+	assertRawExtendedCompletion(t, client.sendSync(t, &pgproto3.Bind{
+		DestinationPortal: "visible_xid_portal", PreparedStatement: "visible_xid",
+	}), "BindComplete", 'T')
+
+	assertNoRawPGError(t, client.simpleQuery(t, "CREATE TYPE pg_temp.xid AS ENUM ('x')"))
+	const shadowedSQL = "SELECT 2 AS shadowed_xid"
+	assertRawExtendedCompletion(t, client.sendSync(t, &pgproto3.Parse{Name: "shadowed_xid", Query: shadowedSQL}), "ParseComplete", 'T')
+	assertRawExtendedCompletion(t, client.sendSync(t, &pgproto3.Bind{
+		DestinationPortal: "shadowed_xid_portal", PreparedStatement: "shadowed_xid",
+	}), "BindComplete", 'T')
+
+	assertNoRawPGError(t, client.sendSync(t, &pgproto3.Execute{Portal: "visible_xid_portal"}))
+	assertNoRawPGError(t, client.simpleQuery(t, "DROP TYPE pg_temp.xid"))
+	assertNoRawPGError(t, client.sendSync(t, &pgproto3.Execute{Portal: "shadowed_xid_portal"}))
+
+	lastRequest := func(sql string) *pb.DecisionRequest {
+		t.Helper()
+		var found *pb.DecisionRequest
+		for _, request := range h.fake.requests() {
+			if request.GetSql() == sql {
+				found = request
+			}
+		}
+		if found == nil {
+			t.Fatalf("no DecisionRequest for %q", sql)
+		}
+		return found
+	}
+	visible := lastRequest(visibleSQL)
+	if visible.PostgresSystemXidVisible == nil || !visible.GetPostgresSystemXidVisible() {
+		t.Fatalf("visible portal xid visibility = %v, want present true", visible.PostgresSystemXidVisible)
+	}
+	shadowed := lastRequest(shadowedSQL)
+	if shadowed.PostgresSystemXidVisible == nil || shadowed.GetPostgresSystemXidVisible() {
+		t.Fatalf("shadowed portal xid visibility = %v, want present false", shadowed.PostgresSystemXidVisible)
+	}
+	assertNoRawPGError(t, client.simpleQuery(t, "ROLLBACK"))
+}
+
 func TestExtendedExecuteAuthorizesUnderBindTimeNamespace(t *testing.T) {
 	h := startBroker(t)
 	h.fake.decideFn = func(*pb.DecisionRequest) (*pb.WireDecision, error) {
@@ -1081,14 +1183,11 @@ func TestExtendedAbortedTransactionRecoversViaRollback(t *testing.T) {
 	})
 }
 
-// TestExtendedBindCoercionSetConfigLeaksAcrossSchema is a CHARACTERIZATION test for a known, out-of-scope
-// limitation (KNOWN_LIMITATIONS.md, backlog): a domain CHECK that calls set_config('search_path', …) moves
-// the path DURING Bind parameter coercion — after the proxy's pre-Bind probe but before PostgreSQL resolves
-// the portal's table names — so Execute is authorized under the stale probed snapshot while the target DB binds
-// the portal under the mutated path. The bare `people` reads id=10, which exists ONLY in the secondary
-// schema, so a real leak surfaces the secondary row ('secret-2') even though the policy DENIES the secondary
-// path. The proxy tracks search_path by SQL classification and cannot observe a set_config fired from inside
-// coercion, so this is out of scope. If this test ever STOPS leaking, the limitation was closed — update the docs.
+// TestExtendedBindCoercionSetConfigLeaksAcrossSchema pins accepted behavior: a domain CHECK calling
+// set_config('search_path', …) runs during Bind parameter coercion, after the pre-Bind probe, so Execute is
+// authorized under the probed path while PostgreSQL binds under the mutated one, and the bare `people` reads
+// the denied secondary schema's row ('secret-2'). This is intended: creating the domain is DDL, and anyone
+// who can run DDL on the target has more direct routes to the data.
 func TestExtendedBindCoercionSetConfigLeaksAcrossSchema(t *testing.T) {
 	h := startBroker(t)
 	var decidedPaths [][]string
@@ -1147,16 +1246,15 @@ func TestExtendedBindCoercionSetConfigLeaksAcrossSchema(t *testing.T) {
 		}
 	}
 	t.Logf("decision search_paths seen: %v", decidedPaths)
-	t.Logf("LEAKED (secondary secret disclosed under a primary-authorized decision): %v", leaked)
+	t.Logf("secondary row read under a primary-authorized decision: %v", leaked)
 	if !leaked {
-		t.Fatalf("expected the documented Bind-coercion set_config leak to reproduce (secondary row 'secret-2'); it did not — the leak may no longer reproduce, so revisit KNOWN_LIMITATIONS.md")
+		t.Fatalf("expected the Bind-coercion set_config read of the secondary row 'secret-2'; it did not reproduce")
 	}
-	// The leak is only meaningful if the proxy authorized under the STALE primary path (not the secondary
-	// one the target DB actually bound). Assert no decision was ever made under the secondary schema.
+	// Only meaningful if every decision was made under the primary path, not the one PostgreSQL bound.
 	for _, path := range decidedPaths {
 		for _, schema := range path {
 			if schema == secondarySchema {
-				t.Fatalf("a decision was made under the secondary path %v — not the stale-snapshot leak this test documents", path)
+				t.Fatalf("a decision was made under the secondary path %v", path)
 			}
 		}
 	}
@@ -1283,5 +1381,86 @@ func assertExtendedMaskError(t *testing.T, err error) {
 	}
 	if !strings.Contains(err.Error(), "required mask could not be bound") && !strings.Contains(err.Error(), "closed") && !strings.Contains(err.Error(), "EOF") {
 		t.Fatalf("error = %T %v, want unbindable-mask or broken-connection error", err, err)
+	}
+}
+
+func TestExtendedBindCapturesVisibilityChangedAfterParse(t *testing.T) {
+	h := startBroker(t)
+	h.fake.decideFn = func(*pb.DecisionRequest) (*pb.WireDecision, error) {
+		return wireVerdict(&pb.Verdict{Decision: pb.EnfAction_ALLOW}), nil
+	}
+	direct := dbtest.OpenPostgres(t, "")
+	schema := "bind_shadow_" + strconv.FormatInt(time.Now().UnixNano(), 10)
+	for _, sql := range []string{
+		"CREATE SCHEMA " + schema,
+		"CREATE FUNCTION " + schema + ".unnest(integer[]) RETURNS SETOF integer LANGUAGE SQL AS 'SELECT 999'",
+	} {
+		if _, err := direct.Exec(sql); err != nil {
+			t.Fatalf("shadow setup %q: %v", sql, err)
+		}
+	}
+	t.Cleanup(func() { _, _ = direct.Exec("DROP SCHEMA IF EXISTS " + schema + " CASCADE") })
+
+	client := newRawPGClient(t, h)
+	const query = "SELECT unnest($1::integer[])"
+	assertNoRawPGError(t, client.simpleQuery(t, "SET search_path TO "+primarySchema))
+	assertNoRawPGError(t, client.simpleQuery(t, "BEGIN"))
+	assertRawExtendedCompletion(t, client.sendSync(t, &pgproto3.Parse{Name: "late_shadow", Query: query}), "ParseComplete", 'T')
+	assertNoRawPGError(t, client.simpleQuery(t, "SET search_path TO pg_catalog, "+schema))
+	assertRawExtendedCompletion(t, client.sendSync(t, &pgproto3.Bind{
+		DestinationPortal: "late_portal",
+		PreparedStatement: "late_shadow",
+		Parameters:        [][]byte{[]byte("{1}")},
+	}), "BindComplete", 'T')
+	assertNoRawPGError(t, client.simpleQuery(t, "SET search_path TO "+primarySchema))
+	frames := client.sendSync(t, &pgproto3.Execute{Portal: "late_portal"})
+	row, ok := frames[0].(*pgproto3.DataRow)
+	if !ok || !reflect.DeepEqual(row.Values, [][]byte{[]byte("999")}) {
+		t.Fatalf("Execute frame[0] = %#v, want shadow-function result 999", frames[0])
+	}
+
+	var decisions []*pb.DecisionRequest
+	for _, request := range h.fake.requests() {
+		if request.GetSql() == query {
+			decisions = append(decisions, request)
+		}
+	}
+	if len(decisions) != 2 {
+		t.Fatalf("decisions for the statement = %d, want Parse + Execute", len(decisions))
+	}
+	parse, execute := decisions[0], decisions[1]
+	if !reflect.DeepEqual(parse.GetSearchPath(), []string{"pg_catalog", primarySchema}) || len(parse.GetPostgresShadowedFunctions()) != 0 {
+		t.Fatalf("Parse DecisionRequest = %+v, want the pre-shadow path and no shadows", parse)
+	}
+	if !reflect.DeepEqual(execute.GetSearchPath(), []string{"pg_catalog", schema}) ||
+		!reflect.DeepEqual(execute.GetPostgresShadowedFunctions(), []string{"unnest"}) {
+		t.Fatalf("Execute DecisionRequest = %+v, want the Bind-time path and observed [unnest]", execute)
+	}
+}
+
+func TestAbortedTransactionDecidesUnderTheLastBindSnapshot(t *testing.T) {
+	h := startBroker(t)
+	h.fake.decideFn = func(*pb.DecisionRequest) (*pb.WireDecision, error) {
+		return wireVerdict(&pb.Verdict{Decision: pb.EnfAction_ALLOW}), nil
+	}
+	client := newRawPGClient(t, h)
+	assertNoRawPGError(t, client.simpleQuery(t, "SET search_path TO "+primarySchema))
+	assertNoRawPGError(t, client.simpleQuery(t, "BEGIN"))
+	assertRawExtendedCompletion(t, client.sendSync(t, &pgproto3.Parse{Name: "typed", Query: "SELECT $1::integer"}), "ParseComplete", 'T')
+	assertNoRawPGError(t, client.simpleQuery(t, "SET search_path TO "+secondarySchema))
+	frames := client.sendSync(t, &pgproto3.Bind{DestinationPortal: "typed_portal", PreparedStatement: "typed", Parameters: [][]byte{[]byte("not-an-int")}})
+	if _, failed := frames[0].(*pgproto3.ErrorResponse); !failed {
+		t.Fatalf("Bind frame[0] = %#v, want the 22P02 ErrorResponse that aborts the transaction", frames[0])
+	}
+	assertNoRawPGError(t, client.simpleQuery(t, "ROLLBACK"))
+
+	var rollback *pb.DecisionRequest
+	for _, request := range h.fake.requests() {
+		if request.GetSql() == "ROLLBACK" {
+			rollback = request
+		}
+	}
+	if rollback == nil || !reflect.DeepEqual(rollback.GetSearchPath(), []string{"pg_catalog", secondarySchema}) {
+		t.Fatalf("ROLLBACK DecisionRequest = %+v, want the path snapshotted at the failed Bind", rollback)
 	}
 }

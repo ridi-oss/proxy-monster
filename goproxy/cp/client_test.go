@@ -387,10 +387,16 @@ func TestDecideMapsRequestAndRetriesBeforeDecide(t *testing.T) {
 	c := startFakeControlPlane(t, fake)
 	var run [][]*pb.Refetch
 	request := engine.DecideRequest{
+		NamespaceProbe: engine.NamespaceProbe{
+			Namespace:                         []string{"public", "app"},
+			PostgresShadowedFunctions:         []string{"unnest"},
+			PostgresFunctionShadowingObserved: true,
+			PostgresSystemXIDVisible:          true,
+			PostgresTypeVisibilityObserved:    true,
+		},
 		Token:        "raw-token",
 		SQL:          "SELECT 1",
 		ClientAddr:   "10.0.0.9:5555",
-		Namespace:    []string{"public", "app"},
 		TempColumns:  []engine.TempColumn{{Schema: "pg_temp_3", Table: "t", Column: "c", SqlType: "text", Ordinal: 5}},
 		ConnectionID: []byte("0123456789abcdef"),
 		RunCommands: func(commands []*pb.Refetch) error {
@@ -418,11 +424,39 @@ func TestDecideMapsRequestAndRetriesBeforeDecide(t *testing.T) {
 		!reflect.DeepEqual(req.GetSearchPath(), request.Namespace) || !reflect.DeepEqual(req.GetConnectionId(), request.ConnectionID) {
 		t.Fatalf("DecisionRequest = %+v", req)
 	}
+	if !req.GetPostgresFunctionShadowingObserved() ||
+		!reflect.DeepEqual(req.GetPostgresShadowedFunctions(), []string{"unnest"}) {
+		t.Fatalf("PostgreSQL function shadow state = %v/%v, want observed [unnest]", req.GetPostgresFunctionShadowingObserved(), req.GetPostgresShadowedFunctions())
+	}
+	if req.PostgresSystemXidVisible == nil || !req.GetPostgresSystemXidVisible() {
+		t.Fatalf("PostgreSQL xid visibility = %v, want present true", req.PostgresSystemXidVisible)
+	}
 	if len(req.GetTempColumns()) != 1 || req.GetTempColumns()[0].GetOrdinal() != 5 {
 		t.Fatalf("TempColumns = %+v", req.GetTempColumns())
 	}
 	if meta != "secret-abc" {
 		t.Fatalf("metadata = %q", meta)
+	}
+}
+
+func TestDecideOmitsUnobservedPostgresTypeVisibility(t *testing.T) {
+	fake := &fakeControlPlane{}
+	c := startFakeControlPlane(t, fake)
+	out := c.Decide(engine.DecideRequest{
+		Token:        "raw-token",
+		SQL:          "SELECT 1",
+		ConnectionID: []byte("0123456789abcdef"),
+	})
+	if out.IsErr() {
+		t.Fatalf("Decide = %+v", out)
+	}
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	if len(fake.decideReqs) != 1 {
+		t.Fatalf("Decide requests = %d, want 1", len(fake.decideReqs))
+	}
+	if got := fake.decideReqs[0].PostgresSystemXidVisible; got != nil {
+		t.Fatalf("unobserved PostgreSQL xid visibility = %v, want absent", got)
 	}
 }
 
@@ -456,6 +490,43 @@ func TestDecideBeforeDecideFailures(t *testing.T) {
 			t.Fatalf("RPC calls/runs = %d/%d, want 4/3", calls, runs)
 		}
 	})
+}
+
+func TestPushCatalogPreservesFunctions(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		functions *enginepb.FunctionCatalog
+	}{
+		{"absent", nil},
+		{"observed empty", &enginepb.FunctionCatalog{}},
+		{"observed names", &enginepb.FunctionCatalog{
+			BuiltinFunctions:      []string{"abs"},
+			SystemFunctionSchemas: []*enginepb.SchemaFunctions{{Schema: "pg_catalog", Names: []string{"abs"}}},
+			UdfSchemas:            []*enginepb.SchemaFunctions{{Schema: "app", Names: []string{"lookup"}}},
+			LoadableFunctions:     []string{"plugin_fn"},
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fake := &fakeControlPlane{}
+			client := startFakeControlPlane(t, fake)
+			catalog := &pb.CatalogRequest{Catalog: &enginepb.CatalogSnapshot{
+				Columns:   []*enginepb.Column{{Schema: "app", Table: "users", Column: "ssn"}},
+				Functions: tc.functions,
+			}}
+			if err := client.PushCatalog(catalog); err != nil {
+				t.Fatal(err)
+			}
+			fake.mu.Lock()
+			got := fake.lastCatalog
+			fake.mu.Unlock()
+			if !proto.Equal(got, catalog) {
+				t.Fatalf("catalog changed across gRPC: got %v, want %v", got, catalog)
+			}
+			if (got.GetCatalog().GetFunctions() == nil) != (tc.functions == nil) {
+				t.Fatalf("function observation presence changed: got %v, want %v", got.GetCatalog().GetFunctions(), tc.functions)
+			}
+		})
+	}
 }
 
 func TestRegisterAndPushCatalog(t *testing.T) {

@@ -30,13 +30,13 @@ func postgresFacts(t *testing.T, sql string) *pb.StatementFacts {
 		Sql:          sql,
 		EngineConfig: &pb.EngineConfig{Engine: pb.Engine_POSTGRES},
 		Namespace:    &pb.Namespace{Catalog: "acme", SearchPath: []string{"public"}},
-		Catalog: snapshot([]*pb.Column{
+		Catalog: snapshotWith([]*pb.Column{
 			pbColumn("public", "users", "id", "BIGINT"),
 			pbColumn("public", "users", "ssn", "VARCHAR"),
 			pbColumn("public", "users", "email", "VARCHAR"),
 			pbColumn("public", "sink", "id", "BIGINT"),
 			pbColumn("public", "sink", "value", "VARCHAR"),
-		}),
+		}, testFunctionCatalog(false, nil)),
 	})
 }
 
@@ -54,13 +54,13 @@ func mysqlFactsMode(t *testing.T, sql string, ansiQuotes bool) *pb.StatementFact
 		Sql:          sql,
 		EngineConfig: cfg,
 		Namespace:    &pb.Namespace{Catalog: "def", SearchPath: []string{"acme"}},
-		Catalog: snapshot([]*pb.Column{
+		Catalog: snapshotWith([]*pb.Column{
 			pbColumn("acme", "users", "id", "BIGINT"),
 			pbColumn("acme", "users", "ssn", "VARCHAR"),
 			pbColumn("acme", "users", "email", "VARCHAR"),
 			pbColumn("acme", "sink", "id", "BIGINT"),
 			pbColumn("acme", "sink", "value", "VARCHAR"),
-		}),
+		}, testFunctionCatalog(true, []string{"acme"})),
 	})
 }
 
@@ -385,11 +385,11 @@ func TestStatementFactsNoFromUnknownFunctionGrant(t *testing.T) {
 		t.Fatalf("expected analyzable no-FROM statement: %+v", facts)
 	}
 	for _, grant := range facts.GetResultReads() {
-		if grant.GetFunction().GetName() == "my_udf" {
+		if grant.GetFunction().GetName() == "public.my_udf" {
 			return
 		}
 	}
-	t.Fatalf("unknown UDF did not emit Function grant: %+v", facts.GetResultReads())
+	t.Fatalf("resolved UDF did not emit its qualified Function grant: %+v", facts.GetResultReads())
 }
 
 func TestStatementFactsUserTypeCastGated(t *testing.T) {
@@ -434,13 +434,13 @@ func TestStatementFactsUserTypeCastGated(t *testing.T) {
 }
 
 func TestStatementFactsSchemaQualifiedFunctionGrant(t *testing.T) {
-	// sqlglot drops a call's schema qualifier from the function node's own Name(), so `public.version()`
-	// would fold onto the safe metadata version() and pass. A non-pg_catalog qualifier is user code: it
-	// must emit a Function grant under its fully-qualified name so the control-plane never classifies it
-	// as a trusted function (a user function shadowing a safe name is an exfil vector).
+	// A schema-qualified call resolves against the engine catalog: a KNOWN user function emits its
+	// fully-qualified fail-closed Function grant (a user function shadowing a safe name is an exfil
+	// vector, and its identity — not the bare leaf — is what the control plane authorizes); an
+	// UNKNOWN qualified name fails the statement closed.
 	for _, tc := range []struct{ sql, want string }{
-		{"SELECT public.version()", "public.version"},
 		{"SELECT pm_leak.upper('x')", "pm_leak.upper"},
+		{"SELECT app.get_ssn(), id FROM users", "app.get_ssn"},
 	} {
 		facts := postgresFacts(t, tc.sql)
 		found := false
@@ -453,9 +453,19 @@ func TestStatementFactsSchemaQualifiedFunctionGrant(t *testing.T) {
 			t.Fatalf("qualified user function %q did not emit %q grant: %+v", tc.sql, tc.want, facts.GetResultReads())
 		}
 	}
+	for _, sql := range []string{"SELECT public.version()", "SELECT public.version(), id FROM users"} {
+		if facts := postgresFacts(t, sql); facts.GetResolved() {
+			t.Fatalf("unknown qualified function must fail closed: %q -> %+v", sql, facts)
+		}
+	}
 	// A pg_catalog-qualified safe builtin is the trusted system function of that name — no grant.
 	if facts := postgresFacts(t, "SELECT pg_catalog.abs(-1)"); len(nonExecuteGrants(facts)) != 0 {
 		t.Fatalf("pg_catalog.abs must be safe: %+v", facts.GetResultReads())
+	}
+	// A bare builtin with a physical source resolves to its identity in facts.functions — never an
+	// unclassified Function grant.
+	if facts := postgresFacts(t, "SELECT age(now()), id FROM users"); hasFunctionGrant(facts, "age") || hasFunctionGrant(facts, "pg_catalog.age") {
+		t.Fatalf("bare age() must not become an unclassified Function grant: %+v", facts.GetResultReads())
 	}
 }
 
@@ -473,19 +483,15 @@ func TestStatementFactsPgCatalogQualifierFoldedQuoteAware(t *testing.T) {
 			t.Fatalf("qualifier folding to the system catalog must be trusted (no grant): %q -> %+v", sql, facts.GetResultReads())
 		}
 	}
-	// Quoted "PG_CATALOG" (a distinct user schema) is gated under its case-preserved qualified name, and
-	// must never smuggle the bare trusted name `version`.
-	facts := postgresFacts(t, `SELECT "PG_CATALOG".version()`)
-	if !hasFunctionGrant(facts, "PG_CATALOG.version") {
-		t.Fatalf(`quoted "PG_CATALOG".version() must emit a case-preserved Function grant: %+v`, facts.GetResultReads())
+	// Quoted "PG_CATALOG" is a DISTINCT case-sensitive user schema; absent from the engine catalog
+	// the call is unresolvable — the statement fails closed and never smuggles the trusted name.
+	if facts := postgresFacts(t, `SELECT "PG_CATALOG".version()`); facts.GetResolved() {
+		t.Fatalf(`quoted "PG_CATALOG".version() must fail closed: %+v`, facts)
 	}
-	if hasFunctionGrant(facts, "version") {
-		t.Fatalf(`quoted "PG_CATALOG" smuggled the bare trusted name: %+v`, facts.GetResultReads())
-	}
-	// Engine-gated: pg_catalog is a PostgreSQL schema. On MySQL a database literally named pg_catalog is
-	// ordinary user code, so its function is gated — never trusted as a system builtin.
-	if my := mysqlFacts(t, "SELECT pg_catalog.leak()"); !hasFunctionGrant(my, "pg_catalog.leak") {
-		t.Fatalf("MySQL pg_catalog.leak() must be gated (pg_catalog is not a MySQL system schema): %+v", my.GetResultReads())
+	// Engine-gated: on MySQL a database literally named pg_catalog is ordinary user territory — not
+	// in the engine catalog, the call fails closed rather than being trusted as a system builtin.
+	if my := mysqlFacts(t, "SELECT pg_catalog.leak()"); my.GetResolved() {
+		t.Fatalf("MySQL pg_catalog.leak() must fail closed (pg_catalog is not a MySQL system schema): %+v", my)
 	}
 }
 
@@ -577,21 +583,20 @@ func TestStatementFactsQualifiedFunctionInSetGated(t *testing.T) {
 }
 
 func TestStatementFactsMultiPartQualifierFunctionGrant(t *testing.T) {
-	// A multi-part / computed qualifier whose leaf merely spells `pg_catalog` must NOT enter the trusted
-	// branch — its call is user code and must emit a fully-qualified (unclassified) Function grant, never
-	// be skipped as a safe system builtin.
+	// A multi-part / computed qualifier whose leaf merely spells `pg_catalog` must NOT enter the
+	// trusted branch — the resolver fails such a call closed (deeper-than-one qualifier chains are
+	// never classified), so the statement denies rather than smuggling a safe name.
 	for _, sql := range []string{
 		"SELECT foo.pg_catalog.version()",
 		"SELECT current_database().public.version()",
 	} {
 		facts := postgresFacts(t, sql)
-		grants := facts.GetResultReads()
-		if len(grants) == 0 {
-			t.Fatalf("multi-part qualified call must emit a Function grant: %q -> %+v", sql, facts)
+		if facts.GetResolved() {
+			t.Fatalf("multi-part qualified call must fail closed: %q -> %+v", sql, facts)
 		}
-		for _, grant := range grants {
-			if name := grant.GetFunction().GetName(); name == "version" {
-				t.Fatalf("multi-part qualifier smuggled a bare safe name %q: %q", name, sql)
+		for _, fn := range facts.GetFunctions() {
+			if fn == "pg_catalog.version" {
+				t.Fatalf("multi-part qualifier smuggled the trusted identity: %q", sql)
 			}
 		}
 	}
@@ -713,12 +718,12 @@ func TestStatementFactsUnicodeEscapedSetConfigEmitsFunctionGrant(t *testing.T) {
 	if !facts.GetResolved() {
 		t.Fatalf("decoded U& identifier should analyze: %+v", facts)
 	}
-	for _, grant := range facts.GetResultReads() {
-		if grant.GetFunction().GetName() == "set_config" {
+	for _, fn := range facts.GetFunctions() {
+		if fn == "pg_catalog.set_config" {
 			return
 		}
 	}
-	t.Fatalf("decoded set_config did not emit a Function grant: %+v", facts.GetResultReads())
+	t.Fatalf("decoded set_config did not resolve to its gated identity: %v", facts.GetFunctions())
 }
 
 func TestStatementFactsSchemaCandidatesAndTemporaryDDL(t *testing.T) {

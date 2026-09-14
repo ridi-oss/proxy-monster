@@ -133,7 +133,7 @@ func TestDerivedProjectionFacts(t *testing.T) {
 
 			for _, tc := range cases {
 				t.Run(tc.name, func(t *testing.T) {
-					r := analyzeProbe(t, &pb.AnalyzeRequest{Sql: tc.sql, EngineConfig: e.ec, Namespace: e.ns, Catalog: snapshot(e.cols)})
+					r := analyzeProbe(t, &pb.AnalyzeRequest{Sql: tc.sql, EngineConfig: e.ec, Namespace: e.ns, Catalog: snapshotWith(e.cols, testFunctionCatalog(e.ec.GetEngine() == pb.Engine_MYSQL, e.ns.GetSearchPath()))})
 					if !r.Resolved {
 						t.Fatalf("expected resolved=true; sql=%q detail=%q", tc.sql, r.Detail)
 					}
@@ -192,7 +192,7 @@ func TestRedactableWhitelistGate(t *testing.T) {
 			// redactable returns true iff output ordinal 0 is a redactable derived transform (derived=true
 			// and the masked column is NOT in any reference bucket).
 			redactable := func(sql string) bool {
-				r := analyzeProbe(t, &pb.AnalyzeRequest{Sql: sql, EngineConfig: e.ec, Namespace: e.ns, Catalog: snapshot(cols)})
+				r := analyzeProbe(t, &pb.AnalyzeRequest{Sql: sql, EngineConfig: e.ec, Namespace: e.ns, Catalog: snapshotWith(cols, testFunctionCatalog(e.ec.GetEngine() == pb.Engine_MYSQL, e.ns.GetSearchPath()))})
 				if !r.Resolved || len(r.Origins) == 0 || !r.Origins[0].Derived {
 					return false
 				}
@@ -272,3 +272,21 @@ func containsAll(hay, needles []string) bool {
 }
 
 func colsOf(r []string) []string { return r }
+
+// A UDF that borrows a whitelisted name would receive the unredacted value inside its body; only the
+// resolved builtin is a redactable transform.
+func TestRedactableTransformRequiresTheResolvedBuiltin(t *testing.T) {
+	cols := []*pb.Column{pbColumn("public", "users", "ssn", "VARCHAR")}
+	ns := &pb.Namespace{Catalog: "acme", SearchPath: []string{"public"}}
+	ec := &pb.EngineConfig{Engine: pb.Engine_POSTGRES}
+	catalog := &pb.FunctionCatalog{
+		UdfSchemas: []*pb.SchemaFunctions{{Schema: "public", Names: []string{"lcase"}}},
+	}
+	r := analyzeProbe(t, &pb.AnalyzeRequest{Sql: "SELECT lcase(ssn) FROM users", EngineConfig: ec, Namespace: ns, Catalog: snapshotWith(cols, catalog)})
+	if !r.Resolved {
+		t.Fatalf("unresolved: %s", r.Detail)
+	}
+	if len(r.Origins) == 0 || r.Origins[0].Derived {
+		t.Fatalf("public.lcase(ssn) was marked a redactable transform; origins=%+v", r.Origins)
+	}
+}

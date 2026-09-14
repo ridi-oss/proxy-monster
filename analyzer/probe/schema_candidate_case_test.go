@@ -45,3 +45,24 @@ func TestSchemaQualifierCandidatesFoldToTheStoredSpelling(t *testing.T) {
 		}
 	}
 }
+
+// `SELECT app.get_ssn()` names no table, so the qualifier of the call is the only thing that can make the
+// control plane fetch `app`; without it the statement stays unresolved on every retry.
+func TestSchemaQualifierCandidatesIncludeFunctionQualifiers(t *testing.T) {
+	mapping, err := schemaMappingFromProto("db", []*pb.Column{pbColumn("public", "users", "id", "integer")})
+	if err != nil {
+		t.Fatalf("build schema: %v", err)
+	}
+	facts := EmitFacts(
+		"SELECT app.get_ssn()",
+		&pb.EngineConfig{Engine: pb.Engine_POSTGRES, EngineVersion: "16.4"},
+		mapping,
+		NamespaceConfig{Catalog: "db", SearchPath: []string{"pg_catalog", "public"}, EngineCatalog: engineCatalogFromProto(&pb.FunctionCatalog{}, nil)},
+	)
+	if facts.GetResolved() {
+		t.Fatalf("resolved with no inventory: %v", facts)
+	}
+	if !slices.Equal(facts.GetSchemaQualifierCandidates(), []string{"app"}) {
+		t.Fatalf("candidates = %v, want [app]", facts.GetSchemaQualifierCandidates())
+	}
+}

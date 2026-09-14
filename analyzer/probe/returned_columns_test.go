@@ -76,7 +76,7 @@ func TestReturnedColumns(t *testing.T) {
 					continue
 				}
 				t.Run(tc.sql, func(t *testing.T) {
-					facts := analyzeProto(t, &pb.AnalyzeRequest{Sql: tc.sql, EngineConfig: e.ec, Namespace: e.ns, Catalog: catalog})
+					facts := analyzeProto(t, &pb.AnalyzeRequest{Sql: tc.sql, EngineConfig: e.ec, Namespace: e.ns, Catalog: snapshotWith(catalog.GetColumns(), testFunctionCatalog(e.ec.GetEngine() == pb.Engine_MYSQL, e.ns.GetSearchPath()))})
 					if !facts.Resolved {
 						t.Fatalf("unresolved: %s", facts.Detail)
 					}

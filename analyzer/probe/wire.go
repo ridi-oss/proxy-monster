@@ -9,6 +9,7 @@ import (
 	"fmt"
 
 	pb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
+	"github.com/ridi-oss/sqlglot-go/optimizer"
 	"github.com/ridi-oss/sqlglot-go/schema"
 	"google.golang.org/protobuf/proto"
 )
@@ -24,7 +25,44 @@ func AnalyzeStatement(req *pb.AnalyzeRequest) (*pb.StatementFacts, error) {
 	if err != nil {
 		return nil, err
 	}
+	namespace.EngineCatalog = engineCatalogFromProto(req.GetCatalog().GetFunctions(), namespace.SearchPath)
 	return EmitFacts(req.GetSql(), req.GetEngineConfig(), sch, namespace), nil
+}
+
+// Names arrive folded. Nil stays nil, which makes every call unknown.
+func engineCatalogFromProto(c *pb.FunctionCatalog, searchPath []string) *optimizer.EngineCatalog {
+	if c == nil {
+		return nil
+	}
+	schemaFunctions := func(entries []*pb.SchemaFunctions) map[string]map[string]bool {
+		out := map[string]map[string]bool{}
+		for _, e := range entries {
+			names := map[string]bool{}
+			for _, n := range e.GetNames() {
+				names[n] = true
+			}
+			out[e.GetSchema()] = names
+		}
+		return out
+	}
+	stringSet := func(names []string) map[string]bool {
+		out := map[string]bool{}
+		for _, n := range names {
+			out[n] = true
+		}
+		return out
+	}
+	currentDatabase := ""
+	if len(searchPath) > 0 {
+		currentDatabase = searchPath[0]
+	}
+	return &optimizer.EngineCatalog{
+		BuiltinFunctions:      stringSet(c.GetBuiltinFunctions()),
+		SystemFunctionSchemas: schemaFunctions(c.GetSystemFunctionSchemas()),
+		UDFSchemas:            schemaFunctions(c.GetUdfSchemas()),
+		LoadableFunctions:     stringSet(c.GetLoadableFunctions()),
+		CurrentDatabase:       currentDatabase,
+	}
 }
 
 // AnalyzeStatementSafe is the total, panic-safe entry point for the c-shared / FFI boundary: decode

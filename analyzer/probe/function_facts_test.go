@@ -8,12 +8,10 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-// TestCalledFunctions locks the called-function emission (docs/facts-emission.md): the probe emits the DISTINCT
-// bare names of every Anonymous function call, so the control-plane can classify each against the
-// datasource's system manifests and DENY a dangerous builtin by policy. sqlglot drops a function's schema
-// qualifier at parse time, so only the bare name is emitted; standard-SQL builtins with dedicated node
-// kinds (count/cast/substring) are NOT emitted (they are safe and carry unreliable names). The `functions`
-// fact must be present ONLY for names actually called, deduped, and lowercased.
+// TestCalledFunctions locks the called-function emission (docs/facts-emission.md): the probe emits the
+// DISTINCT resolved identities ("pg_catalog.set_config") of every builtin call, so the control-plane can
+// danger-check each against its policy manifest. A user function is NOT in `functions` — it emits a
+// fail-closed Function grant instead — and an unresolvable name fails the statement closed.
 func TestCalledFunctions(t *testing.T) {
 	pgCatalog := []*pb.Column{
 		pbColumn("public", "t", "id", "BIGINT"),
@@ -30,16 +28,16 @@ func TestCalledFunctions(t *testing.T) {
 		want    []string
 	}{
 		// Dangerous builtins reach the success path and MUST be emitted so the Cedar forbid can act.
-		{"pg_terminate_backend", "postgres", pgCatalog, pgNs, "SELECT pg_terminate_backend(1)", []string{"pg_terminate_backend"}},
-		{"set_config", "postgres", pgCatalog, pgNs, "SELECT set_config('search_path', 'x', false)", []string{"set_config"}},
-		{"pageinspect nested calls both emitted", "postgres", pgCatalog, pgNs, "SELECT heap_page_items(get_raw_page('t', 0))", []string{"get_raw_page", "heap_page_items"}},
-		{"dblink_get_result (not in backstop)", "postgres", pgCatalog, pgNs, "SELECT dblink_get_result('c')", []string{"dblink_get_result"}},
+		{"pg_terminate_backend", "postgres", pgCatalog, pgNs, "SELECT pg_terminate_backend(1)", []string{"pg_catalog.pg_terminate_backend"}},
+		{"set_config", "postgres", pgCatalog, pgNs, "SELECT set_config('search_path', 'x', false)", []string{"pg_catalog.set_config"}},
+		{"pageinspect nested calls both emitted", "postgres", pgCatalog, pgNs, "SELECT heap_page_items(get_raw_page('t', 0))", []string{"pg_catalog.get_raw_page", "pg_catalog.heap_page_items"}},
+		{"dblink_get_result (not in backstop)", "postgres", pgCatalog, pgNs, "SELECT dblink_get_result('c')", []string{"pg_catalog.dblink_get_result"}},
 		// Safe Anonymous builtin is emitted (harmless — classifier returns null → not marshalled); a
 		// dedicated-kind builtin (count) is NOT emitted; a bare user function IS emitted (classifier returns
 		// null → treated as a safe/unclassified call on this phase).
-		{"safe now() emitted, count() not, user fn emitted", "postgres", pgCatalog, pgNs, "SELECT now(), count(*), my_udf(c) FROM t", []string{"my_udf", "now"}},
+		{"builtins emitted resolved; the user fn goes to a Function grant, not functions", "postgres", pgCatalog, pgNs, "SELECT now(), count(*), my_udf(c) FROM t", []string{"pg_catalog.count", "pg_catalog.now"}},
 		{"no functions", "postgres", pgCatalog, pgNs, "SELECT id FROM t", []string{}},
-		{"dedup: same fn called twice → once", "postgres", pgCatalog, pgNs, "SELECT set_config('a','b',false), set_config('c','d',true)", []string{"set_config"}},
+		{"dedup: same fn called twice → once", "postgres", pgCatalog, pgNs, "SELECT set_config('a','b',false), set_config('c','d',true)", []string{"pg_catalog.set_config"}},
 		// MySQL: rds_kill is Aurora-management (mysql.rds_ family); the bare name must be emitted so the
 		// resolver classifies it. keyring_ is a __builtin__ family.
 		{"mysql rds_kill", "mysql",
@@ -69,11 +67,9 @@ func TestCalledFunctions(t *testing.T) {
 }
 
 // TestFormerDangerousFuncsResolveAndEmit: every dangerous builtin analyzes resolved=TRUE and emits its
-// bare name as a function fact (docs/facts-emission.md) — so the verdict is the control-plane function
-// gate (per-version manifest OR the version-independent baseline floor), a stronger position than a
-// datasource-agnostic resolved=false relay. A FROM clause mirrors the real gated shape
-// (`SELECT pg_read_file('/x') FROM t`); the no-FROM form is gated separately by noFromFunctionGrants
-// (facts.go).
+// resolved identity as a function fact (docs/facts-emission.md) — so the verdict is the control-plane
+// danger-policy gate on that identity, a stronger position than a datasource-agnostic resolved=false
+// relay. A FROM clause mirrors the real gated shape (`SELECT pg_read_file('/x') FROM t`).
 func TestFormerDangerousFuncsResolveAndEmit(t *testing.T) {
 	pgCatalog := []*pb.Column{
 		pbColumn("public", "t", "id", "BIGINT"),
@@ -91,20 +87,20 @@ func TestFormerDangerousFuncsResolveAndEmit(t *testing.T) {
 		sql     string
 		want    string
 	}{
-		{"dblink", "postgres", pgCatalog, pgNs, "SELECT dblink('c', 'SELECT 1') FROM t", "dblink"},
-		{"dblink_exec", "postgres", pgCatalog, pgNs, "SELECT dblink_exec('c', 'SELECT 1') FROM t", "dblink_exec"},
-		{"dblink_open", "postgres", pgCatalog, pgNs, "SELECT dblink_open('c') FROM t", "dblink_open"},
-		{"dblink_fetch", "postgres", pgCatalog, pgNs, "SELECT dblink_fetch('c') FROM t", "dblink_fetch"},
-		{"dblink_send_query", "postgres", pgCatalog, pgNs, "SELECT dblink_send_query('c', 'SELECT 1') FROM t", "dblink_send_query"},
-		{"pg_read_file", "postgres", pgCatalog, pgNs, "SELECT pg_read_file('/etc/passwd') FROM t", "pg_read_file"},
-		{"pg_read_binary_file", "postgres", pgCatalog, pgNs, "SELECT pg_read_binary_file('/etc/passwd') FROM t", "pg_read_binary_file"},
-		{"pg_ls_dir", "postgres", pgCatalog, pgNs, "SELECT pg_ls_dir('/') FROM t", "pg_ls_dir"},
-		{"pg_stat_file", "postgres", pgCatalog, pgNs, "SELECT pg_stat_file('/etc/passwd') FROM t", "pg_stat_file"},
-		{"lo_import", "postgres", pgCatalog, pgNs, "SELECT lo_import('/etc/passwd') FROM t", "lo_import"},
-		{"lo_export", "postgres", pgCatalog, pgNs, "SELECT lo_export(16384, '/tmp/x') FROM t", "lo_export"},
-		{"query_to_xml", "postgres", pgCatalog, pgNs, "SELECT query_to_xml('SELECT 1', true, false, '') FROM t", "query_to_xml"},
-		{"query_to_xml_and_xmlschema", "postgres", pgCatalog, pgNs, "SELECT query_to_xml_and_xmlschema('SELECT 1', true, false, '') FROM t", "query_to_xml_and_xmlschema"},
-		{"xpath_table", "postgres", pgCatalog, pgNs, "SELECT xpath_table('a', 'b', 'c', 'd', 'e') FROM t", "xpath_table"},
+		{"dblink", "postgres", pgCatalog, pgNs, "SELECT dblink('c', 'SELECT 1') FROM t", "pg_catalog.dblink"},
+		{"dblink_exec", "postgres", pgCatalog, pgNs, "SELECT dblink_exec('c', 'SELECT 1') FROM t", "pg_catalog.dblink_exec"},
+		{"dblink_open", "postgres", pgCatalog, pgNs, "SELECT dblink_open('c') FROM t", "pg_catalog.dblink_open"},
+		{"dblink_fetch", "postgres", pgCatalog, pgNs, "SELECT dblink_fetch('c') FROM t", "pg_catalog.dblink_fetch"},
+		{"dblink_send_query", "postgres", pgCatalog, pgNs, "SELECT dblink_send_query('c', 'SELECT 1') FROM t", "pg_catalog.dblink_send_query"},
+		{"pg_read_file", "postgres", pgCatalog, pgNs, "SELECT pg_read_file('/etc/passwd') FROM t", "pg_catalog.pg_read_file"},
+		{"pg_read_binary_file", "postgres", pgCatalog, pgNs, "SELECT pg_read_binary_file('/etc/passwd') FROM t", "pg_catalog.pg_read_binary_file"},
+		{"pg_ls_dir", "postgres", pgCatalog, pgNs, "SELECT pg_ls_dir('/') FROM t", "pg_catalog.pg_ls_dir"},
+		{"pg_stat_file", "postgres", pgCatalog, pgNs, "SELECT pg_stat_file('/etc/passwd') FROM t", "pg_catalog.pg_stat_file"},
+		{"lo_import", "postgres", pgCatalog, pgNs, "SELECT lo_import('/etc/passwd') FROM t", "pg_catalog.lo_import"},
+		{"lo_export", "postgres", pgCatalog, pgNs, "SELECT lo_export(16384, '/tmp/x') FROM t", "pg_catalog.lo_export"},
+		{"query_to_xml", "postgres", pgCatalog, pgNs, "SELECT query_to_xml('SELECT 1', true, false, '') FROM t", "pg_catalog.query_to_xml"},
+		{"query_to_xml_and_xmlschema", "postgres", pgCatalog, pgNs, "SELECT query_to_xml_and_xmlschema('SELECT 1', true, false, '') FROM t", "pg_catalog.query_to_xml_and_xmlschema"},
+		{"xpath_table", "postgres", pgCatalog, pgNs, "SELECT xpath_table('a', 'b', 'c', 'd', 'e') FROM t", "pg_catalog.xpath_table"},
 		// MySQL server-side file read.
 		{"load_file", "mysql", myCatalog, myNs, "SELECT load_file('/etc/passwd') FROM t", "load_file"},
 	}
@@ -138,13 +134,10 @@ func deniedColumns(f *pb.StatementFacts) map[string]bool {
 	return out
 }
 
-// TestOdkuValuesIsNotAFunctionGrant locks two things about MySQL's `INSERT … ON DUPLICATE KEY UPDATE
-// col = VALUES(col)`. First, `VALUES()` there is not a callable function — it names the value that would
-// have been inserted — so the upsert must resolve and must NOT emit the deny-by-default Function grant that
-// noFromFunctionGrants gives an unclassified no-FROM call (a regression there re-denies every plain upsert
-// with "dangerous system function is not allowed: 'values'"). Second — and separately — making the
-// pseudo-function safe must NOT weaken write-side gating: every column VALUES() names is still a
-// DENY_STATEMENT grant, so a masked column cannot slip through the write payload unauthorized.
+// TestOdkuValuesIsNotAFunctionGrant: MySQL `ON DUPLICATE KEY UPDATE col = VALUES(col)` — `VALUES()` is
+// the would-be-inserted value, not a callable function, so the upsert resolves and emits no Function
+// grant for `values`. Separately, every column VALUES() names is still a DENY_STATEMENT grant, so a
+// masked column cannot slip through the write payload.
 func TestOdkuValuesIsNotAFunctionGrant(t *testing.T) {
 	sql := "INSERT INTO users (id, email, ssn) VALUES (1, 'x', 'y') ON DUPLICATE KEY UPDATE email = VALUES(email), ssn = VALUES(ssn)"
 	f := mysqlFacts(t, sql)
@@ -178,22 +171,14 @@ func TestOdkuInsertSelectRetainsSourceLineage(t *testing.T) {
 	}
 }
 
-// TestPostgresQuotedValuesStaysGated locks that `values` is safe ONLY on MySQL. PostgreSQL has no `values`
-// builtin, so a quoted `"values"()` is a user function and must still emit a no-FROM Function grant the
-// control-plane denies — the MySQL ODKU allowance must not leak into PostgreSQL.
+// TestPostgresQuotedValuesStaysGated locks that `values` is exempt ONLY inside MySQL's ODKU clause.
+// PostgreSQL has no `values` function anywhere in the catalog, so a quoted `"values"()` is an
+// unresolvable call and the statement fails closed — the MySQL ODKU allowance must not leak into
+// PostgreSQL.
 func TestPostgresQuotedValuesStaysGated(t *testing.T) {
 	f := postgresFacts(t, `SELECT "values"()`)
-	if !f.Resolved {
-		t.Fatalf(`SELECT "values"() did not resolve: detail=%q`, f.GetDetail())
-	}
-	gated := false
-	for _, g := range f.GetResultReads() {
-		if fn := g.GetFunction(); fn != nil && fn.GetName() == "values" {
-			gated = true
-		}
-	}
-	if !gated {
-		t.Fatalf(`PostgreSQL "values"() must emit a Function grant (a user function is gated): reads=%v`, f.GetResultReads())
+	if f.Resolved || stageString(f.FailedStage) != "VALIDATE" {
+		t.Fatalf(`PostgreSQL "values"() must fail closed as an unresolved call: %+v`, f)
 	}
 }
 
@@ -203,7 +188,7 @@ func probeFunctions(t *testing.T, sql, dialect string, cols []*pb.Column, ns *pb
 	if dialect == "mysql" {
 		engineConfig = &pb.EngineConfig{Engine: pb.Engine_MYSQL, EngineVersion: "8.0.46", MysqlLowerCaseTableNames: proto.Int32(1)}
 	}
-	res := analyzeProbe(t, &pb.AnalyzeRequest{Sql: sql, EngineConfig: engineConfig, Namespace: ns, Catalog: snapshot(cols)})
+	res := analyzeProbe(t, &pb.AnalyzeRequest{Sql: sql, EngineConfig: engineConfig, Namespace: ns, Catalog: snapshotWith(cols, testFunctionCatalog(dialect == "mysql", ns.GetSearchPath()))})
 	return res.Functions, res.Resolved
 }
 

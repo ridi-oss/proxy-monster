@@ -649,7 +649,7 @@ fun decideQuery(
         if (facts.functionsList.isNotEmpty()) {
             val functionTags = facts.functionsList.mapNotNull { name ->
                 (systemClassification?.tagForFunction(ds.engine, ds.engineVersion, name)
-                    ?: BaselineDangerousFunctions.classify(name)?.id)?.let { name to it }
+                    ?: BaselineDangerousFunctions.classify(name.substringAfterLast('.'))?.id)?.let { name to it }
             }.toMap()
             if (functionTags.isNotEmpty()) {
                 val refs = functionTags.keys.map(::FunctionRef)
@@ -779,13 +779,19 @@ fun decideQuery(
         val names = (functionGrants.map { it.function.name } + facts.functionsList).distinct()
         val functionTags = names.mapNotNull { name ->
             (systemClassification?.tagForFunction(ds.engine, ds.engineVersion, name)
-                ?: BaselineDangerousFunctions.classify(name)?.id)?.let { name to it }
+                ?: BaselineDangerousFunctions.classify(name.substringAfterLast('.'))?.id)?.let { name to it }
         }.toMap()
-        functionGrants.firstOrNull { it.function.name !in functionTags }?.let {
-            return structuralDeny("$SYSTEM_FUNCTION_DENY '${it.function.name}'", roleList, failedStage = "policy", contextTags = derivedTags)
+        // now() relays; pg_read_file and every user function need a grant. functionsList (calls seen in an
+        // unanalyzable statement) has no builtin flag, so only its dangerous names are gated.
+        val functionsToAuthorize = LinkedHashSet<String>()
+        for (grant in functionGrants) {
+            val name = grant.function.name
+            if (grant.function.builtin && name !in functionTags) continue
+            functionsToAuthorize += name
         }
-        if (functionTags.isNotEmpty()) {
-            val refs = functionTags.keys.map(::FunctionRef)
+        facts.functionsList.filterTo(functionsToAuthorize) { it in functionTags }
+        if (functionsToAuthorize.isNotEmpty()) {
+            val refs = functionsToAuthorize.map(::FunctionRef)
             val verdicts = authz.authorizeFunctions(principal, roles, ds.name, refs, context, functionTags, ds.tags)
             refs.firstOrNull { verdicts[it.name] != FunctionVerdict.ALLOWED }?.let {
                 return structuralDeny("$SYSTEM_FUNCTION_DENY '${it.name}'", roleList, failedStage = "policy", contextTags = derivedTags)
@@ -935,7 +941,8 @@ fun decideQuery(
         contextTags = derivedTags,
         unmaskablePermitted = unmaskablePermitted,
         sanitizeDiagnostics = sanitizeDiagnostics,
-        catalogChanging = facts.catalogChanging || facts.functionsList.isNotEmpty(),
+        // A call may run DDL inside its body, builtin or UDF alike.
+        catalogChanging = facts.catalogChanging || facts.functionsList.isNotEmpty() || functionGrants.isNotEmpty(),
         referencedSchemas = referencedSchemas,
         schemaCandidates = facts.schemaQualifierCandidatesList.toSet(),
     ).withCaps(datasourceCaps, statementCaps).withAnalyzerRewrite(facts)

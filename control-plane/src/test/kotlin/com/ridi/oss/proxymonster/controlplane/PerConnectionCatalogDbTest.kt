@@ -9,6 +9,7 @@ import com.ridi.oss.proxymonster.analyzer.pb.sessionObservation
 import com.ridi.oss.proxymonster.grpc.EnfAction
 import com.ridi.oss.proxymonster.controlplane.support.EnforcementFixture
 import com.ridi.oss.proxymonster.controlplane.support.PerConnectionCatalogFixture
+import com.ridi.oss.proxymonster.controlplane.support.pushTestCatalog
 import com.ridi.oss.proxymonster.controlplane.support.requireDocker
 import com.ridi.oss.proxymonster.controlplane.support.SharedMySql
 import com.ridi.oss.proxymonster.controlplane.systemSchemas
@@ -19,6 +20,7 @@ import org.junit.jupiter.api.TestInstance
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
+import kotlin.test.assertTrue
 
 abstract class PerConnectionCatalogDbContract {
     protected abstract val enforcement: EnforcementFixture
@@ -86,6 +88,77 @@ abstract class PerConnectionCatalogDbContract {
         )
         val allowedVerdict = assertIs<EnforcementOutcome.Verdict>(allowed)
         assertEquals(EnfAction.ALLOW, allowedVerdict.ctx.action, allowedVerdict.ctx.denyReason)
+    }
+
+
+    @Test
+    fun `PostgreSQL safe function rewrite survives target shadowing`() = runBlocking {
+        if (!fixture.datasource.engine.isPostgres) return@runBlocking
+        val schema = fixture.datasource.defaultSchemas.first { it !in fixture.datasource.engine.systemSchemas }
+        val shadowSchema = "pm_abs_shadow"
+        val sql = "select abs(1)"
+
+        java.sql.DriverManager.getConnection(
+            fixture.enforcement.targetJdbcUrl,
+            fixture.enforcement.targetUser,
+            fixture.enforcement.targetPassword,
+        ).use { target ->
+            target.createStatement().use { statement ->
+                statement.execute("drop schema if exists $shadowSchema cascade")
+                statement.execute("create schema $shadowSchema")
+                statement.execute(
+                    "create function $shadowSchema.abs(integer) returns integer language sql immutable as 'select 777'",
+                )
+            }
+            try {
+                // Re-introspect AFTER creating the shadow, the way the proxy's catalog refresh would.
+                fixture.core.datasourceStore.pushTestCatalog(
+                    fixture.datasource,
+                    fixture.enforcement.targetJdbcUrl,
+                    fixture.enforcement.targetUser,
+                    fixture.enforcement.targetPassword,
+                )
+                val opened = fixture.openAndPush(schemas = listOf(shadowSchema, "pg_catalog", schema))
+                // With the shadow schema FIRST on the live search_path, the bare abs resolves to the
+                // user function $shadowSchema.abs — an ungranted UDF Function grant — so the statement
+                // DENIES instead of relaying a call the target would resolve to user code.
+                val verdict = assertIs<EnforcementOutcome.Verdict>(
+                    decideConnection(
+                        fixture.core,
+                        opened.connectionId,
+                        "analyst@example.com",
+                        fixture.datasource,
+                        sql,
+                        listOf(shadowSchema, "pg_catalog", schema),
+                        null,
+                    ),
+                )
+                assertEquals(EnfAction.DENY, verdict.ctx.action, verdict.ctx.toString())
+                // Without the shadow on the path, the same call resolves to the pg_catalog builtin and
+                // relays verbatim.
+                val clean = assertIs<EnforcementOutcome.Verdict>(
+                    decideConnection(
+                        fixture.core,
+                        opened.connectionId,
+                        "analyst@example.com",
+                        fixture.datasource,
+                        sql,
+                        listOf("pg_catalog", schema),
+                        null,
+                    ),
+                )
+                assertEquals(EnfAction.ALLOW, clean.ctx.action, clean.ctx.denyReason)
+                assertEquals(null, clean.ctx.rewrittenSql, clean.ctx.toString())
+            } finally {
+                target.createStatement().use { it.execute("drop schema if exists $shadowSchema cascade") }
+                fixture.core.datasourceStore.pushTestCatalog(
+                    fixture.datasource,
+                    fixture.enforcement.targetJdbcUrl,
+                    fixture.enforcement.targetUser,
+                    fixture.enforcement.targetPassword,
+                )
+            }
+        }
     }
 
     @Test
@@ -177,6 +250,7 @@ abstract class PerConnectionCatalogDbContract {
         val before = assertIs<EnforcementOutcome.BeforeDecide>(outcome)
         assertEquals(listOf("missing_schema"), before.commands.map { it.schema })
     }
+
 }
 
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
@@ -187,4 +261,5 @@ class PerConnectionCatalogMysqlDbTest : PerConnectionCatalogDbContract() {
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 class PerConnectionCatalogPostgresDbTest : PerConnectionCatalogDbContract() {
     override val enforcement by lazy { EnforcementFixture.postgres() }
+
 }

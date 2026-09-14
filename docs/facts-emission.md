@@ -27,8 +27,8 @@ For each statement the analyzer emits, in `StatementFacts`
    and output ordinals;
 2. every physical Table scanned, including scans that touch zero columns, each
    marked `covered` or not;
-3. distinct named `Anonymous` function calls, plus explicit Function grants for
-   non-allowlisted no-FROM calls;
+3. resolved Function grants, marked builtin or user-defined, plus dangerous-call
+   facts retained when analysis is unresolved;
 4. classified Utility commands (SHOW/SET forms and unsafe cast/subquery forms);
 5. the single `statement_exec` grant naming the statement's kind
    (`stmt.kind.<k>`) — the single per-statement authorization signal, which
@@ -105,11 +105,11 @@ The request graph is assembled from live data on every decision:
 - Table (uncovered scan): either `result.read.unmasked` or `result.read.masked`
   permits the scan — a masked reader already observes the table's existence and
   row count through masked projections. No permit denies.
-- Function: called-function names are classified before marshalling.
-  `system:critical` is always forbidden; `system:data-leak` is forbidden on the
-  production posture and relaxed on `system:development`. Unclassified FROM'd
-  calls are not marshalled. An explicit no-FROM Function grant must classify; an
-  unclassified grant hard-denies.
+- Function: a resolved builtin with no dangerous tag needs no Function permit.
+  Dangerous builtins and all user functions require a Cedar read permit.
+  `system:critical` is forbidden by the shipped policy; `system:data-leak` is
+  forbidden on production and relaxed on `system:development`. An unresolved
+  call routes through `exception.unanalyzable`, with or without FROM.
 - Utility: a read permit covering the tagged `Utility` resource permits use; the
   shipped `system:` forbids deny dangerous commands. A recognized Utility with
   no governing manifest classification hard-denies before Cedar.
@@ -183,15 +183,34 @@ with no covering column fact requires `result.read.unmasked` or
 Verified by `KnownGapsTest` and `ScannedTableMySqlTest` (control-plane) and
 `scanned_sources_test.go` (analyzer, both engines).
 
-## Functions — dangerous-call gating
+## Functions — catalog resolution and Cedar gating
 
-The analyzer emits distinct lowercased bare names for function calls represented
-as `Anonymous` nodes. Standard built-ins with dedicated node kinds such as
-`count`, `cast`, and `substring` are not emitted. The control-plane classifies
-the names it receives and marshals only the dangerous set. A FROM'd dangerous
-call emits its name even when later analysis is unresolved. `system:critical`
-always denies; `system:data-leak` denies on production and may pass under
-`system:development`.
+The analyzer parses calls with `opaque_functions=true` and resolves them against
+`FunctionCatalog` using the live namespace. Resolved calls emit Function grants
+with their qualified identity and builtin flag. A builtin with no dangerous tag
+needs no Function permit; a dangerous builtin or any user function requires a
+Cedar read permit. An unknown call makes the statement unanalyzable and routes
+through `exception.unanalyzable`. FROM does not change these rules.
+Dangerous-call facts survive unresolved analysis and still pass through the
+dangerous-function gate before an exception can relay the statement.
+
+The proxy sends function names alongside columns in `CatalogRequest.catalog`.
+The control plane stores both as one snapshot and reads a consistent `Catalog`.
+It passes the same `CatalogSnapshot` through `AnalyzeRequest.catalog`,
+supplementing its functions with pinned MySQL native names or PostgreSQL grammar
+functions absent from `pg_proc`. PostgreSQL builtins and user functions are
+introspected; MySQL introspects stored and loadable functions. The existing
+column catalog remains the source for relation qualification and lineage.
+`optimizer.EngineCatalog` is the Go library adapter, not a second catalog
+transport.
+
+A failed function probe omits `functions` from the push, clearing the stored
+inventory while still updating columns. Failure in any function tier discards
+all tiers. A successful empty observation sends a present, empty
+`FunctionCatalog`; it is distinct from an absent inventory. A failed database
+write rolls back columns and functions together. After control-plane restart,
+persisted functions remain unavailable until a successful function-bearing push.
+Pinned MySQL natives remain available without an introspected inventory.
 
 For a governed datasource, `SystemClassificationService.tagForFunction` uses the
 governing manifest plus `BaselineDangerousFunctions`. With no governing manifest
@@ -200,18 +219,10 @@ engine, again with the baseline floor. The function gate runs before the column
 and uncovered-table gates, so a legitimate table-read grant cannot punch a
 classified function through.
 
-The no-FROM function allowlist lives in the analyzer
-(`analyzer/probe/facts.go`): any non-allowlisted anonymous call, or an untrusted
-qualified call, emits a Function grant. An unclassified grant hard-denies;
-classified grants follow their shipped system policy. Allowlisted no-FROM calls
-and dedicated safe built-ins emit no Function grant.
-
-Resolving every call as built-in vs UDF against a datasource function catalog,
-and vouching a data-reading UDF's output, is out of scope. A non-dangerous UDF
-in a FROM-backed query that reads a masked/PII column inside its body — never as
-a visible argument (an argument is already denied by the derived-expression
-rule) — passes unmasked, held by the operational rule that a UDF on a masking
-datasource must not read PII ([KNOWN_LIMITATIONS.md](../KNOWN_LIMITATIONS.md)).
+Connection-scoped execution combines held-connection columns with the persisted
+datasource-global function inventory; functions have no per-connection
+generation stamp. Function freshness and a permitted UDF's hidden body reads
+remain limitations ([KNOWN_LIMITATIONS.md](../KNOWN_LIMITATIONS.md)).
 
 ## Analyzable
 
@@ -283,10 +294,10 @@ deactivated principal; resolve roles and context; validate the facts contract;
 authorize `datasource.connect`; authorize classified Utility grants; handle
 zero-resource metadata/session passthrough; authorize each emitted datasource
 action; apply the dangerous-function and `exception.unanalyzable` gates for an
-unresolved statement; then authorize classified functions, Columns, and
-uncovered Tables. For any remaining MASK verdict, the control-plane checks
-`exception.unmaskable` and carries the result as a capability flag for the
-proxy. Every gate runs before the target DB receives the statement.
+unresolved statement; then authorize dangerous builtins, user functions,
+Columns, and uncovered Tables. For any remaining MASK verdict, the control-plane
+checks `exception.unmaskable` and carries the result as a capability flag for
+the proxy. Every gate runs before the target DB receives the statement.
 
 Assuming `datasource.connect` and the `stmt.kind.select` gate pass:
 
@@ -294,7 +305,7 @@ Assuming `datasource.connect` and the `stmt.kind.select` gate pass:
 | query / feature | emitted facts | production masking datasource | development datasource |
 | --- | --- | --- | --- |
 | `SELECT count(*) FROM orders` | uncovered Table `orders` | DENY without a Table read grant | permit if policy grants broad read |
-| `SELECT lower(email) FROM users` | derived Column `email`; no Function fact | masked output is redacted to NULL | ALLOW unmasked under dev posture |
+| `SELECT lower(email) FROM users` | derived Column `email`; builtin Function `lower` | masked output is redacted to NULL | ALLOW unmasked under dev posture |
 | `SELECT dblink(…) FROM t` | named Function `dblink` (`system:data-leak`) | DENY (function forbid) | ALLOW under the dev relaxation |
 | `SELECT * FROM information_schema.tables` | system Table/Columns tagged `system:catalog` | catalog permit | catalog permit |
 | `SHOW FULL PROCESSLIST` | Utility → activity resource | DENY | dev activity policy may permit |
@@ -318,8 +329,8 @@ would permit, but it must never under-deny one.
 
 1. A physical read omitted from the sources is a leak. The scope-graph sweep and
    the zero-column adversarial suite are release gates.
-2. A dangerous named function call omitted from `functions` or an explicit
-   Function grant is a leak. Dedicated safe built-ins are intentionally absent.
+2. A resolved call emits a Function grant; an unknown call makes the statement
+   unanalyzable. Dangerous-call facts must survive unresolved analysis.
 3. A classified utility omitted is a leak. Every recognized command id is either
    a mapped resource fact or an explicit metadata/session operation.
 4. Unknown identity is never safe: an unknown relation resolution makes the

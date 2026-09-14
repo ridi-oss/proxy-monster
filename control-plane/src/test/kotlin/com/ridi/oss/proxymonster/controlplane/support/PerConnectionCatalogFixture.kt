@@ -41,10 +41,11 @@ class PerConnectionCatalogFixture(val enforcement: EnforcementFixture) {
         principal: String = "analyst@example.com",
         schemas: Collection<String> = datasource.defaultSchemas,
         tokenKind: String = "USER",
+        withRoutines: Boolean = true,
     ): OpenConnection {
         val opened = core.connectionCatalog.open(Binding(datasource.name, principal, tokenKind), schemas)
         val bySchema = enforcement.datasourceStore.catalog(datasource.id).columns.groupBy { it.schema }
-        val routines = enforcement.datasourceStore.storedRoutines(datasource.id)
+        val routines = if (withRoutines) enforcement.datasourceStore.storedRoutines(datasource.id) else emptyMap()
         for (schema in schemas.distinct()) {
             val rows = bySchema[schema].orEmpty().map { row ->
                 FragmentColumn(row.schema, row.table, row.column, row.sqlType, row.ordinal, row.nullable)

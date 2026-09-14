@@ -9,48 +9,13 @@ import (
 	sqlglot "github.com/ridi-oss/sqlglot-go"
 	"github.com/ridi-oss/sqlglot-go/dialects"
 	exp "github.com/ridi-oss/sqlglot-go/expressions"
-	"github.com/ridi-oss/sqlglot-go/generator"
 	"github.com/ridi-oss/sqlglot-go/optimizer"
 	"github.com/ridi-oss/sqlglot-go/schema"
 	"github.com/ridi-oss/sqlglot-go/tokens"
 )
 
-var safeNoFromFunctions = stringSet(
-	"version", "current_schema", "current_schemas", "current_database", "current_catalog",
-	"current_user", "session_user", "current_role", "user", "database", "schema", "connection_id",
-	"pg_backend_pid", "pg_is_in_recovery", "pg_postmaster_start_time", "current_setting",
-	"txid_current", "pg_current_xact_id",
-	"inet_server_addr", "inet_server_port", "inet_client_addr", "inet_client_port",
-	"last_insert_id", "row_count", "found_rows", "charset", "collation", "coercibility",
-	"now", "current_timestamp", "current_date", "current_time", "localtime", "localtimestamp",
-	"clock_timestamp", "statement_timestamp", "transaction_timestamp", "timeofday", "sysdate",
-	"curdate", "curtime", "utc_timestamp", "utc_date", "utc_time", "unix_timestamp", "from_unixtime",
-	"extract", "date_part", "date_trunc", "datediff", "timestampdiff", "dateadd", "datepart",
-	"to_char", "to_date", "to_timestamp", "to_number", "make_date", "make_timestamp",
-	"abs", "ceil", "ceiling", "floor", "round", "trunc", "truncate", "mod", "power", "pow", "sqrt",
-	"cbrt", "exp", "ln", "log", "log10", "log2", "sign", "pi", "degrees", "radians",
-	"sin", "cos", "tan", "asin", "acos", "atan", "atan2", "rand", "random", "gen_random_uuid", "uuid",
-	"length", "char_length", "character_length", "octet_length", "bit_length", "lower", "upper",
-	"lcase", "ucase", "initcap", "trim", "ltrim", "rtrim", "btrim", "lpad", "rpad", "substr",
-	"substring", "mid", "left", "right", "concat", "concat_ws", "replace", "translate", "reverse",
-	"repeat", "ascii", "chr", "char", "ord", "instr", "locate", "position", "strpos", "split_part",
-	"format", "quote_ident", "quote_literal", "quote_nullable", "regexp_replace", "regexp_substr",
-	"md5", "sha1", "sha2", "encode", "decode", "hex", "unhex", "to_hex", "overlay",
-	"cast", "convert", "coalesce", "nullif", "ifnull", "isnull", "nvl", "greatest", "least",
-	"iif", "if", "typeof", "pg_typeof",
-)
-
-// userTypeCast returns the name of the first reference to a non-built-in (user) type anywhere in root, or
-// "" if every type reference is a safe built-in. sqlglot resolves a built-in type to a concrete DType and
-// a user type to DTypeUserDefined, so this is a single AST pass over DataType nodes. It covers every way a
-// statement can name a type — the `::type` and `CAST(x AS type)` forms and the `type 'literal'` typed
-// literal alike (they all parse to the same DataType node), in any position and whether or not the
-// statement has a FROM (a `SELECT 1::public.evil_domain FROM users` runs the domain's code just the same).
-// A `pg_catalog.<builtin>` reference needs no special-case here: sqlglot-go resolves it to the built-in
-// node directly (`pg_catalog.int4` → INT DataType, `pg_catalog.oid`/reg* → ObjectIdentifier — not a
-// DataType at all), so it never reaches the DTypeUserDefined branch. Only a non-catalog builtin ALIAS in
-// pg_catalog (e.g. `pg_catalog.integer`, which PostgreSQL itself rejects as a nonexistent type) still
-// lands here and is fail-closed — an accepted over-deny of invalid SQL.
+// userTypeCast returns the first type that may run user code (`1::public.evil_domain` runs the domain's
+// CHECK), or "". sqlglot marks every type it does not know as DTypeUserDefined.
 func userTypeCast(root exp.Expression) string {
 	for _, dt := range root.FindAll(exp.KindDataType) {
 		if dt.Arg("this") != exp.DTypeUserDefined {
@@ -70,8 +35,6 @@ func userTypeCast(root exp.Expression) string {
 	return ""
 }
 
-// EmitFacts parses one statement, classifies its relay behavior, and emits every Cedar requirement.
-// Every return is a valid fail-closed StatementFacts; unresolved statements carry an explicit failure class.
 func EmitFacts(sql string, engineConfig *pb.EngineConfig, sch *schema.Mapping, namespace NamespaceConfig) *pb.StatementFacts {
 	eng, err := createEngine(engineConfig)
 	if err != nil {
@@ -124,12 +87,13 @@ func EmitFacts(sql string, engineConfig *pb.EngineConfig, sch *schema.Mapping, n
 	// left to fold by hand. Quote-aware, so a quoted identifier keeps its case: `"PG_CATALOG"` stays a
 	// distinct user schema from `pg_catalog`, and `"MySchema".fn` from `myschema.fn`.
 	root := optimizer.NormalizeIdentifiers(unwrapSubquery(stmts[0]), eng.Dialect())
+	originalRoot := root
 	if !hasSyntheticAlias(root) {
 		// A duplicate-label error is the target DB's own rejection (MySQL ER_DUP_FIELDNAME, a
 		// referenced PostgreSQL ambiguity) — the statement would never run there.
 		if err := stampNativeOutputLabels(root, eng); err != nil {
 			facts := inadmissibleFacts("VALIDATE", err.Error())
-			facts.StatementExec = executeGrant(statementKind(root, eng))
+			facts.StatementExec = executeGrant(statementKind(originalRoot, eng))
 			return facts
 		}
 	}
@@ -140,9 +104,9 @@ func EmitFacts(sql string, engineConfig *pb.EngineConfig, sch *schema.Mapping, n
 	case exp.KindDescribe:
 		facts = emitDescribeFacts(root, eng, qualifySchema, validatedNamespace)
 	case exp.KindShow:
-		facts = emitShowFacts(root, eng)
+		facts = emitShowFacts(root, eng, validatedNamespace)
 	case exp.KindSet:
-		facts = emitSetFacts(root, eng)
+		facts = emitSetFacts(root, eng, validatedNamespace)
 	case exp.KindCommand:
 		facts = emitCommandFacts(root, eng)
 	case exp.KindTransaction, exp.KindCommit, exp.KindRollback, exp.KindSavepoint, exp.KindUse, exp.KindReset:
@@ -186,7 +150,7 @@ func EmitFacts(sql string, engineConfig *pb.EngineConfig, sch *schema.Mapping, n
 			facts.RewrittenSql = &rewrite
 		}
 	}
-	facts.StatementExec = executeGrant(statementKind(root, eng))
+	facts.StatementExec = executeGrant(statementKind(originalRoot, eng))
 	facts.SchemaQualifierCandidates = candidates
 	return facts
 }
@@ -299,8 +263,11 @@ func emitLineageFacts(root exp.Expression, eng engine, qualifySchema schema.Sche
 			MaskedDisposition: pb.MaskedDisposition_MASKED_DISPOSITION_DENY_STATEMENT,
 		})
 	}
-	if len(report.Sources) == 0 {
-		facts.ResultReads = append(facts.ResultReads, noFromFunctionGrants(root, eng)...)
+	for _, identity := range report.UDFCalls {
+		facts.ResultReads = append(facts.ResultReads, &pb.RequireResultReadGrant{
+			Resource:          &pb.RequireResultReadGrant_Function{Function: &pb.FunctionResource{Name: identity}},
+			MaskedDisposition: pb.MaskedDisposition_MASKED_DISPOSITION_DENY_STATEMENT,
+		})
 	}
 	facts.CatalogChanging = root.Kind() == exp.KindCreate && !isTemporaryDDL(root, eng)
 	if root.Kind() == exp.KindSelect && root.Arg("into") != nil {
@@ -465,14 +432,15 @@ func emitAnalyzeFacts(root exp.Expression, eng engine, qualifySchema schema.Sche
 	return passthroughFacts()
 }
 
-func emitShowFacts(root exp.Expression, eng engine) *pb.StatementFacts {
-	if unsafeExpression(root.Arg("where"), eng) || unsafeExpression(root.Arg("query"), eng) {
+func emitShowFacts(root exp.Expression, eng engine, namespace NamespaceConfig) *pb.StatementFacts {
+	if unsafeExpression(root.Arg("where"), eng, namespace) || unsafeExpression(root.Arg("query"), eng, namespace) {
 		return criticalUtilityFacts(cmdShowSubquery)
 	}
 	if userTypeCast(root) != "" {
 		return criticalUtilityFacts(cmdUserTypeCast)
 	}
 	facts := passthroughFacts()
+	facts.Functions, _ = resolveStandaloneCalls(root, eng, namespace)
 	command := showUtilityCommand(root)
 	if command != "" {
 		facts.ResultReads = append(facts.ResultReads, utilityGrant(command))
@@ -567,11 +535,11 @@ func sessionIdentitySetCommand(root exp.Expression) string {
 // time — a literal or a bareword keyword — and never one that changes the lexer.
 var lexerModeGucs = stringSet("sql_mode", "standard_conforming_strings")
 
-func emitSetFacts(root exp.Expression, eng engine) *pb.StatementFacts {
+func emitSetFacts(root exp.Expression, eng engine, namespace NamespaceConfig) *pb.StatementFacts {
 	if command := sessionIdentitySetCommand(root); command != "" {
 		return sessionUtilityFacts(command)
 	}
-	if unsafeExpression(root, eng) {
+	if unsafeExpression(root, eng, namespace) {
 		return sessionUtilityFacts(cmdSetSubquery)
 	}
 	if userTypeCast(root) != "" {
@@ -581,6 +549,7 @@ func emitSetFacts(root exp.Expression, eng engine) *pb.StatementFacts {
 		return sessionUtilityFacts(command)
 	}
 	facts := passthroughFacts()
+	facts.Functions, _ = resolveStandaloneCalls(root, eng, namespace)
 	for _, command := range setUtilityCommands(root) {
 		facts.ResultReads = append(facts.ResultReads, utilityGrant(command))
 	}
@@ -710,88 +679,36 @@ func conflictDoesUpdate(root exp.Expression) bool {
 	return false
 }
 
-func noFromFunctionGrants(root exp.Expression, eng engine) []*pb.RequireResultReadGrant {
-	seen := map[string]bool{}
-	out := []*pb.RequireResultReadGrant{}
-	emit := func(name string) {
-		if name == "" || name == "*" || seen[name] {
-			return
-		}
-		seen[name] = true
-		out = append(out, &pb.RequireResultReadGrant{
-			Resource:          &pb.RequireResultReadGrant_Function{Function: &pb.FunctionResource{Name: name}},
-			MaskedDisposition: pb.MaskedDisposition_MASKED_DISPOSITION_DENY_STATEMENT,
-		})
-	}
-	// Schema-qualified calls carry their qualifier in a wrapping Dot (left = qualifier, right = the
-	// function), even though the function node's own Name() drops it. Only a bare `pg_catalog.<fn>` is a
-	// trusted system builtin; any other qualifier — a user schema, or a multi-part/computed qualifier
-	// whose leaf merely spells `pg_catalog` (`db.pg_catalog.fn`, `current_database().public.fn`) — is user
-	// code and must NOT inherit a safe built-in's name. Emit its fully-qualified identity so it can never
-	// classify to a trusted function and the control-plane hard-denies it (unclassified Function grant).
-	qualified := map[exp.Expression]bool{}
-	for _, dot := range root.FindAll(exp.KindDot) {
-		fn := dot.Right()
-		if fn == nil || !fn.Is(exp.TraitFunc) || dot.Left() == nil {
-			continue
-		}
-		qualified[fn] = true
-		leaf := strings.ToLower(fn.Name())
-		if eng.IsTrustedSystemQualifier(dot.Left()) {
-			if !safeNoFromFunctions[leaf] {
-				emit(leaf)
-			}
-			continue
-		}
-		if eng.IsTrustedInformationSchemaCall(dot.Left(), leaf) {
-			continue
-		}
-		emit(qualifiedCallName(dot.Left(), leaf, eng))
-	}
-	// A FROM-form call carries its qualifier on the Table node, not a Dot wrapper.
-	for _, table := range root.FindAll(exp.KindTable) {
-		fn := table.This()
-		if fn == nil || !fn.Is(exp.TraitFunc) || table.Arg("catalog") != nil {
-			continue
-		}
-		schema, _ := table.Arg("schema").(exp.Expression)
-		if schema == nil {
-			continue
-		}
-		if eng.IsTrustedInformationSchemaCall(schema, strings.ToLower(fn.Name())) {
-			qualified[fn] = true
+// resolveStandaloneCalls resolves calls in SET/SHOW, which never reach Qualify: builtin identities
+// ("pg_catalog.current_setting") for facts.functions, gated=true on any user or unknown call.
+func resolveStandaloneCalls(root exp.Expression, eng engine, namespace NamespaceConfig) (builtins []string, gated bool) {
+	var callNodes []exp.Expression
+	for _, fn := range root.FindAll(exp.KindAnonymous) {
+		if fn.Is(exp.TraitFunc) && !skipCallResolution(fn) {
+			callNodes = append(callNodes, fn)
 		}
 	}
-	for _, fn := range root.FindAll(exp.TraitFunc) {
-		if fn.Kind() != exp.KindAnonymous || qualified[fn] {
-			continue
-		}
-		name := strings.ToLower(fn.Name())
-		if eng.IsSafeNoFromFunction(name) {
-			continue
-		}
-		emit(name)
+	if len(callNodes) == 0 {
+		return nil, false
 	}
-	return out
+	if namespace.EngineCatalog == nil {
+		return nil, true
+	}
+	calls := map[exp.Expression]optimizer.ResolvedCall{}
+	optimizer.ResolveEngineIdentities(root, namespace.EngineCatalog,
+		dialects.DialectType(eng.Dialect().SettingsString()), namespace.SearchPath, calls, nil)
+	set := map[string]bool{}
+	for _, fn := range callNodes {
+		c := calls[fn]
+		if c.Kind != optimizer.CallBuiltin {
+			return nil, true
+		}
+		set[c.Identity] = true
+	}
+	return sortedStringSet(set), false
 }
 
-// qualifiedCallName renders a user-code call's fully-qualified identity so it is always an unclassified
-// Function grant. The single-identifier qualifier arrives already folded (EmitFacts normalizes up front,
-// quote-aware) — matching how the analyzer resolves every other relation, so the emitted name keys
-// identically to the control-plane's catalog (`"MySchema".fn` and `myschema.fn` stay DISTINCT rather than
-// both collapsing to one lowercased name a classification could ride). A multi-part qualifier is rendered
-// whole (`current_database().public.fn`) so the leaf never stands alone; that rendered form is always an
-// unclassifiable identity, so its exact spelling is not load-bearing.
-func qualifiedCallName(qualifier exp.Expression, leaf string, eng engine) string {
-	if qualifier.Kind() == exp.KindDot {
-		if rendered, err := sqlglot.Generate(qualifier, "", generator.Options{}); err == nil && rendered != "" {
-			return strings.ToLower(rendered) + "." + leaf
-		}
-	}
-	return qualifier.Name() + "." + leaf
-}
-
-func unsafeExpression(value any, eng engine) bool {
+func unsafeExpression(value any, eng engine, namespace NamespaceConfig) bool {
 	var expressions []exp.Expression
 	switch v := value.(type) {
 	case exp.Expression:
@@ -808,47 +725,7 @@ func unsafeExpression(value any, eng engine) bool {
 		if len(expression.FindAll(exp.KindSelect)) > 0 || len(expression.FindAll(exp.TraitSetOperation)) > 0 {
 			return true
 		}
-		if hasUnsafeCall(expression, eng) {
-			return true
-		}
-	}
-	return false
-}
-
-// hasUnsafeCall reports whether root contains any function call that is not provably a safe builtin,
-// applying the SAME qualifier rule as noFromFunctionGrants: a qualified call is safe only when it is a
-// bare `pg_catalog.<safe builtin>`; a user-schema or multi-part qualifier is user code regardless of the
-// leaf's spelling. Without the qualifier check a call like `acme.version()` would fold onto the safe
-// metadata `version()` and let session-state exfil (`SET @x = acme.leak()` then `SELECT @x`) slip through.
-func hasUnsafeCall(root exp.Expression, eng engine) bool {
-	qualified := map[exp.Expression]bool{}
-	for _, dot := range root.FindAll(exp.KindDot) {
-		fn := dot.Right()
-		if fn == nil || !fn.Is(exp.TraitFunc) || dot.Left() == nil {
-			continue
-		}
-		qualified[fn] = true
-		if eng.IsTrustedSystemQualifier(dot.Left()) {
-			if !safeNoFromFunctions[strings.ToLower(fn.Name())] {
-				return true
-			}
-			continue
-		}
-		if eng.IsTrustedInformationSchemaCall(dot.Left(), normalizedFunctionName(fn, eng)) {
-			continue
-		}
-		return true
-	}
-	for _, fn := range root.FindAll(exp.TraitFunc) {
-		// Only ANONYMOUS calls are candidates for user code — sqlglot resolves every recognized builtin to
-		// a dedicated kind (Abs, Upper, …) whose Name() is its argument, not the function, so checking it
-		// against the safe set is meaningless and would false-positive `abs(1)`. This mirrors
-		// noFromFunctionGrants: dedicated builtins are inherently safe; an unrecognized Anonymous call is not.
-		if qualified[fn] || fn.Kind() != exp.KindAnonymous {
-			continue
-		}
-		name := strings.ToLower(fn.Name())
-		if name != "" && name != "*" && !eng.IsSafeNoFromFunction(name) {
+		if _, gated := resolveStandaloneCalls(expression, eng, namespace); gated {
 			return true
 		}
 	}
@@ -1080,6 +957,12 @@ func schemaQualifierCandidates(root exp.Expression) []string {
 	for _, column := range root.FindAll(exp.KindColumn) {
 		if name := column.TableName(); name != "" {
 			set[name] = true
+		}
+	}
+	// `SELECT app.get_ssn()`: the qualifier is the Dot's left side, so an unheld `app` is refetched too.
+	for _, dot := range root.FindAll(exp.KindDot) {
+		if fn := dot.Right(); fn != nil && fn.Is(exp.TraitFunc) && dot.Left() != nil && dot.Left().Kind() == exp.KindIdentifier {
+			set[dot.Left().Name()] = true
 		}
 	}
 	out := sortedSet(set)

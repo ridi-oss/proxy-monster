@@ -624,24 +624,13 @@ fun Authz.authorizeTables(
     verdict = { unmasked, masked -> if (unmasked() || masked()) TableVerdict.READ else TableVerdict.DENIED },
 )
 
-/**
- * Authorize the DANGEROUS functions a query calls (facts-emission.md). Mirrors
- * [authorizeTables]: ONE [Entities] batch, name-keyed EUIDs (`Function::"<ds>/<name>"`), a delimiter-bearing
- * name builds no EUID → DENIED fail-closed. Each function carries its shipped `system:` tag ([systemTags],
- * keyed by bare name) as a Cedar parent, so the V24 `system:data-leak`/`system:critical` forbids override
- * any read grant → DENIED. The caller passes ONLY classified (dangerous) functions — a safe function has no
- * tag and no permit, so marshalling it would deny-by-default and break every `now()`/user-UDF query; it is
- * therefore left out entirely and unaffected on this phase. A function permitted (never, while every
- * marshalled function is forbidden) OR — future — carrying a safe/vouched permit is [ALLOWED]; else DENIED.
- */
+/** Authorize calls by resolved name; the caller passes dangerous builtins and user functions only. */
 fun Authz.authorizeFunctions(
     principal: String,
     roles: Set<String>,
     datasource: String,
     functions: List<FunctionRef>,
     context: AuthzContext = AuthzContext(),
-    // System tag per bare function name — the ONLY reason a Function is marshalled. A name
-    // absent from this map is a safe function and must not be passed by the caller (see [authorizeFunctions] doc).
     systemTags: Map<String, String> = emptyMap(),
     // The datasource's `system:*` posture tags — attached to the Datasource entity so a
     // conditional forbid can relax a dangerous function on a dev datasource through its Datasource parent.

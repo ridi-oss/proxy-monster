@@ -42,7 +42,7 @@ func ServeStatement(
 	in AuthzInput,
 	ref *Refetcher,
 	guard ExecGuard,
-	run func(toSend string, masks []*pb.ColumnMask) (clean bool, err error),
+	run func(toSend string, masks []*pb.ColumnMask, dec *Decision) (clean bool, err error),
 ) (dec *Decision, denied bool, err error) {
 	verdict := qe.Authorize(in)
 	var proceed Proceed
@@ -65,7 +65,7 @@ func ServeStatement(
 	var clean bool
 	exec := func() error {
 		var runErr error
-		clean, runErr = run(toSend, proceed.Masks)
+		clean, runErr = run(toSend, proceed.Masks, dec)
 		return runErr
 	}
 	if guard != nil {

@@ -154,3 +154,100 @@ func TestResultCapPreservesTransaction(t *testing.T) {
 		t.Fatalf("rolled back row count = %d, %v", count, err)
 	}
 }
+
+// A cap ends the result, not the transaction: work before the capped SELECT still commits.
+func TestResultCapThenCommit(t *testing.T) {
+	h := startBroker(t)
+	seedCapRows(t)
+	h.fake.decideFn = func(*pb.DecisionRequest) (*pb.WireDecision, error) {
+		return wireVerdict(&pb.Verdict{Decision: pb.EnfAction_ALLOW, DecisionId: completionDecisionID, MaxRows: 500}), nil
+	}
+	ctx := context.Background()
+	db := h.openDB(t, validToken)
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	tx, err := conn.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec("INSERT INTO cap_rows VALUES (10000, 'committed')"); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := tx.Query("SELECT value FROM cap_rows")
+	countCapRows(t, rows, err, 500, "proxy-monster: result exceeds the row cap (500 rows); request unbounded access")
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("commit after a capped result: %v", err)
+	}
+	// The harness pool holds one connection, so a second client is a second pool.
+	other, err := h.openDB(t, validToken).Conn(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer other.Close()
+	var value string
+	if err := other.QueryRowContext(ctx, "SELECT value FROM cap_rows WHERE id = 10000").Scan(&value); err != nil || value != "committed" {
+		t.Fatalf("committed row from a second connection = %q, %v", value, err)
+	}
+}
+
+// A capped prepared statement stays usable: the same handle executes again and the drained cursor does
+// not bleed rows into the next execution.
+func TestResultCapPreparedReexecute(t *testing.T) {
+	h := startBroker(t)
+	seedCapRows(t)
+	h.fake.decideFn = func(*pb.DecisionRequest) (*pb.WireDecision, error) {
+		return wireVerdict(&pb.Verdict{Decision: pb.EnfAction_ALLOW, DecisionId: completionDecisionID, MaxRows: 500}), nil
+	}
+	ctx := context.Background()
+	conn, err := h.openDB(t, validToken).Conn(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	stmt, err := conn.PrepareContext(ctx, "SELECT value FROM cap_rows WHERE id >= ?")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stmt.Close()
+	rows, err := stmt.QueryContext(ctx, 0)
+	countCapRows(t, rows, err, 500, "proxy-monster: result exceeds the row cap (500 rows); request unbounded access")
+	rows, err = stmt.QueryContext(ctx, 9990)
+	countCapRows(t, rows, err, 10, "")
+	rows, err = stmt.QueryContext(ctx, 0)
+	countCapRows(t, rows, err, 500, "proxy-monster: result exceeds the row cap (500 rows); request unbounded access")
+	if reports := h.waitCompletions(t, 3); reports[1].GetRowsReturned() != 10 || reports[1].GetStatus() != "ok" {
+		t.Fatalf("middle completion = %v", reports[1])
+	}
+}
+
+// A spent rate is an ordinary policy denial on the wire; the session survives it and the next allowed
+// statement runs.
+func TestRateSpentDenyKeepsSession(t *testing.T) {
+	h := startBroker(t)
+	seedCapRows(t)
+	h.fake.decideFn = func(*pb.DecisionRequest) (*pb.WireDecision, error) {
+		return wireVerdict(&pb.Verdict{Decision: pb.EnfAction_DENY, DenyReason: "rate 10000/1h spent"}), nil
+	}
+	ctx := context.Background()
+	conn, err := h.openDB(t, validToken).Conn(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	_, err = conn.QueryContext(ctx, "SELECT value FROM cap_rows")
+	if err == nil || !strings.Contains(err.Error(), "Error 1142") || !strings.Contains(err.Error(), "proxy-monster denied: rate 10000/1h spent") {
+		t.Fatalf("spent-rate query error = %v, want 1142 naming the rate", err)
+	}
+	h.fake.mu.Lock()
+	h.fake.decideFn = func(*pb.DecisionRequest) (*pb.WireDecision, error) {
+		return wireVerdict(&pb.Verdict{Decision: pb.EnfAction_ALLOW, DecisionId: completionDecisionID}), nil
+	}
+	h.fake.mu.Unlock()
+	var count int
+	if err := conn.QueryRowContext(ctx, "SELECT COUNT(*) FROM cap_rows").Scan(&count); err != nil || count != 10000 {
+		t.Fatalf("post-reset COUNT(*) = %d, %v", count, err)
+	}
+}

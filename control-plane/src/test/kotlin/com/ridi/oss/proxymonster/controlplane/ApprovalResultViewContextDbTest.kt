@@ -417,6 +417,36 @@ class ApprovalResultViewContextDbTest {
     }
 
     @Test
+    fun `a stored-result view charges the viewer's relayed volume against the execution decision`() = testApplication {
+        resetMutableAuthzState()
+        val id = seedResult(rows = listOf(listOf("1", "a@x", rawSsn), listOf("2", "b@x", rawSsn)))
+        val decisionId = fx.auditStore.insert(
+            AuditEvent(principal = executor, datasource = fx.datasource.name, statement = "SELECT id, email, ssn FROM users", decision = Decision.ALLOW, channel = "workflow-executor"),
+        )
+        fx.dataSource.connection.use { c ->
+            c.prepareStatement("UPDATE query_result SET decision_id = ? WHERE task_id = ?").use { ps -> ps.setLong(1, decisionId); ps.setLong(2, id); ps.executeUpdate() }
+        }
+        val client = wire()
+        client.login(requester)
+        val hour = java.time.Duration.ofHours(1)
+        val before = fx.auditStore.relayedVolume(requester, listOf(hour), java.time.Instant.now()).getValue(hour)
+        val response = client.get("/api/approvals/$id/result")
+        assertEquals(HttpStatusCode.OK, response.status)
+        val released = response.body<QueryResultView>().rows
+        assertEquals(2, released.size)
+        val after = fx.auditStore.relayedVolume(requester, listOf(hour), java.time.Instant.now()).getValue(hour)
+        assertEquals(before.rows + 2, after.rows, "the viewer, not the executor, is charged the released rows")
+        val releasedBytes = released.sumOf { row -> row.sumOf { it?.toByteArray(Charsets.UTF_8)?.size ?: 0 } }.toLong()
+        assertEquals(before.bytes + releasedBytes, after.bytes, "bytes charged are the released (masked) cells")
+        val charge = fx.auditStore.recent(50).first { it.kind == "completion" && it.principal == requester && it.decisionId == decisionId }
+        assertEquals("workflow-viewer", charge.channel)
+        assertTrue(
+            fx.auditStore.recent(50).none { it.kind == "completion" && it.principal == executor && it.decisionId == decisionId },
+            "the executor is not charged for someone else's view",
+        )
+    }
+
+    @Test
     fun `a deactivated executor is hidden before any live result decision`() = testApplication {
         resetMutableAuthzState()
         val id = seedResult()

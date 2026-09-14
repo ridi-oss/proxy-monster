@@ -191,6 +191,8 @@ class QueryResultStore(private val dataSource: DataSource, private val crypto: R
         taskId: Long,
         result: DecryptedResult,
         retentionSec: Long,
+        // The execution's audit decision, kept so a later view can charge its released volume against it.
+        decisionId: Long? = null,
         audit: (Connection, QueryResultMeta) -> Unit = { _, _ -> },
     ): QueryResultMeta? {
         val blob = crypto.encrypt(ResultPayloadCodec.encode(result))
@@ -200,7 +202,7 @@ class QueryResultStore(private val dataSource: DataSource, private val crypto: R
             val updated = child != null && c.prepareStatement(
                 """UPDATE query_result
                    SET status = 'DONE', ciphertext = ?, row_count = ?, columns = ?,
-                       executed_at = ?, expires_at = ?, error_code = NULL
+                       executed_at = ?, expires_at = ?, error_code = NULL, decision_id = ?
                    WHERE id = ? AND status = 'RUNNING'""",
             ).use { ps ->
                 ps.setBytes(1, blob)
@@ -213,7 +215,8 @@ class QueryResultStore(private val dataSource: DataSource, private val crypto: R
                 }
                 ps.setTimestamp(4, Timestamp.from(now))
                 ps.setTimestamp(5, Timestamp.from(now.plusSeconds(retentionSec)))
-                ps.setLong(6, child.id)
+                if (decisionId == null) ps.setNull(6, java.sql.Types.BIGINT) else ps.setLong(6, decisionId)
+                ps.setLong(7, child.id)
                 ps.executeUpdate() > 0
             }
             val meta = if (updated) meta(taskId, child.ordinal, c) else null

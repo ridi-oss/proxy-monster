@@ -299,3 +299,17 @@ func rows(values ...string) [][]*string {
 
 var _ engine.Db = MySqlDb{}
 var _ engine.Db = PgDb{}
+
+func TestFoldFunctionNameMatchesTheResolverFold(t *testing.T) {
+	// MySQL folds with its exact case map; PostgreSQL folds ASCII only, so a non-ASCII upper-case
+	// letter keeps its spelling (strings.ToLower would over-fold it and miss the resolver's lookup).
+	if got := (MySqlDb{}).FoldFunctionName("AddTax"); got != "addtax" {
+		t.Fatalf("mysql fold = %q, want addtax", got)
+	}
+	if got := (PgDb{}).FoldFunctionName("PG_Read_File"); got != "pg_read_file" {
+		t.Fatalf("postgres fold = %q, want pg_read_file", got)
+	}
+	if got := (PgDb{}).FoldFunctionName("ÄBC"); got != "Äbc" {
+		t.Fatalf("postgres must not fold non-ASCII: got %q, want Äbc", got)
+	}
+}

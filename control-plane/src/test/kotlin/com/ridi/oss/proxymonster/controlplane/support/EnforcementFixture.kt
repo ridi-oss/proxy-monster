@@ -26,6 +26,9 @@ import com.ridi.oss.proxymonster.controlplane.authz.CedarEngine
 import com.ridi.oss.proxymonster.controlplane.authz.CedarPolicyInput
 import com.ridi.oss.proxymonster.controlplane.authz.CedarPolicyStore
 import com.ridi.oss.proxymonster.controlplane.authz.RoleSource
+import com.ridi.oss.proxymonster.analyzer.pb.FunctionCatalog
+import com.ridi.oss.proxymonster.analyzer.pb.schemaFunctions
+import com.ridi.oss.proxymonster.analyzer.pb.functionCatalog
 import org.flywaydb.core.Flyway
 import com.ridi.oss.proxymonster.analyzer.pb.CatalogSnapshot
 import com.ridi.oss.proxymonster.analyzer.pb.Column
@@ -109,8 +112,42 @@ internal fun DatasourceStore.pushTestCatalog(
         defaultSchemas = namespace.defaultSchemas,
         mysqlLowerCaseTableNames = namespace.mysqlLowerCaseTableNames,
         engineVersion = namespace.engineVersion,
-        catalog = catalogSnapshot { this.columns.addAll(columns) },
+        catalog = catalogSnapshot {
+            this.columns.addAll(columns)
+            introspectTestFunctions(jdbcUrl, user, password, isMysql)?.let { functions = it }
+        },
     )
+}
+
+/** Introspect functions using the same target catalogs as the proxy. */
+private fun introspectTestFunctions(jdbcUrl: String, user: String, password: String, isMysql: Boolean): FunctionCatalog? = try {
+    DriverManager.getConnection(jdbcUrl, user, password).use { target ->
+        fun pairs(sql: String): List<Pair<String, String>> = buildList {
+            target.prepareStatement(sql).use { ps ->
+                ps.executeQuery().use { rs -> while (rs.next()) add(rs.getString(1) to rs.getString(2)) }
+            }
+        }
+        // ASCII-lower matches the analyzer's fold for the ASCII names these fixtures use.
+        fun schemaFunctions(rows: List<Pair<String, String>>) = rows.groupBy({ it.first }, { it.second.lowercase(java.util.Locale.ROOT) })
+            .map { (schema, names) -> schemaFunctions { this.schema = schema; this.names.addAll(names.distinct()) } }
+        if (isMysql) {
+            functionCatalog {
+                loadableFunctions.addAll(pairs("SELECT name, name FROM mysql.func").map { it.first.lowercase(java.util.Locale.ROOT) })
+                udfSchemas.addAll(schemaFunctions(pairs("SELECT ROUTINE_SCHEMA, ROUTINE_NAME FROM information_schema.ROUTINES WHERE ROUTINE_TYPE = 'FUNCTION'")))
+            }
+        } else {
+            functionCatalog {
+                builtinFunctions.addAll(
+                    pairs("SELECT p.proname, p.proname FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace WHERE n.nspname = 'pg_catalog'")
+                        .map { it.first.lowercase(java.util.Locale.ROOT) }.distinct(),
+                )
+                systemFunctionSchemas.addAll(schemaFunctions(pairs("SELECT n.nspname, p.proname FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace WHERE n.nspname IN ('pg_catalog', 'information_schema')")))
+                udfSchemas.addAll(schemaFunctions(pairs("SELECT n.nspname, p.proname FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace WHERE n.nspname <> 'information_schema' AND n.nspname NOT LIKE 'pg\\_%'")))
+            }
+        }
+    }
+} catch (_: java.sql.SQLException) {
+    null
 }
 
 /**

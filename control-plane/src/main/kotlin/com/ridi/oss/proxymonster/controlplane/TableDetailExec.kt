@@ -105,7 +105,7 @@ class TableDetailService(private val core: ControlPlaneCore) {
                 throw ProxyTableDetailException("proxy returned table detail for an unexpected table")
             }
 
-            val classifications = core.datasourceStore.catalog(datasource.id)
+            val classifications = core.datasourceStore.catalog(datasource.id).columns
                 .asSequence()
                 .filter { it.schema == detail.schema && it.table == detail.table }
                 .associate { it.column to it.classification }

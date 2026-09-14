@@ -182,6 +182,25 @@ configured per proxy under `PM_TARGET_*`.
   pick it up without redistribution.
 - `PM_SECRET_TOKEN` — _required_. The shared gRPC secret; must equal the CP's.
 
+#### Target DB service-account grants
+
+In addition to its application permissions, the MySQL `PM_TARGET_USER` needs
+`SELECT` on `mysql.func` to inventory loadable functions. Grant it to the
+existing account, replacing the user and host below:
+
+```sql
+GRANT SELECT ON mysql.func TO 'pmproxy'@'<proxy-host>';
+```
+
+Stored functions must also be visible to that account in
+`information_schema.ROUTINES` through its routine privileges. If a function
+inventory query fails, the proxy still publishes columns but clears all
+introspected function tiers; pinned MySQL natives remain available.
+
+PostgreSQL function inventory reads `pg_catalog.pg_proc` and
+`pg_catalog.pg_namespace`, which are publicly readable by default. If catalog
+access is hardened, retain `SELECT` on both for `PM_TARGET_USER`.
+
 ### Web console
 
 - `PM_PROXY_TARGET` — _required for `next dev`; build-time only for the

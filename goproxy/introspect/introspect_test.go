@@ -148,6 +148,25 @@ func hasSchema(cols []*analyzerpb.Column, schema string) bool {
 	return false
 }
 
+// schemaFunctions finds the name set for schema in an function-catalog group, or nil if the schema is absent.
+func schemaFunctions(groups []*analyzerpb.SchemaFunctions, schema string) []string {
+	for _, g := range groups {
+		if g.GetSchema() == schema {
+			return g.GetNames()
+		}
+	}
+	return nil
+}
+
+func containsName(names []string, want string) bool {
+	for _, n := range names {
+		if n == want {
+			return true
+		}
+	}
+	return false
+}
+
 func TestIntrospectMySQL(t *testing.T) {
 	targetDb := dbtest.MySQL(t)
 
@@ -200,6 +219,33 @@ func TestIntrospectMySQL(t *testing.T) {
 		}
 	})
 
+	t.Run("functions: no native builtins, stored UDF", func(t *testing.T) {
+		// A stored function under the dedicated schema so udf_schemas has something to assert. Names are
+		// asserted lower-case (the function catalog folds every function name).
+		if _, err := seed.Exec(`CREATE FUNCTION IF NOT EXISTS ` + itMySQLSchema + `.AddTax (amount INT) RETURNS INT DETERMINISTIC RETURN amount * 11 / 10`); err != nil {
+			t.Fatalf("seed stored function: %v", err)
+		}
+		cat, err := Run(mysqlTestOpener{}, spi.TargetDb{Host: targetDb.Host, Port: targetDb.Port, Db: itMySQLSchema, User: targetDb.User, Password: targetDb.Password})
+		if err != nil {
+			t.Fatalf("Run: %v", err)
+		}
+		ec := cat.GetCatalog().GetFunctions()
+		if ec == nil {
+			t.Fatal("Functions = nil, want an observed function catalog")
+		}
+		// MySQL native functions are injected by the control plane, never introspected.
+		if len(ec.GetBuiltinFunctions()) != 0 {
+			t.Errorf("BuiltinFunctions = %v, want empty (natives injected by control plane, not introspected)", ec.GetBuiltinFunctions())
+		}
+		if len(ec.GetSystemFunctionSchemas()) != 0 {
+			t.Errorf("SystemFunctionSchemas = %v, want empty (MySQL builtins are not schema-qualified)", ec.GetSystemFunctionSchemas())
+		}
+		if !containsName(schemaFunctions(ec.GetUdfSchemas(), itMySQLSchema), "addtax") {
+			t.Errorf("UdfSchemas[%s] = %v, want to contain folded 'addtax'", itMySQLSchema, schemaFunctions(ec.GetUdfSchemas(), itMySQLSchema))
+		}
+
+	})
+
 	t.Run("delimiter-bearing credentials authenticate (connector path, no DSN round-trip)", func(t *testing.T) {
 		cat, err := Run(mysqlTestOpener{}, spi.TargetDb{Host: targetDb.Host, Port: targetDb.Port, Db: itMySQLSchema, User: "svc:reader", Password: "p@s:s/w@rd"})
 		if err != nil {
@@ -210,6 +256,9 @@ func TestIntrospectMySQL(t *testing.T) {
 		}
 		if !hasColumn(cat.GetCatalog().GetColumns(), itMySQLSchema, "customers", "email") {
 			t.Errorf("delimiter-cred introspection missing %s.customers.email", itMySQLSchema)
+		}
+		if cat.GetCatalog().GetFunctions() != nil {
+			t.Fatalf("mysql.func SELECT is not granted; functions must be absent: %v", cat.GetCatalog().GetFunctions())
 		}
 	})
 
@@ -279,6 +328,28 @@ func TestIntrospectPostgres(t *testing.T) {
 				t.Errorf("system schema %q absent from catalog — introspection must NOT exclude system schemas", sys)
 			}
 		}
+	})
+
+	t.Run("functions: builtins and system schemas", func(t *testing.T) {
+		cat, err := Run(pgTestOpener{}, spi.TargetDb{Host: targetDb.Host, Port: targetDb.Port, Db: targetDb.DB, User: targetDb.User, Password: targetDb.Password})
+		if err != nil {
+			t.Fatalf("Run: %v", err)
+		}
+		ec := cat.GetCatalog().GetFunctions()
+		if ec == nil {
+			t.Fatal("Functions = nil, want an observed function catalog")
+		}
+		// pg_catalog builtins: 'lower' and 'now' are always present.
+		if !containsName(ec.GetBuiltinFunctions(), "lower") || !containsName(ec.GetBuiltinFunctions(), "now") {
+			t.Errorf("BuiltinFunctions missing expected pg_catalog builtins (lower/now); got %d functions", len(ec.GetBuiltinFunctions()))
+		}
+		if len(ec.GetLoadableFunctions()) != 0 {
+			t.Errorf("LoadableFunctions = %v, want empty (Postgres has no loadable tier)", ec.GetLoadableFunctions())
+		}
+		if !containsName(schemaFunctions(ec.GetSystemFunctionSchemas(), "pg_catalog"), "lower") {
+			t.Error("SystemFunctionSchemas[pg_catalog] missing 'lower'")
+		}
+
 	})
 
 	t.Run("special-char credentials authenticate (url.UserPassword escaping)", func(t *testing.T) {

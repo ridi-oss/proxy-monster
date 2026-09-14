@@ -264,7 +264,7 @@ class PerConnectionCatalogMysqlAdversarialDbTest : PerConnectionCatalogAdversari
             mysqlLowerCaseTableNames = enforcement.datasource.mysqlLowerCaseTableNames,
             engineVersion = enforcement.datasource.engineVersion.orEmpty(),
             catalog = catalogSnapshot {
-                columns += enforcement.datasourceStore.catalog(enforcement.datasource.id).map { row ->
+                columns += enforcement.datasourceStore.catalog(enforcement.datasource.id).columns.map { row ->
                 pushedColumn(row.schema, row.table, row.column, row.dataType, row.ordinal, row.nullable)
             } + accounts.rows.map { row ->
                 pushedColumn(
@@ -408,7 +408,7 @@ class PerConnectionCatalogPostgresAdversarialDbTest : PerConnectionCatalogAdvers
             mysqlLowerCaseTableNames = null,
             engineVersion = enforcement.datasource.engineVersion.orEmpty(),
             catalog = catalogSnapshot {
-                columns += enforcement.datasourceStore.catalog(enforcement.datasource.id).map { row ->
+                columns += enforcement.datasourceStore.catalog(enforcement.datasource.id).columns.map { row ->
                     pushedColumn(row.schema, row.table, row.column, row.dataType, row.ordinal, row.nullable)
                 }
                 columns += accounts.rows.map { row ->

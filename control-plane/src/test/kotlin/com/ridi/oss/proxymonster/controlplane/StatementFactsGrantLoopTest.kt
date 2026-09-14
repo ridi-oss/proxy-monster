@@ -34,7 +34,7 @@ import kotlin.test.assertTrue
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 class StatementFactsGrantLoopTest {
     private lateinit var fx: EnforcementFixture
-    private lateinit var fixtureCatalog: List<CatalogColumn>
+    private lateinit var fixtureCatalog: Catalog
     private lateinit var ssn: CatalogColumn
     private lateinit var region: CatalogColumn
     private lateinit var amount: CatalogColumn
@@ -50,7 +50,7 @@ class StatementFactsGrantLoopTest {
     }
 
     private fun col(table: String, name: String): CatalogColumn =
-        fixtureCatalog.first { it.table == table && it.column == name }
+        fixtureCatalog.columns.first { it.table == table && it.column == name }
 
     private fun decide(facts: StatementFacts, channel: Channel = Channel.EDITOR): DecisionContext =
         decideQuery(

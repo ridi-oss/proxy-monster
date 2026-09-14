@@ -47,15 +47,21 @@ class SystemClassificationEnforcementDbTest {
         }
     }
 
-    private fun decide(sql: String): EnfAction {
-        val ds = fx.datasourceStore.get(fx.datasource.id)!! // re-fetch so ds.engineVersion reflects setEngineVersion
-        return decideQuery(
-            principal = principal, ds = ds, sql = sql, channel = Channel.WIRE,
-            catalog = fx.datasourceStore.catalog(fx.datasource.id), policyStore = fx.policyStore, accessStore = fx.accessStore,
-            userGroupStore = fx.userGroupStore, roleResolver = fx.roleResolver, authz = fx.authz,
-            systemClassification = classifier,
-        ).action
-    }
+    private fun decideContext(sql: String, who: String = principal) = decideQuery(
+        principal = who,
+        ds = fx.datasourceStore.get(fx.datasource.id)!!,
+        sql = sql,
+        channel = Channel.WIRE,
+        catalog = fx.datasourceStore.catalog(fx.datasource.id),
+        policyStore = fx.policyStore,
+        accessStore = fx.accessStore,
+        userGroupStore = fx.userGroupStore,
+        roleResolver = fx.roleResolver,
+        authz = fx.authz,
+        systemClassification = classifier,
+    )
+
+    private fun decide(sql: String): EnfAction = decideContext(sql).action
 
     @Test
     fun `a column classification may name a product system tag but not invent one`() {
@@ -115,12 +121,8 @@ class SystemClassificationEnforcementDbTest {
             ),
             updatedBy = "test",
         )
-        fun decideAs(who: String, sql: String) = decideQuery(
-            principal = who, ds = fx.datasourceStore.get(fx.datasource.id)!!, sql = sql, channel = Channel.WIRE,
-            catalog = fx.datasourceStore.catalog(fx.datasource.id), policyStore = fx.policyStore, accessStore = fx.accessStore,
-            userGroupStore = fx.userGroupStore, roleResolver = fx.roleResolver, authz = fx.authz,
-            systemClassification = classifier,
-        ).action
+        fun decideAsContext(who: String, sql: String) = decideContext(sql, who)
+        fun decideAs(who: String, sql: String) = decideAsContext(who, sql).action
         // The broad grant genuinely permits: system:catalog browses.
         assertEquals(EnfAction.ALLOW, decideAs(broad, "select count(*) from pg_catalog.pg_class"), "broad grant permits system:catalog")
         // ...but the shipped forbids OVERRIDE that broad grant on every dangerous tag (production floor).
@@ -156,12 +158,8 @@ class SystemClassificationEnforcementDbTest {
             ),
             updatedBy = "test",
         )
-        fun decideAs(who: String, sql: String) = decideQuery(
-            principal = who, ds = fx.datasourceStore.get(fx.datasource.id)!!, sql = sql, channel = Channel.WIRE,
-            catalog = fx.datasourceStore.catalog(fx.datasource.id), policyStore = fx.policyStore, accessStore = fx.accessStore,
-            userGroupStore = fx.userGroupStore, roleResolver = fx.roleResolver, authz = fx.authz,
-            systemClassification = classifier,
-        ).action
+        fun decideAsContext(who: String, sql: String) = decideContext(sql, who)
+        fun decideAs(who: String, sql: String) = decideAsContext(who, sql).action
         assertEquals(EnfAction.DENY, decideAs(broad, "select count(*) from pg_catalog.pg_authid"), "no-manifest critical floor overrides the broad grant")
         assertEquals(EnfAction.DENY, decideAs(broad, "select rolname from pg_catalog.pg_authid"), "and on the column path too")
         // And an unrecognized/catalog-default fixed-system table is closed under the same grant — the fix does
@@ -206,12 +204,8 @@ class SystemClassificationEnforcementDbTest {
             ),
             updatedBy = "test",
         )
-        fun decideAs(who: String, sql: String) = decideQuery(
-            principal = who, ds = fx.datasourceStore.get(fx.datasource.id)!!, sql = sql, channel = Channel.WIRE,
-            catalog = fx.datasourceStore.catalog(fx.datasource.id), policyStore = fx.policyStore, accessStore = fx.accessStore,
-            userGroupStore = fx.userGroupStore, roleResolver = fx.roleResolver, authz = fx.authz,
-            systemClassification = classifier,
-        ).action
+        fun decideAsContext(who: String, sql: String) = decideContext(sql, who)
+        fun decideAs(who: String, sql: String) = decideAsContext(who, sql).action
         // The broad grant genuinely permits: a safe function over the table ALLOWs.
         assertEquals(EnfAction.ALLOW, decideAs(broad, "select now() from pg_catalog.pg_class"), "broad grant permits a safe function")
         // ...but the forbid OVERRIDES that broad grant on a dangerous function (critical AND data-leak).

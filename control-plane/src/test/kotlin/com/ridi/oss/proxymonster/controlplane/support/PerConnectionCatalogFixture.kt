@@ -20,12 +20,19 @@ class PerConnectionCatalogFixture(val enforcement: EnforcementFixture) {
     val core = ControlPlaneCore(enforcement.dataSource)
     val datasource: Datasource = core.datasourceStore.get(enforcement.datasource.id)!!
 
+    init {
+        // A new control plane requires a fresh push before trusting stored functions.
+        core.datasourceStore.pushTestCatalog(
+            datasource, enforcement.targetJdbcUrl, enforcement.targetUser, enforcement.targetPassword,
+        )
+    }
+
     suspend fun openAndPush(
         principal: String = "analyst@example.com",
         schemas: Collection<String> = datasource.defaultSchemas,
     ): OpenConnection {
         val opened = core.connectionCatalog.open(Binding(datasource.name, principal, "USER"), schemas)
-        val bySchema = enforcement.datasourceStore.catalog(datasource.id).groupBy { it.schema }
+        val bySchema = enforcement.datasourceStore.catalog(datasource.id).columns.groupBy { it.schema }
         for (schema in schemas.distinct()) {
             val rows = bySchema[schema].orEmpty().map { row ->
                 FragmentColumn(row.schema, row.table, row.column, row.sqlType, row.ordinal, row.nullable)

@@ -12,7 +12,16 @@ import (
 
 	"github.com/ridi-oss/proxy-monster/analyzer/probe"
 	analyzerpb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
+	"github.com/ridi-oss/sqlglot-go/dialects"
 )
+
+// Queries yield names or (schema, name) pairs; an empty query denotes an unused tier.
+type FunctionCatalogSQL struct {
+	BuiltinFunctions      string
+	SystemFunctionSchemas string
+	UdfSchemas            string
+	LoadableFunctions     string
+}
 
 // MySqlDb is the engine.Db adapter for MySQL.
 type MySqlDb struct{}
@@ -53,6 +62,18 @@ func (MySqlDb) NormalizeColumns(lowerCaseTableNames int, columns []*analyzerpb.C
 		}
 	}
 	return out
+}
+
+// FunctionCatalogSQL for MySQL. BuiltinFunctions/SystemFunctionSchemas are empty — natives are in no
+// catalog (the control plane injects its pinned list) and are never schema-qualified.
+// MySQL routine and native names are case-insensitive regardless of lower_case_table_names.
+func (MySqlDb) FoldFunctionName(name string) string { return dialects.MySQLLower(name) }
+
+func (MySqlDb) FunctionCatalogSQL() FunctionCatalogSQL {
+	return FunctionCatalogSQL{
+		UdfSchemas:        `SELECT ROUTINE_SCHEMA, ROUTINE_NAME FROM information_schema.ROUTINES WHERE ROUTINE_TYPE = 'FUNCTION'`,
+		LoadableFunctions: `SELECT name FROM mysql.func`,
+	}
 }
 
 // mysqlSchemaFilter renders the WHERE-clause comparison for schema (a possibly-canonical spelling —
@@ -130,6 +151,26 @@ type PgDb struct{}
 // introspect.Run's unqualified namespace probe used at a different call site.
 func (PgDb) NamespaceProbeSQL() string {
 	return "SELECT pg_catalog.unnest(pg_catalog.current_schemas(true))"
+}
+
+// FunctionCatalogSQL for PostgreSQL. The `pg\_%` LIKE excludes the reserved pg_catalog/pg_temp*/pg_toast*
+// schemas from the user tiers. LoadableFunctions is empty — PostgreSQL has no loadable-UDF tier.
+func (PgDb) FoldFunctionName(name string) string {
+	return dialects.Postgres().FoldIdentifierName(name, false)
+}
+
+func (PgDb) FunctionCatalogSQL() FunctionCatalogSQL {
+	return FunctionCatalogSQL{
+		BuiltinFunctions: `SELECT DISTINCT p.proname FROM pg_catalog.pg_proc p
+JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace
+WHERE n.nspname = 'pg_catalog'`,
+		SystemFunctionSchemas: `SELECT n.nspname, p.proname FROM pg_catalog.pg_proc p
+JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace
+WHERE n.nspname IN ('pg_catalog', 'information_schema')`,
+		UdfSchemas: `SELECT n.nspname, p.proname FROM pg_catalog.pg_proc p
+JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace
+WHERE n.nspname <> 'information_schema' AND n.nspname NOT LIKE 'pg\_%'`,
+	}
 }
 
 func (PgDb) SupportsTempOverlay() bool { return true }

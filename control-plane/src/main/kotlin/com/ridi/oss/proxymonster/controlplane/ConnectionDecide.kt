@@ -49,8 +49,7 @@ suspend fun decideConnection(
     }
 
     val catalogName = ds.engine.catalogName(ds.dbName)
-    val classifications = core.datasourceStore.classificationsFor(ds.id)
-    val catalog = core.connectionCatalog.structuralRows(connection).map { row ->
+    val columns = core.connectionCatalog.structuralRows(connection).map { row ->
         CatalogColumn(
             catalog = catalogName,
             schema = row.schema,
@@ -60,7 +59,6 @@ suspend fun decideConnection(
             sqlType = sqlTypeFor(row.dataType),
             ordinal = row.ordinal,
             nullable = row.nullable,
-            classification = classifications[Triple(row.schema, row.table, row.column)],
         )
     }
 
@@ -76,7 +74,7 @@ suspend fun decideConnection(
         ds = ds,
         sql = sql,
         channel = channel,
-        catalog = catalog,
+        catalog = core.datasourceStore.connectionCatalog(ds.id, columns),
         policyStore = core.policyStore,
         accessStore = core.accessStore,
         userGroupStore = core.userGroupStore,

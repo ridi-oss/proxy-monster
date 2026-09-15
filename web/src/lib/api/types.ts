@@ -340,7 +340,7 @@ export interface AccessRequest {
   decidedAt?: string | null
   rejectionReason?: string | null
   createdAt: string
-  kind: 'ROLE' | 'QUERY'
+  kind: 'ROLE' | 'QUERY' | 'RATE_RESET'
   /** The task's statements joined in run order — the request's readable form, never what is authorized. */
   sql?: string | null
   sqlHash?: string | null
@@ -362,6 +362,20 @@ export interface AccessRequestInput {
   datasourceId?: number | null
   reason?: string | null
   requestedDurationSec: number
+}
+
+/** Ask an approver to reset the caller's spent result rates (docs/result-caps.md). */
+export interface RateResetRequestInput {
+  reason: string
+  denyReason?: string | null
+}
+
+/** One rate reset marker: relayed volume before `resetAt` no longer counts toward any rate. */
+export interface RateReset {
+  principal: string
+  resetAt: string
+  resetBy: string
+  reason: string
 }
 
 export interface AccessGrant {

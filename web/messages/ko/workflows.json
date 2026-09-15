@@ -110,7 +110,8 @@
     "roleAccessTitle": "역할 액세스: {role}",
     "queryApprovalTitle": "쿼리 승인 #{id}",
     "incoming": "받은 요청",
-    "outgoing": "보낸 요청"
+    "outgoing": "보낸 요청",
+    "rateResetTitle": "한도 초기화"
   },
   "queryComposer": {
     "wouldAllowToast": "이 쿼리는 현재 허용되어 있어 승인이 필요하지 않지만, 검토를 위해 요청이 접수되었습니다.",
@@ -207,5 +208,11 @@
     "token": "토큰",
     "connectionString": "연결 문자열",
     "connectionStringWithName": "연결 문자열 · {name}"
+  },
+  "rateResetDetail": {
+    "title": "한도 초기화 요청 #{id}",
+    "spentRate": "소진된 한도",
+    "approvedToast": "승인됨 — {principal}의 결과 한도 초기화",
+    "note": "승인하면 초기화 표시가 기록됩니다: 승인 이전 {principal}의 전송량은 모든 기간 한도에서 제외됩니다. 문장별 상한은 그대로입니다."
   }
 }

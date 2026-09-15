@@ -35,6 +35,7 @@ import { SqlEditor, type SqlEditorHandle } from './sql-editor'
 import { ResultTabs } from './result-tabs'
 import { QueryHistoryMenu } from './query-history-menu'
 import { RequestAccessDialog } from './request-access-dialog'
+import { RateResetRequestDialog } from './rate-reset-request-dialog'
 
 const ROW_LIMITS = [100, 200, 500, 1000, 5000]
 
@@ -48,6 +49,8 @@ export function Workbench() {
   const [maxRows, setMaxRows] = useState('200')
   const [requestOpen, setRequestOpen] = useState(false)
   const [denyReason, setDenyReason] = useState<string | null>(null)
+  const [rateResetOpen, setRateResetOpen] = useState(false)
+  const [rateDenyReason, setRateDenyReason] = useState<string | null>(null)
   const editorRef = useRef<SqlEditorHandle>(null)
 
   const { data: catalog, isLoading: catalogLoading, error: catalogError } = useCatalog(datasourceId)
@@ -70,6 +73,10 @@ export function Workbench() {
   const handleRequestAccess = (reason?: string | null) => {
     setDenyReason(reason ?? null)
     setRequestOpen(true)
+  }
+  const handleRequestRateReset = (reason?: string | null) => {
+    setRateDenyReason(reason ?? null)
+    setRateResetOpen(true)
   }
 
   return (
@@ -176,12 +183,13 @@ export function Workbench() {
             <ResizableHandle />
 
             <ResizablePanel defaultSize={48} minSize={15}>
-              <ResultTabs api={resultTabs} onRequestAccess={handleRequestAccess} />
+              <ResultTabs api={resultTabs} onRequestAccess={handleRequestAccess} onRequestRateReset={handleRequestRateReset} />
             </ResizablePanel>
           </ResizablePanelGroup>
         </div>
       </div>
 
+      <RateResetRequestDialog open={rateResetOpen} onOpenChange={setRateResetOpen} denyReason={rateDenyReason} />
       {datasourceId != null && (
         <RequestAccessDialog
           open={requestOpen}

@@ -110,7 +110,8 @@
     "roleAccessTitle": "Role access: {role}",
     "queryApprovalTitle": "Query approval #{id}",
     "incoming": "Incoming",
-    "outgoing": "Outgoing"
+    "outgoing": "Outgoing",
+    "rateResetTitle": "Rate reset"
   },
   "queryComposer": {
     "wouldAllowToast": "This query is currently allowed — it does not need approval, but the request was filed for review.",
@@ -207,5 +208,11 @@
     "token": "Token",
     "connectionString": "Connection string",
     "connectionStringWithName": "Connection string · {name}"
+  },
+  "rateResetDetail": {
+    "title": "Rate reset request #{id}",
+    "spentRate": "Spent rate",
+    "approvedToast": "Approved — reset {principal}'s result rates",
+    "note": "Approving writes a reset marker: {principal}'s relayed volume before the approval stops counting toward every rate window. Per-statement caps are unchanged."
   }
 }

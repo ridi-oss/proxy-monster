@@ -931,7 +931,7 @@ internal fun resultCaps(vararg resolved: ResolvedCaps): ResultCaps {
 /**
  * The deny reason when a rate entry the statement's `result.cap` permits carry is already spent, else null.
  * A forbid on any ask lifts every rate; with no rate collected no audit scan runs. The scan is one query
- * over the widest window (AuditStore.relayedVolume).
+ * over the widest window, lower-bounded by the principal's last rate reset (AuditStore.relayedVolume).
  */
 internal fun spentRate(auditStore: AuditStore?, principal: String, vararg resolved: ResolvedCaps): String? {
     if (auditStore == null || resolved.any { it.unbounded }) return null

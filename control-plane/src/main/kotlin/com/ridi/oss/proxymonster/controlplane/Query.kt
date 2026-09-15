@@ -934,7 +934,7 @@ internal fun resultCaps(vararg resolved: ResolvedCaps): ResultCaps {
 /**
  * The deny reason when a rate entry the statement's `result.cap` permits carry is already spent, else null.
  * A forbid on any ask lifts every rate; with no rate collected no audit scan runs. The scan is one query
- * over the widest window (AuditStore.relayedVolume).
+ * over the widest window, lower-bounded by the principal's last rate reset (AuditStore.relayedVolume).
  */
 /** A rate bounds relayed volume, so a statement that relays no rows (COMMIT, SET, USE) is never rate-denied. */
 private fun relaysRows(kind: StatementKind): Boolean = kind !in SESSION_KINDS

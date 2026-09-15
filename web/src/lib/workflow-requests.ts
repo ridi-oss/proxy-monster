@@ -46,7 +46,7 @@ export function useWorkflowIncomingRequests(): {
   const requests = useMemo(() => {
     const byId = new Map<number, AccessRequest>()
     for (const request of roleRequests.data ?? []) {
-      if (request.kind === 'ROLE') byId.set(request.id, request)
+      if (request.kind === 'ROLE' || request.kind === 'RATE_RESET') byId.set(request.id, request)
     }
     for (const request of queryRequests.data ?? []) {
       if (request.kind === 'QUERY') byId.set(request.id, request)
@@ -80,7 +80,7 @@ export function useWorkflowRequests(): {
     const principal = identity?.principal
     return [
       ...(roleLookup.data ?? []).filter(
-        (request) => request.kind === 'ROLE' && request.principal === principal,
+        (request) => (request.kind === 'ROLE' || request.kind === 'RATE_RESET') && request.principal === principal,
       ),
       ...(queryOutgoing.data ?? []).filter((request) => request.kind === 'QUERY'),
     ]
@@ -110,7 +110,7 @@ export function useWorkflowRequests(): {
   const roleRequestsById = useMemo<ReadonlyMap<number, AccessRequest>>(
     () => new Map(
       (roleLookup.data ?? [])
-        .filter((request) => request.kind === 'ROLE')
+        .filter((request) => request.kind === 'ROLE' || request.kind === 'RATE_RESET')
         .map((request) => [request.id, request]),
     ),
     [roleLookup.data],

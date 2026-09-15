@@ -147,5 +147,20 @@
     "metaTableComment": "Table comment",
     "onUpdate": "On update: {action}",
     "onDelete": "On delete: {action}"
+  },
+  "rateReset": {
+    "title": "Request a rate reset",
+    "description": "Your relayed-volume rate for this window is spent. An approver can reset it on the Workflows page; the reset clears every window at once and leaves the per-statement cap alone.",
+    "reasonLabel": "Reason",
+    "reasonPlaceholder": "Why the extra volume is needed now.",
+    "submit": "Request reset",
+    "submitting": "Requesting…",
+    "cancel": "Cancel",
+    "close": "Close",
+    "submitError": "failed to submit request",
+    "successTitle": "Requested — awaiting approval",
+    "successDescription": "An approver can reset it on the Workflows page; then re-run the query.",
+    "button": "Request rate reset",
+    "denyHelp": "Your relayed-volume rate for this window is spent. Ask an approver to reset it, or wait for the window to roll off."
   }
 }

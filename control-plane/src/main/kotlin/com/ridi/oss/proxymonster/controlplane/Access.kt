@@ -4,6 +4,7 @@ import com.ridi.oss.proxymonster.controlplane.authz.Authz
 import com.ridi.oss.proxymonster.controlplane.authz.AuthzAction
 import com.ridi.oss.proxymonster.controlplane.authz.AuthzDecision
 import com.ridi.oss.proxymonster.controlplane.authz.AuthzResource
+import com.ridi.oss.proxymonster.controlplane.authz.requireAdmin
 import com.ridi.oss.proxymonster.controlplane.authz.authorizeDatasourceAction
 import com.ridi.oss.proxymonster.controlplane.authz.authorizeWithContext
 import com.ridi.oss.proxymonster.controlplane.authz.requireAuthz
@@ -76,6 +77,14 @@ data class AccessRequestInput(
     val reason: String? = null, val requestedDurationSec: Long = 3600,
 )
 
+/** Ask an approver to reset the caller's spent `@cap` rates (docs/result-caps.md); [denyReason] is the spent rate. */
+@Serializable
+data class RateResetRequestInput(val reason: String, val denyReason: String? = null)
+
+/** An admin resets a principal's spent rates directly; the reason is recorded with the marker. */
+@Serializable
+data class RateResetInput(val reason: String)
+
 @Serializable
 data class AccessGrant(
     val id: Long, val principal: String, val roleId: Long, val roleName: String,
@@ -90,7 +99,7 @@ data class AccessGrant(
 
 class DuplicatePendingQueryRequestException : RuntimeException("a pending query request already exists for this decision")
 
-class AccessStore(private val dataSource: DataSource) {
+class AccessStore(internal val dataSource: DataSource) {
     private val json = Json
     private val stringList = ListSerializer(String.serializer())
 
@@ -105,11 +114,12 @@ class AccessStore(private val dataSource: DataSource) {
             ps.executeQuery().use { rs -> if (rs.next()) rs.toRequest() else null }
         }
 
+    /** ROLE and RATE_RESET requests: both are decided PENDING → APPROVED | REJECTED by the same routes. */
     fun listRequests(status: String?): List<AccessRequest> = dataSource.connection.use { c ->
         val sql = if (status != null) {
-            "$REQ_SELECT WHERE ar.kind = 'ROLE' AND ar.status = ? ORDER BY ar.created_at DESC"
+            "$REQ_SELECT WHERE ar.kind IN ('ROLE', 'RATE_RESET') AND ar.status = ? ORDER BY ar.created_at DESC"
         } else {
-            "$REQ_SELECT WHERE ar.kind = 'ROLE' ORDER BY ar.created_at DESC"
+            "$REQ_SELECT WHERE ar.kind IN ('ROLE', 'RATE_RESET') ORDER BY ar.created_at DESC"
         }
         c.prepareStatement(sql).use { ps ->
             if (status != null) ps.setString(1, status)
@@ -152,6 +162,32 @@ class AccessStore(private val dataSource: DataSource) {
             recorder.record(
                 c, actor, AuthzAction.TASK_REQUEST, auditEntity("AccessRequest", newId.toString()),
                 "open access request #$newId for role '$roleName'",
+            )
+            newId
+        }
+        return getRequest(id)!!
+    }
+
+    /** Open a RATE_RESET request (docs/result-caps.md), recording it as a TASK_REQUEST atomically. */
+    fun createRateResetRequest(
+        principal: String,
+        input: RateResetRequestInput,
+        actor: AuditActor,
+        recorder: ManagementAuditRecorder,
+    ): AccessRequest {
+        val id = dataSource.inTx { c ->
+            val newId = c.prepareStatement(
+                """INSERT INTO access_request (principal, kind, reason, deny_reason, requested_duration_sec)
+                   VALUES (?, 'RATE_RESET', ?, ?, 0) RETURNING id""",
+            ).use { ps ->
+                ps.setString(1, principal)
+                ps.setString(2, input.reason)
+                ps.setString(3, input.denyReason)
+                ps.executeQuery().use { rs -> rs.next(); rs.getLong(1) }
+            }
+            recorder.record(
+                c, actor, AuthzAction.TASK_REQUEST, auditEntity("AccessRequest", newId.toString()),
+                "open rate reset request #$newId",
             )
             newId
         }
@@ -612,6 +648,7 @@ class AccessStore(private val dataSource: DataSource) {
      */
     fun approve(id: Long, durationSec: Long?, decidedBy: String, c: Connection): Long? {
         val req = getRequest(id, c) ?: return null
+        if (req.kind == "RATE_RESET") return approveRateReset(req, decidedBy, c)
         val roleId = req.roleId ?: return null
         val dur = durationSec ?: req.requestedDurationSec
         val expires = Timestamp.from(Instant.now().plusSeconds(dur))
@@ -635,8 +672,21 @@ class AccessStore(private val dataSource: DataSource) {
     }
 
     /**
-     * Approve a ROLE request, recording the granted elevation ([TASK_APPROVE][AuthzAction.TASK_APPROVE]) atomically.
-     * A request no longer PENDING inserts no grant, so nothing is recorded.
+     * Approving a RATE_RESET writes the principal's reset marker (docs/result-caps.md) in place of a grant and
+     * returns the request id so the caller's audit row still fires. Nothing about `@cap` changes.
+     */
+    private fun approveRateReset(req: AccessRequest, decidedBy: String, c: Connection): Long? {
+        val won = c.prepareStatement(
+            "UPDATE access_request SET status='APPROVED', decided_by=?, decided_at=now() WHERE id=? AND status='PENDING'",
+        ).use { ps -> ps.setString(1, decidedBy); ps.setLong(2, req.id); ps.executeUpdate() > 0 }
+        if (!won) return null
+        AuditStore(dataSource).insertRateReset(c, req.principal, decidedBy, req.reason ?: "approved rate reset request #${req.id}")
+        return req.id
+    }
+
+    /**
+     * Approve a ROLE or RATE_RESET request, recording the decision ([TASK_APPROVE][AuthzAction.TASK_APPROVE])
+     * atomically. A request no longer PENDING changes nothing, so nothing is recorded.
      */
     fun approve(
         id: Long,
@@ -649,13 +699,35 @@ class AccessStore(private val dataSource: DataSource) {
         val dur = durationSec ?: req.requestedDurationSec
         dataSource.inTx { c ->
             approve(id, durationSec, decidedBy, c)?.let { grantId ->
-                recorder.record(
-                    c, actor, AuthzAction.TASK_APPROVE, auditEntity("AccessGrant", grantId.toString()),
-                    "approve access request #$id: grant role '${req.roleName}' to '${req.principal}' for ${dur}s",
-                )
+                if (req.kind == "RATE_RESET") {
+                    recorder.record(
+                        c, actor, AuthzAction.TASK_APPROVE, auditEntity("AccessRequest", id.toString()),
+                        "approve rate reset request #$id: reset spent rates of '${req.principal}'",
+                    )
+                } else {
+                    recorder.record(
+                        c, actor, AuthzAction.TASK_APPROVE, auditEntity("AccessGrant", grantId.toString()),
+                        "approve access request #$id: grant role '${req.roleName}' to '${req.principal}' for ${dur}s",
+                    )
+                }
             }
         }
         return getRequest(id)
+    }
+
+    /** An admin's direct reset (docs/result-caps.md), recorded as ADMIN_IDENTITY on the same transaction. */
+    fun resetRate(
+        principal: String,
+        reason: String,
+        actor: AuditActor,
+        recorder: ManagementAuditRecorder,
+    ): RateReset = dataSource.inTx { c ->
+        val reset = AuditStore(dataSource).insertRateReset(c, principal, actor.principal, reason)
+        recorder.record(
+            c, actor, AuthzAction.ADMIN_IDENTITY, auditEntity("User", principal),
+            "reset spent result rates of '$principal': $reason",
+        )
+        reset
     }
 
     fun reject(id: Long, reason: String, decidedBy: String): AccessRequest? {
@@ -673,7 +745,7 @@ class AccessStore(private val dataSource: DataSource) {
         }
 
     /**
-     * Reject a ROLE request, recording the [TASK_APPROVE][AuthzAction.TASK_APPROVE] decision atomically.
+     * Reject a ROLE or RATE_RESET request, recording the [TASK_APPROVE][AuthzAction.TASK_APPROVE] decision atomically.
      * A request no longer PENDING transitions no row, so nothing is recorded.
      */
     fun reject(
@@ -854,11 +926,37 @@ fun Route.accessRoutes(
         }
         call.respond(HttpStatusCode.Created, store.createRequest(principal, input, call.auditActor(config), recorder))
     }
+    // A user whose `@cap` rate is spent asks an approver to reset it (docs/result-caps.md). Authentication
+    // alone opens it: there is no datasource to decide task.request against, and the approver decides.
+    post("/api/access-requests/rate-reset") {
+        val principal = call.requireApi() ?: return@post
+        val input = call.receive<RateResetRequestInput>()
+        if (input.reason.isBlank()) {
+            return@post call.respondError(HttpStatusCode.BadRequest, "common.field_required", mapOf("fields" to "reason"))
+        }
+        call.respond(HttpStatusCode.Created, store.createRateResetRequest(principal, input, call.auditActor(config), recorder))
+    }
+    // An admin resets a principal's spent rates directly, reason required.
+    post("/api/access/principals/{principal}/rate-reset") {
+        if (!call.requireAdmin(config, authz, AuthzAction.ADMIN_IDENTITY)) return@post
+        val principal = call.parameters["principal"]?.takeIf { it.isNotBlank() } ?: return@post call.badId()
+        val input = call.receive<RateResetInput>()
+        if (input.reason.isBlank()) {
+            return@post call.respondError(HttpStatusCode.BadRequest, "common.field_required", mapOf("fields" to "reason"))
+        }
+        call.respond(store.resetRate(principal, input.reason, call.auditActor(config), recorder))
+    }
+    get("/api/access/principals/{principal}/rate-reset") {
+        if (!call.requireAdmin(config, authz, AuthzAction.ADMIN_IDENTITY)) return@get
+        val principal = call.parameters["principal"]?.takeIf { it.isNotBlank() } ?: return@get call.badId()
+        AuditStore(store.dataSource).lastRateReset(principal)?.let { call.respond(it) }
+            ?: call.respond(HttpStatusCode.NoContent)
+    }
     post("/api/access-requests/{id}/approve") {
         val approver = call.requireApi() ?: return@post
         val id = call.idParam() ?: return@post call.badId()
         val req = store.getRequest(id) ?: return@post call.notFound("access request")
-        if (req.kind != "ROLE") {
+        if (req.kind == "QUERY") {
             return@post call.respondError(HttpStatusCode.BadRequest, "approval.use_query_approval_endpoint")
         }
         // Self-approval is governed entirely by Cedar policy (the `no-self-approval` forbid, V11
@@ -888,7 +986,7 @@ fun Route.accessRoutes(
         val approver = call.requireApi() ?: return@post
         val id = call.idParam() ?: return@post call.badId()
         val req = store.getRequest(id) ?: return@post call.notFound("access request")
-        if (req.kind != "ROLE") {
+        if (req.kind == "QUERY") {
             return@post call.respondError(HttpStatusCode.BadRequest, "approval.use_query_approval_endpoint")
         }
         // Self-approval is governed entirely by Cedar policy (the `no-self-approval` forbid, V11

@@ -1,6 +1,8 @@
 package com.ridi.oss.proxymonster.controlplane
 
 import com.ridi.oss.proxymonster.controlplane.authz.CedarPolicyInput
+import com.ridi.oss.proxymonster.controlplane.management.AuditActor
+import com.ridi.oss.proxymonster.controlplane.management.ManagementAuditRecorder
 import com.ridi.oss.proxymonster.controlplane.support.EnforcementFixture
 import com.ridi.oss.proxymonster.controlplane.support.requireDockerOrSkip
 import com.ridi.oss.proxymonster.grpc.EnfAction
@@ -9,6 +11,7 @@ import java.time.Duration
 import java.time.Instant
 import kotlin.test.assertEquals
 import kotlin.test.assertNotEquals
+import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 
 /**
@@ -127,5 +130,51 @@ class RateDecideDbTest {
                 assertNotEquals(EnfAction.DENY, d.action, "${fx.datasource.engine} $sql: ${d.denyReason}")
             }
         }
+    }
+
+    @Test
+    fun `a reset clears every window at once and leaves the cap alone`() {
+        requireDockerOrSkip()
+        val fx = EnforcementFixture.mysql()
+        fx.unmaskedPii()
+        fx.completion(10_000, 0, ageSeconds = 120)
+        assertEquals("$RATE_SPENT_DENY 10000/1h spent", fx.decide("select ssn from users", auditStore = fx.auditStore).denyReason)
+        val recorder = ManagementAuditRecorder(fx.auditStore)
+        val reset = fx.accessStore.resetRate(
+            "analyst@example.com", "false positive after a re-run", AuditActor("admin@example.com", channel = "console"), recorder,
+        )
+        assertEquals("admin@example.com", reset.resetBy)
+        assertEquals(reset, fx.auditStore.lastRateReset("analyst@example.com"))
+        val after = fx.decide("select ssn from users", auditStore = fx.auditStore)
+        assertEquals(EnfAction.ALLOW, after.action, after.denyReason)
+        assertEquals(500L, after.maxRows, "a reset never touches the statement cap")
+        // Volume relayed AFTER the reset counts again.
+        fx.completion(10_000, 0, ageSeconds = 0)
+        assertEquals("$RATE_SPENT_DENY 10000/1h spent", fx.decide("select ssn from users", auditStore = fx.auditStore).denyReason)
+        assertNotNull(fx.auditStore.recent(20).firstOrNull { it.kind == "admin" && it.principal == "admin@example.com" && "reset spent result rates" in it.statement })
+    }
+
+    @Test
+    fun `approving a RATE_RESET request writes the reset`() {
+        requireDockerOrSkip()
+        val fx = EnforcementFixture.mysql()
+        fx.completion(0, 100_000_000, ageSeconds = 120)
+        assertEquals("$RATE_SPENT_DENY 100MB/1h spent", fx.decide("select id from users", auditStore = fx.auditStore).denyReason)
+        val recorder = ManagementAuditRecorder(fx.auditStore)
+        val request = fx.accessStore.createRateResetRequest(
+            "analyst@example.com", RateResetRequestInput("monthly export re-run", denyReason = "rate 100MB/1h spent"),
+            AuditActor("analyst@example.com", channel = "console"), recorder,
+        )
+        assertEquals("RATE_RESET", request.kind)
+        assertEquals("PENDING", request.status)
+        assertEquals("rate 100MB/1h spent", request.denyReason)
+        assertNull(fx.auditStore.lastRateReset("analyst@example.com"))
+        val approved = fx.accessStore.approve(request.id, null, "approver@example.com", AuditActor("approver@example.com", channel = "console"), recorder)
+        assertEquals("APPROVED", approved?.status)
+        assertEquals("approver@example.com", fx.auditStore.lastRateReset("analyst@example.com")?.resetBy)
+        assertNotEquals(EnfAction.DENY, fx.decide("select id from users", auditStore = fx.auditStore).action)
+        // Approving twice changes nothing.
+        assertEquals("APPROVED", fx.accessStore.approve(request.id, null, "approver@example.com", AuditActor("approver@example.com", channel = "console"), recorder)?.status)
+        assertEquals(1, fx.accessStore.listRequests("APPROVED").count { it.kind == "RATE_RESET" })
     }
 }

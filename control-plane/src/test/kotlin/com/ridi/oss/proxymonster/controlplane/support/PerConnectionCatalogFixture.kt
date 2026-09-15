@@ -30,8 +30,9 @@ class PerConnectionCatalogFixture(val enforcement: EnforcementFixture) {
     suspend fun openAndPush(
         principal: String = "analyst@example.com",
         schemas: Collection<String> = datasource.defaultSchemas,
+        tokenKind: String = "USER",
     ): OpenConnection {
-        val opened = core.connectionCatalog.open(Binding(datasource.name, principal, "USER"), schemas)
+        val opened = core.connectionCatalog.open(Binding(datasource.name, principal, tokenKind), schemas)
         val bySchema = enforcement.datasourceStore.catalog(datasource.id).columns.groupBy { it.schema }
         for (schema in schemas.distinct()) {
             val rows = bySchema[schema].orEmpty().map { row ->

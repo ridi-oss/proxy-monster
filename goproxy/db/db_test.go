@@ -41,6 +41,7 @@ func TestMySqlSchemaHashSQL(t *testing.T) {
 		"LENGTH(CAST(op AS CHAR CHARACTER SET ascii)), ':'",
 		"LENGTH(CAST(nl AS BINARY)), ':'",
 		"ORDER BY CAST(tn AS BINARY), op, CAST(cn AS BINARY)",
+		"SELECT ROUTINE_SCHEMA, '', ROUTINE_NAME, 'function', 0, 'NO'",
 		"X'" + fmt.Sprintf("%x", []byte(schema)) + "'",
 		// The WHERE filter must be mode-aware (CASE WHEN @@lower_case_table_names = 2 THEN LOWER(...)):
 		// a canonical (possibly-folded) schema parameter must still match a live mode-2 server whose
@@ -251,6 +252,7 @@ func TestPgSchemaHashSQL(t *testing.T) {
 		"pg_catalog.string_agg(",
 		"pg_catalog.octet_length(",
 		`COLLATE "C"`,
+		"SELECT n.nspname, '', p.proname, 'function', 0, 'NO'",
 		"pg_catalog.convert_from('\\x" + fmt.Sprintf("%x", []byte(schema)) + "'::pg_catalog.bytea, 'UTF8')",
 	} {
 		if !strings.Contains(cryptoSQL, fragment) {
@@ -323,5 +325,26 @@ func TestFoldFunctionNameMatchesTheResolverFold(t *testing.T) {
 	}
 	if got := (PgDb{}).FoldFunctionName("ÄBC"); got != "Äbc" {
 		t.Fatalf("postgres must not fold non-ASCII: got %q, want Äbc", got)
+	}
+}
+
+func TestRoutinesSQLHoldsLoadablesUnderMysqlSchemaOnly(t *testing.T) {
+	m := MySqlDb{}
+	if !strings.Contains(m.RoutinesSQL(), "SELECT 'mysql', name FROM mysql.func") {
+		t.Fatalf("RoutinesSQL = %q, want mysql.func reported under the mysql schema", m.RoutinesSQL())
+	}
+	if !strings.Contains(m.SchemaRoutinesSQL("mysql"), "FROM mysql.func") {
+		t.Fatalf("SchemaRoutinesSQL(mysql) = %q, want mysql.func", m.SchemaRoutinesSQL("mysql"))
+	}
+	if strings.Contains(m.SchemaRoutinesSQL("app"), "mysql.func") {
+		t.Fatalf("SchemaRoutinesSQL(app) = %q, want no mysql.func", m.SchemaRoutinesSQL("app"))
+	}
+	appHash, _, _ := m.SchemaHashSQL("app", nil)
+	mysqlHash, _, _ := m.SchemaHashSQL("mysql", nil)
+	if strings.Contains(appHash, "mysql.func") || !strings.Contains(mysqlHash, "mysql.func") {
+		t.Fatal("only the mysql schema's hash covers mysql.func")
+	}
+	if !strings.Contains(PgDb{}.RoutinesSQL(), "pg_catalog.pg_proc") {
+		t.Fatalf("PG RoutinesSQL = %q, want pg_proc", PgDb{}.RoutinesSQL())
 	}
 }

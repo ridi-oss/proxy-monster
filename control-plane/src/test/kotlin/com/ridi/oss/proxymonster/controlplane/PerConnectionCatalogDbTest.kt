@@ -10,6 +10,9 @@ import com.ridi.oss.proxymonster.grpc.EnfAction
 import com.ridi.oss.proxymonster.controlplane.support.EnforcementFixture
 import com.ridi.oss.proxymonster.controlplane.support.PerConnectionCatalogFixture
 import com.ridi.oss.proxymonster.controlplane.support.requireDocker
+import com.ridi.oss.proxymonster.controlplane.support.SharedMySql
+import com.ridi.oss.proxymonster.controlplane.systemSchemas
+import com.ridi.oss.proxymonster.controlplane.isPostgres
 import kotlinx.coroutines.runBlocking
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.TestInstance
@@ -117,6 +120,42 @@ abstract class PerConnectionCatalogDbContract {
         } finally {
             channel.shutdownNow().awaitTermination(5, java.util.concurrent.TimeUnit.SECONDS)
             server.shutdown()
+        }
+    }
+
+    @Test
+    fun `routine DDL refetches the held schema and the fragment carries the new routine`() = runBlocking {
+        val schema = fixture.datasource.defaultSchemas.first { it !in fixture.datasource.engine.systemSchemas }
+        val principal = "writer@example.com"
+        val opened = fixture.core.connectionCatalog.open(Binding(fixture.datasource.name, principal, "USER"), listOf(schema))
+        val connection = fixture.core.connectionCatalog.find(opened.connectionId)!!
+        val name = "pccat_identity_${System.nanoTime()}"
+        val (create, drop) = if (fixture.datasource.engine.isPostgres) {
+            "create function $schema.$name(v integer) returns integer language sql immutable as 'select v'" to
+                "drop function $schema.$name(integer)"
+        } else {
+            "CREATE FUNCTION `$schema`.$name(v BIGINT) RETURNS BIGINT DETERMINISTIC RETURN v" to
+                "DROP FUNCTION `$schema`.$name"
+        }
+        fun held() = fixture.core.connectionCatalog.heldRoutines(connection)[schema].orEmpty().filter { it == name.lowercase() }
+        java.sql.DriverManager.getConnection(
+            fixture.enforcement.targetJdbcUrl, fixture.enforcement.targetUser, fixture.enforcement.targetPassword,
+        ).use { target ->
+            fixture.pushFromTarget(target, opened.connectionId, schema)
+            assertEquals(emptyList(), held())
+            val verdict = assertIs<EnforcementOutcome.Verdict>(
+                decideConnection(fixture.core, opened.connectionId, principal, fixture.datasource, create, listOf(schema), null),
+            )
+            assertEquals(EnfAction.ALLOW, verdict.ctx.action, verdict.ctx.denyReason)
+            assertEquals(listOf(schema), verdict.afterStatement.map { it.schema }, "routine DDL refetches the schema it lives in")
+            // MySQL's binlog refuses CREATE FUNCTION from a non-SUPER account, so the DDL runs as root there.
+            try {
+                if (fixture.datasource.engine.isPostgres) target.createStatement().use { it.execute(create) } else SharedMySql.executeAdmin(create)
+                fixture.pushFromTarget(target, opened.connectionId, schema)
+                assertEquals(listOf(name.lowercase()), held(), "the refreshed fragment holds the routine")
+            } finally {
+                if (fixture.datasource.engine.isPostgres) target.createStatement().use { it.execute(drop) } else SharedMySql.executeAdmin(drop)
+            }
         }
     }
 

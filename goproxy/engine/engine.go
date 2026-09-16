@@ -352,6 +352,12 @@ type Db interface {
 	SchemaHashFromRows(rows [][]*string) (hash []byte, trusted bool, err error)
 	// SchemaColumnsSQL returns six fragment columns ordered by binary (table, ordinal, column).
 	SchemaColumnsSQL(schema string) string
+	// RoutinesSQL lists every routine as (schema, name), the whole-catalog counterpart of the
+	// per-schema SchemaRoutinesSQL.
+	RoutinesSQL() string
+	// SchemaRoutinesSQL returns the schema's routine names, one column; they are part of the same
+	// fragment and the same content hash as the columns.
+	SchemaRoutinesSQL(schema string) string
 	// LowerCaseTableNamesProbeSQL is the query whose single-row single-column result is MySQL's live
 	// lower_case_table_names mode ("" for a dialect with no such concept, e.g. Postgres — NormalizeColumns
 	// ignores the mode argument in that case).

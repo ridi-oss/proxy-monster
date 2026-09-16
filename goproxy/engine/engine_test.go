@@ -29,6 +29,8 @@ func (f fakeDb) SchemaHashSQL(string, [][]*string) (string, int, error) {
 }
 func (f fakeDb) SchemaHashFromRows([][]*string) ([]byte, bool, error) { return nil, false, nil }
 func (f fakeDb) SchemaColumnsSQL(string) string                       { return "columns" }
+func (f fakeDb) RoutinesSQL() string                                  { return "routines" }
+func (f fakeDb) SchemaRoutinesSQL(string) string                      { return "routines" }
 func (f fakeDb) LowerCaseTableNamesProbeSQL() string                  { return "" }
 func (f fakeDb) FoldFunctionName(name string) string                  { return name }
 

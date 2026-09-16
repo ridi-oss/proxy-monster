@@ -69,7 +69,7 @@ func TestServeStatementRefetchesOnlyAfterCleanCompletion(t *testing.T) {
 		name  string
 		clean bool
 		want  int
-	}{{"clean", true, 3}, {"target-DB error response", false, 0}} {
+	}{{"clean", true, 4}, {"target-DB error response", false, 0}} {
 		t.Run(tc.name, func(t *testing.T) {
 			calls := 0
 			decision := &Decision{Action: "ALLOW", AfterStatement: []*pb.Refetch{{Schema: "app"}}}

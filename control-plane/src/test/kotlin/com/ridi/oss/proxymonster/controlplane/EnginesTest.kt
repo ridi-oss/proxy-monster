@@ -1,8 +1,5 @@
 package com.ridi.oss.proxymonster.controlplane
 
-import com.ridi.oss.proxymonster.analyzer.pb.FunctionCatalog
-import com.ridi.oss.proxymonster.analyzer.pb.functionCatalog
-import com.ridi.oss.proxymonster.analyzer.pb.schemaFunctions
 import com.ridi.oss.proxymonster.classification.MysqlNativeFunctions
 import com.ridi.oss.proxymonster.classification.PostgresGrammarFunctions
 import com.ridi.oss.proxymonster.grpc.Engine
@@ -125,43 +122,50 @@ class EnginesTest {
         assertFalse(Engine.POSTGRES.isSystemSchema("app"))
     }
 
-    @Test fun `MySQL function catalog is the pinned native list with or without a push`() {
+    @Test fun `MySQL function catalog is the pinned native list plus loadable and stored routines`() {
         val natives = MysqlNativeFunctions.forVersion("8.0.44")
-        val unpushed = Engine.MYSQL.functionCatalog(null, "8.0.44")!!
-        assertEquals(natives, unpushed.builtinFunctionsList)
-        val pushed = functionCatalog {
-            builtinFunctions.add("invented_native")
-            udfSchemas.add(schemaFunctions { schema = "app"; names.add("add_tax") })
-            loadableFunctions.add("fnv_64")
-        }
-        val filled = Engine.MYSQL.functionCatalog(pushed, "8.0.44")!!
-        assertEquals(natives, filled.builtinFunctionsList, "a pushed MySQL builtin claim is replaced, never trusted")
-        assertEquals(pushed.udfSchemasList, filled.udfSchemasList)
-        assertEquals(pushed.loadableFunctionsList, filled.loadableFunctionsList)
+        val empty = Engine.MYSQL.functionCatalog(emptyMap(), "8.0.44")
+        assertEquals(natives, empty.builtinFunctionsList)
+        assertTrue(empty.udfSchemasList.isEmpty() && empty.loadableFunctionsList.isEmpty())
+        val tiered = Engine.MYSQL.functionCatalog(
+            mapOf("mysql" to listOf("fnv_64"), "app" to listOf("add_tax"), "sys" to listOf("format_bytes")),
+            "8.0.44",
+        )
+        assertEquals(natives, tiered.builtinFunctionsList)
+        assertEquals(listOf("fnv_64"), tiered.loadableFunctionsList, "mysql.func loadables are the mysql schema's routines")
+        assertEquals(
+            listOf("app" to listOf("add_tax"), "sys" to listOf("format_bytes")),
+            tiered.udfSchemasList.map { it.schema to it.namesList },
+            "every other schema's routines are stored functions, system schemas included",
+        )
+        assertTrue(tiered.systemFunctionSchemasList.isEmpty(), "MySQL natives are never schema-qualified")
     }
 
-    @Test fun `Postgres function catalog is absent without a push and gains the grammar functions with one`() {
-        assertNull(Engine.POSTGRES.functionCatalog(null, "16.4"))
-        val pushed = functionCatalog {
-            builtinFunctions.add("abs")
-            systemFunctionSchemas.add(schemaFunctions { schema = "pg_catalog"; names.add("abs") })
-            systemFunctionSchemas.add(schemaFunctions { schema = "information_schema"; names.add("_pg_expandarray") })
-            systemFunctionSchemas.add(schemaFunctions { schema = "pg_catalog"; names.add("lower") })
-            udfSchemas.add(schemaFunctions { schema = "public"; names.add("add_tax") })
-        }
-        val filled = Engine.POSTGRES.functionCatalog(pushed, "16.4")!!
-        assertEquals(listOf("abs") + PostgresGrammarFunctions.names, filled.builtinFunctionsList)
-        val bySchema = filled.systemFunctionSchemasList.groupBy { it.schema }
-        assertEquals(1, bySchema.getValue("pg_catalog").size, "duplicate pg_catalog entries fold into one")
-        assertEquals(
-            listOf("abs", "lower") + PostgresGrammarFunctions.names,
-            bySchema.getValue("pg_catalog").single().namesList,
+    @Test fun `Postgres function catalog tiers pg_catalog, information_schema, and user schemas`() {
+        val empty = Engine.POSTGRES.functionCatalog(emptyMap(), "16.4")
+        assertEquals(PostgresGrammarFunctions.names, empty.builtinFunctionsList, "grammar functions have no pg_proc row")
+        val tiered = Engine.POSTGRES.functionCatalog(
+            mapOf(
+                "pg_catalog" to listOf("abs", "lower", PostgresGrammarFunctions.names.first()),
+                "information_schema" to listOf("_pg_expandarray"),
+                "public" to listOf("add_tax"),
+                "pg_temp_3" to listOf("scratch"),
+                "pg_toast" to listOf("chunk"),
+            ),
+            "16.4",
         )
-        assertEquals(listOf("_pg_expandarray"), bySchema.getValue("information_schema").single().namesList)
-        assertEquals(pushed.udfSchemasList, filled.udfSchemasList)
+        assertEquals(listOf("abs", "lower") + PostgresGrammarFunctions.names, tiered.builtinFunctionsList)
+        val bySchema = tiered.systemFunctionSchemasList.associate { it.schema to it.namesList }
+        assertEquals(listOf("abs", "lower") + PostgresGrammarFunctions.names, bySchema.getValue("pg_catalog"))
+        assertEquals(listOf("_pg_expandarray"), bySchema.getValue("information_schema"))
+        assertEquals(
+            listOf("public" to listOf("add_tax")),
+            tiered.udfSchemasList.map { it.schema to it.namesList },
+            "ephemeral pg_temp/pg_toast routines are neither system nor UDF",
+        )
     }
 
     @Test fun `functionCatalog fails closed on an unspecified engine`() {
-        assertFailsWith<IllegalStateException> { Engine.ENGINE_UNSPECIFIED.functionCatalog(FunctionCatalog.getDefaultInstance(), null) }
+        assertFailsWith<IllegalStateException> { Engine.ENGINE_UNSPECIFIED.functionCatalog(emptyMap(), null) }
     }
 }

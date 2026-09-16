@@ -40,9 +40,18 @@ data class FragmentColumn(
 
 data class PoolKey(val scope: String, val schema: String, val hash: ContentHash)
 
-data class SchemaFragment(val key: PoolKey, val hash: ContentHash, val columns: List<FragmentColumn>)
+data class SchemaFragment(
+    val key: PoolKey,
+    val hash: ContentHash,
+    val columns: List<FragmentColumn>,
+    /** Routine names, folded like a call (MySQL `AddTax` -> `addtax`). */
+    val routines: List<String> = emptyList(),
+)
 
 data class PooledFragment(val fragment: SchemaFragment, val refCount: Int)
+
+/** What the content hash covers; two pushes under one hash that differ here are an alias, rejected. */
+val SchemaFragment.content: Pair<List<FragmentColumn>, List<String>> get() = columns to routines
 
 /**
  * [measuredNanos] is when THIS datasource's target DB was last read and found to hold this content — the
@@ -270,9 +279,9 @@ class ConnectionCatalogRegistry(
         }
         return synchronized(stateLock) {
             val key = poolKey(ds, request.schema, pushedHash)
-            val fragment = SchemaFragment(key, pushedHash, columns.toList())
+            val fragment = SchemaFragment(key, pushedHash, columns.toList(), request.routinesList.toList())
             val existing = pool[key]
-            if (existing != null && existing.fragment.columns != fragment.columns) {
+            if (existing != null && existing.fragment.content != fragment.content) {
                 return@synchronized CatalogMutationResult.Rejected(
                     Status.Code.FAILED_PRECONDITION,
                     "content hash aliases different fragment columns",
@@ -287,7 +296,7 @@ class ConnectionCatalogRegistry(
             if (previousAuth?.pooledRef != key) retains++
             // Also performs the alias check atomically with insertion when another thread created the key.
             val retained = retain(fragment, retains)
-            if (retained.fragment.columns != fragment.columns) {
+            if (retained.fragment.content != fragment.content) {
                 return@synchronized CatalogMutationResult.Rejected(
                     Status.Code.FAILED_PRECONDITION,
                     "content hash aliases different fragment columns",
@@ -331,7 +340,7 @@ class ConnectionCatalogRegistry(
         pool.compute(fragment.key) { _, current ->
             val next = when {
                 current == null -> PooledFragment(fragment, count)
-                current.fragment.columns != fragment.columns -> current
+                current.fragment.content != fragment.content -> current
                 else -> current.copy(refCount = current.refCount + count)
             }
             result = next
@@ -410,6 +419,13 @@ class ConnectionCatalogRegistry(
             .sortedWith(compareBy({ it.schema }, { it.table }, { it.ordinal }))
     }
 
+    fun heldRoutines(connection: EnforcementConnection): Map<String, List<String>> = synchronized(stateLock) {
+        connection.held.entries
+            .mapNotNull { (schema, held) -> pool[held.pooledRef]?.fragment?.routines?.let { schema to it } }
+            .sortedBy { it.first }
+            .toMap()
+    }
+
     fun heldAndFreshSchemas(connection: EnforcementConnection): Set<String> =
         connection.held.keys.filterTo(LinkedHashSet()) { freshnessGate(connection, listOf(it)).isEmpty() }
 
@@ -417,8 +433,8 @@ class ConnectionCatalogRegistry(
      * Fold a whole-catalog measurement from the proxy's ambient refresh into this datasource's authoritative
      * entries.
      *
-     * The refresh reads every schema from the target DB with the same six fields a fragment holds, so for a
-     * schema whose columns are byte-identical it is a genuine re-measurement of exactly that content — the
+     * The refresh reads every schema from the target DB with the same columns and routines a fragment holds,
+     * so for a schema whose content is identical it is a genuine re-measurement of exactly that content — the
      * same evidence a connection's own hash probe produces. Recording it advances the authoritative entry's
      * measurement time, so the staleness gate counts from this reading rather than from the first time the
      * content happened to be pooled.
@@ -428,7 +444,7 @@ class ConnectionCatalogRegistry(
      * there would let one datasource's refresh vouch for another's schema that nobody read. Freshness is
      * evidence about one target DB; only the content itself is shareable.
      *
-     * Deliberately narrow: a schema whose columns differ is left untouched, so this can only ever confirm
+     * Deliberately narrow: a schema whose content differs is left untouched, so this can only ever confirm
      * content, never install it. Divergence stays the job of the connection's own probe, which alone knows
      * what that connection's target DB binds.
      *
@@ -437,10 +453,11 @@ class ConnectionCatalogRegistry(
     fun recordAmbientMeasurement(
         datasourceName: String,
         columnsBySchema: Map<String, List<FragmentColumn>>,
+        routinesBySchema: Map<String, List<String>> = emptyMap(),
     ): Set<String> = synchronized(stateLock) {
         val confirmed = LinkedHashSet<String>()
         val now = clockNanos()
-        for ((schema, columns) in columnsBySchema) {
+        for (schema in columnsBySchema.keys + routinesBySchema.keys) {
             val authKey = datasourceName to schema
             val auth = authoritative[authKey] ?: continue
             val pooled = pool[auth.pooledRef] ?: continue
@@ -448,7 +465,8 @@ class ConnectionCatalogRegistry(
             // statements whose ORDER BY need not agree, and row order is not part of what a fragment
             // asserts — the decide path sorts for itself. Comparing lists would silently stop confirming
             // anything the moment the two orderings diverged, and nothing would report it.
-            if (pooled.fragment.columns.toSet() != columns.toSet()) continue
+            if (pooled.fragment.columns.toSet() != columnsBySchema[schema].orEmpty().toSet()) continue
+            if (pooled.fragment.routines.toSet() != routinesBySchema[schema].orEmpty().toSet()) continue
             authoritative[authKey] = auth.copy(measuredNanos = now)
             confirmed += schema
         }

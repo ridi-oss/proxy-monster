@@ -26,6 +26,7 @@ class PerConnectionCatalogStateTest {
         generation: Long = 1,
         unchanged: Boolean = false,
         columnName: String = "id",
+        routines: List<String> = emptyList(),
     ) = schemaFragmentPush {
         connectionId = opened.connectionId
         datasourceName = ds.name
@@ -34,6 +35,7 @@ class PerConnectionCatalogStateTest {
         this.unchanged = unchanged
         backendGeneration = generation
         if (!unchanged) {
+            this.routines.addAll(routines)
             columns.add(column {
                 this.schema = schema; table = "users"; column = columnName
                 dataType = "bigint"; ordinal = 1; nullable = false
@@ -194,6 +196,22 @@ class PerConnectionCatalogStateTest {
             registry.freshnessGate(registry.find(second.connectionId)!!, listOf("app")).isEmpty(),
             "the ambient re-measurement must reset the staleness clock for later adopters",
         )
+    }
+
+    @Test
+    fun `an ambient refresh whose routines differ does not confirm the pooled content`() = runBlocking {
+        var now = 0L
+        val registry = ConnectionCatalogRegistry(clockNanos = { now }, stalenessNanos = 10)
+        val first = registry.open(Binding(ds.name, "first", "USER"), listOf("app"))
+        registry.applyPush(push(first, "app", "h1"), ds)
+
+        now = 8
+        val columns = mapOf("app" to listOf(FragmentColumn("app", "users", "id", "bigint", 1, false)))
+        assertTrue(
+            registry.recordAmbientMeasurement(ds.name, columns, mapOf("app" to listOf("add_tax"))).isEmpty(),
+            "a routine created out of band must not re-measure the fragment that lacks it",
+        )
+        assertEquals(setOf("app"), registry.recordAmbientMeasurement(ds.name, columns))
     }
 
     @Test
@@ -384,6 +402,17 @@ class PerConnectionCatalogStateTest {
         )
         check(result is CatalogMutationResult.Applied) { "openPushSystem rejected: $result" }
         return opened
+    }
+
+    @Test
+    fun `same hash with the same columns but different routines rejects`() = runBlocking {
+        val registry = ConnectionCatalogRegistry()
+        val first = registry.open(Binding(ds.name, "first", "USER"), listOf("app"))
+        registry.applyPush(push(first, "app", "h1", routines = listOf("add_tax")), ds)
+        val second = registry.open(Binding(ds.name, "second", "USER"), listOf("app"))
+        assertTrue(registry.applyPush(push(second, "app", "h1", routines = listOf("add_tax", "lookup")), ds) is CatalogMutationResult.Rejected)
+        assertTrue(registry.applyPush(push(second, "app", "h1", routines = listOf("add_tax")), ds) is CatalogMutationResult.Applied)
+        Unit
     }
 
     @Test

@@ -26,9 +26,8 @@ import com.ridi.oss.proxymonster.controlplane.authz.CedarEngine
 import com.ridi.oss.proxymonster.controlplane.authz.CedarPolicyInput
 import com.ridi.oss.proxymonster.controlplane.authz.CedarPolicyStore
 import com.ridi.oss.proxymonster.controlplane.authz.RoleSource
-import com.ridi.oss.proxymonster.analyzer.pb.FunctionCatalog
+import com.ridi.oss.proxymonster.analyzer.pb.SchemaFunctions
 import com.ridi.oss.proxymonster.analyzer.pb.schemaFunctions
-import com.ridi.oss.proxymonster.analyzer.pb.functionCatalog
 import org.flywaydb.core.Flyway
 import com.ridi.oss.proxymonster.analyzer.pb.CatalogSnapshot
 import com.ridi.oss.proxymonster.analyzer.pb.Column
@@ -114,41 +113,43 @@ internal fun DatasourceStore.pushTestCatalog(
         engineVersion = namespace.engineVersion,
         catalog = catalogSnapshot {
             this.columns.addAll(columns)
-            introspectTestFunctions(jdbcUrl, user, password, isMysql)?.let { functions = it }
+            routines.addAll(introspectTestRoutines(jdbcUrl, user, password, isMysql))
         },
     )
 }
 
-/** Introspect functions using the same target catalogs as the proxy. */
-private fun introspectTestFunctions(jdbcUrl: String, user: String, password: String, isMysql: Boolean): FunctionCatalog? = try {
+/** The stored catalog snapshot bytes, parsed; the default instance when nothing is stored. */
+internal fun DatasourceStore.storedSnapshot(id: Long): CatalogSnapshot = dataSource.connection.use { c ->
+    c.prepareStatement("SELECT catalog FROM datasource WHERE id = ?").use { ps ->
+        ps.setLong(1, id)
+        ps.executeQuery().use { rs ->
+            check(rs.next()) { "datasource $id missing" }
+            rs.getBytes(1)?.let(CatalogSnapshot::parseFrom) ?: CatalogSnapshot.getDefaultInstance()
+        }
+    }
+}
+
+/** The routines the stored snapshot holds, by schema. */
+internal fun DatasourceStore.storedRoutines(id: Long): Map<String, List<String>> =
+    storedSnapshot(id).routinesList.associate { it.schema to it.namesList }
+
+/** Introspect routines the way the proxy does: (schema, name) pairs, folded, grouped by schema. */
+private fun introspectTestRoutines(jdbcUrl: String, user: String, password: String, isMysql: Boolean): List<SchemaFunctions> =
     DriverManager.getConnection(jdbcUrl, user, password).use { target ->
-        fun pairs(sql: String): List<Pair<String, String>> = buildList {
+        val sql = if (isMysql) {
+            "SELECT ROUTINE_SCHEMA, ROUTINE_NAME FROM information_schema.ROUTINES WHERE ROUTINE_TYPE = 'FUNCTION' UNION ALL SELECT 'mysql', name FROM mysql.func"
+        } else {
+            "SELECT n.nspname, p.proname FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace"
+        }
+        val pairs = buildList {
             target.prepareStatement(sql).use { ps ->
                 ps.executeQuery().use { rs -> while (rs.next()) add(rs.getString(1) to rs.getString(2)) }
             }
         }
         // ASCII-lower matches the analyzer's fold for the ASCII names these fixtures use.
-        fun schemaFunctions(rows: List<Pair<String, String>>) = rows.groupBy({ it.first }, { it.second.lowercase(java.util.Locale.ROOT) })
+        pairs.groupBy({ it.first }, { it.second.lowercase(java.util.Locale.ROOT) })
             .map { (schema, names) -> schemaFunctions { this.schema = schema; this.names.addAll(names.distinct()) } }
-        if (isMysql) {
-            functionCatalog {
-                loadableFunctions.addAll(pairs("SELECT name, name FROM mysql.func").map { it.first.lowercase(java.util.Locale.ROOT) })
-                udfSchemas.addAll(schemaFunctions(pairs("SELECT ROUTINE_SCHEMA, ROUTINE_NAME FROM information_schema.ROUTINES WHERE ROUTINE_TYPE = 'FUNCTION'")))
-            }
-        } else {
-            functionCatalog {
-                builtinFunctions.addAll(
-                    pairs("SELECT p.proname, p.proname FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace WHERE n.nspname = 'pg_catalog'")
-                        .map { it.first.lowercase(java.util.Locale.ROOT) }.distinct(),
-                )
-                systemFunctionSchemas.addAll(schemaFunctions(pairs("SELECT n.nspname, p.proname FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace WHERE n.nspname IN ('pg_catalog', 'information_schema')")))
-                udfSchemas.addAll(schemaFunctions(pairs("SELECT n.nspname, p.proname FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace WHERE n.nspname <> 'information_schema' AND n.nspname NOT LIKE 'pg\\_%'")))
-            }
-        }
     }
-} catch (_: java.sql.SQLException) {
-    null
-}
 
 /**
  * A fully wired enforcement stack against real databases: a Flyway-migrated Postgres control-plane

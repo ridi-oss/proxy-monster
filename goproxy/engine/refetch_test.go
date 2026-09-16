@@ -31,9 +31,11 @@ func (refetchDb) SchemaHashFromRows(rows [][]*string) ([]byte, bool, error) {
 	}
 	return []byte(*rows[0][0]), true, nil
 }
-func (refetchDb) SchemaColumnsSQL(schema string) string { return "columns:" + schema }
-func (refetchDb) LowerCaseTableNamesProbeSQL() string   { return "" }
-func (refetchDb) FoldFunctionName(name string) string   { return name }
+func (refetchDb) SchemaColumnsSQL(schema string) string  { return "columns:" + schema }
+func (refetchDb) RoutinesSQL() string                    { return "routines" }
+func (refetchDb) SchemaRoutinesSQL(schema string) string { return "routines:" + schema }
+func (refetchDb) LowerCaseTableNamesProbeSQL() string    { return "" }
+func (refetchDb) FoldFunctionName(name string) string    { return name }
 
 func (refetchDb) NormalizeColumns(_ int, columns []*analyzerpb.Column) []*analyzerpb.Column {
 	return columns
@@ -87,6 +89,8 @@ func TestRefetcherUnconditionalFetch(t *testing.T) {
 			case strings.HasPrefix(sql, "hash:"):
 				hashCalls++
 				return [][]*string{{ptr("stable")}}, nil
+			case strings.HasPrefix(sql, "routines:"):
+				return [][]*string{{ptr("add_tax")}, {ptr("lookup")}}, nil
 			default:
 				return fragmentRows("app"), nil
 			}
@@ -101,6 +105,9 @@ func TestRefetcherUnconditionalFetch(t *testing.T) {
 	}
 	if pushed.Unchanged || !bytes.Equal(pushed.ContentHash, []byte("stable")) || len(pushed.Columns) != 1 {
 		t.Fatalf("push = %+v, want coherent full fragment", pushed)
+	}
+	if !reflect.DeepEqual(pushed.Routines, []string{"add_tax", "lookup"}) {
+		t.Fatalf("push routines = %v, want the schema's routines", pushed.Routines)
 	}
 }
 
@@ -154,7 +161,28 @@ func TestRefetcherProbesModeAndNormalizesBeforePush(t *testing.T) {
 	}
 }
 
-func TestRefetcherUntrustedAndIncoherentHashesUseNonce(t *testing.T) {
+func TestRefetcherIncoherentHashesAreTerminal(t *testing.T) {
+	var hashCalls int
+	r := Refetcher{
+		Db: refetchDb{},
+		Probe: func(sql string, columns int) ([][]*string, error) {
+			if strings.HasPrefix(sql, "hash:") {
+				hashCalls++
+				return [][]*string{{ptr([]string{"first", "second"}[hashCalls-1])}}, nil
+			}
+			return fragmentRows("app"), nil
+		},
+		Push: func(*pb.SchemaFragmentPush) (uint64, error) {
+			t.Fatal("a schema that changed under the read must not be pushed")
+			return 0, nil
+		},
+	}
+	if err := r.Run(&pb.Refetch{Schema: "app", IfHashDiffers: []byte("never")}); err == nil || !strings.Contains(err.Error(), "changed during introspection") {
+		t.Fatalf("Run error = %v, want changed-during-introspection", err)
+	}
+}
+
+func TestRefetcherUntrustedHashesUseNonce(t *testing.T) {
 	cases := []struct {
 		name   string
 		hashes []string
@@ -162,7 +190,6 @@ func TestRefetcherUntrustedAndIncoherentHashesUseNonce(t *testing.T) {
 	}{
 		{name: "untrusted", hashes: []string{"untrusted", "untrusted"}},
 		{name: "first probe error", hashes: []string{"ignored", "stable"}, errAt: 1},
-		{name: "coherence mismatch", hashes: []string{"first", "second"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

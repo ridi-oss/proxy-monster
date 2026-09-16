@@ -44,12 +44,14 @@ message Column {
   bool implicit = 8;
 }
 
-// The introspected catalog: pushed whole, stored whole, and analyzed whole.
+// The introspected catalog: pushed whole, stored whole, analyzed whole. The proxy fills columns and
+// routines; the control plane fills functions (Engine.functionCatalog).
 message CatalogSnapshot {
   repeated Column columns = 1;
-  // Absent means function introspection failed; an observed empty inventory is authoritative. The
-  // control plane supplies MySQL natives from its pinned list.
+  // Absent = no inventory: every call fails closed except MySQL natives, which are pinned.
   FunctionCatalog functions = 2;
+  // Routine names per schema, folded like a call; MySQL lists mysql.func loadables under "mysql".
+  repeated SchemaFunctions routines = 3;
 }
 
 // Function names used to resolve SQL calls.

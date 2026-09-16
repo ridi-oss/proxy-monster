@@ -394,16 +394,6 @@ Fixes for gaps documented in
 - Support a NATURAL/USING join after an outer merging join (RIGHT/FULL). The
   merged key's value is `COALESCE(l.k, r.k)`, which a rewrite to plain USING
   cannot express against a single carrier table; fails closed today.
-- Couple function-catalog freshness to the held connection. Function resolution
-  reads a datasource-level snapshot the proxy pushes on whole-catalog
-  introspection, so a same-named user function created ahead of `pg_catalog` on
-  the search path keeps resolving as the builtin (and relays) until the catalog
-  refreshes — the shadowing window in
-  [`KNOWN_LIMITATIONS.md`](../KNOWN_LIMITATIONS.md). The column catalog already
-  decides per connection against a generation stamp; the function catalog should
-  ride the same seam (deny function calls on a stale/absent generation) instead
-  of a process-global map, which also closes the transactional-DDL commit
-  ordering and concurrent-re-push reorder edges.
 - Fail closed on ambiguous unqualified columns in write payloads. The
   write-payload resolver treats a column that is ambiguous among the payload's
   local sources (`SELECT … FROM orders o, orders p WHERE ctid = …` — same for a

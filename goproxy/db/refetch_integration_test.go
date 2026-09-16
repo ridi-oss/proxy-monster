@@ -55,13 +55,14 @@ func TestMySqlRefetcherIntegration(t *testing.T) {
 		push := runRefetchIntegration(t, adapter, conn, otherSchema, previous)
 		assertFullRefetch(t, push, current, []*analyzerpb.Column{
 			{Schema: otherSchema, Table: "base", Column: "a", DataType: "int", Ordinal: 1},
-		})
+		}, nil)
 	})
 
 	steps := []struct {
 		name      string
 		statement string
 		columns   []*analyzerpb.Column
+		routines  []string
 	}{
 		{
 			name:      "add column",
@@ -112,6 +113,23 @@ func TestMySqlRefetcherIntegration(t *testing.T) {
 			},
 		},
 		{
+			name:      "create function",
+			statement: "CREATE FUNCTION " + quote(schema) + ".AddTax(amount INT) RETURNS INT DETERMINISTIC RETURN amount * 11 / 10",
+			columns: []*analyzerpb.Column{
+				{Schema: schema, Table: "renamed_table", Column: "renamed", DataType: "text", Ordinal: 1},
+				{Schema: schema, Table: "renamed_table", Column: "a", DataType: "int", Ordinal: 2},
+			},
+			routines: []string{"addtax"},
+		},
+		{
+			name:      "drop function",
+			statement: "DROP FUNCTION " + quote(schema) + ".AddTax",
+			columns: []*analyzerpb.Column{
+				{Schema: schema, Table: "renamed_table", Column: "renamed", DataType: "text", Ordinal: 1},
+				{Schema: schema, Table: "renamed_table", Column: "a", DataType: "int", Ordinal: 2},
+			},
+		},
+		{
 			name:      "drop table",
 			statement: "DROP TABLE " + quote(schema) + ".renamed_table",
 			columns:   []*analyzerpb.Column{},
@@ -125,7 +143,7 @@ func TestMySqlRefetcherIntegration(t *testing.T) {
 				t.Fatalf("mutation did not change trusted hash: %x", current)
 			}
 			push := runRefetchIntegration(t, adapter, conn, schema, previous)
-			assertFullRefetch(t, push, current, step.columns)
+			assertFullRefetch(t, push, current, step.columns, step.routines)
 			previous = current
 		})
 	}
@@ -191,13 +209,15 @@ func TestPostgresRefetcherIntegration(t *testing.T) {
 				push := runRefetchIntegration(t, adapter, conn, otherSchema, previous)
 				assertFullRefetch(t, push, current, []*analyzerpb.Column{
 					{Schema: otherSchema, Table: "base", Column: "a", DataType: "integer", Ordinal: 1},
-				})
+				}, nil)
 			})
 
 			steps := []struct {
 				name      string
+				before    string
 				statement string
 				columns   []*analyzerpb.Column
+				routines  []string
 			}{
 				{
 					name:      "add column",
@@ -256,6 +276,24 @@ func TestPostgresRefetcherIntegration(t *testing.T) {
 					},
 				},
 				{
+					name:      "create function inside an open transaction",
+					statement: "CREATE FUNCTION " + quote(schema) + ".AddTax(integer) RETURNS integer LANGUAGE sql IMMUTABLE AS 'select $1 * 11 / 10'",
+					before:    "BEGIN",
+					columns: []*analyzerpb.Column{
+						{Schema: schema, Table: "renamed_table", Column: "renamed", DataType: "text", Ordinal: 2, Nullable: true},
+						{Schema: schema, Table: "renamed_table", Column: "a", DataType: "integer", Ordinal: 3},
+					},
+					routines: []string{"addtax"},
+				},
+				{
+					name:      "roll the function back",
+					statement: "ROLLBACK",
+					columns: []*analyzerpb.Column{
+						{Schema: schema, Table: "renamed_table", Column: "renamed", DataType: "text", Ordinal: 2, Nullable: true},
+						{Schema: schema, Table: "renamed_table", Column: "a", DataType: "integer", Ordinal: 3},
+					},
+				},
+				{
 					name:      "drop table",
 					statement: "DROP TABLE " + quote(schema) + ".renamed_table",
 					columns:   []*analyzerpb.Column{},
@@ -263,6 +301,9 @@ func TestPostgresRefetcherIntegration(t *testing.T) {
 			}
 			for _, step := range steps {
 				t.Run(step.name, func(t *testing.T) {
+					if step.before != "" {
+						execRefetchSQL(t, conn, step.before)
+					}
 					execRefetchSQL(t, conn, step.statement)
 					current := trustedRefetchHash(t, adapter, conn, schema)
 					if len(current) != wantHashLength {
@@ -272,7 +313,7 @@ func TestPostgresRefetcherIntegration(t *testing.T) {
 						t.Fatalf("mutation did not change trusted hash: %x", current)
 					}
 					push := runRefetchIntegration(t, adapter, conn, schema, previous)
-					assertFullRefetch(t, push, current, step.columns)
+					assertFullRefetch(t, push, current, step.columns, step.routines)
 					previous = current
 				})
 			}
@@ -420,7 +461,7 @@ func runRefetchIntegration(t *testing.T, adapter engine.Db, conn *sql.Conn, sche
 	return push
 }
 
-func assertFullRefetch(t *testing.T, push *pb.SchemaFragmentPush, currentHash []byte, wantColumns []*analyzerpb.Column) {
+func assertFullRefetch(t *testing.T, push *pb.SchemaFragmentPush, currentHash []byte, wantColumns []*analyzerpb.Column, wantRoutines []string) {
 	t.Helper()
 	if push.Unchanged {
 		t.Fatalf("push = %+v, want full fetch", push)
@@ -430,6 +471,9 @@ func assertFullRefetch(t *testing.T, push *pb.SchemaFragmentPush, currentHash []
 	}
 	if !reflect.DeepEqual(push.Columns, wantColumns) {
 		t.Fatalf("push columns = %+v, want %+v", push.Columns, wantColumns)
+	}
+	if !reflect.DeepEqual(push.Routines, wantRoutines) {
+		t.Fatalf("push routines = %v, want %v", push.Routines, wantRoutines)
 	}
 }
 

@@ -23,8 +23,8 @@ func NewRefetcher(db Db, connectionID []byte, generation uint64, probe func(stri
 	return &Refetcher{Db: db, ConnectionID: connectionID, BackendGeneration: generation, Probe: probe, Push: push}
 }
 
-// Run executes one refetch command. Hash failures degrade to a full fetch; introspection and push failures
-// are terminal because the control plane must never decide against stale connection-local structure.
+// Run executes one refetch. A failed hash probe degrades to a full fetch; a failed read, a failed push,
+// or a schema that changed under the read is an error, and the schema stays pending until it is re-asked.
 func (r *Refetcher) Run(cmd *pb.Refetch) error {
 	if cmd.GetSchema() == "" {
 		return errors.New("refetch command has blank schema")
@@ -68,13 +68,27 @@ func (r *Refetcher) Run(cmd *pb.Refetch) error {
 	if err != nil {
 		return fmt.Errorf("mapping schema %q fragment: %w", cmd.GetSchema(), err)
 	}
+	routineRows, err := r.Probe(r.Db.SchemaRoutinesSQL(cmd.GetSchema()), 1)
+	if err != nil {
+		return fmt.Errorf("introspecting schema %q routines: %w", cmd.GetSchema(), err)
+	}
+	routines := make([]string, 0, len(routineRows))
+	for _, row := range routineRows {
+		if len(row) == 1 && row[0] != nil {
+			routines = append(routines, *row[0])
+		}
+	}
 
+	// h1 != h2: DDL landed between the two probes, so columns and routines may not belong together.
 	h2, trusted2 := r.measureHash(hashSQL, hashColumns, hashSQLErr)
+	if trusted1 && trusted2 && !bytes.Equal(h1, h2) {
+		return fmt.Errorf("schema %q changed during introspection", cmd.GetSchema())
+	}
 	contentHash := make([]byte, 32)
 	if _, err := rand.Read(contentHash); err != nil {
 		return fmt.Errorf("generating untrusted fragment nonce: %w", err)
 	}
-	if trusted1 && trusted2 && bytes.Equal(h1, h2) {
+	if trusted1 && trusted2 {
 		contentHash = append(contentHash[:0], h2...)
 	}
 
@@ -83,6 +97,7 @@ func (r *Refetcher) Run(cmd *pb.Refetch) error {
 		Schema:            cmd.GetSchema(),
 		ContentHash:       contentHash,
 		Columns:           columns,
+		Routines:          FoldFunctionNames(r.Db, routines),
 		BackendGeneration: r.BackendGeneration,
 	})
 	return err

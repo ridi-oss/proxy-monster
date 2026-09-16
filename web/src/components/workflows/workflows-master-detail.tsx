@@ -29,6 +29,7 @@ import { ActiveRoleGrants } from './active-role-grants'
 import { QueryRequestComposer } from './query-request-composer'
 import { RoleRequestComposer } from './role-request-composer'
 import { RoleRequestDetail } from './role-request-detail'
+import { RateResetRequestDetail } from './rate-reset-request-detail'
 import { WorkflowRequestList } from './workflow-request-list'
 
 export type WorkflowComposeDraft =
@@ -100,8 +101,11 @@ function DetailPanel({
   if (selectedId != null) {
     const selectedEntry = lists.all.find((entry) => entry.request.id === selectedId)
     const selectedRoleRequest = roleRequestsById.get(selectedId)
-      ?? (selectedEntry?.request.kind === 'ROLE' ? selectedEntry.request : null)
+      ?? (selectedEntry?.request.kind === 'ROLE' || selectedEntry?.request.kind === 'RATE_RESET' ? selectedEntry.request : null)
 
+    if (selectedRoleRequest?.kind === 'RATE_RESET') {
+      return <DetailScroll><RateResetRequestDetail request={selectedRoleRequest} /></DetailScroll>
+    }
     if (selectedRoleRequest) {
       return <DetailScroll><RoleRequestDetail request={selectedRoleRequest} /></DetailScroll>
     }

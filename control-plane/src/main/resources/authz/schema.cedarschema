@@ -30,7 +30,11 @@ entity Group;
 // the Table and its Columns INHERIT it transitively via their Table parent — a Column of `pg_authid` is
 // `in Tag::"system:critical"` through the graph, without a second direct system tag on the column.
 entity Table in [Datasource, Tag];
-entity Column in [Table, Datasource, Tag];
+// `tagged` is true when the column carries any classification tag, so a `result.cap` row can say "a tagged
+// value" (`resource is Column && resource.tagged`) without naming the tag (result-caps.md).
+entity Column in [Table, Datasource, Tag] = {
+    tagged: Bool,
+};
 entity Tag;
 
 // A function CALLED by a query (facts-emission.md), keyed off the datasource NAME + bare
@@ -120,6 +124,9 @@ type RequestContext = {
     // condition on HOW a column is read — e.g. permit `result.read.unmasked` only under a plan-only
     // EXPLAIN (`context.stmt_kind == "explain"`), which returns no rows.
     stmt_kind?: String,
+    // On a `result.cap` ask for a returned column only: whether this principal's read of it is masked
+    // (result-caps.md). Absent on every other decision.
+    masked?: Bool,
 };
 
 // Global admin surfaces (App.kt route groups gated via requireAdmin). No per-resource scoping —
@@ -206,6 +213,19 @@ action "audit.read"
 // returned cleartext (Authz.authorizeColumns; the caller — Query.kt — resolves the actual mask fn,
 // Cedar only picks unmasked/masked/deny).
 action "result.read.unmasked", "result.read.masked"
+  appliesTo {
+    principal: [User, Role],
+    resource: [Column, Table, Tag, Datasource, Function, Utility],
+    context: RequestContext,
+  };
+
+// `result.cap` is never consulted for access: no enforcement path asks it, so permitting it grants
+// nothing. Its permits exist to carry the `@cap` annotation (result-caps.md) the control plane folds after a
+// statement's reads are authorized — it asks this action on the Datasource and on every returned column
+// (with `context.masked`), table, function, and utility, and reads the annotation off the permits that
+// determined each ALLOW; a forbid that determines a DENY lifts every limit. Scoped like a read permit so a
+// cap can target a tag, a table, a datasource, or a role.
+action "result.cap"
   appliesTo {
     principal: [User, Role],
     resource: [Column, Table, Tag, Datasource, Function, Utility],

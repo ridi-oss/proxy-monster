@@ -10,7 +10,9 @@ package engine
 import (
 	"errors"
 	"fmt"
+	"math"
 	"strconv"
+	"time"
 
 	// The shared proxymonster.v1.Engine enum (engine.proto) is generated once, into analyzer/probe/pb —
 	// goproxy links analyzer/probe into this same binary in-process (introspect.go, db.go), and two
@@ -219,6 +221,45 @@ type Decision struct {
 	// proxy does not interpret them; it only echoes them back on a RunDecision so an execute-under-R run can
 	// freeze them with the stored result (the control plane's result-view drift gate).
 	ResultFingerprint []*enginepb.RequireResultReadGrant
+	// MaxRows / MaxBytes are the result caps the control plane resolved from the statement's Cedar permits
+	// (Verdict.max_rows / max_bytes); 0 = uncapped. See docs/result-caps.md.
+	MaxRows  int64
+	MaxBytes int64
+}
+
+// PageRows is the row count a paging caller should ask the target DB for: its own page size narrowed by the
+// verdict cap. A zero on either side means that side sets no bound.
+func (d *Decision) PageRows(clientRows int) int {
+	if d == nil || d.MaxRows <= 0 {
+		return clientRows
+	}
+	capRows := int(min(d.MaxRows, int64(math.MaxInt)))
+	if clientRows <= 0 {
+		return capRows
+	}
+	return min(clientRows, capRows)
+}
+
+// CapBinds reports whether the verdict cap — not the caller's page size — is what ended a result of
+// [clientRows] page size. A result the client's own paging cut short is a plain page end, not a cap hit.
+func (d *Decision) CapBinds(clientRows int) bool {
+	return d != nil && d.MaxRows > 0 && (clientRows <= 0 || d.MaxRows <= int64(clientRows))
+}
+
+// CapExceeded is the client-facing terminator text when relaying one more row of [rowBytes] would cross
+// this decision's caps, or "" when it fits. Both wire relays build their engine-specific error around this
+// one string, so a MySQL 1317 and a PostgreSQL 57014 say the same thing.
+func (d *Decision) CapExceeded(relayed RelayStats, rowBytes int64) string {
+	switch {
+	case d == nil:
+		return ""
+	case d.MaxRows > 0 && relayed.Rows >= d.MaxRows:
+		return fmt.Sprintf("proxy-monster: result exceeds the row cap (%d rows); request unbounded access", d.MaxRows)
+	case d.MaxBytes > 0 && rowBytes > d.MaxBytes-relayed.Bytes:
+		return fmt.Sprintf("proxy-monster: result exceeds the byte cap (%d bytes); request unbounded access", d.MaxBytes)
+	default:
+		return ""
+	}
 }
 
 // RedactedDiagnosticMessage is the single generic string that replaces every target-DB diagnostic message on
@@ -415,6 +456,9 @@ type QueryEngine struct {
 	probe        NamespaceProbe
 	nsDirty      bool
 	sanitizeDiag bool
+	// The previous statement's in-flight completion report; Authorize waits for it so the control plane's
+	// budget read includes this connection's own last relay.
+	pendingCompletion <-chan struct{}
 }
 
 // NewQueryEngine creates the per-connection engine. The namespace starts dirty so the first query
@@ -427,6 +471,14 @@ func NewQueryEngine(db Db, decider Decider) *QueryEngine {
 // target DB signal says the namespace may have changed but does not include its new value, never by
 // classifying SQL text.
 func (e *QueryEngine) MarkNamespaceDirty() { e.nsDirty = true }
+
+// AwaitCompletion makes the next Authorize wait until done closes (the statement's completion report has
+// been delivered or abandoned), bounded by completionWait.
+func (e *QueryEngine) AwaitCompletion(done <-chan struct{}) { e.pendingCompletion = done }
+
+// completionWait bounds how long a Decide waits for the previous statement's completion report. The
+// reporter's own RPC deadline is shorter, so this only guards a reporter that hangs.
+const completionWait = 35 * time.Second
 
 // SanitizeDiagnostics reports whether the CURRENT statement's target-DB diagnostics must be redacted
 // — the value from the most recent decision, so the protocol can gate each target-DB error/notice forward on
@@ -482,6 +534,13 @@ type AuthzInput struct {
 // apply. It makes no enforcement decision of its own; the only local outcomes are fail-closed (Fail) on
 // a mechanical impossibility and the reduction of the control plane's Action to Deny/Proceed.
 func (e *QueryEngine) Authorize(in AuthzInput) Verdict {
+	if e.pendingCompletion != nil {
+		select {
+		case <-e.pendingCompletion:
+		case <-time.After(completionWait):
+		}
+		e.pendingCompletion = nil
+	}
 	if e.nsDirty || e.probe.Namespace == nil {
 		probe, err := in.ProbeNamespace()
 		if err != nil {

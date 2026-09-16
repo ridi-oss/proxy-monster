@@ -61,6 +61,7 @@
     "masked": "마스킹됨",
     "rowCount": "행 {count}개",
     "rowsAffectedSuffix": " · 영향받은 행 {count}개",
+    "cappedAt": "결과 상한에 걸려 {count}행에서 멈췄습니다. 전체 결과가 아닙니다.",
     "requestApproval": "승인 요청",
     "requestAccess": "접근 요청",
     "tabResults": "결과",
@@ -146,5 +147,20 @@
     "metaTableComment": "테이블 설명",
     "onUpdate": "업데이트 시: {action}",
     "onDelete": "삭제 시: {action}"
+  },
+  "rateReset": {
+    "title": "한도 초기화 요청",
+    "description": "이 기간의 결과 전송량 한도를 모두 사용했습니다. 승인자가 워크플로우 페이지에서 초기화할 수 있으며, 초기화는 모든 기간을 한 번에 비우고 문장별 상한은 그대로 둡니다.",
+    "reasonLabel": "사유",
+    "reasonPlaceholder": "지금 추가 전송량이 필요한 이유를 입력하세요.",
+    "submit": "초기화 요청",
+    "submitting": "요청 중…",
+    "cancel": "취소",
+    "close": "닫기",
+    "submitError": "요청을 제출하지 못했습니다.",
+    "successTitle": "요청 완료 — 승인 대기 중",
+    "successDescription": "승인자가 워크플로우 페이지에서 초기화한 뒤 쿼리를 다시 실행하면 됩니다.",
+    "button": "한도 초기화 요청",
+    "denyHelp": "이 기간의 결과 전송량 한도를 모두 사용했습니다. 승인자에게 초기화를 요청하거나 기간이 지나기를 기다리세요."
   }
 }

@@ -23,6 +23,15 @@ interface Props {
   error: string | null
   onCancel?: () => void
   onRequestAccess: () => void
+  /** A spent `@cap` rate denied the statement (docs/result-caps.md): offer a RATE_RESET request instead of a role. */
+  onRequestRateReset?: () => void
+  /** Row count a stored result's view cap cut the release to (`QueryResultView.truncatedAt`). */
+  truncatedAt?: number | null
+}
+
+/** A deny reason the control plane wrote for a spent rate entry (`rate <amount>/<window> spent`). */
+export function isRateDeny(reason: string | null | undefined): boolean {
+  return /^rate \S+\/\S+ spent$/.test(reason ?? '')
 }
 
 export function ResultsPanel({
@@ -33,9 +42,12 @@ export function ResultsPanel({
   error,
   onCancel,
   onRequestAccess,
+  onRequestRateReset,
+  truncatedAt = null,
 }: Props) {
   const t = useTranslations('Query')
   const tone = result ? decisionTone[result.decision] : null
+  const cappedAt = result?.truncatedByCap ? (result.capRows ?? result.rows.length) : truncatedAt
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
@@ -161,9 +173,14 @@ export function ResultsPanel({
               </div>
             </Centered>
           ) : result.decision === 'DENY' ? (
-            <DenyCallout result={result} onRequestAccess={onRequestAccess} />
+            <DenyCallout result={result} onRequestAccess={onRequestAccess} onRequestRateReset={onRequestRateReset} />
           ) : (
-            <ResultGrid result={result} />
+            <div className="flex h-full min-h-0 flex-col">
+              {cappedAt != null && (
+                <CapNotice rows={cappedAt} onRequestAccess={onRequestAccess} />
+              )}
+              <ResultGrid result={result} />
+            </div>
           )}
         </TabsContent>
 
@@ -185,14 +202,34 @@ function Centered({ children }: { children: React.ReactNode }) {
   return <div className="flex min-h-0 flex-1 items-center justify-center p-6">{children}</div>
 }
 
+/** A result the verdict's cap ended, not the requested page size — so the set is INCOMPLETE. */
+function CapNotice({ rows, onRequestAccess }: { rows: number; onRequestAccess: () => void }) {
+  const t = useTranslations('Query')
+  return (
+    <div
+      data-testid="result-cap-notice"
+      className="flex shrink-0 flex-wrap items-center gap-2 border-b border-amber-500/30 bg-amber-500/10 px-4 py-2 text-xs"
+    >
+      <AlertTriangle className="size-3.5 shrink-0 text-amber-500" />
+      <span>{t('results.cappedAt', { count: rows })}</span>
+      <Button size="xs" variant="outline" onClick={onRequestAccess}>
+        {t('results.requestAccess')}
+      </Button>
+    </div>
+  )
+}
+
 function DenyCallout({
   result,
   onRequestAccess,
+  onRequestRateReset,
 }: {
   result: QueryResponse
   onRequestAccess: () => void
+  onRequestRateReset?: () => void
 }) {
   const t = useTranslations('Query')
+  const rateDeny = isRateDeny(result.denyReason) && onRequestRateReset != null
   return (
     <div className="flex min-h-0 flex-1 items-start justify-center overflow-y-auto p-6">
       <div className="max-w-lg rounded-xl border border-red-500/30 bg-red-500/10 p-4">
@@ -214,17 +251,25 @@ function DenyCallout({
           </p>
         )}
         <p className="text-muted-foreground mt-3 text-xs">
-          {t('results.denyHelp')}
+          {rateDeny ? t('rateReset.denyHelp') : t('results.denyHelp')}
         </p>
         <div className="mt-3 flex flex-wrap items-center gap-2">
-          {result.decisionId != null && (
-            <Button size="sm" asChild>
-              <Link href={`/workflows/new?from=${result.decisionId}`}>{t('results.requestApproval')}</Link>
+          {rateDeny ? (
+            <Button size="sm" data-testid="request-rate-reset" onClick={onRequestRateReset}>
+              {t('rateReset.button')}
             </Button>
+          ) : (
+            <>
+              {result.decisionId != null && (
+                <Button size="sm" asChild>
+                  <Link href={`/workflows/new?from=${result.decisionId}`}>{t('results.requestApproval')}</Link>
+                </Button>
+              )}
+              <Button size="sm" variant="destructive" onClick={onRequestAccess}>
+                {t('results.requestAccess')}
+              </Button>
+            </>
           )}
-          <Button size="sm" variant="destructive" onClick={onRequestAccess}>
-            {t('results.requestAccess')}
-          </Button>
           {result.decisionId != null && (
             <Link
               href={`/audit/${result.decisionId}`}

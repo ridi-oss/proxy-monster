@@ -15,13 +15,16 @@ import (
 )
 
 // userTypeCast returns the first type that may run user code (`1::public.evil_domain` runs the domain's
-// CHECK), or "". sqlglot marks every type it does not know as DTypeUserDefined.
-func userTypeCast(root exp.Expression) string {
+// CHECK), or "". sqlglot marks every type it does not know as DTypeUserDefined; IsSafeTypeReference exempts.
+func userTypeCast(root exp.Expression, eng engine, namespace NamespaceConfig) string {
 	for _, dt := range root.FindAll(exp.KindDataType) {
 		if dt.Arg("this") != exp.DTypeUserDefined {
 			continue
 		}
 		kind, _ := dt.Arg("kind").(exp.Expression)
+		if eng.IsSafeTypeReference(dt, kind, namespace) {
+			continue
+		}
 		if kind != nil && kind.Kind() == exp.KindDot {
 			qualifier := strings.ToLower(kind.Left().Name())
 			leaf := strings.ToLower(kind.Right().Name())
@@ -178,7 +181,7 @@ func emitConfigFailureUtilityFacts(sql string, engineConfig *pb.EngineConfig) *p
 }
 
 func emitLineageFacts(root exp.Expression, eng engine, qualifySchema schema.Schema, namespace NamespaceConfig, explain bool) *pb.StatementFacts {
-	if userTypeCast(root) != "" {
+	if userTypeCast(root, eng, namespace) != "" {
 		return criticalUtilityFacts(cmdUserTypeCast)
 	}
 	report := probeParsed(root, eng, qualifySchema, namespace)
@@ -436,7 +439,7 @@ func emitShowFacts(root exp.Expression, eng engine, namespace NamespaceConfig) *
 	if unsafeExpression(root.Arg("where"), eng, namespace) || unsafeExpression(root.Arg("query"), eng, namespace) {
 		return criticalUtilityFacts(cmdShowSubquery)
 	}
-	if userTypeCast(root) != "" {
+	if userTypeCast(root, eng, namespace) != "" {
 		return criticalUtilityFacts(cmdUserTypeCast)
 	}
 	facts := passthroughFacts()
@@ -542,7 +545,7 @@ func emitSetFacts(root exp.Expression, eng engine, namespace NamespaceConfig) *p
 	if unsafeExpression(root, eng, namespace) {
 		return sessionUtilityFacts(cmdSetSubquery)
 	}
-	if userTypeCast(root) != "" {
+	if userTypeCast(root, eng, namespace) != "" {
 		return sessionUtilityFacts(cmdUserTypeCast)
 	}
 	if command := lexerModeUtilityCommand(root); command != "" {

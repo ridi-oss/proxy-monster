@@ -9,7 +9,7 @@ import (
 )
 
 func serveInput() AuthzInput {
-	return AuthzInput{SQL: "SELECT 1", ProbeNamespace: func() (NamespaceProbe, error) { return NamespaceProbe{Namespace: []string{"app"}}, nil }}
+	return AuthzInput{SQL: "SELECT 1", ProbeSession: func() (SessionObservation, error) { return SessionObservation{Namespace: []string{"app"}}, nil }}
 }
 
 func TestServeStatementFailHasNoDecision(t *testing.T) {
@@ -85,9 +85,9 @@ func TestServeStatementRefetchesOnlyAfterCleanCompletion(t *testing.T) {
 func TestServeStatementGuardWrapsOnlyRun(t *testing.T) {
 	var events []string
 	in := serveInput()
-	in.ProbeNamespace = func() (NamespaceProbe, error) {
+	in.ProbeSession = func() (SessionObservation, error) {
 		events = append(events, "authorize")
-		return NamespaceProbe{Namespace: []string{"app"}}, nil
+		return SessionObservation{Namespace: []string{"app"}}, nil
 	}
 	qe := NewQueryEngine(mysqlDb, &fakeDecider{outcome: okOutcome("ALLOW", nil)})
 	guard := func(exec func() error) error {

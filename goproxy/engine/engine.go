@@ -21,6 +21,7 @@ import (
 	// import is the same resolution for this file's hand-written Dialect.Proto().
 	enginepb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
+	"google.golang.org/protobuf/proto"
 )
 
 // Dialect is the typed datasource engine — the target-DB SQL dialect and the registration identity are the
@@ -315,7 +316,7 @@ type TempColumn struct {
 // DecideRequest is the complete per-query control-plane request plus the callback used to satisfy
 // before_decide commands on the held target-DB connection.
 type DecideRequest struct {
-	NamespaceProbe
+	Session      SessionObservation
 	Token        string
 	SQL          string
 	ClientAddr   string
@@ -452,7 +453,7 @@ func (Fail) isVerdict()    {}
 type QueryEngine struct {
 	db           Db
 	decider      Decider
-	probe        NamespaceProbe
+	session      SessionObservation
 	nsDirty      bool
 	sanitizeDiag bool
 }
@@ -477,42 +478,36 @@ func (e *QueryEngine) SanitizeDiagnostics() bool { return e.sanitizeDiag }
 // SetNamespace replaces the cached namespace from an authoritative target DB protocol signal. It copies
 // namespace so a caller cannot mutate the authorization context after the signal is consumed.
 func (e *QueryEngine) SetNamespace(namespace []string) {
-	e.probe.Namespace = append([]string{}, namespace...)
+	e.session.Namespace = append([]string{}, namespace...)
 	e.nsDirty = false
 }
 
-// NamespaceProbe is the pre-statement session observation the protocol returns to the engine: the
-// connection's effective namespace plus engine-specific lookup state. The engine caches it as one value
-// and the decision carries it whole, so every lookup fact reaches the control plane from the same probe.
-type NamespaceProbe struct {
+// SessionObservation is what the pre-statement probe returned: the connection's effective namespace
+// plus the session facts the wire carries as-is. The engine caches it as one value and the decision
+// carries it whole, so every fact reaches the control plane from the same probe.
+type SessionObservation struct {
 	Namespace []string
-	// MySQLAnsiQuotes reports sql_mode=ANSI_QUOTES, so `"x"` is a quoted identifier rather than a string
-	// literal. Always false for PostgreSQL.
-	MySQLAnsiQuotes bool
-	// PostgresShadowedFunctions lists polymorphic builtins with a visible non-pg_catalog overload; the
-	// Observed flags say the probe answered at all, so an absent fact is distinct from a false one.
-	PostgresShadowedFunctions         []string
-	PostgresFunctionShadowingObserved bool
-	PostgresSystemXIDVisible          bool
-	PostgresTypeVisibilityObserved    bool
+	*enginepb.SessionObservation
 }
 
-// Clone copies the observation so a cached snapshot cannot be mutated through a shared slice.
-func (p NamespaceProbe) Clone() NamespaceProbe {
-	p.Namespace = append([]string{}, p.Namespace...)
-	p.PostgresShadowedFunctions = append([]string{}, p.PostgresShadowedFunctions...)
-	return p
+// Clone copies the observation so a cached snapshot cannot be mutated through shared state.
+func (o SessionObservation) Clone() SessionObservation {
+	o.Namespace = append([]string{}, o.Namespace...)
+	if o.SessionObservation != nil {
+		o.SessionObservation = proto.Clone(o.SessionObservation).(*enginepb.SessionObservation)
+	}
+	return o
 }
 
 // AuthzInput is one statement to authorize plus the probe callbacks the protocol wires up. The Db
 // supplies the probe SQL; the protocol runs it on the target DB and parses the result. The engine calls
-// ProbeNamespace only when its cache is dirty, and ProbeTempColumns only when the Db supports the overlay.
+// ProbeSession only when its cache is dirty, and ProbeTempColumns only when the Db supports the overlay.
 type AuthzInput struct {
 	SQL              string
 	Token            string
 	ClientAddr       string
 	ConnectionID     []byte
-	ProbeNamespace   func() (NamespaceProbe, error)
+	ProbeSession     func() (SessionObservation, error)
 	ProbeTempColumns func() ([]TempColumn, error)
 	RunCommands      func([]*pb.Refetch) error
 }
@@ -522,12 +517,12 @@ type AuthzInput struct {
 // apply. It makes no enforcement decision of its own; the only local outcomes are fail-closed (Fail) on
 // a mechanical impossibility and the reduction of the control plane's Action to Deny/Proceed.
 func (e *QueryEngine) Authorize(in AuthzInput) Verdict {
-	if e.nsDirty || e.probe.Namespace == nil {
-		probe, err := in.ProbeNamespace()
+	if e.nsDirty || e.session.Namespace == nil {
+		session, err := in.ProbeSession()
 		if err != nil {
 			return Fail{Message: "namespace probe failed: " + err.Error()}
 		}
-		e.probe = probe.Clone()
+		e.session = session.Clone()
 		e.nsDirty = false
 	}
 
@@ -540,13 +535,13 @@ func (e *QueryEngine) Authorize(in AuthzInput) Verdict {
 	}
 
 	out := e.decider.Decide(DecideRequest{
-		NamespaceProbe: e.probe.Clone(),
-		Token:          in.Token,
-		SQL:            in.SQL,
-		ClientAddr:     in.ClientAddr,
-		TempColumns:    temps,
-		ConnectionID:   in.ConnectionID,
-		RunCommands:    in.RunCommands,
+		Session:      e.session.Clone(),
+		Token:        in.Token,
+		SQL:          in.SQL,
+		ClientAddr:   in.ClientAddr,
+		TempColumns:  temps,
+		ConnectionID: in.ConnectionID,
+		RunCommands:  in.RunCommands,
 	})
 	if out.IsErr() {
 		return Fail{Message: out.Err}

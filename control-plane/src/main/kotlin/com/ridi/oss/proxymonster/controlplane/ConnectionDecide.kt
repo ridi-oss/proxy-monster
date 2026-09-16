@@ -1,5 +1,6 @@
 package com.ridi.oss.proxymonster.controlplane
 
+import com.ridi.oss.proxymonster.analyzer.pb.SessionObservation
 import com.google.protobuf.ByteString
 import com.ridi.oss.proxymonster.controlplane.authz.AuthzContext
 import com.ridi.oss.proxymonster.grpc.EnfAction
@@ -29,7 +30,7 @@ suspend fun decideConnection(
     sql: String,
     searchPath: List<String>,
     clientAddr: String?,
-    ansiQuotes: Boolean = false,
+    session: SessionObservation = SessionObservation.getDefaultInstance(),
     channel: Channel = Channel.WIRE,
     providedRoles: Set<String>? = null,
     tempColumns: List<CatalogColumn> = emptyList(),
@@ -83,7 +84,7 @@ suspend fun decideConnection(
         providedRoles = providedRoles,
         context = AuthzContext(requesterIp = requesterIp),
         liveSearchPath = searchPath,
-        liveAnsiQuotes = ansiQuotes,
+        session = session,
         systemClassification = core.systemClassification,
         tempColumns = tempColumns,
     )

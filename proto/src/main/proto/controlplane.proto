@@ -188,22 +188,13 @@ message DecisionRequest {
   // of a shadowed real table. Editor-session only; empty for one-shot/wire paths.
   repeated TempColumn temp_columns = 6;
   bytes connection_id = 7;
-  // Whether the target DB's live MySQL session sql_mode has ANSI_QUOTES active, observed by the proxy per
-  // statement (sql_mode is mutable per session). The control-plane forwards it to the analyzer's
-  // EngineConfig so `"col"` is parsed as a quoted identifier (a masked column read) rather than a string,
-  // letting the proxy relay an ANSI_QUOTES session under masking instead of failing it closed. Absent/false
-  // for PostgreSQL and the default MySQL mode. NO_BACKSLASH_ESCAPES / ANSI stay fail-closed at the proxy.
-  bool mysql_ansi_quotes = 8;
-  // Visible non-pg_catalog overloads that can change PostgreSQL's resolution of an unqualified
-  // builtin with an analyzer-supplied implicit output schema. Observed on the held target-DB session
-  // with the effective function search path; empty for MySQL.
-  repeated string postgres_shadowed_functions = 9;
-  // True only when the proxy successfully observed PostgreSQL function visibility on the held session.
-  // False is distinct from an observed empty shadow list and keeps implicit polymorphic schemas closed.
-  bool postgres_function_shadowing_observed = 10;
-  // Whether pg_catalog.xid is the type PostgreSQL resolves for an unqualified xid on the held session.
-  // Absence means type visibility was not observed and the analyzer keeps the cast gated fail-closed.
-  optional bool postgres_system_xid_visible = 11;
+  reserved 8 to 11;
+  reserved "mysql_ansi_quotes", "postgres_shadowed_functions", "postgres_function_shadowing_observed",
+    "postgres_system_xid_visible";
+  // Tags 12 and 13 are held by the Athena branch.
+  // What the proxy observed on the held target session before this statement; the control plane
+  // forwards it unchanged as EngineConfig.session.
+  proxymonster.analyzer.v1.SessionObservation session = 14;
 }
 
 // One column of a session-temp table on a connection. Carries no classification — a temp is

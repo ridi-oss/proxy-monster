@@ -1,5 +1,6 @@
 package com.ridi.oss.proxymonster.controlplane
 
+import com.ridi.oss.proxymonster.analyzer.pb.sessionObservation
 import com.ridi.oss.proxymonster.controlplane.support.EnforcementFixture
 import com.ridi.oss.proxymonster.controlplane.support.requireDockerOrSkip
 import com.ridi.oss.proxymonster.grpc.EnfAction
@@ -94,18 +95,18 @@ class GateSqlglotRegressionTest {
     @Test
     fun `MySQL ANSI_QUOTES masks a double-quoted pii column, default mode leaves it a string literal`() {
         // Under sql_mode=ANSI_QUOTES the target DB reads `"ssn"` as
-        // the pii column ssn, not a string. Told liveAnsiQuotes=true, the analyzer parses it the same way, so
+        // the pii column ssn, not a string. Told mysqlAnsiQuotes=true, the analyzer parses it the same way, so
         // the CP must MASK it instead of skipping it as a literal — this is the whole reason the proxy can now
         // forward an ANSI_QUOTES session instead of failing it closed. Without the flag (default mode) `"ssn"`
         // is the constant string 'ssn' (no pii column touched) → ALLOW. Proving BOTH directions proves the
         // flag is what flips the decision, closing the cleartext-via-quoting bypass. This exercises the CP
-        // liveAnsiQuotes threading (decideQuery → EngineConfig.mysqlAnsiQuotes) through the real analyzer.
+        // session threading (decideQuery → EngineConfig.session) through the real analyzer.
         val ds = mysql.datasource
         val catalog = mysql.datasourceStore.catalog(ds.id)
         fun decide(ansiQuotes: Boolean) = decideQuery(
             "analyst@example.com", ds, """SELECT "ssn" FROM users""", Channel.WIRE, catalog,
             mysql.policyStore, mysql.accessStore, mysql.userGroupStore, mysql.roleResolver, mysql.authz,
-            liveAnsiQuotes = ansiQuotes,
+            session = sessionObservation { mysqlAnsiQuotes = ansiQuotes },
         )
 
         val masked = decide(true)

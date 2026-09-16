@@ -62,11 +62,11 @@ The analyzer boundary (`AnalyzeRequest` in `analyzer.proto`) receives four
 inputs: SQL, a `Namespace` descriptor (`catalog` + ordered `search_path`), a
 flat `CatalogSnapshot` of `Column` rows (Go nests it into the depth-3 mapping),
 and an `EngineConfig` (engine identity, version, and — for MySQL —
-`mysql_lower_case_table_names` / `mysql_ansi_quotes`). Each catalog column
-carries structured `catalog`, `schema`, `table`, `column`, and SQL-type fields.
-The namespace descriptor is the namespace observed at introspection (or the
-connection's live path on the wire), not a claim about an arbitrary long-lived
-target-DB session.
+`mysql_lower_case_table_names` / `session.mysql_ansi_quotes`). Each catalog
+column carries structured `catalog`, `schema`, `table`, `column`, and SQL-type
+fields. The namespace descriptor is the namespace observed at introspection (or
+the connection's live path on the wire), not a claim about an arbitrary
+long-lived target-DB session.
 
 ### Go resolves physical tables once
 

@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgproto3"
+	enginepb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
 	"github.com/ridi-oss/proxy-monster/goproxy/engine"
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
 	"github.com/ridi-oss/proxy-monster/goproxy/spi"
@@ -213,12 +214,12 @@ func containsString(values []string, want string) bool {
 	return false
 }
 
-func (c *sessionCore) probeNamespace() (engine.NamespaceProbe, error) {
+func (c *sessionCore) probeSession() (engine.SessionObservation, error) {
 	rows, err := c.runProbe(c.db.NamespaceProbeSQL(), 1, false)
 	if err != nil {
-		return engine.NamespaceProbe{}, fmt.Errorf("target-DB namespace probe: %w", err)
+		return engine.SessionObservation{}, fmt.Errorf("target-DB namespace probe: %w", err)
 	}
-	return namespaceProbeFromRows(rows)
+	return sessionFromRows(rows)
 }
 
 type postgresNamespaceObservation struct {
@@ -227,32 +228,33 @@ type postgresNamespaceObservation struct {
 	PgCatalogXIDVisible *bool    `json:"pg_catalog_xid_visible"`
 }
 
-func namespaceProbeFromRows(rows [][]*string) (engine.NamespaceProbe, error) {
+func sessionFromRows(rows [][]*string) (engine.SessionObservation, error) {
 	if len(rows) != 1 || len(rows[0]) != 1 || rows[0][0] == nil {
-		return engine.NamespaceProbe{}, errors.New("namespace probe returned a malformed result")
+		return engine.SessionObservation{}, errors.New("namespace probe returned a malformed result")
 	}
 	var observed postgresNamespaceObservation
 	decoder := json.NewDecoder(strings.NewReader(*rows[0][0]))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&observed); err != nil {
-		return engine.NamespaceProbe{}, fmt.Errorf("namespace probe returned invalid JSON: %w", err)
+		return engine.SessionObservation{}, fmt.Errorf("namespace probe returned invalid JSON: %w", err)
 	}
 	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
-		return engine.NamespaceProbe{}, errors.New("namespace probe returned trailing JSON")
+		return engine.SessionObservation{}, errors.New("namespace probe returned trailing JSON")
 	}
 	seen := make(map[string]bool, len(observed.ShadowedFunctions))
 	for _, name := range observed.ShadowedFunctions {
 		if name == "" || name != strings.ToLower(name) || seen[name] {
-			return engine.NamespaceProbe{}, fmt.Errorf("namespace probe returned invalid shadowed function %q", name)
+			return engine.SessionObservation{}, fmt.Errorf("namespace probe returned invalid shadowed function %q", name)
 		}
 		seen[name] = true
 	}
-	return engine.NamespaceProbe{
-		Namespace:                         observed.SearchPath,
-		PostgresShadowedFunctions:         observed.ShadowedFunctions,
-		PostgresFunctionShadowingObserved: observed.ShadowedFunctions != nil,
-		PostgresSystemXIDVisible:          observed.PgCatalogXIDVisible != nil && *observed.PgCatalogXIDVisible,
-		PostgresTypeVisibilityObserved:    observed.PgCatalogXIDVisible != nil,
+	return engine.SessionObservation{
+		Namespace: observed.SearchPath,
+		SessionObservation: &enginepb.SessionObservation{
+			PostgresShadowedFunctions:         observed.ShadowedFunctions,
+			PostgresFunctionShadowingObserved: observed.ShadowedFunctions != nil,
+			PostgresSystemXidVisible:          observed.PgCatalogXIDVisible,
+		},
 	}, nil
 }
 
@@ -329,17 +331,17 @@ func (c *sessionCore) authzInput(sql, token, clientAddr string, connectionID []b
 		ClientAddr:   clientAddr,
 		ConnectionID: connectionID,
 		RunCommands:  runCommands,
-		ProbeNamespace: func() (engine.NamespaceProbe, error) {
-			// Postgres never reports MySQLAnsiQuotes: it has no ANSI_QUOTES mode, and its string-lexing
+		ProbeSession: func() (engine.SessionObservation, error) {
+			// Postgres never reports MysqlAnsiQuotes: it has no ANSI_QUOTES mode, and its string-lexing
 			// divergence (standard_conforming_strings) fails the connection closed at the relay instead.
 			if c.lastTxStatus == 'E' {
-				return c.namespaceProbe.Clone(), nil
+				return c.session.Clone(), nil
 			}
-			probe, err := c.probeNamespace()
+			session, err := c.probeSession()
 			if err == nil {
-				c.namespaceProbe = probe.Clone()
+				c.session = session.Clone()
 			}
-			return probe, err
+			return session, err
 		},
 		ProbeTempColumns: func() ([]engine.TempColumn, error) {
 			if c.lastTxStatus == 'E' {

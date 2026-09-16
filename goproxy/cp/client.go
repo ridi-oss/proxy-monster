@@ -41,7 +41,7 @@ import (
 // error instead of a stalled run channel. Bump it on any incompatible wire change. It MUST match the
 // control-plane's CONTROL_PROTOCOL_VERSION; the two are separate constants in separate languages kept in
 // lockstep by hand — a server-v* release always ships both at the same value.
-const ProtocolVersion int32 = 3
+const ProtocolVersion int32 = 4
 
 // ErrIncompatibleControlPlane means the control-plane speaks a different wire-protocol version than this
 // proxy — a PERMANENT deploy-skew condition, not a transient failure. boot treats it as fatal (refuse to
@@ -284,19 +284,14 @@ func (c *Client) Decide(req engine.DecideRequest) engine.DecisionOutcome {
 		})
 	}
 	wireReq := &pb.DecisionRequest{
-		Token:                             req.Token,
-		DatasourceName:                    c.datasourceName,
-		Sql:                               req.SQL,
-		SearchPath:                        append([]string(nil), req.Namespace...),
-		ClientAddr:                        req.ClientAddr,
-		TempColumns:                       temps,
-		ConnectionId:                      append([]byte(nil), req.ConnectionID...),
-		MysqlAnsiQuotes:                   req.MySQLAnsiQuotes,
-		PostgresShadowedFunctions:         append([]string(nil), req.PostgresShadowedFunctions...),
-		PostgresFunctionShadowingObserved: req.PostgresFunctionShadowingObserved,
-	}
-	if req.PostgresTypeVisibilityObserved {
-		wireReq.PostgresSystemXidVisible = &req.PostgresSystemXIDVisible
+		Token:          req.Token,
+		DatasourceName: c.datasourceName,
+		Sql:            req.SQL,
+		SearchPath:     append([]string(nil), req.Session.Namespace...),
+		ClientAddr:     req.ClientAddr,
+		TempColumns:    temps,
+		ConnectionId:   append([]byte(nil), req.ConnectionID...),
+		Session:        req.Session.Clone().SessionObservation,
 	}
 
 	for round := 0; ; round++ {

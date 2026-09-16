@@ -649,16 +649,16 @@ func TestFunctionShadowingIsReprobedOnSameConnection(t *testing.T) {
 		t.Fatalf("SELECT 1 decisions = %d, want 2", len(selectOne))
 	}
 	beforeCreate := selectOne[0]
-	if !beforeCreate.GetPostgresFunctionShadowingObserved() || len(beforeCreate.GetPostgresShadowedFunctions()) != 0 {
-		t.Fatalf("pre-CREATE shadow state = %v/%#v, want observed empty", beforeCreate.GetPostgresFunctionShadowingObserved(), beforeCreate.GetPostgresShadowedFunctions())
+	if !beforeCreate.GetSession().GetPostgresFunctionShadowingObserved() || len(beforeCreate.GetSession().GetPostgresShadowedFunctions()) != 0 {
+		t.Fatalf("pre-CREATE shadow state = %v/%#v, want observed empty", beforeCreate.GetSession().GetPostgresFunctionShadowingObserved(), beforeCreate.GetSession().GetPostgresShadowedFunctions())
 	}
 	shadowed := bySQL("SELECT unnest(ARRAY[1])")
-	if len(shadowed) != 1 || !shadowed[0].GetPostgresFunctionShadowingObserved() || !reflect.DeepEqual(shadowed[0].GetPostgresShadowedFunctions(), []string{"unnest"}) {
+	if len(shadowed) != 1 || !shadowed[0].GetSession().GetPostgresFunctionShadowingObserved() || !reflect.DeepEqual(shadowed[0].GetSession().GetPostgresShadowedFunctions(), []string{"unnest"}) {
 		t.Fatalf("post-CREATE shadow state = %+v, want observed [unnest]", shadowed)
 	}
 	afterDrop := selectOne[1]
-	if !afterDrop.GetPostgresFunctionShadowingObserved() || len(afterDrop.GetPostgresShadowedFunctions()) != 0 {
-		t.Fatalf("post-DROP shadow state = %v/%#v, want observed empty", afterDrop.GetPostgresFunctionShadowingObserved(), afterDrop.GetPostgresShadowedFunctions())
+	if !afterDrop.GetSession().GetPostgresFunctionShadowingObserved() || len(afterDrop.GetSession().GetPostgresShadowedFunctions()) != 0 {
+		t.Fatalf("post-DROP shadow state = %v/%#v, want observed empty", afterDrop.GetSession().GetPostgresFunctionShadowingObserved(), afterDrop.GetSession().GetPostgresShadowedFunctions())
 	}
 }
 

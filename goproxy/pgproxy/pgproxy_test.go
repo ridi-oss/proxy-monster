@@ -57,7 +57,7 @@ func TestMD5Password(t *testing.T) {
 	}
 }
 
-func TestNamespaceProbeFromRows(t *testing.T) {
+func TestSessionFromRows(t *testing.T) {
 	str := func(value string) *string { return &value }
 
 	for _, tc := range []struct {
@@ -91,15 +91,15 @@ func TestNamespaceProbeFromRows(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			got, err := namespaceProbeFromRows([][]*string{{str(tc.json)}})
+			got, err := sessionFromRows([][]*string{{str(tc.json)}})
 			if err != nil {
-				t.Fatalf("namespaceProbeFromRows: %v", err)
+				t.Fatalf("sessionFromRows: %v", err)
 			}
 			if !reflect.DeepEqual(got.Namespace, tc.wantPath) ||
-				!reflect.DeepEqual(got.PostgresShadowedFunctions, tc.wantNames) ||
-				!got.PostgresFunctionShadowingObserved ||
-				got.PostgresTypeVisibilityObserved != tc.wantTypeObserved ||
-				got.PostgresSystemXIDVisible != tc.wantXIDVisible {
+				!reflect.DeepEqual(got.GetPostgresShadowedFunctions(), tc.wantNames) ||
+				!got.GetPostgresFunctionShadowingObserved() ||
+				(got.PostgresSystemXidVisible != nil) != tc.wantTypeObserved ||
+				got.GetPostgresSystemXidVisible() != tc.wantXIDVisible {
 				t.Fatalf("namespace probe = %+v, want path %v, shadows %v, type observed/visible %v/%v", got, tc.wantPath, tc.wantNames, tc.wantTypeObserved, tc.wantXIDVisible)
 			}
 		})
@@ -121,8 +121,8 @@ func TestNamespaceProbeFromRows(t *testing.T) {
 		{name: "duplicate function", rows: [][]*string{{str(`{"search_path":[],"shadowed_functions":["unnest","unnest"]}`)}}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if _, err := namespaceProbeFromRows(tc.rows); err == nil {
-				t.Fatal("namespaceProbeFromRows succeeded, want strict error")
+			if _, err := sessionFromRows(tc.rows); err == nil {
+				t.Fatal("sessionFromRows succeeded, want strict error")
 			}
 		})
 	}

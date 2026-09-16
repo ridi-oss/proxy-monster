@@ -283,6 +283,19 @@ Fixes for gaps documented in
   locked fail-closed by a coverage test, so this is consolidation rather than a
   security fix.
 
+## Athena
+
+- Add Redis or control-plane DB adapters for the minimal enforcement-context
+  cache in the [forwarding design](./athena.md). Preserve owner/instruction
+  bindings and expiry; Athena still owns execution state and idempotency.
+- Recover enforcement context the AOF cannot supply: a write lost before it
+  committed, a replaced volume, or an execution this proxy never saw. Today
+  those results are refused. Recovery has to bind to what the stored result
+  actually read, not today's SQL and view definitions.
+- Measure the context cache and response buffers under load. Peak memory is
+  bounded by the 10,000-context cap times record size plus eight concurrent
+  result pages, but neither has been measured.
+
 ## Data plane
 
 - Unmaskable-feature relay: a verbatim passthrough for `COPY OUT`, PostgreSQL

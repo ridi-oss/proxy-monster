@@ -9,7 +9,7 @@ plugins {
 }
 
 val ktorVersion = "3.5.2"
-val flywayVersion = "13.4.0"
+val flywayVersion = "13.6.0"
 val testcontainersVersion = "1.21.4"
 // 0.10.0 is the last official kotlin-sdk line built on Ktor 3.2.x (3.2.3); newer releases require
 // Ktor 3.3/3.4. It provides the official stateless Streamable HTTP server/client and structured tools.
@@ -29,7 +29,7 @@ dependencies {
     implementation(project(":proto"))
     // The gRPC server transport for the control-plane's ControlPlane service (netty, shaded to
     // avoid clashing with Ktor's own Netty on the classpath).
-    implementation("io.grpc:grpc-netty-shaded:1.83.1")
+    implementation("io.grpc:grpc-netty-shaded:1.84.0")
 
     // Ktor server
     implementation("io.ktor:ktor-server-core:$ktorVersion")

@@ -106,8 +106,8 @@ func assertLastDecideAnsiQuotes(t *testing.T, h *brokerHarness, sql string, want
 	reqs := h.fake.requests()
 	for i := len(reqs) - 1; i >= 0; i-- {
 		if reqs[i].GetSql() == sql {
-			if reqs[i].GetMysqlAnsiQuotes() != want {
-				t.Fatalf("DecisionRequest(%q).MysqlAnsiQuotes = %v, want %v", sql, reqs[i].GetMysqlAnsiQuotes(), want)
+			if reqs[i].GetSession().GetMysqlAnsiQuotes() != want {
+				t.Fatalf("DecisionRequest(%q).MysqlAnsiQuotes = %v, want %v", sql, reqs[i].GetSession().GetMysqlAnsiQuotes(), want)
 			}
 			return
 		}

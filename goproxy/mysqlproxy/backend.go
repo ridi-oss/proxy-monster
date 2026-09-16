@@ -13,6 +13,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	enginepb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
 	"github.com/ridi-oss/proxy-monster/goproxy/engine"
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
 	"github.com/ridi-oss/proxy-monster/goproxy/spi"
@@ -515,14 +516,21 @@ func probeNamespace(targetDb net.Conn, deprecateEOF bool) (namespace []string, a
 	return interpretSessionProbeRow(rows[0])
 }
 
-// probeNamespaceObservation runs the pre-statement session probe and packages its result as the engine's
-// NamespaceProbe, so every wire/editor call site shares one probe→engine conversion.
-func probeNamespaceObservation(targetDb net.Conn, deprecateEOF bool) (engine.NamespaceProbe, error) {
+// probeSession runs the pre-statement session probe and packages its result as the engine's
+// SessionObservation, so every wire/editor call site shares one probe→engine conversion.
+func probeSession(targetDb net.Conn, deprecateEOF bool) (engine.SessionObservation, error) {
 	namespace, ansiQuotes, err := probeNamespace(targetDb, deprecateEOF)
 	if err != nil {
-		return engine.NamespaceProbe{}, err
+		return engine.SessionObservation{}, err
 	}
-	return engine.NamespaceProbe{Namespace: namespace, MySQLAnsiQuotes: ansiQuotes}, nil
+	return mysqlSession(namespace, ansiQuotes), nil
+}
+
+func mysqlSession(namespace []string, ansiQuotes bool) engine.SessionObservation {
+	return engine.SessionObservation{
+		Namespace:          namespace,
+		SessionObservation: &enginepb.SessionObservation{MysqlAnsiQuotes: ansiQuotes},
+	}
 }
 
 func cancelTargetDbQuery(target spi.TargetDb, connID uint32) error {

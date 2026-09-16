@@ -48,7 +48,7 @@ func mysqlFactsMode(t *testing.T, sql string, ansiQuotes bool) *pb.StatementFact
 		Engine: pb.Engine_MYSQL, EngineVersion: "8.0.46", MysqlLowerCaseTableNames: proto.Int32(0),
 	}
 	if ansiQuotes {
-		cfg.MysqlAnsiQuotes = proto.Bool(true)
+		cfg.Session = &pb.SessionObservation{MysqlAnsiQuotes: true}
 	}
 	return analyzeProto(t, &pb.AnalyzeRequest{
 		Sql:          sql,

@@ -150,7 +150,7 @@ func newMySQLEngine(config *pb.EngineConfig) (*mysqlEngine, error) {
 	// SettingsString round-trips losslessly as the base.
 	settings := mysqlNormalizationDialect(lowerCaseTableNames).SettingsString() +
 		fmt.Sprintf(", mysql_version=%d", versionID)
-	if config.GetMysqlAnsiQuotes() {
+	if config.GetSession().GetMysqlAnsiQuotes() {
 		settings += ", mysql_ansi_quotes=true"
 	}
 	dialect, err := dialects.GetOrRaise(settings)

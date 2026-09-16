@@ -794,8 +794,8 @@ func TestExtendedExecuteAuthorizesUnderBindTimeFunctionVisibility(t *testing.T) 
 		}
 	}
 	if execute == nil || !reflect.DeepEqual(execute.GetSearchPath(), []string{"pg_catalog", schema}) ||
-		!execute.GetPostgresFunctionShadowingObserved() ||
-		!reflect.DeepEqual(execute.GetPostgresShadowedFunctions(), []string{"unnest"}) {
+		!execute.GetSession().GetPostgresFunctionShadowingObserved() ||
+		!reflect.DeepEqual(execute.GetSession().GetPostgresShadowedFunctions(), []string{"unnest"}) {
 		t.Fatalf("Execute DecisionRequest = %+v, want bind-time path and observed [unnest]", execute)
 	}
 	assertNoRawPGError(t, client.simpleQuery(t, "ROLLBACK"))
@@ -841,12 +841,12 @@ func TestExtendedExecuteAuthorizesUnderBindTimeTypeVisibility(t *testing.T) {
 		return found
 	}
 	visible := lastRequest(visibleSQL)
-	if visible.PostgresSystemXidVisible == nil || !visible.GetPostgresSystemXidVisible() {
-		t.Fatalf("visible portal xid visibility = %v, want present true", visible.PostgresSystemXidVisible)
+	if visible.GetSession().PostgresSystemXidVisible == nil || !visible.GetSession().GetPostgresSystemXidVisible() {
+		t.Fatalf("visible portal xid visibility = %v, want present true", visible.GetSession().PostgresSystemXidVisible)
 	}
 	shadowed := lastRequest(shadowedSQL)
-	if shadowed.PostgresSystemXidVisible == nil || shadowed.GetPostgresSystemXidVisible() {
-		t.Fatalf("shadowed portal xid visibility = %v, want present false", shadowed.PostgresSystemXidVisible)
+	if shadowed.GetSession().PostgresSystemXidVisible == nil || shadowed.GetSession().GetPostgresSystemXidVisible() {
+		t.Fatalf("shadowed portal xid visibility = %v, want present false", shadowed.GetSession().PostgresSystemXidVisible)
 	}
 	assertNoRawPGError(t, client.simpleQuery(t, "ROLLBACK"))
 }
@@ -1429,11 +1429,11 @@ func TestExtendedBindCapturesVisibilityChangedAfterParse(t *testing.T) {
 		t.Fatalf("decisions for the statement = %d, want Parse + Execute", len(decisions))
 	}
 	parse, execute := decisions[0], decisions[1]
-	if !reflect.DeepEqual(parse.GetSearchPath(), []string{"pg_catalog", primarySchema}) || len(parse.GetPostgresShadowedFunctions()) != 0 {
+	if !reflect.DeepEqual(parse.GetSearchPath(), []string{"pg_catalog", primarySchema}) || len(parse.GetSession().GetPostgresShadowedFunctions()) != 0 {
 		t.Fatalf("Parse DecisionRequest = %+v, want the pre-shadow path and no shadows", parse)
 	}
 	if !reflect.DeepEqual(execute.GetSearchPath(), []string{"pg_catalog", schema}) ||
-		!reflect.DeepEqual(execute.GetPostgresShadowedFunctions(), []string{"unnest"}) {
+		!reflect.DeepEqual(execute.GetSession().GetPostgresShadowedFunctions(), []string{"unnest"}) {
 		t.Fatalf("Execute DecisionRequest = %+v, want the Bind-time path and observed [unnest]", execute)
 	}
 }

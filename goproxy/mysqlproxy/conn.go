@@ -249,12 +249,12 @@ func (s *Server) handleConn(clientConn net.Conn) {
 			var relayStats engine.RelayStats
 			relayStatus := engine.StatusError
 			decision, denied, serveErr := engine.ServeStatement(qe, engine.AuthzInput{
-				SQL:            sql,
-				Token:          token,
-				ClientAddr:     clientAddr,
-				ConnectionID:   identity.ConnectionID,
-				ProbeNamespace: func() (engine.NamespaceProbe, error) { return probeNamespaceObservation(targetDbConn, deprecateEOF) },
-				RunCommands:    refetcher.RunAll,
+				SQL:          sql,
+				Token:        token,
+				ClientAddr:   clientAddr,
+				ConnectionID: identity.ConnectionID,
+				ProbeSession: func() (engine.SessionObservation, error) { return probeSession(targetDbConn, deprecateEOF) },
+				RunCommands:  refetcher.RunAll,
 			}, refetcher, nil, func(toSend string, masks []*pb.ColumnMask, dec *engine.Decision) (bool, error) {
 				queryPayload := mysqlwire.ComQueryPayload(toSend)
 				if len(queryPayload) >= maxPacketPayload {
@@ -320,11 +320,11 @@ func (s *Server) handleConn(clientConn net.Conn) {
 			sql := string(payload[1:])
 			var frozen []string
 			var frozenAnsiQuotes bool
-			proceed, allowed, err := s.authorize(qe, clientConn, seq, sql, token, clientAddr, identity.ConnectionID, refetcher.RunAll, func() (engine.NamespaceProbe, error) {
-				obs, err := probeNamespaceObservation(targetDbConn, deprecateEOF)
+			proceed, allowed, err := s.authorize(qe, clientConn, seq, sql, token, clientAddr, identity.ConnectionID, refetcher.RunAll, func() (engine.SessionObservation, error) {
+				obs, err := probeSession(targetDbConn, deprecateEOF)
 				if err == nil {
 					frozen = append([]string{}, obs.Namespace...)
-					frozenAnsiQuotes = obs.MySQLAnsiQuotes
+					frozenAnsiQuotes = obs.GetMysqlAnsiQuotes()
 				}
 				return obs, err
 			})
@@ -410,8 +410,8 @@ func (s *Server) handleConn(clientConn net.Conn) {
 			// namespace rather than live session state, then dirty the engine cache immediately so it cannot
 			// leak into the next statement's decision.
 			qe.MarkNamespaceDirty()
-			proceed, allowed, err := s.authorize(qe, clientConn, seq, ps.sql, token, clientAddr, identity.ConnectionID, refetcher.RunAll, func() (engine.NamespaceProbe, error) {
-				return engine.NamespaceProbe{Namespace: ps.namespace, MySQLAnsiQuotes: ps.ansiQuotes}, nil
+			proceed, allowed, err := s.authorize(qe, clientConn, seq, ps.sql, token, clientAddr, identity.ConnectionID, refetcher.RunAll, func() (engine.SessionObservation, error) {
+				return mysqlSession(ps.namespace, ps.ansiQuotes), nil
 			})
 			qe.MarkNamespaceDirty()
 			if err != nil {
@@ -522,15 +522,15 @@ func (s *Server) authorize(
 	sql, token, clientAddr string,
 	connectionID []byte,
 	runCommands func([]*pb.Refetch) error,
-	probeNamespace func() (engine.NamespaceProbe, error),
+	probeSession func() (engine.SessionObservation, error),
 ) (engine.Proceed, bool, error) {
 	verdict := qe.Authorize(engine.AuthzInput{
-		SQL:            sql,
-		Token:          token,
-		ClientAddr:     clientAddr,
-		ConnectionID:   connectionID,
-		ProbeNamespace: probeNamespace,
-		RunCommands:    runCommands,
+		SQL:          sql,
+		Token:        token,
+		ClientAddr:   clientAddr,
+		ConnectionID: connectionID,
+		ProbeSession: probeSession,
+		RunCommands:  runCommands,
 	})
 	switch v := verdict.(type) {
 	case engine.Fail:

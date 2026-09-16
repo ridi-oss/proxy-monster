@@ -97,23 +97,31 @@ message EngineConfig {
   // MySQL's server-level lower_case_table_names setting (0..2), required for MySQL. Absent for
   // PostgreSQL, which has no equivalent setting.
   optional int32 mysql_lower_case_table_names = 3;
-  // Whether the target DB's live MySQL session sql_mode has ANSI_QUOTES active. When true the analyzer
-  // builds the MySQL dialect with the mysql_ansi_quotes tokenizer state, so `"col"` parses as a quoted
-  // IDENTIFIER (a masked column read) rather than a string literal — matching the server, so a masked
-  // column quoted with `"` is still masked instead of leaking cleartext. sql_mode is mutable per
-  // session, so this is observed and forwarded per statement. Absent/false for PostgreSQL and for the
-  // default MySQL mode (`"` is a string).
-  optional bool mysql_ansi_quotes = 4;
+  reserved 4 to 7;
+  reserved "mysql_ansi_quotes", "postgres_shadowed_functions", "postgres_function_shadowing_observed",
+    "postgres_system_xid_visible";
+  // What the proxy observed on the target session right before this statement. Forwarded by the
+  // control plane exactly as the proxy sent it on DecisionRequest.session.
+  SessionObservation session = 8;
+}
+
+// Per-statement facts about the live target session that change how the analyzer parses or resolves
+// a statement. The proxy probes them before each statement; the control plane forwards them as-is.
+// Every field is engine-specific and stays unset for the other engine.
+message SessionObservation {
+  // MySQL sql_mode has ANSI_QUOTES active, so `"col"` is a quoted identifier (a masked column read),
+  // not a string literal. sql_mode is mutable per session, so this is observed per statement.
+  bool mysql_ansi_quotes = 1;
   // Unqualified PostgreSQL functions whose live resolution can select a visible non-pg_catalog
-  // overload instead of the builtin whose implicit output schema the analyzer knows. The proxy observes
-  // this per statement; explicit pg_catalog qualification remains trusted. Empty for MySQL.
-  repeated string postgres_shadowed_functions = 5;
-  // True only after the proxy successfully observed function visibility on the held PostgreSQL session.
-  // False is distinct from an observed empty shadow list and keeps implicit polymorphic schemas closed.
-  bool postgres_function_shadowing_observed = 6;
+  // overload instead of the builtin whose implicit output schema the analyzer knows. Explicit
+  // pg_catalog qualification remains trusted.
+  repeated string postgres_shadowed_functions = 2;
+  // True only after the proxy observed function visibility on the held PostgreSQL session. False is
+  // distinct from an observed empty shadow list and keeps implicit polymorphic schemas closed.
+  bool postgres_function_shadowing_observed = 3;
   // Whether pg_catalog.xid is the type PostgreSQL resolves for an unqualified xid on the held session.
-  // Absence means the proxy did not observe type visibility and keeps the cast gated fail-closed.
-  optional bool postgres_system_xid_visible = 7;
+  // Absence means type visibility was not observed and keeps the cast gated fail-closed.
+  optional bool postgres_system_xid_visible = 4;
 }
 
 message AnalyzeRequest {

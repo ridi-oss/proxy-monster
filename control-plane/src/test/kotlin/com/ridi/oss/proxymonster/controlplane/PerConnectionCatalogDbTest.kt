@@ -1,5 +1,11 @@
 package com.ridi.oss.proxymonster.controlplane
 
+import com.ridi.oss.proxymonster.controlplane.grpc.ControlPlaneGrpcService
+import com.ridi.oss.proxymonster.controlplane.grpc.GrpcServer
+import com.ridi.oss.proxymonster.grpc.ControlPlaneGrpcKt
+import com.ridi.oss.proxymonster.grpc.decisionRequest
+import io.grpc.netty.shaded.io.grpc.netty.NettyChannelBuilder
+import com.ridi.oss.proxymonster.analyzer.pb.sessionObservation
 import com.ridi.oss.proxymonster.grpc.EnfAction
 import com.ridi.oss.proxymonster.controlplane.support.EnforcementFixture
 import com.ridi.oss.proxymonster.controlplane.support.PerConnectionCatalogFixture
@@ -49,7 +55,7 @@ abstract class PerConnectionCatalogDbContract {
     @Test
     fun `ANSI_QUOTES threads through decideConnection so a double-quoted pii column masks`() = runBlocking {
         // ANSI_QUOTES seam: the gRPC handler forwards the proxy's observed sql_mode=ANSI_QUOTES as
-        // decideConnection(ansiQuotes=true), which must reach the analyzer's EngineConfig so `"ssn"` is read
+        // decideConnection(session.mysqlAnsiQuotes=true), which must reach the analyzer's EngineConfig so `"ssn"` is read
         // as the masked pii column, not a string literal — MASK, not a cleartext leak. With the flag false
         // (default mode) `"ssn"` is the constant string 'ssn' (no pii column touched) → ALLOW. Proven through
         // the real per-connection catalog path the wire Decide RPC actually runs.
@@ -66,17 +72,52 @@ abstract class PerConnectionCatalogDbContract {
 
         val masked = decideConnection(
             fixture.core, opened.connectionId, "analyst@example.com", fixture.datasource,
-            """select "ssn" from users""", listOf(schema), null, ansiQuotes = true,
+            """select "ssn" from users""", listOf(schema), null, session = sessionObservation { mysqlAnsiQuotes = true },
         )
         val maskedVerdict = assertIs<EnforcementOutcome.Verdict>(masked)
         assertEquals(EnfAction.MASK, maskedVerdict.ctx.action, maskedVerdict.ctx.denyReason)
 
         val allowed = decideConnection(
             fixture.core, opened.connectionId, "analyst@example.com", fixture.datasource,
-            """select "ssn" from users""", listOf(schema), null, ansiQuotes = false,
+            """select "ssn" from users""", listOf(schema), null, session = sessionObservation { mysqlAnsiQuotes = false },
         )
         val allowedVerdict = assertIs<EnforcementOutcome.Verdict>(allowed)
         assertEquals(EnfAction.ALLOW, allowedVerdict.ctx.action, allowedVerdict.ctx.denyReason)
+    }
+
+    @Test
+    fun `the gRPC Decide handler forwards the session observation`() = runBlocking {
+        // The one proxy-to-analyzer handoff: DecisionRequest.session must reach EngineConfig unchanged. A handler
+        // that dropped it would read `"ssn"` as a string literal and relay the pii column in the clear.
+        if (fixture.datasource.engine.isPostgres) return@runBlocking
+        val schema = fixture.datasource.defaultSchemas.first()
+        val token = fixture.core.tokenStore.issue(TokenKind.USER, "analyst@example.com", emptyList(), null, 3600).token
+        val opened = fixture.core.connectionCatalog.open(
+            Binding(fixture.datasource.name, "analyst@example.com", "USER"), listOf(schema),
+        )
+        java.sql.DriverManager.getConnection(
+            fixture.enforcement.targetJdbcUrl, fixture.enforcement.targetUser, fixture.enforcement.targetPassword,
+        ).use { target -> fixture.pushFromTarget(target, opened.connectionId, schema) }
+
+        val server = GrpcServer(0, ControlPlaneGrpcService(fixture.core), null).also { it.start() }
+        val channel = NettyChannelBuilder.forAddress("localhost", server.boundPort).usePlaintext().build()
+        try {
+            val stub = ControlPlaneGrpcKt.ControlPlaneCoroutineStub(channel)
+            suspend fun decide(ansiQuotes: Boolean) = stub.decide(decisionRequest {
+                this.token = token
+                datasourceName = fixture.datasource.name
+                connectionId = opened.connectionId
+                sql = """select "ssn" from users"""
+                searchPath.add(schema)
+                session = sessionObservation { mysqlAnsiQuotes = ansiQuotes }
+            }).verdict
+            val masked = decide(true)
+            assertEquals(EnfAction.MASK, masked.decision, masked.denyReason)
+            assertEquals(EnfAction.ALLOW, decide(false).decision)
+        } finally {
+            channel.shutdownNow().awaitTermination(5, java.util.concurrent.TimeUnit.SECONDS)
+            server.shutdown()
+        }
     }
 
     @Test

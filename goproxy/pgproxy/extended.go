@@ -34,10 +34,10 @@ type preparedStatement struct {
 // boundPortal snapshots the context PostgreSQL used for its confirmed Bind. Every Execute re-decides the
 // portal SQL against that snapshot, and no decision is ever stored.
 type boundPortal struct {
-	sql    string
-	probe  engine.NamespaceProbe
-	temps  []engine.TempColumn
-	binary bool
+	sql     string
+	session engine.SessionObservation
+	temps   []engine.TempColumn
+	binary  bool
 }
 
 func renderExtendedVerdict(sess *session, verdict engine.Verdict) (engine.Proceed, bool, error) {
@@ -159,7 +159,7 @@ func (s *Server) handleBind(sess *session, message *pgproto3.Bind) error {
 	// target DB between this probe and Bind, so the captured context is exactly the one PostgreSQL binds under.
 	// Probing first also leaves no registry/target DB inconsistency if capture fails. An aborted transaction
 	// fails here before PostgreSQL's equivalent 25P02 Bind, retaining the prior portal snapshot and target DB portal.
-	namespaceProbe, temps, err := s.probeBindContext(sess)
+	observed, temps, err := s.probeBindContext(sess)
 	if err != nil {
 		if errors.Is(err, errClientEncoding) || errors.Is(err, errStdConformingStrings) {
 			return err
@@ -185,10 +185,10 @@ func (s *Server) handleBind(sess *session, message *pgproto3.Bind) error {
 	}
 	if _, complete := terminal.(*pgproto3.BindComplete); complete {
 		sess.portals[message.DestinationPortal] = boundPortal{
-			sql:    statement.sql,
-			probe:  namespaceProbe.Clone(),
-			temps:  temps,
-			binary: binary,
+			sql:     statement.sql,
+			session: observed.Clone(),
+			temps:   temps,
+			binary:  binary,
 		}
 	}
 	return sess.client.Flush()
@@ -323,32 +323,32 @@ func (s *Server) runExtendedProbe(sess *session, sql string, expectedColumns int
 
 // probeBindContext captures the namespace, function visibility, and temporary columns PostgreSQL will
 // bind the next portal under.
-func (s *Server) probeBindContext(sess *session) (engine.NamespaceProbe, []engine.TempColumn, error) {
+func (s *Server) probeBindContext(sess *session) (engine.SessionObservation, []engine.TempColumn, error) {
 	if sess.lastTxStatus == 'E' {
 		// Aborted transaction: both injected probes would fail with 25P02 and block an extended-protocol
 		// ROLLBACK's Bind. Reuse the last context snapshot (symmetric with handleQuery / handleParse).
-		return sess.namespaceProbe.Clone(), append([]engine.TempColumn{}, sess.tempOverlay...), nil
+		return sess.session.Clone(), append([]engine.TempColumn{}, sess.tempOverlay...), nil
 	}
 	namespaceRows, err := s.runExtendedProbe(sess, s.db.NamespaceProbeSQL(), 1)
 	if err != nil {
-		return engine.NamespaceProbe{}, nil, fmt.Errorf("target-DB namespace probe: %w", err)
+		return engine.SessionObservation{}, nil, fmt.Errorf("target-DB namespace probe: %w", err)
 	}
-	namespaceProbe, err := namespaceProbeFromRows(namespaceRows)
+	observed, err := sessionFromRows(namespaceRows)
 	if err != nil {
-		return engine.NamespaceProbe{}, nil, err
+		return engine.SessionObservation{}, nil, err
 	}
-	sess.namespaceProbe = namespaceProbe.Clone()
+	sess.session = observed.Clone()
 
 	tempRows, err := s.runExtendedProbe(sess, s.db.TempColumnsProbeSQL(), 5)
 	if err != nil {
-		return engine.NamespaceProbe{}, nil, fmt.Errorf("target DB temp-column probe: %w", err)
+		return engine.SessionObservation{}, nil, fmt.Errorf("target DB temp-column probe: %w", err)
 	}
 	temps, err := tempColumnsFromRows(tempRows)
 	if err != nil {
-		return engine.NamespaceProbe{}, nil, err
+		return engine.SessionObservation{}, nil, err
 	}
 	sess.tempOverlay = append([]engine.TempColumn{}, temps...)
-	return namespaceProbe, temps, nil
+	return observed, temps, nil
 }
 
 func (s *Server) handleExecute(sess *session, message *pgproto3.Execute) error {
@@ -361,12 +361,12 @@ func (s *Server) handleExecute(sess *session, message *pgproto3.Execute) error {
 	// diverge from the bound plan after post-Bind search_path drift and authorize a different resource.
 	sess.qe.MarkNamespaceDirty()
 	verdict := sess.qe.Authorize(engine.AuthzInput{
-		SQL:            portal.sql,
-		Token:          sess.token,
-		ClientAddr:     sess.clientAddr,
-		ConnectionID:   sess.connectionID,
-		RunCommands:    s.refetcher(sess, true).RunAll,
-		ProbeNamespace: func() (engine.NamespaceProbe, error) { return portal.probe, nil },
+		SQL:          portal.sql,
+		Token:        sess.token,
+		ClientAddr:   sess.clientAddr,
+		ConnectionID: sess.connectionID,
+		RunCommands:  s.refetcher(sess, true).RunAll,
+		ProbeSession: func() (engine.SessionObservation, error) { return portal.session.Clone(), nil },
 		ProbeTempColumns: func() ([]engine.TempColumn, error) {
 			return portal.temps, nil
 		},

@@ -62,11 +62,11 @@ func (s *RunSession) OnOpen(ctx context.Context, cmds []*pb.Refetch) error {
 
 func (s *RunSession) ServeStatement(sql string, maxRows int) (result engine.StatementResult, err error) {
 	result.Decision, result.Denied, err = engine.ServeStatement(s.qe, engine.AuthzInput{
-		SQL:            sql,
-		Token:          s.token,
-		ConnectionID:   s.connectionID,
-		ProbeNamespace: func() (engine.NamespaceProbe, error) { return probeNamespaceObservation(s.conn, true) },
-		RunCommands:    s.ref.RunAll,
+		SQL:          sql,
+		Token:        s.token,
+		ConnectionID: s.connectionID,
+		ProbeSession: func() (engine.SessionObservation, error) { return probeSession(s.conn, true) },
+		RunCommands:  s.ref.RunAll,
 	}, s.ref, s.guard, func(toSend string, masks []*pb.ColumnMask, _ *engine.Decision) (clean bool, runErr error) {
 		payload := mysqlwire.ComQueryPayload(toSend)
 		if len(payload) >= mysqlwire.MaxPacketPayload {

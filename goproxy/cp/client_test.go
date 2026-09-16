@@ -391,12 +391,13 @@ func TestDecideMapsRequestAndRetriesBeforeDecide(t *testing.T) {
 	c := startFakeControlPlane(t, fake)
 	var run [][]*pb.Refetch
 	request := engine.DecideRequest{
-		NamespaceProbe: engine.NamespaceProbe{
-			Namespace:                         []string{"public", "app"},
-			PostgresShadowedFunctions:         []string{"unnest"},
-			PostgresFunctionShadowingObserved: true,
-			PostgresSystemXIDVisible:          true,
-			PostgresTypeVisibilityObserved:    true,
+		Session: engine.SessionObservation{
+			Namespace: []string{"public", "app"},
+			SessionObservation: &enginepb.SessionObservation{
+				PostgresShadowedFunctions:         []string{"unnest"},
+				PostgresFunctionShadowingObserved: true,
+				PostgresSystemXidVisible:          proto.Bool(true),
+			},
 		},
 		Token:        "raw-token",
 		SQL:          "SELECT 1",
@@ -425,15 +426,15 @@ func TestDecideMapsRequestAndRetriesBeforeDecide(t *testing.T) {
 	}
 	req := requests[0]
 	if req.GetToken() != request.Token || req.GetDatasourceName() != "ds-1" || req.GetSql() != request.SQL || req.GetClientAddr() != request.ClientAddr ||
-		!reflect.DeepEqual(req.GetSearchPath(), request.Namespace) || !reflect.DeepEqual(req.GetConnectionId(), request.ConnectionID) {
+		!reflect.DeepEqual(req.GetSearchPath(), request.Session.Namespace) || !reflect.DeepEqual(req.GetConnectionId(), request.ConnectionID) {
 		t.Fatalf("DecisionRequest = %+v", req)
 	}
-	if !req.GetPostgresFunctionShadowingObserved() ||
-		!reflect.DeepEqual(req.GetPostgresShadowedFunctions(), []string{"unnest"}) {
-		t.Fatalf("PostgreSQL function shadow state = %v/%v, want observed [unnest]", req.GetPostgresFunctionShadowingObserved(), req.GetPostgresShadowedFunctions())
+	if !req.GetSession().GetPostgresFunctionShadowingObserved() ||
+		!reflect.DeepEqual(req.GetSession().GetPostgresShadowedFunctions(), []string{"unnest"}) {
+		t.Fatalf("PostgreSQL function shadow state = %v/%v, want observed [unnest]", req.GetSession().GetPostgresFunctionShadowingObserved(), req.GetSession().GetPostgresShadowedFunctions())
 	}
-	if req.PostgresSystemXidVisible == nil || !req.GetPostgresSystemXidVisible() {
-		t.Fatalf("PostgreSQL xid visibility = %v, want present true", req.PostgresSystemXidVisible)
+	if req.GetSession().PostgresSystemXidVisible == nil || !req.GetSession().GetPostgresSystemXidVisible() {
+		t.Fatalf("PostgreSQL xid visibility = %v, want present true", req.GetSession().PostgresSystemXidVisible)
 	}
 	if len(req.GetTempColumns()) != 1 || req.GetTempColumns()[0].GetOrdinal() != 5 {
 		t.Fatalf("TempColumns = %+v", req.GetTempColumns())
@@ -447,6 +448,10 @@ func TestDecideOmitsUnobservedPostgresTypeVisibility(t *testing.T) {
 	fake := &fakeControlPlane{}
 	c := startFakeControlPlane(t, fake)
 	out := c.Decide(engine.DecideRequest{
+		Session: engine.SessionObservation{
+			Namespace:          []string{"public"},
+			SessionObservation: &enginepb.SessionObservation{PostgresFunctionShadowingObserved: true},
+		},
 		Token:        "raw-token",
 		SQL:          "SELECT 1",
 		ConnectionID: []byte("0123456789abcdef"),
@@ -459,8 +464,9 @@ func TestDecideOmitsUnobservedPostgresTypeVisibility(t *testing.T) {
 	if len(fake.decideReqs) != 1 {
 		t.Fatalf("Decide requests = %d, want 1", len(fake.decideReqs))
 	}
-	if got := fake.decideReqs[0].PostgresSystemXidVisible; got != nil {
-		t.Fatalf("unobserved PostgreSQL xid visibility = %v, want absent", got)
+	session := fake.decideReqs[0].GetSession()
+	if session == nil || session.PostgresSystemXidVisible != nil {
+		t.Fatalf("unobserved PostgreSQL xid visibility = %+v, want a session with the field absent", session)
 	}
 }
 

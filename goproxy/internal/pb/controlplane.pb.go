@@ -984,22 +984,10 @@ type DecisionRequest struct {
 	// of a shadowed real table. Editor-session only; empty for one-shot/wire paths.
 	TempColumns  []*TempColumn `protobuf:"bytes,6,rep,name=temp_columns,json=tempColumns,proto3" json:"temp_columns,omitempty"`
 	ConnectionId []byte        `protobuf:"bytes,7,opt,name=connection_id,json=connectionId,proto3" json:"connection_id,omitempty"`
-	// Whether the target DB's live MySQL session sql_mode has ANSI_QUOTES active, observed by the proxy per
-	// statement (sql_mode is mutable per session). The control-plane forwards it to the analyzer's
-	// EngineConfig so `"col"` is parsed as a quoted identifier (a masked column read) rather than a string,
-	// letting the proxy relay an ANSI_QUOTES session under masking instead of failing it closed. Absent/false
-	// for PostgreSQL and the default MySQL mode. NO_BACKSLASH_ESCAPES / ANSI stay fail-closed at the proxy.
-	MysqlAnsiQuotes bool `protobuf:"varint,8,opt,name=mysql_ansi_quotes,json=mysqlAnsiQuotes,proto3" json:"mysql_ansi_quotes,omitempty"`
-	// Visible non-pg_catalog overloads that can change PostgreSQL's resolution of an unqualified
-	// builtin with an analyzer-supplied implicit output schema. Observed on the held target-DB session
-	// with the effective function search path; empty for MySQL.
-	PostgresShadowedFunctions []string `protobuf:"bytes,9,rep,name=postgres_shadowed_functions,json=postgresShadowedFunctions,proto3" json:"postgres_shadowed_functions,omitempty"`
-	// True only when the proxy successfully observed PostgreSQL function visibility on the held session.
-	// False is distinct from an observed empty shadow list and keeps implicit polymorphic schemas closed.
-	PostgresFunctionShadowingObserved bool `protobuf:"varint,10,opt,name=postgres_function_shadowing_observed,json=postgresFunctionShadowingObserved,proto3" json:"postgres_function_shadowing_observed,omitempty"`
-	// Whether pg_catalog.xid is the type PostgreSQL resolves for an unqualified xid on the held session.
-	// Absence means type visibility was not observed and the analyzer keeps the cast gated fail-closed.
-	PostgresSystemXidVisible *bool `protobuf:"varint,11,opt,name=postgres_system_xid_visible,json=postgresSystemXidVisible,proto3,oneof" json:"postgres_system_xid_visible,omitempty"`
+	// Tags 12 and 13 are held by the Athena branch.
+	// What the proxy observed on the held target session before this statement; the control plane
+	// forwards it unchanged as EngineConfig.session.
+	Session *pb.SessionObservation `protobuf:"bytes,14,opt,name=session,proto3" json:"session,omitempty"`
 }
 
 func (x *DecisionRequest) Reset() {
@@ -1081,32 +1069,11 @@ func (x *DecisionRequest) GetConnectionId() []byte {
 	return nil
 }
 
-func (x *DecisionRequest) GetMysqlAnsiQuotes() bool {
+func (x *DecisionRequest) GetSession() *pb.SessionObservation {
 	if x != nil {
-		return x.MysqlAnsiQuotes
-	}
-	return false
-}
-
-func (x *DecisionRequest) GetPostgresShadowedFunctions() []string {
-	if x != nil {
-		return x.PostgresShadowedFunctions
+		return x.Session
 	}
 	return nil
-}
-
-func (x *DecisionRequest) GetPostgresFunctionShadowingObserved() bool {
-	if x != nil {
-		return x.PostgresFunctionShadowingObserved
-	}
-	return false
-}
-
-func (x *DecisionRequest) GetPostgresSystemXidVisible() bool {
-	if x != nil && x.PostgresSystemXidVisible != nil {
-		return *x.PostgresSystemXidVisible
-	}
-	return false
 }
 
 // One column of a session-temp table on a connection. Carries no classification — a temp is
@@ -3254,7 +3221,7 @@ var file_controlplane_proto_rawDesc = []byte{
 	0x72, 0x63, 0x65, 0x5f, 0x6e, 0x61, 0x6d, 0x65, 0x18, 0x02, 0x20, 0x01, 0x28, 0x09, 0x52, 0x0e,
 	0x64, 0x61, 0x74, 0x61, 0x73, 0x6f, 0x75, 0x72, 0x63, 0x65, 0x4e, 0x61, 0x6d, 0x65, 0x22, 0x19,
 	0x0a, 0x17, 0x43, 0x6c, 0x6f, 0x73, 0x65, 0x43, 0x6f, 0x6e, 0x6e, 0x65, 0x63, 0x74, 0x69, 0x6f,
-	0x6e, 0x52, 0x65, 0x73, 0x70, 0x6f, 0x6e, 0x73, 0x65, 0x22, 0xaa, 0x04, 0x0a, 0x0f, 0x44, 0x65,
+	0x6e, 0x52, 0x65, 0x73, 0x70, 0x6f, 0x6e, 0x73, 0x65, 0x22, 0xca, 0x03, 0x0a, 0x0f, 0x44, 0x65,
 	0x63, 0x69, 0x73, 0x69, 0x6f, 0x6e, 0x52, 0x65, 0x71, 0x75, 0x65, 0x73, 0x74, 0x12, 0x14, 0x0a,
 	0x05, 0x74, 0x6f, 0x6b, 0x65, 0x6e, 0x18, 0x01, 0x20, 0x01, 0x28, 0x09, 0x52, 0x05, 0x74, 0x6f,
 	0x6b, 0x65, 0x6e, 0x12, 0x27, 0x0a, 0x0f, 0x64, 0x61, 0x74, 0x61, 0x73, 0x6f, 0x75, 0x72, 0x63,
@@ -3271,23 +3238,17 @@ var file_controlplane_proto_rawDesc = []byte{
 	0x75, 0x6d, 0x6e, 0x52, 0x0b, 0x74, 0x65, 0x6d, 0x70, 0x43, 0x6f, 0x6c, 0x75, 0x6d, 0x6e, 0x73,
 	0x12, 0x23, 0x0a, 0x0d, 0x63, 0x6f, 0x6e, 0x6e, 0x65, 0x63, 0x74, 0x69, 0x6f, 0x6e, 0x5f, 0x69,
 	0x64, 0x18, 0x07, 0x20, 0x01, 0x28, 0x0c, 0x52, 0x0c, 0x63, 0x6f, 0x6e, 0x6e, 0x65, 0x63, 0x74,
-	0x69, 0x6f, 0x6e, 0x49, 0x64, 0x12, 0x2a, 0x0a, 0x11, 0x6d, 0x79, 0x73, 0x71, 0x6c, 0x5f, 0x61,
-	0x6e, 0x73, 0x69, 0x5f, 0x71, 0x75, 0x6f, 0x74, 0x65, 0x73, 0x18, 0x08, 0x20, 0x01, 0x28, 0x08,
-	0x52, 0x0f, 0x6d, 0x79, 0x73, 0x71, 0x6c, 0x41, 0x6e, 0x73, 0x69, 0x51, 0x75, 0x6f, 0x74, 0x65,
-	0x73, 0x12, 0x3e, 0x0a, 0x1b, 0x70, 0x6f, 0x73, 0x74, 0x67, 0x72, 0x65, 0x73, 0x5f, 0x73, 0x68,
-	0x61, 0x64, 0x6f, 0x77, 0x65, 0x64, 0x5f, 0x66, 0x75, 0x6e, 0x63, 0x74, 0x69, 0x6f, 0x6e, 0x73,
-	0x18, 0x09, 0x20, 0x03, 0x28, 0x09, 0x52, 0x19, 0x70, 0x6f, 0x73, 0x74, 0x67, 0x72, 0x65, 0x73,
-	0x53, 0x68, 0x61, 0x64, 0x6f, 0x77, 0x65, 0x64, 0x46, 0x75, 0x6e, 0x63, 0x74, 0x69, 0x6f, 0x6e,
-	0x73, 0x12, 0x4f, 0x0a, 0x24, 0x70, 0x6f, 0x73, 0x74, 0x67, 0x72, 0x65, 0x73, 0x5f, 0x66, 0x75,
+	0x69, 0x6f, 0x6e, 0x49, 0x64, 0x12, 0x46, 0x0a, 0x07, 0x73, 0x65, 0x73, 0x73, 0x69, 0x6f, 0x6e,
+	0x18, 0x0e, 0x20, 0x01, 0x28, 0x0b, 0x32, 0x2c, 0x2e, 0x70, 0x72, 0x6f, 0x78, 0x79, 0x6d, 0x6f,
+	0x6e, 0x73, 0x74, 0x65, 0x72, 0x2e, 0x61, 0x6e, 0x61, 0x6c, 0x79, 0x7a, 0x65, 0x72, 0x2e, 0x76,
+	0x31, 0x2e, 0x53, 0x65, 0x73, 0x73, 0x69, 0x6f, 0x6e, 0x4f, 0x62, 0x73, 0x65, 0x72, 0x76, 0x61,
+	0x74, 0x69, 0x6f, 0x6e, 0x52, 0x07, 0x73, 0x65, 0x73, 0x73, 0x69, 0x6f, 0x6e, 0x4a, 0x04, 0x08,
+	0x08, 0x10, 0x0c, 0x52, 0x11, 0x6d, 0x79, 0x73, 0x71, 0x6c, 0x5f, 0x61, 0x6e, 0x73, 0x69, 0x5f,
+	0x71, 0x75, 0x6f, 0x74, 0x65, 0x73, 0x52, 0x1b, 0x70, 0x6f, 0x73, 0x74, 0x67, 0x72, 0x65, 0x73,
+	0x5f, 0x73, 0x68, 0x61, 0x64, 0x6f, 0x77, 0x65, 0x64, 0x5f, 0x66, 0x75, 0x6e, 0x63, 0x74, 0x69,
+	0x6f, 0x6e, 0x73, 0x52, 0x24, 0x70, 0x6f, 0x73, 0x74, 0x67, 0x72, 0x65, 0x73, 0x5f, 0x66, 0x75,
 	0x6e, 0x63, 0x74, 0x69, 0x6f, 0x6e, 0x5f, 0x73, 0x68, 0x61, 0x64, 0x6f, 0x77, 0x69, 0x6e, 0x67,
-	0x5f, 0x6f, 0x62, 0x73, 0x65, 0x72, 0x76, 0x65, 0x64, 0x18, 0x0a, 0x20, 0x01, 0x28, 0x08, 0x52,
-	0x21, 0x70, 0x6f, 0x73, 0x74, 0x67, 0x72, 0x65, 0x73, 0x46, 0x75, 0x6e, 0x63, 0x74, 0x69, 0x6f,
-	0x6e, 0x53, 0x68, 0x61, 0x64, 0x6f, 0x77, 0x69, 0x6e, 0x67, 0x4f, 0x62, 0x73, 0x65, 0x72, 0x76,
-	0x65, 0x64, 0x12, 0x42, 0x0a, 0x1b, 0x70, 0x6f, 0x73, 0x74, 0x67, 0x72, 0x65, 0x73, 0x5f, 0x73,
-	0x79, 0x73, 0x74, 0x65, 0x6d, 0x5f, 0x78, 0x69, 0x64, 0x5f, 0x76, 0x69, 0x73, 0x69, 0x62, 0x6c,
-	0x65, 0x18, 0x0b, 0x20, 0x01, 0x28, 0x08, 0x48, 0x00, 0x52, 0x18, 0x70, 0x6f, 0x73, 0x74, 0x67,
-	0x72, 0x65, 0x73, 0x53, 0x79, 0x73, 0x74, 0x65, 0x6d, 0x58, 0x69, 0x64, 0x56, 0x69, 0x73, 0x69,
-	0x62, 0x6c, 0x65, 0x88, 0x01, 0x01, 0x42, 0x1e, 0x0a, 0x1c, 0x5f, 0x70, 0x6f, 0x73, 0x74, 0x67,
+	0x5f, 0x6f, 0x62, 0x73, 0x65, 0x72, 0x76, 0x65, 0x64, 0x52, 0x1b, 0x70, 0x6f, 0x73, 0x74, 0x67,
 	0x72, 0x65, 0x73, 0x5f, 0x73, 0x79, 0x73, 0x74, 0x65, 0x6d, 0x5f, 0x78, 0x69, 0x64, 0x5f, 0x76,
 	0x69, 0x73, 0x69, 0x62, 0x6c, 0x65, 0x22, 0x87, 0x01, 0x0a, 0x0a, 0x54, 0x65, 0x6d, 0x70, 0x43,
 	0x6f, 0x6c, 0x75, 0x6d, 0x6e, 0x12, 0x16, 0x0a, 0x06, 0x73, 0x63, 0x68, 0x65, 0x6d, 0x61, 0x18,
@@ -3661,8 +3622,9 @@ var file_controlplane_proto_goTypes = []any{
 	(pb.Engine)(0),                    // 46: proxymonster.v1.Engine
 	(*pb.CatalogSnapshot)(nil),        // 47: proxymonster.analyzer.v1.CatalogSnapshot
 	(*pb.Column)(nil),                 // 48: proxymonster.analyzer.v1.Column
-	(*pb.RequireResultReadGrant)(nil), // 49: proxymonster.analyzer.v1.RequireResultReadGrant
-	(*emptypb.Empty)(nil),             // 50: google.protobuf.Empty
+	(*pb.SessionObservation)(nil),     // 49: proxymonster.analyzer.v1.SessionObservation
+	(*pb.RequireResultReadGrant)(nil), // 50: proxymonster.analyzer.v1.RequireResultReadGrant
+	(*emptypb.Empty)(nil),             // 51: google.protobuf.Empty
 }
 var file_controlplane_proto_depIdxs = []int32{
 	2,  // 0: proxymonster.v1.ProxyCommand.refetch:type_name -> proxymonster.v1.Refetch
@@ -3671,61 +3633,62 @@ var file_controlplane_proto_depIdxs = []int32{
 	1,  // 3: proxymonster.v1.WireIdentity.on_open:type_name -> proxymonster.v1.ProxyCommand
 	48, // 4: proxymonster.v1.SchemaFragmentPush.columns:type_name -> proxymonster.analyzer.v1.Column
 	15, // 5: proxymonster.v1.DecisionRequest.temp_columns:type_name -> proxymonster.v1.TempColumn
-	18, // 6: proxymonster.v1.WireDecision.verdict:type_name -> proxymonster.v1.Verdict
-	19, // 7: proxymonster.v1.WireDecision.before_decide:type_name -> proxymonster.v1.BeforeDecide
-	0,  // 8: proxymonster.v1.Verdict.decision:type_name -> proxymonster.v1.EnfAction
-	16, // 9: proxymonster.v1.Verdict.masks:type_name -> proxymonster.v1.ColumnMask
-	1,  // 10: proxymonster.v1.Verdict.after_statement:type_name -> proxymonster.v1.ProxyCommand
-	49, // 11: proxymonster.v1.Verdict.result_fingerprint:type_name -> proxymonster.analyzer.v1.RequireResultReadGrant
-	1,  // 12: proxymonster.v1.BeforeDecide.commands:type_name -> proxymonster.v1.ProxyCommand
-	22, // 13: proxymonster.v1.ControlEvent.refresh_catalog:type_name -> proxymonster.v1.RefreshCatalog
-	24, // 14: proxymonster.v1.ControlEvent.open_run_channel:type_name -> proxymonster.v1.OpenRunChannel
-	25, // 15: proxymonster.v1.ControlEvent.open_table_detail_channel:type_name -> proxymonster.v1.OpenTableDetailChannel
-	23, // 16: proxymonster.v1.ControlEvent.draining:type_name -> proxymonster.v1.Draining
-	1,  // 17: proxymonster.v1.OpenRunChannel.on_open:type_name -> proxymonster.v1.ProxyCommand
-	28, // 18: proxymonster.v1.ProxyRunMsg.session_ready:type_name -> proxymonster.v1.RunReady
-	34, // 19: proxymonster.v1.ProxyRunMsg.decision:type_name -> proxymonster.v1.RunDecision
-	35, // 20: proxymonster.v1.ProxyRunMsg.result_rows:type_name -> proxymonster.v1.RunResultRows
-	38, // 21: proxymonster.v1.ProxyRunMsg.done:type_name -> proxymonster.v1.RunDone
-	39, // 22: proxymonster.v1.ProxyRunMsg.error:type_name -> proxymonster.v1.RunError
-	29, // 23: proxymonster.v1.ProxyRunMsg.progress:type_name -> proxymonster.v1.RunProgress
-	30, // 24: proxymonster.v1.ProxyRunMsg.serving:type_name -> proxymonster.v1.RunServing
-	31, // 25: proxymonster.v1.ControlRunMsg.query:type_name -> proxymonster.v1.RunQuery
-	32, // 26: proxymonster.v1.ControlRunMsg.close:type_name -> proxymonster.v1.RunClose
-	33, // 27: proxymonster.v1.ControlRunMsg.cancel:type_name -> proxymonster.v1.RunCancel
-	0,  // 28: proxymonster.v1.RunDecision.decision:type_name -> proxymonster.v1.EnfAction
-	49, // 29: proxymonster.v1.RunDecision.result_fingerprint:type_name -> proxymonster.analyzer.v1.RequireResultReadGrant
-	36, // 30: proxymonster.v1.RunResultRows.rows:type_name -> proxymonster.v1.RunRow
-	37, // 31: proxymonster.v1.RunRow.values:type_name -> proxymonster.v1.RunValue
-	42, // 32: proxymonster.v1.ProxyTableDetailMsg.session_ready:type_name -> proxymonster.v1.TableDetailReady
-	43, // 33: proxymonster.v1.ProxyTableDetailMsg.result:type_name -> proxymonster.v1.TableDetailResult
-	44, // 34: proxymonster.v1.ProxyTableDetailMsg.error:type_name -> proxymonster.v1.TableDetailError
-	45, // 35: proxymonster.v1.ControlTableDetailMsg.close:type_name -> proxymonster.v1.TableDetailClose
-	4,  // 36: proxymonster.v1.ControlPlane.Register:input_type -> proxymonster.v1.RegisterRequest
-	6,  // 37: proxymonster.v1.ControlPlane.PushCatalog:input_type -> proxymonster.v1.CatalogRequest
-	8,  // 38: proxymonster.v1.ControlPlane.ValidateToken:input_type -> proxymonster.v1.ValidateTokenRequest
-	14, // 39: proxymonster.v1.ControlPlane.Decide:input_type -> proxymonster.v1.DecisionRequest
-	10, // 40: proxymonster.v1.ControlPlane.PushSchemaFragment:input_type -> proxymonster.v1.SchemaFragmentPush
-	12, // 41: proxymonster.v1.ControlPlane.CloseConnection:input_type -> proxymonster.v1.CloseConnectionRequest
-	20, // 42: proxymonster.v1.ControlPlane.Events:input_type -> proxymonster.v1.EventsRequest
-	26, // 43: proxymonster.v1.ControlPlane.RunExec:input_type -> proxymonster.v1.ProxyRunMsg
-	40, // 44: proxymonster.v1.ControlPlane.TableDetailExec:input_type -> proxymonster.v1.ProxyTableDetailMsg
-	3,  // 45: proxymonster.v1.ControlPlane.ReportCompletion:input_type -> proxymonster.v1.CompletionReport
-	5,  // 46: proxymonster.v1.ControlPlane.Register:output_type -> proxymonster.v1.RegisterResponse
-	7,  // 47: proxymonster.v1.ControlPlane.PushCatalog:output_type -> proxymonster.v1.CatalogResponse
-	9,  // 48: proxymonster.v1.ControlPlane.ValidateToken:output_type -> proxymonster.v1.WireIdentity
-	17, // 49: proxymonster.v1.ControlPlane.Decide:output_type -> proxymonster.v1.WireDecision
-	11, // 50: proxymonster.v1.ControlPlane.PushSchemaFragment:output_type -> proxymonster.v1.SchemaFragmentAck
-	13, // 51: proxymonster.v1.ControlPlane.CloseConnection:output_type -> proxymonster.v1.CloseConnectionResponse
-	21, // 52: proxymonster.v1.ControlPlane.Events:output_type -> proxymonster.v1.ControlEvent
-	27, // 53: proxymonster.v1.ControlPlane.RunExec:output_type -> proxymonster.v1.ControlRunMsg
-	41, // 54: proxymonster.v1.ControlPlane.TableDetailExec:output_type -> proxymonster.v1.ControlTableDetailMsg
-	50, // 55: proxymonster.v1.ControlPlane.ReportCompletion:output_type -> google.protobuf.Empty
-	46, // [46:56] is the sub-list for method output_type
-	36, // [36:46] is the sub-list for method input_type
-	36, // [36:36] is the sub-list for extension type_name
-	36, // [36:36] is the sub-list for extension extendee
-	0,  // [0:36] is the sub-list for field type_name
+	49, // 6: proxymonster.v1.DecisionRequest.session:type_name -> proxymonster.analyzer.v1.SessionObservation
+	18, // 7: proxymonster.v1.WireDecision.verdict:type_name -> proxymonster.v1.Verdict
+	19, // 8: proxymonster.v1.WireDecision.before_decide:type_name -> proxymonster.v1.BeforeDecide
+	0,  // 9: proxymonster.v1.Verdict.decision:type_name -> proxymonster.v1.EnfAction
+	16, // 10: proxymonster.v1.Verdict.masks:type_name -> proxymonster.v1.ColumnMask
+	1,  // 11: proxymonster.v1.Verdict.after_statement:type_name -> proxymonster.v1.ProxyCommand
+	50, // 12: proxymonster.v1.Verdict.result_fingerprint:type_name -> proxymonster.analyzer.v1.RequireResultReadGrant
+	1,  // 13: proxymonster.v1.BeforeDecide.commands:type_name -> proxymonster.v1.ProxyCommand
+	22, // 14: proxymonster.v1.ControlEvent.refresh_catalog:type_name -> proxymonster.v1.RefreshCatalog
+	24, // 15: proxymonster.v1.ControlEvent.open_run_channel:type_name -> proxymonster.v1.OpenRunChannel
+	25, // 16: proxymonster.v1.ControlEvent.open_table_detail_channel:type_name -> proxymonster.v1.OpenTableDetailChannel
+	23, // 17: proxymonster.v1.ControlEvent.draining:type_name -> proxymonster.v1.Draining
+	1,  // 18: proxymonster.v1.OpenRunChannel.on_open:type_name -> proxymonster.v1.ProxyCommand
+	28, // 19: proxymonster.v1.ProxyRunMsg.session_ready:type_name -> proxymonster.v1.RunReady
+	34, // 20: proxymonster.v1.ProxyRunMsg.decision:type_name -> proxymonster.v1.RunDecision
+	35, // 21: proxymonster.v1.ProxyRunMsg.result_rows:type_name -> proxymonster.v1.RunResultRows
+	38, // 22: proxymonster.v1.ProxyRunMsg.done:type_name -> proxymonster.v1.RunDone
+	39, // 23: proxymonster.v1.ProxyRunMsg.error:type_name -> proxymonster.v1.RunError
+	29, // 24: proxymonster.v1.ProxyRunMsg.progress:type_name -> proxymonster.v1.RunProgress
+	30, // 25: proxymonster.v1.ProxyRunMsg.serving:type_name -> proxymonster.v1.RunServing
+	31, // 26: proxymonster.v1.ControlRunMsg.query:type_name -> proxymonster.v1.RunQuery
+	32, // 27: proxymonster.v1.ControlRunMsg.close:type_name -> proxymonster.v1.RunClose
+	33, // 28: proxymonster.v1.ControlRunMsg.cancel:type_name -> proxymonster.v1.RunCancel
+	0,  // 29: proxymonster.v1.RunDecision.decision:type_name -> proxymonster.v1.EnfAction
+	50, // 30: proxymonster.v1.RunDecision.result_fingerprint:type_name -> proxymonster.analyzer.v1.RequireResultReadGrant
+	36, // 31: proxymonster.v1.RunResultRows.rows:type_name -> proxymonster.v1.RunRow
+	37, // 32: proxymonster.v1.RunRow.values:type_name -> proxymonster.v1.RunValue
+	42, // 33: proxymonster.v1.ProxyTableDetailMsg.session_ready:type_name -> proxymonster.v1.TableDetailReady
+	43, // 34: proxymonster.v1.ProxyTableDetailMsg.result:type_name -> proxymonster.v1.TableDetailResult
+	44, // 35: proxymonster.v1.ProxyTableDetailMsg.error:type_name -> proxymonster.v1.TableDetailError
+	45, // 36: proxymonster.v1.ControlTableDetailMsg.close:type_name -> proxymonster.v1.TableDetailClose
+	4,  // 37: proxymonster.v1.ControlPlane.Register:input_type -> proxymonster.v1.RegisterRequest
+	6,  // 38: proxymonster.v1.ControlPlane.PushCatalog:input_type -> proxymonster.v1.CatalogRequest
+	8,  // 39: proxymonster.v1.ControlPlane.ValidateToken:input_type -> proxymonster.v1.ValidateTokenRequest
+	14, // 40: proxymonster.v1.ControlPlane.Decide:input_type -> proxymonster.v1.DecisionRequest
+	10, // 41: proxymonster.v1.ControlPlane.PushSchemaFragment:input_type -> proxymonster.v1.SchemaFragmentPush
+	12, // 42: proxymonster.v1.ControlPlane.CloseConnection:input_type -> proxymonster.v1.CloseConnectionRequest
+	20, // 43: proxymonster.v1.ControlPlane.Events:input_type -> proxymonster.v1.EventsRequest
+	26, // 44: proxymonster.v1.ControlPlane.RunExec:input_type -> proxymonster.v1.ProxyRunMsg
+	40, // 45: proxymonster.v1.ControlPlane.TableDetailExec:input_type -> proxymonster.v1.ProxyTableDetailMsg
+	3,  // 46: proxymonster.v1.ControlPlane.ReportCompletion:input_type -> proxymonster.v1.CompletionReport
+	5,  // 47: proxymonster.v1.ControlPlane.Register:output_type -> proxymonster.v1.RegisterResponse
+	7,  // 48: proxymonster.v1.ControlPlane.PushCatalog:output_type -> proxymonster.v1.CatalogResponse
+	9,  // 49: proxymonster.v1.ControlPlane.ValidateToken:output_type -> proxymonster.v1.WireIdentity
+	17, // 50: proxymonster.v1.ControlPlane.Decide:output_type -> proxymonster.v1.WireDecision
+	11, // 51: proxymonster.v1.ControlPlane.PushSchemaFragment:output_type -> proxymonster.v1.SchemaFragmentAck
+	13, // 52: proxymonster.v1.ControlPlane.CloseConnection:output_type -> proxymonster.v1.CloseConnectionResponse
+	21, // 53: proxymonster.v1.ControlPlane.Events:output_type -> proxymonster.v1.ControlEvent
+	27, // 54: proxymonster.v1.ControlPlane.RunExec:output_type -> proxymonster.v1.ControlRunMsg
+	41, // 55: proxymonster.v1.ControlPlane.TableDetailExec:output_type -> proxymonster.v1.ControlTableDetailMsg
+	51, // 56: proxymonster.v1.ControlPlane.ReportCompletion:output_type -> google.protobuf.Empty
+	47, // [47:57] is the sub-list for method output_type
+	37, // [37:47] is the sub-list for method input_type
+	37, // [37:37] is the sub-list for extension type_name
+	37, // [37:37] is the sub-list for extension extendee
+	0,  // [0:37] is the sub-list for field type_name
 }
 
 func init() { file_controlplane_proto_init() }
@@ -3738,7 +3701,6 @@ func file_controlplane_proto_init() {
 	}
 	file_controlplane_proto_msgTypes[3].OneofWrappers = []any{}
 	file_controlplane_proto_msgTypes[5].OneofWrappers = []any{}
-	file_controlplane_proto_msgTypes[13].OneofWrappers = []any{}
 	file_controlplane_proto_msgTypes[15].OneofWrappers = []any{}
 	file_controlplane_proto_msgTypes[16].OneofWrappers = []any{
 		(*WireDecision_Verdict)(nil),

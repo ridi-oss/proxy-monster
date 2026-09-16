@@ -191,27 +191,6 @@ class ApprovalResultAssumeMysqlDbTest {
     }
 
     @Test
-    fun `the view releases the longest prefix within the viewer's own caps`() {
-        val fingerprint = fingerprintOf(decide(Channel.WORKFLOW_EXECUTOR, "100.100.1.10").resultFingerprint)
-        val rows = List(6) { listOf("x".repeat(10)) }
-        val stored = DecryptedResult(listOf("ssn"), rows, resultFingerprint = fingerprint)
-        val ctx = viewerCtx(request().sql, "100.100.1.10")
-
-        val byRows = assertIs<ResultViewDecision.Allowed>(decideResultView(ctx.copy(maxRows = 4, maxBytes = 1_000), stored))
-        assertEquals(4, byRows.rows.size)
-        assertEquals(4, byRows.truncatedAt)
-
-        // 25 bytes admit two 10-byte rows; the tighter of the two dimensions wins.
-        val byBytes = assertIs<ResultViewDecision.Allowed>(decideResultView(ctx.copy(maxRows = 100, maxBytes = 25), stored))
-        assertEquals(2, byBytes.rows.size)
-        assertEquals(2, byBytes.truncatedAt)
-
-        val whole = assertIs<ResultViewDecision.Allowed>(decideResultView(ctx.copy(maxRows = null, maxBytes = null), stored))
-        assertEquals(6, whole.rows.size)
-        assertEquals(null, whole.truncatedAt)
-    }
-
-    @Test
     fun `a passthrough that re-decides DENY via Cedar is refused, not released`() {
         // A passthrough is released only when the live re-decision authorizes it. Under a development-only
         // role with no datasource.connect on this system:production datasource, SHOW CREATE TABLE re-decides

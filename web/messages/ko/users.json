@@ -57,20 +57,5 @@
     "addFailed": "그룹을 추가하지 못했습니다.",
     "toastRemoved": "{group}에서 {principal}을(를) 제거했습니다.",
     "removeFailed": "그룹을 제거하지 못했습니다."
-  },
-  "rateReset": {
-    "menu": "결과 한도 초기화",
-    "title": "결과 한도 초기화",
-    "description": "{principal}의 사용한 결과 전송량 한도를 초기화합니다. 지금 이전의 전송량은 모든 기간 한도에서 제외되며, 문장별 상한은 그대로입니다. 사유가 기록됩니다.",
-    "lastLoading": "마지막 초기화를 불러오는 중…",
-    "lastNone": "초기화 기록이 없습니다.",
-    "last": "마지막 초기화: {at} ({by})",
-    "reasonLabel": "사유 (필수)",
-    "reasonPlaceholder": "오탐 이후 정당한 내보내기 재실행.",
-    "cancel": "취소",
-    "submit": "초기화",
-    "submitting": "초기화 중…",
-    "toast": "{principal}의 결과 한도를 초기화했습니다.",
-    "failed": "초기화에 실패했습니다."
   }
 }

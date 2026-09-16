@@ -36,17 +36,13 @@ var (
 )
 
 type resultHooks struct {
-	// Cap, when non-nil, bounds how much of this result may reach the client; OnCapExceeded fires once when
-	// the bound is first crossed, so the relay can cancel the statement on the target.
-	Cap           *engine.Decision
-	OnCapExceeded func()
-	Sink          func(seq byte, payload []byte) error
-	OnColumns     func(int) error
-	OnColumnDef   func([]byte) error
-	OnRow         func([]byte) ([]byte, error)
-	OnOK          func(uint64)
-	OnSchema      func(string)
-	OnSysVars     func([]sysVarChange) error
+	Sink        func(seq byte, payload []byte) error
+	OnColumns   func(int) error
+	OnColumnDef func([]byte) error
+	OnRow       func([]byte) ([]byte, error)
+	OnOK        func(uint64)
+	OnSchema    func(string)
+	OnSysVars   func([]sysVarChange) error
 	// RedactErr, when non-nil, rewrites a standalone target-DB ERR packet before it reaches the sink — the one
 	// client-facing ERR site for both the wire relay and the run collector, so redaction here covers both.
 	RedactErr func([]byte) []byte
@@ -57,35 +53,11 @@ type resultHooks struct {
 }
 
 // relayResultSet consumes one complete COM_QUERY text result for both wire relay and in-memory collection.
-// [capped] is the cap terminator the client must receive INSTEAD of the result's own OK/EOF: the target
-// stream is always drained to its terminator either way, so the connection stays reusable. It is distinct
-// from [err], which is a malformed stream or a transport fault and does not leave the session usable.
-func relayResultSet(targetDb io.Reader, deprecateEOF bool, h resultHooks) (clean bool, capErr, err error) {
-	var capped error
-	stats := h.Stats
-	if stats == nil {
-		stats = &engine.RelayStats{}
-	}
-	// Reports whether one more row of rowBytes crosses the cap, latching the terminator and cancelling the
-	// target statement the first time it does.
-	capCrossed := func(rowBytes int64) bool {
-		if capped != nil {
-			return true
-		}
-		message := h.Cap.CapExceeded(*stats, rowBytes)
-		if message == "" {
-			return false
-		}
-		capped = errors.New(message)
-		if h.OnCapExceeded != nil {
-			h.OnCapExceeded()
-		}
-		return true
-	}
+func relayResultSet(targetDb io.Reader, deprecateEOF bool, h resultHooks) (bool, error) {
 	phase, columnCount, columnsSeen := resultFirst, 0, 0
 	fragmenting, fragmentPhase := false, resultFirst
 	sink := func(seq byte, payload []byte) error {
-		if capped == nil && h.Sink != nil {
+		if h.Sink != nil {
 			return h.Sink(seq, payload)
 		}
 		return nil
@@ -104,17 +76,17 @@ func relayResultSet(targetDb io.Reader, deprecateEOF bool, h resultHooks) (clean
 	for {
 		seq, payload, err := mysqlwire.ReadPacket(targetDb)
 		if err != nil {
-			return false, capped, err
+			return false, err
 		}
 		if fragmenting {
 			// Continuations are opaque bytes belonging to the prior logical column definition or row.
 			// A row's continuation fragments carry row data, so their bytes join the volume tally (the
 			// logical row itself was already counted when its first fragment entered the resultRows phase).
-			if capped == nil && fragmentPhase == resultRows {
-				stats.Bytes += int64(len(payload))
+			if h.Stats != nil && fragmentPhase == resultRows {
+				h.Stats.Bytes += int64(len(payload))
 			}
 			if err := sink(seq, payload); err != nil {
-				return false, capped, err
+				return false, err
 			}
 			if len(payload) < maxPacketPayload {
 				fragmenting = false
@@ -126,7 +98,7 @@ func relayResultSet(targetDb io.Reader, deprecateEOF bool, h resultHooks) (clean
 		}
 		if len(payload) == 0 {
 			if err := sink(seq, payload); err != nil {
-				return false, capped, err
+				return false, err
 			}
 			continue
 		}
@@ -139,9 +111,9 @@ func relayResultSet(targetDb io.Reader, deprecateEOF bool, h resultHooks) (clean
 				payload = h.RedactErr(payload)
 			}
 			if err := sink(seq, payload); err != nil {
-				return false, capped, err
+				return false, err
 			}
-			return false, capped, nil
+			return false, nil
 		}
 
 		switch phase {
@@ -149,53 +121,53 @@ func relayResultSet(targetDb io.Reader, deprecateEOF bool, h resultHooks) (clean
 			if payload[0] == 0x00 {
 				clean, affected, schema, sysVars, err := normalizeTargetDbOK(payload)
 				if err != nil {
-					return false, capped, &resultSetError{seq, fmt.Errorf("parse result OK: %w", err)}
+					return false, &resultSetError{seq, fmt.Errorf("parse result OK: %w", err)}
 				}
 				if schema != nil && h.OnSchema != nil {
 					h.OnSchema(*schema)
 				}
 				if len(sysVars) > 0 && h.OnSysVars != nil {
 					if err := h.OnSysVars(sysVars); err != nil {
-						return false, capped, &resultSetError{seq, err}
+						return false, &resultSetError{seq, err}
 					}
 				}
 				if h.OnOK != nil {
 					h.OnOK(affected)
 				}
 				if err := sink(seq, clean); err != nil {
-					return false, capped, err
+					return false, err
 				}
-				return true, capped, nil
+				return true, nil
 			}
 			count, err := mysqlwire.NewReader(payload).Lenenc()
 			if err != nil {
-				return false, capped, &resultSetError{seq, fmt.Errorf("parse result column count: %w", err)}
+				return false, &resultSetError{seq, fmt.Errorf("parse result column count: %w", err)}
 			}
 			if count == 0 || count > uint64(^uint(0)>>1) {
-				return false, capped, &resultSetError{seq, fmt.Errorf("invalid result column count %d", count)}
+				return false, &resultSetError{seq, fmt.Errorf("invalid result column count %d", count)}
 			}
 			columnCount = int(count)
 			if h.OnColumns != nil {
 				if err := h.OnColumns(columnCount); err != nil {
-					return false, capped, &resultSetError{seq, err}
+					return false, &resultSetError{seq, err}
 				}
 			}
 			if err := sink(seq, payload); err != nil {
-				return false, capped, err
+				return false, err
 			}
 			phase = resultColumnDefs
 
 		case resultColumnDefs:
 			if h.OnColumnDef != nil {
 				if len(payload) == maxPacketPayload {
-					return false, capped, &resultSetError{seq, errors.New("fragmented MySQL column definitions are not supported")}
+					return false, &resultSetError{seq, errors.New("fragmented MySQL column definitions are not supported")}
 				}
 				if err := h.OnColumnDef(payload); err != nil {
-					return false, capped, &resultSetError{seq, err}
+					return false, &resultSetError{seq, err}
 				}
 			}
 			if err := sink(seq, payload); err != nil {
-				return false, capped, err
+				return false, err
 			}
 			if len(payload) == maxPacketPayload {
 				fragmenting, fragmentPhase = true, resultColumnDefs
@@ -205,10 +177,10 @@ func relayResultSet(targetDb io.Reader, deprecateEOF bool, h resultHooks) (clean
 
 		case resultAwaitEOF:
 			if !mysqlwire.IsResultTerminator(payload) {
-				return false, capped, &resultSetError{seq, errors.New("missing EOF after column definitions")}
+				return false, &resultSetError{seq, errors.New("missing EOF after column definitions")}
 			}
 			if err := sink(seq, payload); err != nil {
-				return false, capped, err
+				return false, err
 			}
 			phase = resultRows
 
@@ -216,75 +188,46 @@ func relayResultSet(targetDb io.Reader, deprecateEOF bool, h resultHooks) (clean
 			if deprecateEOF && payload[0] == 0xfe && len(payload) < maxPacketPayload {
 				clean, _, schema, sysVars, err := normalizeTargetDbOK(payload)
 				if err != nil {
-					return false, capped, &resultSetError{seq, fmt.Errorf("parse result terminator: %w", err)}
+					return false, &resultSetError{seq, fmt.Errorf("parse result terminator: %w", err)}
 				}
 				if schema != nil && h.OnSchema != nil {
 					h.OnSchema(*schema)
 				}
 				if len(sysVars) > 0 && h.OnSysVars != nil {
 					if err := h.OnSysVars(sysVars); err != nil {
-						return false, capped, &resultSetError{seq, err}
+						return false, &resultSetError{seq, err}
 					}
 				}
 				if err := sink(seq, clean); err != nil {
-					return false, capped, err
+					return false, err
 				}
-				return true, capped, nil
+				return true, nil
 			}
 			if !deprecateEOF && mysqlwire.IsResultTerminator(payload) {
 				if err := sink(seq, payload); err != nil {
-					return false, capped, err
+					return false, err
 				}
-				return true, capped, nil
+				return true, nil
 			}
-			if capCrossed(int64(len(payload))) {
-				fragmenting, fragmentPhase = len(payload) == maxPacketPayload, resultRows
-				continue
+			// A non-terminator packet in the rows phase starts one logical data row (its continuation
+			// fragments, if any, are counted in the fragmenting block above). Tally it before masking so the
+			// volume reflects the target-DB row, not the rewritten one.
+			if h.Stats != nil {
+				h.Stats.Rows++
+				h.Stats.Bytes += int64(len(payload))
 			}
-			// A byte cap must admit the WHOLE logical row before its first fragment reaches the client:
-			// forwarding fragments as they arrive would ship most of an over-cap row and then cut it off
-			// mid-value. Read the continuations first, then either sink them all or drop the row.
-			if h.Cap != nil && h.Cap.MaxBytes > 0 && len(payload) == maxPacketPayload && h.OnRow == nil {
-				parts := [][]byte{payload}
-				firstSeq, size := seq, int64(len(payload))
-				for len(payload) == maxPacketPayload {
-					_, payload, err = mysqlwire.ReadPacket(targetDb)
-					if err != nil {
-						return false, capped, err
-					}
-					if capped == nil && capCrossed(size+int64(len(payload))) {
-						parts = nil
-					} else if capped == nil {
-						size += int64(len(payload))
-						parts = append(parts, payload)
-					}
-				}
-				if capped == nil {
-					for i, part := range parts {
-						if err := sink(firstSeq+byte(i), part); err != nil {
-							return false, capped, err
-						}
-					}
-					stats.Rows++
-					stats.Bytes += size
-				}
-				continue
-			}
-			rowBytes := int64(len(payload))
 			if h.OnRow != nil {
 				if len(payload) == maxPacketPayload {
-					return false, capped, &resultSetError{seq, errRowTooLong}
+					return false, &resultSetError{seq, errRowTooLong}
 				}
 				payload, err = h.OnRow(payload)
 				if err != nil {
-					return false, capped, &resultSetError{seq, err}
+					return false, &resultSetError{seq, err}
 				}
 			}
 			if err := sink(seq, payload); err != nil {
-				return false, capped, err
+				return false, err
 			}
-			stats.Rows++
-			stats.Bytes += rowBytes
 			if len(payload) == maxPacketPayload {
 				fragmenting, fragmentPhase = true, resultRows
 			}
@@ -314,8 +257,6 @@ func relayQueryResponseTracked(
 	deprecateEOF bool,
 	masks []*pb.ColumnMask,
 	redactErr func([]byte) []byte,
-	dec *engine.Decision,
-	cancel func(),
 ) (bool, engine.RelayStats, error) {
 	columnCount := 0
 	var masker *engine.RowMasker
@@ -337,17 +278,8 @@ func relayQueryResponseTracked(
 		}
 	}
 
-	var lastSeq byte
-	ok, capped, err := relayResultSet(targetDb, deprecateEOF, resultHooks{
-		Cap:           dec,
-		OnCapExceeded: cancel,
-		Sink: func(seq byte, payload []byte) error {
-			if err := mysqlwire.WritePacket(client, seq, payload); err != nil {
-				return err
-			}
-			lastSeq = seq
-			return nil
-		},
+	ok, err := relayResultSet(targetDb, deprecateEOF, resultHooks{
+		Sink:      func(seq byte, payload []byte) error { return mysqlwire.WritePacket(client, seq, payload) },
 		OnColumns: onFirst,
 		OnRow:     rewrite,
 		// The namespace is re-probed before every statement (probe-always), so SESSION_TRACK_SCHEMA is ignored.
@@ -356,9 +288,6 @@ func relayQueryResponseTracked(
 		Stats:     &stats,
 	})
 	if err == nil {
-		if capped != nil {
-			return false, stats, mysqlwire.WritePacket(client, lastSeq+1, mysqlwire.ErrPacketState(1317, "70100", capped.Error()))
-		}
 		return ok, stats, nil
 	}
 

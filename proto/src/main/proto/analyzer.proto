@@ -516,14 +516,5 @@ message StatementFacts {
   // The columns this statement's target-DB diagnostic could echo: the referenced columns, plus a
   // PostgreSQL write's whole target row (`DETAIL: Failing row contains (…)`). Empty = nothing to redact.
   repeated ColumnResource diagnostic_leak_columns = 19;
-  // Base columns whose VALUE reaches the client through the result set, with the output ordinals each one
-  // feeds. A read-only position (a predicate, join key, ORDER BY, GROUP BY) does not return the column; a
-  // write's payload does not either, only its RETURNING does (with no ordinals, since output_columns is
-  // empty for a write); an EXPLAIN returns a plan, so it lists none.
-  repeated ReturnedColumn returned_columns = 20;
-}
 
-message ReturnedColumn {
-  ColumnResource column = 1;
-  repeated int32 output_ordinals = 2;
 }

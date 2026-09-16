@@ -51,8 +51,6 @@ func TestDecisionFromWire(t *testing.T) {
 		commands, got := decisionFromWire(wireVerdict(&pb.Verdict{
 			Decision:            pb.EnfAction_MASK,
 			DecisionId:          42,
-			MaxRows:             500,
-			MaxBytes:            5_000_000,
 			DenyReason:          "reason",
 			EffectiveRoles:      []string{"analyst"},
 			RewrittenSql:        proto.String("SELECT c FROM t"),
@@ -68,8 +66,6 @@ func TestDecisionFromWire(t *testing.T) {
 		want := &engine.Decision{
 			Action:              "MASK",
 			DecisionID:          42,
-			MaxRows:             500,
-			MaxBytes:            5_000_000,
 			DenyReason:          "reason",
 			Masks:               []*pb.ColumnMask{{Column: "c", MaskFn: "mask", Kind: "FIXED", Ordinal: proto.Int32(2)}},
 			EffectiveRoles:      []string{"analyst"},
@@ -1189,20 +1185,4 @@ func (f *deadlineControlPlane) openCount() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.opens
-}
-
-func TestDecisionFromWireCarriesCapsAndDeniesNegative(t *testing.T) {
-	_, got := decisionFromWire(wireVerdict(&pb.Verdict{Decision: pb.EnfAction_ALLOW}))
-	if got.MaxRows != 0 || got.MaxBytes != 0 {
-		t.Fatalf("uncapped verdict = %d/%d, want 0/0", got.MaxRows, got.MaxBytes)
-	}
-	_, got = decisionFromWire(wireVerdict(&pb.Verdict{Decision: pb.EnfAction_ALLOW, MaxRows: 500, MaxBytes: 5_000_000}))
-	if got.MaxRows != 500 || got.MaxBytes != 5_000_000 {
-		t.Fatalf("caps = %d/%d, want 500/5000000", got.MaxRows, got.MaxBytes)
-	}
-	for _, bad := range []*pb.Verdict{{Decision: pb.EnfAction_ALLOW, MaxRows: -1}, {Decision: pb.EnfAction_ALLOW, MaxBytes: -1}} {
-		if _, got := decisionFromWire(wireVerdict(bad)); got.Action != "DENY" {
-			t.Fatalf("negative cap %+v = %s, want DENY", bad, got.Action)
-		}
-	}
 }

@@ -38,9 +38,6 @@ type boundPortal struct {
 	probe  engine.NamespaceProbe
 	temps  []engine.TempColumn
 	binary bool
-	// Volume already relayed from this portal. A suspended portal resumes on a further Execute, so the cap
-	// is measured against the portal's whole output rather than restarting with each page.
-	relayed engine.RelayStats
 }
 
 func renderExtendedVerdict(sess *session, verdict engine.Verdict) (engine.Proceed, bool, error) {
@@ -399,14 +396,11 @@ func (s *Server) handleExecute(sess *session, message *pgproto3.Execute) error {
 		return err
 	}
 	var relayStats engine.RelayStats
-	terminal, err := s.relayExecuteStream(sess, masks, &relayStats, portal.relayed, proceed.Decision)
-	// A re-Bind of the same name replaces this entry, which is what resets the tally for a new portal.
-	portal.relayed = portal.relayed.Plus(relayStats)
-	sess.portals[message.Portal] = portal
+	terminal, err := s.relayExecuteStream(sess, masks, &relayStats)
 	// Post-relay, best-effort completion for this extended-protocol Execute (no-op if unaudited). A
 	// CommandComplete / EmptyQueryResponse / PortalSuspended is a clean finish; an ErrorResponse or a
 	// transport fault is an error carrying the partial counts relayed before it.
-	sess.qe.AwaitCompletion(engine.EmitCompletion(s.client, proceed.Decision, relayStats, engine.RelayStatus(isCleanExecuteTerminal(terminal), err), start))
+	engine.EmitCompletion(s.client, proceed.Decision, relayStats, engine.RelayStatus(isCleanExecuteTerminal(terminal), err), start)
 	if err != nil {
 		return err
 	}
@@ -418,11 +412,8 @@ func (s *Server) handleExecute(sess *session, message *pgproto3.Execute) error {
 	return nil
 }
 
-// carried is the volume earlier Executes already drew from this portal; stats stays this Execute's own
-// tally so each page audits its own completion.
-func (s *Server) relayExecuteStream(sess *session, masks []*pb.ColumnMask, stats *engine.RelayStats, carried engine.RelayStats, dec *engine.Decision) (pgproto3.BackendMessage, error) {
+func (s *Server) relayExecuteStream(sess *session, masks []*pb.ColumnMask, stats *engine.RelayStats) (pgproto3.BackendMessage, error) {
 	var masker *engine.RowMasker
-	var capped *pgproto3.ErrorResponse
 	bufferedFrames := 0
 	for {
 		message, err := sess.targetDb.Receive()
@@ -431,14 +422,6 @@ func (s *Server) relayExecuteStream(sess *session, masks []*pb.ColumnMask, stats
 		}
 		switch message := message.(type) {
 		case *pgproto3.DataRow:
-			if capped != nil {
-				continue
-			}
-			capped = resultCapError(dec, carried.Plus(*stats), dataRowBytes(message))
-			if capped != nil {
-				s.cancelCappedQuery(sess)
-				continue
-			}
 			if len(masks) > 0 && masker == nil {
 				masker = engine.NewRowMasker(masks, len(message.Values))
 				if masker == nil {
@@ -465,19 +448,9 @@ func (s *Server) relayExecuteStream(sess *session, masks []*pb.ColumnMask, stats
 		case *pgproto3.CopyInResponse, *pgproto3.CopyOutResponse, *pgproto3.CopyBothResponse:
 			return nil, failClosedRelay(sess, "0A000", "proxy-monster: COPY is not supported", errCopyStream)
 		case *pgproto3.CommandComplete, *pgproto3.EmptyQueryResponse, *pgproto3.PortalSuspended:
-			if capped != nil {
-				sess.client.Send(capped)
-				sess.skipToSync = true
-				return capped, sess.client.Flush()
-			}
 			sess.client.Send(message)
 			return message, sess.client.Flush()
 		case *pgproto3.ErrorResponse:
-			if capped != nil {
-				sess.client.Send(capped)
-				sess.skipToSync = true
-				return capped, sess.client.Flush()
-			}
 			forwardError(sess, message)
 			sess.skipToSync = true
 			return message, sess.client.Flush()

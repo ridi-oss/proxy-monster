@@ -30,11 +30,9 @@ class QueryResultOrdinalMigrationDbTest {
         // shape every pre-batch writer produced) and one with two (schema-valid, and what a constant-0
         // backfill would choke on).
         Flyway.configure().dataSource(ds).target(MigrationVersion.fromVersion("24")).load().migrate()
-        val datasourceId = ds.connection.use { c ->
-            c.prepareStatement("INSERT INTO datasource (name, engine, host, port, db_name) VALUES ('ds', 'postgres', 'h', 5432, 'd') RETURNING id").use { ps ->
-                ps.executeQuery().use { rs -> rs.next(); rs.getLong(1) }
-            }
-        }
+        val datasourceId = DatasourceStore(ds).create(
+            DatasourceInput(name = "ds", engine = "postgres", host = "h", port = 5432, dbName = "d"),
+        ).id
         val (single, plural) = ds.connection.use { c ->
             fun task(): Long = c.prepareStatement(
                 """INSERT INTO access_request (principal, kind, datasource_id, requested_duration_sec, creator_kind)
@@ -82,11 +80,9 @@ class QueryResultOrdinalMigrationDbTest {
     fun `V25 applies to a task left holding two running children`() {
         val ds = SharedPostgres.hikari(SharedPostgres.freshDatabase("pm_v25_running"))
         Flyway.configure().dataSource(ds).target(MigrationVersion.fromVersion("24")).load().migrate()
-        val datasourceId = ds.connection.use { c ->
-            c.prepareStatement("INSERT INTO datasource (name, engine, host, port, db_name) VALUES ('ds', 'postgres', 'h', 5432, 'd') RETURNING id").use { ps ->
-                ps.executeQuery().use { rs -> rs.next(); rs.getLong(1) }
-            }
-        }
+        val datasourceId = DatasourceStore(ds).create(
+            DatasourceInput(name = "ds", engine = "postgres", host = "h", port = 5432, dbName = "d"),
+        ).id
         val taskId = ds.connection.use { c ->
             val id = c.prepareStatement(
                 """INSERT INTO access_request (principal, kind, datasource_id, requested_duration_sec, creator_kind)

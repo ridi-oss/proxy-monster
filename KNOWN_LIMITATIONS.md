@@ -202,19 +202,6 @@ connection so `SET`/`USE`/temp/`BEGIN` persist across queries.
   opening many sessions can exhaust the target's `max_connections`. A
   per-principal cap is a follow-up.
 
-## Result caps and rates
-
-See [`docs/result-caps.md`](./docs/result-caps.md).
-
-- 🟢 A run-channel result (the editor and the approval workflow) is bounded by
-  the channel's own 5,000-row ceiling even under an uncapped verdict. Reading a
-  larger result unbounded goes over the wire.
-- 🟡 Parallel connections can overshoot a rate by up to one statement cap each.
-  A rate is summed from completion rows, which land after a statement finishes,
-  so connections that all pass `Decide` before any of them completes see the
-  same stale total. Charging the statement cap at `Decide` and settling it on
-  completion would close this.
-
 ---
 
 _Add an entry here whenever a fix ships with an accepted caveat or a deferred

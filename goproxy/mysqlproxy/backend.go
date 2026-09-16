@@ -16,7 +16,6 @@ import (
 	"github.com/ridi-oss/proxy-monster/goproxy/engine"
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
 	"github.com/ridi-oss/proxy-monster/goproxy/spi"
-	"github.com/ridi-oss/proxy-monster/goproxy/wire"
 	"github.com/ridi-oss/proxy-monster/mysqlwire"
 )
 
@@ -348,13 +347,12 @@ func interpretSessionProbeRow(values []*string) (namespace []string, ansiQuotes 
 
 // textResultCollector decodes one COM_QUERY text result for probes and run execution.
 type textResultCollector struct {
-	expected, columns        int
-	budget                   engine.RowBudget
-	masks                    []*pb.ColumnMask
-	columnDefs               []mysqlwire.ColumnDefinition
-	result                   *engine.StatementResult
-	masker                   *engine.RowMasker
-	targetDbErr, affectedErr error
+	expected, maxRows, columns int
+	masks                      []*pb.ColumnMask
+	columnDefs                 []mysqlwire.ColumnDefinition
+	result                     *engine.StatementResult
+	masker                     *engine.RowMasker
+	targetDbErr, affectedErr   error
 }
 
 func (c *textResultCollector) hooks() resultHooks {
@@ -412,7 +410,7 @@ func (c *textResultCollector) onRow(payload []byte) ([]byte, error) {
 	if c.masker != nil {
 		values = c.masker.Apply(values)
 	}
-	if c.result != nil && c.budget.Admit(len(c.result.Rows), int64(len(payload))) {
+	if c.result != nil && (c.maxRows <= 0 || len(c.result.Rows) < c.maxRows) {
 		c.result.Rows = append(c.result.Rows, c.displayValues(values))
 	}
 	return payload, nil
@@ -492,7 +490,7 @@ func runInternalQuery(targetDb net.Conn, deprecateEOF bool, sql string, expected
 	}
 	result := engine.StatementResult{Rows: make([][]*string, 0)}
 	collect := textResultCollector{expected: expectedColumns, result: &result}
-	_, _, err := relayResultSet(targetDb, deprecateEOF, collect.hooks())
+	_, err := relayResultSet(targetDb, deprecateEOF, collect.hooks())
 	if err != nil {
 		return nil, err
 	}
@@ -524,16 +522,4 @@ func probeNamespaceObservation(targetDb net.Conn, deprecateEOF bool) (engine.Nam
 		return engine.NamespaceProbe{}, err
 	}
 	return engine.NamespaceProbe{Namespace: namespace, MySQLAnsiQuotes: ansiQuotes}, nil
-}
-
-func cancelTargetDbQuery(target spi.TargetDb, connID uint32) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	conn, _, err := dialTargetDbAuthID(ctx, target, true)
-	if err != nil {
-		return err
-	}
-	conn = wire.WithIODeadlines(conn, 5*time.Second, 5*time.Second)
-	defer conn.Close()
-	return execTargetDbSet(conn, "KILL QUERY "+strconv.FormatUint(uint64(connID), 10))
 }

@@ -60,7 +60,6 @@ class DatasourceSoftDeleteDbTest {
         (dataSource as? AutoCloseable)?.close()
     }
 
-
     @Test
     fun `deleting a datasource with access-request history soft-deletes it and keeps the rows`() {
         val name = "soft-del-history-${System.nanoTime()}"

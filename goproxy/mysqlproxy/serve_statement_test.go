@@ -145,7 +145,7 @@ func TestRunStatementMySQLCapturesRawAndRedactedTargetDbError(t *testing.T) {
 
 func TestTextResultCollectorRejectsMalformedRowWidth(t *testing.T) {
 	result := engine.StatementResult{Rows: make([][]*string, 0)}
-	collect := textResultCollector{budget: engine.RowBudget{MaxRows: 1}, result: &result}
+	collect := textResultCollector{maxRows: 1, result: &result}
 	if err := collect.onColumns(2); err != nil {
 		t.Fatal(err)
 	}
@@ -157,7 +157,7 @@ func TestTextResultCollectorRejectsMalformedRowWidth(t *testing.T) {
 
 func TestTextResultCollectorDisplaysBinaryValuesAsHex(t *testing.T) {
 	result := engine.StatementResult{Rows: make([][]*string, 0)}
-	collect := textResultCollector{budget: engine.RowBudget{MaxRows: 1}, result: &result}
+	collect := textResultCollector{maxRows: 1, result: &result}
 	if err := collect.onColumns(2); err != nil {
 		t.Fatal(err)
 	}
@@ -185,7 +185,7 @@ func TestTextResultCollectorHexesBitAndGeometry(t *testing.T) {
 	// other binary column, even when a value happens to be valid UTF-8 (e.g. BIT(1) = 0x01) — otherwise it
 	// would reach the UI as an invisible control character.
 	result := engine.StatementResult{Rows: make([][]*string, 0)}
-	collect := textResultCollector{budget: engine.RowBudget{MaxRows: 1}, result: &result}
+	collect := textResultCollector{maxRows: 1, result: &result}
 	if err := collect.onColumns(2); err != nil {
 		t.Fatal(err)
 	}
@@ -211,7 +211,7 @@ func TestTextResultCollectorHexesNonUTF8Fallback(t *testing.T) {
 	// A cell whose bytes are not valid UTF-8 must be hexed even when its column is not classified binary, so
 	// an unnamed or future binary type cannot revive the proto3-string marshal failure.
 	result := engine.StatementResult{Rows: make([][]*string, 0)}
-	collect := textResultCollector{budget: engine.RowBudget{MaxRows: 1}, result: &result}
+	collect := textResultCollector{maxRows: 1, result: &result}
 	if err := collect.onColumns(1); err != nil {
 		t.Fatal(err)
 	}
@@ -232,9 +232,9 @@ func TestTextResultCollectorLeavesMaskedBinaryValuesMasked(t *testing.T) {
 	ordinal := int32(0)
 	result := engine.StatementResult{Rows: make([][]*string, 0)}
 	collect := textResultCollector{
-		budget: engine.RowBudget{MaxRows: 1},
-		result: &result,
-		masks:  []*pb.ColumnMask{{Kind: "FIXED", Ordinal: &ordinal}},
+		maxRows: 1,
+		result:  &result,
+		masks:   []*pb.ColumnMask{{Kind: "FIXED", Ordinal: &ordinal}},
 	}
 	if err := collect.onColumns(1); err != nil {
 		t.Fatal(err)
@@ -277,7 +277,7 @@ func mysqlColumnDef(name string, charset uint16, typ byte) []byte {
 func TestTextResultCollectorMaskUnboundBeforeRows(t *testing.T) {
 	ordinal := int32(3)
 	result := engine.StatementResult{Rows: make([][]*string, 0)}
-	collect := textResultCollector{budget: engine.RowBudget{MaxRows: 1}, result: &result, masks: []*pb.ColumnMask{{Ordinal: &ordinal}}}
+	collect := textResultCollector{maxRows: 1, result: &result, masks: []*pb.ColumnMask{{Ordinal: &ordinal}}}
 	err := collect.onColumns(1)
 	if !errors.Is(err, engine.ErrMaskUnbound) || len(result.Rows) != 0 {
 		t.Fatalf("err=%v rows=%v, want unbound before rows", err, result.Rows)

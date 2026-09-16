@@ -340,7 +340,7 @@ export interface AccessRequest {
   decidedAt?: string | null
   rejectionReason?: string | null
   createdAt: string
-  kind: 'ROLE' | 'QUERY' | 'RATE_RESET'
+  kind: 'ROLE' | 'QUERY'
   /** The task's statements joined in run order — the request's readable form, never what is authorized. */
   sql?: string | null
   sqlHash?: string | null
@@ -362,20 +362,6 @@ export interface AccessRequestInput {
   datasourceId?: number | null
   reason?: string | null
   requestedDurationSec: number
-}
-
-/** Ask an approver to reset the caller's spent result rates (docs/result-caps.md). */
-export interface RateResetRequestInput {
-  reason: string
-  denyReason?: string | null
-}
-
-/** One rate reset marker: relayed volume before `resetAt` no longer counts toward any rate. */
-export interface RateReset {
-  principal: string
-  resetAt: string
-  resetBy: string
-  reason: string
 }
 
 export interface AccessGrant {
@@ -466,10 +452,6 @@ export interface QueryResultView {
   maskedColumns: string[]
   /** A FAILED run's target-DB error, raw or redacted per this viewer; null otherwise. */
   errorDetail?: string | null
-  /** Row count the viewer's own result cap cut this release to; null when every stored row was released. */
-  truncatedAt?: number | null
-  /** The EXECUTION's cap ended the stored rows — independent of a further view-time truncation. */
-  truncatedByCap?: boolean
 }
 
 /** Submit acknowledgement; completion is observed through task polling. */
@@ -537,9 +519,6 @@ export interface QueryResponse {
   columns: string[]
   rows: (string | null)[][]
   rowsAffected?: number | null
-  /** The verdict's row cap, and whether it — not the requested page size — ended this result. */
-  truncatedByCap?: boolean
-  capRows?: number | null
   latencyMs: number
 }
 

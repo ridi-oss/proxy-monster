@@ -1,6 +1,7 @@
 package probe
 
 import (
+	"strings"
 	"testing"
 
 	pb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
@@ -430,6 +431,87 @@ func TestStatementFactsUserTypeCastGated(t *testing.T) {
 		if !facts.GetResolved() {
 			t.Fatalf("built-in cast / legit alias must analyze: %q -> %+v", sql, facts)
 		}
+	}
+}
+
+func TestStatementFactsPostgresXIDCastVisibility(t *testing.T) {
+	factsFor := func(sql string, searchPath []string, visible *bool) *pb.StatementFacts {
+		t.Helper()
+		return analyzeProto(t, &pb.AnalyzeRequest{
+			Sql: sql,
+			EngineConfig: &pb.EngineConfig{
+				Engine:  pb.Engine_POSTGRES,
+				Session: &pb.SessionObservation{PostgresSystemXidVisible: visible},
+			},
+			Namespace: &pb.Namespace{Catalog: "acme", SearchPath: searchPath},
+			Catalog: snapshot([]*pb.Column{
+				pbColumn("public", "users", "id", "BIGINT"),
+				pbColumn("public", "users", "ssn", "VARCHAR"),
+			}),
+		})
+	}
+	hasUserTypeCast := func(facts *pb.StatementFacts) bool {
+		for _, grant := range facts.GetResultReads() {
+			if grant.GetUtility().GetCommand() == "USER_TYPE_CAST" {
+				return true
+			}
+		}
+		return false
+	}
+
+	for _, tc := range []struct {
+		sql        string
+		searchPath []string
+		visible    *bool
+	}{
+		{"SELECT $2::varchar::xid", []string{"pg_catalog", "public"}, proto.Bool(true)},
+		{"SELECT '1'::xid", []string{"pg_temp_3", "pg_catalog", "public"}, proto.Bool(true)},
+		{"SELECT '1'::pg_catalog.xid", []string{"public", "pg_catalog"}, nil},
+		{`SELECT '1'::"pg_catalog"."xid"`, []string{"pg_temp_3", "pg_catalog", "public"}, nil},
+		{"SELECT '{1}'::xid[]", []string{"pg_catalog", "public"}, proto.Bool(true)},
+	} {
+		facts := factsFor(tc.sql, tc.searchPath, tc.visible)
+		if !facts.GetResolved() || hasUserTypeCast(facts) {
+			t.Errorf("safe xid cast was gated: %q path=%v facts=%+v", tc.sql, tc.searchPath, facts)
+			continue
+		}
+		if facts.RewrittenSql != nil {
+			t.Errorf("safe xid cast must relay verbatim (resolution is report-only): %q -> %q", tc.sql, facts.GetRewrittenSql())
+		}
+	}
+
+	for _, tc := range []struct {
+		sql        string
+		searchPath []string
+		visible    *bool
+	}{
+		{"SELECT '1'::xid", []string{"pg_catalog", "public"}, nil},
+		{"SELECT '1'::xid", []string{"pg_catalog", "public"}, proto.Bool(false)},
+		{"SELECT '1'::xid", []string{"pg_temp_3", "pg_catalog", "public"}, proto.Bool(false)},
+		{"SELECT '1'::xid", []string{"public", "pg_catalog"}, proto.Bool(true)},
+		{"SELECT '1'::xid", []string{"pg_temp_3", "public", "pg_catalog"}, proto.Bool(true)},
+		{"SELECT '1'::public.xid", []string{"pg_catalog", "public"}, proto.Bool(true)},
+		{`SELECT '1'::"XID"`, []string{"pg_catalog", "public"}, proto.Bool(true)},
+		{"SELECT '1'::xid(5)", []string{"pg_catalog", "public"}, proto.Bool(true)},
+	} {
+		facts := factsFor(tc.sql, tc.searchPath, tc.visible)
+		if !hasUserTypeCast(facts) {
+			t.Errorf("shadowable xid cast was not gated: %q path=%v facts=%+v", tc.sql, tc.searchPath, facts)
+		}
+		if facts.RewrittenSql != nil {
+			t.Errorf("untrusted xid cast produced relayed SQL: %q -> %q", tc.sql, facts.GetRewrittenSql())
+		}
+	}
+
+	// A safe xid cast composes with the lineage-driven star expansion (the only rewrite left).
+	star := factsFor("SELECT *, '1'::xid AS transaction_id FROM users", []string{"pg_catalog", "public"}, proto.Bool(true))
+	if !star.GetResolved() || hasUserTypeCast(star) {
+		t.Errorf("safe xid cast under star expansion was gated: %+v", star)
+	} else if rewrite := strings.ToLower(star.GetRewrittenSql()); strings.Contains(rewrite, "*") {
+		t.Errorf("xid cast lost star expansion: %q", star.GetRewrittenSql())
+	}
+	if explain := factsFor("EXPLAIN SELECT '1'::xid", []string{"pg_catalog", "public"}, proto.Bool(true)); !explain.GetResolved() || hasUserTypeCast(explain) {
+		t.Errorf("safe xid cast under EXPLAIN was gated: %+v", explain)
 	}
 }
 

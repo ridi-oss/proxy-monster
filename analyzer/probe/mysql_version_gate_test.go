@@ -148,6 +148,17 @@ func TestCreateEngineRejectsNilConfig(t *testing.T) {
 	}
 }
 
+func TestCreateEngineRejectsPostgresTypeVisibilityForMySQL(t *testing.T) {
+	if _, err := createEngine(&pb.EngineConfig{
+		Engine:                   pb.Engine_MYSQL,
+		EngineVersion:            "8.0.46",
+		MysqlLowerCaseTableNames: proto.Int32(0),
+		Session:                  &pb.SessionObservation{PostgresSystemXidVisible: proto.Bool(false)},
+	}); err == nil {
+		t.Fatal("PostgreSQL type visibility context unexpectedly succeeded for MySQL")
+	}
+}
+
 func TestCreateEngineValidatesPostgresFunctionShadowingContext(t *testing.T) {
 	if _, err := createEngine(&pb.EngineConfig{
 		Engine:  pb.Engine_POSTGRES,

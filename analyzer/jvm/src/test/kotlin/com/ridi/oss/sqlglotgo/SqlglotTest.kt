@@ -10,6 +10,7 @@ import com.ridi.oss.proxymonster.analyzer.pb.analyzeRequest
 import com.ridi.oss.proxymonster.analyzer.pb.column
 import com.ridi.oss.proxymonster.analyzer.pb.engineConfig
 import com.ridi.oss.proxymonster.analyzer.pb.namespace
+import com.ridi.oss.proxymonster.analyzer.pb.sessionObservation
 import com.ridi.oss.proxymonster.grpc.Engine
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
@@ -84,6 +85,30 @@ class SqlglotTest {
             assertTrue("$prefix.users.id" in columns)
             assertTrue("$prefix.users.ssn" in columns)
         }
+    }
+
+    @Test
+    fun postgresXidCastRequiresCatalogFirst() {
+        fun xidFacts(searchPath: List<String>): StatementFacts {
+            val request = analyzeRequest {
+                sql = "SELECT '1'::xid"
+                namespace = namespace {
+                    catalog = "acme"
+                    this.searchPath.addAll(searchPath)
+                }
+                engineConfig = engineConfig {
+                    engine = Engine.POSTGRES
+                    session = sessionObservation { postgresSystemXidVisible = true }
+                }
+            }
+            return StatementFacts.parseFrom(Sqlglot.analyzeStatement(request.toByteArray()))
+        }
+
+        val safe = xidFacts(listOf("pg_catalog", "public"))
+        assertTrue(safe.resultReadsList.none { it.utility.command == "USER_TYPE_CAST" })
+        // Resolution is report-only: the safe cast relays verbatim (no pin rewrite).
+        assertTrue(safe.rewrittenSql.isEmpty())
+        assertTrue(xidFacts(listOf("public", "pg_catalog")).resultReadsList.any { it.utility.command == "USER_TYPE_CAST" })
     }
 
     @Test

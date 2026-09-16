@@ -38,6 +38,7 @@ type engine interface {
 	// no separate parse-only string form to keep in sync with this one).
 	Dialect() *dialects.Dialect
 	NormalizeCatalogOnBuild() bool
+	PostgresSystemXIDVisible() bool
 	FoldColumn(column string) string
 	// IsTempSchema reports whether a DDL target's schema identifier denotes session-local (temporary)
 	// storage for this engine, so the DDL is not catalog-changing. The schema is passed as its parsed
@@ -65,6 +66,9 @@ type engine interface {
 	// RightJoinStarOrder is how this engine's target DB orders a NATURAL/USING RIGHT JOIN's star
 	// expansion. A plain ON right join is written order on both engines.
 	RightJoinStarOrder() starOrder
+	// IsSafeTypeReference: a type sqlglot marked user-defined that is trusted anyway (`'1'::xid` when
+	// it must be pg_catalog.xid). False keeps the user-type fail-close.
+	IsSafeTypeReference(dt, kind exp.Expression, namespace NamespaceConfig) bool
 	// NativeOutputLabel computes the output label THIS engine's target DB natively assigns to an
 	// unaliased projection: PostgreSQL derives it from the resolved expression (parse_target.c
 	// FigureColname, written function names from the parse-time SpanText); MySQL uses the
@@ -124,6 +128,9 @@ func newMySQLEngine(config *pb.EngineConfig) (*mysqlEngine, error) {
 	if len(config.GetSession().GetPostgresShadowedFunctions()) != 0 || config.GetSession().GetPostgresFunctionShadowingObserved() {
 		return nil, fmt.Errorf("postgres function shadowing context is not valid for mysql")
 	}
+	if session := config.GetSession(); session != nil && session.PostgresSystemXidVisible != nil {
+		return nil, fmt.Errorf("postgres type visibility context is not valid for mysql")
+	}
 	if config.MysqlLowerCaseTableNames == nil {
 		return nil, fmt.Errorf("mysqlLowerCaseTableNames is required for mysql")
 	}
@@ -162,6 +169,8 @@ func (e *mysqlEngine) Dialect() *dialects.Dialect { return e.dialect }
 // MySQL's catalog needs build-time folding: columns are always case-insensitive, while relation
 // spelling follows lower_case_table_names and the information_schema exception.
 func (e *mysqlEngine) NormalizeCatalogOnBuild() bool { return true }
+
+func (e *mysqlEngine) PostgresSystemXIDVisible() bool { return false }
 
 func (e *mysqlEngine) FoldColumn(column string) string {
 	return e.dialect.FoldIdentifierName(column, false)
@@ -260,10 +269,15 @@ func (e *mysqlEngine) RejectsDuplicateDerivedOutputLabels() bool { return true }
 
 func (e *mysqlEngine) RightJoinStarOrder() starOrder { return starOrderCommonRightLeft }
 
+func (e *mysqlEngine) IsSafeTypeReference(exp.Expression, exp.Expression, NamespaceConfig) bool {
+	return false
+}
+
 type postgresEngine struct {
 	dialect                   *dialects.Dialect
 	shadowedFunctions         map[string]bool
 	functionShadowingObserved bool
+	systemXIDVisible          bool
 }
 
 func postgresOpaqueDialect() *dialects.Dialect {
@@ -292,6 +306,7 @@ func newPostgresEngine(config *pb.EngineConfig) (*postgresEngine, error) {
 		dialect:                   postgresOpaqueDialect(),
 		shadowedFunctions:         shadowed,
 		functionShadowingObserved: config.GetSession().GetPostgresFunctionShadowingObserved(),
+		systemXIDVisible:          config.GetSession().GetPostgresSystemXidVisible(),
 	}, nil
 }
 
@@ -301,6 +316,8 @@ func (e *postgresEngine) Dialect() *dialects.Dialect { return e.dialect }
 // PostgreSQL does not fold the introspected catalog: quoted and unquoted names can identify distinct
 // real columns, while query-side qualification already preserves quoted names and folds unquoted ones.
 func (e *postgresEngine) NormalizeCatalogOnBuild() bool { return false }
+
+func (e *postgresEngine) PostgresSystemXIDVisible() bool { return e.systemXIDVisible }
 
 func (e *postgresEngine) FoldColumn(column string) string { return column }
 
@@ -343,6 +360,48 @@ func (e *postgresEngine) CommandPassthrough(command string) bool {
 func (e *postgresEngine) RejectsDuplicateDerivedOutputLabels() bool { return false }
 
 func (e *postgresEngine) RightJoinStarOrder() starOrder { return starOrderCommonLeftRight }
+
+func (e *postgresEngine) IsSafeTypeReference(dt, kind exp.Expression, namespace NamespaceConfig) bool {
+	return e.isSafeXIDType(dt, kind, namespace)
+}
+
+// `'1'::pg_catalog.xid` is safe. Bare `'1'::xid` is safe only when pg_catalog is first on search_path
+// (after pg_temp) and the proxy saw pg_catalog.xid visible, so no user type can shadow it. `xid(4)` never.
+func (e *postgresEngine) isSafeXIDType(dt, kind exp.Expression, namespace NamespaceConfig) bool {
+	if kind == nil || len(dt.Expressions()) != 0 {
+		return false
+	}
+	leaf := kind
+	var qualifier exp.Expression
+	if kind.Kind() == exp.KindDot {
+		qualifier = kind.Left()
+		leaf = kind.Right()
+	} else if kind.Kind() != exp.KindIdentifier {
+		return false
+	}
+	if leaf == nil || leaf.Kind() != exp.KindIdentifier {
+		return false
+	}
+	folded := leaf.Copy()
+	e.dialect.NormalizeIdentifier(folded)
+	if folded.Name() != "xid" {
+		return false
+	}
+	if qualifier != nil {
+		return e.IsTrustedSystemQualifier(qualifier)
+	}
+	return e.PostgresSystemXIDVisible() && postgresCatalogFirstAfterTempSchemas(namespace.SearchPath)
+}
+
+func postgresCatalogFirstAfterTempSchemas(searchPath []string) bool {
+	for _, schema := range searchPath {
+		if schema == "pg_temp" || strings.HasPrefix(schema, "pg_temp_") {
+			continue
+		}
+		return schema == "pg_catalog"
+	}
+	return false
+}
 
 // PostgreSQL names an unaliased projection per parse_target.c FigureColname; a call is labeled by
 // its WRITTEN function name, read from the projection's parse-time SpanText.

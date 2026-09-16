@@ -298,7 +298,7 @@ func (c *sessionCore) collectProbe(expectedColumns int, quiet bool) ([][]*string
 	collector := rowsCollector{expected: expectedColumns, result: &result}
 	emit := collector.emit
 	if !quiet && c.forward != nil {
-		emit = func(message pgproto3.BackendMessage, rowBytes int64) error {
+		emit = func(message pgproto3.BackendMessage) error {
 			switch message.(type) {
 			case *pgproto3.ParameterStatus, *pgproto3.NoticeResponse, *pgproto3.NotificationResponse:
 				c.forward(message)
@@ -307,7 +307,7 @@ func (c *sessionCore) collectProbe(expectedColumns int, quiet bool) ([][]*string
 					return c.flushForward()
 				}
 			}
-			return collector.emit(message, rowBytes)
+			return collector.emit(message)
 		}
 	}
 	targetDbErr, streamErr := c.streamResult(nil, streamOpts{soft: true}, emit)
@@ -395,10 +395,5 @@ func sendCancelRequest(host string, port int, processID uint32, secretKey []byte
 	if _, err := conn.Write(encoded); err != nil {
 		return fmt.Errorf("write CancelRequest: %w", err)
 	}
-	if err := conn.SetReadDeadline(time.Now().Add(targetDbHandshakeTimeout)); err != nil {
-		return err
-	}
-	// Wait for the cancel connection to close before the held session can start another query.
-	_, err = io.Copy(io.Discard, conn)
-	return err
+	return nil
 }

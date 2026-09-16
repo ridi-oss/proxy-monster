@@ -178,12 +178,6 @@ class DatasourceStore(internal val dataSource: DataSource) {
     }
 
     companion object {
-        /** Every column [toDatasource] reads. One list, so a new column cannot reach some reads and not others. */
-        const val DATASOURCE_COLUMNS =
-            "id, name, engine, host, port, db_name, tags, default_schemas, mysql_lower_case_table_names, " +
-                "catalog_synced_at, last_seen_at, engine_version, advertise_addr, advertise_cert_chain, " +
-                "advertise_wire_tls"
-
         /** The `system:` tag namespace is owned by the product — an operator may not coin a name in it. */
         const val RESERVED_TAG_PREFIX = "system:"
 
@@ -211,7 +205,7 @@ class DatasourceStore(internal val dataSource: DataSource) {
 
     fun list(): List<Datasource> = dataSource.connection.use { c ->
         c.prepareStatement(
-            "SELECT $DATASOURCE_COLUMNS FROM datasource WHERE deleted_at IS NULL ORDER BY id",
+            "SELECT id, name, engine, host, port, db_name, tags, default_schemas, mysql_lower_case_table_names, catalog_synced_at, last_seen_at, engine_version, advertise_addr, advertise_cert_chain, advertise_wire_tls FROM datasource WHERE deleted_at IS NULL ORDER BY id",
         ).use { ps ->
             ps.executeQuery().use { rs ->
                 val out = ArrayList<Datasource>()
@@ -224,7 +218,7 @@ class DatasourceStore(internal val dataSource: DataSource) {
     fun get(id: Long): Datasource? = dataSource.connection.use { c -> get(id, c) }
 
     fun get(id: Long, c: java.sql.Connection): Datasource? = c.prepareStatement(
-        "SELECT $DATASOURCE_COLUMNS FROM datasource WHERE id = ? AND deleted_at IS NULL",
+        "SELECT id, name, engine, host, port, db_name, tags, default_schemas, mysql_lower_case_table_names, catalog_synced_at, last_seen_at, engine_version, advertise_addr, advertise_cert_chain, advertise_wire_tls FROM datasource WHERE id = ? AND deleted_at IS NULL",
     ).use { ps ->
         ps.setLong(1, id)
         ps.executeQuery().use { rs -> if (rs.next()) rs.toDatasource() else null }
@@ -240,7 +234,7 @@ class DatasourceStore(internal val dataSource: DataSource) {
     fun getByName(name: String): Datasource? = dataSource.connection.use { c -> getByName(name, c) }
 
     fun getByName(name: String, c: java.sql.Connection): Datasource? = c.prepareStatement(
-        "SELECT $DATASOURCE_COLUMNS FROM datasource WHERE name = ? AND deleted_at IS NULL",
+        "SELECT id, name, engine, host, port, db_name, tags, default_schemas, mysql_lower_case_table_names, catalog_synced_at, last_seen_at, engine_version, advertise_addr, advertise_cert_chain, advertise_wire_tls FROM datasource WHERE name = ? AND deleted_at IS NULL",
     ).use { ps ->
         ps.setString(1, name)
         ps.executeQuery().use { rs -> if (rs.next()) rs.toDatasource() else null }
@@ -256,7 +250,7 @@ class DatasourceStore(internal val dataSource: DataSource) {
      */
     fun getIncludingDeleted(id: Long): Datasource? = dataSource.connection.use { c ->
         c.prepareStatement(
-            "SELECT $DATASOURCE_COLUMNS FROM datasource WHERE id = ?",
+            "SELECT id, name, engine, host, port, db_name, tags, default_schemas, mysql_lower_case_table_names, catalog_synced_at, last_seen_at, engine_version, advertise_addr, advertise_cert_chain, advertise_wire_tls FROM datasource WHERE id = ?",
         ).use { ps ->
             ps.setLong(1, id)
             ps.executeQuery().use { rs -> if (rs.next()) rs.toDatasource() else null }

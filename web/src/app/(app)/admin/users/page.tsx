@@ -5,7 +5,7 @@
 
 import { Fragment, useState } from 'react'
 import { useTranslations } from 'next-intl'
-import { Gauge, Loader2, MoreHorizontal, Pencil, Plus, Trash2, UserRoundCog, Users } from 'lucide-react'
+import { Loader2, MoreHorizontal, Pencil, Plus, Trash2, UserRoundCog, Users } from 'lucide-react'
 import { toast } from 'sonner'
 import { mutate } from 'swr'
 import { deleteUser } from '@/lib/api/client'
@@ -37,7 +37,6 @@ import {
 } from '@/components/page-scaffold'
 import { UserFormDialog } from '@/components/users/user-form-dialog'
 import { UserGroupsDialog } from '@/components/users/user-groups-dialog'
-import { RateResetDialog } from '@/components/users/rate-reset-dialog'
 
 export default function UsersPage() {
   const t = useTranslations('Users')
@@ -45,7 +44,6 @@ export default function UsersPage() {
   const [formOpen, setFormOpen] = useState(false)
   const [editing, setEditing] = useState<AppUser | null>(null)
   const [managingGroups, setManagingGroups] = useState<AppUser | null>(null)
-  const [resettingRate, setResettingRate] = useState<string | null>(null)
   const [deleting, setDeleting] = useState<AppUser | null>(null)
   const [deleteBusy, setDeleteBusy] = useState(false)
   const [deleteError, setDeleteError] = useState<string | null>(null)
@@ -177,10 +175,6 @@ export default function UsersPage() {
                               <UserRoundCog className="size-3.5" />
                               {t('list.manageGroups')}
                             </DropdownMenuItem>
-                            <DropdownMenuItem onClick={() => setResettingRate(user.principal)}>
-                              <Gauge className="size-3.5" />
-                              {t('rateReset.menu')}
-                            </DropdownMenuItem>
                             <DropdownMenuSeparator />
                             <DropdownMenuItem
                               variant="destructive"
@@ -232,7 +226,6 @@ export default function UsersPage() {
 
       <UserFormDialog open={formOpen} onOpenChange={setFormOpen} editing={editing} />
       <UserGroupsDialog user={managingGroups} onClose={() => setManagingGroups(null)} />
-      <RateResetDialog principal={resettingRate} onClose={() => setResettingRate(null)} />
     </>
   )
 }

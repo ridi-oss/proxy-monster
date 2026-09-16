@@ -72,7 +72,7 @@ func TestUnmaskedRowContinuationCannotMasqueradeAsTerminator(t *testing.T) {
 	writeTestPacket(t, &targetDb, 5, trackedOKPacket(0xfe, 0x0002, "", nil))
 
 	var got [][]byte
-	ok, _, err := relayResultSet(&targetDb, true, resultHooks{Sink: func(_ byte, payload []byte) error {
+	ok, err := relayResultSet(&targetDb, true, resultHooks{Sink: func(_ byte, payload []byte) error {
 		got = append(got, append([]byte(nil), payload...))
 		return nil
 	}})
@@ -94,7 +94,7 @@ func TestRelayResultSetReportsTargetDbError(t *testing.T) {
 	var targetDb bytes.Buffer
 	writeTestPacket(t, &targetDb, 1, mysqlwire.ErrPacketState(1146, "42S02", "missing table"))
 
-	ok, _, err := relayResultSet(&targetDb, true, resultHooks{})
+	ok, err := relayResultSet(&targetDb, true, resultHooks{})
 	if err != nil {
 		t.Fatalf("relayResultSet: %v", err)
 	}
@@ -110,7 +110,7 @@ func TestRelayResultSetReportsAffectedRowsFromFirstOK(t *testing.T) {
 	writeTestPacket(t, &targetDb, 1, payload)
 
 	var affected uint64
-	ok, _, err := relayResultSet(&targetDb, true, resultHooks{OnOK: func(n uint64) { affected = n }})
+	ok, err := relayResultSet(&targetDb, true, resultHooks{OnOK: func(n uint64) { affected = n }})
 	if err != nil || !ok || affected != 7 {
 		t.Fatalf("ok=%v affected=%d err=%v, want true, 7, nil", ok, affected, err)
 	}
@@ -121,7 +121,7 @@ func TestRelayResultSetRejectsFragmentedColumnDefinitionForCollector(t *testing.
 	writeTestPacket(t, &targetDb, 1, []byte{0x01})
 	writeTestPacket(t, &targetDb, 2, make([]byte, maxPacketPayload))
 
-	_, _, err := relayResultSet(&targetDb, true, resultHooks{OnColumnDef: func([]byte) error { return nil }})
+	_, err := relayResultSet(&targetDb, true, resultHooks{OnColumnDef: func([]byte) error { return nil }})
 	if err == nil || !strings.Contains(err.Error(), "fragmented MySQL column definitions") {
 		t.Fatalf("err=%v, want fragmented column-definition rejection", err)
 	}

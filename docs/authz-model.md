@@ -77,9 +77,7 @@ self-service is a possible later convenience.
   `stmt.cat.read`/`stmt.cat.write.insert`/`stmt.cat.write.update`/`stmt.cat.write.delete`/`stmt.cat.ddl`
   (statement categories, each an action group over its `stmt.kind.*` actions);
   `exception.unanalyzable`/`exception.unmaskable` (datasource-exception gates);
-  `result.cap` (never consulted for access — its policies carry the result-cap
-  annotations, [`result-caps.md`](./result-caps.md)); `datasource.connect`; the
-  approval lifecycle `task.request`/`task.read`/
+  `datasource.connect`; the approval lifecycle `task.request`/`task.read`/
   `task.approve`/`task.assume`/`task.cancel`/`task.delete` and `grant.revoke`;
   `token.mint`/`token.list`/`token.revoke` (credential issuance/management);
   `audit.read`; and `admin.datasources`/ `admin.policies`/`admin.identity`.
@@ -216,7 +214,6 @@ for each Column grant c:
       DENY       otherwise
       DENY       if masked and c's MaskedDisposition forbids masking
 authorize each uncovered Table scan              -- either result-read action permits
-resolveResultCaps(result.cap on the datasource + every unmasked resource)  -- annotations → max_rows/max_bytes
 ```
 
 `decideQuery` returns DENY if any required grant fails, MASK if an output grant

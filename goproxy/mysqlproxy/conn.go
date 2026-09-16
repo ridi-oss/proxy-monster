@@ -1,7 +1,6 @@
 package mysqlproxy
 
 import (
-	"context"
 	"crypto/tls"
 	"errors"
 	"fmt"
@@ -153,7 +152,7 @@ func (s *Server) handleConn(clientConn net.Conn) {
 	}()
 	slog.Info("authenticated mysql client", "client", clientConn.RemoteAddr().String(), "principal", identity.Principal, "roles", identity.Roles)
 
-	targetDbConn, targetConnID, err := dialTargetDbAuthID(context.Background(), s.targetDb, deprecateEOF)
+	targetDbConn, err := dialTargetDbAuth(s.targetDb, deprecateEOF)
 	if err != nil {
 		slog.Warn("mysql target DB unavailable", "host", s.targetDb.Host, "port", s.targetDb.Port, "error", err)
 		_ = mysqlwire.WritePacket(clientConn, tokenSeq+1, mysqlwire.ErrPacketState(
@@ -165,7 +164,6 @@ func (s *Server) handleConn(clientConn net.Conn) {
 	}
 	targetDbConn = s.WrapTargetDbConn(targetDbConn)
 	defer targetDbConn.Close()
-	cancelQuery := func() { _ = cancelTargetDbQuery(s.targetDb, targetConnID) }
 
 	qe := engine.NewQueryEngine(s.db, s.client)
 	preparedStmts := make(map[uint32]preparedStmt)
@@ -255,7 +253,7 @@ func (s *Server) handleConn(clientConn net.Conn) {
 				ConnectionID:   identity.ConnectionID,
 				ProbeNamespace: func() (engine.NamespaceProbe, error) { return probeNamespaceObservation(targetDbConn, deprecateEOF) },
 				RunCommands:    refetcher.RunAll,
-			}, refetcher, nil, func(toSend string, masks []*pb.ColumnMask, dec *engine.Decision) (bool, error) {
+			}, refetcher, nil, func(toSend string, masks []*pb.ColumnMask) (bool, error) {
 				queryPayload := mysqlwire.ComQueryPayload(toSend)
 				if len(queryPayload) >= maxPacketPayload {
 					if err := mysqlwire.WritePacket(clientConn, seq+1, mysqlwire.ErrPacketState(
@@ -270,7 +268,7 @@ func (s *Server) handleConn(clientConn net.Conn) {
 				if err := mysqlwire.WritePacket(targetDbConn, 0, queryPayload); err != nil {
 					return false, err
 				}
-				clean, stats, err := relayQueryResponseTracked(clientConn, targetDbConn, deprecateEOF, masks, errRedactor(qe), dec, cancelQuery)
+				clean, stats, err := relayQueryResponseTracked(clientConn, targetDbConn, deprecateEOF, masks, errRedactor(qe))
 				relayStats = stats
 				relayStatus = engine.RelayStatus(clean, err)
 				if err != nil {
@@ -282,7 +280,7 @@ func (s *Server) handleConn(clientConn net.Conn) {
 			// Post-relay, best-effort completion: only a relayed (Proceed) statement reports. A DENY relayed
 			// nothing, and EmitCompletion additionally no-ops for a decision with no audit id.
 			if !denied {
-				qe.AwaitCompletion(engine.EmitCompletion(s.client, decision, relayStats, relayStatus, start))
+				engine.EmitCompletion(s.client, decision, relayStats, relayStatus, start)
 			}
 			if serveErr != nil {
 				var fail engine.FailError
@@ -448,9 +446,9 @@ func (s *Server) handleConn(clientConn net.Conn) {
 			if err := mysqlwire.WritePacket(targetDbConn, 0, payload); err != nil {
 				return
 			}
-			ok, stats, err := relayQueryResponseTracked(clientConn, targetDbConn, deprecateEOF, nil, errRedactor(qe), proceed.Decision, cancelQuery)
+			ok, stats, err := relayQueryResponseTracked(clientConn, targetDbConn, deprecateEOF, nil, errRedactor(qe))
 			// Post-relay, best-effort completion for this binary-protocol EXECUTE (no-op if unaudited).
-			qe.AwaitCompletion(engine.EmitCompletion(s.client, proceed.Decision, stats, engine.RelayStatus(ok, err), start))
+			engine.EmitCompletion(s.client, proceed.Decision, stats, engine.RelayStatus(ok, err), start)
 			if err != nil {
 				return
 			}

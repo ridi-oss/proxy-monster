@@ -146,11 +146,6 @@ fun discoverRoles(
     val maskedColumns: List<String> = emptyList(),
     // A FAILED run's target-DB error — raw or redacted per this viewer (failedDiagnosticForViewer).
     val errorDetail: String? = null,
-    /** Row count the viewer's own result cap cut this release to; null when every stored row was released. */
-    val truncatedAt: Int? = null,
-    // The EXECUTION's cap, not this view's, ended the stored rows. Independent of [truncatedAt]: a view can
-    // narrow an already-capped result further, and either alone means the viewer is seeing a prefix.
-    val truncatedByCap: Boolean = false,
 )
 
 /** Submit acknowledgement. Completion is observed by polling the task detail/result endpoints. */
@@ -184,8 +179,6 @@ internal sealed class ResultViewDecision {
         val columns: List<String>,
         val rows: List<List<String?>>,
         val maskedColumns: List<String> = emptyList(),
-        /** Row count the viewer's own result cap cut the release to; null when every stored row is released. */
-        val truncatedAt: Int? = null,
     ) : ResultViewDecision()
     data class Denied(val reason: String) : ResultViewDecision()
 }
@@ -217,7 +210,6 @@ internal fun viewerDecision(
     authz: Authz,
     systemClassification: SystemClassificationService?,
     channel: Channel,
-    auditStore: AuditStore? = null,
 ): DecisionContext? {
     val sql = childSql ?: return null
     val ds = req.datasourceId?.let(datasourceStore::get) ?: return null
@@ -225,7 +217,7 @@ internal fun viewerDecision(
     return decideQuery(
         principal = viewer, ds = ds, sql = sql, channel = channel,
         catalog = datasourceStore.catalog(ds.id), policyStore = policyStore, accessStore = accessStore,
-        userGroupStore = userGroupStore, roleResolver = roleResolver, authz = authz, auditStore = auditStore,
+        userGroupStore = userGroupStore, roleResolver = roleResolver, authz = authz,
         providedRoles = roles, context = callerContext, systemClassification = systemClassification,
     )
 }
@@ -235,29 +227,6 @@ internal fun viewerDecision(
  * uncertainty denies: policy DENY, passthrough mismatch, fingerprint drift, an unbound mask.
  */
 internal fun decideResultView(ctx: DecisionContext, decrypted: DecryptedResult): ResultViewDecision {
-    // The viewer's own caps bound the release exactly as they bound a wire relay: the longest prefix within
-    // rows and bytes is released, the rest stays encrypted.
-    fun allowed(columns: List<String>, rows: List<List<String?>>, maskedColumns: List<String> = emptyList()):
-        ResultViewDecision.Allowed {
-        var released = rows.size
-        ctx.maxRows?.let { released = minOf(released.toLong(), it).toInt() }
-        ctx.maxBytes?.let { maxBytes ->
-            var bytes = 0L
-            for ((index, row) in rows.withIndex()) {
-                if (index >= released) break
-                bytes += resultVolume(listOf(row)).second
-                if (bytes > maxBytes) {
-                    released = index
-                    break
-                }
-            }
-        }
-        return if (released < rows.size) {
-            ResultViewDecision.Allowed(columns, rows.take(released), maskedColumns, truncatedAt = released)
-        } else {
-            ResultViewDecision.Allowed(columns, rows, maskedColumns)
-        }
-    }
     if (ctx.action == EnfAction.DENY) {
         return ResultViewDecision.Denied(ctx.denyReason ?: ctx.detail ?: "view decision denied")
     }
@@ -287,7 +256,7 @@ internal fun decideResultView(ctx: DecisionContext, decrypted: DecryptedResult):
         if (decrypted.rows.any { it.size != decrypted.columns.size }) {
             return ResultViewDecision.Denied("stored result row width does not match its columns")
         }
-        return allowed(decrypted.columns, decrypted.rows)
+        return ResultViewDecision.Allowed(decrypted.columns, decrypted.rows)
     }
     // Apply the re-decided masks only when the frozen requirements still match the live re-decision — then
     // each masked column keeps the same output ordinals, so ctx.masks bind to the same stored columns they
@@ -308,7 +277,7 @@ internal fun decideResultView(ctx: DecisionContext, decrypted: DecryptedResult):
         if (decrypted.rows.any { it.size != decrypted.columns.size }) {
             return ResultViewDecision.Denied("stored result row width does not match its columns")
         }
-        return allowed(decrypted.columns, decrypted.rows)
+        return ResultViewDecision.Allowed(decrypted.columns, decrypted.rows)
     }
     // The live projection must be the same width as the stored bytes a mask ordinal indexes into; this also
     // denies a plan-shaped result rather than releasing it raw when the EXPLAIN release above did not take it.
@@ -335,7 +304,7 @@ internal fun decideResultView(ctx: DecisionContext, decrypted: DecryptedResult):
     // the decision asked for but could not bind can never be reported as applied. (An unbound one denies
     // above, so the two agree here — reading the binding keeps them agreeing if that ever changes.)
     val maskedColumns = binding.byIndex.keys.sorted().map { decrypted.columns[it] }
-    return allowed(decrypted.columns, rows, maskedColumns)
+    return ResultViewDecision.Allowed(decrypted.columns, rows, maskedColumns)
 }
 
 /**
@@ -585,7 +554,7 @@ fun Route.approvalRoutes(
                 accessStore = accessStore,
                 userGroupStore = userGroupStore,
                 roleResolver = roleResolver,
-                authz = authz, auditStore = auditStore,
+                authz = authz,
                 // This compose preview IS an HTTP request with a datasource in scope, so it carries the
                 // server-attested requester_ip (decideQuery overlays the EDITOR channel + derives tags over it). A
                 // preview that dropped it would report a DIFFERENT verdict than the real editor execution when a
@@ -655,7 +624,7 @@ fun Route.approvalRoutes(
             decideQuery(
                 principal = principal, ds = ds, sql = statements[index], channel = channel,
                 catalog = catalog, policyStore = policyStore, accessStore = accessStore,
-                userGroupStore = userGroupStore, roleResolver = roleResolver, authz = authz, auditStore = auditStore,
+                userGroupStore = userGroupStore, roleResolver = roleResolver, authz = authz,
                 providedRoles = roles, context = discoverContext, systemClassification = systemClassification,
             )
         }
@@ -908,7 +877,7 @@ fun Route.approvalRoutes(
         val ctx = viewerDecision(
             principal, req, access.sql, call.httpAuthzContext(config),
             datasourceStore, policyStore, accessStore, userGroupStore, roleResolver, authz,
-            systemClassification, Channel.WORKFLOW_VIEWER, auditStore,
+            systemClassification, Channel.WORKFLOW_VIEWER,
         )
         // The failure detail releases only here, behind the same gate as the rows (never on the metadata
         // poll). Audit before responding so it is never returned unrecorded.
@@ -952,22 +921,8 @@ fun Route.approvalRoutes(
                     else -> "result-viewed-by-assumer"
                 }
                 // Audit the view BEFORE returning rows — a failed audit insert propagates (500) so PII is never
-                // returned without a durable record. The same transaction charges the released volume to the
-                // viewer's relayed volume, against the decision the stored rows came from.
-                val (rowCount, bytes) = resultVolume(viewDecision.rows)
-                val chargeDecision = listOfNotNull(meta.decisionId, req.sourceDecisionId)
-                    .firstNotNullOfOrNull { id -> auditStore.get(id)?.let { id to it } }
-                auditStore.insertAll(
-                    listOfNotNull(
-                        e3Record(principal, req, viewEvent, Channel.WORKFLOW_VIEWER),
-                        chargeDecision?.let { (decisionId, decision) ->
-                            completionEvent(
-                                decision, decisionId, rowCount, bytes, "ok", 0,
-                                principal = principal, channel = Channel.WORKFLOW_VIEWER.contextValue,
-                            )
-                        },
-                    ),
-                )
+                // returned without a durable record.
+                auditStore.insert(e3Record(principal, req, viewEvent, Channel.WORKFLOW_VIEWER))
                 call.respond(
                     QueryResultView(
                         meta, viewDecision.columns, viewDecision.rows,
@@ -976,8 +931,6 @@ fun Route.approvalRoutes(
                         // not the execution that produced it.
                         decision = if (viewDecision.maskedColumns.isEmpty()) Decision.ALLOW else Decision.MASK,
                         maskedColumns = viewDecision.maskedColumns,
-                        truncatedAt = viewDecision.truncatedAt,
-                        truncatedByCap = decrypted.truncatedByCap,
                     ),
                 )
             }
@@ -1053,10 +1006,10 @@ internal suspend fun runApprovedTask(
                     batchFailure = "approval.execute_denied"
                     false
                 } else {
-                    val result = DecryptedResult(response.columns, response.rows, response.rowsAffected, response.resultFingerprint, response.truncatedByCap)
+                    val result = DecryptedResult(response.columns, response.rows, response.rowsAffected, response.resultFingerprint)
                     // The parent flips to EXECUTED only on the LAST statement, so a crash mid-batch cannot
                     // leave a task EXECUTED with statements unrun.
-                    val completed = store.completeRun(id, result, QueryResultStore.RESULT_RETENTION_SEC, response.decisionId) { conn, _ ->
+                    val completed = store.completeRun(id, result, QueryResultStore.RESULT_RETENTION_SEC) { conn, _ ->
                         if (last && !accessStore.markExecuted(id, conn)) {
                             throw IllegalStateException("task $id left EXECUTING before completion")
                         }

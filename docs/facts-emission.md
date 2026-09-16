@@ -35,10 +35,7 @@ For each statement the analyzer emits, in `StatementFacts`
    Cedar's schema maps to a category; and
 6. whether the statement is resolved, and if not, its `FailureClass`
    (`INADMISSIBLE` hard-deny, or `UNANALYZABLE` → the `exception.unanalyzable`
-   gate); and
-7. `returned_columns`: the base columns whose value reaches the client through
-   the result set, and at which result positions
-   ([`result-caps.md`](./result-caps.md)).
+   gate).
 
 Wire-path masking capability is decided after these facts (see
 [Unmaskable wire paths](#unmaskable-wire-paths)).

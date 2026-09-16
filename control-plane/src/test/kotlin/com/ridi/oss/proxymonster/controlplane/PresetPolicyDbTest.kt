@@ -41,7 +41,6 @@ class PresetPolicyDbTest {
         "system:development-architect" to "dev-architect@example.com",
         "system:production-viewer" to "prod-viewer@example.com",
         "system:production-pii-accessor" to "prod-pii@example.com",
-        "system:production-exporter" to "prod-exporter@example.com",
         "system:production-updater" to "prod-updater@example.com",
         "system:production-deleter" to "prod-deleter@example.com",
         "system:production-architect" to "prod-architect@example.com",
@@ -145,7 +144,6 @@ class PresetPolicyDbTest {
         val expected = mapOf(
             "system:production-viewer" to setOf("stmt.cat.read"),
             "system:production-pii-accessor" to setOf("stmt.cat.read"),
-            "system:production-exporter" to setOf("stmt.cat.read"),
             "system:production-updater" to setOf("stmt.cat.write.insert", "stmt.cat.write.update"),
             "system:production-deleter" to setOf("stmt.cat.write.delete"),
             "system:production-architect" to setOf("stmt.cat.ddl"),
@@ -218,12 +216,6 @@ class PresetPolicyDbTest {
             decide(accessor, "select ssn from users", offNetwork, Channel.WORKFLOW_EXECUTOR).action,
             "-259: pii-accessor unmasks off-network on the workflow-executor channel",
         )
-        // The exporter reads exactly like the pii-accessor, and the -307 forbid lifts its caps and rates on top.
-        val exporter = decide(principals.getValue("system:production-exporter"), "select ssn from users", offNetwork, Channel.WORKFLOW_EXECUTOR)
-        assertEquals(EnfAction.ALLOW, exporter.action, "-259: exporter unmasks on the workflow-executor channel")
-        assertEquals(null, exporter.maxRows, "-307: exporter is uncapped")
-        val capped = decide(accessor, "select ssn from users", offNetwork, Channel.WORKFLOW_EXECUTOR)
-        assertEquals(500L, capped.maxRows, "-306: pii-accessor keeps the pii cap")
         // The viewer channel does NOT match -259, so off-network it falls through to -257 (masked) — this is
         // the re-mask that bounds a saved result at view time.
         assertEquals(

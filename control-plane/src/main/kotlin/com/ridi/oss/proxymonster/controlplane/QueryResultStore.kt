@@ -52,8 +52,6 @@ data class DecryptedResult(
     // rather than being mistaken for a grant-less passthrough and released raw.
     @Serializable(with = ResultFingerprintSerializer::class)
     val resultFingerprint: ResultFingerprint? = null,
-    /** The EXECUTION's verdict cap ended this result, which a view over the stored rows cannot re-derive. */
-    val truncatedByCap: Boolean = false,
 )
 
 /**
@@ -90,7 +88,6 @@ internal object ResultPayloadCodec {
         }
         result.rowsAffected?.let { rowsAffected = it }
         result.resultFingerprint?.let { resultFingerprint = it }
-        truncatedByCap = result.truncatedByCap
     }.toByteArray()
 
     fun decode(plaintext: ByteArray): DecryptedResult =
@@ -111,7 +108,6 @@ internal object ResultPayloadCodec {
         rows = stored.rows.rowsList.map { row -> row.valuesList.map { if (it.isNull) null else it.value } },
         rowsAffected = if (stored.hasRowsAffected()) stored.rowsAffected else null,
         resultFingerprint = if (stored.hasResultFingerprint()) stored.resultFingerprint else null,
-        truncatedByCap = stored.truncatedByCap,
     )
 }
 
@@ -191,8 +187,6 @@ class QueryResultStore(private val dataSource: DataSource, private val crypto: R
         taskId: Long,
         result: DecryptedResult,
         retentionSec: Long,
-        // The execution's audit decision, kept so a later view can charge its released volume against it.
-        decisionId: Long? = null,
         audit: (Connection, QueryResultMeta) -> Unit = { _, _ -> },
     ): QueryResultMeta? {
         val blob = crypto.encrypt(ResultPayloadCodec.encode(result))
@@ -202,7 +196,7 @@ class QueryResultStore(private val dataSource: DataSource, private val crypto: R
             val updated = child != null && c.prepareStatement(
                 """UPDATE query_result
                    SET status = 'DONE', ciphertext = ?, row_count = ?, columns = ?,
-                       executed_at = ?, expires_at = ?, error_code = NULL, decision_id = ?
+                       executed_at = ?, expires_at = ?, error_code = NULL
                    WHERE id = ? AND status = 'RUNNING'""",
             ).use { ps ->
                 ps.setBytes(1, blob)
@@ -215,8 +209,7 @@ class QueryResultStore(private val dataSource: DataSource, private val crypto: R
                 }
                 ps.setTimestamp(4, Timestamp.from(now))
                 ps.setTimestamp(5, Timestamp.from(now.plusSeconds(retentionSec)))
-                if (decisionId == null) ps.setNull(6, java.sql.Types.BIGINT) else ps.setLong(6, decisionId)
-                ps.setLong(7, child.id)
+                ps.setLong(6, child.id)
                 ps.executeUpdate() > 0
             }
             val meta = if (updated) meta(taskId, child.ordinal, c) else null

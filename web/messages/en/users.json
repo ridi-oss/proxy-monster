@@ -57,20 +57,5 @@
     "addFailed": "failed to add group",
     "toastRemoved": "Removed {principal} from {group}.",
     "removeFailed": "failed to remove group"
-  },
-  "rateReset": {
-    "menu": "Reset result rates",
-    "title": "Reset result rates",
-    "description": "Reset {principal}'s spent result rates. Relayed volume before now stops counting toward every rate window; per-statement caps are unchanged. The reason is recorded.",
-    "lastLoading": "Loading the last reset…",
-    "lastNone": "Never reset.",
-    "last": "Last reset {at} by {by}.",
-    "reasonLabel": "Reason (required)",
-    "reasonPlaceholder": "Legitimate export re-run after a false positive.",
-    "cancel": "Cancel",
-    "submit": "Reset",
-    "submitting": "Resetting…",
-    "toast": "Reset result rates for {principal}",
-    "failed": "reset failed"
   }
 }

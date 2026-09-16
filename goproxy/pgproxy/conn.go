@@ -54,7 +54,6 @@ type session struct {
 	client       *pgproto3.Backend
 	clientConn   net.Conn
 	targetDbConn net.Conn
-	keyData      pgproto3.BackendKeyData
 	token        string
 	clientAddr   string
 	connectionID []byte
@@ -216,7 +215,6 @@ startupComplete:
 		client:       client,
 		clientConn:   clientIO,
 		targetDbConn: targetDbConn,
-		keyData:      keyData,
 		token:        password.Password,
 		clientAddr:   rawClientConn.RemoteAddr().String(),
 		connectionID: append([]byte(nil), identity.ConnectionID...),

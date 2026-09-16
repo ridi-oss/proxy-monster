@@ -67,7 +67,7 @@ class PolicyOriginDbTest {
             }
         }
         assertEquals(
-            "176f5f46f11ea1760b98e97e6cc6a63f",
+            "44b45d7f95ecbbee19f2f715c63070b1",
             digest,
             "the seeded security posture changed: a policy body, id, key, origin, enabled flag, role, " +
                 "group, or group-to-role link differs from what a fresh install is supposed to enforce",
@@ -127,11 +127,6 @@ class PolicyOriginDbTest {
             auditSeeds.map { it.name }.toSet(),
         )
         assertTrue(auditSeeds.all { it.origin == "SYSTEM" && it.enabled })
-        // Result limits: -305 the default permit, -306 the tagged-in-the-clear permit, -307 the exporter's forbid.
-        val caps = store.list().filter { it.id in -307L..-305L }
-        assertEquals(setOf(-305L, -306L, -307L), caps.map { it.id }.toSet())
-        assertTrue(caps.all { it.origin == "SYSTEM" && it.enabled && it.systemKey == "guardrail.${it.name.removePrefix("system:")}" })
-        assertTrue(caps.single { it.id == -307L }.cedarSrc.startsWith("forbid"))
         CedarEngine(store)
     }
 
@@ -144,7 +139,7 @@ class PolicyOriginDbTest {
         val enabledById = CedarPolicyStore(ds).list().associate { it.id to it.enabled }
 
         val shippedEnabled = listOf(-4L, -5L, -100L, -110L, -120L, -130L, -200L, -201L, -202L) +
-            (230L..235L).map { -it } + (305L..307L).map { -it }
+            (230L..235L).map { -it }
         for (id in shippedEnabled) {
             assertTrue(enabledById[id] == true, "policy $id must ship ENABLED (got ${enabledById[id]})")
         }

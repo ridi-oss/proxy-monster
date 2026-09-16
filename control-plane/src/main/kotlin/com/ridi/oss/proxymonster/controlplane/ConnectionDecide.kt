@@ -80,7 +80,6 @@ suspend fun decideConnection(
         userGroupStore = core.userGroupStore,
         roleResolver = core.roleResolver,
         authz = core.authz,
-        auditStore = core.auditStore,
         providedRoles = providedRoles,
         context = AuthzContext(requesterIp = requesterIp),
         liveSearchPath = searchPath,

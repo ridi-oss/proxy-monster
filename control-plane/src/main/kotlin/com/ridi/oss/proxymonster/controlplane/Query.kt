@@ -1,9 +1,6 @@
 package com.ridi.oss.proxymonster.controlplane
 
 import com.ridi.oss.proxymonster.controlplane.authz.Authz
-import com.ridi.oss.proxymonster.controlplane.authz.CapResource
-import com.ridi.oss.proxymonster.controlplane.authz.ResolvedCaps
-import com.ridi.oss.proxymonster.controlplane.authz.resolveResultCaps
 import com.ridi.oss.proxymonster.controlplane.authz.AuthzAction
 import com.ridi.oss.proxymonster.controlplane.authz.AuthzContext
 import com.ridi.oss.proxymonster.controlplane.authz.AuthzDecision
@@ -65,7 +62,6 @@ import kotlinx.serialization.descriptors.SerialDescriptor
 import kotlinx.serialization.encoding.Decoder
 import kotlinx.serialization.encoding.Encoder
 import org.slf4j.LoggerFactory
-import java.time.Instant
 
 private val queryLog = LoggerFactory.getLogger("com.ridi.oss.proxymonster.controlplane.Query")
 
@@ -116,9 +112,6 @@ data class QueryResponse(
     // view can deny drift ([decideResultView]). Carried back from the Decide handler on the RunDecision.
     @Serializable(with = ResultFingerprintSerializer::class)
     val resultFingerprint: ResultFingerprint = ResultFingerprint.getDefaultInstance(),
-    // The verdict's row cap, and whether it — not the requested page size — ended this result.
-    val truncatedByCap: Boolean = false,
-    val capRows: Long? = null,
     val latencyMs: Long = 0,
 )
 
@@ -200,11 +193,6 @@ data class DecisionContext(
      * early denies (admission-reject / deactivated principal), which return before any `context.tags` is
      * derived and so were evaluated under none. */
     val contextTags: List<String> = emptyList(),
-    /** How much of this statement's result may be relayed, folded from the `result.cap` policies that
-     * answer for its datasource and its returned columns (docs/result-caps.md). Null = unbounded, which only
-     * a `result.cap` forbid produces; a DENY relays nothing and leaves both null. */
-    val maxRows: Long? = null,
-    val maxBytes: Long? = null,
     /** MASK-only capability grant. A proxy may relay an unmaskable binary result unmasked iff this is true
      * AND the proxy's local feature capability says that relay path is supported. */
     val unmaskablePermitted: Boolean = false,
@@ -436,7 +424,6 @@ fun decideQuery(
     userGroupStore: UserGroupStore,
     roleResolver: RoleResolver,
     authz: Authz,
-    auditStore: AuditStore? = null,
     // Almost always null (resolve server-side below). Tests that already resolved roles once and
     // want decideQuery + authz.authorizeColumns to see the EXACT same set (no risk of a second,
     // out-of-band resolve() disagreeing with the first) may pass them explicitly.
@@ -519,8 +506,6 @@ fun decideQuery(
             ?.name?.removePrefix("STATEMENT_KIND_")?.lowercase(),
     )
     val derivedTags = context.tags.toList()
-    // The datasource-level `result.cap` answer, asked up front: it alone decides a passthrough or relay's cap.
-    val datasourceCaps = authz.resolveResultCaps(principal, roles, ds.name, emptyList(), context, ds.tags)
 
     // Fail-closed contract validation (analyzer.proto): the single statement-execution grant is the sole
     // per-statement authorization signal. A RESOLVED statement without it would default to the grantable
@@ -568,8 +553,6 @@ fun decideQuery(
         AuthzDecision.Allow -> Unit
     }
 
-    var usedUtilityTags: Map<String, String> = emptyMap()
-    var allowedFunctionTags: Map<String, String> = emptyMap()
     val utilityGrants = facts.resultReadsList.filter { it.hasUtility() }
     if (utilityGrants.isNotEmpty()) {
         if (systemClassification == null || ds.engineVersion.isNullOrBlank()) {
@@ -594,7 +577,6 @@ fun decideQuery(
         }
         val utilRefs = utilityTags.keys.map(::UtilityRef)
         val verdicts = authz.authorizeUtilities(principal, roles, ds.name, utilRefs, context, utilityTags, ds.tags)
-        usedUtilityTags = utilityTags
         utilRefs.firstOrNull { verdicts[it.command] != UtilityVerdict.USE }?.let {
             return structuralDeny(
                 "$SYSTEM_UTILITY_DENY '${it.command}'",
@@ -631,13 +613,11 @@ fun decideQuery(
     ) {
         // A literal write reaches this relay too, and its diagnostic can leak (a PostgreSQL constraint ERR
         // dumps the whole target row) — gate on the analyzer's leak set. `SELECT 1` has an empty set: raw.
-        spentRate(auditStore, principal, datasourceCaps)?.let { return policyDeny(it, roleList, derivedTags) }
         return passthroughAllow(roleList, "passthrough (no data touched)", derivedTags)
             .copy(
                 sanitizeDiagnostics = !readsAllUnmasked(principal, roles, ds, catalog.columns, facts.diagnosticLeakColumnsList, context, authz, systemClassification),
                 schemaCandidates = facts.schemaQualifierCandidatesList.toSet(),
             )
-            .withCaps(datasourceCaps)
             .withAnalyzerRewrite(facts)
     }
 
@@ -678,7 +658,7 @@ fun decideQuery(
                 catalogMiss = true,
                 // Unanalyzable: no leak set to authorize, so fail closed and redact the diagnostic.
                 sanitizeDiagnostics = true,
-            ).withCaps(datasourceCaps).let { relay -> spentRate(auditStore, principal, datasourceCaps)?.let { deny(it) } ?: relay }
+            )
             is AuthzDecision.Deny -> deny(reason, catalogMiss = true)
         }
     }
@@ -724,7 +704,7 @@ fun decideQuery(
                 schemaCandidates = facts.schemaQualifierCandidatesList.toSet(),
                 // An uncovered column means the leak set can't be authorized — fail closed and redact.
                 sanitizeDiagnostics = true,
-            ).withCaps(datasourceCaps).let { relay -> spentRate(auditStore, principal, datasourceCaps)?.let { deny(it) } ?: relay }
+            )
             is AuthzDecision.Deny -> structuralDeny(
                 coverage.reason, roleList, failedStage = "catalog", contextTags = derivedTags,
             ).copy(catalogMiss = true, schemaCandidates = facts.schemaQualifierCandidatesList.toSet())
@@ -768,7 +748,6 @@ fun decideQuery(
             refs.firstOrNull { verdicts[it.name] != FunctionVerdict.ALLOWED }?.let {
                 return structuralDeny("$SYSTEM_FUNCTION_DENY '${it.name}'", roleList, failedStage = "policy", contextTags = derivedTags)
             }
-            allowedFunctionTags = functionTags
         }
     }
 
@@ -832,38 +811,6 @@ fun decideQuery(
     }
 
     val action = if (masks.isEmpty()) EnfAction.ALLOW else EnfAction.MASK
-    // Ask result.cap on every returned column, with context.masked telling a cap policy whether this
-    // principal's read reaches the client in the clear: an UNMASKED read feeding an output no mask covers
-    // (RETURNING has no ordinals and counts as bare). A column read only in a predicate returns nothing and is
-    // not asked.
-    val maskedOrdinals = masks.mapTo(HashSet()) { it.ordinal }
-    // A permitted exception.unmaskable lets the proxy relay a masked result raw, so for the cap ask a masked
-    // column counts as reaching the client in the clear.
-    val unmaskablePermitted = masks.isNotEmpty() && authz.authorizeDatasourceAction(
-        principal, roles, AuthzAction.EXCEPTION_UNMASKABLE, ds.name, context, ds.tags,
-    ) is AuthzDecision.Allow
-    val returnedMasked = LinkedHashMap<String, Boolean>()
-    for (rc in facts.returnedColumnsList) {
-        val c = rc.column
-        val key = listOf(c.catalog, c.identity.schema, c.identity.table, c.identity.column).joinToString(".")
-        val clear = unmaskablePermitted || columnVerdicts[key] == ColumnVerdict.UNMASKED &&
-            (rc.outputOrdinalsList.isEmpty() || rc.outputOrdinalsList.any { o -> o !in maskedOrdinals })
-        returnedMasked[key] = (returnedMasked[key] ?: true) && !clear
-    }
-    val capResources = buildList<CapResource> {
-        for (ref in columnRefs) {
-            val masked = returnedMasked[ref.key] ?: continue
-            add(CapResource.Column(ref, systemTags[Triple(ref.catalog, ref.schema, ref.table)], masked))
-        }
-        for (grant in tableGrants) {
-            val t = grant.table
-            add(CapResource.Table(TableRef("${t.catalog}.${t.schema}.${t.table}", t.catalog, t.schema, t.table), systemTags[Triple(t.catalog, t.schema, t.table)]))
-        }
-        for ((name, tagId) in allowedFunctionTags) add(CapResource.Function(FunctionRef(name), tagId))
-        for ((command, tagId) in usedUtilityTags) add(CapResource.Utility(UtilityRef(command), tagId))
-    }
-    val statementCaps = authz.resolveResultCaps(principal, roles, ds.name, capResources, context, ds.tags)
-    spentRate(auditStore, principal, datasourceCaps, statementCaps)?.let { return deny(it) }
     // Every classified column the statement touched, whatever its tags are named: `pii` is a deployment's
     // own tag, so keying this on that one string leaves auditmon's mass-export detector blind on a
     // deployment that classifies with `pci`.
@@ -876,6 +823,9 @@ fun decideQuery(
         facts.sourcesList.mapTo(this) { it.schema }
         columnGrants.mapTo(this) { it.column.identity.schema }
     }.filterNotTo(LinkedHashSet()) { it.startsWith("pg_temp", ignoreCase = true) }
+    val unmaskablePermitted = action == EnfAction.MASK && authz.authorizeDatasourceAction(
+        principal, roles, AuthzAction.EXCEPTION_UNMASKABLE, ds.name, context, ds.tags,
+    ) is AuthzDecision.Allow
     // MASK/DENY always redacts; an ALLOW redacts iff the analyzer's leak set holds a column the viewer
     // can't read unmasked. `select id from users` (all readable) relays raw.
     val sanitizeDiagnostics = action != EnfAction.ALLOW ||
@@ -898,7 +848,7 @@ fun decideQuery(
         catalogChanging = facts.catalogChanging || facts.functionsList.isNotEmpty(),
         referencedSchemas = referencedSchemas,
         schemaCandidates = facts.schemaQualifierCandidatesList.toSet(),
-    ).withCaps(datasourceCaps, statementCaps).withAnalyzerRewrite(facts)
+    ).withAnalyzerRewrite(facts)
 }
 
 // A column grant must carry a real masking disposition; an absent/unrecognized one is a malformed effect
@@ -908,54 +858,11 @@ private val MALFORMED_DISPOSITIONS = setOf(
     MaskedDisposition.UNRECOGNIZED,
 )
 
-/** The cap when no `result.cap` policy answers on that dimension: fail closed, never uncapped. */
-internal const val DEFAULT_CAP_ROWS = 5_000L
-internal const val DEFAULT_CAP_BYTES = 50_000_000L
-
-/** The resolved per-statement cap; null on a dimension = unbounded (only a `result.cap` forbid produces it). */
-internal data class ResultCaps(val rows: Long?, val bytes: Long?)
-
-/**
- * Fold the `result.cap` answers a statement collected (docs/result-caps.md): a forbid that matched any ask
- * lifts both; else the tightest cap rows and the tightest cap bytes, falling back to the shipped default on a
- * dimension nothing answered.
- */
-internal fun resultCaps(vararg resolved: ResolvedCaps): ResultCaps {
-    if (resolved.any { it.unbounded }) return ResultCaps(null, null)
-    return ResultCaps(
-        resolved.mapNotNull { it.rows }.minOrNull() ?: DEFAULT_CAP_ROWS,
-        resolved.mapNotNull { it.bytes }.minOrNull() ?: DEFAULT_CAP_BYTES,
-    )
-}
-
-/**
- * The deny reason when a rate entry the statement's `result.cap` permits carry is already spent, else null.
- * A forbid on any ask lifts every rate; with no rate collected no audit scan runs. The scan is one query
- * over the widest window, lower-bounded by the principal's last rate reset (AuditStore.relayedVolume).
- */
-internal fun spentRate(auditStore: AuditStore?, principal: String, vararg resolved: ResolvedCaps): String? {
-    if (auditStore == null || resolved.any { it.unbounded }) return null
-    val rates = resolved.flatMap { it.rates }
-    if (rates.isEmpty()) return null
-    val relayed = auditStore.relayedVolume(principal, rates.map { it.window }, Instant.now())
-    val spent = rates.firstOrNull { rate ->
-        val volume = relayed.getValue(rate.window)
-        (rate.rows != null && volume.rows >= rate.rows) || (rate.bytes != null && volume.bytes >= rate.bytes)
-    } ?: return null
-    return "$RATE_SPENT_DENY ${spent.spec} spent"
-}
-
-private fun DecisionContext.withCaps(vararg resolved: ResolvedCaps): DecisionContext {
-    val caps = resultCaps(*resolved)
-    return copy(maxRows = caps.rows, maxBytes = caps.bytes)
-}
-
 internal const val MASK_BIND_DENY = "required mask could not be bound to a result column"
 private const val SYSTEM_FUNCTION_DENY = "dangerous system function is not allowed:"
 private const val SYSTEM_UTILITY_DENY = "utility command is not allowed on this datasource:"
 private const val DEACTIVATED_PRINCIPAL_DENY = "principal is deprovisioned (deactivated) — access denied"
 private const val CATALOG_CONFIGURATION_DENY = "fail-closed: invalid catalog or analyzer namespace configuration"
-internal const val RATE_SPENT_DENY = "rate"
 private const val WIRE_TASK_FORBIDDEN_DENY = "automatic task approval is not permitted for this datasource"
 
 private fun structuralDeny(
@@ -1171,8 +1078,6 @@ fun Route.editorSessionRoutes(
     // Pushes a task's terminal transition to the owner's SSE stream so the tab updates without waiting for
     // its next poll (null in the many Config-free test constructions — publish is then a no-op).
     taskCompletionHub: TaskCompletionHub? = null,
-    // Feeds the stored-result re-decision the viewer's relayed volume for its rate entries, as the wire path does.
-    auditStore: AuditStore? = null,
 ) {
     post("/api/editor/sessions") {
         val principal = call.requireApi() ?: return@post
@@ -1271,11 +1176,11 @@ fun Route.editorSessionRoutes(
                         batchFailure = "approval.execute_denied"
                         false
                     } else {
-                    val result = DecryptedResult(response.columns, response.rows, response.rowsAffected, response.resultFingerprint, response.truncatedByCap)
+                    val result = DecryptedResult(response.columns, response.rows, response.rowsAffected, response.resultFingerprint)
                     // The parent flips to EXECUTED only on the LAST statement. The per-statement Decide
                     // already wrote the real audit decision, so no task-level row is added here.
                     val last = ordinal == statements.lastIndex
-                    val completed = store.completeRun(task.id, result, QueryResultStore.RESULT_RETENTION_SEC, response.decisionId) { conn, _ ->
+                    val completed = store.completeRun(task.id, result, QueryResultStore.RESULT_RETENTION_SEC) { conn, _ ->
                         if (last && !accessStore.markExecuted(task.id, conn)) {
                             throw IllegalStateException("editor task ${task.id} left EXECUTING before completion")
                         }
@@ -1450,7 +1355,7 @@ fun Route.editorSessionRoutes(
         val ctx = viewerDecision(
             principal, task, access.sql, call.httpAuthzContext(config),
             datasourceStore, policyStore, accessStore, userGroupStore, roleResolver, authz,
-            systemClassification, Channel.EDITOR, auditStore,
+            systemClassification, Channel.EDITOR,
         )
         if (meta.status == "FAILED" && access.errorDetail != null) {
             return@get call.respond(
@@ -1481,8 +1386,6 @@ fun Route.editorSessionRoutes(
                         // display as a clean ALLOW.
                         decision = if (viewDecision.maskedColumns.isEmpty()) Decision.ALLOW else Decision.MASK,
                         maskedColumns = viewDecision.maskedColumns,
-                        truncatedAt = viewDecision.truncatedAt,
-                        truncatedByCap = decrypted.truncatedByCap,
                     ),
                 )
         }

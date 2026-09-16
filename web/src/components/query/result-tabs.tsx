@@ -15,11 +15,9 @@ import type { ResultTab, ResultTabsApi } from './use-result-tabs'
 export function ResultTabs({
   api,
   onRequestAccess,
-  onRequestRateReset,
 }: {
   api: ResultTabsApi
   onRequestAccess: (denyReason?: string | null) => void
-  onRequestRateReset?: (denyReason?: string | null) => void
 }) {
   const t = useTranslations('Query')
   const { tabs, activeId, active, logs, clearLogs } = api
@@ -71,7 +69,7 @@ export function ResultTabs({
         {viewingLogs ? (
           <QueryLogs logs={logs} clearLogs={clearLogs} />
         ) : active?.kind === 'table' ? (
-          <TableView tab={active} onRequestAccess={onRequestAccess} onRequestRateReset={onRequestRateReset} />
+          <TableView tab={active} onRequestAccess={onRequestAccess} />
         ) : active ? (
           <ResultsPanel
             result={active.res.result}
@@ -81,7 +79,6 @@ export function ResultTabs({
             error={active.res.error}
             onCancel={active.res.loading && active.taskId != null ? () => api.cancel(active.id) : undefined}
             onRequestAccess={() => onRequestAccess(active.res.result?.denyReason)}
-            onRequestRateReset={onRequestRateReset && (() => onRequestRateReset(active.res.result?.denyReason))}
           />
         ) : (
           <ResultsPanel

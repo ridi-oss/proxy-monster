@@ -83,23 +83,4 @@ class ChannelContextAuthzTest {
         )
         assertFailsWith<IllegalStateException> { CedarEngine(unguarded) }
     }
-
-    @Test
-    fun `the masked bool reaches the real Cedar engine and an absent attribute fails its guard`() {
-        val gate = authz(
-            listOf(
-                1L to """
-                    permit(principal, action == Action::"datasource.connect", resource) when {
-                        context has masked && !context.masked
-                    };
-                """,
-            ),
-        )
-        fun decide(ctx: AuthzContext) =
-            gate.authorizeDatasourceAction("alice", emptySet(), AuthzAction.DATASOURCE_CONNECT, "acme-mysql", ctx)
-
-        assertEquals(AuthzDecision.Allow, decide(AuthzContext(masked = false)))
-        assertIs<AuthzDecision.Deny>(decide(AuthzContext(masked = true)))
-        assertIs<AuthzDecision.Deny>(decide(AuthzContext()))
-    }
 }

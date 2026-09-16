@@ -6,7 +6,6 @@ import com.cedarpolicy.value.CedarList
 import com.cedarpolicy.value.EntityTypeName
 import com.cedarpolicy.value.EntityUID
 import com.cedarpolicy.value.IpAddress
-import com.cedarpolicy.value.PrimBool
 import com.cedarpolicy.value.PrimString
 import com.cedarpolicy.value.Unknown
 import com.cedarpolicy.value.Value
@@ -43,8 +42,6 @@ enum class AuthzAction(val cedarId: String) {
     AUDIT_READ("audit.read"),
     RESULT_READ_UNMASKED("result.read.unmasked"),
     RESULT_READ_MASKED("result.read.masked"),
-    // Never consulted for access — its policies carry the result-cap annotations (docs/result-caps.md).
-    RESULT_CAP("result.cap"),
     DATASOURCE_CONNECT("datasource.connect"),
     // Statement categories (stmt.cat.*) are NOT enumerated here: a statement is authorized by its kind
     // (stmt.kind.<k>, from the statement_exec grant) and the Cedar schema alone maps a kind to its category.
@@ -167,9 +164,6 @@ data class AuthzContext(
     // The statement's classified kind leaf (`select`, `explain`, `insert`, …). Lets a read policy condition
     // on HOW a column is read — e.g. `result.read.unmasked` only under a plan-only EXPLAIN. Server-attested.
     val stmtKind: String? = null,
-    // On a `result.cap` ask for a returned column: whether this principal's read of it is masked
-    // (docs/result-caps.md). Null everywhere else, so a policy reads it has-guarded.
-    val masked: Boolean? = null,
 ) {
     /**
      * The Cedar `context` map. `network_zones` is always present (empty set if none); `tags` too UNLESS
@@ -183,7 +177,6 @@ data class AuthzContext(
         if (includeTags) put("tags", CedarList(tags.map { PrimString(it) as Value }))
         channel?.let { put("channel", PrimString(it)) }
         stmtKind?.let { put("stmt_kind", PrimString(it)) }
-        masked?.let { put("masked", PrimBool(it)) }
         requesterIp?.let { ip ->
             // Defensive: a malformed IP must NEVER break the whole decision. Fail-closed means the attribute
             // is simply absent (a policy conditioning on it then denies), not a thrown IpAddress constructor
@@ -279,9 +272,6 @@ private fun marshal(principal: String, roles: Set<String>, auxEntities: List<Ent
 // catalog identity, '.') denies fail-closed BEFORE this, so the join stays injective.
 private fun tableEuid(datasource: String, catalog: String, schema: String, table: String) =
     TABLE_TYPE.of("$datasource/$catalog/$schema/$table")
-/** The Column entity's attributes: `tagged` = the column carries any classification tag (schema.cedarschema). */
-private fun columnAttrs(col: ColumnRef): Map<String, Value> = mapOf("tagged" to PrimBool(col.tags.isNotEmpty()))
-
 private fun columnEuid(datasource: String, catalog: String, schema: String, table: String, column: String) =
     COLUMN_TYPE.of("$datasource/$catalog/$schema/$table/$column")
 private fun functionEuid(datasource: String, name: String) = FUNCTION_TYPE.of("$datasource/$name")
@@ -562,7 +552,7 @@ fun Authz.authorizeColumns(
                 tableEuid(datasource, col.catalog, col.schema, col.table)
             }
             val colEuid = columnEuid(datasource, col.catalog, col.schema, col.table, col.column)
-            columnEntities[col.key] = Entity(colEuid, columnAttrs(col), (setOf(tblEuid, dsEuid) + col.tags.map(tag)).toSet())
+            columnEntities[col.key] = Entity(colEuid, emptyMap(), (setOf(tblEuid, dsEuid) + col.tags.map(tag)).toSet())
         }
         // Each Table entity carries its datasource parent + its system tag, so a Column inherits the system
         // classification through its Table parent (no second direct system tag on the column).
@@ -706,113 +696,6 @@ fun Authz.authorizeUtilities(
     },
     verdict = { unmasked, masked -> if (unmasked() || masked()) UtilityVerdict.USE else UtilityVerdict.DENIED },
 )
-
-/**
- * A resource a statement reads UNMASKED, for [resolveResultCaps]: the Column/Table/Function/Utility entity
- * as the read gates marshal it, so a `result.cap` policy scoped like a read permit (a tag, a table, a
- * datasource) matches the same way.
- */
-sealed interface CapResource {
-    /** [masked] is this principal's read of the column: false when its value reaches the client in the clear. */
-    data class Column(val ref: ColumnRef, val systemTag: String?, val masked: Boolean) : CapResource
-    data class Table(val ref: TableRef, val systemTag: String?) : CapResource
-    data class Function(val ref: FunctionRef, val systemTag: String?) : CapResource
-    data class Utility(val ref: UtilityRef, val systemTag: String?) : CapResource
-}
-
-/** The limits a statement's `result.cap` asks resolve to. [unbounded] = a forbid matched some ask; null on a
- *  dimension = no cap entry from any permit; [rates] = every rate entry collected, checked by the caller. */
-data class ResolvedCaps(val unbounded: Boolean, val rows: Long?, val bytes: Long?, val rates: List<ResultCap.Rate> = emptyList())
-
-/**
- * Ask `Action::"result.cap"` (docs/result-caps.md) on the datasource and on every [resources] entry, and fold
- * the outcomes: a DENY on any ask (a forbid matched) makes the statement unbounded; else the tightest cap
- * rows and cap bytes across the permits that determined each ALLOW, plus every rate entry they carry. A
- * column ask carries `context.masked`; the others do not. `result.cap` grants nothing — no enforcement path
- * consults it — so an ALLOW here is only "these permits speak"; an evaluation error contributes nothing
- * (the caller's constant default then applies, fail-closed).
- */
-fun Authz.resolveResultCaps(
-    principal: String,
-    roles: Set<String>,
-    datasource: String,
-    resources: List<CapResource>,
-    context: AuthzContext = AuthzContext(),
-    datasourceTags: List<String> = emptyList(),
-): ResolvedCaps {
-    val dsEuid = DATASOURCE_TYPE.of(datasource)
-    val tagEuids = HashMap<String, EntityUID>()
-    val tag = { name: String -> tagEuids.getOrPut(name) { TAG_TYPE.of(name) } }
-    val dsEntity = datasourceEntity(dsEuid, datasource, datasourceTags, tagEuids)
-    fun hasDelim(s: String) = '/' in s || '.' in s
-    val tableEuids = HashMap<Triple<String, String, String>, EntityUID>()
-    val tableSystemTags = HashMap<Triple<String, String, String>, String>()
-    val focal = ArrayList<Entity>()
-    val maskedByEuid = HashMap<EntityUID, Boolean>()
-    for (r in resources) {
-        when (r) {
-            is CapResource.Column -> {
-                val c = r.ref
-                if (hasDelim(datasource) || hasDelim(c.catalog) || hasDelim(c.schema) || hasDelim(c.table) || hasDelim(c.column)) continue
-                val id = Triple(c.catalog, c.schema, c.table)
-                val tblEuid = tableEuids.getOrPut(id) { tableEuid(datasource, c.catalog, c.schema, c.table) }
-                r.systemTag?.let { tableSystemTags[id] = it }
-                focal += Entity(columnEuid(datasource, c.catalog, c.schema, c.table, c.column), columnAttrs(c), (setOf(tblEuid, dsEuid) + c.tags.map(tag)).toSet())
-                maskedByEuid[focal.last().euid] = r.masked
-            }
-            is CapResource.Table -> {
-                val t = r.ref
-                if (hasDelim(datasource) || hasDelim(t.catalog) || hasDelim(t.schema) || hasDelim(t.table)) continue
-                val id = Triple(t.catalog, t.schema, t.table)
-                tableEuids.getOrPut(id) { tableEuid(datasource, t.catalog, t.schema, t.table) }
-                r.systemTag?.let { tableSystemTags[id] = it }
-            }
-            is CapResource.Function -> {
-                if (hasDelim(datasource) || '/' in r.ref.name) continue
-                val parents = mutableSetOf(dsEuid)
-                r.systemTag?.let { parents += tag(it) }
-                focal += Entity(functionEuid(datasource, r.ref.name), emptyMap(), parents)
-            }
-            is CapResource.Utility -> {
-                if (hasDelim(datasource) || '/' in r.ref.command) continue
-                val parents = mutableSetOf(dsEuid)
-                r.systemTag?.let { parents += tag(it) }
-                focal += Entity(utilityEuid(datasource, r.ref.command), emptyMap(), parents)
-            }
-        }
-    }
-    val tableEntities = tableEuids.map { (id, euid) ->
-        val parents = mutableSetOf(dsEuid)
-        tableSystemTags[id]?.let { parents += tag(it) }
-        Entity(euid, emptyMap(), parents)
-    }
-    // A scanned table is asked on its own entity; a column's table is only its parent.
-    val askedTables = resources.filterIsInstance<CapResource.Table>().mapNotNull { r ->
-        tableEuids[Triple(r.ref.catalog, r.ref.schema, r.ref.table)]?.let { euid -> tableEntities.first { it.euid == euid } }
-    }
-    val request = marshal(principal, roles, listOf(dsEntity) + focal + tableEntities + tagEuids.values.map { Entity(it) })
-    val contextMap = context.toCedarMap()
-    val action = ACTION_TYPE.of(AuthzAction.RESULT_CAP.cedarId)
-    val caps = ArrayList<ResultCap>()
-    for (resource in listOf(dsEntity) + focal + askedTables) {
-        val masked = maskedByEuid[resource.euid]
-        val ctx = if (masked == null) contextMap else contextMap + ("masked" to PrimBool(masked))
-        val success = engine.isAuthorized(request, action, resource, ctx).success.orElse(null) ?: continue
-        if (success.errors.isNotEmpty()) continue
-        // Deny-by-default (no permit spoke) contributes nothing; a DENY a forbid determined lifts every limit.
-        if (!success.isAllowed) {
-            if (success.getReason().isNotEmpty()) return ResolvedCaps(unbounded = true, rows = null, bytes = null)
-            continue
-        }
-        caps += engine.capsOf(success.getReason())
-    }
-    return ResolvedCaps(
-        unbounded = false,
-        rows = caps.mapNotNull { it.rows }.minOrNull(),
-        bytes = caps.mapNotNull { it.bytes }.minOrNull(),
-        rates = caps.flatMap { it.rates },
-    )
-}
 
 /**
  * The two once-per-query gates ahead of the catalog/analyzer/column loop (docs/authz-model.md:

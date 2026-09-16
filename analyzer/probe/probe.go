@@ -71,15 +71,6 @@ type ProbeResult struct {
 	// Base columns a literal is compared against in a predicate, keyed by clause. Deliberately NOT folded
 	// into References: the parity oracle diffs that map field-by-field and produces no such fact.
 	PredicateLiterals []PredicateLiteralRef `json:"predicateLiterals,omitempty"`
-	// Base columns whose value reaches the client through the result set (docs/facts-emission.md).
-	Returned []ReturnedColumnInfo `json:"returned,omitempty"`
-}
-
-// ReturnedColumnInfo is one returned base column and the output ordinals it feeds (empty for a write's
-// RETURNING, which has no output_columns).
-type ReturnedColumnInfo struct {
-	Column   string  `json:"column"`
-	Ordinals []int32 `json:"ordinals"`
 }
 
 // PredicateLiteralRef is one literal-vs-column comparison: the resolved base column key and the clause it
@@ -1453,7 +1444,6 @@ func (p *prober) lineage() ProbeResult {
 	}
 
 	origins := []OriginInfo{}
-	returned := returnedColumns{}
 	if p.analyzeQuery != nil {
 		aq := p.qroot
 		if p.root.Kind() == exp.KindCreate {
@@ -1471,18 +1461,13 @@ func (p *prober) lineage() ProbeResult {
 			}
 			for i := range leftSels {
 				srcs := map[string]bool{}
-				returnedSrcs := map[string]bool{}
 				identity := true
 				for _, bs := range branchSelects {
 					if i < len(bs) {
 						b, sub := p.projIdent(bs[i], map[identKey]bool{})
 						addSet(srcs, b)
-						addSet(returnedSrcs, p.returnedProjectionBases(bs[i]))
 						identity = identity && sub
 					}
-				}
-				if !p.isWrite {
-					returned.add(i, returnedSrcs)
 				}
 				if identity {
 					origins = append(origins, OriginInfo{Column: leftSels[i].AliasOrName(), Origins: sortedSet(srcs)})
@@ -1496,11 +1481,8 @@ func (p *prober) lineage() ProbeResult {
 			// row count is a function of the derived value — redacting the cell can't hide it. Such a
 			// query is not safely redactable; its derived outputs stay a DERIVED reference (→ DENY).
 			distinct := aq.Arg("distinct") != nil
-			for i, proj := range aq.Selects() {
+			for _, proj := range aq.Selects() {
 				bases, isID := p.projIdent(proj, map[identKey]bool{})
-				if !p.isWrite {
-					returned.add(i, p.returnedProjectionBases(proj))
-				}
 				switch {
 				case isID:
 					origins = append(origins, OriginInfo{Column: proj.AliasOrName(), Origins: sortedSet(bases)})
@@ -1667,22 +1649,6 @@ func (p *prober) lineage() ProbeResult {
 			return bases, true
 		}
 
-		for _, ret := range p.qroot.FindAll(exp.KindReturning) {
-			for _, projection := range ret.Expressions() {
-				if !p.isStar(projection) {
-					returned.add(-1, p.returnedProjectionBases(projection))
-					continue
-				}
-				if projection.Kind() == exp.KindColumn && projection.TableName() != "" {
-					if src := p.srcInScope(projection, projection.TableName()); src != nil {
-						returned.add(-1, p.relationColumns(src))
-						continue
-					}
-				}
-				returned.add(-1, p.relationColumns(p.writeTargetTable()))
-			}
-		}
-
 		for _, c := range p.qroot.FindAll(exp.KindColumn) {
 			columnScope := p.col2scope[c]
 			if destIDs[c] || (columnScope != nil && columnScope.Expression != p.qroot) {
@@ -1841,44 +1807,7 @@ func (p *prober) lineage() ProbeResult {
 		WriteTarget:       writeTarget,
 		RewrittenSQL:      rewrittenSQL,
 		PredicateLiterals: p.predicateLiteralRefs(),
-		Returned:          returned.sorted(),
 	}
-}
-
-// returnedColumns accumulates base column -> output ordinals; ordinal -1 records a column returned
-// through a position with no output_columns entry (a write's RETURNING).
-type returnedColumns map[string]map[int32]bool
-
-func (r returnedColumns) add(ordinal int, bases map[string]bool) {
-	for b := range bases {
-		if r[b] == nil {
-			r[b] = map[int32]bool{}
-		}
-		if ordinal >= 0 {
-			r[b][int32(ordinal)] = true
-		}
-	}
-}
-
-func (r returnedColumns) sorted() []ReturnedColumnInfo {
-	if len(r) == 0 {
-		return nil
-	}
-	keys := make([]string, 0, len(r))
-	for k := range r {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	out := make([]ReturnedColumnInfo, 0, len(keys))
-	for _, k := range keys {
-		ords := make([]int32, 0, len(r[k]))
-		for o := range r[k] {
-			ords = append(ords, o)
-		}
-		sort.Slice(ords, func(i, j int) bool { return ords[i] < ords[j] })
-		out = append(out, ReturnedColumnInfo{Column: k, Ordinals: ords})
-	}
-	return out
 }
 
 // predicateLiteralRefs renders the collected literal-vs-column comparisons in a stable order, so a golden
@@ -2466,83 +2395,6 @@ func (p *prober) redactableTransform(node exp.Expression) bool {
 		}
 	}
 	return true
-}
-
-func (p *prober) returnedProjectionBases(proj exp.Expression) map[string]bool {
-	out := map[string]bool{}
-	var collect func(exp.Expression)
-	collect = func(node exp.Expression) {
-		node = unwrapParen(node)
-		for node != nil && node.Kind() == exp.KindAlias {
-			node = unwrapParen(node.This())
-		}
-		if node == nil {
-			return
-		}
-		switch {
-		case node.Kind() == exp.KindExists:
-			return
-		case node.Kind() == exp.KindSubquery:
-			collect(node.This())
-			return
-		case node.Is(exp.TraitSetOperation):
-			for _, branch := range p.leafSelects(node) {
-				for _, projection := range branch.Selects() {
-					collect(projection)
-				}
-			}
-			return
-		case node.Kind() == exp.KindSelect:
-			for _, projection := range node.Selects() {
-				collect(projection)
-			}
-			return
-		case node.Kind() == exp.KindColumn:
-			if node.This() != nil && node.This().Kind() == exp.KindStar {
-				if src := p.srcInScope(node, node.TableName()); src != nil {
-					addSet(out, p.relationColumns(src))
-				}
-				return
-			}
-			if rel, ok := p.relationOfNode(node, 0); ok {
-				addSet(out, p.relationColumns(rel))
-				return
-			}
-			addSet(out, p.resolve(node, map[resolveKey]bool{}))
-			return
-		case node.Kind() == exp.KindTableColumn:
-			if rel, ok := p.relationOfNode(node, 0); ok {
-				addSet(out, p.relationColumns(rel))
-			}
-			return
-		case node.Kind() == exp.KindDot:
-			if rel, ok := p.relationOfNode(node.This(), 0); ok {
-				field := ""
-				if node.Expr() != nil {
-					field = node.Expr().Name()
-				}
-				if bases, found := p.relationField(rel, field); found {
-					addSet(out, bases)
-				} else {
-					addSet(out, p.relationColumns(rel))
-				}
-				return
-			}
-		}
-		// A window's partition/order keys and an ordered aggregate's ORDER BY shape the result; only the
-		// value operand is returned.
-		if node.Kind() == exp.KindWindow || node.Kind() == exp.KindOrder {
-			collect(node.This())
-			return
-		}
-		for _, value := range exp.ArgsOf(node) {
-			for _, child := range expressionsFromAny(value) {
-				collect(child)
-			}
-		}
-	}
-	collect(proj)
-	return out
 }
 
 func (p *prober) projIdent(proj exp.Expression, seen map[identKey]bool) (map[string]bool, bool) {

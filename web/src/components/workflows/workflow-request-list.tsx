@@ -16,7 +16,6 @@ const STATUS_STYLE: Record<string, string> = {
 const KIND_STYLE: Record<WorkflowRequestEntry['request']['kind'], string> = {
   ROLE: 'border-violet-500/30 bg-violet-500/10 text-violet-600 dark:text-violet-400',
   QUERY: 'border-sky-500/30 bg-sky-500/10 text-sky-600 dark:text-sky-400',
-  RATE_RESET: 'border-amber-500/30 bg-amber-500/10 text-amber-600 dark:text-amber-400',
 }
 
 function formatRelative(iso: string, t: Translator): string {
@@ -35,7 +34,6 @@ function requestTitle(entry: WorkflowRequestEntry, t: Translator): string {
   const { request } = entry
   const role =
     request.roleName ?? (request.roleId != null ? `#${request.roleId}` : t('values.unknownRole'))
-  if (request.kind === 'RATE_RESET') return t('requestList.rateResetTitle')
   return request.kind === 'ROLE'
     ? t('requestList.roleAccessTitle', { role })
     : request.title || t('requestList.queryApprovalTitle', { id: request.id })
@@ -92,7 +90,7 @@ export function WorkflowRequestList({
             <span
               className={cn(
                 'absolute inset-y-0 left-0 w-[3px]',
-                request.kind === 'ROLE' ? 'bg-violet-500' : request.kind === 'RATE_RESET' ? 'bg-amber-500' : 'bg-sky-500',
+                request.kind === 'ROLE' ? 'bg-violet-500' : 'bg-sky-500',
                 !selected && 'opacity-60 group-hover:opacity-100',
               )}
             />

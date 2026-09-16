@@ -37,10 +37,7 @@ type pgTargetDbErr struct {
 
 func (e *pgTargetDbErr) Error() string { return e.message }
 
-// emit receives each frame as the CLIENT should see it (masks already applied) plus the byte size of the
-// TARGET-DB row it came from, so a caller measuring result volume charges the target's row rather than the
-// rewritten one. rowBytes is 0 for every frame that is not a DataRow.
-func (c *sessionCore) streamResult(masks []*pb.ColumnMask, opts streamOpts, emit func(message pgproto3.BackendMessage, rowBytes int64) error) (targetDbErr error, err error) {
+func (c *sessionCore) streamResult(masks []*pb.ColumnMask, opts streamOpts, emit func(pgproto3.BackendMessage) error) (targetDbErr error, err error) {
 	var masker *engine.RowMasker
 	columnCount := -1
 	fail := func(cause error) bool {
@@ -49,13 +46,12 @@ func (c *sessionCore) streamResult(masks []*pb.ColumnMask, opts streamOpts, emit
 		}
 		return opts.soft
 	}
-	rowBytes := int64(0)
 	emitFrame := func(message pgproto3.BackendMessage, data bool) bool {
 		if data && (targetDbErr != nil || opts.soft && err != nil) {
 			return true
 		}
 		if emit != nil {
-			if cause := emit(message, rowBytes); cause != nil {
+			if cause := emit(message); cause != nil {
 				return fail(cause)
 			}
 		}
@@ -69,7 +65,6 @@ func (c *sessionCore) streamResult(masks []*pb.ColumnMask, opts streamOpts, emit
 		}
 		out := message
 		data := true
-		rowBytes = 0
 		switch message := message.(type) {
 		case *pgproto3.RowDescription:
 			columnCount = len(message.Fields)
@@ -97,7 +92,6 @@ func (c *sessionCore) streamResult(masks []*pb.ColumnMask, opts streamOpts, emit
 				}
 				continue
 			}
-			rowBytes = dataRowBytes(message)
 			if masker != nil {
 				out = maskDataRow(message, masker)
 			}
@@ -160,13 +154,12 @@ func (c *sessionCore) streamResult(masks []*pb.ColumnMask, opts streamOpts, emit
 }
 
 type rowsCollector struct {
-	expected int
-	budget   engine.RowBudget
-	result   *engine.StatementResult
-	failed   error
+	expected, maxRows int
+	result            *engine.StatementResult
+	failed            error
 }
 
-func (c *rowsCollector) emit(message pgproto3.BackendMessage, rowBytes int64) error {
+func (c *rowsCollector) emit(message pgproto3.BackendMessage) error {
 	if c.failed != nil {
 		return nil
 	}
@@ -185,7 +178,7 @@ func (c *rowsCollector) emit(message pgproto3.BackendMessage, rowBytes int64) er
 		if c.expected > 0 && len(message.Values) != c.expected {
 			return fail(fmt.Errorf("probe row returned %d columns, want %d", len(message.Values), c.expected))
 		}
-		if c.budget.Admit(len(c.result.Rows), rowBytes) {
+		if c.maxRows <= 0 || len(c.result.Rows) < c.maxRows {
 			c.result.Rows = append(c.result.Rows, decodeTextRow(message))
 		}
 	case *pgproto3.CommandComplete:
@@ -251,25 +244,6 @@ func firstErr(errs ...error) error {
 	return nil
 }
 
-// resultCapError is the 57014 a client sees INSTEAD of the capped statement's own terminator — the same
-// SQLSTATE PostgreSQL itself sends for a cancelled query. Nil while the next row still fits.
-func resultCapError(dec *engine.Decision, relayed engine.RelayStats, rowBytes int64) *pgproto3.ErrorResponse {
-	message := dec.CapExceeded(relayed, rowBytes)
-	if message == "" {
-		return nil
-	}
-	return &pgproto3.ErrorResponse{
-		Severity: "ERROR", Code: "57014", Message: message,
-		Hint: "Request unbounded access to read the full result.",
-	}
-}
-
-func (s *Server) cancelCappedQuery(sess *session) {
-	if sess.keyData.ProcessID != 0 {
-		_ = sendCancelRequest(s.targetDb.Host, s.targetDb.Port, sess.keyData.ProcessID, sess.keyData.SecretKey)
-	}
-}
-
 func (s *Server) handleQuery(sess *session, sql string) error {
 	ref := s.refetcher(sess, false)
 	start := time.Now()
@@ -277,36 +251,16 @@ func (s *Server) handleQuery(sess *session, sql string) error {
 	relayStatus := engine.StatusError
 	decision, denied, err := engine.ServeStatement(sess.qe,
 		sess.authzInput(sql, sess.token, sess.clientAddr, sess.connectionID, ref.RunAll), ref, nil,
-		func(toSend string, masks []*pb.ColumnMask, dec *engine.Decision) (bool, error) {
+		func(toSend string, masks []*pb.ColumnMask) (bool, error) {
 			sess.targetDb.Send(&pgproto3.Query{String: toSend})
 			if err := sess.targetDb.Flush(); err != nil {
 				return false, err
 			}
 			bufferedFrames := 0
-			var capped *pgproto3.ErrorResponse
-			targetDbErr, streamErr := sess.streamResult(masks, streamOpts{}, func(message pgproto3.BackendMessage, rowBytes int64) error {
-				switch message.(type) {
-				case *pgproto3.DataRow:
-					if capped != nil {
-						return nil
-					}
-					capped = resultCapError(dec, relayStats, rowBytes)
-					if capped != nil {
-						s.cancelCappedQuery(sess)
-						return nil
-					}
+			targetDbErr, streamErr := sess.streamResult(masks, streamOpts{}, func(message pgproto3.BackendMessage) error {
+				if row, ok := message.(*pgproto3.DataRow); ok {
 					relayStats.Rows++
-					relayStats.Bytes += rowBytes
-				case *pgproto3.ReadyForQuery:
-					if capped != nil {
-						sess.client.Send(capped)
-					}
-				default:
-					// Past the cap the 57014 IS the client's terminator, so every remaining frame of this
-					// Query is swallowed — including a following statement's own result frames.
-					if capped != nil {
-						return nil
-					}
+					relayStats.Bytes += dataRowBytes(row)
 				}
 				sess.client.Send(message)
 				bufferedFrames++
@@ -323,13 +277,13 @@ func (s *Server) handleQuery(sess *session, sql string) error {
 			if err := sess.client.Flush(); err != nil {
 				return false, err
 			}
-			relayStatus = engine.RelayStatus(targetDbErr == nil && capped == nil, nil)
-			return targetDbErr == nil && capped == nil, nil
+			relayStatus = engine.RelayStatus(targetDbErr == nil, nil)
+			return targetDbErr == nil, nil
 		})
 	// Post-relay, best-effort completion: only a relayed (Proceed) statement reports. A DENY relayed
 	// nothing, and EmitCompletion additionally no-ops for a decision with no audit id.
 	if !denied {
-		sess.qe.AwaitCompletion(engine.EmitCompletion(s.client, decision, relayStats, relayStatus, start))
+		engine.EmitCompletion(s.client, decision, relayStats, relayStatus, start)
 	}
 	if err != nil {
 		var fail engine.FailError

@@ -21,14 +21,10 @@ class GrpcMappersTest {
         denyReason: String? = null,
         unmaskablePermitted: Boolean = false,
         sanitizeDiagnostics: Boolean = false,
-        maxRows: Long? = null,
-        maxBytes: Long? = null,
     ) = DecisionContext(
         action = action,
         denyReason = denyReason,
         masks = masks,
-        maxRows = maxRows,
-        maxBytes = maxBytes,
         piiTouched = emptyList(),
         effectiveRoles = effectiveRoles,
         failedStage = null,
@@ -59,16 +55,6 @@ class GrpcMappersTest {
         assertTrue(d.verdict.hasRewrittenSql())
         assertTrue(d.verdict.unmaskablePermitted)
         assertTrue(d.verdict.sanitizeDiagnostics)
-    }
-
-    @Test
-    fun `result caps cross explicitly and an unbounded decision sends zero`() {
-        val capped = ctx(EnfAction.ALLOW, maxRows = 500, maxBytes = 5_000_000).toWireDecision(1, 0, emptyList()).verdict
-        assertEquals(500L, capped.maxRows)
-        assertEquals(5_000_000L, capped.maxBytes)
-        val unbounded = ctx(EnfAction.ALLOW).toWireDecision(1, 0, emptyList()).verdict
-        assertEquals(0L, unbounded.maxRows)
-        assertEquals(0L, unbounded.maxBytes)
     }
 
     @Test

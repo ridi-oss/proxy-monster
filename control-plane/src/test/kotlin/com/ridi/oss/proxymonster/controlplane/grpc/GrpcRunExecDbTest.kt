@@ -250,42 +250,6 @@ class GrpcRunExecDbTest {
     }
 
     @Test
-    fun `a cap-truncated run carries the verdict cap and its notice flag`() = runBlocking {
-        val decisionId = audit(Decision.ALLOW, emptyList())
-        val response = exchange("select id from users") { _, requests ->
-            requests.send(
-                proxyRunMsg {
-                    decision = runDecision {
-                        decision = WireEnfAction.ALLOW
-                        this.decisionId = decisionId
-                        maxRows = 100
-                        maxBytes = 4000
-                    }
-                },
-            )
-            requests.send(rowsChunk(listOf("id"), listOf(listOf("1"))))
-            requests.send(proxyRunMsg { done = runDone { rowsAffected = -1; truncatedByCap = true } })
-        }.getOrThrow()
-
-        assertEquals(EnfAction.ALLOW, response.decision)
-        assertEquals(100L, response.capRows)
-        assertTrue(response.truncatedByCap)
-
-        val uncapped = exchange("select id from users") { _, requests ->
-            requests.send(
-                proxyRunMsg {
-                    decision = runDecision { decision = WireEnfAction.ALLOW; this.decisionId = decisionId }
-                },
-            )
-            requests.send(rowsChunk(listOf("id"), listOf(listOf("1"))))
-            requests.send(proxyRunMsg { done = runDone { rowsAffected = -1 } })
-        }.getOrThrow()
-
-        assertNull(uncapped.capRows)
-        assertFalse(uncapped.truncatedByCap)
-    }
-
-    @Test
     fun `DENY is terminal and never returns rows`() = runBlocking {
         val decisionId = audit(Decision.DENY, listOf("app.public.users.ssn"))
         val response = exchange("select ssn from users") { _, requests ->

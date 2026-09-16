@@ -14,52 +14,12 @@ const (
 	StatusCanceled = "canceled"
 )
 
-// RelayStats is the running result-volume tally for one statement: the number of data rows that reached
+// RelayStats is the post-relay result-volume tally for one statement: the number of data rows that reached
 // the client and the byte size of that row data. Rows catch "many records"; bytes catch "few wide rows /
-// big blob". It is both the audit signal for the mass-export rule and — as the relay accumulates it — what
-// the verdict's result caps are measured against ([Decision.CapExceeded]).
+// big blob". It is audit signal for the mass-export rule, never an enforcement input.
 type RelayStats struct {
 	Rows  int64
 	Bytes int64
-}
-
-func (s RelayStats) Plus(other RelayStats) RelayStats {
-	return RelayStats{Rows: s.Rows + other.Rows, Bytes: s.Bytes + other.Bytes}
-}
-
-// RowBudget bounds an in-memory result collection (the run channel's paged reads) the way [RelayStats]
-// plus a [Decision] bounds a wire relay. A zero MaxRows/MaxBytes is uncapped on that dimension.
-type RowBudget struct {
-	MaxRows  int
-	MaxBytes int64
-	bytes    int64
-	// Overflowed is set once a row was left out; ByteCapped distinguishes the byte bound from the row one,
-	// since only the byte bound is the verdict's alone (a row bound may be the caller's own page size).
-	Overflowed, ByteCapped bool
-}
-
-// Admit reports whether a row of [rowBytes] fits, given [collected] rows already taken, and charges it to
-// the budget when it does. Overflow LATCHES: once a row is refused every later one is too, even a narrow
-// one that would still fit, so the collected rows are the result's contiguous prefix rather than whichever
-// of its rows happened to be small.
-func (b *RowBudget) Admit(collected int, rowBytes int64) bool {
-	switch {
-	case b.Overflowed:
-	case b.MaxRows > 0 && collected >= b.MaxRows:
-		b.Overflowed = true
-	case b.MaxBytes > 0 && rowBytes > b.MaxBytes-b.bytes:
-		b.Overflowed, b.ByteCapped = true, true
-	default:
-		b.bytes += rowBytes
-		return true
-	}
-	return false
-}
-
-// CapTruncated reports whether the VERDICT's cap, not the caller's [clientRows] page size, is why this
-// budget left rows out.
-func (b *RowBudget) CapTruncated(dec *Decision, clientRows int) bool {
-	return b.Overflowed && (b.ByteCapped || dec.CapBinds(clientRows))
 }
 
 // CompletionReport is the proxy's post-relay result-volume signal for one statement, correlated to its
@@ -91,18 +51,15 @@ func RelayStatus(clean bool, err error) string {
 	return StatusError
 }
 
-// EmitCompletion fires a post-relay completion report on its own goroutine and returns a channel that closes
-// when the report has been sent (or given up on). It never blocks the caller and never surfaces an error: a
-// lost completion degrades the audit volume signal, not the client session. The returned channel is what
-// lets the SAME connection's next Decide see this statement's volume (QueryEngine.AwaitCompletion): a
-// sequential dump script must not outrun its own budget. No report is sent for a statement that was never
-// relayed (dec nil) or whose decision carries no audit id (DecisionID 0, a fail-closed path); the channel is
-// then already closed.
-func EmitCompletion(reporter CompletionReporter, dec *Decision, stats RelayStats, status string, start time.Time) <-chan struct{} {
-	done := make(chan struct{})
+// EmitCompletion fires a best-effort post-relay completion report and returns immediately. It NEVER blocks
+// the caller — the report goes on its own goroutine, off the client session's critical path — and NEVER
+// surfaces an error, because a completion is an audit-only signal. No report is sent for a statement that
+// was never relayed to the client (dec is nil) or whose decision carries no audit id (DecisionID 0 — a
+// decision the control plane did not record, e.g. a fail-closed path); a DENY relays nothing and so is
+// never reached here. duration is measured from start to now.
+func EmitCompletion(reporter CompletionReporter, dec *Decision, stats RelayStats, status string, start time.Time) {
 	if reporter == nil || dec == nil || dec.DecisionID == 0 {
-		close(done)
-		return done
+		return
 	}
 	report := CompletionReport{
 		DecisionID:    dec.DecisionID,
@@ -111,9 +68,5 @@ func EmitCompletion(reporter CompletionReporter, dec *Decision, stats RelayStats
 		Status:        status,
 		DurationMs:    time.Since(start).Milliseconds(),
 	}
-	go func() {
-		defer close(done)
-		reporter.ReportCompletion(report)
-	}()
-	return done
+	go reporter.ReportCompletion(report)
 }

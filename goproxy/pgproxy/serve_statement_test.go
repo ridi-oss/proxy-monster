@@ -51,7 +51,7 @@ func (s *RunSession) execute(sql string, maxRows int) ([]string, [][]*string, in
 		return nil, nil, 0, err
 	}
 	result := engine.StatementResult{Rows: make([][]*string, 0)}
-	collector := rowsCollector{maxRows: maxRows, result: &result}
+	collector := rowsCollector{budget: engine.RowBudget{MaxRows: maxRows}, result: &result}
 	targetDbErr, streamErr := s.streamResult(nil, streamOpts{extended: true}, collector.emit)
 	err = firstErr(targetDbErr, streamErr, collector.failed)
 	if streamErr != nil || collector.failed != nil {
@@ -157,7 +157,7 @@ func TestStreamResultMaskUnboundEmitsNoDataRow(t *testing.T) {
 	defer closeCore()
 	ordinal := int32(99)
 	dataRows := 0
-	_, err := core.streamResult([]*pb.ColumnMask{{Ordinal: &ordinal}}, streamOpts{}, func(message pgproto3.BackendMessage) error {
+	_, err := core.streamResult([]*pb.ColumnMask{{Ordinal: &ordinal}}, streamOpts{}, func(message pgproto3.BackendMessage, _ int64) error {
 		if _, ok := message.(*pgproto3.DataRow); ok {
 			dataRows++
 		}
@@ -312,7 +312,7 @@ func TestStreamResultTargetDbErrStaysProxyInternalWithBothForms(t *testing.T) {
 		&pgproto3.ReadyForQuery{TxStatus: 'I'},
 	))
 	defer closeCore()
-	targetDbErr, _ := core.streamResult(nil, streamOpts{soft: true}, func(pgproto3.BackendMessage) error { return nil })
+	targetDbErr, _ := core.streamResult(nil, streamOpts{soft: true}, func(pgproto3.BackendMessage, int64) error { return nil })
 	if targetDbErr == nil {
 		t.Fatal("expected a target-DB error from the ErrorResponse")
 	}

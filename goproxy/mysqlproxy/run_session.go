@@ -67,22 +67,23 @@ func (s *RunSession) ServeStatement(sql string, maxRows int) (result engine.Stat
 		ConnectionID:   s.connectionID,
 		ProbeNamespace: func() (engine.NamespaceProbe, error) { return probeNamespaceObservation(s.conn, true) },
 		RunCommands:    s.ref.RunAll,
-	}, s.ref, s.guard, func(toSend string, masks []*pb.ColumnMask) (clean bool, runErr error) {
+	}, s.ref, s.guard, func(toSend string, masks []*pb.ColumnMask, dec *engine.Decision) (clean bool, runErr error) {
 		payload := mysqlwire.ComQueryPayload(toSend)
 		if len(payload) >= mysqlwire.MaxPacketPayload {
 			return false, errors.New("query exceeds the maximum MySQL packet payload")
 		}
-		capped := maxRows > 0
-		if capped {
-			if maxRows == math.MaxInt {
+		pageRows := dec.PageRows(maxRows)
+		limited := pageRows > 0
+		if limited {
+			if pageRows == math.MaxInt {
 				return false, errors.New("max rows exceeds MySQL SQL_SELECT_LIMIT range")
 			}
-			if err := execTargetDbSet(s.conn, "SET SQL_SELECT_LIMIT = "+strconv.Itoa(maxRows+1)); err != nil {
+			if err := execTargetDbSet(s.conn, "SET SQL_SELECT_LIMIT = "+strconv.Itoa(pageRows+1)); err != nil {
 				return false, err
 			}
 		}
 		reset := func() error {
-			if !capped {
+			if !limited {
 				return nil
 			}
 			return execTargetDbSet(s.conn, "SET SQL_SELECT_LIMIT = DEFAULT")
@@ -92,7 +93,11 @@ func (s *RunSession) ServeStatement(sql string, maxRows int) (result engine.Stat
 			_ = reset()
 			return false, err
 		}
-		collect := textResultCollector{maxRows: maxRows, masks: masks, result: &result}
+		collect := textResultCollector{
+			budget: engine.RowBudget{MaxRows: pageRows, MaxBytes: dec.MaxBytes},
+			masks:  masks,
+			result: &result,
+		}
 		h := collect.hooks()
 		h.OnSysVars = checkSysVarInvariants
 		// A run result is stored and re-gated per viewer at view time, so — unlike the wire path — redaction
@@ -103,7 +108,7 @@ func (s *RunSession) ServeStatement(sql string, maxRows int) (result engine.Stat
 			rawErrPacket = append([]byte(nil), raw...)
 			return sanitizeErrPacket(raw)
 		}
-		clean, relayErr := relayResultSet(s.conn, true, h)
+		clean, _, relayErr := relayResultSet(s.conn, true, h)
 		s.qe.MarkNamespaceDirty()
 		resetErr := reset()
 		if relayErr != nil {
@@ -123,6 +128,7 @@ func (s *RunSession) ServeStatement(sql string, maxRows int) (result engine.Stat
 		if resetErr != nil {
 			return false, resetErr
 		}
+		result.TruncatedByCap = collect.budget.CapTruncated(dec, maxRows)
 		return clean, nil
 	})
 	return result, err

@@ -14,6 +14,7 @@ import com.cedarpolicy.model.policy.PolicySet
 import com.cedarpolicy.model.schema.Schema
 import com.cedarpolicy.value.EntityUID
 import com.cedarpolicy.value.Value
+import java.time.Duration
 
 /**
  * The bundled Cedar schema (resources/authz/schema.cedarschema) plus the stateless half of Cedar
@@ -25,6 +26,7 @@ import com.cedarpolicy.value.Value
  * no per-call mutable state, every JNI call is given the full policy/entity/request payload.
  */
 private val CONTEXT_TAG_ACTION = Regex("""Action::"context\.tag::([^"]+)"""")
+private val RESULT_CAP_ACTION = Regex("""Action::"result\.cap"""")
 
 /**
  * The tag names a Cedar policy targets via a `context.tag::<name>` action — the tag vocabulary is
@@ -241,7 +243,26 @@ object CedarSchema {
         val typeErrors = response.success
             .map { success -> success.validationErrors.map { it.error.message } }
             .orElseGet { emptyList() }
-        return parseErrors + typeErrors + retiredUtilityErrors(cedarSrc)
+        val capErrors = if (parseErrors.isEmpty()) capAnnotationErrors(policy) else emptyList()
+        return parseErrors + typeErrors + retiredUtilityErrors(cedarSrc) + capErrors
+    }
+
+    /** A cap annotation must parse, and must sit on a `result.cap` policy — anywhere else it is inert, which
+     *  reads as a cap that never applies; refuse both at the write. */
+    private fun capAnnotationErrors(policy: Policy): List<String> = try {
+        val cap = ResultCap.parse(policy.annotations)
+        if (!cap.isEmpty && !RESULT_CAP_ACTION.containsMatchIn(policy.source)) {
+            listOf("a @cap annotation belongs on an Action::\"result.cap\" policy")
+        } else {
+            emptyList()
+        }
+    } catch (e: IllegalArgumentException) {
+        listOf(e.message ?: "malformed cap annotation")
+    } catch (e: ArithmeticException) {
+        listOf("cap annotation overflows")
+    } catch (_: Exception) {
+        // The policy did not parse at all; the parse/type errors above already say so.
+        emptyList()
     }
 
     /**
@@ -265,6 +286,80 @@ object CedarSchema {
         "SHOW_GRANTS" to "Action::\"stmt.kind.show_grants\" (or stmt.cat.admin.account)",
         "SHOW_PROCESSLIST" to "Action::\"stmt.kind.show_processlist\" (or stmt.cat.admin.process)",
     )
+}
+
+
+/**
+ * The limits a `result.cap` permit annotates (docs/result-caps.md): `@cap("<entry>, <entry>, …")`, at most
+ * once per policy (Cedar keeps annotations as a map by name). An entry `<amount>` caps one result; an entry
+ * `<amount>/<window>` is a rate over a rolling window. An amount is a row count, or bytes with a
+ * `KB`/`MB`/`GB` suffix (10^3); a bare `K`/`M`/`G` is refused. A window is `<n>m`, `<n>h`, or `<n>d`, at
+ * most 31 days. Cedar ignores annotations when it decides; the control plane folds these off the permits
+ * that determined an ALLOW.
+ */
+data class ResultCap(val rows: Long? = null, val bytes: Long? = null, val rates: List<Rate> = emptyList()) {
+    val isEmpty: Boolean get() = rows == null && bytes == null && rates.isEmpty()
+
+    /** One rate entry: [rows] xor [bytes] over [window]. [spec] is the entry text, for the deny reason. */
+    data class Rate(val rows: Long?, val bytes: Long?, val window: Duration, val spec: String)
+
+    companion object {
+        const val NAME = "cap"
+        val MAX_WINDOW: Duration = Duration.ofDays(31)
+
+        /** Parse a policy's annotations; a malformed value throws so a write rejects it and a load fails. */
+        fun parse(annotations: Map<String, String>): ResultCap {
+            val raw = annotations[NAME] ?: return ResultCap()
+            var rows: Long? = null
+            var bytes: Long? = null
+            val rates = ArrayList<Rate>()
+            for (entry in raw.split(',').map { it.trim() }) {
+                require(entry.isNotEmpty()) { "@cap has an empty entry in \"$raw\"" }
+                val slash = entry.indexOf('/')
+                if (slash < 0) {
+                    val (r, b) = parseAmount(entry)
+                    if (r != null) rows = minOf(rows ?: r, r)
+                    if (b != null) bytes = minOf(bytes ?: b, b)
+                } else {
+                    val (r, b) = parseAmount(entry.substring(0, slash))
+                    rates += Rate(r, b, parseWindow(entry.substring(slash + 1)), entry)
+                }
+            }
+            return ResultCap(rows, bytes, rates)
+        }
+
+        private val AMOUNT = Regex("""(\d+)\s*([KMG]B)?""", RegexOption.IGNORE_CASE)
+        private val WINDOW = Regex("""(\d+)\s*([mhd])""", RegexOption.IGNORE_CASE)
+
+        /** rows (no suffix) or bytes (`KB`/`MB`/`GB`). A bare `K`/`M`/`G` reads as rows or bytes alike, so it fails. */
+        private fun parseAmount(raw: String): Pair<Long?, Long?> {
+            val match = AMOUNT.matchEntire(raw.trim())
+            val value = match?.groupValues?.get(1)?.toLongOrNull()
+            require(match != null && value != null && value > 0) {
+                "@cap amount must be a positive row count or bytes with a KB/MB/GB suffix, got \"$raw\""
+            }
+            val multiplier = when (match.groupValues[2].take(1).uppercase()) {
+                "K" -> 1_000L
+                "M" -> 1_000_000L
+                "G" -> 1_000_000_000L
+                else -> return value to null
+            }
+            return null to Math.multiplyExact(value, multiplier)
+        }
+
+        private fun parseWindow(raw: String): Duration {
+            val match = WINDOW.matchEntire(raw.trim())
+            val n = match?.groupValues?.get(1)?.toLongOrNull()
+            require(match != null && n != null && n > 0) { "@cap rate window must be <n>m, <n>h, or <n>d, got \"$raw\"" }
+            val window = when (match.groupValues[2].lowercase()) {
+                "m" -> Duration.ofMinutes(n)
+                "h" -> Duration.ofHours(n)
+                else -> Duration.ofDays(n)
+            }
+            require(window <= MAX_WINDOW) { "@cap rate window must not exceed 31d, got \"$raw\"" }
+            return window
+        }
+    }
 }
 
 /**
@@ -291,6 +386,7 @@ class CedarEngine private constructor(private val sources: () -> List<Pair<Long,
     @Volatile private var cachedVersion = Long.MIN_VALUE
     @Volatile private var cachedPolicies: PolicySet? = null
     @Volatile private var cachedVocab: Set<String> = emptySet()
+    @Volatile private var cachedCaps: Map<String, ResultCap> = emptyMap()
 
     /** How many times [policySet] has actually rebuilt the [PolicySet] — exposed for
      *  CedarEngineCacheTest's O(1)-per-query assertion; not meant for production use. */
@@ -314,10 +410,19 @@ class CedarEngine private constructor(private val sources: () -> List<Pair<Long,
         val v = version()
         if (cachedPolicies != null && v == cachedVersion) return
         val srcs = sources()
-        cachedPolicies = PolicySet(srcs.map { (id, src) -> Policy(src, "policy-$id") }.toSet())
+        val policies = srcs.map { (id, src) -> Policy(src, "policy-$id") }
+        cachedPolicies = PolicySet(policies.toSet())
         cachedVocab = srcs.flatMapTo(mutableSetOf()) { extractContextTagNames(it.second) }
+        cachedCaps = policies.associate { it.id to ResultCap.parse(it.annotations) }.filterValues { !it.isEmpty }
         cachedVersion = v
         buildCount++
+    }
+
+    /** The cap annotations of the policies a decision named as its reasons — only permits carry them. */
+    fun capsOf(reasons: Set<String>): List<ResultCap> {
+        rebuildIfStale()
+        val caps = cachedCaps
+        return reasons.mapNotNull { caps[it] }
     }
 
     private fun policySet(): PolicySet {

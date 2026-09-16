@@ -15,14 +15,6 @@ import (
 	"github.com/ridi-oss/sqlglot-go/dialects"
 )
 
-// Queries yield names or (schema, name) pairs; an empty query denotes an unused tier.
-type FunctionCatalogSQL struct {
-	BuiltinFunctions      string
-	SystemFunctionSchemas string
-	UdfSchemas            string
-	LoadableFunctions     string
-}
-
 // MySqlDb is the engine.Db adapter for MySQL.
 type MySqlDb struct{}
 
@@ -64,17 +56,8 @@ func (MySqlDb) NormalizeColumns(lowerCaseTableNames int, columns []*analyzerpb.C
 	return out
 }
 
-// FunctionCatalogSQL for MySQL. BuiltinFunctions/SystemFunctionSchemas are empty — natives are in no
-// catalog (the control plane injects its pinned list) and are never schema-qualified.
 // MySQL routine and native names are case-insensitive regardless of lower_case_table_names.
 func (MySqlDb) FoldFunctionName(name string) string { return dialects.MySQLLower(name) }
-
-func (MySqlDb) FunctionCatalogSQL() FunctionCatalogSQL {
-	return FunctionCatalogSQL{
-		UdfSchemas:        `SELECT ROUTINE_SCHEMA, ROUTINE_NAME FROM information_schema.ROUTINES WHERE ROUTINE_TYPE = 'FUNCTION'`,
-		LoadableFunctions: `SELECT name FROM mysql.func`,
-	}
-}
 
 // mysqlSchemaFilter renders the WHERE-clause comparison for schema (a possibly-canonical spelling —
 // see analyzer/probe.NormalizeRelation) against the live TABLE_SCHEMA. Mode 0 never folds schema names
@@ -93,6 +76,24 @@ func mysqlSchemaFilter(column, schema string) string {
 }
 
 // SchemaColumnsSQL returns one schema fragment without excluding system schemas.
+// RoutinesSQL lists (schema, name) for every stored function; mysql.func loadables have no schema and
+// are listed under "mysql".
+func (MySqlDb) RoutinesSQL() string {
+	return `SELECT ROUTINE_SCHEMA, ROUTINE_NAME FROM information_schema.ROUTINES WHERE ROUTINE_TYPE = 'FUNCTION'
+UNION ALL SELECT 'mysql', name FROM mysql.func`
+}
+
+// Ordered by binary name: the control plane compares pushed lists positionally.
+func (MySqlDb) SchemaRoutinesSQL(schema string) string {
+	routines := fmt.Sprintf(`SELECT ROUTINE_NAME AS name FROM information_schema.ROUTINES WHERE ROUTINE_TYPE = 'FUNCTION' AND %s`, mysqlSchemaFilter("ROUTINE_SCHEMA", schema))
+	if schema == "mysql" {
+		routines += `
+UNION ALL SELECT name FROM mysql.func`
+	}
+	return routines + `
+ORDER BY CAST(name AS BINARY)`
+}
+
 func (MySqlDb) SchemaColumnsSQL(schema string) string {
 	return fmt.Sprintf(`SELECT TABLE_SCHEMA, TABLE_NAME, COLUMN_NAME, DATA_TYPE, ORDINAL_POSITION, IS_NULLABLE
 FROM information_schema.COLUMNS
@@ -100,8 +101,9 @@ WHERE %s
 ORDER BY CAST(TABLE_NAME AS BINARY), ORDINAL_POSITION, CAST(COLUMN_NAME AS BINARY)`, mysqlSchemaFilter("TABLE_SCHEMA", schema))
 }
 
-// SchemaHashSQL hashes the exact six-field fragment serialization and returns hash, aggregate length,
-// and row count. SET_VAR scopes the large GROUP_CONCAT bound to this one statement.
+// SchemaHashSQL hashes columns and routines as one row set; a routine is the row
+// (app, <empty table>, add_tax, function, 0, NO), which no real column row can equal. Returns hash,
+// aggregate length, row count. SET_VAR raises the GROUP_CONCAT limit for this statement only.
 func (MySqlDb) SchemaHashSQL(schema string, _ [][]*string) (string, int, error) {
 	return fmt.Sprintf(`SELECT /*+ SET_VAR(group_concat_max_len=33554432) */
   SHA2(COALESCE(GROUP_CONCAT(row_digest ORDER BY CAST(tn AS BINARY), op, CAST(cn AS BINARY) SEPARATOR ''), ''), 256),
@@ -121,8 +123,21 @@ FROM (
       ORDINAL_POSITION AS op, IS_NULLABLE AS nl
     FROM information_schema.COLUMNS
     WHERE %s
+    UNION ALL
+    SELECT ROUTINE_SCHEMA, '', ROUTINE_NAME, 'function', 0, 'NO'
+    FROM information_schema.ROUTINES
+    WHERE ROUTINE_TYPE = 'FUNCTION' AND %s%s
   ) AS fragment_rows
-) AS row_hashes`, mysqlSchemaFilter("TABLE_SCHEMA", schema)), 3, nil
+) AS row_hashes`, mysqlSchemaFilter("TABLE_SCHEMA", schema), mysqlSchemaFilter("ROUTINE_SCHEMA", schema), mysqlLoadableHashRows(schema)), 3, nil
+}
+
+func mysqlLoadableHashRows(schema string) string {
+	if schema != "mysql" {
+		return ""
+	}
+	return `
+    UNION ALL
+    SELECT 'mysql', '', name, 'function', 0, 'NO' FROM mysql.func`
 }
 
 func (MySqlDb) SchemaHashFromRows(rows [][]*string) ([]byte, bool, error) {
@@ -168,24 +183,8 @@ func (PgDb) NamespaceProbeSQL() string {
 )::pg_catalog.text`
 }
 
-// FunctionCatalogSQL for PostgreSQL. The `pg\_%` LIKE excludes the reserved pg_catalog/pg_temp*/pg_toast*
-// schemas from the user tiers. LoadableFunctions is empty — PostgreSQL has no loadable-UDF tier.
 func (PgDb) FoldFunctionName(name string) string {
 	return dialects.Postgres().FoldIdentifierName(name, false)
-}
-
-func (PgDb) FunctionCatalogSQL() FunctionCatalogSQL {
-	return FunctionCatalogSQL{
-		BuiltinFunctions: `SELECT DISTINCT p.proname FROM pg_catalog.pg_proc p
-JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace
-WHERE n.nspname = 'pg_catalog'`,
-		SystemFunctionSchemas: `SELECT n.nspname, p.proname FROM pg_catalog.pg_proc p
-JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace
-WHERE n.nspname IN ('pg_catalog', 'information_schema')`,
-		UdfSchemas: `SELECT n.nspname, p.proname FROM pg_catalog.pg_proc p
-JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace
-WHERE n.nspname <> 'information_schema' AND n.nspname NOT LIKE 'pg\_%'`,
-	}
 }
 
 func (PgDb) SupportsTempOverlay() bool { return true }
@@ -220,6 +219,18 @@ func (PgDb) NormalizeColumns(_ int, columns []*analyzerpb.Column) []*analyzerpb.
 	return columns
 }
 
+func (PgDb) RoutinesSQL() string {
+	return `SELECT n.nspname, p.proname FROM pg_catalog.pg_proc p
+JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace`
+}
+
+func (PgDb) SchemaRoutinesSQL(schema string) string {
+	return fmt.Sprintf(`SELECT p.proname FROM pg_catalog.pg_proc p
+JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace
+WHERE n.nspname = pg_catalog.convert_from('%s'::pg_catalog.bytea, 'UTF8')
+ORDER BY p.proname::pg_catalog.text COLLATE "C"`, pgByteaLiteral(schema))
+}
+
 func (PgDb) SchemaColumnsSQL(schema string) string {
 	return fmt.Sprintf(`SELECT table_schema, table_name, column_name, data_type, ordinal_position, is_nullable
 FROM information_schema.columns
@@ -249,8 +260,13 @@ FROM (
       ordinal_position AS op, is_nullable AS nl
     FROM information_schema.columns
     WHERE table_schema = pg_catalog.convert_from('%s'::pg_catalog.bytea, 'UTF8')
+    UNION ALL
+    SELECT n.nspname, '', p.proname, 'function', 0, 'NO'
+    FROM pg_catalog.pg_proc p
+    JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace
+    WHERE n.nspname = pg_catalog.convert_from('%s'::pg_catalog.bytea, 'UTF8')
   ) AS fragment_rows
-) AS serialized_rows`, hashExpr, pgByteaLiteral(schema)), 3, nil
+) AS serialized_rows`, hashExpr, pgByteaLiteral(schema), pgByteaLiteral(schema)), 3, nil
 }
 
 func (PgDb) SchemaHashFromRows(rows [][]*string) ([]byte, bool, error) {

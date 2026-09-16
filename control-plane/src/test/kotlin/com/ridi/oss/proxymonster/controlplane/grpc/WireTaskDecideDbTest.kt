@@ -7,6 +7,7 @@ import com.ridi.oss.proxymonster.controlplane.Channel
 import com.ridi.oss.proxymonster.controlplane.EnforcementOutcome
 import com.ridi.oss.proxymonster.controlplane.OpenConnection
 import com.ridi.oss.proxymonster.controlplane.catalogName
+import com.ridi.oss.proxymonster.controlplane.functionCatalog
 import com.ridi.oss.proxymonster.controlplane.decideConnection
 import com.ridi.oss.proxymonster.controlplane.decideQuery
 import com.ridi.oss.proxymonster.controlplane.sqlTypeFor
@@ -93,7 +94,11 @@ abstract class WireTaskDecideDbContract {
             ds = fixture.datasource,
             sql = sql,
             channel = Channel.WIRE,
-            catalog = fixture.core.datasourceStore.connectionCatalog(fixture.datasource.id, catalog),
+            catalog = fixture.core.datasourceStore.connectionCatalog(
+                fixture.datasource.id,
+                catalog,
+                fixture.datasource.engine.functionCatalog(fixture.core.connectionCatalog.heldRoutines(connection), fixture.datasource.engineVersion),
+            ),
             policyStore = fixture.core.policyStore,
             accessStore = fixture.core.accessStore,
             userGroupStore = fixture.core.userGroupStore,

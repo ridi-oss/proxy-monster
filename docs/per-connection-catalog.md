@@ -80,10 +80,14 @@ head-of-line-blocking in-flight `Decide`s on a shared HTTP/2 connection.
 ## Content-addressed, immutable, per-schema fragments
 
 The enforcement catalog is a set of per-schema fragments, each immutable and
-keyed by a stable content hash of its enforcement-relevant fields:
+keyed by a stable content hash of its enforcement-relevant fields: the schema's
+columns and the routines it holds (the functions the analyzer resolves calls
+against; on MySQL the `mysql` schema also holds the `mysql.func` loadables).
 
-- A schema's structure changes → a new fragment under a new hash. Fragments are
-  never mutated in place; connections hold references to a hash.
+- A schema's structure changes → a new fragment under a new hash. Routine DDL
+  changes the hash the same way column DDL does, so the `REFETCH` that refreshes
+  columns refreshes the function inventory too. Fragments are never mutated in
+  place; connections hold references to a hash.
 - User schemas are keyed by `(datasource, schema, hash)`.
 - System schemas (`information_schema`, `pg_catalog`, `mysql`, `sys`,
   `performance_schema`) are immutable per engine build, so they are keyed by
@@ -279,6 +283,7 @@ message SchemaFragmentPush {
   bool   unchanged          = 5;  // true = live hash matched H; columns omitted (no-op ack)
   repeated Column columns   = 6;  // the analyzer's Column message, the same one PushCatalog carries
   uint64 backend_generation = 7;  // which target-DB-connection instance measured this
+  repeated string routines  = 8;  // the schema's routine names, part of the content hash
 }
 message SchemaFragmentAck { uint64 generation = 1; }  // per-connection generation after applying
 
@@ -372,13 +377,15 @@ catalog).
   monotonic epoch — not content-monotonic; a lagging replica may regress the
   hint), and bumps the connection generation.
 - `decideConnection` (`ConnectionDecide.kt`) assembles the analyzer catalog from
-  the connection's held fragments plus the per-query temp overlay, then calls
-  `decideQuery` for the grant walk. Classifications remain joined
-  control-plane-side by `(datasource, schema, table, column)`; only the
-  structural rows come from the fragments. System-classification keeps reading
-  the datasource's global engine version. If a referenced schema's fragment is
-  absent, stale (held ≠ authoritative, or older than the staleness bound), or
-  pending, `decideConnection` returns `before_decide` instead of a verdict.
+  the connection's held fragments plus the per-query temp overlay, and the
+  function inventory from the routines those same fragments hold (tiered per
+  engine by `Engine.functionCatalog`), then calls `decideQuery` for the grant
+  walk. Classifications remain joined control-plane-side by
+  `(datasource, schema, table, column)`; only the structural rows and routines
+  come from the fragments. System-classification keeps reading the datasource's
+  global engine version. If a referenced schema's fragment is absent, stale
+  (held ≠ authoritative, or older than the staleness bound), or pending,
+  `decideConnection` returns `before_decide` instead of a verdict.
 - Command attachment. On a non-DENY verdict for a catalog-changing statement
   (non-temp DDL, or a statement that invokes a function/routine —
   `catalogChanging` from analysis), `decideConnection` attaches

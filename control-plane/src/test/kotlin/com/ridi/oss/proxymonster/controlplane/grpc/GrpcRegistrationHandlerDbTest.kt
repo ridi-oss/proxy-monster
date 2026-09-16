@@ -1,8 +1,10 @@
 package com.ridi.oss.proxymonster.controlplane.grpc
 
-import com.ridi.oss.proxymonster.analyzer.pb.FunctionCatalog
-import com.ridi.oss.proxymonster.analyzer.pb.functionCatalog
+import com.ridi.oss.proxymonster.analyzer.pb.SchemaFunctions
 import com.ridi.oss.proxymonster.analyzer.pb.schemaFunctions
+import com.ridi.oss.proxymonster.classification.PostgresGrammarFunctions
+import com.ridi.oss.proxymonster.controlplane.Catalog
+import com.ridi.oss.proxymonster.controlplane.support.storedSnapshot
 import com.ridi.oss.proxymonster.controlplane.DatasourceStore
 import com.ridi.oss.proxymonster.analyzer.pb.CatalogSnapshot
 import com.google.protobuf.ByteString
@@ -756,13 +758,13 @@ class GrpcRegistrationHandlerDbTest {
         val classification = assertNotNull(ssn.classification, "the surviving ssn identity must stay attached to its classification")
         assertEquals(listOf("pii", "government-id"), classification.tags)
     }
-    private suspend fun pushFunctions(name: String, functions: FunctionCatalog?, table: String = "users", duplicate: Boolean = false) {
+    private suspend fun pushRoutines(name: String, routines: List<SchemaFunctions>, table: String = "users", duplicate: Boolean = false) {
         stub.pushCatalog(catalogRequest {
             datasourceName = name
             defaultSchemas.add("public")
             engineVersion = "PostgreSQL 16.4"
             catalog = catalogSnapshot {
-                functions?.let { this.functions = it }
+                this.routines.addAll(routines)
                 val row = column {
                     schema = "public"
                     this.table = table
@@ -776,106 +778,74 @@ class GrpcRegistrationHandlerDbTest {
         })
     }
 
-    private fun storedFunctions(id: Long): FunctionCatalog? = dataSource.connection.use { c ->
-        c.prepareStatement("SELECT catalog FROM datasource WHERE id = ?").use { ps ->
-            ps.setLong(1, id)
-            ps.executeQuery().use { rs ->
-                rs.next()
-                rs.getBytes(1)?.let(CatalogSnapshot::parseFrom)?.takeIf { it.hasFunctions() }?.functions
-            }
-        }
+    private fun udfs(catalog: Catalog): Map<String, List<String>> = catalog.functions.udfSchemasList.associate { it.schema to it.namesList }
+
+    @Test
+    fun `routines persist through grpc and tier into the function catalog on read`() = runBlocking {
+        val name = "routines-presence"
+        stub.register(regReq { this.name = name; engine = Engine.POSTGRES; dbName = "app" })
+        val ds = core.datasourceStore.getByName(name)!!
+        val routines = listOf(
+            schemaFunctions { schema = "pg_catalog"; names.add("lower") },
+            schemaFunctions { schema = "public"; names.add("normalize") },
+        )
+        pushRoutines(name, routines)
+        assertEquals(routines, core.datasourceStore.storedSnapshot(ds.id).routinesList)
+        val catalog = core.datasourceStore.catalog(ds.id)
+        assertTrue("lower" in catalog.functions.builtinFunctionsList)
+        assertEquals(mapOf("public" to listOf("normalize")), udfs(catalog))
+
+        pushRoutines(name, emptyList())
+        assertTrue(core.datasourceStore.storedSnapshot(ds.id).routinesList.isEmpty())
+        val bare = core.datasourceStore.catalog(ds.id)
+        assertEquals(PostgresGrammarFunctions.names, bare.functions.builtinFunctionsList, "no routines: only the grammar functions")
+        assertTrue(udfs(bare).isEmpty())
     }
 
     @Test
-    fun `function inventory persists through grpc with absent and observed empty distinct`() = runBlocking {
-        val name = "functions-presence"
+    fun `failed catalog replacement rolls back routines and columns together`() = runBlocking {
+        val name = "routines-rollback"
         stub.register(regReq { this.name = name; engine = Engine.POSTGRES; dbName = "app" })
         val ds = core.datasourceStore.getByName(name)!!
-        val functions = functionCatalog {
-            builtinFunctions.add("lower")
-            systemFunctionSchemas.add(schemaFunctions { schema = "pg_catalog"; names.add("lower") })
-            udfSchemas.add(schemaFunctions { schema = "public"; names.add("normalize") })
-            loadableFunctions.add("plugin_function")
-        }
-        pushFunctions(name, functions)
-        assertEquals(functions, storedFunctions(ds.id))
-        assertEquals(functions, core.datasourceStore.catalog(ds.id).functions)
-        assertEquals(functions, core.datasourceStore.connectionCatalog(ds.id, emptyList()).functions)
-
-        pushFunctions(name, FunctionCatalog.getDefaultInstance())
-        assertEquals(FunctionCatalog.getDefaultInstance(), storedFunctions(ds.id))
-        assertEquals(FunctionCatalog.getDefaultInstance(), core.datasourceStore.catalog(ds.id).functions)
-
-        stub.pushCatalog(catalogRequest {
-            datasourceName = name
-            catalog = catalogSnapshot { this.functions = functions }
-        })
-        val noColumns = core.datasourceStore.catalog(ds.id)
-        assertTrue(noColumns.columns.isEmpty())
-        assertEquals(functions, noColumns.functions)
-
-        pushFunctions(name, null)
-        assertNull(storedFunctions(ds.id))
-        assertNull(core.datasourceStore.catalog(ds.id).functions)
-        assertNull(core.datasourceStore.connectionCatalog(ds.id, emptyList()).functions)
-    }
-
-    @Test
-    fun `failed catalog replacement rolls back functions and columns together`() = runBlocking {
-        val name = "functions-rollback"
-        stub.register(regReq { this.name = name; engine = Engine.POSTGRES; dbName = "app" })
-        val ds = core.datasourceStore.getByName(name)!!
-        val functions = functionCatalog { builtinFunctions.add("lower") }
-        pushFunctions(name, functions)
+        val routines = listOf(schemaFunctions { schema = "public"; names.add("normalize") })
+        pushRoutines(name, routines)
         val before = core.datasourceStore.catalog(ds.id)
-        assertFailsWith<StatusException> { pushFunctions(name, null, table = "replacement", duplicate = true) }
+        assertFailsWith<StatusException> { pushRoutines(name, emptyList(), table = "replacement", duplicate = true) }
         assertEquals(before, core.datasourceStore.catalog(ds.id))
-        assertEquals(functions, storedFunctions(ds.id))
-        assertEquals(functions, core.datasourceStore.connectionCatalog(ds.id, emptyList()).functions)
+        assertEquals(routines, core.datasourceStore.storedSnapshot(ds.id).routinesList)
     }
 
     @Test
-    fun `restart needs a fresh function push and both retarget paths clear persisted bytes`() = runBlocking {
-        val name = "functions-restart-retarget"
+    fun `both retarget paths clear persisted routines with the columns`() = runBlocking {
+        val name = "routines-retarget"
         stub.register(regReq { this.name = name; engine = Engine.POSTGRES; dbName = "app" })
         val ds = core.datasourceStore.getByName(name)!!
-        val functions = functionCatalog { builtinFunctions.add("lower") }
-        pushFunctions(name, functions)
-        val restarted = DatasourceStore(dataSource)
-        assertEquals(functions, storedFunctions(ds.id))
-        assertNull(restarted.catalog(ds.id).functions)
-        assertNull(restarted.connectionCatalog(ds.id, emptyList()).functions)
-        assertTrue(restarted.catalog(ds.id).columns.isNotEmpty())
-        pushFunctions(name, null, table = "columns_only")
-        assertNull(storedFunctions(ds.id))
-        assertNull(restarted.catalog(ds.id).functions)
-        assertNull(restarted.connectionCatalog(ds.id, emptyList()).functions)
-        assertEquals("columns_only", restarted.catalog(ds.id).columns.single().table)
-        pushFunctions(name, functions)
-        assertEquals(functions, restarted.catalog(ds.id).functions)
-        assertEquals(functions, restarted.connectionCatalog(ds.id, emptyList()).functions)
+        val routines = listOf(schemaFunctions { schema = "public"; names.add("normalize") })
+        pushRoutines(name, routines)
+        assertEquals(mapOf("public" to listOf("normalize")), udfs(core.datasourceStore.catalog(ds.id)))
 
         stub.register(regReq { this.name = name; engine = Engine.POSTGRES; dbName = "other" })
-        assertNull(storedFunctions(ds.id))
-        assertTrue(restarted.catalog(ds.id).columns.isEmpty())
-        pushFunctions(name, functions)
+        assertTrue(core.datasourceStore.storedSnapshot(ds.id).routinesList.isEmpty())
+        assertTrue(core.datasourceStore.catalog(ds.id).columns.isEmpty())
+        assertTrue(udfs(core.datasourceStore.catalog(ds.id)).isEmpty())
+        pushRoutines(name, routines)
         core.datasourceStore.update(ds.id, DatasourceInput(name = name, engine = "postgres", dbName = "third"))
-        assertNull(storedFunctions(ds.id))
-        assertNull(restarted.catalog(ds.id).functions)
-        assertTrue(restarted.catalog(ds.id).columns.isEmpty())
+        assertTrue(core.datasourceStore.storedSnapshot(ds.id).routinesList.isEmpty())
+        assertTrue(udfs(core.datasourceStore.catalog(ds.id)).isEmpty())
     }
 
     @Test
-    fun `catalog read never mixes concurrently pushed functions and columns`() = runBlocking {
-        val name = "functions-snapshot"
+    fun `catalog read never mixes concurrently pushed routines and columns`() = runBlocking {
+        val name = "routines-snapshot"
         stub.register(regReq { this.name = name; engine = Engine.POSTGRES; dbName = "app" })
         val ds = core.datasourceStore.getByName(name)!!
-        pushFunctions(name, functionCatalog { builtinFunctions.add("v0") }, table = "v0")
+        fun routines(marker: String) = listOf(schemaFunctions { schema = "public"; names.add(marker) })
+        pushRoutines(name, routines("v0"), table = "v0")
         val published = CoroutineChannel<Unit>()
         val writer = async(Dispatchers.IO) {
             repeat(25) { index ->
                 val marker = "v${index + 1}"
-                pushFunctions(name, functionCatalog { builtinFunctions.add(marker) }, table = marker)
+                pushRoutines(name, routines(marker), table = marker)
                 published.send(Unit)
             }
         }
@@ -886,7 +856,7 @@ class GrpcRegistrationHandlerDbTest {
                 val catalog = core.datasourceStore.catalog(ds.id)
                 val marker = catalog.columns.single().table
                 observed += marker
-                assertEquals(marker, catalog.functions!!.builtinFunctionsList.single())
+                assertEquals(listOf(marker), udfs(catalog).getValue("public"))
             }
         }
         writer.await()

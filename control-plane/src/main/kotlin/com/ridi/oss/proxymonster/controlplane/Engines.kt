@@ -3,6 +3,7 @@ package com.ridi.oss.proxymonster.controlplane
 import com.ridi.oss.proxymonster.analyzer.pb.EngineConfig as PbEngineConfig
 import com.ridi.oss.proxymonster.analyzer.pb.FunctionCatalog
 import com.ridi.oss.proxymonster.analyzer.pb.engineConfig as pbEngineConfig
+import com.ridi.oss.proxymonster.analyzer.pb.functionCatalog as pbFunctionCatalog
 import com.ridi.oss.proxymonster.analyzer.pb.schemaFunctions as pbSchemaFunctions
 import com.ridi.oss.proxymonster.classification.MysqlNativeFunctions
 import com.ridi.oss.proxymonster.classification.PostgresGrammarFunctions
@@ -196,27 +197,34 @@ object EngineWireSerializer : KSerializer<Engine> {
 }
 
 /**
- * The function inventory the analyzer resolves calls against: [pushed] with its builtin list fixed up.
- * MySQL replaces the builtins with the pinned native list for this server version (natives are not in
- * any table, so the proxy cannot push them); the pushed UDFs and loadables stay. PostgreSQL adds the
- * grammar keyword functions (coalesce, greatest, ...) that have no pg_proc row. Null when nothing was
- * pushed, except MySQL, which always has its natives.
+ * The function inventory the analyzer resolves calls against, tiered from [routines] (schema -> names).
+ *
+ *   MySQL     {"mysql": [fnv_64], "app": [add_tax]}  -> builtins = pinned natives, loadables = [fnv_64],
+ *                                                         udf app = [add_tax]
+ *   Postgres  {"pg_catalog": [abs], "public": [add_tax], "pg_temp_3": [x]}
+ *                                                      -> builtins = [abs, coalesce, ...] (grammar keywords
+ *                                                         have no pg_proc row), udf public = [add_tax],
+ *                                                         pg_temp_3 dropped
  */
-fun Engine.functionCatalog(pushed: FunctionCatalog?, engineVersion: String?): FunctionCatalog? = when (this) {
-    Engine.MYSQL -> (pushed ?: FunctionCatalog.getDefaultInstance()).toBuilder().apply {
-        clearBuiltinFunctions()
-        addAllBuiltinFunctions(MysqlNativeFunctions.forVersion(engineVersion))
-    }.build()
-    Engine.POSTGRES -> pushed?.toBuilder()?.apply {
-        addAllBuiltinFunctions(PostgresGrammarFunctions.names)
-        val schemas = pushed.systemFunctionSchemasList.filterNot { it.schema == "pg_catalog" }
-        val names = pushed.systemFunctionSchemasList.filter { it.schema == "pg_catalog" }.flatMap { it.namesList }
-        clearSystemFunctionSchemas()
-        addAllSystemFunctionSchemas(schemas)
-        addSystemFunctionSchemas(pbSchemaFunctions {
-            schema = "pg_catalog"
-            this.names.addAll((names + PostgresGrammarFunctions.names).distinct())
-        })
-    }?.build()
+fun Engine.functionCatalog(routines: Map<String, List<String>>, engineVersion: String?): FunctionCatalog = when (this) {
+    Engine.MYSQL -> pbFunctionCatalog {
+        builtinFunctions.addAll(MysqlNativeFunctions.forVersion(engineVersion))
+        routines.forEach { (schema, names) ->
+            if (schema == "mysql") loadableFunctions.addAll(names)
+            else udfSchemas.add(pbSchemaFunctions { this.schema = schema; this.names.addAll(names) })
+        }
+    }
+    Engine.POSTGRES -> pbFunctionCatalog {
+        val pgCatalog = (routines["pg_catalog"].orEmpty() + PostgresGrammarFunctions.names).distinct()
+        builtinFunctions.addAll(pgCatalog)
+        systemFunctionSchemas.add(pbSchemaFunctions { schema = "pg_catalog"; names.addAll(pgCatalog) })
+        routines.forEach { (schema, names) ->
+            when {
+                schema == "pg_catalog" -> Unit
+                isFixedSystemSchema(schema) -> systemFunctionSchemas.add(pbSchemaFunctions { this.schema = schema; this.names.addAll(names) })
+                !isSystemSchema(schema) -> udfSchemas.add(pbSchemaFunctions { this.schema = schema; this.names.addAll(names) })
+            }
+        }
+    }
     else -> error("engine has no function catalog: $this")
 }

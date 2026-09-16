@@ -193,11 +193,11 @@ GRANT SELECT ON mysql.func TO 'pmproxy'@'<proxy-host>';
 ```
 
 Stored functions must also be visible to that account in
-`information_schema.ROUTINES` through its routine privileges. If a function
-inventory query fails, the proxy still publishes columns but clears all
-introspected function tiers; pinned MySQL natives remain available.
+`information_schema.ROUTINES` through its routine privileges. The routines are
+read together with the columns, on registration and on every per-connection
+schema refresh, so a failing routine read fails the whole catalog read.
 
-PostgreSQL function inventory reads `pg_catalog.pg_proc` and
+PostgreSQL routines are read from `pg_catalog.pg_proc` and
 `pg_catalog.pg_namespace`, which are publicly readable by default. If catalog
 access is hardened, retain `SELECT` on both for `PM_TARGET_USER`.
 

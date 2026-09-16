@@ -75,7 +75,11 @@ suspend fun decideConnection(
         ds = ds,
         sql = sql,
         channel = channel,
-        catalog = core.datasourceStore.connectionCatalog(ds.id, columns),
+        catalog = core.datasourceStore.connectionCatalog(
+            ds.id,
+            columns,
+            ds.engine.functionCatalog(core.connectionCatalog.heldRoutines(connection), ds.engineVersion),
+        ),
         policyStore = core.policyStore,
         accessStore = core.accessStore,
         userGroupStore = core.userGroupStore,

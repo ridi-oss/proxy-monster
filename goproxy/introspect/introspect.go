@@ -22,7 +22,6 @@ import (
 	// for safe DSN construction, so no separate blank import is needed.
 	mysqldriver "github.com/go-sql-driver/mysql"
 	analyzerpb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
-	"github.com/ridi-oss/proxy-monster/goproxy/db"
 	"github.com/ridi-oss/proxy-monster/goproxy/engine"
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
 	"github.com/ridi-oss/proxy-monster/goproxy/spi"
@@ -163,8 +162,11 @@ func Run(opener TargetOpener, target spi.TargetDb) (*pb.CatalogRequest, error) {
 	normalizeMs := time.Since(phase).Milliseconds()
 
 	phase = time.Now()
-	functionCatalog := introspectFunctionCatalog(conn, dbImpl, lctnMode)
-	functionCatalogMs := time.Since(phase).Milliseconds()
+	routines, err := introspectRoutines(conn, dbImpl, lctnMode)
+	if err != nil {
+		return nil, err
+	}
+	routinesMs := time.Since(phase).Milliseconds()
 
 	distinctTables := map[string]struct{}{}
 	for _, c := range columns {
@@ -184,129 +186,41 @@ func Run(opener TargetOpener, target spi.TargetDb) (*pb.CatalogRequest, error) {
 		"namespace_ms", namespaceMs,
 		"columns_ms", columnsMs,
 		"normalize_ms", normalizeMs,
-		"functions_ms", functionCatalogMs,
+		"routines_ms", routinesMs,
 	)
 
 	return &pb.CatalogRequest{
 		DefaultSchemas:           defaultSchemas,
 		MysqlLowerCaseTableNames: mysqlLowerCaseTableNames,
 		EngineVersion:            engineVersion,
-		Catalog:                  &analyzerpb.CatalogSnapshot{Columns: columns, Functions: functionCatalog},
+		Catalog:                  &analyzerpb.CatalogSnapshot{Columns: columns, Routines: routines},
 	}, nil
 }
 
-type functionCatalogProber interface {
-	FunctionCatalogSQL() db.FunctionCatalogSQL
-}
-
-// schemaNamePair is one (schema, name) row from a two-column function-catalog query.
 type schemaNamePair struct{ schema, name string }
 
-func introspectFunctionCatalog(conn *sql.Conn, dbImpl engine.Db, lctnMode int) *analyzerpb.FunctionCatalog {
-	prober, ok := dbImpl.(functionCatalogProber)
-	if !ok {
-		return nil
-	}
-	q := prober.FunctionCatalogSQL()
-	// A failed tier could hide a shadowing UDF; only complete observations are authoritative.
-	builtins, ok1 := queryOneColumn(conn, q.BuiltinFunctions)
-	loadables, ok2 := queryOneColumn(conn, q.LoadableFunctions)
-	sysFns, ok3 := queryTwoColumn(conn, q.SystemFunctionSchemas)
-	udfs, ok4 := queryTwoColumn(conn, q.UdfSchemas)
-	if !(ok1 && ok2 && ok3 && ok4) {
-		slog.Warn("function introspection incomplete; publishing columns without observed functions")
-		return nil
-	}
-	return &analyzerpb.FunctionCatalog{
-		BuiltinFunctions:      foldDistinct(dbImpl, builtins),
-		LoadableFunctions:     foldDistinct(dbImpl, loadables),
-		SystemFunctionSchemas: foldFunctionSchemas(dbImpl, lctnMode, sysFns),
-		UdfSchemas:            foldFunctionSchemas(dbImpl, lctnMode, udfs),
-	}
-}
-
-// queryOneColumn runs a one-column string query. ok=false ONLY on a real error (query/scan/rows) — an
-// empty query string (a tier this dialect does not have) or a zero-row result is a legitimate empty set
-// (ok=true). NULLs are dropped. The caller fails the whole catalog closed when any tier reports ok=false.
-func queryOneColumn(conn *sql.Conn, query string) ([]string, bool) {
-	if query == "" {
-		return nil, true
-	}
+func introspectRoutines(conn *sql.Conn, dbImpl engine.Db, lctnMode int) ([]*analyzerpb.SchemaFunctions, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), queryTimeout)
 	defer cancel()
-	rows, err := conn.QueryContext(ctx, query)
+	rows, err := conn.QueryContext(ctx, dbImpl.RoutinesSQL())
 	if err != nil {
-		slog.Warn("function-catalog probe failed", "error", err)
-		return nil, false
+		return nil, fmt.Errorf("introspect: routines query: %w", err)
 	}
 	defer rows.Close()
-	var out []string
-	for rows.Next() {
-		var v sql.NullString
-		if err := rows.Scan(&v); err != nil {
-			slog.Warn("function-catalog probe scan failed", "error", err)
-			return nil, false
-		}
-		if v.Valid {
-			out = append(out, v.String)
-		}
-	}
-	if err := rows.Err(); err != nil {
-		slog.Warn("function-catalog probe failed", "error", err)
-		return nil, false
-	}
-	return out, true
-}
-
-// queryTwoColumn runs a (schema, name) query with the same error-vs-empty contract as queryOneColumn:
-// ok=false only on a real error. Rows with a NULL schema or name are dropped.
-func queryTwoColumn(conn *sql.Conn, query string) ([]schemaNamePair, bool) {
-	if query == "" {
-		return nil, true
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), queryTimeout)
-	defer cancel()
-	rows, err := conn.QueryContext(ctx, query)
-	if err != nil {
-		slog.Warn("function-catalog probe failed", "error", err)
-		return nil, false
-	}
-	defer rows.Close()
-	var out []schemaNamePair
+	var pairs []schemaNamePair
 	for rows.Next() {
 		var schema, name sql.NullString
 		if err := rows.Scan(&schema, &name); err != nil {
-			slog.Warn("function-catalog probe scan failed", "error", err)
-			return nil, false
+			return nil, fmt.Errorf("introspect: scanning routine row: %w", err)
 		}
 		if schema.Valid && name.Valid {
-			out = append(out, schemaNamePair{schema: schema.String, name: name.String})
+			pairs = append(pairs, schemaNamePair{schema: schema.String, name: name.String})
 		}
 	}
 	if err := rows.Err(); err != nil {
-		slog.Warn("function-catalog probe failed", "error", err)
-		return nil, false
+		return nil, fmt.Errorf("introspect: routines query: %w", err)
 	}
-	return out, true
-}
-
-// foldDistinct folds every name through the dialect's function-name fold and drops duplicates,
-// preserving first-seen order.
-func foldDistinct(dbImpl engine.Db, names []string) []string {
-	if len(names) == 0 {
-		return nil
-	}
-	seen := make(map[string]struct{}, len(names))
-	out := make([]string, 0, len(names))
-	for _, n := range names {
-		l := dbImpl.FoldFunctionName(n)
-		if _, dup := seen[l]; dup {
-			continue
-		}
-		seen[l] = struct{}{}
-		out = append(out, l)
-	}
-	return out
+	return foldFunctionSchemas(dbImpl, lctnMode, pairs), nil
 }
 
 // foldFunctionSchemas groups (schema, function) pairs by their canonical schema, folding the schema

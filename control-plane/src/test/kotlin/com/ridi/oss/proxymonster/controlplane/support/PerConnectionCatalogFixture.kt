@@ -8,12 +8,22 @@ import com.ridi.oss.proxymonster.controlplane.Datasource
 import com.ridi.oss.proxymonster.controlplane.FragmentColumn
 import com.ridi.oss.proxymonster.controlplane.OpenConnection
 import com.ridi.oss.proxymonster.controlplane.sqlTypeFor
+import com.ridi.oss.proxymonster.controlplane.support.storedRoutines
+import com.ridi.oss.proxymonster.grpc.Engine
 import com.ridi.oss.proxymonster.analyzer.pb.column
 import com.ridi.oss.proxymonster.grpc.schemaFragmentPush
 import java.io.ByteArrayOutputStream
 import java.io.DataOutputStream
 import java.security.MessageDigest
 import java.sql.Connection
+
+/** The per-schema routine read each engine's target answers, with the schema as the one parameter. */
+private val Engine.testRoutinesSql: String
+    get() = when (this) {
+        Engine.MYSQL -> "SELECT ROUTINE_NAME FROM information_schema.ROUTINES WHERE ROUTINE_TYPE = 'FUNCTION' AND ROUTINE_SCHEMA = ?"
+        Engine.POSTGRES -> "SELECT p.proname FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace WHERE n.nspname = ?"
+        else -> error("engine has no routines: $this")
+    }
 
 /** Test helper that turns the fixture's real target-introspected rows into immutable connection fragments. */
 class PerConnectionCatalogFixture(val enforcement: EnforcementFixture) {
@@ -34,11 +44,12 @@ class PerConnectionCatalogFixture(val enforcement: EnforcementFixture) {
     ): OpenConnection {
         val opened = core.connectionCatalog.open(Binding(datasource.name, principal, tokenKind), schemas)
         val bySchema = enforcement.datasourceStore.catalog(datasource.id).columns.groupBy { it.schema }
+        val routines = enforcement.datasourceStore.storedRoutines(datasource.id)
         for (schema in schemas.distinct()) {
             val rows = bySchema[schema].orEmpty().map { row ->
                 FragmentColumn(row.schema, row.table, row.column, row.sqlType, row.ordinal, row.nullable)
             }
-            push(opened.connectionId, schema, rows, backendGeneration = 1)
+            push(opened.connectionId, schema, rows, routines[schema].orEmpty(), backendGeneration = 1)
         }
         return opened
     }
@@ -75,13 +86,19 @@ class PerConnectionCatalogFixture(val enforcement: EnforcementFixture) {
                 }
             }
         }
-        push(connectionId, schema, rows, backendGeneration, unchanged)
+        val routines = ArrayList<String>()
+        target.prepareStatement(datasource.engine.testRoutinesSql).use { ps ->
+            ps.setString(1, schema)
+            ps.executeQuery().use { rs -> while (rs.next()) routines += rs.getString(1).lowercase(java.util.Locale.ROOT) }
+        }
+        push(connectionId, schema, rows, routines.distinct(), backendGeneration, unchanged)
     }
 
     private suspend fun push(
         connectionId: ByteString,
         schema: String,
         rows: List<FragmentColumn>,
+        routines: List<String>,
         backendGeneration: Long,
         unchanged: Boolean = false,
     ) {
@@ -90,10 +107,11 @@ class PerConnectionCatalogFixture(val enforcement: EnforcementFixture) {
                 this.connectionId = connectionId
                 datasourceName = datasource.name
                 this.schema = schema
-                contentHash = hash(rows)
+                contentHash = hash(rows, routines)
                 this.unchanged = unchanged
                 this.backendGeneration = backendGeneration
                 if (!unchanged) {
+                    this.routines.addAll(routines)
                     columns.addAll(rows.map { row ->
                         column {
                             this.schema = row.schema
@@ -111,7 +129,7 @@ class PerConnectionCatalogFixture(val enforcement: EnforcementFixture) {
         check(result is CatalogMutationResult.Applied) { "fixture fragment push rejected: $result" }
     }
 
-    private fun hash(rows: List<FragmentColumn>): ByteString {
+    private fun hash(rows: List<FragmentColumn>, routines: List<String>): ByteString {
         val encoded = ByteArrayOutputStream()
         DataOutputStream(encoded).use { out ->
             rows.forEach { row ->
@@ -122,6 +140,7 @@ class PerConnectionCatalogFixture(val enforcement: EnforcementFixture) {
                 out.writeInt(row.ordinal)
                 out.writeBoolean(row.nullable)
             }
+            routines.forEach(out::writeUTF)
         }
         return ByteString.copyFrom(MessageDigest.getInstance("SHA-256").digest(encoded.toByteArray()))
     }

@@ -96,7 +96,7 @@ data class DatasourceInput(
 
 data class Catalog(
     val columns: List<CatalogColumn>,
-    val functions: FunctionCatalog? = null,
+    val functions: FunctionCatalog,
 )
 
 @Serializable
@@ -169,13 +169,6 @@ fun sqlTypeFor(dataType: String): String = when (dataType.lowercase().trim()) {
 class DatasourceStore(internal val dataSource: DataSource) {
     private val json = Json
     private val stringList = ListSerializer(String.serializer())
-
-    // Persisted functions require a fresh push after this store starts.
-    private val startedAt = dataSource.connection.use { c ->
-        c.createStatement().use { ps ->
-            ps.executeQuery("SELECT clock_timestamp()").use { rs -> rs.next(); rs.getTimestamp(1) }
-        }
-    }
 
     companion object {
         /** Every column [toDatasource] reads. One list, so a new column cannot reach some reads and not others. */
@@ -577,12 +570,13 @@ class DatasourceStore(internal val dataSource: DataSource) {
             }
     }
 
-    /** The catalog for one held connection: its own structural [columns], the live classifications, and the
-     *  datasource-wide functions. */
-    fun connectionCatalog(id: Long, columns: List<CatalogColumn>): Catalog = dataSource.connection.use { c ->
-        readCatalog(id, c) { _, _, classifications ->
-            columns.map { row -> row.copy(classification = classifications[Triple(row.schema, row.table, row.column)]) }
-        }
+    /** The catalog for one held connection: its own structural [columns] and [functions], the live classifications. */
+    fun connectionCatalog(id: Long, columns: List<CatalogColumn>, functions: FunctionCatalog): Catalog {
+        val classifications = classificationsFor(id)
+        return Catalog(
+            columns.map { row -> row.copy(classification = classifications[Triple(row.schema, row.table, row.column)]) },
+            functions,
+        )
     }
 
     private fun readCatalog(
@@ -591,29 +585,31 @@ class DatasourceStore(internal val dataSource: DataSource) {
         columns: (CatalogSnapshot, String, Map<Triple<String, String, String>, Classification>) -> List<CatalogColumn>,
     ): Catalog = c.prepareStatement(
         """SELECT CASE WHEN lower(d.engine) = 'mysql' THEN 'def' ELSE d.db_name END AS catalog_name, d.catalog,
-                  d.catalog_synced_at >= ? AS functions_fresh,
+                  d.engine, d.engine_version,
                   cl.schema_name, cl.table_name, cl.column_name, cl.tags, cl.mask_fn_id, m.name AS mask_fn_name
            FROM datasource d
            LEFT JOIN column_classification cl ON cl.datasource_id = d.id
            LEFT JOIN mask_fn m ON m.id = cl.mask_fn_id AND m.deleted_at IS NULL
            WHERE d.id = ?""",
     ).use { ps ->
-        ps.setTimestamp(1, startedAt)
-        ps.setLong(2, id)
+        ps.setLong(1, id)
         ps.executeQuery().use { rs ->
             var catalogName = ""
+            var engine: Engine? = null
+            var engineVersion: String? = null
             var snapshot = CatalogSnapshot.getDefaultInstance()
-            var functionsFresh = false
             val classifications = HashMap<Triple<String, String, String>, Classification>()
             while (rs.next()) {
                 catalogName = rs.getString("catalog_name")
+                engine = engineFromWire(rs.getString("engine"))
+                engineVersion = rs.getString("engine_version")
                 rs.getBytes("catalog")?.let { snapshot = CatalogSnapshot.parseFrom(it) }
-                functionsFresh = rs.getBoolean("functions_fresh")
                 rs.classification()?.let { classifications[Triple(it.schema, it.table, it.column)] = it }
             }
             Catalog(
                 columns(snapshot, catalogName, classifications),
-                if (functionsFresh && snapshot.hasFunctions()) snapshot.functions else null,
+                engine?.functionCatalog(snapshot.routinesList.associate { it.schema to it.namesList }, engineVersion)
+                    ?: FunctionCatalog.getDefaultInstance(),
             )
         }
     }

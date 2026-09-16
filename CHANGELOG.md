@@ -1,5 +1,29 @@
 # Changelog
 
+## [0.1.26](https://github.com/ridi-oss/proxy-monster/compare/server-v0.1.25...server-v0.1.26) (2026-09-16)
+
+
+### Features
+
+* **catalog:** introspect and store the function inventory ([#309](https://github.com/ridi-oss/proxy-monster/issues/309)) ([6dfac30](https://github.com/ridi-oss/proxy-monster/commit/6dfac304b7463c81cd6c57c589c8c02f42eb5c47))
+* **goproxy:** observe PostgreSQL function and type visibility at Bind ([#312](https://github.com/ridi-oss/proxy-monster/issues/312)) ([46469aa](https://github.com/ridi-oss/proxy-monster/commit/46469aa4d98d829f637236060a6e626dababdab1))
+
+
+### Bug Fixes
+
+* **goproxy:** queue a run query that races the previous statement's completion ([#311](https://github.com/ridi-oss/proxy-monster/issues/311)) ([12a505a](https://github.com/ridi-oss/proxy-monster/commit/12a505a0bd73fb0ccd2dc44958a7b033ed6bf134))
+
+
+### Refactoring
+
+* **catalog:** store the pushed catalog as one snapshot ([#308](https://github.com/ridi-oss/proxy-monster/issues/308)) ([50c0c87](https://github.com/ridi-oss/proxy-monster/commit/50c0c87b7082fe4ca92e01425c7377b9e9ae41ec))
+* **proto:** share one Column and CatalogSnapshot across every catalog boundary ([#305](https://github.com/ridi-oss/proxy-monster/issues/305)) ([701b26e](https://github.com/ridi-oss/proxy-monster/commit/701b26e4fddc134d4efe7f106d8322e29b1bf2b1))
+
+
+### Build & Dependencies
+
+* **proto:** add the shared function-catalog contract ([#307](https://github.com/ridi-oss/proxy-monster/issues/307)) ([be9def3](https://github.com/ridi-oss/proxy-monster/commit/be9def3d9e0f7f0e72d26e791f91cd2a95e2b40f))
+
 ## [0.1.25](https://github.com/ridi-oss/proxy-monster/compare/server-v0.1.24...server-v0.1.25) (2026-09-07)
 
 

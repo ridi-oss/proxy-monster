@@ -1,5 +1,46 @@
 # Changelog
 
+## [0.1.26](https://github.com/ridi-oss/proxy-monster/compare/server-v0.1.25...server-v0.1.26) (2026-09-16)
+
+
+### Features
+
+* **analyzer:** emit the columns a statement returns ([92fca9a](https://github.com/ridi-oss/proxy-monster/commit/92fca9afba2f2931f4a940f0acf2571d9ea26064))
+* **catalog:** introspect and store the function inventory ([#309](https://github.com/ridi-oss/proxy-monster/issues/309)) ([6dfac30](https://github.com/ridi-oss/proxy-monster/commit/6dfac304b7463c81cd6c57c589c8c02f42eb5c47))
+* **control-plane:** a stored result view applies the viewer's own caps ([d0fb77d](https://github.com/ridi-oss/proxy-monster/commit/d0fb77d2ba0624af1a1773c9e218d85f9276f165))
+* **control-plane:** deny a read whose [@cap](https://github.com/cap) rate window is spent ([6729a3c](https://github.com/ridi-oss/proxy-monster/commit/6729a3cc549f66c90aa1bc36d7839c23989347e3))
+* **control-plane:** reset a principal's spent rate by admin or approval ([e8d6bf0](https://github.com/ridi-oss/proxy-monster/commit/e8d6bf0f7b37f6ed0355f66b22131d51b512e283))
+* **goproxy:** observe PostgreSQL function and type visibility at Bind ([#312](https://github.com/ridi-oss/proxy-monster/issues/312)) ([46469aa](https://github.com/ridi-oss/proxy-monster/commit/46469aa4d98d829f637236060a6e626dababdab1))
+* **mysqlproxy:** enforce result caps and keep the session ([967353a](https://github.com/ridi-oss/proxy-monster/commit/967353ab1ebccdf8800c2c36630e0405d72850d5))
+* **pgproxy:** enforce result caps in both wire protocols ([caa9baa](https://github.com/ridi-oss/proxy-monster/commit/caa9baac05c257edec1230ba09ec37286ee2b9b1))
+* **run:** narrow a run to the verdict cap and report the truncation ([3040f8a](https://github.com/ridi-oss/proxy-monster/commit/3040f8a9cff9ad2c93a150936c44ca31d0ab1963))
+* verdicts carry the result cap the result.cap policies annotate ([8b72210](https://github.com/ridi-oss/proxy-monster/commit/8b7221016445f28498a752d81325f446dd07641c))
+* **web:** label a capped result ([31e8ede](https://github.com/ridi-oss/proxy-monster/commit/31e8ede88ef89d8cd13d18cc431044588f38d099))
+
+
+### Bug Fixes
+
+* **goproxy:** queue a run query that races the previous statement's completion ([#311](https://github.com/ridi-oss/proxy-monster/issues/311)) ([12a505a](https://github.com/ridi-oss/proxy-monster/commit/12a505a0bd73fb0ccd2dc44958a7b033ed6bf134))
+
+
+### Refactoring
+
+* **catalog:** store the pushed catalog as one snapshot ([#308](https://github.com/ridi-oss/proxy-monster/issues/308)) ([50c0c87](https://github.com/ridi-oss/proxy-monster/commit/50c0c87b7082fe4ca92e01425c7377b9e9ae41ec))
+* **control-plane:** name the datasource column list once ([9bb6e15](https://github.com/ridi-oss/proxy-monster/commit/9bb6e158132341eae65b92bc72774a82d81ff8de))
+* **proto:** carry the session observation as one message ([#324](https://github.com/ridi-oss/proxy-monster/issues/324)) ([afb5ab9](https://github.com/ridi-oss/proxy-monster/commit/afb5ab9693e950057457193b5a0917f694fe4c86))
+* **proto:** share one Column and CatalogSnapshot across every catalog boundary ([#305](https://github.com/ridi-oss/proxy-monster/issues/305)) ([701b26e](https://github.com/ridi-oss/proxy-monster/commit/701b26e4fddc134d4efe7f106d8322e29b1bf2b1))
+
+
+### Build & Dependencies
+
+* **proto:** add the shared function-catalog contract ([#307](https://github.com/ridi-oss/proxy-monster/issues/307)) ([be9def3](https://github.com/ridi-oss/proxy-monster/commit/be9def3d9e0f7f0e72d26e791f91cd2a95e2b40f))
+
+
+### Documentation
+
+* propose Athena API support ([#314](https://github.com/ridi-oss/proxy-monster/issues/314)) ([6b7600a](https://github.com/ridi-oss/proxy-monster/commit/6b7600a0f3362a58a74c42b10122030ebf44da17))
+* result caps design ([c201d84](https://github.com/ridi-oss/proxy-monster/commit/c201d8422cb36e596fc6ee0c2cfa5a11e57608aa))
+
 ## [0.1.25](https://github.com/ridi-oss/proxy-monster/compare/server-v0.1.24...server-v0.1.25) (2026-09-07)
 
 

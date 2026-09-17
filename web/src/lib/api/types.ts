@@ -80,6 +80,12 @@ export interface AuthConfig {
 /** Supported target engines. */
 export type Engine = 'postgres' | 'mysql'
 
+/** Nonsecret endpoint and properties a proxy publishes for clients; never a credential. */
+export interface ConnectionInfo {
+  endpoint: string
+  properties: Record<string, string>
+}
+
 /**
  * A registered target database. Carries NO credential: the control-plane never dials a target (the proxy
  * executes every query), so there is zero target secret at rest. host/port/dbName are advisory — the proxy
@@ -93,6 +99,7 @@ export interface Datasource {
   port: number
   dbName: string
   currentCatalog?: string | null
+  connectionInfo?: ConnectionInfo | null
   /** Policy-posture tags (`preset:*`, docs/access-model.md) — set by the proxy's `PM_DATASOURCE_TAGS` at
    *  registration, or by an admin edit. Empty by default (safe "production" posture). */
   tags: string[]

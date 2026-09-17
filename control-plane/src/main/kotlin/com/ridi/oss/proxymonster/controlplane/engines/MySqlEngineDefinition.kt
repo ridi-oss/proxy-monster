@@ -12,6 +12,8 @@ import com.ridi.oss.proxymonster.controlplane.Datasource
 import com.ridi.oss.proxymonster.controlplane.EngineDefinition
 import com.ridi.oss.proxymonster.controlplane.MetadataRequestAuthorizer
 import com.ridi.oss.proxymonster.controlplane.RequestAuthorizer
+import com.ridi.oss.proxymonster.controlplane.validateNativeConnectionInfo
+import com.ridi.oss.proxymonster.grpc.ConnectionInfo
 import com.ridi.oss.proxymonster.grpc.Engine
 import com.ridi.oss.proxymonster.probe.Dialect
 
@@ -20,6 +22,7 @@ internal object MySqlEngineDefinition : EngineDefinition {
     override val wireName = "mysql"
     override val dialect = Dialect.MYSQL
     override val requestAuthorizer: RequestAuthorizer = MetadataRequestAuthorizer
+    override val connectionProperties: Set<String> = emptySet()
     override val systemSchemas = setOf("information_schema", "mysql", "performance_schema", "sys")
     // MySQL temporary tables are absent from information_schema.COLUMNS.
     override val catalogIsConnectionIndependent = true
@@ -54,6 +57,7 @@ internal object MySqlEngineDefinition : EngineDefinition {
         return version to raw.contains("aurora", ignoreCase = true)
     }
 
+    override fun validateConnectionInfo(info: ConnectionInfo) = validateNativeConnectionInfo(info, connectionProperties)
     override fun manifestSeries(version: String): String = version.split(".").take(2).joinToString(".")
 
     // {"mysql": [fnv_64], "app": [add_tax]} -> builtins = pinned natives, loadables = [fnv_64], udf app = [add_tax]

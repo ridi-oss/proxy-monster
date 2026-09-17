@@ -205,6 +205,9 @@ type Provider interface {
 // reconciler, and the runners hold a Db and never see a connection string or a *sql.DB.
 type Db interface {
 	TargetDb() TargetDb
+	// ConnectionInfo is the nonsecret client-facing metadata published at Register: an endpoint plus the
+	// properties the engine allows. A wire dialect publishes only the advertised address.
+	ConnectionInfo() *pb.ConnectionInfo
 	Introspect(ctx context.Context) (*pb.CatalogRequest, error)
 	ReadTableDetail(ctx context.Context, table *enginepb.ObjectRef) (*TableDetail, error)
 	NewWireServer(port int, client EnforcementClient, tlsProvider func() (*tls.Config, error)) WireServer

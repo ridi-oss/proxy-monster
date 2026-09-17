@@ -56,7 +56,7 @@ func (d *datasourceReconciler) tryRegisterAndPushCatalog() error {
 func (d *datasourceReconciler) registerAndPushCatalog() error {
 	for attempt := 0; attempt < bootRegisterAttempts; attempt++ {
 		target := d.targetDb.TargetDb()
-		err := d.configClient.Register(d.dialect.Proto(), target.Host, target.Port, target.Db, d.cfg.DatasourceTags, d.cfg.AdvertiseAddr, d.certChain(), d.cfg.TLSEnabled())
+		err := d.configClient.Register(d.dialect.Proto(), target.Host, target.Port, target.Db, d.cfg.DatasourceTags, d.cfg.AdvertiseAddr, d.certChain(), d.cfg.TLSEnabled(), d.targetDb.ConnectionInfo())
 		if errors.Is(err, cp.ErrIncompatibleControlPlane) {
 			return err
 		}

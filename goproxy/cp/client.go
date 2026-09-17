@@ -383,7 +383,7 @@ func (c *Client) ReportCompletion(report engine.CompletionReport) {
 // advertiseCertChain is a pointer for explicit presence. nil means "no opinion" and preserves whatever the
 // control plane stores (a transient read at re-register); a non-nil empty string is authoritative and CLEARS
 // the stored chain, so an operator who stops publishing does not leave clients on dead roots.
-func (c *Client) Register(registrationEngine enginepb.Engine, host string, port int, dbName string, tags []string, advertiseAddr string, advertiseCertChain *string, wireTLS bool) error {
+func (c *Client) Register(registrationEngine enginepb.Engine, host string, port int, dbName string, tags []string, advertiseAddr string, advertiseCertChain *string, wireTLS bool, connectionInfo *pb.ConnectionInfo) error {
 	// Fail-closed defense-in-depth — never send an unspecified engine (boot already validated the provider).
 	if registrationEngine == enginepb.Engine_ENGINE_UNSPECIFIED {
 		return fmt.Errorf("cp: refusing to register datasource %q with an unspecified engine", c.datasourceName)
@@ -403,6 +403,7 @@ func (c *Client) Register(registrationEngine enginepb.Engine, host string, port 
 		AdvertiseCertChain: advertiseCertChain,
 		AdvertiseWireTls:   wireTLS,
 		ProtocolVersion:    ProtocolVersion,
+		ConnectionInfo:     connectionInfo,
 	})
 	if err != nil {
 		// A control-plane on a LATER protocol rejects our version with FAILED_PRECONDITION — a permanent

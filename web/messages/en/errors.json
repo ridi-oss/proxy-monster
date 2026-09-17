@@ -58,7 +58,8 @@
     "wire_cert_unusable": "The stored certificate chain is not usable as a trust anchor. Re-register the proxy, then try again.",
     "in_use_proxy_attached": "A proxy is still attached to this datasource. Stop the proxy, then delete it.",
     "in_use_active_requests": "This datasource has open access requests. Resolve or cancel them, then delete it.",
-    "invalid_catalog": "The catalog is not available for this datasource."
+    "invalid_catalog": "The catalog is not available for this datasource.",
+    "invalid_connection_info": "The datasource connection metadata is invalid."
   },
   "group": {
     "system_immutable": "This is a system-managed group and cannot be modified or deleted."

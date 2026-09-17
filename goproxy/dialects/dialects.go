@@ -6,6 +6,8 @@ import (
 	"crypto/tls"
 	"database/sql"
 	"fmt"
+	"os"
+	"strings"
 	"time"
 
 	enginepb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
@@ -42,7 +44,8 @@ func (p sqlProvider) NewDb(target spi.TargetDb) (spi.Db, error) {
 	}
 	// Metadata reads must observe the defaults a new target session would inherit.
 	pool.SetMaxIdleConns(0)
-	return &sqlDb{provider: p, target: target, pool: pool}, nil
+	advertise, _ := os.LookupEnv("PM_ADVERTISE_ADDR")
+	return &sqlDb{provider: p, target: target, pool: pool, endpoint: strings.TrimSpace(advertise)}, nil
 }
 
 // sqlDb is one open MySQL or PostgreSQL target: the pool serves introspection and table detail; the wire
@@ -51,9 +54,12 @@ type sqlDb struct {
 	provider sqlProvider
 	target   spi.TargetDb
 	pool     *sql.DB
+	endpoint string
 }
 
 func (d *sqlDb) TargetDb() spi.TargetDb { return d.target }
+
+func (d *sqlDb) ConnectionInfo() *pb.ConnectionInfo { return &pb.ConnectionInfo{Endpoint: d.endpoint} }
 
 func (d *sqlDb) Introspect(ctx context.Context) (*pb.CatalogRequest, error) {
 	return introspect.Run(ctx, d.pool, d.provider.db, d.provider.probe, d.target.Db)

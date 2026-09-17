@@ -295,6 +295,20 @@ Fixes for gaps documented in
 - Measure the context cache and response buffers under load. Peak memory is
   bounded by the 10,000-context cap times record size plus eight concurrent
   result pages, but neither has been measured.
+- Editor: surface a canceled Athena run as CANCELLED rather than a generic
+  failure; stream scan progress (bytes scanned, elapsed) during polling; record
+  bytes scanned on completion and show the estimated cost. Progress and cost
+  share one run-statistics message on the run channel.
+- Feed the resolved result cap into the Athena LIMIT rewrite alongside the
+  editor's row cap.
+- Ship a narrower default `native.invoke` policy: the broad permit lets a viewer
+  create workgroups and other NATIVE-category resources.
+- Athena for Apache Spark (sessions, calculations, notebooks) is refused; adding
+  it needs owner binding for session ids, the way query executions are bound.
+- Report result volume for forwarded `GetQueryResults` pages; the completion
+  event records the accepted submission only.
+- Represent a Glue view as an unproved relation instead of refusing the whole
+  catalog scan.
 
 ## Data plane
 

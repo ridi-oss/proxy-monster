@@ -166,6 +166,13 @@ captured on the connection's own held target-DB connection (design:
   succeeded. Narrow window; MySQL's analogue is benign (skipped and retried on
   reconnect). Fix (bounded reads through the pending `Sync`) is a follow-up.
 
+## Athena
+
+- 🟡 A forwarded `GetQueryResults` page reports no row or byte volume; the audit
+  completion covers the accepted submission only.
+- 🟡 A database containing a Glue view fails the catalog scan, so the datasource
+  does not register until the view is moved out of the crawled databases.
+
 ## Wire-cert distribution (direct clients and `pmon`)
 
 A proxy advertises its wire-TLS certificate chain at `Register`;

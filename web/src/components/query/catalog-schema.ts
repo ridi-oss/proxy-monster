@@ -38,8 +38,7 @@ export function buildTree(cols: CatalogColumn[], datasource?: Datasource): TreeT
   const catalog = currentCatalog(datasource)
   const engine = datasource?.engine
   return groupCatalogTables(cols).map((group) => {
-    const canQuery = (engine === 'mysql' || engine === 'postgres') &&
-      catalog != null && catalog.trim() !== '' && group.catalog === catalog
+    const canQuery = catalog != null && catalog.trim() !== '' && group.catalog === catalog
     const parts = group.schema ? [group.schema, group.table] : [group.table]
     return {
       key: group.key,

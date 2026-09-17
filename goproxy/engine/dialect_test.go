@@ -12,6 +12,7 @@ func TestParseDialect(t *testing.T) {
 	}{
 		{"mysql", MySQL},
 		{"postgres", Postgres},
+		{"athena", Athena},
 	}
 	for _, c := range ok {
 		got, err := ParseDialect(c.in)
@@ -22,7 +23,7 @@ func TestParseDialect(t *testing.T) {
 			t.Errorf("ParseDialect(%q) = %v, want %v", c.in, got, c.want)
 		}
 	}
-	for _, bad := range []string{"MySQL", "Postgres", "postgresql", "oracle", ""} {
+	for _, bad := range []string{"MySQL", "Postgres", "Athena", "postgresql", "oracle", ""} {
 		if _, err := ParseDialect(bad); err == nil {
 			t.Errorf("ParseDialect(%q) = nil error, want fail-closed rejection", bad)
 		}
@@ -43,7 +44,7 @@ func TestDialectWireNameAndPredicates(t *testing.T) {
 		t.Errorf("Postgres predicates: IsPostgres=%v IsMySQL=%v", Postgres.IsPostgres(), Postgres.IsMySQL())
 	}
 	// WireName → ParseDialect round-trips.
-	for _, d := range []Dialect{MySQL, Postgres} {
+	for _, d := range []Dialect{MySQL, Postgres, Athena} {
 		got, err := ParseDialect(d.WireName())
 		if err != nil || got != d {
 			t.Errorf("round-trip ParseDialect(%q) = %v, %v; want %v", d.WireName(), got, err, d)

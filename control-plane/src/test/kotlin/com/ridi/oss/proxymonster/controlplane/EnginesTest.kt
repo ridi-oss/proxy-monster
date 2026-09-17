@@ -2,6 +2,7 @@ package com.ridi.oss.proxymonster.controlplane
 
 import com.ridi.oss.proxymonster.analyzer.pb.SessionObservation
 import com.ridi.oss.proxymonster.analyzer.pb.sessionObservation
+import com.ridi.oss.proxymonster.classification.AthenaNativeFunctions
 import com.ridi.oss.proxymonster.classification.MysqlNativeFunctions
 import com.ridi.oss.proxymonster.classification.PostgresGrammarFunctions
 import com.ridi.oss.proxymonster.grpc.Engine
@@ -166,6 +167,14 @@ class EnginesTest {
             "every other schema's routines are stored functions, system schemas included",
         )
         assertTrue(tiered.systemFunctionSchemasList.isEmpty(), "MySQL natives are never schema-qualified")
+    }
+
+    @Test fun `Athena function catalog is the pinned builtin list for the engine version`() {
+        val catalog = Engine.ATHENA.functionCatalog(mapOf("sample" to listOf("ignored")), "3")
+        assertEquals(AthenaNativeFunctions.forVersion("3"), catalog.builtinFunctionsList)
+        assertTrue("upper" in catalog.builtinFunctionsList && "invoker_principal" in catalog.builtinFunctionsList)
+        assertTrue(catalog.udfSchemasList.isEmpty() && catalog.systemFunctionSchemasList.isEmpty(), "Athena has no routine catalog")
+        assertEquals(catalog.builtinFunctionsList, Engine.ATHENA.functionCatalog(emptyMap(), null).builtinFunctionsList, "an unknown version pins to 3")
     }
 
     @Test fun `Postgres function catalog tiers pg_catalog, information_schema, and user schemas`() {

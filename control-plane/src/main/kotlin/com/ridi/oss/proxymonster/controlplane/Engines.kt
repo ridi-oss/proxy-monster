@@ -3,6 +3,7 @@ package com.ridi.oss.proxymonster.controlplane
 import com.ridi.oss.proxymonster.analyzer.pb.EngineConfig as PbEngineConfig
 import com.ridi.oss.proxymonster.analyzer.pb.FunctionCatalog
 import com.ridi.oss.proxymonster.analyzer.pb.SessionObservation
+import com.ridi.oss.proxymonster.controlplane.engines.AthenaEngineDefinition
 import com.ridi.oss.proxymonster.controlplane.engines.MySqlEngineDefinition
 import com.ridi.oss.proxymonster.controlplane.engines.PostgresEngineDefinition
 import com.ridi.oss.proxymonster.grpc.ConnectionInfo
@@ -65,7 +66,7 @@ interface EngineDefinition {
     fun validateConnectionInfo(info: ConnectionInfo)
 }
 
-private val engineDefinitions = listOf(MySqlEngineDefinition, PostgresEngineDefinition).associateBy { it.engine }
+private val engineDefinitions = listOf(MySqlEngineDefinition, PostgresEngineDefinition, AthenaEngineDefinition).associateBy { it.engine }
 
 val Engine.definition: EngineDefinition
     get() = checkNotNull(engineDefinitions[this]) { "unregistered engine: $this" }

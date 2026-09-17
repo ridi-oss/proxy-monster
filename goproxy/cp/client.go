@@ -26,6 +26,7 @@ import (
 	"google.golang.org/grpc/keepalive"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/proto"
 
 	"github.com/ridi-oss/proxy-monster/goproxy/engine"
 	"github.com/ridi-oss/proxy-monster/goproxy/spi"
@@ -158,15 +159,33 @@ func refetchesFromWire(commands []*pb.ProxyCommand) ([]*pb.Refetch, error) {
 		if refetch == nil {
 			return nil, fmt.Errorf("command %d is not a refetch", i)
 		}
+		if refetch.Catalog != nil && refetch.GetCatalog() == "" {
+			return nil, fmt.Errorf("command %d has blank catalog", i)
+		}
 		if refetch.GetSchema() == "" {
 			return nil, fmt.Errorf("command %d has blank schema", i)
 		}
 		mapped = append(mapped, &pb.Refetch{
 			Schema:        refetch.GetSchema(),
 			IfHashDiffers: append([]byte(nil), refetch.GetIfHashDiffers()...),
+			Catalog:       copyString(refetch.Catalog),
 		})
 	}
 	return mapped, nil
+}
+
+func nonemptyString(value string) *string {
+	if value == "" {
+		return nil
+	}
+	return proto.String(value)
+}
+
+func copyString(value *string) *string {
+	if value == nil {
+		return nil
+	}
+	return proto.String(*value)
 }
 
 // identityFromWire maps the control plane's WireIdentity into the proxy's session identity. PURE function
@@ -281,6 +300,7 @@ func (c *Client) Decide(req engine.DecideRequest) engine.DecisionOutcome {
 			Column:  t.Column,
 			SqlType: t.SqlType,
 			Ordinal: int32(t.Ordinal),
+			Catalog: nonemptyString(t.Catalog),
 		})
 	}
 	wireReq := &pb.DecisionRequest{
@@ -292,6 +312,7 @@ func (c *Client) Decide(req engine.DecideRequest) engine.DecisionOutcome {
 		TempColumns:    temps,
 		ConnectionId:   append([]byte(nil), req.ConnectionID...),
 		Session:        req.Session.Clone().SessionObservation,
+		CurrentCatalog: nonemptyString(req.Session.CurrentCatalog),
 	}
 
 	for round := 0; ; round++ {

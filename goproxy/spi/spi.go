@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	enginepb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
 	"github.com/ridi-oss/proxy-monster/goproxy/engine"
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
 )
@@ -105,6 +106,7 @@ type TargetDbSession interface {
 
 // TableDetail is the canonical metadata-only table-browser response shared with the control plane.
 type TableDetail struct {
+	Catalog      *string             `json:"catalog"`
 	Schema       string              `json:"schema"`
 	Table        string              `json:"table"`
 	Columns      []TableDetailColumn `json:"columns"`
@@ -150,6 +152,8 @@ type TableIndex struct {
 
 // TableRelation describes one foreign-key relation.
 type TableRelation struct {
+	SourceCatalog *string  `json:"sourceCatalog"`
+	TargetCatalog *string  `json:"targetCatalog"`
 	Name          string   `json:"name"`
 	SourceSchema  string   `json:"sourceSchema"`
 	SourceTable   string   `json:"sourceTable"`
@@ -195,7 +199,7 @@ type Provider interface {
 type Db interface {
 	TargetDb() TargetDb
 	Introspect(ctx context.Context) (*pb.CatalogRequest, error)
-	ReadTableDetail(ctx context.Context, schema, table string) (*TableDetail, error)
+	ReadTableDetail(ctx context.Context, table *enginepb.ObjectRef) (*TableDetail, error)
 	NewWireServer(port int, client EnforcementClient, tlsProvider func() (*tls.Config, error)) WireServer
 	// NewRunSession dials and authenticates the target DB. ctx is the target-DB open context: cancelling it aborts
 	// an in-flight dial/auth so a run the control-plane already closed does not finish a target-DB handshake.

@@ -307,6 +307,7 @@ func (o DecisionOutcome) IsErr() bool { return o.Decision == nil }
 // TempColumn is one column of a session-temp table on the connection — context the proxy sends so the
 // control plane resolves a bare name to the connection's temp. Mirrors proto TempColumn.
 type TempColumn struct {
+	Catalog string
 	Schema  string
 	Table   string
 	Column  string
@@ -350,7 +351,8 @@ type Db interface {
 	SchemaHashSQL(schema string, setupRows [][]*string) (sql string, columns int, err error)
 	// SchemaHashFromRows validates and decodes the hash query result.
 	SchemaHashFromRows(rows [][]*string) (hash []byte, trusted bool, err error)
-	// SchemaColumnsSQL returns six fragment columns ordered by binary (table, ordinal, column).
+	// SchemaColumnsSQL returns the seven fragment columns (six information_schema fields, then the
+	// catalog) ordered by binary (table, ordinal, column).
 	SchemaColumnsSQL(schema string) string
 	// RoutinesSQL lists every routine as (schema, name), the whole-catalog counterpart of the
 	// per-schema SchemaRoutinesSQL.
@@ -373,7 +375,7 @@ type Db interface {
 	FoldFunctionName(name string) string
 }
 
-// FragmentColumnsFromRows strictly maps six-column information_schema rows into a canonical schema
+// FragmentColumnsFromRows strictly maps seven-column information_schema rows into a canonical schema
 // fragment. Rows are folded via db.NormalizeColumns(lowerCaseTableNames, ...) — the SAME rule
 // introspect's bulk catalog push uses — and every row's canonical schema must then equal the requested
 // schema's own canonical form. This is a self-consistency check (every row came back for the schema
@@ -386,8 +388,8 @@ type Db interface {
 func FragmentColumnsFromRows(db Db, lowerCaseTableNames int, schema string, rows [][]*string) ([]*enginepb.Column, error) {
 	raw := make([]*enginepb.Column, 0, len(rows))
 	for i, row := range rows {
-		if len(row) != 6 {
-			return nil, fmt.Errorf("fragment row %d has %d columns, want 6", i, len(row))
+		if len(row) != 7 {
+			return nil, fmt.Errorf("fragment row %d has %d columns, want 7", i, len(row))
 		}
 		for j, field := range row {
 			if field == nil {
@@ -408,6 +410,7 @@ func FragmentColumnsFromRows(db Db, lowerCaseTableNames int, schema string, rows
 			return nil, fmt.Errorf("fragment row %d nullable %q is not YES or NO", i, *row[5])
 		}
 		raw = append(raw, &enginepb.Column{
+			Catalog:  *row[6],
 			Schema:   *row[0],
 			Table:    *row[1],
 			Column:   *row[2],
@@ -499,11 +502,12 @@ func (e *QueryEngine) SetNamespace(namespace []string) {
 	e.nsDirty = false
 }
 
-// SessionObservation is what the pre-statement probe returned: the connection's effective namespace
-// plus the session facts the wire carries as-is. The engine caches it as one value and the decision
-// carries it whole, so every fact reaches the control plane from the same probe.
+// SessionObservation is what the pre-statement probe returned: the connection's current catalog and
+// effective namespace plus the session facts the wire carries as-is. The engine caches it as one value and
+// the decision carries it whole, so every fact reaches the control plane from the same probe.
 type SessionObservation struct {
-	Namespace []string
+	CurrentCatalog string
+	Namespace      []string
 	*enginepb.SessionObservation
 }
 

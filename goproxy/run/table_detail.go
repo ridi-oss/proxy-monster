@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"strings"
 
+	enginepb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
 	"github.com/ridi-oss/proxy-monster/goproxy/spi"
 )
@@ -37,7 +38,7 @@ func (r *TableDetailRunner) Run(sessionID, schema, table string) {
 		return
 	}
 
-	detail, detailErr := r.targetDb.ReadTableDetail(ctx, schema, table)
+	detail, detailErr := r.targetDb.ReadTableDetail(ctx, &enginepb.ObjectRef{Schema: schema, Table: table})
 	if detailErr != nil {
 		message := "table introspection failed"
 		if text := strings.TrimSpace(detailErr.Error()); text != "" {

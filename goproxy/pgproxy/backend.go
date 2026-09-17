@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/ridi-oss/proxy-monster/goproxy/spi"
 	"io"
 	"log/slog"
 	"net"
@@ -18,7 +19,6 @@ import (
 	enginepb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
 	"github.com/ridi-oss/proxy-monster/goproxy/engine"
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
-	"github.com/ridi-oss/proxy-monster/goproxy/spi"
 	"github.com/ridi-oss/proxy-monster/goproxy/wire"
 )
 
@@ -28,11 +28,11 @@ const targetDbHandshakeTimeout = 10 * time.Second
 // (deadline-bounded) auth exchange runs, an AfterFunc closes the conn on cancel so a blocked read unwinds at
 // once. On the run path ctx is the target-DB open context, so a run the control-plane already closed does not
 // finish a target-DB handshake nobody is waiting for; the wire path passes a background ctx (never cancelled).
-func dialTargetDbAuth(ctx context.Context, target spi.TargetDb) (net.Conn, []pgproto3.ParameterStatus, pgproto3.BackendKeyData, byte, error) {
+func dialTargetDbAuth(ctx context.Context, target spi.TargetDb) (net.Conn, []pgproto3.ParameterStatus, pgproto3.BackendKeyData, byte, string, error) {
 	dialer := net.Dialer{Timeout: targetDbHandshakeTimeout}
 	conn, err := dialer.DialContext(ctx, "tcp", net.JoinHostPort(target.Host, strconv.Itoa(target.Port)))
 	if err != nil {
-		return nil, nil, pgproto3.BackendKeyData{}, 0, err
+		return nil, nil, pgproto3.BackendKeyData{}, 0, "", err
 	}
 	keep := false
 	defer func() {
@@ -42,7 +42,7 @@ func dialTargetDbAuth(ctx context.Context, target spi.TargetDb) (net.Conn, []pgp
 	}()
 	defer context.AfterFunc(ctx, func() { _ = conn.Close() })()
 	if err := conn.SetDeadline(time.Now().Add(targetDbHandshakeTimeout)); err != nil {
-		return nil, nil, pgproto3.BackendKeyData{}, 0, fmt.Errorf("set target-DB auth deadline: %w", err)
+		return nil, nil, pgproto3.BackendKeyData{}, 0, "", fmt.Errorf("set target-DB auth deadline: %w", err)
 	}
 
 	wireConn := &switchConn{Conn: conn, strictReads: true}
@@ -56,7 +56,7 @@ func dialTargetDbAuth(ctx context.Context, target spi.TargetDb) (net.Conn, []pgp
 		},
 	})
 	if err := frontend.Flush(); err != nil {
-		return nil, nil, pgproto3.BackendKeyData{}, 0, fmt.Errorf("write target-DB startup: %w", err)
+		return nil, nil, pgproto3.BackendKeyData{}, 0, "", fmt.Errorf("write target-DB startup: %w", err)
 	}
 
 	var scram *scramClient
@@ -66,77 +66,77 @@ func dialTargetDbAuth(ctx context.Context, target spi.TargetDb) (net.Conn, []pgp
 	for !authenticated {
 		message, err := frontend.Receive()
 		if err != nil {
-			return nil, nil, pgproto3.BackendKeyData{}, 0, fmt.Errorf("read target-DB auth response: %w", err)
+			return nil, nil, pgproto3.BackendKeyData{}, 0, "", fmt.Errorf("read target-DB auth response: %w", err)
 		}
 		switch message := message.(type) {
 		case *pgproto3.AuthenticationOk:
 			if scram != nil && !scramVerified {
-				return nil, nil, pgproto3.BackendKeyData{}, 0, errors.New("target DB accepted auth without completing the SCRAM exchange")
+				return nil, nil, pgproto3.BackendKeyData{}, 0, "", errors.New("target DB accepted auth without completing the SCRAM exchange")
 			}
 			authenticated = true
 
 		case *pgproto3.AuthenticationCleartextPassword:
 			frontend.Send(&pgproto3.PasswordMessage{Password: target.Password})
 			if err := frontend.Flush(); err != nil {
-				return nil, nil, pgproto3.BackendKeyData{}, 0, fmt.Errorf("write target DB cleartext password: %w", err)
+				return nil, nil, pgproto3.BackendKeyData{}, 0, "", fmt.Errorf("write target DB cleartext password: %w", err)
 			}
 
 		case *pgproto3.AuthenticationMD5Password:
 			frontend.Send(&pgproto3.PasswordMessage{Password: md5Password(target.User, target.Password, message.Salt)})
 			if err := frontend.Flush(); err != nil {
-				return nil, nil, pgproto3.BackendKeyData{}, 0, fmt.Errorf("write target DB md5 password: %w", err)
+				return nil, nil, pgproto3.BackendKeyData{}, 0, "", fmt.Errorf("write target DB md5 password: %w", err)
 			}
 
 		case *pgproto3.AuthenticationSASL:
 			if scram != nil || !containsString(message.AuthMechanisms, "SCRAM-SHA-256") {
-				return nil, nil, pgproto3.BackendKeyData{}, 0, fmt.Errorf("target DB offered no usable SCRAM-SHA-256 mechanism: %v", message.AuthMechanisms)
+				return nil, nil, pgproto3.BackendKeyData{}, 0, "", fmt.Errorf("target DB offered no usable SCRAM-SHA-256 mechanism: %v", message.AuthMechanisms)
 			}
 			scram, err = newScramClient(target.Password)
 			if err != nil {
-				return nil, nil, pgproto3.BackendKeyData{}, 0, fmt.Errorf("create SCRAM client: %w", err)
+				return nil, nil, pgproto3.BackendKeyData{}, 0, "", fmt.Errorf("create SCRAM client: %w", err)
 			}
 			frontend.Send(&pgproto3.SASLInitialResponse{
 				AuthMechanism: "SCRAM-SHA-256",
 				Data:          scram.clientFirstMessage(),
 			})
 			if err := frontend.Flush(); err != nil {
-				return nil, nil, pgproto3.BackendKeyData{}, 0, fmt.Errorf("write target DB SCRAM initial response: %w", err)
+				return nil, nil, pgproto3.BackendKeyData{}, 0, "", fmt.Errorf("write target DB SCRAM initial response: %w", err)
 			}
 
 		case *pgproto3.AuthenticationSASLContinue:
 			if scram == nil || scramFinalSent {
-				return nil, nil, pgproto3.BackendKeyData{}, 0, errors.New("unexpected SASLContinue from target DB")
+				return nil, nil, pgproto3.BackendKeyData{}, 0, "", errors.New("unexpected SASLContinue from target DB")
 			}
 			if err := scram.recvServerFirstMessage(message.Data); err != nil {
-				return nil, nil, pgproto3.BackendKeyData{}, 0, fmt.Errorf("SCRAM exchange failed: %w", err)
+				return nil, nil, pgproto3.BackendKeyData{}, 0, "", fmt.Errorf("SCRAM exchange failed: %w", err)
 			}
 			final, err := scram.clientFinalMessage()
 			if err != nil {
-				return nil, nil, pgproto3.BackendKeyData{}, 0, fmt.Errorf("SCRAM exchange failed: %w", err)
+				return nil, nil, pgproto3.BackendKeyData{}, 0, "", fmt.Errorf("SCRAM exchange failed: %w", err)
 			}
 			scramFinalSent = true
 			frontend.Send(&pgproto3.SASLResponse{Data: final})
 			if err := frontend.Flush(); err != nil {
-				return nil, nil, pgproto3.BackendKeyData{}, 0, fmt.Errorf("write target DB SCRAM final response: %w", err)
+				return nil, nil, pgproto3.BackendKeyData{}, 0, "", fmt.Errorf("write target DB SCRAM final response: %w", err)
 			}
 
 		case *pgproto3.AuthenticationSASLFinal:
 			if scram == nil || !scramFinalSent || scramVerified {
-				return nil, nil, pgproto3.BackendKeyData{}, 0, errors.New("unexpected SASLFinal from target DB")
+				return nil, nil, pgproto3.BackendKeyData{}, 0, "", errors.New("unexpected SASLFinal from target DB")
 			}
 			if err := scram.verifyServerFinal(message.Data); err != nil {
-				return nil, nil, pgproto3.BackendKeyData{}, 0, err
+				return nil, nil, pgproto3.BackendKeyData{}, 0, "", err
 			}
 			scramVerified = true
 
 		case *pgproto3.ErrorResponse:
-			return nil, nil, pgproto3.BackendKeyData{}, 0, fmt.Errorf("target-DB auth failed: %s", message.Message)
+			return nil, nil, pgproto3.BackendKeyData{}, 0, "", fmt.Errorf("target-DB auth failed: %s", message.Message)
 
 		case *pgproto3.NoticeResponse:
 			// Notices during service-account authentication have no authenticated frontend recipient.
 
 		default:
-			return nil, nil, pgproto3.BackendKeyData{}, 0, fmt.Errorf("unexpected target-DB auth message %T", message)
+			return nil, nil, pgproto3.BackendKeyData{}, 0, "", fmt.Errorf("unexpected target-DB auth message %T", message)
 		}
 	}
 
@@ -145,7 +145,7 @@ func dialTargetDbAuth(ctx context.Context, target spi.TargetDb) (net.Conn, []pgp
 	for {
 		message, err := frontend.Receive()
 		if err != nil {
-			return nil, nil, pgproto3.BackendKeyData{}, 0, fmt.Errorf("read target-DB startup response: %w", err)
+			return nil, nil, pgproto3.BackendKeyData{}, 0, "", fmt.Errorf("read target-DB startup response: %w", err)
 		}
 		switch message := message.(type) {
 		case *pgproto3.ParameterStatus:
@@ -154,19 +154,24 @@ func dialTargetDbAuth(ctx context.Context, target spi.TargetDb) (net.Conn, []pgp
 			keyData = pgproto3.BackendKeyData{ProcessID: message.ProcessID, SecretKey: message.SecretKey}
 		case *pgproto3.ReadyForQuery:
 			if err := validateStartupParameters(parameters); err != nil {
-				return nil, nil, pgproto3.BackendKeyData{}, 0, err
+				return nil, nil, pgproto3.BackendKeyData{}, 0, "", err
+			}
+			core := sessionCore{targetDb: frontend, lastTxStatus: message.TxStatus}
+			catalog, err := core.probeCurrentCatalog()
+			if err != nil {
+				return nil, nil, pgproto3.BackendKeyData{}, 0, "", err
 			}
 			if err := conn.SetDeadline(time.Time{}); err != nil {
-				return nil, nil, pgproto3.BackendKeyData{}, 0, fmt.Errorf("clear target-DB auth deadline: %w", err)
+				return nil, nil, pgproto3.BackendKeyData{}, 0, "", fmt.Errorf("clear target-DB auth deadline: %w", err)
 			}
 			keep = true
-			return conn, parameters, keyData, message.TxStatus, nil
+			return conn, parameters, keyData, core.lastTxStatus, catalog, nil
 		case *pgproto3.ErrorResponse:
-			return nil, nil, pgproto3.BackendKeyData{}, 0, fmt.Errorf("target-DB startup failed: %s", message.Message)
+			return nil, nil, pgproto3.BackendKeyData{}, 0, "", fmt.Errorf("target-DB startup failed: %s", message.Message)
 		case *pgproto3.NoticeResponse:
 			// Ignore pre-ready notices; client authentication has not completed yet.
 		default:
-			return nil, nil, pgproto3.BackendKeyData{}, 0, fmt.Errorf("unexpected target-DB startup message %T", message)
+			return nil, nil, pgproto3.BackendKeyData{}, 0, "", fmt.Errorf("unexpected target-DB startup message %T", message)
 		}
 	}
 }
@@ -214,12 +219,26 @@ func containsString(values []string, want string) bool {
 	return false
 }
 
+// probeCurrentCatalog runs once at connect; a Postgres session cannot change its database afterwards.
+func (c *sessionCore) probeCurrentCatalog() (string, error) {
+	rows, err := c.runProbe("SELECT pg_catalog.current_database()", 1, true)
+	if err != nil {
+		return "", fmt.Errorf("target-DB catalog probe: %w", err)
+	}
+	if len(rows) != 1 || len(rows[0]) != 1 || rows[0][0] == nil || *rows[0][0] == "" {
+		return "", errors.New("target-DB catalog probe returned no current database")
+	}
+	return *rows[0][0], nil
+}
+
 func (c *sessionCore) probeSession() (engine.SessionObservation, error) {
 	rows, err := c.runProbe(c.db.NamespaceProbeSQL(), 1, false)
 	if err != nil {
 		return engine.SessionObservation{}, fmt.Errorf("target-DB namespace probe: %w", err)
 	}
-	return sessionFromRows(rows)
+	observed, err := sessionFromRows(rows)
+	observed.CurrentCatalog = c.currentCatalog
+	return observed, err
 }
 
 type postgresNamespaceObservation struct {
@@ -259,7 +278,7 @@ func sessionFromRows(rows [][]*string) (engine.SessionObservation, error) {
 }
 
 func (c *sessionCore) probeTempColumns() ([]engine.TempColumn, error) {
-	rows, err := c.runProbe(c.db.TempColumnsProbeSQL(), 5, false)
+	rows, err := c.runProbe(c.db.TempColumnsProbeSQL(), 6, false)
 	if err != nil {
 		return nil, fmt.Errorf("target DB temp-column probe: %w", err)
 	}
@@ -269,7 +288,7 @@ func (c *sessionCore) probeTempColumns() ([]engine.TempColumn, error) {
 func tempColumnsFromRows(rows [][]*string) ([]engine.TempColumn, error) {
 	columns := make([]engine.TempColumn, 0, len(rows))
 	for _, row := range rows {
-		if len(row) != 5 || row[0] == nil || row[1] == nil || row[2] == nil || row[3] == nil || row[4] == nil {
+		if len(row) != 6 || row[0] == nil || row[1] == nil || row[2] == nil || row[3] == nil || row[4] == nil || row[5] == nil {
 			return nil, errors.New("temp-column probe returned a malformed row")
 		}
 		ordinal, err := strconv.Atoi(*row[4])
@@ -277,6 +296,7 @@ func tempColumnsFromRows(rows [][]*string) ([]engine.TempColumn, error) {
 			return nil, fmt.Errorf("temp-column probe returned invalid ordinal %q", *row[4])
 		}
 		columns = append(columns, engine.TempColumn{
+			Catalog: *row[5],
 			Schema:  *row[0],
 			Table:   *row[1],
 			Column:  *row[2],
@@ -365,13 +385,17 @@ func (s *Server) refetcher(sess *session, extended bool) *engine.Refetcher {
 			return s.runExtendedProbe(sess, sql, expectedColumns)
 		}
 	}
-	return engine.NewRefetcher(s.db, sess.connectionID, sess.backendGen, probe, s.client.PushSchemaFragment)
+	refetcher := engine.NewRefetcher(s.db, sess.connectionID, sess.backendGen, probe, s.client.PushSchemaFragment)
+	refetcher.Catalog = sess.currentCatalog
+	return refetcher
 }
 
 func (s *Server) quietRefetcher(sess *session) *engine.Refetcher {
-	return engine.NewRefetcher(s.db, sess.connectionID, sess.backendGen, func(sql string, expectedColumns int) ([][]*string, error) {
+	refetcher := engine.NewRefetcher(s.db, sess.connectionID, sess.backendGen, func(sql string, expectedColumns int) ([][]*string, error) {
 		return sess.sessionCore.runProbe(sql, expectedColumns, true)
 	}, s.client.PushSchemaFragment)
+	refetcher.Catalog = sess.currentCatalog
+	return refetcher
 }
 
 func (s *Server) forwardCancelRequest(message *pgproto3.CancelRequest) {

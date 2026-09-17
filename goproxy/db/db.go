@@ -13,6 +13,7 @@ import (
 	"github.com/ridi-oss/proxy-monster/analyzer/probe"
 	analyzerpb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
 	"github.com/ridi-oss/sqlglot-go/dialects"
+	"google.golang.org/protobuf/proto"
 )
 
 // MySqlDb is the engine.Db adapter for MySQL.
@@ -48,10 +49,8 @@ func (MySqlDb) NormalizeColumns(lowerCaseTableNames int, columns []*analyzerpb.C
 	outSchemas, outTables, outColumns := probe.NormalizeMySQLColumns(lowerCaseTableNames, schemas, tables, names)
 	out := make([]*analyzerpb.Column, len(columns))
 	for i, c := range columns {
-		out[i] = &analyzerpb.Column{
-			Schema: outSchemas[i], Table: outTables[i], Column: outColumns[i],
-			DataType: c.GetDataType(), Ordinal: c.GetOrdinal(), Nullable: c.GetNullable(),
-		}
+		out[i] = proto.Clone(c).(*analyzerpb.Column)
+		out[i].Schema, out[i].Table, out[i].Column = outSchemas[i], outTables[i], outColumns[i]
 	}
 	return out
 }
@@ -95,7 +94,7 @@ ORDER BY CAST(name AS BINARY)`
 }
 
 func (MySqlDb) SchemaColumnsSQL(schema string) string {
-	return fmt.Sprintf(`SELECT TABLE_SCHEMA, TABLE_NAME, COLUMN_NAME, DATA_TYPE, ORDINAL_POSITION, IS_NULLABLE
+	return fmt.Sprintf(`SELECT TABLE_SCHEMA, TABLE_NAME, COLUMN_NAME, DATA_TYPE, ORDINAL_POSITION, IS_NULLABLE, TABLE_CATALOG
 FROM information_schema.COLUMNS
 WHERE %s
 ORDER BY CAST(TABLE_NAME AS BINARY), ORDINAL_POSITION, CAST(COLUMN_NAME AS BINARY)`, mysqlSchemaFilter("TABLE_SCHEMA", schema))
@@ -191,7 +190,7 @@ func (PgDb) SupportsTempOverlay() bool { return true }
 
 // TempColumnsProbeSQL is the session-temp overlay probe.
 func (PgDb) TempColumnsProbeSQL() string {
-	return `SELECT n.nspname, c.relname, a.attname, pg_catalog.format_type(a.atttypid, a.atttypmod), a.attnum
+	return `SELECT n.nspname, c.relname, a.attname, pg_catalog.format_type(a.atttypid, a.atttypmod), a.attnum, pg_catalog.current_database()
 FROM pg_catalog.pg_attribute a
 JOIN pg_catalog.pg_class c ON c.oid = a.attrelid
 JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
@@ -232,7 +231,7 @@ ORDER BY p.proname::pg_catalog.text COLLATE "C"`, pgByteaLiteral(schema))
 }
 
 func (PgDb) SchemaColumnsSQL(schema string) string {
-	return fmt.Sprintf(`SELECT table_schema, table_name, column_name, data_type, ordinal_position, is_nullable
+	return fmt.Sprintf(`SELECT table_schema, table_name, column_name, data_type, ordinal_position, is_nullable, table_catalog
 FROM information_schema.columns
 WHERE table_schema = pg_catalog.convert_from('%s'::pg_catalog.bytea, 'UTF8')
 ORDER BY table_name::pg_catalog.text COLLATE "C", ordinal_position, column_name::pg_catalog.text COLLATE "C"`, pgByteaLiteral(schema))

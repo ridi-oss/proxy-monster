@@ -3,6 +3,7 @@ package dialects_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net"
 	"reflect"
 	"testing"
@@ -151,4 +152,53 @@ func contains(values []string, want string) bool {
 		}
 	}
 	return false
+}
+
+func TestCatalogRefreshObservesNewConnectionDefaults(t *testing.T) {
+	database := dbtest.Postgres(t)
+	seed := dbtest.OpenPostgres(t, "")
+	role := fmt.Sprintf("spi_defaults_%d", time.Now().UnixNano())
+	if _, err := seed.Exec("CREATE ROLE " + role + " LOGIN PASSWORD 'test-secret'"); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if _, err := seed.Exec("DROP ROLE " + role); err != nil {
+			t.Error(err)
+		}
+	})
+	if _, err := seed.Exec("ALTER ROLE " + role + " SET search_path TO public"); err != nil {
+		t.Fatal(err)
+	}
+	target := openDb(t, engine.Postgres, spi.TargetDb{Host: database.Host, Port: database.Port, Db: database.DB, User: role, Password: "test-secret"})
+	first, err := target.Introspect(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.GetCurrentCatalog() != database.DB || !contains(first.DefaultSchemas, "public") {
+		t.Fatalf("initial catalog = %v/%v", first.CurrentCatalog, first.DefaultSchemas)
+	}
+	if _, err := seed.Exec("ALTER ROLE " + role + " SET search_path TO pg_catalog"); err != nil {
+		t.Fatal(err)
+	}
+	second, err := target.Introspect(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.GetCurrentCatalog() != database.DB || !reflect.DeepEqual(second.DefaultSchemas, []string{"pg_catalog"}) {
+		t.Fatalf("refreshed catalog = %v/%v", second.CurrentCatalog, second.DefaultSchemas)
+	}
+}
+
+func openDb(t *testing.T, dialect engine.Dialect, target spi.TargetDb) spi.Db {
+	t.Helper()
+	provider, err := dialects.For(dialect)
+	if err != nil {
+		t.Fatal(err)
+	}
+	targetDb, err := provider.NewDb(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = targetDb.Close() })
+	return targetDb
 }

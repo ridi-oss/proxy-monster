@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"time"
 
+	enginepb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
 	"github.com/ridi-oss/proxy-monster/goproxy/db"
 	"github.com/ridi-oss/proxy-monster/goproxy/engine"
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
@@ -21,10 +22,12 @@ const tableDetailConnectTimeout = 5 * time.Second
 
 // sqlProvider is a database/sql-backed dialect: MySQL and PostgreSQL differ only in the functions below.
 type sqlProvider struct {
-	dialect    engine.Dialect
-	db         engine.Db
-	open       func(spi.TargetDb) (*sql.DB, error)
-	probe      introspect.NamespaceProbe
+	dialect engine.Dialect
+	db      engine.Db
+	open    func(spi.TargetDb) (*sql.DB, error)
+	probe   introspect.NamespaceProbe
+	// catalog reads the connection's current catalog; MySQL pins "def", Postgres asks the server.
+	catalog    func(context.Context, *sql.Conn) (string, error)
 	readDetail func(*sql.Conn, string, string) (*spi.TableDetail, error)
 	newServer  func(int, spi.TargetDb, spi.EnforcementClient, engine.Db, func() (*tls.Config, error)) spi.WireServer
 	newSession func(context.Context, spi.TargetDb, engine.Db, spi.SessionClient, string, []byte, engine.ExecGuard, time.Duration) (spi.TargetDbSession, error)
@@ -56,7 +59,10 @@ func (d *sqlDb) Introspect(ctx context.Context) (*pb.CatalogRequest, error) {
 	return introspect.Run(ctx, d.pool, d.provider.db, d.provider.probe, d.target.Db)
 }
 
-func (d *sqlDb) ReadTableDetail(ctx context.Context, schema, table string) (*spi.TableDetail, error) {
+func (d *sqlDb) ReadTableDetail(ctx context.Context, table *enginepb.ObjectRef) (*spi.TableDetail, error) {
+	if table == nil || table.Schema == "" || table.Table == "" {
+		return nil, fmt.Errorf("table selector is incomplete")
+	}
 	connectCtx, cancel := context.WithTimeout(ctx, tableDetailConnectTimeout+tableDetailQueryTimeout)
 	defer cancel()
 	conn, err := d.pool.Conn(connectCtx)
@@ -64,12 +70,32 @@ func (d *sqlDb) ReadTableDetail(ctx context.Context, schema, table string) (*spi
 		return nil, fmt.Errorf("connecting to target: %w", err)
 	}
 	defer conn.Close()
-	schema = d.provider.dialect.ResolveSchema(schema, d.target.Db)
-	exists, err := tableDetailTableExists(conn, d.provider.dialect, schema, table)
+	catalog, err := d.provider.catalog(ctx, conn)
+	if err != nil {
+		return nil, err
+	}
+	if table.Catalog != "" && table.Catalog != catalog {
+		return nil, fmt.Errorf("table catalog %q does not match target catalog %q", table.Catalog, catalog)
+	}
+	schema := table.Schema
+	if table.Catalog == "" {
+		schema = d.provider.dialect.ResolveSchema(schema, d.target.Db)
+	}
+	exists, err := tableDetailTableExists(conn, d.provider.dialect, schema, table.Table)
 	if err != nil || !exists {
 		return nil, err
 	}
-	return d.provider.readDetail(conn, schema, table)
+	detail, err := d.provider.readDetail(conn, schema, table.Table)
+	if detail != nil {
+		detail.Catalog = &catalog
+		for i := range detail.ForeignKeys {
+			detail.ForeignKeys[i].SourceCatalog, detail.ForeignKeys[i].TargetCatalog = &catalog, &catalog
+		}
+		for i := range detail.ReferencedBy {
+			detail.ReferencedBy[i].SourceCatalog, detail.ReferencedBy[i].TargetCatalog = &catalog, &catalog
+		}
+	}
+	return detail, err
 }
 
 func (d *sqlDb) NewWireServer(port int, client spi.EnforcementClient, tlsProvider func() (*tls.Config, error)) spi.WireServer {
@@ -88,6 +114,7 @@ var registry = spi.MustRegistry(
 		db:         db.MySqlDb{},
 		open:       introspect.OpenMySQLTarget,
 		probe:      introspect.ProbeMySQLNamespace,
+		catalog:    func(context.Context, *sql.Conn) (string, error) { return "def", nil },
 		readDetail: readMySQLTableDetail,
 		newServer: func(port int, target spi.TargetDb, client spi.EnforcementClient, db engine.Db, tlsProvider func() (*tls.Config, error)) spi.WireServer {
 			return mysqlproxy.New(port, target, client, db, tlsProvider)
@@ -101,6 +128,7 @@ var registry = spi.MustRegistry(
 		db:         db.PgDb{},
 		open:       introspect.OpenPostgresTarget,
 		probe:      introspect.ProbePostgresNamespace,
+		catalog:    introspect.ReadPostgresCatalog,
 		readDetail: readPostgresTableDetail,
 		newServer: func(port int, target spi.TargetDb, client spi.EnforcementClient, db engine.Db, tlsProvider func() (*tls.Config, error)) spi.WireServer {
 			return pgproxy.New(port, target, client, db, tlsProvider)

@@ -153,7 +153,7 @@ func TestPgNormalizeColumnsIsIdentity(t *testing.T) {
 func TestFragmentColumnsFromRowsModeAwareSchemaCheck(t *testing.T) {
 	str := func(s string) *string { return &s }
 	row := func(schema string) [][]*string {
-		return [][]*string{{str(schema), str("t"), str("c"), str("int"), str("1"), str("NO")}}
+		return [][]*string{{str(schema), str("t"), str("c"), str("int"), str("1"), str("NO"), str("def")}}
 	}
 
 	t.Run("MySQL mode 0 rejects a case-differing schema (no legitimate divergence)", func(t *testing.T) {

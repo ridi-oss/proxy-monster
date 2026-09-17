@@ -301,6 +301,11 @@ func TestRunnerPostgresTempTablesAreSessionIsolated(t *testing.T) {
 	runExpectDone(t, runRecv(t, fake1), -1)
 	requests1 := fake1.runRecordedRequests()
 	last1 := requests1[len(requests1)-1]
+	for _, column := range last1.GetTempColumns() {
+		if column.Catalog == nil || column.GetCatalog() != fixture.runTarget.Db {
+			t.Fatalf("temp column catalog = %v, want %s", column.Catalog, fixture.runTarget.Db)
+		}
+	}
 	if !runRequestHasTempTable(last1, tempTable, "id") || !runRequestHasTempTable(last1, tempTable, "note") {
 		t.Fatalf("session 1 temp_columns = %v, want %s.id and %s.note", last1.GetTempColumns(), tempTable, tempTable)
 	}

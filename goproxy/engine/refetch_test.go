@@ -44,7 +44,7 @@ func (refetchDb) NormalizeColumns(_ int, columns []*analyzerpb.Column) []*analyz
 func ptr(s string) *string { return &s }
 
 func fragmentRows(schema string) [][]*string {
-	return [][]*string{{ptr(schema), ptr("t"), ptr("c"), ptr("text"), ptr("1"), ptr("NO")}}
+	return [][]*string{{ptr(schema), ptr("t"), ptr("c"), ptr("text"), ptr("1"), ptr("NO"), ptr("def")}}
 }
 
 func TestRefetcherUnchangedOnHashMatch(t *testing.T) {

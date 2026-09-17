@@ -24,7 +24,6 @@ internal object PostgresEngineDefinition : EngineDefinition {
 
     override fun catalogName(dbName: String): String = dbName
     override fun defaultSchema(dbName: String): String = "public"
-    override fun resolveSchema(requestedSchema: String, dbName: String): String = requestedSchema
     override fun requireCaseMode(lowerCaseTableNames: Int?): Int? = null
     override fun isFixedSystemSchema(schema: String): Boolean = schema in systemSchemas
     override fun isSystemSchema(schema: String): Boolean =

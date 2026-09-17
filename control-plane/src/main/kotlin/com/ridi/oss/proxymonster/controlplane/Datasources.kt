@@ -15,6 +15,7 @@ import com.ridi.oss.proxymonster.controlplane.management.ManagementException
 import com.ridi.oss.proxymonster.analyzer.pb.CatalogSnapshot
 import com.ridi.oss.proxymonster.analyzer.pb.FunctionCatalog
 import com.ridi.oss.proxymonster.grpc.Engine
+import com.ridi.oss.proxymonster.grpc.ObjectRef
 import com.ridi.oss.proxymonster.probe.Classification
 import com.ridi.oss.proxymonster.probe.TableDetail
 import io.ktor.http.ContentType
@@ -71,6 +72,7 @@ data class Datasource(
     // proxy may serve a publicly-trusted certificate and publish nothing. A client reads this to know a
     // plaintext greeting must be refused; false means plaintext.
     val advertiseWireTls: Boolean = false,
+    val currentCatalog: String? = null,
 ) {
     /**
      * The same row with everything a caller would need to reach the proxy removed — the advertised address
@@ -79,6 +81,7 @@ data class Datasource(
      */
     fun withoutConnectionMaterial(): Datasource = copy(
         host = "", port = 0, dbName = "", advertiseAddr = null, advertiseCertChain = null,
+        currentCatalog = null,
     )
 }
 
@@ -129,10 +132,11 @@ data class ClassificationInput(
     val column: String,
     val tags: List<String> = emptyList(),
     val maskFnId: Long? = null,
+    val catalog: String,
 )
 
 @Serializable
-data class ClassificationDelete(val schema: String? = null, val table: String, val column: String)
+data class ClassificationDelete(val schema: String? = null, val table: String, val column: String, val catalog: String)
 
 @Serializable
 data class TestResult(val ok: Boolean, val message: String)
@@ -179,7 +183,7 @@ class DatasourceStore(internal val dataSource: DataSource) {
         const val DATASOURCE_COLUMNS =
             "id, name, engine, host, port, db_name, tags, default_schemas, mysql_lower_case_table_names, " +
                 "catalog_synced_at, last_seen_at, engine_version, advertise_addr, advertise_cert_chain, " +
-                "advertise_wire_tls"
+                "advertise_wire_tls, current_catalog_name"
 
         /** The `system:` tag namespace is owned by the product — an operator may not coin a name in it. */
         const val RESERVED_TAG_PREFIX = "system:"
@@ -374,6 +378,7 @@ class DatasourceStore(internal val dataSource: DataSource) {
                            -- Authoritative every register, so TLS-on -> TLS-off is observable rather than sticky.
                            advertise_wire_tls = EXCLUDED.advertise_wire_tls,
                            catalog           = CASE WHEN datasource.db_name IS DISTINCT FROM EXCLUDED.db_name THEN NULL ELSE datasource.catalog END,
+                           current_catalog_name = CASE WHEN datasource.db_name IS DISTINCT FROM EXCLUDED.db_name THEN NULL ELSE datasource.current_catalog_name END,
                            catalog_synced_at = CASE WHEN datasource.db_name IS DISTINCT FROM EXCLUDED.db_name THEN NULL ELSE datasource.catalog_synced_at END,
                            default_schemas   = CASE WHEN datasource.db_name IS DISTINCT FROM EXCLUDED.db_name THEN '[]'::jsonb ELSE datasource.default_schemas END,
                            mysql_lower_case_table_names = CASE WHEN datasource.db_name IS DISTINCT FROM EXCLUDED.db_name THEN NULL ELSE datasource.mysql_lower_case_table_names END
@@ -429,7 +434,8 @@ class DatasourceStore(internal val dataSource: DataSource) {
      * gRPC PushCatalog: replace datasource [id]'s catalog with the snapshot the PROXY introspected and
      * pushed — the control-plane never connects to the target itself. The snapshot is one blob on the
      * datasource row, replaced whole together with the connection's live `default_schemas` /
-     * `mysql_lower_case_table_names` / `catalog_synced_at`. Returns the number of columns stored.
+     * `mysql_lower_case_table_names` / `catalog_synced_at` / `current_catalog_name`. Every column names
+     * the measured catalog or none. Returns the number of columns stored.
      */
     fun storePushedCatalog(
         id: Long,
@@ -437,22 +443,27 @@ class DatasourceStore(internal val dataSource: DataSource) {
         mysqlLowerCaseTableNames: Int?,
         engineVersion: String,
         catalog: CatalogSnapshot,
+        currentCatalog: String,
     ): Int {
         val duplicate = catalog.columnsList.groupingBy { listOf(it.catalog, it.schema, it.table, it.column) }.eachCount()
             .entries.firstOrNull { it.value > 1 }
         require(duplicate == null) { "duplicate catalog column ${duplicate!!.key}" }
         dataSource.connection.use { c ->
+            val ds = checkNotNull(get(id, c)) { "datasource $id disappeared before catalog push" }
+            val measuredCatalog = ds.measuredCatalog(currentCatalog)
+            catalog.columnsList.forEach { require(it.catalog == measuredCatalog) { "column ${it.schema}.${it.table}.${it.column} names catalog '${it.catalog}', not the measured '$measuredCatalog'" } }
             c.prepareStatement(
                 """UPDATE datasource
                    SET catalog = ?, default_schemas = ?::jsonb, mysql_lower_case_table_names = ?, engine_version = ?,
-                       catalog_synced_at = clock_timestamp()
+                       catalog_synced_at = clock_timestamp(), current_catalog_name = ?
                    WHERE id = ? AND deleted_at IS NULL""",
             ).use { ps ->
                 ps.setBytes(1, catalog.toByteArray())
                 ps.setString(2, json.encodeToString(stringList, defaultSchemas))
                 setNullableInt(ps, 3, mysqlLowerCaseTableNames)
                 ps.setString(4, engineVersion.ifBlank { null })
-                ps.setLong(5, id)
+                ps.setString(5, measuredCatalog)
+                ps.setLong(6, id)
                 check(ps.executeUpdate() == 1) { "datasource $id disappeared before catalog push" }
             }
         }
@@ -481,7 +492,7 @@ class DatasourceStore(internal val dataSource: DataSource) {
      *  both leave a catalog that now describes a DIFFERENT schema, a fail-OPEN unless invalidated. */
     private fun invalidateCatalog(c: java.sql.Connection, id: Long) {
         c.prepareStatement(
-            "UPDATE datasource SET catalog = NULL, catalog_synced_at = NULL, default_schemas = '[]'::jsonb, mysql_lower_case_table_names = NULL WHERE id = ?",
+            "UPDATE datasource SET catalog = NULL, current_catalog_name = NULL, catalog_synced_at = NULL, default_schemas = '[]'::jsonb, mysql_lower_case_table_names = NULL WHERE id = ?",
         ).use { ps -> ps.setLong(1, id); ps.executeUpdate() }
     }
 
@@ -563,13 +574,14 @@ class DatasourceStore(internal val dataSource: DataSource) {
     }
 
 
-    fun catalog(id: Long, c: java.sql.Connection): Catalog = readCatalog(id, c) { snapshot, classifications ->
+    fun catalog(id: Long, c: java.sql.Connection): Catalog = readCatalog(id, c) { snapshot, currentCatalog, classifications ->
         snapshot.columnsList
-            .sortedWith(compareBy({ it.schema }, { it.table }, { it.ordinal }))
-            .map { col ->
+            .map { col -> col.catalog to col }
+            .sortedWith(compareBy({ it.first }, { it.second.schema }, { it.second.table }, { it.second.ordinal }))
+            .map { (catalog, col) ->
                 CatalogColumn(
-                    col.catalog, col.schema, col.table, col.column, col.dataType, sqlTypeFor(col.dataType),
-                    col.ordinal, col.nullable, classifications[Triple(col.schema, col.table, col.column)],
+                    catalog, col.schema, col.table, col.column, col.dataType, sqlTypeFor(col.dataType),
+                    col.ordinal, col.nullable, classifications[columnRef(catalog, col.schema, col.table, col.column)],
                 )
             }
     }
@@ -578,7 +590,7 @@ class DatasourceStore(internal val dataSource: DataSource) {
     fun connectionCatalog(id: Long, columns: List<CatalogColumn>, functions: FunctionCatalog): Catalog {
         val classifications = classificationsFor(id)
         return Catalog(
-            columns.map { row -> row.copy(classification = classifications[Triple(row.schema, row.table, row.column)]) },
+            columns.map { row -> row.copy(classification = classifications[columnRef(row.catalog, row.schema, row.table, row.column)]) },
             functions,
         )
     }
@@ -586,10 +598,11 @@ class DatasourceStore(internal val dataSource: DataSource) {
     private fun readCatalog(
         id: Long,
         c: java.sql.Connection,
-        columns: (CatalogSnapshot, Map<Triple<String, String, String>, Classification>) -> List<CatalogColumn>,
+        columns: (CatalogSnapshot, String?, Map<ObjectRef, Classification>) -> List<CatalogColumn>,
     ): Catalog = c.prepareStatement(
-        """SELECT d.catalog, d.engine, d.engine_version,
-                  cl.schema_name, cl.table_name, cl.column_name, cl.tags, cl.mask_fn_id, m.name AS mask_fn_name
+        """SELECT d.current_catalog_name, d.catalog,
+                  d.engine, d.engine_version,
+                  cl.catalog_name, cl.schema_name, cl.table_name, cl.column_name, cl.tags, cl.mask_fn_id, m.name AS mask_fn_name
            FROM datasource d
            LEFT JOIN column_classification cl ON cl.datasource_id = d.id
            LEFT JOIN mask_fn m ON m.id = cl.mask_fn_id AND m.deleted_at IS NULL
@@ -597,18 +610,20 @@ class DatasourceStore(internal val dataSource: DataSource) {
     ).use { ps ->
         ps.setLong(1, id)
         ps.executeQuery().use { rs ->
+            var currentCatalog: String? = null
             var engine: Engine? = null
             var engineVersion: String? = null
             var snapshot = CatalogSnapshot.getDefaultInstance()
-            val classifications = HashMap<Triple<String, String, String>, Classification>()
+            val classifications = HashMap<ObjectRef, Classification>()
             while (rs.next()) {
+                currentCatalog = rs.getString("current_catalog_name")
                 engine = engineFromWire(rs.getString("engine"))
                 engineVersion = rs.getString("engine_version")
                 rs.getBytes("catalog")?.let { snapshot = CatalogSnapshot.parseFrom(it) }
-                rs.classification()?.let { classifications[Triple(it.schema, it.table, it.column)] = it }
+                rs.classification()?.let { classifications[columnRef(it.catalog!!, it.schema, it.table, it.column)] = it }
             }
             Catalog(
-                columns(snapshot, classifications),
+                columns(snapshot, currentCatalog, classifications),
                 engine?.functionCatalog(snapshot.routinesList.associate { it.schema to it.namesList }, engineVersion)
                     ?: FunctionCatalog.getDefaultInstance(),
             )
@@ -618,7 +633,7 @@ class DatasourceStore(internal val dataSource: DataSource) {
     private fun java.sql.ResultSet.classification(): Classification? = getString("tags")?.let { tags ->
         Classification(
             getString("schema_name"), getString("table_name"), getString("column_name"),
-            json.decodeFromString(stringList, tags), longOrNull("mask_fn_id"), getString("mask_fn_name"),
+            json.decodeFromString(stringList, tags), longOrNull("mask_fn_id"), getString("mask_fn_name"), getString("catalog_name"),
         )
     }
 
@@ -626,10 +641,10 @@ class DatasourceStore(internal val dataSource: DataSource) {
      * Live classification metadata keyed independently of the pushed catalog. Enforcement fragments provide the
      * structural rows; classifications remain CP-owned and can change without a connection re-introspection.
      */
-    fun classificationsFor(id: Long): Map<Triple<String, String, String>, Classification> =
+    fun classificationsFor(id: Long): Map<ObjectRef, Classification> =
         dataSource.connection.use { c ->
             c.prepareStatement(
-                """SELECT cl.schema_name, cl.table_name, cl.column_name, cl.tags, cl.mask_fn_id,
+                """SELECT cl.catalog_name, cl.schema_name, cl.table_name, cl.column_name, cl.tags, cl.mask_fn_id,
                           m.name AS mask_fn_name
                    FROM column_classification cl
                    LEFT JOIN mask_fn m ON m.id = cl.mask_fn_id AND m.deleted_at IS NULL
@@ -643,7 +658,7 @@ class DatasourceStore(internal val dataSource: DataSource) {
                             val table = rs.getString("table_name")
                             val column = rs.getString("column_name")
                             put(
-                                Triple(schema, table, column),
+                                columnRef(rs.getString("catalog_name"), schema, table, column),
                                 Classification(
                                     schema,
                                     table,
@@ -651,6 +666,7 @@ class DatasourceStore(internal val dataSource: DataSource) {
                                     json.decodeFromString(stringList, rs.getString("tags")),
                                     rs.longOrNull("mask_fn_id"),
                                     rs.getString("mask_fn_name"),
+                                    rs.getString("catalog_name"),
                                 ),
                             )
                         }
@@ -675,11 +691,12 @@ class DatasourceStore(internal val dataSource: DataSource) {
         // so the caller sees a tagged column while the real one stays untagged and reads cleartext.
         val schema = input.schema?.takeIf(String::isNotBlank) ?: defaultSchema(id, c)
             ?: throw IllegalArgumentException("schema is required until datasource introspection captures a default schema")
+        val catalog = checkNotNull(get(id, c)).requireCatalog(input.catalog)
         c.prepareStatement(
             """INSERT INTO column_classification
-               (datasource_id, schema_name, table_name, column_name, tags, mask_fn_id, updated_at)
-               VALUES (?, ?, ?, ?, ?::jsonb, ?, now())
-               ON CONFLICT (datasource_id, schema_name, table_name, column_name)
+               (datasource_id, schema_name, table_name, column_name, tags, mask_fn_id, updated_at, catalog_name)
+               VALUES (?, ?, ?, ?, ?::jsonb, ?, now(), ?)
+               ON CONFLICT (datasource_id, catalog_name, schema_name, table_name, column_name)
                DO UPDATE SET tags = EXCLUDED.tags, mask_fn_id = EXCLUDED.mask_fn_id, updated_at = now()""",
         ).use { ps ->
             ps.setLong(1, id)
@@ -688,9 +705,10 @@ class DatasourceStore(internal val dataSource: DataSource) {
             ps.setString(4, input.column)
             ps.setString(5, json.encodeToString(stringList, input.tags))
             setNullableLong(ps, 6, input.maskFnId)
+            ps.setString(7, catalog)
             ps.executeUpdate()
         }
-        return Classification(schema, input.table, input.column, input.tags, input.maskFnId, maskFnName(input.maskFnId, c))
+        return Classification(schema, input.table, input.column, input.tags, input.maskFnId, maskFnName(input.maskFnId, c), catalog)
     }
 
     private fun maskFnName(id: Long?, c: java.sql.Connection): String? {
@@ -713,16 +731,18 @@ class DatasourceStore(internal val dataSource: DataSource) {
 
     private fun java.sql.ResultSet.intOrNull(col: String): Int? = getInt(col).let { if (wasNull()) null else it }
 
-    fun deleteClassification(id: Long, schema: String, table: String, column: String): Boolean =
-        dataSource.connection.use { c -> deleteClassification(id, schema, table, column, c) }
+    fun deleteClassification(id: Long, schema: String, table: String, column: String, catalog: String): Boolean =
+        dataSource.connection.use { c -> deleteClassification(id, schema, table, column, c, catalog) }
 
-    fun deleteClassification(id: Long, schema: String, table: String, column: String, c: java.sql.Connection): Boolean =
-        c.prepareStatement(
-            "DELETE FROM column_classification WHERE datasource_id=? AND schema_name=? AND table_name=? AND column_name=?",
+    fun deleteClassification(id: Long, schema: String, table: String, column: String, c: java.sql.Connection, catalog: String): Boolean {
+        val resolvedCatalog = checkNotNull(get(id, c)).requireCatalog(catalog)
+        return c.prepareStatement(
+            "DELETE FROM column_classification WHERE datasource_id=? AND schema_name=? AND table_name=? AND column_name=? AND catalog_name=?",
         ).use { ps ->
-            ps.setLong(1, id); ps.setString(2, schema); ps.setString(3, table); ps.setString(4, column)
+            ps.setLong(1, id); ps.setString(2, schema); ps.setString(3, table); ps.setString(4, column); ps.setString(5, resolvedCatalog)
             ps.executeUpdate() > 0
         }
+    }
 
     private fun java.sql.ResultSet.toDatasource() = Datasource(
         id = getLong("id"),
@@ -740,6 +760,7 @@ class DatasourceStore(internal val dataSource: DataSource) {
         advertiseAddr = getString("advertise_addr"),
         advertiseCertChain = getString("advertise_cert_chain"),
         advertiseWireTls = getBoolean("advertise_wire_tls"),
+        currentCatalog = getString("current_catalog_name"),
     )
 }
 
@@ -1010,10 +1031,11 @@ fun Route.datasourceRoutes(
         val principal = call.requireApiOrBearer(config, tokenStore, userGroupStore) ?: return@get
         val id = call.idParam()?.takeIf { it > 0 }
             ?: return@get call.respond(HttpStatusCode.BadRequest, ApiError("common.bad_id"))
+        val catalog = call.request.queryParameters["catalog"]
         val schema = call.request.queryParameters["schema"]
         val table = call.request.queryParameters["table"]
-        if (schema.isNullOrBlank() || table.isNullOrBlank()) {
-            call.respond(HttpStatusCode.BadRequest, ApiError("common.field_required", mapOf("fields" to "schema, table")))
+        if (catalog.isNullOrBlank() || schema.isNullOrBlank() || table.isNullOrBlank()) {
+            call.respond(HttpStatusCode.BadRequest, ApiError("common.field_required", mapOf("fields" to "catalog, schema, table")))
             return@get
         }
         val datasource = store.get(id)
@@ -1022,7 +1044,7 @@ fun Route.datasourceRoutes(
             return@get call.respond(HttpStatusCode.Forbidden, ApiError("datasource.not_connectable"))
         }
         try {
-            call.respond(management.getTableDetail(datasource.name, schema, table))
+            call.respond(management.getTableDetail(datasource.name, catalog, schema, table))
         } catch (e: ManagementException) {
             call.respondManagementError(e)
         }
@@ -1034,7 +1056,7 @@ fun Route.datasourceRoutes(
         try {
             call.respond(
                 management.setColumnClassification(
-                    id, input.schema, input.table, input.column, input.tags, input.maskFnId, call.auditActor(config),
+                    id, input.schema, input.table, input.column, input.tags, input.maskFnId, call.auditActor(config), input.catalog,
                 ),
             )
         } catch (e: ManagementException) {
@@ -1046,7 +1068,7 @@ fun Route.datasourceRoutes(
         val id = call.idParam() ?: return@delete call.respond(HttpStatusCode.BadRequest, ApiError("common.bad_id"))
         val body = call.receive<ClassificationDelete>()
         try {
-            management.clearColumnClassification(id, body.schema, body.table, body.column, call.auditActor(config))
+            management.clearColumnClassification(id, body.schema, body.table, body.column, call.auditActor(config), body.catalog)
             call.respond(HttpStatusCode.NoContent)
         } catch (e: ManagementException) {
             call.respondManagementError(e)

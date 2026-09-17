@@ -244,6 +244,7 @@ object SchemaThreadingFixtures {
                 column = "ssn",
                 tags = listOf("pii"),
                 maskFnId = maskFn.id,
+                catalog = catalog,
             ),
         )
 

@@ -34,15 +34,16 @@ class MySqlSummaryTableLeakDbTest {
         fx = EnforcementFixture.mysql()
         fx.datasourceStore.storePushedCatalog(
             id = fx.datasource.id,
+            currentCatalog = fx.datasource.effectiveCatalog,
             defaultSchemas = listOf(fx.datasource.dbName),
             mysqlLowerCaseTableNames = 0,
             engineVersion = "8.0.44",
             catalog = snapshotOf(
-                pushedColumn("def", "performance_schema", "user_variables_by_thread", "VARIABLE_NAME", "varchar", 1, true),
-                pushedColumn("def", "performance_schema", "user_variables_by_thread", "VARIABLE_VALUE", "longtext", 2, true),
-                pushedColumn("def", "sys", "x\$schema_table_statistics", "table_name", "varchar", 1, true),
+                pushedColumn("performance_schema", "user_variables_by_thread", "VARIABLE_NAME", "varchar", 1, true, catalog = "def"),
+                pushedColumn("performance_schema", "user_variables_by_thread", "VARIABLE_VALUE", "longtext", 2, true, catalog = "def"),
+                pushedColumn("sys", "x\$schema_table_statistics", "table_name", "varchar", 1, true, catalog = "def"),
                 // A genuinely structural catalog view stays browsable — proves the fix did not over-classify.
-                pushedColumn("def", "information_schema", "TABLES", "TABLE_NAME", "varchar", 1, true),
+                pushedColumn("information_schema", "TABLES", "TABLE_NAME", "varchar", 1, true, catalog = "def"),
             ),
         )
         fx.dataSource.connection.use { c ->

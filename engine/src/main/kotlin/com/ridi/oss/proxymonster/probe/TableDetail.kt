@@ -11,6 +11,7 @@ data class Classification(
     val tags: List<String> = emptyList(),
     val maskFnId: Long? = null,
     val maskFnName: String? = null,
+    val catalog: String = "",
 )
 
 /** Live table-browser metadata. The proxy serializes this shape and the control plane serves it unchanged. */

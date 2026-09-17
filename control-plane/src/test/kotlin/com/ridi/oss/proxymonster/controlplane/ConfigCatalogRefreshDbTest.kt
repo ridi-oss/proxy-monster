@@ -101,7 +101,7 @@ abstract class ConfigCatalogRefreshDbContract {
     }
 
     private suspend fun open(held: Connection, principal: String = writer): OpenConnection {
-        val opened = fixture.core.connectionCatalog.open(Binding(ds.name, principal, "USER", ds.effectiveCatalog), listOf(schema()))
+        val opened = fixture.core.connectionCatalog.open(Binding(ds.name, principal, "USER", ds.effectiveCatalog), ds.namespaces(listOf(schema())))
         fixture.pushFromTarget(held, opened.connectionId, schema())
         return opened
     }

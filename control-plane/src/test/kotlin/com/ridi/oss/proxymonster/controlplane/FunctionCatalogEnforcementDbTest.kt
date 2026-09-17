@@ -38,7 +38,7 @@ class FunctionCatalogEnforcementDbTest {
         // The held connection decides against its own fragments: the stored snapshot can go away entirely.
         core.datasourceStore.storePushedCatalog(
             ds.id, ds.defaultSchemas, ds.mysqlLowerCaseTableNames, ds.engineVersion!!,
-            CatalogSnapshot.getDefaultInstance(),
+            CatalogSnapshot.getDefaultInstance(), ds.effectiveCatalog,
         )
         assertTrue(core.datasourceStore.catalog(ds.id).columns.isEmpty())
         // A call may run DDL inside its body, so every verdict on a function call carries a refetch of the
@@ -48,7 +48,7 @@ class FunctionCatalogEnforcementDbTest {
                 core, connectionId, "analyst@example.com", ds, sql, ds.defaultSchemas, "127.0.0.1:12345",
             ))
             for (refetch in verdict.afterStatement) {
-                val held = core.connectionCatalog.find(connectionId)!!.held.getValue(refetch.schema)
+                val held = core.connectionCatalog.find(connectionId)!!.held.getValue(namespace(ds.effectiveCatalog, refetch.schema))
                 val ack = core.connectionCatalog.applyPush(
                     schemaFragmentPush {
                         this.connectionId = connectionId; datasourceName = ds.name; catalog = ds.effectiveCatalog; schema = refetch.schema
@@ -63,7 +63,7 @@ class FunctionCatalogEnforcementDbTest {
         val masked = decide(opened.connectionId, "SELECT catalog_identity(id), ssn FROM users")
         assertEquals(EnfAction.MASK, masked.action, masked.detail)
         assertEquals(listOf(1), masked.masks.map { it.ordinal })
-        core.datasourceStore.deleteClassification(ds.id, ds.dbName, "users", "ssn")
+        core.datasourceStore.deleteClassification(ds.id, ds.dbName, "users", "ssn", ds.effectiveCatalog)
         val clear = decide(opened.connectionId, "SELECT catalog_identity(id), ssn FROM users")
         assertEquals(EnfAction.ALLOW, clear.action, clear.detail)
         val udfCall = assertIs<EnforcementOutcome.Verdict>(decideConnection(
@@ -73,7 +73,7 @@ class FunctionCatalogEnforcementDbTest {
         core.connectionCatalog.applyPush(
             schemaFragmentPush {
                 connectionId = opened.connectionId; datasourceName = ds.name; catalog = ds.effectiveCatalog; schema = ds.defaultSchemas.single()
-                contentHash = core.connectionCatalog.find(opened.connectionId)!!.held.getValue(ds.defaultSchemas.single()).hash.bytes
+                contentHash = core.connectionCatalog.find(opened.connectionId)!!.held.getValue(namespace(ds.effectiveCatalog, ds.defaultSchemas.single())).hash.bytes
                 unchanged = true; backendGeneration = 1
             },
             ds,
@@ -100,6 +100,7 @@ class FunctionCatalogEnforcementDbTest {
                 columns.addAll(fx.datasourceStore.storedSnapshot(ds.id).columnsList)
                 routines.add(schemaFunctions { schema = ds.dbName; names.add("invented_native") })
             },
+            ds.effectiveCatalog,
         )
         val catalog = fx.datasourceStore.catalog(ds.id)
         val (_, analyzer) = analyzerAndCatalogIndex(ds, catalog, emptyList(), ds.defaultSchemas)

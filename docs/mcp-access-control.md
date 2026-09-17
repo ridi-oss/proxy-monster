@@ -255,15 +255,15 @@ REST's session-only `requireApi` on some list routes).
   columns (from `column_classification`).
 - `set_column_classification` (`admin.datasources`, scope
   `mcp:datasources:write`) — set
-  `{schema?, table, column, tags[], maskFnName?}`. Enforces
+  `{catalog, schema?, table, column, tags[], maskFnName?}`. Enforces
   `RESERVED_TAG_PREFIX="system:"` exactly as REST does (REST:
   `PUT /api/datasources/{id}/classification`).
 - `set_column_classifications` (`admin.datasources`, scope
   `mcp:datasources:write`) — the same write for many columns of one datasource:
-  `{datasource, columns[{schema?, table, column, tags[], maskFnName?}]}`, at
-  most `MAX_CLASSIFICATION_BATCH` (500) entries. Classifying a table column by
-  column costs one round trip, one transaction, and one audit row each; a model
-  labelling a freshly introspected schema does that dozens of times, and a
+  `{datasource, columns[{catalog, schema?, table, column, tags[], maskFnName?}]}`,
+  at most `MAX_CLASSIFICATION_BATCH` (500) entries. Classifying a table column
+  by column costs one round trip, one transaction, and one audit row each; a
+  model labelling a freshly introspected schema does that dozens of times, and a
   failure partway leaves the table half-tagged with no single row saying so.
   All-or-nothing: every entry is validated — reserved tag, blank name, missing
   schema with no datasource default, unknown mask function, the same column

@@ -1,5 +1,7 @@
 package com.ridi.oss.proxymonster.controlplane.grpc
 
+import com.ridi.oss.proxymonster.controlplane.columnRef
+
 import com.ridi.oss.proxymonster.controlplane.AccessRequest
 import com.ridi.oss.proxymonster.controlplane.effectiveCatalog
 import com.ridi.oss.proxymonster.controlplane.Binding
@@ -87,7 +89,7 @@ abstract class WireTaskDecideDbContract {
                 sqlType = sqlTypeFor(row.dataType),
                 ordinal = row.ordinal,
                 nullable = row.nullable,
-                classification = classifications[Triple(row.schema, row.table, row.column)],
+                classification = classifications[columnRef(row.catalog, row.schema, row.table, row.column)],
             )
         }
         val ctx = decideQuery(

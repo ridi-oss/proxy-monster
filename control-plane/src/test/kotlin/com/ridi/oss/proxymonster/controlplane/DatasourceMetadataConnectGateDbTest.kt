@@ -182,7 +182,7 @@ class DatasourceMetadataConnectGateDbTest {
         )
         assertEquals(
             HttpStatusCode.Forbidden,
-            client.get("/api/datasources/${ungranted.id}/table-detail?schema=app&table=t").status,
+            client.get("/api/datasources/${ungranted.id}/table-detail?catalog=def&schema=app&table=t").status,
         )
     }
 
@@ -261,7 +261,7 @@ class DatasourceMetadataConnectGateDbTest {
     @Test
     fun `table-detail is 401 unauthenticated`() = testApplication {
         val client = wire()
-        val res = client.get("/api/datasources/${datasource.id}/table-detail?schema=app&table=t")
+        val res = client.get("/api/datasources/${datasource.id}/table-detail?catalog=def&schema=app&table=t")
         assertEquals(HttpStatusCode.Unauthorized, res.status)
     }
 
@@ -269,7 +269,7 @@ class DatasourceMetadataConnectGateDbTest {
     fun `table-detail is 403 without datasource-connect`() = testApplication {
         val client = wire()
         client.post("/test/session/$stranger")
-        val res = client.get("/api/datasources/${datasource.id}/table-detail?schema=app&table=t")
+        val res = client.get("/api/datasources/${datasource.id}/table-detail?catalog=def&schema=app&table=t")
         assertEquals(
             HttpStatusCode.Forbidden, res.status,
             "table-detail overlays the same classifications {id}/catalog serves under datasource.connect",
@@ -285,7 +285,7 @@ class DatasourceMetadataConnectGateDbTest {
     fun `a granted caller passes the table-detail gate and fails at proxy dispatch`() = testApplication {
         val client = wire()
         client.post("/test/session/$connector")
-        val res = client.get("/api/datasources/${datasource.id}/table-detail?schema=app&table=t")
+        val res = client.get("/api/datasources/${datasource.id}/table-detail?catalog=def&schema=app&table=t")
         assertEquals(HttpStatusCode.BadGateway, res.status, "expected the no-proxy dispatch failure past the gate")
         assertTrue(
             res.bodyAsText().contains("table_introspection_failed"),

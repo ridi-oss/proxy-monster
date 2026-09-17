@@ -80,7 +80,7 @@ class ResultCapDecideDbTest {
         val fx = EnforcementFixture.mysql()
         fx.datasourceStore.upsertClassification(
             fx.datasource.id,
-            ClassificationInput(schema = fx.datasource.engine.defaultSchema(fx.datasource.dbName), table = "users", column = "email", tags = listOf("contact"), maskFnId = null),
+            ClassificationInput(schema = fx.datasource.engine.defaultSchema(fx.datasource.dbName), table = "users", column = "email", tags = listOf("contact"), maskFnId = null, catalog = fx.datasource.effectiveCatalog),
         )
         fx.policy(
             "analyst-contact-unmasked",

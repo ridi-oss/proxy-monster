@@ -111,6 +111,7 @@ internal fun DatasourceStore.pushTestCatalog(
     storePushedCatalog(
         id = datasource.id,
         defaultSchemas = namespace.defaultSchemas,
+        currentCatalog = datasource.effectiveCatalog,
         mysqlLowerCaseTableNames = namespace.mysqlLowerCaseTableNames,
         engineVersion = namespace.engineVersion,
         catalog = catalogSnapshot {
@@ -265,7 +266,7 @@ class EnforcementFixture(
             val maskFn = s.policyStore.createMaskFn(MaskFnInput("last4", "LAST_N"))
             s.datasourceStore.upsertClassification(
                 ds.id,
-                ClassificationInput(schema = schema, table = "users", column = "ssn", tags = listOf("pii"), maskFnId = maskFn.id),
+                ClassificationInput(schema = schema, table = "users", column = "ssn", tags = listOf("pii"), maskFnId = maskFn.id, catalog = catalog),
             )
             val role = s.policyStore.createRole(RoleInput(ROLE))
             // Direct principal_role assignment so RoleResolver.resolve("analyst@example.com") — the
@@ -553,7 +554,7 @@ class EnforcementFixture(
     }
 }
 
-internal fun pushedColumn(catalog: String, schema: String, table: String, column: String, dataType: String, ordinal: Int, nullable: Boolean): Column =
+internal fun pushedColumn(schema: String, table: String, column: String, dataType: String, ordinal: Int, nullable: Boolean, catalog: String): Column =
     column {
         this.catalog = catalog
         this.schema = schema

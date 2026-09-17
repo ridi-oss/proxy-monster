@@ -49,19 +49,13 @@ class EnginesTest {
         assertEquals(Dialect.POSTGRES, Engine.POSTGRES.dialect)
     }
 
-    @Test fun `catalogName, defaultSchema and resolveSchema follow each engine's namespace model`() {
+    @Test fun `catalogName and defaultSchema follow each engine's namespace model`() {
         assertEquals("def", Engine.MYSQL.catalogName("app"))
         assertEquals("app", Engine.POSTGRES.catalogName("app"))
         // In ANSI terms a MySQL "database" is the schema, so the default schema is the database name;
         // Postgres defaults to "public".
         assertEquals("app", Engine.MYSQL.defaultSchema("app"))
         assertEquals("public", Engine.POSTGRES.defaultSchema("app"))
-        // resolveSchema: the "public" default selector maps to the default schema; any other value is an
-        // explicit schema/database used as-is — so MySQL addresses every database, not only "app".
-        assertEquals("app", Engine.MYSQL.resolveSchema("public", "app"))
-        assertEquals("reporting", Engine.MYSQL.resolveSchema("reporting", "app"))
-        assertEquals("public", Engine.POSTGRES.resolveSchema("public", "app"))
-        assertEquals("reporting", Engine.POSTGRES.resolveSchema("reporting", "app"))
     }
 
     @Test fun `value-returning engine methods fail closed on an unspecified engine`() {

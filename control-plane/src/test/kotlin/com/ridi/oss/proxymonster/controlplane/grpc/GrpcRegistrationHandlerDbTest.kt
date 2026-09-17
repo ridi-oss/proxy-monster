@@ -4,10 +4,12 @@ import com.ridi.oss.proxymonster.analyzer.pb.SchemaFunctions
 import com.ridi.oss.proxymonster.analyzer.pb.schemaFunctions
 import com.ridi.oss.proxymonster.classification.PostgresGrammarFunctions
 import com.ridi.oss.proxymonster.controlplane.Catalog
-import com.ridi.oss.proxymonster.controlplane.effectiveCatalog
 import com.ridi.oss.proxymonster.controlplane.support.storedSnapshot
 import com.ridi.oss.proxymonster.controlplane.DatasourceStore
 import com.ridi.oss.proxymonster.analyzer.pb.CatalogSnapshot
+import com.ridi.oss.proxymonster.controlplane.namespace
+import com.ridi.oss.proxymonster.controlplane.namespaces
+import com.ridi.oss.proxymonster.controlplane.effectiveCatalog
 import com.google.protobuf.ByteString
 import com.ridi.oss.proxymonster.controlplane.Binding
 import com.ridi.oss.proxymonster.controlplane.CatalogMutationResult
@@ -520,6 +522,43 @@ class GrpcRegistrationHandlerDbTest {
     }
 
     @Test
+    fun `pushCatalog uses measured catalog and rejects contradictory row catalogs`() = runBlocking {
+        stub.register(regReq { name = "reg-qualified"; engine = Engine.POSTGRES; dbName = "advisory" })
+        stub.pushCatalog(catalogRequest {
+            datasourceName = "reg-qualified"
+            currentCatalog = "measured"
+            defaultSchemas.add("schema.with.dot")
+            catalog = catalogSnapshot {
+                columns.add(column {
+                    catalog = "measured"; schema = "schema.with.dot"; table = "users"; this.column = "id"
+                    dataType = "bigint"; ordinal = 1
+                })
+            }
+        })
+        val ds = core.datasourceStore.getByName("reg-qualified")!!
+        assertEquals("measured", ds.currentCatalog)
+        assertEquals("measured", core.datasourceStore.catalog(ds.id).columns.single().catalog)
+        // An empty column catalog means the measured one; any other name contradicts the measurement.
+        assertEquals(Status.Code.INVALID_ARGUMENT, statusOf {
+            stub.pushCatalog(catalogRequest {
+                datasourceName = ds.name
+                currentCatalog = "measured"
+                catalog = catalogSnapshot {
+                    columns.add(column {
+                        catalog = "other"; schema = "schema.with.dot"; table = "users"; this.column = "id"
+                        dataType = "bigint"; ordinal = 1
+                    })
+                }
+            })
+        })
+        assertEquals(Status.Code.INVALID_ARGUMENT, statusOf {
+            stub.pushCatalog(catalogRequest { datasourceName = ds.name; currentCatalog = "" })
+        })
+        assertEquals(1, core.datasourceStore.catalog(ds.id).columns.size)
+        assertEquals("measured", core.datasourceStore.get(ds.id)!!.currentCatalog)
+    }
+
+    @Test
     fun `pushCatalog stores the proxy-pushed columns and default schemas`() = runBlocking {
         stub.register(regReq { name = "reg-cat"; engine = Engine.POSTGRES; host = "h"; port = 1; dbName = "d" })
         val ack = stub.pushCatalog(
@@ -555,7 +594,7 @@ class GrpcRegistrationHandlerDbTest {
         val ds = core.datasourceStore.getByName("reg-ambient")!!
 
         // A connection measures `app` itself, so the control plane holds enforcement content for it.
-        val opened = core.connectionCatalog.open(Binding(ds.name, "p", "USER", ds.effectiveCatalog), listOf("app"))
+        val opened = core.connectionCatalog.open(Binding(ds.name, "p", "USER", ds.effectiveCatalog), ds.namespaces(listOf("app")))
         val applied = core.connectionCatalog.applyPush(
             schemaFragmentPush {
                 connectionId = opened.connectionId
@@ -571,7 +610,7 @@ class GrpcRegistrationHandlerDbTest {
             ds,
         )
         assertIs<CatalogMutationResult.Applied>(applied)
-        val measuredBefore = core.connectionCatalog.measuredNanosFor(ds.name, "app")!!
+        val measuredBefore = core.connectionCatalog.measuredNanosFor(ds.name, namespace(ds.effectiveCatalog, "app"))!!
 
         // The ambient refresh reports the same content for that schema.
         stub.pushCatalog(
@@ -590,7 +629,7 @@ class GrpcRegistrationHandlerDbTest {
         // The recorded measurement time must have MOVED. Asserting that instead of "the adopter looks
         // fresh" is deliberate: the adopter would look fresh anyway from the original measurement seconds
         // earlier, so a freshness assertion holds even with this handler unwired and proves nothing.
-        val afterAmbient = core.connectionCatalog.measuredNanosFor(ds.name, "app")
+        val afterAmbient = core.connectionCatalog.measuredNanosFor(ds.name, namespace(ds.effectiveCatalog, "app"))
         assertNotNull(afterAmbient, "the enforcement entry must survive the push")
         assertTrue(
             afterAmbient > measuredBefore,
@@ -600,7 +639,7 @@ class GrpcRegistrationHandlerDbTest {
 
         // The push confirms content; it never installs it.
         val adopter = core.connectionCatalog.open(
-            Binding(ds.name, "later", "USER", ds.effectiveCatalog), listOf("app"), adoptHeldContent = true,
+            Binding(ds.name, "later", "USER", ds.effectiveCatalog), ds.namespaces(listOf("app")), adoptHeldContent = true,
         )
         assertTrue(adopter.onOpen.isEmpty(), "the ambient push must leave the adopter with nothing to fetch")
         assertEquals(
@@ -747,10 +786,11 @@ class GrpcRegistrationHandlerDbTest {
         dataSource.connection.use { c ->
             c.prepareStatement(
                 """INSERT INTO column_classification
-                   (datasource_id, schema_name, table_name, column_name, tags)
-                   VALUES (?, 'public', 'users', 'ssn', '["pii","government-id"]'::jsonb)""",
+                   (datasource_id, schema_name, table_name, column_name, tags, catalog_name)
+                   VALUES (?, 'public', 'users', 'ssn', '["pii","government-id"]'::jsonb, ?)""",
             ).use { ps ->
                 ps.setLong(1, ds.id)
+                ps.setString(2, ds.effectiveCatalog)
                 ps.executeUpdate()
             }
         }

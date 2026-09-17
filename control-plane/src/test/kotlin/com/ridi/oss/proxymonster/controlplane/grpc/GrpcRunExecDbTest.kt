@@ -1022,6 +1022,7 @@ class GrpcRunExecDbTest {
                     token = ephemeralToken
                     datasourceName = datasource.name
                     currentCatalog = datasource.effectiveCatalog
+                    currentCatalog = datasource.effectiveCatalog
                     connectionId = open.connectionId
                     sql = "select 1 from t"
                 },

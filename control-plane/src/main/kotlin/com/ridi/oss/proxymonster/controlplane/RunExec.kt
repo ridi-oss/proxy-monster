@@ -416,7 +416,7 @@ class RunExecService(
         val kind = (if (approverExec) TokenKind.APPROVER_EXEC else TokenKind.EDITOR).name
         val opened = core.connectionCatalog.open(
             Binding(ds.name, principal, kind, ds.effectiveCatalog),
-            ds.defaultSchemas + ds.engine.systemSchemas,
+            ds.namespaces(ds.defaultSchemas + ds.engine.systemSchemas),
             adoptHeldContent = ds.engine.catalogIsConnectionIndependent,
         )
         val sessionId = UUID.randomUUID().toString()
@@ -516,7 +516,7 @@ class RunExecService(
         core.runRequesterIps.put(issuedTokenHash, requesterIp)
         val opened = core.connectionCatalog.open(
             Binding(ds.name, principal, TokenKind.EDITOR.name, ds.effectiveCatalog),
-            ds.defaultSchemas + ds.engine.systemSchemas,
+            ds.namespaces(ds.defaultSchemas + ds.engine.systemSchemas),
             adoptHeldContent = ds.engine.catalogIsConnectionIndependent,
         )
         val sessionId = UUID.randomUUID().toString()

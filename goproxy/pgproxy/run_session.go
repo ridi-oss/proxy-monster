@@ -26,7 +26,7 @@ type RunSession struct {
 }
 
 func NewRunSession(ctx context.Context, target spi.TargetDb, db engine.Db, client spi.SessionClient, token string, connectionID []byte, guard engine.ExecGuard, readTimeout time.Duration) (*RunSession, error) {
-	conn, _, keyData, txStatus, err := dialTargetDbAuth(ctx, target)
+	conn, _, keyData, txStatus, catalog, err := dialTargetDbAuth(ctx, target)
 	if err != nil {
 		return nil, err
 	}
@@ -38,10 +38,11 @@ func NewRunSession(ctx context.Context, target spi.TargetDb, db engine.Db, clien
 	}
 	s := &RunSession{
 		sessionCore: sessionCore{
-			targetDb:     pgproto3.NewFrontend(conn, conn),
-			qe:           engine.NewQueryEngine(client),
-			db:           db,
-			lastTxStatus: txStatus,
+			currentCatalog: catalog,
+			targetDb:       pgproto3.NewFrontend(conn, conn),
+			qe:             engine.NewQueryEngine(client),
+			db:             db,
+			lastTxStatus:   txStatus,
 		},
 		conn:         conn,
 		keyData:      keyData,
@@ -53,6 +54,7 @@ func NewRunSession(ctx context.Context, target spi.TargetDb, db engine.Db, clien
 	s.ref = engine.NewRefetcher(db, s.connectionID, generation, func(sql string, expectedColumns int) ([][]*string, error) {
 		return s.runProbe(sql, expectedColumns, true)
 	}, client.PushSchemaFragment)
+	s.ref.Catalog = catalog
 	return s, nil
 }
 

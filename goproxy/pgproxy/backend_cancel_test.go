@@ -43,7 +43,7 @@ func TestDialTargetDbAuthAbortsOnContextCancel(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	dialErr := make(chan error, 1)
 	go func() {
-		_, _, _, _, err := dialTargetDbAuth(ctx, target)
+		_, _, _, _, _, err := dialTargetDbAuth(ctx, target)
 		dialErr <- err
 	}()
 

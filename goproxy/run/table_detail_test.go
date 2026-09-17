@@ -171,7 +171,7 @@ func tableDetailDecode(t *testing.T, tableDetailPayload string) (spi.TableDetail
 	}
 	tableDetailWantKeys := map[string]struct{}{
 		"schema": {}, "table": {}, "columns": {}, "indexes": {},
-		"foreignKeys": {}, "referencedBy": {}, "metadata": {},
+		"foreignKeys": {}, "referencedBy": {}, "metadata": {}, "catalog": {},
 	}
 	tableDetailGotKeys := make(map[string]struct{}, len(tableDetailTop))
 	for tableDetailKey := range tableDetailTop {
@@ -288,6 +288,9 @@ CREATE TABLE pm_tdetail_plain (
 		"pm_tdetail_mysql_users", "public", "pm_tdetail_users",
 	))
 	tableDetailUsers, tableDetailUsersTop := tableDetailDecode(t, tableDetailUsersPayload)
+	if tableDetailUsers.Catalog == nil || *tableDetailUsers.Catalog != "def" {
+		t.Fatalf("catalog = %v, want def", tableDetailUsers.Catalog)
+	}
 	if tableDetailUsers.Schema != tableDetailDBTargetDb.DB || tableDetailUsers.Table != "pm_tdetail_users" {
 		t.Fatalf("MySQL public selector resolved to %s.%s, want %s.pm_tdetail_users", tableDetailUsers.Schema, tableDetailUsers.Table, tableDetailDBTargetDb.DB)
 	}

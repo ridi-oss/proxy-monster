@@ -57,8 +57,8 @@ func TestServeStatementRefetchesOnlyAfterCleanCompletion(t *testing.T) {
 			Db: mysqlDb,
 			Probe: func(sql string, expected int) ([][]*string, error) {
 				*calls++
-				if expected == 6 {
-					return [][]*string{{str("app"), str("t"), str("id"), str("int"), str("1"), str("NO")}}, nil
+				if expected == 7 {
+					return [][]*string{{str("app"), str("t"), str("id"), str("int"), str("1"), str("NO"), str("def")}}, nil
 				}
 				return [][]*string{{str("hash")}}, nil
 			},

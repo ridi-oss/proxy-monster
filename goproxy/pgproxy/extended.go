@@ -340,9 +340,10 @@ func (s *Server) probeBindContext(sess *session) (engine.SessionObservation, []e
 	if err != nil {
 		return engine.SessionObservation{}, nil, err
 	}
+	observed.CurrentCatalog = sess.currentCatalog
 	sess.session = observed.Clone()
 
-	tempRows, err := s.runExtendedProbe(sess, s.db.TempColumnsProbeSQL(), 5)
+	tempRows, err := s.runExtendedProbe(sess, s.db.TempColumnsProbeSQL(), 6)
 	if err != nil {
 		return engine.SessionObservation{}, nil, fmt.Errorf("target DB temp-column probe: %w", err)
 	}

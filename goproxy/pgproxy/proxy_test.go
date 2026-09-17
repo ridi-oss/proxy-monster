@@ -431,6 +431,9 @@ func TestAllowRelaysRowsAndDecisionContext(t *testing.T) {
 		t.Fatalf("Decide requests = %d, want 1", len(requests))
 	}
 	request := requests[0]
+	if request.CurrentCatalog == nil || request.GetCurrentCatalog() != "app" {
+		t.Fatalf("DecisionRequest catalog = %v, want app", request.CurrentCatalog)
+	}
 	if request.GetToken() != validToken || request.GetSql() != query || !reflect.DeepEqual(request.GetSearchPath(), []string{"pg_catalog", "public"}) {
 		t.Fatalf("DecisionRequest = %+v, want token/query/default search path", request)
 	}

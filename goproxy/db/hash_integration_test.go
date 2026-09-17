@@ -15,6 +15,7 @@ import (
 	analyzerpb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
 	"github.com/ridi-oss/proxy-monster/goproxy/engine"
 	"github.com/ridi-oss/proxy-monster/goproxy/internal/dbtest"
+	"github.com/ridi-oss/proxy-monster/goproxy/introspect"
 )
 
 const hashTestTimeout = 30 * time.Second
@@ -76,7 +77,7 @@ func TestMySqlSchemaHashIntegration(t *testing.T) {
 	}
 	fragments := func(schema string) []*analyzerpb.Column {
 		t.Helper()
-		rows, err := queryStrings(conn, db.SchemaColumnsSQL(schema), 6)
+		rows, err := queryStrings(conn, db.SchemaColumnsSQL(schema), 7)
 		if err != nil {
 			t.Fatalf("fragment query for %q: %v", schema, err)
 		}
@@ -175,8 +176,8 @@ func TestMySqlSchemaHashIntegration(t *testing.T) {
 		t.Cleanup(func() { cleanupExec("DROP DATABASE IF EXISTS " + quote(hostile)) })
 		exec("CREATE TABLE " + quote(hostile) + ".t (id INT NOT NULL)")
 		_ = hash(hostile)
-		want := []*analyzerpb.Column{{Schema: hostile, Table: "t", Column: "id", DataType: "int", Ordinal: 1}}
-		if got := fragments(hostile); !reflect.DeepEqual(got, want) {
+		want := inCatalog("def", []*analyzerpb.Column{{Schema: hostile, Table: "t", Column: "id", DataType: "int", Ordinal: 1}})
+		if got := fragments(hostile); !equalColumns(got, want) {
 			t.Fatalf("hostile schema fragment = %+v, want %+v", got, want)
 		}
 		missing := uniqueFixtureName("pm_hash_mysql_missing")
@@ -192,11 +193,11 @@ func TestMySqlSchemaHashIntegration(t *testing.T) {
 		exec("CREATE DATABASE " + quote(fragmentSchema))
 		t.Cleanup(func() { cleanupExec("DROP DATABASE IF EXISTS " + quote(fragmentSchema)) })
 		exec("CREATE TABLE " + quote(fragmentSchema) + ".sample (id INT NOT NULL, note VARCHAR(20) NULL)")
-		want := []*analyzerpb.Column{
+		want := inCatalog("def", []*analyzerpb.Column{
 			{Schema: fragmentSchema, Table: "sample", Column: "id", DataType: "int", Ordinal: 1},
 			{Schema: fragmentSchema, Table: "sample", Column: "note", DataType: "varchar", Ordinal: 2, Nullable: true},
-		}
-		if got := fragments(fragmentSchema); !reflect.DeepEqual(got, want) {
+		})
+		if got := fragments(fragmentSchema); !equalColumns(got, want) {
 			t.Fatalf("fragment = %+v, want %+v", got, want)
 		}
 		if got := fragments("information_schema"); len(got) == 0 {
@@ -305,7 +306,7 @@ func verifyPostgresHashAndFragment(t *testing.T, database *sql.DB, wantCrypto bo
 	if !wantCrypto && len(first) != 16 {
 		t.Fatalf("md5 hash length = %d, want 16", len(first))
 	}
-	rows, err := queryStrings(conn, db.SchemaColumnsSQL(schema), 6)
+	rows, err := queryStrings(conn, db.SchemaColumnsSQL(schema), 7)
 	if err != nil {
 		t.Fatalf("Postgres fragment query: %v", err)
 	}
@@ -313,11 +314,15 @@ func verifyPostgresHashAndFragment(t *testing.T, database *sql.DB, wantCrypto bo
 	if err != nil {
 		t.Fatalf("Postgres fragment mapping: %v", err)
 	}
-	want := []*analyzerpb.Column{
+	catalog, err := introspect.ReadPostgresCatalog(context.Background(), conn)
+	if err != nil {
+		t.Fatalf("Postgres catalog probe: %v", err)
+	}
+	want := inCatalog(catalog, []*analyzerpb.Column{
 		{Schema: schema, Table: "sample", Column: "id", DataType: "integer", Ordinal: 1},
 		{Schema: schema, Table: "sample", Column: "note", DataType: "text", Ordinal: 2, Nullable: true},
-	}
-	if !reflect.DeepEqual(fragment, want) {
+	})
+	if !equalColumns(fragment, want) {
 		t.Fatalf("Postgres fragment = %+v, want %+v", fragment, want)
 	}
 

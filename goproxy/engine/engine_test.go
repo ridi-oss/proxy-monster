@@ -310,12 +310,12 @@ func TestTempOverlayOnlyWhenProvided(t *testing.T) {
 
 func TestFragmentColumnsFromRowsStrict(t *testing.T) {
 	str := func(s string) *string { return &s }
-	valid := [][]*string{{str("app"), str("users"), str("id"), str("integer"), str("1"), str("NO")}, {str("app"), str("users"), str("email"), str("text"), str("2"), str("YES")}}
+	valid := [][]*string{{str("app"), str("users"), str("id"), str("integer"), str("1"), str("NO"), str("db")}, {str("app"), str("users"), str("email"), str("text"), str("2"), str("YES"), str("db")}}
 	got, err := FragmentColumnsFromRows(fakeDb{}, 0, "app", valid)
 	if err != nil {
 		t.Fatalf("FragmentColumnsFromRows: %v", err)
 	}
-	want := []*analyzerpb.Column{{Schema: "app", Table: "users", Column: "id", DataType: "integer", Ordinal: 1}, {Schema: "app", Table: "users", Column: "email", DataType: "text", Ordinal: 2, Nullable: true}}
+	want := []*analyzerpb.Column{{Catalog: "db", Schema: "app", Table: "users", Column: "id", DataType: "integer", Ordinal: 1}, {Catalog: "db", Schema: "app", Table: "users", Column: "email", DataType: "text", Ordinal: 2, Nullable: true}}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("columns = %+v, want %+v", got, want)
 	}
@@ -325,10 +325,10 @@ func TestFragmentColumnsFromRowsStrict(t *testing.T) {
 		rows [][]*string
 	}{
 		{"wrong width", [][]*string{{str("app")}}},
-		{"nil field", [][]*string{{str("app"), nil, str("id"), str("int"), str("1"), str("NO")}}},
-		{"schema mismatch", [][]*string{{str("other"), str("t"), str("c"), str("int"), str("1"), str("NO")}}},
-		{"bad ordinal", [][]*string{{str("app"), str("t"), str("c"), str("int"), str("2147483648"), str("NO")}}},
-		{"bad nullable", [][]*string{{str("app"), str("t"), str("c"), str("int"), str("1"), str("TRUE")}}},
+		{"nil field", [][]*string{{str("app"), nil, str("id"), str("int"), str("1"), str("NO"), str("db")}}},
+		{"schema mismatch", [][]*string{{str("other"), str("t"), str("c"), str("int"), str("1"), str("NO"), str("db")}}},
+		{"bad ordinal", [][]*string{{str("app"), str("t"), str("c"), str("int"), str("2147483648"), str("NO"), str("db")}}},
+		{"bad nullable", [][]*string{{str("app"), str("t"), str("c"), str("int"), str("1"), str("TRUE"), str("db")}}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

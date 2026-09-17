@@ -49,6 +49,7 @@ func NewRunSession(ctx context.Context, target spi.TargetDb, db engine.Db, clien
 	s.ref = engine.NewRefetcher(db, s.connectionID, generation, func(sql string, expectedColumns int) ([][]*string, error) {
 		return runInternalQuery(s.conn, true, sql, expectedColumns)
 	}, client.PushSchemaFragment)
+	s.ref.Catalog = "def"
 	return s, nil
 }
 

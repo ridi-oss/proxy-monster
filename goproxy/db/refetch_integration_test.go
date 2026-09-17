@@ -53,7 +53,7 @@ func TestMySqlRefetcherIntegration(t *testing.T) {
 			t.Fatalf("byte-identical tables in distinct schemas collided: %x", current)
 		}
 		push := runRefetchIntegration(t, adapter, conn, otherSchema, previous)
-		assertFullRefetch(t, push, current, []*analyzerpb.Column{
+		assertFullRefetch(t, push, current, "def", []*analyzerpb.Column{
 			{Schema: otherSchema, Table: "base", Column: "a", DataType: "int", Ordinal: 1},
 		}, nil)
 	})
@@ -143,7 +143,7 @@ func TestMySqlRefetcherIntegration(t *testing.T) {
 				t.Fatalf("mutation did not change trusted hash: %x", current)
 			}
 			push := runRefetchIntegration(t, adapter, conn, schema, previous)
-			assertFullRefetch(t, push, current, step.columns, step.routines)
+			assertFullRefetch(t, push, current, "def", step.columns, step.routines)
 			previous = current
 		})
 	}
@@ -207,7 +207,7 @@ func TestPostgresRefetcherIntegration(t *testing.T) {
 					t.Fatalf("byte-identical tables in distinct schemas collided: %x", current)
 				}
 				push := runRefetchIntegration(t, adapter, conn, otherSchema, previous)
-				assertFullRefetch(t, push, current, []*analyzerpb.Column{
+				assertFullRefetch(t, push, current, databaseName, []*analyzerpb.Column{
 					{Schema: otherSchema, Table: "base", Column: "a", DataType: "integer", Ordinal: 1},
 				}, nil)
 			})
@@ -313,7 +313,7 @@ func TestPostgresRefetcherIntegration(t *testing.T) {
 						t.Fatalf("mutation did not change trusted hash: %x", current)
 					}
 					push := runRefetchIntegration(t, adapter, conn, schema, previous)
-					assertFullRefetch(t, push, current, step.columns, step.routines)
+					assertFullRefetch(t, push, current, databaseName, step.columns, step.routines)
 					previous = current
 				})
 			}
@@ -376,8 +376,8 @@ func TestMySqlRefetcherTruncationFallsBackToFullFetch(t *testing.T) {
 		if push.Unchanged {
 			t.Fatalf("run %d emitted Unchanged=true for matching truncated hash", i+1)
 		}
-		if !reflect.DeepEqual(push.Columns, wantColumns) {
-			t.Fatalf("run %d columns = %+v, want complete %+v", i+1, push.Columns, wantColumns)
+		if want := inCatalog("def", wantColumns); !equalColumns(push.Columns, want) {
+			t.Fatalf("run %d columns = %+v, want complete %+v", i+1, push.Columns, want)
 		}
 		if len(push.ContentHash) != 32 {
 			t.Fatalf("run %d nonce length = %d, want 32", i+1, len(push.ContentHash))
@@ -461,7 +461,7 @@ func runRefetchIntegration(t *testing.T, adapter engine.Db, conn *sql.Conn, sche
 	return push
 }
 
-func assertFullRefetch(t *testing.T, push *pb.SchemaFragmentPush, currentHash []byte, wantColumns []*analyzerpb.Column, wantRoutines []string) {
+func assertFullRefetch(t *testing.T, push *pb.SchemaFragmentPush, currentHash []byte, catalog string, wantColumns []*analyzerpb.Column, wantRoutines []string) {
 	t.Helper()
 	if push.Unchanged {
 		t.Fatalf("push = %+v, want full fetch", push)
@@ -469,8 +469,8 @@ func assertFullRefetch(t *testing.T, push *pb.SchemaFragmentPush, currentHash []
 	if !bytes.Equal(push.ContentHash, currentHash) {
 		t.Fatalf("push hash = %x, want new trusted hash %x", push.ContentHash, currentHash)
 	}
-	if !reflect.DeepEqual(push.Columns, wantColumns) {
-		t.Fatalf("push columns = %+v, want %+v", push.Columns, wantColumns)
+	if want := inCatalog(catalog, wantColumns); !equalColumns(push.Columns, want) {
+		t.Fatalf("push columns = %+v, want %+v", push.Columns, want)
 	}
 	if !reflect.DeepEqual(push.Routines, wantRoutines) {
 		t.Fatalf("push routines = %v, want %v", push.Routines, wantRoutines)

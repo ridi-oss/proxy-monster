@@ -43,7 +43,7 @@ const connectTimeout = 5 * time.Second
 // first; we would fall through to a user schema shadowing a system-table name) — a fail-open leak.
 // System objects are first-class access-controlled resources: deny-by-default until the access-model
 // `system:` tags open the safe ones. Never re-add a NOT IN (...) exclusion here.
-const columnsSQL = `SELECT table_schema, table_name, column_name, data_type, ordinal_position, is_nullable
+const columnsSQL = `SELECT table_catalog, table_schema, table_name, column_name, data_type, ordinal_position, is_nullable
 FROM information_schema.columns
 ORDER BY table_schema, table_name, ordinal_position`
 
@@ -288,13 +288,34 @@ func ProbeMySQLNamespace(ctx context.Context, conn *sql.Conn, targetDb string) (
 	if !matches.Valid || !matches.Bool {
 		return nil, fmt.Errorf("introspect: MySQL current database %q does not match bound database %q", currentDb.String, targetDb)
 	}
-	return &pb.CatalogRequest{DefaultSchemas: []string{currentDb.String}, MysqlLowerCaseTableNames: proto.Int32(int32(lctn))}, nil
+	return &pb.CatalogRequest{DefaultSchemas: []string{currentDb.String}, MysqlLowerCaseTableNames: proto.Int32(int32(lctn)), CurrentCatalog: proto.String("def")}, nil
+}
+
+// ReadPostgresCatalog returns current_database(); the catalog every fragment and temp column from this
+// connection is stamped with.
+func ReadPostgresCatalog(ctx context.Context, conn *sql.Conn) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, queryTimeout)
+	defer cancel()
+	var catalog string
+	if err := conn.QueryRowContext(ctx, "SELECT pg_catalog.current_database()").Scan(&catalog); err != nil {
+		return "", fmt.Errorf("introspect: Postgres catalog probe: %w", err)
+	}
+	if catalog == "" {
+		return "", errors.New("introspect: Postgres connection has no current database")
+	}
+
+	return catalog, nil
 }
 
 // ProbePostgresNamespace captures the effective search_path.
 func ProbePostgresNamespace(ctx context.Context, conn *sql.Conn, _ string) (*pb.CatalogRequest, error) {
 	ctx, cancel := context.WithTimeout(ctx, queryTimeout)
 	defer cancel()
+
+	catalog, err := ReadPostgresCatalog(ctx, conn)
+	if err != nil {
+		return nil, err
+	}
 
 	// This literal is UNQUALIFIED — deliberately distinct from the qualified namespace-probe form used
 	// elsewhere; do not swap it in here.
@@ -314,7 +335,7 @@ func ProbePostgresNamespace(ctx context.Context, conn *sql.Conn, _ string) (*pb.
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("introspect: Postgres namespace probe: %w", err)
 	}
-	return &pb.CatalogRequest{DefaultSchemas: schemas}, nil
+	return &pb.CatalogRequest{DefaultSchemas: schemas, CurrentCatalog: proto.String(catalog)}, nil
 }
 
 // introspectColumns runs columnsSQL on the pinned connection and scans every row into a *analyzerpb.Column.
@@ -330,12 +351,13 @@ func introspectColumns(conn *sql.Conn) ([]*analyzerpb.Column, error) {
 
 	var columns []*analyzerpb.Column
 	for rows.Next() {
-		var schema, table, column, dataType, isNullable string
+		var catalog, schema, table, column, dataType, isNullable string
 		var ordinal int32
-		if err := rows.Scan(&schema, &table, &column, &dataType, &ordinal, &isNullable); err != nil {
+		if err := rows.Scan(&catalog, &schema, &table, &column, &dataType, &ordinal, &isNullable); err != nil {
 			return nil, fmt.Errorf("introspect: scanning column row: %w", err)
 		}
 		columns = append(columns, &analyzerpb.Column{
+			Catalog:  catalog,
 			Schema:   schema,
 			Table:    table,
 			Column:   column,

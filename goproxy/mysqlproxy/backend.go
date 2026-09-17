@@ -529,6 +529,7 @@ func probeSession(targetDb net.Conn, deprecateEOF bool) (engine.SessionObservati
 
 func mysqlSession(namespace []string, ansiQuotes bool) engine.SessionObservation {
 	return engine.SessionObservation{
+		CurrentCatalog:     "def",
 		Namespace:          namespace,
 		SessionObservation: &enginepb.SessionObservation{MysqlAnsiQuotes: ansiQuotes},
 	}

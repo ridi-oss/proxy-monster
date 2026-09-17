@@ -2,12 +2,9 @@ package com.ridi.oss.proxymonster.controlplane
 
 import com.ridi.oss.proxymonster.analyzer.pb.EngineConfig as PbEngineConfig
 import com.ridi.oss.proxymonster.analyzer.pb.FunctionCatalog
-import com.ridi.oss.proxymonster.analyzer.pb.engineConfig as pbEngineConfig
-import com.ridi.oss.proxymonster.analyzer.pb.functionCatalog as pbFunctionCatalog
-import com.ridi.oss.proxymonster.analyzer.pb.schemaFunctions as pbSchemaFunctions
-import com.ridi.oss.proxymonster.classification.MysqlNativeFunctions
-import com.ridi.oss.proxymonster.classification.PostgresGrammarFunctions
-import com.ridi.oss.proxymonster.classification.PostgresSystemColumns
+import com.ridi.oss.proxymonster.analyzer.pb.SessionObservation
+import com.ridi.oss.proxymonster.controlplane.engines.MySqlEngineDefinition
+import com.ridi.oss.proxymonster.controlplane.engines.PostgresEngineDefinition
 import com.ridi.oss.proxymonster.grpc.Engine
 import com.ridi.oss.proxymonster.probe.Dialect
 import kotlinx.serialization.KSerializer
@@ -17,242 +14,85 @@ import kotlinx.serialization.descriptors.SerialDescriptor
 import kotlinx.serialization.encoding.Decoder
 import kotlinx.serialization.encoding.Encoder
 
-// The datasource engine is the proto enum [Engine] (com.ridi.oss.proxymonster.grpc.Engine) used directly
-// as the domain type — there is no parallel twin. These extensions are the single home for every
-// "is this MySQL or Postgres?" decision, so nothing else compares an engine string literal. MySQL is the
-// priority engine and is listed first in each mapping.
-
-/** The canonical persistence / registration / wire string for an engine: "mysql" or "postgres". */
-val Engine.wireName: String
-    get() = when (this) {
-        Engine.MYSQL -> "mysql"
-        Engine.POSTGRES -> "postgres"
-        else -> error("engine has no canonical wire name: $this")
-    }
-
 /**
- * Whether this is MySQL. Calling this at a call site to branch behavior is almost always wrong: per-engine
- * behavior belongs in a method on [Engine] (see [catalogName], [defaultSchema], [requireCaseMode],
- * [parseServerVersion], …), so adding a future engine means implementing the type's methods, not hunting
- * down scattered call-site branches. Kept only for a genuinely local one-off.
+ * Everything the control plane knows about one engine. The proto [Engine] stays the domain type; this is
+ * the single home for every per-engine decision, so no call site branches on the engine itself. Adding an
+ * engine means one object here plus its row in [engineDefinitions], not a hunt through the call sites.
  */
-val Engine.isMySql: Boolean
-    get() = this == Engine.MYSQL
+interface EngineDefinition {
+    val engine: Engine
+    /** The persistence, registration, and JSON string: "mysql", "postgres". */
+    val wireName: String
+    /** The analyzer SQL dialect. */
+    val dialect: Dialect
+    /** The fixed, enumerable system schemas whose content is identical across every datasource of one version. */
+    val systemSchemas: Set<String>
+    /** True when one connection's catalog measurement answers for every connection of the datasource. */
+    val catalogIsConnectionIndependent: Boolean
 
-/**
- * Whether this is Postgres. See [isMySql]: prefer a method on [Engine] over branching on this at a call
- * site.
- */
-val Engine.isPostgres: Boolean
-    get() = this == Engine.POSTGRES
-
-/** The analyzer SQL dialect for this engine. */
-val Engine.dialect: Dialect
-    get() = when (this) {
-        Engine.MYSQL -> Dialect.MYSQL
-        Engine.POSTGRES -> Dialect.POSTGRES
-        else -> error("engine has no dialect: $this")
-    }
-
-/** The analyzer catalog segment: MySQL pins "def"; Postgres uses the database name. */
-fun Engine.catalogName(dbName: String): String = when (this) {
-    Engine.MYSQL -> "def"
-    Engine.POSTGRES -> dbName
-    else -> error("engine has no catalog mapping: $this")
+    /** The analyzer catalog segment for a datasource whose registration database is [dbName]. */
+    fun catalogName(dbName: String): String
+    /** The schema an unqualified table resolves to when no per-request schema is given. */
+    fun defaultSchema(dbName: String): String
+    /** Maps the cross-engine "public" selector to [defaultSchema]; any other value is an explicit schema. */
+    fun resolveSchema(requestedSchema: String, dbName: String): String
+    /** The MySQL lower_case_table_names mode the analyzer needs, or null for an engine without one. */
+    fun requireCaseMode(lowerCaseTableNames: Int?): Int?
+    /** [systemSchemas] membership with engine-correct casing; the catalog pool key predicate. */
+    fun isFixedSystemSchema(schema: String): Boolean
+    /** [isFixedSystemSchema] plus the engine's ephemeral per-session schemas (Postgres pg_temp_*, pg_toast). */
+    fun isSystemSchema(schema: String): Boolean
+    /** The analyzer config for splitting a batch before any session exists; null when introspection has not captured what the dialect needs. */
+    fun splitEngineConfig(datasource: Datasource): PbEngineConfig?
+    /** The analyzer config for one statement decision, with the live session facts. */
+    fun analyzerEngineConfig(datasource: Datasource, session: SessionObservation): PbEngineConfig
+    /** (comparable server version, isAurora) from the raw `version()` string; null version when unparsable. */
+    fun parseServerVersion(raw: String?): Pair<String?, Boolean>
+    /** The classification-manifest series a parsed version belongs to: MySQL "8.0", Postgres "17". */
+    fun manifestSeries(version: String): String
+    /** The function inventory the analyzer resolves calls against, tiered from routines (schema -> names). */
+    fun functionCatalog(routines: Map<String, List<String>>, engineVersion: String?): FunctionCatalog
+    /**
+     * The system columns every table has beyond its introspected ones (PostgreSQL ctid/xmin/…; a real column
+     * of that name wins). They resolve when written, never expand from `*`, and cannot be classified.
+     */
+    fun implicitColumns(rows: List<CatalogColumn>): List<CatalogColumn>
 }
 
-/**
- * The schema an unqualified table lives under by default for this engine. In ANSI terms a MySQL "database"
- * IS the schema (catalog is always "def"), so the default schema is the database name; Postgres defaults to
- * "public". A per-request schema is used as-is — this is only the fallback when none is specified.
- */
-fun Engine.defaultSchema(dbName: String): String = when (this) {
-    Engine.MYSQL -> dbName
-    Engine.POSTGRES -> "public"
-    else -> error("engine has no default schema: $this")
-}
+private val engineDefinitions = listOf(MySqlEngineDefinition, PostgresEngineDefinition).associateBy { it.engine }
 
-/**
- * Resolves a per-request schema to the concrete schema a table lives under. The cross-engine `"public"`
- * default selector maps to this engine's [defaultSchema] (MySQL's database, Postgres's `"public"`); any
- * other value is an explicit schema — for MySQL an explicit database, since a MySQL "database" is the ANSI
- * schema — and is used as-is, so MySQL addresses every database, not only the connection's default. Mirrors
- * `Dialect.ResolveSchema` in the proxy.
- */
-fun Engine.resolveSchema(requestedSchema: String, dbName: String): String =
-    if (requestedSchema == "public") defaultSchema(dbName) else requestedSchema
+val Engine.definition: EngineDefinition
+    get() = checkNotNull(engineDefinitions[this]) { "unregistered engine: $this" }
 
-/**
- * The analyzer EngineConfig for splitting this datasource's batch, or null when introspection has not
- * captured what MySQL's dialect needs. ANSI_QUOTES is absent because it is a live per-session mode and a
- * batch is split before any session exists; under the default mode a `;` inside `"…"` is not a boundary,
- * so the batch stays whole and the per-statement decision runs with the session's real config.
- */
-fun Datasource.splitEngineConfig(): PbEngineConfig? {
-    if (engine == Engine.MYSQL && (engineVersion.isNullOrBlank() || mysqlLowerCaseTableNames == null)) {
-        return null
-    }
-    return pbEngineConfig {
-        this.engine = this@splitEngineConfig.engine
-        this.engineVersion = this@splitEngineConfig.engineVersion ?: ""
-        this@splitEngineConfig.mysqlLowerCaseTableNames?.let { this.mysqlLowerCaseTableNames = it }
-    }
-}
+val Engine.wireName: String get() = definition.wireName
+val Engine.dialect: Dialect get() = definition.dialect
+val Engine.systemSchemas: Set<String> get() = definition.systemSchemas
+val Engine.catalogIsConnectionIndependent: Boolean get() = definition.catalogIsConnectionIndependent
 
-/**
- * The MySQL `lower_case_table_names` case-folding mode the analyzer needs, or null for an engine that has
- * no such mode. MySQL requires the value to have been captured by introspection; Postgres has none.
- */
-fun Engine.requireCaseMode(lowerCaseTableNames: Int?): Int? = when (this) {
-    Engine.MYSQL -> requireNotNull(lowerCaseTableNames) {
-        "MySQL lower_case_table_names has not been captured by introspection"
-    }
-    Engine.POSTGRES -> null
-    else -> error("engine has no case mode: $this")
-}
+val Engine.isMySql: Boolean get() = this == Engine.MYSQL
+val Engine.isPostgres: Boolean get() = this == Engine.POSTGRES
 
-/**
- * The engine's concrete, enumerable system namespaces — the fixed catalog schemas whose content is identical
- * across every datasource of the same engine version. This is the single source of truth for those names:
- * the enforcement catalog pools them by engine version, and search-path building enumerates them, so it holds
- * only concrete names — Postgres's per-session `pg_temp_` / `pg_toast` schemas are ephemeral and never appear.
- */
-val Engine.systemSchemas: Set<String>
-    get() = when (this) {
-        Engine.MYSQL -> setOf("information_schema", "mysql", "performance_schema", "sys")
-        Engine.POSTGRES -> setOf("pg_catalog", "information_schema")
-        else -> error("engine has no system schemas: $this")
-    }
+fun Engine.catalogName(dbName: String): String = definition.catalogName(dbName)
+fun Engine.defaultSchema(dbName: String): String = definition.defaultSchema(dbName)
+fun Engine.resolveSchema(requestedSchema: String, dbName: String): String = definition.resolveSchema(requestedSchema, dbName)
+fun Engine.requireCaseMode(lowerCaseTableNames: Int?): Int? = definition.requireCaseMode(lowerCaseTableNames)
+fun Engine.isFixedSystemSchema(schema: String): Boolean = definition.isFixedSystemSchema(schema)
+fun Engine.isSystemSchema(schema: String): Boolean = definition.isSystemSchema(schema)
+fun Engine.parseServerVersion(raw: String?): Pair<String?, Boolean> = definition.parseServerVersion(raw)
+fun Engine.functionCatalog(routines: Map<String, List<String>>, engineVersion: String?): FunctionCatalog =
+    definition.functionCatalog(routines, engineVersion)
+fun Engine.implicitColumns(rows: List<CatalogColumn>): List<CatalogColumn> = definition.implicitColumns(rows)
+fun Datasource.splitEngineConfig(): PbEngineConfig? = engine.definition.splitEngineConfig(this)
 
-/**
- * Whether [schema] is one of the engine's fixed catalog schemas — [systemSchemas] membership with
- * engine-correct casing (MySQL folds; Postgres matches exactly, its unquoted identifiers being canonically
- * lowercase). Excludes Postgres's ephemeral `pg_temp_` / `pg_toast` schemas, so this is the predicate for an
- * enumerable / poolable system schema (the catalog pool key); use [isSystemSchema] for the full test. The
- * MySQL fold is an interim compensation for schema names that reach the control plane un-canonicalized (safe
- * only because MySQL system schemas are always case-insensitive) — see KNOWN_LIMITATIONS.md "Identifier
- * handling".
- */
-fun Engine.isFixedSystemSchema(schema: String): Boolean = when (this) {
-    Engine.MYSQL -> schema.lowercase() in systemSchemas
-    Engine.POSTGRES -> schema in systemSchemas
-    else -> error("engine has no system schemas: $this")
-}
-
-/**
- * Whether [schema] names any engine-owned system namespace — [isFixedSystemSchema] plus Postgres's ephemeral
- * per-session `pg_temp_` / `pg_toast` schemas (which answer the membership test but are not enumerable, so
- * they stay out of [systemSchemas] / [isFixedSystemSchema]).
- */
-fun Engine.isSystemSchema(schema: String): Boolean = when (this) {
-    Engine.MYSQL -> isFixedSystemSchema(schema)
-    Engine.POSTGRES -> isFixedSystemSchema(schema) || schema.startsWith("pg_temp_") || schema.startsWith("pg_toast")
-    else -> error("engine has no system schemas: $this")
-}
-
-/**
- * Whether a schema's catalog content is the same for every connection to a datasource, so one connection's
- * measurement answers for all of them.
- *
- * MySQL's temporary tables are absent from `information_schema.COLUMNS` entirely — a session's temp tables
- * cannot appear in a catalog scan, so nothing a scan returns varies by connection. They reach a decision as
- * the per-request temp overlay instead, never through the catalog. PostgreSQL's `pg_temp_*` schemas are real,
- * per-session, and visible in the catalog, so there a fragment is only true for the connection that measured
- * it.
- *
- * Where this is true, a connection may start from catalog content the control plane already holds rather than
- * measuring the target DB itself.
- */
-val Engine.catalogIsConnectionIndependent: Boolean
-    get() = when (this) {
-        Engine.MYSQL -> true
-        Engine.POSTGRES -> false
-        else -> error("engine has no catalog scope: $this")
-    }
-
-/**
- * Parse a wire / registration engine string, fail-closed and case-insensitive: "mysql" → MYSQL,
- * "postgres" → POSTGRES, anything else throws. This is the one gate raw engine input passes through; it
- * accepts exactly the two canonical spellings the store persists and the proxy registers.
- */
 fun engineFromWire(raw: String): Engine =
-    engineFromWireOrNull(raw)
-        ?: throw IllegalArgumentException("unknown datasource engine '$raw' (expected 'mysql' or 'postgres')")
+    engineFromWireOrNull(raw) ?: throw IllegalArgumentException("unknown datasource engine '$raw'")
 
-/** Like [engineFromWire] but returns null instead of throwing, for validation paths that render their own error. */
-fun engineFromWireOrNull(raw: String): Engine? = when (raw.lowercase()) {
-    "mysql" -> Engine.MYSQL
-    "postgres" -> Engine.POSTGRES
-    else -> null
-}
+fun engineFromWireOrNull(raw: String): Engine? =
+    engineDefinitions.values.firstOrNull { it.wireName == raw.lowercase() }?.engine
 
-/**
- * Encodes [Engine] as its [wireName] string, so the JSON API shape stays exactly "mysql" / "postgres";
- * decoding accepts the same wire strings via [engineFromWire]. Applied per-field with
- * `@Serializable(with = EngineWireSerializer::class)`.
- */
 object EngineWireSerializer : KSerializer<Engine> {
     override val descriptor: SerialDescriptor = PrimitiveSerialDescriptor("Engine", PrimitiveKind.STRING)
     override fun serialize(encoder: Encoder, value: Engine) = encoder.encodeString(value.wireName)
     override fun deserialize(decoder: Decoder): Engine = engineFromWire(decoder.decodeString())
 }
 
-/**
- * The function inventory the analyzer resolves calls against, tiered from [routines] (schema -> names).
- *
- *   MySQL     {"mysql": [fnv_64], "app": [add_tax]}  -> builtins = pinned natives, loadables = [fnv_64],
- *                                                         udf app = [add_tax]
- *   Postgres  {"pg_catalog": [abs], "public": [add_tax], "pg_temp_3": [x]}
- *                                                      -> builtins = [abs, coalesce, ...] (grammar keywords
- *                                                         have no pg_proc row), udf public = [add_tax],
- *                                                         pg_temp_3 dropped
- */
-fun Engine.functionCatalog(routines: Map<String, List<String>>, engineVersion: String?): FunctionCatalog = when (this) {
-    Engine.MYSQL -> pbFunctionCatalog {
-        builtinFunctions.addAll(MysqlNativeFunctions.forVersion(engineVersion))
-        routines.forEach { (schema, names) ->
-            if (schema == "mysql") loadableFunctions.addAll(names)
-            else udfSchemas.add(pbSchemaFunctions { this.schema = schema; this.names.addAll(names) })
-        }
-    }
-    Engine.POSTGRES -> pbFunctionCatalog {
-        val pgCatalog = (routines["pg_catalog"].orEmpty() + PostgresGrammarFunctions.names).distinct()
-        builtinFunctions.addAll(pgCatalog)
-        systemFunctionSchemas.add(pbSchemaFunctions { schema = "pg_catalog"; names.addAll(pgCatalog) })
-        routines.forEach { (schema, names) ->
-            when {
-                schema == "pg_catalog" -> Unit
-                isFixedSystemSchema(schema) -> systemFunctionSchemas.add(pbSchemaFunctions { this.schema = schema; this.names.addAll(names) })
-                !isSystemSchema(schema) -> udfSchemas.add(pbSchemaFunctions { this.schema = schema; this.names.addAll(names) })
-            }
-        }
-    }
-    else -> error("engine has no function catalog: $this")
-}
-
-/**
- * The system columns every table has beyond its introspected ones: PostgreSQL ctid/xmin/xmax/cmin/cmax/
- * tableoid (a real column of that name wins; some system views have an ordinary xmin), MySQL none.
- * They resolve when written, never expand from `*`, and cannot be classified.
- */
-fun Engine.implicitColumns(rows: List<CatalogColumn>): List<CatalogColumn> = when (this) {
-    Engine.MYSQL -> emptyList()
-    Engine.POSTGRES -> {
-        data class TableId(val catalog: String, val schema: String, val table: String, val isTemp: Boolean)
-        val existing = HashMap<TableId, MutableSet<String>>()
-        for (row in rows) {
-            existing.getOrPut(TableId(row.catalog, row.schema, row.table, row.isTemp)) { HashSet() } += row.column
-        }
-        existing.flatMap { (id, columns) ->
-            PostgresSystemColumns.byName.mapNotNull { (name, type) ->
-                if (name in columns) return@mapNotNull null
-                CatalogColumn(
-                    catalog = id.catalog, schema = id.schema, table = id.table, column = name,
-                    dataType = type, sqlType = type, ordinal = 0, nullable = false,
-                    isTemp = id.isTemp, implicit = true,
-                )
-            }
-        }
-    }
-    else -> error("engine has no implicit columns: $this")
-}

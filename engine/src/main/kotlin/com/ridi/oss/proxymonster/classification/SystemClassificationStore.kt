@@ -30,18 +30,9 @@ class SystemClassificationStore private constructor(
     private val byEngineSeries: Map<Pair<String, String>, SystemClassifier>,
     val checksum: String,
 ) {
-    /**
-     * Resolve the manifest for a datasource. [serverVersion] is the parsed target DB release (e.g. `17.9`,
-     * `8.0.44`, `8.4.7`). [allowFallback] is the operator opt-in: when false (the safe default), an
-     * uncertified major returns null (system schemas stay unavailable); when true, it falls back to the
-     * nearest supported major of the same engine.
-     *
-     * Returns null when there is no manifest for the major and fallback is off — the caller then does NOT
-     * expose the datasource's system schemas (fail-closed; user schemas keep ordinary deny-by-default).
-     */
-    fun resolve(engine: String, serverVersion: String, allowFallback: Boolean): ResolvedClassification? {
+    /** Resolve a provider's manifest series, optionally falling back to the nearest supported series. */
+    fun resolveSeries(engine: String, requested: String, allowFallback: Boolean): ResolvedClassification? {
         val eng = engine.lowercase()
-        val requested = seriesOf(eng, serverVersion)
         byEngineSeries[eng to requested]?.let {
             return ResolvedClassification(it, requested, requested, isFallback = false)
         }
@@ -139,12 +130,6 @@ class SystemClassificationStore private constructor(
             val map = HashMap<Pair<String, String>, SystemClassifier>()
             for (m in manifests) map[m.engine.lowercase() to m.series] = SystemClassifier(m)
             return SystemClassificationStore(map, "test")
-        }
-
-        /** Engine version → major series. PostgreSQL: the leading integer (`17.9`→`17`). MySQL: the LTS family (`8.0.44`→`8.0`, `8.4.7`→`8.4`). */
-        fun seriesOf(engine: String, version: String): String = when (engine.lowercase()) {
-            "mysql" -> version.split(".").take(2).joinToString(".")
-            else -> version.substringBefore(".")
         }
 
         // A single comparable key for ordering series WITHIN one engine (never compared cross-engine):

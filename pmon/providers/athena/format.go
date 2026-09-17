@@ -5,15 +5,10 @@ package athena
 import (
 	"encoding/json"
 	"fmt"
-	"regexp"
 	"strings"
 
 	"github.com/ridi-oss/proxy-monster/pmon/driver"
 )
-
-type Provider struct{}
-
-var regionPattern = regexp.MustCompile(`^[a-z]{2}(?:-[a-z0-9]+)+-[0-9]+$`)
 
 // FormatConnectionString produces client configuration for the local endpoint. url needs only the port; every other format
 // embeds the per-(principal, datasource) local access key and needs the datasource's published region,

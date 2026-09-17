@@ -149,9 +149,16 @@ func (r *Refetcher) measureHash(sql string, expectedColumns int, sqlErr error) (
 }
 
 // RunAll executes commands in order and stops at the first failure.
-func (r *Refetcher) RunAll(cmds []*pb.Refetch) error {
+// RunAll executes a command list on the held connection. The SQL engines answer only the Refetch arm; any
+// other command is unknown here and fails closed. session is unused: nothing a refetch fetches changes the
+// per-statement session facts.
+func (r *Refetcher) RunAll(cmds []*pb.ProxyCommand, _ *SessionObservation) error {
 	for i, cmd := range cmds {
-		if err := r.Run(cmd); err != nil {
+		refetch := cmd.GetRefetch()
+		if refetch == nil {
+			return fmt.Errorf("command %d is not a refetch", i)
+		}
+		if err := r.Run(refetch); err != nil {
 			return fmt.Errorf("refetch command %d: %w", i, err)
 		}
 	}

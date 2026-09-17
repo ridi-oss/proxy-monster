@@ -22,7 +22,7 @@ func TestRunnerCatalogIdentity(t *testing.T) {
 			fake, client := runStartFakeCP(t, runSessionID)
 			open := runOpen(fixture)
 			for _, command := range open.OnOpen {
-				command.Catalog = catalog
+				command.GetRefetch().Catalog = catalog
 			}
 			done := runLaunchOpen(t, fake, client, fixture, open)
 			runSendQuery(fake, "SELECT 1", 20)

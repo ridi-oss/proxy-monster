@@ -25,16 +25,16 @@ func TestDecideCarriesCatalogs(t *testing.T) {
 func TestRefetchCatalogPresenceAndOwnership(t *testing.T) {
 	command := refetch("schema", []byte("hash"))
 	command.GetRefetch().Catalog = "catalog"
-	mapped, err := refetchesFromWire([]*pb.ProxyCommand{command})
-	if err != nil || mapped[0].GetCatalog() != "catalog" {
+	mapped, err := commandsFromWire([]*pb.ProxyCommand{command})
+	if err != nil || mapped[0].GetRefetch().GetCatalog() != "catalog" {
 		t.Fatalf("commands = %v, %v", mapped, err)
 	}
 	command.GetRefetch().Catalog = "changed"
-	if mapped[0].GetCatalog() != "catalog" {
+	if mapped[0].GetRefetch().GetCatalog() != "catalog" {
 		t.Fatal("mapped catalog aliases the wire command")
 	}
 	command.GetRefetch().Catalog = ""
-	if _, err := refetchesFromWire([]*pb.ProxyCommand{command}); err == nil {
+	if _, err := commandsFromWire([]*pb.ProxyCommand{command}); err == nil {
 		t.Fatal("explicit blank catalog was accepted")
 	}
 }

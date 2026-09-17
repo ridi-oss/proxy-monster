@@ -27,6 +27,18 @@ func wireVerdict(v *pb.Verdict) *pb.WireDecision {
 	return &pb.WireDecision{Outcome: &pb.WireDecision_Verdict{Verdict: v}}
 }
 
+func commandsEqual(got, want []*pb.ProxyCommand) bool {
+	if len(got) != len(want) {
+		return false
+	}
+	for i := range got {
+		if !proto.Equal(got[i], want[i]) {
+			return false
+		}
+	}
+	return true
+}
+
 func wireBefore(commands ...*pb.ProxyCommand) *pb.WireDecision {
 	return &pb.WireDecision{Outcome: &pb.WireDecision_BeforeDecide{BeforeDecide: &pb.BeforeDecide{Commands: commands}}}
 }
@@ -41,9 +53,37 @@ func TestDecisionFromWire(t *testing.T) {
 		if decision != nil {
 			t.Fatalf("decision = %+v, want nil", decision)
 		}
-		want := []*pb.Refetch{{Catalog: "db", Schema: "app", IfHashDiffers: []byte{1, 2}}}
-		if !reflect.DeepEqual(commands, want) {
-			t.Fatalf("commands = %+v, want %+v", commands, want)
+		if len(commands) != 1 || !proto.Equal(commands[0], refetch("app", []byte{1, 2})) {
+			t.Fatalf("commands = %+v", commands)
+		}
+	})
+
+	t.Run("before decide passes every command arm through opaquely", func(t *testing.T) {
+		fetch := &pb.ProxyCommand{Command: &pb.ProxyCommand_FetchAthenaPreparedDefinition{FetchAthenaPreparedDefinition: &enginepb.FetchAthenaPreparedDefinition{Workgroup: "wg", Name: "stmt"}}}
+		commands, decision := decisionFromWire(wireBefore(refetch("app", nil), fetch))
+		if decision != nil || len(commands) != 2 || !proto.Equal(commands[1], fetch) {
+			t.Fatalf("commands = %+v decision = %+v", commands, decision)
+		}
+		if commands, got := decisionFromWire(wireBefore(&pb.ProxyCommand{})); commands != nil || got.Action != "DENY" {
+			t.Fatalf("armless command accepted: %+v %+v", commands, got)
+		}
+		if commands, got := decisionFromWire(wireBefore()); commands != nil || got.Action != "DENY" {
+			t.Fatalf("empty before-decide round accepted: %+v %+v", commands, got)
+		}
+	})
+
+	t.Run("the submission rides rewritten sql", func(t *testing.T) {
+		_, got := decisionFromWire(wireVerdict(&pb.Verdict{Decision: pb.EnfAction_ALLOW, RewrittenSql: proto.String("SELECT 1"), Submission: &enginepb.Submission{Engine: &enginepb.Submission_Athena{Athena: &enginepb.AthenaSubmission{ExecutionParameters: []string{"'x'"}}}}}))
+		if got.Action != "ALLOW" || got.RewrittenSQL == nil || *got.RewrittenSQL != "SELECT 1" || got.Submission.GetAthena() == nil || len(got.Submission.GetAthena().ExecutionParameters) != 1 {
+			t.Fatalf("submission not mapped: %+v", got)
+		}
+		_, got = decisionFromWire(wireVerdict(&pb.Verdict{Decision: pb.EnfAction_ALLOW, RewrittenSql: proto.String("SELECT 1"), Submission: &enginepb.Submission{Engine: &enginepb.Submission_Athena{Athena: &enginepb.AthenaSubmission{}}}}))
+		if got.Action != "ALLOW" || got.Submission.GetAthena() == nil || len(got.Submission.GetAthena().ExecutionParameters) != 0 {
+			t.Fatalf("empty parameter list lost its presence: %+v", got)
+		}
+		_, got = decisionFromWire(wireVerdict(&pb.Verdict{Decision: pb.EnfAction_ALLOW, Submission: &enginepb.Submission{Engine: &enginepb.Submission_Athena{Athena: &enginepb.AthenaSubmission{}}}}))
+		if got.Action != "DENY" {
+			t.Fatalf("parameters without rewritten sql accepted: %+v", got)
 		}
 	})
 
@@ -75,10 +115,14 @@ func TestDecisionFromWire(t *testing.T) {
 			EffectiveRoles:      []string{"analyst"},
 			RewrittenSQL:        proto.String("SELECT c FROM t"),
 			UnmaskablePermitted: true,
-			AfterStatement:      []*pb.Refetch{{Catalog: "db", Schema: "app", IfHashDiffers: []byte("hash")}},
+			AfterStatement:      []*pb.ProxyCommand{refetch("app", []byte("hash"))},
 			Generation:          9,
 			ResultFingerprint:   []*enginepb.RequireResultReadGrant{{Resource: &enginepb.RequireResultReadGrant_Function{Function: &enginepb.FunctionResource{Name: "now"}}}},
 		}
+		if !commandsEqual(got.AfterStatement, want.AfterStatement) {
+			t.Fatalf("after-statement = %+v, want %+v", got.AfterStatement, want.AfterStatement)
+		}
+		got.AfterStatement, want.AfterStatement = nil, nil
 		if !reflect.DeepEqual(got, want) {
 			t.Fatalf("decision = %+v, want %+v", got, want)
 		}
@@ -137,15 +181,20 @@ func TestIdentityFromWire(t *testing.T) {
 		Principal:    "alice@example.com",
 		Roles:        []string{"analyst", "reader"},
 		ConnectionID: []byte("0123456789abcdef"),
-		OnOpen:       []*pb.Refetch{{Catalog: "db", Schema: "app", IfHashDiffers: []byte("hash")}},
+		OnOpen:       []*pb.ProxyCommand{refetch("app", []byte("hash"))},
 	}
+	if !commandsEqual(got.OnOpen, want.OnOpen) {
+		t.Fatalf("on-open = %+v, want %+v", got.OnOpen, want.OnOpen)
+	}
+	onOpen := got.OnOpen
+	got.OnOpen, want.OnOpen = nil, nil
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("identity = %+v, want %+v", got, want)
 	}
 	wire.Roles[0] = "mutated"
 	wire.ConnectionId[0] = 'x'
 	wire.OnOpen[0].GetRefetch().IfHashDiffers[0] = 'x'
-	if got.Roles[0] != "analyst" || string(got.ConnectionID) != "0123456789abcdef" || string(got.OnOpen[0].IfHashDiffers) != "hash" {
+	if got.Roles[0] != "analyst" || string(got.ConnectionID) != "0123456789abcdef" || string(onOpen[0].GetRefetch().IfHashDiffers) != "hash" {
 		t.Fatal("identityFromWire retained mutable proto backing arrays")
 	}
 
@@ -354,7 +403,7 @@ func TestValidateTokenMapsRequestAndIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ValidateToken: %v", err)
 	}
-	if got.Principal != "alice@example.com" || !reflect.DeepEqual(got.OnOpen, []*pb.Refetch{{Catalog: "db", Schema: "app"}}) {
+	if got.Principal != "alice@example.com" || !proto.Equal(got.OnOpen[0], refetch("app", nil)) {
 		t.Fatalf("identity = %+v", got)
 	}
 	fake.mu.Lock()
@@ -389,7 +438,7 @@ func TestDecideMapsRequestAndRetriesBeforeDecide(t *testing.T) {
 		wireVerdict(&pb.Verdict{Decision: pb.EnfAction_MASK, DecisionId: 99, Generation: 4}),
 	}}
 	c := startFakeControlPlane(t, fake)
-	var run [][]*pb.Refetch
+	var run [][]*pb.ProxyCommand
 	request := engine.DecideRequest{
 		Session: engine.SessionObservation{
 			Namespace: []string{"public", "app"},
@@ -402,7 +451,7 @@ func TestDecideMapsRequestAndRetriesBeforeDecide(t *testing.T) {
 		ClientAddr:   "10.0.0.9:5555",
 		TempColumns:  []engine.TempColumn{{Schema: "pg_temp_3", Table: "t", Column: "c", SqlType: "text", Ordinal: 5}},
 		ConnectionID: []byte("0123456789abcdef"),
-		RunCommands: func(commands []*pb.Refetch) error {
+		RunCommands: func(commands []*pb.ProxyCommand, _ *engine.SessionObservation) error {
 			run = append(run, commands)
 			return nil
 		},
@@ -411,7 +460,7 @@ func TestDecideMapsRequestAndRetriesBeforeDecide(t *testing.T) {
 	if out.IsErr() || out.Decision.Action != "MASK" || out.Decision.Generation != 4 {
 		t.Fatalf("Decide = %+v", out)
 	}
-	if !reflect.DeepEqual(run, [][]*pb.Refetch{{{Catalog: "db", Schema: "app", IfHashDiffers: []byte("old")}}}) {
+	if len(run) != 1 || len(run[0]) != 1 || !proto.Equal(run[0][0], refetch("app", []byte("old"))) {
 		t.Fatalf("RunCommands calls = %+v", run)
 	}
 
@@ -478,7 +527,7 @@ func TestDecideBeforeDecideFailures(t *testing.T) {
 	})
 	t.Run("runner error", func(t *testing.T) {
 		c := startFakeControlPlane(t, &fakeControlPlane{decideResp: wireBefore(refetch("app", nil))})
-		out := c.Decide(engine.DecideRequest{RunCommands: func([]*pb.Refetch) error { return errors.New("probe failed") }})
+		out := c.Decide(engine.DecideRequest{RunCommands: func([]*pb.ProxyCommand, *engine.SessionObservation) error { return errors.New("probe failed") }})
 		if !out.IsErr() || !strings.Contains(out.Err, "probe failed") {
 			t.Fatalf("Decide = %+v", out)
 		}
@@ -487,7 +536,7 @@ func TestDecideBeforeDecideFailures(t *testing.T) {
 		fake := &fakeControlPlane{decideResp: wireBefore(refetch("app", nil))}
 		c := startFakeControlPlane(t, fake)
 		runs := 0
-		out := c.Decide(engine.DecideRequest{RunCommands: func([]*pb.Refetch) error { runs++; return nil }})
+		out := c.Decide(engine.DecideRequest{RunCommands: func([]*pb.ProxyCommand, *engine.SessionObservation) error { runs++; return nil }})
 		if !out.IsErr() || !strings.Contains(out.Err, "4 times") {
 			t.Fatalf("Decide = %+v", out)
 		}
@@ -662,8 +711,10 @@ func TestStreamEventsDispatchesMappedRunOpen(t *testing.T) {
 	if err == nil {
 		t.Fatal("StreamEvents returned nil, want EOF")
 	}
-	wantRun := spi.RunOpen{SessionID: "sess-1", Token: "eph-9", ConnectionID: connectionID, OnOpen: []*pb.Refetch{{Catalog: "db", Schema: "app"}}}
-	if refreshes != 1 || !reflect.DeepEqual(openedRun, wantRun) || !reflect.DeepEqual(table, []string{"sess-2", "db", "public", "users"}) {
+	wantRun := spi.RunOpen{SessionID: "sess-1", Token: "eph-9", ConnectionID: connectionID, OnOpen: []*pb.ProxyCommand{refetch("app", nil)}}
+	runOnOpenEqual := commandsEqual(openedRun.OnOpen, wantRun.OnOpen)
+	openedRun.OnOpen, wantRun.OnOpen = nil, nil
+	if refreshes != 1 || !runOnOpenEqual || !reflect.DeepEqual(openedRun, wantRun) || !reflect.DeepEqual(table, []string{"sess-2", "db", "public", "users"}) {
 		t.Fatalf("dispatch refresh/run/table = %d/%+v/%v", refreshes, openedRun, table)
 	}
 	fake.mu.Lock()

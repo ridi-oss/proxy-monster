@@ -184,9 +184,9 @@ func (m *RowMasker) Apply(values []*string) []*string {
 // ---- Control-plane decision (the Decider maps the wire enum to a string Action + fail-closes) ----
 
 // Decision is the control plane's enforcement verdict for one statement. Mirrors WireDecision in
-// controlplane.proto. Masks and AfterStatement are the proto types (pb.ColumnMask / pb.Refetch) used AS
-// the data classes; a pb.Refetch mechanically requests a conditional refresh of one connection-local
-// schema fragment.
+// controlplane.proto. Masks and AfterStatement are the proto types (pb.ColumnMask / pb.ProxyCommand) used
+// AS the data classes; a ProxyCommand is run mechanically by the dialect's command runner (a Refetch is a
+// conditional refresh of one connection-local schema fragment).
 type Decision struct {
 	Action              string // "ALLOW" | "MASK" | "DENY" (mapped by NAME; unknown -> DENY, fail closed)
 	DecisionID          int64
@@ -195,7 +195,7 @@ type Decision struct {
 	EffectiveRoles      []string
 	RewrittenSQL        *string // nil == relay the client's original SQL verbatim (no * expansion)
 	UnmaskablePermitted bool
-	AfterStatement      []*pb.Refetch
+	AfterStatement      []*pb.ProxyCommand
 	Generation          uint64
 	// SanitizeDiagnostics is the control plane's per-decision diagnostic-redaction flag. When set,
 	// the proxy strips this statement's target-DB error/notice messages down to code + severity. See
@@ -209,6 +209,9 @@ type Decision struct {
 	// (Verdict.max_rows / max_bytes); 0 = uncapped. See docs/result-caps.md.
 	MaxRows  int64
 	MaxBytes int64
+	// Submission is the engine-specific companion to RewrittenSQL (analyzer.proto Submission); the dialect
+	// reads its own arm. nil = the text is the whole submission.
+	Submission *enginepb.Submission
 }
 
 // PageRows is the row count a paging caller should ask the target DB for: its own page size narrowed by the
@@ -307,7 +310,9 @@ type DecideRequest struct {
 	ClientAddr   string
 	TempColumns  []TempColumn
 	ConnectionID []byte
-	RunCommands  func([]*pb.Refetch) error
+	// RunCommands executes one before-decide round on the held target connection; the dialect's command
+	// runner interprets each ProxyCommand arm and may extend Session with what it fetched.
+	RunCommands func([]*pb.ProxyCommand, *SessionObservation) error
 }
 
 // Decider performs the per-query control-plane decision. It is injected so the engine is unit-testable;
@@ -513,7 +518,7 @@ type AuthzInput struct {
 	ConnectionID     []byte
 	ProbeSession     func() (SessionObservation, error)
 	ProbeTempColumns func() ([]TempColumn, error)
-	RunCommands      func([]*pb.Refetch) error
+	RunCommands      func([]*pb.ProxyCommand, *SessionObservation) error
 }
 
 // Authorize gathers namespace context (cached unless dirty), gathers session-temp columns when the

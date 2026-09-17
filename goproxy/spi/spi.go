@@ -28,7 +28,7 @@ type Identity struct {
 	Principal    string
 	Roles        []string
 	ConnectionID []byte
-	OnOpen       []*pb.Refetch
+	OnOpen       []*pb.ProxyCommand
 }
 
 // RunOpen is the fully mapped run-session open nudge. MapErr is populated for malformed commands
@@ -37,7 +37,7 @@ type RunOpen struct {
 	SessionID    string
 	Token        string
 	ConnectionID []byte
-	OnOpen       []*pb.Refetch
+	OnOpen       []*pb.ProxyCommand
 	MapErr       error
 }
 
@@ -106,7 +106,7 @@ type TargetDbSession interface {
 	// OnOpen runs the on-open catalog fetch. ctx is the target-DB open context: if the control-plane closes the
 	// run (or the proxy drains) while the fetch is in flight, ctx is cancelled and the in-flight target-DB read
 	// unwinds at once (a catalog push RPC to the control-plane still runs to its own deadline).
-	OnOpen(ctx context.Context, cmds []*pb.Refetch) error
+	OnOpen(ctx context.Context, cmds []*pb.ProxyCommand) error
 	Cancel() error
 	Close() error
 }

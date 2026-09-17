@@ -61,9 +61,9 @@ func NewRunSession(ctx context.Context, target spi.TargetDb, db engine.Db, clien
 // OnOpen runs the on-open catalog fetch over the target DB conn. A cancel of ctx (the control-plane closed the
 // run, or the proxy is draining, during the target-DB open) closes the conn, which unwinds an in-flight fetch read
 // at once instead of holding the target DB until readTimeout.
-func (s *RunSession) OnOpen(ctx context.Context, cmds []*pb.Refetch) error {
+func (s *RunSession) OnOpen(ctx context.Context, cmds []*pb.ProxyCommand) error {
 	defer context.AfterFunc(ctx, func() { _ = s.conn.Close() })()
-	return s.ref.RunAll(cmds)
+	return s.ref.RunAll(cmds, nil)
 }
 
 func (s *RunSession) ServeStatement(sql string, maxRows int) (result engine.StatementResult, err error) {

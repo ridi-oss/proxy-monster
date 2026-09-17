@@ -25,11 +25,13 @@ import com.ridi.oss.proxymonster.controlplane.authz.authorizeDatasourceActionId
 import com.ridi.oss.proxymonster.classification.BaselineDangerousFunctions
 import com.ridi.oss.proxymonster.grpc.ColumnMask
 import com.ridi.oss.proxymonster.grpc.EnfAction
+import com.ridi.oss.proxymonster.grpc.ProxyCommand
 import com.ridi.oss.proxymonster.grpc.Engine
 import com.ridi.oss.proxymonster.grpc.ObjectRef
 import com.ridi.oss.proxymonster.grpc.columnMask
 import com.ridi.oss.proxymonster.analyzer.pb.CatalogSnapshot
 import com.ridi.oss.proxymonster.analyzer.pb.Column
+import com.ridi.oss.proxymonster.analyzer.pb.Submission
 import com.ridi.oss.proxymonster.analyzer.pb.FailureClass
 import com.ridi.oss.proxymonster.analyzer.pb.MaskedDisposition
 import com.ridi.oss.proxymonster.analyzer.pb.RequireResultReadGrant
@@ -178,6 +180,10 @@ data class DecisionContext(
     /** ALLOW/MASK only: the `*`-expanded query the wire proxy must send instead of the client's original
      * so target-DB column order matches the mask ordinals. Null = send verbatim. */
     val rewrittenSql: String? = null,
+    /** The engine-specific companion to [rewrittenSql] (analyzer.proto Submission); the proxy's engine reads it. */
+    val submission: Submission? = null,
+    /** Non-empty: no verdict yet; the proxy runs these, then re-sends the same statement. */
+    val beforeDecide: List<ProxyCommand> = emptyList(),
     /** The analyzer's ordered output column names for this decision (an empty list for a passthrough /
      * unanalyzed statement). */
     val outputColumns: List<String> = emptyList(),
@@ -476,6 +482,11 @@ fun decideQuery(
         facts.failureClass == FailureClass.FAILURE_CLASS_UNSPECIFIED && !facts.resolved
     ) {
         return structuralDeny(facts.detail.ifBlank { "statement is inadmissible" }, emptyList())
+    }
+    // The analyzer asked for input only the proxy can fetch: no verdict, run the commands and retry.
+    val beforeDecide = ds.engine.definition.beforeDecideCommands(facts)
+    if (beforeDecide.isNotEmpty()) {
+        return structuralDeny(facts.detail.ifBlank { "more input is required" }, emptyList()).copy(beforeDecide = beforeDecide)
     }
 
     if (userGroupStore.isDeactivated(principal)) {
@@ -1062,8 +1073,13 @@ internal fun wireTaskForbiddenDeny(
 // than each building its own. An EXPLAIN/DESCRIBE keeps its original text — the analyzer emits no
 // rewritten_sql for it (the rewrite is for the inner query it plans). The exception.unanalyzable escape
 // hatches deliberately relay the original whole statement, so they do not call this.
-private fun DecisionContext.withAnalyzerRewrite(facts: StatementFacts): DecisionContext =
-    if (facts.hasRewrittenSql()) copy(rewrittenSql = facts.rewrittenSql) else this
+private fun DecisionContext.withAnalyzerRewrite(facts: StatementFacts): DecisionContext = when {
+    facts.hasRewrittenSql() -> copy(
+        rewrittenSql = facts.rewrittenSql,
+        submission = if (facts.hasSubmission()) facts.submission else null,
+    )
+    else -> this
+}
 
 // The Cedar action a statement's kind is gated by. "stmt.kind.<k>" is a member of its category action in
 // the schema, so a category or kind preset matches it; an admin-category kind with no preset denies —

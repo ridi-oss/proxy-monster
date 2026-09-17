@@ -20,6 +20,8 @@ import (
 
 // flowClient plays the control plane for one principal: it admits SQL through Decide, binds executions to
 // the cached contexts the proxy presents, and records what it was asked.
+func (*flowClient) DatasourceName() string { return "athena-dev" }
+
 type flowClient struct {
 	spi.EnforcementClient
 	mu          sync.Mutex

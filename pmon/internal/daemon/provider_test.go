@@ -29,6 +29,10 @@ type httpBroker struct {
 
 func (b httpBroker) Engine() string { return b.engine }
 
+func (httpBroker) SupportedFormats() []driver.Format { return []driver.Format{driver.URL} }
+
+func (httpBroker) DefaultFormat() driver.Format { return driver.URL }
+
 func (httpBroker) FormatConnectionString(driver.Format, driver.Target, driver.Options) string {
 	return ""
 }

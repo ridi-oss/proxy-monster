@@ -674,3 +674,6 @@ var (
 	_ spi.RunClient             = (*Client)(nil)
 	_ spi.TableDetailClient     = (*Client)(nil)
 )
+
+// DatasourceName is the one datasource this client fronts.
+func (c *Client) DatasourceName() string { return c.datasourceName }

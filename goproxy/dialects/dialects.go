@@ -12,6 +12,7 @@ import (
 
 	enginepb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
 	"github.com/ridi-oss/proxy-monster/goproxy/db"
+	"github.com/ridi-oss/proxy-monster/goproxy/dialects/athena"
 	"github.com/ridi-oss/proxy-monster/goproxy/engine"
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
 	"github.com/ridi-oss/proxy-monster/goproxy/introspect"
@@ -112,6 +113,7 @@ func (d *sqlDb) NewRunSession(ctx context.Context, client spi.SessionClient, tok
 func (d *sqlDb) Close() error { return d.pool.Close() }
 
 var registry = spi.MustRegistry(
+	athena.Provider{},
 	sqlProvider{
 		dialect:    engine.MySQL,
 		db:         db.MySqlDb{},

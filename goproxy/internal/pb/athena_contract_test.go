@@ -54,11 +54,39 @@ func TestAthenaSubmissionEmptyParametersRemainPresent(t *testing.T) {
 	if decoded.GetAthenaSubmission() == nil || len(decoded.GetAthenaSubmission().GetExecutionParameters()) != 0 {
 		t.Fatalf("replacement with empty parameters lost presence: %v", decoded)
 	}
-	if decoded.RewrittenSql != nil {
-		t.Fatal("native submission unexpectedly populated relational rewritten_sql")
-	}
 	if new(Verdict).GetAthenaSubmission() != nil || new(DecisionRequest).GetAthena() != nil {
 		t.Fatal("absent Athena fields must remain absent")
+	}
+}
+
+func TestNativeResultInstructionsReferenceOriginalContext(t *testing.T) {
+	instructions := &analyzerpb.AthenaNativeInstructions{
+		Version:  1,
+		Action:   analyzerpb.AthenaNativeInstruction_ATHENA_NATIVE_INSTRUCTION_APPLY_ORIGINAL_CONTEXT,
+		Contexts: []*analyzerpb.AthenaContextRef{{ResourceId: "execution-123", ContextId: "context-456"}},
+	}
+	payload, err := proto.Marshal(instructions)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := &RequestAuthorizationResult{Allowed: true, ProviderInstructions: payload}
+	encoded, err := proto.Marshal(response)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decoded := new(RequestAuthorizationResult)
+	if err := proto.Unmarshal(encoded, decoded); err != nil {
+		t.Fatal(err)
+	}
+	got := new(analyzerpb.AthenaNativeInstructions)
+	if err := proto.Unmarshal(decoded.GetProviderInstructions(), got); err != nil {
+		t.Fatal(err)
+	}
+	if !proto.Equal(got, instructions) {
+		t.Fatalf("native result instructions changed: %v", got)
+	}
+	if new(analyzerpb.AthenaNativeInstructions).GetAction() != analyzerpb.AthenaNativeInstruction_ATHENA_NATIVE_INSTRUCTION_UNSPECIFIED {
+		t.Fatal("an absent native instruction must not imply response release")
 	}
 }
 

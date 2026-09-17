@@ -98,6 +98,10 @@
     "proxy_timeout": "The proxy did not respond in time."
   },
   "native": {
+    "context_unavailable": "The original execution context for this request is not available.",
+    "invalid_descriptor": "The native request could not be validated.",
+    "not_authorized": "This native operation is not permitted.",
+    "scope_violation": "The native request is outside this datasource's configured scope.",
     "unsupported_sql_context": "This datasource does not support this SQL context."
   }
 }

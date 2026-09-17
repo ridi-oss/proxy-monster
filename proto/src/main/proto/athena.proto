@@ -1,0 +1,50 @@
+syntax = "proto3";
+
+package proxymonster.athena.v1;
+
+option java_package = "com.ridi.oss.proxymonster.athena.pb";
+option java_multiple_files = true;
+
+// Athena is an HTTP API, not a wire protocol: a query is one StartQueryExecution call whose body carries
+// the SQL text plus the fields below, and prepared statements live in a named workgroup rather than a
+// session. This is the part of that call the analyzer needs beyond the text.
+message AthenaSqlContext {
+  // The workgroup the query runs in; prepared statements are looked up by (workgroup, name).
+  string workgroup = 1;
+  // The client's positional bindings for the `?` placeholders in the SQL, in order, as SQL expressions:
+  //   SQL "SELECT email FROM users WHERE id = ? AND region = ?" with ["7", "'kr'"].
+  repeated string execution_parameters = 2;
+  // Prepared statements the proxy fetched from AWS for this request, after the analyzer asked for them
+  // (StatementFacts.athena_prepared_definition_need). Never taken from the client.
+  repeated AthenaPreparedDefinition prepared_definitions = 3;
+  // Editor row cap; a resolved query gets LIMIT max_rows when it has none or a larger one. 0 = no cap.
+  uint32 max_rows = 4;
+}
+
+// One prepared statement as AWS stores it: `PREPARE lookup_user FROM SELECT email FROM users WHERE id = ?`
+// in workgroup "primary" is {workgroup: "primary", name: "lookup_user", query_string: "SELECT email ..."}.
+message AthenaPreparedDefinition {
+  string workgroup = 1;
+  string name = 2;
+  string query_string = 3;
+}
+
+// A control-plane command: fetch this prepared statement from AWS and retry the decision with it.
+message FetchAthenaPreparedDefinition {
+  string workgroup = 1;
+  string name = 2;
+}
+
+// The analyzer's request for a prepared statement it was not given (see
+// StatementFacts.athena_prepared_definition_need).
+message AthenaPreparedDefinitionNeed {
+  string workgroup = 1;
+  string name = 2;
+}
+
+// The parameter list the proxy submits with StatementFacts.rewritten_sql in place of the client's (see
+// StatementFacts.athena_submission for the worked example). Presence replaces the client's list even when
+// empty; absence keeps it.
+message AthenaSubmission {
+  repeated string execution_parameters = 1;
+}

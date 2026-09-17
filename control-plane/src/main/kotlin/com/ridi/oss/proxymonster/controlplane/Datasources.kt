@@ -4,10 +4,7 @@ import com.ridi.oss.proxymonster.classification.SystemTag
 import com.ridi.oss.proxymonster.controlplane.authz.Authz
 import com.ridi.oss.proxymonster.controlplane.authz.AuthzAction
 import com.ridi.oss.proxymonster.controlplane.authz.AuthzContext
-import com.ridi.oss.proxymonster.controlplane.authz.AuthzDecision
-import com.ridi.oss.proxymonster.controlplane.authz.authorizeDatasourceAction
 import com.ridi.oss.proxymonster.controlplane.authz.requireAdmin
-import com.ridi.oss.proxymonster.controlplane.authz.resolveContextTags
 import com.ridi.oss.proxymonster.controlplane.management.DatasourceManagementService
 import com.ridi.oss.proxymonster.controlplane.grpc.inspectTrustChain
 import com.ridi.oss.proxymonster.controlplane.management.ManagementAuditRecorder
@@ -806,13 +803,9 @@ private fun ApplicationCall.bearerWirePrincipal(tokenStore: TokenStore, userGrou
     val header = request.headers[HttpHeaders.Authorization] ?: return null
     if (!header.startsWith("Bearer ", ignoreCase = true)) return null
     val token = header.substring(7).trim().ifBlank { return null }
-    val id = tokenStore.resolve(token) ?: return null
+    val id = resolveActiveToken(tokenStore, userGroupStore, token) ?: return null
     val kind = TokenKind.fromWire(id.kind)
     if (kind != TokenKind.SESSION && kind != TokenKind.USER) return null
-    // Fail closed for a deactivated principal even if a token row survived — matches the gRPC decide path
-    // (a SCIM active=false push or a failed IdP liveness recheck can mark the app_user inactive without the
-    // credential revoke having raced in yet).
-    if (userGroupStore.isDeactivated(id.principal)) return null
     return id.principal
 }
 
@@ -832,14 +825,8 @@ private suspend fun ApplicationCall.requireApiOrBearer(config: Config, tokenStor
 private val datasourceLog = org.slf4j.LoggerFactory.getLogger("com.ridi.oss.proxymonster.controlplane.Datasources")
 
 /** Whether Cedar grants [principal] datasource.connect on [ds] — the decision the proxy runs on connect. */
-internal fun mayConnect(authz: Authz, roleResolver: RoleResolver, principal: String, requesterIp: String?, ds: Datasource): Boolean {
-    val roles = roleResolver.resolve(principal)
-    val raw = AuthzContext(requesterIp = requesterIp)
-    val tags = authz.resolveContextTags(principal, roles, ds.name, raw, ds.tags)
-    return authz.authorizeDatasourceAction(
-        principal, roles, AuthzAction.DATASOURCE_CONNECT, ds.name, raw.copy(tags = tags), ds.tags,
-    ) !is AuthzDecision.Deny
-}
+internal fun mayConnect(authz: Authz, roleResolver: RoleResolver, principal: String, requesterIp: String?, ds: Datasource): Boolean =
+    authorizeMetadata(authz, principal, roleResolver.resolve(principal), ds, AuthzContext(requesterIp = requesterIp))
 
 fun Route.datasourceRoutes(
     config: Config,
@@ -858,8 +845,10 @@ fun Route.datasourceRoutes(
     // connect. No authDebug arm: PM_AUTH_DEBUG is an AUTHENTICATION bypass, and `/auth/debug` persists its
     // claimed roles as real assignments so Cedar can evaluate them, so short-circuiting the decision here
     // would only hide the policy dev is configured to exercise.
-    fun mayConnect(call: ApplicationCall, principal: String, ds: Datasource): Boolean =
-        mayConnect(authz, roleResolver, principal, call.httpRequesterIp(config), ds)
+    fun mayConnect(call: ApplicationCall, principal: String, ds: Datasource): Boolean {
+        if (userGroupStore.isDeactivated(principal)) return false
+        return authorizeMetadata(authz, principal, roleResolver.resolve(principal), ds, call.httpAuthzContext(config))
+    }
 
     // The datasource LIST stays open to every authenticated principal: the SQL editor's picker,
     // JIT-request compose (which must show datasources you CANNOT yet connect to, precisely so they can be

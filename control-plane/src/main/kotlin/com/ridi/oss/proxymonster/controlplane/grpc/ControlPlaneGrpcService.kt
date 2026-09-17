@@ -30,7 +30,10 @@ import com.ridi.oss.proxymonster.controlplane.TokenKind
 import com.ridi.oss.proxymonster.controlplane.decideConnection
 import com.ridi.oss.proxymonster.controlplane.inTx
 import com.ridi.oss.proxymonster.controlplane.systemSchemas
-import com.ridi.oss.proxymonster.controlplane.tokenHash
+import com.ridi.oss.proxymonster.controlplane.resolveRequestIdentity
+import com.ridi.oss.proxymonster.grpc.RequestAuthorization
+import com.ridi.oss.proxymonster.grpc.RequestAuthorizationResult
+import com.ridi.oss.proxymonster.grpc.requestAuthorizationResult
 import com.google.protobuf.Empty
 import com.ridi.oss.proxymonster.grpc.CatalogRequest
 import com.ridi.oss.proxymonster.grpc.CatalogResponse
@@ -186,18 +189,32 @@ class ControlPlaneGrpcService(
         }
     }
 
-    override suspend fun decide(request: DecisionRequest): WireDecision {
-        // Re-validate the RAW token on every query so a mid-session revocation takes effect on the next
-        // query, not at session end — the proxy-asserted principal is never trusted for the life of the
-        // connection. Read-only (resolve, not validate) so the per-query check doesn't
-        // serialize concurrent queries on the token row's last_used_at write. An authN failure
-        // (bad/revoked/expired token, deprovisioned principal) is UNAUTHENTICATED so the proxy can tear
-        // the session down, distinct from an authZ policy DENY.
-        val id = core.tokenStore.resolve(request.token)
-            ?: throw StatusException(Status.UNAUTHENTICATED.withDescription("invalid, expired, or revoked wire token"))
-        if (core.userGroupStore.isDeactivated(id.principal)) {
-            throw StatusException(Status.UNAUTHENTICATED.withDescription("principal is deprovisioned"))
+    override suspend fun authorizeRequest(request: RequestAuthorization): RequestAuthorizationResult {
+        val resolved = core.resolveRequestIdentity(request.token, request.clientAddr.ifBlank { null })
+        if (resolved.kind != TokenKind.SESSION && resolved.kind != TokenKind.USER) {
+            throw StatusException(Status.UNAUTHENTICATED.withDescription("metadata requires a native credential"))
         }
+        val ds = core.datasourceStore.getByName(request.datasourceName)
+            ?: throw StatusException(Status.NOT_FOUND.withDescription("unknown datasource"))
+        val roles = resolved.effectiveRoles
+        val allowed = try {
+            ds.engine.definition.requestAuthorizer.authorize(request, ds, resolved.identity.principal, roles, resolved.context, core.authz)
+        } catch (_: ManagementException) {
+            false
+        }
+        return requestAuthorizationResult {
+            this.allowed = allowed
+            if (allowed) principal = resolved.identity.principal else denyReason = "datasource.not_connectable"
+            effectiveRoles.addAll(roles)
+        }
+    }
+
+    override suspend fun decide(request: DecisionRequest): WireDecision {
+        // Re-validated on every query so a mid-session revocation takes effect on the next query, not at
+        // session end; resolveRequestIdentity is read-only (resolve, not validate) so concurrent queries do
+        // not serialize on the token row's last_used_at write.
+        val resolved = core.resolveRequestIdentity(request.token, request.clientAddr.ifBlank { null })
+        val id = resolved.identity
         val ds = core.datasourceStore.getByName(request.datasourceName)
             ?: throw StatusException(Status.NOT_FOUND.withDescription("unknown datasource '${request.datasourceName}'"))
         try {
@@ -212,38 +229,12 @@ class ControlPlaneGrpcService(
         // default (possibly the wrong schema). An empty namespace reaches decideQuery as-is and resolves
         // fail-closed (unqualified references can't resolve -> DENY).
         val clientAddr = request.clientAddr.ifBlank { null }
-        // Derive the channel and assume-role set from the resolved token's KIND (the
-        // control-plane minted it; the proxy can't assert it). A native-wire token (SESSION/USER) is
-        // channel=wire, and its roles are ALWAYS resolved server-side (never taken from the token). The
-        // ephemeral editor/approver-exec kinds map to editor/workflow-executor; only they may carry a
-        // CP-computed assume-role set (execute-under-R).
-        val kind = TokenKind.fromWire(id.kind)
-            ?: throw StatusException(Status.UNAUTHENTICATED.withDescription("token kind is not valid for query decisions"))
-        val assumeRoles = if (kind == TokenKind.EDITOR || kind == TokenKind.APPROVER_EXEC) {
-            id.roles.toSet().takeIf { it.isNotEmpty() }
-        } else {
-            null
-        }
-        val channel = when (kind) {
-            TokenKind.SESSION, TokenKind.USER -> Channel.WIRE
-            TokenKind.EDITOR -> Channel.EDITOR
-            // workflow-executor (where a policy may unmask R at execute) is reachable ONLY by an approver-exec
-            // token that actually carries an assume-role set (execute-under-R). A no-R approver-exec (approver
-            // runs as themselves, no elevation) decides at the editor channel with NORMAL enforcement.
-            TokenKind.APPROVER_EXEC -> if (assumeRoles != null) Channel.WORKFLOW_EXECUTOR else Channel.EDITOR
-        }
+        val channel = resolved.channel
+        val assumeRoles = resolved.providedRoles
         // The connection's session/temp columns, overlaid onto the base catalog. Both trust
         // gates (EDITOR-channel-only + pg_temp* filter) live in [editorTempOverlay] so they're unit-testable.
         val tempColumns = editorTempOverlay(channel, request.tempColumnsList)
-        // The HTTP requester IP recorded on [ControlPlaneCore.runRequesterIps] at ephemeral
-        // token mint time, keyed by this token's hash. Gated strictly on KIND (never just "an entry exists")
-        // so a native-wire (SESSION/USER) token can never pick up a registry entry — the registry is only ever
-        // populated for EDITOR/APPROVER_EXEC tokens, but this keeps the read itself honest about that intent.
-        val httpIp = if (kind == TokenKind.EDITOR || kind == TokenKind.APPROVER_EXEC) {
-            core.runRequesterIps.get(tokenHash(request.token))
-        } else {
-            null
-        }
+        val httpIp = resolved.httpRequesterIp
         if (request.connectionId.size() != 16) {
             throw StatusException(Status.INVALID_ARGUMENT.withDescription("connection_id must be exactly 16 bytes"))
         }

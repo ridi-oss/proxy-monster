@@ -64,7 +64,14 @@ type SessionClient interface {
 // EnforcementClient is the complete control-plane capability used by a native-wire server. It adds the
 // post-relay completion report (engine.CompletionReporter) that only the native-wire path emits — the
 // editor path streams to the control plane, which records its own completion, so SessionClient omits it.
+// RequestAuthorizer asks the control plane whether one metadata request (a catalog or table-metadata read
+// with no SQL session behind it) is allowed. The proxy only forwards the verdict; it never decides itself.
+type RequestAuthorizer interface {
+	AuthorizeRequest(context.Context, *pb.RequestAuthorization) (*pb.RequestAuthorizationResult, error)
+}
+
 type EnforcementClient interface {
+	RequestAuthorizer
 	SessionClient
 	engine.CompletionReporter
 	ValidateToken(token, clientAddr string) (Identity, error)

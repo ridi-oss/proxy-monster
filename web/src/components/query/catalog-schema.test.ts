@@ -48,6 +48,11 @@ describe('query catalog tree', () => {
     expect((await complete(columns, postgres, 'SELECT "public"."users".|')).options.map((item) => item.label)).toEqual(['id'])
   })
 
+  it('lets every engine preview a table of the current catalog', () => {
+    const athena = { ...postgres, engine: 'athena', port: 443, dbName: 'acme', defaultSchemas: ['acme'], currentCatalog: 'awsdatacatalog' }
+    expect(buildTree([column('awsdatacatalog', 'acme')], athena)[0].insert).toBe('"acme"."users"')
+  })
+
   it('qualifies public as explicitly as a shadow schema, without catalog qualifiers', () => {
     expect(buildTree([column('def', 'app')], mysql)[0].insert).toBe('`app`.`users`')
     const tree = buildTree([column('app'), column('app', 'shadow')], { ...postgres, defaultSchemas: ['shadow', 'public'] })

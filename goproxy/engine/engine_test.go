@@ -127,7 +127,7 @@ func TestAuthorizeSanitizeDiagnosticsStaysClearWhenNeverRequested(t *testing.T) 
 func TestAuthorizePassesConnectionCatalogCallbacks(t *testing.T) {
 	dec := &fakeDecider{outcome: okOutcome("ALLOW", nil)}
 	connectionID := []byte("0123456789abcdef")
-	runCommands := func([]*pb.Refetch) error { return nil }
+	runCommands := func([]*pb.ProxyCommand, *SessionObservation) error { return nil }
 	got := NewQueryEngine(dec).Authorize(AuthzInput{
 		SQL:              "SELECT 1",
 		Token:            "token",

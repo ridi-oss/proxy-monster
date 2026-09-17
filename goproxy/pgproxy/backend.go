@@ -339,7 +339,7 @@ func (c *sessionCore) collectProbe(expectedColumns int, quiet bool) ([][]*string
 	return result.Rows, nil
 }
 
-func (c *sessionCore) authzInput(sql, token, clientAddr string, connectionID []byte, runCommands func([]*pb.Refetch) error) engine.AuthzInput {
+func (c *sessionCore) authzInput(sql, token, clientAddr string, connectionID []byte, runCommands func([]*pb.ProxyCommand, *engine.SessionObservation) error) engine.AuthzInput {
 	// In an aborted transaction the probe below returns the session's last snapshot instead of querying.
 	if c.pendingDirty {
 		c.qe.MarkNamespaceDirty()

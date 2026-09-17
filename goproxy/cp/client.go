@@ -148,28 +148,25 @@ func (c *Client) outCtx(parent context.Context) context.Context {
 	return metadata.AppendToOutgoingContext(parent, secretTokenHeader, c.secretToken)
 }
 
-// refetchesFromWire unwraps the only supported mechanical command arm (Refetch) from the generic
-// ProxyCommand envelope. Unknown arms and blank schemas are malformed and fail closed rather than degrading
-// to a broader refresh. Each Refetch is deep-copied so the returned commands never alias the wire message's
-// mutable backing arrays.
-func refetchesFromWire(commands []*pb.ProxyCommand) ([]*pb.Refetch, error) {
-	mapped := make([]*pb.Refetch, 0, len(commands))
+// commandsFromWire validates the generic ProxyCommand envelope and deep-copies each command so the returned
+// list never aliases the wire message's mutable backing arrays. The client does not interpret an arm — the
+// dialect's command runner does — it only rejects an empty command or a Refetch missing its selector, so a
+// malformed list fails closed here rather than degrading to a broader refresh downstream.
+func commandsFromWire(commands []*pb.ProxyCommand) ([]*pb.ProxyCommand, error) {
+	mapped := make([]*pb.ProxyCommand, 0, len(commands))
 	for i, command := range commands {
-		refetch := command.GetRefetch()
-		if refetch == nil {
-			return nil, fmt.Errorf("command %d is not a refetch", i)
+		if command.GetCommand() == nil {
+			return nil, fmt.Errorf("command %d has no arm", i)
 		}
-		if refetch.GetCatalog() == "" {
-			return nil, fmt.Errorf("command %d has blank catalog", i)
+		if refetch := command.GetRefetch(); refetch != nil {
+			if refetch.GetCatalog() == "" {
+				return nil, fmt.Errorf("command %d has blank catalog", i)
+			}
+			if refetch.GetSchema() == "" {
+				return nil, fmt.Errorf("command %d has blank schema", i)
+			}
 		}
-		if refetch.GetSchema() == "" {
-			return nil, fmt.Errorf("command %d has blank schema", i)
-		}
-		mapped = append(mapped, &pb.Refetch{
-			Schema:        refetch.GetSchema(),
-			IfHashDiffers: append([]byte(nil), refetch.GetIfHashDiffers()...),
-			Catalog:       refetch.GetCatalog(),
-		})
+		mapped = append(mapped, proto.Clone(command).(*pb.ProxyCommand))
 	}
 	return mapped, nil
 }
@@ -200,7 +197,7 @@ func identityFromWire(id *pb.WireIdentity) (spi.Identity, error) {
 	if len(id.GetConnectionId()) != 16 {
 		return spi.Identity{}, fmt.Errorf("control plane returned connection_id with %d bytes, want 16", len(id.GetConnectionId()))
 	}
-	onOpen, err := refetchesFromWire(id.GetOnOpen())
+	onOpen, err := commandsFromWire(id.GetOnOpen())
 	if err != nil {
 		return spi.Identity{}, fmt.Errorf("control plane returned malformed on_open: %w", err)
 	}
@@ -244,11 +241,14 @@ func denyClosed(reason string) *engine.Decision {
 
 // decisionFromWire maps the control plane's WireDecision onto the engine's dialect-agnostic outcome.
 // Before-decision commands are returned separately and take precedence over any verdict accessor.
-func decisionFromWire(d *pb.WireDecision) ([]*pb.Refetch, *engine.Decision) {
+func decisionFromWire(d *pb.WireDecision) ([]*pb.ProxyCommand, *engine.Decision) {
 	if before := d.GetBeforeDecide(); before != nil {
-		commands, err := refetchesFromWire(before.GetCommands())
+		commands, err := commandsFromWire(before.GetCommands())
 		if err != nil {
 			return nil, denyClosed("control plane returned malformed before-decision commands: " + err.Error())
+		}
+		if len(commands) == 0 {
+			return nil, denyClosed("control plane returned an empty before-decision round")
 		}
 		return commands, nil
 	}
@@ -269,7 +269,14 @@ func decisionFromWire(d *pb.WireDecision) ([]*pb.Refetch, *engine.Decision) {
 		rewrittenSQL := *v.RewrittenSql
 		rewritten = &rewrittenSQL
 	}
-	afterStatement, err := refetchesFromWire(v.GetAfterStatement())
+	var submission *enginepb.Submission
+	if v.Submission != nil {
+		if rewritten == nil {
+			return nil, denyClosed("control plane returned a submission without rewritten SQL")
+		}
+		submission = proto.Clone(v.Submission).(*enginepb.Submission)
+	}
+	afterStatement, err := commandsFromWire(v.GetAfterStatement())
 	if err != nil {
 		return nil, denyClosed("control plane returned malformed after-statement commands: " + err.Error())
 	}
@@ -291,6 +298,7 @@ func decisionFromWire(d *pb.WireDecision) ([]*pb.Refetch, *engine.Decision) {
 		AfterStatement:      afterStatement,
 		Generation:          v.GetGeneration(),
 		SanitizeDiagnostics: v.GetSanitizeDiagnostics(),
+		Submission:          submission,
 		ResultFingerprint:   v.GetResultFingerprint(),
 	}
 }
@@ -346,13 +354,24 @@ func (c *Client) Decide(req engine.DecideRequest) engine.DecisionOutcome {
 		if round >= 3 {
 			return engine.DecisionOutcome{Err: fmt.Sprintf("control plane demanded pre-decision commands %d times", round+1)}
 		}
-		if req.RunCommands == nil {
-			return engine.DecisionOutcome{Err: "control plane demanded pre-decision commands but no runner is configured"}
-		}
-		if err := req.RunCommands(commands); err != nil {
+		if err := runBeforeDecide(commands, &req, wireReq); err != nil {
 			return engine.DecisionOutcome{Err: "pre-decision commands failed: " + err.Error()}
 		}
 	}
+}
+
+// runBeforeDecide executes one before-decide round through the dialect's command runner. A command may
+// extend the session facts the re-sent request carries (a fetched prepared definition), so the runner gets
+// the request's session and the wire request is rebuilt from it.
+func runBeforeDecide(commands []*pb.ProxyCommand, req *engine.DecideRequest, wireReq *pb.DecisionRequest) error {
+	if req.RunCommands == nil {
+		return errors.New("control plane demanded pre-decision commands but no runner is configured")
+	}
+	if err := req.RunCommands(commands, &req.Session); err != nil {
+		return err
+	}
+	wireReq.Session = req.Session.Clone().SessionObservation
+	return nil
 }
 
 // ReportCompletion sends a post-relay completion report (audit-only result volume) to the control plane.
@@ -540,7 +559,7 @@ func (c *Client) streamEvents(
 			onRefresh()
 		case ev.GetOpenRunChannel() != nil:
 			e := ev.GetOpenRunChannel()
-			onOpen, mapErr := refetchesFromWire(e.GetOnOpen())
+			onOpen, mapErr := commandsFromWire(e.GetOnOpen())
 			if len(e.GetConnectionId()) != 16 {
 				mapErr = fmt.Errorf("control plane returned run connection_id with %d bytes, want 16", len(e.GetConnectionId()))
 			}

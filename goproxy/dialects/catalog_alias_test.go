@@ -185,7 +185,7 @@ func TestPostgresCatalogThroughDatabaseAlias(t *testing.T) {
 			t.Fatal(err)
 		}
 		defer session.Close()
-		if err := session.OnOpen(ctx, []*pb.Refetch{control.refetch()}); err != nil {
+		if err := session.OnOpen(ctx, []*pb.ProxyCommand{{Command: &pb.ProxyCommand_Refetch{Refetch: control.refetch()}}}); err != nil {
 			t.Fatal(err)
 		}
 		result, err := session.ServeStatement("SELECT current_database()", 20)

@@ -3,10 +3,12 @@ package com.ridi.oss.proxymonster.controlplane
 import com.ridi.oss.proxymonster.analyzer.pb.EngineConfig as PbEngineConfig
 import com.ridi.oss.proxymonster.analyzer.pb.FunctionCatalog
 import com.ridi.oss.proxymonster.analyzer.pb.SessionObservation
+import com.ridi.oss.proxymonster.analyzer.pb.StatementFacts
 import com.ridi.oss.proxymonster.controlplane.engines.MySqlEngineDefinition
 import com.ridi.oss.proxymonster.controlplane.engines.PostgresEngineDefinition
 import com.ridi.oss.proxymonster.grpc.ConnectionInfo
 import com.ridi.oss.proxymonster.grpc.Engine
+import com.ridi.oss.proxymonster.grpc.ProxyCommand
 import com.ridi.oss.proxymonster.probe.Dialect
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.descriptors.PrimitiveKind
@@ -48,8 +50,16 @@ interface EngineDefinition {
     fun isSystemSchema(schema: String): Boolean
     /** The analyzer config for splitting a batch before any session exists; null when introspection has not captured what the dialect needs. */
     fun splitEngineConfig(datasource: Datasource): PbEngineConfig?
-    /** The analyzer config for one statement decision, with the live session facts. */
+    /**
+     * The analyzer config for one statement decision, with the per-statement facts the proxy sent (session
+     * observations and, for Athena, the request scope). A definition refuses facts it does not model.
+     */
     fun analyzerEngineConfig(datasource: Datasource, session: SessionObservation): PbEngineConfig
+    /**
+     * The commands the proxy must run before this statement can be decided, read from an unresolved analysis
+     * that asks for more input (Athena: fetch the prepared statement `EXECUTE` names). Empty = decidable now.
+     */
+    fun beforeDecideCommands(facts: StatementFacts): List<ProxyCommand> = emptyList()
     /** (comparable server version, isAurora) from the raw `version()` string; null version when unparsable. */
     fun parseServerVersion(raw: String?): Pair<String?, Boolean>
     /** The classification-manifest series a parsed version belongs to: MySQL "8.0", Postgres "17". */

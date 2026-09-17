@@ -282,7 +282,10 @@ func TestRefetcherRunAllOrdersAndStops(t *testing.T) {
 			return 1, nil
 		},
 	}
-	err := r.RunAll([]*pb.Refetch{{Catalog: "def", Schema: "one"}, {Catalog: "def", Schema: "two"}, {Catalog: "def", Schema: "three"}})
+	refetch := func(schema string) *pb.ProxyCommand {
+		return &pb.ProxyCommand{Command: &pb.ProxyCommand_Refetch{Refetch: &pb.Refetch{Catalog: "def", Schema: schema}}}
+	}
+	err := r.RunAll([]*pb.ProxyCommand{refetch("one"), refetch("two"), refetch("three")}, nil)
 	if err == nil {
 		t.Fatal("RunAll succeeded, want second-command error")
 	}

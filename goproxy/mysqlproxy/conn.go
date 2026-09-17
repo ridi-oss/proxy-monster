@@ -201,7 +201,7 @@ func (s *Server) handleConn(clientConn net.Conn) {
 		return runInternalQuery(targetDbConn, deprecateEOF, sql, expectedColumns)
 	}, s.client.PushSchemaFragment)
 	refetcher.Catalog = "def"
-	if err := refetcher.RunAll(identity.OnOpen); err != nil {
+	if err := refetcher.RunAll(identity.OnOpen, nil); err != nil {
 		slog.Warn("mysql catalog initialization failed", "error", err)
 		_ = mysqlwire.WritePacket(clientConn, tokenSeq+1, mysqlwire.ErrPacketState(
 			1105,
@@ -456,7 +456,7 @@ func (s *Server) handleConn(clientConn net.Conn) {
 				return
 			}
 			if ok && proceed.Decision != nil && len(proceed.Decision.AfterStatement) > 0 {
-				if err := refetcher.RunAll(proceed.Decision.AfterStatement); err != nil {
+				if err := refetcher.RunAll(proceed.Decision.AfterStatement, nil); err != nil {
 					return
 				}
 			}
@@ -522,7 +522,7 @@ func (s *Server) authorize(
 	seq byte,
 	sql, token, clientAddr string,
 	connectionID []byte,
-	runCommands func([]*pb.Refetch) error,
+	runCommands func([]*pb.ProxyCommand, *engine.SessionObservation) error,
 	probeSession func() (engine.SessionObservation, error),
 ) (engine.Proceed, bool, error) {
 	verdict := qe.Authorize(engine.AuthzInput{

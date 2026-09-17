@@ -283,14 +283,14 @@ func TestRunnerPostgresTempTablesAreSessionIsolated(t *testing.T) {
 		SessionID:    runSessionID + "-temp-1",
 		Token:        runToken,
 		ConnectionID: []byte("temp-session-001"),
-		OnOpen:       []*pb.Refetch{{Catalog: fixture.runTarget.Db, Schema: runPGSchema}},
+		OnOpen:       []*pb.ProxyCommand{&pb.ProxyCommand{Command: &pb.ProxyCommand_Refetch{Refetch: &pb.Refetch{Catalog: fixture.runTarget.Db, Schema: runPGSchema}}}},
 	})
 	fake2, client2 := runStartFakeCP(t, runSessionID+"-temp-2")
 	runLaunchOpen(t, fake2, client2, fixture, spi.RunOpen{
 		SessionID:    runSessionID + "-temp-2",
 		Token:        runToken,
 		ConnectionID: []byte("temp-session-002"),
-		OnOpen:       []*pb.Refetch{{Catalog: fixture.runTarget.Db, Schema: runPGSchema}},
+		OnOpen:       []*pb.ProxyCommand{&pb.ProxyCommand{Command: &pb.ProxyCommand_Refetch{Refetch: &pb.Refetch{Catalog: fixture.runTarget.Db, Schema: runPGSchema}}}},
 	})
 
 	runSendQuery(fake1, createSQL, 20)
@@ -1575,10 +1575,10 @@ func runOpen(fixture runEngineFixture) spi.RunOpen {
 		SessionID:    runSessionID,
 		Token:        runToken,
 		ConnectionID: []byte(runConnectionID),
-		OnOpen: []*pb.Refetch{{
+		OnOpen: []*pb.ProxyCommand{{Command: &pb.ProxyCommand_Refetch{Refetch: &pb.Refetch{
 			Catalog: fixture.runCatalog(),
 			Schema:  fixture.runNamespaceForTable(),
-		}},
+		}}}},
 	}
 }
 
@@ -1815,7 +1815,7 @@ func runStallOpen() spi.RunOpen {
 		SessionID:    runSessionID,
 		Token:        runToken,
 		ConnectionID: []byte(runConnectionID),
-		OnOpen:       []*pb.Refetch{{Catalog: "def", Schema: runMySQLSchema}},
+		OnOpen:       []*pb.ProxyCommand{&pb.ProxyCommand{Command: &pb.ProxyCommand_Refetch{Refetch: &pb.Refetch{Catalog: "def", Schema: runMySQLSchema}}}},
 	}
 }
 

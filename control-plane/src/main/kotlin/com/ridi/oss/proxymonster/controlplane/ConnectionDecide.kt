@@ -5,7 +5,9 @@ import com.ridi.oss.proxymonster.analyzer.pb.StatementKind
 import com.google.protobuf.ByteString
 import com.ridi.oss.proxymonster.controlplane.authz.AuthzContext
 import com.ridi.oss.proxymonster.grpc.EnfAction
+import com.ridi.oss.proxymonster.grpc.ProxyCommand
 import com.ridi.oss.proxymonster.grpc.Refetch
+import com.ridi.oss.proxymonster.grpc.proxyCommand
 import kotlinx.coroutines.sync.withLock
 
 sealed interface EnforcementOutcome {
@@ -16,7 +18,9 @@ sealed interface EnforcementOutcome {
         val afterStatement: List<Refetch>,
     ) : EnforcementOutcome
 
-    data class BeforeDecide(val commands: List<Refetch>) : EnforcementOutcome
+    data class BeforeDecide(val commands: List<ProxyCommand>) : EnforcementOutcome {
+        constructor(refetches: Collection<Refetch>) : this(refetches.map { proxyCommand { refetch = it } })
+    }
 }
 
 /**
@@ -77,6 +81,9 @@ suspend fun decideConnection(
         systemClassification = core.systemClassification,
         tempColumns = tempColumns,
     )
+    if (ctx.beforeDecide.isNotEmpty()) {
+        return@withConnection EnforcementOutcome.BeforeDecide(ctx.beforeDecide)
+    }
 
     val postGate = core.connectionCatalog.freshnessGate(connection, ctx.referencedSchemas)
     if (postGate.isNotEmpty()) {

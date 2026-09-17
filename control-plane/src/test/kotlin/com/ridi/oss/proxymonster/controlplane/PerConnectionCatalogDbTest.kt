@@ -205,7 +205,7 @@ abstract class PerConnectionCatalogDbContract {
             null,
         )
         val before = assertIs<EnforcementOutcome.BeforeDecide>(outcome)
-        assertEquals(listOf("missing_schema"), before.commands.map { it.schema })
+        assertEquals(listOf("missing_schema"), before.commands.map { it.refetch.schema })
     }
 
 

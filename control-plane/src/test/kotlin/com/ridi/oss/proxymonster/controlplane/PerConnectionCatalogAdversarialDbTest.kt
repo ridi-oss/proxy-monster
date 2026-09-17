@@ -128,7 +128,7 @@ abstract class PerConnectionCatalogAdversarialDbContract {
                 first,
                 "an unheld schema must be requested, not relayed on a catalog that never held it",
             )
-            assertContains(refetch.commands.map { it.schema }, second, "the unheld schema must be the one requested")
+            assertContains(refetch.commands.map { it.refetch.schema }, second, "the unheld schema must be the one requested")
 
             // Satisfy the refetch exactly as the proxy would, then re-decide: the statement now resolves, so
             // the verdict is the column policy's — never the unmasked relay.
@@ -161,7 +161,7 @@ abstract class PerConnectionCatalogAdversarialDbContract {
                 val stale = assertIs<EnforcementOutcome.BeforeDecide>(
                     decide(held, "analyst@example.com", "SELECT id FROM users", listOf(schema)),
                 )
-                assertEquals(listOf(schema), stale.commands.map { it.schema })
+                assertEquals(listOf(schema), stale.commands.map { it.refetch.schema })
 
                 val heldConnection = fixture.core.connectionCatalog.find(held.connectionId)!!
                 val heldHash = heldConnection.held.getValue(namespace(fixture.datasource.effectiveCatalog, schema)).hash.bytes
@@ -219,7 +219,7 @@ abstract class PerConnectionCatalogAdversarialDbContract {
 
                 var after = decide(b, "analyst@example.com", "SELECT id FROM users", listOf(schema))
                 if (after is EnforcementOutcome.BeforeDecide) {
-                    after.commands.forEach { fixture.pushFromTarget(targetB, b.connectionId, it.schema) }
+                    after.commands.forEach { fixture.pushFromTarget(targetB, b.connectionId, it.refetch.schema) }
                     after = decide(b, "analyst@example.com", "SELECT id FROM users", listOf(schema))
                 }
                 val verdict = assertIs<EnforcementOutcome.Verdict>(after)

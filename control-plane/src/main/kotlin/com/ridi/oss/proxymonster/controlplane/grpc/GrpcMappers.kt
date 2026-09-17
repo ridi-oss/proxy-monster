@@ -4,6 +4,7 @@ import com.ridi.oss.proxymonster.controlplane.DecisionContext
 import com.ridi.oss.proxymonster.grpc.Refetch
 import com.ridi.oss.proxymonster.grpc.WireDecision
 import com.ridi.oss.proxymonster.grpc.beforeDecide
+import com.ridi.oss.proxymonster.grpc.ProxyCommand
 import com.ridi.oss.proxymonster.grpc.proxyCommand
 import com.ridi.oss.proxymonster.grpc.verdict
 import com.ridi.oss.proxymonster.grpc.wireDecision
@@ -40,10 +41,15 @@ internal fun DecisionContext.toWireDecision(
             // Echoed back on RunDecision so an execute-under-R run freezes it with the stored result and a
             // later view denies authorization drift (decideResultView). The proxy does not read these.
             resultFingerprint.addAll(ctx.resultFingerprint)
+            ctx.submission?.let { submission = it }
         }
     }
 }
 
-internal fun beforeDecideDecision(commands: List<Refetch>): WireDecision = wireDecision {
-    beforeDecide = beforeDecide { this.commands.addAll(commands.map { proxyCommand { refetch = it } }) }
+internal fun beforeDecideDecision(commands: List<ProxyCommand>): WireDecision = wireDecision {
+    beforeDecide = beforeDecide { this.commands.addAll(commands) }
 }
+
+@JvmName("beforeDecideRefetches")
+internal fun beforeDecideDecision(refetches: List<Refetch>): WireDecision =
+    beforeDecideDecision(refetches.map { proxyCommand { refetch = it } })

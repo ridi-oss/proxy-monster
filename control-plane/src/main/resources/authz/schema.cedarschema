@@ -54,6 +54,18 @@ entity Function in [Datasource, Tag];
 // not catalog-resolved, so this needs no function catalog).
 entity Utility in [Datasource, Tag];
 
+entity NativeResource in [Datasource] = {
+    kind: String,
+    id: String,
+    owner?: User,
+};
+
+action "native.invoke" appliesTo {
+    principal: [User, Role],
+    resource: [NativeResource],
+    context: RequestContext,
+};
+
 // The authenticated principal. Its Cedar parents are the role set RoleSource.rolesOf(principal)
 // resolved (Layer 1); "member of Role" is exactly that "principal in Role::..." relationship.
 entity User in [Role];
@@ -127,6 +139,7 @@ type RequestContext = {
     // On a `result.cap` ask for a returned column only: whether this principal's read of it is masked
     // (result-caps.md). Absent on every other decision.
     masked?: Bool,
+    native_operation?: String,
 };
 
 // Global admin surfaces (App.kt route groups gated via requireAdmin). No per-resource scoping —

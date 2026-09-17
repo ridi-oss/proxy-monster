@@ -59,6 +59,29 @@ func TestAthenaSubmissionEmptyParametersRemainPresent(t *testing.T) {
 	}
 }
 
+func TestNativeResultInstructionsReferenceOriginalContext(t *testing.T) {
+	instructions := &analyzerpb.AthenaNativeInstructions{
+		Action:   analyzerpb.AthenaNativeInstruction_ATHENA_NATIVE_INSTRUCTION_APPLY_ORIGINAL_CONTEXT,
+		Contexts: []*analyzerpb.AthenaContextRef{{ResourceId: "execution-123", ContextId: "context-456"}},
+	}
+	response := &RequestAuthorizationResult{Allowed: true, Instructions: &RequestAuthorizationResult_Athena{Athena: instructions}}
+	encoded, err := proto.Marshal(response)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decoded := new(RequestAuthorizationResult)
+	if err := proto.Unmarshal(encoded, decoded); err != nil {
+		t.Fatal(err)
+	}
+	got := decoded.GetAthena()
+	if !proto.Equal(got, instructions) {
+		t.Fatalf("native result instructions changed: %v", got)
+	}
+	if new(analyzerpb.AthenaNativeInstructions).GetAction() != analyzerpb.AthenaNativeInstruction_ATHENA_NATIVE_INSTRUCTION_UNSPECIFIED {
+		t.Fatal("an absent native instruction must not imply response release")
+	}
+}
+
 func TestAthenaPreparedDefinitionCommandHasItsOwnArm(t *testing.T) {
 	command := &ProxyCommand{Command: &ProxyCommand_FetchAthenaPreparedDefinition{
 		FetchAthenaPreparedDefinition: &analyzerpb.FetchAthenaPreparedDefinition{Workgroup: "reports", Name: "lookup"},

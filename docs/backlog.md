@@ -285,6 +285,11 @@ Fixes for gaps documented in
 
 ## Athena
 
+- Multi-catalog datasources (high priority). Reflect, classify, and refetch
+  every catalog the datasource may read, not only `PM_ATHENA_DEFAULT_CATALOG`,
+  so a cross-catalog query masks instead of denying. The default catalog keeps
+  its role for unqualified names; the reflected set becomes a list, and
+  classification keys already carry the catalog.
 - Add Redis or control-plane DB adapters for the minimal enforcement-context
   cache in the [forwarding design](./athena.md). Preserve owner/instruction
   bindings and expiry; Athena still owns execution state and idempotency.
@@ -295,6 +300,20 @@ Fixes for gaps documented in
 - Measure the context cache and response buffers under load. Peak memory is
   bounded by the 10,000-context cap times record size plus eight concurrent
   result pages, but neither has been measured.
+- Editor: surface a canceled Athena run as CANCELLED rather than a generic
+  failure; stream scan progress (bytes scanned, elapsed) during polling; record
+  bytes scanned on completion and show the estimated cost. Progress and cost
+  share one run-statistics message on the run channel.
+- Feed the resolved result cap into the Athena LIMIT rewrite alongside the
+  editor's row cap.
+- Ship a narrower default `native.invoke` policy: the broad permit lets a viewer
+  create workgroups and other NATIVE-category resources.
+- Athena for Apache Spark (sessions, calculations, notebooks) is refused; adding
+  it needs owner binding for session ids, the way query executions are bound.
+- Report result volume for forwarded `GetQueryResults` pages; the completion
+  event records the accepted submission only.
+- Represent a Glue view as an unproved relation instead of refusing the whole
+  catalog scan.
 
 ## Data plane
 

@@ -173,6 +173,9 @@ Forwarding is not blanket authorization through `datasource.connect`:
 - SQL submission authorizes the actual SQL and ordered parameter expressions.
   `EXECUTE` resolves its Athena-owned prepared statement; storing a definition
   does not authorize executing it. The analyzer/control plane owns SQL meaning.
+  Function calls resolve against a pinned builtin list per engine version
+  (`native-functions/athena/<version>.txt`), since Athena exposes no routine
+  catalog; an unlisted call is unresolved and denies.
 - Result reads cover paginated rows, Athena streaming, and S3 downloads. Each
   data path must apply the required masking or obtain explicit authorization for
   raw disclosure. The client must route streaming and S3 requests through the

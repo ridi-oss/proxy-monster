@@ -20,7 +20,7 @@ import { toast } from 'sonner'
 import { mutate } from 'swr'
 import { refreshDatasource, putClassification } from '@/lib/api/client'
 import { useCatalog, useDatasources, swrKeys } from '@/lib/hooks'
-import { groupCatalogTables, tableKey } from '@/lib/catalog'
+import { connectionEndpoint, groupCatalogTables, tableKey } from '@/lib/catalog'
 import { cn } from '@/lib/utils'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -140,7 +140,7 @@ export function DatasourceCatalog({ id }: { id: number }) {
         </h1>
         {ds && (
           <span className="text-muted-foreground font-mono text-xs">
-            {ds.host}:{ds.port}/{ds.dbName}
+            {connectionEndpoint(ds)}
           </span>
         )}
         {ds && ds.tags.length > 0 && (

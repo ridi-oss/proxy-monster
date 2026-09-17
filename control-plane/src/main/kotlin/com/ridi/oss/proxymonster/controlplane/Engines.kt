@@ -5,6 +5,7 @@ import com.ridi.oss.proxymonster.analyzer.pb.FunctionCatalog
 import com.ridi.oss.proxymonster.analyzer.pb.SessionObservation
 import com.ridi.oss.proxymonster.controlplane.engines.MySqlEngineDefinition
 import com.ridi.oss.proxymonster.controlplane.engines.PostgresEngineDefinition
+import com.ridi.oss.proxymonster.grpc.ConnectionInfo
 import com.ridi.oss.proxymonster.grpc.Engine
 import com.ridi.oss.proxymonster.probe.Dialect
 import kotlinx.serialization.KSerializer
@@ -27,6 +28,8 @@ interface EngineDefinition {
     val dialect: Dialect
     /** Decides a metadata request that has no SQL session behind it (a catalog or table-metadata read). */
     val requestAuthorizer: RequestAuthorizer
+    /** The ConnectionInfo property keys this engine's proxies may publish; anything else is refused at register. */
+    val connectionProperties: Set<String>
     /** The fixed, enumerable system schemas whose content is identical across every datasource of one version. */
     val systemSchemas: Set<String>
     /** True when one connection's catalog measurement answers for every connection of the datasource. */
@@ -58,6 +61,8 @@ interface EngineDefinition {
      * of that name wins). They resolve when written, never expand from `*`, and cannot be classified.
      */
     fun implicitColumns(rows: List<CatalogColumn>): List<CatalogColumn>
+    /** Refuses a ConnectionInfo this engine's proxies must not publish (see [validateNativeConnectionInfo]). */
+    fun validateConnectionInfo(info: ConnectionInfo)
 }
 
 private val engineDefinitions = listOf(MySqlEngineDefinition, PostgresEngineDefinition).associateBy { it.engine }

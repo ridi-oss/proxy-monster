@@ -96,10 +96,10 @@ func TestSessionFromRows(t *testing.T) {
 				t.Fatalf("sessionFromRows: %v", err)
 			}
 			if !reflect.DeepEqual(got.Namespace, tc.wantPath) ||
-				!reflect.DeepEqual(got.GetPostgresShadowedFunctions(), tc.wantNames) ||
-				!got.GetPostgresFunctionShadowingObserved() ||
-				(got.PostgresSystemXidVisible != nil) != tc.wantTypeObserved ||
-				got.GetPostgresSystemXidVisible() != tc.wantXIDVisible {
+				!reflect.DeepEqual(got.GetPostgres().GetShadowedFunctions(), tc.wantNames) ||
+				!got.GetPostgres().GetFunctionShadowingObserved() ||
+				(got.GetPostgres().SystemXidVisible != nil) != tc.wantTypeObserved ||
+				got.GetPostgres().GetSystemXidVisible() != tc.wantXIDVisible {
 				t.Fatalf("namespace probe = %+v, want path %v, shadows %v, type observed/visible %v/%v", got, tc.wantPath, tc.wantNames, tc.wantTypeObserved, tc.wantXIDVisible)
 			}
 		})

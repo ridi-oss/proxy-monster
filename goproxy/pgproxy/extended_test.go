@@ -825,8 +825,8 @@ func TestExtendedExecuteAuthorizesUnderBindTimeFunctionVisibility(t *testing.T) 
 		}
 	}
 	if execute == nil || !reflect.DeepEqual(execute.GetSearchPath(), []string{"pg_catalog", schema}) ||
-		!execute.GetSession().GetPostgresFunctionShadowingObserved() ||
-		!reflect.DeepEqual(execute.GetSession().GetPostgresShadowedFunctions(), []string{"unnest"}) {
+		!execute.GetSession().GetPostgres().GetFunctionShadowingObserved() ||
+		!reflect.DeepEqual(execute.GetSession().GetPostgres().GetShadowedFunctions(), []string{"unnest"}) {
 		t.Fatalf("Execute DecisionRequest = %+v, want bind-time path and observed [unnest]", execute)
 	}
 	assertNoRawPGError(t, client.simpleQuery(t, "ROLLBACK"))
@@ -872,12 +872,12 @@ func TestExtendedExecuteAuthorizesUnderBindTimeTypeVisibility(t *testing.T) {
 		return found
 	}
 	visible := lastRequest(visibleSQL)
-	if visible.GetSession().PostgresSystemXidVisible == nil || !visible.GetSession().GetPostgresSystemXidVisible() {
-		t.Fatalf("visible portal xid visibility = %v, want present true", visible.GetSession().PostgresSystemXidVisible)
+	if visible.GetSession().GetPostgres().SystemXidVisible == nil || !visible.GetSession().GetPostgres().GetSystemXidVisible() {
+		t.Fatalf("visible portal xid visibility = %v, want present true", visible.GetSession().GetPostgres().SystemXidVisible)
 	}
 	shadowed := lastRequest(shadowedSQL)
-	if shadowed.GetSession().PostgresSystemXidVisible == nil || shadowed.GetSession().GetPostgresSystemXidVisible() {
-		t.Fatalf("shadowed portal xid visibility = %v, want present false", shadowed.GetSession().PostgresSystemXidVisible)
+	if shadowed.GetSession().GetPostgres().SystemXidVisible == nil || shadowed.GetSession().GetPostgres().GetSystemXidVisible() {
+		t.Fatalf("shadowed portal xid visibility = %v, want present false", shadowed.GetSession().GetPostgres().SystemXidVisible)
 	}
 	assertNoRawPGError(t, client.simpleQuery(t, "ROLLBACK"))
 }
@@ -1013,7 +1013,7 @@ func TestExtendedBindSnapshotsLiveXIDVisibilityAfterNamespaceDrift(t *testing.T)
 			execute = request
 		}
 	}
-	if execute == nil || execute.GetSession().PostgresSystemXidVisible == nil || execute.GetSession().GetPostgresSystemXidVisible() {
+	if execute == nil || execute.GetSession().GetPostgres().SystemXidVisible == nil || execute.GetSession().GetPostgres().GetSystemXidVisible() {
 		t.Fatalf("Execute DecisionRequest xid visibility = %v, want Bind-time present false", execute)
 	}
 	assertNoRawPGError(t, client.simpleQuery(t, "ROLLBACK"))
@@ -1071,7 +1071,7 @@ func TestExtendedBindSnapshotsLiveXIDVisibilityAfterSameNamespaceInvalidation(t 
 			execute = request
 		}
 	}
-	if execute == nil || execute.GetSession().PostgresSystemXidVisible == nil || execute.GetSession().GetPostgresSystemXidVisible() {
+	if execute == nil || execute.GetSession().GetPostgres().SystemXidVisible == nil || execute.GetSession().GetPostgres().GetSystemXidVisible() {
 		t.Fatalf("Execute DecisionRequest xid visibility = %v, want Bind-time present false", execute)
 	}
 	assertNoRawPGError(t, client.simpleQuery(t, "ROLLBACK"))
@@ -1684,11 +1684,11 @@ func TestExtendedBindCapturesVisibilityChangedAfterParse(t *testing.T) {
 		t.Fatalf("decisions for the statement = %d, want Parse + Execute", len(decisions))
 	}
 	parse, execute := decisions[0], decisions[1]
-	if !reflect.DeepEqual(parse.GetSearchPath(), []string{"pg_catalog", primarySchema}) || len(parse.GetSession().GetPostgresShadowedFunctions()) != 0 {
+	if !reflect.DeepEqual(parse.GetSearchPath(), []string{"pg_catalog", primarySchema}) || len(parse.GetSession().GetPostgres().GetShadowedFunctions()) != 0 {
 		t.Fatalf("Parse DecisionRequest = %+v, want the pre-shadow path and no shadows", parse)
 	}
 	if !reflect.DeepEqual(execute.GetSearchPath(), []string{"pg_catalog", schema}) ||
-		!reflect.DeepEqual(execute.GetSession().GetPostgresShadowedFunctions(), []string{"unnest"}) {
+		!reflect.DeepEqual(execute.GetSession().GetPostgres().GetShadowedFunctions(), []string{"unnest"}) {
 		t.Fatalf("Execute DecisionRequest = %+v, want the Bind-time path and observed [unnest]", execute)
 	}
 }

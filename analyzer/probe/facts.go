@@ -9,6 +9,7 @@ import (
 	sqlglot "github.com/ridi-oss/sqlglot-go"
 	"github.com/ridi-oss/sqlglot-go/dialects"
 	exp "github.com/ridi-oss/sqlglot-go/expressions"
+	"github.com/ridi-oss/sqlglot-go/generator"
 	"github.com/ridi-oss/sqlglot-go/optimizer"
 	"github.com/ridi-oss/sqlglot-go/schema"
 	"github.com/ridi-oss/sqlglot-go/tokens"
@@ -81,7 +82,51 @@ func EmitFacts(sql string, engineConfig *pb.EngineConfig, sch, implicit *schema.
 	if len(stmts) != 1 {
 		return inadmissibleFacts("PARSE", fmt.Sprintf("expected 1 statement, got %d", len(stmts)))
 	}
-	return emitParsedFacts(stmts[0], eng, qualifySchema, validatedNamespace)
+	root, regenerate, stop, err := eng.PrepareStatement(stmts[0])
+	if err != nil {
+		return unanalyzableFacts("VALIDATE", err.Error())
+	}
+	if stop != nil {
+		return stop
+	}
+	facts := emitParsedFacts(root, eng, qualifySchema, validatedNamespace)
+	if !facts.GetResolved() {
+		return facts
+	}
+	// The text the proxy submits: the lineage rewrite (star expansion) re-parsed, else the prepared tree.
+	// The engine may still edit it (Athena's LIMIT cap), so the final text is regenerated from the tree.
+	submission := root
+	if facts.RewrittenSql != nil {
+		if submission, err = singleStatement(facts.GetRewrittenSql(), eng); err != nil {
+			return unanalyzableFacts("LINEAGE", err.Error())
+		}
+		regenerate = true
+	}
+	if eng.FinishSubmission(submission) {
+		regenerate = true
+	}
+	if regenerate {
+		text, err := sqlglot.Generate(submission, eng.Dialect(), generator.Options{})
+		if err != nil {
+			return unanalyzableFacts("LINEAGE", err.Error())
+		}
+		facts.RewrittenSql = &text
+		eng.StampSubmission(facts)
+	}
+	return facts
+}
+
+// singleStatement parses sql as exactly one statement.
+func singleStatement(sql string, eng engine) (exp.Expression, error) {
+	parsed, err := sqlglot.Parse(sql, eng.Dialect())
+	if err != nil {
+		return nil, err
+	}
+	statements := nonNilStatements(parsed)
+	if len(statements) != 1 {
+		return nil, fmt.Errorf("expected 1 statement, got %d", len(statements))
+	}
+	return statements[0], nil
 }
 
 func emitParsedFacts(parsed exp.Expression, eng engine, qualifySchema schema.Schema, validatedNamespace NamespaceConfig) *pb.StatementFacts {

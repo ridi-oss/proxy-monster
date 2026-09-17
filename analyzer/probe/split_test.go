@@ -358,7 +358,7 @@ func TestSplitStatementsHonorsAnsiQuotes(t *testing.T) {
 		Engine:                   pb.Engine_MYSQL,
 		EngineVersion:            "8.0.46",
 		MysqlLowerCaseTableNames: proto.Int32(1),
-		Session:                  &pb.SessionObservation{MysqlAnsiQuotes: true},
+		Session:                  &pb.SessionObservation{Engine: &pb.SessionObservation_Mysql{Mysql: &pb.MySqlSession{AnsiQuotes: true}}},
 	}
 	got, ok := SplitStatements(sql, ansi)
 	if !ok {

@@ -10,6 +10,38 @@ import (
 	"github.com/ridi-oss/sqlglot-go/tokens"
 )
 
+// normalizeRules is the per-engine part of SqlNormalize: the dialect that tokenizes, the dialect that
+// classifies a lexeme as a word, whether the lexer switches to Hive mid-stream (Athena DDL inside a Trino
+// stream), whether unquoted identifiers fold, and whether executable comments are refused.
+type normalizeRules struct {
+	dialect *dialects.Dialect
+	// wordDialect classifies raw lexemes as identifiers or keywords; usually dialect itself.
+	wordDialect *dialects.Dialect
+	// hiveDialect takes over on a HIVE_TOKEN_STREAM marker and wordDialect returns on ';'; nil = never.
+	hiveDialect *dialects.Dialect
+	// foldIdentifiers lowercases unquoted identifiers (PostgreSQL, Athena). MySQL keeps them byte-exact:
+	// lower_case_table_names=0 makes `db.T` and `db.t` distinct tables.
+	foldIdentifiers bool
+	// rejectExecutableComments refuses `/*! */` and `/*+ */`, which MySQL runs as SQL.
+	rejectExecutableComments bool
+}
+
+// normalizeRulesByWireName is the engine registry SqlNormalize consults; a name not here fails closed.
+// Adding an engine means adding its row.
+var normalizeRulesByWireName = map[string]func() normalizeRules{
+	"mysql": func() normalizeRules {
+		d := dialects.MySQL()
+		return normalizeRules{dialect: d, wordDialect: d, rejectExecutableComments: true}
+	},
+	"postgres": func() normalizeRules {
+		d := dialects.Postgres()
+		return normalizeRules{dialect: d, wordDialect: d, foldIdentifiers: true}
+	},
+	"athena": func() normalizeRules {
+		return normalizeRules{dialect: dialects.Athena(), wordDialect: dialects.Trino(), hiveDialect: dialects.Hive(), foldIdentifiers: true}
+	},
+}
+
 // SqlNormalize produces a lexer-only canonical form suitable for exact approval matching.
 // It is total and fail-closed so that no panic can cross the native binding boundary.
 func SqlNormalize(sql, dialect string) (normalized string, ok bool) {
@@ -20,37 +52,43 @@ func SqlNormalize(sql, dialect string) (normalized string, ok bool) {
 		}
 	}()
 
-	if (dialect != "mysql" && dialect != "postgres") || !utf8.ValidString(sql) || strings.IndexByte(sql, 0) >= 0 {
+	if !utf8.ValidString(sql) || strings.IndexByte(sql, 0) >= 0 {
 		return "", false
 	}
-
-	d, err := dialects.GetOrRaise(dialect)
-	if err != nil {
+	newRules, known := normalizeRulesByWireName[dialect]
+	if !known {
 		return "", false
 	}
+	rules := newRules()
+	d := rules.dialect
 	tokenStream, err := sqlglot.Tokenize(sql, d)
 	if err != nil {
 		return "", false
 	}
 
+	for len(tokenStream) > 0 && tokenStream[len(tokenStream)-1].TokenType == tokens.SEMICOLON {
+		tokenStream = tokenStream[:len(tokenStream)-1]
+	}
 	runes := []rune(sql)
 	previousEnd := -1
 	previousWasDot := false
 	lexemes := make([]string, 0, len(tokenStream))
+	wordDialect := rules.wordDialect
 	for _, token := range tokenStream {
+		if rules.hiveDialect != nil && token.TokenType == tokens.HIVE_TOKEN_STREAM {
+			wordDialect = rules.hiveDialect
+			continue
+		}
 		if token.Start < 0 || token.End < token.Start || token.Start <= previousEnd || token.End >= len(runes) {
 			return "", false
 		}
-		if dialect == "mysql" && containsUnsafeMySQLComment(runes[previousEnd+1:token.Start]) {
-			return "", false
-		}
-		if dialect == "mysql" && token.TokenType == tokens.HINT {
+		if rules.rejectExecutableComments && (containsUnsafeMySQLComment(runes[previousEnd+1:token.Start]) || token.TokenType == tokens.HINT) {
 			return "", false
 		}
 
 		raw := string(runes[token.Start : token.End+1])
-		if isWordToken(raw, token.TokenType, d) {
-			if dialect == "postgres" {
+		if isWordToken(raw, token.TokenType, wordDialect) {
+			if rules.foldIdentifiers {
 				raw = d.FoldIdentifierName(raw, false)
 			} else if d.IsReservedKeyword(raw) && !previousWasDot {
 				// A reserved word immediately after `.` is an unquoted qualified identifier, not a
@@ -64,14 +102,14 @@ func SqlNormalize(sql, dialect string) (normalized string, ok bool) {
 		lexemes = append(lexemes, raw)
 		previousEnd = token.End
 		previousWasDot = token.TokenType == tokens.DOT
+		if rules.hiveDialect != nil && token.TokenType == tokens.SEMICOLON {
+			wordDialect = rules.wordDialect
+		}
 	}
-	if dialect == "mysql" && containsUnsafeMySQLComment(runes[previousEnd+1:]) {
+	if rules.rejectExecutableComments && containsUnsafeMySQLComment(runes[previousEnd+1:]) {
 		return "", false
 	}
 
-	for len(lexemes) > 0 && tokenStream[len(lexemes)-1].TokenType == tokens.SEMICOLON {
-		lexemes = lexemes[:len(lexemes)-1]
-	}
 	if len(lexemes) == 0 {
 		return "", false
 	}

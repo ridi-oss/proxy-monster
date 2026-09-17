@@ -531,7 +531,7 @@ func mysqlSession(namespace []string, ansiQuotes bool) engine.SessionObservation
 	return engine.SessionObservation{
 		CurrentCatalog:     "def",
 		Namespace:          namespace,
-		SessionObservation: &enginepb.SessionObservation{MysqlAnsiQuotes: ansiQuotes},
+		SessionObservation: &enginepb.SessionObservation{Engine: &enginepb.SessionObservation_Mysql{Mysql: &enginepb.MySqlSession{AnsiQuotes: ansiQuotes}}},
 	}
 }
 

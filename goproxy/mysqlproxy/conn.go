@@ -325,7 +325,7 @@ func (s *Server) handleConn(clientConn net.Conn) {
 				obs, err := probeSession(targetDbConn, deprecateEOF)
 				if err == nil {
 					frozen = append([]string{}, obs.Namespace...)
-					frozenAnsiQuotes = obs.GetMysqlAnsiQuotes()
+					frozenAnsiQuotes = obs.GetMysql().GetAnsiQuotes()
 				}
 				return obs, err
 			})

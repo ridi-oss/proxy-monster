@@ -49,7 +49,7 @@ service ControlPlane {
   // Per-query enforcement decision. Takes the RAW token, re-validated +
   // re-resolved server-side every call — never a client-cached principal.
   rpc Decide(DecisionRequest) returns (WireDecision);
-  // Metadata authorization without opening a database session or allocating a connection catalog.
+  // Metadata or provider-native admission without opening a database session or allocating a connection catalog.
   rpc AuthorizeRequest(RequestAuthorization) returns (RequestAuthorizationResult);
   // Per-connection schema fragment push on the enforcement channel.
   rpc PushSchemaFragment(SchemaFragmentPush) returns (SchemaFragmentAck);
@@ -162,6 +162,9 @@ message RequestAuthorization {
   oneof operation {
     ReadCatalog read_catalog = 4;
     ReadTableMetadata read_table_metadata = 5;
+    // A provider-native API call, described by that engine's own message; the engine's request authorizer
+    // decides it. An arm the datasource's engine does not own is denied.
+    proxymonster.athena.v1.AthenaNativeDescriptor athena = 6;
   }
 }
 
@@ -172,6 +175,11 @@ message RequestAuthorizationResult {
   string deny_reason = 2;
   repeated string effective_roles = 3;
   string principal = 4;
+  // For a native operation, what the proxy must do with the call; allowed never grants arbitrary response
+  // bytes. Set exactly when the request's operation was a native arm, in that engine's own message.
+  oneof instructions {
+    proxymonster.athena.v1.AthenaNativeInstructions athena = 5;
+  }
 }
 
 // ---- Catalog ----

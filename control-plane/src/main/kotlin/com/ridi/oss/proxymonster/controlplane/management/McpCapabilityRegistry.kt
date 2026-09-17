@@ -48,6 +48,7 @@ object McpCapabilityRegistry {
         AuthzAction.RESULT_READ_UNMASKED,
         AuthzAction.RESULT_READ_MASKED,
         AuthzAction.RESULT_CAP,
+        AuthzAction.NATIVE_INVOKE,
         AuthzAction.EXCEPTION_UNANALYZABLE,
         AuthzAction.EXCEPTION_UNMASKABLE,
     )

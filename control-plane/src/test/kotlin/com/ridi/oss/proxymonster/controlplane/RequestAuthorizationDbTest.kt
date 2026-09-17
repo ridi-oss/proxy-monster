@@ -8,6 +8,7 @@ import com.ridi.oss.proxymonster.controlplane.grpc.GrpcServer
 import com.ridi.oss.proxymonster.controlplane.support.SharedPostgres
 import com.ridi.oss.proxymonster.controlplane.support.requireDockerOrSkip
 import com.ridi.oss.proxymonster.grpc.ControlPlaneGrpcKt
+import com.ridi.oss.proxymonster.athena.pb.AthenaNativeDescriptor
 import com.ridi.oss.proxymonster.grpc.RequestAuthorization
 import com.ridi.oss.proxymonster.grpc.objectRef
 import com.ridi.oss.proxymonster.grpc.readCatalog
@@ -222,6 +223,33 @@ class RequestAuthorizationDbTest {
         }
         assertEquals(0, core.connectionCatalog.connectionCount())
         assertEquals(0, core.connectionCatalog.poolSize())
+    }
+
+    @Test
+    fun `native RPC refuses task tokens and relational engines refuse its descriptor`() {
+        val principal = principal()
+        val own = role()
+        val assumed = role()
+        core.policyStore.createAssignment(RoleAssignmentInput(principal, own.id))
+        val ds = core.datasourceStore.create(DatasourceInput("native-${UUID.randomUUID()}", engine = "mysql", dbName = "app"))
+        val request = RequestAuthorization.newBuilder().setDatasourceName(ds.name)
+            .setAthena(AthenaNativeDescriptor.newBuilder().setService("athena").setOperation("ListWorkGroups"))
+        for (kind in listOf(TokenKind.EDITOR, TokenKind.APPROVER_EXEC)) {
+            val token = issue(kind, principal, listOf(assumed.name)).token
+            val failure = assertFailsWith<StatusException> { runBlocking { stub.authorizeRequest(request.setToken(token).build()) } }
+            assertEquals(Status.Code.UNAUTHENTICATED, failure.status.code)
+        }
+        val token = issue(TokenKind.USER, principal, listOf("system:admin")).token
+        val result = runBlocking { stub.authorizeRequest(request.setToken(token).build()) }
+        assertFalse(result.allowed)
+        assertEquals(setOf(own.name), result.effectiveRolesList.toSet())
+        core.userGroupStore.createUser(
+            AppUserInput(principal = principal), core.tokenStore, core.accessStore, PrincipalSessionStore(database, null),
+        )
+        core.userGroupStore.setUserActive(principal, false)
+        val failure = assertFailsWith<StatusException> { runBlocking { stub.authorizeRequest(request.build()) } }
+        assertEquals(Status.Code.UNAUTHENTICATED, failure.status.code)
+        assertEquals(0, core.connectionCatalog.connectionCount())
     }
 
     private fun assertUnauthenticated(token: String) {

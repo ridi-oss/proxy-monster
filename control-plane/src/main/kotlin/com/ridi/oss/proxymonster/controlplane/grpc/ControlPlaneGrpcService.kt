@@ -31,9 +31,11 @@ import com.ridi.oss.proxymonster.controlplane.decideConnection
 import com.ridi.oss.proxymonster.controlplane.inTx
 import com.ridi.oss.proxymonster.controlplane.systemSchemas
 import com.ridi.oss.proxymonster.controlplane.resolveRequestIdentity
+import com.ridi.oss.proxymonster.controlplane.authorizeBounded
+import com.ridi.oss.proxymonster.controlplane.RequestAdmission
+import com.ridi.oss.proxymonster.controlplane.deniedAdmission
 import com.ridi.oss.proxymonster.grpc.RequestAuthorization
 import com.ridi.oss.proxymonster.grpc.RequestAuthorizationResult
-import com.ridi.oss.proxymonster.grpc.requestAuthorizationResult
 import com.google.protobuf.Empty
 import com.ridi.oss.proxymonster.grpc.CatalogRequest
 import com.ridi.oss.proxymonster.grpc.CatalogResponse
@@ -192,21 +194,25 @@ class ControlPlaneGrpcService(
     override suspend fun authorizeRequest(request: RequestAuthorization): RequestAuthorizationResult {
         val resolved = core.resolveRequestIdentity(request.token, request.clientAddr.ifBlank { null })
         if (resolved.kind != TokenKind.SESSION && resolved.kind != TokenKind.USER) {
-            throw StatusException(Status.UNAUTHENTICATED.withDescription("metadata requires a native credential"))
+            throw StatusException(Status.UNAUTHENTICATED.withDescription("request authorization requires a wire credential"))
         }
         val ds = core.datasourceStore.getByName(request.datasourceName)
             ?: throw StatusException(Status.NOT_FOUND.withDescription("unknown datasource"))
         val roles = resolved.effectiveRoles
-        val allowed = try {
-            ds.engine.definition.requestAuthorizer.authorize(request, ds, resolved.identity.principal, roles, resolved.context, core.authz)
+        val admission = try {
+            ds.engine.definition.requestAuthorizer.authorizeBounded(request, ds, resolved.identity.principal, roles, resolved.context, core.authz)
         } catch (_: ManagementException) {
-            false
+            request.deniedAdmission()
         }
-        return requestAuthorizationResult {
-            this.allowed = allowed
-            if (allowed) principal = resolved.identity.principal else denyReason = "datasource.not_connectable"
-            effectiveRoles.addAll(roles)
+        val result = RequestAuthorizationResult.newBuilder().setAllowed(admission is RequestAdmission.Allowed).addAllEffectiveRoles(roles)
+        when (admission) {
+            is RequestAdmission.Allowed -> {
+                result.principal = resolved.identity.principal
+                admission.instructions?.applyTo(result)
+            }
+            is RequestAdmission.Denied -> result.denyReason = admission.denyCode
         }
+        return result.build()
     }
 
     override suspend fun decide(request: DecisionRequest): WireDecision {

@@ -12,6 +12,7 @@ syntax = "proto3";
 package proxymonster.analyzer.v1;
 
 import "engine.proto";
+import "athena.proto";
 
 option java_package = "com.ridi.oss.proxymonster.analyzer.pb";
 option java_multiple_files = true;
@@ -97,6 +98,9 @@ message EngineConfig {
   // What the proxy observed on the target session right before this statement. Forwarded by the
   // control plane exactly as the proxy sent it on DecisionRequest.session.
   SessionObservation session = 8;
+  // The Athena request scope (workgroup, execution parameters, fetched prepared definitions, editor
+  // row cap); set only for ATHENA. Forwarded unchanged from DecisionRequest.athena.
+  proxymonster.athena.v1.AthenaSqlContext athena = 9;
 }
 
 // Per-statement facts about the live target session that change how the analyzer parses or resolves
@@ -515,6 +519,10 @@ message StatementFacts {
   // write's payload does not either, only its RETURNING does (with no ordinals, since output_columns is
   // empty for a write); an EXPLAIN returns a plan, so it lists none.
   repeated ReturnedColumn returned_columns = 20;
+  // Missing trusted definition: fetch it and retry the same analysis, never assume it is harmless.
+  proxymonster.athena.v1.AthenaPreparedDefinitionNeed athena_prepared_definition_need = 21;
+  // The execution parameters that go with rewritten_sql on Athena; absent means keep the client's list.
+  proxymonster.athena.v1.AthenaSubmission athena_submission = 22;
 }
 
 message ReturnedColumn {

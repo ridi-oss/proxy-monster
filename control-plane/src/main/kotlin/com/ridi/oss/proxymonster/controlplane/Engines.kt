@@ -25,6 +25,8 @@ interface EngineDefinition {
     val wireName: String
     /** The analyzer SQL dialect. */
     val dialect: Dialect
+    /** Decides a metadata request that has no SQL session behind it (a catalog or table-metadata read). */
+    val requestAuthorizer: RequestAuthorizer
     /** The fixed, enumerable system schemas whose content is identical across every datasource of one version. */
     val systemSchemas: Set<String>
     /** True when one connection's catalog measurement answers for every connection of the datasource. */

@@ -33,6 +33,7 @@ type Dialect int
 const (
 	MySQL Dialect = iota
 	Postgres
+	Athena
 	// invalidDialect is the fail-closed value ParseDialect returns for an unrecognized engine; both
 	// IsMySQL and IsPostgres report false for it.
 	invalidDialect Dialect = -1
@@ -48,8 +49,10 @@ func ParseDialect(raw string) (Dialect, error) {
 		return MySQL, nil
 	case "postgres":
 		return Postgres, nil
+	case "athena":
+		return Athena, nil
 	default:
-		return invalidDialect, fmt.Errorf("unsupported engine %q (expected mysql or postgres)", raw)
+		return invalidDialect, fmt.Errorf("unsupported engine %q (expected mysql, postgres, or athena)", raw)
 	}
 }
 
@@ -60,6 +63,8 @@ func (d Dialect) WireName() string {
 		return "mysql"
 	case Postgres:
 		return "postgres"
+	case Athena:
+		return "athena"
 	default:
 		return fmt.Sprintf("Dialect(%d)", int(d))
 	}
@@ -91,6 +96,8 @@ func (d Dialect) Proto() enginepb.Engine {
 		return enginepb.Engine_MYSQL
 	case Postgres:
 		return enginepb.Engine_POSTGRES
+	case Athena:
+		return enginepb.Engine_ATHENA
 	default:
 		return enginepb.Engine_ENGINE_UNSPECIFIED
 	}
@@ -119,6 +126,8 @@ func (d Dialect) DefaultProxyPort() int {
 		return 6033
 	case Postgres:
 		return 6432
+	case Athena:
+		return 6443
 	default:
 		return 6033
 	}
@@ -133,6 +142,8 @@ func (d Dialect) DefaultTargetPort() int {
 		return 3307
 	case Postgres:
 		return 5433
+	case Athena:
+		return 443
 	default:
 		return 3307
 	}

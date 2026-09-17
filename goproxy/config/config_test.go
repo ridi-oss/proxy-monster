@@ -29,6 +29,7 @@ func testRegistry() spi.Registry {
 	return spi.MustRegistry(
 		configTestProvider{dialect: engine.MySQL},
 		configTestProvider{dialect: engine.Postgres},
+		configTestProvider{dialect: engine.Athena},
 	)
 }
 
@@ -410,8 +411,8 @@ func TestValidateRejectsUnsupportedEngine(t *testing.T) {
 	}
 }
 
-func TestValidateAcceptsMySQLAndPostgres(t *testing.T) {
-	for _, name := range []string{"mysql", "postgres"} {
+func TestValidateAcceptsRegisteredEngines(t *testing.T) {
+	for _, name := range []string{"mysql", "postgres", "athena"} {
 		dialect, _ := engine.ParseDialect(name)
 		provider, _ := testRegistry().For(dialect)
 		cfg := &Config{Engine: name, Dialect: dialect, Provider: provider, DatasourceName: "ds"}

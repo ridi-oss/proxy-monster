@@ -7,11 +7,6 @@ import (
 	"github.com/ridi-oss/proxy-monster/pmon/driver"
 )
 
-// Provider is the MySQL engine.
-type Provider struct{}
-
-func (Provider) Engine() string { return "mysql" }
-
 func (Provider) FormatConnectionString(format driver.Format, t driver.Target, opts driver.Options) string {
 	switch format {
 	case driver.JDBC:

@@ -43,6 +43,7 @@ import (
 
 	"github.com/ridi-oss/proxy-monster/mysqlwire"
 	"github.com/ridi-oss/proxy-monster/pmon/conn"
+	"github.com/ridi-oss/proxy-monster/pmon/driver"
 )
 
 // The fixed identity the broker checks locally. The values are cosmetic to the upstream (the stub
@@ -290,15 +291,15 @@ func startBroker(t *testing.T, proxyAddr string) int {
 }
 
 // clientTarget is the pmon connection Target for the running broker, in the format a given client wants.
-func clientTarget(port int) conn.Target {
-	return conn.Target{Engine: "mysql", DbName: itDatabase, Port: port, User: itPrincipal, Password: itLocalPassword}
+func clientTarget(port int) driver.Target {
+	return driver.Target{Engine: "mysql", DbName: itDatabase, Port: port, User: itPrincipal, Password: itLocalPassword}
 }
 
 // forContainer rewrites the loopback host in a pmon connection string to the alias a client container
 // uses to reach the test host. Everything else — port, credentials, parameters — is exactly what
 // `pmon show` prints.
 func forContainer(s string) string {
-	return strings.ReplaceAll(s, conn.Host, dockerHostAlias)
+	return strings.ReplaceAll(s, driver.Host, dockerHostAlias)
 }
 
 // harness starts the backend, proxy stub, and broker once and hands tests the broker port.
@@ -376,7 +377,7 @@ func mustContain(t *testing.T, logs, want string) {
 // serves directly, and selects its database — the whole point being that the printed CLI string runs as-is.
 func TestClientInteropMySQLCLI(t *testing.T) {
 	h := newHarness(t)
-	cli := forContainer(conn.String(conn.CLI, clientTarget(h.brokerPort)))
+	cli := forContainer(conn.String(driver.CLI, clientTarget(h.brokerPort)))
 	// The printed command plus a query that proves auth + the right schema + the seed row.
 	script := cli + ` -e "SELECT CONCAT('DB=', DATABASE()); SELECT CONCAT('ROW=', name) FROM members WHERE id=1;"`
 	logs := runClient(t, testcontainers.ContainerRequest{
@@ -447,7 +448,7 @@ func TestClientInteropJDBC(t *testing.T) {
 // sub-protocol, so it gets an equivalent URL over the same host/port/credentials.
 func jdbcURL(scheme string, port int) string {
 	if scheme == "mysql" {
-		return forContainer(conn.String(conn.JDBC, clientTarget(port)))
+		return forContainer(conn.String(driver.JDBC, clientTarget(port)))
 	}
 	tgt := clientTarget(port)
 	return fmt.Sprintf("jdbc:%s://%s:%d/%s?user=%s&password=%s", scheme, dockerHostAlias, port, tgt.DbName, tgt.User, tgt.Password)
@@ -456,7 +457,7 @@ func jdbcURL(scheme string, port int) string {
 // TestClientInteropGoDriver drives go-sql-driver/mysql against the exact `pmon show --go-dsn` DSN.
 func TestClientInteropGoDriver(t *testing.T) {
 	h := newHarness(t)
-	dsn := forContainer(conn.String(conn.GoDSN, clientTarget(h.brokerPort)))
+	dsn := forContainer(conn.String(driver.GoDSN, clientTarget(h.brokerPort)))
 	logs := runClient(t, testcontainers.ContainerRequest{
 		Image: "alpine:3.20",
 		Files: []testcontainers.ContainerFile{{HostFilePath: buildGoClient(t), ContainerFilePath: "/goclient", FileMode: 0o755}},
@@ -484,7 +485,7 @@ const nodeProbeSource = `const mysql = require('mysql2/promise');
 // URI directly). mysql2 is npm-installed at run time, so this leg needs outbound network.
 func TestClientInteropNode(t *testing.T) {
 	h := newHarness(t)
-	uri := forContainer(conn.String(conn.URL, clientTarget(h.brokerPort)))
+	uri := forContainer(conn.String(driver.URL, clientTarget(h.brokerPort)))
 	probe := writeTempFile(t, "probe.js", nodeProbeSource)
 	script := "cd /work && npm install --no-save --no-audit --no-fund mysql2@3 >/tmp/npm.log 2>&1 && node probe.js"
 	logs := runClient(t, testcontainers.ContainerRequest{

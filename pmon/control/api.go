@@ -5,7 +5,7 @@
 // Transport is a Unix socket under a per-user 0700 directory, so only the same OS user can connect.
 package control
 
-// Status is the daemon's whole observable state, and the only thing a peer renders. Live listener facts come
+// Status is the daemon's whole observable state, and the only thing a peer formats. Live listener facts come
 // from the daemon's own maps, never from the sticky port map on disk — a revoked datasource keeps its port
 // assignment but stops being brokered, so counting the config would over-report.
 type Status struct {

@@ -8,6 +8,7 @@ import (
 
 	"github.com/ridi-oss/proxy-monster/pmon/conn"
 	"github.com/ridi-oss/proxy-monster/pmon/control"
+	"github.com/ridi-oss/proxy-monster/pmon/driver"
 )
 
 // showCmd prints ONE datasource's local connection string, in the flavor the target client wants:
@@ -63,27 +64,27 @@ func (c *showCmd) Run() error {
 		return fmt.Errorf("datasource %q is not brokered locally: %s", found.Name, found.Reason)
 	}
 
-	fmt.Println(conn.StringWithOptions(c.format(), conn.Target{
+	fmt.Println(conn.StringWithOptions(c.format(), driver.Target{
 		Engine:   found.Engine,
 		DbName:   found.DbName,
 		Port:     found.LocalPort,
 		User:     s.Principal,
 		Password: s.LocalPassword,
-	}, conn.Options{JDBCTruncationDiagnostics: c.JDBCTruncationDiagnostics}))
+	}, driver.Options{JDBCTruncationDiagnostics: c.JDBCTruncationDiagnostics}))
 	return nil
 }
 
-// format maps the mutually-exclusive flags onto a [conn.Format], defaulting to a driver URI.
-func (c *showCmd) format() conn.Format {
+// format maps the mutually-exclusive flags onto a [driver.Format], defaulting to a driver URI.
+func (c *showCmd) format() driver.Format {
 	switch {
 	case c.JDBC:
-		return conn.JDBC
+		return driver.JDBC
 	case c.GoDSN:
-		return conn.GoDSN
+		return driver.GoDSN
 	case c.CLI:
-		return conn.CLI
+		return driver.CLI
 	default:
-		return conn.URL
+		return driver.URL
 	}
 }
 

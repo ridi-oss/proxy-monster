@@ -86,7 +86,7 @@ func (statusCmd) Run() error {
 	return nil
 }
 
-// expiryLine renders an RFC3339 timestamp as an absolute time plus how long is left, so "is this about to
+// expiryLine formats an RFC3339 timestamp as an absolute time plus how long is left, so "is this about to
 // break?" is answerable at a glance.
 func expiryLine(ts string) string {
 	if ts == "" {

@@ -20,7 +20,7 @@ func SqlNormalize(sql, dialect string) (normalized string, ok bool) {
 		}
 	}()
 
-	if (dialect != "mysql" && dialect != "postgres") || !utf8.ValidString(sql) || strings.IndexByte(sql, 0) >= 0 {
+	if (dialect != "mysql" && dialect != "postgres" && dialect != "athena") || !utf8.ValidString(sql) || strings.IndexByte(sql, 0) >= 0 {
 		return "", false
 	}
 
@@ -33,11 +33,22 @@ func SqlNormalize(sql, dialect string) (normalized string, ok bool) {
 		return "", false
 	}
 
+	for len(tokenStream) > 0 && tokenStream[len(tokenStream)-1].TokenType == tokens.SEMICOLON {
+		tokenStream = tokenStream[:len(tokenStream)-1]
+	}
 	runes := []rune(sql)
 	previousEnd := -1
 	previousWasDot := false
 	lexemes := make([]string, 0, len(tokenStream))
+	wordDialect := d
+	if dialect == "athena" {
+		wordDialect = dialects.Trino()
+	}
 	for _, token := range tokenStream {
+		if dialect == "athena" && token.TokenType == tokens.HIVE_TOKEN_STREAM {
+			wordDialect = dialects.Hive()
+			continue
+		}
 		if token.Start < 0 || token.End < token.Start || token.Start <= previousEnd || token.End >= len(runes) {
 			return "", false
 		}
@@ -49,8 +60,8 @@ func SqlNormalize(sql, dialect string) (normalized string, ok bool) {
 		}
 
 		raw := string(runes[token.Start : token.End+1])
-		if isWordToken(raw, token.TokenType, d) {
-			if dialect == "postgres" {
+		if isWordToken(raw, token.TokenType, wordDialect) {
+			if dialect == "postgres" || dialect == "athena" {
 				raw = d.FoldIdentifierName(raw, false)
 			} else if d.IsReservedKeyword(raw) && !previousWasDot {
 				// A reserved word immediately after `.` is an unquoted qualified identifier, not a
@@ -64,14 +75,14 @@ func SqlNormalize(sql, dialect string) (normalized string, ok bool) {
 		lexemes = append(lexemes, raw)
 		previousEnd = token.End
 		previousWasDot = token.TokenType == tokens.DOT
+		if dialect == "athena" && token.TokenType == tokens.SEMICOLON {
+			wordDialect = dialects.Trino()
+		}
 	}
 	if dialect == "mysql" && containsUnsafeMySQLComment(runes[previousEnd+1:]) {
 		return "", false
 	}
 
-	for len(lexemes) > 0 && tokenStream[len(lexemes)-1].TokenType == tokens.SEMICOLON {
-		lexemes = lexemes[:len(lexemes)-1]
-	}
 	if len(lexemes) == 0 {
 		return "", false
 	}

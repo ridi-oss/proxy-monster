@@ -26,6 +26,12 @@ func AnalyzeStatement(req *pb.AnalyzeRequest) (*pb.StatementFacts, error) {
 		return nil, err
 	}
 	namespace.EngineCatalog = engineCatalogFromProto(req.GetCatalog().GetFunctions(), namespace.SearchPath)
+	if req.GetEngineConfig().GetEngine() == pb.Engine_ATHENA {
+		return emitAthenaFacts(req, sch, implicit, namespace), nil
+	}
+	if req.GetEngineConfig().GetAthena() != nil {
+		return unanalyzableFacts("VALIDATE", "Athena scope requires the Athena engine"), nil
+	}
 	return EmitFacts(req.GetSql(), req.GetEngineConfig(), sch, implicit, namespace), nil
 }
 

@@ -138,6 +138,8 @@ func createEngine(config *pb.EngineConfig) (engine, error) {
 		return newMySQLEngine(config)
 	case pb.Engine_POSTGRES:
 		return newPostgresEngine(config)
+	case pb.Engine_ATHENA:
+		return newAthenaEngine(config)
 	default:
 		return nil, fmt.Errorf("unsupported engine %s", config.GetEngine())
 	}

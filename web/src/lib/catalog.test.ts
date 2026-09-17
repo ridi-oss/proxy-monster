@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { CatalogColumn, Datasource } from './api/types'
-import { currentCatalog, groupCatalogTables, schemaKey, tableKey } from './catalog'
+import { connectionEndpoint, currentCatalog, groupCatalogTables, schemaKey, tableKey } from './catalog'
 
 const datasource: Datasource = {
   id: 1, name: 'test', engine: 'mysql', host: 'db.example.test', port: 3306,
@@ -50,5 +50,14 @@ describe('legacy datasource metadata', () => {
   it('does not replace explicit catalog values, including blank', () => {
     expect(currentCatalog({ ...datasource, currentCatalog: 'other' })).toBe('other')
     expect(currentCatalog({ ...datasource, currentCatalog: '' })).toBe('')
+  })
+
+  it('prefers published connection metadata without serializing properties', () => {
+    expect(connectionEndpoint({ ...datasource, connectionInfo: {
+      endpoint: 'db.example.test:3306/app', properties: { note: '<script>text</script>' },
+    } })).toBe('db.example.test:3306/app')
+    expect(connectionEndpoint(datasource)).toBe('db.example.test:3306/app')
+    expect(connectionEndpoint({ ...datasource, engine: 'other' })).toBeNull()
+    expect(connectionEndpoint({ ...datasource, connectionInfo: { endpoint: '', properties: {} } })).toBe('')
   })
 })

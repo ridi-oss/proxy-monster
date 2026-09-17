@@ -20,6 +20,7 @@ import {
 import { toast } from 'sonner'
 import { mutate } from 'swr'
 import { refreshDatasource, testDatasource } from '@/lib/api/client'
+import { connectionEndpoint } from '@/lib/catalog'
 import { useDatasources, useDatasourcesLive, swrKeys } from '@/lib/hooks'
 import type { Datasource, RefreshResult, TestResult } from '@/lib/api/types'
 import { Badge } from '@/components/ui/badge'
@@ -244,7 +245,7 @@ export default function DatasourcesPage() {
                       {/* Connection string */}
                       <TableCell>
                         <span className="text-muted-foreground font-mono text-xs">
-                          {ds.host}:{ds.port}/{ds.dbName}
+                          {connectionEndpoint(ds)}
                         </span>
                       </TableCell>
 

@@ -13,6 +13,8 @@ import com.ridi.oss.proxymonster.controlplane.Datasource
 import com.ridi.oss.proxymonster.controlplane.EngineDefinition
 import com.ridi.oss.proxymonster.controlplane.MetadataRequestAuthorizer
 import com.ridi.oss.proxymonster.controlplane.RequestAuthorizer
+import com.ridi.oss.proxymonster.controlplane.validateNativeConnectionInfo
+import com.ridi.oss.proxymonster.grpc.ConnectionInfo
 import com.ridi.oss.proxymonster.grpc.Engine
 import com.ridi.oss.proxymonster.probe.Dialect
 
@@ -21,6 +23,7 @@ internal object PostgresEngineDefinition : EngineDefinition {
     override val wireName = "postgres"
     override val dialect = Dialect.POSTGRES
     override val requestAuthorizer: RequestAuthorizer = MetadataRequestAuthorizer
+    override val connectionProperties: Set<String> = emptySet()
     override val systemSchemas = setOf("pg_catalog", "information_schema")
     // pg_temp_* schemas and transactional DDL depend on the connection.
     override val catalogIsConnectionIndependent = false
@@ -46,6 +49,7 @@ internal object PostgresEngineDefinition : EngineDefinition {
         return version to raw.contains("aurora", ignoreCase = true)
     }
 
+    override fun validateConnectionInfo(info: ConnectionInfo) = validateNativeConnectionInfo(info, connectionProperties)
     override fun manifestSeries(version: String): String = version.substringBefore(".")
 
     // {"pg_catalog": [abs], "public": [add_tax], "pg_temp_3": [x]} -> builtins = [abs, coalesce, ...] (grammar

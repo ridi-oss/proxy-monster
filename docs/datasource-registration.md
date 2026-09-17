@@ -70,6 +70,12 @@ message RegisterRequest {
   reserved 8, 9;                                // a leaf SHA-256 clients pinned against, and the leaf alone
   optional string advertise_cert_chain = 10;    // PEM chain to trust for this proxy, leaf first; absent = no opinion, present-blank = clear
   bool advertise_wire_tls = 11;                 // whether this proxy serves client-facing TLS at all
+  int32 protocol_version = 12;
+  ConnectionInfo connection_info = 13;          // nonsecret endpoint + properties for clients; absent = keep stored
+}
+message ConnectionInfo {
+  string endpoint = 1;
+  map<string, string> properties = 2;
 }
 ```
 
@@ -104,6 +110,12 @@ that never had TLS.
 `advertiseCertChain`, `advertiseWireTls`). That is how a client finds them:
 `pmon` lists `?connectable=true`, and an entry carrying an `advertiseAddr` is
 enough to open a local broker port for that datasource.
+
+`connection_info` is what a client needs beyond the address: an endpoint plus
+engine-defined properties, nonsecret by contract. An absent message keeps the
+stored value; an explicit empty message clears it. The engine definition
+validates the accepted fields, and a non-connectable listing omits it along with
+the other connection material.
 
 Only a proxy sets them; the admin REST create/update does not. A proxy with wire
 TLS fails to boot only if its certificate cannot be READ — whether the chain is

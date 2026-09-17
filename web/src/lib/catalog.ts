@@ -24,6 +24,13 @@ export function currentCatalog(datasource: Datasource | undefined): string | nul
   }
 }
 
+/** What the console shows as the datasource endpoint: the published metadata when a proxy sent it, else host:port/db. */
+export function connectionEndpoint(datasource: Datasource): string | null {
+  if (datasource.connectionInfo) return datasource.connectionInfo.endpoint
+  if (datasource.engine !== 'mysql' && datasource.engine !== 'postgres') return null
+  return `${datasource.host}:${datasource.port}/${datasource.dbName}`
+}
+
 export function groupCatalogTables(columns: CatalogColumn[]) {
   const multipleCatalogs = new Set(columns.map((column) => column.catalog)).size > 1
   const groups = new Map<string, TableIdentity & {

@@ -74,6 +74,18 @@ type engine interface {
 	// RewriteStatement optionally rewrites a parsed statement into the SQL the proxy should relay to the
 	// target DB, returning "" to leave it unchanged.
 	RewriteStatement(root exp.Expression) string
+	// PrepareStatement runs before classification on the single parsed statement: an engine that binds
+	// request parameters into the tree, or resolves a server-side prepared statement into its body, does it
+	// here. It returns the statement to analyze, whether the proxy must submit regenerated text, and either
+	// an error (fail closed) or facts that end the analysis (a request for more input).
+	PrepareStatement(root exp.Expression) (prepared exp.Expression, regenerate bool, stop *pb.StatementFacts, err error)
+	// FinishSubmission runs after a resolved analysis on the tree the proxy will submit (the lineage rewrite
+	// re-parsed, or the prepared original) and may edit it (a row cap); true means the text must be
+	// regenerated.
+	FinishSubmission(submission exp.Expression) bool
+	// StampSubmission records on facts what the proxy needs beside the regenerated text (Athena: the
+	// execution-parameter list that goes with it). Called only when the text was regenerated.
+	StampSubmission(facts *pb.StatementFacts)
 	// CommandPassthrough reports whether a statement that DEGRADED to an unstructured Command (the
 	// structured node forms never reach it) may relay as a benign session/metadata passthrough for
 	// this engine. False = fail closed.
@@ -138,6 +150,8 @@ func createEngine(config *pb.EngineConfig) (engine, error) {
 		return newMySQLEngine(config)
 	case pb.Engine_POSTGRES:
 		return newPostgresEngine(config)
+	case pb.Engine_ATHENA:
+		return newAthenaEngine(config)
 	default:
 		return nil, fmt.Errorf("unsupported engine %s", config.GetEngine())
 	}
@@ -150,12 +164,6 @@ type mysqlEngine struct {
 }
 
 func newMySQLEngine(config *pb.EngineConfig) (*mysqlEngine, error) {
-	if len(config.GetSession().GetPostgresShadowedFunctions()) != 0 || config.GetSession().GetPostgresFunctionShadowingObserved() {
-		return nil, fmt.Errorf("postgres function shadowing context is not valid for mysql")
-	}
-	if session := config.GetSession(); session != nil && session.PostgresSystemXidVisible != nil {
-		return nil, fmt.Errorf("postgres type visibility context is not valid for mysql")
-	}
 	if config.MysqlLowerCaseTableNames == nil {
 		return nil, fmt.Errorf("mysqlLowerCaseTableNames is required for mysql")
 	}
@@ -178,7 +186,7 @@ func newMySQLEngine(config *pb.EngineConfig) (*mysqlEngine, error) {
 	// SettingsString round-trips losslessly as the base.
 	settings := mysqlNormalizationDialect(lowerCaseTableNames).SettingsString() +
 		fmt.Sprintf(", mysql_version=%d, opaque_functions=true", versionID)
-	if config.GetSession().GetMysqlAnsiQuotes() {
+	if config.GetSession().GetMysql().GetAnsiQuotes() {
 		settings += ", mysql_ansi_quotes=true"
 	}
 	dialect, err := dialects.GetOrRaise(settings)
@@ -188,8 +196,13 @@ func newMySQLEngine(config *pb.EngineConfig) (*mysqlEngine, error) {
 	return &mysqlEngine{dialect: dialect}, nil
 }
 
-func (e *mysqlEngine) WireName() string           { return "mysql" }
-func (e *mysqlEngine) Dialect() *dialects.Dialect { return e.dialect }
+func (e *mysqlEngine) WireName() string { return "mysql" }
+func (e *mysqlEngine) PrepareStatement(root exp.Expression) (exp.Expression, bool, *pb.StatementFacts, error) {
+	return root, false, nil, nil
+}
+func (e *mysqlEngine) FinishSubmission(exp.Expression) bool { return false }
+func (e *mysqlEngine) StampSubmission(*pb.StatementFacts)   {}
+func (e *mysqlEngine) Dialect() *dialects.Dialect           { return e.dialect }
 
 // MySQL's catalog needs build-time folding: columns are always case-insensitive, while relation
 // spelling follows lower_case_table_names and the information_schema exception.
@@ -326,29 +339,35 @@ func postgresOpaqueDialect() *dialects.Dialect {
 }
 
 func newPostgresEngine(config *pb.EngineConfig) (*postgresEngine, error) {
-	if !config.GetSession().GetPostgresFunctionShadowingObserved() && len(config.GetSession().GetPostgresShadowedFunctions()) != 0 {
-		return nil, fmt.Errorf("postgresShadowedFunctions requires an observed function-shadowing context")
+	session := config.GetSession().GetPostgres()
+	if !session.GetFunctionShadowingObserved() && len(session.GetShadowedFunctions()) != 0 {
+		return nil, fmt.Errorf("shadowedFunctions requires an observed function-shadowing context")
 	}
-	shadowed := make(map[string]bool, len(config.GetSession().GetPostgresShadowedFunctions()))
-	for _, name := range config.GetSession().GetPostgresShadowedFunctions() {
+	shadowed := make(map[string]bool, len(session.GetShadowedFunctions()))
+	for _, name := range session.GetShadowedFunctions() {
 		if name == "" || name != strings.ToLower(name) {
-			return nil, fmt.Errorf("postgresShadowedFunctions contains invalid function name %q", name)
+			return nil, fmt.Errorf("shadowedFunctions contains invalid function name %q", name)
 		}
 		if shadowed[name] {
-			return nil, fmt.Errorf("postgresShadowedFunctions contains duplicate function name %q", name)
+			return nil, fmt.Errorf("shadowedFunctions contains duplicate function name %q", name)
 		}
 		shadowed[name] = true
 	}
 	return &postgresEngine{
 		dialect:                   postgresOpaqueDialect(),
 		shadowedFunctions:         shadowed,
-		functionShadowingObserved: config.GetSession().GetPostgresFunctionShadowingObserved(),
-		systemXIDVisible:          config.GetSession().GetPostgresSystemXidVisible(),
+		functionShadowingObserved: session.GetFunctionShadowingObserved(),
+		systemXIDVisible:          session.GetSystemXidVisible(),
 	}, nil
 }
 
-func (e *postgresEngine) WireName() string           { return "postgres" }
-func (e *postgresEngine) Dialect() *dialects.Dialect { return e.dialect }
+func (e *postgresEngine) WireName() string { return "postgres" }
+func (e *postgresEngine) PrepareStatement(root exp.Expression) (exp.Expression, bool, *pb.StatementFacts, error) {
+	return root, false, nil, nil
+}
+func (e *postgresEngine) FinishSubmission(exp.Expression) bool { return false }
+func (e *postgresEngine) StampSubmission(*pb.StatementFacts)   {}
+func (e *postgresEngine) Dialect() *dialects.Dialect           { return e.dialect }
 
 // PostgreSQL does not fold the introspected catalog: quoted and unquoted names can identify distinct
 // real columns, while query-side qualification already preserves quoted names and folds unquoted ones.

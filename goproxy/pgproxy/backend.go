@@ -269,11 +269,11 @@ func sessionFromRows(rows [][]*string) (engine.SessionObservation, error) {
 	}
 	return engine.SessionObservation{
 		Namespace: observed.SearchPath,
-		SessionObservation: &enginepb.SessionObservation{
-			PostgresShadowedFunctions:         observed.ShadowedFunctions,
-			PostgresFunctionShadowingObserved: observed.ShadowedFunctions != nil,
-			PostgresSystemXidVisible:          observed.PgCatalogXIDVisible,
-		},
+		SessionObservation: &enginepb.SessionObservation{Engine: &enginepb.SessionObservation_Postgres{Postgres: &enginepb.PostgresSession{
+			ShadowedFunctions:         observed.ShadowedFunctions,
+			FunctionShadowingObserved: observed.ShadowedFunctions != nil,
+			SystemXidVisible:          observed.PgCatalogXIDVisible,
+		}}},
 	}, nil
 }
 

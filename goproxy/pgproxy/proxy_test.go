@@ -652,16 +652,16 @@ func TestFunctionShadowingIsReprobedOnSameConnection(t *testing.T) {
 		t.Fatalf("SELECT 1 decisions = %d, want 2", len(selectOne))
 	}
 	beforeCreate := selectOne[0]
-	if !beforeCreate.GetSession().GetPostgresFunctionShadowingObserved() || len(beforeCreate.GetSession().GetPostgresShadowedFunctions()) != 0 {
-		t.Fatalf("pre-CREATE shadow state = %v/%#v, want observed empty", beforeCreate.GetSession().GetPostgresFunctionShadowingObserved(), beforeCreate.GetSession().GetPostgresShadowedFunctions())
+	if !beforeCreate.GetSession().GetPostgres().GetFunctionShadowingObserved() || len(beforeCreate.GetSession().GetPostgres().GetShadowedFunctions()) != 0 {
+		t.Fatalf("pre-CREATE shadow state = %v/%#v, want observed empty", beforeCreate.GetSession().GetPostgres().GetFunctionShadowingObserved(), beforeCreate.GetSession().GetPostgres().GetShadowedFunctions())
 	}
 	shadowed := bySQL("SELECT unnest(ARRAY[1])")
-	if len(shadowed) != 1 || !shadowed[0].GetSession().GetPostgresFunctionShadowingObserved() || !reflect.DeepEqual(shadowed[0].GetSession().GetPostgresShadowedFunctions(), []string{"unnest"}) {
+	if len(shadowed) != 1 || !shadowed[0].GetSession().GetPostgres().GetFunctionShadowingObserved() || !reflect.DeepEqual(shadowed[0].GetSession().GetPostgres().GetShadowedFunctions(), []string{"unnest"}) {
 		t.Fatalf("post-CREATE shadow state = %+v, want observed [unnest]", shadowed)
 	}
 	afterDrop := selectOne[1]
-	if !afterDrop.GetSession().GetPostgresFunctionShadowingObserved() || len(afterDrop.GetSession().GetPostgresShadowedFunctions()) != 0 {
-		t.Fatalf("post-DROP shadow state = %v/%#v, want observed empty", afterDrop.GetSession().GetPostgresFunctionShadowingObserved(), afterDrop.GetSession().GetPostgresShadowedFunctions())
+	if !afterDrop.GetSession().GetPostgres().GetFunctionShadowingObserved() || len(afterDrop.GetSession().GetPostgres().GetShadowedFunctions()) != 0 {
+		t.Fatalf("post-DROP shadow state = %v/%#v, want observed empty", afterDrop.GetSession().GetPostgres().GetFunctionShadowingObserved(), afterDrop.GetSession().GetPostgres().GetShadowedFunctions())
 	}
 }
 

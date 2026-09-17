@@ -2,6 +2,7 @@ package com.ridi.oss.proxymonster.controlplane
 
 import com.ridi.oss.proxymonster.analyzer.pb.SessionObservation
 import com.ridi.oss.proxymonster.analyzer.pb.sessionObservation
+import com.ridi.oss.proxymonster.analyzer.pb.mySqlSession
 import com.ridi.oss.proxymonster.classification.MysqlNativeFunctions
 import com.ridi.oss.proxymonster.classification.PostgresGrammarFunctions
 import com.ridi.oss.proxymonster.grpc.Engine
@@ -70,13 +71,13 @@ class EnginesTest {
     @Test fun `registered definitions own analyzer configuration and manifest series`() {
         val mysql = Datasource(1, "mysql", Engine.MYSQL, "", 0, "app", engineVersion = "8.0.44", mysqlLowerCaseTableNames = 1)
         val postgres = mysql.copy(engine = Engine.POSTGRES, engineVersion = "17.9", mysqlLowerCaseTableNames = null)
-        val mysqlConfig = mysql.engine.definition.analyzerEngineConfig(mysql, sessionObservation { mysqlAnsiQuotes = true })
+        val mysqlConfig = mysql.engine.definition.analyzerEngineConfig(mysql, sessionObservation { this.mysql = mySqlSession { ansiQuotes = true } })
         assertEquals(Engine.MYSQL, mysqlConfig.engine)
         assertEquals("8.0.44", mysqlConfig.engineVersion)
         assertEquals(1, mysqlConfig.mysqlLowerCaseTableNames)
-        assertTrue(mysqlConfig.session.mysqlAnsiQuotes)
+        assertTrue(mysqlConfig.session.mysql.ansiQuotes)
         assertEquals("8.0", mysql.engine.definition.manifestSeries(mysqlConfig.engineVersion))
-        assertFalse(mysql.splitEngineConfig()!!.session.mysqlAnsiQuotes)
+        assertFalse(mysql.splitEngineConfig()!!.session.mysql.ansiQuotes)
         assertNull(mysql.copy(engineVersion = null).splitEngineConfig())
         assertNull(mysql.copy(mysqlLowerCaseTableNames = null).splitEngineConfig())
         assertFailsWith<IllegalArgumentException> {

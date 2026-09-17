@@ -49,7 +49,7 @@ func mysqlFactsMode(t *testing.T, sql string, ansiQuotes bool) *pb.StatementFact
 		Engine: pb.Engine_MYSQL, EngineVersion: "8.0.46", MysqlLowerCaseTableNames: proto.Int32(0),
 	}
 	if ansiQuotes {
-		cfg.Session = &pb.SessionObservation{MysqlAnsiQuotes: true}
+		cfg.Session = &pb.SessionObservation{Engine: &pb.SessionObservation_Mysql{Mysql: &pb.MySqlSession{AnsiQuotes: true}}}
 	}
 	return analyzeProto(t, &pb.AnalyzeRequest{
 		Sql:          sql,
@@ -441,7 +441,7 @@ func TestStatementFactsPostgresXIDCastVisibility(t *testing.T) {
 			Sql: sql,
 			EngineConfig: &pb.EngineConfig{
 				Engine:  pb.Engine_POSTGRES,
-				Session: &pb.SessionObservation{PostgresSystemXidVisible: visible},
+				Session: &pb.SessionObservation{Engine: &pb.SessionObservation_Postgres{Postgres: &pb.PostgresSession{SystemXidVisible: visible}}},
 			},
 			Namespace: &pb.Namespace{Catalog: "acme", SearchPath: searchPath},
 			Catalog: snapshot([]*pb.Column{

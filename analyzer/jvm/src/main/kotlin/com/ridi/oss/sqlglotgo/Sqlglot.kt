@@ -119,7 +119,6 @@ object Sqlglot {
      * dialect or SQL cannot be normalized safely.
      */
     fun sqlNormalize(sql: String, dialect: String): String? {
-        if (dialect != "mysql" && dialect != "postgres") return null
         if (!hasWellFormedUtf16(sql)) return null
 
         val sqlBytes = sql.toByteArray(Charsets.UTF_8)

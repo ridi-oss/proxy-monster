@@ -210,11 +210,11 @@ func TestMysqlAnsiQuotesForwardedAndCached(t *testing.T) {
 	probes := 0
 	in := AuthzInput{SQL: `SELECT "card_number" FROM cards`, ProbeSession: func() (SessionObservation, error) {
 		probes++
-		return SessionObservation{Namespace: []string{"app"}, SessionObservation: &analyzerpb.SessionObservation{MysqlAnsiQuotes: true}}, nil
+		return SessionObservation{Namespace: []string{"app"}, SessionObservation: &analyzerpb.SessionObservation{Engine: &analyzerpb.SessionObservation_Mysql{Mysql: &analyzerpb.MySqlSession{AnsiQuotes: true}}}}, nil
 	}}
 
 	e.Authorize(in)
-	if !dec.lastReq.Session.GetMysqlAnsiQuotes() {
+	if !dec.lastReq.Session.GetMysql().GetAnsiQuotes() {
 		t.Fatal("an observed ANSI_QUOTES session must be forwarded to Decide")
 	}
 	// The observation rides the namespace cache: a second authorize without a re-probe reuses it.
@@ -222,7 +222,7 @@ func TestMysqlAnsiQuotesForwardedAndCached(t *testing.T) {
 	if probes != 1 {
 		t.Fatalf("ANSI_QUOTES observation should ride the namespace cache; probes=%d", probes)
 	}
-	if !dec.lastReq.Session.GetMysqlAnsiQuotes() {
+	if !dec.lastReq.Session.GetMysql().GetAnsiQuotes() {
 		t.Fatal("the cached ANSI_QUOTES observation must still be forwarded")
 	}
 
@@ -230,10 +230,10 @@ func TestMysqlAnsiQuotesForwardedAndCached(t *testing.T) {
 	// so a mid-session flip back to the default mode is decided under the default lexer.
 	e.MarkNamespaceDirty()
 	in.ProbeSession = func() (SessionObservation, error) {
-		return SessionObservation{Namespace: []string{"app"}, SessionObservation: &analyzerpb.SessionObservation{MysqlAnsiQuotes: false}}, nil
+		return SessionObservation{Namespace: []string{"app"}, SessionObservation: &analyzerpb.SessionObservation{Engine: &analyzerpb.SessionObservation_Mysql{Mysql: &analyzerpb.MySqlSession{AnsiQuotes: false}}}}, nil
 	}
 	e.Authorize(in)
-	if dec.lastReq.Session.GetMysqlAnsiQuotes() {
+	if dec.lastReq.Session.GetMysql().GetAnsiQuotes() {
 		t.Fatal("a probe that no longer observes ANSI_QUOTES must clear the forwarded flag")
 	}
 }
@@ -245,19 +245,15 @@ func TestPostgresLookupStateForwardedAndCached(t *testing.T) {
 	observations := []SessionObservation{
 		{
 			Namespace: []string{"pg_catalog", "app"},
-			SessionObservation: &analyzerpb.SessionObservation{
-				PostgresShadowedFunctions:         []string{"unnest"},
-				PostgresFunctionShadowingObserved: true,
-				PostgresSystemXidVisible:          proto.Bool(true),
-			},
+			SessionObservation: &analyzerpb.SessionObservation{Engine: &analyzerpb.SessionObservation_Postgres{Postgres: &analyzerpb.PostgresSession{
+				ShadowedFunctions: []string{"unnest"}, FunctionShadowingObserved: true, SystemXidVisible: proto.Bool(true),
+			}}},
 		},
 		{
 			Namespace: []string{"pg_catalog", "app"},
-			SessionObservation: &analyzerpb.SessionObservation{
-				PostgresShadowedFunctions:         []string{},
-				PostgresFunctionShadowingObserved: true,
-				PostgresSystemXidVisible:          proto.Bool(false),
-			},
+			SessionObservation: &analyzerpb.SessionObservation{Engine: &analyzerpb.SessionObservation_Postgres{Postgres: &analyzerpb.PostgresSession{
+				ShadowedFunctions: []string{}, FunctionShadowingObserved: true, SystemXidVisible: proto.Bool(false),
+			}}},
 		},
 	}
 	in := AuthzInput{

@@ -1,0 +1,14 @@
+{
+  "engine": "athena",
+  "series": "3",
+  "manifestVersion": 1,
+  "curatedThrough": "Athena engine version 3",
+  "systemSchemas": [{ "catalog": "*", "schema": "information_schema" }],
+  "commands": [
+    {
+      "id": "SHOW_PARTITIONS",
+      "resource": "partition_values",
+      "tag": "system:data-leak"
+    }
+  ]
+}

@@ -316,7 +316,7 @@ from pg_catalog.pg_extension E
 		Sql: query,
 		EngineConfig: &pb.EngineConfig{
 			Engine:  pb.Engine_POSTGRES,
-			Session: &pb.SessionObservation{PostgresFunctionShadowingObserved: true},
+			Session: &pb.SessionObservation{Engine: &pb.SessionObservation_Postgres{Postgres: &pb.PostgresSession{FunctionShadowingObserved: true}}},
 		},
 		Namespace: &pb.Namespace{Catalog: "acme", SearchPath: []string{"pg_catalog", "public"}},
 		Catalog: snapshotWith([]*pb.Column{
@@ -345,7 +345,7 @@ func TestPostgresBuiltinFunctionRowRespectResolution(t *testing.T) {
 			Sql: sql,
 			EngineConfig: &pb.EngineConfig{
 				Engine:  pb.Engine_POSTGRES,
-				Session: &pb.SessionObservation{PostgresFunctionShadowingObserved: observed, PostgresShadowedFunctions: shadowed},
+				Session: &pb.SessionObservation{Engine: &pb.SessionObservation_Postgres{Postgres: &pb.PostgresSession{FunctionShadowingObserved: observed, ShadowedFunctions: shadowed}}},
 			},
 			Namespace: &pb.Namespace{Catalog: "acme", SearchPath: searchPath},
 			Catalog: snapshotWith([]*pb.Column{

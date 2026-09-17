@@ -3,6 +3,7 @@ package com.ridi.oss.proxymonster.probe
 import com.ridi.oss.proxymonster.analyzer.pb.EngineConfig as PbEngineConfig
 import com.ridi.oss.proxymonster.analyzer.pb.engineConfig
 import com.ridi.oss.proxymonster.analyzer.pb.sessionObservation
+import com.ridi.oss.proxymonster.analyzer.pb.mySqlSession
 import com.ridi.oss.proxymonster.grpc.Engine
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -106,7 +107,7 @@ class SplitStatementsTest {
             engine = Engine.MYSQL
             engineVersion = "8.0.46"
             mysqlLowerCaseTableNames = 1
-            session = sessionObservation { mysqlAnsiQuotes = true }
+            session = sessionObservation { mysql = mySqlSession { ansiQuotes = true } }
         }
         assertEquals(listOf("""SELECT "a\" FROM t""", "DROP TABLE users"), splitStatements(sql, ansi))
         assertEquals(1, assertNotNull(splitStatements(sql, mysql)).size)

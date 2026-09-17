@@ -10,6 +10,7 @@ import com.ridi.oss.proxymonster.analyzer.pb.analyzeRequest
 import com.ridi.oss.proxymonster.analyzer.pb.column
 import com.ridi.oss.proxymonster.analyzer.pb.engineConfig
 import com.ridi.oss.proxymonster.analyzer.pb.namespace
+import com.ridi.oss.proxymonster.analyzer.pb.postgresSession
 import com.ridi.oss.proxymonster.analyzer.pb.sessionObservation
 import com.ridi.oss.proxymonster.grpc.Engine
 import java.util.concurrent.Executors
@@ -98,7 +99,7 @@ class SqlglotTest {
                 }
                 engineConfig = engineConfig {
                     engine = Engine.POSTGRES
-                    session = sessionObservation { postgresSystemXidVisible = true }
+                    session = sessionObservation { postgres = postgresSession { systemXidVisible = true } }
                 }
             }
             return StatementFacts.parseFrom(Sqlglot.analyzeStatement(request.toByteArray()))

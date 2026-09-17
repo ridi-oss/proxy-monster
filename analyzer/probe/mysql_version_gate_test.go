@@ -154,36 +154,32 @@ func TestCreateEngineRejectsNilConfig(t *testing.T) {
 	}
 }
 
-func TestCreateEngineRejectsPostgresTypeVisibilityForMySQL(t *testing.T) {
-	if _, err := createEngine(&pb.EngineConfig{
+// A session arm for another engine is invisible to this one: MySQL reads its own arm, which is absent, and
+// builds as if no session facts were observed. The oneof makes a foreign fact unrepresentable rather than
+// something each engine must refuse.
+func TestCreateEngineIgnoresAnotherEnginesSessionArm(t *testing.T) {
+	eng, err := createEngine(&pb.EngineConfig{
 		Engine:                   pb.Engine_MYSQL,
 		EngineVersion:            "8.0.46",
 		MysqlLowerCaseTableNames: proto.Int32(0),
-		Session:                  &pb.SessionObservation{PostgresSystemXidVisible: proto.Bool(false)},
-	}); err == nil {
-		t.Fatal("PostgreSQL type visibility context unexpectedly succeeded for MySQL")
+		Session:                  &pb.SessionObservation{Engine: &pb.SessionObservation_Postgres{Postgres: &pb.PostgresSession{SystemXidVisible: proto.Bool(false), FunctionShadowingObserved: true}}},
+	})
+	if err != nil || eng.WireName() != "mysql" {
+		t.Fatalf("MySQL engine with a PostgreSQL session arm = %v, %v", eng, err)
 	}
 }
 
 func TestCreateEngineValidatesPostgresFunctionShadowingContext(t *testing.T) {
 	if _, err := createEngine(&pb.EngineConfig{
 		Engine:  pb.Engine_POSTGRES,
-		Session: &pb.SessionObservation{PostgresShadowedFunctions: []string{"unnest"}},
+		Session: &pb.SessionObservation{Engine: &pb.SessionObservation_Postgres{Postgres: &pb.PostgresSession{ShadowedFunctions: []string{"unnest"}}}},
 	}); err == nil {
 		t.Fatal("unobserved PostgreSQL function shadow list unexpectedly succeeded")
 	}
 	if _, err := createEngine(&pb.EngineConfig{
 		Engine:  pb.Engine_POSTGRES,
-		Session: &pb.SessionObservation{PostgresFunctionShadowingObserved: true},
+		Session: &pb.SessionObservation{Engine: &pb.SessionObservation_Postgres{Postgres: &pb.PostgresSession{FunctionShadowingObserved: true}}},
 	}); err != nil {
 		t.Fatalf("observed empty PostgreSQL function shadow list failed: %v", err)
-	}
-	if _, err := createEngine(&pb.EngineConfig{
-		Engine:                   pb.Engine_MYSQL,
-		EngineVersion:            "8.0.46",
-		MysqlLowerCaseTableNames: proto.Int32(0),
-		Session:                  &pb.SessionObservation{PostgresFunctionShadowingObserved: true},
-	}); err == nil {
-		t.Fatal("PostgreSQL function shadowing context unexpectedly succeeded for MySQL")
 	}
 }

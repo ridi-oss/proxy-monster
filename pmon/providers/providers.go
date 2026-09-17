@@ -3,6 +3,7 @@ package providers
 
 import (
 	"github.com/ridi-oss/proxy-monster/pmon/driver"
+	"github.com/ridi-oss/proxy-monster/pmon/providers/athena"
 	"github.com/ridi-oss/proxy-monster/pmon/providers/mysql"
 	"github.com/ridi-oss/proxy-monster/pmon/providers/postgres"
 )
@@ -10,6 +11,7 @@ import (
 var builtins = driver.NewRegistry(
 	mysql.Provider{},
 	postgres.Provider{},
+	athena.Provider{},
 )
 
 // Builtins is the immutable registry the daemon and the formatting API consult.

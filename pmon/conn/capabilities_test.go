@@ -19,12 +19,33 @@ func TestProviderFormatCapabilities(t *testing.T) {
 			t.Errorf("%s advertises an unsupported format", engine)
 		}
 	}
-	if SupportsFormat("unknown", driver.URL) || DefaultFormat("unknown") != "" {
-		t.Fatal("capabilities advertise an unsupported engine")
+	if got := DefaultFormat("athena"); got != driver.CLI {
+		t.Fatalf("Athena default = %q, want cli", got)
 	}
-	formats := SupportedFormats("mysql")
-	formats[0] = "python"
-	if SupportsFormat("mysql", "python") {
+	for _, format := range []driver.Format{driver.CLI, driver.URL, driver.JDBC, "python", "node", "aws-config"} {
+		if !SupportsFormat("athena", format) {
+			t.Errorf("Athena does not advertise %q", format)
+		}
+	}
+	if SupportsFormat("athena", driver.GoDSN) || SupportsFormat("unknown", driver.URL) || DefaultFormat("unknown") != "" {
+		t.Fatal("capabilities advertise unsupported engine or format")
+	}
+	formats := SupportedFormats("athena")
+	formats[0] = driver.GoDSN
+	if SupportsFormat("athena", driver.GoDSN) {
 		t.Fatal("caller changed the registered format slice")
+	}
+}
+
+func TestAthenaPublicFormattingUsesConnectionInfo(t *testing.T) {
+	target := driver.Target{
+		Name: "warehouse", Engine: "athena", Port: 32123, User: "alice", Password: "local-password",
+		ConnectionInfo: &driver.ConnectionInfo{Properties: map[string]string{"region": "us-east-1"}},
+	}
+	if got := String(driver.URL, target); got != "http://127.0.0.1:32123" {
+		t.Fatalf("Athena endpoint = %q", got)
+	}
+	if got := String(driver.GoDSN, target); got != "" {
+		t.Fatalf("unsupported driver.GoDSN formatted %q", got)
 	}
 }

@@ -209,6 +209,9 @@ type Decision struct {
 	// (Verdict.max_rows / max_bytes); 0 = uncapped. See docs/result-caps.md.
 	MaxRows  int64
 	MaxBytes int64
+	// AthenaSubmission is the execution-parameter list that goes with RewrittenSQL on Athena; nil keeps the
+	// client's list.
+	AthenaSubmission *enginepb.AthenaSubmission
 }
 
 // PageRows is the row count a paging caller should ask the target DB for: its own page size narrowed by the
@@ -308,6 +311,11 @@ type DecideRequest struct {
 	TempColumns  []TempColumn
 	ConnectionID []byte
 	RunCommands  func([]*pb.Refetch) error
+	// Athena carries the Athena request scope (workgroup, ordered execution parameters, fetched
+	// prepared definitions); nil for every other engine.
+	Athena *enginepb.AthenaSqlContext
+	// FetchAthenaPreparedDefinition resolves a fetch_athena_prepared_definition command from the target.
+	FetchAthenaPreparedDefinition func(*enginepb.FetchAthenaPreparedDefinition) (*enginepb.AthenaPreparedDefinition, error)
 }
 
 // Decider performs the per-query control-plane decision. It is injected so the engine is unit-testable;
@@ -507,13 +515,15 @@ func (o SessionObservation) Clone() SessionObservation {
 // runs its Db's probe SQL on the target DB and parses the result. The engine calls ProbeSession only when
 // its cache is dirty, and ProbeTempColumns only when the protocol supplies it (the PG temp overlay).
 type AuthzInput struct {
-	SQL              string
-	Token            string
-	ClientAddr       string
-	ConnectionID     []byte
-	ProbeSession     func() (SessionObservation, error)
-	ProbeTempColumns func() ([]TempColumn, error)
-	RunCommands      func([]*pb.Refetch) error
+	SQL                           string
+	Token                         string
+	ClientAddr                    string
+	ConnectionID                  []byte
+	ProbeSession                  func() (SessionObservation, error)
+	ProbeTempColumns              func() ([]TempColumn, error)
+	RunCommands                   func([]*pb.Refetch) error
+	Athena                        *enginepb.AthenaSqlContext
+	FetchAthenaPreparedDefinition func(*enginepb.FetchAthenaPreparedDefinition) (*enginepb.AthenaPreparedDefinition, error)
 }
 
 // Authorize gathers namespace context (cached unless dirty), gathers session-temp columns when the
@@ -546,13 +556,15 @@ func (e *QueryEngine) Authorize(in AuthzInput) Verdict {
 	}
 
 	out := e.decider.Decide(DecideRequest{
-		Session:      e.session.Clone(),
-		Token:        in.Token,
-		SQL:          in.SQL,
-		ClientAddr:   in.ClientAddr,
-		TempColumns:  temps,
-		ConnectionID: in.ConnectionID,
-		RunCommands:  in.RunCommands,
+		Session:                       e.session.Clone(),
+		Token:                         in.Token,
+		SQL:                           in.SQL,
+		ClientAddr:                    in.ClientAddr,
+		TempColumns:                   temps,
+		ConnectionID:                  in.ConnectionID,
+		RunCommands:                   in.RunCommands,
+		Athena:                        in.Athena,
+		FetchAthenaPreparedDefinition: in.FetchAthenaPreparedDefinition,
 	})
 	if out.IsErr() {
 		return Fail{Message: out.Err}

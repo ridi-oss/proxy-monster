@@ -217,6 +217,9 @@ class ControlPlaneGrpcService(
         val id = resolved.identity
         val ds = core.datasourceStore.getByName(request.datasourceName)
             ?: throw StatusException(Status.NOT_FOUND.withDescription("unknown datasource '${request.datasourceName}'"))
+        if (request.hasAthena() && ds.engine != Engine.ATHENA) {
+            throw StatusException(Status.INVALID_ARGUMENT.withDescription("native.unsupported_sql_context"))
+        }
         try {
             ds.requireCatalog(request.currentCatalog)
             request.tempColumnsList.forEach { ds.requireCatalog(it.catalog) }
@@ -256,9 +259,10 @@ class ControlPlaneGrpcService(
             val outcome = decideConnection(
                 core, request.connectionId, id.principal, ds, request.sql, request.searchPathList,
                 clientAddr, request.session, channel, assumeRoles, tempColumns, httpRequesterIp = httpIp,
+                athena = if (request.hasAthena()) request.athena else null,
             ) ?: throw StatusException(Status.NOT_FOUND.withDescription("connection disappeared during Decide"))
         ) {
-            is EnforcementOutcome.BeforeDecide -> beforeDecideDecision(outcome.commands)
+            is EnforcementOutcome.BeforeDecide -> beforeDecideDecision(outcome.commands, outcome.preparedDefinitions)
             is EnforcementOutcome.Verdict -> outcome.ctx.toWireDecision(
                 outcome.decisionId,
                 outcome.generation,

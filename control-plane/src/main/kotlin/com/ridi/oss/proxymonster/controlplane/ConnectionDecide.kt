@@ -3,6 +3,9 @@ package com.ridi.oss.proxymonster.controlplane
 import com.ridi.oss.proxymonster.analyzer.pb.SessionObservation
 import com.ridi.oss.proxymonster.analyzer.pb.StatementKind
 import com.google.protobuf.ByteString
+import com.ridi.oss.proxymonster.athena.pb.AthenaSqlContext
+import com.ridi.oss.proxymonster.athena.pb.FetchAthenaPreparedDefinition
+import com.ridi.oss.proxymonster.athena.pb.fetchAthenaPreparedDefinition
 import com.ridi.oss.proxymonster.controlplane.authz.AuthzContext
 import com.ridi.oss.proxymonster.grpc.EnfAction
 import com.ridi.oss.proxymonster.grpc.Refetch
@@ -16,7 +19,10 @@ sealed interface EnforcementOutcome {
         val afterStatement: List<Refetch>,
     ) : EnforcementOutcome
 
-    data class BeforeDecide(val commands: List<Refetch>) : EnforcementOutcome
+    data class BeforeDecide(
+        val commands: List<Refetch>,
+        val preparedDefinitions: List<FetchAthenaPreparedDefinition> = emptyList(),
+    ) : EnforcementOutcome
 }
 
 /**
@@ -37,6 +43,7 @@ suspend fun decideConnection(
     providedRoles: Set<String>? = null,
     tempColumns: List<CatalogColumn> = emptyList(),
     httpRequesterIp: String? = null,
+    athena: AthenaSqlContext? = null,
 ): EnforcementOutcome? = core.connectionCatalog.withConnection(connectionId) { connection ->
     // Snapshot the generation at entry; the registry mutex is held through analysis + audit, so only an
     // applyPush (which needs the same mutex) can bump it — impossible mid-flow. Stamping the entry value and
@@ -76,7 +83,14 @@ suspend fun decideConnection(
         session = session,
         systemClassification = core.systemClassification,
         tempColumns = tempColumns,
+        athena = athena,
     )
+    ctx.athenaPreparedDefinitionNeed?.let { need ->
+        return@withConnection EnforcementOutcome.BeforeDecide(
+            emptyList(),
+            listOf(fetchAthenaPreparedDefinition { workgroup = need.workgroup; name = need.name }),
+        )
+    }
 
     val postGate = core.connectionCatalog.freshnessGate(connection, ctx.referencedSchemas)
     if (postGate.isNotEmpty()) {

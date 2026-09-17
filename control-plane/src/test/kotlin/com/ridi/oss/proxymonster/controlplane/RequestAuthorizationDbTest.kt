@@ -2,12 +2,14 @@ package com.ridi.oss.proxymonster.controlplane
 
 import com.google.protobuf.ByteString
 import com.google.protobuf.UnknownFieldSet
+import com.ridi.oss.proxymonster.athena.pb.AthenaSqlContext
 import com.ridi.oss.proxymonster.controlplane.authz.CedarPolicyInput
 import com.ridi.oss.proxymonster.controlplane.grpc.ControlPlaneGrpcService
 import com.ridi.oss.proxymonster.controlplane.grpc.GrpcServer
 import com.ridi.oss.proxymonster.controlplane.support.SharedPostgres
 import com.ridi.oss.proxymonster.controlplane.support.requireDockerOrSkip
 import com.ridi.oss.proxymonster.grpc.ControlPlaneGrpcKt
+import com.ridi.oss.proxymonster.grpc.DecisionRequest
 import com.ridi.oss.proxymonster.grpc.RequestAuthorization
 import com.ridi.oss.proxymonster.grpc.objectRef
 import com.ridi.oss.proxymonster.grpc.readCatalog
@@ -222,6 +224,20 @@ class RequestAuthorizationDbTest {
         }
         assertEquals(0, core.connectionCatalog.connectionCount())
         assertEquals(0, core.connectionCatalog.poolSize())
+    }
+
+    @Test
+    fun `MySQL and PostgreSQL Decide reject present Athena context before allocating a connection`() {
+        val token = issue(TokenKind.USER, principal()).token
+        for (engine in listOf("mysql", "postgres")) {
+            val ds = core.datasourceStore.create(DatasourceInput("context-${UUID.randomUUID()}", engine = engine, dbName = "app"))
+            val request = DecisionRequest.newBuilder().setToken(token).setDatasourceName(ds.name).setSql("SELECT 1")
+                .setAthena(AthenaSqlContext.getDefaultInstance()).build()
+            val failure = assertFailsWith<StatusException> { runBlocking { stub.decide(request) } }
+            assertEquals(Status.Code.INVALID_ARGUMENT, failure.status.code)
+            assertEquals("native.unsupported_sql_context", failure.status.description)
+        }
+        assertEquals(0, core.connectionCatalog.connectionCount())
     }
 
     private fun assertUnauthenticated(token: String) {

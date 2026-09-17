@@ -17,7 +17,7 @@ import (
 
 // End-to-end tests over the REAL binary and a REAL spawned daemon, so the peer-symmetry claims are exercised
 // through the actual control socket rather than an in-process fake: the CLI starts a daemon, logs in through
-// it, reads status, renders connection strings, and stops it.
+// it, reads status, formats connection strings, and stops it.
 
 // buildPmon compiles the binary once per test run and returns its path.
 //

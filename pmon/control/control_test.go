@@ -408,7 +408,7 @@ func TestShutdownDrivesTheBackend(t *testing.T) {
 	t.Error("the backend never saw a shutdown")
 }
 
-// TestEventsSendsCurrentStateFirst means a peer renders correctly the moment it subscribes, with no separate
+// TestEventsSendsCurrentStateFirst means a peer formats correctly the moment it subscribes, with no separate
 // /status call and no blank window.
 func TestEventsSendsCurrentStateFirst(t *testing.T) {
 	backend := newFakeBackend()

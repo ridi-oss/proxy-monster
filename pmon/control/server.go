@@ -210,7 +210,7 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	flusher, _ := w.(http.Flusher)
 	enc := json.NewEncoder(w)
 
-	// Send the current state immediately, so a peer renders correctly without a separate /status call.
+	// Send the current state immediately, so a peer formats correctly without a separate /status call.
 	current := s.backend.Status()
 	if err := enc.Encode(Event{Kind: "status", Status: &current}); err != nil {
 		return

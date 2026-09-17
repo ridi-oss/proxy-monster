@@ -11,6 +11,8 @@ import com.ridi.oss.proxymonster.analyzer.pb.engineConfig
 import com.ridi.oss.proxymonster.controlplane.CatalogColumn
 import com.ridi.oss.proxymonster.controlplane.Datasource
 import com.ridi.oss.proxymonster.controlplane.EngineDefinition
+import com.ridi.oss.proxymonster.controlplane.MetadataRequestAuthorizer
+import com.ridi.oss.proxymonster.controlplane.RequestAuthorizer
 import com.ridi.oss.proxymonster.grpc.Engine
 import com.ridi.oss.proxymonster.probe.Dialect
 
@@ -18,6 +20,7 @@ internal object PostgresEngineDefinition : EngineDefinition {
     override val engine = Engine.POSTGRES
     override val wireName = "postgres"
     override val dialect = Dialect.POSTGRES
+    override val requestAuthorizer: RequestAuthorizer = MetadataRequestAuthorizer
     override val systemSchemas = setOf("pg_catalog", "information_schema")
     // pg_temp_* schemas and transactional DDL depend on the connection.
     override val catalogIsConnectionIndependent = false

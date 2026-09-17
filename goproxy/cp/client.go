@@ -26,6 +26,7 @@ import (
 	"google.golang.org/grpc/keepalive"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/proto"
 
 	"github.com/ridi-oss/proxy-monster/goproxy/engine"
 	"github.com/ridi-oss/proxy-monster/goproxy/spi"
@@ -171,6 +172,26 @@ func refetchesFromWire(commands []*pb.ProxyCommand) ([]*pb.Refetch, error) {
 		})
 	}
 	return mapped, nil
+}
+
+// AuthorizeRequest stamps the client's datasource name onto a copy of the request so a provider cannot ask
+// about another datasource, then forwards it. Any transport error is returned as an error, never as a deny.
+func (c *Client) AuthorizeRequest(parent context.Context, request *pb.RequestAuthorization) (*pb.RequestAuthorizationResult, error) {
+	if request == nil {
+		return nil, errors.New("request authorization input is required")
+	}
+	ctx, cancel := context.WithTimeout(parent, rpcDeadline)
+	defer cancel()
+	wireRequest := proto.Clone(request).(*pb.RequestAuthorization)
+	wireRequest.DatasourceName = c.datasourceName
+	response, err := c.stub.AuthorizeRequest(c.outCtx(ctx), wireRequest)
+	if err != nil {
+		return nil, fmt.Errorf("request authorization failed: %w", err)
+	}
+	if response == nil {
+		return nil, errors.New("control plane returned an empty request authorization")
+	}
+	return response, nil
 }
 
 // identityFromWire maps the control plane's WireIdentity into the proxy's session identity. PURE function

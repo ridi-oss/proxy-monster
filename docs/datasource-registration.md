@@ -31,6 +31,7 @@ service ControlPlane {
   rpc Register(RegisterRequest) returns (RegisterResponse);            // boot: declare identity
   rpc PushCatalog(CatalogRequest) returns (CatalogResponse);          // push the introspected catalog
   rpc ValidateToken(ValidateTokenRequest) returns (WireIdentity);     // wire-auth handshake, once per session
+  rpc AuthorizeRequest(RequestAuthorization) returns (RequestAuthorizationResult); // metadata access, no SQL session
   rpc Decide(DecisionRequest) returns (WireDecision);                 // per-query enforcement decision
   rpc PushSchemaFragment(SchemaFragmentPush) returns (SchemaFragmentAck);  // per-connection catalog fragment
   rpc CloseConnection(CloseConnectionRequest) returns (CloseConnectionResponse);
@@ -44,6 +45,12 @@ service ControlPlane {
 The Go proxy client is `goproxy/cp/client.go`; the control-plane gRPC server is
 `grpc/GrpcServer.kt` + `grpc/ControlPlaneGrpcService.kt`. Every RPC carries the
 shared secret as call metadata (see [Trust model](#trust-model)).
+
+`AuthorizeRequest` decides a catalog or table-metadata read that has no SQL
+session behind it. It checks the token, the live roles, the requester context,
+and the datasource connect gate without allocating a connection catalog. A
+missing or unrecognized operation denies. Selectors carry the catalog and schema
+explicitly and must name the datasource's measured catalog.
 
 ## Registration
 

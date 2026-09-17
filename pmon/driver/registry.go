@@ -28,3 +28,14 @@ func (r *Registry) Lookup(engine string) (Provider, bool) {
 	provider, ok := r.providers[engine]
 	return provider, ok
 }
+
+// UnavailableReason says why the endpoint has no local listener, or "" when its provider can broker it.
+func (r *Registry) UnavailableReason(endpoint Endpoint) string {
+	if provider, ok := r.Lookup(endpoint.Engine); ok {
+		return provider.UnavailableReason(endpoint)
+	}
+	if endpoint.AdvertiseAddr == "" {
+		return "no advertised proxy address"
+	}
+	return fmt.Sprintf("engine %q not brokered", endpoint.Engine)
+}

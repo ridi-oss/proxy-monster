@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"encoding/json"
+	"github.com/ridi-oss/proxy-monster/pmon/driver"
 	"strings"
 	"testing"
 )
@@ -12,7 +13,7 @@ import (
 // proxy), the plaintext-downgrade refusal becomes dead code, and the token can cross in the clear. Nothing
 // errors — which is exactly why unit tests that hand a chain straight to upstreamTLSConfig cannot catch it.
 //
-// The literal below is the shape the control plane serializes (Datasource in Datasources.kt). Keep it a
+// The literal below is the shape the control plane serializes (driver.Endpoint in Datasources.kt). Keep it a
 // literal, not a constant shared with production code: the point is to fail when the two drift apart.
 func TestDiscoveryParsesTheControlPlaneChainField(t *testing.T) {
 	const controlPlaneResponse = `[{
@@ -25,7 +26,7 @@ func TestDiscoveryParsesTheControlPlaneChainField(t *testing.T) {
       "advertiseWireTls": true
     }]`
 
-	var got []Datasource
+	var got []driver.Endpoint
 	if err := json.Unmarshal([]byte(controlPlaneResponse), &got); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
@@ -61,7 +62,7 @@ func TestATLSProxyThatPublishesNoChainStillRequiresTLS(t *testing.T) {
       "advertiseWireTls": true
     }]`
 
-	var got []Datasource
+	var got []driver.Endpoint
 	if err := json.Unmarshal([]byte(publiclyTrustedProxy), &got); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
@@ -77,7 +78,7 @@ func TestATLSProxyThatPublishesNoChainStillRequiresTLS(t *testing.T) {
 // TestAPlaintextDatasourceReportsNeitherChainNorTLS: with TLS genuinely off, both fields are absent, and only
 // then may the broker speak plaintext.
 func TestAPlaintextDatasourceReportsNeitherChainNorTLS(t *testing.T) {
-	var got []Datasource
+	var got []driver.Endpoint
 	if err := json.Unmarshal([]byte(`[{"name":"plain","engine":"mysql","advertiseAddr":"h:3306"}]`), &got); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}

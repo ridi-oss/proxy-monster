@@ -174,7 +174,7 @@ description = "Regenerate the checked-in Go protobuf bindings"
 shell = "bash -c"
 run = '''
 set -euo pipefail
-(cd analyzer && buf generate ../proto/src/main/proto --path ../proto/src/main/proto/analyzer.proto --path ../proto/src/main/proto/engine.proto)
+(cd analyzer && buf generate ../proto/src/main/proto --path ../proto/src/main/proto/analyzer.proto --path ../proto/src/main/proto/engine.proto --path ../proto/src/main/proto/athena.proto)
 (cd goproxy && buf generate ../proto/src/main/proto --path ../proto/src/main/proto/controlplane.proto)
 '''
 
@@ -186,6 +186,7 @@ set -euo pipefail
 files=(
   analyzer/probe/pb/analyzer.pb.go
   analyzer/probe/pb/engine.pb.go
+  analyzer/probe/pb/athena.pb.go
   goproxy/internal/pb/controlplane.pb.go
   goproxy/internal/pb/controlplane_grpc.pb.go
 )

@@ -26,7 +26,6 @@ import com.ridi.oss.proxymonster.controlplane.authz.authorizeWithContext
 import com.ridi.oss.proxymonster.classification.BaselineDangerousFunctions
 import com.ridi.oss.proxymonster.grpc.ColumnMask
 import com.ridi.oss.proxymonster.grpc.EnfAction
-import com.ridi.oss.proxymonster.grpc.Engine
 import com.ridi.oss.proxymonster.grpc.ObjectRef
 import com.ridi.oss.proxymonster.grpc.RunError
 import com.ridi.oss.proxymonster.grpc.columnMask
@@ -42,7 +41,6 @@ import com.ridi.oss.proxymonster.analyzer.pb.StatementKind
 import com.ridi.oss.proxymonster.analyzer.pb.catalogSnapshot
 import com.ridi.oss.proxymonster.analyzer.pb.column
 import com.ridi.oss.proxymonster.analyzer.pb.resultFingerprint
-import com.ridi.oss.proxymonster.analyzer.pb.engineConfig as pbEngineConfig
 import com.ridi.oss.proxymonster.analyzer.pb.namespace as pbNamespace
 import com.ridi.oss.proxymonster.probe.Analyzer
 import com.ridi.oss.proxymonster.probe.Dialect
@@ -312,17 +310,11 @@ internal fun analyzerAndCatalogIndex(
     resolvedSearchPath: List<String>,
     session: SessionObservation = SessionObservation.getDefaultInstance(),
 ): Pair<CatalogColumnIndex, Analyzer> {
-    val mysqlCaseMode = ds.engine.requireCaseMode(ds.mysqlLowerCaseTableNames)
     val namespace = pbNamespace {
         this.catalog = ds.engine.catalogName(ds.dbName)
         this.searchPath.addAll(resolvedSearchPath)
     }
-    val engineConfig = pbEngineConfig {
-        this.engine = ds.engine
-        this.engineVersion = ds.engineVersion ?: ""
-        mysqlCaseMode?.let { this.mysqlLowerCaseTableNames = it }
-        this.session = session
-    }
+    val engineConfig = ds.engine.definition.analyzerEngineConfig(ds, session)
     val effectiveCatalog = (catalog.columns + tempColumns).let { it + ds.engine.implicitColumns(it) }
     val snapshot = catalogSnapshot {
         functions = catalog.functions

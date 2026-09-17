@@ -19,6 +19,7 @@ import com.ridi.oss.proxymonster.controlplane.management.ManagementException
 import com.ridi.oss.proxymonster.controlplane.management.auditEntity
 import com.ridi.oss.proxymonster.controlplane.catalogIsConnectionIndependent
 import com.ridi.oss.proxymonster.controlplane.catalogName
+import com.ridi.oss.proxymonster.controlplane.definition
 import com.ridi.oss.proxymonster.controlplane.EnforcementOutcome
 import com.ridi.oss.proxymonster.controlplane.DatasourceStore
 import com.ridi.oss.proxymonster.controlplane.TokenKind
@@ -364,16 +365,10 @@ class ControlPlaneGrpcService(
         // let it surface later as a stalled run channel. The proxy makes the mirror check against
         // RegisterResponse.protocol_version, so an OLDER control-plane is refused on that side.
         requireCompatibleProtocolVersion(request.protocolVersion)
-        // Pass the proto Engine through as the domain type, rejecting only the invalid sentinels (the proto3
-        // zero value and the generated unrecognized value) — an unset/garbage engine must not silently
-        // default to postgres and mis-drive introspection/dialect resolution. Inverting the check this way
-        // lets a future proto engine pass through untouched instead of being rejected by an enumeration of
-        // the currently-known ones.
-        val engine = when (request.engine) {
-            Engine.ENGINE_UNSPECIFIED, Engine.UNRECOGNIZED -> throw StatusException(
-                Status.INVALID_ARGUMENT.withDescription("engine must be POSTGRES or MYSQL"),
-            )
-            else -> request.engine
+        val engine = try {
+            request.engine.definition.engine
+        } catch (_: IllegalStateException) {
+            throw StatusException(Status.INVALID_ARGUMENT.withDescription("unregistered engine"))
         }
         // The advertised chain is inspected, never refused. Whether a chain is usable is the CLIENT's
         // verification to make, and it will fail loudly on its own if it cannot build a path. Rejecting at

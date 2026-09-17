@@ -1,6 +1,9 @@
 package driver
 
-import "fmt"
+import (
+	"fmt"
+	"slices"
+)
 
 // Registry is the immutable set of providers the daemon was built with, keyed by engine name.
 type Registry struct {
@@ -18,6 +21,15 @@ func NewRegistry(providers ...Provider) *Registry {
 		}
 		if _, exists := r.providers[engine]; exists {
 			panic(fmt.Sprintf("duplicate provider engine %q", engine))
+		}
+		formats := provider.SupportedFormats()
+		if provider.DefaultFormat() == "" || !slices.Contains(formats, provider.DefaultFormat()) {
+			panic(fmt.Sprintf("provider %q has no supported default format", engine))
+		}
+		for i, format := range formats {
+			if format == "" || slices.Contains(formats[:i], format) {
+				panic(fmt.Sprintf("provider %q has an empty or duplicate format", engine))
+			}
 		}
 		r.providers[engine] = provider
 	}

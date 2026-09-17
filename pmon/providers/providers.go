@@ -1,4 +1,4 @@
-// Package providers is pmon's composition root: the engines it knows and what each one provides.
+// Package providers is pmon's composition root: the registry of every engine it can format connection strings for or broker.
 package providers
 
 import (
@@ -12,4 +12,5 @@ var builtins = driver.NewRegistry(
 	postgres.Provider{},
 )
 
+// Builtins is the immutable registry the daemon and the formatting API consult.
 func Builtins() *driver.Registry { return builtins }

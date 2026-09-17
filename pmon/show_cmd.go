@@ -11,27 +11,19 @@ import (
 	"github.com/ridi-oss/proxy-monster/pmon/driver"
 )
 
-// showCmd prints ONE datasource's local connection string, in the flavor the target client wants:
-//
-//	pmon show acme-mysql            postgres://…  |  mysql://…      (--url, the default)
-//	pmon show acme-mysql --jdbc     jdbc:mysql://127.0.0.1:6100/app?user=…&password=…
-//	pmon show acme-mysql --jdbc --jdbc-with-truncation-diagnostics
-//	pmon show acme-mysql --go-dsn   user:pass@tcp(127.0.0.1:6100)/app?parseTime=true&charset=utf8mb4
-//	pmon show acme-mysql --cli      mysql -h 127.0.0.1 -P 6100 -u … -p… app
-//
-// Output is the bare string, so it pipes straight into a client or an env var.
 type showCmd struct {
 	Datasource                string `arg:"" help:"Datasource name (as shown by 'pmon status')."`
-	URL                       bool   `xor:"format" help:"Print a driver URI (default)."`
+	Format                    string `xor:"format" help:"Print a provider-supported format (for example url, jdbc, cli, python, node, aws-config); defaults to the provider's preferred format."`
+	URL                       bool   `xor:"format" help:"Print a connection URL."`
 	JDBC                      bool   `xor:"format" help:"Print a JDBC URL."`
 	JDBCTruncationDiagnostics bool   `name:"jdbc-with-truncation-diagnostics" help:"With --jdbc, omit the compatibility parameter so Connector/J can fetch truncation diagnostics (may issue SHOW WARNINGS)."`
 	GoDSN                     bool   `name:"go-dsn" xor:"format" help:"Print a Go driver DSN."`
-	CLI                       bool   `xor:"format" help:"Print the mysql/psql command line."`
+	CLI                       bool   `xor:"format" help:"Print the native client command line."`
 }
 
 func (c *showCmd) Run() error {
-	if c.JDBCTruncationDiagnostics && !c.JDBC {
-		return fmt.Errorf("--jdbc-with-truncation-diagnostics requires --jdbc")
+	if c.JDBCTruncationDiagnostics && c.format() != driver.JDBC {
+		return fmt.Errorf("--jdbc-with-truncation-diagnostics requires --jdbc or --format jdbc")
 	}
 
 	ctx := context.Background()
@@ -64,19 +56,37 @@ func (c *showCmd) Run() error {
 		return fmt.Errorf("datasource %q is not brokered locally: %s", found.Name, found.Reason)
 	}
 
-	fmt.Println(conn.StringWithOptions(c.format(), driver.Target{
-		Engine:   found.Engine,
-		DbName:   found.DbName,
-		Port:     found.LocalPort,
-		User:     s.Principal,
-		Password: s.LocalPassword,
-	}, driver.Options{JDBCTruncationDiagnostics: c.JDBCTruncationDiagnostics}))
+	format := c.format()
+	if format == "" {
+		format = conn.DefaultFormat(found.Engine)
+	}
+	if !conn.SupportsFormat(found.Engine, format) {
+		var supported []string
+		for _, value := range conn.SupportedFormats(found.Engine) {
+			supported = append(supported, string(value))
+		}
+		return fmt.Errorf("format %q is not supported by %q; supported formats: %s", format, found.Engine, strings.Join(supported, ", "))
+	}
+	output := conn.StringWithOptions(format, driver.Target{
+		Name:           found.Name,
+		ConnectionInfo: found.ConnectionInfo.Clone(),
+		Engine:         found.Engine,
+		DbName:         found.DbName,
+		Port:           found.LocalPort,
+		User:           s.Principal,
+		Password:       s.LocalPassword,
+	}, driver.Options{JDBCTruncationDiagnostics: c.JDBCTruncationDiagnostics})
+	if output == "" {
+		return fmt.Errorf("cannot format %q for %q: connection metadata is incomplete or invalid", format, found.Name)
+	}
+	fmt.Println(output)
 	return nil
 }
 
-// format maps the mutually-exclusive flags onto a [driver.Format], defaulting to a driver URI.
 func (c *showCmd) format() driver.Format {
 	switch {
+	case c.URL:
+		return driver.URL
 	case c.JDBC:
 		return driver.JDBC
 	case c.GoDSN:
@@ -84,7 +94,7 @@ func (c *showCmd) format() driver.Format {
 	case c.CLI:
 		return driver.CLI
 	default:
-		return driver.URL
+		return driver.Format(c.Format)
 	}
 }
 

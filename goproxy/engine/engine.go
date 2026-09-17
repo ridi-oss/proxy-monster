@@ -455,10 +455,9 @@ func (Fail) isVerdict()    {}
 // ---- The engine ----
 
 // QueryEngine runs one connection's relay. It holds ONLY a namespace cache (invalidated by protocol
-// signals via MarkNamespaceDirty, never by inspecting SQL). It is created with a dumb Db and an
-// injected Decider and never touches sockets — the protocol supplies probe I/O via callbacks.
+// signals via MarkNamespaceDirty, never by inspecting SQL). It is created with an injected Decider and
+// never touches sockets — the protocol supplies probe I/O via callbacks.
 type QueryEngine struct {
-	db           Db
 	decider      Decider
 	session      SessionObservation
 	nsDirty      bool
@@ -470,8 +469,8 @@ type QueryEngine struct {
 
 // NewQueryEngine creates the per-connection engine. The namespace starts dirty so the first query
 // probes it.
-func NewQueryEngine(db Db, decider Decider) *QueryEngine {
-	return &QueryEngine{db: db, decider: decider, nsDirty: true}
+func NewQueryEngine(decider Decider) *QueryEngine {
+	return &QueryEngine{decider: decider, nsDirty: true}
 }
 
 // MarkNamespaceDirty invalidates the cached namespace. The protocol calls this when an authoritative
@@ -517,9 +516,9 @@ func (o SessionObservation) Clone() SessionObservation {
 	return o
 }
 
-// AuthzInput is one statement to authorize plus the probe callbacks the protocol wires up. The Db
-// supplies the probe SQL; the protocol runs it on the target DB and parses the result. The engine calls
-// ProbeSession only when its cache is dirty, and ProbeTempColumns only when the Db supports the overlay.
+// AuthzInput is one statement to authorize plus the probe callbacks the protocol wires up. The protocol
+// runs its Db's probe SQL on the target DB and parses the result. The engine calls ProbeSession only when
+// its cache is dirty, and ProbeTempColumns only when the protocol supplies it (the PG temp overlay).
 type AuthzInput struct {
 	SQL              string
 	Token            string
@@ -530,8 +529,8 @@ type AuthzInput struct {
 	RunCommands      func([]*pb.Refetch) error
 }
 
-// Authorize gathers namespace context (cached unless dirty), gathers session-temp columns when the Db
-// supports the overlay, calls the control plane's Decide, and returns the verdict for the protocol to
+// Authorize gathers namespace context (cached unless dirty), gathers session-temp columns when the
+// protocol supplies a probe, calls the control plane's Decide, and returns the verdict for the protocol to
 // apply. It makes no enforcement decision of its own; the only local outcomes are fail-closed (Fail) on
 // a mechanical impossibility and the reduction of the control plane's Action to Deny/Proceed.
 func (e *QueryEngine) Authorize(in AuthzInput) Verdict {
@@ -552,7 +551,7 @@ func (e *QueryEngine) Authorize(in AuthzInput) Verdict {
 	}
 
 	var temps []TempColumn
-	if e.db.SupportsTempOverlay() && in.ProbeTempColumns != nil {
+	if in.ProbeTempColumns != nil {
 		// Best-effort: on failure none are overlaid, so a temp read resolves fail-closed at the CP.
 		if t, err := in.ProbeTempColumns(); err == nil {
 			temps = t

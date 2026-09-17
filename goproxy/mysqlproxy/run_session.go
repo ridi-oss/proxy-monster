@@ -43,7 +43,7 @@ func NewRunSession(ctx context.Context, target spi.TargetDb, db engine.Db, clien
 		target:       target,
 		token:        token,
 		connectionID: append([]byte(nil), connectionID...),
-		qe:           engine.NewQueryEngine(db, client),
+		qe:           engine.NewQueryEngine(client),
 		guard:        guard,
 	}
 	s.ref = engine.NewRefetcher(db, s.connectionID, generation, func(sql string, expectedColumns int) ([][]*string, error) {

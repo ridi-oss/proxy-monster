@@ -167,7 +167,7 @@ func (s *Server) handleConn(clientConn net.Conn) {
 	defer targetDbConn.Close()
 	cancelQuery := func() { _ = cancelTargetDbQuery(s.targetDb, targetConnID) }
 
-	qe := engine.NewQueryEngine(s.db, s.client)
+	qe := engine.NewQueryEngine(s.client)
 	preparedStmts := make(map[uint32]preparedStmt)
 	if handshake.Database != "" {
 		// The client selected a database at connect time. Switching the current database is not a gated

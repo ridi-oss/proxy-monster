@@ -39,7 +39,7 @@ func NewRunSession(ctx context.Context, target spi.TargetDb, db engine.Db, clien
 	s := &RunSession{
 		sessionCore: sessionCore{
 			targetDb:     pgproto3.NewFrontend(conn, conn),
-			qe:           engine.NewQueryEngine(db, client),
+			qe:           engine.NewQueryEngine(client),
 			db:           db,
 			lastTxStatus: txStatus,
 		},

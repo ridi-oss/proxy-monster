@@ -207,7 +207,7 @@ startupComplete:
 	sess := &session{
 		sessionCore: sessionCore{
 			targetDb:     targetDb,
-			qe:           engine.NewQueryEngine(s.db, s.client),
+			qe:           engine.NewQueryEngine(s.client),
 			db:           s.db,
 			lastTxStatus: txStatus,
 			forward:      client.Send,

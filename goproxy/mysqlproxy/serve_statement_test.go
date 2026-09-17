@@ -9,7 +9,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ridi-oss/proxy-monster/goproxy/db"
 	"github.com/ridi-oss/proxy-monster/goproxy/engine"
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
 	"github.com/ridi-oss/proxy-monster/mysqlwire"
@@ -27,7 +26,7 @@ func scriptedMySQLRun(t *testing.T, decider engine.Decider, maxRows int, respons
 	t.Cleanup(func() { _ = client.Close(); _ = server.Close() })
 	_ = client.SetDeadline(time.Now().Add(5 * time.Second))
 	_ = server.SetDeadline(time.Now().Add(5 * time.Second))
-	qe := engine.NewQueryEngine(db.MySqlDb{}, decider)
+	qe := engine.NewQueryEngine(decider)
 	qe.SetNamespace([]string{"test"})
 	s := &RunSession{conn: client, qe: qe, ref: &engine.Refetcher{}}
 	writes := make(chan string, 3)

@@ -16,7 +16,7 @@ version: v2
 plugins:
   - local: protoc-gen-go
     out: internal/pb
-    opt: paths=source_relative,Mcontrolplane.proto=github.com/ridi-oss/proxy-monster/goproxy/internal/pb;proxymonsterv1,Mengine.proto=github.com/ridi-oss/proxy-monster/analyzer/probe/pb,Manalyzer.proto=github.com/ridi-oss/proxy-monster/analyzer/probe/pb
+    opt: paths=source_relative,Mcontrolplane.proto=github.com/ridi-oss/proxy-monster/goproxy/internal/pb;proxymonsterv1,Mengine.proto=github.com/ridi-oss/proxy-monster/analyzer/probe/pb,Manalyzer.proto=github.com/ridi-oss/proxy-monster/analyzer/probe/pb,Mathena.proto=github.com/ridi-oss/proxy-monster/analyzer/probe/pb
   - local: protoc-gen-go-grpc
     out: internal/pb
-    opt: paths=source_relative,Mcontrolplane.proto=github.com/ridi-oss/proxy-monster/goproxy/internal/pb;proxymonsterv1,Mengine.proto=github.com/ridi-oss/proxy-monster/analyzer/probe/pb,Manalyzer.proto=github.com/ridi-oss/proxy-monster/analyzer/probe/pb
+    opt: paths=source_relative,Mcontrolplane.proto=github.com/ridi-oss/proxy-monster/goproxy/internal/pb;proxymonsterv1,Mengine.proto=github.com/ridi-oss/proxy-monster/analyzer/probe/pb,Manalyzer.proto=github.com/ridi-oss/proxy-monster/analyzer/probe/pb,Mathena.proto=github.com/ridi-oss/proxy-monster/analyzer/probe/pb

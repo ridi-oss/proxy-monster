@@ -39,8 +39,8 @@ const KEYS = {
   datasources: 'datasources',
   datasourcesLive: 'datasources-live',
   catalog: (id: number) => ['catalog', id] as const,
-  tableDetail: (id: number, schema: string, table: string) =>
-    ['table-detail', id, schema, table] as const,
+  tableDetail: (id: number, catalog: string, schema: string, table: string) =>
+    ['table-detail', id, catalog, schema, table] as const,
   auditEvents: (limit: number) => ['audit-events', limit] as const,
   auditEvent: (id: number) => ['audit-event', id] as const,
   approval: (id: number) => ['approval', id] as const,
@@ -94,13 +94,14 @@ export function useCatalog(id: number | null) {
 
 export function useTableDetail(
   datasourceId: number | null,
+  catalog: string | null,
   schema: string | null,
   table: string | null,
 ) {
-  const key = datasourceId == null || schema == null || table == null
+  const key = datasourceId == null || catalog == null || schema == null || table == null
     ? null
-    : KEYS.tableDetail(datasourceId, schema, table)
-  return useSWR(key, () => getTableDetail(datasourceId!, schema!, table!), {
+    : KEYS.tableDetail(datasourceId, catalog, schema, table)
+  return useSWR(key, () => getTableDetail(datasourceId!, catalog!, schema!, table!), {
     revalidateOnMount: true,
     revalidateOnFocus: true,
     dedupingInterval: 0,

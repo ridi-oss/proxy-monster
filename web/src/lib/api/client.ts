@@ -243,10 +243,11 @@ export function getCatalog(datasourceId: number): Promise<CatalogColumn[]> {
 
 export function getTableDetail(
   datasourceId: number,
+  catalog: string,
   schema: string,
   table: string,
 ): Promise<TableDetail> {
-  const query = new URLSearchParams({ schema, table })
+  const query = new URLSearchParams({ catalog, schema, table })
   return request<TableDetail>(`/api/datasources/${datasourceId}/table-detail?${query}`)
 }
 

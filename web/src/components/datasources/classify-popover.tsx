@@ -76,6 +76,7 @@ export function ClassifyPopover({ datasourceId, col }: Props) {
     setError(null)
     try {
       await putClassification(datasourceId, {
+        catalog: col.catalog,
         schema: col.schema,
         table: col.table,
         column: col.column,
@@ -96,6 +97,7 @@ export function ClassifyPopover({ datasourceId, col }: Props) {
     setError(null)
     try {
       await deleteClassification(datasourceId, {
+        catalog: col.catalog,
         schema: col.schema,
         table: col.table,
         column: col.column,

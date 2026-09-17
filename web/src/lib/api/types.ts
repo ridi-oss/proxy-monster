@@ -92,6 +92,7 @@ export interface Datasource {
   host: string
   port: number
   dbName: string
+  currentCatalog?: string | null
   /** Policy-posture tags (`preset:*`, docs/access-model.md) — set by the proxy's `PM_DATASOURCE_TAGS` at
    *  registration, or by an admin edit. Empty by default (safe "production" posture). */
   tags: string[]
@@ -142,6 +143,7 @@ export interface TestResult {
 
 /** A column's classification (tags + optional mask function), upserted by table+column. */
 export interface Classification {
+  catalog: string
   schema: string
   table: string
   column: string
@@ -231,6 +233,7 @@ export interface TableDetail {
 
 /** Upsert body for a classification. Omitted `schema` uses the captured non-system datasource default; it is required before introspection captures one. */
 export interface ClassificationInput {
+  catalog: string
   schema?: string
   table: string
   column: string
@@ -240,6 +243,7 @@ export interface ClassificationInput {
 
 /** Delete body for a classification. Omitted `schema` uses the same captured default as upsert. */
 export interface ClassificationDelete {
+  catalog: string
   schema?: string
   table: string
   column: string

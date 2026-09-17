@@ -1,82 +1,95 @@
-// Catalog → CodeMirror SQL `schema` map + a grouped table/column tree, derived
-// once from a datasource's CatalogColumn[]. The same source drives both
-// schema-aware autocomplete (the `schema` map) and the explorer tree (the
-// grouped view) — one shape, no parallel derivation.
-import type { CatalogColumn } from '@/lib/api/types'
+import { MySQL, PostgreSQL, type SQLNamespace } from '@codemirror/lang-sql'
+import type { CatalogColumn, Datasource } from '@/lib/api/types'
+import { currentCatalog, groupCatalogTables } from '@/lib/catalog'
 
-/** A column row in the tree, carrying its qualified name + PII flag for the explorer. */
 export interface TreeColumn {
   name: string
   dataType: string
-  /** Classification tags (e.g. `pii`, `financial`) — empty when unclassified. */
   tags: string[]
   nullable: boolean
 }
 
-/** One table group: its catalog identity, qualified label, and columns in catalog order. */
 export interface TreeTable {
+  key: string
+  catalog: string
   schema: string
-  /** Bare table name within `schema`. */
   name: string
-  /** `schema.table` (or bare `table` when schema is "public"). */
   qualified: string
-  /** Identifier inserted into the editor when the table node is clicked. */
-  insert: string
+  insert: string | null
   columns: TreeColumn[]
-  /** Count of PII columns — surfaced as a badge on the table node. */
   piiCount: number
 }
 
-/** Drop the redundant "public." prefix so names read like the user would type them. */
-function qualify(schema: string, table: string): string {
-  return schema && schema !== 'public' ? `${schema}.${table}` : table
+export function sqlDialect(engine?: string) {
+  return engine === 'mysql' ? MySQL : PostgreSQL
 }
 
-/** Group catalog columns into table nodes, preserving catalog (ordinal) order. */
-export function buildTree(cols: CatalogColumn[]): TreeTable[] {
-  const bySchema = new Map<string, Map<string, TreeTable>>()
-  const tree: TreeTable[] = []
-  for (const c of cols) {
-    let byTable = bySchema.get(c.schema)
-    if (!byTable) {
-      byTable = new Map()
-      bySchema.set(c.schema, byTable)
-    }
-
-    let node = byTable.get(c.table)
-    if (!node) {
-      const qualified = qualify(c.schema, c.table)
-      node = {
-        schema: c.schema,
-        name: c.table,
-        qualified,
-        insert: qualified,
-        columns: [],
-        piiCount: 0,
-      }
-      byTable.set(c.table, node)
-      tree.push(node)
-    }
-    const tags = c.classification?.tags ?? []
-    node.columns.push({ name: c.column, dataType: c.dataType, tags, nullable: c.nullable })
-    // The badge counts classified columns, whatever the tag is named.
-    if (tags.length > 0) node.piiCount += 1
-  }
-  return tree
+function identifierLabel(name: string, engine?: string): string {
+  const quote = engine === 'mysql' ? '`' : '"'
+  return name.replaceAll(quote, quote + quote)
 }
 
-/**
- * The `schema` map @codemirror/lang-sql consumes for table + column completion:
- * `{ "<table>": ["<col>", ...] }`. Keyed by both the qualified name and the bare
- * table name so completion fires whether the user types `orders` or `public.orders`.
- */
-export function buildSchemaMap(tree: TreeTable[]): Record<string, string[]> {
-  const map: Record<string, string[]> = {}
-  for (const t of tree) {
-    const colNames = t.columns.map((c) => c.name)
-    map[t.qualified] = colNames
-    const bare = t.qualified.includes('.') ? t.qualified.split('.').pop()! : t.qualified
-    if (!(bare in map)) map[bare] = colNames
+function identifier(name: string, engine?: string): string {
+  const quote = engine === 'mysql' ? '`' : '"'
+  return quote + identifierLabel(name, engine) + quote
+}
+
+export function buildTree(cols: CatalogColumn[], datasource?: Datasource): TreeTable[] {
+  const catalog = currentCatalog(datasource)
+  const engine = datasource?.engine
+  return groupCatalogTables(cols).map((group) => {
+    const canQuery = (engine === 'mysql' || engine === 'postgres') &&
+      catalog != null && catalog.trim() !== '' && group.catalog === catalog
+    const parts = group.schema ? [group.schema, group.table] : [group.table]
+    return {
+      key: group.key,
+      catalog: group.catalog,
+      schema: group.schema,
+      name: group.table,
+      qualified: group.label,
+      insert: canQuery ? parts.map((part) => identifier(part, engine)).join('.') : null,
+      columns: group.columns.map((column) => ({
+        name: column.column,
+        dataType: column.dataType,
+        tags: column.classification?.tags ?? [],
+        nullable: column.nullable,
+      })),
+      piiCount: group.piiCount,
+    }
+  })
+}
+
+// CodeMirror keeps doubled quotes in identifier lookups and splits unescaped dots.
+function completionKey(name: string, engine?: string): string {
+  return identifierLabel(name, engine).replaceAll('.', '\\.')
+}
+
+export function buildSchemaMap(tree: TreeTable[], engine?: string): SQLNamespace {
+  const schemas = new Map<string, TreeTable[]>()
+  const aliases = new Map<string, TreeTable | null>()
+  for (const table of tree) {
+    if (table.insert == null) continue
+    const tables = schemas.get(table.schema) ?? []
+    tables.push(table)
+    schemas.set(table.schema, tables)
+    aliases.set(table.name, aliases.has(table.name) ? null : table)
   }
-  return map
+  const tableNamespace = (table: TreeTable, apply: string): SQLNamespace => ({
+    self: { label: identifierLabel(table.name, engine), type: 'type', apply },
+    children: table.columns.map((column) => ({
+      label: identifierLabel(column.name, engine), type: 'property', apply: identifier(column.name, engine),
+    })),
+  })
+  return Object.fromEntries([
+    ...[...schemas].filter(([schema]) => schema !== '').map(([schema, tables]) => [
+      completionKey(schema, engine), {
+        self: { label: identifierLabel(schema, engine), type: 'type', apply: identifier(schema, engine) },
+        children: Object.fromEntries(tables.map((table) => [
+          completionKey(table.name, engine), tableNamespace(table, identifier(table.name, engine)),
+        ])),
+      },
+    ]),
+    ...[...aliases].flatMap(([name, table]) => table && !schemas.has(name)
+      ? [[completionKey(name, engine), tableNamespace(table, table.insert!)]] : []),
+  ])
 }

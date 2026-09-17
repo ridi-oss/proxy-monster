@@ -1,10 +1,5 @@
 'use client'
 
-// CodeMirror SQL editor. Wires the PostgreSQL dialect + a catalog-derived
-// `schema` map for schema-aware autocomplete, our palette-matched theme (picked
-// off the active light/dark mode), and a high-precedence Cmd/Ctrl+Enter keymap
-// that runs the query. Exposes an imperative `insertAtCursor` handle so the
-// explorer can splice a table/column name in at the caret.
 import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef } from 'react'
 import { useTheme } from 'next-themes'
 import CodeMirror, {
@@ -13,7 +8,8 @@ import CodeMirror, {
   Prec,
   type ReactCodeMirrorRef,
 } from '@uiw/react-codemirror'
-import { PostgreSQL, sql } from '@codemirror/lang-sql'
+import { sql, type SQLNamespace } from '@codemirror/lang-sql'
+import { sqlDialect } from './catalog-schema'
 import { autocompletion } from '@codemirror/autocomplete'
 import { editorTheme } from '@/lib/cm-theme'
 import { currentStatement, findStatementRange } from './statement'
@@ -29,8 +25,8 @@ export interface SqlEditorHandle {
 interface Props {
   value: string
   onChange: (value: string) => void
-  /** `{ "<table>": ["<col>", ...] }` for schema-aware completion. */
-  schema: Record<string, string[]>
+  schema: SQLNamespace
+  engine?: string
   /** Cmd/Ctrl+Enter handler (run the query). */
   onRun: () => void
   /** SQL of the selected result tab — its matching statement is highlighted + scrolled to. */
@@ -38,7 +34,7 @@ interface Props {
 }
 
 export const SqlEditor = forwardRef<SqlEditorHandle, Props>(function SqlEditor(
-  { value, onChange, schema, onRun, linkedQuery },
+  { value, onChange, schema, engine, onRun, linkedQuery },
   ref,
 ) {
   const { resolvedTheme } = useTheme()
@@ -98,7 +94,7 @@ export const SqlEditor = forwardRef<SqlEditorHandle, Props>(function SqlEditor(
           },
         ]),
       ),
-      sql({ dialect: PostgreSQL, schema, upperCaseKeywords: true }),
+      sql({ dialect: sqlDialect(engine), schema, upperCaseKeywords: true }),
       activeStatementHighlight,
       linkedQueryHighlight,
       // Tuned autocomplete: debounce so the popup doesn't recompute/repaint on every keystroke,
@@ -107,7 +103,7 @@ export const SqlEditor = forwardRef<SqlEditorHandle, Props>(function SqlEditor(
       autocompletion({ activateOnTypingDelay: 150, interactionDelay: 100, maxRenderedOptions: 15 }),
       EditorView.lineWrapping,
     ],
-    [schema, resolvedTheme],
+    [schema, engine, resolvedTheme],
   )
 
   return (

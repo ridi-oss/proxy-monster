@@ -7,6 +7,12 @@ import (
 	"github.com/ridi-oss/proxy-monster/pmon/driver"
 )
 
+func (Provider) SupportedFormats() []driver.Format {
+	return []driver.Format{driver.URL, driver.JDBC, driver.GoDSN, driver.CLI}
+}
+
+func (Provider) DefaultFormat() driver.Format { return driver.URL }
+
 func (Provider) FormatConnectionString(format driver.Format, t driver.Target, opts driver.Options) string {
 	switch format {
 	case driver.JDBC:

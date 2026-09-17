@@ -5,6 +5,7 @@ package driver
 
 import (
 	"context"
+	"maps"
 	"net"
 )
 
@@ -17,6 +18,28 @@ type Endpoint struct {
 	CertChainPEM  string `json:"advertiseCertChain"`
 	// TLS can be required even when the proxy publishes no certificate chain.
 	WireTLS bool `json:"advertiseWireTls"`
+	// ConnectionInfo is what the proxy published beyond its address; nil when it published nothing.
+	ConnectionInfo *ConnectionInfo `json:"connectionInfo,omitempty"`
+}
+
+// Clone deep-copies the mutable ConnectionInfo so a provider may edit its copy without touching the daemon's.
+func (e Endpoint) Clone() Endpoint {
+	e.ConnectionInfo = e.ConnectionInfo.Clone()
+	return e
+}
+
+// ConnectionInfo is the nonsecret endpoint and engine-defined properties a proxy publishes for clients. Its
+// contents belong to the provider that registered the engine; the daemon only carries and clones it.
+type ConnectionInfo struct {
+	Endpoint   string            `json:"endpoint"`
+	Properties map[string]string `json:"properties"`
+}
+
+func (info *ConnectionInfo) Clone() *ConnectionInfo {
+	if info == nil {
+		return nil
+	}
+	return &ConnectionInfo{Endpoint: info.Endpoint, Properties: maps.Clone(info.Properties)}
 }
 
 // Credentials is the logged-in session a broker forwards with: the principal, the wire token it presents
@@ -47,11 +70,14 @@ const (
 // Target is what a connection string is formatted for: the local broker port plus the principal and the
 // sticky local password the broker checks.
 type Target struct {
-	Engine   string
-	DbName   string
-	Port     int
-	User     string
-	Password string
+	Name string
+	// ConnectionInfo is the datasource's published metadata, or nil; a formatter that needs it returns "" without.
+	ConnectionInfo *ConnectionInfo
+	Engine         string
+	DbName         string
+	Port           int
+	User           string
+	Password       string
 }
 
 // Options adjusts formatting for clients with non-default requirements.
@@ -67,8 +93,12 @@ type Options struct {
 type Provider interface {
 	// Engine is the name the datasource advertises and the registry keys on.
 	Engine() string
-	// FormatConnectionString returns the text a client pastes in the requested Format; an unknown Format
-	// yields the engine's URL form.
+	// SupportedFormats lists the connection-string flavors this engine can produce; DefaultFormat is used
+	// when the user names none and must be one of them (NewRegistry panics otherwise).
+	SupportedFormats() []Format
+	DefaultFormat() Format
+	// FormatConnectionString returns the text a client pastes, or "" when the Target lacks what that
+	// format needs; the caller reports that, never a partial string.
 	FormatConnectionString(Format, Target, Options) string
 	// UnavailableReason says why this endpoint cannot be brokered, or "" when it can. No network I/O.
 	UnavailableReason(Endpoint) string

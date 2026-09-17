@@ -15,6 +15,12 @@ type Provider struct{}
 
 func (Provider) Engine() string { return "postgres" }
 
+func (Provider) SupportedFormats() []driver.Format {
+	return []driver.Format{driver.URL, driver.JDBC, driver.GoDSN, driver.CLI}
+}
+
+func (Provider) DefaultFormat() driver.Format { return driver.URL }
+
 func (Provider) FormatConnectionString(format driver.Format, t driver.Target, _ driver.Options) string {
 	dbPath := url.PathEscape(t.DbName)
 	keywordUser := keywordValue(t.User)

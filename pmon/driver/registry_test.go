@@ -10,6 +10,8 @@ import (
 type namedProvider string
 
 func (p namedProvider) Engine() string                                      { return string(p) }
+func (namedProvider) SupportedFormats() []Format                            { return []Format{URL} }
+func (namedProvider) DefaultFormat() Format                                 { return URL }
 func (namedProvider) FormatConnectionString(Format, Target, Options) string { return "" }
 func (namedProvider) UnavailableReason(Endpoint) string                     { return "unsupported" }
 func (namedProvider) RouteKey(Endpoint) string                              { return "" }

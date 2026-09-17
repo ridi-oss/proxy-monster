@@ -290,7 +290,7 @@ class McpServerDbTest {
 
         val malformedDatasource = sdk.callTool(
             "set_column_classification",
-            mapOf("datasource" to mapOf("invalid" to true), "table" to "users", "column" to "ssn", "tags" to listOf("pii")),
+            mapOf("datasource" to mapOf("invalid" to true), "catalog" to "mcp", "table" to "users", "column" to "ssn", "tags" to listOf("pii")),
         )
         assertEquals(true, malformedDatasource.isError)
         assertEquals("mcp.invalid_request", malformedDatasource.structuredContent?.get("code")?.jsonPrimitive?.content)
@@ -407,6 +407,7 @@ class McpServerDbTest {
                 "set_column_classification",
                 mapOf(
                     "datasource" to "mcp-family-datasource",
+                    "catalog" to "mcp",
                     "schema" to "public",
                     "table" to "users",
                     "column" to "ssn",
@@ -448,9 +449,9 @@ class McpServerDbTest {
                 mapOf(
                     "datasource" to "mcp-batch-datasource",
                     "columns" to listOf(
-                        mapOf("table" to "users", "column" to "ssn", "tags" to listOf("pii"), "maskFnName" to "mcp-batch-mask"),
-                        mapOf("schema" to "public", "table" to "users", "column" to "email", "tags" to listOf("pii", "contact")),
-                        mapOf("table" to "users", "column" to "phone", "tags" to listOf("contact")),
+                        mapOf("catalog" to "mcp", "table" to "users", "column" to "ssn", "tags" to listOf("pii"), "maskFnName" to "mcp-batch-mask"),
+                        mapOf("catalog" to "mcp", "schema" to "public", "table" to "users", "column" to "email", "tags" to listOf("pii", "contact")),
+                        mapOf("catalog" to "mcp", "table" to "users", "column" to "phone", "tags" to listOf("contact")),
                     ),
                 ),
             ),
@@ -470,8 +471,8 @@ class McpServerDbTest {
             mapOf(
                 "datasource" to "mcp-batch-datasource",
                 "columns" to listOf(
-                    mapOf("table" to "orders", "column" to "buyer", "tags" to listOf("pii")),
-                    mapOf("table" to "orders", "column" to "card", "tags" to listOf("system:reserved")),
+                    mapOf("catalog" to "mcp", "table" to "orders", "column" to "buyer", "tags" to listOf("pii")),
+                    mapOf("catalog" to "mcp", "table" to "orders", "column" to "card", "tags" to listOf("system:reserved")),
                 ),
             ),
         )
@@ -485,8 +486,8 @@ class McpServerDbTest {
             mapOf(
                 "datasource" to "mcp-batch-datasource",
                 "columns" to listOf(
-                    mapOf("table" to "orders", "column" to "buyer", "tags" to listOf("pii")),
-                    mapOf("table" to "orders", "column" to "card", "tags" to listOf("pii"), "maskFnName" to "no-such-mask"),
+                    mapOf("catalog" to "mcp", "table" to "orders", "column" to "buyer", "tags" to listOf("pii")),
+                    mapOf("catalog" to "mcp", "table" to "orders", "column" to "card", "tags" to listOf("pii"), "maskFnName" to "no-such-mask"),
                 ),
             ),
         )
@@ -501,8 +502,8 @@ class McpServerDbTest {
             mapOf(
                 "datasource" to "mcp-batch-datasource",
                 "columns" to listOf(
-                    mapOf("table" to "users", "column" to "ssn", "tags" to listOf("pii")),
-                    mapOf("schema" to "public", "table" to "users", "column" to "ssn", "tags" to emptyList<String>()),
+                    mapOf("catalog" to "mcp", "table" to "users", "column" to "ssn", "tags" to listOf("pii")),
+                    mapOf("catalog" to "mcp", "schema" to "public", "table" to "users", "column" to "ssn", "tags" to emptyList<String>()),
                 ),
             ),
         )
@@ -515,7 +516,7 @@ class McpServerDbTest {
             "set_column_classifications",
             mapOf(
                 "datasource" to "mcp-batch-datasource",
-                "columns" to listOf(mapOf("table" to "users", "column" to "ssn", "tags" to listOf("pii"), "maskFnId" to 1)),
+                "columns" to listOf(mapOf("catalog" to "mcp", "table" to "users", "column" to "ssn", "tags" to listOf("pii"), "maskFnId" to 1)),
             ),
         )
         assertEquals(true, unknownKey.isError)
@@ -584,8 +585,8 @@ class McpServerDbTest {
                 mapOf(
                     "datasource" to "mcp-batch-rollback-datasource",
                     "columns" to listOf(
-                        mapOf("table" to "users", "column" to "email", "tags" to listOf("pii")),
-                        mapOf("table" to "users", "column" to "ssn", "tags" to listOf("pii")),
+                        mapOf("catalog" to "mcp", "table" to "users", "column" to "email", "tags" to listOf("pii")),
+                        mapOf("catalog" to "mcp", "table" to "users", "column" to "ssn", "tags" to listOf("pii")),
                     ),
                     "idempotencyKey" to "batch-rolled-back",
                 ),
@@ -617,7 +618,7 @@ class McpServerDbTest {
                 "set_column_classifications",
                 mapOf(
                     "datasource" to "mcp-batch-blank-datasource",
-                    "columns" to listOf(mapOf("schema" to "", "table" to "users", "column" to "ssn", "tags" to listOf("pii"))),
+                    "columns" to listOf(mapOf("catalog" to "mcp", "schema" to "", "table" to "users", "column" to "ssn", "tags" to listOf("pii"))),
                 ),
             ),
         ).getValue("result").jsonObject
@@ -635,8 +636,8 @@ class McpServerDbTest {
             mapOf(
                 "datasource" to "mcp-batch-blank-datasource",
                 "columns" to listOf(
-                    mapOf("schema" to "", "table" to "users", "column" to "ssn", "tags" to listOf("pii")),
-                    mapOf("table" to "users", "column" to "ssn", "tags" to emptyList<String>()),
+                    mapOf("catalog" to "mcp", "schema" to "", "table" to "users", "column" to "ssn", "tags" to listOf("pii")),
+                    mapOf("catalog" to "mcp", "table" to "users", "column" to "ssn", "tags" to emptyList<String>()),
                 ),
             ),
         )
@@ -658,7 +659,7 @@ class McpServerDbTest {
             mapOf(
                 "datasource" to "mcp-batch-cap-datasource",
                 "columns" to (1..DatasourceManagementService.MAX_CLASSIFICATION_BATCH + 1).map {
-                    mapOf("table" to "users", "column" to "c$it", "tags" to listOf("pii"))
+                    mapOf("catalog" to "mcp", "table" to "users", "column" to "c$it", "tags" to listOf("pii"))
                 },
             ),
         )
@@ -709,12 +710,12 @@ class McpServerDbTest {
             val arguments = if (tool == "set_column_classification") {
                 mapOf(
                     "datasource" to "mcp-batch-cedar-datasource",
-                    "table" to "users", "column" to "ssn", "tags" to listOf("pii"),
+                    "catalog" to "mcp", "table" to "users", "column" to "ssn", "tags" to listOf("pii"),
                 )
             } else {
                 mapOf(
                     "datasource" to "mcp-batch-cedar-datasource",
-                    "columns" to listOf(mapOf("table" to "users", "column" to "ssn", "tags" to listOf("pii"))),
+                    "columns" to listOf(mapOf("catalog" to "mcp", "table" to "users", "column" to "ssn", "tags" to listOf("pii"))),
                 )
             }
             assertFailsWith<McpException>(tool) { sdk.callTool(tool, arguments) }
@@ -749,6 +750,7 @@ class McpServerDbTest {
                         put("columns", buildJsonArray {
                             add(
                                 buildJsonObject {
+                                    put("catalog", "mcp")
                                     put("table", "users")
                                     put("column", "ssn")
                                     put("tags", buildJsonArray { add(JsonPrimitive("pii")) })
@@ -768,7 +770,7 @@ class McpServerDbTest {
         }
         val arguments = mapOf(
             "datasource" to "mcp-batch-scope-datasource",
-            "columns" to listOf(mapOf("table" to "users", "column" to "ssn", "tags" to listOf("pii"))),
+            "columns" to listOf(mapOf("catalog" to "mcp", "table" to "users", "column" to "ssn", "tags" to listOf("pii"))),
             "idempotencyKey" to "batch-once",
         )
         val first = sdk.callTool("set_column_classifications", arguments)
@@ -781,7 +783,7 @@ class McpServerDbTest {
         // silently never applying the tags the caller asked for.
         val changedTags = sdk.callTool(
             "set_column_classifications",
-            arguments + ("columns" to listOf(mapOf("table" to "users", "column" to "ssn", "tags" to listOf("contact")))),
+            arguments + ("columns" to listOf(mapOf("catalog" to "mcp", "table" to "users", "column" to "ssn", "tags" to listOf("contact")))),
         )
         assertEquals(true, changedTags.isError)
         assertEquals("mcp.idempotency_conflict", changedTags.structuredContent?.get("code")?.jsonPrimitive?.content)
@@ -945,12 +947,13 @@ class McpServerDbTest {
             }
             core.datasourceStore.storePushedCatalog(
                 id = id,
+                currentCatalog = "mcp",
                 defaultSchemas = listOf("public"),
                 mysqlLowerCaseTableNames = null,
                 engineVersion = "PostgreSQL 16.4",
                 catalog = catalogSnapshot {
                     this.columns += columns.mapIndexed { index, column ->
-                        pushedColumn("mcp", "public", "users", column, "text", index + 1, true)
+                        pushedColumn("public", "users", column, "text", index + 1, true, catalog = "mcp")
                     }
                 },
             )

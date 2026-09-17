@@ -43,7 +43,7 @@ suspend fun decideConnection(
     // asserting it is unchanged at emit is the connection's compare-and-set on the decision generation,
     // and guards against a future edit bumping it under us.
     val generationAtEntry = connection.generation
-    val required = searchPath.filterNot { it.startsWith("pg_temp", ignoreCase = true) }
+    val required = ds.namespaces(searchPath.filterNot { it.startsWith("pg_temp", ignoreCase = true) })
     val preGate = core.connectionCatalog.freshnessGate(connection, required)
     if (preGate.isNotEmpty()) {
         return@withConnection EnforcementOutcome.BeforeDecide(

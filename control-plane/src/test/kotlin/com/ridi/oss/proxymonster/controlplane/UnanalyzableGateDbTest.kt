@@ -85,7 +85,7 @@ class UnanalyzableGateDbTest {
         val ctx = decide("select id from $candidate.orders")
         assertTrue(ctx.catalogMiss, "an unheld-schema statement must request a refetch, not stand on the partial catalog")
         assertTrue(
-            candidate in ctx.schemaCandidates,
+            namespace(fx.datasource.effectiveCatalog, candidate) in ctx.schemaCandidates,
             "the unheld schema must be named for the refetch, got ${ctx.schemaCandidates}",
         )
     }

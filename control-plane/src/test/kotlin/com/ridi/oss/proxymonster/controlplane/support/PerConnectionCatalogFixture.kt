@@ -1,8 +1,9 @@
 package com.ridi.oss.proxymonster.controlplane.support
 
+import com.ridi.oss.proxymonster.controlplane.namespaces
+import com.ridi.oss.proxymonster.controlplane.effectiveCatalog
 import com.google.protobuf.ByteString
 import com.ridi.oss.proxymonster.controlplane.Binding
-import com.ridi.oss.proxymonster.controlplane.effectiveCatalog
 import com.ridi.oss.proxymonster.controlplane.CatalogMutationResult
 import com.ridi.oss.proxymonster.controlplane.CONFIG_CATALOG_REFRESH_WINDOW_MILLIS
 import com.ridi.oss.proxymonster.controlplane.ControlPlaneCore
@@ -48,7 +49,7 @@ class PerConnectionCatalogFixture(
         tokenKind: String = "USER",
         withRoutines: Boolean = true,
     ): OpenConnection {
-        val opened = core.connectionCatalog.open(Binding(datasource.name, principal, tokenKind, datasource.effectiveCatalog), schemas)
+        val opened = core.connectionCatalog.open(Binding(datasource.name, principal, tokenKind, datasource.effectiveCatalog), datasource.namespaces(schemas))
         val bySchema = enforcement.datasourceStore.catalog(datasource.id).columns.groupBy { it.schema }
         val routines = if (withRoutines) enforcement.datasourceStore.storedRoutines(datasource.id) else emptyMap()
         for (schema in schemas.distinct()) {
@@ -113,8 +114,8 @@ class PerConnectionCatalogFixture(
             schemaFragmentPush {
                 this.connectionId = connectionId
                 datasourceName = datasource.name
-                catalog = datasource.effectiveCatalog
                 this.schema = schema
+                this.catalog = datasource.effectiveCatalog
                 contentHash = hash(rows, routines)
                 this.unchanged = unchanged
                 this.backendGeneration = backendGeneration
@@ -122,7 +123,7 @@ class PerConnectionCatalogFixture(
                     this.routines.addAll(routines)
                     columns.addAll(rows.map { row ->
                         column {
-                            catalog = datasource.effectiveCatalog
+                            this.catalog = row.catalog
                             this.schema = row.schema
                             table = row.table
                             this.column = row.column

@@ -15,7 +15,7 @@ class FunctionCatalogRolloutDbTest {
     private fun clearFunctions(fx: EnforcementFixture) {
         val ds = fx.datasource
         fx.datasourceStore.storePushedCatalog(
-            ds.id, ds.defaultSchemas, ds.mysqlLowerCaseTableNames, ds.engineVersion!!, CatalogSnapshot.getDefaultInstance(),
+            ds.id, ds.defaultSchemas, ds.mysqlLowerCaseTableNames, ds.engineVersion!!, CatalogSnapshot.getDefaultInstance(), ds.effectiveCatalog,
         )
     }
 

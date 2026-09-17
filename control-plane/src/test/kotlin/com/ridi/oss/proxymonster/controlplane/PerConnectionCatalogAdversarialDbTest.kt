@@ -47,7 +47,7 @@ abstract class PerConnectionCatalogAdversarialDbContract {
         principal: String,
         schemas: List<String>,
     ): OpenConnection {
-        val opened = fixture.core.connectionCatalog.open(Binding(fixture.datasource.name, principal, "USER", fixture.datasource.effectiveCatalog), schemas)
+        val opened = fixture.core.connectionCatalog.open(Binding(fixture.datasource.name, principal, "USER", fixture.datasource.effectiveCatalog), fixture.datasource.namespaces(schemas))
         schemas.distinct().forEach { fixture.pushFromTarget(target, opened.connectionId, it) }
         return opened
     }
@@ -164,7 +164,7 @@ abstract class PerConnectionCatalogAdversarialDbContract {
                 assertEquals(listOf(schema), stale.commands.map { it.schema })
 
                 val heldConnection = fixture.core.connectionCatalog.find(held.connectionId)!!
-                val heldHash = heldConnection.held.getValue(schema).hash.bytes
+                val heldHash = heldConnection.held.getValue(namespace(fixture.datasource.effectiveCatalog, schema)).hash.bytes
                 val unchanged = fixture.core.connectionCatalog.applyPush(
                     schemaFragmentPush {
                         connectionId = held.connectionId
@@ -261,21 +261,22 @@ class PerConnectionCatalogMysqlAdversarialDbTest : PerConnectionCatalogAdversari
         val accounts = enforcement.execOnTarget("SELECT column_name, data_type, ordinal_position, is_nullable FROM information_schema.columns WHERE table_schema = '$schema' AND table_name = 'accounts'")
         enforcement.datasourceStore.storePushedCatalog(
             id = enforcement.datasource.id,
+            currentCatalog = enforcement.datasource.effectiveCatalog,
             defaultSchemas = listOf(schema),
             mysqlLowerCaseTableNames = enforcement.datasource.mysqlLowerCaseTableNames,
             engineVersion = enforcement.datasource.engineVersion.orEmpty(),
             catalog = catalogSnapshot {
                 columns += enforcement.datasourceStore.catalog(enforcement.datasource.id).columns.map { row ->
-                pushedColumn(row.catalog, row.schema, row.table, row.column, row.dataType, row.ordinal, row.nullable)
+                pushedColumn(row.schema, row.table, row.column, row.dataType, row.ordinal, row.nullable, catalog = row.catalog)
             } + accounts.rows.map { row ->
                 pushedColumn(
-                    enforcement.datasource.effectiveCatalog,
                     schema,
                     "accounts",
                     row[0]!!,
                     row[1]!!,
                     row[2]!!.toInt(),
                     row[3] == "YES",
+                    catalog = enforcement.datasource.effectiveCatalog,
                 )
                 }
             },
@@ -406,15 +407,16 @@ class PerConnectionCatalogPostgresAdversarialDbTest : PerConnectionCatalogAdvers
         )
         enforcement.datasourceStore.storePushedCatalog(
             id = enforcement.datasource.id,
+            currentCatalog = enforcement.datasource.effectiveCatalog,
             defaultSchemas = enforcement.datasource.defaultSchemas,
             mysqlLowerCaseTableNames = null,
             engineVersion = enforcement.datasource.engineVersion.orEmpty(),
             catalog = catalogSnapshot {
                 columns += enforcement.datasourceStore.catalog(enforcement.datasource.id).columns.map { row ->
-                    pushedColumn(row.catalog, row.schema, row.table, row.column, row.dataType, row.ordinal, row.nullable)
+                    pushedColumn(row.schema, row.table, row.column, row.dataType, row.ordinal, row.nullable, catalog = row.catalog)
                 }
                 columns += accounts.rows.map { row ->
-                    pushedColumn(enforcement.datasource.effectiveCatalog, row[0]!!, "accounts", row[1]!!, row[2]!!, row[3]!!.toInt(), row[4] == "YES")
+                    pushedColumn(row[0]!!, "accounts", row[1]!!, row[2]!!, row[3]!!.toInt(), row[4] == "YES", catalog = enforcement.datasource.effectiveCatalog)
                 }
             },
         )

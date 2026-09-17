@@ -147,6 +147,65 @@ class TableDetailDbTest {
     }
 
     @Test
+    fun `MySQL public is a literal database, not a default-schema selector`() = testApplication {
+        val client = wireTableDetailApp()
+        val ds = datasourceStore.create(DatasourceInput("literal-mysql", "mysql", dbName = "app"))
+        val details = listOf("app", "public").associateWith { schema ->
+            mysql.detail.copy(
+                catalog = "def", schema = schema, table = "users",
+                columns = listOf(mysql.detail.columns.first().copy(name = "${schema}_marker")),
+                indexes = emptyList(), foreignKeys = emptyList(), referencedBy = emptyList(),
+            )
+        }
+        val proxy = FakeTableDetailProxy(core, ds.name) { schema, table ->
+            if (table == "users") details[schema]?.let { ProxyReply.Detail(it) } ?: ProxyReply.NotFound else ProxyReply.NotFound
+        }
+        fakeProxies += proxy
+        for ((requestedSchema, expectedSchema) in listOf("public" to "public", "app" to "app")) {
+            val response = client.get("/api/datasources/${ds.id}/table-detail") {
+                parameter("catalog", "def")
+                parameter("schema", requestedSchema)
+                parameter("table", "users")
+            }
+            assertEquals(HttpStatusCode.OK, response.status)
+            val detail = Json.decodeFromString<TableDetail>(response.bodyAsText())
+            assertEquals("def", detail.catalog)
+            assertEquals(expectedSchema, detail.schema)
+            assertEquals("${expectedSchema}_marker", detail.columns.single().name)
+            val dispatched = proxy.requests.last()
+            assertEquals("def", dispatched.catalog)
+            assertEquals(expectedSchema, dispatched.schema)
+            assertEquals("users", dispatched.table)
+        }
+    }
+
+    @Test
+    fun `a table-detail selector without a catalog is refused`() = testApplication {
+        val client = wireTableDetailApp()
+        val ds = datasourceStore.create(DatasourceInput("literal-postgres", "postgres", dbName = "app"))
+        val detail = postgres.detail.copy(catalog = "app", schema = "public", table = "users")
+        val proxy = FakeTableDetailProxy(core, ds.name) { schema, table ->
+            if (schema == "public" && table == "users") ProxyReply.Detail(detail) else ProxyReply.NotFound
+        }
+        fakeProxies += proxy
+        val before = proxy.requests.size
+        val missing = client.get("/api/datasources/${ds.id}/table-detail") {
+            parameter("schema", "public")
+            parameter("table", "users")
+        }
+        assertEquals(HttpStatusCode.BadRequest, missing.status)
+        assertEquals(before, proxy.requests.size, "a selector without a catalog must be rejected before a nudge")
+        val response = client.get("/api/datasources/${ds.id}/table-detail") {
+            parameter("catalog", "app")
+            parameter("schema", "public")
+            parameter("table", "users")
+        }
+        assertEquals(HttpStatusCode.OK, response.status)
+        assertEquals("public", Json.decodeFromString<TableDetail>(response.bodyAsText()).schema)
+        assertEquals("app", proxy.requests.last().catalog)
+    }
+
+    @Test
     fun `grpc table-detail stream claims once and relays both directions`() = runBlocking {
         val pending = PendingTableDetail("grpc-table-detail", CompletableDeferred())
         core.tableDetailChannels.register(pending)
@@ -179,15 +238,16 @@ class TableDetailDbTest {
         val proxy = fakeProxies.single { it.datasourceName == mysql.datasource.name }
         val requestsBeforeValidation = proxy.requests.size
 
-        assertEquals(HttpStatusCode.BadRequest, client.get(base) { parameter("table", mysql.middle) }.status)
-        assertEquals(HttpStatusCode.BadRequest, client.get(base) { parameter("schema", "public") }.status)
+        assertEquals(HttpStatusCode.BadRequest, client.get(base) { parameter("catalog", "def"); parameter("table", mysql.middle) }.status)
+        assertEquals(HttpStatusCode.BadRequest, client.get(base) { parameter("catalog", "def"); parameter("schema", "public") }.status)
+        assertEquals(HttpStatusCode.BadRequest, client.get(base) { parameter("schema", "public"); parameter("table", mysql.middle) }.status)
         assertEquals(
             HttpStatusCode.BadRequest,
-            client.get(base) { parameter("schema", ""); parameter("table", mysql.middle) }.status,
+            client.get(base) { parameter("catalog", "def"); parameter("schema", ""); parameter("table", mysql.middle) }.status,
         )
         assertEquals(
             HttpStatusCode.BadRequest,
-            client.get(base) { parameter("schema", "public"); parameter("table", "") }.status,
+            client.get(base) { parameter("catalog", "def"); parameter("schema", "public"); parameter("table", "") }.status,
         )
         assertEquals(requestsBeforeValidation, proxy.requests.size, "invalid selectors must be rejected before a nudge")
         assertEquals(HttpStatusCode.BadRequest, client.get("/api/datasources/999999/table-detail").status)
@@ -195,13 +255,14 @@ class TableDetailDbTest {
         assertEquals(
             HttpStatusCode.NotFound,
             client.get("/api/datasources/999999/table-detail") {
+                parameter("catalog", "def")
                 parameter("schema", "public")
                 parameter("table", mysql.middle)
             }.status,
         )
         assertEquals(
             HttpStatusCode.NotFound,
-            client.get(base) { parameter("schema", "public"); parameter("table", "${mysql.prefix}_absent") }.status,
+            client.get(base) { parameter("catalog", "def"); parameter("schema", "public"); parameter("table", "${mysql.prefix}_absent") }.status,
         )
 
         val attacks = listOf(
@@ -212,7 +273,7 @@ class TableDetailDbTest {
             "public" to "${mysql.middle}`; DROP TABLE `${mysql.parent}`; --",
         )
         for ((schema, table) in attacks) {
-            val attack = client.get(base) { parameter("schema", schema); parameter("table", table) }
+            val attack = client.get(base) { parameter("catalog", "def"); parameter("schema", schema); parameter("table", table) }
             assertEquals(HttpStatusCode.NotFound, attack.status, "identifier payload must be treated as an exact lookup")
         }
 
@@ -227,6 +288,7 @@ class TableDetailDbTest {
         )
         fakeProxies += FakeTableDetailProxy(core, failing.name) { _, _ -> ProxyReply.Error("target-DB connection failed") }
         val failedResponse = client.get("/api/datasources/${failing.id}/table-detail") {
+            parameter("catalog", failing.effectiveCatalog)
             parameter("schema", "public")
             parameter("table", "anything")
         }
@@ -243,6 +305,7 @@ class TableDetailDbTest {
             ),
         )
         val detachedResponse = client.get("/api/datasources/${detached.id}/table-detail") {
+            parameter("catalog", detached.effectiveCatalog)
             parameter("schema", "public")
             parameter("table", "anything")
         }
@@ -310,14 +373,15 @@ class TableDetailDbTest {
         )
         datasourceStore.storePushedCatalog(
             id = datasource.id,
+            currentCatalog = datasource.effectiveCatalog,
             defaultSchemas = listOf(schema),
             mysqlLowerCaseTableNames = if (engine == "mysql") 0 else null,
             engineVersion = if (engine == "mysql") "8.4.0" else "PostgreSQL 17.6",
             catalog = snapshotOf(
-                pushedColumn(datasource.effectiveCatalog, schema, middle, "id", "bigint", 1, false),
-                pushedColumn(datasource.effectiveCatalog, schema, middle, "classified_secret", "varchar", 2, false),
-                pushedColumn(datasource.effectiveCatalog, schema, middle, "amount", if (engine == "mysql") "decimal" else "numeric", 3, false),
-                pushedColumn(datasource.effectiveCatalog, schema, middle, "optional_note", "varchar", 4, true),
+                pushedColumn(schema, middle, "id", "bigint", 1, false, catalog = datasource.effectiveCatalog),
+                pushedColumn(schema, middle, "classified_secret", "varchar", 2, false, catalog = datasource.effectiveCatalog),
+                pushedColumn(schema, middle, "amount", if (engine == "mysql") "decimal" else "numeric", 3, false, catalog = datasource.effectiveCatalog),
+                pushedColumn(schema, middle, "optional_note", "varchar", 4, true, catalog = datasource.effectiveCatalog),
             ),
         )
         val mask = policyStore.createMaskFn(MaskFnInput(maskName, "LAST_N"))
@@ -329,6 +393,7 @@ class TableDetailDbTest {
                 column = "classified_secret",
                 tags = listOf("pii"),
                 maskFnId = mask.id,
+                catalog = datasource.effectiveCatalog,
             ),
         )
         val detail = TableDetail(
@@ -395,6 +460,7 @@ class TableDetailDbTest {
 
     private suspend fun HttpClient.tableDetail(fixture: Fixture): HttpResponse =
         get("/api/datasources/${fixture.datasource.id}/table-detail") {
+            parameter("catalog", fixture.datasource.effectiveCatalog)
             parameter("schema", fixture.requestSchema)
             parameter("table", fixture.middle)
         }
@@ -425,7 +491,7 @@ class TableDetailDbTest {
         val datasourceName: String,
         private val responder: (schema: String, table: String) -> ProxyReply,
     ) : AutoCloseable {
-        val requests = CopyOnWriteArrayList<Pair<String, String>>()
+        val requests = CopyOnWriteArrayList<com.ridi.oss.proxymonster.grpc.OpenTableDetailChannel>()
         private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
         private val events = Channel<ControlEvent>(Channel.UNLIMITED)
 
@@ -435,7 +501,7 @@ class TableDetailDbTest {
                 for (event in events) {
                     if (!event.hasOpenTableDetailChannel()) continue
                     val open = event.openTableDetailChannel
-                    requests += open.schema to open.table
+                    requests += open
                     val outbound = Channel<com.ridi.oss.proxymonster.grpc.ControlTableDetailMsg>(Channel.BUFFERED)
                     val attached = core.tableDetailChannels.attach(open.sessionId, outbound) ?: continue
                     attached.inbound.send(responseMessage(responder(open.schema, open.table)))

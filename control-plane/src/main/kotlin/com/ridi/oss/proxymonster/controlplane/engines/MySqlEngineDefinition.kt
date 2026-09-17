@@ -23,8 +23,6 @@ internal object MySqlEngineDefinition : EngineDefinition {
 
     override fun catalogName(dbName: String): String = "def"
     override fun defaultSchema(dbName: String): String = dbName
-    override fun resolveSchema(requestedSchema: String, dbName: String): String =
-        if (requestedSchema == "public") defaultSchema(dbName) else requestedSchema
 
     override fun requireCaseMode(lowerCaseTableNames: Int?): Int = requireNotNull(lowerCaseTableNames) {
         "MySQL lower_case_table_names has not been captured by introspection"

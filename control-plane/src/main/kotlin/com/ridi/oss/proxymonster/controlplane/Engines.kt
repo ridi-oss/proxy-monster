@@ -35,7 +35,6 @@ interface EngineDefinition {
     /** The schema an unqualified table resolves to when no per-request schema is given. */
     fun defaultSchema(dbName: String): String
     /** Maps the cross-engine "public" selector to [defaultSchema]; any other value is an explicit schema. */
-    fun resolveSchema(requestedSchema: String, dbName: String): String
     /** The MySQL lower_case_table_names mode the analyzer needs, or null for an engine without one. */
     fun requireCaseMode(lowerCaseTableNames: Int?): Int?
     /** [systemSchemas] membership with engine-correct casing; the catalog pool key predicate. */
@@ -74,7 +73,6 @@ val Engine.isPostgres: Boolean get() = this == Engine.POSTGRES
 
 fun Engine.catalogName(dbName: String): String = definition.catalogName(dbName)
 fun Engine.defaultSchema(dbName: String): String = definition.defaultSchema(dbName)
-fun Engine.resolveSchema(requestedSchema: String, dbName: String): String = definition.resolveSchema(requestedSchema, dbName)
 fun Engine.requireCaseMode(lowerCaseTableNames: Int?): Int? = definition.requireCaseMode(lowerCaseTableNames)
 fun Engine.isFixedSystemSchema(schema: String): Boolean = definition.isFixedSystemSchema(schema)
 fun Engine.isSystemSchema(schema: String): Boolean = definition.isSystemSchema(schema)

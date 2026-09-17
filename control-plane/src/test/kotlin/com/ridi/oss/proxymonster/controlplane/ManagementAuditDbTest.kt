@@ -71,9 +71,9 @@ class ManagementAuditDbTest {
             datasources.setColumnClassifications(
                 ds.name,
                 listOf(
-                    ClassificationInput(null, "users", "ssn", listOf("pii")),
-                    ClassificationInput("public", "users", "email", listOf("contact")),
-                    ClassificationInput(null, "users", "phone", listOf("contact")),
+                    ClassificationInput(null, "users", "ssn", listOf("pii"), catalog = "app"),
+                    ClassificationInput("public", "users", "email", listOf("contact"), catalog = "app"),
+                    ClassificationInput(null, "users", "phone", listOf("contact"), catalog = "app"),
                 ),
                 actor,
                 c,
@@ -212,12 +212,12 @@ class ManagementAuditDbTest {
 
         // Schema omitted on the wire: both the descriptor and the summary must carry the RESOLVED schema,
         // since that is the column the mask decision reads.
-        datasources.setColumnClassification(renamed.id, null, "users", "ssn", listOf("pii"), null, actor)
+        datasources.setColumnClassification(renamed.id, null, "users", "ssn", listOf("pii"), null, actor, "app")
         assertEvent(
             principal, AuthzAction.ADMIN_DATASOURCES, """Datasource::"${renamed.name}" col public.users.ssn""",
             "tag ${renamed.name}.public.users.ssn [pii]",
         )
-        assertEquals(true, datasources.clearColumnClassification(renamed.id, null, "users", "ssn", actor).deleted)
+        assertEquals(true, datasources.clearColumnClassification(renamed.id, null, "users", "ssn", actor, "app").deleted)
         assertEvent(
             principal, AuthzAction.ADMIN_DATASOURCES, """Datasource::"${renamed.name}" col public.users.ssn""",
             "clear tags on ${renamed.name}.public.users.ssn",
@@ -286,7 +286,7 @@ class ManagementAuditDbTest {
     }
 
     private fun defaultSchemaPublic(datasourceId: Long) = dataSource.connection.use { c ->
-        c.prepareStatement("UPDATE datasource SET default_schemas='[\"public\"]'::jsonb WHERE id=?").use { ps ->
+        c.prepareStatement("UPDATE datasource SET current_catalog_name='app', default_schemas='[\"public\"]'::jsonb WHERE id=?").use { ps ->
             ps.setLong(1, datasourceId)
             ps.executeUpdate()
         }

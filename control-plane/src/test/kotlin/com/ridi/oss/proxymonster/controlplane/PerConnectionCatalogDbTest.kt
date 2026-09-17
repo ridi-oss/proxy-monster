@@ -69,7 +69,7 @@ abstract class PerConnectionCatalogDbContract {
         // Introspect the fragment straight from the target (not fixture.openAndPush, which reads the global
         // catalog a sibling test deletes) — this also mirrors the proxy's real push flow exactly.
         val opened = fixture.core.connectionCatalog.open(
-            Binding(fixture.datasource.name, "analyst@example.com", "USER", fixture.datasource.effectiveCatalog), listOf(schema),
+            Binding(fixture.datasource.name, "analyst@example.com", "USER", fixture.datasource.effectiveCatalog), fixture.datasource.namespaces(listOf(schema)),
         )
         java.sql.DriverManager.getConnection(
             fixture.enforcement.targetJdbcUrl, fixture.enforcement.targetUser, fixture.enforcement.targetPassword,
@@ -216,7 +216,7 @@ abstract class PerConnectionCatalogDbContract {
         val schema = fixture.datasource.defaultSchemas.first()
         val token = fixture.core.tokenStore.issue(TokenKind.USER, "analyst@example.com", emptyList(), null, 3600).token
         val opened = fixture.core.connectionCatalog.open(
-            Binding(fixture.datasource.name, "analyst@example.com", "USER", fixture.datasource.effectiveCatalog), listOf(schema),
+            Binding(fixture.datasource.name, "analyst@example.com", "USER", fixture.datasource.effectiveCatalog), fixture.datasource.namespaces(listOf(schema)),
         )
         java.sql.DriverManager.getConnection(
             fixture.enforcement.targetJdbcUrl, fixture.enforcement.targetUser, fixture.enforcement.targetPassword,
@@ -248,7 +248,7 @@ abstract class PerConnectionCatalogDbContract {
     fun `routine DDL refetches the held schema and the fragment carries the new routine`() = runBlocking {
         val schema = fixture.datasource.defaultSchemas.first { it !in fixture.datasource.engine.systemSchemas }
         val principal = "writer@example.com"
-        val opened = fixture.core.connectionCatalog.open(Binding(fixture.datasource.name, principal, "USER", fixture.datasource.effectiveCatalog), listOf(schema))
+        val opened = fixture.core.connectionCatalog.open(Binding(fixture.datasource.name, principal, "USER", fixture.datasource.effectiveCatalog), fixture.datasource.namespaces(listOf(schema)))
         val connection = fixture.core.connectionCatalog.find(opened.connectionId)!!
         val name = "pccat_identity_${System.nanoTime()}"
         val (create, drop) = if (fixture.datasource.engine.isPostgres) {

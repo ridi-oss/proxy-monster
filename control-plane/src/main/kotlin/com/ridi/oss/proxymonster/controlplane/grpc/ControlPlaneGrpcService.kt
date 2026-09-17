@@ -19,6 +19,10 @@ import com.ridi.oss.proxymonster.controlplane.management.ManagementException
 import com.ridi.oss.proxymonster.controlplane.management.auditEntity
 import com.ridi.oss.proxymonster.controlplane.catalogIsConnectionIndependent
 import com.ridi.oss.proxymonster.controlplane.effectiveCatalog
+import com.ridi.oss.proxymonster.controlplane.requireCatalog
+import com.ridi.oss.proxymonster.controlplane.measuredCatalog
+import com.ridi.oss.proxymonster.controlplane.namespaces
+import com.ridi.oss.proxymonster.controlplane.namespace
 import com.ridi.oss.proxymonster.controlplane.definition
 import com.ridi.oss.proxymonster.controlplane.EnforcementOutcome
 import com.ridi.oss.proxymonster.controlplane.DatasourceStore
@@ -171,7 +175,7 @@ class ControlPlaneGrpcService(
             ?: throw StatusException(Status.NOT_FOUND.withDescription("unknown datasource '${request.datasourceName}'"))
         val opened = core.connectionCatalog.open(
             Binding(ds.name, id.principal, id.kind, ds.effectiveCatalog),
-            ds.defaultSchemas + ds.engine.systemSchemas,
+            ds.namespaces(ds.defaultSchemas + ds.engine.systemSchemas),
             adoptHeldContent = ds.engine.catalogIsConnectionIndependent,
         )
         return wireIdentity {
@@ -196,8 +200,11 @@ class ControlPlaneGrpcService(
         }
         val ds = core.datasourceStore.getByName(request.datasourceName)
             ?: throw StatusException(Status.NOT_FOUND.withDescription("unknown datasource '${request.datasourceName}'"))
-        if (request.currentCatalog != ds.effectiveCatalog || request.tempColumnsList.any { it.catalog != ds.effectiveCatalog }) {
-            throw StatusException(Status.INVALID_ARGUMENT.withDescription("catalog is not the datasource's '${ds.effectiveCatalog}'"))
+        try {
+            ds.requireCatalog(request.currentCatalog)
+            request.tempColumnsList.forEach { ds.requireCatalog(it.catalog) }
+        } catch (e: ManagementException) {
+            throw StatusException(Status.INVALID_ARGUMENT.withDescription(e.error.code))
         }
         // The proxy always sends its live namespace. Pass search_path through verbatim — do NOT
         // collapse an empty list to the datasource default: treating "absent = default" would be
@@ -246,7 +253,7 @@ class ControlPlaneGrpcService(
             val recovered = core.connectionCatalog.recover(
                 request.connectionId,
                 binding,
-                request.searchPathList + ds.defaultSchemas + ds.engine.systemSchemas,
+                ds.namespaces(request.searchPathList + ds.defaultSchemas + ds.engine.systemSchemas),
                 adoptHeldContent = ds.engine.catalogIsConnectionIndependent,
             ) ?: throw StatusException(Status.ABORTED.withDescription("connection recovery raced with another request"))
             return beforeDecideDecision(recovered.onOpen)
@@ -434,8 +441,10 @@ class ControlPlaneGrpcService(
             ?: throw StatusException(
                 Status.NOT_FOUND.withDescription("unknown datasource '${request.datasourceName}' — Register first"),
             )
-        if (request.currentCatalog != ds.effectiveCatalog || request.catalog.columnsList.any { it.catalog != ds.effectiveCatalog }) {
-            throw StatusException(Status.INVALID_ARGUMENT.withDescription("catalog is not the datasource's '${ds.effectiveCatalog}'"))
+        val currentCatalog = try {
+            ds.measuredCatalog(request.currentCatalog)
+        } catch (e: ManagementException) {
+            throw StatusException(Status.INVALID_ARGUMENT.withDescription(e.error.code))
         }
         val mysqlLowerCaseTableNames =
             if (request.hasMysqlLowerCaseTableNames()) request.mysqlLowerCaseTableNames else null
@@ -446,9 +455,12 @@ class ControlPlaneGrpcService(
                 mysqlLowerCaseTableNames = mysqlLowerCaseTableNames,
                 engineVersion = request.engineVersion,
                 catalog = request.catalog,
+                currentCatalog = currentCatalog,
             )
         } catch (e: IllegalArgumentException) {
             throw StatusException(Status.INVALID_ARGUMENT.withDescription(e.message))
+        } catch (e: ManagementException) {
+            throw StatusException(Status.INVALID_ARGUMENT.withDescription(e.error.code))
         }
         // This push is a fresh whole-catalog read of the target DB, so where it agrees with content the
         // enforcement pool already holds it re-measures that content — the ambient refresh keeps held
@@ -456,10 +468,10 @@ class ControlPlaneGrpcService(
         // re-probe a schema the proxy just confirmed.
         val confirmed = core.connectionCatalog.recordAmbientMeasurement(
             ds.name,
-            request.catalog.columnsList.groupBy({ it.schema }) {
+            request.catalog.columnsList.groupBy({ namespace(it.catalog, it.schema) }) {
                 FragmentColumn(it.catalog, it.schema, it.table, it.column, it.dataType, it.ordinal, it.nullable)
             },
-            request.catalog.routinesList.associate { it.schema to it.namesList },
+            request.catalog.routinesList.associate { namespace(currentCatalog, it.schema) to it.namesList },
         )
         if (confirmed.isNotEmpty()) {
             log.debug("datasource '{}': ambient refresh re-verified {} pooled schema(s)", ds.name, confirmed.size)

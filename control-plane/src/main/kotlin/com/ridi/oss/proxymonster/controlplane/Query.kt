@@ -25,6 +25,7 @@ import com.ridi.oss.proxymonster.controlplane.authz.authorizeDatasourceActionId
 import com.ridi.oss.proxymonster.classification.BaselineDangerousFunctions
 import com.ridi.oss.proxymonster.grpc.ColumnMask
 import com.ridi.oss.proxymonster.grpc.EnfAction
+import com.ridi.oss.proxymonster.grpc.Engine
 import com.ridi.oss.proxymonster.grpc.ObjectRef
 import com.ridi.oss.proxymonster.grpc.columnMask
 import com.ridi.oss.proxymonster.analyzer.pb.CatalogSnapshot
@@ -212,9 +213,9 @@ data class DecisionContext(
     /** True when the deny may be caused by absent structural catalog rows. */
     val catalogMiss: Boolean = false,
     /** Non-temp schemas the analyzer resolved or touched. */
-    val referencedSchemas: Set<String> = emptySet(),
+    val referencedSchemas: Set<com.ridi.oss.proxymonster.grpc.ObjectRef> = emptySet(),
     /** Parsed dotted-identifier candidates used by the catalog-miss retry path. */
-    val schemaCandidates: Set<String> = emptySet(),
+    val schemaCandidates: Set<com.ridi.oss.proxymonster.grpc.ObjectRef> = emptySet(),
 )
 
 /**
@@ -307,7 +308,7 @@ internal fun analyzerAndCatalogIndex(
     session: SessionObservation = SessionObservation.getDefaultInstance(),
 ): Pair<CatalogColumnIndex, Analyzer> {
     val namespace = pbNamespace {
-        this.catalog = ds.engine.catalogName(ds.dbName)
+        this.catalog = ds.effectiveCatalog
         this.searchPath.addAll(resolvedSearchPath)
     }
     val engineConfig = ds.engine.definition.analyzerEngineConfig(ds, session)
@@ -549,7 +550,7 @@ fun decideQuery(
     // without them the query stays denied until an unrelated refresh (ConnectionDecide.markCatalogMiss).
     fun deny(reason: String, catalogMiss: Boolean = false): DecisionContext =
         policyDeny(reason, roleList, derivedTags)
-            .copy(catalogMiss = catalogMiss, schemaCandidates = facts.schemaQualifierCandidatesList.toSet())
+            .copy(catalogMiss = catalogMiss, schemaCandidates = facts.namespaceQualifierCandidatesList.toSet())
 
     when (authz.authorizeDatasourceAction(principal, roles, AuthzAction.DATASOURCE_CONNECT, ds.name, context, ds.tags)) {
         is AuthzDecision.Deny -> return policyDeny("no access to datasource '${ds.name}'", roleList, derivedTags)
@@ -625,7 +626,7 @@ fun decideQuery(
         return passthroughAllow(roleList, "passthrough (no data touched)", derivedTags)
             .copy(
                 sanitizeDiagnostics = !readsAllUnmasked(principal, roles, ds, catalogIndex.rowsByKey.values.toList(), facts.diagnosticLeakColumnsList, context, authz, systemClassification),
-                schemaCandidates = facts.schemaQualifierCandidatesList.toSet(),
+                schemaCandidates = facts.namespaceQualifierCandidatesList.toSet(),
                 statementKind = statementKind,
             )
             .withCaps(datasourceCaps)
@@ -663,7 +664,7 @@ fun decideQuery(
                 passthrough = true,
                 contextTags = derivedTags,
                 catalogChanging = facts.catalogChanging || facts.functionsList.isNotEmpty(),
-                schemaCandidates = facts.schemaQualifierCandidatesList.toSet(),
+                schemaCandidates = facts.namespaceQualifierCandidatesList.toSet(),
                 // A statement may be unresolvable only because this connection never fetched the schema it
                 // names, so refetch the qualifiers before relaying it unmasked.
                 catalogMiss = true,
@@ -710,7 +711,7 @@ fun decideQuery(
                 contextTags = derivedTags,
                 catalogChanging = facts.catalogChanging || facts.functionsList.isNotEmpty(),
                 catalogMiss = true,
-                schemaCandidates = facts.schemaQualifierCandidatesList.toSet(),
+                schemaCandidates = facts.namespaceQualifierCandidatesList.toSet(),
                 // An uncovered column means the leak set can't be authorized — fail closed and redact.
                 sanitizeDiagnostics = true,
             ).withCaps(datasourceCaps).let { relay ->
@@ -718,7 +719,7 @@ fun decideQuery(
             }
             is AuthzDecision.Deny -> structuralDeny(
                 coverage.reason, roleList, failedStage = "catalog", contextTags = derivedTags,
-            ).copy(catalogMiss = true, schemaCandidates = facts.schemaQualifierCandidatesList.toSet())
+            ).copy(catalogMiss = true, schemaCandidates = facts.namespaceQualifierCandidatesList.toSet())
         }
     }
 
@@ -726,7 +727,7 @@ fun decideQuery(
         policyStore.listMaskFns().associate { it.name to it.kind }
     } catch (_: Exception) {
         return structuralDeny(CATALOG_CONFIGURATION_DENY, roleList, failedStage = "catalog", contextTags = derivedTags)
-            .copy(catalogMiss = true, schemaCandidates = facts.schemaQualifierCandidatesList.toSet())
+            .copy(catalogMiss = true, schemaCandidates = facts.namespaceQualifierCandidatesList.toSet())
     }
     val columnRefs = columnKeys.keys.map { key ->
         val row = catalogIndex.rowsByKey.getValue(key)
@@ -903,9 +904,9 @@ fun decideQuery(
         catalogIndex.rowsByKey.getValue(it).classification?.tags?.isNotEmpty() == true
     }
     val referencedSchemas = buildSet {
-        facts.sourcesList.mapTo(this) { it.schema }
-        columnGrants.mapTo(this) { it.column.schema }
-    }.filterNotTo(LinkedHashSet()) { it.startsWith("pg_temp", ignoreCase = true) }
+        facts.sourcesList.mapTo(this) { namespace(it.catalog, it.schema) }
+        columnGrants.mapTo(this) { namespace(it.column.catalog, it.column.schema) }
+    }.filterNotTo(LinkedHashSet()) { it.schema.startsWith("pg_temp", ignoreCase = true) }
     // MASK/DENY always redacts; an ALLOW redacts iff the analyzer's leak set holds a column the viewer
     // can't read unmasked. `select id from users` (all readable) relays raw.
     val sanitizeDiagnostics = action != EnfAction.ALLOW ||
@@ -928,7 +929,7 @@ fun decideQuery(
         // A call may run DDL inside its body, builtin or UDF alike.
         catalogChanging = facts.catalogChanging || facts.functionsList.isNotEmpty() || functionGrants.isNotEmpty(),
         referencedSchemas = referencedSchemas,
-        schemaCandidates = facts.schemaQualifierCandidatesList.toSet(),
+        schemaCandidates = facts.namespaceQualifierCandidatesList.toSet(),
     ).withCaps(datasourceCaps, statementCaps).withAnalyzerRewrite(facts)
 }
 

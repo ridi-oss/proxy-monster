@@ -67,11 +67,10 @@ class ProxyTableDetailException(message: String, cause: Throwable? = null) :
 class TableDetailService(private val core: ControlPlaneCore) {
     private val json = Json
 
-    suspend fun fetch(dsName: String, schema: String, table: String): TableDetail? {
+    suspend fun fetch(dsName: String, catalog: String, schema: String, table: String): TableDetail? {
         val datasource = core.datasourceStore.getByName(dsName) ?: return null
-        // The schema the proxy's live detail must report back under: the "public" default selector maps to
-        // this engine's default schema (MySQL's database), any other value is an explicit schema/database.
-        val expectedSchema = datasource.engine.resolveSchema(schema, datasource.dbName)
+        val expectedCatalog = datasource.requireCatalog(catalog)
+        val expectedSchema = schema
         val sessionId = UUID.randomUUID().toString()
         val pending = PendingTableDetail(sessionId, CompletableDeferred())
         var registered = false
@@ -80,7 +79,7 @@ class TableDetailService(private val core: ControlPlaneCore) {
         try {
             core.tableDetailChannels.register(pending)
             registered = true
-            when (core.proxyEventsHub.requestOpenTableDetail(dsName, sessionId, datasource.effectiveCatalog, expectedSchema, table)) {
+            when (core.proxyEventsHub.requestOpenTableDetail(dsName, sessionId, expectedCatalog, expectedSchema, table)) {
                 ProxyEventsHub.Dispatch.SENT -> Unit
                 ProxyEventsHub.Dispatch.NOT_ATTACHED, ProxyEventsHub.Dispatch.WEDGED -> {
                 throw NoTableDetailProxyAttachedException()
@@ -101,7 +100,7 @@ class TableDetailService(private val core: ControlPlaneCore) {
             if (detail == null) return null
             // The proxy's live detail must come back under the resolved schema and for the requested table;
             // anything else is a channel/response mixup.
-            if (detail.catalog != datasource.effectiveCatalog || detail.schema != expectedSchema || detail.table != table) {
+            if (detail.catalog != expectedCatalog || detail.schema != expectedSchema || detail.table != table) {
                 throw ProxyTableDetailException("proxy returned table detail for an unexpected table")
             }
 

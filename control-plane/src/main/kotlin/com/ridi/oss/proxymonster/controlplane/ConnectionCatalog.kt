@@ -2,6 +2,7 @@ package com.ridi.oss.proxymonster.controlplane
 
 import com.google.protobuf.ByteString
 import com.ridi.oss.proxymonster.analyzer.pb.SessionObservation
+import com.ridi.oss.proxymonster.grpc.ObjectRef
 import com.ridi.oss.proxymonster.grpc.Refetch
 import com.ridi.oss.proxymonster.grpc.SchemaFragmentPush
 import com.ridi.oss.proxymonster.grpc.refetch
@@ -40,7 +41,7 @@ data class FragmentColumn(
     val nullable: Boolean,
 )
 
-data class PoolKey(val scope: String, val schema: String, val hash: ContentHash)
+data class PoolKey(val scope: String, val namespace: ObjectRef, val hash: ContentHash)
 
 data class SchemaFragment(
     val key: PoolKey,
@@ -87,9 +88,9 @@ data class PendingRefetch(
 
 /** Build the proxy's conditional-refetch command; an absent [hash] leaves `if_hash_differs` empty
  *  (unconditional fetch, fail-safe). */
-private fun refetchOf(catalog: String, schema: String, hash: ContentHash?): Refetch = refetch {
-    this.catalog = catalog
-    this.schema = schema
+private fun refetchOf(schema: ObjectRef, hash: ContentHash?): Refetch = refetch {
+    this.schema = schema.schema
+    this.catalog = schema.catalog
     hash?.let { ifHashDiffers = it.bytes }
 }
 
@@ -98,10 +99,10 @@ data class OpenConnection(val connectionId: ByteString, val onOpen: List<Refetch
 data class EnforcementConnection(
     val connectionId: ByteString,
     val binding: Binding,
-    val held: MutableMap<String, HeldSchema> = LinkedHashMap(),
-    val pending: MutableMap<String, PendingRefetch> = LinkedHashMap(),
-    /** Schemas whose DDL this connection ran since its last COMMIT/ROLLBACK; a PG transaction hides it from others. */
-    val ddlSinceLastCommit: MutableSet<String> = LinkedHashSet(),
+    val held: MutableMap<ObjectRef, HeldSchema> = LinkedHashMap(),
+    val pending: MutableMap<ObjectRef, PendingRefetch> = LinkedHashMap(),
+    /** Namespaces whose DDL this connection ran since its last COMMIT/ROLLBACK; a PG transaction hides it from others. */
+    val ddlSinceLastCommit: MutableSet<ObjectRef> = LinkedHashSet(),
     var backendGeneration: Long? = null,
     var generation: Long = 0,
     val mutex: Mutex = Mutex(),
@@ -133,7 +134,7 @@ class ConnectionCatalogRegistry(
     private val requestConfigCatalogRefresh: (datasourceName: String) -> Unit = {},
 ) {
     private val pool = ConcurrentHashMap<PoolKey, PooledFragment>()
-    private val authoritative = ConcurrentHashMap<Pair<String, String>, Authoritative>()
+    private val authoritative = ConcurrentHashMap<Pair<String, ObjectRef>, Authoritative>()
     private val connections = ConcurrentHashMap<ByteString, EnforcementConnection>()
     private val authoritativeEpoch = AtomicLong()
 
@@ -149,7 +150,7 @@ class ConnectionCatalogRegistry(
      */
     fun open(
         binding: Binding,
-        schemas: Collection<String>,
+        schemas: Collection<ObjectRef>,
         adoptHeldContent: Boolean = false,
     ): OpenConnection {
         while (true) {
@@ -167,7 +168,7 @@ class ConnectionCatalogRegistry(
     fun recover(
         connectionId: ByteString,
         binding: Binding,
-        schemas: Collection<String>,
+        schemas: Collection<ObjectRef>,
         adoptHeldContent: Boolean = false,
     ): OpenConnection? {
         val connection = EnforcementConnection(connectionId, binding, lastUsedNanos = clockNanos())
@@ -177,11 +178,11 @@ class ConnectionCatalogRegistry(
 
     private fun issueInitial(
         connection: EnforcementConnection,
-        schemas: Collection<String>,
+        schemas: Collection<ObjectRef>,
         adoptHeldContent: Boolean,
     ): List<Refetch> =
         synchronized(stateLock) {
-            schemas.asSequence().filter { it.isNotBlank() }.distinct().mapNotNull { schema ->
+            schemas.asSequence().filter { it.schema.isNotBlank() && it.catalog.isNotBlank() }.distinct().mapNotNull { schema ->
                 val auth = authoritative[connection.binding.datasourceName to schema]
                 val pooled = auth?.let { pool[it.pooledRef] }
                 // Where a scan cannot vary by connection, content another connection already measured is
@@ -202,7 +203,7 @@ class ConnectionCatalogRegistry(
                 }
                 val pending = PendingRefetch(auth?.hash, auth?.hash)
                 connection.pending[schema] = pending
-                refetchOf(connection.binding.catalog, schema, pending.expectedHash)
+                refetchOf(schema, pending.expectedHash)
             }.toList()
         }
 
@@ -252,10 +253,12 @@ class ConnectionCatalogRegistry(
                 return CatalogMutationResult.Rejected(Status.Code.FAILED_PRECONDITION, "stale backend_generation")
             }
         }
-        if (request.catalog.isBlank() || request.catalog != ds.effectiveCatalog) {
+        val catalog = request.catalog
+        if (catalog.isBlank() || catalog != ds.effectiveCatalog) {
             return CatalogMutationResult.Rejected(Status.Code.INVALID_ARGUMENT, "invalid catalog")
         }
-        val pending = connection.pending[request.schema]
+        val ns = namespace(catalog, request.schema)
+        val pending = connection.pending[ns]
             ?: return CatalogMutationResult.Rejected(
                 Status.Code.FAILED_PRECONDITION,
                 "schema push has no pending REFETCH command",
@@ -271,16 +274,16 @@ class ConnectionCatalogRegistry(
                 return CatalogMutationResult.Rejected(Status.Code.FAILED_PRECONDITION, "unchanged hash mismatch")
             }
             return synchronized(stateLock) {
-                val key = poolKey(ds, request.schema, expected)
+                val key = poolKey(ds, ns, expected)
                 val pooled = pool[key]
                     ?: return@synchronized CatalogMutationResult.Rejected(
                         Status.Code.FAILED_PRECONDITION,
                         "unchanged push references an unknown pooled fragment",
                     )
-                val previous = connection.held[request.schema]
+                val previous = connection.held[ns]
                 if (previous?.pooledRef != key) retain(pooled.fragment, 1)
                 val now = clockNanos()
-                connection.held[request.schema] = HeldSchema(
+                connection.held[ns] = HeldSchema(
                     pooledRef = key,
                     hash = expected,
                     // An unchanged reply is a live verification, not a full fetch. Preserve the separate
@@ -290,7 +293,7 @@ class ConnectionCatalogRegistry(
                     revalidatedAgainstAuthoritativeHash = pending.authoritativeAtIssue,
                 )
                 if (previous != null && previous.pooledRef != key) release(previous.pooledRef)
-                accept(connection, request.schema, request.backendGeneration)
+                accept(connection, ns, request.backendGeneration)
                     .copy(refreshConfigCatalog = pending.afterCommit)
             }
         }
@@ -298,11 +301,11 @@ class ConnectionCatalogRegistry(
         val columns = request.columnsList.map {
             FragmentColumn(it.catalog, it.schema, it.table, it.column, it.dataType, it.ordinal, it.nullable)
         }
-        if (request.columnsList.any { it.catalog != request.catalog || it.schema != request.schema }) {
+        if (columns.any { it.catalog != catalog || it.schema != request.schema }) {
             return CatalogMutationResult.Rejected(Status.Code.INVALID_ARGUMENT, "fragment column schema mismatch")
         }
         return synchronized(stateLock) {
-            val key = poolKey(ds, request.schema, pushedHash)
+            val key = poolKey(ds, ns, pushedHash)
             val fragment = SchemaFragment(key, pushedHash, columns.toList(), request.routinesList.toList())
             val existing = pool[key]
             if (existing != null && existing.fragment.content != fragment.content) {
@@ -312,8 +315,8 @@ class ConnectionCatalogRegistry(
                 )
             }
 
-            val previousHeld = connection.held[request.schema]
-            val authKey = ds.name to request.schema
+            val previousHeld = connection.held[ns]
+            val authKey = ds.name to ns
             val previousAuth = authoritative[authKey]
             var retains = 0
             if (previousHeld?.pooledRef != key) retains++
@@ -328,7 +331,7 @@ class ConnectionCatalogRegistry(
             }
 
             val now = clockNanos()
-            connection.held[request.schema] = HeldSchema(key, pushedHash, now, now, null)
+            connection.held[ns] = HeldSchema(key, pushedHash, now, now, null)
             // Authoritative is ACCEPT-ordered (last accepted push wins, via a monotonic epoch), NOT
             // content-monotonic: an accepted push from a lagging read-replica may legitimately set an older
             // content hash. This is a liveness hint, never a correctness input — every connection decides
@@ -339,21 +342,21 @@ class ConnectionCatalogRegistry(
             if (previousHeld != null && previousHeld.pooledRef != key) release(previousHeld.pooledRef)
             if (previousAuth != null && previousAuth.pooledRef != key) release(previousAuth.pooledRef)
             val statementChangedStructure = pending.afterStatement && previousHeld?.hash != pushedHash
-            if (statementChangedStructure) connection.ddlSinceLastCommit += request.schema
-            accept(connection, request.schema, request.backendGeneration)
+            if (statementChangedStructure) connection.ddlSinceLastCommit += ns
+            accept(connection, ns, request.backendGeneration)
                 .copy(refreshConfigCatalog = statementChangedStructure || pending.afterCommit)
         }
     }
 
-    private fun accept(connection: EnforcementConnection, schema: String, backendGeneration: Long): CatalogMutationResult.Applied {
+    private fun accept(connection: EnforcementConnection, schema: ObjectRef, backendGeneration: Long): CatalogMutationResult.Applied {
         connection.pending.remove(schema)
         connection.backendGeneration = maxOf(connection.backendGeneration ?: backendGeneration, backendGeneration)
         connection.generation++
         return CatalogMutationResult.Applied(connection.generation)
     }
 
-    private fun poolKey(ds: Datasource, schema: String, hash: ContentHash): PoolKey {
-        val system = ds.engine.isFixedSystemSchema(schema)
+    private fun poolKey(ds: Datasource, schema: ObjectRef, hash: ContentHash): PoolKey {
+        val system = ds.engine.isFixedSystemSchema(schema.schema)
         val scope = if (system && !ds.engineVersion.isNullOrBlank()) {
             "engine:${ds.engineVersion}"
         } else {
@@ -386,10 +389,10 @@ class ConnectionCatalogRegistry(
     }
 
     /** Must be called while holding [EnforcementConnection.mutex]. */
-    fun freshnessGate(connection: EnforcementConnection, requiredSchemas: Collection<String>): Set<String> {
+    fun freshnessGate(connection: EnforcementConnection, requiredSchemas: Collection<ObjectRef>): Set<ObjectRef> {
         val now = clockNanos()
         return requiredSchemas.asSequence()
-            .filter { it.isNotBlank() && !it.startsWith("pg_temp", ignoreCase = true) }
+            .filter { it.schema.isNotBlank() && it.catalog.isNotBlank() && !it.schema.startsWith("pg_temp", ignoreCase = true) }
             .distinct()
             .filterTo(LinkedHashSet()) { schema ->
                 val held = connection.held[schema]
@@ -402,7 +405,7 @@ class ConnectionCatalogRegistry(
     }
 
     /** Issue or replay pending before-decide commands without changing an existing command's CAS token. */
-    fun markBeforeDecide(connection: EnforcementConnection, schemas: Collection<String>): List<Refetch> =
+    fun markBeforeDecide(connection: EnforcementConnection, schemas: Collection<ObjectRef>): List<Refetch> =
         markPending(connection, schemas) { schema ->
             val held = connection.held[schema]
             val auth = authoritative[connection.binding.datasourceName to schema]
@@ -410,12 +413,12 @@ class ConnectionCatalogRegistry(
         }
 
     /** A catalog-miss qualifier was never held: force one bounded unconditional fetch. */
-    fun markCatalogMiss(connection: EnforcementConnection, schemas: Collection<String>): List<Refetch> =
+    fun markCatalogMiss(connection: EnforcementConnection, schemas: Collection<ObjectRef>): List<Refetch> =
         markPending(connection, schemas) { schema ->
             PendingRefetch(null, authoritative[connection.binding.datasourceName to schema]?.hash)
         }
 
-    fun markAfterStatement(connection: EnforcementConnection, schemas: Collection<String>): List<Refetch> =
+    fun markAfterStatement(connection: EnforcementConnection, schemas: Collection<ObjectRef>): List<Refetch> =
         markPending(connection, schemas, { copy(afterStatement = true) }) { schema -> heldOrAuthoritative(connection, schema) }
 
     /**
@@ -431,24 +434,24 @@ class ConnectionCatalogRegistry(
     /** Must be called while holding [EnforcementConnection.mutex]. */
     fun clearDdlSinceLastCommit(connection: EnforcementConnection) = connection.ddlSinceLastCommit.clear()
 
-    private fun heldOrAuthoritative(connection: EnforcementConnection, schema: String) = PendingRefetch(
+    private fun heldOrAuthoritative(connection: EnforcementConnection, schema: ObjectRef) = PendingRefetch(
         connection.held[schema]?.hash,
         authoritative[connection.binding.datasourceName to schema]?.hash,
     )
 
     private fun markPending(
         connection: EnforcementConnection,
-        schemas: Collection<String>,
+        schemas: Collection<ObjectRef>,
         mark: PendingRefetch.() -> PendingRefetch = { this },
-        create: (String) -> PendingRefetch,
+        create: (ObjectRef) -> PendingRefetch,
     ): List<Refetch> = synchronized(stateLock) {
         schemas.asSequence()
-            .filter { it.isNotBlank() && !it.startsWith("pg_temp", ignoreCase = true) }
+            .filter { it.schema.isNotBlank() && it.catalog.isNotBlank() && !it.schema.startsWith("pg_temp", ignoreCase = true) }
             .distinct()
             .map { schema ->
                 val pending = connection.pending.getOrPut(schema) { create(schema) }.mark()
                 connection.pending[schema] = pending
-                refetchOf(connection.binding.catalog, schema, pending.expectedHash)
+                refetchOf(schema, pending.expectedHash)
             }.toList()
     }
 
@@ -458,17 +461,18 @@ class ConnectionCatalogRegistry(
         // `ORDER BY ordinal` guarantee as CP-side defense-in-depth (masks stay self-consistent either way).
         connection.held.values
             .flatMap { held -> pool[held.pooledRef]?.fragment?.columns.orEmpty() }
-            .sortedWith(compareBy({ it.schema }, { it.table }, { it.ordinal }))
+            .sortedWith(compareBy({ it.catalog }, { it.schema }, { it.table }, { it.ordinal }))
     }
 
+    /** Routine names per held schema, keyed by schema name as the function catalog expects. */
     fun heldRoutines(connection: EnforcementConnection): Map<String, List<String>> = synchronized(stateLock) {
         connection.held.entries
-            .mapNotNull { (schema, held) -> pool[held.pooledRef]?.fragment?.routines?.let { schema to it } }
+            .mapNotNull { (ns, held) -> pool[held.pooledRef]?.fragment?.routines?.let { ns.schema to it } }
             .sortedBy { it.first }
             .toMap()
     }
 
-    fun heldAndFreshSchemas(connection: EnforcementConnection): Set<String> =
+    fun heldAndFreshSchemas(connection: EnforcementConnection): Set<ObjectRef> =
         connection.held.keys.filterTo(LinkedHashSet()) { freshnessGate(connection, listOf(it)).isEmpty() }
 
     /**
@@ -494,10 +498,10 @@ class ConnectionCatalogRegistry(
      */
     fun recordAmbientMeasurement(
         datasourceName: String,
-        columnsBySchema: Map<String, List<FragmentColumn>>,
-        routinesBySchema: Map<String, List<String>> = emptyMap(),
-    ): Set<String> = synchronized(stateLock) {
-        val confirmed = LinkedHashSet<String>()
+        columnsBySchema: Map<ObjectRef, List<FragmentColumn>>,
+        routinesBySchema: Map<ObjectRef, List<String>> = emptyMap(),
+    ): Set<ObjectRef> = synchronized(stateLock) {
+        val confirmed = LinkedHashSet<ObjectRef>()
         val now = clockNanos()
         for (schema in columnsBySchema.keys + routinesBySchema.keys) {
             val authKey = datasourceName to schema
@@ -529,11 +533,11 @@ class ConnectionCatalogRegistry(
      * statement. Returns the schemas invalidated, for logging.
      */
     /** When this datasource's [schema] was last read and found to hold the content held for it. */
-    internal fun measuredNanosFor(datasourceName: String, schema: String): Long? =
+    internal fun measuredNanosFor(datasourceName: String, schema: ObjectRef): Long? =
         authoritative[datasourceName to schema]?.measuredNanos
 
-    fun invalidateDatasource(datasourceName: String): Set<String> = synchronized(stateLock) {
-        val dropped = LinkedHashSet<String>()
+    fun invalidateDatasource(datasourceName: String): Set<ObjectRef> = synchronized(stateLock) {
+        val dropped = LinkedHashSet<ObjectRef>()
         val keys = authoritative.keys.filter { it.first == datasourceName }
         for (key in keys) {
             val auth = authoritative.remove(key) ?: continue
@@ -583,7 +587,7 @@ class ConnectionCatalogRegistry(
         return swept
     }
 
-    internal fun authoritativeFor(datasourceName: String, schema: String): Authoritative? =
+    internal fun authoritativeFor(datasourceName: String, schema: ObjectRef): Authoritative? =
         authoritative[datasourceName to schema]
 
     internal fun pooledFor(key: PoolKey): PooledFragment? = pool[key]

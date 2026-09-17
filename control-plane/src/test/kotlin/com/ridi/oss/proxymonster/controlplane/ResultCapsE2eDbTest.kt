@@ -224,6 +224,7 @@ class ResultCapsE2eDbTest {
                 this.token = this@WireClient.token
                 datasourceName = fx.datasource.name
                 currentCatalog = fx.datasource.effectiveCatalog
+                currentCatalog = fx.datasource.effectiveCatalog
                 connectionId = this@WireClient.connectionId
                 this.sql = sql
                 searchPath.add(schema)

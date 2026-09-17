@@ -116,7 +116,7 @@ class RoleMaskFnSoftDeleteDbTest {
         val fn = policyStore.createMaskFn(MaskFnInput(name, "LAST_N"))
         datasourceStore.upsertClassification(
             datasource.id,
-            ClassificationInput("app", "users", "email", listOf("pii"), fn.id),
+            ClassificationInput("app", "users", "email", listOf("pii"), fn.id, catalog = datasource.effectiveCatalog),
         )
         assertEquals(name, datasourceStore.classificationsFor(datasource.id).values.single().maskFnName, "sanity")
 

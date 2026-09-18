@@ -82,6 +82,7 @@
     "newRequest": "새 요청",
     "roleAccessRequest": "역할 액세스 요청",
     "queryApprovalRequest": "쿼리 승인 요청",
+    "rateResetRequest": "한도 초기화 요청",
     "loadingRequests": "워크플로우 요청을 불러오는 중…",
     "lookingUpType": "요청 유형을 확인하는 중…",
     "invalidRequestId": "요청 ID는 양의 정수여야 합니다.",
@@ -208,6 +209,15 @@
     "token": "토큰",
     "connectionString": "연결 문자열",
     "connectionStringWithName": "연결 문자열 · {name}"
+  },
+  "rateResetComposer": {
+    "title": "한도 초기화 요청",
+    "description": "결과 전송량 한도를 모두 사용했습니다. 승인자가 초기화하며, 초기화는 모든 기간을 한 번에 비우고 문장별 상한은 그대로 둡니다.",
+    "denyReasonLabel": "거부 메시지 (선택)",
+    "denyReasonPlaceholder": "rate 10000/1h spent",
+    "reasonPlaceholder": "월간 내보내기 재실행 — 오늘 전체 테이블이 필요합니다.",
+    "submittedToast": "한도 초기화 요청 완료 — 승인자 검토 대기 중",
+    "submitFailed": "요청을 제출하지 못했습니다."
   },
   "rateResetDetail": {
     "title": "한도 초기화 요청 #{id}",

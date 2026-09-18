@@ -16,7 +16,7 @@ function parseDraft(search: URLSearchParams, t: Translator): WorkflowComposeDraf
   const from = fromRaw == null ? null : Number(fromRaw)
   const sourceDecisionId = from != null && Number.isFinite(from) && from > 0 ? from : null
 
-  if (kind != null && kind !== 'role' && kind !== 'query') {
+  if (kind != null && kind !== 'role' && kind !== 'query' && kind !== 'rate-reset') {
     return {
       kind: 'QUERY',
       sourceDecisionId: null,
@@ -30,7 +30,7 @@ function parseDraft(search: URLSearchParams, t: Translator): WorkflowComposeDraf
       sourceDecisionError: t('newPage.sourceDecisionPositive'),
     }
   }
-  if (kind === 'role' && fromRaw != null) {
+  if ((kind === 'role' || kind === 'rate-reset') && fromRaw != null) {
     return {
       kind: 'QUERY',
       sourceDecisionId: null,
@@ -39,6 +39,7 @@ function parseDraft(search: URLSearchParams, t: Translator): WorkflowComposeDraf
   }
   if (sourceDecisionId != null) return { kind: 'QUERY', sourceDecisionId }
   if (kind === 'role') return { kind: 'ROLE' }
+  if (kind === 'rate-reset') return { kind: 'RATE_RESET' }
   return { kind: 'QUERY', sourceDecisionId: null }
 }
 

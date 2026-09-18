@@ -154,15 +154,16 @@ test('a spent rate offers a rate-reset request and files it with the deny reason
 
   await runInEditor(page, 'select id from users')
 
-  // The workbench toolbar has its own "Request access"; the callout is what a denial changes.
   const results = page.getByLabel('Results')
   await expect(results.getByText('Query denied')).toBeVisible()
   await expect(results.getByText('rate 10000/1h spent')).toBeVisible()
-  // A rate denial is not a role problem: neither "Request approval" nor "Request access" is offered.
-  await expect(results.getByRole('button', { name: 'Request access' })).toHaveCount(0)
-  await expect(results.getByRole('button', { name: 'Request approval' })).toHaveCount(0)
+  // A rate denial is not a role problem: the callout and the result header both drop "Request approval"
+  // and "Request access" and offer the reset instead.
+  await expect(page.getByRole('button', { name: 'Request approval' })).toHaveCount(0)
+  await expect(page.getByRole('button', { name: 'Request access' })).toHaveCount(0)
+  await expect(page.getByRole('button', { name: 'Request rate reset' })).toHaveCount(2)
 
-  await page.getByTestId('request-rate-reset').click()
+  await page.getByTestId('request-rate-reset-header').click()
   const dialog = page.getByRole('dialog')
   await expect(dialog).toBeVisible()
   await expect(dialog.getByText('rate 10000/1h spent')).toBeVisible()
@@ -231,6 +232,36 @@ test('an approver sees the RATE_RESET request on Workflows and approves it', asy
 
   await expect.poll(() => approved).toBe(true)
   await expect(page.getByText("Approved — reset sam@example.com's result rates")).toBeVisible()
+})
+
+test('the Workflows "New request" menu files a RATE_RESET request for a wire-side denial', async ({ page }) => {
+  await mockAppShell(page)
+  await page.route('**/api/access-requests?status=PENDING', (route) => fulfillJson(route, 200, []))
+  await page.route('**/api/access-requests', (route) => fulfillJson(route, 200, []))
+  await page.route('**/api/approvals/inbox', (route) => fulfillJson(route, 200, []))
+  await page.route('**/api/approvals', (route) => fulfillJson(route, 200, []))
+  await page.route('**/api/approvals?**', (route) => fulfillJson(route, 200, []))
+  await page.route('**/api/access-requests/77', (route) => fulfillJson(route, 200, RATE_RESET_REQUEST))
+  let filed: Record<string, unknown> | null = null
+  await page.route('**/api/access-requests/rate-reset', async (route) => {
+    filed = route.request().postDataJSON()
+    await fulfillJson(route, 201, RATE_RESET_REQUEST)
+  })
+
+  await page.goto('/workflows')
+  await page.getByRole('button', { name: 'New request' }).click()
+  await page.getByRole('menuitem', { name: 'Rate reset request' }).click()
+
+  const composer = page.locator('[data-workflow-composer-kind="RATE_RESET"]')
+  await expect(composer).toBeVisible()
+  const submit = composer.getByRole('button', { name: 'Submit request' })
+  await expect(submit).toBeDisabled()
+  // The denied-with line is optional: a wire-side denial is retyped or left out.
+  await composer.locator('#rate-reset-request-reason').fill('monthly export re-run')
+  await submit.click()
+
+  await expect.poll(() => filed).toEqual({ reason: 'monthly export re-run', denyReason: null })
+  await expect(page).toHaveURL(/\/workflows\/77$/)
 })
 
 test('an admin resets a principal\'s result rates from the Users page', async ({ page }) => {

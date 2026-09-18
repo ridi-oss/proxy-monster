@@ -12,6 +12,7 @@ import (
 	"github.com/ridi-oss/sqlglot-go/generator"
 	"github.com/ridi-oss/sqlglot-go/optimizer"
 	"github.com/ridi-oss/sqlglot-go/schema"
+	"github.com/ridi-oss/sqlglot-go/tokens"
 
 	pb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
 )
@@ -257,6 +258,11 @@ func probeParsed(root exp.Expression, eng engine, qualifySchema schema.Schema, n
 		}
 		report := make(map[exp.Expression]optimizer.ResolvedSource)
 		opts := p.qualifyOptions(report)
+		// With no source anywhere in the tree a name can bind to nothing, so an unresolvable one is the
+		// target's own error (MySQL ER_BAD_FIELD_ERROR), not a lineage gap: the target answers it.
+		if !p.isWrite && p.sourcelessPlainNames() {
+			opts.ValidateQualifyColumns = false
+		}
 		p.qroot = optimizer.Qualify(p.qroot, opts)
 		if err := p.completeResolutionReport(report); err != nil {
 			panic(err)
@@ -588,6 +594,40 @@ func (p *prober) qualifyOptions(report map[exp.Expression]optimizer.ResolvedSour
 	opts.InferSchema = boolPtr(false)
 	opts.ValidateQualifyColumns = !p.isWrite
 	return opts
+}
+
+// sourcelessPlainNames reports whether the statement can read no relation at all and every column
+// reference in it is a plain unqualified name: no FROM, JOIN, or table, no CTE, no table-valued
+// source, no INTO, and no column whose name lexes as a keyword. The keyword test keeps a query
+// primary the parser degraded into a column (`(TABLE users)` becomes the column TABLE aliased
+// users) on the fail-closed path. A bare scalar subquery is not a source: one that holds a FROM is
+// caught by the whole-tree probes.
+func (p *prober) sourcelessPlainNames() bool {
+	for _, kind := range []exp.Kind{
+		exp.KindFrom, exp.KindJoin, exp.KindTable, exp.KindWith, exp.KindCTE,
+		exp.KindLateral, exp.KindValues, exp.KindUnnest, exp.KindInto,
+	} {
+		if len(p.root.FindAll(kind)) > 0 {
+			return false
+		}
+	}
+	if len(p.root.FindAll(exp.TraitUDTF)) > 0 {
+		return false
+	}
+	for _, col := range p.root.FindAll(exp.KindColumn) {
+		if truthy(col.Arg("table")) {
+			return false
+		}
+		ident := col.This()
+		if ident == nil || truthy(ident.Arg("quoted")) {
+			continue
+		}
+		toks, err := sqlglot.Tokenize(ident.Name(), p.dialect)
+		if err != nil || len(toks) != 1 || toks[0].TokenType != tokens.VAR {
+			return false
+		}
+	}
+	return true
 }
 
 // queryIslands returns the outermost query nodes embedded in a non-query statement. Qualifying one

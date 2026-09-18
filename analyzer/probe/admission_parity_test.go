@@ -466,12 +466,12 @@ func TestParityNoFromSafeChatter(t *testing.T) {
 	}
 }
 
-// TestParityNiladicRemainingOverDeny documents the one niladic still over-denied after v0.14.0's
-// bare-keyword fix: current_role has no bare keyword in either engine, so it parses as a Column that fails lineage
-// (fail-safe, not a leak). current_schema is dual — bare is a safe function (above), but the typed-literal
-// form `current_schema 'x'` is a user-type cast and still denies.
-func TestParityNiladicRemainingOverDeny(t *testing.T) {
-	bothDialects(func(d string) { parityDenied(t, "SELECT current_role", d) })
+// current_role has no bare keyword in either engine, so it parses as a Column; with no source to bind it
+// the statement relays and the target answers it (see sourceless_select_test.go). current_schema is dual:
+// bare is a safe function (above), but the typed-literal form `current_schema 'x'` is a user-type cast
+// and still denies.
+func TestParityNiladicCurrentRoleRelays(t *testing.T) {
+	bothDialects(func(d string) { parityKind(t, "SELECT current_role", d, pb.StatementKind_STATEMENT_KIND_SELECT) })
 	// current_schema is dual: bare → function (safe); `current_schema 'x'` is a typed literal to type
 	// current_schema → USER_TYPE_CAST Utility grant (system:critical).
 	parityUtility(t, "SELECT current_schema 'x'", "postgres", "USER_TYPE_CAST")

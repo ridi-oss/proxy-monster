@@ -82,6 +82,7 @@
     "newRequest": "New request",
     "roleAccessRequest": "Role access request",
     "queryApprovalRequest": "Query approval request",
+    "rateResetRequest": "Rate reset request",
     "loadingRequests": "Loading workflow requests…",
     "lookingUpType": "Looking up request type…",
     "invalidRequestId": "Request id must be a positive number.",
@@ -208,6 +209,15 @@
     "token": "Token",
     "connectionString": "Connection string",
     "connectionStringWithName": "Connection string · {name}"
+  },
+  "rateResetComposer": {
+    "title": "Request a rate reset",
+    "description": "Your relayed-volume rate is spent. An approver resets it; the reset clears every window at once and leaves the per-statement cap alone.",
+    "denyReasonLabel": "Denied with (optional)",
+    "denyReasonPlaceholder": "rate 10000/1h spent",
+    "reasonPlaceholder": "Monthly export re-run — need the full table today.",
+    "submittedToast": "Rate reset requested — awaiting approver review",
+    "submitFailed": "failed to submit request"
   },
   "rateResetDetail": {
     "title": "Rate reset request #{id}",

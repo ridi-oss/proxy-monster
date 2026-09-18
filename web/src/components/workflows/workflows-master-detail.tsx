@@ -28,12 +28,14 @@ import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { ActiveRoleGrants } from './active-role-grants'
 import { QueryRequestComposer } from './query-request-composer'
 import { RoleRequestComposer } from './role-request-composer'
+import { RateResetRequestComposer } from './rate-reset-request-composer'
 import { RoleRequestDetail } from './role-request-detail'
 import { RateResetRequestDetail } from './rate-reset-request-detail'
 import { WorkflowRequestList } from './workflow-request-list'
 
 export type WorkflowComposeDraft =
   | { kind: 'ROLE' }
+  | { kind: 'RATE_RESET' }
   | {
       kind: 'QUERY'
       sourceDecisionId: number | null
@@ -85,6 +87,9 @@ function DetailPanel({
   }
   if (compose?.kind === 'ROLE') {
     return <DetailScroll><RoleRequestComposer onCreated={onCreated} onCancel={onCancel} /></DetailScroll>
+  }
+  if (compose?.kind === 'RATE_RESET') {
+    return <DetailScroll><RateResetRequestComposer onCreated={onCreated} onCancel={onCancel} /></DetailScroll>
   }
   if (compose?.kind === 'QUERY') {
     return (
@@ -211,6 +216,9 @@ export function WorkflowsMasterDetail({
                 </DropdownMenuItem>
                 <DropdownMenuItem render={<Link href="/workflows/new?kind=query" />}>
                   {t('masterDetail.queryApprovalRequest')}
+                </DropdownMenuItem>
+                <DropdownMenuItem render={<Link href="/workflows/new?kind=rate-reset" />}>
+                  {t('masterDetail.rateResetRequest')}
                 </DropdownMenuItem>
               </DropdownMenuContent>
             </DropdownMenu>

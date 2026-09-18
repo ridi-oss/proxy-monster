@@ -145,3 +145,9 @@ over-deny rather than a leak — `NATURAL JOIN` (shared-column lineage is
 ambiguous), `PIVOT`, a data-modifying CTE, and `SELECT *` over a table-function
 / `VALUES` / `LATERAL` source (no fixed column list, so mask ordinals cannot be
 bound) all resolve false and route through the `exception.unanalyzable` gate.
+The one name the analyzer does not fail closed on is a plain unqualified column
+reference in a statement with no source at all (no FROM, JOIN, CTE, table-valued
+source, or INTO): nothing could ever bind it, so the statement resolves with no
+column reads and relays, and the target DB returns its own unknown-column error.
+A name that lexes as a keyword stays fail-closed, since it may be a query
+primary the parser degraded into a column.

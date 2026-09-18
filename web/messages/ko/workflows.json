@@ -97,7 +97,7 @@
       "incomingTitle": "받은 요청이 없습니다.",
       "incomingHint": "검토를 기다리는 요청이 없습니다.",
       "outgoingTitle": "보낸 요청이 없습니다.",
-      "outgoingHint": "역할 액세스 또는 쿼리 승인 요청을 생성하세요.",
+      "outgoingHint": "역할 액세스, 쿼리 승인 또는 한도 초기화 요청을 생성하세요.",
       "allTitle": "아직 워크플로우 요청이 없습니다.",
       "allHint": "받은 요청과 보낸 요청이 여기에 표시됩니다."
     }

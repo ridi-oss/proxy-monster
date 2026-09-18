@@ -97,7 +97,7 @@
       "incomingTitle": "Inbox zero.",
       "incomingHint": "No requests are waiting for your review.",
       "outgoingTitle": "No outgoing requests.",
-      "outgoingHint": "Create a role access or query approval request.",
+      "outgoingHint": "Create a role access, query approval, or rate reset request.",
       "allTitle": "No workflow requests yet.",
       "allHint": "Incoming and outgoing requests will appear here."
     }

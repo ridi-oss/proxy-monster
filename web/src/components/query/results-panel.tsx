@@ -97,7 +97,7 @@ export function ResultsPanel({
               </span>
             )}
             <span className="text-muted-foreground font-mono text-xs">{result.latencyMs} ms</span>
-            {result.decision === 'DENY' && (
+            {result.decision === 'DENY' && !isRateDeny(result.denyReason) && (
               <div className="flex items-center gap-2">
                 {result.decisionId != null && (
                   <Button size="xs" asChild>
@@ -108,6 +108,11 @@ export function ResultsPanel({
                   {t('results.requestAccess')}
                 </Button>
               </div>
+            )}
+            {result.decision === 'DENY' && isRateDeny(result.denyReason) && onRequestRateReset && (
+              <Button size="xs" data-testid="request-rate-reset-header" onClick={onRequestRateReset}>
+                {t('rateReset.button')}
+              </Button>
             )}
           </div>
         </div>

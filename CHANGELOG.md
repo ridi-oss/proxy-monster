@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.1.27](https://github.com/ridi-oss/proxy-monster/compare/server-v0.1.26...server-v0.1.27) (2026-09-18)
+
+
+### Features
+
+* **web:** file a rate-reset request from the Workflows page ([3b4034e](https://github.com/ridi-oss/proxy-monster/commit/3b4034e9c48e3488407226e5209fc1af12a0fde0))
+
+
+### Bug Fixes
+
+* **web:** a rate denial's result header offers the reset, not approval or access ([fe91c08](https://github.com/ridi-oss/proxy-monster/commit/fe91c08a23f624d73638996681127178e66024f3))
+
 ## [0.1.26](https://github.com/ridi-oss/proxy-monster/compare/server-v0.1.25...server-v0.1.26) (2026-09-16)
 
 

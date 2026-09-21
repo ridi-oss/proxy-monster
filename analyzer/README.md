@@ -148,6 +148,7 @@ bound) all resolve false and route through the `exception.unanalyzable` gate.
 The one name the analyzer does not fail closed on is a plain unqualified column
 reference in a statement with no source at all (no FROM, JOIN, CTE, table-valued
 source, or INTO): nothing could ever bind it, so the statement resolves with no
-column reads and relays, and the target DB returns its own unknown-column error.
-A name that lexes as a keyword stays fail-closed, since it may be a query
-primary the parser degraded into a column.
+column reads and relays, and the target DB decides what the name means — an
+unknown-column error for `SELECT foo`, the session value for a niladic such as
+`SELECT current_role`. A name that lexes as a keyword stays fail-closed, since
+it may be a query primary the parser degraded into a column.

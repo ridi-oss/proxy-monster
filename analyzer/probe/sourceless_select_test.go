@@ -51,8 +51,41 @@ func TestSourcelessSelectRelaysAnUnresolvableName(t *testing.T) {
 }
 
 func TestSourcelessSelectKeepsTheFunctionGrant(t *testing.T) {
-	parityFunctionGrant(t, "select foo, load_file('/etc/passwd')", "mysql")
-	parityFunctionGrant(t, "select foo, pg_read_file('/etc/passwd')", "postgres")
+	cases := []struct {
+		dialect  string
+		sql      string
+		function string
+		outputs  int
+	}{
+		{"mysql", "select foo, load_file('/etc/passwd')", "load_file", 2},
+		{"postgres", "select foo, pg_read_file('/etc/passwd')", "pg_read_file", 2},
+	}
+	for _, c := range cases {
+		f := factsFor(t, c.sql, c.dialect)
+		if !f.Resolved {
+			t.Errorf("[%s] %q: want resolved, got stage=%q detail=%q", c.dialect, c.sql, f.GetFailedStage(), f.Detail)
+			continue
+		}
+		if got := len(f.GetOutputColumns()); got != c.outputs {
+			t.Errorf("[%s] %q: want %d output columns, got %v", c.dialect, c.sql, c.outputs, f.GetOutputColumns())
+		}
+		var grant *pb.RequireResultReadGrant
+		for _, g := range f.GetResultReads() {
+			if g.GetColumn() != nil || g.GetTable() != nil {
+				t.Errorf("[%s] %q: a sourceless statement emitted a column/table read: %v", c.dialect, c.sql, g)
+			}
+			if fn := g.GetFunction(); fn != nil && fn.Name == c.function {
+				grant = g
+			}
+		}
+		if grant == nil {
+			t.Errorf("[%s] %q: want a Function grant for %q, got reads=%v", c.dialect, c.sql, c.function, f.GetResultReads())
+			continue
+		}
+		if grant.MaskedDisposition != pb.MaskedDisposition_MASKED_DISPOSITION_DENY_STATEMENT {
+			t.Errorf("[%s] %q: want DENY_STATEMENT on the %q grant, got %s", c.dialect, c.sql, c.function, grant.MaskedDisposition)
+		}
+	}
 }
 
 func TestUnresolvableNameWithASourceStaysFailClosed(t *testing.T) {

@@ -132,7 +132,7 @@ func TestStatusRoundTrips(t *testing.T) {
 	backend := newFakeBackend()
 	backend.status.Datasources = []Datasource{
 		{Name: "acme-mysql", Engine: "mysql", DbName: "app", LocalPort: 6100, Brokered: true, LiveConns: 2},
-		{Name: "pg", Engine: "postgres", Brokered: false, Reason: "postgres brokering not yet supported"},
+		{Name: "unsupported", Engine: "sqlite", Brokered: false, Reason: "engine \"sqlite\" not brokered"},
 	}
 	c := serve(t, backend)
 

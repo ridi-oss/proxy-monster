@@ -22,7 +22,7 @@ item, and the daemon's lifetime is an explicit choice, never an init system's.
   ─────────
   acme-mysql    ·  127.0.0.1:6100        ← click to copy the connection string
   acme-orders   ·  127.0.0.1:6101  (2)   ← (2) = live connections
-  acme-target   ·  postgres brokering not yet supported
+  acme-target   ·  127.0.0.1:6102
   ─────────
   Re-authenticate…
   Log out

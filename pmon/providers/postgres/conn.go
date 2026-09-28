@@ -1,31 +1,19 @@
 package postgres
 
 import (
-	"context"
-	"errors"
 	"fmt"
-	"net"
 	"net/url"
 	"strings"
 
 	"github.com/ridi-oss/proxy-monster/pmon/driver"
 )
 
-// Provider is the PostgreSQL engine. It formats connection strings; brokering is not implemented yet, so
-// every endpoint reports unavailable and Serve is never reached.
+// Provider is the PostgreSQL engine. Its broker plays PostgreSQL server to the local client, checks the
+// local password, then plays PostgreSQL client to the proxy with the wire token as the password and pipes
+// the session raw.
 type Provider struct{}
 
 func (Provider) Engine() string { return "postgres" }
-
-func (Provider) UnavailableReason(driver.Endpoint) string {
-	return "postgres brokering not yet supported"
-}
-
-func (Provider) RouteKey(driver.Endpoint) string { return "" }
-
-func (Provider) Serve(context.Context, net.Listener, driver.ResolveSession) error {
-	return errors.New("postgres brokering not yet supported")
-}
 
 func (Provider) FormatConnectionString(format driver.Format, t driver.Target, _ driver.Options) string {
 	dbPath := url.PathEscape(t.DbName)

@@ -21,8 +21,8 @@ func TestBuiltinsPreserveBrokerSupport(t *testing.T) {
 	}{
 		{"mysql", "proxy:3306", ""},
 		{"mysql", "", "no advertised proxy address"},
-		{"postgres", "proxy:5432", "postgres brokering not yet supported"},
-		{"postgres", "", "postgres brokering not yet supported"},
+		{"postgres", "proxy:5432", ""},
+		{"postgres", "", "no advertised proxy address"},
 		{"other", "proxy:9999", `engine "other" not brokered`},
 		{"other", "", "no advertised proxy address"},
 	} {

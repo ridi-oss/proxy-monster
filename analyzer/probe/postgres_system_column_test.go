@@ -401,7 +401,20 @@ func TestPostgresBuiltinFunctionRowRespectResolution(t *testing.T) {
 			t.Errorf("unknown function qualifier must fail closed: %q -> %+v", sql, facts)
 		}
 	}
-
+	// `WITH OFFSET` is BigQuery syntax; PostgreSQL rejects it, so the parser must too.
+	offset := analyze("SELECT 1 FROM unnest(ARRAY[1, 2]) WITH OFFSET AS pos", []string{"pg_catalog", "public"}, true)
+	if offset.GetResolved() || stageString(offset.FailedStage) != "PARSE" {
+		t.Errorf("WITH OFFSET must fail at parse under PostgreSQL: %+v", offset)
+	}
+	for _, sql := range []string{
+		"SELECT v, n FROM unnest(ARRAY[1, 2]) WITH ORDINALITY AS u(v, n)",
+		"SELECT u.v, u.n FROM unnest(ARRAY[1, 2]) WITH ORDINALITY AS u(v, n)",
+	} {
+		facts := analyze(sql, []string{"pg_catalog", "public"}, true)
+		if !facts.GetResolved() {
+			t.Errorf("WITH ORDINALITY must resolve: %q stage=%s detail=%q", sql, stageString(facts.FailedStage), facts.GetDetail())
+		}
+	}
 }
 
 func TestPostgresCTIDResolutionBoundaries(t *testing.T) {

@@ -129,7 +129,7 @@ func parityColumnGrant(t *testing.T, sql, dialect, column string) {
 	t.Helper()
 	f := factsFor(t, sql, dialect)
 	for _, g := range f.GetResultReads() {
-		if c := g.GetColumn(); c != nil && c.GetIdentity().GetColumn() == column {
+		if c := g.GetColumn(); c != nil && c.GetColumn() == column {
 			return
 		}
 	}

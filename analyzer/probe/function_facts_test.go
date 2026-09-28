@@ -128,7 +128,7 @@ func deniedColumns(f *pb.StatementFacts) map[string]bool {
 	out := map[string]bool{}
 	for _, g := range f.GetResultReads() {
 		if c := g.GetColumn(); c != nil && g.GetMaskedDisposition() == pb.MaskedDisposition_MASKED_DISPOSITION_DENY_STATEMENT {
-			out[c.GetIdentity().GetColumn()] = true
+			out[c.GetColumn()] = true
 		}
 	}
 	return out

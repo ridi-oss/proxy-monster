@@ -9,6 +9,16 @@ package proxymonster.v1;
 option java_package = "com.ridi.oss.proxymonster.grpc";
 option java_multiple_files = true;
 
+// One catalog object named by its path: a namespace sets catalog and schema, a table adds table,
+// a column adds column. Fields past the named object stay empty, so the same message keys a
+// namespace, a table, or a column on every boundary that names one.
+message ObjectRef {
+  string catalog = 1;
+  string schema = 2;
+  string table = 3;
+  string column = 4;
+}
+
 enum Engine {
   ENGINE_UNSPECIFIED = 0;
   POSTGRES = 1;

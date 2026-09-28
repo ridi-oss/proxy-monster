@@ -1,8 +1,7 @@
 package com.ridi.oss.proxymonster.controlplane
 
+import com.ridi.oss.proxymonster.grpc.objectRef
 import com.ridi.oss.proxymonster.analyzer.pb.MaskedDisposition
-import com.ridi.oss.proxymonster.analyzer.pb.columnResource
-import com.ridi.oss.proxymonster.analyzer.pb.relationIdentity
 import com.ridi.oss.proxymonster.analyzer.pb.requireResultReadGrant
 import com.ridi.oss.proxymonster.analyzer.pb.resultFingerprint
 import kotlin.test.Test
@@ -21,13 +20,11 @@ class ResultPayloadCodecTest {
     private val fingerprint = resultFingerprint {
         grants.add(
             requireResultReadGrant {
-                column = columnResource {
+                column = objectRef {
                     catalog = "def"
-                    identity = relationIdentity {
-                        schema = "bom"
-                        table = "tb_user"
-                        column = "email"
-                    }
+                    schema = "bom"
+                    table = "tb_user"
+                    column = "email"
                 }
                 maskedDisposition = MaskedDisposition.MASKED_DISPOSITION_MASK_OUTPUT
                 outputOrdinals.add(1)
@@ -106,9 +103,9 @@ class ResultPayloadCodecTest {
     }
 
     private companion object {
-        // The base64 the old serializer emitted for [fingerprint]. analyzer.proto is unchanged by this
-        // migration, so these bytes are byte-identical to what a pre-migration deployment stored.
-        const val LEGACY_FINGERPRINT_B64 = "CiMKHAoDZGVmEhUKA2JvbRIHdGJfdXNlchoFZW1haWwoAjIBAQ=="
+        // The base64 the old serializer emitted for [fingerprint], in the ObjectRef grant shape. A fingerprint
+        // frozen in the earlier nested-identity shape decodes to different grants and denies the view instead.
+        const val LEGACY_FINGERPRINT_B64 = "CiEKGgoDZGVmEgNib20aB3RiX3VzZXIiBWVtYWlsKAIyAQE="
     }
 
     @Test

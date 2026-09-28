@@ -11,7 +11,7 @@ import (
 // tracked and can be masked/denied, rather than silently copied out.
 func readsColumn(f *pb.StatementFacts, column string) bool {
 	for _, g := range f.GetResultReads() {
-		if c := g.GetColumn(); c != nil && c.Identity.Column == column {
+		if c := g.GetColumn(); c != nil && c.Column == column {
 			return true
 		}
 	}
@@ -262,7 +262,7 @@ func TestParenthesizedQueryBodyKeepsLineage(t *testing.T) {
 		// the protected column. Its absence is the whole bug, so assert it rather than a grant count.
 		var denies int
 		for _, g := range f.GetResultReads() {
-			if c := g.GetColumn(); c != nil && c.Identity.Column == "ssn" &&
+			if c := g.GetColumn(); c != nil && c.Column == "ssn" &&
 				g.MaskedDisposition == pb.MaskedDisposition_MASKED_DISPOSITION_DENY_STATEMENT {
 				denies++
 			}

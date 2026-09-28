@@ -27,6 +27,7 @@ import com.ridi.oss.proxymonster.classification.BaselineDangerousFunctions
 import com.ridi.oss.proxymonster.grpc.ColumnMask
 import com.ridi.oss.proxymonster.grpc.EnfAction
 import com.ridi.oss.proxymonster.grpc.Engine
+import com.ridi.oss.proxymonster.grpc.ObjectRef
 import com.ridi.oss.proxymonster.grpc.RunError
 import com.ridi.oss.proxymonster.grpc.columnMask
 import com.ridi.oss.proxymonster.analyzer.pb.CatalogSnapshot
@@ -232,7 +233,7 @@ internal fun readsAllUnmasked(
     roles: Set<String>,
     ds: Datasource,
     catalog: List<CatalogColumn>,
-    leakColumns: List<com.ridi.oss.proxymonster.analyzer.pb.ColumnResource>,
+    leakColumns: List<ObjectRef>,
     context: AuthzContext,
     authz: Authz,
     systemClassification: SystemClassificationService?,
@@ -240,7 +241,7 @@ internal fun readsAllUnmasked(
     if (leakColumns.isEmpty()) return true
     val byKey = catalog.associateBy { listOf(it.catalog, it.schema, it.table, it.column) }
     val refs = leakColumns.map { col ->
-        val row = byKey[listOf(col.catalog, col.identity.schema, col.identity.table, col.identity.column)] ?: return false
+        val row = byKey[listOf(col.catalog, col.schema, col.table, col.column)] ?: return false
         ColumnRef(
             "${row.catalog}.${row.schema}.${row.table}.${row.column}",
             row.catalog, row.schema, row.table, row.column, row.classification?.tags ?: emptyList(),
@@ -374,8 +375,7 @@ fun protectedPredicateLiterals(
     }
     if (!facts.resolved) return null
     return facts.predicateLiteralsList.mapNotNull { lit ->
-        val identity = lit.column.identity
-        val key = "${lit.column.catalog}.${identity.schema}.${identity.table}.${identity.column}"
+        val key = lit.column.key
         // Unknown to the catalog ⇒ cannot be vouched for ⇒ protected. Known ⇒ protected iff it carries a tag
         // or a mask function; a bare known column is genuinely unclassified.
         val row = catalogIndex.rowsByKey[key]
@@ -687,12 +687,8 @@ fun decideQuery(
     }
 
     val columnGrants = facts.resultReadsList.filter { it.hasColumn() }
-    val columnKeys = LinkedHashMap<String, com.ridi.oss.proxymonster.analyzer.pb.ColumnResource>()
-    for (grant in columnGrants) {
-        val column = grant.column
-        val key = listOf(column.catalog, column.identity.schema, column.identity.table, column.identity.column).joinToString(".")
-        columnKeys.putIfAbsent(key, column)
-    }
+    val columnKeys = LinkedHashMap<String, ObjectRef>()
+    for (grant in columnGrants) columnKeys.putIfAbsent(grant.column.key, grant.column)
     when (val coverage = catalogCoverage(catalogIndex, columnKeys.keys)) {
         CatalogCoverage.Covered -> Unit
         // A resolved statement traced a column key with no row in the catalog index. This is NOT a stale
@@ -805,8 +801,7 @@ fun decideQuery(
     val masks = ArrayList<ColumnMask>()
     var hasMandatoryRedaction = false
     for (grant in columnGrants) {
-        val column = grant.column
-        val key = listOf(column.catalog, column.identity.schema, column.identity.table, column.identity.column).joinToString(".")
+        val key = grant.column.key
         val row = catalogIndex.rowsByKey.getValue(key)
         val systemRedacted = key in systemRedactedColumns
         val authorizedVerdict = if (row.isTemp) {
@@ -869,7 +864,7 @@ fun decideQuery(
     if (tableGrants.isNotEmpty()) {
         val refs = tableGrants.map { grant ->
             val table = grant.table
-            TableRef("${table.catalog}.${table.schema}.${table.table}", table.catalog, table.schema, table.table)
+            TableRef(table.key, table.catalog, table.schema, table.table)
         }.distinctBy { it.key }
         val verdicts = authz.authorizeTables(principal, roles, ds.name, refs, context, tableSystemTags, ds.tags)
         refs.firstOrNull { verdicts[it.key] != TableVerdict.READ }?.let {
@@ -890,8 +885,7 @@ fun decideQuery(
     ) is AuthzDecision.Allow
     val returnedMasked = LinkedHashMap<String, Boolean>()
     for (rc in facts.returnedColumnsList) {
-        val c = rc.column
-        val key = listOf(c.catalog, c.identity.schema, c.identity.table, c.identity.column).joinToString(".")
+        val key = rc.column.key
         val clear = unmaskablePermitted || columnVerdicts[key] == ColumnVerdict.UNMASKED &&
             (rc.outputOrdinalsList.isEmpty() || rc.outputOrdinalsList.any { o -> o !in maskedOrdinals })
         returnedMasked[key] = (returnedMasked[key] ?: true) && !clear
@@ -903,7 +897,7 @@ fun decideQuery(
         }
         for (grant in tableGrants) {
             val t = grant.table
-            add(CapResource.Table(TableRef("${t.catalog}.${t.schema}.${t.table}", t.catalog, t.schema, t.table), tableSystemTags[Triple(t.catalog, t.schema, t.table)]))
+            add(CapResource.Table(TableRef(t.key, t.catalog, t.schema, t.table), tableSystemTags[Triple(t.catalog, t.schema, t.table)]))
         }
         for ((name, tagId) in allowedFunctionTags) add(CapResource.Function(FunctionRef(name), tagId))
         for ((command, tagId) in usedUtilityTags) add(CapResource.Utility(UtilityRef(command), tagId))
@@ -920,7 +914,7 @@ fun decideQuery(
     }
     val referencedSchemas = buildSet {
         facts.sourcesList.mapTo(this) { it.schema }
-        columnGrants.mapTo(this) { it.column.identity.schema }
+        columnGrants.mapTo(this) { it.column.schema }
     }.filterNotTo(LinkedHashSet()) { it.startsWith("pg_temp", ignoreCase = true) }
     // MASK/DENY always redacts; an ALLOW redacts iff the analyzer's leak set holds a column the viewer
     // can't read unmasked. `select id from users` (all readable) relays raw.

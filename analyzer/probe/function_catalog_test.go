@@ -33,7 +33,7 @@ func TestAnalyzeRequestAbsentFunctions(t *testing.T) {
 						if facts.GetResolved() || facts.GetFailureClass() != pb.FailureClass_FAILURE_CLASS_UNANALYZABLE {
 							t.Fatalf("observed=%v sql=%q: unknown function must fail closed: %v", observed, sql, facts)
 						}
-					} else if !facts.GetResolved() || len(facts.GetResultReads()) != 1 || facts.GetResultReads()[0].GetColumn().GetIdentity().GetColumn() != "ssn" {
+					} else if !facts.GetResolved() || len(facts.GetResultReads()) != 1 || facts.GetResultReads()[0].GetColumn().GetColumn() != "ssn" {
 						t.Fatalf("observed=%v: column catalog must resolve independently of functions: %v", observed, facts)
 					}
 					if (req.GetCatalog().GetFunctions() != nil) != observed {

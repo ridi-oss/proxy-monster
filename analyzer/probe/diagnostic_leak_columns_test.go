@@ -89,7 +89,7 @@ func TestDiagnosticLeakColumns(t *testing.T) {
 		// control-plane's catalog lookup misses (→ redact), never be silently dropped.
 		found := false
 		for _, c := range facts.GetDiagnosticLeakColumns() {
-			if c.GetIdentity().GetColumn() == "acme.public.users.ssn.secret" {
+			if c.GetColumn() == "acme.public.users.ssn.secret" {
 				found = true
 			}
 		}
@@ -103,8 +103,7 @@ func assertLeak(t *testing.T, facts *pb.StatementFacts, want []string) {
 	t.Helper()
 	got := make([]string, 0, len(facts.GetDiagnosticLeakColumns()))
 	for _, c := range facts.GetDiagnosticLeakColumns() {
-		id := c.GetIdentity()
-		got = append(got, c.GetCatalog()+"."+id.GetSchema()+"."+id.GetTable()+"."+id.GetColumn())
+		got = append(got, c.GetCatalog()+"."+c.GetSchema()+"."+c.GetTable()+"."+c.GetColumn())
 	}
 	// The emitted order must already be sorted by (catalog, schema, table, column); assert it before any
 	// local re-sort, since the control-plane compares the frozen list positionally.

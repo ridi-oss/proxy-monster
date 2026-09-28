@@ -81,7 +81,7 @@ class SqlglotTest {
             val prefix = if (dialect == "mysql") "def.app" else "acme.public"
             assertTrue(result.resolved, "[$dialect] expected resolved=true, got: $result")
             val columns = result.resultReadsList.mapNotNull { it.column.takeIf { _ -> it.hasColumn() } }
-                .map { "${it.catalog}.${it.identity.schema}.${it.identity.table}.${it.identity.column}" }
+                .map { "${it.catalog}.${it.schema}.${it.table}.${it.column}" }
             assertTrue("$prefix.users.id" in columns)
             assertTrue("$prefix.users.ssn" in columns)
         }

@@ -8,6 +8,7 @@ import (
 
 	"github.com/ridi-oss/proxy-monster/pmon/conn"
 	"github.com/ridi-oss/proxy-monster/pmon/control"
+	"github.com/ridi-oss/proxy-monster/pmon/driver"
 )
 
 // menuItem wrappers for the FIXED items, nil-safe for the same reason as the row ones: render() must be
@@ -158,7 +159,7 @@ func (a *app) applyRows(s *control.Status) {
 			if ds.LiveConns > 0 {
 				label += fmt.Sprintf("  (%d)", ds.LiveConns)
 			}
-			row.set(ds.Name, conn.String(conn.URL, conn.Target{
+			row.set(ds.Name, conn.String(driver.URL, driver.Target{
 				Engine:   ds.Engine,
 				DbName:   ds.DbName,
 				Port:     ds.LocalPort,

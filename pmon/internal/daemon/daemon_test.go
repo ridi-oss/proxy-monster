@@ -170,12 +170,12 @@ func TestBrokeringImpliesALocalPassword(t *testing.T) {
 	}
 }
 
-// TestStatusReportsUnbrokerableDatasourcesWithAReason: a PG or address-less datasource must still appear, with
-// an explanation — a silently short list would read as "you have no access".
+// TestStatusReportsUnbrokerableDatasourcesWithAReason: an unsupported or address-less datasource must still
+// appear with an explanation rather than silently shortening the list.
 func TestStatusReportsUnbrokerableDatasourcesWithAReason(t *testing.T) {
 	isolate(t)
 	cp := newFakeCP(t, []driver.Endpoint{
-		{Name: "pg", Engine: "postgres", DbName: "app", AdvertiseAddr: freePort(t)},
+		{Name: "unsupported", Engine: "sqlite", DbName: "app", AdvertiseAddr: freePort(t)},
 		{Name: "no-addr", Engine: "mysql", DbName: "app"},
 	})
 

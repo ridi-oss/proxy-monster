@@ -200,7 +200,7 @@ func emitLineageFacts(root exp.Expression, eng engine, qualifySchema schema.Sche
 	// empty output_columns — a stray ordinal would fail the mask-binding contract check (Query.kt).
 	for ordinal, origin := range report.Origins {
 		for _, key := range origin.Origins {
-			column, ok := columnResourceFromKey(key)
+			column, ok := columnRefFromKey(key)
 			if !ok {
 				return unanalyzableFacts("LINEAGE", "invalid column identity emitted by analyzer")
 			}
@@ -225,7 +225,7 @@ func emitLineageFacts(root exp.Expression, eng engine, qualifySchema schema.Sche
 	}
 	sort.Strings(refCols)
 	for _, key := range refCols {
-		column, ok := columnResourceFromKey(key)
+		column, ok := columnRefFromKey(key)
 		if !ok {
 			return unanalyzableFacts("LINEAGE", "invalid column identity emitted by analyzer")
 		}
@@ -235,7 +235,7 @@ func emitLineageFacts(root exp.Expression, eng engine, qualifySchema schema.Sche
 	// console. An unparseable identity is skipped rather than failing the statement — a fact that can only
 	// hide text must not be able to deny a query.
 	for _, lit := range report.PredicateLiterals {
-		column, ok := columnResourceFromKey(lit.Column)
+		column, ok := columnRefFromKey(lit.Column)
 		if !ok {
 			continue
 		}
@@ -248,7 +248,7 @@ func emitLineageFacts(root exp.Expression, eng engine, qualifySchema schema.Sche
 		seen := map[string]bool{}
 		for _, grant := range facts.ResultReads {
 			if column := grant.GetColumn(); column != nil {
-				key := column.GetCatalog() + "." + column.GetIdentity().GetSchema() + "." + column.GetIdentity().GetTable() + "." + column.GetIdentity().GetColumn()
+				key := column.GetCatalog() + "." + column.GetSchema() + "." + column.GetTable() + "." + column.GetColumn()
 				if seen[key] {
 					continue
 				}
@@ -262,7 +262,7 @@ func emitLineageFacts(root exp.Expression, eng engine, qualifySchema schema.Sche
 			continue
 		}
 		facts.ResultReads = append(facts.ResultReads, &pb.RequireResultReadGrant{
-			Resource:          &pb.RequireResultReadGrant_Table{Table: &pb.TableResource{Catalog: source.Catalog, Schema: source.Schema, Table: source.Table}},
+			Resource:          &pb.RequireResultReadGrant_Table{Table: &pb.ObjectRef{Catalog: source.Catalog, Schema: source.Schema, Table: source.Table}},
 			MaskedDisposition: pb.MaskedDisposition_MASKED_DISPOSITION_DENY_STATEMENT,
 		})
 	}
@@ -287,7 +287,7 @@ func emitLineageFacts(root exp.Expression, eng engine, qualifySchema schema.Sche
 	facts.DiagnosticLeakColumns = diagnosticLeakColumns(report, eng, qualifySchema)
 	if !explain {
 		for _, rc := range report.Returned {
-			column, ok := columnResourceFromKey(rc.Column)
+			column, ok := columnRefFromKey(rc.Column)
 			if !ok {
 				return unanalyzableFacts("LINEAGE", "invalid column identity emitted by analyzer")
 			}
@@ -297,22 +297,22 @@ func emitLineageFacts(root exp.Expression, eng engine, qualifySchema schema.Sche
 	return facts
 }
 
-// diagnosticLeakColumns converts the engine's leak-key set to sorted ColumnResources, so the
+// diagnosticLeakColumns converts the engine's leak-key set to sorted column refs, so the
 // control-plane's frozen-facts comparison never churns on order.
-func diagnosticLeakColumns(report ProbeResult, eng engine, qualifySchema schema.Schema) []*pb.ColumnResource {
+func diagnosticLeakColumns(report ProbeResult, eng engine, qualifySchema schema.Schema) []*pb.ObjectRef {
 	keys := eng.DiagnosticLeakKeys(report, qualifySchema)
 	sorted := make([]string, 0, len(keys))
 	for key := range keys {
 		sorted = append(sorted, key)
 	}
 	sort.Strings(sorted)
-	out := make([]*pb.ColumnResource, 0, len(sorted))
+	out := make([]*pb.ObjectRef, 0, len(sorted))
 	for _, key := range sorted {
-		column, ok := columnResourceFromKey(key)
+		column, ok := columnRefFromKey(key)
 		if !ok {
 			// A key that doesn't split 4-ways (a column named "ssn.secret") must fail closed, not vanish:
 			// emit it as a column no catalog resolves.
-			column = &pb.ColumnResource{Identity: &pb.RelationIdentity{Column: key}}
+			column = &pb.ObjectRef{Column: key}
 		}
 		out = append(out, column)
 	}
@@ -833,22 +833,15 @@ func outputColumnNames(report ProbeResult) []string {
 	return out
 }
 
-func columnResourceFromKey(key string) (*pb.ColumnResource, bool) {
+func columnRefFromKey(key string) (*pb.ObjectRef, bool) {
 	parts := strings.Split(key, ".")
 	if len(parts) != 4 {
 		return nil, false
 	}
-	return &pb.ColumnResource{
-		Catalog: parts[0],
-		Identity: &pb.RelationIdentity{
-			Schema: parts[1],
-			Table:  parts[2],
-			Column: parts[3],
-		},
-	}, true
+	return &pb.ObjectRef{Catalog: parts[0], Schema: parts[1], Table: parts[2], Column: parts[3]}, true
 }
 
-func columnGrant(column *pb.ColumnResource, disposition pb.MaskedDisposition, ordinals ...int32) *pb.RequireResultReadGrant {
+func columnGrant(column *pb.ObjectRef, disposition pb.MaskedDisposition, ordinals ...int32) *pb.RequireResultReadGrant {
 	return &pb.RequireResultReadGrant{
 		Resource:          &pb.RequireResultReadGrant_Column{Column: column},
 		MaskedDisposition: disposition,

@@ -18,14 +18,6 @@ option java_multiple_files = true;
 
 // ---- request side ----
 
-// A schema/table/column identity of an emitted column resource. No catalog: a bare
-// schema/table/column identity never deals in a cross-catalog identity.
-message RelationIdentity {
-  string schema = 1;
-  string table = 2;
-  string column = 3;
-}
-
 // A physical catalog column as the proxy introspects it: the same message on every catalog boundary
 // (PushCatalog, the per-connection fragment push, the stored snapshot, AnalyzeRequest). Flat, no nested
 // tree: Go builds its own schema.Mapping from the list.
@@ -403,11 +395,6 @@ enum FailureClass {
   FAILURE_CLASS_UNANALYZABLE = 2;
 }
 
-message ColumnResource {
-  string catalog = 1;
-  RelationIdentity identity = 2;
-}
-
 // A literal compared against a base column inside a predicate.
 //
 // `WHERE ssn = '987-65-4320'` puts a protected value in the query itself, where masking cannot reach it
@@ -421,15 +408,9 @@ message ColumnResource {
 // authorize anything.
 message PredicateLiteral {
   // The resolved base column, through the same lineage resolution the rest of enforcement uses.
-  ColumnResource column = 1;
+  proxymonster.v1.ObjectRef column = 1;
   // Where the comparison sits, for audit legibility: WHERE, HAVING, QUALIFY, or JOIN.
   string clause = 2;
-}
-
-message TableResource {
-  string catalog = 1;
-  string schema = 2;
-  string table = 3;
 }
 
 message FunctionResource {
@@ -452,8 +433,8 @@ message UtilityResource {
 // missing or malformed resource denies fail-closed.
 message RequireResultReadGrant {
   oneof resource {
-    ColumnResource column = 1;
-    TableResource table = 2;
+    proxymonster.v1.ObjectRef column = 1;
+    proxymonster.v1.ObjectRef table = 2;
     FunctionResource function = 3;
     UtilityResource utility = 4;
   }
@@ -525,7 +506,7 @@ message StatementFacts {
   repeated PredicateLiteral predicate_literals = 18;
   // The columns this statement's target-DB diagnostic could echo: the referenced columns, plus a
   // PostgreSQL write's whole target row (`DETAIL: Failing row contains (…)`). Empty = nothing to redact.
-  repeated ColumnResource diagnostic_leak_columns = 19;
+  repeated proxymonster.v1.ObjectRef diagnostic_leak_columns = 19;
   // Base columns whose VALUE reaches the client through the result set, with the output ordinals each one
   // feeds. A read-only position (a predicate, join key, ORDER BY, GROUP BY) does not return the column; a
   // write's payload does not either, only its RETURNING does (with no ordinals, since output_columns is
@@ -534,6 +515,6 @@ message StatementFacts {
 }
 
 message ReturnedColumn {
-  ColumnResource column = 1;
+  proxymonster.v1.ObjectRef column = 1;
   repeated int32 output_ordinals = 2;
 }

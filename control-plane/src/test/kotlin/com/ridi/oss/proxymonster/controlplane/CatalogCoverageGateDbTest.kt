@@ -1,10 +1,9 @@
 package com.ridi.oss.proxymonster.controlplane
 
+import com.ridi.oss.proxymonster.grpc.objectRef
 import com.ridi.oss.proxymonster.analyzer.pb.MaskedDisposition
 import com.ridi.oss.proxymonster.analyzer.pb.StatementFacts
 import com.ridi.oss.proxymonster.analyzer.pb.StatementKind
-import com.ridi.oss.proxymonster.analyzer.pb.columnResource
-import com.ridi.oss.proxymonster.analyzer.pb.relationIdentity
 import com.ridi.oss.proxymonster.analyzer.pb.requireResultReadGrant
 import com.ridi.oss.proxymonster.analyzer.pb.requireStatementExecGrant
 import com.ridi.oss.proxymonster.analyzer.pb.statementFacts
@@ -66,13 +65,11 @@ class CatalogCoverageGateDbTest {
             }
             resultReads.add(
                 requireResultReadGrant {
-                    column = columnResource {
+                    column = objectRef {
                         catalog = users.catalog
-                        identity = relationIdentity {
-                            schema = users.schema
-                            table = users.table
-                            column = "ghost_uncovered_column"
-                        }
+                        schema = users.schema
+                        table = users.table
+                        column = "ghost_uncovered_column"
                     }
                     // Any valid, specified disposition: coverage is checked BEFORE the disposition-driven
                     // grant walk, so this value never decides the outcome — the "absent from catalog" detail

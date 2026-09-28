@@ -40,7 +40,7 @@ class AnalyzerTest {
         assertEquals(ns, analyzer.namespaceProto)
         assertEquals(columns, analyzer.catalogProto)
         assertEquals(listOf("acme.public.users.id", "acme.public.users.ssn"), analyzer.columnKeys)
-        assertTrue(facts.resultReadsList.any { it.hasColumn() && it.column.identity.column == "ssn" })
+        assertTrue(facts.resultReadsList.any { it.hasColumn() && it.column.column == "ssn" })
     }
 
     @Test

@@ -1,11 +1,9 @@
 package com.ridi.oss.proxymonster.controlplane
 
+import com.ridi.oss.proxymonster.grpc.objectRef
 import com.ridi.oss.proxymonster.analyzer.pb.MaskedDisposition
 import com.ridi.oss.proxymonster.analyzer.pb.RequireResultReadGrant
-import com.ridi.oss.proxymonster.analyzer.pb.columnResource
-import com.ridi.oss.proxymonster.analyzer.pb.relationIdentity
 import com.ridi.oss.proxymonster.analyzer.pb.requireResultReadGrant
-import com.ridi.oss.proxymonster.analyzer.pb.tableResource
 import kotlinx.serialization.json.Json
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -16,9 +14,8 @@ import kotlin.test.assertTrue
 class ResultFingerprintTest {
     private fun column(column: String, disposition: MaskedDisposition, ordinals: List<Int>) =
         requireResultReadGrant {
-            this.column = columnResource {
-                catalog = "def"
-                identity = relationIdentity { schema = "app"; table = "users"; this.column = column }
+            this.column = objectRef {
+                catalog = "def"; schema = "app"; table = "users"; this.column = column
             }
             maskedDisposition = disposition
             outputOrdinals.addAll(ordinals)
@@ -36,7 +33,7 @@ class ResultFingerprintTest {
     @Test
     fun `a non-projection requirement (a scanned table) changes the fingerprint`() {
         val withTable: List<RequireResultReadGrant> = ssnAt1 +
-            requireResultReadGrant { table = tableResource { catalog = "def"; schema = "app"; table = "orders" } }
+            requireResultReadGrant { table = objectRef { catalog = "def"; schema = "app"; table = "orders" } }
         assertNotEquals(fingerprintOf(ssnAt1), fingerprintOf(withTable))
     }
 

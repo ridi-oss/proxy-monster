@@ -73,7 +73,7 @@ func TestStatementFactsMysqlAnsiQuotesMasksQuotedColumn(t *testing.T) {
 	// is a string, so it emits no column requirement.
 	hasSSNColumnGrant := func(f *pb.StatementFacts) bool {
 		for _, g := range f.GetResultReads() {
-			if c := g.GetColumn(); c != nil && c.GetIdentity().GetColumn() == "ssn" {
+			if c := g.GetColumn(); c != nil && c.GetColumn() == "ssn" {
 				return true
 			}
 		}
@@ -120,7 +120,7 @@ func TestStatementFactsWriteReadSetAlwaysDeniesMasking(t *testing.T) {
 	foundInsert := facts.GetStatementExec().GetStatementKind() == pb.StatementKind_STATEMENT_KIND_INSERT_SELECT
 	foundWriteRead := false
 	for _, grant := range facts.GetResultReads() {
-		if c := grant.GetColumn(); c != nil && c.GetIdentity().GetColumn() == "ssn" &&
+		if c := grant.GetColumn(); c != nil && c.GetColumn() == "ssn" &&
 			grant.GetMaskedDisposition() == pb.MaskedDisposition_MASKED_DISPOSITION_DENY_STATEMENT {
 			foundWriteRead = true
 		}
@@ -175,7 +175,7 @@ func TestStatementFactsExplainAnalyzesInnerQuery(t *testing.T) {
 	}
 	foundSSN := false
 	for _, grant := range facts.GetResultReads() {
-		if c := grant.GetColumn(); c != nil && c.GetIdentity().GetColumn() == "ssn" {
+		if c := grant.GetColumn(); c != nil && c.GetColumn() == "ssn" {
 			foundSSN = true
 		}
 	}
@@ -220,8 +220,8 @@ func TestStatementFactsAnalyzeTableGatesTableRead(t *testing.T) {
 				if c == nil {
 					continue
 				}
-				if c.GetIdentity().GetTable() != tc.table {
-					t.Fatalf("ANALYZE %s emitted a read grant on %q, not the target: %+v", tc.table, c.GetIdentity().GetTable(), grant)
+				if c.GetTable() != tc.table {
+					t.Fatalf("ANALYZE %s emitted a read grant on %q, not the target: %+v", tc.table, c.GetTable(), grant)
 				}
 				gated = true
 			}
@@ -298,7 +298,7 @@ func TestStatementFactsExplainKind(t *testing.T) {
 		f := postgresFacts(t, sql)
 		denied := false
 		for _, g := range f.GetResultReads() {
-			if c := g.GetColumn(); c != nil && c.GetIdentity().GetColumn() == "ssn" &&
+			if c := g.GetColumn(); c != nil && c.GetColumn() == "ssn" &&
 				g.GetMaskedDisposition() == pb.MaskedDisposition_MASKED_DISPOSITION_DENY_STATEMENT {
 				denied = true
 			}
@@ -370,7 +370,7 @@ func TestExplainEmitsNoOutputOrdinal(t *testing.T) {
 		for _, g := range f.GetResultReads() {
 			if ords := g.GetOutputOrdinals(); len(ords) != 0 {
 				t.Errorf("[%s] %q: an EXPLAIN grant on %s bound output ordinal %v against empty output_columns",
-					engine, sql, g.GetColumn().GetIdentity().GetColumn(), ords)
+					engine, sql, g.GetColumn().GetColumn(), ords)
 			}
 		}
 	}
@@ -837,7 +837,7 @@ func TestStatementFactsExecutableCommentAndOptimizerHint(t *testing.T) {
 	}
 	found := false
 	for _, grant := range executable.GetResultReads() {
-		if grant.GetColumn().GetIdentity().GetColumn() == "ssn" {
+		if grant.GetColumn().GetColumn() == "ssn" {
 			found = true
 		}
 	}

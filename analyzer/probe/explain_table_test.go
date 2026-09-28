@@ -11,7 +11,7 @@ func columnGrantSet(f *pb.StatementFacts) []string {
 	cols := []string{}
 	for _, g := range f.GetResultReads() {
 		if c := g.GetColumn(); c != nil {
-			cols = append(cols, c.GetIdentity().GetTable()+"."+c.GetIdentity().GetColumn())
+			cols = append(cols, c.GetTable()+"."+c.GetColumn())
 		}
 	}
 	sort.Strings(cols)

@@ -83,7 +83,7 @@ func TestReturnedColumns(t *testing.T) {
 					got := map[string][]int32{}
 					for _, rc := range facts.ReturnedColumns {
 						c := rc.Column
-						k := c.Catalog + "." + c.Identity.Schema + "." + c.Identity.Table + "." + c.Identity.Column
+						k := c.Catalog + "." + c.Schema + "." + c.Table + "." + c.Column
 						got[k] = append([]int32{}, rc.OutputOrdinals...)
 					}
 					if !reflect.DeepEqual(got, tc.want) {

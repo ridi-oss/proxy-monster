@@ -152,8 +152,7 @@ func readKeys(facts *pb.StatementFacts) []string {
 	out := []string{}
 	for _, grant := range facts.GetResultReads() {
 		if col := grant.GetColumn(); col != nil {
-			id := col.GetIdentity()
-			out = append(out, id.GetSchema()+"."+id.GetTable()+"."+id.GetColumn())
+			out = append(out, col.GetSchema()+"."+col.GetTable()+"."+col.GetColumn())
 		}
 	}
 	sort.Strings(out)

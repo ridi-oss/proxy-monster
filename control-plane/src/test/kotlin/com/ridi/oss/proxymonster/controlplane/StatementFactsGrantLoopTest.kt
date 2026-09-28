@@ -1,17 +1,15 @@
 package com.ridi.oss.proxymonster.controlplane
 
+import com.ridi.oss.proxymonster.grpc.objectRef
 import com.ridi.oss.proxymonster.analyzer.pb.FailureClass
 import com.ridi.oss.proxymonster.analyzer.pb.MaskedDisposition
 import com.ridi.oss.proxymonster.analyzer.pb.RequireResultReadGrant
 import com.ridi.oss.proxymonster.analyzer.pb.RequireStatementExecGrant
 import com.ridi.oss.proxymonster.analyzer.pb.StatementFacts
 import com.ridi.oss.proxymonster.analyzer.pb.StatementKind
-import com.ridi.oss.proxymonster.analyzer.pb.columnResource
-import com.ridi.oss.proxymonster.analyzer.pb.relationIdentity
 import com.ridi.oss.proxymonster.analyzer.pb.requireResultReadGrant
 import com.ridi.oss.proxymonster.analyzer.pb.requireStatementExecGrant
 import com.ridi.oss.proxymonster.analyzer.pb.statementFacts
-import com.ridi.oss.proxymonster.analyzer.pb.tableResource
 import com.ridi.oss.proxymonster.controlplane.support.EnforcementFixture
 import com.ridi.oss.proxymonster.controlplane.support.requireDockerOrSkip
 import com.ridi.oss.proxymonster.grpc.EnfAction
@@ -72,13 +70,11 @@ class StatementFactsGrantLoopTest {
         disposition: MaskedDisposition,
         ordinals: List<Int> = emptyList(),
     ): RequireResultReadGrant = requireResultReadGrant {
-        column = columnResource {
+        column = objectRef {
             this.catalog = c.catalog
-            identity = relationIdentity {
-                this.schema = c.schema
-                this.table = c.table
-                this.column = c.column
-            }
+            this.schema = c.schema
+            this.table = c.table
+            this.column = c.column
         }
         maskedDisposition = disposition
         this.outputOrdinals.addAll(ordinals)
@@ -317,7 +313,7 @@ class StatementFactsGrantLoopTest {
     @Test
     fun `ungranted table grant denies through table dispatch`() {
         val tableGrant = requireResultReadGrant {
-            table = tableResource {
+            table = objectRef {
                 this.catalog = amount.catalog
                 this.schema = amount.schema
                 this.table = amount.table

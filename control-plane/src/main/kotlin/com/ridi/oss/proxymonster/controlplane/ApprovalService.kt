@@ -364,7 +364,7 @@ class ApprovalService(
      * stored result is re-decided live under exactly the task's R on workflow-viewer. Every view and live-decision
      * denial is audited before responding.
      */
-    fun result(principal: String, requesterIp: String?, id: Long, ordinal: Int?): QueryResultView {
+    fun result(principal: String, requesterIp: String?, id: Long, ordinal: Int?, page: ResultPage? = null): QueryResultView {
         val req = workflowRequest(id)
         // Deprovisioning gate before result lookup; NotFound so it is no result-existence oracle.
         if (userGroupStore.isDeactivated(principal)) throw serviceNotFound(REQUEST)
@@ -401,6 +401,8 @@ class ApprovalService(
                 throw TaskServiceException(HttpStatusCode.Forbidden, ApiError("approval.result_view_denied"))
             }
             is ResultViewDecision.Allowed -> {
+                // Only the released page is audited and charged.
+                val (released, nextOffset) = viewDecision.page(page)
                 // By the viewer's relationship to the task: an assumer is neither party.
                 val viewEvent = when (principal) {
                     req.principal -> "result-viewed-by-requester"
@@ -409,7 +411,7 @@ class ApprovalService(
                 }
                 // Audit before returning rows, and charge the released volume against the stored rows' decision
                 // in the same transaction; a failed insert propagates, so rows never leave unrecorded.
-                val (rowCount, bytes) = resultVolume(viewDecision.rows)
+                val (rowCount, bytes) = resultVolume(released.rows)
                 val chargeDecision = listOfNotNull(meta.decisionId, req.sourceDecisionId)
                     .firstNotNullOfOrNull { id -> auditStore.get(id)?.let { id to it } }
                 auditStore.insertAll(
@@ -424,12 +426,13 @@ class ApprovalService(
                     ),
                 )
                 return QueryResultView(
-                    meta, viewDecision.columns, viewDecision.rows,
+                    meta, released.columns, released.rows,
                     // Labels the release, which the viewer's context may have narrowed past the execution.
-                    decision = if (viewDecision.maskedColumns.isEmpty()) Decision.ALLOW else Decision.MASK,
-                    maskedColumns = viewDecision.maskedColumns,
-                    truncatedAt = viewDecision.truncatedAt,
+                    decision = if (released.maskedColumns.isEmpty()) Decision.ALLOW else Decision.MASK,
+                    maskedColumns = released.maskedColumns,
+                    truncatedAt = released.truncatedAt,
                     truncatedByCap = decrypted.truncatedByCap,
+                    nextOffset = nextOffset,
                 )
             }
         }

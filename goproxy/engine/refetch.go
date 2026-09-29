@@ -8,7 +8,6 @@ import (
 	"strconv"
 
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
-	"google.golang.org/protobuf/proto"
 )
 
 // Refetcher executes connection-local catalog commands through callback-injected held-target DB I/O.
@@ -41,7 +40,10 @@ func (r *Refetcher) Run(cmd *pb.Refetch) error {
 		return errors.New("refetcher has no push callback")
 	}
 
-	if cmd.Catalog != nil && (cmd.GetCatalog() == "" || cmd.GetCatalog() != r.Catalog) {
+	if r.Catalog == "" {
+		return errors.New("refetcher has no catalog")
+	}
+	if cmd.GetCatalog() != r.Catalog {
 		return fmt.Errorf("refetch catalog %q does not match target catalog %q", cmd.GetCatalog(), r.Catalog)
 	}
 
@@ -53,17 +55,13 @@ func (r *Refetcher) Run(cmd *pb.Refetch) error {
 		}
 	}
 
-	var catalog *string
-	if r.Catalog != "" {
-		catalog = proto.String(r.Catalog)
-	}
 	hashSQL, hashColumns, hashSQLErr := r.Db.SchemaHashSQL(cmd.GetSchema(), setupRows)
 	h1, trusted1 := r.measureHash(hashSQL, hashColumns, hashSQLErr)
 	if trusted1 && len(cmd.GetIfHashDiffers()) > 0 && bytes.Equal(h1, cmd.GetIfHashDiffers()) {
 		_, err := r.Push(&pb.SchemaFragmentPush{
 			ConnectionId:      append([]byte(nil), r.ConnectionID...),
 			Schema:            cmd.GetSchema(),
-			Catalog:           catalog,
+			Catalog:           r.Catalog,
 			ContentHash:       append([]byte(nil), h1...),
 			Unchanged:         true,
 			BackendGeneration: r.BackendGeneration,
@@ -106,7 +104,7 @@ func (r *Refetcher) Run(cmd *pb.Refetch) error {
 	_, err = r.Push(&pb.SchemaFragmentPush{
 		ConnectionId:      append([]byte(nil), r.ConnectionID...),
 		Schema:            cmd.GetSchema(),
-		Catalog:           catalog,
+		Catalog:           r.Catalog,
 		ContentHash:       contentHash,
 		Columns:           columns,
 		Routines:          FoldFunctionNames(r.Db, routines),

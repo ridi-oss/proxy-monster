@@ -172,15 +172,17 @@ class DatasourceSoftDeleteDbTest {
         val name = "soft-del-catalog-${System.nanoTime()}"
         val ds = datasources.createDatasource(DatasourceInput(name, "mysql"), actor)
         // Seed the in-memory authoritative catalog for this datasource's name, as a proxy push would.
-        val opened = core.connectionCatalog.open(Binding(name, "principal", "USER"), listOf("app"))
+        val opened = core.connectionCatalog.open(Binding(name, "principal", "USER", ds.effectiveCatalog), listOf("app"))
         core.connectionCatalog.applyPush(
             schemaFragmentPush {
                 connectionId = opened.connectionId
                 datasourceName = name
+                catalog = ds.effectiveCatalog
                 schema = "app"
                 contentHash = ByteString.copyFromUtf8("h1")
                 backendGeneration = 1
                 columns.add(column {
+                    catalog = ds.effectiveCatalog
                     this.schema = "app"; table = "users"; column = "id"
                     dataType = "bigint"; ordinal = 1; nullable = false
                 })
@@ -196,7 +198,7 @@ class DatasourceSoftDeleteDbTest {
             "delete drops the name-keyed authoritative catalog",
         )
         // A new connection on the freed name must therefore re-measure its own target DB, not adopt the drop.
-        val reused = core.connectionCatalog.open(Binding(name, "after", "USER"), listOf("app"), adoptHeldContent = true)
+        val reused = core.connectionCatalog.open(Binding(name, "after", "USER", ds.effectiveCatalog), listOf("app"), adoptHeldContent = true)
         assertEquals(
             listOf("app"),
             reused.onOpen.map { it.schema },

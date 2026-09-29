@@ -77,10 +77,11 @@ class GrpcMappersTest {
         val d = ctx(EnfAction.ALLOW).toWireDecision(
             1,
             9,
-            listOf(refetch { schema = "app"; ifHashDiffers = hash }),
+            listOf(refetch { catalog = "db"; schema = "app"; ifHashDiffers = hash }),
         )
 
         val cmd: Refetch = d.verdict.afterStatementList.single().refetch
+        assertEquals("db", cmd.catalog)
         assertEquals("app", cmd.schema)
         assertEquals(hash, cmd.ifHashDiffers)
         assertEquals(9L, d.verdict.generation)
@@ -88,7 +89,7 @@ class GrpcMappersTest {
 
     @Test
     fun `before-decide is structurally exclusive from verdict`() {
-        val d = beforeDecideDecision(listOf(refetch { schema = "app" }))
+        val d = beforeDecideDecision(listOf(refetch { catalog = "db"; schema = "app" }))
         assertTrue(d.hasBeforeDecide())
         assertFalse(d.hasVerdict())
         assertEquals("app", d.beforeDecide.commandsList.single().refetch.schema)

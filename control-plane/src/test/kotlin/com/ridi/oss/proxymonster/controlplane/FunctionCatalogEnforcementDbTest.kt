@@ -51,7 +51,7 @@ class FunctionCatalogEnforcementDbTest {
                 val held = core.connectionCatalog.find(connectionId)!!.held.getValue(refetch.schema)
                 val ack = core.connectionCatalog.applyPush(
                     schemaFragmentPush {
-                        this.connectionId = connectionId; datasourceName = ds.name; schema = refetch.schema
+                        this.connectionId = connectionId; datasourceName = ds.name; catalog = ds.effectiveCatalog; schema = refetch.schema
                         contentHash = held.hash.bytes; unchanged = true; backendGeneration = 1
                     },
                     ds,
@@ -72,7 +72,7 @@ class FunctionCatalogEnforcementDbTest {
         assertEquals(ds.defaultSchemas, udfCall.afterStatement.map { it.schema }, "a UDF call refetches")
         core.connectionCatalog.applyPush(
             schemaFragmentPush {
-                connectionId = opened.connectionId; datasourceName = ds.name; schema = ds.defaultSchemas.single()
+                connectionId = opened.connectionId; datasourceName = ds.name; catalog = ds.effectiveCatalog; schema = ds.defaultSchemas.single()
                 contentHash = core.connectionCatalog.find(opened.connectionId)!!.held.getValue(ds.defaultSchemas.single()).hash.bytes
                 unchanged = true; backendGeneration = 1
             },

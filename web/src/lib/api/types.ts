@@ -197,9 +197,11 @@ export interface TableIndex {
 
 export interface TableRelation {
   name: string
+  sourceCatalog: string
   sourceSchema: string
   sourceTable: string
   sourceColumns: string[]
+  targetCatalog: string
   targetSchema: string
   targetTable: string
   targetColumns: string[]
@@ -217,6 +219,7 @@ export interface TableMetadata {
 }
 
 export interface TableDetail {
+  catalog: string
   schema: string
   table: string
   columns: TableDetailColumn[]

@@ -12,6 +12,7 @@ import (
 	"syscall"
 	"time"
 
+	enginepb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
 	"github.com/ridi-oss/proxy-monster/goproxy/config"
 	"github.com/ridi-oss/proxy-monster/goproxy/cp"
 	"github.com/ridi-oss/proxy-monster/goproxy/drain"
@@ -176,8 +177,8 @@ func Run(registry spi.Registry) error {
 					run.NewRunner(enforcementClient, targetDb, cfg.QueryTimeout).Run(open, runs.Signal())
 				}()
 			},
-			func(sessionID, schema, table string) {
-				go run.NewTableDetailRunner(configClient, targetDb).Run(sessionID, schema, table)
+			func(sessionID string, table *enginepb.ObjectRef) {
+				go run.NewTableDetailRunner(configClient, targetDb).Run(sessionID, table)
 			},
 		)
 		// A version rejection on the events stream is fatal even when a resync Register races to a still-

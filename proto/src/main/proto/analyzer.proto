@@ -28,8 +28,8 @@ message Column {
   string data_type = 4;
   int32 ordinal = 5;
   bool nullable = 6;
-  // The column's catalog. Empty means the Namespace catalog (the only catalog on MySQL/PostgreSQL); a
-  // multi-catalog engine names it so columns from two catalogs stay distinct identities.
+  // The catalog the column was read from (MySQL `def`, PostgreSQL the database); columns from two
+  // catalogs stay distinct identities.
   string catalog = 7;
   // An engine-implicit system column (PostgreSQL ctid/xmin/…): resolvable when named explicitly,
   // excluded from * and whole-row expansion, never classifiable.

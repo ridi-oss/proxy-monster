@@ -283,14 +283,14 @@ func TestRunnerPostgresTempTablesAreSessionIsolated(t *testing.T) {
 		SessionID:    runSessionID + "-temp-1",
 		Token:        runToken,
 		ConnectionID: []byte("temp-session-001"),
-		OnOpen:       []*pb.Refetch{{Schema: runPGSchema}},
+		OnOpen:       []*pb.Refetch{{Catalog: fixture.runTarget.Db, Schema: runPGSchema}},
 	})
 	fake2, client2 := runStartFakeCP(t, runSessionID+"-temp-2")
 	runLaunchOpen(t, fake2, client2, fixture, spi.RunOpen{
 		SessionID:    runSessionID + "-temp-2",
 		Token:        runToken,
 		ConnectionID: []byte("temp-session-002"),
-		OnOpen:       []*pb.Refetch{{Schema: runPGSchema}},
+		OnOpen:       []*pb.Refetch{{Catalog: fixture.runTarget.Db, Schema: runPGSchema}},
 	})
 
 	runSendQuery(fake1, createSQL, 20)
@@ -302,7 +302,7 @@ func TestRunnerPostgresTempTablesAreSessionIsolated(t *testing.T) {
 	requests1 := fake1.runRecordedRequests()
 	last1 := requests1[len(requests1)-1]
 	for _, column := range last1.GetTempColumns() {
-		if column.Catalog == nil || column.GetCatalog() != fixture.runTarget.Db {
+		if column.GetCatalog() != fixture.runTarget.Db {
 			t.Fatalf("temp column catalog = %v, want %s", column.Catalog, fixture.runTarget.Db)
 		}
 	}
@@ -583,7 +583,7 @@ func runCatalogRefreshContract(t *testing.T, fixture runEngineFixture) {
 		table := runUniqueTable("pm_run_refresh")
 		ddl := runCreateTableSQL(fixture, table)
 		nextSQL := "BEGIN"
-		fake.runSetDecide(runCatalogRefreshDecider(ddl, fixture.runNamespaceForTable()))
+		fake.runSetDecide(runCatalogRefreshDecider(ddl, fixture.runCatalog(), fixture.runNamespaceForTable()))
 
 		runSendQuery(fake, ddl, 20)
 		runExpectDecision(t, runRecv(t, fake), pb.EnfAction_ALLOW, nil, "")
@@ -612,7 +612,7 @@ func runCatalogRefreshContract(t *testing.T, fixture runEngineFixture) {
 		initialPushes := len(fake.runRecordedFragments())
 		table := runUniqueTable("pm_run_capped_refresh")
 		ddl := runCreateTableSQL(fixture, table)
-		fake.runSetDecide(runCatalogRefreshDecider(ddl, fixture.runNamespaceForTable()))
+		fake.runSetDecide(runCatalogRefreshDecider(ddl, fixture.runCatalog(), fixture.runNamespaceForTable()))
 
 		runSendQuery(fake, ddl, 1)
 		runExpectSuccess(t, fake, 0)
@@ -658,7 +658,7 @@ func runCatalogRefreshContract(t *testing.T, fixture runEngineFixture) {
 			})
 			callSQL = "CALL " + directSchema + "." + procedure + "()"
 		}
-		fake.runSetDecide(runCatalogRefreshDecider(callSQL, directSchema))
+		fake.runSetDecide(runCatalogRefreshDecider(callSQL, fixture.runCatalog(), directSchema))
 
 		runSendQuery(fake, callSQL, 20)
 		runExpectDecision(t, runRecv(t, fake), pb.EnfAction_ALLOW, nil, "")
@@ -684,7 +684,7 @@ func runCatalogRefreshContract(t *testing.T, fixture runEngineFixture) {
 			if calls == 1 {
 				return &pb.WireDecision{Outcome: &pb.WireDecision_BeforeDecide{BeforeDecide: &pb.BeforeDecide{
 					Commands: []*pb.ProxyCommand{{Command: &pb.ProxyCommand_Refetch{Refetch: &pb.Refetch{
-						Schema: fixture.runNamespaceForTable(),
+						Schema: fixture.runNamespaceForTable(), Catalog: fixture.runCatalog(),
 					}}}},
 				}}}
 			}
@@ -716,7 +716,7 @@ func runCatalogRefreshContract(t *testing.T, fixture runEngineFixture) {
 		fake.runSetDecide(func(*pb.DecisionRequest) *pb.WireDecision {
 			return &pb.WireDecision{Outcome: &pb.WireDecision_BeforeDecide{BeforeDecide: &pb.BeforeDecide{
 				Commands: []*pb.ProxyCommand{{Command: &pb.ProxyCommand_Refetch{Refetch: &pb.Refetch{
-					Schema: fixture.runNamespaceForTable(),
+					Schema: fixture.runNamespaceForTable(), Catalog: fixture.runCatalog(),
 				}}}},
 			}}}
 		})
@@ -758,7 +758,7 @@ func runCatalogRefreshContract(t *testing.T, fixture runEngineFixture) {
 		waitDone := runLaunch(t, fake, client, fixture)
 		initialPushes := len(fake.runRecordedFragments())
 		ddl := runCreateTableSQL(fixture, runUniqueTable("pm_run_push_failure"))
-		fake.runSetDecide(runCatalogRefreshDecider(ddl, fixture.runNamespaceForTable()))
+		fake.runSetDecide(runCatalogRefreshDecider(ddl, fixture.runCatalog(), fixture.runNamespaceForTable()))
 		fake.runSetFragmentPushError(errors.New("injected fragment push failure"))
 
 		runSendQuery(fake, ddl, 20)
@@ -783,7 +783,7 @@ func runCatalogRefreshContract(t *testing.T, fixture runEngineFixture) {
 		waitDone := runLaunch(t, fake, client, fixture)
 		initialPushes := len(fake.runRecordedFragments())
 		ddl := fmt.Sprintf("CREATE TABLE %s (id INT PRIMARY KEY)", fixture.runTable)
-		fake.runSetDecide(runCatalogRefreshDecider(ddl, fixture.runNamespaceForTable()))
+		fake.runSetDecide(runCatalogRefreshDecider(ddl, fixture.runCatalog(), fixture.runNamespaceForTable()))
 
 		runSendQuery(fake, ddl, 20)
 		runExpectDecision(t, runRecv(t, fake), pb.EnfAction_ALLOW, nil, "")
@@ -816,7 +816,7 @@ func runCatalogRefreshContract(t *testing.T, fixture runEngineFixture) {
 			initialPushes := len(fake.runRecordedFragments())
 			table := runUniqueTable("pm_run_tx_refresh")
 			ddl := runCreateTableSQL(fixture, table)
-			fake.runSetDecide(runCatalogRefreshDecider(ddl, fixture.runNamespaceForTable()))
+			fake.runSetDecide(runCatalogRefreshDecider(ddl, fixture.runCatalog(), fixture.runNamespaceForTable()))
 
 			runSendQuery(fake, "BEGIN", 20)
 			runExpectSuccess(t, fake, 0)
@@ -835,12 +835,12 @@ func runCatalogRefreshContract(t *testing.T, fixture runEngineFixture) {
 	}
 }
 
-func runCatalogRefreshDecider(flaggedSQL, schema string) func(*pb.DecisionRequest) *pb.WireDecision {
+func runCatalogRefreshDecider(flaggedSQL, catalog, schema string) func(*pb.DecisionRequest) *pb.WireDecision {
 	return func(req *pb.DecisionRequest) *pb.WireDecision {
 		verdict := &pb.Verdict{Decision: pb.EnfAction_ALLOW}
 		if req.GetSql() == flaggedSQL {
 			verdict.AfterStatement = []*pb.ProxyCommand{{
-				Command: &pb.ProxyCommand_Refetch{Refetch: &pb.Refetch{Schema: schema}},
+				Command: &pb.ProxyCommand_Refetch{Refetch: &pb.Refetch{Catalog: catalog, Schema: schema}},
 			}}
 		}
 		return wireVerdict(verdict)
@@ -853,6 +853,13 @@ func runUniqueTable(prefix string) string {
 
 func runCreateTableSQL(fixture runEngineFixture, table string) string {
 	return fmt.Sprintf("CREATE TABLE %s.%s (id INT PRIMARY KEY)", fixture.runNamespaceForTable(), table)
+}
+
+func (f runEngineFixture) runCatalog() string {
+	if f.runDialect == engine.MySQL {
+		return "def"
+	}
+	return f.runTarget.Db
 }
 
 func (f runEngineFixture) runNamespaceForTable() string {
@@ -1569,7 +1576,8 @@ func runOpen(fixture runEngineFixture) spi.RunOpen {
 		Token:        runToken,
 		ConnectionID: []byte(runConnectionID),
 		OnOpen: []*pb.Refetch{{
-			Schema: fixture.runNamespaceForTable(),
+			Catalog: fixture.runCatalog(),
+			Schema:  fixture.runNamespaceForTable(),
 		}},
 	}
 }
@@ -1807,7 +1815,7 @@ func runStallOpen() spi.RunOpen {
 		SessionID:    runSessionID,
 		Token:        runToken,
 		ConnectionID: []byte(runConnectionID),
-		OnOpen:       []*pb.Refetch{{Schema: runMySQLSchema}},
+		OnOpen:       []*pb.Refetch{{Catalog: "def", Schema: runMySQLSchema}},
 	}
 }
 

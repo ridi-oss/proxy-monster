@@ -47,7 +47,7 @@ abstract class PerConnectionCatalogAdversarialDbContract {
         principal: String,
         schemas: List<String>,
     ): OpenConnection {
-        val opened = fixture.core.connectionCatalog.open(Binding(fixture.datasource.name, principal, "USER"), schemas)
+        val opened = fixture.core.connectionCatalog.open(Binding(fixture.datasource.name, principal, "USER", fixture.datasource.effectiveCatalog), schemas)
         schemas.distinct().forEach { fixture.pushFromTarget(target, opened.connectionId, it) }
         return opened
     }
@@ -169,6 +169,7 @@ abstract class PerConnectionCatalogAdversarialDbContract {
                     schemaFragmentPush {
                         connectionId = held.connectionId
                         datasourceName = fixture.datasource.name
+                        catalog = fixture.datasource.effectiveCatalog
                         this.schema = schema
                         contentHash = heldHash
                         this.unchanged = true
@@ -265,9 +266,10 @@ class PerConnectionCatalogMysqlAdversarialDbTest : PerConnectionCatalogAdversari
             engineVersion = enforcement.datasource.engineVersion.orEmpty(),
             catalog = catalogSnapshot {
                 columns += enforcement.datasourceStore.catalog(enforcement.datasource.id).columns.map { row ->
-                pushedColumn(row.schema, row.table, row.column, row.dataType, row.ordinal, row.nullable)
+                pushedColumn(row.catalog, row.schema, row.table, row.column, row.dataType, row.ordinal, row.nullable)
             } + accounts.rows.map { row ->
                 pushedColumn(
+                    enforcement.datasource.effectiveCatalog,
                     schema,
                     "accounts",
                     row[0]!!,
@@ -409,10 +411,10 @@ class PerConnectionCatalogPostgresAdversarialDbTest : PerConnectionCatalogAdvers
             engineVersion = enforcement.datasource.engineVersion.orEmpty(),
             catalog = catalogSnapshot {
                 columns += enforcement.datasourceStore.catalog(enforcement.datasource.id).columns.map { row ->
-                    pushedColumn(row.schema, row.table, row.column, row.dataType, row.ordinal, row.nullable)
+                    pushedColumn(row.catalog, row.schema, row.table, row.column, row.dataType, row.ordinal, row.nullable)
                 }
                 columns += accounts.rows.map { row ->
-                    pushedColumn(row[0]!!, "accounts", row[1]!!, row[2]!!, row[3]!!.toInt(), row[4] == "YES")
+                    pushedColumn(enforcement.datasource.effectiveCatalog, row[0]!!, "accounts", row[1]!!, row[2]!!, row[3]!!.toInt(), row[4] == "YES")
                 }
             },
         )

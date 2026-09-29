@@ -266,6 +266,7 @@ message Refetch {
   string schema = 1;          // the schema to conditionally re-introspect
   bytes  if_hash_differs = 2; // CP's currently-held content hash for (connection, schema);
                               // empty/absent = unconditional fetch (fail-safe)
+  string catalog = 3;         // the connection's catalog; a proxy refuses any other value
 }
 
 // ---- Connection open: ValidateToken admits, mints, and commands ----
@@ -288,6 +289,7 @@ message SchemaFragmentPush {
   repeated Column columns   = 6;  // the analyzer's Column message, the same one PushCatalog carries
   uint64 backend_generation = 7;  // which target-DB-connection instance measured this
   repeated string routines  = 8;  // the schema's routine names, part of the content hash
+  string catalog            = 9;  // the catalog the fragment was measured in; every column names it
 }
 message SchemaFragmentAck { uint64 generation = 1; }  // per-connection generation after applying
 

@@ -288,7 +288,7 @@ func ProbeMySQLNamespace(ctx context.Context, conn *sql.Conn, targetDb string) (
 	if !matches.Valid || !matches.Bool {
 		return nil, fmt.Errorf("introspect: MySQL current database %q does not match bound database %q", currentDb.String, targetDb)
 	}
-	return &pb.CatalogRequest{DefaultSchemas: []string{currentDb.String}, MysqlLowerCaseTableNames: proto.Int32(int32(lctn)), CurrentCatalog: proto.String("def")}, nil
+	return &pb.CatalogRequest{DefaultSchemas: []string{currentDb.String}, MysqlLowerCaseTableNames: proto.Int32(int32(lctn)), CurrentCatalog: "def"}, nil
 }
 
 // ReadPostgresCatalog returns current_database(); the catalog every fragment and temp column from this
@@ -335,7 +335,7 @@ func ProbePostgresNamespace(ctx context.Context, conn *sql.Conn, _ string) (*pb.
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("introspect: Postgres namespace probe: %w", err)
 	}
-	return &pb.CatalogRequest{DefaultSchemas: schemas, CurrentCatalog: proto.String(catalog)}, nil
+	return &pb.CatalogRequest{DefaultSchemas: schemas, CurrentCatalog: catalog}, nil
 }
 
 // introspectColumns runs columnsSQL on the pinned connection and scans every row into a *analyzerpb.Column.

@@ -4,7 +4,6 @@ import (
 	"testing"
 
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
-	"google.golang.org/protobuf/proto"
 )
 
 func TestQueryEngineCachesCatalogWithNamespace(t *testing.T) {
@@ -32,14 +31,13 @@ func TestQueryEngineCachesCatalogWithNamespace(t *testing.T) {
 func TestRefetcherCatalogIdentity(t *testing.T) {
 	for _, test := range []struct {
 		name                string
-		catalog             *string
+		catalog             string
 		unchanged, rejected bool
 	}{
-		{"legacy inferred", nil, false, false},
-		{"qualified full fetch", proto.String("def"), false, false},
-		{"qualified unchanged", proto.String("def"), true, false},
-		{"blank", proto.String(""), false, true},
-		{"wrong catalog", proto.String("other"), false, true},
+		{"qualified full fetch", "def", false, false},
+		{"qualified unchanged", "def", true, false},
+		{"blank", "", false, true},
+		{"wrong catalog", "other", false, true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			probes := 0

@@ -18,7 +18,7 @@ import com.ridi.oss.proxymonster.controlplane.management.AuditActor
 import com.ridi.oss.proxymonster.controlplane.management.ManagementException
 import com.ridi.oss.proxymonster.controlplane.management.auditEntity
 import com.ridi.oss.proxymonster.controlplane.catalogIsConnectionIndependent
-import com.ridi.oss.proxymonster.controlplane.catalogName
+import com.ridi.oss.proxymonster.controlplane.effectiveCatalog
 import com.ridi.oss.proxymonster.controlplane.definition
 import com.ridi.oss.proxymonster.controlplane.EnforcementOutcome
 import com.ridi.oss.proxymonster.controlplane.DatasourceStore
@@ -100,22 +100,15 @@ private val COMPLETION_STATUSES = setOf("ok", "error", "canceled")
  *    session-temp namespace. Drop anything whose schema isn't `pg_temp*`, so a proxy cannot unmask a real
  *    table (e.g. `public.users`) by mislabeling it a temp. Postgres reserves the `pg_` prefix, so no real
  *    schema is ever named `pg_temp*`.
- * The catalog segment must match the analyzer namespace's (PG: the database name; MySQL: "def") so a temp
- * key aligns with the base-catalog keys.
+ * Every entry's catalog is the connection's; [decide] refuses a request that says otherwise.
  */
-internal fun editorTempOverlay(
-    channel: Channel,
-    temps: List<TempColumn>,
-    engine: Engine,
-    dbName: String,
-): List<CatalogColumn> {
+internal fun editorTempOverlay(channel: Channel, temps: List<TempColumn>): List<CatalogColumn> {
     if (channel != Channel.EDITOR || temps.isEmpty()) return emptyList()
-    val catalogName = engine.catalogName(dbName)
     return temps
         .filter { it.schema.startsWith("pg_temp") }
         .map { t ->
             CatalogColumn(
-                catalog = catalogName, schema = t.schema, table = t.table, column = t.column,
+                catalog = t.catalog, schema = t.schema, table = t.table, column = t.column,
                 dataType = t.sqlType, sqlType = t.sqlType, ordinal = t.ordinal, nullable = true,
                 isTemp = true,
             )
@@ -177,7 +170,7 @@ class ControlPlaneGrpcService(
         val ds = core.datasourceStore.getByName(request.datasourceName)
             ?: throw StatusException(Status.NOT_FOUND.withDescription("unknown datasource '${request.datasourceName}'"))
         val opened = core.connectionCatalog.open(
-            Binding(ds.name, id.principal, id.kind),
+            Binding(ds.name, id.principal, id.kind, ds.effectiveCatalog),
             ds.defaultSchemas + ds.engine.systemSchemas,
             adoptHeldContent = ds.engine.catalogIsConnectionIndependent,
         )
@@ -203,6 +196,9 @@ class ControlPlaneGrpcService(
         }
         val ds = core.datasourceStore.getByName(request.datasourceName)
             ?: throw StatusException(Status.NOT_FOUND.withDescription("unknown datasource '${request.datasourceName}'"))
+        if (request.currentCatalog != ds.effectiveCatalog || request.tempColumnsList.any { it.catalog != ds.effectiveCatalog }) {
+            throw StatusException(Status.INVALID_ARGUMENT.withDescription("catalog is not the datasource's '${ds.effectiveCatalog}'"))
+        }
         // The proxy always sends its live namespace. Pass search_path through verbatim — do NOT
         // collapse an empty list to the datasource default: treating "absent = default" would be
         // fail-OPEN here, since a failed/empty namespace probe would authorize against the stored
@@ -231,7 +227,7 @@ class ControlPlaneGrpcService(
         }
         // The connection's session/temp columns, overlaid onto the base catalog. Both trust
         // gates (EDITOR-channel-only + pg_temp* filter) live in [editorTempOverlay] so they're unit-testable.
-        val tempColumns = editorTempOverlay(channel, request.tempColumnsList, ds.engine, ds.dbName)
+        val tempColumns = editorTempOverlay(channel, request.tempColumnsList)
         // The HTTP requester IP recorded on [ControlPlaneCore.runRequesterIps] at ephemeral
         // token mint time, keyed by this token's hash. Gated strictly on KIND (never just "an entry exists")
         // so a native-wire (SESSION/USER) token can never pick up a registry entry — the registry is only ever
@@ -244,7 +240,7 @@ class ControlPlaneGrpcService(
         if (request.connectionId.size() != 16) {
             throw StatusException(Status.INVALID_ARGUMENT.withDescription("connection_id must be exactly 16 bytes"))
         }
-        val binding = Binding(ds.name, id.principal, id.kind)
+        val binding = Binding(ds.name, id.principal, id.kind, ds.effectiveCatalog)
         val connection = core.connectionCatalog.find(request.connectionId)
         if (connection == null) {
             val recovered = core.connectionCatalog.recover(
@@ -438,6 +434,9 @@ class ControlPlaneGrpcService(
             ?: throw StatusException(
                 Status.NOT_FOUND.withDescription("unknown datasource '${request.datasourceName}' — Register first"),
             )
+        if (request.currentCatalog != ds.effectiveCatalog || request.catalog.columnsList.any { it.catalog != ds.effectiveCatalog }) {
+            throw StatusException(Status.INVALID_ARGUMENT.withDescription("catalog is not the datasource's '${ds.effectiveCatalog}'"))
+        }
         val mysqlLowerCaseTableNames =
             if (request.hasMysqlLowerCaseTableNames()) request.mysqlLowerCaseTableNames else null
         val stored = try {
@@ -458,7 +457,7 @@ class ControlPlaneGrpcService(
         val confirmed = core.connectionCatalog.recordAmbientMeasurement(
             ds.name,
             request.catalog.columnsList.groupBy({ it.schema }) {
-                FragmentColumn(it.schema, it.table, it.column, it.dataType, it.ordinal, it.nullable)
+                FragmentColumn(it.catalog, it.schema, it.table, it.column, it.dataType, it.ordinal, it.nullable)
             },
             request.catalog.routinesList.associate { it.schema to it.namesList },
         )

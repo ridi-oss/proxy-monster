@@ -22,7 +22,7 @@ func NewTableDetailRunner(client spi.TableDetailClient, targetDb spi.Db) *TableD
 }
 
 // Run blocks for the short table-detail session lifetime.
-func (r *TableDetailRunner) Run(sessionID, schema, table string) {
+func (r *TableDetailRunner) Run(sessionID string, table *enginepb.ObjectRef) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -38,7 +38,7 @@ func (r *TableDetailRunner) Run(sessionID, schema, table string) {
 		return
 	}
 
-	detail, detailErr := r.targetDb.ReadTableDetail(ctx, &enginepb.ObjectRef{Schema: schema, Table: table})
+	detail, detailErr := r.targetDb.ReadTableDetail(ctx, table)
 	if detailErr != nil {
 		message := "table introspection failed"
 		if text := strings.TrimSpace(detailErr.Error()); text != "" {

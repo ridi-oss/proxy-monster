@@ -27,19 +27,21 @@ func TestMySQLQualifiedPublicSchemaIsLiteral(t *testing.T) {
 		})
 	}
 	target := openDb(t, engine.MySQL, spi.TargetDb{Host: database.Host, Port: database.Port, Db: "app", User: database.User, Password: database.Password})
+	if _, err := target.ReadTableDetail(context.Background(), &enginepb.ObjectRef{Schema: "app", Table: "users"}); err == nil {
+		t.Fatal("blank catalog was answered")
+	}
 	for _, test := range []struct {
 		name, catalog, schema, wantSchema string
 	}{
 		{"qualified public", "def", "public", "public"},
 		{"qualified app", "def", "app", "app"},
-		{"legacy public default", "", "public", "app"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			detail, err := target.ReadTableDetail(context.Background(), &enginepb.ObjectRef{Catalog: test.catalog, Schema: test.schema, Table: "users"})
 			if err != nil {
 				t.Fatal(err)
 			}
-			if detail == nil || detail.Catalog == nil || *detail.Catalog != "def" || detail.Schema != test.wantSchema || detail.Table != "users" {
+			if detail == nil || detail.Catalog != "def" || detail.Schema != test.wantSchema || detail.Table != "users" {
 				t.Fatalf("table detail = %+v, want def.%s.users", detail, test.wantSchema)
 			}
 			if len(detail.Columns) != 1 || detail.Columns[0].Name != test.wantSchema+"_id" {

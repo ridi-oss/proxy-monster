@@ -30,6 +30,7 @@ class PerConnectionCatalogStateTest {
     ) = schemaFragmentPush {
         connectionId = opened.connectionId
         datasourceName = ds.name
+        catalog = ds.effectiveCatalog
         this.schema = schema
         contentHash = ByteString.copyFromUtf8(hash)
         this.unchanged = unchanged
@@ -37,6 +38,7 @@ class PerConnectionCatalogStateTest {
         if (!unchanged) {
             this.routines.addAll(routines)
             columns.add(column {
+                catalog = ds.effectiveCatalog
                 this.schema = schema; table = "users"; column = columnName
                 dataType = "bigint"; ordinal = 1; nullable = false
             })
@@ -52,8 +54,8 @@ class PerConnectionCatalogStateTest {
             }
         }
         val registry = ConnectionCatalogRegistry(secureRandom = random)
-        val first = registry.open(Binding("ds", "a", "USER"), listOf("app"))
-        val second = registry.open(Binding("ds", "b", "USER"), listOf("app"))
+        val first = registry.open(Binding("ds", "a", "USER", "def"), listOf("app"))
+        val second = registry.open(Binding("ds", "b", "USER", "def"), listOf("app"))
         assertEquals(16, first.connectionId.size())
         assertEquals(16, second.connectionId.size())
         assertNotEquals(first.connectionId, second.connectionId)
@@ -62,7 +64,7 @@ class PerConnectionCatalogStateTest {
     @Test
     fun `pending is the push CAS and replay cannot regress authoritative`() = runBlocking {
         val registry = ConnectionCatalogRegistry()
-        val opened = registry.open(Binding(ds.name, "p", "USER"), listOf("app"))
+        val opened = registry.open(Binding(ds.name, "p", "USER", ds.effectiveCatalog), listOf("app"))
         assertEquals(1, (registry.applyPush(push(opened, "app", "z"), ds) as CatalogMutationResult.Applied).generation)
         val replay = registry.applyPush(push(opened, "app", "a"), ds) as CatalogMutationResult.Rejected
         assertEquals(Status.Code.FAILED_PRECONDITION, replay.code)
@@ -72,7 +74,7 @@ class PerConnectionCatalogStateTest {
     @Test
     fun `backend generation binds and old pushes reject`() = runBlocking {
         val registry = ConnectionCatalogRegistry()
-        val opened = registry.open(Binding(ds.name, "p", "USER"), listOf("app"))
+        val opened = registry.open(Binding(ds.name, "p", "USER", ds.effectiveCatalog), listOf("app"))
         registry.applyPush(push(opened, "app", "h1", generation = 5), ds)
         val connection = registry.find(opened.connectionId)!!
         registry.markAfterStatement(connection, listOf("app"))
@@ -84,13 +86,13 @@ class PerConnectionCatalogStateTest {
     @Test
     fun `authoritative ordering follows accepted observation order including revert`() = runBlocking {
         val registry = ConnectionCatalogRegistry()
-        val one = registry.open(Binding(ds.name, "one", "USER"), listOf("app"))
+        val one = registry.open(Binding(ds.name, "one", "USER", ds.effectiveCatalog), listOf("app"))
         registry.applyPush(push(one, "app", "z"), ds)
         val epoch1 = registry.authoritativeFor(ds.name, "app")!!.epoch
-        val two = registry.open(Binding(ds.name, "two", "USER"), listOf("app"))
+        val two = registry.open(Binding(ds.name, "two", "USER", ds.effectiveCatalog), listOf("app"))
         registry.applyPush(push(two, "app", "a"), ds)
         val epoch2 = registry.authoritativeFor(ds.name, "app")!!.epoch
-        val three = registry.open(Binding(ds.name, "three", "USER"), listOf("app"))
+        val three = registry.open(Binding(ds.name, "three", "USER", ds.effectiveCatalog), listOf("app"))
         registry.applyPush(push(three, "app", "z"), ds)
         assertTrue(epoch2 > epoch1)
         assertEquals("z", registry.authoritativeFor(ds.name, "app")!!.hash.bytes.toStringUtf8())
@@ -100,9 +102,9 @@ class PerConnectionCatalogStateTest {
     @Test
     fun `a hash marker quiets one authoritative version and retriggers on the next`() = runBlocking {
         val registry = ConnectionCatalogRegistry()
-        val held = registry.open(Binding(ds.name, "held", "USER"), listOf("app"))
+        val held = registry.open(Binding(ds.name, "held", "USER", ds.effectiveCatalog), listOf("app"))
         registry.applyPush(push(held, "app", "h1"), ds)
-        val sibling = registry.open(Binding(ds.name, "sibling", "USER"), listOf("app"))
+        val sibling = registry.open(Binding(ds.name, "sibling", "USER", ds.effectiveCatalog), listOf("app"))
         registry.applyPush(push(sibling, "app", "h2"), ds)
 
         val connection = registry.find(held.connectionId)!!
@@ -111,7 +113,7 @@ class PerConnectionCatalogStateTest {
         registry.applyPush(push(held, "app", "h1", unchanged = true), ds)
         assertTrue(registry.freshnessGate(connection, listOf("app")).isEmpty())
 
-        val third = registry.open(Binding(ds.name, "third", "USER"), listOf("app"))
+        val third = registry.open(Binding(ds.name, "third", "USER", ds.effectiveCatalog), listOf("app"))
         registry.applyPush(push(third, "app", "h3"), ds)
         assertEquals(setOf("app"), registry.freshnessGate(connection, listOf("app")))
     }
@@ -120,10 +122,10 @@ class PerConnectionCatalogStateTest {
     fun `unchanged adoption shares pooled fragment and refreshes staleness clock`() = runBlocking {
         var now = 0L
         val registry = ConnectionCatalogRegistry(clockNanos = { now }, stalenessNanos = 10)
-        val first = registry.open(Binding(ds.name, "first", "USER"), listOf("app"))
+        val first = registry.open(Binding(ds.name, "first", "USER", ds.effectiveCatalog), listOf("app"))
         registry.applyPush(push(first, "app", "h1"), ds)
         val key = registry.find(first.connectionId)!!.held.getValue("app").pooledRef
-        val second = registry.open(Binding(ds.name, "second", "USER"), listOf("app"))
+        val second = registry.open(Binding(ds.name, "second", "USER", ds.effectiveCatalog), listOf("app"))
         now = 20
         registry.applyPush(push(second, "app", "h1", unchanged = true), ds)
         assertEquals(3, registry.pooledFor(key)!!.refCount) // authoritative + two connections
@@ -136,12 +138,12 @@ class PerConnectionCatalogStateTest {
     fun `adopting held content opens with no fetch and decides immediately`() = runBlocking {
         var now = 0L
         val registry = ConnectionCatalogRegistry(clockNanos = { now }, stalenessNanos = 100)
-        val first = registry.open(Binding(ds.name, "first", "USER"), listOf("app"))
+        val first = registry.open(Binding(ds.name, "first", "USER", ds.effectiveCatalog), listOf("app"))
         assertEquals(listOf("app"), first.onOpen.map { it.schema }) // nothing held yet: it must fetch
         registry.applyPush(push(first, "app", "h1"), ds)
 
         now = 10
-        val second = registry.open(Binding(ds.name, "second", "USER"), listOf("app"), adoptHeldContent = true)
+        val second = registry.open(Binding(ds.name, "second", "USER", ds.effectiveCatalog), listOf("app"), adoptHeldContent = true)
         assertTrue(second.onOpen.isEmpty(), "an adopting connection must not be sent a refetch")
         val connection = registry.find(second.connectionId)!!
         assertEquals("h1", connection.held.getValue("app").hash.bytes.toStringUtf8())
@@ -156,11 +158,11 @@ class PerConnectionCatalogStateTest {
         // content alive indefinitely without anyone re-reading the target DB, and the bound could never fire.
         var now = 0L
         val registry = ConnectionCatalogRegistry(clockNanos = { now }, stalenessNanos = 10)
-        val first = registry.open(Binding(ds.name, "first", "USER"), listOf("app"))
+        val first = registry.open(Binding(ds.name, "first", "USER", ds.effectiveCatalog), listOf("app"))
         registry.applyPush(push(first, "app", "h1"), ds) // measured at now = 0
 
         now = 9
-        val second = registry.open(Binding(ds.name, "second", "USER"), listOf("app"), adoptHeldContent = true)
+        val second = registry.open(Binding(ds.name, "second", "USER", ds.effectiveCatalog), listOf("app"), adoptHeldContent = true)
         val connection = registry.find(second.connectionId)!!
         assertTrue(registry.freshnessGate(connection, listOf("app")).isEmpty(), "still inside the window")
 
@@ -179,18 +181,18 @@ class PerConnectionCatalogStateTest {
         // how recently the target DB was read, and every new session would refetch.
         var now = 0L
         val registry = ConnectionCatalogRegistry(clockNanos = { now }, stalenessNanos = 10)
-        val first = registry.open(Binding(ds.name, "first", "USER"), listOf("app"))
+        val first = registry.open(Binding(ds.name, "first", "USER", ds.effectiveCatalog), listOf("app"))
         registry.applyPush(push(first, "app", "h1"), ds)
 
         now = 8
         val confirmed = registry.recordAmbientMeasurement(
             ds.name,
-            mapOf("app" to listOf(FragmentColumn("app", "users", "id", "bigint", 1, false))),
+            mapOf("app" to listOf(FragmentColumn("def", "app", "users", "id", "bigint", 1, false))),
         )
         assertEquals(setOf("app"), confirmed)
 
         now = 15 // past the original measurement, inside the window from the ambient one
-        val second = registry.open(Binding(ds.name, "second", "USER"), listOf("app"), adoptHeldContent = true)
+        val second = registry.open(Binding(ds.name, "second", "USER", ds.effectiveCatalog), listOf("app"), adoptHeldContent = true)
         assertTrue(second.onOpen.isEmpty())
         assertTrue(
             registry.freshnessGate(registry.find(second.connectionId)!!, listOf("app")).isEmpty(),
@@ -202,11 +204,11 @@ class PerConnectionCatalogStateTest {
     fun `an ambient refresh whose routines differ does not confirm the pooled content`() = runBlocking {
         var now = 0L
         val registry = ConnectionCatalogRegistry(clockNanos = { now }, stalenessNanos = 10)
-        val first = registry.open(Binding(ds.name, "first", "USER"), listOf("app"))
+        val first = registry.open(Binding(ds.name, "first", "USER", ds.effectiveCatalog), listOf("app"))
         registry.applyPush(push(first, "app", "h1"), ds)
 
         now = 8
-        val columns = mapOf("app" to listOf(FragmentColumn("app", "users", "id", "bigint", 1, false)))
+        val columns = mapOf("app" to listOf(FragmentColumn("def", "app", "users", "id", "bigint", 1, false)))
         assertTrue(
             registry.recordAmbientMeasurement(ds.name, columns, mapOf("app" to listOf("add_tax"))).isEmpty(),
             "a routine created out of band must not re-measure the fragment that lacks it",
@@ -221,18 +223,18 @@ class PerConnectionCatalogStateTest {
         // catalog no connection measured.
         var now = 0L
         val registry = ConnectionCatalogRegistry(clockNanos = { now }, stalenessNanos = 10)
-        val first = registry.open(Binding(ds.name, "first", "USER"), listOf("app"))
+        val first = registry.open(Binding(ds.name, "first", "USER", ds.effectiveCatalog), listOf("app"))
         registry.applyPush(push(first, "app", "h1"), ds)
 
         now = 8
         val confirmed = registry.recordAmbientMeasurement(
             ds.name,
-            mapOf("app" to listOf(FragmentColumn("app", "users", "DIFFERENT", "bigint", 1, false))),
+            mapOf("app" to listOf(FragmentColumn("def", "app", "users", "DIFFERENT", "bigint", 1, false))),
         )
         assertTrue(confirmed.isEmpty(), "a differing ambient read must not count as a re-measurement")
 
         now = 15
-        val second = registry.open(Binding(ds.name, "second", "USER"), listOf("app"), adoptHeldContent = true)
+        val second = registry.open(Binding(ds.name, "second", "USER", ds.effectiveCatalog), listOf("app"), adoptHeldContent = true)
         assertEquals(
             setOf("app"),
             registry.freshnessGate(registry.find(second.connectionId)!!, listOf("app")),
@@ -250,11 +252,11 @@ class PerConnectionCatalogStateTest {
         // Adoption takes a reference of its own. Without it the fragment would be released out from under
         // the adopter when the measuring connection closes, and structuralRows would silently go empty.
         val registry = ConnectionCatalogRegistry()
-        val first = registry.open(Binding(ds.name, "first", "USER"), listOf("app"))
+        val first = registry.open(Binding(ds.name, "first", "USER", ds.effectiveCatalog), listOf("app"))
         registry.applyPush(push(first, "app", "h1"), ds)
         val key = registry.find(first.connectionId)!!.held.getValue("app").pooledRef
 
-        val second = registry.open(Binding(ds.name, "second", "USER"), listOf("app"), adoptHeldContent = true)
+        val second = registry.open(Binding(ds.name, "second", "USER", ds.effectiveCatalog), listOf("app"), adoptHeldContent = true)
         assertEquals(3, registry.pooledFor(key)!!.refCount) // authoritative + measurer + adopter
 
         registry.close(first.connectionId, ds.name)
@@ -273,11 +275,11 @@ class PerConnectionCatalogStateTest {
     fun `a schema with nothing held is still fetched when adopting`() = runBlocking {
         // Adoption only skips work that is already done; it never skips the first measurement of a schema.
         val registry = ConnectionCatalogRegistry()
-        val first = registry.open(Binding(ds.name, "first", "USER"), listOf("app"))
+        val first = registry.open(Binding(ds.name, "first", "USER", ds.effectiveCatalog), listOf("app"))
         registry.applyPush(push(first, "app", "h1"), ds)
 
         val second = registry.open(
-            Binding(ds.name, "second", "USER"),
+            Binding(ds.name, "second", "USER", ds.effectiveCatalog),
             listOf("app", "other"),
             adoptHeldContent = true,
         )
@@ -293,7 +295,7 @@ class PerConnectionCatalogStateTest {
         // (pending.expectedHash == null). A proxy that replies unchanged=true has nothing to adopt — this
         // must fail closed, never silently establish a held reference with no structure behind it.
         val registry = ConnectionCatalogRegistry()
-        val opened = registry.open(Binding(ds.name, "fresh", "USER"), listOf("app"))
+        val opened = registry.open(Binding(ds.name, "fresh", "USER", ds.effectiveCatalog), listOf("app"))
         val rejected = registry.applyPush(push(opened, "app", "h1", unchanged = true), ds) as CatalogMutationResult.Rejected
         assertEquals(Status.Code.FAILED_PRECONDITION, rejected.code)
         val connection = registry.find(opened.connectionId)!!
@@ -323,16 +325,16 @@ class PerConnectionCatalogStateTest {
         // longer there. Adoption would otherwise hand that structure to the next connection, which would
         // decide against a catalog its target DB never had.
         val registry = ConnectionCatalogRegistry()
-        val first = registry.open(Binding(ds.name, "first", "USER"), listOf("app"))
+        val first = registry.open(Binding(ds.name, "first", "USER", ds.effectiveCatalog), listOf("app"))
         registry.applyPush(push(first, "app", "h1"), ds)
         val key = registry.find(first.connectionId)!!.held.getValue("app").pooledRef
 
-        val adoptsBefore = registry.open(Binding(ds.name, "before", "USER"), listOf("app"), adoptHeldContent = true)
+        val adoptsBefore = registry.open(Binding(ds.name, "before", "USER", ds.effectiveCatalog), listOf("app"), adoptHeldContent = true)
         assertTrue(adoptsBefore.onOpen.isEmpty(), "same target: adoption is expected")
 
         assertEquals(setOf("app"), registry.invalidateDatasource(ds.name))
 
-        val afterRetarget = registry.open(Binding(ds.name, "after", "USER"), listOf("app"), adoptHeldContent = true)
+        val afterRetarget = registry.open(Binding(ds.name, "after", "USER", ds.effectiveCatalog), listOf("app"), adoptHeldContent = true)
         assertEquals(
             listOf("app"),
             afterRetarget.onOpen.map { it.schema },
@@ -362,19 +364,19 @@ class PerConnectionCatalogStateTest {
             dsA.name,
             mapOf(
                 "information_schema" to
-                    listOf(FragmentColumn("information_schema", "t", "c", "bigint", 1, false)),
+                    listOf(FragmentColumn("def", "information_schema", "t", "c", "bigint", 1, false)),
             ),
         )
         assertEquals(setOf("information_schema"), confirmed)
 
         now = 15
         val onA = registry.open(
-            Binding(dsA.name, "p", "USER"), listOf("information_schema"), adoptHeldContent = true,
+            Binding(dsA.name, "p", "USER", dsA.effectiveCatalog), listOf("information_schema"), adoptHeldContent = true,
         )
         assertTrue(onA.onOpen.isEmpty(), "dsA was re-read, so its adopter is fresh")
 
         val onB = registry.open(
-            Binding(dsB.name, "p", "USER"), listOf("information_schema"), adoptHeldContent = true,
+            Binding(dsB.name, "p", "USER", dsB.effectiveCatalog), listOf("information_schema"), adoptHeldContent = true,
         )
         assertEquals(
             setOf("information_schema"),
@@ -385,15 +387,17 @@ class PerConnectionCatalogStateTest {
 
     /** Open a connection on [ds] scoped to one system [schema] and push a single-column fragment for it. */
     private suspend fun ConnectionCatalogRegistry.openPushSystem(ds: Datasource, schema: String, hash: String): OpenConnection {
-        val opened = open(Binding(ds.name, "p", "USER"), listOf(schema))
+        val opened = open(Binding(ds.name, "p", "USER", ds.effectiveCatalog), listOf(schema))
         val result = applyPush(
             schemaFragmentPush {
                 connectionId = opened.connectionId
                 datasourceName = ds.name
+                catalog = ds.effectiveCatalog
                 this.schema = schema
                 contentHash = ByteString.copyFromUtf8(hash)
                 backendGeneration = 1
                 columns.add(column {
+                    catalog = ds.effectiveCatalog
                     this.schema = schema; table = "t"; column = "c"
                     dataType = "bigint"; ordinal = 1; nullable = false
                 })
@@ -407,9 +411,9 @@ class PerConnectionCatalogStateTest {
     @Test
     fun `same hash with the same columns but different routines rejects`() = runBlocking {
         val registry = ConnectionCatalogRegistry()
-        val first = registry.open(Binding(ds.name, "first", "USER"), listOf("app"))
+        val first = registry.open(Binding(ds.name, "first", "USER", ds.effectiveCatalog), listOf("app"))
         registry.applyPush(push(first, "app", "h1", routines = listOf("add_tax")), ds)
-        val second = registry.open(Binding(ds.name, "second", "USER"), listOf("app"))
+        val second = registry.open(Binding(ds.name, "second", "USER", ds.effectiveCatalog), listOf("app"))
         assertTrue(registry.applyPush(push(second, "app", "h1", routines = listOf("add_tax", "lookup")), ds) is CatalogMutationResult.Rejected)
         assertTrue(registry.applyPush(push(second, "app", "h1", routines = listOf("add_tax")), ds) is CatalogMutationResult.Applied)
         Unit
@@ -418,9 +422,9 @@ class PerConnectionCatalogStateTest {
     @Test
     fun `same hash with different columns rejects and close is idempotently fail-closed`() = runBlocking {
         val registry = ConnectionCatalogRegistry()
-        val first = registry.open(Binding(ds.name, "first", "USER"), listOf("app"))
+        val first = registry.open(Binding(ds.name, "first", "USER", ds.effectiveCatalog), listOf("app"))
         registry.applyPush(push(first, "app", "h1", columnName = "id"), ds)
-        val second = registry.open(Binding(ds.name, "second", "USER"), listOf("app"))
+        val second = registry.open(Binding(ds.name, "second", "USER", ds.effectiveCatalog), listOf("app"))
         val alias = registry.applyPush(push(second, "app", "h1", columnName = "email"), ds)
         assertTrue(alias is CatalogMutationResult.Rejected)
         assertTrue(registry.close(first.connectionId, ds.name) is CatalogMutationResult.Applied)

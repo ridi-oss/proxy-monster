@@ -28,7 +28,7 @@ func scriptedMySQLRun(t *testing.T, decider engine.Decider, maxRows int, respons
 	_ = server.SetDeadline(time.Now().Add(5 * time.Second))
 	qe := engine.NewQueryEngine(decider)
 	qe.SetNamespace([]string{"test"})
-	s := &RunSession{conn: client, qe: qe, ref: &engine.Refetcher{}}
+	s := &RunSession{conn: client, qe: qe, ref: &engine.Refetcher{Catalog: "def"}}
 	writes := make(chan string, 3)
 	go func() {
 		defer close(writes)

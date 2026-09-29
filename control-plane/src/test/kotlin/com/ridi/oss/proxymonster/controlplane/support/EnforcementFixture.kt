@@ -1,6 +1,7 @@
 package com.ridi.oss.proxymonster.controlplane.support
 
 import com.ridi.oss.proxymonster.controlplane.AccessStore
+import com.ridi.oss.proxymonster.controlplane.effectiveCatalog
 import com.ridi.oss.proxymonster.controlplane.AuditStore
 import com.ridi.oss.proxymonster.controlplane.Channel
 import com.ridi.oss.proxymonster.controlplane.ClassificationInput
@@ -94,6 +95,7 @@ internal fun DatasourceStore.pushTestCatalog(
             ps.executeQuery().use { rs ->
                 while (rs.next()) {
                     columns += pushedColumn(
+                        catalog = datasource.effectiveCatalog,
                         schema = rs.getString(1),
                         table = rs.getString(2),
                         column = rs.getString(3),
@@ -551,8 +553,9 @@ class EnforcementFixture(
     }
 }
 
-internal fun pushedColumn(schema: String, table: String, column: String, dataType: String, ordinal: Int, nullable: Boolean): Column =
+internal fun pushedColumn(catalog: String, schema: String, table: String, column: String, dataType: String, ordinal: Int, nullable: Boolean): Column =
     column {
+        this.catalog = catalog
         this.schema = schema
         this.table = table
         this.column = column

@@ -51,6 +51,7 @@ func TestRefetcherUnchangedOnHashMatch(t *testing.T) {
 	var probes []string
 	var pushed *pb.SchemaFragmentPush
 	r := Refetcher{
+		Catalog:           "def",
 		Db:                refetchDb{},
 		ConnectionID:      []byte("0123456789abcdef"),
 		BackendGeneration: 7,
@@ -63,7 +64,7 @@ func TestRefetcherUnchangedOnHashMatch(t *testing.T) {
 		},
 		Push: func(push *pb.SchemaFragmentPush) (uint64, error) { pushed = push; return 9, nil },
 	}
-	if err := r.Run(&pb.Refetch{Schema: "app", IfHashDiffers: []byte("same")}); err != nil {
+	if err := r.Run(&pb.Refetch{Schema: "app", Catalog: "def", IfHashDiffers: []byte("same")}); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 	if !reflect.DeepEqual(probes, []string{"setup", "hash:app"}) {
@@ -81,7 +82,8 @@ func TestRefetcherUnconditionalFetch(t *testing.T) {
 	var hashCalls int
 	var pushed *pb.SchemaFragmentPush
 	r := Refetcher{
-		Db: refetchDb{},
+		Catalog: "def",
+		Db:      refetchDb{},
 		Probe: func(sql string, columns int) ([][]*string, error) {
 			switch {
 			case sql == "setup":
@@ -97,7 +99,7 @@ func TestRefetcherUnconditionalFetch(t *testing.T) {
 		},
 		Push: func(push *pb.SchemaFragmentPush) (uint64, error) { pushed = push; return 1, nil },
 	}
-	if err := r.Run(&pb.Refetch{Schema: "app"}); err != nil {
+	if err := r.Run(&pb.Refetch{Schema: "app", Catalog: "def"}); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 	if hashCalls != 2 {
@@ -135,7 +137,8 @@ func TestRefetcherProbesModeAndNormalizesBeforePush(t *testing.T) {
 	fakeDb := &normalizingRefetchDb{}
 	var pushed *pb.SchemaFragmentPush
 	r := Refetcher{
-		Db: fakeDb,
+		Catalog: "def",
+		Db:      fakeDb,
 		Probe: func(sql string, columns int) ([][]*string, error) {
 			switch {
 			case sql == "lctn":
@@ -150,7 +153,7 @@ func TestRefetcherProbesModeAndNormalizesBeforePush(t *testing.T) {
 		},
 		Push: func(push *pb.SchemaFragmentPush) (uint64, error) { pushed = push; return 1, nil },
 	}
-	if err := r.Run(&pb.Refetch{Schema: "app"}); err != nil {
+	if err := r.Run(&pb.Refetch{Schema: "app", Catalog: "def"}); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 	if fakeDb.gotMode == nil || *fakeDb.gotMode != 2 {
@@ -164,7 +167,8 @@ func TestRefetcherProbesModeAndNormalizesBeforePush(t *testing.T) {
 func TestRefetcherIncoherentHashesAreTerminal(t *testing.T) {
 	var hashCalls int
 	r := Refetcher{
-		Db: refetchDb{},
+		Catalog: "def",
+		Db:      refetchDb{},
 		Probe: func(sql string, columns int) ([][]*string, error) {
 			if strings.HasPrefix(sql, "hash:") {
 				hashCalls++
@@ -177,7 +181,7 @@ func TestRefetcherIncoherentHashesAreTerminal(t *testing.T) {
 			return 0, nil
 		},
 	}
-	if err := r.Run(&pb.Refetch{Schema: "app", IfHashDiffers: []byte("never")}); err == nil || !strings.Contains(err.Error(), "changed during introspection") {
+	if err := r.Run(&pb.Refetch{Schema: "app", Catalog: "def", IfHashDiffers: []byte("never")}); err == nil || !strings.Contains(err.Error(), "changed during introspection") {
 		t.Fatalf("Run error = %v, want changed-during-introspection", err)
 	}
 }
@@ -196,7 +200,8 @@ func TestRefetcherUntrustedHashesUseNonce(t *testing.T) {
 			var hashCalls int
 			var pushed *pb.SchemaFragmentPush
 			r := Refetcher{
-				Db: refetchDb{},
+				Catalog: "def",
+				Db:      refetchDb{},
 				Probe: func(sql string, columns int) ([][]*string, error) {
 					if sql == "setup" {
 						return nil, nil
@@ -212,7 +217,7 @@ func TestRefetcherUntrustedHashesUseNonce(t *testing.T) {
 				},
 				Push: func(push *pb.SchemaFragmentPush) (uint64, error) { pushed = push; return 1, nil },
 			}
-			if err := r.Run(&pb.Refetch{Schema: "app", IfHashDiffers: []byte("never")}); err != nil {
+			if err := r.Run(&pb.Refetch{Schema: "app", Catalog: "def", IfHashDiffers: []byte("never")}); err != nil {
 				t.Fatalf("Run: %v", err)
 			}
 			if len(pushed.ContentHash) != 32 {
@@ -229,30 +234,30 @@ func TestRefetcherUntrustedHashesUseNonce(t *testing.T) {
 
 func TestRefetcherTerminalErrors(t *testing.T) {
 	t.Run("blank schema", func(t *testing.T) {
-		r := Refetcher{Db: refetchDb{}, Probe: func(string, int) ([][]*string, error) { return nil, nil }, Push: func(*pb.SchemaFragmentPush) (uint64, error) { return 0, nil }}
-		if err := r.Run(&pb.Refetch{}); err == nil {
+		r := Refetcher{Catalog: "def", Db: refetchDb{}, Probe: func(string, int) ([][]*string, error) { return nil, nil }, Push: func(*pb.SchemaFragmentPush) (uint64, error) { return 0, nil }}
+		if err := r.Run(&pb.Refetch{Catalog: "def"}); err == nil {
 			t.Fatal("Run succeeded, want blank-schema error")
 		}
 	})
 	t.Run("introspection", func(t *testing.T) {
-		r := Refetcher{Db: refetchDb{}, Probe: func(sql string, _ int) ([][]*string, error) {
+		r := Refetcher{Catalog: "def", Db: refetchDb{}, Probe: func(sql string, _ int) ([][]*string, error) {
 			if strings.HasPrefix(sql, "columns:") {
 				return nil, errors.New("introspection failed")
 			}
 			return [][]*string{{ptr("hash")}}, nil
 		}, Push: func(*pb.SchemaFragmentPush) (uint64, error) { return 0, nil }}
-		if err := r.Run(&pb.Refetch{Schema: "app"}); err == nil {
+		if err := r.Run(&pb.Refetch{Schema: "app", Catalog: "def"}); err == nil {
 			t.Fatal("Run succeeded, want introspection error")
 		}
 	})
 	t.Run("push", func(t *testing.T) {
-		r := Refetcher{Db: refetchDb{}, Probe: func(sql string, _ int) ([][]*string, error) {
+		r := Refetcher{Catalog: "def", Db: refetchDb{}, Probe: func(sql string, _ int) ([][]*string, error) {
 			if strings.HasPrefix(sql, "columns:") {
 				return fragmentRows("app"), nil
 			}
 			return [][]*string{{ptr("hash")}}, nil
 		}, Push: func(*pb.SchemaFragmentPush) (uint64, error) { return 0, errors.New("push failed") }}
-		if err := r.Run(&pb.Refetch{Schema: "app"}); err == nil || !strings.Contains(err.Error(), "push failed") {
+		if err := r.Run(&pb.Refetch{Schema: "app", Catalog: "def"}); err == nil || !strings.Contains(err.Error(), "push failed") {
 			t.Fatalf("Run error = %v, want push failure", err)
 		}
 	})
@@ -261,7 +266,8 @@ func TestRefetcherTerminalErrors(t *testing.T) {
 func TestRefetcherRunAllOrdersAndStops(t *testing.T) {
 	var pushed []string
 	r := Refetcher{
-		Db: refetchDb{},
+		Catalog: "def",
+		Db:      refetchDb{},
 		Probe: func(sql string, _ int) ([][]*string, error) {
 			if strings.HasPrefix(sql, "columns:") {
 				return fragmentRows(strings.TrimPrefix(sql, "columns:")), nil
@@ -276,7 +282,7 @@ func TestRefetcherRunAllOrdersAndStops(t *testing.T) {
 			return 1, nil
 		},
 	}
-	err := r.RunAll([]*pb.Refetch{{Schema: "one"}, {Schema: "two"}, {Schema: "three"}})
+	err := r.RunAll([]*pb.Refetch{{Catalog: "def", Schema: "one"}, {Catalog: "def", Schema: "two"}, {Catalog: "def", Schema: "three"}})
 	if err == nil {
 		t.Fatal("RunAll succeeded, want second-command error")
 	}

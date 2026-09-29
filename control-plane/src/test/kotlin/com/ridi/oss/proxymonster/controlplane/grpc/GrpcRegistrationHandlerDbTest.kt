@@ -4,6 +4,7 @@ import com.ridi.oss.proxymonster.analyzer.pb.SchemaFunctions
 import com.ridi.oss.proxymonster.analyzer.pb.schemaFunctions
 import com.ridi.oss.proxymonster.classification.PostgresGrammarFunctions
 import com.ridi.oss.proxymonster.controlplane.Catalog
+import com.ridi.oss.proxymonster.controlplane.effectiveCatalog
 import com.ridi.oss.proxymonster.controlplane.support.storedSnapshot
 import com.ridi.oss.proxymonster.controlplane.DatasourceStore
 import com.ridi.oss.proxymonster.analyzer.pb.CatalogSnapshot
@@ -325,9 +326,10 @@ class GrpcRegistrationHandlerDbTest {
         stub.pushCatalog(
             catalogRequest {
                 datasourceName = "reg-engine-lock"
+                currentCatalog = "d"
                 defaultSchemas.add("public")
                 catalog = catalogSnapshot {
-                    columns.add(column { schema = "public"; table = "t"; this.column = "c"; dataType = "text"; ordinal = 1; nullable = true })
+                    columns.add(column { catalog = "d"; schema = "public"; table = "t"; this.column = "c"; dataType = "text"; ordinal = 1; nullable = true })
                 }
             },
         )
@@ -447,9 +449,10 @@ class GrpcRegistrationHandlerDbTest {
         stub.pushCatalog(
             catalogRequest {
                 datasourceName = "upd-engine-lock"
+                currentCatalog = "app"
                 defaultSchemas.add("public")
                 catalog = catalogSnapshot {
-                    columns.add(column { schema = "public"; table = "t"; this.column = "c"; dataType = "text"; ordinal = 1; nullable = true })
+                    columns.add(column { catalog = "app"; schema = "public"; table = "t"; this.column = "c"; dataType = "text"; ordinal = 1; nullable = true })
                 }
             },
         )
@@ -522,11 +525,12 @@ class GrpcRegistrationHandlerDbTest {
         val ack = stub.pushCatalog(
             catalogRequest {
                 datasourceName = "reg-cat"
+                currentCatalog = "d"
                 defaultSchemas.addAll(listOf("pg_catalog", "public"))
                 engineVersion = "PostgreSQL 16.3 (aurora 16.3)"
                 catalog = catalogSnapshot {
-                    columns.add(column { schema = "public"; table = "users"; this.column = "id"; dataType = "integer"; ordinal = 1; nullable = false })
-                    columns.add(column { schema = "public"; table = "users"; this.column = "ssn"; dataType = "text"; ordinal = 2; nullable = true })
+                    columns.add(column { catalog = "d"; schema = "public"; table = "users"; this.column = "id"; dataType = "integer"; ordinal = 1; nullable = false })
+                    columns.add(column { catalog = "d"; schema = "public"; table = "users"; this.column = "ssn"; dataType = "text"; ordinal = 2; nullable = true })
                 }
             },
         )
@@ -551,16 +555,17 @@ class GrpcRegistrationHandlerDbTest {
         val ds = core.datasourceStore.getByName("reg-ambient")!!
 
         // A connection measures `app` itself, so the control plane holds enforcement content for it.
-        val opened = core.connectionCatalog.open(Binding(ds.name, "p", "USER"), listOf("app"))
+        val opened = core.connectionCatalog.open(Binding(ds.name, "p", "USER", ds.effectiveCatalog), listOf("app"))
         val applied = core.connectionCatalog.applyPush(
             schemaFragmentPush {
                 connectionId = opened.connectionId
                 datasourceName = ds.name
+                catalog = ds.effectiveCatalog
                 schema = "app"
                 contentHash = ByteString.copyFromUtf8("h1")
                 backendGeneration = 1
                 columns.add(
-                    column { schema = "app"; table = "users"; this.column = "id"; dataType = "bigint"; ordinal = 1; nullable = false },
+                    column { catalog = ds.effectiveCatalog; schema = "app"; table = "users"; this.column = "id"; dataType = "bigint"; ordinal = 1; nullable = false },
                 )
             },
             ds,
@@ -572,10 +577,11 @@ class GrpcRegistrationHandlerDbTest {
         stub.pushCatalog(
             catalogRequest {
                 datasourceName = ds.name
+                currentCatalog = ds.effectiveCatalog
                 defaultSchemas.add("app")
                 catalog = catalogSnapshot {
                     columns.add(
-                        column { schema = "app"; table = "users"; this.column = "id"; dataType = "bigint"; ordinal = 1; nullable = false },
+                        column { catalog = ds.effectiveCatalog; schema = "app"; table = "users"; this.column = "id"; dataType = "bigint"; ordinal = 1; nullable = false },
                     )
                 }
             },
@@ -594,7 +600,7 @@ class GrpcRegistrationHandlerDbTest {
 
         // The push confirms content; it never installs it.
         val adopter = core.connectionCatalog.open(
-            Binding(ds.name, "later", "USER"), listOf("app"), adoptHeldContent = true,
+            Binding(ds.name, "later", "USER", ds.effectiveCatalog), listOf("app"), adoptHeldContent = true,
         )
         assertTrue(adopter.onOpen.isEmpty(), "the ambient push must leave the adopter with nothing to fetch")
         assertEquals(
@@ -615,9 +621,10 @@ class GrpcRegistrationHandlerDbTest {
         stub.pushCatalog(
             catalogRequest {
                 datasourceName = "reg-preserve"
+                currentCatalog = "app"
                 defaultSchemas.add("public")
                 catalog = catalogSnapshot {
-                    columns.add(column { schema = "public"; table = "keep"; this.column = "c"; dataType = "text"; ordinal = 1; nullable = true })
+                    columns.add(column { catalog = "app"; schema = "public"; table = "keep"; this.column = "c"; dataType = "text"; ordinal = 1; nullable = true })
                 }
             },
         )
@@ -636,9 +643,10 @@ class GrpcRegistrationHandlerDbTest {
         stub.pushCatalog(
             catalogRequest {
                 datasourceName = "reg-retarget"
+                currentCatalog = "db_a"
                 defaultSchemas.add("public")
                 catalog = catalogSnapshot {
-                    columns.add(column { schema = "public"; table = "old_table"; this.column = "c"; dataType = "text"; ordinal = 1; nullable = true })
+                    columns.add(column { catalog = "db_a"; schema = "public"; table = "old_table"; this.column = "c"; dataType = "text"; ordinal = 1; nullable = true })
                 }
             },
         )
@@ -661,9 +669,10 @@ class GrpcRegistrationHandlerDbTest {
         stub.pushCatalog(
             catalogRequest {
                 datasourceName = "reg-rollback"
+                currentCatalog = "d"
                 defaultSchemas.add("public")
                 catalog = catalogSnapshot {
-                    columns.add(column { schema = "public"; table = "orig"; this.column = "c"; dataType = "text"; ordinal = 1; nullable = true })
+                    columns.add(column { catalog = "d"; schema = "public"; table = "orig"; this.column = "c"; dataType = "text"; ordinal = 1; nullable = true })
                 }
             },
         )
@@ -674,10 +683,11 @@ class GrpcRegistrationHandlerDbTest {
             stub.pushCatalog(
                 catalogRequest {
                     datasourceName = "reg-rollback"
+                    currentCatalog = "d"
                     defaultSchemas.add("public")
                     catalog = catalogSnapshot {
-                        columns.add(column { schema = "public"; table = "dup"; this.column = "x"; dataType = "text"; ordinal = 1; nullable = true })
-                        columns.add(column { schema = "public"; table = "dup"; this.column = "x"; dataType = "text"; ordinal = 2; nullable = true })
+                        columns.add(column { catalog = "d"; schema = "public"; table = "dup"; this.column = "x"; dataType = "text"; ordinal = 1; nullable = true })
+                        columns.add(column { catalog = "d"; schema = "public"; table = "dup"; this.column = "x"; dataType = "text"; ordinal = 2; nullable = true })
                     }
                 },
             )
@@ -694,19 +704,21 @@ class GrpcRegistrationHandlerDbTest {
         stub.pushCatalog(
             catalogRequest {
                 datasourceName = "reg-replace"
+                currentCatalog = "d"
                 defaultSchemas.add("public")
                 catalog = catalogSnapshot {
-                    columns.add(column { schema = "public"; table = "a"; this.column = "x"; dataType = "integer"; ordinal = 1; nullable = true })
-                    columns.add(column { schema = "public"; table = "b"; this.column = "y"; dataType = "integer"; ordinal = 1; nullable = true })
+                    columns.add(column { catalog = "d"; schema = "public"; table = "a"; this.column = "x"; dataType = "integer"; ordinal = 1; nullable = true })
+                    columns.add(column { catalog = "d"; schema = "public"; table = "b"; this.column = "y"; dataType = "integer"; ordinal = 1; nullable = true })
                 }
             },
         )
         val ack = stub.pushCatalog(
             catalogRequest {
                 datasourceName = "reg-replace"
+                currentCatalog = "d"
                 defaultSchemas.add("public")
                 catalog = catalogSnapshot {
-                    columns.add(column { schema = "public"; table = "a"; this.column = "x"; dataType = "integer"; ordinal = 1; nullable = true })
+                    columns.add(column { catalog = "d"; schema = "public"; table = "a"; this.column = "x"; dataType = "integer"; ordinal = 1; nullable = true })
                 }
             },
         )
@@ -723,10 +735,11 @@ class GrpcRegistrationHandlerDbTest {
         stub.pushCatalog(
             catalogRequest {
                 datasourceName = "reg-replace-classified"
+                currentCatalog = "d"
                 defaultSchemas.add("public")
                 catalog = catalogSnapshot {
-                    columns.add(column { schema = "public"; table = "users"; this.column = "ssn"; dataType = "text"; ordinal = 1; nullable = false })
-                    columns.add(column { schema = "public"; table = "users"; this.column = "display_name"; dataType = "text"; ordinal = 2; nullable = true })
+                    columns.add(column { catalog = "d"; schema = "public"; table = "users"; this.column = "ssn"; dataType = "text"; ordinal = 1; nullable = false })
+                    columns.add(column { catalog = "d"; schema = "public"; table = "users"; this.column = "display_name"; dataType = "text"; ordinal = 2; nullable = true })
                 }
             },
         )
@@ -745,11 +758,12 @@ class GrpcRegistrationHandlerDbTest {
         stub.pushCatalog(
             catalogRequest {
                 datasourceName = "reg-replace-classified"
+                currentCatalog = "d"
                 defaultSchemas.add("public")
                 catalog = catalogSnapshot {
-                    columns.add(column { schema = "public"; table = "users"; this.column = "ssn"; dataType = "text"; ordinal = 1; nullable = false })
-                    columns.add(column { schema = "public"; table = "users"; this.column = "display_name"; dataType = "character varying"; ordinal = 2; nullable = false })
-                    columns.add(column { schema = "public"; table = "users"; this.column = "created_at"; dataType = "timestamp"; ordinal = 3; nullable = false })
+                    columns.add(column { catalog = "d"; schema = "public"; table = "users"; this.column = "ssn"; dataType = "text"; ordinal = 1; nullable = false })
+                    columns.add(column { catalog = "d"; schema = "public"; table = "users"; this.column = "display_name"; dataType = "character varying"; ordinal = 2; nullable = false })
+                    columns.add(column { catalog = "d"; schema = "public"; table = "users"; this.column = "created_at"; dataType = "timestamp"; ordinal = 3; nullable = false })
                 }
             },
         )
@@ -761,11 +775,13 @@ class GrpcRegistrationHandlerDbTest {
     private suspend fun pushRoutines(name: String, routines: List<SchemaFunctions>, table: String = "users", duplicate: Boolean = false) {
         stub.pushCatalog(catalogRequest {
             datasourceName = name
+            currentCatalog = core.datasourceStore.getByName(name)!!.effectiveCatalog
             defaultSchemas.add("public")
             engineVersion = "PostgreSQL 16.4"
             catalog = catalogSnapshot {
                 this.routines.addAll(routines)
                 val row = column {
+                    catalog = core.datasourceStore.getByName(name)!!.effectiveCatalog
                     schema = "public"
                     this.table = table
                     column = "id"

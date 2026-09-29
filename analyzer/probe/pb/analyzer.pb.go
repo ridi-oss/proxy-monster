@@ -659,8 +659,8 @@ type Column struct {
 	DataType string `protobuf:"bytes,4,opt,name=data_type,json=dataType,proto3" json:"data_type,omitempty"`
 	Ordinal  int32  `protobuf:"varint,5,opt,name=ordinal,proto3" json:"ordinal,omitempty"`
 	Nullable bool   `protobuf:"varint,6,opt,name=nullable,proto3" json:"nullable,omitempty"`
-	// The column's catalog. Empty means the Namespace catalog (the only catalog on MySQL/PostgreSQL); a
-	// multi-catalog engine names it so columns from two catalogs stay distinct identities.
+	// The catalog the column was read from (MySQL `def`, PostgreSQL the database); columns from two
+	// catalogs stay distinct identities.
 	Catalog string `protobuf:"bytes,7,opt,name=catalog,proto3" json:"catalog,omitempty"`
 	// An engine-implicit system column (PostgreSQL ctid/xmin/…): resolvable when named explicitly,
 	// excluded from * and whole-row expansion, never classifiable.

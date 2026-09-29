@@ -46,14 +46,14 @@ class SystemClassificationEnforcementMySqlDbTest {
             engineVersion = "5.7.44",
             catalog = snapshotOf(
                 // An explicit system:critical credential table.
-                pushedColumn("mysql", "user", "User", "char", 1, false),
-                pushedColumn("mysql", "user", "authentication_string", "text", 2, true),
+                pushedColumn("def", "mysql", "user", "User", "char", 1, false),
+                pushedColumn("def", "mysql", "user", "authentication_string", "text", 2, true),
                 // A value-bearing table NO shipped manifest classifies — the fail-closed critical default; the
                 // raw cross-session-variable surface the advisory closes.
-                pushedColumn("performance_schema", "user_variables_by_thread", "VARIABLE_NAME", "varchar", 1, true),
-                pushedColumn("performance_schema", "user_variables_by_thread", "VARIABLE_VALUE", "longtext", 2, true),
+                pushedColumn("def", "performance_schema", "user_variables_by_thread", "VARIABLE_NAME", "varchar", 1, true),
+                pushedColumn("def", "performance_schema", "user_variables_by_thread", "VARIABLE_VALUE", "longtext", 2, true),
                 // An explicit system:data-leak table — kept at its tag (not force-critical), so system:development still relaxes it.
-                pushedColumn("information_schema", "COLUMN_STATISTICS", "SCHEMA_NAME", "varchar", 1, true),
+                pushedColumn("def", "information_schema", "COLUMN_STATISTICS", "SCHEMA_NAME", "varchar", 1, true),
             ),
         )
         val role = fx.policyStore.createRole(RoleInput("broad-mysql-reader"))

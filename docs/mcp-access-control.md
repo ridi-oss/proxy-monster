@@ -30,11 +30,12 @@ roles + Cedar on every call.
 `context.channel` (`Channel.MCP` in `Query.kt`), so policies and the audit trail
 can see that a change arrived over MCP.
 
-MCP covers the access-control management surface only. Target-database query
-execution, approvals, and audit-log tools are later MCP work tracked in
-[backlog.md](./backlog.md), not architectural non-goals. proxy-monster has no
-table-level tag store and does not add one, so MCP exposes only the column tags
-that already exist. `PM_AUTH_DEBUG` provides the development login method.
+MCP covers the access-control management surface, target-database queries, and
+the query-approval workflow. Audit-log tools and JIT access requests and grants
+are later MCP work tracked in [backlog.md](./backlog.md), not architectural
+non-goals. proxy-monster has no table-level tag store and does not add one, so
+MCP exposes only the column tags that already exist. `PM_AUTH_DEBUG` provides
+the development login method.
 
 ## Why this shape
 
@@ -81,7 +82,7 @@ Three facts about the system force the design.
 - Development debug parity. When `config.authDebug` is on, MCP accepts the same
   dev login the other control-plane surfaces do, so developers do not need Okta
   to exercise MCP locally. The principal chosen authorizes on its own roles, so
-  a tool call needs an `admin.*` grant.
+  a management tool call needs an `admin.*` grant.
 - Audience binding. Access tokens are bound to this resource (`resource` = the
   MCP endpoint's canonical URI, RFC 8707). A token minted for any other audience
   is rejected. proxy-monster never forwards a received token upstream (no
@@ -94,8 +95,8 @@ Three facts about the system force the design.
 - Completeness is explicit and fail-closed. The tool catalog is generated from a
   single capability registry keyed by `AuthzAction` (`McpCapabilityRegistry`).
   Startup fails if an in-scope action has no tool. Explicitly deferred
-  capabilities — query execution, approvals, audit-log tools — are named
-  exclusions from the required set.
+  capabilities — audit-log tools, JIT grants, tokens, editor-tab cleanup — are
+  named exclusions from the required set.
 
 ## Architecture
 
@@ -118,14 +119,15 @@ Three facts about the system force the design.
 │            │                                             │
 │            ▼                                             │
 │         Tool dispatch ──► ManagementService(s)           │
-│            │                     │                       │
+│            │               EditorTaskService             │
+│            │               ApprovalService               │
 │            │   RoleResolver.resolve(principal)           │
-│            │   authz.authorize(action, resource, ctx)    │  ctx.channel = mcp
-│            ▼                     ▼                       │
+│            │   authz.authorize(action, resource, ctx)    │  ctx.channel = mcp (admin)
+│            ▼                     ▼                       │  editor / workflow-viewer (tasks)
 │         same stores the REST routes use (Postgres)       │
 └──────────────────────────────────────────────────────────┘
-        │ gRPC (unchanged)          │ SQL (later)
-        ▼                           ▼
+        │ gRPC run channel (queries run through the proxy)
+        ▼
    wire proxy  ───────────────►  target DBs
 ```
 
@@ -187,9 +189,10 @@ Development needs no Okta connection and no second non-OAuth MCP transport.
 
 The principal must be named — an explicit `?principal=` or an existing console
 session — because this route mints a session for it. Tool dispatch then runs the
-ordinary Cedar check, so that principal needs an `admin.*` grant or every tool
-answers `common.forbidden`; sign in at `/login` with `system:admin` first, or
-authorize as a principal that already holds the role.
+ordinary Cedar check, so that principal needs the grant each tool's console
+route needs — `admin.*` for a management tool — or the call answers
+`common.forbidden`; sign in at `/login` with the role first, or authorize as a
+principal that already holds it.
 
 ### Tokens
 
@@ -219,6 +222,8 @@ the user's authority (e.g. a read-only agent):
 | `mcp:datasources:write` | datasource + classification writes | `admin.datasources` |
 | `mcp:policies:write` | Cedar policy + role + mask-fn writes | `admin.policies` |
 | `mcp:identity:write` | users/groups/members/role-assignments | `admin.identity` |
+| `mcp:query` | queries, own task status/results, approval requests and reads | the REST route's Cedar gate per tool |
+| `mcp:approvals:write` | approve, reject, and execute query approvals | `task.approve` on the Request |
 
 Presenting a scope never grants the action; lacking a scope denies it up front.
 A user who consents to `mcp:read` only can never mutate even if they hold
@@ -306,12 +311,56 @@ All under `admin.policies` (write tools also require `mcp:policies:write`):
 - `list_mask_fns` / `create_mask_fn` / `update_mask_fn` / `delete_mask_fn` →
   `admin.policies` (writes need `mcp:policies:write`).
 
-### Deferred sibling surfaces
+### Query and approval tools
 
-Workflow tools (requests, approvals, grants, result release/view), query
-execution, and audit-log browsing are separate future MCP designs, tracked in
-[backlog.md](./backlog.md). These are sequencing boundaries, not permanent
-exclusions.
+- `list_connectable_datasources` (`datasource.connect`, scope `mcp:query`) — the
+  datasources the caller may connect to: name, engine, default schemas. No host
+  or port (REST: `GET /api/datasources?connectable=true`).
+- `describe_datasource` (`datasource.connect`, scope `mcp:query`) — schemas,
+  tables, and columns of one connectable datasource.
+- `run_query` (`task.request`, scope `mcp:query`) — runs SQL as an editor task
+  under the caller's own roles on a one-shot connection, waits up to 10 s, and
+  returns the task status, per-statement metadata, and the first 200 rows of the
+  last result set. A denied statement carries its `decisionId` (REST:
+  `POST /api/editor/sessions/{id}/query`).
+- `get_query_result` (`task.assume`, scope `mcp:query`) — one page of an editor
+  task's rows (REST: `GET /api/editor/tasks/{id}/result`).
+- `get_query_status` (`task.read`, scope `mcp:query`) — REST:
+  `GET /api/editor/tasks/{id}`.
+- `cancel_query` (`task.cancel`, scope `mcp:query`) — REST:
+  `POST /api/editor/tasks/{id}/cancel`.
+- `discover_roles` (`task.request`, scope `mcp:query`) — REST:
+  `POST /api/approvals/discover-roles`.
+- `request_approval` (`task.request`, scope `mcp:query`) — from a denied
+  `decisionId`, or proactive from datasource + SQL + title (REST:
+  `POST /api/approvals`).
+- `list_my_approvals` (`task.read`, scope `mcp:query`) — REST:
+  `GET /api/approvals`.
+- `list_approval_inbox` (`task.approve`, scope `mcp:query`) — REST:
+  `GET /api/approvals/inbox`.
+- `get_approval` (`task.read`, scope `mcp:query`) — REST:
+  `GET /api/approvals/{id}`.
+- `approve_approval` / `reject_approval` (`task.approve`, scope
+  `mcp:approvals:write`) — REST: `POST /api/approvals/{id}/approve`,
+  `POST /api/approvals/{id}/reject`.
+- `execute_approval` (`task.approve`, scope `mcp:approvals:write`) — REST:
+  `POST /api/approvals/{id}/execute`.
+- `get_approval_result` (`task.assume`, scope `mcp:query`) — one page of an
+  approval's rows (REST: `GET /api/approvals/{id}/result`).
+- `cancel_approval` (`task.cancel`, scope `mcp:query`) — REST:
+  `POST /api/approvals/{id}/cancel`.
+
+These tools are resource-scoped. The dispatcher checks only the OAuth scope up
+front; the tool then calls the same `EditorTaskService` or `ApprovalService` the
+REST route calls, which runs the route's own Cedar gate against the Datasource,
+the Request, or the task owner. Those decisions run on the REST channel —
+`editor` for the caller's own queries, `workflow-viewer` for approval decisions
+and views — never `mcp`, so the no-self-approval forbid, the editor self-approve
+permit, and `workflow-executor` scoping hold exactly as in the console. The two
+result tools re-decide the stored rows live for the viewer and page them
+(`offset`, `limit` ≤ 1000, `nextOffset`); an approval view audits and charges
+the viewer's relayed volume for the released page only. Request, approve, and
+reject record the MCP caller as the actor with `channel=mcp`.
 
 ## Data model
 
@@ -327,9 +376,10 @@ New / changed
 - `oauth_consent`: remembers a principal's approved
   `{client_id, resource, scope}` so repeat logins skip the screen. Revocable by
   the user/admin; revocation invalidates the client's refresh-token chain.
-- Request channel: `Channel.MCP` (`Query.kt`), so `context.channel` reaches
-  Cedar. Audit rows for MCP-driven changes carry `channel=mcp` and the acting
-  principal.
+- Request channel: `Channel.MCP` (`Query.kt`) on management tools, so
+  `context.channel` reaches Cedar; their audit rows carry `channel=mcp` and the
+  acting principal. Query and approval tools decide on the REST channels
+  instead.
 - `mcp_mutation_idempotency` (V31) — optional client-supplied `idempotencyKey`
   on write tools.
 
@@ -344,8 +394,9 @@ no MCP-only permission table, no generic REST proxy tool, no DCR endpoint.
 ## Mutation safety
 
 - Atomicity / validation / immutability: inherited from the reused routes.
-- Idempotency: write tools accept an optional client-supplied idempotency key; a
-  replay with the same key returns the prior result rather than double-applying.
+- Idempotency: the management write tools accept an optional client-supplied
+  idempotency key; a replay with the same key returns the prior result rather
+  than double-applying. The query and approval tools take none.
 - Concurrency: MCP retains the current REST last-write-wins behavior; a
   cross-surface optimistic-concurrency guard is a separate
   [backlog.md](./backlog.md) item.
@@ -353,9 +404,10 @@ no MCP-only permission table, no generic REST proxy tool, no DCR endpoint.
   `destructiveHint`) are advisory metadata for the client UI. The server never
   trusts them for a decision — a tool tagged `readOnly` that somehow reaches a
   write path is still gated by Cedar.
-- Audit: every mutating tool call lands in the audit log with `channel=mcp`,
-  principal, action, resource, and outcome — the same store the web mutations
-  use.
+- Audit: every mutating management tool call lands in the audit log with
+  `channel=mcp`, principal, action, resource, and outcome — the same store the
+  web mutations use. Query and approval tools write the same audit rows their
+  REST routes write.
 
 ## Errors & l10n
 

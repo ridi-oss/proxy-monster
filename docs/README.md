@@ -17,7 +17,8 @@ proxy-monster runs on `main`: the enforcing wire proxy for MySQL and PostgreSQL,
 the Cedar authorization core, the sqlglot-go lineage analyzer, OIDC and session
 auth, the query-approval workflow, and the tamper-evident audit trail with its
 independent monitor. Two tracks are still moving: the OAuth-2.1-authenticated
-MCP admin surface is partial, and a port of the control-plane to Go (the data
+MCP surface covers administration, queries, and query approvals but not yet
+audit browsing or JIT grants, and a port of the control-plane to Go (the data
 plane is already Go) is a proposal under evaluation.
 
 ## Documents

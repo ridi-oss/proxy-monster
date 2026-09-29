@@ -365,10 +365,7 @@ Fixes for gaps documented in
 
 ## Management over MCP
 
-- Workflow tools: access requests and grants, query approvals, approve / reject
-  / revoke, and result view.
-- Query tool: target-database query execution through the proxy enforcement
-  path.
+- Workflow tools: JIT access requests and grants, and grant revoke.
 - Audit browsing: read tools over the decision feed, preserving the all-vs-own
   split.
 - Optimistic concurrency: resource versions and conditional writes across REST

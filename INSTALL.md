@@ -485,14 +485,15 @@ at boot.
 
 ### Connect an MCP client (optional)
 
-`/mcp` is a Streamable HTTP MCP resource server for access-control
-administration, co-hosted in control-plane — no separate process. It exposes the
-same Cedar-authorized datasource/catalog/classification, policy, role,
-assignment, user/group, and mask-function operations as the Admin REST API. It
-does not execute SQL, manage workflows, or browse audit history. Every MCP call
-is OAuth 2.1-authenticated, then authorized through the same Cedar action and
-validators as the REST surface — OAuth scopes are only a consent ceiling, never
-an extra source of permission.
+`/mcp` is a Streamable HTTP MCP resource server co-hosted in control-plane — no
+separate process. It exposes the same Cedar-authorized operations as the REST
+API: access-control administration (datasource/catalog/classification, policy,
+role, assignment, user/group, mask function), running SQL with the stored,
+masked result, and the query-approval workflow (request, inbox, approve, reject,
+execute, result). It does not browse audit history. Every MCP call is OAuth
+2.1-authenticated, then authorized through the same Cedar action and validators
+as the REST surface — OAuth scopes are only a consent ceiling, never an extra
+source of permission.
 
 Control-plane serves the MCP resource, OAuth discovery (RFC 8414/9728), the
 `/oauth/authorize` + `/oauth/token` + `/oauth/revoke` endpoints, and — since
@@ -510,9 +511,10 @@ principal and auto-consents (`PM_OAUTH_DEBUG_AUTO_CONSENT`, default `true`) with
 no Okta round-trip — it still mints normal audience-bound OAuth bearer tokens,
 so discovery and client behavior stay identical to production.
 
-That flow selects a principal but assigns it no roles, and every MCP tool needs
-an `admin.*` grant, so the token authorizes nothing until its principal holds a
-role — a tool call answers `common.forbidden`. Sign that principal in through
+That flow selects a principal but assigns it no roles, so the token authorizes
+nothing until its principal holds one — a management tool needs an `admin.*`
+grant, and a query or approval tool the same grant its console route does;
+otherwise a call answers `common.forbidden`. Sign that principal in through
 `/login` (debug login, with `system:admin`) first, or authorize with
 `?principal=` naming a principal that already has the role.
 

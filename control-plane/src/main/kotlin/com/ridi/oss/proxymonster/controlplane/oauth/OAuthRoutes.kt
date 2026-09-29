@@ -56,7 +56,9 @@ import javax.crypto.Mac
 import javax.crypto.spec.SecretKeySpec
 import javax.sql.DataSource
 
-val MCPA_SCOPES = setOf("mcp:read", "mcp:datasources:write", "mcp:policies:write", "mcp:identity:write")
+val MCPA_SCOPES = setOf(
+    "mcp:read", "mcp:datasources:write", "mcp:policies:write", "mcp:identity:write", "mcp:query", "mcp:approvals:write",
+)
 
 private val log = org.slf4j.LoggerFactory.getLogger("com.ridi.oss.proxymonster.controlplane.oauth.OAuthRoutes")
 
@@ -477,7 +479,10 @@ private suspend fun renderConsent(
     clientId: String,
 ) {
     val bundle = localizedBundle(call)
-    val scopes = pending.scope.split(' ').joinToString("<br>") { escapeHtml(it) }
+    val scopes = pending.scope.split(' ').filter(String::isNotBlank).joinToString("<br>") { scope ->
+        val label = "consent.scope.$scope".takeIf(bundle::containsKey)?.let(bundle::getString)
+        if (label == null) escapeHtml(scope) else "${escapeHtml(label)} (${escapeHtml(scope)})"
+    }
     val redirect = validatedRedirectUri(pending.redirectUri)
     val redirectDisclosure = escapeHtml(pending.redirectUri)
     val loopbackWarning = if (isLoopbackRedirectHost(requireNotNull(redirect.host))) {

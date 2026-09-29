@@ -586,7 +586,19 @@ fun Application.module(config: Config, core: ControlPlaneCore) {
     val identityManagement = IdentityManagementService(
         dataSource, userGroupStore, policyStore, tokenStore, accessStore, principalSessionStore, managementAudit,
     )
-    installMcp(config, core, datasourceManagement, policyManagement, identityManagement)
+    val editorTaskService = EditorTaskService(
+        config, datasourceStore, accessStore, queryResultStore, policyStore, userGroupStore,
+        roleResolver, authz, runExecService, this@module, core.systemClassification, taskCompletionHub,
+        core.auditStore,
+    )
+    val approvalService = ApprovalService(
+        config, accessStore, store, datasourceStore, policyStore, userGroupStore, queryResultStore,
+        roleResolver, authz, runExecService, this@module, core.systemClassification, taskCompletionHub,
+        notifications,
+    )
+    installMcp(
+        config, core, datasourceManagement, policyManagement, identityManagement, editorTaskService, approvalService,
+    )
 
     routing {
         // Installed on the routing ROOT, not bare Application — Ktor's ContentNegotiation is a
@@ -682,7 +694,7 @@ fun Application.module(config: Config, core: ControlPlaneCore) {
         approvalRoutes(
             config, accessStore, store, datasourceStore, policyStore, userGroupStore, queryResultStore,
             roleResolver, authz, runExecService, this@module, core.systemClassification, taskCompletionHub,
-            notifications,
+            notifications, service = approvalService,
         )
 
         // Self-service: the caller's own display language, which notification delivery reads. Not an admin
@@ -696,7 +708,7 @@ fun Application.module(config: Config, core: ControlPlaneCore) {
         editorSessionRoutes(
             config, datasourceStore, accessStore, queryResultStore, policyStore, userGroupStore,
             roleResolver, authz, runExecService, this@module, core.systemClassification, taskCompletionHub,
-            core.auditStore,
+            core.auditStore, service = editorTaskService,
         )
 
         taskEventsRoute(config, taskCompletionHub, accessStore, authz, datasourceStore, principalSessionStore, appJson)

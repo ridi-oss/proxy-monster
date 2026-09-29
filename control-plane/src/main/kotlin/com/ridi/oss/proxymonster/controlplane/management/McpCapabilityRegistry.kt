@@ -5,6 +5,9 @@ import com.ridi.oss.proxymonster.controlplane.authz.AuthzResource
 
 enum class CapabilityClassification { READ, WRITE }
 
+/** SYSTEM: Cedar on the System resource up front. RESOURCE: a scope check up front; the shared service runs Cedar. */
+enum class McpGate { SYSTEM, RESOURCE }
+
 data class McpToolAnnotations(
     val readOnlyHint: Boolean,
     val destructiveHint: Boolean,
@@ -17,6 +20,7 @@ data class McpCapability(
     val requiredScope: String,
     val classification: CapabilityClassification,
     val annotations: McpToolAnnotations,
+    val gate: McpGate = McpGate.SYSTEM,
 )
 
 /** The one authoritative, complete MCPA tool/action/scope catalog. */
@@ -25,16 +29,17 @@ object McpCapabilityRegistry {
         AuthzAction.ADMIN_DATASOURCES,
         AuthzAction.ADMIN_POLICIES,
         AuthzAction.ADMIN_IDENTITY,
-    )
-
-    val excludedActions = setOf(
-        AuthzAction.TASK_APPROVE,
-        // Task lifecycle + token actions are runtime authorization (the approval / token routes), not
-        // MCP-management tools — deferred like the other non-management actions below.
+        AuthzAction.DATASOURCE_CONNECT,
         AuthzAction.TASK_REQUEST,
         AuthzAction.TASK_READ,
         AuthzAction.TASK_ASSUME,
         AuthzAction.TASK_CANCEL,
+        AuthzAction.TASK_APPROVE,
+    )
+
+    val excludedActions = setOf(
+        // Editor-tab cleanup, grants, tokens, audit browsing, and actions that are only ever checked inside
+        // a query decision have no MCP tool.
         AuthzAction.TASK_DELETE,
         AuthzAction.GRANT_REVOKE,
         AuthzAction.TOKEN_MINT,
@@ -44,7 +49,6 @@ object McpCapabilityRegistry {
         AuthzAction.RESULT_READ_UNMASKED,
         AuthzAction.RESULT_READ_MASKED,
         AuthzAction.RESULT_CAP,
-        AuthzAction.DATASOURCE_CONNECT,
         AuthzAction.EXCEPTION_UNANALYZABLE,
         AuthzAction.EXCEPTION_UNMASKABLE,
     )
@@ -58,6 +62,14 @@ object McpCapabilityRegistry {
         name, action, requiredScope = scope, classification = CapabilityClassification.WRITE,
         annotations = McpToolAnnotations(readOnlyHint = false, destructiveHint = destructive),
     )
+
+    private fun task(name: String, action: AuthzAction, scope: String, write: Boolean, destructive: Boolean = false) =
+        McpCapability(
+            name, action, requiredScope = scope,
+            classification = if (write) CapabilityClassification.WRITE else CapabilityClassification.READ,
+            annotations = McpToolAnnotations(readOnlyHint = !write, destructiveHint = destructive),
+            gate = McpGate.RESOURCE,
+        )
 
     val entries: List<McpCapability> = listOf(
         read("list_datasources", AuthzAction.ADMIN_DATASOURCES),
@@ -103,6 +115,24 @@ object McpCapabilityRegistry {
         write("create_mask_fn", AuthzAction.ADMIN_POLICIES, "mcp:policies:write"),
         write("update_mask_fn", AuthzAction.ADMIN_POLICIES, "mcp:policies:write"),
         write("delete_mask_fn", AuthzAction.ADMIN_POLICIES, "mcp:policies:write", destructive = true),
+
+        task("list_connectable_datasources", AuthzAction.DATASOURCE_CONNECT, "mcp:query", write = false),
+        task("describe_datasource", AuthzAction.DATASOURCE_CONNECT, "mcp:query", write = false),
+        // Destructive because the SQL may be DML wherever Cedar allows it.
+        task("run_query", AuthzAction.TASK_REQUEST, "mcp:query", write = true, destructive = true),
+        task("get_query_result", AuthzAction.TASK_ASSUME, "mcp:query", write = false),
+        task("get_query_status", AuthzAction.TASK_READ, "mcp:query", write = false),
+        task("cancel_query", AuthzAction.TASK_CANCEL, "mcp:query", write = true),
+        task("discover_roles", AuthzAction.TASK_REQUEST, "mcp:query", write = false),
+        task("request_approval", AuthzAction.TASK_REQUEST, "mcp:query", write = true),
+        task("list_my_approvals", AuthzAction.TASK_READ, "mcp:query", write = false),
+        task("list_approval_inbox", AuthzAction.TASK_APPROVE, "mcp:query", write = false),
+        task("get_approval", AuthzAction.TASK_READ, "mcp:query", write = false),
+        task("approve_approval", AuthzAction.TASK_APPROVE, "mcp:approvals:write", write = true),
+        task("reject_approval", AuthzAction.TASK_APPROVE, "mcp:approvals:write", write = true),
+        task("execute_approval", AuthzAction.TASK_APPROVE, "mcp:approvals:write", write = true, destructive = true),
+        task("get_approval_result", AuthzAction.TASK_ASSUME, "mcp:query", write = false),
+        task("cancel_approval", AuthzAction.TASK_CANCEL, "mcp:query", write = true),
     )
 
     val byName = entries.associateBy(McpCapability::toolName)
@@ -117,6 +147,9 @@ object McpCapabilityRegistry {
         "unassign_role", "list_users", "create_user", "update_user", "deprovision_user", "list_groups", "create_group",
         "update_group", "delete_group", "add_group_member", "remove_group_member", "set_group_roles", "list_mask_fns",
         "create_mask_fn", "update_mask_fn", "delete_mask_fn",
+        "list_connectable_datasources", "describe_datasource", "run_query", "get_query_result", "get_query_status",
+        "cancel_query", "discover_roles", "request_approval", "list_my_approvals", "list_approval_inbox", "get_approval",
+        "approve_approval", "reject_approval", "execute_approval", "get_approval_result", "cancel_approval",
     )
 
     fun verify() {

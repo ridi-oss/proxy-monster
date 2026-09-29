@@ -1217,6 +1217,10 @@ fun Route.editorSessionRoutes(
     taskCompletionHub: TaskCompletionHub? = null,
     // Feeds the stored-result re-decision the viewer's relayed volume for its rate entries, as the wire path does.
     auditStore: AuditStore? = null,
+    service: EditorTaskService = EditorTaskService(
+        config, datasourceStore, accessStore, queryResultStore, policyStore, userGroupStore, roleResolver, authz,
+        runExecService, appScope, systemClassification, taskCompletionHub, auditStore,
+    ),
 ) {
     post("/api/editor/sessions") {
         val principal = call.requireApi() ?: return@post
@@ -1245,306 +1249,59 @@ fun Route.editorSessionRoutes(
         val sessionId = call.parameters["sessionId"]
             ?: return@post call.respond(HttpStatusCode.BadRequest, ApiError("common.bad_id"))
         val req = call.receive<QueryRequest>()
-        val sql = req.sql
-        if (sql.isBlank()) {
-            return@post call.respond(HttpStatusCode.BadRequest, ApiError("common.field_required", mapOf("fields" to "sql")))
+        try {
+            val sub = service.submitOnSession(principal, call.httpRequesterIp(config), sessionId, req.sql, req.maxRows)
+            call.respond(HttpStatusCode.Accepted, sub.response)
+        } catch (e: TaskServiceException) {
+            call.respondServiceError(e)
         }
-        // Own roles, freshly resolved at THIS submit — the task executes as exactly these (never elevation,
-        // never frozen across submits: a re-run resolves again, so a revoked role fails closed next time).
-        val ownRoles = roleResolver.resolve(principal)
-        if (ownRoles.isEmpty()) {
-            return@post call.respond(HttpStatusCode.Forbidden, ApiError("common.forbidden"))
-        }
-        // Resolve the datasource from the held session (owner-scoped) — a leaked session id can't target
-        // another principal's connection.
-        val dsName = runExecService.sessionDatasourceName(sessionId, principal)
-            ?: return@post call.respond(HttpStatusCode.NotFound, ApiError("common.not_found", mapOf("resource" to "editor session")))
-        val ds = datasourceStore.getByName(dsName)
-            ?: return@post call.respond(HttpStatusCode.NotFound, ApiError("common.not_found", mapOf("resource" to "datasource")))
-        val store = queryResultStore
-            ?: return@post call.respond(HttpStatusCode.ServiceUnavailable, ApiError("approval.result_storage_not_configured"))
-        // Self-approve on the editor channel: must clear task.request AND task.approve.
-        if (!autoApproveTask(principal, ownRoles, ds, call.httpAuthzContext(config), authz, Channel.EDITOR)) {
-            return@post call.respond(HttpStatusCode.Forbidden, ApiError("common.forbidden"))
-        }
-
-        // Split server-side, like the workflow: one task, one child per statement.
-        val splitConfig = ds.splitEngineConfig()
-            ?: return@post call.respond(HttpStatusCode.BadRequest, ApiError("approval.unsplittable_sql"))
-        val statements = splitStatements(sql, splitConfig)
-            ?: return@post call.respond(HttpStatusCode.BadRequest, ApiError("approval.unsplittable_sql"))
-        val task = accessStore.createEditorTask(principal, ds.id, statements, ownRoles.toList(), approver = principal)
-        val childId = accessStore.editorChildId(task.id) ?: -1L
-        // Same single-execution claim as /execute, atomic so a cancel can't slip into an EXECUTING-but-no-
-        // RUNNING-child gap: APPROVED → EXECUTING and the child NULL → RUNNING commit in one transaction.
-        if (store.claimAndStartRun(task.id, principal) { c -> accessStore.claimExecution(task.id, c) } == null) {
-            return@post call.respond(HttpStatusCode.Conflict, ApiError("approval.already_executed"))
-        }
-
-        val requesterIp = call.httpRequesterIp(config)
-        val maxRows = req.maxRows
-        appScope.launch {
-            // A policy DENY carries its reason and audit decision id onto the failed child, so the polling
-            // tab can offer an approval request built from that decision instead of showing a bare error.
-            var denyReason: String? = null
-            var denyDecisionId: Long? = null
-            // The target-DB error behind a failure (both forms), stored so the FAILED view releases one per viewer.
-            var diagnostic: RunError? = null
-            val failureCode = try {
-                var batchFailure: String? = null
-                // One mutex hold for the batch, so a concurrent submit cannot land inside its transaction.
-                // Decides on the EDITOR channel under the caller's own roles and saves each result.
-                runExecService.runBatchOnSession(
-                    sessionId, principal, statementCount = statements.size, maxRows = maxRows,
-                    requesterIp = requesterIp,
-                    taskId = task.id,
-                    preflight = { store.meta(task.id)?.status == "RUNNING" },
-                    exchangeTimeoutMs = config.queryExchangeTimeoutMs,
-                    // Statement 0 is RUNNING from the claim; a cancel between statements leaves none
-                    // pending, so the batch stops here.
-                    statementAt = { ordinal ->
-                        if (ordinal == 0) statements[0] else store.startNextRun(task.id, principal)?.sql
-                    },
-                    onStatement = { ordinal, response ->
-                    if (response.decision == EnfAction.DENY) {
-                        denyReason = response.denyReason
-                        denyDecisionId = response.decisionId
-                        // Reuse the already-translated approval.* result codes (en/ko errors.json) — the messages
-                        // ("denied at execution time" / "execution failed") are channel-agnostic, so the web
-                        // localizes the polled code with no editor-specific catalog entries.
-                        batchFailure = "approval.execute_denied"
-                        false
-                    } else {
-                    val result = DecryptedResult(response.columns, response.rows, response.rowsAffected, response.resultFingerprint, response.truncatedByCap)
-                    // The parent flips to EXECUTED only on the LAST statement. The per-statement Decide
-                    // already wrote the real audit decision, so no task-level row is added here.
-                    val last = ordinal == statements.lastIndex
-                    val completed = store.completeRun(task.id, result, QueryResultStore.RESULT_RETENTION_SEC, response.decisionId) { conn, _ ->
-                        if (last && !accessStore.markExecuted(task.id, conn)) {
-                            throw IllegalStateException("editor task ${task.id} left EXECUTING before completion")
-                        }
-                    }
-                    if (completed == null) {
-                        batchFailure = "approval.query_failed"
-                        false
-                    } else {
-                        true
-                    }
-                    }
-                    },
-                )
-                batchFailure
-            } catch (_: RunCanceledBeforeStartException) {
-                null
-            } catch (_: NoProxyAttachedException) {
-                "query.no_proxy_attached"
-            } catch (_: ProxyStreamWedgedException) {
-                "query.proxy_stream_wedged"
-            } catch (_: ProxyRunTimeoutException) {
-                "query.proxy_timeout"
-            } catch (e: TargetDbRunException) {
-                // The target DB's own error for the statement that failed, in the form the run's decision
-                // chose. Stored encrypted on the failed child and re-gated per viewer, so it must survive
-                // the batch walk rather than collapsing into a bare failure code.
-                diagnostic = e.toDiagnostic()
-                "approval.query_failed"
-            } catch (_: ProxyRunException) {
-                "approval.query_failed"
-            } catch (t: Throwable) {
-                call.application.environment.log.error("editor task execution failed task=${task.id}", t)
-                "approval.query_failed"
-            }
-            if (failureCode != null) {
-                // Child FAILED + parent FAILED in ONE transaction (mirrors the success path's single commit).
-                runCatching {
-                    store.failRun(task.id, failureCode, denyReason, denyDecisionId, diagnostic = diagnostic) { conn, _ ->
-                        accessStore.markFailed(task.id, conn)
-                    }
-                }
-                    .onFailure { call.application.environment.log.error("editor task failure transition failed task=${task.id}", it) }
-            }
-            // Push the ACTUAL terminal state (EXECUTED / FAILED / or CANCELLED if a cancel raced) to the owner's
-            // SSE stream so the tab updates at once; best-effort, the tab also polls (see TaskCompletionHub).
-            accessStore.getRequest(task.id)?.status?.let { taskCompletionHub?.publish(principal, TaskEvent(task.id, it)) }
-        }
-        call.respond(
-            HttpStatusCode.Accepted,
-            EditorSubmitResponse(taskId = task.id, childId = childId, statements = statements),
-        )
     }
 
-    // Poll: task status + child metadata. Owner-scoped to the caller's own EDITOR tasks (task.read/own);
-    // 404 for a non-owner / non-EDITOR id, so it's not an existence oracle. Rows stay behind /result.
     get("/api/editor/tasks/{taskId}") {
         val principal = call.requireApi() ?: return@get
         val taskId = call.parameters["taskId"]?.toLongOrNull()
             ?: return@get call.respond(HttpStatusCode.BadRequest, ApiError("common.bad_id"))
-        val task = accessStore.getRequest(taskId)
-        if (task == null || task.kind != "QUERY" || task.creatorKind != "EDITOR" || task.principal != principal) {
-            return@get call.respond(HttpStatusCode.NotFound, ApiError("common.not_found", mapOf("resource" to "editor task")))
+        try {
+            call.respond(service.status(principal, call.httpRequesterIp(config), taskId))
+        } catch (e: TaskServiceException) {
+            call.respondServiceError(e)
         }
-        // task.read gates the metadata (status, row count, column names, error code, timestamps) — the owner
-        // guard above is not a substitute: a Cedar forbid (e.g. task.read denied from an untrusted zone) must
-        // still override the self-read permit.
-        val mayRead = authz.authorizeWithContext(
-            principal, AuthzAction.TASK_READ,
-            task.toApprovalResource(),
-            call.httpAuthzContext(config), task.datasourceName,
-            task.datasourceId?.let(datasourceStore::getIncludingDeleted)?.tags.orEmpty(),
-        )
-        if (mayRead is AuthzDecision.Deny) {
-            return@get call.respond(HttpStatusCode.NotFound, ApiError("common.not_found", mapOf("resource" to "editor task")))
-        }
-        call.respond(
-            EditorTaskStatus(
-                task.id, task.status, queryResultStore?.meta(taskId),
-                statements = queryResultStore?.statements(taskId).orEmpty(),
-            ),
-        )
     }
 
     post("/api/editor/tasks/{taskId}/cancel") {
         val principal = call.requireApi() ?: return@post
         val taskId = call.parameters["taskId"]?.toLongOrNull()
             ?: return@post call.respond(HttpStatusCode.BadRequest, ApiError("common.bad_id"))
-        val task = accessStore.getRequest(taskId)
-        if (task == null || task.kind != "QUERY" || task.creatorKind != "EDITOR" || task.principal != principal) {
-            return@post call.respond(HttpStatusCode.NotFound, ApiError("common.not_found", mapOf("resource" to "editor task")))
+        try {
+            call.respond(service.cancel(principal, call.httpRequesterIp(config), taskId))
+        } catch (e: TaskServiceException) {
+            call.respondServiceError(e)
         }
-        val mayCancel = authz.authorizeWithContext(
-            principal, AuthzAction.TASK_CANCEL,
-            task.toApprovalResource(),
-            call.httpAuthzContext(config), task.datasourceName,
-            task.datasourceId?.let(datasourceStore::getIncludingDeleted)?.tags.orEmpty(),
-        )
-        if (mayCancel is AuthzDecision.Deny) {
-            return@post call.respond(HttpStatusCode.Forbidden, ApiError("approval.cancel_forbidden"))
-        }
-        if (task.status != "EXECUTING") {
-            return@post call.respond(
-                EditorTaskStatus(
-                    task.id, task.status, queryResultStore?.meta(taskId),
-                    statements = queryResultStore?.statements(taskId).orEmpty(),
-                ),
-            )
-        }
-        val store = queryResultStore
-            ?: return@post call.respond(HttpStatusCode.ServiceUnavailable, ApiError("approval.result_storage_not_configured"))
-        val cancelled = store.cancelRun(taskId) { conn, _ ->
-            if (!accessStore.markCancelled(taskId, conn)) {
-                throw IllegalStateException("editor task $taskId left EXECUTING before cancellation")
-            }
-        }
-        if (cancelled != null) {
-            runExecService.cancelActiveRun(taskId)
-            // The run coroutine also pushes its terminal state, but a cancel of a stuck/slow run may win the
-            // CAS well before the coroutine unwinds — push CANCELLED now so the owner's tab reflects it at once.
-            taskCompletionHub?.publish(principal, TaskEvent(taskId, "CANCELLED"))
-        }
-        val updated = accessStore.getRequest(taskId)
-            ?: return@post call.respond(HttpStatusCode.NotFound, ApiError("common.not_found", mapOf("resource" to "editor task")))
-        call.respond(
-            EditorTaskStatus(
-                updated.id, updated.status, store.meta(taskId),
-                statements = store.statements(taskId),
-            ),
-        )
     }
 
-    // Rows: task.assume gates the viewer (no authDebug bypass — data confidentiality), then the stored result
-    // is re-decided live under the task's execute-as roles on the EDITOR channel — mirrors the approval view.
+    // ?statement=<ordinal> selects one statement of a batch; absent takes the active one.
     get("/api/editor/tasks/{taskId}/result") {
         val principal = call.requireApi() ?: return@get
         val taskId = call.parameters["taskId"]?.toLongOrNull()
             ?: return@get call.respond(HttpStatusCode.BadRequest, ApiError("common.bad_id"))
-        val task = accessStore.getRequest(taskId)
-        // Owner-scoped (frozen contract): an editor result is readable ONLY by its own submitter. The
-        // task.assume check below is defense-in-depth (the owner passes it via the task.assume-parties policy);
-        // without this principal guard a task.assume grantee (e.g. system:auditor via V40) could read another
-        // user's editor rows, which the contract forbids. A non-owner / non-EDITOR id is an opaque 404.
-        if (task == null || task.kind != "QUERY" || task.creatorKind != "EDITOR" || task.principal != principal) {
-            return@get call.respond(HttpStatusCode.NotFound, ApiError("common.not_found", mapOf("resource" to "editor task")))
-        }
-        // Deprovisioning gate before result lookup (defense in depth; the live decide repeats it). Fail-closed.
-        if (userGroupStore.isDeactivated(principal)) {
-            return@get call.respond(HttpStatusCode.NotFound, ApiError("common.not_found", mapOf("resource" to "editor task")))
-        }
-        // One read captures ciphertext + meta; decrypt is lazy (only after authz passes → an unauthorized
-        // viewer never triggers a decrypt, and a concurrent re-run can't swap the row between check + decrypt).
-        // ?statement=<ordinal> selects one statement of a batch; absent takes the active one.
         val ordinalParam = call.request.queryParameters["statement"]
         val ordinal = if (ordinalParam == null) null else {
             ordinalParam.toIntOrNull()?.takeIf { it >= 0 }
                 ?: return@get call.respond(HttpStatusCode.BadRequest, ApiError("common.bad_id"))
         }
-        val access = queryResultStore?.accessFor(taskId, ordinal)
-            ?: return@get call.respond(HttpStatusCode.NotFound, ApiError("common.not_found", mapOf("resource" to "editor task")))
-        val mayAssume = authz.authorizeWithContext(
-            principal, AuthzAction.TASK_ASSUME,
-            task.toApprovalResource(),
-            call.httpAuthzContext(config, Channel.EDITOR), task.datasourceName,
-            task.datasourceId?.let(datasourceStore::getIncludingDeleted)?.tags.orEmpty(),
-        )
-        if (mayAssume is AuthzDecision.Deny) {
-            return@get call.respond(HttpStatusCode.NotFound, ApiError("common.not_found", mapOf("resource" to "editor task")))
-        }
-        val meta = access.meta
-        // One re-decision gates both the FAILED diagnostic and the DONE rows. Not audited here — the
-        // per-statement Decide already recorded it.
-        // No AuditStore: the rows were relayed and charged at execution, so a spent rate must not gate the view.
-        val ctx = viewerDecision(
-            principal, task, access.sql, call.httpAuthzContext(config),
-            datasourceStore, policyStore, accessStore, userGroupStore, roleResolver, authz,
-            systemClassification, Channel.EDITOR,
-        )
-        if (meta.status == "FAILED" && access.errorDetail != null) {
-            return@get call.respond(
-                QueryResultView(meta, emptyList(), emptyList(), errorDetail = failedDiagnosticForViewer(ctx, access.errorDetail)),
-            )
-        }
-        if (meta.status != "DONE") {
-            return@get call.respond(HttpStatusCode.Conflict, ApiError("approval.result_not_ready"))
-        }
-        val decrypted = access.decrypted
-            ?: return@get call.respond(HttpStatusCode.Gone, ApiError("approval.result_expired"))
-        val viewDecision =
-            if (ctx == null) ResultViewDecision.Denied("stored result has no live decision to re-mask under")
-            else decideResultView(ctx, decrypted)
-        when (viewDecision) {
-            is ResultViewDecision.Denied -> {
-                call.application.environment.log.warn(
-                    "editor result view denied task={} viewer={} reason={}", taskId, principal, viewDecision.reason,
-                )
-                call.respond(HttpStatusCode.Forbidden, ApiError("approval.result_view_denied"))
-            }
-            is ResultViewDecision.Allowed ->
-                call.respond(
-                    QueryResultView(
-                        meta, viewDecision.columns, viewDecision.rows,
-                        // MASK iff this view actually masked something. The editor labels its result from
-                        // this; deriving it client-side from "are there rows" is what let a masked result
-                        // display as a clean ALLOW.
-                        decision = if (viewDecision.maskedColumns.isEmpty()) Decision.ALLOW else Decision.MASK,
-                        maskedColumns = viewDecision.maskedColumns,
-                        truncatedAt = viewDecision.truncatedAt,
-                        truncatedByCap = decrypted.truncatedByCap,
-                    ),
-                )
+        try {
+            call.respond(service.result(principal, call.httpRequesterIp(config), taskId, ordinal))
+        } catch (e: TaskServiceException) {
+            call.respondServiceError(e)
         }
     }
 
-    // Delete-on-close: drop the tab's saved rows + its task row (CASCADE). Owner-scoped + EDITOR-only, so a
-    // leaked id can't delete another principal's task; a non-owner / unknown id is a silent, idempotent 204.
+    // Delete-on-close: idempotent 204, so a leaked id is not an existence oracle.
     delete("/api/editor/tasks/{taskId}") {
         val principal = call.requireApi() ?: return@delete
         val taskId = call.parameters["taskId"]?.toLongOrNull()
             ?: return@delete call.respond(HttpStatusCode.BadRequest, ApiError("common.bad_id"))
-        val task = accessStore.getRequest(taskId)
-        if (task != null && task.kind == "QUERY" && task.creatorKind == "EDITOR" && task.principal == principal) {
-            if (task.status == "EXECUTING") runExecService.cancelActiveRun(taskId)
-            queryResultStore?.deleteResultsForTask(taskId)
-            accessStore.deleteEditorTask(taskId, principal)
-        }
+        service.delete(principal, taskId)
         call.respond(HttpStatusCode.NoContent)
     }
 

@@ -30,12 +30,12 @@ class AuditStore(private val dataSource: DataSource) {
     private val stringList = ListSerializer(String.serializer())
 
     /**
-     * This principal's relayed volume over each of [windows], summed from the completion events every relay
-     * and release writes, in ONE scan bounded by the widest window (`audit_event_completion_principal_ts`).
-     * A rate reset (docs/result-caps.md) is a marker, not a deletion: rows before the principal's last
-     * reset are not counted, whatever the window.
+     * This principal's relayed volume from [datasource] over each of [windows], summed from the completion
+     * events every relay and release writes, in ONE scan bounded by the widest window
+     * (`audit_event_completion_principal_datasource_ts`). A rate reset (docs/result-caps.md) is a marker, not
+     * a deletion: rows before the principal's last reset are not counted, whatever the window.
      */
-    fun relayedVolume(principal: String, windows: Collection<Duration>, now: Instant): Map<Duration, RelayedVolume> {
+    fun relayedVolume(principal: String, datasource: String, windows: Collection<Duration>, now: Instant): Map<Duration, RelayedVolume> {
         val distinct = windows.toSortedSet()
         if (distinct.isEmpty()) return emptyMap()
         val filters = distinct.joinToString(",\n") {
@@ -44,7 +44,7 @@ class AuditStore(private val dataSource: DataSource) {
         val sql = """
             SELECT $filters
             FROM audit_event
-            WHERE kind = 'completion' AND principal = ? AND ts >= ?
+            WHERE kind = 'completion' AND principal = ? AND datasource = ? AND ts >= ?
               AND ts >= COALESCE((SELECT max(reset_at) FROM result_rate_reset WHERE principal = ?), '-infinity'::timestamptz)
         """
         return dataSource.connection.use { c ->
@@ -56,6 +56,7 @@ class AuditStore(private val dataSource: DataSource) {
                     ps.setObject(i++, since)
                 }
                 ps.setString(i++, principal)
+                ps.setString(i++, datasource)
                 ps.setObject(i++, OffsetDateTime.ofInstant(now.minus(distinct.last()), ZoneOffset.UTC))
                 ps.setString(i, principal)
                 ps.executeQuery().use { rs ->

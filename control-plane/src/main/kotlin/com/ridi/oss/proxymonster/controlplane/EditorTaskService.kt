@@ -237,7 +237,7 @@ class EditorTaskService(
      * The saved rows of statement [ordinal] (null = the active one), re-decided live under the task's roles on
      * the EDITOR channel. Owner-only: task.assume is defense in depth, since an assume grantee is not the owner.
      */
-    fun result(principal: String, requesterIp: String?, taskId: Long, ordinal: Int?): QueryResultView {
+    fun result(principal: String, requesterIp: String?, taskId: Long, ordinal: Int?, page: ResultPage? = null): QueryResultView {
         val task = ownedTask(principal, taskId)
         // Deprovisioning gate before result lookup (defense in depth; the live decide repeats it).
         if (userGroupStore.isDeactivated(principal)) throw serviceNotFound("editor task")
@@ -269,15 +269,18 @@ class EditorTaskService(
                 log.warn("editor result view denied task={} viewer={} reason={}", taskId, principal, viewDecision.reason)
                 throw TaskServiceException(HttpStatusCode.Forbidden, ApiError("approval.result_view_denied"))
             }
-            is ResultViewDecision.Allowed ->
+            is ResultViewDecision.Allowed -> {
+                val (released, nextOffset) = viewDecision.page(page)
                 return QueryResultView(
-                    meta, viewDecision.columns, viewDecision.rows,
+                    meta, released.columns, released.rows,
                     // MASK iff this view actually masked something; the editor labels its result from this.
-                    decision = if (viewDecision.maskedColumns.isEmpty()) Decision.ALLOW else Decision.MASK,
-                    maskedColumns = viewDecision.maskedColumns,
-                    truncatedAt = viewDecision.truncatedAt,
+                    decision = if (released.maskedColumns.isEmpty()) Decision.ALLOW else Decision.MASK,
+                    maskedColumns = released.maskedColumns,
+                    truncatedAt = released.truncatedAt,
                     truncatedByCap = decrypted.truncatedByCap,
+                    nextOffset = nextOffset,
                 )
+            }
         }
     }
 

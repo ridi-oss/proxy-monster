@@ -146,6 +146,8 @@ fun discoverRoles(
     // The EXECUTION's cap, not this view's, ended the stored rows. Independent of [truncatedAt]: a view can
     // narrow an already-capped result further, and either alone means the viewer is seeing a prefix.
     val truncatedByCap: Boolean = false,
+    /** The next page's offset when this view is one page of the release; null on the last page or unpaged. */
+    val nextOffset: Int? = null,
 )
 
 /** Submit acknowledgement. Completion is observed by polling the task detail/result endpoints. */

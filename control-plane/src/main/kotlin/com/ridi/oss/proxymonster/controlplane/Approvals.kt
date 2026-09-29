@@ -9,16 +9,12 @@ import com.ridi.oss.proxymonster.controlplane.authz.AuthzResource
 import com.ridi.oss.proxymonster.controlplane.authz.authorizeDatasourceAction
 import com.ridi.oss.proxymonster.controlplane.authz.authorizeWithContext
 import com.ridi.oss.proxymonster.controlplane.authz.resolveContextTags
-import com.ridi.oss.proxymonster.controlplane.management.ManagementAuditRecorder
-import com.ridi.oss.proxymonster.controlplane.notify.NotificationEvent
 import com.ridi.oss.proxymonster.controlplane.notify.NotificationService
 import com.ridi.oss.proxymonster.grpc.EnfAction
 import com.ridi.oss.proxymonster.grpc.RunError
 import com.ridi.oss.proxymonster.probe.Masking
 import com.ridi.oss.proxymonster.probe.bindMasks
-import com.ridi.oss.proxymonster.probe.splitStatements
 import io.ktor.http.HttpStatusCode
-import io.ktor.server.application.ApplicationCall
 import io.ktor.server.request.receive
 import io.ktor.server.response.respond
 import io.ktor.server.routing.Route
@@ -26,7 +22,6 @@ import io.ktor.server.routing.get
 import io.ktor.server.routing.post
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.launch
 import kotlinx.serialization.Serializable
 
 // ---- DTOs ---------------------------------------------------------------------------------
@@ -58,7 +53,7 @@ data class DiscoverRolesRequest(val datasourceId: Long, val sql: String)
  * listed, fetched, decided, executed, or viewed through /api/approvals. Every id-addressed approval
  * route guards on this; the list/inbox feeds filter the same creator_kind in [AccessStore.listQueryRequests].
  */
-private val AccessRequest.isWorkflowApproval: Boolean
+internal val AccessRequest.isWorkflowApproval: Boolean
     get() = kind == "QUERY" && creatorKind == "WORKFLOW"
 
 /**
@@ -405,583 +400,109 @@ fun Route.approvalRoutes(
     // Queues out-of-band notifications (docs/notifications.md). Null = the layer is not configured and the
     // workflow behaves exactly as before.
     notifications: NotificationService? = null,
+    service: ApprovalService = ApprovalService(
+        config, accessStore, auditStore, datasourceStore, policyStore, userGroupStore, queryResultStore, roleResolver,
+        authz, runExecService, appScope, systemClassification, taskCompletionHub, notifications,
+    ),
 ) {
-    // Query-approval DECISIONS (approve/reject) record a kind="admin" management event; the result
-    // lifecycle (execute/cancel/view) uses e3Record's separate approval_lifecycle path.
-    val recorder = ManagementAuditRecorder(auditStore)
-
-    // Whether the caller may open a query-approval request against this datasource (task.request on the
-    // Datasource). The shipped global permit keeps this open by default; an operator can forbid it per
-    // datasource.
-    fun mayRequest(call: ApplicationCall, principal: String, ds: Datasource): Boolean {
-        val roles = roleResolver.resolve(principal)
-        val raw = call.httpAuthzContext(config)
-        val tags = authz.resolveContextTags(principal, roles, ds.name, raw, ds.tags)
-        val decision = authz.authorizeDatasourceAction(
-            principal, roles, AuthzAction.TASK_REQUEST, ds.name, raw.copy(tags = tags), ds.tags,
-        )
-        return decision !is AuthzDecision.Deny
-    }
-
-    // The single authorization for a task action on a query-approval request: Cedar decides
-    // task.approve (approve/reject/execute under R) or task.read (metadata) against the Request —
-    // scoped to its role/datasource, with
-    // requester != approver enforced by the shipped no-self-approval forbid. Approver eligibility is a
-    // Cedar policy, never the datasource's approver GROUP.
-    //
-    // The console is a real surface, so it names itself: WORKFLOW_VIEWER, the same channel a result view
-    // runs on. Deciding and viewing are both the unelevated human side of a task and are scoped together.
-    // It must never be `editor` or `wire` — those two carry [system:task-editor-self-approve] /
-    // [system:task-wire-self-approve], which permit self-approval because a machine task runs under the
-    // caller's OWN roles. A human approval elevates to R, so it stays under the no-self-approval forbid.
-    fun mayDecide(call: ApplicationCall, principal: String, action: AuthzAction, req: AccessRequest): Boolean {
-        val decision = authz.authorizeWithContext(
-            principal,
-            action,
-            req.toApprovalResource(),
-            call.httpAuthzContext(config, Channel.WORKFLOW_VIEWER),
-            req.datasourceName,
-            req.datasourceId?.let(datasourceStore::getIncludingDeleted)?.tags.orEmpty(),
-        )
-        return decision !is AuthzDecision.Deny
-    }
-
-    // Result rows require Cedar authority to assume the task's R. No authDebug bypass: this is data
-    // confidentiality, enforced in development too. Same channel as [mayDecide] and as the per-column
-    // re-decision the released rows go through, so one policy scopes the whole console surface.
-    fun mayReadResult(call: ApplicationCall, principal: String, req: AccessRequest): Boolean {
-        val decision = authz.authorizeWithContext(
-            principal,
-            AuthzAction.TASK_ASSUME,
-            req.toApprovalResource(),
-            call.httpAuthzContext(config, Channel.WORKFLOW_VIEWER),
-            req.datasourceName,
-            req.datasourceId?.let(datasourceStore::getIncludingDeleted)?.tags.orEmpty(),
-        )
-        return decision !is AuthzDecision.Deny
-    }
-
-    fun trimmedTitle(input: String?): String? = input?.trim()?.takeIf { it.isNotEmpty() }
-
-    // Durable audit record for a task result event (execute/view), recorded in audit_decision. Execution
-    // writes it in the same transaction as DONE; a view writes it before responding. audit_decision is exposed via the
-    // shared /api/decisions feed, so this record deliberately carries NO result-derived data (no
-    // row_count, no requester name) — only the event, the actor (record.principal = whoever acted:
-    // the executor on execute, the requester/approver/assumer on view), and the approval id. The
-    // requester↔approval linkage is reconstructable from access_request by an authorized auditor via the
-    // id, but is not broadcast inline (result-access confidentiality).
-    fun e3Record(principal: String, req: AccessRequest, event: String, channel: Channel? = null): AuditEvent {
-        // The retained name from the (unfiltered) request join, so a datasource soft-deleted after the task
-        // ran still names itself in the audit trail rather than degrading to "?".
-        val dsName = req.datasourceName ?: "?"
-        return AuditEvent(
-            principal = principal, datasource = dsName,
-            statement = "approval #${req.id} $event",
-            decision = Decision.ALLOW, detail = "APPROVER_EXEC $event",
-            // Stamp the channel on execution and live-view decisions.
-            channel = channel?.contextValue,
-            kind = "approval_lifecycle",
-        )
-    }
-
     post("/api/approvals") {
         val principal = call.requireApi() ?: return@post
         val input = call.receive<CreateApprovalInput>()
-        if (input.reason.isBlank()) return@post call.respond(HttpStatusCode.BadRequest, ApiError("common.field_required", mapOf("fields" to "reason")))
-
-        val hasSource = input.sourceDecisionId != null
-        val hasProactive = input.datasourceId != null || input.sql != null
-        if (hasSource && hasProactive) {
-            return@post call.respond(HttpStatusCode.BadRequest, ApiError("approval.exactly_one_source_required"))
-        }
-        if (!hasSource && !hasProactive) {
-            return@post call.respond(HttpStatusCode.BadRequest, ApiError("approval.exactly_one_source_required"))
-        }
-        // A query approval always runs under an elevation role R (execute-under-R); the requester picks it via
-        // role discovery. A NEW request must carry R — a query no role can satisfy has nothing to run under R,
-        // and there is no requester-run mode. The `input.roleId == null` guard below is checked AFTER each
-        // branch's field validation so an incomplete form still names its missing field first. (A row with
-        // no R has no {R} to re-decide under, so /result fails it closed.)
-
-        if (hasSource) {
-            val sourceDecisionId = input.sourceDecisionId!!
-            val decision = auditStore.get(sourceDecisionId)
-            when (validateApprovalSource(decision, principal)) {
-                SourceValidation.OK -> Unit
-                SourceValidation.NOT_FOUND -> return@post call.respond(HttpStatusCode.NotFound, ApiError("common.not_found", mapOf("resource" to "decision")))
-                SourceValidation.NOT_DENY -> return@post call.respond(HttpStatusCode.BadRequest, ApiError("approval.only_denied_queries"))
-            }
-            val source = decision!!
-
-            if (accessStore.pendingQueryRequestExists(sourceDecisionId)) {
-                return@post call.respond(HttpStatusCode.Conflict, ApiError("approval.pending_request_exists"))
-            }
-
-            val ds = datasourceStore.list().firstOrNull { it.name == source.datasource }
-                ?: return@post call.respond(HttpStatusCode.Conflict, ApiError("common.not_found", mapOf("resource" to "datasource")))
-            val datasourceId = ds.id
-            if (!mayRequest(call, principal, ds)) {
-                return@post call.respond(HttpStatusCode.Forbidden, ApiError("common.forbidden"))
-            }
-            if (input.roleId == null) return@post call.respond(HttpStatusCode.BadRequest, ApiError("approval.role_required"))
-
-            val request = try {
-                accessStore.createQueryRequest(
-                    principal = principal,
-                    datasourceId = datasourceId,
-                    // The source decision authorized one statement, so there is no batch to split.
-                    statements = listOf(source.statement),
-                    denyReason = source.detail,
-                    sourceDecisionId = sourceDecisionId,
-                    reason = input.reason.trim(),
-                    title = trimmedTitle(input.title),
-                    evaluatedDecision = "DENY",
-                    roleId = input.roleId,
-                    requestedDurationSec = input.requestedDurationSec,
-                    actor = call.auditActor(config),
-                    recorder = recorder,
-                    // A from-denied request copies the statement of a decision that already ran; nothing
-                    // re-analyzes it here, so it is left NULL and the delivery side withholds the text.
-                    // Guessing "safe" for an unanalyzed statement is the one mistake that leaks a value.
-                    carriesProtectedLiteral = null,
-                    onCreated = { c, taskId, roleName -> notifications?.emitRequested(c, taskId, principal, ds, roleName) },
-                )
-            } catch (_: DuplicatePendingQueryRequestException) {
-                return@post call.respond(HttpStatusCode.Conflict, ApiError("approval.pending_request_exists"))
-            }
-            notifications?.wake()
-            call.respond(HttpStatusCode.Created, CreateApprovalResponse(request, wouldAllow = false))
-            return@post
-        }
-
-        validateProactiveCompose(input.datasourceId, input.sql, input.title, input.reason)?.let {
-            return@post call.fieldRequired(it)
-        }
-        val ds = datasourceStore.get(input.datasourceId!!)
-            ?: return@post call.respond(HttpStatusCode.NotFound, ApiError("common.not_found", mapOf("resource" to "datasource")))
-        val sql = input.sql!!
-        if (!mayRequest(call, principal, ds)) {
-            return@post call.respond(HttpStatusCode.Forbidden, ApiError("common.forbidden"))
-        }
-        if (input.roleId == null) return@post call.respond(HttpStatusCode.BadRequest, ApiError("approval.role_required"))
-
-        // Split server-side, so the stored boundary is the engine's rather than a client's guess.
-        val splitConfig = ds.splitEngineConfig()
-            ?: return@post call.respond(HttpStatusCode.BadRequest, ApiError("approval.unsplittable_sql"))
-        val statements = splitStatements(sql, splitConfig)
-            ?: return@post call.respond(HttpStatusCode.BadRequest, ApiError("approval.unsplittable_sql"))
-
-        // Analysis only: nothing executes and no audit row is written. Each statement previews on its own.
-        val catalog = datasourceStore.catalog(ds.id)
-        val composeContext = call.httpAuthzContext(config)
-        val decisions = statements.map { statement ->
-            decideQuery(
-                principal = principal,
-                ds = ds,
-                sql = statement,
-                channel = Channel.EDITOR,
-                catalog = catalog,
-                policyStore = policyStore,
-                accessStore = accessStore,
-                userGroupStore = userGroupStore,
-                roleResolver = roleResolver,
-                authz = authz, auditStore = auditStore,
-                // This compose preview IS an HTTP request with a datasource in scope, so it carries the
-                // server-attested requester_ip (decideQuery overlays the EDITOR channel + derives tags over it). A
-                // preview that dropped it would report a DIFFERENT verdict than the real editor execution when a
-                // policy conditions on requester_ip / a requester_ip-derived tag.
-                context = composeContext,
-                // Classify system tables + the dangerous-function gate here too, so the compose preview's verdict
-                // matches what execution will do.
-                systemClassification = systemClassification,
+        try {
+            call.respond(
+                HttpStatusCode.Created,
+                service.create(principal, call.httpRequesterIp(config), call.auditActor(config), input),
             )
+        } catch (e: TaskServiceException) {
+            call.respondServiceError(e)
         }
-        // Worst statement wins (DENY > MASK > ALLOW): previewing ALLOW would promise a run that cannot
-        // finish, or cleartext the run will not deliver.
-        val decision = decisions.firstOrNull { it.action == EnfAction.DENY }
-            ?: decisions.firstOrNull { it.masks.isNotEmpty() }
-            ?: decisions.first()
-        val request = accessStore.createQueryRequest(
-            principal = principal,
-            datasourceId = ds.id,
-            statements = statements,
-            denyReason = if (decision.action == EnfAction.DENY) (decision.denyReason ?: decision.detail) else null,
-            sourceDecisionId = null,
-            reason = input.reason.trim(),
-            title = input.title!!.trim(),
-            evaluatedDecision = decision.action.name,
-            roleId = input.roleId,
-            requestedDurationSec = input.requestedDurationSec,
-            actor = call.auditActor(config),
-            recorder = recorder,
-            // The disclosure hint runs on its OWN path — reader-neutral, independent of the authorization
-            // decision above — because whether the TEXT carries a protected value has nothing to do with
-            // whether THIS requester could run it. null (unanalyzable) and true both withhold; only a proven
-            // clean statement (empty) discloses; one carrying a literal withholds the whole batch, whose
-            // text is delivered as one body. A catalog-changing statement (a DROP) can change what a later
-            // one binds to, so a clean verdict after it is unproven — and AUTO mode Slacks the text on a
-            // false clean. Any such statement makes the hint unknown.
-            carriesProtectedLiteral = if (decisions.any { it.catalogChanging }) {
-                null
-            } else {
-                statements
-                    .map { protectedPredicateLiterals(ds, it, catalog)?.isNotEmpty() }
-                    .reduce { a, b -> if (a == null || b == null) null else a || b }
-            },
-            onCreated = { c, taskId, roleName -> notifications?.emitRequested(c, taskId, principal, ds, roleName) },
-        )
-        notifications?.wake()
-        call.respond(HttpStatusCode.Created, CreateApprovalResponse(request, wouldAllow = decision.action == EnfAction.ALLOW))
     }
 
-    // APPROVAL role discovery (approval-workflow.md — "the requester picks R"): evaluate the statement under
-    // each role and list every one it runs under, held or not. A dry-run — no audit row is written.
     post("/api/approvals/discover-roles") {
         val principal = call.requireApi() ?: return@post
         val input = call.receive<DiscoverRolesRequest>()
-        val ds = datasourceStore.get(input.datasourceId)
-            ?: return@post call.respond(HttpStatusCode.NotFound, ApiError("common.not_found", mapOf("resource" to "datasource")))
-        // Resolve requester_ip ONCE here (the closure runs decideQuery per candidate role).
-        val discoverContext = call.httpAuthzContext(config)
-        // Candidates preview on WORKFLOW_EXECUTOR, the channel an approved query actually runs on. A grant
-        // scoped to that channel — the shipped -259 PII unmask — is invisible from any other, so previewing
-        // candidates elsewhere hides roles that would in fact work.
-        val splitConfig = ds.splitEngineConfig()
-            ?: return@post call.respond(HttpStatusCode.BadRequest, ApiError("approval.unsplittable_sql"))
-        val statements = splitStatements(input.sql, splitConfig)
-            ?: return@post call.respond(HttpStatusCode.BadRequest, ApiError("approval.unsplittable_sql"))
-        val catalog = datasourceStore.catalog(ds.id)
-        val response = discoverRoles(policyStore.listRoles(), statements.size) { index, roles, channel ->
-            decideQuery(
-                principal = principal, ds = ds, sql = statements[index], channel = channel,
-                catalog = catalog, policyStore = policyStore, accessStore = accessStore,
-                userGroupStore = userGroupStore, roleResolver = roleResolver, authz = authz, auditStore = auditStore,
-                providedRoles = roles, context = discoverContext, systemClassification = systemClassification,
-            )
+        try {
+            call.respond(service.discoverRoles(principal, call.httpRequesterIp(config), input.datasourceId, input.sql))
+        } catch (e: TaskServiceException) {
+            call.respondServiceError(e)
         }
-        call.respond(response)
     }
 
     get("/api/approvals") {
         val principal = call.requireApi() ?: return@get
-        call.respond(accessStore.listQueryRequests(status = call.request.queryParameters["status"], principal = principal))
+        call.respond(service.listOwn(principal, call.request.queryParameters["status"]))
     }
 
     get("/api/approvals/inbox") {
         val principal = call.requireApi() ?: return@get
-        // Forward filter: every PENDING request the caller may approve (Cedar task.approve), not a
-        // group-membership join.
-        val requests = accessStore.listQueryRequests("PENDING", null).filter { mayDecide(call, principal, AuthzAction.TASK_APPROVE, it) }
-        call.respond(requests)
+        call.respond(service.inbox(principal, call.httpRequesterIp(config)))
     }
 
     get("/api/approvals/{id}") {
         val principal = call.requireApi() ?: return@get
         val id = call.idParam() ?: return@get call.respond(HttpStatusCode.BadRequest, ApiError("common.bad_id"))
-        val req = accessStore.getRequest(id)
-        if (req == null || !req.isWorkflowApproval) return@get call.respond(HttpStatusCode.NotFound, ApiError("common.not_found", mapOf("resource" to "query approval request")))
-        val isApprover = mayDecide(call, principal, AuthzAction.TASK_APPROVE, req)
-        // Task metadata is gated by task.read. Saved rows are separate and remain behind task.assume.
-        if (!mayDecide(call, principal, AuthzAction.TASK_READ, req)) {
-            return@get call.respond(HttpStatusCode.NotFound, ApiError("common.not_found", mapOf("resource" to "query approval request")))
+        try {
+            call.respond(service.detail(principal, call.httpRequesterIp(config), id))
+        } catch (e: TaskServiceException) {
+            call.respondServiceError(e)
         }
-        // task.read is a metadata gate; result-derived data stays behind task.assume. A caller who cannot
-        // assume R sees execution status only (status/executor/timestamps/error) — never the result's row
-        // count or output-column shape, which are cardinality/existence oracles the assume gate must close.
-        val mayReadRows = mayReadResult(call, principal, req)
-        // Redacts every statement: otherwise a metadata-only reader gets a row count per statement.
-        fun visible(meta: QueryResultMeta) =
-            if (mayReadRows) meta else meta.copy(rowCount = null, columns = emptyList())
-        val visibleMeta = queryResultStore?.meta(id)?.let(::visible)
-        val visibleStatements = queryResultStore?.statements(id).orEmpty().map(::visible)
-        // Mirror /execute's gates: only the approver OF RECORD (decided_by) can run it, so a merely-eligible
-        // approver who did not approve THIS task gets no Run affordance that would just 403.
-        val canExecute = queryResultStore != null && isApprover && req.status == "APPROVED" && req.decidedBy == principal
-        val canCancel = req.status == "EXECUTING" && mayDecide(call, principal, AuthzAction.TASK_CANCEL, req)
-        call.respond(
-            ApprovalDetail(
-                req,
-                canDecide = req.status == "PENDING" && isApprover,
-                result = visibleMeta,
-                statements = visibleStatements,
-                canExecute = canExecute,
-                canCancel = canCancel,
-            ),
-        )
     }
 
     post("/api/approvals/{id}/approve") {
         val principal = call.requireApi() ?: return@post
         val id = call.idParam() ?: return@post call.respond(HttpStatusCode.BadRequest, ApiError("common.bad_id"))
-        val req = accessStore.getRequest(id)
-        if (req == null || !req.isWorkflowApproval) return@post call.respond(HttpStatusCode.NotFound, ApiError("common.not_found", mapOf("resource" to "query approval request")))
-        if (req.status != "PENDING") return@post call.respond(HttpStatusCode.Conflict, ApiError("approval.already_decided"))
-        // Cedar owns the authorization: task.approve on this request, scoped to its role/datasource,
-        // with requester != approver via the no-self-approval forbid.
-        if (!mayDecide(call, principal, AuthzAction.TASK_APPROVE, req)) {
-            return@post call.respond(HttpStatusCode.Forbidden, ApiError("approval.not_approver"))
+        try {
+            call.respond(service.approve(principal, call.httpRequesterIp(config), call.auditActor(config), id))
+        } catch (e: TaskServiceException) {
+            call.respondServiceError(e)
         }
-        // An approved QUERY request is executed under role R by an approver (execute-under-R); there is no
-        // requester-side re-run mode. The proxy masks the result exactly as role R would see it.
-        val updated = accessStore.decideQueryRequest(
-            id, approved = true, rejectionReason = null, decidedBy = principal,
-            actor = call.auditActor(config), recorder = recorder,
-            onDecided = { c, decided -> notifications?.emit(c, NotificationEvent.TASK_DECIDED, decided) },
-        ) ?: return@post call.respond(HttpStatusCode.Conflict, ApiError("approval.already_decided"))
-        notifications?.wake()
-        call.application.environment.log.info(
-            "query approval approved request={} requester={} decider={} sourceDecisionId={}",
-            id,
-            req.principal,
-            principal,
-            req.sourceDecisionId,
-        )
-        call.respond(updated)
     }
 
     post("/api/approvals/{id}/reject") {
         val principal = call.requireApi() ?: return@post
         val id = call.idParam() ?: return@post call.respond(HttpStatusCode.BadRequest, ApiError("common.bad_id"))
         val body = call.receive<RejectInput>()
-        if (body.reason.isBlank()) return@post call.respond(HttpStatusCode.BadRequest, ApiError("common.field_required", mapOf("fields" to "reason")))
-        val req = accessStore.getRequest(id)
-        if (req == null || !req.isWorkflowApproval) return@post call.respond(HttpStatusCode.NotFound, ApiError("common.not_found", mapOf("resource" to "query approval request")))
-        if (req.status != "PENDING") return@post call.respond(HttpStatusCode.Conflict, ApiError("approval.already_decided"))
-        // Cedar owns the authorization: reject is the SAME task.approve decision as approve, scoped to its
-        // role/datasource with requester != approver via the no-self-approval forbid.
-        if (!mayDecide(call, principal, AuthzAction.TASK_APPROVE, req)) {
-            return@post call.respond(HttpStatusCode.Forbidden, ApiError("approval.not_approver"))
+        try {
+            call.respond(service.reject(principal, call.httpRequesterIp(config), call.auditActor(config), id, body.reason))
+        } catch (e: TaskServiceException) {
+            call.respondServiceError(e)
         }
-        val updated = accessStore.decideQueryRequest(
-            id, approved = false, rejectionReason = body.reason.trim(), decidedBy = principal,
-            actor = call.auditActor(config), recorder = recorder,
-            onDecided = { c, decided -> notifications?.emit(c, NotificationEvent.TASK_DECIDED, decided) },
-        ) ?: return@post call.respond(HttpStatusCode.Conflict, ApiError("approval.already_decided"))
-        notifications?.wake()
-        call.application.environment.log.info(
-            "query approval rejected request={} requester={} decider={} sourceDecisionId={}",
-            id,
-            req.principal,
-            principal,
-            req.sourceDecisionId,
-        )
-        call.respond(updated)
     }
 
     post("/api/approvals/{id}/cancel") {
         val principal = call.requireApi() ?: return@post
         val id = call.idParam() ?: return@post call.respond(HttpStatusCode.BadRequest, ApiError("common.bad_id"))
-        val req = accessStore.getRequest(id)
-        if (req == null || !req.isWorkflowApproval) {
-            return@post call.respond(HttpStatusCode.NotFound, ApiError("common.not_found", mapOf("resource" to "query approval request")))
+        try {
+            call.respond(service.cancel(principal, call.httpRequesterIp(config), id))
+        } catch (e: TaskServiceException) {
+            call.respondServiceError(e)
         }
-        if (!mayDecide(call, principal, AuthzAction.TASK_CANCEL, req)) {
-            return@post call.respond(HttpStatusCode.Forbidden, ApiError("approval.cancel_forbidden"))
-        }
-        when (req.status) {
-            "EXECUTED", "FAILED", "CANCELLED" -> return@post call.respond(req)
-            "DRAFT", "PENDING", "APPROVED", "REJECTED" ->
-                return@post call.respond(HttpStatusCode.Conflict, ApiError("approval.not_cancelable"))
-            "EXECUTING" -> Unit
-            else -> return@post call.respond(HttpStatusCode.Conflict, ApiError("approval.not_cancelable"))
-        }
-        val store = queryResultStore
-            ?: return@post call.respond(HttpStatusCode.ServiceUnavailable, ApiError("approval.result_storage_not_configured"))
-        val cancelled = store.cancelRun(id) { conn, _ ->
-            if (!accessStore.markCancelled(id, conn)) {
-                throw IllegalStateException("task $id left EXECUTING before cancellation")
-            }
-            auditStore.insert(conn, e3Record(principal, req, "result-canceled", Channel.WORKFLOW_EXECUTOR))
-        }
-        if (cancelled != null) {
-            runExecService.cancelActiveRun(id)
-            // A cancel can win the CAS before the run coroutine unwinds — push CANCELLED now to both parties
-            // so a watching tab reflects it at once (best-effort; the coroutine's terminal push + the poll cover it).
-            taskCompletionHub?.publish(listOf(req.principal, req.decidedBy).filterNotNull(), TaskEvent(id, "CANCELLED"))
-            accessStore.getRequest(id)?.let { notifications?.enqueueTerminal(it) }
-        }
-        val updated = accessStore.getRequest(id)
-            ?: return@post call.respond(HttpStatusCode.NotFound, ApiError("common.not_found", mapOf("resource" to "query approval request")))
-        call.respond(updated)
     }
-
-    // ---- Execute under R ---------------------------------------------------------------
 
     post("/api/approvals/{id}/execute") {
         val executor = call.requireApi() ?: return@post
         val id = call.idParam() ?: return@post call.respond(HttpStatusCode.BadRequest, ApiError("common.bad_id"))
-        val req = accessStore.getRequest(id)
-        if (req == null || !req.isWorkflowApproval) {
-            return@post call.respond(HttpStatusCode.NotFound, ApiError("common.not_found", mapOf("resource" to "query approval request")))
+        try {
+            call.respond(HttpStatusCode.Accepted, service.execute(executor, call.httpRequesterIp(config), id).first)
+        } catch (e: TaskServiceException) {
+            call.respondServiceError(e)
         }
-        // Authorize (task.approve) BEFORE disclosing task state: a caller who cannot approve this task gets a
-        // uniform 403 regardless of its status, so the 409 already_executed/not_approved distinctions below are
-        // never a state oracle for a non-approver. The approver-of-record identity is still pinned further down.
-        if (!mayDecide(call, executor, AuthzAction.TASK_APPROVE, req)) {
-            return@post call.respond(HttpStatusCode.Forbidden, ApiError("approval.not_approver"))
-        }
-        if (req.status in setOf("EXECUTING", "EXECUTED", "FAILED", "CANCELLED")) {
-            return@post call.respond(HttpStatusCode.Conflict, ApiError("approval.already_executed"))
-        }
-        if (req.status != "APPROVED") {
-            return@post call.respond(HttpStatusCode.Conflict, ApiError("approval.not_approved"))
-        }
-        // The approver of record must be the one who executes. This pins executedBy = decided_by = the
-        // approver, so the run's identity (run(principal = executor)) always falls inside the task.assume
-        // permit (requester or approver) and the saved result stays readable by its parties — no need to
-        // add executedBy to the permit. An eligible approver who did not approve THIS task cannot run it.
-        // No authDebug bypass: this is an identity invariant, enforced in development too.
-        if (req.decidedBy != executor) {
-            return@post call.respond(HttpStatusCode.Forbidden, ApiError("approval.not_the_approver"))
-        }
-        val store = queryResultStore
-            ?: return@post call.respond(HttpStatusCode.ServiceUnavailable, ApiError("approval.result_storage_not_configured"))
-        val ds = req.datasourceId?.let(datasourceStore::get)
-            ?: return@post call.respond(HttpStatusCode.Conflict, ApiError("common.not_found", mapOf("resource" to "datasource")))
-        if (store.statements(id).none { it.sql != null }) {
-            return@post call.respond(HttpStatusCode.Conflict, ApiError("approval.no_sql"))
-        }
-        val requesterIp = call.httpRequesterIp(config)
-        // Only LIVE execute-as roles: a role soft-deleted since approval grants nothing, so it drops out of
-        // the run's ceiling here (and an all-deleted snapshot fails closed at the empty check below).
-        val executeAs = policyStore.liveRoleNames(req.executeAs)
-        // Fail closed on a task with no execute-as role set — there is no R to enforce the run under. Only
-        // a row with no elevation role can be empty (every new request carries R), so this never rejects a
-        // current request; without it the run would fall through to the proxy Decide under the requester's
-        // own roles, silently reinterpreting the authorization. Mirrors the view path's empty-{R} deny.
-        if (executeAs.isEmpty()) {
-            return@post call.respond(HttpStatusCode.Conflict, ApiError("approval.no_execute_role"))
-        }
-
-        // Claim (APPROVED→EXECUTING) and start the child (NULL→RUNNING) in ONE transaction: a cancel can
-        // then never land in a gap where the parent is EXECUTING but no RUNNING child exists yet (which
-        // would no-op the cancel and let the query run). Before the commit the task is still APPROVED
-        // (cancel → not_cancelable); after it, EXECUTING with a RUNNING child a cancel can catch.
-        if (store.claimAndStartRun(id, executor) { c -> accessStore.claimExecution(id, c) } == null) {
-            return@post call.respond(HttpStatusCode.Conflict, ApiError("approval.already_executed"))
-        }
-
-        appScope.launch {
-            runApprovedTask(
-                id = id, executor = executor, ds = ds, executeAs = executeAs,
-                requesterIp = requesterIp, requesterPrincipal = req.principal, req = req,
-                config = config, accessStore = accessStore, store = store, auditStore = auditStore,
-                runExecService = runExecService, taskCompletionHub = taskCompletionHub,
-                notifications = notifications, log = call.application.environment.log,
-            )
-        }
-        call.respond(HttpStatusCode.Accepted, ExecuteApprovalResponse(decision = "EXECUTING"))
     }
 
-    // The decrypted rows: task.assume gates the viewer, then the stored result is re-decided live under
-    // exactly the task's execute-as role set in the viewer's workflow-viewer context. Every successful
-    // view and live-decision denial is audited; a deactivated viewer is hidden and an expired result is Gone.
+    // ?statement=<ordinal>; absent takes the active one. A malformed value is rejected, never silently
+    // served from a different statement.
     get("/api/approvals/{id}/result") {
         val principal = call.requireApi() ?: return@get
         val id = call.idParam() ?: return@get call.respond(HttpStatusCode.BadRequest, ApiError("common.bad_id"))
-        val req = accessStore.getRequest(id)
-        if (req == null || !req.isWorkflowApproval) return@get call.respond(HttpStatusCode.NotFound, ApiError("common.not_found", mapOf("resource" to "query approval request")))
-        // Deprovisioning gate applies before result lookup. The live decideQuery path repeats this gate as
-        // defense in depth. Fail-closed as NotFound — no result-existence oracle for a deprovisioned principal.
-        if (userGroupStore.isDeactivated(principal)) {
-            return@get call.respond(HttpStatusCode.NotFound, ApiError("common.not_found", mapOf("resource" to "query approval request")))
-        }
-        // One read captures the row's ciphertext + meta together; the payload is decrypted lazily on the
-        // first read of access.decrypted below, which happens only AFTER authorization passes — an
-        // unauthorized caller never triggers a decrypt. Reading both in one shot also keeps a concurrent
-        // re-execute from swapping the row between the authz check and the decrypt (TOCTOU).
-        // ?statement=<ordinal>; absent takes the active one. A malformed value is rejected, never
-        // silently served from a different statement.
         val ordinalParam = call.request.queryParameters["statement"]
         val ordinal = if (ordinalParam == null) null else {
             ordinalParam.toIntOrNull()?.takeIf { it >= 0 }
                 ?: return@get call.respond(HttpStatusCode.BadRequest, ApiError("common.bad_id"))
         }
-        val access = queryResultStore?.accessFor(id, ordinal)
-            ?: return@get call.respond(HttpStatusCode.NotFound, ApiError("common.not_found", mapOf("resource" to "query approval request")))
-        val meta = access.meta
-        if (!mayReadResult(call, principal, req)) {
-            return@get call.respond(HttpStatusCode.NotFound, ApiError("common.not_found", mapOf("resource" to "query approval request")))
-        }
-        // One re-decision on access.sql (the released child's own statement, not req.sql) gates both the
-        // FAILED diagnostic and the DONE rows. Null withholds.
-        // No AuditStore: the rows were relayed and charged at execution, so a spent rate must not gate the view.
-        val ctx = viewerDecision(
-            principal, req, access.sql, call.httpAuthzContext(config),
-            datasourceStore, policyStore, accessStore, userGroupStore, roleResolver, authz,
-            systemClassification, Channel.WORKFLOW_VIEWER,
-        )
-        // The failure detail releases only here, behind the same gate as the rows (never on the metadata
-        // poll). Audit before responding so it is never returned unrecorded.
-        if (meta.status == "FAILED" && access.errorDetail != null) {
-            val viewEvent = when (principal) {
-                req.principal -> "result-failure-viewed-by-requester"
-                req.decidedBy -> "result-failure-viewed-by-approver"
-                else -> "result-failure-viewed-by-assumer"
-            }
-            auditStore.insert(e3Record(principal, req, viewEvent, Channel.WORKFLOW_VIEWER))
-            return@get call.respond(
-                QueryResultView(meta, emptyList(), emptyList(), errorDetail = failedDiagnosticForViewer(ctx, access.errorDetail)),
-            )
-        }
-        if (meta.status != "DONE") {
-            return@get call.respond(HttpStatusCode.Conflict, ApiError("approval.result_not_ready"))
-        }
-        val decrypted = access.decrypted
-            ?: return@get call.respond(HttpStatusCode.Gone, ApiError("approval.result_expired"))
-        val viewDecision =
-            if (ctx == null) ResultViewDecision.Denied("stored result has no live decision to re-mask under")
-            else decideResultView(ctx, decrypted)
-        when (viewDecision) {
-            is ResultViewDecision.Denied -> {
-                call.application.environment.log.warn(
-                    "query approval result view denied request={} viewer={} reason={}",
-                    id,
-                    principal,
-                    viewDecision.reason,
-                )
-                auditStore.insert(e3Record(principal, req, "result-view-denied", Channel.WORKFLOW_VIEWER))
-                call.respond(HttpStatusCode.Forbidden, ApiError("approval.result_view_denied"))
-            }
-            is ResultViewDecision.Allowed -> {
-                // Classify by the viewer's relationship to the task, not requester-vs-everyone-else: a
-                // system:auditor (or any operator-defined task.assume principal) is neither party, so it must
-                // not be miscredited to the approver. The exact actor is always record.principal regardless.
-                val viewEvent = when (principal) {
-                    req.principal -> "result-viewed-by-requester"
-                    req.decidedBy -> "result-viewed-by-approver"
-                    else -> "result-viewed-by-assumer"
-                }
-                // Audit the view BEFORE returning rows — a failed audit insert propagates (500) so PII is never
-                // returned without a durable record. The same transaction charges the released volume to the
-                // viewer's relayed volume, against the decision the stored rows came from.
-                val (rowCount, bytes) = resultVolume(viewDecision.rows)
-                val chargeDecision = listOfNotNull(meta.decisionId, req.sourceDecisionId)
-                    .firstNotNullOfOrNull { id -> auditStore.get(id)?.let { id to it } }
-                auditStore.insertAll(
-                    listOfNotNull(
-                        e3Record(principal, req, viewEvent, Channel.WORKFLOW_VIEWER),
-                        chargeDecision?.let { (decisionId, decision) ->
-                            completionEvent(
-                                decision, decisionId, rowCount, bytes, "ok", 0,
-                                principal = principal, channel = Channel.WORKFLOW_VIEWER.contextValue,
-                            )
-                        },
-                    ),
-                )
-                call.respond(
-                    QueryResultView(
-                        meta, viewDecision.columns, viewDecision.rows,
-                        // The stored bytes are R's execution output, but this VIEW re-decides under the
-                        // viewer's own context and may narrow further — so the label describes the release,
-                        // not the execution that produced it.
-                        decision = if (viewDecision.maskedColumns.isEmpty()) Decision.ALLOW else Decision.MASK,
-                        maskedColumns = viewDecision.maskedColumns,
-                        truncatedAt = viewDecision.truncatedAt,
-                        truncatedByCap = decrypted.truncatedByCap,
-                    ),
-                )
-            }
+        try {
+            call.respond(service.result(principal, call.httpRequesterIp(config), id, ordinal))
+        } catch (e: TaskServiceException) {
+            call.respondServiceError(e)
         }
     }
 }

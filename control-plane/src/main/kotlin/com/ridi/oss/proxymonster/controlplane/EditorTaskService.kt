@@ -237,7 +237,7 @@ class EditorTaskService(
      * The saved rows of statement [ordinal] (null = the active one), re-decided live under the task's roles on
      * the EDITOR channel. Owner-only: task.assume is defense in depth, since an assume grantee is not the owner.
      */
-    fun result(principal: String, requesterIp: String?, taskId: Long, ordinal: Int?, page: ResultPage? = null): QueryResultView {
+    suspend fun result(principal: String, requesterIp: String?, taskId: Long, ordinal: Int?, page: ResultPage? = null): QueryResultView {
         val task = ownedTask(principal, taskId)
         // Deprovisioning gate before result lookup (defense in depth; the live decide repeats it).
         if (userGroupStore.isDeactivated(principal)) throw serviceNotFound("editor task")
@@ -250,10 +250,13 @@ class EditorTaskService(
         val meta = access.meta
         // One re-decision gates both the FAILED diagnostic and the DONE rows. Not audited here — the
         // per-statement Decide already recorded it. No AuditStore: the rows were charged at execution.
+        val structure = task.datasourceId?.let(datasourceStore::get)?.let { ds ->
+            runExecService.openSessionStructure(taskId, principal, ds)
+        }
         val ctx = viewerDecision(
             principal, task, access.sql, AuthzContext(requesterIp = requesterIp),
             datasourceStore, policyStore, accessStore, userGroupStore, roleResolver, authz,
-            systemClassification, Channel.EDITOR,
+            systemClassification, Channel.EDITOR, structure = structure,
         )
         if (meta.status == "FAILED" && access.errorDetail != null) {
             return QueryResultView(meta, emptyList(), emptyList(), errorDetail = failedDiagnosticForViewer(ctx, access.errorDetail))

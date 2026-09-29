@@ -26,7 +26,6 @@ import (
 	"google.golang.org/grpc/keepalive"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
-	"google.golang.org/protobuf/proto"
 
 	"github.com/ridi-oss/proxy-monster/goproxy/engine"
 	"github.com/ridi-oss/proxy-monster/goproxy/spi"
@@ -159,7 +158,7 @@ func refetchesFromWire(commands []*pb.ProxyCommand) ([]*pb.Refetch, error) {
 		if refetch == nil {
 			return nil, fmt.Errorf("command %d is not a refetch", i)
 		}
-		if refetch.Catalog != nil && refetch.GetCatalog() == "" {
+		if refetch.GetCatalog() == "" {
 			return nil, fmt.Errorf("command %d has blank catalog", i)
 		}
 		if refetch.GetSchema() == "" {
@@ -168,24 +167,10 @@ func refetchesFromWire(commands []*pb.ProxyCommand) ([]*pb.Refetch, error) {
 		mapped = append(mapped, &pb.Refetch{
 			Schema:        refetch.GetSchema(),
 			IfHashDiffers: append([]byte(nil), refetch.GetIfHashDiffers()...),
-			Catalog:       copyString(refetch.Catalog),
+			Catalog:       refetch.GetCatalog(),
 		})
 	}
 	return mapped, nil
-}
-
-func nonemptyString(value string) *string {
-	if value == "" {
-		return nil
-	}
-	return proto.String(value)
-}
-
-func copyString(value *string) *string {
-	if value == nil {
-		return nil
-	}
-	return proto.String(*value)
 }
 
 // identityFromWire maps the control plane's WireIdentity into the proxy's session identity. PURE function
@@ -300,7 +285,7 @@ func (c *Client) Decide(req engine.DecideRequest) engine.DecisionOutcome {
 			Column:  t.Column,
 			SqlType: t.SqlType,
 			Ordinal: int32(t.Ordinal),
-			Catalog: nonemptyString(t.Catalog),
+			Catalog: t.Catalog,
 		})
 	}
 	wireReq := &pb.DecisionRequest{
@@ -312,7 +297,7 @@ func (c *Client) Decide(req engine.DecideRequest) engine.DecisionOutcome {
 		TempColumns:    temps,
 		ConnectionId:   append([]byte(nil), req.ConnectionID...),
 		Session:        req.Session.Clone().SessionObservation,
-		CurrentCatalog: nonemptyString(req.Session.CurrentCatalog),
+		CurrentCatalog: req.Session.CurrentCatalog,
 	}
 
 	for round := 0; ; round++ {
@@ -477,7 +462,7 @@ func (c *Client) CloseConnection(connectionID []byte) error {
 func (c *Client) StreamEvents(
 	onRefresh func(),
 	onOpenRun func(spi.RunOpen),
-	onOpenTableDetail func(sessionID, schema, table string),
+	onOpenTableDetail func(sessionID string, table *enginepb.ObjectRef),
 ) error {
 	timings := defaultEventLoopTimings()
 	return c.streamEvents(context.Background(), timings.streamMaxAge, onRefresh, onOpenRun, onOpenTableDetail)
@@ -499,7 +484,7 @@ func (c *Client) streamEvents(
 	maxAge time.Duration,
 	onRefresh func(),
 	onOpenRun func(spi.RunOpen),
-	onOpenTableDetail func(sessionID, schema, table string),
+	onOpenTableDetail func(sessionID string, table *enginepb.ObjectRef),
 ) error {
 	ctx, cancel := context.WithTimeout(c.outCtx(parent), maxAge)
 	defer cancel()
@@ -546,7 +531,7 @@ func (c *Client) streamEvents(
 			})
 		case ev.GetOpenTableDetailChannel() != nil:
 			t := ev.GetOpenTableDetailChannel()
-			onOpenTableDetail(t.GetSessionId(), t.GetSchema(), t.GetTable())
+			onOpenTableDetail(t.GetSessionId(), &enginepb.ObjectRef{Catalog: t.GetCatalog(), Schema: t.GetSchema(), Table: t.GetTable()})
 		}
 	}
 }
@@ -569,7 +554,7 @@ func (c *Client) RunEventsLoop(
 	resync func(),
 	onRefresh func(),
 	onOpenRun func(spi.RunOpen),
-	onOpenTableDetail func(sessionID, schema, table string),
+	onOpenTableDetail func(sessionID string, table *enginepb.ObjectRef),
 ) error {
 	return c.runEventsLoop(ctx, defaultEventLoopTimings(), resync, onRefresh, onOpenRun, onOpenTableDetail)
 }
@@ -580,7 +565,7 @@ func (c *Client) runEventsLoop(
 	resync func(),
 	onRefresh func(),
 	onOpenRun func(spi.RunOpen),
-	onOpenTableDetail func(sessionID, schema, table string),
+	onOpenTableDetail func(sessionID string, table *enginepb.ObjectRef),
 ) error {
 	for {
 		err := c.streamEvents(ctx, timings.streamMaxAge, onRefresh, onOpenRun, onOpenTableDetail)

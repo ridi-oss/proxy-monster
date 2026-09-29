@@ -80,7 +80,7 @@ class TableDetailService(private val core: ControlPlaneCore) {
         try {
             core.tableDetailChannels.register(pending)
             registered = true
-            when (core.proxyEventsHub.requestOpenTableDetail(dsName, sessionId, schema, table)) {
+            when (core.proxyEventsHub.requestOpenTableDetail(dsName, sessionId, datasource.effectiveCatalog, expectedSchema, table)) {
                 ProxyEventsHub.Dispatch.SENT -> Unit
                 ProxyEventsHub.Dispatch.NOT_ATTACHED, ProxyEventsHub.Dispatch.WEDGED -> {
                 throw NoTableDetailProxyAttachedException()
@@ -101,13 +101,13 @@ class TableDetailService(private val core: ControlPlaneCore) {
             if (detail == null) return null
             // The proxy's live detail must come back under the resolved schema and for the requested table;
             // anything else is a channel/response mixup.
-            if (detail.schema != expectedSchema || detail.table != table) {
+            if (detail.catalog != datasource.effectiveCatalog || detail.schema != expectedSchema || detail.table != table) {
                 throw ProxyTableDetailException("proxy returned table detail for an unexpected table")
             }
 
             val classifications = core.datasourceStore.catalog(datasource.id).columns
                 .asSequence()
-                .filter { it.schema == detail.schema && it.table == detail.table }
+                .filter { it.catalog == detail.catalog && it.schema == detail.schema && it.table == detail.table }
                 .associate { it.column to it.classification }
             return detail.copy(
                 columns = detail.columns.map { column ->

@@ -16,6 +16,7 @@ import kotlin.test.assertTrue
 class AnalyzerTest {
     private fun column(schema: String, table: String, name: String): Column =
         column {
+            catalog = "acme"
             this.schema = schema
             this.table = table
             column = name

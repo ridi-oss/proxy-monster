@@ -344,7 +344,7 @@ func refreshDecision(schema string) *pb.WireDecision {
 	return wireVerdict(&pb.Verdict{
 		Decision: pb.EnfAction_ALLOW,
 		AfterStatement: []*pb.ProxyCommand{{
-			Command: &pb.ProxyCommand_Refetch{Refetch: &pb.Refetch{Schema: schema}},
+			Command: &pb.ProxyCommand_Refetch{Refetch: &pb.Refetch{Schema: schema, Catalog: "app"}},
 		}},
 	})
 }
@@ -431,7 +431,7 @@ func TestAllowRelaysRowsAndDecisionContext(t *testing.T) {
 		t.Fatalf("Decide requests = %d, want 1", len(requests))
 	}
 	request := requests[0]
-	if request.CurrentCatalog == nil || request.GetCurrentCatalog() != "app" {
+	if request.GetCurrentCatalog() != "app" {
 		t.Fatalf("DecisionRequest catalog = %v, want app", request.CurrentCatalog)
 	}
 	if request.GetToken() != validToken || request.GetSql() != query || !reflect.DeepEqual(request.GetSearchPath(), []string{"pg_catalog", "public"}) {
@@ -1296,7 +1296,7 @@ func TestOnOpenRunsBeforeFirstReadyAndCloseConnectionRunsOnce(t *testing.T) {
 	targetDb := seedTargetDb(t)
 	h := startBrokerForDBSetup(t, targetDb, "app", func(fake *fakeControlPlane) {
 		fake.setOnOpen(&pb.ProxyCommand{
-			Command: &pb.ProxyCommand_Refetch{Refetch: &pb.Refetch{Schema: primarySchema}},
+			Command: &pb.ProxyCommand_Refetch{Refetch: &pb.Refetch{Schema: primarySchema, Catalog: "app"}},
 		})
 	})
 
@@ -1320,7 +1320,7 @@ func TestOnOpenPushFailureRefusesConnectionAndClosesControlPlaneState(t *testing
 	targetDb := seedTargetDb(t)
 	h := startBrokerForDBSetup(t, targetDb, "app", func(fake *fakeControlPlane) {
 		fake.setOnOpen(&pb.ProxyCommand{
-			Command: &pb.ProxyCommand_Refetch{Refetch: &pb.Refetch{Schema: primarySchema}},
+			Command: &pb.ProxyCommand_Refetch{Refetch: &pb.Refetch{Schema: primarySchema, Catalog: "app"}},
 		})
 		fake.setPushError(status.Error(codes.Unavailable, "injected on-open push failure"))
 	})

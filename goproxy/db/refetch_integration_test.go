@@ -35,7 +35,7 @@ func TestMySqlRefetcherIntegration(t *testing.T) {
 	adapter := MySqlDb{}
 	previous := trustedRefetchHash(t, adapter, conn, schema)
 	t.Run("unchanged", func(t *testing.T) {
-		push := runRefetchIntegration(t, adapter, conn, schema, previous)
+		push := runRefetchIntegration(t, adapter, conn, "def", schema, previous)
 		if !push.Unchanged || len(push.Columns) != 0 || !bytes.Equal(push.ContentHash, previous) {
 			t.Fatalf("unchanged push = %+v, want hash-only unchanged push", push)
 		}
@@ -52,7 +52,7 @@ func TestMySqlRefetcherIntegration(t *testing.T) {
 		if bytes.Equal(current, previous) {
 			t.Fatalf("byte-identical tables in distinct schemas collided: %x", current)
 		}
-		push := runRefetchIntegration(t, adapter, conn, otherSchema, previous)
+		push := runRefetchIntegration(t, adapter, conn, "def", otherSchema, previous)
 		assertFullRefetch(t, push, current, "def", []*analyzerpb.Column{
 			{Schema: otherSchema, Table: "base", Column: "a", DataType: "int", Ordinal: 1},
 		}, nil)
@@ -142,7 +142,7 @@ func TestMySqlRefetcherIntegration(t *testing.T) {
 			if bytes.Equal(current, previous) {
 				t.Fatalf("mutation did not change trusted hash: %x", current)
 			}
-			push := runRefetchIntegration(t, adapter, conn, schema, previous)
+			push := runRefetchIntegration(t, adapter, conn, "def", schema, previous)
 			assertFullRefetch(t, push, current, "def", step.columns, step.routines)
 			previous = current
 		})
@@ -190,7 +190,7 @@ func TestPostgresRefetcherIntegration(t *testing.T) {
 				t.Fatalf("initial hash length = %d, want %d", len(previous), wantHashLength)
 			}
 			t.Run("unchanged", func(t *testing.T) {
-				push := runRefetchIntegration(t, adapter, conn, schema, previous)
+				push := runRefetchIntegration(t, adapter, conn, databaseName, schema, previous)
 				if !push.Unchanged || len(push.Columns) != 0 || !bytes.Equal(push.ContentHash, previous) {
 					t.Fatalf("unchanged push = %+v, want hash-only unchanged push", push)
 				}
@@ -206,7 +206,7 @@ func TestPostgresRefetcherIntegration(t *testing.T) {
 				if bytes.Equal(current, previous) {
 					t.Fatalf("byte-identical tables in distinct schemas collided: %x", current)
 				}
-				push := runRefetchIntegration(t, adapter, conn, otherSchema, previous)
+				push := runRefetchIntegration(t, adapter, conn, databaseName, otherSchema, previous)
 				assertFullRefetch(t, push, current, databaseName, []*analyzerpb.Column{
 					{Schema: otherSchema, Table: "base", Column: "a", DataType: "integer", Ordinal: 1},
 				}, nil)
@@ -312,7 +312,7 @@ func TestPostgresRefetcherIntegration(t *testing.T) {
 					if bytes.Equal(current, previous) {
 						t.Fatalf("mutation did not change trusted hash: %x", current)
 					}
-					push := runRefetchIntegration(t, adapter, conn, schema, previous)
+					push := runRefetchIntegration(t, adapter, conn, databaseName, schema, previous)
 					assertFullRefetch(t, push, current, databaseName, step.columns, step.routines)
 					previous = current
 				})
@@ -372,7 +372,7 @@ func TestMySqlRefetcherTruncationFallsBackToFullFetch(t *testing.T) {
 
 	pushes := make([]*pb.SchemaFragmentPush, 0, 2)
 	for i := 0; i < 2; i++ {
-		push := runRefetchIntegration(t, adapter, conn, schema, truncatedHash)
+		push := runRefetchIntegration(t, adapter, conn, "def", schema, truncatedHash)
 		if push.Unchanged {
 			t.Fatalf("run %d emitted Unchanged=true for matching truncated hash", i+1)
 		}
@@ -431,12 +431,13 @@ func trustedRefetchHash(t *testing.T, adapter engine.Db, conn *sql.Conn, schema 
 	return hash
 }
 
-func runRefetchIntegration(t *testing.T, adapter engine.Db, conn *sql.Conn, schema string, ifHashDiffers []byte) *pb.SchemaFragmentPush {
+func runRefetchIntegration(t *testing.T, adapter engine.Db, conn *sql.Conn, catalog, schema string, ifHashDiffers []byte) *pb.SchemaFragmentPush {
 	t.Helper()
 	connectionID := []byte("refetch-test-connection")
 	const generation = uint64(41)
 	var pushes []*pb.SchemaFragmentPush
 	refetcher := engine.Refetcher{
+		Catalog:           catalog,
 		Db:                adapter,
 		ConnectionID:      connectionID,
 		BackendGeneration: generation,
@@ -448,7 +449,7 @@ func runRefetchIntegration(t *testing.T, adapter engine.Db, conn *sql.Conn, sche
 			return uint64(len(pushes)), nil
 		},
 	}
-	if err := refetcher.Run(&pb.Refetch{Schema: schema, IfHashDiffers: ifHashDiffers}); err != nil {
+	if err := refetcher.Run(&pb.Refetch{Catalog: catalog, Schema: schema, IfHashDiffers: ifHashDiffers}); err != nil {
 		t.Fatalf("Refetcher.Run(%q): %v", schema, err)
 	}
 	if len(pushes) != 1 {

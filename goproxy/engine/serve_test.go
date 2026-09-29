@@ -54,7 +54,8 @@ func TestServeStatementRefetchesOnlyAfterCleanCompletion(t *testing.T) {
 	str := func(value string) *string { return &value }
 	newRef := func(calls *int) *Refetcher {
 		return &Refetcher{
-			Db: mysqlDb,
+			Catalog: "def",
+			Db:      mysqlDb,
 			Probe: func(sql string, expected int) ([][]*string, error) {
 				*calls++
 				if expected == 7 {
@@ -72,7 +73,7 @@ func TestServeStatementRefetchesOnlyAfterCleanCompletion(t *testing.T) {
 	}{{"clean", true, 4}, {"target-DB error response", false, 0}} {
 		t.Run(tc.name, func(t *testing.T) {
 			calls := 0
-			decision := &Decision{Action: "ALLOW", AfterStatement: []*pb.Refetch{{Schema: "app"}}}
+			decision := &Decision{Action: "ALLOW", AfterStatement: []*pb.Refetch{{Catalog: "def", Schema: "app"}}}
 			qe := NewQueryEngine(&fakeDecider{outcome: DecisionOutcome{Decision: decision}})
 			_, _, err := ServeStatement(qe, serveInput(), newRef(&calls), nil, func(string, []*pb.ColumnMask, *Decision) (bool, error) {
 				return tc.clean, nil

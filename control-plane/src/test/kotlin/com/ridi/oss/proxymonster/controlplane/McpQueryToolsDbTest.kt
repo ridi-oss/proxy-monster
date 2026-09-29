@@ -583,6 +583,7 @@ class McpQueryToolsDbTest {
                     var response = stub.decide(decisionRequest {
                         this.token = open.ephemeralToken
                         datasourceName = fx.datasource.name
+                        currentCatalog = fx.datasource.effectiveCatalog
                         connectionId = open.connectionId
                         this.sql = statement
                         searchPath.add(schema)
@@ -593,6 +594,7 @@ class McpQueryToolsDbTest {
                             response = stub.decide(decisionRequest {
                                 this.token = open.ephemeralToken
                                 datasourceName = fx.datasource.name
+                                currentCatalog = fx.datasource.effectiveCatalog
                                 connectionId = open.connectionId
                                 this.sql = statement
                                 searchPath.add(schema)

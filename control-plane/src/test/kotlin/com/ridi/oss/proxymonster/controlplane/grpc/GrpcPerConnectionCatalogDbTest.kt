@@ -2,6 +2,7 @@ package com.ridi.oss.proxymonster.controlplane.grpc
 
 import com.google.protobuf.ByteString
 import com.ridi.oss.proxymonster.controlplane.Binding
+import com.ridi.oss.proxymonster.controlplane.effectiveCatalog
 import com.ridi.oss.proxymonster.controlplane.ControlPlaneCore
 import com.ridi.oss.proxymonster.controlplane.Datasource
 import com.ridi.oss.proxymonster.controlplane.DatasourceInput
@@ -79,6 +80,7 @@ class GrpcPerConnectionCatalogDbTest {
     ) = stub.pushSchemaFragment(schemaFragmentPush {
         this.connectionId = connectionId
         this.datasourceName = datasourceName
+        catalog = ds.effectiveCatalog
         this.schema = schema
         contentHash = ByteString.copyFromUtf8(hash)
         this.backendGeneration = backendGeneration
@@ -162,6 +164,7 @@ class GrpcPerConnectionCatalogDbTest {
                 stub.decide(decisionRequest {
                     token = otherToken
                     datasourceName = ds.name
+                    currentCatalog = ds.effectiveCatalog
                     connectionId = identity.connectionId
                     sql = "select 1"
                     searchPath.add("public")
@@ -189,6 +192,7 @@ class GrpcPerConnectionCatalogDbTest {
                 stub.decide(decisionRequest {
                     token = this@GrpcPerConnectionCatalogDbTest.token
                     datasourceName = ds.name
+                    currentCatalog = ds.effectiveCatalog
                     connectionId = identity.connectionId
                     sql = "select 1"
                     searchPath.add("public")
@@ -205,6 +209,7 @@ class GrpcPerConnectionCatalogDbTest {
         val recovered = stub.decide(decisionRequest {
             token = this@GrpcPerConnectionCatalogDbTest.token
             datasourceName = ds.name
+            currentCatalog = ds.effectiveCatalog
             connectionId = identity.connectionId
             sql = "select 1"
             searchPath.add("public")
@@ -226,6 +231,7 @@ class GrpcPerConnectionCatalogDbTest {
         val recovered = stub.decide(decisionRequest {
             token = this@GrpcPerConnectionCatalogDbTest.token
             datasourceName = ds.name
+            currentCatalog = ds.effectiveCatalog
             connectionId = identity.connectionId
             sql = "select 1"
             searchPath.add("public")
@@ -240,6 +246,7 @@ class GrpcPerConnectionCatalogDbTest {
         val verdict = stub.decide(decisionRequest {
             token = this@GrpcPerConnectionCatalogDbTest.token
             datasourceName = ds.name
+            currentCatalog = ds.effectiveCatalog
             connectionId = identity.connectionId
             sql = "select 1"
             searchPath.add("public")
@@ -253,6 +260,7 @@ class GrpcPerConnectionCatalogDbTest {
                 stub.decide(decisionRequest {
                     token = otherToken
                     datasourceName = ds.name
+                    currentCatalog = ds.effectiveCatalog
                     connectionId = identity.connectionId
                     sql = "select 1"
                     searchPath.add("public")
@@ -268,6 +276,7 @@ class GrpcPerConnectionCatalogDbTest {
         val before = stub.decide(decisionRequest {
             token = this@GrpcPerConnectionCatalogDbTest.token
             datasourceName = ds.name
+            currentCatalog = ds.effectiveCatalog
             connectionId = unknown
             sql = "select 1"
             searchPath.add("public")

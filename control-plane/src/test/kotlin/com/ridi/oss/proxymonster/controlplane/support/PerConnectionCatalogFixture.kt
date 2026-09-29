@@ -2,6 +2,7 @@ package com.ridi.oss.proxymonster.controlplane.support
 
 import com.google.protobuf.ByteString
 import com.ridi.oss.proxymonster.controlplane.Binding
+import com.ridi.oss.proxymonster.controlplane.effectiveCatalog
 import com.ridi.oss.proxymonster.controlplane.CatalogMutationResult
 import com.ridi.oss.proxymonster.controlplane.ControlPlaneCore
 import com.ridi.oss.proxymonster.controlplane.Datasource
@@ -43,12 +44,12 @@ class PerConnectionCatalogFixture(val enforcement: EnforcementFixture) {
         tokenKind: String = "USER",
         withRoutines: Boolean = true,
     ): OpenConnection {
-        val opened = core.connectionCatalog.open(Binding(datasource.name, principal, tokenKind), schemas)
+        val opened = core.connectionCatalog.open(Binding(datasource.name, principal, tokenKind, datasource.effectiveCatalog), schemas)
         val bySchema = enforcement.datasourceStore.catalog(datasource.id).columns.groupBy { it.schema }
         val routines = if (withRoutines) enforcement.datasourceStore.storedRoutines(datasource.id) else emptyMap()
         for (schema in schemas.distinct()) {
             val rows = bySchema[schema].orEmpty().map { row ->
-                FragmentColumn(row.schema, row.table, row.column, row.sqlType, row.ordinal, row.nullable)
+                FragmentColumn(row.catalog, row.schema, row.table, row.column, row.sqlType, row.ordinal, row.nullable)
             }
             push(opened.connectionId, schema, rows, routines[schema].orEmpty(), backendGeneration = 1)
         }
@@ -77,6 +78,7 @@ class PerConnectionCatalogFixture(val enforcement: EnforcementFixture) {
             ps.executeQuery().use { rs ->
                 while (rs.next()) {
                     rows += FragmentColumn(
+                        catalog = datasource.effectiveCatalog,
                         schema = rs.getString(1),
                         table = rs.getString(2),
                         column = rs.getString(3),
@@ -107,6 +109,7 @@ class PerConnectionCatalogFixture(val enforcement: EnforcementFixture) {
             schemaFragmentPush {
                 this.connectionId = connectionId
                 datasourceName = datasource.name
+                catalog = datasource.effectiveCatalog
                 this.schema = schema
                 contentHash = hash(rows, routines)
                 this.unchanged = unchanged
@@ -115,6 +118,7 @@ class PerConnectionCatalogFixture(val enforcement: EnforcementFixture) {
                     this.routines.addAll(routines)
                     columns.addAll(rows.map { row ->
                         column {
+                            catalog = datasource.effectiveCatalog
                             this.schema = row.schema
                             table = row.table
                             this.column = row.column

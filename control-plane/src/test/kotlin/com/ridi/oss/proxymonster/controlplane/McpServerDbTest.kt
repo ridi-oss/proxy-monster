@@ -950,7 +950,7 @@ class McpServerDbTest {
                 engineVersion = "PostgreSQL 16.4",
                 catalog = catalogSnapshot {
                     this.columns += columns.mapIndexed { index, column ->
-                        pushedColumn("public", "users", column, "text", index + 1, true)
+                        pushedColumn("mcp", "public", "users", column, "text", index + 1, true)
                     }
                 },
             )

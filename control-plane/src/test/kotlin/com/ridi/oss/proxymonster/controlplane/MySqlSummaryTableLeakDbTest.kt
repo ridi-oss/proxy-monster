@@ -38,11 +38,11 @@ class MySqlSummaryTableLeakDbTest {
             mysqlLowerCaseTableNames = 0,
             engineVersion = "8.0.44",
             catalog = snapshotOf(
-                pushedColumn("performance_schema", "user_variables_by_thread", "VARIABLE_NAME", "varchar", 1, true),
-                pushedColumn("performance_schema", "user_variables_by_thread", "VARIABLE_VALUE", "longtext", 2, true),
-                pushedColumn("sys", "x\$schema_table_statistics", "table_name", "varchar", 1, true),
+                pushedColumn("def", "performance_schema", "user_variables_by_thread", "VARIABLE_NAME", "varchar", 1, true),
+                pushedColumn("def", "performance_schema", "user_variables_by_thread", "VARIABLE_VALUE", "longtext", 2, true),
+                pushedColumn("def", "sys", "x\$schema_table_statistics", "table_name", "varchar", 1, true),
                 // A genuinely structural catalog view stays browsable — proves the fix did not over-classify.
-                pushedColumn("information_schema", "TABLES", "TABLE_NAME", "varchar", 1, true),
+                pushedColumn("def", "information_schema", "TABLES", "TABLE_NAME", "varchar", 1, true),
             ),
         )
         fx.dataSource.connection.use { c ->

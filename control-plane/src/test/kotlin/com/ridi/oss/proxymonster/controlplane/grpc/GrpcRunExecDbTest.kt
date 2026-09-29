@@ -1,6 +1,7 @@
 package com.ridi.oss.proxymonster.controlplane.grpc
 
 import com.ridi.oss.proxymonster.controlplane.ControlPlaneCore
+import com.ridi.oss.proxymonster.controlplane.effectiveCatalog
 import com.ridi.oss.proxymonster.controlplane.Datasource
 import com.ridi.oss.proxymonster.controlplane.DatasourceInput
 import com.ridi.oss.proxymonster.controlplane.Decision
@@ -1020,6 +1021,7 @@ class GrpcRunExecDbTest {
                 decisionRequest {
                     token = ephemeralToken
                     datasourceName = datasource.name
+                    currentCatalog = datasource.effectiveCatalog
                     connectionId = open.connectionId
                     sql = "select 1 from t"
                 },

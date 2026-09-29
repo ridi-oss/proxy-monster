@@ -18,7 +18,6 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
-	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/emptypb"
 )
 
@@ -30,7 +29,7 @@ type aliasControlPlane struct {
 }
 
 func (c *aliasControlPlane) refetch() *pb.Refetch {
-	return &pb.Refetch{Catalog: proto.String(c.catalog), Schema: c.schema}
+	return &pb.Refetch{Catalog: c.catalog, Schema: c.schema}
 }
 
 func (c *aliasControlPlane) ValidateToken(context.Context, *pb.ValidateTokenRequest) (*pb.WireIdentity, error) {
@@ -38,7 +37,7 @@ func (c *aliasControlPlane) ValidateToken(context.Context, *pb.ValidateTokenRequ
 }
 
 func (c *aliasControlPlane) Decide(_ context.Context, request *pb.DecisionRequest) (*pb.WireDecision, error) {
-	if request.CurrentCatalog == nil || request.GetCurrentCatalog() != c.catalog {
+	if request.GetCurrentCatalog() != c.catalog {
 		return nil, status.Errorf(codes.FailedPrecondition, "catalog %q, want measured %q", request.GetCurrentCatalog(), c.catalog)
 	}
 	for _, column := range request.TempColumns {
@@ -53,7 +52,7 @@ func (c *aliasControlPlane) Decide(_ context.Context, request *pb.DecisionReques
 }
 
 func (c *aliasControlPlane) PushSchemaFragment(_ context.Context, fragment *pb.SchemaFragmentPush) (*pb.SchemaFragmentAck, error) {
-	if fragment.Catalog == nil || fragment.GetCatalog() != c.catalog || fragment.GetSchema() != c.schema || len(fragment.Columns) == 0 {
+	if fragment.GetCatalog() != c.catalog || fragment.GetSchema() != c.schema || len(fragment.Columns) == 0 {
 		return nil, status.Error(codes.FailedPrecondition, "fragment does not match measured catalog")
 	}
 	for _, column := range fragment.Columns {
@@ -134,11 +133,11 @@ func TestPostgresCatalogThroughDatabaseAlias(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if detail == nil || detail.Catalog == nil || *detail.Catalog != measured || len(detail.ForeignKeys) != 1 {
+		if detail == nil || detail.Catalog != measured || len(detail.ForeignKeys) != 1 {
 			t.Fatalf("detail = %+v", detail)
 		}
 		relation := detail.ForeignKeys[0]
-		if relation.SourceCatalog == nil || *relation.SourceCatalog != measured || relation.TargetCatalog == nil || *relation.TargetCatalog != measured {
+		if relation.SourceCatalog != measured || relation.TargetCatalog != measured {
 			t.Fatalf("relation = %+v", relation)
 		}
 		if _, err := target.ReadTableDetail(ctx, &enginepb.ObjectRef{Catalog: "advisory", Schema: schema, Table: "child"}); err == nil {

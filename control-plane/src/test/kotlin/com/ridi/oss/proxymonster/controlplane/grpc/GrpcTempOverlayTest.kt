@@ -1,7 +1,6 @@
 package com.ridi.oss.proxymonster.controlplane.grpc
 
 import com.ridi.oss.proxymonster.controlplane.Channel
-import com.ridi.oss.proxymonster.grpc.Engine
 import com.ridi.oss.proxymonster.grpc.tempColumn
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -14,7 +13,8 @@ import kotlin.test.assertTrue
  * `pg_temp*` schema filter. (Pure — no DB/gRPC server needed, so it runs everywhere.)
  */
 class GrpcTempOverlayTest {
-    private fun temp(schema: String, table: String = "scratch", column: String = "secret") = tempColumn {
+    private fun temp(schema: String, table: String = "scratch", column: String = "secret", catalog: String = "appdb") = tempColumn {
+        this.catalog = catalog
         this.schema = schema
         this.table = table
         this.column = column
@@ -24,11 +24,11 @@ class GrpcTempOverlayTest {
 
     @Test
     fun `an editor pg_temp column is overlaid under the pg database catalog as a temp`() {
-        val out = editorTempOverlay(Channel.EDITOR, listOf(temp("pg_temp_3")), engine = Engine.POSTGRES, dbName = "appdb")
+        val out = editorTempOverlay(Channel.EDITOR, listOf(temp("pg_temp_3")))
         assertEquals(1, out.size)
         val c = out.single()
         assertTrue(c.isTemp, "an overlaid session temp must be flagged isTemp (reads unmasked)")
-        assertEquals("appdb", c.catalog, "the catalog segment must match the analyzer namespace (PG: db name)")
+        assertEquals("appdb", c.catalog, "the overlay keeps the catalog the proxy measured")
         assertEquals("pg_temp_3", c.schema)
         assertEquals("scratch", c.table)
     }
@@ -40,8 +40,6 @@ class GrpcTempOverlayTest {
         val out = editorTempOverlay(
             Channel.EDITOR,
             listOf(temp("public", table = "users"), temp("pg_catalog"), temp("information_schema")),
-            engine = Engine.POSTGRES,
-            dbName = "appdb",
         )
         assertTrue(out.isEmpty(), "only pg_temp* schemas may be overlaid unmasked; got $out")
     }
@@ -51,8 +49,6 @@ class GrpcTempOverlayTest {
         val out = editorTempOverlay(
             Channel.EDITOR,
             listOf(temp("public", table = "real"), temp("pg_temp_5", table = "mine")),
-            engine = Engine.POSTGRES,
-            dbName = "appdb",
         )
         assertEquals(listOf("mine"), out.map { it.table }, "the real-schema entry must be dropped, the temp kept")
     }
@@ -62,7 +58,7 @@ class GrpcTempOverlayTest {
         // Only a persistent editor session legitimately carries session temps. A wire/workflow decision with
         // temp_columns is a buggy/compromised proxy — the overlay must be empty regardless of the schema.
         for (ch in listOf(Channel.WIRE, Channel.WORKFLOW_EXECUTOR, Channel.WORKFLOW_VIEWER)) {
-            val out = editorTempOverlay(ch, listOf(temp("pg_temp_3")), engine = Engine.POSTGRES, dbName = "appdb")
+            val out = editorTempOverlay(ch, listOf(temp("pg_temp_3")))
             assertTrue(out.isEmpty(), "a session-temp overlay must never apply on the $ch channel; got $out")
         }
     }
@@ -71,7 +67,7 @@ class GrpcTempOverlayTest {
     fun `mysql overlays under the def catalog segment`() {
         // MySQL never actually sends temps (they're invisible to information_schema), but if it did the
         // catalog segment must be "def" to align with the analyzer namespace.
-        val out = editorTempOverlay(Channel.EDITOR, listOf(temp("pg_temp_1")), engine = Engine.MYSQL, dbName = "appdb")
+        val out = editorTempOverlay(Channel.EDITOR, listOf(temp("pg_temp_1", catalog = "def")))
         assertEquals("def", out.single().catalog)
     }
 }

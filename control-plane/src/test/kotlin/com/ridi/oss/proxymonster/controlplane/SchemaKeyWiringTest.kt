@@ -34,6 +34,7 @@ class SchemaKeyWiringTest {
     private fun specsFor(catalog: List<CatalogColumn>) = catalogSnapshot {
         columns += catalog.map { col ->
             column {
+                this.catalog = col.catalog
                 schema = col.schema
                 table = col.table
                 this.column = col.column

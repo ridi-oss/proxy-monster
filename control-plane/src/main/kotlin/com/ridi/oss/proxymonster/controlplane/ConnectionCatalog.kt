@@ -30,6 +30,7 @@ private const val DEFAULT_STALENESS_NANOS = 15L * 60 * 1_000_000_000
 data class ContentHash(val bytes: ByteString)
 
 data class FragmentColumn(
+    val catalog: String,
     val schema: String,
     val table: String,
     val column: String,
@@ -66,7 +67,7 @@ data class Authoritative(
     val measuredNanos: Long,
 )
 
-data class Binding(val datasourceName: String, val principal: String, val tokenKind: String)
+data class Binding(val datasourceName: String, val principal: String, val tokenKind: String, val catalog: String)
 
 data class HeldSchema(
     val pooledRef: PoolKey,
@@ -83,7 +84,8 @@ data class PendingRefetch(
 
 /** Build the proxy's conditional-refetch command; an absent [hash] leaves `if_hash_differs` empty
  *  (unconditional fetch, fail-safe). */
-private fun refetchOf(schema: String, hash: ContentHash?): Refetch = refetch {
+private fun refetchOf(catalog: String, schema: String, hash: ContentHash?): Refetch = refetch {
+    this.catalog = catalog
     this.schema = schema
     hash?.let { ifHashDiffers = it.bytes }
 }
@@ -186,7 +188,7 @@ class ConnectionCatalogRegistry(
                 }
                 val pending = PendingRefetch(auth?.hash, auth?.hash)
                 connection.pending[schema] = pending
-                refetchOf(schema, pending.expectedHash)
+                refetchOf(connection.binding.catalog, schema, pending.expectedHash)
             }.toList()
         }
 
@@ -232,6 +234,9 @@ class ConnectionCatalogRegistry(
                 return CatalogMutationResult.Rejected(Status.Code.FAILED_PRECONDITION, "stale backend_generation")
             }
         }
+        if (request.catalog.isBlank() || request.catalog != ds.effectiveCatalog) {
+            return CatalogMutationResult.Rejected(Status.Code.INVALID_ARGUMENT, "invalid catalog")
+        }
         val pending = connection.pending[request.schema]
             ?: return CatalogMutationResult.Rejected(
                 Status.Code.FAILED_PRECONDITION,
@@ -272,9 +277,9 @@ class ConnectionCatalogRegistry(
         }
 
         val columns = request.columnsList.map {
-            FragmentColumn(it.schema, it.table, it.column, it.dataType, it.ordinal, it.nullable)
+            FragmentColumn(it.catalog, it.schema, it.table, it.column, it.dataType, it.ordinal, it.nullable)
         }
-        if (columns.any { it.schema != request.schema }) {
+        if (request.columnsList.any { it.catalog != request.catalog || it.schema != request.schema }) {
             return CatalogMutationResult.Rejected(Status.Code.INVALID_ARGUMENT, "fragment column schema mismatch")
         }
         return synchronized(stateLock) {
@@ -406,7 +411,7 @@ class ConnectionCatalogRegistry(
             .distinct()
             .map { schema ->
                 val pending = connection.pending.getOrPut(schema) { create(schema) }
-                refetchOf(schema, pending.expectedHash)
+                refetchOf(connection.binding.catalog, schema, pending.expectedHash)
             }.toList()
     }
 

@@ -259,7 +259,7 @@ class TableDetailDbTest {
         val body = response.bodyAsText()
         val detail = Json.decodeFromString<TableDetail>(body)
         assertEquals(
-            setOf("schema", "table", "columns", "indexes", "foreignKeys", "referencedBy", "metadata"),
+            setOf("catalog", "schema", "table", "columns", "indexes", "foreignKeys", "referencedBy", "metadata"),
             Json.parseToJsonElement(body).jsonObject.keys,
         )
         assertEquals(fixture.requestSchema, detail.schema)
@@ -314,10 +314,10 @@ class TableDetailDbTest {
             mysqlLowerCaseTableNames = if (engine == "mysql") 0 else null,
             engineVersion = if (engine == "mysql") "8.4.0" else "PostgreSQL 17.6",
             catalog = snapshotOf(
-                pushedColumn(schema, middle, "id", "bigint", 1, false),
-                pushedColumn(schema, middle, "classified_secret", "varchar", 2, false),
-                pushedColumn(schema, middle, "amount", if (engine == "mysql") "decimal" else "numeric", 3, false),
-                pushedColumn(schema, middle, "optional_note", "varchar", 4, true),
+                pushedColumn(datasource.effectiveCatalog, schema, middle, "id", "bigint", 1, false),
+                pushedColumn(datasource.effectiveCatalog, schema, middle, "classified_secret", "varchar", 2, false),
+                pushedColumn(datasource.effectiveCatalog, schema, middle, "amount", if (engine == "mysql") "decimal" else "numeric", 3, false),
+                pushedColumn(datasource.effectiveCatalog, schema, middle, "optional_note", "varchar", 4, true),
             ),
         )
         val mask = policyStore.createMaskFn(MaskFnInput(maskName, "LAST_N"))
@@ -332,6 +332,7 @@ class TableDetailDbTest {
             ),
         )
         val detail = TableDetail(
+            catalog = datasource.effectiveCatalog,
             schema = schema,
             table = middle,
             columns = listOf(
@@ -349,10 +350,10 @@ class TableDetailDbTest {
                 TableIndex(index, listOf(TableIndexColumn("classified_secret", 1, "DESC"), TableIndexColumn("amount", 2, "ASC")), true, if (engine == "mysql") "BTREE" else "btree"),
             ),
             foreignKeys = listOf(
-                TableRelation(outboundFk, schema, middle, listOf("parent_id"), schema, parent, listOf("id"), "NO ACTION", "NO ACTION"),
+                TableRelation(outboundFk, datasource.effectiveCatalog, schema, middle, listOf("parent_id"), datasource.effectiveCatalog, schema, parent, listOf("id"), "NO ACTION", "NO ACTION"),
             ),
             referencedBy = listOf(
-                TableRelation(inboundFk, schema, child, listOf("middle_id"), schema, middle, listOf("id"), "NO ACTION", "NO ACTION"),
+                TableRelation(inboundFk, datasource.effectiveCatalog, schema, child, listOf("middle_id"), datasource.effectiveCatalog, schema, middle, listOf("id"), "NO ACTION", "NO ACTION"),
             ),
             metadata = TableMetadata(
                 if (engine == "mysql") "InnoDB" else "PostgreSQL",

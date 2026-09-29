@@ -74,25 +74,22 @@ func (d *sqlDb) ReadTableDetail(ctx context.Context, table *enginepb.ObjectRef) 
 	if err != nil {
 		return nil, err
 	}
-	if table.Catalog != "" && table.Catalog != catalog {
+	if table.Catalog != catalog {
 		return nil, fmt.Errorf("table catalog %q does not match target catalog %q", table.Catalog, catalog)
 	}
 	schema := table.Schema
-	if table.Catalog == "" {
-		schema = d.provider.dialect.ResolveSchema(schema, d.target.Db)
-	}
 	exists, err := tableDetailTableExists(conn, d.provider.dialect, schema, table.Table)
 	if err != nil || !exists {
 		return nil, err
 	}
 	detail, err := d.provider.readDetail(conn, schema, table.Table)
 	if detail != nil {
-		detail.Catalog = &catalog
+		detail.Catalog = catalog
 		for i := range detail.ForeignKeys {
-			detail.ForeignKeys[i].SourceCatalog, detail.ForeignKeys[i].TargetCatalog = &catalog, &catalog
+			detail.ForeignKeys[i].SourceCatalog, detail.ForeignKeys[i].TargetCatalog = catalog, catalog
 		}
 		for i := range detail.ReferencedBy {
-			detail.ReferencedBy[i].SourceCatalog, detail.ReferencedBy[i].TargetCatalog = &catalog, &catalog
+			detail.ReferencedBy[i].SourceCatalog, detail.ReferencedBy[i].TargetCatalog = catalog, catalog
 		}
 	}
 	return detail, err

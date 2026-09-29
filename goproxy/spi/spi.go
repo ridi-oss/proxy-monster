@@ -106,7 +106,7 @@ type TargetDbSession interface {
 
 // TableDetail is the canonical metadata-only table-browser response shared with the control plane.
 type TableDetail struct {
-	Catalog      *string             `json:"catalog"`
+	Catalog      string              `json:"catalog"`
 	Schema       string              `json:"schema"`
 	Table        string              `json:"table"`
 	Columns      []TableDetailColumn `json:"columns"`
@@ -152,8 +152,8 @@ type TableIndex struct {
 
 // TableRelation describes one foreign-key relation.
 type TableRelation struct {
-	SourceCatalog *string  `json:"sourceCatalog"`
-	TargetCatalog *string  `json:"targetCatalog"`
+	SourceCatalog string   `json:"sourceCatalog"`
+	TargetCatalog string   `json:"targetCatalog"`
 	Name          string   `json:"name"`
 	SourceSchema  string   `json:"sourceSchema"`
 	SourceTable   string   `json:"sourceTable"`

@@ -4,7 +4,6 @@ import (
 	"testing"
 
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
-	"google.golang.org/protobuf/proto"
 )
 
 func TestRunnerCatalogIdentity(t *testing.T) {
@@ -23,7 +22,7 @@ func TestRunnerCatalogIdentity(t *testing.T) {
 			fake, client := runStartFakeCP(t, runSessionID)
 			open := runOpen(fixture)
 			for _, command := range open.OnOpen {
-				command.Catalog = proto.String(catalog)
+				command.Catalog = catalog
 			}
 			done := runLaunchOpen(t, fake, client, fixture, open)
 			runSendQuery(fake, "SELECT 1", 20)
@@ -33,7 +32,7 @@ func TestRunnerCatalogIdentity(t *testing.T) {
 			}
 			runExpectDone(t, runRecv(t, fake), -1)
 			requests := fake.runRecordedRequests()
-			if len(requests) != 1 || requests[0].CurrentCatalog == nil || requests[0].GetCurrentCatalog() != catalog {
+			if len(requests) != 1 || requests[0].GetCurrentCatalog() != catalog {
 				t.Fatalf("decision requests = %v", requests)
 			}
 			fragments := fake.runRecordedFragments()
@@ -42,7 +41,7 @@ func TestRunnerCatalogIdentity(t *testing.T) {
 			}
 			columns := 0
 			for _, fragment := range fragments {
-				if fragment.Catalog == nil || fragment.GetCatalog() != catalog {
+				if fragment.GetCatalog() != catalog {
 					t.Fatalf("fragment = %v", fragment)
 				}
 				for _, column := range fragment.Columns {

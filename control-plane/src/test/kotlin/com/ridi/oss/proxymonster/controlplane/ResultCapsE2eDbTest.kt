@@ -223,6 +223,7 @@ class ResultCapsE2eDbTest {
             stub.decide(decisionRequest {
                 this.token = this@WireClient.token
                 datasourceName = fx.datasource.name
+                currentCatalog = fx.datasource.effectiveCatalog
                 connectionId = this@WireClient.connectionId
                 this.sql = sql
                 searchPath.add(schema)
@@ -529,7 +530,7 @@ class ResultCapsE2eDbTest {
         val editorToken = core.tokenStore.issue(TokenKind.EDITOR, requester, emptyList(), null, 3600).token
         val editorConnection = pcf.openAndPush(requester, listOf(schema), tokenKind = TokenKind.EDITOR.name).connectionId
         val denied = stub.decide(decisionRequest {
-            token = editorToken; datasourceName = fx.datasource.name; connectionId = editorConnection
+            token = editorToken; datasourceName = fx.datasource.name; currentCatalog = fx.datasource.effectiveCatalog; connectionId = editorConnection
             this.sql = "select id from users"; searchPath.add(schema)
         }).verdict
         assertEquals(WireEnfAction.DENY, denied.decision)

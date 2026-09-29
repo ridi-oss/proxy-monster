@@ -16,6 +16,7 @@ data class Classification(
 /** Live table-browser metadata. The proxy serializes this shape and the control plane serves it unchanged. */
 @Serializable
 data class TableDetail(
+    val catalog: String,
     val schema: String,
     val table: String,
     val columns: List<TableDetailColumn>,
@@ -61,9 +62,11 @@ data class TableIndex(
 @Serializable
 data class TableRelation(
     val name: String,
+    val sourceCatalog: String,
     val sourceSchema: String,
     val sourceTable: String,
     val sourceColumns: List<String>,
+    val targetCatalog: String,
     val targetSchema: String,
     val targetTable: String,
     val targetColumns: List<String>,

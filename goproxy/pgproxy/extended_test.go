@@ -486,7 +486,7 @@ func TestExtendedBeforeDecideRefetchRetriesWithoutReadyForQueryLeak(t *testing.T
 		attempts++
 		if attempts == 1 {
 			return beforeDecide(&pb.ProxyCommand{
-				Command: &pb.ProxyCommand_Refetch{Refetch: &pb.Refetch{Schema: primarySchema}},
+				Command: &pb.ProxyCommand_Refetch{Refetch: &pb.Refetch{Schema: primarySchema, Catalog: "app"}},
 			}), nil
 		}
 		return wireVerdict(&pb.Verdict{Decision: pb.EnfAction_ALLOW}), nil

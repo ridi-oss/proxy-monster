@@ -1,6 +1,7 @@
 package com.ridi.oss.proxymonster.controlplane.grpc
 
 import com.ridi.oss.proxymonster.controlplane.AccessRequest
+import com.ridi.oss.proxymonster.controlplane.effectiveCatalog
 import com.ridi.oss.proxymonster.controlplane.Binding
 import com.ridi.oss.proxymonster.controlplane.CatalogColumn
 import com.ridi.oss.proxymonster.controlplane.Channel
@@ -299,7 +300,7 @@ abstract class WireTaskDecideDbContract {
     @Test
     fun `stale catalog before-decide creates no wire task`() = runBlocking {
         val opened = fixture.core.connectionCatalog.open(
-            Binding(fixture.datasource.name, principal, "USER"),
+            Binding(fixture.datasource.name, principal, "USER", fixture.datasource.effectiveCatalog),
             emptyList(),
         )
         val before = wireTasks().size

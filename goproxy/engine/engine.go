@@ -110,23 +110,6 @@ func (d Dialect) Placeholder(n int) string {
 	}
 }
 
-// ResolveSchema resolves a per-request schema to the concrete schema a table lives under. The cross-engine
-// "public" default selector maps to this dialect's default schema (MySQL's database, since a MySQL
-// "database" is the ANSI schema; Postgres's "public"); any other value is an explicit schema/database and
-// is used as-is, so MySQL addresses every database, not only the connection's default. Mirrors
-// Engine.resolveSchema in the control plane.
-func (d Dialect) ResolveSchema(requestedSchema, dbName string) string {
-	if requestedSchema != "public" {
-		return requestedSchema
-	}
-	switch d {
-	case MySQL:
-		return dbName
-	default:
-		return "public"
-	}
-}
-
 // DefaultProxyPort is the proxy's default client-facing listen port for this dialect when PM_PROXY_PORT is
 // unset — MySQL 6033, Postgres 6432 (an unrecognized dialect falls back to the MySQL default; boot rejects
 // it before the port is used).

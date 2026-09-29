@@ -17,7 +17,7 @@ import com.ridi.oss.proxymonster.analyzer.pb.StatementFacts
 fun columnKey(namespace: Namespace, column: Column): String {
     validateNamespace(namespace)
     validateColumn(column)
-    return "${column.catalog.ifBlank { namespace.catalog }}.${column.schema}.${column.table}.${column.column}"
+    return "${column.catalog}.${column.schema}.${column.table}.${column.column}"
 }
 
 /**
@@ -68,6 +68,7 @@ private fun validateNamespace(namespace: Namespace) {
 }
 
 private fun validateColumn(column: Column) {
+    require(column.catalog.isNotBlank()) { "column catalog is required" }
     require(column.schema.isNotBlank()) { "column schema is required" }
     require(column.table.isNotBlank()) { "column table is required" }
     require(column.column.isNotBlank()) { "column name is required" }
@@ -89,7 +90,7 @@ private fun validateUniqueness(namespaceCatalog: String, columns: List<Column>):
 
     for (column in columns) {
         validateColumn(column)
-        val schema = SchemaIdentity(column.catalog.ifBlank { namespaceCatalog }, column.schema)
+        val schema = SchemaIdentity(column.catalog, column.schema)
         val table = TableIdentity(schema, column.table)
         val renderedTable = listOf(schema.catalog, schema.schema, table.table).joinToString(".")
         val previousRenderedTable = renderedTables.putIfAbsent(renderedTable, table)

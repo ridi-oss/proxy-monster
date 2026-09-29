@@ -32,7 +32,7 @@ func wireBefore(commands ...*pb.ProxyCommand) *pb.WireDecision {
 }
 
 func refetch(schema string, hash []byte) *pb.ProxyCommand {
-	return &pb.ProxyCommand{Command: &pb.ProxyCommand_Refetch{Refetch: &pb.Refetch{Schema: schema, IfHashDiffers: hash}}}
+	return &pb.ProxyCommand{Command: &pb.ProxyCommand_Refetch{Refetch: &pb.Refetch{Catalog: "db", Schema: schema, IfHashDiffers: hash}}}
 }
 
 func TestDecisionFromWire(t *testing.T) {
@@ -41,7 +41,7 @@ func TestDecisionFromWire(t *testing.T) {
 		if decision != nil {
 			t.Fatalf("decision = %+v, want nil", decision)
 		}
-		want := []*pb.Refetch{{Schema: "app", IfHashDiffers: []byte{1, 2}}}
+		want := []*pb.Refetch{{Catalog: "db", Schema: "app", IfHashDiffers: []byte{1, 2}}}
 		if !reflect.DeepEqual(commands, want) {
 			t.Fatalf("commands = %+v, want %+v", commands, want)
 		}
@@ -75,7 +75,7 @@ func TestDecisionFromWire(t *testing.T) {
 			EffectiveRoles:      []string{"analyst"},
 			RewrittenSQL:        proto.String("SELECT c FROM t"),
 			UnmaskablePermitted: true,
-			AfterStatement:      []*pb.Refetch{{Schema: "app", IfHashDiffers: []byte("hash")}},
+			AfterStatement:      []*pb.Refetch{{Catalog: "db", Schema: "app", IfHashDiffers: []byte("hash")}},
 			Generation:          9,
 			ResultFingerprint:   []*enginepb.RequireResultReadGrant{{Resource: &enginepb.RequireResultReadGrant_Function{Function: &enginepb.FunctionResource{Name: "now"}}}},
 		}
@@ -137,7 +137,7 @@ func TestIdentityFromWire(t *testing.T) {
 		Principal:    "alice@example.com",
 		Roles:        []string{"analyst", "reader"},
 		ConnectionID: []byte("0123456789abcdef"),
-		OnOpen:       []*pb.Refetch{{Schema: "app", IfHashDiffers: []byte("hash")}},
+		OnOpen:       []*pb.Refetch{{Catalog: "db", Schema: "app", IfHashDiffers: []byte("hash")}},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("identity = %+v, want %+v", got, want)
@@ -354,7 +354,7 @@ func TestValidateTokenMapsRequestAndIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ValidateToken: %v", err)
 	}
-	if got.Principal != "alice@example.com" || !reflect.DeepEqual(got.OnOpen, []*pb.Refetch{{Schema: "app"}}) {
+	if got.Principal != "alice@example.com" || !reflect.DeepEqual(got.OnOpen, []*pb.Refetch{{Catalog: "db", Schema: "app"}}) {
 		t.Fatalf("identity = %+v", got)
 	}
 	fake.mu.Lock()
@@ -413,7 +413,7 @@ func TestDecideMapsRequestAndRetriesBeforeDecide(t *testing.T) {
 	if out.IsErr() || out.Decision.Action != "MASK" || out.Decision.Generation != 4 {
 		t.Fatalf("Decide = %+v", out)
 	}
-	if !reflect.DeepEqual(run, [][]*pb.Refetch{{{Schema: "app", IfHashDiffers: []byte("old")}}}) {
+	if !reflect.DeepEqual(run, [][]*pb.Refetch{{{Catalog: "db", Schema: "app", IfHashDiffers: []byte("old")}}}) {
 		t.Fatalf("RunCommands calls = %+v", run)
 	}
 
@@ -652,20 +652,20 @@ func TestStreamEventsDispatchesMappedRunOpen(t *testing.T) {
 		{Kind: &pb.ControlEvent_OpenRunChannel{OpenRunChannel: &pb.OpenRunChannel{
 			SessionId: "sess-1", EphemeralToken: "eph-9", ConnectionId: connectionID, OnOpen: []*pb.ProxyCommand{refetch("app", nil)},
 		}}},
-		{Kind: &pb.ControlEvent_OpenTableDetailChannel{OpenTableDetailChannel: &pb.OpenTableDetailChannel{SessionId: "sess-2", Schema: "public", Table: "users"}}},
+		{Kind: &pb.ControlEvent_OpenTableDetailChannel{OpenTableDetailChannel: &pb.OpenTableDetailChannel{SessionId: "sess-2", Catalog: "db", Schema: "public", Table: "users"}}},
 	}}
 	c := startFakeControlPlane(t, fake)
 	var refreshes int
 	var openedRun spi.RunOpen
 	var table []string
-	err := c.StreamEvents(func() { refreshes++ }, func(open spi.RunOpen) { openedRun = open }, func(sessionID, schema, tableName string) {
-		table = []string{sessionID, schema, tableName}
+	err := c.StreamEvents(func() { refreshes++ }, func(open spi.RunOpen) { openedRun = open }, func(sessionID string, ref *enginepb.ObjectRef) {
+		table = []string{sessionID, ref.GetCatalog(), ref.GetSchema(), ref.GetTable()}
 	})
 	if err == nil {
 		t.Fatal("StreamEvents returned nil, want EOF")
 	}
-	wantRun := spi.RunOpen{SessionID: "sess-1", Token: "eph-9", ConnectionID: connectionID, OnOpen: []*pb.Refetch{{Schema: "app"}}}
-	if refreshes != 1 || !reflect.DeepEqual(openedRun, wantRun) || !reflect.DeepEqual(table, []string{"sess-2", "public", "users"}) {
+	wantRun := spi.RunOpen{SessionID: "sess-1", Token: "eph-9", ConnectionID: connectionID, OnOpen: []*pb.Refetch{{Catalog: "db", Schema: "app"}}}
+	if refreshes != 1 || !reflect.DeepEqual(openedRun, wantRun) || !reflect.DeepEqual(table, []string{"sess-2", "db", "public", "users"}) {
 		t.Fatalf("dispatch refresh/run/table = %d/%+v/%v", refreshes, openedRun, table)
 	}
 	fake.mu.Lock()
@@ -682,7 +682,7 @@ func TestStreamEventsDispatchesMalformedRunOpen(t *testing.T) {
 	}}}}}
 	c := startFakeControlPlane(t, fake)
 	var openedRun spi.RunOpen
-	_ = c.StreamEvents(func() {}, func(open spi.RunOpen) { openedRun = open }, func(string, string, string) {})
+	_ = c.StreamEvents(func() {}, func(open spi.RunOpen) { openedRun = open }, func(string, *enginepb.ObjectRef) {})
 	if openedRun.SessionID != "bad" || openedRun.MapErr == nil {
 		t.Fatalf("malformed run open was not dispatched with MapErr: %+v", openedRun)
 	}
@@ -695,7 +695,7 @@ func TestStreamEventsReturnsErrDrainingOnDrainSignal(t *testing.T) {
 		{Kind: &pb.ControlEvent_Draining{Draining: &pb.Draining{}}},
 	}}
 	c := startFakeControlPlane(t, fake)
-	err := c.StreamEvents(func() {}, func(spi.RunOpen) {}, func(string, string, string) {})
+	err := c.StreamEvents(func() {}, func(spi.RunOpen) {}, func(string, *enginepb.ObjectRef) {})
 	if !errors.Is(err, errDraining) {
 		t.Fatalf("StreamEvents err = %v, want errDraining", err)
 	}
@@ -753,7 +753,7 @@ func TestEventsLoopReconnectsFastOnDrain(t *testing.T) {
 			streamMaxAge:      time.Minute, // long enough that only the drain path paces this test
 			reconnect:         backoff,
 			rotationReconnect: eventsRotationReconnect,
-		}, func() {}, func() {}, func(spi.RunOpen) {}, func(string, string, string) {})
+		}, func() {}, func() {}, func(spi.RunOpen) {}, func(string, *enginepb.ObjectRef) {})
 	}()
 	t.Cleanup(func() {
 		cancel()
@@ -874,7 +874,7 @@ func TestRunEventsLoopExitsOnEventsVersionRejection(t *testing.T) {
 			streamMaxAge:      time.Minute,
 			reconnect:         10 * time.Millisecond,
 			rotationReconnect: eventsRotationReconnect,
-		}, func() {}, func() {}, func(spi.RunOpen) {}, func(string, string, string) {})
+		}, func() {}, func() {}, func(spi.RunOpen) {}, func(string, *enginepb.ObjectRef) {})
 	}()
 	select {
 	case err := <-errCh:
@@ -899,7 +899,7 @@ func TestStreamEventsEndsAtItsMaxAge(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	start := time.Now()
-	err := c.streamEvents(ctx, 300*time.Millisecond, func() {}, func(spi.RunOpen) {}, func(string, string, string) {})
+	err := c.streamEvents(ctx, 300*time.Millisecond, func() {}, func(spi.RunOpen) {}, func(string, *enginepb.ObjectRef) {})
 	elapsed := time.Since(start)
 
 	if err == nil {
@@ -929,7 +929,7 @@ func TestEventsLoopReopensAfterMaxAge(t *testing.T) {
 			streamMaxAge:      150 * time.Millisecond,
 			reconnect:         10 * time.Millisecond,
 			rotationReconnect: 10 * time.Millisecond,
-		}, func() {}, func() {}, func(spi.RunOpen) {}, func(string, string, string) {})
+		}, func() {}, func() {}, func(spi.RunOpen) {}, func(string, *enginepb.ObjectRef) {})
 	}()
 	t.Cleanup(func() {
 		cancel()
@@ -966,7 +966,7 @@ func TestEventsLoopRotationGapStaysBoundedAcrossPeriods(t *testing.T) {
 		loopDone := make(chan struct{})
 		go func() {
 			defer close(loopDone)
-			c.runEventsLoop(ctx, timings, func() {}, func() {}, func(spi.RunOpen) {}, func(string, string, string) {})
+			c.runEventsLoop(ctx, timings, func() {}, func() {}, func(spi.RunOpen) {}, func(string, *enginepb.ObjectRef) {})
 		}()
 		defer func() {
 			cancel()
@@ -1044,7 +1044,7 @@ func TestEventsLoopBacksOffOnServerDeadlineExceeded(t *testing.T) {
 			streamMaxAge:      time.Minute, // long, so only the server's status ends the stream
 			reconnect:         backoff,
 			rotationReconnect: 10 * time.Millisecond,
-		}, func() {}, func() {}, func(spi.RunOpen) {}, func(string, string, string) {})
+		}, func() {}, func() {}, func(spi.RunOpen) {}, func(string, *enginepb.ObjectRef) {})
 	}()
 	t.Cleanup(func() {
 		cancel()
@@ -1077,7 +1077,7 @@ func TestEventsLoopReopensWithoutWaitingForResync(t *testing.T) {
 			streamMaxAge:      150 * time.Millisecond,
 			reconnect:         10 * time.Millisecond,
 			rotationReconnect: 10 * time.Millisecond,
-		}, resync, func() {}, func(spi.RunOpen) {}, func(string, string, string) {})
+		}, resync, func() {}, func(spi.RunOpen) {}, func(string, *enginepb.ObjectRef) {})
 	}()
 	t.Cleanup(func() {
 		cancel()
@@ -1150,7 +1150,7 @@ func TestEventsLoopWaitsTheBackoffBetweenReopens(t *testing.T) {
 			streamMaxAge:      time.Minute, // long enough that only the backoff paces this test
 			reconnect:         backoff,
 			rotationReconnect: eventsRotationReconnect,
-		}, func() {}, func() {}, func(spi.RunOpen) {}, func(string, string, string) {})
+		}, func() {}, func() {}, func(spi.RunOpen) {}, func(string, *enginepb.ObjectRef) {})
 	}()
 	t.Cleanup(func() {
 		cancel()

@@ -373,6 +373,7 @@ func TestValidateTokenCarriesClientAddr(t *testing.T) {
 func refetchCommand(schema string, hash []byte) *pb.ProxyCommand {
 	return &pb.ProxyCommand{Command: &pb.ProxyCommand_Refetch{Refetch: &pb.Refetch{
 		Schema:        schema,
+		Catalog:       "def",
 		IfHashDiffers: append([]byte(nil), hash...),
 	}}}
 }
@@ -1064,7 +1065,7 @@ func TestAllowRelaysRowsAndDecisionContext(t *testing.T) {
 		t.Fatalf("Decide requests = %d, want 1", len(requests))
 	}
 	req := requests[0]
-	if req.CurrentCatalog == nil || req.GetCurrentCatalog() != "def" {
+	if req.GetCurrentCatalog() != "def" {
 		t.Fatalf("DecisionRequest catalog = %v, want def", req.CurrentCatalog)
 	}
 	if req.GetToken() != validToken || req.GetSql() != query || !reflect.DeepEqual(req.GetSearchPath(), []string{primarySchema}) {

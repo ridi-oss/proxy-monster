@@ -438,7 +438,7 @@ class DatasourceStore(internal val dataSource: DataSource) {
         engineVersion: String,
         catalog: CatalogSnapshot,
     ): Int {
-        val duplicate = catalog.columnsList.groupingBy { Triple(it.schema, it.table, it.column) }.eachCount()
+        val duplicate = catalog.columnsList.groupingBy { listOf(it.catalog, it.schema, it.table, it.column) }.eachCount()
             .entries.firstOrNull { it.value > 1 }
         require(duplicate == null) { "duplicate catalog column ${duplicate!!.key}" }
         dataSource.connection.use { c ->
@@ -563,12 +563,12 @@ class DatasourceStore(internal val dataSource: DataSource) {
     }
 
 
-    fun catalog(id: Long, c: java.sql.Connection): Catalog = readCatalog(id, c) { snapshot, catalogName, classifications ->
+    fun catalog(id: Long, c: java.sql.Connection): Catalog = readCatalog(id, c) { snapshot, classifications ->
         snapshot.columnsList
             .sortedWith(compareBy({ it.schema }, { it.table }, { it.ordinal }))
             .map { col ->
                 CatalogColumn(
-                    catalogName, col.schema, col.table, col.column, col.dataType, sqlTypeFor(col.dataType),
+                    col.catalog, col.schema, col.table, col.column, col.dataType, sqlTypeFor(col.dataType),
                     col.ordinal, col.nullable, classifications[Triple(col.schema, col.table, col.column)],
                 )
             }
@@ -586,10 +586,9 @@ class DatasourceStore(internal val dataSource: DataSource) {
     private fun readCatalog(
         id: Long,
         c: java.sql.Connection,
-        columns: (CatalogSnapshot, String, Map<Triple<String, String, String>, Classification>) -> List<CatalogColumn>,
+        columns: (CatalogSnapshot, Map<Triple<String, String, String>, Classification>) -> List<CatalogColumn>,
     ): Catalog = c.prepareStatement(
-        """SELECT CASE WHEN lower(d.engine) = 'mysql' THEN 'def' ELSE d.db_name END AS catalog_name, d.catalog,
-                  d.engine, d.engine_version,
+        """SELECT d.catalog, d.engine, d.engine_version,
                   cl.schema_name, cl.table_name, cl.column_name, cl.tags, cl.mask_fn_id, m.name AS mask_fn_name
            FROM datasource d
            LEFT JOIN column_classification cl ON cl.datasource_id = d.id
@@ -598,20 +597,18 @@ class DatasourceStore(internal val dataSource: DataSource) {
     ).use { ps ->
         ps.setLong(1, id)
         ps.executeQuery().use { rs ->
-            var catalogName = ""
             var engine: Engine? = null
             var engineVersion: String? = null
             var snapshot = CatalogSnapshot.getDefaultInstance()
             val classifications = HashMap<Triple<String, String, String>, Classification>()
             while (rs.next()) {
-                catalogName = rs.getString("catalog_name")
                 engine = engineFromWire(rs.getString("engine"))
                 engineVersion = rs.getString("engine_version")
                 rs.getBytes("catalog")?.let { snapshot = CatalogSnapshot.parseFrom(it) }
                 rs.classification()?.let { classifications[Triple(it.schema, it.table, it.column)] = it }
             }
             Catalog(
-                columns(snapshot, catalogName, classifications),
+                columns(snapshot, classifications),
                 engine?.functionCatalog(snapshot.routinesList.associate { it.schema to it.namesList }, engineVersion)
                     ?: FunctionCatalog.getDefaultInstance(),
             )

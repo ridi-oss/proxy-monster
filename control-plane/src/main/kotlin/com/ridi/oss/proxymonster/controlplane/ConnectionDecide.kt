@@ -49,10 +49,9 @@ suspend fun decideConnection(
         )
     }
 
-    val catalogName = ds.engine.catalogName(ds.dbName)
     val columns = core.connectionCatalog.structuralRows(connection).map { row ->
         CatalogColumn(
-            catalog = catalogName,
+            catalog = row.catalog,
             schema = row.schema,
             table = row.table,
             column = row.column,

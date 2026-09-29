@@ -3,6 +3,10 @@ package com.ridi.oss.proxymonster.controlplane.mcp
 import com.ridi.oss.proxymonster.auth.McpAccessIdentity
 import com.ridi.oss.proxymonster.auth.sha256Hex
 import com.ridi.oss.proxymonster.controlplane.ApiError
+import com.ridi.oss.proxymonster.controlplane.ApprovalService
+import com.ridi.oss.proxymonster.controlplane.EditorTaskService
+import com.ridi.oss.proxymonster.controlplane.RunExecService
+import com.ridi.oss.proxymonster.controlplane.TaskServiceException
 import com.ridi.oss.proxymonster.controlplane.AuditStore
 import com.ridi.oss.proxymonster.controlplane.Channel
 import com.ridi.oss.proxymonster.controlplane.ClassificationInput
@@ -26,6 +30,7 @@ import com.ridi.oss.proxymonster.controlplane.management.ManagementAuditRecorder
 import com.ridi.oss.proxymonster.controlplane.management.ManagementException
 import com.ridi.oss.proxymonster.controlplane.management.McpCapability
 import com.ridi.oss.proxymonster.controlplane.management.McpCapabilityRegistry
+import com.ridi.oss.proxymonster.controlplane.management.McpGate
 import com.ridi.oss.proxymonster.controlplane.management.PolicyManagementService
 import com.ridi.oss.proxymonster.controlplane.authz.AuthzAction
 import com.ridi.oss.proxymonster.controlplane.authz.AuthzContext
@@ -68,6 +73,7 @@ import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.longOrNull
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonObject
 import java.net.URI
@@ -78,13 +84,14 @@ import java.util.ResourceBundle
 import javax.sql.DataSource
 
 private val MCP_CONTEXT = AttributeKey<McpRequestContext>("mcp-request-context")
-private val mcpJson = Json { encodeDefaults = true; explicitNulls = false }
+internal val mcpJson = Json { encodeDefaults = true; explicitNulls = false }
 private val POLICY_MUTATION_TOOLS = setOf(
     "create_policy", "update_policy", "enable_policy", "disable_policy", "delete_policy",
 )
 private val CLASSIFICATION_TOOLS = setOf(
     "set_column_classification", "set_column_classifications", "clear_column_classification",
 )
+private val OPEN_WORLD_TOOLS = setOf("get_table_detail", "run_query", "execute_approval")
 private val CLASSIFICATION_ENTRY_KEYS = setOf("schema", "table", "column", "tags", "maskFnName")
 
 data class McpRequestContext(
@@ -100,6 +107,16 @@ fun Application.installMcp(
     datasourceService: DatasourceManagementService,
     policyService: PolicyManagementService,
     identityService: IdentityManagementService,
+    editorTasks: EditorTaskService = EditorTaskService(
+        config, core.datasourceStore, core.accessStore, queryResultStore = null, core.policyStore, core.userGroupStore,
+        core.roleResolver, core.authz, RunExecService(core), appScope = this, core.systemClassification,
+        core.taskCompletionHub, core.auditStore,
+    ),
+    approvals: ApprovalService = ApprovalService(
+        config, core.accessStore, core.auditStore, core.datasourceStore, core.policyStore, core.userGroupStore,
+        queryResultStore = null, core.roleResolver, core.authz, RunExecService(core), appScope = this,
+        core.systemClassification, core.taskCompletionHub,
+    ),
 ) {
     McpCapabilityRegistry.verify()
     val metadataUri = protectedResourceMetadataUri(config.mcpResource)
@@ -157,6 +174,7 @@ fun Application.installMcp(
 
     val authorizer = McpAuthorizer(config, core)
     val mutationExecutor = McpMutationExecutor(core.dataSource, core.auditStore, core.cedarPolicyStore, authorizer)
+    val taskTools = McpTaskTools(core, datasourceService, editorTasks, approvals)
     mcpStatelessStreamableHttp(
         path = "/mcp",
         // The SDK's built-in guard reads the HTTP/1.1 Host header literally and rejects HTTP/2
@@ -175,6 +193,7 @@ fun Application.installMcp(
             policyService,
             identityService,
             core,
+            taskTools,
         )
     }
 }
@@ -204,13 +223,17 @@ private fun McpAccessIdentity.toContext(requesterIp: String?) = McpRequestContex
 private class McpAuthorizationException(val error: ApiError, val roles: Set<String>) : RuntimeException(error.code)
 
 private class McpAuthorizer(private val config: Config, private val core: ControlPlaneCore) {
-    fun authorize(context: McpRequestContext, capability: McpCapability): Set<String> {
+    fun requireScope(context: McpRequestContext, capability: McpCapability) {
         if (capability.requiredScope !in context.scopes) {
             throw McpAuthorizationException(
                 ApiError("mcp.insufficient_scope", mapOf("scope" to capability.requiredScope)),
                 emptySet(),
             )
         }
+    }
+
+    fun authorize(context: McpRequestContext, capability: McpCapability): Set<String> {
+        requireScope(context, capability)
         val roles = core.roleResolver.resolve(context.principal)
         val decision = core.authz.authorizeAs(
             context.principal,
@@ -387,6 +410,7 @@ private fun createMcpServer(
     policyService: PolicyManagementService,
     identityService: IdentityManagementService,
     core: ControlPlaneCore,
+    taskTools: McpTaskTools,
 ): Server {
     val locale = requestLocale(call)
     val server = Server(
@@ -402,12 +426,16 @@ private fun createMcpServer(
                 readOnlyHint = capability.annotations.readOnlyHint,
                 destructiveHint = capability.annotations.destructiveHint,
                 idempotentHint = capability.classification == CapabilityClassification.READ,
-                openWorldHint = capability.toolName == "get_table_detail",
+                openWorldHint = capability.toolName in OPEN_WORLD_TOOLS,
             ),
         ) { request ->
             val args = request.arguments ?: JsonObject(emptyMap())
             try {
-                val structured = if (capability.classification == CapabilityClassification.READ) {
+                val structured = if (capability.gate == McpGate.RESOURCE) {
+                    authorizeScope(context, capability, args, authorizer, core.auditStore)
+                    validateArguments(capability, args)
+                    taskTools.execute(capability.toolName, args, context)
+                } else if (capability.classification == CapabilityClassification.READ) {
                     authorizeRead(context, capability, args, authorizer, core.auditStore)
                     validateArguments(capability, args)
                     executeRead(capability.toolName, args, datasourceService, policyService, identityService)
@@ -422,6 +450,8 @@ private fun createMcpServer(
                 localizedError(call, e.error, metadataUri)
             } catch (e: ManagementException) {
                 localizedError(call, e.error, metadataUri)
+            } catch (e: TaskServiceException) {
+                localizedError(call, e.error.withForbiddenDetail(capability))
             } catch (_: McpInputException) {
                 localizedError(call, ApiError("mcp.invalid_request"))
             } catch (_: Exception) {
@@ -430,6 +460,41 @@ private fun createMcpServer(
         }
     }
     return server
+}
+
+// A resource-scoped tool's Cedar gate runs inside the shared service; only the OAuth scope is checked here.
+private fun authorizeScope(
+    context: McpRequestContext,
+    capability: McpCapability,
+    arguments: JsonObject,
+    authorizer: McpAuthorizer,
+    auditStore: AuditStore,
+) {
+    try {
+        authorizer.requireScope(context, capability)
+    } catch (e: McpAuthorizationException) {
+        runCatching {
+            auditStore.insert(
+                mcpAuditRecord(
+                    context, capability, e.roles, safeDatasource(capability, arguments),
+                    mutationDetail(capability.toolName, arguments), Decision.DENY, e.error.code,
+                ),
+            )
+        }
+        throw e
+    }
+}
+
+// The services answer a bare common.forbidden; the tool's action names what was refused.
+private fun ApiError.withForbiddenDetail(capability: McpCapability): ApiError {
+    if (code != "common.forbidden" || params.isNotEmpty()) return this
+    // run_query self-approves, so either of its two decisions can refuse it.
+    val detail = if (capability.toolName == "run_query") {
+        "${AuthzAction.TASK_REQUEST.cedarId}, ${AuthzAction.TASK_APPROVE.cedarId}"
+    } else {
+        capability.action.cedarId
+    }
+    return copy(params = mapOf("detail" to detail))
 }
 
 private fun authorizeRead(
@@ -641,6 +706,12 @@ private fun schemaFor(tool: String): ToolSchema {
     val properties = buildJsonObject {
         fun string(name: String) = putJsonObject(name) { put("type", "string") }
         fun boolean(name: String) = putJsonObject(name) { put("type", "boolean") }
+        fun integer(name: String, min: Int? = null, max: Int? = null) = putJsonObject(name) {
+            put("type", "integer")
+            min?.let { put("minimum", it) }
+            max?.let { put("maximum", it) }
+        }
+        fun resultPage() { integer("statement", min = 0); integer("offset", min = 0); integer("limit", min = 1, max = 1000) }
         fun strings(name: String) = putJsonObject(name) {
             put("type", "array")
             put("items", buildJsonObject { put("type", "string") })
@@ -692,8 +763,21 @@ private fun schemaFor(tool: String): ToolSchema {
             "set_group_roles" -> { string("groupName"); strings("roleNames"); string("idempotencyKey") }
             "create_mask_fn" -> { string("name"); string("kind"); string("idempotencyKey") }
             "update_mask_fn" -> { string("name"); string("newName"); string("kind"); string("idempotencyKey") }
+            "describe_datasource" -> string("datasource")
+            "run_query" -> { string("datasource"); string("sql"); integer("maxRows", min = 1, max = 5000) }
+            "get_query_result" -> { integer("taskId"); resultPage() }
+            "get_query_status", "cancel_query" -> integer("taskId")
+            "discover_roles" -> { string("datasource"); string("sql") }
+            "request_approval" -> {
+                integer("decisionId"); string("datasource"); string("sql"); string("title"); string("roleName"); string("reason")
+            }
+            "list_my_approvals" -> string("status")
+            "get_approval", "approve_approval", "execute_approval", "cancel_approval" -> integer("id")
+            "reject_approval" -> { integer("id"); string("reason") }
+            "get_approval_result" -> { integer("id"); resultPage() }
         }
-        if (McpCapabilityRegistry.byName[tool]?.classification == CapabilityClassification.WRITE) {
+        val capability = McpCapabilityRegistry.byName[tool]
+        if (capability?.classification == CapabilityClassification.WRITE && capability.gate == McpGate.SYSTEM) {
             string("idempotencyKey")
         }
     }
@@ -714,12 +798,18 @@ private fun schemaFor(tool: String): ToolSchema {
         "add_group_member", "remove_group_member" -> listOf("groupName", "principal")
         "set_group_roles" -> listOf("groupName", "roleNames")
         "create_mask_fn", "update_mask_fn" -> listOf("name", "kind")
+        "describe_datasource" -> listOf("datasource")
+        "run_query", "discover_roles" -> listOf("datasource", "sql")
+        "get_query_result", "get_query_status", "cancel_query" -> listOf("taskId")
+        "request_approval" -> listOf("roleName", "reason")
+        "get_approval", "approve_approval", "execute_approval", "cancel_approval", "get_approval_result" -> listOf("id")
+        "reject_approval" -> listOf("id", "reason")
         else -> emptyList()
     }
     return ToolSchema(properties = properties, required = required)
 }
 
-private inline fun <reified T> structured(value: T): JsonObject = buildJsonObject {
+internal inline fun <reified T> structured(value: T): JsonObject = buildJsonObject {
     put("result", mcpJson.encodeToJsonElement(serializer<T>(), value))
 }
 
@@ -746,7 +836,7 @@ private fun localizedError(call: ApplicationCall, error: ApiError, metadataUri: 
     return CallToolResult(content = listOf(TextContent(body.toString())), isError = true, structuredContent = body)
 }
 
-private class McpInputException : RuntimeException()
+internal class McpInputException : RuntimeException()
 
 private fun validateArguments(capability: McpCapability, arguments: JsonObject) {
     val allowed = schemaFor(capability.toolName).properties?.keys.orEmpty()
@@ -806,9 +896,9 @@ private fun safeDatasource(capability: McpCapability, args: JsonObject): String 
         "control-plane"
     }
 
-private fun JsonObject.requiredString(name: String): String = string(name)?.takeIf(String::isNotBlank)
+internal fun JsonObject.requiredString(name: String): String = string(name)?.takeIf(String::isNotBlank)
     ?: throw ManagementException(ApiError("common.field_required", mapOf("fields" to name)))
-private fun JsonObject.string(name: String): String? {
+internal fun JsonObject.string(name: String): String? {
     val value = get(name) ?: return null
     if (value is JsonNull) return null
     return (value as? JsonPrimitive)?.takeIf { it.isString }?.contentOrNull ?: throw McpInputException()
@@ -818,6 +908,15 @@ private fun JsonObject.boolean(name: String): Boolean? {
     if (value is JsonNull) return null
     return (value as? JsonPrimitive)?.booleanOrNull ?: throw McpInputException()
 }
+internal fun JsonObject.long(name: String): Long? {
+    val value = get(name) ?: return null
+    if (value is JsonNull) return null
+    return (value as? JsonPrimitive)?.takeIf { !it.isString }?.longOrNull ?: throw McpInputException()
+}
+internal fun JsonObject.int(name: String): Int? =
+    long(name)?.let { if (it in Int.MIN_VALUE..Int.MAX_VALUE) it.toInt() else throw McpInputException() }
+internal fun JsonObject.requiredLong(name: String): Long =
+    long(name) ?: throw ManagementException(ApiError("common.field_required", mapOf("fields" to name)))
 /**
  * Read a bounded array of objects, rejecting any key the entry schema does not declare.
  * [validateArguments] only sees top-level keys, so without this a batch entry could carry an unknown

@@ -3,6 +3,7 @@ package com.ridi.oss.proxymonster.controlplane
 import com.ridi.oss.proxymonster.classification.SystemTag
 import com.ridi.oss.proxymonster.controlplane.authz.Authz
 import com.ridi.oss.proxymonster.controlplane.authz.AuthzAction
+import com.ridi.oss.proxymonster.controlplane.authz.AuthzContext
 import com.ridi.oss.proxymonster.controlplane.authz.AuthzDecision
 import com.ridi.oss.proxymonster.controlplane.authz.authorizeDatasourceAction
 import com.ridi.oss.proxymonster.controlplane.authz.requireAdmin
@@ -812,6 +813,16 @@ private suspend fun ApplicationCall.requireApiOrBearer(config: Config, tokenStor
 
 private val datasourceLog = org.slf4j.LoggerFactory.getLogger("com.ridi.oss.proxymonster.controlplane.Datasources")
 
+/** Whether Cedar grants [principal] datasource.connect on [ds] — the decision the proxy runs on connect. */
+internal fun mayConnect(authz: Authz, roleResolver: RoleResolver, principal: String, requesterIp: String?, ds: Datasource): Boolean {
+    val roles = roleResolver.resolve(principal)
+    val raw = AuthzContext(requesterIp = requesterIp)
+    val tags = authz.resolveContextTags(principal, roles, ds.name, raw, ds.tags)
+    return authz.authorizeDatasourceAction(
+        principal, roles, AuthzAction.DATASOURCE_CONNECT, ds.name, raw.copy(tags = tags), ds.tags,
+    ) !is AuthzDecision.Deny
+}
+
 fun Route.datasourceRoutes(
     config: Config,
     authz: Authz,
@@ -829,14 +840,8 @@ fun Route.datasourceRoutes(
     // connect. No authDebug arm: PM_AUTH_DEBUG is an AUTHENTICATION bypass, and `/auth/debug` persists its
     // claimed roles as real assignments so Cedar can evaluate them, so short-circuiting the decision here
     // would only hide the policy dev is configured to exercise.
-    fun mayConnect(call: ApplicationCall, principal: String, ds: Datasource): Boolean {
-        val roles = roleResolver.resolve(principal)
-        val raw = call.httpAuthzContext(config)
-        val tags = authz.resolveContextTags(principal, roles, ds.name, raw, ds.tags)
-        return authz.authorizeDatasourceAction(
-            principal, roles, AuthzAction.DATASOURCE_CONNECT, ds.name, raw.copy(tags = tags), ds.tags,
-        ) !is AuthzDecision.Deny
-    }
+    fun mayConnect(call: ApplicationCall, principal: String, ds: Datasource): Boolean =
+        mayConnect(authz, roleResolver, principal, call.httpRequesterIp(config), ds)
 
     // The datasource LIST stays open to every authenticated principal: the SQL editor's picker,
     // JIT-request compose (which must show datasources you CANNOT yet connect to, precisely so they can be

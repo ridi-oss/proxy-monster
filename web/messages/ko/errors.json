@@ -20,6 +20,7 @@
     "no_execute_role": "이 요청을 실행할 역할이 지정되어 있지 않습니다.",
     "no_unreleased_result": "이 요청에 대해 회원님이 보유한 미공개 결과가 없습니다.",
     "not_approver": "이 요청의 승인자가 아닙니다.",
+    "not_the_approver": "이 요청을 승인한 승인자만 실행할 수 있습니다.",
     "not_approved": "승인되지 않은 요청입니다.",
     "only_denied_queries": "거부된 쿼리만 승인 요청할 수 있습니다.",
     "role_required": "이 요청은 실행할 권한 상승 역할(role)을 지정해야 합니다.",

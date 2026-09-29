@@ -90,7 +90,14 @@ class ApprovalService(
         return decision !is AuthzDecision.Deny
     }
 
-    fun create(principal: String, requesterIp: String?, actor: AuditActor, input: CreateApprovalInput): CreateApprovalResponse {
+    /** [roleName] names R when [CreateApprovalInput.roleId] is null; it resolves only after the task.request gate. */
+    fun create(
+        principal: String,
+        requesterIp: String?,
+        actor: AuditActor,
+        input: CreateApprovalInput,
+        roleName: String? = null,
+    ): CreateApprovalResponse {
         if (input.reason.isBlank()) throw fieldRequired("reason")
 
         val hasSource = input.sourceDecisionId != null
@@ -117,7 +124,7 @@ class ApprovalService(
             val ds = datasourceStore.list().firstOrNull { it.name == source.datasource }
                 ?: throw TaskServiceException(HttpStatusCode.Conflict, notFoundError("datasource"))
             if (!mayRequest(principal, requesterIp, ds)) throw serviceForbidden()
-            if (input.roleId == null) throw roleRequired()
+            val roleId = roleIdOf(input, roleName)
 
             val request = try {
                 accessStore.createQueryRequest(
@@ -130,7 +137,7 @@ class ApprovalService(
                     reason = input.reason.trim(),
                     title = trimmedTitle(input.title),
                     evaluatedDecision = "DENY",
-                    roleId = input.roleId,
+                    roleId = roleId,
                     requestedDurationSec = input.requestedDurationSec,
                     actor = actor,
                     recorder = recorder,
@@ -149,7 +156,7 @@ class ApprovalService(
         val ds = datasourceStore.get(input.datasourceId!!) ?: throw serviceNotFound("datasource")
         val sql = input.sql!!
         if (!mayRequest(principal, requesterIp, ds)) throw serviceForbidden()
-        if (input.roleId == null) throw roleRequired()
+        val roleId = roleIdOf(input, roleName)
 
         // Split server-side, so the stored boundary is the engine's rather than a client's guess.
         val splitConfig = ds.splitEngineConfig() ?: throw unsplittableSql()
@@ -188,7 +195,7 @@ class ApprovalService(
             reason = input.reason.trim(),
             title = input.title!!.trim(),
             evaluatedDecision = decision.action.name,
-            roleId = input.roleId,
+            roleId = roleId,
             requestedDurationSec = input.requestedDurationSec,
             actor = actor,
             recorder = recorder,
@@ -458,6 +465,10 @@ class ApprovalService(
 
     private fun fieldRequired(field: String) =
         TaskServiceException(HttpStatusCode.BadRequest, ApiError("common.field_required", mapOf("fields" to field)))
+
+    private fun roleIdOf(input: CreateApprovalInput, roleName: String?): Long = input.roleId
+        ?: roleName?.let { (policyStore.getRoleByName(it) ?: throw serviceNotFound("role")).id }
+        ?: throw roleRequired()
 
     private fun roleRequired() = TaskServiceException(HttpStatusCode.BadRequest, ApiError("approval.role_required"))
 

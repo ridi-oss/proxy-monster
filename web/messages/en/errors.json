@@ -20,6 +20,7 @@
     "no_execute_role": "This request has no role to run under.",
     "no_unreleased_result": "No unreleased result is held by you for this request.",
     "not_approver": "You are not an approver for this request.",
+    "not_the_approver": "Only the approver who approved this request can run it.",
     "not_approved": "This request has not been approved.",
     "only_denied_queries": "Only denied queries can be requested for approval.",
     "role_required": "This request must specify an elevation role to run under.",

@@ -1,0 +1,12 @@
+-- The encrypted target-DB error behind a failed query result, beyond its error code.
+--
+-- A run that fails inside the target DB (a syntax error, a constraint violation, a missing table) carries a
+-- stable error_code the console localizes, but that code alone cannot say WHICH table was missing or WHICH
+-- constraint fired. The proxy reports the backend error text ONLY for a genuine target-DB statement ERR,
+-- tagged as such on the wire (RunError.target_db_error) and redaction-gated on the same decision as the wire
+-- path: raw when the decision applies no masking, stripped to a value-free canonical message when it does.
+-- This column holds that text as AES-GCM ciphertext, exactly like the
+-- result-row ciphertext: released only to a viewer that clears the task.assume gate on GET /result, and
+-- NULLed on expiry by the same purge. It never rides on the task.read metadata, so a metadata-only reader
+-- cannot see it. NULL for every proxy/decode/decision/connection failure and every success.
+ALTER TABLE query_result ADD COLUMN error_detail BYTEA;

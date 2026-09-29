@@ -240,7 +240,8 @@ mise run proto-check
 # where a race is both most likely and least visible, and a data race is a correctness bug the plain
 # run reports as a pass. These tests wait on containers and sockets far more than they compute, so the
 # detector costs a few seconds of wall clock rather than the usual multiple.
-go test -race ./analyzer/... ./auditmon/... ./goproxy/... ./mysqlwire/... ./pmon/...
+go test -race ./analyzer/... ./auditmon/... ./gocp/... ./goproxy/... ./mysqlwire/... ./pmon/...
+(cd gocp && go run ./internal/tracing/geninventory.go -check)
 mise run check-image-gomod
 pnpm -C web test:unit
 pnpm -C web build
@@ -290,7 +291,7 @@ shell = "bash -c"
 # module, so a root-relative pattern only resolves once a go.work exists.
 run = '''
 set -euo pipefail
-for m in analyzer auditmon goproxy mysqlwire pmon; do
+for m in analyzer auditmon gocp goproxy mysqlwire pmon; do
   echo "=== $m ==="
   (cd "$m" && go test -race ./...)
 done

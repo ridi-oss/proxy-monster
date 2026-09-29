@@ -3,29 +3,21 @@ package run
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"strings"
-	"time"
 
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
 	"github.com/ridi-oss/proxy-monster/goproxy/spi"
 )
 
-const (
-	tableDetailQueryTimeout   = 30 * time.Second
-	tableDetailConnectTimeout = 5 * time.Second
-)
-
 // TableDetailRunner runs one short-lived, proxy-dialed table-detail session.
 type TableDetailRunner struct {
 	client   spi.TableDetailClient
-	targetDb spi.TargetDb
-	provider spi.Provider
+	targetDb spi.Db
 }
 
 // NewTableDetailRunner constructs a table-detail runner for one datasource target.
-func NewTableDetailRunner(client spi.TableDetailClient, targetDb spi.TargetDb, provider spi.Provider) *TableDetailRunner {
-	return &TableDetailRunner{client: client, targetDb: targetDb, provider: provider}
+func NewTableDetailRunner(client spi.TableDetailClient, targetDb spi.Db) *TableDetailRunner {
+	return &TableDetailRunner{client: client, targetDb: targetDb}
 }
 
 // Run blocks for the short table-detail session lifetime.
@@ -45,7 +37,7 @@ func (r *TableDetailRunner) Run(sessionID, schema, table string) {
 		return
 	}
 
-	detail, detailErr := r.read(schema, table)
+	detail, detailErr := r.targetDb.ReadTableDetail(ctx, schema, table)
 	if detailErr != nil {
 		message := "table introspection failed"
 		if text := strings.TrimSpace(detailErr.Error()); text != "" {
@@ -97,23 +89,4 @@ func (r *TableDetailRunner) Run(sessionID, schema, table string) {
 			return
 		}
 	}
-}
-
-func (r *TableDetailRunner) read(schema, table string) (*spi.TableDetail, error) {
-	sqlDB, err := r.provider.OpenTarget(r.targetDb)
-	if err != nil {
-		return nil, err
-	}
-	defer sqlDB.Close()
-
-	connectCtx, connectCancel := context.WithTimeout(context.Background(), tableDetailConnectTimeout+tableDetailQueryTimeout)
-	defer connectCancel()
-	conn, err := sqlDB.Conn(connectCtx)
-	if err != nil {
-		return nil, fmt.Errorf("connecting to target: %w", err)
-	}
-	defer conn.Close()
-
-	resolvedSchema := r.provider.Dialect().ResolveSchema(schema, r.targetDb.Db)
-	return r.provider.ReadTableDetail(conn, resolvedSchema, table)
 }

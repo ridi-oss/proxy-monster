@@ -59,14 +59,17 @@ func Run(registry spi.Registry) error {
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 
 	provider := cfg.Provider
-	dbImpl := provider.NewDb()
-	targetDb := spi.TargetDb{
+	targetDb, err := provider.NewDb(spi.TargetDb{
 		Host:     cfg.TargetHost,
 		Port:     cfg.TargetPort,
 		Db:       cfg.TargetDb,
 		User:     cfg.TargetUser,
 		Password: cfg.TargetPassword,
+	})
+	if err != nil {
+		return fmt.Errorf("failed to open target: %w", err)
 	}
+	defer targetDb.Close()
 
 	// Build the client-facing TLS config BEFORE registering, so the proxy can advertise the certificate chain
 	// a client should trust alongside its address. certChain is re-read at every (re)register, so a rotated
@@ -134,7 +137,7 @@ func Run(registry spi.Registry) error {
 		configClient,
 		cfg,
 		targetDb,
-		provider,
+		provider.Dialect(),
 		certChain,
 		maxResyncConcurrency,
 	)
@@ -170,11 +173,11 @@ func Run(registry spi.Registry) error {
 				runs.Add()
 				go func() {
 					defer runs.Done()
-					run.NewRunner(enforcementClient, dbImpl, targetDb, provider, cfg.QueryTimeout).Run(open, runs.Signal())
+					run.NewRunner(enforcementClient, targetDb, cfg.QueryTimeout).Run(open, runs.Signal())
 				}()
 			},
 			func(sessionID, schema, table string) {
-				go run.NewTableDetailRunner(configClient, targetDb, provider).Run(sessionID, schema, table)
+				go run.NewTableDetailRunner(configClient, targetDb).Run(sessionID, schema, table)
 			},
 		)
 		// A version rejection on the events stream is fatal even when a resync Register races to a still-
@@ -196,7 +199,7 @@ func Run(registry spi.Registry) error {
 		}
 	}()
 
-	server := provider.NewWireServer(cfg.ProxyPort, targetDb, enforcementClient, dbImpl, tlsProvider)
+	server := targetDb.NewWireServer(cfg.ProxyPort, enforcementClient, tlsProvider)
 	slog.Info("starting proxy-monster data plane", "engine", cfg.Engine, "control_plane", cfg.ControlPlaneGrpcTarget)
 
 	serveErr := make(chan error, 1)

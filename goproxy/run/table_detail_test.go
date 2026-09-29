@@ -102,13 +102,12 @@ func tableDetailRun(
 	t *testing.T,
 	tableDetailClient *cp.Client,
 	tableDetailFake *tableDetailFakeCP,
-	provider spi.Provider,
-	tableDetailTargetDb spi.TargetDb,
+	tableDetailDb spi.Db,
 	tableDetailSessionID, schema, table string,
 ) *pb.ProxyTableDetailMsg {
 	t.Helper()
 	tableDetailFake.tableDetailExpect(tableDetailSessionID)
-	run.NewTableDetailRunner(tableDetailClient, tableDetailTargetDb, provider).Run(tableDetailSessionID, schema, table)
+	run.NewTableDetailRunner(tableDetailClient, tableDetailDb).Run(tableDetailSessionID, schema, table)
 	select {
 	case tableDetailObservation := <-tableDetailFake.observed:
 		if tableDetailObservation.err != nil {
@@ -282,10 +281,10 @@ CREATE TABLE pm_tdetail_plain (
 ) ENGINE=InnoDB;`)
 
 	tableDetailClient, tableDetailFake := tableDetailStartFakeCP(t)
-	tableDetailTarget := tableDetailTargetDb(tableDetailDBTargetDb)
+	tableDetailTarget := mustDb(t, engine.MySQL, tableDetailTargetDb(tableDetailDBTargetDb))
 
 	tableDetailUsersPayload := tableDetailRequireResult(t, tableDetailRun(
-		t, tableDetailClient, tableDetailFake, mustProvider(t, engine.MySQL), tableDetailTarget,
+		t, tableDetailClient, tableDetailFake, tableDetailTarget,
 		"pm_tdetail_mysql_users", "public", "pm_tdetail_users",
 	))
 	tableDetailUsers, tableDetailUsersTop := tableDetailDecode(t, tableDetailUsersPayload)
@@ -304,14 +303,14 @@ CREATE TABLE pm_tdetail_plain (
 	tableDetailAssertRelation(t, tableDetailUsers.ReferencedBy, "pm_tdetail_orders_user_fk", "pm_tdetail_orders", "pm_tdetail_users")
 
 	tableDetailOrdersPayload := tableDetailRequireResult(t, tableDetailRun(
-		t, tableDetailClient, tableDetailFake, mustProvider(t, engine.MySQL), tableDetailTarget,
+		t, tableDetailClient, tableDetailFake, tableDetailTarget,
 		"pm_tdetail_mysql_orders", tableDetailDBTargetDb.DB, "pm_tdetail_orders",
 	))
 	tableDetailOrders, _ := tableDetailDecode(t, tableDetailOrdersPayload)
 	tableDetailAssertRelation(t, tableDetailOrders.ForeignKeys, "pm_tdetail_orders_user_fk", "pm_tdetail_orders", "pm_tdetail_users")
 
 	tableDetailPlainPayload := tableDetailRequireResult(t, tableDetailRun(
-		t, tableDetailClient, tableDetailFake, mustProvider(t, engine.MySQL), tableDetailTarget,
+		t, tableDetailClient, tableDetailFake, tableDetailTarget,
 		"pm_tdetail_mysql_plain", "public", "pm_tdetail_plain",
 	))
 	tableDetailPlain, _ := tableDetailDecode(t, tableDetailPlainPayload)
@@ -320,7 +319,7 @@ CREATE TABLE pm_tdetail_plain (
 	}
 
 	tableDetailRequireNull(t, tableDetailRun(
-		t, tableDetailClient, tableDetailFake, mustProvider(t, engine.MySQL), tableDetailTarget,
+		t, tableDetailClient, tableDetailFake, tableDetailTarget,
 		"pm_tdetail_mysql_other_schema", "other", "pm_tdetail_users",
 	))
 	for tableDetailIndex, tableDetailSelector := range []struct{ schema, table string }{
@@ -329,7 +328,7 @@ CREATE TABLE pm_tdetail_plain (
 		{schema: "public", table: "pm_tdetail_users` WHERE 1=1 --"},
 	} {
 		tableDetailRequireNull(t, tableDetailRun(
-			t, tableDetailClient, tableDetailFake, mustProvider(t, engine.MySQL), tableDetailTarget,
+			t, tableDetailClient, tableDetailFake, tableDetailTarget,
 			fmt.Sprintf("pm_tdetail_mysql_hostile_%d", tableDetailIndex), tableDetailSelector.schema, tableDetailSelector.table,
 		))
 	}
@@ -368,10 +367,10 @@ CREATE TABLE pm_tdetail_it.pm_tdetail_plain (
 );`)
 
 	tableDetailClient, tableDetailFake := tableDetailStartFakeCP(t)
-	tableDetailTarget := tableDetailTargetDb(tableDetailDBTargetDb)
+	tableDetailTarget := mustDb(t, engine.Postgres, tableDetailTargetDb(tableDetailDBTargetDb))
 
 	tableDetailUsersPayload := tableDetailRequireResult(t, tableDetailRun(
-		t, tableDetailClient, tableDetailFake, mustProvider(t, engine.Postgres), tableDetailTarget,
+		t, tableDetailClient, tableDetailFake, tableDetailTarget,
 		"pm_tdetail_pg_users", "pm_tdetail_it", "pm_tdetail_users",
 	))
 	tableDetailUsers, tableDetailUsersTop := tableDetailDecode(t, tableDetailUsersPayload)
@@ -390,14 +389,14 @@ CREATE TABLE pm_tdetail_it.pm_tdetail_plain (
 	tableDetailAssertRelation(t, tableDetailUsers.ReferencedBy, "pm_tdetail_orders_user_fk", "pm_tdetail_orders", "pm_tdetail_users")
 
 	tableDetailOrdersPayload := tableDetailRequireResult(t, tableDetailRun(
-		t, tableDetailClient, tableDetailFake, mustProvider(t, engine.Postgres), tableDetailTarget,
+		t, tableDetailClient, tableDetailFake, tableDetailTarget,
 		"pm_tdetail_pg_orders", "pm_tdetail_it", "pm_tdetail_orders",
 	))
 	tableDetailOrders, _ := tableDetailDecode(t, tableDetailOrdersPayload)
 	tableDetailAssertRelation(t, tableDetailOrders.ForeignKeys, "pm_tdetail_orders_user_fk", "pm_tdetail_orders", "pm_tdetail_users")
 
 	tableDetailPlainPayload := tableDetailRequireResult(t, tableDetailRun(
-		t, tableDetailClient, tableDetailFake, mustProvider(t, engine.Postgres), tableDetailTarget,
+		t, tableDetailClient, tableDetailFake, tableDetailTarget,
 		"pm_tdetail_pg_plain", "pm_tdetail_it", "pm_tdetail_plain",
 	))
 	tableDetailPlain, _ := tableDetailDecode(t, tableDetailPlainPayload)
@@ -412,7 +411,7 @@ CREATE TABLE pm_tdetail_it.pm_tdetail_plain (
 		{schema: "pm_tdetail_it`", table: "pm_tdetail_users`"},
 	} {
 		tableDetailRequireNull(t, tableDetailRun(
-			t, tableDetailClient, tableDetailFake, mustProvider(t, engine.Postgres), tableDetailTarget,
+			t, tableDetailClient, tableDetailFake, tableDetailTarget,
 			fmt.Sprintf("pm_tdetail_pg_hostile_%d", tableDetailIndex), tableDetailSelector.schema, tableDetailSelector.table,
 		))
 	}

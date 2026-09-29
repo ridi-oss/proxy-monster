@@ -22,12 +22,10 @@ import com.ridi.oss.proxymonster.controlplane.authz.resolveContextTags
 import com.ridi.oss.proxymonster.controlplane.authz.authorizeUtilities
 import com.ridi.oss.proxymonster.controlplane.authz.authorizeDatasourceAction
 import com.ridi.oss.proxymonster.controlplane.authz.authorizeDatasourceActionId
-import com.ridi.oss.proxymonster.controlplane.authz.authorizeWithContext
 import com.ridi.oss.proxymonster.classification.BaselineDangerousFunctions
 import com.ridi.oss.proxymonster.grpc.ColumnMask
 import com.ridi.oss.proxymonster.grpc.EnfAction
 import com.ridi.oss.proxymonster.grpc.ObjectRef
-import com.ridi.oss.proxymonster.grpc.RunError
 import com.ridi.oss.proxymonster.grpc.columnMask
 import com.ridi.oss.proxymonster.analyzer.pb.CatalogSnapshot
 import com.ridi.oss.proxymonster.analyzer.pb.Column
@@ -47,7 +45,6 @@ import com.ridi.oss.proxymonster.probe.Dialect
 import com.ridi.oss.proxymonster.probe.Masking
 import com.ridi.oss.proxymonster.probe.analyzerFor
 import com.ridi.oss.proxymonster.probe.bindMasks
-import com.ridi.oss.proxymonster.probe.splitStatements
 import io.ktor.http.HttpStatusCode
 import io.ktor.server.request.receive
 import io.ktor.server.response.respond
@@ -56,7 +53,6 @@ import io.ktor.server.routing.delete
 import io.ktor.server.routing.get
 import io.ktor.server.routing.post
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.launch
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.descriptors.PrimitiveKind

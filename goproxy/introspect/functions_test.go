@@ -5,8 +5,8 @@ import (
 
 	analyzerpb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
 	"github.com/ridi-oss/proxy-monster/goproxy/db"
-	"github.com/ridi-oss/proxy-monster/goproxy/engine"
 	"github.com/ridi-oss/proxy-monster/goproxy/internal/dbtest"
+	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
 	"github.com/ridi-oss/proxy-monster/goproxy/spi"
 	"google.golang.org/protobuf/proto"
 )
@@ -18,12 +18,9 @@ type routinesQueryDb struct {
 
 func (d routinesQueryDb) RoutinesSQL() string { return d.query }
 
-type routinesQueryOpener struct {
-	mysqlTestOpener
-	query string
+func runRoutinesQuery(query string, target spi.TargetDb) (*pb.CatalogRequest, error) {
+	return runWith(OpenMySQLTarget, routinesQueryDb{query: query}, ProbeMySQLNamespace, target)
 }
-
-func (o routinesQueryOpener) NewDb() engine.Db { return routinesQueryDb{query: o.query} }
 
 func TestRoutinesObservation(t *testing.T) {
 	targetDb := dbtest.MySQL(t)
@@ -39,7 +36,7 @@ func TestRoutinesObservation(t *testing.T) {
 	}
 	target := spi.TargetDb{Host: targetDb.Host, Port: targetDb.Port, Db: schema, User: targetDb.User, Password: targetDb.Password}
 	t.Run("routines fold and group by schema", func(t *testing.T) {
-		catalog, err := Run(routinesQueryOpener{query: "SELECT 'app', 'LOOKUP' UNION ALL SELECT 'app', 'lookup' UNION ALL SELECT 'mysql', 'PLUGIN_FN'"}, target)
+		catalog, err := runRoutinesQuery("SELECT 'app', 'LOOKUP' UNION ALL SELECT 'app', 'lookup' UNION ALL SELECT 'mysql', 'PLUGIN_FN'", target)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -60,7 +57,7 @@ func TestRoutinesObservation(t *testing.T) {
 		}
 	})
 	t.Run("an empty observation is an empty list", func(t *testing.T) {
-		catalog, err := Run(routinesQueryOpener{query: "SELECT 'app', 'lookup' WHERE FALSE"}, target)
+		catalog, err := runRoutinesQuery("SELECT 'app', 'lookup' WHERE FALSE", target)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -73,7 +70,7 @@ func TestRoutinesObservation(t *testing.T) {
 		"column count": "SELECT 'one'",
 	} {
 		t.Run(name+" failure fails the whole catalog", func(t *testing.T) {
-			if _, err := Run(routinesQueryOpener{query: query}, target); err == nil {
+			if _, err := runRoutinesQuery(query, target); err == nil {
 				t.Fatal("Run succeeded, want a routines failure")
 			}
 		})

@@ -4,7 +4,6 @@ package spi
 import (
 	"context"
 	"crypto/tls"
-	"database/sql"
 	"fmt"
 	"sort"
 	"strings"
@@ -182,20 +181,26 @@ type Classification struct {
 	MaskFnName *string  `json:"maskFnName"`
 }
 
-// Provider bundles the per-dialect capabilities (target-DB connection, wire server, run session,
-// introspection) used by dialect-neutral consumers. The pure per-dialect facts (registration engine,
-// default ports, placeholder, schema resolution) live on engine.Dialect; a new dialect is one Provider
-// implementation plus one registry row.
+// Provider is one dialect's registration: its identity and how to open a Db on a target. The pure per-dialect
+// facts (registration engine, default ports, placeholder, schema resolution) live on engine.Dialect; a new
+// dialect is one Provider implementation plus one registry row.
 type Provider interface {
 	Dialect() engine.Dialect
-	NewDb() engine.Db
-	OpenTarget(target TargetDb) (*sql.DB, error)
-	ProbeNamespace(conn *sql.Conn, targetDb string) (defaultSchemas []string, mysqlLowerCaseTableNames *int32, err error)
-	ReadTableDetail(conn *sql.Conn, schema, table string) (*TableDetail, error)
-	NewWireServer(port int, targetDb TargetDb, client EnforcementClient, db engine.Db, tlsProvider func() (*tls.Config, error)) WireServer
+	NewDb(target TargetDb) (Db, error)
+}
+
+// Db is one open target database. It owns its connection pool and answers everything the proxy core asks of
+// a target: the catalog scan, a table's detail, the wire server, and a dedicated run session. Boot, the
+// reconciler, and the runners hold a Db and never see a connection string or a *sql.DB.
+type Db interface {
+	TargetDb() TargetDb
+	Introspect(ctx context.Context) (*pb.CatalogRequest, error)
+	ReadTableDetail(ctx context.Context, schema, table string) (*TableDetail, error)
+	NewWireServer(port int, client EnforcementClient, tlsProvider func() (*tls.Config, error)) WireServer
 	// NewRunSession dials and authenticates the target DB. ctx is the target-DB open context: cancelling it aborts
 	// an in-flight dial/auth so a run the control-plane already closed does not finish a target-DB handshake.
-	NewRunSession(ctx context.Context, target TargetDb, db engine.Db, client SessionClient, token string, connectionID []byte, guard engine.ExecGuard, readTimeout time.Duration) (TargetDbSession, error)
+	NewRunSession(ctx context.Context, client SessionClient, token string, connectionID []byte, guard engine.ExecGuard, readTimeout time.Duration) (TargetDbSession, error)
+	Close() error
 }
 
 // Registry resolves the canonical PM_ENGINE name to its Provider. Consumers depend on this interface and

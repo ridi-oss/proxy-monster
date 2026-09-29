@@ -18,7 +18,6 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	"github.com/ridi-oss/proxy-monster/goproxy/cp"
-	"github.com/ridi-oss/proxy-monster/goproxy/db"
 	"github.com/ridi-oss/proxy-monster/goproxy/dialects"
 	"github.com/ridi-oss/proxy-monster/goproxy/engine"
 	"github.com/ridi-oss/proxy-monster/goproxy/internal/dbtest"
@@ -217,21 +216,21 @@ func (f *runFakeCP) runSetFragmentPushError(err error) {
 }
 
 type runEngineFixture struct {
-	runDB        engine.Db
-	runProvider  spi.Provider
+	runDialect   engine.Dialect
+	runDb        spi.Db
 	runTarget    spi.TargetDb
 	runTable     string
 	runNamespace []string
 }
 
-type runCapturingProvider struct {
-	spi.Provider
+type runCapturingDb struct {
+	spi.Db
 	readTimeout chan time.Duration
 }
 
-func (p *runCapturingProvider) NewRunSession(ctx context.Context, target spi.TargetDb, dbImpl engine.Db, client spi.SessionClient, token string, connectionID []byte, guard engine.ExecGuard, readTimeout time.Duration) (spi.TargetDbSession, error) {
+func (p *runCapturingDb) NewRunSession(ctx context.Context, client spi.SessionClient, token string, connectionID []byte, guard engine.ExecGuard, readTimeout time.Duration) (spi.TargetDbSession, error) {
 	p.readTimeout <- readTimeout
-	return p.Provider.NewRunSession(ctx, target, dbImpl, client, token, connectionID, guard, readTimeout)
+	return p.Db.NewRunSession(ctx, client, token, connectionID, guard, readTimeout)
 }
 
 // runSlowOpenProvider blocks the target DB dial until release is closed, modeling a slow open against a large
@@ -240,8 +239,8 @@ func (p *runCapturingProvider) NewRunSession(ctx context.Context, target spi.Tar
 // if that is cancelled (the control-plane closed the run, or the proxy drained, during the open) it returns
 // at once, standing in for a real dialect whose dial/auth aborts on cancel. entered, when non-nil, is closed
 // the first time the dial is reached so a test can wait until the open is genuinely in flight before cutting it.
-type runSlowOpenProvider struct {
-	spi.Provider
+type runSlowOpenDb struct {
+	spi.Db
 	release   chan struct{}
 	entered   chan struct{}
 	enterOnce sync.Once
@@ -250,7 +249,7 @@ type runSlowOpenProvider struct {
 	beforeDelegate func()
 }
 
-func (p *runSlowOpenProvider) NewRunSession(ctx context.Context, target spi.TargetDb, dbImpl engine.Db, client spi.SessionClient, token string, connectionID []byte, guard engine.ExecGuard, readTimeout time.Duration) (spi.TargetDbSession, error) {
+func (p *runSlowOpenDb) NewRunSession(ctx context.Context, client spi.SessionClient, token string, connectionID []byte, guard engine.ExecGuard, readTimeout time.Duration) (spi.TargetDbSession, error) {
 	if p.entered != nil {
 		p.enterOnce.Do(func() { close(p.entered) })
 	}
@@ -259,7 +258,7 @@ func (p *runSlowOpenProvider) NewRunSession(ctx context.Context, target spi.Targ
 		if p.beforeDelegate != nil {
 			p.beforeDelegate()
 		}
-		return p.Provider.NewRunSession(ctx, target, dbImpl, client, token, connectionID, guard, readTimeout)
+		return p.Db.NewRunSession(ctx, client, token, connectionID, guard, readTimeout)
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	}
@@ -361,7 +360,7 @@ func TestRunnerMalformedOpen(t *testing.T) {
 			fake, client := runStartFakeCP(t, test.open.SessionID)
 			done := make(chan struct{})
 			go func() {
-				run.NewRunner(client, fixture.runDB, fixture.runTarget, fixture.runProvider, 0).Run(test.open, nil)
+				run.NewRunner(client, fixture.runDb, 0).Run(test.open, nil)
 				close(done)
 			}()
 			// The stream sends its run id (RunReady) the instant it opens, before the open is validated, so even
@@ -631,7 +630,7 @@ func runCatalogRefreshContract(t *testing.T, fixture runEngineFixture) {
 		table := runUniqueTable("pm_run_routine_refresh")
 		var callSQL string
 		directSchema := fixture.runNamespaceForTable()
-		if fixture.runProvider.Dialect() == engine.MySQL {
+		if fixture.runDialect == engine.MySQL {
 			procedure := runUniqueTable("pm_run_routine")
 			direct := dbtest.OpenMySQL(t, directSchema)
 			if _, err := direct.Exec("CREATE PROCEDURE " + procedure + "() CREATE TABLE " + table + " (id INT PRIMARY KEY)"); err != nil {
@@ -805,7 +804,7 @@ func runCatalogRefreshContract(t *testing.T, fixture runEngineFixture) {
 		runExpectSingleClose(t, fake)
 	})
 
-	if fixture.runProvider.Dialect() == engine.Postgres {
+	if fixture.runDialect == engine.Postgres {
 		t.Run("transactional DDL refetches inside the open transaction", func(t *testing.T) {
 			fake, client := runStartFakeCP(t, runSessionID)
 			runLaunch(t, fake, client, fixture)
@@ -852,7 +851,7 @@ func runCreateTableSQL(fixture runEngineFixture, table string) string {
 }
 
 func (f runEngineFixture) runNamespaceForTable() string {
-	if f.runProvider.Dialect() == engine.MySQL {
+	if f.runDialect == engine.MySQL {
 		return runMySQLSchema
 	}
 	return runPGSchema
@@ -1166,7 +1165,7 @@ func TestRunnerDrainReturnsWhenIdle(t *testing.T) {
 	draining := make(chan struct{})
 	done := make(chan struct{})
 	go func() {
-		run.NewRunner(client, fixture.runDB, fixture.runTarget, fixture.runProvider, 0).Run(runOpen(fixture), draining)
+		run.NewRunner(client, fixture.runDb, 0).Run(runOpen(fixture), draining)
 		close(done)
 	}()
 
@@ -1188,7 +1187,7 @@ func TestRunnerDrainLetsInFlightStatementFinish(t *testing.T) {
 	draining := make(chan struct{})
 	done := make(chan struct{})
 	go func() {
-		run.NewRunner(client, fixture.runDB, fixture.runTarget, fixture.runProvider, 0).Run(runOpen(fixture), draining)
+		run.NewRunner(client, fixture.runDb, 0).Run(runOpen(fixture), draining)
 		close(done)
 	}()
 
@@ -1220,7 +1219,7 @@ func TestRunnerDrainDoesNotStartAQueuedQuery(t *testing.T) {
 	draining := make(chan struct{})
 	done := make(chan struct{})
 	go func() {
-		run.NewRunner(client, fixture.runDB, fixture.runTarget, fixture.runProvider, 0).Run(runOpen(fixture), draining)
+		run.NewRunner(client, fixture.runDb, 0).Run(runOpen(fixture), draining)
 		close(done)
 	}()
 
@@ -1246,11 +1245,11 @@ func TestRunnerDrainDoesNotStartAQueuedQuery(t *testing.T) {
 func TestRunnerSendsRunReadyBeforeTargetDbOpenAndHeartbeats(t *testing.T) {
 	fixture := runSeedMySQL(t)
 	release := make(chan struct{})
-	fixture.runProvider = &runSlowOpenProvider{Provider: fixture.runProvider, release: release}
+	fixture.runDb = &runSlowOpenDb{Db: fixture.runDb, release: release}
 	fake, client := runStartFakeCP(t, runSessionID)
 	done := make(chan struct{})
 	go func() {
-		run.NewRunner(client, fixture.runDB, fixture.runTarget, fixture.runProvider, 0).Run(runOpen(fixture), nil)
+		run.NewRunner(client, fixture.runDb, 0).Run(runOpen(fixture), nil)
 		close(done)
 	}()
 
@@ -1302,11 +1301,11 @@ func TestRunnerSendsRunReadyBeforeTargetDbOpenAndHeartbeats(t *testing.T) {
 func TestRunnerCloseDuringTargetDbOpenAbortsTargetDb(t *testing.T) {
 	fixture := runSeedMySQL(t)
 	entered := make(chan struct{})
-	fixture.runProvider = &runSlowOpenProvider{Provider: fixture.runProvider, release: make(chan struct{}), entered: entered}
+	fixture.runDb = &runSlowOpenDb{Db: fixture.runDb, release: make(chan struct{}), entered: entered}
 	fake, client := runStartFakeCP(t, runSessionID)
 	done := make(chan struct{})
 	go func() {
-		run.NewRunner(client, fixture.runDB, fixture.runTarget, fixture.runProvider, 0).Run(runOpen(fixture), nil)
+		run.NewRunner(client, fixture.runDb, 0).Run(runOpen(fixture), nil)
 		close(done)
 	}()
 
@@ -1329,12 +1328,12 @@ func TestRunnerCloseDuringTargetDbOpenAbortsTargetDb(t *testing.T) {
 func TestRunnerDrainDuringTargetDbOpenAbortsTargetDb(t *testing.T) {
 	fixture := runSeedMySQL(t)
 	entered := make(chan struct{})
-	fixture.runProvider = &runSlowOpenProvider{Provider: fixture.runProvider, release: make(chan struct{}), entered: entered}
+	fixture.runDb = &runSlowOpenDb{Db: fixture.runDb, release: make(chan struct{}), entered: entered}
 	fake, client := runStartFakeCP(t, runSessionID)
 	draining := make(chan struct{})
 	done := make(chan struct{})
 	go func() {
-		run.NewRunner(client, fixture.runDB, fixture.runTarget, fixture.runProvider, 0).Run(runOpen(fixture), draining)
+		run.NewRunner(client, fixture.runDb, 0).Run(runOpen(fixture), draining)
 		close(done)
 	}()
 
@@ -1362,15 +1361,15 @@ func TestRunnerDrainAsTargetDbOpenCompletesInstallsNoSession(t *testing.T) {
 	release := make(chan struct{})
 	draining := make(chan struct{})
 	var drainOnce sync.Once
-	fixture.runProvider = &runSlowOpenProvider{
-		Provider:       fixture.runProvider,
+	fixture.runDb = &runSlowOpenDb{
+		Db:             fixture.runDb,
 		release:        release,
 		beforeDelegate: func() { drainOnce.Do(func() { close(draining) }) },
 	}
 	fake, client := runStartFakeCP(t, runSessionID)
 	done := make(chan struct{})
 	go func() {
-		run.NewRunner(client, fixture.runDB, fixture.runTarget, fixture.runProvider, 0).Run(runOpen(fixture), draining)
+		run.NewRunner(client, fixture.runDb, 0).Run(runOpen(fixture), draining)
 		close(done)
 	}()
 
@@ -1407,7 +1406,7 @@ func TestRunnerCloseDuringRealDialAbortsIt(t *testing.T) {
 	fake, client := runStartFakeCP(t, runSessionID)
 	done := make(chan struct{})
 	go func() {
-		run.NewRunner(client, db.MySqlDb{}, stall.target, mustProvider(t, engine.MySQL), 0).Run(runStallOpen(), nil)
+		run.NewRunner(client, mustDb(t, engine.MySQL, stall.target), 0).Run(runStallOpen(), nil)
 		close(done)
 	}()
 
@@ -1434,7 +1433,7 @@ func TestRunnerDrainDuringRealDialAbortsIt(t *testing.T) {
 	draining := make(chan struct{})
 	done := make(chan struct{})
 	go func() {
-		run.NewRunner(client, db.MySqlDb{}, stall.target, mustProvider(t, engine.MySQL), 0).Run(runStallOpen(), draining)
+		run.NewRunner(client, mustDb(t, engine.MySQL, stall.target), 0).Run(runStallOpen(), draining)
 		close(done)
 	}()
 
@@ -1471,8 +1470,8 @@ func TestRunnerCloseInFlightCancelsTargetDb(t *testing.T) {
 
 func TestRunnerPassesQueryTimeoutPlusGraceToRunSession(t *testing.T) {
 	fixture := runSeedMySQL(t)
-	capturing := &runCapturingProvider{Provider: fixture.runProvider, readTimeout: make(chan time.Duration, 1)}
-	fixture.runProvider = capturing
+	capturing := &runCapturingDb{Db: fixture.runDb, readTimeout: make(chan time.Duration, 1)}
+	fixture.runDb = capturing
 	fake, client := runStartFakeCP(t, runSessionID)
 	waitDone := runLaunchWithTimeout(t, fake, client, fixture, 17*time.Second)
 
@@ -1514,7 +1513,7 @@ func runLaunchOpen(t *testing.T, fake *runFakeCP, client *cp.Client, fixture run
 
 func runLaunchOpenConfigured(t *testing.T, fake *runFakeCP, client *cp.Client, fixture runEngineFixture, open spi.RunOpen, queryTimeout time.Duration, configure func(*run.Runner)) func() {
 	t.Helper()
-	runner := run.NewRunner(client, fixture.runDB, fixture.runTarget, fixture.runProvider, queryTimeout)
+	runner := run.NewRunner(client, fixture.runDb, queryTimeout)
 	if configure != nil {
 		configure(runner)
 	}
@@ -1615,13 +1614,14 @@ func runSeedMySQL(t *testing.T) runEngineFixture {
 		}
 	}
 	runSeedRows(t, seed, "INSERT INTO "+runMySQLSchema+".pm_run_rows (id, secret) VALUES ")
+	target := spi.TargetDb{
+		Host: targetDb.Host, Port: targetDb.Port, Db: runMySQLSchema,
+		User: runMySQLService, Password: runMySQLServicePwd,
+	}
 	return runEngineFixture{
-		runDB:       db.MySqlDb{},
-		runProvider: mustProvider(t, engine.MySQL),
-		runTarget: spi.TargetDb{
-			Host: targetDb.Host, Port: targetDb.Port, Db: runMySQLSchema,
-			User: runMySQLService, Password: runMySQLServicePwd,
-		},
+		runDialect:   engine.MySQL,
+		runDb:        mustDb(t, engine.MySQL, target),
+		runTarget:    target,
 		runTable:     runMySQLSchema + ".pm_run_rows",
 		runNamespace: []string{runMySQLSchema},
 	}
@@ -1642,25 +1642,31 @@ func runSeedPostgres(t *testing.T) runEngineFixture {
 		}
 	}
 	runSeedRows(t, seed, "INSERT INTO "+runPGSchema+".pm_run_rows (id, secret) VALUES ")
+	target := spi.TargetDb{
+		Host: targetDb.Host, Port: targetDb.Port, Db: targetDb.DB,
+		User: targetDb.User, Password: targetDb.Password,
+	}
 	return runEngineFixture{
-		runDB:       db.PgDb{},
-		runProvider: mustProvider(t, engine.Postgres),
-		runTarget: spi.TargetDb{
-			Host: targetDb.Host, Port: targetDb.Port, Db: targetDb.DB,
-			User: targetDb.User, Password: targetDb.Password,
-		},
+		runDialect:   engine.Postgres,
+		runDb:        mustDb(t, engine.Postgres, target),
+		runTarget:    target,
 		runTable:     runPGSchema + ".pm_run_rows",
 		runNamespace: []string{"pg_catalog", "public"},
 	}
 }
 
-func mustProvider(t *testing.T, dialect engine.Dialect) spi.Provider {
+func mustDb(t *testing.T, dialect engine.Dialect, target spi.TargetDb) spi.Db {
 	t.Helper()
 	provider, err := dialects.For(dialect)
 	if err != nil {
 		t.Fatalf("dialects.For(%v): %v", dialect, err)
 	}
-	return provider
+	targetDb, err := provider.NewDb(target)
+	if err != nil {
+		t.Fatalf("NewDb(%v): %v", dialect, err)
+	}
+	t.Cleanup(func() { _ = targetDb.Close() })
+	return targetDb
 }
 
 func runSeedRows(t *testing.T, seed *sql.DB, prefix string) {

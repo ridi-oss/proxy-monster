@@ -2,31 +2,29 @@ package dialects_test
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"net"
 	"reflect"
 	"testing"
 	"time"
 
-	"github.com/ridi-oss/proxy-monster/goproxy/db"
 	"github.com/ridi-oss/proxy-monster/goproxy/dialects"
 	"github.com/ridi-oss/proxy-monster/goproxy/engine"
 	"github.com/ridi-oss/proxy-monster/goproxy/internal/dbtest"
+	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
 	"github.com/ridi-oss/proxy-monster/goproxy/spi"
 )
 
 func TestRegistryProviderContracts(t *testing.T) {
 	registry := dialects.Registry()
-	cases := []struct {
+	for _, test := range []struct {
 		name    string
 		dialect engine.Dialect
-		wantDb  engine.Db
+		server  string
 	}{
-		{"mysql", engine.MySQL, db.MySqlDb{}},
-		{"postgres", engine.Postgres, db.PgDb{}},
-	}
-	for _, test := range cases {
+		{"mysql", engine.MySQL, "*mysqlproxy.Server"},
+		{"postgres", engine.Postgres, "*pgproxy.Server"},
+	} {
 		t.Run(test.name, func(t *testing.T) {
 			provider, err := registry.For(test.dialect)
 			if err != nil {
@@ -35,19 +33,18 @@ func TestRegistryProviderContracts(t *testing.T) {
 			if provider.Dialect() != test.dialect {
 				t.Errorf("Dialect() = %v, want %v", provider.Dialect(), test.dialect)
 			}
-			if got := provider.NewDb(); got != test.wantDb {
-				t.Errorf("NewDb() = %#v, want %#v", got, test.wantDb)
+			target := spi.TargetDb{Host: "target", Port: 1234, Db: "app", User: "service", Password: "secret"}
+			targetDb, err := provider.NewDb(target)
+			if err != nil {
+				t.Fatalf("NewDb: %v", err)
 			}
-			server := provider.NewWireServer(0, spi.TargetDb{}, nil, provider.NewDb(), nil)
-			switch test.dialect {
-			case engine.MySQL:
-				if reflect.TypeOf(server).String() != "*mysqlproxy.Server" {
-					t.Errorf("NewWireServer() type = %T, want *mysqlproxy.Server", server)
-				}
-			case engine.Postgres:
-				if reflect.TypeOf(server).String() != "*pgproxy.Server" {
-					t.Errorf("NewWireServer() type = %T, want *pgproxy.Server", server)
-				}
+			defer targetDb.Close()
+			if targetDb.TargetDb() != target {
+				t.Fatalf("TargetDb() = %+v, want %+v", targetDb.TargetDb(), target)
+			}
+			server := targetDb.NewWireServer(0, nil, nil)
+			if reflect.TypeOf(server).String() != test.server {
+				t.Errorf("NewWireServer() type = %T, want %s", server, test.server)
 			}
 		})
 	}
@@ -58,47 +55,44 @@ func TestRegistryProviderContracts(t *testing.T) {
 	}
 }
 
-func TestRegistryProbeNamespaceDelegates(t *testing.T) {
-	cases := []struct {
+func TestRegistryIntrospectDelegates(t *testing.T) {
+	for _, test := range []struct {
 		name    string
 		dialect engine.Dialect
-		open    func(testing.TB, string) *sql.DB
-		dbName  string
-		assert  func(*testing.T, []string, *int32)
+		target  dbtest.TargetDb
+		assert  func(*testing.T, *pb.CatalogRequest)
 	}{
 		{
-			name: "mysql", dialect: engine.MySQL, open: dbtest.OpenMySQL, dbName: dbtest.MySQL(t).DB,
-			assert: func(t *testing.T, schemas []string, mode *int32) {
-				if len(schemas) != 1 || schemas[0] != dbtest.MySQL(t).DB || mode == nil {
-					t.Fatalf("ProbeNamespace = %v/%v, want current database plus case mode", schemas, mode)
+			name: "mysql", dialect: engine.MySQL, target: dbtest.MySQL(t),
+			assert: func(t *testing.T, catalog *pb.CatalogRequest) {
+				if len(catalog.DefaultSchemas) != 1 || catalog.DefaultSchemas[0] != dbtest.MySQL(t).DB || catalog.MysqlLowerCaseTableNames == nil {
+					t.Fatalf("Introspect = %v/%v, want current database plus case mode", catalog.DefaultSchemas, catalog.MysqlLowerCaseTableNames)
 				}
 			},
 		},
 		{
-			name: "postgres", dialect: engine.Postgres, open: dbtest.OpenPostgres, dbName: dbtest.Postgres(t).DB,
-			assert: func(t *testing.T, schemas []string, mode *int32) {
-				if mode != nil || !contains(schemas, "public") || !contains(schemas, "pg_catalog") {
-					t.Fatalf("ProbeNamespace = %v/%v, want PostgreSQL search path and nil case mode", schemas, mode)
+			name: "postgres", dialect: engine.Postgres, target: dbtest.Postgres(t),
+			assert: func(t *testing.T, catalog *pb.CatalogRequest) {
+				if catalog.MysqlLowerCaseTableNames != nil || !contains(catalog.DefaultSchemas, "public") || !contains(catalog.DefaultSchemas, "pg_catalog") {
+					t.Fatalf("Introspect = %v/%v, want PostgreSQL search path and nil case mode", catalog.DefaultSchemas, catalog.MysqlLowerCaseTableNames)
 				}
 			},
 		},
-	}
-	for _, test := range cases {
+	} {
 		t.Run(test.name, func(t *testing.T) {
 			provider, _ := dialects.For(test.dialect)
-			sqlDB := test.open(t, test.dbName)
-			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-			defer cancel()
-			conn, err := sqlDB.Conn(ctx)
+			targetDb, err := provider.NewDb(spi.TargetDb{Host: test.target.Host, Port: test.target.Port, Db: test.target.DB, User: test.target.User, Password: test.target.Password})
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer conn.Close()
-			schemas, mode, err := provider.ProbeNamespace(conn, test.dbName)
+			defer targetDb.Close()
+			ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+			defer cancel()
+			catalog, err := targetDb.Introspect(ctx)
 			if err != nil {
-				t.Fatalf("ProbeNamespace: %v", err)
+				t.Fatalf("Introspect: %v", err)
 			}
-			test.assert(t, schemas, mode)
+			test.assert(t, catalog)
 		})
 	}
 }
@@ -107,7 +101,12 @@ func TestNewWireServerStartsExpectedProtocol(t *testing.T) {
 	for _, dialect := range []engine.Dialect{engine.MySQL, engine.Postgres} {
 		t.Run(dialect.WireName(), func(t *testing.T) {
 			provider, _ := dialects.For(dialect)
-			server := provider.NewWireServer(0, spi.TargetDb{}, nil, provider.NewDb(), nil)
+			targetDb, err := provider.NewDb(spi.TargetDb{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer targetDb.Close()
+			server := targetDb.NewWireServer(0, nil, nil)
 			starter, ok := server.(interface {
 				Listen() error
 				Serve() error

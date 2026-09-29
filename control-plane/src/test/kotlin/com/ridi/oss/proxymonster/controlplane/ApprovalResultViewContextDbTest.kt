@@ -233,16 +233,19 @@ class ApprovalResultViewContextDbTest {
         // for [sql] under the execute-as role, so a same-schema view matches and releases; a test that
         // simulates a schema change between execute and view passes a different (drifted/empty) set.
         resultFingerprint: List<RequireResultReadGrant>? = fx.decide(sql, providedRoles = setOf(roleName)).resultFingerprint,
+        decisionId: Long? = executionDecision(sql),
+        sourceDecisionId: Long? = null,
     ): Long {
         val reqId = fx.dataSource.connection.use { c ->
             c.prepareStatement(
-                "INSERT INTO access_request (principal, kind, datasource_id, role_id, execute_as, creator_kind, decided_by) VALUES (?, 'QUERY', ?, ?, ?::jsonb, 'WORKFLOW', ?) RETURNING id",
+                "INSERT INTO access_request (principal, kind, datasource_id, role_id, execute_as, creator_kind, decided_by, source_decision_id) VALUES (?, 'QUERY', ?, ?, ?::jsonb, 'WORKFLOW', ?, ?) RETURNING id",
             ).use { ps ->
                 ps.setString(1, requester)
                 ps.setLong(2, fx.datasource.id)
                 ps.setLong(3, roleId)
                 ps.setString(4, "[\"$roleName\"]")
                 ps.setString(5, approver)
+                ps.setObject(6, sourceDecisionId)
                 ps.executeQuery().use { rs ->
                     check(rs.next())
                     rs.getLong(1)
@@ -251,9 +254,13 @@ class ApprovalResultViewContextDbTest {
         }
         fx.dataSource.connection.use { c -> c.prepareStatement("INSERT INTO query_result (task_id, sql, sql_hash) VALUES (?, ?, 'fixture')").use { ps -> ps.setLong(1, reqId); ps.setString(2, sql); ps.executeUpdate() } }
         assertNotNull(resultStore.startNextRun(reqId, executor))
-        assertNotNull(resultStore.completeRun(reqId, DecryptedResult(columns, rows, resultFingerprint = resultFingerprint?.let { fingerprintOf(it) }, truncatedByCap = truncatedByCap), 3600))
+        assertNotNull(resultStore.completeRun(reqId, DecryptedResult(columns, rows, resultFingerprint = resultFingerprint?.let { fingerprintOf(it) }, truncatedByCap = truncatedByCap), 3600, decisionId))
         return reqId
     }
+
+    private fun executionDecision(sql: String, decision: Decision = Decision.ALLOW): Long = fx.auditStore.insert(
+        AuditEvent(principal = executor, datasource = fx.datasource.name, statement = sql, decision = decision, channel = "workflow-executor"),
+    )
 
     private fun seedFailedResult(rawText: String, redactedForm: String): Long {
         val reqId = fx.dataSource.connection.use { c ->
@@ -444,6 +451,45 @@ class ApprovalResultViewContextDbTest {
             fx.auditStore.recent(50).none { it.kind == "completion" && it.principal == executor && it.decisionId == decisionId },
             "the executor is not charged for someone else's view",
         )
+    }
+
+    @Test
+    fun `a stored result with no execution decision is refused, audited, and not charged`() = testApplication {
+        resetMutableAuthzState()
+        val client = wire()
+        client.login(requester)
+        for (sourceDecisionId in listOf(null, executionDecision("SELECT id, email, ssn FROM users", Decision.DENY))) {
+            val id = seedResult(decisionId = null, sourceDecisionId = sourceDecisionId)
+            val hour = java.time.Duration.ofHours(1)
+            val before = fx.auditStore.relayedVolume(requester, listOf(hour), java.time.Instant.now()).getValue(hour)
+            val completionsBefore = fx.auditStore.recent(200).count { it.kind == "completion" && it.principal == requester }
+            val response = client.get("/api/approvals/$id/result") { header("X-Forwarded-For", "100.100.5.5") }
+            assertEquals(HttpStatusCode.Forbidden, response.status)
+            assertEquals("approval.result_view_denied", response.body<ApiError>().code)
+            assertFalse(rawSsn in response.bodyAsText(), "no rows are returned")
+            assertTrue(
+                fx.auditStore.recent(50).any { it.principal == requester && it.statement == "approval #$id result-view-denied" },
+                "the refusal is audited",
+            )
+            assertEquals(completionsBefore, fx.auditStore.recent(200).count { it.kind == "completion" && it.principal == requester })
+            assertEquals(before, fx.auditStore.relayedVolume(requester, listOf(hour), java.time.Instant.now()).getValue(hour))
+            assertNull(viewEvent(id, requester), "a refused view earns no result-viewed event")
+        }
+    }
+
+    @Test
+    fun `a from-denied request's view charges the execution decision, not the source denial`() = testApplication {
+        resetMutableAuthzState()
+        val sql = "SELECT id, email, ssn FROM users"
+        val sourceDecisionId = executionDecision(sql, Decision.DENY)
+        val decisionId = executionDecision(sql)
+        val id = seedResult(sql = sql, decisionId = decisionId, sourceDecisionId = sourceDecisionId)
+        val client = wire()
+        client.login(requester)
+        assertEquals(HttpStatusCode.OK, client.get("/api/approvals/$id/result").status)
+        val charges = fx.auditStore.recent(50).filter { it.kind == "completion" && it.principal == requester }
+        assertTrue(charges.any { it.decisionId == decisionId }, "the view is charged against the execution decision")
+        assertTrue(charges.none { it.decisionId == sourceDecisionId }, "the source DENY decision is never charged")
     }
 
     @Test

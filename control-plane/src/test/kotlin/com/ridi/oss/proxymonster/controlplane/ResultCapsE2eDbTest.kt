@@ -463,6 +463,7 @@ class ResultCapsE2eDbTest {
             }
         }
         val approverClient = login(approver)
+        val executionDecisionId = decisionRow(approver, sql, Channel.WORKFLOW_EXECUTOR)
         val stored = (1..5000).map { listOf("987-65-%04d".format(it)) }
         supervisorScope {
             val (response, proxy) = withFakeProxy(
@@ -471,7 +472,7 @@ class ResultCapsE2eDbTest {
                 assertEquals(5000, control.query.maxRows, "the workflow asks for the channel ceiling")
                 req.send(proxyRunMsg {
                     decision = runDecision {
-                        decision = WireEnfAction.ALLOW; maxRows = 0
+                        decision = WireEnfAction.ALLOW; maxRows = 0; decisionId = executionDecisionId
                         resultFingerprint.addAll(approverExec.resultFingerprint)
                     }
                 })
@@ -509,7 +510,7 @@ class ResultCapsE2eDbTest {
         }
         val cappedFingerprint = fx.decide(sql, principal = approver, channel = Channel.WORKFLOW_EXECUTOR, providedRoles = setOf("e2e-capped-viewer")).resultFingerprint
         assertNotNull(resultStore.startNextRun(cappedId, approver))
-        assertNotNull(resultStore.completeRun(cappedId, DecryptedResult(listOf("ssn"), stored, resultFingerprint = fingerprintOf(cappedFingerprint)), 3600))
+        assertNotNull(resultStore.completeRun(cappedId, DecryptedResult(listOf("ssn"), stored, resultFingerprint = fingerprintOf(cappedFingerprint)), 3600, decisionRow(approver, sql, Channel.WORKFLOW_EXECUTOR)))
         fx.dataSource.connection.use { c ->
             c.prepareStatement("UPDATE access_request SET status='EXECUTED' WHERE id=?").use { ps -> ps.setLong(1, cappedId); ps.executeUpdate() }
         }

@@ -398,15 +398,19 @@ class ApprovalService(
         if (meta.status != "DONE") throw TaskServiceException(HttpStatusCode.Conflict, ApiError("approval.result_not_ready"))
         val decrypted = access.decrypted
             ?: throw TaskServiceException(HttpStatusCode.Gone, ApiError("approval.result_expired"))
+        fun denyView(reason: String): Nothing {
+            log.warn("query approval result view denied request={} viewer={} reason={}", id, principal, reason)
+            auditStore.insert(e3Record(principal, req, "result-view-denied", Channel.WORKFLOW_VIEWER))
+            throw TaskServiceException(HttpStatusCode.Forbidden, ApiError("approval.result_view_denied"))
+        }
+        // An uncharged view would escape the result caps, so no execution decision means no view.
+        val (chargeDecisionId, chargeDecision) = meta.decisionId?.let { decisionId -> auditStore.get(decisionId)?.let { decisionId to it } }
+            ?: denyView("stored result has no execution decision to charge")
         val viewDecision =
             if (ctx == null) ResultViewDecision.Denied("stored result has no live decision to re-mask under")
             else decideResultView(ctx, decrypted)
         when (viewDecision) {
-            is ResultViewDecision.Denied -> {
-                log.warn("query approval result view denied request={} viewer={} reason={}", id, principal, viewDecision.reason)
-                auditStore.insert(e3Record(principal, req, "result-view-denied", Channel.WORKFLOW_VIEWER))
-                throw TaskServiceException(HttpStatusCode.Forbidden, ApiError("approval.result_view_denied"))
-            }
+            is ResultViewDecision.Denied -> denyView(viewDecision.reason)
             is ResultViewDecision.Allowed -> {
                 // Only the released page is audited and charged.
                 val (released, nextOffset) = viewDecision.page(page)
@@ -416,20 +420,16 @@ class ApprovalService(
                     req.decidedBy -> "result-viewed-by-approver"
                     else -> "result-viewed-by-assumer"
                 }
-                // Audit before returning rows, and charge the released volume against the stored rows' decision
+                // Audit before returning rows, and charge the released volume against the execution decision
                 // in the same transaction; a failed insert propagates, so rows never leave unrecorded.
                 val (rowCount, bytes) = resultVolume(released.rows)
-                val chargeDecision = listOfNotNull(meta.decisionId, req.sourceDecisionId)
-                    .firstNotNullOfOrNull { id -> auditStore.get(id)?.let { id to it } }
                 auditStore.insertAll(
-                    listOfNotNull(
+                    listOf(
                         e3Record(principal, req, viewEvent, Channel.WORKFLOW_VIEWER),
-                        chargeDecision?.let { (decisionId, decision) ->
-                            completionEvent(
-                                decision, decisionId, rowCount, bytes, "ok", 0,
-                                principal = principal, channel = Channel.WORKFLOW_VIEWER.contextValue,
-                            )
-                        },
+                        completionEvent(
+                            chargeDecision, chargeDecisionId, rowCount, bytes, "ok", 0,
+                            principal = principal, channel = Channel.WORKFLOW_VIEWER.contextValue,
+                        ),
                     ),
                 )
                 return QueryResultView(

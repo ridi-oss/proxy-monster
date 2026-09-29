@@ -1,6 +1,7 @@
 package com.ridi.oss.proxymonster.controlplane
 
 import com.google.protobuf.ByteString
+import com.ridi.oss.proxymonster.analyzer.pb.SessionObservation
 import com.ridi.oss.proxymonster.grpc.Refetch
 import com.ridi.oss.proxymonster.grpc.SchemaFragmentPush
 import com.ridi.oss.proxymonster.grpc.refetch
@@ -101,6 +102,14 @@ data class EnforcementConnection(
     var generation: Long = 0,
     val mutex: Mutex = Mutex(),
     @Volatile var lastUsedNanos: Long,
+    var lastEditorDecide: EditorDecideInputs? = null,
+)
+
+/** What the latest editor Decide on a connection resolved against beyond its held fragments. */
+data class EditorDecideInputs(
+    val searchPath: List<String>,
+    val session: SessionObservation,
+    val tempColumns: List<CatalogColumn>,
 )
 
 sealed interface CatalogMutationResult {

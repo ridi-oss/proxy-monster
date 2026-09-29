@@ -5,6 +5,7 @@ import com.google.protobuf.ByteString
 import com.ridi.oss.proxymonster.controlplane.authz.AuthzContext
 import com.ridi.oss.proxymonster.grpc.EnfAction
 import com.ridi.oss.proxymonster.grpc.Refetch
+import kotlinx.coroutines.sync.withLock
 
 sealed interface EnforcementOutcome {
     data class Verdict(
@@ -49,19 +50,6 @@ suspend fun decideConnection(
         )
     }
 
-    val columns = core.connectionCatalog.structuralRows(connection).map { row ->
-        CatalogColumn(
-            catalog = row.catalog,
-            schema = row.schema,
-            table = row.table,
-            column = row.column,
-            dataType = row.dataType,
-            sqlType = sqlTypeFor(row.dataType),
-            ordinal = row.ordinal,
-            nullable = row.nullable,
-        )
-    }
-
     val t0 = System.nanoTime()
     // requester_ip's source is selected by CHANNEL, never nullable fallback: WIRE attests the client socket;
     // editor/workflow channels use only the HTTP carrier recorded when the CP minted their token.
@@ -74,11 +62,7 @@ suspend fun decideConnection(
         ds = ds,
         sql = sql,
         channel = channel,
-        catalog = core.datasourceStore.connectionCatalog(
-            ds.id,
-            columns,
-            ds.engine.functionCatalog(core.connectionCatalog.heldRoutines(connection), ds.engineVersion),
-        ),
+        catalog = heldCatalog(core, connection, ds),
         policyStore = core.policyStore,
         accessStore = core.accessStore,
         userGroupStore = core.userGroupStore,
@@ -161,5 +145,37 @@ suspend fun decideConnection(
         core.auditStore.insert(decisionRecord)
     }
     check(connection.generation == generationAtEntry) { "connection generation changed during serialized decide" }
+    if (channel == Channel.EDITOR) connection.lastEditorDecide = EditorDecideInputs(searchPath, session, tempColumns)
     EnforcementOutcome.Verdict(effectiveCtx, decisionId, generationAtEntry, afterStatement)
+}
+
+private fun heldCatalog(core: ControlPlaneCore, connection: EnforcementConnection, ds: Datasource): Catalog {
+    val columns = core.connectionCatalog.structuralRows(connection).map { row ->
+        CatalogColumn(
+            catalog = row.catalog,
+            schema = row.schema,
+            table = row.table,
+            column = row.column,
+            dataType = row.dataType,
+            sqlType = sqlTypeFor(row.dataType),
+            ordinal = row.ordinal,
+            nullable = row.nullable,
+        )
+    }
+    return core.datasourceStore.connectionCatalog(
+        ds.id,
+        columns,
+        ds.engine.functionCatalog(core.connectionCatalog.heldRoutines(connection), ds.engineVersion),
+    )
+}
+
+/** The structure an open editor connection's latest Decide resolved against; null once it has none. */
+data class ConnectionStructure(val catalog: Catalog, val inputs: EditorDecideInputs)
+
+suspend fun connectionStructure(core: ControlPlaneCore, connectionId: ByteString, binding: Binding, ds: Datasource): ConnectionStructure? {
+    val connection = core.connectionCatalog.find(connectionId)?.takeIf { it.binding == binding } ?: return null
+    return connection.mutex.withLock {
+        if (core.connectionCatalog.find(connectionId) !== connection) return@withLock null
+        connection.lastEditorDecide?.let { ConnectionStructure(heldCatalog(core, connection, ds), it) }
+    }
 }

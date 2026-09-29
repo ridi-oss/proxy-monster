@@ -1,5 +1,6 @@
 package com.ridi.oss.proxymonster.controlplane
 
+import com.ridi.oss.proxymonster.analyzer.pb.SessionObservation
 import com.ridi.oss.proxymonster.analyzer.pb.StatementKind
 import com.ridi.oss.proxymonster.controlplane.authz.Authz
 import com.ridi.oss.proxymonster.controlplane.authz.AuthzAction
@@ -215,15 +216,20 @@ internal fun viewerDecision(
     systemClassification: SystemClassificationService?,
     channel: Channel,
     auditStore: AuditStore? = null,
+    // An open editor session's connection catalog; null re-decides against the datasource's config catalog.
+    structure: ConnectionStructure? = null,
 ): DecisionContext? {
     val sql = childSql ?: return null
     val ds = req.datasourceId?.let(datasourceStore::get) ?: return null
     val roles = policyStore.liveRoleNames(req.executeAs).ifEmpty { return null }
     return decideQuery(
         principal = viewer, ds = ds, sql = sql, channel = channel,
-        catalog = datasourceStore.catalog(ds.id), policyStore = policyStore, accessStore = accessStore,
+        catalog = structure?.catalog ?: datasourceStore.catalog(ds.id), policyStore = policyStore, accessStore = accessStore,
         userGroupStore = userGroupStore, roleResolver = roleResolver, authz = authz, auditStore = auditStore,
         providedRoles = roles, context = callerContext, systemClassification = systemClassification,
+        liveSearchPath = structure?.inputs?.searchPath,
+        session = structure?.inputs?.session ?: SessionObservation.getDefaultInstance(),
+        tempColumns = structure?.inputs?.tempColumns.orEmpty(),
     )
 }
 

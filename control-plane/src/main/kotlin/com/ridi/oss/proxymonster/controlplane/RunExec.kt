@@ -498,6 +498,7 @@ class RunExecService(
     // authz relaxation. The per-session token carries a fixed absolute TTL (sliding refresh-on-activity is a
     // follow-up); the session is bounded by idle-sweep and explicit close.
     private val openSessions = ConcurrentHashMap<String, OpenEditorSession>()
+    private val taskSessions = ConcurrentHashMap<Long, String>()
 
     /**
      * Open a persistent editor session: mint a per-session EDITOR token, dial one proxy stream, and hold it.
@@ -616,6 +617,7 @@ class RunExecService(
                 // rather than run a query on (and refresh the registry entry of) a since-revoked token. `!==` is a
                 // safe identity check: sessionId is a fresh UUID, so a re-open can never resurrect the same object.
                 if (openSessions[sessionId] !== session) throw ProxyRunException("no such editor session")
+                taskId?.let { taskSessions[it] = sessionId }
                 val run = taskId?.let { id -> ActiveRun(session.attached.outbound).also { activeRuns[id] = it } }
                 try {
                     // The session outlives this call, so any stream failure must drop it here: the run loop
@@ -684,6 +686,7 @@ class RunExecService(
     /** End a session's proxy stream + revoke its token. Idempotent (a missing session is a no-op). */
     fun closeSession(sessionId: String) {
         val session = openSessions.remove(sessionId) ?: return
+        taskSessions.values.removeIf { it == sessionId }
         try {
             session.attached.outbound.trySend(controlRunMsg { close = runClose {} })
         } finally {
@@ -692,6 +695,13 @@ class RunExecService(
             session.tokenHash?.let(core.runRequesterIps::remove)
             core.runChannels.remove(sessionId)
         }
+    }
+
+    /** The catalog [taskId]'s editor session last decided against, while that session is open and owned by [principal]. */
+    suspend fun openSessionStructure(taskId: Long, principal: String, ds: Datasource): ConnectionStructure? {
+        val session = taskSessions[taskId]?.let(openSessions::get)
+            ?.takeIf { it.principal == principal && it.datasourceName == ds.name } ?: return null
+        return connectionStructure(core, session.connectionId, Binding(ds.name, principal, TokenKind.EDITOR.name, ds.effectiveCatalog), ds)
     }
 
     /** Reap sessions idle longer than [maxIdleMs] (called on a timer) — releases the target-DB connection. */

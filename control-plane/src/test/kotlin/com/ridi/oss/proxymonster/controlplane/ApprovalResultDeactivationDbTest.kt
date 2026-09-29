@@ -96,7 +96,10 @@ class ApprovalResultDeactivationDbTest {
         }
         fx.dataSource.connection.use { c -> c.prepareStatement("INSERT INTO query_result (task_id, sql, sql_hash) VALUES (?, 'select 1', 'fixture')").use { ps -> ps.setLong(1, reqId); ps.executeUpdate() } }
         resultStore.startNextRun(reqId, viewer)!!
-        resultStore.completeRun(reqId, DecryptedResult(listOf("id"), listOf(listOf("1"))), 3600)!!
+        val decisionId = fx.auditStore.insert(
+            AuditEvent(principal = viewer, datasource = fx.datasource.name, statement = "select 1", decision = Decision.ALLOW, channel = "workflow-executor"),
+        )
+        resultStore.completeRun(reqId, DecryptedResult(listOf("id"), listOf(listOf("1"))), 3600, decisionId)!!
         return reqId
     }
 

@@ -204,7 +204,7 @@ class McpQueryToolsDbTest {
         try {
             withFakeProxy({ identity, statement, _ ->
                     if (identity?.kind == TokenKind.APPROVER_EXEC.name) {
-                        maskedResult(executeFingerprint)
+                        maskedResult(executeFingerprint, executionDecision(approver))
                     } else {
                         val denied = core.auditStore.insert(
                             AuditEvent(
@@ -512,7 +512,7 @@ class McpQueryToolsDbTest {
                         approver, "task.approve", "AccessRequest::\"$id\"",
                     ),
                 )
-                withFakeProxy({ _, _, _ -> maskedResult(executeFingerprint) }) {
+                withFakeProxy({ _, _, _ -> maskedResult(executeFingerprint, executionDecision(approver)) }) {
                     assertEquals("EXECUTING", client.call(approverToken, "execute_approval", idArg(id)).ok().result().str("decision"))
                     withTimeout(10_000) {
                         while (client.call(approverToken, "get_approval", idArg(id)).ok().result()
@@ -732,10 +732,15 @@ class McpQueryToolsDbTest {
         }
     }
 
-    private fun maskedResult(fingerprint: List<com.ridi.oss.proxymonster.analyzer.pb.RequireResultReadGrant>) = listOf(
+    private fun executionDecision(principal: String): Long = core.auditStore.insert(
+        AuditEvent(principal = principal, datasource = fx.datasource.name, statement = sql, decision = Decision.MASK, channel = Channel.WORKFLOW_EXECUTOR.contextValue),
+    )
+
+    private fun maskedResult(fingerprint: List<com.ridi.oss.proxymonster.analyzer.pb.RequireResultReadGrant>, decisionId: Long = 0) = listOf(
         proxyRunMsg {
             decision = runDecision {
                 decision = WireEnfAction.MASK
+                this.decisionId = decisionId
                 maskedColumns += "ssn"
                 resultFingerprint += fingerprint
             }

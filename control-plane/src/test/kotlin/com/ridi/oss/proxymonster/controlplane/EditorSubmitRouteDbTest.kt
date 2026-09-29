@@ -673,7 +673,7 @@ class EditorSubmitRouteDbTest {
     fun `an editor result charges the caller's relayed volume with one completion per statement`() = testApplication {
         val client = wire()
         val hour = java.time.Duration.ofHours(1)
-        val before = core.auditStore.relayedVolume(caller, listOf(hour), java.time.Instant.now()).getValue(hour)
+        val before = core.auditStore.relayedVolume(caller, datasource.name, listOf(hour), java.time.Instant.now()).getValue(hour)
         // The run channel emits no completion report, so the decision row the proxy names is what the
         // control plane charges the released rows against.
         val decisionId = core.auditStore.insert(
@@ -690,7 +690,7 @@ class EditorSubmitRouteDbTest {
             }.body<EditorSubmitResponse>()
             awaitUntil("child DONE") { resultStore.meta(ack.taskId)?.status == "DONE" }
             assertEquals(decisionId, resultStore.meta(ack.taskId)?.decisionId, "a DONE result keeps its execution decision")
-            val after = core.auditStore.relayedVolume(caller, listOf(hour), java.time.Instant.now()).getValue(hour)
+            val after = core.auditStore.relayedVolume(caller, datasource.name, listOf(hour), java.time.Instant.now()).getValue(hour)
             assertEquals(before.rows + 3, after.rows)
             assertEquals(before.bytes + 3, after.bytes, "bytes are the UTF-8 size of the non-null cells")
             val completions = core.auditStore.recent(50).filter { it.kind == "completion" && it.decisionId == decisionId }

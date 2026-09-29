@@ -26,11 +26,12 @@ class RateDecideDbTest {
         ageSeconds: Long = 60,
         principal: String = "analyst@example.com",
         kind: String = "completion",
+        datasource: String = this.datasource.name,
     ) {
         auditStore.insert(
             AuditEvent(
                 ts = Instant.now().minusSeconds(ageSeconds).toString(), principal = principal,
-                datasource = "another-datasource", statement = "select id from users",
+                datasource = datasource, statement = "select id from users",
                 decision = Decision.ALLOW, kind = kind, rowsReturned = rows, bytesReturned = bytes,
             ),
         )
@@ -45,7 +46,7 @@ class RateDecideDbTest {
     )
 
     @Test
-    fun `relayed volume sums only this principal's completions per window`() {
+    fun `relayed volume sums only this principal's completions on this datasource per window`() {
         requireDockerOrSkip()
         val fx = EnforcementFixture.mysql()
         fx.completion(5, 50)
@@ -53,8 +54,10 @@ class RateDecideDbTest {
         fx.completion(10000, 10000, ageSeconds = 90000)
         fx.completion(10000, 10000, principal = "other@example.com")
         fx.completion(10000, 10000, kind = "decision")
+        fx.completion(10000, 10000, datasource = "another-datasource")
         val volume = fx.auditStore.relayedVolume(
-            "analyst@example.com", listOf(Duration.ofHours(1), Duration.ofDays(1), Duration.ofHours(1)), Instant.now(),
+            "analyst@example.com", fx.datasource.name,
+            listOf(Duration.ofHours(1), Duration.ofDays(1), Duration.ofHours(1)), Instant.now(),
         )
         assertEquals(RelayedVolume(rows = 5, bytes = 50), volume.getValue(Duration.ofHours(1)))
         assertEquals(RelayedVolume(rows = 12, bytes = 120), volume.getValue(Duration.ofDays(1)))
@@ -129,6 +132,34 @@ class RateDecideDbTest {
                 val d = fx.decide(sql, auditStore = fx.auditStore)
                 assertNotEquals(EnfAction.DENY, d.action, "${fx.datasource.engine} $sql: ${d.denyReason}")
             }
+        }
+    }
+
+    @Test
+    fun `a rate is spent per datasource, not across datasources`() {
+        requireDockerOrSkip()
+        val fx = EnforcementFixture.mysql()
+        // Volume on another datasource, however large, leaves this one's rate untouched.
+        fx.completion(10_000, 0, ageSeconds = 120, datasource = "another-datasource")
+        val elsewhere = fx.decide("select id from users", auditStore = fx.auditStore)
+        assertNotEquals(EnfAction.DENY, elsewhere.action, elsewhere.denyReason)
+        fx.completion(10_000, 0, ageSeconds = 120)
+        assertEquals("$RATE_SPENT_DENY 10000/1h spent", fx.decide("select id from users", auditStore = fx.auditStore).denyReason)
+    }
+
+    @Test
+    fun `a reset clears the rate on every datasource`() {
+        requireDockerOrSkip()
+        val fx = EnforcementFixture.mysql()
+        fx.completion(10_000, 0, ageSeconds = 120)
+        fx.completion(10_000, 0, ageSeconds = 120, datasource = "another-datasource")
+        assertEquals("$RATE_SPENT_DENY 10000/1h spent", fx.decide("select id from users", auditStore = fx.auditStore).denyReason)
+        fx.accessStore.resetRate(
+            "analyst@example.com", "re-run", AuditActor("admin@example.com", channel = "console"), ManagementAuditRecorder(fx.auditStore),
+        )
+        val hour = Duration.ofHours(1)
+        for (ds in listOf(fx.datasource.name, "another-datasource")) {
+            assertEquals(RelayedVolume(0, 0), fx.auditStore.relayedVolume("analyst@example.com", ds, listOf(hour), Instant.now()).getValue(hour), ds)
         }
     }
 

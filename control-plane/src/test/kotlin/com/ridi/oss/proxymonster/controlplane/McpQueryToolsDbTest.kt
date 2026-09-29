@@ -342,7 +342,7 @@ class McpQueryToolsDbTest {
         )
         val id = seedApprovalResult(requester, approver, decisionId)
         val window = Duration.ofHours(1)
-        val before = core.auditStore.relayedVolume(requester, listOf(window), Instant.now()).getValue(window)
+        val before = core.auditStore.relayedVolume(requester, fx.datasource.name, listOf(window), Instant.now()).getValue(window)
 
         val view = client.call(token(requester, setOf("mcp:query")), "get_approval_result", buildJsonObject {
             put("id", id)
@@ -351,7 +351,7 @@ class McpQueryToolsDbTest {
         assertEquals(listOf(maskedRows[0]), view.rows())
         assertEquals(1, view.getValue("nextOffset").jsonPrimitive.int)
 
-        val after = core.auditStore.relayedVolume(requester, listOf(window), Instant.now()).getValue(window)
+        val after = core.auditStore.relayedVolume(requester, fx.datasource.name, listOf(window), Instant.now()).getValue(window)
         assertEquals(1L, after.rows - before.rows)
         assertEquals(
             1L,

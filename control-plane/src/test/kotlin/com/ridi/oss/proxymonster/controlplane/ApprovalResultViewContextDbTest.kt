@@ -438,12 +438,12 @@ class ApprovalResultViewContextDbTest {
         val client = wire()
         client.login(requester)
         val hour = java.time.Duration.ofHours(1)
-        val before = fx.auditStore.relayedVolume(requester, listOf(hour), java.time.Instant.now()).getValue(hour)
+        val before = fx.auditStore.relayedVolume(requester, fx.datasource.name, listOf(hour), java.time.Instant.now()).getValue(hour)
         val response = client.get("/api/approvals/$id/result")
         assertEquals(HttpStatusCode.OK, response.status)
         val released = response.body<QueryResultView>().rows
         assertEquals(2, released.size)
-        val after = fx.auditStore.relayedVolume(requester, listOf(hour), java.time.Instant.now()).getValue(hour)
+        val after = fx.auditStore.relayedVolume(requester, fx.datasource.name, listOf(hour), java.time.Instant.now()).getValue(hour)
         assertEquals(before.rows + 2, after.rows, "the viewer, not the executor, is charged the released rows")
         val releasedBytes = released.sumOf { row -> row.sumOf { it?.toByteArray(Charsets.UTF_8)?.size ?: 0 } }.toLong()
         assertEquals(before.bytes + releasedBytes, after.bytes, "bytes charged are the released (masked) cells")
@@ -463,7 +463,7 @@ class ApprovalResultViewContextDbTest {
         for (sourceDecisionId in listOf(null, executionDecision("SELECT id, email, ssn FROM users", Decision.DENY))) {
             val id = seedResult(decisionId = null, sourceDecisionId = sourceDecisionId)
             val hour = java.time.Duration.ofHours(1)
-            val before = fx.auditStore.relayedVolume(requester, listOf(hour), java.time.Instant.now()).getValue(hour)
+            val before = fx.auditStore.relayedVolume(requester, fx.datasource.name, listOf(hour), java.time.Instant.now()).getValue(hour)
             val completionsBefore = fx.auditStore.recent(200).count { it.kind == "completion" && it.principal == requester }
             val response = client.get("/api/approvals/$id/result") { header("X-Forwarded-For", "100.100.5.5") }
             assertEquals(HttpStatusCode.Forbidden, response.status)
@@ -474,7 +474,7 @@ class ApprovalResultViewContextDbTest {
                 "the refusal is audited",
             )
             assertEquals(completionsBefore, fx.auditStore.recent(200).count { it.kind == "completion" && it.principal == requester })
-            assertEquals(before, fx.auditStore.relayedVolume(requester, listOf(hour), java.time.Instant.now()).getValue(hour))
+            assertEquals(before, fx.auditStore.relayedVolume(requester, fx.datasource.name, listOf(hour), java.time.Instant.now()).getValue(hour))
             assertNull(viewEvent(id, requester), "a refused view earns no result-viewed event")
         }
     }

@@ -212,7 +212,7 @@ class ResultCapsE2eDbTest {
         )
     }
 
-    private fun relayed(principal: String) = fx.auditStore.relayedVolume(principal, listOf(hour), Instant.now()).getValue(hour)
+    private fun relayed(principal: String) = fx.auditStore.relayedVolume(principal, fx.datasource.name, listOf(hour), Instant.now()).getValue(hour)
 
     /** A wire client's real Decide: a USER token, a per-connection catalog, the gRPC handler. */
     private inner class WireClient(val principal: String) {

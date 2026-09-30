@@ -138,7 +138,7 @@ class McpQueryToolsDbTest {
         val client = createClient { expectSuccess = false }
         val principal = analyst("scope")
         val taskTools = McpCapabilityRegistry.entries.filter { it.gate == McpGate.RESOURCE }
-        assertEquals(29, taskTools.size)
+        assertEquals(32, taskTools.size)
         for (tool in taskTools) {
             val allButOwn = token(principal, McpCapabilityRegistry.supportedScopes - tool.requiredScope)
             val response = client.rawCall(allButOwn, tool.toolName)

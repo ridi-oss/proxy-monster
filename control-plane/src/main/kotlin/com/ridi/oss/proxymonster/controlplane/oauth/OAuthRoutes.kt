@@ -58,6 +58,7 @@ import javax.sql.DataSource
 
 val MCPA_SCOPES = setOf(
     "mcp:read", "mcp:datasources:write", "mcp:policies:write", "mcp:identity:write", "mcp:query", "mcp:approvals:write",
+    "mcp:tokens",
 )
 
 private val log = org.slf4j.LoggerFactory.getLogger("com.ridi.oss.proxymonster.controlplane.oauth.OAuthRoutes")

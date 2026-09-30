@@ -1,5 +1,47 @@
 # Changelog
 
+## [0.1.6](https://github.com/ridi-oss/proxy-monster/compare/pmon-v0.1.5...pmon-v0.1.6) (2026-09-30)
+
+
+### ⚠ BREAKING CHANGES
+
+* **pmon:** require a control-plane URL on the first login
+
+### Features
+
+* **pmon:** add server commands and a server argument to the CLI ([145c0c3](https://github.com/ridi-oss/proxy-monster/commit/145c0c38b46c37ae92bea33aa17f32869c9a5f5d))
+* **pmon:** broker PostgreSQL connections ([d9303df](https://github.com/ridi-oss/proxy-monster/commit/d9303df11e8d4101d0e1368a860ae532a6f0fd23))
+* **pmon:** keep a named set of servers in the daemon ([b80935a](https://github.com/ridi-oss/proxy-monster/commit/b80935a9fbaee28d392d3a973ec3dede0f929022))
+* **pmon:** render PostgreSQL connection strings ([3127ea8](https://github.com/ridi-oss/proxy-monster/commit/3127ea8657478376070431d1a44a3b0a677dacb2))
+* **pmon:** require a control-plane URL on the first login ([755dc55](https://github.com/ridi-oss/proxy-monster/commit/755dc550e1892a586a26f07f7ec5b11db434f9d7))
+* **pmontray:** show every server's datasources ([94117b6](https://github.com/ridi-oss/proxy-monster/commit/94117b6d92a5296fdf5a342c6c862a55eed2405f))
+
+
+### Bug Fixes
+
+* **pmon:** refuse to act on a daemon from before multi-server support ([c7168ca](https://github.com/ridi-oss/proxy-monster/commit/c7168caabc949b0970c55d70a5102be76d0c82b1))
+* **pmon:** stabilize daemon control sockets ([#262](https://github.com/ridi-oss/proxy-monster/issues/262)) ([be370d3](https://github.com/ridi-oss/proxy-monster/commit/be370d346fe4cc5cbd6acf4149890145651f4195))
+* **pmon:** use moby/moby HostConfig in client interop test ([#281](https://github.com/ridi-oss/proxy-monster/issues/281)) ([b1de20a](https://github.com/ridi-oss/proxy-monster/commit/b1de20a7e4a9949abc25429d22f26a83cd7a7f95))
+
+
+### Refactoring
+
+* **pmon:** declare provider connection formats and carry connection metadata ([3dcc427](https://github.com/ridi-oss/proxy-monster/commit/3dcc4270e4b97a1e10743fb13cac6c79b77779ee))
+* **pmon:** format connection strings through a provider registry ([83092bb](https://github.com/ridi-oss/proxy-monster/commit/83092bbed49d63ed2b00b0b6b3f09573557451f2))
+* **pmon:** serve local listeners through the provider ([2622810](https://github.com/ridi-oss/proxy-monster/commit/2622810f17c81820f970512b0dd5f349863614ee))
+
+
+### Build & Dependencies
+
+* **deps:** bump github.com/docker/docker in /pmon ([#216](https://github.com/ridi-oss/proxy-monster/issues/216)) ([ee1babd](https://github.com/ridi-oss/proxy-monster/commit/ee1babd8d3487fda7eaf7ba99d8c37c3a1d29823))
+* **deps:** bump the go group across 4 directories with 8 updates ([#256](https://github.com/ridi-oss/proxy-monster/issues/256)) ([d431547](https://github.com/ridi-oss/proxy-monster/commit/d431547ff28646ad24ec82226b8387510ba3ce5a))
+
+
+### Chores
+
+* cut server 0.1.21 for the [#202](https://github.com/ridi-oss/proxy-monster/issues/202) revert ([#230](https://github.com/ridi-oss/proxy-monster/issues/230)) ([5001b8c](https://github.com/ridi-oss/proxy-monster/commit/5001b8ccd91a3a9f9ef47f5fc6efe50f0a86f715))
+* **pmon:** release pmon 0.1.6 ([74e74b8](https://github.com/ridi-oss/proxy-monster/commit/74e74b819050f5a44ca07f7c0198af9be6f9cb9e))
+
 ## [0.1.5](https://github.com/ridi-oss/proxy-monster/compare/pmon-v0.1.4...pmon-v0.1.5) (2026-08-20)
 
 
@@ -68,4 +110,3 @@
 
 * **deps:** depend on the published mysqlwire, not the sibling directory ([#11](https://github.com/ridi-oss/proxy-monster/issues/11)) ([63c9603](https://github.com/ridi-oss/proxy-monster/commit/63c9603ff28a6224102ed3923430b3f18a101f3f))
 * release trains for the server, the client, and mysqlwire ([#12](https://github.com/ridi-oss/proxy-monster/issues/12)) ([f6c95f1](https://github.com/ridi-oss/proxy-monster/commit/f6c95f120685e052c576465c8e9ec00d4d5ce0be))
-

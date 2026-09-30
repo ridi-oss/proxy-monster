@@ -287,14 +287,13 @@ class EditorTaskService(
         }
     }
 
-    /** Drop the task's saved rows and its row. A non-owner or unknown id is a silent no-op. */
-    suspend fun delete(principal: String, taskId: Long) {
+    /** Drop the task's saved rows and its row. False for a non-owner or unknown id, which changes nothing. */
+    suspend fun delete(principal: String, taskId: Long): Boolean {
         val task = accessStore.getRequest(taskId)
-        if (task != null && task.isEditorTaskOf(principal)) {
-            if (task.status == "EXECUTING") runExecService.cancelActiveRun(taskId)
-            queryResultStore?.deleteResultsForTask(taskId)
-            accessStore.deleteEditorTask(taskId, principal)
-        }
+        if (task == null || !task.isEditorTaskOf(principal)) return false
+        if (task.status == "EXECUTING") runExecService.cancelActiveRun(taskId)
+        queryResultStore?.deleteResultsForTask(taskId)
+        return accessStore.deleteEditorTask(taskId, principal)
     }
 
     // 404 for a non-owner / non-EDITOR id, so it's not an existence oracle.

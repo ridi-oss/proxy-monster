@@ -72,6 +72,7 @@ message RegisterRequest {
   bool advertise_wire_tls = 11;                 // whether this proxy serves client-facing TLS at all
   int32 protocol_version = 12;
   ConnectionInfo connection_info = 13;          // nonsecret endpoint + properties for clients; absent = keep stored
+  optional string description = 14;            // PM_DATASOURCE_DESCRIPTION; absent = keep stored, empty = clear
 }
 message ConnectionInfo {
   string endpoint = 1;
@@ -116,6 +117,11 @@ engine-defined properties, nonsecret by contract. An absent message keeps the
 stored value; an explicit empty message clears it. The engine definition
 validates the accepted fields, and a non-connectable listing omits it along with
 the other connection material.
+
+`description` is one line saying what the datasource holds, from the proxy's
+`PM_DATASOURCE_DESCRIPTION`. Register refuses more than 500 characters or any
+control character. It is served on connectable `/api/datasources` rows and to
+MCP agents, and stripped with the connection material otherwise.
 
 Only a proxy sets them; the admin REST create/update does not. A proxy with wire
 TLS fails to boot only if its certificate cannot be READ — whether the chain is

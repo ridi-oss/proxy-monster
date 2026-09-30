@@ -337,10 +337,11 @@ All under `admin.policies` (write tools also require `mcp:policies:write`):
 ### Query and approval tools
 
 - `list_connectable_datasources` (`datasource.connect`, scope `mcp:query`) — the
-  datasources the caller may connect to: name, engine, default schemas. No host
-  or port (REST: `GET /api/datasources?connectable=true`).
-- `describe_datasource` (`datasource.connect`, scope `mcp:query`) — schemas,
-  tables, and columns of one connectable datasource.
+  datasources the caller may connect to: name, engine, default schemas,
+  description. No host or port (REST: `GET /api/datasources?connectable=true`).
+- `describe_datasource` (`datasource.connect`, scope `mcp:query`) — name,
+  engine, description, and the schemas, tables, and columns of one connectable
+  datasource.
 - `run_query` (`task.request`, scope `mcp:query`) — runs SQL as an editor task
   under the caller's own roles on a one-shot connection, waits up to 10 s, and
   returns the task status, per-statement metadata, and the first 200 rows of the
@@ -447,6 +448,34 @@ The token, audit, grant, access-request, and self tools are resource-gated like
 the query tools: the dispatcher checks the scope, then the shared service runs
 the REST route's Cedar decision on the same context — `requesterIp` and the
 channel the route passes — so MCP returns no row the console would not.
+
+## Several instances
+
+A user often has access to more than one proxy-monster deployment, and installs
+each as its own MCP server. The deployment names itself: `PM_INSTANCE_NAME`
+(default: the first DNS label of `PM_MCP_RESOURCE`'s host, or `local`) and
+`PM_INSTANCE_DESCRIPTION`. The install name is `pmon-<instance>`, served with
+the MCP URL by `GET /api/mcp/connect` to the console's Connect an agent page.
+
+`initialize` returns `instructions`, in English for every client (the agent
+reads them, and it answers the user in the user's language), so the agent knows
+which server to use for what. The instance and datasource descriptions are
+passed through as configured:
+
+```
+This MCP server is the proxy-monster instance "hr-pmon": HR and payroll data
+Other pmon-* MCP servers are different proxy-monster instances, each with its own datasources and access. Use this one only for the datasources listed here.
+Datasources you can query here:
+- payroll (postgres): Salaries and payslips
+- hris (mysql)
+```
+
+The list is the caller's own: the same `datasource.connect` decision
+`list_connectable_datasources` makes, so a datasource the caller cannot connect
+to is never named. It is capped at 50, then points at
+`list_connectable_datasources`. A datasource's line comes from the proxy's
+`PM_DATASOURCE_DESCRIPTION`, carried on `RegisterRequest.description`. The
+server's `Implementation` title is `proxy-monster (<instance>)`.
 
 ## Data model
 

@@ -601,6 +601,7 @@ fun Application.module(config: Config, core: ControlPlaneCore) {
     val accessService = AccessService(accessStore, datasourceStore, store, roleResolver, authz, managementAudit)
     installMcp(
         config, core, datasourceManagement, policyManagement, identityManagement, editorTaskService, approvalService,
+        access = accessService,
     )
 
     routing {

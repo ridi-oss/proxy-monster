@@ -2,7 +2,11 @@ package com.ridi.oss.proxymonster.controlplane.mcp
 
 import com.ridi.oss.proxymonster.auth.McpAccessIdentity
 import com.ridi.oss.proxymonster.auth.sha256Hex
+import com.ridi.oss.proxymonster.controlplane.AccessService
 import com.ridi.oss.proxymonster.controlplane.ApiError
+import com.ridi.oss.proxymonster.controlplane.DatasourceInput
+import com.ridi.oss.proxymonster.controlplane.RateReset
+import com.ridi.oss.proxymonster.controlplane.wireName
 import com.ridi.oss.proxymonster.controlplane.ApprovalService
 import com.ridi.oss.proxymonster.controlplane.EditorTaskService
 import com.ridi.oss.proxymonster.controlplane.RunExecService
@@ -117,6 +121,10 @@ fun Application.installMcp(
         queryResultStore = null, core.roleResolver, core.authz, RunExecService(core), appScope = this,
         core.systemClassification, core.taskCompletionHub,
     ),
+    access: AccessService = AccessService(
+        core.accessStore, core.datasourceStore, core.auditStore, core.roleResolver, core.authz,
+        ManagementAuditRecorder(core.auditStore),
+    ),
 ) {
     McpCapabilityRegistry.verify()
     val metadataUri = protectedResourceMetadataUri(config.mcpResource)
@@ -192,6 +200,7 @@ fun Application.installMcp(
             datasourceService,
             policyService,
             identityService,
+            access,
             core,
             taskTools,
         )
@@ -409,6 +418,7 @@ private fun createMcpServer(
     datasourceService: DatasourceManagementService,
     policyService: PolicyManagementService,
     identityService: IdentityManagementService,
+    access: AccessService,
     core: ControlPlaneCore,
     taskTools: McpTaskTools,
 ): Server {
@@ -438,9 +448,9 @@ private fun createMcpServer(
                 } else if (capability.classification == CapabilityClassification.READ) {
                     authorizeRead(context, capability, args, authorizer, core.auditStore)
                     validateArguments(capability, args)
-                    executeRead(capability.toolName, args, datasourceService, policyService, identityService)
+                    executeRead(capability.toolName, args, datasourceService, policyService, identityService, access)
                 } else {
-                    executeWrite(capability, args, context, mutations, datasourceService, policyService, identityService, core)
+                    executeWrite(capability, args, context, mutations, datasourceService, policyService, identityService, access, core)
                 }
                 CallToolResult(content = listOf(TextContent(structured.toString())), structuredContent = structured)
             } catch (e: CedarValidationManagementException) {
@@ -525,6 +535,7 @@ private suspend fun executeRead(
     datasources: DatasourceManagementService,
     policies: PolicyManagementService,
     identities: IdentityManagementService,
+    access: AccessService,
 ): JsonObject = when (tool) {
     "list_datasources" -> structured(datasources.listDatasources())
     "get_datasource_liveness" -> structured(datasources.getDatasourceLiveness(args.requiredString("datasource")))
@@ -542,6 +553,9 @@ private suspend fun executeRead(
     "list_users" -> structured(identities.listUsers())
     "list_groups" -> structured(identities.listGroups())
     "list_mask_fns" -> structured(policies.listMaskFns())
+    "list_group_members" -> structured(identities.listGroupMembers(args.requiredString("groupName")))
+    "list_group_roles" -> structured(identities.listGroupRoles(args.requiredString("groupName")))
+    "get_principal_rate" -> structured<RateReset?>(access.lastRateReset(args.requiredString("principal")))
     else -> throw ManagementException(ApiError("mcp.invalid_request"))
 }
 
@@ -553,6 +567,7 @@ private fun executeWrite(
     datasources: DatasourceManagementService,
     policies: PolicyManagementService,
     identities: IdentityManagementService,
+    access: AccessService,
     core: ControlPlaneCore,
 ): JsonObject {
     val datasourceName = safeDatasource(capability, args)
@@ -698,6 +713,39 @@ private fun executeWrite(
                 },
             )
             "delete_mask_fn" -> structured(policies.deleteMaskFn(args.requiredString("name"), actor, connection))
+            "reset_principal_rate" -> structured(
+                access.resetRate(args.requiredString("principal"), args.requiredString("reason"), actor, connection),
+            )
+            "create_datasource" -> structured(
+                datasources.createDatasource(
+                    DatasourceInput(
+                        args.requiredString("name"),
+                        args.string("engine") ?: "postgres",
+                        args.string("host").orEmpty(),
+                        args.int("port") ?: 0,
+                        args.string("dbName").orEmpty(),
+                    ),
+                    actor, connection,
+                ),
+            )
+            "update_datasource" -> structured(
+                datasources.getDatasource(args.requiredString("datasource")).let { current ->
+                    datasources.updateDatasource(
+                        current.name,
+                        DatasourceInput(
+                            args.string("newName") ?: current.name,
+                            args.string("engine") ?: current.engine.wireName,
+                            args.string("host") ?: current.host,
+                            args.int("port") ?: current.port,
+                            args.string("dbName") ?: current.dbName,
+                        ),
+                        actor, connection,
+                    )
+                },
+            )
+            "delete_datasource" -> structured(datasources.deleteDatasource(args.requiredString("datasource"), actor, connection))
+            "refresh_datasource" -> structured(datasources.refreshDatasource(args.requiredString("datasource")))
+            "test_datasource" -> structured(datasources.testDatasource(args.requiredString("datasource")))
             else -> throw ManagementException(ApiError("mcp.invalid_request"))
         }
     }
@@ -717,8 +765,15 @@ private fun schemaFor(tool: String): ToolSchema {
             put("type", "array")
             put("items", buildJsonObject { put("type", "string") })
         }
+        fun datasourceFields() { string("engine"); string("host"); integer("port", min = 0, max = 65535); string("dbName") }
         when (tool) {
             "get_datasource_liveness", "browse_catalog", "list_column_tags" -> string("datasource")
+            "list_group_members", "list_group_roles" -> string("groupName")
+            "get_principal_rate" -> string("principal")
+            "reset_principal_rate" -> { string("principal"); string("reason") }
+            "create_datasource" -> { string("name"); datasourceFields() }
+            "update_datasource" -> { string("datasource"); string("newName"); datasourceFields() }
+            "delete_datasource", "refresh_datasource", "test_datasource" -> string("datasource")
             "get_table_detail" -> { string("datasource"); string("catalog"); string("schema"); string("table") }
             "get_policy", "enable_policy", "disable_policy", "delete_policy", "delete_role", "delete_group", "delete_mask_fn" -> string("name")
             "validate_policy" -> string("cedarSrc")
@@ -785,6 +840,11 @@ private fun schemaFor(tool: String): ToolSchema {
     }
     val required = when (tool) {
         "get_datasource_liveness", "browse_catalog", "list_column_tags" -> listOf("datasource")
+        "list_group_members", "list_group_roles" -> listOf("groupName")
+        "get_principal_rate" -> listOf("principal")
+        "reset_principal_rate" -> listOf("principal", "reason")
+        "create_datasource" -> listOf("name")
+        "update_datasource", "delete_datasource", "refresh_datasource", "test_datasource" -> listOf("datasource")
         "get_table_detail" -> listOf("datasource", "catalog", "schema", "table")
         "get_policy", "enable_policy", "disable_policy", "delete_policy", "delete_role", "delete_group", "delete_mask_fn" -> listOf("name")
         "validate_policy" -> listOf("cedarSrc")

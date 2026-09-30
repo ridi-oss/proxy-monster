@@ -47,6 +47,9 @@ func (c *showCmd) Run() error {
 		return err
 	}
 	warnVersionSkew(s)
+	if err := requireCurrentDaemon(s); err != nil {
+		return err
+	}
 	// A second daemon makes the port this prints ambiguous.
 	warnOtherDaemons()
 	srv := s.Server(server)

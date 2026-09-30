@@ -27,6 +27,9 @@ func (statusCmd) Run() error {
 		return err
 	}
 	warnVersionSkew(s)
+	if err := requireCurrentDaemon(s); err != nil {
+		return err
+	}
 	warnOtherDaemons()
 
 	if s.LoggedIn {

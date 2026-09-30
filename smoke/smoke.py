@@ -8,6 +8,7 @@ import json
 import os
 import re
 import shlex
+import ssl
 import struct
 import subprocess
 import sys
@@ -23,6 +24,9 @@ PRODUCTION_PRESETS = [-200, -201, -202, *range(-238, -229), -250, -251, -255, *r
 
 class Fail(Exception):
     pass
+
+
+CATALOGS = {"mysql": ("def", "acme"), "postgres": ("acme", "public"), "athena": ("awsdatacatalog", "acme")}
 
 
 class Session:
@@ -97,7 +101,7 @@ class Stack:
             a.call("POST", f"/api/policies/{pid}/enable")
         _, roles, _ = a.call("GET", "/api/roles")
         self.roles = {r["name"]: r["id"] for r in roles}
-        for name in ("smoke-rate-mysql", "smoke-rate-postgres"):
+        for name in ("smoke-rate-mysql", "smoke-rate-postgres", "smoke-rate-athena"):
             if name not in self.roles:
                 self.roles[name] = a.call("POST", "/api/roles", {"name": name})[1]["id"]
         _, policies, _ = a.call("GET", "/api/policies")
@@ -105,6 +109,7 @@ class Stack:
         wanted = {
             "smoke:rate-mysql": '@cap("2, 2/1h") permit(principal in Role::"smoke-rate-mysql", action == Action::"result.cap", resource);',
             "smoke:rate-postgres": '@cap("2, 2/1h") permit(principal in Role::"smoke-rate-postgres", action == Action::"result.cap", resource);',
+            "smoke:rate-athena": '@cap("2, 2/1h") permit(principal in Role::"smoke-rate-athena", action == Action::"result.cap", resource);',
         }
         for name, src in wanted.items():
             if name not in have:
@@ -115,15 +120,73 @@ class Stack:
             expect(name in by_name, f"datasource {name} is not registered (proxies: {sorted(by_name)})")
             d = by_name[name]
             expect("system:production" in d["tags"], f"{name} is not tagged system:production: {d['tags']}")
-            catalog, schema = ("def", "acme") if engine == "mysql" else ("acme", "public")
+            catalog, schema = CATALOGS[engine]
             a.call("PUT", f"/api/datasources/{d['id']}/classification",
                    {"catalog": catalog, "schema": schema, "table": "users", "column": "email",
                     "tags": ["pii"], "maskFnId": fixed["id"]})
             self.datasources[engine] = {"id": d["id"], "name": name, "port": int(port), "engine": engine}
+        # The wire cert is connect-gated, so a viewer fetches it the way a client would.
+        viewer = self.session("setup").login("smoke-viewer", ["system:production-viewer"])
+        for ds in self.datasources.values():
+            if ds["engine"] == "athena":
+                status, _, _ = viewer.call("GET", f"/api/datasources/{ds['id']}/wire-cert", ok=None)
+                expect(status == 200, f"wire-cert for {ds['name']}: {status}")
+                ds["certChain"] = self.raw_get(viewer, f"/api/datasources/{ds['id']}/wire-cert")
+
+    def raw_get(self, session, path):
+        with session.opener.open(urllib.request.Request(session.base + path), timeout=30) as resp:
+            return resp.read().decode()
 
     # ---- wire clients -------------------------------------------------------------------------------
+    def athena_call(self, ds, token, operation, body):
+        """One Athena JSON API call at the proxy, the wire token as bearer; returns (status, parsed body)."""
+        ctx = ssl.create_default_context(cadata=ds["certChain"])
+        req = urllib.request.Request(f"https://127.0.0.1:{ds['port']}/", data=json.dumps(body).encode(), method="POST", headers={
+            "Content-Type": "application/x-amz-json-1.1", "X-Amz-Target": "AmazonAthena." + operation, "Authorization": "Bearer " + token})
+        try:
+            with urllib.request.urlopen(req, context=ctx, timeout=120) as resp:
+                return resp.status, json.loads(resp.read() or b"{}")
+        except urllib.error.HTTPError as e:
+            return e.code, json.loads(e.read() or b"{}")
+
+    def athena_sql(self, ds, token, sql):
+        """StartQueryExecution, poll to a terminal state, page the results; returns (ok, rows, error text)."""
+        status, r = self.athena_call(ds, token, "StartQueryExecution", {
+            "QueryString": sql, "WorkGroup": "primary", "QueryExecutionContext": {"Catalog": "AwsDataCatalog", "Database": "acme"}})
+        if status != 200:
+            return False, [], r.get("Message", str(r))
+        qid = r["QueryExecutionId"]
+        deadline = time.time() + 60
+        while True:
+            status, r = self.athena_call(ds, token, "GetQueryExecution", {"QueryExecutionId": qid})
+            expect(status == 200, f"GetQueryExecution {qid}: {status} {r}")
+            state = r["QueryExecution"]["Status"]
+            if state["State"] in ("SUCCEEDED", "FAILED", "CANCELLED") or time.time() > deadline:
+                break
+            time.sleep(0.2)
+        if state["State"] != "SUCCEEDED":
+            return False, [], f"{state['State']}: {state.get('StateChangeReason')}"
+        rows, token_next, first = [], None, True
+        while True:
+            body = {"QueryExecutionId": qid, "MaxResults": 2}
+            if token_next:
+                body["NextToken"] = token_next
+            status, r = self.athena_call(ds, token, "GetQueryResults", body)
+            expect(status == 200, f"GetQueryResults {qid}: {status} {r}")
+            page = [[d.get("VarCharValue") for d in row["Data"]] for row in r["ResultSet"]["Rows"]]
+            if first and page and page[0] == [c["Name"] for c in r["ResultSet"]["ResultSetMetadata"]["ColumnInfo"]]:
+                page = page[1:]
+            rows += page
+            first = False
+            token_next = r.get("NextToken")
+            if not token_next:
+                break
+        return True, rows, ""
+
     def wire_sql(self, ds, principal, token, sql):
         """Run one statement through the proxy as a native client; returns (ok, rows, stderr)."""
+        if ds["engine"] == "athena":
+            return self.athena_sql(ds, token, sql)
         if ds["engine"] == "mysql":
             cmd = ["mysql", "--protocol=tcp", "-h", "127.0.0.1", "-P", str(ds["port"]), "-u", principal,
                    "--enable-cleartext-plugin", "--ssl-mode=DISABLED", "-N", "-B", "-e", sql, "acme"]
@@ -164,7 +227,7 @@ class Stack:
 
     def leg_browser(self, ds):
         """The console in a real browser (smoke/browser.spec.ts): editor mask, table detail by catalog, Data tab."""
-        catalog, schema = ("def", "acme") if ds["engine"] == "mysql" else ("acme", "public")
+        catalog, schema = CATALOGS[ds["engine"]]
         env = dict(os.environ, SMOKE_WEB_URL=self.args.web, SMOKE_DATASOURCES=f"{ds['engine']}:{ds['name']}:{catalog}:{schema}")
         code, out, err = run(["node_modules/.bin/playwright", "test", "-c", os.path.join(self.args.root, "smoke", "playwright.config.ts")],
                              env=env, timeout=300, cwd=os.path.join(self.args.root, "web"))
@@ -182,7 +245,9 @@ class Stack:
         expect(not ok and "proxy-monster denied" in err, f"wire predicate on masked column should be denied: ok={ok} rows={rows} err={err.strip()}")
         arch = self.session("wire").login("smoke-architect", ["system:production-viewer", "system:production-architect"])
         atoken = self.wire_token(arch)
-        ok, _, err = self.wire_sql(ds, "smoke-architect", atoken, "CREATE TABLE smoke_ddl (id INT, note VARCHAR(20))")
+        ddl = ("CREATE EXTERNAL TABLE smoke_ddl (id INT, note STRING) LOCATION 's3://acme-data/smoke_ddl/'"
+               if ds["engine"] == "athena" else "CREATE TABLE smoke_ddl (id INT, note VARCHAR(20))")
+        ok, _, err = self.wire_sql(ds, "smoke-architect", atoken, ddl)
         expect(ok, f"DDL as architect failed: {err.strip()}")
         try:
             deadline = time.time() + 30
@@ -228,21 +293,54 @@ class Stack:
                     break
                 time.sleep(1)
             expect(rc == 0, f"pmon show {ds['name']} --cli failed: {err.strip()}")
-            argv = shlex.split(cli.strip())
-            if ds["engine"] == "mysql":
-                argv += ["--protocol=tcp", "--ssl-mode=DISABLED", "-N", "-B", "-e", "SELECT id, email FROM users ORDER BY id"]
+            if ds["engine"] == "athena":
+                rows = self.athena_via_pmon(cli.strip(), log)
             else:
-                argv += ["-At", "-F", "\t", "-c", "SELECT id, email FROM users ORDER BY id"]
-            rc, out, err = run(argv)
-            log.write(f"$ {argv[0]} ... -> {rc}\n{out}{err}")
-            expect(rc == 0, f"client via pmon failed: {err.strip()}")
-            rows = [l.split("\t") for l in out.splitlines() if l]
+                argv = shlex.split(cli.strip())
+                if ds["engine"] == "mysql":
+                    argv += ["--protocol=tcp", "--ssl-mode=DISABLED", "-N", "-B", "-e", "SELECT id, email FROM users ORDER BY id"]
+                else:
+                    argv += ["-At", "-F", "\t", "-c", "SELECT id, email FROM users ORDER BY id"]
+                rc, out, err = run(argv)
+                log.write(f"$ {argv[0]} ... -> {rc}\n{out}{err}")
+                expect(rc == 0, f"client via pmon failed: {err.strip()}")
+                rows = [l.split("\t") for l in out.splitlines() if l]
             expect(len(rows) == 3 and all(r[1] == MASK for r in rows), f"result via pmon not masked: {rows}")
         finally:
             if proc.poll() is None:
                 proc.kill()
             run([a.pmon, "logout"], env=env)
         self.produced.setdefault(ds["engine"], set()).add("pmon")
+
+    def athena_via_pmon(self, cli, log):
+        """Run a masked read as the AWS CLI would: SigV4 with the local credentials from `pmon show --cli`, at pmon's
+        local Athena endpoint. The printed command is `VAR=… aws athena start-query-execution …`; its env is reused."""
+        words = shlex.split(cli)
+        env = dict(os.environ)
+        while words and "=" in words[0] and not words[0].startswith("aws"):
+            key, value = words.pop(0).split("=", 1)
+            env[key] = value
+        expect(words[:2] == ["aws", "athena"], f"pmon show --cli did not print an aws athena command: {cli}")
+        endpoint = env["AWS_ENDPOINT_URL_ATHENA"]
+        context = json.dumps({"Catalog": "AwsDataCatalog", "Database": "acme"})
+
+        def aws(*args):
+            rc, out, err = run(["aws", "athena", *args, "--endpoint-url", endpoint, "--output", "json"], env=env, timeout=120)
+            log.write(f"$ aws athena {args[0]} -> {rc}\n{out}{err}")
+            expect(rc == 0, f"aws athena {args[0]} via pmon failed: {err.strip()}")
+            return json.loads(out) if out.strip() else {}
+        qid = aws("start-query-execution", "--query-string", "SELECT id, email FROM users ORDER BY id", "--work-group", "primary",
+                  "--query-execution-context", context)["QueryExecutionId"]
+        deadline = time.time() + 60
+        while True:
+            state = aws("get-query-execution", "--query-execution-id", qid)["QueryExecution"]["Status"]["State"]
+            if state in ("SUCCEEDED", "FAILED", "CANCELLED") or time.time() > deadline:
+                break
+            time.sleep(0.2)
+        expect(state == "SUCCEEDED", f"execution via pmon ended {state}")
+        result = aws("get-query-results", "--query-execution-id", qid)
+        rows = [[d.get("VarCharValue") for d in row["Data"]] for row in result["ResultSet"]["Rows"]]
+        return rows[1:]
 
     def leg_workflow(self, ds):
         requester = self.session("workflow").login("smoke-requester", ["system:production-viewer"])
@@ -377,7 +475,7 @@ def main():
     ap.add_argument("--pmon-port-base", type=int, required=True)
     ap.add_argument("--logs", required=True)
     ap.add_argument("--only", choices=LEGS)
-    ap.add_argument("--engine", choices=["mysql", "postgres"])
+    ap.add_argument("--engine", choices=["mysql", "postgres", "athena"])
     args = ap.parse_args()
     args.datasource = [tuple(d.split(":")) for d in args.datasource]
     if args.engine:
@@ -403,14 +501,12 @@ def main():
             except Exception as e:  # a crashed leg is a failed leg, with the crash as its message
                 results.append((engine, leg, "FAIL", f"{type(e).__name__}: {e}"))
             print(f"{engine:9} {leg:9} {results[-1][2]:4} {time.time() - t0:5.1f}s  {results[-1][3]}", flush=True)
-    athena = "SKIP (PM_SMOKE_ATHENA unset)" if not os.environ.get("PM_SMOKE_ATHENA") else "FAIL athena: no provider in this checkout"
     print()
     print(f"{'engine':9} " + " ".join(f"{l:9}" for l in legs))
     for engine, _, _ in args.datasource:
         cells = {leg: status for e, leg, status, _ in results if e == engine}
         print(f"{engine:9} " + " ".join(f"{cells.get(l, '-'):9}" for l in legs))
-    print(f"{'athena':9} {athena}")
-    failed = [r for r in results if r[2] == "FAIL"] + ([athena] if athena.startswith("FAIL") else [])
+    failed = [r for r in results if r[2] == "FAIL"]
     print(f"\nlogs: {args.logs}")
     return 1 if failed else 0
 

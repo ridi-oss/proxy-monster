@@ -50,3 +50,32 @@ services:
       interval: 3s
       timeout: 5s
       retries: 20
+
+  # Athena emulator: MiniStack's full image (DuckDB execution) built from the branch that serves a
+  # Glue-backed catalog. The Athena proxy points at it through AWS_ENDPOINT_URL; the emulator serves HTTPS
+  # with a self-signed cert because the proxy forwards only to an HTTPS origin.
+  athena:
+    image: ${SMOKE_ATHENA_IMAGE:-pm-smoke-athena:66652278}
+    build:
+      context: https://github.com/sjincho/ministack.git#66652278d4f62d58ce1bd3009952f84ded065574
+      dockerfile: Dockerfile.full
+    environment:
+      USE_SSL: "1"
+      ATHENA_ENGINE: duckdb
+      S3_PERSIST: "1"
+      PERSIST_STATE: "0"
+      MINISTACK_ACCOUNT_ID: "000000000000"
+      MINISTACK_REGION: us-east-1
+    ports:
+      - "${SMOKE_ATHENA_PORT:-47013}:4566"
+    volumes:
+      - ./athena/seed.py:/docker-entrypoint-initaws.d/ready.d/seed.py:ro
+    healthcheck:
+      # Ready, not merely healthy: the seed script has run.
+      test:
+        python -c "import ssl,urllib.request as r;
+        r.urlopen('https://localhost:4566/_ministack/ready',
+        context=ssl._create_unverified_context())"
+      interval: 3s
+      timeout: 5s
+      retries: 40

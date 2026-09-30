@@ -163,5 +163,12 @@
     "successDescription": "An approver can reset it on the Workflows page; then re-run the query.",
     "button": "Request rate reset",
     "denyHelp": "Your relayed-volume rate for this window is spent. Ask an approver to reset it, or wait for the window to roll off."
+  },
+  "session": {
+    "close": "End session",
+    "closeTitle": "End this editor session?",
+    "closeDescription": "Its database connection closes. The database rolls back any open transaction and drops session variables and temporary tables. A running query is canceled. The next run opens a new session.",
+    "keep": "Keep session",
+    "closed": "Session ended. Any open transaction was rolled back."
   }
 }

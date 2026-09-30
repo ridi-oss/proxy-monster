@@ -8,7 +8,7 @@
 // the JIT request dialog.
 import { useMemo, useRef, useState } from 'react'
 import { useTranslations } from 'next-intl'
-import { Loader2, Play } from 'lucide-react'
+import { Loader2, Play, Unplug } from 'lucide-react'
 import { useCatalog, useDatasources } from '@/lib/hooks'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
@@ -36,6 +36,7 @@ import { ResultTabs } from './result-tabs'
 import { QueryHistoryMenu } from './query-history-menu'
 import { RequestAccessDialog } from './request-access-dialog'
 import { RateResetRequestDialog } from './rate-reset-request-dialog'
+import { CloseSessionDialog } from './close-session-dialog'
 
 const ROW_LIMITS = [100, 200, 500, 1000, 5000]
 
@@ -51,6 +52,7 @@ export function Workbench() {
   const [denyReason, setDenyReason] = useState<string | null>(null)
   const [rateResetOpen, setRateResetOpen] = useState(false)
   const [rateDenyReason, setRateDenyReason] = useState<string | null>(null)
+  const [closeSessionOpen, setCloseSessionOpen] = useState(false)
   const editorRef = useRef<SqlEditorHandle>(null)
 
   const { data: catalog, isLoading: catalogLoading, error: catalogError } = useCatalog(datasourceId)
@@ -136,6 +138,15 @@ export function Workbench() {
                       {t('workbench.run')}
                     </Button>
                     <QueryHistoryMenu onPick={setSql} />
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => setCloseSessionOpen(true)}
+                      disabled={!resultTabs.sessionOpen}
+                    >
+                      <Unplug className="size-3.5" />
+                      {t('session.close')}
+                    </Button>
                   </div>
                   <div className="flex items-center gap-2">
                     <span className="text-muted-foreground hidden text-xs sm:inline">
@@ -192,6 +203,11 @@ export function Workbench() {
         </div>
       </div>
 
+      <CloseSessionDialog
+        open={closeSessionOpen}
+        onOpenChange={setCloseSessionOpen}
+        onConfirm={resultTabs.closeSession}
+      />
       <RateResetRequestDialog open={rateResetOpen} onOpenChange={setRateResetOpen} denyReason={rateDenyReason} />
       {datasourceId != null && (
         <RequestAccessDialog

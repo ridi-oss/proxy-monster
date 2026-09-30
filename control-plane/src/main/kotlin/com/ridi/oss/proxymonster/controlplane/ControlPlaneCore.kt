@@ -20,7 +20,10 @@ import javax.sql.DataSource
  * Only the enforcement-decision dependencies live here (the ones both surfaces share). HTTP-only stores
  * (query history, approval policy, OIDC, at-rest crypto, …) stay local to [Application.module].
  */
-class ControlPlaneCore(val dataSource: DataSource) {
+class ControlPlaneCore(
+    val dataSource: DataSource,
+    configCatalogRefreshWindowMillis: Long = CONFIG_CATALOG_REFRESH_WINDOW_MILLIS,
+) {
     val auditStore = AuditStore(dataSource)
     val authAudit = AuthAuditRecorder(auditStore)
     val datasourceStore = DatasourceStore(dataSource)
@@ -48,7 +51,8 @@ class ControlPlaneCore(val dataSource: DataSource) {
     // drain it — signalling every open browser stream to reconnect so a rolling restart re-homes the
     // console to the replacement instead of leaving it on the draining instance until the LB cuts it.
     val taskCompletionHub = TaskCompletionHub()
-    val connectionCatalog = ConnectionCatalogRegistry()
+    val configCatalogRefresh = ConfigCatalogRefresh(proxyEventsHub, configCatalogRefreshWindowMillis)
+    val connectionCatalog = ConnectionCatalogRegistry(requestConfigCatalogRefresh = configCatalogRefresh::request)
     val runChannels = RunChannelRegistry()
     val tableDetailChannels = TableDetailChannelRegistry()
 

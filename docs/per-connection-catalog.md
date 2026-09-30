@@ -8,11 +8,12 @@ channels:
   against catalog fragments the proxy introspected on that connection's own held
   target-DB connection, so they reflect uncommitted in-transaction DDL. The
   control plane resolves columns against that connection's view.
-- The **config catalog** is datasource-global and SWR-refreshed (~12 min), on
-  its own channel. It feeds the config/admin surfaces — catalog browsing,
-  tagging/classification, table detail, the system-classification manifest, the
-  liveness UI, and HTTP approval dry-run previews — and is never the structure
-  source for connection-scoped wire/editor/`RunExec` Decide.
+- The **config catalog** is datasource-global and refreshed on the proxy's
+  ambient interval (~12 min) and a few seconds after DDL on a proxied
+  connection, on its own channel. It feeds the config/admin surfaces — catalog
+  browsing, tagging/classification, table detail, the system-classification
+  manifest, the liveness UI, and HTTP approval dry-run previews — and is never
+  the structure source for connection-scoped wire/editor/`RunExec` Decide.
 
 Routine names travel with the columns, both in `CatalogRequest.catalog` and in
 each per-connection fragment, so function freshness rides the same generation
@@ -68,8 +69,8 @@ the DB-side hash (`goproxy/db/db.go`), and the config-channel split (a second
 |  | Enforcement catalog | Config catalog |
 | --- | --- | --- |
 | Scope | one wire/editor connection (per-schema fragments) | the datasource |
-| Freshness | transactionally current for the issuing connection | SWR, ambient ~12 min + admin refresh |
-| Kept current by | control-plane `REFETCH` commands, DB-hash-gated | proxy timer + Events `RefreshCatalog` |
+| Freshness | transactionally current for the issuing connection | ambient ~12 min, a few seconds after DDL, admin refresh |
+| Kept current by | control-plane `REFETCH` commands, DB-hash-gated | proxy timer + Events `RefreshCatalog` (after-DDL and admin) |
 | Introspected on | the connection's held target-DB connection | a dedicated short-lived connection (`introspect.Run`) |
 | Channel | enforcement (`ValidateToken`/`Decide`/`PushSchemaFragment`/`CloseConnection`/`RunExec`/`ReportCompletion`) | config (`Register`/`PushCatalog`/`Events`/`TableDetailExec`) |
 | Control-plane storage | in-memory content-addressed fragments + per-connection held-hash map | the `datasource` row and its `catalog` snapshot |
@@ -402,6 +403,24 @@ catalog).
   the global catalog. Connection-scoped Decide builds columns and the function
   inventory from held fragments only. The global catalog feeds config/admin
   surfaces and HTTP approval dry-run previews without a connection.
+- After-DDL config refresh. When a fragment push answering an `after_statement`
+  `REFETCH` carries a hash different from the one the connection held, the
+  statement ran and changed structure on the target, so `ConfigCatalogRefresh`
+  sends one `RefreshCatalog` on the datasource's `Events` stream(s) 3 s after
+  the first such push; further pushes inside that window join it, so a migration
+  of many DDLs costs one introspection. Temporary DDL, a plain `SELECT`, and an
+  `unchanged` reply trigger nothing. The request is best-effort and off the
+  statement path: with no proxy attached it is logged and dropped, and the
+  ambient refresh remains the backstop. An uncommitted PG DDL is visible only on
+  its own connection, so the connection records the schemas its DDL changed
+  (`ddlSinceLastCommit`); an allowed `COMMIT` (or `END`) carries an
+  `after_statement` `REFETCH` of those schemas, and the push that answers it,
+  after the COMMIT executed, requests another refresh. `ROLLBACK` clears the
+  record without a refresh. On MySQL, DDL commits implicitly, so the first
+  refresh already sees it and the COMMIT one is a redundant introspection.
+  `COMMIT PREPARED` is classified as an unknown statement and triggers nothing;
+  the ambient refresh covers it. This adds no decision path; it only makes the
+  config catalog fresher.
 
 ## Go proxy
 
@@ -511,8 +530,9 @@ endpoint, same `x-pm-secret-token`), owned by a config-side client in
 `goproxy/boot/boot.go`:
 
 - Carries `Register` (boot + Events-reconnect resync), `PushCatalog` (boot,
-  ambient ~12 min SWR, admin `RefreshCatalog` via Events), the `Events` stream
-  (liveness + editor/table-detail nudges), and `TableDetailExec`.
+  ambient ~12 min, after-DDL and admin `RefreshCatalog` via Events), the
+  `Events` stream (liveness + editor/table-detail nudges), and
+  `TableDetailExec`.
 - The enforcement channel carries `ValidateToken`, `Decide`,
   `PushSchemaFragment`, `CloseConnection`, `RunExec`, `ReportCompletion`.
 - Config reads never touch the per-connection enforcement path — separate store,

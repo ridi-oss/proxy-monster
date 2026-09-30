@@ -626,6 +626,7 @@ fun decideQuery(
             .copy(
                 sanitizeDiagnostics = !readsAllUnmasked(principal, roles, ds, catalogIndex.rowsByKey.values.toList(), facts.diagnosticLeakColumnsList, context, authz, systemClassification),
                 schemaCandidates = facts.schemaQualifierCandidatesList.toSet(),
+                statementKind = statementKind,
             )
             .withCaps(datasourceCaps)
             .withAnalyzerRewrite(facts)

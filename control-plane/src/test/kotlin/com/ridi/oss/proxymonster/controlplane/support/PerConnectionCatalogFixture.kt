@@ -4,6 +4,7 @@ import com.google.protobuf.ByteString
 import com.ridi.oss.proxymonster.controlplane.Binding
 import com.ridi.oss.proxymonster.controlplane.effectiveCatalog
 import com.ridi.oss.proxymonster.controlplane.CatalogMutationResult
+import com.ridi.oss.proxymonster.controlplane.CONFIG_CATALOG_REFRESH_WINDOW_MILLIS
 import com.ridi.oss.proxymonster.controlplane.ControlPlaneCore
 import com.ridi.oss.proxymonster.controlplane.Datasource
 import com.ridi.oss.proxymonster.controlplane.FragmentColumn
@@ -27,8 +28,11 @@ private val Engine.testRoutinesSql: String
     }
 
 /** Test helper that turns the fixture's real target-introspected rows into immutable connection fragments. */
-class PerConnectionCatalogFixture(val enforcement: EnforcementFixture) {
-    val core = ControlPlaneCore(enforcement.dataSource)
+class PerConnectionCatalogFixture(
+    val enforcement: EnforcementFixture,
+    configCatalogRefreshWindowMillis: Long = CONFIG_CATALOG_REFRESH_WINDOW_MILLIS,
+) {
+    val core = ControlPlaneCore(enforcement.dataSource, configCatalogRefreshWindowMillis)
     val datasource: Datasource = core.datasourceStore.get(enforcement.datasource.id)!!
 
     init {

@@ -210,8 +210,9 @@ The proxy opens `Events` once at startup and keeps it open for its lifetime,
 reconnecting if it drops. The open stream is itself the liveness signal — the
 control-plane sees the stream close and knows the proxy is down, with no polling
 interval to wait out. Down the same stream the control-plane pushes nudges:
-`RefreshCatalog` (re-introspect now — an admin just added a column), plus the
-`OpenRunChannel` and `OpenTableDetailChannel` nudges below.
+`RefreshCatalog` (re-introspect now — an admin asked, or a connection's DDL just
+changed structure on the target), plus the `OpenRunChannel` and
+`OpenTableDetailChannel` nudges below.
 
 ```protobuf
 message ControlEvent {

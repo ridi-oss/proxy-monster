@@ -33,8 +33,11 @@ func (c *loginCmd) Run() error {
 	// A daemon reporting no version opens its own browser. Asked here rather than in the prompt
 	// callback, which the poll loop waits on.
 	daemonOpensItsOwn := false
-	if s, err := client.Status(ctx); err == nil && s.Version == "" {
-		daemonOpensItsOwn = true
+	if s, err := client.Status(ctx); err == nil {
+		if err := requireCurrentDaemon(s); err != nil {
+			return err
+		}
+		daemonOpensItsOwn = s.Version == ""
 	}
 	if err := client.Login(ctx, req, func(ev control.LoginEvent) {
 		switch ev.Kind {

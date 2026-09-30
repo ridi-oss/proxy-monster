@@ -60,6 +60,9 @@ func (c *serverUnsetCmd) Run() error {
 	if err != nil {
 		return err
 	}
+	if err := requireCurrentDaemon(s); err != nil {
+		return err
+	}
 	if s.Server(c.Name) == nil {
 		return fmt.Errorf("unknown server %q", c.Name)
 	}
@@ -87,6 +90,9 @@ func (serverListCmd) Run() error {
 		return err
 	}
 	warnVersionSkew(s)
+	if err := requireCurrentDaemon(s); err != nil {
+		return err
+	}
 	if len(s.Servers) == 0 {
 		fmt.Println("no servers — add one with `pmon server set --url <control-plane-url>`")
 		return nil

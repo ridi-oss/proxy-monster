@@ -112,6 +112,9 @@ func (c *logoutCmd) Run() error {
 	if err != nil {
 		return err
 	}
+	if err := requireCurrentDaemon(s); err != nil {
+		return err
+	}
 	conns := s.TotalLiveConns()
 	if !c.All {
 		if s.Server(c.Server) == nil {

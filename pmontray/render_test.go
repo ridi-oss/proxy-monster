@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"strings"
 	"sync"
 	"testing"
@@ -162,4 +163,21 @@ func TestLoginTargetIsAnExistingServer(t *testing.T) {
 func TestRenderToleratesAnOutdatedDaemon(t *testing.T) {
 	a := newTestApp(2)
 	a.render(&control.Status{LoggedIn: true})
+}
+
+// Decoded from a real released daemon's /status: a login with no servers.
+func TestReleasedDaemonStatusRendersAsOutdated(t *testing.T) {
+	var s control.Status
+	raw := `{"principal":"you@example.com","controlPlane":"http://cp","loggedIn":true,"expiresAt":"2099-01-01T00:00:00Z","startedAt":"2026-01-01T00:00:00Z","version":"0.1.5","localPassword":"pw","datasources":[{"name":"acme","engine":"mysql","localPort":6100,"brokered":true}]}`
+	if err := json.Unmarshal([]byte(raw), &s); err != nil {
+		t.Fatal(err)
+	}
+	if !s.Outdated() {
+		t.Fatal("a released daemon's status is not recognized as outdated")
+	}
+	a := newTestApp(2)
+	a.render(&s)
+	if a.dsItems[0].connString != "" {
+		t.Errorf("an outdated daemon's row carries a payload %q with no principal", a.dsItems[0].connString)
+	}
 }

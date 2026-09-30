@@ -103,6 +103,12 @@ func (s Status) Server(name string) *ServerInfo {
 	return nil
 }
 
+// Outdated reports a daemon from before multi-server support: it reports a login but no servers. The daemon
+// outlives an upgrade of the binary on disk, so this is a normal state until `pmon restart`.
+func (s *Status) Outdated() bool {
+	return s.LoggedIn && len(s.LoggedInServers()) == 0
+}
+
 // LoggedInServers returns the servers that are logged in.
 func (s *Status) LoggedInServers() []ServerInfo {
 	var out []ServerInfo

@@ -32,3 +32,12 @@ func warnVersionSkew(s *control.Status) {
 			"         run `pmon restart` to pick up the current build.\n",
 		s.Version, FullVersion())
 }
+
+// requireCurrentDaemon refuses to act on a daemon too old to report its servers, which would otherwise read as
+// "no servers" and prompt a needless fresh login.
+func requireCurrentDaemon(s *control.Status) error {
+	if s.Outdated() {
+		return fmt.Errorf("the running daemon predates this CLI (%s) and cannot report its servers — run `pmon restart`", FullVersion())
+	}
+	return nil
+}

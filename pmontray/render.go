@@ -58,7 +58,7 @@ func (a *app) render(s *control.Status) {
 	switch {
 	case s == nil:
 		a.renderStopped()
-	case s.LoggedIn && len(s.LoggedInServers()) == 0:
+	case s.Outdated():
 		// A daemon from before multi-server support reports a login but no servers.
 		a.renderIdle(s)
 		setTitleOf(a.mHeader, "daemon is outdated — restart it")

@@ -224,16 +224,19 @@ access is hardened, retain `SELECT` on both for `PM_TARGET_USER`.
 pmon takes no proxy address of its own: its daemon discovers every datasource
 the logged-in principal may connect to and dials each one's `PM_ADVERTISE_ADDR`.
 
-- `--url` (on `pmon login`) — _required once_. The control-plane base URL. It is
-  saved to the config file and reused by later logins that omit it. Example:
+- server URL — _required once per server_. `pmon server set [name] --url <url>`
+  saves a control-plane base URL under a name (`default` when omitted);
+  `pmon login --url <url> [name]` does the same and logs in. Later commands name
+  the server, or address `default`. Example:
   `pmon login --url https://console.example.com`
 - `--ttl` (on `pmon login`) — _optional_. Wire-token lifetime in seconds.
   Default `43200` (12h).
 - local broker port — _not configurable_. The daemon assigns each datasource the
   next free loopback port at or above `6100` and persists it, so a datasource
-  keeps the same port across restarts. `pmon status` prints the assignments;
-  `pmon show <datasource> [--url | --jdbc | --go-dsn | --cli]` prints one ready
-  connection string (`--url` is the default).
+  keeps the same port across restarts. Ports are unique across servers.
+  `pmon status` prints every server's assignments;
+  `pmon show [server] <datasource> [--url | --jdbc | --go-dsn | --cli]` prints
+  one ready connection string (`--url` is the default).
 
 ### auditmon — YAML file + env overlays
 

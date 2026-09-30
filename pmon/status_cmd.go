@@ -29,33 +29,44 @@ func (statusCmd) Run() error {
 	warnVersionSkew(s)
 	warnOtherDaemons()
 
-	if !s.LoggedIn {
+	if s.LoggedIn {
+		fmt.Printf("daemon:    running since %s\n", humanTime(s.StartedAt))
+	} else {
 		fmt.Println("daemon:    running, idle")
-		fmt.Println("login:     not logged in (run `pmon login`)")
+	}
+	if len(s.Servers) == 0 {
+		fmt.Println("servers:   none (run `pmon login --url <control-plane-url>`)")
 		return nil
 	}
+	for _, srv := range s.Servers {
+		fmt.Printf("\nserver:    %s  %s\n", srv.Name, srv.ControlPlane)
+		if !srv.LoggedIn {
+			fmt.Printf("login:     not logged in (run `%s`)\n", loginHint(srv.Name))
+			continue
+		}
+		fmt.Printf("principal: %s\n", srv.Principal)
+		fmt.Printf("token:     %s\n", expiryLine(srv.ExpiresAt))
+		if srv.SessionExpiresAt != "" {
+			fmt.Printf("session:   %s\n", expiryLine(srv.SessionExpiresAt))
+		}
+		if srv.ReauthRequired {
+			fmt.Printf("reauth:    REQUIRED — the session window closed; run `%s`\n", loginHint(srv.Name))
+		}
+		if srv.LastDiscoveryError != "" {
+			fmt.Printf("discovery: FAILING — %s\n", srv.LastDiscoveryError)
+		}
+	}
 
-	fmt.Printf("daemon:    running since %s\n", humanTime(s.StartedAt))
-	fmt.Printf("principal: %s\n", s.Principal)
-	fmt.Printf("cp:        %s\n", s.ControlPlane)
-	fmt.Printf("token:     %s\n", expiryLine(s.ExpiresAt))
-	if s.SessionExpiresAt != "" {
-		fmt.Printf("session:   %s\n", expiryLine(s.SessionExpiresAt))
+	if !s.LoggedIn {
+		return nil
 	}
-	if s.ReauthRequired {
-		fmt.Println("reauth:    REQUIRED — the session window closed; run `pmon login`")
-	}
-	if s.LastDiscoveryError != "" {
-		fmt.Printf("discovery: FAILING — %s\n", s.LastDiscoveryError)
-	}
-
 	if len(s.Datasources) == 0 {
 		fmt.Println("\nno datasources yet (none advertised a proxy address, or none are granted to you)")
 		return nil
 	}
 	fmt.Println()
 	tw := tabwriter.NewWriter(os.Stdout, 0, 2, 2, ' ', 0)
-	fmt.Fprintln(tw, "DATASOURCE\tENGINE\tLOCAL\tCONNS\tPROXY")
+	fmt.Fprintln(tw, "SERVER\tDATASOURCE\tENGINE\tLOCAL\tCONNS\tPROXY")
 	for _, ds := range s.Datasources {
 		local, proxy := "—", ds.AdvertiseAddr
 		if ds.Brokered {
@@ -77,12 +88,12 @@ func (statusCmd) Run() error {
 		if ds.Brokered {
 			conns = fmt.Sprintf("%d", ds.LiveConns)
 		}
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", ds.Name, ds.Engine, local, conns, proxy)
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n", ds.Server, ds.Name, ds.Engine, local, conns, proxy)
 	}
 	if err := tw.Flush(); err != nil {
 		return err
 	}
-	fmt.Println("\n`pmon show <datasource>` for a connection string")
+	fmt.Println("\n`pmon show [server] <datasource>` for a connection string")
 	return nil
 }
 

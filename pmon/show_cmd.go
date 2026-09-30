@@ -9,21 +9,32 @@ import (
 	"github.com/ridi-oss/proxy-monster/pmon/conn"
 	"github.com/ridi-oss/proxy-monster/pmon/control"
 	"github.com/ridi-oss/proxy-monster/pmon/driver"
+	"github.com/ridi-oss/proxy-monster/pmon/state"
 )
 
 type showCmd struct {
-	Datasource                string `arg:"" help:"Datasource name (as shown by 'pmon status')."`
-	Format                    string `xor:"format" help:"Print a provider-supported format (for example url, jdbc, cli, python, node, aws-config); defaults to the provider's preferred format."`
-	URL                       bool   `xor:"format" help:"Print a connection URL."`
-	JDBC                      bool   `xor:"format" help:"Print a JDBC URL."`
-	JDBCTruncationDiagnostics bool   `name:"jdbc-with-truncation-diagnostics" help:"With --jdbc, omit the compatibility parameter so Connector/J can fetch truncation diagnostics (may issue SHOW WARNINGS)."`
-	GoDSN                     bool   `name:"go-dsn" xor:"format" help:"Print a Go driver DSN."`
-	CLI                       bool   `xor:"format" help:"Print the native client command line."`
+	Args                      []string `arg:"" name:"[server] datasource" help:"Datasource name, optionally after a server name (default: \"default\")."`
+	Format                    string   `xor:"format" help:"Print a provider-supported format (for example url, jdbc, cli, python, node, aws-config); defaults to the provider's preferred format."`
+	URL                       bool     `xor:"format" help:"Print a connection URL."`
+	JDBC                      bool     `xor:"format" help:"Print a JDBC URL."`
+	JDBCTruncationDiagnostics bool     `name:"jdbc-with-truncation-diagnostics" help:"With --jdbc, omit the compatibility parameter so Connector/J can fetch truncation diagnostics (may issue SHOW WARNINGS)."`
+	GoDSN                     bool     `name:"go-dsn" xor:"format" help:"Print a Go driver DSN."`
+	CLI                       bool     `xor:"format" help:"Print the native client command line."`
 }
 
 func (c *showCmd) Run() error {
 	if c.JDBCTruncationDiagnostics && c.format() != driver.JDBC {
 		return fmt.Errorf("--jdbc-with-truncation-diagnostics requires --jdbc or --format jdbc")
+	}
+
+	server, name := state.DefaultServer, ""
+	switch len(c.Args) {
+	case 1:
+		name = c.Args[0]
+	case 2:
+		server, name = c.Args[0], c.Args[1]
+	default:
+		return fmt.Errorf("expected [server] <datasource>")
 	}
 
 	ctx := context.Background()
@@ -38,19 +49,23 @@ func (c *showCmd) Run() error {
 	warnVersionSkew(s)
 	// A second daemon makes the port this prints ambiguous.
 	warnOtherDaemons()
-	if !s.LoggedIn {
-		return fmt.Errorf("not logged in — run `pmon login`")
+	srv := s.Server(server)
+	if srv == nil {
+		return fmt.Errorf("unknown server %q — known: %s", server, strings.Join(serverNames(s), ", "))
+	}
+	if !srv.LoggedIn {
+		return fmt.Errorf("not logged in to %q — run `%s`", server, loginHint(server))
 	}
 
 	var found *control.Datasource
 	for i := range s.Datasources {
-		if s.Datasources[i].Name == c.Datasource {
+		if s.Datasources[i].Server == server && s.Datasources[i].Name == name {
 			found = &s.Datasources[i]
 			break
 		}
 	}
 	if found == nil {
-		return fmt.Errorf("unknown datasource %q — known: %s", c.Datasource, strings.Join(names(s), ", "))
+		return fmt.Errorf("unknown datasource %q on %q — known: %s", name, server, strings.Join(names(s, server), ", "))
 	}
 	if !found.Brokered {
 		return fmt.Errorf("datasource %q is not brokered locally: %s", found.Name, found.Reason)
@@ -73,7 +88,7 @@ func (c *showCmd) Run() error {
 		Engine:         found.Engine,
 		DbName:         found.DbName,
 		Port:           found.LocalPort,
-		User:           s.Principal,
+		User:           srv.Principal,
 		Password:       s.LocalPassword,
 	}, driver.Options{JDBCTruncationDiagnostics: c.JDBCTruncationDiagnostics})
 	if output == "" {
@@ -98,11 +113,29 @@ func (c *showCmd) format() driver.Format {
 	}
 }
 
-func names(s *control.Status) []string {
-	out := make([]string, 0, len(s.Datasources))
+func names(s *control.Status, server string) []string {
+	var out []string
 	for _, ds := range s.Datasources {
-		out = append(out, ds.Name)
+		if ds.Server == server {
+			out = append(out, ds.Name)
+		}
 	}
 	sort.Strings(out)
 	return out
+}
+
+func serverNames(s *control.Status) []string {
+	out := make([]string, 0, len(s.Servers))
+	for _, srv := range s.Servers {
+		out = append(out, srv.Name)
+	}
+	return out
+}
+
+// showHint is the command that prints a connection string for a datasource on server.
+func showHint(server string) string {
+	if server == state.DefaultServer {
+		return "pmon show <datasource>"
+	}
+	return "pmon show " + server + " <datasource>"
 }

@@ -8,6 +8,7 @@ import com.ridi.oss.proxymonster.controlplane.QueryHistoryStore
 import com.ridi.oss.proxymonster.controlplane.RateResetRequestInput
 import com.ridi.oss.proxymonster.controlplane.MePermissions
 import com.ridi.oss.proxymonster.controlplane.RoleWithSources
+import com.ridi.oss.proxymonster.controlplane.TokenService
 import com.ridi.oss.proxymonster.controlplane.computeMePermissions
 import com.ridi.oss.proxymonster.controlplane.historyLimit
 import com.ridi.oss.proxymonster.controlplane.authz.AuthzContext
@@ -77,6 +78,7 @@ internal class McpTaskTools(
     private val access: AccessService,
     private val audit: AuditService,
     private val history: QueryHistoryStore,
+    private val tokens: TokenService,
 ) {
     suspend fun execute(tool: String, args: JsonObject, ctx: McpRequestContext): JsonObject {
         val p = ctx.principal
@@ -157,6 +159,13 @@ internal class McpTaskTools(
             "reject_access_request" -> structured(
                 access.reject(p, ip, actor(ctx), args.requiredLong("id"), args.requiredString("reason")),
             )
+            "list_tokens" -> structured(tokens.list(p, ip, args.string("principal")))
+            "mint_token" -> structured(
+                tokens.mintUser(
+                    p, ip, core.roleResolver.resolve(p).sorted(), actor(ctx), args.string("name"), args.long("ttlSeconds"),
+                ),
+            )
+            "revoke_token" -> structured(DeleteResult(tokens.revoke(p, ip, actor(ctx), args.requiredLong("id"))))
             "revoke_access_grant" -> {
                 access.revokeGrant(p, ip, actor(ctx), args.requiredLong("id"))
                 structured(DeleteResult(true))

@@ -38,12 +38,12 @@ object McpCapabilityRegistry {
         AuthzAction.TASK_DELETE,
         AuthzAction.GRANT_REVOKE,
         AuthzAction.AUDIT_READ,
-    )
-
-    val excludedActions = setOf(
         AuthzAction.TOKEN_MINT,
         AuthzAction.TOKEN_LIST,
         AuthzAction.TOKEN_REVOKE,
+    )
+
+    val excludedActions = setOf(
         // Checked only inside a query decision; no MCP tool.
         AuthzAction.RESULT_READ_UNMASKED,
         AuthzAction.RESULT_READ_MASKED,
@@ -156,6 +156,9 @@ object McpCapabilityRegistry {
         task("approve_access_request", AuthzAction.TASK_APPROVE, "mcp:approvals:write", write = true),
         task("reject_access_request", AuthzAction.TASK_APPROVE, "mcp:approvals:write", write = true),
         task("revoke_access_grant", AuthzAction.GRANT_REVOKE, "mcp:approvals:write", write = true, destructive = true),
+        task("list_tokens", AuthzAction.TOKEN_LIST, "mcp:read", write = false),
+        task("mint_token", AuthzAction.TOKEN_MINT, "mcp:tokens", write = true),
+        task("revoke_token", AuthzAction.TOKEN_REVOKE, "mcp:tokens", write = true, destructive = true),
     )
 
     val byName = entries.associateBy(McpCapability::toolName)
@@ -178,6 +181,7 @@ object McpCapabilityRegistry {
         "get_my_permissions", "list_audit", "get_audit_event", "request_access", "list_access_requests",
         "list_access_grants", "reset_my_rate", "list_query_history", "clear_query_history", "delete_query_task",
         "approve_access_request", "reject_access_request", "revoke_access_grant",
+        "list_tokens", "mint_token", "revoke_token",
     )
 
     fun verify() {

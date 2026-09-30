@@ -14,6 +14,7 @@ import com.ridi.oss.proxymonster.controlplane.TaskServiceException
 import com.ridi.oss.proxymonster.controlplane.AuditService
 import com.ridi.oss.proxymonster.controlplane.AuditStore
 import com.ridi.oss.proxymonster.controlplane.QueryHistoryStore
+import com.ridi.oss.proxymonster.controlplane.TokenService
 import com.ridi.oss.proxymonster.controlplane.Channel
 import com.ridi.oss.proxymonster.controlplane.ClassificationInput
 import com.ridi.oss.proxymonster.controlplane.Config
@@ -129,6 +130,7 @@ fun Application.installMcp(
     ),
     audit: AuditService = AuditService(core.authz, core.auditStore),
     queryHistory: QueryHistoryStore = QueryHistoryStore(core.dataSource),
+    tokens: TokenService = TokenService(core.tokenStore, core.userGroupStore, core.authz, core.authAudit),
 ) {
     McpCapabilityRegistry.verify()
     val metadataUri = protectedResourceMetadataUri(config.mcpResource)
@@ -186,7 +188,7 @@ fun Application.installMcp(
 
     val authorizer = McpAuthorizer(config, core)
     val mutationExecutor = McpMutationExecutor(core.dataSource, core.auditStore, core.cedarPolicyStore, authorizer)
-    val taskTools = McpTaskTools(core, datasourceService, editorTasks, approvals, access, audit, queryHistory)
+    val taskTools = McpTaskTools(core, datasourceService, editorTasks, approvals, access, audit, queryHistory, tokens)
     mcpStatelessStreamableHttp(
         path = "/mcp",
         // The SDK's built-in guard reads the HTTP/1.1 Host header literally and rejects HTTP/2
@@ -846,7 +848,9 @@ private fun schemaFor(tool: String): ToolSchema {
             "delete_query_task" -> integer("taskId")
             "approve_access_request" -> { integer("id"); integer("durationSec", min = 1) }
             "reject_access_request" -> { integer("id"); string("reason") }
-            "revoke_access_grant" -> integer("id")
+            "revoke_access_grant", "revoke_token" -> integer("id")
+            "list_tokens" -> string("principal")
+            "mint_token" -> { string("name"); integer("ttlSeconds", min = 1) }
         }
         val capability = McpCapabilityRegistry.byName[tool]
         if (capability?.classification == CapabilityClassification.WRITE && capability.gate == McpGate.SYSTEM) {
@@ -881,7 +885,7 @@ private fun schemaFor(tool: String): ToolSchema {
         "request_approval" -> listOf("roleName", "reason")
         "get_approval", "approve_approval", "execute_approval", "cancel_approval", "get_approval_result" -> listOf("id")
         "reject_approval" -> listOf("id", "reason")
-        "get_audit_event", "approve_access_request", "revoke_access_grant" -> listOf("id")
+        "get_audit_event", "approve_access_request", "revoke_access_grant", "revoke_token" -> listOf("id")
         "request_access" -> listOf("roleName", "reason")
         "reset_my_rate" -> listOf("reason")
         "delete_query_task" -> listOf("taskId")

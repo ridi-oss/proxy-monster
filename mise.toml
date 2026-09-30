@@ -452,3 +452,7 @@ if [ -f "$logs/failed" ]; then
 fi
 echo "all supported database versions passed ($n pairs, up to $jobs_cap legs at a time)"
 '''
+
+[tasks.smoke]
+description = "End-to-end smoke: own compose project + fresh control plane, proxies, pmon; PASS/FAIL per engine and leg"
+run = "smoke/run.sh"

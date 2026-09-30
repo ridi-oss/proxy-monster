@@ -597,6 +597,7 @@ fun Application.module(config: Config, core: ControlPlaneCore) {
         notifications,
     )
     val auditService = AuditService(authz, store)
+    val tokenService = TokenService(tokenStore, userGroupStore, authz, core.authAudit)
     val accessService = AccessService(accessStore, datasourceStore, store, roleResolver, authz, managementAudit)
     installMcp(
         config, core, datasourceManagement, policyManagement, identityManagement, editorTaskService, approvalService,
@@ -719,7 +720,7 @@ fun Application.module(config: Config, core: ControlPlaneCore) {
         queryHistoryRoutes(config, queryHistoryStore)
 
         // Wire-auth: SESSION/PAT token issuance + revocation.
-        tokenRoutes(config, tokenStore, userGroupStore, authz, core.authAudit)
+        tokenRoutes(config, tokenStore, userGroupStore, authz, core.authAudit, tokenService)
 
         // Cedar policy admin: put/enable/disable + validate-on-write. Admin-gated: admin.policies.
         cedarPolicyRoutes(config, authz, cedarPolicyStore, policyManagement)

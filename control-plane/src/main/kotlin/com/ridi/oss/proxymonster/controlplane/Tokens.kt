@@ -1,7 +1,6 @@
 package com.ridi.oss.proxymonster.controlplane
 
 import com.ridi.oss.proxymonster.controlplane.AuthAuditRecorder.Companion.ACTION_TOKEN_MINT
-import com.ridi.oss.proxymonster.controlplane.AuthAuditRecorder.Companion.ACTION_TOKEN_REVOKE
 import com.ridi.oss.proxymonster.controlplane.AuthAuditRecorder.Companion.CHANNEL_WIRE
 import com.ridi.oss.proxymonster.controlplane.authz.Authz
 import com.ridi.oss.proxymonster.controlplane.authz.AuthzAction
@@ -287,6 +286,7 @@ fun Route.tokenRoutes(
     userGroupStore: UserGroupStore,
     authz: Authz,
     authAudit: AuthAuditRecorder,
+    service: TokenService = TokenService(store, userGroupStore, authz, authAudit),
 ) {
     // Mint a short-lived SESSION token for the daemon (`pm login`) — held locally, refreshed.
     // Credential issuance is a Cedar decision (token.mint on Token{owner, kind}); the self seed permits a
@@ -321,65 +321,42 @@ fun Route.tokenRoutes(
 
     // Managed user tokens (expiring): generate / list / revoke from the web UI or the `pm` CLI.
     get("/api/tokens") {
-        // Defaults to the caller's own tokens (self seed); an identity admin may pass ?principal= to
-        // list another principal's (token.list oversight seed). This returns METADATA only; a token's
-        // secret is only ever exposed at mint (token.mint) and is never re-readable. kind is irrelevant here.
-        val target = call.request.queryParameters["principal"] ?: principalOf(call)
+        val principal = principalOf(call)
             ?: return@get call.respond(HttpStatusCode.Unauthorized, ApiError("common.unauthenticated"))
-        if (!call.requireAuthz(config, authz, AuthzAction.TOKEN_LIST, AuthzResource.Token(target, kind = null))) return@get
-        call.respond(store.list(target))
+        try {
+            call.respond(service.list(principal, call.httpRequesterIp(config), call.request.queryParameters["principal"]))
+        } catch (e: TaskServiceException) {
+            call.respondServiceError(e)
+        }
     }
     post("/api/tokens") {
         val principal = principalOf(call)
             ?: return@post call.respond(HttpStatusCode.Unauthorized, ApiError("common.unauthenticated"))
-        if (!call.requireAuthz(config, authz, AuthzAction.TOKEN_MINT, AuthzResource.Token(principal, TokenKind.USER))) return@post
-        val input = call.receive<CreateTokenInput>()
-        val ttl = input.ttlSeconds ?: store.defaultUserTtlSeconds
-        val roles = rolesOf(call)
-        // Same locked check-then-mint as /api/wire-tokens above — no fresh credentials
-        // for a deactivated principal, and no revoke can race between the check and the INSERT.
-        val minter = callerActor(principal, call, config)
-        val issued = store.dataSource.mintForActivePrincipalLocked(principal, userGroupStore) { c ->
-            store.issue(TokenKind.USER, principal, roles, input.name?.ifBlank { null }, ttl, c).also { token ->
-                authAudit.success(
-                    c,
-                    minter,
-                    ACTION_TOKEN_MINT,
-                    auditEntity("Token", token.id.toString()),
-                    "Minted USER wire token",
-                )
-            }
+        try {
+            service.authorizeMintUser(principal, call.httpRequesterIp(config))
+            val input = call.receive<CreateTokenInput>()
+            val issued = service.issueUser(
+                principal, rolesOf(call), callerActor(principal, call, config), input.name, input.ttlSeconds,
+            )
+            call.respond(HttpStatusCode.Created, issued)
+        } catch (e: TaskServiceException) {
+            call.respondServiceError(e)
         }
-        if (issued == null) {
-            call.respond(HttpStatusCode.Forbidden, ApiError("auth.principal_deprovisioned")); return@post
-        }
-        call.respond(HttpStatusCode.Created, issued)
     }
     delete("/api/tokens/{id}") {
         val id = call.parameters["id"]?.toLongOrNull()
             ?: return@delete call.badId()
-        // Load the token so Cedar decides against its real owner/kind (replaces the WHERE
-        // principal = ? ownership SQL). A missing token is a 404 before any authorization is revealed.
-        val token = store.get(id)
-            ?: return@delete call.notFound("token")
-        if (!call.requireAuthz(config, authz, AuthzAction.TOKEN_REVOKE, AuthzResource.Token(token.principal, TokenKind.fromWire(token.kind)))) return@delete
-        // The actor is the CALLER, not the token's owner: an oversight seed lets an identity admin revoke
-        // someone else's token, and attributing that to the owner would name the victim as the actor.
-        // requireAuthz above admitted this request, so the session is present.
-        val revoker = callerActor(call.requireApi() ?: return@delete, call, config)
-        val revoked = store.dataSource.inTx { c ->
-            store.revoke(id, token.principal, c).also { changed ->
-                if (changed) {
-                    authAudit.success(
-                        c,
-                        revoker,
-                        ACTION_TOKEN_REVOKE,
-                        auditEntity("Token", id.toString()),
-                        "Revoked ${token.kind} wire token owned by ${token.principal}",
-                    )
-                }
-            }
+        // A missing token is a 404 before any authorization is revealed, session or not.
+        val principal = principalOf(call) ?: return@delete if (store.get(id) == null) {
+            call.notFound("token")
+        } else {
+            call.respond(HttpStatusCode.Unauthorized, ApiError("common.unauthenticated"))
         }
-        if (revoked) call.respond(HttpStatusCode.NoContent) else call.notFound("token")
+        try {
+            service.revoke(principal, call.httpRequesterIp(config), callerActor(principal, call, config), id)
+            call.respond(HttpStatusCode.NoContent)
+        } catch (e: TaskServiceException) {
+            call.respondServiceError(e)
+        }
     }
 }

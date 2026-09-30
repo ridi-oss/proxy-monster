@@ -137,11 +137,11 @@ class McpQueryToolsDbTest {
         application { installTestMcp() }
         val client = createClient { expectSuccess = false }
         val principal = analyst("scope")
-        val readOnly = token(principal, setOf("mcp:read"))
         val taskTools = McpCapabilityRegistry.entries.filter { it.gate == McpGate.RESOURCE }
-        assertEquals(16, taskTools.size)
+        assertEquals(29, taskTools.size)
         for (tool in taskTools) {
-            val response = client.rawCall(readOnly, tool.toolName)
+            val allButOwn = token(principal, McpCapabilityRegistry.supportedScopes - tool.requiredScope)
+            val response = client.rawCall(allButOwn, tool.toolName)
             assertEquals(HttpStatusCode.Forbidden, response.status, tool.toolName)
             assertContains(assertNotNull(response.headers[HttpHeaders.WWWAuthenticate]), "scope=\"${tool.requiredScope}\"")
             assertEquals("mcp.insufficient_scope", structured(response.bodyAsText()).code(), tool.toolName)
@@ -306,6 +306,27 @@ class McpQueryToolsDbTest {
         } finally {
             core.cedarPolicyStore.delete(policy.id)
         }
+    }
+
+    @Test
+    fun `list_my_approvals lists the caller's own requests, filtered by status`() = testApplication {
+        application { installTestMcp() }
+        val client = createClient { expectSuccess = false }
+        val requester = analyst("mine")
+        val other = analyst("theirs")
+        val mine = pendingRequest(requester, fx.datasource.id)
+        val theirs = pendingRequest(other, fx.datasource.id)
+        val token = token(requester, setOf("mcp:query"))
+
+        val listed = client.call(token, "list_my_approvals").ok().getValue("result").jsonArray
+            .map { it.jsonObject.getValue("id").jsonPrimitive.long }
+        assertContains(listed, mine)
+        assertFalse(theirs in listed, "listed $listed")
+
+        val pending = client.call(token, "list_my_approvals", buildJsonObject { put("status", "PENDING") }).ok().getValue("result").jsonArray
+        assertTrue(pending.any { it.jsonObject.getValue("id").jsonPrimitive.long == mine })
+        val approved = client.call(token, "list_my_approvals", buildJsonObject { put("status", "APPROVED") }).ok().getValue("result").jsonArray
+        assertTrue(approved.none { it.jsonObject.getValue("id").jsonPrimitive.long == mine })
     }
 
     @Test

@@ -11,7 +11,9 @@ import com.ridi.oss.proxymonster.controlplane.ApprovalService
 import com.ridi.oss.proxymonster.controlplane.EditorTaskService
 import com.ridi.oss.proxymonster.controlplane.RunExecService
 import com.ridi.oss.proxymonster.controlplane.TaskServiceException
+import com.ridi.oss.proxymonster.controlplane.AuditService
 import com.ridi.oss.proxymonster.controlplane.AuditStore
+import com.ridi.oss.proxymonster.controlplane.QueryHistoryStore
 import com.ridi.oss.proxymonster.controlplane.Channel
 import com.ridi.oss.proxymonster.controlplane.ClassificationInput
 import com.ridi.oss.proxymonster.controlplane.Config
@@ -125,6 +127,8 @@ fun Application.installMcp(
         core.accessStore, core.datasourceStore, core.auditStore, core.roleResolver, core.authz,
         ManagementAuditRecorder(core.auditStore),
     ),
+    audit: AuditService = AuditService(core.authz, core.auditStore),
+    queryHistory: QueryHistoryStore = QueryHistoryStore(core.dataSource),
 ) {
     McpCapabilityRegistry.verify()
     val metadataUri = protectedResourceMetadataUri(config.mcpResource)
@@ -182,7 +186,7 @@ fun Application.installMcp(
 
     val authorizer = McpAuthorizer(config, core)
     val mutationExecutor = McpMutationExecutor(core.dataSource, core.auditStore, core.cedarPolicyStore, authorizer)
-    val taskTools = McpTaskTools(core, datasourceService, editorTasks, approvals)
+    val taskTools = McpTaskTools(core, datasourceService, editorTasks, approvals, access, audit, queryHistory)
     mcpStatelessStreamableHttp(
         path = "/mcp",
         // The SDK's built-in guard reads the HTTP/1.1 Host header literally and rejects HTTP/2
@@ -832,6 +836,17 @@ private fun schemaFor(tool: String): ToolSchema {
             "get_approval", "approve_approval", "execute_approval", "cancel_approval" -> integer("id")
             "reject_approval" -> { integer("id"); string("reason") }
             "get_approval_result" -> { integer("id"); resultPage() }
+            "list_audit" -> integer("limit", min = 1, max = 500)
+            "get_audit_event" -> integer("id")
+            "request_access" -> { string("roleName"); string("reason"); string("datasource"); integer("durationSec", min = 1) }
+            "list_access_requests" -> string("status")
+            "list_access_grants" -> { string("principal"); boolean("active") }
+            "reset_my_rate" -> { string("reason"); string("denyReason") }
+            "list_query_history" -> integer("limit", min = 1, max = 200)
+            "delete_query_task" -> integer("taskId")
+            "approve_access_request" -> { integer("id"); integer("durationSec", min = 1) }
+            "reject_access_request" -> { integer("id"); string("reason") }
+            "revoke_access_grant" -> integer("id")
         }
         val capability = McpCapabilityRegistry.byName[tool]
         if (capability?.classification == CapabilityClassification.WRITE && capability.gate == McpGate.SYSTEM) {
@@ -866,6 +881,11 @@ private fun schemaFor(tool: String): ToolSchema {
         "request_approval" -> listOf("roleName", "reason")
         "get_approval", "approve_approval", "execute_approval", "cancel_approval", "get_approval_result" -> listOf("id")
         "reject_approval" -> listOf("id", "reason")
+        "get_audit_event", "approve_access_request", "revoke_access_grant" -> listOf("id")
+        "request_access" -> listOf("roleName", "reason")
+        "reset_my_rate" -> listOf("reason")
+        "delete_query_task" -> listOf("taskId")
+        "reject_access_request" -> listOf("id", "reason")
         else -> emptyList()
     }
     return ToolSchema(properties = properties, required = required)
@@ -965,7 +985,7 @@ internal fun JsonObject.string(name: String): String? {
     if (value is JsonNull) return null
     return (value as? JsonPrimitive)?.takeIf { it.isString }?.contentOrNull ?: throw McpInputException()
 }
-private fun JsonObject.boolean(name: String): Boolean? {
+internal fun JsonObject.boolean(name: String): Boolean? {
     val value = get(name) ?: return null
     if (value is JsonNull) return null
     return (value as? JsonPrimitive)?.booleanOrNull ?: throw McpInputException()

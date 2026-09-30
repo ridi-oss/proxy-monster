@@ -1167,6 +1167,9 @@ data class OpenEditorSessionInput(val datasourceId: Long)
 @Serializable
 data class EditorSessionOpened(val sessionId: String)
 
+@Serializable
+data class EditorScriptRequest(val datasourceId: Long, val sql: String, val maxRows: Int = 500, val timeoutSeconds: Long? = null)
+
 /** Async editor SUBMIT ack: the born-APPROVED EDITOR task and its single result child (task:child 1:1). No
  *  rows inline — completion is observed by polling the task/result endpoints. */
 @Serializable
@@ -1249,6 +1252,19 @@ fun Route.editorSessionRoutes(
         val req = call.receive<QueryRequest>()
         try {
             val sub = service.submitOnSession(principal, call.httpRequesterIp(config), sessionId, req.sql, req.maxRows)
+            call.respond(HttpStatusCode.Accepted, sub.response)
+        } catch (e: TaskServiceException) {
+            call.respondServiceError(e)
+        }
+    }
+
+    post("/api/editor/scripts") {
+        val principal = call.requireApi() ?: return@post
+        val req = call.receive<EditorScriptRequest>()
+        try {
+            val sub = service.submitScript(
+                principal, call.httpRequesterIp(config), req.datasourceId, req.sql, req.maxRows, req.timeoutSeconds,
+            )
             call.respond(HttpStatusCode.Accepted, sub.response)
         } catch (e: TaskServiceException) {
             call.respondServiceError(e)

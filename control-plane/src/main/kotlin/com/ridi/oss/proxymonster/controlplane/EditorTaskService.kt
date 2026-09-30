@@ -11,7 +11,9 @@ import com.ridi.oss.proxymonster.probe.splitStatements
 import io.ktor.http.HttpStatusCode
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeout
 import org.slf4j.Logger
 import org.slf4j.LoggerFactory
 import java.util.concurrent.ConcurrentHashMap
@@ -74,18 +76,53 @@ class EditorTaskService(
     }
 
     /** Submit on a one-shot connection that lives for this batch only. */
-    fun submitOneShot(principal: String, requesterIp: String?, datasourceName: String, sql: String, maxRows: Int): Submission {
+    fun submitOneShot(
+        principal: String,
+        requesterIp: String?,
+        datasourceName: String,
+        sql: String,
+        maxRows: Int,
+        deadlineMs: Long? = null,
+    ): Submission {
         val ownRoles = submitterRoles(principal, sql)
         val ds = datasourceStore.getByName(datasourceName) ?: throw serviceNotFound("datasource")
         return start(principal, requesterIp, ds, ownRoles, sql) { b ->
-            // No assumeRoles: an EDITOR token, so every statement decides on the editor channel.
-            runExecService.runBatch(
-                principal, ds, statementCount = b.statementCount, maxRows = maxRows,
-                statementAt = b.statementAt, onStatement = b.onStatement,
-                approverExec = false, requesterIp = requesterIp, taskId = b.taskId, preflight = b.preflight,
-                exchangeTimeoutMs = config.queryExchangeTimeoutMs,
-            )
+            val batch: suspend () -> Unit = {
+                // No assumeRoles: an EDITOR token, so every statement decides on the editor channel.
+                runExecService.runBatch(
+                    principal, ds, statementCount = b.statementCount, maxRows = maxRows,
+                    statementAt = b.statementAt, onStatement = b.onStatement,
+                    approverExec = false, requesterIp = requesterIp, taskId = b.taskId, preflight = b.preflight,
+                    exchangeTimeoutMs = config.queryExchangeTimeoutMs,
+                )
+            }
+            if (deadlineMs == null) {
+                batch()
+            } else {
+                val started = System.nanoTime()
+                val expired = { System.nanoTime() - started >= deadlineMs * 1_000_000 }
+                try {
+                    withTimeout(deadlineMs) { batch() }
+                } catch (e: TimeoutCancellationException) {
+                    throw ScriptDeadlineException(e)
+                } catch (e: ProxyRunTimeoutException) {
+                    throw if (expired()) ScriptDeadlineException(e) else e
+                }
+            }
         }
+    }
+
+    fun submitScript(
+        principal: String,
+        requesterIp: String?,
+        datasourceId: Long,
+        sql: String,
+        maxRows: Int,
+        timeoutSeconds: Long?,
+    ): Submission {
+        val ds = datasourceStore.get(datasourceId) ?: throw serviceNotFound("datasource")
+        val seconds = (timeoutSeconds ?: config.queryTimeoutSeconds).coerceIn(1, MAX_SCRIPT_TIMEOUT_SECONDS)
+        return submitOneShot(principal, requesterIp, ds.name, sql, maxRows, deadlineMs = seconds * 1000)
     }
 
     private fun submitterRoles(principal: String, sql: String): Set<String> {
@@ -176,6 +213,8 @@ class EditorTaskService(
                 "query.proxy_stream_wedged"
             } catch (_: ProxyRunTimeoutException) {
                 "query.proxy_timeout"
+            } catch (_: ScriptDeadlineException) {
+                "query.script_timeout"
             } catch (e: TargetDbRunException) {
                 // The target DB's own error for the failed statement, stored encrypted and re-gated per viewer.
                 diagnostic = e.toDiagnostic()
@@ -192,6 +231,7 @@ class EditorTaskService(
                     store.failRun(task.id, failureCode, denyReason, denyDecisionId, diagnostic = diagnostic) { conn, _ ->
                         accessStore.markFailed(task.id, conn)
                     }
+                        ?: store.cancelRun(task.id, failureCode) { conn, _ -> accessStore.markFailed(task.id, conn) }
                 }
                     .onFailure { log.error("editor task failure transition failed task=${task.id}", it) }
             }
@@ -334,3 +374,7 @@ class EditorTaskService(
             task.datasourceId?.let(datasourceStore::getIncludingDeleted)?.tags.orEmpty(),
         )
 }
+
+private class ScriptDeadlineException(cause: Throwable) : Exception("the script ran past its deadline", cause)
+
+internal const val MAX_SCRIPT_TIMEOUT_SECONDS = 3600L

@@ -430,6 +430,110 @@ class EditorSubmitRouteDbTest {
         }
     }
 
+    private class FakeScript(val ack: EditorSubmitResponse, val controls: Channel<ControlRunMsg>, val await: suspend () -> Unit)
+
+    private suspend fun CoroutineScope.runFakeScript(
+        client: HttpClient,
+        request: EditorScriptRequest,
+        onQuery: suspend (SendChannel<ProxyRunMsg>, ControlRunMsg) -> Unit,
+    ): FakeScript {
+        val event = async { stub.events(eventsRequest { datasourceName = datasource.name; protocolVersion = CONTROL_PROTOCOL_VERSION }).first() }
+        awaitUntil("Events stream attached") { datasource.name in core.proxyEventsHub.attached() }
+        val response = client.post("/api/editor/scripts") { contentType(ContentType.Application.Json); setBody(request) }
+        assertEquals(HttpStatusCode.Accepted, response.status)
+        val open = withTimeout(5_000) { event.await() }.openRunChannel
+        val proxyRequests = Channel<ProxyRunMsg>(Channel.UNLIMITED)
+        val controls = Channel<ControlRunMsg>(Channel.UNLIMITED)
+        val proxy = async {
+            stub.runExec(proxyRequests.receiveAsFlow()).collect { control ->
+                controls.send(control)
+                when {
+                    control.hasQuery() -> launch { onQuery(proxyRequests, control) }
+                    control.hasClose() -> proxyRequests.close()
+                    else -> Unit
+                }
+            }
+        }
+        proxyRequests.send(proxyRunMsg { sessionReady = runReady { sessionId = open.sessionId } })
+        proxyRequests.send(proxyRunMsg { serving = runServing {} })
+        return FakeScript(response.body(), controls) { withTimeout(5_000) { proxy.await() } }
+    }
+
+    private suspend fun Channel<ControlRunMsg>.drain(): List<String> {
+        val seen = mutableListOf<String>()
+        withTimeout(5_000) {
+            while (true) {
+                val control = receive()
+                if (control.hasClose()) break
+                if (control.hasQuery()) seen += control.query.sql
+            }
+        }
+        return seen
+    }
+
+    @Test
+    fun `Run All runs the whole script on one dedicated connection and closes it at the end`() = testApplication {
+        val client = wire()
+        supervisorScope {
+            val script = runFakeScript(
+                client, EditorScriptRequest(datasource.id, "start transaction;\n-- note; still one\nupdate t set a = 1; commit", 100),
+            ) { req, control ->
+                req.send(allowed())
+                req.send(proxyRunMsg { done = runDone { rowsAffected = if ("update" in control.query.sql) 7 else -1 } })
+            }
+            assertEquals(3, script.ack.statements?.size)
+            assertEquals(3, script.controls.drain().size)
+            script.await()
+            awaitUntil("script EXECUTED") { core.accessStore.getRequest(script.ack.taskId)?.status == "EXECUTED" }
+            val statements = client.get("/api/editor/tasks/${script.ack.taskId}").body<EditorTaskStatus>().statements
+            assertEquals(listOf("DONE", "DONE", "DONE"), statements.map { it.status })
+            assertEquals(7, statements[1].rowCount)
+        }
+    }
+
+    @Test
+    fun `a failing statement stops Run All and closes the connection so the target DB rolls back`() = testApplication {
+        val client = wire()
+        supervisorScope {
+            val script = runFakeScript(
+                client, EditorScriptRequest(datasource.id, "start transaction; update t set a = 1; commit", 100),
+            ) { req, control ->
+                req.send(allowed())
+                if (control.query.sql.startsWith("update")) {
+                    req.send(proxyRunMsg { error = runError { message = "ERROR: 23505"; rawMessage = "duplicate key"; targetDbError = true } })
+                } else {
+                    req.send(proxyRunMsg { done = runDone { rowsAffected = -1 } })
+                }
+            }
+            assertEquals(listOf("start transaction", "update t set a = 1"), script.controls.drain())
+            script.await()
+            awaitUntil("script FAILED") { core.accessStore.getRequest(script.ack.taskId)?.status == "FAILED" }
+            val statements = client.get("/api/editor/tasks/${script.ack.taskId}").body<EditorTaskStatus>().statements
+            assertEquals(listOf("DONE", "FAILED", "SKIPPED"), statements.map { it.status })
+        }
+    }
+
+    @Test
+    fun `Run All past its deadline fails with script_timeout and closes the connection`() = testApplication {
+        val client = wire()
+        supervisorScope {
+            val held = CompletableDeferred<Unit>()
+            val script = runFakeScript(
+                client, EditorScriptRequest(datasource.id, "select sleep(30); commit", 100, timeoutSeconds = 1),
+            ) { req, _ ->
+                req.send(allowed())
+                held.await()
+            }
+            assertEquals(listOf("select sleep(30)"), script.controls.drain())
+            held.complete(Unit)
+            script.await()
+            awaitUntil("script FAILED") { core.accessStore.getRequest(script.ack.taskId)?.status == "FAILED" }
+            val statements = client.get("/api/editor/tasks/${script.ack.taskId}").body<EditorTaskStatus>().statements
+            assertEquals(listOf("FAILED", "SKIPPED"), statements.map { it.status })
+            assertEquals("query.script_timeout", statements[0].errorCode)
+        }
+    }
+
     @Test
     fun `a target-DB failure in an editor run stores BOTH diagnostic forms for the re-gated view`() = testApplication {
         val client = wire()

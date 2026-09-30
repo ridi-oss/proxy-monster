@@ -11,8 +11,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"syscall"
 )
@@ -20,8 +22,18 @@ import (
 // Config is pmon's persisted state, written by the daemon and read back on its next start. Stored 0600 in
 // the user config dir. A keychain backend belongs here later.
 type Config struct {
-	// ControlPlane is the control-plane base URL, saved by a login that supplied one and reused by later
-	// logins that omit it, so the address is configured once.
+	// LocalPassword is a stable loopback DB password generated once and shared by every server, so a saved
+	// client connection uses one never-changing password while the daemon rotates wire tokens upstream.
+	LocalPassword string `json:"localPassword"`
+	// Servers maps a server name to its control plane and login.
+	Servers map[string]*Server `json:"servers"`
+}
+
+// Server is one control plane pmon logs in to.
+type Server struct {
+	// ID tells a server apart from an earlier one of the same name, so a login or discovery that started
+	// against a deleted server cannot land on its replacement.
+	ID           string `json:"id"`
 	ControlPlane string `json:"controlPlane"`
 	Principal    string `json:"principal"`
 	// Token is the wire token the daemon injects upstream. Each login rewrites it; the daemon swaps it in
@@ -38,12 +50,28 @@ type Config struct {
 	// RenewalToken is the daemon's bearer for POST /auth/session/renew within the session window. Minted
 	// once at device-auth completion and returned only there (the control plane persists only its hash).
 	RenewalToken string `json:"renewalToken"`
-	// LocalPassword is a stable loopback DB password generated once, so a saved client connection uses one
-	// never-changing password while the daemon rotates the wire token upstream. Regenerated only if absent.
-	LocalPassword string `json:"localPassword"`
 	// Ports is the STICKY datasource-name -> local loopback port map, persisted so a datasource keeps the
-	// same port across daemon restarts. A newly-discovered one takes the next free port at or above PortBase.
+	// same port across daemon restarts. Unique across every server.
 	Ports map[string]int `json:"ports"`
+}
+
+// DefaultServer is the server a command addresses when it names none.
+const DefaultServer = "default"
+
+var serverNamePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,62}$`)
+
+// ValidServerName reports whether name can name a server.
+func ValidServerName(name string) error {
+	if !serverNamePattern.MatchString(name) {
+		return fmt.Errorf("invalid server name %q: use lowercase letters, digits, '.', '_' or '-'", name)
+	}
+	return nil
+}
+
+// legacyConfig is the single-server config shape, which loads as [DefaultServer].
+type legacyConfig struct {
+	Server
+	LocalPassword string `json:"localPassword"`
 }
 
 // DefaultPortBase is the low end of the loopback port range handed out per datasource. Chosen high to avoid
@@ -266,7 +294,7 @@ func Update(mutate func(*Config) error) error {
 	// and port assignments — destroying exactly the state that keeps saved client connections working.
 	cfg, err := Load()
 	if errors.Is(err, os.ErrNotExist) {
-		cfg = &Config{Ports: map[string]int{}}
+		cfg = &Config{Servers: map[string]*Server{}}
 	} else if err != nil {
 		return fmt.Errorf("refusing to overwrite an unreadable config (fix or remove it): %w", err)
 	}
@@ -287,14 +315,57 @@ func Load() (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
-	var c Config
-	if err := json.Unmarshal(data, &c); err != nil {
+	return parse(data)
+}
+
+func parse(data []byte) (*Config, error) {
+	var probe map[string]json.RawMessage
+	if err := json.Unmarshal(data, &probe); err != nil {
 		return nil, err
 	}
-	if c.Ports == nil {
-		c.Ports = map[string]int{}
+	c := &Config{}
+	if _, ok := probe["servers"]; ok {
+		if err := json.Unmarshal(data, c); err != nil {
+			return nil, err
+		}
+	} else {
+		var legacy legacyConfig
+		if err := json.Unmarshal(data, &legacy); err != nil {
+			return nil, err
+		}
+		c.LocalPassword = legacy.LocalPassword
+		if legacy.ControlPlane != "" || len(legacy.Ports) > 0 {
+			srv := legacy.Server
+			c.Servers = map[string]*Server{DefaultServer: &srv}
+		}
 	}
-	return &c, nil
+	if c.Servers == nil {
+		c.Servers = map[string]*Server{}
+	}
+	for name, srv := range c.Servers {
+		if srv == nil {
+			return nil, fmt.Errorf("server %q is null", name)
+		}
+		if srv.ID == "" {
+			srv.ID = NewServerID()
+		}
+		if srv.Ports == nil {
+			srv.Ports = map[string]int{}
+		}
+	}
+	return c, nil
+}
+
+// NewServerID returns a random server ID.
+func NewServerID() string {
+	raw := make([]byte, 8)
+	_, _ = rand.Read(raw)
+	return hex.EncodeToString(raw)
+}
+
+// SameSession reports whether b is still the logged-in session a was read from.
+func SameSession(a, b *Server) bool {
+	return a != nil && b.LoggedIn() && a.ID == b.ID && a.ControlPlane == b.ControlPlane && a.RenewalToken == b.RenewalToken
 }
 
 // Save atomically replaces the config file.
@@ -329,9 +400,28 @@ func Save(c *Config) error {
 	return os.Rename(tmpPath, p)
 }
 
-// LoggedIn reports whether the config carries credentials the daemon can broker with.
-func (c *Config) LoggedIn() bool {
-	return c != nil && c.Token != "" && c.ControlPlane != ""
+// LoggedIn reports whether the server carries credentials the daemon can broker with.
+func (s *Server) LoggedIn() bool {
+	return s != nil && s.Token != "" && s.ControlPlane != ""
+}
+
+// ClearLogin drops the credentials, keeping the control plane and the sticky ports.
+func (s *Server) ClearLogin() {
+	s.Principal, s.Token, s.ExpiresAt, s.IssuedAt, s.SessionExpiresAt, s.RenewalToken = "", "", "", "", "", ""
+}
+
+// Clone returns a deep copy, so a caller can read it outside the daemon's lock.
+func (c *Config) Clone() Config {
+	out := Config{LocalPassword: c.LocalPassword, Servers: make(map[string]*Server, len(c.Servers))}
+	for name, srv := range c.Servers {
+		dup := *srv
+		dup.Ports = maps.Clone(srv.Ports)
+		if dup.Ports == nil {
+			dup.Ports = map[string]int{}
+		}
+		out.Servers[name] = &dup
+	}
+	return out
 }
 
 // EnsureLocalPassword generates the sticky loopback password once and persists it into c, returning it. A
@@ -348,24 +438,36 @@ func (c *Config) EnsureLocalPassword() (string, error) {
 	return c.LocalPassword, nil
 }
 
-// AssignPort returns the sticky loopback port for a datasource name, allocating (and recording in
-// [Config.Ports]) the next free port at or above [PortBase] on first sight. Existing names keep their port;
-// new names fill the lowest free slot so the set stays compact.
-func (c *Config) AssignPort(name string) int {
-	if c.Ports == nil {
-		c.Ports = map[string]int{}
+// AssignPort returns the sticky loopback port for a server's datasource, allocating (and recording in
+// [Server.Ports]) the lowest port at or above [PortBase] no server uses on first sight. The server must exist.
+func (c *Config) AssignPort(server, name string) int {
+	srv := c.Servers[server]
+	if srv.Ports == nil {
+		srv.Ports = map[string]int{}
 	}
-	if p, ok := c.Ports[name]; ok {
+	if p, ok := srv.Ports[name]; ok {
 		return p
 	}
-	used := make(map[int]bool, len(c.Ports))
-	for _, p := range c.Ports {
-		used[p] = true
+	used := map[int]bool{}
+	for _, s := range c.Servers {
+		for _, p := range s.Ports {
+			used[p] = true
+		}
 	}
 	port := PortBase()
 	for used[port] {
 		port++
 	}
-	c.Ports[name] = port
+	srv.Ports[name] = port
 	return port
+}
+
+// LoggedIn reports whether any server is logged in.
+func (c *Config) LoggedIn() bool {
+	for _, srv := range c.Servers {
+		if srv.LoggedIn() {
+			return true
+		}
+	}
+	return false
 }

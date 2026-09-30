@@ -11,14 +11,8 @@ import "github.com/ridi-oss/proxy-monster/pmon/driver"
 // from the daemon's own maps, never from the sticky port map on disk — a revoked datasource keeps its port
 // assignment but stops being brokered, so counting the config would over-report.
 type Status struct {
-	Principal        string `json:"principal"`
-	ControlPlane     string `json:"controlPlane"`
-	LoggedIn         bool   `json:"loggedIn"`
-	ExpiresAt        string `json:"expiresAt"`
-	SessionExpiresAt string `json:"sessionExpiresAt"`
-	// ReauthRequired is set once renewal has been refused: the session window closed, so brokering keeps
-	// working only until the wire token expires and the user must log in again.
-	ReauthRequired bool `json:"reauthRequired"`
+	// LoggedIn reports whether any server is logged in.
+	LoggedIn bool `json:"loggedIn"`
 	// StartedAt is the daemon's start time (RFC3339), so a peer can show an uptime.
 	StartedAt string `json:"startedAt"`
 	// Version is the daemon's build, which a peer compares against its own: the daemon keeps running
@@ -28,14 +22,40 @@ type Status struct {
 	// travels only over the 0700 control socket, which is the same trust boundary that lets a peer start a
 	// login at all.
 	LocalPassword string `json:"localPassword"`
+	// Servers is every configured server, sorted by name.
+	Servers []ServerInfo `json:"servers"`
+	// Datasources is every datasource across all servers, sorted by server then name.
+	Datasources []Datasource `json:"datasources"`
+
+	// TODO(reorg): temporary — the default server's login, until the CLI and tray read Servers; removed with the tray change.
+	Principal          string `json:"principal"`
+	ControlPlane       string `json:"controlPlane"`
+	ExpiresAt          string `json:"expiresAt"`
+	SessionExpiresAt   string `json:"sessionExpiresAt"`
+	ReauthRequired     bool   `json:"reauthRequired"`
+	LastDiscoveryError string `json:"lastDiscoveryError,omitempty"`
+}
+
+// ServerInfo is one configured control plane and its login.
+type ServerInfo struct {
+	Name             string `json:"name"`
+	ControlPlane     string `json:"controlPlane"`
+	Principal        string `json:"principal,omitempty"`
+	LoggedIn         bool   `json:"loggedIn"`
+	ExpiresAt        string `json:"expiresAt,omitempty"`
+	SessionExpiresAt string `json:"sessionExpiresAt,omitempty"`
+	// ReauthRequired is set once renewal has been refused: the session window closed, so brokering keeps
+	// working only until the wire token expires and the user must log in again.
+	ReauthRequired bool `json:"reauthRequired"`
 	// LastDiscoveryError is the most recent discovery failure, cleared on the next success. A peer surfaces
 	// it instead of silently showing an empty datasource list.
-	LastDiscoveryError string       `json:"lastDiscoveryError,omitempty"`
-	Datasources        []Datasource `json:"datasources"`
+	LastDiscoveryError string `json:"lastDiscoveryError,omitempty"`
 }
 
 // Datasource is one brokered datasource as the daemon currently sees it.
 type Datasource struct {
+	// Server names the server the datasource was discovered from.
+	Server         string                 `json:"server"`
 	Name           string                 `json:"name"`
 	Engine         string                 `json:"engine"`
 	DbName         string                 `json:"dbName"`
@@ -70,10 +90,68 @@ func (s *Status) TotalLiveConns() int {
 	return n
 }
 
-// LoginRequest asks the daemon to run a device-auth flow. An empty ControlPlane reuses the saved one.
+// ServerLiveConns is how many client connections are open through the named server's brokers.
+func (s *Status) ServerLiveConns(server string) int {
+	n := 0
+	for _, ds := range s.Datasources {
+		if ds.Server == server {
+			n += ds.LiveConns
+		}
+	}
+	return n
+}
+
+// Server returns the named server, or nil.
+func (s Status) Server(name string) *ServerInfo {
+	for i := range s.Servers {
+		if s.Servers[i].Name == name {
+			return &s.Servers[i]
+		}
+	}
+	return nil
+}
+
+// LoggedInServers returns the servers that are logged in.
+func (s *Status) LoggedInServers() []ServerInfo {
+	var out []ServerInfo
+	for _, srv := range s.Servers {
+		if srv.LoggedIn {
+			out = append(out, srv)
+		}
+	}
+	return out
+}
+
+// LoginRequest asks the daemon to run a device-auth flow against Server ([state.DefaultServer] when empty). A
+// non-empty ControlPlane first sets the server's URL, as [SetServerRequest] does.
 type LoginRequest struct {
+	Server       string `json:"server,omitempty"`
 	ControlPlane string `json:"controlPlane,omitempty"`
 	TTLSeconds   int    `json:"ttlSeconds,omitempty"`
+}
+
+// LogoutRequest clears one server's login ([state.DefaultServer] when empty), or every server's with All.
+type LogoutRequest struct {
+	Server string `json:"server,omitempty"`
+	All    bool   `json:"all,omitempty"`
+}
+
+// SetServerRequest creates a server or changes its URL. Changing the URL of a logged-in server logs it out.
+type SetServerRequest struct {
+	Name         string `json:"name"`
+	ControlPlane string `json:"controlPlane"`
+}
+
+// SetServerResult says what [SetServerRequest] changed.
+type SetServerResult struct {
+	Created   bool `json:"created"`
+	Changed   bool `json:"changed"`
+	LoggedOut bool `json:"loggedOut"`
+}
+
+// UnsetServerRequest deletes a server, logging it out first.
+type UnsetServerRequest struct {
+	Name string `json:"name"`
 }
 
 // LoginEvent is one step of a login, streamed as newline-delimited JSON so a peer can show the verification
@@ -110,10 +188,12 @@ type ErrorResponse struct {
 
 // Route paths on the control socket.
 const (
-	PathStatus   = "/status"
-	PathLogin    = "/login"
-	PathLogout   = "/logout"
-	PathReload   = "/reload"
-	PathShutdown = "/shutdown"
-	PathEvents   = "/events"
+	PathStatus      = "/status"
+	PathLogin       = "/login"
+	PathLogout      = "/logout"
+	PathServerSet   = "/servers/set"
+	PathServerUnset = "/servers/unset"
+	PathReload      = "/reload"
+	PathShutdown    = "/shutdown"
+	PathEvents      = "/events"
 )

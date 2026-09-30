@@ -148,9 +148,30 @@ func (c *Client) Login(ctx context.Context, req LoginRequest, onEvent func(Login
 	return sc.Err()
 }
 
-// Logout clears the stored credentials and closes every broker, leaving the daemon running and idle.
-func (c *Client) Logout(ctx context.Context) error {
-	resp, err := c.do(ctx, http.MethodPost, PathLogout, nil)
+// Logout clears a server's credentials (or every server's) and closes its brokers, leaving the daemon running.
+func (c *Client) Logout(ctx context.Context, req LogoutRequest) error {
+	resp, err := c.do(ctx, http.MethodPost, PathLogout, req)
+	if err != nil {
+		return err
+	}
+	resp.Body.Close()
+	return nil
+}
+
+// SetServer creates a server or changes its URL.
+func (c *Client) SetServer(ctx context.Context, req SetServerRequest) (SetServerResult, error) {
+	var res SetServerResult
+	resp, err := c.do(ctx, http.MethodPost, PathServerSet, req)
+	if err != nil {
+		return res, err
+	}
+	defer resp.Body.Close()
+	return res, json.NewDecoder(resp.Body).Decode(&res)
+}
+
+// UnsetServer logs a server out and deletes it.
+func (c *Client) UnsetServer(ctx context.Context, req UnsetServerRequest) error {
+	resp, err := c.do(ctx, http.MethodPost, PathServerUnset, req)
 	if err != nil {
 		return err
 	}

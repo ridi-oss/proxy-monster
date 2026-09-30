@@ -21,8 +21,12 @@ type Backend interface {
 	Status() Status
 	// Login runs a device-auth flow, reporting each step through onEvent. It returns when the flow finishes.
 	Login(ctx context.Context, req LoginRequest, onEvent func(LoginEvent)) error
-	// Logout clears credentials and closes brokers, leaving the daemon idle.
-	Logout() error
+	// Logout clears credentials and closes brokers, leaving the daemon running.
+	Logout(req LogoutRequest) error
+	// SetServer creates a server or changes its URL.
+	SetServer(req SetServerRequest) (SetServerResult, error)
+	// UnsetServer logs a server out and deletes it.
+	UnsetServer(req UnsetServerRequest) error
 	// Reload forces an immediate rediscovery.
 	Reload()
 	// Subscribe opens a state-change stream; the returned cancel must be called when the stream ends.
@@ -77,6 +81,8 @@ func Listen(backend Backend) (*Server, error) {
 	mux.HandleFunc(PathStatus, s.handleStatus)
 	mux.HandleFunc(PathLogin, s.handleLogin)
 	mux.HandleFunc(PathLogout, s.handleLogout)
+	mux.HandleFunc(PathServerSet, s.handleServerSet)
+	mux.HandleFunc(PathServerUnset, s.handleServerUnset)
 	mux.HandleFunc(PathReload, s.handleReload)
 	mux.HandleFunc(PathShutdown, s.handleShutdown)
 	mux.HandleFunc(PathEvents, s.handleEvents)
@@ -169,8 +175,45 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 	if !requireMethod(w, r, http.MethodPost) {
 		return
 	}
-	if err := s.backend.Logout(); err != nil {
-		writeErr(w, http.StatusInternalServerError, err)
+	var req LogoutRequest
+	if r.Body != nil {
+		_ = json.NewDecoder(r.Body).Decode(&req) // an empty body logs out the default server
+	}
+	if err := s.backend.Logout(req); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, s.backend.Status())
+}
+
+func (s *Server) handleServerSet(w http.ResponseWriter, r *http.Request) {
+	if !requireMethod(w, r, http.MethodPost) {
+		return
+	}
+	var req SetServerRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	res, err := s.backend.SetServer(req)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, res)
+}
+
+func (s *Server) handleServerUnset(w http.ResponseWriter, r *http.Request) {
+	if !requireMethod(w, r, http.MethodPost) {
+		return
+	}
+	var req UnsetServerRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	if err := s.backend.UnsetServer(req); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, s.backend.Status())

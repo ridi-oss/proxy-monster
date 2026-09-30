@@ -20,20 +20,48 @@ func isolate(t *testing.T) string {
 }
 
 func TestAssignPortIsStickyAndCompact(t *testing.T) {
-	c := &Config{Ports: map[string]int{}}
+	c := &Config{Servers: map[string]*Server{"a": {}, "b": {}}}
 	base := PortBase()
-	a := c.AssignPort("alpha")
-	b := c.AssignPort("beta")
+	a := c.AssignPort("a", "alpha")
+	b := c.AssignPort("b", "alpha")
 	if a != base || b != base+1 {
-		t.Fatalf("first two datasources got ports %d,%d; want %d,%d", a, b, base, base+1)
+		t.Fatalf("the same name on two servers got ports %d,%d; want %d,%d", a, b, base, base+1)
 	}
-	if again := c.AssignPort("alpha"); again != a {
-		t.Errorf("AssignPort(alpha) = %d on second call, want sticky %d", again, a)
+	if again := c.AssignPort("a", "alpha"); again != a {
+		t.Errorf("AssignPort(a, alpha) = %d on second call, want sticky %d", again, a)
 	}
 	// A freed slot (lower number) is reused before extending the range.
-	delete(c.Ports, "alpha")
-	if reused := c.AssignPort("gamma"); reused != a {
-		t.Errorf("AssignPort(gamma) = %d, want the freed lowest slot %d", reused, a)
+	delete(c.Servers["a"].Ports, "alpha")
+	if reused := c.AssignPort("b", "gamma"); reused != a {
+		t.Errorf("AssignPort(b, gamma) = %d, want the freed lowest slot %d", reused, a)
+	}
+}
+
+// A single-server config from an earlier release loads as the default server, keeping its login, sticky
+// ports and password, so saved client connections survive the upgrade.
+func TestLegacyConfigLoadsAsDefaultServer(t *testing.T) {
+	dir := isolate(t)
+	legacy := `{"controlPlane":"https://cp","principal":"you@example.com","token":"tok","localPassword":"pmlocal_x","ports":{"acme":6100}}`
+	if err := os.WriteFile(filepath.Join(dir, ConfigName), []byte(legacy), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	c, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	srv := c.Servers[DefaultServer]
+	if srv == nil || srv.ControlPlane != "https://cp" || srv.Token != "tok" || srv.Ports["acme"] != 6100 {
+		t.Fatalf("default server = %+v, want the legacy login and ports", srv)
+	}
+	if c.LocalPassword != "pmlocal_x" {
+		t.Errorf("LocalPassword = %q, want the legacy one", c.LocalPassword)
+	}
+	if err := Save(c); err != nil {
+		t.Fatal(err)
+	}
+	again, err := Load()
+	if err != nil || again.Servers[DefaultServer].Token != "tok" || len(again.Servers) != 1 {
+		t.Fatalf("round trip = %+v, %v", again, err)
 	}
 }
 
@@ -49,8 +77,11 @@ func TestUpdateConcurrentWritersDoNotLoseUpdates(t *testing.T) {
 		go func(i int) {
 			defer wg.Done()
 			_ = Update(func(c *Config) error {
-				c.Ports[fmt.Sprintf("ds-%d", i)] = PortBase() + i
-				c.Token = "tok"
+				if c.Servers[DefaultServer] == nil {
+					c.Servers[DefaultServer] = &Server{Ports: map[string]int{}}
+				}
+				c.Servers[DefaultServer].Ports[fmt.Sprintf("ds-%d", i)] = PortBase() + i
+				c.LocalPassword = "pw"
 				return nil
 			})
 		}(i)
@@ -61,11 +92,11 @@ func TestUpdateConcurrentWritersDoNotLoseUpdates(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if len(cfg.Ports) != n {
-		t.Errorf("lost updates under concurrency: %d ports, want %d", len(cfg.Ports), n)
+	if got := len(cfg.Servers[DefaultServer].Ports); got != n {
+		t.Errorf("lost updates under concurrency: %d ports, want %d", got, n)
 	}
-	if cfg.Token != "tok" {
-		t.Errorf("token not persisted: %q", cfg.Token)
+	if cfg.LocalPassword != "pw" {
+		t.Errorf("password not persisted: %q", cfg.LocalPassword)
 	}
 }
 
@@ -93,7 +124,7 @@ func TestSaveTightensPreExistingWorldReadablePermissions(t *testing.T) {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
-	if err := Save(&Config{ControlPlane: "http://localhost:8090", Token: "tok-abc", RenewalToken: "pmr_abc123"}); err != nil {
+	if err := Save(&Config{Servers: map[string]*Server{DefaultServer: {ControlPlane: "http://localhost:8090", Token: "tok-abc", RenewalToken: "pmr_abc123"}}}); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
 	info, err := os.Stat(p)
@@ -110,7 +141,7 @@ func TestSaveTightensPreExistingWorldReadablePermissions(t *testing.T) {
 // pre-existing 0644 inode) and renames it into place, leaving exactly config.json behind.
 func TestSaveLeavesNoStrayTempFile(t *testing.T) {
 	dir := isolate(t)
-	if err := Save(&Config{ControlPlane: "http://localhost:8090", Token: "tok-abc", RenewalToken: "pmr_abc123"}); err != nil {
+	if err := Save(&Config{Servers: map[string]*Server{DefaultServer: {ControlPlane: "http://localhost:8090", Token: "tok-abc", RenewalToken: "pmr_abc123"}}}); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
 	entries, err := os.ReadDir(dir)
@@ -132,13 +163,13 @@ func TestSaveLeavesNoStrayTempFile(t *testing.T) {
 func TestLoggedInRequiresTokenAndControlPlane(t *testing.T) {
 	tests := []struct {
 		name string
-		cfg  Config
+		cfg  Server
 		want bool
 	}{
-		{"complete", Config{ControlPlane: "http://cp", Token: "tok"}, true},
-		{"no token", Config{ControlPlane: "http://cp", Principal: "you@example.com"}, false},
-		{"no control plane", Config{Token: "tok"}, false},
-		{"empty", Config{}, false},
+		{"complete", Server{ControlPlane: "http://cp", Token: "tok"}, true},
+		{"no token", Server{ControlPlane: "http://cp", Principal: "you@example.com"}, false},
+		{"no control plane", Server{Token: "tok"}, false},
+		{"empty", Server{}, false},
 	}
 	for _, tc := range tests {
 		if got := tc.cfg.LoggedIn(); got != tc.want {
@@ -458,4 +489,10 @@ func TestReleasePidLockKeepsTheFile(t *testing.T) {
 		t.Errorf("AcquirePidLock after release = %v, %v; want true, nil", held, err)
 	}
 	ReleasePidLock()
+}
+
+func TestNullServerIsAConfigError(t *testing.T) {
+	if _, err := parse([]byte(`{"servers":{"dev":null}}`)); err == nil {
+		t.Error("a null server loaded; the daemon would dereference it")
+	}
 }

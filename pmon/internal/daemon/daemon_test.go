@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math/rand/v2"
 	"github.com/ridi-oss/proxy-monster/pmon/driver"
 	"net"
 	"net/http"
@@ -23,7 +24,27 @@ import (
 func isolate(t *testing.T) {
 	t.Helper()
 	t.Setenv("PMON_CONFIG_DIR", t.TempDir())
-	t.Setenv("PMON_PORT_BASE", fmt.Sprintf("%d", freeTCPPort(t)))
+	t.Setenv("PMON_PORT_BASE", fmt.Sprintf("%d", freePortRange(t, 8)))
+}
+
+// freePortRange returns the first of n consecutive free ports below the ephemeral range, so a broker on
+// base+1 cannot collide with a test server the kernel placed there.
+func freePortRange(t *testing.T, n int) int {
+	t.Helper()
+	for {
+		base, ok := 20000+rand.IntN(20000), true
+		for p := base; p < base+n && ok; p++ {
+			ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", p))
+			if err != nil {
+				ok = false
+				continue
+			}
+			ln.Close()
+		}
+		if ok {
+			return base
+		}
+	}
 }
 
 // freeTCPPort returns a port nothing is listening on, for use as an isolated broker-port base.
@@ -44,6 +65,11 @@ type fakeCP struct {
 }
 
 func newFakeCP(t *testing.T, datasources []driver.Endpoint) *fakeCP {
+	return newFakeCPAs(t, "you@example.com", "pmk_tok", datasources)
+}
+
+// newFakeCPAs is newFakeCP issuing its own principal and wire token, so a test can tell servers apart.
+func newFakeCPAs(t *testing.T, principal, token string, datasources []driver.Endpoint) *fakeCP {
 	t.Helper()
 	cp := &fakeCP{datasources: datasources}
 	cp.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -55,12 +81,12 @@ func newFakeCP(t *testing.T, datasources []driver.Endpoint) *fakeCP {
 			})
 		case "/auth/device/poll":
 			_ = json.NewEncoder(w).Encode(map[string]any{
-				"principal": "you@example.com", "token": "pmk_tok",
+				"principal": principal, "token": token,
 				"expiresAt":    time.Now().Add(12 * time.Hour).Format(time.RFC3339),
-				"renewalToken": "pmr_abc",
+				"renewalToken": "pmr_" + token,
 			})
 		case "/api/datasources":
-			if got := r.Header.Get("Authorization"); got != "Bearer pmk_tok" {
+			if got := r.Header.Get("Authorization"); got != "Bearer "+token {
 				t.Errorf("discovery Authorization = %q, want the wire token as a bearer", got)
 			}
 			_ = json.NewEncoder(w).Encode(cp.datasources)
@@ -122,7 +148,7 @@ func TestLoginOpensBrokersImmediately(t *testing.T) {
 	}
 
 	s := d.Status()
-	if !s.LoggedIn || s.Principal != "you@example.com" {
+	if !s.LoggedIn || s.Server("default").Principal != "you@example.com" {
 		t.Fatalf("status after login = %+v, want a logged-in principal", s)
 	}
 	if len(s.Datasources) != 1 {
@@ -245,8 +271,8 @@ func TestRediscoveryClosesARevokedDatasource(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if cfg.Ports["acme-mysql"] != port {
-		t.Errorf("sticky port for a revoked datasource = %d, want it kept at %d", cfg.Ports["acme-mysql"], port)
+	if srvOf(cfg).Ports["acme-mysql"] != port {
+		t.Errorf("sticky port for a revoked datasource = %d, want it kept at %d", srvOf(cfg).Ports["acme-mysql"], port)
 	}
 }
 
@@ -264,11 +290,11 @@ func TestLogoutClosesBrokersButKeepsTheDaemonIdle(t *testing.T) {
 	}
 	port := d.Status().Datasources[0].LocalPort
 
-	if err := d.Logout(); err != nil {
+	if err := d.Logout(control.LogoutRequest{}); err != nil {
 		t.Fatalf("Logout: %v", err)
 	}
 	s := d.Status()
-	if s.LoggedIn || s.Principal != "" {
+	if s.LoggedIn || s.Server("default").Principal != "" {
 		t.Errorf("status after logout = %+v, want logged out", s)
 	}
 	if len(s.Datasources) != 0 {
@@ -289,7 +315,7 @@ func TestLogoutClosesBrokersButKeepsTheDaemonIdle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if cfg.Token != "" || cfg.RenewalToken != "" {
+	if srvOf(cfg).Token != "" || srvOf(cfg).RenewalToken != "" {
 		t.Errorf("logout left credentials on disk: %+v", cfg)
 	}
 	if cfg.LocalPassword == "" {
@@ -302,8 +328,8 @@ func TestLogoutClosesBrokersButKeepsTheDaemonIdle(t *testing.T) {
 func TestDiscoveryFailureIsSurfacedNotFatal(t *testing.T) {
 	isolate(t)
 	if err := state.Update(func(c *state.Config) error {
-		c.ControlPlane = "http://127.0.0.1:1" // nothing listening
-		c.Principal, c.Token = "you@example.com", "pmk_tok"
+		srvOf(c).ControlPlane = "http://127.0.0.1:1" // nothing listening
+		srvOf(c).Principal, srvOf(c).Token = "you@example.com", "pmk_tok"
 		return nil
 	}); err != nil {
 		t.Fatalf("seed config: %v", err)
@@ -314,11 +340,11 @@ func TestDiscoveryFailureIsSurfacedNotFatal(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	d.cfg = *cfg
+	d.cfg = cfg.Clone()
 	d.openListeners(context.Background())
 
 	s := d.Status()
-	if s.LastDiscoveryError == "" {
+	if s.Server("default").LastDiscoveryError == "" {
 		t.Error("a failed discovery left LastDiscoveryError empty; the peer would show a blank list with no reason")
 	}
 	if len(s.Datasources) != 0 {
@@ -342,8 +368,8 @@ func TestConcurrentDiscoveryKeepsTheStickyPort(t *testing.T) {
 	// the state in which two passes both decide the datasource needs one. Logging in first would open the
 	// listener and close the window the race lives in.
 	if err := state.Update(func(c *state.Config) error {
-		c.ControlPlane = cp.URL
-		c.Principal, c.Token = "you@example.com", "pmk_tok"
+		srvOf(c).ControlPlane = cp.URL
+		srvOf(c).Principal, srvOf(c).Token = "you@example.com", "pmk_tok"
 		return nil
 	}); err != nil {
 		t.Fatalf("seed: %v", err)
@@ -352,7 +378,7 @@ func TestConcurrentDiscoveryKeepsTheStickyPort(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	d.cfg = *cfg
+	d.cfg = cfg.Clone()
 	defer d.closeAllListeners()
 
 	var wg sync.WaitGroup
@@ -376,8 +402,8 @@ func TestConcurrentDiscoveryKeepsTheStickyPort(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if onDisk.Ports["acme-mysql"] != want {
-		t.Errorf("sticky port on disk = %d, want %d preserved", onDisk.Ports["acme-mysql"], want)
+	if srvOf(onDisk).Ports["acme-mysql"] != want {
+		t.Errorf("sticky port on disk = %d, want %d preserved", srvOf(onDisk).Ports["acme-mysql"], want)
 	}
 }
 
@@ -409,10 +435,10 @@ func TestStaleRenewalDoesNotClobberANewerSession(t *testing.T) {
 
 	// Seed a session whose token is close enough to expiry that a renewal is due.
 	if err := state.Update(func(c *state.Config) error {
-		c.ControlPlane = srv.URL
-		c.Principal, c.Token = "you@example.com", "tok-old"
-		c.RenewalToken = "pmr_old"
-		c.ExpiresAt = time.Now().Add(1 * time.Minute).Format(time.RFC3339)
+		srvOf(c).ControlPlane = srv.URL
+		srvOf(c).Principal, srvOf(c).Token = "you@example.com", "tok-old"
+		srvOf(c).RenewalToken = "pmr_old"
+		srvOf(c).ExpiresAt = time.Now().Add(1 * time.Minute).Format(time.RFC3339)
 		return nil
 	}); err != nil {
 		t.Fatalf("seed: %v", err)
@@ -421,7 +447,7 @@ func TestStaleRenewalDoesNotClobberANewerSession(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	d.cfg = *cfg
+	d.cfg = cfg.Clone()
 
 	done := make(chan struct{})
 	go func() { defer close(done); d.maybeRenew(context.Background()) }()
@@ -430,18 +456,18 @@ func TestStaleRenewalDoesNotClobberANewerSession(t *testing.T) {
 	// the way Login actually does it, so the guards that re-check under the config lock are exercised.
 	<-requestArrived
 	if err := state.Update(func(c *state.Config) error {
-		c.Principal, c.Token, c.RenewalToken = "new@example.com", "tok-new", "pmr_new"
+		srvOf(c).Principal, srvOf(c).Token, srvOf(c).RenewalToken = "new@example.com", "tok-new", "pmr_new"
 		return nil
 	}); err != nil {
 		t.Fatalf("simulate login: %v", err)
 	}
 	d.mu.Lock()
-	d.cfg.Principal, d.cfg.Token, d.cfg.RenewalToken = "new@example.com", "tok-new", "pmr_new"
+	srvOf(&d.cfg).Principal, srvOf(&d.cfg).Token, srvOf(&d.cfg).RenewalToken = "new@example.com", "tok-new", "pmr_new"
 	d.mu.Unlock()
 	close(loginLanded)
 	<-done
 
-	s := d.snapshot()
+	s := *srvOf(ptr(d.snapshot()))
 	if s.Token != "tok-new" || s.RenewalToken != "pmr_new" {
 		t.Errorf("a stale renewal disturbed the newer session in memory: token=%q renewal=%q", s.Token, s.RenewalToken)
 	}
@@ -451,11 +477,11 @@ func TestStaleRenewalDoesNotClobberANewerSession(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if onDisk.Token != "tok-new" || onDisk.RenewalToken != "pmr_new" {
-		t.Errorf("a stale renewal was persisted: disk token=%q renewal=%q", onDisk.Token, onDisk.RenewalToken)
+	if srvOf(onDisk).Token != "tok-new" || srvOf(onDisk).RenewalToken != "pmr_new" {
+		t.Errorf("a stale renewal was persisted: disk token=%q renewal=%q", srvOf(onDisk).Token, srvOf(onDisk).RenewalToken)
 	}
 	// And a refusal for the superseded session must not demand reauth for the fresh one.
-	if d.Status().ReauthRequired {
+	if d.Status().Server("default").ReauthRequired {
 		t.Error("ReauthRequired set from a superseded session's renewal")
 	}
 }
@@ -473,10 +499,10 @@ func TestRenewalWithNoExpiryIsRetriedNotPersisted(t *testing.T) {
 
 	d := New("test", providers.Builtins())
 	if err := state.Update(func(c *state.Config) error {
-		c.ControlPlane = srv.URL
-		c.Principal, c.Token = "you@example.com", "tok-old"
-		c.RenewalToken = "pmr_x"
-		c.ExpiresAt = time.Now().Add(1 * time.Minute).Format(time.RFC3339)
+		srvOf(c).ControlPlane = srv.URL
+		srvOf(c).Principal, srvOf(c).Token = "you@example.com", "tok-old"
+		srvOf(c).RenewalToken = "pmr_x"
+		srvOf(c).ExpiresAt = time.Now().Add(1 * time.Minute).Format(time.RFC3339)
 		return nil
 	}); err != nil {
 		t.Fatalf("seed: %v", err)
@@ -485,13 +511,13 @@ func TestRenewalWithNoExpiryIsRetriedNotPersisted(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	d.cfg = *cfg
+	d.cfg = cfg.Clone()
 
 	d.maybeRenew(context.Background())
 	if calls != 1 {
 		t.Fatalf("renew calls = %d, want 1", calls)
 	}
-	s := d.snapshot()
+	s := *srvOf(ptr(d.snapshot()))
 	if s.Token != "tok-old" {
 		t.Errorf("token = %q, want the old one kept (an expiry-less renewal must not be persisted)", s.Token)
 	}
@@ -552,7 +578,7 @@ func TestTrackedConnectionsAreNeverInvisibleToStatus(t *testing.T) {
 	defer client.Close()
 	defer server.Close()
 	// Registered with NO listener and NO discovered datasource — exactly the pruned-mid-session state.
-	tracked := d.trackConn("acme-mysql", server)
+	tracked := d.trackConn(dsKey{"default", "acme-mysql"}, server)
 	defer tracked.Close()
 
 	s := d.Status()
@@ -604,8 +630,8 @@ func TestLogoutDuringDiscoveryLeavesNoListener(t *testing.T) {
 
 	d := New("test", providers.Builtins())
 	if err := state.Update(func(c *state.Config) error {
-		c.ControlPlane = gate.URL
-		c.Principal, c.Token = "you@example.com", "pmk_tok"
+		srvOf(c).ControlPlane = gate.URL
+		srvOf(c).Principal, srvOf(c).Token = "you@example.com", "pmk_tok"
 		return nil
 	}); err != nil {
 		t.Fatalf("seed: %v", err)
@@ -614,13 +640,13 @@ func TestLogoutDuringDiscoveryLeavesNoListener(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	d.cfg = *cfg
+	d.cfg = cfg.Clone()
 
 	done := make(chan struct{})
 	go func() { defer close(done); d.openListeners(context.Background()) }()
 
 	<-discovering
-	if err := d.Logout(); err != nil {
+	if err := d.Logout(control.LogoutRequest{}); err != nil {
 		t.Fatalf("Logout: %v", err)
 	}
 	close(release)
@@ -649,12 +675,15 @@ func TestLogoutDuringDiscoveryLeavesNoListener(t *testing.T) {
 func TestLogoutClosesEstablishedSessions(t *testing.T) {
 	isolate(t)
 	d := New("test", providers.Builtins())
+	if _, err := d.SetServer(control.SetServerRequest{ControlPlane: "http://cp"}); err != nil {
+		t.Fatal(err)
+	}
 
 	// A registered connection stands in for an established session (the broker registers before piping).
 	client, server := net.Pipe()
 	defer client.Close()
 	defer server.Close()
-	tracked := d.trackConn("acme-mysql", server)
+	tracked := d.trackConn(dsKey{"default", "acme-mysql"}, server)
 	defer tracked.Close()
 
 	// The tracked session is visible in the count even with no listener for it, which is what stop/quit read
@@ -663,7 +692,7 @@ func TestLogoutClosesEstablishedSessions(t *testing.T) {
 	if got := before.TotalLiveConns(); got != 1 {
 		t.Fatalf("TotalLiveConns() = %d before logout, want 1 (a tracked session must never be invisible)", got)
 	}
-	if err := d.Logout(); err != nil {
+	if err := d.Logout(control.LogoutRequest{}); err != nil {
 		t.Fatalf("Logout: %v", err)
 	}
 
@@ -692,7 +721,7 @@ func TestRevocationClosesEstablishedSessions(t *testing.T) {
 	client, server := net.Pipe()
 	defer client.Close()
 	defer server.Close()
-	tracked := d.trackConn("acme-mysql", server)
+	tracked := d.trackConn(dsKey{"default", "acme-mysql"}, server)
 	defer tracked.Close()
 
 	cp.datasources = nil // revoke
@@ -723,10 +752,10 @@ func TestRenewalDoesNotResurrectALoggedOutSession(t *testing.T) {
 	defer srv.Close()
 
 	if err := state.Update(func(c *state.Config) error {
-		c.ControlPlane = srv.URL
-		c.Principal, c.Token = "you@example.com", "tok-old"
-		c.RenewalToken = "pmr_old"
-		c.ExpiresAt = time.Now().Add(1 * time.Minute).Format(time.RFC3339)
+		srvOf(c).ControlPlane = srv.URL
+		srvOf(c).Principal, srvOf(c).Token = "you@example.com", "tok-old"
+		srvOf(c).RenewalToken = "pmr_old"
+		srvOf(c).ExpiresAt = time.Now().Add(1 * time.Minute).Format(time.RFC3339)
 		return nil
 	}); err != nil {
 		t.Fatalf("seed: %v", err)
@@ -735,27 +764,27 @@ func TestRenewalDoesNotResurrectALoggedOutSession(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	d.cfg = *cfg
+	d.cfg = cfg.Clone()
 
 	done := make(chan struct{})
 	go func() { defer close(done); d.maybeRenew(context.Background()) }()
 
 	<-requestArrived
-	if err := d.Logout(); err != nil {
+	if err := d.Logout(control.LogoutRequest{}); err != nil {
 		t.Fatalf("Logout: %v", err)
 	}
 	close(logoutDone)
 	<-done
 
 	if s := d.Status(); s.LoggedIn {
-		t.Errorf("a renewal resurrected a logged-out session: principal=%q loggedIn=%v", s.Principal, s.LoggedIn)
+		t.Errorf("a renewal resurrected a logged-out session: principal=%q loggedIn=%v", s.Server("default").Principal, s.LoggedIn)
 	}
 	onDisk, err := state.Load()
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if onDisk.Token != "" {
-		t.Errorf("logged-out config carries token %q; a stale renewal wrote it back", onDisk.Token)
+	if srvOf(onDisk).Token != "" {
+		t.Errorf("logged-out config carries token %q; a stale renewal wrote it back", srvOf(onDisk).Token)
 	}
 }
 
@@ -790,7 +819,7 @@ func TestRenewLeadIsNeverNarrowerThanTheSampleInterval(t *testing.T) {
 	for _, ttl := range []time.Duration{60 * time.Second, 2 * time.Minute, 10 * time.Minute, 12 * time.Hour} {
 		issued := time.Now()
 		expiry := issued.Add(ttl)
-		cfg := state.Config{IssuedAt: issued.Format(time.RFC3339), ExpiresAt: expiry.Format(time.RFC3339)}
+		cfg := state.Server{IssuedAt: issued.Format(time.RFC3339), ExpiresAt: expiry.Format(time.RFC3339)}
 		lead := renewLead(cfg, expiry)
 		if lead < floor {
 			t.Errorf("ttl %s: lead %s is narrower than %s, so the loop can skip past expiry", ttl, lead, floor)
@@ -801,7 +830,7 @@ func TestRenewLeadIsNeverNarrowerThanTheSampleInterval(t *testing.T) {
 	}
 	// A config predating IssuedAt falls back to the fixed cap rather than computing a nonsense lifetime.
 	expiry := time.Now().Add(12 * time.Hour)
-	if lead := renewLead(state.Config{}, expiry); lead != maxRenewLeadTime {
+	if lead := renewLead(state.Server{}, expiry); lead != maxRenewLeadTime {
 		t.Errorf("legacy config (no IssuedAt) lead = %s, want the %s fallback", lead, maxRenewLeadTime)
 	}
 }
@@ -812,7 +841,7 @@ func TestRenewLeadIsNeverNarrowerThanTheSampleInterval(t *testing.T) {
 func TestStatusReportsThePersistedLocalPassword(t *testing.T) {
 	isolate(t)
 	if err := state.Update(func(c *state.Config) error {
-		c.ControlPlane, c.Principal, c.Token = "http://cp", "you@example.com", "pmk_tok"
+		srvOf(c).ControlPlane, srvOf(c).Principal, srvOf(c).Token = "http://cp", "you@example.com", "pmk_tok"
 		c.LocalPassword = "pmlocal_fromDisk"
 		return nil
 	}); err != nil {
@@ -823,7 +852,7 @@ func TestStatusReportsThePersistedLocalPassword(t *testing.T) {
 		t.Fatalf("Load: %v", err)
 	}
 	d := New("test", providers.Builtins())
-	d.cfg = *cfg // as Run does, without calling ensureLocalPassword
+	d.cfg = cfg.Clone() // as Run does, without calling ensureLocalPassword
 
 	if got := d.Status().LocalPassword; got != "pmlocal_fromDisk" {
 		t.Errorf("Status.LocalPassword = %q, want the persisted %q", got, "pmlocal_fromDisk")
@@ -871,15 +900,15 @@ func TestSnapshotDoesNotAliasThePortsMap(t *testing.T) {
 	isolate(t)
 	d := New("test", providers.Builtins())
 	d.mu.Lock()
-	d.cfg.Ports = map[string]int{"acme-mysql": 6100}
+	srvOf(&d.cfg).Ports = map[string]int{"acme-mysql": 6100}
 	d.mu.Unlock()
 
 	snap := d.snapshot()
-	snap.Ports["acme-mysql"] = 9999
-	snap.Ports["injected"] = 1234
+	srvOf(&snap).Ports["acme-mysql"] = 9999
+	srvOf(&snap).Ports["injected"] = 1234
 
 	d.mu.Lock()
-	live := d.cfg.Ports
+	live := srvOf(&d.cfg).Ports
 	d.mu.Unlock()
 	if live["acme-mysql"] != 6100 {
 		t.Errorf("mutating a snapshot changed the daemon's port map: %d, want 6100 (the map is aliased)", live["acme-mysql"])
@@ -888,3 +917,16 @@ func TestSnapshotDoesNotAliasThePortsMap(t *testing.T) {
 		t.Error("a key added to a snapshot appeared in the daemon's map (the map is aliased)")
 	}
 }
+
+// srvOf returns the default server, creating it if absent.
+func srvOf(c *state.Config) *state.Server {
+	if c.Servers == nil {
+		c.Servers = map[string]*state.Server{}
+	}
+	if c.Servers[state.DefaultServer] == nil {
+		c.Servers[state.DefaultServer] = &state.Server{Ports: map[string]int{}}
+	}
+	return c.Servers[state.DefaultServer]
+}
+
+func ptr[T any](v T) *T { return &v }

@@ -120,7 +120,7 @@ func (logoutCmd) Run() error {
 		fmt.Println("the daemon is not running — nothing to log out of")
 		return nil
 	}
-	if err := client.Logout(ctx); err != nil {
+	if err := client.Logout(ctx, control.LogoutRequest{}); err != nil {
 		return err
 	}
 	fmt.Println("logged out — the brokers are closed and the daemon is idle")

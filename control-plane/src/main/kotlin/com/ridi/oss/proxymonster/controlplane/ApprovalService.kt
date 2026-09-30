@@ -4,9 +4,7 @@ import com.ridi.oss.proxymonster.controlplane.authz.Authz
 import com.ridi.oss.proxymonster.controlplane.authz.AuthzAction
 import com.ridi.oss.proxymonster.controlplane.authz.AuthzContext
 import com.ridi.oss.proxymonster.controlplane.authz.AuthzDecision
-import com.ridi.oss.proxymonster.controlplane.authz.authorizeDatasourceAction
 import com.ridi.oss.proxymonster.controlplane.authz.authorizeWithContext
-import com.ridi.oss.proxymonster.controlplane.authz.resolveContextTags
 import com.ridi.oss.proxymonster.controlplane.management.AuditActor
 import com.ridi.oss.proxymonster.controlplane.management.ManagementAuditRecorder
 import com.ridi.oss.proxymonster.controlplane.notify.NotificationEvent
@@ -54,15 +52,8 @@ class ApprovalService(
      * Whether [principal] may open a query-approval request against [ds] (task.request on the Datasource).
      * The shipped global permit keeps this open by default; an operator can forbid it per datasource.
      */
-    fun mayRequest(principal: String, requesterIp: String?, ds: Datasource): Boolean {
-        val roles = roleResolver.resolve(principal)
-        val raw = AuthzContext(requesterIp = requesterIp)
-        val tags = authz.resolveContextTags(principal, roles, ds.name, raw, ds.tags)
-        val decision = authz.authorizeDatasourceAction(
-            principal, roles, AuthzAction.TASK_REQUEST, ds.name, raw.copy(tags = tags), ds.tags,
-        )
-        return decision !is AuthzDecision.Deny
-    }
+    fun mayRequest(principal: String, requesterIp: String?, ds: Datasource): Boolean =
+        mayRequestOn(authz, roleResolver, principal, requesterIp, ds)
 
     /**
      * The single authorization for a task action on a query-approval request, decided by Cedar against the

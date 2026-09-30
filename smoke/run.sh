@@ -5,7 +5,7 @@
 #   smoke/run.sh                 full run, tears everything down at the end
 #   smoke/run.sh --keep          leave the stack up for debugging (prints how to stop it)
 #   smoke/run.sh --no-build      reuse the binaries from the last run
-#   smoke/run.sh --only wire     run one leg (editor|wire|pmon|workflow|audit|rate)
+#   smoke/run.sh --only wire     run one leg (editor|browser|wire|pmon|workflow|audit|rate)
 #   smoke/run.sh --engine mysql  run one engine (mysql|postgres)
 set -euo pipefail
 
@@ -20,6 +20,7 @@ CP_GRPC="${SMOKE_CP_GRPC_PORT:-47001}"
 PROXY_MYSQL="${SMOKE_PROXY_MYSQL_PORT:-47002}"
 PROXY_PG="${SMOKE_PROXY_PG_PORT:-47003}"
 PMON_BASE="${SMOKE_PMON_PORT_BASE:-47020}"
+WEB="${SMOKE_WEB_PORT:-47004}"
 
 KEEP=0; BUILD=1; ONLY=""; ENGINE=""
 while [ $# -gt 0 ]; do
@@ -102,7 +103,19 @@ for _ in $(seq 1 60); do
 done
 [ "$n" = 2 ] || { echo "smoke: a proxy did not register; see $SMOKE_DIR/logs/proxy-*.log" >&2; exit 1; }
 
-args=(--cp "http://127.0.0.1:$CP_HTTP" --cp-db "postgresql://proxymonster:proxymonster@127.0.0.1:$SMOKE_CP_DB_PORT/proxymonster" --pmon "$SMOKE_DIR/bin/pmon" --pmon-dir "$SMOKE_DIR/pmon" --pmon-port-base "$PMON_BASE" --logs "$SMOKE_DIR/logs")
+echo "smoke: starting the console on :$WEB"
+(
+  cd "$ROOT/web" && exec env PM_PROXY_TARGET="http://127.0.0.1:$CP_HTTP" PM_WEB_DEV_ORIGINS=127.0.0.1,localhost \
+    pnpm exec next dev -p "$WEB" -H 127.0.0.1 > "$SMOKE_DIR/logs/web.log" 2>&1
+) &
+pids+=($!)
+for _ in $(seq 1 90); do
+  curl -sf -m 3 -o /dev/null "http://127.0.0.1:$WEB/login" 2>/dev/null && break
+  sleep 2
+done
+curl -sf -m 3 -o /dev/null "http://127.0.0.1:$WEB/login" || { echo "smoke: the console did not come up; see $SMOKE_DIR/logs/web.log" >&2; exit 1; }
+
+args=(--cp "http://127.0.0.1:$CP_HTTP" --web "http://127.0.0.1:$WEB" --root "$ROOT" --cp-db "postgresql://proxymonster:proxymonster@127.0.0.1:$SMOKE_CP_DB_PORT/proxymonster" --pmon "$SMOKE_DIR/bin/pmon" --pmon-dir "$SMOKE_DIR/pmon" --pmon-port-base "$PMON_BASE" --logs "$SMOKE_DIR/logs")
 args+=(--datasource "mysql:smoke-mysql:$PROXY_MYSQL" --datasource "postgres:smoke-postgres:$PROXY_PG")
 [ -n "$ONLY" ] && args+=(--only "$ONLY")
 [ -n "$ENGINE" ] && args+=(--engine "$ENGINE")

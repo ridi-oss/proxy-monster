@@ -115,9 +115,10 @@ class Stack:
             expect(name in by_name, f"datasource {name} is not registered (proxies: {sorted(by_name)})")
             d = by_name[name]
             expect("system:production" in d["tags"], f"{name} is not tagged system:production: {d['tags']}")
-            schema = "acme" if engine == "mysql" else "public"
+            catalog, schema = ("def", "acme") if engine == "mysql" else ("acme", "public")
             a.call("PUT", f"/api/datasources/{d['id']}/classification",
-                   {"schema": schema, "table": "users", "column": "email", "tags": ["pii"], "maskFnId": fixed["id"]})
+                   {"catalog": catalog, "schema": schema, "table": "users", "column": "email",
+                    "tags": ["pii"], "maskFnId": fixed["id"]})
             self.datasources[engine] = {"id": d["id"], "name": name, "port": int(port), "engine": engine}
 
     # ---- wire clients -------------------------------------------------------------------------------

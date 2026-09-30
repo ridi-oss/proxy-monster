@@ -320,6 +320,9 @@ func (d *Daemon) Login(ctx context.Context, req control.LoginRequest, onEvent fu
 	if cp == "" {
 		cp = d.snapshot().ControlPlane
 	}
+	if cp == "" {
+		return errors.New("no control-plane URL — log in with `pmon login --url <control-plane-url>`")
+	}
 
 	res, err := login.Run(ctx, login.Options{
 		ControlPlane: cp,
@@ -336,10 +339,6 @@ func (d *Daemon) Login(ctx context.Context, req control.LoginRequest, onEvent fu
 	if err != nil {
 		return err
 	}
-	if cp == "" {
-		cp = login.DefaultControlPlane
-	}
-
 	if err := state.Update(func(c *state.Config) error {
 		c.ControlPlane = cp
 		c.Principal = res.Principal

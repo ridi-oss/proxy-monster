@@ -170,5 +170,47 @@
     "closeDescription": "데이터베이스 연결을 닫습니다. 열린 트랜잭션은 데이터베이스가 롤백하고, 세션 변수와 임시 테이블은 사라집니다. 실행 중인 쿼리는 취소됩니다. 다음에 실행하면 새 세션을 엽니다.",
     "keep": "유지",
     "closed": "세션을 종료했습니다. 열린 트랜잭션은 롤백되었습니다."
+  },
+  "runRules": {
+    "selectOne": "에디터에 문장이 여러 개 있습니다. 실행할 문장 하나를 선택한 뒤 실행을 누르세요.",
+    "useRunAll": "선택 영역에 문장이 여러 개 있습니다. 실행은 한 문장만 실행합니다. 스크립트는 Run All로 실행하세요.",
+    "selectAll": "Run All은 스크립트 전체를 실행합니다. 전체를 선택(⌘/Ctrl + A)한 뒤 Run All을 누르세요."
+  },
+  "runAll": {
+    "button": "Run All",
+    "shortcut": "스크립트 전체를 한 단위로 실행 (Shift + ⌘/Ctrl + Enter)",
+    "timeout": "스크립트 제한 시간",
+    "timeoutOption": "{seconds, select, 30 {30초} 60 {1분} 300 {5분} 600 {10분} other {{seconds}초}}",
+    "tabPending": "Run All…",
+    "tabTitle": "Run All · 문장 {count}개",
+    "groupLabel": "스크립트 · {count}",
+    "expandGroup": "스크립트 탭 펼치기",
+    "collapseGroup": "스크립트 탭 접기",
+    "closeGroup": "스크립트 탭 모두 닫기",
+    "autocommitTitle": "트랜잭션 없이 실행할까요?",
+    "autocommitDescription": "이 스크립트는 START TRANSACTION이나 BEGIN으로 시작하지 않으므로, 각 문장이 실행될 때마다 커밋됩니다. 뒤의 문장이 실패해도 앞에서 커밋된 문장은 되돌릴 수 없습니다.",
+    "autocommitBack": "돌아가기",
+    "autocommitConfirm": "그대로 실행",
+    "outcome": {
+      "running": "전용 연결에서 실행 중입니다. 문장이 실패·거부·취소되거나 제한 시간을 넘기면 연결을 닫고, 데이터베이스가 열린 트랜잭션을 롤백합니다.",
+      "committed": "모든 문장을 실행했습니다. 연결은 닫혔습니다.",
+      "endedOpen": "모든 문장을 실행했지만, 스크립트가 트랜잭션을 연 채로 끝났습니다. 연결이 닫혀서 데이터베이스가 트랜잭션을 롤백했습니다.",
+      "stopped": "스크립트가 중단되었습니다. 연결이 닫혀서 데이터베이스가 열린 트랜잭션을 롤백했습니다. 그 전에 커밋된 문장은 그대로 남습니다."
+    },
+    "columns": {
+      "statement": "문장",
+      "status": "상태",
+      "rows": "행"
+    },
+    "rowsAffected": "{count}행 영향",
+    "rowsReturned": "{count}행",
+    "status": {
+      "PENDING": "대기",
+      "RUNNING": "실행 중",
+      "DONE": "완료",
+      "FAILED": "실패",
+      "CANCELLED": "취소됨",
+      "SKIPPED": "실행 안 함"
+    }
   }
 }

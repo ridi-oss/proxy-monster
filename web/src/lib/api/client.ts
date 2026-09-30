@@ -29,6 +29,7 @@ import type {
   DatasourceInput,
   DiscoverRolesRequest,
   DiscoverRolesResponse,
+  EditorScriptRequest,
   EditorSubmitResponse,
   EditorTaskStatus,
   ExecuteApprovalResponse,
@@ -283,6 +284,14 @@ export function openEditorSession(datasourceId: number): Promise<{ sessionId: st
  */
 export function submitEditorQuery(sessionId: string, input: QueryRequest): Promise<EditorSubmitResponse> {
   return request<EditorSubmitResponse>(`/api/editor/sessions/${encodeURIComponent(sessionId)}/query`, {
+    method: 'POST',
+    body: JSON.stringify(input),
+  })
+}
+
+/** POST /api/editor/scripts — Run All: run a whole script on its own connection, closed when it ends. */
+export function submitEditorScript(input: EditorScriptRequest): Promise<EditorSubmitResponse> {
+  return request<EditorSubmitResponse>(`/api/editor/scripts`, {
     method: 'POST',
     body: JSON.stringify(input),
   })

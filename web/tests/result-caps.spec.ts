@@ -56,7 +56,7 @@ async function runInEditor(page: Page, sql: string) {
   await page.goto('/query')
   await page.locator('.cm-content').click()
   await page.keyboard.insertText(sql)
-  await page.getByRole('button', { name: 'Run' }).click()
+  await page.getByRole('button', { name: 'Run', exact: true }).click()
 }
 
 const RATE_RESET_REQUEST = {

@@ -170,5 +170,47 @@
     "closeDescription": "Its database connection closes. The database rolls back any open transaction and drops session variables and temporary tables. A running query is canceled. The next run opens a new session.",
     "keep": "Keep session",
     "closed": "Session ended. Any open transaction was rolled back."
+  },
+  "runRules": {
+    "selectOne": "This editor holds several statements. Select the one statement to run, then press Run.",
+    "useRunAll": "The selection holds several statements. Run runs one; use Run All to run a script.",
+    "selectAll": "Run All runs the whole script. Select all of it (⌘/Ctrl + A), then press Run All."
+  },
+  "runAll": {
+    "button": "Run All",
+    "shortcut": "Run the whole script as one unit (Shift + ⌘/Ctrl + Enter)",
+    "timeout": "Script timeout",
+    "timeoutOption": "{seconds, select, 30 {30 s} 60 {1 min} 300 {5 min} 600 {10 min} other {{seconds} s}}",
+    "tabPending": "Run All…",
+    "tabTitle": "Run All · {count, plural, one {# statement} other {# statements}}",
+    "groupLabel": "Script · {count}",
+    "expandGroup": "Show the script's tabs",
+    "collapseGroup": "Hide the script's tabs",
+    "closeGroup": "Close the script's tabs",
+    "autocommitTitle": "Run without a transaction?",
+    "autocommitDescription": "This script does not start with START TRANSACTION or BEGIN, so each statement commits as it runs. If a later statement fails, the earlier ones stay committed.",
+    "autocommitBack": "Go back",
+    "autocommitConfirm": "Run anyway",
+    "outcome": {
+      "running": "Running on a dedicated connection. If a statement fails, is denied, is canceled, or runs out of time, the connection closes and the database rolls back any open transaction.",
+      "committed": "Every statement ran. The connection is closed.",
+      "endedOpen": "Every statement ran, but the script left its transaction open. The connection closed, so the database rolled it back.",
+      "stopped": "The script stopped. The connection closed, so the database rolled back any open transaction. Statements committed before that stay committed."
+    },
+    "columns": {
+      "statement": "Statement",
+      "status": "Status",
+      "rows": "Rows"
+    },
+    "rowsAffected": "{count, plural, one {# affected} other {# affected}}",
+    "rowsReturned": "{count, plural, one {# row} other {# rows}}",
+    "status": {
+      "PENDING": "Waiting",
+      "RUNNING": "Running",
+      "DONE": "Done",
+      "FAILED": "Failed",
+      "CANCELLED": "Canceled",
+      "SKIPPED": "Not run"
+    }
   }
 }

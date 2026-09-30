@@ -14,10 +14,11 @@ import {
   getEditorTask,
   openEditorSession,
   submitEditorQuery,
+  submitEditorScript,
 } from '@/lib/api/client'
 import { subscribeTaskEvents, waitForTaskEvent } from '@/lib/api/task-events'
 import { translateApiError } from '@/lib/i18n/errors'
-import type { Decision, QueryResponse } from '@/lib/api/types'
+import type { Decision, EditorTaskStatus, QueryResponse } from '@/lib/api/types'
 import type { TreeTable } from './catalog-schema'
 
 export interface QueryLogEntry {
@@ -52,6 +53,7 @@ interface BaseTab {
   taskId: number | null
   // Which statement of [taskId] this tab shows.
   ordinal: number
+  groupId: number | null
 }
 export interface QueryTab extends BaseTab {
   kind: 'query'
@@ -62,7 +64,12 @@ export interface TableTab extends BaseTab {
   datasourceId: number
   table: TreeTable
 }
-export type ResultTab = QueryTab | TableTab
+export interface SummaryTab extends BaseTab {
+  kind: 'summary'
+  statements: string[]
+  batch: EditorTaskStatus | null
+}
+export type ResultTab = QueryTab | TableTab | SummaryTab
 
 const TABLE_PREVIEW_ROWS = 100
 const EMPTY: ResultState = {
@@ -92,7 +99,12 @@ export interface ResultTabsApi {
   active: ResultTab | null
   logs: QueryLogEntry[]
   run: (sql: string) => void
+  runAll: (sql: string, timeoutSeconds: number) => void
   openTable: (table: TreeTable) => void
+  collapsedGroups: ReadonlySet<number>
+  toggleGroup: (groupId: number) => void
+  closeGroup: (groupId: number) => void
+  openStatement: (groupId: number, ordinal: number) => void
   setActive: (id: string) => void
   pin: (id: string) => void
   cancel: (id: string) => void
@@ -222,22 +234,22 @@ export function useResultTabs(datasourceId: number | null, maxRows: number): Res
     (id: string, sql: string, rows: number, attach?: { taskId: number; ordinal: number }) => void
   >(() => {})
 
-  /** Open a tab per remaining statement (1..N-1), each on the same task at its own ordinal. */
   const openSiblingTabs = useCallback(
-    (afterTabId: string, taskId: number, statements: string[], rows: number) => {
+    (afterTabId: string, taskId: number, statements: string[], rows: number, firstOrdinal = 1, groupId: number | null = null) => {
       const siblings = statements.map((sql, index) => ({
         tab: {
           id: newId(),
           kind: 'query' as const,
-          key: `${norm(sql)}#${taskId}:${index + 1}`,
-          title: label(sql),
+          key: `${norm(sql)}#${taskId}:${index + firstOrdinal}`,
+          title: groupId == null ? label(sql) : `${index + firstOrdinal + 1}. ${label(sql)}`,
           sql,
           pinned: false,
           taskId,
-          ordinal: index + 1,
+          ordinal: index + firstOrdinal,
+          groupId,
           res: { ...EMPTY, loading: true },
         },
-        ordinal: index + 1,
+        ordinal: index + firstOrdinal,
       }))
       setTabs((ts) => {
         const at = ts.findIndex((t) => t.id === afterTabId)
@@ -269,7 +281,7 @@ export function useResultTabs(datasourceId: number | null, maxRows: number): Res
       // Submit the run; supersede the tab's previous task first (best-effort) so a re-run REPLACES it.
       const submitOnce = async (sid: string) => {
         releaseTask(tabsRef.current.find((t) => t.id === id)?.taskId ?? null, [id])
-        return submitEditorQuery(sid, { sql: statement, maxRows: rows })
+        return submitEditorQuery(sid, { sql: sql.trim(), maxRows: rows })
       }
 
       const run = async (): Promise<QueryResponse | null> => {
@@ -350,7 +362,7 @@ export function useResultTabs(datasourceId: number | null, maxRows: number): Res
               effectiveRoles: [],
               columns: view.columns,
               rows: view.rows,
-              rowsAffected: null,
+              rowsAffected: view.columns.length === 0 ? (child.rowCount ?? null) : null,
               truncatedByCap: view.truncatedByCap || view.truncatedAt != null,
               capRows: view.truncatedAt ?? null,
               latencyMs: Math.max(0, Math.round(performance.now() - startedAt)),
@@ -490,13 +502,119 @@ export function useResultTabs(datasourceId: number | null, maxRows: number): Res
         return
       }
       const id = newId()
-      const tab: QueryTab = { id, kind: 'query', key, title: label(sql), sql, pinned: false, taskId: null, ordinal: 0, res: { ...EMPTY, loading: true } }
+      const tab: QueryTab = { id, kind: 'query', key, title: label(sql), sql, pinned: false, taskId: null, ordinal: 0, groupId: null, res: { ...EMPTY, loading: true } }
       setTabs((ts) => [...ts, tab])
       setActiveId(id)
       fetchInto(id, sql, maxRows)
     },
     [datasourceId, fetchInto, maxRows],
   )
+
+  const runAll = useCallback(
+    (sql: string, timeoutSeconds: number) => {
+      if (datasourceId == null || !sql.trim()) return
+      const id = newId()
+      const summary: SummaryTab = {
+        id,
+        kind: 'summary',
+        key: `script:${id}`,
+        title: t('runAll.tabPending'),
+        statements: [],
+        batch: null,
+        pinned: false,
+        taskId: null,
+        ordinal: 0,
+        groupId: null,
+        res: { ...EMPTY, loading: true },
+      }
+      setTabs((ts) => [...ts, summary])
+      setActiveId(id)
+      const open = () => tabsRef.current.some((tab) => tab.id === id)
+      const settle = (batch: EditorTaskStatus) =>
+        setTabs((ts) => ts.map((tab) => (tab.id === id && tab.kind === 'summary' ? { ...tab, batch } : tab)))
+
+      void (async () => {
+        const posted = await submitEditorScript({ datasourceId, sql, maxRows, timeoutSeconds })
+        if (!open()) {
+          void deleteEditorTask(posted.taskId).catch(() => {})
+          return
+        }
+        const statements = posted.statements ?? []
+        setTabs((ts) =>
+          ts.map((tab) =>
+            tab.id === id && tab.kind === 'summary'
+              ? {
+                  ...tab,
+                  statements,
+                  taskId: posted.taskId,
+                  groupId: posted.taskId,
+                  title: t('runAll.tabTitle', { count: statements.length }),
+                }
+              : tab,
+          ),
+        )
+        openSiblingTabs(id, posted.taskId, statements, maxRows, 0, posted.taskId)
+        for (;;) {
+          const batch = await getEditorTask(posted.taskId)
+          if (!open()) return
+          settle(batch)
+          if (batch.status !== 'APPROVED' && batch.status !== 'EXECUTING') break
+          await waitForTaskEvent(posted.taskId, POLL_INTERVAL_MS)
+        }
+        patch(id, { loading: false, canceling: false })
+      })().catch((e) => {
+        if (!open()) return
+        patch(id, {
+          loading: false,
+          canceling: false,
+          error: e instanceof Error ? e.message : translateApiError('common.fallback'),
+        })
+      })
+    },
+    [datasourceId, maxRows, openSiblingTabs, patch, t],
+  )
+
+  const [collapsedGroups, setCollapsedGroups] = useState<ReadonlySet<number>>(new Set())
+
+  const toggleGroup = useCallback((groupId: number) => {
+    setCollapsedGroups((current) => {
+      const next = new Set(current)
+      if (!next.delete(groupId)) next.add(groupId)
+      return next
+    })
+  }, [])
+
+  const openStatement = useCallback((groupId: number, ordinal: number) => {
+    const tab = tabsRef.current.find((t) => t.groupId === groupId && t.kind === 'query' && t.ordinal === ordinal)
+    if (!tab) return
+    setCollapsedGroups((current) => {
+      if (!current.has(groupId)) return current
+      const next = new Set(current)
+      next.delete(groupId)
+      return next
+    })
+    setActiveId(tab.id)
+  }, [])
+
+  const closeGroup = useCallback((groupId: number) => {
+    void deleteEditorTask(groupId).catch(() => {})
+    setTabs((ts) => {
+      const idx = ts.findIndex((t) => t.groupId === groupId)
+      const next = ts.filter((t) => t.groupId !== groupId)
+      setActiveId((cur) => {
+        if (cur != null && next.some((t) => t.id === cur)) return cur
+        if (next.length === 0) return null
+        return next[Math.min(Math.max(idx, 0), next.length - 1)].id
+      })
+      return next
+    })
+    setCollapsedGroups((current) => {
+      if (!current.has(groupId)) return current
+      const next = new Set(current)
+      next.delete(groupId)
+      return next
+    })
+  }, [])
 
   const openTable = useCallback(
     (table: TreeTable) => {
@@ -518,6 +636,7 @@ export function useResultTabs(datasourceId: number | null, maxRows: number): Res
         pinned: false,
         taskId: null,
         ordinal: 0,
+        groupId: null,
         res: { ...EMPTY, loading: table.insert != null },
       }
       setTabs((ts) => [...ts, tab])
@@ -573,7 +692,12 @@ export function useResultTabs(datasourceId: number | null, maxRows: number): Res
     active,
     logs,
     run,
+    runAll,
     openTable,
+    collapsedGroups,
+    toggleGroup,
+    closeGroup,
+    openStatement,
     setActive: setActiveId,
     pin,
     cancel,

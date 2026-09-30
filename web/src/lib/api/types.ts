@@ -499,6 +499,13 @@ export interface QueryRequest {
   maxRows?: number
 }
 
+export interface EditorScriptRequest {
+  datasourceId: number
+  sql: string
+  maxRows?: number
+  timeoutSeconds?: number
+}
+
 /** One recalled query from the principal's editor history (GET /api/query-history). */
 export interface QueryHistoryEntry {
   sql: string

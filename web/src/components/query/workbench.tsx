@@ -8,7 +8,7 @@
 // the JIT request dialog.
 import { useMemo, useRef, useState } from 'react'
 import { useTranslations } from 'next-intl'
-import { Loader2, Play, Unplug } from 'lucide-react'
+import { ListChecks, Loader2, Play, TriangleAlert, Unplug } from 'lucide-react'
 import { useCatalog, useDatasources } from '@/lib/hooks'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
@@ -37,8 +37,11 @@ import { QueryHistoryMenu } from './query-history-menu'
 import { RequestAccessDialog } from './request-access-dialog'
 import { RateResetRequestDialog } from './rate-reset-request-dialog'
 import { CloseSessionDialog } from './close-session-dialog'
+import { RunAllConfirmDialog } from './run-all-confirm-dialog'
+import { opensTransaction } from './statement'
 
 const ROW_LIMITS = [100, 200, 500, 1000, 5000]
+const SCRIPT_TIMEOUTS = ['30', '60', '300', '600']
 
 // The proxy's shipped default row cap (docs/result-caps.md): a page size above it can only produce a capped run.
 const DEFAULT_CAP_ROWS = 5000
@@ -53,6 +56,9 @@ export function Workbench() {
   const [rateResetOpen, setRateResetOpen] = useState(false)
   const [rateDenyReason, setRateDenyReason] = useState<string | null>(null)
   const [closeSessionOpen, setCloseSessionOpen] = useState(false)
+  const [scriptTimeout, setScriptTimeout] = useState('300')
+  const [notice, setNotice] = useState<'selectOne' | 'useRunAll' | 'selectAll' | null>(null)
+  const [pendingScript, setPendingScript] = useState<string | null>(null)
   const editorRef = useRef<SqlEditorHandle>(null)
 
   const { data: catalog, isLoading: catalogLoading, error: catalogError } = useCatalog(datasourceId)
@@ -68,10 +74,34 @@ export function Workbench() {
   const running = resultTabs.active?.res.loading ?? false
   const canRun = datasourceId != null && sql.trim().length > 0
 
+  const handleSqlChange = (value: string) => {
+    setNotice(null)
+    setSql(value)
+  }
+
   const handleRun = () => {
     if (datasourceId == null) return
-    const query = editorRef.current?.currentQuery()?.trim()
-    if (query) resultTabs.run(query)
+    const target = editorRef.current?.runTarget()
+    if (!target || target.kind === 'empty') return
+    if (target.kind !== 'run') {
+      setNotice(target.kind)
+      return
+    }
+    setNotice(null)
+    resultTabs.run(target.sql)
+  }
+
+  const handleRunAll = () => {
+    if (datasourceId == null) return
+    const target = editorRef.current?.runAllTarget()
+    if (!target || target.kind === 'empty') return
+    if (target.kind === 'selectAll') {
+      setNotice('selectAll')
+      return
+    }
+    setNotice(null)
+    if (opensTransaction(target.sql)) resultTabs.runAll(target.sql, Number(scriptTimeout))
+    else setPendingScript(target.sql)
   }
 
   const handleRequestAccess = (reason?: string | null) => {
@@ -137,7 +167,29 @@ export function Workbench() {
                       )}
                       {t('workbench.run')}
                     </Button>
-                    <QueryHistoryMenu onPick={setSql} />
+                    <Button
+                      size="sm"
+                      variant="secondary"
+                      onClick={handleRunAll}
+                      disabled={!canRun}
+                      title={t('runAll.shortcut')}
+                    >
+                      <ListChecks className="size-3.5" />
+                      {t('runAll.button')}
+                    </Button>
+                    <Select value={scriptTimeout} onValueChange={(v: string | null) => setScriptTimeout(v ?? '300')}>
+                      <SelectTrigger size="sm" className="w-24" aria-label={t('runAll.timeout')}>
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {SCRIPT_TIMEOUTS.map((seconds) => (
+                          <SelectItem key={seconds} value={seconds}>
+                            {t('runAll.timeoutOption', { seconds: Number(seconds) })}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                    <QueryHistoryMenu onPick={handleSqlChange} />
                     <Button
                       size="sm"
                       variant="outline"
@@ -179,15 +231,25 @@ export function Workbench() {
                     </div>
                   </div>
                 </div>
+                {notice && (
+                  <div
+                    role="status"
+                    className="flex items-center gap-2 border-b border-amber-500/30 bg-amber-500/10 px-3 py-1.5 text-xs text-amber-700 dark:text-amber-400"
+                  >
+                    <TriangleAlert className="size-3.5 shrink-0" />
+                    {t(`runRules.${notice}`)}
+                  </div>
+                )}
                 {/* Editor */}
                 <div className={cn('min-h-0 flex-1 overflow-hidden')}>
                   <SqlEditor
                     ref={editorRef}
                     value={sql}
-                    onChange={setSql}
+                    onChange={handleSqlChange}
                     schema={schemaMap}
                     engine={datasource?.engine}
                     onRun={handleRun}
+                    onRunAll={handleRunAll}
                     linkedQuery={resultTabs.active?.kind === 'query' ? resultTabs.active.sql : null}
                   />
                 </div>
@@ -203,6 +265,14 @@ export function Workbench() {
         </div>
       </div>
 
+      <RunAllConfirmDialog
+        open={pendingScript != null}
+        onOpenChange={(open) => !open && setPendingScript(null)}
+        onConfirm={() => {
+          if (pendingScript != null) resultTabs.runAll(pendingScript, Number(scriptTimeout))
+          setPendingScript(null)
+        }}
+      />
       <CloseSessionDialog
         open={closeSessionOpen}
         onOpenChange={setCloseSessionOpen}

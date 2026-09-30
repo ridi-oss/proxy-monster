@@ -1038,8 +1038,11 @@ fun Route.userGroupRoutes(
     get("/api/groups/{id}/members") {
         if (!call.requireAdmin(config, authz, AuthzAction.ADMIN_IDENTITY)) return@get
         val id = call.idParam() ?: return@get call.respond(HttpStatusCode.BadRequest, ApiError("common.bad_id"))
-        if (store.getGroup(id) == null) return@get call.respond(HttpStatusCode.NotFound, ApiError("common.not_found", mapOf("resource" to "group")))
-        call.respond(store.listMembers(id))
+        try {
+            call.respond(management.listGroupMembers(id))
+        } catch (e: ManagementException) {
+            call.respondManagementError(e)
+        }
     }
     post("/api/groups/{id}/members") {
         if (!call.requireAdmin(config, authz, AuthzAction.ADMIN_IDENTITY)) return@post
@@ -1066,8 +1069,11 @@ fun Route.userGroupRoutes(
     get("/api/groups/{id}/roles") {
         if (!call.requireAdmin(config, authz, AuthzAction.ADMIN_IDENTITY)) return@get
         val id = call.idParam() ?: return@get call.respond(HttpStatusCode.BadRequest, ApiError("common.bad_id"))
-        if (store.getGroup(id) == null) return@get call.respond(HttpStatusCode.NotFound, ApiError("common.not_found", mapOf("resource" to "group")))
-        call.respond(store.listGroupRoles(id))
+        try {
+            call.respond(management.listGroupRoles(id))
+        } catch (e: ManagementException) {
+            call.respondManagementError(e)
+        }
     }
     post("/api/groups/{id}/roles") {
         if (!call.requireAdmin(config, authz, AuthzAction.ADMIN_IDENTITY)) return@post

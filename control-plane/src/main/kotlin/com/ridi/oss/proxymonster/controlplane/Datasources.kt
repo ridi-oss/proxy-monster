@@ -794,7 +794,8 @@ internal suspend fun ApplicationCall.respondManagementError(exception: Managemen
         "common.not_found" -> HttpStatusCode.NotFound
         "datasource.table_introspection_failed" -> HttpStatusCode.BadGateway
         "group.system_immutable", "role.system_immutable", "policy.system_immutable",
-        "datasource.in_use_proxy_attached", "datasource.in_use_active_requests" -> HttpStatusCode.Conflict
+        "datasource.in_use_proxy_attached", "datasource.in_use_active_requests", "datasource.engine_immutable",
+        -> HttpStatusCode.Conflict
         else -> HttpStatusCode.BadRequest
     }
     respond(status, exception.error)
@@ -904,26 +905,20 @@ fun Route.datasourceRoutes(
     post("/api/datasources/{id}/refresh") {
         if (!call.requireAdmin(config, authz, AuthzAction.ADMIN_DATASOURCES)) return@post
         val id = call.idParam() ?: return@post call.respond(HttpStatusCode.BadRequest, ApiError("common.bad_id"))
-        val ds = store.get(id) ?: return@post call.respond(HttpStatusCode.NotFound, ApiError("common.not_found", mapOf("resource" to "datasource")))
-        call.respond(RefreshResult(eventsHub.requestRefresh(ds.name)))
+        try {
+            call.respond(management.refreshDatasource(id))
+        } catch (e: ManagementException) {
+            call.respondManagementError(e)
+        }
     }
     post("/api/datasources") {
         if (!call.requireAdmin(config, authz, AuthzAction.ADMIN_DATASOURCES)) return@post
         val input = call.receive<DatasourceInput>()
-        // Only `name` is required: this is optional pre-provisioning (the proxy's Register fills in the
-        // advisory host/port/db_name and is authoritative). No credential fields exist.
-        if (input.name.isBlank()) {
-            call.respond(HttpStatusCode.BadRequest, ApiError("common.field_required", mapOf("fields" to "name")))
-            return@post
+        try {
+            call.respond(HttpStatusCode.Created, management.createDatasource(input, call.auditActor(config)))
+        } catch (e: ManagementException) {
+            call.respondManagementError(e)
         }
-        // Canonicalize + validate the engine at admin-create: a non-canonical value (e.g. "Postgres", "psql")
-        // would be stored verbatim and then LOCKED by the engine-immutability guard, so the datasource can
-        // never be adopted by its proxy (which registers "postgres"/"mysql") — unusable until deletion. Only the
-        // two canonical engines are accepted, normalized to the canonical wire string (the proxy's Register uses
-        // the same set).
-        val engine = engineFromWireOrNull(input.engine)
-            ?: return@post call.respond(HttpStatusCode.BadRequest, ApiError("datasource.invalid_engine", mapOf("engine" to input.engine)))
-        call.respond(HttpStatusCode.Created, management.createDatasource(input.copy(engine = engine.wireName), call.auditActor(config)))
     }
     get("/api/datasources/{id}") {
         // Connect-gated, unlike the list: a single row carries advertiseAddr and advertiseCertChain, the
@@ -942,19 +937,12 @@ fun Route.datasourceRoutes(
         if (!call.requireAdmin(config, authz, AuthzAction.ADMIN_DATASOURCES)) return@put
         val id = call.idParam() ?: return@put call.respond(HttpStatusCode.BadRequest, ApiError("common.bad_id"))
         val input = call.receive<DatasourceInput>()
-        // Canonicalize + validate the engine exactly as create does — otherwise a PUT carrying "Postgres",
-        // "postgresql", or the DatasourceInput default "postgres" would be compared verbatim against the
-        // stored canonical engine and spuriously trip the immutability guard below.
-        val engine = engineFromWireOrNull(input.engine)
-            ?: return@put call.respond(HttpStatusCode.BadRequest, ApiError("datasource.invalid_engine", mapOf("engine" to input.engine)))
-        // Engine is immutable — a PUT that changes it is a fail-closed 409 (delete + re-create to change
-        // engine), mirroring the proxy Register path's FAILED_PRECONDITION.
-        val updated = try {
-            management.updateDatasource(id, input.copy(engine = engine.wireName), call.auditActor(config))
-        } catch (e: DatasourceEngineConflictException) {
-            return@put call.respond(HttpStatusCode.Conflict, ApiError("datasource.engine_immutable"))
+        try {
+            management.updateDatasource(id, input, call.auditActor(config))?.let { call.respond(it) }
+                ?: call.respond(HttpStatusCode.NotFound, ApiError("common.not_found", mapOf("resource" to "datasource")))
+        } catch (e: ManagementException) {
+            call.respondManagementError(e)
         }
-        updated?.let { call.respond(it) } ?: call.respond(HttpStatusCode.NotFound, ApiError("common.not_found", mapOf("resource" to "datasource")))
     }
     delete("/api/datasources/{id}") {
         if (!call.requireAdmin(config, authz, AuthzAction.ADMIN_DATASOURCES)) return@delete
@@ -969,8 +957,11 @@ fun Route.datasourceRoutes(
     post("/api/datasources/{id}/test") {
         if (!call.requireAdmin(config, authz, AuthzAction.ADMIN_DATASOURCES)) return@post
         val id = call.idParam() ?: return@post call.respond(HttpStatusCode.BadRequest, ApiError("common.bad_id"))
-        val ds = store.get(id) ?: return@post call.respond(HttpStatusCode.NotFound, ApiError("common.not_found", mapOf("resource" to "datasource")))
-        call.respond(store.test(ds, management.getDatasourceLiveness(ds.name).attached))
+        try {
+            call.respond(management.testDatasource(id))
+        } catch (e: ManagementException) {
+            call.respondManagementError(e)
+        }
     }
     get("/api/datasources/{id}/catalog") {
         // requireApiOrBearer, and the principal it RETURNS: a wire-token caller has no session, so reading

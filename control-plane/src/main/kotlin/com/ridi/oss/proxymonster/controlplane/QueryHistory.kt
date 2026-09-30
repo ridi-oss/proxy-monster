@@ -61,11 +61,12 @@ class QueryHistoryStore(private val dataSource: DataSource) {
     }
 }
 
+internal fun historyLimit(raw: Int?) = (raw ?: 50).coerceIn(1, 200)
+
 fun Route.queryHistoryRoutes(config: Config, store: QueryHistoryStore) {
     get("/api/query-history") {
         val principal = call.requireApi() ?: return@get
-        val limit = (call.request.queryParameters["limit"]?.toIntOrNull() ?: 50).coerceIn(1, 200)
-        call.respond(store.recent(principal, limit))
+        call.respond(store.recent(principal, historyLimit(call.request.queryParameters["limit"]?.toIntOrNull())))
     }
     delete("/api/query-history") {
         val principal = call.requireApi() ?: return@delete

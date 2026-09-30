@@ -58,6 +58,10 @@ func (a *app) render(s *control.Status) {
 	switch {
 	case s == nil:
 		a.renderStopped()
+	case s.LoggedIn && len(s.LoggedInServers()) == 0:
+		// A daemon from before multi-server support reports a login but no servers.
+		a.renderIdle(s)
+		setTitleOf(a.mHeader, "daemon is outdated — restart it")
 	case !s.LoggedIn:
 		a.renderIdle(s)
 	default:
@@ -100,20 +104,23 @@ func (a *app) renderIdle(s *control.Status) {
 }
 
 func (a *app) renderLoggedIn(s *control.Status) {
-	expiry := expiryText(s.ExpiresAt)
-	if s.ReauthRequired {
+	servers := s.LoggedInServers()
+	who := servers[0].Principal
+	if len(servers) > 1 {
+		who = fmt.Sprintf("%d servers", len(servers))
+	}
+	if stale := reauthServer(s); stale != nil {
 		if a.mHeader != nil {
 			systray.SetTooltip("proxy-monster — re-authentication required")
 		}
-		setTitleOf(a.mHeader, fmt.Sprintf("%s — session expired", s.Principal))
-		setTitleOf(a.mLogin, "Re-authenticate…")
+		setTitleOf(a.mHeader, fmt.Sprintf("%s — session expired", stale.Name))
 	} else {
 		if a.mHeader != nil {
-			systray.SetTooltip(fmt.Sprintf("proxy-monster — %s", s.Principal))
+			systray.SetTooltip(fmt.Sprintf("proxy-monster — %s", who))
 		}
-		setTitleOf(a.mHeader, fmt.Sprintf("%s — %s", s.Principal, expiry))
-		setTitleOf(a.mLogin, "Re-authenticate…")
+		setTitleOf(a.mHeader, fmt.Sprintf("%s — %s", who, expiryText(earliestExpiry(servers))))
 	}
+	setTitleOf(a.mLogin, loginTitle(s))
 	enableItem(a.mLogin)
 	showItem(a.mLogout)
 	hideItem(a.mStart)
@@ -121,7 +128,7 @@ func (a *app) renderLoggedIn(s *control.Status) {
 	showItem(a.mStop)
 
 	// A discovery failure is surfaced rather than left to look like "you have no datasources".
-	if s.LastDiscoveryError != "" {
+	if discoveryFailing(s) {
 		setTitleOf(a.mDetail, "discovery failing — check the control plane")
 		showItem(a.mDetail)
 	} else if n := s.TotalLiveConns(); n > 0 {
@@ -148,14 +155,23 @@ func (a *app) applyRows(s *control.Status) {
 		shown = len(a.dsItems) - 1
 	}
 
+	prefix := len(s.Servers) > 1
 	used := 0
 	for _, ds := range s.Datasources {
 		if used >= shown {
 			break
 		}
 		row := a.dsItems[used]
+		name := ds.Name
+		if prefix {
+			name = ds.Server + "  ·  " + ds.Name
+		}
+		principal := ""
+		if srv := s.Server(ds.Server); srv != nil {
+			principal = srv.Principal
+		}
 		if ds.Brokered {
-			label := fmt.Sprintf("%s  ·  127.0.0.1:%d", ds.Name, ds.LocalPort)
+			label := fmt.Sprintf("%s  ·  127.0.0.1:%d", name, ds.LocalPort)
 			if ds.LiveConns > 0 {
 				label += fmt.Sprintf("  (%d)", ds.LiveConns)
 			}
@@ -163,14 +179,14 @@ func (a *app) applyRows(s *control.Status) {
 				Engine:   ds.Engine,
 				DbName:   ds.DbName,
 				Port:     ds.LocalPort,
-				User:     s.Principal,
+				User:     principal,
 				Password: s.LocalPassword,
 			}))
 			row.setTitle(label)
 			row.enable()
 		} else {
 			row.set(ds.Name, "")
-			row.setTitle(fmt.Sprintf("%s  ·  %s", ds.Name, ds.Reason))
+			row.setTitle(fmt.Sprintf("%s  ·  %s", name, ds.Reason))
 			row.disable()
 		}
 		row.show()
@@ -207,6 +223,7 @@ func (a *app) hideDatasourcesFrom(i int) {
 // The wrappers below keep the row logic runnable with no menu item attached (a test), so the production code
 // itself is what gets exercised rather than a copy of it.
 func (d *dsItem) setTitle(title string) {
+	d.title = title
 	if d.item != nil {
 		d.item.SetTitle(title)
 	}
@@ -240,6 +257,66 @@ func (d *dsItem) set(name, connString string) {
 	d.mu.Lock()
 	d.name, d.connString = name, connString
 	d.mu.Unlock()
+}
+
+// reauthServer is the first logged-in server whose renewal was refused, or nil.
+func reauthServer(s *control.Status) *control.ServerInfo {
+	for _, srv := range s.LoggedInServers() {
+		if srv.ReauthRequired {
+			return &srv
+		}
+	}
+	return nil
+}
+
+func discoveryFailing(s *control.Status) bool {
+	for _, srv := range s.LoggedInServers() {
+		if srv.LastDiscoveryError != "" {
+			return true
+		}
+	}
+	return false
+}
+
+func earliestExpiry(servers []control.ServerInfo) string {
+	earliest := ""
+	for _, srv := range servers {
+		if earliest == "" || (srv.ExpiresAt != "" && srv.ExpiresAt < earliest) {
+			earliest = srv.ExpiresAt
+		}
+	}
+	return earliest
+}
+
+// loginTarget is the server the Log in item acts on: the first that needs a login, else "default" if it
+// exists, else the first server.
+func loginTarget(s *control.Status) string {
+	if s == nil || len(s.Servers) == 0 {
+		return "default"
+	}
+	if stale := reauthServer(s); stale != nil {
+		return stale.Name
+	}
+	for _, srv := range s.Servers {
+		if !srv.LoggedIn {
+			return srv.Name
+		}
+	}
+	if s.Server("default") != nil {
+		return "default"
+	}
+	return s.Servers[0].Name
+}
+
+func loginTitle(s *control.Status) string {
+	target := loginTarget(s)
+	if srv := s.Server(target); srv != nil && srv.LoggedIn {
+		return "Re-authenticate…"
+	}
+	if len(s.Servers) > 1 {
+		return fmt.Sprintf("Log in to %s…", target)
+	}
+	return "Log in…"
 }
 
 // expiryText renders how long the wire token has left, which is the fact that decides whether a saved

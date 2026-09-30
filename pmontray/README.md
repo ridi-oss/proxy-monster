@@ -37,10 +37,13 @@ With no daemon running it shows `daemon not running` and offers **Start daemon**
 goes away, the event stream ends and the menu says so.
 
 - **Clicking a datasource** copies its `--url` connection string (the same
-  string `pmon show <ds>` prints).
+  string `pmon show [server] <ds>` prints).
 - **Log in…** asks the _daemon_ to run the device-auth flow, so the browser
   opens and the user code arrives as a notification. Starts the daemon first if
-  none is running.
+  none is running. It logs in to the first server that needs it (`default` when
+  all are logged in); add servers with `pmon server set`.
+- **Log out** logs out of every server. With more than one server, each row is
+  prefixed with its server name.
 - **Quit** stops the daemon, then exits — it is the peer of `pmon stop`. Merely
   closing the menu does nothing, matching a CLI command simply returning.
 - **Stop / Restart / Log out / Quit** confirm first when connections are open,

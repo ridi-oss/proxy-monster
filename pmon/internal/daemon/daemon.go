@@ -283,11 +283,6 @@ func (d *Daemon) Status() control.Status {
 		})
 	}
 	sort.Slice(out.Servers, func(i, j int) bool { return out.Servers[i].Name < out.Servers[j].Name })
-	// TODO(reorg): temporary — removed with the compat fields on control.Status.
-	if def := out.Server(state.DefaultServer); def != nil {
-		out.Principal, out.ControlPlane, out.ExpiresAt = def.Principal, def.ControlPlane, def.ExpiresAt
-		out.SessionExpiresAt, out.ReauthRequired, out.LastDiscoveryError = def.SessionExpiresAt, def.ReauthRequired, def.LastDiscoveryError
-	}
 
 	// Every tracked connection must be accounted for, including one whose datasource has since been pruned
 	// (revoked mid-session, or a broker still parked in the upstream handshake). The registry — not the listener

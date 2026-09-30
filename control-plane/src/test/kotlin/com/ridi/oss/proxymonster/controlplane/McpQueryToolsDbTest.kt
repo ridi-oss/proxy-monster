@@ -5,7 +5,6 @@ import com.ridi.oss.proxymonster.auth.ConsumeAuthorizationCodeInput
 import com.ridi.oss.proxymonster.auth.OAuthAuthorizationStore
 import com.ridi.oss.proxymonster.auth.pkceS256
 import com.ridi.oss.proxymonster.controlplane.authz.CedarPolicyInput
-import com.ridi.oss.proxymonster.controlplane.grpc.CONTROL_PROTOCOL_VERSION
 import com.ridi.oss.proxymonster.controlplane.grpc.ControlPlaneGrpcService
 import com.ridi.oss.proxymonster.controlplane.grpc.GrpcServer
 import com.ridi.oss.proxymonster.controlplane.management.DatasourceManagementService
@@ -18,19 +17,17 @@ import com.ridi.oss.proxymonster.controlplane.mcp.installMcp
 import com.ridi.oss.proxymonster.controlplane.support.EnforcementFixture
 import com.ridi.oss.proxymonster.controlplane.support.PerConnectionCatalogFixture
 import com.ridi.oss.proxymonster.controlplane.support.requireDockerOrSkip
+import com.ridi.oss.proxymonster.controlplane.support.withFakeProxy
 import com.ridi.oss.proxymonster.grpc.ControlPlaneGrpcKt
 import com.ridi.oss.proxymonster.grpc.OpenRunChannel
 import com.ridi.oss.proxymonster.grpc.decisionRequest
 import com.ridi.oss.proxymonster.grpc.EnfAction as WireEnfAction
 import com.ridi.oss.proxymonster.grpc.ProxyRunMsg
-import com.ridi.oss.proxymonster.grpc.eventsRequest
 import com.ridi.oss.proxymonster.grpc.proxyRunMsg
 import com.ridi.oss.proxymonster.grpc.runDecision
 import com.ridi.oss.proxymonster.grpc.runDone
-import com.ridi.oss.proxymonster.grpc.runReady
 import com.ridi.oss.proxymonster.grpc.runResultRows
 import com.ridi.oss.proxymonster.grpc.runRow
-import com.ridi.oss.proxymonster.grpc.runServing
 import com.ridi.oss.proxymonster.grpc.runValue
 import io.grpc.ManagedChannel
 import io.grpc.netty.shaded.io.grpc.netty.NettyChannelBuilder
@@ -53,12 +50,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
-import kotlinx.coroutines.channels.Channel as KChannel
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.flow.receiveAsFlow
-import kotlinx.coroutines.flow.collect
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.supervisorScope
 import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
@@ -724,38 +716,10 @@ class McpQueryToolsDbTest {
         installMcp(config, core, datasourceService, policyService, identityService, editorTasks, approvals)
     }
 
-    /** Answers every run the control plane opens on the fixture datasource with [respond]'s frames while [body] runs. */
     private suspend fun withFakeProxy(
         respond: suspend (WireIdentity?, String, OpenRunChannel) -> List<ProxyRunMsg>,
         body: suspend () -> Unit,
-    ) = supervisorScope {
-        val proxy = launch {
-            stub.events(eventsRequest { datasourceName = fx.datasource.name; protocolVersion = CONTROL_PROTOCOL_VERSION })
-                .collect { event ->
-                    if (!event.hasOpenRunChannel()) return@collect
-                    val open = event.openRunChannel
-                    val identity = core.tokenStore.resolve(open.ephemeralToken)
-                    launch {
-                        val out = KChannel<ProxyRunMsg>(KChannel.UNLIMITED)
-                        out.send(proxyRunMsg { sessionReady = runReady { sessionId = open.sessionId } })
-                        out.send(proxyRunMsg { serving = runServing {} })
-                        stub.runExec(out.receiveAsFlow()).collect { control ->
-                            when {
-                                control.hasQuery() -> respond(identity, control.query.sql, open).forEach { out.send(it) }
-                                control.hasClose() -> out.close()
-                            }
-                        }
-                    }
-                }
-        }
-        try {
-            withTimeout(5_000) { while (fx.datasource.name !in core.proxyEventsHub.attached()) delay(20) }
-            body()
-        } finally {
-            proxy.cancel()
-            withTimeout(5_000) { while (fx.datasource.name in core.proxyEventsHub.attached()) delay(20) }
-        }
-    }
+    ) = withFakeProxy(core, stub, fx.datasource.name, respond, body = body)
 
     private fun executionDecision(principal: String, channel: Channel = Channel.WORKFLOW_EXECUTOR): Long = core.auditStore.insert(
         AuditEvent(principal = principal, datasource = fx.datasource.name, statement = sql, decision = Decision.MASK, channel = channel.contextValue),

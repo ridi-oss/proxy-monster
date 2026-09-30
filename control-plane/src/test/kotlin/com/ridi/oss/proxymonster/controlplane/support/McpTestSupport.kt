@@ -7,8 +7,20 @@ import com.ridi.oss.proxymonster.auth.pkceS256
 import com.ridi.oss.proxymonster.controlplane.Config
 import com.ridi.oss.proxymonster.controlplane.ControlPlaneCore
 import com.ridi.oss.proxymonster.controlplane.PrincipalSessionStore
+import com.ridi.oss.proxymonster.controlplane.WireIdentity
+import com.ridi.oss.proxymonster.controlplane.grpc.CONTROL_PROTOCOL_VERSION
 import com.ridi.oss.proxymonster.controlplane.management.McpCapabilityRegistry
 import com.ridi.oss.proxymonster.controlplane.module
+import com.ridi.oss.proxymonster.grpc.ControlPlaneGrpcKt
+import com.ridi.oss.proxymonster.grpc.ControlTableDetailMsg
+import com.ridi.oss.proxymonster.grpc.OpenRunChannel
+import com.ridi.oss.proxymonster.grpc.OpenTableDetailChannel
+import com.ridi.oss.proxymonster.grpc.ProxyRunMsg
+import com.ridi.oss.proxymonster.grpc.ProxyTableDetailMsg
+import com.ridi.oss.proxymonster.grpc.eventsRequest
+import com.ridi.oss.proxymonster.grpc.proxyRunMsg
+import com.ridi.oss.proxymonster.grpc.runReady
+import com.ridi.oss.proxymonster.grpc.runServing
 import io.ktor.client.HttpClient
 import io.ktor.client.plugins.cookies.HttpCookies
 import io.ktor.client.request.header
@@ -22,6 +34,18 @@ import io.ktor.http.HttpStatusCode
 import io.ktor.http.contentType
 import io.ktor.server.routing.routing
 import io.ktor.server.testing.ApplicationTestBuilder
+import java.util.concurrent.atomic.AtomicInteger
+import javax.sql.DataSource
+import kotlin.test.assertEquals
+import kotlin.test.assertNotNull
+import kotlin.test.assertTrue
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.flow.receiveAsFlow
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.supervisorScope
+import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
@@ -30,11 +54,6 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
-import java.util.concurrent.atomic.AtomicInteger
-import javax.sql.DataSource
-import kotlin.test.assertEquals
-import kotlin.test.assertNotNull
-import kotlin.test.assertTrue
 
 const val MCP_TEST_RESOURCE = "http://localhost/mcp"
 private const val CLIENT_ID = "https://client.example/mcp.json"
@@ -154,3 +173,56 @@ fun JsonObject.errorParams(): JsonObject = getValue("structuredContent").jsonObj
 fun JsonObject.str(name: String): String? = (this[name] as? JsonPrimitive)?.content
 
 fun parseJson(body: String): JsonElement = MCP_TEST_JSON.parseToJsonElement(body)
+
+/**
+ * Attaches a fake proxy to [datasourceName] over the real gRPC Events stream while [body] runs. Each run the
+ * control plane opens is answered with [respond]'s frames, and each table-detail request with [tableDetail]'s
+ * reply (when given).
+ */
+suspend fun withFakeProxy(
+    core: ControlPlaneCore,
+    stub: ControlPlaneGrpcKt.ControlPlaneCoroutineStub,
+    datasourceName: String,
+    respond: suspend (WireIdentity?, String, OpenRunChannel) -> List<ProxyRunMsg>,
+    tableDetail: ((OpenTableDetailChannel) -> ProxyTableDetailMsg)? = null,
+    body: suspend () -> Unit,
+) = supervisorScope {
+    val proxy = launch {
+        stub.events(eventsRequest { this.datasourceName = datasourceName; protocolVersion = CONTROL_PROTOCOL_VERSION })
+            .collect { event ->
+                if (event.hasOpenTableDetailChannel() && tableDetail != null) {
+                    val open = event.openTableDetailChannel
+                    launch {
+                        val outbound = Channel<ControlTableDetailMsg>(Channel.BUFFERED)
+                        val attached = core.tableDetailChannels.attach(open.sessionId, outbound) ?: return@launch
+                        attached.inbound.send(tableDetail(open))
+                        outbound.receive()
+                        attached.inbound.close()
+                        outbound.close()
+                    }
+                    return@collect
+                }
+                if (!event.hasOpenRunChannel()) return@collect
+                val open = event.openRunChannel
+                val identity = core.tokenStore.resolve(open.ephemeralToken)
+                launch {
+                    val out = Channel<ProxyRunMsg>(Channel.UNLIMITED)
+                    out.send(proxyRunMsg { sessionReady = runReady { sessionId = open.sessionId } })
+                    out.send(proxyRunMsg { serving = runServing {} })
+                    stub.runExec(out.receiveAsFlow()).collect { control ->
+                        when {
+                            control.hasQuery() -> respond(identity, control.query.sql, open).forEach { out.send(it) }
+                            control.hasClose() -> out.close()
+                        }
+                    }
+                }
+            }
+    }
+    try {
+        withTimeout(5_000) { while (datasourceName !in core.proxyEventsHub.attached()) delay(20) }
+        body()
+    } finally {
+        proxy.cancel()
+        withTimeout(5_000) { while (datasourceName in core.proxyEventsHub.attached()) delay(20) }
+    }
+}

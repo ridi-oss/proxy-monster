@@ -398,4 +398,21 @@ class ConfigGuardTest {
             Config.fromEnv(envOf()).copy(webSessionSlideSeconds = 900, webSessionIdleSeconds = 900)
         }
     }
+
+    @Test fun `instance name defaults to the MCP host's first label and is validated when set`() {
+        assertEquals("local", Config.fromEnv(envOf()).instanceName)
+        assertEquals("", Config.fromEnv(envOf()).instanceDescription)
+        assertEquals("hris-pmon", Config.fromEnv(envOf("PM_MCP_RESOURCE" to "https://hris-pmon.example.com/mcp")).instanceName)
+        assertEquals("local", Config.fromEnv(envOf("PM_MCP_RESOURCE" to "http://10.0.0.7:8080/mcp")).instanceName)
+        assertEquals("local", Config.fromEnv(envOf("PM_MCP_RESOURCE" to "http://[::1]:8080/mcp")).instanceName)
+        assertEquals("hr-pmon", Config.defaultInstanceName("https://HR--Pmon.example.com/mcp"))
+        assertEquals("a".repeat(40), Config.defaultInstanceName("https://${"a".repeat(60)}.example.com/mcp"))
+        assertEquals("prod-1", Config.fromEnv(envOf("PM_INSTANCE_NAME" to "prod-1")).instanceName)
+        for (bad in listOf("Prod", "prod_1", "-prod", "prod-", "a".repeat(41), "p q")) {
+            assertFailsWith<IllegalArgumentException>(bad) { Config.fromEnv(envOf("PM_INSTANCE_NAME" to bad)) }
+        }
+        assertEquals("HR data", Config.fromEnv(envOf("PM_INSTANCE_DESCRIPTION" to " HR data ")).instanceDescription)
+        assertFailsWith<IllegalArgumentException> { Config.fromEnv(envOf("PM_INSTANCE_DESCRIPTION" to "a\nb")) }
+        assertFailsWith<IllegalArgumentException> { Config.fromEnv(envOf("PM_INSTANCE_DESCRIPTION" to "x".repeat(501))) }
+    }
 }

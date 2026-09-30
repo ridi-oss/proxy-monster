@@ -13,8 +13,9 @@ import (
 // race into two device flows. It starts the daemon if none is running, and the brokers open as soon as the
 // login lands — there is no separate step to begin serving.
 type loginCmd struct {
-	URL string `help:"Control-plane base URL (saved; reused by later logins that omit it)."`
-	TTL int    `default:"43200" help:"Requested token lifetime in seconds (default 12h; the server clamps it)."`
+	Server string `arg:"" optional:"" default:"default" help:"Server to log in to."`
+	URL    string `help:"Set the server's control-plane URL first (as 'pmon server set' does)."`
+	TTL    int    `default:"43200" help:"Requested token lifetime in seconds (default 12h; the server clamps it)."`
 }
 
 func (c *loginCmd) Run() error {
@@ -24,7 +25,7 @@ func (c *loginCmd) Run() error {
 		return err
 	}
 
-	req := control.LoginRequest{ControlPlane: c.URL, TTLSeconds: c.TTL}
+	req := control.LoginRequest{Server: c.Server, ControlPlane: c.URL, TTLSeconds: c.TTL}
 	if req.TTLSeconds <= 0 {
 		req.TTLSeconds = login.DefaultTTL
 	}
@@ -58,7 +59,7 @@ func (c *loginCmd) Run() error {
 		return err
 	}
 	warnVersionSkew(s)
-	fmt.Printf("%d datasource(s) brokered — `pmon status` for the list, `pmon show <datasource>` for a connection string\n",
-		brokeredCount(s))
+	fmt.Printf("%d datasource(s) brokered from %q — `pmon status` for the list, `%s` for a connection string\n",
+		brokeredCount(s, c.Server), c.Server, showHint(c.Server))
 	return nil
 }

@@ -29,11 +29,7 @@ func (startCmd) Run() error {
 	if err != nil {
 		return err
 	}
-	if !s.LoggedIn {
-		fmt.Println("daemon started — not logged in yet; run `pmon login`")
-		return nil
-	}
-	fmt.Printf("daemon started — logged in as %s, %d datasource(s) brokered\n", s.Principal, brokeredCount(s))
+	fmt.Println("daemon started — " + loginLine(s))
 	return nil
 }
 
@@ -52,13 +48,9 @@ func (c *stopCmd) Run() error {
 		return nil
 	}
 	if !c.Force {
-		if s, err := client.Status(ctx); err == nil {
-			if n := s.TotalLiveConns(); n > 0 {
-				if !confirm(fmt.Sprintf("%d active connection(s) will be dropped. Stop anyway?", n)) {
-					fmt.Println("left the daemon running")
-					return nil
-				}
-			}
+		if s, err := client.Status(ctx); err == nil && !confirmDrop(s.TotalLiveConns(), "Stop anyway?") {
+			fmt.Println("left the daemon running")
+			return nil
 		}
 	}
 	if err := control.StopDaemon(ctx); err != nil {
@@ -81,13 +73,9 @@ func (c *restartCmd) Run() error {
 	ctx := context.Background()
 	if client, err := control.Connect(ctx); err == nil {
 		if !c.Force {
-			if s, err := client.Status(ctx); err == nil {
-				if n := s.TotalLiveConns(); n > 0 {
-					if !confirm(fmt.Sprintf("%d active connection(s) will be dropped. Restart anyway?", n)) {
-						fmt.Println("left the daemon running")
-						return nil
-					}
-				}
+			if s, err := client.Status(ctx); err == nil && !confirmDrop(s.TotalLiveConns(), "Restart anyway?") {
+				fmt.Println("left the daemon running")
+				return nil
 			}
 		}
 		if err := control.StopDaemon(ctx); err != nil && !errors.Is(err, control.ErrDaemonNotRunning) {
@@ -102,29 +90,61 @@ func (c *restartCmd) Run() error {
 	if err != nil {
 		return err
 	}
-	if !s.LoggedIn {
-		fmt.Println("daemon restarted — not logged in; run `pmon login`")
-		return nil
-	}
-	fmt.Printf("daemon restarted — logged in as %s, %d datasource(s) brokered\n", s.Principal, brokeredCount(s))
+	fmt.Println("daemon restarted — " + loginLine(s))
 	return nil
 }
 
-// logoutCmd clears the credentials and closes the brokers, leaving the daemon up and idle.
-type logoutCmd struct{}
+// logoutCmd clears a server's credentials and closes its brokers, leaving the daemon up.
+type logoutCmd struct {
+	Server string `arg:"" optional:"" default:"default" help:"Server to log out of."`
+	All    bool   `help:"Log out of every server."`
+	Force  bool   `short:"f" help:"Log out without asking, even with connections open."`
+}
 
-func (logoutCmd) Run() error {
+func (c *logoutCmd) Run() error {
 	ctx := context.Background()
 	client, err := control.Connect(ctx)
 	if err != nil {
 		fmt.Println("the daemon is not running — nothing to log out of")
 		return nil
 	}
-	if err := client.Logout(ctx, control.LogoutRequest{}); err != nil {
+	s, err := client.Status(ctx)
+	if err != nil {
 		return err
 	}
-	fmt.Println("logged out — the brokers are closed and the daemon is idle")
+	conns := s.TotalLiveConns()
+	if !c.All {
+		if s.Server(c.Server) == nil {
+			return fmt.Errorf("unknown server %q", c.Server)
+		}
+		conns = s.ServerLiveConns(c.Server)
+	}
+	if !c.Force && !confirmDrop(conns, "Log out anyway?") {
+		fmt.Println("still logged in")
+		return nil
+	}
+	if err := client.Logout(ctx, control.LogoutRequest{Server: c.Server, All: c.All}); err != nil {
+		return err
+	}
+	if c.All {
+		fmt.Println("logged out of every server — the brokers are closed and the daemon is idle")
+	} else {
+		fmt.Printf("logged out of %q — its brokers are closed\n", c.Server)
+	}
 	return nil
+}
+
+// loginLine summarizes which servers are logged in, for start/restart.
+func loginLine(s *control.Status) string {
+	servers := s.LoggedInServers()
+	if len(servers) == 0 {
+		return "not logged in; run `pmon login`"
+	}
+	parts := make([]string, 0, len(servers))
+	for _, srv := range servers {
+		parts = append(parts, fmt.Sprintf("%s as %s", srv.Name, srv.Principal))
+	}
+	return fmt.Sprintf("logged in to %s, %d datasource(s) brokered", strings.Join(parts, ", "), brokeredCount(s, ""))
 }
 
 // stdinIsTerminal reports whether stdin is a character device, i.e. someone is there to answer. Done with a
@@ -137,14 +157,20 @@ func stdinIsTerminal() bool {
 	return info.Mode()&os.ModeCharDevice != 0
 }
 
-func brokeredCount(s *control.Status) int {
+// brokeredCount counts brokered datasources on server, or on every server when server is empty.
+func brokeredCount(s *control.Status, server string) int {
 	n := 0
 	for _, ds := range s.Datasources {
-		if ds.Brokered {
+		if ds.Brokered && (server == "" || ds.Server == server) {
 			n++
 		}
 	}
 	return n
+}
+
+// confirmDrop asks before dropping n live connections; with none open there is nothing to ask.
+func confirmDrop(n int, question string) bool {
+	return n == 0 || confirm(fmt.Sprintf("%d active connection(s) will be dropped. %s", n, question))
 }
 
 // confirm asks a yes/no question. With no terminal (a script, a hook) it answers NO, so an unattended run

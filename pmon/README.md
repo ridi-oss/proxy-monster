@@ -10,8 +10,8 @@ datasource, and injects the token upstream.
 brew trust --formula ridi-oss/tap/pmon
 brew install ridi-oss/tap/pmon   # or: go build -o /usr/local/bin/pmon ./pmon
 
-pmon login                     # device-auth in your browser; starts the daemon + opens the brokers
-pmon status                    # principal, token expiry, every brokered datasource
+pmon login --url https://pm.example.com  # saves the "default" server, then device-auth in your browser
+pmon status                    # every server's login and brokered datasources
 pmon show acme-mysql            # mysql://you@example.com:pmlocal_…@127.0.0.1:6100/my_database
 pmon show acme-postgres         # postgresql://you@example.com:pmlocal_…@127.0.0.1:6101/app?sslmode=disable
 ```
@@ -19,15 +19,37 @@ pmon show acme-postgres         # postgresql://you@example.com:pmlocal_…@127.0
 Point any SQL client at the address `pmon show` prints. Logging in is the only
 step — there is no separate command to start brokering.
 
+### Servers
+
+pmon can be logged in to several control planes at once. Each server has a name;
+a command that names none addresses `default`.
+
+```sh
+pmon server set --url https://pm.example.com          # the "default" server
+pmon server set dev --url https://pm.dev.example.com  # the "dev" server
+pmon login                     # log in to default
+pmon login dev                 # log in to dev
+pmon login --url U dev         # set dev to U, then log in
+pmon show acme-mysql            # acme-mysql on default
+pmon show dev acme-mysql        # acme-mysql on dev
+pmon logout dev                 # or `pmon logout --all`
+pmon server unset dev           # log out of dev and delete it
+```
+
+Changing a logged-in server's URL logs it out: a token is only good against the
+control plane that issued it. A config from a single-server release loads as
+`default`, keeping its ports and password.
+
 ## Commands
 
 <!-- prettier-ignore -->
 |  |  |
 | --- | --- |
-| `pmon login` | Device-auth flow; starts the daemon if needed and opens the brokers |
-| `pmon logout` | Clear the credentials and close the brokers (the daemon stays up) |
-| `pmon show <ds>` | One datasource's local connection string |
-| `pmon status` | Daemon state: login, expiry, brokered datasources, live connections |
+| `pmon server set [name] --url U` / `unset [name]` / `list` | Manage servers (`-f` on `unset` skips the live-connection prompt) |
+| `pmon login [server] [--url U]` | Device-auth flow; starts the daemon if needed and opens the server's brokers |
+| `pmon logout [server] [--all]` | Clear a server's credentials and close its brokers (the daemon stays up) |
+| `pmon show [server] <ds>` | One datasource's local connection string |
+| `pmon status` | Daemon state: every server's login and expiry, brokered datasources, live connections |
 | `pmon start` / `stop` / `restart` | Daemon lifecycle (`-f` / `--force` on `stop` and `restart` skips the live-connection prompt) |
 | `pmon --version` | The release this binary was built from |
 
@@ -87,7 +109,7 @@ pmon CLI ──┐                        ┌── menu-bar app
         ├─ /tmp/pmon-<uid>/pmon-<hash>.sock  control API
         ├─ daemon.pid   flock: single-instance + liveness
         ├─ 127.0.0.1:6100+  one listener per datasource
-        └─ config.json  the daemon is the sole writer
+        └─ config.json  servers + sticky ports; the daemon is the sole writer
 ```
 
 - **The daemon runs the login.** A peer asks over the socket and the daemon

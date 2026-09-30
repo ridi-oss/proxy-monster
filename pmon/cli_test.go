@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"math/rand/v2"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -66,7 +67,7 @@ type env struct {
 
 func newEnv(t *testing.T) *env {
 	t.Helper()
-	e := &env{bin: buildPmon(t), stateDir: t.TempDir(), portBase: freeTCPPort(t)}
+	e := &env{bin: buildPmon(t), stateDir: t.TempDir(), portBase: freePortRange(t, 4)}
 	t.Cleanup(func() {
 		// Always stop the daemon this env may have started, or it outlives the test (it is detached by design).
 		_, _ = e.run("stop", "--force")
@@ -76,14 +77,24 @@ func newEnv(t *testing.T) *env {
 	return e
 }
 
-func freeTCPPort(t *testing.T) int {
+// freePortRange returns the first of n consecutive free ports below the ephemeral range, so a broker on
+// base+1 cannot collide with a test server the kernel placed there.
+func freePortRange(t *testing.T, n int) int {
 	t.Helper()
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("Listen: %v", err)
+	for base := 20000 + rand.IntN(20000); ; base = 20000 + rand.IntN(20000) {
+		ok := true
+		for p := base; p < base+n && ok; p++ {
+			ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", p))
+			if err != nil {
+				ok = false
+				continue
+			}
+			ln.Close()
+		}
+		if ok {
+			return base
+		}
 	}
-	defer ln.Close()
-	return ln.Addr().(*net.TCPAddr).Port
 }
 
 // run invokes pmon and returns its combined output.
@@ -392,6 +403,60 @@ func TestLogoutClosesBrokersAndKeepsTheDaemonUp(t *testing.T) {
 	// A second login reuses the same daemon and brings the brokers back.
 	if out := e.mustRun(t, "login", "--url", cp.URL); !strings.Contains(out, "1 datasource(s) brokered") {
 		t.Errorf("re-login = %q, want the broker to come back up", out)
+	}
+}
+
+// TestTwoServers covers the multi-server surface end to end: `server set`, `login <server>`, a status listing
+// both servers' datasources, `show [server] <ds>`, per-server logout, and `server unset`.
+func TestTwoServers(t *testing.T) {
+	e := newEnv(t)
+	ds := []map[string]any{{"name": "acme-mysql", "engine": "mysql", "dbName": "app", "advertiseAddr": dummyProxy(t)}}
+	prod, dev := fakeCP(t, ds), fakeCP(t, ds)
+
+	if out, err := e.run("login"); err == nil || !strings.Contains(out, "pmon server set --url") {
+		t.Fatalf("login with no server = %q, %v; want a hint to set one", out, err)
+	}
+	e.mustRun(t, "server", "set", "--url", prod.URL)
+	e.mustRun(t, "login")
+	if out := e.mustRun(t, "login", "--url", dev.URL, "dev"); !strings.Contains(out, `brokered from "dev"`) {
+		t.Errorf("login dev = %q", out)
+	}
+
+	status := e.mustRun(t, "status")
+	for _, want := range []string{"server:    default  " + prod.URL, "server:    dev  " + dev.URL, "SERVER", "dev      acme-mysql"} {
+		if !strings.Contains(status, want) {
+			t.Errorf("status missing %q:\n%s", want, status)
+		}
+	}
+	list := e.mustRun(t, "server", "list")
+	if !strings.Contains(list, "default") || !strings.Contains(list, "dev") {
+		t.Errorf("server list = %q", list)
+	}
+
+	def := strings.TrimSpace(e.mustRun(t, "show", "acme-mysql"))
+	devURL := strings.TrimSpace(e.mustRun(t, "show", "dev", "acme-mysql"))
+	if def == devURL || !strings.HasPrefix(devURL, "mysql://") {
+		t.Errorf("show default = %q, show dev = %q; want two different ports", def, devURL)
+	}
+	if out, err := e.run("show", "staging", "acme-mysql"); err == nil || !strings.Contains(out, "default, dev") {
+		t.Errorf("show on an unknown server = %q, %v; want the known servers listed", out, err)
+	}
+
+	e.mustRun(t, "logout", "dev")
+	if _, err := e.run("show", "dev", "acme-mysql"); err == nil {
+		t.Error("show dev succeeded after logging out of dev")
+	}
+	if got := strings.TrimSpace(e.mustRun(t, "show", "acme-mysql")); got != def {
+		t.Errorf("logging out of dev changed default's connection string: %q -> %q", def, got)
+	}
+
+	e.mustRun(t, "server", "unset", "dev")
+	if strings.Contains(e.mustRun(t, "server", "list"), "dev") {
+		t.Error("dev is still listed after unset")
+	}
+	e.mustRun(t, "logout", "--all")
+	if !strings.Contains(e.mustRun(t, "status"), "not logged in") {
+		t.Error("still logged in after logout --all")
 	}
 }
 

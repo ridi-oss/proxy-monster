@@ -6,9 +6,10 @@
 // SYMMETRIC peers over that socket: neither is privileged, both can start and stop the daemon, and both work
 // when it is down. Brokers come up as soon as credentials exist — logging in is the only step.
 //
-//	pmon login                 # device-auth in your browser; starts the daemon and opens the brokers
-//	pmon show <ds>             # print a datasource's local connection string (--url default)
-//	pmon status                # principal, token expiry, and every brokered datasource
+//	pmon server set [name] --url U  # add a server ("default" unless named)
+//	pmon login [name]               # device-auth in your browser; starts the daemon and opens the brokers
+//	pmon show [name] <ds>           # print a datasource's local connection string (--url default)
+//	pmon status                     # every server's login and brokered datasources
 //	pmon start | stop | restart
 package main
 
@@ -28,10 +29,11 @@ func init() {
 // cli is the kong grammar for pmon's subcommands (matching goproxy's kong usage, kept consistent across the
 // repo rather than hand-rolled flag sets).
 type cli struct {
+	Server  serverCmd  `cmd:"" help:"Manage the servers pmon logs in to."`
 	Login   loginCmd   `cmd:"" help:"Authenticate in your browser; starts the daemon and opens the brokers."`
-	Logout  logoutCmd  `cmd:"" help:"Clear the stored credentials and close the brokers (the daemon stays up)."`
+	Logout  logoutCmd  `cmd:"" help:"Clear a server's credentials and close its brokers (the daemon stays up)."`
 	Show    showCmd    `cmd:"" help:"Print one datasource's local connection string."`
-	Status  statusCmd  `cmd:"" help:"Show the daemon's state: login, token expiry, brokered datasources."`
+	Status  statusCmd  `cmd:"" help:"Show the daemon's state: every server's login and brokered datasources."`
 	Start   startCmd   `cmd:"" help:"Start the daemon (no-op if one is already running)."`
 	Stop    stopCmd    `cmd:"" help:"Stop the daemon."`
 	Restart restartCmd `cmd:"" help:"Stop the daemon and start a fresh one."`

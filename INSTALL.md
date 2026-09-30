@@ -74,6 +74,15 @@ configured per proxy under `PM_TARGET_*`.
 
 - `PM_MCP_RESOURCE` — _optional_. Public MCP resource URL; required only if MCP
   is used. Example: `https://console.example.com/mcp`
+- `PM_INSTANCE_NAME` — _optional_. Short name for this deployment, used in the
+  MCP install name `pmon-<name>` and told to agents so several installed
+  instances stay distinct. Lowercase letters, digits, and inner hyphens, at most
+  40; any other value fails boot. Default: the first DNS label of
+  `PM_MCP_RESOURCE`'s host (`https://hr-pmon.example.com/mcp` → `hr-pmon`), or
+  `local` for an IP or `localhost`.
+- `PM_INSTANCE_DESCRIPTION` — _optional_. One line telling users and agents what
+  this instance holds, at most 500 characters. Default empty. Example:
+  `HR and payroll databases`
 - `PM_TRUSTED_PROXIES` — _optional, set behind an LB_. Comma-separated
   socket-peer addresses or CIDR blocks of the edges trusted to assert forwarded
   headers about a request: `X-Forwarded-For` for client-IP attestation,
@@ -149,6 +158,9 @@ configured per proxy under `PM_TARGET_*`.
   under the datasource inherits them, so a name the shipped presets key on
   decides for the whole datasource — set the posture here and leave column
   classification to the console.
+- `PM_DATASOURCE_DESCRIPTION` — _optional_. One line saying what the datasource
+  holds, at most 500 characters, shown to agents over MCP. Sent at every
+  registration, so unsetting it clears the stored value. Default empty.
 - `PM_PROXY_PORT` — _optional_. The wire port clients connect to. Defaults:
   `6033` (MySQL) · `6432` (PG).
 - `PM_TARGET_HOST` / `_PORT` / `_DB` / `_USER` / `_PASSWORD` — _optional with
@@ -539,13 +551,29 @@ otherwise a call answers `common.forbidden`. Sign that principal in through
 `/login` (debug login, with `system:admin`) first, or authorize with
 `?principal=` naming a principal that already has the role.
 
-Add and authorize the user-scoped Claude Code connection:
+The console's **Connect an agent** page (identity menu → `/connect`) gives each
+signed-in user one block to paste to their agent (Claude Code or Codex CLI),
+built from `GET /api/mcp/connect`. The agent installs the server and starts the
+OAuth sign-in, which the user approves in the browser. The block carries only
+what installing needs, the install name and URL; the server describes itself and
+the user's datasources in its MCP `instructions` on every connection, so that
+survives agent restarts. The server is installed as `pmon-<PM_INSTANCE_NAME>`,
+so a user with several proxy-monster instances gets one distinctly named entry
+per instance, and pasting an instance's block again replaces its entry. The
+block carries no secret. claude.ai, Claude Desktop, and ChatGPT are not
+supported: their connectors reach MCP servers from the vendor's cloud, while a
+proxy-monster server accepts direct connections from the user's machine only.
+
+For the local defaults the instance is `local`, so the Claude Code commands are:
 
 ```
-claude mcp add --scope user --transport http proxy-monster http://127.0.0.1:8080/mcp
-claude mcp login proxy-monster
-claude mcp get proxy-monster
+claude mcp add --scope user --transport http pmon-local http://127.0.0.1:8080/mcp
+claude mcp login pmon-local
+claude mcp get pmon-local
 ```
+
+Codex CLI: `codex mcp add pmon-local --url http://127.0.0.1:8080/mcp` starts the
+login itself.
 
 `claude mcp login` needs a real interactive terminal — it holds a local callback
 listener open while your browser completes the redirect, so it can't run from a

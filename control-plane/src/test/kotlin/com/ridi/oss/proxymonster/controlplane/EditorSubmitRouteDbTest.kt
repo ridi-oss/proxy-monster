@@ -559,6 +559,38 @@ class EditorSubmitRouteDbTest {
     }
 
     @Test
+    fun `closing the session mid-batch cancels its task before the proxy answers and skips the rest`() = testApplication {
+        val client = wire()
+        supervisorScope {
+            val held = CompletableDeferred<Unit>()
+            val session = openFakeSession(client) { req, control ->
+                if (control.query.sql != "select first") fail("a statement after the close crossed the wire: ${control.query.sql}")
+                req.send(allowed())
+                held.await()
+            }
+            val ack = client.post("/api/editor/sessions/${session.sessionId}/query") {
+                contentType(ContentType.Application.Json); setBody(QueryRequest("select first; select second", 100))
+            }.body<EditorSubmitResponse>()
+            awaitUntil("first editor child RUNNING") { resultStore.meta(ack.taskId)?.status == "RUNNING" }
+            withTimeout(5_000) { while (!session.controls.receive().hasQuery()) Unit }
+
+            assertEquals(HttpStatusCode.NoContent, client.delete("/api/editor/sessions/${session.sessionId}").status)
+            assertEquals(true, withTimeout(5_000) { session.controls.receive() }.hasClose())
+            assertEquals("CANCELLED", core.accessStore.getRequest(ack.taskId)?.status)
+            held.complete(Unit)
+            session.await()
+
+            val statements = client.get("/api/editor/tasks/${ack.taskId}").body<EditorTaskStatus>().statements
+            assertEquals(listOf("CANCELLED", "SKIPPED"), statements.map { it.status })
+            assertEquals("query.session_closed", statements[0].errorCode)
+            val rerun = client.post("/api/editor/sessions/${session.sessionId}/query") {
+                contentType(ContentType.Application.Json); setBody(QueryRequest("select first", 100))
+            }
+            assertEquals(HttpStatusCode.NotFound, rerun.status)
+        }
+    }
+
+    @Test
     fun `delete of an executing editor task emits RunCancel then removes the task`() = testApplication {
         val client = wire()
         supervisorScope {

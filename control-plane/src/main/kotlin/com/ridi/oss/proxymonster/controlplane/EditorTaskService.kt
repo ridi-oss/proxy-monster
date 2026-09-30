@@ -14,6 +14,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import org.slf4j.Logger
 import org.slf4j.LoggerFactory
+import java.util.concurrent.ConcurrentHashMap
 
 /**
  * The editor-as-task lifecycle shared by the REST editor routes and the MCP query tools. A submit is a
@@ -39,6 +40,8 @@ class EditorTaskService(
 ) {
     data class Submission(val response: EditorSubmitResponse, val job: Job)
 
+    private val sessionTasks = ConcurrentHashMap<String, MutableSet<Long>>()
+
     private class Batch(
         val taskId: Long,
         val statementCount: Int,
@@ -53,7 +56,7 @@ class EditorTaskService(
         // Owner-scoped: a leaked session id can't target another principal's connection.
         val dsName = runExecService.sessionDatasourceName(sessionId, principal) ?: throw serviceNotFound("editor session")
         val ds = datasourceStore.getByName(dsName) ?: throw serviceNotFound("datasource")
-        return start(principal, requesterIp, ds, ownRoles, sql) { b ->
+        val submission = start(principal, requesterIp, ds, ownRoles, sql) { b ->
             // One mutex hold for the batch, so a concurrent submit cannot land inside its transaction.
             runExecService.runBatchOnSession(
                 sessionId, principal, statementCount = b.statementCount, maxRows = maxRows,
@@ -62,6 +65,12 @@ class EditorTaskService(
                 exchangeTimeoutMs = config.queryExchangeTimeoutMs,
             )
         }
+        val taskId = submission.response.taskId
+        sessionTasks.computeIfAbsent(sessionId) { ConcurrentHashMap.newKeySet() }.add(taskId)
+        submission.job.invokeOnCompletion {
+            sessionTasks.computeIfPresent(sessionId) { _, tasks -> tasks.apply { remove(taskId) }.takeIf { it.isNotEmpty() } }
+        }
+        return submission
     }
 
     /** Submit on a one-shot connection that lives for this batch only. */
@@ -219,12 +228,7 @@ class EditorTaskService(
         }
         val store = queryResultStore
             ?: throw resultStorageNotConfigured()
-        val cancelled = store.cancelRun(taskId) { conn, _ ->
-            if (!accessStore.markCancelled(taskId, conn)) {
-                throw IllegalStateException("editor task $taskId left EXECUTING before cancellation")
-            }
-        }
-        if (cancelled != null) {
+        if (markCancelled(store, taskId, "approval.canceled")) {
             runExecService.cancelActiveRun(taskId)
             // The CAS may win well before the run coroutine unwinds, so push CANCELLED now.
             taskCompletionHub?.publish(principal, TaskEvent(taskId, "CANCELLED"))
@@ -232,6 +236,27 @@ class EditorTaskService(
         val updated = accessStore.getRequest(taskId) ?: throw serviceNotFound("editor task")
         return EditorTaskStatus(updated.id, updated.status, store.meta(taskId), statements = store.statements(taskId))
     }
+
+    fun closeSession(principal: String, requesterIp: String?, sessionId: String) {
+        if (runExecService.sessionDatasourceName(sessionId, principal) == null) return
+        val store = queryResultStore
+        for (taskId in sessionTasks[sessionId].orEmpty().toList()) {
+            val task = accessStore.getRequest(taskId)?.takeIf { it.isEditorTaskOf(principal) } ?: continue
+            if (store == null || task.status != "EXECUTING") continue
+            if (decide(principal, AuthzAction.TASK_CANCEL, task, AuthzContext(requesterIp = requesterIp)) is AuthzDecision.Deny) continue
+            if (markCancelled(store, taskId, "query.session_closed")) {
+                taskCompletionHub?.publish(principal, TaskEvent(taskId, "CANCELLED"))
+            }
+        }
+        runExecService.closeSessionOwnedBy(sessionId, principal)
+    }
+
+    private fun markCancelled(store: QueryResultStore, taskId: Long, errorCode: String): Boolean =
+        store.cancelRun(taskId, errorCode) { conn, _ ->
+            if (!accessStore.markCancelled(taskId, conn)) {
+                throw IllegalStateException("editor task $taskId left EXECUTING before cancellation")
+            }
+        } != null
 
     /**
      * The saved rows of statement [ordinal] (null = the active one), re-decided live under the task's roles on

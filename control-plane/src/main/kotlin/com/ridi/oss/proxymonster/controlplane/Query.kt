@@ -1310,7 +1310,7 @@ fun Route.editorSessionRoutes(
         // Close only if the caller owns the session (mirrors runOnSession) — a leaked sessionId must not let
         // another principal tear down this connection. Idempotent NoContent regardless, so it's not an
         // existence oracle for someone else's session id.
-        runExecService.closeSessionOwnedBy(sessionId, principal)
+        service.closeSession(principal, call.httpRequesterIp(config), sessionId)
         call.respond(HttpStatusCode.NoContent)
     }
 }

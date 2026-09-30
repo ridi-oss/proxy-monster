@@ -689,6 +689,7 @@ class RunExecService(
         taskSessions.values.removeIf { it == sessionId }
         try {
             session.attached.outbound.trySend(controlRunMsg { close = runClose {} })
+            session.attached.inbound.close()
         } finally {
             runCatching { core.tokenStore.revoke(session.tokenId, session.principal) }
             closeConnectionCatalog(session.connectionId, session.datasourceName)

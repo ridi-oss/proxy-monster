@@ -270,6 +270,7 @@ class QueryResultStore(private val dataSource: DataSource, private val crypto: R
      */
     fun cancelRun(
         taskId: Long,
+        errorCode: String = "approval.canceled",
         onCancelled: (Connection, QueryResultMeta) -> Unit = { _, _ -> },
     ): QueryResultMeta? = dataSource.inTx { c ->
         val now = Instant.now()
@@ -278,11 +279,12 @@ class QueryResultStore(private val dataSource: DataSource, private val crypto: R
         // updating zero rows, and the batch runs on past a cancel the user was told had landed.
         val child = runningChild(c, taskId, lockRows = true) ?: pendingChild(c, taskId, lockRows = true)
         val updated = child != null && c.prepareStatement(
-            "UPDATE query_result SET status = 'CANCELLED', error_code = 'approval.canceled', expires_at = ? " +
+            "UPDATE query_result SET status = 'CANCELLED', error_code = ?, expires_at = ? " +
                 "WHERE id = ? AND (status = 'RUNNING' OR status IS NULL)",
         ).use { ps ->
-            ps.setTimestamp(1, expiry)
-            ps.setLong(2, child.id)
+            ps.setString(1, errorCode)
+            ps.setTimestamp(2, expiry)
+            ps.setLong(3, child.id)
             ps.executeUpdate() > 0
         }
         val meta = if (updated) meta(taskId, child.ordinal, c) else null

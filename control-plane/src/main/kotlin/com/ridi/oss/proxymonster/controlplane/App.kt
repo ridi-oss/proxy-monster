@@ -22,6 +22,7 @@ import com.ridi.oss.proxymonster.controlplane.management.ManagementException
 import com.ridi.oss.proxymonster.controlplane.management.PolicyManagementService
 import com.ridi.oss.proxymonster.controlplane.management.auditEntity
 import com.ridi.oss.proxymonster.controlplane.mcp.installMcp
+import com.ridi.oss.proxymonster.controlplane.mcp.mcpConnectRoute
 import com.ridi.oss.proxymonster.controlplane.oauth.MCP_OAUTH_PENDING_COOKIE
 import com.ridi.oss.proxymonster.controlplane.oauth.McpPendingAuthorization
 import com.ridi.oss.proxymonster.controlplane.oauth.OAuthError
@@ -801,6 +802,7 @@ fun Application.module(config: Config, core: ControlPlaneCore) {
         }
 
         mePermissionsRoute(config, authz)
+        mcpConnectRoute(config)
 
         authenticate(WEB_SESSION_AUTH) {
             get("/auth/me") {

@@ -22,10 +22,10 @@ func newTestApp(rows int) *app {
 }
 
 func statusWith(names ...string) *control.Status {
-	s := &control.Status{Principal: "you@example.com", LoggedIn: true, LocalPassword: "pw"}
+	s := &control.Status{LoggedIn: true, LocalPassword: "pw", Servers: []control.ServerInfo{{Name: "default", Principal: "you@example.com", LoggedIn: true}}}
 	for i, n := range names {
 		s.Datasources = append(s.Datasources, control.Datasource{
-			Name: n, Engine: "mysql", DbName: n + "_db", LocalPort: 6100 + i, Brokered: true,
+			Server: "default", Name: n, Engine: "mysql", DbName: n + "_db", LocalPort: 6100 + i, Brokered: true,
 		})
 	}
 	return s
@@ -75,9 +75,9 @@ func TestConcurrentRendersNeverLeaveAMixedPool(t *testing.T) {
 // copying an empty or bogus string.
 func TestUnbrokeredRowCarriesNoPayload(t *testing.T) {
 	a := newTestApp(4)
-	s := &control.Status{Principal: "you@example.com", LoggedIn: true, LocalPassword: "pw"}
+	s := statusWith()
 	s.Datasources = []control.Datasource{
-		{Name: "no-addr", Engine: "postgres", Brokered: false, Reason: "no advertised proxy address"},
+		{Server: "default", Name: "no-addr", Engine: "postgres", Brokered: false, Reason: "no advertised proxy address"},
 	}
 	a.applyRows(s)
 
@@ -120,4 +120,46 @@ func TestOverflowSpendsTheLastRowOnANotice(t *testing.T) {
 			t.Errorf("row %d = %q, want %q (a set that fits must not lose a row to the notice)", i, got, want)
 		}
 	}
+}
+
+// With two servers each row names its server and copies that server's principal, so two datasources sharing a
+// name are told apart.
+func TestRowsNameTheirServer(t *testing.T) {
+	a := newTestApp(4)
+	s := &control.Status{LoggedIn: true, LocalPassword: "pw", Servers: []control.ServerInfo{
+		{Name: "default", Principal: "prod@example.com", LoggedIn: true},
+		{Name: "dev", Principal: "dev@example.com", LoggedIn: true},
+	}}
+	s.Datasources = []control.Datasource{
+		{Server: "default", Name: "acme", Engine: "mysql", DbName: "acme_db", LocalPort: 6100, Brokered: true},
+		{Server: "dev", Name: "acme", Engine: "mysql", DbName: "acme_db", LocalPort: 6101, Brokered: true},
+	}
+	a.applyRows(s)
+
+	for i, want := range []struct{ title, user string }{{"default  ·  acme", "prod%40example.com"}, {"dev  ·  acme", "dev%40example.com"}} {
+		row := a.dsItems[i]
+		if !strings.HasPrefix(row.title, want.title) || !strings.Contains(row.connString, want.user) {
+			t.Errorf("row %d = %q / %q, want %q copying %s", i, row.title, row.connString, want.title, want.user)
+		}
+	}
+	if got := loginTitle(s); got != "Re-authenticate…" {
+		t.Errorf("loginTitle = %q", got)
+	}
+}
+
+func TestLoginTargetIsAnExistingServer(t *testing.T) {
+	onlyDev := &control.Status{LoggedIn: true, Servers: []control.ServerInfo{{Name: "dev", LoggedIn: true}}}
+	if got := loginTarget(onlyDev); got != "dev" {
+		t.Errorf("loginTarget with only dev = %q, want dev", got)
+	}
+	devOut := &control.Status{Servers: []control.ServerInfo{{Name: "default", LoggedIn: true}, {Name: "dev"}}}
+	if got := loginTarget(devOut); got != "dev" {
+		t.Errorf("loginTarget = %q, want the logged-out dev", got)
+	}
+}
+
+// A daemon from before multi-server support reports loggedIn with no servers; rendering it must not panic.
+func TestRenderToleratesAnOutdatedDaemon(t *testing.T) {
+	a := newTestApp(2)
+	a.render(&control.Status{LoggedIn: true})
 }

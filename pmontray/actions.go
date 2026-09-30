@@ -29,7 +29,8 @@ func (a *app) doLogin() {
 		notify("proxy-monster", fmt.Sprintf("could not start the daemon: %v", err))
 		return
 	}
-	err = client.Login(a.ctx, control.LoginRequest{}, func(ev control.LoginEvent) {
+	s, _ := client.Status(a.ctx)
+	err = client.Login(a.ctx, control.LoginRequest{Server: loginTarget(s)}, func(ev control.LoginEvent) {
 		switch ev.Kind {
 		case "prompt":
 			// The DAEMON runs the flow, and it may be on a different host than this menu bar (remote over a

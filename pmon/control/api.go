@@ -26,14 +26,6 @@ type Status struct {
 	Servers []ServerInfo `json:"servers"`
 	// Datasources is every datasource across all servers, sorted by server then name.
 	Datasources []Datasource `json:"datasources"`
-
-	// TODO(reorg): temporary — the default server's login, until the CLI and tray read Servers; removed with the tray change.
-	Principal          string `json:"principal"`
-	ControlPlane       string `json:"controlPlane"`
-	ExpiresAt          string `json:"expiresAt"`
-	SessionExpiresAt   string `json:"sessionExpiresAt"`
-	ReauthRequired     bool   `json:"reauthRequired"`
-	LastDiscoveryError string `json:"lastDiscoveryError,omitempty"`
 }
 
 // ServerInfo is one configured control plane and its login.

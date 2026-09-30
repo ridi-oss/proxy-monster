@@ -59,9 +59,10 @@ type app struct {
 
 // dsItem is one datasource row: clicking it copies that datasource's connection string.
 type dsItem struct {
-	item *systray.MenuItem
-	mu   sync.Mutex
-	name string
+	item  *systray.MenuItem
+	mu    sync.Mutex
+	name  string
+	title string
 	// connString is what a click copies; empty when the row is not currently a brokered datasource.
 	connString string
 }
@@ -126,7 +127,7 @@ func (a *app) onReady() {
 
 	systray.AddSeparator()
 	a.mLogin = systray.AddMenuItem("Log in…", "Authenticate in your browser")
-	a.mLogout = systray.AddMenuItem("Log out", "Clear credentials and close the brokers")
+	a.mLogout = systray.AddMenuItem("Log out", "Log out of every server and close the brokers")
 	a.mStart = systray.AddMenuItem("Start daemon", "Start the pmon daemon")
 	a.mRestart = systray.AddMenuItem("Restart daemon", "Restart the pmon daemon")
 	a.mStop = systray.AddMenuItem("Stop daemon", "Stop the pmon daemon")

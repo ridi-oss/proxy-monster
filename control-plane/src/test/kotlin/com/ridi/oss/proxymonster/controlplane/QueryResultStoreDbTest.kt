@@ -45,6 +45,10 @@ class QueryResultStoreDbTest {
         evaluatedDecision = "MASK",
     ).id
 
+    private fun decision(): Long = AuditStore(dataSource).insert(
+        AuditEvent(principal = "bob@example.com", datasource = "ds", statement = "select 1", decision = Decision.ALLOW),
+    )
+
     private fun result() = DecryptedResult(
         listOf("id", "ssn"),
         listOf(listOf("1", "PM_SECRET_900101"), listOf("2", "PM_SECRET_850202")),
@@ -57,7 +61,7 @@ class QueryResultStoreDbTest {
         assertEquals("RUNNING", running?.status)
         assertEquals("bob@example.com", running?.executedBy)
         assertEquals("bob@example.com", accessStore.getRequest(id)?.executedBy)
-        val done = store.completeRun(id, result(), 3600)
+        val done = store.completeRun(id, result(), 3600, decision())
         assertEquals("DONE", done?.status)
         assertEquals(2, done?.rowCount)
         assertEquals(result(), store.accessFor(id)?.decrypted)
@@ -75,10 +79,27 @@ class QueryResultStoreDbTest {
     }
 
     @Test
+    fun `completeRun without an execution decision saves nothing`() {
+        val id = newTask()
+        assertNotNull(store.startNextRun(id, "bob@example.com"))
+        assertNull(store.completeRun(id, result(), 3600, decisionId = null))
+        assertEquals("RUNNING", store.meta(id)?.status)
+        dataSource.connection.use { c ->
+            c.prepareStatement("SELECT ciphertext FROM query_result WHERE task_id = ?").use { ps ->
+                ps.setLong(1, id)
+                ps.executeQuery().use { rs ->
+                    assertTrue(rs.next())
+                    assertNull(rs.getBytes(1))
+                }
+            }
+        }
+    }
+
+    @Test
     fun `DML result stores rowsAffected as row_count, not the empty result-set size`() {
         val id = newTask()
         assertNotNull(store.startNextRun(id, "bob@example.com"))
-        val done = store.completeRun(id, DecryptedResult(emptyList(), emptyList(), rowsAffected = 1), 3600)
+        val done = store.completeRun(id, DecryptedResult(emptyList(), emptyList(), rowsAffected = 1), 3600, decision())
         assertEquals("DONE", done?.status)
         assertEquals(1, done?.rowCount)
     }
@@ -233,7 +254,7 @@ class QueryResultStoreDbTest {
         assertEquals("approval.canceled", cancelled?.errorCode)
         assertNotNull(cancelled?.expiresAt)
         assertEquals("CANCELLED", accessStore.getRequest(id)?.status)
-        assertNull(store.completeRun(id, result(), 3600), "late completion must lose the child CAS")
+        assertNull(store.completeRun(id, result(), 3600, decision()), "late completion must lose the child CAS")
         assertNull(store.cancelRun(id), "cancel-after-terminal is an idempotent no-op")
     }
 
@@ -273,9 +294,9 @@ class QueryResultStoreDbTest {
             }
         }
         assertNotNull(store.startNextRun(id, "bob@example.com")) // claims statement 0
-        assertNotNull(store.completeRun(id, result(), 3600))
+        assertNotNull(store.completeRun(id, result(), 3600, decision()))
         assertNotNull(store.startNextRun(id, "bob@example.com")) // statement 1
-        val done = store.completeRun(id, DecryptedResult(listOf("v"), listOf(listOf("PM_SECRET_900101"))), 3600)
+        val done = store.completeRun(id, DecryptedResult(listOf("v"), listOf(listOf("PM_SECRET_900101"))), 3600, decision())
         assertEquals("DONE", done?.status)
 
         val access = store.accessFor(id, 1)
@@ -291,7 +312,7 @@ class QueryResultStoreDbTest {
     fun `expiry purges the payload but keeps the child row and its sql for audit`() {
         val id = newTask()
         store.startNextRun(id, "bob@example.com")
-        store.completeRun(id, result(), -1) // already expired
+        store.completeRun(id, result(), -1, decision()) // already expired
         assertTrue(store.purgeExpired() >= 1)
 
         // The child row survives: sql/sql_hash/status stay for durable audit + web preview, but the

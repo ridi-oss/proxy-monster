@@ -179,6 +179,11 @@ class EditorSubmitRouteDbTest {
         }
     }
 
+    private fun allowed(): ProxyRunMsg {
+        val id = core.auditStore.insert(AuditEvent(principal = caller, datasource = datasource.name, statement = "select id from t", decision = Decision.ALLOW, channel = "editor"))
+        return proxyRunMsg { decision = runDecision { decision = WireEnfAction.ALLOW; decisionId = id } }
+    }
+
     private class FakeSession(
         val sessionId: String,
         val proxyRequests: Channel<ProxyRunMsg>,
@@ -227,7 +232,7 @@ class EditorSubmitRouteDbTest {
         val client = wire()
         supervisorScope {
             val session = openFakeSession(client) { req, _ ->
-                req.send(proxyRunMsg { decision = runDecision { decision = WireEnfAction.ALLOW } })
+                req.send(allowed())
                 req.send(rowsChunk(listOf("id"), listOf(listOf("1"), listOf("2"))))
                 req.send(proxyRunMsg { done = runDone { rowsAffected = -1 } })
             }
@@ -270,7 +275,7 @@ class EditorSubmitRouteDbTest {
             val seen = java.util.concurrent.CopyOnWriteArrayList<String>()
             val session = openFakeSession(client) { req, control ->
                 seen += control.query.sql
-                req.send(proxyRunMsg { decision = runDecision { decision = WireEnfAction.ALLOW } })
+                req.send(allowed())
                 req.send(rowsChunk(listOf("v"), listOf(listOf(control.query.sql))))
                 req.send(proxyRunMsg { done = runDone { rowsAffected = -1 } })
             }
@@ -322,7 +327,7 @@ class EditorSubmitRouteDbTest {
                 if (control.query.sql.contains("ssn")) {
                     req.send(proxyRunMsg { decision = runDecision { decision = WireEnfAction.DENY; denyReason = "no" } })
                 } else {
-                    req.send(proxyRunMsg { decision = runDecision { decision = WireEnfAction.ALLOW } })
+                    req.send(allowed())
                     req.send(rowsChunk(listOf("v"), listOf(listOf("1"))))
                     req.send(proxyRunMsg { done = runDone { rowsAffected = -1 } })
                 }
@@ -355,7 +360,7 @@ class EditorSubmitRouteDbTest {
         val client = wire(hub = hub)
         supervisorScope {
             val session = openFakeSession(client) { req, _ ->
-                req.send(proxyRunMsg { decision = runDecision { decision = WireEnfAction.ALLOW } })
+                req.send(allowed())
                 req.send(rowsChunk(listOf("id"), listOf(listOf("1"))))
                 req.send(proxyRunMsg { done = runDone { rowsAffected = -1 } })
             }
@@ -392,6 +397,33 @@ class EditorSubmitRouteDbTest {
             // shows instead of a generic failure, and what the approval request is composed against. The
             // proxy sent this exact string above; an error code alone leaves the requester nowhere to go.
             assertEquals("policy denies", resultStore.meta(ack.taskId)?.denyReason)
+
+            client.delete("/api/editor/sessions/${session.sessionId}")
+            session.await()
+        }
+    }
+
+    @Test
+    fun `a run whose decision carries no decision id fails closed and saves no rows`() = testApplication {
+        val client = wire()
+        supervisorScope {
+            val session = openFakeSession(client) { req, _ ->
+                req.send(proxyRunMsg { decision = runDecision { decision = WireEnfAction.ALLOW; decisionId = 0 } })
+                req.send(rowsChunk(listOf("id"), listOf(listOf("1"))))
+                req.send(proxyRunMsg { done = runDone { rowsAffected = -1 } })
+            }
+            val ack = client.post("/api/editor/sessions/${session.sessionId}/query") {
+                contentType(ContentType.Application.Json); setBody(QueryRequest("select id from t", 100))
+            }.body<EditorSubmitResponse>()
+
+            awaitUntil("task and child FAILED") {
+                core.accessStore.getRequest(ack.taskId)?.status == "FAILED" && resultStore.meta(ack.taskId)?.status == "FAILED"
+            }
+            assertEquals("approval.query_failed", resultStore.meta(ack.taskId)?.errorCode)
+            assertNull(resultStore.accessFor(ack.taskId)?.decrypted)
+            val view = client.get("/api/editor/tasks/${ack.taskId}/result")
+            assertEquals(HttpStatusCode.Conflict, view.status)
+            assertEquals("approval.result_not_ready", view.body<ApiError>().code)
 
             client.delete("/api/editor/sessions/${session.sessionId}")
             session.await()
@@ -438,7 +470,7 @@ class EditorSubmitRouteDbTest {
             // Hold the run in-flight: ALLOW + rows but withhold Done, so the child stays RUNNING.
             val release = kotlinx.coroutines.CompletableDeferred<Unit>()
             val session = openFakeSession(client) { req, _ ->
-                req.send(proxyRunMsg { decision = runDecision { decision = WireEnfAction.ALLOW } })
+                req.send(allowed())
                 req.send(rowsChunk(listOf("id"), listOf(listOf("1"))))
                 release.await()
                 req.send(proxyRunMsg { done = runDone { rowsAffected = -1 } })
@@ -496,7 +528,7 @@ class EditorSubmitRouteDbTest {
             val firstRelease = CompletableDeferred<Unit>()
             val session = openFakeSession(client) { req, control ->
                 if (control.query.sql == "select first") {
-                    req.send(proxyRunMsg { decision = runDecision { decision = WireEnfAction.ALLOW } })
+                    req.send(allowed())
                     firstRelease.await()
                     req.send(proxyRunMsg { done = runDone { rowsAffected = -1 } })
                 } else {
@@ -609,6 +641,7 @@ class EditorSubmitRouteDbTest {
             task.id,
             DecryptedResult(listOf("n"), listOf(listOf("42")), resultFingerprint = ResultFingerprint.getDefaultInstance()),
             3600,
+            core.auditStore.insert(AuditEvent(principal = caller, datasource = datasource.name, statement = "select 42", decision = Decision.ALLOW)),
         )
         val connect = core.cedarPolicyStore.create(
             CedarPolicyInput(

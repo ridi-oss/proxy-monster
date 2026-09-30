@@ -2,6 +2,8 @@ package com.ridi.oss.proxymonster.controlplane.notify
 
 import com.ridi.oss.proxymonster.controlplane.AccessRequest
 import com.ridi.oss.proxymonster.controlplane.AppUserInput
+import com.ridi.oss.proxymonster.controlplane.AuditEvent
+import com.ridi.oss.proxymonster.controlplane.Decision
 import com.ridi.oss.proxymonster.controlplane.Config
 import com.ridi.oss.proxymonster.controlplane.ControlPlaneCore
 import com.ridi.oss.proxymonster.controlplane.CreateApprovalResponse
@@ -285,6 +287,9 @@ class SlackNotificationE2eDbTest {
         val created = client.createApproval("SELECT ssn FROM users")
         assertEquals(HttpStatusCode.Created, created.status)
         val req = created.body<CreateApprovalResponse>().request
+        val executionDecisionId = core.auditStore.insert(
+            AuditEvent(principal = approver, datasource = fx.datasource.name, statement = "SELECT ssn FROM users", decision = Decision.ALLOW, channel = "workflow-executor"),
+        )
 
         // 2. Drain: the approver is notified, and a clean statement offers approve-and-run.
         svc.drainOnce()
@@ -320,7 +325,7 @@ class SlackNotificationE2eDbTest {
                     stub.runExec(proxyRequests.receiveAsFlow()).collect { control ->
                         when {
                             control.hasQuery() -> {
-                                proxyRequests.send(proxyRunMsg { decision = runDecision { decision = WireEnfAction.ALLOW } })
+                                proxyRequests.send(proxyRunMsg { decision = runDecision { decision = WireEnfAction.ALLOW; decisionId = executionDecisionId } })
                                 proxyRequests.send(rowsChunk(listOf("ssn"), listOf(listOf("123-45-6789"))))
                                 proxyRequests.send(proxyRunMsg { done = runDone { rowsAffected = -1 } })
                             }

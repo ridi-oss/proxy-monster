@@ -1,6 +1,8 @@
 package com.ridi.oss.proxymonster.controlplane.notify
 
 import com.ridi.oss.proxymonster.controlplane.AccessRequest
+import com.ridi.oss.proxymonster.controlplane.AuditEvent
+import com.ridi.oss.proxymonster.controlplane.Decision
 import com.ridi.oss.proxymonster.controlplane.DecryptedResult
 import com.ridi.oss.proxymonster.controlplane.QueryResultStore
 import com.ridi.oss.proxymonster.controlplane.ResultCrypto
@@ -328,7 +330,10 @@ class NotificationServiceDbTest {
         val req = newTask(principal = "owner@x")
         val resultStore = QueryResultStore(fx.dataSource, ResultCrypto(ByteArray(32) { it.toByte() }))
         resultStore.startNextRun(req.id, "owner@x")
-        resultStore.completeRun(req.id, DecryptedResult(listOf("id"), listOf(listOf("1"), listOf("2"), listOf("3"))), retentionSec = 3600)
+        val decisionId = fx.auditStore.insert(
+            AuditEvent(principal = "owner@x", datasource = fx.datasource.name, statement = "select 1", decision = Decision.ALLOW),
+        )
+        resultStore.completeRun(req.id, DecryptedResult(listOf("id"), listOf(listOf("1"), listOf("2"), listOf("3"))), retentionSec = 3600, decisionId = decisionId)
 
         val svcWithResults = NotificationService(
             store = store,

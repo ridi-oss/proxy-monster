@@ -161,7 +161,7 @@ class McpQueryToolsDbTest {
         val principal = analyst("run")
         val fingerprint = fx.decide(sql, principal, Channel.EDITOR).resultFingerprint
         val token = token(principal, setOf("mcp:query"))
-        withFakeProxy({ _, _, _ -> maskedResult(fingerprint) }) {
+        withFakeProxy({ _, _, _ -> maskedResult(fingerprint, executionDecision(principal, Channel.EDITOR)) }) {
             run {
                 val run = client.call(token, "run_query", buildJsonObject {
                     put("datasource", fx.datasource.name)
@@ -381,12 +381,16 @@ class McpQueryToolsDbTest {
         withFakeProxy({ _, statement, _ ->
             if (statement.contains("id < 0")) {
                 listOf(
-                    proxyRunMsg { decision = runDecision { decision = WireEnfAction.ALLOW; resultFingerprint += emptyFingerprint } },
+                    proxyRunMsg {
+                        decision = runDecision {
+                            decision = WireEnfAction.ALLOW; decisionId = executionDecision(principal, Channel.EDITOR); resultFingerprint += emptyFingerprint
+                        }
+                    },
                     proxyRunMsg { resultRows = runResultRows { columns += "id" } },
                     proxyRunMsg { done = runDone { rowsAffected = -1 } },
                 )
             } else {
-                maskedResult(maskedFingerprint)
+                maskedResult(maskedFingerprint, executionDecision(principal, Channel.EDITOR))
             }
         }) {
             val batch = client.call(token, "run_query", buildJsonObject {
@@ -415,7 +419,7 @@ class McpQueryToolsDbTest {
         val principal = analyst("pagedenied")
         val token = token(principal, setOf("mcp:query"))
         // No frozen fingerprint, so the live re-decision cannot bind the stored columns and denies the view.
-        withFakeProxy({ _, _, _ -> maskedResult(emptyList()) }) {
+        withFakeProxy({ _, _, _ -> maskedResult(emptyList(), executionDecision(principal, Channel.EDITOR)) }) {
             val run = client.call(token, "run_query", buildJsonObject {
                 put("datasource", fx.datasource.name)
                 put("sql", sql)
@@ -542,7 +546,7 @@ class McpQueryToolsDbTest {
             ).map { core.cedarPolicyStore.create(CedarPolicyInput("mcp-self-approve-channel-${seq.incrementAndGet()}", it), "test") }
             val fingerprint = fx.decide(sql, principal, Channel.EDITOR).resultFingerprint
             try {
-                withFakeProxy({ _, _, _ -> maskedResult(fingerprint) }) {
+                withFakeProxy({ _, _, _ -> maskedResult(fingerprint, executionDecision(principal, Channel.EDITOR)) }) {
                     val result = client.call(token(principal, setOf("mcp:query")), "run_query", buildJsonObject {
                         put("datasource", fx.datasource.name)
                         put("sql", sql)
@@ -732,11 +736,11 @@ class McpQueryToolsDbTest {
         }
     }
 
-    private fun executionDecision(principal: String): Long = core.auditStore.insert(
-        AuditEvent(principal = principal, datasource = fx.datasource.name, statement = sql, decision = Decision.MASK, channel = Channel.WORKFLOW_EXECUTOR.contextValue),
+    private fun executionDecision(principal: String, channel: Channel = Channel.WORKFLOW_EXECUTOR): Long = core.auditStore.insert(
+        AuditEvent(principal = principal, datasource = fx.datasource.name, statement = sql, decision = Decision.MASK, channel = channel.contextValue),
     )
 
-    private fun maskedResult(fingerprint: List<com.ridi.oss.proxymonster.analyzer.pb.RequireResultReadGrant>, decisionId: Long = 0) = listOf(
+    private fun maskedResult(fingerprint: List<com.ridi.oss.proxymonster.analyzer.pb.RequireResultReadGrant>, decisionId: Long) = listOf(
         proxyRunMsg {
             decision = runDecision {
                 decision = WireEnfAction.MASK

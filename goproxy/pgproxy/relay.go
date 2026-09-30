@@ -266,7 +266,7 @@ func resultCapError(dec *engine.Decision, relayed engine.RelayStats, rowBytes in
 
 func (s *Server) cancelCappedQuery(sess *session) {
 	if sess.keyData.ProcessID != 0 {
-		_ = sendCancelRequest(s.targetDb.Host, s.targetDb.Port, sess.keyData.ProcessID, sess.keyData.SecretKey)
+		_ = sendCancelRequest(s.targetDb, sess.keyData.ProcessID, sess.keyData.SecretKey)
 	}
 }
 

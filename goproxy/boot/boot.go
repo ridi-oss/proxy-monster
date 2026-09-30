@@ -66,6 +66,7 @@ func Run(registry spi.Registry) error {
 		Db:       cfg.TargetDb,
 		User:     cfg.TargetUser,
 		Password: cfg.TargetPassword,
+		TLS:      cfg.TargetTLS,
 	})
 	if err != nil {
 		return fmt.Errorf("failed to open target: %w", err)

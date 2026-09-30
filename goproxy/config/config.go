@@ -4,6 +4,7 @@
 package config
 
 import (
+	"crypto/tls"
 	"fmt"
 	"net"
 	"strconv"
@@ -13,6 +14,7 @@ import (
 	"github.com/alecthomas/kong"
 	"github.com/ridi-oss/proxy-monster/goproxy/engine"
 	"github.com/ridi-oss/proxy-monster/goproxy/spi"
+	"github.com/ridi-oss/proxy-monster/goproxy/targettls"
 )
 
 // rawFlags is the kong grammar: every field is bound to its PM_* environment variable. This struct is
@@ -29,6 +31,8 @@ type rawFlags struct {
 	TargetDb               string `env:"PM_TARGET_DB" default:"acme"`
 	TargetUser             string `env:"PM_TARGET_USER" default:"acme"`
 	TargetPassword         string `env:"PM_TARGET_PASSWORD" default:"acme"`
+	TargetTLS              string `env:"PM_TARGET_TLS"`
+	TargetCA               string `env:"PM_TARGET_CA"`
 	ControlPlaneGrpcTarget string `env:"PM_CONTROL_PLANE_GRPC" default:"localhost:9090"`
 	DatasourceName         string `env:"PM_DATASOURCE_NAME"`
 	DatasourceTags         string `env:"PM_DATASOURCE_TAGS"`
@@ -72,15 +76,17 @@ type Config struct {
 	// Engine is the raw, lowercased PM_ENGINE value — the genuine string source kept for error messages
 	// and the boot log. Dialect is the typed form every downstream consumer uses; the string is parsed to
 	// it exactly once, here at the config boundary.
-	Engine                 string
-	Dialect                engine.Dialect
-	Provider               spi.Provider
-	ProxyPort              int
-	TargetHost             string
-	TargetPort             int
-	TargetDb               string
-	TargetUser             string
-	TargetPassword         string
+	Engine         string
+	Dialect        engine.Dialect
+	Provider       spi.Provider
+	ProxyPort      int
+	TargetHost     string
+	TargetPort     int
+	TargetDb       string
+	TargetUser     string
+	TargetPassword string
+	// TargetTLS is the proxy's TLS config toward the target DB (PM_TARGET_TLS, PM_TARGET_CA); nil is plaintext.
+	TargetTLS              *tls.Config
 	ControlPlaneGrpcTarget string
 	DatasourceName         string
 	DatasourceTags         []string
@@ -149,6 +155,15 @@ func Load(registry spi.Registry) (*Config, error) {
 		queryTimeout = time.Duration(seconds) * time.Second
 	}
 
+	targetTLSMode, err := targettls.ParseMode(raw.TargetTLS)
+	if err != nil {
+		return nil, err
+	}
+	targetTLS, err := targettls.Config(targetTLSMode, raw.TargetCA, raw.TargetHost)
+	if err != nil {
+		return nil, err
+	}
+
 	var tags []string
 	for _, tag := range strings.Split(raw.DatasourceTags, ",") {
 		tag = strings.TrimSpace(tag)
@@ -174,6 +189,7 @@ func Load(registry spi.Registry) (*Config, error) {
 		TargetDb:               raw.TargetDb,
 		TargetUser:             raw.TargetUser,
 		TargetPassword:         raw.TargetPassword,
+		TargetTLS:              targetTLS,
 		ControlPlaneGrpcTarget: raw.ControlPlaneGrpcTarget,
 		// A whitespace-only value is absent, so Validate()/TLSEnabled() treat it as unset rather than a
 		// usable name/path.

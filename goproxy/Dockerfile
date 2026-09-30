@@ -23,9 +23,10 @@ RUN go build -trimpath -o /out/goproxy ./cmd/goproxy
 
 # ---- Runtime ----
 # debian-slim (rather than scratch/distroless) so the TCP health check below has a shell; the binary is
-# statically linked, so nothing else from the base is required.
+# statically linked. ca-certificates is the "system" trust in PM_TARGET_CA.
 FROM debian:bookworm-slim
 
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && rm -rf /var/lib/apt/lists/*
 RUN groupadd --system --gid 10001 pm && useradd --system --uid 10001 --gid pm --create-home pm
 COPY --from=build /out/goproxy /usr/local/bin/goproxy
 USER pm

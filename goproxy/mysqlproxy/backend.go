@@ -64,7 +64,8 @@ func dialTargetDbAuthID(ctx context.Context, target spi.TargetDb, mirrorDeprecat
 			_ = conn.Close()
 		}
 	}()
-	defer context.AfterFunc(ctx, func() { _ = conn.Close() })()
+	socket := conn
+	defer context.AfterFunc(ctx, func() { _ = socket.Close() })()
 	if err := conn.SetDeadline(time.Now().Add(targetDbHandshakeTimeout)); err != nil {
 		return nil, 0, fmt.Errorf("set target-DB auth deadline: %w", err)
 	}
@@ -99,8 +100,24 @@ func dialTargetDbAuthID(ctx context.Context, target spi.TargetDb, mirrorDeprecat
 	if err != nil {
 		return nil, 0, err
 	}
+	responseSeq := greetingSeq + 1
+	if target.TLS != nil {
+		if greeting.Capabilities&mysqlwire.CapSSL == 0 {
+			return nil, 0, errors.New("target DB does not offer TLS (CLIENT_SSL missing from its greeting)")
+		}
+		caps |= mysqlwire.CapSSL
+		if err := mysqlwire.WritePacket(conn, responseSeq, mysqlwire.SSLRequest(caps)); err != nil {
+			return nil, 0, fmt.Errorf("write target-DB SSLRequest: %w", err)
+		}
+		tlsConn := tls.Client(conn, target.TLS)
+		if err := tlsConn.HandshakeContext(ctx); err != nil {
+			return nil, 0, fmt.Errorf("target-DB TLS handshake: %w", err)
+		}
+		conn = tlsConn
+		responseSeq++
+	}
 	response := mysqlwire.TargetDbHandshakeResponse(caps, target.User, authResp, target.Db, plugin)
-	if err := mysqlwire.WritePacket(conn, greetingSeq+1, response); err != nil {
+	if err := mysqlwire.WritePacket(conn, responseSeq, response); err != nil {
 		return nil, 0, fmt.Errorf("write target-DB handshake response: %w", err)
 	}
 

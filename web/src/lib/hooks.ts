@@ -23,6 +23,7 @@ import {
   getGroupRoles,
   getGroups,
   getMaskFns,
+  getMcpConnect,
   getMePermissions,
   getMyApprovals,
   getQueryHistory,
@@ -54,6 +55,7 @@ const KEYS = {
   maskFns: 'mask-fns',
   queryHistory: 'query-history',
   tokens: 'tokens',
+  mcpConnect: 'mcp-connect',
   roleAssignments: 'role-assignments',
   cedarPolicies: 'cedar-policies',
   cedarSchema: 'cedar-schema',
@@ -154,6 +156,10 @@ export function useMaskFns() {
 
 export function useQueryHistory() {
   return useSWR(KEYS.queryHistory, () => getQueryHistory(50))
+}
+
+export function useMcpConnect() {
+  return useSWR(KEYS.mcpConnect, getMcpConnect)
 }
 
 export function useTokens(opts?: SWRConfiguration) {

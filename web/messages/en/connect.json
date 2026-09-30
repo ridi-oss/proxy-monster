@@ -1,0 +1,24 @@
+{
+  "menu": "Connect an agent",
+  "header": {
+    "title": "Connect an agent",
+    "subtitle": "Give a coding agent on your machine access to this proxy-monster instance over MCP. It signs in as you through OAuth and gets exactly your access."
+  },
+  "instance": "Instance",
+  "installName": "MCP server name",
+  "url": "MCP URL",
+  "copy": "Copy",
+  "copied": "Copied",
+  "agent": {
+    "title": "Paste this to your agent",
+    "body": "Works in Claude Code and Codex CLI. The agent installs the server; you approve the sign-in in your browser. Pasting it again replaces an earlier install of this instance.",
+    "step1": "Add an HTTP (streamable HTTP) MCP server named {installName} with the URL {mcpUrl}, in user scope so it is available in every project. If a server named {installName} already exists, replace it.",
+    "step2": "Start its OAuth login in my browser. In Claude Code, tell me to run /mcp, pick {installName}, and choose Authenticate. No token or password is needed.",
+    "intro": "Install the proxy-monster MCP server {installName}:",
+    "after": "Once connected, the server describes itself and the datasources I can use."
+  },
+  "unsupported": {
+    "title": "Not supported",
+    "body": "claude.ai, Claude Desktop, and ChatGPT connect to remote MCP servers from the vendor's cloud, not from your machine. proxy-monster servers are private and accept direct connections from agents on your machine only."
+  }
+}

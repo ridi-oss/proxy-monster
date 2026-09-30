@@ -44,6 +44,14 @@ export interface Identity {
 }
 
 /** Coarse Cedar-backed capabilities for the authenticated principal. */
+/** GET /api/mcp/connect — what the "Connect an agent" page installs. */
+export interface McpConnectInfo {
+  instanceName: string
+  instanceDescription: string
+  mcpUrl: string
+  installName: string
+}
+
 export interface MePermissions {
   isAdmin: boolean
   canReadAllAudit: boolean

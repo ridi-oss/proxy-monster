@@ -1,0 +1,24 @@
+{
+  "menu": "에이전트 연결",
+  "header": {
+    "title": "에이전트 연결",
+    "subtitle": "내 컴퓨터의 코딩 에이전트가 MCP로 이 proxy-monster 인스턴스를 사용하게 합니다. 에이전트는 OAuth로 내 계정으로 로그인하며 내 권한만큼만 접근합니다."
+  },
+  "instance": "인스턴스",
+  "installName": "MCP 서버 이름",
+  "url": "MCP URL",
+  "copy": "복사",
+  "copied": "복사됨",
+  "agent": {
+    "title": "에이전트에 붙여넣기",
+    "body": "Claude Code와 Codex CLI에서 동작합니다. 에이전트가 서버를 설치하고, 로그인은 브라우저에서 승인합니다. 다시 붙여넣으면 이 인스턴스의 기존 설치를 교체합니다.",
+    "step1": "{installName}라는 이름으로 URL이 {mcpUrl}인 HTTP(streamable HTTP) MCP 서버를 사용자 범위로 추가해 모든 프로젝트에서 쓸 수 있게 해 주세요. 같은 이름의 서버가 이미 있으면 교체해 주세요.",
+    "step2": "브라우저에서 OAuth 로그인을 시작해 주세요. Claude Code라면 /mcp를 실행해 {installName}를 고르고 Authenticate를 선택하라고 알려 주세요. 토큰이나 비밀번호는 필요 없습니다.",
+    "intro": "proxy-monster MCP 서버 {installName}를 설치해 주세요:",
+    "after": "연결되면 서버가 자신과 내가 쓸 수 있는 데이터소스를 알려 줍니다."
+  },
+  "unsupported": {
+    "title": "지원하지 않음",
+    "body": "claude.ai, Claude Desktop, ChatGPT는 내 컴퓨터가 아니라 각 회사의 클라우드에서 원격 MCP 서버에 연결합니다. proxy-monster 서버는 비공개이며 내 컴퓨터의 에이전트가 직접 연결하는 것만 지원합니다."
+  }
+}

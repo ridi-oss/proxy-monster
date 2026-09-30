@@ -596,6 +596,7 @@ fun Application.module(config: Config, core: ControlPlaneCore) {
         roleResolver, authz, runExecService, this@module, core.systemClassification, taskCompletionHub,
         notifications,
     )
+    val auditService = AuditService(authz, store)
     installMcp(
         config, core, datasourceManagement, policyManagement, identityManagement, editorTaskService, approvalService,
     )
@@ -737,7 +738,7 @@ fun Application.module(config: Config, core: ControlPlaneCore) {
         }
 
         // Live decision feed for the UI. Requires a session; each record is then filtered by audit.read.
-        auditRoutes(config, store, authz)
+        auditRoutes(config, store, authz, auditService)
 
         // Dev-only login shortcut; gated by PM_AUTH_DEBUG. OIDC (above) is the production path.
         post("/auth/debug") {

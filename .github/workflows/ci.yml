@@ -159,3 +159,61 @@ jobs:
 
       - name: Verify
         run: mise run verify
+
+  # The end-to-end smoke (smoke/run.sh): its own compose project, a freshly built
+  # control plane, one wire proxy per engine, the console, and pmon, driven
+  # through every client path. It needs what verify needs plus the mysql and
+  # psql clients and a Playwright Chromium, all present on ubuntu-latest.
+  smoke:
+    name: smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - uses: actions/checkout@v7
+      - uses: jdx/mise-action@v4
+
+      - name: Resolve cache paths
+        id: paths
+        run: |
+          echo "go-mod=$(go env GOMODCACHE)" >>"$GITHUB_OUTPUT"
+          echo "go-build=$(go env GOCACHE)" >>"$GITHUB_OUTPUT"
+          echo "pnpm-store=$(pnpm store path --silent)" >>"$GITHUB_OUTPUT"
+
+      - name: Cache Go modules and build cache
+        uses: actions/cache@v6
+        with:
+          path: |
+            ${{ steps.paths.outputs.go-mod }}
+            ${{ steps.paths.outputs.go-build }}
+          key:
+            go-${{ runner.os }}-${{ hashFiles('go.work', '**/go.sum',
+            '**/go.mod') }}
+          restore-keys: go-${{ runner.os }}-
+
+      - name: Cache pnpm store
+        uses: actions/cache@v6
+        with:
+          path: ${{ steps.paths.outputs.pnpm-store }}
+          key: pnpm-${{ runner.os }}-${{ hashFiles('web/pnpm-lock.yaml') }}
+          restore-keys: pnpm-${{ runner.os }}-
+
+      - uses: gradle/actions/setup-gradle@v6
+
+      - name: Install the console and its browser
+        run: |
+          pnpm -C web install --frozen-lockfile
+          pnpm -C web exec playwright install --with-deps chromium
+
+      - name: Smoke
+        run: mise run smoke
+        env:
+          SMOKE_DIR: ${{ runner.temp }}/pm-smoke
+
+      - name: Upload smoke logs
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: smoke-logs
+          path: ${{ runner.temp }}/pm-smoke/logs
+          if-no-files-found: ignore

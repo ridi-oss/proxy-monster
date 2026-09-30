@@ -191,10 +191,12 @@ class QueryResultStore(private val dataSource: DataSource, private val crypto: R
         taskId: Long,
         result: DecryptedResult,
         retentionSec: Long,
-        // The execution's audit decision, kept so a later view can charge its released volume against it.
-        decisionId: Long? = null,
+        // The execution's audit decision; a later view charges its released volume against it.
+        decisionId: Long?,
         audit: (Connection, QueryResultMeta) -> Unit = { _, _ -> },
     ): QueryResultMeta? {
+        // A DONE result with no decision could never be charged, so it is never saved.
+        if (decisionId == null) return null
         val blob = crypto.encrypt(ResultPayloadCodec.encode(result))
         val now = Instant.now()
         return dataSource.inTx { c ->
@@ -215,7 +217,7 @@ class QueryResultStore(private val dataSource: DataSource, private val crypto: R
                 }
                 ps.setTimestamp(4, Timestamp.from(now))
                 ps.setTimestamp(5, Timestamp.from(now.plusSeconds(retentionSec)))
-                if (decisionId == null) ps.setNull(6, java.sql.Types.BIGINT) else ps.setLong(6, decisionId)
+                ps.setLong(6, decisionId)
                 ps.setLong(7, child.id)
                 ps.executeUpdate() > 0
             }

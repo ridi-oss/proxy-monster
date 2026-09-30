@@ -195,6 +195,11 @@ class ApprovalExecuteRouteDbTest {
     /** A QUERY request elevating [requester] to a fresh role R on [datasource], already APPROVED —
      *  modeling a request legitimately approved earlier so this test isolates the /execute DENY-under-R
      *  branch alone (roleId populates req.roleName, selecting the execute-under-R branch). */
+    private fun allowed(): ProxyRunMsg {
+        val id = core.auditStore.insert(AuditEvent(principal = executor, datasource = datasource.name, statement = "select ssn from users", decision = Decision.ALLOW, channel = "workflow-executor"))
+        return proxyRunMsg { decision = runDecision { decision = WireEnfAction.ALLOW; decisionId = id } }
+    }
+
     private fun seedApprovedRoleRequest(roleName: String, decidedBy: String = executor): Long {
         val roleId = core.policyStore.createRole(RoleInput(roleName)).id
         val id = core.accessStore.createQueryRequest(
@@ -547,7 +552,7 @@ class ApprovalExecuteRouteDbTest {
                 stub.runExec(proxyRequests.receiveAsFlow()).collect { control ->
                     when {
                         control.hasQuery() -> {
-                            proxyRequests.send(proxyRunMsg { decision = runDecision { decision = WireEnfAction.ALLOW } })
+                            proxyRequests.send(allowed())
                             proxyRequests.send(rowsChunk(listOf("ssn"), listOf(listOf("some-value"))))
                             proxyRequests.send(proxyRunMsg { done = runDone { rowsAffected = -1 } })
                         }
@@ -610,7 +615,7 @@ class ApprovalExecuteRouteDbTest {
                 stub.runExec(proxyRequests.receiveAsFlow()).collect { control ->
                     when {
                         control.hasQuery() -> launch {
-                            proxyRequests.send(proxyRunMsg { decision = runDecision { decision = WireEnfAction.ALLOW } })
+                            proxyRequests.send(allowed())
                             proxyRequests.send(rowsChunk(listOf("ssn"), listOf(listOf("some-value"))))
                             // Withhold Done until the test has proven the route already returned 202 and
                             // the task/child are observably in flight.

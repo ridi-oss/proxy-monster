@@ -217,7 +217,10 @@ class PrincipalSessionStoreDbTest {
         composed.mintWeb(principal, null, 7200, 900, "device-t")
         val task = accessStore.createEditorTask(principal, dsId, listOf("select 1"), listOf("analyst"), principal)
         resultStore.startNextRun(task.id, principal)
-        resultStore.completeRun(task.id, DecryptedResult(listOf("c"), listOf(listOf("1"))), 3600)
+        val decisionId = AuditStore(dataSource).insert(
+            AuditEvent(principal = principal, datasource = "ds-teardown", statement = "select 1", decision = Decision.ALLOW),
+        )
+        resultStore.completeRun(task.id, DecryptedResult(listOf("c"), listOf(listOf("1"))), 3600, decisionId)
         assertEquals(1, editorChildCount(principal), "seeded one editor result child")
 
         // Teardown aborts AFTER ending the session + composing the delete → inTx rolls the whole thing back.

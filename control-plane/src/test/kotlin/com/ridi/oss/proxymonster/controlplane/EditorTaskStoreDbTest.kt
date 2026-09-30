@@ -42,6 +42,10 @@ class EditorTaskStoreDbTest {
 
     private fun result() = DecryptedResult(listOf("id"), listOf(listOf("1"), listOf("2")))
 
+    private fun decision(principal: String): Long = AuditStore(dataSource).insert(
+        AuditEvent(principal = principal, datasource = "ds", statement = "select id from t", decision = Decision.ALLOW),
+    )
+
     private fun expireChild(taskId: Long) = dataSource.connection.use { c ->
         c.prepareStatement("UPDATE query_result SET expires_at = ? WHERE task_id = ?").use { ps ->
             ps.setTimestamp(1, Timestamp.from(Instant.now().minusSeconds(60)))
@@ -124,7 +128,7 @@ class EditorTaskStoreDbTest {
         assertFalse(accessStore.claimExecution(task.id), "a second claim on a non-APPROVED task loses")
 
         assertEquals("RUNNING", resultStore.startNextRun(task.id, "bob@example.com")?.status)
-        val done = resultStore.completeRun(task.id, result(), 3600) { conn, _ ->
+        val done = resultStore.completeRun(task.id, result(), 3600, decision("bob@example.com")) { conn, _ ->
             assertTrue(accessStore.markExecuted(task.id, conn))
         }
         assertEquals("DONE", done?.status)
@@ -138,7 +142,7 @@ class EditorTaskStoreDbTest {
             "carol@example.com", datasourceId, listOf("select id from t"), listOf("analyst"), "carol@example.com",
         )
         resultStore.startNextRun(task.id, "carol@example.com")
-        resultStore.completeRun(task.id, result(), 3600)
+        resultStore.completeRun(task.id, result(), 3600, decision("carol@example.com"))
         assertEquals(1, resultStore.deleteResultsForTask(task.id))
         assertEquals(0, childCount(task.id))
         assertEquals(0, resultStore.deleteResultsForTask(task.id), "idempotent: nothing left to delete")

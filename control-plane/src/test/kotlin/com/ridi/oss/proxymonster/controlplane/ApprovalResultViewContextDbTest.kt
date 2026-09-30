@@ -254,7 +254,9 @@ class ApprovalResultViewContextDbTest {
         }
         fx.dataSource.connection.use { c -> c.prepareStatement("INSERT INTO query_result (task_id, sql, sql_hash) VALUES (?, ?, 'fixture')").use { ps -> ps.setLong(1, reqId); ps.setString(2, sql); ps.executeUpdate() } }
         assertNotNull(resultStore.startNextRun(reqId, executor))
-        assertNotNull(resultStore.completeRun(reqId, DecryptedResult(columns, rows, resultFingerprint = resultFingerprint?.let { fingerprintOf(it) }, truncatedByCap = truncatedByCap), 3600, decisionId))
+        assertNotNull(resultStore.completeRun(reqId, DecryptedResult(columns, rows, resultFingerprint = resultFingerprint?.let { fingerprintOf(it) }, truncatedByCap = truncatedByCap), 3600, decisionId ?: executionDecision(sql)))
+        // The FK's ON DELETE SET NULL can still leave a DONE row without its decision.
+        if (decisionId == null) fx.dataSource.connection.use { c -> c.prepareStatement("UPDATE query_result SET decision_id = NULL WHERE task_id = ?").use { ps -> ps.setLong(1, reqId); ps.executeUpdate() } }
         return reqId
     }
 

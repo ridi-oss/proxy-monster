@@ -61,6 +61,10 @@ class QueryResultBatchDbTest {
         return id
     }
 
+    private fun decision(): Long = AuditStore(dataSource).insert(
+        AuditEvent(principal = "bob@example.com", datasource = "ds", statement = "select 1", decision = Decision.ALLOW),
+    )
+
     private fun result(vararg values: String) = DecryptedResult(listOf("c"), values.map { listOf(it) })
 
     @Test
@@ -102,15 +106,15 @@ class QueryResultBatchDbTest {
         // Only the first statement is running; the rest are still pending.
         assertEquals(listOf("RUNNING", null, null), store.statements(id).map { it.status })
 
-        store.completeRun(id, result("a"), 3600)
+        store.completeRun(id, result("a"), 3600, decision())
         val second = assertNotNull(store.startNextRun(id, "bob@example.com"))
         assertEquals(1, second.ordinal)
         assertEquals(batch[1], second.sql)
-        store.completeRun(id, result("b"), 3600)
+        store.completeRun(id, result("b"), 3600, decision())
 
         val third = assertNotNull(store.startNextRun(id, "bob@example.com"))
         assertEquals(2, third.ordinal)
-        store.completeRun(id, result("c"), 3600)
+        store.completeRun(id, result("c"), 3600, decision())
 
         assertEquals(listOf("DONE", "DONE", "DONE"), store.statements(id).map { it.status })
         assertNull(store.startNextRun(id, "bob@example.com"), "a finished batch has nothing left to start")
@@ -120,9 +124,9 @@ class QueryResultBatchDbTest {
     fun `each statement's rows are stored and read back by ordinal`() {
         val id = newTask()
         store.claimAndStartRun(id, "bob@example.com") { accessStore.claimExecution(id, it) }
-        store.completeRun(id, result("first"), 3600)
+        store.completeRun(id, result("first"), 3600, decision())
         store.startNextRun(id, "bob@example.com")
-        store.completeRun(id, result("second"), 3600)
+        store.completeRun(id, result("second"), 3600, decision())
 
         assertEquals(result("first"), store.accessFor(id, 0)?.decrypted)
         assertEquals(result("second"), store.accessFor(id, 1)?.decrypted)
@@ -135,7 +139,7 @@ class QueryResultBatchDbTest {
     fun `a failure stops the batch and skips the statements after it`() {
         val id = newTask()
         store.claimAndStartRun(id, "bob@example.com") { accessStore.claimExecution(id, it) }
-        store.completeRun(id, result("a"), 3600)
+        store.completeRun(id, result("a"), 3600, decision())
         store.startNextRun(id, "bob@example.com")
 
         val failed = assertNotNull(store.failRun(id, "approval.execute_denied", denyReason = "no"))
@@ -162,7 +166,7 @@ class QueryResultBatchDbTest {
     fun `a cancel between statements stops the batch`() {
         val id = newTask()
         store.claimAndStartRun(id, "bob@example.com") { accessStore.claimExecution(id, it) }
-        store.completeRun(id, result("a"), 3600)
+        store.completeRun(id, result("a"), 3600, decision())
         // Statement 0 is DONE and statement 1 has not started — the gap.
         assertEquals(listOf("DONE", null, null), store.statements(id).map { it.status })
 
@@ -180,7 +184,7 @@ class QueryResultBatchDbTest {
     fun `the ordinal-less readers ignore trailing SKIPPED statements`() {
         val id = newTask()
         store.claimAndStartRun(id, "bob@example.com") { accessStore.claimExecution(id, it) }
-        store.completeRun(id, result("a"), 3600)
+        store.completeRun(id, result("a"), 3600, decision())
         store.startNextRun(id, "bob@example.com")
         store.failRun(id, "approval.execute_denied", denyReason = "no")
         assertEquals(listOf("DONE", "FAILED", "SKIPPED"), store.statements(id).map { it.status })
@@ -199,7 +203,7 @@ class QueryResultBatchDbTest {
     fun `boot reconcile fails the statement a crash stopped before, not just the tail`() {
         val id = newTask()
         store.claimAndStartRun(id, "bob@example.com") { accessStore.claimExecution(id, it) }
-        store.completeRun(id, result("a"), 3600)
+        store.completeRun(id, result("a"), 3600, decision())
         // The process dies here: statement 0 DONE, statement 1 never started, parent still EXECUTING.
         assertEquals("EXECUTING", accessStore.getRequest(id)?.status)
         assertEquals(listOf("DONE", null, null), store.statements(id).map { it.status })
@@ -225,7 +229,7 @@ class QueryResultBatchDbTest {
         assertEquals(1, assertNotNull(accessStore.getRequest(id)).statementCount)
         val running = assertNotNull(store.claimAndStartRun(id, "bob@example.com") { accessStore.claimExecution(id, it) })
         assertEquals(0, running.ordinal)
-        store.completeRun(id, result("only"), 3600)
+        store.completeRun(id, result("only"), 3600, decision())
         // The ordinal-less readers still land on the one child.
         assertEquals("DONE", store.meta(id)?.status)
         assertEquals(result("only"), store.accessFor(id)?.decrypted)
@@ -237,7 +241,7 @@ class QueryResultBatchDbTest {
         val id = newTask()
         store.claimAndStartRun(id, "bob@example.com") { accessStore.claimExecution(id, it) }
         assertEquals(0, store.meta(id)?.ordinal)
-        store.completeRun(id, result("a"), 3600)
+        store.completeRun(id, result("a"), 3600, decision())
         store.startNextRun(id, "bob@example.com")
         // Once statement 1 starts, the un-ordinal'd read follows it rather than staying on statement 0.
         assertEquals(1, store.meta(id)?.ordinal)
@@ -262,7 +266,7 @@ class QueryResultBatchDbTest {
     fun `a cancel racing a completion still stops the batch`() {
         val id = newTask()
         assertNotNull(store.claimAndStartRun(id, "bob@example.com") { accessStore.claimExecution(id, it) })
-        store.completeRun(id, result("a"), 3600)
+        store.completeRun(id, result("a"), 3600, decision())
         // Nothing is RUNNING now — exactly the window the race lands in.
         val cancelled = assertNotNull(store.cancelRun(id), "a cancel between statements must still land")
         assertEquals(1, cancelled.ordinal)

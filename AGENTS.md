@@ -165,6 +165,18 @@ and its DB-backed tests need Docker — details, and the flags that change that,
 in [CONTRIBUTING.md](./CONTRIBUTING.md#build-test-run). Install and deploy:
 [INSTALL.md](./INSTALL.md).
 
+## Releases
+
+release-please cuts three trains (server, `pmon`, `mysqlwire`) from one config;
+see [CONTRIBUTING.md](./CONTRIBUTING.md#releases). The paths a commit touches
+decide its train.
+
+Never force a version with an empty commit carrying a `Release-As:` footer. An
+empty commit touches no path, so release-please counts it toward every train:
+`Release-As: 0.1.21` meant for the server also set `pmon` to 0.1.21. Put the
+footer on a commit that edits a file in that train's directory, such as its
+`CHANGELOG.md`.
+
 ## Design docs
 
 Index and what's built: [docs/README.md](./docs/README.md). House style:

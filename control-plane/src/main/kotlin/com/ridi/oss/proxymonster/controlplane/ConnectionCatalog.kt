@@ -81,6 +81,8 @@ data class HeldSchema(
 data class PendingRefetch(
     val expectedHash: ContentHash?,
     val authoritativeAtIssue: ContentHash?,
+    val afterStatement: Boolean = false,
+    val afterCommit: Boolean = false,
 )
 
 /** Build the proxy's conditional-refetch command; an absent [hash] leaves `if_hash_differs` empty
@@ -98,6 +100,8 @@ data class EnforcementConnection(
     val binding: Binding,
     val held: MutableMap<String, HeldSchema> = LinkedHashMap(),
     val pending: MutableMap<String, PendingRefetch> = LinkedHashMap(),
+    /** Schemas whose DDL this connection ran since its last COMMIT/ROLLBACK; a PG transaction hides it from others. */
+    val ddlSinceLastCommit: MutableSet<String> = LinkedHashSet(),
     var backendGeneration: Long? = null,
     var generation: Long = 0,
     val mutex: Mutex = Mutex(),
@@ -113,7 +117,7 @@ data class EditorDecideInputs(
 )
 
 sealed interface CatalogMutationResult {
-    data class Applied(val generation: Long) : CatalogMutationResult
+    data class Applied(val generation: Long, val refreshConfigCatalog: Boolean = false) : CatalogMutationResult
     data class Rejected(val code: Status.Code, val description: String) : CatalogMutationResult
 }
 
@@ -126,6 +130,7 @@ class ConnectionCatalogRegistry(
     private val clockNanos: () -> Long = System::nanoTime,
     private val secureRandom: SecureRandom = SecureRandom(),
     internal val stalenessNanos: Long = DEFAULT_STALENESS_NANOS,
+    private val requestConfigCatalogRefresh: (datasourceName: String) -> Unit = {},
 ) {
     private val pool = ConcurrentHashMap<PoolKey, PooledFragment>()
     private val authoritative = ConcurrentHashMap<Pair<String, String>, Authoritative>()
@@ -224,6 +229,10 @@ class ConnectionCatalogRegistry(
             }
             connection.lastUsedNanos = clockNanos()
             applyPushLocked(connection, request, ds)
+        }.also { result ->
+            if (result is CatalogMutationResult.Applied && result.refreshConfigCatalog) {
+                runCatching { requestConfigCatalogRefresh(ds.name) }
+            }
         }
     }
 
@@ -282,6 +291,7 @@ class ConnectionCatalogRegistry(
                 )
                 if (previous != null && previous.pooledRef != key) release(previous.pooledRef)
                 accept(connection, request.schema, request.backendGeneration)
+                    .copy(refreshConfigCatalog = pending.afterCommit)
             }
         }
 
@@ -328,7 +338,10 @@ class ConnectionCatalogRegistry(
             authoritative[authKey] = Authoritative(pushedHash, key, authoritativeEpoch.incrementAndGet(), now)
             if (previousHeld != null && previousHeld.pooledRef != key) release(previousHeld.pooledRef)
             if (previousAuth != null && previousAuth.pooledRef != key) release(previousAuth.pooledRef)
+            val statementChangedStructure = pending.afterStatement && previousHeld?.hash != pushedHash
+            if (statementChangedStructure) connection.ddlSinceLastCommit += request.schema
             accept(connection, request.schema, request.backendGeneration)
+                .copy(refreshConfigCatalog = statementChangedStructure || pending.afterCommit)
         }
     }
 
@@ -403,23 +416,38 @@ class ConnectionCatalogRegistry(
         }
 
     fun markAfterStatement(connection: EnforcementConnection, schemas: Collection<String>): List<Refetch> =
-        markPending(connection, schemas) { schema ->
-            PendingRefetch(
-                connection.held[schema]?.hash,
-                authoritative[connection.binding.datasourceName to schema]?.hash,
-            )
-        }
+        markPending(connection, schemas, { copy(afterStatement = true) }) { schema -> heldOrAuthoritative(connection, schema) }
+
+    /**
+     * Must be called while holding [EnforcementConnection.mutex]. Re-measures the schemas this connection's DDL
+     * changed since its last COMMIT, so the push answering the executed COMMIT refreshes the config catalog.
+     */
+    fun markAfterCommit(connection: EnforcementConnection): List<Refetch> {
+        val schemas = connection.ddlSinceLastCommit.toList()
+        connection.ddlSinceLastCommit.clear()
+        return markPending(connection, schemas, { copy(afterCommit = true) }) { schema -> heldOrAuthoritative(connection, schema) }
+    }
+
+    /** Must be called while holding [EnforcementConnection.mutex]. */
+    fun clearDdlSinceLastCommit(connection: EnforcementConnection) = connection.ddlSinceLastCommit.clear()
+
+    private fun heldOrAuthoritative(connection: EnforcementConnection, schema: String) = PendingRefetch(
+        connection.held[schema]?.hash,
+        authoritative[connection.binding.datasourceName to schema]?.hash,
+    )
 
     private fun markPending(
         connection: EnforcementConnection,
         schemas: Collection<String>,
+        mark: PendingRefetch.() -> PendingRefetch = { this },
         create: (String) -> PendingRefetch,
     ): List<Refetch> = synchronized(stateLock) {
         schemas.asSequence()
             .filter { it.isNotBlank() && !it.startsWith("pg_temp", ignoreCase = true) }
             .distinct()
             .map { schema ->
-                val pending = connection.pending.getOrPut(schema) { create(schema) }
+                val pending = connection.pending.getOrPut(schema) { create(schema) }.mark()
+                connection.pending[schema] = pending
                 refetchOf(connection.binding.catalog, schema, pending.expectedHash)
             }.toList()
     }

@@ -1,6 +1,7 @@
 package com.ridi.oss.proxymonster.controlplane
 
 import com.ridi.oss.proxymonster.analyzer.pb.SessionObservation
+import com.ridi.oss.proxymonster.analyzer.pb.StatementKind
 import com.google.protobuf.ByteString
 import com.ridi.oss.proxymonster.controlplane.authz.AuthzContext
 import com.ridi.oss.proxymonster.grpc.EnfAction
@@ -106,14 +107,20 @@ suspend fun decideConnection(
     } else {
         ctx
     }
-    val afterStatement = if (effectiveCtx.action != EnfAction.DENY && effectiveCtx.catalogChanging) {
+    val relayed = effectiveCtx.action != EnfAction.DENY
+    val afterStatement = if (relayed && effectiveCtx.catalogChanging) {
         // schemaCandidates too: DDL reads no column, so its target schema appears in no source or read
         // grant, and a cross-schema `ALTER` would leave the schema it just changed held and stale.
         core.connectionCatalog.markAfterStatement(
             connection,
             required + effectiveCtx.referencedSchemas + effectiveCtx.schemaCandidates,
         )
+    } else if (relayed && effectiveCtx.statementKind == StatementKind.STATEMENT_KIND_COMMIT) {
+        core.connectionCatalog.markAfterCommit(connection)
     } else {
+        if (relayed && effectiveCtx.statementKind == StatementKind.STATEMENT_KIND_ROLLBACK) {
+            core.connectionCatalog.clearDdlSinceLastCommit(connection)
+        }
         emptyList()
     }
     val ms = (System.nanoTime() - t0) / 1_000_000

@@ -15,7 +15,7 @@ import time
 import urllib.error
 import urllib.request
 
-LEGS = ["editor", "wire", "pmon", "workflow", "rate", "audit"]
+LEGS = ["editor", "browser", "wire", "pmon", "workflow", "rate", "audit"]
 MASK = "####"
 TRUSTED_IP = "100.100.1.8"
 PRODUCTION_PRESETS = [-200, -201, -202, *range(-238, -229), -250, -251, -255, *range(-262, -255), -280, -300, -305, -306, -307]
@@ -72,8 +72,8 @@ def expect(cond, msg):
         raise Fail(msg)
 
 
-def run(cmd, env=None, timeout=60, stdin=None):
-    p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, env=env, input=stdin)
+def run(cmd, env=None, timeout=60, stdin=None, cwd=None):
+    p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, env=env, input=stdin, cwd=cwd)
     return p.returncode, p.stdout, p.stderr
 
 
@@ -161,6 +161,16 @@ class Stack:
         expect(all("@" in row[1] for row in r["rows"]), f"pii-accessor should read cleartext: {r['rows']}")
         # mcp: the console tools take the same decision path; an MCP leg plugs in here.
         self.produced.setdefault(ds["engine"], set()).add("editor")
+
+    def leg_browser(self, ds):
+        """The console in a real browser (smoke/browser.spec.ts): editor mask, table detail by catalog, Data tab."""
+        catalog, schema = ("def", "acme") if ds["engine"] == "mysql" else ("acme", "public")
+        env = dict(os.environ, SMOKE_WEB_URL=self.args.web, SMOKE_DATASOURCES=f"{ds['engine']}:{ds['name']}:{catalog}:{schema}")
+        code, out, err = run(["node_modules/.bin/playwright", "test", "-c", os.path.join(self.args.root, "smoke", "playwright.config.ts")],
+                             env=env, timeout=300, cwd=os.path.join(self.args.root, "web"))
+        with open(os.path.join(self.logs, "browser.log"), "a") as f:
+            f.write(out + err)
+        expect(code == 0, f"playwright exited {code}; see logs/browser.log")
 
     def leg_wire(self, ds):
         viewer = self.session("wire").login("smoke-viewer", ["system:production-viewer"])
@@ -358,6 +368,8 @@ def row_hash(row, prev):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--cp", required=True)
+    ap.add_argument("--web", required=True, help="the console started against --cp")
+    ap.add_argument("--root", required=True, help="repository root (web/ holds the Playwright install)")
     ap.add_argument("--cp-db", required=True, help="psql conninfo for the control-plane store")
     ap.add_argument("--datasource", action="append", required=True, help="engine:name:proxyPort")
     ap.add_argument("--pmon", required=True)

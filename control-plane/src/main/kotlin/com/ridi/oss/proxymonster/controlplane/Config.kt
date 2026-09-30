@@ -103,6 +103,9 @@ data class Config(
     val notifyStatement: String = "auto",
     // Fallback language for a recipient who has never set one (app_user.locale).
     val notifyLocale: String = "en",
+    // Names this deployment to agents and in the MCP install name `pmon-<instanceName>`.
+    val instanceName: String = defaultInstanceName("http://127.0.0.1:8080/mcp"),
+    val instanceDescription: String = "",
 ) {
     init {
         require(webSessionSlideSeconds < webSessionIdleSeconds) {
@@ -245,6 +248,16 @@ data class Config(
             val notifyLocale = (env("PM_NOTIFY_LOCALE") ?: "en").trim().lowercase()
             require(notifyLocale in setOf("en", "ko")) { "PM_NOTIFY_LOCALE must be one of en|ko; got '$notifyLocale'" }
 
+            val instanceName = env("PM_INSTANCE_NAME")?.trim()?.takeIf(String::isNotEmpty)?.also {
+                require(INSTANCE_NAME.matches(it)) {
+                    "PM_INSTANCE_NAME must be 1-$MAX_INSTANCE_NAME lowercase letters, digits, or inner hyphens; got '$it'"
+                }
+            } ?: defaultInstanceName(mcpResource)
+            val instanceDescription = env("PM_INSTANCE_DESCRIPTION")?.trim().orEmpty()
+            require(instanceDescription.length <= MAX_INSTANCE_DESCRIPTION && instanceDescription.none(Char::isISOControl)) {
+                "PM_INSTANCE_DESCRIPTION must be one line of at most $MAX_INSTANCE_DESCRIPTION characters"
+            }
+
             return Config(
                 httpPort = env("PM_HTTP_PORT")?.toIntOrNull() ?: 8080,
                 grpcPort = env("PM_GRPC_PORT")?.toIntOrNull() ?: DEFAULT_GRPC_PORT,
@@ -288,7 +301,21 @@ data class Config(
                 slackAppToken = env("PM_SLACK_APP_TOKEN")?.takeIf { it.isNotBlank() },
                 notifyStatement = notifyStatement,
                 notifyLocale = notifyLocale,
+                instanceName = instanceName,
+                instanceDescription = instanceDescription,
             )
+        }
+
+        const val MAX_INSTANCE_NAME = 40
+        const val MAX_INSTANCE_DESCRIPTION = 500
+        private val INSTANCE_NAME = Regex("[a-z0-9](?:[a-z0-9-]{0,${MAX_INSTANCE_NAME - 2}}[a-z0-9])?")
+
+        /** The first DNS label of the MCP resource host, e.g. `https://pm.example.com/mcp` -> `pm`; `local` for an IP. */
+        fun defaultInstanceName(mcpResource: String): String {
+            val host = URI(mcpResource).host.orEmpty().removeSurrounding("[", "]").lowercase()
+            if (host.isEmpty() || host == "localhost" || ':' in host || host.matches(Regex("[0-9.]+"))) return "local"
+            return host.substringBefore('.').replace(Regex("[^a-z0-9]+"), "-").trim('-')
+                .take(MAX_INSTANCE_NAME).trimEnd('-').ifEmpty { "local" }
         }
 
         private fun canonicalMcpResource(raw: String, requireHttps: Boolean): String {

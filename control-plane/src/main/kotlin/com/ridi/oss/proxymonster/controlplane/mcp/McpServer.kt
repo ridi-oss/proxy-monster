@@ -199,6 +199,7 @@ fun Application.installMcp(
         val requestContext = call.attributes[MCP_CONTEXT]
         createMcpServer(
             call,
+            config,
             metadataUri,
             requestContext,
             authorizer,
@@ -417,6 +418,7 @@ private fun mcpAuditRecord(
 
 private fun createMcpServer(
     call: ApplicationCall,
+    config: Config,
     metadataUri: String,
     context: McpRequestContext,
     authorizer: McpAuthorizer,
@@ -430,8 +432,9 @@ private fun createMcpServer(
 ): Server {
     val locale = requestLocale(call)
     val server = Server(
-        Implementation("proxy-monster-access-control", "1.0.0"),
+        Implementation("proxy-monster", "1.0.0", title = "proxy-monster (${config.instanceName})"),
         ServerOptions(capabilities = ServerCapabilities(tools = ServerCapabilities.Tools(listChanged = false))),
+        instructionsProvider = { mcpInstructions(config, core, context) },
     )
     for (capability in McpCapabilityRegistry.entries) {
         server.addTool(

@@ -1,0 +1,52 @@
+# Datastores for the end-to-end smoke run, on their own compose project and host ports so a
+# developer's `mise run up` stack keeps running alongside.
+services:
+  pm-postgres:
+    image: postgres:17.6
+    environment:
+      POSTGRES_DB: proxymonster
+      POSTGRES_USER: proxymonster
+      POSTGRES_PASSWORD: proxymonster
+    ports:
+      - "${SMOKE_CP_DB_PORT:-47010}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U proxymonster -d proxymonster"]
+      interval: 3s
+      timeout: 5s
+      retries: 20
+
+  target-mysql:
+    image: mysql:8.4
+    command: ["--mysql-native-password=ON"]
+    environment:
+      MYSQL_DATABASE: acme
+      MYSQL_USER: acme
+      MYSQL_PASSWORD: acme
+      MYSQL_ROOT_PASSWORD: root
+    ports:
+      - "${SMOKE_MYSQL_PORT:-47011}:3306"
+    volumes:
+      - ../deploy/seed/target-seed-mysql.sql:/docker-entrypoint-initdb.d/target-seed-mysql.sql
+      - ./mysql-grants.sql:/docker-entrypoint-initdb.d/zz-mysql-grants.sql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uacme", "-pacme"]
+      interval: 3s
+      timeout: 5s
+      retries: 40
+
+  target-postgres:
+    image: postgres:17.6
+    environment:
+      POSTGRES_DB: acme
+      POSTGRES_USER: acme
+      POSTGRES_PASSWORD: acme
+      POSTGRES_HOST_AUTH_METHOD: trust
+    ports:
+      - "${SMOKE_PG_PORT:-47012}:5432"
+    volumes:
+      - ../deploy/seed/target-seed.sql:/docker-entrypoint-initdb.d/target-seed.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U acme -d acme"]
+      interval: 3s
+      timeout: 5s
+      retries: 20

@@ -149,7 +149,7 @@ func TestProviderServesHTTPWithFreshSessionOnKeepAlive(t *testing.T) {
 	cp.datasources[0].AdvertiseAddr = "second"
 	d.openListeners(context.Background())
 	d.mu.Lock()
-	d.cfg.Principal, d.cfg.Token, d.cfg.LocalPassword = "new-principal", "new-token", "new-password"
+	srvOf(&d.cfg).Principal, srvOf(&d.cfg).Token, d.cfg.LocalPassword = "new-principal", "new-token", "new-password"
 	d.mu.Unlock()
 	second := requestProvider(t, client, port)
 	if second.Endpoint.AdvertiseAddr != "second" || second.Credentials != (driver.Credentials{
@@ -163,7 +163,7 @@ func TestProviderServesHTTPWithFreshSessionOnKeepAlive(t *testing.T) {
 	if got := liveConnections(d); got != 1 {
 		t.Fatalf("live connections = %d, want one persistent HTTP connection", got)
 	}
-	if err := d.Logout(); err != nil {
+	if err := d.Logout(control.LogoutRequest{}); err != nil {
 		t.Fatal(err)
 	}
 	if got := liveConnections(d); got != 0 {
@@ -271,7 +271,7 @@ func TestProviderRouteKeyReplacesListener(t *testing.T) {
 func TestMySQLRouteChangeKeepsListenerAndAcceptedConnection(t *testing.T) {
 	d, cp := startProviderDaemon(t, providers.Builtins(), []driver.Endpoint{{Name: "test", Engine: "mysql", AdvertiseAddr: "first:3306"}})
 	d.mu.Lock()
-	listener := d.listeners["test"]
+	listener := d.listeners[dsKey{"default", "test"}]
 	d.mu.Unlock()
 	local, err := net.Dial("tcp", listener.Addr().String())
 	if err != nil {
@@ -288,7 +288,7 @@ func TestMySQLRouteChangeKeepsListenerAndAcceptedConnection(t *testing.T) {
 	cp.datasources[0].CertChainPEM = "new-chain"
 	cp.datasources[0].WireTLS = true
 	d.openListeners(context.Background())
-	endpoint, _, ok := d.resolveSession("test", listener)
+	endpoint, _, ok := d.resolveSession(dsKey{"default", "test"}, listener)
 	if !ok || endpoint != cp.datasources[0] || listener.ctx.Err() != nil {
 		t.Fatalf("listener was replaced or retained stale metadata: %+v, %v", endpoint, ok)
 	}

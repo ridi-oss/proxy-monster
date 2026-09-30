@@ -57,7 +57,7 @@ func (c *trackedConn) Close() error {
 	return c.err
 }
 
-func (d *Daemon) trackConn(name string, conn net.Conn) net.Conn {
+func (d *Daemon) trackConn(key dsKey, conn net.Conn) net.Conn {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	id := d.nextConnID
@@ -65,14 +65,14 @@ func (d *Daemon) trackConn(name string, conn net.Conn) net.Conn {
 	tracked := &trackedConn{Conn: conn, untrack: func() {
 		d.mu.Lock()
 		defer d.mu.Unlock()
-		delete(d.liveConns[name], id)
-		if len(d.liveConns[name]) == 0 {
-			delete(d.liveConns, name)
+		delete(d.liveConns[key], id)
+		if len(d.liveConns[key]) == 0 {
+			delete(d.liveConns, key)
 		}
 	}}
-	if d.liveConns[name] == nil {
-		d.liveConns[name] = map[uint64]net.Conn{}
+	if d.liveConns[key] == nil {
+		d.liveConns[key] = map[uint64]net.Conn{}
 	}
-	d.liveConns[name][id] = tracked
+	d.liveConns[key][id] = tracked
 	return tracked
 }

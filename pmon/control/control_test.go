@@ -45,7 +45,7 @@ type fakeBackend struct {
 
 func newFakeBackend() *fakeBackend {
 	return &fakeBackend{
-		status: Status{Principal: "you@example.com", LoggedIn: true, ControlPlane: "http://cp"},
+		status: Status{LoggedIn: true, Servers: []ServerInfo{{Name: "default", Principal: "you@example.com", LoggedIn: true, ControlPlane: "http://cp"}}},
 		events: make(chan Event, 8),
 	}
 }
@@ -67,7 +67,13 @@ func (f *fakeBackend) Login(_ context.Context, _ LoginRequest, onEvent func(Logi
 	return err
 }
 
-func (f *fakeBackend) Logout() error {
+func (f *fakeBackend) SetServer(SetServerRequest) (SetServerResult, error) {
+	return SetServerResult{Created: true}, nil
+}
+
+func (f *fakeBackend) UnsetServer(UnsetServerRequest) error { return nil }
+
+func (f *fakeBackend) Logout(LogoutRequest) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.logoutCalls++
@@ -140,7 +146,7 @@ func TestStatusRoundTrips(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Status: %v", err)
 	}
-	if s.Principal != "you@example.com" || !s.LoggedIn {
+	if s.Server("default").Principal != "you@example.com" || !s.LoggedIn {
 		t.Errorf("status = %+v, want the backend's identity", s)
 	}
 	if len(s.Datasources) != 2 || s.Datasources[0].LocalPort != 6100 {
@@ -204,7 +210,7 @@ func TestNewClientReachesReleasedDaemonPath(t *testing.T) {
 		t.Fatalf("listen on released path: %v", err)
 	}
 	srv := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		writeJSON(w, http.StatusOK, Status{Principal: "released-daemon"})
+		writeJSON(w, http.StatusOK, Status{Version: "released-daemon"})
 	})}
 	go func() { _ = srv.Serve(ln) }()
 	t.Cleanup(func() { _ = srv.Close() })
@@ -217,8 +223,8 @@ func TestNewClientReachesReleasedDaemonPath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Status through released daemon path: %v", err)
 	}
-	if status.Principal != "released-daemon" {
-		t.Errorf("Status principal = %q, want released-daemon", status.Principal)
+	if status.Version != "released-daemon" {
+		t.Errorf("Status version = %q, want released-daemon", status.Version)
 	}
 }
 
@@ -379,7 +385,7 @@ func TestLogoutAndReloadDriveTheBackend(t *testing.T) {
 	c := serve(t, backend)
 	ctx := context.Background()
 
-	if err := c.Logout(ctx); err != nil {
+	if err := c.Logout(ctx, LogoutRequest{}); err != nil {
 		t.Fatalf("Logout: %v", err)
 	}
 	if err := c.Reload(ctx); err != nil {
@@ -422,7 +428,7 @@ func TestEventsSendsCurrentStateFirst(t *testing.T) {
 
 	select {
 	case ev := <-got:
-		if ev.Kind != "status" || ev.Status == nil || ev.Status.Principal != "you@example.com" {
+		if ev.Kind != "status" || ev.Status == nil || !ev.Status.LoggedIn {
 			t.Fatalf("first event = %+v, want the current status", ev)
 		}
 	case <-time.After(3 * time.Second):
@@ -541,7 +547,7 @@ func TestMutationsRejectGET(t *testing.T) {
 	sock, _ := state.SocketPath()
 	client := unixHTTPClient(sock)
 
-	for _, path := range []string{PathLogin, PathLogout, PathReload, PathShutdown} {
+	for _, path := range []string{PathLogin, PathLogout, PathServerSet, PathServerUnset, PathReload, PathShutdown} {
 		resp, err := client.Get("http://pmon" + path)
 		if err != nil {
 			t.Fatalf("GET %s: %v", path, err)

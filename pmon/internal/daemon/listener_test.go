@@ -27,7 +27,7 @@ func TestTrackedConnectionClosesAndDeregistersOnce(t *testing.T) {
 	local, remote := net.Pipe()
 	defer remote.Close()
 	counted := &countedConn{Conn: local}
-	tracked := d.trackConn("test", counted)
+	tracked := d.trackConn(dsKey{"default", "test"}, counted)
 	if got := liveConnections(d); got != 1 {
 		t.Fatalf("connection count = %d", got)
 	}

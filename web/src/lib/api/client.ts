@@ -38,6 +38,7 @@ import type {
   IssuedToken,
   MaskFn,
   MaskFnInput,
+  McpConnectInfo,
   MePermissions,
   QueryHistoryEntry,
   QueryRequest,
@@ -142,6 +143,11 @@ export function getSessionStatus(): Promise<SessionStatus> {
 /** POST /auth/session/heartbeat — records visible activity and returns authoritative session deadlines. */
 export function touchSession(): Promise<SessionStatus> {
   return request<SessionStatus>('/auth/session/heartbeat', { method: 'POST' })
+}
+
+/** GET /api/mcp/connect — this instance's MCP install name and URL. */
+export function getMcpConnect(): Promise<McpConnectInfo> {
+  return request<McpConnectInfo>('/api/mcp/connect')
 }
 
 /** GET /api/me/permissions — resolves coarse Cedar-backed capabilities for the current principal. */

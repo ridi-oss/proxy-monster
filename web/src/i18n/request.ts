@@ -24,6 +24,7 @@ const NAMESPACES = {
   Groups: 'groups',
   Users: 'users',
   Policies: 'policies',
+  Connect: 'connect',
 } as const
 
 export default getRequestConfig(async () => {

@@ -493,10 +493,11 @@ separate process. It exposes the same Cedar-authorized operations as the REST
 API: access-control administration (datasource/catalog/classification, policy,
 role, assignment, user/group, mask function), running SQL with the stored,
 masked result, and the query-approval workflow (request, inbox, approve, reject,
-execute, result). It does not browse audit history. Every MCP call is OAuth
-2.1-authenticated, then authorized through the same Cedar action and validators
-as the REST surface — OAuth scopes are only a consent ceiling, never an extra
-source of permission.
+execute, result). It also browses the audit log, opens and decides JIT access
+requests and grants, and mints and revokes the caller's tokens. Every MCP call
+is OAuth 2.1-authenticated, then authorized through the same Cedar action and
+validators as the REST surface — OAuth scopes are only a consent ceiling, never
+an extra source of permission.
 
 Control-plane serves the MCP resource, OAuth discovery (RFC 8414/9728), the
 `/oauth/authorize` + `/oauth/token` + `/oauth/revoke` endpoints, and — since

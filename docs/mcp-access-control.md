@@ -30,12 +30,12 @@ roles + Cedar on every call.
 `context.channel` (`Channel.MCP` in `Query.kt`), so policies and the audit trail
 can see that a change arrived over MCP.
 
-MCP covers the access-control management surface, target-database queries, and
-the query-approval workflow. Audit-log tools and JIT access requests and grants
-are later MCP work tracked in [backlog.md](./backlog.md), not architectural
-non-goals. proxy-monster has no table-level tag store and does not add one, so
-MCP exposes only the column tags that already exist. `PM_AUTH_DEBUG` provides
-the development login method.
+MCP covers what the console offers: access-control management, datasource
+administration, target-database queries, the query-approval workflow, JIT access
+requests and grants, audit browsing, and the caller's own tokens. proxy-monster
+has no table-level tag store and does not add one, so MCP exposes only the
+column tags that already exist. `PM_AUTH_DEBUG` provides the development login
+method.
 
 ## Why this shape
 
@@ -94,9 +94,9 @@ Three facts about the system force the design.
   store.
 - Completeness is explicit and fail-closed. The tool catalog is generated from a
   single capability registry keyed by `AuthzAction` (`McpCapabilityRegistry`).
-  Startup fails if an in-scope action has no tool. Explicitly deferred
-  capabilities — audit-log tools, JIT grants, tokens, editor-tab cleanup — are
-  named exclusions from the required set.
+  Startup fails if an in-scope action has no tool. The only exclusions are the
+  `result.*` and `exception.*` actions, which are checked inside a query
+  decision and have no route of their own.
 
 ## Architecture
 
@@ -198,10 +198,10 @@ principal that already holds it.
 
 - Opaque, random, hashed at rest via `McpTokenStore` + `sha256Hex()` (SHA-256)
   into the shared `proxy_token` table. MCP access and refresh tokens are rows
-  with kinds `MCP_ACCESS` / `MCP_REFRESH` (V30). Access-token TTL clamps into
-  the existing `[60s, 24h]` band (default access 600 s via
-  `PM_OAUTH_ACCESS_TTL`; refresh default 21_600 s via `PM_OAUTH_REFRESH_TTL`);
-  refresh rotates on every use and can be revoked.
+  with kinds `MCP_ACCESS` / `MCP_REFRESH` (V7). Access-token TTL clamps into the
+  existing `[60s, 24h]` band (default access 600 s via `PM_OAUTH_ACCESS_TTL`;
+  refresh default 21_600 s via `PM_OAUTH_REFRESH_TTL`); refresh rotates on every
+  use and can be revoked.
 - Bound to `{resource, client_id, scope, principal}` (RFC 8707 audience).
   Validation checks resource + expiry + revocation before anything else.
 - Roles are NOT in the token. The token names the _principal_ only. Roles are
@@ -218,12 +218,13 @@ the user's authority (e.g. a read-only agent):
 <!-- prettier-ignore -->
 | Scope | Ceiling over | Cedar action still enforced |
 | --- | --- | --- |
-| `mcp:read` | all in-scope read tools | matching `admin.*` per tool |
-| `mcp:datasources:write` | datasource + classification writes | `admin.datasources` |
+| `mcp:read` | all in-scope read tools, including audit, token listing, own permissions, principal rate | matching `admin.*` per tool, or the REST route's gate (`audit.read`, `token.list`) |
+| `mcp:datasources:write` | datasource create/update/delete, refresh, test, classification writes | `admin.datasources` |
 | `mcp:policies:write` | Cedar policy + role + mask-fn writes | `admin.policies` |
-| `mcp:identity:write` | users/groups/members/role-assignments | `admin.identity` |
-| `mcp:query` | queries, own task status/results, approval requests and reads | the REST route's Cedar gate per tool |
-| `mcp:approvals:write` | approve, reject, and execute query approvals | `task.approve` on the Request |
+| `mcp:identity:write` | users/groups/members/role-assignments, principal rate reset | `admin.identity` |
+| `mcp:query` | queries, own tasks and query history, approval and access requests, grant listing, own rate-reset request | the REST route's Cedar gate per tool |
+| `mcp:approvals:write` | approve, reject, and execute query approvals; approve and reject access requests; revoke grants | `task.approve` on the Request, `grant.revoke` on the grant |
+| `mcp:tokens` | mint and revoke the caller's wire tokens | `token.mint` / `token.revoke` on the Token |
 
 Presenting a scope never grants the action; lacking a scope denies it up front.
 A user who consents to `mcp:read` only can never mutate even if they hold
@@ -248,6 +249,21 @@ REST's session-only `requireApi` on some list routes).
 - `browse_catalog` (`admin.datasources`) — schemas → tables → columns.
 - `get_table_detail` (`admin.datasources`) — columns with current tags + mask fn
   (REST: `GET /api/datasources/{id}/table-detail`).
+
+### Datasources (write)
+
+All under `admin.datasources`, scope `mcp:datasources:write`. Arguments and
+results carry no credential fields: a datasource is `name`, `engine`, `host`,
+`port`, `dbName`, the shape of REST's `DatasourceInput`.
+
+- `create_datasource` — REST: `POST /api/datasources`.
+- `update_datasource` (by `datasource` name) — REST:
+  `PUT /api/datasources/{id}`.
+- `delete_datasource` (destructive; soft delete) — REST:
+  `DELETE /api/datasources/{id}`.
+- `refresh_datasource` — asks the attached proxy to re-push the catalog (REST:
+  `POST /api/datasources/{id}/refresh`).
+- `test_datasource` — REST: `POST /api/datasources/{id}/test`.
 
 ### Column tags (read + write)
 
@@ -310,6 +326,13 @@ All under `admin.policies` (write tools also require `mcp:policies:write`):
   `admin.identity`; SYSTEM group → 409 `group.system_immutable`.
 - `list_mask_fns` / `create_mask_fn` / `update_mask_fn` / `delete_mask_fn` →
   `admin.policies` (writes need `mcp:policies:write`).
+- `list_group_members` / `list_group_roles` (`groupName`) → `admin.identity`,
+  scope `mcp:read` (REST: `GET /api/groups/{id}/members`, `.../roles`).
+- `get_principal_rate` (`principal`) → `admin.identity`, scope `mcp:read` — the
+  principal's last rate reset (REST:
+  `GET /api/access/principals/{p}/rate-reset`).
+- `reset_principal_rate` (`principal`, `reason`) → `admin.identity`, scope
+  `mcp:identity:write` (REST: `POST /api/access/principals/{p}/rate-reset`).
 
 ### Query and approval tools
 
@@ -349,6 +372,16 @@ All under `admin.policies` (write tools also require `mcp:policies:write`):
   approval's rows (REST: `GET /api/approvals/{id}/result`).
 - `cancel_approval` (`task.cancel`, scope `mcp:query`) — REST:
   `POST /api/approvals/{id}/cancel`.
+- `delete_query_task` (`taskId`; `task.delete`, scope `mcp:query`, destructive)
+  — removes one of the caller's editor tasks and its stored result (REST:
+  `DELETE /api/editor/tasks/{id}`).
+- `list_query_history` (`limit?`) / `clear_query_history` (scope `mcp:query`;
+  clear is destructive) — the caller's own history (REST:
+  `GET`/`DELETE /api/query-history`).
+
+`delete_query_task` and the history tools are owner-scoped with no Cedar check,
+as in the console: another principal's task id is a no-op, and history is always
+the caller's own.
 
 These tools are resource-scoped. The dispatcher checks only the OAuth scope up
 front; the tool then calls the same `EditorTaskService` or `ApprovalService` the
@@ -362,13 +395,66 @@ result tools re-decide the stored rows live for the viewer and page them
 the viewer's relayed volume for the released page only. Request, approve, and
 reject record the MCP caller as the actor with `channel=mcp`.
 
+### Access requests and grants
+
+- `request_access` (`roleName`, `datasource?`, `reason`, `durationSec?`;
+  `task.request`, scope `mcp:query`) — a JIT role request. With a datasource,
+  `task.request` is decided on it; without one, authentication alone opens it,
+  as in REST (`POST /api/access-requests`).
+- `list_access_requests` (`status?`; `task.read`, scope `mcp:query`) — each row
+  is kept only if the caller may read it: own rows, or all with an oversight
+  grant (REST: `GET /api/access-requests`).
+- `approve_access_request` (`id`, `durationSec?`) / `reject_access_request`
+  (`id`, `reason`) (`task.approve`, scope `mcp:approvals:write`) — decided on
+  the `workflow-viewer` channel, so the no-self-approval forbid holds (REST:
+  `POST /api/access-requests/{id}/approve`, `.../reject`).
+- `list_access_grants` (`principal?`, `active?`; `task.read`, scope `mcp:query`)
+  — REST: `GET /api/access-grants`.
+- `revoke_access_grant` (`id`; `grant.revoke`, scope `mcp:approvals:write`,
+  destructive) — decided against the grant's owner (REST:
+  `POST /api/access-grants/{id}/revoke`).
+- `reset_my_rate` (`reason`, `denyReason?`; scope `mcp:query`) — asks an
+  approver to reset the caller's spent `@cap` rate (REST:
+  `POST /api/access-requests/rate-reset`).
+
+### Audit
+
+- `list_audit` (`limit?`; `audit.read`, scope `mcp:read`) — the whole log only
+  when the caller holds `audit.read` on `AuditLog`, otherwise the caller's own
+  rows (REST: `GET /api/audit`).
+- `get_audit_event` (`id`; `audit.read`, scope `mcp:read`) — decided on the
+  record's owner; a record the caller may not read answers not-found (REST:
+  `GET /api/audit/{id}`).
+
+### Tokens and self
+
+- `mint_token` (`name?`, `ttlSeconds?`; `token.mint`, scope `mcp:tokens`) —
+  mints a USER wire token for the caller only, TTL clamped to 60..86400 s. The
+  secret appears once, in the tool result: the tool takes no `idempotencyKey`,
+  and the secret is never stored in the audit row, a log line, or the
+  idempotency table (REST: `POST /api/tokens`).
+- `list_tokens` (`principal?`; `token.list`, scope `mcp:read`) — the caller's
+  token metadata by default, never a secret (REST: `GET /api/tokens`).
+- `revoke_token` (`id`; `token.revoke`, scope `mcp:tokens`, destructive) —
+  decided against the token's owner (REST: `DELETE /api/tokens/{id}`).
+- `get_my_permissions` (scope `mcp:read`) — the caller's console permissions
+  (REST: `GET /api/me/permissions`) plus `roles`: each effective role
+  `RoleResolver.resolve` returns, with every source that grants it (`direct`,
+  `group`, or `grant` with its id and expiry). REST has no roles field; an agent
+  needs them to explain a denial or pick a role to request.
+
+The token, audit, grant, access-request, and self tools are resource-gated like
+the query tools: the dispatcher checks the scope, then the shared service runs
+the REST route's Cedar decision on the same context — `requesterIp` and the
+channel the route passes — so MCP returns no row the console would not.
+
 ## Data model
 
 New / changed
 
 - Control-plane-hosted authorization routes reuse the existing login/session and
   issue proxy-monster MCP credentials.
-- `proxy_token.kind`: `MCP_ACCESS`, `MCP_REFRESH` (V30) reuse the whole
+- `proxy_token.kind`: `MCP_ACCESS`, `MCP_REFRESH` (V7) reuse the whole
   TokenStore hashing/TTL/expiry machinery; no new token table.
 - `oauth_authorization_code` (short-lived): `code_hash`, CIMD `client_id`,
   `principal`, `resource`, `scope`, `code_challenge`, `expires_at`, plus a
@@ -380,8 +466,8 @@ New / changed
   `context.channel` reaches Cedar; their audit rows carry `channel=mcp` and the
   acting principal. Query and approval tools decide on the REST channels
   instead.
-- `mcp_mutation_idempotency` (V31) — optional client-supplied `idempotencyKey`
-  on write tools.
+- `mcp_mutation_idempotency` (V7) — optional client-supplied `idempotencyKey` on
+  management write tools.
 
 Kept (reused unchanged): `RoleResolver`, `authz.authorize`, every
 `ManagementService` and its validators/transactions, `OidcDiscovery` +
@@ -396,7 +482,8 @@ no MCP-only permission table, no generic REST proxy tool, no DCR endpoint.
 - Atomicity / validation / immutability: inherited from the reused routes.
 - Idempotency: the management write tools accept an optional client-supplied
   idempotency key; a replay with the same key returns the prior result rather
-  than double-applying. The query and approval tools take none.
+  than double-applying. The resource-gated tools, `mint_token` among them, take
+  none.
 - Concurrency: MCP retains the current REST last-write-wins behavior; a
   cross-surface optimistic-concurrency guard is a separate
   [backlog.md](./backlog.md) item.
@@ -406,8 +493,8 @@ no MCP-only permission table, no generic REST proxy tool, no DCR endpoint.
   write path is still gated by Cedar.
 - Audit: every mutating management tool call lands in the audit log with
   `channel=mcp`, principal, action, resource, and outcome — the same store the
-  web mutations use. Query and approval tools write the same audit rows their
-  REST routes write.
+  web mutations use. Resource-gated tools write the same audit rows their REST
+  routes write.
 
 ## Errors & l10n
 

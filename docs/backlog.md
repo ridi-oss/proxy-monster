@@ -365,9 +365,6 @@ Fixes for gaps documented in
 
 ## Management over MCP
 
-- Workflow tools: JIT access requests and grants, and grant revoke.
-- Audit browsing: read tools over the decision feed, preserving the all-vs-own
-  split.
 - Optimistic concurrency: resource versions and conditional writes across REST
   and MCP, starting with Cedar policies.
 

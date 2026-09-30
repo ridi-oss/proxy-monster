@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/alecthomas/kong"
 	"github.com/ridi-oss/proxy-monster/goproxy/engine"
@@ -36,6 +37,7 @@ type rawFlags struct {
 	ControlPlaneGrpcTarget string `env:"PM_CONTROL_PLANE_GRPC" default:"localhost:9090"`
 	DatasourceName         string `env:"PM_DATASOURCE_NAME"`
 	DatasourceTags         string `env:"PM_DATASOURCE_TAGS"`
+	DatasourceDescription  string `env:"PM_DATASOURCE_DESCRIPTION"`
 	AdvertiseAddr          string `env:"PM_ADVERTISE_ADDR"`
 	SecretToken            string `env:"PM_SECRET_TOKEN"`
 	TLSCertPath            string `env:"PM_TLS_CERT"`
@@ -70,6 +72,9 @@ func blankToAbsent(s string) string {
 	return s
 }
 
+// MaxDatasourceDescription matches the control plane's Register limit.
+const MaxDatasourceDescription = 500
+
 // Config is the proxy's normalized configuration. A blank string field means "absent"; there is no
 // separate presence flag.
 type Config struct {
@@ -90,6 +95,9 @@ type Config struct {
 	ControlPlaneGrpcTarget string
 	DatasourceName         string
 	DatasourceTags         []string
+	// DatasourceDescription is one line telling people and agents what the datasource holds. Sent on every
+	// Register, so unsetting it clears the stored value.
+	DatasourceDescription string
 	// AdvertiseAddr is the client-facing host:port a wire client (pmon) dials to reach THIS proxy — distinct
 	// from Target* (the upstream db). Registered with the control plane so GET /api/datasources can hand a
 	// client the per-datasource connect address. NO default: empty unless PM_ADVERTISE_ADDR is set (the proxy
@@ -193,14 +201,15 @@ func Load(registry spi.Registry) (*Config, error) {
 		ControlPlaneGrpcTarget: raw.ControlPlaneGrpcTarget,
 		// A whitespace-only value is absent, so Validate()/TLSEnabled() treat it as unset rather than a
 		// usable name/path.
-		DatasourceName: blankToAbsent(raw.DatasourceName),
-		DatasourceTags: tags,
-		AdvertiseAddr:  advertiseAddr,
-		SecretToken:    raw.SecretToken,
-		TLSCertPath:    blankToAbsent(raw.TLSCertPath),
-		TLSKeyPath:     blankToAbsent(raw.TLSKeyPath),
-		TLSNoAdvertise: parseBoolEnv(raw.TLSNoAdvertise),
-		QueryTimeout:   queryTimeout,
+		DatasourceName:        blankToAbsent(raw.DatasourceName),
+		DatasourceTags:        tags,
+		DatasourceDescription: strings.TrimSpace(raw.DatasourceDescription),
+		AdvertiseAddr:         advertiseAddr,
+		SecretToken:           raw.SecretToken,
+		TLSCertPath:           blankToAbsent(raw.TLSCertPath),
+		TLSKeyPath:            blankToAbsent(raw.TLSKeyPath),
+		TLSNoAdvertise:        parseBoolEnv(raw.TLSNoAdvertise),
+		QueryTimeout:          queryTimeout,
 	}, nil
 }
 
@@ -250,6 +259,10 @@ func (c *Config) Validate() error {
 		if p, perr := strconv.Atoi(port); perr != nil || p < 1 || p > 65535 {
 			return fmt.Errorf("PM_ADVERTISE_ADDR=%q has an invalid port (want 1-65535)", c.AdvertiseAddr)
 		}
+	}
+
+	if len([]rune(c.DatasourceDescription)) > MaxDatasourceDescription || strings.IndexFunc(c.DatasourceDescription, unicode.IsControl) >= 0 {
+		return fmt.Errorf("PM_DATASOURCE_DESCRIPTION must be one line of at most %d characters", MaxDatasourceDescription)
 	}
 
 	return nil

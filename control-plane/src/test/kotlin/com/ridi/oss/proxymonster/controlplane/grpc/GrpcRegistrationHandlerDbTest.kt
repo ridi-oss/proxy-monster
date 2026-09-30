@@ -166,6 +166,26 @@ class GrpcRegistrationHandlerDbTest {
     }
 
     @Test
+    fun `register stores the description, keeps it when absent, clears it when empty, and refuses bad text`() = runBlocking {
+        fun req(description: String?) = regReq {
+            name = "reg-description"; engine = Engine.MYSQL; host = "h"; port = 3306; dbName = "d"
+            if (description != null) this.description = description
+        }
+        fun stored() = core.datasourceStore.getByName("reg-description")!!.description
+        stub.register(req("Orders and payments"))
+        assertEquals("Orders and payments", stored())
+        stub.register(req(null))
+        assertEquals("Orders and payments", stored())
+        for (bad in listOf("x".repeat(DatasourceStore.MAX_DESCRIPTION + 1), "two\nlines", "tab\there")) {
+            assertEquals(Status.Code.INVALID_ARGUMENT, statusOf { stub.register(req(bad)) })
+        }
+        assertEquals("Orders and payments", stored())
+        stub.register(req("가".repeat(DatasourceStore.MAX_DESCRIPTION)))
+        stub.register(req(""))
+        assertEquals("", stored())
+    }
+
+    @Test
     fun `register echoes the control-plane's wire-protocol version so the proxy can mirror-check it`() = runBlocking {
         val response = stub.register(
             regReq { name = "reg-ver-ok"; engine = Engine.POSTGRES; host = "h"; port = 1; dbName = "d" },

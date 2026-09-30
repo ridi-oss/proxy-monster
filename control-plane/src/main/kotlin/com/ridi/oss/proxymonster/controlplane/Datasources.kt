@@ -76,6 +76,8 @@ data class Datasource(
     val currentCatalog: String? = null,
     /** Nonsecret endpoint and properties the proxy publishes for clients; null until a proxy sends one. */
     @Serializable(with = ConnectionInfoSerializer::class) val connectionInfo: ConnectionInfo? = null,
+    /** One line the proxy publishes (PM_DATASOURCE_DESCRIPTION) saying what this datasource holds. */
+    val description: String = "",
 ) {
     /**
      * The same row with everything a caller would need to reach the proxy removed — the advertised address
@@ -84,7 +86,7 @@ data class Datasource(
      */
     fun withoutConnectionMaterial(): Datasource = copy(
         host = "", port = 0, dbName = "", advertiseAddr = null, advertiseCertChain = null,
-        currentCatalog = null, connectionInfo = null,
+        currentCatalog = null, connectionInfo = null, description = "",
     )
 }
 
@@ -186,7 +188,9 @@ class DatasourceStore(internal val dataSource: DataSource) {
         const val DATASOURCE_COLUMNS =
             "id, name, engine, host, port, db_name, tags, default_schemas, mysql_lower_case_table_names, " +
                 "catalog_synced_at, last_seen_at, engine_version, advertise_addr, advertise_cert_chain, " +
-                "advertise_wire_tls, current_catalog_name, connection_info"
+                "advertise_wire_tls, current_catalog_name, connection_info, description"
+
+        const val MAX_DESCRIPTION = 500
 
         /** The `system:` tag namespace is owned by the product — an operator may not coin a name in it. */
         const val RESERVED_TAG_PREFIX = "system:"
@@ -315,8 +319,13 @@ class DatasourceStore(internal val dataSource: DataSource) {
         advertiseCertChain: String?,
         advertiseWireTls: Boolean,
         connectionInfo: ConnectionInfo? = null,
+        // Null keeps the stored description; empty clears it.
+        description: String? = null,
     ): Datasource {
         engine.validateConnectionInfo(connectionInfo)
+        if (description != null && (description.codePointCount(0, description.length) > MAX_DESCRIPTION || description.any(Char::isISOControl))) {
+            throw ManagementException(ApiError("datasource.invalid_description", mapOf("max" to MAX_DESCRIPTION.toString())))
+        }
         // A proxy declaring its own posture (`PM_DATASOURCE_TAGS=system:production`) passes; an invented
         // `system:*` name is refused here as on the admin surfaces, so no write path can coin one.
         requireWritableTags(tags)
@@ -363,8 +372,8 @@ class DatasourceStore(internal val dataSource: DataSource) {
                 // coverage (an admin create/rename that doesn't take it can't interleave a stale decision). The
                 // A fresh insert leaves catalog_synced_at NULL.
                 val upsertedId = c.prepareStatement(
-                    """INSERT INTO datasource (name, engine, host, port, db_name, tags, advertise_addr, advertise_cert_chain, advertise_wire_tls, connection_info)
-                       VALUES (?, ?, ?, ?, ?, ?::jsonb, ?, ?, ?, ?::jsonb)
+                    """INSERT INTO datasource (name, engine, host, port, db_name, tags, advertise_addr, advertise_cert_chain, advertise_wire_tls, connection_info, description)
+                       VALUES (?, ?, ?, ?, ?, ?::jsonb, ?, ?, ?, ?::jsonb, COALESCE(?, ''))
                        ON CONFLICT (name) WHERE deleted_at IS NULL DO UPDATE SET
                            engine  = EXCLUDED.engine,
                            host    = EXCLUDED.host,
@@ -383,6 +392,7 @@ class DatasourceStore(internal val dataSource: DataSource) {
                            -- Authoritative every register, so TLS-on -> TLS-off is observable rather than sticky.
                            advertise_wire_tls = EXCLUDED.advertise_wire_tls,
                            connection_info = COALESCE(EXCLUDED.connection_info, datasource.connection_info),
+                           description = COALESCE(?, datasource.description),
                            catalog           = CASE WHEN datasource.db_name IS DISTINCT FROM EXCLUDED.db_name THEN NULL ELSE datasource.catalog END,
                            current_catalog_name = CASE WHEN datasource.db_name IS DISTINCT FROM EXCLUDED.db_name THEN NULL ELSE datasource.current_catalog_name END,
                            catalog_synced_at = CASE WHEN datasource.db_name IS DISTINCT FROM EXCLUDED.db_name THEN NULL ELSE datasource.catalog_synced_at END,
@@ -407,6 +417,8 @@ class DatasourceStore(internal val dataSource: DataSource) {
                     ps.setString(8, advertiseCertChain)
                     ps.setBoolean(9, advertiseWireTls)
                     ps.setString(10, connectionInfo?.let { json.encodeToString(ConnectionInfoSerializer, it) })
+                    ps.setString(11, description)
+                    ps.setString(12, description)
                     ps.executeQuery().use { rs -> if (rs.next()) rs.getLong(1) else null }
                 }
                 if (upsertedId == null) {
@@ -769,6 +781,7 @@ class DatasourceStore(internal val dataSource: DataSource) {
         advertiseWireTls = getBoolean("advertise_wire_tls"),
         currentCatalog = getString("current_catalog_name"),
         connectionInfo = getString("connection_info")?.let { json.decodeFromString(ConnectionInfoSerializer, it) },
+        description = getString("description"),
     )
 }
 

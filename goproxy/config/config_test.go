@@ -38,6 +38,7 @@ func clearPMEnv(t *testing.T) {
 		"PM_PROXY_PORT", "PM_TARGET_PORT",
 		"PM_DATASOURCE_NAME", "PM_DATASOURCE_TAGS", "PM_SECRET_TOKEN",
 		"PM_TLS_CERT", "PM_TLS_KEY", "PM_ADVERTISE_ADDR", "PM_QUERY_TIMEOUT", "PM_TARGET_TLS", "PM_TARGET_CA",
+		"PM_DATASOURCE_DESCRIPTION",
 	} {
 		t.Setenv(v, "")
 	}
@@ -457,5 +458,27 @@ func TestLoadTargetTLS(t *testing.T) {
 	t.Setenv("PM_TARGET_TLS", "prefer")
 	if _, err := Load(testRegistry()); err == nil || !strings.Contains(err.Error(), "PM_TARGET_TLS") {
 		t.Fatalf("PM_TARGET_TLS=prefer = %v, want a rejection", err)
+	}
+}
+
+func TestLoadDatasourceDescription(t *testing.T) {
+	clearPMEnv(t)
+	t.Setenv("PM_DATASOURCE_DESCRIPTION", "  Orders and payments  ")
+	t.Setenv("PM_DATASOURCE_NAME", "ds")
+	cfg, err := Load(testRegistry())
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.DatasourceDescription != "Orders and payments" {
+		t.Fatalf("DatasourceDescription = %q", cfg.DatasourceDescription)
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate() = %v", err)
+	}
+	for _, bad := range []string{"line\nbreak", strings.Repeat("x", MaxDatasourceDescription+1)} {
+		cfg.DatasourceDescription = bad
+		if err := cfg.Validate(); err == nil {
+			t.Errorf("Validate() = nil for description %q", bad)
+		}
 	}
 }

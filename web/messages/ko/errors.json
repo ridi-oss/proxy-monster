@@ -60,7 +60,8 @@
     "in_use_proxy_attached": "이 데이터소스에 프록시가 아직 연결되어 있습니다. 프록시를 중지한 후 삭제하세요.",
     "in_use_active_requests": "이 데이터소스에 처리 중인 접근 요청이 있습니다. 요청을 처리하거나 취소한 후 삭제하세요.",
     "invalid_catalog": "이 데이터소스에서 사용할 수 없는 카탈로그입니다.",
-    "invalid_connection_info": "데이터소스 연결 메타데이터가 올바르지 않습니다."
+    "invalid_connection_info": "데이터소스 연결 메타데이터가 올바르지 않습니다.",
+    "invalid_description": "데이터소스 설명은 {max}자 이하의 한 줄이어야 합니다."
   },
   "group": {
     "system_immutable": "시스템에서 관리하는 그룹이므로 수정하거나 삭제할 수 없습니다."

@@ -14,6 +14,7 @@ import com.ridi.oss.proxymonster.controlplane.historyLimit
 import com.ridi.oss.proxymonster.controlplane.authz.AuthzContext
 import com.ridi.oss.proxymonster.controlplane.management.DeleteResult
 import com.ridi.oss.proxymonster.controlplane.ApprovalService
+import com.ridi.oss.proxymonster.controlplane.CatalogColumn
 import com.ridi.oss.proxymonster.controlplane.ControlPlaneCore
 import com.ridi.oss.proxymonster.controlplane.CreateApprovalInput
 import com.ridi.oss.proxymonster.controlplane.EditorTaskService
@@ -50,6 +51,15 @@ internal data class ConnectableDatasource(
     val name: String,
     @Serializable(with = EngineWireSerializer::class) val engine: Engine,
     val defaultSchemas: List<String>,
+    val description: String,
+)
+
+@Serializable
+internal data class DatasourceDescription(
+    val name: String,
+    @Serializable(with = EngineWireSerializer::class) val engine: Engine,
+    val description: String,
+    val columns: List<CatalogColumn>,
 )
 
 @Serializable
@@ -87,14 +97,14 @@ internal class McpTaskTools(
             "list_connectable_datasources" -> structured(
                 core.datasourceStore.list()
                     .filter { mayConnect(core.authz, core.roleResolver, p, ip, it) }
-                    .map { ConnectableDatasource(it.name, it.engine, it.defaultSchemas) },
+                    .map { ConnectableDatasource(it.name, it.engine, it.defaultSchemas, it.description) },
             )
             "describe_datasource" -> {
                 val ds = datasource(args.requiredString("datasource"))
                 if (!mayConnect(core.authz, core.roleResolver, p, ip, ds)) {
                     throw TaskServiceException(HttpStatusCode.Forbidden, ApiError("datasource.not_connectable"))
                 }
-                structured(datasources.browseCatalog(ds.name))
+                structured(DatasourceDescription(ds.name, ds.engine, ds.description, datasources.browseCatalog(ds.name)))
             }
             "run_query" -> structured(runQuery(p, ip, args))
             "get_query_result" -> structured(

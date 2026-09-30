@@ -85,7 +85,7 @@ class DatasourceMetadataConnectGateDbTest {
         core.datasourceStore.register(
             name = "gated-ds", engine = Engine.MYSQL, host = "db", port = 3306, dbName = "app",
             tags = emptyList(), advertiseAddr = "proxy.example.com:6033",
-            advertiseCertChain = chainPem, advertiseWireTls = true,
+            advertiseCertChain = chainPem, advertiseWireTls = true, description = "Gated orders DB",
         )
         datasource = core.datasourceStore.getByName("gated-ds")!!
 
@@ -247,6 +247,7 @@ class DatasourceMetadataConnectGateDbTest {
             "the list must not answer what {id} and {id}/wire-cert refuse; got: $body",
         )
         assertFalse(body.contains("proxy.example.com"), "the advertised address is connection material too")
+        assertFalse(body.contains("Gated orders DB"), "the description rides only on connectable rows")
     }
 
     @Test
@@ -256,6 +257,7 @@ class DatasourceMetadataConnectGateDbTest {
         val body = client.get("/api/datasources").bodyAsText()
         assertTrue(body.contains("BEGIN CERTIFICATE"), "a caller granted connect must still get the chain")
         assertTrue(body.contains("proxy.example.com"), "a caller granted connect must still get the address")
+        assertTrue(body.contains("\"description\":\"Gated orders DB\""), body)
     }
 
     @Test

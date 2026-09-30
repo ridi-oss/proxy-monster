@@ -10,6 +10,7 @@ import com.ridi.oss.proxymonster.controlplane.wireName
 import com.ridi.oss.proxymonster.controlplane.ApprovalService
 import com.ridi.oss.proxymonster.controlplane.EditorTaskService
 import com.ridi.oss.proxymonster.controlplane.RunExecService
+import com.ridi.oss.proxymonster.controlplane.SERVER_VERSION
 import com.ridi.oss.proxymonster.controlplane.TaskServiceException
 import com.ridi.oss.proxymonster.controlplane.AuditService
 import com.ridi.oss.proxymonster.controlplane.AuditStore
@@ -432,7 +433,7 @@ private fun createMcpServer(
 ): Server {
     val locale = requestLocale(call)
     val server = Server(
-        Implementation("proxy-monster", "1.0.0", title = "proxy-monster (${config.instanceName})"),
+        Implementation("proxy-monster", SERVER_VERSION, title = "proxy-monster (${config.instanceName})"),
         ServerOptions(capabilities = ServerCapabilities(tools = ServerCapabilities.Tools(listChanged = false))),
         instructionsProvider = { mcpInstructions(config, core, context) },
     )

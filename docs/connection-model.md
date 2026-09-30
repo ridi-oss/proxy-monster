@@ -46,6 +46,16 @@ statement touching a masked column still `DENY`s mid-session.
   the proxy cancels the in-flight statement before dropping the target-DB
   connection. The target DB then rolls back any open transaction and discards
   session variables and temp tables. The next run opens a new session.
+- **Run** executes one statement on the editor session. Once the editor holds
+  several statements, the user selects the one to run; a selection of several
+  is refused in favour of Run All.
+- **Run All** (`POST /api/editor/scripts`) executes the whole script, which the
+  user selects in full, on a connection of its own rather than the editor
+  session. Every statement still decides on its own. The connection closes when
+  the script ends, fails, is denied, is canceled, or passes its deadline
+  (`timeoutSeconds`, at most one hour; `query.script_timeout`), so the target DB
+  rolls back any transaction the script left open. The script does not see the
+  editor session's `SET`/`USE` or temp tables.
 - Idle-bounded. The target-DB connection is held for the session and released on
   disconnect / idle timeout.
 

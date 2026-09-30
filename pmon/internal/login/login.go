@@ -7,16 +7,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/cookiejar"
 	"time"
 )
-
-// DefaultControlPlane is used only on a first login where neither the request nor saved state names one. It
-// matches the control plane's own PM_HTTP_PORT default; a local dev loop that moves that port must pass --url
-// once, which is then saved.
-const DefaultControlPlane = "http://localhost:8080"
 
 // DefaultTTL is the requested wire-token lifetime (12h). The control plane clamps it.
 const DefaultTTL = 43200
@@ -77,7 +73,7 @@ type Options struct {
 func Run(ctx context.Context, opts Options) (*Result, error) {
 	cp := opts.ControlPlane
 	if cp == "" {
-		cp = DefaultControlPlane
+		return nil, errors.New("no control-plane URL")
 	}
 	ttl := opts.TTLSeconds
 	if ttl <= 0 {

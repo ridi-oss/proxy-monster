@@ -1,6 +1,17 @@
 package com.ridi.oss.proxymonster.controlplane.mcp
 
+import com.ridi.oss.proxymonster.controlplane.AccessRequestInput
+import com.ridi.oss.proxymonster.controlplane.AccessService
 import com.ridi.oss.proxymonster.controlplane.ApiError
+import com.ridi.oss.proxymonster.controlplane.AuditService
+import com.ridi.oss.proxymonster.controlplane.QueryHistoryStore
+import com.ridi.oss.proxymonster.controlplane.RateResetRequestInput
+import com.ridi.oss.proxymonster.controlplane.MePermissions
+import com.ridi.oss.proxymonster.controlplane.RoleWithSources
+import com.ridi.oss.proxymonster.controlplane.computeMePermissions
+import com.ridi.oss.proxymonster.controlplane.historyLimit
+import com.ridi.oss.proxymonster.controlplane.authz.AuthzContext
+import com.ridi.oss.proxymonster.controlplane.management.DeleteResult
 import com.ridi.oss.proxymonster.controlplane.ApprovalService
 import com.ridi.oss.proxymonster.controlplane.ControlPlaneCore
 import com.ridi.oss.proxymonster.controlplane.CreateApprovalInput
@@ -21,12 +32,27 @@ import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.JsonObject
 
+/** The console's permission flags plus the caller's effective roles, which an agent needs to explain access. */
+@Serializable
+internal data class MyPermissions(
+    val isAdmin: Boolean,
+    val canReadAllAudit: Boolean,
+    val canApprove: Boolean,
+    val roles: List<RoleWithSources>,
+) {
+    constructor(flags: MePermissions, roles: List<RoleWithSources>) :
+        this(flags.isAdmin, flags.canReadAllAudit, flags.canApprove, roles)
+}
+
 @Serializable
 internal data class ConnectableDatasource(
     val name: String,
     @Serializable(with = EngineWireSerializer::class) val engine: Engine,
     val defaultSchemas: List<String>,
 )
+
+@Serializable
+internal data class ClearedResult(val cleared: Int)
 
 /** A run_query answer: the task, its per-statement metadata, and the first page of the last result set. */
 @Serializable
@@ -48,6 +74,9 @@ internal class McpTaskTools(
     private val datasources: DatasourceManagementService,
     private val editorTasks: EditorTaskService,
     private val approvals: ApprovalService,
+    private val access: AccessService,
+    private val audit: AuditService,
+    private val history: QueryHistoryStore,
 ) {
     suspend fun execute(tool: String, args: JsonObject, ctx: McpRequestContext): JsonObject {
         val p = ctx.principal
@@ -103,6 +132,35 @@ internal class McpTaskTools(
                 approvals.result(p, ip, args.requiredLong("id"), args.int("statement"), page(args)),
             )
             "cancel_approval" -> structured(approvals.cancel(p, ip, args.requiredLong("id")))
+            "get_my_permissions" -> structured(
+                MyPermissions(computeMePermissions(p, core.authz, AuthzContext(requesterIp = ip)), core.roleResolver.resolveWithSources(p)),
+            )
+            "list_audit" -> structured(audit.list(p, ip, args.int("limit")))
+            "get_audit_event" -> structured(audit.get(p, ip, args.requiredLong("id")))
+            "request_access" -> {
+                val role = core.policyStore.getRoleByName(args.requiredString("roleName")) ?: throw serviceNotFound("role")
+                val ds = args.string("datasource")?.let(::datasource)
+                val input = AccessRequestInput(role.id, ds?.id, args.requiredString("reason"), args.long("durationSec") ?: 3600)
+                structured(access.createRequest(p, ip, actor(ctx), input))
+            }
+            "list_access_requests" -> structured(access.listRequests(p, args.string("status")))
+            "list_access_grants" -> structured(access.listGrants(p, args.string("principal"), args.boolean("active") ?: false))
+            "reset_my_rate" -> structured(
+                access.requestRateReset(p, actor(ctx), RateResetRequestInput(args.string("reason").orEmpty(), args.string("denyReason"))),
+            )
+            "list_query_history" -> structured(history.recent(p, historyLimit(args.int("limit"))))
+            "clear_query_history" -> structured(ClearedResult(history.clear(p)))
+            "delete_query_task" -> structured(DeleteResult(editorTasks.delete(p, args.requiredLong("taskId"))))
+            "approve_access_request" -> structured(
+                access.approve(p, ip, actor(ctx), args.requiredLong("id"), args.long("durationSec")),
+            )
+            "reject_access_request" -> structured(
+                access.reject(p, ip, actor(ctx), args.requiredLong("id"), args.requiredString("reason")),
+            )
+            "revoke_access_grant" -> {
+                access.revokeGrant(p, ip, actor(ctx), args.requiredLong("id"))
+                structured(DeleteResult(true))
+            }
             else -> throw McpInputException()
         }
     }

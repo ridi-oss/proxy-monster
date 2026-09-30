@@ -35,17 +35,16 @@ object McpCapabilityRegistry {
         AuthzAction.TASK_ASSUME,
         AuthzAction.TASK_CANCEL,
         AuthzAction.TASK_APPROVE,
+        AuthzAction.TASK_DELETE,
+        AuthzAction.GRANT_REVOKE,
+        AuthzAction.AUDIT_READ,
     )
 
     val excludedActions = setOf(
-        // Editor-tab cleanup, grants, tokens, audit browsing, and actions that are only ever checked inside
-        // a query decision have no MCP tool.
-        AuthzAction.TASK_DELETE,
-        AuthzAction.GRANT_REVOKE,
         AuthzAction.TOKEN_MINT,
         AuthzAction.TOKEN_LIST,
         AuthzAction.TOKEN_REVOKE,
-        AuthzAction.AUDIT_READ,
+        // Checked only inside a query decision; no MCP tool.
         AuthzAction.RESULT_READ_UNMASKED,
         AuthzAction.RESULT_READ_MASKED,
         AuthzAction.RESULT_CAP,
@@ -142,6 +141,21 @@ object McpCapabilityRegistry {
         task("execute_approval", AuthzAction.TASK_APPROVE, "mcp:approvals:write", write = true, destructive = true),
         task("get_approval_result", AuthzAction.TASK_ASSUME, "mcp:query", write = false),
         task("cancel_approval", AuthzAction.TASK_CANCEL, "mcp:query", write = true),
+
+        // A label only: the answer is the caller's own Cedar decisions.
+        task("get_my_permissions", AuthzAction.TASK_READ, "mcp:read", write = false),
+        task("list_audit", AuthzAction.AUDIT_READ, "mcp:read", write = false),
+        task("get_audit_event", AuthzAction.AUDIT_READ, "mcp:read", write = false),
+        task("request_access", AuthzAction.TASK_REQUEST, "mcp:query", write = true),
+        task("list_access_requests", AuthzAction.TASK_READ, "mcp:query", write = false),
+        task("list_access_grants", AuthzAction.TASK_READ, "mcp:query", write = false),
+        task("reset_my_rate", AuthzAction.TASK_REQUEST, "mcp:query", write = true),
+        task("list_query_history", AuthzAction.TASK_READ, "mcp:query", write = false),
+        task("clear_query_history", AuthzAction.TASK_DELETE, "mcp:query", write = true, destructive = true),
+        task("delete_query_task", AuthzAction.TASK_DELETE, "mcp:query", write = true, destructive = true),
+        task("approve_access_request", AuthzAction.TASK_APPROVE, "mcp:approvals:write", write = true),
+        task("reject_access_request", AuthzAction.TASK_APPROVE, "mcp:approvals:write", write = true),
+        task("revoke_access_grant", AuthzAction.GRANT_REVOKE, "mcp:approvals:write", write = true, destructive = true),
     )
 
     val byName = entries.associateBy(McpCapability::toolName)
@@ -161,6 +175,9 @@ object McpCapabilityRegistry {
         "list_connectable_datasources", "describe_datasource", "run_query", "get_query_result", "get_query_status",
         "cancel_query", "discover_roles", "request_approval", "list_my_approvals", "list_approval_inbox", "get_approval",
         "approve_approval", "reject_approval", "execute_approval", "get_approval_result", "cancel_approval",
+        "get_my_permissions", "list_audit", "get_audit_event", "request_access", "list_access_requests",
+        "list_access_grants", "reset_my_rate", "list_query_history", "clear_query_history", "delete_query_task",
+        "approve_access_request", "reject_access_request", "revoke_access_grant",
     )
 
     fun verify() {

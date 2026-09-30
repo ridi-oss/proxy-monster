@@ -25,6 +25,7 @@
     "only_denied_queries": "Only denied queries can be requested for approval.",
     "role_required": "This request must specify an elevation role to run under.",
     "pending_request_exists": "A pending request already exists for this decision.",
+    "request_not_permitted": "You are not permitted to request access on this datasource.",
     "query_failed": "Query execution failed.",
     "execute_denied": "The query was denied at execution time.",
     "canceled": "The execution was canceled.",

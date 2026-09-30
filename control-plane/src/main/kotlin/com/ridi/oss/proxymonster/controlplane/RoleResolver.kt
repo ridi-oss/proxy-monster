@@ -92,6 +92,19 @@ class RoleResolver(
         )
     }
 
+    /** [resolve]'s roles, each with every source that grants it; a deactivated principal has none. */
+    fun resolveWithSources(principal: String): List<RoleWithSources> {
+        if (userGroupStore.isDeactivated(principal)) return emptyList()
+        val sources = linkedMapOf<String, MutableList<RoleSource>>()
+        fun add(role: String, source: RoleSource) = sources.getOrPut(role) { mutableListOf() }.add(source)
+        directRoles(principal).forEach { add(it, RoleSource("direct")) }
+        userGroupStore.rolesForPrincipal(principal).forEach { add(it, RoleSource("group")) }
+        accessStore.listGrants(principal, activeOnly = true).forEach {
+            add(it.roleName, RoleSource("grant", grantId = it.id, expiresAt = it.expiresAt))
+        }
+        return sources.map { (role, from) -> RoleWithSources(role, from) }.sortedBy { it.role }
+    }
+
     /**
      * Whether at least one active principal can resolve [roleName] through the same complete union as
      * [resolve]: direct assignment, group membership, or an active JIT grant. A direct/JIT principal
@@ -131,3 +144,9 @@ class RoleResolver(
         }
     }
 }
+
+@kotlinx.serialization.Serializable
+data class RoleSource(val kind: String, val grantId: Long? = null, val expiresAt: String? = null)
+
+@kotlinx.serialization.Serializable
+data class RoleWithSources(val role: String, val sources: List<RoleSource>)

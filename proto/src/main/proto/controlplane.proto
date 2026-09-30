@@ -125,6 +125,8 @@ message RegisterRequest {
   int32 protocol_version = 12;
   // Absent retains the stored value; an empty message clears it. Nonsecret client-facing metadata only.
   ConnectionInfo connection_info = 13;
+  // One line telling people and agents what this datasource holds. Absent retains the stored value; empty clears it.
+  optional string description = 14;
 }
 message RegisterResponse {
   string name = 1;

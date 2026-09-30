@@ -406,6 +406,7 @@ class ControlPlaneGrpcService(
                 advertiseCertChain = certChain,
                 advertiseWireTls = request.advertiseWireTls,
                 connectionInfo = if (request.hasConnectionInfo()) request.connectionInfo else null,
+                description = if (request.hasDescription()) request.description else null,
             )
         } catch (e: DatasourceEngineConflictException) {
             // Engine is immutable at register — a mismatched re-register is a client precondition

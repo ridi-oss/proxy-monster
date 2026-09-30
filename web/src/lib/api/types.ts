@@ -100,6 +100,7 @@ export interface Datasource {
   dbName: string
   currentCatalog?: string | null
   connectionInfo?: ConnectionInfo | null
+  description?: string
   /** Policy-posture tags (`preset:*`, docs/access-model.md) — set by the proxy's `PM_DATASOURCE_TAGS` at
    *  registration, or by an admin edit. Empty by default (safe "production" posture). */
   tags: string[]

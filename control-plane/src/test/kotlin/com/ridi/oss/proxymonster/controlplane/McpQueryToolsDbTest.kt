@@ -665,14 +665,19 @@ class McpQueryToolsDbTest {
         val principal = analyst("smoke")
         val token = token(principal, setOf("mcp:query"))
         val hidden = core.datasourceStore.create(DatasourceInput("mcp-hidden-${seq.incrementAndGet()}", "mysql", "localhost", 3306, "app"))
+        val shown = fx.datasource
+        core.datasourceStore.register(shown.name, shown.engine, shown.host, shown.port, shown.dbName, emptyList(), "", null, false, description = "Orders and payments")
 
         val listed = client.call(token, "list_connectable_datasources").ok().getValue("result").jsonArray.map { it.jsonObject }
         assertContains(listed.map { it.str("name") }, fx.datasource.name)
         assertFalse(hidden.name in listed.map { it.str("name") })
         assertTrue(listed.none { "host" in it || "port" in it }, listed.toString())
+        assertEquals("Orders and payments", listed.single { it.str("name") == fx.datasource.name }.str("description"))
 
-        val described = client.call(token, "describe_datasource", buildJsonObject { put("datasource", fx.datasource.name) })
-        assertTrue(described.ok().getValue("result").jsonArray.isNotEmpty())
+        val described = client.call(token, "describe_datasource", buildJsonObject { put("datasource", fx.datasource.name) }).ok().result()
+        assertEquals("Orders and payments", described.str("description"))
+        assertEquals("mysql", described.str("engine"))
+        assertTrue(described.getValue("columns").jsonArray.isNotEmpty())
         assertEquals(
             "datasource.not_connectable",
             client.call(token, "describe_datasource", buildJsonObject { put("datasource", hidden.name) }).error(),

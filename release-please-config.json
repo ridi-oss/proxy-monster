@@ -61,6 +61,11 @@
           "type": "json",
           "path": "web/package.json",
           "jsonpath": "$.version"
+        },
+        {
+          "type": "json",
+          "path": "control-plane/src/main/resources/proxymonster/server-version.json",
+          "jsonpath": "$.version"
         }
       ]
     },

@@ -109,6 +109,8 @@ tasks.test {
     // Undeclared, the test task stays UP-TO-DATE after a supported version is added or removed and the
     // guard never re-runs — it would report the previous run's pass against the new declaration.
     inputs.file(rootProject.file("db-support.json"))
+    inputs.file(rootProject.file(".release-please-manifest.json"))
+    inputs.file(rootProject.file("release-please-config.json"))
     inputs.dir(rootProject.file(".github/workflows")).optional()
     // The image env vars select which database version the DB-backed tests run against, so a run under
     // a different version is a different run. Without this Gradle would treat the second version's run

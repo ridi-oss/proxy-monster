@@ -156,6 +156,23 @@ configured per proxy under `PM_TARGET_*`.
   `acme`). In production set all five to the target DB this proxy fronts (VPC
   peering in the AWS layout below). Example: `prod-db.prod-vpc.internal` ·
   `5432` · `appdb` · `pmproxy`
+- `PM_TARGET_TLS` — _optional_. TLS on the proxy's own connection to the target
+  DB: `disable` (default); `require` (encrypt, no certificate check, so no
+  protection from an active man-in-the-middle); `verify-ca` (check the chain
+  only); or `verify-full` (check the chain and that the certificate names
+  `PM_TARGET_HOST`). Use `verify-full` for RDS/Aurora and Azure, and for Cloud
+  SQL on shared or customer-managed CA with `PM_TARGET_HOST` set to the
+  instance's DNS name (`<uid>.<project>.<region>.sql.goog`). Use `verify-ca` for
+  Cloud SQL on the default per-instance CA, whose certificate names no DNS host.
+- `PM_TARGET_CA` — _optional_. The CAs to trust, as a comma-separated list:
+  `system` (the OS trust store), `rds` (the bundled
+  [RDS global CA bundle](https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem)),
+  or a path to a PEM file (relative paths resolve against the proxy's working
+  directory; write a file literally named `rds` as `./rds`). Default
+  `system,rds` for `verify-full`. `verify-ca` requires it and accepts only
+  files: without the hostname check, the CA must sign nothing but this target,
+  as a Cloud SQL per-instance server CA does (download it with
+  `gcloud sql instances describe <instance> --format='value(serverCaCert.cert)'`).
 - `PM_CONTROL_PLANE_GRPC` — _optional_. CP gRPC address `host:port`. Default
   `localhost:9090`. Production example: `pm-cp.pm.internal:9090`
 - `PM_ADVERTISE_ADDR` — _optional, no default_. The client-facing `host:port` a

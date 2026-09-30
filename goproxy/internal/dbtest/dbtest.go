@@ -89,6 +89,9 @@ func OpenPostgres(t testing.TB, db string) *sql.DB {
 	return open(t, "pgx", Postgres(t).PostgresDSN(db))
 }
 
+// Open opens (and pings) a *sql.DB for any DSN, version-checked like OpenMySQL/OpenPostgres.
+func Open(t testing.TB, driver, dsn string) *sql.DB { return open(t, driver, dsn) }
+
 func open(t testing.TB, driver, dsn string) *sql.DB {
 	t.Helper()
 	conn, err := sql.Open(driver, dsn)

@@ -3,6 +3,7 @@ package pgproxy
 import (
 	"context"
 	"crypto/md5"
+	"crypto/tls"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -40,10 +41,16 @@ func dialTargetDbAuth(ctx context.Context, target spi.TargetDb) (net.Conn, []pgp
 			_ = conn.Close()
 		}
 	}()
-	defer context.AfterFunc(ctx, func() { _ = conn.Close() })()
+	socket := conn
+	defer context.AfterFunc(ctx, func() { _ = socket.Close() })()
 	if err := conn.SetDeadline(time.Now().Add(targetDbHandshakeTimeout)); err != nil {
 		return nil, nil, pgproto3.BackendKeyData{}, 0, "", fmt.Errorf("set target-DB auth deadline: %w", err)
 	}
+	secured, err := startTargetDbTLS(ctx, conn, target.TLS)
+	if err != nil {
+		return nil, nil, pgproto3.BackendKeyData{}, 0, "", err
+	}
+	conn = secured
 
 	wireConn := &switchConn{Conn: conn, strictReads: true}
 	frontend := pgproto3.NewFrontend(wireConn, wireConn)
@@ -399,22 +406,57 @@ func (s *Server) quietRefetcher(sess *session) *engine.Refetcher {
 }
 
 func (s *Server) forwardCancelRequest(message *pgproto3.CancelRequest) {
-	if err := sendCancelRequest(s.targetDb.Host, s.targetDb.Port, message.ProcessID, message.SecretKey); err != nil {
+	if err := sendCancelRequest(s.targetDb, message.ProcessID, message.SecretKey); err != nil {
 		slog.Warn("postgres CancelRequest forward failed", "host", s.targetDb.Host, "port", s.targetDb.Port, "error", err)
 	}
 }
 
-func sendCancelRequest(host string, port int, processID uint32, secretKey []byte) error {
+// startTargetDbTLS runs the SSLRequest exchange and returns the TLS-wrapped conn; a nil config leaves conn as is.
+func startTargetDbTLS(ctx context.Context, conn net.Conn, config *tls.Config) (net.Conn, error) {
+	if config == nil {
+		return conn, nil
+	}
+	request, err := (&pgproto3.SSLRequest{}).Encode(nil)
+	if err != nil {
+		return nil, fmt.Errorf("encode SSLRequest: %w", err)
+	}
+	if _, err := conn.Write(request); err != nil {
+		return nil, fmt.Errorf("write target-DB SSLRequest: %w", err)
+	}
+	// Exactly one byte: anything past it belongs to the TLS handshake.
+	answer := make([]byte, 1)
+	if _, err := io.ReadFull(conn, answer); err != nil {
+		return nil, fmt.Errorf("read target-DB SSLRequest answer: %w", err)
+	}
+	if answer[0] != 'S' {
+		return nil, fmt.Errorf("target DB refused TLS (SSLRequest answered %q)", answer[0])
+	}
+	tlsConn := tls.Client(conn, config)
+	if err := tlsConn.HandshakeContext(ctx); err != nil {
+		return nil, fmt.Errorf("target-DB TLS handshake: %w", err)
+	}
+	return tlsConn, nil
+}
+
+func sendCancelRequest(target spi.TargetDb, processID uint32, secretKey []byte) error {
 	request := &pgproto3.CancelRequest{ProcessID: processID, SecretKey: secretKey}
 	encoded, err := request.Encode(nil)
 	if err != nil {
 		return fmt.Errorf("encode CancelRequest: %w", err)
 	}
-	conn, err := net.DialTimeout("tcp", net.JoinHostPort(host, strconv.Itoa(port)), targetDbHandshakeTimeout)
+	conn, err := net.DialTimeout("tcp", net.JoinHostPort(target.Host, strconv.Itoa(target.Port)), targetDbHandshakeTimeout)
 	if err != nil {
 		return fmt.Errorf("dial target DB for cancel: %w", err)
 	}
 	defer conn.Close()
+	if err := conn.SetDeadline(time.Now().Add(targetDbHandshakeTimeout)); err != nil {
+		return fmt.Errorf("set cancel handshake deadline: %w", err)
+	}
+	secured, err := startTargetDbTLS(context.Background(), conn, target.TLS)
+	if err != nil {
+		return err
+	}
+	conn = secured
 	if err := conn.SetWriteDeadline(time.Now().Add(wire.SocketWriteTimeout)); err != nil {
 		return fmt.Errorf("set cancel write deadline: %w", err)
 	}

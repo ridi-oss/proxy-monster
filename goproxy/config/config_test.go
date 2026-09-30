@@ -37,7 +37,7 @@ func clearPMEnv(t *testing.T) {
 	for _, v := range []string{
 		"PM_PROXY_PORT", "PM_TARGET_PORT",
 		"PM_DATASOURCE_NAME", "PM_DATASOURCE_TAGS", "PM_SECRET_TOKEN",
-		"PM_TLS_CERT", "PM_TLS_KEY", "PM_ADVERTISE_ADDR", "PM_QUERY_TIMEOUT",
+		"PM_TLS_CERT", "PM_TLS_KEY", "PM_ADVERTISE_ADDR", "PM_QUERY_TIMEOUT", "PM_TARGET_TLS", "PM_TARGET_CA",
 	} {
 		t.Setenv(v, "")
 	}
@@ -437,5 +437,25 @@ func TestValidateOrderDatasourceNameCheckedBeforeEngine(t *testing.T) {
 	// starts with "unsupported".
 	if strings.HasPrefix(err.Error(), "unsupported") {
 		t.Errorf("Validate() returned the engine error first, want the datasource-name error first: %v", err)
+	}
+}
+
+func TestLoadTargetTLS(t *testing.T) {
+	clearPMEnv(t)
+	cfg, err := Load(testRegistry())
+	if err != nil || cfg.TargetTLS != nil {
+		t.Fatalf("unset PM_TARGET_TLS = %v, %v; want plaintext", cfg.TargetTLS, err)
+	}
+
+	t.Setenv("PM_TARGET_HOST", "db.cluster.example")
+	t.Setenv("PM_TARGET_TLS", "verify-full")
+	cfg, err = Load(testRegistry())
+	if err != nil || cfg.TargetTLS == nil || cfg.TargetTLS.ServerName != "db.cluster.example" || cfg.TargetTLS.InsecureSkipVerify {
+		t.Fatalf("verify-full = %+v, %v; want a verifying config for PM_TARGET_HOST", cfg.TargetTLS, err)
+	}
+
+	t.Setenv("PM_TARGET_TLS", "prefer")
+	if _, err := Load(testRegistry()); err == nil || !strings.Contains(err.Error(), "PM_TARGET_TLS") {
+		t.Fatalf("PM_TARGET_TLS=prefer = %v, want a rejection", err)
 	}
 }

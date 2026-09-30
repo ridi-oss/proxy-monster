@@ -21,6 +21,8 @@ type TargetDb struct {
 	Db       string
 	User     string
 	Password string
+	// TLS secures the proxy's own connection to the target DB; nil is plaintext.
+	TLS *tls.Config
 }
 
 // Identity is the authenticated wire identity retained for a client session.

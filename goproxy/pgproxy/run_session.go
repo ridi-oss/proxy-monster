@@ -116,7 +116,7 @@ func (s *RunSession) Cancel() error {
 		_ = s.conn.Close()
 		return errors.New("cannot cancel: target DB did not provide a cancellation key")
 	}
-	if err := sendCancelRequest(s.target.Host, s.target.Port, s.keyData.ProcessID, s.keyData.SecretKey); err != nil {
+	if err := sendCancelRequest(s.target, s.keyData.ProcessID, s.keyData.SecretKey); err != nil {
 		_ = s.conn.Close()
 		return err
 	}

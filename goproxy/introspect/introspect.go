@@ -6,7 +6,9 @@ package introspect
 
 import (
 	"context"
+	"crypto/tls"
 	"database/sql"
+	"database/sql/driver"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -14,8 +16,8 @@ import (
 	"strings"
 	"time"
 
-	// pgx registers the "pgx" database/sql driver via its init(); we never reference it by name.
-	_ "github.com/jackc/pgx/v5/stdlib"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/stdlib"
 	"google.golang.org/protobuf/proto"
 
 	// The named mysql import both registers the "mysql" driver (via init()) AND gives us mysql.Config
@@ -47,7 +49,7 @@ const columnsSQL = `SELECT table_catalog, table_schema, table_name, column_name,
 FROM information_schema.columns
 ORDER BY table_schema, table_name, ordinal_position`
 
-// OpenMySQLTarget opens a database/sql handle to a MySQL target (plaintext link, 5s connect / 30s socket).
+// OpenMySQLTarget opens a database/sql handle to a MySQL target (5s connect / 30s socket).
 func OpenMySQLTarget(target spi.TargetDb) (*sql.DB, error) {
 	cfg := mysqldriver.NewConfig()
 	cfg.User = target.User
@@ -62,6 +64,9 @@ func OpenMySQLTarget(target spi.TargetDb) (*sql.DB, error) {
 	// allowPublicKeyRetrieval equivalent is needed. zeroDateTimeBehavior/connectionTimeZone are moot
 	// since every read here is a string or int (no parseTime).
 	cfg.TLSConfig = "false"
+	if target.TLS != nil {
+		cfg.TLS = target.TLS.Clone()
+	}
 	// Hand the *Config straight to a connector rather than FormatDSN()->sql.Open(): FormatDSN does not
 	// escape the username, so a service account like "svc:reader" would round-trip back through the DSN
 	// grammar as user "svc" / password "reader:<pw>" and fail auth on every catalog refresh. The
@@ -81,14 +86,29 @@ func OpenPostgresTarget(target spi.TargetDb) (*sql.DB, error) {
 		User:     url.UserPassword(target.User, target.Password),
 		Host:     fmt.Sprintf("%s:%d", target.Host, target.Port),
 		Path:     "/" + target.Db,
-		RawQuery: "connect_timeout=5",
+		RawQuery: "connect_timeout=5&sslmode=disable",
 	}
-	db, err := sql.Open("pgx", u.String())
-	if err != nil {
-		return nil, fmt.Errorf("introspect: opening postgres target: %w", err)
-	}
-	return db, nil
+	return sql.OpenDB(pgConnector{dsn: u.String(), tls: target.TLS}), nil
 }
+
+// pgConnector parses at connect time, as sql.Open does, so an unusable target fails its first connect, not the open.
+type pgConnector struct {
+	dsn string
+	tls *tls.Config
+}
+
+func (c pgConnector) Connect(ctx context.Context) (driver.Conn, error) {
+	config, err := pgx.ParseConfig(c.dsn)
+	if err != nil {
+		return nil, fmt.Errorf("introspect: parsing postgres target config: %w", err)
+	}
+	if c.tls != nil {
+		config.TLSConfig = c.tls.Clone()
+	}
+	return stdlib.GetConnector(*config).Connect(ctx)
+}
+
+func (pgConnector) Driver() driver.Driver { return stdlib.GetDefaultDriver() }
 
 // NamespaceProbe reads the connection's effective namespace into a CatalogRequest: default_schemas, plus
 // MySQL's lower_case_table_names.

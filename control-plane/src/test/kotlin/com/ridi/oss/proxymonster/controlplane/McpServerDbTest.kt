@@ -5,6 +5,7 @@ import com.ridi.oss.proxymonster.auth.ConsumeAuthorizationCodeInput
 import com.ridi.oss.proxymonster.auth.OAuthAuthorizationStore
 import com.ridi.oss.proxymonster.auth.pkceS256
 import com.ridi.oss.proxymonster.controlplane.authz.CedarPolicyInput
+import com.ridi.oss.proxymonster.grpc.Engine
 import com.ridi.oss.proxymonster.controlplane.management.DatasourceManagementService
 import com.ridi.oss.proxymonster.controlplane.management.IdentityManagementService
 import com.ridi.oss.proxymonster.controlplane.management.ManagementAuditRecorder
@@ -54,6 +55,7 @@ import javax.sql.DataSource
 import kotlin.test.assertContains
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
@@ -192,6 +194,46 @@ class McpServerDbTest {
         }
         assertEquals(HttpStatusCode.Forbidden, foreign.status)
         assertEquals("mcp.invalid_host", TEST_JSON.parseToJsonElement(foreign.bodyAsText()).jsonObject["code"]?.jsonPrimitive?.content)
+    }
+
+    @Test
+    fun `initialize instructions name the instance and list only datasources the caller may connect to`() = testApplication {
+        application { installTestMcp() }
+        val client = createClient { expectSuccess = false }
+        core.datasourceStore.register(
+            "mcp-instr-orders", Engine.MYSQL, "db", 3306, "orders", emptyList(), "", null, false,
+            description = "Orders and payments",
+        )
+        val role = core.policyStore.createRole(RoleInput("mcp-instr-connect"))
+        core.cedarPolicyStore.create(
+            CedarPolicyInput(
+                "mcp-instr-connect",
+                """permit(principal in Role::"mcp-instr-connect", action == Action::"datasource.connect", resource == Datasource::"mcp-instr-orders");""",
+            ),
+            "admin@example.com",
+        )
+        val connector = "mcp-instr-connector@example.com"
+        val stranger = "mcp-instr-stranger@example.com"
+        grantRole(connector, role.name)
+        suspend fun instructions(principal: String, language: String = "en"): String {
+            val sdk = client.mcpStreamableHttp("/mcp") {
+                header(HttpHeaders.Authorization, "Bearer ${token(principal, setOf("mcp:read"))}")
+                header(HttpHeaders.AcceptLanguage, language)
+            }
+            assertEquals("proxy-monster (hr-pmon)", sdk.serverVersion?.title)
+            return assertNotNull(sdk.serverInstructions)
+        }
+
+        val granted = instructions(connector)
+        assertContains(granted, "\"hr-pmon\": HR and payroll data")
+        assertContains(granted, "pmon-*")
+        assertContains(granted, "- mcp-instr-orders (mysql): Orders and payments")
+
+        val denied = instructions(stranger)
+        assertContains(denied, "\"hr-pmon\"")
+        assertFalse("mcp-instr-orders" in denied, denied)
+
+        assertEquals(instructions(connector), instructions(connector, "ko"), "instructions are English for every locale")
     }
 
     @Test
@@ -1300,6 +1342,8 @@ class McpServerDbTest {
     }
 
     private fun config(mcpResource: String = RESOURCE, trustedProxies: Set<String> = emptySet()) = Config(
+        instanceName = "hr-pmon",
+        instanceDescription = "HR and payroll data",
         httpPort = 0,
         dbUrl = "",
         dbUser = "",

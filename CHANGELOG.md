@@ -1,5 +1,91 @@
 # Changelog
 
+## [0.1.28](https://github.com/ridi-oss/proxy-monster/compare/server-v0.1.27...server-v0.1.28) (2026-10-01)
+
+
+### Features
+
+* **analyzer:** add the Athena engine and SQL submission ([7cfcf7d](https://github.com/ridi-oss/proxy-monster/commit/7cfcf7d698e7d0f87e9be9f32178da939df0887e))
+* **analyzer:** emit catalog-qualified namespace candidates ([551f2eb](https://github.com/ridi-oss/proxy-monster/commit/551f2ebb9977195e64c234424e091e0b5fe69bb3))
+* **analyzer:** resolve function calls against the catalog and fail closed ([7c19aeb](https://github.com/ridi-oss/proxy-monster/commit/7c19aeb13424adfbde126cfb6641cf64d38ec75e))
+* **analyzer:** resolve PostgreSQL system columns as implicit catalog columns ([c171dcf](https://github.com/ridi-oss/proxy-monster/commit/c171dcfdca7eef72e9d1545df113b1eabf505040))
+* authorize a metadata request without a SQL session ([cf5f9bd](https://github.com/ridi-oss/proxy-monster/commit/cf5f9bd998d5f1aec06e376874749fbbf562f13e))
+* **catalog:** carry routines in the schema fragment ([e6a2db6](https://github.com/ridi-oss/proxy-monster/commit/e6a2db6036a1efcd160b0e71dd13eef1274763b3))
+* **control-plane:** authorize provider-native requests with instructions ([a2fa18f](https://github.com/ridi-oss/proxy-monster/commit/a2fa18fb51fe4265211573741b4619925bfbd164))
+* **control-plane:** count a rate per datasource ([b792be6](https://github.com/ridi-oss/proxy-monster/commit/b792be64c2094b3b06abb8b4c928e00c0676d2a2))
+* **control-plane:** forward the function catalog ([9ad23c6](https://github.com/ridi-oss/proxy-monster/commit/9ad23c6601bb1c114f088634450b9e94c45e3c66))
+* **control-plane:** GET /api/mcp/connect for the connect page ([8d653b9](https://github.com/ridi-oss/proxy-monster/commit/8d653b92c8850a794c92d7f4f3c0361112472ab9))
+* **control-plane:** key the catalog by (catalog, schema), not schema alone ([0e93a9c](https://github.com/ridi-oss/proxy-monster/commit/0e93a9c8926d45bd453d97f429598b111eb4ff0b))
+* **control-plane:** MCP access-request, grant, audit, history and self tools ([e2a849b](https://github.com/ridi-oss/proxy-monster/commit/e2a849b276ab2e75212d137c990241624968f17d))
+* **control-plane:** MCP admin tools for groups, rates and datasources ([850974f](https://github.com/ridi-oss/proxy-monster/commit/850974fa72d9adce22c7806e144951e7e8887f06))
+* **control-plane:** MCP initialize instructions name the instance ([7c45b4d](https://github.com/ridi-oss/proxy-monster/commit/7c45b4d51214e0a840daa429bb040220876474a2))
+* **control-plane:** MCP query and approval tools ([fcfff3d](https://github.com/ridi-oss/proxy-monster/commit/fcfff3d9a2d9867cd7fa2e118012c4e54258e45d))
+* **control-plane:** MCP token tools and the mcp:tokens scope ([91afbc1](https://github.com/ridi-oss/proxy-monster/commit/91afbc1d046ddeadf18cbd1ef0b3fd5adbb2c332))
+* **control-plane:** page stored result views ([b832a5e](https://github.com/ridi-oss/proxy-monster/commit/b832a5e4d62e78a15fb02f079296f11a650408a7))
+* **control-plane:** PM_INSTANCE_NAME and PM_INSTANCE_DESCRIPTION ([b0904cc](https://github.com/ridi-oss/proxy-monster/commit/b0904cc1019bc4db91180026e4ea44b4b6afcc50))
+* **control-plane:** refresh the config catalog after DDL ([c10166f](https://github.com/ridi-oss/proxy-monster/commit/c10166fb4cc225096bf21485454b58a1d059dfce))
+* **control-plane:** register the Athena engine and its request authorizer ([2d7dea2](https://github.com/ridi-oss/proxy-monster/commit/2d7dea2292830e6c384ce5c56e7e6e687e3c0c40))
+* **control-plane:** report the server release as the MCP server version ([a5be660](https://github.com/ridi-oss/proxy-monster/commit/a5be66059e7388e502c7594635bb1c1d8905454f))
+* decide Athena SQL through the control plane ([62c8c4e](https://github.com/ridi-oss/proxy-monster/commit/62c8c4e5c04eb3b76159d9c380c6383b33c7b876))
+* **goproxy:** add the Athena enforcement-context cache ([5273f6a](https://github.com/ridi-oss/proxy-monster/commit/5273f6ab2ba1951cf8974f3dfea52e5857821d6e))
+* **goproxy:** add the Athena JSON envelope, forwarder, and result masking ([7aa0728](https://github.com/ridi-oss/proxy-monster/commit/7aa0728acf56bb23a0c7259eada0199c0b3925f1))
+* **goproxy:** carry the connection's catalog through every catalog fact ([a83b04f](https://github.com/ridi-oss/proxy-monster/commit/a83b04f28b9d0931fa365872aecf49f559b2b09d))
+* **goproxy:** configure an Athena target and read its catalog ([9e1e555](https://github.com/ridi-oss/proxy-monster/commit/9e1e555421c1109d12b2c13320abf2dd2755fbdd))
+* **goproxy:** decide and submit Athena SQL, natively and from the editor ([fbd9caa](https://github.com/ridi-oss/proxy-monster/commit/fbd9caaa2b9728df1ccdd1b4bdfa4298fb1e2838))
+* **goproxy:** serve the Athena API through the forwarding provider ([6035769](https://github.com/ridi-oss/proxy-monster/commit/6035769fb17e975ef578596f6f774b945e705abb))
+* **goproxy:** TLS to the target DB ([dcc71cd](https://github.com/ridi-oss/proxy-monster/commit/dcc71cd247b0cbfb63c737dae88704ec21580321))
+* let a proxy publish nonsecret connection metadata at Register ([c59a78e](https://github.com/ridi-oss/proxy-monster/commit/c59a78e1a5e4e1f988328f9a8f7007e90e003a98))
+* PM_DATASOURCE_DESCRIPTION reaches the control plane ([9666832](https://github.com/ridi-oss/proxy-monster/commit/9666832d517c3d67a3f397e315a281de77d0955e))
+* **pmon:** add server commands and a server argument to the CLI ([145c0c3](https://github.com/ridi-oss/proxy-monster/commit/145c0c38b46c37ae92bea33aa17f32869c9a5f5d))
+* **pmon:** broker PostgreSQL connections ([d9303df](https://github.com/ridi-oss/proxy-monster/commit/d9303df11e8d4101d0e1368a860ae532a6f0fd23))
+* require the catalog on every catalog fact on the wire ([590cdc0](https://github.com/ridi-oss/proxy-monster/commit/590cdc0a6eb40924642f3cbc93b7e2dea22d57b9))
+* **smoke:** drive the console in a real browser ([34b3e09](https://github.com/ridi-oss/proxy-monster/commit/34b3e09294656d4280b3ce0f6c9627a34bc9ca5b))
+* **smoke:** end-to-end smoke harness (mise run smoke) ([b2c826a](https://github.com/ridi-oss/proxy-monster/commit/b2c826ac3c57da483423349e08faf84acd5df1c8))
+* **web:** Connect an agent page ([ce66763](https://github.com/ridi-oss/proxy-monster/commit/ce66763c1e35e1989e326a129a86f734af688a9f))
+* **web:** show the catalog on every table identity ([df1ea16](https://github.com/ridi-oss/proxy-monster/commit/df1ea168c26d50376c9146016380543babde27f3))
+
+
+### Bug Fixes
+
+* **control-plane:** never save a result without its execution decision ([1208f8a](https://github.com/ridi-oss/proxy-monster/commit/1208f8a438de1276e84a10c187429227c4e99204))
+* **control-plane:** refuse an approval result view with no execution decision to charge ([3b8170c](https://github.com/ridi-oss/proxy-monster/commit/3b8170c5303ddbff392f1046b8f5645ba790163d))
+* **control-plane:** view an editor result against its open session's catalog ([6de3c40](https://github.com/ridi-oss/proxy-monster/commit/6de3c40fc2ac9aecc9265991842e029a85eb4e1c))
+* **postgres:** classify exact system columns ([d86bb42](https://github.com/ridi-oss/proxy-monster/commit/d86bb42f1fef1f04626fb63654077211daf90fb6))
+* **postgres:** redact catalog option columns ([fb02adb](https://github.com/ridi-oss/proxy-monster/commit/fb02adb43f2ba2e78f18b813d48de92d59b8ee43))
+* **postgres:** trust an xid cast only when it resolves to pg_catalog.xid ([e076747](https://github.com/ridi-oss/proxy-monster/commit/e0767474ec6eee95254734311caa4b8b62a43da5))
+* **smoke:** send the required catalog on the seed classification ([48297c2](https://github.com/ridi-oss/proxy-monster/commit/48297c271e165def74e5ec96c2abb905c9b58035))
+
+
+### Refactoring
+
+* **analyzer:** let an engine own its namespace and catalog rules ([1f1c814](https://github.com/ridi-oss/proxy-monster/commit/1f1c8144460e51a0d061be44f47f1124adfcbfec))
+* **control-plane:** describe each engine in one EngineDefinition ([dd40e69](https://github.com/ridi-oss/proxy-monster/commit/dd40e693ff2de56de48ab71f1f1e07cd000aa243))
+* **control-plane:** extract AccessService ([b143bae](https://github.com/ridi-oss/proxy-monster/commit/b143baed27c477c52f2c31e8679b863e6d3e4697))
+* **control-plane:** extract ApprovalService from the approval routes ([de450a6](https://github.com/ridi-oss/proxy-monster/commit/de450a6fa431fc0cc28378705b50d3f628c097a3))
+* **control-plane:** extract AuditService ([286f89c](https://github.com/ridi-oss/proxy-monster/commit/286f89cb068759f3cbba32e50d5e65b8d1e98287))
+* **control-plane:** extract EditorTaskService from the editor routes ([ae75ce4](https://github.com/ridi-oss/proxy-monster/commit/ae75ce42e5c0c59626ece184e886792352488373))
+* **control-plane:** extract TokenService ([be29e3f](https://github.com/ridi-oss/proxy-monster/commit/be29e3fed0c3cc98dd9b710c2158480e52f8ccc5))
+* **control-plane:** move datasource admin logic into DatasourceManagementService ([daaf614](https://github.com/ridi-oss/proxy-monster/commit/daaf6140d6c74d0003545e1c4e8696ccddbe4d0a))
+* **goproxy:** a Provider opens a Db that owns its target ([ae984e6](https://github.com/ridi-oss/proxy-monster/commit/ae984e63410a05921c9b8ad3c759c909279d9ae0))
+* **goproxy:** QueryEngine decides from callbacks alone, without a Db ([40ffb92](https://github.com/ridi-oss/proxy-monster/commit/40ffb9296c951d99049a3995e5af455ce3dcde04))
+* **proto:** name every catalog object with one ObjectRef ([22b3c84](https://github.com/ridi-oss/proxy-monster/commit/22b3c8482efa446f1250db23393628e4c8dc1c31))
+
+
+### Build & Dependencies
+
+* **analyzer:** adopt sqlglot-go v0.37.2 ([666c998](https://github.com/ridi-oss/proxy-monster/commit/666c998f7ef821852f5d7b757e4d5803a9044fe0))
+* **proto:** add catalog identity and metadata authorization to the wire contract ([494063c](https://github.com/ridi-oss/proxy-monster/commit/494063c82306abf5f5794debc41acd2b1a6e0ef5))
+* **proto:** add the Athena analyzer contract ([2de3784](https://github.com/ridi-oss/proxy-monster/commit/2de3784fdfb9cb5bcc05a6588908004c76ab72a2))
+
+
+### Documentation
+
+* **agents:** never force a release with an empty Release-As commit ([d24f7af](https://github.com/ridi-oss/proxy-monster/commit/d24f7af04cd62f2e494c107b2000664e0b37f3b5))
+* instance identity, datasource descriptions, and the connect page ([6c5d8f5](https://github.com/ridi-oss/proxy-monster/commit/6c5d8f50906d29bae59a4b14937ff42d93be455c))
+* MCP console-parity tools ([cd59232](https://github.com/ridi-oss/proxy-monster/commit/cd592325909f1f56cb9c066f0008c950f9bfb12a))
+* MCP query and approval tools ([9846ccb](https://github.com/ridi-oss/proxy-monster/commit/9846ccb37954ca610eeb834d7e6efd829f955125))
+* record the Athena limitations and follow-ups ([cae1546](https://github.com/ridi-oss/proxy-monster/commit/cae15462e677389443af96dda3a5e14bf210cdb0))
+
 ## [0.1.27](https://github.com/ridi-oss/proxy-monster/compare/server-v0.1.26...server-v0.1.27) (2026-09-18)
 
 

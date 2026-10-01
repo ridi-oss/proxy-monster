@@ -205,6 +205,11 @@ jobs:
           pnpm -C web install --frozen-lockfile
           pnpm -C web exec playwright install --with-deps chromium
 
+      # The smoke ports sit inside Linux's ephemeral range (32768-60999), so an outbound connection can
+      # take one before its service binds it and the service dies with "address already in use".
+      - name: Reserve the smoke ports
+        run: sudo sysctl -w net.ipv4.ip_local_reserved_ports=47000-47099
+
       - name: Smoke
         run: mise run smoke
         env:

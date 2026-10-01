@@ -55,9 +55,9 @@ services:
   # Glue-backed catalog. The Athena proxy points at it through AWS_ENDPOINT_URL; the emulator serves HTTPS
   # with a self-signed cert because the proxy forwards only to an HTTPS origin.
   athena:
-    image: ${SMOKE_ATHENA_IMAGE:-pm-smoke-athena:66652278}
+    image: ${SMOKE_ATHENA_IMAGE:-pm-smoke-athena:0002723}
     build:
-      context: https://github.com/sjincho/ministack.git#66652278d4f62d58ce1bd3009952f84ded065574
+      context: https://github.com/sjincho/ministack.git#00027235ddb04e7b398e7a3be7c51443a8216ee9
       dockerfile: Dockerfile.full
     environment:
       USE_SSL: "1"

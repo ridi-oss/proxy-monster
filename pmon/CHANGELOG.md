@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.1.7](https://github.com/ridi-oss/proxy-monster/compare/pmon-v0.1.6...pmon-v0.1.7) (2026-10-01)
+
+
+### Features
+
+* **pmon:** broker a local Athena endpoint ([120228e](https://github.com/ridi-oss/proxy-monster/commit/120228eb1fff45477f5eedd01915f318693e4d85))
+* **pmon:** format Athena client configuration with local SigV4 credentials ([9f75ae6](https://github.com/ridi-oss/proxy-monster/commit/9f75ae6ff30ef499b110a79594f05f1539dcf748))
+
 ## [0.1.6](https://github.com/ridi-oss/proxy-monster/compare/pmon-v0.1.5...pmon-v0.1.6) (2026-09-30)
 
 

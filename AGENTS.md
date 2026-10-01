@@ -177,7 +177,9 @@ Never force a version with an empty commit carrying a `Release-As:` footer. An
 empty commit touches no path, so release-please counts it toward every train:
 `Release-As: 0.1.21` meant for the server also set `pmon` to 0.1.21. Put the
 footer on a commit that edits a file in that train's directory, such as its
-`CHANGELOG.md`.
+`CHANGELOG.md`. The one such commit already on `main` is fenced off by
+`last-release-sha` in `release-please-config.json`; move that floor forward if
+another ever lands.
 
 ## Design docs
 

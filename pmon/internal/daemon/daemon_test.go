@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -274,6 +275,69 @@ func TestLogoutEndsTheLoginOnTheServer(t *testing.T) {
 	login()
 	if notEnded, err := d.UnsetServer(control.UnsetServerRequest{Name: "hr"}); err != nil || len(notEnded) != 0 || cp.logouts.Load() != 3 {
 		t.Errorf("UnsetServer = %v, %v; server logouts = %d, want the login ended", notEnded, err, cp.logouts.Load())
+	}
+}
+
+func TestReloginEndsTheReplacedLoginOnTheServer(t *testing.T) {
+	isolate(t)
+	var polls atomic.Int32
+	var mu sync.Mutex
+	var ended []string
+	var endFails atomic.Bool
+	cp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/auth/device/start":
+			_ = json.NewEncoder(w).Encode(map[string]any{"verificationUri": "https://idp.example/activate", "userCode": "ABCD", "handle": "h-1", "interval": 1})
+		case "/auth/device/poll":
+			n := polls.Add(1)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"principal": "you@example.com", "token": "pmk_tok",
+				"expiresAt":    time.Now().Add(12 * time.Hour).Format(time.RFC3339),
+				"renewalToken": fmt.Sprintf("pmr_%d", n),
+			})
+		case "/auth/session/logout":
+			if endFails.Load() {
+				w.WriteHeader(http.StatusInternalServerError)
+				return
+			}
+			mu.Lock()
+			ended = append(ended, strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "))
+			mu.Unlock()
+			w.WriteHeader(http.StatusNoContent)
+		case "/api/datasources":
+			_ = json.NewEncoder(w).Encode([]driver.Endpoint{})
+		}
+	}))
+	defer cp.Close()
+	d := New("test", providers.Builtins())
+	defer d.closeAllListeners()
+	login := func() control.LoginEvent {
+		t.Helper()
+		var done control.LoginEvent
+		if err := d.Login(context.Background(), control.LoginRequest{Server: "hr", ControlPlane: cp.URL}, func(ev control.LoginEvent) {
+			if ev.Kind == "done" {
+				done = ev
+			}
+		}); err != nil {
+			t.Fatalf("Login: %v", err)
+		}
+		return done
+	}
+	endedTokens := func() []string { mu.Lock(); defer mu.Unlock(); return slices.Clone(ended) }
+
+	if ev := login(); ev.ReplacedNotEndedOnServer || len(endedTokens()) != 0 {
+		t.Fatalf("a first login ended %v on the server (warning %v); there was nothing to replace", endedTokens(), ev.ReplacedNotEndedOnServer)
+	}
+	if ev := login(); ev.ReplacedNotEndedOnServer || !slices.Equal(endedTokens(), []string{"pmr_1"}) {
+		t.Errorf("a re-login ended %v (warning %v); want only the replaced pmr_1", endedTokens(), ev.ReplacedNotEndedOnServer)
+	}
+
+	endFails.Store(true)
+	if ev := login(); !ev.ReplacedNotEndedOnServer {
+		t.Error("a re-login whose replaced login could not be ended must say so")
+	}
+	if !d.Status().Server("hr").LoggedIn {
+		t.Error("failing to end the replaced login must not cost the new one")
 	}
 }
 

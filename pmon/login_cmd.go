@@ -1,13 +1,16 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"fmt"
+	"os"
 	"slices"
 	"strings"
 
 	"github.com/ridi-oss/proxy-monster/pmon/control"
 	"github.com/ridi-oss/proxy-monster/pmon/internal/login"
+	"github.com/ridi-oss/proxy-monster/pmon/state"
 )
 
 // loginCmd authenticates through the daemon's control socket: the DAEMON runs the device-auth flow and streams
@@ -81,6 +84,9 @@ func (c *loginCmd) Run() error {
 			}
 			if ev.ElevatedUntil != "" {
 				fmt.Printf("%s expire %s\n", strings.Join(elevatedScopes(ev.Scopes), " "), expiryLine(ev.ElevatedUntil))
+			}
+			if ev.ReplacedNotEndedOnServer {
+				fmt.Fprintf(os.Stderr, "warning: could not end the previous %q login on the server; it stays valid there until its TTL ends\n", cmp.Or(c.Server, state.DefaultServer))
 			}
 		}
 	}); err != nil {

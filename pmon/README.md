@@ -38,10 +38,12 @@ pmon server unset dev           # log out of dev and delete it
 
 Changing a logged-in server's URL logs it out: a token is only good against the
 control plane that issued it. Logging out (`pmon logout`, `server unset`, or a
-URL change) ends the login on the server first, revoking its SQL and MCP tokens.
-If the server cannot be reached, the login is still cleared here, and pmon
-prints that it stays valid on the server until its TTL ends. A config from a
-single-server release loads as `default`, keeping its ports and password.
+URL change) ends the login on the server first, revoking its SQL and MCP tokens,
+and a new `pmon login` ends the login it replaces once the new one is saved. If
+the server cannot be reached, the login is still cleared or replaced here, and
+pmon prints that the old one stays valid on the server until its TTL ends. A
+config from a single-server release loads as `default`, keeping its ports and
+password.
 
 ### Scopes
 

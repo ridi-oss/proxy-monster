@@ -195,6 +195,8 @@ type LoginEvent struct {
 	ExpiresAt     string   `json:"expiresAt,omitempty"`
 	Scopes        []string `json:"scopes,omitempty"`
 	ElevatedUntil string   `json:"elevatedUntil,omitempty"`
+	// ReplacedNotEndedOnServer reports that the login this one replaced could not be ended on the control plane.
+	ReplacedNotEndedOnServer bool `json:"replacedNotEndedOnServer,omitempty"`
 	// Error, set when Kind == "error".
 	Error string `json:"error,omitempty"`
 }

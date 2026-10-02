@@ -497,6 +497,47 @@ func TestOnlyOneDaemonRunsAtATime(t *testing.T) {
 	}
 }
 
+// TestReloginWarnsWhenTheReplacedLoginStaysValid: a second `pmon login` that cannot end the login it
+// replaces still logs in, and says the old one stays valid on the server until its TTL.
+func TestReloginWarnsWhenTheReplacedLoginStaysValid(t *testing.T) {
+	e := newEnv(t)
+	var polls atomic.Int32
+	var endFails atomic.Bool
+	cp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/auth/device/start":
+			_ = json.NewEncoder(w).Encode(map[string]any{"verificationUri": "https://idp.example/activate", "userCode": "ABCD-EFGH", "handle": "h-1", "interval": 1})
+		case "/auth/device/poll":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"principal": "you@example.com", "token": "pmk_tok", "renewalToken": fmt.Sprintf("pmr_%d", polls.Add(1)),
+				"expiresAt": time.Now().Add(12 * time.Hour).Format(time.RFC3339),
+			})
+		case "/auth/session/logout":
+			if endFails.Load() {
+				w.WriteHeader(http.StatusInternalServerError)
+				return
+			}
+			w.WriteHeader(http.StatusNoContent)
+		case "/api/datasources":
+			_ = json.NewEncoder(w).Encode([]any{})
+		}
+	}))
+	defer cp.Close()
+
+	e.mustRun(t, "login", "hr", "--url", cp.URL)
+	if out := e.mustRun(t, "login", "hr"); strings.Contains(out, "warning") {
+		t.Errorf("re-login = %q, want no warning when the replaced login was ended", out)
+	}
+	endFails.Store(true)
+	out := e.mustRun(t, "login", "hr")
+	if !strings.Contains(out, `warning: could not end the previous "hr" login on the server; it stays valid there until its TTL ends`) {
+		t.Errorf("re-login with the end failing = %q, want the warning", out)
+	}
+	if !strings.Contains(out, "logged in as you@example.com") {
+		t.Errorf("re-login = %q, want the new login to land anyway", out)
+	}
+}
+
 // TestLogoutEndsTheServerLoginOrWarns: `pmon logout` asks the control plane to end the login, and when it
 // cannot be reached still logs out here, with one line saying the login stays valid there until its TTL.
 func TestLogoutEndsTheServerLoginOrWarns(t *testing.T) {

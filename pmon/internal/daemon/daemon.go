@@ -434,15 +434,17 @@ func (d *Daemon) Login(ctx context.Context, req control.LoginRequest, onEvent fu
 		d.mu.Lock()
 		delete(d.reauthRequired, name)
 		d.mu.Unlock()
-		onEvent(control.LoginEvent{
-			Kind: "done", Principal: res.Principal, ExpiresAt: res.ExpiresAt,
-			Scopes: res.Scopes, ElevatedUntil: res.ElevatedUntil,
-		})
 	}
 	serverMu.Unlock()
 	if err != nil {
 		return fmt.Errorf("could not save the login: %w", err)
 	}
+	// Ended only after the new login is saved, so a failure here never costs the user the login they just made.
+	replacedEnded := srv.RenewalToken == "" || srv.RenewalToken == res.RenewalToken || d.endOnServer(srv)
+	onEvent(control.LoginEvent{
+		Kind: "done", Principal: res.Principal, ExpiresAt: res.ExpiresAt,
+		Scopes: res.Scopes, ElevatedUntil: res.ElevatedUntil, ReplacedNotEndedOnServer: !replacedEnded,
+	})
 
 	// Bring brokers up immediately, then announce the new state.
 	d.openListeners(ctx)

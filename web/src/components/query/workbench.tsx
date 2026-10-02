@@ -6,10 +6,11 @@
 // (Run, row limit, shortcut hint) on top, the enforcing results panel below.
 // Every query is policy-enforced server-side: ALLOW / MASK / DENY; a DENY opens
 // the JIT request dialog.
-import { useMemo, useRef, useState } from 'react'
+import { useCallback, useMemo, useRef, useState } from 'react'
 import { useTranslations } from 'next-intl'
 import { Loader2, Play } from 'lucide-react'
 import { useCatalog, useDatasources } from '@/lib/hooks'
+import { currentCatalog } from '@/lib/catalog'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import {
@@ -52,6 +53,7 @@ export function Workbench() {
   const [rateResetOpen, setRateResetOpen] = useState(false)
   const [rateDenyReason, setRateDenyReason] = useState<string | null>(null)
   const editorRef = useRef<SqlEditorHandle>(null)
+  const insertAtCursor = useCallback((text: string) => editorRef.current?.insertAtCursor(text), [])
 
   const { data: catalog, isLoading: catalogLoading, error: catalogError } = useCatalog(datasourceId)
   const { data: datasources, isLoading: datasourcesLoading, error: datasourcesError } = useDatasources(true)
@@ -116,10 +118,13 @@ export function Workbench() {
               </p>
             ) : (
               <SchemaTree
+                key={datasourceId}
                 datasourceId={datasourceId}
                 tables={tree}
-                onInsert={(text) => editorRef.current?.insertAtCursor(text)}
+                onInsert={insertAtCursor}
                 onOpenTable={resultTabs.openTable}
+                defaultSchemas={datasource?.defaultSchemas}
+                currentCatalog={currentCatalog(datasource)}
               />
             )}
         </aside>

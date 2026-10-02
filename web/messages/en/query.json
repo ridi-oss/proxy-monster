@@ -95,7 +95,9 @@
   },
   "schema": {
     "filterPlaceholder": "Filter schemas, tables, columns…",
+    "filterTablesPlaceholder": "Filter schemas, tables…",
     "noMatch": "No schemas, tables, or columns match.",
+    "noTableMatch": "No schemas or tables match.",
     "collapseSchema": "Collapse schema {schema}",
     "expandSchema": "Expand schema {schema}",
     "schemaTitle": "Schema {schema}",
@@ -103,8 +105,19 @@
     "expandTable": "Expand table {table}",
     "openTableTitle": "Open {table} (schema + data)",
     "piiBadge": "{count} PII",
-    "insertColumnTitle": "Insert {name} · {type}",
-    "notNullSuffix": " · not null"
+    "columnTitle": "{name} · {type}",
+    "copyName": "Copy {name}",
+    "insertName": "Insert {name} into the editor",
+    "copied": "Copied",
+    "copyFailed": "Could not copy to the clipboard.",
+    "notNullSuffix": " · not null",
+    "clearFilter": "Clear filter",
+    "expandAll": "Expand all",
+    "collapseAll": "Collapse all",
+    "viewOptions": "View options",
+    "showSystemSchemas": "Show system schemas",
+    "systemHidden": "{count, plural, one {# system schema hidden.} other {# system schemas hidden.}}",
+    "show": "Show"
   },
   "table": {
     "previewUnavailable": "Data preview is unavailable for this catalog.",

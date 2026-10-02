@@ -95,7 +95,9 @@
   },
   "schema": {
     "filterPlaceholder": "스키마, 테이블, 열 필터…",
+    "filterTablesPlaceholder": "스키마, 테이블 필터…",
     "noMatch": "일치하는 스키마, 테이블, 열이 없습니다.",
+    "noTableMatch": "일치하는 스키마나 테이블이 없습니다.",
     "collapseSchema": "{schema} 스키마 접기",
     "expandSchema": "{schema} 스키마 펼치기",
     "schemaTitle": "스키마 {schema}",
@@ -103,8 +105,19 @@
     "expandTable": "{table} 테이블 펼치기",
     "openTableTitle": "{table} 열기 (스키마 + 데이터)",
     "piiBadge": "PII {count}개",
-    "insertColumnTitle": "{name} 삽입 · {type}",
-    "notNullSuffix": " · not null"
+    "columnTitle": "{name} · {type}",
+    "copyName": "{name} 복사",
+    "insertName": "에디터에 {name} 삽입",
+    "copied": "복사됨",
+    "copyFailed": "클립보드에 복사하지 못했습니다.",
+    "notNullSuffix": " · not null",
+    "clearFilter": "필터 지우기",
+    "expandAll": "모두 펼치기",
+    "collapseAll": "모두 접기",
+    "viewOptions": "보기 옵션",
+    "showSystemSchemas": "시스템 스키마 표시",
+    "systemHidden": "시스템 스키마 {count}개 숨김.",
+    "show": "표시"
   },
   "table": {
     "previewUnavailable": "이 카탈로그는 데이터 미리보기를 지원하지 않습니다.",

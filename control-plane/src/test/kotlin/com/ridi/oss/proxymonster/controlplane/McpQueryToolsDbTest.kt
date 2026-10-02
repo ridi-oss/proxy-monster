@@ -25,6 +25,7 @@ import com.ridi.oss.proxymonster.grpc.EnfAction as WireEnfAction
 import com.ridi.oss.proxymonster.grpc.ProxyRunMsg
 import com.ridi.oss.proxymonster.grpc.proxyRunMsg
 import com.ridi.oss.proxymonster.grpc.runDecision
+import com.ridi.oss.proxymonster.grpc.runError
 import com.ridi.oss.proxymonster.grpc.runDone
 import com.ridi.oss.proxymonster.grpc.runResultRows
 import com.ridi.oss.proxymonster.grpc.runRow
@@ -422,6 +423,29 @@ class McpQueryToolsDbTest {
             }).ok().result().getValue("page").jsonObject
             assertEquals(listOf("id"), onlyEmpty.getValue("columns").jsonArray.map { it.jsonPrimitive.content })
             assertEquals(emptyList(), onlyEmpty.rows())
+        }
+    }
+
+    @Test
+    fun `a failed run_query carries the target DB's error text`() = testApplication {
+        application { installTestMcp() }
+        val client = createClient { expectSuccess = false }
+        val principal = analyst("dberror")
+        val token = token(principal, setOf("mcp:query"))
+        withFakeProxy({ _, _, _ ->
+            listOf(
+                proxyRunMsg { decision = runDecision { decision = WireEnfAction.ALLOW; decisionId = executionDecision(principal, Channel.EDITOR) } },
+                proxyRunMsg { error = runError { message = "ERROR: 42501 insufficient_privilege"; rawMessage = "ERROR: permission denied for database hris"; targetDbError = true } },
+            )
+        }) {
+            val run = client.call(token, "run_query", buildJsonObject {
+                put("datasource", fx.datasource.name)
+                put("sql", sql)
+            }).ok().result()
+            assertEquals("FAILED", run.str("status"))
+            assertEquals("approval.query_failed", run.getValue("statements").jsonArray[0].jsonObject.str("errorCode"))
+            // The analyst reads a masked column, so it gets the sanitized form, not the raw text.
+            assertEquals("ERROR: 42501 insufficient_privilege", run.getValue("page").jsonObject.str("errorDetail"))
         }
     }
 

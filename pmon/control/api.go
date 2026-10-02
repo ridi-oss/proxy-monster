@@ -133,6 +133,19 @@ type LoginRequest struct {
 	Scopes []string `json:"scopes,omitempty"`
 }
 
+// MCPTokenRequest asks for an MCP access token from Server's login ([state.DefaultServer] when empty).
+type MCPTokenRequest struct {
+	Server string `json:"server,omitempty"`
+}
+
+// MCPToken is a short-lived MCP access token for URL, minted from the server's login.
+type MCPToken struct {
+	URL       string `json:"url"`
+	Token     string `json:"token"`
+	ExpiresAt string `json:"expiresAt"`
+	Scope     string `json:"scope"`
+}
+
 // LogoutRequest clears one server's login ([state.DefaultServer] when empty), or every server's with All.
 type LogoutRequest struct {
 	Server string `json:"server,omitempty"`
@@ -201,4 +214,5 @@ const (
 	PathReload      = "/reload"
 	PathShutdown    = "/shutdown"
 	PathEvents      = "/events"
+	PathMCPToken    = "/mcp-token"
 )

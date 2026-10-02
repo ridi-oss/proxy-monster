@@ -450,6 +450,27 @@ func (d *Daemon) Login(ctx context.Context, req control.LoginRequest, onEvent fu
 	return nil
 }
 
+// MCPToken mints a short-lived MCP access token from a server's login. The daemon holds the login, so a
+// bridge never reads credentials itself.
+func (d *Daemon) MCPToken(ctx context.Context, req control.MCPTokenRequest) (control.MCPToken, error) {
+	name := cmp.Or(req.Server, state.DefaultServer)
+	srv := d.snapshot().Servers[name]
+	if srv == nil {
+		return control.MCPToken{}, fmt.Errorf("unknown server %q — set it up with `pmon server set %s --url <control-plane-url>`, then `pmon login %s`", name, name, name)
+	}
+	if !srv.LoggedIn() || srv.RenewalToken == "" {
+		return control.MCPToken{}, fmt.Errorf("not logged in to %q — run `pmon login %s`", name, name)
+	}
+	tok, err := login.ExchangeMCP(ctx, d.httpClient, srv.ControlPlane, srv.RenewalToken)
+	if errors.Is(err, login.ErrMCPRefused) {
+		return control.MCPToken{}, fmt.Errorf("the login to %q has ended — run `pmon login %s`", name, name)
+	}
+	if err != nil {
+		return control.MCPToken{}, fmt.Errorf("could not get an MCP token from %q: %w", name, err)
+	}
+	return control.MCPToken{URL: srv.ControlPlane + "/mcp", Token: tok.AccessToken, ExpiresAt: tok.ExpiresAt, Scope: tok.Scope}, nil
+}
+
 // Logout clears one server's credentials (or every server's) and closes its brokers, leaving the daemon
 // running.
 // Logout clears one server's credentials (or every server's) and closes its brokers, leaving the daemon

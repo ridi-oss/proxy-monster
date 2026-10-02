@@ -33,6 +33,8 @@ type Backend interface {
 	Subscribe() (<-chan Event, func())
 	// Shutdown asks the daemon to exit gracefully.
 	Shutdown()
+	// MCPToken mints an MCP access token from a server's login.
+	MCPToken(ctx context.Context, req MCPTokenRequest) (MCPToken, error)
 }
 
 // Server serves the control API on the daemon's unix socket.
@@ -86,6 +88,7 @@ func Listen(backend Backend) (*Server, error) {
 	mux.HandleFunc(PathReload, s.handleReload)
 	mux.HandleFunc(PathShutdown, s.handleShutdown)
 	mux.HandleFunc(PathEvents, s.handleEvents)
+	mux.HandleFunc(PathMCPToken, s.handleMCPToken)
 	s.srv = &http.Server{Handler: mux}
 	return s, nil
 }
@@ -236,6 +239,22 @@ func (s *Server) handleShutdown(w http.ResponseWriter, r *http.Request) {
 		f.Flush()
 	}
 	s.backend.Shutdown()
+}
+
+func (s *Server) handleMCPToken(w http.ResponseWriter, r *http.Request) {
+	if !requireMethod(w, r, http.MethodPost) {
+		return
+	}
+	var req MCPTokenRequest
+	if r.Body != nil {
+		_ = json.NewDecoder(r.Body).Decode(&req) // an empty body names the default server
+	}
+	tok, err := s.backend.MCPToken(r.Context(), req)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, tok)
 }
 
 // eventKeepalive bounds how long /events can sit silent, so a peer notices a dead socket promptly.

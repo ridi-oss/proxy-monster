@@ -38,6 +38,33 @@ async function complete(columns: CatalogColumn[], datasource: Datasource, text: 
 }
 
 describe('query catalog tree', () => {
+  it.each([
+    [postgres, 'app', 'users', 'id', 'public.users', 'id'],
+    [postgres, 'app', 'order', 'select', 'public."order"', '"select"'],
+    [postgres, 'app', 'Order Items', 'Amount', 'public."Order Items"', '"Amount"'],
+    [mysql, 'def', 'Orders', 'Amount', 'app.Orders', 'Amount'],
+    [mysql, 'def', 'order', 'key', 'app.`order`', '`key`'],
+  ])('writes names as SQL, quoting only where needed, for %j', (datasource, catalog, table, name, ref, columnRef) => {
+    const schema = datasource.engine === 'mysql' ? 'app' : 'public'
+    const [tree] = buildTree([column(catalog, schema, table, name)], datasource)
+    expect([tree.ref, tree.columns[0].ref]).toEqual([ref, columnRef])
+  })
+
+  it('quotes every name on an engine with no reserved-word list here', () => {
+    const [tree] = buildTree([column('awsdatacatalog', 'sales', 'orders', 'id')], { ...postgres, engine: 'athena' })
+    expect([tree.ref, tree.schemaRef, tree.columns[0].ref]).toEqual(['"sales"."orders"', '"sales"', '"id"'])
+  })
+
+  it('leaves tables outside the current catalog without an insert', () => {
+    const tree = buildTree([column('app'), column('other')], postgres)
+    expect(tree.map((table) => [table.catalog, table.insert != null])).toEqual([['app', true], ['other', false]])
+  })
+
+  it('carries the server system-schema flag onto the table', () => {
+    const tree = buildTree([column('app'), { ...column('app', 'pg_catalog', 'pg_class', 'relname'), system: true }], postgres)
+    expect(tree.map((table) => [table.schema, table.system])).toEqual([['public', false], ['pg_catalog', true]])
+  })
+
   it('keeps catalogs distinct while limiting SQL to the current catalog', async () => {
     const columns = [column('app'), column('other', 'public', 'users', 'email')]
     const tree = buildTree(columns, postgres)

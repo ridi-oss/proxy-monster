@@ -1,9 +1,12 @@
-import { MySQL, PostgreSQL, type SQLNamespace } from '@codemirror/lang-sql'
+import { MySQL, PostgreSQL, type SQLDialect, type SQLNamespace } from '@codemirror/lang-sql'
 import type { CatalogColumn, Datasource } from '@/lib/api/types'
 import { currentCatalog, groupCatalogTables } from '@/lib/catalog'
+import { MYSQL_RESERVED, POSTGRES_RESERVED } from './sql-reserved'
 
 export interface TreeColumn {
   name: string
+  /** The name as written in SQL: quoted only when it is not a plain identifier or is a reserved word. */
+  ref: string
   dataType: string
   tags: string[]
   nullable: boolean
@@ -16,22 +19,56 @@ export interface TreeTable {
   name: string
   qualified: string
   insert: string | null
+  /** `schema.table` and `schema` as written in SQL, quoted only where needed. */
+  ref: string
+  schemaRef: string
   columns: TreeColumn[]
   piiCount: number
+  system: boolean
 }
 
+interface EngineSql {
+  dialect: SQLDialect
+  quote: string
+  /** Whether a name can be written without quotes: a plain identifier the engine neither folds nor reserves. */
+  bare: (name: string) => boolean
+}
+
+const ENGINE_SQL: Record<string, EngineSql> = {
+  mysql: {
+    dialect: MySQL,
+    quote: '`',
+    bare: (name) => /^[A-Za-z_][A-Za-z0-9_$]*$/.test(name) && !MYSQL_RESERVED.has(name.toLowerCase()),
+  },
+  postgres: {
+    dialect: PostgreSQL,
+    quote: '"',
+    // Unquoted names fold to lower case, so a name with an upper-case letter needs quotes.
+    bare: (name) => /^[a-z_][a-z0-9_$]*$/.test(name) && !POSTGRES_RESERVED.has(name),
+  },
+}
+// Any other engine (Athena) quotes every name: there is no reserved-word list for it here.
+const OTHER_ENGINE: EngineSql = { dialect: PostgreSQL, quote: '"', bare: () => false }
+
+const engineSql = (engine?: string): EngineSql => ENGINE_SQL[engine ?? ''] ?? OTHER_ENGINE
+
 export function sqlDialect(engine?: string) {
-  return engine === 'mysql' ? MySQL : PostgreSQL
+  return engineSql(engine).dialect
 }
 
 function identifierLabel(name: string, engine?: string): string {
-  const quote = engine === 'mysql' ? '`' : '"'
+  const { quote } = engineSql(engine)
   return name.replaceAll(quote, quote + quote)
 }
 
 function identifier(name: string, engine?: string): string {
-  const quote = engine === 'mysql' ? '`' : '"'
+  const { quote } = engineSql(engine)
   return quote + identifierLabel(name, engine) + quote
+}
+
+// e.g. users -> users, select -> "select", Order Items -> "Order Items" (backticks on MySQL).
+function sqlName(name: string, engine?: string): string {
+  return engineSql(engine).bare(name) ? name : identifier(name, engine)
 }
 
 export function buildTree(cols: CatalogColumn[], datasource?: Datasource): TreeTable[] {
@@ -47,13 +84,17 @@ export function buildTree(cols: CatalogColumn[], datasource?: Datasource): TreeT
       name: group.table,
       qualified: group.label,
       insert: canQuery ? parts.map((part) => identifier(part, engine)).join('.') : null,
+      ref: parts.map((part) => sqlName(part, engine)).join('.'),
+      schemaRef: sqlName(group.schema, engine),
       columns: group.columns.map((column) => ({
         name: column.column,
+        ref: sqlName(column.column, engine),
         dataType: column.dataType,
         tags: column.classification?.tags ?? [],
         nullable: column.nullable,
       })),
       piiCount: group.piiCount,
+      system: group.columns.some((column) => column.system === true),
     }
   })
 }

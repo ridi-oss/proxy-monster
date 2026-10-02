@@ -8,7 +8,7 @@ import java.util.ResourceBundle
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
-/** Every MCP-facing message exists in every locale, and the tool bundle names exactly the registered tools. */
+/** Every user-facing MCP message exists in every locale, and the tool bundle names exactly the registered tools. */
 class McpBundleParityTest {
     private fun keys(bundle: String, locale: Locale): Set<String> {
         val loaded = ResourceBundle.getBundle(bundle, locale, ResourceBundle.Control.getNoFallbackControl(ResourceBundle.Control.FORMAT_PROPERTIES))
@@ -17,10 +17,8 @@ class McpBundleParityTest {
     }
 
     @Test
-    fun `tool descriptions cover exactly the registered tools in every locale`() {
-        val en = keys("mcp_tools", Locale.ENGLISH)
-        assertEquals(en, keys("mcp_tools", Locale.KOREAN))
-        assertEquals(McpCapabilityRegistry.approvedToolNames, en)
+    fun `tool descriptions cover exactly the registered tools`() {
+        assertEquals(McpCapabilityRegistry.approvedToolNames, ResourceBundle.getBundle("mcp_tools", Locale.ROOT).keySet())
     }
 
     @Test

@@ -431,7 +431,6 @@ private fun createMcpServer(
     core: ControlPlaneCore,
     taskTools: McpTaskTools,
 ): Server {
-    val locale = requestLocale(call)
     val server = Server(
         Implementation("proxy-monster", SERVER_VERSION, title = "proxy-monster (${config.instanceName})"),
         ServerOptions(capabilities = ServerCapabilities(tools = ServerCapabilities.Tools(listChanged = false))),
@@ -440,7 +439,7 @@ private fun createMcpServer(
     for (capability in McpCapabilityRegistry.entries) {
         server.addTool(
             name = capability.toolName,
-            description = toolDescription(capability.toolName, locale),
+            description = toolDescription(capability.toolName),
             inputSchema = schemaFor(capability.toolName),
             toolAnnotations = ToolAnnotations(
                 readOnlyHint = capability.annotations.readOnlyHint,
@@ -1036,15 +1035,8 @@ private fun JsonObject.stringSet(name: String): Set<String> {
 }
 private fun JsonObject.has(name: String): Boolean = containsKey(name)
 
-private fun requestLocale(call: ApplicationCall): Locale =
-    if (call.request.headers[HttpHeaders.AcceptLanguage]?.lowercase(Locale.ROOT)?.startsWith("ko") == true) {
-        Locale.KOREAN
-    } else {
-        Locale.ENGLISH
-    }
-
-private fun toolDescription(toolName: String, locale: Locale): String =
-    ResourceBundle.getBundle("mcp_tools", locale).getString(toolName)
+// English only: the model reads tool descriptions, not the user.
+private fun toolDescription(toolName: String): String = ResourceBundle.getBundle("mcp_tools", Locale.ROOT).getString(toolName)
 
 private fun URI.sameOrigin(other: URI): Boolean =
     scheme.equals(other.scheme, ignoreCase = true) && host.equals(other.host, ignoreCase = true) &&

@@ -88,7 +88,6 @@
     "loading": "카탈로그를 불러오는 중…",
     "emptyTitle": "아직 카탈로그가 없습니다.",
     "emptyHint": "이 데이터소스의 프록시가 연결되어 스키마를 전송하면 카탈로그가 표시됩니다. 이미 프록시가 연결되어 있다면 새로고침으로 지금 다시 조회하도록 요청할 수 있습니다.",
-    "filterPlaceholder": "테이블 필터…",
     "colColumn": "컬럼",
     "colType": "타입",
     "colNullable": "Null 허용",

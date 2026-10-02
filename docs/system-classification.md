@@ -348,8 +348,8 @@ outside output.
 
 Privileged functions:
 
-- configuration read/mutation: `set_config`, `current_setting` (relation-level
-  `pg_settings` is critical for the same reason);
+- configuration mutation: `set_config`. `current_setting` stays open, since it
+  reads the same values as the passthrough `SHOW <guc>`;
 - backend/session control: `pg_cancel_backend`, `pg_terminate_backend`,
   `pg_log_backend_memory_contexts`;
 - configuration/log control: `pg_reload_conf`, `pg_rotate_logfile`;

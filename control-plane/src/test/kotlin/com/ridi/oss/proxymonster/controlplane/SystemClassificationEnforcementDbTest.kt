@@ -350,6 +350,11 @@ class SystemClassificationEnforcementDbTest {
         // Safe baseline: the same browsable table with a SAFE function still ALLOWs — the gate is specific
         // to dangerous functions, it does not deny every function.
         assertEquals(EnfAction.ALLOW, decide("select now() from pg_catalog.pg_class"), "a safe function must not trip the gate")
+        // Prisma's connect probe; current_setting reads what the passthrough SHOW <guc> reads.
+        assertEquals(
+            EnfAction.ALLOW,
+            decide("SELECT EXISTS(SELECT 1 FROM pg_namespace WHERE nspname = 'hr'), version(), current_setting('server_version_num')::integer as numeric_version"),
+        )
         // critical (pg_catalog exact, net-new vs dangerousFuncs) and data-leak (pageinspect *) both deny.
         assertEquals(EnfAction.DENY, decide("select pg_terminate_backend(1) from pg_catalog.pg_class"), "pg_terminate_backend (system:critical) must deny by policy")
         assertEquals(EnfAction.DENY, decide("select get_raw_page('pg_class', 0) from pg_catalog.pg_class"), "get_raw_page (system:data-leak) must deny by policy")

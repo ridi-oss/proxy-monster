@@ -171,7 +171,6 @@ class SystemClassificationServiceTest {
         assertEquals("system:critical", tag("pg_terminate_backend"))
         assertEquals("system:critical", tag("pg_cancel_backend"))
         assertEquals("system:critical", tag("set_config"))
-        assertEquals("system:critical", tag("current_setting"))
         // Cross-schema (`*`) extension functions: exacts (dblink family) + pageinspect families.
         assertEquals("system:data-leak", tag("dblink"))
         assertEquals("system:data-leak", tag("dblink_get_result"))
@@ -181,6 +180,7 @@ class SystemClassificationServiceTest {
         assertEquals("system:critical", tag("PG_TERMINATE_BACKEND"))
         // Safe builtins / unclassified user functions → null (never marshalled, never denied).
         assertNull(tag("now"))
+        assertNull(tag("current_setting"))
         assertNull(tag("count"))
         assertNull(tag("lower"))
         assertNull(tag("my_udf"))

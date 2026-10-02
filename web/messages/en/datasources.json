@@ -88,7 +88,6 @@
     "loading": "Loading catalog…",
     "emptyTitle": "No catalog yet.",
     "emptyHint": "The catalog appears once this datasource's proxy connects and pushes its schema. If a proxy is already connected, Refresh nudges it to re-introspect now.",
-    "filterPlaceholder": "Filter tables…",
     "colColumn": "Column",
     "colType": "Type",
     "colNullable": "Nullable",

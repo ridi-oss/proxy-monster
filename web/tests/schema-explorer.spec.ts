@@ -181,6 +181,36 @@ test('the saved datasource survives navigating away while the cached list is sta
   expect(await page.evaluate(() => localStorage.getItem('pm.query.datasourceId'))).toBe('2')
 })
 
+test('the datasource catalog lists tables in the same tree, without column nodes', async ({ page }) => {
+  await mockEditor(page, () => [datasource(1, 'app')], true)
+  await page.goto('/admin/datasources/1')
+
+  await expect(schemas(page)).toHaveCount(1)
+  await expect(page.getByText('1 system schema hidden.')).toBeVisible()
+  await expect(marked(page)).toHaveCount(0)
+  await expect(page.getByRole('cell', { name: 'user_email' })).toBeVisible()
+
+  await table(page, 'orders').click()
+  await expect(table(page, 'orders').locator('[aria-current=true]')).toHaveCount(1)
+  await expect(page.getByRole('cell', { name: 'user_id' })).toBeVisible()
+  await blank(page)
+  await expect(marked(page)).toHaveCount(0)
+  await expect(page.getByRole('cell', { name: 'user_id' })).toBeVisible()
+
+  const filter = page.getByPlaceholder('Filter schemas, tables…')
+  await filter.fill('email')
+  await expect(page.getByText('No schemas or tables match.')).toBeVisible()
+  await filter.fill('ord')
+  await expect(page.locator('mark')).toHaveText(['ord'])
+  await expect(page.locator('[data-testid=schema-table]')).toHaveCount(1)
+
+  await filter.press('Escape')
+  await page.getByRole('button', { name: 'Collapse all' }).click()
+  await expect(page.locator('[data-testid=schema-table]')).toHaveCount(0)
+  await page.getByRole('button', { name: 'Expand all' }).click()
+  await expect(page.locator('[data-testid=schema-table]')).toHaveCount(2)
+})
+
 test('a column opens its table with the column flashed; hover actions copy and insert names', async ({ page, context, baseURL }) => {
   await context.grantPermissions(['clipboard-read', 'clipboard-write'], { origin: baseURL })
   await mockEditor(page, () => [datasource(1, 'app')])
@@ -231,3 +261,4 @@ test('a column flash leaves Logs, and each table tab keeps its own sub-view', as
   await column.click()
   await expect(page.getByTestId('table-columns-panel').locator('tr[data-focused]')).toContainText('user_email')
 })
+

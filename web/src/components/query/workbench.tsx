@@ -125,6 +125,8 @@ export function Workbench() {
                 onOpenTable={resultTabs.openTable}
                 onSelectColumn={resultTabs.openTable}
                 defaultSchemas={datasource?.defaultSchemas}
+                searchPath={resultTabs.searchPath}
+                onUseSchema={datasource?.defaultSchemaSettable ? resultTabs.setDefaultSchema : undefined}
                 currentCatalog={currentCatalog(datasource)}
               />
             )}

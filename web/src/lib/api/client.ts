@@ -29,6 +29,7 @@ import type {
   DatasourceInput,
   DiscoverRolesRequest,
   DiscoverRolesResponse,
+  DefaultSchemaResult,
   EditorSubmitResponse,
   EditorTaskStatus,
   ExecuteApprovalResponse,
@@ -279,6 +280,19 @@ export function openEditorSession(datasourceId: number): Promise<{ sessionId: st
   return request<{ sessionId: string }>(`/api/editor/sessions`, {
     method: 'POST',
     body: JSON.stringify({ datasourceId }),
+  })
+}
+
+/** GET /api/editor/sessions/{id} — the held connection's effective namespace, as the proxy last read it. */
+export function getEditorSession(sessionId: string): Promise<{ searchPath: string[] | null }> {
+  return request<{ searchPath: string[] | null }>(`/api/editor/sessions/${encodeURIComponent(sessionId)}`)
+}
+
+/** POST /api/editor/sessions/{id}/default-schema — the server builds and runs the engine's statement. */
+export function setEditorDefaultSchema(sessionId: string, schema: string): Promise<DefaultSchemaResult> {
+  return request<DefaultSchemaResult>(`/api/editor/sessions/${encodeURIComponent(sessionId)}/default-schema`, {
+    method: 'POST',
+    body: JSON.stringify({ schema }),
   })
 }
 

@@ -129,6 +129,8 @@ export interface Datasource {
   /** Whether the proxy serves TLS at all. Independent of the chain: an operator may serve a publicly-trusted
    *  certificate and publish nothing, so clients verify against their own trust store. Only false is plaintext. */
   advertiseWireTls?: boolean
+  /** Whether an editor session on it can set its default schema (Athena cannot). */
+  defaultSchemaSettable?: boolean
 }
 
 /**
@@ -572,6 +574,13 @@ export interface QueryResponse {
 // inline), the result is saved server-side, and the client polls status → fetches rows when DONE.
 
 /** POST /api/editor/sessions/{id}/query ack: the born-APPROVED task + its single result child. */
+/** POST /api/editor/sessions/{id}/default-schema: the statement the server ran, its outcome, and the new path. */
+export interface DefaultSchemaResult {
+  statement: string
+  result: QueryResultMeta | null
+  searchPath: string[] | null
+}
+
 export interface EditorSubmitResponse {
   taskId: number
   childId: number

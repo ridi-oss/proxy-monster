@@ -11,8 +11,10 @@ import {
   closeEditorSession,
   deleteEditorTask,
   getEditorResult,
+  getEditorSession,
   getEditorTask,
   openEditorSession,
+  setEditorDefaultSchema,
   submitEditorQuery,
 } from '@/lib/api/client'
 import { subscribeTaskEvents, waitForTaskEvent } from '@/lib/api/task-events'
@@ -106,6 +108,11 @@ export interface ResultTabsApi {
   setTableView: (id: string, view: string) => void
   /** Bumps on every openTable, so the strip can leave Logs even when the tab already existed. */
   revealSeq: number
+  /** The session's effective namespace as the proxy last reported it: undefined before the session opens,
+   *  null when the proxy could not read it. */
+  searchPath: string[] | null | undefined
+  /** Make a schema the session's default (the server builds the statement); logged, without a result tab. */
+  setDefaultSchema: (schema: string) => void
 }
 
 export function useResultTabs(datasourceId: number | null, maxRows: number): ResultTabsApi {
@@ -137,6 +144,20 @@ export function useResultTabs(datasourceId: number | null, maxRows: number): Res
   const sessionDsRef = useRef<number | null>(null)
   const openingRef = useRef<Promise<string> | null>(null)
 
+  const [searchPath, setSearchPath] = useState<string[] | null | undefined>(undefined)
+  const searchPathSeq = useRef(0)
+  const refreshSearchPath = useCallback(() => {
+    const sid = sessionIdRef.current
+    if (!sid) return
+    // Overlapping refreshes can land out of order; only the latest request may set the value.
+    const seq = ++searchPathSeq.current
+    getEditorSession(sid)
+      .then(({ searchPath: path }) => {
+        if (seq === searchPathSeq.current && sessionIdRef.current === sid) setSearchPath(path)
+      })
+      .catch(() => {})
+  }, [])
+
   const ensureSession = useCallback(async (): Promise<string> => {
     if (datasourceId == null) throw new Error('no datasource selected')
     if (sessionIdRef.current && sessionDsRef.current === datasourceId) return sessionIdRef.current
@@ -145,6 +166,7 @@ export function useResultTabs(datasourceId: number | null, maxRows: number): Res
     const p = openEditorSession(datasourceId).then(({ sessionId }) => {
       sessionIdRef.current = sessionId
       sessionDsRef.current = datasourceId
+      refreshSearchPath()
       return sessionId
     })
     openingRef.current = p
@@ -153,13 +175,14 @@ export function useResultTabs(datasourceId: number | null, maxRows: number): Res
     } finally {
       openingRef.current = null
     }
-  }, [datasourceId])
+  }, [datasourceId, refreshSearchPath])
 
   // Switching datasource invalidates every tab (catalog + rows differ) and closes the previous session's
   // held connection (the cleanup runs on datasource change AND on unmount).
   useEffect(() => {
     setTabs([])
     setActiveId(null)
+    setSearchPath(undefined)
     return () => {
       // Drop any live tab tasks (their saved rows) alongside closing the held session — the previous
       // datasource's tabs are being discarded, so their server-side results should go too (best-effort).
@@ -405,6 +428,7 @@ export function useResultTabs(datasourceId: number | null, maxRows: number): Res
       }
 
       run()
+        .finally(refreshSearchPath)
         .then((r) => {
           if (r == null) return
           appendLog(
@@ -461,9 +485,65 @@ export function useResultTabs(datasourceId: number | null, maxRows: number): Res
           }
         })
     },
-    [appendLog, datasourceId, patch, ensureSession, setTabTaskId, openSiblingTabs, releaseTask, t],
+    [appendLog, datasourceId, patch, ensureSession, setTabTaskId, openSiblingTabs, releaseTask, refreshSearchPath, t],
   )
   fetchIntoRef.current = fetchInto
+
+  const setDefaultSchema = useCallback(
+    (schema: string) => {
+      if (datasourceId == null) return
+      const execution = ++executionRef.current
+      const timestamp = new Date().toISOString()
+      const startedAt = performance.now()
+      const log = (statement: string, entry: Pick<QueryLogEntry, 'decision' | 'denyReason' | 'error'>) =>
+        appendLog(
+          {
+            id: `execution-${execution}`,
+            datasourceId,
+            statement,
+            rowsReturned: 0,
+            latencyMs: Math.max(0, Math.round(performance.now() - startedAt)),
+            timestamp,
+            ...entry,
+          },
+          execution,
+        )
+      void (async () => {
+        try {
+          const call = async () => setEditorDefaultSchema(await ensureSession(), schema)
+          let response
+          try {
+            response = await call()
+          } catch (e) {
+            // The held session may have been reaped (idle) or expired — reopen once and retry, as a run does.
+            if (!(e instanceof Error && /session/i.test(e.message))) throw e
+            sessionIdRef.current = null
+            response = await call()
+          }
+          const { statement, result } = response
+          // Newer than any refresh still in flight, so taking a fresh token makes those land as stale.
+          searchPathSeq.current++
+          setSearchPath(response.searchPath)
+          if (result?.status === 'DONE') {
+            log(statement, { decision: 'ALLOW', denyReason: null, error: null })
+          } else if (result?.errorCode === 'approval.execute_denied') {
+            log(statement, { decision: 'DENY', denyReason: result.denyReason ?? null, error: null })
+            toast.error(result.denyReason ?? translateApiError('approval.execute_denied'))
+          } else {
+            const message = translateApiError(result?.errorCode ?? 'approval.query_failed')
+            log(statement, { decision: 'ERROR', denyReason: null, error: message })
+            toast.error(message)
+          }
+        } catch (e) {
+          const message = e instanceof Error ? e.message : 'query failed'
+          log(t('schema.useSchema', { name: schema }), { decision: 'ERROR', denyReason: null, error: message })
+          toast.error(message)
+          refreshSearchPath()
+        }
+      })()
+    },
+    [appendLog, datasourceId, ensureSession, refreshSearchPath, t],
+  )
 
   const run = useCallback(
     (sql: string) => {
@@ -586,5 +666,7 @@ export function useResultTabs(datasourceId: number | null, maxRows: number): Res
     clearFocus,
     setTableView,
     revealSeq,
+    searchPath,
+    setDefaultSchema,
   }
 }

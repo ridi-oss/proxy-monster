@@ -26,6 +26,8 @@ func mcpFakeCP(t *testing.T) *httptest.Server {
 				"principal": "you@example.com", "token": "pmk_tok", "renewalToken": "pmr_abc",
 				"expiresAt": time.Now().Add(12 * time.Hour).Format(time.RFC3339),
 			})
+		case "/auth/session/logout":
+			w.WriteHeader(http.StatusNoContent)
 		case "/api/datasources":
 			_ = json.NewEncoder(w).Encode([]any{})
 		case "/auth/session/mcp-token":

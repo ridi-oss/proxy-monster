@@ -162,14 +162,17 @@ func (c *Client) Login(ctx context.Context, req LoginRequest, onEvent func(Login
 	return sc.Err()
 }
 
-// Logout clears a server's credentials (or every server's) and closes its brokers, leaving the daemon running.
-func (c *Client) Logout(ctx context.Context, req LogoutRequest) error {
+// Logout ends a server's login (or every server's) on its control plane and locally, closing its brokers and
+// leaving the daemon running. It returns the servers whose login could not be ended on the control plane.
+func (c *Client) Logout(ctx context.Context, req LogoutRequest) ([]string, error) {
 	resp, err := c.do(ctx, http.MethodPost, PathLogout, req)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	resp.Body.Close()
-	return nil
+	defer resp.Body.Close()
+	var res LogoutResult
+	_ = json.NewDecoder(resp.Body).Decode(&res)
+	return res.NotEndedOnServer, nil
 }
 
 // SetServer creates a server or changes its URL.
@@ -183,14 +186,16 @@ func (c *Client) SetServer(ctx context.Context, req SetServerRequest) (SetServer
 	return res, json.NewDecoder(resp.Body).Decode(&res)
 }
 
-// UnsetServer logs a server out and deletes it.
-func (c *Client) UnsetServer(ctx context.Context, req UnsetServerRequest) error {
+// UnsetServer logs a server out and deletes it, returning it if its login could not be ended on the control plane.
+func (c *Client) UnsetServer(ctx context.Context, req UnsetServerRequest) ([]string, error) {
 	resp, err := c.do(ctx, http.MethodPost, PathServerUnset, req)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	resp.Body.Close()
-	return nil
+	defer resp.Body.Close()
+	var res LogoutResult
+	_ = json.NewDecoder(resp.Body).Decode(&res)
+	return res.NotEndedOnServer, nil
 }
 
 // Reload forces an immediate rediscovery instead of waiting for the next cycle.

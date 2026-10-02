@@ -233,6 +233,25 @@ func ExchangeMCP(ctx context.Context, client *http.Client, controlPlane, renewal
 	return &out, nil
 }
 
+// Logout ends the session on the control plane: renewal and the MCP exchange stop, and the tokens it minted
+// are revoked. An unknown or already-ended session also succeeds.
+func Logout(ctx context.Context, client *http.Client, controlPlane, renewalToken string) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, controlPlane+"/auth/session/logout", nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+renewalToken)
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		return apiError(resp)
+	}
+	return nil
+}
+
 // postJSON POSTs body as JSON and, if out is non-nil, decodes the response into it. HTTP 202 is treated as
 // success — the device poll endpoint uses it for "still waiting on the user".
 func postJSON(ctx context.Context, client *http.Client, url string, body, out any) error {

@@ -32,7 +32,7 @@ func init() {
 type cli struct {
 	Server  serverCmd  `cmd:"" help:"Manage the servers pmon logs in to."`
 	Login   loginCmd   `cmd:"" help:"Authenticate in your browser; starts the daemon and opens the brokers."`
-	Logout  logoutCmd  `cmd:"" help:"Clear a server's credentials and close its brokers (the daemon stays up)."`
+	Logout  logoutCmd  `cmd:"" help:"End a server's login on the server and here, and close its brokers (the daemon stays up)."`
 	Show    showCmd    `cmd:"" help:"Print one datasource's local connection string."`
 	Status  statusCmd  `cmd:"" help:"Show the daemon's state: every server's login and brokered datasources."`
 	MCP     mcpCmd     `cmd:"" name:"mcp" help:"Run a local stdio MCP server that relays to the server's MCP endpoint over the pmon login."`

@@ -473,9 +473,7 @@ func (d *Daemon) MCPToken(ctx context.Context, req control.MCPTokenRequest) (con
 
 // Logout clears one server's credentials (or every server's) and closes its brokers, leaving the daemon
 // running.
-// Logout clears one server's credentials (or every server's) and closes its brokers, leaving the daemon
-// running.
-func (d *Daemon) Logout(req control.LogoutRequest) error {
+func (d *Daemon) Logout(req control.LogoutRequest) ([]string, error) {
 	var names []string
 	if req.All {
 		for name := range d.snapshot().Servers {
@@ -485,21 +483,28 @@ func (d *Daemon) Logout(req control.LogoutRequest) error {
 		names = []string{cmp.Or(req.Server, state.DefaultServer)}
 	}
 	sort.Strings(names)
+	var notEnded []string
 	for _, name := range names {
 		mu := lockOf(&d.serverMus, name)
 		mu.Lock()
-		err := d.logout(name, req.All)
+		ended, err := d.logout(name, req.All)
 		mu.Unlock()
 		if err != nil {
-			return err
+			return notEnded, err
+		}
+		if !ended {
+			notEnded = append(notEnded, name)
 		}
 	}
 	d.publishStatus()
-	return nil
+	return notEnded, nil
 }
 
-// logout clears one server's login and closes its brokers. Callers hold the server's serverMus lock.
-func (d *Daemon) logout(name string, missingOK bool) error {
+// logout ends one server's login on its control plane, then clears it locally and closes its brokers. ended is
+// false when the control plane could not be told; the local login is cleared regardless. Callers hold the
+// server's serverMus lock.
+func (d *Daemon) logout(name string, missingOK bool) (ended bool, err error) {
+	ended = d.endOnServer(d.snapshot().Servers[name])
 	if err := d.commit(func(c *state.Config) error {
 		srv := c.Servers[name]
 		if srv == nil {
@@ -511,10 +516,29 @@ func (d *Daemon) logout(name string, missingOK bool) error {
 		srv.ClearLogin()
 		return nil
 	}); err != nil {
-		return err
+		return ended, err
 	}
 	d.forgetServer(name)
-	return nil
+	return ended, nil
+}
+
+// endOnServerTimeout bounds the control-plane call a logout makes, so an unreachable server cannot hold the
+// local logout up for long.
+const endOnServerTimeout = 5 * time.Second
+
+// endOnServer ends srv's login on its control plane. It reports true when there was nothing to end or the
+// control plane ended it.
+func (d *Daemon) endOnServer(srv *state.Server) bool {
+	if srv == nil || srv.RenewalToken == "" || srv.ControlPlane == "" {
+		return true
+	}
+	ctx, cancel := context.WithTimeout(d.ctx, endOnServerTimeout)
+	defer cancel()
+	if err := login.Logout(ctx, d.httpClient, srv.ControlPlane, srv.RenewalToken); err != nil {
+		fmt.Fprintf(os.Stderr, "could not end the login on %s: %v\n", srv.ControlPlane, err)
+		return false
+	}
+	return true
 }
 
 // forgetServer closes a server's brokers and established sessions and drops what discovery knew of it.
@@ -575,8 +599,12 @@ func (d *Daemon) SetServer(req control.SetServerRequest) (control.SetServerResul
 	mu := lockOf(&d.serverMus, name)
 	mu.Lock()
 	defer mu.Unlock()
+	if prev := d.snapshot().Servers[name]; prev != nil && prev.ControlPlane != cp && prev.LoggedIn() {
+		res.NotEndedOnServer = !d.endOnServer(prev)
+	}
+	notEnded := res.NotEndedOnServer
 	if err := d.commit(func(c *state.Config) error {
-		res = control.SetServerResult{}
+		res = control.SetServerResult{NotEndedOnServer: notEnded}
 		srv := c.Servers[name]
 		switch {
 		case srv == nil:
@@ -603,11 +631,15 @@ func (d *Daemon) SetServer(req control.SetServerRequest) (control.SetServerResul
 
 // UnsetServer logs a server out and deletes it, along with its sticky ports.
 // UnsetServer logs a server out and deletes it, along with its sticky ports.
-func (d *Daemon) UnsetServer(req control.UnsetServerRequest) error {
+func (d *Daemon) UnsetServer(req control.UnsetServerRequest) ([]string, error) {
 	name := cmp.Or(req.Name, state.DefaultServer)
 	mu := lockOf(&d.serverMus, name)
 	mu.Lock()
 	defer mu.Unlock()
+	var notEnded []string
+	if srv := d.snapshot().Servers[name]; srv != nil && !d.endOnServer(srv) {
+		notEnded = []string{name}
+	}
 	if err := d.commit(func(c *state.Config) error {
 		if c.Servers[name] == nil {
 			return fmt.Errorf("unknown server %q", name)
@@ -615,11 +647,11 @@ func (d *Daemon) UnsetServer(req control.UnsetServerRequest) error {
 		delete(c.Servers, name)
 		return nil
 	}); err != nil {
-		return err
+		return nil, err
 	}
 	d.forgetServer(name)
 	d.publishStatus()
-	return nil
+	return notEnded, nil
 }
 
 // normalizeControlPlane checks a control-plane base URL and drops a trailing slash, so one server is not

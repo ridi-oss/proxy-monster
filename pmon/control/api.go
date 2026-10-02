@@ -146,6 +146,13 @@ type MCPToken struct {
 	Scope     string `json:"scope"`
 }
 
+// LogoutResult is the daemon's state after a logout, plus the servers whose login could not be ended on the
+// control plane. Those stay valid there until their TTL.
+type LogoutResult struct {
+	Status
+	NotEndedOnServer []string `json:"notEndedOnServer,omitempty"`
+}
+
 // LogoutRequest clears one server's login ([state.DefaultServer] when empty), or every server's with All.
 type LogoutRequest struct {
 	Server string `json:"server,omitempty"`
@@ -163,6 +170,8 @@ type SetServerResult struct {
 	Created   bool `json:"created"`
 	Changed   bool `json:"changed"`
 	LoggedOut bool `json:"loggedOut"`
+	// NotEndedOnServer is set when the logged-out login could not be ended on the control plane.
+	NotEndedOnServer bool `json:"notEndedOnServer,omitempty"`
 }
 
 // UnsetServerRequest deletes a server, logging it out first.

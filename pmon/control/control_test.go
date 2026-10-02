@@ -71,13 +71,13 @@ func (f *fakeBackend) SetServer(SetServerRequest) (SetServerResult, error) {
 	return SetServerResult{Created: true}, nil
 }
 
-func (f *fakeBackend) UnsetServer(UnsetServerRequest) error { return nil }
+func (f *fakeBackend) UnsetServer(UnsetServerRequest) ([]string, error) { return nil, nil }
 
-func (f *fakeBackend) Logout(LogoutRequest) error {
+func (f *fakeBackend) Logout(LogoutRequest) ([]string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.logoutCalls++
-	return nil
+	return []string{"hr"}, nil
 }
 
 func (f *fakeBackend) Reload() {
@@ -392,7 +392,7 @@ func TestLogoutAndReloadDriveTheBackend(t *testing.T) {
 	c := serve(t, backend)
 	ctx := context.Background()
 
-	if err := c.Logout(ctx, LogoutRequest{}); err != nil {
+	if _, err := c.Logout(ctx, LogoutRequest{}); err != nil {
 		t.Fatalf("Logout: %v", err)
 	}
 	if err := c.Reload(ctx); err != nil {

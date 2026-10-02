@@ -235,6 +235,10 @@ both. The agent can type the flag; only the human in the browser grants it.
 | At or after `elevated_until` | granted scopes ∩ `mcp:read mcp:query`; none left answers 403 `auth.scopes_expired` | earliest of `PM_OAUTH_ACCESS_TTL`, the login's TTL |
 | Login TTL passed, liveness `INACTIVE`, or principal deactivated | refused, 401 `auth.session_window_expired` | — |
 
+`pmon logout` ends the session through `POST /auth/session/logout`, which also
+revokes the MCP tokens already minted from it
+(`proxy_token.principal_session_id`).
+
 The login's TTL is the wire-token lifetime it was minted for
 (`pmon login --ttl`), not `PM_SESSION_WINDOW`. Each mint is audited as
 `auth.session.mcp_token` on the `pmon` channel, naming the token id, never the

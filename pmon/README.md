@@ -37,8 +37,11 @@ pmon server unset dev           # log out of dev and delete it
 ```
 
 Changing a logged-in server's URL logs it out: a token is only good against the
-control plane that issued it. A config from a single-server release loads as
-`default`, keeping its ports and password.
+control plane that issued it. Logging out (`pmon logout`, `server unset`, or a
+URL change) ends the login on the server first, revoking its SQL and MCP tokens.
+If the server cannot be reached, the login is still cleared here, and pmon
+prints that it stays valid on the server until its TTL ends. A config from a
+single-server release loads as `default`, keeping its ports and password.
 
 ### Scopes
 
@@ -78,7 +81,7 @@ does, so `pmon-<instance>` names one install everywhere.
 | --- | --- |
 | `pmon server set [name] --url U` / `unset [name]` / `list` | Manage servers (`-f` on `unset` skips the live-connection prompt) |
 | `pmon login [server] [--url U] [--scopes S]` | Device-auth flow; starts the daemon if needed and opens the server's brokers |
-| `pmon logout [server] [--all]` | Clear a server's credentials and close its brokers (the daemon stays up) |
+| `pmon logout [server] [--all]` | End a server's login on the server and here, and close its brokers (the daemon stays up) |
 | `pmon show [server] <ds>` | One datasource's local connection string |
 | `pmon mcp [server]` | Local stdio MCP server relaying to the server's `/mcp` over the pmon login |
 | `pmon status` | Daemon state: every server's login, expiry, and scopes, brokered datasources, live connections |

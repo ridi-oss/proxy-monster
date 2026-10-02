@@ -129,6 +129,14 @@ pmon:  store the wire token; open the loopback brokers (one per datasource) imme
   the human's approval grants them, for `PM_ELEVATED_SCOPE_TTL` from that
   approval. The daemon session uses them to mint MCP tokens
   ([mcp-access-control.md](./mcp-access-control.md#pmon-session-exchange)).
+- **pmon logout ends the session on the server.** `POST /auth/session/logout`
+  (bearer: the renewal token) ends the daemon session (`SIGNED_OUT`, liveness
+  `INACTIVE`), so renewal and the MCP exchange refuse it, and revokes every
+  token minted from it: `proxy_token.principal_session_id` links the wire token
+  from poll, each renewed wire token, and each exchanged MCP token. A consent
+  left with no live token is revoked. An unknown or already-ended session
+  answers 204 too. pmon clears its local login even when the call fails, and
+  says the login stays valid on the server until its TTL.
 - **Session renewal (decided).** A login opens a **session window**
   (`PM_SESSION_WINDOW`, default 2h). _Within_ it the daemon **silently
   re-mints** its wire SESSION token — **no re-prompt**. _After_ it, renewal is

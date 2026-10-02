@@ -413,7 +413,11 @@ message RunReady { string session_id = 1; }
 message RunProgress {}
 // The target-DB open finished and the proxy is ready to accept the query. Sent once, after the last
 // RunProgress and before any RunDecision.
-message RunServing {}
+message RunServing {
+  // The held session's effective namespace (PostgreSQL current_schemas(true), MySQL [DATABASE()] or empty).
+  // Absent when the proxy could not read it.
+  proxymonster.analyzer.v1.Namespace namespace = 1;
+}
 message RunQuery {
   string sql = 1;
   int32 max_rows = 2;   // 0 = the proxy's default cap
@@ -457,6 +461,9 @@ message RunDone {
   int32 rows_affected = 1;   // -1 when not applicable (a SELECT)
   // The verdict's result cap, not the client's page size, ended this result.
   bool truncated_by_cap = 2;
+  // Same as RunServing.namespace, but read after the statement, so it reflects a SET search_path / USE the
+  // statement ran.
+  proxymonster.analyzer.v1.Namespace namespace = 3;
 }
 // A run's terminal error. Also the at-rest form of a failed run's diagnostic: for a target-DB failure the
 // control-plane serializes this whole message (protobuf) and AES-GCM encrypts it into

@@ -49,6 +49,12 @@ func (s *runSession) OnOpen(ctx context.Context, commands []*pb.ProxyCommand) er
 	return s.session.onOpen(commands)
 }
 
+// Namespace is the configured catalog and database: every query execution names them, and nothing on the
+// session changes them.
+func (s *runSession) Namespace() (string, []string, error) {
+	return s.target.config.catalog, []string{s.target.config.database}, nil
+}
+
 func (s *runSession) ServeStatement(sql string, maxRows int) (result engine.StatementResult, err error) {
 	verdict := s.session.authorize(sql, "", nil, maxRows)
 	var proceed engine.Proceed

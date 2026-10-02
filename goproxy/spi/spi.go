@@ -109,6 +109,9 @@ type TargetDbSession interface {
 	// run (or the proxy drains) while the fetch is in flight, ctx is cancelled and the in-flight target-DB read
 	// unwinds at once (a catalog push RPC to the control-plane still runs to its own deadline).
 	OnOpen(ctx context.Context, cmds []*pb.ProxyCommand) error
+	// Namespace reads the session's effective namespace for reporting. It never feeds authorization, which
+	// re-probes before every statement: the catalog can change between statements from other connections.
+	Namespace() (catalog string, searchPath []string, err error)
 	Cancel() error
 	Close() error
 }

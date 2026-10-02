@@ -74,6 +74,8 @@ interface EngineDefinition {
     fun implicitColumns(rows: List<CatalogColumn>): List<CatalogColumn>
     /** Refuses a ConnectionInfo this engine's proxies must not publish (see [validateNativeConnectionInfo]). */
     fun validateConnectionInfo(info: ConnectionInfo)
+    /** Builds the statement that makes a schema a session's default for unqualified names; null where the engine has none. */
+    val defaultSchemaStatement: ((schema: String) -> String)? get() = null
 }
 
 private val engineDefinitions = listOf(MySqlEngineDefinition, PostgresEngineDefinition, AthenaEngineDefinition).associateBy { it.engine }

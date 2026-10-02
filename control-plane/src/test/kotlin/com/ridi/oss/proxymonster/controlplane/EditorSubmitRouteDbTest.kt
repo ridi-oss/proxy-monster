@@ -20,6 +20,7 @@ import com.ridi.oss.proxymonster.grpc.runResultRows
 import com.ridi.oss.proxymonster.grpc.runRow
 import com.ridi.oss.proxymonster.grpc.runReady
 import com.ridi.oss.proxymonster.grpc.runServing
+import com.ridi.oss.proxymonster.analyzer.pb.namespace as pbNamespace
 import com.ridi.oss.proxymonster.grpc.runValue
 import com.ridi.oss.proxymonster.grpc.eventsRequest
 import com.ridi.oss.proxymonster.grpc.proxyRunMsg
@@ -68,6 +69,7 @@ import javax.sql.DataSource
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
+import kotlin.test.assertTrue
 import kotlin.test.fail
 
 /**
@@ -198,6 +200,7 @@ class EditorSubmitRouteDbTest {
      */
     private suspend fun CoroutineScope.openFakeSession(
         client: HttpClient,
+        servingNamespace: List<String>? = null,
         onQuery: suspend (SendChannel<ProxyRunMsg>, ControlRunMsg) -> Unit,
     ): FakeSession {
         val event = async { stub.events(eventsRequest { datasourceName = datasource.name; protocolVersion = CONTROL_PROTOCOL_VERSION }).first() }
@@ -222,7 +225,9 @@ class EditorSubmitRouteDbTest {
             }
         }
         proxyRequests.send(proxyRunMsg { sessionReady = runReady { sessionId = open.sessionId } })
-        proxyRequests.send(proxyRunMsg { serving = runServing {} })
+        proxyRequests.send(proxyRunMsg {
+            serving = runServing { servingNamespace?.let { namespace = pbNamespace { searchPath += it } } }
+        })
         val sessionId = withTimeout(5_000) { openDeferred.await() }.body<EditorSessionOpened>().sessionId
         return FakeSession(sessionId, proxyRequests, controls) { withTimeout(5_000) { proxy.await() } }
     }
@@ -265,6 +270,118 @@ class EditorSubmitRouteDbTest {
             client.delete("/api/editor/sessions/${session.sessionId}")
             session.await()
         }
+    }
+
+    @Test
+    fun `the session reports the proxy's namespace at open and after each statement, to its connectable owner only`() = testApplication {
+        val client = wire()
+        supervisorScope {
+            val session = openFakeSession(client, servingNamespace = listOf("pg_catalog", "public")) { req, control ->
+                req.send(allowed())
+                req.send(rowsChunk(emptyList(), emptyList()))
+                req.send(proxyRunMsg {
+                    done = runDone {
+                        rowsAffected = 0
+                        if (control.query.sql.startsWith("set")) namespace = pbNamespace { searchPath += listOf("pg_catalog", "billing") }
+                    }
+                })
+            }
+            suspend fun searchPath() = client.get("/api/editor/sessions/${session.sessionId}").body<EditorSessionState>().searchPath
+            // The path names the target's schemas: without datasource.connect even the owner may not read it.
+            assertEquals(HttpStatusCode.Forbidden, client.get("/api/editor/sessions/${session.sessionId}").status)
+            val connect = core.cedarPolicyStore.create(
+                CedarPolicyInput(
+                    name = "editor-session-state-connect",
+                    cedarSrc = """permit(principal == User::"$caller", action == Action::"datasource.connect", resource);""",
+                ),
+                updatedBy = "test",
+            )
+            try {
+                assertEquals(listOf("pg_catalog", "public"), searchPath())
+
+                val ack = client.post("/api/editor/sessions/${session.sessionId}/query") {
+                    contentType(ContentType.Application.Json); setBody(QueryRequest("set search_path to billing", 100))
+                }.body<EditorSubmitResponse>()
+                awaitUntil("task EXECUTED") { core.accessStore.getRequest(ack.taskId)?.status == "EXECUTED" }
+                assertEquals(listOf("pg_catalog", "billing"), searchPath())
+
+                // A RunDone without a namespace makes it unknown rather than leaving the old one.
+                val unread = client.post("/api/editor/sessions/${session.sessionId}/query") {
+                    contentType(ContentType.Application.Json); setBody(QueryRequest("select 1", 100))
+                }.body<EditorSubmitResponse>()
+                awaitUntil("second task EXECUTED") { core.accessStore.getRequest(unread.taskId)?.status == "EXECUTED" }
+                assertNull(searchPath())
+
+                val other = createClient {
+                    expectSuccess = false
+                    install(HttpCookies)
+                    install(ClientContentNegotiation) { json(Json { ignoreUnknownKeys = true }) }
+                }
+                assertEquals(HttpStatusCode.NoContent, other.post("/test/session/other@example.com").status)
+                assertEquals(HttpStatusCode.NotFound, other.get("/api/editor/sessions/${session.sessionId}").status)
+                assertEquals(HttpStatusCode.NotFound, client.get("/api/editor/sessions/no-such-session").status)
+            } finally {
+                core.cedarPolicyStore.delete(connect.id)
+            }
+
+            client.delete("/api/editor/sessions/${session.sessionId}")
+            session.await()
+        }
+    }
+
+    @Test
+    fun `setting the default schema runs the engine's statement on the session and returns the new path`() = testApplication {
+        val client = wire()
+        val connect = core.cedarPolicyStore.create(
+            CedarPolicyInput(
+                name = "editor-default-schema-connect",
+                cedarSrc = """permit(principal == User::"$caller", action == Action::"datasource.connect", resource);""",
+            ),
+            updatedBy = "test",
+        )
+        try {
+            supervisorScope {
+                val sent = java.util.concurrent.CopyOnWriteArrayList<String>()
+                val session = openFakeSession(client, servingNamespace = listOf("pg_catalog", "public")) { req, control ->
+                    sent += control.query.sql
+                    req.send(allowed())
+                    req.send(rowsChunk(emptyList(), emptyList()))
+                    req.send(proxyRunMsg {
+                        done = runDone { rowsAffected = 0; namespace = pbNamespace { searchPath += listOf("pg_catalog", "bil\"ling") } }
+                    })
+                }
+                val response = client.post("/api/editor/sessions/${session.sessionId}/default-schema") {
+                    contentType(ContentType.Application.Json); setBody(DefaultSchemaInput("bil\"ling"))
+                }
+                assertEquals(HttpStatusCode.OK, response.status)
+                val result = response.body<DefaultSchemaResult>()
+                // The engine builds and quotes it; the web never writes SQL for this.
+                assertEquals("SET search_path TO \"bil\"\"ling\"", result.statement)
+                assertEquals(listOf(result.statement), sent.toList())
+                assertEquals("DONE", result.result?.status)
+                assertEquals(listOf("pg_catalog", "bil\"ling"), result.searchPath)
+                // The run is not kept as a result tab's task.
+                assertNull(core.accessStore.getRequest(result.result!!.taskId))
+
+                val blank = client.post("/api/editor/sessions/${session.sessionId}/default-schema") {
+                    contentType(ContentType.Application.Json); setBody(DefaultSchemaInput(" "))
+                }
+                assertEquals(HttpStatusCode.BadRequest, blank.status)
+
+                client.delete("/api/editor/sessions/${session.sessionId}")
+                session.await()
+            }
+        } finally {
+            core.cedarPolicyStore.delete(connect.id)
+        }
+    }
+
+    @Test
+    fun `a datasource says whether its sessions can set a default schema`() {
+        val json = Json { encodeDefaults = true }
+        assertTrue(json.encodeToString(Datasource.serializer(), datasource).contains("\"defaultSchemaSettable\":true"))
+        val athena = datasource.copy(engine = com.ridi.oss.proxymonster.grpc.Engine.ATHENA)
+        assertTrue(json.encodeToString(Datasource.serializer(), athena).contains("\"defaultSchemaSettable\":false"))
     }
 
     @Test

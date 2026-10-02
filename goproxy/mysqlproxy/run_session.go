@@ -135,6 +135,11 @@ func (s *RunSession) ServeStatement(sql string, maxRows int) (result engine.Stat
 	return result, err
 }
 
+func (s *RunSession) Namespace() (string, []string, error) {
+	session, err := probeSession(s.conn, true)
+	return session.CurrentCatalog, session.Namespace, err
+}
+
 func (s *RunSession) Cancel() error {
 	conn, _, err := dialTargetDbAuthID(context.Background(), s.target, true)
 	if err != nil {

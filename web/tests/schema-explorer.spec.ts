@@ -82,6 +82,89 @@ const marked = (page: Page) => page.locator('[data-testid=schema-tree] [aria-cur
 // Clicks the tree's scroll area below its last row.
 const blank = (page: Page) => page.locator('[data-testid=schema-tree] > div').nth(1).click({ position: { x: 100, y: 400 } })
 
+test('system schemas start hidden and the view option shows them', async ({ page }) => {
+  await mockEditor(page, () => [datasource(1, 'app')])
+  await page.goto('/query')
+
+  await expect(schemas(page)).toHaveCount(1)
+  await expect(page.getByText('1 system schema hidden.')).toBeVisible()
+
+  await page.getByRole('button', { name: 'View options' }).click()
+  await page.getByRole('menuitemcheckbox', { name: 'Show system schemas' }).click()
+  await page.keyboard.press('Escape')
+  await expect(page.locator('[data-testid=schema-group][data-schema=pg_catalog]')).toBeVisible()
+
+  await page.reload()
+  await expect(page.locator('[data-testid=schema-group][data-schema=pg_catalog]')).toBeVisible()
+})
+
+test('expand all, collapse all, and row clicks toggle the tree', async ({ page }) => {
+  await mockEditor(page, () => [datasource(1, 'app')])
+  await page.goto('/query')
+  const usersToggle = table(page, 'users').locator('button[aria-expanded]')
+
+  await page.getByRole('button', { name: 'Expand all' }).click()
+  await expect(usersToggle).toHaveAttribute('aria-expanded', 'true')
+  await expect(table(page, 'orders').locator('button[aria-expanded]')).toHaveAttribute('aria-expanded', 'true')
+
+  await page.getByRole('button', { name: 'Collapse all' }).click()
+  await expect(page.locator('[data-testid=schema-table]')).toHaveCount(0)
+
+  await page.getByRole('button', { name: 'Expand schema public' }).click()
+  await table(page, 'users').getByText('users', { exact: true }).click()
+  await expect(usersToggle).toHaveAttribute('aria-expanded', 'true')
+  await expect(table(page, 'users').locator('[aria-current=true]')).toHaveCount(1)
+  await expect(table(page, 'orders').locator('[aria-current=true]')).toHaveCount(0)
+  // Both the tree row and the opened table tab show the name.
+  await expect.poll(() => page.getByText('users', { exact: true }).count()).toBeGreaterThan(1)
+
+  await table(page, 'users').getByRole('button', { name: /^user_email/ }).click()
+  await expect(marked(page)).toHaveCount(1)
+  await expect(marked(page)).toContainText('user_email')
+  await page.getByRole('button', { name: 'Collapse schema public' }).click()
+  await expect(marked(page)).toContainText('public')
+  await expect(page.getByRole('button', { name: 'Expand schema public' })).toBeVisible()
+  await blank(page)
+  await expect(marked(page)).toHaveCount(0)
+})
+
+test('only the search-path schema starts expanded', async ({ page }) => {
+  await mockEditor(page, () => [datasource(1, 'app')])
+  await page.route(/\/api\/datasources\/\d+\/catalog$/, (route) => fulfillJson(route, 200, [
+    column('audit', 'events', 'id'),
+    column('public', 'users', 'id'),
+  ]))
+  await page.goto('/query')
+
+  await expect(page.getByRole('button', { name: 'Collapse schema public' })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Expand schema audit' })).toBeVisible()
+  await expect(table(page, 'events')).toHaveCount(0)
+
+  await page.getByRole('button', { name: 'Expand schema audit' }).click()
+  await page.reload()
+  await expect(table(page, 'events')).toBeVisible()
+})
+
+test('the filter highlights matches, opens tables matched by a column, and clears', async ({ page }) => {
+  await mockEditor(page, () => [datasource(1, 'app')])
+  await page.goto('/query')
+  const filter = page.getByPlaceholder('Filter schemas, tables, columns…')
+
+  await filter.fill('user')
+  // users matches by name and stays closed; orders opens to show its matching user_id column.
+  await expect(page.locator('mark')).toHaveText(['user', 'user'])
+  await expect(table(page, 'orders').locator('button[aria-expanded]')).toHaveAttribute('aria-expanded', 'true')
+  await expect(table(page, 'users').locator('button[aria-expanded]')).toHaveAttribute('aria-expanded', 'false')
+
+  await filter.press('Escape')
+  await expect(filter).toHaveValue('')
+  await filter.fill('relname')
+  await expect(page.getByText('No schemas, tables, or columns match.')).toBeVisible()
+  await page.getByRole('button', { name: 'Clear filter' }).click()
+  await expect(filter).toHaveValue('')
+  await expect(page.locator('mark')).toHaveCount(0)
+})
+
 test('the saved datasource survives navigating away while the cached list is stale', async ({ page }) => {
   let listed = [datasource(1, 'first')]
   await mockEditor(page, () => listed)

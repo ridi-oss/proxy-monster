@@ -44,7 +44,8 @@
     "invalid_requester_ip": "That is not a valid IP address.",
     "missing_renewal_token": "Missing bearer renewal token.",
     "principal_deprovisioned": "This account has been deprovisioned.",
-    "session_window_expired": "Your session has expired or your account was deprovisioned. Please sign in again."
+    "session_window_expired": "Your session has expired or your account was deprovisioned. Please sign in again.",
+    "scopes_expired": "This login's extra scopes have expired and it grants nothing else. Log in again with the scopes you need."
   },
   "datasource": {
     "table_introspection_failed": "Table introspection failed: {detail}",

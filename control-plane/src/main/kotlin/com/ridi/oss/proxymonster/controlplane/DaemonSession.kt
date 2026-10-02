@@ -602,6 +602,21 @@ class PrincipalSessionStore(
     }
 
     /**
+     * Re-read [row] under its principal's advisory lock and run [mint] on it — or return null when the row is
+     * gone, its liveness went INACTIVE, or the principal is deactivated. Deprovision takes the same lock.
+     */
+    fun <T> withLiveDaemonSessionLocked(
+        row: DaemonSessionRow,
+        isDeactivated: (String, Connection) -> Boolean,
+        mint: (DaemonSessionRow, Connection) -> T?,
+    ): T? = dataSource.inTx { c ->
+        c.advisoryLockPrincipal(row.principal)
+        val fresh = queryOneOn(c, "$SELECT AND id = ?") { it.setLong(1, row.id) } ?: return@inTx null
+        if (fresh.livenessStatus == LIVENESS_INACTIVE || isDeactivated(fresh.principal, c)) return@inTx null
+        mint(fresh, c)
+    }
+
+    /**
      * [withinWindow], scoped to ONE row by id and read on the caller-supplied (locked) connection
      * [c] — what [renewLocked] needs. Uses `clock_timestamp()`, NOT `now()`:
      * Postgres's `now()` is frozen at the enclosing TRANSACTION's start, not the current instant —

@@ -3,6 +3,7 @@ package com.ridi.oss.proxymonster.controlplane
 import com.ridi.oss.proxymonster.auth.OAuthAuthorizationStore
 import com.ridi.oss.proxymonster.auth.canonicalScopes
 import com.ridi.oss.proxymonster.auth.sha256Hex
+import com.ridi.oss.proxymonster.controlplane.AuthAuditRecorder.Companion.ACTION_LOGOUT
 import com.ridi.oss.proxymonster.controlplane.AuthAuditRecorder.Companion.ACTION_SESSION_MCP_TOKEN
 import com.ridi.oss.proxymonster.controlplane.AuthAuditRecorder.Companion.CHANNEL_PMON
 import com.ridi.oss.proxymonster.controlplane.management.AuditActor
@@ -30,6 +31,37 @@ internal fun pmonMcpScopes(row: DaemonSessionRow, now: Instant): Set<String> {
     val elevated = row.elevatedUntil?.let(now::isBefore) == true
     val granted = if (elevated) row.scopes else row.scopes.intersect(PMON_DEFAULT_SCOPES)
     return granted.intersect(McpCapabilityRegistry.supportedScopes)
+}
+
+/**
+ * `POST /auth/session/logout` — pmon ends its daemon session: renewal and the MCP exchange stop, and every wire
+ * and MCP token minted from it is revoked. Answers 204 for an unknown or already-ended session alike.
+ */
+internal fun Route.pmonLogoutRoute(config: Config, sessionStore: PrincipalSessionStore, authAudit: AuthAuditRecorder) {
+    post("/auth/session/logout") {
+        val authHeader = call.request.headers["Authorization"]
+        if (authHeader == null || !authHeader.startsWith("Bearer ")) {
+            call.respond(HttpStatusCode.Unauthorized, ApiError("auth.missing_renewal_token"))
+            return@post
+        }
+        val row = sessionStore.getByRenewalTokenHash(sha256Hex(authHeader.removePrefix("Bearer ").trim()))
+        if (row != null) {
+            val clientAddr = call.httpRequesterIp(config)
+            sessionStore.dataSource.inTx { c ->
+                c.advisoryLockPrincipal(row.principal)
+                sessionStore.endDaemon(row.id, c)?.let { owner ->
+                    authAudit.success(
+                        c,
+                        AuditActor(owner, clientAddr = clientAddr, channel = CHANNEL_PMON),
+                        ACTION_LOGOUT,
+                        auditEntity("Session", row.id.toString()),
+                        "pmon session signed out",
+                    )
+                }
+            }
+        }
+        call.respond(HttpStatusCode.NoContent)
+    }
 }
 
 /**
@@ -76,7 +108,9 @@ internal fun Route.pmonMcpTokenRoute(
                 fresh.elevatedUntil.takeIf { scopes.any { it !in PMON_DEFAULT_SCOPES } },
             )
             val expiresAt = caps.min()
-            val (token, id) = oauthStore.issueAccessOnly(c, fresh.principal, PMON_MCP_CLIENT_ID, config.mcpResource, scopes, expiresAt)
+            val (token, id) = oauthStore.issueAccessOnly(
+                c, fresh.principal, PMON_MCP_CLIENT_ID, config.mcpResource, scopes, expiresAt, fresh.id,
+            )
             val scope = canonicalScopes(scopes)
             authAudit.success(
                 c,

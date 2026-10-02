@@ -126,13 +126,21 @@ class TokenStore(internal val dataSource: DataSource) {
      * from `RETURNING` on this SAME connection (never the plain no-connection [get], which would open a
      * second connection and could read a different/uncommitted view of the row).
      */
-    fun issue(kind: TokenKind, principal: String, roles: List<String>, name: String?, ttlSeconds: Long, c: Connection): IssuedToken {
+    fun issue(
+        kind: TokenKind,
+        principal: String,
+        roles: List<String>,
+        name: String?,
+        ttlSeconds: Long,
+        c: Connection,
+        principalSessionId: Long? = null,
+    ): IssuedToken {
         val ttl = clampTtlSeconds(ttlSeconds)
         val prefix = if (kind == TokenKind.SESSION) "pmt_" else "pmk_"
         val token = randomToken(prefix)
         val (id, expiresAt) = c.prepareStatement(
-            """INSERT INTO proxy_token (token_hash, kind, principal, roles, name, expires_at)
-               VALUES (?, ?, ?, ?::jsonb, ?, now() + (?::bigint * interval '1 second'))
+            """INSERT INTO proxy_token (token_hash, kind, principal, roles, name, expires_at, principal_session_id)
+               VALUES (?, ?, ?, ?::jsonb, ?, now() + (?::bigint * interval '1 second'), ?)
                RETURNING id, expires_at""",
         ).use { ps ->
             ps.setString(1, hash(token))
@@ -141,6 +149,7 @@ class TokenStore(internal val dataSource: DataSource) {
             ps.setString(4, json.encodeToString(stringList, roles))
             ps.setString(5, name)
             ps.setLong(6, ttl)
+            ps.setObject(7, principalSessionId, java.sql.Types.BIGINT)
             ps.executeQuery().use { rs -> rs.next(); rs.getLong(1) to rs.getTimestamp(2).toInstant().toString() }
         }
         return IssuedToken(token, id, kind.name, name, expiresAt)

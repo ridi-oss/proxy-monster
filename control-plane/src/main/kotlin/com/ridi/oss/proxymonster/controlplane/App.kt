@@ -669,6 +669,7 @@ fun Application.module(config: Config, core: ControlPlaneCore) {
             config, deviceLoginStore, principalSessionStore,
             tokenStore, userGroupStore, core.authAudit, this@module.environment.log, core.clock,
         )
+        pmonLogoutRoute(config, principalSessionStore, core.authAudit)
         pmonMcpTokenRoute(
             config, principalSessionStore, userGroupStore, OAuthAuthorizationStore(dataSource), core.authAudit, core.clock,
         )

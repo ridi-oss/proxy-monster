@@ -489,7 +489,7 @@ private suspend fun respondWithMintedSession(
         val created = daemonSessionStore.create(
             principal, row.handle, refreshToken, config.sessionWindowSeconds, row.ttlSeconds, c, row.scopes, row.elevatedUntil,
         )
-        val issued = tokenStore.issue(TokenKind.SESSION, principal, emptyList(), name = null, ttlSeconds = row.ttlSeconds, c)
+        val issued = tokenStore.issue(TokenKind.SESSION, principal, emptyList(), name = null, ttlSeconds = row.ttlSeconds, c, created.row.id)
         authAudit.success(
             c,
             poller,

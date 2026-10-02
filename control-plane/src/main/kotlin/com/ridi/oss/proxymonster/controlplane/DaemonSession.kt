@@ -500,6 +500,44 @@ class PrincipalSessionStore(
             ps.executeUpdate()
         }
 
+    /**
+     * End daemon session [id] as signed out and revoke every token minted from it. A consent left with no
+     * live token is revoked too. Returns the principal when this call ended it, null when it was already ended.
+     */
+    fun endDaemon(id: Long, c: Connection): String? {
+        val principal = c.prepareStatement(
+            """UPDATE principal_session
+               SET ended_at = now(), ended_reason = ?, liveness_status = ?, absolute_expires_at = LEAST(absolute_expires_at, now())
+               WHERE id = ? AND kind = 'DAEMON' AND ended_at IS NULL
+               RETURNING principal""",
+        ).use { ps ->
+            ps.setString(1, ENDED_SIGNED_OUT)
+            ps.setString(2, LIVENESS_INACTIVE)
+            ps.setLong(3, id)
+            ps.executeQuery().use { rs -> if (rs.next()) rs.getString(1) else null }
+        } ?: return null
+        val consents = c.prepareStatement(
+            """UPDATE proxy_token SET revoked_at = now()
+               WHERE principal_session_id = ? AND revoked_at IS NULL
+               RETURNING consent_id""",
+        ).use { ps ->
+            ps.setLong(1, id)
+            ps.executeQuery().use { rs -> buildSet { while (rs.next()) rs.getObject(1, java.lang.Long::class.java)?.let { add(it.toLong()) } } }
+        }
+        for (consentId in consents) {
+            c.prepareStatement(
+                """UPDATE oauth_consent SET revoked_at = now(), updated_at = now()
+                   WHERE id = ? AND revoked_at IS NULL
+                     AND NOT EXISTS (SELECT 1 FROM proxy_token WHERE consent_id = ? AND revoked_at IS NULL AND expires_at > now())""",
+            ).use { ps ->
+                ps.setLong(1, consentId)
+                ps.setLong(2, consentId)
+                ps.executeUpdate()
+            }
+        }
+        return principal
+    }
+
     /** End every active web session for [principal], on a fresh connection. Already-ended rows remain unchanged. */
     fun endAllWebForPrincipal(principal: String, reason: String): Int =
         dataSource.connection.use { c -> endAllWebForPrincipal(principal, reason, c) }
@@ -703,7 +741,7 @@ internal fun Route.sessionRenewRoutes(
             row,
             isDeactivated = { principal, c -> userGroupStore.isDeactivated(principal, c) },
             mint = { fresh, c ->
-                tokenStore.issue(TokenKind.SESSION, fresh.principal, emptyList(), name = null, ttlSeconds = fresh.ttlSeconds, c)
+                tokenStore.issue(TokenKind.SESSION, fresh.principal, emptyList(), name = null, ttlSeconds = fresh.ttlSeconds, c, fresh.id)
                     .also { token ->
                         authAudit.success(
                             c,

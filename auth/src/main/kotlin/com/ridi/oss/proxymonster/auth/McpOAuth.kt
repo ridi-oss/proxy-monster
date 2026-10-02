@@ -299,6 +299,7 @@ class OAuthAuthorizationStore(private val dataSource: DataSource) {
         resource: String,
         scopes: Collection<String>,
         expiresAt: Instant,
+        principalSessionId: Long? = null,
     ): Pair<String, Long> {
         val canonical = canonicalScopes(scopes)
         val consentId = connection.prepareStatement(
@@ -317,8 +318,8 @@ class OAuthAuthorizationStore(private val dataSource: DataSource) {
         val access = randomSecret("pma_")
         val id = connection.prepareStatement(
             """INSERT INTO proxy_token
-               (token_hash, kind, principal, roles, expires_at, resource, client_id, scope, refresh_family, consent_id)
-               VALUES (?, ?, ?, '[]'::jsonb, ?, ?, ?, ?, ?, ?)
+               (token_hash, kind, principal, roles, expires_at, resource, client_id, scope, refresh_family, consent_id, principal_session_id)
+               VALUES (?, ?, ?, '[]'::jsonb, ?, ?, ?, ?, ?, ?, ?)
                RETURNING id""",
         ).use { statement ->
             statement.setString(1, sha256Hex(access))
@@ -330,6 +331,7 @@ class OAuthAuthorizationStore(private val dataSource: DataSource) {
             statement.setString(7, canonical)
             statement.setString(8, randomSecret("pmf_", 24))
             statement.setLong(9, consentId)
+            statement.setObject(10, principalSessionId, Types.BIGINT)
             statement.executeQuery().use { result -> result.next(); result.getLong(1) }
         }
         return access to id

@@ -40,6 +40,7 @@ import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.boolean
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonArray
@@ -1087,7 +1088,7 @@ class McpServerDbTest {
         application { installTestMcp() }
         val principal = "mcp-admin-datasource-reads@example.com"
         grantRole(principal, "system:admin")
-        seedDatasource("mcp-admin-read-datasource", listOf("ssn", "email"))
+        seedDatasource("mcp-admin-read-datasource", listOf("ssn", "email"), systemColumns = listOf("relname"))
         val sdk = adminSdk(principal)
 
         val listed = callResult(sdk, "list_datasources", emptyMap()).jsonArray
@@ -1095,8 +1096,10 @@ class McpServerDbTest {
         assertEquals("mcp", listed.getValue("dbName").jsonPrimitive.content)
 
         val catalog = callResult(sdk, "browse_catalog", mapOf("datasource" to "mcp-admin-read-datasource")).jsonArray.map { it.jsonObject }
-        assertEquals(listOf("email", "ssn"), catalog.map { it.getValue("column").jsonPrimitive.content }.sorted())
-        assertTrue(catalog.all { it.getValue("table").jsonPrimitive.content == "users" && it.getValue("schema").jsonPrimitive.content == "public" })
+        val (system, user) = catalog.partition { it.getValue("system").jsonPrimitive.boolean }
+        assertEquals(listOf("email", "ssn"), user.map { it.getValue("column").jsonPrimitive.content }.sorted())
+        assertTrue(user.all { it.getValue("table").jsonPrimitive.content == "users" && it.getValue("schema").jsonPrimitive.content == "public" })
+        assertEquals(listOf("pg_catalog.relname"), system.map { "${it.getValue("schema").jsonPrimitive.content}.${it.getValue("column").jsonPrimitive.content}" })
 
         answerTableDetail("mcp-admin-read-datasource", tableDetail("mcp", "public", "users", listOf("ssn", "email"))).use {
             val detail = callResult(
@@ -1306,7 +1309,7 @@ class McpServerDbTest {
         dataSource.connection.use { connection -> connection.createStatement().use { it.execute(sql) } }
     }
 
-    private fun seedDatasource(name: String, columns: List<String> = listOf("ssn")) {
+    private fun seedDatasource(name: String, columns: List<String> = listOf("ssn"), systemColumns: List<String> = emptyList()) {
         dataSource.connection.use { connection ->
             val id = connection.prepareStatement(
                 """INSERT INTO datasource(name, engine, host, port, db_name, default_schemas)
@@ -1324,6 +1327,9 @@ class McpServerDbTest {
                 catalog = catalogSnapshot {
                     this.columns += columns.mapIndexed { index, column ->
                         pushedColumn("public", "users", column, "text", index + 1, true, catalog = "mcp")
+                    }
+                    this.columns += systemColumns.mapIndexed { index, column ->
+                        pushedColumn("pg_catalog", "pg_class", column, "name", index + 1, true, catalog = "mcp")
                     }
                 },
             )

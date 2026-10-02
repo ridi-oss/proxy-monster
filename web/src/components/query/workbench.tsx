@@ -44,7 +44,7 @@ const DEFAULT_CAP_ROWS = 5000
 
 export function Workbench() {
   const t = useTranslations('Query')
-  const [datasourceId, setDatasourceId] = usePersistedDatasource()
+  const [datasourceId, setDatasourceId, datasourceLoaded] = usePersistedDatasource()
   const [sql, setSql] = usePersistedSql()
   const [maxRows, setMaxRows] = useState('200')
   const [requestOpen, setRequestOpen] = useState(false)
@@ -90,12 +90,17 @@ export function Workbench() {
               <p className="text-muted-foreground px-1 text-[11px] font-medium tracking-wider uppercase">
                 {t('workbench.explorer')}
               </p>
-              <DatasourceSelect
-                value={datasourceId}
-                onChange={setDatasourceId}
-                className="w-full"
-                connectableOnly
-              />
+              {/* The picker auto-selects the first datasource, so it mounts only once the saved one is read. Its wrapper keeps Select's hidden input out of space-y. */}
+              <div className="h-7">
+                {datasourceLoaded && (
+                  <DatasourceSelect
+                    value={datasourceId}
+                    onChange={setDatasourceId}
+                    className="w-full"
+                    connectableOnly
+                  />
+                )}
+              </div>
             </div>
             {datasourceId == null ? (
               <p className="text-muted-foreground p-3 text-xs">{t('workbench.selectDatasource')}</p>

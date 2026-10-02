@@ -242,12 +242,12 @@ export function DatasourceCatalog({ id }: { id: number }) {
           {/* Columns (RHS) */}
           <div className="min-h-0 flex-1 overflow-auto">
             {selected && (
-              <table className="w-full border-collapse text-sm">
+              <table className="w-full table-fixed border-collapse text-sm">
                 <thead className="bg-muted/50 text-muted-foreground sticky top-0">
                   <tr>
-                    <th className="border-b px-4 py-2 text-left font-medium">{t('catalog.colColumn')}</th>
+                    <th className="w-[35%] border-b px-4 py-2 text-left font-medium">{t('catalog.colColumn')}</th>
                     <th className="border-b px-4 py-2 text-left font-medium">{t('catalog.colType')}</th>
-                    <th className="border-b px-4 py-2 text-left font-medium">{t('catalog.colNullable')}</th>
+                    <th className="w-24 border-b px-4 py-2 text-left font-medium">{t('catalog.colNullable')}</th>
                     <th className="w-40 border-b px-4 py-2 text-left font-medium">{t('catalog.colClassification')}</th>
                   </tr>
                 </thead>
@@ -257,12 +257,15 @@ export function DatasourceCatalog({ id }: { id: number }) {
                     return (
                       <tr key={JSON.stringify([tableKey(c), c.column])} className="hover:bg-muted/40">
                         <td className="border-b px-4 py-1.5">
-                          <span className="flex items-center gap-1.5">
-                            {pii && <KeyRound className="size-3 text-red-500" />}
-                            <code className={cn('font-mono text-xs', pii && 'text-red-500')}>{c.column}</code>
+                          <span className="flex min-w-0 items-center gap-1.5" title={c.column}>
+                            {pii && <KeyRound className="size-3 shrink-0 text-red-500" />}
+                            <code className={cn('truncate font-mono text-xs', pii && 'text-red-500')}>{c.column}</code>
                           </span>
                         </td>
-                        <td className="text-muted-foreground border-b px-4 py-1.5 font-mono text-xs lowercase">
+                        <td
+                          title={c.dataType}
+                          className="text-muted-foreground truncate border-b px-4 py-1.5 font-mono text-xs lowercase"
+                        >
                           {c.dataType}
                         </td>
                         <td className="text-muted-foreground border-b px-4 py-1.5 text-xs">

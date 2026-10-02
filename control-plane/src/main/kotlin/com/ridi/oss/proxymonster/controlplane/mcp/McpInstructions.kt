@@ -23,6 +23,9 @@ internal fun mcpInstructions(config: Config, core: ControlPlaneCore, context: Mc
             "Other pmon-* MCP servers are different proxy-monster instances, each with its own datasources " +
                 "and access. Use this one only for the datasources listed here.",
         )
+        appendLine(
+            "For SQL clients or scripts, or to share one pmon login across agents, call get_pmon_guide.",
+        )
         if (connectable.isEmpty()) {
             append("You cannot query any datasource here yet. request_access asks for a role that can.")
             return@buildString

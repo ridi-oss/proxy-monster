@@ -199,7 +199,15 @@ internal class McpTaskTools(
         }
         var page: QueryResultView? = null
         var pageError: String? = null
-        if (st.status == "EXECUTED") {
+        val failed = st.statements.firstOrNull { it.status == "FAILED" && it.denyReason == null }
+        if (failed != null) {
+            // Its page carries the target DB's error text in errorDetail; a failure with none has no page.
+            page = try {
+                editorTasks.result(p, ip, taskId, failed.ordinal)
+            } catch (_: TaskServiceException) {
+                null
+            }
+        } else if (st.status == "EXECUTED") {
             val done = st.statements.filter { it.status == "DONE" }
             (done.lastOrNull { (it.rowCount ?: 0) > 0 } ?: done.lastOrNull { it.columns.isNotEmpty() })?.let { last ->
                 try {

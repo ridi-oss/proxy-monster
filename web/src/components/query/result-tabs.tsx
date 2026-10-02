@@ -34,6 +34,12 @@ export function ResultTabs({
     if (tabs.length > prevTabCount.current) setViewingLogs(false)
     prevTabCount.current = tabs.length
   }, [tabs.length])
+  // Opening a table that already has a tab adds no tab, so the strip leaves Logs on this separate signal.
+  const [seenReveal, setSeenReveal] = useState(api.revealSeq)
+  if (api.revealSeq !== seenReveal) {
+    setSeenReveal(api.revealSeq)
+    setViewingLogs(false)
+  }
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
@@ -71,7 +77,13 @@ export function ResultTabs({
         {viewingLogs ? (
           <QueryLogs logs={logs} clearLogs={clearLogs} />
         ) : active?.kind === 'table' ? (
-          <TableView tab={active} onRequestAccess={onRequestAccess} onRequestRateReset={onRequestRateReset} />
+          <TableView
+            tab={active}
+            onViewChange={(view) => api.setTableView(active.id, view)}
+            onFocusShown={() => api.clearFocus(active.id)}
+            onRequestAccess={onRequestAccess}
+            onRequestRateReset={onRequestRateReset}
+          />
         ) : active ? (
           <ResultsPanel
             result={active.res.result}

@@ -123,6 +123,7 @@ export function Workbench() {
                 tables={tree}
                 onInsert={insertAtCursor}
                 onOpenTable={resultTabs.openTable}
+                onSelectColumn={resultTabs.openTable}
                 defaultSchemas={datasource?.defaultSchemas}
                 currentCatalog={currentCatalog(datasource)}
               />

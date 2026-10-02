@@ -15,6 +15,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"syscall"
 )
@@ -50,6 +51,9 @@ type Server struct {
 	// RenewalToken is the daemon's bearer for POST /auth/session/renew within the session window. Minted
 	// once at device-auth completion and returned only there (the control plane persists only its hash).
 	RenewalToken string `json:"renewalToken"`
+	// Scopes is what the login granted. Those beyond mcp:read and mcp:query last until ElevatedUntil.
+	Scopes        []string `json:"scopes,omitempty"`
+	ElevatedUntil string   `json:"elevatedUntil,omitempty"`
 	// Ports is the STICKY datasource-name -> local loopback port map, persisted so a datasource keeps the
 	// same port across daemon restarts. Unique across every server.
 	Ports map[string]int `json:"ports"`
@@ -408,6 +412,7 @@ func (s *Server) LoggedIn() bool {
 // ClearLogin drops the credentials, keeping the control plane and the sticky ports.
 func (s *Server) ClearLogin() {
 	s.Principal, s.Token, s.ExpiresAt, s.IssuedAt, s.SessionExpiresAt, s.RenewalToken = "", "", "", "", "", ""
+	s.Scopes, s.ElevatedUntil = nil, ""
 }
 
 // Clone returns a deep copy, so a caller can read it outside the daemon's lock.
@@ -416,6 +421,7 @@ func (c *Config) Clone() Config {
 	for name, srv := range c.Servers {
 		dup := *srv
 		dup.Ports = maps.Clone(srv.Ports)
+		dup.Scopes = slices.Clone(srv.Scopes)
 		if dup.Ports == nil {
 			dup.Ports = map[string]int{}
 		}

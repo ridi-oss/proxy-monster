@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -278,6 +279,8 @@ func (d *Daemon) Status() control.Status {
 			LoggedIn:           srv.LoggedIn(),
 			ExpiresAt:          srv.ExpiresAt,
 			SessionExpiresAt:   srv.SessionExpiresAt,
+			Scopes:             slices.Clone(srv.Scopes),
+			ElevatedUntil:      srv.ElevatedUntil,
 			ReauthRequired:     d.reauthRequired[name],
 			LastDiscoveryError: d.lastDiscoveryErr[name],
 		})
@@ -394,6 +397,7 @@ func (d *Daemon) Login(ctx context.Context, req control.LoginRequest, onEvent fu
 	res, err := login.Run(ctx, login.Options{
 		ControlPlane: srv.ControlPlane,
 		TTLSeconds:   req.TTLSeconds,
+		Scopes:       req.Scopes,
 		OnPrompt: func(p login.Prompt) {
 			onEvent(control.LoginEvent{
 				Kind:                    "prompt",
@@ -422,13 +426,18 @@ func (d *Daemon) Login(ctx context.Context, req control.LoginRequest, onEvent fu
 		live.IssuedAt = time.Now().UTC().Format(time.RFC3339)
 		live.SessionExpiresAt = res.SessionExpiresAt
 		live.RenewalToken = res.RenewalToken
+		live.Scopes = res.Scopes
+		live.ElevatedUntil = res.ElevatedUntil
 		return nil
 	})
 	if err == nil {
 		d.mu.Lock()
 		delete(d.reauthRequired, name)
 		d.mu.Unlock()
-		onEvent(control.LoginEvent{Kind: "done", Principal: res.Principal, ExpiresAt: res.ExpiresAt})
+		onEvent(control.LoginEvent{
+			Kind: "done", Principal: res.Principal, ExpiresAt: res.ExpiresAt,
+			Scopes: res.Scopes, ElevatedUntil: res.ElevatedUntil,
+		})
 	}
 	serverMu.Unlock()
 	if err != nil {

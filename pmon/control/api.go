@@ -36,6 +36,9 @@ type ServerInfo struct {
 	LoggedIn         bool   `json:"loggedIn"`
 	ExpiresAt        string `json:"expiresAt,omitempty"`
 	SessionExpiresAt string `json:"sessionExpiresAt,omitempty"`
+	// Scopes is what the login granted; those beyond mcp:read and mcp:query last until ElevatedUntil.
+	Scopes        []string `json:"scopes,omitempty"`
+	ElevatedUntil string   `json:"elevatedUntil,omitempty"`
 	// ReauthRequired is set once renewal has been refused: the session window closed, so brokering keeps
 	// working only until the wire token expires and the user must log in again.
 	ReauthRequired bool `json:"reauthRequired"`
@@ -126,6 +129,8 @@ type LoginRequest struct {
 	Server       string `json:"server,omitempty"`
 	ControlPlane string `json:"controlPlane,omitempty"`
 	TTLSeconds   int    `json:"ttlSeconds,omitempty"`
+	// Scopes replaces the server's default scopes when non-empty.
+	Scopes []string `json:"scopes,omitempty"`
 }
 
 // LogoutRequest clears one server's login ([state.DefaultServer] when empty), or every server's with All.
@@ -164,8 +169,10 @@ type LoginEvent struct {
 	VerificationURIComplete string `json:"verificationUriComplete,omitempty"`
 	UserCode                string `json:"userCode,omitempty"`
 	// Done fields, set when Kind == "done".
-	Principal string `json:"principal,omitempty"`
-	ExpiresAt string `json:"expiresAt,omitempty"`
+	Principal     string   `json:"principal,omitempty"`
+	ExpiresAt     string   `json:"expiresAt,omitempty"`
+	Scopes        []string `json:"scopes,omitempty"`
+	ElevatedUntil string   `json:"elevatedUntil,omitempty"`
 	// Error, set when Kind == "error".
 	Error string `json:"error,omitempty"`
 }

@@ -7,8 +7,9 @@ import { useCallback, useEffect, useState } from 'react'
 
 const KEY = 'pm.query.datasourceId'
 
-export function usePersistedDatasource(): [number | null, (id: number | null) => void] {
+export function usePersistedDatasource(): [number | null, (id: number | null) => void, boolean] {
   const [value, setValue] = useState<number | null>(null)
+  const [loaded, setLoaded] = useState(false)
 
   // Read after mount (localStorage is browser-only — avoids SSR hydration mismatch).
   useEffect(() => {
@@ -17,6 +18,7 @@ export function usePersistedDatasource(): [number | null, (id: number | null) =>
       const n = Number(raw)
       if (Number.isFinite(n)) setValue(n)
     }
+    setLoaded(true)
   }, [])
 
   const set = useCallback((id: number | null) => {
@@ -25,5 +27,5 @@ export function usePersistedDatasource(): [number | null, (id: number | null) =>
     else localStorage.setItem(KEY, String(id))
   }, [])
 
-  return [value, set]
+  return [value, set, loaded]
 }

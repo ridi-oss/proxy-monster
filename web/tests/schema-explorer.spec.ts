@@ -262,3 +262,71 @@ test('a column flash leaves Logs, and each table tab keeps its own sub-view', as
   await expect(page.getByTestId('table-columns-panel').locator('tr[data-focused]')).toContainText('user_email')
 })
 
+test('the tree marks the session search path and switches it without a result tab', async ({ page }) => {
+  await mockEditor(page, () => [{ ...datasource(1, 'app'), defaultSchemaSettable: true }])
+  await page.route(/\/api\/datasources\/\d+\/catalog$/, (route) => fulfillJson(route, 200, [
+    column('public', 'users', 'id'),
+    column('billing', 'invoices', 'id'),
+    column('pg_catalog', 'pg_class', 'relname', true),
+  ]))
+  let searchPath: string[] | null = ['pg_catalog', 'public']
+  const defaults: string[] = []
+  await page.route('**/api/editor/sessions', (route) => fulfillJson(route, 200, { sessionId: 's1' }))
+  await page.route('**/api/editor/sessions/s1', (route) => fulfillJson(route, 200, { searchPath }))
+  await page.route('**/api/editor/sessions/s1/default-schema', (route) => {
+    const schema = route.request().postDataJSON().schema as string
+    defaults.push(schema)
+    searchPath = ['pg_catalog', schema]
+    return fulfillJson(route, 200, {
+      statement: `SET search_path TO "${schema}"`, result: { taskId: 9, ordinal: 0, status: 'DONE' }, searchPath,
+    })
+  })
+  await page.route('**/api/editor/sessions/s1/query', (route) => {
+    const sql = route.request().postDataJSON().sql as string
+    return fulfillJson(route, 202, { taskId: 1, childId: 1, statements: [sql] })
+  })
+  await page.route(/\/api\/editor\/tasks\/\d+$/, (route) => {
+    const taskId = Number(route.request().url().split('/').pop())
+    return route.request().method() === 'DELETE'
+      ? route.fulfill({ status: 204 })
+      : fulfillJson(route, 200, { taskId, status: 'EXECUTED', result: { taskId, ordinal: 0, status: 'DONE' } })
+  })
+  await page.route(/\/api\/editor\/tasks\/\d+\/result/, (route) => fulfillJson(route, 200, {
+    meta: { taskId: 1, ordinal: 0, status: 'DONE' }, columns: ['id'], rows: [['1']], decision: 'ALLOW', maskedColumns: [],
+  }))
+  const marker = (schema: string) => page.locator(`[data-testid=schema-group][data-schema=${schema}] > div`).first()
+
+  await page.goto('/query')
+  await expect(marker('public')).toContainText('default')
+  await expect(marker('billing')).not.toContainText('default')
+
+  await marker('billing').hover()
+  await page.getByRole('button', { name: 'Make billing the default' }).click()
+  await expect(marker('billing')).toContainText('default')
+  await expect(marker('public')).not.toContainText('default')
+  // The server builds the statement from the schema name; the console logs what it ran.
+  expect(defaults).toEqual(['billing'])
+  await expect(page.getByRole('tab', { name: /^SET search_path/ })).toHaveCount(0)
+  await page.getByRole('tab', { name: 'Logs' }).click()
+  await expect(page.getByText('SET search_path TO "billing"')).toBeVisible()
+
+  // A path the proxy could not read marks nothing rather than keeping the last one.
+  searchPath = null
+  await page.locator('.cm-content').click()
+  await page.keyboard.press('ControlOrMeta+a')
+  await page.keyboard.type('SELECT 1')
+  await page.getByRole('button', { name: 'Run' }).click()
+  await expect(marker('billing')).not.toContainText('default')
+  await expect(marker('public')).not.toContainText('default')
+})
+
+test('a datasource that cannot set a default schema offers no switch', async ({ page }) => {
+  await mockEditor(page, () => [{ ...datasource(1, 'app'), defaultSchemaSettable: false }])
+  await page.goto('/query')
+  const users = table(page, 'users')
+  await users.hover()
+  await expect(page.getByRole('button', { name: /^Copy / }).first()).toBeVisible()
+  await page.getByTestId('schema-group').first().locator(':scope > div').first().hover()
+  await expect(page.getByRole('button', { name: /the default$/ })).toHaveCount(0)
+})
+

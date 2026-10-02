@@ -4,7 +4,7 @@
 // Schemas and tables are collapsible; `pii`-tagged columns are flagged loud
 // (red dot), any other tag amber. Clicking a row selects it; a schema or table row also
 // toggles, a table opens its tab, and a column opens its table's tab with the column flashed.
-import { createContext, useContext, useMemo, useState } from 'react'
+import { createContext, useCallback, useContext, useMemo, useState } from 'react'
 import { useTranslations } from 'next-intl'
 import { toast } from 'sonner'
 import {
@@ -15,6 +15,7 @@ import {
   Database,
   Copy,
   KeyRound,
+  LocateFixed,
   Search,
   Settings2,
   Table2,
@@ -44,9 +45,14 @@ interface Props {
   onInsert?: (text: string) => void
   onOpenTable: (table: TreeTable) => void
   onSelectColumn?: (table: TreeTable, column: string) => void
-  /** Schemas that start expanded (the search path); the rest start collapsed. Unset or unmatched: all expanded. */
+  /** The configured search path, used until the session reports [searchPath]. */
   defaultSchemas?: string[]
+  /** The session's live search path: undefined before the session opens, null when it could not be read.
+   *  Its schemas are marked and start expanded; with no path to match, every schema starts expanded. */
+  searchPath?: string[] | null
   currentCatalog?: string | null
+  /** Make a schema the session's default; absent where the datasource cannot (Athena). */
+  onUseSchema?: (schema: string) => void
 }
 
 interface VisibleTable {
@@ -72,11 +78,13 @@ interface TreeContext {
   onInsert?: (text: string) => void
   onOpenTable: (table: TreeTable) => void
   onSelectColumn?: (table: TreeTable, column: string) => void
+  onUseSchema?: (schema: string) => void
+  pathKeys: string[]
   // A marker the user sets by clicking a row; independent of whatever tab or panel is showing.
   selected: string | null
   select: (id: string) => void
 }
-const Tree = createContext<TreeContext>({ query: '', onOpenTable: () => {}, selected: null, select: () => {} })
+const Tree = createContext<TreeContext>({ query: '', onOpenTable: () => {}, pathKeys: [], selected: null, select: () => {} })
 const SELECTED = 'bg-primary/15 font-medium'
 
 function useSelection(id: string) {
@@ -85,7 +93,8 @@ function useSelection(id: string) {
 }
 
 export function SchemaTree({
-  datasourceId, tables, onInsert, onOpenTable, onSelectColumn, defaultSchemas, currentCatalog,
+  datasourceId, tables, onInsert, onOpenTable, onSelectColumn, defaultSchemas, searchPath, currentCatalog,
+  onUseSchema,
 }: Props) {
   const t = useTranslations('Query')
   const withColumns = onInsert != null
@@ -98,10 +107,6 @@ export function SchemaTree({
   const [filterExpansion, setFilterExpansion] = useState<{ filter: string; open: Expansion }>({ filter: '', open: {} })
   const query = filter.trim().toLowerCase()
   const filterOpen = filterExpansion.filter === query ? filterExpansion.open : {}
-  const context = useMemo<TreeContext>(
-    () => ({ query, onInsert, onOpenTable, onSelectColumn, selected, select: setSelected }),
-    [query, onInsert, onOpenTable, onSelectColumn, selected],
-  )
 
   const { groups, hiddenSystemSchemas } = useMemo(() => {
     const bySchema = new Map<string, SchemaGroup>()
@@ -143,15 +148,28 @@ export function SchemaTree({
     return { groups: [...bySchema.values()], hiddenSystemSchemas: hidden.size }
   }, [tables, query, showSystem, withColumns])
 
-  const defaultOpen = useMemo(() => {
-    const keys = new Set(
+  // A path's non-system schemas present in the tree, in path order: [0] is where unqualified names resolve first.
+  const keysOf = useCallback((path: string[]) => {
+    const catalogOf = new Map(
       tables
-        .filter((table) => !table.system && defaultSchemas?.includes(table.schema)
-          && (currentCatalog == null || table.catalog === currentCatalog))
-        .map((table) => schemaKey(table.catalog, table.schema)),
+        .filter((table) => !table.system && (currentCatalog == null || table.catalog === currentCatalog))
+        .map((table) => [table.schema, table.catalog]),
     )
-    return keys.size > 0 ? keys : null
-  }, [tables, defaultSchemas, currentCatalog])
+    return path.filter((schema) => catalogOf.has(schema)).map((schema) => schemaKey(catalogOf.get(schema)!, schema))
+  }, [tables, currentCatalog])
+  // Markers claim only what is known: the configured default before the session opens, nothing when unread.
+  const pathKeys = useMemo(
+    () => keysOf(searchPath === undefined ? defaultSchemas ?? [] : searchPath ?? []),
+    [keysOf, searchPath, defaultSchemas],
+  )
+  const defaultOpen = useMemo(() => {
+    const keys = keysOf(searchPath ?? defaultSchemas ?? [])
+    return keys.length > 0 ? new Set(keys) : null
+  }, [keysOf, searchPath, defaultSchemas])
+  const context = useMemo<TreeContext>(
+    () => ({ query, onInsert, onOpenTable, onSelectColumn, onUseSchema, pathKeys, selected, select: setSelected }),
+    [query, onInsert, onOpenTable, onSelectColumn, onUseSchema, pathKeys, selected],
+  )
 
   const schemaOpen = (key: string) =>
     query ? filterOpen[key] ?? true : expandedSchemas[key] ?? (defaultOpen?.has(key) ?? true)
@@ -326,8 +344,11 @@ function SchemaGroupNode({
   onToggleTable: (visible: VisibleTable) => void
 }) {
   const t = useTranslations('Query')
-  const { query } = useContext(Tree)
+  const { query, pathKeys, onUseSchema } = useContext(Tree)
   const { selected, select } = useSelection(group.key)
+  const position = pathKeys.indexOf(group.key)
+  const schemaRef = group.tables[0]?.table.schemaRef ?? group.schema
+  const insertable = group.tables[0]?.table.insert != null
   return (
     <div
       data-testid="schema-group"
@@ -351,9 +372,25 @@ function SchemaGroupNode({
         label={<Highlight text={group.label} query={query} />}
         labelClassName={cn('font-medium', group.system && 'text-muted-foreground')}
         title={t('schema.schemaTitle', { schema: group.label })}
-        aside={<span className="text-muted-foreground/70 shrink-0 font-mono text-[10px]">{group.tables.length}</span>}
-        name={group.tables[0]?.table.schemaRef ?? group.schema}
-        insertable={group.tables[0]?.table.insert != null}
+        aside={
+          <>
+            {position >= 0 && (
+              <span
+                title={t('schema.searchPathTitle', { position: position + 1 })}
+                className={cn(
+                  'shrink-0 rounded px-1 py-px text-[10px]',
+                  position === 0 ? 'bg-primary/15 text-foreground' : 'text-muted-foreground border',
+                )}
+              >
+                {position === 0 ? t('schema.currentSchema') : t('schema.inSearchPath')}
+              </span>
+            )}
+            <span className="text-muted-foreground/70 shrink-0 font-mono text-[10px]">{group.tables.length}</span>
+          </>
+        }
+        name={schemaRef}
+        insertable={insertable}
+        onUse={onUseSchema && insertable && position !== 0 ? () => onUseSchema(group.schema) : undefined}
       />
       {expanded && (
         <div className="ml-[14px] border-l pl-2">
@@ -479,7 +516,7 @@ function ColumnRow({ table, column }: { table: TreeTable; column: TreeColumn }) 
 
 /** One tree row: the row click is the node's action; copy/insert show on hover and act on `name`. */
 function Row({
-  selected, onClick, toggle, icon, label, labelClassName, title, aside, name, insertable,
+  selected, onClick, toggle, icon, label, labelClassName, title, aside, name, insertable, onUse,
 }: {
   selected: boolean
   onClick: () => void
@@ -492,6 +529,7 @@ function Row({
   name: string
   /** False for a table outside the current catalog: its name would resolve elsewhere in the editor. */
   insertable: boolean
+  onUse?: () => void
 }) {
   return (
     <div
@@ -528,12 +566,12 @@ function Row({
         {label}
       </button>
       {aside}
-      <RowActions name={name} insertable={insertable} />
+      <RowActions name={name} insertable={insertable} onUse={onUse} />
     </div>
   )
 }
 
-function RowActions({ name, insertable }: { name: string; insertable: boolean }) {
+function RowActions({ name, insertable, onUse }: { name: string; insertable: boolean; onUse?: () => void }) {
   const t = useTranslations('Query')
   const { onInsert } = useContext(Tree)
   const [copied, setCopied] = useState(false)
@@ -570,6 +608,20 @@ function RowActions({ name, insertable }: { name: string; insertable: boolean })
           className={action}
         >
           <TextCursorInput className="size-3" />
+        </button>
+      )}
+      {onUse && (
+        <button
+          type="button"
+          aria-label={t('schema.useSchema', { name })}
+          title={t('schema.useSchema', { name })}
+          onClick={(e) => {
+            e.stopPropagation()
+            onUse()
+          }}
+          className={action}
+        >
+          <LocateFixed className="size-3" />
         </button>
       )}
     </span>

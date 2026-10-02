@@ -237,7 +237,7 @@ class McpServerDbTest {
     }
 
     @Test
-    fun `tool catalog is complete localized and scope cannot grant a write`() = testApplication {
+    fun `tool catalog is complete and scope cannot grant a write`() = testApplication {
         application { installTestMcp() }
         val principal = "mcp-catalog@example.com"
         grantRole(principal, "system:admin")
@@ -251,7 +251,7 @@ class McpServerDbTest {
         val tools = sdk.listTools().tools
         assertEquals(McpCapabilityRegistry.approvedToolNames, tools.map { it.name }.toSet())
         assertTrue(tools.all { !it.description.isNullOrBlank() })
-        assertContains(assertNotNull(tools.single { it.name == "create_role" }.description), "역할")
+        assertEquals("Create an access-control role.", tools.single { it.name == "create_role" }.description)
 
         val denied = client.post("/mcp") {
             acceptMcp(readToken)

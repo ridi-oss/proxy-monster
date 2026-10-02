@@ -179,6 +179,7 @@ export interface CatalogColumn {
   ordinal: number
   nullable: boolean
   classification?: Classification | null
+  system?: boolean
 }
 
 // ---- Live table detail ------------------------------------------------------

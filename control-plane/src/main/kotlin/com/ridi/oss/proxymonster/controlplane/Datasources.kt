@@ -128,6 +128,8 @@ data class CatalogColumn(
     // An engine-implicit system column (PostgreSQL ctid/xmin/…), synthesized at analysis time — never
     // stored, never classifiable; resolves like a normal column but is excluded from * expansion.
     val implicit: Boolean = false,
+    // True for a column in an engine system schema (information_schema, pg_catalog, …); only catalog browsing sets it.
+    val system: Boolean = false,
 )
 
 @Serializable

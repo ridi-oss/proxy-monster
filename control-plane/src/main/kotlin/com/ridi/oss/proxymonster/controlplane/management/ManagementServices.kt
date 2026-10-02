@@ -16,6 +16,7 @@ import com.ridi.oss.proxymonster.controlplane.DatasourceInput
 import com.ridi.oss.proxymonster.controlplane.RefreshResult
 import com.ridi.oss.proxymonster.controlplane.TestResult
 import com.ridi.oss.proxymonster.controlplane.engineFromWireOrNull
+import com.ridi.oss.proxymonster.controlplane.isSystemSchema
 import com.ridi.oss.proxymonster.controlplane.wireName
 import com.ridi.oss.proxymonster.controlplane.columnRef
 import com.ridi.oss.proxymonster.controlplane.requireCatalog
@@ -108,7 +109,7 @@ class DatasourceManagementService(
 
     fun browseCatalog(name: String): List<CatalogColumn> {
         val datasource = datasource(name)
-        return store.catalog(datasource.id).columns
+        return store.catalog(datasource.id).columns.map { it.copy(system = datasource.engine.isSystemSchema(it.schema)) }
     }
 
     suspend fun getTableDetail(name: String, catalog: String, schema: String, table: String): TableDetail {

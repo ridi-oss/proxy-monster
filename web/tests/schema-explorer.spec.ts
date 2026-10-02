@@ -180,3 +180,54 @@ test('the saved datasource survives navigating away while the cached list is sta
   await expect(page.getByRole('combobox').first()).toHaveText(/second/)
   expect(await page.evaluate(() => localStorage.getItem('pm.query.datasourceId'))).toBe('2')
 })
+
+test('a column opens its table with the column flashed; hover actions copy and insert names', async ({ page, context, baseURL }) => {
+  await context.grantPermissions(['clipboard-read', 'clipboard-write'], { origin: baseURL })
+  await mockEditor(page, () => [datasource(1, 'app')])
+  await page.goto('/query')
+  await table(page, 'users').locator('button[aria-expanded]').click()
+  const column = table(page, 'users').getByRole('button', { name: /^user_email/ })
+
+  await column.click()
+  const flashed = page.getByTestId('table-columns-panel').locator('tr[data-focused]')
+  await expect(flashed).toContainText('user_email')
+  await expect(flashed).toHaveCount(0, { timeout: 5000 })
+  await expect(page.locator('.cm-content')).not.toContainText('user_email')
+
+  await page.getByRole('tab', { name: 'Indexes' }).click()
+  await column.click()
+  await expect(page.getByRole('tab', { name: 'Columns' })).toHaveAttribute('aria-selected', 'true')
+  await expect(flashed).toContainText('user_email')
+
+  const editor = page.locator('.cm-content')
+  await editor.click()
+  await page.keyboard.press('ControlOrMeta+a')
+  await page.keyboard.press('Delete')
+  await column.hover()
+  await page.getByRole('button', { name: 'Insert user_email into the editor' }).click()
+  await expect(editor).toHaveText('user_email')
+  await expect(page.locator('[data-testid=table-detail-tabs]')).toBeVisible()
+
+  await table(page, 'users').getByText('users', { exact: true }).hover()
+  await page.getByRole('button', { name: 'Copy public.users' }).click()
+  await expect(page.getByRole('button', { name: 'Copied' })).toBeVisible()
+  expect(await page.evaluate(() => navigator.clipboard.readText())).toBe('public.users')
+})
+
+test('a column flash leaves Logs, and each table tab keeps its own sub-view', async ({ page }) => {
+  await mockEditor(page, () => [datasource(1, 'app')])
+  await page.goto('/query')
+  await table(page, 'users').locator('button[aria-expanded]').click()
+  const column = table(page, 'users').getByRole('button', { name: /^user_email/ })
+  await column.click()
+  await page.getByRole('tab', { name: 'Indexes' }).click()
+
+  await table(page, 'orders').getByText('orders', { exact: true }).click()
+  await expect(page.getByRole('tab', { name: 'Columns' })).toHaveAttribute('aria-selected', 'true')
+  await page.getByRole('tab', { name: /^users/ }).click()
+  await expect(page.getByRole('tab', { name: 'Indexes' })).toHaveAttribute('aria-selected', 'true')
+
+  await page.getByRole('tab', { name: 'Logs' }).click()
+  await column.click()
+  await expect(page.getByTestId('table-columns-panel').locator('tr[data-focused]')).toContainText('user_email')
+})

@@ -61,6 +61,10 @@ export interface TableTab extends BaseTab {
   kind: 'table'
   datasourceId: number
   table: TreeTable
+  /** The column to flash in the Columns view; `seq` changes on every request so a repeat re-flashes. */
+  focus: { column: string; seq: number } | null
+  /** The open sub-view (columns, indexes, …), kept per tab. */
+  view: string
 }
 export type ResultTab = QueryTab | TableTab
 
@@ -92,12 +96,16 @@ export interface ResultTabsApi {
   active: ResultTab | null
   logs: QueryLogEntry[]
   run: (sql: string) => void
-  openTable: (table: TreeTable) => void
+  openTable: (table: TreeTable, column?: string) => void
   setActive: (id: string) => void
   pin: (id: string) => void
   cancel: (id: string) => void
   close: (id: string) => void
   clearLogs: () => void
+  clearFocus: (id: string) => void
+  setTableView: (id: string, view: string) => void
+  /** Bumps on every openTable, so the strip can leave Logs even when the tab already existed. */
+  revealSeq: number
 }
 
 export function useResultTabs(datasourceId: number | null, maxRows: number): ResultTabsApi {
@@ -108,6 +116,8 @@ export function useResultTabs(datasourceId: number | null, maxRows: number): Res
 
   // Mirror state in a ref so the imperative handlers read the latest without stale closures.
   const tabsRef = useRef<ResultTab[]>([])
+  const focusSeq = useRef(0)
+  const [revealSeq, setRevealSeq] = useState(0)
   useEffect(() => {
     tabsRef.current = tabs
   }, [tabs])
@@ -478,11 +488,16 @@ export function useResultTabs(datasourceId: number | null, maxRows: number): Res
   )
 
   const openTable = useCallback(
-    (table: TreeTable) => {
+    (table: TreeTable, column?: string) => {
       if (datasourceId == null) return
       const key = JSON.stringify(['table', datasourceId, table.key])
+      const focus = column == null ? null : { column, seq: ++focusSeq.current }
+      setRevealSeq((n) => n + 1)
       const existing = tabsRef.current.find((t) => t.kind === 'table' && t.key === key)
       if (existing) {
+        if (focus) {
+          setTabs((ts) => ts.map((t) => (t.id === existing.id && t.kind === 'table' ? { ...t, focus, view: 'columns' } : t)))
+        }
         setActiveId(existing.id)
         return
       }
@@ -494,6 +509,8 @@ export function useResultTabs(datasourceId: number | null, maxRows: number): Res
         title: table.qualified,
         datasourceId,
         table,
+        focus,
+        view: 'columns',
         pinned: false,
         taskId: null,
         ordinal: 0,
@@ -507,6 +524,14 @@ export function useResultTabs(datasourceId: number | null, maxRows: number): Res
     },
     [datasourceId, fetchInto],
   )
+
+  const clearFocus = useCallback((id: string) => {
+    setTabs((ts) => ts.map((t) => (t.id === id && t.kind === 'table' && t.focus ? { ...t, focus: null } : t)))
+  }, [])
+
+  const setTableView = useCallback((id: string, view: string) => {
+    setTabs((ts) => ts.map((t) => (t.id === id && t.kind === 'table' ? { ...t, view } : t)))
+  }, [])
 
   const pin = useCallback((id: string) => {
     setTabs((ts) => ts.map((t) => (t.id === id ? { ...t, pinned: !t.pinned } : t)))
@@ -558,5 +583,8 @@ export function useResultTabs(datasourceId: number | null, maxRows: number): Res
     cancel,
     close,
     clearLogs,
+    clearFocus,
+    setTableView,
+    revealSeq,
   }
 }

@@ -160,6 +160,7 @@ and refresh tokens. There is no RFC 7591 DCR endpoint.
 | Control plane | `POST /oauth/token` | OAuth 2.1 | Code→token exchange (verifies PKCE) and one-time refresh-token rotation. |
 | Control plane | `POST /oauth/revoke` | RFC 7009 | Revoke an access or refresh token. |
 | Control plane | `GET /oauth/consents`, `DELETE /oauth/consents/{id}` | Shared-session API/UI | List and revoke remembered client consent; revocation also invalidates that client's refresh-token chain for the principal. |
+| Control plane | `POST /auth/session/mcp-token` | proxy-monster | A pmon daemon trades its session's renewal bearer for an MCP access token; see [pmon session exchange](#pmon-session-exchange). |
 
 ### CIMD client registration
 
@@ -208,6 +209,36 @@ principal that already holds it.
   re-resolved live per call, so a mid-session role change (grant, revoke, JIT
   expiry) takes effect on the next tool call — no stale authority frozen into a
   credential. This mirrors the web session model.
+
+### pmon session exchange
+
+An agent can reach `/mcp` through the user's pmon login instead of its own OAuth
+sign-in. `pmon mcp <server>` is a local stdio MCP server; it asks the pmon
+daemon for a token, and the daemon calls `POST /auth/session/mcp-token` with
+`Authorization: Bearer <renewalToken>`, the secret that names its daemon session
+(`DaemonSession.kt`, `PmonMcpToken.kt`). The answer is an `MCP_ACCESS` token for
+`PM_MCP_RESOURCE` with client id `pmon` and an `oauth_consent` row like any
+other, so `/mcp` cannot tell it from an OAuth token: the scope is a ceiling and
+Cedar decides every call. No refresh token is issued; pmon asks again.
+
+The scopes come from the device login. `pmon login --scopes a,b` sends them on
+`/auth/device/start` (default `mcp:read mcp:query`; unknown names answer
+`device.unknown_scope`), the `/device` page lists every scope beyond the default
+pair before the human approves, and the approval stamps `elevated_until` =
+approval time + `PM_ELEVATED_SCOPE_TTL` (default 1h). The daemon session carries
+both. The agent can type the flag; only the human in the browser grants it.
+
+<!-- prettier-ignore -->
+| At exchange time | Token scope | Token expiry |
+| --- | --- | --- |
+| Before `elevated_until` | every granted scope | earliest of `PM_OAUTH_ACCESS_TTL`, the login's TTL, `elevated_until` |
+| At or after `elevated_until` | granted scopes ∩ `mcp:read mcp:query`; none left answers 403 `auth.scopes_expired` | earliest of `PM_OAUTH_ACCESS_TTL`, the login's TTL |
+| Login TTL passed, liveness `INACTIVE`, or principal deactivated | refused, 401 `auth.session_window_expired` | — |
+
+The login's TTL is the wire-token lifetime it was minted for
+(`pmon login --ttl`), not `PM_SESSION_WINDOW`. Each mint is audited as
+`auth.session.mcp_token` on the `pmon` channel, naming the token id, never the
+token.
 
 ### Scopes (consent ceilings, not permissions)
 
@@ -443,6 +474,12 @@ reject record the MCP caller as the actor with `channel=mcp`.
   `RoleResolver.resolve` returns, with every source that grants it (`direct`,
   `group`, or `grant` with its id and expiry). REST has no roles field; an agent
   needs them to explain a denial or pick a role to request.
+- `get_pmon_guide` (scope `mcp:read`) — plain text for using this instance
+  through pmon: install, `pmon server set <instance> --url <issuer>`,
+  `pmon login <instance>`, the `pmon mcp <instance>` install line for Claude
+  Code, Codex, and Claude Desktop, one `pmon show <instance> <ds> --cli` per
+  datasource the caller may connect to (the `list_connectable_datasources`
+  gate), `pmon status`, `pmon logout`, and `--scopes`.
 
 The token, audit, grant, access-request, and self tools are resource-gated like
 the query tools: the dispatcher checks the scope, then the shared service runs
@@ -465,6 +502,7 @@ passed through as configured:
 ```
 This MCP server is the proxy-monster instance "hr-pmon": HR and payroll data
 Other pmon-* MCP servers are different proxy-monster instances, each with its own datasources and access. Use this one only for the datasources listed here.
+For SQL clients or scripts, or to share one pmon login across agents, call get_pmon_guide.
 Datasources you can query here:
 - payroll (postgres): Salaries and payslips
 - hris (mysql)
@@ -586,5 +624,6 @@ _consent ceiling_, and Cedar decided.
 - MCP Authorization (spec 2025-11-25) — MCP server as OAuth 2.1 resource server.
 - RFC 9728 (protected-resource metadata), RFC 8414 (AS metadata), RFC 8707
   (resource indicators / audience), RFC 7636 (PKCE), RFC 7009 (revocation), RFC
-  8628 (device-auth — the existing `pmon` precedent, not used by MCP).
+  8628 (device-auth — `pmon login`, whose session the
+  [pmon session exchange](#pmon-session-exchange) turns into MCP tokens).
 - CIMD (Client ID Metadata Documents) — the client-registration mechanism.

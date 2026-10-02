@@ -45,6 +45,10 @@ control-plane store, which is PostgreSQL only and carries no portability caveat
   `active=false` / local deactivate revoke the tokens outright
   (`revokeActiveCredentialsTx`). Detail:
   [`docs/auth-model.md`](./docs/auth-model.md#security-invariants).
+- 🟡 `pmon logout` clears the login on the machine only. The control plane keeps
+  the daemon session, so a copy of its renewal secret could still mint MCP
+  tokens through `POST /auth/session/mcp-token` until the login's TTL ends. An
+  IdP-closed window (liveness `INACTIVE`) or a deactivation stops it.
 
 ## Audit trail
 

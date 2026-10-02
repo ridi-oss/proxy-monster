@@ -17,8 +17,15 @@
     "intro": "proxy-monster MCP 서버 {installName}를 설치해 주세요:",
     "after": "연결되면 서버가 자신과 내가 쓸 수 있는 데이터소스를 알려 줍니다."
   },
+  "pmon": {
+    "title": "pmon을 이미 쓰고 있나요? pmon 로그인을 함께 쓰기",
+    "body": "pmon이 설치된 컴퓨터의 에이전트용이며 Claude Desktop도 포함됩니다. 에이전트가 pmon을 로컬 MCP 서버로 실행해 내 pmon 로그인을 쓰므로 따로 로그인할 필요가 없습니다.",
+    "intro": "pmon으로 proxy-monster MCP 서버 {installName}를 설치해 주세요:",
+    "step1": "`pmon mcp {instance}` 명령을 실행하는 {installName}라는 이름의 stdio MCP 서버를 사용자 범위로 추가해 모든 프로젝트에서 쓸 수 있게 해 주세요. Claude Desktop이라면 claude_desktop_config.json의 mcpServers에 추가해 주세요. 같은 이름의 서버가 이미 있으면 교체해 주세요.",
+    "step2": "pmon에 {instance} 서버가 없으면 `pmon server set {instance} --url {origin}`을 실행하라고 알려 주세요. `pmon mcp {instance}`가 로그인되어 있지 않다고 하면 `pmon login {instance}`를 실행하라고 알려 주세요."
+  },
   "unsupported": {
     "title": "지원하지 않음",
-    "body": "claude.ai, Claude Desktop, ChatGPT는 내 컴퓨터가 아니라 각 회사의 클라우드에서 원격 MCP 서버에 연결합니다. proxy-monster 서버는 비공개이며 내 컴퓨터의 에이전트가 직접 연결하는 것만 지원합니다."
+    "body": "claude.ai와 ChatGPT는 내 컴퓨터가 아니라 각 회사의 클라우드에서 원격 MCP 서버에 연결합니다. proxy-monster 서버는 비공개이며 내 컴퓨터에서 오는 연결만 받습니다. Claude Desktop은 위의 pmon 방식으로 쓸 수 있습니다."
   }
 }

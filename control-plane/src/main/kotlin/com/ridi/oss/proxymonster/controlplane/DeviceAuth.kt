@@ -3,7 +3,9 @@ package com.ridi.oss.proxymonster.controlplane
 import com.ridi.oss.proxymonster.controlplane.AuthAuditRecorder.Companion.ACTION_DEVICE_APPROVE
 import com.ridi.oss.proxymonster.controlplane.AuthAuditRecorder.Companion.ACTION_DEVICE_MINT
 import com.ridi.oss.proxymonster.controlplane.AuthAuditRecorder.Companion.CHANNEL_DEVICE
+import com.ridi.oss.proxymonster.auth.canonicalScopes
 import com.ridi.oss.proxymonster.controlplane.management.AuditActor
+import com.ridi.oss.proxymonster.controlplane.management.McpCapabilityRegistry
 import com.ridi.oss.proxymonster.controlplane.management.auditEntity
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.encodeURLParameter
@@ -24,13 +26,17 @@ import java.security.SecureRandom
 import java.sql.Connection
 import java.sql.ResultSet
 import java.sql.Timestamp
+import java.time.Clock
 import java.time.Instant
 import javax.sql.DataSource
 
 // ---- Wire DTOs (SHARED CONTRACT REGISTRY — pmon + web consume these) ---------------------
 
 @Serializable
-data class DeviceStartInput(val ttlSeconds: Long? = null)
+data class DeviceStartInput(val ttlSeconds: Long? = null, val scopes: List<String>? = null)
+
+/** What a pmon login grants when it names no scopes. Anything beyond it is shown on the approval page. */
+val PMON_DEFAULT_SCOPES: Set<String> = setOf("mcp:read", "mcp:query")
 
 @Serializable
 data class DeviceStartResponse(
@@ -48,8 +54,13 @@ data class DevicePollInput(val handle: String)
 @Serializable
 data class DeviceConfirmInput(val userCode: String)
 
+/** [elevatedTtlSeconds] is set when [scopes] goes beyond [PMON_DEFAULT_SCOPES]: how long those extra scopes last. */
 @Serializable
-data class DeviceConfirmAck(val ok: Boolean = true)
+data class DeviceConfirmAck(
+    val ok: Boolean = true,
+    val scopes: List<String> = emptyList(),
+    val elevatedTtlSeconds: Long? = null,
+)
 
 /** The 202 "still waiting on the user" shape. */
 @Serializable
@@ -69,6 +80,8 @@ data class DevicePollResult(
     val principal: String,
     val sessionExpiresAt: String,
     val renewalToken: String,
+    val scopes: List<String> = emptyList(),
+    val elevatedUntil: String? = null,
 )
 
 // ---- Store ---------------------------------------------------------------------------------
@@ -86,6 +99,8 @@ data class DeviceLoginRow(
     val refreshTokenEnc: ByteArray?, // IdP refresh token captured at SSO approval, encrypted (decryptRefresh)
     val createdAt: Instant,
     val expiresAt: Instant,
+    val scopes: Set<String> = PMON_DEFAULT_SCOPES,
+    val elevatedUntil: Instant? = null,
 )
 
 /**
@@ -127,11 +142,19 @@ class DeviceLoginStore(internal val dataSource: DataSource, private val crypto: 
         }
     }
 
-    fun create(handle: String, deviceCode: String?, intervalSec: Int, ttlSeconds: Long, expiresAt: Instant, userCode: String? = null): DeviceLoginRow {
+    fun create(
+        handle: String,
+        deviceCode: String?,
+        intervalSec: Int,
+        ttlSeconds: Long,
+        expiresAt: Instant,
+        userCode: String? = null,
+        scopes: Set<String> = PMON_DEFAULT_SCOPES,
+    ): DeviceLoginRow {
         dataSource.connection.use { c ->
             c.prepareStatement(
-                """INSERT INTO device_login (handle, user_code, device_code, interval_sec, ttl_seconds, expires_at)
-                   VALUES (?, ?, ?, ?, ?, ?)""",
+                """INSERT INTO device_login (handle, user_code, device_code, interval_sec, ttl_seconds, expires_at, scopes)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
             ).use { ps ->
                 ps.setString(1, handle)
                 ps.setString(2, userCode)
@@ -139,6 +162,7 @@ class DeviceLoginStore(internal val dataSource: DataSource, private val crypto: 
                 ps.setInt(4, intervalSec)
                 ps.setLong(5, ttlSeconds)
                 ps.setTimestamp(6, Timestamp.from(expiresAt))
+                ps.setString(7, canonicalScopes(scopes))
                 ps.executeUpdate()
             }
         }
@@ -147,7 +171,8 @@ class DeviceLoginStore(internal val dataSource: DataSource, private val crypto: 
 
     fun get(handle: String): DeviceLoginRow? = dataSource.connection.use { c ->
         c.prepareStatement(
-            """SELECT id, handle, user_code, device_code, interval_sec, ttl_seconds, status, principal, refresh_token_enc, created_at, expires_at
+            """SELECT id, handle, user_code, device_code, interval_sec, ttl_seconds, status, principal, refresh_token_enc, created_at, expires_at,
+                      scopes, elevated_until
                FROM device_login WHERE handle = ?""",
         ).use { ps ->
             ps.setString(1, handle)
@@ -159,7 +184,8 @@ class DeviceLoginStore(internal val dataSource: DataSource, private val crypto: 
      *  `/device` page approves via this. */
     fun getByUserCode(userCode: String): DeviceLoginRow? = dataSource.connection.use { c ->
         c.prepareStatement(
-            """SELECT id, handle, user_code, device_code, interval_sec, ttl_seconds, status, principal, refresh_token_enc, created_at, expires_at
+            """SELECT id, handle, user_code, device_code, interval_sec, ttl_seconds, status, principal, refresh_token_enc, created_at, expires_at,
+                      scopes, elevated_until
                FROM device_login WHERE user_code = ?""",
         ).use { ps ->
             ps.setString(1, normalizeUserCode(userCode))
@@ -172,12 +198,12 @@ class DeviceLoginStore(internal val dataSource: DataSource, private val crypto: 
      * Retries the user_code on the astronomically-rare unique-index collision (~40 bits, minutes-long TTL)
      * rather than surfacing a 500; the handle is 192-bit so it never collides. Returns the created row.
      */
-    fun createPending(intervalSec: Int, ttlSeconds: Long, expiresAt: Instant): DeviceLoginRow {
+    fun createPending(intervalSec: Int, ttlSeconds: Long, expiresAt: Instant, scopes: Set<String> = PMON_DEFAULT_SCOPES): DeviceLoginRow {
         val handle = newHandle()
         var attempts = 0
         while (true) {
             try {
-                return create(handle, deviceCode = null, intervalSec = intervalSec, ttlSeconds = ttlSeconds, expiresAt = expiresAt, userCode = newUserCode())
+                return create(handle, deviceCode = null, intervalSec, ttlSeconds, expiresAt, newUserCode(), scopes)
             } catch (e: java.sql.SQLException) {
                 if (++attempts >= 5 || e.sqlState != "23505") throw e // 23505 = unique_violation → new code + retry
             }
@@ -194,16 +220,18 @@ class DeviceLoginStore(internal val dataSource: DataSource, private val crypto: 
         principal: String,
         refreshToken: String? = null,
         c: Connection? = null,
+        elevatedUntil: Instant? = null,
     ): Boolean {
         val encrypted = refreshToken?.let { crypto?.encrypt(it.toByteArray(Charsets.UTF_8)) }
         val update: (Connection) -> Boolean = { connection ->
             connection.prepareStatement(
-                """UPDATE device_login SET status = 'APPROVED', principal = ?, refresh_token_enc = ?
+                """UPDATE device_login SET status = 'APPROVED', principal = ?, refresh_token_enc = ?, elevated_until = ?
                    WHERE handle = ? AND status = 'PENDING' AND expires_at > now()""",
             ).use { ps ->
                 ps.setString(1, principal)
                 ps.setBytes(2, encrypted)
-                ps.setString(3, handle)
+                ps.setTimestamp(3, elevatedUntil?.let(Timestamp::from))
+                ps.setString(4, handle)
                 ps.executeUpdate() > 0
             }
         }
@@ -251,8 +279,12 @@ class DeviceLoginStore(internal val dataSource: DataSource, private val crypto: 
         refreshTokenEnc = getBytes("refresh_token_enc"),
         createdAt = getTimestamp("created_at").toInstant(),
         expiresAt = getTimestamp("expires_at").toInstant(),
+        scopes = parseScopes(getString("scopes")),
+        elevatedUntil = getTimestamp("elevated_until")?.toInstant(),
     )
 }
+
+internal fun parseScopes(raw: String?): Set<String> = raw.orEmpty().split(' ').filter(String::isNotBlank).toSet()
 
 private const val DEVICE_POLL_INTERVAL_SEC = 2 // how often pmon polls /poll; the browser page approves out-of-band
 private const val DEVICE_LOGIN_TTL_SEC = 600L // 10 min to complete the device-auth dance
@@ -282,13 +314,23 @@ fun Route.deviceSessionRoutes(
     userGroupStore: UserGroupStore,
     authAudit: AuthAuditRecorder,
     log: Logger,
+    clock: Clock = Clock.systemUTC(),
 ) {
     // pmon begins a login: mint a PENDING handle (pmon polls it) + a short human user_code, and hand back the
     // CP's OWN verification page. The choice of SSO vs debug happens later, in the browser.
     post("/auth/device/start") {
         val input = runCatching { call.receive<DeviceStartInput>() }.getOrDefault(DeviceStartInput())
         val ttl = clampTtlSeconds(input.ttlSeconds ?: SESSION_TTL_SECONDS)
-        val row = deviceLoginStore.createPending(DEVICE_POLL_INTERVAL_SEC, ttl, Instant.now().plusSeconds(DEVICE_LOGIN_TTL_SEC))
+        val scopes = input.scopes?.map(String::trim)?.filter(String::isNotEmpty)?.toSet() ?: PMON_DEFAULT_SCOPES
+        if (scopes.isEmpty()) {
+            call.respond(HttpStatusCode.BadRequest, ApiError("device.no_scopes"))
+            return@post
+        }
+        scopes.firstOrNull { it !in McpCapabilityRegistry.supportedScopes }?.let { unknown ->
+            call.respond(HttpStatusCode.BadRequest, ApiError("device.unknown_scope", mapOf("scope" to auditedValue(unknown))))
+            return@post
+        }
+        val row = deviceLoginStore.createPending(DEVICE_POLL_INTERVAL_SEC, ttl, Instant.now().plusSeconds(DEVICE_LOGIN_TTL_SEC), scopes)
         val userCode = row.userCode!! // createPending always sets it
         // The verification page is a WEB route, so this must be the console's origin — same as the control
         // plane in the usual single-edge deployment, or PM_WEB_ORIGIN when the console is served elsewhere.
@@ -319,7 +361,13 @@ fun Route.deviceSessionRoutes(
             return@post
         }
         call.sessions.set(DeviceVerifySession(row.userCode, session.id))
-        call.respond(HttpStatusCode.OK, DeviceConfirmAck())
+        call.respond(
+            HttpStatusCode.OK,
+            DeviceConfirmAck(
+                scopes = row.scopes.sorted(),
+                elevatedTtlSeconds = config.elevatedScopeTtlSeconds.takeIf { row.scopes.isElevated() },
+            ),
+        )
     }
 
     // After confirm, the web page navigates the browser here. The same live session that confirmed the code
@@ -361,7 +409,9 @@ fun Route.deviceSessionRoutes(
         }
         val approver = AuditActor(session.principal, clientAddr = call.httpRequesterIp(config), channel = CHANNEL_DEVICE)
         val approved = deviceLoginStore.dataSource.inTx { c ->
-            deviceLoginStore.markApproved(row.handle, session.principal, refreshToken, c).also { changed ->
+            // The approval's own clock starts the window, never a value the client sent.
+            val elevatedUntil = clock.instant().plusSeconds(config.elevatedScopeTtlSeconds).takeIf { row.scopes.isElevated() }
+            deviceLoginStore.markApproved(row.handle, session.principal, refreshToken, c, elevatedUntil).also { changed ->
                 if (changed) {
                     authAudit.success(
                         c,
@@ -436,7 +486,9 @@ private suspend fun respondWithMintedSession(
             alreadyCompleted = true
             return@mintForActivePrincipalLocked null
         }
-        val created = daemonSessionStore.create(principal, row.handle, refreshToken, config.sessionWindowSeconds, row.ttlSeconds, c)
+        val created = daemonSessionStore.create(
+            principal, row.handle, refreshToken, config.sessionWindowSeconds, row.ttlSeconds, c, row.scopes, row.elevatedUntil,
+        )
         val issued = tokenStore.issue(TokenKind.SESSION, principal, emptyList(), name = null, ttlSeconds = row.ttlSeconds, c)
         authAudit.success(
             c,
@@ -451,6 +503,8 @@ private suspend fun respondWithMintedSession(
             principal,
             created.row.sessionExpiresAt.toString(),
             created.renewalToken,
+            row.scopes.sorted(),
+            row.elevatedUntil?.toString(),
         )
     }
     when {
@@ -459,3 +513,6 @@ private suspend fun respondWithMintedSession(
         else -> call.respond(result)
     }
 }
+
+/** Whether [this] grants anything beyond [PMON_DEFAULT_SCOPES], which then lasts only the elevated window. */
+internal fun Set<String>.isElevated(): Boolean = any { it !in PMON_DEFAULT_SCOPES }

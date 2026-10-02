@@ -93,6 +93,8 @@ data class Config(
     val webOrigin: String = "",
     val mcpAccessTtlSeconds: Long = 600,
     val mcpRefreshTtlSeconds: Long = 21_600,
+    // How long a pmon login's scopes beyond mcp:read and mcp:query last after its browser approval.
+    val elevatedScopeTtlSeconds: Long = 3_600,
     val mcpDebugAutoConsent: Boolean = true,
     val queryTimeoutSeconds: Long = 600,
     // Out-of-band task notifications (docs/notifications.md). Both Slack tokens must be present for the
@@ -295,6 +297,7 @@ data class Config(
                 webOrigin = env("PM_WEB_ORIGIN") ?: "",
                 mcpAccessTtlSeconds = clampTtlSeconds(env("PM_OAUTH_ACCESS_TTL")?.toLongOrNull() ?: 600),
                 mcpRefreshTtlSeconds = clampTtlSeconds(env("PM_OAUTH_REFRESH_TTL")?.toLongOrNull() ?: 21_600),
+                elevatedScopeTtlSeconds = clampTtlSeconds(env("PM_ELEVATED_SCOPE_TTL")?.toLongOrNull() ?: 3_600),
                 mcpDebugAutoConsent = env("PM_OAUTH_DEBUG_AUTO_CONSENT")?.toBooleanStrictOrNull() ?: true,
                 queryTimeoutSeconds = queryTimeoutSeconds,
                 slackBotToken = env("PM_SLACK_BOT_TOKEN")?.takeIf { it.isNotBlank() },

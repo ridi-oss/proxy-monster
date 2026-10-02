@@ -85,9 +85,11 @@
   "device": {
     "idp_unsupported": "Your identity provider does not support device authorization.",
     "login_already_completed": "This device login has already been completed.",
+    "no_scopes": "Name at least one scope.",
     "poll_denied": "Device sign-in was denied: {detail}",
     "start_failed": "Failed to start device authorization.",
-    "unknown_or_expired_login": "Unknown or expired device login."
+    "unknown_or_expired_login": "Unknown or expired device login.",
+    "unknown_scope": "Unknown scope: {scope}"
   },
   "task": {
     "orphaned_on_restart": "Execution was interrupted by a control-plane restart.",

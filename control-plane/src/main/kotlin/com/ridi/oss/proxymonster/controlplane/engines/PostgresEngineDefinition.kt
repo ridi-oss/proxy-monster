@@ -34,6 +34,7 @@ internal object PostgresEngineDefinition : EngineDefinition {
     override fun isFixedSystemSchema(schema: String): Boolean = schema in systemSchemas
     override fun isSystemSchema(schema: String): Boolean =
         isFixedSystemSchema(schema) || schema.startsWith("pg_temp_") || schema.startsWith("pg_toast")
+    override val defaultSchemaStatement = { schema: String -> "SET search_path TO \"${schema.replace("\"", "\"\"")}\"" }
 
     override fun splitEngineConfig(datasource: Datasource): EngineConfig = analyzerEngineConfig(datasource, SessionObservation.getDefaultInstance())
 

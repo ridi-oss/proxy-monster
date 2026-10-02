@@ -79,6 +79,9 @@ data class Datasource(
     /** One line the proxy publishes (PM_DATASOURCE_DESCRIPTION) saying what this datasource holds. */
     val description: String = "",
 ) {
+    /** Whether an editor session on this datasource can set its default schema (POST …/default-schema). */
+    val defaultSchemaSettable: Boolean = engine.definition.defaultSchemaStatement != null
+
     /**
      * The same row with everything a caller would need to reach the proxy removed — the advertised address
      * and certificate chain, and the advisory upstream coordinates. What survives is identity (name, engine,

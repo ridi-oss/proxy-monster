@@ -56,6 +56,7 @@ type runFakeCP struct {
 	readyOnce       sync.Once
 	runServing      chan struct{}
 	servingOnce     sync.Once
+	serving         *pb.RunServing
 	progressCount   int
 }
 
@@ -136,6 +137,7 @@ func (f *runFakeCP) RunExec(stream grpc.BidiStreamingServer[pb.ProxyRunMsg, pb.C
 			case message.GetServing() != nil:
 				f.mu.Lock()
 				f.events = append(f.events, "serving")
+				f.serving = proto.Clone(message.GetServing()).(*pb.RunServing)
 				f.mu.Unlock()
 				f.servingOnce.Do(func() { close(f.runServing) })
 			default:
@@ -972,6 +974,124 @@ func TestRunnerMySQLReprobesNamespaceAfterTrackerBypass(t *testing.T) {
 	requests := fake.runRecordedRequests()
 	if got := requests[len(requests)-1].GetSearchPath(); !reflect.DeepEqual(got, []string{runMySQLAltSchema}) {
 		t.Fatalf("post-bypass Decide namespace = %v, want re-probed %v (stale namespace not defeated)", got, []string{runMySQLAltSchema})
+	}
+}
+
+func TestRunnerMySQLReportsNamespaceAfterUse(t *testing.T) {
+	fixture := runSeedMySQL(t)
+	const altSchema = runMySQLSchema + "_ns"
+	seed := dbtest.OpenMySQL(t, "")
+	for _, statement := range []string{
+		"CREATE DATABASE IF NOT EXISTS " + altSchema,
+		"GRANT ALL ON " + altSchema + ".* TO '" + runMySQLService + "'@'%'",
+		"FLUSH PRIVILEGES",
+	} {
+		if _, err := seed.Exec(statement); err != nil {
+			t.Fatalf("seed %q: %v", statement, err)
+		}
+	}
+	fake, client := runStartFakeCP(t, runSessionID)
+	runLaunch(t, fake, client, fixture)
+	runExpectServingNamespace(t, fake, []string{runMySQLSchema})
+
+	runSendQuery(fake, "USE "+altSchema, 20)
+	runExpectDecision(t, runRecv(t, fake), pb.EnfAction_ALLOW, nil, "")
+	runExpectRows(t, runRecv(t, fake), nil)
+	afterUse := runRecv(t, fake)
+	runExpectDoneNamespace(t, afterUse, []string{altSchema})
+	if got := afterUse.GetDone().GetNamespace().GetCatalog(); got != "def" {
+		t.Fatalf("RunDone catalog = %q, want def", got)
+	}
+
+	before := len(fake.runRecordedRequests())
+	runSendQuery(fake, "SELECT 1", 20)
+	runExpectDecision(t, runRecv(t, fake), pb.EnfAction_ALLOW, nil, "")
+	runExpectRows(t, runRecv(t, fake), []string{"1"})
+	runExpectDoneNamespace(t, runRecv(t, fake), []string{altSchema})
+	requests := fake.runRecordedRequests()
+	if len(requests) != before+1 || !reflect.DeepEqual(requests[len(requests)-1].GetSearchPath(), []string{altSchema}) {
+		t.Fatalf("Decide after USE = %v, want one request with search_path %v", requests[before:], []string{altSchema})
+	}
+}
+
+func TestRunnerPostgresReportsNamespaceAfterSetSearchPath(t *testing.T) {
+	fixture := runSeedPostgres(t)
+	fake, client := runStartFakeCP(t, runSessionID)
+	runLaunch(t, fake, client, fixture)
+	initial := runServingNamespace(t, fake)
+	if len(initial) == 0 || initial[0] != "pg_catalog" {
+		t.Fatalf("RunServing namespace = %v, want the effective current_schemas(true) list", initial)
+	}
+
+	runSendQuery(fake, "SET search_path TO "+runPGSchema, 20)
+	runExpectDecision(t, runRecv(t, fake), pb.EnfAction_ALLOW, nil, "")
+	runExpectRows(t, runRecv(t, fake), nil)
+	afterSet := runRecv(t, fake)
+	runExpectDoneNamespace(t, afterSet, []string{"pg_catalog", runPGSchema})
+	if got := afterSet.GetDone().GetNamespace().GetCatalog(); got != fixture.runTarget.Db {
+		t.Fatalf("RunDone catalog = %q, want %s", got, fixture.runTarget.Db)
+	}
+
+	runSendQuery(fake, "SELECT 1", 20)
+	runExpectDecision(t, runRecv(t, fake), pb.EnfAction_ALLOW, nil, "")
+	runExpectRows(t, runRecv(t, fake), []string{"?column?"})
+	runExpectDoneNamespace(t, runRecv(t, fake), []string{"pg_catalog", runPGSchema})
+	requests := fake.runRecordedRequests()
+	if got := requests[len(requests)-1].GetSearchPath(); !reflect.DeepEqual(got, []string{"pg_catalog", runPGSchema}) {
+		t.Fatalf("Decide after SET search_path = %v, want %v", got, []string{"pg_catalog", runPGSchema})
+	}
+}
+
+// The reported namespace must not stand in for authorization's own probe: another connection can change
+// what the session resolves between two statements.
+func TestRunnerPostgresAuthorizesAgainstANamespaceChangedBetweenStatements(t *testing.T) {
+	fixture := runSeedPostgres(t)
+	schema := runUniqueTable("pm_run_ns_late")
+	seed := dbtest.OpenPostgres(t, "")
+	t.Cleanup(func() { _, _ = seed.Exec("DROP SCHEMA IF EXISTS " + schema) })
+	fake, client := runStartFakeCP(t, runSessionID)
+	runLaunch(t, fake, client, fixture)
+
+	runSendQuery(fake, "SET search_path TO "+schema+", public", 20)
+	runExpectDecision(t, runRecv(t, fake), pb.EnfAction_ALLOW, nil, "")
+	runExpectRows(t, runRecv(t, fake), nil)
+	runExpectDoneNamespace(t, runRecv(t, fake), []string{"pg_catalog", "public"})
+
+	if _, err := seed.Exec("CREATE SCHEMA " + schema); err != nil {
+		t.Fatalf("create schema: %v", err)
+	}
+	runSendQuery(fake, "SELECT 1", 20)
+	runExpectDecision(t, runRecv(t, fake), pb.EnfAction_ALLOW, nil, "")
+	runExpectRows(t, runRecv(t, fake), []string{"?column?"})
+	runExpectDoneNamespace(t, runRecv(t, fake), []string{"pg_catalog", schema, "public"})
+	requests := fake.runRecordedRequests()
+	if got := requests[len(requests)-1].GetSearchPath(); !reflect.DeepEqual(got, []string{"pg_catalog", schema, "public"}) {
+		t.Fatalf("Decide after another connection created %s = %v, want it probed fresh", schema, got)
+	}
+}
+
+func runServingNamespace(t *testing.T, fake *runFakeCP) []string {
+	t.Helper()
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	if fake.serving.GetNamespace() == nil {
+		t.Fatalf("RunServing = %v, want a namespace", fake.serving)
+	}
+	return fake.serving.GetNamespace().GetSearchPath()
+}
+
+func runExpectServingNamespace(t *testing.T, fake *runFakeCP, want []string) {
+	t.Helper()
+	if got := runServingNamespace(t, fake); !reflect.DeepEqual(got, want) {
+		t.Fatalf("RunServing namespace = %v, want %v", got, want)
+	}
+}
+
+func runExpectDoneNamespace(t *testing.T, message *pb.ProxyRunMsg, want []string) {
+	t.Helper()
+	namespace := message.GetDone().GetNamespace()
+	if namespace == nil || !reflect.DeepEqual(namespace.GetSearchPath(), want) {
+		t.Fatalf("RunDone = %v, want namespace %v", message, want)
 	}
 }
 

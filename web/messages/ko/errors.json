@@ -94,6 +94,7 @@
     "upgraded_ambiguous_claim": "업그레이드 전 이미 실행되었을 수 있어 안전하게 실패 처리했습니다."
   },
   "query": {
+    "default_schema_unsupported": "이 데이터소스는 기본 스키마를 바꿀 수 없습니다.",
     "failed": "쿼리 실행에 실패했습니다: {detail}",
     "no_proxy_attached": "이 데이터소스에 연결된 프록시가 없습니다.",
     "proxy_stream_wedged": "이 데이터소스의 프록시가 재연결 중입니다. 잠시 후 다시 시도해 주세요.",

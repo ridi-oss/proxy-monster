@@ -5,6 +5,7 @@ import com.ridi.oss.proxymonster.grpc.ControlRunMsg
 import com.ridi.oss.proxymonster.grpc.EnfAction
 import com.ridi.oss.proxymonster.grpc.ProxyRunMsg
 import com.ridi.oss.proxymonster.grpc.RunError
+import com.ridi.oss.proxymonster.grpc.RunServing
 import com.ridi.oss.proxymonster.grpc.controlRunMsg
 import com.ridi.oss.proxymonster.grpc.runError
 import com.ridi.oss.proxymonster.grpc.runCancel
@@ -97,6 +98,9 @@ data class OpenEditorSession(
     // Defaulted (null) so existing constructions (incl. test fixtures) compile unchanged.
     val requesterIp: String? = null,
     val tokenHash: String? = null,
+    // The held connection's namespace as the proxy last read it (at open, then after each statement). Null
+    // until the first reading, or when the proxy could not read it.
+    @Volatile var namespace: List<String>? = null,
 )
 
 /**
@@ -341,6 +345,7 @@ class RunExecService(
         onStatement: suspend (Int, QueryResponse) -> Boolean,
         beforeSend: (Int) -> Unit = {},
         onStreamFailure: () -> Unit = {},
+        onNamespace: (List<String>?) -> Unit = {},
     ) {
         // One statement at a time per stream: the next is sent only after this one's response.
         for (ordinal in 0 until statementCount) {
@@ -362,7 +367,7 @@ class RunExecService(
                 throw ProxyRunException("proxy run stream closed before the query was sent", e)
             }
             val response = try {
-                withTimeout(exchangeTimeoutMs) { collectResponse(inbound, started) }
+                withTimeout(exchangeTimeoutMs) { collectResponse(inbound, started, onNamespace) }
             } catch (e: TimeoutCancellationException) {
                 onStreamFailure()
                 throw ProxyRunTimeoutException(e)
@@ -535,10 +540,11 @@ class RunExecService(
                 throw ProxyRunTimeoutException(e)
             }
             // Wait for the target-DB open to finish (RunServing), bounded by lack of progress — see run().
-            awaitServing(attached.inbound, RUN_NO_PROGRESS_TIMEOUT_MS, RUN_OPEN_TIMEOUT_MS)
+            val serving = awaitServing(attached.inbound, RUN_NO_PROGRESS_TIMEOUT_MS, RUN_OPEN_TIMEOUT_MS)
             openSessions[sessionId] = OpenEditorSession(
                 sessionId, principal, issued.id, ds.name, attached, opened.connectionId,
                 requesterIp = requesterIp, tokenHash = issuedTokenHash,
+                namespace = serving.namespaceOrNull(),
             )
             return sessionId
         } catch (e: Throwable) {
@@ -633,6 +639,7 @@ class RunExecService(
                         preflight = preflight,
                         statementAt = statementAt,
                         onStatement = onStatement,
+                        onNamespace = { session.namespace = it },
                         beforeSend = {
                             session.lastUsedNanos = System.nanoTime()
                             // Refresh the requester_ip this statement's decision will see to the CURRENT
@@ -673,6 +680,10 @@ class RunExecService(
      * revoke its token. A non-owner (or an unknown id) is a silent no-op that reveals nothing about whether the
      * id exists. Returns true iff a session the caller owned was closed.
      */
+    /** Returns the open session if [principal] owns it, else null. */
+    fun sessionOwnedBy(sessionId: String, principal: String): OpenEditorSession? =
+        openSessions[sessionId]?.takeIf { it.principal == principal }
+
     fun closeSessionOwnedBy(sessionId: String, principal: String): Boolean {
         if (openSessions[sessionId]?.principal != principal) return false
         closeSession(sessionId)
@@ -727,7 +738,7 @@ class RunExecService(
      * this run (attached), so every one of these is attributable — there is no blind wait, unlike the old
      * pre-RunReady gap.
      */
-    private suspend fun awaitServing(inbound: Channel<ProxyRunMsg>, noProgressMs: Long, openTimeoutMs: Long) {
+    private suspend fun awaitServing(inbound: Channel<ProxyRunMsg>, noProgressMs: Long, openTimeoutMs: Long): RunServing {
         val deadlineNanos = System.nanoTime() + openTimeoutMs * 1_000_000
         while (true) {
             val remainingMs = (deadlineNanos - System.nanoTime()) / 1_000_000
@@ -741,7 +752,7 @@ class RunExecService(
                 ?: throw ProxyRunException("proxy run stream closed before it was ready to serve")
             when {
                 message.hasProgress() -> continue
-                message.hasServing() -> return
+                message.hasServing() -> return message.serving
                 message.hasError() -> {
                     if (message.error.message == QUERY_TIMEOUT_MESSAGE) throw ProxyRunTimeoutException()
                     // An open failure's text can echo the target host (`dial tcp 10.0.3.7:5432: …`) — routes
@@ -753,7 +764,11 @@ class RunExecService(
         }
     }
 
-    private suspend fun collectResponse(inbound: Channel<ProxyRunMsg>, started: Long): QueryResponse {
+    private suspend fun collectResponse(
+        inbound: Channel<ProxyRunMsg>,
+        started: Long,
+        onNamespace: (List<String>?) -> Unit = {},
+    ): QueryResponse {
         var decision: com.ridi.oss.proxymonster.grpc.RunDecision? = null
         var action: EnfAction? = null
         var columns: List<String>? = null
@@ -802,6 +817,8 @@ class RunExecService(
                         throw ProxyRunException("proxy sent RunDone after a deny decision")
                     }
                     val rowsAffected = message.done.rowsAffected.let { if (it == -1) null else it }
+                    // An absent namespace means the proxy could not read it: it becomes unknown, not unchanged.
+                    onNamespace(if (message.done.hasNamespace()) message.done.namespace.searchPathList else null)
                     return response(
                         received, receivedAction, columns ?: emptyList(), rows, rowsAffected, started,
                         truncatedByCap = message.done.truncatedByCap,
@@ -905,3 +922,5 @@ class RunExecService(
             maxOf(EDITOR_SESSION_TTL_SECONDS, queryTimeoutSeconds + TOKEN_TTL_GRACE_SECONDS)
     }
 }
+
+private fun RunServing.namespaceOrNull(): List<String>? = if (hasNamespace()) namespace.searchPathList else null

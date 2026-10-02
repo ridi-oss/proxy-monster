@@ -94,6 +94,7 @@
     "upgraded_ambiguous_claim": "This upgraded task may already have executed and was failed closed."
   },
   "query": {
+    "default_schema_unsupported": "This datasource cannot change its default schema.",
     "failed": "Query failed: {detail}",
     "no_proxy_attached": "No proxy is attached to this datasource.",
     "proxy_stream_wedged": "The proxy for this datasource is reconnecting. Try again in a moment.",

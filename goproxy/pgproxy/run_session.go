@@ -111,6 +111,18 @@ func (s *RunSession) ServeStatement(sql string, maxRows int) (result engine.Stat
 	return result, err
 }
 
+func (s *RunSession) Namespace() (string, []string, error) {
+	if s.poisoned {
+		return "", nil, errors.New("run session is unusable after a prior protocol error")
+	}
+	// An aborted transaction runs no queries; authorization uses the same last snapshot there.
+	if s.lastTxStatus == 'E' {
+		return s.session.CurrentCatalog, append([]string(nil), s.session.Namespace...), nil
+	}
+	session, err := s.probeSession()
+	return session.CurrentCatalog, session.Namespace, err
+}
+
 func (s *RunSession) Cancel() error {
 	if s.keyData.ProcessID == 0 {
 		_ = s.conn.Close()

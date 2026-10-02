@@ -36,6 +36,7 @@ internal object MySqlEngineDefinition : EngineDefinition {
 
     override fun isFixedSystemSchema(schema: String): Boolean = schema.lowercase() in systemSchemas
     override fun isSystemSchema(schema: String): Boolean = isFixedSystemSchema(schema)
+    override val defaultSchemaStatement = { schema: String -> "USE `${schema.replace("`", "``")}`" }
 
     override fun splitEngineConfig(datasource: Datasource): EngineConfig? {
         if (datasource.engineVersion.isNullOrBlank() || datasource.mysqlLowerCaseTableNames == null) return null

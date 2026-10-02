@@ -49,6 +49,7 @@ import com.ridi.oss.proxymonster.probe.Masking
 import com.ridi.oss.proxymonster.probe.analyzerFor
 import com.ridi.oss.proxymonster.probe.bindMasks
 import io.ktor.http.HttpStatusCode
+import io.ktor.server.application.ApplicationCall
 import io.ktor.server.request.receive
 import io.ktor.server.response.respond
 import io.ktor.server.routing.Route
@@ -1183,6 +1184,17 @@ data class OpenEditorSessionInput(val datasourceId: Long)
 @Serializable
 data class EditorSessionOpened(val sessionId: String)
 
+/** [searchPath] is the held connection's effective namespace; null until the proxy reports one, or when it could not read it. */
+@Serializable
+data class EditorSessionState(val searchPath: List<String>?)
+
+@Serializable
+data class DefaultSchemaInput(val schema: String)
+
+/** The statement run to set the default schema, its outcome, and the session's namespace afterwards. */
+@Serializable
+data class DefaultSchemaResult(val statement: String, val result: QueryResultMeta?, val searchPath: List<String>?)
+
 /** Async editor SUBMIT ack: the born-APPROVED EDITOR task and its single result child (task:child 1:1). No
  *  rows inline — completion is observed by polling the task/result endpoints. */
 @Serializable
@@ -1317,6 +1329,52 @@ fun Route.editorSessionRoutes(
             ?: return@delete call.respond(HttpStatusCode.BadRequest, ApiError("common.bad_id"))
         service.delete(principal, taskId)
         call.respond(HttpStatusCode.NoContent)
+    }
+
+    // The session's datasource when [principal] owns the session and may connect to it; the response is sent
+    // otherwise. A missing session and someone else's get the same 404, so a guessed id reveals nothing. The
+    // session's path names the target's schemas, so reading it needs datasource.connect, as the catalog does.
+    suspend fun ApplicationCall.ownedConnectableSession(principal: String): Pair<OpenEditorSession, Datasource>? {
+        val sessionId = parameters["sessionId"]
+            ?: return null.also { respond(HttpStatusCode.BadRequest, ApiError("common.bad_id")) }
+        val session = runExecService.sessionOwnedBy(sessionId, principal)
+            ?: return null.also { respond(HttpStatusCode.NotFound, ApiError("common.not_found", mapOf("resource" to "editor_session"))) }
+        val ds = datasourceStore.getByName(session.datasourceName)
+        if (ds == null || userGroupStore.isDeactivated(principal) ||
+            !authorizeMetadata(authz, principal, roleResolver.resolve(principal), ds, httpAuthzContext(config))
+        ) {
+            return null.also { respond(HttpStatusCode.Forbidden, ApiError("datasource.not_connectable")) }
+        }
+        return session to ds
+    }
+
+    get("/api/editor/sessions/{sessionId}") {
+        val principal = call.requireApi() ?: return@get
+        val (session, _) = call.ownedConnectableSession(principal) ?: return@get
+        call.respond(EditorSessionState(session.namespace))
+    }
+
+    // The engine builds the statement; it then runs as an ordinary editor submit on the session (the same
+    // auto-approval and per-statement decision as typed SQL) and its task is dropped once read.
+    post("/api/editor/sessions/{sessionId}/default-schema") {
+        val principal = call.requireApi() ?: return@post
+        val (session, ds) = call.ownedConnectableSession(principal) ?: return@post
+        val schema = call.receive<DefaultSchemaInput>().schema
+        if (schema.isBlank()) {
+            return@post call.respond(HttpStatusCode.BadRequest, ApiError("common.field_required", mapOf("fields" to "schema")))
+        }
+        val statement = ds.engine.definition.defaultSchemaStatement?.invoke(schema)
+            ?: return@post call.respond(HttpStatusCode.BadRequest, ApiError("query.default_schema_unsupported"))
+        val requesterIp = call.httpRequesterIp(config)
+        try {
+            val sub = service.submitOnSession(principal, requesterIp, session.sessionId, statement, 1)
+            sub.job.join()
+            val result = service.status(principal, requesterIp, sub.response.taskId).result
+            service.delete(principal, sub.response.taskId)
+            call.respond(DefaultSchemaResult(statement, result, session.namespace))
+        } catch (e: TaskServiceException) {
+            call.respondServiceError(e)
+        }
     }
 
     delete("/api/editor/sessions/{sessionId}") {

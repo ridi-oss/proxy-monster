@@ -4,6 +4,7 @@ import com.ridi.oss.proxymonster.controlplane.authz.Authz
 import com.ridi.oss.proxymonster.controlplane.authz.CedarEngine
 import com.ridi.oss.proxymonster.controlplane.authz.CedarPolicyStore
 import com.ridi.oss.proxymonster.controlplane.authz.RoleSource
+import java.time.Clock
 import javax.sql.DataSource
 
 /**
@@ -23,6 +24,7 @@ import javax.sql.DataSource
 class ControlPlaneCore(
     val dataSource: DataSource,
     configCatalogRefreshWindowMillis: Long = CONFIG_CATALOG_REFRESH_WINDOW_MILLIS,
+    val clock: Clock = Clock.systemUTC(),
 ) {
     val auditStore = AuditStore(dataSource)
     val authAudit = AuthAuditRecorder(auditStore)

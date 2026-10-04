@@ -117,6 +117,9 @@ configured per proxy under `PM_TARGET_*`.
   integer seconds (no unit). Default `600`.
 - `PM_OAUTH_ACCESS_TTL` / `PM_OAUTH_REFRESH_TTL` — _optional_. MCP OAuth token
   lifetimes (seconds). Defaults `600` · `21600`.
+- `PM_ELEVATED_SCOPE_TTL` — _optional_. How long a pmon login's scopes beyond
+  `mcp:read` and `mcp:query` last after its browser approval (seconds, clamped
+  to 60–86400). Default `3600`.
 - `PM_SCIM_TOKEN` — _optional_. SCIM provisioning bearer (OIDC just-in-time is
   the default).
 - `PM_SLACK_BOT_TOKEN` / `PM_SLACK_APP_TOKEN` — _optional_. Slack notifications

@@ -17,8 +17,15 @@
     "intro": "Install the proxy-monster MCP server {installName}:",
     "after": "Once connected, the server describes itself and the datasources I can use."
   },
+  "pmon": {
+    "title": "Already use pmon? Share its login",
+    "body": "For an agent on a machine where pmon is installed, including Claude Desktop. The agent runs pmon as a local MCP server and uses your pmon login, so there is no separate sign-in.",
+    "intro": "Install the proxy-monster MCP server {installName} through pmon:",
+    "step1": "Add a stdio MCP server named {installName} that runs the command `pmon mcp {instance}`, in user scope so it is available in every project. In Claude Desktop, add it to claude_desktop_config.json under mcpServers. If a server named {installName} already exists, replace it.",
+    "step2": "If pmon has no server named {instance}, tell me to run `pmon server set {instance} --url {origin}`. If `pmon mcp {instance}` says I am not logged in, tell me to run `pmon login {instance}`."
+  },
   "unsupported": {
     "title": "Not supported",
-    "body": "claude.ai, Claude Desktop, and ChatGPT connect to remote MCP servers from the vendor's cloud, not from your machine. proxy-monster servers are private and accept direct connections from agents on your machine only."
+    "body": "claude.ai and ChatGPT connect to remote MCP servers from the vendor's cloud, not from your machine. proxy-monster servers are private and accept connections from your machine only. Claude Desktop works through pmon, above."
   }
 }

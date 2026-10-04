@@ -474,6 +474,12 @@ reject record the MCP caller as the actor with `channel=mcp`.
   `RoleResolver.resolve` returns, with every source that grants it (`direct`,
   `group`, or `grant` with its id and expiry). REST has no roles field; an agent
   needs them to explain a denial or pick a role to request.
+- `get_pmon_guide` (scope `mcp:read`) — plain text for using this instance
+  through pmon: install, `pmon server set <instance> --url <issuer>`,
+  `pmon login <instance>`, the `pmon mcp <instance>` install line for Claude
+  Code, Codex, and Claude Desktop, one `pmon show <instance> <ds> --cli` per
+  datasource the caller may connect to (the `list_connectable_datasources`
+  gate), `pmon status`, `pmon logout`, and `--scopes`.
 
 The token, audit, grant, access-request, and self tools are resource-gated like
 the query tools: the dispatcher checks the scope, then the shared service runs
@@ -496,6 +502,7 @@ passed through as configured:
 ```
 This MCP server is the proxy-monster instance "hr-pmon": HR and payroll data
 Other pmon-* MCP servers are different proxy-monster instances, each with its own datasources and access. Use this one only for the datasources listed here.
+For SQL clients or scripts, or to share one pmon login across agents, call get_pmon_guide.
 Datasources you can query here:
 - payroll (postgres): Salaries and payslips
 - hris (mysql)

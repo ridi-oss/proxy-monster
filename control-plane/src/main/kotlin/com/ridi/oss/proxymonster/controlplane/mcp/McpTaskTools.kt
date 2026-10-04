@@ -15,6 +15,7 @@ import com.ridi.oss.proxymonster.controlplane.authz.AuthzContext
 import com.ridi.oss.proxymonster.controlplane.management.DeleteResult
 import com.ridi.oss.proxymonster.controlplane.ApprovalService
 import com.ridi.oss.proxymonster.controlplane.CatalogColumn
+import com.ridi.oss.proxymonster.controlplane.Config
 import com.ridi.oss.proxymonster.controlplane.ControlPlaneCore
 import com.ridi.oss.proxymonster.controlplane.CreateApprovalInput
 import com.ridi.oss.proxymonster.controlplane.EditorTaskService
@@ -89,6 +90,7 @@ internal class McpTaskTools(
     private val audit: AuditService,
     private val history: QueryHistoryStore,
     private val tokens: TokenService,
+    private val config: Config,
 ) {
     suspend fun execute(tool: String, args: JsonObject, ctx: McpRequestContext): JsonObject {
         val p = ctx.principal
@@ -144,6 +146,9 @@ internal class McpTaskTools(
                 approvals.result(p, ip, args.requiredLong("id"), args.int("statement"), page(args)),
             )
             "cancel_approval" -> structured(approvals.cancel(p, ip, args.requiredLong("id")))
+            "get_pmon_guide" -> structured(
+                pmonGuide(config, core.datasourceStore.list().filter { mayConnect(core.authz, core.roleResolver, p, ip, it) }.map { it.name }),
+            )
             "get_my_permissions" -> structured(
                 MyPermissions(computeMePermissions(p, core.authz, AuthzContext(requesterIp = ip)), core.roleResolver.resolveWithSources(p)),
             )

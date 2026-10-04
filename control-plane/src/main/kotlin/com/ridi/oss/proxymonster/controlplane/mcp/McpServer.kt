@@ -189,7 +189,7 @@ fun Application.installMcp(
 
     val authorizer = McpAuthorizer(config, core)
     val mutationExecutor = McpMutationExecutor(core.dataSource, core.auditStore, core.cedarPolicyStore, authorizer)
-    val taskTools = McpTaskTools(core, datasourceService, editorTasks, approvals, access, audit, queryHistory, tokens)
+    val taskTools = McpTaskTools(core, datasourceService, editorTasks, approvals, access, audit, queryHistory, tokens, config)
     mcpStatelessStreamableHttp(
         path = "/mcp",
         // The SDK's built-in guard reads the HTTP/1.1 Host header literally and rejects HTTP/2
@@ -461,7 +461,8 @@ private fun createMcpServer(
                 } else {
                     executeWrite(capability, args, context, mutations, datasourceService, policyService, identityService, access, core)
                 }
-                CallToolResult(content = listOf(TextContent(structured.toString())), structuredContent = structured)
+                val text = (structured["result"] as? JsonPrimitive)?.takeIf { it.isString }?.content ?: structured.toString()
+                CallToolResult(content = listOf(TextContent(text)), structuredContent = structured)
             } catch (e: CedarValidationManagementException) {
                 val raw = buildJsonObject { put("errors", JsonArray(e.errors.map(::JsonPrimitive))) }
                 CallToolResult(content = listOf(TextContent(raw.toString())), isError = true, structuredContent = raw)

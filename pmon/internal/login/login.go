@@ -9,8 +9,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/cookiejar"
+	"sort"
 	"time"
 )
 
@@ -35,6 +37,9 @@ type Result struct {
 	ExpiresAt        string `json:"expiresAt"`
 	SessionExpiresAt string `json:"sessionExpiresAt"`
 	RenewalToken     string `json:"renewalToken"`
+	// Scopes beyond mcp:read and mcp:query last until ElevatedUntil.
+	Scopes        []string `json:"scopes,omitempty"`
+	ElevatedUntil string   `json:"elevatedUntil,omitempty"`
 }
 
 // deviceStartResponse is the body of POST {cp}/auth/device/start.
@@ -49,18 +54,22 @@ type deviceStartResponse struct {
 // devicePollResponse is the body of POST {cp}/auth/device/poll: either the 202 "still waiting" shape
 // ({status: "authorization_pending"}) or the 200 "done" shape.
 type devicePollResponse struct {
-	Status           string `json:"status"`
-	Token            string `json:"token"`
-	ExpiresAt        string `json:"expiresAt"`
-	Principal        string `json:"principal"`
-	SessionExpiresAt string `json:"sessionExpiresAt"`
-	RenewalToken     string `json:"renewalToken"`
+	Status           string   `json:"status"`
+	Token            string   `json:"token"`
+	ExpiresAt        string   `json:"expiresAt"`
+	Principal        string   `json:"principal"`
+	SessionExpiresAt string   `json:"sessionExpiresAt"`
+	RenewalToken     string   `json:"renewalToken"`
+	Scopes           []string `json:"scopes"`
+	ElevatedUntil    string   `json:"elevatedUntil"`
 }
 
 // Options configures one device-auth run. Sleep is injected so tests can supply a no-op.
 type Options struct {
 	ControlPlane string
 	TTLSeconds   int
+	// Scopes replaces the server's default scopes when non-empty.
+	Scopes []string
 	// OnPrompt receives the verification URI + user code as soon as the flow starts, before polling. It must
 	// not block for long — the poll loop is waiting on it.
 	OnPrompt   func(Prompt)
@@ -89,8 +98,12 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 		sleep = sleepCtx
 	}
 
+	body := map[string]any{"ttlSeconds": ttl}
+	if len(opts.Scopes) > 0 {
+		body["scopes"] = opts.Scopes
+	}
 	var start deviceStartResponse
-	if err := postJSON(ctx, client, cp+"/auth/device/start", map[string]any{"ttlSeconds": ttl}, &start); err != nil {
+	if err := postJSON(ctx, client, cp+"/auth/device/start", body, &start); err != nil {
 		return nil, fmt.Errorf("could not start device login: %w", err)
 	}
 
@@ -135,6 +148,8 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 			ExpiresAt:        poll.ExpiresAt,
 			SessionExpiresAt: poll.SessionExpiresAt,
 			RenewalToken:     poll.RenewalToken,
+			Scopes:           poll.Scopes,
+			ElevatedUntil:    poll.ElevatedUntil,
 		}, nil
 	}
 }
@@ -196,7 +211,7 @@ func Logout(ctx context.Context, client *http.Client, controlPlane, renewalToken
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 300 {
-		return fmt.Errorf("logout: HTTP %d", resp.StatusCode)
+		return apiError(resp)
 	}
 	return nil
 }
@@ -216,12 +231,46 @@ func postJSON(ctx context.Context, client *http.Client, url string, body, out an
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 300 && resp.StatusCode != http.StatusAccepted {
-		return fmt.Errorf("HTTP %d", resp.StatusCode)
+		return apiError(resp)
 	}
 	if out != nil {
 		return json.NewDecoder(resp.Body).Decode(out)
 	}
 	return nil
+}
+
+// APIError is a control-plane error body: a stable code and its parameters.
+type APIError struct {
+	Status int               `json:"-"`
+	Code   string            `json:"code"`
+	Params map[string]string `json:"params"`
+}
+
+func (e *APIError) Error() string {
+	switch e.Code {
+	case "device.unknown_scope":
+		return fmt.Sprintf("unknown scope %q", e.Params["scope"])
+	case "device.no_scopes":
+		return "no scopes given"
+	case "":
+		return fmt.Sprintf("HTTP %d", e.Status)
+	}
+	keys := make([]string, 0, len(e.Params))
+	for k := range e.Params {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	msg := fmt.Sprintf("HTTP %d: %s", e.Status, e.Code)
+	for _, k := range keys {
+		msg += fmt.Sprintf(" %s=%s", k, e.Params[k])
+	}
+	return msg
+}
+
+func apiError(resp *http.Response) error {
+	e := &APIError{Status: resp.StatusCode}
+	_ = json.NewDecoder(io.LimitReader(resp.Body, 4096)).Decode(e)
+	return e
 }
 
 // sleepCtx sleeps for d, or returns early when ctx ends, so a shutdown mid-poll is prompt.

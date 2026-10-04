@@ -220,12 +220,12 @@ sign-in: the pmon daemon calls `POST /auth/session/mcp-token` with
 other, so `/mcp` cannot tell it from an OAuth token: the scope is a ceiling and
 Cedar decides every call. No refresh token is issued; pmon asks again.
 
-The scopes come from the device login, which sends them on `/auth/device/start`
-(default `mcp:read mcp:query`; unknown names answer `device.unknown_scope`), the
-`/device` page lists every scope beyond the default pair before the human
-approves, and the approval stamps `elevated_until` = approval time +
-`PM_ELEVATED_SCOPE_TTL` (default 1h). The daemon session carries both. The agent
-can ask for scopes; only the human in the browser grants them.
+The scopes come from the device login. `pmon login --scopes a,b` sends them on
+`/auth/device/start` (default `mcp:read mcp:query`; unknown names answer
+`device.unknown_scope`), the `/device` page lists every scope beyond the default
+pair before the human approves, and the approval stamps `elevated_until` =
+approval time + `PM_ELEVATED_SCOPE_TTL` (default 1h). The daemon session carries
+both. The agent can type the flag; only the human in the browser grants it.
 
 <!-- prettier-ignore -->
 | At exchange time | Token scope | Token expiry |

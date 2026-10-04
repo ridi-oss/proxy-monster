@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"slices"
+	"strings"
 	"text/tabwriter"
 	"time"
 
@@ -52,6 +54,12 @@ func (statusCmd) Run() error {
 		if srv.SessionExpiresAt != "" {
 			fmt.Printf("session:   %s\n", expiryLine(srv.SessionExpiresAt))
 		}
+		if len(srv.Scopes) > 0 {
+			fmt.Printf("scopes:    %s\n", strings.Join(srv.Scopes, " "))
+		}
+		if srv.ElevatedUntil != "" {
+			fmt.Printf("elevated:  %s\n", elevatedLine(srv, time.Now()))
+		}
 		if srv.ReauthRequired {
 			fmt.Printf("reauth:    REQUIRED — the session window closed; run `%s`\n", loginHint(srv.Name))
 		}
@@ -98,6 +106,30 @@ func (statusCmd) Run() error {
 	}
 	fmt.Println("\n`pmon show [server] <datasource>` for a connection string")
 	return nil
+}
+
+// defaultScopes is what a login grants without --scopes.
+var defaultScopes = []string{"mcp:read", "mcp:query"}
+
+func elevatedScopes(scopes []string) []string {
+	var out []string
+	for _, s := range scopes {
+		if !slices.Contains(defaultScopes, s) {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+// elevatedLine says when a login's elevated scopes expire, or that they have and how to get them back.
+func elevatedLine(srv control.ServerInfo, now time.Time) string {
+	extra := strings.Join(elevatedScopes(srv.Scopes), " ")
+	until, err := time.Parse(time.RFC3339, srv.ElevatedUntil)
+	if err != nil || until.After(now) {
+		return fmt.Sprintf("%s until %s", extra, expiryLine(srv.ElevatedUntil))
+	}
+	return fmt.Sprintf("%s EXPIRED at %s — run `%s --scopes %s` to get them back",
+		extra, until.Local().Format("2006-01-02 15:04"), loginHint(srv.Name), strings.Join(srv.Scopes, ","))
 }
 
 // expiryLine formats an RFC3339 timestamp as an absolute time plus how long is left, so "is this about to

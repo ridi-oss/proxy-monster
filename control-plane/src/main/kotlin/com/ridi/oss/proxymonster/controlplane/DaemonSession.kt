@@ -522,14 +522,39 @@ class PrincipalSessionStore(
                 ps.executeUpdate()
             }
         }
-        c.prepareStatement(
-            "UPDATE proxy_token SET revoked_at = now() WHERE principal_session_id = ? AND revoked_at IS NULL AND (kind <> 'SESSION' OR NOT ?)",
+        val consents = c.prepareStatement(
+            """UPDATE proxy_token SET revoked_at = now()
+               WHERE principal_session_id = ? AND revoked_at IS NULL AND (kind <> 'SESSION' OR NOT ?)
+               RETURNING consent_id""",
         ).use { ps ->
             ps.setLong(1, id)
             ps.setBoolean(2, replaced)
-            ps.executeUpdate()
+            ps.executeQuery().use { rs -> buildSet { while (rs.next()) rs.getObject(1, java.lang.Long::class.java)?.let { add(it.toLong()) } } }
+        }
+        for (consentId in consents) {
+            c.prepareStatement(
+                """UPDATE oauth_consent SET revoked_at = now(), updated_at = now()
+                   WHERE id = ? AND revoked_at IS NULL
+                     AND NOT EXISTS (SELECT 1 FROM proxy_token WHERE consent_id = ? AND revoked_at IS NULL AND expires_at > now())""",
+            ).use { ps ->
+                ps.setLong(1, consentId)
+                ps.setLong(2, consentId)
+                ps.executeUpdate()
+            }
         }
         return principal
+    }
+
+    /** Ends every pmon login that minted an MCP token under consent [consentId], so pmon cannot mint it back. */
+    fun endDaemonsByConsent(consentId: Long, principal: String) = dataSource.inTx { c ->
+        c.advisoryLockPrincipal(principal)
+        val ids = c.prepareStatement(
+            "SELECT DISTINCT principal_session_id FROM proxy_token WHERE consent_id = ? AND principal_session_id IS NOT NULL",
+        ).use { ps ->
+            ps.setLong(1, consentId)
+            ps.executeQuery().use { rs -> buildList { while (rs.next()) add(rs.getLong(1)) } }
+        }
+        ids.forEach { endDaemon(it, c) }
     }
 
     /** End every active web session for [principal], on a fresh connection. Already-ended rows remain unchanged. */
@@ -630,6 +655,18 @@ class PrincipalSessionStore(
         ) {
             return@inTx null
         }
+        mint(fresh, c)
+    }
+
+    /** Runs [mint] on [row] under its principal's lock (deprovision takes it too); null once ended or deactivated. */
+    fun <T> withLiveDaemonSessionLocked(
+        row: DaemonSessionRow,
+        isDeactivated: (String, Connection) -> Boolean,
+        mint: (DaemonSessionRow, Connection) -> T?,
+    ): T? = dataSource.inTx { c ->
+        c.advisoryLockPrincipal(row.principal)
+        val fresh = queryOneOn(c, "$SELECT AND id = ?") { it.setLong(1, row.id) } ?: return@inTx null
+        if (fresh.livenessStatus == LIVENESS_INACTIVE || isDeactivated(fresh.principal, c)) return@inTx null
         mint(fresh, c)
     }
 

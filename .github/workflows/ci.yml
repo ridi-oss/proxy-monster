@@ -222,3 +222,18 @@ jobs:
           name: smoke-logs
           path: ${{ runner.temp }}/pm-smoke/logs
           if-no-files-found: ignore
+
+  # The release job signs and notarizes on a pmon-v* tag only; this builds and packages the same app ad-hoc
+  # on every change, so a broken build or payload shows up before a release does.
+  macos-app:
+    name: macos app
+    runs-on: macos-15
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: pmontray/go.mod
+      - name: Build, package, check
+        run: pmontray/smoke-macos.sh

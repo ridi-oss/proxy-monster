@@ -51,14 +51,11 @@ services:
       timeout: 5s
       retries: 20
 
-  # Athena emulator: MiniStack's full image (DuckDB execution) built from the branch that serves a
-  # Glue-backed catalog. The Athena proxy points at it through AWS_ENDPOINT_URL; the emulator serves HTTPS
-  # with a self-signed cert because the proxy forwards only to an HTTPS origin.
+  # Athena emulator: MiniStack's full image (DuckDB execution), which serves a Glue-backed catalog. The
+  # Athena proxy points at it through AWS_ENDPOINT_URL; the emulator serves HTTPS with a self-signed cert
+  # because the proxy forwards only to an HTTPS origin.
   athena:
-    image: ${SMOKE_ATHENA_IMAGE:-pm-smoke-athena:0002723}
-    build:
-      context: https://github.com/sjincho/ministack.git#00027235ddb04e7b398e7a3be7c51443a8216ee9
-      dockerfile: Dockerfile.full
+    image: ${SMOKE_ATHENA_IMAGE:-ministackorg/ministack:1.5.21-full}
     environment:
       USE_SSL: "1"
       ATHENA_ENGINE: duckdb

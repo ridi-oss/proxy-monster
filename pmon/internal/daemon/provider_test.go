@@ -163,7 +163,7 @@ func TestProviderServesHTTPWithFreshSessionOnKeepAlive(t *testing.T) {
 	if got := liveConnections(d); got != 1 {
 		t.Fatalf("live connections = %d, want one persistent HTTP connection", got)
 	}
-	if err := d.Logout(control.LogoutRequest{}); err != nil {
+	if _, err := d.Logout(control.LogoutRequest{}); err != nil {
 		t.Fatal(err)
 	}
 	if got := liveConnections(d); got != 0 {

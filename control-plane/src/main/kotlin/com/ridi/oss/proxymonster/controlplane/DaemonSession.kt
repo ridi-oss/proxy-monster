@@ -1,5 +1,6 @@
 package com.ridi.oss.proxymonster.controlplane
 
+import com.ridi.oss.proxymonster.controlplane.AuthAuditRecorder.Companion.ACTION_LOGOUT
 import com.ridi.oss.proxymonster.controlplane.AuthAuditRecorder.Companion.ACTION_SESSION_EXPIRE
 import com.ridi.oss.proxymonster.controlplane.AuthAuditRecorder.Companion.ACTION_SESSION_RENEW
 import com.ridi.oss.proxymonster.controlplane.AuthAuditRecorder.Companion.CHANNEL_PMON
@@ -500,6 +501,37 @@ class PrincipalSessionStore(
             ps.executeUpdate()
         }
 
+    /** Ends daemon session [id] and revokes its tokens, or retires its wire tokens when [replaced]; null when already ended. */
+    fun endDaemon(id: Long, c: Connection, replaced: Boolean = false): String? {
+        val principal = c.prepareStatement(
+            """UPDATE principal_session
+               SET ended_at = now(), ended_reason = ?, liveness_status = ?, absolute_expires_at = LEAST(absolute_expires_at, now())
+               WHERE id = ? AND kind = 'DAEMON' AND ended_at IS NULL
+               RETURNING principal""",
+        ).use { ps ->
+            ps.setString(1, ENDED_SIGNED_OUT)
+            ps.setString(2, LIVENESS_INACTIVE)
+            ps.setLong(3, id)
+            ps.executeQuery().use { rs -> if (rs.next()) rs.getString(1) else null }
+        } ?: return null
+        if (replaced) {
+            c.prepareStatement(
+                "UPDATE proxy_token SET retired_at = now() WHERE principal_session_id = ? AND kind = 'SESSION' AND revoked_at IS NULL AND retired_at IS NULL",
+            ).use { ps ->
+                ps.setLong(1, id)
+                ps.executeUpdate()
+            }
+        }
+        c.prepareStatement(
+            "UPDATE proxy_token SET revoked_at = now() WHERE principal_session_id = ? AND revoked_at IS NULL AND (kind <> 'SESSION' OR NOT ?)",
+        ).use { ps ->
+            ps.setLong(1, id)
+            ps.setBoolean(2, replaced)
+            ps.executeUpdate()
+        }
+        return principal
+    }
+
     /** End every active web session for [principal], on a fresh connection. Already-ended rows remain unchanged. */
     fun endAllWebForPrincipal(principal: String, reason: String): Int =
         dataSource.connection.use { c -> endAllWebForPrincipal(principal, reason, c) }
@@ -662,6 +694,35 @@ class PrincipalSessionStore(
  * hash. There is deliberately no request-body identity (no `handle`/`principal`): a bare knowledge
  * of someone's principal string must never be enough to mint them a fresh wire token.
  */
+/** `POST /auth/session/logout[?replaced=true]` ends the daemon session (see [PrincipalSessionStore.endDaemon]); 204 even for an unknown token. */
+internal fun Route.pmonLogoutRoute(config: Config, sessionStore: PrincipalSessionStore, authAudit: AuthAuditRecorder) {
+    post("/auth/session/logout") {
+        val authHeader = call.request.headers["Authorization"]
+        if (authHeader == null || !authHeader.startsWith("Bearer ")) {
+            call.respond(HttpStatusCode.Unauthorized, ApiError("auth.missing_renewal_token"))
+            return@post
+        }
+        val row = sessionStore.getByRenewalTokenHash(sha256Hex(authHeader.removePrefix("Bearer ").trim()))
+        if (row != null) {
+            val clientAddr = call.httpRequesterIp(config)
+            val replaced = call.request.queryParameters["replaced"] == "true"
+            sessionStore.dataSource.inTx { c ->
+                c.advisoryLockPrincipal(row.principal)
+                sessionStore.endDaemon(row.id, c, replaced)?.let { owner ->
+                    authAudit.success(
+                        c,
+                        AuditActor(owner, clientAddr = clientAddr, channel = CHANNEL_PMON),
+                        ACTION_LOGOUT,
+                        auditEntity("Session", row.id.toString()),
+                        if (replaced) "pmon session replaced by a new login" else "pmon session signed out",
+                    )
+                }
+            }
+        }
+        call.respond(HttpStatusCode.NoContent)
+    }
+}
+
 internal fun Route.sessionRenewRoutes(
     config: Config,
     daemonSessionStore: PrincipalSessionStore,
@@ -688,7 +749,7 @@ internal fun Route.sessionRenewRoutes(
             row,
             isDeactivated = { principal, c -> userGroupStore.isDeactivated(principal, c) },
             mint = { fresh, c ->
-                tokenStore.issue(TokenKind.SESSION, fresh.principal, emptyList(), name = null, ttlSeconds = fresh.ttlSeconds, c)
+                tokenStore.issue(TokenKind.SESSION, fresh.principal, emptyList(), name = null, ttlSeconds = fresh.ttlSeconds, c, fresh.id)
                     .also { token ->
                         authAudit.success(
                             c,

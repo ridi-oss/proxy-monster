@@ -65,7 +65,7 @@ func TestTwoServersBrokerTheSameNameSeparately(t *testing.T) {
 		t.Fatalf("ports default=%d dev=%d, want two distinct live brokers", pa, pb)
 	}
 
-	if err := d.Logout(control.LogoutRequest{Server: "dev"}); err != nil {
+	if _, err := d.Logout(control.LogoutRequest{Server: "dev"}); err != nil {
 		t.Fatalf("Logout dev: %v", err)
 	}
 	waitFor(t, "dev's broker to close", func() bool { return !dialable(pb) })
@@ -77,7 +77,7 @@ func TestTwoServersBrokerTheSameNameSeparately(t *testing.T) {
 		t.Errorf("servers after logout dev = %+v", s.Servers)
 	}
 
-	if err := d.Logout(control.LogoutRequest{All: true}); err != nil {
+	if _, err := d.Logout(control.LogoutRequest{All: true}); err != nil {
 		t.Fatalf("Logout all: %v", err)
 	}
 	waitFor(t, "default's broker to close", func() bool { return !dialable(pa) })
@@ -145,7 +145,7 @@ func TestUnsetServerLogsOutAndDeletesIt(t *testing.T) {
 	loginTo(t, d, "dev", cp.URL)
 	port := portOf(t, d.Status(), "dev", "acme-mysql")
 
-	if err := d.UnsetServer(control.UnsetServerRequest{Name: "dev"}); err != nil {
+	if _, err := d.UnsetServer(control.UnsetServerRequest{Name: "dev"}); err != nil {
 		t.Fatalf("UnsetServer: %v", err)
 	}
 	waitFor(t, "the broker to close", func() bool { return !dialable(port) })
@@ -159,7 +159,7 @@ func TestUnsetServerLogsOutAndDeletesIt(t *testing.T) {
 	if len(onDisk.Servers) != 0 {
 		t.Errorf("servers on disk after unset = %+v", onDisk.Servers)
 	}
-	if err := d.UnsetServer(control.UnsetServerRequest{Name: "dev"}); err == nil {
+	if _, err := d.UnsetServer(control.UnsetServerRequest{Name: "dev"}); err == nil {
 		t.Error("unsetting an unknown server succeeded")
 	}
 }
@@ -261,7 +261,7 @@ func TestLogoutDuringDiscoveryLeavesNoRows(t *testing.T) {
 	done := make(chan struct{})
 	go func() { defer close(done); d.openListeners(context.Background()) }()
 	<-discovering
-	if err := d.UnsetServer(control.UnsetServerRequest{Name: "dev"}); err != nil {
+	if _, err := d.UnsetServer(control.UnsetServerRequest{Name: "dev"}); err != nil {
 		t.Fatal(err)
 	}
 	close(release)

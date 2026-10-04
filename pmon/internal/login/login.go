@@ -179,6 +179,28 @@ func Renew(ctx context.Context, client *http.Client, controlPlane, renewalToken 
 	return &out, nil
 }
 
+// Logout ends the session on the control plane; a [replaced] one keeps its open SQL connections.
+func Logout(ctx context.Context, client *http.Client, controlPlane, renewalToken string, replaced bool) error {
+	url := controlPlane + "/auth/session/logout"
+	if replaced {
+		url += "?replaced=true"
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+renewalToken)
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		return fmt.Errorf("logout: HTTP %d", resp.StatusCode)
+	}
+	return nil
+}
+
 // postJSON POSTs body as JSON and, if out is non-nil, decodes the response into it. HTTP 202 is treated as
 // success — the device poll endpoint uses it for "still waiting on the user".
 func postJSON(ctx context.Context, client *http.Client, url string, body, out any) error {

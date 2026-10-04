@@ -31,8 +31,8 @@ internal class ResolvedRequestIdentity(
 }
 
 /** A token whose principal is still active; a deprovisioned user's surviving token row resolves to null. */
-internal fun resolveActiveToken(tokenStore: TokenStore, users: UserGroupStore, token: String): WireIdentity? =
-    tokenStore.resolve(token)?.takeUnless { users.isDeactivated(it.principal) }
+internal fun resolveActiveToken(tokenStore: TokenStore, users: UserGroupStore, token: String, allowRetired: Boolean = true): WireIdentity? =
+    tokenStore.resolve(token, allowRetired)?.takeUnless { users.isDeactivated(it.principal) }
 
 /**
  * The one place a wire token becomes a caller. Native tokens (SESSION, USER) are channel "wire" with the

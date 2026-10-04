@@ -126,9 +126,11 @@ func (c *logoutCmd) Run() error {
 		fmt.Println("still logged in")
 		return nil
 	}
-	if err := client.Logout(ctx, control.LogoutRequest{Server: c.Server, All: c.All}); err != nil {
+	notEnded, err := client.Logout(ctx, control.LogoutRequest{Server: c.Server, All: c.All})
+	if err != nil {
 		return err
 	}
+	warnNotEnded(notEnded...)
 	if c.All {
 		fmt.Println("logged out of every server — the brokers are closed and the daemon is idle")
 	} else {

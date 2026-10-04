@@ -126,13 +126,21 @@ class TokenStore(internal val dataSource: DataSource) {
      * from `RETURNING` on this SAME connection (never the plain no-connection [get], which would open a
      * second connection and could read a different/uncommitted view of the row).
      */
-    fun issue(kind: TokenKind, principal: String, roles: List<String>, name: String?, ttlSeconds: Long, c: Connection): IssuedToken {
+    fun issue(
+        kind: TokenKind,
+        principal: String,
+        roles: List<String>,
+        name: String?,
+        ttlSeconds: Long,
+        c: Connection,
+        principalSessionId: Long? = null,
+    ): IssuedToken {
         val ttl = clampTtlSeconds(ttlSeconds)
         val prefix = if (kind == TokenKind.SESSION) "pmt_" else "pmk_"
         val token = randomToken(prefix)
         val (id, expiresAt) = c.prepareStatement(
-            """INSERT INTO proxy_token (token_hash, kind, principal, roles, name, expires_at)
-               VALUES (?, ?, ?, ?::jsonb, ?, now() + (?::bigint * interval '1 second'))
+            """INSERT INTO proxy_token (token_hash, kind, principal, roles, name, expires_at, principal_session_id)
+               VALUES (?, ?, ?, ?::jsonb, ?, now() + (?::bigint * interval '1 second'), ?)
                RETURNING id, expires_at""",
         ).use { ps ->
             ps.setString(1, hash(token))
@@ -141,6 +149,7 @@ class TokenStore(internal val dataSource: DataSource) {
             ps.setString(4, json.encodeToString(stringList, roles))
             ps.setString(5, name)
             ps.setLong(6, ttl)
+            ps.setObject(7, principalSessionId, java.sql.Types.BIGINT)
             ps.executeQuery().use { rs -> rs.next(); rs.getLong(1) to rs.getTimestamp(2).toInstant().toString() }
         }
         return IssuedToken(token, id, kind.name, name, expiresAt)
@@ -153,11 +162,12 @@ class TokenStore(internal val dataSource: DataSource) {
      * lock (or generate WAL per query). `last_used_at` is stamped once per session by [validate] at the
      * handshake, which is freshness enough for a "recently used" signal.
      */
-    fun resolve(token: String): WireIdentity? = dataSource.connection.use { c ->
+    fun resolve(token: String, allowRetired: Boolean = true): WireIdentity? = dataSource.connection.use { c ->
         c.prepareStatement(
-            "SELECT principal, roles, kind FROM proxy_token WHERE token_hash = ? AND kind IN ('SESSION', 'USER', 'EDITOR', 'APPROVER_EXEC') AND revoked_at IS NULL AND expires_at > now()",
+            "SELECT principal, roles, kind FROM proxy_token WHERE token_hash = ? AND kind IN ('SESSION', 'USER', 'EDITOR', 'APPROVER_EXEC') AND revoked_at IS NULL AND (? OR retired_at IS NULL) AND expires_at > now()",
         ).use { ps ->
             ps.setString(1, hash(token))
+            ps.setBoolean(2, allowRetired)
             ps.executeQuery().use { rs ->
                 if (rs.next()) {
                     WireIdentity(
@@ -175,7 +185,7 @@ class TokenStore(internal val dataSource: DataSource) {
     /**
      * Validate a presented token: must exist, not be revoked, and not be expired. On success,
      * stamp `last_used_at` and return the principal + base roles. Null otherwise. Used for the session
-     * handshake (per-query enforcement uses [resolve], which skips the write).
+     * handshake (per-query enforcement uses [resolve], which skips the write). A retired token fails here only.
      */
     fun validate(token: String): WireIdentity? = dataSource.connection.use { c ->
         c.prepareStatement(
@@ -184,7 +194,7 @@ class TokenStore(internal val dataSource: DataSource) {
             // token can't open a native MySQL/PG session as that principal within its short TTL. Both
             // ephemeral kinds (editor and approver-exec) are excluded here.
             """UPDATE proxy_token SET last_used_at = now()
-               WHERE token_hash = ? AND kind IN ('SESSION', 'USER') AND revoked_at IS NULL AND expires_at > now()
+               WHERE token_hash = ? AND kind IN ('SESSION', 'USER') AND revoked_at IS NULL AND retired_at IS NULL AND expires_at > now()
                RETURNING principal, roles, kind""",
         ).use { ps ->
             ps.setString(1, hash(token))

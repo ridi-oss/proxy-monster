@@ -64,6 +64,8 @@ func freeTCPPort(t *testing.T) int {
 type fakeCP struct {
 	*httptest.Server
 	datasources []driver.Endpoint
+	// mcpRefused makes the MCP token exchange answer 401, as for an ended login.
+	mcpRefused atomic.Bool
 	// logouts counts server-side logouts with this login's renewal token; logoutFails makes them answer 500.
 	logouts     atomic.Int32
 	logoutFails atomic.Bool
@@ -104,6 +106,15 @@ func newFakeCPAs(t *testing.T, principal, token string, datasources []driver.End
 				cp.logouts.Add(1)
 			}
 			w.WriteHeader(http.StatusNoContent)
+		case "/auth/session/mcp-token":
+			if cp.mcpRefused.Load() || r.Header.Get("Authorization") != "Bearer pmr_"+token {
+				w.WriteHeader(http.StatusUnauthorized)
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"accessToken": "pma_" + token, "scope": "mcp:query mcp:read",
+				"expiresAt": time.Now().Add(10 * time.Minute).Format(time.RFC3339),
+			})
 		default:
 			t.Errorf("unexpected control-plane path %q", r.URL.Path)
 		}
@@ -183,6 +194,37 @@ func TestLoginOpensBrokersImmediately(t *testing.T) {
 	c.Close()
 
 	d.closeAllListeners()
+}
+
+func TestMCPTokenComesFromTheLogin(t *testing.T) {
+	isolate(t)
+	cp := newFakeCP(t, nil)
+	d := New("test", providers.Builtins())
+	ctx := context.Background()
+	if _, err := d.SetServer(control.SetServerRequest{Name: "hr", ControlPlane: cp.URL}); err != nil {
+		t.Fatalf("SetServer: %v", err)
+	}
+	if _, err := d.MCPToken(ctx, control.MCPTokenRequest{Server: "hr"}); err == nil || !strings.Contains(err.Error(), "run `pmon login hr`") {
+		t.Errorf("MCPToken before login = %v, want the login hint", err)
+	}
+	if err := d.Login(ctx, control.LoginRequest{Server: "hr"}, func(control.LoginEvent) {}); err != nil {
+		t.Fatalf("Login: %v", err)
+	}
+	defer d.closeAllListeners()
+	tok, err := d.MCPToken(ctx, control.MCPTokenRequest{Server: "hr"})
+	if err != nil || tok.Token != "pma_pmk_tok" || tok.URL != cp.URL+"/mcp" || tok.Scope != "mcp:query mcp:read" {
+		t.Fatalf("MCPToken = %+v, %v", tok, err)
+	}
+	cp.mcpRefused.Store(true)
+	if _, err := d.MCPToken(ctx, control.MCPTokenRequest{Server: "hr"}); err == nil || !strings.Contains(err.Error(), "has ended — run `pmon login hr`") {
+		t.Errorf("MCPToken after the login ended = %v, want the login hint", err)
+	}
+	if _, err := d.Logout(control.LogoutRequest{Server: "hr"}); err != nil {
+		t.Fatalf("Logout: %v", err)
+	}
+	if _, err := d.MCPToken(ctx, control.MCPTokenRequest{Server: "hr"}); err == nil || !strings.Contains(err.Error(), "not logged in") {
+		t.Errorf("MCPToken after logout = %v, want not logged in", err)
+	}
 }
 
 func TestLogoutEndsTheLoginOnTheServer(t *testing.T) {

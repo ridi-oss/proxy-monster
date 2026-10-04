@@ -54,6 +54,23 @@ approve. Those extra scopes last `PM_ELEVATED_SCOPE_TTL` (default 1h) from the
 approval; read and query last the whole login. `pmon status` shows the granted
 scopes and when the extra ones expire. To change scopes, log in again.
 
+### MCP
+
+`pmon mcp [server]` is a local stdio MCP server. An agent runs it as a command,
+and it relays to `<server>/mcp` with a short-lived MCP token the daemon mints
+from your pmon login, so the agent needs no sign-in of its own:
+
+```sh
+claude mcp add --scope user pmon-hr -- pmon mcp hr
+codex mcp add pmon-hr -- pmon mcp hr
+```
+
+Claude Desktop takes the same command in `claude_desktop_config.json`:
+`"mcpServers": {"pmon-hr": {"command": "pmon", "args": ["mcp", "hr"]}}`. If the
+server is not logged in, `pmon mcp` exits with the `pmon login` to run. Name the
+pmon server after the proxy-monster instance, so `pmon-<instance>` names one
+install everywhere.
+
 ## Commands
 
 <!-- prettier-ignore -->
@@ -63,6 +80,7 @@ scopes and when the extra ones expire. To change scopes, log in again.
 | `pmon login [server] [--url U] [--scopes S]` | Device-auth flow; starts the daemon if needed and opens the server's brokers |
 | `pmon logout [server] [--all]` | Clear a server's credentials and close its brokers (the daemon stays up) |
 | `pmon show [server] <ds>` | One datasource's local connection string |
+| `pmon mcp [server]` | Local stdio MCP server relaying to the server's `/mcp` over the pmon login |
 | `pmon status` | Daemon state: every server's login, expiry, and scopes, brokered datasources, live connections |
 | `pmon start` / `stop` / `restart` | Daemon lifecycle (`-f` / `--force` on `stop` and `restart` skips the live-connection prompt) |
 | `pmon --version` | The release this binary was built from |

@@ -119,6 +119,20 @@ func (c *Client) Status(ctx context.Context) (*Status, error) {
 	return &s, nil
 }
 
+// MCPToken asks the daemon for an MCP access token from a server's login.
+func (c *Client) MCPToken(ctx context.Context, req MCPTokenRequest) (*MCPToken, error) {
+	resp, err := c.do(ctx, http.MethodPost, PathMCPToken, req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	var tok MCPToken
+	if err := json.NewDecoder(resp.Body).Decode(&tok); err != nil {
+		return nil, err
+	}
+	return &tok, nil
+}
+
 // Login runs a device-auth flow in the daemon, calling onEvent for each streamed step. It returns when the
 // flow finishes; a "done" event means the daemon is logged in and its brokers are coming up.
 func (c *Client) Login(ctx context.Context, req LoginRequest, onEvent func(LoginEvent)) error {

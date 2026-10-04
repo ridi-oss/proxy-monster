@@ -4,6 +4,7 @@ import com.ridi.oss.proxymonster.controlplane.AuthAuditRecorder.Companion.ACTION
 import com.ridi.oss.proxymonster.controlplane.AuthAuditRecorder.Companion.ACTION_SESSION_RENEW
 import com.ridi.oss.proxymonster.controlplane.AuthAuditRecorder.Companion.CHANNEL_PMON
 import com.ridi.oss.proxymonster.controlplane.AuthAuditRecorder.Companion.CHANNEL_SESSION
+import com.ridi.oss.proxymonster.auth.canonicalScopes
 import com.ridi.oss.proxymonster.controlplane.management.AuditActor
 import com.ridi.oss.proxymonster.controlplane.management.auditEntity
 import io.ktor.client.HttpClient
@@ -76,6 +77,8 @@ data class DaemonSessionRow(
     val lastIdpCheckAt: Instant?,
     val livenessStatus: String,
     val createdAt: Instant,
+    val scopes: Set<String> = emptySet(),
+    val elevatedUntil: Instant? = null,
 )
 
 data class WebSessionRow(
@@ -145,12 +148,22 @@ class PrincipalSessionStore(
      * Reads the row back on [c] (the just-inserted, still-uncommitted row), never the
      * plain [getById] which would open a second connection with a different view.
      */
-    fun create(principal: String, handle: String?, refreshToken: String?, windowSeconds: Long, ttlSeconds: Long, c: Connection): CreatedDaemonSession {
+    fun create(
+        principal: String,
+        handle: String?,
+        refreshToken: String?,
+        windowSeconds: Long,
+        ttlSeconds: Long,
+        c: Connection,
+        scopes: Set<String> = PMON_DEFAULT_SCOPES,
+        elevatedUntil: Instant? = null,
+    ): CreatedDaemonSession {
         val encrypted = refreshToken?.let { crypto?.encrypt(it.toByteArray(Charsets.UTF_8)) }
         val renewalToken = newRenewalToken()
         val id = c.prepareStatement(
-            """INSERT INTO principal_session (principal, handle, refresh_token_enc, ttl_seconds, absolute_expires_at, liveness_status, renewal_token_hash, kind)
-               VALUES (?, ?, ?, ?, now() + make_interval(secs => ?), ?, ?, 'DAEMON')
+            """INSERT INTO principal_session
+               (principal, handle, refresh_token_enc, ttl_seconds, absolute_expires_at, liveness_status, renewal_token_hash, kind, scopes, elevated_until)
+               VALUES (?, ?, ?, ?, now() + make_interval(secs => ?), ?, ?, 'DAEMON', ?, ?)
                RETURNING id""",
         ).use { ps ->
             ps.setString(1, principal)
@@ -160,6 +173,8 @@ class PrincipalSessionStore(
             ps.setDouble(5, windowSeconds.toDouble())
             ps.setString(6, LIVENESS_ACTIVE)
             ps.setString(7, sha256Hex(renewalToken))
+            ps.setString(8, canonicalScopes(scopes))
+            ps.setTimestamp(9, elevatedUntil?.let(java.sql.Timestamp::from))
             ps.executeQuery().use { rs -> rs.next(); rs.getLong(1) }
         }
         return CreatedDaemonSession(queryOneOn(c, "$SELECT AND id = ?") { it.setLong(1, id) }!!, renewalToken)
@@ -619,11 +634,14 @@ class PrincipalSessionStore(
         lastIdpCheckAt = getTimestamp("last_idp_check_at")?.toInstant(),
         livenessStatus = getString("liveness_status"),
         createdAt = getTimestamp("created_at").toInstant(),
+        scopes = parseScopes(getString("scopes")),
+        elevatedUntil = getTimestamp("elevated_until")?.toInstant(),
     )
 
     private companion object {
         const val SELECT =
-            """SELECT id, principal, handle, refresh_token_enc, ttl_seconds, absolute_expires_at, last_idp_check_at, liveness_status, created_at
+            """SELECT id, principal, handle, refresh_token_enc, ttl_seconds, absolute_expires_at, last_idp_check_at, liveness_status, created_at,
+                      scopes, elevated_until
                FROM principal_session
                WHERE kind = 'DAEMON'"""
     }

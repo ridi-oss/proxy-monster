@@ -666,7 +666,7 @@ fun Application.module(config: Config, core: ControlPlaneCore) {
         // SSO/debug choices, and /auth/session/renew (docs/auth-model.md "CLI / daemon login").
         deviceSessionRoutes(
             config, deviceLoginStore, principalSessionStore,
-            tokenStore, userGroupStore, core.authAudit, this@module.environment.log,
+            tokenStore, userGroupStore, core.authAudit, this@module.environment.log, core.clock,
         )
 
         // SCIM 2.0 provisioning (docs/auth-model.md "SCIM 2.0 provisioning") — bearer+TLS gated,

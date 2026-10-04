@@ -833,7 +833,7 @@ private fun ApplicationCall.bearerWirePrincipal(tokenStore: TokenStore, userGrou
     val header = request.headers[HttpHeaders.Authorization] ?: return null
     if (!header.startsWith("Bearer ", ignoreCase = true)) return null
     val token = header.substring(7).trim().ifBlank { return null }
-    val id = resolveActiveToken(tokenStore, userGroupStore, token) ?: return null
+    val id = resolveActiveToken(tokenStore, userGroupStore, token, allowRetired = false) ?: return null
     val kind = TokenKind.fromWire(id.kind)
     if (kind != TokenKind.SESSION && kind != TokenKind.USER) return null
     return id.principal

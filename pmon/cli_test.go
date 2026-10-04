@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -137,6 +138,8 @@ func fakeCP(t *testing.T, datasources []map[string]any) *httptest.Server {
 				"expiresAt":    time.Now().Add(12 * time.Hour).Format(time.RFC3339),
 				"renewalToken": "pmr_abc",
 			})
+		case "/auth/session/logout":
+			w.WriteHeader(http.StatusNoContent)
 		case "/api/datasources":
 			_ = json.NewEncoder(w).Encode(datasources)
 		default:
@@ -491,5 +494,84 @@ func TestOnlyOneDaemonRunsAtATime(t *testing.T) {
 	}
 	if !strings.Contains(out, "already running") {
 		t.Errorf("second daemon = %q, want it to report one is already running", out)
+	}
+}
+
+func TestReloginWarnsWhenTheReplacedLoginStaysValid(t *testing.T) {
+	e := newEnv(t)
+	var polls atomic.Int32
+	var endFails atomic.Bool
+	cp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/auth/device/start":
+			_ = json.NewEncoder(w).Encode(map[string]any{"verificationUri": "https://idp.example/activate", "userCode": "ABCD-EFGH", "handle": "h-1", "interval": 1})
+		case "/auth/device/poll":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"principal": "you@example.com", "token": "pmk_tok", "renewalToken": fmt.Sprintf("pmr_%d", polls.Add(1)),
+				"expiresAt": time.Now().Add(12 * time.Hour).Format(time.RFC3339),
+			})
+		case "/auth/session/logout":
+			if endFails.Load() {
+				w.WriteHeader(http.StatusInternalServerError)
+				return
+			}
+			w.WriteHeader(http.StatusNoContent)
+		case "/api/datasources":
+			_ = json.NewEncoder(w).Encode([]any{})
+		}
+	}))
+	defer cp.Close()
+
+	e.mustRun(t, "login", "hr", "--url", cp.URL)
+	if out := e.mustRun(t, "login", "hr"); strings.Contains(out, "warning") {
+		t.Errorf("re-login = %q, want no warning when the replaced login was ended", out)
+	}
+	endFails.Store(true)
+	out := e.mustRun(t, "login", "hr")
+	if !strings.Contains(out, `warning: could not end the previous "hr" login on the server; it stays valid there until its TTL ends`) {
+		t.Errorf("re-login with the end failing = %q, want the warning", out)
+	}
+	if !strings.Contains(out, "logged in as you@example.com") {
+		t.Errorf("re-login = %q, want the new login to land anyway", out)
+	}
+}
+
+func TestLogoutEndsTheServerLoginOrWarns(t *testing.T) {
+	e := newEnv(t)
+	var ended atomic.Int32
+	cp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/auth/device/start":
+			_ = json.NewEncoder(w).Encode(map[string]any{"verificationUri": "https://idp.example/activate", "userCode": "ABCD-EFGH", "handle": "h-1", "interval": 1})
+		case "/auth/device/poll":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"principal": "you@example.com", "token": "pmk_tok", "renewalToken": "pmr_abc",
+				"expiresAt": time.Now().Add(12 * time.Hour).Format(time.RFC3339),
+			})
+		case "/auth/session/logout":
+			if r.Header.Get("Authorization") == "Bearer pmr_abc" {
+				ended.Add(1)
+			}
+			w.WriteHeader(http.StatusNoContent)
+		case "/api/datasources":
+			_ = json.NewEncoder(w).Encode([]any{})
+		}
+	}))
+	defer cp.Close()
+
+	e.mustRun(t, "login", "hr", "--url", cp.URL)
+	out := e.mustRun(t, "logout", "hr")
+	if ended.Load() != 1 || strings.Contains(out, "warning") {
+		t.Errorf("logout = %q with %d server logouts, want one and no warning", out, ended.Load())
+	}
+
+	e.mustRun(t, "login", "hr")
+	cp.Close()
+	out = e.mustRun(t, "logout", "hr")
+	if !strings.Contains(out, `warning: could not end the "hr" login on the server; it stays valid there until its TTL ends`) {
+		t.Errorf("logout with the server down = %q, want the warning", out)
+	}
+	if status := e.mustRun(t, "status"); !strings.Contains(status, "not logged in") {
+		t.Errorf("status = %q, want the login cleared here anyway", status)
 	}
 }

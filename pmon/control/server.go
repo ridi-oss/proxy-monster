@@ -22,11 +22,11 @@ type Backend interface {
 	// Login runs a device-auth flow, reporting each step through onEvent. It returns when the flow finishes.
 	Login(ctx context.Context, req LoginRequest, onEvent func(LoginEvent)) error
 	// Logout clears credentials and closes brokers, leaving the daemon running.
-	Logout(req LogoutRequest) error
+	Logout(req LogoutRequest) ([]string, error)
 	// SetServer creates a server or changes its URL.
 	SetServer(req SetServerRequest) (SetServerResult, error)
 	// UnsetServer logs a server out and deletes it.
-	UnsetServer(req UnsetServerRequest) error
+	UnsetServer(req UnsetServerRequest) ([]string, error)
 	// Reload forces an immediate rediscovery.
 	Reload()
 	// Subscribe opens a state-change stream; the returned cancel must be called when the stream ends.
@@ -179,11 +179,12 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 	if r.Body != nil {
 		_ = json.NewDecoder(r.Body).Decode(&req) // an empty body logs out the default server
 	}
-	if err := s.backend.Logout(req); err != nil {
+	notEnded, err := s.backend.Logout(req)
+	if err != nil {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, s.backend.Status())
+	writeJSON(w, http.StatusOK, LogoutResult{Status: s.backend.Status(), NotEndedOnServer: notEnded})
 }
 
 func (s *Server) handleServerSet(w http.ResponseWriter, r *http.Request) {
@@ -212,11 +213,12 @@ func (s *Server) handleServerUnset(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
-	if err := s.backend.UnsetServer(req); err != nil {
+	notEnded, err := s.backend.UnsetServer(req)
+	if err != nil {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, s.backend.Status())
+	writeJSON(w, http.StatusOK, LogoutResult{Status: s.backend.Status(), NotEndedOnServer: notEnded})
 }
 
 func (s *Server) handleReload(w http.ResponseWriter, r *http.Request) {

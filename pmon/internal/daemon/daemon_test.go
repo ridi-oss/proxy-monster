@@ -9,8 +9,10 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -62,6 +64,9 @@ func freeTCPPort(t *testing.T) int {
 type fakeCP struct {
 	*httptest.Server
 	datasources []driver.Endpoint
+	// logouts counts server-side logouts with this login's renewal token; logoutFails makes them answer 500.
+	logouts     atomic.Int32
+	logoutFails atomic.Bool
 }
 
 func newFakeCP(t *testing.T, datasources []driver.Endpoint) *fakeCP {
@@ -90,6 +95,15 @@ func newFakeCPAs(t *testing.T, principal, token string, datasources []driver.End
 				t.Errorf("discovery Authorization = %q, want the wire token as a bearer", got)
 			}
 			_ = json.NewEncoder(w).Encode(cp.datasources)
+		case "/auth/session/logout":
+			if cp.logoutFails.Load() {
+				w.WriteHeader(http.StatusInternalServerError)
+				return
+			}
+			if r.Header.Get("Authorization") == "Bearer pmr_"+token && r.URL.RawQuery == "" {
+				cp.logouts.Add(1)
+			}
+			w.WriteHeader(http.StatusNoContent)
 		default:
 			t.Errorf("unexpected control-plane path %q", r.URL.Path)
 		}
@@ -169,6 +183,116 @@ func TestLoginOpensBrokersImmediately(t *testing.T) {
 	c.Close()
 
 	d.closeAllListeners()
+}
+
+func TestLogoutEndsTheLoginOnTheServer(t *testing.T) {
+	isolate(t)
+	cp := newFakeCP(t, nil)
+	d := New("test", providers.Builtins())
+	ctx := context.Background()
+	login := func() {
+		t.Helper()
+		if err := d.Login(ctx, control.LoginRequest{Server: "hr", ControlPlane: cp.URL}, func(control.LoginEvent) {}); err != nil {
+			t.Fatalf("Login: %v", err)
+		}
+	}
+	defer d.closeAllListeners()
+
+	login()
+	if notEnded, err := d.Logout(control.LogoutRequest{Server: "hr"}); err != nil || len(notEnded) != 0 || cp.logouts.Load() != 1 {
+		t.Fatalf("Logout = %v, %v; server logouts = %d, want one ended on the server", notEnded, err, cp.logouts.Load())
+	}
+	if _, err := d.Logout(control.LogoutRequest{Server: "hr"}); err != nil || cp.logouts.Load() != 1 {
+		t.Errorf("a second logout called the server again (%d) or failed: %v", cp.logouts.Load(), err)
+	}
+
+	login()
+	cp.logoutFails.Store(true)
+	notEnded, err := d.Logout(control.LogoutRequest{All: true})
+	if err != nil || len(notEnded) != 1 || notEnded[0] != "hr" {
+		t.Errorf("Logout with the server failing = %v, %v; want hr reported", notEnded, err)
+	}
+	if d.Status().Server("hr").LoggedIn {
+		t.Error("a failed server logout must still clear the login here")
+	}
+	cp.logoutFails.Store(false)
+
+	login()
+	other := newFakeCP(t, nil)
+	if res, err := d.SetServer(control.SetServerRequest{Name: "hr", ControlPlane: other.URL}); err != nil || !res.LoggedOut || res.NotEndedOnServer || cp.logouts.Load() != 2 {
+		t.Errorf("URL change = %+v, %v; server logouts = %d, want the old login ended", res, err, cp.logouts.Load())
+	}
+
+	if _, err := d.SetServer(control.SetServerRequest{Name: "hr", ControlPlane: cp.URL}); err != nil {
+		t.Fatalf("SetServer: %v", err)
+	}
+	login()
+	if notEnded, err := d.UnsetServer(control.UnsetServerRequest{Name: "hr"}); err != nil || len(notEnded) != 0 || cp.logouts.Load() != 3 {
+		t.Errorf("UnsetServer = %v, %v; server logouts = %d, want the login ended", notEnded, err, cp.logouts.Load())
+	}
+}
+
+func TestReloginEndsTheReplacedLoginOnTheServer(t *testing.T) {
+	isolate(t)
+	var polls atomic.Int32
+	var mu sync.Mutex
+	var ended []string
+	var endFails atomic.Bool
+	cp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/auth/device/start":
+			_ = json.NewEncoder(w).Encode(map[string]any{"verificationUri": "https://idp.example/activate", "userCode": "ABCD", "handle": "h-1", "interval": 1})
+		case "/auth/device/poll":
+			n := polls.Add(1)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"principal": "you@example.com", "token": "pmk_tok",
+				"expiresAt":    time.Now().Add(12 * time.Hour).Format(time.RFC3339),
+				"renewalToken": fmt.Sprintf("pmr_%d", n),
+			})
+		case "/auth/session/logout":
+			if endFails.Load() {
+				w.WriteHeader(http.StatusInternalServerError)
+				return
+			}
+			mu.Lock()
+			ended = append(ended, strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")+"?"+r.URL.RawQuery)
+			mu.Unlock()
+			w.WriteHeader(http.StatusNoContent)
+		case "/api/datasources":
+			_ = json.NewEncoder(w).Encode([]driver.Endpoint{})
+		}
+	}))
+	defer cp.Close()
+	d := New("test", providers.Builtins())
+	defer d.closeAllListeners()
+	login := func() control.LoginEvent {
+		t.Helper()
+		var done control.LoginEvent
+		if err := d.Login(context.Background(), control.LoginRequest{Server: "hr", ControlPlane: cp.URL}, func(ev control.LoginEvent) {
+			if ev.Kind == "done" {
+				done = ev
+			}
+		}); err != nil {
+			t.Fatalf("Login: %v", err)
+		}
+		return done
+	}
+	endedTokens := func() []string { mu.Lock(); defer mu.Unlock(); return slices.Clone(ended) }
+
+	if ev := login(); ev.ReplacedNotEndedOnServer || len(endedTokens()) != 0 {
+		t.Fatalf("a first login ended %v on the server (warning %v); there was nothing to replace", endedTokens(), ev.ReplacedNotEndedOnServer)
+	}
+	if ev := login(); ev.ReplacedNotEndedOnServer || !slices.Equal(endedTokens(), []string{"pmr_1?replaced=true"}) {
+		t.Errorf("a re-login ended %v (warning %v); want only the replaced pmr_1, as replaced", endedTokens(), ev.ReplacedNotEndedOnServer)
+	}
+
+	endFails.Store(true)
+	if ev := login(); !ev.ReplacedNotEndedOnServer {
+		t.Error("a re-login whose replaced login could not be ended must say so")
+	}
+	if !d.Status().Server("hr").LoggedIn {
+		t.Error("failing to end the replaced login must not cost the new one")
+	}
 }
 
 // TestBrokeringImpliesALocalPassword locks the invariant a connection string depends on: if any broker is
@@ -290,7 +414,7 @@ func TestLogoutClosesBrokersButKeepsTheDaemonIdle(t *testing.T) {
 	}
 	port := d.Status().Datasources[0].LocalPort
 
-	if err := d.Logout(control.LogoutRequest{}); err != nil {
+	if _, err := d.Logout(control.LogoutRequest{}); err != nil {
 		t.Fatalf("Logout: %v", err)
 	}
 	s := d.Status()
@@ -646,7 +770,7 @@ func TestLogoutDuringDiscoveryLeavesNoListener(t *testing.T) {
 	go func() { defer close(done); d.openListeners(context.Background()) }()
 
 	<-discovering
-	if err := d.Logout(control.LogoutRequest{}); err != nil {
+	if _, err := d.Logout(control.LogoutRequest{}); err != nil {
 		t.Fatalf("Logout: %v", err)
 	}
 	close(release)
@@ -692,7 +816,7 @@ func TestLogoutClosesEstablishedSessions(t *testing.T) {
 	if got := before.TotalLiveConns(); got != 1 {
 		t.Fatalf("TotalLiveConns() = %d before logout, want 1 (a tracked session must never be invisible)", got)
 	}
-	if err := d.Logout(control.LogoutRequest{}); err != nil {
+	if _, err := d.Logout(control.LogoutRequest{}); err != nil {
 		t.Fatalf("Logout: %v", err)
 	}
 
@@ -770,7 +894,7 @@ func TestRenewalDoesNotResurrectALoggedOutSession(t *testing.T) {
 	go func() { defer close(done); d.maybeRenew(context.Background()) }()
 
 	<-requestArrived
-	if err := d.Logout(control.LogoutRequest{}); err != nil {
+	if _, err := d.Logout(control.LogoutRequest{}); err != nil {
 		t.Fatalf("Logout: %v", err)
 	}
 	close(logoutDone)

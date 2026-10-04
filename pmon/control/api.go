@@ -128,6 +128,12 @@ type LoginRequest struct {
 	TTLSeconds   int    `json:"ttlSeconds,omitempty"`
 }
 
+// LogoutResult is the daemon's state plus the servers whose control-plane logout failed.
+type LogoutResult struct {
+	Status
+	NotEndedOnServer []string `json:"notEndedOnServer,omitempty"`
+}
+
 // LogoutRequest clears one server's login ([state.DefaultServer] when empty), or every server's with All.
 type LogoutRequest struct {
 	Server string `json:"server,omitempty"`
@@ -142,9 +148,10 @@ type SetServerRequest struct {
 
 // SetServerResult says what [SetServerRequest] changed.
 type SetServerResult struct {
-	Created   bool `json:"created"`
-	Changed   bool `json:"changed"`
-	LoggedOut bool `json:"loggedOut"`
+	Created          bool `json:"created"`
+	Changed          bool `json:"changed"`
+	LoggedOut        bool `json:"loggedOut"`
+	NotEndedOnServer bool `json:"notEndedOnServer,omitempty"`
 }
 
 // UnsetServerRequest deletes a server, logging it out first.
@@ -164,8 +171,9 @@ type LoginEvent struct {
 	VerificationURIComplete string `json:"verificationUriComplete,omitempty"`
 	UserCode                string `json:"userCode,omitempty"`
 	// Done fields, set when Kind == "done".
-	Principal string `json:"principal,omitempty"`
-	ExpiresAt string `json:"expiresAt,omitempty"`
+	Principal                string `json:"principal,omitempty"`
+	ExpiresAt                string `json:"expiresAt,omitempty"`
+	ReplacedNotEndedOnServer bool   `json:"replacedNotEndedOnServer,omitempty"`
 	// Error, set when Kind == "error".
 	Error string `json:"error,omitempty"`
 }

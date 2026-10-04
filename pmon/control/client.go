@@ -149,13 +149,15 @@ func (c *Client) Login(ctx context.Context, req LoginRequest, onEvent func(Login
 }
 
 // Logout clears a server's credentials (or every server's) and closes its brokers, leaving the daemon running.
-func (c *Client) Logout(ctx context.Context, req LogoutRequest) error {
+func (c *Client) Logout(ctx context.Context, req LogoutRequest) ([]string, error) {
 	resp, err := c.do(ctx, http.MethodPost, PathLogout, req)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	resp.Body.Close()
-	return nil
+	defer resp.Body.Close()
+	var res LogoutResult
+	_ = json.NewDecoder(resp.Body).Decode(&res)
+	return res.NotEndedOnServer, nil
 }
 
 // SetServer creates a server or changes its URL.
@@ -170,13 +172,15 @@ func (c *Client) SetServer(ctx context.Context, req SetServerRequest) (SetServer
 }
 
 // UnsetServer logs a server out and deletes it.
-func (c *Client) UnsetServer(ctx context.Context, req UnsetServerRequest) error {
+func (c *Client) UnsetServer(ctx context.Context, req UnsetServerRequest) ([]string, error) {
 	resp, err := c.do(ctx, http.MethodPost, PathServerUnset, req)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	resp.Body.Close()
-	return nil
+	defer resp.Body.Close()
+	var res LogoutResult
+	_ = json.NewDecoder(resp.Body).Decode(&res)
+	return res.NotEndedOnServer, nil
 }
 
 // Reload forces an immediate rediscovery instead of waiting for the next cycle.

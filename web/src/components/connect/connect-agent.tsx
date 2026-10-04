@@ -2,7 +2,7 @@
 
 import { useState } from 'react'
 import { useTranslations } from 'next-intl'
-import { Bot, Check, Copy, XCircle } from 'lucide-react'
+import { Bot, Check, Copy, Terminal, XCircle } from 'lucide-react'
 import type { McpConnectInfo } from '@/lib/api/types'
 import { Button } from '@/components/ui/button'
 
@@ -66,6 +66,17 @@ export function ConnectAgent({ info }: { info: McpConnectInfo }) {
     `2. ${t('agent.step2', values)}`,
     t('agent.after'),
   ].join('\n')
+  const pmonValues = {
+    installName: info.installName,
+    instance: info.instanceName,
+    origin: info.mcpUrl.replace(/\/mcp$/, ''),
+  }
+  const pmonText = [
+    t('pmon.intro', pmonValues),
+    `1. ${t('pmon.step1', pmonValues)}`,
+    `2. ${t('pmon.step2', pmonValues)}`,
+    t('agent.after'),
+  ].join('\n')
 
   return (
     <div className="space-y-4">
@@ -84,6 +95,13 @@ export function ConnectAgent({ info }: { info: McpConnectInfo }) {
       </dl>
       <Section icon={<Bot className="size-4" />} title={t('agent.title')} body={t('agent.body')}>
         <CopyBlock value={agentText} />
+      </Section>
+      <Section
+        icon={<Terminal className="text-muted-foreground size-4" />}
+        title={t('pmon.title')}
+        body={t('pmon.body')}
+      >
+        <CopyBlock value={pmonText} />
       </Section>
       <Section
         icon={<XCircle className="text-muted-foreground size-4" />}

@@ -68,8 +68,8 @@ codex mcp add pmon-hr -- pmon mcp hr
 Claude Desktop takes the same command in `claude_desktop_config.json`:
 `"mcpServers": {"pmon-hr": {"command": "pmon", "args": ["mcp", "hr"]}}`. If the
 server is not logged in, `pmon mcp` exits with the `pmon login` to run. Name the
-pmon server after the proxy-monster instance, so `pmon-<instance>` names one
-install everywhere.
+pmon server after the proxy-monster instance, as the `get_pmon_guide` MCP tool
+does, so `pmon-<instance>` names one install everywhere.
 
 ## Commands
 

@@ -194,6 +194,44 @@ func Renew(ctx context.Context, client *http.Client, controlPlane, renewalToken 
 	return &out, nil
 }
 
+// MCPToken is a short-lived MCP access token minted from a session.
+type MCPToken struct {
+	AccessToken string `json:"accessToken"`
+	ExpiresAt   string `json:"expiresAt"`
+	Scope       string `json:"scope"`
+}
+
+// ErrMCPRefused: the control plane will not mint from this session again; only a fresh login recovers.
+var ErrMCPRefused = errors.New("the login no longer grants MCP access")
+
+// ExchangeMCP trades the session's renewal token for an MCP access token carrying the session's scopes.
+func ExchangeMCP(ctx context.Context, client *http.Client, controlPlane, renewalToken string) (*MCPToken, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, controlPlane+"/auth/session/mcp-token", nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+renewalToken)
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	switch {
+	case resp.StatusCode == http.StatusUnauthorized:
+		return nil, ErrMCPRefused
+	case resp.StatusCode != http.StatusOK:
+		return nil, apiError(resp)
+	}
+	var out MCPToken
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, err
+	}
+	if out.AccessToken == "" {
+		return nil, errors.New("the MCP token exchange returned no token")
+	}
+	return &out, nil
+}
+
 // Logout ends the session on the control plane; a [replaced] one keeps its open SQL connections.
 func Logout(ctx context.Context, client *http.Client, controlPlane, renewalToken string, replaced bool) error {
 	url := controlPlane + "/auth/session/logout"
@@ -252,6 +290,8 @@ func (e *APIError) Error() string {
 		return fmt.Sprintf("unknown scope %q", e.Params["scope"])
 	case "device.no_scopes":
 		return "no scopes given"
+	case "auth.scopes_expired":
+		return "the login's extra scopes expired and it grants nothing else"
 	case "":
 		return fmt.Sprintf("HTTP %d", e.Status)
 	}

@@ -10,6 +10,7 @@
 //	pmon login [name]               # device-auth in your browser; starts the daemon and opens the brokers
 //	pmon show [name] <ds>           # print a datasource's local connection string (--url default)
 //	pmon status                     # every server's login and brokered datasources
+//	pmon mcp [name]                 # a stdio MCP server for an agent, over the pmon login
 //	pmon start | stop | restart
 package main
 
@@ -34,6 +35,7 @@ type cli struct {
 	Logout  logoutCmd  `cmd:"" help:"Clear a server's credentials and close its brokers (the daemon stays up)."`
 	Show    showCmd    `cmd:"" help:"Print one datasource's local connection string."`
 	Status  statusCmd  `cmd:"" help:"Show the daemon's state: every server's login and brokered datasources."`
+	MCP     mcpCmd     `cmd:"" name:"mcp" help:"Run a local stdio MCP server that relays to the server's MCP endpoint over the pmon login."`
 	Start   startCmd   `cmd:"" help:"Start the daemon (no-op if one is already running)."`
 	Stop    stopCmd    `cmd:"" help:"Stop the daemon."`
 	Restart restartCmd `cmd:"" help:"Stop the daemon and start a fresh one."`

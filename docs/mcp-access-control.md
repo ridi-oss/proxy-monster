@@ -213,7 +213,8 @@ principal that already holds it.
 ### pmon session exchange
 
 An agent can reach `/mcp` through the user's pmon login instead of its own OAuth
-sign-in: the pmon daemon calls `POST /auth/session/mcp-token` with
+sign-in. `pmon mcp <server>` is a local stdio MCP server; it asks the pmon
+daemon for a token, and the daemon calls `POST /auth/session/mcp-token` with
 `Authorization: Bearer <renewalToken>`, the secret that names its daemon session
 (`DaemonSession.kt`, `PmonMcpToken.kt`). The answer is an `MCP_ACCESS` token for
 `PM_MCP_RESOURCE` with client id `pmon` and an `oauth_consent` row like any

@@ -133,6 +133,19 @@ type LoginRequest struct {
 	Scopes []string `json:"scopes,omitempty"`
 }
 
+// MCPTokenRequest asks for an MCP access token from Server's login ([state.DefaultServer] when empty).
+type MCPTokenRequest struct {
+	Server string `json:"server,omitempty"`
+}
+
+// MCPToken is a short-lived MCP access token for URL, minted from the server's login.
+type MCPToken struct {
+	URL       string `json:"url"`
+	Token     string `json:"token"`
+	ExpiresAt string `json:"expiresAt"`
+	Scope     string `json:"scope"`
+}
+
 // LogoutResult is the daemon's state plus the servers whose control-plane logout failed.
 type LogoutResult struct {
 	Status
@@ -209,4 +222,5 @@ const (
 	PathReload      = "/reload"
 	PathShutdown    = "/shutdown"
 	PathEvents      = "/events"
+	PathMCPToken    = "/mcp-token"
 )

@@ -40,16 +40,30 @@ Changing a logged-in server's URL logs it out: a token is only good against the
 control plane that issued it. A config from a single-server release loads as
 `default`, keeping its ports and password.
 
+### Scopes
+
+A login grants `mcp:read` and `mcp:query`. `--scopes` names every scope to grant
+instead, as a comma-separated list:
+
+```sh
+pmon login hr --scopes mcp:read,mcp:query,mcp:approvals:write
+```
+
+The browser approval page lists each scope beyond the default pair before you
+approve. Those extra scopes last `PM_ELEVATED_SCOPE_TTL` (default 1h) from the
+approval; read and query last the whole login. `pmon status` shows the granted
+scopes and when the extra ones expire. To change scopes, log in again.
+
 ## Commands
 
 <!-- prettier-ignore -->
 |  |  |
 | --- | --- |
 | `pmon server set [name] --url U` / `unset [name]` / `list` | Manage servers (`-f` on `unset` skips the live-connection prompt) |
-| `pmon login [server] [--url U]` | Device-auth flow; starts the daemon if needed and opens the server's brokers |
+| `pmon login [server] [--url U] [--scopes S]` | Device-auth flow; starts the daemon if needed and opens the server's brokers |
 | `pmon logout [server] [--all]` | Clear a server's credentials and close its brokers (the daemon stays up) |
 | `pmon show [server] <ds>` | One datasource's local connection string |
-| `pmon status` | Daemon state: every server's login and expiry, brokered datasources, live connections |
+| `pmon status` | Daemon state: every server's login, expiry, and scopes, brokered datasources, live connections |
 | `pmon start` / `stop` / `restart` | Daemon lifecycle (`-f` / `--force` on `stop` and `restart` skips the live-connection prompt) |
 | `pmon --version` | The release this binary was built from |
 

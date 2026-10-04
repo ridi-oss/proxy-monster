@@ -274,6 +274,9 @@ the logged-in principal may connect to and dials each one's `PM_ADVERTISE_ADDR`.
   `pmon login --url https://console.example.com`
 - `--ttl` (on `pmon login`) — _optional_. Wire-token lifetime in seconds.
   Default `43200` (12h).
+- `--scopes` (on `pmon login`) — _optional_. Comma-separated scopes the login
+  grants, replacing the default `mcp:read,mcp:query`. Scopes beyond that pair
+  last `PM_ELEVATED_SCOPE_TTL`.
 - local broker port — _not configurable_. The daemon assigns each datasource the
   next free loopback port at or above `6100` and persists it, so a datasource
   keeps the same port across restarts. Ports are unique across servers.

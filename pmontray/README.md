@@ -1,18 +1,35 @@
 # pmontray — proxy-monster in the macOS menu bar
 
+Shipped as the app **Proxy Monster Desktop**; `pmontray` is its executable.
+
 A menu-bar front end for the [`pmon`](../pmon) daemon. It is a **peer of the
 CLI, not its owner**: both drive the same control socket, both can start and
 stop the daemon, and both work when it is down. Anything the menu does is
 equally doable with `pmon`, and vice versa.
 
 ```sh
-./build-app.sh            # -> ./dist/pmontray.app
-open ./dist/pmontray.app
+./build-app.sh            # -> "./dist/Proxy Monster Desktop.app"
+open "./dist/Proxy Monster Desktop.app"
 ```
 
 To start it at login: System Settings › General › Login Items › add
-`pmontray.app`. There is no launchd plist to install — the app is the login
-item, and the daemon's lifetime is an explicit choice, never an init system's.
+`Proxy Monster Desktop`. There is no launchd plist to install — the app is the
+login item, and the daemon's lifetime is an explicit choice, never an init
+system's.
+
+## Releases
+
+Each `pmon-v*` release attaches a universal (arm64 + x86_64) build, signed with
+RIDI's Developer ID and notarized:
+
+- `ProxyMonsterDesktop_<version>.pkg` installs
+  `/Applications/Proxy Monster Desktop.app` and links `/usr/local/bin/pmon` to
+  the `pmon` inside it.
+- `ProxyMonsterDesktop_<version>_darwin_universal.zip` is the app alone.
+
+The release job runs `signing-keychain.sh`, `build-app.sh` and
+`package-macos.sh`; each script lists the environment it reads. Unset, the
+signing and notarization inputs fall back to an ad-hoc, unnotarized build.
 
 ## The menu
 

@@ -8,8 +8,12 @@ require (
 )
 
 require (
+	github.com/aws/aws-sdk-go-v2 v1.47.1 // indirect
+	github.com/aws/aws-sdk-go-v2/service/athena v1.66.1 // indirect
+	github.com/aws/smithy-go v1.28.1 // indirect
 	github.com/godbus/dbus/v5 v5.1.0 // indirect
-	golang.org/x/sys v0.15.0 // indirect
+	github.com/ridi-oss/proxy-monster/mysqlwire v0.1.4 // indirect
+	golang.org/x/sys v0.47.0 // indirect
 )
 
 // In-repo module: resolve locally (no go.work needed for CI / fresh clones).

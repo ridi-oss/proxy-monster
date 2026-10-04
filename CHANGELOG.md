@@ -1,5 +1,36 @@
 # Changelog
 
+## [0.1.29](https://github.com/ridi-oss/proxy-monster/compare/server-v0.1.28...server-v0.1.29) (2026-10-04)
+
+
+### Features
+
+* **control-plane:** flag system-schema columns in the catalog browse ([d09d4df](https://github.com/ridi-oss/proxy-monster/commit/d09d4df307a4a5522e3274a6d19192ea5b2124b9))
+* **editor:** report and set each editor session's namespace ([2c3430f](https://github.com/ridi-oss/proxy-monster/commit/2c3430f2776af529d529dd9b7dd13f33f6e8ad06))
+* **web:** a column in the tree opens its table on the column, flashed ([b806d8c](https://github.com/ridi-oss/proxy-monster/commit/b806d8cddc8571683bc28159aba7739e2e4216b1))
+* **web:** mark the session's search path in the schema tree and switch it ([e339ce7](https://github.com/ridi-oss/proxy-monster/commit/e339ce75b69f205edf05abee0d28baf7b5f157d5))
+* **web:** name tree objects as SQL writes them ([84cfe44](https://github.com/ridi-oss/proxy-monster/commit/84cfe444a238d2fde92763a37ac7d374938322ff))
+* **web:** rebuild the editor's schema explorer as a tree ([1d9afbf](https://github.com/ridi-oss/proxy-monster/commit/1d9afbf175764fed5f0546ed495d0df9ab32b544))
+* **web:** show the datasource catalog's tables in the schema tree ([08f9d90](https://github.com/ridi-oss/proxy-monster/commit/08f9d90b58d179b65f730a46e32001ea903567bb))
+
+
+### Bug Fixes
+
+* **classification:** open PostgreSQL current_setting like SHOW &lt;guc&gt; ([e94bade](https://github.com/ridi-oss/proxy-monster/commit/e94bade9f3766479a4c93e7c93ce21ed22cf55f1))
+* **mcp:** return the target DB error text from a failed run_query ([a9bdfd8](https://github.com/ridi-oss/proxy-monster/commit/a9bdfd8fa04cfbcac4144687103dfef0b35d5a84))
+* **web:** clip long column types in the datasource catalog ([34269f4](https://github.com/ridi-oss/proxy-monster/commit/34269f4de70735b55ce99c1a0e328e8ddf52d837))
+* **web:** keep the editor's datasource when navigating back to it ([0b14c40](https://github.com/ridi-oss/proxy-monster/commit/0b14c40647506dc1bd31fcdd33c76320b8a329d5))
+
+
+### Refactoring
+
+* **mcp:** serve tool descriptions in English only ([c856a8d](https://github.com/ridi-oss/proxy-monster/commit/c856a8d2cba066b2802665542757985d8c3310ca))
+
+
+### Build & Dependencies
+
+* **release:** fence the empty Release-As commit out of every train ([6dfe10f](https://github.com/ridi-oss/proxy-monster/commit/6dfe10fe32c9f1e6e5e7bac409fd5b93447b0341))
+
 ## [0.1.28](https://github.com/ridi-oss/proxy-monster/compare/server-v0.1.27...server-v0.1.28) (2026-10-01)
 
 

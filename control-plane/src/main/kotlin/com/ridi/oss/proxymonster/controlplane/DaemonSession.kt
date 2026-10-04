@@ -4,6 +4,7 @@ import com.ridi.oss.proxymonster.controlplane.AuthAuditRecorder.Companion.ACTION
 import com.ridi.oss.proxymonster.controlplane.AuthAuditRecorder.Companion.ACTION_SESSION_RENEW
 import com.ridi.oss.proxymonster.controlplane.AuthAuditRecorder.Companion.CHANNEL_PMON
 import com.ridi.oss.proxymonster.controlplane.AuthAuditRecorder.Companion.CHANNEL_SESSION
+import com.ridi.oss.proxymonster.auth.canonicalScopes
 import com.ridi.oss.proxymonster.controlplane.management.AuditActor
 import com.ridi.oss.proxymonster.controlplane.management.auditEntity
 import io.ktor.client.HttpClient
@@ -76,6 +77,8 @@ data class DaemonSessionRow(
     val lastIdpCheckAt: Instant?,
     val livenessStatus: String,
     val createdAt: Instant,
+    val scopes: Set<String> = emptySet(),
+    val elevatedUntil: Instant? = null,
 )
 
 data class WebSessionRow(
@@ -145,12 +148,22 @@ class PrincipalSessionStore(
      * Reads the row back on [c] (the just-inserted, still-uncommitted row), never the
      * plain [getById] which would open a second connection with a different view.
      */
-    fun create(principal: String, handle: String?, refreshToken: String?, windowSeconds: Long, ttlSeconds: Long, c: Connection): CreatedDaemonSession {
+    fun create(
+        principal: String,
+        handle: String?,
+        refreshToken: String?,
+        windowSeconds: Long,
+        ttlSeconds: Long,
+        c: Connection,
+        scopes: Set<String> = PMON_DEFAULT_SCOPES,
+        elevatedUntil: Instant? = null,
+    ): CreatedDaemonSession {
         val encrypted = refreshToken?.let { crypto?.encrypt(it.toByteArray(Charsets.UTF_8)) }
         val renewalToken = newRenewalToken()
         val id = c.prepareStatement(
-            """INSERT INTO principal_session (principal, handle, refresh_token_enc, ttl_seconds, absolute_expires_at, liveness_status, renewal_token_hash, kind)
-               VALUES (?, ?, ?, ?, now() + make_interval(secs => ?), ?, ?, 'DAEMON')
+            """INSERT INTO principal_session
+               (principal, handle, refresh_token_enc, ttl_seconds, absolute_expires_at, liveness_status, renewal_token_hash, kind, scopes, elevated_until)
+               VALUES (?, ?, ?, ?, now() + make_interval(secs => ?), ?, ?, 'DAEMON', ?, ?)
                RETURNING id""",
         ).use { ps ->
             ps.setString(1, principal)
@@ -160,6 +173,8 @@ class PrincipalSessionStore(
             ps.setDouble(5, windowSeconds.toDouble())
             ps.setString(6, LIVENESS_ACTIVE)
             ps.setString(7, sha256Hex(renewalToken))
+            ps.setString(8, canonicalScopes(scopes))
+            ps.setTimestamp(9, elevatedUntil?.let(java.sql.Timestamp::from))
             ps.executeQuery().use { rs -> rs.next(); rs.getLong(1) }
         }
         return CreatedDaemonSession(queryOneOn(c, "$SELECT AND id = ?") { it.setLong(1, id) }!!, renewalToken)
@@ -485,6 +500,44 @@ class PrincipalSessionStore(
             ps.executeUpdate()
         }
 
+    /**
+     * End daemon session [id] as signed out and revoke every token minted from it. A consent left with no
+     * live token is revoked too. Returns the principal when this call ended it, null when it was already ended.
+     */
+    fun endDaemon(id: Long, c: Connection): String? {
+        val principal = c.prepareStatement(
+            """UPDATE principal_session
+               SET ended_at = now(), ended_reason = ?, liveness_status = ?, absolute_expires_at = LEAST(absolute_expires_at, now())
+               WHERE id = ? AND kind = 'DAEMON' AND ended_at IS NULL
+               RETURNING principal""",
+        ).use { ps ->
+            ps.setString(1, ENDED_SIGNED_OUT)
+            ps.setString(2, LIVENESS_INACTIVE)
+            ps.setLong(3, id)
+            ps.executeQuery().use { rs -> if (rs.next()) rs.getString(1) else null }
+        } ?: return null
+        val consents = c.prepareStatement(
+            """UPDATE proxy_token SET revoked_at = now()
+               WHERE principal_session_id = ? AND revoked_at IS NULL
+               RETURNING consent_id""",
+        ).use { ps ->
+            ps.setLong(1, id)
+            ps.executeQuery().use { rs -> buildSet { while (rs.next()) rs.getObject(1, java.lang.Long::class.java)?.let { add(it.toLong()) } } }
+        }
+        for (consentId in consents) {
+            c.prepareStatement(
+                """UPDATE oauth_consent SET revoked_at = now(), updated_at = now()
+                   WHERE id = ? AND revoked_at IS NULL
+                     AND NOT EXISTS (SELECT 1 FROM proxy_token WHERE consent_id = ? AND revoked_at IS NULL AND expires_at > now())""",
+            ).use { ps ->
+                ps.setLong(1, consentId)
+                ps.setLong(2, consentId)
+                ps.executeUpdate()
+            }
+        }
+        return principal
+    }
+
     /** End every active web session for [principal], on a fresh connection. Already-ended rows remain unchanged. */
     fun endAllWebForPrincipal(principal: String, reason: String): Int =
         dataSource.connection.use { c -> endAllWebForPrincipal(principal, reason, c) }
@@ -587,6 +640,21 @@ class PrincipalSessionStore(
     }
 
     /**
+     * Re-read [row] under its principal's advisory lock and run [mint] on it — or return null when the row is
+     * gone, its liveness went INACTIVE, or the principal is deactivated. Deprovision takes the same lock.
+     */
+    fun <T> withLiveDaemonSessionLocked(
+        row: DaemonSessionRow,
+        isDeactivated: (String, Connection) -> Boolean,
+        mint: (DaemonSessionRow, Connection) -> T?,
+    ): T? = dataSource.inTx { c ->
+        c.advisoryLockPrincipal(row.principal)
+        val fresh = queryOneOn(c, "$SELECT AND id = ?") { it.setLong(1, row.id) } ?: return@inTx null
+        if (fresh.livenessStatus == LIVENESS_INACTIVE || isDeactivated(fresh.principal, c)) return@inTx null
+        mint(fresh, c)
+    }
+
+    /**
      * [withinWindow], scoped to ONE row by id and read on the caller-supplied (locked) connection
      * [c] — what [renewLocked] needs. Uses `clock_timestamp()`, NOT `now()`:
      * Postgres's `now()` is frozen at the enclosing TRANSACTION's start, not the current instant —
@@ -619,11 +687,14 @@ class PrincipalSessionStore(
         lastIdpCheckAt = getTimestamp("last_idp_check_at")?.toInstant(),
         livenessStatus = getString("liveness_status"),
         createdAt = getTimestamp("created_at").toInstant(),
+        scopes = parseScopes(getString("scopes")),
+        elevatedUntil = getTimestamp("elevated_until")?.toInstant(),
     )
 
     private companion object {
         const val SELECT =
-            """SELECT id, principal, handle, refresh_token_enc, ttl_seconds, absolute_expires_at, last_idp_check_at, liveness_status, created_at
+            """SELECT id, principal, handle, refresh_token_enc, ttl_seconds, absolute_expires_at, last_idp_check_at, liveness_status, created_at,
+                      scopes, elevated_until
                FROM principal_session
                WHERE kind = 'DAEMON'"""
     }
@@ -670,7 +741,7 @@ internal fun Route.sessionRenewRoutes(
             row,
             isDeactivated = { principal, c -> userGroupStore.isDeactivated(principal, c) },
             mint = { fresh, c ->
-                tokenStore.issue(TokenKind.SESSION, fresh.principal, emptyList(), name = null, ttlSeconds = fresh.ttlSeconds, c)
+                tokenStore.issue(TokenKind.SESSION, fresh.principal, emptyList(), name = null, ttlSeconds = fresh.ttlSeconds, c, fresh.id)
                     .also { token ->
                         authAudit.success(
                             c,

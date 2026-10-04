@@ -75,7 +75,7 @@ func (a *app) doLogout() {
 	if !a.confirmDroppingConns("Log out") {
 		return
 	}
-	if err := client.Logout(a.ctx, control.LogoutRequest{All: true}); err != nil {
+	if _, err := client.Logout(a.ctx, control.LogoutRequest{All: true}); err != nil {
 		notify("proxy-monster", fmt.Sprintf("logout failed: %v", err))
 		return
 	}

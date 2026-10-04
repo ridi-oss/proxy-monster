@@ -71,19 +71,26 @@ func (f *fakeBackend) SetServer(SetServerRequest) (SetServerResult, error) {
 	return SetServerResult{Created: true}, nil
 }
 
-func (f *fakeBackend) UnsetServer(UnsetServerRequest) error { return nil }
+func (f *fakeBackend) UnsetServer(UnsetServerRequest) ([]string, error) { return nil, nil }
 
-func (f *fakeBackend) Logout(LogoutRequest) error {
+func (f *fakeBackend) Logout(LogoutRequest) ([]string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.logoutCalls++
-	return nil
+	return []string{"hr"}, nil
 }
 
 func (f *fakeBackend) Reload() {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.reloadCalls++
+}
+
+func (f *fakeBackend) MCPToken(_ context.Context, req MCPTokenRequest) (MCPToken, error) {
+	if req.Server == "nowhere" {
+		return MCPToken{}, errors.New("not logged in to \"nowhere\" — run `pmon login nowhere`")
+	}
+	return MCPToken{URL: "https://pm.example/mcp", Token: "pma_" + req.Server, ExpiresAt: "2026-07-26T00:10:00Z"}, nil
 }
 
 func (f *fakeBackend) Shutdown() {
@@ -385,7 +392,7 @@ func TestLogoutAndReloadDriveTheBackend(t *testing.T) {
 	c := serve(t, backend)
 	ctx := context.Background()
 
-	if err := c.Logout(ctx, LogoutRequest{}); err != nil {
+	if _, err := c.Logout(ctx, LogoutRequest{}); err != nil {
 		t.Fatalf("Logout: %v", err)
 	}
 	if err := c.Reload(ctx); err != nil {
@@ -540,6 +547,19 @@ func TestDaemonBinaryFailsWhenNoPmonExists(t *testing.T) {
 	}
 }
 
+// TestMCPTokenRelaysTheDaemonsAnswer: a bridge gets its token, or the daemon's not-logged-in message, over the
+// control socket.
+func TestMCPTokenRelaysTheDaemonsAnswer(t *testing.T) {
+	c := serve(t, newFakeBackend())
+	tok, err := c.MCPToken(context.Background(), MCPTokenRequest{Server: "hr"})
+	if err != nil || tok.Token != "pma_hr" || tok.URL != "https://pm.example/mcp" {
+		t.Fatalf("MCPToken = %+v, %v", tok, err)
+	}
+	if _, err := c.MCPToken(context.Background(), MCPTokenRequest{Server: "nowhere"}); err == nil || !strings.Contains(err.Error(), "pmon login nowhere") {
+		t.Errorf("MCPToken for a logged-out server = %v, want the login hint", err)
+	}
+}
+
 // TestMutationsRejectGET is a small hardening check: the control socket can start a login, so a route that
 // mutates must not be reachable by a bare GET.
 func TestMutationsRejectGET(t *testing.T) {
@@ -547,7 +567,7 @@ func TestMutationsRejectGET(t *testing.T) {
 	sock, _ := state.SocketPath()
 	client := unixHTTPClient(sock)
 
-	for _, path := range []string{PathLogin, PathLogout, PathServerSet, PathServerUnset, PathReload, PathShutdown} {
+	for _, path := range []string{PathLogin, PathLogout, PathServerSet, PathServerUnset, PathReload, PathShutdown, PathMCPToken} {
 		resp, err := client.Get("http://pmon" + path)
 		if err != nil {
 			t.Fatalf("GET %s: %v", path, err)

@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
@@ -186,5 +188,61 @@ func TestRenewRetriesATransientFailure(t *testing.T) {
 	}
 	if errors.Is(err, ErrRenewalRefused) {
 		t.Error("a 500 was reported as a terminal refusal; the daemon would stop renewing on a transient fault")
+	}
+}
+
+// TestRunSendsRequestedScopes: --scopes travels on start and the granted scopes come back from poll; no
+// --scopes sends no list, so the server's default applies.
+func TestRunSendsRequestedScopes(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		scopes []string
+	}{
+		{"default", nil},
+		{"replaced", []string{"mcp:read", "mcp:approvals:write"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var sent map[string]any
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch r.URL.Path {
+				case "/auth/device/start":
+					_ = json.NewDecoder(r.Body).Decode(&sent)
+					_ = json.NewEncoder(w).Encode(map[string]any{"userCode": "ABCD-EFGH", "handle": "h-1", "interval": 1})
+				case "/auth/device/poll":
+					_ = json.NewEncoder(w).Encode(map[string]any{
+						"principal": "you@example.com", "token": "pmk_tok", "renewalToken": "pmr_abc",
+						"scopes": []string{"mcp:approvals:write", "mcp:read"}, "elevatedUntil": "2026-07-26T01:00:00Z",
+					})
+				}
+			}))
+			defer srv.Close()
+			res, err := Run(context.Background(), Options{ControlPlane: srv.URL, Scopes: tc.scopes, Sleep: noSleep, HTTPClient: srv.Client()})
+			if err != nil {
+				t.Fatalf("Run: %v", err)
+			}
+			got, present := sent["scopes"]
+			if tc.scopes == nil && present {
+				t.Errorf("start body = %v, want no scopes so the server default applies", sent)
+			}
+			if tc.scopes != nil && fmt.Sprint(got) != fmt.Sprint(tc.scopes) {
+				t.Errorf("start scopes = %v, want %v", got, tc.scopes)
+			}
+			if fmt.Sprint(res.Scopes) != "[mcp:approvals:write mcp:read]" || res.ElevatedUntil != "2026-07-26T01:00:00Z" {
+				t.Errorf("result = %+v, want the granted scopes and their window", res)
+			}
+		})
+	}
+}
+
+// TestRunSurfacesAnUnknownScope: the server refuses a scope it does not know and pmon says which.
+func TestRunSurfacesAnUnknownScope(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]any{"code": "device.unknown_scope", "params": map[string]string{"scope": "mcp:everything"}})
+	}))
+	defer srv.Close()
+	_, err := Run(context.Background(), Options{ControlPlane: srv.URL, Scopes: []string{"mcp:everything"}, Sleep: noSleep, HTTPClient: srv.Client()})
+	if err == nil || !strings.Contains(err.Error(), `unknown scope "mcp:everything"`) {
+		t.Errorf("Run error = %v, want it to name the unknown scope", err)
 	}
 }

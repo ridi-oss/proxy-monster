@@ -36,6 +36,9 @@ type ServerInfo struct {
 	LoggedIn         bool   `json:"loggedIn"`
 	ExpiresAt        string `json:"expiresAt,omitempty"`
 	SessionExpiresAt string `json:"sessionExpiresAt,omitempty"`
+	// Scopes is what the login granted; those beyond mcp:read and mcp:query last until ElevatedUntil.
+	Scopes        []string `json:"scopes,omitempty"`
+	ElevatedUntil string   `json:"elevatedUntil,omitempty"`
 	// ReauthRequired is set once renewal has been refused: the session window closed, so brokering keeps
 	// working only until the wire token expires and the user must log in again.
 	ReauthRequired bool `json:"reauthRequired"`
@@ -126,6 +129,28 @@ type LoginRequest struct {
 	Server       string `json:"server,omitempty"`
 	ControlPlane string `json:"controlPlane,omitempty"`
 	TTLSeconds   int    `json:"ttlSeconds,omitempty"`
+	// Scopes replaces the server's default scopes when non-empty.
+	Scopes []string `json:"scopes,omitempty"`
+}
+
+// MCPTokenRequest asks for an MCP access token from Server's login ([state.DefaultServer] when empty).
+type MCPTokenRequest struct {
+	Server string `json:"server,omitempty"`
+}
+
+// MCPToken is a short-lived MCP access token for URL, minted from the server's login.
+type MCPToken struct {
+	URL       string `json:"url"`
+	Token     string `json:"token"`
+	ExpiresAt string `json:"expiresAt"`
+	Scope     string `json:"scope"`
+}
+
+// LogoutResult is the daemon's state after a logout, plus the servers whose login could not be ended on the
+// control plane. Those stay valid there until their TTL.
+type LogoutResult struct {
+	Status
+	NotEndedOnServer []string `json:"notEndedOnServer,omitempty"`
 }
 
 // LogoutRequest clears one server's login ([state.DefaultServer] when empty), or every server's with All.
@@ -145,6 +170,8 @@ type SetServerResult struct {
 	Created   bool `json:"created"`
 	Changed   bool `json:"changed"`
 	LoggedOut bool `json:"loggedOut"`
+	// NotEndedOnServer is set when the logged-out login could not be ended on the control plane.
+	NotEndedOnServer bool `json:"notEndedOnServer,omitempty"`
 }
 
 // UnsetServerRequest deletes a server, logging it out first.
@@ -164,8 +191,12 @@ type LoginEvent struct {
 	VerificationURIComplete string `json:"verificationUriComplete,omitempty"`
 	UserCode                string `json:"userCode,omitempty"`
 	// Done fields, set when Kind == "done".
-	Principal string `json:"principal,omitempty"`
-	ExpiresAt string `json:"expiresAt,omitempty"`
+	Principal     string   `json:"principal,omitempty"`
+	ExpiresAt     string   `json:"expiresAt,omitempty"`
+	Scopes        []string `json:"scopes,omitempty"`
+	ElevatedUntil string   `json:"elevatedUntil,omitempty"`
+	// ReplacedNotEndedOnServer reports that the login this one replaced could not be ended on the control plane.
+	ReplacedNotEndedOnServer bool `json:"replacedNotEndedOnServer,omitempty"`
 	// Error, set when Kind == "error".
 	Error string `json:"error,omitempty"`
 }
@@ -194,4 +225,5 @@ const (
 	PathReload      = "/reload"
 	PathShutdown    = "/shutdown"
 	PathEvents      = "/events"
+	PathMCPToken    = "/mcp-token"
 )

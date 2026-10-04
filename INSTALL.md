@@ -117,6 +117,9 @@ configured per proxy under `PM_TARGET_*`.
   integer seconds (no unit). Default `600`.
 - `PM_OAUTH_ACCESS_TTL` / `PM_OAUTH_REFRESH_TTL` — _optional_. MCP OAuth token
   lifetimes (seconds). Defaults `600` · `21600`.
+- `PM_ELEVATED_SCOPE_TTL` — _optional_. How long a pmon login's scopes beyond
+  `mcp:read` and `mcp:query` last after its browser approval (seconds, clamped
+  to 60–86400). Default `3600`.
 - `PM_SCIM_TOKEN` — _optional_. SCIM provisioning bearer (OIDC just-in-time is
   the default).
 - `PM_SLACK_BOT_TOKEN` / `PM_SLACK_APP_TOKEN` — _optional_. Slack notifications
@@ -271,6 +274,9 @@ the logged-in principal may connect to and dials each one's `PM_ADVERTISE_ADDR`.
   `pmon login --url https://console.example.com`
 - `--ttl` (on `pmon login`) — _optional_. Wire-token lifetime in seconds.
   Default `43200` (12h).
+- `--scopes` (on `pmon login`) — _optional_. Comma-separated scopes the login
+  grants, replacing the default `mcp:read,mcp:query`. Scopes beyond that pair
+  last `PM_ELEVATED_SCOPE_TTL`.
 - local broker port — _not configurable_. The daemon assigns each datasource the
   next free loopback port at or above `6100` and persists it, so a datasource
   keeps the same port across restarts. Ports are unique across servers.
@@ -571,9 +577,20 @@ the user's datasources in its MCP `instructions` on every connection, so that
 survives agent restarts. The server is installed as `pmon-<PM_INSTANCE_NAME>`,
 so a user with several proxy-monster instances gets one distinctly named entry
 per instance, and pasting an instance's block again replaces its entry. The
-block carries no secret. claude.ai, Claude Desktop, and ChatGPT are not
-supported: their connectors reach MCP servers from the vendor's cloud, while a
-proxy-monster server accepts direct connections from the user's machine only.
+block carries no secret.
+
+A second block, **Already use pmon? Share its login**, installs the same server
+as a local stdio command, `pmon mcp <instance>`, which relays to `/mcp` with an
+MCP token minted from the user's pmon login (see
+[pmon/README.md](./pmon/README.md#mcp)). One `pmon login` then serves both SQL
+clients and agents, and it works when the agent runs on a remote machine,
+because the device login completes in any browser. This is also how Claude
+Desktop connects: its local stdio servers run on the user's machine. claude.ai
+and ChatGPT are not supported: their connectors reach MCP servers from the
+vendor's cloud, while a proxy-monster server accepts direct connections from the
+user's machine only. The `get_pmon_guide` MCP tool gives an agent the same pmon
+setup for its instance, plus one `pmon show` line per datasource the user may
+connect to.
 
 For the local defaults the instance is `local`, so the Claude Code commands are:
 

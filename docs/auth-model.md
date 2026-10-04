@@ -76,8 +76,9 @@ polls; the IdP is reached in the browser via the ordinary auth-code flow, never
 a device grant.
 
 ```
-pmon:  POST /auth/device/start
-cp:    → mint a PENDING login: an opaque handle (pmon polls it) + a short user_code (shown to the human)
+pmon:  POST /auth/device/start { ttlSeconds, scopes? }
+cp:    → refuse an unknown scope (device.unknown_scope); no list means mcp:read + mcp:query
+       → mint a PENDING login: an opaque handle (pmon polls it) + a short user_code (shown to the human)
        → return { verificationUri={origin}/device, verificationUriComplete={origin}/device?user_code=…, userCode, handle, interval }
 pmon:  print the plain URL + the code (best-effort auto-open uses the complete URL, which prefills it),
        then POST /auth/device/poll { handle } every interval
@@ -85,11 +86,15 @@ user:  open /device (web)
 web:   signed in already? → show the code field
        not signed in?     → /login?return_to=/device… → SSO or debug → back to /device
 user:  confirm the prefilled code, or type the code from the terminal → Continue
-web:   POST /auth/device/confirm { userCode }   → CP validates it's a live pending login, sets the verify cookie
+web:   POST /auth/device/confirm { userCode }   → CP validates it's a live pending login, sets the verify cookie,
+       and answers { scopes, elevatedTtlSeconds }
+       scopes beyond mcp:read + mcp:query? → list each in plain words with its window → Approve
        → GET /auth/device/authorize?user_code=…
 cp:    approve the handle with the same live session that confirmed the code → 302 /device/success
+       extra scopes? → stamp elevated_until = now + PM_ELEVATED_SCOPE_TTL
        session missing or replaced? → back to /device to authenticate and confirm again
        → /auth/device/poll: 202 while PENDING; once approved, mint a wire SESSION token (one-time claim per handle)
+         and copy the scopes + elevated_until onto the daemon session
 pmon:  store the wire token; open the loopback brokers (one per datasource) immediately
 ```
 
@@ -119,6 +124,21 @@ pmon:  store the wire token; open the loopback brokers (one per datasource) imme
   confirmed, and a replaced session must authenticate and confirm again. The
   residual (a victim who confirms someone else's code anyway) is tracked in
   `docs/backlog.md`.
+- **Scopes are consented in the browser.** `pmon login --scopes` only asks; the
+  `/device` page shows every scope beyond `mcp:read` and `mcp:query`, and only
+  the human's approval grants them, for `PM_ELEVATED_SCOPE_TTL` from that
+  approval. The daemon session uses them to mint MCP tokens
+  ([mcp-access-control.md](./mcp-access-control.md#pmon-session-exchange)).
+- **pmon logout, and a re-login, end the session on the server.**
+  `POST /auth/session/logout` (bearer: the renewal token) ends the daemon
+  session (`SIGNED_OUT`, liveness `INACTIVE`), so renewal and the MCP exchange
+  refuse it, and revokes every token minted from it:
+  `proxy_token.principal_session_id` links the wire token from poll, each
+  renewed wire token, and each exchanged MCP token. A consent left with no live
+  token is revoked. An unknown or already-ended session answers 204 too. pmon
+  clears its local login even when the call fails, and says the login stays
+  valid on the server until its TTL. A new `pmon login` calls it with the
+  replaced login's renewal token after the new login is saved.
 - **Session renewal (decided).** A login opens a **session window**
   (`PM_SESSION_WINDOW`, default 2h). _Within_ it the daemon **silently
   re-mints** its wire SESSION token — **no re-prompt**. _After_ it, renewal is

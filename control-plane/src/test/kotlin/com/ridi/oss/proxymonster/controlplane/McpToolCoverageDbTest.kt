@@ -258,6 +258,7 @@ class McpToolCoverageDbTest {
 
         // JIT access, rates, audit, permissions and tokens.
         on("get_my_permissions") { client.ok(req, "get_my_permissions") }
+        on("get_pmon_guide") { client.ok(req, "get_pmon_guide") }
         on("request_access") {
             client.ok(req, "request_access", args("roleName" to jitRole.name, "reason" to "coverage")).also { accessRequestId = it.id() }
         }

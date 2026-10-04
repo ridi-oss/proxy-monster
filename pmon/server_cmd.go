@@ -32,6 +32,9 @@ func (c *serverSetCmd) Run() error {
 	if err != nil {
 		return err
 	}
+	if res.NotEndedOnServer {
+		warnNotEnded(c.Name)
+	}
 	switch {
 	case res.Created:
 		fmt.Printf("server %q set to %s — run `%s` to log in\n", c.Name, c.URL, loginHint(c.Name))
@@ -70,9 +73,11 @@ func (c *serverUnsetCmd) Run() error {
 		fmt.Printf("left server %q in place\n", c.Name)
 		return nil
 	}
-	if err := client.UnsetServer(ctx, control.UnsetServerRequest{Name: c.Name}); err != nil {
+	notEnded, err := client.UnsetServer(ctx, control.UnsetServerRequest{Name: c.Name})
+	if err != nil {
 		return err
 	}
+	warnNotEnded(notEnded...)
 	fmt.Printf("server %q deleted\n", c.Name)
 	return nil
 }
@@ -114,6 +119,13 @@ func loginSummary(srv control.ServerInfo) string {
 		return srv.Principal + " — reauth REQUIRED"
 	default:
 		return srv.Principal + " — token " + expiryLine(srv.ExpiresAt)
+	}
+}
+
+// warnNotEnded says, once per server, that its login was cleared here but not ended on the control plane.
+func warnNotEnded(servers ...string) {
+	for _, name := range servers {
+		fmt.Fprintf(os.Stderr, "warning: could not end the %q login on the server; it stays valid there until its TTL ends\n", name)
 	}
 }
 

@@ -1,6 +1,7 @@
 package com.ridi.oss.proxymonster.controlplane
 
 import com.cedarpolicy.value.IpAddress
+import com.ridi.oss.proxymonster.auth.OAuthAuthorizationStore
 import com.ridi.oss.proxymonster.controlplane.authz.Authz
 import com.ridi.oss.proxymonster.controlplane.authz.AuthzAction
 import com.ridi.oss.proxymonster.controlplane.authz.AuthzContext
@@ -666,7 +667,11 @@ fun Application.module(config: Config, core: ControlPlaneCore) {
         // SSO/debug choices, and /auth/session/renew (docs/auth-model.md "CLI / daemon login").
         deviceSessionRoutes(
             config, deviceLoginStore, principalSessionStore,
-            tokenStore, userGroupStore, core.authAudit, this@module.environment.log,
+            tokenStore, userGroupStore, core.authAudit, this@module.environment.log, core.clock,
+        )
+        pmonLogoutRoute(config, principalSessionStore, core.authAudit)
+        pmonMcpTokenRoute(
+            config, principalSessionStore, userGroupStore, OAuthAuthorizationStore(dataSource), core.authAudit, core.clock,
         )
 
         // SCIM 2.0 provisioning (docs/auth-model.md "SCIM 2.0 provisioning") — bearer+TLS gated,

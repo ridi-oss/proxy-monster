@@ -37,8 +37,44 @@ pmon server unset dev           # log out of dev and delete it
 ```
 
 Changing a logged-in server's URL logs it out: a token is only good against the
-control plane that issued it. A config from a single-server release loads as
-`default`, keeping its ports and password.
+control plane that issued it. Logging out (`pmon logout`, `server unset`, or a
+URL change) ends the login on the server first, revoking its SQL and MCP tokens,
+and a new `pmon login` ends the login it replaces once the new one is saved. If
+the server cannot be reached, the login is still cleared or replaced here, and
+pmon prints that the old one stays valid on the server until its TTL ends. A
+config from a single-server release loads as `default`, keeping its ports and
+password.
+
+### Scopes
+
+A login grants `mcp:read` and `mcp:query`. `--scopes` names every scope to grant
+instead, as a comma-separated list:
+
+```sh
+pmon login hr --scopes mcp:read,mcp:query,mcp:approvals:write
+```
+
+The browser approval page lists each scope beyond the default pair before you
+approve. Those extra scopes last `PM_ELEVATED_SCOPE_TTL` (default 1h) from the
+approval; read and query last the whole login. `pmon status` shows the granted
+scopes and when the extra ones expire. To change scopes, log in again.
+
+### MCP
+
+`pmon mcp [server]` is a local stdio MCP server. An agent runs it as a command,
+and it relays to `<server>/mcp` with a short-lived MCP token the daemon mints
+from your pmon login, so the agent needs no sign-in of its own:
+
+```sh
+claude mcp add --scope user pmon-hr -- pmon mcp hr
+codex mcp add pmon-hr -- pmon mcp hr
+```
+
+Claude Desktop takes the same command in `claude_desktop_config.json`:
+`"mcpServers": {"pmon-hr": {"command": "pmon", "args": ["mcp", "hr"]}}`. If the
+server is not logged in, `pmon mcp` exits with the `pmon login` to run. Name the
+pmon server after the proxy-monster instance, as the `get_pmon_guide` MCP tool
+does, so `pmon-<instance>` names one install everywhere.
 
 ## Commands
 
@@ -46,10 +82,11 @@ control plane that issued it. A config from a single-server release loads as
 |  |  |
 | --- | --- |
 | `pmon server set [name] --url U` / `unset [name]` / `list` | Manage servers (`-f` on `unset` skips the live-connection prompt) |
-| `pmon login [server] [--url U]` | Device-auth flow; starts the daemon if needed and opens the server's brokers |
-| `pmon logout [server] [--all]` | Clear a server's credentials and close its brokers (the daemon stays up) |
+| `pmon login [server] [--url U] [--scopes S]` | Device-auth flow; starts the daemon if needed and opens the server's brokers |
+| `pmon logout [server] [--all]` | End a server's login on the server and here, and close its brokers (the daemon stays up) |
 | `pmon show [server] <ds>` | One datasource's local connection string |
-| `pmon status` | Daemon state: every server's login and expiry, brokered datasources, live connections |
+| `pmon mcp [server]` | Local stdio MCP server relaying to the server's `/mcp` over the pmon login |
+| `pmon status` | Daemon state: every server's login, expiry, and scopes, brokered datasources, live connections |
 | `pmon start` / `stop` / `restart` | Daemon lifecycle (`-f` / `--force` on `stop` and `restart` skips the live-connection prompt) |
 | `pmon --version` | The release this binary was built from |
 

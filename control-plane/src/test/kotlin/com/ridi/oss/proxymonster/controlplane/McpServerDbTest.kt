@@ -227,6 +227,7 @@ class McpServerDbTest {
         val granted = instructions(connector)
         assertContains(granted, "\"hr-pmon\": HR and payroll data")
         assertContains(granted, "pmon-*")
+        assertContains(granted, "call get_pmon_guide")
         assertContains(granted, "- mcp-instr-orders (mysql): Orders and payments")
 
         val denied = instructions(stranger)
@@ -234,6 +235,52 @@ class McpServerDbTest {
         assertFalse("mcp-instr-orders" in denied, denied)
 
         assertEquals(instructions(connector), instructions(connector, "ko"), "instructions are English for every locale")
+    }
+
+    @Test
+    fun `get_pmon_guide gives this instance's pmon setup and only the caller's connectable datasources`() = testApplication {
+        application { installTestMcp() }
+        val client = createClient { expectSuccess = false }
+        core.datasourceStore.register("mcp-guide-orders", Engine.MYSQL, "db", 3306, "orders", emptyList(), "", null, false)
+        core.datasourceStore.register("mcp-guide-payroll", Engine.MYSQL, "db", 3306, "payroll", emptyList(), "", null, false)
+        val role = core.policyStore.createRole(RoleInput("mcp-guide-connect"))
+        core.cedarPolicyStore.create(
+            CedarPolicyInput(
+                "mcp-guide-connect",
+                """permit(principal in Role::"mcp-guide-connect", action == Action::"datasource.connect", resource == Datasource::"mcp-guide-orders");""",
+            ),
+            "admin@example.com",
+        )
+        val connector = "mcp-guide-connector@example.com"
+        grantRole(connector, role.name)
+        suspend fun guide(principal: String): String {
+            val response = client.post("/mcp") {
+                acceptMcp(token(principal, setOf("mcp:read")))
+                setBody(toolCall(1, "get_pmon_guide").toString())
+            }
+            val result = TEST_JSON.parseToJsonElement(response.bodyAsText()).jsonObject.getValue("result").jsonObject
+            val text = result.getValue("content").jsonArray.single().jsonObject.getValue("text").jsonPrimitive.content
+            assertEquals(text, result.getValue("structuredContent").jsonObject.getValue("result").jsonPrimitive.content)
+            return text
+        }
+
+        val granted = guide(connector)
+        assertContains(granted, "brew trust --formula ridi-oss/tap/pmon")
+        assertContains(granted, "brew install ridi-oss/tap/pmon")
+        assertContains(granted, "pmon server set hr-pmon --url http://localhost")
+        assertContains(granted, "pmon login hr-pmon\n")
+        assertContains(granted, "claude mcp add --scope user pmon-hr-pmon -- pmon mcp hr-pmon")
+        assertContains(granted, "codex mcp add pmon-hr-pmon -- pmon mcp hr-pmon")
+        assertContains(granted, "\"args\": [\"mcp\", \"hr-pmon\"]")
+        assertContains(granted, "pmon show hr-pmon mcp-guide-orders --cli")
+        assertFalse("mcp-guide-payroll" in granted, granted)
+        assertContains(granted, "pmon status")
+        assertContains(granted, "pmon logout hr-pmon")
+        assertContains(granted, "--scopes mcp:query,mcp:read,mcp:approvals:write")
+
+        val stranger = guide("mcp-guide-stranger@example.com")
+        assertFalse("pmon show" in stranger, stranger)
+        assertContains(stranger, "pmon login hr-pmon")
     }
 
     @Test

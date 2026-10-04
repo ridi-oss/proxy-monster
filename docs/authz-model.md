@@ -338,6 +338,7 @@ of a route and the gate it calls. Paths are relative to
 | OIDC web login | `/auth/oidc/login`, `/auth/oidc/callback` | `Oidc.kt` | none — this mints the session |
 | CLI device authorization | `/auth/device/start`, `/auth/device/poll` | `DeviceAuth.kt` | none — the handle plus the IdP grant are the credential |
 | Daemon session renew | `/auth/session/renew` | `DaemonSession.kt` | `Authorization: Bearer <renewalToken>` only |
+| Daemon session MCP token, logout | `/auth/session/mcp-token`, `/auth/session/logout` | `PmonMcpToken.kt` | `Authorization: Bearer <renewalToken>` only |
 | OAuth 2.1 authorization server | `/.well-known/oauth-authorization-server`, `/oauth/**` | `oauth/OAuthRoutes.kt` | protocol-native (PKCE, client metadata, consent CSRF); `/oauth/consents` needs a session |
 | MCP admin surface | `/mcp`, `/.well-known/oauth-protected-resource**` | `mcp/McpServer.kt` | MCP access-token bearer + host/origin checks in an interceptor; metadata routes public |
 | SCIM 2.0 provisioning | `/api/scim/v2/**` | `Scim.kt` | `requireScimAuth` — `PM_SCIM_TOKEN` bearer, TLS-only; 501 when unconfigured |
@@ -393,10 +394,11 @@ access-token bearer resolved in an interceptor
 ([`mcp-access-control.md`](./mcp-access-control.md)). `/auth/me`,
 `/auth/session/status`, and `/auth/session/heartbeat` sit inside Ktor's
 `WEB_SESSION_AUTH` authentication block instead of a helper.
-`POST /auth/session/renew` authenticates by the mint-once renewal-token bearer
-only — never a request-body principal. The task-event SSE stream resolves the
-session itself, ends the stream when there is none, and re-checks `task.read`
-per pushed event.
+`POST /auth/session/renew`, `/auth/session/mcp-token`, and
+`/auth/session/logout` authenticate by the mint-once renewal-token bearer only —
+never a request-body principal. The task-event SSE stream resolves the session
+itself, ends the stream when there is none, and re-checks `task.read` per pushed
+event.
 
 Two exceptions to "session or nothing":
 

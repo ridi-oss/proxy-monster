@@ -287,6 +287,56 @@ class OAuthAuthorizationStore(private val dataSource: DataSource) {
         pair
     }
 
+    /**
+     * Issue an access token with no refresh token on the caller's transaction [connection], for a caller that
+     * has already authenticated [principal] and decided [scopes]. Its consent row is what [McpTokenStore.resolveAccess]
+     * joins, so revoking that consent revokes the tokens too. Returns the token and its row id.
+     */
+    fun issueAccessOnly(
+        connection: Connection,
+        principal: String,
+        clientId: String,
+        resource: String,
+        scopes: Collection<String>,
+        expiresAt: Instant,
+        principalSessionId: Long? = null,
+    ): Pair<String, Long> {
+        val canonical = canonicalScopes(scopes)
+        val consentId = connection.prepareStatement(
+            """INSERT INTO oauth_consent (principal, client_id, resource, scope)
+               VALUES (?, ?, ?, ?)
+               ON CONFLICT (principal, client_id, resource, scope) WHERE revoked_at IS NULL
+               DO UPDATE SET updated_at = now()
+               RETURNING id""",
+        ).use { statement ->
+            statement.setString(1, principal)
+            statement.setString(2, clientId)
+            statement.setString(3, resource)
+            statement.setString(4, canonical)
+            statement.executeQuery().use { result -> result.next(); result.getLong(1) }
+        }
+        val access = randomSecret("pma_")
+        val id = connection.prepareStatement(
+            """INSERT INTO proxy_token
+               (token_hash, kind, principal, roles, expires_at, resource, client_id, scope, refresh_family, consent_id, principal_session_id)
+               VALUES (?, ?, ?, '[]'::jsonb, ?, ?, ?, ?, ?, ?, ?)
+               RETURNING id""",
+        ).use { statement ->
+            statement.setString(1, sha256Hex(access))
+            statement.setString(2, MCP_ACCESS_KIND)
+            statement.setString(3, principal)
+            statement.setTimestamp(4, java.sql.Timestamp.from(expiresAt))
+            statement.setString(5, resource)
+            statement.setString(6, clientId)
+            statement.setString(7, canonical)
+            statement.setString(8, randomSecret("pmf_", 24))
+            statement.setLong(9, consentId)
+            statement.setObject(10, principalSessionId, Types.BIGINT)
+            statement.executeQuery().use { result -> result.next(); result.getLong(1) }
+        }
+        return access to id
+    }
+
     /** [onCommit] runs inside this transaction with the consent id, so a caller's consent-grant audit commits
      *  or rolls back with the consent. */
     fun rememberConsent(

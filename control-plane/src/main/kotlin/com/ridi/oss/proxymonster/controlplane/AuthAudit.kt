@@ -118,6 +118,7 @@ class AuthAuditRecorder(private val auditStore: AuditStore) {
         const val ACTION_DEVICE_APPROVE = "auth.device.approve"
         const val ACTION_DEVICE_MINT = "auth.device.mint"
         const val ACTION_SESSION_RENEW = "auth.session.renew"
+        const val ACTION_SESSION_MCP_TOKEN = "auth.session.mcp_token"
         const val ACTION_SESSION_EXPIRE = "auth.session.expire"
         const val ACTION_WIRE_VALIDATE = "auth.wire.validate"
         const val ACTION_TOKEN_MINT = "auth.token.mint"

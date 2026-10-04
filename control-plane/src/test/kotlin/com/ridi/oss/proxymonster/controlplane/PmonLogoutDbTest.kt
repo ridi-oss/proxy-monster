@@ -4,13 +4,17 @@ import com.ridi.oss.proxymonster.controlplane.grpc.ControlPlaneGrpcService
 import com.ridi.oss.proxymonster.controlplane.support.MCP_TEST_JSON
 import com.ridi.oss.proxymonster.controlplane.support.SharedPostgres
 import com.ridi.oss.proxymonster.controlplane.support.installControlPlane
+import com.ridi.oss.proxymonster.controlplane.support.mcpCall
+import com.ridi.oss.proxymonster.controlplane.support.mcpRaw
 import com.ridi.oss.proxymonster.controlplane.support.mcpTestConfig
+import com.ridi.oss.proxymonster.controlplane.support.ok
 import com.ridi.oss.proxymonster.controlplane.support.pmonLogin
 import com.ridi.oss.proxymonster.controlplane.support.requireDockerOrSkip
 import com.ridi.oss.proxymonster.grpc.validateTokenRequest
 import io.grpc.Status
 import io.grpc.StatusException
 import io.ktor.client.HttpClient
+import io.ktor.client.request.delete
 import io.ktor.client.request.get
 import io.ktor.client.request.header
 import io.ktor.client.request.post
@@ -20,6 +24,9 @@ import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
 import io.ktor.server.testing.testApplication
 import kotlinx.coroutines.runBlocking
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import org.flywaydb.core.Flyway
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.Test
@@ -53,6 +60,12 @@ class PmonLogoutDbTest {
         header(HttpHeaders.Authorization, "Bearer $renewalToken")
     }
 
+    private suspend fun HttpClient.mint(renewalToken: String): PmonMcpTokenResponse {
+        val res = bearerPost("/auth/session/mcp-token", renewalToken)
+        assertEquals(HttpStatusCode.OK, res.status, res.bodyAsText())
+        return MCP_TEST_JSON.decodeFromString(res.bodyAsText())
+    }
+
     private fun wireValid(token: String): Boolean = try {
         runBlocking { grpc.validateToken(validateTokenRequest { this.token = token; datasourceName = datasource.name; clientAddr = "127.0.0.1" }) }
         true
@@ -62,26 +75,32 @@ class PmonLogoutDbTest {
     }
 
     @Test
-    fun `logout refuses renew and revokes the login's wire tokens`() = testApplication {
+    fun `logout refuses renew and the exchange, and revokes the login's wire and MCP tokens`() = testApplication {
         val client = installControlPlane(config, core)
         val caller = principal()
         val login = client.pmonLogin(caller)
         val renewed = MCP_TEST_JSON.decodeFromString<RenewSessionResponse>(
             client.bearerPost("/auth/session/renew", login.renewalToken).bodyAsText(),
         )
+        val mcp = client.mint(login.renewalToken)
         val other = client.pmonLogin(caller)
+        val otherMcp = client.mint(other.renewalToken)
         assertEquals(true, wireValid(login.token))
         assertEquals(true, wireValid(renewed.token))
+        client.mcpCall(mcp.accessToken, "get_my_permissions").ok()
 
         assertEquals(HttpStatusCode.NoContent, client.bearerPost("/auth/session/logout", login.renewalToken).status)
 
         assertEquals(HttpStatusCode.Unauthorized, client.bearerPost("/auth/session/renew", login.renewalToken).status)
+        assertEquals(HttpStatusCode.Unauthorized, client.bearerPost("/auth/session/mcp-token", login.renewalToken).status)
         assertEquals(false, wireValid(login.token))
         assertEquals(false, wireValid(renewed.token))
         assertFailsWith<StatusException> { core.resolveRequestIdentity(login.token, null) }
+        assertEquals(HttpStatusCode.Unauthorized, client.mcpRaw(mcp.accessToken, "get_my_permissions").status)
 
         assertEquals(true, wireValid(other.token), "another login of the same principal stays up")
-        assertEquals(HttpStatusCode.OK, client.bearerPost("/auth/session/renew", other.renewalToken).status)
+        client.mcpCall(otherMcp.accessToken, "get_my_permissions").ok()
+        client.mcpCall(client.mint(other.renewalToken).accessToken, "get_my_permissions").ok()
     }
 
     @Test
@@ -91,13 +110,34 @@ class PmonLogoutDbTest {
         val pmon = createClient { }
         val discover = suspend { pmon.get("/api/datasources") { header(HttpHeaders.Authorization, "Bearer ${login.token}") }.status }
         assertEquals(HttpStatusCode.OK, discover())
+        val mcp = client.mint(login.renewalToken)
 
         assertEquals(HttpStatusCode.NoContent, client.bearerPost("/auth/session/logout?replaced=true", login.renewalToken).status)
+
+        assertEquals(HttpStatusCode.Unauthorized, client.mcpRaw(mcp.accessToken, "get_my_permissions").status)
 
         assertEquals(HttpStatusCode.Unauthorized, client.bearerPost("/auth/session/renew", login.renewalToken).status)
         assertEquals(false, wireValid(login.token), "a new connection is refused")
         assertEquals(login.principal, core.resolveRequestIdentity(login.token, null).identity.principal, "an open connection's statements still run")
         assertEquals(HttpStatusCode.Unauthorized, discover(), "a retired token is refused as a fresh bearer")
+    }
+
+    @Test
+    fun `revoking the pmon consent on the web ends the pmon login`() = testApplication {
+        val client = installControlPlane(config, core)
+        val login = client.pmonLogin(principal())
+        val mcp = client.mint(login.renewalToken)
+        val listed = MCP_TEST_JSON.parseToJsonElement(client.get("/oauth/consents").bodyAsText()).jsonObject
+        val consent = listed["consents"]!!.jsonArray.map { it.jsonObject }.single { it["clientId"]!!.jsonPrimitive.content == PMON_MCP_CLIENT_ID }
+
+        val revoke = client.delete("/oauth/consents/${consent["id"]!!.jsonPrimitive.content}") {
+            header("X-PM-CSRF", listed["csrfToken"]!!.jsonPrimitive.content)
+        }
+        assertEquals(HttpStatusCode.NoContent, revoke.status)
+
+        assertEquals(HttpStatusCode.Unauthorized, client.mcpRaw(mcp.accessToken, "get_my_permissions").status)
+        assertEquals(HttpStatusCode.Unauthorized, client.bearerPost("/auth/session/mcp-token", login.renewalToken).status, "pmon cannot mint it back")
+        assertEquals(false, wireValid(login.token))
     }
 
     @Test

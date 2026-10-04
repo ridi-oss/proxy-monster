@@ -44,7 +44,8 @@
     "invalid_requester_ip": "유효한 IP 주소가 아닙니다.",
     "missing_renewal_token": "갱신용 베어러 토큰이 없습니다.",
     "principal_deprovisioned": "이 계정은 비활성화(deprovision)되었습니다.",
-    "session_window_expired": "세션이 만료되었거나 계정이 비활성화되었습니다. 다시 로그인해 주세요."
+    "session_window_expired": "세션이 만료되었거나 계정이 비활성화되었습니다. 다시 로그인해 주세요.",
+    "scopes_expired": "이 로그인의 추가 권한 범위가 만료되었고 다른 권한 범위가 없습니다. 필요한 권한 범위로 다시 로그인하세요."
   },
   "datasource": {
     "table_introspection_failed": "테이블 인트로스펙션에 실패했습니다: {detail}",

@@ -1,0 +1,39 @@
+version: v2
+# Go bindings for the proxy <-> control-plane gRPC contract (proto/src/main/proto/controlplane.proto),
+# the same shared .proto the Kotlin control-plane generates from today. Managed mode injects
+# go_package — the .proto declares only java_package/java_multiple_files and is still consumed by the
+# LIVE Kotlin build, so a Go option cannot be added to it. Regenerate with an explicit --path for
+# controlplane.proto only, so this module's codegen never picks up analyzer.proto (owned by
+# analyzer/buf.gen.yaml):
+#
+#   cd controlplane && buf generate ../proto/src/main/proto --path ../proto/src/main/proto/controlplane.proto
+#
+# (or, from the repo root: mise run cp-codegen)
+#
+# 🔴 The Mengine.proto option below is load-bearing, exactly as in goproxy/buf.gen.yaml.
+# controlplane.proto imports the shared engine.proto (proxymonster.v1.Engine). This module must NOT
+# generate a second copy of it: the control plane links analyzer/probe (A13's statement-facts data
+# types ARE the analyzer's proto messages), which already generates engine.proto into
+# analyzer/probe/pb. Two independently-generated Go types for one logical .proto file panic the
+# protobuf runtime's global file registry in init() ("file already registered") the instant both
+# packages are imported into one process — before main() runs, before any log line. The M-option
+# instead points engine.proto's Go package AT analyzer/probe/pb, so RegisterRequest's Engine field
+# resolves to that ALREADY-REGISTERED type: one Go type, shared, not two colliding ones.
+#
+# It cannot sidestep this by importing goproxy's stubs instead — goproxy/internal/pb sits under
+# internal/, importable only from within goproxy/….
+#
+# No M-option for google/protobuf/empty.proto: buf's managed mode leaves the well-known types alone
+# (goproxy/internal/pb/controlplane.pb.go builds today with the identical import).
+managed:
+  enabled: true
+  override:
+    - file_option: go_package_prefix
+      value: github.com/ridi-oss/proxy-monster/gocp/internal/pb
+plugins:
+  - local: protoc-gen-go
+    out: internal/pb
+    opt: paths=source_relative,Mengine.proto=github.com/ridi-oss/proxy-monster/analyzer/probe/pb
+  - local: protoc-gen-go-grpc
+    out: internal/pb
+    opt: paths=source_relative

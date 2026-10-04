@@ -1,0 +1,14 @@
+-- A development-only simulated source address for one console login.
+--
+-- Every authorization decision carries the requester's observed source address, and admin-authored
+-- rules derive named context tags from it -- a "trusted-network" tag earned by a CIDR match, for
+-- example -- which later rules condition on. On a development box every browser request arrives
+-- from loopback, so such a rule can never fire and the behavior it gates cannot be exercised
+-- without physically moving the client onto the matching network.
+--
+-- This column records an address chosen when a session is created through the debug-authentication
+-- bypass, and it is consulted ONLY while that bypass is enabled. With the bypass off the column is
+-- ignored outright and the observed socket peer stays authoritative, so a row left behind by an
+-- earlier development run can never weaken a real deployment. NULL means "use the observed
+-- address", which is what every non-debug login writes.
+ALTER TABLE principal_session ADD COLUMN debug_requester_ip TEXT;

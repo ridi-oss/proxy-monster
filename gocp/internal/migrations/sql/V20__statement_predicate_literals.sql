@@ -1,0 +1,11 @@
+-- Advisory hint: whether a request's statement compares a literal against a CLASSIFIED column (reader-neutral).
+--
+-- `WHERE ssn = '987-65-4320'` puts the protected value in the query itself, where masking cannot reach it:
+-- masking rewrites results, not predicates. So the statement TEXT must not be forwarded outside the console
+-- for such a request, whatever the configured disclosure mode.
+--
+-- Recorded at compose time, when the statement is analyzed anyway, rather than re-analyzed per delivery.
+-- TRUE withholds the text. NULL means the statement was never analyzed for this -- a request created before
+-- this column existed, or one the analyzer could not resolve -- and is treated exactly like TRUE, because
+-- absence of evidence is not evidence the statement is safe to forward.
+ALTER TABLE access_request ADD COLUMN statement_carries_protected_literal BOOLEAN;

@@ -17,8 +17,8 @@ import (
 	"time"
 
 	"github.com/ridi-oss/proxy-monster/pmon/control"
-	"github.com/ridi-oss/proxy-monster/pmon/providers"
-	"github.com/ridi-oss/proxy-monster/pmon/state"
+	"github.com/ridi-oss/proxy-monster/pmon/internal/providers"
+	"github.com/ridi-oss/proxy-monster/pmon/internal/state"
 )
 
 // isolate points the state directory at a temp dir and moves the broker port range out of the way, so a test

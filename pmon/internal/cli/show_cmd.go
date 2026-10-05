@@ -1,4 +1,4 @@
-package main
+package cli
 
 import (
 	"context"
@@ -9,7 +9,7 @@ import (
 	"github.com/ridi-oss/proxy-monster/pmon/conn"
 	"github.com/ridi-oss/proxy-monster/pmon/control"
 	"github.com/ridi-oss/proxy-monster/pmon/driver"
-	"github.com/ridi-oss/proxy-monster/pmon/state"
+	"github.com/ridi-oss/proxy-monster/pmon/internal/state"
 )
 
 type showCmd struct {

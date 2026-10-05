@@ -46,7 +46,8 @@ Modules:
 - `auditmon/` — Go audit-trail monitor: verifies the hash chain, anchors
   off-box, detects anomalies, and exports to a SIEM.
 - `pmon/` — Go client daemon: connect with a saved password while it brokers a
-  short-lived token upstream. Connection-string formatters and brokers use its
+  short-lived token upstream. Its menu-bar app is `pmon/tray/`.
+  Connection-string formatters and brokers use its
   [provider SPI](./pmon/AGENTS.md).
 - `mysqlwire/` — Go MySQL wire-protocol codec library (shared by `goproxy` and
   `pmon`).

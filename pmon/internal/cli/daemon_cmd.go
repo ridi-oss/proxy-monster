@@ -1,4 +1,4 @@
-package main
+package cli
 
 import (
 	"context"
@@ -6,7 +6,7 @@ import (
 	"syscall"
 
 	"github.com/ridi-oss/proxy-monster/pmon/internal/daemon"
-	"github.com/ridi-oss/proxy-monster/pmon/providers"
+	"github.com/ridi-oss/proxy-monster/pmon/internal/providers"
 )
 
 // daemonCmd runs the daemon in the foreground. It is the exec target of `pmon start` (which spawns it
@@ -17,5 +17,5 @@ type daemonCmd struct{}
 func (daemonCmd) Run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
-	return daemon.New(FullVersion(), providers.Builtins()).Run(ctx)
+	return daemon.New(version, providers.Builtins()).Run(ctx)
 }

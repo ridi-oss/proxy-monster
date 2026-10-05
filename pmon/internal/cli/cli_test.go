@@ -1,4 +1,4 @@
-package main
+package cli
 
 import (
 	"bytes"
@@ -34,7 +34,7 @@ func buildPmon(t *testing.T) string {
 	if raceEnabled {
 		args = append(args, "-race")
 	}
-	out, err := exec.Command("go", append(args, ".")...).CombinedOutput()
+	out, err := exec.Command("go", append(args, "../..")...).CombinedOutput()
 	if err != nil {
 		t.Fatalf("go build: %v\n%s", err, out)
 	}

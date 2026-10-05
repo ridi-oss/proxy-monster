@@ -15,9 +15,8 @@
 package main
 
 import (
-	"github.com/alecthomas/kong"
-
 	"github.com/ridi-oss/proxy-monster/pmon/control"
+	"github.com/ridi-oss/proxy-monster/pmon/internal/cli"
 )
 
 func init() {
@@ -27,30 +26,6 @@ func init() {
 	control.SelfRunsDaemon = true
 }
 
-// cli is the kong grammar for pmon's subcommands (matching goproxy's kong usage, kept consistent across the
-// repo rather than hand-rolled flag sets).
-type cli struct {
-	Server  serverCmd  `cmd:"" help:"Manage the servers pmon logs in to."`
-	Login   loginCmd   `cmd:"" help:"Authenticate in your browser; starts the daemon and opens the brokers."`
-	Logout  logoutCmd  `cmd:"" help:"Clear a server's credentials and close its brokers (the daemon stays up)."`
-	Show    showCmd    `cmd:"" help:"Print one datasource's local connection string."`
-	Status  statusCmd  `cmd:"" help:"Show the daemon's state: every server's login and brokered datasources."`
-	MCP     mcpCmd     `cmd:"" name:"mcp" help:"Run a local stdio MCP server that relays to the server's MCP endpoint over the pmon login."`
-	Start   startCmd   `cmd:"" help:"Start the daemon (no-op if one is already running)."`
-	Stop    stopCmd    `cmd:"" help:"Stop the daemon."`
-	Restart restartCmd `cmd:"" help:"Stop the daemon and start a fresh one."`
-	Daemon  daemonCmd  `cmd:"" hidden:"" help:"Run the daemon in the foreground (the exec target of 'pmon start')."`
-
-	Version kong.VersionFlag `help:"Print the version and exit." short:"V"`
-}
-
 func main() {
-	var c cli
-	ctx := kong.Parse(&c,
-		kong.Name("pmon"),
-		kong.Description("proxy-monster connector — reach a datasource on a stable local port with a password that never changes."),
-		kong.UsageOnError(),
-		kong.Vars{"version": FullVersion()},
-	)
-	ctx.FatalIfErrorf(ctx.Run())
+	cli.Main(FullVersion())
 }

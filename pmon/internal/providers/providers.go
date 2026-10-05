@@ -3,9 +3,9 @@ package providers
 
 import (
 	"github.com/ridi-oss/proxy-monster/pmon/driver"
-	"github.com/ridi-oss/proxy-monster/pmon/providers/athena"
-	"github.com/ridi-oss/proxy-monster/pmon/providers/mysql"
-	"github.com/ridi-oss/proxy-monster/pmon/providers/postgres"
+	"github.com/ridi-oss/proxy-monster/pmon/internal/providers/athena"
+	"github.com/ridi-oss/proxy-monster/pmon/internal/providers/mysql"
+	"github.com/ridi-oss/proxy-monster/pmon/internal/providers/postgres"
 )
 
 var builtins = driver.NewRegistry(

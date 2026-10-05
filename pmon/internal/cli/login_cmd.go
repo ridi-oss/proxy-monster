@@ -1,4 +1,4 @@
-package main
+package cli
 
 import (
 	"cmp"
@@ -10,7 +10,7 @@ import (
 
 	"github.com/ridi-oss/proxy-monster/pmon/control"
 	"github.com/ridi-oss/proxy-monster/pmon/internal/login"
-	"github.com/ridi-oss/proxy-monster/pmon/state"
+	"github.com/ridi-oss/proxy-monster/pmon/internal/state"
 )
 
 // loginCmd authenticates through the daemon's control socket: the DAEMON runs the device-auth flow and streams

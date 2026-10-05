@@ -1,4 +1,4 @@
-package main
+package cli
 
 import (
 	"context"
@@ -7,7 +7,7 @@ import (
 	"text/tabwriter"
 
 	"github.com/ridi-oss/proxy-monster/pmon/control"
-	"github.com/ridi-oss/proxy-monster/pmon/state"
+	"github.com/ridi-oss/proxy-monster/pmon/internal/state"
 )
 
 // serverCmd manages the control planes pmon logs in to. A command that names no server addresses "default".

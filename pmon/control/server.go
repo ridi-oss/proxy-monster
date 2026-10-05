@@ -11,7 +11,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/ridi-oss/proxy-monster/pmon/state"
+	"github.com/ridi-oss/proxy-monster/pmon/internal/state"
 )
 
 // Backend is what the daemon implements for the control API to drive. It exists so the socket server holds no

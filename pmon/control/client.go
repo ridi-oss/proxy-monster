@@ -16,7 +16,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/ridi-oss/proxy-monster/pmon/state"
+	"github.com/ridi-oss/proxy-monster/pmon/internal/state"
 )
 
 // ErrDaemonNotRunning reports that no daemon is listening. Every peer command handles this rather than

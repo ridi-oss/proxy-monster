@@ -19,7 +19,7 @@ import (
 	"github.com/testcontainers/testcontainers-go/wait"
 
 	"github.com/ridi-oss/proxy-monster/pmon/driver"
-	"github.com/ridi-oss/proxy-monster/pmon/providers"
+	"github.com/ridi-oss/proxy-monster/pmon/internal/providers"
 )
 
 const postgresInteropImage = "postgres:16"

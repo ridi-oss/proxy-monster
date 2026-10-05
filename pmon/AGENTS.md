@@ -3,18 +3,30 @@
 The daemon owns login state, discovery, sticky ports, listener binding, and
 active connections. Protocol behavior belongs to providers.
 
+## Layout
+
+- `main.go`, `version.go` — the `pmon` binary.
+- `internal/cli/` — the commands, including the hidden `pmon daemon` entry
+  point.
+- `internal/daemon/` — the background process.
+- `control/` — the control-socket API between the daemon and its clients: the
+  CLI and `tray/`.
+- `tray/` — the menu-bar app, a separate Go module (cgo) so `pmon` stays a
+  static binary.
+
 ## Protocol SPI
 
 - `driver/` defines endpoints, credentials, the per-engine `Provider` contract
   (engine name, connection-string formatting, listener-level brokering), and the
   immutable registry.
-- `providers/` is the composition root: one `Provider` per engine, declaring the
-  formats it supports and its default. An engine pmon cannot front yet still
-  formats; its `UnavailableReason` says why.
-- `providers/mysql/` owns MySQL formatting, handshakes, TLS negotiation, and
-  relay. `providers/postgres/` formats only; its broker is a stub.
-- `providers/athena/` verifies local SigV4 requests and forwards them over
-  verified HTTPS with the current PM token. Local credentials bind to
+- `internal/providers/` is the composition root: one `Provider` per engine,
+  declaring the formats it supports and its default. An engine pmon cannot front
+  yet still formats; its `UnavailableReason` says why.
+- `internal/providers/mysql/` owns MySQL formatting, handshakes, TLS
+  negotiation, and relay. `internal/providers/postgres/` formats only; its
+  broker is a stub.
+- `internal/providers/athena/` verifies local SigV4 requests and forwards them
+  over verified HTTPS with the current PM token. Local credentials bind to
   principal + datasource.
 - `conn/` preserves the public formatting API. Its unknown-engine MySQL fallback
   is compatibility behavior, not a broker-selection or format-capability rule.

@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ridi-oss/proxy-monster/pmon/state"
+	"github.com/ridi-oss/proxy-monster/pmon/internal/state"
 )
 
 // unixHTTPClient is a raw HTTP client over the control socket, for asserting transport-level behavior the

@@ -13,8 +13,8 @@ import (
 
 	"github.com/ridi-oss/proxy-monster/pmon/control"
 	"github.com/ridi-oss/proxy-monster/pmon/driver"
-	"github.com/ridi-oss/proxy-monster/pmon/providers"
-	"github.com/ridi-oss/proxy-monster/pmon/state"
+	"github.com/ridi-oss/proxy-monster/pmon/internal/providers"
+	"github.com/ridi-oss/proxy-monster/pmon/internal/state"
 )
 
 func loginTo(t *testing.T, d *Daemon, server, url string) {

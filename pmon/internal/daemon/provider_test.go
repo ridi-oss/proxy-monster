@@ -13,7 +13,7 @@ import (
 	"github.com/ridi-oss/proxy-monster/mysqlwire"
 	"github.com/ridi-oss/proxy-monster/pmon/control"
 	"github.com/ridi-oss/proxy-monster/pmon/driver"
-	"github.com/ridi-oss/proxy-monster/pmon/providers"
+	"github.com/ridi-oss/proxy-monster/pmon/internal/providers"
 )
 
 type servingBroker struct {

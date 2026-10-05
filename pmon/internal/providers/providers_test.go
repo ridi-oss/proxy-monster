@@ -4,7 +4,7 @@ import (
 	"testing"
 
 	"github.com/ridi-oss/proxy-monster/pmon/driver"
-	"github.com/ridi-oss/proxy-monster/pmon/providers"
+	"github.com/ridi-oss/proxy-monster/pmon/internal/providers"
 )
 
 func TestBuiltinsPreserveBrokerSupport(t *testing.T) {

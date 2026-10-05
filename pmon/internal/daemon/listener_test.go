@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ridi-oss/proxy-monster/pmon/providers"
+	"github.com/ridi-oss/proxy-monster/pmon/internal/providers"
 )
 
 type countedConn struct {

@@ -146,6 +146,8 @@ object McpCapabilityRegistry {
         // A label only: the answer is the caller's own Cedar decisions.
         task("get_my_permissions", AuthzAction.TASK_READ, "mcp:read", write = false),
         task("get_pmon_guide", AuthzAction.TASK_READ, "mcp:read", write = false),
+        task("get_usage_guide", AuthzAction.TASK_READ, "mcp:read", write = false),
+        task("get_admin_guide", AuthzAction.TASK_READ, "mcp:read", write = false),
         task("list_audit", AuthzAction.AUDIT_READ, "mcp:read", write = false),
         task("get_audit_event", AuthzAction.AUDIT_READ, "mcp:read", write = false),
         task("request_access", AuthzAction.TASK_REQUEST, "mcp:query", write = true),
@@ -180,7 +182,7 @@ object McpCapabilityRegistry {
         "list_connectable_datasources", "describe_datasource", "run_query", "get_query_result", "get_query_status",
         "cancel_query", "discover_roles", "request_approval", "list_my_approvals", "list_approval_inbox", "get_approval",
         "approve_approval", "reject_approval", "execute_approval", "get_approval_result", "cancel_approval",
-        "get_my_permissions", "get_pmon_guide", "list_audit", "get_audit_event", "request_access", "list_access_requests",
+        "get_my_permissions", "get_pmon_guide", "get_usage_guide", "get_admin_guide", "list_audit", "get_audit_event", "request_access", "list_access_requests",
         "list_access_grants", "reset_my_rate", "list_query_history", "clear_query_history", "delete_query_task",
         "approve_access_request", "reject_access_request", "revoke_access_grant",
         "list_tokens", "mint_token", "revoke_token",

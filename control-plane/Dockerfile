@@ -48,6 +48,7 @@ COPY engine ./engine
 COPY auth ./auth
 COPY proto ./proto
 COPY control-plane ./control-plane
+COPY docs/guides/usage.md docs/guides/admin.md ./docs/guides/
 
 RUN ./gradlew --no-daemon :control-plane:installDist -x test
 

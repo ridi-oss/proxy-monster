@@ -95,7 +95,9 @@ first, then walk me through it step by step.
 ```
 
 Swap in `admin.md` if you are the one configuring it. Each guide is written to
-be read cold, so the agent answers from it rather than guessing.
+be read cold, so the agent answers from it rather than guessing. An agent
+connected to proxy-monster over MCP reads them through the `get_usage_guide` and
+`get_admin_guide` tools.
 
 ## Documentation
 

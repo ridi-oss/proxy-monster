@@ -229,6 +229,8 @@ class McpServerDbTest {
         assertContains(granted, "\"hr-pmon\": HR and payroll data")
         assertContains(granted, "pmon-*")
         assertContains(granted, "call get_pmon_guide")
+        assertContains(granted, "call get_usage_guide")
+        assertContains(granted, "call get_admin_guide")
         assertContains(granted, "- mcp-instr-orders (mysql): Orders and payments")
 
         val denied = instructions(stranger)
@@ -282,6 +284,22 @@ class McpServerDbTest {
         val stranger = guide("mcp-guide-stranger@example.com")
         assertFalse("pmon show" in stranger, stranger)
         assertContains(stranger, "pmon login hr-pmon")
+    }
+
+    @Test
+    fun `get_usage_guide and get_admin_guide return the bundled guides as text`() = testApplication {
+        application { installTestMcp() }
+        val client = createClient { expectSuccess = false }
+        for ((tool, file) in listOf("get_usage_guide" to "usage.md", "get_admin_guide" to "admin.md")) {
+            val response = client.post("/mcp") {
+                acceptMcp(token("mcp-guides@example.com", setOf("mcp:read")))
+                setBody(toolCall(1, tool).toString())
+            }
+            val result = TEST_JSON.parseToJsonElement(response.bodyAsText()).jsonObject.getValue("result").jsonObject
+            val text = result.getValue("content").jsonArray.single().jsonObject.getValue("text").jsonPrimitive.content
+            assertEquals(javaClass.getResource("/guides/$file")!!.readText(), text)
+            assertTrue(text.startsWith("# "), text.take(200))
+        }
     }
 
     @Test

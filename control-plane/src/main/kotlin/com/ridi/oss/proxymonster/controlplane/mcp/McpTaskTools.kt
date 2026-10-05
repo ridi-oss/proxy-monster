@@ -149,6 +149,8 @@ internal class McpTaskTools(
             "get_pmon_guide" -> structured(
                 pmonGuide(config, core.datasourceStore.list().filter { mayConnect(core.authz, core.roleResolver, p, ip, it) }.map { it.name }),
             )
+            "get_usage_guide" -> structured(guide("usage.md"))
+            "get_admin_guide" -> structured(guide("admin.md"))
             "get_my_permissions" -> structured(
                 MyPermissions(computeMePermissions(p, core.authz, AuthzContext(requesterIp = ip)), core.roleResolver.resolveWithSources(p)),
             )
@@ -243,3 +245,6 @@ internal class McpTaskTools(
         const val MAX_PAGE = 1000
     }
 }
+
+private fun guide(file: String): String =
+    McpTaskTools::class.java.getResource("/guides/$file")?.readText() ?: error("guides/$file is missing from the jar")

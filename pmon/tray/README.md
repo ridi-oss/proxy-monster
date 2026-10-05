@@ -2,10 +2,10 @@
 
 Shipped as the app **Proxy Monster Desktop**; `pmontray` is its executable.
 
-A menu-bar front end for the [`pmon`](../pmon) daemon. It is a **peer of the
-CLI, not its owner**: both drive the same control socket, both can start and
-stop the daemon, and both work when it is down. Anything the menu does is
-equally doable with `pmon`, and vice versa.
+A menu-bar front end for the [`pmon`](..) daemon. It is a **peer of the CLI, not
+its owner**: both drive the same control socket, both can start and stop the
+daemon, and both work when it is down. Anything the menu does is equally doable
+with `pmon`, and vice versa.
 
 ```sh
 ./build-app.sh            # -> "./dist/Proxy Monster Desktop.app"

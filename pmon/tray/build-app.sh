@@ -38,7 +38,7 @@ trap 'rm -rf "$WORK"' EXIT
 pmon_slices=() tray_slices=()
 for arch in $ARCHS; do
     echo "building pmon and pmontray for ${arch}…"
-    (cd ../pmon && GOWORK=off CGO_ENABLED=0 GOOS=darwin GOARCH="$arch" \
+    (cd .. && GOWORK=off CGO_ENABLED=0 GOOS=darwin GOARCH="$arch" \
         go build -trimpath -ldflags "-s -w" -o "$WORK/pmon-$arch" .)
     # The systray is cgo; clang targets the slice's arch, so one host builds every slice.
     clang_arch="$arch"

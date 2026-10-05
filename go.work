@@ -6,5 +6,5 @@ use (
 	./goproxy
 	./mysqlwire
 	./pmon
-	./pmontray
+	./pmon/tray
 )

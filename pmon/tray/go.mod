@@ -1,4 +1,4 @@
-module github.com/ridi-oss/proxy-monster/pmontray
+module github.com/ridi-oss/proxy-monster/pmon/tray
 
 go 1.26.0
 
@@ -17,4 +17,4 @@ require (
 )
 
 // In-repo module: resolve locally (no go.work needed for CI / fresh clones).
-replace github.com/ridi-oss/proxy-monster/pmon => ../pmon
+replace github.com/ridi-oss/proxy-monster/pmon => ../

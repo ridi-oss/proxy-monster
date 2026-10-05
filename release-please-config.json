@@ -56,7 +56,7 @@
       "component": "server",
       "release-type": "simple",
       "changelog-path": "CHANGELOG.md",
-      "exclude-paths": ["pmon", "pmontray", "mysqlwire"],
+      "exclude-paths": ["pmon", "mysqlwire"],
       "extra-files": [
         {
           "type": "json",

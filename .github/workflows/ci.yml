@@ -234,6 +234,6 @@ jobs:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
         with:
-          go-version-file: pmontray/go.mod
+          go-version-file: pmon/tray/go.mod
       - name: Build, package, check
-        run: pmontray/smoke-macos.sh
+        run: pmon/tray/smoke-macos.sh

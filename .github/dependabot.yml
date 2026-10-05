@@ -38,7 +38,7 @@ updates:
       - /goproxy
       - /mysqlwire
       - /pmon
-      - /pmontray
+      - /pmon/tray
     schedule:
       interval: weekly
     commit-message:

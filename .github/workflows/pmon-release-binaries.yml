@@ -98,7 +98,7 @@ jobs:
 
       - uses: actions/setup-go@v7
         with:
-          go-version-file: pmontray/go.mod
+          go-version-file: pmon/tray/go.mod
 
       - name: Load the Developer ID identities
         env:
@@ -112,7 +112,7 @@ jobs:
           echo "KEYCHAIN=$RUNNER_TEMP/sign.keychain-db" >>"$GITHUB_ENV"
           echo "NOTARY_KEY_PATH=$RUNNER_TEMP/notary.p8" >>"$GITHUB_ENV"
           KEYCHAIN="$RUNNER_TEMP/sign.keychain-db" NOTARY_KEY_PATH="$RUNNER_TEMP/notary.p8"
-          pmontray/signing-keychain.sh "$KEYCHAIN"
+          pmon/tray/signing-keychain.sh "$KEYCHAIN"
           (umask 077 && printf '%s\n' "$NOTARY_KEY" >"$NOTARY_KEY_PATH")
 
       - name: Build, sign, notarize
@@ -123,9 +123,9 @@ jobs:
           set -euo pipefail
           export VERSION="${TAG#pmon-v}" SIGN_KEYCHAIN="$KEYCHAIN" ARCHS="arm64 amd64"
           SIGN_IDENTITY="Developer ID Application: RIDI Corporation (SNTDSH9YYM)" \
-            pmontray/build-app.sh "$RUNNER_TEMP/app"
+            pmon/tray/build-app.sh "$RUNNER_TEMP/app"
           INSTALLER_IDENTITY="Developer ID Installer: RIDI Corporation (SNTDSH9YYM)" \
-            pmontray/package-macos.sh "$RUNNER_TEMP/app/Proxy Monster Desktop.app" dist
+            pmon/tray/package-macos.sh "$RUNNER_TEMP/app/Proxy Monster Desktop.app" dist
           # Both artifacts must reach users notarized; the scripts skip notarization when its inputs are unset.
           spctl -a -vv -t install dist/*.pkg
           ditto -x -k dist/*.zip "$RUNNER_TEMP/unzipped"

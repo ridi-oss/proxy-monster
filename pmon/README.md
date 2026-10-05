@@ -129,9 +129,9 @@ the running process predates it. `pmon restart` picks up the current build.
 ## Architecture
 
 The daemon owns all state and logic and exposes a **local control socket**. This
-CLI and the [menu-bar app](../pmontray) are symmetric peers over that socket:
-neither is privileged, both can start and stop the daemon, and both work when it
-is down.
+CLI and the [menu-bar app](./tray) are symmetric peers over that socket: neither
+is privileged, both can start and stop the daemon, and both work when it is
+down.
 
 ```
 pmon CLI ──┐                        ┌── menu-bar app
@@ -187,9 +187,3 @@ pmon CLI ──┐                        ┌── menu-bar app
 | `PMON_CONFIG_DIR` | State directory (default: the user config dir). Set it to run several independent daemons |
 | `PMON_PORT_BASE` | Low end of the loopback port range (default 6100). Needed when two daemons share a machine — a separate state dir isolates state, not ports |
 | `PMON_BINARY` | The `pmon` binary that runs the daemon. Resolved automatically (this binary if it is `pmon`, else a sibling `pmon`, else `PATH`); set it for an unbundled dev build |
-
-## Not yet
-
-- **Notarized menu-bar app** — [`pmontray/`](../pmontray) is built and ad-hoc
-  signed; distributing it to other machines needs a Developer ID signature +
-  notarization.

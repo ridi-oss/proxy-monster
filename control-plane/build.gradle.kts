@@ -103,6 +103,14 @@ application {
 }
 
 
+// get_usage_guide / get_admin_guide serve the guides themselves, so the MCP text and the published docs cannot drift.
+tasks.processResources {
+    from(rootProject.file("docs/guides")) {
+        include("usage.md", "admin.md")
+        into("guides")
+    }
+}
+
 tasks.test {
     useJUnitPlatform()
     // DbSupportMatrixTest reads these from outside the source tree, so Gradle cannot infer them.

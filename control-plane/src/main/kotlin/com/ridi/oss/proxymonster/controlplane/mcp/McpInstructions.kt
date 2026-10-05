@@ -26,6 +26,8 @@ internal fun mcpInstructions(config: Config, core: ControlPlaneCore, context: Mc
         appendLine(
             "For SQL clients or scripts, or to share one pmon login across agents, call get_pmon_guide.",
         )
+        appendLine("For how to use proxy-monster — running queries, masked results, denials, approvals, access requests — call get_usage_guide.")
+        appendLine("For how to configure it — tags, roles, Cedar policy, presets, result caps — call get_admin_guide.")
         if (connectable.isEmpty()) {
             append("You cannot query any datasource here yet. request_access asks for a role that can.")
             return@buildString

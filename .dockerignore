@@ -34,6 +34,8 @@ go.work.sum
 # Docs — not needed to build, keep the context small
 *.md
 docs/
+!docs/guides/usage.md
+!docs/guides/admin.md
 pmon/launchd/*.plist
 
 # Local secrets — must never end up baked into an image layer

@@ -73,8 +73,35 @@ ambient JDK fails to compile.
 The console is at http://localhost:41300. The full walkthrough — component by
 component, local and AWS — is in [INSTALL.md](./INSTALL.md).
 
+## Using it
+
+Two guides in [docs/guides/](./docs/guides), written to be read by your agent so
+it can walk you through the system:
+
+- [usage.md](./docs/guides/usage.md) — querying through proxy-monster: the
+  console, what a masked result looks like, requesting access you do not have,
+  and connecting TablePlus or DataGrip through `pmon`.
+- [admin.md](./docs/guides/admin.md) — configuring it: tags, roles, policy, and
+  the MCP admin surface.
+
+### Let your agent walk you through it
+
+Already running an AI coding agent? Paste this:
+
+```
+Help me understand and use proxy-monster. Read
+https://raw.githubusercontent.com/ridi-oss/proxy-monster/main/docs/guides/usage.md
+first, then walk me through it step by step.
+```
+
+Swap in `admin.md` if you are the one configuring it. Each guide is written to
+be read cold, so the agent answers from it rather than guessing.
+
 ## Documentation
 
+- [docs/guides/](./docs/guides) — onboarding guides for people using
+  proxy-monster: [usage.md](./docs/guides/usage.md) (developers) and
+  [admin.md](./docs/guides/admin.md) (administrators).
 - [ARCHITECTURE.md](./ARCHITECTURE.md) — the components, topology, trust
   boundaries, and ports.
 - [INSTALL.md](./INSTALL.md) — install, run locally, and deploy (local + AWS

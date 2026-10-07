@@ -1,8 +1,12 @@
+//go:build !windows
+
 package main
 
 import (
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -99,6 +103,38 @@ func copyToClipboard(s string) error {
 	}
 	return cmd.Wait()
 }
+
+func noConsole(cmd *exec.Cmd) *exec.Cmd { return cmd }
+
+// platformKeySuffix is empty: the base messages are the macOS wording.
+const platformKeySuffix = ""
+
+// pmonName is the bundled CLI's file name.
+const pmonName = "pmon"
+
+func claudeDesktopConfig() string {
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, "Library", "Application Support", "Claude", "claude_desktop_config.json")
+}
+
+// withClaudeDesktopClosed just makes the edit: Claude Desktop for macOS keeps an edit made while it runs.
+func withClaudeDesktopClosed(edit func() error) error { return edit() }
+
+func claudeDesktopInstalled() bool {
+	_, err := os.Stat("/Applications/Claude.app")
+	return err == nil
+}
+
+// toolDirs are where installers put a CLI. An app opened from Finder gets a minimal PATH without ~/.local/bin or
+// Homebrew, so PATH alone would miss both.
+func toolDirs() []string {
+	home, _ := os.UserHomeDir()
+	return []string{filepath.Join(home, ".local", "bin"), "/opt/homebrew/bin", "/usr/local/bin", filepath.Join(home, ".npm-global", "bin")}
+}
+
+func toolNames(name string) []string { return []string{name} }
+
+func isRunnable(fi os.FileInfo) bool { return fi.Mode()&0o111 != 0 }
 
 // osaQuote renders s as an AppleScript string literal. Required, not cosmetic: a principal, datasource name, or
 // error message reaches these scripts as data, and an unescaped quote or backslash would otherwise let it

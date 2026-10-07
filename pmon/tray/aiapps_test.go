@@ -6,16 +6,26 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sync"
 	"testing"
 
 	"github.com/ridi-oss/proxy-monster/pmon/control"
 )
 
+// setHome points every per-user directory the AI apps use at dir: HOME on macOS, the profile and app-data
+// directories on Windows.
+func setHome(t *testing.T, dir string) {
+	t.Setenv("HOME", dir)
+	t.Setenv("USERPROFILE", dir)
+	t.Setenv("APPDATA", filepath.Join(dir, "AppData", "Roaming"))
+	t.Setenv("LOCALAPPDATA", filepath.Join(dir, "AppData", "Local"))
+}
+
 // Adding and removing proxy-monster must leave every other setting in Claude Desktop's config untouched.
 func TestClaudeDesktopEditKeepsOtherSettings(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	setHome(t, home)
 	path := claudeDesktopConfig()
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		t.Fatal(err)
@@ -53,7 +63,7 @@ func TestClaudeDesktopEditKeepsOtherSettings(t *testing.T) {
 	if got.GlobalShortcut != "Alt+Space" || other.String() != `{"command":"npx","args":["x"],"env":{"K":"V"}}` {
 		t.Errorf("other settings changed: %s", data)
 	}
-	if fi, _ := os.Stat(path); fi.Mode().Perm() != 0o640 {
+	if fi, _ := os.Stat(path); runtime.GOOS != "windows" && fi.Mode().Perm() != 0o640 {
 		t.Errorf("mode %v, want the original 0640", fi.Mode().Perm())
 	}
 
@@ -69,7 +79,7 @@ func TestClaudeDesktopEditKeepsOtherSettings(t *testing.T) {
 }
 
 func TestClaudeDesktopAddCreatesTheConfig(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	setHome(t, t.TempDir())
 	if err := claudeDesktop().add("proxy-monster", "/p/pmon", "default"); err != nil {
 		t.Fatal(err)
 	}
@@ -80,7 +90,7 @@ func TestClaudeDesktopAddCreatesTheConfig(t *testing.T) {
 
 // A config Claude Desktop cannot parse either must not be overwritten with one that drops its contents.
 func TestClaudeDesktopRefusesABrokenConfig(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	setHome(t, t.TempDir())
 	path := claudeDesktopConfig()
 	_ = os.MkdirAll(filepath.Dir(path), 0o700)
 	_ = os.WriteFile(path, []byte(`{"mcpServers": {`), 0o600)
@@ -117,7 +127,7 @@ func twoServersWith(name string) *control.Status {
 // JSON null is valid JSON but not a config; it must be refused, not crash the app.
 func TestClaudeDesktopRefusesNull(t *testing.T) {
 	for _, body := range []string{`null`, `{"mcpServers":null}`} {
-		t.Setenv("HOME", t.TempDir())
+		setHome(t, t.TempDir())
 		path := claudeDesktopConfig()
 		_ = os.MkdirAll(filepath.Dir(path), 0o700)
 		_ = os.WriteFile(path, []byte(body), 0o600)
@@ -128,7 +138,7 @@ func TestClaudeDesktopRefusesNull(t *testing.T) {
 }
 
 func TestClaudeDesktopConcurrentAddsKeepEveryEntry(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	setHome(t, t.TempDir())
 	var wg sync.WaitGroup
 	for i := range 20 {
 		wg.Add(1)
@@ -148,7 +158,7 @@ func TestClaudeDesktopConcurrentAddsKeepEveryEntry(t *testing.T) {
 
 // An entry with the same name that something else added is neither shown as connected, overwritten, nor removed.
 func TestClaudeDesktopLeavesAForeignEntryAlone(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	setHome(t, t.TempDir())
 	path := claudeDesktopConfig()
 	_ = os.MkdirAll(filepath.Dir(path), 0o700)
 	foreign := `{"mcpServers":{"proxy-monster":{"command":"/usr/bin/false","args":[]}}}`
@@ -186,7 +196,7 @@ func TestCLIGetParsing(t *testing.T) {
 
 // A tray using a non-default daemon hands its settings to the entry, so the AI app reaches the same daemon.
 func TestClaudeDesktopEntryCarriesTheDaemonSettings(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	setHome(t, t.TempDir())
 	t.Setenv("PMON_CONFIG_DIR", "/tmp/pmd-test")
 	t.Setenv("PMON_PORT_BASE", "46500")
 	if err := claudeDesktop().add("proxy-monster-ridi", "/p/pmon", "ridi"); err != nil {
@@ -227,5 +237,23 @@ func TestCLIEntryForAnotherDaemonIsNotConnected(t *testing.T) {
 	t.Setenv("PMON_PORT_BASE", "46500")
 	if !ours(c, a, e, pmon, "acme") {
 		t.Error("an entry for the daemon in use does not read as connected")
+	}
+}
+
+func TestClaudeDesktopConfigWithAByteOrderMark(t *testing.T) {
+	setHome(t, t.TempDir())
+	path := claudeDesktopConfig()
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("\xef\xbb\xbf{\"globalShortcut\":\"Alt+Space\"}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := claudeDesktop().add("proxy-monster-acme", "/pmon", "acme"); err != nil {
+		t.Fatalf("add on a config with a BOM: %v", err)
+	}
+	data, _ := os.ReadFile(path)
+	if bytes.HasPrefix(data, []byte("\xef\xbb\xbf")) || !bytes.Contains(data, []byte("Alt+Space")) || !bytes.Contains(data, []byte("proxy-monster-acme")) {
+		t.Errorf("config after add: %s", data)
 	}
 }

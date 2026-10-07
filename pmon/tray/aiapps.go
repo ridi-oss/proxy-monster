@@ -49,15 +49,13 @@ func bundledPmon() string {
 	if err != nil {
 		return "pmon"
 	}
-	return filepath.Join(filepath.Dir(exe), "pmon")
+	return filepath.Join(filepath.Dir(exe), pmonName)
 }
+
+// errDeclined is an AI-app change the user declined in a confirmation; it is reported as nothing.
+var errDeclined = errors.New("declined")
 
 // --- Claude Desktop: claude_desktop_config.json ---
-
-func claudeDesktopConfig() string {
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, "Library", "Application Support", "Claude", "claude_desktop_config.json")
-}
 
 type mcpCommand struct {
 	Command string            `json:"command"`
@@ -82,7 +80,7 @@ func claudeDesktop() aiApp {
 	return aiApp{
 		id: "claude-desktop", name: "Claude Desktop", after: T("ai.after.claude-desktop"),
 		installed: func() bool {
-			if _, err := os.Stat("/Applications/Claude.app"); err == nil {
+			if claudeDesktopInstalled() {
 				return true
 			}
 			_, err := os.Stat(filepath.Dir(claudeDesktopConfig()))
@@ -102,22 +100,26 @@ func claudeDesktop() aiApp {
 				return err
 			}
 			var taken error
-			err = editDesktopServers(claudeDesktopConfig(), func(m map[string]json.RawMessage) {
-				var c mcpCommand
-				if prev, ok := m[entry]; ok && (json.Unmarshal(prev, &c) != nil || c.Command != pmon) {
-					taken = errors.New(T("ai.taken", "app", "Claude Desktop", "entry", entry))
-					return
-				}
-				m[entry] = raw
+			err = withClaudeDesktopClosed(func() error {
+				return editDesktopServers(claudeDesktopConfig(), func(m map[string]json.RawMessage) {
+					var c mcpCommand
+					if prev, ok := m[entry]; ok && (json.Unmarshal(prev, &c) != nil || c.Command != pmon) {
+						taken = errors.New(T("ai.taken", "app", "Claude Desktop", "entry", entry))
+						return
+					}
+					m[entry] = raw
+				})
 			})
 			return cmp.Or(taken, err)
 		},
 		remove: func(entry, pmon, server string) error {
-			return editDesktopServers(claudeDesktopConfig(), func(m map[string]json.RawMessage) {
-				var c mcpCommand
-				if json.Unmarshal(m[entry], &c) == nil && ownCommand(c.Command, c.Args, pmon, server) {
-					delete(m, entry)
-				}
+			return withClaudeDesktopClosed(func() error {
+				return editDesktopServers(claudeDesktopConfig(), func(m map[string]json.RawMessage) {
+					var c mcpCommand
+					if json.Unmarshal(m[entry], &c) == nil && ownCommand(c.Command, c.Args, pmon, server) {
+						delete(m, entry)
+					}
+				})
 			})
 		},
 	}
@@ -135,6 +137,8 @@ func readDesktopServers(path string) (servers, top map[string]json.RawMessage, e
 	if err != nil {
 		return nil, nil, err
 	}
+	// Windows editors such as Notepad save JSON with a byte-order mark, which Claude Desktop accepts.
+	data = bytes.TrimPrefix(data, []byte("\xef\xbb\xbf"))
 	if len(bytes.TrimSpace(data)) > 0 {
 		if err := json.Unmarshal(data, &top); err != nil || top == nil {
 			return nil, nil, fmt.Errorf("%s is not a JSON object", path)
@@ -281,7 +285,7 @@ func cliApp(id, name, bin, after string, scope []string) aiApp {
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		out, err := exec.CommandContext(ctx, path, args...).CombinedOutput()
+		out, err := noConsole(exec.CommandContext(ctx, path, args...)).CombinedOutput()
 		if err != nil {
 			return string(out), fmt.Errorf("%s %s: %w: %s", bin, strings.Join(args[:2], " "), err, bytes.TrimSpace(out))
 		}
@@ -340,14 +344,14 @@ func cliApp(id, name, bin, after string, scope []string) aiApp {
 	}
 }
 
-// findTool looks a command up where installers put it. An app opened from Finder gets a minimal PATH without
-// ~/.local/bin or Homebrew, so PATH alone would miss both.
+// findTool looks a command up where installers put it, then on PATH.
 func findTool(name string) string {
-	home, _ := os.UserHomeDir()
-	for _, dir := range []string{filepath.Join(home, ".local", "bin"), "/opt/homebrew/bin", "/usr/local/bin", filepath.Join(home, ".npm-global", "bin")} {
-		p := filepath.Join(dir, name)
-		if fi, err := os.Stat(p); err == nil && !fi.IsDir() && fi.Mode()&0o111 != 0 {
-			return p
+	for _, dir := range toolDirs() {
+		for _, n := range toolNames(name) {
+			p := filepath.Join(dir, n)
+			if fi, err := os.Stat(p); err == nil && !fi.IsDir() && isRunnable(fi) {
+				return p
+			}
 		}
 	}
 	if p, err := exec.LookPath(name); err == nil {
@@ -425,12 +429,16 @@ func (a *app) doAIApp(act action) {
 		a.refreshAI(true)
 	}()
 	if act.connect {
-		if err := app.add(entry, bundledPmon(), act.server); err != nil {
+		if err := app.add(entry, bundledPmon(), act.server); errors.Is(err, errDeclined) {
+			return
+		} else if err != nil {
 			notify(T("n.aiAddFailed", "server", act.server, "app", app.name), err.Error())
 		} else {
 			notify(T("n.aiAdded", "server", act.server, "app", app.name), app.after)
 		}
-	} else if err := app.remove(entry, bundledPmon(), act.server); err != nil {
+	} else if err := app.remove(entry, bundledPmon(), act.server); errors.Is(err, errDeclined) {
+		return
+	} else if err != nil {
 		notify(T("n.aiRemoveFailed", "server", act.server, "app", app.name), err.Error())
 	} else {
 		notify(T("n.aiRemoved", "server", act.server, "app", app.name), "")

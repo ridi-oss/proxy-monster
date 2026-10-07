@@ -17,7 +17,7 @@ import (
 // Preferences logic runs against the actual control socket.
 func realDaemon(t *testing.T) {
 	t.Helper()
-	bin := filepath.Join(t.TempDir(), "pmon")
+	bin := filepath.Join(t.TempDir(), pmonName)
 	build := exec.Command("go", "build", "-o", bin, ".")
 	build.Dir = ".." // pmon's own module, so its go.sum resolves its dependencies
 	if out, err := build.CombinedOutput(); err != nil {

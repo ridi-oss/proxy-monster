@@ -176,17 +176,22 @@ func (p *prefs) aiState() []prefsAIApp {
 	return out
 }
 
-func (p *prefs) aiToggle(id, server string, on bool) string {
+func (p *prefs) aiToggle(id, server string, on bool) any {
 	p.aiMu.Lock()
 	defer p.aiMu.Unlock()
 	for _, app := range aiApps() {
 		if app.id != id {
 			continue
 		}
+		change := app.remove
 		if on {
-			return errText(app.add(mcpEntryName(server), bundledPmon(), server))
+			change = app.add
 		}
-		return errText(app.remove(mcpEntryName(server), bundledPmon(), server))
+		if err := change(mcpEntryName(server), bundledPmon(), server); errors.Is(err, errDeclined) {
+			return nil
+		} else {
+			return errText(err)
+		}
 	}
 	return "unknown app " + id
 }
@@ -417,7 +422,7 @@ func (p *prefs) start() string {
 func bundledPmonVersion() string {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, bundledPmon(), "--version").Output()
+	out, err := noConsole(exec.CommandContext(ctx, bundledPmon(), "--version")).Output()
 	if err != nil {
 		return ""
 	}

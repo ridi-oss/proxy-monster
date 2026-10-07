@@ -26,6 +26,12 @@ func loadCatalogs() map[string]map[string]string {
 		if err := json.Unmarshal(data, &m); err != nil {
 			panic(err)
 		}
+		// "<key>.<platform>" replaces "<key>" where the wording differs (menu bar vs notification area).
+		for k, v := range m {
+			if base, ok := strings.CutSuffix(k, "."+platformKeySuffix); ok && platformKeySuffix != "" {
+				m[base] = v
+			}
+		}
 		out[lang] = m
 	}
 	return out

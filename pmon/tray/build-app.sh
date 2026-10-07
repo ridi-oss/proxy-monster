@@ -89,6 +89,18 @@ cat > "$APP/Contents/Info.plist" <<PLIST
     <string>$MIN_MACOS</string>
     <key>NSHighResolutionCapable</key>
     <true/>
+    <!-- pmon://connect links from the console's Connect page. -->
+    <key>CFBundleURLTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleURLName</key>
+            <string>com.ridi.oss.proxymonster.connect</string>
+            <key>CFBundleURLSchemes</key>
+            <array>
+                <string>pmon</string>
+            </array>
+        </dict>
+    </array>
 </dict>
 </plist>
 PLIST

@@ -61,6 +61,16 @@ func setLoginItem(on bool) error {
 
 func activatePid(pid int) { C.pm_activate_pid(C.int(pid)) }
 
+// listenForLinks routes pmon:// links opened anywhere on this Mac to onConnectLink.
+func listenForLinks() { C.pm_url_init() }
+
+//export goURLOpened
+func goURLOpened(u *C.char) {
+	if f := onConnectLink; f != nil {
+		go f(C.GoString(u))
+	}
+}
+
 func prefBool(key string) bool {
 	k := C.CString(key)
 	defer C.free(unsafe.Pointer(k))

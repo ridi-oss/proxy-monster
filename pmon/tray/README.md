@@ -52,6 +52,36 @@ Update** while one waits. An organization turns updates off with a configuration
 profile setting `SUEnableAutomaticChecks` to false for
 `com.ridi.oss.proxymonster.pmontray`; Settings then shows the switch as managed.
 
+### Windows
+
+The same app runs in the Windows notification area. `package-windows.sh`, on
+macOS or Linux, builds `pmontray.exe` (no console window), `pmon.exe` and
+WinSparkle into a per-user MSI (`windows/ProxyMonsterDesktop.wxs`, built with
+msitools' `wixl`): it installs to
+`%LOCALAPPDATA%\Programs\Proxy Monster Desktop` and adds a Start menu shortcut.
+wixl has no ARM64 target, so the ARM64 MSI is an x64 package holding ARM64
+binaries, which a per-user install does not depend on; it refuses to install on
+an x64 PC.
+
+The installer is optional. The app itself registers `pmon://`, its notification
+identity (`HKCU\Software\Classes\AppUserModelId\RIDI.ProxyMonsterDesktop`) and
+Open at Login, and puts its folder on the user's PATH, so the three files of
+`ProxyMonsterDesktop_<version>_windows_<arch>.zip` run from any folder.
+
+Windows releases are signed by hand with a hardware token. Each `pmon-v*`
+release attaches attested unsigned binaries
+(`ProxyMonsterDesktop_<version>_windows_<arch>_unsigned.zip`). The token holder
+runs `sign-windows.sh pmon-v<version>` where the token is plugged in (macOS or
+Linux, with osslsigncode), which signs the executables, packages and signs the
+MSIs, and uploads them with the signed zips. Then
+`gh workflow run desktop-feed-windows.yml --ref pmon-v<version>` checks that the
+MSIs are signed by the certificate whose SHA-1 thumbprint is in
+`windows/signing-cert-sha1` (it refuses to publish until that file exists) and
+publishes `appcast-windows.xml` and `ProxyMonsterDesktop-x64.msi` on
+`desktop-feed`. WinSparkle reads that feed; an organization turns updates off
+with the policy value `AutoUpdate` = 0 under
+`HKLM\Software\Policies\RIDI\Proxy Monster Desktop`.
+
 ## The menu
 
 ```

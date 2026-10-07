@@ -30,8 +30,8 @@ type aiApp struct {
 }
 
 func aiApps() []aiApp {
-	return []aiApp{claudeDesktop(), cliApp("claude-code", "Claude Code", "claude", "New Claude Code sessions can use it.",
-		[]string{"--scope", "user"}), cliApp("codex", "Codex", "codex", "New Codex sessions can use it.", nil)}
+	return []aiApp{claudeDesktop(), cliApp("claude-code", "Claude Code", "claude", T("ai.after.claude-code"),
+		[]string{"--scope", "user"}), cliApp("codex", "Codex", "codex", T("ai.after.codex"), nil)}
 }
 
 // mcpEntryName is the name a server is registered under in an AI app's MCP settings.
@@ -80,7 +80,7 @@ func daemonEnv() map[string]string {
 
 func claudeDesktop() aiApp {
 	return aiApp{
-		id: "claude-desktop", name: "Claude Desktop", after: "Quit and reopen Claude Desktop to use it.",
+		id: "claude-desktop", name: "Claude Desktop", after: T("ai.after.claude-desktop"),
 		installed: func() bool {
 			if _, err := os.Stat("/Applications/Claude.app"); err == nil {
 				return true
@@ -106,7 +106,7 @@ func claudeDesktop() aiApp {
 			err = editDesktopServers(claudeDesktopConfig(), func(m map[string]json.RawMessage) {
 				var c mcpCommand
 				if prev, ok := m[entry]; ok && (json.Unmarshal(prev, &c) != nil || c.Command != pmon) {
-					taken = fmt.Errorf("Claude Desktop already has an MCP server named %s that Proxy Monster did not add. Rename or remove it first", entry)
+					taken = errors.New(T("ai.taken", "app", "Claude Desktop", "entry", entry))
 					return
 				}
 				m[entry] = raw
@@ -255,7 +255,7 @@ func cliApp(id, name, bin, after string, scope []string) aiApp {
 	run := func(args ...string) (string, error) {
 		path := findTool(bin)
 		if path == "" {
-			return "", fmt.Errorf("%s is not installed", name)
+			return "", errors.New(T("ai.notInstalled", "app", name))
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
@@ -289,7 +289,7 @@ func cliApp(id, name, bin, after string, scope []string) aiApp {
 		add: func(entry, pmon, server string) error {
 			exists, mine := lookup(entry, pmon, server)
 			if exists && !mine {
-				return fmt.Errorf("%s already has an MCP server named %s that Proxy Monster did not add. Rename or remove it in %s first", name, entry, name)
+				return errors.New(T("ai.taken", "app", name, "entry", entry))
 			}
 			if exists {
 				if _, err := run(append([]string{"mcp", "remove", entry}, scope...)...); err != nil {
@@ -305,7 +305,7 @@ func cliApp(id, name, bin, after string, scope []string) aiApp {
 		},
 		remove: func(entry, pmon, server string) error {
 			if exists, mine := lookup(entry, pmon, server); exists && !mine {
-				return fmt.Errorf("the %s entry %s is not Proxy Monster's, so it was left alone", name, entry)
+				return errors.New(T("ai.notOurs", "app", name, "entry", entry))
 			}
 			_, err := run(append([]string{"mcp", "remove", entry}, scope...)...)
 			return err
@@ -393,14 +393,14 @@ func (a *app) doAIApp(act action) {
 	entry := mcpEntryName(act.server)
 	if act.connect {
 		if err := app.add(entry, bundledPmon(), act.server); err != nil {
-			notify("Couldn't add "+act.server+" to "+app.name, err.Error())
+			notify(T("n.aiAddFailed", "server", act.server, "app", app.name), err.Error())
 		} else {
-			notify("Added "+act.server+" to "+app.name, app.after)
+			notify(T("n.aiAdded", "server", act.server, "app", app.name), app.after)
 		}
 	} else if err := app.remove(entry, bundledPmon(), act.server); err != nil {
-		notify("Couldn't remove "+act.server+" from "+app.name, err.Error())
+		notify(T("n.aiRemoveFailed", "server", act.server, "app", app.name), err.Error())
 	} else {
-		notify("Removed "+act.server+" from "+app.name, "")
+		notify(T("n.aiRemoved", "server", act.server, "app", app.name), "")
 	}
 	a.refreshAI(true)
 }

@@ -2,7 +2,10 @@
 
 package main
 
-import "errors"
+import (
+	"errors"
+	"unsafe"
+)
 
 var onNotificationClick func(key string)
 
@@ -17,6 +20,16 @@ func activatePid(int) {}
 func listenForLinks() {}
 
 var fakePrefs = map[string]bool{}
+
+var fakeStrings = map[string]string{}
+
+func prefString(key string) string { return fakeStrings[key] }
+
+func setPrefString(key, value string) { fakeStrings[key] = value }
+
+func preferredLanguages() []string { return nil }
+
+func applyTheme(unsafe.Pointer, string) {}
 
 func prefBool(key string) bool { return fakePrefs[key] }
 

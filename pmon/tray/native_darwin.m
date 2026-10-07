@@ -84,14 +84,14 @@ char *pm_set_login_item(bool on) {
                  : [SMAppService.mainAppService unregisterAndReturnError:&error];
     if (ok && on && SMAppService.mainAppService.status == SMAppServiceStatusRequiresApproval) {
       [SMAppService openSystemSettingsLoginItems];
-      return strdup("Allow Proxy Monster Desktop under Login Items in System Settings to finish.");
+      return strdup("needs-approval");
     }
     if (ok) {
       return NULL;
     }
     return strdup(error.localizedDescription.UTF8String);
   }
-  return strdup("Open at Login needs macOS 13 or later");
+  return strdup("needs-macos-13");
 }
 
 bool pm_pref_bool(const char *key) {
@@ -130,4 +130,34 @@ void pm_url_init(void) {
                                                      andSelector:@selector(handleURL:withReplyEvent:)
                                                    forEventClass:kInternetEventClass
                                                       andEventID:kAEGetURL];
+}
+
+char *pm_pref_string(const char *key) {
+  NSString *v = [[NSUserDefaults standardUserDefaults] stringForKey:[NSString stringWithUTF8String:key]];
+  return v ? strdup(v.UTF8String) : NULL;
+}
+
+void pm_set_pref_string(const char *key, const char *value) {
+  [[NSUserDefaults standardUserDefaults] setObject:[NSString stringWithUTF8String:value]
+                                            forKey:[NSString stringWithUTF8String:key]];
+}
+
+// The user's languages in order, newline-separated.
+char *pm_preferred_languages(void) {
+  return strdup([[NSLocale preferredLanguages] componentsJoinedByString:@"\n"].UTF8String);
+}
+
+// mode 0 follows the system, 1 is light, 2 is dark. A NULL window sets the whole app, which the menu-bar
+// menu follows.
+void pm_set_appearance(void *window, int mode) {
+  dispatch_async(dispatch_get_main_queue(), ^{
+    NSAppearance *appearance = nil;
+    if (mode == 1) appearance = [NSAppearance appearanceNamed:NSAppearanceNameAqua];
+    if (mode == 2) appearance = [NSAppearance appearanceNamed:NSAppearanceNameDarkAqua];
+    if (window) {
+      ((__bridge NSWindow *)window).appearance = appearance;
+    } else {
+      NSApp.appearance = appearance;
+    }
+  });
 }

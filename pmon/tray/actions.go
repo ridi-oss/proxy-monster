@@ -23,10 +23,10 @@ func (a *app) run(act action) {
 		a.doSignOut(act.server)
 	case opCopy:
 		if err := copyToClipboard(act.payload); err != nil {
-			notify("Couldn't copy", err.Error())
+			notify(T("n.copyFailed"), err.Error())
 			return
 		}
-		notify("Copied", "The "+act.label+" is on the clipboard.")
+		notify(T("n.copied"), T("n.copiedBody", "label", act.label))
 	case opStart:
 		a.doStart()
 	case opRestart:
@@ -44,7 +44,7 @@ func (a *app) run(act action) {
 	}
 }
 
-func busy() { notify("Proxy Monster", "Another action is still running. Try again in a moment.") }
+func busy() { notify("Proxy Monster", T("n.busy")) }
 
 // doSignIn starts the daemon if needed, then asks IT to run the device-auth flow. The verification prompt is
 // streamed back, so the browser opens and the user code reaches a notification rather than a terminal.
@@ -60,13 +60,13 @@ func (a *app) doSignIn(server string) {
 	client, err := control.EnsureDaemon(a.ctx)
 	a.unlockAction()
 	if err != nil {
-		notify("Couldn't start Proxy Monster", err.Error())
+		notify(T("n.startFailed"), err.Error())
 		return
 	}
 	a.setSigningIn(server, true)
 	defer a.setSigningIn(server, false)
 	if err := signInFlow(a.ctx, client, server); err != nil {
-		notify("Sign-in failed", err.Error())
+		notify(T("n.signInFailed"), err.Error())
 		return
 	}
 	a.refresh(client)
@@ -80,19 +80,20 @@ func signInFlow(ctx context.Context, client *control.Client, server string) erro
 		case "prompt":
 			code := ""
 			if ev.UserCode != "" {
-				code = " The code is " + ev.UserCode + "."
+				code = T("n.signInCode", "code", ev.UserCode)
 			}
+			title := T("n.signInTo", "server", server)
 			// The daemon may run on another host than this menu bar, so a link that fails to open here goes to
 			// the clipboard, where the user can reach it.
 			if openURL(ev.VerificationURIComplete) == nil {
-				notify("Sign in to "+server, "Finish in your browser."+code)
+				notify(title, T("n.signInBrowser")+code)
 			} else if copyToClipboard(ev.VerificationURI) == nil {
-				notify("Sign in to "+server, "The sign-in link is on the clipboard. Open it in your browser."+code)
+				notify(title, T("n.signInClipboard")+code)
 			} else {
-				notify("Sign in to "+server, "Open "+ev.VerificationURI+" in your browser."+code)
+				notify(title, T("n.signInOpen", "url", ev.VerificationURI)+code)
 			}
 		case "done":
-			notify("Signed in", fmt.Sprintf("Signed in to %s as %s.", server, ev.Principal))
+			notify(T("n.signedIn"), T("n.signedInBody", "server", server, "principal", ev.Principal))
 			openAtLoginOnce()
 		}
 	})
@@ -111,16 +112,16 @@ func (a *app) doSignOut(server string) {
 		return
 	}
 	// Signing out closes the brokers, which drops live sessions — the same warning the CLI gives.
-	if !a.confirmDroppingConns("Sign Out", server) {
+	if !a.confirmDroppingConns("signOut", server) {
 		return
 	}
 	notEnded, err := client.Logout(a.ctx, control.LogoutRequest{Server: server})
 	if err != nil {
-		notify("Sign-out failed", err.Error())
+		notify(T("n.signOutFailed"), err.Error())
 		return
 	}
 	if len(notEnded) > 0 {
-		notify("Signed out on this Mac", fmt.Sprintf("The server could not end the %s sign-in. It ends on its own when it expires.", server))
+		notify(T("n.signedOutLocal"), T("n.signedOutLocalBody", "server", server))
 	}
 	a.refresh(client)
 }
@@ -137,7 +138,7 @@ func (a *app) doStart() {
 	}
 	client, err := control.EnsureDaemon(a.ctx)
 	if err != nil {
-		notify("Couldn't start Proxy Monster", err.Error())
+		notify(T("n.startFailed"), err.Error())
 		return
 	}
 	a.refresh(client)
@@ -150,16 +151,16 @@ func (a *app) doRestart() {
 	}
 	defer a.unlockAction()
 
-	if !a.confirmDroppingConns("Restart", "") {
+	if !a.confirmDroppingConns("restart", "") {
 		return
 	}
 	if err := control.StopDaemon(a.ctx); err != nil && !errors.Is(err, control.ErrDaemonNotRunning) {
-		notify("Couldn't restart", err.Error())
+		notify(T("n.restartFailed"), err.Error())
 		return
 	}
 	client, err := control.EnsureDaemon(a.ctx)
 	if err != nil {
-		notify("Couldn't restart", err.Error())
+		notify(T("n.restartFailed"), err.Error())
 		a.render(nil)
 		return
 	}
@@ -169,7 +170,7 @@ func (a *app) doRestart() {
 func (a *app) toggleLoginItem() {
 	on, _ := loginItem()
 	if err := setLoginItem(!on); err != nil {
-		notify("Couldn't change Open at Login", err.Error())
+		notify(T("n.loginItemFailed"), err.Error())
 	}
 	setPrefBool(openAtLoginDecided, true)
 	a.renderMu.Lock()
@@ -182,7 +183,7 @@ func (a *app) toggleLoginItem() {
 func (a *app) doQuit() {
 	// Quit is NOT gated on the action lock: quitting must always work, even while another action is mid-flight,
 	// or a wedged menu becomes unquittable.
-	if !a.confirmDroppingConns("Quit", "") {
+	if !a.confirmDroppingConns("quit", "") {
 		return
 	}
 	if err := control.StopDaemon(a.ctx); err != nil && !errors.Is(err, control.ErrDaemonNotRunning) {
@@ -190,7 +191,7 @@ func (a *app) doQuit() {
 		// no stderr to read, so say so where the user will see it — otherwise the menu vanishes and a daemon
 		// keeps running with no indication.
 		a.setErr(fmt.Errorf("could not stop the daemon: %w", err))
-		notify("Proxy Monster is still running", fmt.Sprintf("%v. Stop it with `pmon stop`.", err))
+		notify(T("n.stillRunning"), T("n.stillRunningBody", "error", err.Error()))
 	}
 	systray.Quit()
 }
@@ -201,9 +202,10 @@ func (a *app) doQuit() {
 // It asks the DAEMON for the count rather than trusting the last render: the cached status can be stale, and a
 // stale nil would silently skip the dialog and drop someone's in-flight query. Only a daemon that is genuinely
 // unreachable — nothing to disturb — proceeds without asking.
-func (a *app) confirmDroppingConns(verb, server string) bool { return confirmDrop(a.ctx, verb, server) }
+func (a *app) confirmDroppingConns(kind, server string) bool { return confirmDrop(a.ctx, kind, server) }
 
-func confirmDrop(ctx context.Context, verb, server string) bool {
+// confirmDrop's kind is "signOut", "restart", "quit" or "remove"; it picks the dialog's title and button.
+func confirmDrop(ctx context.Context, kind, server string) bool {
 	client, err := control.Connect(ctx)
 	if err != nil {
 		return true
@@ -221,7 +223,7 @@ func confirmDrop(ctx context.Context, verb, server string) bool {
 	if n == 0 {
 		return true
 	}
-	return confirm(verb+"?", fmt.Sprintf("%s will be closed.", plural(n, "open database connection")), verb)
+	return confirm(T("confirm."+kind, "name", server), Tn("confirm.conns", n), T("confirm."+kind+"Button"))
 }
 
 // openPreferences opens the Settings window, or brings the open one to the front.
@@ -234,7 +236,7 @@ func (a *app) openPreferences(add bool) {
 	}
 	exe, err := os.Executable()
 	if err != nil {
-		notify("Couldn't open Settings", err.Error())
+		notify(T("n.settingsFailed"), err.Error())
 		return
 	}
 	args := []string{"--preferences"}
@@ -243,7 +245,7 @@ func (a *app) openPreferences(add bool) {
 	}
 	cmd := exec.Command(exe, args...)
 	if err := cmd.Start(); err != nil {
-		notify("Couldn't open Settings", err.Error())
+		notify(T("n.settingsFailed"), err.Error())
 		return
 	}
 	a.prefsPid = cmd.Process.Pid

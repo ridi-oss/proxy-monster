@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unsafe"
 
 	"github.com/ridi-oss/proxy-monster/pmon/control"
 )
@@ -39,6 +40,9 @@ type prefsVersions struct {
 }
 
 type prefsState struct {
+	Language       string        `json:"language"` // the setting: "system", "en" or "ko"
+	Lang           string        `json:"lang"`     // the language in use
+	Theme          string        `json:"theme"`
 	Running        bool          `json:"running"`
 	Servers        []prefsServer `json:"servers"`
 	LoginItemOn    bool          `json:"loginItemOn"`
@@ -59,8 +63,10 @@ type prefs struct {
 	ctx         context.Context
 	changed     func()
 	pmonVersion string
-	mu          sync.Mutex
-	signingIn   map[string]bool
+	// window is the native window, so a theme change also restyles its title bar; nil in tests.
+	window    unsafe.Pointer
+	mu        sync.Mutex
+	signingIn map[string]bool
 }
 
 func (p *prefs) busy(name string) bool {
@@ -78,7 +84,11 @@ func (p *prefs) setBusy(name string, on bool) {
 
 func (p *prefs) state() prefsState {
 	on, shown := loginItem()
-	st := prefsState{LoginItemOn: on, LoginItemShown: shown, Servers: []prefsServer{},
+	language := prefString(prefLanguage)
+	if _, ok := catalogs[language]; !ok {
+		language = "system"
+	}
+	st := prefsState{Language: language, Lang: lang(), Theme: theme(), LoginItemOn: on, LoginItemShown: shown, Servers: []prefsServer{},
 		Versions: prefsVersions{App: version, Pmon: p.pmonVersion}}
 	client, err := control.Connect(p.ctx)
 	if err != nil {
@@ -120,9 +130,9 @@ func clockLabel(t, now time.Time) string {
 	day := func(x time.Time) time.Time { return time.Date(x.Year(), x.Month(), x.Day(), 0, 0, 0, 0, x.Location()) }
 	switch day(t).Sub(day(now)) {
 	case 0:
-		return "Today " + t.Format("15:04")
+		return T("time.today", "time", t.Format("15:04"))
 	case 24 * time.Hour:
-		return "Tomorrow " + t.Format("15:04")
+		return T("time.tomorrow", "time", t.Format("15:04"))
 	}
 	return t.Format("Jan 2 15:04")
 }
@@ -161,6 +171,25 @@ func (p *prefs) aiToggle(id, server string, on bool) string {
 
 func (p *prefs) openLink(u string) string { return errText(openURL(u)) }
 
+func (p *prefs) setLanguage(l string) string {
+	if _, ok := catalogs[l]; !ok && l != "system" {
+		return "unknown language " + l
+	}
+	setPrefString(prefLanguage, l)
+	return ""
+}
+
+func (p *prefs) setTheme(t string) string {
+	if t != "system" && t != "light" && t != "dark" {
+		return "unknown theme " + t
+	}
+	setPrefString(prefTheme, t)
+	if p.window != nil {
+		applyTheme(p.window, t)
+	}
+	return ""
+}
+
 // handlers are the calls the page makes, by name, each with its JSON-encoded arguments.
 func (p *prefs) handlers() map[string]func(args []json.RawMessage) (any, error) {
 	str := func(args []json.RawMessage, i int) (string, error) {
@@ -187,6 +216,8 @@ func (p *prefs) handlers() map[string]func(args []json.RawMessage) (any, error) 
 		"signOut":      one(p.signOut),
 		"removeServer": one(p.removeServer),
 		"openLink":     one(p.openLink),
+		"setLanguage":  one(p.setLanguage),
+		"setTheme":     one(p.setTheme),
 		"setServer": func(args []json.RawMessage) (any, error) {
 			name, err := str(args, 0)
 			if err != nil {
@@ -249,7 +280,7 @@ func (p *prefs) removeServer(name string) string {
 	if err != nil {
 		return errText(err)
 	}
-	if !confirmDrop(p.ctx, "Remove "+name, name) {
+	if !confirmDrop(p.ctx, "remove", name) {
 		return errCanceled
 	}
 	_, err = client.UnsetServer(p.ctx, control.UnsetServerRequest{Name: name})
@@ -270,7 +301,7 @@ func (p *prefs) signIn(name string) string {
 		err := signInFlow(p.ctx, client, name)
 		p.setBusy(name, false)
 		if err != nil && !errors.Is(err, context.Canceled) {
-			notify("Sign-in failed", err.Error())
+			notify(T("n.signInFailed"), err.Error())
 		}
 	}()
 	return ""
@@ -281,7 +312,7 @@ func (p *prefs) signOut(name string) string {
 	if err != nil {
 		return errText(err)
 	}
-	if !confirmDrop(p.ctx, "Sign Out", name) {
+	if !confirmDrop(p.ctx, "signOut", name) {
 		return errCanceled
 	}
 	_, err = client.Logout(p.ctx, control.LogoutRequest{Server: name})

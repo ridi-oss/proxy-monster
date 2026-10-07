@@ -12,3 +12,7 @@ bool pm_pref_bool(const char *key);
 void pm_set_pref_bool(const char *key, bool value);
 void pm_activate_pid(int pid);
 void pm_url_init(void);
+char *pm_pref_string(const char *key);
+void pm_set_pref_string(const char *key, const char *value);
+char *pm_preferred_languages(void);
+void pm_set_appearance(void *window, int mode);

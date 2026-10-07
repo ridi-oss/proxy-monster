@@ -2,7 +2,6 @@ package main
 
 import (
 	"errors"
-	"fmt"
 	"net"
 	"net/url"
 	"regexp"
@@ -26,28 +25,28 @@ var serverName = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,62}$`)
 func parseConnectLink(raw string) (connectLink, error) {
 	u, err := url.Parse(raw)
 	if err != nil || u.Scheme != "pmon" || u.Host != "connect" {
-		return connectLink{}, errors.New("not a Proxy Monster connect link")
+		return connectLink{}, errors.New(T("link.invalid"))
 	}
 	q := u.Query()
 	addr, err := url.Parse(q.Get("url"))
 	if err != nil || addr.Hostname() == "" || addr.User != nil || addr.RawQuery != "" || addr.Fragment != "" {
-		return connectLink{}, errors.New("the link has no valid server address")
+		return connectLink{}, errors.New(T("link.noAddress"))
 	}
 	switch addr.Scheme {
 	case "https":
 	case "http":
 		if host := addr.Hostname(); host != "localhost" && !net.ParseIP(host).IsLoopback() {
-			return connectLink{}, errors.New("the server address must start with https://")
+			return connectLink{}, errors.New(T("link.https"))
 		}
 	default:
-		return connectLink{}, errors.New("the server address must start with https://")
+		return connectLink{}, errors.New(T("link.https"))
 	}
 	name := strings.ToLower(q.Get("name"))
 	if name == "" && net.ParseIP(addr.Hostname()) == nil {
 		name, _, _ = strings.Cut(addr.Hostname(), ".")
 	}
 	if !serverName.MatchString(name) {
-		return connectLink{}, errors.New("the link has no valid server name")
+		return connectLink{}, errors.New(T("link.noName"))
 	}
 	return connectLink{name: name, url: strings.TrimSuffix(addr.String(), "/")}, nil
 }
@@ -60,7 +59,7 @@ var onConnectLink func(raw string)
 func (a *app) openConnectLink(raw string) {
 	link, err := parseConnectLink(raw)
 	if err != nil {
-		notify("Couldn't connect", err.Error())
+		notify(T("n.connectFailed"), err.Error())
 		return
 	}
 	var existing *control.ServerInfo
@@ -73,21 +72,21 @@ func (a *app) openConnectLink(raw string) {
 	}
 	same := existing != nil && sameAddress(existing.ControlPlane, link.url)
 	if same && existing.LoggedIn && !existing.ReauthRequired {
-		notify("Already connected", fmt.Sprintf("You are signed in to %s.", link.name))
+		notify(T("n.alreadyConnected"), T("n.alreadyConnectedBody", "name", link.name))
 		return
 	}
 
-	title, verb := fmt.Sprintf("Connect to %s?", link.name), "Connect"
-	msg := fmt.Sprintf("Server address: %s\nYou'll sign in with your company account.", link.url)
+	title, verb := T("confirm.connect", "name", link.name), T("confirm.connectButton")
+	msg := T("confirm.connectBody", "url", link.url)
 	switch {
 	case same:
-		title, verb = fmt.Sprintf("Sign in to %s?", link.name), "Sign In"
-		msg = fmt.Sprintf("Server address: %s", link.url)
+		title, verb = T("confirm.signInTo", "name", link.name), T("confirm.signInButton")
+		msg = T("confirm.signInToBody", "url", link.url)
 	case existing != nil:
-		msg = fmt.Sprintf("This replaces %s's current address, %s, and signs you out of it.\nNew address: %s", link.name, existing.ControlPlane, link.url)
+		msg = T("confirm.replaceBody", "name", link.name, "old", existing.ControlPlane, "url", link.url)
 	}
 	if !running {
-		msg += "\nThis starts Proxy Monster."
+		msg += T("confirm.startsApp")
 	}
 	if !confirm(title, msg, verb) {
 		return
@@ -95,27 +94,27 @@ func (a *app) openConnectLink(raw string) {
 
 	client, err := control.EnsureDaemon(a.ctx)
 	if err != nil {
-		notify("Couldn't start Proxy Monster", err.Error())
+		notify(T("n.startFailed"), err.Error())
 		return
 	}
 	if !running {
 		// Only now can the saved servers be read; a replacement the first dialog could not mention asks again.
 		st, err := client.Status(a.ctx)
 		if err != nil {
-			notify("Couldn't connect", err.Error())
+			notify(T("n.connectFailed"), err.Error())
 			return
 		}
 		if ex := st.Server(link.name); ex != nil {
 			same = sameAddress(ex.ControlPlane, link.url)
-			replace := fmt.Sprintf("This replaces %s's current address, %s, and signs you out of it.\nNew address: %s", link.name, ex.ControlPlane, link.url)
-			if !same && !confirm(fmt.Sprintf("Replace %s's address?", link.name), replace, "Replace") {
+			replace := T("confirm.replaceBody", "name", link.name, "old", ex.ControlPlane, "url", link.url)
+			if !same && !confirm(T("confirm.replace", "name", link.name), replace, T("confirm.replaceButton")) {
 				return
 			}
 		}
 	}
 	if !same {
 		if _, err := client.SetServer(a.ctx, control.SetServerRequest{Name: link.name, ControlPlane: link.url}); err != nil {
-			notify("Couldn't connect", err.Error())
+			notify(T("n.connectFailed"), err.Error())
 			return
 		}
 	}

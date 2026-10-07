@@ -82,6 +82,11 @@ when nothing is running.
   link, so the address must be `https` (`http` only for this machine), the user
   confirms first, and replacing an existing server's address says so. A cancel
   or an unanswered dialog changes nothing.
+- **Language and theme** are set in Settings › General: System, English or
+  한국어, and System, Light or Dark. Every message comes from
+  `i18n/<lang>.json`, shared by the menu and the Settings page; a test fails if
+  a key is missing from any language. Both choices live in the app's user
+  defaults, which the menu-bar process re-reads every 2 seconds.
 - **Connect AI Apps** adds or removes `pmon mcp <server>` in Claude Desktop (its
   `claude_desktop_config.json`, other settings untouched), Claude Code
   (`claude mcp add --scope user`) and Codex (`codex mcp add`), listing only the

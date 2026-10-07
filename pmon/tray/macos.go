@@ -57,8 +57,9 @@ func confirmDialog(title, message, confirmLabel string) bool {
 	// give-up returns `gave up:true` with an empty `button returned:`, which fails the check below, so walking
 	// away means the destructive action does NOT happen.
 	script := fmt.Sprintf(
-		`display dialog %s with title %s buttons {"Cancel", %s} default button "Cancel" with icon caution giving up after %d`,
-		osaQuote(message), osaQuote(title), osaQuote(confirmLabel), int(confirmDialogTimeout.Seconds()),
+		`display dialog %s with title %s buttons {%s, %s} default button %s with icon caution giving up after %d`,
+		osaQuote(message), osaQuote(title), osaQuote(T("confirm.cancel")), osaQuote(confirmLabel), osaQuote(T("confirm.cancel")),
+		int(confirmDialogTimeout.Seconds()),
 	)
 	out, err := exec.Command("osascript", "-e", script).Output()
 	if err != nil {

@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -78,21 +79,21 @@ func buildMenu(s *control.Status, v view) []entry {
 	var m []entry
 	switch {
 	case s == nil:
-		m = append(m, header("Proxy Monster is not running"), separator("sep-start"),
-			entry{key: "start", title: "Start", act: &action{op: opStart}})
+		m = append(m, header(T("menu.notRunning")), separator("sep-start"),
+			entry{key: "start", title: T("menu.start"), act: &action{op: opStart}})
 	case s.Outdated():
-		m = append(m, header("The background service is out of date"), separator("sep-restart"),
-			entry{key: "restart", title: "Restart Background Service", act: &action{op: opRestart}})
+		m = append(m, header(T("menu.outOfDate")), separator("sep-restart"),
+			entry{key: "restart", title: T("menu.restart"), act: &action{op: opRestart}})
 	case v.pmonVersion != "" && s.Version != v.pmonVersion:
 		// An AI app's `pmon mcp` is this bundle's pmon, and it can need routes an older daemon lacks.
-		m = append(m, header("The background service is a different version"), separator("sep-restart"),
-			entry{key: "restart", title: "Restart Background Service", act: &action{op: opRestart}}, separator("sep-stale"))
+		m = append(m, header(T("menu.differentVersion")), separator("sep-restart"),
+			entry{key: "restart", title: T("menu.restart"), act: &action{op: opRestart}}, separator("sep-stale"))
 		for _, srv := range s.Servers {
 			m = append(m, serverEntry(s, srv, v))
 		}
 	case len(s.Servers) == 0:
-		m = append(m, header("Not connected to a server"), separator("sep-add"),
-			entry{key: "addserver", title: "Connect to a Server…", act: &action{op: opAddServer}})
+		m = append(m, header(T("menu.noServer")), separator("sep-add"),
+			entry{key: "addserver", title: T("menu.connectServer"), act: &action{op: opAddServer}})
 	default:
 		for _, srv := range s.Servers {
 			m = append(m, serverEntry(s, srv, v))
@@ -101,15 +102,15 @@ func buildMenu(s *control.Status, v view) []entry {
 			m = append(m, separator("sep-ai"), e)
 		}
 		if n := s.TotalLiveConns(); n > 0 {
-			m = append(m, entry{key: "conns", title: plural(n, "open connection"), disabled: true})
+			m = append(m, entry{key: "conns", title: Tn("menu.openConns", n), disabled: true})
 		}
 	}
 	m = append(m, separator("sep-tail"))
 	if v.loginItemShow {
-		m = append(m, entry{key: "loginitem", title: "Open at Login", checkbox: true, checked: v.loginItemOn, act: &action{op: opLoginItem}})
+		m = append(m, entry{key: "loginitem", title: T("menu.openAtLogin"), checkbox: true, checked: v.loginItemOn, act: &action{op: opLoginItem}})
 	}
-	m = append(m, entry{key: "prefs", title: "Settings…", act: &action{op: opPrefs}})
-	return append(m, entry{key: "quit", title: "Quit Proxy Monster", act: &action{op: opQuit}})
+	m = append(m, entry{key: "prefs", title: T("menu.settings"), act: &action{op: opPrefs}})
+	return append(m, entry{key: "quit", title: T("menu.quit"), act: &action{op: opQuit}})
 }
 
 // aiEntry lists each installed AI app with a checkmark per server it already uses. With one server the app
@@ -118,7 +119,7 @@ func aiEntry(s *control.Status, v view) (entry, bool) {
 	if len(v.ai) == 0 {
 		return entry{}, false
 	}
-	e := entry{key: "ai", title: "Connect AI Apps"}
+	e := entry{key: "ai", title: T("menu.aiApps")}
 	for _, app := range v.ai {
 		item := func(key, title, server string) entry {
 			on := app.connected[server]
@@ -140,16 +141,16 @@ func aiEntry(s *control.Status, v view) (entry, bool) {
 
 func serverEntry(s *control.Status, srv control.ServerInfo, v view) entry {
 	e := entry{key: "srv:" + srv.Name, title: serverTitle(srv, v)}
-	signIn := entry{key: "signin:" + srv.Name, title: "Sign In…", act: &action{op: opSignIn, server: srv.Name}}
+	signIn := entry{key: "signin:" + srv.Name, title: T("menu.signIn"), act: &action{op: opSignIn, server: srv.Name}}
 	switch {
 	case v.signingIn[srv.Name]:
-		signIn = entry{key: "signin:" + srv.Name, title: "Signing in — finish in your browser", disabled: true}
+		signIn = entry{key: "signin:" + srv.Name, title: T("menu.signingIn"), disabled: true}
 	case srv.LoggedIn:
-		signIn.title = "Sign In Again…"
+		signIn.title = T("menu.signInAgain")
 	}
 	e.children = append(e.children, signIn)
 	if srv.LoggedIn {
-		e.children = append(e.children, entry{key: "signout:" + srv.Name, title: "Sign Out", act: &action{op: opSignOut, server: srv.Name}})
+		e.children = append(e.children, entry{key: "signout:" + srv.Name, title: T("menu.signOut"), act: &action{op: opSignOut, server: srv.Name}})
 	}
 	if !srv.LoggedIn {
 		return e
@@ -162,9 +163,9 @@ func serverEntry(s *control.Status, srv control.ServerInfo, v view) entry {
 	}
 	if srv.LastDiscoveryError != "" {
 		// The daemon keeps the last list it got, so an error with rows means the list is stale, not missing.
-		title := "Couldn't refresh datasources — showing the last list"
+		title := T("menu.refreshFailed")
 		if len(rows) == 0 {
-			title = "Can't list datasources: " + shorten(srv.LastDiscoveryError, 70)
+			title = T("menu.listFailed", "error", shorten(srv.LastDiscoveryError, 70))
 		}
 		e.children = append(e.children, entry{key: "discovery:" + srv.Name, title: title, disabled: true})
 	}
@@ -182,7 +183,7 @@ func datasourceEntry(s *control.Status, srv control.ServerInfo, ds control.Datas
 	}
 	title := ds.Name
 	if ds.LiveConns > 0 {
-		title += "  ·  " + plural(ds.LiveConns, "open")
+		title += "  ·  " + T("menu.dsOpen", "count", strconv.Itoa(ds.LiveConns))
 	}
 	e := entry{key: key, title: title}
 	target := driver.Target{
@@ -202,7 +203,7 @@ func datasourceEntry(s *control.Status, srv control.ServerInfo, ds control.Datas
 		label := formatLabel(f)
 		e.children = append(e.children, entry{
 			key:   key + "#" + string(f),
-			title: "Copy " + label,
+			title: T("menu.copy", "format", label),
 			act:   &action{op: opCopy, server: srv.Name, label: ds.Name + " " + label, payload: payload},
 		})
 	}
@@ -213,21 +214,8 @@ func datasourceEntry(s *control.Status, srv control.ServerInfo, ds control.Datas
 }
 
 func formatLabel(f driver.Format) string {
-	switch f {
-	case driver.URL:
-		return "URL"
-	case driver.JDBC:
-		return "JDBC URL"
-	case driver.GoDSN:
-		return "Go DSN"
-	case driver.CLI:
-		return "Command Line"
-	case "python":
-		return "Python"
-	case "node":
-		return "Node.js"
-	case "aws-config":
-		return "AWS Config"
+	if _, ok := catalogs["en"]["format."+string(f)]; ok {
+		return T("format." + string(f))
 	}
 	return strings.ToUpper(string(f))
 }
@@ -259,41 +247,31 @@ func signInEnded(srv control.ServerInfo, now time.Time) bool {
 func serverTitle(srv control.ServerInfo, v view) string {
 	switch {
 	case v.signingIn[srv.Name]:
-		return srv.Name + " — signing in"
+		return T("server.signingIn", "name", srv.Name)
 	case !srv.LoggedIn:
-		return srv.Name + " — signed out"
+		return T("server.signedOut", "name", srv.Name)
 	case signInEnded(srv, v.now):
-		return srv.Name + " — sign-in ended"
+		return T("server.ended", "name", srv.Name)
 	}
 	who := srv.Principal
 	if who == "" {
-		who = "signed in"
+		who = T("n.signedIn")
 	}
 	if end, ok := signInEnd(srv); ok {
-		return fmt.Sprintf("%s — %s · %s", srv.Name, who, timeLeft(end.Sub(v.now)))
+		return T("server.signedInLeft", "name", srv.Name, "who", who, "left", timeLeft(end.Sub(v.now)))
 	}
-	return fmt.Sprintf("%s — %s", srv.Name, who)
+	return T("server.signedIn", "name", srv.Name, "who", who)
 }
 
 func timeLeft(d time.Duration) string {
 	switch {
 	case d <= 0:
-		return "ended"
+		return T("time.ended")
 	case d < time.Hour:
-		return fmt.Sprintf("%d min left", max(1, int(d.Minutes())))
+		return T("time.minLeft", "m", strconv.Itoa(max(1, int(d.Minutes()))))
 	default:
-		return fmt.Sprintf("%dh %dm left", int(d.Hours()), int(d.Minutes())%60)
+		return T("time.hoursLeft", "h", strconv.Itoa(int(d.Hours())), "m", strconv.Itoa(int(d.Minutes())%60))
 	}
-}
-
-func plural(n int, noun string) string {
-	if n == 1 {
-		return "1 " + noun
-	}
-	if noun == "open" {
-		return fmt.Sprintf("%d open", n)
-	}
-	return fmt.Sprintf("%d %ss", n, noun)
 }
 
 // iconFor is the menu-bar icon's state: the most urgent thing across all servers.

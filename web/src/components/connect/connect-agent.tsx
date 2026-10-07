@@ -60,9 +60,9 @@ function Section({
   );
 }
 
-// Proxy Monster Desktop's releases ride the pmon train, so its downloads sit on the pmon-v* releases.
-const DESKTOP_DOWNLOADS =
-  "https://github.com/ridi-oss/proxy-monster/releases?q=pmon-v&expanded=true";
+// The current macOS installer; each pmon release replaces it on the rolling desktop-feed release.
+const DESKTOP_DOWNLOAD =
+  "https://github.com/ridi-oss/proxy-monster/releases/download/desktop-feed/ProxyMonsterDesktop.pkg";
 
 /** The pmon://connect link Proxy Monster Desktop handles: it confirms, adds the server, and signs in. */
 export function desktopConnectLink(info: McpConnectInfo): string {
@@ -124,12 +124,7 @@ export function ConnectAgent({ info }: { info: McpConnectInfo }) {
           </Button>
           <span className="text-muted-foreground text-xs">
             {t("desktop.notInstalled")}{" "}
-            <a
-              className="underline"
-              href={DESKTOP_DOWNLOADS}
-              target="_blank"
-              rel="noreferrer"
-            >
+            <a className="underline" href={DESKTOP_DOWNLOAD}>
               {t("desktop.download")}
             </a>
           </span>

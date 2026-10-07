@@ -13,8 +13,8 @@
     "title": "Proxy Monster Desktop",
     "body": "The menu-bar app for Mac. It signs you in to {instance} and connects Claude Desktop, Claude Code or Codex from its menu.",
     "open": "Open in Proxy Monster Desktop",
-    "notInstalled": "Not installed? Download it, open it once, then click the button again.",
-    "download": "Download"
+    "notInstalled": "Not installed? Download and install it, then click the button again.",
+    "download": "Download for macOS"
   },
   "agent": {
     "title": "Paste this to your agent",

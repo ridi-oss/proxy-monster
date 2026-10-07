@@ -13,8 +13,8 @@
     "title": "Proxy Monster Desktop",
     "body": "Mac 메뉴 막대 앱입니다. {instance}에 로그인하고, 메뉴에서 Claude Desktop, Claude Code, Codex를 연결합니다.",
     "open": "Proxy Monster Desktop에서 열기",
-    "notInstalled": "설치되어 있지 않다면 내려받아 한 번 실행한 뒤 버튼을 다시 누르세요.",
-    "download": "내려받기"
+    "notInstalled": "설치되어 있지 않다면 내려받아 설치한 뒤 버튼을 다시 누르세요.",
+    "download": "macOS용 내려받기"
   },
   "agent": {
     "title": "에이전트에 붙여넣기",

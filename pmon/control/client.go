@@ -299,7 +299,7 @@ func Connect(ctx context.Context) (*Client, error) {
 const daemonBinaryEnv = "PMON_BINARY"
 
 // daemonBinaryName is the binary that understands the `daemon` subcommand.
-const daemonBinaryName = "pmon"
+const daemonBinaryName = "pmon" + exeSuffix
 
 // SelfRunsDaemon is set by the pmon CLI's own main package to declare that THIS binary understands the `daemon`
 // subcommand. It is a positive self-identification, not a guess: resolving by filename would break a pmon
@@ -375,7 +375,7 @@ func executable(path string) error {
 	if !info.Mode().IsRegular() {
 		return fmt.Errorf("%s is not a regular file", path)
 	}
-	if info.Mode()&0o111 == 0 {
+	if !runnable(path, info) {
 		return fmt.Errorf("%s is not executable", path)
 	}
 	return nil
@@ -394,28 +394,6 @@ func trustedSpawnTarget(path string) error {
 		return err
 	}
 	return trustedPathComponent(filepath.Dir(path), "its directory")
-}
-
-// trustedPathComponent requires that path be owned by this user (or root) and not group/world-writable. `what`
-// names it in the error, so a refusal says whether the binary or its directory was the problem.
-func trustedPathComponent(path, what string) error {
-	info, err := os.Stat(path)
-	if err != nil {
-		return err
-	}
-	st, ok := info.Sys().(*syscall.Stat_t)
-	if !ok {
-		return fmt.Errorf("cannot verify %s ownership", what)
-	}
-	if uid := os.Getuid(); int(st.Uid) != uid && st.Uid != 0 {
-		return fmt.Errorf("%s is owned by uid %d, not %d or root", what, st.Uid, uid)
-	}
-	// A sticky directory (/tmp, mode 1777) still bars unlinking someone else's file, but nothing here needs to
-	// live in one, so the simpler predicate is kept rather than carving out an exception that widens the surface.
-	if perm := info.Mode().Perm(); perm&0o022 != 0 {
-		return fmt.Errorf("%s is group/world-writable (%o)", what, perm)
-	}
-	return nil
 }
 
 // StartDaemon spawns a DETACHED daemon and returns once it is launched (not once it is ready — see
@@ -437,9 +415,7 @@ func StartDaemon() error {
 			}
 		}
 	}
-	// New session: the daemon must not die with the peer's process group, nor take its controlling terminal
-	// signals (a Ctrl-C in the shell that ran `pmon login` must not kill the daemon).
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	detach(cmd)
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("could not start the daemon: %w", err)
 	}
@@ -484,7 +460,7 @@ func StopDaemon(ctx context.Context) error {
 	if pid <= 0 {
 		return fmt.Errorf("a daemon is running but its pid is unreadable; stop it by hand")
 	}
-	if err := syscall.Kill(pid, syscall.SIGTERM); err != nil {
+	if err := terminate(pid); err != nil {
 		return fmt.Errorf("could not signal the daemon (pid %d): %w", pid, err)
 	}
 	return waitForExit(ctx, 10*time.Second)

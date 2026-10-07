@@ -126,3 +126,13 @@ func setPrefBool(key string, v bool) {
 	defer C.free(unsafe.Pointer(k))
 	C.pm_set_pref_bool(k, C.bool(v))
 }
+
+// handedOff reports whether another running instance took this launch; only Windows starts one per link.
+func handedOff() bool { return false }
+
+var onShow func()
+
+var onQuitForInstall func() bool
+
+// runQuitForInstall is Windows-only: the macOS installer replaces the bundle while it runs.
+func runQuitForInstall() int { return 0 }

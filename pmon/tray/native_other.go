@@ -1,4 +1,4 @@
-//go:build !darwin
+//go:build !darwin && !windows
 
 package main
 
@@ -34,3 +34,13 @@ func applyTheme(unsafe.Pointer, string) {}
 func prefBool(key string) bool { return fakePrefs[key] }
 
 func setPrefBool(key string, v bool) { fakePrefs[key] = v }
+
+// handedOff reports whether another running instance took this launch; only Windows starts one per link.
+func handedOff() bool { return false }
+
+var onShow func()
+
+var onQuitForInstall func() bool
+
+// runQuitForInstall is Windows-only: the macOS installer replaces the bundle while it runs.
+func runQuitForInstall() int { return 0 }

@@ -49,6 +49,10 @@ type app struct {
 	warned map[string]time.Time
 	// ended is the sign-in end each server's "ended" notice was posted for.
 	ended map[string]time.Time
+	// ai is the last read of each AI app's settings; reading runs the apps' CLIs, so it is cached.
+	ai        []aiState
+	aiServers string
+	aiMu      sync.Mutex // one AI-settings read at a time
 
 	errMu  sync.Mutex
 	err    error
@@ -99,7 +103,10 @@ func (a *app) view() view {
 	}
 	a.mu.Unlock()
 	on, supported := loginItem()
-	return view{now: time.Now(), signingIn: signingIn, loginItemOn: on, loginItemShow: supported}
+	a.mu.Lock()
+	ai := a.ai
+	a.mu.Unlock()
+	return view{now: time.Now(), signingIn: signingIn, loginItemOn: on, loginItemShow: supported, ai: ai}
 }
 
 func (a *app) setSigningIn(server string, on bool) {
@@ -135,11 +142,15 @@ func (a *app) onExit() {
 func (a *app) ticker() {
 	t := time.NewTicker(tick)
 	defer t.Stop()
+	n := 0
 	for {
 		select {
 		case <-a.ctx.Done():
 			return
 		case <-t.C:
+			if n++; n%5 == 0 {
+				go a.refreshAI(true)
+			}
 			a.renderMu.Lock()
 			a.redraw()
 			a.renderMu.Unlock()

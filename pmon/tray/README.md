@@ -42,6 +42,10 @@ acme — dana@acme.example · 9h 12m left  ›  Sign In Again…
                                                           Copy Go DSN
                                                           Copy Command Line
 staging — signed out                    ›  Sign In…
+─────────
+Connect AI Apps                         ›  ✓ Claude Desktop
+                                             Claude Code
+                                             Codex
 2 open connections
 ─────────
 ✓ Open at Login
@@ -62,6 +66,12 @@ when nothing is running.
   filled in, starting the daemon first if none is running. A notification 30
   minutes before a sign-in ends, and one when it has ended, sign in again when
   clicked.
+- **Connect AI Apps** adds or removes `pmon mcp <server>` in Claude Desktop (its
+  `claude_desktop_config.json`, other settings untouched), Claude Code
+  (`claude mcp add --scope user`) and Codex (`codex mcp add`), listing only the
+  apps installed. The entry runs the `pmon` inside the app bundle. The app is
+  not restarted; the notification says what to do. Codex's own command rewrites
+  the formatting of `~/.codex/config.toml`.
 - **Open at Login** turns on after the first sign-in; once the user changes it,
   the app leaves it alone. Needs macOS 13.
 - **Quit** stops the daemon, then exits — it is the peer of `pmon stop`. Merely

@@ -1,0 +1,210 @@
+package main
+
+import (
+	"bytes"
+	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
+	"sync"
+	"testing"
+
+	"github.com/ridi-oss/proxy-monster/pmon/control"
+)
+
+// Adding and removing proxy-monster must leave every other setting in Claude Desktop's config untouched.
+func TestClaudeDesktopEditKeepsOtherSettings(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	path := claudeDesktopConfig()
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	orig := `{"globalShortcut":"Alt+Space","mcpServers":{"other":{"command":"npx","args":["x"],"env":{"K":"V"}}}}`
+	if err := os.WriteFile(path, []byte(orig), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	app := claudeDesktop()
+	pmon := "/Applications/Proxy Monster Desktop.app/Contents/MacOS/pmon"
+
+	if app.connected("proxy-monster-acme", pmon, "acme") {
+		t.Fatal("connected before adding")
+	}
+	if err := app.add("proxy-monster-acme", pmon, "acme"); err != nil {
+		t.Fatal(err)
+	}
+	if !app.connected("proxy-monster-acme", pmon, "acme") {
+		t.Fatal("not connected after adding")
+	}
+	if app.connected("proxy-monster-acme", "/elsewhere/pmon", "acme") {
+		t.Error("an entry for another pmon reads as connected")
+	}
+
+	var got struct {
+		GlobalShortcut string                     `json:"globalShortcut"`
+		MCPServers     map[string]json.RawMessage `json:"mcpServers"`
+	}
+	data, _ := os.ReadFile(path)
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatal(err)
+	}
+	var other bytes.Buffer
+	_ = json.Compact(&other, got.MCPServers["other"])
+	if got.GlobalShortcut != "Alt+Space" || other.String() != `{"command":"npx","args":["x"],"env":{"K":"V"}}` {
+		t.Errorf("other settings changed: %s", data)
+	}
+	if fi, _ := os.Stat(path); fi.Mode().Perm() != 0o640 {
+		t.Errorf("mode %v, want the original 0640", fi.Mode().Perm())
+	}
+
+	if err := app.remove("proxy-monster-acme", pmon, "acme"); err != nil {
+		t.Fatal(err)
+	}
+	data, _ = os.ReadFile(path)
+	var after map[string]map[string]json.RawMessage
+	_ = json.Unmarshal(data, &after)
+	if _, ok := after["mcpServers"]["proxy-monster-acme"]; ok || len(after["mcpServers"]) != 1 {
+		t.Errorf("after remove: %s", data)
+	}
+}
+
+func TestClaudeDesktopAddCreatesTheConfig(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	if err := claudeDesktop().add("proxy-monster", "/p/pmon", "default"); err != nil {
+		t.Fatal(err)
+	}
+	if !claudeDesktop().connected("proxy-monster", "/p/pmon", "default") {
+		t.Fatal("not connected after creating the config")
+	}
+}
+
+// A config Claude Desktop cannot parse either must not be overwritten with one that drops its contents.
+func TestClaudeDesktopRefusesABrokenConfig(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	path := claudeDesktopConfig()
+	_ = os.MkdirAll(filepath.Dir(path), 0o700)
+	_ = os.WriteFile(path, []byte(`{"mcpServers": {`), 0o600)
+	if err := claudeDesktop().add("proxy-monster", "/p/pmon", "default"); err == nil {
+		t.Fatal("added to an unparseable config")
+	}
+	if data, _ := os.ReadFile(path); string(data) != `{"mcpServers": {` {
+		t.Errorf("the broken config was rewritten: %s", data)
+	}
+}
+
+func TestAIEntryShapes(t *testing.T) {
+	ai := []aiState{{id: "claude-desktop", name: "Claude Desktop", connected: map[string]bool{"acme": true}}}
+	one := buildMenu(twoServersWith("acme"), view{now: now, ai: ai})
+	if e := find(one, "ai:claude-desktop"); e == nil || !e.checkbox || !e.checked || e.act.connect {
+		t.Fatalf("one server: %+v", e)
+	}
+	two := buildMenu(twoServers(), view{now: now, ai: ai})
+	if e := find(two, "ai:claude-desktop:staging"); e == nil || e.checked || !e.act.connect || e.act.server != "staging" {
+		t.Fatalf("two servers, staging: %+v", e)
+	}
+	if find(buildMenu(twoServers(), view{now: now}), "ai") != nil {
+		t.Error("an AI section with no AI apps installed")
+	}
+}
+
+func twoServersWith(name string) *control.Status {
+	s := twoServers()
+	s.Servers = s.Servers[:1]
+	s.Servers[0].Name = name
+	return s
+}
+
+// JSON null is valid JSON but not a config; it must be refused, not crash the app.
+func TestClaudeDesktopRefusesNull(t *testing.T) {
+	for _, body := range []string{`null`, `{"mcpServers":null}`} {
+		t.Setenv("HOME", t.TempDir())
+		path := claudeDesktopConfig()
+		_ = os.MkdirAll(filepath.Dir(path), 0o700)
+		_ = os.WriteFile(path, []byte(body), 0o600)
+		if err := claudeDesktop().add("proxy-monster", "/p/pmon", "default"); err == nil {
+			t.Errorf("%s: added to a config that is not an object", body)
+		}
+	}
+}
+
+func TestClaudeDesktopConcurrentAddsKeepEveryEntry(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	var wg sync.WaitGroup
+	for i := range 20 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := claudeDesktop().add(fmt.Sprintf("e%d", i), "/p/pmon", fmt.Sprintf("s%d", i)); err != nil {
+				t.Error(err)
+			}
+		}()
+	}
+	wg.Wait()
+	servers, _, err := readDesktopServers(claudeDesktopConfig())
+	if err != nil || len(servers) != 20 {
+		t.Fatalf("%d entries after 20 concurrent adds (err %v)", len(servers), err)
+	}
+}
+
+// An entry with the same name that something else added is neither shown as connected, overwritten, nor removed.
+func TestClaudeDesktopLeavesAForeignEntryAlone(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	path := claudeDesktopConfig()
+	_ = os.MkdirAll(filepath.Dir(path), 0o700)
+	foreign := `{"mcpServers":{"proxy-monster":{"command":"/usr/bin/false","args":[]}}}`
+	_ = os.WriteFile(path, []byte(foreign), 0o600)
+	app := claudeDesktop()
+	if app.connected("proxy-monster", "/p/pmon", "default") {
+		t.Error("a foreign entry reads as connected")
+	}
+	if err := app.add("proxy-monster", "/p/pmon", "default"); err == nil {
+		t.Error("add overwrote a foreign entry")
+	}
+	if err := app.remove("proxy-monster", "/p/pmon", "default"); err != nil {
+		t.Fatal(err)
+	}
+	servers, _, _ := readDesktopServers(path)
+	if _, ok := servers["proxy-monster"]; !ok {
+		t.Error("remove deleted a foreign entry")
+	}
+}
+
+func TestCLIGetParsing(t *testing.T) {
+	pmon := "/Applications/Proxy Monster Desktop.app/Contents/MacOS/pmon"
+	claude := "proxy-monster-acme:\n  Scope: User config (available in all your projects)\n  Type: stdio\n  Command: " + pmon + "\n  Args: mcp acme\n  Environment:\n"
+	if c, a := parseClaudeGet(claude); !ours(c, a, pmon, "acme") {
+		t.Errorf("claude output parsed as %q %q", c, a)
+	}
+	codex := `{"name":"proxy-monster-acme","transport":{"type":"stdio","command":"` + pmon + `","args":["mcp","acme"]}}`
+	if c, a := parseCodexGet(codex); !ours(c, a, pmon, "acme") {
+		t.Errorf("codex output parsed as %q %q", c, a)
+	}
+	if c, a := parseCodexGet(`{"transport":{"command":"/usr/bin/false","args":[]}}`); ours(c, a, pmon, "acme") {
+		t.Error("a foreign codex entry reads as ours")
+	}
+}
+
+// A tray using a non-default daemon hands its settings to the entry, so the AI app reaches the same daemon.
+func TestClaudeDesktopEntryCarriesTheDaemonSettings(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("PMON_CONFIG_DIR", "/tmp/pmd-test")
+	t.Setenv("PMON_PORT_BASE", "46500")
+	if err := claudeDesktop().add("proxy-monster-ridi", "/p/pmon", "ridi"); err != nil {
+		t.Fatal(err)
+	}
+	servers, _, _ := readDesktopServers(claudeDesktopConfig())
+	var c mcpCommand
+	_ = json.Unmarshal(servers["proxy-monster-ridi"], &c)
+	if c.Env["PMON_CONFIG_DIR"] != "/tmp/pmd-test" || c.Env["PMON_PORT_BASE"] != "46500" {
+		t.Errorf("entry env = %v", c.Env)
+	}
+	if !claudeDesktop().connected("proxy-monster-ridi", "/p/pmon", "ridi") {
+		t.Error("an entry with env does not read as connected")
+	}
+	// An entry written for another daemon reads as not connected, so a click rewrites it.
+	t.Setenv("PMON_CONFIG_DIR", "")
+	t.Setenv("PMON_PORT_BASE", "")
+	if claudeDesktop().connected("proxy-monster-ridi", "/p/pmon", "ridi") {
+		t.Error("an entry for another daemon reads as connected")
+	}
+}

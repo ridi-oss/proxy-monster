@@ -35,7 +35,37 @@ func TestNormalizeTargetDbOKExtractsSchemaAndStripsTracking(t *testing.T) {
 		t.Fatalf("schema = %v, want other_db", schema)
 	}
 	want := []byte{0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00}
-	want = append(want, "rows matched"...)
+	want = mysqlwire.AppendLenencStr(want, "rows matched")
+	if !bytes.Equal(clean, want) {
+		t.Fatalf("clean OK = %x, want %x", clean, want)
+	}
+}
+
+func TestNormalizeTargetDbOKKeepsUntrackedInfoLengthPrefixed(t *testing.T) {
+	for _, header := range []byte{0x00, 0xfe} {
+		payload := trackedOKPacket(header, 0x0002, "Records: 2  Duplicates: 0  Warnings: 0", nil)
+		clean, _, _, _, err := normalizeTargetDbOK(payload)
+		if err != nil {
+			t.Fatalf("header %#x: normalizeTargetDbOK: %v", header, err)
+		}
+		if !bytes.Equal(clean, payload) {
+			t.Fatalf("header %#x: clean OK = %x, want the untouched %x", header, clean, payload)
+		}
+	}
+}
+
+func TestNormalizeTargetDbOKOmitsEmptyInfoOnceStateIsStripped(t *testing.T) {
+	block := mysqlwire.AppendLenencStr(nil, "other_db")
+	state := []byte{sessionTrackSchema}
+	state = mysqlwire.AppendLenenc(state, uint64(len(block)))
+	state = append(state, block...)
+
+	payload := trackedOKPacket(0x00, serverStatusSessionStateChanged|0x0002, "", state)
+	clean, _, _, _, err := normalizeTargetDbOK(payload)
+	if err != nil {
+		t.Fatalf("normalizeTargetDbOK: %v", err)
+	}
+	want := []byte{0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00}
 	if !bytes.Equal(clean, want) {
 		t.Fatalf("clean OK = %x, want %x", clean, want)
 	}

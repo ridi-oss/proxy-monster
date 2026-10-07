@@ -19,7 +19,7 @@ import urllib.request
 LEGS = ["editor", "browser", "wire", "pmon", "workflow", "rate", "audit"]
 MASK = "####"
 TRUSTED_IP = "100.100.1.8"
-PRODUCTION_PRESETS = [-200, -201, -202, *range(-238, -229), -250, -251, -255, *range(-262, -255), -280, -300, -305, -306, -307]
+PRODUCTION_PRESETS = [-200, -201, -202, *range(-238, -229), -250, -251, -252, -253, -255, *range(-262, -255), -280, -300, -305, -306, -307]
 
 
 class Fail(Exception):
@@ -183,13 +183,14 @@ class Stack:
                 break
         return True, rows, ""
 
-    def wire_sql(self, ds, principal, token, sql):
+    def wire_sql(self, ds, principal, token, sql, verbose=False):
         """Run one statement through the proxy as a native client; returns (ok, rows, stderr)."""
         if ds["engine"] == "athena":
             return self.athena_sql(ds, token, sql)
         if ds["engine"] == "mysql":
             cmd = ["mysql", "--protocol=tcp", "-h", "127.0.0.1", "-P", str(ds["port"]), "-u", principal,
-                   "--enable-cleartext-plugin", "--ssl-mode=DISABLED", "-N", "-B", "-e", sql, "acme"]
+                   "--enable-cleartext-plugin", "--ssl-mode=DISABLED", "-N", "-B", *(["-vvv"] if verbose else []),
+                   "-e", sql, "acme"]
             env = dict(os.environ, MYSQL_PWD=token)
         else:
             cmd = ["psql", f"host=127.0.0.1 port={ds['port']} dbname=acme user={principal} sslmode=disable",
@@ -257,9 +258,21 @@ class Stack:
                     break
                 time.sleep(1)
             expect(ok, f"read of a table created by DDL is still refused after the refetch window: {err.strip()}")
+            if ds["engine"] == "mysql":
+                self.wire_ok_info(ds)
         finally:
             self.wire_sql(ds, "smoke-architect", atoken, "DROP TABLE smoke_ddl")
         self.produced.setdefault(ds["engine"], set()).add("wire")
+
+    def wire_ok_info(self, ds):
+        """A write whose OK packet carries an info message reaches the client with that message intact."""
+        updater = self.session("wire").login("smoke-updater", ["system:production-viewer", "system:production-updater"])
+        utoken = self.wire_token(updater)
+        for sql, info in (("INSERT INTO smoke_ddl VALUES (1, 'a'), (2, 'b')", "Records: 2"),
+                          ("UPDATE smoke_ddl SET note = 'c' WHERE id = 1", "Rows matched: 1")):
+            ok, rows, err = self.wire_sql(ds, "smoke-updater", utoken, sql, verbose=True)
+            expect(ok, f"wire {sql.split()[0]} as updater failed: {err.strip()}")
+            expect(any(r[0].startswith(info) for r in rows), f"wire {sql.split()[0]} OK info not relayed intact: {rows}")
 
     def leg_pmon(self, ds):
         a = self.args

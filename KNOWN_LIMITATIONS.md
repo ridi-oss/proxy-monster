@@ -165,6 +165,14 @@ captured on the connection's own held target-DB connection (design:
   that treated `CommandComplete` as commit believes a rolled-back write
   succeeded. Narrow window; MySQL's analogue is benign (skipped and retried on
   reconnect). Fix (bounded reads through the pending `Sync`) is a follow-up.
+- 🟡 A PostgreSQL multi-statement query may control the transaction only by
+  beginning with `BEGIN` and ending with `COMMIT`; any other `BEGIN`, `COMMIT`,
+  `ROLLBACK`, `SAVEPOINT`, or `SET TRANSACTION` in it is refused. Send those
+  statements as their own query.
+- A PostgreSQL refusal on the extended protocol outside `BEGIN` does not undo
+  the statements already executed since the last `Sync`; PostgreSQL would roll
+  that implicit transaction back. Inside `BEGIN` a refusal fails the transaction
+  as an error does.
 
 ## Athena
 

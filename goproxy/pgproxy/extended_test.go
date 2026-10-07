@@ -1319,7 +1319,7 @@ func TestExtendedPostBindSearchPathDriftCannotBypassPolicy(t *testing.T) {
 	if !ok || denial.Code != "42501" || !strings.Contains(denial.Message, "proxy-monster denied") {
 		t.Fatalf("Execute frame[0] = %#v, want 42501 proxy-monster denied", executeFrames[0])
 	}
-	assertRawReadyForQuery(t, executeFrames, 'T')
+	assertRawReadyForQuery(t, executeFrames, 'E')
 
 	requests := h.fake.requests()
 	if len(requests) == 0 {

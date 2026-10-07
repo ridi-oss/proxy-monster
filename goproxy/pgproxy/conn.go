@@ -63,6 +63,8 @@ type session struct {
 	statements   map[string]preparedStatement
 	portals      map[string]boundPortal
 	skipToSync   bool
+	// A refusal in this extended sequence fails the target's open transaction once Sync completes.
+	abortAtSync bool
 }
 
 func (s *Server) handleConn(rawClientConn net.Conn) {
@@ -304,6 +306,10 @@ startupComplete:
 				return
 			}
 		case *pgproto3.FunctionCall:
+			if err := abortTransaction(sess); err != nil {
+				_ = closeRelay(sess, err)
+				return
+			}
 			if err := sendError(client, "ERROR", "0A000", "proxy-monster: function call protocol is not supported", true, sess.lastTxStatus); err != nil {
 				return
 			}

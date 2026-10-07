@@ -317,6 +317,16 @@ Fixes for gaps documented in
 
 ## Data plane
 
+- PostgreSQL multi-statement queries with transaction control anywhere in the
+  batch. Today the proxy runs a batch statement by statement inside its own
+  `BEGIN`/`COMMIT`, so it refuses transaction control other than a leading
+  `BEGIN` and a trailing `COMMIT`. When no statement changes the catalog or the
+  session (`SET search_path`, `SET ROLE`), every statement can be decided up
+  front and the batch sent whole, so PostgreSQL applies its own transaction
+  rules. Needs per-result-set masks, caps, completions, and diagnostic redaction
+  in one relayed response. A batch that changes the catalog or session must stay
+  statement by statement: deciding it up front binds a later statement to
+  objects an earlier one renamed or replaced.
 - Unmaskable-feature relay: a verbatim passthrough for `COPY OUT`, PostgreSQL
   fast-path, and similar features so a trusted datasource can opt in (denied
   today; MySQL and PostgreSQL binary-result relay is built). Each feature is a

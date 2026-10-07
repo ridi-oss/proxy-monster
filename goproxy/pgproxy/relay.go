@@ -9,6 +9,8 @@ import (
 
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgproto3"
+	"github.com/ridi-oss/proxy-monster/analyzer/probe"
+	analyzerpb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
 	"github.com/ridi-oss/proxy-monster/goproxy/engine"
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
 )
@@ -271,10 +273,113 @@ func (s *Server) cancelCappedQuery(sess *session) {
 }
 
 func (s *Server) handleQuery(sess *session, sql string) error {
+	batch := splitBatch(sql)
+	if batch == nil {
+		_, err := s.serveQuery(sess, sql, relayQuery)
+		return err
+	}
+	explicit := explicitTransaction(batch)
+	for i, statement := range batch {
+		if statement.MayControlTransaction && !(explicit && (i == 0 || i == len(batch)-1)) {
+			if err := abortTransaction(sess); err != nil {
+				return closeRelay(sess, err)
+			}
+			return sendError(sess.client, "ERROR", "0A000",
+				"proxy-monster: a multi-statement query may only begin with BEGIN and end with COMMIT; send other transaction control as its own query",
+				true, sess.lastTxStatus)
+		}
+	}
+	return s.handleBatch(sess, batch, explicit)
+}
+
+// explicitTransaction reports a batch that opens its own transaction first and commits it last, which runs as
+// PostgreSQL runs it without the proxy's wrapping transaction.
+func explicitTransaction(batch []probe.BatchStatement) bool {
+	return batch[0].Kind == analyzerpb.StatementKind_STATEMENT_KIND_START_TRANSACTION &&
+		batch[len(batch)-1].Kind == analyzerpb.StatementKind_STATEMENT_KIND_COMMIT
+}
+
+// splitBatch cuts a multi-statement simple query into its statements, or nil to serve sql as one.
+func splitBatch(sql string) []probe.BatchStatement {
+	if !strings.Contains(strings.TrimRight(sql, "; \t\r\n"), ";") {
+		return nil
+	}
+	batch, ok := probe.SplitBatch(sql, &analyzerpb.EngineConfig{Engine: analyzerpb.Engine_POSTGRES})
+	if !ok || len(batch) < 2 {
+		return nil
+	}
+	return batch
+}
+
+// handleBatch decides each statement right before it runs and answers with one ReadyForQuery. From an idle
+// session the batch runs in the proxy's own transaction, so a deny or error undoes it, as PostgreSQL does.
+func (s *Server) handleBatch(sess *session, batch []probe.BatchStatement, explicit bool) error {
+	owned := !explicit && sess.lastTxStatus == 'I'
+	failed := false
+	if owned {
+		result, err := s.serveQuery(sess, "BEGIN", relayBatchControl)
+		if err != nil {
+			return err
+		}
+		failed, owned = result.stop, !result.stop
+	}
+	for i, statement := range batch {
+		if failed {
+			break
+		}
+		result, err := s.serveQuery(sess, statement.SQL, relayBatchStatement)
+		if err != nil {
+			return err
+		}
+		failed = result.stop
+		// PREPARE TRANSACTION is not marked as transaction control, but it ends the transaction.
+		if sess.lastTxStatus == 'I' && !(explicit && i == len(batch)-1) {
+			owned, failed = false, true
+			if err := sendError(sess.client, "ERROR", "0A000", "proxy-monster: a statement ended the multi-statement query's transaction", false, 0); err != nil {
+				return err
+			}
+		}
+	}
+	if owned {
+		end := "COMMIT"
+		if failed || sess.lastTxStatus == 'E' {
+			end = "ROLLBACK"
+		}
+		if _, err := s.serveQuery(sess, end, relayBatchControl); err != nil {
+			return err
+		}
+		// A denied or failed COMMIT/ROLLBACK leaves the batch pending in a transaction the client never
+		// opened; closing the connection makes the target roll it back.
+		if sess.lastTxStatus != 'I' {
+			return closeRelay(sess, fmt.Errorf("multi-statement query's %s left the transaction open", end))
+		}
+	}
+	sess.client.Send(&pgproto3.ReadyForQuery{TxStatus: sess.lastTxStatus})
+	return sess.client.Flush()
+}
+
+type relayMode int
+
+const (
+	relayQuery relayMode = iota
+	// One statement of a batch: its ReadyForQuery is held for handleBatch to send once.
+	relayBatchStatement
+	// The proxy's own BEGIN/COMMIT/ROLLBACK around a batch: only its errors and notices reach the client.
+	relayBatchControl
+)
+
+type queryResult struct {
+	// The statement was denied, failed, or hit its result cap; a batch runs nothing after it.
+	stop bool
+}
+
+// serveQuery serves one statement.
+func (s *Server) serveQuery(sess *session, sql string, mode relayMode) (queryResult, error) {
 	ref := s.refetcher(sess, false)
 	start := time.Now()
 	var relayStats engine.RelayStats
 	relayStatus := engine.StatusError
+	var result queryResult
 	decision, denied, err := engine.ServeStatement(sess.qe,
 		sess.authzInput(sql, sess.token, sess.clientAddr, sess.connectionID, ref.RunAll), ref, nil,
 		func(toSend string, masks []*pb.ColumnMask, dec *engine.Decision) (bool, error) {
@@ -298,8 +403,17 @@ func (s *Server) handleQuery(sess *session, sql string) error {
 					relayStats.Rows++
 					relayStats.Bytes += rowBytes
 				case *pgproto3.ReadyForQuery:
+					// A capped statement fails its transaction, so its ReadyForQuery waits for the abort below.
 					if capped != nil {
 						sess.client.Send(capped)
+						return nil
+					}
+					if mode != relayQuery {
+						return nil
+					}
+				case *pgproto3.CommandComplete:
+					if capped != nil || mode == relayBatchControl {
+						return nil
 					}
 				default:
 					// Past the cap the 57014 IS the client's terminator, so every remaining frame of this
@@ -319,12 +433,21 @@ func (s *Server) handleQuery(sess *session, sql string) error {
 			if streamErr != nil {
 				return false, mapWireStreamError(sess, streamErr)
 			}
+			if capped != nil {
+				if err := abortTransaction(sess); err != nil {
+					return false, err
+				}
+				if mode == relayQuery {
+					sess.client.Send(&pgproto3.ReadyForQuery{TxStatus: sess.lastTxStatus})
+				}
+			}
 			sess.pendingDirty = true
 			if err := sess.client.Flush(); err != nil {
 				return false, err
 			}
 			relayStatus = engine.RelayStatus(targetDbErr == nil && capped == nil, nil)
-			return targetDbErr == nil && capped == nil, nil
+			result.stop = targetDbErr != nil || capped != nil
+			return !result.stop, nil
 		})
 	// Post-relay, best-effort completion: only a relayed (Proceed) statement reports. A DENY relayed
 	// nothing, and EmitCompletion additionally no-ops for a decision with no audit id.
@@ -334,18 +457,38 @@ func (s *Server) handleQuery(sess *session, sql string) error {
 	if err != nil {
 		var fail engine.FailError
 		if errors.As(err, &fail) {
-			return sendError(sess.client, "ERROR", "58000", "proxy-monster: "+fail.Message, true, sess.lastTxStatus)
+			if err := abortTransaction(sess); err != nil {
+				return queryResult{stop: true}, closeRelay(sess, err)
+			}
+			return queryResult{stop: true}, sendError(sess.client, "ERROR", "58000", "proxy-monster: "+fail.Message, mode == relayQuery, sess.lastTxStatus)
 		}
-		return closeRelay(sess, err)
+		return result, closeRelay(sess, err)
 	}
 	if denied {
 		reason := "policy"
 		if decision != nil && decision.DenyReason != "" {
 			reason = decision.DenyReason
 		}
-		return sendError(sess.client, "ERROR", "42501", "proxy-monster denied: "+reason, true, sess.lastTxStatus)
+		if err := abortTransaction(sess); err != nil {
+			return queryResult{stop: true}, closeRelay(sess, err)
+		}
+		return queryResult{stop: true}, sendError(sess.client, "ERROR", "42501", "proxy-monster denied: "+reason, mode == relayQuery, sess.lastTxStatus)
 	}
-	return nil
+	return result, nil
+}
+
+// abortTransaction fails an open target transaction as a target-DB error would, so a refusal the target
+// never saw still makes a later COMMIT roll back.
+func abortTransaction(sess *session) error {
+	if sess.lastTxStatus != 'T' {
+		return nil
+	}
+	sess.targetDb.Send(&pgproto3.Query{String: "DO $$BEGIN RAISE EXCEPTION 'proxy-monster refused the statement'; END$$"})
+	if err := sess.targetDb.Flush(); err != nil {
+		return err
+	}
+	_, err := sess.streamResult(nil, streamOpts{}, nil)
+	return err
 }
 
 func mapWireStreamError(sess *session, err error) error {

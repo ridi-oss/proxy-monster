@@ -1,4 +1,4 @@
-//go:build !darwin
+//go:build !darwin && !windows
 
 package main
 
@@ -15,3 +15,5 @@ func checkForUpdates() {}
 func setAutoUpdatesNow(bool) {}
 
 func installHeldUpdate() {}
+
+func stopUpdater() {}

@@ -151,6 +151,7 @@ func (a *app) onReady() {
 }
 
 func (a *app) onExit() {
+	stopUpdater()
 	a.errMu.Lock()
 	a.exited = true
 	a.errMu.Unlock()

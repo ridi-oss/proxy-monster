@@ -195,5 +195,9 @@
   "s.about.pmon": "Bundled pmon",
   "s.about.daemon": "Background service",
   "s.about.notRunning": "not running",
-  "s.about.license": "Open source under the Apache 2.0 license."
+  "s.about.license": "Open source under the Apache 2.0 license.",
+  "menu.checkUpdates": "Check for Updates…",
+  "menu.installUpdate": "Install Update {version}",
+  "confirm.update": "Install the update?",
+  "confirm.updateButton": "Install"
 }

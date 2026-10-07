@@ -195,5 +195,9 @@
   "s.about.pmon": "내장 pmon",
   "s.about.daemon": "백그라운드 서비스",
   "s.about.notRunning": "실행 중이 아님",
-  "s.about.license": "Apache 2.0 라이선스로 배포되는 오픈 소스입니다."
+  "s.about.license": "Apache 2.0 라이선스로 배포되는 오픈 소스입니다.",
+  "menu.checkUpdates": "업데이트 확인…",
+  "menu.installUpdate": "업데이트 {version} 설치",
+  "confirm.update": "업데이트를 설치할까요?",
+  "confirm.updateButton": "설치"
 }

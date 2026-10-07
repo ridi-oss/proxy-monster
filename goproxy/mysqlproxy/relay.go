@@ -1,6 +1,7 @@
 package mysqlproxy
 
 import (
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
@@ -50,6 +51,9 @@ type resultHooks struct {
 	// RedactErr, when non-nil, rewrites a standalone target-DB ERR packet before it reaches the sink — the one
 	// client-facing ERR site for both the wire relay and the run collector, so redaction here covers both.
 	RedactErr func([]byte) []byte
+	// MoreResults sets SERVER_MORE_RESULTS_EXISTS on the result's final OK/EOF: another result of the same
+	// multi-statement query follows.
+	MoreResults bool
 	// Stats, when non-nil, tallies result volume as rows stream: one row per logical data row and the
 	// target DB row-packet payload bytes (including continuation fragments of an oversized row). It measures
 	// target DB data volume, not the post-mask relayed size, so a masked result reports the same volume signal.
@@ -162,6 +166,11 @@ func relayResultSet(targetDb io.Reader, deprecateEOF bool, h resultHooks) (clean
 				if h.OnOK != nil {
 					h.OnOK(affected)
 				}
+				if h.MoreResults {
+					if clean, err = withMoreResults(clean, false); err != nil {
+						return false, capped, &resultSetError{seq, err}
+					}
+				}
 				if err := sink(seq, clean); err != nil {
 					return false, capped, err
 				}
@@ -226,12 +235,22 @@ func relayResultSet(targetDb io.Reader, deprecateEOF bool, h resultHooks) (clean
 						return false, capped, &resultSetError{seq, err}
 					}
 				}
+				if h.MoreResults {
+					if clean, err = withMoreResults(clean, false); err != nil {
+						return false, capped, &resultSetError{seq, err}
+					}
+				}
 				if err := sink(seq, clean); err != nil {
 					return false, capped, err
 				}
 				return true, capped, nil
 			}
 			if !deprecateEOF && mysqlwire.IsResultTerminator(payload) {
+				if h.MoreResults {
+					if payload, err = withMoreResults(payload, true); err != nil {
+						return false, capped, &resultSetError{seq, err}
+					}
+				}
 				if err := sink(seq, payload); err != nil {
 					return false, capped, err
 				}
@@ -292,6 +311,28 @@ func relayResultSet(targetDb io.Reader, deprecateEOF bool, h resultHooks) (clean
 	}
 }
 
+const serverMoreResultsExists = 0x0008
+
+// withMoreResults copies a result's final OK packet (or, with eof, its EOF packet) with
+// SERVER_MORE_RESULTS_EXISTS set.
+func withMoreResults(payload []byte, eof bool) ([]byte, error) {
+	out := append([]byte(nil), payload...)
+	pos := 3 // EOF: header, warnings, status
+	if !eof {
+		pos = 1
+		for range 2 { // affected rows, last insert id
+			if _, err := readLenencUint(out, &pos); err != nil {
+				return nil, err
+			}
+		}
+	}
+	if len(out) < pos+2 {
+		return nil, io.ErrUnexpectedEOF
+	}
+	binary.LittleEndian.PutUint16(out[pos:], binary.LittleEndian.Uint16(out[pos:])|serverMoreResultsExists)
+	return out, nil
+}
+
 // errRedactor returns the ERR-packet redactor for the current decision — sanitizeErrPacket when the control
 // plane latched diagnostic redaction for this statement, else nil (relay the ERR verbatim). It is the single
 // gate every target-DB-ERR relay path passes through. See docs/diagnostic-redaction.md.
@@ -309,6 +350,7 @@ func errRedactor(qe *engine.QueryEngine) func([]byte) []byte {
 // before the offending statement's OK reaches the client. A binding, row-decoding, or session-state failure
 // sends a final ERR and closes both sockets so no unmasked row can leak, no partially-relayed protocol can
 // be reused, and no follow-up query can run under a defeated invariant.
+// seqBase is the client sequence id the response follows, and moreResults marks a result another follows.
 func relayQueryResponseTracked(
 	client, targetDb net.Conn,
 	deprecateEOF bool,
@@ -316,7 +358,9 @@ func relayQueryResponseTracked(
 	redactErr func([]byte) []byte,
 	dec *engine.Decision,
 	cancel func(),
-) (bool, engine.RelayStats, error) {
+	seqBase byte,
+	moreResults bool,
+) (bool, engine.RelayStats, byte, error) {
 	columnCount := 0
 	var masker *engine.RowMasker
 	var stats engine.RelayStats
@@ -341,11 +385,12 @@ func relayQueryResponseTracked(
 	ok, capped, err := relayResultSet(targetDb, deprecateEOF, resultHooks{
 		Cap:           dec,
 		OnCapExceeded: cancel,
+		MoreResults:   moreResults,
 		Sink: func(seq byte, payload []byte) error {
-			if err := mysqlwire.WritePacket(client, seq, payload); err != nil {
+			if err := mysqlwire.WritePacket(client, seq+seqBase, payload); err != nil {
 				return err
 			}
-			lastSeq = seq
+			lastSeq = seq + seqBase
 			return nil
 		},
 		OnColumns: onFirst,
@@ -357,9 +402,9 @@ func relayQueryResponseTracked(
 	})
 	if err == nil {
 		if capped != nil {
-			return false, stats, mysqlwire.WritePacket(client, lastSeq+1, mysqlwire.ErrPacketState(1317, "70100", capped.Error()))
+			return false, stats, lastSeq, mysqlwire.WritePacket(client, lastSeq+1, mysqlwire.ErrPacketState(1317, "70100", capped.Error()))
 		}
-		return ok, stats, nil
+		return ok, stats, lastSeq, nil
 	}
 
 	var resultErr *resultSetError
@@ -387,12 +432,12 @@ func relayQueryResponseTracked(
 		case len(masks) > 0:
 			message = "proxy-monster: malformed target-DB text row"
 		}
-		_ = mysqlwire.WritePacket(client, resultErr.seq, mysqlwire.ErrPacketState(code, state, message))
+		_ = mysqlwire.WritePacket(client, resultErr.seq+seqBase, mysqlwire.ErrPacketState(code, state, message))
 	}
 	_ = client.Close()
 	_ = targetDb.Close()
 	// The partial volume tallied before the fault still travels with the error completion.
-	return false, stats, err
+	return false, stats, lastSeq, err
 }
 
 func rewriteMaskedTextRow(payload []byte, columnCount int, masker *engine.RowMasker) ([]byte, error) {

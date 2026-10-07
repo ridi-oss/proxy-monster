@@ -27,7 +27,7 @@ type RunSession struct {
 }
 
 func NewRunSession(ctx context.Context, target spi.TargetDb, db engine.Db, client spi.SessionClient, token string, connectionID []byte, guard engine.ExecGuard, readTimeout time.Duration) (*RunSession, error) {
-	conn, connID, err := dialTargetDbAuthID(ctx, target, true)
+	conn, greeting, err := dialTargetDbAuthID(ctx, target, true)
 	if err != nil {
 		return nil, err
 	}
@@ -39,7 +39,7 @@ func NewRunSession(ctx context.Context, target spi.TargetDb, db engine.Db, clien
 	}
 	s := &RunSession{
 		conn:         conn,
-		connID:       connID,
+		connID:       greeting.ConnectionID,
 		target:       target,
 		token:        token,
 		connectionID: append([]byte(nil), connectionID...),

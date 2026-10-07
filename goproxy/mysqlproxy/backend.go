@@ -52,11 +52,11 @@ func dialTargetDbAuth(target spi.TargetDb, mirrorDeprecateEOF bool) (net.Conn, e
 // (deadline-bounded) auth exchange runs, an AfterFunc closes the conn on cancel so a blocked read unwinds at
 // once. On the run path ctx is the target-DB open context, so a run the control-plane already closed does not
 // finish a target-DB handshake nobody is waiting for; the wire path passes a background ctx (never cancelled).
-func dialTargetDbAuthID(ctx context.Context, target spi.TargetDb, mirrorDeprecateEOF bool) (net.Conn, uint32, error) {
+func dialTargetDbAuthID(ctx context.Context, target spi.TargetDb, mirrorDeprecateEOF bool) (net.Conn, mysqlwire.Greeting, error) {
 	dialer := net.Dialer{Timeout: targetDbHandshakeTimeout}
 	conn, err := dialer.DialContext(ctx, "tcp", net.JoinHostPort(target.Host, strconv.Itoa(target.Port)))
 	if err != nil {
-		return nil, 0, err
+		return nil, mysqlwire.Greeting{}, err
 	}
 	keep := false
 	defer func() {
@@ -67,19 +67,19 @@ func dialTargetDbAuthID(ctx context.Context, target spi.TargetDb, mirrorDeprecat
 	socket := conn
 	defer context.AfterFunc(ctx, func() { _ = socket.Close() })()
 	if err := conn.SetDeadline(time.Now().Add(targetDbHandshakeTimeout)); err != nil {
-		return nil, 0, fmt.Errorf("set target-DB auth deadline: %w", err)
+		return nil, mysqlwire.Greeting{}, fmt.Errorf("set target-DB auth deadline: %w", err)
 	}
 
 	greetingSeq, payload, err := mysqlwire.ReadPacketLimited(conn, maxTargetDbAuthPacket)
 	if err != nil {
-		return nil, 0, fmt.Errorf("read target-DB greeting: %w", err)
+		return nil, mysqlwire.Greeting{}, fmt.Errorf("read target-DB greeting: %w", err)
 	}
 	greeting, err := mysqlwire.ParseHandshakeV10(payload)
 	if err != nil {
-		return nil, 0, fmt.Errorf("malformed target-DB greeting: %w", err)
+		return nil, mysqlwire.Greeting{}, fmt.Errorf("malformed target-DB greeting: %w", err)
 	}
 	if greeting.Capabilities&mysqlwire.CapSessionTrack == 0 {
-		return nil, 0, errors.New("target DB does not support CLIENT_SESSION_TRACK (MySQL 8.0+ required)")
+		return nil, mysqlwire.Greeting{}, errors.New("target DB does not support CLIENT_SESSION_TRACK (MySQL 8.0+ required)")
 	}
 
 	caps := uint32(mysqlwire.CapLongPassword | mysqlwire.CapProtocol41 | mysqlwire.CapTransactions |
@@ -93,77 +93,77 @@ func dialTargetDbAuthID(ctx context.Context, target spi.TargetDb, mirrorDeprecat
 	// full-auth path encrypts against.
 	plugin, err := canonicalTargetDbPlugin(greeting.AuthPlugin)
 	if err != nil {
-		return nil, 0, err
+		return nil, mysqlwire.Greeting{}, err
 	}
 	scramble := greeting.Scramble
 	authResp, err := targetDbAuthResponse(plugin, target.Password, scramble)
 	if err != nil {
-		return nil, 0, err
+		return nil, mysqlwire.Greeting{}, err
 	}
 	responseSeq := greetingSeq + 1
 	if target.TLS != nil {
 		if greeting.Capabilities&mysqlwire.CapSSL == 0 {
-			return nil, 0, errors.New("target DB does not offer TLS (CLIENT_SSL missing from its greeting)")
+			return nil, mysqlwire.Greeting{}, errors.New("target DB does not offer TLS (CLIENT_SSL missing from its greeting)")
 		}
 		caps |= mysqlwire.CapSSL
 		if err := mysqlwire.WritePacket(conn, responseSeq, mysqlwire.SSLRequest(caps)); err != nil {
-			return nil, 0, fmt.Errorf("write target-DB SSLRequest: %w", err)
+			return nil, mysqlwire.Greeting{}, fmt.Errorf("write target-DB SSLRequest: %w", err)
 		}
 		tlsConn := tls.Client(conn, target.TLS)
 		if err := tlsConn.HandshakeContext(ctx); err != nil {
-			return nil, 0, fmt.Errorf("target-DB TLS handshake: %w", err)
+			return nil, mysqlwire.Greeting{}, fmt.Errorf("target-DB TLS handshake: %w", err)
 		}
 		conn = tlsConn
 		responseSeq++
 	}
 	response := mysqlwire.TargetDbHandshakeResponse(caps, target.User, authResp, target.Db, plugin)
 	if err := mysqlwire.WritePacket(conn, responseSeq, response); err != nil {
-		return nil, 0, fmt.Errorf("write target-DB handshake response: %w", err)
+		return nil, mysqlwire.Greeting{}, fmt.Errorf("write target-DB handshake response: %w", err)
 	}
 
 	for {
 		seq, authPayload, err := mysqlwire.ReadPacketLimited(conn, maxTargetDbAuthPacket)
 		if err != nil {
-			return nil, 0, fmt.Errorf("read target-DB auth response: %w", err)
+			return nil, mysqlwire.Greeting{}, fmt.Errorf("read target-DB auth response: %w", err)
 		}
 		if len(authPayload) == 0 {
-			return nil, 0, errors.New("unexpected empty target-DB auth packet")
+			return nil, mysqlwire.Greeting{}, errors.New("unexpected empty target-DB auth packet")
 		}
 		switch authPayload[0] {
 		case 0x00:
 			if err := enableSessionTracking(conn); err != nil {
-				return nil, 0, err
+				return nil, mysqlwire.Greeting{}, err
 			}
 			if err := conn.SetDeadline(time.Time{}); err != nil {
-				return nil, 0, fmt.Errorf("clear target-DB auth deadline: %w", err)
+				return nil, mysqlwire.Greeting{}, fmt.Errorf("clear target-DB auth deadline: %w", err)
 			}
 			keep = true
-			return conn, greeting.ConnectionID, nil
+			return conn, greeting, nil
 		case 0xff:
-			return nil, 0, fmt.Errorf("target-DB auth failed: %s", mysqlwire.ErrString(authPayload))
+			return nil, mysqlwire.Greeting{}, fmt.Errorf("target-DB auth failed: %s", mysqlwire.ErrString(authPayload))
 		case 0xfe:
 			switchPlugin, switchScramble, err := parseAuthSwitch(authPayload)
 			if err != nil {
-				return nil, 0, err
+				return nil, mysqlwire.Greeting{}, err
 			}
 			plugin = switchPlugin
 			scramble = switchScramble
 			resp, err := targetDbAuthResponse(plugin, target.Password, scramble)
 			if err != nil {
-				return nil, 0, err
+				return nil, mysqlwire.Greeting{}, err
 			}
 			if err := mysqlwire.WritePacket(conn, seq+1, resp); err != nil {
-				return nil, 0, fmt.Errorf("write target-DB auth switch response: %w", err)
+				return nil, mysqlwire.Greeting{}, fmt.Errorf("write target-DB auth switch response: %w", err)
 			}
 		case mysqlwire.AuthMoreData:
 			if plugin != targetDbPluginCachingSHA2 {
-				return nil, 0, fmt.Errorf("unexpected AuthMoreData for plugin %s", plugin)
+				return nil, mysqlwire.Greeting{}, fmt.Errorf("unexpected AuthMoreData for plugin %s", plugin)
 			}
 			if err := handleCachingSHA2MoreData(conn, seq, authPayload, target.Password, scramble); err != nil {
-				return nil, 0, err
+				return nil, mysqlwire.Greeting{}, err
 			}
 		default:
-			return nil, 0, fmt.Errorf("unexpected target-DB auth packet 0x%02x", authPayload[0])
+			return nil, mysqlwire.Greeting{}, fmt.Errorf("unexpected target-DB auth packet 0x%02x", authPayload[0])
 		}
 	}
 }

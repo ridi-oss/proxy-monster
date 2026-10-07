@@ -141,13 +141,18 @@ impossibility; every policy decision is a Cedar verdict. Four outcomes:
 
 The analyzer decides one statement at a time, so a batch (`SELECT 1; SELECT 2`)
 that reaches it is a structural deny. The console editor and MCP split a batch
-before deciding it, and so does the PostgreSQL wire proxy for a simple query:
-each statement is decided right before it runs, against the catalog its
-predecessors left. From an idle session the proxy runs the batch between its own
-`BEGIN` and `COMMIT`, decided like any statement, and rolls back on a deny or an
-error, as PostgreSQL does for a multi-statement query. A batch that begins with
-`BEGIN` and ends with `COMMIT` runs as written, without the proxy's transaction;
-any other transaction-control statement in a batch is refused.
+before deciding it, and so do the wire proxies: each statement is decided right
+before it runs, against the catalog its predecessors left.
+
+- PostgreSQL: from an idle session the proxy runs the batch between its own
+  `BEGIN` and `COMMIT`, decided like any statement, and rolls back on a deny or
+  an error, as PostgreSQL does for a multi-statement query. A batch that begins
+  with `BEGIN` and ends with `COMMIT` runs as written, without the proxy's
+  transaction; any other transaction-control statement in a batch is refused.
+- MySQL: only for a client that enabled multi-statements (at connect or with
+  `COM_SET_OPTION`). The batch stops at the first deny or error and keeps what
+  already ran, as MySQL does. The target connection keeps multi-statements off,
+  so it never runs more than the one statement the proxy decided.
 
 ## What Kotlin does
 

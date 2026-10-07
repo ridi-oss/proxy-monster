@@ -160,7 +160,8 @@ func TestDialTargetDbCachingSHA2FullAuth(t *testing.T) {
 		User:     user,
 		Password: password,
 	}
-	conn, connID, err := dialTargetDbAuthID(context.Background(), target, true)
+	conn, greeting, err := dialTargetDbAuthID(context.Background(), target, true)
+	connID := greeting.ConnectionID
 	if err != nil {
 		t.Fatalf("dialTargetDbAuthID against caching_sha2 target DB: %v", err)
 	}

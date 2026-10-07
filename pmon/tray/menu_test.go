@@ -1,7 +1,10 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
+	"image/color"
+	"image/png"
 	"strings"
 	"testing"
 	"time"
@@ -247,5 +250,19 @@ func TestASignInPastItsWindowReadsAsEnded(t *testing.T) {
 	}
 	if got := iconFor(s, view{now: now}); got != iconSignedOut {
 		t.Errorf("icon = %v, want signed out", got)
+	}
+}
+
+func TestToICOWrapsThePNG(t *testing.T) {
+	ico := toICO(recolor(trayIcon, color.NRGBA{R: 255, G: 255, B: 255}))
+	if !bytes.Equal(ico[:6], []byte{0, 0, 1, 0, 1, 0}) || ico[6] != 32 || ico[7] != 32 {
+		t.Fatalf("header % x", ico[:8])
+	}
+	img, err := png.Decode(bytes.NewReader(ico[22:]))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r, g, b, _ := img.At(16, 16).RGBA(); r>>8 != 255 || g>>8 != 255 || b>>8 != 255 {
+		t.Errorf("the recolored shield is not white at its center")
 	}
 }

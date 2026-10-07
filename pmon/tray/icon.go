@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	_ "embed"
+	"encoding/binary"
 	"image"
 	"image/color"
 	"image/png"
@@ -127,4 +128,45 @@ func drawDots(m *image.NRGBA) {
 			}
 		}
 	}
+}
+
+// toICO wraps a PNG in a one-image .ico, the only icon format the Windows notification area takes.
+func toICO(p []byte) []byte {
+	img, err := png.DecodeConfig(bytes.NewReader(p))
+	if err != nil {
+		panic(err)
+	}
+	side := func(n int) byte {
+		if n >= 256 {
+			return 0 // 0 means 256
+		}
+		return byte(n)
+	}
+	var b bytes.Buffer
+	b.Write([]byte{0, 0, 1, 0, 1, 0})
+	b.Write([]byte{side(img.Width), side(img.Height), 0, 0, 1, 0, 32, 0})
+	_ = binary.Write(&b, binary.LittleEndian, uint32(len(p)))
+	_ = binary.Write(&b, binary.LittleEndian, uint32(22))
+	b.Write(p)
+	return b.Bytes()
+}
+
+// recolor paints a template icon's shape in c, keeping its alpha, for a tray that does not tint icons itself.
+func recolor(p []byte, c color.NRGBA) []byte {
+	src, err := png.Decode(bytes.NewReader(p))
+	if err != nil {
+		panic(err)
+	}
+	m := image.NewNRGBA(src.Bounds())
+	for y := range m.Bounds().Dy() {
+		for x := range m.Bounds().Dx() {
+			_, _, _, a := src.At(x, y).RGBA()
+			m.SetNRGBA(x, y, color.NRGBA{R: c.R, G: c.G, B: c.B, A: uint8(a >> 8)})
+		}
+	}
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, m); err != nil {
+		panic(err)
+	}
+	return buf.Bytes()
 }

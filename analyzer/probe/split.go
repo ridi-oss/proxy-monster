@@ -29,6 +29,8 @@ type BatchStatement struct {
 	// BEGIN/START TRANSACTION, COMMIT/END, ROLLBACK, SAVEPOINT/RELEASE, SET TRANSACTION, or a statement
 	// sqlglot-go did not parse as one (PostgreSQL `ABORT` reads as a column), which could be any of them.
 	MayControlTransaction bool
+	// An empty statement (`;;`, or a comment alone) comes before it, which MySQL stops at.
+	AfterEmpty bool
 }
 
 // SplitBatch is SplitStatements that also marks each statement that may control the transaction.
@@ -58,9 +60,11 @@ func SplitBatch(sql string, config *pb.EngineConfig) (statements []BatchStatemen
 	}
 
 	out := make([]BatchStatement, 0, len(parsed))
+	afterEmpty := false
 	for _, statement := range parsed {
 		// `;;` leaves a nil slot and a bare `;` a Semicolon node — nothing to run, nothing to authorize.
 		if statement == nil || statement.Kind() == exp.KindSemicolon {
+			afterEmpty = true
 			continue
 		}
 		text, spanned := statement.SpanText()
@@ -69,7 +73,8 @@ func SplitBatch(sql string, config *pb.EngineConfig) (statements []BatchStatemen
 			return nil, false
 		}
 		if trimmed := strings.TrimSpace(text); trimmed != "" {
-			out = append(out, BatchStatement{SQL: trimmed, Kind: statementKind(statement, eng), MayControlTransaction: mayControlTransaction(statement, eng)})
+			out = append(out, BatchStatement{SQL: trimmed, Kind: statementKind(statement, eng), MayControlTransaction: mayControlTransaction(statement, eng), AfterEmpty: afterEmpty})
+			afterEmpty = false
 		}
 	}
 	// TODO: PG runs a bare `;` and the wire path relays EmptyQueryResponse; here it denies, since a

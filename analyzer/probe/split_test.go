@@ -389,3 +389,17 @@ func TestSplitBatchMarksStatementsThatMayControlTheTransaction(t *testing.T) {
 		t.Fatalf("transaction control = %v, want %v", got, want)
 	}
 }
+
+func TestSplitBatchMarksStatementsAfterAnEmptyOne(t *testing.T) {
+	batch, ok := SplitBatch("SELECT 1; ; SELECT 2;; SELECT 3; SELECT 4; -- tail", mysqlSplitConfig())
+	if !ok {
+		t.Fatal("split failed")
+	}
+	var got []bool
+	for _, statement := range batch {
+		got = append(got, statement.AfterEmpty)
+	}
+	if want := []bool{false, true, true, false}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("after empty = %v, want %v", got, want)
+	}
+}

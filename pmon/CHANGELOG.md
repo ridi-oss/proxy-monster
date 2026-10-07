@@ -1,5 +1,33 @@
 # Changelog
 
+## [0.1.8](https://github.com/ridi-oss/proxy-monster/compare/pmon-v0.1.7...pmon-v0.1.8) (2026-10-07)
+
+
+### Features
+
+* end a pmon login on the server at logout and at re-login ([91c14d8](https://github.com/ridi-oss/proxy-monster/commit/91c14d8a5a756ac2832e261ecb58085339e7eaad))
+* get_pmon_guide and the connect page's pmon block ([3057674](https://github.com/ridi-oss/proxy-monster/commit/3057674dde6cef4231f277511ba7cf19a948e400))
+* **pmon:** `pmon login --scopes` and granted scopes in `pmon status` ([2a8b467](https://github.com/ridi-oss/proxy-monster/commit/2a8b4676963aba7730e9f885f96894bd1b8202f2))
+* **pmon:** `pmon mcp`, a stdio MCP bridge over the pmon login ([ec17a79](https://github.com/ridi-oss/proxy-monster/commit/ec17a798a3bb874865704aa9e33cf9db46b12aa6))
+* **tray:** a menu per server, every copy format, state icons, native notifications ([2a7cb3f](https://github.com/ridi-oss/proxy-monster/commit/2a7cb3f1a7b5e9f38ecff9a70d5f84575de1a2f9))
+* **tray:** a Settings window for servers, AI apps and login ([8dbc837](https://github.com/ridi-oss/proxy-monster/commit/8dbc837b1225e7925ebc90f12f8515cc783c42bf))
+* **tray:** connect Claude Desktop, Claude Code and Codex to a server ([460db91](https://github.com/ridi-oss/proxy-monster/commit/460db91fa16edd79dafb3634f5c7704658f3c653))
+* **tray:** English and Korean, with language and theme settings ([bb394d6](https://github.com/ridi-oss/proxy-monster/commit/bb394d659405f2bc5f28dddcfc59d3c840fc552b))
+* **tray:** open pmon://connect links from the console ([6f1e5aa](https://github.com/ridi-oss/proxy-monster/commit/6f1e5aa26048d0d1e2e00d37036b5bd10ea564d3))
+
+
+### Bug Fixes
+
+* **pmon:** say when the daemon or the server is older than pmon mcp ([37da5a5](https://github.com/ridi-oss/proxy-monster/commit/37da5a5e001fa8914f1a84a2ba993faa16b68842))
+* **tray:** name local builds after the pmon tag ([cad3037](https://github.com/ridi-oss/proxy-monster/commit/cad303702b84fb0d65d550d94326631ada741fe5))
+* **tray:** review fixes for Settings, AI apps, connect links and notices ([2fe5a3c](https://github.com/ridi-oss/proxy-monster/commit/2fe5a3c222889aa07de16ad91539496260a93bf4))
+
+
+### Refactoring
+
+* **pmon:** move the CLI and other pmon-only packages under internal/ ([4e82d86](https://github.com/ridi-oss/proxy-monster/commit/4e82d86ca2e51a6221f20be3bc911f629ce459b8))
+* **pmon:** move the menu-bar app into pmon/tray ([427357f](https://github.com/ridi-oss/proxy-monster/commit/427357f8003b62c65be6d998ea7337c6185aef1f))
+
 ## [0.1.7](https://github.com/ridi-oss/proxy-monster/compare/pmon-v0.1.6...pmon-v0.1.7) (2026-10-01)
 
 

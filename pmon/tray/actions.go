@@ -42,6 +42,10 @@ func (a *app) run(act action) {
 		a.openPreferences(false)
 	case opAddServer:
 		a.openPreferences(true)
+	case opCheckUpdates:
+		checkForUpdates()
+	case opInstallUpdate:
+		a.doInstallUpdate()
 	}
 }
 
@@ -213,7 +217,7 @@ func (a *app) doQuit() {
 // unreachable — nothing to disturb — proceeds without asking.
 func (a *app) confirmDroppingConns(kind, server string) bool { return confirmDrop(a.ctx, kind, server) }
 
-// confirmDrop's kind is "signOut", "restart", "quit" or "remove"; it picks the dialog's title and button.
+// confirmDrop's kind is "signOut", "restart", "quit", "update" or "remove"; it picks the dialog's title and button.
 func confirmDrop(ctx context.Context, kind, server string) bool {
 	n := liveConns(ctx, server)
 	if n == 0 {

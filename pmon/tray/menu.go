@@ -27,6 +27,8 @@ const (
 	opAIApp
 	opPrefs
 	opAddServer
+	opCheckUpdates
+	opInstallUpdate
 )
 
 // action is what a click does. Copy actions carry their payload, so a row's label and what it copies are built
@@ -62,6 +64,9 @@ type view struct {
 	ai            []aiState
 	// pmonVersion is the bundled pmon's build; a daemon reporting another one was started by a different pmon.
 	pmonVersion string
+	// updates is whether this build updates itself; pendingUpdate is a downloaded update waiting to install.
+	updates       bool
+	pendingUpdate string
 }
 
 // aiState is one installed AI app and which servers it already runs `pmon mcp` for.
@@ -108,6 +113,12 @@ func buildMenu(s *control.Status, v view) []entry {
 	m = append(m, separator("sep-tail"))
 	if v.loginItemShow {
 		m = append(m, entry{key: "loginitem", title: T("menu.openAtLogin"), checkbox: true, checked: v.loginItemOn, act: &action{op: opLoginItem}})
+	}
+	switch {
+	case v.pendingUpdate != "":
+		m = append(m, entry{key: "update-install", title: T("menu.installUpdate", "version", v.pendingUpdate), act: &action{op: opInstallUpdate}})
+	case v.updates:
+		m = append(m, entry{key: "update-check", title: T("menu.checkUpdates"), act: &action{op: opCheckUpdates}})
 	}
 	m = append(m, entry{key: "prefs", title: T("menu.settings"), act: &action{op: opPrefs}})
 	return append(m, entry{key: "quit", title: T("menu.quit"), act: &action{op: opQuit}})

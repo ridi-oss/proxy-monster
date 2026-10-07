@@ -56,6 +56,11 @@ type app struct {
 	prefsPid  int        // the Preferences window's process, while open
 	// pmonVersion is the bundled pmon's `--version`, read once at startup.
 	pmonVersion string
+	// updates is whether this build updates itself; pendingUpdate is a downloaded update's version.
+	updates       bool
+	pendingUpdate string
+	// appearance ticks when watchAppearance polls, for settings the Settings window changes.
+	appearance chan struct{}
 
 	errMu  sync.Mutex
 	err    error
@@ -64,7 +69,7 @@ type app struct {
 
 func newApp(ctx context.Context) *app {
 	ctx, cancel := context.WithCancel(ctx)
-	return &app{pmonVersion: bundledPmonVersion(), ctx: ctx, cancel: cancel, children: map[*node][]*node{}, warned: map[string]time.Time{}, ended: map[string]time.Time{}, signingIn: map[string]bool{}}
+	return &app{pmonVersion: bundledPmonVersion(), ctx: ctx, cancel: cancel, children: map[*node][]*node{}, warned: map[string]time.Time{}, ended: map[string]time.Time{}, signingIn: map[string]bool{}, appearance: make(chan struct{}, 1)}
 }
 
 // tryLockAction claims the lifecycle lock without blocking, reporting whether it was free.
@@ -107,9 +112,10 @@ func (a *app) view() view {
 	a.mu.Unlock()
 	on, supported := loginItem()
 	a.mu.Lock()
-	ai := a.ai
+	ai, updates, pending := a.ai, a.updates, a.pendingUpdate
 	a.mu.Unlock()
-	return view{now: time.Now(), signingIn: signingIn, loginItemOn: on, loginItemShow: supported, ai: ai, pmonVersion: a.pmonVersion}
+	return view{now: time.Now(), signingIn: signingIn, loginItemOn: on, loginItemShow: supported, ai: ai, pmonVersion: a.pmonVersion,
+		updates: updates, pendingUpdate: pending}
 }
 
 func (a *app) setSigningIn(server string, on bool) {
@@ -132,6 +138,8 @@ func (a *app) onReady() {
 	a.onScreen = true
 	a.redraw()
 	a.renderMu.Unlock()
+	a.startUpdates()
+	go a.finishUpdate()
 	go a.watchDaemon()
 	go a.ticker()
 	go a.watchAppearance()
@@ -157,6 +165,10 @@ func (a *app) watchAppearance() {
 			return
 		case <-t.C:
 		}
+		select {
+		case a.appearance <- struct{}{}:
+		default:
+		}
 		nlogin, _ := loginItem()
 		if nl, nth := lang(), theme(); nl != l || nth != th || nlogin != login {
 			l, th, login = nl, nth, nlogin
@@ -181,6 +193,7 @@ func (a *app) ticker() {
 			if n++; n%5 == 0 {
 				go a.refreshAI(true)
 			}
+			go a.installWhenIdle()
 			a.renderMu.Lock()
 			a.redraw()
 			a.renderMu.Unlock()

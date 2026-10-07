@@ -80,7 +80,7 @@ func TestT(t *testing.T) {
 // Keys the code builds at run time, which the literal scan cannot see.
 func TestDynamicKeysExist(t *testing.T) {
 	var keys []string
-	for _, kind := range []string{"signOut", "restart", "quit", "remove"} {
+	for _, kind := range []string{"signOut", "restart", "quit", "update", "remove"} {
 		keys = append(keys, "confirm."+kind, "confirm."+kind+"Button")
 	}
 	for _, app := range aiApps() {

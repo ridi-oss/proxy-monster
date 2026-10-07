@@ -31,6 +31,10 @@ func main() {
 		return
 	}
 
+	if handedOff() {
+		return
+	}
+
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -38,6 +42,7 @@ func main() {
 	// Set before the run loop starts: a click on a notification can launch the app and arrive at once.
 	onNotificationClick = app.notificationClicked
 	onConnectLink = app.openConnectLink
+	onShow = func() { app.openPreferences(false) }
 	listenForLinks()
 	// systray.Run takes over the main thread (a macOS UI requirement) and calls onReady on it.
 	systray.Run(app.onReady, app.onExit)

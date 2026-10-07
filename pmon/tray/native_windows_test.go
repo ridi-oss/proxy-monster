@@ -42,3 +42,15 @@ func TestPathEntryIsAddedOnceAndMoves(t *testing.T) {
 		}
 	}
 }
+
+func TestPathEntryIsRemovedWithoutTheRest(t *testing.T) {
+	for _, tc := range []struct{ current, entry, want string }{
+		{`C:\x;c:\A\;;C:\y;C:\a`, `C:\a`, `C:\x;C:\y`},
+		{`C:\a\`, `C:\a`, ""},
+		{`C:\x;C:\y`, `C:\a`, `C:\x;C:\y`},
+	} {
+		if got := withoutPathEntry(tc.current, tc.entry); got != tc.want {
+			t.Errorf("withoutPathEntry(%q, %q) = %q, want %q", tc.current, tc.entry, got, tc.want)
+		}
+	}
+}

@@ -237,6 +237,37 @@ jobs:
       - name: Test
         run: go test ./pmon/... ./mysqlwire/...
 
+  # The tray's tests on Windows, so a broken Windows build shows up before a release does.
+  windows-app:
+    name: windows app
+    runs-on: windows-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: pmon/tray/go.mod
+      - name: Test
+        run: go test ./pmon/tray/...
+
+  # Unsigned MSIs, built the way a release builds them, so a broken package shows up before a release does.
+  windows-package:
+    name: windows package
+    # Ubuntu's wixl is too old for the installer's PATH entry.
+    runs-on: macos-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: pmon/tray/go.mod
+      - name: Package
+        run: |
+          brew install msitools
+          for arch in amd64 arm64; do VERSION=0.0.0 pmon/tray/package-windows.sh "$arch" dist; done
+
   # The release job signs and notarizes on a pmon-v* tag only; this builds and packages the same app ad-hoc
   # on every change, so a broken build or payload shows up before a release does.
   macos-app:

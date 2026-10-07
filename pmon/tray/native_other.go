@@ -44,3 +44,6 @@ var onQuitForInstall func() bool
 
 // runQuitForInstall is Windows-only: the macOS installer replaces the bundle while it runs.
 func runQuitForInstall() int { return 0 }
+
+// forget is Windows-only: it undoes what the app set up for itself, for the MSI's uninstall.
+func forget() {}

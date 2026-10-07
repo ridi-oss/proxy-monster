@@ -1,0 +1,73 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The per-user MSI, in the WiX 3 dialect of msitools' wixl; package-windows.sh builds it. -->
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+  <Product Id="*" Name="Proxy Monster Desktop" Language="1033" Version="$(var.Version)" Manufacturer="RIDI"
+           UpgradeCode="{9500B1F0-60C8-4F8D-AC85-5D3ED84B8061}">
+    <Package InstallerVersion="500" Compressed="yes" InstallScope="perUser" />
+    <MajorUpgrade DowngradeErrorMessage="A newer version of Proxy Monster Desktop is already installed." />
+    <Media Id="1" Cabinet="app.cab" EmbedCab="yes" />
+<?if $(var.Arch) = arm64 ?>
+    <!-- Both MSIs are x64 packages, so Windows does not stop this one on an x64 PC. -->
+    <Condition Message="This installer is for Windows on Arm. Use the x64 installer on this PC.">%PROCESSOR_ARCHITECTURE = "ARM64" OR %PROCESSOR_ARCHITEW6432 = "ARM64"</Condition>
+<?endif?>
+
+    <Icon Id="AppIcon" SourceFile="app-icon.ico" />
+    <Property Id="ARPPRODUCTICON" Value="AppIcon" />
+    <!-- 1 starts the app when the install ends; WinSparkle's update run passes it too. -->
+    <Property Id="LAUNCHAPP" Value="1" />
+
+    <Directory Id="TARGETDIR" Name="SourceDir">
+      <Directory Id="LocalAppDataFolder">
+        <Directory Id="ProgramsDir" Name="Programs">
+          <Directory Id="INSTALLFOLDER" Name="Proxy Monster Desktop" />
+        </Directory>
+      </Directory>
+      <Directory Id="ProgramMenuFolder" />
+    </Directory>
+
+    <!-- A per-user component keys on an HKCU value; a file in the profile cannot be its key path. -->
+    <DirectoryRef Id="INSTALLFOLDER">
+      <Component Id="Binaries" Guid="{2BF71544-EFBE-429F-8468-CF139346293A}">
+        <RegistryValue Root="HKCU" Key="Software\RIDI\Proxy Monster Desktop" Name="InstallDir" Value="[INSTALLFOLDER]" Type="string" KeyPath="yes" />
+        <File Id="pmontray.exe" Source="$(var.Bin)/pmontray.exe" />
+        <File Id="pmon.exe" Source="$(var.Bin)/pmon.exe" />
+        <File Id="WinSparkle.dll" Source="$(var.Bin)/WinSparkle.dll" />
+        <RemoveFolder Id="RemoveInstallFolder" On="uninstall" />
+      </Component>
+      <Component Id="Path" Guid="{45DC92BB-42D4-43B2-B538-04D10BB76C75}">
+        <RegistryValue Root="HKCU" Key="Software\RIDI\Proxy Monster Desktop" Name="OnPath" Value="1" Type="integer" KeyPath="yes" />
+        <Environment Id="UserPath" Name="PATH" Value="[INSTALLFOLDER]" Part="last" Action="set" System="no" />
+      </Component>
+      <Component Id="UrlScheme" Guid="{73060260-2672-4694-9B43-115851F80040}">
+        <RegistryValue Root="HKCU" Key="Software\Classes\pmon" Value="URL:Proxy Monster" Type="string" KeyPath="yes" />
+        <RegistryValue Root="HKCU" Key="Software\Classes\pmon" Name="URL Protocol" Value="" Type="string" />
+        <RegistryValue Root="HKCU" Key="Software\Classes\pmon\shell\open\command" Value="&quot;[INSTALLFOLDER]pmontray.exe&quot; &quot;%1&quot;" Type="string" />
+      </Component>
+    </DirectoryRef>
+    <DirectoryRef Id="ProgramMenuFolder">
+      <Component Id="StartMenu" Guid="{8739804D-2EBE-4FA7-8F16-E3356D40CDE5}">
+        <RegistryValue Root="HKCU" Key="Software\RIDI\Proxy Monster Desktop" Name="StartMenu" Value="1" Type="integer" KeyPath="yes" />
+        <Shortcut Id="AppShortcut" Name="Proxy Monster Desktop" Target="[INSTALLFOLDER]pmontray.exe" WorkingDirectory="INSTALLFOLDER" Icon="AppIcon" />
+      </Component>
+    </DirectoryRef>
+
+    <Feature Id="Main" Level="1">
+      <ComponentRef Id="Binaries" />
+      <ComponentRef Id="Path" />
+      <ComponentRef Id="UrlScheme" />
+      <ComponentRef Id="StartMenu" />
+    </Feature>
+
+    <!-- Windows cannot replace or remove a running pmontray.exe or pmon.exe, so an upgrade or uninstall first asks
+         the installed app to quit and stops the daemon. A full uninstall then removes what the app set up itself
+         (Open at Login, its notification identity, its PATH entry), which wixl cannot remove declaratively. -->
+    <CustomAction Id="QuitRunningApp" FileKey="pmontray.exe" ExeCommand="--quit-for-install" Return="check" Execute="immediate" Impersonate="yes" />
+    <CustomAction Id="ForgetApp" FileKey="pmontray.exe" ExeCommand="--forget" Return="ignore" Execute="immediate" Impersonate="yes" />
+    <CustomAction Id="LaunchApp" FileKey="pmontray.exe" ExeCommand="" Return="asyncNoWait" Impersonate="yes" />
+    <InstallExecuteSequence>
+      <Custom Action="QuitRunningApp" Sequence="1390">Installed OR WIX_UPGRADE_DETECTED</Custom>
+      <Custom Action="ForgetApp" Sequence="1405">REMOVE="ALL" AND NOT UPGRADINGPRODUCTCODE</Custom>
+      <Custom Action="LaunchApp" After="InstallFinalize">LAUNCHAPP = "1" AND NOT REMOVE</Custom>
+    </InstallExecuteSequence>
+  </Product>
+</Wix>

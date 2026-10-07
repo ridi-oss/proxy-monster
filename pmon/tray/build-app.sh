@@ -21,7 +21,7 @@ mkdir -p "$DEST"
 # Absolute, because the builds below run in subshells with a different working directory.
 DEST="$(cd "$DEST" && pwd)"
 APP="$DEST/Proxy Monster Desktop.app"
-VERSION="${VERSION:-$(git -C .. describe --tags --always --dirty 2>/dev/null || echo dev)}"
+VERSION="${VERSION:-$(git -C .. describe --tags --match 'pmon-v*' --always --dirty 2>/dev/null || echo dev)}"
 ARCHS="${ARCHS:-$(go env GOARCH)}"
 # cgo's clang otherwise targets the build host's macOS. Passed as CGO flags: Go's build cache ignores
 # MACOSX_DEPLOYMENT_TARGET, so a cached object would keep the host's target.

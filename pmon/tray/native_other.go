@@ -14,6 +14,8 @@ func setLoginItem(bool) error { return errors.New("Open at Login is not supporte
 
 func activatePid(int) {}
 
+func listenForLinks() {}
+
 var fakePrefs = map[string]bool{}
 
 func prefBool(key string) bool { return fakePrefs[key] }

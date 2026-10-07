@@ -77,6 +77,11 @@ when nothing is running.
   several calls take seconds. Opened in a browser on its own, the page runs on
   demo data, for design review. With no servers, the menu offers **Connect to a
   Server…**, which opens it at Add.
+- **`pmon://connect?name=<server>&url=<address>`** links, from the console's
+  Connect page, add a server and start its sign-in. Any web page can open such a
+  link, so the address must be `https` (`http` only for this machine), the user
+  confirms first, and replacing an existing server's address says so. A cancel
+  or an unanswered dialog changes nothing.
 - **Connect AI Apps** adds or removes `pmon mcp <server>` in Claude Desktop (its
   `claude_desktop_config.json`, other settings untouched), Claude Code
   (`claude mcp add --scope user`) and Codex (`codex mcp add`), listing only the

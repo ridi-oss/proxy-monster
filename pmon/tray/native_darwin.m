@@ -6,6 +6,7 @@
 #include "native_darwin.h"
 
 extern void goNotificationClicked(char *key);
+extern void goURLOpened(char *url);
 
 @interface PMNotificationDelegate : NSObject <UNUserNotificationCenterDelegate>
 @end
@@ -106,4 +107,27 @@ void pm_activate_pid(int pid) {
     [[NSRunningApplication runningApplicationWithProcessIdentifier:pid]
         activateWithOptions:NSApplicationActivateAllWindows];
   });
+}
+
+@interface PMURLHandler : NSObject
+@end
+
+@implementation PMURLHandler
+- (void)handleURL:(NSAppleEventDescriptor *)event withReplyEvent:(NSAppleEventDescriptor *)reply {
+  NSString *url = [[event paramDescriptorForKeyword:keyDirectObject] stringValue];
+  if (url.length > 0) {
+    goURLOpened((char *)url.UTF8String);
+  }
+}
+@end
+
+static PMURLHandler *urlHandler;
+
+// Registered before the run loop starts, so a link that launches the app is not dropped.
+void pm_url_init(void) {
+  urlHandler = [PMURLHandler new];
+  [[NSAppleEventManager sharedAppleEventManager] setEventHandler:urlHandler
+                                                     andSelector:@selector(handleURL:withReplyEvent:)
+                                                   forEventClass:kInternetEventClass
+                                                      andEventID:kAEGetURL];
 }

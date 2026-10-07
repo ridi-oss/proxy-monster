@@ -26,6 +26,8 @@ const (
 	CapSSL              = 0x00000800
 	CapTransactions     = 0x00002000
 	CapSecureConn       = 0x00008000
+	CapMultiStatements  = 0x00010000
+	CapMultiResults     = 0x00020000
 	CapPluginAuth       = 0x00080000
 	CapPluginAuthLenenc = 0x00200000
 	CapSessionTrack     = 0x00800000
@@ -44,6 +46,13 @@ const (
 	ComStmtSendLongData = 0x18
 	ComStmtClose        = 0x19
 	ComStmtReset        = 0x1a
+	ComSetOption        = 0x1b
+)
+
+// COM_SET_OPTION options.
+const (
+	OptionMultiStatementsOn  = 0
+	OptionMultiStatementsOff = 1
 )
 
 // caching_sha2_password protocol markers. After the client sends its initial caching_sha2 response the
@@ -139,7 +148,7 @@ func AppendLenencStr(dst []byte, s string) []byte {
 	return append(dst, s...)
 }
 
-const serverGreetingCapabilities = uint32(CapLongPassword | CapProtocol41 | CapSecureConn | CapPluginAuth | CapTransactions | CapDeprecateEOF)
+const serverGreetingCapabilities = uint32(CapLongPassword | CapProtocol41 | CapSecureConn | CapPluginAuth | CapTransactions | CapDeprecateEOF | CapMultiStatements | CapMultiResults)
 
 // ServerGreeting builds an Initial Handshake (v10) advertising mysql_native_password without SSL.
 // ServerGreetingSSL builds the same greeting with CLIENT_SSL advertised. serverVersion is the
@@ -567,10 +576,11 @@ func ParseHandshakeResponse(payload []byte, connectWithDBSupported bool) (Handsh
 
 // Greeting is the target-DB server data needed by the client role.
 type Greeting struct {
-	ConnectionID uint32
-	Scramble     []byte
-	AuthPlugin   string
-	Capabilities uint32
+	ServerVersion string
+	ConnectionID  uint32
+	Scramble      []byte
+	AuthPlugin    string
+	Capabilities  uint32
 }
 
 // ParseHandshakeV10 parses a target DB Initial Handshake.
@@ -583,7 +593,8 @@ func ParseHandshakeV10(payload []byte) (Greeting, error) {
 	if protocol != 10 {
 		return Greeting{}, fmt.Errorf("mysqlwire: unsupported handshake protocol %d", protocol)
 	}
-	if _, err := r.Cstr(); err != nil {
+	serverVersion, err := r.Cstr()
+	if err != nil {
 		return Greeting{}, err
 	}
 	connectionID, err := r.U32()
@@ -603,7 +614,7 @@ func ParseHandshakeV10(payload []byte) (Greeting, error) {
 	}
 	capLower := uint32(binary.LittleEndian.Uint16(capLowerBytes))
 	if !r.HasRemaining() {
-		return Greeting{ConnectionID: connectionID, Scramble: append([]byte(nil), part1...), AuthPlugin: "mysql_native_password", Capabilities: capLower}, nil
+		return Greeting{ServerVersion: serverVersion, ConnectionID: connectionID, Scramble: append([]byte(nil), part1...), AuthPlugin: "mysql_native_password", Capabilities: capLower}, nil
 	}
 	if err := r.Skip(1 + 2); err != nil {
 		return Greeting{}, err
@@ -639,7 +650,7 @@ func ParseHandshakeV10(payload []byte) (Greeting, error) {
 			return Greeting{}, err
 		}
 	}
-	return Greeting{ConnectionID: connectionID, Scramble: scramble, AuthPlugin: authPlugin, Capabilities: caps}, nil
+	return Greeting{ServerVersion: serverVersion, ConnectionID: connectionID, Scramble: scramble, AuthPlugin: authPlugin, Capabilities: caps}, nil
 }
 
 // NativePassword computes mysql_native_password authentication bytes.

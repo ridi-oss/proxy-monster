@@ -312,6 +312,42 @@ func runQuitForInstall() int {
 	return 0
 }
 
+// forget is `pmontray --forget`, which the MSI runs on a full uninstall: it removes what the app set up for
+// itself and the installer cannot list, Open at Login, its notification identity, its PATH entry and its
+// preferences, so a later install starts fresh.
+func forget() {
+	_ = setLoginItem(false)
+	_ = registry.DeleteKey(registry.CURRENT_USER, `Software\Classes\AppUserModelId\`+appID)
+	_ = os.RemoveAll(filepath.Join(os.Getenv("LOCALAPPDATA"), "Proxy Monster Desktop"))
+	entry := prefString(pathEntryPref)
+	// WinSparkle keeps its settings in a subkey, and a key with subkeys cannot be deleted.
+	_ = registry.DeleteKey(registry.CURRENT_USER, prefsKey+`\WinSparkle`)
+	_ = registry.DeleteKey(registry.CURRENT_USER, prefsKey)
+	if entry == "" {
+		return
+	}
+	k, err := registry.OpenKey(registry.CURRENT_USER, "Environment", registry.QUERY_VALUE|registry.SET_VALUE)
+	if err != nil {
+		return
+	}
+	defer k.Close()
+	current, _, err := k.GetStringValue("Path")
+	if err != nil {
+		return
+	}
+	updated := withoutPathEntry(current, entry)
+	if updated != current {
+		if updated == "" {
+			err = k.DeleteValue("Path")
+		} else {
+			err = k.SetExpandStringValue("Path", updated)
+		}
+		if err == nil {
+			broadcastEnvironmentChange()
+		}
+	}
+}
+
 // waitForInstanceExit waits, up to half a minute, for the running app to release the instance mutex.
 func waitForInstanceExit() {
 	name, _ := windows.UTF16PtrFromString(instanceMutexName)
@@ -402,18 +438,17 @@ func putOnPath() {
 // withPathEntry is a PATH value with dir in it once, without old (where this app used to be). Entries match
 // regardless of case and a trailing backslash, which the installer's entry has.
 func withPathEntry(current, dir, old string) string {
-	same := func(a, b string) bool { return strings.EqualFold(strings.TrimRight(a, `\`), strings.TrimRight(b, `\`)) }
 	var entries []string
 	present := false
 	for _, e := range strings.Split(current, ";") {
 		switch {
 		case e == "":
-		case same(e, dir):
+		case samePathEntry(e, dir):
 			if !present {
 				entries = append(entries, e)
 			}
 			present = true
-		case old != "" && same(e, old):
+		case old != "" && samePathEntry(e, old):
 		default:
 			entries = append(entries, e)
 		}
@@ -422,6 +457,21 @@ func withPathEntry(current, dir, old string) string {
 		entries = append(entries, dir)
 	}
 	return strings.Join(entries, ";")
+}
+
+// withoutPathEntry is a PATH value without entry.
+func withoutPathEntry(current, entry string) string {
+	var entries []string
+	for _, e := range strings.Split(current, ";") {
+		if e != "" && !samePathEntry(e, entry) {
+			entries = append(entries, e)
+		}
+	}
+	return strings.Join(entries, ";")
+}
+
+func samePathEntry(a, b string) bool {
+	return strings.EqualFold(strings.TrimRight(a, `\`), strings.TrimRight(b, `\`))
 }
 
 // broadcastEnvironmentChange tells Explorer, and so new terminals, that the user's environment changed.

@@ -34,6 +34,10 @@ func main() {
 	if len(os.Args) > 1 && os.Args[1] == "--quit-for-install" {
 		os.Exit(runQuitForInstall())
 	}
+	if len(os.Args) > 1 && os.Args[1] == "--forget" {
+		forget()
+		return
+	}
 	if handedOff() {
 		return
 	}

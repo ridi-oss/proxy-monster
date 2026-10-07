@@ -223,6 +223,20 @@ jobs:
           path: ${{ runner.temp }}/pm-smoke/logs
           if-no-files-found: ignore
 
+  # pmon's tests on Windows, where the state locks, private directories and daemon spawn differ.
+  pmon-windows:
+    name: pmon windows
+    runs-on: windows-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: pmon/go.mod
+      - name: Test
+        run: go test ./pmon/... ./mysqlwire/...
+
   # The release job signs and notarizes on a pmon-v* tag only; this builds and packages the same app ad-hoc
   # on every change, so a broken build or payload shows up before a release does.
   macos-app:

@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -20,6 +21,9 @@ import (
 )
 
 func TestFormattedAWSCLI(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the CLI format is POSIX shell")
+	}
 	if _, err := exec.LookPath("aws"); err != nil {
 		t.Skip("AWS CLI is not installed")
 	}

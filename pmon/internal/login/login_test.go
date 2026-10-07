@@ -243,3 +243,12 @@ func TestRunSurfacesAnUnknownScope(t *testing.T) {
 		t.Errorf("Run error = %v, want it to name the unknown scope", err)
 	}
 }
+
+// A control plane from before `pmon mcp` has no token endpoint; that reads as unsupported, not as a dead login.
+func TestExchangeMCPOnAServerWithoutTheEndpoint(t *testing.T) {
+	srv := httptest.NewServer(http.NotFoundHandler())
+	defer srv.Close()
+	if _, err := ExchangeMCP(context.Background(), srv.Client(), srv.URL, "rt"); !errors.Is(err, ErrMCPUnsupported) {
+		t.Fatalf("err = %v, want ErrMCPUnsupported", err)
+	}
+}

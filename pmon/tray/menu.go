@@ -59,6 +59,8 @@ type view struct {
 	loginItemOn   bool
 	loginItemShow bool
 	ai            []aiState
+	// pmonVersion is the bundled pmon's build; a daemon reporting another one was started by a different pmon.
+	pmonVersion string
 }
 
 // aiState is one installed AI app and which servers it already runs `pmon mcp` for.
@@ -81,6 +83,13 @@ func buildMenu(s *control.Status, v view) []entry {
 	case s.Outdated():
 		m = append(m, header("The background service is out of date"), separator("sep-restart"),
 			entry{key: "restart", title: "Restart Background Service", act: &action{op: opRestart}})
+	case v.pmonVersion != "" && s.Version != v.pmonVersion:
+		// An AI app's `pmon mcp` is this bundle's pmon, and it can need routes an older daemon lacks.
+		m = append(m, header("The background service is a different version"), separator("sep-restart"),
+			entry{key: "restart", title: "Restart Background Service", act: &action{op: opRestart}}, separator("sep-stale"))
+		for _, srv := range s.Servers {
+			m = append(m, serverEntry(s, srv, v))
+		}
 	case len(s.Servers) == 0:
 		m = append(m, header("Not connected to a server"), separator("sep-add"),
 			entry{key: "addserver", title: "Connect to a Server…", act: &action{op: opAddServer}})

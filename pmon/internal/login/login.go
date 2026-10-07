@@ -204,6 +204,9 @@ type MCPToken struct {
 // ErrMCPRefused: the control plane will not mint from this session again; only a fresh login recovers.
 var ErrMCPRefused = errors.New("the login no longer grants MCP access")
 
+// ErrMCPUnsupported: the control plane has no MCP token endpoint, because it predates `pmon mcp`.
+var ErrMCPUnsupported = errors.New("the server does not support pmon mcp")
+
 // ExchangeMCP trades the session's renewal token for an MCP access token carrying the session's scopes.
 func ExchangeMCP(ctx context.Context, client *http.Client, controlPlane, renewalToken string) (*MCPToken, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, controlPlane+"/auth/session/mcp-token", nil)
@@ -219,6 +222,8 @@ func ExchangeMCP(ctx context.Context, client *http.Client, controlPlane, renewal
 	switch {
 	case resp.StatusCode == http.StatusUnauthorized:
 		return nil, ErrMCPRefused
+	case resp.StatusCode == http.StatusNotFound:
+		return nil, ErrMCPUnsupported
 	case resp.StatusCode != http.StatusOK:
 		return nil, apiError(resp)
 	}

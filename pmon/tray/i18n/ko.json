@@ -199,5 +199,10 @@
   "menu.checkUpdates": "업데이트 확인…",
   "menu.installUpdate": "업데이트 {version} 설치",
   "confirm.update": "업데이트를 설치할까요?",
-  "confirm.updateButton": "설치"
+  "confirm.updateButton": "설치",
+  "s.general.updates": "자동 업데이트",
+  "s.general.updatesDesc": "새 버전이 나오면 내려받아 두었다가, 열린 데이터베이스 연결이 없을 때 설치합니다.",
+  "s.general.updatesManaged": "조직에서 관리하는 설정입니다.",
+  "s.general.updatesHint": "업데이트를 마치려면 Proxy Monster가 스스로 다시 시작합니다.",
+  "s.btn.checkUpdates": "지금 확인"
 }

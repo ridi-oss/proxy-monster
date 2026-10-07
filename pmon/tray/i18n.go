@@ -35,6 +35,8 @@ func loadCatalogs() map[string]map[string]string {
 const (
 	prefLanguage = "language" // "system", or one of languages
 	prefTheme    = "theme"    // "system", "light" or "dark"
+	// prefAutoUpdates is Sparkle's own key, so the updater reads the Settings window's choice directly.
+	prefAutoUpdates = "SUEnableAutomaticChecks"
 )
 
 // langOverride pins the language, for tests.

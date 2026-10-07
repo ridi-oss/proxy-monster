@@ -5,11 +5,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 	"unsafe"
 
@@ -49,6 +51,14 @@ type prefsState struct {
 	LoginItemOn    bool          `json:"loginItemOn"`
 	LoginItemShown bool          `json:"loginItemShown"`
 	Versions       prefsVersions `json:"versions"`
+	Updates        prefsUpdates  `json:"updates"`
+}
+
+// prefsUpdates is the Updates setting; Shown is false in a build without an updater.
+type prefsUpdates struct {
+	Shown  bool `json:"shown"`
+	Auto   bool `json:"auto"`
+	Forced bool `json:"forced"`
 }
 
 // prefsAIApp is one installed AI app and which servers it already runs `pmon mcp` for.
@@ -95,6 +105,8 @@ func (p *prefs) state() prefsState {
 	}
 	st := prefsState{Language: language, Lang: lang(), Theme: theme(), LoginItemOn: on, LoginItemShown: shown, Servers: []prefsServer{},
 		Versions: prefsVersions{App: version, Pmon: p.pmonVersion}}
+	st.Updates.Shown = updatesConfigured()
+	st.Updates.Auto, st.Updates.Forced = autoUpdates()
 	client, err := control.Connect(p.ctx)
 	if err != nil {
 		return st
@@ -250,6 +262,14 @@ func (p *prefs) handlers() map[string]func(args []json.RawMessage) (any, error) 
 			}
 			return p.setOpenAtLogin(on), nil
 		},
+		"checkUpdates": func([]json.RawMessage) (any, error) { return p.checkUpdates(), nil },
+		"setAutoUpdates": func(args []json.RawMessage) (any, error) {
+			var on bool
+			if len(args) < 1 || json.Unmarshal(args[0], &on) != nil {
+				return nil, errors.New("setAutoUpdates takes a boolean")
+			}
+			return p.setAutoUpdates(on), nil
+		},
 		"aiToggle": func(args []json.RawMessage) (any, error) {
 			id, err := str(args, 0)
 			if err != nil {
@@ -368,6 +388,24 @@ func (p *prefs) restart() any {
 func (p *prefs) setOpenAtLogin(on bool) string {
 	setPrefBool(openAtLoginDecided, true)
 	return errText(setLoginItem(on))
+}
+
+// setAutoUpdates writes the setting the menu-bar process's updater follows (update.go).
+func (p *prefs) setAutoUpdates(on bool) string {
+	if _, forced := autoUpdates(); forced {
+		return T("s.general.updatesManaged")
+	}
+	setPrefBool(prefAutoUpdates, on)
+	return ""
+}
+
+// checkUpdates asks the menu-bar process, which runs the updater and started this window, to check now.
+func (p *prefs) checkUpdates() string {
+	parent := os.Getppid()
+	if parent <= 1 {
+		return T("menu.notRunning")
+	}
+	return errText(syscall.Kill(parent, syscall.SIGUSR2))
 }
 
 func (p *prefs) start() string {

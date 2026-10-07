@@ -44,6 +44,7 @@ func (a *app) redraw() {
 	v := a.view()
 	menu := buildMenu(s, v)
 	a.noticeEndings(s, v)
+	go a.refreshAI(false)
 	if !a.onScreen {
 		return
 	}

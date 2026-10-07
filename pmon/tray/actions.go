@@ -32,6 +32,8 @@ func (a *app) run(act action) {
 		a.toggleLoginItem()
 	case opQuit:
 		a.doQuit()
+	case opAIApp:
+		a.doAIApp(act)
 	}
 }
 

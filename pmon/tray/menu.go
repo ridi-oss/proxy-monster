@@ -23,6 +23,7 @@ const (
 	opRestart
 	opLoginItem
 	opQuit
+	opAIApp
 )
 
 // action is what a click does. Copy actions carry their payload, so a row's label and what it copies are built
@@ -32,6 +33,8 @@ type action struct {
 	server  string
 	label   string
 	payload string
+	app     string // opAIApp: which app
+	connect bool   // opAIApp: add (true) or remove (false)
 }
 
 // entry is one menu row. key identifies the row across renders: two menus with the same keys in the same order
@@ -53,6 +56,13 @@ type view struct {
 	signingIn     map[string]bool // servers whose browser sign-in is open
 	loginItemOn   bool
 	loginItemShow bool
+	ai            []aiState
+}
+
+// aiState is one installed AI app and which servers it already runs `pmon mcp` for.
+type aiState struct {
+	id, name  string
+	connected map[string]bool
 }
 
 func header(title string) entry { return entry{key: "header", title: title, disabled: true} }
@@ -75,6 +85,9 @@ func buildMenu(s *control.Status, v view) []entry {
 		for _, srv := range s.Servers {
 			m = append(m, serverEntry(s, srv, v))
 		}
+		if e, ok := aiEntry(s, v); ok {
+			m = append(m, separator("sep-ai"), e)
+		}
 		if n := s.TotalLiveConns(); n > 0 {
 			m = append(m, entry{key: "conns", title: plural(n, "open connection"), disabled: true})
 		}
@@ -84,6 +97,32 @@ func buildMenu(s *control.Status, v view) []entry {
 		m = append(m, entry{key: "loginitem", title: "Open at Login", checkbox: true, checked: v.loginItemOn, act: &action{op: opLoginItem}})
 	}
 	return append(m, entry{key: "quit", title: "Quit Proxy Monster", act: &action{op: opQuit}})
+}
+
+// aiEntry lists each installed AI app with a checkmark per server it already uses. With one server the app
+// itself is the checkbox; with more, each app opens a list of servers.
+func aiEntry(s *control.Status, v view) (entry, bool) {
+	if len(v.ai) == 0 {
+		return entry{}, false
+	}
+	e := entry{key: "ai", title: "Connect AI Apps"}
+	for _, app := range v.ai {
+		item := func(key, title, server string) entry {
+			on := app.connected[server]
+			return entry{key: key, title: title, checkbox: true, checked: on,
+				act: &action{op: opAIApp, app: app.id, server: server, label: app.name, connect: !on}}
+		}
+		if len(s.Servers) == 1 {
+			e.children = append(e.children, item("ai:"+app.id, app.name, s.Servers[0].Name))
+			continue
+		}
+		sub := entry{key: "ai:" + app.id, title: app.name}
+		for _, srv := range s.Servers {
+			sub.children = append(sub.children, item("ai:"+app.id+":"+srv.Name, srv.Name, srv.Name))
+		}
+		e.children = append(e.children, sub)
+	}
+	return e, true
 }
 
 func serverEntry(s *control.Status, srv control.ServerInfo, v view) entry {

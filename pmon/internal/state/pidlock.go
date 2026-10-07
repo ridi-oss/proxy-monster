@@ -1,12 +1,15 @@
 package state
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"strconv"
 	"strings"
-	"syscall"
 )
+
+// errLocked is lockFile's answer when another process holds the lock.
+var errLocked = errors.New("locked by another process")
 
 // pidLock is the open, flocked pid file the daemon holds while it runs; [ReleasePidLock] closes it.
 var pidLock *os.File
@@ -27,9 +30,12 @@ func AcquirePidLock() (held bool, err error) {
 	if err != nil {
 		return false, err
 	}
-	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+	if err := lockFile(f, false); err != nil {
 		f.Close()
-		return false, nil // already held by a live daemon
+		if errors.Is(err, errLocked) {
+			return false, nil // already held by a live daemon
+		}
+		return false, err
 	}
 	_ = f.Truncate(0)
 	_, _ = f.WriteAt(fmt.Appendf(nil, "%d", os.Getpid()), 0)
@@ -48,7 +54,7 @@ func ReleasePidLock() {
 	if pidLock == nil {
 		return
 	}
-	syscall.Flock(int(pidLock.Fd()), syscall.LOCK_UN)
+	unlockFile(pidLock)
 	pidLock.Close()
 	pidLock = nil
 }
@@ -66,10 +72,10 @@ func DaemonRunning() bool {
 		return false // no pid file -> not running
 	}
 	defer f.Close()
-	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
-		return true // lock held elsewhere -> a daemon is alive
+	if err := lockFile(f, false); err != nil {
+		return errors.Is(err, errLocked) // held elsewhere -> a daemon is alive
 	}
-	syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+	unlockFile(f)
 	return false
 }
 

@@ -17,7 +17,6 @@ import (
 	"regexp"
 	"slices"
 	"strconv"
-	"syscall"
 )
 
 // Config is pmon's persisted state, written by the daemon and read back on its next start. Stored 0600 in
@@ -117,7 +116,7 @@ func Dir() (string, error) {
 	return filepath.Join(base, "proxy-monster"), nil
 }
 
-// EnsureDir creates the state directory 0700 and tightens a pre-existing directory that is looser.
+// EnsureDir creates the state directory private to this user, and tightens a pre-existing one that is not.
 func EnsureDir() (string, error) {
 	d, err := Dir()
 	if err != nil {
@@ -130,10 +129,8 @@ func EnsureDir() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if perm := info.Mode().Perm(); perm&0o077 != 0 {
-		if err := os.Chmod(d, 0o700); err != nil {
-			return "", fmt.Errorf("could not tighten %s to 0700 (it is %o): %w", d, perm, err)
-		}
+	if err := makePrivate(d, info, false); err != nil {
+		return "", err
 	}
 	return d, nil
 }
@@ -158,9 +155,7 @@ const ConfigName = "config.json"
 // Linux), minus room for the NUL. A bind past it fails with EINVAL, so the path is checked, never assumed.
 const maxSocketPath = 100
 
-const socketRoot = "/tmp"
-
-func SocketPath() (string, error) { return socketPathAt(socketRoot) }
+func SocketPath() (string, error) { return socketPathAt(socketRoot()) }
 
 // SocketPaths returns the canonical path followed by paths used by released peers.
 func SocketPaths() ([]string, error) {
@@ -238,9 +233,9 @@ func legacySocketPath() (string, error) {
 	return p, nil
 }
 
-// Socket directories must be owned by the current user, mode 0700, and not symlinks.
+// Socket directories must be owned by the current user, private to it, and not symlinks.
 func socketDirAt(root string, wantUID int) (string, error) {
-	d := filepath.Join(root, fmt.Sprintf("pmon-%d", os.Getuid()))
+	d := filepath.Join(root, socketDirName())
 	if err := os.MkdirAll(d, 0o700); err != nil {
 		return "", err
 	}
@@ -254,17 +249,11 @@ func socketDirAt(root string, wantUID int) (string, error) {
 	if !info.IsDir() {
 		return "", fmt.Errorf("control-socket directory %s is not a directory", d)
 	}
-	st, ok := info.Sys().(*syscall.Stat_t)
-	if !ok {
-		return "", fmt.Errorf("cannot verify ownership of the control-socket directory %s", d)
+	if err := ownedBy(d, info, wantUID); err != nil {
+		return "", fmt.Errorf("control-socket directory %s: %w; refusing to use it", d, err)
 	}
-	if int(st.Uid) != wantUID {
-		return "", fmt.Errorf("control-socket directory %s is owned by uid %d, not %d; refusing to use it", d, st.Uid, wantUID)
-	}
-	if perm := info.Mode().Perm(); perm != 0o700 {
-		if err := os.Chmod(d, 0o700); err != nil {
-			return "", fmt.Errorf("could not set the control-socket directory %s to 0700 (it is %o): %w", d, perm, err)
-		}
+	if err := makePrivate(d, info, true); err != nil {
+		return "", err
 	}
 	return d, nil
 }
@@ -277,7 +266,7 @@ func LogPath() (string, error) { return pathIn("daemon.log") }
 
 // Update runs a read-modify-write under an exclusive file lock. The daemon is the only writer today, but the
 // lock still guards its own concurrent writers (a login stamping the token while discovery assigns a sticky
-// port) — the atomic rename in [Save] prevents torn reads, not lost updates. Unix-only (flock).
+// port) — the atomic rename in [Save] prevents torn reads, not lost updates.
 func Update(mutate func(*Config) error) error {
 	dir, err := EnsureDir()
 	if err != nil {
@@ -288,10 +277,10 @@ func Update(mutate func(*Config) error) error {
 		return err
 	}
 	defer lf.Close()
-	if err := syscall.Flock(int(lf.Fd()), syscall.LOCK_EX); err != nil {
+	if err := lockFile(lf, true); err != nil {
 		return err
 	}
-	defer syscall.Flock(int(lf.Fd()), syscall.LOCK_UN)
+	defer unlockFile(lf)
 
 	// Start fresh ONLY when there is genuinely no config yet. Treating every load error as "no config" would let
 	// corrupt JSON or a transient read error silently overwrite the principal, tokens, sticky loopback password,

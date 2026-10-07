@@ -30,3 +30,6 @@ func checkForUpdates() { C.pm_updater_check() }
 func setAutoUpdatesNow(on bool) { C.pm_updater_set_auto(C.bool(on)) }
 
 func installHeldUpdate() { C.pm_updater_install() }
+
+// stopUpdater has nothing to do: Sparkle stops with the app.
+func stopUpdater() {}

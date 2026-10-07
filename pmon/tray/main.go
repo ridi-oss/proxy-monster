@@ -31,6 +31,9 @@ func main() {
 		return
 	}
 
+	if len(os.Args) > 1 && os.Args[1] == "--quit-for-install" {
+		os.Exit(runQuitForInstall())
+	}
 	if handedOff() {
 		return
 	}
@@ -43,6 +46,7 @@ func main() {
 	onNotificationClick = app.notificationClicked
 	onConnectLink = app.openConnectLink
 	onShow = func() { app.openPreferences(false) }
+	onQuitForInstall = app.quitForInstall
 	listenForLinks()
 	// systray.Run takes over the main thread (a macOS UI requirement) and calls onReady on it.
 	systray.Run(app.onReady, app.onExit)

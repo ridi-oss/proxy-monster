@@ -122,6 +122,9 @@ jobs:
         run: |
           set -euo pipefail
           export VERSION="${TAG#pmon-v}" SIGN_KEYCHAIN="$KEYCHAIN" ARCHS="arm64 amd64"
+          export FEED_URL="https://github.com/$GITHUB_REPOSITORY/releases/download/desktop-feed/appcast-macos.xml"
+          SPARKLE_PUBLIC_KEY="$(cat pmon/tray/sparkle-public-key)"
+          export SPARKLE_PUBLIC_KEY
           SIGN_IDENTITY="Developer ID Application: RIDI Corporation (SNTDSH9YYM)" \
             pmon/tray/build-app.sh "$RUNNER_TEMP/app"
           INSTALLER_IDENTITY="Developer ID Installer: RIDI Corporation (SNTDSH9YYM)" \
@@ -145,3 +148,29 @@ jobs:
           set -euo pipefail
           .github/scripts/release-checksums.sh "$TAG" ProxyMonsterDesktop_ dist
           gh release upload "$TAG" dist/ProxyMonsterDesktop_* dist/checksums.txt --repo "$GITHUB_REPOSITORY" --clobber
+
+  # Every tag writes the same rolling desktop-feed release, so feed updates run one at a time across tags.
+  feed:
+    needs: tray
+    runs-on: macos-15
+    timeout-minutes: 15
+    environment: release
+    concurrency:
+      group: desktop-feed
+      cancel-in-progress: false
+    env:
+      TAG: ${{ github.ref_name }}
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Point the update feed at this release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SPARKLE_ED_KEY: ${{ secrets.SPARKLE_ED_KEY }}
+        run: |
+          set -euo pipefail
+          v="${TAG#pmon-v}"
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --dir dist \
+            -p "ProxyMonsterDesktop_${v}.pkg" -p "ProxyMonsterDesktop_${v}_darwin_universal.zip"
+          .github/scripts/desktop-feed.sh "$TAG" dist

@@ -254,6 +254,7 @@ func (a *app) openPreferences(add bool) {
 			a.tellPrefs("add")
 		}
 		activatePid(a.prefsPid)
+		a.tellPrefs("show")
 		return
 	}
 	exe, err := os.Executable()

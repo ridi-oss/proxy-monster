@@ -149,6 +149,48 @@ jobs:
           .github/scripts/release-checksums.sh "$TAG" ProxyMonsterDesktop_ dist
           gh release upload "$TAG" dist/ProxyMonsterDesktop_* dist/checksums.txt --repo "$GITHUB_REPOSITORY" --clobber
 
+  # Unsigned Windows binaries for the code-signing token holder, who signs and packages them with
+  # pmon/tray/sign-windows.sh and then runs desktop-feed-windows.yml.
+  windows:
+    needs: binaries
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    env:
+      TAG: ${{ github.ref_name }}
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: pmon/tray/go.mod
+
+      - name: Build
+        run: |
+          SPARKLE_PUBLIC_KEY="$(tr -d '[:space:]' < pmon/tray/sparkle-public-key)"
+          export VERSION="${TAG#pmon-v}" NO_MSI=1 SPARKLE_PUBLIC_KEY
+          export FEED_URL="https://github.com/$GITHUB_REPOSITORY/releases/download/desktop-feed/appcast-windows.xml"
+          for arch in amd64 arm64; do
+            pmon/tray/package-windows.sh "$arch" dist
+            zip -q -j "dist/ProxyMonsterDesktop_${VERSION}_windows_${arch}_unsigned.zip" "dist/bin-$arch/pmontray.exe" "dist/bin-$arch/pmon.exe"
+          done
+
+      # sign-windows.sh checks this before the token signs anything.
+      - uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: dist/*_unsigned.zip
+
+      - name: Attach them to the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run:
+          gh release upload "$TAG" dist/*_unsigned.zip --repo
+          "$GITHUB_REPOSITORY" --clobber
+
   # Every tag writes the same rolling desktop-feed release, so feed updates run one at a time across tags.
   feed:
     needs: tray

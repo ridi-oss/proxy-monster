@@ -48,7 +48,8 @@ func (a *app) redraw() {
 	if !a.onScreen {
 		return
 	}
-	systray.SetTemplateIcon(stateIcons[iconFor(s, v)], stateIcons[iconFor(s, v)])
+	icon := stateIcons[iconFor(s, v)]
+	systray.SetTemplateIcon(icon, regularIcon(icon))
 	systray.SetTooltip(tooltip(menu))
 
 	shape := shapeOf(menu)

@@ -9,6 +9,13 @@
   "url": "MCP URL",
   "copy": "Copy",
   "copied": "Copied",
+  "desktop": {
+    "title": "Proxy Monster Desktop",
+    "body": "The menu-bar app for Mac. It signs you in to {instance} and connects Claude Desktop, Claude Code or Codex from its menu.",
+    "open": "Open in Proxy Monster Desktop",
+    "notInstalled": "Not installed? Download it, open it once, then click the button again.",
+    "download": "Download"
+  },
   "agent": {
     "title": "Paste this to your agent",
     "body": "Works in Claude Code and Codex CLI. The agent installs the server; you approve the sign-in in your browser. Pasting it again replaces an earlier install of this instance.",

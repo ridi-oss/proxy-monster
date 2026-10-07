@@ -24,10 +24,11 @@
   --radius: 10px;
   --sans: "Geist", ui-sans-serif, system-ui, -apple-system, sans-serif;
   --mono: "Geist Mono", ui-monospace, "SF Mono", monospace;
+  --switch-knob: #fff;
   color-scheme: light;
 }
 @media (prefers-color-scheme: dark) {
-  :root {
+  :root:not([data-theme="light"]) {
     --background: oklch(0.12 0 0);
     --sidebar: oklch(0.145 0 0);
     --foreground: oklch(0.97 0 0);
@@ -40,8 +41,25 @@
     --ring: oklch(0.55 0 0);
     --destructive: oklch(0.68 0.2 25.5);
     --shadow: 0 1px 2px oklch(0 0 0 / 30%);
+    --switch-knob: var(--primary-foreground);
     color-scheme: dark;
   }
+}
+:root[data-theme="dark"] {
+  --background: oklch(0.12 0 0);
+  --sidebar: oklch(0.145 0 0);
+  --foreground: oklch(0.97 0 0);
+  --muted: oklch(0.175 0 0);
+  --muted-foreground: oklch(0.66 0 0);
+  --accent: oklch(0.22 0 0);
+  --primary: oklch(0.97 0 0);
+  --primary-foreground: oklch(0.18 0 0);
+  --border: oklch(1 0 0 / 11%);
+  --ring: oklch(0.55 0 0);
+  --destructive: oklch(0.68 0.2 25.5);
+  --shadow: 0 1px 2px oklch(0 0 0 / 30%);
+  --switch-knob: var(--primary-foreground);
+  color-scheme: dark;
 }
 * { box-sizing: border-box; }
 [hidden] { display: none !important; }
@@ -133,7 +151,7 @@ h1 { margin: 0; font-size: 22px; font-weight: 600; letter-spacing: -0.025em; }
 .switch::after { content: ""; position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%; background: #fff; box-shadow: 0 1px 2px oklch(0 0 0 / 25%); transition: transform .15s; }
 .switch[aria-checked="true"] { background: var(--primary); }
 .switch[aria-checked="true"]::after { transform: translateX(14px); }
-@media (prefers-color-scheme: dark) { .switch[aria-checked="true"]::after { background: var(--primary-foreground); } }
+.switch[aria-checked="true"]::after { background: var(--switch-knob); }
 .switch:disabled { opacity: .4; }
 
 .tile { width: 34px; height: 34px; border-radius: 9px; display: grid; place-items: center; flex: none; font: 600 14px var(--sans); color: #fff; }
@@ -162,28 +180,50 @@ h1 { margin: 0; font-size: 22px; font-weight: 600; letter-spacing: -0.025em; }
 .kv dt { color: var(--muted-foreground); }
 .kv dd { margin: 0; font-family: var(--mono); font-size: 12px; overflow-wrap: anywhere; }
 
+.seg { display: inline-flex; padding: 2px; border: 1px solid var(--border); border-radius: 8px; background: var(--muted); gap: 2px; }
+.seg button { height: 26px; padding: 0 12px; border: 0; border-radius: 6px; background: none; color: var(--muted-foreground); font-weight: 500; font-size: 12.5px; display: inline-flex; align-items: center; gap: 6px; }
+.seg button svg { width: 14px; height: 14px; }
+.seg button[aria-pressed="true"] { background: var(--background); color: var(--foreground); box-shadow: 0 1px 2px oklch(0 0 0 / 12%); }
+.select { height: 30px; padding: 0 28px 0 10px; border: 1px solid var(--border); border-radius: 7px; background: var(--background) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23888' stroke-width='2'%3E%3Cpath d='m7 10 5 5 5-5'/%3E%3C/svg%3E") no-repeat right 8px center / 14px; color: var(--foreground); font: 500 12.5px var(--sans); -webkit-appearance: none; appearance: none; }
+.setting + .setting { border-top: 1px solid var(--border); padding-top: 14px; }
 .toast { position: fixed; left: calc(50% + 104px); bottom: 18px; transform: translateX(-50%); background: var(--primary); color: var(--primary-foreground); border-radius: 999px; padding: 7px 14px; font-weight: 500; font-size: 12.5px; box-shadow: 0 6px 20px oklch(0 0 0 / 20%); max-width: 460px; animation: in .18s ease-out; }
 .toast.error { background: var(--destructive); color: #fff; }
 </style>
 </head>
 <body>
 <aside>
-  <div class="brand"><span class="mark"><svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/><path d="M12 22V2"/></svg></span><div><b>Proxy Monster</b><span>Desktop</span></div></div>
-  <nav id="nav">
-    <button data-pane="servers"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="8" rx="2"/><rect x="2" y="13" width="20" height="8" rx="2"/><path d="M6 7h.01M6 17h.01"/></svg>Servers<kbd>⌘1</kbd></button>
-    <button data-pane="ai"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9.94 14.06A2 2 0 0 0 8.5 12.6L2.36 11a.5.5 0 0 1 0-.96L8.5 8.45a2 2 0 0 0 1.44-1.43L11.52.86a.5.5 0 0 1 .96 0l1.58 6.16a2 2 0 0 0 1.44 1.43l6.14 1.59a.5.5 0 0 1 0 .96L15.5 12.6a2 2 0 0 0-1.44 1.43l-1.58 6.15a.5.5 0 0 1-.96 0z"/></svg>AI Apps<kbd>⌘2</kbd></button>
-    <button data-pane="general"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 7h-9M14 17H5"/><circle cx="17" cy="17" r="3"/><circle cx="7" cy="7" r="3"/></svg>General<kbd>⌘3</kbd></button>
-    <button data-pane="about"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/></svg>About<kbd>⌘4</kbd></button>
-  </nav>
+  <div class="brand"><span class="mark"></span><div><b>Proxy Monster</b><span>Desktop</span></div></div>
+  <nav id="nav"></nav>
   <div class="status" id="status"></div>
 </aside>
 <main id="main"></main>
 <div class="toast" id="toast" hidden></div>
+<script>/*I18N*/</script>
 <script>
 const SHIELD = '<svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/><path d="M12 22V2"/></svg>';
 const PLUS = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>';
 const MORE = '<svg viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="12" r="1.7"/><circle cx="12" cy="12" r="1.7"/><circle cx="19" cy="12" r="1.7"/></svg>';
+const ICONS = {
+  servers: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="8" rx="2"/><rect x="2" y="13" width="20" height="8" rx="2"/><path d="M6 7h.01M6 17h.01"/></svg>',
+  ai: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9.94 14.06A2 2 0 0 0 8.5 12.6L2.36 11a.5.5 0 0 1 0-.96L8.5 8.45a2 2 0 0 0 1.44-1.43L11.52.86a.5.5 0 0 1 .96 0l1.58 6.16a2 2 0 0 0 1.44 1.43l6.14 1.59a.5.5 0 0 1 0 .96L15.5 12.6a2 2 0 0 0-1.44 1.43l-1.58 6.15a.5.5 0 0 1-.96 0z"/></svg>',
+  general: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 7h-9M14 17H5"/><circle cx="17" cy="17" r="3"/><circle cx="7" cy="7" r="3"/></svg>',
+  about: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/></svg>',
+  system: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/></svg>',
+  light: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/></svg>',
+  dark: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/></svg>',
+};
 const APP_TILES = { 'claude-desktop': ['C', '#d97757'], 'claude-code': ['>_', '#1f1f1f'], codex: ['◎', '#10a37f'] };
+const PANES = ['servers', 'ai', 'general', 'about'];
+document.querySelector('.brand .mark').innerHTML = SHIELD;
+
+// Messages come from the app's catalogs (i18n/*.json), injected when the window opens.
+const I18N = window.PM_I18N || { en: {} };
+let lang = 'en';
+function t(key, vars = {}) {
+  let m = (I18N[lang] && I18N[lang][key]) ?? I18N.en[key] ?? key;
+  for (const [k, v] of Object.entries(vars)) m = m.split('{' + k + '}').join(v);
+  return m;
+}
 
 // In the app, pmCall reaches Go and answers through __pmDone. Opened on its own (a design review), the page
 // runs on the demo backend below so every state can be seen.
@@ -195,10 +235,16 @@ function call(name, ...args) {
   return new Promise(resolve => { const id = 'c' + (++seq); pending[id] = resolve; window.pmCall(id, name, JSON.stringify(args)); });
 }
 
-let state = { running: true, servers: [], loginItemOn: false, loginItemShown: false, versions: {} };
+let state = { running: true, servers: [], loginItemOn: false, loginItemShown: false, versions: {}, language: 'system', lang: 'en', theme: 'system' };
 let ai = null, pane = 'servers', adding = false, editing = null, menuFor = null, err = '';
 
-async function refresh() { state = await call('state'); render(); }
+function applyAppearance() {
+  lang = I18N[state.lang] ? state.lang : 'en';
+  document.documentElement.lang = lang;
+  if (state.theme === 'light' || state.theme === 'dark') document.documentElement.dataset.theme = state.theme;
+  else delete document.documentElement.dataset.theme;
+}
+async function refresh() { state = await call('state'); applyAppearance(); render(); }
 async function refreshAI() { ai = await call('aiState'); if (pane === 'ai') render(); }
 window.pmRefresh = () => { refresh(); refreshAI(); };
 
@@ -206,9 +252,9 @@ const $ = s => document.querySelector(s);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
 function toast(text, error) {
-  const t = $('#toast');
-  t.textContent = text; t.className = 'toast' + (error ? ' error' : ''); t.hidden = false;
-  clearTimeout(toast.timer); toast.timer = setTimeout(() => { t.hidden = true; }, 3200);
+  const el = $('#toast');
+  el.textContent = text; el.className = 'toast' + (error ? ' error' : ''); el.hidden = false;
+  clearTimeout(toast.timer); toast.timer = setTimeout(() => { el.hidden = true; }, 3200);
 }
 async function act(promise, done) {
   const e = await promise;
@@ -218,91 +264,109 @@ async function act(promise, done) {
 
 function statusDot(s) { return s.busy ? 'busy' : s.ended ? 'warn' : s.signedIn ? (s.ending ? 'warn' : 'ok') : ''; }
 
-function renderStatus() {
-  const el = $('#status');
-  if (!state.running) {
-    el.innerHTML = `<div class="line"><span class="dot"></span>Not running</div><small>Background service is stopped</small>`;
-    return;
-  }
-  const signed = state.servers.filter(s => s.signedIn || s.ended);
-  if (!state.servers.length) { el.innerHTML = `<div class="line"><span class="dot"></span>No servers</div><small>Add one to get started</small>`; return; }
-  const s = signed[0] || state.servers[0];
-  el.innerHTML = `<div class="line"><span class="dot ${statusDot(s)}"></span>${esc(s.name)}${state.servers.length > 1 ? ` <span class="muted">+${state.servers.length - 1}</span>` : ''}</div><small>${esc(s.ended ? 'sign-in ended' : s.signedIn ? s.left : 'signed out')}</small>`;
+function renderNav() {
+  $('#nav').innerHTML = PANES.map((p, i) => `<button data-pane="${p}"${p === pane ? ' aria-current="page"' : ''}>${ICONS[p]}${esc(t('s.nav.' + p))}<kbd>⌘${i + 1}</kbd></button>`).join('');
 }
 
+function renderStatus() {
+  const el = $('#status');
+  if (!state.running) { el.innerHTML = `<div class="line"><span class="dot"></span>${esc(t('s.status.notRunning'))}</div><small>${esc(t('s.status.notRunningSub'))}</small>`; return; }
+  if (!state.servers.length) { el.innerHTML = `<div class="line"><span class="dot"></span>${esc(t('s.status.noServers'))}</div><small>${esc(t('s.status.noServersSub'))}</small>`; return; }
+  const s = state.servers.find(x => x.signedIn || x.ended) || state.servers[0];
+  const sub = s.ended ? t('s.status.ended') : s.signedIn ? s.left : t('s.status.signedOut');
+  el.innerHTML = `<div class="line"><span class="dot ${statusDot(s)}"></span>${esc(s.name)}${state.servers.length > 1 ? ` <span class="muted">+${state.servers.length - 1}</span>` : ''}</div><small>${esc(sub)}</small>`;
+}
+
+function badge(dot, key) { return `<span class="badge"><span class="dot ${dot}"></span>${esc(t(key))}</span>`; }
+
 function serverCard(s) {
-  const badge = s.busy ? '<span class="badge"><span class="dot busy"></span>Signing in</span>'
-    : s.ended ? '<span class="badge"><span class="dot warn"></span>Sign-in ended</span>'
-    : s.signedIn ? `<span class="badge"><span class="dot ${s.ending ? 'warn' : 'ok'}"></span>${s.ending ? 'Ending soon' : 'Signed in'}</span>`
-    : '<span class="badge"><span class="dot"></span>Signed out</span>';
+  if (editing === s.name) return editCard(s);
+  const b = s.busy ? badge('busy', 's.badge.signingIn') : s.ended ? badge('warn', 's.badge.ended')
+    : s.signedIn ? (s.ending ? badge('warn', 's.badge.ending') : badge('ok', 's.badge.signedIn')) : badge('', 's.badge.signedOut');
   const body = s.signedIn || s.ended ? `
       <div class="stats">
-        <div class="stat"><label>Account</label><b title="${esc(s.account)}">${esc(s.account)}</b></div>
-        <div class="stat"><label>${s.ended ? 'Sign-in ended' : 'Sign-in ends'}</label><b>${esc(s.endsAt)}</b></div>
-        <div class="stat"><label>Datasources</label><b>${s.datasources}</b></div>
+        <div class="stat"><label>${esc(t('s.stat.account'))}</label><b title="${esc(s.account)}">${esc(s.account)}</b></div>
+        <div class="stat"><label>${esc(t(s.ended ? 's.stat.ended' : 's.stat.ends'))}</label><b>${esc(s.endsAt)}</b></div>
+        <div class="stat"><label>${esc(t('s.stat.datasources'))}</label><b>${s.datasources}</b></div>
       </div>` : '';
-  const hint = s.busy ? 'Finish signing in in your browser.'
-    : s.ended ? (s.tokenEndsAt ? `Database connections work until ${esc(s.tokenEndsAt.replace(/^(Today|Tomorrow)/, w => w.toLowerCase()))}. Sign in again to use AI apps.` : 'Sign in again to use AI apps and connect.')
-    : s.signedIn ? `${esc(s.left)} until you need to sign in again.` : 'Sign in to reach this server’s datasources.';
-  const primary = s.busy ? '<button class="btn" disabled>Waiting…</button>'
-    : `<button class="btn ${s.signedIn && !s.ending ? '' : 'primary'}" data-act="signin" data-s="${esc(s.name)}">${s.signedIn || s.ended ? 'Sign In Again' : 'Sign In'}</button>`;
+  const until = lang === 'en' ? (s.tokenEndsAt || '').replace(/^(Today|Tomorrow)/, w => w.toLowerCase()) : s.tokenEndsAt;
+  const hint = s.busy ? t('s.hint.busy')
+    : s.ended ? (s.tokenEndsAt ? t('s.hint.endedUntil', { time: until }) : t('s.hint.ended'))
+    : s.signedIn ? t('s.hint.left', { left: s.left }) : t('s.hint.signedOut');
+  const primary = s.busy ? `<button class="btn" disabled>${esc(t('s.btn.waiting'))}</button>`
+    : `<button class="btn ${s.signedIn && !s.ending ? '' : 'primary'}" data-act="signin" data-s="${esc(s.name)}">${esc(t(s.signedIn || s.ended ? 's.btn.signInAgain' : 's.btn.signIn'))}</button>`;
   const menu = menuFor === s.name ? `<div class="menu-pop">
-      ${s.signedIn || s.ended ? `<button data-act="signout" data-s="${esc(s.name)}">Sign Out</button>` : ''}
-      <button data-act="edit" data-s="${esc(s.name)}">Change Address…</button>
-      <button class="danger" data-act="remove" data-s="${esc(s.name)}">Remove Server…</button></div>` : '';
-  if (editing === s.name) return editCard(s);
+      ${s.signedIn || s.ended ? `<button data-act="signout" data-s="${esc(s.name)}">${esc(t('s.btn.signOut'))}</button>` : ''}
+      <button data-act="edit" data-s="${esc(s.name)}">${esc(t('s.btn.changeAddress'))}</button>
+      <button class="danger" data-act="remove" data-s="${esc(s.name)}">${esc(t('s.btn.remove'))}</button></div>` : '';
   return `<div class="card">
     <div class="card-body">
-      <div class="row"><span class="avatar">${SHIELD}</span><div class="grow"><div class="title">${esc(s.name)}</div><div class="sub mono">${esc(s.url)}</div></div>${badge}</div>
+      <div class="row"><span class="avatar">${SHIELD}</span><div class="grow"><div class="title">${esc(s.name)}</div><div class="sub mono">${esc(s.url)}</div></div>${b}</div>
       ${body}
     </div>
-    <div class="card-foot"><span class="hint">${hint}</span>
-      <span class="menu"><button class="btn ghost" data-act="menu" data-s="${esc(s.name)}" aria-label="More">${MORE}</button>${menu}</span>${primary}</div>
+    <div class="card-foot"><span class="hint">${esc(hint)}</span>
+      <span class="menu"><button class="btn ghost" data-act="menu" data-s="${esc(s.name)}" aria-label="${esc(t('s.btn.more'))}">${MORE}</button>${menu}</span>${primary}</div>
   </div>`;
 }
 
 function editCard(s) {
   return `<form class="card" id="form">
     <div class="card-body">
-      <div class="row"><span class="avatar">${SHIELD}</span><div class="grow"><div class="title">${s ? 'Change address of ' + esc(s.name) : 'Add a server'}</div><div class="sub">${s ? 'Changing the address signs you out of this server.' : 'The Connect page of your company’s console can do this for you.'}</div></div></div>
-      ${s ? '' : `<div class="field"><label for="name">Name</label><input id="name" class="mono" placeholder="acme" autocomplete="off" spellcheck="false"><small>Short and lowercase. You’ll see it in menus and in <span class="mono">pmon</span> commands.</small></div>`}
-      <div class="field"><label for="url">Server address</label><input id="url" class="mono" placeholder="https://pm.example.com" value="${s ? esc(s.url) : ''}" autocomplete="off" spellcheck="false"></div>
+      <div class="row"><span class="avatar">${SHIELD}</span><div class="grow"><div class="title">${esc(s ? t('s.form.changeTitle', { name: s.name }) : t('s.form.addTitle'))}</div><div class="sub">${esc(t(s ? 's.form.changeDesc' : 's.form.addDesc'))}</div></div></div>
+      ${s ? '' : `<div class="field"><label for="name">${esc(t('s.form.name'))}</label><input id="name" class="mono" placeholder="acme" autocomplete="off" spellcheck="false"><small>${esc(t('s.form.nameHint'))}</small></div>`}
+      <div class="field"><label for="url">${esc(t('s.form.url'))}</label><input id="url" class="mono" placeholder="https://pm.example.com" value="${s ? esc(s.url) : ''}" autocomplete="off" spellcheck="false"></div>
       <div class="err" id="formErr">${esc(err)}</div>
     </div>
-    <div class="card-foot"><span class="hint"></span><button type="button" class="btn" data-act="cancel">Cancel</button><button class="btn primary">${s ? 'Save' : 'Add Server'}</button></div>
+    <div class="card-foot"><span class="hint"></span><button type="button" class="btn" data-act="cancel">${esc(t('s.btn.cancel'))}</button><button class="btn primary">${esc(t(s ? 's.btn.save' : 's.btn.add'))}</button></div>
   </form>`;
 }
 
+function emptyState(titleKey, bodyKey, button) {
+  return `<div class="empty">${button === 'add' ? `<span class="avatar">${SHIELD}</span>` : ''}<div class="title">${esc(t(titleKey))}</div><p>${esc(t(bodyKey))}</p>${
+    button === 'add' ? `<button class="btn primary" data-act="add">${PLUS}${esc(t('s.btn.add'))}</button>` : button === 'servers' ? `<button class="btn primary" data-act="goto-servers">${esc(t('s.btn.goServers'))}</button>` : ''}</div>`;
+}
+
+function paneHead(title, desc) { return `<header><h1>${esc(t(title))}</h1><p>${esc(t(desc))}</p></header>`; }
+
 function serversPane() {
   const list = state.servers.map(serverCard).join('');
-  const empty = !state.servers.length && !adding ? `<div class="empty"><span class="avatar">${SHIELD}</span><div class="title">No servers yet</div><p>Open the Connect page in your company’s proxy-monster console, or add the server’s address here.</p><button class="btn primary" data-act="add">${PLUS}Add Server</button></div>` : '';
-  const add = adding ? editCard(null) : state.servers.length ? `<button class="add" data-act="add">${PLUS}Add another server</button>` : '';
-  const stopped = !state.running ? `<div class="card"><div class="card-body"><div class="row"><div class="grow"><div class="title">Proxy Monster isn’t running</div><div class="sub">Start the background service to see and use your servers.</div></div><button class="btn primary" data-act="start">Start</button></div></div></div>` : '';
-  return `<section class="pane"><header><h1>Servers</h1><p>The proxy-monster servers you sign in to. Each sign-in reaches the datasources you have access to.</p></header>${stopped}${list}${empty}${add}</section>`;
+  const empty = !state.servers.length && !adding && state.running ? emptyState('s.empty.title', 's.empty.body', 'add') : '';
+  const add = adding ? editCard(null) : state.servers.length ? `<button class="add" data-act="add">${PLUS}${esc(t('s.btn.addAnother'))}</button>` : '';
+  const stopped = !state.running ? `<div class="card"><div class="card-body"><div class="row"><div class="grow"><div class="title">${esc(t('s.stopped.title'))}</div><div class="sub">${esc(t('s.stopped.body'))}</div></div><button class="btn primary" data-act="start">${esc(t('s.btn.start'))}</button></div></div></div>` : '';
+  return `<section class="pane">${paneHead('s.servers.title', 's.servers.desc')}${stopped}${list}${empty}${add}</section>`;
 }
 
 function aiPane() {
   let body;
   if (!ai) body = `<div class="card"><div class="card-body"><div class="skeleton" style="width:40%"></div><div class="skeleton" style="width:70%"></div></div></div>`.repeat(2);
-  else if (!ai.length) body = `<div class="empty"><div class="title">No AI apps found</div><p>Install Claude Desktop, Claude Code or Codex, then come back here.</p></div>`;
-  else if (!state.servers.length) body = `<div class="empty"><div class="title">Add a server first</div><p>AI apps use a server you’ve signed in to.</p><button class="btn primary" data-act="goto-servers">Go to Servers</button></div>`;
+  else if (!ai.length) body = emptyState('s.ai.noneTitle', 's.ai.noneBody');
+  else if (!state.servers.length) body = emptyState('s.ai.noServerTitle', 's.ai.noServerBody', 'servers');
   else body = ai.map(app => {
     const [glyph, color] = APP_TILES[app.id] || ['•', '#555'];
     const rows = state.servers.map(s => {
       const on = !!app.connected[s.name];
-      return `<div class="row"><div class="grow"><div style="font-weight:500">${esc(s.name)}</div><div class="sub">${s.signedIn ? (on ? 'Connected' : 'Not connected') : 'Signed out — sign in to use it'}</div></div><button class="switch" role="switch" aria-checked="${on}" aria-label="Use ${esc(s.name)} in ${esc(app.name)}" data-act="ai" data-app="${app.id}" data-s="${esc(s.name)}" ${app.busy ? 'disabled' : ''}></button></div>`;
+      const sub = s.signedIn ? t(on ? 's.ai.connected' : 's.ai.notConnected') : t('s.ai.signedOut');
+      return `<div class="row"><div class="grow"><div style="font-weight:500">${esc(s.name)}</div><div class="sub">${esc(sub)}</div></div><button class="switch" role="switch" aria-checked="${on}" aria-label="${esc(t('s.ai.use', { server: s.name, app: app.name }))}" data-act="ai" data-app="${app.id}" data-s="${esc(s.name)}" ${app.busy ? 'disabled' : ''}></button></div>`;
     }).join('');
-    return `<div class="card"><div class="card-body"><div class="row"><span class="tile" style="background:${color}">${glyph}</span><div class="grow"><div class="title">${esc(app.name)}</div><div class="sub">Query your datasources from ${esc(app.name)}, with your access.</div></div></div><div class="list">${rows}</div></div><div class="card-foot"><span class="hint">${esc(app.after)}</span></div></div>`;
+    return `<div class="card"><div class="card-body"><div class="row"><span class="tile" style="background:${color}">${glyph}</span><div class="grow"><div class="title">${esc(app.name)}</div><div class="sub">${esc(t('s.ai.appDesc', { app: app.name }))}</div></div></div><div class="list">${rows}</div></div><div class="card-foot"><span class="hint">${esc(t('ai.after.' + app.id))}</span></div></div>`;
   }).join('');
-  return `<section class="pane"><header><h1>AI Apps</h1><p>Let an AI app on this Mac query the datasources you can access. It signs in as you, so masking and approvals still apply.</p></header>${body}</section>`;
+  return `<section class="pane">${paneHead('s.ai.title', 's.ai.desc')}${body}</section>`;
 }
 
 function generalPane() {
-  return `<section class="pane"><header><h1>General</h1><p>How Proxy Monster starts and keeps you informed.</p></header>
-    <div class="card"><div class="card-body"><div class="row"><div class="grow"><div class="title">Open at Login</div><div class="sub">Start Proxy Monster when you log in, so your sign-in status is always in the menu bar.</div></div><button class="switch" role="switch" aria-checked="${state.loginItemOn}" data-act="login" aria-label="Open at Login" ${state.loginItemShown ? '' : 'disabled'}></button></div></div>
-      <div class="card-foot"><span class="hint">${state.loginItemShown ? 'Turned on after your first sign-in.' : 'Needs macOS 13 or later and the app installed from its installer.'}</span></div></div>
-    <div class="card"><div class="card-body"><div class="row"><div class="grow"><div class="title">Notifications</div><div class="sub">You’ll get a notification 30 minutes before a sign-in ends, and when it has ended. Click it to sign in again.</div></div></div></div>
-      <div class="card-foot"><span class="hint">Change how they appear in System Settings › Notifications.</span></div></div>
+  const langs = [['system', t('s.general.system')], ['en', 'English'], ['ko', '한국어']];
+  const themes = ['system', 'light', 'dark'];
+  return `<section class="pane">${paneHead('s.general.title', 's.general.desc')}
+    <div class="card"><div class="card-body">
+      <div class="row setting"><div class="grow"><div class="title">${esc(t('s.general.language'))}</div></div>
+        <select class="select" id="language" aria-label="${esc(t('s.general.language'))}">${langs.map(([v, l]) => `<option value="${v}"${state.language === v ? ' selected' : ''}>${esc(l)}</option>`).join('')}</select></div>
+      <div class="row setting"><div class="grow"><div class="title">${esc(t('s.general.theme'))}</div></div>
+        <div class="seg" role="group" aria-label="${esc(t('s.general.theme'))}">${themes.map(v => `<button data-act="theme" data-v="${v}" aria-pressed="${state.theme === v}">${ICONS[v]}${esc(t('s.general.' + v))}</button>`).join('')}</div></div>
+    </div><div class="card-foot"><span class="hint">${esc(t('s.general.appearanceDesc'))}</span></div></div>
+    <div class="card"><div class="card-body"><div class="row"><div class="grow"><div class="title">${esc(t('s.general.login'))}</div><div class="sub">${esc(t('s.general.loginDesc'))}</div></div><button class="switch" role="switch" aria-checked="${state.loginItemOn}" data-act="login" aria-label="${esc(t('s.general.login'))}" ${state.loginItemShown ? '' : 'disabled'}></button></div></div>
+      <div class="card-foot"><span class="hint">${esc(t(state.loginItemShown ? 's.general.loginHint' : 's.general.loginUnavailable'))}</span></div></div>
+    <div class="card"><div class="card-body"><div class="row"><div class="grow"><div class="title">${esc(t('s.general.notifications'))}</div><div class="sub">${esc(t('s.general.notificationsDesc'))}</div></div></div></div>
+      <div class="card-foot"><span class="hint">${esc(t('s.general.notificationsHint'))}</span></div></div>
   </section>`;
 }
 
@@ -310,15 +374,15 @@ function aboutPane() {
   const v = state.versions || {};
   return `<section class="pane"><div class="about"><span class="mark">${SHIELD}</span><h2>Proxy Monster Desktop</h2><div class="muted mono">${esc(v.app || 'dev')}</div></div>
     <div class="card"><div class="card-body"><dl class="kv">
-      <dt>App</dt><dd>${esc(v.app || '—')}</dd>
-      <dt>Bundled pmon</dt><dd>${esc(v.pmon || '—')}</dd>
-      <dt>Background service</dt><dd>${state.running ? esc(v.daemon || 'running') : 'not running'}</dd>
-    </dl></div><div class="card-foot"><span class="hint">Open source under the Apache 2.0 license.</span><button class="btn" data-act="link" data-url="https://github.com/ridi-oss/proxy-monster">GitHub</button></div></div>
+      <dt>${esc(t('s.about.app'))}</dt><dd>${esc(v.app || '—')}</dd>
+      <dt>${esc(t('s.about.pmon'))}</dt><dd>${esc(v.pmon || '—')}</dd>
+      <dt>${esc(t('s.about.daemon'))}</dt><dd>${state.running ? esc(v.daemon || '—') : esc(t('s.about.notRunning'))}</dd>
+    </dl></div><div class="card-foot"><span class="hint">${esc(t('s.about.license'))}</span><button class="btn" data-act="link" data-url="https://github.com/ridi-oss/proxy-monster">GitHub</button></div></div>
   </section>`;
 }
 
 function render() {
-  for (const b of document.querySelectorAll('nav button')) { if (b.dataset.pane === pane) b.setAttribute('aria-current', 'page'); else b.removeAttribute('aria-current'); }
+  renderNav();
   renderStatus();
   const m = $('#main');
   const html = { servers: serversPane, ai: aiPane, general: generalPane, about: aboutPane }[pane]();
@@ -336,7 +400,11 @@ function render() {
 }
 
 function go(p) { pane = p; adding = false; editing = null; menuFor = null; err = ''; render(); if (p === 'ai') refreshAI(); }
-document.getElementById('nav').addEventListener('click', e => { const b = e.target.closest('button'); if (b) go(b.dataset.pane); });
+$('#nav').addEventListener('click', e => { const b = e.target.closest('button'); if (b) go(b.dataset.pane); });
+
+document.addEventListener('change', async e => {
+  if (e.target.id === 'language') { await act(call('setLanguage', e.target.value)); refreshAI(); }
+});
 
 document.addEventListener('click', async e => {
   const b = e.target.closest('[data-act]');
@@ -347,18 +415,20 @@ document.addEventListener('click', async e => {
     case 'cancel': adding = false; editing = null; err = ''; render(); break;
     case 'menu': menuFor = menuFor === s ? null : s; render(); break;
     case 'edit': menuFor = null; editing = s; err = ''; render(); $('#url')?.focus(); break;
-    case 'signin': case 'reauth': await act(call('signIn', s)); break;
-    case 'signout': menuFor = null; await act(call('signOut', s), `Signed out of ${s}`); break;
-    case 'remove': menuFor = null; await act(call('removeServer', s), `Removed ${s}`); break;
+    case 'signin': await act(call('signIn', s)); break;
+    case 'signout': menuFor = null; await act(call('signOut', s), t('s.toast.signedOut', { name: s })); break;
+    case 'remove': menuFor = null; await act(call('removeServer', s), t('s.toast.removed', { name: s })); break;
     case 'start': await act(call('start')); break;
     case 'login': await act(call('setOpenAtLogin', b.getAttribute('aria-checked') !== 'true')); break;
+    case 'theme': await act(call('setTheme', b.dataset.v)); break;
     case 'goto-servers': go('servers'); break;
     case 'link': call('openLink', b.dataset.url); break;
     case 'ai': {
       const on = b.getAttribute('aria-checked') !== 'true';
       const app = ai.find(a => a.id === b.dataset.app); app.busy = true; render();
       const e2 = await call('aiToggle', app.id, s, on);
-      if (e2) toast(e2, true); else toast(on ? `Added ${s} to ${app.name}. ${app.after}` : `Removed ${s} from ${app.name}`);
+      if (e2) toast(e2, true);
+      else toast(on ? t('s.toast.aiAdded', { server: s, app: app.name, after: t('ai.after.' + app.id) }) : t('s.toast.aiRemoved', { server: s, app: app.name }));
       await refreshAI(); render();
       break;
     }
@@ -369,24 +439,24 @@ document.addEventListener('submit', async e => {
   e.preventDefault();
   const name = editing ?? $('#name').value.trim().toLowerCase();
   const url = $('#url').value.trim().replace(/\/+$/, '');
-  if (!name) { err = 'Enter a name for this server.'; return render(); }
-  if (!/^https:\/\//.test(url) && !/^http:\/\/(localhost|127\.0\.0\.1)(:|\/|$)/.test(url)) { err = 'Enter the full address, starting with https://'; return render(); }
+  if (!name) { err = t('s.form.errName'); return render(); }
+  if (!/^https:\/\//.test(url) && !/^http:\/\/(localhost|127\.0\.0\.1)(:|\/|$)/.test(url)) { err = t('s.form.errUrl'); return render(); }
   const e2 = await call('setServer', name, url);
   if (e2) { err = e2; return render(); }
   const wasAdding = adding;
   adding = false; editing = null; err = '';
   await refresh();
-  toast(wasAdding ? `Added ${name}. Sign in to start using it.` : `Updated ${name}`);
+  toast(t(wasAdding ? 's.toast.added' : 's.toast.updated', { name }));
 });
 
 document.addEventListener('keydown', e => {
-  if (e.metaKey && ['1', '2', '3', '4'].includes(e.key)) { e.preventDefault(); go(['servers', 'ai', 'general', 'about'][+e.key - 1]); }
+  if (e.metaKey && ['1', '2', '3', '4'].includes(e.key)) { e.preventDefault(); go(PANES[+e.key - 1]); }
   if (e.key === 'Escape' && (adding || editing || menuFor)) { adding = false; editing = null; menuFor = null; err = ''; render(); }
 });
 
 // ---- demo backend, used only when the page is opened outside the app ----
 const demoState = {
-  running: true, loginItemOn: true, loginItemShown: true,
+  running: true, loginItemOn: true, loginItemShown: true, language: 'system', lang: (navigator.language || 'en').startsWith('ko') ? 'ko' : 'en', theme: 'system',
   versions: { app: '0.1.8', pmon: '0.1.8', daemon: '0.1.8' },
   servers: [
     { name: 'acme', url: 'https://pm.acme.example', signedIn: true, account: 'dana@acme.example', endsAt: 'Today 18:40', left: '9h 12m left', datasources: 12 },
@@ -394,9 +464,9 @@ const demoState = {
   ],
 };
 const demoAI = [
-  { id: 'claude-desktop', name: 'Claude Desktop', after: 'Quit and reopen Claude Desktop to use it.', connected: { acme: true } },
-  { id: 'claude-code', name: 'Claude Code', after: 'New Claude Code sessions can use it.', connected: {} },
-  { id: 'codex', name: 'Codex', after: 'New Codex sessions can use it.', connected: {} },
+  { id: 'claude-desktop', name: 'Claude Desktop', connected: { acme: true } },
+  { id: 'claude-code', name: 'Claude Code', connected: {} },
+  { id: 'codex', name: 'Codex', connected: {} },
 ];
 async function demo(name, args) {
   await new Promise(r => setTimeout(r, name === 'aiState' ? 500 : 120));
@@ -409,6 +479,8 @@ async function demo(name, args) {
     case 'signIn': { const s = find(args[0]); Object.assign(s, { signedIn: true, ended: false, ending: false, account: 'dana@acme.example', endsAt: 'Tomorrow 09:40', left: '12h left', datasources: s.datasources || 7 }); return ''; }
     case 'signOut': find(args[0]).signedIn = false; return '';
     case 'setOpenAtLogin': demoState.loginItemOn = args[0]; return '';
+    case 'setLanguage': demoState.language = args[0]; demoState.lang = args[0] === 'system' ? ((navigator.language || 'en').startsWith('ko') ? 'ko' : 'en') : args[0]; return '';
+    case 'setTheme': demoState.theme = args[0]; return '';
     case 'aiToggle': { const [id, s, on] = args; demoAI.find(a => a.id === id).connected[s] = on; return ''; }
     default: return '';
   }

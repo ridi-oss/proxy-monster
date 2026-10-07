@@ -10,6 +10,7 @@ import "C"
 
 import (
 	"errors"
+	"strings"
 	"unsafe"
 )
 
@@ -54,7 +55,14 @@ func loginItem() (on, supported bool) {
 func setLoginItem(on bool) error {
 	if msg := C.pm_set_login_item(C.bool(on)); msg != nil {
 		defer C.free(unsafe.Pointer(msg))
-		return errors.New(C.GoString(msg))
+		switch m := C.GoString(msg); m {
+		case "needs-approval":
+			return errors.New(T("n.loginItemApprove"))
+		case "needs-macos-13":
+			return errors.New(T("n.loginItemNeedsMac13"))
+		default:
+			return errors.New(m)
+		}
 	}
 	return nil
 }
@@ -69,6 +77,42 @@ func goURLOpened(u *C.char) {
 	if f := onConnectLink; f != nil {
 		go f(C.GoString(u))
 	}
+}
+
+func prefString(key string) string {
+	k := C.CString(key)
+	defer C.free(unsafe.Pointer(k))
+	v := C.pm_pref_string(k)
+	if v == nil {
+		return ""
+	}
+	defer C.free(unsafe.Pointer(v))
+	return C.GoString(v)
+}
+
+func setPrefString(key, value string) {
+	k, v := C.CString(key), C.CString(value)
+	defer C.free(unsafe.Pointer(k))
+	defer C.free(unsafe.Pointer(v))
+	C.pm_set_pref_string(k, v)
+}
+
+func preferredLanguages() []string {
+	v := C.pm_preferred_languages()
+	defer C.free(unsafe.Pointer(v))
+	return strings.Split(C.GoString(v), "\n")
+}
+
+// applyTheme sets a window's appearance, or with a nil window the app's, which the menu follows.
+func applyTheme(window unsafe.Pointer, t string) {
+	mode := 0
+	switch t {
+	case "light":
+		mode = 1
+	case "dark":
+		mode = 2
+	}
+	C.pm_set_appearance(window, C.int(mode))
 }
 
 func prefBool(key string) bool {

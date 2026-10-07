@@ -3,7 +3,7 @@ package main
 import (
 	"context"
 	"errors"
-	"fmt"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -127,12 +127,14 @@ func (a *app) setSigningIn(server string, on bool) {
 
 // onReady draws the first menu and starts the watchers.
 func (a *app) onReady() {
+	applyTheme(nil, theme())
 	a.renderMu.Lock()
 	a.onScreen = true
 	a.redraw()
 	a.renderMu.Unlock()
 	go a.watchDaemon()
 	go a.ticker()
+	go a.watchAppearance()
 }
 
 func (a *app) onExit() {
@@ -140,6 +142,29 @@ func (a *app) onExit() {
 	a.exited = true
 	a.errMu.Unlock()
 	a.cancel()
+}
+
+// watchAppearance applies a language or theme the Settings window changed. The two processes share the
+// app's user defaults, so polling them is the whole protocol.
+func (a *app) watchAppearance() {
+	l, th := lang(), theme()
+	t := time.NewTicker(2 * time.Second)
+	defer t.Stop()
+	for {
+		select {
+		case <-a.ctx.Done():
+			return
+		case <-t.C:
+		}
+		if nl, nth := lang(), theme(); nl != l || nth != th {
+			l, th = nl, nth
+			applyTheme(nil, th)
+			a.renderMu.Lock()
+			a.redraw()
+			a.renderMu.Unlock()
+			go a.refreshAI(true)
+		}
+	}
 }
 
 func (a *app) ticker() {
@@ -184,8 +209,8 @@ func (a *app) noticeEndings(s *control.Status, v view) {
 		a.warned[srv.Name] = end
 		a.mu.Unlock()
 		if !seen {
-			notifyAction("ending:"+srv.Name, fmt.Sprintf("%s sign-in ends in %s", srv.Name, strings.TrimSuffix(timeLeft(left), " left")),
-				"Click to sign in again.", "signin:"+srv.Name)
+			notifyAction("ending:"+srv.Name, T("n.ending", "server", srv.Name, "m", strconv.Itoa(max(1, int(left.Minutes())))),
+				T("n.endingBody"), "signin:"+srv.Name)
 		}
 	}
 }
@@ -198,7 +223,7 @@ func (a *app) noticeEnded(server string, end time.Time) {
 	a.ended[server] = end
 	a.mu.Unlock()
 	if !seen {
-		notifyAction("ended:"+server, server+" sign-in ended", "AI apps can't reach it until you sign in again. Click to sign in.", "signin:"+server)
+		notifyAction("ended:"+server, T("n.ended", "server", server), T("n.endedBody"), "signin:"+server)
 	}
 }
 
@@ -262,7 +287,7 @@ func (a *app) noticeReauth() {
 	}
 	for _, srv := range s.Servers {
 		if srv.ReauthRequired {
-			notifyAction("ended:"+srv.Name, srv.Name+" sign-in ended", "Click to sign in again.", "signin:"+srv.Name)
+			notifyAction("ended:"+srv.Name, T("n.ended", "server", srv.Name), T("n.endedBody"), "signin:"+srv.Name)
 		}
 	}
 }

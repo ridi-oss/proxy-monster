@@ -35,6 +35,12 @@ func fontCSS() string {
 	return face("Geist", geistFont, "100 900") + face("Geist Mono", geistMonoFont, "100 900")
 }
 
+// i18nScript hands the page the same catalogs the menu uses.
+func i18nScript() string {
+	b, _ := json.Marshal(catalogs)
+	return "window.PM_I18N = " + string(b) + ";"
+}
+
 // runPreferences shows the Settings window until it is closed. The page calls Go through pmCall, which
 // answers asynchronously: a binding runs on the UI thread, and several calls (an AI app's CLI, a sign-out
 // confirmation) take seconds.
@@ -56,7 +62,8 @@ func runPreferences(add bool) {
 		}
 	}
 	refresh := func() { eval("window.pmRefresh && window.pmRefresh()") }
-	p := &prefs{ctx: ctx, signingIn: map[string]bool{}, changed: refresh, pmonVersion: bundledPmonVersion()}
+	p := &prefs{ctx: ctx, signingIn: map[string]bool{}, changed: refresh, pmonVersion: bundledPmonVersion(), window: w.Window()}
+	applyTheme(p.window, theme())
 	handlers := p.handlers()
 
 	if err := w.Bind("pmCall", func(id, name, args string) {
@@ -86,7 +93,7 @@ func runPreferences(add bool) {
 	if add {
 		w.Init("window.pmStartWithAdd = true;")
 	}
-	w.SetHtml(strings.Replace(prefsHTML, "/*FONTS*/", fontCSS(), 1))
+	w.SetHtml(strings.NewReplacer("/*FONTS*/", fontCSS(), "/*I18N*/", i18nScript()).Replace(prefsHTML))
 	go watchForPrefs(ctx, refresh)
 	w.Run()
 

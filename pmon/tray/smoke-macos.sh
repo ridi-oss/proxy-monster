@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Build and package the app ad-hoc, then check what a release would ship: both architectures, the minimum
-# macOS, the signature, and the pkg's title and payload. Signing and notarization run only on release tags.
+# macOS, the signature, the embedded updater, and the pkg's title and payload. Signing and notarization run only on release tags.
 #
 #   ./smoke-macos.sh
 set -euo pipefail
@@ -11,8 +11,14 @@ trap 'rm -rf "$WORK"' EXIT
 NAME="Proxy Monster Desktop"
 fail() { echo "smoke: $*" >&2; exit 1; }
 
-ARCHS="arm64 amd64" ./build-app.sh "$WORK/app" >/dev/null
+KEY=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
+ARCHS="arm64 amd64" FEED_URL=https://example.invalid/appcast.xml SPARKLE_PUBLIC_KEY=$KEY \
+    ./build-app.sh "$WORK/app" >/dev/null
 APP="$WORK/app/$NAME.app"
+[ -x "$APP/Contents/Frameworks/Sparkle.framework/Versions/B/Autoupdate" ] || fail "Sparkle is not embedded"
+[ "$(plutil -extract SUFeedURL raw "$APP/Contents/Info.plist")" = https://example.invalid/appcast.xml ] ||
+    fail "the feed URL is not in Info.plist"
+[ "$(plutil -extract SUPublicEDKey raw "$APP/Contents/Info.plist")" = "$KEY" ] || fail "the public key is not in Info.plist"
 for bin in pmon pmontray; do
     archs="$(lipo -archs "$APP/Contents/MacOS/$bin")"
     [ "$archs" = "x86_64 arm64" ] || fail "$bin has architectures '$archs'"

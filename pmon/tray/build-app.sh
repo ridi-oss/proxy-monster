@@ -13,6 +13,9 @@
 #   SIGN_IDENTITY   codesign identity (default "-", ad-hoc). A real identity also turns on the hardened runtime
 #                   and a secure timestamp, which notarization requires.
 #   SIGN_KEYCHAIN   keychain holding SIGN_IDENTITY (default: the search list)
+#   FEED_URL        Sparkle appcast URL. Set, it embeds Sparkle and turns on automatic updates; unset, the app
+#                   has no updater (local builds carry a git-describe version Sparkle cannot compare).
+#   SPARKLE_PUBLIC_KEY  the EdDSA public key updates are signed with; required with FEED_URL
 set -euo pipefail
 
 cd "$(dirname "$0")"
@@ -27,6 +30,14 @@ ARCHS="${ARCHS:-$(go env GOARCH)}"
 # MACOSX_DEPLOYMENT_TARGET, so a cached object would keep the host's target.
 MIN_MACOS=12.0
 SIGN_IDENTITY="${SIGN_IDENTITY:--}"
+source ./sparkle.sh
+if [ -n "${FEED_URL:-}" ]; then
+    : "${SPARKLE_PUBLIC_KEY:?FEED_URL needs SPARKLE_PUBLIC_KEY}"
+    if [ "$(printf '%s' "$SPARKLE_PUBLIC_KEY" | base64 -d 2>/dev/null | wc -c | tr -d ' ')" != 32 ]; then
+        echo "error: SPARKLE_PUBLIC_KEY is not a base64 Ed25519 public key" >&2
+        exit 1
+    fi
+fi
 
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
@@ -105,6 +116,19 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 </plist>
 PLIST
 
+if [ -n "${FEED_URL:-}" ]; then
+    fetch_sparkle "$WORK/sparkle"
+    # The XPC services are only for sandboxed apps.
+    rm -rf "$WORK/sparkle/Sparkle.framework/Versions/B/XPCServices"
+    ditto "$WORK/sparkle/Sparkle.framework" "$APP/Contents/Frameworks/Sparkle.framework"
+    /usr/libexec/PlistBuddy \
+        -c "Add :SUFeedURL string $FEED_URL" \
+        -c "Add :SUPublicEDKey string $SPARKLE_PUBLIC_KEY" \
+        -c "Add :SUEnableAutomaticChecks bool true" \
+        -c "Add :SUAutomaticallyUpdate bool true" \
+        "$APP/Contents/Info.plist"
+fi
+
 # Finder/Login-Items icon. CFBundleIconFile names "icon", so macOS looks for Resources/icon.icns; without it the
 # bundle shows a generic icon in Login Items. The menu-bar icon is separate (embedded in the binary).
 if command -v iconutil >/dev/null 2>&1 && command -v sips >/dev/null 2>&1; then
@@ -128,6 +152,12 @@ if [ -n "${SIGN_KEYCHAIN:-}" ]; then
     sign_flags+=(--keychain "$SIGN_KEYCHAIN")
 fi
 codesign "${sign_flags[@]}" --identifier com.ridi.oss.proxymonster.pmon "$APP/Contents/MacOS/pmon"
+SPARKLE="$APP/Contents/Frameworks/Sparkle.framework"
+if [ -d "$SPARKLE" ]; then
+    codesign "${sign_flags[@]}" "$SPARKLE/Versions/B/Autoupdate"
+    codesign "${sign_flags[@]}" "$SPARKLE/Versions/B/Updater.app"
+    codesign "${sign_flags[@]}" "$SPARKLE"
+fi
 codesign "${sign_flags[@]}" "$APP"
 codesign --verify --strict --deep "$APP"
 

@@ -311,7 +311,7 @@ func TestSocketPathsDeduplicateEquivalentRoots(t *testing.T) {
 	stateDir := filepath.Join(t.TempDir(), strings.Repeat("long-state-dir/", 10), "proxy-monster")
 	t.Setenv(dirEnv, stateDir)
 	aliasRoot := filepath.Join(t.TempDir(), "tmp-link")
-	if err := os.Symlink(socketRoot, aliasRoot); err != nil {
+	if err := os.Symlink(socketRoot(), aliasRoot); err != nil {
 		t.Fatalf("Symlink: %v", err)
 	}
 	t.Setenv("TMPDIR", aliasRoot)
@@ -433,7 +433,7 @@ func TestSocketPathUsesProductionRoot(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SocketPath: %v", err)
 	}
-	want := filepath.Join(socketRoot, fmt.Sprintf("pmon-%d", os.Getuid()))
+	want := filepath.Join(socketRoot(), socketDirName())
 	if got := filepath.Dir(sock); got != want {
 		t.Errorf("socket directory = %q, want %q", got, want)
 	}

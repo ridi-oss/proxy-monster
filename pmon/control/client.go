@@ -88,10 +88,16 @@ func (c *Client) do(ctx context.Context, method, path string, body any) (*http.R
 		if json.NewDecoder(io.LimitReader(resp.Body, 4096)).Decode(&e) == nil && e.Error != "" {
 			return nil, fmt.Errorf("%s", e.Error)
 		}
+		if resp.StatusCode == http.StatusNotFound {
+			return nil, fmt.Errorf("control API %s: %w", path, ErrUnknownRoute)
+		}
 		return nil, fmt.Errorf("control API %s: HTTP %d", path, resp.StatusCode)
 	}
 	return resp, nil
 }
+
+// ErrUnknownRoute means the daemon has no such control route: it is an older build than this client.
+var ErrUnknownRoute = errors.New("HTTP 404: the running daemon is older than this pmon")
 
 // isDialFailure reports whether err means "nothing is listening on the control socket". It keys on the
 // operation being a DIAL rather than on an essno allow-list: a stale non-socket file, a permission problem, or

@@ -214,6 +214,25 @@ func TestDiscoveryErrorWording(t *testing.T) {
 	}
 }
 
+// A daemon from a different pmon build is flagged with a restart, and the servers stay usable below it.
+func TestADifferentDaemonVersionOffersRestart(t *testing.T) {
+	s := twoServers()
+	s.Version = "0.1.7+aaaaaaaaaaaa"
+	menu := buildMenu(s, view{now: now, pmonVersion: "0.1.8+bbbbbbbbbbbb"})
+	if e := find(menu, "restart"); e == nil || e.act.op != opRestart {
+		t.Fatal("no restart for a daemon of another version")
+	}
+	if find(menu, "srv:acme") == nil {
+		t.Error("the servers disappeared behind the restart notice")
+	}
+	if find(buildMenu(s, view{now: now, pmonVersion: s.Version}), "restart") != nil {
+		t.Error("a restart offered for the same version")
+	}
+	if find(buildMenu(s, view{now: now}), "restart") != nil {
+		t.Error("a restart offered when the bundled version is unknown")
+	}
+}
+
 // Past its sign-in window a login still brokers until the wire token expires, but it must read as needing a
 // sign-in: AI apps get no token from it.
 func TestASignInPastItsWindowReadsAsEnded(t *testing.T) {

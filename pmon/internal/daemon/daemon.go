@@ -466,6 +466,9 @@ func (d *Daemon) MCPToken(ctx context.Context, req control.MCPTokenRequest) (con
 	if errors.Is(err, login.ErrMCPRefused) {
 		return control.MCPToken{}, fmt.Errorf("the login to %q has ended — run `pmon login %s`", name, name)
 	}
+	if errors.Is(err, login.ErrMCPUnsupported) {
+		return control.MCPToken{}, fmt.Errorf("%q (%s) does not support `pmon mcp` yet — its proxy-monster server needs an upgrade", name, srv.ControlPlane)
+	}
 	if err != nil {
 		return control.MCPToken{}, fmt.Errorf("could not get an MCP token from %q: %w", name, err)
 	}

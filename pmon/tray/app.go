@@ -54,6 +54,8 @@ type app struct {
 	aiServers string
 	aiMu      sync.Mutex // one AI-settings read at a time
 	prefsPid  int        // the Preferences window's process, while open
+	// pmonVersion is the bundled pmon's `--version`, read once at startup.
+	pmonVersion string
 
 	errMu  sync.Mutex
 	err    error
@@ -62,7 +64,7 @@ type app struct {
 
 func newApp(ctx context.Context) *app {
 	ctx, cancel := context.WithCancel(ctx)
-	return &app{ctx: ctx, cancel: cancel, children: map[*node][]*node{}, warned: map[string]time.Time{}, ended: map[string]time.Time{}, signingIn: map[string]bool{}}
+	return &app{pmonVersion: bundledPmonVersion(), ctx: ctx, cancel: cancel, children: map[*node][]*node{}, warned: map[string]time.Time{}, ended: map[string]time.Time{}, signingIn: map[string]bool{}}
 }
 
 // tryLockAction claims the lifecycle lock without blocking, reporting whether it was free.
@@ -107,7 +109,7 @@ func (a *app) view() view {
 	a.mu.Lock()
 	ai := a.ai
 	a.mu.Unlock()
-	return view{now: time.Now(), signingIn: signingIn, loginItemOn: on, loginItemShow: supported, ai: ai}
+	return view{now: time.Now(), signingIn: signingIn, loginItemOn: on, loginItemShow: supported, ai: ai, pmonVersion: a.pmonVersion}
 }
 
 func (a *app) setSigningIn(server string, on bool) {

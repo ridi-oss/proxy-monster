@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -32,6 +33,9 @@ func (c *mcpCmd) Run() error {
 	bridge := &mcpbridge.Bridge{
 		Tokens: func(ctx context.Context) (mcpbridge.Token, error) {
 			tok, err := client.MCPToken(ctx, control.MCPTokenRequest{Server: c.Server})
+			if errors.Is(err, control.ErrUnknownRoute) {
+				return mcpbridge.Token{}, fmt.Errorf("the running daemon predates `pmon mcp` — run `pmon restart`")
+			}
 			if err != nil {
 				return mcpbridge.Token{}, err
 			}

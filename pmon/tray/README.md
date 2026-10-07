@@ -34,39 +34,42 @@ signing and notarization inputs fall back to an ad-hoc, unnotarized build.
 ## The menu
 
 ```
-● you@example.com — 11h23m left
-  3 active connection(s)
-  ─────────
-  acme-mysql    ·  127.0.0.1:6100        ← click to copy the connection string
-  acme-orders   ·  127.0.0.1:6101  (2)   ← (2) = live connections
-  acme-target   ·  127.0.0.1:6102
-  ─────────
-  Re-authenticate…
-  Log out
-  Restart daemon
-  Stop daemon
-  ─────────
-  Quit
+acme — dana@acme.example · 9h 12m left  ›  Sign In Again…
+                                            Sign Out
+                                            ─────────
+                                            orders     ›  Copy URL
+                                            analytics  ›  Copy JDBC URL
+                                                          Copy Go DSN
+                                                          Copy Command Line
+staging — signed out                    ›  Sign In…
+2 open connections
+─────────
+✓ Open at Login
+Quit Proxy Monster
 ```
 
-With no daemon running it shows `daemon not running` and offers **Start daemon**
-/ **Log in…**. The menu never displays a stale last-known state: if the daemon
-goes away, the event stream ends and the menu says so.
+One submenu per server; each datasource offers every connection-string format
+its engine supports (the same strings `pmon show --format` prints). With no
+daemon running the menu says so and offers **Start**; it never shows a stale
+last-known state.
 
-- **Clicking a datasource** copies its `--url` connection string (the same
-  string `pmon show [server] <ds>` prints).
-- **Log in…** asks the _daemon_ to run the device-auth flow, so the browser
-  opens and the user code arrives as a notification. Starts the daemon first if
-  none is running. It logs in to the first server that needs it (`default` when
-  all are logged in); add servers with `pmon server set`.
-- **Log out** logs out of every server. With more than one server, each row is
-  prefixed with its server name.
+The menu-bar icon is a monochrome template image; its state is a shape on the
+shield: plain when signed in, a clock when a sign-in ends within 30 minutes, a
+slash when a server is signed out, dots while a browser sign-in is open, faded
+when nothing is running.
+
+- **Sign In…** opens the server's sign-in page in the browser with the code
+  filled in, starting the daemon first if none is running. A notification 30
+  minutes before a sign-in ends, and one when it has ended, sign in again when
+  clicked.
+- **Open at Login** turns on after the first sign-in; once the user changes it,
+  the app leaves it alone. Needs macOS 13.
 - **Quit** stops the daemon, then exits — it is the peer of `pmon stop`. Merely
   closing the menu does nothing, matching a CLI command simply returning.
-- **Stop / Restart / Log out / Quit** confirm first when connections are open,
-  because the daemon is shared: the CLI may have started it and another window
-  may be mid-query. The dialog fails **closed** — if it cannot be shown, the
-  action is refused rather than silently dropping someone's session.
+- **Sign Out / Quit** confirm first when connections are open, because the
+  daemon is shared: the CLI may have started it and another window may be
+  mid-query. The dialog fails **closed** — if it cannot be shown, the action is
+  refused rather than silently dropping someone's session.
 
 ## Design
 
@@ -75,11 +78,13 @@ every action is a call on the same control API the CLI uses, so the two front
 ends cannot drift.
 
 It also **never starts a daemon on its own** — launching at login must not force
-brokers up. That is an explicit action (Start, or Log in).
+brokers up. That is an explicit action: Start, Sign In, or a confirmed
+`pmon://connect` link.
 
-Menu items are created once and then updated or hidden, because a systray cannot
-remove an item; a menu rebuilt per update would accumulate rows forever.
-Datasource rows are a fixed pool (`maxDatasourceItems`).
+The menu is built as a tree from each status (`menu.go`). A tree with the same
+keys as the one on screen updates the items in place; any other shape resets the
+menu, since a systray can only append items. A Copy item's label and payload
+come from one datasource in one render, so they cannot pair two datasources.
 
 ### Its own module
 
@@ -93,10 +98,11 @@ together is what keeps the daemon and the front end from skewing.
 
 ### macOS integration
 
-Notifications, the confirm dialog, and the clipboard go through
-`osascript`/`pbcopy` rather than AppKit bindings — cgo is already paid for by
-the systray, and Objective-C for three small affordances would buy nothing. Any
-value interpolated into an AppleScript is escaped (`osaQuote`): a principal or
+Notifications and Open at Login use the system frameworks (`native_darwin.m`): a
+notification is attributed to the app and can be clicked. An unbundled `go run`
+build has no app identity, so its notifications fall back to `osascript`. The
+confirm dialog and the clipboard use `osascript` and `pbcopy`. Any value
+interpolated into an AppleScript is escaped (`osaQuote`): a principal or
 datasource name reaches those scripts as data, and an unescaped quote would
 otherwise run as code.
 

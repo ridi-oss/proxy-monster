@@ -27,9 +27,30 @@ RIDI's Developer ID and notarized:
   the `pmon` inside it.
 - `ProxyMonsterDesktop_<version>_darwin_universal.zip` is the app alone.
 
+`brew install --cask ridi-oss/tap/proxy-monster-desktop` installs the zip and
+puts its `pmon` on `PATH`; it cannot install beside the `pmon` formula.
+
 The release job runs `signing-keychain.sh`, `build-app.sh` and
 `package-macos.sh`; each script lists the environment it reads. Unset, the
 signing and notarization inputs fall back to an ad-hoc, unnotarized build.
+
+### Updates
+
+Release builds update themselves with [Sparkle](https://sparkle-project.org)
+(`sparkle.sh` pins the version). `build-app.sh` embeds it when `FEED_URL` is
+set; other builds have no updater. The feed is `appcast-macos.xml` on the
+rolling `desktop-feed` release, which the release job replaces with the new
+version, signed with the EdDSA key in the `release` environment
+(`SPARKLE_ED_KEY`; its public half is `sparkle-public-key`). The same release
+holds `ProxyMonsterDesktop.pkg`, the current installer, which the console's
+Connect page links to.
+
+The app checks daily and downloads an update on its own, then installs it once
+no database connection or browser sign-in is open, relaunches, and replaces a
+daemon the old build started with the new `pmon`. The menu offers **Install
+Update** while one waits. An organization turns updates off with a configuration
+profile setting `SUEnableAutomaticChecks` to false for
+`com.ridi.oss.proxymonster.pmontray`; Settings then shows the switch as managed.
 
 ## The menu
 
@@ -49,6 +70,7 @@ Connect AI Apps                         ›  ✓ Claude Desktop
 2 open connections
 ─────────
 ✓ Open at Login
+Check for Updates…
 Settings…
 Quit Proxy Monster
 ```
@@ -69,14 +91,14 @@ when nothing is running.
   clicked.
 - **Settings…** opens a window with Servers (add, change an address, remove,
   sign in and out), AI Apps (a switch per app and server), General (Open at
-  Login) and About (versions). It runs as a second process
-  (`pmontray --preferences`) because the systray owns the menu-bar process's
-  main thread. The page (`prefs.html`) runs in a system web view and uses the
-  console's look: its tokens and the Geist fonts, embedded in the app (`fonts/`,
-  SIL Open Font License). It calls Go through one asynchronous `pmCall`, since
-  several calls take seconds. Opened in a browser on its own, the page runs on
-  demo data, for design review. With no servers, the menu offers **Connect to a
-  Server…**, which opens it at Add.
+  Login, updates, language and theme) and About (versions). It runs as a second
+  process (`pmontray --preferences`) because the systray owns the menu-bar
+  process's main thread. The page (`prefs.html`) runs in a system web view and
+  uses the console's look: its tokens and the Geist fonts, embedded in the app
+  (`fonts/`, SIL Open Font License). It calls Go through one asynchronous
+  `pmCall`, since several calls take seconds. Opened in a browser on its own,
+  the page runs on demo data, for design review. With no servers, the menu
+  offers **Connect to a Server…**, which opens it at Add.
 - **`pmon://connect?name=<server>&url=<address>`** links, from the console's
   Connect page, add a server and start its sign-in. Any web page can open such a
   link, so the address must be `https` (`http` only for this machine), the user

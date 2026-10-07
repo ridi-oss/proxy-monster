@@ -173,6 +173,10 @@ captured on the connection's own held target-DB connection (design:
   the statements already executed since the last `Sync`; PostgreSQL would roll
   that implicit transaction back. Inside `BEGIN` a refusal fails the transaction
   as an error does.
+- 🟡 A MySQL multi-statement query with a syntax error or an empty statement
+  (`;;`) runs nothing, where MySQL runs the statements before it. A MySQL stored
+  procedure that returns result sets fails (1312): the proxy relays one result
+  per statement.
 
 ## Athena
 

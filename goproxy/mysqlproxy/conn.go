@@ -7,12 +7,16 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"strings"
 	"time"
 
+	"github.com/ridi-oss/proxy-monster/analyzer/probe"
+	enginepb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
 	"github.com/ridi-oss/proxy-monster/goproxy/engine"
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
 	"github.com/ridi-oss/proxy-monster/goproxy/wire"
 	"github.com/ridi-oss/proxy-monster/mysqlwire"
+	"google.golang.org/protobuf/proto"
 )
 
 const (
@@ -120,6 +124,7 @@ func (s *Server) handleConn(clientConn net.Conn) {
 	}
 	clientCaps := handshake.Capabilities
 	deprecateEOF := clientCaps&mysqlwire.CapDeprecateEOF != 0
+	multiStatements := clientCaps&mysqlwire.CapMultiStatements != 0
 	if err := mysqlwire.WritePacket(clientConn, handshakeSeq+1, mysqlwire.AuthSwitchClearPassword()); err != nil {
 		return
 	}
@@ -153,7 +158,7 @@ func (s *Server) handleConn(clientConn net.Conn) {
 	}()
 	slog.Info("authenticated mysql client", "client", clientConn.RemoteAddr().String(), "principal", identity.Principal, "roles", identity.Roles)
 
-	targetDbConn, targetConnID, err := dialTargetDbAuthID(context.Background(), s.targetDb, deprecateEOF)
+	targetDbConn, targetGreeting, err := dialTargetDbAuthID(context.Background(), s.targetDb, deprecateEOF)
 	if err != nil {
 		slog.Warn("mysql target DB unavailable", "host", s.targetDb.Host, "port", s.targetDb.Port, "error", err)
 		_ = mysqlwire.WritePacket(clientConn, tokenSeq+1, mysqlwire.ErrPacketState(
@@ -165,7 +170,7 @@ func (s *Server) handleConn(clientConn net.Conn) {
 	}
 	targetDbConn = s.WrapTargetDbConn(targetDbConn)
 	defer targetDbConn.Close()
-	cancelQuery := func() { _ = cancelTargetDbQuery(s.targetDb, targetConnID) }
+	cancelQuery := func() { _ = cancelTargetDbQuery(s.targetDb, targetGreeting.ConnectionID) }
 
 	qe := engine.NewQueryEngine(s.client)
 	preparedStmts := make(map[uint32]preparedStmt)
@@ -246,60 +251,109 @@ func (s *Server) handleConn(clientConn net.Conn) {
 
 		case mysqlwire.ComQuery:
 			sql := string(payload[1:])
-			start := time.Now()
-			var relayStats engine.RelayStats
-			relayStatus := engine.StatusError
-			decision, denied, serveErr := engine.ServeStatement(qe, engine.AuthzInput{
-				SQL:          sql,
-				Token:        token,
-				ClientAddr:   clientAddr,
-				ConnectionID: identity.ConnectionID,
-				ProbeSession: func() (engine.SessionObservation, error) { return probeSession(targetDbConn, deprecateEOF) },
-				RunCommands:  refetcher.RunAll,
-			}, refetcher, nil, func(toSend string, masks []*pb.ColumnMask, dec *engine.Decision) (bool, error) {
-				queryPayload := mysqlwire.ComQueryPayload(toSend)
-				if len(queryPayload) >= maxPacketPayload {
-					if err := mysqlwire.WritePacket(clientConn, seq+1, mysqlwire.ErrPacketState(
-						1105,
-						"HY000",
-						"proxy-monster: expanded query exceeds max packet size",
-					)); err != nil {
+			// serve answers one statement after client sequence id seqBase; more marks a result another follows.
+			// stop reports that the statement ended the response (a deny or an error); the connection is closed
+			// when serve returns closed.
+			serve := func(sql string, seqBase byte, more bool) (lastSeq byte, stop, closed bool) {
+				start := time.Now()
+				var relayStats engine.RelayStats
+				relayStatus := engine.StatusError
+				stop = true
+				decision, denied, serveErr := engine.ServeStatement(qe, engine.AuthzInput{
+					SQL:          sql,
+					Token:        token,
+					ClientAddr:   clientAddr,
+					ConnectionID: identity.ConnectionID,
+					ProbeSession: func() (engine.SessionObservation, error) { return probeSession(targetDbConn, deprecateEOF) },
+					RunCommands:  refetcher.RunAll,
+				}, refetcher, nil, func(toSend string, masks []*pb.ColumnMask, dec *engine.Decision) (bool, error) {
+					queryPayload := mysqlwire.ComQueryPayload(toSend)
+					if len(queryPayload) >= maxPacketPayload {
+						if err := mysqlwire.WritePacket(clientConn, seqBase+1, mysqlwire.ErrPacketState(
+							1105,
+							"HY000",
+							"proxy-monster: expanded query exceeds max packet size",
+						)); err != nil {
+							return false, err
+						}
+						return false, nil
+					}
+					if err := mysqlwire.WritePacket(targetDbConn, 0, queryPayload); err != nil {
 						return false, err
 					}
-					return false, nil
+					clean, stats, last, err := relayQueryResponseTracked(clientConn, targetDbConn, deprecateEOF, masks, errRedactor(qe), dec, cancelQuery, seqBase, more)
+					relayStats = stats
+					relayStatus = engine.RelayStatus(clean, err)
+					if err != nil {
+						return false, err
+					}
+					qe.MarkNamespaceDirty()
+					lastSeq, stop = last, !clean
+					return clean, nil
+				})
+				// Post-relay, best-effort completion: only a relayed (Proceed) statement reports. A DENY relayed
+				// nothing, and EmitCompletion additionally no-ops for a decision with no audit id.
+				if !denied {
+					qe.AwaitCompletion(engine.EmitCompletion(s.client, decision, relayStats, relayStatus, start))
 				}
-				if err := mysqlwire.WritePacket(targetDbConn, 0, queryPayload); err != nil {
-					return false, err
+				if serveErr != nil {
+					var fail engine.FailError
+					if errors.As(serveErr, &fail) {
+						_ = mysqlwire.WritePacket(clientConn, seqBase+1, mysqlwire.ErrPacketState(1105, "HY000", "proxy-monster: "+fail.Message))
+					} else if more && lastSeq != 0 {
+						// The relayed result promised another; the catalog refresh after it failed.
+						_ = mysqlwire.WritePacket(clientConn, lastSeq+1, mysqlwire.ErrPacketState(1105, "HY000", "proxy-monster: catalog refresh failed"))
+					}
+					return 0, true, true
 				}
-				clean, stats, err := relayQueryResponseTracked(clientConn, targetDbConn, deprecateEOF, masks, errRedactor(qe), dec, cancelQuery)
-				relayStats = stats
-				relayStatus = engine.RelayStatus(clean, err)
-				if err != nil {
-					return false, err
+				if denied {
+					reason := "policy"
+					if decision != nil && decision.DenyReason != "" {
+						reason = decision.DenyReason
+					}
+					if err := mysqlwire.WritePacket(clientConn, seqBase+1, mysqlwire.ErrPacketState(1142, "42000", "proxy-monster denied: "+reason)); err != nil {
+						return 0, true, true
+					}
 				}
-				qe.MarkNamespaceDirty()
-				return clean, nil
+				return lastSeq, stop, false
+			}
+			batch := splitBatch(multiStatements, sql, targetGreeting.ServerVersion, func() (engine.SessionObservation, error) {
+				return probeSession(targetDbConn, deprecateEOF)
 			})
-			// Post-relay, best-effort completion: only a relayed (Proceed) statement reports. A DENY relayed
-			// nothing, and EmitCompletion additionally no-ops for a decision with no audit id.
-			if !denied {
-				qe.AwaitCompletion(engine.EmitCompletion(s.client, decision, relayStats, relayStatus, start))
-			}
-			if serveErr != nil {
-				var fail engine.FailError
-				if errors.As(serveErr, &fail) {
-					_ = mysqlwire.WritePacket(clientConn, seq+1, mysqlwire.ErrPacketState(1105, "HY000", "proxy-monster: "+fail.Message))
-				}
-				return
-			}
-			if denied {
-				reason := "policy"
-				if decision != nil && decision.DenyReason != "" {
-					reason = decision.DenyReason
-				}
-				if err := mysqlwire.WritePacket(clientConn, seq+1, mysqlwire.ErrPacketState(1142, "42000", "proxy-monster denied: "+reason)); err != nil {
+			if batch == nil {
+				if _, _, closed := serve(sql, seq, false); closed {
 					return
 				}
+				continue
+			}
+			// MySQL runs a multi-statement query in order and stops at the first error, keeping what already ran.
+			next := seq
+			for i, statement := range batch {
+				last, stop, closed := serve(statement, next, i < len(batch)-1)
+				if closed {
+					return
+				}
+				if stop {
+					break
+				}
+				next = last
+			}
+
+		case mysqlwire.ComSetOption:
+			// The client's choice decides whether its queries split; the target connection keeps multi-statements
+			// off, so any SQL it runs is one statement the proxy decided.
+			if len(payload) != 3 || (payload[1] != mysqlwire.OptionMultiStatementsOn && payload[1] != mysqlwire.OptionMultiStatementsOff) || payload[2] != 0 {
+				if err := mysqlwire.WritePacket(clientConn, seq+1, mysqlwire.ErrPacketState(1047, "08S01", "proxy-monster: unknown COM_SET_OPTION")); err != nil {
+					return
+				}
+				continue
+			}
+			result, err := relaySingleResponse(clientConn, targetDbConn, seq, []byte{mysqlwire.ComSetOption, mysqlwire.OptionMultiStatementsOff, 0}, errRedactor(qe))
+			if err != nil {
+				return
+			}
+			if result.ok {
+				multiStatements = payload[1] == mysqlwire.OptionMultiStatementsOn
 			}
 
 		case mysqlwire.ComInitDB:
@@ -449,7 +503,7 @@ func (s *Server) handleConn(clientConn net.Conn) {
 			if err := mysqlwire.WritePacket(targetDbConn, 0, payload); err != nil {
 				return
 			}
-			ok, stats, err := relayQueryResponseTracked(clientConn, targetDbConn, deprecateEOF, nil, errRedactor(qe), proceed.Decision, cancelQuery)
+			ok, stats, _, err := relayQueryResponseTracked(clientConn, targetDbConn, deprecateEOF, nil, errRedactor(qe), proceed.Decision, cancelQuery, 0, false)
 			// Post-relay, best-effort completion for this binary-protocol EXECUTE (no-op if unaudited).
 			qe.AwaitCompletion(engine.EmitCompletion(s.client, proceed.Decision, stats, engine.RelayStatus(ok, err), start))
 			if err != nil {
@@ -587,6 +641,14 @@ func executeSingleResponse(targetDb net.Conn, seq byte, payload []byte) (singleR
 			return singleResponse{}, err
 		}
 		result.ok = true
+	case 0xfe:
+		// COM_SET_OPTION answers with an EOF packet, or an OK packet under CLIENT_DEPRECATE_EOF.
+		if len(response) >= 9 {
+			if result.payload, _, result.schema, _, err = normalizeTargetDbOK(response); err != nil {
+				return singleResponse{}, err
+			}
+		}
+		result.ok = true
 	case 0xff:
 		// Preserve the target-DB ERR packet for the frontend.
 	default:
@@ -618,4 +680,34 @@ func mysqlNamespace(schema string) []string {
 		return []string{}
 	}
 	return []string{schema}
+}
+
+// splitBatch cuts a multi-statement query into its statements when the client enabled them, or returns nil
+// to serve sql as one, which the analyzer denies if it holds several.
+func splitBatch(enabled bool, sql, version string, observe func() (engine.SessionObservation, error)) []string {
+	if !enabled || !strings.Contains(strings.TrimRight(sql, "; \t\r\n"), ";") {
+		return nil
+	}
+	session, err := observe()
+	if err != nil {
+		return nil
+	}
+	batch, ok := probe.SplitBatch(sql, &enginepb.EngineConfig{
+		Engine:                   enginepb.Engine_MYSQL,
+		EngineVersion:            version,
+		MysqlLowerCaseTableNames: proto.Int32(0),
+		Session:                  session.SessionObservation,
+	})
+	if !ok || len(batch) < 2 {
+		return nil
+	}
+	statements := make([]string, len(batch))
+	for i, statement := range batch {
+		// MySQL stops at an empty statement, which the split would skip and run what follows.
+		if statement.AfterEmpty {
+			return nil
+		}
+		statements[i] = statement.SQL
+	}
+	return statements
 }

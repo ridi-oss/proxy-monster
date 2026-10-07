@@ -199,5 +199,10 @@
   "menu.checkUpdates": "Check for Updates…",
   "menu.installUpdate": "Install Update {version}",
   "confirm.update": "Install the update?",
-  "confirm.updateButton": "Install"
+  "confirm.updateButton": "Install",
+  "s.general.updates": "Update Automatically",
+  "s.general.updatesDesc": "Download new versions as they come out, and install them when no database connection is open.",
+  "s.general.updatesManaged": "Your organization manages this setting.",
+  "s.general.updatesHint": "Proxy Monster restarts itself to finish an update.",
+  "s.btn.checkUpdates": "Check Now"
 }

@@ -21,6 +21,10 @@ import (
 var version = "dev"
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "--preferences" {
+		runPreferences(len(os.Args) > 2 && os.Args[2] == "--add")
+		return
+	}
 	// A menu-bar app has no terminal, so this is only for `pmontray --version` from a shell.
 	if len(os.Args) > 1 && (os.Args[1] == "--version" || os.Args[1] == "-v") {
 		fmt.Println("pmontray", version)

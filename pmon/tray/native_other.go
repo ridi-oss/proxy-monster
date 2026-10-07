@@ -12,8 +12,10 @@ func loginItem() (on, supported bool) { return false, false }
 
 func setLoginItem(bool) error { return errors.New("Open at Login is not supported on this platform") }
 
-var prefs = map[string]bool{}
+func activatePid(int) {}
 
-func prefBool(key string) bool { return prefs[key] }
+var fakePrefs = map[string]bool{}
 
-func setPrefBool(key string, v bool) { prefs[key] = v }
+func prefBool(key string) bool { return fakePrefs[key] }
+
+func setPrefBool(key string, v bool) { fakePrefs[key] = v }

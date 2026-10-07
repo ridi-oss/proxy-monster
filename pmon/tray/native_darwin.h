@@ -10,3 +10,4 @@ int pm_login_item_status(void);
 char *pm_set_login_item(bool on);
 bool pm_pref_bool(const char *key);
 void pm_set_pref_bool(const char *key, bool value);
+void pm_activate_pid(int pid);

@@ -24,6 +24,8 @@ const (
 	opLoginItem
 	opQuit
 	opAIApp
+	opPrefs
+	opAddServer
 )
 
 // action is what a click does. Copy actions carry their payload, so a row's label and what it copies are built
@@ -80,7 +82,8 @@ func buildMenu(s *control.Status, v view) []entry {
 		m = append(m, header("The background service is out of date"), separator("sep-restart"),
 			entry{key: "restart", title: "Restart Background Service", act: &action{op: opRestart}})
 	case len(s.Servers) == 0:
-		m = append(m, header("Not connected to a server"))
+		m = append(m, header("Not connected to a server"), separator("sep-add"),
+			entry{key: "addserver", title: "Connect to a Server…", act: &action{op: opAddServer}})
 	default:
 		for _, srv := range s.Servers {
 			m = append(m, serverEntry(s, srv, v))
@@ -96,6 +99,7 @@ func buildMenu(s *control.Status, v view) []entry {
 	if v.loginItemShow {
 		m = append(m, entry{key: "loginitem", title: "Open at Login", checkbox: true, checked: v.loginItemOn, act: &action{op: opLoginItem}})
 	}
+	m = append(m, entry{key: "prefs", title: "Settings…", act: &action{op: opPrefs}})
 	return append(m, entry{key: "quit", title: "Quit Proxy Monster", act: &action{op: opQuit}})
 }
 

@@ -2,7 +2,7 @@ package main
 
 /*
 #cgo CFLAGS: -x objective-c -fobjc-arc
-#cgo LDFLAGS: -framework Foundation -framework UserNotifications -framework ServiceManagement
+#cgo LDFLAGS: -framework AppKit -framework Foundation -framework UserNotifications -framework ServiceManagement
 #include <stdlib.h>
 #include "native_darwin.h"
 */
@@ -58,6 +58,8 @@ func setLoginItem(on bool) error {
 	}
 	return nil
 }
+
+func activatePid(pid int) { C.pm_activate_pid(C.int(pid)) }
 
 func prefBool(key string) bool {
 	k := C.CString(key)

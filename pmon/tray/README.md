@@ -49,6 +49,7 @@ Connect AI Apps                         ›  ✓ Claude Desktop
 2 open connections
 ─────────
 ✓ Open at Login
+Settings…
 Quit Proxy Monster
 ```
 
@@ -66,6 +67,16 @@ when nothing is running.
   filled in, starting the daemon first if none is running. A notification 30
   minutes before a sign-in ends, and one when it has ended, sign in again when
   clicked.
+- **Settings…** opens a window with Servers (add, change an address, remove,
+  sign in and out), AI Apps (a switch per app and server), General (Open at
+  Login) and About (versions). It runs as a second process
+  (`pmontray --preferences`) because the systray owns the menu-bar process's
+  main thread. The page (`prefs.html`) runs in a system web view and uses the
+  console's look: its tokens and the Geist fonts, embedded in the app (`fonts/`,
+  SIL Open Font License). It calls Go through one asynchronous `pmCall`, since
+  several calls take seconds. Opened in a browser on its own, the page runs on
+  demo data, for design review. With no servers, the menu offers **Connect to a
+  Server…**, which opens it at Add.
 - **Connect AI Apps** adds or removes `pmon mcp <server>` in Claude Desktop (its
   `claude_desktop_config.json`, other settings untouched), Claude Code
   (`claude mcp add --scope user`) and Codex (`codex mcp add`), listing only the

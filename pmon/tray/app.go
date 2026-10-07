@@ -53,6 +53,7 @@ type app struct {
 	ai        []aiState
 	aiServers string
 	aiMu      sync.Mutex // one AI-settings read at a time
+	prefsPid  int        // the Preferences window's process, while open
 
 	errMu  sync.Mutex
 	err    error

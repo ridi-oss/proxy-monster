@@ -43,8 +43,9 @@ for arch in $ARCHS; do
     # The systray is cgo; clang targets the slice's arch, so one host builds every slice.
     clang_arch="$arch"
     [ "$arch" = amd64 ] && clang_arch=x86_64
-    GOWORK=off CGO_ENABLED=1 GOOS=darwin GOARCH="$arch" CC="clang -arch $clang_arch" \
-        CGO_CFLAGS="-O2 -g -mmacosx-version-min=$MIN_MACOS" CGO_LDFLAGS="-mmacosx-version-min=$MIN_MACOS" \
+    GOWORK=off CGO_ENABLED=1 GOOS=darwin GOARCH="$arch" CC="clang -arch $clang_arch" CXX="clang++ -arch $clang_arch" \
+        CGO_CFLAGS="-O2 -g -mmacosx-version-min=$MIN_MACOS" CGO_CXXFLAGS="-O2 -g -mmacosx-version-min=$MIN_MACOS" \
+        CGO_LDFLAGS="-mmacosx-version-min=$MIN_MACOS" \
         go build -trimpath -ldflags "-s -w -X main.version=$VERSION" -o "$WORK/pmontray-$arch" .
     pmon_slices+=("$WORK/pmon-$arch")
     tray_slices+=("$WORK/pmontray-$arch")

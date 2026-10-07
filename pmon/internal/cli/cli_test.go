@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -30,6 +31,9 @@ import (
 func buildPmon(t *testing.T) string {
 	t.Helper()
 	bin := filepath.Join(t.TempDir(), "pmon")
+	if runtime.GOOS == "windows" {
+		bin += ".exe"
+	}
 	args := []string{"build", "-o", bin}
 	if raceEnabled {
 		args = append(args, "-race")

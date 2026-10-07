@@ -79,6 +79,8 @@
   "confirm.signOutButton": "로그아웃",
   "confirm.restart": "다시 시작할까요?",
   "confirm.restartButton": "다시 시작",
+  "confirm.claudeRestart": "Claude Desktop을 다시 시작할까요?",
+  "confirm.claudeRestartBody": "변경 사항을 적용하려면 Claude Desktop을 다시 시작합니다. 보내지 않은 메시지는 사라집니다.",
   "confirm.quit": "종료할까요?",
   "confirm.quitButton": "종료",
   "confirm.remove": "{name} 서버를 제거할까요?",

@@ -79,6 +79,8 @@
   "confirm.signOutButton": "Sign Out",
   "confirm.restart": "Restart?",
   "confirm.restartButton": "Restart",
+  "confirm.claudeRestart": "Restart Claude Desktop?",
+  "confirm.claudeRestartBody": "Claude Desktop restarts to pick up the change. A message you have not sent in it is lost.",
   "confirm.quit": "Quit?",
   "confirm.quitButton": "Quit",
   "confirm.remove": "Remove {name}?",

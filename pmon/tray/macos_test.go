@@ -82,27 +82,19 @@ func TestConfirmParsingIsFailClosed(t *testing.T) {
 	}
 }
 
-// TestExpiryTextTellsTheUserWhatMatters: the menu's job is answering "is my saved connection about to break",
-// so an expired or unparseable token must read as such rather than as a silent blank.
-func TestExpiryTextTellsTheUserWhatMatters(t *testing.T) {
-	tests := []struct {
-		name string
-		ts   string
+func TestTimeLeft(t *testing.T) {
+	for _, tc := range []struct {
+		d    time.Duration
 		want string
 	}{
-		{"empty", "", "expiry unknown"},
-		{"garbage", "not-a-timestamp", "expiry unknown"},
-		{"past", time.Now().Add(-time.Minute).Format(time.RFC3339), "token EXPIRED"},
-	}
-	for _, tc := range tests {
-		if got := expiryText(tc.ts); got != tc.want {
-			t.Errorf("%s: expiryText(%q) = %q, want %q", tc.name, tc.ts, got, tc.want)
+		{-time.Minute, "ended"},
+		{0, "ended"},
+		{20 * time.Second, "1 min left"},
+		{24 * time.Minute, "24 min left"},
+		{90 * time.Minute, "1h 30m left"},
+	} {
+		if got := timeLeft(tc.d); got != tc.want {
+			t.Errorf("timeLeft(%v) = %q, want %q", tc.d, got, tc.want)
 		}
-	}
-	if got := expiryText(time.Now().Add(90 * time.Minute).Format(time.RFC3339)); !strings.Contains(got, "1h") {
-		t.Errorf("expiryText for 90m = %q, want it to mention 1h", got)
-	}
-	if got := expiryText(time.Now().Add(20 * time.Minute).Format(time.RFC3339)); !strings.HasSuffix(got, "m left") {
-		t.Errorf("expiryText for 20m = %q, want minutes", got)
 	}
 }

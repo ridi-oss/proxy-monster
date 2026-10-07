@@ -17,9 +17,33 @@ const confirmDialogTimeout = 60 * time.Second
 
 // notify posts a user notification. Failures are ignored: this is a courtesy channel, and the menu itself is
 // the authoritative display.
-func notify(title, message string) {
+// confirm is the yes/no dialog every action that drops connections or changes a server asks through;
+// a variable so tests can answer it.
+var confirm = confirmDialog
+
+// notify is a variable so tests can keep notifications off the screen.
+var notify = func(title, message string) { notifyAction("", title, message, "") }
+
+// notifyAction posts a notification; clicking it hands key to onNotificationClick. A notification with the same
+// id replaces the previous one. Outside a bundled app it falls back to osascript, whose notifications are not
+// clickable.
+func notifyAction(id, title, message, key string) {
+	if id == "" {
+		id = fmt.Sprintf("n-%d", time.Now().UnixNano())
+	}
+	if postNative(id, title, message, key) {
+		return
+	}
 	script := fmt.Sprintf("display notification %s with title %s", osaQuote(message), osaQuote(title))
 	_ = exec.Command("osascript", "-e", script).Run()
+}
+
+// openURL opens an http(s) link in the default browser.
+func openURL(u string) error {
+	if !strings.HasPrefix(u, "https://") && !strings.HasPrefix(u, "http://") {
+		return fmt.Errorf("not a web link: %q", u)
+	}
+	return exec.Command("open", u).Run()
 }
 
 // confirmDialog asks a modal yes/no question and reports whether the user confirmed.

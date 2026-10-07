@@ -94,13 +94,12 @@ PLIST
 
 # Finder/Login-Items icon. CFBundleIconFile names "icon", so macOS looks for Resources/icon.icns; without it the
 # bundle shows a generic icon in Login Items. The menu-bar icon is separate (embedded in the binary).
-cp icon.png "$APP/Contents/Resources/icon.png"
 if command -v iconutil >/dev/null 2>&1 && command -v sips >/dev/null 2>&1; then
     ICONSET="$WORK/icon.iconset"
     mkdir -p "$ICONSET"
     for size in 16 32 128 256 512; do
-        sips -z $size $size icon.png --out "$ICONSET/icon_${size}x${size}.png" >/dev/null 2>&1 || true
-        sips -z $((size*2)) $((size*2)) icon.png --out "$ICONSET/icon_${size}x${size}@2x.png" >/dev/null 2>&1 || true
+        sips -z $size $size app-icon.png --out "$ICONSET/icon_${size}x${size}.png" >/dev/null 2>&1 || true
+        sips -z $((size*2)) $((size*2)) app-icon.png --out "$ICONSET/icon_${size}x${size}@2x.png" >/dev/null 2>&1 || true
     done
     iconutil -c icns "$ICONSET" -o "$APP/Contents/Resources/icon.icns" 2>/dev/null || \
         echo "note: icns generation failed; the bundle will show a generic Finder icon"

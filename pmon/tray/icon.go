@@ -1,17 +1,130 @@
 package main
 
-// trayIcon is the menu-bar icon: a 22x22 shield with a keyhole, black + alpha only so macOS treats it as a
-// TEMPLATE image and renders it correctly in both light and dark menu bars (and inverted when selected).
-// Embedded rather than loaded from disk — a menu-bar app must not depend on finding a file at runtime.
-var trayIcon = []byte{
-	0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48,
-	0x44, 0x52, 0x00, 0x00, 0x00, 0x16, 0x00, 0x00, 0x00, 0x16, 0x08, 0x06, 0x00, 0x00,
-	0x00, 0xc4, 0xb4, 0x6c, 0x3b, 0x00, 0x00, 0x00, 0x4c, 0x49, 0x44, 0x41, 0x54, 0x78,
-	0xda, 0x63, 0x60, 0x18, 0xea, 0xe0, 0x3f, 0x85, 0x78, 0xe0, 0x0c, 0x26, 0xd7, 0xa7,
-	0x23, 0xc0, 0x60, 0x42, 0x61, 0x49, 0x96, 0xc1, 0xc4, 0x44, 0xd4, 0x30, 0x34, 0x98,
-	0x81, 0x8c, 0x70, 0x24, 0x29, 0xc2, 0x49, 0x35, 0x98, 0x7a, 0xc9, 0x87, 0x92, 0xe4,
-	0x49, 0x48, 0x13, 0xb9, 0x69, 0x9e, 0xa0, 0x37, 0xff, 0x53, 0xa3, 0xc4, 0xa3, 0xba,
-	0xa1, 0x34, 0x35, 0x18, 0xdd, 0x20, 0xaa, 0x19, 0x4a, 0x95, 0xc8, 0x1a, 0xfc, 0x00,
-	0x00, 0x60, 0xe7, 0x6d, 0x93, 0xd4, 0x5c, 0x91, 0x98, 0x00, 0x00, 0x00, 0x00, 0x49,
-	0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
+import (
+	"bytes"
+	_ "embed"
+	"image"
+	"image/color"
+	"image/png"
+	"math"
+)
+
+// trayIcon is the menu-bar icon: the console's shield mark, black + alpha only so macOS treats it as a TEMPLATE
+// image and renders it correctly in both light and dark menu bars (and inverted when selected). It is 32px
+// because systray shows it at 16pt, which is 32px on a Retina display. Embedded rather than loaded from disk —
+// a menu-bar app must not depend on finding a file at runtime.
+//
+//go:embed tray-icon.png
+var trayIcon []byte
+
+// iconState is what the menu-bar icon says at a glance. A template image has one color, so each state is a
+// shape on the shield, never a tint.
+type iconState int
+
+const (
+	iconIdle      iconState = iota // no server, or no daemon: the shield faded
+	iconSignedIn                   // the plain shield
+	iconExpiring                   // a clock badge: a sign-in ends soon
+	iconSignedOut                  // a slash: a configured server is signed out
+	iconBusy                       // three dots: a browser sign-in is open
+)
+
+var stateIcons = buildStateIcons()
+
+func buildStateIcons() map[iconState][]byte {
+	base, err := png.Decode(bytes.NewReader(trayIcon))
+	if err != nil {
+		panic(err)
+	}
+	icons := map[iconState][]byte{iconSignedIn: trayIcon}
+	for state, draw := range map[iconState]func(*image.NRGBA){
+		iconIdle:      func(m *image.NRGBA) { fade(m, 0.35) },
+		iconExpiring:  drawClockBadge,
+		iconSignedOut: func(m *image.NRGBA) { fade(m, 0.55); drawSlash(m) },
+		iconBusy:      func(m *image.NRGBA) { fade(m, 0.75); drawDots(m) },
+	} {
+		m := image.NewNRGBA(base.Bounds())
+		for y := range m.Bounds().Dy() {
+			for x := range m.Bounds().Dx() {
+				m.Set(x, y, base.At(x, y))
+			}
+		}
+		draw(m)
+		var buf bytes.Buffer
+		if err := png.Encode(&buf, m); err != nil {
+			panic(err)
+		}
+		icons[state] = buf.Bytes()
+	}
+	return icons
+}
+
+func alphaAt(m *image.NRGBA, x, y int) uint8 { return m.NRGBAAt(x, y).A }
+
+func setAlpha(m *image.NRGBA, x, y int, a uint8) {
+	if image.Pt(x, y).In(m.Bounds()) {
+		m.SetNRGBA(x, y, color.NRGBA{A: a})
+	}
+}
+
+func fade(m *image.NRGBA, f float64) {
+	for y := range m.Bounds().Dy() {
+		for x := range m.Bounds().Dx() {
+			setAlpha(m, x, y, uint8(float64(alphaAt(m, x, y))*f))
+		}
+	}
+}
+
+// drawClockBadge cuts a ring of clear space at the bottom-right corner and draws a small clock in it, so the
+// badge reads against the shield behind it.
+func drawClockBadge(m *image.NRGBA) {
+	const cx, cy, r = 24.0, 24.0, 7.0
+	for y := 14; y < 32; y++ {
+		for x := 14; x < 32; x++ {
+			px, py := float64(x)+0.5, float64(y)+0.5
+			d := math.Hypot(px-cx, py-cy)
+			hand := (math.Abs(px-cx) < 0.9 && py <= cy && py > cy-4.5) || (math.Abs(py-cy) < 0.9 && px >= cx && px < cx+3.5)
+			switch {
+			case d <= r-1.8 && !hand:
+				setAlpha(m, x, y, 0)
+			case d <= r:
+				setAlpha(m, x, y, 255)
+			case d <= r+1.6:
+				setAlpha(m, x, y, 0)
+			}
+		}
+	}
+}
+
+// drawSlash strikes the shield from bottom-left to top-right, with a clear edge so it reads over the strokes.
+func drawSlash(m *image.NRGBA) {
+	for y := 0; y < 32; y++ {
+		for x := 0; x < 32; x++ {
+			d := math.Abs(float64(x)+float64(y)+1-32) / math.Sqrt2
+			switch {
+			case d < 1.3 && x > 2 && x < 29:
+				setAlpha(m, x, y, 255)
+			case d < 2.8:
+				setAlpha(m, x, y, 0)
+			}
+		}
+	}
+}
+
+// drawDots clears a strip along the bottom-right and draws three dots in it.
+func drawDots(m *image.NRGBA) {
+	for y := 23; y < 32; y++ {
+		for x := 12; x < 32; x++ {
+			setAlpha(m, x, y, 0)
+		}
+	}
+	for _, cx := range []float64{16.5, 22.5, 28.5} {
+		for y := 24; y < 31; y++ {
+			for x := 12; x < 32; x++ {
+				if math.Hypot(float64(x)+0.5-cx, float64(y)+0.5-27.5) <= 2.1 {
+					setAlpha(m, x, y, 255)
+				}
+			}
+		}
+	}
 }

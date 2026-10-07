@@ -31,6 +31,8 @@ func main() {
 	defer cancel()
 
 	app := newApp(ctx)
+	// Set before the run loop starts: a click on a notification can launch the app and arrive at once.
+	onNotificationClick = app.notificationClicked
 	// systray.Run takes over the main thread (a macOS UI requirement) and calls onReady on it.
 	systray.Run(app.onReady, app.onExit)
 	if err := app.exitErr(); err != nil {

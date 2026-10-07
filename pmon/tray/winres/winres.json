@@ -1,0 +1,25 @@
+{
+  "RT_GROUP_ICON": {
+    "#1": {
+      "0000": "../windows/app-icon.ico"
+    }
+  },
+  "RT_VERSION": {
+    "#1": {
+      "0000": {
+        "fixed": {
+          "file_version": "0.0.0.0",
+          "product_version": "0.0.0.0"
+        },
+        "info": {
+          "0409": {
+            "CompanyName": "RIDI",
+            "FileDescription": "Proxy Monster Desktop",
+            "ProductName": "Proxy Monster Desktop",
+            "OriginalFilename": "pmontray.exe"
+          }
+        }
+      }
+    }
+  }
+}

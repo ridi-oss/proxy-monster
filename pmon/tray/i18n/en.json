@@ -52,7 +52,7 @@
   "n.signedIn": "Signed in",
   "n.signedInBody": "Signed in to {server} as {principal}.",
   "n.signOutFailed": "Sign-out failed",
-  "n.signedOutLocal": "Signed out on this Mac",
+  "n.signedOutLocal": "Signed out on this computer",
   "n.signedOutLocalBody": "The server could not end the {server} sign-in. It ends on its own when it expires.",
   "n.restartFailed": "Couldn't restart",
   "n.loginItemFailed": "Couldn't change Open at Login",
@@ -166,7 +166,7 @@
   "s.toast.aiAdded": "Added {server} to {app}. {after}",
   "s.toast.aiRemoved": "Removed {server} from {app}",
   "s.ai.title": "AI Apps",
-  "s.ai.desc": "Let an AI app on this Mac query the datasources you can access. It signs in as you, so masking and approvals still apply.",
+  "s.ai.desc": "Let an AI app on this computer query the datasources you can access. It signs in as you, so masking and approvals still apply.",
   "s.ai.appDesc": "Query your datasources from {app}, with your access.",
   "s.ai.connected": "Connected",
   "s.ai.notConnected": "Not connected",
@@ -206,5 +206,10 @@
   "s.general.updatesDesc": "Download new versions as they come out, and install them when no database connection is open.",
   "s.general.updatesManaged": "Your organization manages this setting.",
   "s.general.updatesHint": "Proxy Monster restarts itself to finish an update.",
-  "s.btn.checkUpdates": "Check Now"
+  "s.btn.checkUpdates": "Check Now",
+  "s.webviewMissing": "Settings needs the Microsoft Edge WebView2 Runtime, which is not installed or could not start. Open its download page?",
+  "s.general.loginDesc.windows": "Start Proxy Monster when you sign in to Windows, so your sign-in status is always in the notification area.",
+  "s.general.appearanceDesc.windows": "Applies to this window. The notification-area menu follows Windows.",
+  "s.general.notificationsHint.windows": "Change how they appear in Windows Settings › System › Notifications.",
+  "ai.after.claude-desktop.windows": "Claude Desktop can use it now."
 }

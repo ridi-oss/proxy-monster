@@ -52,7 +52,7 @@
   "n.signedIn": "로그인됨",
   "n.signedInBody": "{principal} 계정으로 {server}에 로그인했습니다.",
   "n.signOutFailed": "로그아웃하지 못했습니다",
-  "n.signedOutLocal": "이 Mac에서 로그아웃했습니다",
+  "n.signedOutLocal": "이 컴퓨터에서 로그아웃했습니다",
   "n.signedOutLocalBody": "{server} 로그인은 서버에서 종료하지 못했습니다. 만료되면 자동으로 종료됩니다.",
   "n.restartFailed": "다시 시작하지 못했습니다",
   "n.loginItemFailed": "로그인 시 열기를 바꾸지 못했습니다",
@@ -166,7 +166,7 @@
   "s.toast.aiAdded": "{server} 서버를 {app}에 추가했습니다. {after}",
   "s.toast.aiRemoved": "{server} 서버를 {app}에서 제거했습니다",
   "s.ai.title": "AI 앱",
-  "s.ai.desc": "이 Mac의 AI 앱에서 접근 권한이 있는 데이터소스를 조회할 수 있습니다. 현재 사용자 계정으로 로그인하므로 마스킹과 승인도 그대로 적용됩니다.",
+  "s.ai.desc": "이 컴퓨터의 AI 앱에서 접근 권한이 있는 데이터소스를 조회할 수 있습니다. 현재 사용자 계정으로 로그인하므로 마스킹과 승인도 그대로 적용됩니다.",
   "s.ai.appDesc": "{app}에서 현재 사용자 권한으로 데이터소스를 조회합니다.",
   "s.ai.connected": "연결됨",
   "s.ai.notConnected": "연결 안 됨",
@@ -206,5 +206,10 @@
   "s.general.updatesDesc": "새 버전이 나오면 내려받아 두었다가, 열린 데이터베이스 연결이 없을 때 설치합니다.",
   "s.general.updatesManaged": "조직에서 관리하는 설정입니다.",
   "s.general.updatesHint": "업데이트를 마치려면 Proxy Monster가 스스로 다시 시작합니다.",
-  "s.btn.checkUpdates": "지금 확인"
+  "s.btn.checkUpdates": "지금 확인",
+  "s.webviewMissing": "설정 창에는 Microsoft Edge WebView2 런타임이 필요한데, 설치되어 있지 않거나 시작하지 못했습니다. 다운로드 페이지를 열까요?",
+  "s.general.loginDesc.windows": "Windows에 로그인하면 Proxy Monster를 시작해, 알림 영역에서 항상 로그인 상태를 볼 수 있습니다.",
+  "s.general.appearanceDesc.windows": "이 창에 적용됩니다. 알림 영역 메뉴는 Windows 설정을 따릅니다.",
+  "s.general.notificationsHint.windows": "표시 방식은 Windows 설정 › 시스템 › 알림에서 바꿀 수 있습니다.",
+  "ai.after.claude-desktop.windows": "이제 Claude Desktop에서 쓸 수 있습니다."
 }

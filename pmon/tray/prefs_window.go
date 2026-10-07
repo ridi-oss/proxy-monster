@@ -1,4 +1,4 @@
-//go:build darwin
+//go:build darwin || windows
 
 package main
 
@@ -13,11 +13,24 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	webview "github.com/webview/webview_go"
+	"unsafe"
 
 	"github.com/ridi-oss/proxy-monster/pmon/control"
 )
+
+// webView is what the window needs from webview_go (macOS) and go-webview2 (Windows), which share this API.
+type webView interface {
+	SetTitle(string)
+	Window() unsafe.Pointer
+	Bind(name string, f interface{}) error
+	Init(js string)
+	SetHtml(html string)
+	Dispatch(f func())
+	Eval(js string)
+	Terminate()
+	Run()
+	Destroy()
+}
 
 //go:embed prefs.html
 var prefsHTML string
@@ -47,10 +60,12 @@ func i18nScript() string {
 // answers asynchronously: a binding runs on the UI thread, and several calls (an AI app's CLI, a sign-out
 // confirmation) take seconds.
 func runPreferences(add bool) {
+	w := newWebView(T("s.title"), 800, 560)
+	if w == nil {
+		webViewMissing()
+		return
+	}
 	ctx, cancel := context.WithCancel(context.Background())
-	w := webview.New(false)
-	w.SetTitle(T("s.title"))
-	w.SetSize(800, 560, webview.HintNone)
 
 	// Background goroutines reach the page through eval; once the window closes, closed stops them from
 	// dispatching into a web view that is about to be destroyed.
@@ -115,8 +130,11 @@ func runPreferences(add bool) {
 	go func() {
 		lines := bufio.NewScanner(os.Stdin)
 		for lines.Scan() && lines.Text() != "quit" {
-			if lines.Text() == "add" {
+			switch lines.Text() {
+			case "add":
 				eval("window.pmOpenAdd && window.pmOpenAdd()")
+			case "show":
+				raiseWindow(w.Window())
 			}
 		}
 		mu.Lock()

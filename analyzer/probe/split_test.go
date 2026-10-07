@@ -372,3 +372,20 @@ func TestSplitStatementsHonorsAnsiQuotes(t *testing.T) {
 		t.Fatalf("default mode = %q, want one statement (the `\"…\"` is a literal there)", plain)
 	}
 }
+
+func TestSplitBatchMarksStatementsThatMayControlTheTransaction(t *testing.T) {
+	batch, ok := SplitBatch("BEGIN ISOLATION LEVEL SERIALIZABLE; INSERT INTO t VALUES (1); SAVEPOINT a; RELEASE a; "+
+		"SET TRANSACTION READ ONLY; SET LOCAL app.x = '1'; COMMIT AND CHAIN; END; ROLLBACK; SELECT 1; "+
+		"ABORT; ABORT AND CHAIN; ABORT WORK; CREATE FUNCTION f() RETURNS int LANGUAGE sql AS $$ SELECT 1 $$; DO $$ BEGIN END $$", postgresSplitConfig())
+	if !ok {
+		t.Fatal("split failed")
+	}
+	var got []bool
+	for _, statement := range batch {
+		got = append(got, statement.MayControlTransaction)
+	}
+	want := []bool{true, false, true, true, true, false, true, true, true, false, true, true, true, false, false}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("transaction control = %v, want %v", got, want)
+	}
+}

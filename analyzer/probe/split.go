@@ -15,6 +15,24 @@ import (
 //	SELECT 'a;b' FROM t; SELECT 2                  ->  ["SELECT 'a;b' FROM t", "SELECT 2"]
 //	CREATE PROCEDURE p() BEGIN a; b; END; SELECT 2  ->  ["CREATE PROCEDURE p() BEGIN a; b; END", "SELECT 2"]
 func SplitStatements(sql string, config *pb.EngineConfig) (statements []string, ok bool) {
+	batch, ok := SplitBatch(sql, config)
+	for _, statement := range batch {
+		statements = append(statements, statement.SQL)
+	}
+	return statements, ok
+}
+
+// BatchStatement is one statement of a split batch.
+type BatchStatement struct {
+	SQL  string
+	Kind pb.StatementKind
+	// BEGIN/START TRANSACTION, COMMIT/END, ROLLBACK, SAVEPOINT/RELEASE, SET TRANSACTION, or a statement
+	// sqlglot-go did not parse as one (PostgreSQL `ABORT` reads as a column), which could be any of them.
+	MayControlTransaction bool
+}
+
+// SplitBatch is SplitStatements that also marks each statement that may control the transaction.
+func SplitBatch(sql string, config *pb.EngineConfig) (statements []BatchStatement, ok bool) {
 	defer func() {
 		if recover() != nil {
 			statements = nil
@@ -39,7 +57,7 @@ func SplitStatements(sql string, config *pb.EngineConfig) (statements []string, 
 		return nil, false
 	}
 
-	out := make([]string, 0, len(parsed))
+	out := make([]BatchStatement, 0, len(parsed))
 	for _, statement := range parsed {
 		// `;;` leaves a nil slot and a bare `;` a Semicolon node — nothing to run, nothing to authorize.
 		if statement == nil || statement.Kind() == exp.KindSemicolon {
@@ -51,7 +69,7 @@ func SplitStatements(sql string, config *pb.EngineConfig) (statements []string, 
 			return nil, false
 		}
 		if trimmed := strings.TrimSpace(text); trimmed != "" {
-			out = append(out, trimmed)
+			out = append(out, BatchStatement{SQL: trimmed, Kind: statementKind(statement, eng), MayControlTransaction: mayControlTransaction(statement, eng)})
 		}
 	}
 	// TODO: PG runs a bare `;` and the wire path relays EmptyQueryResponse; here it denies, since a
@@ -60,4 +78,24 @@ func SplitStatements(sql string, config *pb.EngineConfig) (statements []string, 
 		return nil, false
 	}
 	return out, true
+}
+
+func mayControlTransaction(root exp.Expression, eng engine) bool {
+	kind := statementKind(root, eng)
+	if kind != pb.StatementKind_STATEMENT_KIND_STMT_UNKNOWN {
+		return transactionControlKinds[kind]
+	}
+	switch root.Kind() {
+	case exp.KindCommand, exp.KindCreate, exp.KindAlter, exp.KindDrop:
+		return false
+	}
+	return true
+}
+
+var transactionControlKinds = map[pb.StatementKind]bool{
+	pb.StatementKind_STATEMENT_KIND_START_TRANSACTION: true,
+	pb.StatementKind_STATEMENT_KIND_COMMIT:            true,
+	pb.StatementKind_STATEMENT_KIND_ROLLBACK:          true,
+	pb.StatementKind_STATEMENT_KIND_SAVEPOINT:         true,
+	pb.StatementKind_STATEMENT_KIND_SET_TRANSACTION:   true,
 }

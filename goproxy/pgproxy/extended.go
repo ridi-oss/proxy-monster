@@ -46,7 +46,7 @@ type boundPortal struct {
 func renderExtendedVerdict(sess *session, verdict engine.Verdict) (engine.Proceed, bool, error) {
 	switch verdict := verdict.(type) {
 	case engine.Fail:
-		sess.skipToSync = true
+		sess.skipToSync, sess.abortAtSync = true, true
 		err := sendError(sess.client, "ERROR", "58000", "proxy-monster: "+verdict.Message, false, 0)
 		return engine.Proceed{}, false, err
 	case engine.Deny:
@@ -54,7 +54,7 @@ func renderExtendedVerdict(sess *session, verdict engine.Verdict) (engine.Procee
 		if verdict.Decision != nil && verdict.Decision.DenyReason != "" {
 			reason = verdict.Decision.DenyReason
 		}
-		sess.skipToSync = true
+		sess.skipToSync, sess.abortAtSync = true, true
 		err := sendError(sess.client, "ERROR", "42501", "proxy-monster denied: "+reason, false, 0)
 		return engine.Proceed{}, false, err
 	case engine.Proceed:
@@ -65,7 +65,7 @@ func renderExtendedVerdict(sess *session, verdict engine.Verdict) (engine.Procee
 }
 
 func refuseExtended(sess *session, code, message string) error {
-	sess.skipToSync = true
+	sess.skipToSync, sess.abortAtSync = true, true
 	return sendError(sess.client, "ERROR", code, "proxy-monster: "+message, false, 0)
 }
 
@@ -484,7 +484,7 @@ func (s *Server) relayExecuteStream(sess *session, masks []*pb.ColumnMask, stats
 		case *pgproto3.CommandComplete, *pgproto3.EmptyQueryResponse, *pgproto3.PortalSuspended:
 			if capped != nil {
 				sess.client.Send(capped)
-				sess.skipToSync = true
+				sess.skipToSync, sess.abortAtSync = true, true
 				return capped, sess.client.Flush()
 			}
 			sess.client.Send(message)
@@ -492,7 +492,7 @@ func (s *Server) relayExecuteStream(sess *session, masks []*pb.ColumnMask, stats
 		case *pgproto3.ErrorResponse:
 			if capped != nil {
 				sess.client.Send(capped)
-				sess.skipToSync = true
+				sess.skipToSync, sess.abortAtSync = true, true
 				return capped, sess.client.Flush()
 			}
 			forwardError(sess, message)
@@ -569,7 +569,13 @@ func (s *Server) handleSync(sess *session) error {
 			sess.client.Send(&pgproto3.NotificationResponse{PID: message.PID, Channel: message.Channel, Payload: message.Payload})
 		case *pgproto3.ReadyForQuery:
 			sess.lastTxStatus = message.TxStatus
-			sess.client.Send(message)
+			if sess.abortAtSync {
+				sess.abortAtSync = false
+				if err := abortTransaction(sess); err != nil {
+					return closeRelay(sess, err)
+				}
+			}
+			sess.client.Send(&pgproto3.ReadyForQuery{TxStatus: sess.lastTxStatus})
 			sess.pendingDirty = true
 			sess.skipToSync = false
 			if err := sess.client.Flush(); err != nil {

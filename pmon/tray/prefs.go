@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os/exec"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -64,9 +65,13 @@ type prefs struct {
 	changed     func()
 	pmonVersion string
 	// window is the native window, so a theme change also restyles its title bar; nil in tests.
-	window    unsafe.Pointer
+	window unsafe.Pointer
+	// retitle sets the window title in the current language; nil in tests.
+	retitle   func()
 	mu        sync.Mutex
 	signingIn map[string]bool
+	// aiMu runs one AI-app read or change at a time: each is several CLI calls on the same config files.
+	aiMu sync.Mutex
 }
 
 func (p *prefs) busy(name string) bool {
@@ -127,19 +132,22 @@ func (p *prefs) state() prefsState {
 // clockLabel names a time the way the window shows it: "Today 14:16", "Tomorrow 09:40", or a date.
 func clockLabel(t, now time.Time) string {
 	t, now = t.Local(), now.Local()
-	day := func(x time.Time) time.Time { return time.Date(x.Year(), x.Month(), x.Day(), 0, 0, 0, 0, x.Location()) }
-	switch day(t).Sub(day(now)) {
-	case 0:
-		return T("time.today", "time", t.Format("15:04"))
-	case 24 * time.Hour:
-		return T("time.tomorrow", "time", t.Format("15:04"))
+	sameDay := func(a, b time.Time) bool { return a.Year() == b.Year() && a.YearDay() == b.YearDay() }
+	clock := t.Format("15:04")
+	switch {
+	case sameDay(t, now):
+		return T("time.today", "time", clock)
+	case sameDay(t, now.AddDate(0, 0, 1)):
+		return T("time.tomorrow", "time", clock)
 	}
-	return t.Format("Jan 2 15:04")
+	return T("time.date", "month", strconv.Itoa(int(t.Month())), "monthName", t.Format("Jan"), "day", strconv.Itoa(t.Day()), "time", clock)
 }
 
 // aiState reads which servers each installed AI app uses. It runs the apps' CLIs, so the page asks for it
 // separately and shows a placeholder meanwhile.
 func (p *prefs) aiState() []prefsAIApp {
+	p.aiMu.Lock()
+	defer p.aiMu.Unlock()
 	st := p.state()
 	out := []prefsAIApp{}
 	pmon := bundledPmon()
@@ -157,6 +165,8 @@ func (p *prefs) aiState() []prefsAIApp {
 }
 
 func (p *prefs) aiToggle(id, server string, on bool) string {
+	p.aiMu.Lock()
+	defer p.aiMu.Unlock()
 	for _, app := range aiApps() {
 		if app.id != id {
 			continue
@@ -176,6 +186,9 @@ func (p *prefs) setLanguage(l string) string {
 		return "unknown language " + l
 	}
 	setPrefString(prefLanguage, l)
+	if p.retitle != nil {
+		p.retitle()
+	}
 	return ""
 }
 
@@ -199,7 +212,7 @@ func (p *prefs) handlers() map[string]func(args []json.RawMessage) (any, error) 
 		}
 		return v, json.Unmarshal(args[i], &v)
 	}
-	one := func(f func(string) string) func([]json.RawMessage) (any, error) {
+	one := func(f func(string) any) func([]json.RawMessage) (any, error) {
 		return func(args []json.RawMessage) (any, error) {
 			a, err := str(args, 0)
 			if err != nil {
@@ -212,12 +225,13 @@ func (p *prefs) handlers() map[string]func(args []json.RawMessage) (any, error) 
 		"state":        func([]json.RawMessage) (any, error) { return p.state(), nil },
 		"aiState":      func([]json.RawMessage) (any, error) { return p.aiState(), nil },
 		"start":        func([]json.RawMessage) (any, error) { return p.start(), nil },
-		"signIn":       one(p.signIn),
+		"restart":      func([]json.RawMessage) (any, error) { return p.restart(), nil },
+		"signIn":       one(func(n string) any { return p.signIn(n) }),
 		"signOut":      one(p.signOut),
 		"removeServer": one(p.removeServer),
-		"openLink":     one(p.openLink),
-		"setLanguage":  one(p.setLanguage),
-		"setTheme":     one(p.setTheme),
+		"openLink":     one(func(u string) any { return p.openLink(u) }),
+		"setLanguage":  one(func(l string) any { return p.setLanguage(l) }),
+		"setTheme":     one(func(t string) any { return p.setTheme(t) }),
 		"setServer": func(args []json.RawMessage) (any, error) {
 			name, err := str(args, 0)
 			if err != nil {
@@ -263,27 +277,44 @@ func errText(err error) string {
 }
 
 // setServer adds a server, or changes an existing one's address (which signs it out).
-func (p *prefs) setServer(name, url string) string {
+// A handler's result tells the page what happened: "" is success, a string is an error, nil means the user
+// declined a confirmation (the page shows nothing), and a warning is success with something to point out.
+type warning struct {
+	Warn string `json:"warn"`
+}
+
+// notEnded is the warning for a login the server could not end, which stays valid until it expires.
+func notEnded(server string) any { return warning{T("n.signedOutLocalBody", "server", server)} }
+
+// setServer adds a server, or changes an existing one's address (which signs it out).
+func (p *prefs) setServer(name, url string) any {
 	client, err := control.EnsureDaemon(p.ctx)
 	if err != nil {
 		return errText(err)
 	}
-	_, err = client.SetServer(p.ctx, control.SetServerRequest{Name: name, ControlPlane: url})
+	res, err := client.SetServer(p.ctx, control.SetServerRequest{Name: name, ControlPlane: url})
+	if err == nil && res.NotEndedOnServer {
+		return notEnded(name)
+	}
 	return errText(err)
 }
 
-// errCanceled is what a binding returns when the user declined a confirmation: the page shows nothing.
-const errCanceled = ""
-
-func (p *prefs) removeServer(name string) string {
+func (p *prefs) removeServer(name string) any {
 	client, err := control.Connect(p.ctx)
 	if err != nil {
 		return errText(err)
 	}
-	if !confirmDrop(p.ctx, "remove", name) {
-		return errCanceled
+	body := T("confirm.removeBody")
+	if n := liveConns(p.ctx, name); n > 0 {
+		body += "\n" + Tn("confirm.conns", n)
 	}
-	_, err = client.UnsetServer(p.ctx, control.UnsetServerRequest{Name: name})
+	if !confirm(T("confirm.remove", "name", name), body, T("confirm.removeButton")) {
+		return nil
+	}
+	notEndedOn, err := client.UnsetServer(p.ctx, control.UnsetServerRequest{Name: name})
+	if err == nil && len(notEndedOn) > 0 {
+		return notEnded(name)
+	}
 	return errText(err)
 }
 
@@ -307,15 +338,30 @@ func (p *prefs) signIn(name string) string {
 	return ""
 }
 
-func (p *prefs) signOut(name string) string {
+func (p *prefs) signOut(name string) any {
 	client, err := control.Connect(p.ctx)
 	if err != nil {
 		return errText(err)
 	}
 	if !confirmDrop(p.ctx, "signOut", name) {
-		return errCanceled
+		return nil
 	}
-	_, err = client.Logout(p.ctx, control.LogoutRequest{Server: name})
+	notEndedOn, err := client.Logout(p.ctx, control.LogoutRequest{Server: name})
+	if err == nil && len(notEndedOn) > 0 {
+		return notEnded(name)
+	}
+	return errText(err)
+}
+
+// restart replaces a daemon of another version with the bundled pmon's.
+func (p *prefs) restart() any {
+	if !confirmDrop(p.ctx, "restart", "") {
+		return nil
+	}
+	if err := control.StopDaemon(p.ctx); err != nil && !errors.Is(err, control.ErrDaemonNotRunning) {
+		return errText(err)
+	}
+	_, err := control.EnsureDaemon(p.ctx)
 	return errText(err)
 }
 

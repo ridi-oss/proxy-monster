@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ridi-oss/proxy-monster/pmon/control"
 )
@@ -79,4 +80,14 @@ func quiet(t *testing.T) {
 	prev := notify
 	notify = func(string, string) {}
 	t.Cleanup(func() { notify = prev })
+}
+
+// A login past its sign-in window still reads LoggedIn until the daemon tries to renew it; the console link must
+// start a fresh sign-in for it, not report it connected.
+func TestAConnectLinkSignsInAgainWhenTheSignInEnded(t *testing.T) {
+	ended := control.ServerInfo{Name: "ridi", ControlPlane: "https://pm.ridi.example", LoggedIn: true,
+		SessionExpiresAt: time.Now().Add(-time.Minute).Format(time.RFC3339), ExpiresAt: time.Now().Add(time.Hour).Format(time.RFC3339)}
+	if !signInEnded(ended, time.Now()) {
+		t.Fatal("a login past its window does not read as ended")
+	}
 }

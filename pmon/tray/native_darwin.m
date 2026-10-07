@@ -150,12 +150,14 @@ char *pm_preferred_languages(void) {
 // mode 0 follows the system, 1 is light, 2 is dark. A NULL window sets the whole app, which the menu-bar
 // menu follows.
 void pm_set_appearance(void *window, int mode) {
+  // A strong reference taken now, so a window closed before the block runs is still valid when it does.
+  NSWindow *w = window ? (__bridge NSWindow *)window : nil;
   dispatch_async(dispatch_get_main_queue(), ^{
     NSAppearance *appearance = nil;
     if (mode == 1) appearance = [NSAppearance appearanceNamed:NSAppearanceNameAqua];
     if (mode == 2) appearance = [NSAppearance appearanceNamed:NSAppearanceNameDarkAqua];
-    if (window) {
-      ((__bridge NSWindow *)window).appearance = appearance;
+    if (w) {
+      w.appearance = appearance;
     } else {
       NSApp.appearance = appearance;
     }

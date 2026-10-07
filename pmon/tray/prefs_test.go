@@ -53,8 +53,15 @@ func freeBase(t *testing.T) int {
 	return 0
 }
 
+// yes answers every confirmation, as a user clicking through.
+func yes(t *testing.T) {
+	confirm = func(string, string, string) bool { return true }
+	t.Cleanup(func() { confirm = confirmDialog })
+}
+
 func TestPreferencesManageServers(t *testing.T) {
 	realDaemon(t)
+	yes(t)
 	p := &prefs{ctx: context.Background(), signingIn: map[string]bool{}, changed: func() {}}
 
 	if st := p.state(); st.Running || len(st.Servers) != 0 {
@@ -73,7 +80,7 @@ func TestPreferencesManageServers(t *testing.T) {
 	if got := p.state().Servers[0].URL; !strings.Contains(got, "pm2.acme.example") {
 		t.Errorf("address after change = %q", got)
 	}
-	if err := p.setServer("Not Valid", "https://x.example"); !strings.Contains(err, "invalid server name") {
+	if err := p.setServer("Not Valid", "https://x.example"); !strings.Contains(fmt.Sprint(err), "invalid server name") {
 		t.Errorf("an invalid name was not refused with the daemon's reason: %q", err)
 	}
 	if err := p.removeServer("acme"); err != "" {
@@ -87,6 +94,7 @@ func TestPreferencesManageServers(t *testing.T) {
 // The page reaches Go only through named calls with JSON arguments; drive them as the page does.
 func TestSettingsCallsByName(t *testing.T) {
 	realDaemon(t)
+	yes(t)
 	p := &prefs{ctx: context.Background(), signingIn: map[string]bool{}, changed: func() {}}
 	h := p.handlers()
 	call := func(name string, args ...any) any {
@@ -116,5 +124,22 @@ func TestSettingsCallsByName(t *testing.T) {
 	}
 	if st := call("state").(prefsState); len(st.Servers) != 0 {
 		t.Fatalf("state after removeServer: %+v", st)
+	}
+}
+
+// Declining a confirmation is neither success nor an error: the page must show nothing for it.
+func TestADeclinedRemoveReportsCanceled(t *testing.T) {
+	realDaemon(t)
+	confirm = func(string, string, string) bool { return false }
+	t.Cleanup(func() { confirm = confirmDialog })
+	p := &prefs{ctx: context.Background(), signingIn: map[string]bool{}, changed: func() {}}
+	if e := p.setServer("acme", "https://pm.acme.example"); e != "" {
+		t.Fatal(e)
+	}
+	if got := p.removeServer("acme"); got != nil {
+		t.Fatalf("a declined remove returned %#v, want nil", got)
+	}
+	if len(p.state().Servers) != 1 {
+		t.Fatal("a declined remove removed the server")
 	}
 }

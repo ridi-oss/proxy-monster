@@ -245,7 +245,9 @@ function applyAppearance() {
   else delete document.documentElement.dataset.theme;
 }
 async function refresh() { state = await call('state'); applyAppearance(); render(); }
-async function refreshAI() { ai = await call('aiState'); if (pane === 'ai') render(); }
+// Reads overlap (events, the 30 s poll, a toggle); only the newest one may land.
+let aiSeq = 0;
+async function refreshAI() { const n = ++aiSeq; const r = await call('aiState'); if (n === aiSeq) { ai = r; if (pane === 'ai') render(); } }
 window.pmRefresh = () => { refresh(); refreshAI(); };
 
 const $ = s => document.querySelector(s);
@@ -256,9 +258,13 @@ function toast(text, error) {
   el.textContent = text; el.className = 'toast' + (error ? ' error' : ''); el.hidden = false;
   clearTimeout(toast.timer); toast.timer = setTimeout(() => { el.hidden = true; }, 3200);
 }
+// A call's result: '' is success, a string an error, null a declined confirmation, {warn} success with a note.
 async function act(promise, done) {
   const e = await promise;
-  if (e) toast(e, true); else if (done) toast(done);
+  if (e === null) { await refresh(); return; }
+  if (e && e.warn) toast(e.warn);
+  else if (e) toast(e, true);
+  else if (done) toast(done);
   await refresh();
 }
 
@@ -336,11 +342,16 @@ function serversPane() {
   return `<section class="pane">${paneHead('s.servers.title', 's.servers.desc')}${stopped}${list}${empty}${add}</section>`;
 }
 
+// The running daemon is another build than the bundled pmon an AI app would launch; MCP may not work until
+// the background service restarts on the bundled one.
+function stale() { const v = state.versions || {}; return state.running && v.pmon && v.daemon && v.pmon !== v.daemon; }
+
 function aiPane() {
   let body;
   if (!ai) body = `<div class="card"><div class="card-body"><div class="skeleton" style="width:40%"></div><div class="skeleton" style="width:70%"></div></div></div>`.repeat(2);
   else if (!ai.length) body = emptyState('s.ai.noneTitle', 's.ai.noneBody');
   else if (!state.servers.length) body = emptyState('s.ai.noServerTitle', 's.ai.noServerBody', 'servers');
+  else if (stale()) body = `<div class="card"><div class="card-body"><div class="row"><div class="grow"><div class="title">${esc(t('menu.differentVersion'))}</div><div class="sub">${esc(t('s.ai.staleBody'))}</div></div><button class="btn primary" data-act="restart">${esc(t('menu.restart'))}</button></div></div></div>`;
   else body = ai.map(app => {
     const [glyph, color] = APP_TILES[app.id] || ['•', '#555'];
     const rows = state.servers.map(s => {
@@ -395,7 +406,7 @@ function render() {
   m.innerHTML = html;
   if (entering) m.firstElementChild?.classList.add('enter');
   if ($('#name') && values.name != null) $('#name').value = values.name;
-  if ($('#url') && values.url != null && editing === null) $('#url').value = values.url;
+  if ($('#url') && values.url != null) $('#url').value = values.url;
   if (keep && document.getElementById(keep)) document.getElementById(keep).focus();
 }
 
@@ -414,11 +425,12 @@ document.addEventListener('click', async e => {
     case 'add': adding = true; editing = null; err = ''; render(); $('#form')?.scrollIntoView({ block: 'nearest', behavior: 'smooth' }); $('#name')?.focus({ preventScroll: true }); break;
     case 'cancel': adding = false; editing = null; err = ''; render(); break;
     case 'menu': menuFor = menuFor === s ? null : s; render(); break;
-    case 'edit': menuFor = null; editing = s; err = ''; render(); $('#url')?.focus(); break;
+    case 'edit': menuFor = null; editing = s; err = ''; render.last = null; render(); $('#url').value = (state.servers.find(x => x.name === s) || {}).url || ''; $('#url')?.focus(); break;
     case 'signin': await act(call('signIn', s)); break;
     case 'signout': menuFor = null; await act(call('signOut', s), t('s.toast.signedOut', { name: s })); break;
     case 'remove': menuFor = null; await act(call('removeServer', s), t('s.toast.removed', { name: s })); break;
     case 'start': await act(call('start')); break;
+    case 'restart': await act(call('restart')); refreshAI(); break;
     case 'login': await act(call('setOpenAtLogin', b.getAttribute('aria-checked') !== 'true')); break;
     case 'theme': await act(call('setTheme', b.dataset.v)); break;
     case 'goto-servers': go('servers'); break;
@@ -440,7 +452,7 @@ document.addEventListener('submit', async e => {
   const name = editing ?? $('#name').value.trim().toLowerCase();
   const url = $('#url').value.trim().replace(/\/+$/, '');
   if (!name) { err = t('s.form.errName'); return render(); }
-  if (!/^https:\/\//.test(url) && !/^http:\/\/(localhost|127\.0\.0\.1)(:|\/|$)/.test(url)) { err = t('s.form.errUrl'); return render(); }
+  if (!/^https:\/\//.test(url) && !/^http:\/\/(localhost|127\.0\.0\.1|\[::1\])(:|\/|$)/.test(url)) { err = t('s.form.errUrl'); return render(); }
   const e2 = await call('setServer', name, url);
   if (e2) { err = e2; return render(); }
   const wasAdding = adding;
@@ -486,7 +498,8 @@ async function demo(name, args) {
   }
 }
 
-refresh().then(() => { if (window.pmStartWithAdd) { adding = true; render(); $('#name')?.focus(); } });
+window.pmOpenAdd = () => { go('servers'); adding = true; render(); $('#form')?.scrollIntoView({ block: 'nearest' }); $('#name')?.focus({ preventScroll: true }); };
+refresh().then(() => { if (window.pmStartWithAdd) window.pmOpenAdd(); });
 refreshAI();
 </script>
 </body>

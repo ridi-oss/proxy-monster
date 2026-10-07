@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/ridi-oss/proxy-monster/pmon/control"
 )
@@ -71,7 +72,7 @@ func (a *app) openConnectLink(raw string) {
 		}
 	}
 	same := existing != nil && sameAddress(existing.ControlPlane, link.url)
-	if same && existing.LoggedIn && !existing.ReauthRequired {
+	if same && existing.LoggedIn && !signInEnded(*existing, time.Now()) {
 		notify(T("n.alreadyConnected"), T("n.alreadyConnectedBody", "name", link.name))
 		return
 	}
@@ -113,9 +114,13 @@ func (a *app) openConnectLink(raw string) {
 		}
 	}
 	if !same {
-		if _, err := client.SetServer(a.ctx, control.SetServerRequest{Name: link.name, ControlPlane: link.url}); err != nil {
+		res, err := client.SetServer(a.ctx, control.SetServerRequest{Name: link.name, ControlPlane: link.url})
+		if err != nil {
 			notify(T("n.connectFailed"), err.Error())
 			return
+		}
+		if res.NotEndedOnServer {
+			notify(T("n.signedOutLocal"), T("n.signedOutLocalBody", "server", link.name))
 		}
 	}
 	a.doSignIn(link.name)

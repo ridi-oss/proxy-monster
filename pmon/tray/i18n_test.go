@@ -1,6 +1,9 @@
 package main
 
 import (
+	"time"
+
+	"github.com/ridi-oss/proxy-monster/pmon/control"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -71,5 +74,71 @@ func TestT(t *testing.T) {
 	defer func() { langOverride = "en" }()
 	if got := Tn("confirm.conns", 3); got != "열린 데이터베이스 연결 3개가 닫힙니다." {
 		t.Errorf("Tn(3) in Korean = %q", got)
+	}
+}
+
+// Keys the code builds at run time, which the literal scan cannot see.
+func TestDynamicKeysExist(t *testing.T) {
+	var keys []string
+	for _, kind := range []string{"signOut", "restart", "quit", "remove"} {
+		keys = append(keys, "confirm."+kind, "confirm."+kind+"Button")
+	}
+	for _, app := range aiApps() {
+		keys = append(keys, "ai.after."+app.id)
+	}
+	for _, p := range []string{"servers", "ai", "general", "about"} {
+		keys = append(keys, "s.nav."+p)
+	}
+	for _, v := range []string{"system", "light", "dark"} {
+		keys = append(keys, "s.general."+v)
+	}
+	for _, f := range []string{"url", "jdbc", "go-dsn", "cli", "python", "node", "aws-config"} {
+		keys = append(keys, "format."+f)
+	}
+	for _, l := range languages {
+		for _, k := range keys {
+			if _, ok := catalogs[l][k]; !ok {
+				t.Errorf("%s has no %q", l, k)
+			}
+		}
+	}
+}
+
+func TestClockLabel(t *testing.T) {
+	now := time.Date(2026, 3, 7, 23, 30, 0, 0, time.Local)
+	for _, tc := range []struct {
+		lang string
+		at   time.Time
+		want string
+	}{
+		{"en", now.Add(10 * time.Minute), "Today 23:40"},
+		{"en", time.Date(2026, 3, 8, 9, 5, 0, 0, time.Local), "Tomorrow 09:05"},
+		{"en", time.Date(2026, 3, 10, 9, 5, 0, 0, time.Local), "Mar 10 09:05"},
+		{"ko", time.Date(2026, 3, 10, 9, 5, 0, 0, time.Local), "3월 10일 09:05"},
+	} {
+		langOverride = tc.lang
+		if got := clockLabel(tc.at, now); got != tc.want {
+			t.Errorf("%s %v: %q, want %q", tc.lang, tc.at, got, tc.want)
+		}
+	}
+	langOverride = "en"
+}
+
+// One ended sign-in is announced once, however many renders and reauth events see it.
+func TestAnEndedSignInIsAnnouncedOnce(t *testing.T) {
+	var posted int
+	postNotice = func(id, title, body, key string) { posted++ }
+	t.Cleanup(func() { postNotice = notifyAction })
+	a := newApp(t.Context())
+	now := time.Now()
+	s := &control.Status{LoggedIn: true, Servers: []control.ServerInfo{{Name: "ridi", LoggedIn: true,
+		SessionExpiresAt: now.Add(-time.Minute).Format(time.RFC3339)}}}
+	for range 3 {
+		a.noticeEndings(s, view{now: now})
+	}
+	s.Servers[0].ReauthRequired = true
+	a.noticeEndings(s, view{now: now})
+	if posted != 1 {
+		t.Errorf("posted %d notices, want 1", posted)
 	}
 }

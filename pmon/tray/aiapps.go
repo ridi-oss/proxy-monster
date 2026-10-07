@@ -94,8 +94,7 @@ func claudeDesktop() aiApp {
 				return false
 			}
 			var c mcpCommand
-			return json.Unmarshal(servers[entry], &c) == nil && ours(c.Command, c.Args, pmon, server) &&
-				maps.Equal(c.Env, daemonEnv())
+			return json.Unmarshal(servers[entry], &c) == nil && ours(c.Command, c.Args, c.Env, pmon, server)
 		},
 		add: func(entry, pmon, server string) error {
 			raw, err := json.Marshal(mcpCommand{Command: pmon, Args: []string{"mcp", server}, Env: daemonEnv()})
@@ -116,7 +115,7 @@ func claudeDesktop() aiApp {
 		remove: func(entry, pmon, server string) error {
 			return editDesktopServers(claudeDesktopConfig(), func(m map[string]json.RawMessage) {
 				var c mcpCommand
-				if json.Unmarshal(m[entry], &c) == nil && ours(c.Command, c.Args, pmon, server) {
+				if json.Unmarshal(m[entry], &c) == nil && ownCommand(c.Command, c.Args, pmon, server) {
 					delete(m, entry)
 				}
 			})
@@ -213,38 +212,61 @@ func writeDesktopConfig(path string, before []byte, servers, top map[string]json
 
 // --- Claude Code and Codex: their own `mcp add/get/remove` commands ---
 
-// ours reports whether a registered command is this app's `pmon mcp <server>`.
-func ours(command string, args []string, pmon, server string) bool {
+// ownCommand reports whether a registered command is this app's `pmon mcp <server>`: this app wrote it, so it
+// may replace or remove it.
+func ownCommand(command string, args []string, pmon, server string) bool {
 	return command == pmon && len(args) == 2 && args[0] == "mcp" && args[1] == server
 }
 
-// parseClaudeGet reads the command and args from `claude mcp get` output. Args are space-joined there, which
-// is unambiguous for `mcp <server>` because a server name has no spaces.
-func parseClaudeGet(out string) (string, []string) {
+// ours reports whether the entry is this app's and reaches the daemon this app uses, which is what "connected"
+// means: an entry written for another PMON_CONFIG_DIR would reach a different login.
+func ours(command string, args []string, env map[string]string, pmon, server string) bool {
+	return ownCommand(command, args, pmon, server) && maps.Equal(env, daemonEnv())
+}
+
+// parseClaudeGet reads the command, args and environment from `claude mcp get` output. Args are space-joined
+// there, which is unambiguous for `mcp <server>` because a server name has no spaces.
+func parseClaudeGet(out string) (string, []string, map[string]string) {
 	var command string
 	var args []string
+	env := map[string]string{}
+	inEnv := false
 	for _, line := range strings.Split(out, "\n") {
-		line = strings.TrimSpace(line)
-		if v, ok := strings.CutPrefix(line, "Command: "); ok {
+		trimmed := strings.TrimSpace(line)
+		switch {
+		case inEnv && strings.HasPrefix(line, "    ") && strings.Contains(trimmed, "="):
+			k, v, _ := strings.Cut(trimmed, "=")
+			env[k] = v
+			continue
+		case trimmed == "Environment:":
+			inEnv = true
+			continue
+		}
+		inEnv = false
+		if v, ok := strings.CutPrefix(trimmed, "Command: "); ok {
 			command = v
-		} else if v, ok := strings.CutPrefix(line, "Args: "); ok {
+		} else if v, ok := strings.CutPrefix(trimmed, "Args: "); ok {
 			args = strings.Fields(v)
 		}
 	}
-	return command, args
+	return command, args, env
 }
 
-func parseCodexGet(out string) (string, []string) {
+func parseCodexGet(out string) (string, []string, map[string]string) {
 	var got struct {
 		Transport struct {
-			Command string   `json:"command"`
-			Args    []string `json:"args"`
+			Command string            `json:"command"`
+			Args    []string          `json:"args"`
+			Env     map[string]string `json:"env"`
 		} `json:"transport"`
 	}
 	if json.Unmarshal([]byte(out), &got) != nil {
-		return "", nil
+		return "", nil, nil
 	}
-	return got.Transport.Command, got.Transport.Args
+	if got.Transport.Env == nil {
+		got.Transport.Env = map[string]string{}
+	}
+	return got.Transport.Command, got.Transport.Args, got.Transport.Env
 }
 
 func cliApp(id, name, bin, after string, scope []string) aiApp {
@@ -265,8 +287,9 @@ func cliApp(id, name, bin, after string, scope []string) aiApp {
 		}
 		return string(out), nil
 	}
-	// lookup reports whether entry exists, and whether it is this app's.
-	lookup := func(entry, pmon, server string) (exists, mine bool) {
+	// lookup reports whether entry exists, and whether it is this app's. A failed `get` (missing entry or a
+	// broken CLI alike) reads as absent, so nothing is ever removed or replaced on its strength.
+	lookup := func(entry, pmon, server string) (exists, own, current bool) {
 		get := []string{"mcp", "get", entry}
 		parse := parseClaudeGet
 		if bin == "codex" {
@@ -274,21 +297,21 @@ func cliApp(id, name, bin, after string, scope []string) aiApp {
 		}
 		out, err := run(get...)
 		if err != nil {
-			return false, false
+			return false, false, false
 		}
-		command, args := parse(out)
-		return true, ours(command, args, pmon, server)
+		command, args, env := parse(out)
+		return true, ownCommand(command, args, pmon, server), ours(command, args, env, pmon, server)
 	}
 	return aiApp{
 		id: id, name: name, after: after,
 		installed: func() bool { return findTool(bin) != "" },
 		connected: func(entry, pmon, server string) bool {
-			_, mine := lookup(entry, pmon, server)
-			return mine
+			_, _, current := lookup(entry, pmon, server)
+			return current
 		},
 		add: func(entry, pmon, server string) error {
-			exists, mine := lookup(entry, pmon, server)
-			if exists && !mine {
+			exists, own, _ := lookup(entry, pmon, server)
+			if exists && !own {
 				return errors.New(T("ai.taken", "app", name, "entry", entry))
 			}
 			if exists {
@@ -304,7 +327,11 @@ func cliApp(id, name, bin, after string, scope []string) aiApp {
 			return err
 		},
 		remove: func(entry, pmon, server string) error {
-			if exists, mine := lookup(entry, pmon, server); exists && !mine {
+			exists, own, _ := lookup(entry, pmon, server)
+			switch {
+			case !exists:
+				return nil
+			case !own:
 				return errors.New(T("ai.notOurs", "app", name, "entry", entry))
 			}
 			_, err := run(append([]string{"mcp", "remove", entry}, scope...)...)
@@ -391,6 +418,12 @@ func (a *app) doAIApp(act action) {
 		return
 	}
 	entry := mcpEntryName(act.server)
+	// One AI-app change or read at a time: each is several CLI calls on the same config files.
+	a.aiMu.Lock()
+	defer func() {
+		a.aiMu.Unlock()
+		a.refreshAI(true)
+	}()
 	if act.connect {
 		if err := app.add(entry, bundledPmon(), act.server); err != nil {
 			notify(T("n.aiAddFailed", "server", act.server, "app", app.name), err.Error())
@@ -402,5 +435,4 @@ func (a *app) doAIApp(act action) {
 	} else {
 		notify(T("n.aiRemoved", "server", act.server, "app", app.name), "")
 	}
-	a.refreshAI(true)
 }

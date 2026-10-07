@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"io"
 	"strconv"
 	"strings"
 	"sync"
@@ -52,8 +53,9 @@ type app struct {
 	// ai is the last read of each AI app's settings; reading runs the apps' CLIs, so it is cached.
 	ai        []aiState
 	aiServers string
-	aiMu      sync.Mutex // one AI-settings read at a time
-	prefsPid  int        // the Preferences window's process, while open
+	aiMu      sync.Mutex     // one AI-settings read at a time
+	prefsPid  int            // the Settings window's process, while open
+	prefsIn   io.WriteCloser // its stdin, for tellPrefs
 	// pmonVersion is the bundled pmon's `--version`, read once at startup.
 	pmonVersion string
 	// updates is whether this build updates itself; pendingUpdate is a downloaded update's version.

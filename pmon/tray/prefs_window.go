@@ -3,16 +3,15 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	_ "embed"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"os"
-	"os/signal"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	webview "github.com/webview/webview_go"
@@ -112,29 +111,21 @@ func runPreferences(add bool) {
 	}
 	w.SetHtml(strings.NewReplacer("/*FONTS*/", fontCSS(), "/*I18N*/", i18nScript()).Replace(prefsHTML))
 	go watchForPrefs(ctx, refresh)
-	// The menu-bar process asks an open window to show its add form (SIGUSR1) or to close (SIGTERM, on Quit).
-	sigs := make(chan os.Signal, 1)
-	signal.Notify(sigs, syscall.SIGUSR1, syscall.SIGTERM)
+	// The menu-bar process sends commands on stdin; it closing (the menu-bar app exited) closes the window too.
 	go func() {
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case s := <-sigs:
-				if s == syscall.SIGTERM {
-					mu.Lock()
-					if !closed {
-						w.Dispatch(w.Terminate)
-					}
-					mu.Unlock()
-					return
-				}
+		lines := bufio.NewScanner(os.Stdin)
+		for lines.Scan() && lines.Text() != "quit" {
+			if lines.Text() == "add" {
 				eval("window.pmOpenAdd && window.pmOpenAdd()")
 			}
 		}
+		mu.Lock()
+		if !closed {
+			w.Dispatch(w.Terminate)
+		}
+		mu.Unlock()
 	}()
 	w.Run()
-	signal.Stop(sigs)
 
 	mu.Lock()
 	closed = true

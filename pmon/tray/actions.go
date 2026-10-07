@@ -1,12 +1,13 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
-	"syscall"
 
 	"fyne.io/systray"
 
@@ -202,9 +203,7 @@ func (a *app) doQuit() {
 		notify(T("n.stillRunning"), T("n.stillRunningBody", "error", err.Error()))
 	}
 	a.mu.Lock()
-	if a.prefsPid != 0 {
-		_ = syscall.Kill(a.prefsPid, syscall.SIGTERM)
-	}
+	a.tellPrefs("quit")
 	a.mu.Unlock()
 	systray.Quit()
 }
@@ -252,8 +251,7 @@ func (a *app) openPreferences(add bool) {
 	defer a.mu.Unlock()
 	if a.prefsPid != 0 {
 		if add {
-			// The open window shows its add form on SIGUSR1 (prefs_window.go).
-			_ = syscall.Kill(a.prefsPid, syscall.SIGUSR1)
+			a.tellPrefs("add")
 		}
 		activatePid(a.prefsPid)
 		return
@@ -268,15 +266,46 @@ func (a *app) openPreferences(add bool) {
 		args = append(args, "--add")
 	}
 	cmd := exec.Command(exe, args...)
-	if err := cmd.Start(); err != nil {
+	in, err := cmd.StdinPipe()
+	if err != nil {
 		notify(T("n.settingsFailed"), err.Error())
 		return
 	}
-	a.prefsPid = cmd.Process.Pid
+	out, err := cmd.StdoutPipe()
+	if err != nil {
+		in.Close()
+		notify(T("n.settingsFailed"), err.Error())
+		return
+	}
+	if err := cmd.Start(); err != nil {
+		in.Close()
+		out.Close()
+		notify(T("n.settingsFailed"), err.Error())
+		return
+	}
+	a.prefsPid, a.prefsIn = cmd.Process.Pid, in
 	go func() {
+		lines := bufio.NewScanner(out)
+		for lines.Scan() {
+			if lines.Text() == "check-updates" {
+				checkForUpdates()
+			}
+		}
 		_ = cmd.Wait()
 		a.mu.Lock()
-		a.prefsPid = 0
+		a.prefsPid, a.prefsIn = 0, nil
 		a.mu.Unlock()
 	}()
+}
+
+// tellPrefs sends the open Settings window a command over its stdin: "add" shows the add form, "quit" closes
+// it. Signals would do on macOS, but Windows has none to send. The caller holds a.mu.
+func (a *app) tellPrefs(command string) {
+	if a.prefsIn != nil {
+		_, _ = io.WriteString(a.prefsIn, command+"\n")
+		if command == "quit" {
+			a.prefsIn.Close()
+			a.prefsIn = nil
+		}
+	}
 }

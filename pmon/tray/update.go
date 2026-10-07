@@ -2,9 +2,6 @@ package main
 
 import (
 	"errors"
-	"os"
-	"os/signal"
-	"syscall"
 
 	"github.com/ridi-oss/proxy-monster/pmon/control"
 )
@@ -19,7 +16,7 @@ var (
 	autoInstall   = func() bool { on, _ := autoUpdates(); return on }
 )
 
-// startUpdates starts the updater in release builds and routes "Check Now" from the Settings window to it.
+// startUpdates starts the updater in release builds.
 func (a *app) startUpdates() {
 	if !startUpdater() {
 		return
@@ -28,17 +25,12 @@ func (a *app) startUpdates() {
 	a.updates = true
 	a.mu.Unlock()
 	onUpdateReady = a.updateReady
-	sigs := make(chan os.Signal, 1)
-	signal.Notify(sigs, syscall.SIGUSR2)
 	go func() {
 		auto, _ := autoUpdates()
 		for {
 			select {
 			case <-a.ctx.Done():
-				signal.Stop(sigs)
 				return
-			case <-sigs:
-				checkForUpdates()
 			case <-a.appearance:
 				// The Settings window writes the setting; the updater reschedules only when told.
 				if on, _ := autoUpdates(); on != auto {
@@ -94,9 +86,7 @@ func (a *app) doInstallUpdate() {
 func (a *app) install() {
 	setPrefBool(restartAfterUpdate, true)
 	a.mu.Lock()
-	if a.prefsPid != 0 {
-		_ = syscall.Kill(a.prefsPid, syscall.SIGTERM)
-	}
+	a.tellPrefs("quit")
 	a.mu.Unlock()
 	installUpdate()
 }

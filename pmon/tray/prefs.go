@@ -5,13 +5,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 	"unsafe"
 
@@ -399,14 +399,14 @@ func (p *prefs) setAutoUpdates(on bool) string {
 	return ""
 }
 
-// checkUpdates asks the menu-bar process, which runs the updater and started this window, to check now.
+// checkUpdates asks the menu-bar process, which runs the updater and reads this process's stdout, to check now.
 func (p *prefs) checkUpdates() string {
-	parent := os.Getppid()
-	if parent <= 1 {
-		return T("menu.notRunning")
-	}
-	return errText(syscall.Kill(parent, syscall.SIGUSR2))
+	_, err := fmt.Fprintln(toMenuBar, "check-updates")
+	return errText(err)
 }
+
+// toMenuBar is this process's stdout, which the menu-bar process reads; replaceable in tests.
+var toMenuBar io.Writer = os.Stdout
 
 func (p *prefs) start() string {
 	_, err := control.EnsureDaemon(p.ctx)

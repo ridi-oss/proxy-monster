@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"syscall"
 
 	"fyne.io/systray"
 
@@ -94,6 +95,9 @@ func signInFlow(ctx context.Context, client *control.Client, server string) erro
 			}
 		case "done":
 			notify(T("n.signedIn"), T("n.signedInBody", "server", server, "principal", ev.Principal))
+			if ev.ReplacedNotEndedOnServer {
+				notify(T("n.signedOutLocal"), T("n.signedOutLocalBody", "server", server))
+			}
 			openAtLoginOnce()
 		}
 	})
@@ -193,6 +197,11 @@ func (a *app) doQuit() {
 		a.setErr(fmt.Errorf("could not stop the daemon: %w", err))
 		notify(T("n.stillRunning"), T("n.stillRunningBody", "error", err.Error()))
 	}
+	a.mu.Lock()
+	if a.prefsPid != 0 {
+		_ = syscall.Kill(a.prefsPid, syscall.SIGTERM)
+	}
+	a.mu.Unlock()
 	systray.Quit()
 }
 
@@ -206,13 +215,23 @@ func (a *app) confirmDroppingConns(kind, server string) bool { return confirmDro
 
 // confirmDrop's kind is "signOut", "restart", "quit" or "remove"; it picks the dialog's title and button.
 func confirmDrop(ctx context.Context, kind, server string) bool {
+	n := liveConns(ctx, server)
+	if n == 0 {
+		return true
+	}
+	return confirm(T("confirm."+kind, "name", server), Tn("confirm.conns", n), T("confirm."+kind+"Button"))
+}
+
+// liveConns counts open database connections on one server, or with server empty on all of them. A daemon that
+// cannot be reached has none to disturb.
+func liveConns(ctx context.Context, server string) int {
 	client, err := control.Connect(ctx)
 	if err != nil {
-		return true
+		return 0
 	}
 	s, err := client.Status(ctx)
 	if err != nil {
-		return true
+		return 0
 	}
 	n := 0
 	for _, ds := range s.Datasources {
@@ -220,10 +239,7 @@ func confirmDrop(ctx context.Context, kind, server string) bool {
 			n += ds.LiveConns
 		}
 	}
-	if n == 0 {
-		return true
-	}
-	return confirm(T("confirm."+kind, "name", server), Tn("confirm.conns", n), T("confirm."+kind+"Button"))
+	return n
 }
 
 // openPreferences opens the Settings window, or brings the open one to the front.
@@ -231,6 +247,10 @@ func (a *app) openPreferences(add bool) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if a.prefsPid != 0 {
+		if add {
+			// The open window shows its add form on SIGUSR1 (prefs_window.go).
+			_ = syscall.Kill(a.prefsPid, syscall.SIGUSR1)
+		}
 		activatePid(a.prefsPid)
 		return
 	}

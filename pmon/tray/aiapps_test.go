@@ -172,14 +172,14 @@ func TestClaudeDesktopLeavesAForeignEntryAlone(t *testing.T) {
 func TestCLIGetParsing(t *testing.T) {
 	pmon := "/Applications/Proxy Monster Desktop.app/Contents/MacOS/pmon"
 	claude := "proxy-monster-acme:\n  Scope: User config (available in all your projects)\n  Type: stdio\n  Command: " + pmon + "\n  Args: mcp acme\n  Environment:\n"
-	if c, a := parseClaudeGet(claude); !ours(c, a, pmon, "acme") {
+	if c, a, e := parseClaudeGet(claude); !ours(c, a, e, pmon, "acme") {
 		t.Errorf("claude output parsed as %q %q", c, a)
 	}
 	codex := `{"name":"proxy-monster-acme","transport":{"type":"stdio","command":"` + pmon + `","args":["mcp","acme"]}}`
-	if c, a := parseCodexGet(codex); !ours(c, a, pmon, "acme") {
+	if c, a, e := parseCodexGet(codex); !ours(c, a, e, pmon, "acme") {
 		t.Errorf("codex output parsed as %q %q", c, a)
 	}
-	if c, a := parseCodexGet(`{"transport":{"command":"/usr/bin/false","args":[]}}`); ours(c, a, pmon, "acme") {
+	if c, a, e := parseCodexGet(`{"transport":{"command":"/usr/bin/false","args":[]}}`); ours(c, a, e, pmon, "acme") {
 		t.Error("a foreign codex entry reads as ours")
 	}
 }
@@ -206,5 +206,26 @@ func TestClaudeDesktopEntryCarriesTheDaemonSettings(t *testing.T) {
 	t.Setenv("PMON_PORT_BASE", "")
 	if claudeDesktop().connected("proxy-monster-ridi", "/p/pmon", "ridi") {
 		t.Error("an entry for another daemon reads as connected")
+	}
+}
+
+// An entry this app wrote for another daemon (another PMON_CONFIG_DIR) is its own to replace, but not connected.
+func TestCLIEntryForAnotherDaemonIsNotConnected(t *testing.T) {
+	pmon := "/p/pmon"
+	claude := "x:\n  Command: /p/pmon\n  Args: mcp acme\n  Environment:\n    PMON_CONFIG_DIR=/tmp/a\n    PMON_PORT_BASE=46500\n\nTo remove this server, run: claude mcp remove x -s user\n"
+	c, a, e := parseClaudeGet(claude)
+	if e["PMON_CONFIG_DIR"] != "/tmp/a" || e["PMON_PORT_BASE"] != "46500" {
+		t.Fatalf("env = %v", e)
+	}
+	if ours(c, a, e, pmon, "acme") {
+		t.Error("an entry for /tmp/a reads as connected to the default daemon")
+	}
+	if !ownCommand(c, a, pmon, "acme") {
+		t.Error("this app's own entry is not recognized as its own")
+	}
+	t.Setenv("PMON_CONFIG_DIR", "/tmp/a")
+	t.Setenv("PMON_PORT_BASE", "46500")
+	if !ours(c, a, e, pmon, "acme") {
+		t.Error("an entry for the daemon in use does not read as connected")
 	}
 }

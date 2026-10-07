@@ -8,8 +8,11 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"os"
+	"os/signal"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	webview "github.com/webview/webview_go"
@@ -47,7 +50,7 @@ func i18nScript() string {
 func runPreferences(add bool) {
 	ctx, cancel := context.WithCancel(context.Background())
 	w := webview.New(false)
-	w.SetTitle("Proxy Monster Settings")
+	w.SetTitle(T("s.title"))
 	w.SetSize(800, 560, webview.HintNone)
 
 	// Background goroutines reach the page through eval; once the window closes, closed stops them from
@@ -58,12 +61,26 @@ func runPreferences(add bool) {
 		mu.Lock()
 		defer mu.Unlock()
 		if !closed {
-			w.Dispatch(func() { w.Eval(js) })
+			w.Dispatch(func() {
+				// Queued before the window closed but run after: the web view may be gone.
+				mu.Lock()
+				defer mu.Unlock()
+				if !closed {
+					w.Eval(js)
+				}
+			})
 		}
 	}
 	refresh := func() { eval("window.pmRefresh && window.pmRefresh()") }
 	p := &prefs{ctx: ctx, signingIn: map[string]bool{}, changed: refresh, pmonVersion: bundledPmonVersion(), window: w.Window()}
 	applyTheme(p.window, theme())
+	p.retitle = func() {
+		mu.Lock()
+		defer mu.Unlock()
+		if !closed {
+			w.Dispatch(func() { w.SetTitle(T("s.title")) })
+		}
+	}
 	handlers := p.handlers()
 
 	if err := w.Bind("pmCall", func(id, name, args string) {
@@ -95,7 +112,29 @@ func runPreferences(add bool) {
 	}
 	w.SetHtml(strings.NewReplacer("/*FONTS*/", fontCSS(), "/*I18N*/", i18nScript()).Replace(prefsHTML))
 	go watchForPrefs(ctx, refresh)
+	// The menu-bar process asks an open window to show its add form (SIGUSR1) or to close (SIGTERM, on Quit).
+	sigs := make(chan os.Signal, 1)
+	signal.Notify(sigs, syscall.SIGUSR1, syscall.SIGTERM)
+	go func() {
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case s := <-sigs:
+				if s == syscall.SIGTERM {
+					mu.Lock()
+					if !closed {
+						w.Dispatch(w.Terminate)
+					}
+					mu.Unlock()
+					return
+				}
+				eval("window.pmOpenAdd && window.pmOpenAdd()")
+			}
+		}
+	}()
 	w.Run()
+	signal.Stop(sigs)
 
 	mu.Lock()
 	closed = true

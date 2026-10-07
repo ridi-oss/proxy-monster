@@ -144,10 +144,11 @@ func (a *app) onExit() {
 	a.cancel()
 }
 
-// watchAppearance applies a language or theme the Settings window changed. The two processes share the
-// app's user defaults, so polling them is the whole protocol.
+// watchAppearance applies a language, theme or Open at Login the Settings window changed. The two processes
+// share the app's user defaults and login item, so polling them is the whole protocol.
 func (a *app) watchAppearance() {
 	l, th := lang(), theme()
+	login, _ := loginItem()
 	t := time.NewTicker(2 * time.Second)
 	defer t.Stop()
 	for {
@@ -156,8 +157,9 @@ func (a *app) watchAppearance() {
 			return
 		case <-t.C:
 		}
-		if nl, nth := lang(), theme(); nl != l || nth != th {
-			l, th = nl, nth
+		nlogin, _ := loginItem()
+		if nl, nth := lang(), theme(); nl != l || nth != th || nlogin != login {
+			l, th, login = nl, nth, nlogin
 			applyTheme(nil, th)
 			a.renderMu.Lock()
 			a.redraw()
@@ -193,11 +195,11 @@ func (a *app) noticeEndings(s *control.Status, v view) {
 	}
 	for _, srv := range s.Servers {
 		end, ok := signInEnd(srv)
-		if !srv.LoggedIn || srv.ReauthRequired || !ok {
+		if !srv.LoggedIn || !ok {
 			continue
 		}
 		left := end.Sub(v.now)
-		if left <= 0 {
+		if left <= 0 || srv.ReauthRequired {
 			a.noticeEnded(srv.Name, end)
 			continue
 		}
@@ -215,15 +217,18 @@ func (a *app) noticeEndings(s *control.Status, v view) {
 	}
 }
 
-// noticeEnded announces once that a server's sign-in window has closed. It shares its id with the daemon's
-// reauth notice, so the two never show twice.
+// postNotice is notifyAction, replaceable in tests.
+var postNotice = notifyAction
+
+// noticeEnded announces once per sign-in that a server's sign-in has ended, whether its window closed or the
+// daemon's renewal was refused, including one that ended while the tray was not running.
 func (a *app) noticeEnded(server string, end time.Time) {
 	a.mu.Lock()
 	seen := a.ended[server].Equal(end)
 	a.ended[server] = end
 	a.mu.Unlock()
 	if !seen {
-		notifyAction("ended:"+server, T("n.ended", "server", server), T("n.endedBody"), "signin:"+server)
+		postNotice("ended:"+server, T("n.ended", "server", server), T("n.endedBody"), "signin:"+server)
 	}
 }
 
@@ -260,7 +265,6 @@ func (a *app) watchDaemon() {
 				}
 			case "reauth":
 				a.refresh(client)
-				a.noticeReauth()
 			case "shutdown":
 				a.render(nil)
 			default:
@@ -274,20 +278,6 @@ func (a *app) watchDaemon() {
 		}
 		if !a.sleep(reconnectDelay) {
 			return
-		}
-	}
-}
-
-func (a *app) noticeReauth() {
-	a.mu.Lock()
-	s := a.status
-	a.mu.Unlock()
-	if s == nil {
-		return
-	}
-	for _, srv := range s.Servers {
-		if srv.ReauthRequired {
-			notifyAction("ended:"+srv.Name, T("n.ended", "server", srv.Name), T("n.endedBody"), "signin:"+srv.Name)
 		}
 	}
 }

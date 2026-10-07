@@ -1,0 +1,421 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Proxy Monster Settings</title>
+<style>
+/*FONTS*/
+/* The web console's tokens: monochrome, hairline borders, a near-black primary, Geist. */
+:root {
+  --background: oklch(1 0 0);
+  --sidebar: oklch(0.985 0 0);
+  --foreground: oklch(0.145 0 0);
+  --muted: oklch(0.97 0 0);
+  --muted-foreground: oklch(0.556 0 0);
+  --accent: oklch(0.955 0 0);
+  --primary: oklch(0.205 0 0);
+  --primary-foreground: oklch(0.985 0 0);
+  --border: oklch(0.922 0 0);
+  --ring: oklch(0.708 0 0);
+  --destructive: oklch(0.577 0.245 27.325);
+  --ok: oklch(0.67 0.17 150);
+  --warn: oklch(0.75 0.16 70);
+  --shadow: 0 1px 2px oklch(0 0 0 / 4%), 0 4px 12px oklch(0 0 0 / 4%);
+  --radius: 10px;
+  --sans: "Geist", ui-sans-serif, system-ui, -apple-system, sans-serif;
+  --mono: "Geist Mono", ui-monospace, "SF Mono", monospace;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --background: oklch(0.12 0 0);
+    --sidebar: oklch(0.145 0 0);
+    --foreground: oklch(0.97 0 0);
+    --muted: oklch(0.175 0 0);
+    --muted-foreground: oklch(0.66 0 0);
+    --accent: oklch(0.22 0 0);
+    --primary: oklch(0.97 0 0);
+    --primary-foreground: oklch(0.18 0 0);
+    --border: oklch(1 0 0 / 11%);
+    --ring: oklch(0.55 0 0);
+    --destructive: oklch(0.68 0.2 25.5);
+    --shadow: 0 1px 2px oklch(0 0 0 / 30%);
+    color-scheme: dark;
+  }
+}
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+html, body { height: 100%; margin: 0; }
+body {
+  background: var(--background); color: var(--foreground); font: 13px/1.5 var(--sans);
+  -webkit-font-smoothing: antialiased; -webkit-user-select: none; user-select: none; cursor: default;
+  display: grid; grid-template-columns: 208px minmax(0, 1fr); overflow: hidden;
+}
+button { font: inherit; color: inherit; cursor: default; }
+:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
+.mono { font-family: var(--mono); }
+.muted { color: var(--muted-foreground); }
+
+/* ---- sidebar ---- */
+aside { background: var(--sidebar); border-right: 1px solid var(--border); display: flex; flex-direction: column; padding: 14px 10px 12px; gap: 18px; }
+.brand { display: flex; align-items: center; gap: 10px; padding: 4px 6px; }
+.mark { width: 30px; height: 30px; border-radius: 8px; background: oklch(0.145 0 0); display: grid; place-items: center; flex: none; box-shadow: inset 0 0 0 1px oklch(1 0 0 / 10%); }
+.mark svg { width: 17px; height: 17px; }
+.brand b { display: block; font-weight: 600; font-size: 13.5px; letter-spacing: -0.01em; line-height: 1.2; }
+.brand span { font: 11px var(--mono); color: var(--muted-foreground); }
+nav { display: grid; gap: 2px; }
+nav button { display: flex; align-items: center; gap: 10px; height: 32px; padding: 0 10px; border: 0; border-radius: 7px; background: none; color: var(--muted-foreground); text-align: left; font-weight: 500; }
+nav button svg { width: 16px; height: 16px; flex: none; }
+nav button:hover { background: var(--accent); color: var(--foreground); }
+nav button[aria-current="page"] { background: var(--accent); color: var(--foreground); }
+nav kbd { margin-left: auto; font: 10.5px var(--mono); color: var(--muted-foreground); opacity: 0; transition: opacity .15s; }
+nav:hover kbd { opacity: 1; }
+.status { margin-top: auto; border: 1px solid var(--border); border-radius: 9px; padding: 9px 10px; background: var(--background); display: grid; gap: 2px; }
+.status .line { display: flex; align-items: center; gap: 7px; font-weight: 500; }
+.status small { font: 11px var(--mono); color: var(--muted-foreground); }
+
+/* ---- content ---- */
+main { overflow-y: auto; padding: 28px 32px 40px; }
+.pane { display: grid; gap: 18px; max-width: 560px; }
+.pane.enter { animation: in .18s ease-out; }
+@keyframes in { from { opacity: 0; transform: translateY(4px); } }
+@media (prefers-reduced-motion: reduce) { .pane { animation: none; } }
+.pane > header { display: grid; gap: 4px; margin-bottom: 4px; }
+h1 { margin: 0; font-size: 22px; font-weight: 600; letter-spacing: -0.025em; }
+.pane > header p { margin: 0; color: var(--muted-foreground); }
+
+.card { border: 1px solid var(--border); border-radius: var(--radius); background: var(--background); box-shadow: var(--shadow); overflow: hidden; }
+.card-body { padding: 16px 18px; display: grid; gap: 14px; }
+.card-foot { border-top: 1px solid var(--border); background: var(--muted); padding: 10px 18px; display: flex; align-items: center; gap: 10px; min-height: 50px; }
+.card-foot .hint { flex: 1; min-width: 0; color: var(--muted-foreground); font-size: 12.5px; }
+.row { display: flex; align-items: center; gap: 12px; }
+.row .grow { flex: 1; min-width: 0; }
+.title { font-weight: 600; font-size: 14px; letter-spacing: -0.01em; }
+.sub { color: var(--muted-foreground); font-size: 12.5px; }
+
+.btn { height: 30px; padding: 0 12px; border-radius: 7px; border: 1px solid var(--border); background: var(--background); font-weight: 500; font-size: 12.5px; white-space: nowrap; display: inline-flex; align-items: center; gap: 6px; transition: background .12s, opacity .12s; }
+.btn:hover { background: var(--accent); }
+.btn.primary { background: var(--primary); color: var(--primary-foreground); border-color: var(--primary); }
+.btn.primary:hover { opacity: .88; }
+.btn.danger { color: var(--destructive); }
+.btn.ghost { border-color: transparent; background: none; }
+.btn.ghost:hover { background: var(--accent); }
+.btn:disabled { opacity: .45; }
+.btn svg { width: 14px; height: 14px; }
+
+.badge { display: inline-flex; align-items: center; gap: 6px; height: 22px; padding: 0 9px; border: 1px solid var(--border); border-radius: 999px; font-size: 11.5px; font-weight: 500; white-space: nowrap; }
+.dot { width: 7px; height: 7px; border-radius: 50%; background: var(--muted-foreground); flex: none; }
+.dot.ok { background: var(--ok); box-shadow: 0 0 0 3px color-mix(in oklch, var(--ok) 22%, transparent); }
+.dot.warn { background: var(--warn); }
+.dot.busy { background: var(--warn); animation: pulse 1.1s ease-in-out infinite; }
+@keyframes pulse { 50% { opacity: .3; } }
+
+.avatar { width: 34px; height: 34px; border-radius: 9px; background: oklch(0.145 0 0); display: grid; place-items: center; flex: none; }
+.avatar svg { width: 18px; height: 18px; }
+.stats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); border: 1px solid var(--border); border-radius: 8px; }
+.stat { padding: 10px 12px; display: grid; gap: 2px; min-width: 0; }
+.stat + .stat { border-left: 1px solid var(--border); }
+.stat label { font-size: 11px; color: var(--muted-foreground); text-transform: uppercase; letter-spacing: .06em; font-weight: 500; }
+.stat b { font-weight: 500; font-variant-numeric: tabular-nums; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.add { border: 1px dashed var(--border); border-radius: var(--radius); background: none; height: 52px; display: flex; align-items: center; justify-content: center; gap: 8px; color: var(--muted-foreground); font-weight: 500; width: 100%; }
+.add:hover { background: var(--accent); color: var(--foreground); }
+.add svg { width: 15px; height: 15px; }
+.field { display: grid; gap: 6px; }
+.field label { font-weight: 500; font-size: 12.5px; }
+.field input { height: 34px; padding: 0 10px; border: 1px solid var(--border); border-radius: 7px; background: var(--background); color: var(--foreground); font: 13px var(--sans); -webkit-user-select: text; user-select: text; }
+.field input.mono { font-family: var(--mono); font-size: 12.5px; }
+.field input:focus { outline: none; border-color: var(--ring); box-shadow: 0 0 0 3px color-mix(in oklch, var(--ring) 22%, transparent); }
+.field small { color: var(--muted-foreground); font-size: 11.5px; }
+.err { color: var(--destructive); font-size: 12.5px; }
+
+.switch { position: relative; width: 34px; height: 20px; flex: none; border: 0; padding: 0; border-radius: 999px; background: var(--border); transition: background .15s; }
+.switch::after { content: ""; position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%; background: #fff; box-shadow: 0 1px 2px oklch(0 0 0 / 25%); transition: transform .15s; }
+.switch[aria-checked="true"] { background: var(--primary); }
+.switch[aria-checked="true"]::after { transform: translateX(14px); }
+@media (prefers-color-scheme: dark) { .switch[aria-checked="true"]::after { background: var(--primary-foreground); } }
+.switch:disabled { opacity: .4; }
+
+.tile { width: 34px; height: 34px; border-radius: 9px; display: grid; place-items: center; flex: none; font: 600 14px var(--sans); color: #fff; }
+.list { display: grid; }
+.list .row { padding: 10px 0; border-top: 1px solid var(--border); }
+.list .row:first-child { border-top: 0; padding-top: 0; }
+.skeleton { height: 14px; border-radius: 4px; background: linear-gradient(90deg, var(--accent), var(--muted), var(--accent)); background-size: 200% 100%; animation: shimmer 1.2s linear infinite; }
+@keyframes shimmer { to { background-position: -200% 0; } }
+
+.empty { border: 1px dashed var(--border); border-radius: var(--radius); padding: 34px 20px; display: grid; justify-items: center; gap: 10px; text-align: center; }
+.empty .avatar { width: 46px; height: 46px; border-radius: 12px; }
+.empty .avatar svg { width: 24px; height: 24px; }
+.empty p { margin: 0; color: var(--muted-foreground); max-width: 340px; }
+
+.menu { position: relative; }
+.menu-pop { position: absolute; right: 0; bottom: 36px; min-width: 180px; background: var(--background); border: 1px solid var(--border); border-radius: 9px; box-shadow: 0 8px 24px oklch(0 0 0 / 14%); padding: 4px; display: grid; z-index: 5; }
+.menu-pop button { height: 30px; border: 0; background: none; border-radius: 6px; text-align: left; padding: 0 10px; font-size: 12.5px; }
+.menu-pop button:hover { background: var(--accent); }
+.menu-pop button.danger { color: var(--destructive); }
+
+.about { display: grid; justify-items: center; gap: 6px; padding: 18px 0 6px; text-align: center; }
+.about .mark { width: 64px; height: 64px; border-radius: 16px; }
+.about .mark svg { width: 34px; height: 34px; }
+.about h2 { margin: 8px 0 0; font-size: 18px; font-weight: 600; letter-spacing: -0.02em; }
+.kv { display: grid; grid-template-columns: max-content 1fr; gap: 8px 18px; }
+.kv dt { color: var(--muted-foreground); }
+.kv dd { margin: 0; font-family: var(--mono); font-size: 12px; overflow-wrap: anywhere; }
+
+.toast { position: fixed; left: calc(50% + 104px); bottom: 18px; transform: translateX(-50%); background: var(--primary); color: var(--primary-foreground); border-radius: 999px; padding: 7px 14px; font-weight: 500; font-size: 12.5px; box-shadow: 0 6px 20px oklch(0 0 0 / 20%); max-width: 460px; animation: in .18s ease-out; }
+.toast.error { background: var(--destructive); color: #fff; }
+</style>
+</head>
+<body>
+<aside>
+  <div class="brand"><span class="mark"><svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/><path d="M12 22V2"/></svg></span><div><b>Proxy Monster</b><span>Desktop</span></div></div>
+  <nav id="nav">
+    <button data-pane="servers"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="8" rx="2"/><rect x="2" y="13" width="20" height="8" rx="2"/><path d="M6 7h.01M6 17h.01"/></svg>Servers<kbd>⌘1</kbd></button>
+    <button data-pane="ai"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9.94 14.06A2 2 0 0 0 8.5 12.6L2.36 11a.5.5 0 0 1 0-.96L8.5 8.45a2 2 0 0 0 1.44-1.43L11.52.86a.5.5 0 0 1 .96 0l1.58 6.16a2 2 0 0 0 1.44 1.43l6.14 1.59a.5.5 0 0 1 0 .96L15.5 12.6a2 2 0 0 0-1.44 1.43l-1.58 6.15a.5.5 0 0 1-.96 0z"/></svg>AI Apps<kbd>⌘2</kbd></button>
+    <button data-pane="general"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 7h-9M14 17H5"/><circle cx="17" cy="17" r="3"/><circle cx="7" cy="7" r="3"/></svg>General<kbd>⌘3</kbd></button>
+    <button data-pane="about"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/></svg>About<kbd>⌘4</kbd></button>
+  </nav>
+  <div class="status" id="status"></div>
+</aside>
+<main id="main"></main>
+<div class="toast" id="toast" hidden></div>
+<script>
+const SHIELD = '<svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/><path d="M12 22V2"/></svg>';
+const PLUS = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>';
+const MORE = '<svg viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="12" r="1.7"/><circle cx="12" cy="12" r="1.7"/><circle cx="19" cy="12" r="1.7"/></svg>';
+const APP_TILES = { 'claude-desktop': ['C', '#d97757'], 'claude-code': ['>_', '#1f1f1f'], codex: ['◎', '#10a37f'] };
+
+// In the app, pmCall reaches Go and answers through __pmDone. Opened on its own (a design review), the page
+// runs on the demo backend below so every state can be seen.
+const pending = {};
+let seq = 0;
+window.__pmDone = (id, result) => { const r = pending[id]; delete pending[id]; if (r) r(result); };
+function call(name, ...args) {
+  if (typeof window.pmCall !== 'function') return demo(name, args);
+  return new Promise(resolve => { const id = 'c' + (++seq); pending[id] = resolve; window.pmCall(id, name, JSON.stringify(args)); });
+}
+
+let state = { running: true, servers: [], loginItemOn: false, loginItemShown: false, versions: {} };
+let ai = null, pane = 'servers', adding = false, editing = null, menuFor = null, err = '';
+
+async function refresh() { state = await call('state'); render(); }
+async function refreshAI() { ai = await call('aiState'); if (pane === 'ai') render(); }
+window.pmRefresh = () => { refresh(); refreshAI(); };
+
+const $ = s => document.querySelector(s);
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+
+function toast(text, error) {
+  const t = $('#toast');
+  t.textContent = text; t.className = 'toast' + (error ? ' error' : ''); t.hidden = false;
+  clearTimeout(toast.timer); toast.timer = setTimeout(() => { t.hidden = true; }, 3200);
+}
+async function act(promise, done) {
+  const e = await promise;
+  if (e) toast(e, true); else if (done) toast(done);
+  await refresh();
+}
+
+function statusDot(s) { return s.busy ? 'busy' : s.ended ? 'warn' : s.signedIn ? (s.ending ? 'warn' : 'ok') : ''; }
+
+function renderStatus() {
+  const el = $('#status');
+  if (!state.running) {
+    el.innerHTML = `<div class="line"><span class="dot"></span>Not running</div><small>Background service is stopped</small>`;
+    return;
+  }
+  const signed = state.servers.filter(s => s.signedIn || s.ended);
+  if (!state.servers.length) { el.innerHTML = `<div class="line"><span class="dot"></span>No servers</div><small>Add one to get started</small>`; return; }
+  const s = signed[0] || state.servers[0];
+  el.innerHTML = `<div class="line"><span class="dot ${statusDot(s)}"></span>${esc(s.name)}${state.servers.length > 1 ? ` <span class="muted">+${state.servers.length - 1}</span>` : ''}</div><small>${esc(s.ended ? 'sign-in ended' : s.signedIn ? s.left : 'signed out')}</small>`;
+}
+
+function serverCard(s) {
+  const badge = s.busy ? '<span class="badge"><span class="dot busy"></span>Signing in</span>'
+    : s.ended ? '<span class="badge"><span class="dot warn"></span>Sign-in ended</span>'
+    : s.signedIn ? `<span class="badge"><span class="dot ${s.ending ? 'warn' : 'ok'}"></span>${s.ending ? 'Ending soon' : 'Signed in'}</span>`
+    : '<span class="badge"><span class="dot"></span>Signed out</span>';
+  const body = s.signedIn || s.ended ? `
+      <div class="stats">
+        <div class="stat"><label>Account</label><b title="${esc(s.account)}">${esc(s.account)}</b></div>
+        <div class="stat"><label>${s.ended ? 'Sign-in ended' : 'Sign-in ends'}</label><b>${esc(s.endsAt)}</b></div>
+        <div class="stat"><label>Datasources</label><b>${s.datasources}</b></div>
+      </div>` : '';
+  const hint = s.busy ? 'Finish signing in in your browser.'
+    : s.ended ? (s.tokenEndsAt ? `Database connections work until ${esc(s.tokenEndsAt.replace(/^(Today|Tomorrow)/, w => w.toLowerCase()))}. Sign in again to use AI apps.` : 'Sign in again to use AI apps and connect.')
+    : s.signedIn ? `${esc(s.left)} until you need to sign in again.` : 'Sign in to reach this server’s datasources.';
+  const primary = s.busy ? '<button class="btn" disabled>Waiting…</button>'
+    : `<button class="btn ${s.signedIn && !s.ending ? '' : 'primary'}" data-act="signin" data-s="${esc(s.name)}">${s.signedIn || s.ended ? 'Sign In Again' : 'Sign In'}</button>`;
+  const menu = menuFor === s.name ? `<div class="menu-pop">
+      ${s.signedIn || s.ended ? `<button data-act="signout" data-s="${esc(s.name)}">Sign Out</button>` : ''}
+      <button data-act="edit" data-s="${esc(s.name)}">Change Address…</button>
+      <button class="danger" data-act="remove" data-s="${esc(s.name)}">Remove Server…</button></div>` : '';
+  if (editing === s.name) return editCard(s);
+  return `<div class="card">
+    <div class="card-body">
+      <div class="row"><span class="avatar">${SHIELD}</span><div class="grow"><div class="title">${esc(s.name)}</div><div class="sub mono">${esc(s.url)}</div></div>${badge}</div>
+      ${body}
+    </div>
+    <div class="card-foot"><span class="hint">${hint}</span>
+      <span class="menu"><button class="btn ghost" data-act="menu" data-s="${esc(s.name)}" aria-label="More">${MORE}</button>${menu}</span>${primary}</div>
+  </div>`;
+}
+
+function editCard(s) {
+  return `<form class="card" id="form">
+    <div class="card-body">
+      <div class="row"><span class="avatar">${SHIELD}</span><div class="grow"><div class="title">${s ? 'Change address of ' + esc(s.name) : 'Add a server'}</div><div class="sub">${s ? 'Changing the address signs you out of this server.' : 'The Connect page of your company’s console can do this for you.'}</div></div></div>
+      ${s ? '' : `<div class="field"><label for="name">Name</label><input id="name" class="mono" placeholder="acme" autocomplete="off" spellcheck="false"><small>Short and lowercase. You’ll see it in menus and in <span class="mono">pmon</span> commands.</small></div>`}
+      <div class="field"><label for="url">Server address</label><input id="url" class="mono" placeholder="https://pm.example.com" value="${s ? esc(s.url) : ''}" autocomplete="off" spellcheck="false"></div>
+      <div class="err" id="formErr">${esc(err)}</div>
+    </div>
+    <div class="card-foot"><span class="hint"></span><button type="button" class="btn" data-act="cancel">Cancel</button><button class="btn primary">${s ? 'Save' : 'Add Server'}</button></div>
+  </form>`;
+}
+
+function serversPane() {
+  const list = state.servers.map(serverCard).join('');
+  const empty = !state.servers.length && !adding ? `<div class="empty"><span class="avatar">${SHIELD}</span><div class="title">No servers yet</div><p>Open the Connect page in your company’s proxy-monster console, or add the server’s address here.</p><button class="btn primary" data-act="add">${PLUS}Add Server</button></div>` : '';
+  const add = adding ? editCard(null) : state.servers.length ? `<button class="add" data-act="add">${PLUS}Add another server</button>` : '';
+  const stopped = !state.running ? `<div class="card"><div class="card-body"><div class="row"><div class="grow"><div class="title">Proxy Monster isn’t running</div><div class="sub">Start the background service to see and use your servers.</div></div><button class="btn primary" data-act="start">Start</button></div></div></div>` : '';
+  return `<section class="pane"><header><h1>Servers</h1><p>The proxy-monster servers you sign in to. Each sign-in reaches the datasources you have access to.</p></header>${stopped}${list}${empty}${add}</section>`;
+}
+
+function aiPane() {
+  let body;
+  if (!ai) body = `<div class="card"><div class="card-body"><div class="skeleton" style="width:40%"></div><div class="skeleton" style="width:70%"></div></div></div>`.repeat(2);
+  else if (!ai.length) body = `<div class="empty"><div class="title">No AI apps found</div><p>Install Claude Desktop, Claude Code or Codex, then come back here.</p></div>`;
+  else if (!state.servers.length) body = `<div class="empty"><div class="title">Add a server first</div><p>AI apps use a server you’ve signed in to.</p><button class="btn primary" data-act="goto-servers">Go to Servers</button></div>`;
+  else body = ai.map(app => {
+    const [glyph, color] = APP_TILES[app.id] || ['•', '#555'];
+    const rows = state.servers.map(s => {
+      const on = !!app.connected[s.name];
+      return `<div class="row"><div class="grow"><div style="font-weight:500">${esc(s.name)}</div><div class="sub">${s.signedIn ? (on ? 'Connected' : 'Not connected') : 'Signed out — sign in to use it'}</div></div><button class="switch" role="switch" aria-checked="${on}" aria-label="Use ${esc(s.name)} in ${esc(app.name)}" data-act="ai" data-app="${app.id}" data-s="${esc(s.name)}" ${app.busy ? 'disabled' : ''}></button></div>`;
+    }).join('');
+    return `<div class="card"><div class="card-body"><div class="row"><span class="tile" style="background:${color}">${glyph}</span><div class="grow"><div class="title">${esc(app.name)}</div><div class="sub">Query your datasources from ${esc(app.name)}, with your access.</div></div></div><div class="list">${rows}</div></div><div class="card-foot"><span class="hint">${esc(app.after)}</span></div></div>`;
+  }).join('');
+  return `<section class="pane"><header><h1>AI Apps</h1><p>Let an AI app on this Mac query the datasources you can access. It signs in as you, so masking and approvals still apply.</p></header>${body}</section>`;
+}
+
+function generalPane() {
+  return `<section class="pane"><header><h1>General</h1><p>How Proxy Monster starts and keeps you informed.</p></header>
+    <div class="card"><div class="card-body"><div class="row"><div class="grow"><div class="title">Open at Login</div><div class="sub">Start Proxy Monster when you log in, so your sign-in status is always in the menu bar.</div></div><button class="switch" role="switch" aria-checked="${state.loginItemOn}" data-act="login" aria-label="Open at Login" ${state.loginItemShown ? '' : 'disabled'}></button></div></div>
+      <div class="card-foot"><span class="hint">${state.loginItemShown ? 'Turned on after your first sign-in.' : 'Needs macOS 13 or later and the app installed from its installer.'}</span></div></div>
+    <div class="card"><div class="card-body"><div class="row"><div class="grow"><div class="title">Notifications</div><div class="sub">You’ll get a notification 30 minutes before a sign-in ends, and when it has ended. Click it to sign in again.</div></div></div></div>
+      <div class="card-foot"><span class="hint">Change how they appear in System Settings › Notifications.</span></div></div>
+  </section>`;
+}
+
+function aboutPane() {
+  const v = state.versions || {};
+  return `<section class="pane"><div class="about"><span class="mark">${SHIELD}</span><h2>Proxy Monster Desktop</h2><div class="muted mono">${esc(v.app || 'dev')}</div></div>
+    <div class="card"><div class="card-body"><dl class="kv">
+      <dt>App</dt><dd>${esc(v.app || '—')}</dd>
+      <dt>Bundled pmon</dt><dd>${esc(v.pmon || '—')}</dd>
+      <dt>Background service</dt><dd>${state.running ? esc(v.daemon || 'running') : 'not running'}</dd>
+    </dl></div><div class="card-foot"><span class="hint">Open source under the Apache 2.0 license.</span><button class="btn" data-act="link" data-url="https://github.com/ridi-oss/proxy-monster">GitHub</button></div></div>
+  </section>`;
+}
+
+function render() {
+  for (const b of document.querySelectorAll('nav button')) { if (b.dataset.pane === pane) b.setAttribute('aria-current', 'page'); else b.removeAttribute('aria-current'); }
+  renderStatus();
+  const m = $('#main');
+  const html = { servers: serversPane, ai: aiPane, general: generalPane, about: aboutPane }[pane]();
+  // Rebuilding identical content still repaints, which reads as a flicker on every click and refresh.
+  if (html === render.last && pane === render.pane) return;
+  const entering = pane !== render.pane;
+  render.last = html; render.pane = pane;
+  const keep = document.activeElement && document.activeElement.id;
+  const values = { name: $('#name')?.value, url: $('#url')?.value };
+  m.innerHTML = html;
+  if (entering) m.firstElementChild?.classList.add('enter');
+  if ($('#name') && values.name != null) $('#name').value = values.name;
+  if ($('#url') && values.url != null && editing === null) $('#url').value = values.url;
+  if (keep && document.getElementById(keep)) document.getElementById(keep).focus();
+}
+
+function go(p) { pane = p; adding = false; editing = null; menuFor = null; err = ''; render(); if (p === 'ai') refreshAI(); }
+document.getElementById('nav').addEventListener('click', e => { const b = e.target.closest('button'); if (b) go(b.dataset.pane); });
+
+document.addEventListener('click', async e => {
+  const b = e.target.closest('[data-act]');
+  if (!b) { if (menuFor) { menuFor = null; render(); } return; }
+  const s = b.dataset.s;
+  switch (b.dataset.act) {
+    case 'add': adding = true; editing = null; err = ''; render(); $('#form')?.scrollIntoView({ block: 'nearest', behavior: 'smooth' }); $('#name')?.focus({ preventScroll: true }); break;
+    case 'cancel': adding = false; editing = null; err = ''; render(); break;
+    case 'menu': menuFor = menuFor === s ? null : s; render(); break;
+    case 'edit': menuFor = null; editing = s; err = ''; render(); $('#url')?.focus(); break;
+    case 'signin': case 'reauth': await act(call('signIn', s)); break;
+    case 'signout': menuFor = null; await act(call('signOut', s), `Signed out of ${s}`); break;
+    case 'remove': menuFor = null; await act(call('removeServer', s), `Removed ${s}`); break;
+    case 'start': await act(call('start')); break;
+    case 'login': await act(call('setOpenAtLogin', b.getAttribute('aria-checked') !== 'true')); break;
+    case 'goto-servers': go('servers'); break;
+    case 'link': call('openLink', b.dataset.url); break;
+    case 'ai': {
+      const on = b.getAttribute('aria-checked') !== 'true';
+      const app = ai.find(a => a.id === b.dataset.app); app.busy = true; render();
+      const e2 = await call('aiToggle', app.id, s, on);
+      if (e2) toast(e2, true); else toast(on ? `Added ${s} to ${app.name}. ${app.after}` : `Removed ${s} from ${app.name}`);
+      await refreshAI(); render();
+      break;
+    }
+  }
+});
+
+document.addEventListener('submit', async e => {
+  e.preventDefault();
+  const name = editing ?? $('#name').value.trim().toLowerCase();
+  const url = $('#url').value.trim().replace(/\/+$/, '');
+  if (!name) { err = 'Enter a name for this server.'; return render(); }
+  if (!/^https:\/\//.test(url) && !/^http:\/\/(localhost|127\.0\.0\.1)(:|\/|$)/.test(url)) { err = 'Enter the full address, starting with https://'; return render(); }
+  const e2 = await call('setServer', name, url);
+  if (e2) { err = e2; return render(); }
+  const wasAdding = adding;
+  adding = false; editing = null; err = '';
+  await refresh();
+  toast(wasAdding ? `Added ${name}. Sign in to start using it.` : `Updated ${name}`);
+});
+
+document.addEventListener('keydown', e => {
+  if (e.metaKey && ['1', '2', '3', '4'].includes(e.key)) { e.preventDefault(); go(['servers', 'ai', 'general', 'about'][+e.key - 1]); }
+  if (e.key === 'Escape' && (adding || editing || menuFor)) { adding = false; editing = null; menuFor = null; err = ''; render(); }
+});
+
+// ---- demo backend, used only when the page is opened outside the app ----
+const demoState = {
+  running: true, loginItemOn: true, loginItemShown: true,
+  versions: { app: '0.1.8', pmon: '0.1.8', daemon: '0.1.8' },
+  servers: [
+    { name: 'acme', url: 'https://pm.acme.example', signedIn: true, account: 'dana@acme.example', endsAt: 'Today 18:40', left: '9h 12m left', datasources: 12 },
+    { name: 'staging', url: 'https://pm.staging.acme.example', signedIn: false, ended: true, account: 'dana@acme.example', endsAt: 'Today 09:58', tokenEndsAt: 'Tomorrow 00:16', left: 'ended', datasources: 4 },
+  ],
+};
+const demoAI = [
+  { id: 'claude-desktop', name: 'Claude Desktop', after: 'Quit and reopen Claude Desktop to use it.', connected: { acme: true } },
+  { id: 'claude-code', name: 'Claude Code', after: 'New Claude Code sessions can use it.', connected: {} },
+  { id: 'codex', name: 'Codex', after: 'New Codex sessions can use it.', connected: {} },
+];
+async function demo(name, args) {
+  await new Promise(r => setTimeout(r, name === 'aiState' ? 500 : 120));
+  const find = n => demoState.servers.find(s => s.name === n);
+  switch (name) {
+    case 'state': return JSON.parse(JSON.stringify(demoState));
+    case 'aiState': return JSON.parse(JSON.stringify(demoAI));
+    case 'setServer': { const [n, u] = args; const s = find(n); if (s) { s.url = u; s.signedIn = false; } else demoState.servers.push({ name: n, url: u, signedIn: false, datasources: 0 }); return ''; }
+    case 'removeServer': demoState.servers = demoState.servers.filter(s => s.name !== args[0]); return '';
+    case 'signIn': { const s = find(args[0]); Object.assign(s, { signedIn: true, ended: false, ending: false, account: 'dana@acme.example', endsAt: 'Tomorrow 09:40', left: '12h left', datasources: s.datasources || 7 }); return ''; }
+    case 'signOut': find(args[0]).signedIn = false; return '';
+    case 'setOpenAtLogin': demoState.loginItemOn = args[0]; return '';
+    case 'aiToggle': { const [id, s, on] = args; demoAI.find(a => a.id === id).connected[s] = on; return ''; }
+    default: return '';
+  }
+}
+
+refresh().then(() => { if (window.pmStartWithAdd) { adding = true; render(); $('#name')?.focus(); } });
+refreshAI();
+</script>
+</body>
+</html>

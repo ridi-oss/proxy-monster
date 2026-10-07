@@ -1,8 +1,11 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"os"
+	"os/exec"
 
 	"fyne.io/systray"
 
@@ -34,6 +37,10 @@ func (a *app) run(act action) {
 		a.doQuit()
 	case opAIApp:
 		a.doAIApp(act)
+	case opPrefs:
+		a.openPreferences(false)
+	case opAddServer:
+		a.openPreferences(true)
 	}
 }
 
@@ -58,13 +65,25 @@ func (a *app) doSignIn(server string) {
 	}
 	a.setSigningIn(server, true)
 	defer a.setSigningIn(server, false)
-	err = client.Login(a.ctx, control.LoginRequest{Server: server}, func(ev control.LoginEvent) {
+	if err := signInFlow(a.ctx, client, server); err != nil {
+		notify("Sign-in failed", err.Error())
+		return
+	}
+	a.refresh(client)
+}
+
+// signInFlow runs one server's device sign-in: the browser opens the prefilled verification page, and the
+// outcome arrives as a notification. Shared by the menu and the Settings window.
+func signInFlow(ctx context.Context, client *control.Client, server string) error {
+	return client.Login(ctx, control.LoginRequest{Server: server}, func(ev control.LoginEvent) {
 		switch ev.Kind {
 		case "prompt":
 			code := ""
 			if ev.UserCode != "" {
 				code = " The code is " + ev.UserCode + "."
 			}
+			// The daemon may run on another host than this menu bar, so a link that fails to open here goes to
+			// the clipboard, where the user can reach it.
 			if openURL(ev.VerificationURIComplete) == nil {
 				notify("Sign in to "+server, "Finish in your browser."+code)
 			} else if copyToClipboard(ev.VerificationURI) == nil {
@@ -74,14 +93,9 @@ func (a *app) doSignIn(server string) {
 			}
 		case "done":
 			notify("Signed in", fmt.Sprintf("Signed in to %s as %s.", server, ev.Principal))
+			openAtLoginOnce()
 		}
 	})
-	if err != nil {
-		notify("Sign-in failed", err.Error())
-		return
-	}
-	openAtLoginOnce()
-	a.refresh(client)
 }
 
 func (a *app) doSignOut(server string) {
@@ -187,12 +201,14 @@ func (a *app) doQuit() {
 // It asks the DAEMON for the count rather than trusting the last render: the cached status can be stale, and a
 // stale nil would silently skip the dialog and drop someone's in-flight query. Only a daemon that is genuinely
 // unreachable — nothing to disturb — proceeds without asking.
-func (a *app) confirmDroppingConns(verb, server string) bool {
-	client, err := control.Connect(a.ctx)
+func (a *app) confirmDroppingConns(verb, server string) bool { return confirmDrop(a.ctx, verb, server) }
+
+func confirmDrop(ctx context.Context, verb, server string) bool {
+	client, err := control.Connect(ctx)
 	if err != nil {
 		return true
 	}
-	s, err := client.Status(a.ctx)
+	s, err := client.Status(ctx)
 	if err != nil {
 		return true
 	}
@@ -205,5 +221,36 @@ func (a *app) confirmDroppingConns(verb, server string) bool {
 	if n == 0 {
 		return true
 	}
-	return confirmDialog(verb+"?", fmt.Sprintf("%s will be closed.", plural(n, "open database connection")), verb)
+	return confirm(verb+"?", fmt.Sprintf("%s will be closed.", plural(n, "open database connection")), verb)
+}
+
+// openPreferences opens the Settings window, or brings the open one to the front.
+func (a *app) openPreferences(add bool) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.prefsPid != 0 {
+		activatePid(a.prefsPid)
+		return
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		notify("Couldn't open Settings", err.Error())
+		return
+	}
+	args := []string{"--preferences"}
+	if add {
+		args = append(args, "--add")
+	}
+	cmd := exec.Command(exe, args...)
+	if err := cmd.Start(); err != nil {
+		notify("Couldn't open Settings", err.Error())
+		return
+	}
+	a.prefsPid = cmd.Process.Pid
+	go func() {
+		_ = cmd.Wait()
+		a.mu.Lock()
+		a.prefsPid = 0
+		a.mu.Unlock()
+	}()
 }

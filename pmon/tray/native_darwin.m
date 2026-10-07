@@ -1,3 +1,4 @@
+#import <AppKit/AppKit.h>
 #import <Foundation/Foundation.h>
 #import <ServiceManagement/ServiceManagement.h>
 #import <UserNotifications/UserNotifications.h>
@@ -98,4 +99,11 @@ bool pm_pref_bool(const char *key) {
 
 void pm_set_pref_bool(const char *key, bool value) {
   [[NSUserDefaults standardUserDefaults] setBool:value forKey:[NSString stringWithUTF8String:key]];
+}
+
+void pm_activate_pid(int pid) {
+  dispatch_async(dispatch_get_main_queue(), ^{
+    [[NSRunningApplication runningApplicationWithProcessIdentifier:pid]
+        activateWithOptions:NSApplicationActivateAllWindows];
+  });
 }

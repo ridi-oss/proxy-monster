@@ -7,6 +7,7 @@ import (
 	"crypto/tls"
 	"fmt"
 	"net"
+	"net/netip"
 	"strconv"
 	"strings"
 	"time"
@@ -44,6 +45,8 @@ type rawFlags struct {
 	TLSKeyPath             string `env:"PM_TLS_KEY"`
 	TLSNoAdvertise         string `env:"PM_TLS_NO_ADVERTISE"`
 	QueryTimeout           string `env:"PM_QUERY_TIMEOUT"`
+	ProxyProtocolPort      string `env:"PM_PROXY_PROTOCOL_PORT"`
+	TrustedProxies         string `env:"PM_TRUSTED_PROXIES"`
 }
 
 // parsePort turns a blank, non-numeric, or out-of-range value into 0, which Load() then replaces with the
@@ -112,8 +115,10 @@ type Config struct {
 	// already distributed by your fleet management) and you would rather not publish the certificate through
 	// the console at all. Advertising is otherwise harmless — a leaf and its issuers are public material — so
 	// this exists for deployments that prefer the control plane hold nothing it does not need.
-	TLSNoAdvertise bool
-	QueryTimeout   time.Duration
+	TLSNoAdvertise    bool
+	QueryTimeout      time.Duration
+	ProxyProtocolPort int
+	TrustedProxies    []netip.Prefix
 }
 
 // Load reads the proxy configuration from the environment, applying the engine-dependent port defaults
@@ -163,6 +168,15 @@ func Load(registry spi.Registry) (*Config, error) {
 		queryTimeout = time.Duration(seconds) * time.Second
 	}
 
+	proxyProtocolPort := parsePort(raw.ProxyProtocolPort)
+	if proxyProtocolPort == 0 && strings.TrimSpace(raw.ProxyProtocolPort) != "" {
+		return nil, fmt.Errorf("PM_PROXY_PROTOCOL_PORT=%q has an invalid port (want 1-65535)", raw.ProxyProtocolPort)
+	}
+	trustedProxies, err := parseTrustedProxies(raw.TrustedProxies)
+	if err != nil {
+		return nil, err
+	}
+
 	targetTLSMode, err := targettls.ParseMode(raw.TargetTLS)
 	if err != nil {
 		return nil, err
@@ -210,7 +224,33 @@ func Load(registry spi.Registry) (*Config, error) {
 		TLSKeyPath:            blankToAbsent(raw.TLSKeyPath),
 		TLSNoAdvertise:        parseBoolEnv(raw.TLSNoAdvertise),
 		QueryTimeout:          queryTimeout,
+		ProxyProtocolPort:     proxyProtocolPort,
+		TrustedProxies:        trustedProxies,
 	}, nil
+}
+
+func parseTrustedProxies(raw string) ([]netip.Prefix, error) {
+	var prefixes []netip.Prefix
+	for _, entry := range strings.Split(raw, ",") {
+		entry = strings.TrimSpace(entry)
+		if entry == "" {
+			continue
+		}
+		if prefix, err := netip.ParsePrefix(entry); err == nil {
+			prefixes = append(prefixes, prefix.Masked())
+			continue
+		}
+		addr, err := netip.ParseAddr(entry)
+		if err != nil {
+			return nil, fmt.Errorf("PM_TRUSTED_PROXIES entry %q is neither an IP address nor a CIDR block", entry)
+		}
+		prefixes = append(prefixes, netip.PrefixFrom(addr, addr.BitLen()))
+	}
+	return prefixes, nil
+}
+
+func (c *Config) Listen() spi.Listen {
+	return spi.Listen{Port: c.ProxyPort, ProxyProtocolPort: c.ProxyProtocolPort, TrustedProxies: c.TrustedProxies}
 }
 
 // parseBoolEnv treats the usual truthy spellings as true and anything else — including blank — as false, so
@@ -258,6 +298,15 @@ func (c *Config) Validate() error {
 		}
 		if p, perr := strconv.Atoi(port); perr != nil || p < 1 || p > 65535 {
 			return fmt.Errorf("PM_ADVERTISE_ADDR=%q has an invalid port (want 1-65535)", c.AdvertiseAddr)
+		}
+	}
+
+	if c.ProxyProtocolPort != 0 {
+		if len(c.TrustedProxies) == 0 {
+			return fmt.Errorf("PM_PROXY_PROTOCOL_PORT needs PM_TRUSTED_PROXIES: with no trusted sender, no connection there could ever be accepted")
+		}
+		if c.ProxyProtocolPort == c.ProxyPort {
+			return fmt.Errorf("PM_PROXY_PROTOCOL_PORT=%d must differ from the plain wire port", c.ProxyProtocolPort)
 		}
 	}
 

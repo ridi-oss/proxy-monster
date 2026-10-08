@@ -37,6 +37,8 @@ services:
       - "31307:3306"
     volumes:
       - ./deploy/seed/target-seed-mysql.sql:/docker-entrypoint-initdb.d/target-seed-mysql.sql
+      # The proxy's catalog read includes mysql.func; without it the proxy never registers.
+      - ./smoke/mysql-grants.sql:/docker-entrypoint-initdb.d/zz-mysql-grants.sql
       - target-mysql-data:/var/lib/mysql
     healthcheck:
       test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uacme", "-pacme"]

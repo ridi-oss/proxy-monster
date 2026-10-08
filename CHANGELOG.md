@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.1.30](https://github.com/ridi-oss/proxy-monster/compare/server-v0.1.29...server-v0.1.30) (2026-10-08)
+
+
+### Features
+
+* **analyzer:** mark a batch statement that follows an empty one ([bf5c8bd](https://github.com/ridi-oss/proxy-monster/commit/bf5c8bdb0096309fb4744f58093f18720ef795cb))
+* **analyzer:** mark statements that may control the transaction in a batch ([fea8461](https://github.com/ridi-oss/proxy-monster/commit/fea8461b6ac8f314767b74dbe5df3fdcb9f96fb1))
+* **mysqlproxy:** run a multi-statement query statement by statement ([eb1deb2](https://github.com/ridi-oss/proxy-monster/commit/eb1deb2cca49968695a02105f3e4bb5482420434))
+* **pgproxy:** run a multi-statement simple query statement by statement ([7d386eb](https://github.com/ridi-oss/proxy-monster/commit/7d386eb9a7413e7255351d26daef24ca9b01391f))
+* **web:** download Proxy Monster Desktop's current installer ([e3e3bc5](https://github.com/ridi-oss/proxy-monster/commit/e3e3bc58889bbeb54a431b0d75e34954303a16d9))
+* **web:** open Proxy Monster Desktop from the Connect page ([20c4cd6](https://github.com/ridi-oss/proxy-monster/commit/20c4cd6d3ca303d5a7aa52809bcdceae0b32cb0e))
+
 ## [0.1.29](https://github.com/ridi-oss/proxy-monster/compare/server-v0.1.28...server-v0.1.29) (2026-10-07)
 
 

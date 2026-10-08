@@ -1,7 +1,9 @@
 package config
 
 import (
+	"net/netip"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -39,7 +41,7 @@ func clearPMEnv(t *testing.T) {
 		"PM_PROXY_PORT", "PM_TARGET_PORT",
 		"PM_DATASOURCE_NAME", "PM_DATASOURCE_TAGS", "PM_SECRET_TOKEN",
 		"PM_TLS_CERT", "PM_TLS_KEY", "PM_ADVERTISE_ADDR", "PM_QUERY_TIMEOUT", "PM_TARGET_TLS", "PM_TARGET_CA",
-		"PM_DATASOURCE_DESCRIPTION",
+		"PM_DATASOURCE_DESCRIPTION", "PM_PROXY_PROTOCOL_PORT", "PM_TRUSTED_PROXIES",
 	} {
 		t.Setenv(v, "")
 	}
@@ -481,5 +483,75 @@ func TestLoadDatasourceDescription(t *testing.T) {
 		if err := cfg.Validate(); err == nil {
 			t.Errorf("Validate() = nil for description %q", bad)
 		}
+	}
+}
+
+func TestLoadProxyProtocolPortAndTrustedProxies(t *testing.T) {
+	clearPMEnv(t)
+	t.Setenv("PM_DATASOURCE_NAME", "ds")
+	t.Setenv("PM_PROXY_PROTOCOL_PORT", "16033")
+	t.Setenv("PM_TRUSTED_PROXIES", " 10.20.0.0/16 , 10.30.1.7,, 10.40.1.9/16 ")
+
+	cfg, err := Load(testRegistry())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	listen := cfg.Listen()
+	if listen.Port != 6033 || listen.ProxyProtocolPort != 16033 {
+		t.Fatalf("Listen ports = %d/%d, want 6033/16033", listen.Port, listen.ProxyProtocolPort)
+	}
+	want := []netip.Prefix{
+		netip.MustParsePrefix("10.20.0.0/16"),
+		netip.MustParsePrefix("10.30.1.7/32"),
+		netip.MustParsePrefix("10.40.0.0/16"),
+	}
+	if !slices.Equal(listen.TrustedProxies, want) {
+		t.Fatalf("TrustedProxies = %v, want %v", listen.TrustedProxies, want)
+	}
+}
+
+func TestLoadRejectsAnUnparsableTrustedProxy(t *testing.T) {
+	clearPMEnv(t)
+	t.Setenv("PM_TRUSTED_PROXIES", "10.20.0.0/16,edge.internal")
+	if _, err := Load(testRegistry()); err == nil {
+		t.Fatal("Load accepted a trusted proxy that is not an address")
+	}
+}
+
+func TestLoadRejectsAGarbledProxyProtocolPort(t *testing.T) {
+	clearPMEnv(t)
+	t.Setenv("PM_PROXY_PROTOCOL_PORT", "16o33")
+	if _, err := Load(testRegistry()); err == nil {
+		t.Fatal("Load silently dropped a garbled PROXY protocol port")
+	}
+}
+
+func TestValidateRequiresATrustedSenderForTheProxyProtocolPort(t *testing.T) {
+	clearPMEnv(t)
+	t.Setenv("PM_DATASOURCE_NAME", "ds")
+	t.Setenv("PM_PROXY_PROTOCOL_PORT", "16033")
+	cfg, err := Load(testRegistry())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("Validate accepted a PROXY protocol port with no trusted sender")
+	}
+}
+
+func TestValidateRejectsAProxyProtocolPortEqualToTheWirePort(t *testing.T) {
+	clearPMEnv(t)
+	t.Setenv("PM_DATASOURCE_NAME", "ds")
+	t.Setenv("PM_PROXY_PROTOCOL_PORT", "6033")
+	t.Setenv("PM_TRUSTED_PROXIES", "10.20.0.0/16")
+	cfg, err := Load(testRegistry())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("Validate accepted a PROXY protocol port that shadows the wire port")
 	}
 }

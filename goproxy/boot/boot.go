@@ -201,7 +201,7 @@ func Run(registry spi.Registry) error {
 		}
 	}()
 
-	server := targetDb.NewWireServer(cfg.ProxyPort, enforcementClient, tlsProvider)
+	server := targetDb.NewWireServer(cfg.Listen(), enforcementClient, tlsProvider)
 	slog.Info("starting proxy-monster data plane", "engine", cfg.Engine, "control_plane", cfg.ControlPlaneGrpcTarget)
 
 	serveErr := make(chan error, 1)

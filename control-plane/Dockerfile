@@ -70,7 +70,7 @@ USER pm
 # FFM restricted-method grant for the analyzer's native downcall (java.lang.foreign); the generated
 # start script appends $JAVA_OPTS to its java invocation, same as the root Gradle build's
 # JavaExec/Test jvmArgs locally. Override PM_HTTP_PORT via env; the healthcheck reads it back.
-ENV JAVA_OPTS="--enable-native-access=ALL-UNNAMED"
+ENV JAVA_OPTS="--enable-native-access=ALL-UNNAMED -XX:MaxRAMPercentage=60 -XX:+ExitOnOutOfMemoryError"
 ENV PM_HTTP_PORT=8080
 EXPOSE 8080
 

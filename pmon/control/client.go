@@ -415,11 +415,11 @@ func StartDaemon() error {
 			}
 		}
 	}
-	detach(cmd)
-	if err := cmd.Start(); err != nil {
+	started, err := startDetached(cmd)
+	if err != nil {
 		return fmt.Errorf("could not start the daemon: %w", err)
 	}
-	return cmd.Process.Release() // detach; the daemon owns its own lifetime + pid lock
+	return started.Process.Release() // detach; the daemon owns its own lifetime + pid lock
 }
 
 // waitForDaemon polls the socket until the daemon answers or the timeout expires.

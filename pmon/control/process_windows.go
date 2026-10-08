@@ -1,6 +1,7 @@
 package control
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -96,13 +97,20 @@ const exeSuffix = ".exe"
 // runnable goes by the extension: Windows file modes carry no execute bit.
 func runnable(path string, _ os.FileInfo) bool { return strings.EqualFold(filepath.Ext(path), ".exe") }
 
-// detach starts the daemon outside the peer's console and process group, so closing a terminal or pressing
-// Ctrl-C in it does not stop the daemon.
-func detach(cmd *exec.Cmd) {
-	cmd.SysProcAttr = &windows.SysProcAttr{
-		CreationFlags: windows.CREATE_NEW_PROCESS_GROUP | windows.DETACHED_PROCESS,
-		HideWindow:    true,
+// startDetached starts the daemon outside the peer's console, process group and job, so closing a terminal,
+// pressing Ctrl-C in it, or ending the SSH session that ran `pmon login` does not stop the daemon. A job that
+// forbids leaving it refuses the start, which is then retried inside the job.
+func startDetached(cmd *exec.Cmd) (*exec.Cmd, error) {
+	flags := uint32(windows.CREATE_NEW_PROCESS_GROUP | windows.DETACHED_PROCESS)
+	cmd.SysProcAttr = &windows.SysProcAttr{CreationFlags: flags | windows.CREATE_BREAKAWAY_FROM_JOB, HideWindow: true}
+	err := cmd.Start()
+	if !errors.Is(err, windows.ERROR_ACCESS_DENIED) {
+		return cmd, err
 	}
+	retry := exec.Command(cmd.Path, cmd.Args[1:]...)
+	retry.Env, retry.Dir, retry.Stdout, retry.Stderr = cmd.Env, cmd.Dir, cmd.Stdout, cmd.Stderr
+	retry.SysProcAttr = &windows.SysProcAttr{CreationFlags: flags, HideWindow: true}
+	return retry, retry.Start()
 }
 
 // terminate ends the daemon outright: Windows has no SIGTERM for a process without a console.

@@ -35,8 +35,11 @@ const exeSuffix = ""
 
 func runnable(_ string, info os.FileInfo) bool { return info.Mode()&0o111 != 0 }
 
-// detach starts the daemon in a new session: it must not die with the peer's process group, nor take its
+// startDetached starts the daemon in a new session: it must not die with the peer's process group, nor take its
 // controlling terminal's signals (a Ctrl-C in the shell that ran `pmon login` must not kill the daemon).
-func detach(cmd *exec.Cmd) { cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true} }
+func startDetached(cmd *exec.Cmd) (*exec.Cmd, error) {
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	return cmd, cmd.Start()
+}
 
 func terminate(pid int) error { return syscall.Kill(pid, syscall.SIGTERM) }

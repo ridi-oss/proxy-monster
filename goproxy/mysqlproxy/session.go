@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"io"
 	"strings"
+
+	"github.com/ridi-oss/proxy-monster/mysqlwire"
 )
 
 const (
@@ -212,8 +214,10 @@ func normalizeTargetDbOK(payload []byte) ([]byte, uint64, *string, []sysVarChang
 	if err != nil {
 		return nil, 0, nil, nil, fmt.Errorf("parse OK info: %w", err)
 	}
-	// Without CLIENT_SESSION_TRACK the info field is string<EOF>, not string<lenenc>.
-	clean = append(clean, info...)
+	if len(info) > 0 {
+		clean = mysqlwire.AppendLenenc(clean, uint64(len(info)))
+		clean = append(clean, info...)
+	}
 
 	var schema *string
 	var sysVars []sysVarChange

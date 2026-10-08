@@ -142,9 +142,14 @@ when nothing is running.
 - **Connect AI Apps** adds or removes `pmon mcp <server>` in Claude Desktop (its
   `claude_desktop_config.json`, other settings untouched), Claude Code
   (`claude mcp add --scope user`) and Codex (`codex mcp add`), listing only the
-  apps installed. The entry runs the `pmon` inside the app bundle. The app is
-  not restarted; the notification says what to do. Codex's own command rewrites
-  the formatting of `~/.codex/config.toml`.
+  apps installed. The entry runs the `pmon` inside the app bundle. Codex's own
+  command rewrites the formatting of `~/.codex/config.toml`. Without the CLI —
+  the Claude and Codex desktop apps on Windows ship none — the app edits the
+  file the CLI would (`~/.claude.json`, or one `[mcp_servers.<entry>]` table of
+  `~/.codex/config.toml`, leaving the rest as it was). On macOS the AI app is
+  not restarted and the notification says what to do; on Windows, Claude Desktop
+  writes its config back from memory, so it is restarted around the change after
+  the user confirms.
 - **Open at Login** turns on after the first sign-in; once the user changes it,
   the app leaves it alone. Needs macOS 13.
 - **Quit** stops the daemon, then exits — it is the peer of `pmon stop`. Merely

@@ -30,8 +30,20 @@ type aiApp struct {
 }
 
 func aiApps() []aiApp {
-	return []aiApp{claudeDesktop(), cliApp("claude-code", "Claude Code", "claude", T("ai.after.claude-code"),
-		[]string{"--scope", "user"}), cliApp("codex", "Codex", "codex", T("ai.after.codex"), nil)}
+	return []aiApp{
+		claudeDesktop(),
+		cliOrConfig(cliApp("claude-code", "Claude Code", "claude", T("ai.after.claude-code"), []string{"--scope", "user"}), claudeCodeConfig()),
+		cliOrConfig(cliApp("codex", "Codex", "codex", T("ai.after.codex"), nil), codexConfig()),
+	}
+}
+
+// cliOrConfig uses the app's CLI when it is installed, else its config file: the desktop apps have the file
+// without the CLI.
+func cliOrConfig(cli aiApp, file configFile) aiApp {
+	if cli.installed() || !file.exists() {
+		return cli
+	}
+	return configApp(cli.id, cli.name, cli.after, file)
 }
 
 // mcpEntryName is the name a server is registered under in an AI app's MCP settings.
@@ -58,6 +70,7 @@ var errDeclined = errors.New("declined")
 // --- Claude Desktop: claude_desktop_config.json ---
 
 type mcpCommand struct {
+	Type    string            `json:"type,omitempty"` // "stdio" in ~/.claude.json
 	Command string            `json:"command"`
 	Args    []string          `json:"args"`
 	Env     map[string]string `json:"env,omitempty"`

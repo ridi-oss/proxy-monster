@@ -43,7 +43,7 @@ func TestRegistryProviderContracts(t *testing.T) {
 			if targetDb.TargetDb() != target {
 				t.Fatalf("TargetDb() = %+v, want %+v", targetDb.TargetDb(), target)
 			}
-			server := targetDb.NewWireServer(0, nil, nil)
+			server := targetDb.NewWireServer(spi.Listen{}, nil, nil)
 			if reflect.TypeOf(server).String() != test.server {
 				t.Errorf("NewWireServer() type = %T, want %s", server, test.server)
 			}
@@ -107,7 +107,7 @@ func TestNewWireServerStartsExpectedProtocol(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer targetDb.Close()
-			server := targetDb.NewWireServer(0, nil, nil)
+			server := targetDb.NewWireServer(spi.Listen{}, nil, nil)
 			starter, ok := server.(interface {
 				Listen() error
 				Serve() error

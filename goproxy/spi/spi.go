@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
+	"net/netip"
 	"sort"
 	"strings"
 	"time"
@@ -100,6 +101,13 @@ type WireServer interface {
 	Start() error
 	Shutdown()
 	Drain(ctx context.Context)
+}
+
+// Listen is where a wire broker accepts clients; a PROXY protocol port admits only TrustedProxies.
+type Listen struct {
+	Port              int
+	ProxyProtocolPort int
+	TrustedProxies    []netip.Prefix
 }
 
 // TargetDbSession is one dedicated run target-DB session.
@@ -215,7 +223,7 @@ type Db interface {
 	ConnectionInfo() *pb.ConnectionInfo
 	Introspect(ctx context.Context) (*pb.CatalogRequest, error)
 	ReadTableDetail(ctx context.Context, table *enginepb.ObjectRef) (*TableDetail, error)
-	NewWireServer(port int, client EnforcementClient, tlsProvider func() (*tls.Config, error)) WireServer
+	NewWireServer(listen Listen, client EnforcementClient, tlsProvider func() (*tls.Config, error)) WireServer
 	// NewRunSession dials and authenticates the target DB. ctx is the target-DB open context: cancelling it aborts
 	// an in-flight dial/auth so a run the control-plane already closed does not finish a target-DB handshake.
 	NewRunSession(ctx context.Context, client SessionClient, token string, connectionID []byte, guard engine.ExecGuard, readTimeout time.Duration) (TargetDbSession, error)

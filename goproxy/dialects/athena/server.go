@@ -18,6 +18,7 @@ import (
 	enginepb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
 	"github.com/ridi-oss/proxy-monster/goproxy/engine"
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
+	"github.com/ridi-oss/proxy-monster/goproxy/listen"
 	"github.com/ridi-oss/proxy-monster/goproxy/spi"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -32,7 +33,7 @@ var errAuthorizationUnavailable = errors.New("athena: request authorization is u
 // the cached enforcement context to result and status reads. Streaming and S3 result paths are refused.
 type nativeServer struct {
 	target      *target
-	port        int
+	listen      spi.Listen
 	client      spi.EnforcementClient
 	tlsProvider func() (*tls.Config, error)
 	mu          sync.Mutex
@@ -52,7 +53,7 @@ func (s *nativeServer) Start() error {
 	if tlsConfig == nil {
 		return errors.New("athena: TLS is required")
 	}
-	listener, err := net.Listen("tcp", fmt.Sprintf(":%d", s.port))
+	listener, err := listen.Open(s.listen)
 	if err != nil {
 		return err
 	}

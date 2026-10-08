@@ -32,7 +32,7 @@ type sqlProvider struct {
 	// catalog reads the connection's current catalog; MySQL pins "def", Postgres asks the server.
 	catalog    func(context.Context, *sql.Conn) (string, error)
 	readDetail func(*sql.Conn, string, string) (*spi.TableDetail, error)
-	newServer  func(int, spi.TargetDb, spi.EnforcementClient, engine.Db, func() (*tls.Config, error)) spi.WireServer
+	newServer  func(spi.Listen, spi.TargetDb, spi.EnforcementClient, engine.Db, func() (*tls.Config, error)) spi.WireServer
 	newSession func(context.Context, spi.TargetDb, engine.Db, spi.SessionClient, string, []byte, engine.ExecGuard, time.Duration) (spi.TargetDbSession, error)
 }
 
@@ -102,8 +102,8 @@ func (d *sqlDb) ReadTableDetail(ctx context.Context, table *enginepb.ObjectRef) 
 	return detail, err
 }
 
-func (d *sqlDb) NewWireServer(port int, client spi.EnforcementClient, tlsProvider func() (*tls.Config, error)) spi.WireServer {
-	return d.provider.newServer(port, d.target, client, d.provider.db, tlsProvider)
+func (d *sqlDb) NewWireServer(listen spi.Listen, client spi.EnforcementClient, tlsProvider func() (*tls.Config, error)) spi.WireServer {
+	return d.provider.newServer(listen, d.target, client, d.provider.db, tlsProvider)
 }
 
 func (d *sqlDb) NewRunSession(ctx context.Context, client spi.SessionClient, token string, connectionID []byte, guard engine.ExecGuard, readTimeout time.Duration) (spi.TargetDbSession, error) {
@@ -121,8 +121,8 @@ var registry = spi.MustRegistry(
 		probe:      introspect.ProbeMySQLNamespace,
 		catalog:    func(context.Context, *sql.Conn) (string, error) { return "def", nil },
 		readDetail: readMySQLTableDetail,
-		newServer: func(port int, target spi.TargetDb, client spi.EnforcementClient, db engine.Db, tlsProvider func() (*tls.Config, error)) spi.WireServer {
-			return mysqlproxy.New(port, target, client, db, tlsProvider)
+		newServer: func(listen spi.Listen, target spi.TargetDb, client spi.EnforcementClient, db engine.Db, tlsProvider func() (*tls.Config, error)) spi.WireServer {
+			return mysqlproxy.New(listen, target, client, db, tlsProvider)
 		},
 		newSession: func(ctx context.Context, target spi.TargetDb, db engine.Db, client spi.SessionClient, token string, connectionID []byte, guard engine.ExecGuard, readTimeout time.Duration) (spi.TargetDbSession, error) {
 			return mysqlproxy.NewRunSession(ctx, target, db, client, token, connectionID, guard, readTimeout)
@@ -135,8 +135,8 @@ var registry = spi.MustRegistry(
 		probe:      introspect.ProbePostgresNamespace,
 		catalog:    introspect.ReadPostgresCatalog,
 		readDetail: readPostgresTableDetail,
-		newServer: func(port int, target spi.TargetDb, client spi.EnforcementClient, db engine.Db, tlsProvider func() (*tls.Config, error)) spi.WireServer {
-			return pgproxy.New(port, target, client, db, tlsProvider)
+		newServer: func(listen spi.Listen, target spi.TargetDb, client spi.EnforcementClient, db engine.Db, tlsProvider func() (*tls.Config, error)) spi.WireServer {
+			return pgproxy.New(listen, target, client, db, tlsProvider)
 		},
 		newSession: func(ctx context.Context, target spi.TargetDb, db engine.Db, client spi.SessionClient, token string, connectionID []byte, guard engine.ExecGuard, readTimeout time.Duration) (spi.TargetDbSession, error) {
 			return pgproxy.NewRunSession(ctx, target, db, client, token, connectionID, guard, readTimeout)

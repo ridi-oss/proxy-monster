@@ -130,9 +130,9 @@ It holds **no state**. Every fact shown comes from the daemon's `/status`, and
 every action is a call on the same control API the CLI uses, so the two front
 ends cannot drift.
 
-It also **never starts a daemon on its own** — launching at login must not force
-brokers up. That is an explicit action: Start, Sign In, or a confirmed
-`pmon://connect` link.
+It **starts the daemon when it launches**, so a saved sign-in's datasources are
+ready as soon as the user logs in to their computer, and **Quit stops it**. The
+CLI stays explicit: `pmon status` never starts one.
 
 The menu is built as a tree from each status (`menu.go`). A tree with the same
 keys as the one on screen updates the items in place; any other shape resets the

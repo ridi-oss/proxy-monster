@@ -139,7 +139,10 @@ func (a *app) onReady() {
 	a.redraw()
 	a.renderMu.Unlock()
 	a.startUpdates()
-	go a.finishUpdate()
+	go func() {
+		a.finishUpdate() // first: it replaces a daemon an older build left, which starting one would hide
+		a.startDaemon()
+	}()
 	go a.watchDaemon()
 	go a.ticker()
 	go a.watchAppearance()
@@ -251,11 +254,20 @@ func (a *app) notificationClicked(key string) {
 	}
 }
 
+// startDaemon starts the daemon when the app launches, so a saved sign-in's datasources are ready and the menu
+// never shows the stopped state for no reason. Quit still stops it.
+func (a *app) startDaemon() {
+	if !a.tryLockAction() {
+		return // a Start or Sign In is already doing it
+	}
+	defer a.unlockAction()
+	if _, err := control.EnsureDaemon(a.ctx); err != nil && a.ctx.Err() == nil {
+		notify(T("n.startFailed"), err.Error())
+	}
+}
+
 // watchDaemon keeps the menu in sync with the daemon, and is also how the tray learns the daemon is gone: the
 // event stream ending means no daemon, which renders as the stopped state rather than a stale last-known one.
-//
-// It deliberately does NOT start a daemon. A tray launching at login must not force one up — that is an
-// explicit action (Start or Sign In), symmetric with the CLI.
 func (a *app) watchDaemon() {
 	for {
 		if err := a.ctx.Err(); err != nil {

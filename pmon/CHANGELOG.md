@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.1.9](https://github.com/ridi-oss/proxy-monster/compare/pmon-v0.1.8...pmon-v0.1.9) (2026-10-08)
+
+
+### Features
+
+* **pmon:** pass the client's multi-statement choice to the proxy ([7152347](https://github.com/ridi-oss/proxy-monster/commit/7152347cbc189ca7798fe86c7bf6bd726064957d))
+* **pmon:** start, stop and trust the daemon binary on Windows ([1e1a826](https://github.com/ridi-oss/proxy-monster/commit/1e1a82644985761c96544f425cb6ea6e4d782c7f))
+* **pmon:** state locks and private directories on Windows ([da7c585](https://github.com/ridi-oss/proxy-monster/commit/da7c5852665471d01f7bb61f9cdf375075fea13a))
+* **tray:** update itself with Sparkle ([bb9b443](https://github.com/ridi-oss/proxy-monster/commit/bb9b443594c45d1ff61d42778d46f991af2fc367))
+* **tray:** Updates setting in Settings › General ([fd1394e](https://github.com/ridi-oss/proxy-monster/commit/fd1394e17638e3bd8855569f40c0b9da3c9b7e52))
+
+
+### Build & Dependencies
+
+* **tray:** embed Sparkle in builds that have an update feed ([f0878f8](https://github.com/ridi-oss/proxy-monster/commit/f0878f88ce80ecff40cdd0a93d758c984854cb01))
+
 ## [0.1.8](https://github.com/ridi-oss/proxy-monster/compare/pmon-v0.1.7...pmon-v0.1.8) (2026-10-07)
 
 

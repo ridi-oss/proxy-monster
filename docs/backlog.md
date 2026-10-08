@@ -88,8 +88,26 @@ forward work. MySQL leads PostgreSQL in priority.
   stored tag on a table or a function. Not reachable today — neither takes a
   direct stored-tag input — but a marshalling change could regress it silently.
 
+## Control plane as a tailnet node
+
+- Embed `tsnet` so the control plane is its own tailnet node, with no sidecar.
+  It needs a stable node identity on ECS (persisted state, or an ephemeral node
+  with a tagged key and a fixed hostname). `tsnet` is Go, so this lands with the
+  control plane's Go port.
+- GitHub webhooks over Funnel for [sql-from-github.md](./sql-from-github.md): a
+  public listener (`ListenFunnel`) serving only the signature-checked webhook
+  handler, separate from the tailnet-only listener. Removes the poll's up to 15
+  s delay; the poll stays to catch missed deliveries.
+- Tailscale-attested network conditions through `WhoIs` on tailnet connections
+  (see Authorization & network conditions).
+
 ## Approval automation
 
+- Ordered console requests: "run after #12" makes a request wait until #12 has
+  executed, for a multi-step fix whose steps need different roles, which one
+  request (one role) cannot hold. A later step is approved without running and
+  runs when the one before it finishes. It needs its own prerequisite field;
+  [sql-from-github.md](./sql-from-github.md) orders GitHub runs without one.
 - Broaden predicate-literal detection past direct comparison. A value also
   reaches a predicate through a function, a `CASE`, a subquery, or a bound
   parameter, and none of those are reported today. The consumer already fails

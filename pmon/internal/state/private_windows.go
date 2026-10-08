@@ -22,8 +22,9 @@ func currentUser() (*windows.SID, error) {
 	return u.User.Sid, nil
 }
 
-// ownedBy requires this user as the owner, who alone may then change the DACL; or, for an elevated process, the
-// Administrators group, which owns what such a process creates. uid is unused: Windows has no uids.
+// ownedBy requires this user as the owner, who alone may then change the DACL; or the Administrators group,
+// which owns what an elevated process creates, when this user is an administrator. uid is unused: Windows has
+// no uids.
 func ownedBy(path string, _ os.FileInfo, _ int) error {
 	sd, err := windows.GetNamedSecurityInfo(path, windows.SE_FILE_OBJECT, windows.OWNER_SECURITY_INFORMATION)
 	if err != nil {
@@ -40,12 +41,29 @@ func ownedBy(path string, _ os.FileInfo, _ int) error {
 	if owner.Equals(me) {
 		return nil
 	}
-	if admins, err := windows.CreateWellKnownSid(windows.WinBuiltinAdministratorsSid); err == nil && owner.Equals(admins) {
-		if elevated, err := windows.GetCurrentProcessToken().IsMember(admins); err == nil && elevated {
-			return nil
-		}
+	if admins, err := windows.CreateWellKnownSid(windows.WinBuiltinAdministratorsSid); err == nil && owner.Equals(admins) &&
+		inGroup(admins) {
+		// This user's elevated process made it. Taking ownership back keeps an unelevated process from refusing
+		// it next time; the DACL already lets this user.
+		_ = windows.SetNamedSecurityInfo(path, windows.SE_FILE_OBJECT, windows.OWNER_SECURITY_INFORMATION, me, nil, nil, nil)
+		return nil
 	}
 	return fmt.Errorf("owned by %s, not %s", owner, me)
+}
+
+// inGroup reports whether this user belongs to group, including as UAC's deny-only membership, which is how an
+// administrator's unelevated token lists Administrators.
+func inGroup(group *windows.SID) bool {
+	groups, err := windows.GetCurrentProcessToken().GetTokenGroups()
+	if err != nil {
+		return false
+	}
+	for _, g := range groups.AllGroups() {
+		if g.Sid.Equals(group) {
+			return true
+		}
+	}
+	return false
 }
 
 // makePrivate gives a directory this user owns a protected DACL granting only this user and SYSTEM, inherited

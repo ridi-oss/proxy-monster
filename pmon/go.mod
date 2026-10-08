@@ -2,7 +2,7 @@ module github.com/ridi-oss/proxy-monster/pmon
 
 go 1.26.0
 
-require github.com/ridi-oss/proxy-monster/mysqlwire v0.1.4
+require github.com/ridi-oss/proxy-monster/mysqlwire v0.1.5
 
 require (
 	github.com/alecthomas/kong v1.16.1

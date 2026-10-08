@@ -178,10 +178,8 @@ func proxyConnect(raw net.Conn, serverName, certChainPEM string, wireTLS bool, p
 		return nil, err
 	}
 	caps := uint32(mysqlwire.CapProtocol41 | mysqlwire.CapSecureConn | mysqlwire.CapPluginAuth | mysqlwire.CapTransactions)
-	// Mirror the client's DEPRECATE_EOF so the proxy's result-set framing matches what we pipe back.
-	if clientCaps&mysqlwire.CapDeprecateEOF != 0 {
-		caps |= mysqlwire.CapDeprecateEOF
-	}
+	// Mirror the client's result framing and multi-statement choice; the proxy reads them from this handshake.
+	caps |= clientCaps & (mysqlwire.CapDeprecateEOF | mysqlwire.CapMultiStatements | mysqlwire.CapMultiResults)
 
 	offersSSL := mysqlwire.GreetingOffersSSL(greeting)
 	// A datasource the control plane says serves TLS must not be downgraded to plaintext: something offering

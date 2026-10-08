@@ -746,3 +746,30 @@ func TestProxyInitDB(t *testing.T) {
 		})
 	}
 }
+
+func TestProxyConnectMirrorsTheClientsMultiStatementChoice(t *testing.T) {
+	for _, multi := range []bool{true, false} {
+		client, server := net.Pipe()
+		sent := make(chan uint32, 1)
+		go func() {
+			_ = mysqlwire.WritePacket(server, 0, mysqlwire.ServerGreeting(1, make([]byte, 20), "8.0-test", false))
+			_, payload, err := mysqlwire.ReadPacket(server)
+			if err != nil || len(payload) < 4 {
+				sent <- 0
+			} else {
+				sent <- binary.LittleEndian.Uint32(payload)
+			}
+			server.Close()
+		}()
+		clientCaps := uint32(mysqlwire.CapDeprecateEOF)
+		if multi {
+			clientCaps |= mysqlwire.CapMultiStatements | mysqlwire.CapMultiResults
+		}
+		_, _ = proxyConnect(client, "proxy.example", "", false, "you@example.com", "sekrit-token", clientCaps)
+		client.Close()
+		want := uint32(mysqlwire.CapMultiStatements | mysqlwire.CapMultiResults)
+		if got := <-sent & want; (got == want) != multi || (got != 0) != multi {
+			t.Errorf("multi=%v: upstream multi-statement caps = %#x", multi, got)
+		}
+	}
+}

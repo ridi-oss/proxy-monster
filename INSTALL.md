@@ -224,6 +224,18 @@ configured per proxy under `PM_TARGET_*`.
   Rotating the cert re-advertises the new chain on the next register, so clients
   pick it up without redistribution.
 - `PM_SECRET_TOKEN` — _required_. The shared gRPC secret; must equal the CP's.
+- `PM_PROXY_PROTOCOL_PORT` / `PM_TRUSTED_PROXIES` — _optional (the port needs at
+  least one trusted proxy, or the proxy refuses to start)_. A second wire port
+  for an edge that relays clients through a hop that would otherwise replace
+  their address, such as a load balancer without client-IP preservation. Every
+  connection there must open with a PROXY protocol v1 or v2 header and come from
+  a socket peer in `PM_TRUSTED_PROXIES` (comma-separated addresses or CIDR
+  blocks); the header's source address is then the client address the CP audits.
+  A connection from any other peer is closed at accept, and one without a header
+  fails its handshake. The plain wire port never reads a header, so a client
+  there cannot assert an address. The port must differ from `PM_PROXY_PORT`, and
+  an entry that is neither an address nor a block refuses to start. Example:
+  `16033` · `10.20.0.0/16`
 
 #### Target DB service-account grants
 

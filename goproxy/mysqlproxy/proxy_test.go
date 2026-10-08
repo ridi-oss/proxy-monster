@@ -7,12 +7,15 @@ import (
 	"encoding/binary"
 	"fmt"
 	"net"
+	"net/netip"
 	"reflect"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/go-sql-driver/mysql"
+	"github.com/pires/go-proxyproto"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -307,6 +310,11 @@ func startBrokerWithTLS(t *testing.T, tlsProvider func() (*tls.Config, error)) *
 
 func startBrokerConfigured(t *testing.T, tlsProvider func() (*tls.Config, error), dbImpl engine.Db) *brokerHarness {
 	t.Helper()
+	return startBrokerListening(t, spi.Listen{}, tlsProvider, dbImpl)
+}
+
+func startBrokerListening(t *testing.T, listen spi.Listen, tlsProvider func() (*tls.Config, error), dbImpl engine.Db) *brokerHarness {
+	t.Helper()
 	targetDb := seedTargetDb(t)
 	fake, cpClient := startFakeCP(t)
 	target := spi.TargetDb{
@@ -316,7 +324,7 @@ func startBrokerConfigured(t *testing.T, tlsProvider func() (*tls.Config, error)
 		User:     serviceUser,
 		Password: servicePassword,
 	}
-	server := mysqlproxy.New(0, target, cpClient, dbImpl, tlsProvider)
+	server := mysqlproxy.New(listen, target, cpClient, dbImpl, tlsProvider)
 	if err := server.Listen(); err != nil {
 		t.Fatalf("mysqlproxy.Listen: %v", err)
 	}
@@ -367,6 +375,55 @@ func TestValidateTokenCarriesClientAddr(t *testing.T) {
 	h.fake.mu.Unlock()
 	if got == "" || !strings.Contains(got, ":") || got == validToken {
 		t.Fatalf("ValidateToken client_addr = %q; want the client socket address (host:port), not blank or the token", got)
+	}
+}
+
+func freeLoopbackPort(t *testing.T) int {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	port := ln.Addr().(*net.TCPAddr).Port
+	_ = ln.Close()
+	return port
+}
+
+func TestProxyProtocolPortReportsTheHeaderSourceAsClientAddr(t *testing.T) {
+	proxyPort := freeLoopbackPort(t)
+	h := startBrokerListening(t, spi.Listen{
+		ProxyProtocolPort: proxyPort,
+		TrustedProxies:    []netip.Prefix{netip.MustParsePrefix("127.0.0.0/8")},
+	}, nil, db.MySqlDb{})
+	h.fake.decideFn = func(*pb.DecisionRequest) (*pb.WireDecision, error) {
+		return wireVerdict(&pb.Verdict{Decision: pb.EnfAction_ALLOW, DecisionId: 1}), nil
+	}
+	tailnetClient := &net.TCPAddr{IP: net.ParseIP("100.64.0.7"), Port: 51234}
+	mysql.RegisterDialContext("proxied", func(ctx context.Context, addr string) (net.Conn, error) {
+		conn, err := (&net.Dialer{}).DialContext(ctx, "tcp", addr)
+		if err != nil {
+			return nil, err
+		}
+		if _, err := proxyproto.HeaderProxyFromAddrs(2, tailnetClient, conn.RemoteAddr()).WriteTo(conn); err != nil {
+			_ = conn.Close()
+			return nil, err
+		}
+		return conn, nil
+	})
+	dsn := fmt.Sprintf("pm:%s@proxied(127.0.0.1:%d)/?allowCleartextPasswords=true&interpolateParams=false", validToken, proxyPort)
+	conn, err := sql.Open("mysql", dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+	if err := conn.Ping(); err != nil {
+		t.Fatalf("Ping through the PROXY protocol port: %v", err)
+	}
+	h.fake.mu.Lock()
+	got := h.fake.lastValidate.GetClientAddr()
+	h.fake.mu.Unlock()
+	if got != tailnetClient.String() {
+		t.Fatalf("ValidateToken client_addr = %q, want the PROXY header source %s", got, tailnetClient)
 	}
 }
 
@@ -1408,7 +1465,7 @@ func TestLegacyEOFRelayRewriteAndPing(t *testing.T) {
 }
 
 func TestOversizedUnauthenticatedHandshakeIsRejectedWithoutBody(t *testing.T) {
-	server := mysqlproxy.New(0, spi.TargetDb{}, nil, nil, nil)
+	server := mysqlproxy.New(spi.Listen{}, spi.TargetDb{}, nil, nil, nil)
 	if err := server.Listen(); err != nil {
 		t.Fatalf("Listen: %v", err)
 	}

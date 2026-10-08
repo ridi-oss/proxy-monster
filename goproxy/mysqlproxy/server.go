@@ -26,8 +26,8 @@ type Server struct {
 }
 
 // New constructs a MySQL wire broker for one target DB datasource.
-func New(port int, targetDb spi.TargetDb, client spi.EnforcementClient, dbImpl engine.Db, tlsProvider func() (*tls.Config, error)) *Server {
+func New(listen spi.Listen, targetDb spi.TargetDb, client spi.EnforcementClient, dbImpl engine.Db, tlsProvider func() (*tls.Config, error)) *Server {
 	s := &Server{targetDb: targetDb, client: client, db: dbImpl, tlsProvider: tlsProvider}
-	s.Server = wire.New(port, "mysqlproxy", s.handleConn)
+	s.Server = wire.New(listen, "mysqlproxy", s.handleConn)
 	return s
 }

@@ -14,6 +14,7 @@ require (
 	github.com/gofrs/flock v0.13.1
 	github.com/jackc/pgx/v5 v5.10.0
 	github.com/moby/moby/api v1.55.0
+	github.com/pires/go-proxyproto v0.15.0
 	github.com/ridi-oss/proxy-monster/analyzer v0.0.0-00010101000000-000000000000
 	github.com/ridi-oss/proxy-monster/mysqlwire v0.1.4
 	github.com/ridi-oss/sqlglot-go v0.37.2

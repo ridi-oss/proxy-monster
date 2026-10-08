@@ -107,7 +107,10 @@ disjoint resolution cases, never blended (plus a development-only exception,
 [below](#the-development-only-simulated-address)):
 
 - Wire path: the proxy's socket peer (`client_addr` on `DecisionRequest`) is the
-  requester.
+  requester. On the optional PROXY protocol port (`PM_PROXY_PROTOCOL_PORT`), the
+  header's source address takes the peer's place; that port accepts only peers
+  in the proxy's `PM_TRUSTED_PROXIES` and requires the header from them, and the
+  plain wire port never reads one.
 - HTTP path (`resolveHttpRequesterIp`, `RequesterIp.kt`): resolved by the trust
   status of the socket peer. `X-Forwarded-For` is client-settable, so it is
   honored only when the socket peer matches a `PM_TRUSTED_PROXIES` entry (a load

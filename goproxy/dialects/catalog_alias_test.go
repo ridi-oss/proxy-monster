@@ -146,7 +146,7 @@ func TestPostgresCatalogThroughDatabaseAlias(t *testing.T) {
 	})
 
 	t.Run("native session", func(t *testing.T) {
-		server := target.NewWireServer(0, client, nil)
+		server := target.NewWireServer(spi.Listen{}, client, nil)
 		listener := server.(interface {
 			Listen() error
 			Serve() error

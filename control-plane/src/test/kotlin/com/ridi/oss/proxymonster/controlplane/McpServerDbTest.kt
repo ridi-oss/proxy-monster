@@ -226,7 +226,7 @@ class McpServerDbTest {
         }
 
         val granted = instructions(connector)
-        assertContains(granted, "\"hr-pmon\": HR and payroll data")
+        assertContains(granted, "\"hr-pmon\", server version $SERVER_VERSION: HR and payroll data")
         assertContains(granted, "pmon-*")
         assertContains(granted, "call get_pmon_guide")
         assertContains(granted, "call get_usage_guide")

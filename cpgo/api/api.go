@@ -101,6 +101,11 @@ type Authorizer interface {
 	AuthorizeEach(ctx context.Context, principal, action string, resources []bridge.Resource, requesterIP string) ([]bool, error)
 	MayConnect(ctx context.Context, principal string, datasourceIDs []int64, requesterIP string) ([]bool, error)
 	Validate(ctx context.Context, cedarSrc string) ([]string, error)
+}
+
+// Kotlin is what Go routes tell the Kotlin control plane about the state it holds in memory.
+type Kotlin interface {
+	// PoliciesChanged: a committed policy write; Kotlin's query path rebuilds its cached policy set.
 	PoliciesChanged(ctx context.Context) error
 }
 
@@ -114,6 +119,7 @@ type Gate struct {
 	// AuthDebug lets a session carry the requester IP chosen at its debug login, as Kotlin does.
 	AuthDebug bool
 	Authz     Authorizer
+	Kotlin    Kotlin
 }
 
 // RequireAPIOrBearer is Kotlin's requireApiOrBearer, for read-only datasource discovery: a web session,

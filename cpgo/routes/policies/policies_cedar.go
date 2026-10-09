@@ -68,7 +68,7 @@ func recordPolicy(ctx context.Context, tx pgx.Tx, actor audit.Actor, id int64, s
 	return audit.Admin(ctx, tx, actor, "admin.policies", audit.Entity("Policy", strconv.FormatInt(id, 10)), summary)
 }
 
-func (p policies) changed(ctx context.Context) error { return p.authz.PoliciesChanged(ctx) }
+func (p policies) changed(ctx context.Context) error { return p.kotlin.PoliciesChanged(ctx) }
 
 func (p policies) createPolicy(w http.ResponseWriter, r *http.Request) {
 	var in cedarPolicyInput

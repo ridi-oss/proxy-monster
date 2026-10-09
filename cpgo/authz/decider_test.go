@@ -1,0 +1,242 @@
+package authz
+
+import (
+	"context"
+	"os"
+	"path/filepath"
+	"runtime"
+	"testing"
+
+	"github.com/ridi-oss/proxy-monster/cpgo/bridge"
+	"github.com/ridi-oss/proxy-monster/cpgo/internal/dbtest"
+)
+
+func TestSchemaMatchesKotlin(t *testing.T) {
+	_, file, _, _ := runtime.Caller(0)
+	kotlin, err := os.ReadFile(filepath.Join(filepath.Dir(file), "../../control-plane/src/main/resources/authz/schema.cedarschema"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(kotlin) != bundledSchema {
+		t.Fatal("cpgo/authz/schema.cedarschema differs from the control plane's; copy it over")
+	}
+}
+
+func TestSeededPoliciesValidate(t *testing.T) {
+	st := dbtest.Open(t)
+	rows, err := st.Pool.Query(context.Background(), `SELECT id, cedar_src FROM policy WHERE deleted_at IS NULL`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	n := 0
+	for rows.Next() {
+		var (
+			id  int64
+			src string
+		)
+		_ = rows.Scan(&id, &src)
+		if errs := schemaOf(t, "").Validate(src); len(errs) != 0 {
+			t.Errorf("seeded policy %d: %v", id, errs)
+		}
+		n++
+	}
+	if n == 0 {
+		t.Fatal("no seeded policies")
+	}
+}
+
+func TestValidateRejects(t *testing.T) {
+	for _, src := range []string{
+		``,
+		`not cedar`,
+		`permit(principal, action == Action::"audit.write", resource);`,
+		`permit(principal, action == Action::"audit.read", resource) when { context.nope == 1 };`,
+		`@cap("5M") permit(principal, action == Action::"result.cap", resource);`,
+		`@cap("1/32d") permit(principal, action == Action::"result.cap", resource);`,
+		`@cap("10/1x") permit(principal, action == Action::"result.cap", resource);`,
+		`@cap("5") permit(principal in Role::"analyst", action == Action::"result.read.unmasked", resource);`,
+		`permit(principal, action == Action::"result.read.unmasked", resource == Utility::"ds/SHOW_GRANTS");`,
+		`permit(principal, action == Action::"audit.read", resource) when { datetime("2026-01-01") == datetime("2026-01-01") };`,
+		`permit(principal, action == Action::"audit.read", resource) when { duration("1h") == duration("1h") };`,
+		"permit(principal, action == Action::\"audit.read\", resource) when { duration // a comment\n(\"1h\") == duration // a comment\n(\"1h\") };",
+		`@cap("9223372036854775808") permit(principal, action == Action::"result.cap", resource);`,
+		`@boost("1") permit(principal in Role::"analyst", action == Action::"result.cap", resource);`,
+		`@boost("x2") permit(principal in Role::"analyst", action == Action::"result.cap", resource);`,
+		`@boost("1.") permit(principal in Role::"analyst", action == Action::"result.cap", resource);`,
+		`@boost("2") permit(principal in Role::"analyst", action == Action::"audit.read", resource);`,
+	} {
+		if errs := schemaOf(t, "").Validate(src); len(errs) == 0 {
+			t.Errorf("accepted %q", src)
+		}
+	}
+	for _, src := range []string{
+		`permit(principal, action == Action::"audit.read", resource);`,
+		"// duration(\"1h\") is not supported\npermit(principal, action == Action::\"audit.read\", resource);",
+		`@cap("2000, 3MB, 100KB/10m, 7GB/31d") permit(principal in Role::"analyst", action == Action::"result.cap", resource);`,
+		`@boost(" 1.5 ") permit(principal in Role::"analyst", action == Action::"result.cap", resource);`,
+		`@boost("3") @cap("100MB/1h") permit(principal in Role::"analyst", action == Action::"result.cap", resource);`,
+		`permit(principal, action == Action::"context.tag::office", resource) when { context has requester_ip && context.requester_ip.isInRange(ip("10.0.0.0/8")) };`,
+	} {
+		if errs := schemaOf(t, "").Validate(src); len(errs) != 0 {
+			t.Errorf("rejected %q: %v", src, errs)
+		}
+	}
+}
+
+func TestDecisionsUnderShippedPolicies(t *testing.T) {
+	st := dbtest.Open(t)
+	ctx := context.Background()
+	exec := func(sql string, args ...any) {
+		t.Helper()
+		if _, err := st.Pool.Exec(ctx, sql, args...); err != nil {
+			t.Fatal(err)
+		}
+	}
+	exec(`INSERT INTO principal_role (principal, role_id) SELECT 'auditor', id FROM app_role WHERE name = 'system:admin'`)
+	exec(`INSERT INTO app_role (name) VALUES ('ip-auditor')`)
+	exec(`INSERT INTO principal_role (principal, role_id) SELECT 'edge', id FROM app_role WHERE name = 'ip-auditor'`)
+	exec(`INSERT INTO policy (name, cedar_src, enabled, origin) VALUES ('ip-gated', 'permit(principal in Role::"ip-auditor", action == Action::"audit.read", resource) when { context has requester_ip && context.requester_ip.isInRange(ip("203.0.113.0/24")) };', true, 'USER')`)
+	exec(`INSERT INTO datasource (name, host, port, db_name, tags) VALUES ('gated', 'h', 1, 'd', '["prod"]')`)
+	exec(`INSERT INTO policy (name, cedar_src, enabled, origin) VALUES ('connect', 'permit(principal == User::"connector", action == Action::"datasource.connect", resource == Datasource::"gated");', true, 'USER')`)
+	exec(`INSERT INTO datasource (name, host, port, db_name) VALUES ('ip-ds', 'h', 1, 'd')`)
+	exec(`INSERT INTO policy (name, cedar_src, enabled, origin) VALUES ('ip-connect', 'permit(principal == User::"edge-connector", action == Action::"datasource.connect", resource == Datasource::"ip-ds") when { context has requester_ip && context.requester_ip.isInRange(ip("203.0.113.0/24")) };', true, 'USER')`)
+	exec(`INSERT INTO policy (name, cedar_src, enabled, origin) VALUES ('no-github-reads', 'forbid(principal == User::"alice", action == Action::"task.read", resource) when { resource has source && resource.source == "github" };', true, 'USER')`)
+	exec(`INSERT INTO app_user (principal, active) VALUES ('grouped', true), ('lapsed', false)`)
+	exec(`INSERT INTO app_group (name, source) VALUES ('eng', 'LOCAL'), ('retired', 'LOCAL')`)
+	exec(`UPDATE app_group SET deleted_at = now() WHERE name = 'retired'`)
+	exec(`INSERT INTO group_member (group_id, user_id) SELECT g.id, u.id FROM app_group g, app_user u WHERE u.principal IN ('grouped', 'lapsed') AND g.name IN ('eng', 'retired')`)
+	exec(`INSERT INTO policy (name, cedar_src, enabled, origin) VALUES ('eng-audit', 'permit(principal in Group::"eng", action == Action::"audit.read", resource == AuditLog::"all");', true, 'USER'),
+		('retired-audit', 'permit(principal in Group::"retired", action == Action::"admin.policies", resource);', true, 'USER'),
+		('eng-requests', 'permit(principal == User::"watcher", action == Action::"task.read", resource) when { resource.requester in Group::"eng" };', true, 'USER'),
+		('cc-graph', 'permit(principal == User::"ccwatch", action == Action::"task.read", resource) when { User::"grouped" in Group::"eng" };', true, 'USER'),
+		('overflow-permit', 'permit(principal == User::"overflow", action == Action::"audit.read", resource);', true, 'USER'),
+		('overflow-forbid', 'forbid(principal == User::"overflow", action == Action::"audit.read", resource) when { 9223372036854775807 + 1 > 0 };', true, 'USER')`)
+	exec(`INSERT INTO app_user (principal, active) VALUES ('gone', false)`)
+	exec(`INSERT INTO principal_role (principal, role_id) SELECT 'gone', id FROM app_role WHERE name = 'system:admin'`)
+
+	l := NewDecider(st.Pool, schemaOf(t, ""))
+	allow := func(principal, action string, r bridge.Resource, ip string) bool {
+		t.Helper()
+		ok, _, err := l.Authorize(ctx, principal, action, r, ip)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return ok
+	}
+	ds := "gated"
+	role := "analyst"
+	for _, tc := range []struct {
+		name      string
+		principal string
+		action    string
+		resource  bridge.Resource
+		ip        string
+		want      bool
+	}{
+		{"own audit record", "alice", "audit.read", bridge.AuditRecord("alice"), "", true},
+		{"another's audit record", "alice", "audit.read", bridge.AuditRecord("bob"), "", false},
+		{"whole log without a grant", "alice", "audit.read", bridge.AuditLog, "", false},
+		{"admin reads the log", "auditor", "audit.read", bridge.AuditLog, "", true},
+		{"admin admin.policies", "auditor", "admin.policies", bridge.System, "", true},
+		{"plain admin.policies", "alice", "admin.policies", bridge.System, "", false},
+		{"ip-gated in range", "edge", "audit.read", bridge.AuditLog, "203.0.113.10", true},
+		{"ip-gated out of range", "edge", "audit.read", bridge.AuditLog, "198.51.100.10", false},
+		{"ip-gated without an address", "edge", "audit.read", bridge.AuditLog, "", false},
+		{"ip-gated garbage address", "edge", "audit.read", bridge.AuditLog, "not-an-ip", false},
+		{"own request", "alice", "task.read", bridge.Resource{Type: "ApprovalRequest", Principal: "alice", DatasourceName: &ds, RoleName: &role}, "", true},
+		{"own request filed from github", "alice", "task.read", bridge.Resource{Type: "ApprovalRequest", Principal: "alice", Source: "github"}, "", false},
+		{"own request filed from mcp", "alice", "task.read", bridge.Resource{Type: "ApprovalRequest", Principal: "alice", Source: "mcp"}, "", true},
+		{"another's request", "bob", "task.read", bridge.Resource{Type: "ApprovalRequest", Principal: "alice"}, "", false},
+		{"own grant", "alice", "task.read", bridge.Resource{Type: "AccessGrant", Principal: "alice", ID: 1, RoleName: &role}, "", true},
+		{"deactivated admin", "gone", "admin.policies", bridge.System, "", false},
+		{"group member", "grouped", "audit.read", bridge.AuditLog, "", true},
+		{"deleted group grants nothing", "grouped", "admin.policies", bridge.System, "", false},
+		{"inactive member has no groups", "lapsed", "audit.read", bridge.AuditLog, "", false},
+		{"requester in a group", "watcher", "task.read", bridge.Resource{Type: "ApprovalRequest", Principal: "grouped"}, "", true},
+		{"requester outside the group", "watcher", "task.read", bridge.Resource{Type: "ApprovalRequest", Principal: "alice"}, "", false},
+		{"cc reads the request", "carol", "task.read", bridge.Resource{Type: "ApprovalRequest", Principal: "alice", CCs: []string{"carol"}}, "", true},
+		{"cc comments", "carol", "task.comment", bridge.Resource{Type: "ApprovalRequest", Principal: "alice", CCs: []string{"carol"}}, "", true},
+		{"cc may not run", "carol", "task.run", bridge.Resource{Type: "ApprovalRequest", Principal: "alice", CCs: []string{"carol"}}, "", false},
+		{"a cc's groups are not in the graph", "ccwatch", "task.read", bridge.Resource{Type: "ApprovalRequest", Principal: "alice", CCs: []string{"grouped"}}, "", false},
+		{"an erroring forbid denies", "overflow", "audit.read", bridge.AuditLog, "", false},
+		{"not a cc", "dave", "task.read", bridge.Resource{Type: "ApprovalRequest", Principal: "alice", CCs: []string{"carol"}}, "", false},
+		{"requester runs", "alice", "task.run", bridge.Resource{Type: "ApprovalRequest", Principal: "alice", Approver: &role}, "", true},
+		{"own session token", "alice", "token.mint", bridge.Resource{Type: "Token", Principal: "alice", Kind: "SESSION"}, "", true},
+		{"another's session token", "alice", "token.mint", bridge.Resource{Type: "Token", Principal: "bob", Kind: "SESSION"}, "", false},
+		{"runner sees the result", "erin", "task.assume", bridge.Resource{Type: "ApprovalRequest", Principal: "alice", ExecutedBy: ptr("erin")}, "", true},
+	} {
+		if got := allow(tc.principal, tc.action, tc.resource, tc.ip); got != tc.want {
+			t.Errorf("%s: got %v want %v", tc.name, got, tc.want)
+		}
+	}
+
+	var id int64
+	_ = st.Pool.QueryRow(ctx, `SELECT id FROM datasource WHERE name = 'gated'`).Scan(&id)
+	for principal, want := range map[string]bool{"connector": true, "stranger": false} {
+		got, err := l.MayConnect(ctx, principal, []int64{id, 999999}, "")
+		if err != nil || len(got) != 2 || got[0] != want || got[1] {
+			t.Errorf("may-connect %s: %v %v", principal, got, err)
+		}
+	}
+
+	var ipDS int64
+	_ = st.Pool.QueryRow(ctx, `SELECT id FROM datasource WHERE name = 'ip-ds'`).Scan(&ipDS)
+	for _, tc := range []struct {
+		principal, ip string
+		want          bool
+	}{{"edge-connector", "203.0.113.9", true}, {"edge-connector", "198.51.100.9", false}, {"edge-connector", "", false}, {"someone-else", "203.0.113.9", false}} {
+		if got, err := l.MayConnect(ctx, tc.principal, []int64{ipDS}, tc.ip); err != nil || len(got) != 1 || got[0] != tc.want {
+			t.Errorf("may-connect %s from %q: %v %v, want %v", tc.principal, tc.ip, got, err, tc.want)
+		}
+	}
+
+	ok, reason, _ := l.Authorize(ctx, "alice", "admin.policies", bridge.System, "")
+	if ok || reason != "no policy permits this action" {
+		t.Errorf("deny reason %q", reason)
+	}
+}
+
+func TestPoliciesReloadWhenTheStoreChanges(t *testing.T) {
+	st := dbtest.Open(t)
+	ctx := context.Background()
+	l := NewDecider(st.Pool, schemaOf(t, ""))
+	ask := func() bool {
+		ok, _, err := l.Authorize(ctx, "late", "audit.read", bridge.AuditLog, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return ok
+	}
+	if ask() {
+		t.Fatal("allowed before the grant")
+	}
+	if _, err := st.Pool.Exec(ctx, `INSERT INTO policy (name, cedar_src, enabled, origin) VALUES ('late', 'permit(principal == User::"late", action == Action::"audit.read", resource);', true, 'USER')`); err != nil {
+		t.Fatal(err)
+	}
+	if !ask() {
+		t.Fatal("a policy written by another process must apply without a signal")
+	}
+	if _, err := st.Pool.Exec(ctx, `INSERT INTO policy (name, cedar_src, enabled, origin) VALUES ('newer', 'permit(principal == User::"x", action == Action::"audit.read", resource);', true, 'USER')`); err != nil {
+		t.Fatal(err)
+	}
+	if !ask() {
+		t.Fatal("still allowed")
+	}
+	// An edit committed by a transaction that started before the newest policy was written.
+	if _, err := st.Pool.Exec(ctx, `UPDATE policy SET cedar_src = 'forbid(principal == User::"late", action == Action::"audit.read", resource);',
+		updated_at = updated_at + interval '1 microsecond' WHERE name = 'late'`); err != nil {
+		t.Fatal(err)
+	}
+	if ask() {
+		t.Fatal("an older-timestamped edit must apply")
+	}
+	if _, err := st.Pool.Exec(ctx, `UPDATE policy SET deleted_at = now() WHERE name = 'late'`); err != nil {
+		t.Fatal(err)
+	}
+	if ask() {
+		t.Fatal("a deleted policy must stop applying")
+	}
+}
+
+func ptr(s string) *string { return &s }

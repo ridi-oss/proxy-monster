@@ -11,7 +11,7 @@ import (
 )
 
 func Register(mux *http.ServeMux, pool *pgxpool.Pool, gate api.Gate) {
-	p := policies{pool: pool, authz: gate.Authz}
+	p := policies{pool: pool, authz: gate.Authz, kotlin: gate.Kotlin}
 	mux.HandleFunc("GET /api/roles", gate.RequireAPI(p.roles))
 	mux.HandleFunc("GET /api/role-assignments", gate.RequireAdmin("admin.identity", p.roleAssignments))
 	mux.HandleFunc("GET /api/mask-fns", gate.RequireAdmin("admin.policies", p.maskFns))
@@ -34,8 +34,9 @@ func Register(mux *http.ServeMux, pool *pgxpool.Pool, gate api.Gate) {
 }
 
 type policies struct {
-	pool  *pgxpool.Pool
-	authz api.Authorizer
+	pool   *pgxpool.Pool
+	authz  api.Authorizer
+	kotlin api.Kotlin
 }
 
 type role struct {

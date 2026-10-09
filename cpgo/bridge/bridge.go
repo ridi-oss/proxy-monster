@@ -1,4 +1,4 @@
-// Package bridge asks the Kotlin control plane for Cedar decisions until Cedar moves to Go.
+// Package bridge tells the Kotlin control plane what Go changed that Kotlin caches.
 package bridge
 
 import (
@@ -28,6 +28,13 @@ type Resource struct {
 	Source string `json:"source,omitempty"`
 	// ApprovalRequest: the users CC'd on it.
 	CCs []string `json:"ccs,omitempty"`
+	// Token: the token kind (SESSION, USER, …), "" for any kind.
+	Kind string `json:"kind,omitempty"`
+	// NativeResource fields.
+	NativeKind     string   `json:"nativeKind,omitempty"`
+	NativeID       string   `json:"nativeId,omitempty"`
+	Owner          *string  `json:"owner,omitempty"`
+	DatasourceTags []string `json:"datasourceTags,omitempty"`
 }
 
 var (
@@ -37,89 +44,19 @@ var (
 
 func AuditRecord(owner string) Resource { return Resource{Type: "AuditRecord", Principal: owner} }
 
-// Client calls Kotlin's /internal/authorize routes.
+// Client calls Kotlin's /internal routes.
 type Client struct {
-	upstream                     *url.URL
-	url, batchURL, mayConnectURL string
-	token                        string
-	http                         *http.Client
+	upstream *url.URL
+	token    string
+	http     *http.Client
 }
 
 func New(upstream *url.URL, token string) *Client {
 	return &Client{
-		upstream:      upstream,
-		url:           upstream.JoinPath("/internal/authorize").String(),
-		batchURL:      upstream.JoinPath("/internal/authorize-batch").String(),
-		mayConnectURL: upstream.JoinPath("/internal/may-connect").String(),
-		token:         token,
-		http:          &http.Client{Timeout: 10 * time.Second},
+		upstream: upstream,
+		token:    token,
+		http:     &http.Client{Timeout: 10 * time.Second},
 	}
-}
-
-// Authorize reports whether Cedar allows principal to take action on resource, and on a deny, Cedar's reason.
-func (c *Client) Authorize(ctx context.Context, principal, action string, resource Resource, requesterIP string) (bool, string, error) {
-	var out struct {
-		Allow  bool   `json:"allow"`
-		Reason string `json:"reason"`
-	}
-	err := c.post(ctx, c.url, struct {
-		Principal   string   `json:"principal"`
-		Action      string   `json:"action"`
-		Resource    Resource `json:"resource"`
-		RequesterIP string   `json:"requesterIp,omitempty"`
-	}{principal, action, resource, requesterIP}, &out)
-	return out.Allow, out.Reason, err
-}
-
-// AuthorizeEach decides action on every resource for principal, in order, from one role resolution.
-func (c *Client) AuthorizeEach(ctx context.Context, principal, action string, resources []Resource, requesterIP string) ([]bool, error) {
-	if len(resources) == 0 {
-		return nil, nil
-	}
-	var out struct {
-		Allow []bool `json:"allow"`
-	}
-	err := c.post(ctx, c.batchURL, struct {
-		Principal   string     `json:"principal"`
-		Action      string     `json:"action"`
-		Resources   []Resource `json:"resources"`
-		RequesterIP string     `json:"requesterIp,omitempty"`
-	}{principal, action, resources, requesterIP}, &out)
-	if err == nil && len(out.Allow) != len(resources) {
-		err = fmt.Errorf("bridge: %d decisions for %d resources", len(out.Allow), len(resources))
-	}
-	return out.Allow, err
-}
-
-// MayConnect is Kotlin's datasource.connect decision for each datasource, in order: context tags derived
-// from the datasource first, and false for a deactivated principal or a missing datasource.
-func (c *Client) MayConnect(ctx context.Context, principal string, datasourceIDs []int64, requesterIP string) ([]bool, error) {
-	if len(datasourceIDs) == 0 {
-		return nil, nil
-	}
-	var out struct {
-		Allow []bool `json:"allow"`
-	}
-	err := c.post(ctx, c.mayConnectURL, struct {
-		Principal     string  `json:"principal"`
-		DatasourceIDs []int64 `json:"datasourceIds"`
-		RequesterIP   string  `json:"requesterIp,omitempty"`
-	}{principal, datasourceIDs, requesterIP}, &out)
-	if err == nil && len(out.Allow) != len(datasourceIDs) {
-		err = fmt.Errorf("bridge: %d decisions for %d datasources", len(out.Allow), len(datasourceIDs))
-	}
-	return out.Allow, err
-}
-
-// Validate checks a Cedar source against the authorization schema, returning the validator's errors.
-func (c *Client) Validate(ctx context.Context, cedarSrc string) ([]string, error) {
-	var out struct {
-		Errors []string `json:"errors"`
-	}
-	err := c.post(ctx, c.upstream.JoinPath("/internal/cedar-validate").String(), struct {
-		CedarSrc string `json:"cedarSrc"`
-	}{cedarSrc}, &out)
-	return out.Errors, err
 }
 
 // PoliciesChanged tells Kotlin a policy change committed, so its next decision rebuilds the policy set.

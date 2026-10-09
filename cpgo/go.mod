@@ -9,6 +9,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/acm v1.50.4
 	github.com/aws/aws-sdk-go-v2/service/kms v1.61.4
 	github.com/bradleyfalzon/ghinstallation/v2 v2.19.0
+	github.com/cedar-policy/cedar-go v1.8.0
 	github.com/golang-jwt/jwt/v4 v4.5.2
 	github.com/google/go-github/v88 v88.0.0
 	github.com/jackc/pgx/v5 v5.10.0

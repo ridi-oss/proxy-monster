@@ -41,29 +41,38 @@ func (c *mcpCmd) register(ctx context.Context) error {
 	setup := aiapps.Setup{Pmon: pmon, Confirm: confirmClaudeRestart}
 	failed := 0
 	for _, app := range apps {
-		for _, srv := range servers {
-			var replaced []string
-			var err error
-			done, removed := "removed", true
-			if c.Install {
-				replaced, err = app.Add(setup, srv)
-				done = "added"
-			} else {
-				removed, err = app.Remove(setup, srv.Name)
+		err := app.Batch(setup, func(setup aiapps.Setup) error {
+			for _, srv := range servers {
+				var replaced []string
+				var err error
+				done, removed := "removed", true
+				if c.Install {
+					replaced, err = app.Add(setup, srv)
+					done = "added"
+				} else {
+					removed, err = app.Remove(setup, srv.Name)
+				}
+				switch {
+				case err != nil:
+					failed++
+					fmt.Fprintf(os.Stderr, "%s: %s: %v\n", app.Name, srv.Name, err)
+				case !removed:
+					fmt.Printf("%s: no %s to remove\n", app.Name, aiapps.EntryName(srv.Name))
+				case len(replaced) > 0:
+					fmt.Printf("%s: %s %s, replacing %s\n", app.Name, done, aiapps.EntryName(srv.Name), strings.Join(replaced, ", "))
+				default:
+					fmt.Printf("%s: %s %s\n", app.Name, done, aiapps.EntryName(srv.Name))
+				}
 			}
-			switch {
-			case err == nil && !removed:
-				fmt.Printf("%s: no %s to remove\n", app.Name, aiapps.EntryName(srv.Name))
-			case errors.Is(err, aiapps.ErrDeclined):
-				fmt.Printf("%s: skipped %s; Claude Desktop was not restarted\n", app.Name, srv.Name)
-			case err != nil:
-				failed++
-				fmt.Fprintf(os.Stderr, "%s: %s: %v\n", app.Name, srv.Name, err)
-			case len(replaced) > 0:
-				fmt.Printf("%s: %s %s, replacing %s\n", app.Name, done, aiapps.EntryName(srv.Name), strings.Join(replaced, ", "))
-			default:
-				fmt.Printf("%s: %s %s\n", app.Name, done, aiapps.EntryName(srv.Name))
-			}
+			return nil
+		})
+		switch {
+		case errors.Is(err, aiapps.ErrDeclined):
+			failed += len(servers)
+			fmt.Fprintf(os.Stderr, "%s: not changed, since it was not restarted; quit it and run this again\n", app.Name)
+		case err != nil:
+			failed += len(servers)
+			fmt.Fprintf(os.Stderr, "%s: %v\n", app.Name, err)
 		}
 	}
 	if failed > 0 {

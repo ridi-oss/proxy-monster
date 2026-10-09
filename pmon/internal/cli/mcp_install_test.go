@@ -57,7 +57,7 @@ func TestMCPInstallRegistersEveryServer(t *testing.T) {
 	if servers["pm-hr"] != nil || servers["keep"] == nil {
 		t.Errorf("after install: %v", servers)
 	}
-	for _, entry := range []string{"pmon-hr", "pmon-ops"} {
+	for entry, server := range map[string]string{"pmon-hr": "hr", "pmon-ops": "ops"} {
 		var c struct {
 			Command string            `json:"command"`
 			Args    []string          `json:"args"`
@@ -66,7 +66,7 @@ func TestMCPInstallRegistersEveryServer(t *testing.T) {
 		if err := json.Unmarshal(servers[entry], &c); err != nil {
 			t.Fatalf("%s: %v in %v", entry, err, servers)
 		}
-		if !sameFile(c.Command, e.bin) || c.Args[0] != "mcp" || c.Env["PMON_CONFIG_DIR"] != e.stateDir {
+		if !sameFile(c.Command, e.bin) || strings.Join(c.Args, " ") != "mcp "+server || c.Env["PMON_CONFIG_DIR"] != e.stateDir {
 			t.Errorf("%s = %+v, want this pmon reaching this daemon", entry, c)
 		}
 	}

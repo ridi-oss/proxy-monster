@@ -70,10 +70,21 @@ func withClaudeDesktopClosed(confirm func() bool, edit func() error) error {
 		}
 		return ErrDeclined
 	}
+	exited := true
 	for _, h := range running {
 		_ = windows.TerminateProcess(h, 0)
-		_, _ = windows.WaitForSingleObject(h, 10_000)
+		if ev, err := windows.WaitForSingleObject(h, 10_000); err != nil || ev != windows.WAIT_OBJECT_0 {
+			exited = false
+		}
 		windows.CloseHandle(h)
+	}
+	for _, h := range runningClaudeDesktop() {
+		exited = false
+		windows.CloseHandle(h)
+	}
+	// A Claude Desktop still running would write its old config back over the edit.
+	if !exited {
+		return ErrStillRunning
 	}
 	err := edit()
 	startClaudeDesktop()

@@ -43,6 +43,8 @@ func aiErrorText(err error) string {
 	var entry *aiapps.EntryError
 	var missing *aiapps.NotInstalledError
 	switch {
+	case errors.Is(err, aiapps.ErrStillRunning):
+		return T("ai.claudeStillRunning")
 	case errors.As(err, &entry) && entry.Taken:
 		return T("ai.taken", "app", entry.App, "entry", entry.Entry)
 	case errors.As(err, &entry):

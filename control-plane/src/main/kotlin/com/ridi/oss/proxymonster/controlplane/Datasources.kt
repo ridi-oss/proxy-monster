@@ -854,14 +854,6 @@ private suspend fun ApplicationCall.requireApiOrBearer(config: Config, tokenStor
 
 private val datasourceLog = org.slf4j.LoggerFactory.getLogger("com.ridi.oss.proxymonster.controlplane.Datasources")
 
-/** The datasource.connect decision cp-go's datasource list asks for each row: false for a missing datasource
- *  or a deactivated principal, else [authorizeMetadata]. */
-internal fun ControlPlaneCore.mayConnectById(principal: String, requesterIp: String?, datasourceId: Long): Boolean {
-    val ds = datasourceStore.get(datasourceId) ?: return false
-    return !userGroupStore.isDeactivated(principal) &&
-        authorizeMetadata(authz, principal, roleResolver.resolveParents(principal), ds, AuthzContext(requesterIp = requesterIp))
-}
-
 /** Whether Cedar grants [principal] datasource.connect on [ds] — the decision the proxy runs on connect. */
 internal fun mayConnect(authz: Authz, roleResolver: RoleResolver, principal: String, requesterIp: String?, ds: Datasource): Boolean =
     authorizeMetadata(authz, principal, roleResolver.resolveParents(principal), ds, AuthzContext(requesterIp = requesterIp))

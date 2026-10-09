@@ -22,6 +22,7 @@ import (
 	"google.golang.org/grpc"
 
 	"github.com/ridi-oss/proxy-monster/cpgo/api"
+	"github.com/ridi-oss/proxy-monster/cpgo/authz"
 	"github.com/ridi-oss/proxy-monster/cpgo/bridge"
 	"github.com/ridi-oss/proxy-monster/cpgo/child"
 	"github.com/ridi-oss/proxy-monster/cpgo/front"
@@ -54,6 +55,8 @@ type config struct {
 	AuthDebug     bool   `kong:"-"`
 	// InternalToken authenticates cp-go to the child; generated per boot unless attaching.
 	InternalToken string `kong:"-"`
+	// UserAttributes is PM_OIDC_USER_ATTRIBUTES, which Kotlin declares only when OIDC login is configured.
+	UserAttributes string `kong:"-"`
 }
 
 func envOr(key, def string) string {
@@ -72,6 +75,9 @@ func main() {
 	cfg.SessionSecret = envOr("PM_SESSION_SECRET", "dev-insecure-session-secret-change-me")
 	cfg.AuthDebug = envOr("PM_AUTH_DEBUG", "true") == "true"
 	cfg.InternalToken = os.Getenv("PM_CP_INTERNAL_TOKEN")
+	if os.Getenv("PM_OIDC_ISSUER") != "" && os.Getenv("PM_OIDC_CLIENT_ID") != "" && os.Getenv("PM_OIDC_CLIENT_SECRET") != "" && os.Getenv("PM_OIDC_REDIRECT_URI") != "" {
+		cfg.UserAttributes = os.Getenv("PM_OIDC_USER_ATTRIBUTES")
+	}
 	cfg.GitHub.AppID = strings.TrimSpace(os.Getenv("PM_GITHUB_APP_ID"))
 	// Normalized as the Kotlin control plane normalizes it for its web links.
 	cfg.GitHub.APIURL = strings.TrimSpace(os.Getenv("PM_GITHUB_API_URL"))
@@ -98,6 +104,15 @@ func run(ctx context.Context, cfg config) int {
 			return 1
 		}
 		web = u
+	}
+	attrs, err := authz.ParseUserAttributes(cfg.UserAttributes)
+	var schema *authz.Schema
+	if err == nil {
+		schema, err = authz.NewSchema(attrs)
+	}
+	if err != nil {
+		slog.Error("cp-go: " + err.Error())
+		return 1
 	}
 	var kt *child.Child
 	var exited <-chan struct{}
@@ -158,7 +173,8 @@ func run(ctx context.Context, cfg config) int {
 			EndMismatched: api.KotlinSessionCheck(httpUpstream),
 			Edges:         edges,
 			AuthDebug:     cfg.AuthDebug,
-			Authz:         bridge.New(httpUpstream, internalToken),
+			Authz:         authz.NewDecider(pool, schema),
+			Kotlin:        bridge.New(httpUpstream, internalToken),
 		})
 		h := front.Route(mux, front.NewHTTP(httpUpstream, edges))
 		if web != nil {

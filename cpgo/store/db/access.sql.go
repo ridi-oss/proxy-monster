@@ -33,7 +33,7 @@ func (q *Queries) AccessGrants(ctx context.Context) ([]AccessGrantsRow, error) {
 		return nil, err
 	}
 	defer rows.Close()
-	var items []AccessGrantsRow
+	items := []AccessGrantsRow{}
 	for rows.Next() {
 		var i AccessGrantsRow
 		if err := rows.Scan(
@@ -79,7 +79,7 @@ func (q *Queries) AccessGrantsOf(ctx context.Context, principal string) ([]Acces
 		return nil, err
 	}
 	defer rows.Close()
-	var items []AccessGrantsOfRow
+	items := []AccessGrantsOfRow{}
 	for rows.Next() {
 		var i AccessGrantsOfRow
 		if err := rows.Scan(
@@ -182,7 +182,7 @@ func (q *Queries) AccessRequests(ctx context.Context) ([]AccessRequestsRow, erro
 		return nil, err
 	}
 	defer rows.Close()
-	var items []AccessRequestsRow
+	items := []AccessRequestsRow{}
 	for rows.Next() {
 		var i AccessRequestsRow
 		if err := rows.Scan(
@@ -327,7 +327,7 @@ func (q *Queries) AccessRequestsByStatus(ctx context.Context, status string) ([]
 		return nil, err
 	}
 	defer rows.Close()
-	var items []AccessRequestsByStatusRow
+	items := []AccessRequestsByStatusRow{}
 	for rows.Next() {
 		var i AccessRequestsByStatusRow
 		if err := rows.Scan(
@@ -415,7 +415,7 @@ func (q *Queries) LiveAccessGrants(ctx context.Context) ([]LiveAccessGrantsRow, 
 		return nil, err
 	}
 	defer rows.Close()
-	var items []LiveAccessGrantsRow
+	items := []LiveAccessGrantsRow{}
 	for rows.Next() {
 		var i LiveAccessGrantsRow
 		if err := rows.Scan(
@@ -461,7 +461,7 @@ func (q *Queries) LiveAccessGrantsOf(ctx context.Context, principal string) ([]L
 		return nil, err
 	}
 	defer rows.Close()
-	var items []LiveAccessGrantsOfRow
+	items := []LiveAccessGrantsOfRow{}
 	for rows.Next() {
 		var i LiveAccessGrantsOfRow
 		if err := rows.Scan(
@@ -564,7 +564,7 @@ func (q *Queries) OwnApprovals(ctx context.Context, principal string) ([]OwnAppr
 		return nil, err
 	}
 	defer rows.Close()
-	var items []OwnApprovalsRow
+	items := []OwnApprovalsRow{}
 	for rows.Next() {
 		var i OwnApprovalsRow
 		if err := rows.Scan(
@@ -714,7 +714,7 @@ func (q *Queries) OwnApprovalsByStatus(ctx context.Context, arg OwnApprovalsBySt
 		return nil, err
 	}
 	defer rows.Close()
-	var items []OwnApprovalsByStatusRow
+	items := []OwnApprovalsByStatusRow{}
 	for rows.Next() {
 		var i OwnApprovalsByStatusRow
 		if err := rows.Scan(

@@ -72,7 +72,7 @@ func (q *Queries) AuditLog(ctx context.Context, limit int32) ([]AuditEvent, erro
 		return nil, err
 	}
 	defer rows.Close()
-	var items []AuditEvent
+	items := []AuditEvent{}
 	for rows.Next() {
 		var i AuditEvent
 		if err := rows.Scan(
@@ -128,7 +128,7 @@ func (q *Queries) AuditLogOf(ctx context.Context, arg AuditLogOfParams) ([]Audit
 		return nil, err
 	}
 	defer rows.Close()
-	var items []AuditEvent
+	items := []AuditEvent{}
 	for rows.Next() {
 		var i AuditEvent
 		if err := rows.Scan(

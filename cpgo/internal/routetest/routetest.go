@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/ridi-oss/proxy-monster/cpgo/api"
+	"github.com/ridi-oss/proxy-monster/cpgo/authz"
 	"github.com/ridi-oss/proxy-monster/cpgo/bridge"
 	"github.com/ridi-oss/proxy-monster/cpgo/front"
 	"github.com/ridi-oss/proxy-monster/cpgo/internal/dbtest"
@@ -17,7 +18,7 @@ import (
 	"github.com/ridi-oss/proxy-monster/cpgo/session"
 )
 
-type env struct {
+type Env struct {
 	St        dbtest.Store
 	Srv       *httptest.Server
 	Forwarded []string
@@ -80,9 +81,26 @@ func (f *fakeAuthz) AuthorizeEach(ctx context.Context, principal, action string,
 	return out, nil
 }
 
-func Setup(t *testing.T) *env {
+func Setup(t *testing.T) *Env { return SetupConfig(t, Config{}) }
+
+type Config struct {
+	// Cedar decides with cedar-go over the stored policies instead of the fake; PoliciesChanged still reaches the fake.
+	Cedar bool
+	// Edges is PM_TRUSTED_PROXIES; "127.0.0.1" makes the test client a trusted edge.
+	Edges []string
+}
+
+func SetupConfig(t *testing.T, c Config) *Env {
 	t.Helper()
-	e := &env{St: dbtest.Open(t)}
+	e := &Env{St: dbtest.Open(t)}
+	var decider api.Authorizer = &e.Authz
+	if c.Cedar {
+		schema, err := authz.NewSchema(nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		decider = authz.NewDecider(e.St.Pool, schema)
+	}
 	forward := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		e.Forwarded = append(e.Forwarded, r.Method+" "+r.URL.Path)
 		w.WriteHeader(http.StatusTeapot)
@@ -91,15 +109,23 @@ func Setup(t *testing.T) *env {
 	routes.Register(mux, e.St.Pool, api.Gate{
 		Sessions:      session.NewResolver(e.St.Pool, dbtest.Secret),
 		EndMismatched: func(r *http.Request) { e.Ended = append(e.Ended, r.Header.Get("Cookie")) },
+		Edges:         front.ParseTrustedEdges(c.Edges),
 		AuthDebug:     true,
-		Authz:         &e.Authz,
+		Authz:         decider,
+		Kotlin:        &e.Authz,
 	})
 	e.Srv = httptest.NewServer(front.Route(mux, forward))
 	t.Cleanup(e.Srv.Close)
 	return e
 }
 
-func (e *env) Do(t *testing.T, method, path, body string, cookies []*http.Cookie) (int, string) {
+func (e *Env) Do(t *testing.T, method, path, body string, cookies []*http.Cookie) (int, string) {
+	t.Helper()
+	return e.DoHeader(t, method, path, body, cookies)
+}
+
+// DoHeader is Do with header name, value pairs set on the request.
+func (e *Env) DoHeader(t *testing.T, method, path, body string, cookies []*http.Cookie, header ...string) (int, string) {
 	t.Helper()
 	req, _ := http.NewRequest(method, e.Srv.URL+path, strings.NewReader(body))
 	if body != "" {
@@ -108,6 +134,9 @@ func (e *env) Do(t *testing.T, method, path, body string, cookies []*http.Cookie
 	for _, c := range cookies {
 		req.AddCookie(c)
 	}
+	for i := 0; i+1 < len(header); i += 2 {
+		req.Header.Set(header[i], header[i+1])
+	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
@@ -115,4 +144,11 @@ func (e *env) Do(t *testing.T, method, path, body string, cookies []*http.Cookie
 	defer resp.Body.Close()
 	b, _ := io.ReadAll(resp.Body)
 	return resp.StatusCode, strings.TrimSpace(string(b))
+}
+
+func (e *Env) Exec(t *testing.T, sql string, args ...any) {
+	t.Helper()
+	if _, err := e.St.Pool.Exec(context.Background(), sql, args...); err != nil {
+		t.Fatal(err)
+	}
 }

@@ -14,10 +14,16 @@ import (
 // TokenHeader carries the per-boot token cp-go hands the Kotlin child.
 const TokenHeader = "X-PM-Internal-Token"
 
-// Resource is the Cedar resource a decision is about.
+// Resource is the Cedar resource a decision is about. Principal is its owner: an audit record's, a
+// grant's, or an approval request's requester.
 type Resource struct {
-	Type      string `json:"type"`
-	Principal string `json:"principal,omitempty"`
+	Type           string  `json:"type"`
+	Principal      string  `json:"principal,omitempty"`
+	ID             int64   `json:"id,omitempty"`
+	Approver       *string `json:"approver,omitempty"`
+	ExecutedBy     *string `json:"executedBy,omitempty"`
+	DatasourceName *string `json:"datasourceName,omitempty"`
+	RoleName       *string `json:"roleName,omitempty"`
 }
 
 var (
@@ -27,52 +33,78 @@ var (
 
 func AuditRecord(owner string) Resource { return Resource{Type: "AuditRecord", Principal: owner} }
 
-// Client calls Kotlin's POST /internal/authorize.
+// Client calls Kotlin's /internal/authorize routes.
 type Client struct {
-	url   string
-	token string
-	http  *http.Client
+	url, batchURL string
+	token         string
+	http          *http.Client
 }
 
 func New(upstream *url.URL, token string) *Client {
 	return &Client{
-		url:   upstream.JoinPath("/internal/authorize").String(),
-		token: token,
-		http:  &http.Client{Timeout: 10 * time.Second},
+		url:      upstream.JoinPath("/internal/authorize").String(),
+		batchURL: upstream.JoinPath("/internal/authorize-batch").String(),
+		token:    token,
+		http:     &http.Client{Timeout: 10 * time.Second},
 	}
 }
 
 // Authorize reports whether Cedar allows principal to take action on resource, and on a deny, Cedar's reason.
 func (c *Client) Authorize(ctx context.Context, principal, action string, resource Resource, requesterIP string) (bool, string, error) {
-	body, err := json.Marshal(struct {
+	var out struct {
+		Allow  bool   `json:"allow"`
+		Reason string `json:"reason"`
+	}
+	err := c.post(ctx, c.url, struct {
 		Principal   string   `json:"principal"`
 		Action      string   `json:"action"`
 		Resource    Resource `json:"resource"`
 		RequesterIP string   `json:"requesterIp,omitempty"`
-	}{principal, action, resource, requesterIP})
-	if err != nil {
-		return false, "", err
+	}{principal, action, resource, requesterIP}, &out)
+	return out.Allow, out.Reason, err
+}
+
+// AuthorizeEach decides action on every resource for principal, in order, from one role resolution.
+func (c *Client) AuthorizeEach(ctx context.Context, principal, action string, resources []Resource, requesterIP string) ([]bool, error) {
+	if len(resources) == 0 {
+		return nil, nil
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.url, bytes.NewReader(body))
+	var out struct {
+		Allow []bool `json:"allow"`
+	}
+	err := c.post(ctx, c.batchURL, struct {
+		Principal   string     `json:"principal"`
+		Action      string     `json:"action"`
+		Resources   []Resource `json:"resources"`
+		RequesterIP string     `json:"requesterIp,omitempty"`
+	}{principal, action, resources, requesterIP}, &out)
+	if err == nil && len(out.Allow) != len(resources) {
+		err = fmt.Errorf("bridge: %d decisions for %d resources", len(out.Allow), len(resources))
+	}
+	return out.Allow, err
+}
+
+func (c *Client) post(ctx context.Context, url string, in, out any) error {
+	body, err := json.Marshal(in)
 	if err != nil {
-		return false, "", err
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set(TokenHeader, c.token)
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return false, "", fmt.Errorf("bridge: %w", err)
+		return fmt.Errorf("bridge: %w", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return false, "", fmt.Errorf("bridge: authorize returned %s", resp.Status)
+		return fmt.Errorf("bridge: %s returned %s", url, resp.Status)
 	}
-	var out struct {
-		Allow  bool   `json:"allow"`
-		Reason string `json:"reason"`
+	if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
+		return fmt.Errorf("bridge: %w", err)
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
-		return false, "", fmt.Errorf("bridge: %w", err)
-	}
-	return out.Allow, out.Reason, nil
+	return nil
 }

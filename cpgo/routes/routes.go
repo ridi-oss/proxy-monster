@@ -35,6 +35,9 @@ func Register(mux *http.ServeMux, pool *pgxpool.Pool, gate api.Gate) {
 	mux.HandleFunc("GET /api/mask-fns", gate.RequireAdmin("admin.policies", p.maskFns))
 	mux.HandleFunc("GET /api/policies", gate.RequireAdmin("admin.policies", p.policies))
 	mux.HandleFunc("GET /api/me/permissions", gate.RequireAPI(permissions(gate.Authz)))
+	ac := access{pool: pool, authz: gate.Authz}
+	mux.HandleFunc("GET /api/access-requests", gate.RequireAPI(ac.requests))
+	mux.HandleFunc("GET /api/access-grants", gate.RequireAPI(ac.grants))
 }
 
 type handlers struct{ pool *pgxpool.Pool }

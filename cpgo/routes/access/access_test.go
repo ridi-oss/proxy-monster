@@ -72,4 +72,70 @@ func TestAccessLists(t *testing.T) {
 	if _, body = e.Do(t, http.MethodGet, "/api/access-grants?principal=bob@example.com", "", alice); body != "[]" {
 		t.Fatalf("naming another principal must not widen the listing: %s", body)
 	}
+	for _, path := range []string{"/api/access-requests", "/api/access-grants", "/api/access-grants?principal=alice@example.com"} {
+		if status, body := e.Do(t, http.MethodGet, path, "", nil); status != http.StatusUnauthorized || strings.Contains(body, "alice@example.com") {
+			t.Fatalf("%s without a session: %d %s", path, status, body)
+		}
+	}
+}
+
+func TestOwnApprovals(t *testing.T) {
+	e := routetest.Setup(t)
+	ctx := context.Background()
+	var ds int64
+	if err := e.St.Pool.QueryRow(ctx, `INSERT INTO datasource (name, host, port, db_name) VALUES ('acme', 'db', 5432, 'acme') RETURNING id`).Scan(&ds); err != nil {
+		t.Fatal(err)
+	}
+	var mine int64
+	for _, row := range []struct{ principal, kind, creator, status string }{
+		{"alice@example.com", "QUERY", "WORKFLOW", "PENDING"},
+		{"alice@example.com", "QUERY", "EDITOR", "PENDING"},
+		{"alice@example.com", "RATE_RESET", "WORKFLOW", "PENDING"},
+		{"bob@example.com", "QUERY", "WORKFLOW", "PENDING"},
+	} {
+		var id int64
+		if err := e.St.Pool.QueryRow(ctx, `INSERT INTO access_request (principal, kind, creator_kind, status, requested_duration_sec, datasource_id)
+			VALUES ($1, $2, $3, $4, 0, $5) RETURNING id`, row.principal, row.kind, row.creator, row.status, ds).Scan(&id); err != nil {
+			t.Fatal(err)
+		}
+		if mine == 0 {
+			mine = id
+		}
+	}
+	alice := e.St.WebSession(t, "alice@example.com", "k-a", "dev-a")
+	status, body := e.Do(t, http.MethodGet, "/api/approvals", "", alice)
+	if status != http.StatusOK || strings.Count(body, `"id":`) != 1 || !strings.HasPrefix(body, fmt.Sprintf(`[{"id":%d,"principal":"alice@example.com",`, mine)) {
+		t.Fatalf("own approvals: %d %s", status, body)
+	}
+	if _, body = e.Do(t, http.MethodGet, "/api/approvals?status=APPROVED", "", alice); body != "[]" {
+		t.Fatalf("status filter: %s", body)
+	}
+	if len(e.Authz.Asked) != 0 {
+		t.Fatalf("listing one's own requests asks Cedar nothing: %v", e.Authz.Asked)
+	}
+}
+
+func TestOwnApprovalsPullRequest(t *testing.T) {
+	e := routetest.Setup(t)
+	ctx := context.Background()
+	var ds, id int64
+	if err := e.St.Pool.QueryRow(ctx, `INSERT INTO datasource (name, host, port, db_name) VALUES ('acme', 'db', 5432, 'acme') RETURNING id`).Scan(&ds); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.St.Pool.QueryRow(ctx, `INSERT INTO access_request (principal, kind, creator_kind, status, requested_duration_sec, datasource_id, source,
+			scope, file_key, change_key, content_hash, repository, pr, pr_url, path, head_sha, force_run, force_run_by)
+		VALUES ('alice@example.com', 'QUERY', 'WORKFLOW', 'PENDING', 0, $1, 'github', 'acme/main', '0001', 'ck', 'h', 'o/r', 7,
+			'https://github.com/o/r/pull/7', 'sql/0001.sql', 'abc', true, 'boss@example.com') RETURNING id`, ds).Scan(&id); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.St.Pool.Exec(ctx, `INSERT INTO request_participant (request_id, principal, kind) VALUES ($1, 'zed@example.com', 'cc'), ($1, 'carol@example.com', 'cc'), ($1, 'bob@example.com', 'approver')`, id); err != nil {
+		t.Fatal(err)
+	}
+	_, body := e.Do(t, http.MethodGet, "/api/approvals", "", e.St.WebSession(t, "alice@example.com", "k-a", "dev-a"))
+	want := `"source":"github","scope":"acme/main","fileKey":"0001","changeKey":"ck","revision":1,"contentHash":"h",` +
+		`"pullRequest":{"repository":"o/r","pr":7,"prUrl":"https://github.com/o/r/pull/7","path":"sql/0001.sql","headSha":"abc","prAutoMerge":false},` +
+		`"forceRun":true,"forceRunBy":"boss@example.com","ccs":["carol@example.com","zed@example.com"]}]`
+	if !strings.HasSuffix(body, want) {
+		t.Fatalf("pull request fields in Kotlin's order:\n got %s\nwant suffix %s", body, want)
+	}
 }

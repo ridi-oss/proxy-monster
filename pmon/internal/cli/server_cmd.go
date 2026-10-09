@@ -2,23 +2,24 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"text/tabwriter"
 
 	"github.com/ridi-oss/proxy-monster/pmon/control"
-	"github.com/ridi-oss/proxy-monster/pmon/internal/state"
 )
 
-// serverCmd manages the control planes pmon logs in to. A command that names no server addresses "default".
+// serverCmd manages the control planes pmon logs in to. A command that names no server addresses the default one.
 type serverCmd struct {
-	Set   serverSetCmd   `cmd:"" help:"Create a server or change its URL (logs it out if the URL changes)."`
-	Unset serverUnsetCmd `cmd:"" help:"Log a server out and delete it."`
-	List  serverListCmd  `cmd:"" default:"withargs" help:"List the servers."`
+	Set     serverSetCmd     `cmd:"" help:"Create a server or change its URL (logs it out if the URL changes)."`
+	Unset   serverUnsetCmd   `cmd:"" help:"Log a server out and delete it."`
+	Default serverDefaultCmd `cmd:"" help:"Print the default server, or make another one the default."`
+	List    serverListCmd    `cmd:"" default:"withargs" help:"List the servers."`
 }
 
 type serverSetCmd struct {
-	Name string `arg:"" optional:"" default:"default" help:"Server name."`
+	Name string `arg:"" optional:"" help:"Server name (default: the default server, or a new one named default)."`
 	URL  string `required:"" help:"Control-plane base URL."`
 }
 
@@ -33,23 +34,24 @@ func (c *serverSetCmd) Run() error {
 		return err
 	}
 	if res.NotEndedOnServer {
-		warnNotEnded(c.Name)
+		warnNotEnded(res.Name)
 	}
+	hint := loginHint(res.Name, res.Default)
 	switch {
 	case res.Created:
-		fmt.Printf("server %q set to %s — run `%s` to log in\n", c.Name, c.URL, loginHint(c.Name))
+		fmt.Printf("server %q set to %s — run `%s` to log in\n", res.Name, c.URL, hint)
 	case res.LoggedOut:
-		fmt.Printf("server %q moved to %s and logged out — run `%s` to log in\n", c.Name, c.URL, loginHint(c.Name))
+		fmt.Printf("server %q moved to %s and logged out — run `%s` to log in\n", res.Name, c.URL, hint)
 	case res.Changed:
-		fmt.Printf("server %q set to %s\n", c.Name, c.URL)
+		fmt.Printf("server %q set to %s\n", res.Name, c.URL)
 	default:
-		fmt.Printf("server %q is already %s\n", c.Name, c.URL)
+		fmt.Printf("server %q is already %s\n", res.Name, c.URL)
 	}
 	return nil
 }
 
 type serverUnsetCmd struct {
-	Name  string `arg:"" optional:"" default:"default" help:"Server name."`
+	Name  string `arg:"" optional:"" help:"Server name (default: the default server)."`
 	Force bool   `short:"f" help:"Delete without asking, even with connections open."`
 }
 
@@ -66,19 +68,51 @@ func (c *serverUnsetCmd) Run() error {
 	if err := requireCurrentDaemon(s); err != nil {
 		return err
 	}
-	if s.Server(c.Name) == nil {
-		return fmt.Errorf("unknown server %q", c.Name)
+	name, err := serverOrDefault(s, c.Name)
+	if err != nil {
+		return err
 	}
-	if !c.Force && !confirmDrop(s.ServerLiveConns(c.Name), "Delete the server anyway?") {
-		fmt.Printf("left server %q in place\n", c.Name)
+	if !c.Force && !confirmDrop(s.ServerLiveConns(name), "Delete the server anyway?") {
+		fmt.Printf("left server %q in place\n", name)
 		return nil
 	}
-	notEnded, err := client.UnsetServer(ctx, control.UnsetServerRequest{Name: c.Name})
+	notEnded, err := client.UnsetServer(ctx, control.UnsetServerRequest{Name: name})
 	if err != nil {
 		return err
 	}
 	warnNotEnded(notEnded...)
-	fmt.Printf("server %q deleted\n", c.Name)
+	fmt.Printf("server %q deleted\n", name)
+	return nil
+}
+
+// serverDefaultCmd is `pmon server default [name]`: the server a command addresses when it names none.
+type serverDefaultCmd struct {
+	Name string `arg:"" optional:"" help:"Server to make the default."`
+}
+
+func (c *serverDefaultCmd) Run() error {
+	ctx := context.Background()
+	client, err := control.EnsureDaemon(ctx)
+	if err != nil {
+		return err
+	}
+	if c.Name == "" {
+		s, err := client.Status(ctx)
+		if err != nil {
+			return err
+		}
+		if s.Server(s.DefaultServer) == nil {
+			return errors.New("no default server — pick one with `pmon server default <name>`")
+		}
+		fmt.Println(s.DefaultServer)
+		return nil
+	}
+	if err := client.SetDefault(ctx, control.SetDefaultRequest{Name: c.Name}); errors.Is(err, control.ErrUnknownRoute) {
+		return errors.New("the running daemon predates `pmon server default` — run `pmon restart`")
+	} else if err != nil {
+		return err
+	}
+	fmt.Printf("server %q is now the default\n", c.Name)
 	return nil
 }
 
@@ -105,7 +139,11 @@ func (serverListCmd) Run() error {
 	tw := tabwriter.NewWriter(os.Stdout, 0, 2, 2, ' ', 0)
 	fmt.Fprintln(tw, "SERVER\tURL\tLOGIN")
 	for _, srv := range s.Servers {
-		fmt.Fprintf(tw, "%s\t%s\t%s\n", srv.Name, srv.ControlPlane, loginSummary(srv))
+		name := srv.Name
+		if srv.Default {
+			name += " (default)"
+		}
+		fmt.Fprintf(tw, "%s\t%s\t%s\n", name, srv.ControlPlane, loginSummary(srv))
 	}
 	return tw.Flush()
 }
@@ -128,9 +166,22 @@ func warnNotEnded(servers ...string) {
 	}
 }
 
-// loginHint is the command that logs in to server.
-func loginHint(server string) string {
-	if server == state.DefaultServer {
+// serverOrDefault is name, or the default server when name is empty, as long as it is configured.
+func serverOrDefault(s *control.Status, name string) (string, error) {
+	switch {
+	case name == "" && s.Server(s.DefaultServer) == nil:
+		return "", errors.New("no default server — name one, or pick one with `pmon server default <name>`")
+	case name == "":
+		return s.DefaultServer, nil
+	case s.Server(name) == nil:
+		return "", fmt.Errorf("unknown server %q", name)
+	}
+	return name, nil
+}
+
+// loginHint is the command that logs in to server; the default server needs no name.
+func loginHint(server string, isDefault bool) string {
+	if isDefault {
 		return "pmon login"
 	}
 	return "pmon login " + server

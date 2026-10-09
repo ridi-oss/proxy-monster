@@ -269,11 +269,13 @@ func (d *Daemon) Status() control.Status {
 		// `pmon show` would emit a connection string with an empty password.
 		LocalPassword: cmp.Or(d.localPassword, d.cfg.LocalPassword),
 		Servers:       make([]control.ServerInfo, 0, len(d.cfg.Servers)),
+		DefaultServer: d.cfg.Default,
 		Datasources:   make([]control.Datasource, 0, len(d.datasources)+len(d.unbrokered)),
 	}
 	for name, srv := range d.cfg.Servers {
 		out.Servers = append(out.Servers, control.ServerInfo{
 			Name:               name,
+			Default:            name == d.cfg.Default,
 			ControlPlane:       srv.ControlPlane,
 			Principal:          srv.Principal,
 			LoggedIn:           srv.LoggedIn(),
@@ -373,7 +375,7 @@ func (d *Daemon) LocalPassword() string {
 // login is the only step needed to reach a datasource. A second concurrent login to the same server waits
 // rather than starting a competing device flow.
 func (d *Daemon) Login(ctx context.Context, req control.LoginRequest, onEvent func(control.LoginEvent)) error {
-	name := cmp.Or(req.Server, state.DefaultServer)
+	name := d.serverName(req.Server)
 	if err := state.ValidServerName(name); err != nil {
 		return err
 	}
@@ -388,8 +390,8 @@ func (d *Daemon) Login(ctx context.Context, req control.LoginRequest, onEvent fu
 	}
 	srv := d.snapshot().Servers[name]
 	if srv == nil {
-		if name == state.DefaultServer {
-			return errors.New("no default server — set one with `pmon server set --url <control-plane-url>`, or log in with `pmon login --url <control-plane-url>`")
+		if req.Server == "" {
+			return errors.New("no default server — set one with `pmon server set --url <control-plane-url>` or `pmon login --url <control-plane-url>`, or pick one with `pmon server default <name>`")
 		}
 		return fmt.Errorf("unknown server %q — set it with `pmon server set %s --url <control-plane-url>`, or log in with `pmon login --url <control-plane-url> %s`", name, name, name)
 	}
@@ -442,7 +444,7 @@ func (d *Daemon) Login(ctx context.Context, req control.LoginRequest, onEvent fu
 	// After the save, so a failed end never costs the new login.
 	replacedEnded := srv.RenewalToken == "" || srv.RenewalToken == res.RenewalToken || d.endOnServer(srv, true)
 	onEvent(control.LoginEvent{
-		Kind: "done", Principal: res.Principal, ExpiresAt: res.ExpiresAt,
+		Kind: "done", Server: name, Principal: res.Principal, ExpiresAt: res.ExpiresAt,
 		Scopes: res.Scopes, ElevatedUntil: res.ElevatedUntil, ReplacedNotEndedOnServer: !replacedEnded,
 	})
 
@@ -454,8 +456,11 @@ func (d *Daemon) Login(ctx context.Context, req control.LoginRequest, onEvent fu
 
 // MCPToken mints an MCP access token from a server's login, so a bridge never reads credentials itself.
 func (d *Daemon) MCPToken(ctx context.Context, req control.MCPTokenRequest) (control.MCPToken, error) {
-	name := cmp.Or(req.Server, state.DefaultServer)
+	name := d.serverName(req.Server)
 	srv := d.snapshot().Servers[name]
+	if srv == nil && req.Server == "" {
+		return control.MCPToken{}, errors.New("no default server — pick one with `pmon server default <name>`, or name the server: `pmon mcp <server>`")
+	}
 	if srv == nil {
 		return control.MCPToken{}, fmt.Errorf("unknown server %q — set it up with `pmon server set %s --url <control-plane-url>`, then `pmon login %s`", name, name, name)
 	}
@@ -484,7 +489,7 @@ func (d *Daemon) Logout(req control.LogoutRequest) ([]string, error) {
 			names = append(names, name)
 		}
 	} else {
-		names = []string{cmp.Or(req.Server, state.DefaultServer)}
+		names = []string{d.serverName(req.Server)}
 	}
 	sort.Strings(names)
 	var notEnded []string
@@ -587,7 +592,7 @@ func (d *Daemon) forgetServer(name string) {
 // it, so changing a logged-in server's URL logs it out.
 func (d *Daemon) SetServer(req control.SetServerRequest) (control.SetServerResult, error) {
 	var res control.SetServerResult
-	name := cmp.Or(req.Name, state.DefaultServer)
+	name := d.serverName(req.Name)
 	if err := state.ValidServerName(name); err != nil {
 		return res, err
 	}
@@ -609,6 +614,9 @@ func (d *Daemon) SetServer(req control.SetServerRequest) (control.SetServerResul
 		case srv == nil:
 			c.Servers[name] = &state.Server{ID: state.NewServerID(), ControlPlane: cp, Ports: map[string]int{}}
 			res.Created = true
+			if c.Servers[c.Default] == nil {
+				c.Default = name
+			}
 		case srv.ControlPlane != cp:
 			res.Changed = true
 			res.LoggedOut = srv.LoggedIn()
@@ -619,6 +627,7 @@ func (d *Daemon) SetServer(req control.SetServerRequest) (control.SetServerResul
 	}); err != nil {
 		return res, err
 	}
+	res.Name, res.Default = name, d.snapshot().Default == name
 	if res.Changed {
 		d.forgetServer(name)
 	}
@@ -631,7 +640,7 @@ func (d *Daemon) SetServer(req control.SetServerRequest) (control.SetServerResul
 // UnsetServer logs a server out and deletes it, along with its sticky ports.
 // UnsetServer logs a server out and deletes it, along with its sticky ports.
 func (d *Daemon) UnsetServer(req control.UnsetServerRequest) ([]string, error) {
-	name := cmp.Or(req.Name, state.DefaultServer)
+	name := d.serverName(req.Name)
 	mu := lockOf(&d.serverMus, name)
 	mu.Lock()
 	defer mu.Unlock()
@@ -651,6 +660,27 @@ func (d *Daemon) UnsetServer(req control.UnsetServerRequest) ([]string, error) {
 	d.forgetServer(name)
 	d.publishStatus()
 	return notEnded, nil
+}
+
+// serverName is name, or the default server when name is empty; with no default either, it is
+// state.DefaultServer, the name a new server gets.
+func (d *Daemon) serverName(name string) string {
+	return cmp.Or(d.snapshot().Resolve(name), state.DefaultServer)
+}
+
+// SetDefault makes a configured server the one a command addresses when it names none.
+func (d *Daemon) SetDefault(req control.SetDefaultRequest) error {
+	if err := d.commit(func(c *state.Config) error {
+		if c.Servers[req.Name] == nil {
+			return fmt.Errorf("unknown server %q", req.Name)
+		}
+		c.Default = req.Name
+		return nil
+	}); err != nil {
+		return err
+	}
+	d.publishStatus()
+	return nil
 }
 
 // normalizeControlPlane checks a control-plane base URL and drops a trailing slash, so one server is not

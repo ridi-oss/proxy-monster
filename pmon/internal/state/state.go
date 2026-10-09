@@ -4,6 +4,7 @@
 package state
 
 import (
+	"cmp"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
@@ -27,6 +28,9 @@ type Config struct {
 	LocalPassword string `json:"localPassword"`
 	// Servers maps a server name to its control plane and login.
 	Servers map[string]*Server `json:"servers"`
+	// Default names the server a command addresses when it names none. It may name no configured server,
+	// such as after that server is deleted; a command that needs it then says so.
+	Default string `json:"default"`
 }
 
 // Server is one control plane pmon logs in to.
@@ -58,7 +62,8 @@ type Server struct {
 	Ports map[string]int `json:"ports"`
 }
 
-// DefaultServer is the server a command addresses when it names none.
+// DefaultServer is the name a server gets when nothing else names it, and the default server of a config
+// written before Config.Default existed.
 const DefaultServer = "default"
 
 var serverNamePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,62}$`)
@@ -317,6 +322,9 @@ func parse(data []byte) (*Config, error) {
 		return nil, err
 	}
 	c := &Config{}
+	if _, ok := probe["default"]; !ok {
+		c.Default = DefaultServer
+	}
 	if _, ok := probe["servers"]; ok {
 		if err := json.Unmarshal(data, c); err != nil {
 			return nil, err
@@ -404,9 +412,12 @@ func (s *Server) ClearLogin() {
 	s.Scopes, s.ElevatedUntil = nil, ""
 }
 
+// Resolve is name, or the default server when name is empty.
+func (c Config) Resolve(name string) string { return cmp.Or(name, c.Default) }
+
 // Clone returns a deep copy, so a caller can read it outside the daemon's lock.
 func (c *Config) Clone() Config {
-	out := Config{LocalPassword: c.LocalPassword, Servers: make(map[string]*Server, len(c.Servers))}
+	out := Config{LocalPassword: c.LocalPassword, Servers: make(map[string]*Server, len(c.Servers)), Default: c.Default}
 	for name, srv := range c.Servers {
 		dup := *srv
 		dup.Ports = maps.Clone(srv.Ports)

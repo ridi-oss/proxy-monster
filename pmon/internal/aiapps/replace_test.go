@@ -3,6 +3,7 @@ package aiapps
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -159,10 +160,34 @@ func TestRemoveTakesEveryRelayForTheServer(t *testing.T) {
 	}
 }
 
-// `pmon mcp` with no server is the default server's relay.
+// `pmon mcp` with no server relays to whichever server is the default, not to one named "default".
 func TestBarePmonMCPIsTheDefaultServer(t *testing.T) {
-	if !ownCommand("pmon", []string{"mcp"}, "default") || ownCommand("pmon", []string{"mcp"}, "acme") {
+	bare := []string{"mcp"}
+	if !ownCommand("pmon", bare, "staging", "staging") || ownCommand("pmon", bare, "default", "staging") {
 		t.Error("`pmon mcp` should be the default server's relay and only that")
+	}
+	setHome(t, t.TempDir())
+	if err := os.WriteFile(claudeCodePath(), []byte(`{"mcpServers":{"bare":{"type":"stdio","command":"/pmon","args":["mcp"]}}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	app := configApp("claude-code", "Claude Code", claudeCodeConfig())
+	if removed, err := app.Remove(Setup{Pmon: "/pmon", Default: "staging"}, "default"); err != nil || removed {
+		t.Errorf("removing the server named default took the default's bare entry: %v %v", removed, err)
+	}
+	if !app.Connected(Setup{Pmon: "/pmon", Default: "staging"}, "staging") {
+		t.Error("the bare entry does not read as the default server's")
+	}
+}
+
+// An entry may name pmon by its bare command, found on PATH.
+func TestBareCommandOnPATH(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, pmonFile()), []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir)
+	if !ours("pmon", []string{"mcp", "acme"}, map[string]string{}, "/elsewhere/pmon", "acme", "") {
+		t.Error("an entry running pmon from PATH does not read as connected")
 	}
 }
 
@@ -207,4 +232,11 @@ func TestFallbackEntryNameHasNoDot(t *testing.T) {
 	if got := (Server{Name: "acme.prod"}).EntryName(); got != "pmon-acme-prod" {
 		t.Errorf("EntryName = %q", got)
 	}
+}
+
+func pmonFile() string {
+	if runtime.GOOS == "windows" {
+		return "pmon.exe"
+	}
+	return "pmon"
 }

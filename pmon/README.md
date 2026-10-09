@@ -22,7 +22,9 @@ step — there is no separate command to start brokering.
 ### Servers
 
 pmon can be logged in to several control planes at once. Each server has a name;
-a command that names none addresses `default`.
+a command that names none addresses the default server. The first server you
+create becomes the default; `pmon server default <name>` makes another one the
+default, and `pmon server default` prints it.
 
 ```sh
 pmon server set --url https://pm.example.com          # the "default" server
@@ -34,11 +36,14 @@ pmon show acme-mysql            # acme-mysql on default
 pmon show dev acme-mysql        # acme-mysql on dev
 pmon logout dev                 # or `pmon logout --all`
 pmon server unset dev           # log out of dev and delete it
+pmon server default dev         # bare commands now address dev
 ```
 
 Changing a logged-in server's URL logs it out: a token is only good against the
 control plane that issued it. A config from a single-server release loads as
-`default`, keeping its ports and password.
+`default`, keeping its ports and password, and a config from before the default
+could be chosen keeps `default` as its default. Deleting the default server
+leaves none until you create or choose another.
 
 ### Scopes
 

@@ -118,9 +118,27 @@ func (c *Client) Status(ctx context.Context) (*Status, error) {
 		return nil, err
 	}
 	defer resp.Body.Close()
-	var s Status
-	if err := json.NewDecoder(resp.Body).Decode(&s); err != nil {
+	var raw json.RawMessage
+	if err := json.NewDecoder(resp.Body).Decode(&raw); err != nil {
 		return nil, err
+	}
+	return decodeStatus(raw)
+}
+
+// decodeStatus reads a status, including one from a daemon that predates choosing the default server.
+func decodeStatus(raw []byte) (*Status, error) {
+	var s Status
+	if err := json.Unmarshal(raw, &s); err != nil {
+		return nil, err
+	}
+	var fields map[string]json.RawMessage
+	if json.Unmarshal(raw, &fields) == nil {
+		if _, ok := fields["defaultServer"]; !ok {
+			s.DefaultServer, s.FixedDefault = "default", true
+			for i := range s.Servers {
+				s.Servers[i].Default = s.Servers[i].Name == "default"
+			}
+		}
 	}
 	return &s, nil
 }
@@ -189,6 +207,15 @@ func (c *Client) SetServer(ctx context.Context, req SetServerRequest) (SetServer
 	}
 	defer resp.Body.Close()
 	return res, json.NewDecoder(resp.Body).Decode(&res)
+}
+
+// SetDefault makes a server the one a command addresses when it names none.
+func (c *Client) SetDefault(ctx context.Context, req SetDefaultRequest) error {
+	resp, err := c.do(ctx, http.MethodPost, PathServerDefault, req)
+	if err != nil {
+		return err
+	}
+	return resp.Body.Close()
 }
 
 // UnsetServer logs a server out and deletes it.

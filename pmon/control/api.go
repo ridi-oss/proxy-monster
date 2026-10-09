@@ -24,6 +24,11 @@ type Status struct {
 	LocalPassword string `json:"localPassword"`
 	// Servers is every configured server, sorted by name.
 	Servers []ServerInfo `json:"servers"`
+	// DefaultServer is the server a command addresses when it names none; it may name no configured server.
+	DefaultServer string `json:"defaultServer"`
+	// FixedDefault is set by Client.Status for a daemon that predates choosing the default: its default is
+	// always "default", and it reads a request naming no server as that one.
+	FixedDefault bool `json:"-"`
 	// Datasources is every datasource across all servers, sorted by server then name.
 	Datasources []Datasource `json:"datasources"`
 }
@@ -31,6 +36,7 @@ type Status struct {
 // ServerInfo is one configured control plane and its login.
 type ServerInfo struct {
 	Name             string `json:"name"`
+	Default          bool   `json:"default,omitempty"`
 	ControlPlane     string `json:"controlPlane"`
 	Principal        string `json:"principal,omitempty"`
 	LoggedIn         bool   `json:"loggedIn"`
@@ -166,14 +172,23 @@ type SetServerRequest struct {
 
 // SetServerResult says what [SetServerRequest] changed.
 type SetServerResult struct {
-	Created          bool `json:"created"`
-	Changed          bool `json:"changed"`
-	LoggedOut        bool `json:"loggedOut"`
-	NotEndedOnServer bool `json:"notEndedOnServer,omitempty"`
+	// Name is the server set, which a request naming none leaves to the daemon; Default reports whether it
+	// is the default server afterwards.
+	Name             string `json:"name,omitempty"`
+	Default          bool   `json:"default,omitempty"`
+	Created          bool   `json:"created"`
+	Changed          bool   `json:"changed"`
+	LoggedOut        bool   `json:"loggedOut"`
+	NotEndedOnServer bool   `json:"notEndedOnServer,omitempty"`
 }
 
 // UnsetServerRequest deletes a server, logging it out first.
 type UnsetServerRequest struct {
+	Name string `json:"name"`
+}
+
+// SetDefaultRequest makes Name the server a command addresses when it names none.
+type SetDefaultRequest struct {
 	Name string `json:"name"`
 }
 
@@ -188,7 +203,9 @@ type LoginEvent struct {
 	// and prints the plain one, so a user following the printed link types the code themselves.
 	VerificationURIComplete string `json:"verificationUriComplete,omitempty"`
 	UserCode                string `json:"userCode,omitempty"`
-	// Done fields, set when Kind == "done".
+	// Done fields, set when Kind == "done". Server is the server logged in to, which a request naming none
+	// leaves to the daemon.
+	Server                   string   `json:"server,omitempty"`
 	Principal                string   `json:"principal,omitempty"`
 	ExpiresAt                string   `json:"expiresAt,omitempty"`
 	Scopes                   []string `json:"scopes,omitempty"`
@@ -214,13 +231,14 @@ type ErrorResponse struct {
 
 // Route paths on the control socket.
 const (
-	PathStatus      = "/status"
-	PathLogin       = "/login"
-	PathLogout      = "/logout"
-	PathServerSet   = "/servers/set"
-	PathServerUnset = "/servers/unset"
-	PathReload      = "/reload"
-	PathShutdown    = "/shutdown"
-	PathEvents      = "/events"
-	PathMCPToken    = "/mcp-token"
+	PathStatus        = "/status"
+	PathLogin         = "/login"
+	PathLogout        = "/logout"
+	PathServerSet     = "/servers/set"
+	PathServerUnset   = "/servers/unset"
+	PathServerDefault = "/servers/default"
+	PathReload        = "/reload"
+	PathShutdown      = "/shutdown"
+	PathEvents        = "/events"
+	PathMCPToken      = "/mcp-token"
 )

@@ -9,7 +9,6 @@ import (
 	"github.com/ridi-oss/proxy-monster/pmon/conn"
 	"github.com/ridi-oss/proxy-monster/pmon/control"
 	"github.com/ridi-oss/proxy-monster/pmon/driver"
-	"github.com/ridi-oss/proxy-monster/pmon/internal/state"
 )
 
 type showCmd struct {
@@ -27,7 +26,7 @@ func (c *showCmd) Run() error {
 		return fmt.Errorf("--jdbc-with-truncation-diagnostics requires --jdbc or --format jdbc")
 	}
 
-	server, name := state.DefaultServer, ""
+	server, name := "", ""
 	switch len(c.Args) {
 	case 1:
 		name = c.Args[0]
@@ -52,12 +51,18 @@ func (c *showCmd) Run() error {
 	}
 	// A second daemon makes the port this prints ambiguous.
 	warnOtherDaemons()
+	if server == "" {
+		server = s.DefaultServer
+	}
 	srv := s.Server(server)
+	if srv == nil && len(c.Args) == 1 {
+		return fmt.Errorf("no default server — name one (known: %s), or pick one with `pmon server default <name>`", strings.Join(serverNames(s), ", "))
+	}
 	if srv == nil {
 		return fmt.Errorf("unknown server %q — known: %s", server, strings.Join(serverNames(s), ", "))
 	}
 	if !srv.LoggedIn {
-		return fmt.Errorf("not logged in to %q — run `%s`", server, loginHint(server))
+		return fmt.Errorf("not logged in to %q — run `%s`", server, loginHint(server, srv.Default))
 	}
 
 	var found *control.Datasource
@@ -136,8 +141,8 @@ func serverNames(s *control.Status) []string {
 }
 
 // showHint is the command that prints a connection string for a datasource on server.
-func showHint(server string) string {
-	if server == state.DefaultServer {
+func showHint(server string, isDefault bool) string {
+	if isDefault {
 		return "pmon show <datasource>"
 	}
 	return "pmon show " + server + " <datasource>"

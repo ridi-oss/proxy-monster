@@ -18,7 +18,7 @@ import (
 // race into two device flows. It starts the daemon if none is running, and the brokers open as soon as the
 // login lands — there is no separate step to begin serving.
 type loginCmd struct {
-	Server string  `arg:"" optional:"" default:"default" help:"Server to log in to."`
+	Server string  `arg:"" optional:"" help:"Server to log in to (default: the default server)."`
 	URL    string  `help:"Set the server's control-plane URL first (as 'pmon server set' does)."`
 	TTL    int     `default:"43200" help:"Requested token lifetime in seconds (default 12h; the server clamps it)."`
 	Scopes *string `help:"Comma-separated scopes to grant instead of the default mcp:read,mcp:query. Available: mcp:read, mcp:query, mcp:approvals:write, mcp:datasources:write, mcp:policies:write, mcp:identity:write, mcp:tokens."`
@@ -66,6 +66,7 @@ func (c *loginCmd) Run() error {
 		}
 		daemonOpensItsOwn = s.Version == ""
 	}
+	server := c.Server
 	if err := client.Login(ctx, req, func(ev control.LoginEvent) {
 		switch ev.Kind {
 		case "prompt":
@@ -78,6 +79,7 @@ func (c *loginCmd) Run() error {
 			}
 			fmt.Println("\nWaiting for you to finish logging in…")
 		case "done":
+			server = cmp.Or(ev.Server, server, state.DefaultServer)
 			fmt.Printf("logged in as %s — token expires %s\n", ev.Principal, ev.ExpiresAt)
 			if len(ev.Scopes) > 0 {
 				fmt.Printf("scopes: %s\n", strings.Join(ev.Scopes, " "))
@@ -86,7 +88,7 @@ func (c *loginCmd) Run() error {
 				fmt.Printf("%s expire %s\n", strings.Join(elevatedScopes(ev.Scopes), " "), expiryLine(ev.ElevatedUntil))
 			}
 			if ev.ReplacedNotEndedOnServer {
-				fmt.Fprintf(os.Stderr, "warning: could not end the previous %q login on the server; it stays valid there until its TTL ends\n", cmp.Or(c.Server, state.DefaultServer))
+				fmt.Fprintf(os.Stderr, "warning: could not end the previous %q login on the server; it stays valid there until its TTL ends\n", server)
 			}
 		}
 	}); err != nil {
@@ -99,6 +101,6 @@ func (c *loginCmd) Run() error {
 	}
 	warnVersionSkew(s)
 	fmt.Printf("%d datasource(s) brokered from %q — `pmon status` for the list, `%s` for a connection string\n",
-		brokeredCount(s, c.Server), c.Server, showHint(c.Server))
+		brokeredCount(s, server), server, showHint(server, server == s.DefaultServer))
 	return nil
 }

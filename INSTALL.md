@@ -275,7 +275,8 @@ the logged-in principal may connect to and dials each one's `PM_ADVERTISE_ADDR`.
 - server URL — _required once per server_. `pmon server set [name] --url <url>`
   saves a control-plane base URL under a name (`default` when omitted);
   `pmon login --url <url> [name]` does the same and logs in. Later commands name
-  the server, or address `default`. Example:
+  the server, or address the default server (the first one created;
+  `pmon server default <name>` changes it). Example:
   `pmon login --url https://console.example.com`
 - `--ttl` (on `pmon login`) — _optional_. Wire-token lifetime in seconds.
   Default `43200` (12h).

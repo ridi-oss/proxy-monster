@@ -6,11 +6,13 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/ridi-oss/proxy-monster/cpgo/api"
+	"github.com/ridi-oss/proxy-monster/cpgo/bridge"
 	"github.com/ridi-oss/proxy-monster/cpgo/front"
 	"github.com/ridi-oss/proxy-monster/cpgo/internal/dbtest"
 	"github.com/ridi-oss/proxy-monster/cpgo/session"
@@ -21,6 +23,19 @@ type env struct {
 	srv       *httptest.Server
 	forwarded []string
 	ended     []string
+	authz     fakeAuthz
+}
+
+// fakeAuthz allows what allow lists and records every decision asked for.
+type fakeAuthz struct {
+	allow map[string]bool
+	asked []string
+}
+
+func (f *fakeAuthz) Authorize(_ context.Context, principal, action string, resource bridge.Resource, ip string) (bool, error) {
+	key := principal + " " + action + " " + resource.Type + ":" + resource.Principal
+	f.asked = append(f.asked, key+" @"+ip)
+	return f.allow[key], nil
 }
 
 func setup(t *testing.T) *env {
@@ -34,7 +49,8 @@ func setup(t *testing.T) *env {
 	Register(mux, e.st.Pool, api.Gate{
 		Sessions:      session.NewResolver(e.st.Pool, dbtest.Secret),
 		EndMismatched: func(r *http.Request) { e.ended = append(e.ended, r.Header.Get("Cookie")) },
-	})
+		AuthDebug:     true,
+	}, &e.authz)
 	e.srv = httptest.NewServer(front.Route(mux, forward))
 	t.Cleanup(e.srv.Close)
 	return e
@@ -57,7 +73,7 @@ func (e *env) do(t *testing.T, method, path, body string, cookies []*http.Cookie
 
 func TestUnauthenticated(t *testing.T) {
 	e := setup(t)
-	for _, path := range []string{"/api/query-history"} {
+	for _, path := range []string{"/api/query-history", "/api/audit", "/api/audit/1"} {
 		status, body := e.do(t, http.MethodGet, path, "", nil)
 		if status != http.StatusUnauthorized || body != `{"code":"common.unauthenticated","params":{}}` {
 			t.Fatalf("%s: %d %s", path, status, body)
@@ -182,5 +198,88 @@ func TestJavaInstant(t *testing.T) {
 		if got := javaInstant(ts); got != want {
 			t.Errorf("%s: got %s want %s", in, got, want)
 		}
+	}
+}
+
+func TestAudit(t *testing.T) {
+	e := setup(t)
+	ctx := context.Background()
+	ids := map[string]int64{}
+	for i, row := range []struct{ principal, statement string }{
+		{"alice@example.com", "select a1"},
+		{"bob@example.com", "select b1"},
+		{"alice@example.com", "select a2"},
+	} {
+		id := int64(100 + i)
+		ids[row.statement] = id
+		if _, err := e.st.Pool.Exec(ctx, `INSERT INTO audit_event (id, ts, principal, datasource, statement, decision)
+			VALUES ($1, now() - make_interval(mins => $2), $3, 'acme', $4, 'ALLOW')`, id, 10-i, row.principal, row.statement); err != nil {
+			t.Fatal(err)
+		}
+	}
+	alice := e.st.WebSession(t, "alice@example.com", "k-a", "dev-a")
+	auditor := e.st.WebSession(t, "auditor@example.com", "k-x", "dev-x")
+	e.authz.allow = map[string]bool{
+		"auditor@example.com audit.read AuditLog:":                   true,
+		"auditor@example.com audit.read AuditRecord:bob@example.com": true,
+		"alice@example.com audit.read AuditRecord:alice@example.com": true,
+	}
+
+	statements := func(body string) []string {
+		var got []struct{ Statement string }
+		if err := json.Unmarshal([]byte(body), &got); err != nil {
+			t.Fatalf("%v: %s", err, body)
+		}
+		out := []string{}
+		for _, g := range got {
+			out = append(out, g.Statement)
+		}
+		return out
+	}
+
+	_, body := e.do(t, http.MethodGet, "/api/audit", "", alice)
+	if got := statements(body); strings.Join(got, ",") != "select a2,select a1" {
+		t.Fatalf("alice sees %v", got)
+	}
+	_, body = e.do(t, http.MethodGet, "/api/audit?limit=2", "", auditor)
+	if got := statements(body); strings.Join(got, ",") != "select a2,select b1" {
+		t.Fatalf("auditor sees %v", got)
+	}
+
+	status, body := e.do(t, http.MethodGet, "/api/audit/"+strconv.FormatInt(ids["select a1"], 10), "", alice)
+	if status != http.StatusOK || !strings.Contains(body, `"statement":"select a1"`) || !strings.Contains(body, `"roles":[]`) || strings.Contains(body, "clientAddr") {
+		t.Fatalf("own record: %d %s", status, body)
+	}
+	hiddenStatus, hidden := e.do(t, http.MethodGet, "/api/audit/"+strconv.FormatInt(ids["select b1"], 10), "", alice)
+	e.authz.asked = nil
+	missingStatus, missing := e.do(t, http.MethodGet, "/api/audit/999999", "", alice)
+	if hiddenStatus != http.StatusNotFound || missingStatus != http.StatusNotFound || hidden != missing ||
+		missing != `{"code":"common.not_found","params":{"resource":"audit record"}}` {
+		t.Fatalf("hidden %d %s / missing %d %s", hiddenStatus, hidden, missingStatus, missing)
+	}
+	if len(e.authz.asked) != 0 {
+		t.Fatalf("a missing record must not reach Cedar: %v", e.authz.asked)
+	}
+	if status, body := e.do(t, http.MethodGet, "/api/audit/not-a-number", "", alice); status != http.StatusBadRequest ||
+		body != `{"code":"common.bad_id","params":{}}` {
+		t.Fatalf("bad id: %d %s", status, body)
+	}
+}
+
+func TestAuditDecisionCarriesRequesterIP(t *testing.T) {
+	e := setup(t)
+	alice := e.st.WebSession(t, "alice@example.com", "k-a", "dev-a")
+	e.do(t, http.MethodGet, "/api/audit", "", alice)
+	if len(e.authz.asked) != 1 || e.authz.asked[0] != "alice@example.com audit.read AuditLog: @127.0.0.1" {
+		t.Fatalf("asked %v", e.authz.asked)
+	}
+
+	e.authz.asked = nil
+	if _, err := e.st.Pool.Exec(context.Background(), `UPDATE principal_session SET debug_requester_ip = '203.0.113.9' WHERE session_key = 'k-a'`); err != nil {
+		t.Fatal(err)
+	}
+	e.do(t, http.MethodGet, "/api/audit", "", alice)
+	if len(e.authz.asked) != 1 || !strings.HasSuffix(e.authz.asked[0], "@203.0.113.9") {
+		t.Fatalf("under auth debug the session's chosen address wins: %v", e.authz.asked)
 	}
 }

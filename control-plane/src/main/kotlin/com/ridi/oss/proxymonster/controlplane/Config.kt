@@ -33,6 +33,8 @@ data class Config(
     val grpcPort: Int = DEFAULT_GRPC_PORT,
     // cp-go sets 127.0.0.1 so this process is reachable only through it.
     val bindHost: String = "0.0.0.0",
+    // Set by cp-go per boot; enables /internal/authorize.
+    val internalToken: String? = null,
     val dbUrl: String,
     val dbUser: String,
     val dbPassword: String,
@@ -266,6 +268,7 @@ data class Config(
                 httpPort = env("PM_HTTP_PORT")?.toIntOrNull() ?: 8080,
                 grpcPort = env("PM_GRPC_PORT")?.toIntOrNull() ?: DEFAULT_GRPC_PORT,
                 bindHost = env("PM_BIND_HOST")?.trim()?.takeIf { it.isNotEmpty() } ?: "0.0.0.0",
+                internalToken = env("PM_CP_INTERNAL_TOKEN")?.takeIf { it.isNotEmpty() },
                 dbUrl = env("PM_DB_URL") ?: "jdbc:postgresql://localhost:5432/proxymonster",
                 dbUser = env("PM_DB_USER") ?: "proxymonster",
                 dbPassword = env("PM_DB_PASSWORD") ?: "proxymonster",

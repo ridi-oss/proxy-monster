@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"time"
 
+	"github.com/ridi-oss/proxy-monster/cpgo/front"
 	"github.com/ridi-oss/proxy-monster/cpgo/session"
 )
 
@@ -35,12 +36,20 @@ func WriteError(w http.ResponseWriter, status int, code string, params map[strin
 	WriteJSON(w, status, Error{Code: code, Params: params})
 }
 
-type principalKey struct{}
+type caller struct{ principal, requesterIP string }
+
+type callerKey struct{}
 
 // Principal is the caller RequireAPI authenticated.
 func Principal(ctx context.Context) string {
-	p, _ := ctx.Value(principalKey{}).(string)
-	return p
+	c, _ := ctx.Value(callerKey{}).(caller)
+	return c.principal
+}
+
+// RequesterIP is the caller's address as Cedar's requester_ip, "" when unknown.
+func RequesterIP(ctx context.Context) string {
+	c, _ := ctx.Value(callerKey{}).(caller)
+	return c.requesterIP
 }
 
 // Gate authenticates console requests for Go routes.
@@ -49,6 +58,9 @@ type Gate struct {
 	// EndMismatched has the Kotlin control plane end a session presented from the wrong device. Kotlin
 	// owns that teardown because it also drops the principal's in-memory editor runs.
 	EndMismatched func(*http.Request)
+	Edges         front.TrustedEdges
+	// AuthDebug lets a session carry the requester IP chosen at its debug login, as Kotlin does.
+	AuthDebug bool
 }
 
 // KotlinSessionCheck resolves the request's session through Kotlin's /auth/session/status, which ends a
@@ -85,7 +97,11 @@ func (g Gate) RequireAPI(next http.HandlerFunc) http.HandlerFunc {
 		case s == nil:
 			WriteError(w, http.StatusUnauthorized, "common.unauthenticated", nil)
 		default:
-			next(w, r.WithContext(context.WithValue(r.Context(), principalKey{}, s.Principal)))
+			ip := front.RequesterIP(r, g.Edges)
+			if g.AuthDebug && s.DebugRequesterIP != "" {
+				ip = s.DebugRequesterIP
+			}
+			next(w, r.WithContext(context.WithValue(r.Context(), callerKey{}, caller{s.Principal, ip})))
 		}
 	}
 }

@@ -35,6 +35,8 @@ type Web struct {
 	AbsoluteExpiresAt time.Time
 	IdleExpiresAt     time.Time
 	Now               time.Time
+	// DebugRequesterIP is the address chosen at a PM_AUTH_DEBUG login, if any.
+	DebugRequesterIP string
 }
 
 // Resolver reads sessions without extending them; only the heartbeat route slides idle.
@@ -65,12 +67,12 @@ func (r *Resolver) Resolve(ctx context.Context, req *http.Request) (*Web, error)
 	)
 	err := r.pool.QueryRow(ctx, `
 		SELECT id, principal, created_at, absolute_expires_at, idle_expires_at, device_id,
-		       clock_timestamp()
+		       coalesce(debug_requester_ip, ''), clock_timestamp()
 		FROM principal_session
 		WHERE session_key = $1 AND kind = 'WEB' AND ended_at IS NULL
 		  AND absolute_expires_at > clock_timestamp()
 		  AND idle_expires_at > clock_timestamp()`, key,
-	).Scan(&w.ID, &w.Principal, &w.CreatedAt, &w.AbsoluteExpiresAt, &w.IdleExpiresAt, &rowDevice, &w.Now)
+	).Scan(&w.ID, &w.Principal, &w.CreatedAt, &w.AbsoluteExpiresAt, &w.IdleExpiresAt, &rowDevice, &w.DebugRequesterIP, &w.Now)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}

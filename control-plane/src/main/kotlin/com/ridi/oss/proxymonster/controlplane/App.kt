@@ -744,7 +744,7 @@ fun Application.module(config: Config, core: ControlPlaneCore) {
         }
 
         // Live decision feed for the UI. Requires a session; each record is then filtered by audit.read.
-        auditRoutes(config, store, authz, auditService)
+        internalAuthorizeRoute(config.internalToken, authz)
 
         // Dev-only login shortcut; gated by PM_AUTH_DEBUG. OIDC (above) is the production path.
         post("/auth/debug") {

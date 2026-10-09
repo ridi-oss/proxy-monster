@@ -144,7 +144,7 @@ func readCodexServers(path string) (map[string]codexServer, error) {
 // codexTable is the TOML for one server, as `codex mcp add` would describe it.
 func codexTable(entry string, cmd mcpCommand) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "[mcp_servers.%s]\ncommand = %s\nargs = [", entry, tomlString(cmd.Command))
+	fmt.Fprintf(&b, "[mcp_servers.%s]\ncommand = %s\nargs = [", tomlKey(entry), tomlString(cmd.Command))
 	for i, a := range cmd.Args {
 		if i > 0 {
 			b.WriteString(", ")
@@ -176,18 +176,69 @@ func tomlString(s string) string {
 	return string(b)
 }
 
-var tomlHeader = regexp.MustCompile(`^\s*\[\[?\s*([^\]]+?)\s*\]\]?\s*(#.*)?$`)
+var bareKey = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
+
+// tomlKey is entry as one TOML key: quoted unless it is a bare key, since a dot would otherwise split it.
+func tomlKey(entry string) string {
+	if bareKey.MatchString(entry) {
+		return entry
+	}
+	return tomlString(entry)
+}
+
+var tomlHeader = regexp.MustCompile(`^\s*\[\[?(.+?)\]\]?\s*(#.*)?$`)
+
+// tomlKeyPath splits a table header's dotted key into its keys, unquoting each; ok is false when it is not one.
+func tomlKeyPath(header string) (keys []string, ok bool) {
+	rest := strings.TrimSpace(header)
+	for {
+		var k string
+		switch {
+		case strings.HasPrefix(rest, `"`):
+			end := 1
+			for end < len(rest) && (rest[end] != '"' || rest[end-1] == '\\') {
+				end++
+			}
+			if end == len(rest) || json.Unmarshal([]byte(rest[:end+1]), &k) != nil {
+				return nil, false
+			}
+			rest = rest[end+1:]
+		case strings.HasPrefix(rest, "'"):
+			end := strings.IndexByte(rest[1:], '\'')
+			if end < 0 {
+				return nil, false
+			}
+			k, rest = rest[1:end+1], rest[end+2:]
+		default:
+			end := strings.IndexAny(rest, ". \t")
+			if end < 0 {
+				end = len(rest)
+			}
+			k, rest = rest[:end], rest[end:]
+			if !bareKey.MatchString(k) {
+				return nil, false
+			}
+		}
+		keys = append(keys, k)
+		rest = strings.TrimSpace(rest)
+		if rest == "" {
+			return keys, true
+		}
+		if rest[0] != '.' {
+			return nil, false
+		}
+		rest = strings.TrimSpace(rest[1:])
+	}
+}
 
 // withoutTOMLTable removes the [mcp_servers.<entry>] table and its sub-tables (such as .env) from text.
 func withoutTOMLTable(text, entry string) string {
-	key := func(h string) string { return strings.ReplaceAll(strings.ReplaceAll(h, `"`, ""), " ", "") }
-	own := "mcp_servers." + entry
 	var out []string
 	skipping := false
 	for _, line := range strings.SplitAfter(text, "\n") {
 		if m := tomlHeader.FindStringSubmatch(strings.TrimRight(line, "\r\n")); m != nil {
-			k := key(m[1])
-			skipping = k == own || strings.HasPrefix(k, own+".")
+			keys, ok := tomlKeyPath(m[1])
+			skipping = ok && len(keys) >= 2 && keys[0] == "mcp_servers" && keys[1] == entry
 		}
 		if !skipping {
 			out = append(out, line)

@@ -120,3 +120,45 @@ func TestClaudeCodeConfigKeepsOtherKeys(t *testing.T) {
 		t.Errorf("remove: %v", err)
 	}
 }
+
+// A dot inside a quoted key is part of the name: pm.prod is its own server, not a sub-table of pm.
+func TestCodexDottedNames(t *testing.T) {
+	p := writeCodex(t, "[mcp_servers.pm]\nurl = \"https://pm.example.com/mcp\"\n\n[mcp_servers.\"pm.prod\"]\ncommand = \"npx\"\nargs = []\n\n[ mcp_servers . 'pm' . env ]\nA = \"1\"\n")
+	if err := codexConfig().delete("pm"); err != nil {
+		t.Fatal(err)
+	}
+	data, _ := os.ReadFile(p)
+	if !strings.Contains(string(data), `[mcp_servers."pm.prod"]`) || strings.Contains(string(data), "url =") || strings.Contains(string(data), "A = ") {
+		t.Errorf("deleting pm:\n%s", data)
+	}
+	cmd := mcpCommand{Command: "/pmon", Args: []string{"mcp", "acme.prod"}}
+	if err := codexConfig().write("pmon-acme.prod", cmd); err != nil {
+		t.Fatal(err)
+	}
+	if c, found, err := codexConfig().read("pmon-acme.prod"); err != nil || !found || c.Command != "/pmon" {
+		t.Errorf("read back %+v %v %v", c, found, err)
+	}
+	if err := codexConfig().delete("pmon-acme.prod"); err != nil {
+		t.Fatal(err)
+	}
+	if _, found, _ := codexConfig().read("pmon-acme.prod"); found {
+		t.Error("pmon-acme.prod is still there after delete")
+	}
+	if _, found, _ := codexConfig().read("pm.prod"); !found {
+		t.Error("pm.prod was deleted")
+	}
+}
+
+func TestTOMLKeyPath(t *testing.T) {
+	for header, want := range map[string]string{
+		`mcp_servers.pm`:            "mcp_servers|pm",
+		` mcp_servers . "pm.prod" `: "mcp_servers|pm.prod",
+		`mcp_servers.'a b'.env`:     "mcp_servers|a b|env",
+		`mcp_servers."x\"y"`:        `mcp_servers|x"y`,
+	} {
+		keys, ok := tomlKeyPath(header)
+		if !ok || strings.Join(keys, "|") != want {
+			t.Errorf("tomlKeyPath(%q) = %q %v, want %q", header, keys, ok, want)
+		}
+	}
+}

@@ -54,6 +54,9 @@ func TestPolicyWrites(t *testing.T) {
 	if body := do(http.MethodPost, "/api/roles", `{"name":"analyst"}`, admin, http.StatusBadRequest); body != `{"code":"common.already_exists","params":{"resource":"role","name":"analyst"}}` {
 		t.Fatalf("duplicate: %s", body)
 	}
+	for _, junk := range []string{`{"name":"trailing"} garbage`, `{"name":"two"}{"name":"three"}`, `not json`} {
+		do(http.MethodPost, "/api/roles", junk, admin, http.StatusBadRequest)
+	}
 	if body := do(http.MethodPost, "/api/roles", `{"name":"  "}`, admin, http.StatusBadRequest); body != `{"code":"common.field_required","params":{"fields":"name"}}` {
 		t.Fatalf("blank: %s", body)
 	}

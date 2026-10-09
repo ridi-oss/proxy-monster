@@ -60,6 +60,22 @@ func Register(mux *http.ServeMux, pool *pgxpool.Pool, gate api.Gate) {
 	mux.HandleFunc("POST /api/access-requests/{id}/approve", gate.RequireAPI(withID(ac.approve)))
 	mux.HandleFunc("POST /api/access-requests/{id}/reject", gate.RequireAPI(withID(ac.reject)))
 	mux.HandleFunc("POST /api/access-grants/{id}/revoke", gate.RequireAPIElse(ac.unauthenticatedRevoke, withID(ac.revokeGrant)))
+	id := identity{pool: pool, sessionsEnded: gate.SessionsEnded}
+	admin := func(h http.HandlerFunc) http.HandlerFunc { return gate.RequireAdmin("admin.identity", h) }
+	mux.HandleFunc("GET /api/users", admin(id.listUsers))
+	mux.HandleFunc("POST /api/users", admin(id.createUser))
+	mux.HandleFunc("PUT /api/users/{id}", admin(withID(id.updateUser)))
+	mux.HandleFunc("DELETE /api/users/{id}", admin(withID(id.deprovisionUser)))
+	mux.HandleFunc("GET /api/groups", admin(id.listGroups))
+	mux.HandleFunc("POST /api/groups", admin(id.createGroup))
+	mux.HandleFunc("PUT /api/groups/{id}", admin(withID(id.updateGroup)))
+	mux.HandleFunc("DELETE /api/groups/{id}", admin(withID(id.deleteGroup)))
+	mux.HandleFunc("GET /api/groups/{id}/members", admin(withID(id.members)))
+	mux.HandleFunc("POST /api/groups/{id}/members", admin(withID(id.addMember)))
+	mux.HandleFunc("DELETE /api/groups/{id}/members/{userId}", admin(withID(id.removeMember)))
+	mux.HandleFunc("GET /api/groups/{id}/roles", admin(withID(id.groupRoles)))
+	mux.HandleFunc("POST /api/groups/{id}/roles", admin(withID(id.addGroupRole)))
+	mux.HandleFunc("DELETE /api/groups/{id}/roles/{roleId}", admin(withID(id.removeGroupRole)))
 	ds := datasources{pool: pool, authz: gate.Authz}
 	mux.HandleFunc("GET /api/datasources", gate.RequireAPIOrBearer(ds.list))
 }

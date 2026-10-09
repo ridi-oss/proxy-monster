@@ -670,14 +670,6 @@ fun Application.module(config: Config, core: ControlPlaneCore) {
         // Roles, principal->role, mask functions, column policies. Admin-gated: admin.policies
         // (role-assignments are admin.identity — see Policies.kt).
 
-        // Local users + groups + group->role mapping (docs/authz-model.md). Admin-gated: admin.identity.
-        // tokenStore/accessStore/principalSessionStore are threaded through so a local-admin rename or
-        // active-flip can atomically revoke the affected principal's credentials,
-        // mirroring the SCIM surface below.
-        userGroupRoutes(
-            config, authz, userGroupStore, tokenStore, accessStore, principalSessionStore, identityManagement,
-        )
-
         // Query-approval workflow: from-denied + proactive compose, approver decide, then async
         // execute-under-R with encrypted short-retention result storage.
         approvalRoutes(
@@ -724,7 +716,7 @@ fun Application.module(config: Config, core: ControlPlaneCore) {
         }
 
         // Live decision feed for the UI. Requires a session; each record is then filtered by audit.read.
-        internalAuthorizeRoute(config.internalToken, authz, core::mayConnectById, cedarPolicyStore::markCommittedMutation, core::mayRequestById)
+        internalAuthorizeRoute(config.internalToken, authz, core::mayConnectById, cedarPolicyStore::markCommittedMutation, core::mayRequestById, runExecService::closeSessionsForPrincipal)
 
         // Dev-only login shortcut; gated by PM_AUTH_DEBUG. OIDC (above) is the production path.
         post("/auth/debug") {

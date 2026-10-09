@@ -173,6 +173,13 @@ func (c *Client) PoliciesChanged(ctx context.Context) error {
 	return c.post(ctx, c.upstream.JoinPath("/internal/policies-changed").String(), struct{}{}, nil)
 }
 
+// SessionsEnded tells Kotlin the principal's web sessions ended, so it closes their editor runs.
+func (c *Client) SessionsEnded(ctx context.Context, principal string) error {
+	return c.post(ctx, c.upstream.JoinPath("/internal/sessions-ended").String(), struct {
+		Principal string `json:"principal"`
+	}{principal}, nil)
+}
+
 func (c *Client) post(ctx context.Context, url string, in, out any) error {
 	body, err := json.Marshal(in)
 	if err != nil {

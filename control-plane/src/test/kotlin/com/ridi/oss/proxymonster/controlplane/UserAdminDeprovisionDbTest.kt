@@ -20,7 +20,7 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
- * DB-backed tests for local-admin `PUT`/`DELETE /api/users/{id}` teardown atomicity: a principal
+ * DB-backed tests for the user edit and deprovision teardown atomicity: a principal
  * rename or an active flip from true to false via [UserGroupStore.updateUser], and a
  * [UserGroupStore.deleteUser], must revoke the affected principal's active credentials — tokens,
  * JIT grants, AND daemon session windows — in the SAME transaction as the `app_user` mutation,

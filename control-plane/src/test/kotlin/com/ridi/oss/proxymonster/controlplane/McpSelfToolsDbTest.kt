@@ -111,8 +111,6 @@ class McpSelfToolsDbTest {
         val listed = client.mcpCall(token, "list_query_history").okResult()
         assertEquals(setOf("SELECT 1", "SELECT 2"), listed.jsonArray.map { it.jsonObject.str("sql") }.toSet())
         assertEquals(1, client.mcpCall(token, "list_query_history", buildJsonObject { put("limit", 1) }).okResult().jsonArray.size)
-        client.login(caller)
-        assertEquals(parseJson(client.get("/api/query-history").bodyAsText()), listed)
 
         val cleared = client.mcpCall(token, "clear_query_history").okResult()
         assertEquals(2, cleared.jsonObject.getValue("cleared").jsonPrimitive.int)

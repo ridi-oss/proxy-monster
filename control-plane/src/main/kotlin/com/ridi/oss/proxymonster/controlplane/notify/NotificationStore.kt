@@ -243,13 +243,6 @@ class NotificationStore(private val dataSource: DataSource) {
     }
 
     /** Set the caller's own language. Returns false when no directory row exists for them. */
-    fun setLocale(principal: String, locale: String): Boolean = dataSource.connection.use { c ->
-        c.prepareStatement("UPDATE app_user SET locale = ? WHERE principal = ?").use { ps ->
-            ps.setString(1, locale)
-            ps.setString(2, principal)
-            ps.executeUpdate() > 0
-        }
-    }
 }
 
 /** Local transaction helper — the claim needs its row locks held to the commit. */

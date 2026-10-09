@@ -16,6 +16,8 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/health"
 	healthpb "google.golang.org/grpc/health/grpc_health_v1"
+
+	"github.com/ridi-oss/proxy-monster/cpgo/internal/dbtest"
 )
 
 // The test binary doubles as the Kotlin child: cp-go starts it with CPGO_FAKE_CHILD set.
@@ -71,10 +73,13 @@ func startFront(t *testing.T) (config, context.CancelFunc, <-chan int) {
 	t.Helper()
 	t.Setenv("CPGO_FAKE_CHILD", "1")
 	t.Setenv("PM_TRUSTED_PROXIES", "10.9.9.9")
+	st := dbtest.Open(t)
 	cfg := config{
 		HTTPPort: freePort(t), GRPCPort: freePort(t),
 		Child: os.Args[0], ChildHTTPPort: freePort(t), ChildGRPCPort: freePort(t),
 		StartTimeout: 30 * time.Second,
+		DBURL:        st.JDBCURL, DBUser: st.User, DBPassword: st.Password,
+		SessionSecret: dbtest.Secret,
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan int, 1)
@@ -107,6 +112,10 @@ func TestRunForwardsToChildOnLoopback(t *testing.T) {
 	_ = resp.Body.Close()
 	if env["bind"] != "127.0.0.1" || env["trusted"] != "127.0.0.1" || env["xff"] != "127.0.0.1" {
 		t.Fatalf("child saw %v", env)
+	}
+
+	if resp, err := http.Get(fmt.Sprintf("http://127.0.0.1:%d/api/query-history", cfg.HTTPPort)); err != nil || resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("Go route without a session: %v %v", resp, err)
 	}
 
 	cc, err := grpc.NewClient(fmt.Sprintf("127.0.0.1:%d", cfg.GRPCPort), grpc.WithTransportCredentials(insecure.NewCredentials()))

@@ -1,10 +1,5 @@
 package com.ridi.oss.proxymonster.controlplane
 
-import io.ktor.http.HttpStatusCode
-import io.ktor.server.response.respond
-import io.ktor.server.routing.Route
-import io.ktor.server.routing.delete
-import io.ktor.server.routing.get
 import kotlinx.serialization.Serializable
 import javax.sql.DataSource
 
@@ -62,15 +57,3 @@ class QueryHistoryStore(private val dataSource: DataSource) {
 }
 
 internal fun historyLimit(raw: Int?) = (raw ?: 50).coerceIn(1, 200)
-
-fun Route.queryHistoryRoutes(config: Config, store: QueryHistoryStore) {
-    get("/api/query-history") {
-        val principal = call.requireApi() ?: return@get
-        call.respond(store.recent(principal, historyLimit(call.request.queryParameters["limit"]?.toIntOrNull())))
-    }
-    delete("/api/query-history") {
-        val principal = call.requireApi() ?: return@delete
-        store.clear(principal)
-        call.respond(HttpStatusCode.NoContent)
-    }
-}

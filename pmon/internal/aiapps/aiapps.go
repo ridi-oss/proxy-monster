@@ -70,7 +70,7 @@ func (a App) Connected(s Setup, server string) bool { return a.connected(s, Entr
 // endpoint, or pmon's relay under another name. It returns the names it replaced.
 func (a App) Add(s Setup, srv Server) ([]string, error) { return a.add(s, EntryName(srv.Name), srv) }
 
-// Remove removes pmon's entry for server, reporting whether there was one.
+// Remove removes pmon's relay for server, under its name or any other, reporting whether there was one.
 func (a App) Remove(s Setup, server string) (bool, error) {
 	return a.remove(s, EntryName(server), server)
 }
@@ -94,12 +94,7 @@ func cliOrConfig(cli App, file configFile) App {
 }
 
 // EntryName is the name a server is registered under in an AI app's MCP settings.
-func EntryName(server string) string {
-	if server == "default" {
-		return "proxy-monster"
-	}
-	return "proxy-monster-" + server
-}
+func EntryName(server string) string { return "pmon-" + server }
 
 // --- Claude Desktop: claude_desktop_config.json ---
 
@@ -174,10 +169,12 @@ func claudeDesktop() App {
 			removed := false
 			err := withClaudeDesktopClosed(s.Confirm, func() error {
 				return editDesktopServers(claudeDesktopConfig(), func(m map[string]json.RawMessage) {
-					var c mcpCommand
-					removed = json.Unmarshal(m[entry], &c) == nil && ownCommand(c.Command, c.Args, server)
-					if removed {
-						delete(m, entry)
+					removed = false
+					for name, raw := range m {
+						if e := decodeEntry(raw); e.URL == "" && ownCommand(e.Command, e.Args, server) {
+							delete(m, name)
+							removed = true
+						}
 					}
 				})
 			})
@@ -459,17 +456,35 @@ func cliApp(id, name, bin string, scope []string, file configFile) App {
 			return replaced, nil
 		},
 		remove: func(s Setup, entry, server string) (bool, error) {
+			others, _ := file.list()
 			exists, own, _ := lookup(s, entry, server)
-			switch {
-			case !exists:
-				return false, nil
-			case !own:
+			if exists && !own {
 				return false, &EntryError{App: name, Entry: entry}
 			}
-			_, err := run(append([]string{"mcp", "remove", entry}, scope...)...)
-			return err == nil, err
+			names := relayNames(others, entry, server)
+			if exists {
+				names = append([]string{entry}, names...)
+			}
+			for i, n := range names {
+				if _, err := run(append([]string{"mcp", "remove", n}, scope...)...); err != nil {
+					return i > 0, err
+				}
+			}
+			return len(names) > 0, nil
 		},
 	}
+}
+
+// relayNames are the entries other than entry that run pmon's relay for server, in a stable order.
+func relayNames(entries map[string]entry, entry, server string) []string {
+	var names []string
+	for name, e := range entries {
+		if name != entry && e.URL == "" && ownCommand(e.Command, e.Args, server) {
+			names = append(names, name)
+		}
+	}
+	slices.Sort(names)
+	return names
 }
 
 // replaceableNames are the entries other than entry that pmon's entry for srv replaces, in a stable order.

@@ -246,17 +246,24 @@ func configApp(id, name string, file configFile) App {
 			return replaced, nil
 		},
 		remove: func(s Setup, entry, server string) (bool, error) {
-			c, found, err := file.read(entry)
-			switch {
-			case err != nil:
+			entries, err := file.list()
+			if err != nil {
 				return false, err
-			case !found:
-				return false, nil
-			case !ownCommand(c.Command, c.Args, server):
+			}
+			mine, found := entries[entry]
+			if found && (mine.URL != "" || !ownCommand(mine.Command, mine.Args, server)) {
 				return false, &EntryError{App: name, Entry: entry}
 			}
-			err = file.delete(entry)
-			return err == nil, err
+			names := relayNames(entries, entry, server)
+			if found {
+				names = append([]string{entry}, names...)
+			}
+			for i, n := range names {
+				if err := file.delete(n); err != nil {
+					return i > 0, err
+				}
+			}
+			return len(names) > 0, nil
 		},
 	}
 }

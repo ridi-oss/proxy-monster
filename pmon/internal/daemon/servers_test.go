@@ -112,7 +112,7 @@ func TestSetServerToANewURLLogsItOut(t *testing.T) {
 	if err != nil || res.Changed || res.LoggedOut {
 		t.Fatalf("SetServer to the same URL = %+v, %v; want a no-op", res, err)
 	}
-	res, err = d.SetServer(control.SetServerRequest{ControlPlane: "https://elsewhere.example"})
+	res, err = d.SetServer(control.SetServerRequest{Name: "default", ControlPlane: "https://elsewhere.example"})
 	if err != nil || !res.LoggedOut {
 		t.Fatalf("SetServer to a new URL = %+v, %v; want it logged out", res, err)
 	}
@@ -268,5 +268,43 @@ func TestLogoutDuringDiscoveryLeavesNoRows(t *testing.T) {
 	<-done
 	if s := d.Status(); len(s.Datasources) != 0 || len(s.Servers) != 0 {
 		t.Errorf("status after unset during discovery = %+v, want nothing", s)
+	}
+}
+
+// A URL set without a name names the server after its instance, or reuses the server already at that URL.
+func TestServerNamedAfterItsInstance(t *testing.T) {
+	isolate(t)
+	advertise := func(name string) *httptest.Server {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path != "/api/instance" {
+				http.NotFound(w, r)
+				return
+			}
+			_, _ = w.Write([]byte(`{"name":"` + name + `"}`))
+		}))
+		t.Cleanup(srv.Close)
+		return srv
+	}
+	hr, hr2, old := advertise("hr-pmon"), advertise("hr-pmon"), httptest.NewServer(http.NotFoundHandler())
+	defer old.Close()
+	d := New("test", providers.Builtins())
+
+	res, err := d.SetServer(control.SetServerRequest{ControlPlane: hr.URL})
+	if err != nil || res.Name != "hr-pmon" || !res.Created || !res.Default {
+		t.Fatalf("SetServer = %+v, %v; want a new default server hr-pmon", res, err)
+	}
+	if res, err := d.SetServer(control.SetServerRequest{ControlPlane: hr.URL + "/"}); err != nil || res.Name != "hr-pmon" || res.Created {
+		t.Errorf("the same URL again = %+v, %v; want hr-pmon unchanged", res, err)
+	}
+	if _, err := d.SetServer(control.SetServerRequest{ControlPlane: hr2.URL}); err == nil || !strings.Contains(err.Error(), `"hr-pmon" already points at`) {
+		t.Errorf("another server advertising the same name: %v", err)
+	}
+	if res, err := d.SetServer(control.SetServerRequest{ControlPlane: old.URL}); err != nil || res.Name != "default" || res.Default {
+		t.Errorf("a server too old to say = %+v, %v; want default, not made the default", res, err)
+	}
+	broken := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusBadGateway) }))
+	defer broken.Close()
+	if _, err := d.SetServer(control.SetServerRequest{ControlPlane: broken.URL}); err == nil || !strings.Contains(err.Error(), "could not ask") {
+		t.Errorf("a server that failed to answer was named anyway: %v", err)
 	}
 }

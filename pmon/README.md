@@ -10,7 +10,7 @@ datasource, and injects the token upstream.
 brew trust --formula ridi-oss/tap/pmon
 brew install ridi-oss/tap/pmon   # or: go build -o /usr/local/bin/pmon ./pmon
 
-pmon login --url https://pm.example.com  # saves the "default" server, then device-auth in your browser
+pmon login --url https://pm.example.com  # saves the server under its instance name, then device-auth in your browser
 pmon status                    # every server's login and brokered datasources
 pmon show acme-mysql            # mysql://you@example.com:pmlocal_…@127.0.0.1:6100/my_database
 pmon show acme-postgres         # postgresql://you@example.com:pmlocal_…@127.0.0.1:6101/app?sslmode=disable
@@ -22,12 +22,14 @@ step — there is no separate command to start brokering.
 ### Servers
 
 pmon can be logged in to several control planes at once. Each server has a name;
-a command that names none addresses the default server. The first server you
+a command that names none addresses the default server. A server set or logged
+in to by URL alone is named after the instance (`PM_INSTANCE_NAME`, from
+`/api/instance`), or `default` on a server too old to say. The first server you
 create becomes the default; `pmon server default <name>` makes another one the
 default, and `pmon server default` prints it.
 
 ```sh
-pmon server set --url https://pm.example.com          # the "default" server
+pmon server set --url https://pm.example.com          # named after the instance, e.g. "pm"
 pmon server set dev --url https://pm.dev.example.com  # the "dev" server
 pmon login                     # log in to default
 pmon login dev                 # log in to dev

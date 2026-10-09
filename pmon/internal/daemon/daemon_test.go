@@ -115,6 +115,8 @@ func newFakeCPAs(t *testing.T, principal, token string, datasources []driver.End
 				"accessToken": "pma_" + token, "scope": "mcp:query mcp:read",
 				"expiresAt": time.Now().Add(10 * time.Minute).Format(time.RFC3339),
 			})
+		case "/api/instance":
+			http.NotFound(w, r)
 		default:
 			t.Errorf("unexpected control-plane path %q", r.URL.Path)
 		}
@@ -841,7 +843,7 @@ func TestLogoutDuringDiscoveryLeavesNoListener(t *testing.T) {
 func TestLogoutClosesEstablishedSessions(t *testing.T) {
 	isolate(t)
 	d := New("test", providers.Builtins())
-	if _, err := d.SetServer(control.SetServerRequest{ControlPlane: "http://cp"}); err != nil {
+	if _, err := d.SetServer(control.SetServerRequest{Name: "default", ControlPlane: "http://cp"}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -907,7 +909,11 @@ func TestRenewalDoesNotResurrectALoggedOutSession(t *testing.T) {
 
 	requestArrived := make(chan struct{})
 	logoutDone := make(chan struct{})
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/instance" {
+			http.NotFound(w, r)
+			return
+		}
 		close(requestArrived)
 		<-logoutDone
 		_ = json.NewEncoder(w).Encode(map[string]any{

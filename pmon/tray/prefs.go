@@ -333,7 +333,7 @@ func (p *prefs) setServer(name, url string) any {
 	}
 	res, err := client.SetServer(p.ctx, control.SetServerRequest{Name: name, ControlPlane: url})
 	if err == nil && res.NotEndedOnServer {
-		return notEnded(name)
+		return notEnded(res.Name)
 	}
 	return errText(err)
 }

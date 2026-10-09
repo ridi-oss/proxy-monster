@@ -12,6 +12,7 @@ import (
 
 	"github.com/ridi-oss/proxy-monster/cpgo/api"
 	"github.com/ridi-oss/proxy-monster/cpgo/audit"
+	"github.com/ridi-oss/proxy-monster/cpgo/session"
 	"github.com/ridi-oss/proxy-monster/cpgo/store/db"
 )
 
@@ -61,8 +62,9 @@ type groupRole struct {
 }
 
 type identity struct {
-	pool   *pgxpool.Pool
-	kotlin api.Kotlin
+	pool     *pgxpool.Pool
+	kotlin   api.Kotlin
+	sessions *session.Resolver
 }
 
 func refsBy[R any](rows []R, owned func(R) (int64, ref)) map[int64][]ref {
@@ -242,7 +244,7 @@ func releaseTombstone(ctx context.Context, tx pgx.Tx, principal string, exclude 
 
 // revokeCredentials is Kotlin's revokeActiveCredentialsTx: tokens, JIT grants, daemon sessions and web
 // sessions, under the principal's lock. Every revoked principal goes to ended, so a retry re-sends the signal.
-func revokeCredentials(ctx context.Context, tx pgx.Tx, principal string, ended *[]string) error {
+func revokeCredentials(ctx context.Context, tx pgx.Tx, sessions *session.Resolver, principal string, ended *[]string) error {
 	if err := lockPrincipal(ctx, tx, principal); err != nil {
 		return err
 	}
@@ -254,7 +256,7 @@ func revokeCredentials(ctx context.Context, tx pgx.Tx, principal string, ended *
 	}
 	n, err := q.DeactivateWebSessions(ctx, principal)
 	if err == nil && n > 0 {
-		err = q.DeleteEditorRequests(ctx, principal)
+		err = sessions.DropEditorResults(ctx, tx, principal)
 	}
 	*ended = append(*ended, principal)
 	return err
@@ -309,7 +311,7 @@ func (h identity) createUser(w http.ResponseWriter, r *http.Request) {
 			return nil, unique(err, "principal", principal)
 		}
 		if !active {
-			if err := revokeCredentials(ctx, tx, principal, &ended); err != nil {
+			if err := revokeCredentials(ctx, tx, h.sessions, principal, &ended); err != nil {
 				return nil, err
 			}
 		}
@@ -348,11 +350,11 @@ func (h identity) updateUser(w http.ResponseWriter, r *http.Request, id int64) {
 		}
 		if err == nil && current != "" && current != principal {
 			if err = db.New(tx).TombstoneUser(ctx, current); err == nil {
-				err = revokeCredentials(ctx, tx, current, &ended)
+				err = revokeCredentials(ctx, tx, h.sessions, current, &ended)
 			}
 		}
 		if err == nil && !active {
-			err = revokeCredentials(ctx, tx, principal, &ended)
+			err = revokeCredentials(ctx, tx, h.sessions, principal, &ended)
 		}
 		if err != nil {
 			return nil, unique(err, "principal", principal)
@@ -381,7 +383,7 @@ func (h identity) deprovisionUser(w http.ResponseWriter, r *http.Request, id int
 		if err := db.New(tx).DeactivateUser(ctx, id); err != nil {
 			return nil, err
 		}
-		if err := revokeCredentials(ctx, tx, current, &ended); err != nil {
+		if err := revokeCredentials(ctx, tx, h.sessions, current, &ended); err != nil {
 			return nil, err
 		}
 		return nil, audit.Admin(ctx, tx, actor, "admin.identity", userEntity(before.Principal), "deprovision user '"+before.Principal+"'")

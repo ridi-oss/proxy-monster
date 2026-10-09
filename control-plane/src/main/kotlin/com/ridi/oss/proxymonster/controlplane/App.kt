@@ -11,15 +11,11 @@ import com.ridi.oss.proxymonster.controlplane.authz.CedarSchema
 import com.ridi.oss.proxymonster.controlplane.authz.authorizeWithContext
 import com.ridi.oss.proxymonster.controlplane.authz.cedarPolicyRoutes
 import com.ridi.oss.proxymonster.controlplane.authz.contextTagLint
-import com.ridi.oss.proxymonster.controlplane.management.AuditActor
-import com.ridi.oss.proxymonster.controlplane.management.AuditSource
 import com.ridi.oss.proxymonster.controlplane.management.DatasourceManagementService
 import com.ridi.oss.proxymonster.controlplane.management.IdentityManagementService
 import com.ridi.oss.proxymonster.controlplane.management.ManagementAuditRecorder
 import com.ridi.oss.proxymonster.controlplane.notify.installNotifications
-import com.ridi.oss.proxymonster.controlplane.management.ManagementException
 import com.ridi.oss.proxymonster.controlplane.management.PolicyManagementService
-import com.ridi.oss.proxymonster.controlplane.management.auditEntity
 import com.ridi.oss.proxymonster.controlplane.mcp.installMcp
 import com.ridi.oss.proxymonster.controlplane.mcp.instanceInfoRoute
 import com.ridi.oss.proxymonster.controlplane.mcp.mcpConnectRoute
@@ -28,24 +24,15 @@ import com.ridi.oss.proxymonster.controlplane.oauth.McpPendingAuthorization
 import com.ridi.oss.proxymonster.controlplane.oauth.OAuthError
 import com.ridi.oss.proxymonster.controlplane.oauth.installMcpOAuthProtocolGuard
 import com.ridi.oss.proxymonster.controlplane.oauth.mcpOAuthRoutes
-import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
 import io.ktor.serialization.kotlinx.json.json
 import io.ktor.server.application.Application
-import io.ktor.server.application.ApplicationCall
 import io.ktor.server.application.install
-import io.ktor.server.auth.Authentication
-import io.ktor.server.auth.authenticate
-import io.ktor.server.auth.principal
-import io.ktor.server.auth.session
 import io.ktor.server.plugins.calllogging.CallLogging
 import io.ktor.server.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.server.plugins.statuspages.StatusPages
-import io.ktor.server.request.contentLength
 import io.ktor.server.request.receive
-import io.ktor.server.request.receiveNullable
 import io.ktor.server.request.path
-import io.ktor.server.response.header
 import io.ktor.server.response.respond
 import io.ktor.server.routing.Route
 import io.ktor.server.routing.get
@@ -53,11 +40,7 @@ import io.ktor.server.routing.post
 import io.ktor.server.routing.routing
 import io.ktor.server.sessions.SessionTransportTransformerMessageAuthentication
 import io.ktor.server.sessions.Sessions
-import io.ktor.server.sessions.clear
-import io.ktor.server.sessions.get
 import io.ktor.server.sessions.cookie
-import io.ktor.server.sessions.set
-import io.ktor.server.sessions.sessions
 import io.ktor.server.sse.SSE
 import io.ktor.server.sse.sse
 import io.ktor.sse.ServerSentEvent
@@ -204,69 +187,6 @@ internal data class MePermissions(
     val canReadAllAudit: Boolean,
     val canApprove: Boolean,
 )
-
-@Serializable
-internal data class SessionStatus(
-    val now: String,
-    val idleExpiresAt: String,
-    val absoluteExpiresAt: String,
-    val principal: String,
-    val sessionId: Long,
-)
-
-@Serializable
-internal data class SessionStatusError(val reason: String)
-
-@Serializable
-internal data class LogoutRequest(val sessionId: Long? = null)
-
-@Serializable
-internal data class LogoutResponse(val ended: Boolean)
-
-@Serializable
-internal data class AuthConfigResponse(
-    val oidcEnabled: Boolean,
-    val authDebug: Boolean,
-    val session: SessionUxConfig,
-)
-
-@Serializable
-internal data class SessionUxConfig(
-    val heartbeatMs: Long,
-    val idleWarnLeadMs: Long,
-    val absoluteWarnLeadMs: Long,
-    val absoluteCapAmount: Long,
-    val absoluteCapUnit: String,
-)
-
-internal data class NormalizedDuration(val amount: Long, val unit: String)
-
-internal fun normalizeDuration(seconds: Long): NormalizedDuration = when {
-    seconds % 3600 == 0L -> NormalizedDuration(seconds / 3600, "hours")
-    seconds % 60 == 0L -> NormalizedDuration(seconds / 60, "minutes")
-    else -> NormalizedDuration(seconds, "seconds")
-}
-
-private fun WebSessionRow.toSessionStatus() = SessionStatus(
-    now = now.toString(),
-    idleExpiresAt = idleExpiresAt.toString(),
-    absoluteExpiresAt = absoluteExpiresAt.toString(),
-    principal = principal,
-    sessionId = id,
-)
-
-private suspend fun respondSessionUnauthorized(call: ApplicationCall, store: PrincipalSessionStore) {
-    val sessionId = call.attributes.getOrNull(FAILED_WEB_SESSION)
-    val endedReason = sessionId?.let(store::webEndedReason)
-    val reason = when {
-        sessionId == null -> "none"
-        endedReason == ENDED_DISPLACED -> "displaced"
-        endedReason == ENDED_DEVICE_BIND_MISMATCH -> "bind_mismatch"
-        else -> "expired"
-    }
-    call.response.header(HttpHeaders.CacheControl, "no-store")
-    call.respond(HttpStatusCode.Unauthorized, SessionStatusError(reason))
-}
 
 internal fun computeMePermissions(principal: String, authz: Authz, context: AuthzContext = AuthzContext()): MePermissions {
     // These are deliberately independent decisions: one permitted admin domain is enough to expose
@@ -555,13 +475,6 @@ fun Application.module(config: Config, core: ControlPlaneCore) {
             transform(SessionTransportTransformerMessageAuthentication(config.sessionSecret.toByteArray()))
         }
     }
-    install(Authentication) {
-        session<WebSessionRef>(WEB_SESSION_AUTH) {
-            validate { webSession() }
-            challenge { respondSessionUnauthorized(call, principalSessionStore) }
-        }
-    }
-
     installMcpOAuthProtocolGuard()
 
     // MCPA transport adapters share these service instances with the REST surface and the one live core.
@@ -613,24 +526,6 @@ fun Application.module(config: Config, core: ControlPlaneCore) {
                         "diagnostics" to kotlinx.serialization.json.JsonArray(
                             diagnostics.map { kotlinx.serialization.json.JsonPrimitive(it) },
                         ),
-                    ),
-                ),
-            )
-        }
-
-        // Auth capabilities and session UX timings are public so the login shell can initialize them.
-        get("/auth/config") {
-            val absoluteCap = normalizeDuration(config.webSessionAbsoluteSeconds)
-            call.respond(
-                AuthConfigResponse(
-                    oidcEnabled = config.oidc != null,
-                    authDebug = config.authDebug,
-                    session = SessionUxConfig(
-                        heartbeatMs = config.webSessionHeartbeatSeconds * 1000,
-                        idleWarnLeadMs = config.webSessionIdleWarnLeadSeconds * 1000,
-                        absoluteWarnLeadMs = config.webSessionAbsoluteWarnLeadSeconds * 1000,
-                        absoluteCapAmount = absoluteCap.amount,
-                        absoluteCapUnit = absoluteCap.unit,
                     ),
                 ),
             )
@@ -717,135 +612,7 @@ fun Application.module(config: Config, core: ControlPlaneCore) {
             { name -> core.connectionCatalog.invalidateDatasource(name) },
         )
 
-        // Dev-only login shortcut; gated by PM_AUTH_DEBUG. OIDC (above) is the production path.
-        post("/auth/debug") {
-            if (!config.authDebug) {
-                call.notFound("endpoint")
-                return@post
-            }
-            val login = call.receive<DebugLogin>()
-            // The claimed roles become the principal's DIRECT assignments, replacing whatever it had.
-            // Authorization resolves roles from the database (RoleResolver.directRoles + grants + groups),
-            // never from the session — so a role merely carried in the session would display in the UI while
-            // every query denied on an empty role set. Persisting them is what makes "sign in as this
-            // principal with these roles" true. Replace rather than add: the claim is the whole intended
-            // set, so a second debug login cannot silently accumulate roles from the first.
-            val roles = login.roles.map { it.trim() }.filter { it.isNotBlank() }.distinct()
-            // Rejected outright when malformed rather than dropped to null: a silently-ignored address
-            // would present as "the tag rule does not work", sending the reader after a policy bug that
-            // isn't there.
-            val debugRequesterIp = login.requesterIp?.trim()?.takeIf { it.isNotEmpty() }
-            if (debugRequesterIp != null && !isStorableIpLiteral(debugRequesterIp, authz::evaluatesInCedar)) {
-                call.respond(HttpStatusCode.BadRequest, ApiError("auth.invalid_requester_ip"))
-                return@post
-            }
-            val deviceId = call.ensureDeviceCookie(config.mcpIssuer.startsWith("https://"))
-            // Roles and session in ONE transaction under ONE per-principal lock (mintWeb re-takes the same
-            // advisory lock, which is re-entrant). Committing separately would let a failed mint leave the roles
-            // rewritten under a login that never succeeded, and would let two concurrent logins interleave —
-            // roles {A} then roles {B} then mint {B} then mint {A} leaves the surviving session claiming {A}
-            // while the database says {B}. The response must describe the state the session actually resolves.
-            val sessionId = try {
-                dataSource.inTx { c ->
-                    policyManagement.replaceDirectRoles(
-                        login.principal, roles,
-                        AuditActor(
-                            principal = login.principal,
-                            clientAddr = debugRequesterIp ?: call.httpRequesterIp(config),
-                            channel = AuditSource.CONSOLE,
-                        ),
-                        c,
-                    )
-                    principalSessionStore.mintWeb(
-                        login.principal,
-                        null,
-                        config.webSessionAbsoluteSeconds,
-                        config.webSessionIdleSeconds,
-                        deviceId,
-                        c,
-                        debugRequesterIp,
-                    )
-                }
-            } catch (e: ManagementException) {
-                call.respondManagementError(e)
-                return@post
-            }
-            call.sessions.set(WebSessionRef(sessionId))
-            call.respond(HttpStatusCode.OK, UserSession(login.principal, roles, debugRequesterIp))
-        }
-
         mcpConnectRoute(config)
         instanceInfoRoute(config)
-
-        authenticate(WEB_SESSION_AUTH) {
-            get("/auth/me") {
-                call.response.header(HttpHeaders.CacheControl, "no-store")
-                // Resolved per request, never carried in the session: a role gained or lost after
-                // login (group change, expired JIT grant, deactivation) must be visible to the next
-                // read, and the console shows this set while explaining a decision.
-                val row = requireNotNull(call.principal<WebSessionRow>())
-                // Reported only while the bypass that honors it is on, so the console never shows a
-                // simulated address the decision path is in fact ignoring.
-                val simulatedIp = row.debugRequesterIp.takeIf { config.authDebug }
-                call.respond(UserSession(row.principal, roleResolver.resolve(row.principal).sorted(), simulatedIp))
-            }
-
-            get("/auth/session/status") {
-                call.response.header(HttpHeaders.CacheControl, "no-store")
-                val row = requireNotNull(call.principal<WebSessionRow>())
-                call.respond(row.toSessionStatus())
-            }
-
-            post("/auth/session/heartbeat") {
-                call.response.header(HttpHeaders.CacheControl, "no-store")
-                val row = requireNotNull(call.principal<WebSessionRow>())
-                val touched = principalSessionStore.touchWeb(row.id, call.deviceCookieId())
-                if (touched == null) {
-                    call.attributes.put(FAILED_WEB_SESSION, row.id)
-                    respondSessionUnauthorized(call, principalSessionStore)
-                    return@post
-                }
-                call.respond(touched.toSessionStatus())
-            }
-        }
-
-        post("/auth/logout") {
-            val request = if (call.request.contentLength() == 0L || call.request.headers[HttpHeaders.ContentType] == null) {
-                null
-            } else {
-                call.receiveNullable<LogoutRequest>()
-            }
-            val currentRef = runCatching { call.sessions.get<WebSessionRef>() }.getOrNull()
-            // A conditional automatic logout can end only the exact session observed by the client;
-            // a re-login may already have replaced the tracker with a fresh row.
-            if (request?.sessionId != null && currentRef != null && currentRef.sessionId != request.sessionId) {
-                call.respond(HttpStatusCode.OK, LogoutResponse(ended = false))
-                return@post
-            }
-            // Ends the row here rather than leaving it to the cookie-storage invalidate below, so the end and
-            // its audit record share one transaction. Keyed off the session REF, not the resolved row: a
-            // session past its idle deadline no longer resolves yet is still ended by a logout, and that
-            // termination has to appear in the trail like any other. The invalidate then no-ops on the
-            // already-ended row, so exactly one event is written.
-            if (currentRef != null) {
-                // Resolved BEFORE the transaction: under the debug bypass this reads the web session, and
-                // that read can itself write (the device-binding mismatch end) on a second connection —
-                // which would then block on the row this transaction has already locked.
-                val clientAddr = call.httpRequesterIp(config)
-                principalSessionStore.dataSource.inTx { c ->
-                    principalSessionStore.endWebOwner(currentRef.sessionId, ENDED_SIGNED_OUT, c)?.let { owner ->
-                        core.authAudit.success(
-                            c,
-                            AuditActor(owner, clientAddr = clientAddr, channel = AuthAuditRecorder.CHANNEL_SESSION),
-                            AuthAuditRecorder.ACTION_LOGOUT,
-                            auditEntity("Session", currentRef.sessionId.toString()),
-                            "Web session signed out",
-                        )
-                    }
-                }
-            }
-            call.sessions.clear(SESSION_COOKIE)
-            call.respond(HttpStatusCode.OK, LogoutResponse(ended = true))
-        }
     }
 }

@@ -37,25 +37,9 @@ data class UserSession(
 @kotlinx.serialization.Serializable
 data class WebSessionRef(val sessionId: Long)
 
-const val WEB_SESSION_AUTH = "web-session"
 val PRINCIPAL_SESSION_STORE = AttributeKey<PrincipalSessionStore>("principal-session-store")
-val FAILED_WEB_SESSION = AttributeKey<Long>("failed-web-session")
 private val RESOLVED_IDENTITY = AttributeKey<ResolvedIdentity>("resolved-session-identity")
 private data class ResolvedIdentity(val row: WebSessionRow?)
-
-/**
- * Body for the dev-only debug login (PM_AUTH_DEBUG) — the dev bypass alongside the OIDC login (Oidc.kt).
- *
- * [requesterIp] simulates the source address the session's decisions are authorized under, so a Cedar tag
- * rule keyed on a CIDR can be exercised from a development box where every request arrives from loopback.
- * Blank/absent leaves the observed peer authoritative. Honored only while the bypass is enabled.
- */
-@kotlinx.serialization.Serializable
-data class DebugLogin(
-    val principal: String,
-    val roles: List<String> = emptyList(),
-    val requesterIp: String? = null,
-)
 
 /**
  * A [SessionSerializer] backed by kotlinx.serialization JSON. Ktor's bundled serializer
@@ -103,7 +87,6 @@ fun ApplicationCall.webSession(): WebSessionRow? {
     val resolved = application.attributes.getOrNull(PRINCIPAL_SESSION_STORE)?.let { store ->
         ref?.let { store.resolveWeb(it.sessionId, deviceCookieId()) }
     }
-    if (ref != null && resolved == null) attributes.put(FAILED_WEB_SESSION, ref.sessionId)
     attributes.put(RESOLVED_IDENTITY, ResolvedIdentity(resolved))
     return resolved
 }

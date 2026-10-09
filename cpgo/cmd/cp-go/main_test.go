@@ -74,6 +74,7 @@ func startFront(t *testing.T) (config, context.CancelFunc, <-chan int) {
 	t.Setenv("CPGO_FAKE_CHILD", "1")
 	t.Setenv("PM_TRUSTED_PROXIES", "10.9.9.9")
 	st := dbtest.Open(t)
+	t.Setenv("PM_SESSION_SECRET", dbtest.Secret)
 	// freePort releases its port before run binds it, so another process can take it in between; run then
 	// exits before serving, and a fresh set of ports is the fix.
 	for attempt := 1; ; attempt++ {
@@ -82,7 +83,6 @@ func startFront(t *testing.T) (config, context.CancelFunc, <-chan int) {
 			Child: os.Args[0], ChildHTTPPort: freePort(t), ChildGRPCPort: freePort(t),
 			StartTimeout: 30 * time.Second,
 			DBURL:        st.JDBCURL, DBUser: st.User, DBPassword: st.Password,
-			SessionSecret: dbtest.Secret,
 		}
 		ctx, cancel := context.WithCancel(context.Background())
 		done := make(chan int, 1)

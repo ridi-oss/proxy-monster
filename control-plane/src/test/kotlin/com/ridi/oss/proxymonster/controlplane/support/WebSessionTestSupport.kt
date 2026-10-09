@@ -40,6 +40,7 @@ fun SessionsConfig.webSessionCookie(
  *
  * Install inside `routing { }` alongside the routes under test, then call it before the requests that need
  * a caller. The test client needs a cookie jar (`install(HttpCookies)`) for the cookie to be carried.
+ * An optional `?requesterIp=` stores a debug-simulated source address on the session.
  */
 fun Route.testLoginRoute(store: PrincipalSessionStore, config: Config) {
     post("/test/session/{principal}") {
@@ -52,6 +53,7 @@ fun Route.testLoginRoute(store: PrincipalSessionStore, config: Config) {
                     config.webSessionAbsoluteSeconds,
                     config.webSessionIdleSeconds,
                     deviceId,
+                    debugRequesterIp = call.request.queryParameters["requesterIp"],
                 ),
             ),
         )

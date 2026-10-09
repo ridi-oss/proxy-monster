@@ -386,22 +386,6 @@ class Authz(
     internal fun rolesOf(principal: String): Set<String> = roleSource.rolesOf(principal)
 
     /**
-     * Whether the ENGINE can evaluate [ip] as a `requester_ip` — which cedar-java's `IpAddress` regex
-     * does not answer (see [com.ridi.oss.proxymonster.controlplane.isStorableIpLiteral]).
-     *
-     * Runs one throwaway decision and asks only whether the engine produced a verdict at all: the
-     * verdict itself is irrelevant, only the absence of an engine ERROR is being tested.
-     */
-    fun evaluatesInCedar(ip: String): Boolean {
-        val request = marshal("ip-probe", emptySet(), emptyList())
-        val context = AuthzContext(requesterIp = ip).toCedarMap()
-        val response = runCatching {
-            engine.isAuthorized(request, ACTION_TYPE.of(AuthzAction.DATASOURCE_CONNECT.cedarId), Entity(SYSTEM_TYPE.of("system")), context)
-        }.getOrNull() ?: return false
-        return response.success.isPresent
-    }
-
-    /**
      * Could this principal EVER be authorized, with some request attributes not yet knowable? Strictly weaker
      * than [authorizeAs] and MUST NEVER gate access — it exists only to route notifications, where the
      * recipient's address is unknowable until they act (docs/notifications.md). Every real action still runs

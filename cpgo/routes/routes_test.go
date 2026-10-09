@@ -26,7 +26,6 @@ type env struct {
 	st        dbtest.Store
 	srv       *httptest.Server
 	forwarded []string
-	ended     []string
 	authz     fakeAuthz
 	kotlin    fakeKotlin
 }
@@ -131,11 +130,10 @@ func setupWith(t *testing.T, authz func(*pgxpool.Pool) api.Authorizer) *env {
 	})
 	mux := http.NewServeMux()
 	Register(mux, e.st.Pool, api.Gate{
-		Sessions:      session.NewResolver(e.st.Pool, dbtest.Secret),
-		EndMismatched: func(r *http.Request) { e.ended = append(e.ended, r.Header.Get("Cookie")) },
-		Kotlin:        &e.kotlin,
-		AuthDebug:     true,
-		Authz:         decider,
+		Sessions:  session.NewResolver(e.st.Pool, dbtest.Settings),
+		Kotlin:    &e.kotlin,
+		AuthDebug: true,
+		Authz:     decider,
 	})
 	e.srv = httptest.NewServer(front.Route(mux, forward))
 	t.Cleanup(e.srv.Close)
@@ -167,16 +165,28 @@ func TestUnauthenticated(t *testing.T) {
 	}
 }
 
-func TestDeviceMismatchIsEndedByKotlin(t *testing.T) {
+func TestDeviceMismatchEndsTheSession(t *testing.T) {
 	e := setup(t)
 	c := e.st.WebSession(t, "alice@example.com", "k1", "dev-1")
 	status, body := e.do(t, http.MethodGet, "/api/query-history", "", []*http.Cookie{c[0], {Name: "pm_did", Value: "dev-2"}})
 	if status != http.StatusUnauthorized || body != `{"code":"common.unauthenticated","params":{}}` {
 		t.Fatalf("status %d %s", status, body)
 	}
-	if len(e.ended) != 1 || !strings.Contains(e.ended[0], "pm_did=dev-2") || len(e.forwarded) != 0 {
-		t.Fatalf("ended %v forwarded %v", e.ended, e.forwarded)
+	if reason := e.endedReason(t, "k1"); reason != "DEVICE_BIND_MISMATCH" || strings.Join(e.kotlin.sessionsEnded, ",") != "alice@example.com" || len(e.forwarded) != 0 {
+		t.Fatalf("ended %q signalled %v forwarded %v", reason, e.kotlin.sessionsEnded, e.forwarded)
 	}
+}
+
+func (e *env) endedReason(t *testing.T, key string) string {
+	t.Helper()
+	var reason *string
+	if err := e.st.Pool.QueryRow(context.Background(), `SELECT ended_reason FROM principal_session WHERE session_key = $1`, key).Scan(&reason); err != nil {
+		t.Fatal(err)
+	}
+	if reason == nil {
+		return ""
+	}
+	return *reason
 }
 
 func TestUnportedRequestsAreForwarded(t *testing.T) {
@@ -727,8 +737,8 @@ func TestDatasourceList(t *testing.T) {
 			t.Fatalf("want %s: %d asked %v", tc.want, resp.StatusCode, e.authz.asked)
 		}
 	}
-	if len(e.ended) != 1 {
-		t.Fatalf("the wrong-device session must still be ended: %v", e.ended)
+	if len(e.kotlin.sessionsEnded) != 1 {
+		t.Fatalf("the wrong-device session must still be ended: %v", e.kotlin.sessionsEnded)
 	}
 	alice = e.st.WebSession(t, "alice@example.com", "k-a2", "dev-a")
 

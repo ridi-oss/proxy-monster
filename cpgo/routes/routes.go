@@ -24,6 +24,13 @@ var locales = []string{"en", "ko"}
 // Register adds every Go-served route to mux.
 func Register(mux *http.ServeMux, pool *pgxpool.Pool, gate api.Gate) {
 	h := handlers{pool: pool}
+	au := auth{pool: pool, sessions: gate.Sessions, kotlin: gate.Kotlin, edges: gate.Edges}
+	mux.HandleFunc("GET /auth/config", au.config)
+	mux.HandleFunc("POST /auth/debug", au.debugLogin)
+	mux.HandleFunc("GET /auth/me", au.sessionGate(au.me))
+	mux.HandleFunc("GET /auth/session/status", au.sessionGate(au.status))
+	mux.HandleFunc("POST /auth/session/heartbeat", au.sessionGate(au.heartbeat))
+	mux.HandleFunc("POST /auth/logout", au.logout)
 	mux.HandleFunc("PUT /api/me/locale", gate.RequireAPI(h.putLocale))
 	mux.HandleFunc("GET /api/query-history", gate.RequireAPI(h.getQueryHistory))
 	mux.HandleFunc("DELETE /api/query-history", gate.RequireAPI(h.deleteQueryHistory))
@@ -66,7 +73,7 @@ func Register(mux *http.ServeMux, pool *pgxpool.Pool, gate api.Gate) {
 	mux.HandleFunc("GET /api/tokens", gate.RequireAPI(tk.list))
 	mux.HandleFunc("POST /api/tokens", gate.RequireAPI(tk.mintUser))
 	mux.HandleFunc("DELETE /api/tokens/{id}", gate.RequireAPIElse(tk.unauthenticatedRevoke, withID(tk.revoke)))
-	id := identity{pool: pool, kotlin: gate.Kotlin}
+	id := identity{pool: pool, kotlin: gate.Kotlin, sessions: gate.Sessions}
 	admin := func(h http.HandlerFunc) http.HandlerFunc { return gate.RequireAdmin("admin.identity", h) }
 	mux.HandleFunc("GET /api/users", admin(id.listUsers))
 	mux.HandleFunc("POST /api/users", admin(id.createUser))

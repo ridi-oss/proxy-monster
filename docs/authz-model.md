@@ -333,9 +333,9 @@ of a route and the gate it calls. Paths are relative to
 <!-- prettier-ignore -->
 | Route group | Path prefix | Owner file | Auth |
 | --- | --- | --- | --- |
-| Health, auth config, debug login, logout | `/health`, `/auth/config`, `/auth/debug`, `/auth/logout` | `App.kt` | none (`/auth/debug` 404s unless `PM_AUTH_DEBUG`) |
+| Health, auth config, debug login, logout | `/health`, `/auth/config`, `/auth/debug`, `/auth/logout` | `App.kt` (`/health`); the rest in `cpgo/routes/auth.go` | none (`/auth/debug` 404s unless `PM_AUTH_DEBUG`) |
 | Instance name and version | `/api/instance` | `mcp/McpConnect.kt` | none — under `/api` so the console forwards it |
-| Web session | `/auth/me`, `/auth/session/status`, `/auth/session/heartbeat` | `App.kt` | Ktor `authenticate(WEB_SESSION_AUTH)` |
+| Web session | `/auth/me`, `/auth/session/status`, `/auth/session/heartbeat` | `cpgo/routes/auth.go` | a live session, else 401 `{"reason"}` |
 | OIDC web login | `/auth/oidc/login`, `/auth/oidc/callback` | `Oidc.kt` | none — this mints the session |
 | CLI device authorization | `/auth/device/start`, `/auth/device/poll` | `DeviceAuth.kt` | none — the handle plus the IdP grant are the credential |
 | Daemon session renew, logout | `/auth/session/renew`, `/auth/session/logout` | `DaemonSession.kt` | `Authorization: Bearer <renewalToken>` only |
@@ -396,13 +396,13 @@ which clears the cookie unconditionally. `POST /auth/debug` returns 404 unless
 carry their own credential checks — PKCE, client-metadata validation, and an MCP
 access-token bearer resolved in an interceptor
 ([`mcp-access-control.md`](./mcp-access-control.md)). `/auth/me`,
-`/auth/session/status`, and `/auth/session/heartbeat` sit inside Ktor's
-`WEB_SESSION_AUTH` authentication block instead of a helper.
-`POST /auth/session/renew`, `/auth/session/mcp-token`, and
-`/auth/session/logout` authenticate by the mint-once renewal-token bearer only —
-never a request-body principal. The task-event SSE stream resolves the session
-itself, ends the stream when there is none, and re-checks `task.read` per pushed
-event.
+`/auth/session/status`, and `/auth/session/heartbeat` answer a missing session
+with 401 `{"reason"}` (`none`, `expired`, `displaced`, `bind_mismatch`) instead
+of `common.unauthenticated`. `POST /auth/session/renew`,
+`/auth/session/mcp-token`, and `/auth/session/logout` authenticate by the
+mint-once renewal-token bearer only — never a request-body principal. The
+task-event SSE stream resolves the session itself, ends the stream when there is
+none, and re-checks `task.read` per pushed event.
 
 Two exceptions to "session or nothing":
 

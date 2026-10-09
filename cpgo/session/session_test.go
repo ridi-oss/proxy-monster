@@ -22,7 +22,7 @@ func request(cookies ...*http.Cookie) *http.Request {
 func TestResolve(t *testing.T) {
 	st := dbtest.Open(t)
 	ctx := context.Background()
-	res := session.NewResolver(st.Pool, dbtest.Secret)
+	res := session.NewResolver(st.Pool, dbtest.Settings)
 	live := st.WebSession(t, "alice@example.com", "k-live", "dev-1")
 
 	expired := st.WebSession(t, "bob@example.com", "k-expired", "dev-2")
@@ -52,8 +52,8 @@ func TestResolve(t *testing.T) {
 		{"ended", request(ended...), "", nil},
 		{"absolute cap passed", request(capped...), "", nil},
 		{"URI-encoded device cookie", request(live[0], &http.Cookie{Name: "pm_did", Value: "%64ev-1"}), "alice@example.com", nil},
-		{"other device", request(live[0], &http.Cookie{Name: "pm_did", Value: "dev-9"}), "", session.ErrDeviceMismatch},
-		{"no device cookie", request(live[0]), "", session.ErrDeviceMismatch},
+		{"other device", request(live[0], &http.Cookie{Name: "pm_did", Value: "dev-9"}), "alice@example.com", session.ErrDeviceMismatch},
+		{"no device cookie", request(live[0]), "alice@example.com", session.ErrDeviceMismatch},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

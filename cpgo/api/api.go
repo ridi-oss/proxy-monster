@@ -9,9 +9,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
-	"net/url"
 	"strings"
-	"time"
 
 	"github.com/ridi-oss/proxy-monster/cpgo/bridge"
 	"github.com/ridi-oss/proxy-monster/cpgo/front"
@@ -119,11 +117,8 @@ type Kotlin interface {
 // Gate authenticates console requests for Go routes.
 type Gate struct {
 	Sessions *session.Resolver
-	// EndMismatched has the Kotlin control plane end a session presented from the wrong device. Kotlin
-	// owns that teardown because it also drops the principal's in-memory editor runs.
-	EndMismatched func(*http.Request)
-	Kotlin        Kotlin
-	Edges         front.TrustedEdges
+	Kotlin   Kotlin
+	Edges    front.TrustedEdges
 	// AuthDebug lets a session carry the requester IP chosen at its debug login, as Kotlin does.
 	AuthDebug bool
 	Authz     Authorizer
@@ -135,7 +130,7 @@ func (g Gate) RequireAPIOrBearer(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		s, err := g.Sessions.Resolve(r.Context(), r)
 		if errors.Is(err, session.ErrDeviceMismatch) {
-			g.EndMismatched(r)
+			g.endMismatched(r.Context(), s)
 			s, err = nil, nil
 		}
 		if err != nil {
@@ -200,23 +195,15 @@ func (g Gate) RequireAdmin(action string, next http.HandlerFunc) http.HandlerFun
 	})
 }
 
-// KotlinSessionCheck resolves the request's session through Kotlin's /auth/session/status, which ends a
-// device-mismatched session as a side effect.
-func KotlinSessionCheck(upstream *url.URL) func(*http.Request) {
-	client := &http.Client{Timeout: 10 * time.Second}
-	status := upstream.JoinPath("/auth/session/status").String()
-	return func(r *http.Request) {
-		req, err := http.NewRequestWithContext(r.Context(), http.MethodGet, status, nil)
-		if err != nil {
-			return
-		}
-		req.Header["Cookie"] = r.Header["Cookie"]
-		resp, err := client.Do(req)
-		if err != nil {
-			slog.Warn("api: ending mismatched session", "err", err)
-			return
-		}
-		_ = resp.Body.Close()
+// endMismatched ends a session presented from a device other than the one it was opened on, as Kotlin's
+// resolve does, and has Kotlin close the principal's editor runs.
+func (g Gate) endMismatched(ctx context.Context, w *session.Web) {
+	principal, err := g.Sessions.EndNow(ctx, w.ID, session.EndedDeviceMismatch)
+	if err == nil && principal != "" {
+		err = g.Kotlin.SessionsEnded(context.WithoutCancel(ctx), principal)
+	}
+	if err != nil {
+		slog.Warn("api: ending a device-mismatched session", "session", w.ID, "err", err)
 	}
 }
 
@@ -233,7 +220,7 @@ func (g Gate) RequireAPIElse(unauthenticated, next http.HandlerFunc) http.Handle
 		s, err := g.Sessions.Resolve(r.Context(), r)
 		switch {
 		case errors.Is(err, session.ErrDeviceMismatch):
-			g.EndMismatched(r)
+			g.endMismatched(r.Context(), s)
 			unauthenticated(w, r)
 		case err != nil:
 			slog.Error("api: resolving session", "err", err)

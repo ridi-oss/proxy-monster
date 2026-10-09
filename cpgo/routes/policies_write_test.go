@@ -78,7 +78,9 @@ func TestPolicyWrites(t *testing.T) {
 	var mfID int64
 	_, _ = fmt.Sscanf(mf, `{"id":%d`, &mfID)
 	do(http.MethodPost, "/api/mask-fns", `{"name":"x","kind":""}`, admin, http.StatusBadRequest)
-	do(http.MethodPut, fmt.Sprintf("/api/mask-fns/%d", mfID), `{"name":"hash-it","kind":"FIXED"}`, admin, http.StatusOK)
+	if updated := do(http.MethodPut, fmt.Sprintf("/api/mask-fns/%d", mfID), `{"name":"hash-it","kind":"FIXED"}`, admin, http.StatusOK); updated != fmt.Sprintf(`{"id":%d,"name":"hash-it","kind":"FIXED"}`, mfID) {
+		t.Fatalf("mask fn update: %s", updated)
+	}
 	do(http.MethodDelete, fmt.Sprintf("/api/mask-fns/%d", mfID), "", admin, http.StatusNoContent)
 	do(http.MethodDelete, fmt.Sprintf("/api/mask-fns/%d", mfID), "", admin, http.StatusNotFound)
 
@@ -86,6 +88,7 @@ func TestPolicyWrites(t *testing.T) {
 	if err := e.st.Pool.QueryRow(ctx, `SELECT gr.role_id FROM group_role gr JOIN app_group g ON g.id = gr.group_id WHERE g.source = 'SYSTEM' LIMIT 1`).Scan(&system); err != nil {
 		t.Fatal(err)
 	}
+	do(http.MethodPut, fmt.Sprintf("/api/roles/%d", system), `{"name":"renamed-admin"}`, admin, http.StatusConflict)
 	if body := do(http.MethodDelete, fmt.Sprintf("/api/roles/%d", system), "", admin, http.StatusConflict); body != `{"code":"role.system_immutable","params":{}}` {
 		t.Fatalf("system role: %s", body)
 	}

@@ -5,9 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -71,7 +73,7 @@ func (p policies) mutate(w http.ResponseWriter, r *http.Request, status int, cha
 	})
 	for _, f := range afterCommit {
 		if err == nil {
-			err = f(ctx)
+			err = notify(ctx, f)
 		}
 	}
 	var me *managementError
@@ -98,6 +100,22 @@ func (p policies) mutate(w http.ResponseWriter, r *http.Request, status int, cha
 }
 
 // decodeBody reads exactly one JSON value; anything after it fails the request before it changes anything.
+// notify runs a post-commit signal even if the client has gone, retrying briefly: the change is already
+// committed, so a lost signal would leave Kotlin deciding on the old state.
+func notify(ctx context.Context, f func(context.Context) error) error {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
+	defer cancel()
+	var err error
+	for attempt := range 3 {
+		if err = f(ctx); err == nil {
+			return nil
+		}
+		slog.Warn("routes: post-commit signal failed", "attempt", attempt+1, "err", err)
+		time.Sleep(time.Duration(attempt+1) * 200 * time.Millisecond)
+	}
+	return err
+}
+
 func decodeBody(r *http.Request, v any) error {
 	dec := json.NewDecoder(r.Body)
 	if err := dec.Decode(v); err != nil || dec.More() {

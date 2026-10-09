@@ -60,7 +60,8 @@ description = "Run the control plane (cp-go in front of the Kotlin control plane
 depends = ["up"]
 shell = "bash -c"
 # PM_CP_ATTACH=true skips starting Kotlin, for one you run yourself (e.g. from the IDE) with
-# PM_HTTP_PORT=18090 PM_GRPC_PORT=18091 PM_BIND_HOST=127.0.0.1 PM_TRUSTED_PROXIES=127.0.0.1.
+# PM_HTTP_PORT=18090 PM_GRPC_PORT=18091 PM_BIND_HOST=127.0.0.1 PM_TRUSTED_PROXIES=127.0.0.1, and the
+# same PM_CP_INTERNAL_TOKEN in both processes.
 run = '''
 set -euo pipefail
 export PM_DB_URL="${PM_DB_URL:-jdbc:postgresql://localhost:5442/proxymonster}"

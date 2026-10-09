@@ -20,11 +20,14 @@ import (
 var locales = []string{"en", "ko"}
 
 // Register adds every Go-served route to mux.
-func Register(mux *http.ServeMux, pool *pgxpool.Pool, gate api.Gate) {
+func Register(mux *http.ServeMux, pool *pgxpool.Pool, gate api.Gate, authz Authorizer) {
 	h := handlers{pool: pool}
 	mux.HandleFunc("PUT /api/me/locale", gate.RequireAPI(h.putLocale))
 	mux.HandleFunc("GET /api/query-history", gate.RequireAPI(h.getQueryHistory))
 	mux.HandleFunc("DELETE /api/query-history", gate.RequireAPI(h.deleteQueryHistory))
+	a := audit{pool: pool, authz: authz}
+	mux.HandleFunc("GET /api/audit", gate.RequireAPI(a.list))
+	mux.HandleFunc("GET /api/audit/{id}", gate.RequireAPI(a.get))
 }
 
 type handlers struct{ pool *pgxpool.Pool }
@@ -46,7 +49,7 @@ func (h handlers) putLocale(w http.ResponseWriter, r *http.Request) {
 	// A principal with no directory row keeps the instance default; that is not an error.
 	if _, err := h.pool.Exec(r.Context(), `UPDATE app_user SET locale = $1 WHERE principal = $2`,
 		locale, api.Principal(r.Context())); err != nil {
-		h.fail(w, err)
+		fail(w, err)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -73,7 +76,7 @@ func (h handlers) getQueryHistory(w http.ResponseWriter, r *http.Request) {
 		ORDER BY created_at DESC
 		LIMIT $2`, api.Principal(r.Context()), limit)
 	if err != nil {
-		h.fail(w, err)
+		fail(w, err)
 		return
 	}
 	defer rows.Close()
@@ -84,14 +87,14 @@ func (h handlers) getQueryHistory(w http.ResponseWriter, r *http.Request) {
 			at time.Time
 		)
 		if err := rows.Scan(&e.SQL, &e.DatasourceID, &at); err != nil {
-			h.fail(w, err)
+			fail(w, err)
 			return
 		}
 		e.RanAt = javaInstant(at)
 		out = append(out, e)
 	}
 	if err := rows.Err(); err != nil {
-		h.fail(w, err)
+		fail(w, err)
 		return
 	}
 	api.WriteJSON(w, http.StatusOK, out)
@@ -100,13 +103,13 @@ func (h handlers) getQueryHistory(w http.ResponseWriter, r *http.Request) {
 func (h handlers) deleteQueryHistory(w http.ResponseWriter, r *http.Request) {
 	if _, err := h.pool.Exec(r.Context(), `DELETE FROM query_history WHERE principal = $1`,
 		api.Principal(r.Context())); err != nil {
-		h.fail(w, err)
+		fail(w, err)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func (handlers) fail(w http.ResponseWriter, err error) {
+func fail(w http.ResponseWriter, err error) {
 	slog.Error("routes: store query failed", "err", err)
 	api.WriteError(w, http.StatusInternalServerError, "common.fallback", nil)
 }

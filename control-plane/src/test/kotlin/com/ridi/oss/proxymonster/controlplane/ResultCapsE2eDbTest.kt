@@ -75,6 +75,8 @@ import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import kotlin.test.fail
+import com.zaxxer.hikari.HikariDataSource
+import com.ridi.oss.proxymonster.controlplane.support.CpGoStack
 
 /**
  * Every result-cap path through the control plane's real surfaces (docs/result-caps.md): the shipped
@@ -96,6 +98,7 @@ class ResultCapsE2eDbTest {
     private lateinit var appScope: CoroutineScope
     private lateinit var sessionStore: PrincipalSessionStore
     private lateinit var schema: String
+    private lateinit var cpGo: CpGoStack
     private var analystRoleId = 0L
     private var exporterRoleId = 0L
 
@@ -150,10 +153,14 @@ class ResultCapsE2eDbTest {
         server = GrpcServer(0, ControlPlaneGrpcService(core), secretToken = null).also { it.start() }
         rawChannel = NettyChannelBuilder.forAddress("localhost", server.boundPort).usePlaintext().build()
         stub = ControlPlaneGrpcKt.ControlPlaneCoroutineStub(rawChannel)
+        // cp-go serves the routes it owns; the rest of this class still drives the Kotlin routes directly.
+        val database = (fx.dataSource as HikariDataSource).jdbcUrl.substringAfterLast('/')
+        cpGo = CpGoStack(config, core, database) { routing { testLoginRoute(sessionStore, config) } }
     }
 
     @AfterAll
     fun teardown() {
+        if (::cpGo.isInitialized) cpGo.close()
         appScope.cancel()
         rawChannel.shutdownNow().awaitTermination(5, TimeUnit.SECONDS)
         server.shutdown()
@@ -194,6 +201,11 @@ class ResultCapsE2eDbTest {
         }
         assertEquals(HttpStatusCode.NoContent, client.post("/test/session/$principal").status)
         return client
+    }
+
+    /** A client signed in as [principal], talking to cp-go. */
+    private suspend fun console(principal: String): HttpClient = cpGo.client().also {
+        assertEquals(HttpStatusCode.NoContent, it.post("/test/session/$principal").status)
     }
 
     /** Both engines (the fixture's and the core's) share the DB but version their caches in-process. */
@@ -396,7 +408,7 @@ class ResultCapsE2eDbTest {
         completion(principal, 10_000)
         assertEquals("$RATE_SPENT_DENY 10000/1h spent", wire.decide("select id from users").denyReason)
 
-        val user = login(principal)
+        val user = console(principal)
         assertEquals(HttpStatusCode.BadRequest, user.post("/api/access-requests/rate-reset") {
             contentType(ContentType.Application.Json); setBody(RateResetRequestInput("", denyReason = "rate 10000/1h spent"))
         }.status)
@@ -416,7 +428,7 @@ class ResultCapsE2eDbTest {
         assertEquals(HttpStatusCode.Forbidden, login(analyst).post("/api/access-requests/${request.id}/approve").status)
         assertEquals("$RATE_SPENT_DENY 10000/1h spent", wire.decide("select id from users").denyReason)
 
-        val approverClient = login(approver)
+        val approverClient = console(approver)
         assertTrue(approverClient.get("/api/access-requests?status=PENDING").body<List<AccessRequest>>().any { it.id == request.id })
         val approved = approverClient.post("/api/access-requests/${request.id}/approve")
         assertEquals(HttpStatusCode.OK, approved.status, approved.bodyAsText())

@@ -8,6 +8,22 @@ import (
 	"time"
 )
 
+func OptInstant(t *time.Time) *string {
+	if t == nil {
+		return nil
+	}
+	s := JavaInstant(*t)
+	return &s
+}
+
+func OptText(b []byte) *string {
+	if b == nil {
+		return nil
+	}
+	s := string(b)
+	return &s
+}
+
 // WriteRows answers with every row as a JSON array, [] when there are none.
 func WriteRows[R, T any](w http.ResponseWriter, rows []R, err error, to func(R) T) {
 	if err != nil {

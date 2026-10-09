@@ -1489,10 +1489,6 @@ fun Route.accessRoutes(
     recorder: ManagementAuditRecorder,
     service: AccessService = AccessService(store, datasourceStore, AuditStore(store.dataSource), roleResolver, authz, recorder),
 ) {
-    get("/api/access-requests") {
-        val caller = call.requireApi() ?: return@get
-        call.respond(service.listRequests(caller, call.request.queryParameters["status"]))
-    }
     post("/api/access-requests") {
         val principal = call.requireApi() ?: return@post
         val input = call.receive<AccessRequestInput>()
@@ -1552,12 +1548,6 @@ fun Route.accessRoutes(
         } catch (e: TaskServiceException) {
             call.respondServiceError(e)
         }
-    }
-    get("/api/access-grants") {
-        val caller = call.requireApi() ?: return@get
-        val principal = call.request.queryParameters["principal"]
-        val active = call.request.queryParameters["active"]?.toBoolean() ?: false
-        call.respond(service.listGrants(caller, principal, active))
     }
     post("/api/access-grants/{id}/revoke") {
         val id = call.idParam() ?: return@post call.badId()

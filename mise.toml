@@ -251,7 +251,10 @@ mise run proto-check
 # where a race is both most likely and least visible, and a data race is a correctness bug the plain
 # run reports as a pass. These tests wait on containers and sockets far more than they compute, so the
 # detector costs a few seconds of wall clock rather than the usual multiple.
-go test -race ./analyzer/... ./auditmon/... ./cpgo/... ./goproxy/... ./mysqlwire/... ./pmon/... ./pmon/tray/...
+#
+# The packages share one testcontainers reaper, which exits 10s after its last package lets go; a package
+# starting in that window waits on the dying reaper until its 60s deadline.
+TESTCONTAINERS_RYUK_RECONNECTION_TIMEOUT=5m go test -race ./analyzer/... ./auditmon/... ./cpgo/... ./goproxy/... ./mysqlwire/... ./pmon/... ./pmon/tray/...
 mise run check-image-gomod
 pnpm -C web test:unit
 pnpm -C web build

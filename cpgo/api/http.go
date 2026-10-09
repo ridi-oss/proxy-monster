@@ -8,6 +8,19 @@ import (
 	"time"
 )
 
+// WriteRows answers with every row as a JSON array, [] when there are none.
+func WriteRows[R, T any](w http.ResponseWriter, rows []R, err error, to func(R) T) {
+	if err != nil {
+		Fail(w, err)
+		return
+	}
+	out := make([]T, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, to(r))
+	}
+	WriteJSON(w, http.StatusOK, out)
+}
+
 func Fail(w http.ResponseWriter, err error) {
 	slog.Error("routes: store query failed", "err", err)
 	WriteError(w, http.StatusInternalServerError, "common.fallback", nil)

@@ -158,7 +158,8 @@ func run(ctx context.Context, cfg config) int {
 			EndMismatched: api.KotlinSessionCheck(httpUpstream),
 			Edges:         edges,
 			AuthDebug:     cfg.AuthDebug,
-		}, bridge.New(httpUpstream, internalToken))
+			Authz:         bridge.New(httpUpstream, internalToken),
+		})
 		h := front.Route(mux, front.NewHTTP(httpUpstream, edges))
 		if web != nil {
 			h = front.Split(h, front.NewHTTP(web, edges))

@@ -1,5 +1,6 @@
 package com.ridi.oss.proxymonster.controlplane
 
+import com.ridi.oss.proxymonster.controlplane.support.CpGoStack
 import com.ridi.oss.proxymonster.controlplane.support.McpTokens
 import com.ridi.oss.proxymonster.controlplane.support.SharedPostgres
 import com.ridi.oss.proxymonster.controlplane.support.errorCode
@@ -11,7 +12,9 @@ import com.ridi.oss.proxymonster.controlplane.support.okResult
 import com.ridi.oss.proxymonster.controlplane.support.parseJson
 import com.ridi.oss.proxymonster.controlplane.support.requireDockerOrSkip
 import com.ridi.oss.proxymonster.controlplane.support.str
+import com.ridi.oss.proxymonster.controlplane.support.testLoginRoute
 import io.ktor.client.request.get
+import io.ktor.server.routing.routing
 import io.ktor.server.testing.testApplication
 import io.ktor.client.statement.bodyAsText
 import kotlinx.serialization.json.buildJsonObject
@@ -23,6 +26,7 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 import org.flywaydb.core.Flyway
+import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.TestInstance
@@ -40,27 +44,37 @@ class McpSelfToolsDbTest {
     private lateinit var tokens: McpTokens
     private lateinit var history: QueryHistoryStore
     private lateinit var datasource: Datasource
+    private lateinit var cpGo: CpGoStack
     private val seq = AtomicInteger()
     private val config = mcpTestConfig()
 
     @BeforeAll
     fun setUp() {
         requireDockerOrSkip()
-        dataSource = SharedPostgres.hikari(SharedPostgres.freshDatabase("pm_mcp_self_tools"))
+        val database = SharedPostgres.freshDatabase("pm_mcp_self_tools")
+        dataSource = SharedPostgres.hikari(database)
         Flyway.configure().dataSource(dataSource).load().migrate()
         core = ControlPlaneCore(dataSource)
         tokens = McpTokens(dataSource)
         history = QueryHistoryStore(dataSource)
         datasource = core.datasourceStore.create(DatasourceInput("mcp-self-ds", "postgres"))
+        // cp-go serves the console's /api/me/permissions; MCP is still Kotlin.
+        cpGo = CpGoStack(config, core, database) { routing { testLoginRoute(PrincipalSessionStore(dataSource, null), config) } }
+    }
+
+    @AfterAll
+    fun tearDown() {
+        if (::cpGo.isInitialized) cpGo.close()
     }
 
     @Test
     fun `get_my_permissions carries the console's flags`() = testApplication {
         val client = installControlPlane(config, core)
+        val consoleClient = cpGo.client()
         for (principal in listOf(principal("plain"), admin())) {
             val mcp = client.mcpCall(tokens.token(principal, setOf("mcp:read")), "get_my_permissions").okResult().jsonObject
-            client.login(principal)
-            val console = parseJson(client.get("/api/me/permissions").bodyAsText()).jsonObject
+            consoleClient.login(principal)
+            val console = parseJson(consoleClient.get("/api/me/permissions").bodyAsText()).jsonObject
             assertEquals(console, JsonObject(mcp.filterKeys { it != "roles" }), principal)
         }
     }

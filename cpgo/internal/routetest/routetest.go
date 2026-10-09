@@ -30,10 +30,13 @@ type fakeAuthz struct {
 	Asked []string
 }
 
-func (f *fakeAuthz) Authorize(_ context.Context, principal, action string, resource bridge.Resource, ip string) (bool, error) {
+func (f *fakeAuthz) Authorize(_ context.Context, principal, action string, resource bridge.Resource, ip string) (bool, string, error) {
 	key := principal + " " + action + " " + resource.Type + ":" + resource.Principal
 	f.Asked = append(f.Asked, key+" @"+ip)
-	return f.Allow[key], nil
+	if f.Allow[key] {
+		return true, "", nil
+	}
+	return false, "no permit for " + action, nil
 }
 
 func Setup(t *testing.T) *env {
@@ -48,7 +51,8 @@ func Setup(t *testing.T) *env {
 		Sessions:      session.NewResolver(e.St.Pool, dbtest.Secret),
 		EndMismatched: func(r *http.Request) { e.Ended = append(e.Ended, r.Header.Get("Cookie")) },
 		AuthDebug:     true,
-	}, &e.Authz)
+		Authz:         &e.Authz,
+	})
 	e.srv = httptest.NewServer(front.Route(mux, forward))
 	t.Cleanup(e.srv.Close)
 	return e

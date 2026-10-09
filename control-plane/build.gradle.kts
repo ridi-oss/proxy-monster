@@ -112,8 +112,24 @@ tasks.processResources {
     }
 }
 
+// cp-go built from this checkout, for the tests that run the control plane behind it (support/CpGoStack.kt).
+val cpGoTestBinary = layout.buildDirectory.file("cp-go-test/cp-go")
+val buildCpGoForTests by tasks.registering(Exec::class) {
+    workingDir = rootProject.file("cpgo")
+    inputs.file(rootProject.file("go.work"))
+    for (module in listOf("cpgo", "auditmon", "analyzer")) {
+        inputs.files(fileTree(rootProject.file(module)) { include("**/*.go", "go.mod", "go.sum"); exclude("**/build/**") })
+    }
+    outputs.file(cpGoTestBinary)
+    commandLine("go", "build", "-o", cpGoTestBinary.get().asFile.absolutePath, "./cmd/cp-go")
+}
+
 tasks.test {
     useJUnitPlatform()
+    dependsOn(buildCpGoForTests)
+    inputs.file(cpGoTestBinary)
+    systemProperty("pm.cpgo.bin", cpGoTestBinary.get().asFile.absolutePath)
+    systemProperty("pm.cpgo.logs", layout.buildDirectory.dir("cp-go-test").get().asFile.absolutePath)
     // DbSupportMatrixTest reads these from outside the source tree, so Gradle cannot infer them.
     // Undeclared, the test task stays UP-TO-DATE after a supported version is added or removed and the
     // guard never re-runs — it would report the previous run's pass against the new declaration.

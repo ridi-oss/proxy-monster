@@ -496,6 +496,9 @@ each as its own MCP server. The deployment names itself: `PM_INSTANCE_NAME`
 (default: the first DNS label of `PM_MCP_RESOURCE`'s host, or `local`) and
 `PM_INSTANCE_DESCRIPTION`. The install name is `pmon-<instance>`, served with
 the MCP URL by `GET /api/mcp/connect` to the console's Connect an agent page.
+`GET /api/instance` serves the instance name, the server version, the MCP URL
+and the install name without a session, so a client can name its entry the way
+this page does before anyone signs in.
 
 `initialize` returns `instructions`, in English for every client (the agent
 reads them, and it answers the user in the user's language), so the agent knows

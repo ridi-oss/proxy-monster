@@ -83,7 +83,8 @@ configured per proxy under `PM_TARGET_*`.
   instances stay distinct. Lowercase letters, digits, and inner hyphens, at most
   40; any other value fails boot. Default: the first DNS label of
   `PM_MCP_RESOURCE`'s host (`https://hr-pmon.example.com/mcp` → `hr-pmon`), or
-  `local` for an IP or `localhost`.
+  `local` for an IP or `localhost`. It is public: `GET /api/instance` serves it
+  with the server version, the MCP URL, and the install name.
 - `PM_INSTANCE_DESCRIPTION` — _optional_. One line telling users and agents what
   this instance holds, at most 500 characters. Default empty. Example:
   `HR and payroll databases`

@@ -7,7 +7,7 @@ import com.ridi.oss.proxymonster.controlplane.management.McpCapabilityRegistry
 /** pmon setup for this instance; the pmon server name is the instance name, so `pmon-hr` pairs with `pmon login hr`. */
 internal fun pmonGuide(config: Config, connectable: List<String>): String {
     val name = config.instanceName
-    val install = "pmon-$name"
+    val install = installName(config)
     val sh = shellArg(name)
     val shInstall = shellArg(install)
     val extra = (McpCapabilityRegistry.supportedScopes - PMON_DEFAULT_SCOPES).sorted()

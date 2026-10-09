@@ -10,8 +10,8 @@ requires access granted by the maintainers.
 
 Status: phases 0–2 done; phases 3–6 in progress (Go decides Cedar for the routes
 it serves; roles, mask functions, policies, JIT access requests, users, groups,
-datasources, tokens, web sessions, OIDC login and the IdP recheck run on Go);
-phases 7–8 not started.
+datasources, tokens, web sessions, OIDC login, the IdP recheck, pmon's device
+login and its daemon session run on Go); phases 7–8 not started.
 
 ## Shape
 

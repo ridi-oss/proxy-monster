@@ -5,7 +5,9 @@ import com.ridi.oss.proxymonster.controlplane.management.AuditSource
 import com.ridi.oss.proxymonster.controlplane.management.IdentityManagementService
 import com.ridi.oss.proxymonster.controlplane.management.ManagementAuditRecorder
 import com.ridi.oss.proxymonster.controlplane.support.SharedPostgres
+import com.ridi.oss.proxymonster.controlplane.support.daemonWithinWindow
 import com.ridi.oss.proxymonster.controlplane.support.requireDockerOrSkip
+import com.ridi.oss.proxymonster.controlplane.support.seedDaemonSession
 import org.flywaydb.core.Flyway
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.Test
@@ -62,9 +64,9 @@ class UserAdminDeprovisionDbTest {
         val role = policyStore.createRole(RoleInput(roleName))
         val req = accessStore.createRequest(principal, AccessRequestInput(roleId = role.id))
         accessStore.approve(req.id, durationSec = 3600, decidedBy = "approver@example.com")
-        daemonSessionStore.create(principal, "dvc_$roleName", null, windowSeconds = 3600, ttlSeconds = 900)
+        ds.seedDaemonSession(principal)
         daemonSessionStore.mintWeb(principal, null, 3600, 900, "web-$roleName")
-        assertTrue(daemonSessionStore.withinWindow(principal), "sanity: $principal is in-window before the teardown")
+        assertTrue(ds.daemonWithinWindow(principal), "sanity: $principal is in-window before the teardown")
         return token
     }
 
@@ -113,7 +115,7 @@ class UserAdminDeprovisionDbTest {
         assertFalse(userGroupStore.isDeactivated(newPrincipal), "the current principal stays active")
         assertNotNull(tokenStore.get(token.id)!!.revokedAt, "the old principal's token must be revoked by the rename")
         assertEquals(0, accessStore.listGrants(oldPrincipal, activeOnly = true).size, "the old principal's grant must be revoked")
-        assertFalse(daemonSessionStore.withinWindow(oldPrincipal), "the old principal's daemon session window must be closed")
+        assertFalse(ds.daemonWithinWindow(oldPrincipal), "the old principal's daemon session window must be closed")
         assertWebEnded(oldPrincipal)
     }
 
@@ -130,7 +132,7 @@ class UserAdminDeprovisionDbTest {
         assertTrue(userGroupStore.isDeactivated(principal))
         assertNotNull(tokenStore.get(token.id)!!.revokedAt, "flipping active to false must revoke the principal's tokens")
         assertEquals(0, accessStore.listGrants(principal, activeOnly = true).size, "flipping active to false must revoke the grant")
-        assertFalse(daemonSessionStore.withinWindow(principal), "flipping active to false must close the daemon session window")
+        assertFalse(ds.daemonWithinWindow(principal), "flipping active to false must close the daemon session window")
         assertWebEnded(principal)
     }
 
@@ -156,13 +158,13 @@ class UserAdminDeprovisionDbTest {
         assertTrue(userGroupStore.isDeactivated(oldPrincipal), "old principal must be tombstoned")
         assertNotNull(tokenStore.get(oldToken.id)!!.revokedAt, "old principal's token must be revoked")
         assertEquals(0, accessStore.listGrants(oldPrincipal, activeOnly = true).size, "old principal's grant must be revoked")
-        assertFalse(daemonSessionStore.withinWindow(oldPrincipal), "old principal's session window must be closed")
+        assertFalse(ds.daemonWithinWindow(oldPrincipal), "old principal's session window must be closed")
         assertWebEnded(oldPrincipal)
         // New (target) principal's PRE-EXISTING credentials must ALL be revoked.
         assertTrue(userGroupStore.isDeactivated(newPrincipal), "the renamed-to row is inactive")
         assertNotNull(tokenStore.get(newToken.id)!!.revokedAt, "the TARGET principal's pre-existing token must be revoked too")
         assertEquals(0, accessStore.listGrants(newPrincipal, activeOnly = true).size, "the TARGET principal's grant must be revoked too")
-        assertFalse(daemonSessionStore.withinWindow(newPrincipal), "the TARGET principal's session window must be closed too")
+        assertFalse(ds.daemonWithinWindow(newPrincipal), "the TARGET principal's session window must be closed too")
         assertWebEnded(newPrincipal)
     }
 
@@ -181,7 +183,7 @@ class UserAdminDeprovisionDbTest {
         assertTrue(userGroupStore.isDeactivated(principal))
         assertNotNull(tokenStore.get(token.id)!!.revokedAt, "creating inactive must revoke the principal's pre-existing token")
         assertEquals(0, accessStore.listGrants(principal, activeOnly = true).size, "creating inactive must revoke the pre-existing grant")
-        assertFalse(daemonSessionStore.withinWindow(principal), "creating inactive must close the pre-existing daemon session window")
+        assertFalse(ds.daemonWithinWindow(principal), "creating inactive must close the pre-existing daemon session window")
         assertWebEnded(principal)
     }
 
@@ -193,7 +195,7 @@ class UserAdminDeprovisionDbTest {
         userGroupStore.createUser(AppUserInput(principal = principal, active = true), tokenStore, accessStore, daemonSessionStore)
 
         assertNull(tokenStore.get(token.id)!!.revokedAt, "creating active must not revoke pre-existing credentials")
-        assertTrue(daemonSessionStore.withinWindow(principal))
+        assertTrue(ds.daemonWithinWindow(principal))
         assertWebLive(principal)
     }
 
@@ -209,7 +211,7 @@ class UserAdminDeprovisionDbTest {
         )
         assertNull(tokenStore.get(token.id)!!.revokedAt, "an unrelated field update must not revoke live credentials")
         assertEquals(1, accessStore.listGrants(principal, activeOnly = true).size, "an unrelated field update must not revoke the grant")
-        assertTrue(daemonSessionStore.withinWindow(principal), "an unrelated field update must not close the session window")
+        assertTrue(ds.daemonWithinWindow(principal), "an unrelated field update must not close the session window")
         assertWebLive(principal)
     }
 
@@ -227,7 +229,7 @@ class UserAdminDeprovisionDbTest {
         assertTrue(userGroupStore.isDeactivated(principal))
         assertNotNull(tokenStore.get(token.id)!!.revokedAt, "DELETE must revoke the principal's active tokens")
         assertEquals(0, accessStore.listGrants(principal, activeOnly = true).size, "DELETE must revoke the grant")
-        assertFalse(daemonSessionStore.withinWindow(principal), "DELETE must close the daemon session window")
+        assertFalse(ds.daemonWithinWindow(principal), "DELETE must close the daemon session window")
         assertWebEnded(principal)
     }
 

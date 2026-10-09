@@ -19,6 +19,7 @@ var Settings = session.Settings{
 	Secret: Secret, AuthDebug: true, ResultKey: true,
 	AbsoluteSeconds: 7200, IdleSeconds: 900, SlideSeconds: 120,
 	IdleWarnLeadSeconds: 60, AbsoluteWarnLeadSeconds: 300, HeartbeatSeconds: 90,
+	MCPResource: "http://127.0.0.1:8080/mcp", SessionWindowSeconds: 7200, ElevatedScopeTTL: 3600, MCPAccessTTL: 600,
 }
 
 // WebSession inserts a live WEB session for principal bound to device and returns the request cookies

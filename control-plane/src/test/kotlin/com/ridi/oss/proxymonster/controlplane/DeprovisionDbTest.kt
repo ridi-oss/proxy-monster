@@ -1,7 +1,10 @@
 package com.ridi.oss.proxymonster.controlplane
 
 import com.ridi.oss.proxymonster.controlplane.support.SharedPostgres
+import com.ridi.oss.proxymonster.controlplane.support.daemonLiveness
+import com.ridi.oss.proxymonster.controlplane.support.daemonWithinWindow
 import com.ridi.oss.proxymonster.controlplane.support.requireDockerOrSkip
+import com.ridi.oss.proxymonster.controlplane.support.seedDaemonSession
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
@@ -122,8 +125,8 @@ class DeprovisionDbTest {
         tokenStore.issue(TokenKind.USER, principal, emptyList(), name = null, ttlSeconds = 3600)
         val req = accessStore.createRequest(principal, AccessRequestInput(roleId = role.id))
         accessStore.approve(req.id, durationSec = 3600, decidedBy = "approver@example.com")
-        daemonSessionStore.create(principal, "dvc_combo_a", null, windowSeconds = 3600, ttlSeconds = 900)
-        daemonSessionStore.create(principal, "dvc_combo_b", null, windowSeconds = 3600, ttlSeconds = 900)
+        ds.seedDaemonSession(principal)
+        ds.seedDaemonSession(principal)
         val webId = daemonSessionStore.mintWeb(principal, null, 3600, 900, "combo-web-device")
         val bystanderWebId = daemonSessionStore.mintWeb(bystander, null, 3600, 900, "combo-bystander-device")
 
@@ -137,14 +140,13 @@ class DeprovisionDbTest {
     @Test
     fun `revokeActiveCredentials closes the principal's daemon session windows so a renewal secret can't survive`() {
         val principal = "revoke-daemon-session@example.com"
-        val created = daemonSessionStore.create(principal, "dvc_revoke", null, windowSeconds = 3600, ttlSeconds = 900)
-        assertTrue(daemonSessionStore.withinWindow(principal), "sanity: the session is in-window before revoke")
+        val created = ds.seedDaemonSession(principal)
+        assertTrue(ds.daemonWithinWindow(principal), "sanity: the session is in-window before revoke")
 
         revokeActiveCredentials(principal, tokenStore, accessStore, daemonSessionStore)
 
-        val after = daemonSessionStore.getById(created.row.id)!!
-        assertEquals(LIVENESS_INACTIVE, after.livenessStatus, "revoke must mark the session INACTIVE")
-        assertFalse(daemonSessionStore.withinWindow(principal), "revoke must close the renewal window (durable deprovision)")
+        assertEquals(LIVENESS_INACTIVE, ds.daemonLiveness(created), "revoke must mark the session INACTIVE")
+        assertFalse(ds.daemonWithinWindow(principal), "revoke must close the renewal window (durable deprovision)")
     }
 
     @Test
@@ -222,6 +224,38 @@ class DeprovisionDbTest {
 
                     val result = withTimeout(5_000) { deferred.await() }
                     assertNull(result, "once the teardown's deactivation commits, the locked mint must refuse (mint nothing)")
+                }
+            }
+        } finally {
+            holder.close()
+        }
+    }
+
+    @Test
+    fun `revokeActiveCredentials itself blocks behind a concurrent holder of the SAME principal's advisory lock`() {
+        val principal = "revoke-serializes@example.com"
+        val token = tokenStore.issue(TokenKind.SESSION, principal, emptyList(), name = null, ttlSeconds = 3600)
+
+        val holder = ds.connection
+        holder.autoCommit = false
+        holder.prepareStatement("SELECT pg_advisory_xact_lock(hashtext(?))").use { ps ->
+            ps.setString(1, principal); ps.executeQuery().use { it.next() }
+        }
+        try {
+            runBlocking {
+                coroutineScope {
+                    val revokeDeferred = async(Dispatchers.IO) {
+                        revokeActiveCredentials(principal, tokenStore, accessStore, daemonSessionStore)
+                    }
+                    delay(300)
+                    assertFalse(revokeDeferred.isCompleted, "revokeActiveCredentials must block behind the held advisory lock, not revoke ahead of the holder")
+                    assertNull(tokenStore.get(token.id)!!.revokedAt, "the token must still be live while the teardown is blocked on the lock")
+
+                    holder.commit()
+
+                    val revoked = withTimeout(5_000) { revokeDeferred.await() }
+                    assertTrue(revoked >= 1, "once the lock releases, the teardown proceeds and revokes at least the token")
+                    assertNotNull(tokenStore.get(token.id)!!.revokedAt, "the token must be revoked after the teardown completes")
                 }
             }
         } finally {

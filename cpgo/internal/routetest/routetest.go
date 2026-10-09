@@ -26,17 +26,27 @@ type env struct {
 
 // fakeAuthz allows what allow lists and records every decision asked for.
 type fakeAuthz struct {
-	Allow map[string]bool
-	Asked []string
+	Allow     map[string]bool
+	Asked     []string
+	Resources []bridge.Resource
 }
 
 func (f *fakeAuthz) Authorize(_ context.Context, principal, action string, resource bridge.Resource, ip string) (bool, string, error) {
 	key := principal + " " + action + " " + resource.Type + ":" + resource.Principal
 	f.Asked = append(f.Asked, key+" @"+ip)
+	f.Resources = append(f.Resources, resource)
 	if f.Allow[key] {
 		return true, "", nil
 	}
 	return false, "no permit for " + action, nil
+}
+
+func (f *fakeAuthz) AuthorizeEach(ctx context.Context, principal, action string, resources []bridge.Resource, ip string) ([]bool, error) {
+	out := make([]bool, len(resources))
+	for i, r := range resources {
+		out[i], _, _ = f.Authorize(ctx, principal, action, r, ip)
+	}
+	return out, nil
 }
 
 func Setup(t *testing.T) *env {

@@ -52,3 +52,41 @@ func TestAuthorizeDenyCarriesCedarsReason(t *testing.T) {
 		t.Fatalf("allow %v reason %q err %v", ok, reason, err)
 	}
 }
+
+func TestAuthorizeEach(t *testing.T) {
+	var got struct {
+		Principal, Action string
+		Resources         []Resource
+	}
+	kotlin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/internal/authorize-batch" || r.Header.Get(TokenHeader) != "tok" {
+			http.NotFound(w, r)
+			return
+		}
+		_ = json.NewDecoder(r.Body).Decode(&got)
+		if len(got.Resources) == 3 {
+			_, _ = w.Write([]byte(`{"allow":[true,false,true]}`))
+		} else {
+			_, _ = w.Write([]byte(`{"allow":[true]}`))
+		}
+	}))
+	defer kotlin.Close()
+	u, _ := url.Parse(kotlin.URL)
+	c := New(u, "tok")
+	role := "jit"
+	res := []Resource{{Type: "AccessGrant", Principal: "a", ID: 1, RoleName: &role}, AuditLog, System}
+
+	allow, err := c.AuthorizeEach(context.Background(), "alice", "task.read", res, "")
+	if err != nil || len(allow) != 3 || !allow[0] || allow[1] || !allow[2] {
+		t.Fatalf("allow %v err %v", allow, err)
+	}
+	if got.Principal != "alice" || got.Action != "task.read" || got.Resources[0].ID != 1 || *got.Resources[0].RoleName != "jit" {
+		t.Fatalf("sent %+v", got)
+	}
+	if _, err := c.AuthorizeEach(context.Background(), "alice", "task.read", res[:2], ""); err == nil {
+		t.Fatal("a decision count that does not match the resources must be an error")
+	}
+	if allow, err := c.AuthorizeEach(context.Background(), "alice", "task.read", nil, ""); err != nil || allow != nil {
+		t.Fatalf("no resources makes no call: %v %v", allow, err)
+	}
+}

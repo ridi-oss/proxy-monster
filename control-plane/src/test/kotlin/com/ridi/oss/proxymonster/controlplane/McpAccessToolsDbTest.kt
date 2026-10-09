@@ -39,6 +39,10 @@ import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import com.ridi.oss.proxymonster.controlplane.support.CpGoStack
+import com.ridi.oss.proxymonster.controlplane.support.testLoginRoute
+import io.ktor.server.routing.routing
+import org.junit.jupiter.api.AfterAll
 
 /** The JIT access tools: request, approve and reject, grants and revoke, each against its REST route. */
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
@@ -47,6 +51,7 @@ class McpAccessToolsDbTest {
     private lateinit var core: ControlPlaneCore
     private lateinit var tokens: McpTokens
     private lateinit var datasource: Datasource
+    private lateinit var cpGo: CpGoStack
     private var roleId = 0L
     private val roleName = "mcp-jit-role"
     private val seq = AtomicInteger()
@@ -55,12 +60,19 @@ class McpAccessToolsDbTest {
     @BeforeAll
     fun setUp() {
         requireDockerOrSkip()
-        dataSource = SharedPostgres.hikari(SharedPostgres.freshDatabase("pm_mcp_access_tools"))
+        val database = SharedPostgres.freshDatabase("pm_mcp_access_tools")
+        dataSource = SharedPostgres.hikari(database)
         Flyway.configure().dataSource(dataSource).load().migrate()
         core = ControlPlaneCore(dataSource)
         tokens = McpTokens(dataSource)
         roleId = core.policyStore.createRole(RoleInput(roleName)).id
         datasource = core.datasourceStore.create(DatasourceInput("mcp-jit-ds", "postgres"))
+        cpGo = CpGoStack(config, core, database) { routing { testLoginRoute(PrincipalSessionStore(dataSource, null), config) } }
+    }
+
+    @AfterAll
+    fun tearDown() {
+        if (::cpGo.isInitialized) cpGo.close()
     }
 
     @Test
@@ -167,10 +179,11 @@ class McpAccessToolsDbTest {
         val ownerGrants = client.mcpCall(ownerToken, "list_access_grants", buildJsonObject { put("principal", owner) }).okResult()
         assertEquals(1, ownerGrants.jsonArray.size)
 
-        client.login(stranger)
-        assertEquals(parseJson(client.get("/api/access-grants?principal=$owner").bodyAsText()), strangerGrants)
+        val console = cpGo.client()
+        console.login(stranger)
+        assertEquals(parseJson(console.get("/api/access-grants?principal=$owner").bodyAsText()), strangerGrants)
         assertEquals(
-            parseJson(client.get("/api/access-requests").bodyAsText()),
+            parseJson(console.get("/api/access-requests").bodyAsText()),
             client.mcpCall(strangerToken, "list_access_requests").okResult(),
         )
     }

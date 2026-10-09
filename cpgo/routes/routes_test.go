@@ -47,7 +47,6 @@ func TestUnportedRequestsAreForwarded(t *testing.T) {
 		{http.MethodGet, "/api/approvals/1"},
 		{http.MethodPost, "/api/approvals/1/approve"},
 		{http.MethodGet, "/api/policies/schema"},
-		{http.MethodGet, "/api/tokens"},
 	} {
 		if status, _ := e.Do(t, tc.method, tc.path, "", nil); status != http.StatusTeapot {
 			t.Fatalf("%s %s: status %d, want forwarded", tc.method, tc.path, status)

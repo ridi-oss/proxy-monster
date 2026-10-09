@@ -209,7 +209,7 @@ func (h identity) listGroups(w http.ResponseWriter, r *http.Request) {
 	api.WriteJSON(w, http.StatusOK, groups)
 }
 
-func lockPrincipal(ctx context.Context, tx pgx.Tx, principal string) error {
+func LockPrincipal(ctx context.Context, tx pgx.Tx, principal string) error {
 	return db.New(tx).LockPrincipal(ctx, principal)
 }
 
@@ -225,7 +225,7 @@ func lockCurrentPrincipal(ctx context.Context, tx pgx.Tx, id int64) (string, err
 	}
 	seen, err := principalOf()
 	for err == nil && seen != "" {
-		if err = lockPrincipal(ctx, tx, seen); err != nil {
+		if err = LockPrincipal(ctx, tx, seen); err != nil {
 			break
 		}
 		var current string
@@ -239,7 +239,7 @@ func lockCurrentPrincipal(ctx context.Context, tx pgx.Tx, id int64) (string, err
 
 // releaseTombstone frees principal from the inactive SCIM row a rename left behind, so it can be reused.
 func releaseTombstone(ctx context.Context, tx pgx.Tx, principal string, exclude *int64) error {
-	if err := lockPrincipal(ctx, tx, principal); err != nil {
+	if err := LockPrincipal(ctx, tx, principal); err != nil {
 		return err
 	}
 	q := db.New(tx)
@@ -255,7 +255,7 @@ func releaseTombstone(ctx context.Context, tx pgx.Tx, principal string, exclude 
 // revokeCredentials is Kotlin's revokeActiveCredentialsTx: tokens, JIT grants, daemon sessions and web
 // sessions, under the principal's lock. Every revoked principal goes to ended, so a retry re-sends the signal.
 func revokeCredentials(ctx context.Context, tx pgx.Tx, principal string, ended *[]string) error {
-	if err := lockPrincipal(ctx, tx, principal); err != nil {
+	if err := LockPrincipal(ctx, tx, principal); err != nil {
 		return err
 	}
 	q := db.New(tx)

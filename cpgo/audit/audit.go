@@ -61,13 +61,21 @@ type Actor struct {
 
 // Admin is ManagementAuditRecorder.record: a kind=admin event for a config change, on the change's tx.
 func Admin(ctx context.Context, tx pgx.Tx, actor Actor, action, resource, summary string) error {
+	return controlPlane(ctx, tx, "admin", "ALLOW", actor, action, resource, summary)
+}
+
+// Auth is AuthAuditRecorder.success: a kind=auth event for a credential change, on the change's tx.
+func Auth(ctx context.Context, tx pgx.Tx, actor Actor, action, resource, summary string) error {
+	return controlPlane(ctx, tx, "auth", "SUCCESS", actor, action, resource, summary)
+}
+
+func controlPlane(ctx context.Context, tx pgx.Tx, kind, outcome string, actor Actor, action, resource, summary string) error {
 	var addr *string
 	if actor.ClientAddr != "" {
 		addr = &actor.ClientAddr
 	}
-	allow := "ALLOW"
 	_, err := Insert(ctx, tx, canon.AuditEvent{
-		Kind:          "admin",
+		Kind:          kind,
 		Principal:     actor.Principal,
 		Roles:         []string{},
 		Datasource:    "control-plane",
@@ -77,7 +85,7 @@ func Admin(ctx context.Context, tx pgx.Tx, actor Actor, action, resource, summar
 		Channel:       &actor.Channel,
 		AuthzAction:   &action,
 		AuthzResource: &resource,
-		Outcome:       &allow,
+		Outcome:       &outcome,
 	})
 	return err
 }

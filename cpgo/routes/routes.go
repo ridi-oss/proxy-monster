@@ -15,6 +15,7 @@ import (
 	"github.com/ridi-oss/proxy-monster/cpgo/routes/identity"
 	"github.com/ridi-oss/proxy-monster/cpgo/routes/me"
 	"github.com/ridi-oss/proxy-monster/cpgo/routes/policies"
+	"github.com/ridi-oss/proxy-monster/cpgo/routes/tokens"
 )
 
 // Register adds every Go-served route to mux.
@@ -23,6 +24,7 @@ func Register(mux *http.ServeMux, pool *pgxpool.Pool, gate api.Gate) {
 	auditlog.Register(mux, pool, gate)
 	policies.Register(mux, pool, gate)
 	access.Register(mux, pool, gate)
+	tokens.Register(mux, pool, gate)
 	identity.Register(mux, pool, gate)
 	datasources.Register(mux, pool, gate)
 	mux.Handle("GET /api/datasources/live", front.Kotlin)

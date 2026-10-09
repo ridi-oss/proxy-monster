@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -84,6 +85,22 @@ func UpdateSummary(typ, before, after string) string {
 		return "update " + typ + " '" + before + "'"
 	}
 	return "update " + typ + " '" + before + "' -> '" + after + "'"
+}
+
+// Notify runs a post-commit signal even if the client has gone, retrying briefly: the change is already
+// committed, so a lost signal would leave Kotlin deciding on the old state.
+func Notify(ctx context.Context, f func(context.Context) error) error {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
+	defer cancel()
+	var err error
+	for attempt := range 3 {
+		if err = f(ctx); err == nil {
+			return nil
+		}
+		slog.Warn("routes: post-commit signal failed", "attempt", attempt+1, "err", err)
+		time.Sleep(time.Duration(attempt+1) * 200 * time.Millisecond)
+	}
+	return err
 }
 
 // DecodeBody reads exactly one JSON value sent as application/json; anything after it fails the request before it

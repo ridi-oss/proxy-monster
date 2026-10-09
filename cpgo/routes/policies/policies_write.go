@@ -30,7 +30,7 @@ func (p policies) mutate(w http.ResponseWriter, r *http.Request, status int, cha
 	})
 	for _, f := range afterCommit {
 		if err == nil {
-			err = f(ctx)
+			err = api.Notify(ctx, f)
 		}
 	}
 	var me *api.ManagementError

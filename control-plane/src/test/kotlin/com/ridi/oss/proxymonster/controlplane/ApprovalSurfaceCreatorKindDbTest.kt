@@ -132,12 +132,11 @@ class ApprovalSurfaceCreatorKindDbTest {
 
     @Test
     fun `list surfaces only WORKFLOW tasks - WIRE and EDITOR never appear`() = testApplication {
-        val client = wire()
         val workflowId = seedWorkflowRequest()
         val wireId = seedWireTask()
         val editorId = seedEditorTask()
 
-        val listed = client.get("/api/approvals").body<List<AccessRequest>>().map { it.id }
+        val listed = core.accessStore.listQueryRequests(null, principal).map { it.id }
         assertTrue(workflowId in listed, "the WORKFLOW approval request must appear on the feed")
         assertTrue(wireId !in listed, "a native-wire lifecycle task must never appear on the approvals feed")
         assertTrue(editorId !in listed, "an editor lifecycle task must never appear on the approvals feed")

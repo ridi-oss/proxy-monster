@@ -64,6 +64,18 @@ func (a accessRequest) approvalResource() bridge.Resource {
 		ExecutedBy: a.ExecutedBy, DatasourceName: a.DatasourceName, RoleName: a.RoleName}
 }
 
+// ownApprovals lists the caller's own workflow approval requests; owning them is the whole check.
+func (a access) ownApprovals(w http.ResponseWriter, r *http.Request) {
+	q, principal := r.URL.Query(), api.Principal(r.Context())
+	if q.Has("status") {
+		rows, err := db.New(a.pool).OwnApprovalsByStatus(r.Context(), db.OwnApprovalsByStatusParams{Principal: principal, Status: q.Get("status")})
+		writeRows(w, rows, err, func(r db.OwnApprovalsByStatusRow) accessRequest { return toAccessRequest(db.AccessRequestsRow(r)) })
+		return
+	}
+	rows, err := db.New(a.pool).OwnApprovals(r.Context(), principal)
+	writeRows(w, rows, err, func(r db.OwnApprovalsRow) accessRequest { return toAccessRequest(db.AccessRequestsRow(r)) })
+}
+
 type accessGrant struct {
 	ID        int64   `json:"id"`
 	Principal string  `json:"principal"`

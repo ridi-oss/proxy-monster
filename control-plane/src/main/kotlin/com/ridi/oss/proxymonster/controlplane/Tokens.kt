@@ -1,20 +1,5 @@
 package com.ridi.oss.proxymonster.controlplane
 
-import com.ridi.oss.proxymonster.controlplane.AuthAuditRecorder.Companion.ACTION_TOKEN_MINT
-import com.ridi.oss.proxymonster.controlplane.AuthAuditRecorder.Companion.CHANNEL_WIRE
-import com.ridi.oss.proxymonster.controlplane.authz.Authz
-import com.ridi.oss.proxymonster.controlplane.authz.AuthzAction
-import com.ridi.oss.proxymonster.controlplane.authz.AuthzResource
-import com.ridi.oss.proxymonster.controlplane.authz.requireAuthz
-import com.ridi.oss.proxymonster.controlplane.management.AuditActor
-import com.ridi.oss.proxymonster.controlplane.management.auditEntity
-import io.ktor.http.HttpStatusCode
-import io.ktor.server.request.receive
-import io.ktor.server.response.respond
-import io.ktor.server.routing.Route
-import io.ktor.server.routing.delete
-import io.ktor.server.routing.get
-import io.ktor.server.routing.post
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.builtins.serializer
@@ -44,7 +29,7 @@ enum class TokenKind {
     }
 }
 
-// ---- DTOs — the wire contract for /api/wire-tokens + /api/tokens** -----------
+// ---- DTOs -------------------------------------------------------------------
 
 /** A token row as listed to its owner — never includes the secret itself. */
 @Serializable
@@ -66,12 +51,6 @@ data class IssuedToken(val token: String, val id: Long, val kind: String, val na
 /** Resolved identity for a presented wire token (the proxy's validate result). */
 @Serializable
 data class WireIdentity(val principal: String, val roles: List<String>, val kind: String)
-
-@Serializable
-data class MintSessionTokenInput(val ttlSeconds: Long? = null)
-
-@Serializable
-data class CreateTokenInput(val name: String? = null, val ttlSeconds: Long? = null)
 
 // ---- TTL policy (pure; wire credentials are ALWAYS expiring — DESIGN.md) -----------------
 
@@ -275,98 +254,4 @@ class TokenStore(internal val dataSource: DataSource) {
         revokedAt = getTimestamp("revoked_at")?.toInstant()?.toString(),
         lastUsedAt = getTimestamp("last_used_at")?.toInstant()?.toString(),
     )
-}
-
-// ---- Routes -----------------------------------------------------------------
-
-// Nullable, unlike a gated route's principal: these routes resolve the caller to BUILD the Token resource
-// they then authorize against, so this necessarily runs before any gate. Null means no session, and each
-// caller answers 401 itself rather than asserting a name it has not yet had approved.
-private fun principalOf(call: io.ktor.server.application.ApplicationCall) = call.userSession()?.principal
-private fun rolesOf(call: io.ktor.server.application.ApplicationCall) = call.userSession()?.roles ?: emptyList()
-
-/** The audited actor of a token route: whoever made the request, resolved the same way the route's own
- *  authorization resolves it — never the token's owner, who may be someone else on the revoke path. */
-private fun callerActor(principal: String, call: io.ktor.server.application.ApplicationCall, config: Config) =
-    AuditActor(principal, clientAddr = call.httpRequesterIp(config), channel = CHANNEL_WIRE)
-
-fun Route.tokenRoutes(
-    config: Config,
-    store: TokenStore,
-    userGroupStore: UserGroupStore,
-    authz: Authz,
-    authAudit: AuthAuditRecorder,
-    service: TokenService = TokenService(store, userGroupStore, authz, authAudit),
-) {
-    // Mint a short-lived SESSION token for the daemon (`pm login`) — held locally, refreshed.
-    // Credential issuance is a Cedar decision (token.mint on Token{owner, kind}); the self seed permits a
-    // principal to mint its own, a kind-scoped forbid can bar a role from long-lived PATs.
-    post("/api/wire-tokens") {
-        val principal = principalOf(call)
-            ?: return@post call.respond(HttpStatusCode.Unauthorized, ApiError("common.unauthenticated"))
-        if (!call.requireAuthz(config, authz, AuthzAction.TOKEN_MINT, AuthzResource.Token(principal, TokenKind.SESSION))) return@post
-        val ttl = call.receive<MintSessionTokenInput>().ttlSeconds ?: store.sessionTtlSeconds
-        val roles = rolesOf(call)
-        // A deprovisioned principal must not mint fresh wire credentials, even mid-session — and the
-        // check + the INSERT run on ONE transaction under the per-principal advisory lock,
-        // so a concurrent SCIM/liveness teardown can't slip its revoke between them and leave a
-        // token that survives the deprovision (resurrectable on a later reactivation).
-        val minter = callerActor(principal, call, config)
-        val issued = store.dataSource.mintForActivePrincipalLocked(principal, userGroupStore) { c ->
-            store.issue(TokenKind.SESSION, principal, roles, name = null, ttlSeconds = ttl, c).also { token ->
-                authAudit.success(
-                    c,
-                    minter,
-                    ACTION_TOKEN_MINT,
-                    auditEntity("Token", token.id.toString()),
-                    "Minted SESSION wire token",
-                )
-            }
-        }
-        if (issued == null) {
-            call.respond(HttpStatusCode.Forbidden, ApiError("auth.principal_deprovisioned")); return@post
-        }
-        call.respond(issued)
-    }
-
-    // Managed user tokens (expiring): generate / list / revoke from the web UI or the `pm` CLI.
-    get("/api/tokens") {
-        val principal = principalOf(call)
-            ?: return@get call.respond(HttpStatusCode.Unauthorized, ApiError("common.unauthenticated"))
-        try {
-            call.respond(service.list(principal, call.httpRequesterIp(config), call.request.queryParameters["principal"]))
-        } catch (e: TaskServiceException) {
-            call.respondServiceError(e)
-        }
-    }
-    post("/api/tokens") {
-        val principal = principalOf(call)
-            ?: return@post call.respond(HttpStatusCode.Unauthorized, ApiError("common.unauthenticated"))
-        try {
-            service.authorizeMintUser(principal, call.httpRequesterIp(config))
-            val input = call.receive<CreateTokenInput>()
-            val issued = service.issueUser(
-                principal, rolesOf(call), callerActor(principal, call, config), input.name, input.ttlSeconds,
-            )
-            call.respond(HttpStatusCode.Created, issued)
-        } catch (e: TaskServiceException) {
-            call.respondServiceError(e)
-        }
-    }
-    delete("/api/tokens/{id}") {
-        val id = call.parameters["id"]?.toLongOrNull()
-            ?: return@delete call.badId()
-        // A missing token is a 404 before any authorization is revealed, session or not.
-        val principal = principalOf(call) ?: return@delete if (store.get(id) == null) {
-            call.notFound("token")
-        } else {
-            call.respond(HttpStatusCode.Unauthorized, ApiError("common.unauthenticated"))
-        }
-        try {
-            service.revoke(principal, call.httpRequesterIp(config), callerActor(principal, call, config), id)
-            call.respond(HttpStatusCode.NoContent)
-        } catch (e: TaskServiceException) {
-            call.respondServiceError(e)
-        }
-    }
 }

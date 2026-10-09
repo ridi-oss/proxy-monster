@@ -61,6 +61,11 @@ func Register(mux *http.ServeMux, pool *pgxpool.Pool, gate api.Gate) {
 	mux.HandleFunc("POST /api/access-requests/{id}/approve", gate.RequireAPI(withID(ac.approve)))
 	mux.HandleFunc("POST /api/access-requests/{id}/reject", gate.RequireAPI(withID(ac.reject)))
 	mux.HandleFunc("POST /api/access-grants/{id}/revoke", gate.RequireAPIElse(ac.unauthenticatedRevoke, withID(ac.revokeGrant)))
+	tk := tokens{pool: pool, authz: gate.Authz}
+	mux.HandleFunc("POST /api/wire-tokens", gate.RequireAPI(tk.mintSession))
+	mux.HandleFunc("GET /api/tokens", gate.RequireAPI(tk.list))
+	mux.HandleFunc("POST /api/tokens", gate.RequireAPI(tk.mintUser))
+	mux.HandleFunc("DELETE /api/tokens/{id}", gate.RequireAPIElse(tk.unauthenticatedRevoke, withID(tk.revoke)))
 	id := identity{pool: pool, kotlin: gate.Kotlin}
 	admin := func(h http.HandlerFunc) http.HandlerFunc { return gate.RequireAdmin("admin.identity", h) }
 	mux.HandleFunc("GET /api/users", admin(id.listUsers))

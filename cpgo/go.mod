@@ -14,10 +14,12 @@ require (
 	github.com/jackc/pgx/v5 v5.10.0
 	github.com/moby/moby/api v1.55.0
 	github.com/pires/go-proxyproto v0.8.1
+	github.com/ridi-oss/proxy-monster/auditmon v0.0.0-00010101000000-000000000000
 	github.com/shurcooL/githubv4 v0.0.0-20260209031235-2402fdf4a9ed
 	github.com/testcontainers/testcontainers-go v0.44.0
 	github.com/youmark/pkcs8 v0.0.0-20240726163527-a2c0da244d78
 	google.golang.org/grpc v1.83.2
+	google.golang.org/protobuf v1.36.12
 	tailscale.com v1.100.0
 )
 
@@ -62,7 +64,7 @@ require (
 	github.com/digitalocean/go-smbios v0.0.0-20180907143718-390a4f403a8e // indirect
 	github.com/distribution/reference v0.6.0 // indirect
 	github.com/djherbis/times v1.6.0 // indirect
-	github.com/docker/go-connections v0.7.0 // indirect
+	github.com/docker/go-connections v0.8.1 // indirect
 	github.com/docker/go-units v0.5.0 // indirect
 	github.com/ebitengine/purego v0.10.1 // indirect
 	github.com/felixge/httpsnoop v1.1.0 // indirect
@@ -160,8 +162,11 @@ require (
 	golang.zx2c4.com/wintun v0.0.0-20230126152724-0fa3db229ce2 // indirect
 	golang.zx2c4.com/wireguard/windows v0.5.3 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260526163538-3dc84a4a5aaa // indirect
-	google.golang.org/protobuf v1.36.12 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 	gvisor.dev/gvisor v0.0.0-20260224225140-573d5e7127a8 // indirect
 	honnef.co/go/tools v0.7.0 // indirect
 )
+
+// auditmon/canon is the audit hash both writers produce; resolve it from source so the GOWORK=off image
+// build (control-plane/Dockerfile copies ../auditmon in) matches the workspace.
+replace github.com/ridi-oss/proxy-monster/auditmon => ../auditmon

@@ -14,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/ridi-oss/proxy-monster/cpgo/api"
+	"github.com/ridi-oss/proxy-monster/cpgo/front"
 	"github.com/ridi-oss/proxy-monster/cpgo/store/db"
 )
 
@@ -78,6 +79,9 @@ func Register(mux *http.ServeMux, pool *pgxpool.Pool, gate api.Gate) {
 	mux.HandleFunc("DELETE /api/groups/{id}/roles/{roleId}", admin(withID(id.removeGroupRole)))
 	ds := datasources{pool: pool, authz: gate.Authz}
 	mux.HandleFunc("GET /api/datasources", gate.RequireAPIOrBearer(ds.list))
+	mux.HandleFunc("GET /api/datasources/{id}", gate.RequireAPIOrBearer(withID(ds.get)))
+	mux.Handle("GET /api/datasources/live", front.Kotlin)
+	mux.HandleFunc("GET /api/datasources/{id}/wire-cert", gate.RequireAPIOrBearer(withID(ds.wireCert)))
 }
 
 type handlers struct{ pool *pgxpool.Pool }

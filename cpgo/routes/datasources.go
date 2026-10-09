@@ -3,9 +3,13 @@ package routes
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
 	"net/http"
 	"strings"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/ridi-oss/proxy-monster/cpgo/api"
@@ -131,4 +135,56 @@ func (d datasources) list(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	api.WriteJSON(w, http.StatusOK, out)
+}
+
+// connectable is the live datasource id names, or the answer already written: 404 for a missing one, 403
+// datasource.not_connectable when the caller may not datasource.connect to it.
+func (d datasources) connectable(w http.ResponseWriter, r *http.Request, id int64) (*datasource, bool) {
+	ctx := r.Context()
+	row, err := db.New(d.pool).Datasource(ctx, id)
+	var ds datasource
+	if err == nil {
+		ds, err = toDatasource(db.DatasourcesRow(row))
+	}
+	if errors.Is(err, pgx.ErrNoRows) {
+		api.WriteError(w, http.StatusNotFound, "common.not_found", map[string]string{"resource": "datasource"})
+		return nil, false
+	}
+	var may []bool
+	if err == nil {
+		may, err = d.authz.MayConnect(ctx, api.Principal(ctx), []int64{id}, api.RequesterIP(ctx))
+	}
+	if err != nil {
+		fail(w, err)
+		return nil, false
+	}
+	if !may[0] {
+		api.WriteError(w, http.StatusForbidden, "datasource.not_connectable", nil)
+		return nil, false
+	}
+	return &ds, true
+}
+
+// get is one datasource with its connection material, so it takes the same connect gate as wire-cert.
+func (d datasources) get(w http.ResponseWriter, r *http.Request, id int64) {
+	if ds, ok := d.connectable(w, r, id); ok {
+		api.WriteJSON(w, http.StatusOK, ds)
+	}
+}
+
+// wireCert serves the proxy's advertised wire TLS chain as stored; the client is the one that verifies it.
+func (d datasources) wireCert(w http.ResponseWriter, r *http.Request, id int64) {
+	ds, ok := d.connectable(w, r, id)
+	if !ok {
+		return
+	}
+	if ds.AdvertiseCertChain == nil || strings.TrimSpace(*ds.AdvertiseCertChain) == "" {
+		api.WriteError(w, http.StatusNotFound, "datasource.no_wire_cert", nil)
+		return
+	}
+	// The file is named by id: a datasource name could carry a quote or CRLF into the header.
+	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="datasource-%d-wire-cert.pem"`, ds.ID))
+	w.Header().Set("Content-Type", "application/x-pem-file")
+	w.WriteHeader(http.StatusOK)
+	_, _ = io.WriteString(w, *ds.AdvertiseCertChain)
 }

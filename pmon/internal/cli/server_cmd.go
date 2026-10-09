@@ -15,6 +15,7 @@ type serverCmd struct {
 	Set     serverSetCmd     `cmd:"" help:"Create a server or change its URL (logs it out if the URL changes)."`
 	Unset   serverUnsetCmd   `cmd:"" help:"Log a server out and delete it."`
 	Default serverDefaultCmd `cmd:"" help:"Print the default server, or make another one the default."`
+	Rename  serverRenameCmd  `cmd:"" help:"Rename a server, to the name it advertises unless given one."`
 	List    serverListCmd    `cmd:"" default:"withargs" help:"List the servers."`
 }
 
@@ -124,6 +125,53 @@ func (c *serverDefaultCmd) Run() error {
 	}
 	fmt.Printf("server %q is now the default\n", c.Name)
 	return nil
+}
+
+// serverRenameCmd is `pmon server rename [name] [new-name]`. The AI apps' entries for the server move with it.
+type serverRenameCmd struct {
+	Name  string `arg:"" optional:"" help:"Server to rename (default: the default server)."`
+	To    string `arg:"" optional:"" name:"new-name" help:"New name (default: the name the server advertises)."`
+	Force bool   `short:"f" help:"Rename without asking, even with connections open."`
+}
+
+func (c *serverRenameCmd) Run() error {
+	ctx := context.Background()
+	client, err := control.EnsureDaemon(ctx)
+	if err != nil {
+		return err
+	}
+	s, err := client.Status(ctx)
+	if err != nil {
+		return err
+	}
+	if err := requireCurrentDaemon(s); err != nil {
+		return err
+	}
+	name, err := serverOrDefault(s, c.Name)
+	if err != nil {
+		return err
+	}
+	if !c.Force && !confirmDrop(s.ServerLiveConns(name), "Rename anyway?") {
+		fmt.Printf("left server %q as it is\n", name)
+		return nil
+	}
+	res, err := client.RenameServer(ctx, control.RenameServerRequest{Name: name, To: c.To})
+	if errors.Is(err, control.ErrUnknownRoute) {
+		return errors.New("the running daemon predates `pmon server rename` — run `pmon restart`")
+	}
+	if err != nil {
+		return err
+	}
+	if res.To == res.Name {
+		fmt.Printf("server %q already has that name\n", res.Name)
+		return nil
+	}
+	fmt.Printf("server %q renamed to %q\n", res.Name, res.To)
+	def := s.DefaultServer
+	if def == res.Name {
+		def = res.To
+	}
+	return moveAIEntries(res.Name, res.To, def)
 }
 
 type serverListCmd struct{}

@@ -727,6 +727,65 @@ func (d *Daemon) nameForURL(ctx context.Context, raw string) (string, error) {
 	return name, nil
 }
 
+// RenameServer renames a server, keeping its login and sticky ports, and the default if it was the default. Its
+// brokers close and reopen under the new name, dropping their connections.
+func (d *Daemon) RenameServer(ctx context.Context, req control.RenameServerRequest) (control.RenameServerResult, error) {
+	from := d.serverName(req.Name)
+	srv := d.snapshot().Servers[from]
+	if srv == nil {
+		return control.RenameServerResult{}, fmt.Errorf("unknown server %q", from)
+	}
+	to := req.To
+	if to == "" {
+		info, err := instance.Fetch(ctx, srv.ControlPlane)
+		if err != nil || state.ValidServerName(info.Name) != nil {
+			return control.RenameServerResult{}, fmt.Errorf("%q does not advertise a name (%v) — give one: `pmon server rename %s <new-name>`", from, cmp.Or(err, errors.New("no usable name")), from)
+		}
+		to = info.Name
+	}
+	if err := state.ValidServerName(to); err != nil {
+		return control.RenameServerResult{}, err
+	}
+	res := control.RenameServerResult{Name: from, To: to}
+	if to == from {
+		return res, nil
+	}
+	// Both names, in one order, so two renames crossing each other cannot deadlock.
+	first, second := lockOf(&d.serverMus, min(from, to)), lockOf(&d.serverMus, max(from, to))
+	first.Lock()
+	defer first.Unlock()
+	second.Lock()
+	defer second.Unlock()
+	if err := d.commit(func(c *state.Config) error {
+		switch {
+		case c.Servers[from] == nil || c.Servers[from].ID != srv.ID || c.Servers[from].ControlPlane != srv.ControlPlane:
+			return fmt.Errorf("server %q changed meanwhile; try again", from)
+		case c.Servers[to] != nil:
+			return fmt.Errorf("server %q already exists", to)
+		}
+		c.Servers[to] = c.Servers[from]
+		delete(c.Servers, from)
+		if c.Default == from {
+			c.Default = to
+		}
+		return nil
+	}); err != nil {
+		return control.RenameServerResult{}, err
+	}
+	d.mu.Lock()
+	reauth := d.reauthRequired[from]
+	d.mu.Unlock()
+	d.forgetServer(from)
+	if reauth {
+		d.mu.Lock()
+		d.reauthRequired[to] = true
+		d.mu.Unlock()
+	}
+	d.openListeners(ctx)
+	d.publishStatus()
+	return res, nil
+}
+
 // SetDefault makes a configured server the one a command addresses when it names none.
 func (d *Daemon) SetDefault(req control.SetDefaultRequest) error {
 	if err := d.commit(func(c *state.Config) error {

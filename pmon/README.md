@@ -39,13 +39,17 @@ pmon show dev acme-mysql        # acme-mysql on dev
 pmon logout dev                 # or `pmon logout --all`
 pmon server unset dev           # log out of dev and delete it
 pmon server default dev         # bare commands now address dev
+pmon server rename default      # rename to the name the server advertises
+pmon server rename dev staging  # or to a name you give
 ```
 
 Changing a logged-in server's URL logs it out: a token is only good against the
 control plane that issued it. A config from a single-server release loads as
 `default`, keeping its ports and password, and a config from before the default
 could be chosen keeps `default` as its default. Deleting the default server
-leaves none until you create or choose another.
+leaves none until you create or choose another. A renamed server keeps its
+login, ports and default, and the entries `pmon mcp --install` added for it move
+to the new name.
 
 ### Scopes
 

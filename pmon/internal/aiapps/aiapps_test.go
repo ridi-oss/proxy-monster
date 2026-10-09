@@ -38,7 +38,7 @@ func TestClaudeDesktopEditKeepsOtherSettings(t *testing.T) {
 	if app.connected(Setup{Pmon: pmon}, "proxy-monster-acme", "acme") {
 		t.Fatal("connected before adding")
 	}
-	if err := app.add(Setup{Pmon: pmon}, "proxy-monster-acme", "acme"); err != nil {
+	if _, err := app.add(Setup{Pmon: pmon}, "proxy-monster-acme", Server{Name: "acme"}); err != nil {
 		t.Fatal(err)
 	}
 	if !app.connected(Setup{Pmon: pmon}, "proxy-monster-acme", "acme") {
@@ -65,7 +65,7 @@ func TestClaudeDesktopEditKeepsOtherSettings(t *testing.T) {
 		t.Errorf("mode %v, want the original 0640", fi.Mode().Perm())
 	}
 
-	if err := app.remove(Setup{Pmon: pmon}, "proxy-monster-acme", "acme"); err != nil {
+	if _, err := app.remove(Setup{Pmon: pmon}, "proxy-monster-acme", "acme"); err != nil {
 		t.Fatal(err)
 	}
 	data, _ = os.ReadFile(path)
@@ -78,7 +78,7 @@ func TestClaudeDesktopEditKeepsOtherSettings(t *testing.T) {
 
 func TestClaudeDesktopAddCreatesTheConfig(t *testing.T) {
 	setHome(t, t.TempDir())
-	if err := claudeDesktop().add(Setup{Pmon: "/p/pmon"}, "proxy-monster", "default"); err != nil {
+	if _, err := claudeDesktop().add(Setup{Pmon: "/p/pmon"}, "proxy-monster", Server{Name: "default"}); err != nil {
 		t.Fatal(err)
 	}
 	if !claudeDesktop().connected(Setup{Pmon: "/p/pmon"}, "proxy-monster", "default") {
@@ -92,7 +92,7 @@ func TestClaudeDesktopRefusesABrokenConfig(t *testing.T) {
 	path := claudeDesktopConfig()
 	_ = os.MkdirAll(filepath.Dir(path), 0o700)
 	_ = os.WriteFile(path, []byte(`{"mcpServers": {`), 0o600)
-	if err := claudeDesktop().add(Setup{Pmon: "/p/pmon"}, "proxy-monster", "default"); err == nil {
+	if _, err := claudeDesktop().add(Setup{Pmon: "/p/pmon"}, "proxy-monster", Server{Name: "default"}); err == nil {
 		t.Fatal("added to an unparseable config")
 	}
 	if data, _ := os.ReadFile(path); string(data) != `{"mcpServers": {` {
@@ -107,7 +107,7 @@ func TestClaudeDesktopRefusesNull(t *testing.T) {
 		path := claudeDesktopConfig()
 		_ = os.MkdirAll(filepath.Dir(path), 0o700)
 		_ = os.WriteFile(path, []byte(body), 0o600)
-		if err := claudeDesktop().add(Setup{Pmon: "/p/pmon"}, "proxy-monster", "default"); err == nil {
+		if _, err := claudeDesktop().add(Setup{Pmon: "/p/pmon"}, "proxy-monster", Server{Name: "default"}); err == nil {
 			t.Errorf("%s: added to a config that is not an object", body)
 		}
 	}
@@ -120,7 +120,7 @@ func TestClaudeDesktopConcurrentAddsKeepEveryEntry(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			if err := claudeDesktop().add(Setup{Pmon: "/p/pmon"}, fmt.Sprintf("e%d", i), fmt.Sprintf("s%d", i)); err != nil {
+			if _, err := claudeDesktop().add(Setup{Pmon: "/p/pmon"}, fmt.Sprintf("e%d", i), Server{Name: fmt.Sprintf("s%d", i)}); err != nil {
 				t.Error(err)
 			}
 		}()
@@ -143,10 +143,10 @@ func TestClaudeDesktopLeavesAForeignEntryAlone(t *testing.T) {
 	if app.connected(Setup{Pmon: "/p/pmon"}, "proxy-monster", "default") {
 		t.Error("a foreign entry reads as connected")
 	}
-	if err := app.add(Setup{Pmon: "/p/pmon"}, "proxy-monster", "default"); err == nil {
+	if _, err := app.add(Setup{Pmon: "/p/pmon"}, "proxy-monster", Server{Name: "default"}); err == nil {
 		t.Error("add overwrote a foreign entry")
 	}
-	if err := app.remove(Setup{Pmon: "/p/pmon"}, "proxy-monster", "default"); err != nil {
+	if _, err := app.remove(Setup{Pmon: "/p/pmon"}, "proxy-monster", "default"); err != nil {
 		t.Fatal(err)
 	}
 	servers, _, _ := readDesktopServers(path)
@@ -175,7 +175,7 @@ func TestClaudeDesktopEntryCarriesTheDaemonSettings(t *testing.T) {
 	setHome(t, t.TempDir())
 	t.Setenv("PMON_CONFIG_DIR", "/tmp/pmd-test")
 	t.Setenv("PMON_PORT_BASE", "46500")
-	if err := claudeDesktop().add(Setup{Pmon: "/p/pmon"}, "proxy-monster-ridi", "ridi"); err != nil {
+	if _, err := claudeDesktop().add(Setup{Pmon: "/p/pmon"}, "proxy-monster-ridi", Server{Name: "ridi"}); err != nil {
 		t.Fatal(err)
 	}
 	servers, _, _ := readDesktopServers(claudeDesktopConfig())
@@ -225,7 +225,7 @@ func TestClaudeDesktopConfigWithAByteOrderMark(t *testing.T) {
 	if err := os.WriteFile(path, []byte("\xef\xbb\xbf{\"globalShortcut\":\"Alt+Space\"}"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := claudeDesktop().add(Setup{Pmon: "/pmon"}, "proxy-monster-acme", "acme"); err != nil {
+	if _, err := claudeDesktop().add(Setup{Pmon: "/pmon"}, "proxy-monster-acme", Server{Name: "acme"}); err != nil {
 		t.Fatalf("add on a config with a BOM: %v", err)
 	}
 	data, _ := os.ReadFile(path)
@@ -242,14 +242,14 @@ func TestAnotherPmonsEntryIsPmons(t *testing.T) {
 		t.Fatal(err)
 	}
 	app := claudeDesktop()
-	if err := app.Add(Setup{Pmon: other}, "acme"); err != nil {
+	if _, err := app.Add(Setup{Pmon: other}, Server{Name: "acme"}); err != nil {
 		t.Fatal(err)
 	}
 	bundled := Setup{Pmon: "/Applications/Proxy Monster Desktop.app/Contents/MacOS/pmon"}
 	if !app.Connected(bundled, "acme") {
 		t.Error("an entry for another pmon that exists does not read as connected")
 	}
-	if err := app.Add(bundled, "acme"); err != nil {
+	if _, err := app.Add(bundled, Server{Name: "acme"}); err != nil {
 		t.Fatalf("replacing another pmon's entry: %v", err)
 	}
 	if err := os.Remove(other); err != nil {
@@ -258,13 +258,13 @@ func TestAnotherPmonsEntryIsPmons(t *testing.T) {
 	if !app.Connected(bundled, "acme") {
 		t.Error("the replaced entry does not run the bundled pmon")
 	}
-	if err := app.Add(Setup{Pmon: other}, "acme"); err != nil {
+	if _, err := app.Add(Setup{Pmon: other}, Server{Name: "acme"}); err != nil {
 		t.Fatal(err)
 	}
 	if app.Connected(bundled, "acme") {
 		t.Error("an entry for a pmon that no longer exists reads as connected")
 	}
-	if err := app.Remove(bundled, "acme"); err != nil {
+	if _, err := app.Remove(bundled, "acme"); err != nil {
 		t.Fatal(err)
 	}
 	if servers, _, _ := readDesktopServers(claudeDesktopConfig()); len(servers) != 0 {

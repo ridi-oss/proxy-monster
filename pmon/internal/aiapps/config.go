@@ -18,6 +18,7 @@ import (
 // on Windows read the same files their CLIs write, but ship no CLI.
 type configFile struct {
 	exists func() bool
+	list   func() (map[string]entry, error)
 	read   func(entry string) (cmd mcpCommand, found bool, err error)
 	write  func(entry string, cmd mcpCommand) error
 	delete func(entry string) error
@@ -30,6 +31,17 @@ func claudeCodeConfig() configFile {
 	path := func() string { return filepath.Join(userHome(), ".claude.json") }
 	return configFile{
 		exists: func() bool { _, err := os.Stat(path()); return err == nil },
+		list: func() (map[string]entry, error) {
+			servers, _, err := readDesktopServers(path())
+			if err != nil {
+				return nil, err
+			}
+			entries := map[string]entry{}
+			for name, raw := range servers {
+				entries[name] = decodeEntry(raw)
+			}
+			return entries, nil
+		},
 		read: func(entry string) (mcpCommand, bool, error) {
 			servers, _, err := readDesktopServers(path())
 			if err != nil {
@@ -62,25 +74,23 @@ func codexConfig() configFile {
 	path := func() string { return filepath.Join(userHome(), ".codex", "config.toml") }
 	return configFile{
 		exists: func() bool { _, err := os.Stat(path()); return err == nil },
-		read: func(entry string) (mcpCommand, bool, error) {
-			data, err := os.ReadFile(path())
-			if errors.Is(err, os.ErrNotExist) {
-				return mcpCommand{}, false, nil
+		list: func() (map[string]entry, error) {
+			servers, err := readCodexServers(path())
+			if err != nil {
+				return nil, err
 			}
+			entries := map[string]entry{}
+			for name, s := range servers {
+				entries[name] = entry{URL: s.URL, Command: s.Command, Args: s.Args}
+			}
+			return entries, nil
+		},
+		read: func(entry string) (mcpCommand, bool, error) {
+			servers, err := readCodexServers(path())
 			if err != nil {
 				return mcpCommand{}, false, err
 			}
-			var doc struct {
-				MCPServers map[string]struct {
-					Command string            `toml:"command"`
-					Args    []string          `toml:"args"`
-					Env     map[string]string `toml:"env"`
-				} `toml:"mcp_servers"`
-			}
-			if err := toml.Unmarshal(data, &doc); err != nil {
-				return mcpCommand{}, false, fmt.Errorf("%s: %w", path(), err)
-			}
-			s, ok := doc.MCPServers[entry]
+			s, ok := servers[entry]
 			return mcpCommand{Command: s.Command, Args: s.Args, Env: s.Env}, ok, nil
 		},
 		write: func(entry string, cmd mcpCommand) error {
@@ -92,6 +102,30 @@ func codexConfig() configFile {
 			return editText(path(), func(text string) string { return withoutTOMLTable(text, entry) })
 		},
 	}
+}
+
+type codexServer struct {
+	URL     string            `toml:"url"`
+	Command string            `toml:"command"`
+	Args    []string          `toml:"args"`
+	Env     map[string]string `toml:"env"`
+}
+
+func readCodexServers(path string) (map[string]codexServer, error) {
+	data, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var doc struct {
+		MCPServers map[string]codexServer `toml:"mcp_servers"`
+	}
+	if err := toml.Unmarshal(data, &doc); err != nil {
+		return nil, fmt.Errorf("%s: %w", path, err)
+	}
+	return doc.MCPServers, nil
 }
 
 // codexTable is the TOML for one server, as `codex mcp add` would describe it.
@@ -191,27 +225,38 @@ func configApp(id, name string, file configFile) App {
 			c, found, err := file.read(entry)
 			return err == nil && found && ours(c.Command, c.Args, envOrEmpty(c.Env), s.Pmon, server)
 		},
-		add: func(s Setup, entry, server string) error {
-			c, found, err := file.read(entry)
+		add: func(s Setup, entry string, srv Server) ([]string, error) {
+			others, err := file.list()
 			if err != nil {
-				return err
+				return nil, err
 			}
-			if found && !ownCommand(c.Command, c.Args, server) {
-				return &EntryError{App: name, Entry: entry, Taken: true}
+			if mine, ok := others[entry]; ok && !replaceable(mine, srv) {
+				return nil, &EntryError{App: name, Entry: entry, Taken: true}
 			}
-			return file.write(entry, mcpCommand{Command: s.Pmon, Args: []string{"mcp", server}, Env: DaemonEnv()})
+			if err := file.write(entry, mcpCommand{Command: s.Pmon, Args: []string{"mcp", srv.Name}, Env: DaemonEnv()}); err != nil {
+				return nil, err
+			}
+			var replaced []string
+			for _, other := range replaceableNames(others, entry, srv) {
+				if err := file.delete(other); err != nil {
+					return replaced, err
+				}
+				replaced = append(replaced, other)
+			}
+			return replaced, nil
 		},
-		remove: func(s Setup, entry, server string) error {
+		remove: func(s Setup, entry, server string) (bool, error) {
 			c, found, err := file.read(entry)
 			switch {
 			case err != nil:
-				return err
+				return false, err
 			case !found:
-				return nil
+				return false, nil
 			case !ownCommand(c.Command, c.Args, server):
-				return &EntryError{App: name, Entry: entry}
+				return false, &EntryError{App: name, Entry: entry}
 			}
-			return file.delete(entry)
+			err = file.delete(entry)
+			return err == nil, err
 		},
 	}
 }

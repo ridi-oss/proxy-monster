@@ -43,7 +43,7 @@ func TestCodexConfigEditsOnlyItsOwnTable(t *testing.T) {
 	p := writeCodex(t, codexBefore)
 	app := configApp("codex", "Codex", codexConfig())
 	pmon := "/old/pmon"
-	if err := app.add(Setup{Pmon: pmon}, "proxy-monster-acme", "acme"); err != nil {
+	if _, err := app.add(Setup{Pmon: pmon}, "proxy-monster-acme", Server{Name: "acme"}); err != nil {
 		t.Fatal(err)
 	}
 	data, _ := os.ReadFile(p)
@@ -60,7 +60,7 @@ func TestCodexConfigEditsOnlyItsOwnTable(t *testing.T) {
 	if err != nil || !found || c.Command != pmon || strings.Join(c.Args, " ") != "mcp acme" {
 		t.Errorf("read back %+v %v %v", c, found, err)
 	}
-	if err := app.remove(Setup{Pmon: pmon}, "proxy-monster-acme", "acme"); err != nil {
+	if _, err := app.remove(Setup{Pmon: pmon}, "proxy-monster-acme", "acme"); err != nil {
 		t.Fatal(err)
 	}
 	data, _ = os.ReadFile(p)
@@ -72,10 +72,10 @@ func TestCodexConfigEditsOnlyItsOwnTable(t *testing.T) {
 func TestCodexConfigRefusesAnotherServersEntry(t *testing.T) {
 	writeCodex(t, "[mcp_servers.proxy-monster-acme]\ncommand = \"npx\"\nargs = [\"x\"]\n")
 	app := configApp("codex", "Codex", codexConfig())
-	if err := app.add(Setup{Pmon: "/pmon"}, "proxy-monster-acme", "acme"); err == nil {
+	if _, err := app.add(Setup{Pmon: "/pmon"}, "proxy-monster-acme", Server{Name: "acme"}); err == nil {
 		t.Error("replaced an entry Proxy Monster did not add")
 	}
-	if err := app.remove(Setup{Pmon: "/pmon"}, "proxy-monster-acme", "acme"); err == nil {
+	if _, err := app.remove(Setup{Pmon: "/pmon"}, "proxy-monster-acme", "acme"); err == nil {
 		t.Error("removed an entry Proxy Monster did not add")
 	}
 }
@@ -100,7 +100,7 @@ func TestClaudeCodeConfigKeepsOtherKeys(t *testing.T) {
 		t.Fatal(err)
 	}
 	app := configApp("claude-code", "Claude Code", claudeCodeConfig())
-	if err := app.add(Setup{Pmon: "/pmon"}, "proxy-monster-acme", "acme"); err != nil {
+	if _, err := app.add(Setup{Pmon: "/pmon"}, "proxy-monster-acme", Server{Name: "acme"}); err != nil {
 		t.Fatal(err)
 	}
 	if !app.connected(Setup{Pmon: "/pmon"}, "proxy-monster-acme", "acme") {
@@ -116,7 +116,7 @@ func TestClaudeCodeConfigKeepsOtherKeys(t *testing.T) {
 		json.Unmarshal(got.MCPServers["proxy-monster-acme"], &ours) != nil || ours.Type != "stdio" {
 		t.Errorf("config after add: %s", data)
 	}
-	if err := app.remove(Setup{Pmon: "/pmon"}, "proxy-monster-acme", "acme"); err != nil || app.connected(Setup{Pmon: "/pmon"}, "proxy-monster-acme", "acme") {
+	if _, err := app.remove(Setup{Pmon: "/pmon"}, "proxy-monster-acme", "acme"); err != nil || app.connected(Setup{Pmon: "/pmon"}, "proxy-monster-acme", "acme") {
 		t.Errorf("remove: %v", err)
 	}
 }

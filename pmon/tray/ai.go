@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/ridi-oss/proxy-monster/pmon/control"
 	"github.com/ridi-oss/proxy-monster/pmon/internal/aiapps"
 )
 
@@ -23,6 +24,18 @@ func aiSetup() aiapps.Setup {
 	return aiapps.Setup{Pmon: bundledPmon(), Confirm: func() bool {
 		return confirm(T("confirm.claudeRestart"), T("confirm.claudeRestartBody"), T("confirm.restartButton"))
 	}}
+}
+
+// aiServer is the named server with its URL, so adding it replaces the AI app's https entry for it.
+func aiServer(s *control.Status, name string) aiapps.Server {
+	if s != nil {
+		for _, srv := range s.Servers {
+			if srv.Name == name {
+				return aiapps.Server{Name: name, URL: srv.ControlPlane}
+			}
+		}
+	}
+	return aiapps.Server{Name: name}
 }
 
 // aiErrorText is an AI-app change's error in this app's language.
@@ -108,14 +121,17 @@ func (a *app) doAIApp(act action) {
 		a.refreshAI(true)
 	}()
 	if act.connect {
-		if err := app.Add(aiSetup(), act.server); errors.Is(err, aiapps.ErrDeclined) {
+		a.mu.Lock()
+		srv := aiServer(a.status, act.server)
+		a.mu.Unlock()
+		if _, err := app.Add(aiSetup(), srv); errors.Is(err, aiapps.ErrDeclined) {
 			return
 		} else if err != nil {
 			notify(T("n.aiAddFailed", "server", act.server, "app", app.Name), aiErrorText(err))
 		} else {
 			notify(T("n.aiAdded", "server", act.server, "app", app.Name), T("ai.after."+app.ID))
 		}
-	} else if err := app.Remove(aiSetup(), act.server); errors.Is(err, aiapps.ErrDeclined) {
+	} else if _, err := app.Remove(aiSetup(), act.server); errors.Is(err, aiapps.ErrDeclined) {
 		return
 	} else if err != nil {
 		notify(T("n.aiRemoveFailed", "server", act.server, "app", app.Name), aiErrorText(err))

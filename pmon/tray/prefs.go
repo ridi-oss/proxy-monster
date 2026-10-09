@@ -184,11 +184,18 @@ func (p *prefs) aiToggle(id, server string, on bool) any {
 		if app.ID != id {
 			continue
 		}
-		change := app.Remove
+		var err error
 		if on {
-			change = app.Add
+			srv := aiapps.Server{Name: server}
+			for _, s := range p.state().Servers {
+				if s.Name == server {
+					srv.URL = s.URL
+				}
+			}
+			_, err = app.Add(aiSetup(), srv)
+		} else {
+			_, err = app.Remove(aiSetup(), server)
 		}
-		err := change(aiSetup(), server)
 		switch {
 		case errors.Is(err, aiapps.ErrDeclined):
 			return nil

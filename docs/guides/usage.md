@@ -300,9 +300,10 @@ Claude Code, finish with `/mcp` → the server → Authenticate.
 **Through pmon.** `pmon mcp [server]` is a local stdio MCP server that uses your
 pmon login, so the agent needs no sign-in of its own. This is how Claude Desktop
 connects. `pmon mcp --install` registers it with every AI app installed on your
-machine (Claude Desktop, Claude Code, Codex) for every pmon server. By hand: the
-**Connect an agent** page and the `get_pmon_guide` tool name the pmon server
-after the instance; with the `default` server:
+machine (Claude Desktop, Claude Code, Codex) for every pmon server, replacing an
+https entry for the same server. By hand: the **Connect an agent** page and the
+`get_pmon_guide` tool name the pmon server after the instance; with the
+`default` server:
 
 ```sh
 claude mcp add --scope user pmon-acme -- pmon mcp

@@ -41,19 +41,28 @@ func (c *mcpCmd) register(ctx context.Context) error {
 	setup := aiapps.Setup{Pmon: pmon, Confirm: confirmClaudeRestart}
 	failed := 0
 	for _, app := range apps {
-		for _, server := range servers {
-			change, done := app.Remove, "removed"
+		for _, srv := range servers {
+			var replaced []string
+			var err error
+			done, removed := "removed", true
 			if c.Install {
-				change, done = app.Add, "added"
+				replaced, err = app.Add(setup, srv)
+				done = "added"
+			} else {
+				removed, err = app.Remove(setup, srv.Name)
 			}
-			switch err := change(setup, server); {
+			switch {
+			case err == nil && !removed:
+				fmt.Printf("%s: no %s to remove\n", app.Name, aiapps.EntryName(srv.Name))
 			case errors.Is(err, aiapps.ErrDeclined):
-				fmt.Printf("%s: skipped %s; Claude Desktop was not restarted\n", app.Name, server)
+				fmt.Printf("%s: skipped %s; Claude Desktop was not restarted\n", app.Name, srv.Name)
 			case err != nil:
 				failed++
-				fmt.Fprintf(os.Stderr, "%s: %s: %v\n", app.Name, server, err)
+				fmt.Fprintf(os.Stderr, "%s: %s: %v\n", app.Name, srv.Name, err)
+			case len(replaced) > 0:
+				fmt.Printf("%s: %s %s, replacing %s\n", app.Name, done, aiapps.EntryName(srv.Name), strings.Join(replaced, ", "))
 			default:
-				fmt.Printf("%s: %s %s\n", app.Name, done, aiapps.EntryName(server))
+				fmt.Printf("%s: %s %s\n", app.Name, done, aiapps.EntryName(srv.Name))
 			}
 		}
 	}
@@ -68,25 +77,28 @@ func (c *mcpCmd) register(ctx context.Context) error {
 
 // targetServers is every configured server by default. --install takes only configured ones; --uninstall also
 // takes a server since deleted, whose entries would otherwise stay behind.
-func (c *mcpCmd) targetServers(s *control.Status) ([]string, error) {
+func (c *mcpCmd) targetServers(s *control.Status) ([]aiapps.Server, error) {
 	var known []string
+	urls := map[string]string{}
 	for _, srv := range s.Servers {
 		known = append(known, srv.Name)
+		urls[srv.Name] = srv.ControlPlane
 	}
-	if len(c.Servers) == 0 {
+	names := c.Servers
+	if len(names) == 0 {
 		if len(known) == 0 {
 			return nil, errors.New("no servers — add one with `pmon server set --url <control-plane-url>`")
 		}
-		return known, nil
+		names = known
 	}
-	if c.Install {
-		for _, name := range c.Servers {
-			if !slices.Contains(known, name) {
-				return nil, fmt.Errorf("unknown server %q (known: %s)", name, strings.Join(known, ", "))
-			}
+	var servers []aiapps.Server
+	for _, name := range names {
+		if _, ok := urls[name]; c.Install && !ok {
+			return nil, fmt.Errorf("unknown server %q (known: %s)", name, strings.Join(known, ", "))
 		}
+		servers = append(servers, aiapps.Server{Name: name, URL: urls[name]})
 	}
-	return c.Servers, nil
+	return servers, nil
 }
 
 // targetApps is every installed AI app by default; an app named with --app must be installed.

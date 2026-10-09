@@ -196,7 +196,7 @@ func configApp(id, name string, file configFile) App {
 			if err != nil {
 				return err
 			}
-			if found && !ownCommand(c.Command, c.Args, s.Pmon, server) {
+			if found && !ownCommand(c.Command, c.Args, server) {
 				return &EntryError{App: name, Entry: entry, Taken: true}
 			}
 			return file.write(entry, mcpCommand{Command: s.Pmon, Args: []string{"mcp", server}, Env: DaemonEnv()})
@@ -208,7 +208,7 @@ func configApp(id, name string, file configFile) App {
 				return err
 			case !found:
 				return nil
-			case !ownCommand(c.Command, c.Args, s.Pmon, server):
+			case !ownCommand(c.Command, c.Args, server):
 				return &EntryError{App: name, Entry: entry}
 			}
 			return file.delete(entry)

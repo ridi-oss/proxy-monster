@@ -206,7 +206,7 @@ func TestCLIEntryForAnotherDaemonIsNotConnected(t *testing.T) {
 	if ours(c, a, e, pmon, "acme") {
 		t.Error("an entry for /tmp/a reads as connected to the default daemon")
 	}
-	if !ownCommand(c, a, pmon, "acme") {
+	if !ownCommand(c, a, "acme") {
 		t.Error("this app's own entry is not recognized as its own")
 	}
 	t.Setenv("PMON_CONFIG_DIR", "/tmp/a")
@@ -231,5 +231,43 @@ func TestClaudeDesktopConfigWithAByteOrderMark(t *testing.T) {
 	data, _ := os.ReadFile(path)
 	if bytes.HasPrefix(data, []byte("\xef\xbb\xbf")) || !bytes.Contains(data, []byte("Alt+Space")) || !bytes.Contains(data, []byte("proxy-monster-acme")) {
 		t.Errorf("config after add: %s", data)
+	}
+}
+
+// The CLI and Proxy Monster Desktop register different copies of pmon; each treats the other's entry as pmon's.
+func TestAnotherPmonsEntryIsPmons(t *testing.T) {
+	setHome(t, t.TempDir())
+	other := filepath.Join(t.TempDir(), "pmon")
+	if err := os.WriteFile(other, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	app := claudeDesktop()
+	if err := app.Add(Setup{Pmon: other}, "acme"); err != nil {
+		t.Fatal(err)
+	}
+	bundled := Setup{Pmon: "/Applications/Proxy Monster Desktop.app/Contents/MacOS/pmon"}
+	if !app.Connected(bundled, "acme") {
+		t.Error("an entry for another pmon that exists does not read as connected")
+	}
+	if err := app.Add(bundled, "acme"); err != nil {
+		t.Fatalf("replacing another pmon's entry: %v", err)
+	}
+	if err := os.Remove(other); err != nil {
+		t.Fatal(err)
+	}
+	if !app.Connected(bundled, "acme") {
+		t.Error("the replaced entry does not run the bundled pmon")
+	}
+	if err := app.Add(Setup{Pmon: other}, "acme"); err != nil {
+		t.Fatal(err)
+	}
+	if app.Connected(bundled, "acme") {
+		t.Error("an entry for a pmon that no longer exists reads as connected")
+	}
+	if err := app.Remove(bundled, "acme"); err != nil {
+		t.Fatal(err)
+	}
+	if servers, _, _ := readDesktopServers(claudeDesktopConfig()); len(servers) != 0 {
+		t.Errorf("remove left %v", servers)
 	}
 }

@@ -106,20 +106,16 @@ class AuthAuditRecorder(private val auditStore: AuditStore) {
          *  value; one shared literal keeps "unattributed" a queryable state instead of a per-site spelling. */
         const val PRINCIPAL_UNATTRIBUTED = "unknown"
 
-        const val CHANNEL_OIDC = "oidc"
         const val CHANNEL_WIRE = "wire"
         const val CHANNEL_DEVICE = "device"
         const val CHANNEL_PMON = "pmon"
         const val CHANNEL_OAUTH = "oauth"
-        const val CHANNEL_SESSION = "session"
 
-        const val ACTION_OIDC_LOGIN = "auth.oidc.login"
         const val ACTION_LOGOUT = "auth.logout"
         const val ACTION_DEVICE_APPROVE = "auth.device.approve"
         const val ACTION_DEVICE_MINT = "auth.device.mint"
         const val ACTION_SESSION_RENEW = "auth.session.renew"
         const val ACTION_SESSION_MCP_TOKEN = "auth.session.mcp_token"
-        const val ACTION_SESSION_EXPIRE = "auth.session.expire"
         const val ACTION_WIRE_VALIDATE = "auth.wire.validate"
         const val ACTION_TOKEN_MINT = "auth.token.mint"
         const val ACTION_TOKEN_REVOKE = "auth.token.revoke"

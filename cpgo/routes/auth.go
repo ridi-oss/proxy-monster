@@ -233,13 +233,11 @@ func (a auth) logout(w http.ResponseWriter, r *http.Request) {
 		if err == nil && owner == "" {
 			owner, err = a.sessions.Owner(ctx, ref.ID)
 		}
-		if err == nil {
-			err = a.kotlin.SessionsEnded(context.WithoutCancel(ctx), owner)
-		}
 		if err != nil {
 			fail(w, err)
 			return
 		}
+		a.signalEnded(ctx, owner)
 	}
 	if ref != nil {
 		a.sessions.ClearSessionCookie(w)
@@ -286,21 +284,12 @@ func (a auth) debugLogin(w http.ResponseWriter, r *http.Request) {
 	if debugIP != nil {
 		addr = *debugIP
 	}
-	ref, err := a.sessions.Ref(ctx, r)
-	if err != nil {
-		fail(w, err)
-		return
-	}
-	key := session.NewKey()
-	if ref != nil {
-		key = ref.Key
-	}
 	principal := *in.Principal
 	var (
 		displaced bool
 		id        int64
 	)
-	err = pgx.BeginFunc(ctx, a.pool, func(tx pgx.Tx) error {
+	err := pgx.BeginFunc(ctx, a.pool, func(tx pgx.Tx) error {
 		if err := replaceDirectRoles(ctx, tx, principal, roles, audit.Actor{Principal: principal, ClientAddr: addr, Channel: "console"}); err != nil {
 			return err
 		}
@@ -308,17 +297,14 @@ func (a auth) debugLogin(w http.ResponseWriter, r *http.Request) {
 		id, displaced, err = a.sessions.Mint(ctx, tx, principal, nil, device, debugIP)
 		return err
 	})
-	if err == nil {
-		err = pgx.BeginFunc(ctx, a.pool, func(tx pgx.Tx) error { return a.sessions.Link(ctx, tx, id, key) })
-	}
-	if err == nil && displaced {
-		err = a.kotlin.SessionsEnded(context.WithoutCancel(ctx), principal)
-	}
 	if err != nil {
 		writeMutationError(w, err)
 		return
 	}
-	a.sessions.SetSessionCookie(w, key)
+	if err := a.establish(w, r, id, principal, displaced); err != nil {
+		fail(w, err)
+		return
+	}
 	api.WriteJSON(w, http.StatusOK, userSession{Principal: principal, Roles: roles, RequesterIP: debugIP})
 }
 
@@ -361,4 +347,12 @@ func storableIP(ip string) bool {
 	}
 	_, err := types.ParseIPAddr(ip)
 	return err == nil
+}
+
+// signalEnded has Kotlin close the principal's editor runs after a committed session end. The end already
+// stands, so a failed signal is logged rather than failing the request.
+func (a auth) signalEnded(ctx context.Context, principal string) {
+	if err := a.kotlin.SessionsEnded(context.WithoutCancel(ctx), principal); err != nil {
+		slog.Warn("auth: telling the control plane a session ended", "principal", principal, "err", err)
+	}
 }

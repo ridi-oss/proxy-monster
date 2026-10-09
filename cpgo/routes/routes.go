@@ -15,6 +15,7 @@ import (
 
 	"github.com/ridi-oss/proxy-monster/cpgo/api"
 	"github.com/ridi-oss/proxy-monster/cpgo/front"
+	"github.com/ridi-oss/proxy-monster/cpgo/idp"
 	"github.com/ridi-oss/proxy-monster/cpgo/store/db"
 )
 
@@ -22,7 +23,13 @@ import (
 var locales = []string{"en", "ko"}
 
 // Register adds every Go-served route to mux.
-func Register(mux *http.ServeMux, pool *pgxpool.Pool, gate api.Gate) {
+// Login is the OIDC relying party; a nil Provider leaves OIDC login unconfigured (501).
+type Login struct {
+	Provider *idp.Provider
+	Crypto   *idp.Crypto
+}
+
+func Register(mux *http.ServeMux, pool *pgxpool.Pool, gate api.Gate, login Login) {
 	h := handlers{pool: pool}
 	au := auth{pool: pool, sessions: gate.Sessions, kotlin: gate.Kotlin, edges: gate.Edges}
 	mux.HandleFunc("GET /auth/config", au.config)
@@ -31,6 +38,9 @@ func Register(mux *http.ServeMux, pool *pgxpool.Pool, gate api.Gate) {
 	mux.HandleFunc("GET /auth/session/status", au.sessionGate(au.status))
 	mux.HandleFunc("POST /auth/session/heartbeat", au.sessionGate(au.heartbeat))
 	mux.HandleFunc("POST /auth/logout", au.logout)
+	oi := oidcLogin{auth: au, provider: login.Provider, crypto: login.Crypto}
+	mux.HandleFunc("GET /auth/oidc/login", oi.login)
+	mux.HandleFunc("GET /auth/oidc/callback", oi.callback)
 	mux.HandleFunc("PUT /api/me/locale", gate.RequireAPI(h.putLocale))
 	mux.HandleFunc("GET /api/query-history", gate.RequireAPI(h.getQueryHistory))
 	mux.HandleFunc("DELETE /api/query-history", gate.RequireAPI(h.deleteQueryHistory))

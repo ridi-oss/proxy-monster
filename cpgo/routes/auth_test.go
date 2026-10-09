@@ -186,7 +186,7 @@ func TestDebugLoginIsOffWithoutAuthDebug(t *testing.T) {
 	settings := dbtest.Settings
 	settings.AuthDebug = false
 	mux := http.NewServeMux()
-	Register(mux, st.Pool, api.Gate{Sessions: session.NewResolver(st.Pool, settings), Kotlin: &fakeKotlin{}})
+	Register(mux, st.Pool, api.Gate{Sessions: session.NewResolver(st.Pool, settings), Kotlin: &fakeKotlin{}}, Login{})
 	srv := httptest.NewServer(front.Route(mux, http.NotFoundHandler()))
 	defer srv.Close()
 	resp, err := http.Post(srv.URL+"/auth/debug", "application/json", strings.NewReader(`{"principal":"x"}`))

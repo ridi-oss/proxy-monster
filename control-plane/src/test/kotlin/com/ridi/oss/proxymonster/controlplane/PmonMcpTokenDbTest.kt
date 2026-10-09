@@ -165,10 +165,9 @@ class PmonMcpTokenDbTest {
             clock.now = Instant.now()
         }
 
-        val ended = client.pmonLogin(principal())
-        PrincipalSessionStore(dataSource, null).let { store ->
-            dataSource.connection.use { c -> store.closeDaemonWindow(assertNotNull(core.mcpSession(ended.renewalToken)).id, c) }
-        }
+        val endedPrincipal = principal()
+        val ended = client.pmonLogin(endedPrincipal)
+        PrincipalSessionStore(dataSource, null).deactivateAllForPrincipal(endedPrincipal)
         assertEquals(unauthorized to "auth.session_window_expired", refused(ended.renewalToken))
 
         val owner = principal()

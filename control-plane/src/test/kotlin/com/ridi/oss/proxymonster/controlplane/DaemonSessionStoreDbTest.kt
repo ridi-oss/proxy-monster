@@ -111,121 +111,6 @@ class DaemonSessionStoreDbTest {
     }
 
     @Test
-    fun `markCheck stamps last_idp_check_at and the liveness status`() {
-        val row = store.create("grace@example.com", "dvc_7", null, windowSeconds = 3600, ttlSeconds = 900).row
-        assertNull(row.lastIdpCheckAt)
-        store.markCheck(row.id, LIVENESS_INACTIVE)
-        val updated = store.getById(row.id)!!
-        assertNotNull(updated.lastIdpCheckAt)
-        assertEquals(LIVENESS_INACTIVE, updated.livenessStatus)
-    }
-
-    @Test
-    fun `markCheck connection overload stamps within the transaction and preserves an ended row status`() {
-        val webId = store.mintWeb(
-            "transactional-mark-check@example.com",
-            null,
-            3600,
-            900,
-            "transactional-mark-check-device",
-        )
-        store.endWeb(webId, ENDED_GROUP_REVOKED)
-
-        ds.connection.use { c ->
-            c.autoCommit = false
-            try {
-                store.markCheck(webId, LIVENESS_ACTIVE, c)
-                c.prepareStatement(
-                    "SELECT liveness_status, last_idp_check_at FROM principal_session WHERE id = ?",
-                ).use { ps ->
-                    ps.setLong(1, webId)
-                    ps.executeQuery().use { rs ->
-                        assertTrue(rs.next())
-                        assertEquals(
-                            LIVENESS_INACTIVE,
-                            rs.getString("liveness_status"),
-                            "markCheck must not resurrect an ended web row",
-                        )
-                        assertNotNull(rs.getTimestamp("last_idp_check_at"))
-                    }
-                }
-                c.commit()
-            } catch (t: Throwable) {
-                c.rollback()
-                throw t
-            }
-        }
-
-        assertEquals(ENDED_GROUP_REVOKED, store.webEndedReason(webId))
-    }
-
-    @Test
-    fun `staleSessions returns live stale daemon and web rows and excludes fresh ended or expired rows`() {
-        val staleDaemon = store.create("henry@example.com", "dvc_8", "daemon-refresh", windowSeconds = 3600, ttlSeconds = 900).row
-        val freshDaemon = store.create("iris@example.com", "dvc_9", null, windowSeconds = 3600, ttlSeconds = 900).row
-        store.markCheck(freshDaemon.id, LIVENESS_ACTIVE)
-        val staleCheckedDaemon = store.create("jack@example.com", "dvc_10", null, windowSeconds = 3600, ttlSeconds = 900).row
-        store.markCheck(staleCheckedDaemon.id, LIVENESS_ACTIVE)
-        val staleWeb = store.mintWeb("live-web@example.com", "web-refresh", 3600, 900, "live-web-device")
-        val freshWeb = store.mintWeb("fresh-web@example.com", null, 3600, 900, "fresh-web-device")
-        store.markCheck(freshWeb, LIVENESS_ACTIVE)
-        val endedWeb = store.mintWeb("ended-web@example.com", null, 3600, 900, "ended-web-device")
-        store.endWeb(endedWeb, ENDED_SIGNED_OUT)
-        val idleExpiredWeb = store.mintWeb("idle-expired-web@example.com", null, 3600, 900, "idle-expired-device")
-        val absoluteExpiredWeb = store.mintWeb("absolute-expired-web@example.com", null, 3600, 900, "absolute-expired-device")
-        val expiredDaemon = store.create("kate@example.com", "dvc_11", null, windowSeconds = 3600, ttlSeconds = 900).row
-        ds.connection.use { c ->
-            c.prepareStatement(
-                """UPDATE principal_session
-                   SET last_idp_check_at = CASE WHEN id = ? THEN now() - interval '1 hour' ELSE last_idp_check_at END,
-                       absolute_expires_at = CASE WHEN id IN (?, ?) THEN now() - interval '1 second' ELSE absolute_expires_at END,
-                       idle_expires_at = CASE WHEN id = ? THEN now() - interval '1 second' ELSE idle_expires_at END
-                   WHERE id IN (?, ?, ?, ?)""",
-            ).use { ps ->
-                ps.setLong(1, staleCheckedDaemon.id)
-                ps.setLong(2, expiredDaemon.id)
-                ps.setLong(3, absoluteExpiredWeb)
-                ps.setLong(4, idleExpiredWeb)
-                ps.setLong(5, staleCheckedDaemon.id)
-                ps.setLong(6, expiredDaemon.id)
-                ps.setLong(7, absoluteExpiredWeb)
-                ps.setLong(8, idleExpiredWeb)
-                ps.executeUpdate()
-            }
-        }
-
-        val stale = store.staleSessions(recheckIntervalSeconds = 600).associateBy { it.id }
-        assertEquals("DAEMON", stale.getValue(staleDaemon.id).kind)
-        assertEquals(staleDaemon.principal, stale.getValue(staleDaemon.id).principal)
-        assertEquals("daemon-refresh", store.decryptRefresh(stale.getValue(staleDaemon.id).refreshTokenEnc))
-        assertEquals("DAEMON", stale.getValue(staleCheckedDaemon.id).kind)
-        assertEquals("WEB", stale.getValue(staleWeb).kind)
-        assertEquals("live-web@example.com", stale.getValue(staleWeb).principal)
-        assertEquals("web-refresh", store.decryptRefresh(stale.getValue(staleWeb).refreshTokenEnc))
-        assertFalse(freshDaemon.id in stale)
-        assertFalse(freshWeb in stale)
-        assertFalse(endedWeb in stale)
-        assertFalse(idleExpiredWeb in stale)
-        assertFalse(absoluteExpiredWeb in stale)
-        assertFalse(expiredDaemon.id in stale)
-    }
-
-    @Test
-    fun `updateRefresh rotates the stored ciphertext`() {
-        val row = store.create("liam@example.com", "dvc_12", "refresh-v1", windowSeconds = 3600, ttlSeconds = 900).row
-        store.updateRefresh(row.id, "refresh-v2")
-        val updated = store.getById(row.id)!!
-        assertEquals("refresh-v2", store.decryptRefresh(updated.refreshTokenEnc))
-    }
-
-    @Test
-    fun `updateRefresh is a no-op when no crypto is configured`() {
-        val row = storeNoCrypto.create("mia@example.com", "dvc_13", null, windowSeconds = 3600, ttlSeconds = 900).row
-        storeNoCrypto.updateRefresh(row.id, "should-be-ignored")
-        assertNull(storeNoCrypto.getById(row.id)!!.refreshTokenEnc)
-    }
-
-    @Test
     fun `getByRenewalTokenHash resolves the session by the hashed bearer secret, and a wrong hash finds nothing`() {
         val created = store.create("nina@example.com", "dvc_14", null, windowSeconds = 3600, ttlSeconds = 900)
         assertTrue(created.renewalToken.startsWith("pmr_"))
@@ -267,7 +152,7 @@ class DaemonSessionStoreDbTest {
     }
 
     @Test
-    fun `daemon lookups stay isolated while liveness operations cover web rows`() {
+    fun `daemon lookups stay isolated from web rows`() {
         val principal = "quinn@example.com"
         val daemon = store.create(principal, "dvc_web_guard", "daemon-refresh", windowSeconds = 3600, ttlSeconds = 900).row
         val webId = store.mintWeb(principal, "web-refresh", absoluteSeconds = 3600, idleSeconds = 900, deviceId = "daemon-test-device")
@@ -279,27 +164,9 @@ class DaemonSessionStoreDbTest {
         assertEquals(900L, byPrincipal.ttlSeconds)
         assertTrue(store.withinWindow(principal))
 
-        val stale = store.staleSessions(recheckIntervalSeconds = 600).associateBy { it.id }
-        assertEquals("DAEMON", stale.getValue(daemon.id).kind)
-        assertEquals("WEB", stale.getValue(webId).kind)
-
-        store.updateRefresh(webId, "web-refresh-v2")
-        val rotated = store.staleSessions(recheckIntervalSeconds = 600).first { it.id == webId }
-        assertEquals("web-refresh-v2", store.decryptRefresh(rotated.refreshTokenEnc))
-        store.markCheck(webId, LIVENESS_ACTIVE)
-        assertFalse(webId in store.staleSessions(recheckIntervalSeconds = 600).map { it.id })
         assertNotNull(store.resolveWeb(webId, "daemon-test-device"))
 
         store.endWeb(webId, ENDED_GROUP_REVOKED)
-        store.markCheck(webId, LIVENESS_ACTIVE)
-        val endedStatus = ds.connection.use { c ->
-            c.prepareStatement("SELECT liveness_status, last_idp_check_at FROM principal_session WHERE id = ?").use { ps ->
-                ps.setLong(1, webId)
-                ps.executeQuery().use { rs -> rs.next(); rs.getString(1) to rs.getTimestamp(2) }
-            }
-        }
-        assertEquals(LIVENESS_INACTIVE, endedStatus.first, "markCheck must not resurrect an ended web row")
-        assertNotNull(endedStatus.second)
         assertEquals(ENDED_GROUP_REVOKED, store.webEndedReason(webId))
 
         val liveWeb = store.mintWeb(principal, "replacement-web-refresh", 3600, 900, "replacement-web-device")

@@ -1,21 +1,14 @@
 package com.ridi.oss.proxymonster.controlplane
 
 import com.ridi.oss.proxymonster.auth.sha256Hex
-import com.ridi.oss.proxymonster.controlplane.authz.Authz
 import com.ridi.oss.proxymonster.controlplane.authz.AuthzAction
 import com.ridi.oss.proxymonster.controlplane.authz.AuthzResource
-import com.ridi.oss.proxymonster.controlplane.authz.requireAdmin
 import com.ridi.oss.proxymonster.controlplane.management.AuditActor
 import com.ridi.oss.proxymonster.controlplane.management.ManagementAuditRecorder
 import com.ridi.oss.proxymonster.controlplane.management.auditEntity
 import com.ridi.oss.proxymonster.probe.Dialect
 import com.ridi.oss.proxymonster.probe.sqlGrantHash
 import io.ktor.http.HttpStatusCode
-import io.ktor.server.request.receive
-import io.ktor.server.response.respond
-import io.ktor.server.routing.Route
-import io.ktor.server.routing.get
-import io.ktor.server.routing.post
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.builtins.ListSerializer
@@ -146,10 +139,6 @@ data class AccessRequestInput(
 @Serializable
 data class RateResetRequestInput(val reason: String, val denyReason: String? = null)
 
-/** An admin resets a principal's spent rates directly; the reason is recorded with the marker. */
-@Serializable
-data class RateResetInput(val reason: String)
-
 @Serializable
 data class AccessGrant(
     val id: Long, val principal: String, val roleId: Long, val roleName: String,
@@ -157,7 +146,6 @@ data class AccessGrant(
     val expiresAt: String? = null, val revokedAt: String? = null,
 )
 
-@Serializable data class ApproveInput(val durationSec: Long? = null)
 @Serializable data class RejectInput(val reason: String)
 
 /** `n:` the SQL's grant hash, or `r:` its raw bytes' hash when the normalizer refuses it. */
@@ -1475,93 +1463,5 @@ class AccessStore(internal val dataSource: DataSource) {
                                                           WHERE n.scope = f.scope AND n.repository = f.repository
                                                             AND n.pr = f.pr AND n.path = f.path AND n.id > f.id
                                                             AND n.status NOT IN ('DELETED', 'ALREADY_RAN', 'CANCELLED')))))"""
-    }
-}
-
-// ---- Routes ------------------------------------------------------------------------------
-
-fun Route.accessRoutes(
-    config: Config,
-    store: AccessStore,
-    authz: Authz,
-    datasourceStore: DatasourceStore,
-    roleResolver: RoleResolver,
-    recorder: ManagementAuditRecorder,
-    service: AccessService = AccessService(store, datasourceStore, AuditStore(store.dataSource), roleResolver, authz, recorder),
-) {
-    post("/api/access-requests") {
-        val principal = call.requireApi() ?: return@post
-        val input = call.receive<AccessRequestInput>()
-        try {
-            call.respond(
-                HttpStatusCode.Created,
-                service.createRequest(principal, call.httpRequesterIp(config), call.auditActor(config), input),
-            )
-        } catch (e: TaskServiceException) {
-            call.respondServiceError(e)
-        }
-    }
-    // A user whose `@cap` rate is spent asks an approver to reset it (docs/result-caps.md). Authentication
-    // alone opens it: there is no datasource to decide task.request against, and the approver decides.
-    post("/api/access-requests/rate-reset") {
-        val principal = call.requireApi() ?: return@post
-        val input = call.receive<RateResetRequestInput>()
-        try {
-            call.respond(HttpStatusCode.Created, service.requestRateReset(principal, call.auditActor(config), input))
-        } catch (e: TaskServiceException) {
-            call.respondServiceError(e)
-        }
-    }
-    // An admin resets a principal's spent rates directly, reason required.
-    post("/api/access/principals/{principal}/rate-reset") {
-        if (!call.requireAdmin(config, authz, AuthzAction.ADMIN_IDENTITY)) return@post
-        val principal = call.parameters["principal"]?.takeIf { it.isNotBlank() } ?: return@post call.badId()
-        val input = call.receive<RateResetInput>()
-        try {
-            call.respond(service.resetRate(principal, input.reason, call.auditActor(config)))
-        } catch (e: TaskServiceException) {
-            call.respondServiceError(e)
-        }
-    }
-    get("/api/access/principals/{principal}/rate-reset") {
-        if (!call.requireAdmin(config, authz, AuthzAction.ADMIN_IDENTITY)) return@get
-        val principal = call.parameters["principal"]?.takeIf { it.isNotBlank() } ?: return@get call.badId()
-        service.lastRateReset(principal)?.let { call.respond(it) } ?: call.respond(HttpStatusCode.NoContent)
-    }
-    post("/api/access-requests/{id}/approve") {
-        val approver = call.requireApi() ?: return@post
-        val id = call.idParam() ?: return@post call.badId()
-        val body = runCatching { call.receive<ApproveInput>() }.getOrDefault(ApproveInput())
-        try {
-            call.respond(service.approve(approver, call.httpRequesterIp(config), call.auditActor(config), id, body.durationSec))
-        } catch (e: TaskServiceException) {
-            call.respondServiceError(e)
-        }
-    }
-    post("/api/access-requests/{id}/reject") {
-        val approver = call.requireApi() ?: return@post
-        val id = call.idParam() ?: return@post call.badId()
-        try {
-            service.requireApprover(approver, call.httpRequesterIp(config), id)
-            val body = call.receive<RejectInput>()
-            call.respond(service.rejectApproved(approver, call.auditActor(config), id, body.reason))
-        } catch (e: TaskServiceException) {
-            call.respondServiceError(e)
-        }
-    }
-    post("/api/access-grants/{id}/revoke") {
-        val id = call.idParam() ?: return@post call.badId()
-        // A missing grant is 404 before the session is asked for, as before any authorization.
-        val caller = call.userSession()?.principal ?: return@post if (store.getGrant(id) == null) {
-            call.notFound("access grant")
-        } else {
-            call.respond(HttpStatusCode.Unauthorized, ApiError("common.unauthenticated"))
-        }
-        try {
-            service.revokeGrant(caller, call.httpRequesterIp(config), call.auditActor(config), id)
-            call.respond(HttpStatusCode.NoContent)
-        } catch (e: TaskServiceException) {
-            call.respondServiceError(e)
-        }
     }
 }

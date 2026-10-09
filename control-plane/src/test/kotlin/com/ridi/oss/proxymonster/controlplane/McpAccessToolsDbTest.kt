@@ -1,26 +1,21 @@
 package com.ridi.oss.proxymonster.controlplane
 
 import com.ridi.oss.proxymonster.controlplane.authz.CedarPolicyInput
+import com.ridi.oss.proxymonster.controlplane.management.AuditActor
+import com.ridi.oss.proxymonster.controlplane.management.AuditSource
+import com.ridi.oss.proxymonster.controlplane.management.ManagementAuditRecorder
 import com.ridi.oss.proxymonster.controlplane.support.McpTokens
 import com.ridi.oss.proxymonster.controlplane.support.SharedPostgres
 import com.ridi.oss.proxymonster.controlplane.support.errorCode
 import com.ridi.oss.proxymonster.controlplane.support.installControlPlane
-import com.ridi.oss.proxymonster.controlplane.support.login
 import com.ridi.oss.proxymonster.controlplane.support.mcpCall
 import com.ridi.oss.proxymonster.controlplane.support.mcpTestConfig
 import com.ridi.oss.proxymonster.controlplane.support.okResult
-import com.ridi.oss.proxymonster.controlplane.support.parseJson
 import com.ridi.oss.proxymonster.controlplane.support.requireDockerOrSkip
 import com.ridi.oss.proxymonster.controlplane.support.str
-import io.ktor.client.request.get
-import io.ktor.client.request.post
-import io.ktor.client.request.setBody
-import io.ktor.client.statement.HttpResponse
-import io.ktor.client.statement.bodyAsText
-import io.ktor.http.ContentType
 import io.ktor.http.HttpStatusCode
-import io.ktor.http.contentType
 import io.ktor.server.testing.testApplication
+import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
@@ -36,22 +31,18 @@ import org.junit.jupiter.api.TestInstance
 import java.util.concurrent.atomic.AtomicInteger
 import javax.sql.DataSource
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
-import com.ridi.oss.proxymonster.controlplane.support.CpGoStack
-import com.ridi.oss.proxymonster.controlplane.support.testLoginRoute
-import io.ktor.server.routing.routing
-import org.junit.jupiter.api.AfterAll
 
-/** The JIT access tools: request, approve and reject, grants and revoke, each against its REST route. */
+/** The JIT access tools: request, approve and reject, grants and revoke, each against [AccessService]. */
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 class McpAccessToolsDbTest {
     private lateinit var dataSource: DataSource
     private lateinit var core: ControlPlaneCore
     private lateinit var tokens: McpTokens
     private lateinit var datasource: Datasource
-    private lateinit var cpGo: CpGoStack
     private var roleId = 0L
     private val roleName = "mcp-jit-role"
     private val seq = AtomicInteger()
@@ -60,19 +51,12 @@ class McpAccessToolsDbTest {
     @BeforeAll
     fun setUp() {
         requireDockerOrSkip()
-        val database = SharedPostgres.freshDatabase("pm_mcp_access_tools")
-        dataSource = SharedPostgres.hikari(database)
+        dataSource = SharedPostgres.hikari(SharedPostgres.freshDatabase("pm_mcp_access_tools"))
         Flyway.configure().dataSource(dataSource).load().migrate()
         core = ControlPlaneCore(dataSource)
         tokens = McpTokens(dataSource)
         roleId = core.policyStore.createRole(RoleInput(roleName)).id
         datasource = core.datasourceStore.create(DatasourceInput("mcp-jit-ds", "postgres"))
-        cpGo = CpGoStack(config, core, database) { routing { testLoginRoute(PrincipalSessionStore(dataSource, null), config) } }
-    }
-
-    @AfterAll
-    fun tearDown() {
-        if (::cpGo.isInitialized) cpGo.close()
     }
 
     @Test
@@ -124,10 +108,9 @@ class McpAccessToolsDbTest {
         )
         assertEquals("PENDING", core.accessStore.getRequest(id)?.status)
 
-        client.login(requester)
-        val rest = client.post("/api/access-requests/$id/approve")
-        assertEquals(HttpStatusCode.Forbidden, rest.status)
-        assertEquals("approval.not_approver", code(rest))
+        val direct = refusal { service().approve(requester, null, actor(requester), id, null) }
+        assertEquals(HttpStatusCode.Forbidden, direct.status)
+        assertEquals("approval.not_approver", direct.error.code)
     }
 
     @Test
@@ -179,13 +162,6 @@ class McpAccessToolsDbTest {
         val ownerGrants = client.mcpCall(ownerToken, "list_access_grants", buildJsonObject { put("principal", owner) }).okResult()
         assertEquals(1, ownerGrants.jsonArray.size)
 
-        val console = cpGo.client()
-        console.login(stranger)
-        assertEquals(parseJson(console.get("/api/access-grants?principal=$owner").bodyAsText()), strangerGrants)
-        assertEquals(
-            parseJson(console.get("/api/access-requests").bodyAsText()),
-            client.mcpCall(strangerToken, "list_access_requests").okResult(),
-        )
     }
 
     @Test
@@ -206,10 +182,11 @@ class McpAccessToolsDbTest {
             })
             assertEquals("approval.request_not_permitted", refused.errorCode())
 
-            client.login(requester)
-            val rest = client.post("/api/access-requests") { json("""{"roleId":$roleId,"datasourceId":${datasource.id},"reason":"r"}""") }
-            assertEquals(HttpStatusCode.Forbidden, rest.status)
-            assertEquals("approval.request_not_permitted", code(rest))
+            val direct = refusal {
+                service().createRequest(requester, null, actor(requester), AccessRequestInput(roleId = roleId, datasourceId = datasource.id, reason = "r"))
+            }
+            assertEquals(HttpStatusCode.Forbidden, direct.status)
+            assertEquals("approval.request_not_permitted", direct.error.code)
             assertTrue(core.accessStore.listRequests(null).none { it.principal == requester })
         } finally {
             core.cedarPolicyStore.delete(policy.id)
@@ -233,10 +210,9 @@ class McpAccessToolsDbTest {
         assertEquals("common.forbidden", refused.errorCode())
         assertNull(core.accessStore.getGrant(grantId)?.revokedAt)
 
-        client.login(other)
-        val rest = client.post("/api/access-grants/$grantId/revoke")
-        assertEquals(HttpStatusCode.Forbidden, rest.status)
-        assertEquals("common.forbidden", code(rest))
+        val direct = refusal { service().revokeGrant(other, null, actor(other), grantId) }
+        assertEquals(HttpStatusCode.Forbidden, direct.status)
+        assertEquals("common.forbidden", direct.error.code)
 
         val byAdmin = client.mcpCall(tokens.token(admin(), setOf("mcp:approvals:write")), "revoke_access_grant", buildJsonObject { put("id", grantId) })
         assertEquals("true", byAdmin.okResult().jsonObject.str("deleted"))
@@ -244,27 +220,24 @@ class McpAccessToolsDbTest {
     }
 
     @Test
-    fun `request and approve answer the same body as REST`() = testApplication {
+    fun `request and approve answer the same body as the service`() = testApplication {
         val client = installControlPlane(config, core)
         val requester = principal("parity")
         val admin = admin()
-        client.login(requester)
-        val rest = client.post("/api/access-requests") { json("""{"roleId":$roleId,"reason":"parity"}""") }
-        assertEquals(HttpStatusCode.Created, rest.status)
-        val restBody = parseJson(rest.bodyAsText()).jsonObject
+        val direct = service().createRequest(requester, null, actor(requester), AccessRequestInput(roleId = roleId, reason = "parity"))
+        val directBody = encode(direct)
         val mcp = client.mcpCall(tokens.token(requester, setOf("mcp:query")), "request_access", buildJsonObject {
             put("roleName", roleName); put("reason", "parity")
         }).okResult().jsonObject
-        assertEquals(restBody - IGNORED, mcp - IGNORED)
-        assertEquals("console", restBody.getValue("source").jsonPrimitive.content)
+        assertEquals(directBody - IGNORED, mcp - IGNORED)
+        assertEquals("console", directBody.getValue("source").jsonPrimitive.content)
         assertEquals("mcp", mcp.getValue("source").jsonPrimitive.content)
 
-        client.login(admin)
-        val restApproved = parseJson(client.post("/api/access-requests/${restBody.getValue("id").jsonPrimitive.long}/approve").bodyAsText()).jsonObject
+        val directApproved = encode(service().approve(admin, null, actor(admin), direct.id, null))
         val mcpApproved = client.mcpCall(tokens.token(admin, setOf("mcp:approvals:write")), "approve_access_request", buildJsonObject {
             put("id", mcp.getValue("id").jsonPrimitive.long)
         }).okResult().jsonObject
-        assertEquals(restApproved - IGNORED, mcpApproved - IGNORED)
+        assertEquals(directApproved - IGNORED, mcpApproved - IGNORED)
     }
 
     private fun JsonArray.ids() = map { it.jsonObject.getValue("id").jsonPrimitive.long }
@@ -288,15 +261,20 @@ class McpAccessToolsDbTest {
         }
     }
 
-    private suspend fun code(response: HttpResponse): String? = parseJson(response.bodyAsText()).jsonObject["code"]?.jsonPrimitive?.content
+    private fun service() =
+        AccessService(core.accessStore, core.datasourceStore, core.auditStore, core.roleResolver, core.authz, ManagementAuditRecorder(core.auditStore))
 
-    private fun io.ktor.client.request.HttpRequestBuilder.json(body: String) {
-        contentType(ContentType.Application.Json)
-        setBody(body)
-    }
+    private fun actor(principal: String) = AuditActor(principal = principal, channel = AuditSource.CONSOLE)
+
+    private fun refusal(block: () -> Unit) = assertFailsWith<TaskServiceException> { block() }
+
+    private fun encode(request: AccessRequest) = APP_JSON.encodeToJsonElement(AccessRequest.serializer(), request).jsonObject
 
     private companion object {
         val IGNORED = setOf("id", "createdAt", "decidedAt", "source")
+
+        // The console's response encoding (App.kt appJson).
+        val APP_JSON = Json { encodeDefaults = true; explicitNulls = false }
     }
 }
 

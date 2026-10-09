@@ -14,8 +14,8 @@ import io.ktor.http.HttpStatusCode
 import java.sql.Connection
 
 /**
- * JIT role requests, rate resets and grants, shared by the REST access routes and the MCP access tools. Each
- * Cedar decision runs on the same context REST builds. Failures throw [TaskServiceException].
+ * JIT role requests, rate resets and grants for the MCP access tools. Each Cedar decision runs on the same
+ * context cp-go's access routes build. Failures throw [TaskServiceException].
  */
 class AccessService(
     private val accessStore: AccessStore,

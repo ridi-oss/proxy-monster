@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+
 	"github.com/ridi-oss/proxy-monster/cpgo/api"
 	"github.com/ridi-oss/proxy-monster/cpgo/authz"
 	"github.com/ridi-oss/proxy-monster/cpgo/bridge"
@@ -31,6 +33,7 @@ type fakeAuthz struct {
 	Allow     map[string]bool
 	Asked     []string
 	Resources []bridge.Resource
+	Scopes    []bridge.Scope
 	Changed   int
 	// AtSignal, when set, records what another connection sees each time PoliciesChanged runs.
 	AtSignal func() string
@@ -63,6 +66,17 @@ func (f *fakeAuthz) Authorize(_ context.Context, principal, action string, resou
 	return false, "no permit for " + action, nil
 }
 
+func (f *fakeAuthz) AuthorizeIn(ctx context.Context, principal, action string, resource bridge.Resource, ip string, s bridge.Scope) (bool, string, error) {
+	f.Scopes = append(f.Scopes, s)
+	return f.Authorize(ctx, principal, action, resource, ip)
+}
+
+func (f *fakeAuthz) MayRequest(_ context.Context, principal string, id int64, ip string) (bool, error) {
+	key := fmt.Sprintf("%s task.request %d", principal, id)
+	f.Asked = append(f.Asked, key+" @"+ip)
+	return f.Allow[key], nil
+}
+
 func (f *fakeAuthz) MayConnect(_ context.Context, principal string, ids []int64, ip string) ([]bool, error) {
 	out := make([]bool, len(ids))
 	for i, id := range ids {
@@ -81,9 +95,16 @@ func (f *fakeAuthz) AuthorizeEach(ctx context.Context, principal, action string,
 	return out, nil
 }
 
-func Setup(t *testing.T) *Env { return SetupConfig(t, Config{}) }
+func Setup(t *testing.T) *Env { return SetupWith(t, nil) }
+
+// SetupWith serves the routes with authz deciding, or the recording fake when authz is nil.
+func SetupWith(t *testing.T, authz func(*pgxpool.Pool) api.Authorizer) *Env {
+	t.Helper()
+	return SetupConfig(t, Config{Authz: authz})
+}
 
 type Config struct {
+	Authz func(*pgxpool.Pool) api.Authorizer
 	// Local decides with the Go engine over the stored policies; PoliciesChanged still reaches the fake.
 	Local bool
 	// Edges is PM_TRUSTED_PROXIES; "127.0.0.1" makes the test client a trusted edge.
@@ -94,8 +115,11 @@ func SetupConfig(t *testing.T, c Config) *Env {
 	t.Helper()
 	e := &Env{St: dbtest.Open(t)}
 	var decider api.Authorizer = &e.Authz
-	if c.Local {
+	switch {
+	case c.Local:
 		decider = authz.Local{Engine: authz.New(e.St.Pool), Kotlin: &e.Authz}
+	case c.Authz != nil:
+		decider = c.Authz(e.St.Pool)
 	}
 	forward := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		e.Forwarded = append(e.Forwarded, r.Method+" "+r.URL.Path)

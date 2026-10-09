@@ -45,14 +45,14 @@ func getPolicy(ctx context.Context, tx pgx.Tx, id int64, lock bool) (*cedarPolic
 // checkSource is CedarPolicyStore's write guard: no system: names, and a source the validator accepts.
 func (p policies) checkSource(ctx context.Context, name, src string) error {
 	if strings.HasPrefix(name, "system:") {
-		return &api.ManagementError{Code: "policy.reserved_name", Params: nil}
+		return &api.ManagementError{Code: "policy.reserved_name"}
 	}
 	errs, err := p.authz.Validate(ctx, src)
 	if err != nil {
 		return err
 	}
 	if len(errs) > 0 {
-		return cedarErrors(errs)
+		return api.CedarErrors(errs)
 	}
 	return nil
 }
@@ -73,7 +73,7 @@ func (p policies) changed(ctx context.Context) error { return p.authz.PoliciesCh
 func (p policies) createPolicy(w http.ResponseWriter, r *http.Request) {
 	var in cedarPolicyInput
 	decodeErr := api.DecodeBody(r, &in)
-	p.mutate(w, r, http.StatusCreated, func(ctx context.Context, tx pgx.Tx, actor audit.Actor) (any, error) {
+	api.Mutate(p.pool, w, r, http.StatusCreated, func(ctx context.Context, tx pgx.Tx, actor audit.Actor) (any, error) {
 		if decodeErr != nil {
 			return nil, decodeErr
 		}
@@ -102,7 +102,7 @@ func (p policies) createPolicy(w http.ResponseWriter, r *http.Request) {
 func (p policies) updatePolicy(w http.ResponseWriter, r *http.Request, id int64) {
 	var in cedarPolicyInput
 	decodeErr := api.DecodeBody(r, &in)
-	p.mutate(w, r, http.StatusOK, func(ctx context.Context, tx pgx.Tx, actor audit.Actor) (any, error) {
+	api.Mutate(p.pool, w, r, http.StatusOK, func(ctx context.Context, tx pgx.Tx, actor audit.Actor) (any, error) {
 		if decodeErr != nil {
 			return nil, decodeErr
 		}
@@ -117,7 +117,7 @@ func (p policies) updatePolicy(w http.ResponseWriter, r *http.Request, id int64)
 			return nil, err
 		}
 		if current.Origin == "SYSTEM" {
-			return nil, &api.ManagementError{Code: "policy.system_immutable", Params: nil}
+			return nil, &api.ManagementError{Code: "policy.system_immutable"}
 		}
 		if err := p.checkSource(ctx, in.Name, in.CedarSrc); err != nil {
 			return nil, err
@@ -136,13 +136,13 @@ func (p policies) updatePolicy(w http.ResponseWriter, r *http.Request, id int64)
 
 func (p policies) deletePolicy(w http.ResponseWriter, r *http.Request, id int64) {
 	deleted := false
-	p.mutate(w, r, http.StatusNoContent, func(ctx context.Context, tx pgx.Tx, actor audit.Actor) (any, error) {
+	api.Mutate(p.pool, w, r, http.StatusNoContent, func(ctx context.Context, tx pgx.Tx, actor audit.Actor) (any, error) {
 		current, err := getPolicy(ctx, tx, id, true)
 		if err != nil {
 			return nil, err
 		}
 		if current.Origin == "SYSTEM" {
-			return nil, &api.ManagementError{Code: "policy.system_immutable", Params: nil}
+			return nil, &api.ManagementError{Code: "policy.system_immutable"}
 		}
 		n, err := db.New(tx).DeletePolicy(ctx, id)
 		if err != nil || n == 0 {
@@ -164,7 +164,7 @@ func (p policies) setPolicyEnabled(enabled bool) func(http.ResponseWriter, *http
 		verb = "enable"
 	}
 	return func(w http.ResponseWriter, r *http.Request, id int64) {
-		p.mutate(w, r, http.StatusOK, func(ctx context.Context, tx pgx.Tx, actor audit.Actor) (any, error) {
+		api.Mutate(p.pool, w, r, http.StatusOK, func(ctx context.Context, tx pgx.Tx, actor audit.Actor) (any, error) {
 			current, err := getPolicy(ctx, tx, id, true)
 			if err != nil {
 				return nil, err
@@ -175,7 +175,7 @@ func (p policies) setPolicyEnabled(enabled bool) func(http.ResponseWriter, *http
 					return nil, err
 				}
 				if len(errs) > 0 {
-					return nil, cedarErrors(errs)
+					return nil, api.CedarErrors(errs)
 				}
 			}
 			principal := api.Principal(ctx)

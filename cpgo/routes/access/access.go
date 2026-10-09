@@ -16,6 +16,13 @@ func Register(mux *http.ServeMux, pool *pgxpool.Pool, gate api.Gate) {
 	mux.HandleFunc("GET /api/access-requests", gate.RequireAPI(ac.requests))
 	mux.HandleFunc("GET /api/access-grants", gate.RequireAPI(ac.grants))
 	mux.HandleFunc("GET /api/approvals", gate.RequireAPI(ac.ownApprovals))
+	mux.HandleFunc("POST /api/access-requests", gate.RequireAPI(ac.createRequest))
+	mux.HandleFunc("POST /api/access-requests/rate-reset", gate.RequireAPI(ac.requestRateReset))
+	mux.HandleFunc("POST /api/access/principals/{principal}/rate-reset", gate.RequireAdmin("admin.identity", ac.resetRate))
+	mux.HandleFunc("GET /api/access/principals/{principal}/rate-reset", gate.RequireAdmin("admin.identity", ac.lastRateReset))
+	mux.HandleFunc("POST /api/access-requests/{id}/approve", gate.RequireAPI(api.WithID(ac.approve)))
+	mux.HandleFunc("POST /api/access-requests/{id}/reject", gate.RequireAPI(api.WithID(ac.reject)))
+	mux.HandleFunc("POST /api/access-grants/{id}/revoke", gate.RequireAPIElse(ac.unauthenticatedRevoke, api.WithID(ac.revokeGrant)))
 }
 
 // accessRequest is one access_request row; fields in the Kotlin AccessRequest's order.
@@ -131,6 +138,11 @@ type accessGrant struct {
 	RevokedAt *string `json:"revokedAt,omitempty"`
 }
 
+func toGrant(g db.AccessGrantsRow) accessGrant {
+	return accessGrant{ID: g.ID, Principal: g.Principal, RoleID: g.RoleID, RoleName: g.RoleName, GrantedBy: g.GrantedBy,
+		GrantedAt: api.JavaInstant(g.GrantedAt), ExpiresAt: api.OptInstant(g.ExpiresAt), RevokedAt: api.OptInstant(g.RevokedAt)}
+}
+
 type access struct {
 	pool  *pgxpool.Pool
 	authz api.Authorizer
@@ -202,8 +214,7 @@ func (a access) grants(w http.ResponseWriter, r *http.Request) {
 	}
 	all := make([]accessGrant, len(rows))
 	for i, g := range rows {
-		all[i] = accessGrant{ID: g.ID, Principal: g.Principal, RoleID: g.RoleID, RoleName: g.RoleName, GrantedBy: g.GrantedBy,
-			GrantedAt: api.JavaInstant(g.GrantedAt), ExpiresAt: api.OptInstant(g.ExpiresAt), RevokedAt: api.OptInstant(g.RevokedAt)}
+		all[i] = toGrant(g)
 	}
 	resources := make([]bridge.Resource, len(all))
 	for i, g := range all {

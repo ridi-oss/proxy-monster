@@ -33,12 +33,13 @@ import org.junit.jupiter.api.TestInstance
 import javax.sql.DataSource
 import kotlin.test.assertEquals
 
-/** The decisions cp-go's audit routes ask for, run against the shipped policies. */
+/** The decisions cp-go's routes ask for, run against the shipped policies. */
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 class InternalAuthorizeDbTest {
     private lateinit var dataSource: DataSource
     private lateinit var authz: Authz
     private lateinit var cedarPolicyStore: CedarPolicyStore
+    private lateinit var core: ControlPlaneCore
 
     @BeforeAll
     fun setup() {
@@ -59,7 +60,23 @@ class InternalAuthorizeDbTest {
             ),
             updatedBy = null,
         )
+        cedarPolicyStore.create(
+            CedarPolicyInput(
+                name = "ctx-tag-rule",
+                cedarSrc = """permit(principal, action == Action::"context.tag::ctx-x", resource == Datasource::"ctx-ds");""",
+            ),
+            updatedBy = null,
+        )
+        cedarPolicyStore.create(
+            CedarPolicyInput(
+                name = "ctx-tag-gated-approve",
+                cedarSrc = """permit(principal == User::"$CTX_APPROVER", action == Action::"task.approve", resource)
+                    when { context has tags && context.tags.contains("ctx-x") };""",
+            ),
+            updatedBy = null,
+        )
         authz = Authz(CedarEngine(cedarPolicyStore), cedarPolicyStore, RoleSource { roleResolver.resolve(it) })
+        core = ControlPlaneCore(dataSource)
     }
 
     @Test
@@ -145,6 +162,37 @@ class InternalAuthorizeDbTest {
     }
 
     @Test
+    fun `contextDatasource derives that datasource's context tags`() = testApplication {
+        val client = app()
+        suspend fun allow(contextDatasource: String?) = client.authorize(
+            InternalAuthorizeRequest(
+                CTX_APPROVER, "task.approve", InternalResource("ApprovalRequest", ALICE, datasourceName = "ctx-ds"),
+                contextDatasource = contextDatasource,
+            ),
+        ).body<InternalAuthorizeResult>().allow
+        assertEquals(false, allow(null), "no datasource, no tag")
+        assertEquals(true, allow("ctx-ds"))
+        assertEquals(false, allow("other-ds"), "the tag rule is scoped to ctx-ds")
+    }
+
+    @Test
+    fun `may-request answers task request on a live datasource`() = testApplication {
+        val client = app(mayRequest = core::mayRequestById)
+        val live = core.datasourceStore.create(DatasourceInput("may-request-live", "postgres"))
+        val deleted = core.datasourceStore.create(DatasourceInput("may-request-deleted", "postgres"))
+        core.datasourceStore.delete(deleted.id)
+        suspend fun ask(datasourceId: Long, token: String? = TOKEN) = client.post("/internal/may-request") {
+            token?.let { header(INTERNAL_TOKEN_HEADER, it) }
+            contentType(ContentType.Application.Json)
+            setBody(InternalMayRequestRequest(ALICE, datasourceId))
+        }
+        assertEquals(true, ask(live.id).body<InternalAuthorizeResult>().allow, "the shipped task.request permit")
+        assertEquals(false, ask(deleted.id).body<InternalAuthorizeResult>().allow)
+        assertEquals(false, ask(Long.MAX_VALUE).body<InternalAuthorizeResult>().allow)
+        assertEquals(HttpStatusCode.NotFound, ask(live.id, token = null).status)
+    }
+
+    @Test
     fun `an unknown action or resource is rejected`() = testApplication {
         val client = app()
         assertEquals(HttpStatusCode.BadRequest, client.authorize(InternalAuthorizeRequest(AUDITOR, "audit.write", InternalResource("AuditLog"))).status)
@@ -152,10 +200,13 @@ class InternalAuthorizeDbTest {
         assertEquals(HttpStatusCode.BadRequest, client.authorize(InternalAuthorizeRequest(AUDITOR, "audit.read", InternalResource("AuditRecord"))).status)
     }
 
-    private fun ApplicationTestBuilder.app(token: String? = TOKEN): HttpClient {
+    private fun ApplicationTestBuilder.app(
+        token: String? = TOKEN,
+        mayRequest: (String, String?, Long) -> Boolean = { _, _, _ -> false },
+    ): HttpClient {
         application {
             install(ContentNegotiation) { json(Json { ignoreUnknownKeys = true; encodeDefaults = true; explicitNulls = false }) }
-            routing { internalAuthorizeRoute(token, authz, policiesChanged = cedarPolicyStore::markCommittedMutation) }
+            routing { internalAuthorizeRoute(token, authz, policiesChanged = cedarPolicyStore::markCommittedMutation, mayRequest = mayRequest) }
         }
         return createClient {
             expectSuccess = false
@@ -177,5 +228,6 @@ class InternalAuthorizeDbTest {
         const val AUDITOR = "auditor-user"
         const val EDGE_AUDITOR = "edge-auditor"
         const val LATE = "late-auditor"
+        const val CTX_APPROVER = "ctx-approver"
     }
 }

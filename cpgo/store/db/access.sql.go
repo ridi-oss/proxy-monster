@@ -10,6 +10,38 @@ import (
 	"time"
 )
 
+const accessGrant = `-- name: AccessGrant :one
+SELECT ag.id, ag.principal, ag.role_id, r.name AS role_name, ag.granted_by, ag.granted_at, ag.expires_at, ag.revoked_at
+FROM access_grant ag JOIN app_role r ON r.id = ag.role_id AND r.deleted_at IS NULL WHERE ag.id = $1
+`
+
+type AccessGrantRow struct {
+	ID        int64
+	Principal string
+	RoleID    int64
+	RoleName  string
+	GrantedBy *string
+	GrantedAt time.Time
+	ExpiresAt *time.Time
+	RevokedAt *time.Time
+}
+
+func (q *Queries) AccessGrant(ctx context.Context, id int64) (AccessGrantRow, error) {
+	row := q.db.QueryRow(ctx, accessGrant, id)
+	var i AccessGrantRow
+	err := row.Scan(
+		&i.ID,
+		&i.Principal,
+		&i.RoleID,
+		&i.RoleName,
+		&i.GrantedBy,
+		&i.GrantedAt,
+		&i.ExpiresAt,
+		&i.RevokedAt,
+	)
+	return i, err
+}
+
 const accessGrants = `-- name: AccessGrants :many
 SELECT ag.id, ag.principal, ag.role_id, r.name AS role_name, ag.granted_by, ag.granted_at, ag.expires_at, ag.revoked_at
 FROM access_grant ag JOIN app_role r ON r.id = ag.role_id AND r.deleted_at IS NULL WHERE true
@@ -100,6 +132,89 @@ func (q *Queries) AccessGrantsOf(ctx context.Context, principal string) ([]Acces
 		return nil, err
 	}
 	return items, nil
+}
+
+const accessRequest = `-- name: AccessRequest :one
+SELECT ar.id, ar.principal, ar.role_id, r.name AS role_name, ar.datasource_id, d.name AS datasource_name,
+       ar.reason, ar.requested_duration_sec, ar.status, ar.decided_by,
+       (SELECT qr.executed_by FROM query_result qr WHERE qr.task_id = ar.id ORDER BY qr.ordinal LIMIT 1) AS executed_by,
+       ar.decided_at, ar.rejection_reason, ar.created_at, ar.kind,
+       (SELECT string_agg(qr.sql, E';\n' ORDER BY qr.ordinal) FROM query_result qr WHERE qr.task_id = ar.id) AS sql,
+       (SELECT qr.sql_hash FROM query_result qr WHERE qr.task_id = ar.id ORDER BY qr.ordinal LIMIT 1) AS sql_hash,
+       (SELECT count(*) FROM query_result qr WHERE qr.task_id = ar.id) AS statement_count,
+       ar.deny_reason, ar.source_decision_id, ar.title, ar.evaluated_decision,
+       ar.approved_at, ar.executing_at, ar.executed_at, ar.execute_as, ar.creator_kind,
+       ar.statement_carries_protected_literal
+FROM access_request ar LEFT JOIN app_role r ON r.id = ar.role_id
+LEFT JOIN datasource d ON d.id = ar.datasource_id
+WHERE ar.id = $1
+`
+
+type AccessRequestRow struct {
+	ID                               int64
+	Principal                        string
+	RoleID                           *int64
+	RoleName                         *string
+	DatasourceID                     *int64
+	DatasourceName                   *string
+	Reason                           *string
+	RequestedDurationSec             int64
+	Status                           string
+	DecidedBy                        *string
+	ExecutedBy                       *string
+	DecidedAt                        *time.Time
+	RejectionReason                  *string
+	CreatedAt                        time.Time
+	Kind                             string
+	Sql                              []byte
+	SqlHash                          *string
+	StatementCount                   int64
+	DenyReason                       *string
+	SourceDecisionID                 *int64
+	Title                            *string
+	EvaluatedDecision                *string
+	ApprovedAt                       *time.Time
+	ExecutingAt                      *time.Time
+	ExecutedAt                       *time.Time
+	ExecuteAs                        []string
+	CreatorKind                      *string
+	StatementCarriesProtectedLiteral *bool
+}
+
+func (q *Queries) AccessRequest(ctx context.Context, id int64) (AccessRequestRow, error) {
+	row := q.db.QueryRow(ctx, accessRequest, id)
+	var i AccessRequestRow
+	err := row.Scan(
+		&i.ID,
+		&i.Principal,
+		&i.RoleID,
+		&i.RoleName,
+		&i.DatasourceID,
+		&i.DatasourceName,
+		&i.Reason,
+		&i.RequestedDurationSec,
+		&i.Status,
+		&i.DecidedBy,
+		&i.ExecutedBy,
+		&i.DecidedAt,
+		&i.RejectionReason,
+		&i.CreatedAt,
+		&i.Kind,
+		&i.Sql,
+		&i.SqlHash,
+		&i.StatementCount,
+		&i.DenyReason,
+		&i.SourceDecisionID,
+		&i.Title,
+		&i.EvaluatedDecision,
+		&i.ApprovedAt,
+		&i.ExecutingAt,
+		&i.ExecutedAt,
+		&i.ExecuteAs,
+		&i.CreatorKind,
+		&i.StatementCarriesProtectedLiteral,
+	)
+	return i, err
 }
 
 const accessRequests = `-- name: AccessRequests :many
@@ -292,6 +407,170 @@ func (q *Queries) AccessRequestsByStatus(ctx context.Context, status string) ([]
 		return nil, err
 	}
 	return items, nil
+}
+
+const approveRequest = `-- name: ApproveRequest :execrows
+UPDATE access_request SET status = 'APPROVED', decided_by = $1, decided_at = now()
+WHERE id = $2 AND status = 'PENDING'
+`
+
+type ApproveRequestParams struct {
+	DecidedBy *string
+	ID        int64
+}
+
+func (q *Queries) ApproveRequest(ctx context.Context, arg ApproveRequestParams) (int64, error) {
+	result, err := q.db.Exec(ctx, approveRequest, arg.DecidedBy, arg.ID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const createRateResetRequest = `-- name: CreateRateResetRequest :one
+INSERT INTO access_request (principal, kind, reason, deny_reason, requested_duration_sec)
+VALUES ($1, 'RATE_RESET', $2, $3, 0) RETURNING id
+`
+
+type CreateRateResetRequestParams struct {
+	Principal  string
+	Reason     *string
+	DenyReason *string
+}
+
+func (q *Queries) CreateRateResetRequest(ctx context.Context, arg CreateRateResetRequestParams) (int64, error) {
+	row := q.db.QueryRow(ctx, createRateResetRequest, arg.Principal, arg.Reason, arg.DenyReason)
+	var id int64
+	err := row.Scan(&id)
+	return id, err
+}
+
+const createRoleRequest = `-- name: CreateRoleRequest :one
+INSERT INTO access_request (principal, role_id, datasource_id, reason, requested_duration_sec)
+VALUES ($1, $2, $3, $4, $5) RETURNING id
+`
+
+type CreateRoleRequestParams struct {
+	Principal            string
+	RoleID               *int64
+	DatasourceID         *int64
+	Reason               *string
+	RequestedDurationSec int64
+}
+
+func (q *Queries) CreateRoleRequest(ctx context.Context, arg CreateRoleRequestParams) (int64, error) {
+	row := q.db.QueryRow(ctx, createRoleRequest,
+		arg.Principal,
+		arg.RoleID,
+		arg.DatasourceID,
+		arg.Reason,
+		arg.RequestedDurationSec,
+	)
+	var id int64
+	err := row.Scan(&id)
+	return id, err
+}
+
+const datasourceLive = `-- name: DatasourceLive :one
+SELECT EXISTS (SELECT 1 FROM datasource WHERE id = $1 AND deleted_at IS NULL)
+`
+
+func (q *Queries) DatasourceLive(ctx context.Context, id int64) (bool, error) {
+	row := q.db.QueryRow(ctx, datasourceLive, id)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
+}
+
+const datasourceTags = `-- name: DatasourceTags :one
+SELECT tags FROM datasource WHERE id = $1
+`
+
+func (q *Queries) DatasourceTags(ctx context.Context, id int64) ([]string, error) {
+	row := q.db.QueryRow(ctx, datasourceTags, id)
+	var tags []string
+	err := row.Scan(&tags)
+	return tags, err
+}
+
+const insertGrant = `-- name: InsertGrant :one
+INSERT INTO access_grant (request_id, principal, role_id, granted_by, granted_at, expires_at)
+VALUES ($1, $2, $3, $4, now(), $5) RETURNING id
+`
+
+type InsertGrantParams struct {
+	RequestID *int64
+	Principal string
+	RoleID    int64
+	GrantedBy *string
+	ExpiresAt *time.Time
+}
+
+func (q *Queries) InsertGrant(ctx context.Context, arg InsertGrantParams) (int64, error) {
+	row := q.db.QueryRow(ctx, insertGrant,
+		arg.RequestID,
+		arg.Principal,
+		arg.RoleID,
+		arg.GrantedBy,
+		arg.ExpiresAt,
+	)
+	var id int64
+	err := row.Scan(&id)
+	return id, err
+}
+
+const insertRateReset = `-- name: InsertRateReset :one
+INSERT INTO result_rate_reset (principal, reset_by, reason) VALUES ($1, $2, $3)
+RETURNING principal, reset_at, reset_by, reason
+`
+
+type InsertRateResetParams struct {
+	Principal string
+	ResetBy   string
+	Reason    string
+}
+
+type InsertRateResetRow struct {
+	Principal string
+	ResetAt   time.Time
+	ResetBy   string
+	Reason    string
+}
+
+func (q *Queries) InsertRateReset(ctx context.Context, arg InsertRateResetParams) (InsertRateResetRow, error) {
+	row := q.db.QueryRow(ctx, insertRateReset, arg.Principal, arg.ResetBy, arg.Reason)
+	var i InsertRateResetRow
+	err := row.Scan(
+		&i.Principal,
+		&i.ResetAt,
+		&i.ResetBy,
+		&i.Reason,
+	)
+	return i, err
+}
+
+const lastRateReset = `-- name: LastRateReset :one
+SELECT principal, reset_at, reset_by, reason FROM result_rate_reset
+WHERE principal = $1 ORDER BY reset_at DESC LIMIT 1
+`
+
+type LastRateResetRow struct {
+	Principal string
+	ResetAt   time.Time
+	ResetBy   string
+	Reason    string
+}
+
+func (q *Queries) LastRateReset(ctx context.Context, principal string) (LastRateResetRow, error) {
+	row := q.db.QueryRow(ctx, lastRateReset, principal)
+	var i LastRateResetRow
+	err := row.Scan(
+		&i.Principal,
+		&i.ResetAt,
+		&i.ResetBy,
+		&i.Reason,
+	)
+	return i, err
 }
 
 const liveAccessGrants = `-- name: LiveAccessGrants :many
@@ -581,4 +860,46 @@ func (q *Queries) OwnApprovalsByStatus(ctx context.Context, arg OwnApprovalsBySt
 		return nil, err
 	}
 	return items, nil
+}
+
+const rejectRequest = `-- name: RejectRequest :execrows
+UPDATE access_request SET status = 'REJECTED', rejection_reason = $1, decided_by = $2,
+decided_at = now() WHERE id = $3 AND status = 'PENDING'
+`
+
+type RejectRequestParams struct {
+	RejectionReason *string
+	DecidedBy       *string
+	ID              int64
+}
+
+func (q *Queries) RejectRequest(ctx context.Context, arg RejectRequestParams) (int64, error) {
+	result, err := q.db.Exec(ctx, rejectRequest, arg.RejectionReason, arg.DecidedBy, arg.ID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const revokeGrant = `-- name: RevokeGrant :execrows
+UPDATE access_grant SET revoked_at = now() WHERE id = $1 AND revoked_at IS NULL
+`
+
+func (q *Queries) RevokeGrant(ctx context.Context, id int64) (int64, error) {
+	result, err := q.db.Exec(ctx, revokeGrant, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const roleNameOf = `-- name: RoleNameOf :one
+SELECT name FROM app_role WHERE id = $1
+`
+
+func (q *Queries) RoleNameOf(ctx context.Context, id int64) (string, error) {
+	row := q.db.QueryRow(ctx, roleNameOf, id)
+	var name string
+	err := row.Scan(&name)
+	return name, err
 }

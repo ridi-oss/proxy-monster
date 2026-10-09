@@ -13,6 +13,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/ridi-oss/proxy-monster/cpgo/api"
 	"github.com/ridi-oss/proxy-monster/cpgo/audit"
@@ -24,26 +25,27 @@ import (
 type managementError struct {
 	code   string
 	params api.Params
+	status int
 }
 
 func (e *managementError) Error() string { return e.code }
 
 func required(field, value string) error {
 	if strings.TrimSpace(value) == "" {
-		return &managementError{"common.field_required", api.Params{{"fields", field}}}
+		return &managementError{code: "common.field_required", params: api.Params{{"fields", field}}}
 	}
 	return nil
 }
 
 func notFound(resource string) error {
-	return &managementError{"common.not_found", api.Params{{"resource", resource}}}
+	return &managementError{code: "common.not_found", params: api.Params{{"resource", resource}}}
 }
 
 // unique turns a unique-constraint violation into common.already_exists, as Kotlin's unique() does.
 func unique(err error, resource, name string) error {
 	var pg *pgconn.PgError
 	if errors.As(err, &pg) && pg.Code == "23505" {
-		return &managementError{"common.already_exists", api.Params{{"resource", resource}, {"name", name}}}
+		return &managementError{code: "common.already_exists", params: api.Params{{"resource", resource}, {"name", name}}}
 	}
 	return err
 }
@@ -62,13 +64,12 @@ func (cedarErrors) Error() string { return "invalid cedar policy" }
 
 // mutate runs change in one transaction with its audit rows, then afterCommit, then answers status with its
 // result, or the management error it returned.
-func (p policies) mutate(w http.ResponseWriter, r *http.Request, status int, change func(ctx context.Context, tx pgx.Tx, actor audit.Actor) (any, error), afterCommit ...func(context.Context) error) {
+func mutate(pool *pgxpool.Pool, w http.ResponseWriter, r *http.Request, status int, change func(ctx context.Context, tx pgx.Tx, actor audit.Actor) (any, error), afterCommit ...func(context.Context) error) {
 	ctx := r.Context()
-	actor := audit.Actor{Principal: api.Principal(ctx), ClientAddr: api.RequesterIP(ctx), Channel: "console"}
 	var out any
-	err := pgx.BeginFunc(ctx, p.pool, func(tx pgx.Tx) error {
+	err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
 		var err error
-		out, err = change(ctx, tx, actor)
+		out, err = change(ctx, tx, actorOf(ctx))
 		return err
 	})
 	for _, f := range afterCommit {
@@ -76,6 +77,22 @@ func (p policies) mutate(w http.ResponseWriter, r *http.Request, status int, cha
 			err = notify(ctx, f)
 		}
 	}
+	switch {
+	case err != nil:
+		writeMutationError(w, err)
+	case out == nil:
+		w.WriteHeader(status)
+	default:
+		api.WriteJSON(w, status, out)
+	}
+}
+
+func actorOf(ctx context.Context) audit.Actor {
+	return audit.Actor{Principal: api.Principal(ctx), ClientAddr: api.RequesterIP(ctx), Channel: "console"}
+}
+
+// writeMutationError answers a failed write: a management error with its status, else 500.
+func writeMutationError(w http.ResponseWriter, err error) {
 	var me *managementError
 	var ce cedarErrors
 	switch {
@@ -89,13 +106,12 @@ func (p policies) mutate(w http.ResponseWriter, r *http.Request, status int, cha
 		case "role.system_immutable", "policy.system_immutable":
 			code = http.StatusConflict
 		}
+		if me.status != 0 {
+			code = me.status
+		}
 		api.WriteErrorParams(w, code, me.code, me.params)
-	case err != nil:
-		fail(w, err)
-	case out == nil:
-		w.WriteHeader(status)
 	default:
-		api.WriteJSON(w, status, out)
+		fail(w, err)
 	}
 }
 
@@ -119,10 +135,10 @@ func notify(ctx context.Context, f func(context.Context) error) error {
 func decodeBody(r *http.Request, v any) error {
 	dec := json.NewDecoder(r.Body)
 	if err := dec.Decode(v); err != nil || dec.More() {
-		return &managementError{"common.invalid_value", api.Params{{"field", "body"}}}
+		return &managementError{code: "common.invalid_value", params: api.Params{{"field", "body"}}}
 	}
 	if _, err := dec.Token(); !errors.Is(err, io.EOF) {
-		return &managementError{"common.invalid_value", api.Params{{"field", "body"}}}
+		return &managementError{code: "common.invalid_value", params: api.Params{{"field", "body"}}}
 	}
 	return nil
 }
@@ -164,7 +180,7 @@ func systemRoleGuard(ctx context.Context, tx pgx.Tx, id int64) error {
 		return err
 	}
 	if system {
-		return &managementError{"role.system_immutable", nil}
+		return &managementError{code: "role.system_immutable"}
 	}
 	return nil
 }
@@ -172,7 +188,7 @@ func systemRoleGuard(ctx context.Context, tx pgx.Tx, id int64) error {
 func (p policies) createRole(w http.ResponseWriter, r *http.Request) {
 	var in roleInput
 	decodeErr := decodeBody(r, &in)
-	p.mutate(w, r, http.StatusCreated, func(ctx context.Context, tx pgx.Tx, actor audit.Actor) (any, error) {
+	mutate(p.pool, w, r, http.StatusCreated, func(ctx context.Context, tx pgx.Tx, actor audit.Actor) (any, error) {
 		if decodeErr != nil {
 			return nil, decodeErr
 		}
@@ -191,7 +207,7 @@ func (p policies) createRole(w http.ResponseWriter, r *http.Request) {
 func (p policies) updateRole(w http.ResponseWriter, r *http.Request, id int64) {
 	var in roleInput
 	decodeErr := decodeBody(r, &in)
-	p.mutate(w, r, http.StatusOK, func(ctx context.Context, tx pgx.Tx, actor audit.Actor) (any, error) {
+	mutate(p.pool, w, r, http.StatusOK, func(ctx context.Context, tx pgx.Tx, actor audit.Actor) (any, error) {
 		if decodeErr != nil {
 			return nil, decodeErr
 		}
@@ -217,7 +233,7 @@ func (p policies) updateRole(w http.ResponseWriter, r *http.Request, id int64) {
 }
 
 func (p policies) deleteRole(w http.ResponseWriter, r *http.Request, id int64) {
-	p.mutate(w, r, http.StatusNoContent, func(ctx context.Context, tx pgx.Tx, actor audit.Actor) (any, error) {
+	mutate(p.pool, w, r, http.StatusNoContent, func(ctx context.Context, tx pgx.Tx, actor audit.Actor) (any, error) {
 		current, err := getRole(ctx, tx, id)
 		if err != nil {
 			return nil, err
@@ -239,7 +255,7 @@ func (p policies) assignRole(w http.ResponseWriter, r *http.Request) {
 		RoleID    int64  `json:"roleId"`
 	}
 	decodeErr := decodeBody(r, &in)
-	p.mutate(w, r, http.StatusCreated, func(ctx context.Context, tx pgx.Tx, actor audit.Actor) (any, error) {
+	mutate(p.pool, w, r, http.StatusCreated, func(ctx context.Context, tx pgx.Tx, actor audit.Actor) (any, error) {
 		if decodeErr != nil {
 			return nil, decodeErr
 		}
@@ -269,7 +285,7 @@ func (p policies) assignRole(w http.ResponseWriter, r *http.Request) {
 }
 
 func (p policies) unassignRole(w http.ResponseWriter, r *http.Request, id int64) {
-	p.mutate(w, r, http.StatusNoContent, func(ctx context.Context, tx pgx.Tx, actor audit.Actor) (any, error) {
+	mutate(p.pool, w, r, http.StatusNoContent, func(ctx context.Context, tx pgx.Tx, actor audit.Actor) (any, error) {
 		q := db.New(tx)
 		a, err := q.RoleAssignment(ctx, id)
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -304,7 +320,7 @@ func getMaskFn(ctx context.Context, tx pgx.Tx, id int64) (*maskFn, error) {
 func (p policies) createMaskFn(w http.ResponseWriter, r *http.Request) {
 	var in maskFnInput
 	decodeErr := decodeBody(r, &in)
-	p.mutate(w, r, http.StatusCreated, func(ctx context.Context, tx pgx.Tx, actor audit.Actor) (any, error) {
+	mutate(p.pool, w, r, http.StatusCreated, func(ctx context.Context, tx pgx.Tx, actor audit.Actor) (any, error) {
 		if decodeErr != nil {
 			return nil, decodeErr
 		}
@@ -326,7 +342,7 @@ func (p policies) createMaskFn(w http.ResponseWriter, r *http.Request) {
 func (p policies) updateMaskFn(w http.ResponseWriter, r *http.Request, id int64) {
 	var in maskFnInput
 	decodeErr := decodeBody(r, &in)
-	p.mutate(w, r, http.StatusOK, func(ctx context.Context, tx pgx.Tx, actor audit.Actor) (any, error) {
+	mutate(p.pool, w, r, http.StatusOK, func(ctx context.Context, tx pgx.Tx, actor audit.Actor) (any, error) {
 		if decodeErr != nil {
 			return nil, decodeErr
 		}
@@ -352,7 +368,7 @@ func (p policies) updateMaskFn(w http.ResponseWriter, r *http.Request, id int64)
 }
 
 func (p policies) deleteMaskFn(w http.ResponseWriter, r *http.Request, id int64) {
-	p.mutate(w, r, http.StatusNoContent, func(ctx context.Context, tx pgx.Tx, actor audit.Actor) (any, error) {
+	mutate(p.pool, w, r, http.StatusNoContent, func(ctx context.Context, tx pgx.Tx, actor audit.Actor) (any, error) {
 		current, err := getMaskFn(ctx, tx, id)
 		if err != nil {
 			return nil, err

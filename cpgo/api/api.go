@@ -99,6 +99,8 @@ func RequesterIP(ctx context.Context) string {
 type Authorizer interface {
 	Authorize(ctx context.Context, principal, action string, resource bridge.Resource, requesterIP string) (bool, string, error)
 	AuthorizeEach(ctx context.Context, principal, action string, resources []bridge.Resource, requesterIP string) ([]bool, error)
+	AuthorizeIn(ctx context.Context, principal, action string, resource bridge.Resource, requesterIP string, s bridge.Scope) (bool, string, error)
+	MayRequest(ctx context.Context, principal string, datasourceID int64, requesterIP string) (bool, error)
 	MayConnect(ctx context.Context, principal string, datasourceIDs []int64, requesterIP string) ([]bool, error)
 	Validate(ctx context.Context, cedarSrc string) ([]string, error)
 	PoliciesChanged(ctx context.Context) error
@@ -209,17 +211,24 @@ func KotlinSessionCheck(upstream *url.URL) func(*http.Request) {
 
 // RequireAPI is Kotlin's requireApi: a live web session, or 401 common.unauthenticated.
 func (g Gate) RequireAPI(next http.HandlerFunc) http.HandlerFunc {
+	return g.RequireAPIElse(func(w http.ResponseWriter, _ *http.Request) {
+		WriteError(w, http.StatusUnauthorized, "common.unauthenticated", nil)
+	}, next)
+}
+
+// RequireAPIElse is RequireAPI with the answer to a request without a live session left to unauthenticated.
+func (g Gate) RequireAPIElse(unauthenticated, next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		s, err := g.Sessions.Resolve(r.Context(), r)
 		switch {
 		case errors.Is(err, session.ErrDeviceMismatch):
 			g.EndMismatched(r)
-			WriteError(w, http.StatusUnauthorized, "common.unauthenticated", nil)
+			unauthenticated(w, r)
 		case err != nil:
 			slog.Error("api: resolving session", "err", err)
 			WriteError(w, http.StatusInternalServerError, "common.fallback", nil)
 		case s == nil:
-			WriteError(w, http.StatusUnauthorized, "common.unauthenticated", nil)
+			unauthenticated(w, r)
 		default:
 			next(w, r.WithContext(context.WithValue(r.Context(), callerKey{}, g.sessionCaller(r, s))))
 		}

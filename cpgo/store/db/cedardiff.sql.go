@@ -9,6 +9,35 @@ import (
 	"context"
 )
 
+const cedarDiffDatasourceTags = `-- name: CedarDiffDatasourceTags :many
+SELECT name, tags FROM datasource
+`
+
+type CedarDiffDatasourceTagsRow struct {
+	Name string
+	Tags []string
+}
+
+func (q *Queries) CedarDiffDatasourceTags(ctx context.Context) ([]CedarDiffDatasourceTagsRow, error) {
+	rows, err := q.db.Query(ctx, cedarDiffDatasourceTags)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []CedarDiffDatasourceTagsRow{}
+	for rows.Next() {
+		var i CedarDiffDatasourceTagsRow
+		if err := rows.Scan(&i.Name, &i.Tags); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const cedarDiffDatasources = `-- name: CedarDiffDatasources :many
 SELECT id FROM datasource ORDER BY id
 `

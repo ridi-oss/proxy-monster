@@ -8,8 +8,9 @@ per-phase file lists, is the
 [plan artifact](https://claude.ai/artifact/9V3VoaADjrYinG6TpJLVc7); viewing it
 requires access granted by the maintainers.
 
-Status: phases 0–2 done; phases 3 and 4 in progress (Go decides Cedar for the
-routes it serves); phases 5–8 not started.
+Status: phases 0–2 done; phases 3–5 in progress (Go decides Cedar for the routes
+it serves; roles, mask functions, policies, and JIT access requests run on Go);
+phases 6–8 not started.
 
 ## Shape
 

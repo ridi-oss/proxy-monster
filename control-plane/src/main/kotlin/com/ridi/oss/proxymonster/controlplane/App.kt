@@ -678,9 +678,6 @@ fun Application.module(config: Config, core: ControlPlaneCore) {
             config, authz, userGroupStore, tokenStore, accessStore, principalSessionStore, identityManagement,
         )
 
-        // JIT access elevation: requests, approve/reject, grants, revoke (DESIGN.md).
-        accessRoutes(config, accessStore, authz, datasourceStore, roleResolver, managementAudit, accessService)
-
         // Query-approval workflow: from-denied + proactive compose, approver decide, then async
         // execute-under-R with encrypted short-retention result storage.
         approvalRoutes(
@@ -727,7 +724,7 @@ fun Application.module(config: Config, core: ControlPlaneCore) {
         }
 
         // Live decision feed for the UI. Requires a session; each record is then filtered by audit.read.
-        internalAuthorizeRoute(config.internalToken, authz, core::mayConnectById, cedarPolicyStore::markCommittedMutation)
+        internalAuthorizeRoute(config.internalToken, authz, core::mayConnectById, cedarPolicyStore::markCommittedMutation, core::mayRequestById)
 
         // Dev-only login shortcut; gated by PM_AUTH_DEBUG. OIDC (above) is the production path.
         post("/auth/debug") {

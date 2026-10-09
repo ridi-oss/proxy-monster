@@ -2,10 +2,13 @@ package authz
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"slices"
 	"strings"
 	"sync/atomic"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/ridi-oss/proxy-monster/cpgo/bridge"
 	"github.com/ridi-oss/proxy-monster/cpgo/store/db"
@@ -46,6 +49,33 @@ func (l Local) AuthorizeEach(ctx context.Context, principal, action string, rs [
 		out[i] = d.Allow
 	}
 	return out, nil
+}
+
+func (l Local) AuthorizeIn(ctx context.Context, principal, action string, r bridge.Resource, ip string, s bridge.Scope) (bool, string, error) {
+	d, err := l.Engine.AuthorizeWithContext(ctx, principal, action, r, Context{RequesterIP: ip, Channel: s.Channel}, s.Datasource, s.DatasourceTags)
+	return d.Allow, d.Reason, err
+}
+
+// MayRequest is mayRequestOn: task.request on a live datasource with its context tags derived first.
+func (l Local) MayRequest(ctx context.Context, principal string, id int64, ip string) (bool, error) {
+	row, err := db.New(l.Engine.pool).DatasourceNameTags(ctx, id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	name, tags := row.Name, row.Tags
+	roles, err := l.Engine.Roles(ctx, principal)
+	if err != nil {
+		return false, err
+	}
+	raw := Context{RequesterIP: ip}
+	if raw.Tags, err = l.Engine.ContextTags(ctx, principal, roles, name, tags, raw); err != nil {
+		return false, err
+	}
+	d, err := l.Engine.DatasourceAction(ctx, principal, roles, "task.request", name, tags, raw)
+	return d.Allow, err
 }
 
 // MayConnect is mayConnectById for each datasource: false for a missing datasource or a deactivated
@@ -90,6 +120,8 @@ func (l Local) PoliciesChanged(ctx context.Context) error { return l.Kotlin.Poli
 type Authorizer interface {
 	Authorize(ctx context.Context, principal, action string, r bridge.Resource, ip string) (bool, string, error)
 	AuthorizeEach(ctx context.Context, principal, action string, rs []bridge.Resource, ip string) ([]bool, error)
+	AuthorizeIn(ctx context.Context, principal, action string, r bridge.Resource, ip string, s bridge.Scope) (bool, string, error)
+	MayRequest(ctx context.Context, principal string, id int64, ip string) (bool, error)
 	MayConnect(ctx context.Context, principal string, ids []int64, ip string) ([]bool, error)
 	Validate(ctx context.Context, src string) ([]string, error)
 	PoliciesChanged(ctx context.Context) error
@@ -132,6 +164,29 @@ func (s Shadow) AuthorizeEach(ctx context.Context, principal, action string, rs 
 	return out, err
 }
 
+func (s Shadow) AuthorizeIn(ctx context.Context, principal, action string, r bridge.Resource, ip string, sc bridge.Scope) (bool, string, error) {
+	ok, reason, err := s.Primary.AuthorizeIn(ctx, principal, action, r, ip, sc)
+	if err == nil {
+		cok, creason, cerr := s.Candidate.AuthorizeIn(ctx, principal, action, r, ip, sc)
+		if cerr != nil || cok != ok || !SameReason(reason, creason) {
+			s.mismatch("authorize-in", "principal", principal, "action", action, "resource", r, "ip", ip, "scope", sc,
+				"kotlin", ok, "kotlin_reason", reason, "go", cok, "go_reason", creason, "go_err", cerr)
+		}
+	}
+	return ok, reason, err
+}
+
+func (s Shadow) MayRequest(ctx context.Context, principal string, id int64, ip string) (bool, error) {
+	ok, err := s.Primary.MayRequest(ctx, principal, id, ip)
+	if err == nil {
+		cok, cerr := s.Candidate.MayRequest(ctx, principal, id, ip)
+		if cerr != nil || cok != ok {
+			s.mismatch("may-request", "principal", principal, "id", id, "ip", ip, "kotlin", ok, "go", cok, "go_err", cerr)
+		}
+	}
+	return ok, err
+}
+
 func (s Shadow) MayConnect(ctx context.Context, principal string, ids []int64, ip string) ([]bool, error) {
 	out, err := s.Primary.MayConnect(ctx, principal, ids, ip)
 	if err == nil {
@@ -157,8 +212,13 @@ func (s Shadow) Validate(ctx context.Context, src string) ([]string, error) {
 
 func (s Shadow) PoliciesChanged(ctx context.Context) error { return s.Primary.PoliciesChanged(ctx) }
 
-// SameReason compares deny reasons as sets of policy ids, since Kotlin lists them in no fixed order.
+// SameReason compares deny reasons as sets of policy ids, since Kotlin lists them in no fixed order, and
+// treats any two evaluation errors as the same: cedar-java and cedar-go word them differently.
 func SameReason(a, b string) bool {
+	const evalError = "policy evaluation error: "
+	if strings.HasPrefix(a, evalError) && strings.HasPrefix(b, evalError) {
+		return true
+	}
 	norm := func(s string) string {
 		head, ids, ok := strings.Cut(s, ": ")
 		if !ok || head != "denied by policy" {

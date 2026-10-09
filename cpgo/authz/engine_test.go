@@ -192,7 +192,43 @@ func TestPoliciesReloadWhenTheStoreChanges(t *testing.T) {
 }
 
 func TestSameReason(t *testing.T) {
-	if !SameReason("denied by policy: policy-2, policy-1", "denied by policy: policy-1, policy-2") || SameReason("a", "b") {
+	if !SameReason("denied by policy: policy-2, policy-1", "denied by policy: policy-1, policy-2") || SameReason("a", "b") ||
+		!SameReason("policy evaluation error: AuthorizationError{…}", "policy evaluation error: while evaluating policy `p`") {
 		t.Fatal(strings.Repeat("x", 0))
+	}
+}
+
+func TestMayRequestAndScopedDecisions(t *testing.T) {
+	st := dbtest.Open(t)
+	ctx := context.Background()
+	exec := func(sql string) {
+		t.Helper()
+		if _, err := st.Pool.Exec(ctx, sql); err != nil {
+			t.Fatal(err)
+		}
+	}
+	exec(`INSERT INTO datasource (name, host, port, db_name, tags) VALUES ('orders', 'h', 1, 'd', '["prod"]')`)
+	exec(`INSERT INTO policy (name, cedar_src, enabled, origin) VALUES ('office', 'permit(principal, action == Action::"context.tag::office", resource) when { context has requester_ip && context.requester_ip.isInRange(ip("10.0.0.0/8")) };', true, 'USER')`)
+	exec(`INSERT INTO policy (name, cedar_src, enabled, origin) VALUES ('office-approver', 'permit(principal == User::"bob", action == Action::"task.approve", resource) when { context has tags && context.tags.contains("office") && context has channel && context.channel == "workflow-viewer" };', true, 'USER')`)
+	var id int64
+	_ = st.Pool.QueryRow(ctx, `SELECT id FROM datasource WHERE name = 'orders'`).Scan(&id)
+	l := Local{Engine: New(st.Pool)}
+
+	if ok, err := l.MayRequest(ctx, "alice", id, ""); err != nil || !ok {
+		t.Fatalf("may request on a live datasource: %v %v", ok, err)
+	}
+	if ok, err := l.MayRequest(ctx, "alice", 999999, ""); err != nil || ok {
+		t.Fatalf("may request on a missing datasource: %v %v", ok, err)
+	}
+	ds := "orders"
+	req := bridge.Resource{Type: "ApprovalRequest", Principal: "alice", DatasourceName: &ds}
+	for _, tc := range []struct {
+		ip, channel string
+		want        bool
+	}{{"10.1.2.3", "workflow-viewer", true}, {"203.0.113.9", "workflow-viewer", false}, {"10.1.2.3", "console", false}} {
+		ok, _, err := l.AuthorizeIn(ctx, "bob", "task.approve", req, tc.ip, bridge.Scope{Channel: tc.channel, Datasource: &ds, DatasourceTags: []string{"prod"}})
+		if err != nil || ok != tc.want {
+			t.Errorf("approve from %s on %s: %v %v, want %v", tc.ip, tc.channel, ok, err, tc.want)
+		}
 	}
 }

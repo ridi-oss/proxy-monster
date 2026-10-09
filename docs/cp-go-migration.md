@@ -8,7 +8,7 @@ per-phase file lists, is the
 [plan artifact](https://claude.ai/artifact/9V3VoaADjrYinG6TpJLVc7); viewing it
 requires access granted by the maintainers.
 
-Status: phases 0 (front door) and 1 (session gate) done; phases 2–8 not started.
+Status: phases 0–2 done; phase 3 started (audit routes); phases 4–8 not started.
 
 ## Shape
 

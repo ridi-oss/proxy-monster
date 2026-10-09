@@ -166,6 +166,7 @@ func run(ctx context.Context, cfg config) int {
 	}
 	defer pool.Close()
 
+	kotlin := bridge.New(httpUpstream, internalToken)
 	serve := func(edges front.TrustedEdges) http.Handler {
 		mux := http.NewServeMux()
 		routes.Register(mux, pool, api.Gate{
@@ -174,7 +175,7 @@ func run(ctx context.Context, cfg config) int {
 			Edges:         edges,
 			AuthDebug:     cfg.AuthDebug,
 			Authz:         authz.NewDecider(pool, schema),
-			Kotlin:        bridge.New(httpUpstream, internalToken),
+			Kotlin:        kotlin,
 		})
 		h := front.Route(mux, front.NewHTTP(httpUpstream, edges))
 		if web != nil {

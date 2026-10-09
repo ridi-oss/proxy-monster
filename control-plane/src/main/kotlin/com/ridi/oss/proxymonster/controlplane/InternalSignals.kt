@@ -12,6 +12,9 @@ const val INTERNAL_TOKEN_HEADER = "X-PM-Internal-Token"
 @Serializable
 data class InternalRequestNotified(val id: Long, val event: String)
 
+@Serializable
+data class InternalPrincipalRequest(val principal: String)
+
 /**
  * What cp-go tells this process after a commit, about state it holds in memory. cp-go never forwards `/internal/`
  * and starts this process with a per-boot [token]; without one the routes do not exist.
@@ -20,6 +23,7 @@ fun Route.internalSignalRoutes(
     token: String?,
     policiesChanged: () -> Unit,
     requestNotified: (id: Long, event: String) -> Boolean = { _, _ -> false },
+    sessionsEnded: (principal: String) -> Unit = {},
 ) {
     if (token.isNullOrEmpty()) return
     // A policy write committed: rebuild this process's PolicySet on its next decision.
@@ -39,6 +43,14 @@ fun Route.internalSignalRoutes(
         if (!requestNotified(request.id, request.event)) {
             return@post call.respondError(HttpStatusCode.BadRequest, "common.invalid_value", mapOf("field" to "event"))
         }
+        call.respond(HttpStatusCode.NoContent)
+    }
+    // A write ended the principal's web sessions: close their editor runs held in memory here.
+    post("/internal/sessions-ended") {
+        if (!constantTimeEquals(call.request.headers[INTERNAL_TOKEN_HEADER], token)) {
+            return@post call.respond(HttpStatusCode.NotFound)
+        }
+        sessionsEnded(call.receive<InternalPrincipalRequest>().principal)
         call.respond(HttpStatusCode.NoContent)
     }
 }

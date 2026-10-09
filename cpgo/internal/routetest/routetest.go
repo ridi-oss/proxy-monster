@@ -35,6 +35,8 @@ type fakeAuthz struct {
 	Changed   int
 	// Notified is each request-notified signal, as "id:event".
 	Notified []string
+	// Ended is each principal Kotlin was told had its web sessions ended.
+	Ended []string
 	// AtSignal, when set, records what another connection sees each time PoliciesChanged runs.
 	AtSignal func() string
 	Seen     []string
@@ -46,6 +48,11 @@ func (f *fakeAuthz) Validate(_ context.Context, src string) ([]string, error) {
 		return []string{"unrecognized action `BAD`"}, nil
 	}
 	return nil, nil
+}
+
+func (f *fakeAuthz) SessionsEnded(_ context.Context, p string) error {
+	f.Ended = append(f.Ended, p)
+	return nil
 }
 
 func (f *fakeAuthz) RequestNotified(_ context.Context, id int64, event string) error {

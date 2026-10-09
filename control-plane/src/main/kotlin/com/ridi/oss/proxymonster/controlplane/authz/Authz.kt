@@ -75,6 +75,7 @@ sealed interface AuthzResource {
         val executedBy: String? = null,
         val datasourceName: String? = null,
         val roleName: String? = null,
+        val source: String = "console",
     ) : AuthzResource
 
     /** An issued JIT access grant (`access_grant` row). [owner] is the elevated principal, so an
@@ -499,6 +500,7 @@ class Authz(
                 put("requester", requesterEuid)
                 resource.approver?.let { put("approver", USER_TYPE.of(it)) }
                 resource.executedBy?.let { put("executedBy", USER_TYPE.of(it)) }
+                put("source", PrimString(resource.source) as Value)
             }
             Entity(reqEuid, attrs, parents) to extraEntities
         }

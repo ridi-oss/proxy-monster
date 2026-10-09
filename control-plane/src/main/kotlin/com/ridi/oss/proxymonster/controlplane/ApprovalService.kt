@@ -88,6 +88,7 @@ class ApprovalService(
         actor: AuditActor,
         input: CreateApprovalInput,
         roleName: String? = null,
+        source: String = "console",
     ): CreateApprovalResponse {
         if (input.reason.isBlank()) throw fieldRequired("reason")
 
@@ -108,11 +109,11 @@ class ApprovalService(
                 SourceValidation.NOT_DENY ->
                     throw TaskServiceException(HttpStatusCode.BadRequest, ApiError("approval.only_denied_queries"))
             }
-            val source = decision!!
+            val denied = decision!!
 
             if (accessStore.pendingQueryRequestExists(sourceDecisionId)) throw pendingExists()
 
-            val ds = datasourceStore.list().firstOrNull { it.name == source.datasource }
+            val ds = datasourceStore.list().firstOrNull { it.name == denied.datasource }
                 ?: throw TaskServiceException(HttpStatusCode.Conflict, notFoundError("datasource"))
             if (!mayRequest(principal, requesterIp, ds)) throw serviceForbidden()
             val roleId = roleIdOf(input, roleName)
@@ -122,8 +123,8 @@ class ApprovalService(
                     principal = principal,
                     datasourceId = ds.id,
                     // The source decision authorized one statement, so there is no batch to split.
-                    statements = listOf(source.statement),
-                    denyReason = source.detail,
+                    statements = listOf(denied.statement),
+                    denyReason = denied.detail,
                     sourceDecisionId = sourceDecisionId,
                     reason = input.reason.trim(),
                     title = trimmedTitle(input.title),
@@ -134,6 +135,7 @@ class ApprovalService(
                     recorder = recorder,
                     // Nothing re-analyzes the copied statement, so it is unknown and delivery withholds the text.
                     carriesProtectedLiteral = null,
+                    source = source,
                     onCreated = { c, taskId, roleName -> notifications?.emitRequested(c, taskId, principal, ds, roleName) },
                 )
             } catch (_: DuplicatePendingQueryRequestException) {
@@ -201,6 +203,7 @@ class ApprovalService(
                     .reduce { a, b -> if (a == null || b == null) null else a || b }
             },
             onCreated = { c, taskId, roleName -> notifications?.emitRequested(c, taskId, principal, ds, roleName) },
+            source = source,
         )
         notifications?.wake()
         return CreateApprovalResponse(request, wouldAllow = decision.action == EnfAction.ALLOW)

@@ -30,14 +30,20 @@ class AccessService(
         }
 
     /** A datasource-less request has no Datasource resource to decide, so authentication alone admits it. */
-    fun createRequest(principal: String, requesterIp: String?, actor: AuditActor, input: AccessRequestInput): AccessRequest {
+    fun createRequest(
+        principal: String,
+        requesterIp: String?,
+        actor: AuditActor,
+        input: AccessRequestInput,
+        source: String = "console",
+    ): AccessRequest {
         val ds = input.datasourceId?.let(datasourceStore::get)
         // A tombstoned id still satisfies the FK, so the insert would otherwise skip the task.request gate.
         if (input.datasourceId != null && ds == null) throw serviceNotFound("datasource")
         if (ds != null && !mayRequestOn(authz, roleResolver, principal, requesterIp, ds)) {
             throw TaskServiceException(HttpStatusCode.Forbidden, ApiError("approval.request_not_permitted"))
         }
-        return accessStore.createRequest(principal, input, actor, recorder)
+        return accessStore.createRequest(principal, input, actor, recorder, source)
     }
 
     fun requestRateReset(principal: String, actor: AuditActor, input: RateResetRequestInput): AccessRequest {

@@ -22,6 +22,7 @@
     "not_approver": "You are not an approver for this request.",
     "not_the_approver": "Only the approver who approved this request can run it.",
     "not_approved": "This request has not been approved.",
+    "scope_busy": "Another request in this scope is running or waiting to merge. Try again after it completes.",
     "only_denied_queries": "Only denied queries can be requested for approval.",
     "role_required": "This request must specify an elevation role to run under.",
     "pending_request_exists": "A pending request already exists for this decision.",

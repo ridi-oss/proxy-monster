@@ -408,7 +408,8 @@ class ResultCapsE2eDbTest {
         assertEquals("RATE_RESET", request.kind)
         assertEquals("PENDING", request.status)
         assertEquals("rate 10000/1h spent", request.denyReason)
-        assertTrue(user.get("/api/access-requests").body<List<AccessRequest>>().any { it.id == request.id }, "the requester sees their own row")
+        val access = AccessService(core.accessStore, core.datasourceStore, core.auditStore, core.roleResolver, core.authz, ManagementAuditRecorder(core.auditStore))
+        assertTrue(access.listRequests(principal, null).any { it.id == request.id }, "the requester sees their own row")
         assertNull(core.auditStore.lastRateReset(principal))
 
         // The requester cannot approve their own request; an unrelated non-approver cannot either.
@@ -417,7 +418,7 @@ class ResultCapsE2eDbTest {
         assertEquals("$RATE_SPENT_DENY 10000/1h spent", wire.decide("select id from users").denyReason)
 
         val approverClient = login(approver)
-        assertTrue(approverClient.get("/api/access-requests?status=PENDING").body<List<AccessRequest>>().any { it.id == request.id })
+        assertTrue(access.listRequests(approver, "PENDING").any { it.id == request.id })
         val approved = approverClient.post("/api/access-requests/${request.id}/approve")
         assertEquals(HttpStatusCode.OK, approved.status, approved.bodyAsText())
         assertEquals("APPROVED", approved.body<AccessRequest>().status)

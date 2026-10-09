@@ -29,17 +29,27 @@ type env struct {
 
 // fakeAuthz allows what allow lists and records every decision asked for.
 type fakeAuthz struct {
-	allow map[string]bool
-	asked []string
+	allow     map[string]bool
+	asked     []string
+	resources []bridge.Resource
 }
 
 func (f *fakeAuthz) Authorize(_ context.Context, principal, action string, resource bridge.Resource, ip string) (bool, string, error) {
 	key := principal + " " + action + " " + resource.Type + ":" + resource.Principal
 	f.asked = append(f.asked, key+" @"+ip)
+	f.resources = append(f.resources, resource)
 	if f.allow[key] {
 		return true, "", nil
 	}
 	return false, "no permit for " + action, nil
+}
+
+func (f *fakeAuthz) AuthorizeEach(ctx context.Context, principal, action string, resources []bridge.Resource, ip string) ([]bool, error) {
+	out := make([]bool, len(resources))
+	for i, r := range resources {
+		out[i], _, _ = f.Authorize(ctx, principal, action, r, ip)
+	}
+	return out, nil
 }
 
 func setup(t *testing.T) *env {
@@ -78,7 +88,7 @@ func (e *env) do(t *testing.T, method, path, body string, cookies []*http.Cookie
 
 func TestUnauthenticated(t *testing.T) {
 	e := setup(t)
-	for _, path := range []string{"/api/query-history", "/api/audit", "/api/audit/1", "/api/roles", "/api/role-assignments", "/api/mask-fns", "/api/policies", "/api/me/permissions"} {
+	for _, path := range []string{"/api/query-history", "/api/audit", "/api/audit/1", "/api/roles", "/api/role-assignments", "/api/mask-fns", "/api/policies", "/api/me/permissions", "/api/access-requests", "/api/access-grants"} {
 		status, body := e.do(t, http.MethodGet, path, "", nil)
 		if status != http.StatusUnauthorized || body != `{"code":"common.unauthenticated","params":{}}` {
 			t.Fatalf("%s: %d %s", path, status, body)
@@ -388,5 +398,69 @@ func TestMePermissions(t *testing.T) {
 		if status, body := e.do(t, http.MethodGet, "/api/me/permissions", "", c); status != http.StatusOK || body != tc.want {
 			t.Fatalf("%s: %d %s", tc.principal, status, body)
 		}
+	}
+}
+
+func TestAccessLists(t *testing.T) {
+	e := setup(t)
+	ctx := context.Background()
+	var roleID, mine, theirs int64
+	if err := e.st.Pool.QueryRow(ctx, `INSERT INTO app_role (name) VALUES ('zz-jit') RETURNING id`).Scan(&roleID); err != nil {
+		t.Fatal(err)
+	}
+	for _, q := range []struct {
+		principal, status string
+		id               *int64
+	}{{"alice@example.com", "PENDING", &mine}, {"bob@example.com", "APPROVED", &theirs}} {
+		if err := e.st.Pool.QueryRow(ctx, `INSERT INTO access_request (principal, role_id, requested_duration_sec, status)
+			VALUES ($1, $2, 3600, $3) RETURNING id`, q.principal, roleID, q.status).Scan(q.id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := e.st.Pool.Exec(ctx, `INSERT INTO access_grant (principal, role_id, granted_by, expires_at) VALUES
+		('alice@example.com', $1, 'admin', now() + interval '1 hour'),
+		('alice@example.com', $1, 'admin', now() - interval '1 hour'),
+		('bob@example.com', $1, 'admin', NULL)`, roleID); err != nil {
+		t.Fatal(err)
+	}
+	alice := e.st.WebSession(t, "alice@example.com", "k-a", "dev-a")
+	// Stand-in for the shipped self-request / self-grant permits: a principal reads their own rows.
+	e.authz.allow = map[string]bool{
+		"alice@example.com task.read ApprovalRequest:alice@example.com": true,
+		"alice@example.com task.read AccessGrant:alice@example.com":     true,
+	}
+
+	status, body := e.do(t, http.MethodGet, "/api/access-requests", "", alice)
+	want := fmt.Sprintf(`[{"id":%d,"principal":"alice@example.com","roleId":%d,"roleName":"zz-jit","requestedDurationSec":3600,"status":"PENDING",`, mine, roleID)
+	if status != http.StatusOK || !strings.HasPrefix(body, want) || strings.Contains(body, "bob@example.com") ||
+		!strings.Contains(body, `"kind":"ROLE","statementCount":0,`) || !strings.Contains(body, `"executeAs":[]`) {
+		t.Fatalf("requests: %d %s", status, body)
+	}
+	if e.authz.asked[len(e.authz.asked)-1] != "alice@example.com task.read ApprovalRequest:alice@example.com @" {
+		t.Fatalf("request listings decide without a requester IP: %v", e.authz.asked)
+	}
+	last := e.authz.resources[len(e.authz.resources)-1]
+	if last.Approver != nil || last.ExecutedBy != nil || last.DatasourceName != nil || last.RoleName == nil || *last.RoleName != "zz-jit" {
+		t.Fatalf("request resource %+v", last)
+	}
+	if _, body = e.do(t, http.MethodGet, "/api/access-requests?status=APPROVED", "", alice); body != "[]" {
+		t.Fatalf("status filter: %s", body)
+	}
+
+	e.authz.resources = nil
+	if _, body = e.do(t, http.MethodGet, "/api/access-grants", "", alice); strings.Count(body, `"id"`) != 2 || strings.Contains(body, "bob@example.com") ||
+		!strings.Contains(body, `"roleName":"zz-jit","grantedBy":"admin","grantedAt":"`) {
+		t.Fatalf("grants: %s", body)
+	}
+	for _, r := range e.authz.resources {
+		if r.Type != "AccessGrant" || r.ID == 0 || r.RoleName == nil || *r.RoleName != "zz-jit" || r.DatasourceName != nil {
+			t.Fatalf("grant resource %+v", r)
+		}
+	}
+	if _, body = e.do(t, http.MethodGet, "/api/access-grants?active=TRUE", "", alice); strings.Count(body, `"id"`) != 1 {
+		t.Fatalf("active grants: %s", body)
+	}
+	if _, body = e.do(t, http.MethodGet, "/api/access-grants?principal=bob@example.com", "", alice); body != "[]" {
+		t.Fatalf("naming another principal must not widen the listing: %s", body)
 	}
 }

@@ -239,10 +239,6 @@ fun Route.cedarPolicyRoutes(
     management: PolicyManagementService =
         PolicyManagementService(store, PolicyStore(store.dataSource), ManagementAuditRecorder(AuditStore(store.dataSource))),
 ) {
-    get("/api/policies") {
-        if (!call.requireAdmin(config, authz, AuthzAction.ADMIN_POLICIES)) return@get
-        call.respond(management.listPolicies())
-    }
     post("/api/policies") {
         if (!call.requireAdmin(config, authz, AuthzAction.ADMIN_POLICIES)) return@post
         val input = call.receive<CedarPolicyInput>()

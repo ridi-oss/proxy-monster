@@ -3,6 +3,7 @@ package routes
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -32,10 +33,13 @@ type fakeAuthz struct {
 	asked []string
 }
 
-func (f *fakeAuthz) Authorize(_ context.Context, principal, action string, resource bridge.Resource, ip string) (bool, error) {
+func (f *fakeAuthz) Authorize(_ context.Context, principal, action string, resource bridge.Resource, ip string) (bool, string, error) {
 	key := principal + " " + action + " " + resource.Type + ":" + resource.Principal
 	f.asked = append(f.asked, key+" @"+ip)
-	return f.allow[key], nil
+	if f.allow[key] {
+		return true, "", nil
+	}
+	return false, "no permit for " + action, nil
 }
 
 func setup(t *testing.T) *env {
@@ -50,7 +54,8 @@ func setup(t *testing.T) *env {
 		Sessions:      session.NewResolver(e.st.Pool, dbtest.Secret),
 		EndMismatched: func(r *http.Request) { e.ended = append(e.ended, r.Header.Get("Cookie")) },
 		AuthDebug:     true,
-	}, &e.authz)
+		Authz:         &e.authz,
+	})
 	e.srv = httptest.NewServer(front.Route(mux, forward))
 	t.Cleanup(e.srv.Close)
 	return e
@@ -73,7 +78,7 @@ func (e *env) do(t *testing.T, method, path, body string, cookies []*http.Cookie
 
 func TestUnauthenticated(t *testing.T) {
 	e := setup(t)
-	for _, path := range []string{"/api/query-history", "/api/audit", "/api/audit/1"} {
+	for _, path := range []string{"/api/query-history", "/api/audit", "/api/audit/1", "/api/roles", "/api/role-assignments", "/api/mask-fns", "/api/policies", "/api/me/permissions"} {
 		status, body := e.do(t, http.MethodGet, path, "", nil)
 		if status != http.StatusUnauthorized || body != `{"code":"common.unauthenticated","params":{}}` {
 			t.Fatalf("%s: %d %s", path, status, body)
@@ -281,5 +286,107 @@ func TestAuditDecisionCarriesRequesterIP(t *testing.T) {
 	e.do(t, http.MethodGet, "/api/audit", "", alice)
 	if len(e.authz.asked) != 1 || !strings.HasSuffix(e.authz.asked[0], "@203.0.113.9") {
 		t.Fatalf("under auth debug the session's chosen address wins: %v", e.authz.asked)
+	}
+}
+
+func TestAdminLists(t *testing.T) {
+	e := setup(t)
+	ctx := context.Background()
+	admin := e.st.WebSession(t, "admin@example.com", "k-admin", "dev-1")
+	plain := e.st.WebSession(t, "plain@example.com", "k-plain", "dev-2")
+	e.authz.allow = map[string]bool{
+		"admin@example.com admin.identity System:": true,
+		"admin@example.com admin.policies System:": true,
+	}
+	var roleID int64
+	if err := e.st.Pool.QueryRow(ctx, `INSERT INTO app_role (name) VALUES ('zz-analyst') RETURNING id`).Scan(&roleID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.st.Pool.Exec(ctx, `INSERT INTO principal_role (principal, role_id) VALUES ('bob@example.com', $1), ('amy@example.com', $1)`, roleID); err != nil {
+		t.Fatal(err)
+	}
+
+	status, body := e.do(t, http.MethodGet, "/api/roles", "", plain)
+	if status != http.StatusOK || !strings.Contains(body, `{"id":`+strconv.FormatInt(roleID, 10)+`,"name":"zz-analyst"}`) {
+		t.Fatalf("roles for any session: %d %s", status, body)
+	}
+
+	status, body = e.do(t, http.MethodGet, "/api/role-assignments", "", plain)
+	if status != http.StatusForbidden || body != `{"code":"common.forbidden","params":{"detail":"no permit for admin.identity"}}` {
+		t.Fatalf("non-admin: %d %s", status, body)
+	}
+	_, body = e.do(t, http.MethodGet, "/api/role-assignments?roleId="+strconv.FormatInt(roleID, 10), "", admin)
+	want := `[{"id":%d,"principal":"amy@example.com","roleId":%d,"roleName":"zz-analyst"},{"id":%d,"principal":"bob@example.com","roleId":%d,"roleName":"zz-analyst"}]`
+	var amy, bob int64
+	_ = e.st.Pool.QueryRow(ctx, `SELECT id FROM principal_role WHERE principal = 'amy@example.com'`).Scan(&amy)
+	_ = e.st.Pool.QueryRow(ctx, `SELECT id FROM principal_role WHERE principal = 'bob@example.com'`).Scan(&bob)
+	if body != fmt.Sprintf(want, amy, roleID, bob, roleID) {
+		t.Fatalf("by role: %s", body)
+	}
+	if _, body = e.do(t, http.MethodGet, "/api/role-assignments?principal=bob@example.com&roleId="+strconv.FormatInt(roleID, 10), "", admin); strings.Count(body, `"principal"`) != 1 {
+		t.Fatalf("by principal and role: %s", body)
+	}
+	if _, body = e.do(t, http.MethodGet, "/api/role-assignments?roleId=abc", "", admin); body != "[]" {
+		t.Fatalf("non-numeric roleId: %s", body)
+	}
+
+	for _, path := range []string{"/api/mask-fns", "/api/policies"} {
+		e.authz.asked = nil
+		status, body = e.do(t, http.MethodGet, path, "", plain)
+		if status != http.StatusForbidden || body != `{"code":"common.forbidden","params":{"detail":"no permit for admin.policies"}}` ||
+			len(e.authz.asked) != 1 || e.authz.asked[0] != "plain@example.com admin.policies System: @127.0.0.1" {
+			t.Fatalf("%s for a non-admin: %d %s asked %v", path, status, body, e.authz.asked)
+		}
+	}
+
+	var live int64
+	if err := e.st.Pool.QueryRow(ctx, `INSERT INTO mask_fn (name, kind) VALUES ('zz-live', 'HASH') RETURNING id`).Scan(&live); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.st.Pool.Exec(ctx, `INSERT INTO mask_fn (name, kind, deleted_at) VALUES ('zz-gone', 'HASH', now())`); err != nil {
+		t.Fatal(err)
+	}
+	status, body = e.do(t, http.MethodGet, "/api/mask-fns", "", admin)
+	if status != http.StatusOK || !strings.HasSuffix(body, fmt.Sprintf(`{"id":%d,"name":"zz-live","kind":"HASH"}]`, live)) || strings.Contains(body, "zz-gone") {
+		t.Fatalf("mask fns: %d %s", status, body)
+	}
+	status, body = e.do(t, http.MethodGet, "/api/policies", "", admin)
+	var ps []map[string]any
+	if err := json.Unmarshal([]byte(body), &ps); err != nil || status != http.StatusOK || len(ps) == 0 {
+		t.Fatalf("policies: %d %s", status, body)
+	}
+	var seed map[string]any
+	for _, p := range ps {
+		if p["id"] == float64(-1) {
+			seed = p
+		}
+	}
+	if seed["origin"] != "SYSTEM" || seed["systemKey"] != "bootstrap.pm-admin" || seed["name"] != "system:admin" {
+		t.Fatalf("the seeded system policy carries its provenance: %v", seed)
+	}
+	if _, ok := ps[0]["updatedAt"].(string); !ok || ps[0]["cedarSrc"] == nil {
+		t.Fatalf("policy shape: %v", ps[0])
+	}
+}
+
+func TestMePermissions(t *testing.T) {
+	e := setup(t)
+	for _, tc := range []struct {
+		principal string
+		allow     []string
+		want      string
+	}{
+		{"roleless@example.com", nil, `{"isAdmin":false,"canReadAllAudit":false,"canApprove":false}`},
+		{"policy@example.com", []string{"admin.policies System:"}, `{"isAdmin":true,"canReadAllAudit":false,"canApprove":true}`},
+		{"auditor@example.com", []string{"audit.read AuditLog:"}, `{"isAdmin":false,"canReadAllAudit":true,"canApprove":false}`},
+	} {
+		e.authz.allow = map[string]bool{}
+		for _, a := range tc.allow {
+			e.authz.allow[tc.principal+" "+a] = true
+		}
+		c := e.st.WebSession(t, tc.principal, "k-"+tc.principal, "dev-1")
+		if status, body := e.do(t, http.MethodGet, "/api/me/permissions", "", c); status != http.StatusOK || body != tc.want {
+			t.Fatalf("%s: %d %s", tc.principal, status, body)
+		}
 	}
 }

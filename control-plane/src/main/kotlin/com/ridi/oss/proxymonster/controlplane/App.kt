@@ -305,22 +305,6 @@ internal fun computeMePermissions(principal: String, authz: Authz, context: Auth
     )
 }
 
-internal fun Route.mePermissionsRoute(config: Config, authz: Authz) {
-    get("/api/me/permissions") {
-        val principal = call.requireApi() ?: return@get
-        // Computed for the debug caller too. Claiming admin under authDebug would render every admin
-        // affordance for a session that logged in with a low-privilege role, and each one would then 403 on
-        // click — the console must describe the authority the routes will actually grant.
-        val permissions = computeMePermissions(
-            principal,
-            authz,
-            call.httpAuthzContext(config),
-        )
-
-        // UI navigation and client-side guards are convenience only; every API authorizes independently.
-        call.respond(permissions)
-    }
-}
 
 /** The control-plane HTTP application: audit ingest/read + debug/OIDC auth surface. */
 fun Application.module(config: Config, core: ControlPlaneCore) {
@@ -803,7 +787,6 @@ fun Application.module(config: Config, core: ControlPlaneCore) {
             call.respond(HttpStatusCode.OK, UserSession(login.principal, roles, debugRequesterIp))
         }
 
-        mePermissionsRoute(config, authz)
         mcpConnectRoute(config)
         instanceInfoRoute(config)
 

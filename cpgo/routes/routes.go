@@ -21,14 +21,20 @@ import (
 var locales = []string{"en", "ko"}
 
 // Register adds every Go-served route to mux.
-func Register(mux *http.ServeMux, pool *pgxpool.Pool, gate api.Gate, authz Authorizer) {
+func Register(mux *http.ServeMux, pool *pgxpool.Pool, gate api.Gate) {
 	h := handlers{pool: pool}
 	mux.HandleFunc("PUT /api/me/locale", gate.RequireAPI(h.putLocale))
 	mux.HandleFunc("GET /api/query-history", gate.RequireAPI(h.getQueryHistory))
 	mux.HandleFunc("DELETE /api/query-history", gate.RequireAPI(h.deleteQueryHistory))
-	a := audit{pool: pool, authz: authz}
+	a := audit{pool: pool, authz: gate.Authz}
 	mux.HandleFunc("GET /api/audit", gate.RequireAPI(a.list))
 	mux.HandleFunc("GET /api/audit/{id}", gate.RequireAPI(a.get))
+	p := policies{pool: pool}
+	mux.HandleFunc("GET /api/roles", gate.RequireAPI(p.roles))
+	mux.HandleFunc("GET /api/role-assignments", gate.RequireAdmin("admin.identity", p.roleAssignments))
+	mux.HandleFunc("GET /api/mask-fns", gate.RequireAdmin("admin.policies", p.maskFns))
+	mux.HandleFunc("GET /api/policies", gate.RequireAdmin("admin.policies", p.policies))
+	mux.HandleFunc("GET /api/me/permissions", gate.RequireAPI(permissions(gate.Authz)))
 }
 
 type handlers struct{ pool *pgxpool.Pool }

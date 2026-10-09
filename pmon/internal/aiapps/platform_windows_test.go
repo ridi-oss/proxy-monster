@@ -20,7 +20,7 @@ func TestBatchClosesClaudeDesktopOnce(t *testing.T) {
 	claudeDesktopChecks = 0
 	err := app.Batch(Setup{Pmon: `C:\p\pmon.exe`}, func(s Setup) error {
 		for _, name := range []string{"a", "b", "c"} {
-			if _, err := app.Add(s, Server{Name: name}); err != nil {
+			if _, _, err := app.Add(s, Server{Name: name}); err != nil {
 				return err
 			}
 		}

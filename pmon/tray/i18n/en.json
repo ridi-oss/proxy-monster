@@ -103,8 +103,6 @@
   "ai.after.claude-desktop": "Quit and reopen Claude Desktop to use it.",
   "ai.after.claude-code": "New Claude Code sessions can use it.",
   "ai.after.codex": "New Codex sessions can use it.",
-  "ai.taken": "{app} already has an MCP server named {entry} that Proxy Monster did not add. Rename or remove it in {app} first.",
-  "ai.notOurs": "The {app} entry {entry} is not Proxy Monster's, so it was left alone.",
   "ai.notInstalled": "{app} is not installed.",
   "ai.claudeStillRunning": "Claude Desktop did not quit, so nothing was changed. Quit it and try again.",
   "s.title": "Proxy Monster Settings",

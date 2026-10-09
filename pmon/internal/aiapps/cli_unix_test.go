@@ -34,7 +34,7 @@ func TestClaudeAddFailurePutsTheOldEntryBack(t *testing.T) {
 	}
 	log := fakeCLI(t, "claude", "add")
 	app := cliApp("claude-code", "Claude Code", "claude", []string{"--scope", "user"}, claudeCodeConfig())
-	if _, err := app.Add(Setup{Pmon: "/pmon"}, acme); err == nil {
+	if _, _, err := app.Add(Setup{Pmon: "/pmon"}, acme); err == nil {
 		t.Fatal("the add failed, but Add reported success")
 	}
 	data, _ := os.ReadFile(log)
@@ -54,7 +54,7 @@ func TestClaudeFailedPutBackIsReported(t *testing.T) {
 	}
 	fakeCLI(t, "claude", "add", "add-json")
 	app := cliApp("claude-code", "Claude Code", "claude", []string{"--scope", "user"}, claudeCodeConfig())
-	if _, err := app.Add(Setup{Pmon: "/pmon"}, acme); err == nil || !strings.Contains(err.Error(), "putting the previous pmon-acme back also failed") {
+	if _, _, err := app.Add(Setup{Pmon: "/pmon"}, acme); err == nil || !strings.Contains(err.Error(), "putting the previous pmon-acme back also failed") {
 		t.Errorf("err = %v", err)
 	}
 }

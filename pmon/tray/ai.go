@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -26,12 +27,13 @@ func aiSetup() aiapps.Setup {
 	}}
 }
 
-// aiServer is the named server with its URL, so adding it replaces the AI app's https entry for it.
+// aiServer is the named server as it advertises itself, so the entry is named as the server asks and replaces
+// the AI app's https entry for it.
 func aiServer(s *control.Status, name string) aiapps.Server {
 	if s != nil {
 		for _, srv := range s.Servers {
 			if srv.Name == name {
-				return aiapps.Server{Name: name, URL: srv.ControlPlane}
+				return aiapps.Lookup(context.Background(), name, srv.ControlPlane)
 			}
 		}
 	}
@@ -40,15 +42,10 @@ func aiServer(s *control.Status, name string) aiapps.Server {
 
 // aiErrorText is an AI-app change's error in this app's language.
 func aiErrorText(err error) string {
-	var entry *aiapps.EntryError
 	var missing *aiapps.NotInstalledError
 	switch {
 	case errors.Is(err, aiapps.ErrStillRunning):
 		return T("ai.claudeStillRunning")
-	case errors.As(err, &entry) && entry.Taken:
-		return T("ai.taken", "app", entry.App, "entry", entry.Entry)
-	case errors.As(err, &entry):
-		return T("ai.notOurs", "app", entry.App, "entry", entry.Entry)
 	case errors.As(err, &missing):
 		return T("ai.notInstalled", "app", missing.App)
 	}
@@ -124,9 +121,10 @@ func (a *app) doAIApp(act action) {
 	}()
 	if act.connect {
 		a.mu.Lock()
-		srv := aiServer(a.status, act.server)
+		status := a.status
 		a.mu.Unlock()
-		if _, err := app.Add(aiSetup(), srv); errors.Is(err, aiapps.ErrDeclined) {
+		srv := aiServer(status, act.server)
+		if _, _, err := app.Add(aiSetup(), srv); errors.Is(err, aiapps.ErrDeclined) {
 			return
 		} else if err != nil {
 			notify(T("n.aiAddFailed", "server", act.server, "app", app.Name), aiErrorText(err))

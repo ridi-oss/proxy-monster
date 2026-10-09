@@ -49,44 +49,43 @@ type NotInstalledError struct{ App string }
 
 func (e *NotInstalledError) Error() string { return e.App + " is not installed." }
 
-// EntryError is an entry with pmon's name that pmon did not add: Taken when adding, otherwise when removing.
-type EntryError struct {
-	App, Entry string
-	Taken      bool
+// Server is a pmon server as an AI app reaches it (see Lookup).
+type Server struct {
+	Name string
+	// MCPURL is the server's MCP endpoint, whose https entries pmon's relay replaces.
+	MCPURL string
+	// entry overrides the entry name, for tests.
+	entry string
 }
 
-func (e *EntryError) Error() string {
-	if e.Taken {
-		return fmt.Sprintf("%s already has an MCP server named %s that pmon did not add. Rename or remove it in %s first.", e.App, e.Entry, e.App)
-	}
-	return fmt.Sprintf("The %s entry %s is not pmon's, so it was left alone.", e.App, e.Entry)
+// EntryName is the name pmon registers the server under in an AI app.
+func (s Server) EntryName() string {
+	return cmp.Or(s.entry, "pmon-"+strings.ReplaceAll(s.Name, ".", "-"))
 }
-
-// Server is a pmon server: its name and its control-plane URL.
-type Server struct{ Name, URL string }
 
 // App is an app that can run `pmon mcp <server>` as a local MCP server.
 type App struct {
 	ID, Name  string
 	installed func() bool
-	connected func(s Setup, entry, server string) bool
-	add       func(s Setup, entry string, srv Server) ([]string, error)
-	remove    func(s Setup, entry, server string) (bool, error) // only an entry that is pmon's
+	connected func(s Setup, server string) bool
+	add       func(s Setup, srv Server) (string, []string, error)
+	remove    func(s Setup, server string) (bool, error)
 }
 
 func (a App) Installed() bool { return a.installed() }
 
-// Connected reports whether the app runs this setup's pmon for server, reaching the daemon in use.
-func (a App) Connected(s Setup, server string) bool { return a.connected(s, EntryName(server), server) }
+// Connected reports whether the app runs this setup's pmon for server, under any name, reaching the daemon in use.
+func (a App) Connected(s Setup, server string) bool { return a.connected(s, server) }
 
 // Add registers `pmon mcp <server>`, replacing the app's other entries for the same server: its https
-// endpoint, or pmon's relay under another name. It returns the names it replaced.
-func (a App) Add(s Setup, srv Server) ([]string, error) { return a.add(s, EntryName(srv.Name), srv) }
-
-// Remove removes pmon's relay for server, under its name or any other, reporting whether there was one.
-func (a App) Remove(s Setup, server string) (bool, error) {
-	return a.remove(s, EntryName(server), server)
+// endpoint, or pmon's relay under another name. A name held by anything else gets a -2, -3, … suffix. It
+// returns the name it used and the names it replaced.
+func (a App) Add(s Setup, srv Server) (entry string, replaced []string, err error) {
+	return a.add(s, srv)
 }
+
+// Remove removes pmon's relay for server under any name, and nothing else, reporting whether there was one.
+func (a App) Remove(s Setup, server string) (bool, error) { return a.remove(s, server) }
 
 // Batch runs fn, which makes several changes to the app, closing and reopening Claude Desktop once around all of
 // them rather than once per change. A declined restart makes no change and returns ErrDeclined.
@@ -117,9 +116,6 @@ func cliOrConfig(cli App, file configFile) App {
 	}
 	return configApp(cli.ID, cli.Name, file)
 }
-
-// EntryName is the name a server is registered under in an AI app's MCP settings.
-func EntryName(server string) string { return "pmon-" + server }
 
 // --- Claude Desktop: claude_desktop_config.json ---
 
@@ -153,44 +149,48 @@ func claudeDesktop() App {
 			_, err := os.Stat(filepath.Dir(claudeDesktopConfig()))
 			return err == nil
 		},
-		connected: func(s Setup, entry, server string) bool {
+		connected: func(s Setup, server string) bool {
 			servers, _, err := readDesktopServers(claudeDesktopConfig())
 			if err != nil {
 				return false
 			}
-			var c mcpCommand
-			return json.Unmarshal(servers[entry], &c) == nil && ours(c.Command, c.Args, c.Env, s.Pmon, server)
+			entries := map[string]entry{}
+			for name, raw := range servers {
+				entries[name] = decodeEntry(raw)
+			}
+			return anyCurrent(entries, s, server)
 		},
-		add: func(s Setup, entry string, srv Server) ([]string, error) {
+		add: func(s Setup, srv Server) (string, []string, error) {
 			raw, err := json.Marshal(mcpCommand{Command: s.Pmon, Args: []string{"mcp", srv.Name}, Env: DaemonEnv()})
 			if err != nil {
-				return nil, err
+				return "", nil, err
 			}
-			var taken error
+			var chosen string
 			var replaced []string
 			err = s.desktopEdit(func() error {
 				return editDesktopServers(claudeDesktopConfig(), func(m map[string]json.RawMessage) {
 					replaced = nil
-					if prev, ok := m[entry]; ok && !replaceable(decodeEntry(prev), srv) {
-						taken = &EntryError{App: "Claude Desktop", Entry: entry, Taken: true}
-						return
+					entries := map[string]entry{}
+					for name, raw := range m {
+						entries[name] = decodeEntry(raw)
 					}
+					chosen = freeName(entries, srv)
 					for name, other := range m {
-						if name != entry && replaceable(decodeEntry(other), srv) {
+						if name != chosen && replaceable(decodeEntry(other), srv) {
 							delete(m, name)
 							replaced = append(replaced, name)
 						}
 					}
-					m[entry] = raw
+					m[chosen] = raw
 				})
 			})
-			if err := cmp.Or(taken, err); err != nil {
-				return nil, err
+			if err != nil {
+				return "", nil, err
 			}
 			slices.Sort(replaced)
-			return replaced, nil
+			return chosen, replaced, nil
 		},
-		remove: func(s Setup, entry, server string) (bool, error) {
+		remove: func(s Setup, server string) (bool, error) {
 			removed := false
 			err := s.desktopEdit(func() error {
 				return editDesktopServers(claudeDesktopConfig(), func(m map[string]json.RawMessage) {
@@ -311,9 +311,10 @@ func ownCommand(command string, args []string, server string) bool {
 
 // entry is any MCP server entry in an AI app's config: a command it runs, or a URL it connects to.
 type entry struct {
-	URL     string   `json:"url" toml:"url"`
-	Command string   `json:"command" toml:"command"`
-	Args    []string `json:"args" toml:"args"`
+	Env     map[string]string `json:"env" toml:"env"`
+	URL     string            `json:"url" toml:"url"`
+	Command string            `json:"command" toml:"command"`
+	Args    []string          `json:"args" toml:"args"`
 }
 
 func decodeEntry(raw json.RawMessage) entry {
@@ -326,9 +327,19 @@ func decodeEntry(raw json.RawMessage) entry {
 // https, which pmon's relay replaces with the pmon login, or e is pmon's relay for srv already.
 func replaceable(e entry, srv Server) bool {
 	if e.URL != "" {
-		return srv.URL != "" && sameEndpoint(e.URL, strings.TrimRight(srv.URL, "/")+"/mcp")
+		return srv.MCPURL != "" && sameEndpoint(e.URL, srv.MCPURL)
 	}
 	return ownCommand(e.Command, e.Args, srv.Name)
+}
+
+// anyCurrent reports whether some entry runs pmon's relay for server and reaches the daemon in use.
+func anyCurrent(entries map[string]entry, s Setup, server string) bool {
+	for _, e := range entries {
+		if e.URL == "" && ours(e.Command, e.Args, envOrEmpty(e.Env), s.Pmon, server) {
+			return true
+		}
+	}
+	return false
 }
 
 // sameEndpoint compares two URLs as an HTTP client would reach them: scheme and host in any case, a default
@@ -383,37 +394,27 @@ func cliApp(id, name, bin string, scope []string, file configFile) App {
 		}
 		return string(out), nil
 	}
-	// lookup reads entry from the config the CLI edits, not from `mcp get`: get answers with whichever scope
+	// Entries are read from the config file the CLI edits, not from `mcp get`: get answers with whichever scope
 	// wins in the current directory, while add and remove act on the user's. A file it cannot read reads as
-	// absent, so nothing is ever removed or replaced on its strength.
-	lookup := func(s Setup, entry, server string) (exists, own, current bool) {
-		c, found, err := file.read(entry)
-		if err != nil || !found {
-			return false, false, false
-		}
-		return true, ownCommand(c.Command, c.Args, server), ours(c.Command, c.Args, envOrEmpty(c.Env), s.Pmon, server)
-	}
+	// empty, so nothing is ever removed or replaced on its strength.
 	return App{
 		ID: id, Name: name,
 		installed: func() bool { return findTool(bin) != "" },
-		connected: func(s Setup, entry, server string) bool {
-			_, _, current := lookup(s, entry, server)
-			return current
+		connected: func(s Setup, server string) bool {
+			entries, _ := file.list()
+			return anyCurrent(entries, s, server)
 		},
-		add: func(s Setup, entry string, srv Server) ([]string, error) {
-			// The CLI lists no entries, so the others come from its config file; one it cannot read replaces none.
+		add: func(s Setup, srv Server) (string, []string, error) {
 			others, _ := file.list()
-			exists, own, _ := lookup(s, entry, srv.Name)
-			if mine, ok := others[entry]; exists && !own && !(ok && replaceable(mine, srv)) {
-				return nil, &EntryError{App: name, Entry: entry, Taken: true}
-			}
+			entry := freeName(others, srv)
+			_, exists := others[entry]
 			// codex replaces an entry of the same name; claude refuses one, so its entry is removed first and put
 			// back if the add fails.
 			restore := func(err error) error { return err }
 			if exists && bin == "claude" {
 				prev, _, _ := readDesktopServers(claudeCodePath())
 				if _, err := run(append([]string{"mcp", "remove", entry}, scope...)...); err != nil {
-					return nil, err
+					return "", nil, err
 				}
 				if raw, ok := prev[entry]; ok {
 					restore = func(err error) error {
@@ -431,27 +432,20 @@ func cliApp(id, name, bin string, scope []string, file configFile) App {
 				add = append(add, envFlag, k+"="+v)
 			}
 			if _, err := run(append(add, "--", s.Pmon, "mcp", srv.Name)...); err != nil {
-				return nil, restore(err)
+				return "", nil, restore(err)
 			}
 			var replaced []string
 			for _, other := range replaceableNames(others, entry, srv) {
 				if _, err := run(append([]string{"mcp", "remove", other}, scope...)...); err != nil {
-					return replaced, err
+					return entry, replaced, err
 				}
 				replaced = append(replaced, other)
 			}
-			return replaced, nil
+			return entry, replaced, nil
 		},
-		remove: func(s Setup, entry, server string) (bool, error) {
-			others, _ := file.list()
-			exists, own, _ := lookup(s, entry, server)
-			if exists && !own {
-				return false, &EntryError{App: name, Entry: entry}
-			}
-			names := relayNames(others, entry, server)
-			if exists {
-				names = append([]string{entry}, names...)
-			}
+		remove: func(s Setup, server string) (bool, error) {
+			entries, _ := file.list()
+			names := relayNames(entries, "", server)
 			for i, n := range names {
 				if _, err := run(append([]string{"mcp", "remove", n}, scope...)...); err != nil {
 					return i > 0, err
@@ -472,6 +466,21 @@ func relayNames(entries map[string]entry, entry, server string) []string {
 	}
 	slices.Sort(names)
 	return names
+}
+
+// freeName is the server's entry name, or that name with -2, -3, … appended: the first that no entry holds or
+// that only an entry pmon's entry for srv replaces holds.
+func freeName(entries map[string]entry, srv Server) string {
+	base := srv.EntryName()
+	for i := 1; ; i++ {
+		name := base
+		if i > 1 {
+			name = fmt.Sprintf("%s-%d", base, i)
+		}
+		if e, ok := entries[name]; !ok || replaceable(e, srv) {
+			return name
+		}
+	}
 }
 
 // replaceableNames are the entries other than entry that pmon's entry for srv replaces, in a stable order.

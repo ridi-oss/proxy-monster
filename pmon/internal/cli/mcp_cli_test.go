@@ -58,6 +58,8 @@ func mcpFakeCP(t *testing.T) *httptest.Server {
 			default:
 				w.WriteHeader(http.StatusAccepted)
 			}
+		case "/api/instance":
+			http.NotFound(w, r)
 		default:
 			t.Errorf("unexpected control-plane path %q", r.URL.Path)
 		}

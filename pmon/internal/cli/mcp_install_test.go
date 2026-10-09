@@ -2,6 +2,8 @@ package cli
 
 import (
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -75,7 +77,7 @@ func TestMCPInstallRegistersEveryServer(t *testing.T) {
 	if servers := readDesktopServers(t, dir); servers["pmon-hr"] != nil || servers["pmon-ops"] == nil {
 		t.Errorf("after uninstalling hr: %v", servers)
 	}
-	if out := e.mustRun(t, "mcp", "--uninstall", "--app", "claude-desktop", "hr"); !strings.Contains(out, "no pmon-hr to remove") {
+	if out := e.mustRun(t, "mcp", "--uninstall", "--app", "claude-desktop", "hr"); !strings.Contains(out, "no pmon mcp hr to remove") {
 		t.Errorf("uninstalling hr again:\n%s", out)
 	}
 }
@@ -93,4 +95,41 @@ func readDesktopServers(t *testing.T, dir string) map[string]json.RawMessage {
 		t.Fatal(err)
 	}
 	return cfg.MCPServers
+}
+
+// The entry is named after the pmon server, and replaces the https entry for the MCP URL the server advertises.
+func TestMCPInstallUsesTheAdvertisedMCPURL(t *testing.T) {
+	// Built before HOME moves: go build would fill the temporary HOME with read-only module files.
+	e := newEnv(t)
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("APPDATA", filepath.Join(home, "AppData", "Roaming"))
+	t.Setenv("LOCALAPPDATA", filepath.Join(home, "AppData", "Local"))
+	dir := claudeDesktopDir(home)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	cp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/instance" {
+			http.NotFound(w, r)
+			return
+		}
+		_, _ = w.Write([]byte(`{"name":"hr-pmon","version":"0.1.31","mcpUrl":"http://` + r.Host + `/custom-mcp","installName":"pmon-hr-pmon"}`))
+	}))
+	t.Cleanup(cp.Close)
+	seed := `{"mcpServers":{"hr-https":{"url":"` + cp.URL + `/custom-mcp"},"other-https":{"url":"https://other.example.com/mcp"}}}`
+	if err := os.WriteFile(filepath.Join(dir, "claude_desktop_config.json"), []byte(seed), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	e.mustRun(t, "server", "set", "hr", "--url", cp.URL)
+	if out := e.mustRun(t, "mcp", "--install", "--app", "claude-desktop"); !strings.Contains(out, "added pmon-hr, replacing hr-https") {
+		t.Errorf("install output:\n%s", out)
+	}
+	if out := e.mustRun(t, "mcp", "--uninstall", "--app", "claude-desktop"); !strings.Contains(out, "removed pmon mcp hr") {
+		t.Errorf("uninstall output:\n%s", out)
+	}
+	if servers := readDesktopServers(t, dir); len(servers) != 1 || servers["other-https"] == nil {
+		t.Errorf("after uninstall: %v", servers)
+	}
 }

@@ -26,7 +26,7 @@ func (c *mcpCmd) register(ctx context.Context) error {
 		return err
 	}
 	warnVersionSkew(s)
-	servers, err := c.targetServers(s)
+	servers, err := c.targetServers(ctx, s)
 	if err != nil {
 		return err
 	}
@@ -43,25 +43,26 @@ func (c *mcpCmd) register(ctx context.Context) error {
 	for _, app := range apps {
 		err := app.Batch(setup, func(setup aiapps.Setup) error {
 			for _, srv := range servers {
-				var replaced []string
-				var err error
-				done, removed := "removed", true
-				if c.Install {
-					replaced, err = app.Add(setup, srv)
-					done = "added"
-				} else {
-					removed, err = app.Remove(setup, srv.Name)
+				if !c.Install {
+					switch removed, err := app.Remove(setup, srv.Name); {
+					case err != nil:
+						failed++
+						fmt.Fprintf(os.Stderr, "%s: %s: %v\n", app.Name, srv.Name, err)
+					case removed:
+						fmt.Printf("%s: removed pmon mcp %s\n", app.Name, srv.Name)
+					default:
+						fmt.Printf("%s: no pmon mcp %s to remove\n", app.Name, srv.Name)
+					}
+					continue
 				}
-				switch {
+				switch entry, replaced, err := app.Add(setup, srv); {
 				case err != nil:
 					failed++
 					fmt.Fprintf(os.Stderr, "%s: %s: %v\n", app.Name, srv.Name, err)
-				case !removed:
-					fmt.Printf("%s: no %s to remove\n", app.Name, aiapps.EntryName(srv.Name))
 				case len(replaced) > 0:
-					fmt.Printf("%s: %s %s, replacing %s\n", app.Name, done, aiapps.EntryName(srv.Name), strings.Join(replaced, ", "))
+					fmt.Printf("%s: added %s, replacing %s\n", app.Name, entry, strings.Join(replaced, ", "))
 				default:
-					fmt.Printf("%s: %s %s\n", app.Name, done, aiapps.EntryName(srv.Name))
+					fmt.Printf("%s: added %s\n", app.Name, entry)
 				}
 			}
 			return nil
@@ -84,9 +85,9 @@ func (c *mcpCmd) register(ctx context.Context) error {
 	return nil
 }
 
-// targetServers is every configured server by default. --install takes only configured ones; --uninstall also
-// takes a server since deleted, whose entries would otherwise stay behind.
-func (c *mcpCmd) targetServers(s *control.Status) ([]aiapps.Server, error) {
+// targetServers is every configured server by default. --install takes only configured ones, named as each
+// server advertises; --uninstall also takes a server since deleted, whose entries would otherwise stay behind.
+func (c *mcpCmd) targetServers(ctx context.Context, s *control.Status) ([]aiapps.Server, error) {
 	var known []string
 	urls := map[string]string{}
 	for _, srv := range s.Servers {
@@ -102,10 +103,15 @@ func (c *mcpCmd) targetServers(s *control.Status) ([]aiapps.Server, error) {
 	}
 	var servers []aiapps.Server
 	for _, name := range names {
-		if _, ok := urls[name]; c.Install && !ok {
+		url, ok := urls[name]
+		switch {
+		case c.Install && !ok:
 			return nil, fmt.Errorf("unknown server %q (known: %s)", name, strings.Join(known, ", "))
+		case c.Install:
+			servers = append(servers, aiapps.Lookup(ctx, name, url))
+		default:
+			servers = append(servers, aiapps.Server{Name: name})
 		}
-		servers = append(servers, aiapps.Server{Name: name, URL: urls[name]})
 	}
 	return servers, nil
 }

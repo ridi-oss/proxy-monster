@@ -8,7 +8,7 @@ per-phase file lists, is the
 [plan artifact](https://claude.ai/artifact/9V3VoaADjrYinG6TpJLVc7); viewing it
 requires access granted by the maintainers.
 
-Status: proposal, no phase started.
+Status: phase 0 (front door) done; phases 1–7 not started.
 
 ## Shape
 

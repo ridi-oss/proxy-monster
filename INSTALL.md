@@ -44,6 +44,10 @@ configured per proxy under `PM_TARGET_*`.
   `jdbc:postgresql://pm.cluster-xxxx.ap-northeast-2.rds.amazonaws.com:5432/proxymonster`
 - `PM_HTTP_PORT` / `PM_GRPC_PORT` — _optional_. HTTP (web/auth/MCP) and gRPC
   (proxies) listen ports. Defaults: `8080` · `9090`.
+- `PM_CP_CHILD_HTTP_PORT` / `PM_CP_CHILD_GRPC_PORT` — _optional_. The image's
+  entrypoint, `cp-go`, owns the two public ports and runs the Kotlin control
+  plane as a child on these loopback ports, forwarding to it. Defaults: `18090`
+  · `18091`; change them only if something else in the container uses them.
 - `PM_OIDC_ISSUER` / `_CLIENT_ID` / `_CLIENT_SECRET` / `_REDIRECT_URI` —
   _required for SSO_ (all four). Redirect must equal
   `<public-origin>/auth/oidc/callback`. Example issuer

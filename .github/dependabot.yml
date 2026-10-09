@@ -35,6 +35,7 @@ updates:
     directories:
       - /analyzer
       - /auditmon
+      - /cpgo
       - /goproxy
       - /mysqlwire
       - /pmon

@@ -52,6 +52,13 @@ COPY docs/guides/usage.md docs/guides/admin.md ./docs/guides/
 
 RUN ./gradlew --no-daemon :control-plane:installDist -x test
 
+# cp-go, the front door that owns the public ports and runs the Kotlin control plane as its child.
+FROM go AS cpgo
+WORKDIR /workspace/cpgo
+COPY cpgo ./
+ENV GOTOOLCHAIN=local CGO_ENABLED=0 GOWORK=off
+RUN go build -trimpath -o /out/cp-go ./cmd/cp-go
+
 # ---- Runtime ----
 FROM eclipse-temurin:24-jre-noble
 
@@ -64,6 +71,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends curl \
 RUN groupadd --system --gid 10001 pm && useradd --system --uid 10001 --gid pm --create-home pm
 WORKDIR /app
 COPY --from=build /workspace/control-plane/build/install/control-plane ./
+COPY --from=cpgo /out/cp-go ./bin/cp-go
 RUN chown -R pm:pm /app
 USER pm
 
@@ -77,4 +85,4 @@ EXPOSE 8080
 HEALTHCHECK --interval=10s --timeout=3s --start-period=20s --retries=5 \
     CMD curl -fsS "http://127.0.0.1:${PM_HTTP_PORT}/health" || exit 1
 
-ENTRYPOINT ["./bin/control-plane"]
+ENTRYPOINT ["./bin/cp-go"]

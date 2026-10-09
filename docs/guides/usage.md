@@ -358,6 +358,11 @@ or `reauth: REQUIRED` means run `pmon login`. Nothing else changes.
 **`The OAuth token does not include the required scope: mcp:approvals:write.`**
 The agent's login lacks that scope. Log in again with `--scopes` (§6).
 
+**Which server, and which version?** `GET <server>/api/instance` answers without
+signing in, with the instance name, the server version, the MCP URL, and the
+name its MCP server installs under. An agent connected over MCP is told the same
+name and version when it connects.
+
 **A write or migration is denied.** Writes and DDL on production are separate
 roles (`system:production-updater`, `-deleter`, `-architect`) and are often left
 off. Ask before scripting a migration through the proxy.

@@ -2,6 +2,7 @@ package com.ridi.oss.proxymonster.controlplane.mcp
 
 import com.ridi.oss.proxymonster.controlplane.Config
 import com.ridi.oss.proxymonster.controlplane.ControlPlaneCore
+import com.ridi.oss.proxymonster.controlplane.SERVER_VERSION
 import com.ridi.oss.proxymonster.controlplane.authorizeMetadata
 import com.ridi.oss.proxymonster.controlplane.authz.AuthzContext
 import com.ridi.oss.proxymonster.controlplane.wireName
@@ -16,7 +17,8 @@ internal fun mcpInstructions(config: Config, core: ControlPlaneCore, context: Mc
     val connectable = core.datasourceStore.list()
         .filter { authorizeMetadata(core.authz, context.principal, roles, it, authzContext) }
     return buildString {
-        append("This MCP server is the proxy-monster instance \"").append(config.instanceName).append('"')
+        append("This MCP server is the proxy-monster instance \"").append(config.instanceName)
+            .append("\", server version ").append(SERVER_VERSION)
         if (config.instanceDescription.isNotBlank()) append(": ").append(config.instanceDescription)
         appendLine(if (config.instanceDescription.isBlank()) "." else "")
         appendLine(

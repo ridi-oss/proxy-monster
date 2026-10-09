@@ -49,6 +49,12 @@ func (statusCmd) Run() error {
 			mark = "  (default)"
 		}
 		fmt.Printf("\nserver:    %s  %s%s\n", srv.Name, srv.ControlPlane, mark)
+		if srv.ServerVersion != "" {
+			fmt.Printf("version:   %s\n", srv.ServerVersion)
+		}
+		if n := srv.InstanceName; n != "" && n != srv.Name && s.Server(n) == nil {
+			fmt.Printf("name:      the server calls itself %q — `pmon server rename %s` to use that name\n", n, srv.Name)
+		}
 		if !srv.LoggedIn {
 			fmt.Printf("login:     not logged in (run `%s`)\n", loginHint(srv.Name, srv.Default))
 			continue

@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -329,5 +330,65 @@ func TestRenameServerRefusesATakenName(t *testing.T) {
 	s := d.Status()
 	if s.Server("prod") != nil || s.Server("live") == nil || s.DefaultServer != "dev" {
 		t.Errorf("after renaming a server that is not the default: %+v", s.Servers)
+	}
+}
+
+// The daemon reads a new server's version from /api/instance and reports it in its status.
+func TestStatusReportsTheServerVersion(t *testing.T) {
+	isolate(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/instance" {
+			http.NotFound(w, r)
+			return
+		}
+		_, _ = w.Write([]byte(`{"name":"hr-pmon","version":"0.1.31"}`))
+	}))
+	defer srv.Close()
+	d := New("test", providers.Builtins())
+	if _, err := d.SetServer(control.SetServerRequest{ControlPlane: srv.URL}); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "the server version", func() bool {
+		s := d.Status().Server("hr-pmon")
+		return s != nil && s.ServerVersion == "0.1.31"
+	})
+}
+
+// A rename re-reads the version, and a response that is not one leaves the last version in place.
+func TestServerVersionFollowsRenameAndSurvivesABadAnswer(t *testing.T) {
+	isolate(t)
+	var mu sync.Mutex
+	body := `{"name":"hr-pmon","version":"0.1.31"}`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/instance" {
+			http.NotFound(w, r)
+			return
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		_, _ = w.Write([]byte(body))
+	}))
+	defer srv.Close()
+	set := func(b string) { mu.Lock(); body = b; mu.Unlock() }
+	d := New("test", providers.Builtins())
+	version := func(name string) string {
+		if s := d.Status().Server(name); s != nil {
+			return s.ServerVersion
+		}
+		return ""
+	}
+	if _, err := d.SetServer(control.SetServerRequest{Name: "hr", ControlPlane: srv.URL}); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "0.1.31", func() bool { return version("hr") == "0.1.31" })
+	set(`{"name":"hr-pmon","version":"0.1.32"}`)
+	if _, err := d.RenameServer(context.Background(), control.RenameServerRequest{Name: "hr", To: "people"}); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "the renamed server's fresh version", func() bool { return version("people") == "0.1.32" })
+	set(`<html>maintenance</html>`)
+	d.refreshVersions(context.Background())
+	if v := version("people"); v != "0.1.32" {
+		t.Errorf("a non-JSON answer replaced the version with %q", v)
 	}
 }

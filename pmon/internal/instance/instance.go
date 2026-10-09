@@ -46,7 +46,7 @@ func Fetch(ctx context.Context, controlPlane string) (Info, error) {
 	}
 	var info Info
 	if err := json.NewDecoder(io.LimitReader(resp.Body, 64<<10)).Decode(&info); err != nil {
-		return Info{}, ErrUnsupported
+		return Info{}, fmt.Errorf("%s/api/instance: %w", controlPlane, err)
 	}
 	return info, nil
 }

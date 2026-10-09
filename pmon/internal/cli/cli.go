@@ -18,6 +18,7 @@ type root struct {
 	Stop    stopCmd    `cmd:"" help:"Stop the daemon."`
 	Restart restartCmd `cmd:"" help:"Stop the daemon and start a fresh one."`
 	Daemon  daemonCmd  `cmd:"" hidden:"" help:"Run the daemon in the foreground (the exec target of 'pmon start')."`
+	Ver     versionCmd `cmd:"" name:"version" help:"Print the version of pmon, of its daemon, and of each server."`
 
 	Version kong.VersionFlag `help:"Print the version and exit." short:"V"`
 }

@@ -100,6 +100,9 @@ type Daemon struct {
 	// reauthRequired marks a server whose renewal was refused: brokering keeps working until the wire token
 	// expires, but only a fresh login recovers it.
 	reauthRequired map[string]bool
+	// instances is each server's /api/instance as last read; absent for a server
+	// older than that route, or one not reached yet.
+	instances map[string]instance.Info
 
 	subMu   sync.Mutex
 	subs    map[int]chan control.Event
@@ -118,6 +121,7 @@ func New(version string, providers *driver.Registry) *Daemon {
 		httpClient:       &http.Client{Timeout: 15 * time.Second},
 		startedAt:        time.Now(),
 		rediscover:       make(chan struct{}, 1),
+		instances:        map[string]instance.Info{},
 		listeners:        map[dsKey]*brokerListener{},
 		datasources:      map[dsKey]driver.Endpoint{},
 		unbrokered:       map[dsKey]driver.Endpoint{},
@@ -187,6 +191,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 
 	go d.rediscoverLoop(ctx)
 	go d.renewLoop(ctx)
+	go d.versionLoop(ctx)
 
 	select {
 	case <-ctx.Done():
@@ -277,6 +282,8 @@ func (d *Daemon) Status() control.Status {
 		out.Servers = append(out.Servers, control.ServerInfo{
 			Name:               name,
 			Default:            name == d.cfg.Default,
+			ServerVersion:      d.instances[name].Version,
+			InstanceName:       d.instances[name].Name,
 			ControlPlane:       srv.ControlPlane,
 			Principal:          srv.Principal,
 			LoggedIn:           srv.LoggedIn(),
@@ -662,6 +669,12 @@ func (d *Daemon) setServer(name, controlPlane string, named bool) (control.SetSe
 	res.Name, res.Default = name, d.snapshot().Default == name
 	if res.Changed {
 		d.forgetServer(name)
+		d.mu.Lock()
+		delete(d.instances, name)
+		d.mu.Unlock()
+	}
+	if srv := d.snapshot().Servers[name]; srv != nil && (res.Created || res.Changed) {
+		go d.refreshVersion(context.Background(), name, srv)
 	}
 	if res.Created || res.Changed {
 		d.publishStatus()
@@ -690,6 +703,9 @@ func (d *Daemon) UnsetServer(req control.UnsetServerRequest) ([]string, error) {
 		return nil, err
 	}
 	d.forgetServer(name)
+	d.mu.Lock()
+	delete(d.instances, name)
+	d.mu.Unlock()
 	d.publishStatus()
 	return notEnded, nil
 }
@@ -774,6 +790,10 @@ func (d *Daemon) RenameServer(ctx context.Context, req control.RenameServerReque
 	}
 	d.mu.Lock()
 	reauth := d.reauthRequired[from]
+	if v, ok := d.instances[from]; ok {
+		d.instances[to] = v
+		delete(d.instances, from)
+	}
 	d.mu.Unlock()
 	d.forgetServer(from)
 	if reauth {
@@ -781,6 +801,7 @@ func (d *Daemon) RenameServer(ctx context.Context, req control.RenameServerReque
 		d.reauthRequired[to] = true
 		d.mu.Unlock()
 	}
+	go d.refreshVersion(context.Background(), to, srv)
 	d.openListeners(ctx)
 	d.publishStatus()
 	return res, nil
@@ -1152,6 +1173,52 @@ func (d *Daemon) rediscoverLoop(ctx context.Context) {
 			d.openListeners(ctx)
 		}
 	}
+}
+
+// versionCheckInterval is how often the daemon re-reads each server's version; a server changes it on a deploy.
+const versionCheckInterval = 5 * time.Minute
+
+func (d *Daemon) versionLoop(ctx context.Context) {
+	d.refreshVersions(ctx)
+	t := time.NewTicker(versionCheckInterval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			d.refreshVersions(ctx)
+		}
+	}
+}
+
+// refreshVersions reads every server's /api/instance, keeping the last version when one does not answer now.
+func (d *Daemon) refreshVersions(ctx context.Context) {
+	var wg sync.WaitGroup
+	for name, srv := range d.snapshot().Servers {
+		wg.Go(func() { d.refreshVersion(ctx, name, srv) })
+	}
+	wg.Wait()
+}
+
+// refreshVersion reads srv's version and keeps it while name is still that server at that URL: the server may
+// have been renamed, moved or replaced while the request ran.
+func (d *Daemon) refreshVersion(ctx context.Context, name string, srv *state.Server) {
+	info, err := instance.Fetch(ctx, srv.ControlPlane)
+	if err != nil && !errors.Is(err, instance.ErrUnsupported) {
+		return
+	}
+	d.mu.Lock()
+	if cur := d.cfg.Servers[name]; cur != nil && cur.ID == srv.ID && cur.ControlPlane == srv.ControlPlane {
+		changed := d.instances[name] != info
+		d.instances[name] = info
+		d.mu.Unlock()
+		if changed {
+			d.publishStatus()
+		}
+		return
+	}
+	d.mu.Unlock()
 }
 
 // renewLoop silently re-mints the wire token before it expires, so a saved connection keeps working without a

@@ -56,6 +56,7 @@ fun main() {
         config.grpcPort,
         ControlPlaneGrpcService(core),
         config.secretToken,
+        host = config.bindHost,
     )
     grpcServer.start()
     Runtime.getRuntime().addShutdownHook(
@@ -91,7 +92,7 @@ fun main() {
         },
     )
 
-    embeddedServer(Netty, port = config.httpPort) {
+    embeddedServer(Netty, host = config.bindHost, port = config.httpPort) {
         module(config, core)
     }.start(wait = true)
 }

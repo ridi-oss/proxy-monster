@@ -19,7 +19,7 @@ type serverCmd struct {
 }
 
 type serverSetCmd struct {
-	Name string `arg:"" optional:"" help:"Server name (default: the default server, or a new one named default)."`
+	Name string `arg:"" optional:"" help:"Server name (default: the server at this URL, else the name the server advertises)."`
 	URL  string `required:"" help:"Control-plane base URL."`
 }
 
@@ -29,9 +29,19 @@ func (c *serverSetCmd) Run() error {
 	if err != nil {
 		return err
 	}
+	s, err := client.Status(ctx)
+	if err != nil {
+		return err
+	}
+	if err := requireNamingDaemon(s, c.Name); err != nil {
+		return err
+	}
 	res, err := client.SetServer(ctx, control.SetServerRequest{Name: c.Name, ControlPlane: c.URL})
 	if err != nil {
 		return err
+	}
+	if res.Name == "" { // a daemon that predates reporting it; requireNamingDaemon made sure c.Name is set
+		res.Name, res.Default = c.Name, c.Name == s.DefaultServer
 	}
 	if res.NotEndedOnServer {
 		warnNotEnded(res.Name)
@@ -164,6 +174,15 @@ func warnNotEnded(servers ...string) {
 	for _, name := range servers {
 		fmt.Fprintf(os.Stderr, "warning: could not end the %q login on the server; it stays valid there until its TTL ends\n", name)
 	}
+}
+
+// requireNamingDaemon refuses a URL given without a server name to a daemon that predates naming a server after
+// its instance: that daemon reads it as the server called default, and would move that server and log it out.
+func requireNamingDaemon(s *control.Status, name string) error {
+	if name == "" && s.FixedDefault {
+		return errors.New("the running daemon predates naming a server after its instance — name the server, or run `pmon restart`")
+	}
+	return nil
 }
 
 // serverOrDefault is name, or the default server when name is empty, as long as it is configured.

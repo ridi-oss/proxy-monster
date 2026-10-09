@@ -18,7 +18,7 @@ import (
 // race into two device flows. It starts the daemon if none is running, and the brokers open as soon as the
 // login lands — there is no separate step to begin serving.
 type loginCmd struct {
-	Server string  `arg:"" optional:"" help:"Server to log in to (default: the default server)."`
+	Server string  `arg:"" optional:"" help:"Server to log in to (default: the default server; with --url, the server at that URL, else the name it advertises)."`
 	URL    string  `help:"Set the server's control-plane URL first (as 'pmon server set' does)."`
 	TTL    int     `default:"43200" help:"Requested token lifetime in seconds (default 12h; the server clamps it)."`
 	Scopes *string `help:"Comma-separated scopes to grant instead of the default mcp:read,mcp:query. Available: mcp:read, mcp:query, mcp:approvals:write, mcp:datasources:write, mcp:policies:write, mcp:identity:write, mcp:tokens."`
@@ -63,6 +63,11 @@ func (c *loginCmd) Run() error {
 	if s, err := client.Status(ctx); err == nil {
 		if err := requireCurrentDaemon(s); err != nil {
 			return err
+		}
+		if c.URL != "" {
+			if err := requireNamingDaemon(s, c.Server); err != nil {
+				return err
+			}
 		}
 		daemonOpensItsOwn = s.Version == ""
 	}

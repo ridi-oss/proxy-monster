@@ -23,6 +23,7 @@ import (
 
 	"github.com/ridi-oss/proxy-monster/pmon/control"
 	"github.com/ridi-oss/proxy-monster/pmon/driver"
+	"github.com/ridi-oss/proxy-monster/pmon/internal/instance"
 	"github.com/ridi-oss/proxy-monster/pmon/internal/login"
 	"github.com/ridi-oss/proxy-monster/pmon/internal/state"
 )
@@ -375,7 +376,14 @@ func (d *Daemon) LocalPassword() string {
 // login is the only step needed to reach a datasource. A second concurrent login to the same server waits
 // rather than starting a competing device flow.
 func (d *Daemon) Login(ctx context.Context, req control.LoginRequest, onEvent func(control.LoginEvent)) error {
-	name := d.serverName(req.Server)
+	name := req.Server
+	if name == "" && req.ControlPlane != "" {
+		var err error
+		if name, err = d.nameForURL(ctx, req.ControlPlane); err != nil {
+			return err
+		}
+	}
+	name = d.serverName(name)
 	if err := state.ValidServerName(name); err != nil {
 		return err
 	}
@@ -384,7 +392,7 @@ func (d *Daemon) Login(ctx context.Context, req control.LoginRequest, onEvent fu
 	defer loginMu.Unlock()
 
 	if req.ControlPlane != "" {
-		if _, err := d.SetServer(control.SetServerRequest{Name: name, ControlPlane: req.ControlPlane}); err != nil {
+		if _, err := d.setServer(name, req.ControlPlane, req.Server != ""); err != nil {
 			return err
 		}
 	}
@@ -591,18 +599,39 @@ func (d *Daemon) forgetServer(name string) {
 // SetServer creates a server or changes its URL. A token is only good against the control plane that minted
 // it, so changing a logged-in server's URL logs it out.
 func (d *Daemon) SetServer(req control.SetServerRequest) (control.SetServerResult, error) {
+	name := req.Name
+	if name == "" {
+		var err error
+		if name, err = d.nameForURL(context.Background(), req.ControlPlane); err != nil {
+			return control.SetServerResult{}, err
+		}
+	}
+	return d.setServer(name, req.ControlPlane, req.Name != "")
+}
+
+// setServer is SetServer for a resolved name. A name derived from the URL (named false) only ever creates a
+// server or finds it unchanged: another server may have taken the name since nameForURL looked.
+func (d *Daemon) setServer(name, controlPlane string, named bool) (control.SetServerResult, error) {
 	var res control.SetServerResult
-	name := d.serverName(req.Name)
-	if err := state.ValidServerName(name); err != nil {
+	cp, err := normalizeControlPlane(controlPlane)
+	if err != nil {
 		return res, err
 	}
-	cp, err := normalizeControlPlane(req.ControlPlane)
-	if err != nil {
+	if err := state.ValidServerName(name); err != nil {
 		return res, err
 	}
 	mu := lockOf(&d.serverMus, name)
 	mu.Lock()
 	defer mu.Unlock()
+	taken := func(srv *state.Server) error {
+		if !named && srv != nil && srv.ControlPlane != cp {
+			return fmt.Errorf("server %q already points at %s — name this one: `pmon server set <name> --url %s`", name, srv.ControlPlane, cp)
+		}
+		return nil
+	}
+	if err := taken(d.snapshot().Servers[name]); err != nil {
+		return res, err
+	}
 	if prev := d.snapshot().Servers[name]; prev != nil && prev.ControlPlane != cp && prev.LoggedIn() {
 		res.NotEndedOnServer = !d.endOnServer(prev, false)
 	}
@@ -610,6 +639,9 @@ func (d *Daemon) SetServer(req control.SetServerRequest) (control.SetServerResul
 	if err := d.commit(func(c *state.Config) error {
 		res = control.SetServerResult{NotEndedOnServer: notEnded}
 		srv := c.Servers[name]
+		if err := taken(srv); err != nil {
+			return err
+		}
 		switch {
 		case srv == nil:
 			c.Servers[name] = &state.Server{ID: state.NewServerID(), ControlPlane: cp, Ports: map[string]int{}}
@@ -666,6 +698,33 @@ func (d *Daemon) UnsetServer(req control.UnsetServerRequest) ([]string, error) {
 // state.DefaultServer, the name a new server gets.
 func (d *Daemon) serverName(name string) string {
 	return cmp.Or(d.snapshot().Resolve(name), state.DefaultServer)
+}
+
+// nameForURL names the server for a control-plane URL given without a name: the server already saved with that
+// URL, else the instance name the server advertises, else state.DefaultServer for a server too old to say.
+func (d *Daemon) nameForURL(ctx context.Context, raw string) (string, error) {
+	cp, err := normalizeControlPlane(raw)
+	if err != nil {
+		return "", err
+	}
+	cfg := d.snapshot()
+	for name, srv := range cfg.Servers {
+		if srv.ControlPlane == cp {
+			return name, nil
+		}
+	}
+	name := state.DefaultServer
+	info, err := instance.Fetch(ctx, cp)
+	switch {
+	case err == nil && state.ValidServerName(info.Name) == nil:
+		name = info.Name
+	case err != nil && !errors.Is(err, instance.ErrUnsupported):
+		return "", fmt.Errorf("could not ask %s for its name (%v) — try again, or name the server: `pmon server set <name> --url %s`", cp, err, cp)
+	}
+	if srv := cfg.Servers[name]; srv != nil {
+		return "", fmt.Errorf("server %q already points at %s — name this one: `pmon server set <name> --url %s`", name, srv.ControlPlane, cp)
+	}
+	return name, nil
 }
 
 // SetDefault makes a configured server the one a command addresses when it names none.

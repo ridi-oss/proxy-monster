@@ -146,6 +146,8 @@ func fakeCP(t *testing.T, datasources []map[string]any) *httptest.Server {
 			w.WriteHeader(http.StatusNoContent)
 		case "/api/datasources":
 			_ = json.NewEncoder(w).Encode(datasources)
+		case "/api/instance":
+			http.NotFound(w, r)
 		default:
 			t.Errorf("unexpected control-plane path %q", r.URL.Path)
 		}

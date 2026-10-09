@@ -273,7 +273,8 @@ pmon takes no proxy address of its own: its daemon discovers every datasource
 the logged-in principal may connect to and dials each one's `PM_ADVERTISE_ADDR`.
 
 - server URL — _required once per server_. `pmon server set [name] --url <url>`
-  saves a control-plane base URL under a name (`default` when omitted);
+  saves a control-plane base URL under a name (when omitted, the instance name
+  the server advertises, or `default` on an older server);
   `pmon login --url <url> [name]` does the same and logs in. Later commands name
   the server, or address the default server (the first one created;
   `pmon server default <name>` changes it). Example:

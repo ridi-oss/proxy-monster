@@ -1,0 +1,372 @@
+// Cedar schema for the authz decision service (docs/authz-model.md, "authz boundary").
+// Layer 2 (Cedar) sits on top of Layer 1 role resolution (RoleResolver, no Cedar): principals are
+// always `User` entities carrying their *resolved* roles as Cedar-graph parents, never bare Roles.
+//
+// Column authz ("masking is column config, not authorization") is deny-by-default: entities for
+// Table/Column/Tag are marshaled fresh from the live catalog on every request — there is no
+// policy-side table to keep in sync with tag/table membership (see Authz.authorizeColumns).
+
+// A singleton, attribute-less resource representing "the whole system" — the resource for
+// instance-wide admin actions (admin.datasources / admin.policies / admin.identity) that aren't
+// scoped to one entity.
+entity System;
+
+// proxy-monster's `app_role` rows (DESIGN.md), Cedar-side. A principal's roles are attached as
+// direct graph parents when Authz marshals the request (see Authz.kt) — this schema only needs to
+// know the type exists, not any particular role name.
+entity Role;
+
+// Local groups provisioned from the IdP group claim (JIT-on-login by default, or SCIM when enabled).
+// Not referenced by any action or seed policy.
+entity Group;
+
+// Column-authz entities (docs/authz-model.md worked examples). `Table`/`Column` are keyed off the
+// datasource NAME and full physical identity, not its numeric id:
+// `Table::"<dsName>/<catalog>/<schema>/<table>"` and
+// `Column::"<dsName>/<catalog>/<schema>/<table>/<column>"`. `Tag` is a leaf entity (freeform labels like "pii" — no
+// built-in "protected" meaning; whatever a policy grants/excludes on a tag is the whole of its
+// meaning). See Authz.authorizeColumns for how a query's touched columns are marshaled.
+// `Table` gains a `Tag` parent so a shipped `system:` classification (system-classification.md) attaches to
+// the Table and its Columns INHERIT it transitively via their Table parent — a Column of `pg_authid` is
+// `in Tag::"system:critical"` through the graph, without a second direct system tag on the column.
+entity Table in [Datasource, Tag];
+// `tagged` is true when the column carries any classification tag, so a `result.cap` row can say "a tagged
+// value" (`resource is Column && resource.tagged`) without naming the tag (result-caps.md).
+entity Column in [Table, Datasource, Tag] = {
+    tagged: Bool,
+};
+entity Tag;
+
+// A function CALLED by a query (facts-emission.md), keyed off the datasource NAME + bare
+// function name: `Function::"<dsName>/<name>"`. It gains a `Tag` parent so a shipped `system:`
+// classification (system-classification.md — a dangerous builtin like pg_read_file / dblink / load_file /
+// rds_* / keyring_*) attaches to it and the shipped `system:data-leak`/`system:critical` forbids override
+// any read grant → DENY. Only DANGEROUS-classified functions are marshaled; ordinary safe functions
+// (now/count/user UDFs) carry no tag and are not marshaled, so they are unaffected.
+entity Function in [Datasource, Tag];
+
+// A resource-bearing UTILITY command a statement performs (facts-emission.md), keyed off the
+// datasource NAME + the canonical command id: `Utility::"<dsName>/<command>"`. Like Function it gains a
+// `Tag` parent for its shipped `system:` classification (SHOW CREATE USER → system:critical, SHOW BINLOG
+// EVENTS → system:data-leak, …). Deny-by-default: unlike a Function (only dangerous ones are marshaled), a
+// RECOGNIZED utility with no classification is still marshaled and, carrying no permit, denies — so an
+// un-classifiable utility on an unsupported-version datasource fails closed (utilities are token-recognized,
+// not catalog-resolved, so this needs no function catalog).
+entity Utility in [Datasource, Tag];
+
+entity NativeResource in [Datasource] = {
+    kind: String,
+    id: String,
+    owner?: User,
+};
+
+action "native.invoke" appliesTo {
+    principal: [User, Role],
+    resource: [NativeResource],
+    context: RequestContext,
+};
+
+// The authenticated principal. Its Cedar parents are the role set RoleSource.rolesOf(principal)
+// resolved (Layer 1); "member of Role" is exactly that "principal in Role::..." relationship.
+entity User in [Role];
+
+// A brokered datasource (DESIGN.md's `datasource` table). `name` is best-effort/optional so
+// callers that only have the id can still authorize. It gains a `Tag` parent so every tag it carries
+// attaches to it AND — transitively via the Datasource parent every Table/Column/Function carries —
+// governs the conditional forbids / preset permits over the objects under it. The posture tags
+// (`system:development` / `system:production`) are what the shipped presets key on; marshalling filters
+// nothing by resource type, so any resource may carry any tag name (Authz.datasourceEntity).
+entity Datasource in [Tag] = {
+    name?: String,
+};
+
+// A task request (`access_request`). Its party attributes are entity references so approval and
+// assume-role policies use real entity equality (`resource.requester == principal`, etc.).
+// `approver`/`executedBy` are OPTIONAL: they do not exist until the task is decided/executed, so
+// Authz marshals them only when present (Authz.kt) and every policy that reads one must `has`-guard
+// it — the validator rejects an unguarded read of an optional attribute, which closes the fail-open
+// where an operator forbid conditioned on `approver` would silently permit a pre-decision task.
+// `requester` is always present (required). `released` is a no-op OPTIONAL attribute: no code sets
+// it, so it is always absent, and a has-guarded operator policy that reads it
+// (`resource has released && resource.released`) evaluates false (fail-closed) instead of bricking
+// boot on an undeclared attribute. Optionally scoped to its Datasource and Role
+// parents so lifecycle policies can match the requested execution scope.
+entity Request in [Datasource, Role] = {
+    requester: User,
+    approver?: User,
+    executedBy?: User,
+    released?: Bool,
+};
+
+// An issued JIT access grant (`access_grant` row). `owner`
+// is the principal the grant elevates, so an ownership policy can scope read/revoke to it
+// (`resource.owner == principal`). Parented on its Datasource/Role like Request so a per-datasource /
+// per-role revoke policy matches transitively (`resource in Datasource::"…"` / `resource in Role::"…"`).
+entity AccessGrant in [Datasource, Role] = {
+    owner: User,
+};
+
+// A wire/personal-access token being minted or managed (`proxy_token` row). `owner` is the principal
+// it authenticates as; `kind` (SESSION | USER | EDITOR | APPROVER_EXEC) lets a policy permit short
+// sessions but forbid long-lived PATs. It is OPTIONAL — absent for operations not tied to one token
+// (e.g. listing) — so a kind-scoped policy must guard it (`resource has kind && resource.kind == "USER"`).
+entity Token = {
+    owner: User,
+    kind?: String,
+};
+
+// One audit decision, carrying its owner so ordinary principals can be limited to their own records.
+entity AuditRecord = {
+    principal: User,
+};
+
+// The whole audit collection, used only for policies that grant the global read capability.
+entity AuditLog;
+
+// Request context (docs/authz-context.md): the server-attested signals every action's policies
+// condition on. Declared once as a common type and referenced by every action's `context` — the shape
+// AuthzContext.toCedarMap (Authz.kt) builds. (The generated `context.tag::<name>` actions in
+// CedarEngine.schemaFor intentionally use their own narrower context and do not reference this type.)
+type RequestContext = {
+    network_zones?: Set<String>,
+    channel?: String,
+    requester_ip?: ipaddr,
+    tags?: Set<String>,
+    // The statement's classified kind leaf (`select`, `explain`, `insert`, …), so a read policy can
+    // condition on HOW a column is read — e.g. permit `result.read.unmasked` only under a plan-only
+    // EXPLAIN (`context.stmt_kind == "explain"`), which returns no rows.
+    stmt_kind?: String,
+    // On a `result.cap` ask for a returned column only: whether this principal's read of it is masked
+    // (result-caps.md). Absent on every other decision.
+    masked?: Bool,
+    native_operation?: String,
+};
+
+// Global admin surfaces (App.kt route groups gated via requireAdmin). No per-resource scoping —
+// the resource is always the System singleton.
+action "admin.datasources", "admin.policies", "admin.identity"
+  appliesTo {
+    principal: [User, Role],
+    resource: [System],
+    context: RequestContext,
+  };
+
+// The task-approval decision. Resource is the pending request itself, carrying who asked for it.
+action "task.approve"
+  appliesTo {
+    principal: [User, Role],
+    resource: [Request],
+    context: RequestContext,
+  };
+
+// Task lifecycle actions replace code-side group-membership / ownership gates. `task.request` gates
+// creation against a datasource. `task.read` is the metadata gate over Request and AccessGrant;
+// `task.assume` is the confidentiality gate for saved result data. Approval routing is expressed as
+// policies scoped by the Request's Role/Datasource parents.
+action "task.request"
+  appliesTo {
+    principal: [User, Role],
+    resource: [Datasource],
+    context: RequestContext,
+  };
+
+action "task.read"
+  appliesTo {
+    principal: [User, Role],
+    resource: [Request, AccessGrant],
+    context: RequestContext,
+  };
+
+action "task.assume"
+  appliesTo {
+    principal: [User, Role],
+    resource: [Request],
+    context: RequestContext,
+  };
+
+action "task.cancel", "task.delete"
+  appliesTo {
+    principal: [User, Role],
+    resource: [Request],
+    context: RequestContext,
+  };
+
+action "grant.revoke"
+  appliesTo {
+    principal: [User, Role],
+    resource: [AccessGrant],
+    context: RequestContext,
+  };
+
+// Credential issuance + management. `token.mint` gates creating a credential — and, since a
+// token's SECRET is returned only once at mint (only its hash is stored after), minting is the ONLY way
+// to obtain that secret, so there is no separate content-read action. `token.list` gates listing token
+// METADATA (id/kind/name/timestamps) and `token.revoke` gates revoking — both go to the owner and, for
+// oversight, an identity admin. `token.mint` is owner-locked (self permit + a cross-user forbid), so an
+// admin who may list/revoke can never mint AS — obtain the secret of — another principal's token.
+action "token.mint", "token.list", "token.revoke"
+  appliesTo {
+    principal: [User, Role],
+    resource: [Token],
+    context: RequestContext,
+  };
+
+// Audit reads apply either to one ownership-bearing record or to the whole collection capability.
+action "audit.read"
+  appliesTo {
+    principal: [User, Role],
+    resource: [AuditRecord, AuditLog],
+    context: RequestContext,
+  };
+
+// Per-column result-visibility decision (docs/authz-model.md — "masking is column config, not
+// authorization"). The resource is the touched Column itself, or — via Cedar `in` — any Table/Tag/
+// Datasource grant that covers it (see the "read table except pii" worked example). Deny-by-default:
+// a column with neither `result.read.unmasked` nor `result.read.masked` permitted is DENIED, never
+// returned cleartext (Authz.authorizeColumns; the caller — Query.kt — resolves the actual mask fn,
+// Cedar only picks unmasked/masked/deny).
+action "result.read.unmasked", "result.read.masked"
+  appliesTo {
+    principal: [User, Role],
+    resource: [Column, Table, Tag, Datasource, Function, Utility],
+    context: RequestContext,
+  };
+
+// `result.cap` is never consulted for access: no enforcement path asks it, so permitting it grants
+// nothing. Its permits exist to carry the `@cap` annotation (result-caps.md) the control plane folds after a
+// statement's reads are authorized — it asks this action on the Datasource and on every returned column
+// (with `context.masked`), table, function, and utility, and reads the annotation off the permits that
+// determined each ALLOW; a forbid that determines a DENY lifts every limit. Scoped like a read permit so a
+// cap can target a tag, a table, a datasource, or a role.
+action "result.cap"
+  appliesTo {
+    principal: [User, Role],
+    resource: [Column, Table, Tag, Datasource, Function, Utility],
+    context: RequestContext,
+  };
+
+// `datasource.connect` — the once-per-query gate ahead of the catalog/analyzer/column loop
+// (docs/authz-model.md): whether the principal may touch the datasource at all. Keyed off the
+// Datasource NAME, not its numeric id — see Authz.authorizeDatasourceAction. Per-statement
+// authorization is the statement-classification gate (stmt.cat.* / stmt.kind.*, below), the only
+// datasource-statement vocabulary — a policy naming any other statement action fails validation.
+action "datasource.connect"
+  appliesTo {
+    principal: [User, Role],
+    resource: [Datasource],
+    context: RequestContext,
+  };
+
+// Datasource-level exception gates (facts-emission.md). `exception.unanalyzable` decides whether a
+// statement the analyzer cannot fully reason about may be RELAYED VERBATIM (no rewrite, no masks);
+// `exception.unmaskable` decides whether a masked result the proxy cannot mask on the chosen wire path (the
+// MySQL binary protocol, or a wire feature that defeats masking) may still be relayed unmasked. Both
+// are deny-by-default: with no exception policy the production floor DENIES; a permissive development
+// datasource can permit them (system:development).
+action "exception.unanalyzable", "exception.unmaskable"
+  appliesTo {
+    principal: [User, Role],
+    resource: [Datasource],
+    context: RequestContext,
+  };
+
+// Statement-classification gate (docs/statement-typing.md). Each statement KIND is an action
+// `stmt.kind.<k>` that is a member of its category action `stmt.cat.<path>`; categories nest
+// (write.insert in write, admin.account in admin). A policy targets one kind, a leaf category,
+// or a whole domain, and Cedar action-group membership carries it down. Keyed off the
+// Datasource, like sql.<kind> was. Deny-by-default: a kind with no permit reaching it denies.
+
+// --- categories (nesting) ---
+action "stmt.cat.admin"
+  appliesTo { principal: [User, Role], resource: [Datasource], context: RequestContext };
+action "stmt.cat.ddl"
+  appliesTo { principal: [User, Role], resource: [Datasource], context: RequestContext };
+action "stmt.cat.metadata"
+  appliesTo { principal: [User, Role], resource: [Datasource], context: RequestContext };
+action "stmt.cat.read"
+  appliesTo { principal: [User, Role], resource: [Datasource], context: RequestContext };
+action "stmt.cat.session"
+  appliesTo { principal: [User, Role], resource: [Datasource], context: RequestContext };
+action "stmt.cat.write"
+  appliesTo { principal: [User, Role], resource: [Datasource], context: RequestContext };
+action "stmt.cat.admin.account" in ["stmt.cat.admin"]
+  appliesTo { principal: [User, Role], resource: [Datasource], context: RequestContext };
+action "stmt.cat.admin.exec" in ["stmt.cat.admin"]
+  appliesTo { principal: [User, Role], resource: [Datasource], context: RequestContext };
+action "stmt.cat.admin.file" in ["stmt.cat.admin"]
+  appliesTo { principal: [User, Role], resource: [Datasource], context: RequestContext };
+action "stmt.cat.admin.lock" in ["stmt.cat.admin"]
+  appliesTo { principal: [User, Role], resource: [Datasource], context: RequestContext };
+action "stmt.cat.admin.maintenance" in ["stmt.cat.admin"]
+  appliesTo { principal: [User, Role], resource: [Datasource], context: RequestContext };
+action "stmt.cat.admin.plugin" in ["stmt.cat.admin"]
+  appliesTo { principal: [User, Role], resource: [Datasource], context: RequestContext };
+action "stmt.cat.admin.process" in ["stmt.cat.admin"]
+  appliesTo { principal: [User, Role], resource: [Datasource], context: RequestContext };
+action "stmt.cat.admin.replication" in ["stmt.cat.admin"]
+  appliesTo { principal: [User, Role], resource: [Datasource], context: RequestContext };
+action "stmt.cat.admin.server" in ["stmt.cat.admin"]
+  appliesTo { principal: [User, Role], resource: [Datasource], context: RequestContext };
+action "stmt.cat.admin.unanalyzable" in ["stmt.cat.admin"]
+  appliesTo { principal: [User, Role], resource: [Datasource], context: RequestContext };
+action "stmt.cat.write.delete" in ["stmt.cat.write"]
+  appliesTo { principal: [User, Role], resource: [Datasource], context: RequestContext };
+action "stmt.cat.write.insert" in ["stmt.cat.write"]
+  appliesTo { principal: [User, Role], resource: [Datasource], context: RequestContext };
+action "stmt.cat.write.update" in ["stmt.cat.write"]
+  appliesTo { principal: [User, Role], resource: [Datasource], context: RequestContext };
+
+// --- kinds (each a member of its category) ---
+action "stmt.kind.select", "stmt.kind.table", "stmt.kind.values", "stmt.kind.with_select", "stmt.kind.set_op", "stmt.kind.explain"
+  in ["stmt.cat.read"]
+  appliesTo { principal: [User, Role], resource: [Datasource], context: RequestContext };
+action "stmt.kind.insert", "stmt.kind.insert_select"
+  in ["stmt.cat.write.insert"]
+  appliesTo { principal: [User, Role], resource: [Datasource], context: RequestContext };
+// insert_on_dup (upsert) can UPDATE an existing row, so it needs write.update, the higher-privilege leaf —
+// a plain write.insert grant must not reach it.
+action "stmt.kind.update", "stmt.kind.insert_on_dup"
+  in ["stmt.cat.write.update"]
+  appliesTo { principal: [User, Role], resource: [Datasource], context: RequestContext };
+action "stmt.kind.delete", "stmt.kind.replace"
+  in ["stmt.cat.write.delete"]
+  appliesTo { principal: [User, Role], resource: [Datasource], context: RequestContext };
+action "stmt.kind.create_table", "stmt.kind.create_view", "stmt.kind.create_index", "stmt.kind.create_database", "stmt.kind.create_trigger", "stmt.kind.create_procedure", "stmt.kind.create_function", "stmt.kind.create_event", "stmt.kind.create_server", "stmt.kind.create_tablespace", "stmt.kind.create_srs", "stmt.kind.alter_table", "stmt.kind.alter_database", "stmt.kind.alter_view", "stmt.kind.alter_event", "stmt.kind.alter_procedure", "stmt.kind.alter_function", "stmt.kind.alter_server", "stmt.kind.alter_tablespace", "stmt.kind.alter_instance", "stmt.kind.drop_table", "stmt.kind.drop_index", "stmt.kind.drop_view", "stmt.kind.drop_database", "stmt.kind.drop_trigger", "stmt.kind.drop_procedure", "stmt.kind.drop_function", "stmt.kind.drop_event", "stmt.kind.drop_server", "stmt.kind.drop_tablespace", "stmt.kind.drop_srs", "stmt.kind.truncate_table", "stmt.kind.rename_table", "stmt.kind.select_into"
+  in ["stmt.cat.ddl"]
+  appliesTo { principal: [User, Role], resource: [Datasource], context: RequestContext };
+action "stmt.kind.start_transaction", "stmt.kind.commit", "stmt.kind.rollback", "stmt.kind.savepoint", "stmt.kind.set_transaction", "stmt.kind.set_session_var", "stmt.kind.use", "stmt.kind.empty"
+  in ["stmt.cat.session"]
+  appliesTo { principal: [User, Role], resource: [Datasource], context: RequestContext };
+action "stmt.kind.describe", "stmt.kind.explain_table", "stmt.kind.show_metadata", "stmt.kind.show_warnings", "stmt.kind.show_errors", "stmt.kind.help"
+  in ["stmt.cat.metadata"]
+  appliesTo { principal: [User, Role], resource: [Datasource], context: RequestContext };
+action "stmt.kind.create_user", "stmt.kind.alter_user", "stmt.kind.drop_user", "stmt.kind.rename_user", "stmt.kind.create_role", "stmt.kind.drop_role", "stmt.kind.grant_priv", "stmt.kind.grant_role", "stmt.kind.revoke_priv", "stmt.kind.revoke_role", "stmt.kind.set_password", "stmt.kind.set_role", "stmt.kind.set_default_role", "stmt.kind.set_session_authorization", "stmt.kind.show_grants", "stmt.kind.show_create_user"
+  in ["stmt.cat.admin.account"]
+  appliesTo { principal: [User, Role], resource: [Datasource], context: RequestContext };
+action "stmt.kind.change_replication_source", "stmt.kind.change_replication_filter", "stmt.kind.start_replica", "stmt.kind.stop_replica", "stmt.kind.reset_replica", "stmt.kind.start_group_replication", "stmt.kind.stop_group_replication", "stmt.kind.purge_binary_logs", "stmt.kind.reset_master", "stmt.kind.reset_binary_logs_and_gtids", "stmt.kind.set_sql_log_bin", "stmt.kind.binlog", "stmt.kind.show_master_status", "stmt.kind.show_binary_logs", "stmt.kind.show_binary_log_status", "stmt.kind.show_binlog_events", "stmt.kind.show_relaylog_events", "stmt.kind.show_replica_status", "stmt.kind.show_replicas"
+  in ["stmt.cat.admin.replication"]
+  appliesTo { principal: [User, Role], resource: [Datasource], context: RequestContext };
+action "stmt.kind.kill", "stmt.kind.show_processlist", "stmt.kind.show_engine_status"
+  in ["stmt.cat.admin.process"]
+  appliesTo { principal: [User, Role], resource: [Datasource], context: RequestContext };
+action "stmt.kind.shutdown", "stmt.kind.restart", "stmt.kind.flush", "stmt.kind.clone", "stmt.kind.set_global", "stmt.kind.set_persist", "stmt.kind.set_persist_only", "stmt.kind.set_sql_mode", "stmt.kind.set_standard_conforming_strings", "stmt.kind.set_resource_group", "stmt.kind.create_resource_group", "stmt.kind.alter_resource_group", "stmt.kind.drop_resource_group", "stmt.kind.reset_persist"
+  in ["stmt.cat.admin.server"]
+  appliesTo { principal: [User, Role], resource: [Datasource], context: RequestContext };
+action "stmt.kind.analyze_table", "stmt.kind.check_table", "stmt.kind.checksum_table", "stmt.kind.optimize_table", "stmt.kind.repair_table", "stmt.kind.cache_index", "stmt.kind.load_index_into_cache"
+  in ["stmt.cat.admin.maintenance"]
+  appliesTo { principal: [User, Role], resource: [Datasource], context: RequestContext };
+action "stmt.kind.install_plugin", "stmt.kind.uninstall_plugin", "stmt.kind.install_component", "stmt.kind.uninstall_component"
+  in ["stmt.cat.admin.plugin"]
+  appliesTo { principal: [User, Role], resource: [Datasource], context: RequestContext };
+action "stmt.kind.lock_tables", "stmt.kind.unlock_tables", "stmt.kind.lock_instance", "stmt.kind.unlock_instance"
+  in ["stmt.cat.admin.lock"]
+  appliesTo { principal: [User, Role], resource: [Datasource], context: RequestContext };
+action "stmt.kind.select_into_outfile", "stmt.kind.select_into_dumpfile", "stmt.kind.load_data", "stmt.kind.load_xml", "stmt.kind.import_table", "stmt.kind.copy"
+  in ["stmt.cat.admin.file"]
+  appliesTo { principal: [User, Role], resource: [Datasource], context: RequestContext };
+action "stmt.kind.prepare", "stmt.kind.execute", "stmt.kind.deallocate_prepare", "stmt.kind.call", "stmt.kind.do"
+  in ["stmt.cat.admin.exec"]
+  appliesTo { principal: [User, Role], resource: [Datasource], context: RequestContext };
+action "stmt.kind.handler", "stmt.kind.xa"
+  in ["stmt.cat.admin.unanalyzable"]
+  appliesTo { principal: [User, Role], resource: [Datasource], context: RequestContext };

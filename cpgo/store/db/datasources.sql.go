@@ -44,7 +44,7 @@ func (q *Queries) Datasources(ctx context.Context) ([]DatasourcesRow, error) {
 		return nil, err
 	}
 	defer rows.Close()
-	var items []DatasourcesRow
+	items := []DatasourcesRow{}
 	for rows.Next() {
 		var i DatasourcesRow
 		if err := rows.Scan(

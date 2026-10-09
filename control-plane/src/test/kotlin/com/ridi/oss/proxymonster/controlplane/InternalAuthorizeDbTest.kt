@@ -135,6 +135,16 @@ class InternalAuthorizeDbTest {
     }
 
     @Test
+    fun `token decisions follow the shipped self-mint permit`() = testApplication {
+        val client = app()
+        suspend fun allow(principal: String, owner: String, kind: String?) =
+            client.authorize(InternalAuthorizeRequest(principal, "token.mint", InternalResource("Token", owner, kind = kind))).body<InternalAuthorizeResult>().allow
+        assertEquals(true, allow(ALICE, ALICE, "SESSION"))
+        assertEquals(false, allow(ALICE, BOB, "SESSION"))
+        assertEquals(HttpStatusCode.BadRequest, client.authorize(InternalAuthorizeRequest(ALICE, "token.mint", InternalResource("Token", ALICE, kind = "NOPE"))).status)
+    }
+
+    @Test
     fun `an unknown action or resource is rejected`() = testApplication {
         val client = app()
         assertEquals(HttpStatusCode.BadRequest, client.authorize(InternalAuthorizeRequest(AUDITOR, "audit.write", InternalResource("AuditLog"))).status)

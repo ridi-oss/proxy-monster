@@ -94,7 +94,7 @@ func codexConfig() configFile {
 			}
 			entries := map[string]entry{}
 			for name, s := range servers {
-				entries[name] = entry{URL: s.URL, Command: s.Command, Args: s.Args}
+				entries[name] = entry{URL: s.URL, Command: s.Command, Args: s.Args, Env: s.Env}
 			}
 			return entries, nil
 		},
@@ -285,43 +285,34 @@ func configApp(id, name string, file configFile) App {
 	return App{
 		ID: id, Name: name,
 		installed: file.exists,
-		connected: func(s Setup, entry, server string) bool {
-			c, found, err := file.read(entry)
-			return err == nil && found && ours(c.Command, c.Args, envOrEmpty(c.Env), s.Pmon, server)
+		connected: func(s Setup, server string) bool {
+			entries, err := file.list()
+			return err == nil && anyCurrent(entries, s, server)
 		},
-		add: func(s Setup, entry string, srv Server) ([]string, error) {
+		add: func(s Setup, srv Server) (string, []string, error) {
 			others, err := file.list()
 			if err != nil {
-				return nil, err
+				return "", nil, err
 			}
-			if mine, ok := others[entry]; ok && !replaceable(mine, srv) {
-				return nil, &EntryError{App: name, Entry: entry, Taken: true}
-			}
+			entry := freeName(others, srv)
 			if err := file.write(entry, mcpCommand{Command: s.Pmon, Args: []string{"mcp", srv.Name}, Env: DaemonEnv()}); err != nil {
-				return nil, err
+				return "", nil, err
 			}
 			var replaced []string
 			for _, other := range replaceableNames(others, entry, srv) {
 				if err := file.delete(other); err != nil {
-					return replaced, err
+					return entry, replaced, err
 				}
 				replaced = append(replaced, other)
 			}
-			return replaced, nil
+			return entry, replaced, nil
 		},
-		remove: func(s Setup, entry, server string) (bool, error) {
+		remove: func(s Setup, server string) (bool, error) {
 			entries, err := file.list()
 			if err != nil {
 				return false, err
 			}
-			mine, found := entries[entry]
-			if found && (mine.URL != "" || !ownCommand(mine.Command, mine.Args, server)) {
-				return false, &EntryError{App: name, Entry: entry}
-			}
-			names := relayNames(entries, entry, server)
-			if found {
-				names = append([]string{entry}, names...)
-			}
+			names := relayNames(entries, "", server)
 			for i, n := range names {
 				if err := file.delete(n); err != nil {
 					return i > 0, err

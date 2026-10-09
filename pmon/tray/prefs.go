@@ -189,10 +189,10 @@ func (p *prefs) aiToggle(id, server string, on bool) any {
 			srv := aiapps.Server{Name: server}
 			for _, s := range p.state().Servers {
 				if s.Name == server {
-					srv.URL = s.URL
+					srv = aiapps.Lookup(context.Background(), server, s.URL)
 				}
 			}
-			_, err = app.Add(aiSetup(), srv)
+			_, _, err = app.Add(aiSetup(), srv)
 		} else {
 			_, err = app.Remove(aiSetup(), server)
 		}

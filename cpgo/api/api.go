@@ -20,8 +20,28 @@ import (
 
 // Error is the Kotlin ApiError: a stable code the web looks up as an i18n key, and its params.
 type Error struct {
-	Code   string            `json:"code"`
-	Params map[string]string `json:"params"`
+	Code   string `json:"code"`
+	Params Params `json:"params"`
+}
+
+// Params are an error's key/value pairs in insertion order, the order Kotlin's maps serialize in.
+type Params [][2]string
+
+func (p Params) MarshalJSON() ([]byte, error) {
+	var b bytes.Buffer
+	b.WriteByte('{')
+	for i, kv := range p {
+		if i > 0 {
+			b.WriteByte(',')
+		}
+		k, _ := json.Marshal(kv[0])
+		v, _ := json.Marshal(kv[1])
+		b.Write(k)
+		b.WriteByte(':')
+		b.Write(v)
+	}
+	b.WriteByte('}')
+	return b.Bytes(), nil
 }
 
 // WriteJSON writes v the way the Kotlin control plane's serializer does: no HTML escaping, no trailing newline.
@@ -39,10 +59,17 @@ func WriteJSON(w http.ResponseWriter, status int, v any) {
 	_, _ = w.Write(bytes.TrimSuffix(buf.Bytes(), []byte("\n")))
 }
 
+// WriteError writes an ApiError; params holds at most one key, use WriteErrorParams for more.
 func WriteError(w http.ResponseWriter, status int, code string, params map[string]string) {
-	if params == nil {
-		params = map[string]string{}
+	var p Params
+	for k, v := range params {
+		p = append(p, [2]string{k, v})
 	}
+	WriteErrorParams(w, status, code, p)
+}
+
+// WriteErrorParams writes an ApiError with params in the given order.
+func WriteErrorParams(w http.ResponseWriter, status int, code string, params Params) {
 	WriteJSON(w, status, Error{Code: code, Params: params})
 }
 

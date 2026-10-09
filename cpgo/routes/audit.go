@@ -39,13 +39,13 @@ type auditEvent struct {
 	DecisionID         *int64   `json:"decisionId,omitempty"`
 }
 
-type audit struct {
+type auditLog struct {
 	pool  *pgxpool.Pool
 	authz api.Authorizer
 }
 
 // list returns the whole log to a caller Cedar grants audit.read on it, and the caller's own rows otherwise.
-func (a audit) list(w http.ResponseWriter, r *http.Request) {
+func (a auditLog) list(w http.ResponseWriter, r *http.Request) {
 	limit := 100
 	if n, err := strconv.ParseInt(r.URL.Query().Get("limit"), 10, 32); err == nil {
 		limit = min(max(int(n), 1), 500)
@@ -76,7 +76,7 @@ func (a audit) list(w http.ResponseWriter, r *http.Request) {
 }
 
 // get answers a record Cedar hides exactly like a missing one, so the route is no existence oracle.
-func (a audit) get(w http.ResponseWriter, r *http.Request) {
+func (a auditLog) get(w http.ResponseWriter, r *http.Request) {
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
 		api.WriteError(w, http.StatusBadRequest, "common.bad_id", nil)

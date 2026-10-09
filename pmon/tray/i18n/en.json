@@ -106,6 +106,7 @@
   "ai.taken": "{app} already has an MCP server named {entry} that Proxy Monster did not add. Rename or remove it in {app} first.",
   "ai.notOurs": "The {app} entry {entry} is not Proxy Monster's, so it was left alone.",
   "ai.notInstalled": "{app} is not installed.",
+  "ai.claudeStillRunning": "Claude Desktop did not quit, so nothing was changed. Quit it and try again.",
   "s.title": "Proxy Monster Settings",
   "s.nav.servers": "Servers",
   "s.nav.ai": "AI Apps",

@@ -26,10 +26,23 @@ type Setup struct {
 	Pmon string
 	// Confirm asks before Claude Desktop for Windows is closed and reopened around an edit; nil declines.
 	Confirm func() bool
+	// closed is set inside Batch, where Claude Desktop is already closed for every change.
+	closed bool
+}
+
+// desktopEdit makes edit with Claude Desktop closed, unless a Batch already closed it.
+func (s Setup) desktopEdit(edit func() error) error {
+	if s.closed {
+		return edit()
+	}
+	return withClaudeDesktopClosed(s.Confirm, edit)
 }
 
 // ErrDeclined is a change the user declined when asked to confirm it.
 var ErrDeclined = errors.New("declined")
+
+// ErrStillRunning is Claude Desktop for Windows still running after it was asked to quit, so nothing was changed.
+var ErrStillRunning = errors.New("Claude Desktop did not quit; quit it and try again")
 
 // NotInstalledError is a change to an app whose CLI is not installed.
 type NotInstalledError struct{ App string }
@@ -73,6 +86,18 @@ func (a App) Add(s Setup, srv Server) ([]string, error) { return a.add(s, EntryN
 // Remove removes pmon's relay for server, under its name or any other, reporting whether there was one.
 func (a App) Remove(s Setup, server string) (bool, error) {
 	return a.remove(s, EntryName(server), server)
+}
+
+// Batch runs fn, which makes several changes to the app, closing and reopening Claude Desktop once around all of
+// them rather than once per change. A declined restart makes no change and returns ErrDeclined.
+func (a App) Batch(s Setup, fn func(Setup) error) error {
+	if a.ID != "claude-desktop" || s.closed {
+		return fn(s)
+	}
+	return withClaudeDesktopClosed(s.Confirm, func() error {
+		s.closed = true
+		return fn(s)
+	})
 }
 
 // Apps is every app this package knows, installed or not.
@@ -143,7 +168,7 @@ func claudeDesktop() App {
 			}
 			var taken error
 			var replaced []string
-			err = withClaudeDesktopClosed(s.Confirm, func() error {
+			err = s.desktopEdit(func() error {
 				return editDesktopServers(claudeDesktopConfig(), func(m map[string]json.RawMessage) {
 					replaced = nil
 					if prev, ok := m[entry]; ok && !replaceable(decodeEntry(prev), srv) {
@@ -167,7 +192,7 @@ func claudeDesktop() App {
 		},
 		remove: func(s Setup, entry, server string) (bool, error) {
 			removed := false
-			err := withClaudeDesktopClosed(s.Confirm, func() error {
+			err := s.desktopEdit(func() error {
 				return editDesktopServers(claudeDesktopConfig(), func(m map[string]json.RawMessage) {
 					removed = false
 					for name, raw := range m {

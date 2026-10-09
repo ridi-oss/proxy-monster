@@ -606,7 +606,7 @@ func TestDatasourceList(t *testing.T) {
 	ctx := context.Background()
 	var open, closed int64
 	if err := e.st.Pool.QueryRow(ctx, `INSERT INTO datasource (name, engine, host, port, db_name, tags, advertise_addr, connection_info, description)
-		VALUES ('acme', 'mysql', 'db', 3306, 'acme', '["pii"]', 'proxy:6033', '{"properties": {"tls": "on", "a": "b"}, "endpoint": "proxy:6033"}', 'orders')
+		VALUES ('acme', 'mysql', 'db', 3306, 'acme', '["pii"]', 'proxy:6033', '{"properties": {"tls": "on", "aa": "b", "z": "c"}, "endpoint": "proxy:6033"}', 'orders')
 		RETURNING id`).Scan(&open); err != nil {
 		t.Fatal(err)
 	}
@@ -624,7 +624,7 @@ func TestDatasourceList(t *testing.T) {
 
 	status, body := e.do(t, http.MethodGet, "/api/datasources", "", alice)
 	want := fmt.Sprintf(`[{"id":%d,"name":"acme","engine":"mysql","host":"db","port":3306,"dbName":"acme","tags":["pii"],"defaultSchemas":[],`+
-		`"advertiseAddr":"proxy:6033","advertiseWireTls":false,"connectionInfo":{"endpoint":"proxy:6033","properties":{"a":"b","tls":"on"}},"description":"orders","defaultSchemaSettable":true},`+
+		`"advertiseAddr":"proxy:6033","advertiseWireTls":false,"connectionInfo":{"endpoint":"proxy:6033","properties":{"z":"c","aa":"b","tls":"on"}},"description":"orders","defaultSchemaSettable":true},`+
 		`{"id":%d,"name":"lake","engine":"athena","host":"","port":0,"dbName":"","tags":[],"defaultSchemas":[],"advertiseWireTls":false,"description":"","defaultSchemaSettable":false}]`, open, closed)
 	if status != http.StatusOK || body != want {
 		t.Fatalf("list:\n got %s\nwant %s", body, want)
@@ -680,12 +680,15 @@ func TestDatasourceList(t *testing.T) {
 		t.Fatal(err)
 	}
 	_ = resp.Body.Close()
-	if resp.StatusCode != http.StatusOK || len(e.authz.asked) != 2 || !strings.HasPrefix(e.authz.asked[0], "bob@example.com datasource.connect") {
+	if resp.StatusCode != http.StatusOK || len(e.authz.asked) != 2 || !strings.HasPrefix(e.authz.asked[0], "bob@example.com datasource.connect") ||
+		!strings.HasSuffix(e.authz.asked[0], " @127.0.0.1") {
 		t.Fatalf("pmon bearer: %d asked %v", resp.StatusCode, e.authz.asked)
 	}
 	for _, tc := range []struct{ token, kind, extra string }{
 		{"editor-token", "EDITOR", ""},
 		{"retired-token", "SESSION", ", retired_at = now()"},
+		{"revoked-token", "SESSION", ", revoked_at = now()"},
+		{"expired-token", "USER", ", expires_at = now() - interval '1 second'"},
 	} {
 		sum := sha256.Sum256([]byte(tc.token))
 		if _, err := e.st.Pool.Exec(ctx, `INSERT INTO proxy_token (token_hash, principal, kind, expires_at) VALUES ($1, 'carol@example.com', $2, now() + interval '1 hour')`,
@@ -698,7 +701,7 @@ func TestDatasourceList(t *testing.T) {
 			}
 		}
 	}
-	for _, tok := range []string{"editor-token", "retired-token", "pmk_not-a-real-token"} {
+	for _, tok := range []string{"editor-token", "retired-token", "revoked-token", "expired-token", "pmk_not-a-real-token"} {
 		r, _ := http.NewRequest(http.MethodGet, e.srv.URL+"/api/datasources", nil)
 		r.Header.Set("Authorization", "Bearer "+tok)
 		resp, err := http.DefaultClient.Do(r)

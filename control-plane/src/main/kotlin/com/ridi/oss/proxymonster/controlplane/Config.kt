@@ -2,11 +2,29 @@ package com.ridi.oss.proxymonster.controlplane
 
 import com.ridi.oss.proxymonster.auth.clampTtlSeconds
 import java.net.URI
+import java.nio.file.Files
+import java.nio.file.Path
 
 typealias OidcGroupMapping = com.ridi.oss.proxymonster.auth.OidcGroupMapping
 
 /** A trusted CI OIDC issuer; [name] keys the Cedar principal (`Workload::"github"`). */
 data class CiOidcIssuer(val name: String, val issuer: String, val audience: String)
+
+enum class GitHubIdentityResolver(val key: String) {
+    EXTERNAL_IDENTITY("external-identity"),
+    VERIFIED_EMAIL("verified-email"),
+    COMMIT_EMAIL("commit-email"),
+}
+
+/** A GitHub App the SQL-from-GitHub source acts as; [identity] is the ordered user-to-principal resolver list. */
+data class GitHubConfig(
+    val appId: String,
+    val privateKeyPem: String,
+    val apiUrl: String,
+    val identity: List<GitHubIdentityResolver>,
+) {
+    override fun toString(): String = "GitHubConfig(appId=$appId, privateKeyPem=***, apiUrl=$apiUrl, identity=$identity)"
+}
 
 /**
  * Generic OIDC settings (docs/auth-model.md) — provider-agnostic: endpoints are resolved from
@@ -118,6 +136,8 @@ data class Config(
     // PM_CI_OIDC_ISSUERS="<name>=<issuerUrl>,…", e.g. github=https://token.actions.githubusercontent.com;
     // empty disables CI token exchange. Every issuer's tokens must carry PM_CI_OIDC_AUDIENCE.
     val ciOidcIssuers: List<CiOidcIssuer> = emptyList(),
+    // Null when PM_GITHUB_APP_ID is unset: the GitHub source is off.
+    val github: GitHubConfig? = null,
 ) {
     init {
         require(webSessionSlideSeconds < webSessionIdleSeconds) {
@@ -270,6 +290,38 @@ data class Config(
                 "PM_INSTANCE_DESCRIPTION must be one line of at most $MAX_INSTANCE_DESCRIPTION characters"
             }
 
+            val github = run {
+                val appId = env("PM_GITHUB_APP_ID")?.trim()?.takeIf { it.isNotBlank() }
+                val keyPem = env("PM_GITHUB_APP_PRIVATE_KEY")?.takeIf { it.isNotBlank() }
+                val keyFile = env("PM_GITHUB_APP_PRIVATE_KEY_FILE")?.trim()?.takeIf { it.isNotBlank() }
+                require(keyPem == null || keyFile == null) {
+                    "set only one of PM_GITHUB_APP_PRIVATE_KEY and PM_GITHUB_APP_PRIVATE_KEY_FILE"
+                }
+                val hasKey = keyPem != null || keyFile != null
+                require((appId != null) == hasKey) {
+                    "PM_GITHUB_APP_ID and PM_GITHUB_APP_PRIVATE_KEY (or PM_GITHUB_APP_PRIVATE_KEY_FILE) must be set together"
+                }
+                if (appId == null) return@run null
+                val validIdentity = GitHubIdentityResolver.entries.joinToString(", ") { it.key }
+                val identity = (env("PM_GITHUB_IDENTITY")?.takeIf { it.isNotBlank() } ?: "external-identity,verified-email")
+                    .split(',').map { it.trim() }.filter { it.isNotEmpty() }
+                    .map { raw ->
+                        requireNotNull(GitHubIdentityResolver.entries.firstOrNull { it.key == raw }) {
+                            "PM_GITHUB_IDENTITY: unknown value '$raw'; valid values: $validIdentity"
+                        }
+                    }
+                require(identity.isNotEmpty() && identity.distinct().size == identity.size) {
+                    "PM_GITHUB_IDENTITY must list distinct values from: $validIdentity"
+                }
+                GitHubConfig(
+                    appId = appId,
+                    privateKeyPem = keyPem ?: Files.readString(Path.of(keyFile!!)),
+                    apiUrl = (env("PM_GITHUB_API_URL")?.trim()?.takeIf { it.isNotBlank() } ?: "https://api.github.com")
+                        .trimEnd('/'),
+                    identity = identity,
+                )
+            }
+
             return Config(
                 httpPort = env("PM_HTTP_PORT")?.toIntOrNull() ?: 8080,
                 grpcPort = env("PM_GRPC_PORT")?.toIntOrNull() ?: DEFAULT_GRPC_PORT,
@@ -319,6 +371,7 @@ data class Config(
                 instanceName = instanceName,
                 instanceDescription = instanceDescription,
                 ciOidcIssuers = parseCiOidcIssuers(env, env("PM_CI_OIDC_AUDIENCE")?.trim()?.ifEmpty { null } ?: mcpIssuer),
+                github = github,
             )
         }
 

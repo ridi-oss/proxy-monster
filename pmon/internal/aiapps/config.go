@@ -294,12 +294,12 @@ func configApp(id, name string, file configFile) App {
 			if err != nil {
 				return "", nil, err
 			}
-			entry := freeName(others, srv)
+			entry := freeName(others, srv, s.Default)
 			if err := file.write(entry, mcpCommand{Command: s.Pmon, Args: []string{"mcp", srv.Name}, Env: DaemonEnv()}); err != nil {
 				return "", nil, err
 			}
 			var replaced []string
-			for _, other := range replaceableNames(others, entry, srv) {
+			for _, other := range replaceableNames(others, entry, srv, s.Default) {
 				if err := file.delete(other); err != nil {
 					return entry, replaced, err
 				}
@@ -312,7 +312,7 @@ func configApp(id, name string, file configFile) App {
 			if err != nil {
 				return false, err
 			}
-			names := relayNames(entries, "", server)
+			names := relayNames(entries, "", server, s.Default)
 			for i, n := range names {
 				if err := file.delete(n); err != nil {
 					return i > 0, err

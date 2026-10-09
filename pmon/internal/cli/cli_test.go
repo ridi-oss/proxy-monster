@@ -579,3 +579,37 @@ func TestLogoutEndsTheServerLoginOrWarns(t *testing.T) {
 		t.Errorf("status = %q, want the login cleared here anyway", status)
 	}
 }
+
+// Bare commands address the default server, which `pmon server default` changes; deleting it leaves none until
+// another server is created or chosen.
+func TestDefaultServerCanBeChosen(t *testing.T) {
+	e := newEnv(t)
+	ds := []map[string]any{{"name": "acme-mysql", "engine": "mysql", "dbName": "app", "advertiseAddr": dummyProxy(t)}}
+	prod, dev := fakeCP(t, ds), fakeCP(t, ds)
+	e.mustRun(t, "server", "set", "prod", "--url", prod.URL)
+	e.mustRun(t, "server", "set", "dev", "--url", dev.URL)
+	if out := strings.TrimSpace(e.mustRun(t, "server", "default")); out != "prod" {
+		t.Fatalf("the first server is not the default: %q", out)
+	}
+	e.mustRun(t, "server", "default", "dev")
+	if out := e.mustRun(t, "login"); !strings.Contains(out, `brokered from "dev"`) {
+		t.Errorf("bare login after `server default dev`:\n%s", out)
+	}
+	if out := e.mustRun(t, "server", "list"); !strings.Contains(out, "dev (default)") {
+		t.Errorf("server list does not mark the default:\n%s", out)
+	}
+	if out := e.mustRun(t, "show", "acme-mysql"); !strings.Contains(out, "127.0.0.1") {
+		t.Errorf("bare show on the default server:\n%s", out)
+	}
+	if out, err := e.run("server", "default", "nope"); err == nil || !strings.Contains(out, `unknown server "nope"`) {
+		t.Errorf("default to an unknown server: %v\n%s", err, out)
+	}
+	e.mustRun(t, "server", "unset", "--force")
+	if out, err := e.run("logout"); err == nil || !strings.Contains(out, "no default server") {
+		t.Errorf("bare logout with no default server: %v\n%s", err, out)
+	}
+	e.mustRun(t, "server", "set", "stage", "--url", dev.URL)
+	if out := strings.TrimSpace(e.mustRun(t, "server", "default")); out != "stage" {
+		t.Errorf("a server created with no default left is not the default: %q", out)
+	}
+}

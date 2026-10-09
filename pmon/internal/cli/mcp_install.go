@@ -38,7 +38,7 @@ func (c *mcpCmd) register(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	setup := aiapps.Setup{Pmon: pmon, Confirm: confirmClaudeRestart}
+	setup := aiapps.Setup{Pmon: pmon, Confirm: confirmClaudeRestart, Default: s.DefaultServer}
 	failed := 0
 	for _, app := range apps {
 		err := app.Batch(setup, func(setup aiapps.Setup) error {

@@ -21,7 +21,7 @@ type mcpCmd struct {
 	Install   bool     `help:"Register pmon mcp with the AI apps on this machine (Claude Desktop, Claude Code, Codex)." xor:"mode"`
 	Uninstall bool     `help:"Remove pmon mcp from the AI apps on this machine." xor:"mode"`
 	App       []string `help:"With --install or --uninstall, only these apps: claude-desktop, claude-code, codex (default: every installed one)."`
-	Servers   []string `arg:"" optional:"" name:"server" help:"Server whose MCP endpoint to relay to (default: default). With --install or --uninstall, the servers to change (default: every one)."`
+	Servers   []string `arg:"" optional:"" name:"server" help:"Server whose MCP endpoint to relay to (default: the default server). With --install or --uninstall, the servers to change (default: every one)."`
 }
 
 func (c *mcpCmd) Run() error {
@@ -36,7 +36,7 @@ func (c *mcpCmd) Run() error {
 	case len(c.Servers) > 1:
 		return errors.New("the relay takes one server; to change several, add --install or --uninstall")
 	}
-	server := "default"
+	server := "" // the daemon's default server
 	if len(c.Servers) == 1 {
 		server = c.Servers[0]
 	}

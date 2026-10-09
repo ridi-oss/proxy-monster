@@ -72,6 +72,8 @@ func (f *fakeBackend) SetServer(SetServerRequest) (SetServerResult, error) {
 
 func (f *fakeBackend) UnsetServer(UnsetServerRequest) ([]string, error) { return nil, nil }
 
+func (f *fakeBackend) SetDefault(SetDefaultRequest) error { return nil }
+
 func (f *fakeBackend) Logout(LogoutRequest) ([]string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -380,5 +382,17 @@ func TestIsDialFailureCoversAnyDialError(t *testing.T) {
 		if got := isDialFailure(tc.err); got != tc.want {
 			t.Errorf("%s: isDialFailure(%v) = %v, want %v", tc.name, tc.err, got, tc.want)
 		}
+	}
+}
+
+// A daemon that predates choosing the default server sends no defaultServer; its default is "default".
+func TestStatusFromAnOlderDaemon(t *testing.T) {
+	old, err := decodeStatus([]byte(`{"servers":[{"name":"default"},{"name":"hr"}]}`))
+	if err != nil || old.DefaultServer != "default" || !old.FixedDefault || !old.Servers[0].Default || old.Servers[1].Default {
+		t.Errorf("older daemon: %+v, %v", old, err)
+	}
+	none, err := decodeStatus([]byte(`{"servers":[{"name":"default"}],"defaultServer":""}`))
+	if err != nil || none.DefaultServer != "" || none.FixedDefault {
+		t.Errorf("a daemon with no default: %+v, %v", none, err)
 	}
 }

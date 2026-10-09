@@ -26,6 +26,8 @@ type Setup struct {
 	Pmon string
 	// Confirm asks before Claude Desktop for Windows is closed and reopened around an edit; nil declines.
 	Confirm func() bool
+	// Default is the daemon's default server, which a bare `pmon mcp` entry relays to.
+	Default string
 	// closed is set inside Batch, where Claude Desktop is already closed for every change.
 	closed bool
 }
@@ -174,9 +176,9 @@ func claudeDesktop() App {
 					for name, raw := range m {
 						entries[name] = decodeEntry(raw)
 					}
-					chosen = freeName(entries, srv)
+					chosen = freeName(entries, srv, s.Default)
 					for name, other := range m {
-						if name != chosen && replaceable(decodeEntry(other), srv) {
+						if name != chosen && replaceable(decodeEntry(other), srv, s.Default) {
 							delete(m, name)
 							replaced = append(replaced, name)
 						}
@@ -196,7 +198,7 @@ func claudeDesktop() App {
 				return editDesktopServers(claudeDesktopConfig(), func(m map[string]json.RawMessage) {
 					removed = false
 					for name, raw := range m {
-						if e := decodeEntry(raw); e.URL == "" && ownCommand(e.Command, e.Args, server) {
+						if e := decodeEntry(raw); e.URL == "" && ownCommand(e.Command, e.Args, server, s.Default) {
 							delete(m, name)
 							removed = true
 						}
@@ -301,12 +303,12 @@ func writeDesktopConfig(path string, before []byte, servers, top map[string]json
 
 // ownCommand reports whether a registered command is `pmon mcp <server>`, whichever pmon runs it: the CLI
 // and Proxy Monster Desktop register different copies, and either may replace or remove the other's entry.
-func ownCommand(command string, args []string, server string) bool {
+func ownCommand(command string, args []string, server, def string) bool {
 	name := strings.ToLower(filepath.Base(strings.ReplaceAll(command, `\`, "/")))
 	if name != "pmon" && name != "pmon.exe" || len(args) == 0 || args[0] != "mcp" {
 		return false
 	}
-	return len(args) == 2 && args[1] == server || len(args) == 1 && server == "default"
+	return len(args) == 2 && args[1] == server || len(args) == 1 && server == def
 }
 
 // entry is any MCP server entry in an AI app's config: a command it runs, or a URL it connects to.
@@ -325,17 +327,17 @@ func decodeEntry(raw json.RawMessage) entry {
 
 // replaceable reports whether pmon's entry for srv may take e's place: e reaches srv's MCP endpoint over
 // https, which pmon's relay replaces with the pmon login, or e is pmon's relay for srv already.
-func replaceable(e entry, srv Server) bool {
+func replaceable(e entry, srv Server, def string) bool {
 	if e.URL != "" {
 		return srv.MCPURL != "" && sameEndpoint(e.URL, srv.MCPURL)
 	}
-	return ownCommand(e.Command, e.Args, srv.Name)
+	return ownCommand(e.Command, e.Args, srv.Name, def)
 }
 
 // anyCurrent reports whether some entry runs pmon's relay for server and reaches the daemon in use.
 func anyCurrent(entries map[string]entry, s Setup, server string) bool {
 	for _, e := range entries {
-		if e.URL == "" && ours(e.Command, e.Args, envOrEmpty(e.Env), s.Pmon, server) {
+		if e.URL == "" && ours(e.Command, e.Args, envOrEmpty(e.Env), s.Pmon, server, s.Default) {
 			return true
 		}
 	}
@@ -365,15 +367,19 @@ func sameEndpoint(a, b string) bool {
 
 // ours reports whether the entry is pmon's, runs a pmon that exists, and reaches the daemon in use, which is
 // what "connected" means: an entry written for another PMON_CONFIG_DIR would reach a different login.
-func ours(command string, args []string, env map[string]string, pmon, server string) bool {
-	if !ownCommand(command, args, server) || !maps.Equal(env, DaemonEnv()) {
+func ours(command string, args []string, env map[string]string, pmon, server, def string) bool {
+	if !ownCommand(command, args, server, def) || !maps.Equal(env, DaemonEnv()) {
 		return false
 	}
 	if command == pmon {
 		return true
 	}
-	fi, err := os.Stat(command)
-	return err == nil && !fi.IsDir()
+	if filepath.IsAbs(command) {
+		fi, err := os.Stat(command)
+		return err == nil && !fi.IsDir()
+	}
+	_, err := exec.LookPath(command)
+	return err == nil
 }
 
 func cliApp(id, name, bin string, scope []string, file configFile) App {
@@ -406,7 +412,7 @@ func cliApp(id, name, bin string, scope []string, file configFile) App {
 		},
 		add: func(s Setup, srv Server) (string, []string, error) {
 			others, _ := file.list()
-			entry := freeName(others, srv)
+			entry := freeName(others, srv, s.Default)
 			_, exists := others[entry]
 			// codex replaces an entry of the same name; claude refuses one, so its entry is removed first and put
 			// back if the add fails.
@@ -435,7 +441,7 @@ func cliApp(id, name, bin string, scope []string, file configFile) App {
 				return "", nil, restore(err)
 			}
 			var replaced []string
-			for _, other := range replaceableNames(others, entry, srv) {
+			for _, other := range replaceableNames(others, entry, srv, s.Default) {
 				if _, err := run(append([]string{"mcp", "remove", other}, scope...)...); err != nil {
 					return entry, replaced, err
 				}
@@ -445,7 +451,7 @@ func cliApp(id, name, bin string, scope []string, file configFile) App {
 		},
 		remove: func(s Setup, server string) (bool, error) {
 			entries, _ := file.list()
-			names := relayNames(entries, "", server)
+			names := relayNames(entries, "", server, s.Default)
 			for i, n := range names {
 				if _, err := run(append([]string{"mcp", "remove", n}, scope...)...); err != nil {
 					return i > 0, err
@@ -457,10 +463,10 @@ func cliApp(id, name, bin string, scope []string, file configFile) App {
 }
 
 // relayNames are the entries other than entry that run pmon's relay for server, in a stable order.
-func relayNames(entries map[string]entry, entry, server string) []string {
+func relayNames(entries map[string]entry, entry, server, def string) []string {
 	var names []string
 	for name, e := range entries {
-		if name != entry && e.URL == "" && ownCommand(e.Command, e.Args, server) {
+		if name != entry && e.URL == "" && ownCommand(e.Command, e.Args, server, def) {
 			names = append(names, name)
 		}
 	}
@@ -470,24 +476,24 @@ func relayNames(entries map[string]entry, entry, server string) []string {
 
 // freeName is the server's entry name, or that name with -2, -3, … appended: the first that no entry holds or
 // that only an entry pmon's entry for srv replaces holds.
-func freeName(entries map[string]entry, srv Server) string {
+func freeName(entries map[string]entry, srv Server, def string) string {
 	base := srv.EntryName()
 	for i := 1; ; i++ {
 		name := base
 		if i > 1 {
 			name = fmt.Sprintf("%s-%d", base, i)
 		}
-		if e, ok := entries[name]; !ok || replaceable(e, srv) {
+		if e, ok := entries[name]; !ok || replaceable(e, srv, def) {
 			return name
 		}
 	}
 }
 
 // replaceableNames are the entries other than entry that pmon's entry for srv replaces, in a stable order.
-func replaceableNames(entries map[string]entry, entry string, srv Server) []string {
+func replaceableNames(entries map[string]entry, entry string, srv Server, def string) []string {
 	var names []string
 	for name, e := range entries {
-		if name != entry && replaceable(e, srv) {
+		if name != entry && replaceable(e, srv, def) {
 			names = append(names, name)
 		}
 	}

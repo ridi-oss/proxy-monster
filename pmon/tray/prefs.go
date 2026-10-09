@@ -44,6 +44,7 @@ type prefsVersions struct {
 }
 
 type prefsState struct {
+	defaultServer  string
 	Language       string        `json:"language"` // the setting: "system", "en" or "ko"
 	Lang           string        `json:"lang"`     // the language in use
 	Theme          string        `json:"theme"`
@@ -117,6 +118,7 @@ func (p *prefs) state() prefsState {
 		return st
 	}
 	st.Running = true
+	st.defaultServer = s.DefaultServer
 	st.Versions.Daemon = s.Version
 	now := time.Now()
 	for _, srv := range s.Servers {
@@ -163,7 +165,7 @@ func (p *prefs) aiState() []prefsAIApp {
 	defer p.aiMu.Unlock()
 	st := p.state()
 	out := []prefsAIApp{}
-	setup := aiSetup()
+	setup := aiSetup(st.defaultServer)
 	for _, app := range aiapps.Apps() {
 		if !app.Installed() {
 			continue
@@ -180,6 +182,7 @@ func (p *prefs) aiState() []prefsAIApp {
 func (p *prefs) aiToggle(id, server string, on bool) any {
 	p.aiMu.Lock()
 	defer p.aiMu.Unlock()
+	st := p.state()
 	for _, app := range aiapps.Apps() {
 		if app.ID != id {
 			continue
@@ -187,14 +190,14 @@ func (p *prefs) aiToggle(id, server string, on bool) any {
 		var err error
 		if on {
 			srv := aiapps.Server{Name: server}
-			for _, s := range p.state().Servers {
+			for _, s := range st.Servers {
 				if s.Name == server {
 					srv = aiapps.Lookup(context.Background(), server, s.URL)
 				}
 			}
-			_, _, err = app.Add(aiSetup(), srv)
+			_, _, err = app.Add(aiSetup(st.defaultServer), srv)
 		} else {
-			_, err = app.Remove(aiSetup(), server)
+			_, err = app.Remove(aiSetup(st.defaultServer), server)
 		}
 		switch {
 		case errors.Is(err, aiapps.ErrDeclined):

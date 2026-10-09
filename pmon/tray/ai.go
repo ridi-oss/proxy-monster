@@ -21,8 +21,9 @@ func bundledPmon() string {
 	return filepath.Join(filepath.Dir(exe), pmonName)
 }
 
-func aiSetup() aiapps.Setup {
-	return aiapps.Setup{Pmon: bundledPmon(), Confirm: func() bool {
+// aiSetup is how this app edits AI apps' entries; def is the daemon's default server.
+func aiSetup(def string) aiapps.Setup {
+	return aiapps.Setup{Pmon: bundledPmon(), Default: def, Confirm: func() bool {
 		return confirm(T("confirm.claudeRestart"), T("confirm.claudeRestartBody"), T("confirm.restartButton"))
 	}}
 }
@@ -77,7 +78,11 @@ func (a *app) refreshAI(force bool) {
 	if same && !force {
 		return
 	}
-	setup := aiSetup()
+	var def string
+	if s != nil {
+		def = s.DefaultServer
+	}
+	setup := aiSetup(def)
 	var states []aiState
 	for _, app := range aiapps.Apps() {
 		if !app.Installed() {
@@ -119,19 +124,23 @@ func (a *app) doAIApp(act action) {
 		a.aiMu.Unlock()
 		a.refreshAI(true)
 	}()
+	a.mu.Lock()
+	status := a.status
+	a.mu.Unlock()
+	var def string
+	if status != nil {
+		def = status.DefaultServer
+	}
 	if act.connect {
-		a.mu.Lock()
-		status := a.status
-		a.mu.Unlock()
 		srv := aiServer(status, act.server)
-		if _, _, err := app.Add(aiSetup(), srv); errors.Is(err, aiapps.ErrDeclined) {
+		if _, _, err := app.Add(aiSetup(def), srv); errors.Is(err, aiapps.ErrDeclined) {
 			return
 		} else if err != nil {
 			notify(T("n.aiAddFailed", "server", act.server, "app", app.Name), aiErrorText(err))
 		} else {
 			notify(T("n.aiAdded", "server", act.server, "app", app.Name), T("ai.after."+app.ID))
 		}
-	} else if _, err := app.Remove(aiSetup(), act.server); errors.Is(err, aiapps.ErrDeclined) {
+	} else if _, err := app.Remove(aiSetup(def), act.server); errors.Is(err, aiapps.ErrDeclined) {
 		return
 	} else if err != nil {
 		notify(T("n.aiRemoveFailed", "server", act.server, "app", app.Name), aiErrorText(err))

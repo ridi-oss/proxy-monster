@@ -184,15 +184,15 @@ func TestClaudeDesktopEntryCarriesTheDaemonSettings(t *testing.T) {
 func TestEntryForAnotherDaemonIsNotConnected(t *testing.T) {
 	pmon, args := "/p/pmon", []string{"mcp", "acme"}
 	env := map[string]string{"PMON_CONFIG_DIR": "/tmp/a", "PMON_PORT_BASE": "46500"}
-	if ours(pmon, args, env, pmon, "acme") {
+	if ours(pmon, args, env, pmon, "acme", "") {
 		t.Error("an entry for /tmp/a reads as connected to the default daemon")
 	}
-	if !ownCommand(pmon, args, "acme") {
+	if !ownCommand(pmon, args, "acme", "") {
 		t.Error("pmon's own entry is not recognized as its own")
 	}
 	t.Setenv("PMON_CONFIG_DIR", "/tmp/a")
 	t.Setenv("PMON_PORT_BASE", "46500")
-	if !ours(pmon, args, env, pmon, "acme") {
+	if !ours(pmon, args, env, pmon, "acme", "") {
 		t.Error("an entry for the daemon in use does not read as connected")
 	}
 }

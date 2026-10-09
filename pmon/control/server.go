@@ -27,6 +27,8 @@ type Backend interface {
 	SetServer(req SetServerRequest) (SetServerResult, error)
 	// UnsetServer logs a server out and deletes it.
 	UnsetServer(req UnsetServerRequest) ([]string, error)
+	// SetDefault makes a server the one a command addresses when it names none.
+	SetDefault(req SetDefaultRequest) error
 	// Reload forces an immediate rediscovery.
 	Reload()
 	// Subscribe opens a state-change stream; the returned cancel must be called when the stream ends.
@@ -85,6 +87,7 @@ func Listen(backend Backend) (*Server, error) {
 	mux.HandleFunc(PathLogout, s.handleLogout)
 	mux.HandleFunc(PathServerSet, s.handleServerSet)
 	mux.HandleFunc(PathServerUnset, s.handleServerUnset)
+	mux.HandleFunc(PathServerDefault, s.handleServerDefault)
 	mux.HandleFunc(PathReload, s.handleReload)
 	mux.HandleFunc(PathShutdown, s.handleShutdown)
 	mux.HandleFunc(PathEvents, s.handleEvents)
@@ -222,6 +225,22 @@ func (s *Server) handleServerUnset(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, LogoutResult{Status: s.backend.Status(), NotEndedOnServer: notEnded})
+}
+
+func (s *Server) handleServerDefault(w http.ResponseWriter, r *http.Request) {
+	if !requireMethod(w, r, http.MethodPost) {
+		return
+	}
+	var req SetDefaultRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	if err := s.backend.SetDefault(req); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, s.backend.Status())
 }
 
 func (s *Server) handleReload(w http.ResponseWriter, r *http.Request) {

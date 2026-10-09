@@ -251,3 +251,21 @@ func TestNullServerIsAConfigError(t *testing.T) {
 		t.Error("a null server loaded; the daemon would dereference it")
 	}
 }
+
+// A config from before the default server could be chosen keeps "default" as its default; a chosen one stays.
+func TestDefaultServerMigration(t *testing.T) {
+	for _, tc := range []struct{ body, want string }{
+		{`{"servers":{"default":{"controlPlane":"https://a"}}}`, "default"},
+		{`{"servers":{"hr":{"controlPlane":"https://a"}}}`, "default"},
+		{`{"servers":{"hr":{"controlPlane":"https://a"}},"default":"hr"}`, "hr"},
+		{`{"servers":{},"default":""}`, ""},
+	} {
+		c, err := parse([]byte(tc.body))
+		if err != nil || c.Default != tc.want {
+			t.Errorf("parse(%s): default %q, err %v; want %q", tc.body, c.Default, err, tc.want)
+		}
+		if got := c.Resolve(""); got != tc.want {
+			t.Errorf("Resolve(\"\") = %q, want %q", got, tc.want)
+		}
+	}
+}

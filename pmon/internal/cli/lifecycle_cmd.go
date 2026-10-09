@@ -96,7 +96,7 @@ func (c *restartCmd) Run() error {
 
 // logoutCmd clears a server's credentials and closes its brokers, leaving the daemon up.
 type logoutCmd struct {
-	Server string `arg:"" optional:"" default:"default" help:"Server to log out of."`
+	Server string `arg:"" optional:"" help:"Server to log out of (default: the default server)."`
 	All    bool   `help:"Log out of every server."`
 	Force  bool   `short:"f" help:"Log out without asking, even with connections open."`
 }
@@ -115,18 +115,18 @@ func (c *logoutCmd) Run() error {
 	if err := requireCurrentDaemon(s); err != nil {
 		return err
 	}
-	conns := s.TotalLiveConns()
+	conns, server := s.TotalLiveConns(), c.Server
 	if !c.All {
-		if s.Server(c.Server) == nil {
-			return fmt.Errorf("unknown server %q", c.Server)
+		if server, err = serverOrDefault(s, c.Server); err != nil {
+			return err
 		}
-		conns = s.ServerLiveConns(c.Server)
+		conns = s.ServerLiveConns(server)
 	}
 	if !c.Force && !confirmDrop(conns, "Log out anyway?") {
 		fmt.Println("still logged in")
 		return nil
 	}
-	notEnded, err := client.Logout(ctx, control.LogoutRequest{Server: c.Server, All: c.All})
+	notEnded, err := client.Logout(ctx, control.LogoutRequest{Server: server, All: c.All})
 	if err != nil {
 		return err
 	}
@@ -134,7 +134,7 @@ func (c *logoutCmd) Run() error {
 	if c.All {
 		fmt.Println("logged out of every server — the brokers are closed and the daemon is idle")
 	} else {
-		fmt.Printf("logged out of %q — its brokers are closed\n", c.Server)
+		fmt.Printf("logged out of %q — its brokers are closed\n", server)
 	}
 	return nil
 }

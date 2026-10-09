@@ -44,9 +44,13 @@ func (statusCmd) Run() error {
 		return nil
 	}
 	for _, srv := range s.Servers {
-		fmt.Printf("\nserver:    %s  %s\n", srv.Name, srv.ControlPlane)
+		mark := ""
+		if srv.Default {
+			mark = "  (default)"
+		}
+		fmt.Printf("\nserver:    %s  %s%s\n", srv.Name, srv.ControlPlane, mark)
 		if !srv.LoggedIn {
-			fmt.Printf("login:     not logged in (run `%s`)\n", loginHint(srv.Name))
+			fmt.Printf("login:     not logged in (run `%s`)\n", loginHint(srv.Name, srv.Default))
 			continue
 		}
 		fmt.Printf("principal: %s\n", srv.Principal)
@@ -61,7 +65,7 @@ func (statusCmd) Run() error {
 			fmt.Printf("elevated:  %s\n", elevatedLine(srv, time.Now()))
 		}
 		if srv.ReauthRequired {
-			fmt.Printf("reauth:    REQUIRED — the session window closed; run `%s`\n", loginHint(srv.Name))
+			fmt.Printf("reauth:    REQUIRED — the session window closed; run `%s`\n", loginHint(srv.Name, srv.Default))
 		}
 		if srv.LastDiscoveryError != "" {
 			fmt.Printf("discovery: FAILING — %s\n", srv.LastDiscoveryError)
@@ -129,7 +133,7 @@ func elevatedLine(srv control.ServerInfo, now time.Time) string {
 		return fmt.Sprintf("%s until %s", extra, expiryLine(srv.ElevatedUntil))
 	}
 	return fmt.Sprintf("%s EXPIRED at %s — run `%s --scopes %s` to get them back",
-		extra, until.Local().Format("2006-01-02 15:04"), loginHint(srv.Name), strings.Join(srv.Scopes, ","))
+		extra, until.Local().Format("2006-01-02 15:04"), loginHint(srv.Name, srv.Default), strings.Join(srv.Scopes, ","))
 }
 
 // expiryLine formats an RFC3339 timestamp as an absolute time plus how long is left, so "is this about to

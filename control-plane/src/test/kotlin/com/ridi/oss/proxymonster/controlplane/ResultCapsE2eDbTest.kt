@@ -555,7 +555,7 @@ class ResultCapsE2eDbTest {
     @Test
     fun `saving a malformed or misplaced cap annotation is refused with the errors`() = testApplication {
         wire()
-        val adminClient = login(admin)
+        val adminClient = console(admin)
         suspend fun save(src: String) = adminClient.post("/api/policies") {
             contentType(ContentType.Application.Json); setBody(CedarPolicyInput("e2e-cap-${System.nanoTime()}", src))
         }
@@ -572,7 +572,7 @@ class ResultCapsE2eDbTest {
         }
         val ok = save("""@cap("2000, 3MB, 100KB/10m, 7GB/31d") permit(principal in Role::"analyst", action == Action::"result.cap", resource);""")
         assertTrue(ok.status.value in 200..201, ok.bodyAsText())
-        assertEquals(HttpStatusCode.Forbidden, login(analyst).post("/api/policies") {
+        assertEquals(HttpStatusCode.Forbidden, console(analyst).post("/api/policies") {
             contentType(ContentType.Application.Json); setBody(CedarPolicyInput("e2e-cap-nope", """@cap("1") permit(principal, action == Action::"result.cap", resource);"""))
         }.status)
     }

@@ -11,7 +11,7 @@ import (
 )
 
 func Register(mux *http.ServeMux, pool *pgxpool.Pool, gate api.Gate) {
-	p := policies{pool: pool}
+	p := policies{pool: pool, authz: gate.Authz}
 	mux.HandleFunc("GET /api/roles", gate.RequireAPI(p.roles))
 	mux.HandleFunc("GET /api/role-assignments", gate.RequireAdmin("admin.identity", p.roleAssignments))
 	mux.HandleFunc("GET /api/mask-fns", gate.RequireAdmin("admin.policies", p.maskFns))
@@ -24,10 +24,19 @@ func Register(mux *http.ServeMux, pool *pgxpool.Pool, gate api.Gate) {
 	mux.HandleFunc("POST /api/mask-fns", gate.RequireAdmin("admin.policies", p.createMaskFn))
 	mux.HandleFunc("PUT /api/mask-fns/{id}", gate.RequireAdmin("admin.policies", api.WithID(p.updateMaskFn)))
 	mux.HandleFunc("DELETE /api/mask-fns/{id}", gate.RequireAdmin("admin.policies", api.WithID(p.deleteMaskFn)))
+	mux.HandleFunc("POST /api/policies", gate.RequireAdmin("admin.policies", p.createPolicy))
+	mux.HandleFunc("PUT /api/policies/{id}", gate.RequireAdmin("admin.policies", api.WithID(p.updatePolicy)))
+	mux.HandleFunc("DELETE /api/policies/{id}", gate.RequireAdmin("admin.policies", api.WithID(p.deletePolicy)))
+	mux.HandleFunc("POST /api/policies/{id}/enable", gate.RequireAdmin("admin.policies", api.WithID(p.setPolicyEnabled(true))))
+	mux.HandleFunc("POST /api/policies/{id}/disable", gate.RequireAdmin("admin.policies", api.WithID(p.setPolicyEnabled(false))))
+	mux.HandleFunc("POST /api/policies/validate", gate.RequireAdmin("admin.policies", p.validatePolicy))
 	mux.HandleFunc("GET /api/me/permissions", gate.RequireAPI(permissions(gate.Authz)))
 }
 
-type policies struct{ pool *pgxpool.Pool }
+type policies struct {
+	pool  *pgxpool.Pool
+	authz api.Authorizer
+}
 
 type role struct {
 	ID          int64   `json:"id"`

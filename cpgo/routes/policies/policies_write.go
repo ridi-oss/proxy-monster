@@ -12,9 +12,14 @@ import (
 	"github.com/ridi-oss/proxy-monster/cpgo/store/db"
 )
 
-// mutate runs change in one transaction with its audit rows, then answers status with its result, or the
-// management error it returned.
-func (p policies) mutate(w http.ResponseWriter, r *http.Request, status int, change func(ctx context.Context, tx pgx.Tx, actor audit.Actor) (any, error)) {
+// cedarErrors is a policy source the validator rejected; Kotlin answers it as 400 {"errors": [...]}.
+type cedarErrors []string
+
+func (cedarErrors) Error() string { return "invalid cedar policy" }
+
+// mutate runs change in one transaction with its audit rows, then afterCommit, then answers status with its
+// result, or the management error it returned.
+func (p policies) mutate(w http.ResponseWriter, r *http.Request, status int, change func(ctx context.Context, tx pgx.Tx, actor audit.Actor) (any, error), afterCommit ...func(context.Context) error) {
 	ctx := r.Context()
 	actor := audit.Actor{Principal: api.Principal(ctx), ClientAddr: api.RequesterIP(ctx), Channel: "console"}
 	var out any
@@ -23,14 +28,22 @@ func (p policies) mutate(w http.ResponseWriter, r *http.Request, status int, cha
 		out, err = change(ctx, tx, actor)
 		return err
 	})
+	for _, f := range afterCommit {
+		if err == nil {
+			err = f(ctx)
+		}
+	}
 	var me *api.ManagementError
+	var ce cedarErrors
 	switch {
+	case errors.As(err, &ce):
+		api.WriteJSON(w, http.StatusBadRequest, map[string][]string{"errors": ce})
 	case errors.As(err, &me):
 		code := http.StatusBadRequest
 		switch me.Code {
 		case "common.not_found":
 			code = http.StatusNotFound
-		case "role.system_immutable":
+		case "role.system_immutable", "policy.system_immutable":
 			code = http.StatusConflict
 		}
 		api.WriteErrorParams(w, code, me.Code, me.Params)

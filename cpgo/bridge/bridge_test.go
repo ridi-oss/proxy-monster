@@ -115,3 +115,36 @@ func TestMayConnect(t *testing.T) {
 		t.Fatalf("sent %+v", got)
 	}
 }
+
+func TestValidateAndPoliciesChanged(t *testing.T) {
+	var paths []string
+	kotlin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get(TokenHeader) != "tok" {
+			http.NotFound(w, r)
+			return
+		}
+		paths = append(paths, r.URL.Path)
+		switch r.URL.Path {
+		case "/internal/cedar-validate":
+			_, _ = w.Write([]byte(`{"valid":false,"errors":["bad action"]}`))
+		case "/internal/policies-changed":
+			w.WriteHeader(http.StatusNoContent)
+		}
+	}))
+	defer kotlin.Close()
+	u, _ := url.Parse(kotlin.URL)
+	c := New(u, "tok")
+	errs, err := c.Validate(context.Background(), "permit(...)")
+	if err != nil || len(errs) != 1 || errs[0] != "bad action" {
+		t.Fatalf("validate %v %v", errs, err)
+	}
+	if err := c.PoliciesChanged(context.Background()); err != nil {
+		t.Fatalf("a 204 is a delivered signal: %v", err)
+	}
+	if err := New(u, "wrong").PoliciesChanged(context.Background()); err == nil {
+		t.Fatal("a rejected signal must be an error")
+	}
+	if len(paths) != 2 {
+		t.Fatalf("paths %v", paths)
+	}
+}

@@ -67,7 +67,9 @@ func TestCedarPolicyWrites(t *testing.T) {
 	if _, err := e.st.Pool.Exec(ctx, `UPDATE policy SET cedar_src = 'BAD stored' WHERE id = $1`, id); err != nil {
 		t.Fatal(err)
 	}
-	do(http.MethodPost, fmt.Sprintf("/api/policies/%d/enable", id), "", http.StatusBadRequest)
+	if body := do(http.MethodPost, fmt.Sprintf("/api/policies/%d/enable", id), "", http.StatusBadRequest); body != "{\"errors\":[\"unrecognized action `BAD`\"]}" {
+		t.Fatalf("enabling an invalid stored source: %s", body)
+	}
 	do(http.MethodPost, fmt.Sprintf("/api/policies/%d/disable", id), "", http.StatusOK, 1)
 	do(http.MethodPost, "/api/policies/-1/disable", "", http.StatusOK, 1)
 	do(http.MethodPost, "/api/policies/-1/enable", "", http.StatusOK, 1)
@@ -82,6 +84,12 @@ func TestCedarPolicyWrites(t *testing.T) {
 		t.Fatalf("validate good: %s", body)
 	}
 
+	var row string
+	_ = e.st.Pool.QueryRow(ctx, `SELECT kind || '|' || principal || '|' || resource || '|' || channel || '|' || coalesce(client_addr, '')
+		FROM audit_event WHERE statement = $1`, "disable policy 'system:admin'").Scan(&row)
+	if row != `admin|admin@example.com|Policy::"-1"|console|127.0.0.1` {
+		t.Fatalf("policy audit row: %s", row)
+	}
 	rows, _ := e.st.Pool.Query(ctx, `SELECT statement FROM audit_event WHERE action = 'admin.policies' ORDER BY id`)
 	var got []string
 	for rows.Next() {

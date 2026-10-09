@@ -699,6 +699,7 @@ func TestStreamEventsDispatchesMappedRunOpen(t *testing.T) {
 		{Kind: &pb.ControlEvent_RefreshCatalog{RefreshCatalog: &pb.RefreshCatalog{}}},
 		{Kind: &pb.ControlEvent_OpenRunChannel{OpenRunChannel: &pb.OpenRunChannel{
 			SessionId: "sess-1", EphemeralToken: "eph-9", ConnectionId: connectionID, OnOpen: []*pb.ProxyCommand{refetch("app", nil)},
+			DefaultSchema: "orders",
 		}}},
 		{Kind: &pb.ControlEvent_OpenTableDetailChannel{OpenTableDetailChannel: &pb.OpenTableDetailChannel{SessionId: "sess-2", Catalog: "db", Schema: "public", Table: "users"}}},
 	}}
@@ -712,7 +713,7 @@ func TestStreamEventsDispatchesMappedRunOpen(t *testing.T) {
 	if err == nil {
 		t.Fatal("StreamEvents returned nil, want EOF")
 	}
-	wantRun := spi.RunOpen{SessionID: "sess-1", Token: "eph-9", ConnectionID: connectionID, OnOpen: []*pb.ProxyCommand{refetch("app", nil)}}
+	wantRun := spi.RunOpen{SessionID: "sess-1", Token: "eph-9", ConnectionID: connectionID, OnOpen: []*pb.ProxyCommand{refetch("app", nil)}, DefaultSchema: "orders"}
 	runOnOpenEqual := commandsEqual(openedRun.OnOpen, wantRun.OnOpen)
 	openedRun.OnOpen, wantRun.OnOpen = nil, nil
 	if refreshes != 1 || !runOnOpenEqual || !reflect.DeepEqual(openedRun, wantRun) || !reflect.DeepEqual(table, []string{"sess-2", "db", "public", "users"}) {

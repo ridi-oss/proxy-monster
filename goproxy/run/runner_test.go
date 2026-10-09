@@ -230,9 +230,9 @@ type runCapturingDb struct {
 	readTimeout chan time.Duration
 }
 
-func (p *runCapturingDb) NewRunSession(ctx context.Context, client spi.SessionClient, token string, connectionID []byte, guard engine.ExecGuard, readTimeout time.Duration) (spi.TargetDbSession, error) {
+func (p *runCapturingDb) NewRunSession(ctx context.Context, client spi.SessionClient, token string, connectionID []byte, guard engine.ExecGuard, readTimeout time.Duration, defaultSchema string) (spi.TargetDbSession, error) {
 	p.readTimeout <- readTimeout
-	return p.Db.NewRunSession(ctx, client, token, connectionID, guard, readTimeout)
+	return p.Db.NewRunSession(ctx, client, token, connectionID, guard, readTimeout, defaultSchema)
 }
 
 // runSlowOpenProvider blocks the target DB dial until release is closed, modeling a slow open against a large
@@ -251,7 +251,7 @@ type runSlowOpenDb struct {
 	beforeDelegate func()
 }
 
-func (p *runSlowOpenDb) NewRunSession(ctx context.Context, client spi.SessionClient, token string, connectionID []byte, guard engine.ExecGuard, readTimeout time.Duration) (spi.TargetDbSession, error) {
+func (p *runSlowOpenDb) NewRunSession(ctx context.Context, client spi.SessionClient, token string, connectionID []byte, guard engine.ExecGuard, readTimeout time.Duration, defaultSchema string) (spi.TargetDbSession, error) {
 	if p.entered != nil {
 		p.enterOnce.Do(func() { close(p.entered) })
 	}
@@ -260,7 +260,7 @@ func (p *runSlowOpenDb) NewRunSession(ctx context.Context, client spi.SessionCli
 		if p.beforeDelegate != nil {
 			p.beforeDelegate()
 		}
-		return p.Db.NewRunSession(ctx, client, token, connectionID, guard, readTimeout)
+		return p.Db.NewRunSession(ctx, client, token, connectionID, guard, readTimeout, defaultSchema)
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	}
@@ -1012,6 +1012,35 @@ func TestRunnerMySQLReportsNamespaceAfterUse(t *testing.T) {
 	if len(requests) != before+1 || !reflect.DeepEqual(requests[len(requests)-1].GetSearchPath(), []string{altSchema}) {
 		t.Fatalf("Decide after USE = %v, want one request with search_path %v", requests[before:], []string{altSchema})
 	}
+}
+
+func TestRunnerMySQLOpensInDefaultSchema(t *testing.T) {
+	fixture := runSeedMySQL(t)
+	const altSchema = runMySQLSchema + "_default"
+	seed := dbtest.OpenMySQL(t, "")
+	for _, statement := range []string{
+		"CREATE DATABASE IF NOT EXISTS " + altSchema,
+		"GRANT ALL ON " + altSchema + ".* TO '" + runMySQLService + "'@'%'",
+		"FLUSH PRIVILEGES",
+	} {
+		if _, err := seed.Exec(statement); err != nil {
+			t.Fatalf("seed %q: %v", statement, err)
+		}
+	}
+	fake, client := runStartFakeCP(t, runSessionID)
+	open := runOpen(fixture)
+	open.DefaultSchema = altSchema
+	runLaunchOpen(t, fake, client, fixture, open)
+	runExpectServingNamespace(t, fake, []string{altSchema})
+}
+
+func TestRunnerPostgresOpensInDefaultSchema(t *testing.T) {
+	fixture := runSeedPostgres(t)
+	fake, client := runStartFakeCP(t, runSessionID)
+	open := runOpen(fixture)
+	open.DefaultSchema = runPGSchema
+	runLaunchOpen(t, fake, client, fixture, open)
+	runExpectServingNamespace(t, fake, []string{"pg_catalog", runPGSchema})
 }
 
 func TestRunnerPostgresReportsNamespaceAfterSetSearchPath(t *testing.T) {

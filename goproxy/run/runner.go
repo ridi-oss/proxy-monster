@@ -37,7 +37,7 @@ var errQueryTimeout = errors.New(QueryTimeoutMessage)
 
 type runStream = spi.RunStream
 
-type targetDbFactory func(ctx context.Context, token string, connectionID []byte, guard engine.ExecGuard) (spi.TargetDbSession, error)
+type targetDbFactory func(ctx context.Context, token string, connectionID []byte, guard engine.ExecGuard, defaultSchema string) (spi.TargetDbSession, error)
 
 type Runner struct {
 	client       spi.RunClient
@@ -50,8 +50,8 @@ func NewRunner(client spi.RunClient, targetDb spi.Db, queryTimeout time.Duration
 		queryTimeout = defaultQueryTimeout
 	}
 	readTimeout := queryTimeout + runSocketTimeoutGrace
-	factory := func(ctx context.Context, token string, connectionID []byte, guard engine.ExecGuard) (spi.TargetDbSession, error) {
-		return targetDb.NewRunSession(ctx, client, token, connectionID, guard, readTimeout)
+	factory := func(ctx context.Context, token string, connectionID []byte, guard engine.ExecGuard, defaultSchema string) (spi.TargetDbSession, error) {
+		return targetDb.NewRunSession(ctx, client, token, connectionID, guard, readTimeout, defaultSchema)
 	}
 	return &Runner{client: client, factory: factory, queryTimeout: queryTimeout}
 }
@@ -223,7 +223,7 @@ func (r *Runner) openTargetDb(ctx context.Context, stream runStream, messages <-
 	}
 	done := make(chan openResult, 1)
 	go func() {
-		sess, err := r.factory(openCtx, open.Token, open.ConnectionID, guard)
+		sess, err := r.factory(openCtx, open.Token, open.ConnectionID, guard, open.DefaultSchema)
 		if err != nil {
 			done <- openResult{err: err, errWhat: "target-DB connection failed: "}
 			return

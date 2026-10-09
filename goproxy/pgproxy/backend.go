@@ -30,6 +30,11 @@ const targetDbHandshakeTimeout = 10 * time.Second
 // once. On the run path ctx is the target-DB open context, so a run the control-plane already closed does not
 // finish a target-DB handshake nobody is waiting for; the wire path passes a background ctx (never cancelled).
 func dialTargetDbAuth(ctx context.Context, target spi.TargetDb) (net.Conn, []pgproto3.ParameterStatus, pgproto3.BackendKeyData, byte, string, error) {
+	return dialTargetDbAuthParams(ctx, target, nil)
+}
+
+// dialTargetDbAuthParams adds extra startup parameters; the server applies them as session settings.
+func dialTargetDbAuthParams(ctx context.Context, target spi.TargetDb, extra map[string]string) (net.Conn, []pgproto3.ParameterStatus, pgproto3.BackendKeyData, byte, string, error) {
 	dialer := net.Dialer{Timeout: targetDbHandshakeTimeout}
 	conn, err := dialer.DialContext(ctx, "tcp", net.JoinHostPort(target.Host, strconv.Itoa(target.Port)))
 	if err != nil {
@@ -54,13 +59,17 @@ func dialTargetDbAuth(ctx context.Context, target spi.TargetDb) (net.Conn, []pgp
 
 	wireConn := &switchConn{Conn: conn, strictReads: true}
 	frontend := pgproto3.NewFrontend(wireConn, wireConn)
+	startup := map[string]string{
+		"user":            target.User,
+		"database":        target.Db,
+		"client_encoding": "UTF8",
+	}
+	for key, value := range extra {
+		startup[key] = value
+	}
 	frontend.Send(&pgproto3.StartupMessage{
 		ProtocolVersion: pgproto3.ProtocolVersionNumber,
-		Parameters: map[string]string{
-			"user":            target.User,
-			"database":        target.Db,
-			"client_encoding": "UTF8",
-		},
+		Parameters:      startup,
 	})
 	if err := frontend.Flush(); err != nil {
 		return nil, nil, pgproto3.BackendKeyData{}, 0, "", fmt.Errorf("write target-DB startup: %w", err)

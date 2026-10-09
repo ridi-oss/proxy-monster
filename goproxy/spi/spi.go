@@ -40,7 +40,9 @@ type RunOpen struct {
 	Token        string
 	ConnectionID []byte
 	OnOpen       []*pb.ProxyCommand
-	MapErr       error
+	// DefaultSchema is the schema the run's target connection opens in; empty keeps the target's default.
+	DefaultSchema string
+	MapErr        error
 }
 
 // RunStream is the subset of the proxy-dialed run stream used by the runner.
@@ -218,7 +220,8 @@ type Db interface {
 	NewWireServer(port int, client EnforcementClient, tlsProvider func() (*tls.Config, error)) WireServer
 	// NewRunSession dials and authenticates the target DB. ctx is the target-DB open context: cancelling it aborts
 	// an in-flight dial/auth so a run the control-plane already closed does not finish a target-DB handshake.
-	NewRunSession(ctx context.Context, client SessionClient, token string, connectionID []byte, guard engine.ExecGuard, readTimeout time.Duration) (TargetDbSession, error)
+	// A non-empty defaultSchema opens the session in that schema; empty keeps the target's default.
+	NewRunSession(ctx context.Context, client SessionClient, token string, connectionID []byte, guard engine.ExecGuard, readTimeout time.Duration, defaultSchema string) (TargetDbSession, error)
 	Close() error
 }
 

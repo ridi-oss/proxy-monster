@@ -33,7 +33,7 @@ type sqlProvider struct {
 	catalog    func(context.Context, *sql.Conn) (string, error)
 	readDetail func(*sql.Conn, string, string) (*spi.TableDetail, error)
 	newServer  func(int, spi.TargetDb, spi.EnforcementClient, engine.Db, func() (*tls.Config, error)) spi.WireServer
-	newSession func(context.Context, spi.TargetDb, engine.Db, spi.SessionClient, string, []byte, engine.ExecGuard, time.Duration) (spi.TargetDbSession, error)
+	newSession func(context.Context, spi.TargetDb, engine.Db, spi.SessionClient, string, []byte, engine.ExecGuard, time.Duration, string) (spi.TargetDbSession, error)
 }
 
 func (p sqlProvider) Dialect() engine.Dialect { return p.dialect }
@@ -106,8 +106,8 @@ func (d *sqlDb) NewWireServer(port int, client spi.EnforcementClient, tlsProvide
 	return d.provider.newServer(port, d.target, client, d.provider.db, tlsProvider)
 }
 
-func (d *sqlDb) NewRunSession(ctx context.Context, client spi.SessionClient, token string, connectionID []byte, guard engine.ExecGuard, readTimeout time.Duration) (spi.TargetDbSession, error) {
-	return d.provider.newSession(ctx, d.target, d.provider.db, client, token, connectionID, guard, readTimeout)
+func (d *sqlDb) NewRunSession(ctx context.Context, client spi.SessionClient, token string, connectionID []byte, guard engine.ExecGuard, readTimeout time.Duration, defaultSchema string) (spi.TargetDbSession, error) {
+	return d.provider.newSession(ctx, d.target, d.provider.db, client, token, connectionID, guard, readTimeout, defaultSchema)
 }
 
 func (d *sqlDb) Close() error { return d.pool.Close() }
@@ -124,8 +124,8 @@ var registry = spi.MustRegistry(
 		newServer: func(port int, target spi.TargetDb, client spi.EnforcementClient, db engine.Db, tlsProvider func() (*tls.Config, error)) spi.WireServer {
 			return mysqlproxy.New(port, target, client, db, tlsProvider)
 		},
-		newSession: func(ctx context.Context, target spi.TargetDb, db engine.Db, client spi.SessionClient, token string, connectionID []byte, guard engine.ExecGuard, readTimeout time.Duration) (spi.TargetDbSession, error) {
-			return mysqlproxy.NewRunSession(ctx, target, db, client, token, connectionID, guard, readTimeout)
+		newSession: func(ctx context.Context, target spi.TargetDb, db engine.Db, client spi.SessionClient, token string, connectionID []byte, guard engine.ExecGuard, readTimeout time.Duration, defaultSchema string) (spi.TargetDbSession, error) {
+			return mysqlproxy.NewRunSession(ctx, target, db, client, token, connectionID, guard, readTimeout, defaultSchema)
 		},
 	},
 	sqlProvider{
@@ -138,8 +138,8 @@ var registry = spi.MustRegistry(
 		newServer: func(port int, target spi.TargetDb, client spi.EnforcementClient, db engine.Db, tlsProvider func() (*tls.Config, error)) spi.WireServer {
 			return pgproxy.New(port, target, client, db, tlsProvider)
 		},
-		newSession: func(ctx context.Context, target spi.TargetDb, db engine.Db, client spi.SessionClient, token string, connectionID []byte, guard engine.ExecGuard, readTimeout time.Duration) (spi.TargetDbSession, error) {
-			return pgproxy.NewRunSession(ctx, target, db, client, token, connectionID, guard, readTimeout)
+		newSession: func(ctx context.Context, target spi.TargetDb, db engine.Db, client spi.SessionClient, token string, connectionID []byte, guard engine.ExecGuard, readTimeout time.Duration, defaultSchema string) (spi.TargetDbSession, error) {
+			return pgproxy.NewRunSession(ctx, target, db, client, token, connectionID, guard, readTimeout, defaultSchema)
 		},
 	},
 )

@@ -62,7 +62,9 @@ from your pmon login, so the agent needs no sign-in of its own.
 
 `pmon mcp --install` registers it with every AI app installed on this machine
 (Claude Desktop, Claude Code, Codex) for every server; name servers or pass
-`--app` to narrow it, and `--uninstall` removes the entries:
+`--app` to narrow it, and `--uninstall` removes the entries. It replaces an
+app's other entry for the same server: one that connects to `<server>/mcp` over
+https, or `pmon mcp` under another name.
 
 ```sh
 pmon mcp --install

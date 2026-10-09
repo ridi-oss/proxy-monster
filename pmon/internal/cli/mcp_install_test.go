@@ -46,8 +46,17 @@ func TestMCPInstallRegistersEveryServer(t *testing.T) {
 		t.Errorf("an unknown server: err=%v\n%s", err, out)
 	}
 
-	e.mustRun(t, "mcp", "--install", "--app", "claude-desktop")
+	seed := `{"mcpServers":{"pm-hr":{"url":"` + cp.URL + `/mcp"},"keep":{"command":"npx","args":[]}}}`
+	if err := os.WriteFile(filepath.Join(dir, "claude_desktop_config.json"), []byte(seed), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if out := e.mustRun(t, "mcp", "--install", "--app", "claude-desktop"); !strings.Contains(out, "added proxy-monster-hr, replacing pm-hr") {
+		t.Errorf("install output does not report the replaced https entry:\n%s", out)
+	}
 	servers := readDesktopServers(t, dir)
+	if servers["pm-hr"] != nil || servers["keep"] == nil {
+		t.Errorf("after install: %v", servers)
+	}
 	for _, entry := range []string{"proxy-monster-hr", "proxy-monster-ops"} {
 		var c struct {
 			Command string            `json:"command"`
@@ -65,6 +74,9 @@ func TestMCPInstallRegistersEveryServer(t *testing.T) {
 	e.mustRun(t, "mcp", "--uninstall", "--app", "claude-desktop", "hr")
 	if servers := readDesktopServers(t, dir); servers["proxy-monster-hr"] != nil || servers["proxy-monster-ops"] == nil {
 		t.Errorf("after uninstalling hr: %v", servers)
+	}
+	if out := e.mustRun(t, "mcp", "--uninstall", "--app", "claude-desktop", "hr"); !strings.Contains(out, "no proxy-monster-hr to remove") {
+		t.Errorf("uninstalling hr again:\n%s", out)
 	}
 }
 

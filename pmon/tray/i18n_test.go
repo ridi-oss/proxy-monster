@@ -1,15 +1,16 @@
 package main
 
 import (
-	"time"
-
-	"github.com/ridi-oss/proxy-monster/pmon/control"
 	"os"
 	"path/filepath"
 	"regexp"
 	"slices"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/ridi-oss/proxy-monster/pmon/control"
+	"github.com/ridi-oss/proxy-monster/pmon/internal/aiapps"
 )
 
 func TestMain(m *testing.M) {
@@ -83,8 +84,8 @@ func TestDynamicKeysExist(t *testing.T) {
 	for _, kind := range []string{"signOut", "restart", "quit", "update", "remove"} {
 		keys = append(keys, "confirm."+kind, "confirm."+kind+"Button")
 	}
-	for _, app := range aiApps() {
-		keys = append(keys, "ai.after."+app.id)
+	for _, app := range aiapps.Apps() {
+		keys = append(keys, "ai.after."+app.ID)
 	}
 	for _, p := range []string{"servers", "ai", "general", "about"} {
 		keys = append(keys, "s.nav."+p)

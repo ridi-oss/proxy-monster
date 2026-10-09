@@ -16,6 +16,7 @@ import (
 	"unsafe"
 
 	"github.com/ridi-oss/proxy-monster/pmon/control"
+	"github.com/ridi-oss/proxy-monster/pmon/internal/aiapps"
 )
 
 // The Preferences window runs as its own process (`pmontray --preferences`): the systray owns the menu-bar
@@ -162,14 +163,14 @@ func (p *prefs) aiState() []prefsAIApp {
 	defer p.aiMu.Unlock()
 	st := p.state()
 	out := []prefsAIApp{}
-	pmon := bundledPmon()
-	for _, app := range aiApps() {
-		if !app.installed() {
+	setup := aiSetup()
+	for _, app := range aiapps.Apps() {
+		if !app.Installed() {
 			continue
 		}
-		row := prefsAIApp{ID: app.id, Name: app.name, After: app.after, Connected: map[string]bool{}}
+		row := prefsAIApp{ID: app.ID, Name: app.Name, After: T("ai.after." + app.ID), Connected: map[string]bool{}}
 		for _, srv := range st.Servers {
-			row.Connected[srv.Name] = app.connected(mcpEntryName(srv.Name), pmon, srv.Name)
+			row.Connected[srv.Name] = app.Connected(setup, srv.Name)
 		}
 		out = append(out, row)
 	}
@@ -179,19 +180,22 @@ func (p *prefs) aiState() []prefsAIApp {
 func (p *prefs) aiToggle(id, server string, on bool) any {
 	p.aiMu.Lock()
 	defer p.aiMu.Unlock()
-	for _, app := range aiApps() {
-		if app.id != id {
+	for _, app := range aiapps.Apps() {
+		if app.ID != id {
 			continue
 		}
-		change := app.remove
+		change := app.Remove
 		if on {
-			change = app.add
+			change = app.Add
 		}
-		if err := change(mcpEntryName(server), bundledPmon(), server); errors.Is(err, errDeclined) {
+		err := change(aiSetup(), server)
+		switch {
+		case errors.Is(err, aiapps.ErrDeclined):
 			return nil
-		} else {
-			return errText(err)
+		case err != nil:
+			return aiErrorText(err)
 		}
+		return ""
 	}
 	return "unknown app " + id
 }

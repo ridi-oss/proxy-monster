@@ -80,6 +80,7 @@ dependencies {
     testImplementation(kotlin("test"))
     // Route-level gate tests (requireAdmin wired into cedarPolicyRoutes) exercise real Ktor routing.
     testImplementation("io.ktor:ktor-server-test-host:$ktorVersion")
+    testImplementation("io.ktor:ktor-client-mock:$ktorVersion")
     testImplementation("io.modelcontextprotocol:kotlin-sdk-client:$mcpVersion")
     // The mock Slack server the transport/socket tests run against is a real embedded server on an ephemeral
     // port, so they exercise their true wire encoding (form vs JSON, the Socket Mode WebSocket). Netty is

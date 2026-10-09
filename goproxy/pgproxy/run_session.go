@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgproto3"
@@ -25,8 +26,12 @@ type RunSession struct {
 	poisoned     bool
 }
 
-func NewRunSession(ctx context.Context, target spi.TargetDb, db engine.Db, client spi.SessionClient, token string, connectionID []byte, guard engine.ExecGuard, readTimeout time.Duration) (*RunSession, error) {
-	conn, _, keyData, txStatus, catalog, err := dialTargetDbAuth(ctx, target)
+func NewRunSession(ctx context.Context, target spi.TargetDb, db engine.Db, client spi.SessionClient, token string, connectionID []byte, guard engine.ExecGuard, readTimeout time.Duration, defaultSchema string) (*RunSession, error) {
+	var extra map[string]string
+	if defaultSchema != "" {
+		extra = map[string]string{"search_path": `"` + strings.ReplaceAll(defaultSchema, `"`, `""`) + `"`}
+	}
+	conn, _, keyData, txStatus, catalog, err := dialTargetDbAuthParams(ctx, target, extra)
 	if err != nil {
 		return nil, err
 	}

@@ -402,6 +402,8 @@ class RunExecService(
         dialTimeoutMs: Long = RUN_DIALBACK_TIMEOUT_MS,
         noProgressMs: Long = RUN_NO_PROGRESS_TIMEOUT_MS,
         openTimeoutMs: Long = RUN_OPEN_TIMEOUT_MS,
+        // The schema the target connection opens in; null keeps the datasource's.
+        defaultSchema: String? = null,
     ) {
         val issued = core.dataSource.mintForActivePrincipalLocked(principal, core.userGroupStore) { c ->
             core.tokenStore.issue(
@@ -433,7 +435,7 @@ class RunExecService(
         try {
             core.runChannels.register(pending)
             registered = true
-            when (core.proxyEventsHub.requestOpenRun(ds.name, sessionId, issued.token, opened.connectionId, opened.onOpen)) {
+            when (core.proxyEventsHub.requestOpenRun(ds.name, sessionId, issued.token, opened.connectionId, opened.onOpen, defaultSchema)) {
                 ProxyEventsHub.Dispatch.SENT -> Unit
                 ProxyEventsHub.Dispatch.NOT_ATTACHED -> throw NoProxyAttachedException()
                 ProxyEventsHub.Dispatch.WEDGED -> throw ProxyStreamWedgedException()

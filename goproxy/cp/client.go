@@ -565,11 +565,12 @@ func (c *Client) streamEvents(
 				mapErr = fmt.Errorf("control plane returned run connection_id with %d bytes, want 16", len(e.GetConnectionId()))
 			}
 			onOpenRun(spi.RunOpen{
-				SessionID:    e.GetSessionId(),
-				Token:        e.GetEphemeralToken(),
-				ConnectionID: append([]byte(nil), e.GetConnectionId()...),
-				OnOpen:       onOpen,
-				MapErr:       mapErr,
+				SessionID:     e.GetSessionId(),
+				Token:         e.GetEphemeralToken(),
+				ConnectionID:  append([]byte(nil), e.GetConnectionId()...),
+				OnOpen:        onOpen,
+				DefaultSchema: e.GetDefaultSchema(),
+				MapErr:        mapErr,
 			})
 		case ev.GetOpenTableDetailChannel() != nil:
 			t := ev.GetOpenTableDetailChannel()

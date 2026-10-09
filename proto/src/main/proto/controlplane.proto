@@ -372,6 +372,7 @@ message OpenRunChannel {
   string ephemeral_token = 2;
   bytes connection_id = 3;             // control-plane-minted for the run session
   repeated ProxyCommand on_open = 4;
+  string default_schema = 5;           // the connection opens in this schema; empty keeps the target's default
 }
 // The request selectors ride the control-plane's Events response; the proxy then dials TableDetailExec
 // and correlates the stream with session_id. No query token is needed: this is metadata-only introspection.

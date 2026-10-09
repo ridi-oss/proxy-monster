@@ -21,6 +21,18 @@ class ProxyEventsHubTest {
         hub.requestOpenRun(name, "session", "token", ByteString.copyFrom(ByteArray(16)), emptyList())
 
     @Test
+    fun `the open-run event carries the default schema`() {
+        val hub = ProxyEventsHub()
+        val channel = Channel<ControlEvent>(Channel.BUFFERED)
+        hub.register("ds", channel)
+
+        hub.requestOpenRun("ds", "session", "token", ByteString.copyFrom(ByteArray(16)), emptyList(), defaultSchema = "orders")
+        assertEquals("orders", channel.tryReceive().getOrThrow().openRunChannel.defaultSchema)
+        openRun(hub, "ds")
+        assertEquals("", channel.tryReceive().getOrThrow().openRunChannel.defaultSchema, "null keeps the target's default")
+    }
+
+    @Test
     fun `a datasource with no stream is not attached`() {
         val hub = ProxyEventsHub()
         assertEquals(ProxyEventsHub.Dispatch.NOT_ATTACHED, openRun(hub, "absent"))

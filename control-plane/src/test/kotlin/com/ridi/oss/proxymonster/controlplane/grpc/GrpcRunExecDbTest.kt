@@ -945,6 +945,47 @@ class GrpcRunExecDbTest {
     }
 
     @Test
+    fun `runBatch opens the target connection in the requested default schema`() = runBlocking {
+        supervisorScope {
+            val event = async { stub.events(eventsRequest { datasourceName = datasource.name; protocolVersion = CONTROL_PROTOCOL_VERSION }).first() }
+            awaitUntil("Events stream attached") { datasource.name in core.proxyEventsHub.attached() }
+            val batch = async {
+                runCatching {
+                    service.runBatch(
+                        principal = "batch-user",
+                        ds = datasource,
+                        statementCount = 1,
+                        maxRows = 500,
+                        statementAt = { if (it == 0) "select 1" else null },
+                        onStatement = { _, _ -> true },
+                        defaultSchema = "orders",
+                    )
+                }
+            }
+            val open = withTimeout(5_000) { event.await() }.openRunChannel
+            assertEquals("orders", open.defaultSchema)
+            val proxyRequests = Channel<ProxyRunMsg>(Channel.UNLIMITED)
+            val proxy = async {
+                stub.runExec(proxyRequests.receiveAsFlow()).collect { control ->
+                    when {
+                        control.hasQuery() -> {
+                            proxyRequests.send(proxyRunMsg { decision = runDecision { decision = WireEnfAction.ALLOW } })
+                            proxyRequests.send(proxyRunMsg { done = runDone { rowsAffected = -1 } })
+                        }
+                        control.hasClose() -> proxyRequests.close()
+                        else -> fail("control plane sent an empty editor control message")
+                    }
+                }
+            }
+            proxyRequests.send(proxyRunMsg { sessionReady = runReady { sessionId = open.sessionId } })
+            proxyRequests.send(proxyRunMsg { serving = runServing {} })
+            withTimeout(5_000) { batch.await() }.getOrThrow()
+            withTimeout(5_000) { proxy.await() }
+            awaitUntil("Events stream detached") { datasource.name !in core.proxyEventsHub.attached() }
+        }
+    }
+
+    @Test
     fun `closeSessionsForPrincipal closes only the matching principal's streams`() = runBlocking {
         supervisorScope {
             val events = Channel<com.ridi.oss.proxymonster.grpc.ControlEvent>(Channel.UNLIMITED)

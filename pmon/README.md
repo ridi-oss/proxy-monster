@@ -11,7 +11,8 @@ brew trust --formula ridi-oss/tap/pmon
 brew install ridi-oss/tap/pmon   # or: go build -o /usr/local/bin/pmon ./pmon
 
 pmon login --url https://pm.example.com  # saves the server under its instance name, then device-auth in your browser
-pmon status                    # every server's login and brokered datasources
+pmon status                    # every server's login, version and brokered datasources
+pmon version                   # pmon's, its daemon's and each server's version
 pmon show acme-mysql            # mysql://you@example.com:pmlocal_…@127.0.0.1:6100/my_database
 pmon show acme-postgres         # postgresql://you@example.com:pmlocal_…@127.0.0.1:6101/app?sslmode=disable
 ```

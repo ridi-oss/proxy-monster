@@ -35,9 +35,13 @@ type Status struct {
 
 // ServerInfo is one configured control plane and its login.
 type ServerInfo struct {
-	Name             string `json:"name"`
-	Default          bool   `json:"default,omitempty"`
-	ControlPlane     string `json:"controlPlane"`
+	Name         string `json:"name"`
+	Default      bool   `json:"default,omitempty"`
+	ControlPlane string `json:"controlPlane"`
+	// ServerVersion and InstanceName are the server's release and instance name from its /api/instance;
+	// empty for a server older than that route or not reached yet.
+	ServerVersion    string `json:"serverVersion,omitempty"`
+	InstanceName     string `json:"instanceName,omitempty"`
 	Principal        string `json:"principal,omitempty"`
 	LoggedIn         bool   `json:"loggedIn"`
 	ExpiresAt        string `json:"expiresAt,omitempty"`

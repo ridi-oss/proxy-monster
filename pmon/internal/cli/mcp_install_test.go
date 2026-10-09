@@ -8,7 +8,9 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 )
 
 // claudeDesktopDir is where Claude Desktop keeps its config under a test's HOME.
@@ -179,5 +181,67 @@ func TestServerRenameMovesEverything(t *testing.T) {
 	}
 	if _, old := servers["pmon-dev"]; old || servers["dev-https"] == nil || json.Unmarshal(servers["pmon-staging"], &c) != nil || strings.Join(c.Args, " ") != "mcp staging" {
 		t.Errorf("Claude Desktop entries after rename: %v", servers)
+	}
+}
+
+func TestVersionPrintsEachServersVersion(t *testing.T) {
+	e := newEnv(t)
+	var mu sync.Mutex
+	current := "0.1.31"
+	cp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/instance" {
+			http.NotFound(w, r)
+			return
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		_, _ = w.Write([]byte(`{"name":"hr-pmon","version":"` + current + `"}`))
+	}))
+	t.Cleanup(cp.Close)
+	old := httptest.NewServer(http.NotFoundHandler())
+	t.Cleanup(old.Close)
+	e.mustRun(t, "server", "set", "--url", cp.URL)
+	e.mustRun(t, "server", "set", "legacy", "--url", old.URL)
+	ridi := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"name":"ridi","version":"0.1.31"}`))
+	}))
+	t.Cleanup(ridi.Close)
+	e.mustRun(t, "server", "set", "default", "--url", ridi.URL)
+	waitStatus := func(want string) string {
+		t.Helper()
+		status := ""
+		for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(100 * time.Millisecond) {
+			if status = e.mustRun(t, "status"); strings.Contains(status, want) {
+				return status
+			}
+		}
+		t.Fatalf("pmon status does not show %q:\n%s", want, status)
+		return ""
+	}
+	waitStatus("version:   0.1.31")
+	if status := waitStatus("the server calls itself \"ridi\" — `pmon server rename default` to use that name"); strings.Count(status, "calls itself") != 1 {
+		t.Errorf("pmon status suggests a name for a server already named after its instance:\n%s", status)
+	}
+
+	// pmon version asks each server now, not the daemon's copy.
+	mu.Lock()
+	current = "0.1.32"
+	mu.Unlock()
+	out := e.mustRun(t, "version")
+	for _, want := range []string{"pmon ", "daemon ", "hr-pmon", "0.1.32", "legacy", "predates /api/instance"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("pmon version lacks %q:\n%s", want, out)
+		}
+	}
+	// A restarted daemon reads every configured server's version when it starts.
+	e.mustRun(t, "restart", "--force")
+	waitStatus("version:   0.1.32")
+	if status := e.mustRun(t, "status"); strings.Count(status, "version:") != 2 {
+		t.Errorf("only the two servers that report a version should show one:\n%s", status)
+	}
+
+	e.mustRun(t, "stop", "--force")
+	if out := e.mustRun(t, "version"); !strings.Contains(out, "daemon   not running") || !strings.Contains(out, "0.1.32") {
+		t.Errorf("pmon version with no daemon:\n%s", out)
 	}
 }

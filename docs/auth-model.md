@@ -158,6 +158,35 @@ pmon:  store the wire token; open the loopback brokers (one per datasource) imme
     grants, daemon windows, and web rows together. Bounded staleness = the
     interval; the session window is the hard cap.
 
+## CI OIDC token exchange
+
+A CI job (GitHub Actions, or any CI that issues OIDC tokens) exchanges its OIDC
+JWT for a control-plane bearer token at `POST /api/workload/token` with body
+`{"token": "<JWT>"}`.
+
+- **Trusted issuers.** `PM_CI_OIDC_ISSUERS=<name>=<issuerUrl>,…`, e.g.
+  `github=https://token.actions.githubusercontent.com`. `name` is `[a-z0-9-]`,
+  unique; the issuer URL must be HTTPS. Unset or empty turns the endpoint off
+  (404 `workload.not_configured`).
+- **Audience.** `PM_CI_OIDC_AUDIENCE`, one value for every issuer since it names
+  this control plane. It defaults to the public origin of `PM_MCP_RESOURCE`,
+  e.g. `https://pm.example.com`.
+- **Checks.** `iss` must be a configured issuer; the RS256 signature verifies
+  against that issuer's JWKS (from its discovery document); `aud` contains the
+  configured audience; `exp`, `nbf`, and `iat` hold within 60s of skew; `sub` is
+  present. An untrusted issuer answers 401 `workload.issuer_not_trusted`; any
+  other failure answers 401 `common.invalid_token`.
+- **Result.** A `WORKLOAD` token (`pmw_`, 15 minutes). Only the
+  `requireWorkload` gate accepts it; it never passes the wire handshake, the
+  per-query `Decide`, or the datasource bearer path. A token whose issuer is
+  removed from `PM_CI_OIDC_ISSUERS` stops working.
+- **Audit.** `auth.workload.exchange` on the `workload` channel: SUCCESS names
+  `workload:<name>` with the kept claims; FAILURE is unattributed (`unknown`).
+- **Principal.** `Workload::"<name>"` with `issuer` (the issuer URL) and the
+  token's `repository`, `repository_id`, `ref`, `base_ref`, `workflow_ref`,
+  `event_name`, and `actor` claims as optional attributes; other claims are
+  dropped. A Workload is a principal only for `task.request`.
+
 ## SCIM 2.0 provisioning — IdP → local directory (opt-in)
 
 SCIM is off by default. Until `PM_SCIM_TOKEN` is configured every SCIM route

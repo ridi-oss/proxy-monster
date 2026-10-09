@@ -109,5 +109,9 @@
     "invalid_descriptor": "The native request could not be validated.",
     "not_authorized": "This native operation is not permitted.",
     "scope_violation": "The native request is outside this datasource's configured scope."
+  },
+  "workload": {
+    "not_configured": "CI token exchange is not configured on this server.",
+    "issuer_not_trusted": "The token's issuer is not trusted."
   }
 }

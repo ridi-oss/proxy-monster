@@ -68,6 +68,20 @@ action "native.invoke" appliesTo {
 // A user's parents are its resolved roles and its local groups.
 entity User in [Role, Group];
 
+// A CI workload, keyed by its configured issuer name (`Workload::"github"`). `issuer` is the trusted
+// issuer URL; the optional attributes are the CI token's claims, so a policy must `has`-guard them.
+// A Workload is a principal only for `task.request`.
+entity Workload = {
+    issuer: String,
+    repository?: String,
+    repository_id?: String,
+    ref?: String,
+    base_ref?: String,
+    workflow_ref?: String,
+    event_name?: String,
+    actor?: String,
+};
+
 // A brokered datasource (DESIGN.md's `datasource` table). `name` is best-effort/optional so
 // callers that only have the id can still authorize. It gains a `Tag` parent so every tag it carries
 // attaches to it AND — transitively via the Datasource parent every Table/Column/Function carries —
@@ -161,10 +175,10 @@ action "task.approve"
 // Task lifecycle actions replace code-side group-membership / ownership gates. `task.request` gates
 // creation against a datasource. `task.read` is the metadata gate over Request and AccessGrant;
 // `task.assume` is the confidentiality gate for saved result data. Approval routing is expressed as
-// policies scoped by the Request's Role/Datasource parents.
+// policies scoped by the Request's Role/Datasource parents. A CI Workload may also file requests.
 action "task.request"
   appliesTo {
-    principal: [User, Role],
+    principal: [User, Role, Workload],
     resource: [Datasource],
     context: RequestContext,
   };

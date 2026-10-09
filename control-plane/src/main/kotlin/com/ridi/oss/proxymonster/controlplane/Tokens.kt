@@ -17,6 +17,7 @@ import io.ktor.server.routing.get
 import io.ktor.server.routing.post
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.builtins.ListSerializer
+import kotlinx.serialization.builtins.MapSerializer
 import kotlinx.serialization.builtins.serializer
 import kotlinx.serialization.json.Json
 import java.security.MessageDigest
@@ -37,6 +38,7 @@ enum class TokenKind {
     USER,           // generated PAT, pasted / injected by the user
     EDITOR,         // stateful editor session
     APPROVER_EXEC,  // approver running an approved query under role R
+    WORKLOAD,       // CI OIDC exchange; HTTP bearer only, never a wire credential
     ;
 
     companion object {
@@ -66,6 +68,9 @@ data class IssuedToken(val token: String, val id: Long, val kind: String, val na
 /** Resolved identity for a presented wire token (the proxy's validate result). */
 @Serializable
 data class WireIdentity(val principal: String, val roles: List<String>, val kind: String)
+
+/** A resolved WORKLOAD token: the CI issuer name and the allow-listed claims it was minted with. */
+data class WorkloadIdentity(val name: String, val claims: Map<String, String>)
 
 @Serializable
 data class MintSessionTokenInput(val ttlSeconds: Long? = null)
@@ -100,6 +105,7 @@ internal fun tokenHash(token: String): String {
 class TokenStore(internal val dataSource: DataSource) {
     private val json = Json
     private val stringList = ListSerializer(String.serializer())
+    private val stringMap = MapSerializer(String.serializer(), String.serializer())
     private val rng = SecureRandom()
 
     val sessionTtlSeconds = SESSION_TTL_SECONDS
@@ -113,8 +119,8 @@ class TokenStore(internal val dataSource: DataSource) {
     }
 
     /**
-     * Issue an expiring token. [kind] is SESSION (daemon, prefix `pmt_`) or USER (generated,
-     * prefix `pmk_`). [ttlSeconds] is clamped to [60, maxTtlSeconds]; there is no no-expiry option.
+     * Issue an expiring token: prefix `pmt_` for SESSION, `pmk_` otherwise (`pmw_` is [issueWorkload]'s).
+     * [ttlSeconds] is clamped to [60, maxTtlSeconds]; there is no no-expiry option.
      */
     fun issue(kind: TokenKind, principal: String, roles: List<String>, name: String?, ttlSeconds: Long): IssuedToken =
         dataSource.connection.use { c -> issue(kind, principal, roles, name, ttlSeconds, c) }
@@ -153,6 +159,43 @@ class TokenStore(internal val dataSource: DataSource) {
             ps.executeQuery().use { rs -> rs.next(); rs.getLong(1) to rs.getTimestamp(2).toInstant().toString() }
         }
         return IssuedToken(token, id, kind.name, name, expiresAt)
+    }
+
+    /** Issue a WORKLOAD token on [c]; [claims] become the Workload principal's Cedar attributes. */
+    fun issueWorkload(name: String, claims: Map<String, String>, ttlSeconds: Long, c: Connection): IssuedToken {
+        val token = randomToken("pmw_")
+        val (id, expiresAt) = c.prepareStatement(
+            """INSERT INTO proxy_token (token_hash, kind, principal, roles, name, expires_at, claims)
+               VALUES (?, ?, ?, '[]'::jsonb, NULL, now() + (?::bigint * interval '1 second'), ?::jsonb)
+               RETURNING id, expires_at""",
+        ).use { ps ->
+            ps.setString(1, hash(token))
+            ps.setString(2, TokenKind.WORKLOAD.name)
+            ps.setString(3, "workload:$name")
+            ps.setLong(4, clampTtlSeconds(ttlSeconds))
+            ps.setString(5, json.encodeToString(stringMap, claims))
+            ps.executeQuery().use { rs -> rs.next(); rs.getLong(1) to rs.getTimestamp(2).toInstant().toString() }
+        }
+        return IssuedToken(token, id, TokenKind.WORKLOAD.name, null, expiresAt)
+    }
+
+    /** Resolve a live WORKLOAD token; null for any other kind, so it is never a wire or datasource credential. */
+    fun resolveWorkload(token: String): WorkloadIdentity? = dataSource.connection.use { c ->
+        c.prepareStatement(
+            "SELECT principal, claims FROM proxy_token WHERE token_hash = ? AND kind = 'WORKLOAD' AND revoked_at IS NULL AND expires_at > now()",
+        ).use { ps ->
+            ps.setString(1, hash(token))
+            ps.executeQuery().use { rs ->
+                if (rs.next()) {
+                    WorkloadIdentity(
+                        rs.getString("principal").removePrefix("workload:"),
+                        rs.getString("claims")?.let { json.decodeFromString(stringMap, it) } ?: emptyMap(),
+                    )
+                } else {
+                    null
+                }
+            }
+        }
     }
 
     /**

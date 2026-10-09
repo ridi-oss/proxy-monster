@@ -1,11 +1,15 @@
 package api
 
 import (
+	"encoding/json"
+	"errors"
 	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 func OptInstant(t *time.Time) *string {
@@ -42,6 +46,66 @@ func WriteRows[R, T any](w http.ResponseWriter, rows []R, err error, to func(R) 
 		out = append(out, to(r))
 	}
 	WriteJSON(w, http.StatusOK, out)
+}
+
+// ManagementError is Kotlin's ManagementException: an ApiError whose code picks the status, as
+// respondManagementError does.
+type ManagementError struct {
+	Code   string
+	Params Params
+}
+
+func (e *ManagementError) Error() string { return e.Code }
+
+func Required(field, value string) error {
+	if strings.TrimSpace(value) == "" {
+		return &ManagementError{"common.field_required", Params{{"fields", field}}}
+	}
+	return nil
+}
+
+func NotFound(resource string) error {
+	return &ManagementError{"common.not_found", Params{{"resource", resource}}}
+}
+
+// Unique turns a unique-constraint violation into common.already_exists, as Kotlin's unique() does.
+func Unique(err error, resource, name string) error {
+	var pg *pgconn.PgError
+	if errors.As(err, &pg) && pg.Code == "23505" {
+		return &ManagementError{"common.already_exists", Params{{"resource", resource}, {"name", name}}}
+	}
+	return err
+}
+
+func UpdateSummary(typ, before, after string) string {
+	if before == after {
+		return "update " + typ + " '" + before + "'"
+	}
+	return "update " + typ + " '" + before + "' -> '" + after + "'"
+}
+
+func DecodeBody(r *http.Request, v any) error {
+	if err := json.NewDecoder(r.Body).Decode(v); err != nil {
+		return &ManagementError{"common.invalid_value", Params{{"field", "body"}}}
+	}
+	return nil
+}
+
+func pathID(r *http.Request) (int64, bool) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	return id, err == nil
+}
+
+// WithID answers a non-numeric {id} with 400 common.bad_id before anything else, as Kotlin's idParam does.
+func WithID(next func(http.ResponseWriter, *http.Request, int64)) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id, ok := pathID(r)
+		if !ok {
+			WriteError(w, http.StatusBadRequest, "common.bad_id", nil)
+			return
+		}
+		next(w, r, id)
+	}
 }
 
 func Fail(w http.ResponseWriter, err error) {

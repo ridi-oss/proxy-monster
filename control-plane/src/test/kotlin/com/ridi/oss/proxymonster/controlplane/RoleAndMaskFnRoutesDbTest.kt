@@ -1,10 +1,10 @@
 package com.ridi.oss.proxymonster.controlplane
 
+import com.ridi.oss.proxymonster.controlplane.support.CpGoStack
 import com.ridi.oss.proxymonster.controlplane.support.SharedPostgres
-import com.ridi.oss.proxymonster.controlplane.support.installControlPlane
 import com.ridi.oss.proxymonster.controlplane.support.requireDockerOrSkip
+import com.ridi.oss.proxymonster.controlplane.support.testLoginRoute
 import io.ktor.client.HttpClient
-import io.ktor.client.plugins.cookies.HttpCookies
 import io.ktor.client.request.delete
 import io.ktor.client.request.post
 import io.ktor.client.request.put
@@ -14,9 +14,11 @@ import io.ktor.client.statement.bodyAsText
 import io.ktor.http.ContentType
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.contentType
+import io.ktor.server.routing.routing
 import io.ktor.server.testing.ApplicationTestBuilder
 import io.ktor.server.testing.testApplication
 import org.flywaydb.core.Flyway
+import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.TestInstance
@@ -29,6 +31,7 @@ class RoleAndMaskFnRoutesDbTest {
     private lateinit var dataSource: DataSource
     private lateinit var core: ControlPlaneCore
     private lateinit var config: Config
+    private lateinit var cpGo: CpGoStack
 
     private val admin = "role-admin@example.com"
     private val viewer = "role-viewer@example.com"
@@ -36,7 +39,8 @@ class RoleAndMaskFnRoutesDbTest {
     @BeforeAll
     fun setup() {
         requireDockerOrSkip()
-        dataSource = SharedPostgres.hikari(SharedPostgres.freshDatabase("pm_role_maskfn_routes"))
+        val database = SharedPostgres.freshDatabase("pm_role_maskfn_routes")
+        dataSource = SharedPostgres.hikari(database)
         Flyway.configure().dataSource(dataSource).load().migrate()
         core = ControlPlaneCore(dataSource)
         val sessions = PrincipalSessionStore(dataSource, null)
@@ -49,17 +53,21 @@ class RoleAndMaskFnRoutesDbTest {
             sessionSecret = "role-maskfn-routes-secret", oidc = null, resultKey = null, scimToken = null,
             sessionWindowSeconds = 3600, idpRecheckIntervalSeconds = 600, devMarker = true,
         )
+        cpGo = CpGoStack(config, core, database) { routing { testLoginRoute(sessions, config) } }
+    }
+
+    @AfterAll
+    fun teardown() {
+        if (::cpGo.isInitialized) cpGo.close()
     }
 
     /** One client per entry, signed in as that principal or anonymous when null. */
-    private suspend fun ApplicationTestBuilder.clients(vararg principals: String?): List<HttpClient> {
-        val first = installControlPlane(config, core)
-        return principals.mapIndexed { i, principal ->
-            val client = if (i == 0) first else createClient { expectSuccess = false; install(HttpCookies) }
+    private suspend fun ApplicationTestBuilder.clients(vararg principals: String?): List<HttpClient> =
+        principals.map { principal ->
+            val client = cpGo.client()
             if (principal != null) assertEquals(HttpStatusCode.NoContent, client.post("/test/session/$principal").status)
             client
         }
-    }
 
     /** One line per request, `METHOD path -> status body`, so a failure shows every difference at once. */
     private class Transcript(private val client: HttpClient) {

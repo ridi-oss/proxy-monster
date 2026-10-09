@@ -439,9 +439,6 @@ class PolicyManagementService(
         return store.listAssignments(principal, roleId)
     }
 
-    fun listAssignmentsByRoleId(principal: String?, roleId: Long?): List<RoleAssignment> =
-        store.listAssignments(principal, roleId)
-
     fun listMaskFns(): List<MaskFn> = store.listMaskFns()
     fun getMaskFn(name: String): MaskFn = store.getMaskFnByName(name) ?: notFound("mask function")
     fun getMaskFn(name: String, c: Connection): MaskFn = store.getMaskFnByName(name, c) ?: notFound("mask function")

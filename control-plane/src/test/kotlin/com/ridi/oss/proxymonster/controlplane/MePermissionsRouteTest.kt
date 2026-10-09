@@ -1,44 +1,36 @@
 package com.ridi.oss.proxymonster.controlplane
 
-import com.ridi.oss.proxymonster.controlplane.authz.Authz
-import com.ridi.oss.proxymonster.controlplane.authz.CedarEngine
-import com.ridi.oss.proxymonster.controlplane.authz.CedarPolicyStore
-import com.ridi.oss.proxymonster.controlplane.authz.RoleSource
+import com.ridi.oss.proxymonster.controlplane.authz.CedarPolicyInput
+import com.ridi.oss.proxymonster.controlplane.support.CpGoStack
 import com.ridi.oss.proxymonster.controlplane.support.testLoginRoute
-import com.ridi.oss.proxymonster.controlplane.support.webSessionCookie
 import io.ktor.client.HttpClient
 import io.ktor.client.call.body
-import io.ktor.client.plugins.contentnegotiation.ContentNegotiation as ClientContentNegotiation
-import io.ktor.client.plugins.cookies.HttpCookies
 import io.ktor.client.request.get
 import io.ktor.client.request.header
 import io.ktor.client.request.post
 import io.ktor.client.statement.bodyAsText
 import io.ktor.http.HttpStatusCode
-import io.ktor.serialization.kotlinx.json.json
-import io.ktor.server.application.Application
-import io.ktor.server.application.install
-import io.ktor.server.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.server.routing.routing
-import io.ktor.server.sessions.Sessions
 import io.ktor.server.testing.ApplicationTestBuilder
 import io.ktor.server.testing.testApplication
-import java.sql.Connection
-import java.util.logging.Logger
 import javax.sql.DataSource
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.boolean
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import org.junit.jupiter.api.AfterEach
 import kotlin.test.Test
 import kotlin.test.assertEquals
 
 class MePermissionsRouteTest {
-    private val dataSource: DataSource by lazy {
+    private val database: String by lazy {
         com.ridi.oss.proxymonster.controlplane.support.requireDockerOrSkip()
-        com.ridi.oss.proxymonster.controlplane.support.SharedPostgres.hikari(
-            com.ridi.oss.proxymonster.controlplane.support.SharedPostgres.freshDatabase("pm_me_permissions"),
-        ).also { org.flywaydb.core.Flyway.configure().dataSource(it).load().migrate() }
+        com.ridi.oss.proxymonster.controlplane.support.SharedPostgres.freshDatabase("pm_me_permissions")
+    }
+
+    private val dataSource: DataSource by lazy {
+        com.ridi.oss.proxymonster.controlplane.support.SharedPostgres.hikari(database)
+            .also { org.flywaydb.core.Flyway.configure().dataSource(it).load().migrate() }
     }
 
     private val rolePolicies = listOf(
@@ -56,11 +48,10 @@ class MePermissionsRouteTest {
         "auditor-only" to setOf("auditor"),
     )
 
-    private fun authz(): Authz = Authz(
-        CedarEngine(rolePolicies),
-        CedarPolicyStore(dataSource),
-        RoleSource { principal -> principalRoles[principal] ?: emptySet() },
-    )
+    /** The Cedar policies and role assignments a test runs under. */
+    private class Authz(val policies: List<Pair<Long, String>>, val roles: Map<String, Set<String>>)
+
+    private fun authz(): Authz = Authz(rolePolicies, principalRoles)
 
     private fun config(authDebug: Boolean, trustedProxies: Set<String> = emptySet()) = Config(
         httpPort = 0,
@@ -82,14 +73,11 @@ class MePermissionsRouteTest {
     // An IP-gated admin.datasources permit: `isAdmin` is true ONLY when requester_ip is in the documentation
     // range 203.0.113.0/24 — so the /api/me/permissions decision is observably sensitive to the context arg.
     private fun ipGatedAdminAuthz(): Authz = Authz(
-        CedarEngine(
-            listOf(
-                1L to """permit(principal in Role::"system:admin", action == Action::"admin.datasources", resource)
-                    when { context has requester_ip && context.requester_ip.isInRange(ip("203.0.113.0/24")) };""",
-            ),
+        listOf(
+            1L to """permit(principal in Role::"system:admin", action == Action::"admin.datasources", resource)
+                when { context has requester_ip && context.requester_ip.isInRange(ip("203.0.113.0/24")) };""",
         ),
-        CedarPolicyStore(MePermissionsUnusedDataSource),
-        RoleSource { p -> if (p == "edge-admin") setOf("system:admin") else emptySet() },
+        mapOf("edge-admin" to setOf("system:admin")),
     )
 
     private fun isAdmin(body: String): Boolean =
@@ -199,44 +187,36 @@ class MePermissionsRouteTest {
             response.body(),
         )
     }
-}
 
-private fun ApplicationTestBuilder.wirePermissionsApp(config: Config, authz: Authz, dataSource: DataSource): HttpClient {
-    application { installPermissionsTestApp(config, authz, dataSource) }
-    return createClient {
-        expectSuccess = false
-        install(HttpCookies)
-        install(ClientContentNegotiation) { json(Json { ignoreUnknownKeys = true }) }
+    private val stacks = mutableListOf<CpGoStack>()
+
+    @AfterEach
+    fun closeStacks() {
+        stacks.forEach(CpGoStack::close)
+        stacks.clear()
     }
-}
 
-private fun Application.installPermissionsTestApp(config: Config, authz: Authz, dataSource: DataSource) {
-    val sessionStore = PrincipalSessionStore(dataSource, null)
-    attributes.put(PRINCIPAL_SESSION_STORE, sessionStore)
-    install(ContentNegotiation) { json(Json { ignoreUnknownKeys = true; encodeDefaults = true }) }
-    install(Sessions) {
-        webSessionCookie(sessionStore, config.sessionSecret)
+    /** cp-go in front of the Kotlin control plane, serving `/api/me/permissions` under [authz]'s policies and roles. */
+    @Suppress("UnusedReceiverParameter")
+    private fun ApplicationTestBuilder.wirePermissionsApp(config: Config, authz: Authz, dataSource: DataSource): HttpClient {
+        val core = ControlPlaneCore(dataSource)
+        core.cedarPolicyStore.list().forEach { core.cedarPolicyStore.setEnabled(it.id, false, null) }
+        authz.policies.forEach { (id, src) -> core.cedarPolicyStore.create(CedarPolicyInput("me-permissions-${System.nanoTime()}-$id", src), null) }
+        val sessionStore = PrincipalSessionStore(dataSource, null)
+        for ((principal, held) in authz.roles) {
+            core.userGroupStore.getUserByPrincipal(principal)
+                ?: core.userGroupStore.createUser(AppUserInput(principal = principal), core.tokenStore, core.accessStore, sessionStore)
+            for (name in held) {
+                val role = core.policyStore.getRoleByName(name) ?: core.policyStore.createRole(RoleInput(name))
+                if (core.policyStore.listAssignments(principal, role.id).isEmpty()) {
+                    core.policyStore.createAssignment(RoleAssignmentInput(principal, role.id))
+                }
+            }
+        }
+        // The test host's peer is cp-go's loopback client, so a trusted edge here is 127.0.0.1 to cp-go.
+        val env = if (config.trustedProxies.isEmpty()) emptyMap() else mapOf("PM_TRUSTED_PROXIES" to "127.0.0.1")
+        val stack = CpGoStack(config, core, database, extraEnv = env) { routing { testLoginRoute(sessionStore, config) } }
+        stacks += stack
+        return stack.client()
     }
-    routing {
-        testLoginRoute(sessionStore, config)
-        mePermissionsRoute(config, authz)
-    }
-}
-
-/**
- * A JDBC sentinel for [ipGatedAdminAuthz]: its Cedar policies are supplied inline to the engine, so
- * that authz's [CedarPolicyStore] is never queried. Any connection attempt is a bug in the fixture.
- */
-private object MePermissionsUnusedDataSource : DataSource {
-    private fun boom(): Nothing = error("ipGatedAdminAuthz must not query its Cedar policy store")
-
-    override fun getConnection(): Connection = boom()
-    override fun getConnection(username: String?, password: String?): Connection = boom()
-    override fun getLogWriter() = boom()
-    override fun setLogWriter(out: java.io.PrintWriter?) = boom()
-    override fun setLoginTimeout(seconds: Int) = boom()
-    override fun getLoginTimeout() = boom()
-    override fun getParentLogger(): Logger = boom()
-    override fun <T : Any?> unwrap(iface: Class<T>?): T = boom()
-    override fun isWrapperFor(iface: Class<*>?): Boolean = false
 }

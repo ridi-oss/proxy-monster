@@ -23,3 +23,11 @@ func TestKotlinSessionCheckAsksKotlinWithTheCallersCookies(t *testing.T) {
 		t.Fatalf("Kotlin saw %q with cookies %q", gotPath, gotCookie)
 	}
 }
+
+func TestWriteJSONMatchesKotlinBytes(t *testing.T) {
+	w := httptest.NewRecorder()
+	WriteJSON(w, http.StatusOK, map[string]string{"cedarSrc": `when { a < 1 && b > 2 }`})
+	if got := w.Body.String(); got != `{"cedarSrc":"when { a < 1 && b > 2 }"}` {
+		t.Fatalf("body %q", got)
+	}
+}

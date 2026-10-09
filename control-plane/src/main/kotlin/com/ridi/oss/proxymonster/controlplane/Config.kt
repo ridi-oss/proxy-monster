@@ -31,6 +31,8 @@ data class Config(
     // the web UI keeps talking HTTP/JSON; only the proxy<->control-plane wire protocol is gRPC.
     // Defaulted so the many HTTP-route tests that build a Config by name need not name it.
     val grpcPort: Int = DEFAULT_GRPC_PORT,
+    // cp-go sets 127.0.0.1 so this process is reachable only through it.
+    val bindHost: String = "0.0.0.0",
     val dbUrl: String,
     val dbUser: String,
     val dbPassword: String,
@@ -263,6 +265,7 @@ data class Config(
             return Config(
                 httpPort = env("PM_HTTP_PORT")?.toIntOrNull() ?: 8080,
                 grpcPort = env("PM_GRPC_PORT")?.toIntOrNull() ?: DEFAULT_GRPC_PORT,
+                bindHost = env("PM_BIND_HOST")?.trim()?.takeIf { it.isNotEmpty() } ?: "0.0.0.0",
                 dbUrl = env("PM_DB_URL") ?: "jdbc:postgresql://localhost:5432/proxymonster",
                 dbUser = env("PM_DB_USER") ?: "proxymonster",
                 dbPassword = env("PM_DB_PASSWORD") ?: "proxymonster",

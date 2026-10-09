@@ -8,7 +8,7 @@ per-phase file lists, is the
 [plan artifact](https://claude.ai/artifact/9V3VoaADjrYinG6TpJLVc7); viewing it
 requires access granted by the maintainers.
 
-Status: phase 0 (front door) done; phases 1–7 not started.
+Status: phases 0 (front door) and 1 (session gate) done; phases 2–8 not started.
 
 ## Shape
 
@@ -44,25 +44,30 @@ gantt
   axisFormat %s
   section Working days
   0 Front door          :0, 3
-  1 Login and sessions  :3, 9
-  2 Access-check bridge :9, 10
-  3 Leaf slices         :10, 16
-  4 Cedar               :16, 21
-  5 Admin CRUD          :21, 27
-  6 Per-query path      :27, 36
-  7 MCP, OAuth, cleanup :36, 40
+  1 Session gate        :3, 5
+  2 Access-check bridge :5, 6
+  3 Leaf slices         :6, 12
+  4 Cedar and roles     :12, 18
+  5 Admin CRUD          :18, 24
+  6 Login and sessions  :24, 30
+  7 Per-query path      :30, 39
+  8 MCP, OAuth, cleanup :39, 43
 ```
 
-| #   | Phase               | Moves                                                      | Kotlin lines | Done when                                                       |
-| --- | ------------------- | ---------------------------------------------------------- | ------------ | --------------------------------------------------------------- |
-| 0   | Front door          | Port ownership, child process, forwarding                  | 0            | e2e passes through `cp-go`; the JVM is unreachable from outside |
-| 1   | Login and sessions  | OIDC, sessions, device login, wire tokens, `ValidateToken` | 2,907        | Web, pmon, and MCP login work end to end                        |
-| 2   | Access-check bridge | Go routes ask Kotlin through one `Authorize` RPC           | 0            | Every Go route calls a gate helper                              |
-| 3   | Leaf slices         | Notifications, audit routes, query history, SCIM           | 2,980        | The audit chain verifies across the switch                      |
-| 4   | Cedar               | `cedar-go` replaces `cedar-java`; the bridge is deleted    | 1,984        | No differences on a recorded request set                        |
-| 5   | Admin CRUD          | Datasources, users, access, policies, approvals            | 7,081        | Console admin and approvals run on Go                           |
-| 6   | Per-query path      | Catalog, roles, `Decide`, `RunExec`, events, Athena        | 6,795        | MySQL wire and editor masking match Kotlin                      |
-| 7   | MCP, OAuth, cleanup | MCP server, OAuth, Flyway handover; delete the JVM build   | 4,927        | The full gate passes with no JVM                                |
+| #   | Phase               | Moves                                                                     | Kotlin lines | Done when                                                       |
+| --- | ------------------- | ------------------------------------------------------------------------- | ------------ | --------------------------------------------------------------- |
+| 0   | Front door          | Port ownership, child process, forwarding                                 | 0            | e2e passes through `cp-go`; the JVM is unreachable from outside |
+| 1   | Session gate        | Go reads console sessions; locale and query-history routes                | 50           | Go accepts exactly the sessions Kotlin does                     |
+| 2   | Access-check bridge | Go routes ask Kotlin through one `Authorize` RPC                          | 0            | Every Go route calls a gate helper                              |
+| 3   | Leaf slices         | Notifications, audit routes, connection info, SCIM                        | 2,930        | The audit chain verifies across the switch                      |
+| 4   | Cedar and roles     | `cedar-go` replaces `cedar-java`, `RoleResolver` moves; bridge deleted    | 2,136        | No differences on a recorded request set                        |
+| 5   | Admin CRUD          | Datasources, users, access, policies, approvals                           | 7,081        | Console admin and approvals run on Go                           |
+| 6   | Login and sessions  | OIDC login, device login, wire tokens, `ValidateToken`, IdP recheck sweep | 2,907        | Web, pmon, and MCP login work end to end                        |
+| 7   | Per-query path      | Catalog, `Decide`, `RunExec`, events, Athena                              | 6,643        | MySQL wire and editor masking match Kotlin                      |
+| 8   | MCP, OAuth, cleanup | MCP server, OAuth, Flyway handover; delete the JVM build                  | 4,927        | The full gate passes with no JVM                                |
+
+Login comes after admin CRUD because it provisions users and groups from the IdP
+and gates on resolved roles; it moves once both are in Go.
 
 Estimated at 31–46 working days in total.
 
@@ -76,7 +81,7 @@ Estimated at 31–46 working days in total.
   before switching.
 - The audit hash chain breaks if Go's canonical form differs by one byte from
   `AuditCanonical.kt`. Test both on the same rows first.
-- Kotlin's Flyway owns migrations until phase 7; a Go runner then takes over the
+- Kotlin's Flyway owns migrations until phase 8; a Go runner then takes over the
   same files and history table.
 - Go handlers return the same `ApiError(code, params)` and use the same gate
   helpers, built in phase 0.

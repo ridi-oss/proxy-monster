@@ -29,7 +29,9 @@ import (
 	"github.com/ridi-oss/proxy-monster/cpgo/front"
 	"github.com/ridi-oss/proxy-monster/cpgo/gobridge"
 	bridgepb "github.com/ridi-oss/proxy-monster/cpgo/gobridge/pb"
+	"github.com/ridi-oss/proxy-monster/cpgo/idp"
 	"github.com/ridi-oss/proxy-monster/cpgo/routes"
+	"github.com/ridi-oss/proxy-monster/cpgo/routes/oidc"
 	"github.com/ridi-oss/proxy-monster/cpgo/session"
 	"github.com/ridi-oss/proxy-monster/cpgo/store"
 	"github.com/ridi-oss/proxy-monster/cpgo/tailnet"
@@ -160,15 +162,30 @@ func run(ctx context.Context, cfg config) int {
 	defer pool.Close()
 
 	kotlin := bridge.New(httpUpstream, internalToken)
+	resolver := session.NewResolver(pool, sessions)
+	var login oidc.Login
+	if login.Crypto, err = idp.CryptoFromEnv(); err != nil {
+		slog.Error("cp-go: " + err.Error())
+		return 1
+	}
+	oidcCfg, err := idp.ConfigFromEnv()
+	if err != nil {
+		slog.Error("cp-go: " + err.Error())
+		return 1
+	}
+	if oidcCfg != nil {
+		login.Provider = idp.NewProvider(*oidcCfg)
+		go oidc.Liveness{Pool: pool, Sessions: resolver, Kotlin: kotlin, Provider: login.Provider, Crypto: login.Crypto}.Run(ctx)
+	}
 	serve := func(edges front.TrustedEdges) http.Handler {
 		mux := http.NewServeMux()
 		routes.Register(mux, pool, api.Gate{
-			Sessions:  session.NewResolver(pool, sessions),
+			Sessions:  resolver,
 			Kotlin:    kotlin,
 			Edges:     edges,
 			AuthDebug: sessions.AuthDebug,
 			Authz:     authorizer(cfg.Cedar, pool, kotlin),
-		})
+		}, login)
 		h := front.Route(mux, front.NewHTTP(httpUpstream, edges))
 		if web != nil {
 			h = front.Split(h, front.NewHTTP(web, edges))

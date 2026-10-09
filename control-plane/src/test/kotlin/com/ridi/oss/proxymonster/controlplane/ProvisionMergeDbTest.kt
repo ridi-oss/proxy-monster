@@ -2,6 +2,7 @@ package com.ridi.oss.proxymonster.controlplane
 
 import com.ridi.oss.proxymonster.controlplane.support.SharedPostgres
 import com.ridi.oss.proxymonster.controlplane.support.requireDockerOrSkip
+import com.ridi.oss.proxymonster.controlplane.support.seedOidcUser
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
@@ -20,9 +21,8 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
- * DB-backed tests for OIDC JIT provisioning + SCIM reconciliation (docs/auth-model.md "SCIM vs
- * JIT (decision (c))"): JIT provisioning is additive-only and never clobbers a SCIM-owned user;
- * SCIM upsert reconciles a prior JIT row (matched by external_id -> email -> principal) instead of
+ * DB-backed tests for SCIM reconciliation (docs/auth-model.md "SCIM vs JIT (decision (c))"): SCIM
+ * upsert reconciles a prior JIT row (matched by external_id -> email -> principal) instead of
  * duplicating it.
  */
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
@@ -48,18 +48,6 @@ class ProvisionMergeDbTest {
     }
 
     @Test
-    fun `provisionFromOidc creates a new source=OIDC user and mirrors the claim's groups`() {
-        val user = store.provisionFromOidc("new-jit@example.com", "new-jit@example.com", listOf("eng", "on-call"))
-        assertEquals("OIDC", user.source)
-        assertEquals("new-jit@example.com", user.email)
-        assertEquals(setOf("eng", "on-call"), user.groups.map { it.name }.toSet())
-
-        // The groups were freshly created as source=OIDC (JIT-created, no SCIM push yet).
-        val eng = store.listGroups().first { it.name == "eng" }
-        assertEquals("OIDC", eng.source)
-    }
-
-    @Test
     fun `activePrincipalByEmail resolves a unique active email but refuses an ambiguous one`() {
         // email carries no uniqueness constraint, so two ACTIVE principals can share one. This method
         // authenticates a Slack click, so an ambiguous match must be refused, never resolved to an arbitrary
@@ -80,45 +68,9 @@ class ProvisionMergeDbTest {
     }
 
     @Test
-    fun `re-provisioning SYNCS group membership to the latest claim (drops removed groups)`() {
-        // OIDC is authoritative for an OIDC user's group membership, so a login with a
-        // smaller claim REMOVES the groups no longer claimed (this is how dropping someone from the IdP
-        // admin group revokes their system:admin on the next login).
-        val principal = "additive@example.com"
-        store.provisionFromOidc(principal, principal, listOf("group-a", "group-b"))
-        val second = store.provisionFromOidc(principal, principal, listOf("group-c"))
-        assertEquals(setOf("group-c"), second.groups.map { it.name }.toSet())
-    }
-
-    @Test
-    fun `provisionFromOidc reuses an existing group's source, whatever it is`() {
-        val group = store.createGroup(AppGroupInput(name = "already-local"))
-        assertEquals("LOCAL", group.source)
-        val user = store.provisionFromOidc("reuse-group@example.com", null, listOf("already-local"))
-        assertEquals(setOf("already-local"), user.groups.map { it.name }.toSet())
-        // The group's own source is untouched by JIT — group creation-vs-reuse is the only branch.
-        assertEquals("LOCAL", store.getGroup(group.id)!!.source)
-    }
-
-    @Test
-    fun `JIT never clobbers a source=SCIM user's fields`() {
-        val principal = "scim-owned@example.com"
-        val scimUser = store.upsertScimUser(
-            externalId = "ext-1", principal = principal, email = "scim-owned@example.com",
-            displayName = "SCIM Name", active = true,
-        )
-        assertEquals("SCIM", scimUser.source)
-
-        // A JIT login for the same principal must not flip source back to OIDC or alter email.
-        val afterJit = store.provisionFromOidc(principal, "attacker-supplied@evil.com", listOf("some-group"))
-        assertEquals("SCIM", afterJit.source)
-        assertEquals("scim-owned@example.com", afterJit.email, "JIT must not overwrite a SCIM-owned user's email")
-    }
-
-    @Test
     fun `upsertScimUser matches an existing JIT user by email and reconciles it to SCIM`() {
         val principal = "jit-then-scim@example.com"
-        val jitUser = store.provisionFromOidc(principal, "jit-then-scim@example.com", emptyList())
+        val jitUser = store.seedOidcUser(principal, "jit-then-scim@example.com")
         assertEquals("OIDC", jitUser.source)
 
         val reconciled = store.upsertScimUser(
@@ -388,7 +340,7 @@ class ProvisionMergeDbTest {
     @Test
     fun `setUserActive and isDeactivated`() {
         val principal = "toggle-active@example.com"
-        store.provisionFromOidc(principal, null, emptyList())
+        store.seedOidcUser(principal)
         assertFalse(store.isDeactivated(principal))
 
         assertTrue(store.setUserActive(principal, false))

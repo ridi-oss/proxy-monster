@@ -24,20 +24,21 @@ import (
 	"github.com/ridi-oss/proxy-monster/cpgo/store/db"
 )
 
-func Register(mux *http.ServeMux, pool *pgxpool.Pool, gate api.Gate) {
-	au := auth{pool: pool, sessions: gate.Sessions, kotlin: gate.Kotlin, edges: gate.Edges}
+func Register(mux *http.ServeMux, pool *pgxpool.Pool, gate api.Gate) Auth {
+	au := Auth{Pool: pool, Sessions: gate.Sessions, kotlin: gate.Kotlin, edges: gate.Edges}
 	mux.HandleFunc("GET /auth/config", au.config)
 	mux.HandleFunc("POST /auth/debug", au.debugLogin)
 	mux.HandleFunc("GET /auth/me", au.sessionGate(au.me))
 	mux.HandleFunc("GET /auth/session/status", au.sessionGate(au.status))
 	mux.HandleFunc("POST /auth/session/heartbeat", au.sessionGate(au.heartbeat))
 	mux.HandleFunc("POST /auth/logout", au.logout)
+	return au
 }
 
-// auth serves the console's session routes: config, debug login, me, status, heartbeat and logout.
-type auth struct {
-	pool     *pgxpool.Pool
-	sessions *session.Resolver
+// Auth serves the console's session routes: config, debug login, me, status, heartbeat and logout.
+type Auth struct {
+	Pool     *pgxpool.Pool
+	Sessions *session.Resolver
 	kotlin   api.Kotlin
 	edges    front.TrustedEdges
 }
@@ -73,8 +74,8 @@ func normalizedDuration(seconds int64) (int64, string) {
 	return seconds, "seconds"
 }
 
-func (a auth) config(w http.ResponseWriter, _ *http.Request) {
-	s := a.sessions.Settings()
+func (a Auth) config(w http.ResponseWriter, _ *http.Request) {
+	s := a.Sessions.Settings()
 	amount, unit := normalizedDuration(s.AbsoluteSeconds)
 	api.WriteJSON(w, http.StatusOK, struct {
 		OIDCEnabled bool `json:"oidcEnabled"`
@@ -99,11 +100,11 @@ func (a auth) config(w http.ResponseWriter, _ *http.Request) {
 }
 
 // sessionGate is Kotlin's web-session auth provider: a live session, else 401 {"reason"} saying why.
-func (a auth) sessionGate(next func(http.ResponseWriter, *http.Request, *session.Web)) http.HandlerFunc {
+func (a Auth) sessionGate(next func(http.ResponseWriter, *http.Request, *session.Web)) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")
 		ctx := r.Context()
-		s, err := a.sessions.Resolve(ctx, r)
+		s, err := a.Sessions.Resolve(ctx, r)
 		if errors.Is(err, session.ErrDeviceMismatch) {
 			a.endSession(ctx, s.ID, session.EndedDeviceMismatch)
 			s, err = nil, nil
@@ -116,7 +117,7 @@ func (a auth) sessionGate(next func(http.ResponseWriter, *http.Request, *session
 			next(w, r, s)
 			return
 		}
-		ref, err := a.sessions.Ref(ctx, r)
+		ref, err := a.Sessions.Ref(ctx, r)
 		if err != nil {
 			api.Fail(w, err)
 			return
@@ -126,11 +127,11 @@ func (a auth) sessionGate(next func(http.ResponseWriter, *http.Request, *session
 }
 
 // unauthorized answers a request whose session did not resolve, naming why when it named one.
-func (a auth) unauthorized(w http.ResponseWriter, ref *session.Ref) {
+func (a Auth) unauthorized(w http.ResponseWriter, ref *session.Ref) {
 	reason := "none"
 	if ref != nil && ref.ID != 0 {
 		var err error
-		if reason, err = a.sessions.EndedReason(context.Background(), ref.ID); err != nil {
+		if reason, err = a.Sessions.EndedReason(context.Background(), ref.ID); err != nil {
 			api.Fail(w, err)
 			return
 		}
@@ -142,8 +143,8 @@ func (a auth) unauthorized(w http.ResponseWriter, ref *session.Ref) {
 }
 
 // endSession ends one web session outside any other write and tells Kotlin to close the editor runs.
-func (a auth) endSession(ctx context.Context, id int64, reason string) {
-	principal, err := a.sessions.EndNow(ctx, id, reason)
+func (a Auth) endSession(ctx context.Context, id int64, reason string) {
+	principal, err := a.Sessions.EndNow(ctx, id, reason)
 	if err == nil && principal != "" {
 		err = a.kotlin.SessionsEnded(context.WithoutCancel(ctx), principal)
 	}
@@ -152,8 +153,8 @@ func (a auth) endSession(ctx context.Context, id int64, reason string) {
 	}
 }
 
-func (a auth) me(w http.ResponseWriter, r *http.Request, s *session.Web) {
-	roles, err := authz.New(a.pool).Roles(r.Context(), s.Principal)
+func (a Auth) me(w http.ResponseWriter, r *http.Request, s *session.Web) {
+	roles, err := authz.New(a.Pool).Roles(r.Context(), s.Principal)
 	if err != nil {
 		api.Fail(w, err)
 		return
@@ -163,20 +164,20 @@ func (a auth) me(w http.ResponseWriter, r *http.Request, s *session.Web) {
 	}
 	slices.Sort(roles)
 	out := userSession{Principal: s.Principal, Roles: roles}
-	if a.sessions.Settings().AuthDebug && s.DebugRequesterIP != "" {
+	if a.Sessions.Settings().AuthDebug && s.DebugRequesterIP != "" {
 		out.RequesterIP = &s.DebugRequesterIP
 	}
 	api.WriteJSON(w, http.StatusOK, out)
 }
 
-func (a auth) status(w http.ResponseWriter, _ *http.Request, s *session.Web) {
+func (a Auth) status(w http.ResponseWriter, _ *http.Request, s *session.Web) {
 	api.WriteJSON(w, http.StatusOK, statusOf(s))
 }
 
 // heartbeat is the one route that slides a session's idle deadline.
-func (a auth) heartbeat(w http.ResponseWriter, r *http.Request, s *session.Web) {
+func (a Auth) heartbeat(w http.ResponseWriter, r *http.Request, s *session.Web) {
 	device, _ := session.Device(r)
-	touched, err := a.sessions.Touch(r.Context(), s.ID, device)
+	touched, err := a.Sessions.Touch(r.Context(), s.ID, device)
 	if err != nil {
 		api.Fail(w, err)
 		return
@@ -188,11 +189,11 @@ func (a auth) heartbeat(w http.ResponseWriter, r *http.Request, s *session.Web) 
 	api.WriteJSON(w, http.StatusOK, statusOf(touched))
 }
 
-// requesterIP is Kotlin's httpRequesterIp: the debug login's simulated address while debug login is on,
+// RequesterIP is Kotlin's httpRequesterIp: the debug login's simulated address while debug login is on,
 // else the edge-resolved address.
-func (a auth) requesterIP(r *http.Request) string {
-	if a.sessions.Settings().AuthDebug {
-		s, err := a.sessions.Resolve(r.Context(), r)
+func (a Auth) RequesterIP(r *http.Request) string {
+	if a.Sessions.Settings().AuthDebug {
+		s, err := a.Sessions.Resolve(r.Context(), r)
 		if errors.Is(err, session.ErrDeviceMismatch) {
 			a.endSession(r.Context(), s.ID, session.EndedDeviceMismatch)
 		} else if err == nil && s != nil && s.DebugRequesterIP != "" {
@@ -204,7 +205,7 @@ func (a auth) requesterIP(r *http.Request) string {
 
 // logout ends the cookie's session, live or idle-expired, and clears the cookie. A request naming a
 // sessionId ends only that session, so an automatic logout cannot end a newer login.
-func (a auth) logout(w http.ResponseWriter, r *http.Request) {
+func (a Auth) logout(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	var in struct {
 		SessionID *int64 `json:"sessionId"`
@@ -219,7 +220,7 @@ func (a auth) logout(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	ref, err := a.sessions.Ref(ctx, r)
+	ref, err := a.Sessions.Ref(ctx, r)
 	if err != nil {
 		api.Fail(w, err)
 		return
@@ -231,29 +232,27 @@ func (a auth) logout(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if ref != nil && ref.ID != 0 {
-		addr := a.requesterIP(r)
+		addr := a.RequesterIP(r)
 		var owner string
-		err := pgx.BeginFunc(ctx, a.pool, func(tx pgx.Tx) error {
+		err := pgx.BeginFunc(ctx, a.Pool, func(tx pgx.Tx) error {
 			var err error
-			if owner, err = a.sessions.End(ctx, tx, ref.ID, session.EndedSignedOut); err != nil || owner == "" {
+			if owner, err = a.Sessions.End(ctx, tx, ref.ID, session.EndedSignedOut); err != nil || owner == "" {
 				return err
 			}
 			return audit.Auth(ctx, tx, audit.Actor{Principal: owner, ClientAddr: addr, Channel: "session"}, "auth.logout",
 				audit.Entity("Session", strconv.FormatInt(ref.ID, 10)), "Web session signed out")
 		})
 		if err == nil && owner == "" {
-			owner, err = a.sessions.Owner(ctx, ref.ID)
-		}
-		if err == nil {
-			err = a.kotlin.SessionsEnded(context.WithoutCancel(ctx), owner)
+			owner, err = a.Sessions.Owner(ctx, ref.ID)
 		}
 		if err != nil {
 			api.Fail(w, err)
 			return
 		}
+		a.signalEnded(ctx, owner)
 	}
 	if ref != nil {
-		a.sessions.ClearSessionCookie(w)
+		a.Sessions.ClearSessionCookie(w)
 	}
 	api.WriteJSON(w, http.StatusOK, struct {
 		Ended bool `json:"ended"`
@@ -261,9 +260,9 @@ func (a auth) logout(w http.ResponseWriter, r *http.Request) {
 }
 
 // debugLogin, under PM_AUTH_DEBUG only, signs in as any principal with exactly the given direct roles.
-func (a auth) debugLogin(w http.ResponseWriter, r *http.Request) {
+func (a Auth) debugLogin(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	if !a.sessions.Settings().AuthDebug {
+	if !a.Sessions.Settings().AuthDebug {
 		api.WriteError(w, http.StatusNotFound, "common.not_found", map[string]string{"resource": "endpoint"})
 		return
 	}
@@ -292,44 +291,32 @@ func (a auth) debugLogin(w http.ResponseWriter, r *http.Request) {
 			debugIP = &ip
 		}
 	}
-	device := a.sessions.EnsureDevice(w, r)
-	addr := a.requesterIP(r)
+	device := a.Sessions.EnsureDevice(w, r)
+	addr := a.RequesterIP(r)
 	if debugIP != nil {
 		addr = *debugIP
-	}
-	ref, err := a.sessions.Ref(ctx, r)
-	if err != nil {
-		api.Fail(w, err)
-		return
-	}
-	key := session.NewKey()
-	if ref != nil {
-		key = ref.Key
 	}
 	principal := *in.Principal
 	var (
 		displaced bool
 		id        int64
 	)
-	err = pgx.BeginFunc(ctx, a.pool, func(tx pgx.Tx) error {
+	err := pgx.BeginFunc(ctx, a.Pool, func(tx pgx.Tx) error {
 		if err := replaceDirectRoles(ctx, tx, principal, roles, audit.Actor{Principal: principal, ClientAddr: addr, Channel: "console"}); err != nil {
 			return err
 		}
 		var err error
-		id, displaced, err = a.sessions.Mint(ctx, tx, principal, nil, device, debugIP)
+		id, displaced, err = a.Sessions.Mint(ctx, tx, principal, nil, device, debugIP)
 		return err
 	})
-	if err == nil {
-		err = pgx.BeginFunc(ctx, a.pool, func(tx pgx.Tx) error { return a.sessions.Link(ctx, tx, id, key) })
-	}
-	if err == nil && displaced {
-		err = a.kotlin.SessionsEnded(context.WithoutCancel(ctx), principal)
-	}
 	if err != nil {
 		api.WriteMutationError(w, err)
 		return
 	}
-	a.sessions.SetSessionCookie(w, key)
+	if err := a.Establish(w, r, id, principal, displaced); err != nil {
+		api.Fail(w, err)
+		return
+	}
 	api.WriteJSON(w, http.StatusOK, userSession{Principal: principal, Roles: roles, RequesterIP: debugIP})
 }
 
@@ -372,4 +359,12 @@ func storableIP(ip string) bool {
 	}
 	_, err := types.ParseIPAddr(ip)
 	return err == nil
+}
+
+// signalEnded has Kotlin close the principal's editor runs after a committed session end. The end already
+// stands, so a failed signal is logged rather than failing the request.
+func (a Auth) signalEnded(ctx context.Context, principal string) {
+	if err := a.kotlin.SessionsEnded(context.WithoutCancel(ctx), principal); err != nil {
+		slog.Warn("auth: telling the control plane a session ended", "principal", principal, "err", err)
+	}
 }

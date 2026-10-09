@@ -17,6 +17,7 @@ import (
 	"github.com/ridi-oss/proxy-monster/cpgo/front"
 	"github.com/ridi-oss/proxy-monster/cpgo/internal/dbtest"
 	"github.com/ridi-oss/proxy-monster/cpgo/routes"
+	"github.com/ridi-oss/proxy-monster/cpgo/routes/oidc"
 	"github.com/ridi-oss/proxy-monster/cpgo/session"
 )
 
@@ -120,9 +121,14 @@ func (f *fakeAuthz) AuthorizeEach(ctx context.Context, principal, action string,
 func Setup(t *testing.T) *Env { return SetupWith(t, nil) }
 
 // SetupWith serves the routes with authz deciding, or the recording fake when authz is nil.
-func SetupWith(t *testing.T, authz func(*pgxpool.Pool) api.Authorizer) *Env {
+func SetupWith(t *testing.T, authz func(*pgxpool.Pool) api.Authorizer, login ...oidc.Login) *Env {
 	t.Helper()
-	return SetupConfig(t, Config{Authz: authz})
+	return SetupConfig(t, Config{Authz: authz, Login: append(login, oidc.Login{})[0]})
+}
+
+// SetupSettings is SetupWith under other session settings.
+func SetupSettings(t *testing.T, settings session.Settings, authz func(*pgxpool.Pool) api.Authorizer, login ...oidc.Login) *Env {
+	return SetupConfig(t, Config{Settings: &settings, Authz: authz, Login: append(login, oidc.Login{})[0]})
 }
 
 type Config struct {
@@ -131,10 +137,17 @@ type Config struct {
 	Local bool
 	// Edges is PM_TRUSTED_PROXIES; "127.0.0.1" makes the test client a trusted edge.
 	Edges []string
+	Login oidc.Login
+	// Settings replaces dbtest.Settings.
+	Settings *session.Settings
 }
 
 func SetupConfig(t *testing.T, c Config) *Env {
 	t.Helper()
+	settings := dbtest.Settings
+	if c.Settings != nil {
+		settings = *c.Settings
+	}
 	e := &Env{St: dbtest.Open(t)}
 	var decider api.Authorizer = &e.Authz
 	switch {
@@ -149,12 +162,12 @@ func SetupConfig(t *testing.T, c Config) *Env {
 	})
 	mux := http.NewServeMux()
 	routes.Register(mux, e.St.Pool, api.Gate{
-		Sessions:  session.NewResolver(e.St.Pool, dbtest.Settings),
+		Sessions:  session.NewResolver(e.St.Pool, settings),
 		Kotlin:    &e.Kotlin,
 		Edges:     front.ParseTrustedEdges(c.Edges),
 		AuthDebug: true,
 		Authz:     decider,
-	})
+	}, c.Login)
 	e.Srv = httptest.NewServer(front.Route(mux, forward))
 	t.Cleanup(e.Srv.Close)
 	return e
@@ -187,6 +200,18 @@ func (e *Env) DoHeader(t *testing.T, method, path, body string, cookies []*http.
 	return resp.StatusCode, strings.TrimSpace(string(b))
 }
 
+func (e *Env) EndedReason(t *testing.T, key string) string {
+	t.Helper()
+	var reason *string
+	if err := e.St.Pool.QueryRow(context.Background(), `SELECT ended_reason FROM principal_session WHERE session_key = $1`, key).Scan(&reason); err != nil {
+		t.Fatal(err)
+	}
+	if reason == nil {
+		return ""
+	}
+	return *reason
+}
+
 func (e *Env) Exec(t *testing.T, sql string, args ...any) {
 	t.Helper()
 	if _, err := e.St.Pool.Exec(context.Background(), sql, args...); err != nil {
@@ -201,16 +226,4 @@ func (e *Env) Count(t *testing.T, sql string, args ...any) int {
 		t.Fatal(err)
 	}
 	return n
-}
-
-func (e *Env) EndedReason(t *testing.T, key string) string {
-	t.Helper()
-	var reason *string
-	if err := e.St.Pool.QueryRow(context.Background(), `SELECT ended_reason FROM principal_session WHERE session_key = $1`, key).Scan(&reason); err != nil {
-		t.Fatal(err)
-	}
-	if reason == nil {
-		return ""
-	}
-	return *reason
 }

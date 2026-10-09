@@ -106,7 +106,7 @@ func (a Auth) sessionGate(next func(http.ResponseWriter, *http.Request, *session
 		ctx := r.Context()
 		s, err := a.Sessions.Resolve(ctx, r)
 		if errors.Is(err, session.ErrDeviceMismatch) {
-			a.endSession(ctx, s.ID, session.EndedDeviceMismatch)
+			a.EndSession(ctx, s.ID, session.EndedDeviceMismatch)
 			s, err = nil, nil
 		}
 		if err != nil {
@@ -142,8 +142,8 @@ func (a Auth) unauthorized(w http.ResponseWriter, ref *session.Ref) {
 	}{reason})
 }
 
-// endSession ends one web session outside any other write and tells Kotlin to close the editor runs.
-func (a Auth) endSession(ctx context.Context, id int64, reason string) {
+// EndSession ends one web session outside any other write and tells Kotlin to close the editor runs.
+func (a Auth) EndSession(ctx context.Context, id int64, reason string) {
 	principal, err := a.Sessions.EndNow(ctx, id, reason)
 	if err == nil && principal != "" {
 		err = a.kotlin.SessionsEnded(context.WithoutCancel(ctx), principal)
@@ -195,7 +195,7 @@ func (a Auth) RequesterIP(r *http.Request) string {
 	if a.Sessions.Settings().AuthDebug {
 		s, err := a.Sessions.Resolve(r.Context(), r)
 		if errors.Is(err, session.ErrDeviceMismatch) {
-			a.endSession(r.Context(), s.ID, session.EndedDeviceMismatch)
+			a.EndSession(r.Context(), s.ID, session.EndedDeviceMismatch)
 		} else if err == nil && s != nil && s.DebugRequesterIP != "" {
 			return s.DebugRequesterIP
 		}

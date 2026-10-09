@@ -1,5 +1,6 @@
 package com.ridi.oss.proxymonster.controlplane
 
+import com.ridi.oss.proxymonster.controlplane.authz.UserParents
 import com.ridi.oss.proxymonster.controlplane.authz.Authz
 import com.ridi.oss.proxymonster.controlplane.authz.AuthzAction
 import com.ridi.oss.proxymonster.controlplane.authz.AuthzDecision
@@ -51,7 +52,7 @@ class ResultCapAuthzTest {
     private val id = CapResource.Column(ColumnRef("acme.public.users.id", "acme", "public", "users", "id"), null, masked = false)
 
     private fun resolve(roles: Set<String>, vararg resources: CapResource) =
-        authz.resolveResultCaps("alice", roles, "acme-pg", resources.toList())
+        authz.resolveResultCaps("alice", UserParents(roles), "acme-pg", resources.toList())
 
     @Test
     fun `the datasource ask alone yields the general row`() {
@@ -93,7 +94,7 @@ class ResultCapAuthzTest {
     @Test
     fun `permitting result cap is not a read grant`() {
         assertIs<AuthzDecision.Deny>(
-            authz.authorizeDatasourceAction("alice", setOf("dump"), AuthzAction.DATASOURCE_CONNECT, "acme-pg"),
+            authz.authorizeDatasourceAction("alice", UserParents(setOf("dump")), AuthzAction.DATASOURCE_CONNECT, "acme-pg"),
         )
     }
 

@@ -103,7 +103,7 @@ suspend fun decideConnection(
 
     val wireGateDenied = channel == Channel.WIRE && !autoApproveTask(
         principal,
-        ctx.effectiveRoles.toSet(),
+        core.roleResolver.resolveParents(principal),
         ds,
         AuthzContext(requesterIp = requesterIp),
         core.authz,

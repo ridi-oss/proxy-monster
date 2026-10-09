@@ -96,7 +96,7 @@ class RequestAuthorizationDbTest {
             val token = issue(kind, principal, listOf("system:admin")).token
             core.runRequesterIps.put(tokenHash(token), "10.0.0.1")
             val resolved = core.resolveRequestIdentity(token, "198.51.100.7:45100")
-            assertEquals(setOf(liveRole.name), resolved.effectiveRoles)
+            assertEquals(setOf(liveRole.name), resolved.effectiveParents.roles)
             assertNull(resolved.providedRoles)
             assertEquals(Channel.WIRE, resolved.channel)
             assertEquals("wire", resolved.context.channel)
@@ -111,9 +111,9 @@ class RequestAuthorizationDbTest {
         val role = role()
         core.policyStore.createAssignment(RoleAssignmentInput(principal, role.id))
         val token = issue(TokenKind.USER, principal).token
-        assertEquals(setOf(role.name), core.resolveRequestIdentity(token, null).effectiveRoles)
+        assertEquals(setOf(role.name), core.resolveRequestIdentity(token, null).effectiveParents.roles)
         core.policyStore.deleteRole(role.id)
-        assertEquals(emptySet(), core.resolveRequestIdentity(token, null).effectiveRoles)
+        assertEquals(emptySet(), core.resolveRequestIdentity(token, null).effectiveParents.roles)
     }
 
     @Test
@@ -126,7 +126,7 @@ class RequestAuthorizationDbTest {
             val token = issue(kind, principal, listOf(assumed.name, "missing-role")).token
             core.runRequesterIps.put(tokenHash(token), "203.0.113.8")
             val resolved = core.resolveRequestIdentity(token, "10.0.0.1:49152")
-            assertEquals(setOf(assumed.name), resolved.effectiveRoles)
+            assertEquals(setOf(assumed.name), resolved.effectiveParents.roles)
             assertEquals(setOf(assumed.name, "missing-role"), resolved.providedRoles)
             assertEquals(if (kind == TokenKind.EDITOR) Channel.EDITOR else Channel.WORKFLOW_EXECUTOR, resolved.channel)
             assertEquals(resolved.channel.contextValue, resolved.context.channel)
@@ -143,7 +143,7 @@ class RequestAuthorizationDbTest {
         val token = issue(TokenKind.APPROVER_EXEC, principal, listOf(assumed.name)).token
         core.policyStore.deleteRole(assumed.id)
         val resolved = core.resolveRequestIdentity(token, null)
-        assertEquals(emptySet(), resolved.effectiveRoles)
+        assertEquals(emptySet(), resolved.effectiveParents.roles)
         assertEquals(Channel.WORKFLOW_EXECUTOR, resolved.channel)
     }
 
@@ -155,7 +155,7 @@ class RequestAuthorizationDbTest {
         for (kind in listOf(TokenKind.EDITOR, TokenKind.APPROVER_EXEC)) {
             val token = issue(kind, principal).token
             val resolved = core.resolveRequestIdentity(token, "10.0.0.1:49152")
-            assertEquals(setOf(own.name), resolved.effectiveRoles)
+            assertEquals(setOf(own.name), resolved.effectiveParents.roles)
             assertEquals(Channel.EDITOR, resolved.channel)
             assertNull(resolved.providedRoles)
             assertNull(resolved.context.requesterIp)

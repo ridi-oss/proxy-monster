@@ -856,15 +856,15 @@ private val datasourceLog = org.slf4j.LoggerFactory.getLogger("com.ridi.oss.prox
 
 /** Whether Cedar grants [principal] datasource.connect on [ds] — the decision the proxy runs on connect. */
 internal fun mayConnect(authz: Authz, roleResolver: RoleResolver, principal: String, requesterIp: String?, ds: Datasource): Boolean =
-    authorizeMetadata(authz, principal, roleResolver.resolve(principal), ds, AuthzContext(requesterIp = requesterIp))
+    authorizeMetadata(authz, principal, roleResolver.resolveParents(principal), ds, AuthzContext(requesterIp = requesterIp))
 
 /** Whether Cedar grants [principal] task.request on [ds]; the shipped global permit keeps it open by default. */
 internal fun mayRequestOn(authz: Authz, roleResolver: RoleResolver, principal: String, requesterIp: String?, ds: Datasource): Boolean {
-    val roles = roleResolver.resolve(principal)
+    val parents = roleResolver.resolveParents(principal)
     val raw = AuthzContext(requesterIp = requesterIp)
-    val tags = authz.resolveContextTags(principal, roles, ds.name, raw, ds.tags)
+    val tags = authz.resolveContextTags(principal, parents, ds.name, raw, ds.tags)
     return authz.authorizeDatasourceAction(
-        principal, roles, AuthzAction.TASK_REQUEST, ds.name, raw.copy(tags = tags), ds.tags,
+        principal, parents, AuthzAction.TASK_REQUEST, ds.name, raw.copy(tags = tags), ds.tags,
     ) !is AuthzDecision.Deny
 }
 
@@ -887,7 +887,7 @@ fun Route.datasourceRoutes(
     // would only hide the policy dev is configured to exercise.
     fun mayConnect(call: ApplicationCall, principal: String, ds: Datasource): Boolean {
         if (userGroupStore.isDeactivated(principal)) return false
-        return authorizeMetadata(authz, principal, roleResolver.resolve(principal), ds, call.httpAuthzContext(config))
+        return authorizeMetadata(authz, principal, roleResolver.resolveParents(principal), ds, call.httpAuthzContext(config))
     }
 
     // The datasource LIST stays open to every authenticated principal: the SQL editor's picker,

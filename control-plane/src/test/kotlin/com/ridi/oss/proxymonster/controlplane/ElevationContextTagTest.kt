@@ -66,10 +66,10 @@ class ElevationContextTagTest {
         )
 
     @Test
-    fun `rolesOf exposes the wired RoleSource`() {
+    fun `parentsOf exposes the wired RoleSource`() {
         val az = authz(emptyList(), roles = mapOf("alice" to setOf("analyst", "approver")))
-        assertEquals(setOf("analyst", "approver"), az.rolesOf("alice"))
-        assertEquals(emptySet(), az.rolesOf("nobody"))
+        assertEquals(setOf("analyst", "approver"), az.parentsOf("alice").roles)
+        assertEquals(emptySet(), az.parentsOf("nobody").roles)
     }
 
     @Test
@@ -165,7 +165,7 @@ class ElevationContextTagTest {
         // separately calling authorize) would see empty roles on pass 2 and DENY. The tag rule here is
         // principal-agnostic, so pass-1 tags are role-independent — isolating the role-snapshot behavior.
         val calls = AtomicInteger(0)
-        val flakyRoles = RoleSource { if (calls.getAndIncrement() == 0) setOf("reviewer") else emptySet() }
+        val flakyRoles = RoleSource { p -> if (p != "approver") emptySet() else if (calls.getAndIncrement() == 0) setOf("reviewer") else emptySet() }
         val az = authz(listOf(trustedNetworkTagRule, tagGatedApprovePermit), flakyRoles)
 
         assertEquals(

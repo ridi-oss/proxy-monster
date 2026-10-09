@@ -72,17 +72,48 @@ class DdlEnforcementDbTest {
         )
     }
 
-    private fun decide(sql: String, who: String) = decideQuery(
+    private val groupMember = "group-member@example.com"
+
+    private fun groupGrantsDdl() {
+        val user = fx.userGroupStore.createUser(AppUserInput(principal = groupMember), fx.tokenStore, fx.accessStore, fx.daemonSessionStore)
+        val group = fx.userGroupStore.createGroup(AppGroupInput(name = "ddl-group"))
+        fx.userGroupStore.addMember(group.id, user.id)
+        fx.cedarPolicyStore.create(
+            CedarPolicyInput(
+                name = "group-production-ddl",
+                cedarSrc = """permit(principal in Group::"ddl-group", action in [Action::"stmt.cat.ddl", Action::"datasource.connect"], resource) when { resource in Tag::"system:production" };""",
+            ),
+            updatedBy = "test-fixture",
+        )
+    }
+
+    @Test
+    fun `an executor running under exactly its request's role does not gain its groups`() {
+        groupGrantsDdl()
+        val sql = "ALTER TABLE users ADD c INT"
+        val viaGroup = decide(sql, groupMember, channel = Channel.WORKFLOW_EXECUTOR)
+        assertEquals(EnfAction.ALLOW, viaGroup.action, "control: the group grants DDL: ${viaGroup.denyReason}")
+        val underRole = decide(sql, groupMember, channel = Channel.WORKFLOW_EXECUTOR, providedRoles = setOf("connect-only"))
+        assertEquals(EnfAction.DENY, underRole.action, "the group's DDL grant must not reach a run under {connect-only}")
+    }
+
+    private fun decide(
+        sql: String,
+        who: String,
+        channel: Channel = Channel.WIRE,
+        providedRoles: Set<String>? = null,
+    ) = decideQuery(
         principal = who,
         ds = fx.datasourceStore.get(fx.datasource.id)!!,
         sql = sql,
-        channel = Channel.WIRE,
+        channel = channel,
         catalog = fx.datasourceStore.catalog(fx.datasource.id),
         policyStore = fx.policyStore,
         accessStore = fx.accessStore,
         userGroupStore = fx.userGroupStore,
         roleResolver = fx.roleResolver,
         authz = fx.authz,
+        providedRoles = providedRoles,
     )
 
     private val ddlForms = listOf(

@@ -2,13 +2,13 @@ package com.ridi.oss.proxymonster.controlplane
 
 import com.ridi.oss.proxymonster.analyzer.pb.SessionObservation
 import com.ridi.oss.proxymonster.analyzer.pb.StatementKind
+import com.ridi.oss.proxymonster.controlplane.authz.UserParents
 import com.ridi.oss.proxymonster.controlplane.authz.Authz
 import com.ridi.oss.proxymonster.controlplane.authz.AuthzAction
 import com.ridi.oss.proxymonster.controlplane.authz.AuthzContext
 import com.ridi.oss.proxymonster.controlplane.authz.AuthzDecision
 import com.ridi.oss.proxymonster.controlplane.authz.AuthzResource
 import com.ridi.oss.proxymonster.controlplane.authz.authorizeDatasourceAction
-import com.ridi.oss.proxymonster.controlplane.authz.authorizeWithContext
 import com.ridi.oss.proxymonster.controlplane.authz.resolveContextTags
 import com.ridi.oss.proxymonster.controlplane.notify.NotificationService
 import com.ridi.oss.proxymonster.grpc.EnfAction
@@ -345,31 +345,27 @@ internal fun decideResultView(ctx: DecisionContext, decrypted: DecryptedResult):
  * The shared auto-approve gate for a self-approved task on a server-attested channel. Editor and wire tasks
  * must clear BOTH lifecycle checks a human request+approve would: [AuthzAction.TASK_REQUEST] on the datasource
  * and [AuthzAction.TASK_APPROVE] against a self-requested Request under the trusted [channel]. Both must
- * ALLOW; either Deny fails the task closed. [ownRoles] is the caller's server-resolved request-side role
- * snapshot; the approve side re-resolves its own snapshot inside [authorizeWithContext]. Returns true only
- * when the task may be born APPROVED.
+ * ALLOW; either Deny fails the task closed. [own] is the caller's server-resolved snapshot, used for both
+ * checks. Returns true only when the task may be born APPROVED.
  */
 internal fun autoApproveTask(
     principal: String,
-    ownRoles: Set<String>,
+    own: UserParents,
     ds: Datasource,
     rawCtx: AuthzContext,
     authz: Authz,
     channel: Channel,
 ): Boolean {
     val taskCtx = rawCtx.copy(channel = channel.contextValue)
-    val tags = authz.resolveContextTags(principal, ownRoles, ds.name, taskCtx, ds.tags)
-    val mayRequest = authz.authorizeDatasourceAction(
-        principal, ownRoles, AuthzAction.TASK_REQUEST, ds.name, taskCtx.copy(tags = tags), ds.tags,
-    )
+    val ctx = taskCtx.copy(tags = authz.resolveContextTags(principal, own, ds.name, taskCtx, ds.tags))
+    val mayRequest = authz.authorizeDatasourceAction(principal, own, AuthzAction.TASK_REQUEST, ds.name, ctx, ds.tags)
     if (mayRequest is AuthzDecision.Deny) return false
-    val mayApprove = authz.authorizeWithContext(
+    val mayApprove = authz.authorizeAs(
         principal,
+        own,
         AuthzAction.TASK_APPROVE,
         AuthzResource.ApprovalRequest(requester = principal, approver = principal, datasourceName = ds.name),
-        taskCtx,
-        ds.name,
-        ds.tags,
+        ctx,
     )
     return mayApprove !is AuthzDecision.Deny
 }

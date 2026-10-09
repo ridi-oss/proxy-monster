@@ -1,5 +1,6 @@
 package com.ridi.oss.proxymonster.controlplane
 
+import com.ridi.oss.proxymonster.controlplane.authz.UserParents
 import com.ridi.oss.proxymonster.controlplane.authz.Authz
 import com.ridi.oss.proxymonster.controlplane.authz.CedarEngine
 import com.ridi.oss.proxymonster.controlplane.authz.CedarPolicyStore
@@ -68,7 +69,7 @@ class ColumnAuthzTest {
     fun `an untagged column in the granted table is unmasked`() {
         val verdicts = authz().authorizeColumns(
             principal = "alice",
-            roles = setOf("analyst"),
+            parents = UserParents(setOf("analyst")),
             datasource = "acme-pg",
             columns = listOf(column("acme.public.users.region", "users", "region")),
         )
@@ -79,7 +80,7 @@ class ColumnAuthzTest {
     fun `a fully-qualified Column EUID grant matches its exact column`() {
         val verdicts = authz().authorizeColumns(
             principal = "bob",
-            roles = setOf("column-reader"),
+            parents = UserParents(setOf("column-reader")),
             datasource = "acme-pg",
             columns = listOf(column("acme.public.users.region", "users", "region")),
         )
@@ -100,7 +101,7 @@ class ColumnAuthzTest {
         )
         val authz = Authz(engine, CedarPolicyStore(UnusedDataSource), RoleSource { emptySet() })
         val verdicts = authz.authorizeColumns(
-            "u", setOf("r"), "acme-pg",
+            "u", UserParents(setOf("r")), "acme-pg",
             listOf(
                 column("slash", table = "a/users", name = "ssn"),                 // '/' in table
                 column("dot", table = "users", name = "ssn", schema = "pub.lic"),  // '.' in schema
@@ -116,7 +117,7 @@ class ColumnAuthzTest {
     fun `a pii-tagged column in the granted table is masked, not unmasked`() {
         val verdicts = authz().authorizeColumns(
             principal = "alice",
-            roles = setOf("analyst"),
+            parents = UserParents(setOf("analyst")),
             datasource = "acme-pg",
             columns = listOf(column("acme.public.users.ssn", "users", "ssn", tags = listOf("pii"))),
         )
@@ -127,7 +128,7 @@ class ColumnAuthzTest {
     fun `a column in an ungranted table is denied — deny-by-default, not absent-equals-cleartext`() {
         val verdicts = authz().authorizeColumns(
             principal = "alice",
-            roles = setOf("analyst"),
+            parents = UserParents(setOf("analyst")),
             datasource = "acme-pg",
             columns = listOf(column("acme.public.orders.amount", "orders", "amount")),
         )
@@ -140,7 +141,7 @@ class ColumnAuthzTest {
         // `resource in Tag::"pii"`. A pii column in a table this role has no grant on must be DENIED.
         val verdicts = authz().authorizeColumns(
             principal = "alice",
-            roles = setOf("analyst"),
+            parents = UserParents(setOf("analyst")),
             datasource = "acme-pg",
             columns = listOf(column("acme.public.orders.card", "orders", "card", tags = listOf("pii"))),
         )
@@ -151,7 +152,7 @@ class ColumnAuthzTest {
     fun `no roles at all is denied on every column`() {
         val verdicts = authz().authorizeColumns(
             principal = "nobody",
-            roles = emptySet(),
+            parents = UserParents(emptySet()),
             datasource = "acme-pg",
             columns = listOf(column("acme.public.users.region", "users", "region")),
         )
@@ -162,7 +163,7 @@ class ColumnAuthzTest {
     fun `a batch of columns resolves independent verdicts in one call`() {
         val verdicts = authz().authorizeColumns(
             principal = "alice",
-            roles = setOf("analyst"),
+            parents = UserParents(setOf("analyst")),
             datasource = "acme-pg",
             columns = listOf(
                 column("acme.public.users.region", "users", "region"),
@@ -184,7 +185,7 @@ class ColumnAuthzTest {
     fun `a permit on public users does not cover analytics users with the same table name`() {
         val verdicts = authz().authorizeColumns(
             principal = "alice",
-            roles = setOf("analyst"),
+            parents = UserParents(setOf("analyst")),
             datasource = "acme-pg",
             columns = listOf(column("acme.analytics.users.region", "users", "region", schema = "analytics")),
         )
@@ -195,7 +196,7 @@ class ColumnAuthzTest {
     fun `a permit in one catalog does not cover the same schema and table in another catalog`() {
         val verdicts = authz().authorizeColumns(
             principal = "alice",
-            roles = setOf("analyst"),
+            parents = UserParents(setOf("analyst")),
             datasource = "acme-pg",
             columns = listOf(column("other.public.users.region", "users", "region", catalog = "other")),
         )
@@ -206,7 +207,7 @@ class ColumnAuthzTest {
     fun `a different datasource with the same qualified table is not covered by the grant`() {
         val verdicts = authz().authorizeColumns(
             principal = "alice",
-            roles = setOf("analyst"),
+            parents = UserParents(setOf("analyst")),
             datasource = "other-ds",
             columns = listOf(column("acme.public.users.region", "users", "region")),
         )
@@ -232,7 +233,7 @@ class ColumnAuthzTest {
             mapOf("acme.public.users.region" to ColumnVerdict.UNMASKED),
             authz.authorizeColumns(
                 principal = "alice",
-                roles = setOf("anyone"),
+                parents = UserParents(setOf("anyone")),
                 datasource = "acme-pg",
                 columns = col,
                 datasourceTags = listOf("pci"),
@@ -242,7 +243,7 @@ class ColumnAuthzTest {
             mapOf("acme.public.users.region" to ColumnVerdict.DENIED),
             authz.authorizeColumns(
                 principal = "alice",
-                roles = setOf("anyone"),
+                parents = UserParents(setOf("anyone")),
                 datasource = "acme-pg",
                 columns = col,
                 datasourceTags = emptyList(),
@@ -279,7 +280,7 @@ class ColumnAuthzTest {
             mapOf("acme.public.users.region" to ColumnVerdict.UNMASKED),
             authz.authorizeColumns(
                 principal = "alice",
-                roles = setOf("anyone"),
+                parents = UserParents(setOf("anyone")),
                 datasource = "acme-pg",
                 columns = col,
                 datasourceTags = listOf("system:production"),
@@ -290,7 +291,7 @@ class ColumnAuthzTest {
             mapOf("acme.public.users.region" to ColumnVerdict.MASKED),
             authz.authorizeColumns(
                 principal = "alice",
-                roles = setOf("anyone"),
+                parents = UserParents(setOf("anyone")),
                 datasource = "acme-pg",
                 columns = col,
                 datasourceTags = listOf("system:production", "pii"),
@@ -321,7 +322,7 @@ class ColumnAuthzTest {
             mapOf("acme.public.users.region" to ColumnVerdict.DENIED),
             authz.authorizeColumns(
                 principal = "alice",
-                roles = setOf("pii-reader"),
+                parents = UserParents(setOf("pii-reader")),
                 datasource = "acme-pg",
                 columns = col,
                 datasourceTags = emptyList(),
@@ -332,7 +333,7 @@ class ColumnAuthzTest {
             mapOf("acme.public.users.region" to ColumnVerdict.UNMASKED),
             authz.authorizeColumns(
                 principal = "alice",
-                roles = setOf("pii-reader"),
+                parents = UserParents(setOf("pii-reader")),
                 datasource = "acme-pg",
                 columns = col,
                 datasourceTags = listOf("pii"),
@@ -360,12 +361,12 @@ class ColumnAuthzTest {
         val col = listOf(column("acme.public.users.region", "users", "region"))
         assertEquals(
             mapOf("acme.public.users.region" to ColumnVerdict.DENIED),
-            authz.authorizeColumns("alice", emptySet(), "acme-pg", col, datasourceTags = emptyList()),
+            authz.authorizeColumns("alice", UserParents(emptySet()), "acme-pg", col, datasourceTags = emptyList()),
             "untagged, deny-by-default holds",
         )
         assertEquals(
             mapOf("acme.public.users.region" to ColumnVerdict.UNMASKED),
-            authz.authorizeColumns("alice", emptySet(), "acme-pg", col, datasourceTags = listOf("system:catalog")),
+            authz.authorizeColumns("alice", UserParents(emptySet()), "acme-pg", col, datasourceTags = listOf("system:catalog")),
             "on the datasource it reaches every column, no role required",
         )
     }
@@ -388,7 +389,7 @@ class ColumnAuthzTest {
         assertEquals(
             mapOf("acme.public.users.region" to ColumnVerdict.UNMASKED),
             authz.authorizeColumns(
-                "alice", emptySet(), "acme-pg",
+                "alice", UserParents(emptySet()), "acme-pg",
                 listOf(column("acme.public.users.region", "users", "region", tags = listOf("ok"))),
                 datasourceTags = listOf("ok"),
             ),
@@ -397,7 +398,7 @@ class ColumnAuthzTest {
         assertEquals(
             mapOf("acme.public.users.region" to ColumnVerdict.DENIED),
             authz.authorizeColumns(
-                "alice", emptySet(), "acme-pg",
+                "alice", UserParents(emptySet()), "acme-pg",
                 listOf(column("acme.public.users.region", "users", "region", tags = listOf("ok", "system:critical"))),
                 datasourceTags = listOf("ok"),
             ),

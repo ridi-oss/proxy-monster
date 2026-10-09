@@ -65,7 +65,8 @@ self-service is a possible later convenience.
 
 ## Concepts
 
-- User / Group — a group maps to roles.
+- User / Group — a group maps to roles. A User's Cedar parents are its resolved
+  roles and its local groups, named as in the admin UI.
 - Role — the assignable unit; a named set of statements.
 - Statement — `allow <action> on <selector> [when <condition>]`.
 - Column config — per column, both optional: tags (freeform labels, e.g. `pii`,

@@ -37,7 +37,14 @@ class ControlPlaneCore(
     val roleResolver = RoleResolver(dataSource, userGroupStore, accessStore)
     val cedarPolicyStore = CedarPolicyStore(dataSource)
     val cedarEngine = CedarEngine(cedarPolicyStore)
-    val authz = Authz(cedarEngine, cedarPolicyStore, RoleSource { p -> roleResolver.resolve(p) })
+    val authz = Authz(
+        cedarEngine,
+        cedarPolicyStore,
+        object : RoleSource {
+            override fun rolesOf(principal: String) = roleResolver.resolve(principal)
+            override fun parentsOf(principal: String) = roleResolver.resolveParents(principal)
+        },
+    )
 
     // System classification (docs/system-classification.md). Loads + validates the bundled
     // manifests at boot (a malformed manifest aborts startup); classifies system Tables into system: tags

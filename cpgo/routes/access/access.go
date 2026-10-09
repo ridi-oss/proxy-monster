@@ -15,6 +15,7 @@ func Register(mux *http.ServeMux, pool *pgxpool.Pool, gate api.Gate) {
 	ac := access{pool: pool, authz: gate.Authz}
 	mux.HandleFunc("GET /api/access-requests", gate.RequireAPI(ac.requests))
 	mux.HandleFunc("GET /api/access-grants", gate.RequireAPI(ac.grants))
+	mux.HandleFunc("GET /api/approvals", gate.RequireAPI(ac.ownApprovals))
 }
 
 // accessRequest is one access_request row; fields in the Kotlin AccessRequest's order.
@@ -58,6 +59,7 @@ type accessRequest struct {
 	PullRequest                      *pullRequestRef `json:"pullRequest,omitempty"`
 	ForceRun                         bool            `json:"forceRun"`
 	ForceRunBy                       *string         `json:"forceRunBy,omitempty"`
+	CCs                              []string        `json:"ccs"`
 }
 
 // pullRequestRef is Kotlin's PullRequestRef: the pull request a GitHub request came from.
@@ -85,7 +87,7 @@ func toAccessRequest(r db.AccessRequestsRow) accessRequest {
 		ExecuteAs: r.ExecuteAs, CreatorKind: &r.CreatorKind, StatementCarriesProtectedLiteral: r.StatementCarriesProtectedLiteral,
 		Source: r.Source, Scope: r.Scope, FileKey: r.FileKey, ChangeKey: r.ChangeKey, MergedAt: api.OptInstant(r.MergedAt),
 		Revision: r.Revision, RevisedAt: api.OptInstant(r.RevisedAt), ContentHash: r.ContentHash,
-		ForceRun: r.ForceRun, ForceRunBy: r.ForceRunBy}
+		ForceRun: r.ForceRun, ForceRunBy: r.ForceRunBy, CCs: r.Ccs}
 	if r.Source == "github" && r.Repository != nil && r.Pr != nil {
 		a.PullRequest = &pullRequestRef{Repository: *r.Repository, PR: *r.Pr, PRURL: r.PrUrl, Path: r.Path, HeadSHA: r.HeadSha,
 			DefaultSchema: r.DefaultSchema, KeyOrder: r.KeyOrder, FiledHead: r.FiledHead, MergeSHA: r.MergeSha,
@@ -94,13 +96,28 @@ func toAccessRequest(r db.AccessRequestsRow) accessRequest {
 	if a.ExecuteAs == nil {
 		a.ExecuteAs = []string{}
 	}
+	if a.CCs == nil {
+		a.CCs = []string{}
+	}
 	return a
 }
 
 // approvalResource is Kotlin's AccessRequest.toApprovalResource.
 func (a accessRequest) approvalResource() bridge.Resource {
 	return bridge.Resource{Type: "ApprovalRequest", Principal: a.Principal, Approver: a.DecidedBy,
-		ExecutedBy: a.ExecutedBy, DatasourceName: a.DatasourceName, RoleName: a.RoleName, Source: a.Source}
+		ExecutedBy: a.ExecutedBy, DatasourceName: a.DatasourceName, RoleName: a.RoleName, Source: a.Source, CCs: a.CCs}
+}
+
+// ownApprovals lists the caller's own workflow approval requests; owning them is the whole check.
+func (a access) ownApprovals(w http.ResponseWriter, r *http.Request) {
+	q, principal := r.URL.Query(), api.Principal(r.Context())
+	if q.Has("status") {
+		rows, err := db.New(a.pool).OwnApprovalsByStatus(r.Context(), db.OwnApprovalsByStatusParams{Principal: principal, Status: q.Get("status")})
+		api.WriteRows(w, rows, err, func(r db.OwnApprovalsByStatusRow) accessRequest { return toAccessRequest(db.AccessRequestsRow(r)) })
+		return
+	}
+	rows, err := db.New(a.pool).OwnApprovals(r.Context(), principal)
+	api.WriteRows(w, rows, err, func(r db.OwnApprovalsRow) accessRequest { return toAccessRequest(db.AccessRequestsRow(r)) })
 }
 
 type accessGrant struct {

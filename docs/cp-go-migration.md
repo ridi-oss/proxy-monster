@@ -89,6 +89,20 @@ and gates on resolved roles; it moves once both are in Go.
 
 Estimated at 31–46 working days in total.
 
+## Approval workflow still in Kotlin
+
+The query-request workflow (`ApprovalService.kt`, `Approvals.kt`, the notify
+layer) moves in phase 5's approvals slice. Go already serves the own-requests
+list, with each request's `ccs`. The port must keep:
+
+- Running an approved request is gated by `task.run`, not by who approved it.
+- An approval expires after 24 hours (`APPROVAL_TTL`): the claim to run refuses
+  an older one, and a sweep returns it to `PENDING` with `TASK_REOPENED`. GitHub
+  requests are exempt.
+- Unapprove, reject of an approved request, close, comments, CCs, the
+  `/api/approvals/involved` list, and a `request_event` row for every change.
+- Slack channel and thread messages never carry the full statement.
+
 ## Risks
 
 - In-memory state split across two processes. The events hub, the task

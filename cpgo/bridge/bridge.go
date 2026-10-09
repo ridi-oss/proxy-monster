@@ -26,6 +26,8 @@ type Resource struct {
 	RoleName       *string `json:"roleName,omitempty"`
 	// ApprovalRequest: where the request came from (console, mcp, github); "" is console.
 	Source string `json:"source,omitempty"`
+	// ApprovalRequest: the users CC'd on it.
+	CCs []string `json:"ccs,omitempty"`
 }
 
 var (

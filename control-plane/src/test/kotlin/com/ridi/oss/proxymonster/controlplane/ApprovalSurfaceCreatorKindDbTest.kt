@@ -4,25 +4,17 @@ import com.ridi.oss.proxymonster.controlplane.authz.CedarPolicyInput
 import com.ridi.oss.proxymonster.controlplane.support.SharedPostgres
 import com.ridi.oss.proxymonster.controlplane.support.requireDockerOrSkip
 import com.ridi.oss.proxymonster.controlplane.support.testLoginRoute
-import com.ridi.oss.proxymonster.controlplane.support.webSessionCookie
 import io.ktor.client.HttpClient
 import io.ktor.client.call.body
-import io.ktor.client.plugins.contentnegotiation.ContentNegotiation as ClientContentNegotiation
-import io.ktor.client.plugins.cookies.HttpCookies
 import io.ktor.client.request.get
 import io.ktor.client.request.post
 import io.ktor.client.request.setBody
 import io.ktor.http.ContentType
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.contentType
-import io.ktor.serialization.kotlinx.json.json
-import io.ktor.server.application.install
-import io.ktor.server.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.server.routing.routing
-import io.ktor.server.sessions.Sessions
 import io.ktor.server.testing.ApplicationTestBuilder
 import io.ktor.server.testing.testApplication
-import kotlinx.serialization.json.Json
 import org.flywaydb.core.Flyway
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.TestInstance
@@ -30,6 +22,8 @@ import javax.sql.DataSource
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
+import com.ridi.oss.proxymonster.controlplane.support.CpGoStack
+import org.junit.jupiter.api.AfterAll
 
 /**
  * The /api/approvals human-approval surface must expose WORKFLOW-origin QUERY tasks only. EDITOR and WIRE
@@ -52,13 +46,15 @@ class ApprovalSurfaceCreatorKindDbTest {
     private lateinit var config: Config
 
     private lateinit var sessionStore: PrincipalSessionStore
+    private lateinit var cpGo: CpGoStack
 
     private val principal = "dev@example.com"
 
     @BeforeAll
     fun setup() {
         requireDockerOrSkip()
-        dataSource = SharedPostgres.hikari(SharedPostgres.freshDatabase("pm_approval_surface"))
+        val database = SharedPostgres.freshDatabase("pm_approval_surface")
+        dataSource = SharedPostgres.hikari(database)
         Flyway.configure().dataSource(dataSource).load().migrate()
         core = ControlPlaneCore(dataSource)
         runExecService = RunExecService(core)
@@ -87,26 +83,18 @@ class ApprovalSurfaceCreatorKindDbTest {
             sessionSecret = "surface-test-secret", oidc = null, resultKey = null, scimToken = null,
             sessionWindowSeconds = 3600, idpRecheckIntervalSeconds = 600, devMarker = true,
         )
+        cpGo = CpGoStack(config, core, database) { routing { testLoginRoute(sessionStore, config) } }
     }
 
+    @AfterAll
+    fun teardown() {
+        if (::cpGo.isInitialized) cpGo.close()
+    }
+
+    /** A client signed in as [principal], talking to cp-go, which serves the approval list. */
+    @Suppress("UnusedReceiverParameter")
     private suspend fun ApplicationTestBuilder.wire(): HttpClient {
-        application {
-            attributes.put(PRINCIPAL_SESSION_STORE, sessionStore)
-            install(ContentNegotiation) { json(Json { ignoreUnknownKeys = true; encodeDefaults = true }) }
-            install(Sessions) { webSessionCookie(sessionStore, config.sessionSecret) }
-            routing {
-                testLoginRoute(sessionStore, config)
-                approvalRoutes(
-                    config, core.accessStore, core.auditStore, core.datasourceStore, core.policyStore,
-                    core.userGroupStore, resultStore, core.roleResolver, core.authz, runExecService,
-                )
-            }
-        }
-        val client = createClient {
-            expectSuccess = false
-            install(HttpCookies)
-            install(ClientContentNegotiation) { json(Json { ignoreUnknownKeys = true }) }
-        }
+        val client = cpGo.client()
         assertEquals(HttpStatusCode.NoContent, client.post("/test/session/$principal").status)
         return client
     }

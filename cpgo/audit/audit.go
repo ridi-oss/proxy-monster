@@ -1,0 +1,94 @@
+// Package audit appends to the control plane's hash-chained audit log, interleaving with the Kotlin
+// writer: both lock the same chain head row, and auditmon's canon package is the hash both produce.
+package audit
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"time"
+
+	"github.com/jackc/pgx/v5"
+
+	"github.com/ridi-oss/proxy-monster/auditmon/canon"
+	"github.com/ridi-oss/proxy-monster/cpgo/store/db"
+)
+
+// Insert appends ev on tx, so it commits or rolls back with the change it records, and returns its id.
+// ev.TSMicros of 0 means now.
+func Insert(ctx context.Context, tx pgx.Tx, ev canon.AuditEvent) (int64, error) {
+	q := db.New(tx)
+	chainHead, err := q.LockAuditChainHead(ctx)
+	lastID, head := chainHead.LastID, chainHead.HeadHash
+	if errors.Is(err, pgx.ErrNoRows) {
+		return 0, errors.New("audit: chain head is missing")
+	}
+	if err != nil {
+		return 0, err
+	}
+	if ev.TSMicros == 0 {
+		ev.TSMicros = canon.EpochMicros(time.Now())
+	}
+	id := lastID + 1
+	rowHash, err := canon.RowHash(id, ev, canon.ChainVersion, head)
+	if err != nil {
+		return 0, err
+	}
+	chainVersion := int32(canon.ChainVersion)
+	if err := q.InsertAuditEvent(ctx, db.InsertAuditEventParams{
+		ID: id, Ts: time.UnixMicro(ev.TSMicros).UTC(), Principal: ev.Principal, Roles: list(ev.Roles), Datasource: ev.Datasource,
+		ClientAddr: ev.ClientAddr, Statement: ev.Statement, Decision: ev.Decision, FailedStage: ev.FailedStage,
+		MaskedColumns: list(ev.MaskedColumns), PiiTouched: list(ev.PIITouched), LatencyMs: ev.LatencyMs, Detail: ev.Detail,
+		EffectiveNamespace: list(ev.EffectiveNamespace), Channel: ev.Channel, ContextTags: list(ev.ContextTags),
+		Action: ev.AuthzAction, Resource: ev.AuthzResource, Outcome: ev.Outcome, Kind: ev.Kind, RowsReturned: ev.RowsReturned,
+		BytesReturned: ev.BytesReturned, DecisionID: ev.DecisionID, ChainVersion: &chainVersion, PrevHash: head, RowHash: rowHash,
+	}); err != nil {
+		return 0, fmt.Errorf("audit: inserting event %d: %w", id, err)
+	}
+	if err := q.AdvanceAuditChainHead(ctx, db.AdvanceAuditChainHeadParams{LastID: id, HeadHash: rowHash}); err != nil {
+		return 0, fmt.Errorf("audit: advancing chain head: %w", err)
+	}
+	return id, nil
+}
+
+// Actor is who made a management change and from where.
+type Actor struct {
+	Principal  string
+	ClientAddr string
+	Channel    string
+}
+
+// Admin is ManagementAuditRecorder.record: a kind=admin event for a config change, on the change's tx.
+func Admin(ctx context.Context, tx pgx.Tx, actor Actor, action, resource, summary string) error {
+	var addr *string
+	if actor.ClientAddr != "" {
+		addr = &actor.ClientAddr
+	}
+	allow := "ALLOW"
+	_, err := Insert(ctx, tx, canon.AuditEvent{
+		Kind:          "admin",
+		Principal:     actor.Principal,
+		Roles:         []string{},
+		Datasource:    "control-plane",
+		ClientAddr:    addr,
+		Statement:     summary,
+		Decision:      "ALLOW",
+		Channel:       &actor.Channel,
+		AuthzAction:   &action,
+		AuthzResource: &resource,
+		Outcome:       &allow,
+	})
+	return err
+}
+
+// Entity is Kotlin's auditEntity: a display label `Type::"id"`, never parsed back as a Cedar UID.
+func Entity(typ, id string) string { return typ + `::"` + id + `"` }
+
+func list(v []string) []byte {
+	if v == nil {
+		v = []string{}
+	}
+	b, _ := json.Marshal(v)
+	return b
+}

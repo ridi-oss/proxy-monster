@@ -55,6 +55,7 @@ RUN ./gradlew --no-daemon :control-plane:installDist -x test
 # cp-go, the front door that owns the public ports and runs the Kotlin control plane as its child.
 FROM go AS cpgo
 WORKDIR /workspace/cpgo
+COPY auditmon /workspace/auditmon
 COPY cpgo ./
 ENV GOTOOLCHAIN=local CGO_ENABLED=0 GOWORK=off
 RUN go build -trimpath -o /out/cp-go ./cmd/cp-go

@@ -7,7 +7,22 @@ package db
 
 import (
 	"context"
+	"time"
 )
+
+const advanceAuditChainHead = `-- name: AdvanceAuditChainHead :exec
+UPDATE audit_chain_head SET last_id = $1, head_hash = $2 WHERE id = 1
+`
+
+type AdvanceAuditChainHeadParams struct {
+	LastID   int64
+	HeadHash []byte
+}
+
+func (q *Queries) AdvanceAuditChainHead(ctx context.Context, arg AdvanceAuditChainHeadParams) error {
+	_, err := q.db.Exec(ctx, advanceAuditChainHead, arg.LastID, arg.HeadHash)
+	return err
+}
 
 const auditEvent = `-- name: AuditEvent :one
 SELECT id, ts, kind, principal, roles, datasource, client_addr, statement, decision, failed_stage, masked_columns, pii_touched, latency_ms, detail, effective_namespace, channel, context_tags, action, resource, outcome, rows_returned, bytes_returned, decision_id, chain_version, prev_hash, row_hash FROM audit_event WHERE id = $1
@@ -152,4 +167,93 @@ func (q *Queries) AuditLogOf(ctx context.Context, arg AuditLogOfParams) ([]Audit
 		return nil, err
 	}
 	return items, nil
+}
+
+const insertAuditEvent = `-- name: InsertAuditEvent :exec
+INSERT INTO audit_event
+    (id, ts, principal, roles, datasource, client_addr, statement, decision,
+     failed_stage, masked_columns, pii_touched, latency_ms, detail, effective_namespace,
+     channel, context_tags, action, resource, outcome, kind, rows_returned, bytes_returned,
+     decision_id, chain_version, prev_hash, row_hash)
+VALUES ($1, $2, $3, $4::jsonb, $5, $6, $7, $8, $9,
+        $10::jsonb, $11::jsonb, $12, $13, $14::jsonb,
+        $15, $16::jsonb, $17, $18, $19, $20, $21, $22,
+        $23, $24, $25, $26)
+`
+
+type InsertAuditEventParams struct {
+	ID                 int64
+	Ts                 time.Time
+	Principal          string
+	Roles              []byte
+	Datasource         string
+	ClientAddr         *string
+	Statement          string
+	Decision           string
+	FailedStage        *string
+	MaskedColumns      []byte
+	PiiTouched         []byte
+	LatencyMs          int64
+	Detail             *string
+	EffectiveNamespace []byte
+	Channel            *string
+	ContextTags        []byte
+	Action             *string
+	Resource           *string
+	Outcome            *string
+	Kind               string
+	RowsReturned       *int64
+	BytesReturned      *int64
+	DecisionID         *int64
+	ChainVersion       *int32
+	PrevHash           []byte
+	RowHash            []byte
+}
+
+func (q *Queries) InsertAuditEvent(ctx context.Context, arg InsertAuditEventParams) error {
+	_, err := q.db.Exec(ctx, insertAuditEvent,
+		arg.ID,
+		arg.Ts,
+		arg.Principal,
+		arg.Roles,
+		arg.Datasource,
+		arg.ClientAddr,
+		arg.Statement,
+		arg.Decision,
+		arg.FailedStage,
+		arg.MaskedColumns,
+		arg.PiiTouched,
+		arg.LatencyMs,
+		arg.Detail,
+		arg.EffectiveNamespace,
+		arg.Channel,
+		arg.ContextTags,
+		arg.Action,
+		arg.Resource,
+		arg.Outcome,
+		arg.Kind,
+		arg.RowsReturned,
+		arg.BytesReturned,
+		arg.DecisionID,
+		arg.ChainVersion,
+		arg.PrevHash,
+		arg.RowHash,
+	)
+	return err
+}
+
+const lockAuditChainHead = `-- name: LockAuditChainHead :one
+SELECT last_id, head_hash FROM audit_chain_head WHERE id = 1 FOR UPDATE
+`
+
+type LockAuditChainHeadRow struct {
+	LastID   int64
+	HeadHash []byte
+}
+
+func (q *Queries) LockAuditChainHead(ctx context.Context) (LockAuditChainHeadRow, error) {
+	row := q.db.QueryRow(ctx, lockAuditChainHead)
+	var i LockAuditChainHeadRow
+	err := row.Scan(&i.LastID, &i.HeadHash)
+	return i, err
 }

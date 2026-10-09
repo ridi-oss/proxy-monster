@@ -19,9 +19,11 @@ import (
 	"time"
 
 	"github.com/alecthomas/kong"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"google.golang.org/grpc"
 
 	"github.com/ridi-oss/proxy-monster/cpgo/api"
+	"github.com/ridi-oss/proxy-monster/cpgo/authz"
 	"github.com/ridi-oss/proxy-monster/cpgo/bridge"
 	"github.com/ridi-oss/proxy-monster/cpgo/child"
 	"github.com/ridi-oss/proxy-monster/cpgo/front"
@@ -46,6 +48,7 @@ type config struct {
 	Tailnet        tailnet.Config `embed:"" prefix:"tailnet-"`
 	GitHub         githubConfig   `embed:"" prefix:"github-"`
 	BridgePort     int            `env:"PM_CP_GO_GRPC_PORT" default:"0" help:"Loopback port the Kotlin control plane calls Go on; 0 picks a free one. Set it, and the child's PM_CP_GO_GRPC_ADDR, with PM_CP_ATTACH."`
+	Cedar          string         `env:"PM_CP_CEDAR" default:"go" enum:"kotlin,shadow,go" help:"Who decides Cedar for Go routes: go, kotlin, or shadow (kotlin decides, go is compared and mismatches logged)."`
 	// Shared with the Kotlin child, which reads them from the environment, so they are never flags.
 	DBURL         string `kong:"-"`
 	DBUser        string `kong:"-"`
@@ -98,6 +101,10 @@ func run(ctx context.Context, cfg config) int {
 			return 1
 		}
 		web = u
+	}
+	if err := authz.DeclareUserAttributesFromEnv(); err != nil {
+		slog.Error("cp-go: " + err.Error())
+		return 1
 	}
 	var kt *child.Child
 	var exited <-chan struct{}
@@ -158,7 +165,7 @@ func run(ctx context.Context, cfg config) int {
 			EndMismatched: api.KotlinSessionCheck(httpUpstream),
 			Edges:         edges,
 			AuthDebug:     cfg.AuthDebug,
-			Authz:         bridge.New(httpUpstream, internalToken),
+			Authz:         authorizer(cfg.Cedar, pool, bridge.New(httpUpstream, internalToken)),
 		})
 		h := front.Route(mux, front.NewHTTP(httpUpstream, edges))
 		if web != nil {
@@ -319,6 +326,17 @@ func shutdownChild(kt *child.Child) int {
 		kt.Stop(childGrace)
 	}
 	return 1
+}
+
+func authorizer(mode string, pool *pgxpool.Pool, kotlin *bridge.Client) api.Authorizer {
+	local := authz.Local{Engine: authz.New(pool), Kotlin: kotlin}
+	switch mode {
+	case "kotlin":
+		return kotlin
+	case "shadow":
+		return authz.Shadow{Primary: kotlin, Candidate: local}
+	}
+	return local
 }
 
 func loopback(port int) string { return net.JoinHostPort("127.0.0.1", strconv.Itoa(port)) }

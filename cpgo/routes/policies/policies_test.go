@@ -101,6 +101,8 @@ func TestMePermissions(t *testing.T) {
 	}{
 		{"roleless@example.com", nil, `{"isAdmin":false,"canReadAllAudit":false,"canApprove":false}`},
 		{"policy@example.com", []string{"admin.policies System:"}, `{"isAdmin":true,"canReadAllAudit":false,"canApprove":true}`},
+		{"datasources@example.com", []string{"admin.datasources System:"}, `{"isAdmin":true,"canReadAllAudit":false,"canApprove":true}`},
+		{"identity@example.com", []string{"admin.identity System:"}, `{"isAdmin":true,"canReadAllAudit":false,"canApprove":true}`},
 		{"auditor@example.com", []string{"audit.read AuditLog:"}, `{"isAdmin":false,"canReadAllAudit":true,"canApprove":false}`},
 	} {
 		e.Authz.Allow = map[string]bool{}
@@ -111,5 +113,84 @@ func TestMePermissions(t *testing.T) {
 		if status, body := e.Do(t, http.MethodGet, "/api/me/permissions", "", c); status != http.StatusOK || body != tc.want {
 			t.Fatalf("%s: %d %s", tc.principal, status, body)
 		}
+	}
+}
+
+func TestMePermissionsRequesterIP(t *testing.T) {
+	const gated = `permit(principal in Role::"edge-admin", action == Action::"admin.datasources", resource)
+		when { context has requester_ip && context.requester_ip.isInRange(ip("203.0.113.0/24")) };`
+	seed := func(e *routetest.Env) []*http.Cookie {
+		e.Exec(t, `INSERT INTO app_role (name) VALUES ('edge-admin')`)
+		e.Exec(t, `INSERT INTO principal_role (principal, role_id) SELECT 'edge@example.com', id FROM app_role WHERE name = 'edge-admin'`)
+		e.Exec(t, `INSERT INTO policy (name, cedar_src, enabled, origin) VALUES ('ip-gated-admin', $1, true, 'USER')`, gated)
+		return e.St.WebSession(t, "edge@example.com", "k-edge", "dev-1")
+	}
+	isAdmin := func(e *routetest.Env, c []*http.Cookie, xff string) bool {
+		t.Helper()
+		status, body := e.DoHeader(t, http.MethodGet, "/api/me/permissions", "", c, "X-Forwarded-For", xff)
+		var p struct{ IsAdmin bool }
+		if err := json.Unmarshal([]byte(body), &p); status != http.StatusOK || err != nil {
+			t.Fatalf("permissions: %d %s", status, body)
+		}
+		return p.IsAdmin
+	}
+
+	trusted := routetest.SetupConfig(t, routetest.Config{Local: true, Edges: []string{"127.0.0.1"}})
+	c := seed(trusted)
+	if !isAdmin(trusted, c, "203.0.113.10") || isAdmin(trusted, c, "198.51.100.10") {
+		t.Fatal("a trusted edge's forwarded requester IP must decide the IP-gated admin permit")
+	}
+	untrusted := routetest.SetupConfig(t, routetest.Config{Local: true})
+	if isAdmin(untrusted, seed(untrusted), "203.0.113.10") {
+		t.Fatal("an untrusted peer spoofed requester_ip through X-Forwarded-For")
+	}
+
+	for _, tc := range []struct {
+		edges []string
+		want  string
+	}{{[]string{"127.0.0.1"}, "@203.0.113.10"}, {nil, "@127.0.0.1"}} {
+		e := routetest.SetupConfig(t, routetest.Config{Edges: tc.edges})
+		c := e.St.WebSession(t, "edge@example.com", "k-edge", "dev-1")
+		e.DoHeader(t, http.MethodGet, "/api/me/permissions", "", c, "X-Forwarded-For", "203.0.113.10")
+		for _, asked := range e.Authz.Asked {
+			if !strings.HasSuffix(asked, " "+tc.want) {
+				t.Fatalf("edges %v: asked %v, want every decision %s", tc.edges, e.Authz.Asked, tc.want)
+			}
+		}
+		if len(e.Authz.Asked) != 4 {
+			t.Fatalf("edges %v: asked %v", tc.edges, e.Authz.Asked)
+		}
+	}
+}
+
+func TestPolicyCapAnnotations(t *testing.T) {
+	e := routetest.SetupConfig(t, routetest.Config{Local: true})
+	e.Exec(t, `INSERT INTO principal_role (principal, role_id) SELECT 'boss@example.com', id FROM app_role WHERE name = 'system:admin'`)
+	boss := e.St.WebSession(t, "boss@example.com", "k-boss", "dev-1")
+	analyst := e.St.WebSession(t, "analyst@example.com", "k-analyst", "dev-2")
+	save := func(c []*http.Cookie, name, src string) (int, string) {
+		t.Helper()
+		body, _ := json.Marshal(map[string]string{"name": name, "cedarSrc": src})
+		return e.Do(t, http.MethodPost, "/api/policies", string(body), c)
+	}
+	for i, bad := range []string{
+		`@cap("5M") permit(principal, action == Action::"result.cap", resource);`,
+		`@cap("1/32d") permit(principal, action == Action::"result.cap", resource);`,
+		`@cap("10/1x") permit(principal, action == Action::"result.cap", resource);`,
+		`@cap("5") permit(principal in Role::"analyst", action == Action::"result.read.unmasked", resource);`,
+	} {
+		status, body := save(boss, fmt.Sprintf("cap-%d", i), bad)
+		if status != http.StatusBadRequest || !strings.Contains(body, `"errors"`) || !(strings.Contains(body, "@cap") || strings.Contains(body, "result.cap")) {
+			t.Errorf("%s: %d %s", bad, status, body)
+		}
+	}
+	if status, body := save(boss, "cap-ok", `@cap("2000, 3MB, 100KB/10m, 7GB/31d") permit(principal in Role::"analyst", action == Action::"result.cap", resource);`); status != http.StatusCreated {
+		t.Fatalf("valid cap: %d %s", status, body)
+	}
+	if status, body := save(analyst, "cap-nope", `@cap("1") permit(principal, action == Action::"result.cap", resource);`); status != http.StatusForbidden {
+		t.Fatalf("non-admin save: %d %s", status, body)
+	}
+	if e.Authz.Changed != 1 {
+		t.Fatalf("%d policy change signals, want 1", e.Authz.Changed)
 	}
 }

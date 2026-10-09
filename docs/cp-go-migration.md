@@ -8,7 +8,8 @@ per-phase file lists, is the
 [plan artifact](https://claude.ai/artifact/9V3VoaADjrYinG6TpJLVc7); viewing it
 requires access granted by the maintainers.
 
-Status: phases 0–2 done; phase 3 started (audit routes); phases 4–8 not started.
+Status: phases 0–2 done; phases 3 and 4 in progress (Go decides Cedar for the
+routes it serves); phases 5–8 not started.
 
 ## Shape
 
@@ -102,6 +103,18 @@ list, with each request's `ccs`. The port must keep:
 - Unapprove, reject of an approved request, close, comments, CCs, the
   `/api/approvals/involved` list, and a `request_event` row for every change.
 - Slack channel and thread messages never carry the full statement.
+
+## Cedar in Go
+
+cp-go decides Cedar with cedar-go for the routes it serves. Kotlin keeps its own
+engine for the query path until phase 7, so a policy change made by Go is still
+signalled to it; a change Kotlin makes reaches Go through a fingerprint of the
+enabled policies checked on each decision. Policy validation uses cedar-go's
+experimental validator, whose error wording differs from Kotlin's.
+
+`PM_CP_CEDAR=shadow` makes Kotlin decide while Go decides alongside and logs
+every disagreement. `cpgo/cmd/cedar-diff` asks both engines every principal,
+action, resource and requester IP a store holds and prints each disagreement.
 
 ## Risks
 

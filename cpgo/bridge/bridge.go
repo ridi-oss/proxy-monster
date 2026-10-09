@@ -28,6 +28,13 @@ type Resource struct {
 	Source string `json:"source,omitempty"`
 	// ApprovalRequest: the users CC'd on it.
 	CCs []string `json:"ccs,omitempty"`
+	// Token: the token kind (SESSION, USER, …), "" for any kind.
+	Kind string `json:"kind,omitempty"`
+	// NativeResource fields.
+	NativeKind     string   `json:"nativeKind,omitempty"`
+	NativeID       string   `json:"nativeId,omitempty"`
+	Owner          *string  `json:"owner,omitempty"`
+	DatasourceTags []string `json:"datasourceTags,omitempty"`
 }
 
 var (

@@ -204,7 +204,7 @@ class PolicyWriteRoutesDbTest {
 POST /api/policies -> 201 {"id":{id},"origin":"USER","name":"pw-a","cedarSrc":"permit(principal == User::\"nobody@example.com\", action == Action::\"audit.read\", resource);","enabled":true,"updatedBy":"policy-admin@example.com","updatedAt":"{at}"}
 POST /api/policies -> 400 {"code":"common.already_exists","params":{"resource":"policy"}}
 POST /api/policies -> 400 {"errors":["for policy `candidate`, unrecognized action `Action::\"no.such.action\"`","for policy `candidate`, unable to find an applicable action given the policy scope constraints"]}
-POST /api/policies -> 400 {"errors":["failed to parse policy with id `candidate` from string: unexpected token `cedar`"]}
+POST /api/policies -> 400 {"errors":["parser error: parse error at <input>:1:5 \"cedar\": unexpected effect: not"]}
 POST /api/policies -> 400 {"code":"common.field_required","params":{"fields":"name"}}
 POST /api/policies -> 400 {"code":"common.field_required","params":{"fields":"cedarSrc"}}
 POST /api/policies -> 400 {"code":"policy.reserved_name","params":{}}
@@ -212,7 +212,7 @@ POST /api/policies -> 201 {"id":{off},"origin":"USER","name":"pw-off","cedarSrc"
 PUT /api/policies/{id} -> 200 {"id":{id},"origin":"USER","name":"pw-a","cedarSrc":"permit(principal == User::\"nobody@example.com\", action == Action::\"audit.read\", resource );","enabled":true,"updatedBy":"policy-admin@example.com","updatedAt":"{at}"}
 PUT /api/policies/{id} -> 200 {"id":{id},"origin":"USER","name":"pw-a2","cedarSrc":"permit(principal == User::\"nobody@example.com\", action == Action::\"audit.read\", resource);","enabled":true,"updatedBy":"policy-admin@example.com","updatedAt":"{at}"}
 PUT /api/policies/{id} -> 400 {"code":"common.already_exists","params":{"resource":"policy"}}
-PUT /api/policies/{id} -> 400 {"errors":["failed to parse policy with id `candidate` from string: unexpected token `cedar`"]}
+PUT /api/policies/{id} -> 400 {"errors":["parser error: parse error at <input>:1:5 \"cedar\": unexpected effect: not"]}
 PUT /api/policies/{sys} -> 409 {"code":"policy.system_immutable","params":{}}
 PUT /api/policies/999999 -> 404 {"code":"common.not_found","params":{"resource":"policy"}}
 PUT /api/policies/abc -> 400 {"code":"common.bad_id","params":{}}
@@ -242,7 +242,7 @@ admin.policies Policy::"{new}" | create policy 'pw-off'
 """
         const val EXPECTED_VALIDATE = """
 POST /api/policies/validate -> 200 {"valid":true,"errors":[]}
-POST /api/policies/validate -> 200 {"valid":false,"errors":["failed to parse policy with id `candidate` from string: unexpected token `cedar`"]}
+POST /api/policies/validate -> 200 {"valid":false,"errors":["parser error: parse error at <input>:1:5 \"cedar\": unexpected effect: not"]}
 POST /api/policies/validate -> 200 {"valid":false,"errors":["for policy `candidate`, unrecognized action `Action::\"no.such.action\"`","for policy `candidate`, unable to find an applicable action given the policy scope constraints"]}
 """
         const val EXPECTED_DECISIONS = """

@@ -28,6 +28,10 @@ import javax.sql.DataSource
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
+import com.ridi.oss.proxymonster.controlplane.support.CpGoStack
+import com.zaxxer.hikari.HikariDataSource
+import io.ktor.client.HttpClient
+import org.junit.jupiter.api.AfterEach
 
 /**
  * These three routes (`/auth/me`, `/auth/debug`, `/api/ingest/decision`) live inline in
@@ -146,8 +150,7 @@ class AuthAndIngestRoutesDbTest {
     fun `datasource discovery accepts a wire-token Bearer and rejects missing or bad auth`() = testApplication {
         val dataSource = migratedDatabase("pm_ds_bearer")
         val core = ControlPlaneCore(dataSource)
-        application { module(config(authDebug = false), core) }
-        val client = wireClient()
+        val client = cpGoClient(core, dataSource)
 
         core.datasourceStore.create(
             DatasourceInput(name = "ds-bearer", engine = "mysql", host = "h", port = 3306, dbName = "app"),
@@ -188,6 +191,20 @@ class AuthAndIngestRoutesDbTest {
     private fun io.ktor.server.testing.ApplicationTestBuilder.wireClient() = createClient {
         expectSuccess = false
         install(ClientContentNegotiation) { json(Json { ignoreUnknownKeys = true }) }
+    }
+
+    private val stacks = mutableListOf<CpGoStack>()
+
+    @AfterEach
+    fun closeStacks() {
+        stacks.forEach(CpGoStack::close)
+        stacks.clear()
+    }
+
+    /** A client of cp-go in front of [core], which serves the datasource list. */
+    private fun cpGoClient(core: ControlPlaneCore, dataSource: DataSource): HttpClient {
+        val database = (dataSource as HikariDataSource).jdbcUrl.substringAfterLast('/')
+        return CpGoStack(config(), core, database).also(stacks::add).client()
     }
 
     private fun migratedDatabase(prefix: String): DataSource {

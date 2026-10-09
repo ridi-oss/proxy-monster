@@ -2,6 +2,7 @@ package routetest
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -18,7 +19,7 @@ import (
 
 type env struct {
 	St        dbtest.Store
-	srv       *httptest.Server
+	Srv       *httptest.Server
 	Forwarded []string
 	Ended     []string
 	Authz     fakeAuthz
@@ -39,6 +40,16 @@ func (f *fakeAuthz) Authorize(_ context.Context, principal, action string, resou
 		return true, "", nil
 	}
 	return false, "no permit for " + action, nil
+}
+
+func (f *fakeAuthz) MayConnect(_ context.Context, principal string, ids []int64, ip string) ([]bool, error) {
+	out := make([]bool, len(ids))
+	for i, id := range ids {
+		key := fmt.Sprintf("%s datasource.connect %d", principal, id)
+		f.Asked = append(f.Asked, key+" @"+ip)
+		out[i] = f.Allow[key]
+	}
+	return out, nil
 }
 
 func (f *fakeAuthz) AuthorizeEach(ctx context.Context, principal, action string, resources []bridge.Resource, ip string) ([]bool, error) {
@@ -63,14 +74,14 @@ func Setup(t *testing.T) *env {
 		AuthDebug:     true,
 		Authz:         &e.Authz,
 	})
-	e.srv = httptest.NewServer(front.Route(mux, forward))
-	t.Cleanup(e.srv.Close)
+	e.Srv = httptest.NewServer(front.Route(mux, forward))
+	t.Cleanup(e.Srv.Close)
 	return e
 }
 
 func (e *env) Do(t *testing.T, method, path, body string, cookies []*http.Cookie) (int, string) {
 	t.Helper()
-	req, _ := http.NewRequest(method, e.srv.URL+path, strings.NewReader(body))
+	req, _ := http.NewRequest(method, e.Srv.URL+path, strings.NewReader(body))
 	for _, c := range cookies {
 		req.AddCookie(c)
 	}

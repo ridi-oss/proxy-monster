@@ -50,6 +50,9 @@ data class InternalAuthorizeBatchRequest(
 @Serializable
 data class InternalAuthorizeBatchResult(val allow: List<Boolean>)
 
+@Serializable
+data class InternalMayConnectRequest(val principal: String, val datasourceIds: List<Long>, val requesterIp: String? = null)
+
 private fun InternalResource.toAuthz(): AuthzResource? = when (type) {
     "System" -> AuthzResource.System
     "AuditLog" -> AuthzResource.AuditLog
@@ -63,7 +66,11 @@ private fun InternalResource.toAuthz(): AuthzResource? = when (type) {
  * The Cedar decision for routes cp-go serves, until Cedar itself moves to Go. cp-go never forwards
  * `/internal/` and starts this process with a per-boot [token]; without one the route does not exist.
  */
-fun Route.internalAuthorizeRoute(token: String?, authz: Authz) {
+fun Route.internalAuthorizeRoute(
+    token: String?,
+    authz: Authz,
+    mayConnect: (principal: String, requesterIp: String?, datasourceId: Long) -> Boolean = { _, _, _ -> false },
+) {
     if (token.isNullOrEmpty()) return
     post("/internal/authorize") {
         if (!constantTimeEquals(call.request.headers[INTERNAL_TOKEN_HEADER], token)) {
@@ -92,5 +99,13 @@ fun Route.internalAuthorizeRoute(token: String?, authz: Authz) {
         val context = AuthzContext(requesterIp = request.requesterIp)
         val roles = authz.parentsOf(request.principal)
         call.respond(InternalAuthorizeBatchResult(resources.map { authz.authorizeAs(request.principal, roles, action, it!!, context) == AuthzDecision.Allow }))
+    }
+    // datasource.connect needs the datasource's context tags derived first, so it is asked as a whole.
+    post("/internal/may-connect") {
+        if (!constantTimeEquals(call.request.headers[INTERNAL_TOKEN_HEADER], token)) {
+            return@post call.respond(HttpStatusCode.NotFound)
+        }
+        val request = call.receive<InternalMayConnectRequest>()
+        call.respond(InternalAuthorizeBatchResult(request.datasourceIds.map { mayConnect(request.principal, request.requesterIp, it) }))
     }
 }

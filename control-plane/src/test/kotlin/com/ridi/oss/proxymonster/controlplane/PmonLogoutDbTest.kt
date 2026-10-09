@@ -35,6 +35,8 @@ import java.util.concurrent.atomic.AtomicInteger
 import javax.sql.DataSource
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import com.ridi.oss.proxymonster.controlplane.support.CpGoStack
+import org.junit.jupiter.api.AfterAll
 
 /** `POST /auth/session/logout`: pmon ends its daemon session on the server, with every token it minted. */
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
@@ -43,17 +45,25 @@ class PmonLogoutDbTest {
     private lateinit var core: ControlPlaneCore
     private lateinit var grpc: ControlPlaneGrpcService
     private lateinit var datasource: Datasource
+    private lateinit var cpGo: CpGoStack
     private val config = mcpTestConfig()
     private val seq = AtomicInteger()
 
     @BeforeAll
     fun setUp() {
         requireDockerOrSkip()
-        dataSource = SharedPostgres.hikari(SharedPostgres.freshDatabase("pm_pmon_logout"))
+        val database = SharedPostgres.freshDatabase("pm_pmon_logout")
+        dataSource = SharedPostgres.hikari(database)
         Flyway.configure().dataSource(dataSource).load().migrate()
         core = ControlPlaneCore(dataSource)
         grpc = ControlPlaneGrpcService(core)
         datasource = core.datasourceStore.create(DatasourceInput("pmon-logout-ds", "postgres"))
+        cpGo = CpGoStack(config, core, database)
+    }
+
+    @AfterAll
+    fun tearDown() {
+        if (::cpGo.isInitialized) cpGo.close()
     }
 
     private suspend fun HttpClient.bearerPost(path: String, renewalToken: String): HttpResponse = post(path) {
@@ -107,7 +117,7 @@ class PmonLogoutDbTest {
     fun `a replaced login keeps its open connections but opens no new one`() = testApplication {
         val client = installControlPlane(config, core)
         val login = client.pmonLogin(principal())
-        val pmon = createClient { }
+        val pmon = cpGo.client()
         val discover = suspend { pmon.get("/api/datasources") { header(HttpHeaders.Authorization, "Bearer ${login.token}") }.status }
         assertEquals(HttpStatusCode.OK, discover())
         val mcp = client.mint(login.renewalToken)

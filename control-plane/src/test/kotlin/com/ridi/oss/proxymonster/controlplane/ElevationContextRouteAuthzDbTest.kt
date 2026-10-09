@@ -42,6 +42,9 @@ import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import com.ridi.oss.proxymonster.controlplane.support.CpGoStack
+import com.ridi.oss.proxymonster.controlplane.support.testLoginRoute
+import org.junit.jupiter.api.AfterAll
 
 /**
  * ROUTE-level coverage of the non-query context wiring that [ElevationContextTagTest]
@@ -71,6 +74,7 @@ class ElevationContextRouteAuthzDbTest {
     private lateinit var resultStore: QueryResultStore
     private lateinit var datasource: Datasource
     private lateinit var config: Config
+    private lateinit var cpGo: CpGoStack
     private var targetRoleId: Long = 0
 
     private val approver = "approver@example.com"
@@ -90,7 +94,8 @@ class ElevationContextRouteAuthzDbTest {
     @BeforeAll
     fun setup() {
         requireDockerOrSkip()
-        dataSource = SharedPostgres.hikari(SharedPostgres.freshDatabase("pm_elev_route"))
+        val database = SharedPostgres.freshDatabase("pm_elev_route")
+        dataSource = SharedPostgres.hikari(database)
         Flyway.configure().dataSource(dataSource).load().migrate()
         core = ControlPlaneCore(dataSource)
         runExecService = RunExecService(core) // required by approvalRoutes; /execute reaches it (test b below)
@@ -122,6 +127,12 @@ class ElevationContextRouteAuthzDbTest {
             sessionWindowSeconds = 3600, idpRecheckIntervalSeconds = 600, devMarker = true,
             trustedProxies = setOf("localhost"),
         )
+        cpGo = CpGoStack(config, core, database) { routing { testLoginRoute(PrincipalSessionStore(dataSource, null), config) } }
+    }
+
+    @AfterAll
+    fun teardown() {
+        if (::cpGo.isInitialized) cpGo.close()
     }
 
     private fun ApplicationTestBuilder.wire(): HttpClient {
@@ -439,7 +450,7 @@ class ElevationContextRouteAuthzDbTest {
 
     @Test
     fun `datasource list is filtered by connect only when connectable is requested`() = testApplication {
-        val client = wire()
+        val client = cpGo.client()
         client.post("/test/session/$requester")
 
         // Default (no param): the full list, so JIT-request compose can show datasources the caller cannot

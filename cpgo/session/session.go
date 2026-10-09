@@ -101,3 +101,14 @@ func (r *Resolver) trackerID(req *http.Request) (string, bool) {
 	}
 	return id, true
 }
+
+// WirePrincipal resolves a native wire token (SESSION or USER, not retired) the way Kotlin's
+// resolveActiveToken does for HTTP discovery, or "" when it is not a live one or its principal is deactivated.
+func (r *Resolver) WirePrincipal(ctx context.Context, token string) (string, error) {
+	sum := sha256.Sum256([]byte(token))
+	principal, err := db.New(r.pool).WirePrincipal(ctx, hex.EncodeToString(sum[:]))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", nil
+	}
+	return principal, err
+}

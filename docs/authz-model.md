@@ -334,6 +334,7 @@ of a route and the gate it calls. Paths are relative to
 | Route group | Path prefix | Owner file | Auth |
 | --- | --- | --- | --- |
 | Health, auth config, debug login, logout | `/health`, `/auth/config`, `/auth/debug`, `/auth/logout` | `App.kt` | none (`/auth/debug` 404s unless `PM_AUTH_DEBUG`) |
+| Instance name and version | `/api/instance` | `mcp/McpConnect.kt` | none — under `/api` so the console forwards it |
 | Web session | `/auth/me`, `/auth/session/status`, `/auth/session/heartbeat` | `App.kt` | Ktor `authenticate(WEB_SESSION_AUTH)` |
 | OIDC web login | `/auth/oidc/login`, `/auth/oidc/callback` | `Oidc.kt` | none — this mints the session |
 | CLI device authorization | `/auth/device/start`, `/auth/device/poll` | `DeviceAuth.kt` | none — the handle plus the IdP grant are the credential |

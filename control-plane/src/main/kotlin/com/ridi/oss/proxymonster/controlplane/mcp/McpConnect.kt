@@ -1,6 +1,7 @@
 package com.ridi.oss.proxymonster.controlplane.mcp
 
 import com.ridi.oss.proxymonster.controlplane.Config
+import com.ridi.oss.proxymonster.controlplane.SERVER_VERSION
 import com.ridi.oss.proxymonster.controlplane.requireApi
 import io.ktor.server.response.respond
 import io.ktor.server.routing.Route
@@ -24,8 +25,26 @@ internal fun Route.mcpConnectRoute(config: Config) {
                 instanceName = config.instanceName,
                 instanceDescription = config.instanceDescription,
                 mcpUrl = config.mcpResource,
-                installName = "pmon-${config.instanceName}",
+                installName = installName(config),
             ),
         )
+    }
+}
+
+/** The name this instance's MCP server is installed under in an AI app. */
+internal fun installName(config: Config) = "pmon-${config.instanceName}"
+
+/** What anyone may read about this instance before signing in, so a client can name it and check its version. */
+@Serializable
+data class InstanceInfo(
+    val name: String,
+    val version: String,
+    val mcpUrl: String,
+    val installName: String,
+)
+
+internal fun Route.instanceInfoRoute(config: Config) {
+    get("/api/instance") {
+        call.respond(InstanceInfo(config.instanceName, SERVER_VERSION, config.mcpResource, installName(config)))
     }
 }

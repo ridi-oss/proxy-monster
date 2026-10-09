@@ -123,7 +123,8 @@ func run(ctx context.Context, cfg config) int {
 		EndMismatched: api.KotlinSessionCheck(httpUpstream),
 		Edges:         edges,
 		AuthDebug:     cfg.AuthDebug,
-	}, bridge.New(httpUpstream, internalToken))
+		Authz:         bridge.New(httpUpstream, internalToken),
+	})
 	httpSrv := &http.Server{
 		Addr:              ":" + strconv.Itoa(cfg.HTTPPort),
 		Handler:           front.Route(mux, forward),

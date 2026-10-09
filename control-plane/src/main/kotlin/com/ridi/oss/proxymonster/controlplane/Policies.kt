@@ -12,7 +12,6 @@ import io.ktor.server.request.receive
 import io.ktor.server.response.respond
 import io.ktor.server.routing.Route
 import io.ktor.server.routing.delete
-import io.ktor.server.routing.get
 import io.ktor.server.routing.post
 import io.ktor.server.routing.put
 import kotlinx.serialization.Serializable
@@ -175,7 +174,6 @@ fun Route.policyRoutes(
     management: PolicyManagementService =
         PolicyManagementService(CedarPolicyStore(store.dataSource), store, ManagementAuditRecorder(AuditStore(store.dataSource))),
 ) {
-    get("/api/roles") { call.requireApi() ?: return@get; call.respond(management.listRoles()) }
     post("/api/roles") {
         if (!call.requireAdmin(config, authz, AuthzAction.ADMIN_POLICIES)) return@post
         val input = call.receive<RoleInput>()
@@ -206,13 +204,6 @@ fun Route.policyRoutes(
         }
     }
 
-    get("/api/role-assignments") {
-        if (!call.requireAdmin(config, authz, AuthzAction.ADMIN_IDENTITY)) return@get
-        val roleIdRaw = call.request.queryParameters["roleId"]
-        val roleId = roleIdRaw?.toLongOrNull()
-        if (roleIdRaw != null && roleId == null) return@get call.respond(emptyList<RoleAssignment>())
-        call.respond(management.listAssignmentsByRoleId(call.request.queryParameters["principal"], roleId))
-    }
     post("/api/role-assignments") {
         if (!call.requireAdmin(config, authz, AuthzAction.ADMIN_IDENTITY)) return@post
         val input = call.receive<RoleAssignmentInput>()
@@ -233,7 +224,6 @@ fun Route.policyRoutes(
         }
     }
 
-    get("/api/mask-fns") { if (!call.requireAdmin(config, authz, AuthzAction.ADMIN_POLICIES)) return@get; call.respond(management.listMaskFns()) }
     post("/api/mask-fns") {
         if (!call.requireAdmin(config, authz, AuthzAction.ADMIN_POLICIES)) return@post
         val input = call.receive<MaskFnInput>()

@@ -15,6 +15,7 @@ import io.ktor.client.request.get
 import io.ktor.server.testing.testApplication
 import io.ktor.client.statement.bodyAsText
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.int
 import kotlinx.serialization.json.long
@@ -59,8 +60,7 @@ class McpSelfToolsDbTest {
         val client = installControlPlane(config, core)
         for (principal in listOf(principal("plain"), admin())) {
             val mcp = client.mcpCall(tokens.token(principal, setOf("mcp:read")), "get_my_permissions").okResult().jsonObject
-            client.login(principal)
-            val console = parseJson(client.get("/api/me/permissions").bodyAsText()).jsonObject
+            val console = parseJson(Json.encodeToString(MePermissions.serializer(), computeMePermissions(principal, core.authz))).jsonObject
             assertEquals(console, JsonObject(mcp.filterKeys { it != "roles" }), principal)
         }
     }

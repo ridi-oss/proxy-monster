@@ -1,7 +1,6 @@
 package routes
 
 import (
-	"context"
 	"errors"
 	"net/http"
 	"strconv"
@@ -13,11 +12,6 @@ import (
 	"github.com/ridi-oss/proxy-monster/cpgo/bridge"
 	"github.com/ridi-oss/proxy-monster/cpgo/store/db"
 )
-
-// Authorizer is the Cedar decision a route asks for.
-type Authorizer interface {
-	Authorize(ctx context.Context, principal, action string, resource bridge.Resource, requesterIP string) (bool, error)
-}
 
 type auditEvent struct {
 	ID                 int64    `json:"id"`
@@ -47,7 +41,7 @@ type auditEvent struct {
 
 type audit struct {
 	pool  *pgxpool.Pool
-	authz Authorizer
+	authz api.Authorizer
 }
 
 // list returns the whole log to a caller Cedar grants audit.read on it, and the caller's own rows otherwise.
@@ -58,7 +52,7 @@ func (a audit) list(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx := r.Context()
 	principal := api.Principal(ctx)
-	all, err := a.authz.Authorize(ctx, principal, "audit.read", bridge.AuditLog, api.RequesterIP(ctx))
+	all, _, err := a.authz.Authorize(ctx, principal, "audit.read", bridge.AuditLog, api.RequesterIP(ctx))
 	if err != nil {
 		fail(w, err)
 		return
@@ -99,7 +93,7 @@ func (a audit) get(w http.ResponseWriter, r *http.Request) {
 		fail(w, err)
 		return
 	}
-	ok, err := a.authz.Authorize(ctx, api.Principal(ctx), "audit.read", bridge.AuditRecord(e.Principal), api.RequesterIP(ctx))
+	ok, _, err := a.authz.Authorize(ctx, api.Principal(ctx), "audit.read", bridge.AuditRecord(e.Principal), api.RequesterIP(ctx))
 	if err != nil {
 		fail(w, err)
 		return

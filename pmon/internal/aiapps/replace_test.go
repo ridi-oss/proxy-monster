@@ -35,7 +35,7 @@ func TestAddReplacesTheServersOtherEntries(t *testing.T) {
 	p := filepath.Join(userHome(), ".claude.json")
 	body := `{"mcpServers":{
 		"pm-https":{"type":"http","url":"https://PM.example.com:443/mcp/"},
-		"pmon-acme":{"type":"stdio","command":"/opt/homebrew/bin/pmon","args":["mcp","acme"]},
+		"proxy-monster-acme":{"type":"stdio","command":"/opt/homebrew/bin/pmon","args":["mcp","acme"]},
 		"pmon-hr":{"type":"stdio","command":"/opt/homebrew/bin/pmon","args":["mcp","hr"]},
 		"other-https":{"type":"http","url":"https://other.example.com/mcp"},
 		"foreign":{"type":"stdio","command":"npx","args":["x"]}}}`
@@ -43,11 +43,11 @@ func TestAddReplacesTheServersOtherEntries(t *testing.T) {
 		t.Fatal(err)
 	}
 	app := configApp("claude-code", "Claude Code", claudeCodeConfig())
-	replaced, err := app.add(Setup{Pmon: "/pmon"}, "proxy-monster-acme", acme)
+	replaced, err := app.Add(Setup{Pmon: "/pmon"}, acme)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !slices.Equal(replaced, []string{"pm-https", "pmon-acme"}) {
+	if !slices.Equal(replaced, []string{"pm-https", "proxy-monster-acme"}) {
 		t.Errorf("replaced %v", replaced)
 	}
 	servers, _, _ := readDesktopServers(p)
@@ -56,7 +56,7 @@ func TestAddReplacesTheServersOtherEntries(t *testing.T) {
 		names = append(names, name)
 	}
 	slices.Sort(names)
-	if !slices.Equal(names, []string{"foreign", "other-https", "pmon-hr", "proxy-monster-acme"}) {
+	if !slices.Equal(names, []string{"foreign", "other-https", "pmon-acme", "pmon-hr"}) {
 		t.Errorf("entries after add: %v", names)
 	}
 }
@@ -95,14 +95,39 @@ func TestClaudeDesktopAddReplacesPmonUnderAnotherName(t *testing.T) {
 	setHome(t, t.TempDir())
 	path := claudeDesktopConfig()
 	_ = os.MkdirAll(filepath.Dir(path), 0o700)
-	_ = os.WriteFile(path, []byte(`{"mcpServers":{"pmon-acme":{"command":"pmon","args":["mcp","acme"]},"keep":{"command":"npx","args":[]}}}`), 0o600)
+	_ = os.WriteFile(path, []byte(`{"mcpServers":{"proxy-monster-acme":{"command":"pmon","args":["mcp","acme"]},"keep":{"command":"npx","args":[]}}}`), 0o600)
 	replaced, err := claudeDesktop().Add(Setup{Pmon: "/p/pmon"}, acme)
-	if err != nil || !slices.Equal(replaced, []string{"pmon-acme"}) {
+	if err != nil || !slices.Equal(replaced, []string{"proxy-monster-acme"}) {
 		t.Fatalf("replaced %v, err %v", replaced, err)
 	}
 	servers, _, _ := readDesktopServers(path)
-	if _, ok := servers["pmon-acme"]; ok || servers["keep"] == nil || servers["proxy-monster-acme"] == nil {
+	if _, ok := servers["proxy-monster-acme"]; ok || servers["keep"] == nil || servers["pmon-acme"] == nil {
 		t.Errorf("after add: %v", servers)
+	}
+}
+
+// Removing a server removes pmon's relay for it under any name, and leaves its https entry and others alone.
+func TestRemoveTakesEveryRelayForTheServer(t *testing.T) {
+	setHome(t, t.TempDir())
+	p := filepath.Join(userHome(), ".claude.json")
+	body := `{"mcpServers":{
+		"pmon-acme":{"type":"stdio","command":"/pmon","args":["mcp","acme"]},
+		"proxy-monster-acme":{"type":"stdio","command":"/old/pmon","args":["mcp","acme"]},
+		"pm-https":{"type":"http","url":"https://pm.example.com/mcp"},
+		"pmon-hr":{"type":"stdio","command":"/pmon","args":["mcp","hr"]}}}`
+	if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	app := configApp("claude-code", "Claude Code", claudeCodeConfig())
+	if removed, err := app.Remove(Setup{Pmon: "/pmon"}, "acme"); err != nil || !removed {
+		t.Fatalf("removed %v, err %v", removed, err)
+	}
+	servers, _, _ := readDesktopServers(p)
+	if len(servers) != 2 || servers["pm-https"] == nil || servers["pmon-hr"] == nil {
+		t.Errorf("after remove: %v", servers)
+	}
+	if removed, err := app.Remove(Setup{Pmon: "/pmon"}, "acme"); err != nil || removed {
+		t.Errorf("a second remove: removed %v, err %v", removed, err)
 	}
 }
 

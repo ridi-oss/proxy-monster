@@ -83,6 +83,7 @@ var (
 	CodeRoleSystemImmutable   = Code{"role.system_immutable", http.StatusConflict}
 	CodePolicySystemImmutable = Code{"policy.system_immutable", http.StatusConflict}
 	CodePolicyReservedName    = Code{"policy.reserved_name", http.StatusBadRequest}
+	CodeGroupSystemImmutable  = Code{"group.system_immutable", http.StatusConflict}
 	CodeNotApprover           = Code{"approval.not_approver", http.StatusForbidden}
 	CodeRequestNotPermitted   = Code{"approval.request_not_permitted", http.StatusForbidden}
 	CodeUseQueryApproval      = Code{"approval.use_query_approval_endpoint", http.StatusBadRequest}
@@ -139,6 +140,8 @@ type Kotlin interface {
 	PoliciesChanged(ctx context.Context) error
 	// RequestNotified: a committed write opened or decided the request; send its notification.
 	RequestNotified(ctx context.Context, id int64, event string) error
+	// SessionsEnded: a committed change ended the principal's web sessions; close the editor runs held for them.
+	SessionsEnded(ctx context.Context, principal string) error
 }
 
 // Gate authenticates console requests for Go routes.

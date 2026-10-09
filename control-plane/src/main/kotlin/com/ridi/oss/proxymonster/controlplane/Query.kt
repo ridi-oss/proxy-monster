@@ -14,6 +14,7 @@ import com.ridi.oss.proxymonster.controlplane.authz.FunctionVerdict
 import com.ridi.oss.proxymonster.controlplane.authz.TableRef
 import com.ridi.oss.proxymonster.controlplane.authz.TableVerdict
 import com.ridi.oss.proxymonster.controlplane.authz.UtilityRef
+import com.ridi.oss.proxymonster.controlplane.authz.UserParents
 import com.ridi.oss.proxymonster.controlplane.authz.UtilityVerdict
 import com.ridi.oss.proxymonster.controlplane.authz.authorizeColumns
 import com.ridi.oss.proxymonster.controlplane.authz.authorizeFunctions
@@ -232,7 +233,7 @@ data class DecisionContext(
  */
 internal fun readsAllUnmasked(
     principal: String,
-    roles: Set<String>,
+    parents: UserParents,
     ds: Datasource,
     catalog: List<CatalogColumn>,
     leakColumns: List<ObjectRef>,
@@ -257,13 +258,13 @@ internal fun readsAllUnmasked(
                 ?.let { ref.key to it }
         }.toMap()
     } ?: emptyMap()
-    return authz.authorizeColumns(principal, roles, ds.name, refs, context.copy(stmtKind = null), systemTags, ds.tags)
+    return authz.authorizeColumns(principal, parents, ds.name, refs, context.copy(stmtKind = null), systemTags, ds.tags)
         .values.all { it == ColumnVerdict.UNMASKED }
 }
 
 /**
  * Pure union of a principal's role sources: the base set (direct `principal_role`) ∪ active JIT grant
- * roles ∪ group-derived roles. [RoleResolver.resolve] is the sole production caller and passes the
+ * roles ∪ group-derived roles. [RoleResolver.resolveParents] is the sole production caller and passes the
  * server-resolved sets (never a client/session-asserted list); kept as a pure fn so the union
  * logic stays unit-testable (EffectiveRolesTest).
  */
@@ -405,13 +406,13 @@ internal fun effectiveAuthzContext(
     channel: Channel,
     authz: Authz,
     principal: String,
-    roles: Set<String>,
+    parents: UserParents,
     datasource: String,
     datasourceTags: List<String>,
     stmtKind: String? = null,
 ): AuthzContext {
     val raw = caller.copy(channel = channel.contextValue, stmtKind = stmtKind)
-    return raw.copy(tags = authz.resolveContextTags(principal, roles, datasource, raw, datasourceTags))
+    return raw.copy(tags = authz.resolveContextTags(principal, parents, datasource, raw, datasourceTags))
 }
 
 /**
@@ -499,8 +500,9 @@ fun decideQuery(
     // check — including between the route and the async proxy Decide — cannot still authorize the run. An
     // all-deleted snapshot collapses to the empty set and denies here (never falls back to the principal's
     // own roles). Ordinary resolution is already deleted-role-filtered in RoleResolver.
-    val roles = providedRoles?.let { policyStore.liveRoleNames(it) } ?: roleResolver.resolve(principal)
-    val roleList = roles.toList()
+    val parents = providedRoles?.let { UserParents(policyStore.liveRoleNames(it)) }
+        ?: roleResolver.resolveParents(principal)
+    val roleList = parents.roles.toList()
     // The statement's classified kind, resolved before the context so a read policy can condition on it
     // (`context.stmt_kind`) — e.g. permit unmasked reads only under a plan-only EXPLAIN, which returns no
     // rows. STMT_UNKNOWN (a pre-parse failure), like an unspecified/unrecognized kind, leaves stmt_kind
@@ -510,7 +512,7 @@ fun decideQuery(
     else StatementKind.STATEMENT_KIND_STMT_UNKNOWN
     @Suppress("NAME_SHADOWING")
     val context = effectiveAuthzContext(
-        context, channel, authz, principal, roles, ds.name, ds.tags,
+        context, channel, authz, principal, parents, ds.name, ds.tags,
         stmtKind = statementKind
             .takeIf {
                 it != StatementKind.STATEMENT_KIND_UNSPECIFIED &&
@@ -521,7 +523,7 @@ fun decideQuery(
     )
     val derivedTags = context.tags.toList()
     // The datasource-level `result.cap` answer, asked up front: it alone decides a passthrough or relay's cap.
-    val datasourceCaps = authz.resolveResultCaps(principal, roles, ds.name, emptyList(), context, ds.tags)
+    val datasourceCaps = authz.resolveResultCaps(principal, parents, ds.name, emptyList(), context, ds.tags)
 
     // Fail-closed contract validation (analyzer.proto): the single statement-execution grant is the sole
     // per-statement authorization signal. A RESOLVED statement without it would default to the grantable
@@ -564,7 +566,7 @@ fun decideQuery(
         policyDeny(reason, roleList, derivedTags)
             .copy(catalogMiss = catalogMiss, schemaCandidates = facts.namespaceQualifierCandidatesList.toSet())
 
-    when (authz.authorizeDatasourceAction(principal, roles, AuthzAction.DATASOURCE_CONNECT, ds.name, context, ds.tags)) {
+    when (authz.authorizeDatasourceAction(principal, parents, AuthzAction.DATASOURCE_CONNECT, ds.name, context, ds.tags)) {
         is AuthzDecision.Deny -> return policyDeny("no access to datasource '${ds.name}'", roleList, derivedTags)
         AuthzDecision.Allow -> Unit
     }
@@ -594,7 +596,7 @@ fun decideQuery(
             )
         }
         val utilRefs = utilityTags.keys.map(::UtilityRef)
-        val verdicts = authz.authorizeUtilities(principal, roles, ds.name, utilRefs, context, utilityTags, ds.tags)
+        val verdicts = authz.authorizeUtilities(principal, parents, ds.name, utilRefs, context, utilityTags, ds.tags)
         usedUtilityTags = utilityTags
         utilRefs.firstOrNull { verdicts[it.command] != UtilityVerdict.USE }?.let {
             return structuralDeny(
@@ -615,7 +617,7 @@ fun decideQuery(
     // unanalyzable/utility gates still apply on top (e.g. ALTER TABLE stays prod-denied).
     val kindAction = statementKindActionId(statementKind)
         ?: return structuralDeny("statement kind is unspecified", roleList, contextTags = derivedTags)
-    if (authz.authorizeDatasourceActionId(principal, roles, kindAction, ds.name, context, ds.tags) !is AuthzDecision.Allow) {
+    if (authz.authorizeDatasourceActionId(principal, parents, kindAction, ds.name, context, ds.tags) !is AuthzDecision.Allow) {
         val kindName = statementKind.name.removePrefix("STATEMENT_KIND_").lowercase()
         return policyDeny("statement kind '$kindName' is not permitted", roleList, derivedTags)
     }
@@ -637,7 +639,7 @@ fun decideQuery(
         }
         return passthroughAllow(roleList, "passthrough (no data touched)", derivedTags)
             .copy(
-                sanitizeDiagnostics = !readsAllUnmasked(principal, roles, ds, catalogIndex.rowsByKey.values.toList(), facts.diagnosticLeakColumnsList, context, authz, systemClassification),
+                sanitizeDiagnostics = !readsAllUnmasked(principal, parents, ds, catalogIndex.rowsByKey.values.toList(), facts.diagnosticLeakColumnsList, context, authz, systemClassification),
                 schemaCandidates = facts.namespaceQualifierCandidatesList.toSet(),
                 statementKind = statementKind,
             )
@@ -656,7 +658,7 @@ fun decideQuery(
             }.toMap()
             if (functionTags.isNotEmpty()) {
                 val refs = functionTags.keys.map(::FunctionRef)
-                val verdicts = authz.authorizeFunctions(principal, roles, ds.name, refs, context, functionTags, ds.tags)
+                val verdicts = authz.authorizeFunctions(principal, parents, ds.name, refs, context, functionTags, ds.tags)
                 refs.firstOrNull { verdicts[it.name] != FunctionVerdict.ALLOWED }?.let {
                     return structuralDeny("$SYSTEM_FUNCTION_DENY '${it.name}'", roleList, failedStage = "policy", contextTags = derivedTags)
                 }
@@ -664,7 +666,7 @@ fun decideQuery(
         }
         val stage = facts.failedStage.takeIf { facts.hasFailedStage() }?.lowercase()
         val reason = "fail-closed: could not analyze ($stage)"
-        return when (authz.authorizeDatasourceAction(principal, roles, AuthzAction.EXCEPTION_UNANALYZABLE, ds.name, context, ds.tags)) {
+        return when (authz.authorizeDatasourceAction(principal, parents, AuthzAction.EXCEPTION_UNANALYZABLE, ds.name, context, ds.tags)) {
             is AuthzDecision.Allow -> DecisionContext(
                 action = EnfAction.ALLOW,
                 denyReason = null,
@@ -709,7 +711,7 @@ fun decideQuery(
         // capability over the unanalyzable relay above, which likewise relays everything unmasked under
         // the same grant.
         is CatalogCoverage.Denied -> return when (
-            authz.authorizeDatasourceAction(principal, roles, AuthzAction.EXCEPTION_UNANALYZABLE, ds.name, context, ds.tags)
+            authz.authorizeDatasourceAction(principal, parents, AuthzAction.EXCEPTION_UNANALYZABLE, ds.name, context, ds.tags)
         ) {
             is AuthzDecision.Allow -> DecisionContext(
                 action = EnfAction.ALLOW,
@@ -791,7 +793,7 @@ fun decideQuery(
         facts.functionsList.filterTo(functionsToAuthorize) { it in functionTags }
         if (functionsToAuthorize.isNotEmpty()) {
             val refs = functionsToAuthorize.map(::FunctionRef)
-            val verdicts = authz.authorizeFunctions(principal, roles, ds.name, refs, context, functionTags, ds.tags)
+            val verdicts = authz.authorizeFunctions(principal, parents, ds.name, refs, context, functionTags, ds.tags)
             refs.firstOrNull { verdicts[it.name] != FunctionVerdict.ALLOWED }?.let {
                 return structuralDeny("$SYSTEM_FUNCTION_DENY '${it.name}'", roleList, failedStage = "policy", contextTags = derivedTags)
             }
@@ -800,7 +802,7 @@ fun decideQuery(
     }
 
     val columnVerdicts = if (columnRefs.isEmpty()) emptyMap() else
-        authz.authorizeColumns(principal, roles, ds.name, columnRefs, context, columnSystemTags, ds.tags)
+        authz.authorizeColumns(principal, parents, ds.name, columnRefs, context, columnSystemTags, ds.tags)
     val masks = ArrayList<ColumnMask>()
     var hasMandatoryRedaction = false
     for (grant in columnGrants) {
@@ -869,7 +871,7 @@ fun decideQuery(
             val table = grant.table
             TableRef(table.key, table.catalog, table.schema, table.table)
         }.distinctBy { it.key }
-        val verdicts = authz.authorizeTables(principal, roles, ds.name, refs, context, tableSystemTags, ds.tags)
+        val verdicts = authz.authorizeTables(principal, parents, ds.name, refs, context, tableSystemTags, ds.tags)
         refs.firstOrNull { verdicts[it.key] != TableVerdict.READ }?.let {
             return deny("no read grant for scanned table '${it.schema}.${it.table}'")
         }
@@ -884,7 +886,7 @@ fun decideQuery(
     // A permitted exception.unmaskable lets the proxy relay a masked result raw, so for the cap ask a masked
     // column counts as reaching the client in the clear.
     val unmaskablePermitted = masks.isNotEmpty() && !hasMandatoryRedaction && authz.authorizeDatasourceAction(
-        principal, roles, AuthzAction.EXCEPTION_UNMASKABLE, ds.name, context, ds.tags,
+        principal, parents, AuthzAction.EXCEPTION_UNMASKABLE, ds.name, context, ds.tags,
     ) is AuthzDecision.Allow
     val returnedMasked = LinkedHashMap<String, Boolean>()
     for (rc in facts.returnedColumnsList) {
@@ -905,7 +907,7 @@ fun decideQuery(
         for ((name, tagId) in allowedFunctionTags) add(CapResource.Function(FunctionRef(name), tagId))
         for ((command, tagId) in usedUtilityTags) add(CapResource.Utility(UtilityRef(command), tagId))
     }
-    val statementCaps = authz.resolveResultCaps(principal, roles, ds.name, capResources, context, ds.tags)
+    val statementCaps = authz.resolveResultCaps(principal, parents, ds.name, capResources, context, ds.tags)
     spentRate(auditStore, principal, ds.name, datasourceCaps, statementCaps)?.let { return deny(it) }
     // Every classified column the statement touched, whatever its tags are named: `pii` is a deployment's
     // own tag, so keying this on that one string leaves auditmon's mass-export detector blind on a
@@ -922,7 +924,7 @@ fun decideQuery(
     // MASK/DENY always redacts; an ALLOW redacts iff the analyzer's leak set holds a column the viewer
     // can't read unmasked. `select id from users` (all readable) relays raw.
     val sanitizeDiagnostics = action != EnfAction.ALLOW ||
-        !readsAllUnmasked(principal, roles, ds, catalogIndex.rowsByKey.values.toList(), facts.diagnosticLeakColumnsList, context, authz, systemClassification)
+        !readsAllUnmasked(principal, parents, ds, catalogIndex.rowsByKey.values.toList(), facts.diagnosticLeakColumnsList, context, authz, systemClassification)
     return DecisionContext(
         action = action,
         denyReason = null,
@@ -1341,7 +1343,7 @@ fun Route.editorSessionRoutes(
             ?: return null.also { respond(HttpStatusCode.NotFound, ApiError("common.not_found", mapOf("resource" to "editor_session"))) }
         val ds = datasourceStore.getByName(session.datasourceName)
         if (ds == null || userGroupStore.isDeactivated(principal) ||
-            !authorizeMetadata(authz, principal, roleResolver.resolve(principal), ds, httpAuthzContext(config))
+            !authorizeMetadata(authz, principal, roleResolver.resolveParents(principal), ds, httpAuthzContext(config))
         ) {
             return null.also { respond(HttpStatusCode.Forbidden, ApiError("datasource.not_connectable")) }
         }

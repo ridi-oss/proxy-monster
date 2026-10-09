@@ -198,13 +198,13 @@ class ControlPlaneGrpcService(
         }
         val ds = core.datasourceStore.getByName(request.datasourceName)
             ?: throw StatusException(Status.NOT_FOUND.withDescription("unknown datasource"))
-        val roles = resolved.effectiveRoles
+        val parents = resolved.effectiveParents
         val admission = try {
-            ds.engine.definition.requestAuthorizer.authorizeBounded(request, ds, resolved.identity.principal, roles, resolved.context, core.authz)
+            ds.engine.definition.requestAuthorizer.authorizeBounded(request, ds, resolved.identity.principal, parents, resolved.context, core.authz)
         } catch (_: ManagementException) {
             request.deniedAdmission()
         }
-        val result = RequestAuthorizationResult.newBuilder().setAllowed(admission is RequestAdmission.Allowed).addAllEffectiveRoles(roles)
+        val result = RequestAuthorizationResult.newBuilder().setAllowed(admission is RequestAdmission.Allowed).addAllEffectiveRoles(parents.roles)
         when (admission) {
             is RequestAdmission.Allowed -> {
                 result.principal = resolved.identity.principal

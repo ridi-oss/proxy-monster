@@ -2,6 +2,7 @@ package com.ridi.oss.proxymonster.controlplane
 
 import com.ridi.oss.proxymonster.controlplane.authz.Authz
 import com.ridi.oss.proxymonster.controlplane.authz.AuthzAction
+import com.ridi.oss.proxymonster.controlplane.authz.UserParents
 import com.ridi.oss.proxymonster.controlplane.authz.requireAdmin
 import com.ridi.oss.proxymonster.controlplane.management.IdentityManagementService
 import com.ridi.oss.proxymonster.controlplane.management.ManagementAuditRecorder
@@ -648,24 +649,29 @@ class UserGroupStore(internal val dataSource: DataSource) {
         "DELETE FROM group_role WHERE group_id=? AND role_id=?",
     ).use { ps -> ps.setLong(1, groupId); ps.setLong(2, roleId); ps.executeUpdate() > 0 }
 
-    /** Role names this principal gets via group membership. Empty if no (active) app_user row. */
-    fun rolesForPrincipal(principal: String): List<String> =
+    /** This principal's groups and the roles they grant. Empty if no (active) app_user row. */
+    fun groupParents(principal: String): UserParents =
         // INNER JOINs from app_user: an unknown or inactive principal yields zero rows (fail-closed).
+        // LEFT JOINs to roles keep a group that grants none.
         dataSource.connection.use { c ->
             c.prepareStatement(
-                """SELECT DISTINCT r.name
+                """SELECT g.name, r.name
                    FROM app_user u
                    JOIN group_member gm ON gm.user_id = u.id
                    JOIN app_group g ON g.id = gm.group_id AND g.deleted_at IS NULL
-                   JOIN group_role gr ON gr.group_id = gm.group_id
-                   JOIN app_role r ON r.id = gr.role_id AND r.deleted_at IS NULL
+                   LEFT JOIN group_role gr ON gr.group_id = g.id
+                   LEFT JOIN app_role r ON r.id = gr.role_id AND r.deleted_at IS NULL
                    WHERE u.principal = ? AND u.active""",
             ).use { ps ->
                 ps.setString(1, principal)
                 ps.executeQuery().use { rs ->
-                    val out = ArrayList<String>()
-                    while (rs.next()) out += rs.getString(1)
-                    out
+                    val groups = sortedSetOf<String>()
+                    val roles = sortedSetOf<String>()
+                    while (rs.next()) {
+                        groups += rs.getString(1)
+                        rs.getString(2)?.let { roles += it }
+                    }
+                    UserParents(roles, groups)
                 }
             }
         }

@@ -251,10 +251,11 @@ private class McpAuthorizer(private val config: Config, private val core: Contro
 
     fun authorize(context: McpRequestContext, capability: McpCapability): Set<String> {
         requireScope(context, capability)
-        val roles = core.roleResolver.resolve(context.principal)
+        val parents = core.roleResolver.resolveParents(context.principal)
+        val roles = parents.roles
         val decision = core.authz.authorizeAs(
             context.principal,
-            roles,
+            parents,
             capability.action,
             capability.resource,
             AuthzContext(channel = Channel.MCP.contextValue, requesterIp = context.requesterIp),

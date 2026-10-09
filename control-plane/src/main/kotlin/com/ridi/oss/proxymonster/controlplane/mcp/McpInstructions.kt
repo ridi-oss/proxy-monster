@@ -12,10 +12,10 @@ internal const val MAX_INSTRUCTION_DATASOURCES = 50
 /** The `initialize` instructions: which instance this is, and the datasources this caller may connect to. */
 internal fun mcpInstructions(config: Config, core: ControlPlaneCore, context: McpRequestContext): String {
     // The SDK builds these for every stateless request, not only initialize, so roles resolve once.
-    val roles = core.roleResolver.resolve(context.principal)
+    val parents = core.roleResolver.resolveParents(context.principal)
     val authzContext = AuthzContext(requesterIp = context.requesterIp)
     val connectable = core.datasourceStore.list()
-        .filter { authorizeMetadata(core.authz, context.principal, roles, it, authzContext) }
+        .filter { authorizeMetadata(core.authz, context.principal, parents, it, authzContext) }
     return buildString {
         append("This MCP server is the proxy-monster instance \"").append(config.instanceName)
             .append("\", server version ").append(SERVER_VERSION)

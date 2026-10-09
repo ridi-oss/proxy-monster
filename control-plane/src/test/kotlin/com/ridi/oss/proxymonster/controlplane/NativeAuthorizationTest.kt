@@ -1,5 +1,6 @@
 package com.ridi.oss.proxymonster.controlplane
 
+import com.ridi.oss.proxymonster.controlplane.authz.UserParents
 import com.ridi.oss.proxymonster.controlplane.authz.Authz
 import com.ridi.oss.proxymonster.controlplane.authz.AuthzAction
 import com.ridi.oss.proxymonster.controlplane.authz.AuthzContext
@@ -82,7 +83,7 @@ class NativeAuthorizationTest {
             resource.copy(datasourceName = ""), resource.copy(kind = ""), resource.copy(id = ""), resource.copy(owner = ""),
         )) assertFalse(allowed(gate, resource = invalid))
         assertFalse(allowed(gate, operation = ""))
-        assertTrue(gate.authorizeAs("alice", setOf("reader"), AuthzAction.NATIVE_INVOKE, resource) is AuthzDecision.Deny)
+        assertTrue(gate.authorizeAs("alice", UserParents(setOf("reader")), AuthzAction.NATIVE_INVOKE, resource) is AuthzDecision.Deny)
     }
 
     @Test
@@ -109,7 +110,7 @@ class NativeAuthorizationTest {
         roles: Set<String> = setOf("reader"),
         operation: String = "athena:GetQueryResults",
         context: AuthzContext = this.context,
-    ) = gate.authorizeNativeResource("alice", roles, resource, operation, context) is AuthzDecision.Allow
+    ) = gate.authorizeNativeResource("alice", UserParents(roles), resource, operation, context) is AuthzDecision.Allow
 
     private fun authz(vararg policies: String) = Authz(
         CedarEngine(policies.mapIndexed { index, source -> index.toLong() + 1 to source }),

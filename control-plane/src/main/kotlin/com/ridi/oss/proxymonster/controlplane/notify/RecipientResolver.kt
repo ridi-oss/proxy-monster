@@ -39,7 +39,7 @@ class RecipientResolver(
             .filter { candidate ->
                 authz.satisfiableAs(
                     candidate,
-                    roleResolver.resolve(candidate),
+                    roleResolver.resolveParents(candidate),
                     AuthzAction.TASK_APPROVE,
                     resource,
                     // The recipient's own request context is unknowable at routing time — the channel they will

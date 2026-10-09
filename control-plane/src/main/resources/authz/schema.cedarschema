@@ -17,7 +17,6 @@ entity System;
 entity Role;
 
 // Local groups provisioned from the IdP group claim (JIT-on-login by default, or SCIM when enabled).
-// Not referenced by any action or seed policy.
 entity Group;
 
 // Column-authz entities (docs/authz-model.md worked examples). `Table`/`Column` are keyed off the
@@ -66,9 +65,8 @@ action "native.invoke" appliesTo {
     context: RequestContext,
 };
 
-// The authenticated principal. Its Cedar parents are the role set RoleSource.rolesOf(principal)
-// resolved (Layer 1); "member of Role" is exactly that "principal in Role::..." relationship.
-entity User in [Role];
+// A user's parents are its resolved roles and its local groups.
+entity User in [Role, Group];
 
 // A brokered datasource (DESIGN.md's `datasource` table). `name` is best-effort/optional so
 // callers that only have the id can still authorize. It gains a `Tag` parent so every tag it carries

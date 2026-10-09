@@ -17,6 +17,7 @@ import com.ridi.oss.proxymonster.athena.pb.AthenaResourceObservation
 import com.ridi.oss.proxymonster.athena.pb.NativeAuthorizationPhase
 import com.ridi.oss.proxymonster.athena.pb.athenaContextRef
 import com.ridi.oss.proxymonster.athena.pb.athenaNativeInstructions
+import com.ridi.oss.proxymonster.controlplane.authz.UserParents
 import com.ridi.oss.proxymonster.controlplane.authz.Authz
 import com.ridi.oss.proxymonster.controlplane.authz.AuthzContext
 import com.ridi.oss.proxymonster.controlplane.authz.AuthzDecision
@@ -52,7 +53,7 @@ internal class AthenaNativeAuthorizer(private val clock: Clock = Clock.systemUTC
         request: RequestAuthorization,
         datasource: Datasource,
         principal: String,
-        roles: Set<String>,
+        parents: UserParents,
         context: AuthzContext,
         authz: Authz,
     ): RequestAdmission = try {
@@ -60,8 +61,8 @@ internal class AthenaNativeAuthorizer(private val clock: Clock = Clock.systemUTC
         val descriptor = validDescriptor(request.athena)
         val operation = AthenaOperations.byName[descriptor.operation] ?: throw Deny(NATIVE_NOT_AUTHORIZED)
         val body = decodeBody(descriptor.body)
-        val gate = Gate(datasource, principal, roles, context.copy(tags = emptySet(), stmtKind = null, nativeOperation = null), authz, descriptor)
-        if (!authorizeMetadata(authz, principal, roles, datasource, gate.context)) throw Deny(NATIVE_NOT_AUTHORIZED)
+        val gate = Gate(datasource, principal, parents, context.copy(tags = emptySet(), stmtKind = null, nativeOperation = null), authz, descriptor)
+        if (!authorizeMetadata(authz, principal, parents, datasource, gate.context)) throw Deny(NATIVE_NOT_AUTHORIZED)
         RequestAdmission.Allowed(NativeInstructions.Athena(admit(gate, operation, body)))
     } catch (e: Deny) {
         RequestAdmission.Denied(e.code)
@@ -72,7 +73,7 @@ internal class AthenaNativeAuthorizer(private val clock: Clock = Clock.systemUTC
     private class Gate(
         val datasource: Datasource,
         val principal: String,
-        val roles: Set<String>,
+        val parents: UserParents,
         val context: AuthzContext,
         val authz: Authz,
         val descriptor: AthenaNativeDescriptor,
@@ -81,7 +82,7 @@ internal class AthenaNativeAuthorizer(private val clock: Clock = Clock.systemUTC
 
         fun invoke(kind: String, id: String, owner: String? = null) {
             val resource = AuthzResource.NativeResource(datasource.name, kind, id, owner, datasource.tags)
-            if (authz.authorizeNativeResource(principal, roles, resource, cedarOperation, context) !is AuthzDecision.Allow) throw Deny(NATIVE_NOT_AUTHORIZED)
+            if (authz.authorizeNativeResource(principal, parents, resource, cedarOperation, context) !is AuthzDecision.Allow) throw Deny(NATIVE_NOT_AUTHORIZED)
         }
 
         fun invoke(observation: AthenaResourceObservation) =

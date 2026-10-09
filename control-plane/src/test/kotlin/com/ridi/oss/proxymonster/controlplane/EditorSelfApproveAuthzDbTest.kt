@@ -1,5 +1,6 @@
 package com.ridi.oss.proxymonster.controlplane
 
+import com.ridi.oss.proxymonster.controlplane.authz.UserParents
 import com.ridi.oss.proxymonster.controlplane.authz.AuthzAction
 import com.ridi.oss.proxymonster.controlplane.authz.AuthzContext
 import com.ridi.oss.proxymonster.controlplane.authz.AuthzDecision
@@ -50,8 +51,8 @@ class EditorSelfApproveAuthzDbTest {
 
     @Test
     fun `autoApproveTask allows non-admin self-approve on server-attested channels`() {
-        assertTrue(autoApproveTask(alice, emptySet(), ds, AuthzContext(), core.authz, Channel.EDITOR))
-        assertTrue(autoApproveTask(alice, emptySet(), ds, AuthzContext(), core.authz, Channel.WIRE))
+        assertTrue(autoApproveTask(alice, UserParents(emptySet()), ds, AuthzContext(), core.authz, Channel.EDITOR))
+        assertTrue(autoApproveTask(alice, UserParents(emptySet()), ds, AuthzContext(), core.authz, Channel.WIRE))
     }
 
     @Test

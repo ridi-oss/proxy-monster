@@ -1,5 +1,6 @@
 package com.ridi.oss.proxymonster.controlplane
 
+import com.ridi.oss.proxymonster.controlplane.authz.UserParents
 import com.ridi.oss.proxymonster.controlplane.authz.Authz
 import com.ridi.oss.proxymonster.controlplane.authz.AuthzAction
 import com.ridi.oss.proxymonster.controlplane.authz.AuthzContext
@@ -15,7 +16,7 @@ import io.grpc.StatusException
 
 /**
  * One request's caller, as the control plane sees it: the token's principal and kind, the channel and
- * assume-role set that kind implies, and the requester IP for the Cedar context. Roles resolve lazily
+ * assume-role set that kind implies, and the requester IP for the Cedar context. Roles and groups resolve lazily
  * (live, never from the token) so a deny before the role lookup costs nothing.
  */
 internal class ResolvedRequestIdentity(
@@ -25,9 +26,9 @@ internal class ResolvedRequestIdentity(
     val providedRoles: Set<String>?,
     val httpRequesterIp: String?,
     val context: AuthzContext,
-    resolveRoles: () -> Set<String>,
+    resolveParents: () -> UserParents,
 ) {
-    val effectiveRoles: Set<String> by lazy(resolveRoles)
+    val effectiveParents: UserParents by lazy(resolveParents)
 }
 
 /** A token whose principal is still active; a deprovisioned user's surviving token row resolves to null. */
@@ -55,7 +56,10 @@ internal fun ControlPlaneCore.resolveRequestIdentity(token: String, clientAddr: 
     return ResolvedRequestIdentity(
         identity, kind, channel, providedRoles, httpIp,
         AuthzContext(channel = channel.contextValue, requesterIp = if (channel == Channel.WIRE) parseRequesterIp(clientAddr) else httpIp),
-    ) { providedRoles?.let(policyStore::liveRoleNames) ?: roleResolver.resolve(identity.principal) }
+    ) {
+        providedRoles?.let { UserParents(policyStore.liveRoleNames(it)) }
+            ?: roleResolver.resolveParents(identity.principal)
+    }
 }
 
 sealed interface RequestAdmission {
@@ -77,7 +81,7 @@ sealed interface NativeInstructions {
  * recognize, a blank selector, or a datasource the request does not name is refused before Cedar runs.
  */
 fun interface RequestAuthorizer {
-    fun authorize(request: RequestAuthorization, datasource: Datasource, principal: String, roles: Set<String>, context: AuthzContext, authz: Authz): RequestAdmission
+    fun authorize(request: RequestAuthorization, datasource: Datasource, principal: String, parents: UserParents, context: AuthzContext, authz: Authz): RequestAdmission
 }
 
 internal val RequestAuthorization.isNative: Boolean
@@ -91,13 +95,13 @@ internal fun RequestAuthorizer.authorizeBounded(
     request: RequestAuthorization,
     datasource: Datasource,
     principal: String,
-    roles: Set<String>,
+    parents: UserParents,
     context: AuthzContext,
     authz: Authz,
 ): RequestAdmission {
     if (request.datasourceName.isBlank() || request.datasourceName != datasource.name) return request.deniedAdmission()
     if (request.operationCase == RequestAuthorization.OperationCase.OPERATION_NOT_SET) return request.deniedAdmission()
-    val admission = authorize(request, datasource, principal, roles, context.copy(tags = emptySet(), stmtKind = null, nativeOperation = null), authz)
+    val admission = authorize(request, datasource, principal, parents, context.copy(tags = emptySet(), stmtKind = null, nativeOperation = null), authz)
     // A native operation is admitted only with instructions; a metadata read never carries any.
     if (admission is RequestAdmission.Allowed && request.isNative != (admission.instructions != null)) return request.deniedAdmission()
     return admission
@@ -109,7 +113,7 @@ internal object MetadataRequestAuthorizer : RequestAuthorizer {
         request: RequestAuthorization,
         datasource: Datasource,
         principal: String,
-        roles: Set<String>,
+        parents: UserParents,
         context: AuthzContext,
         authz: Authz,
     ): RequestAdmission {
@@ -132,15 +136,15 @@ internal object MetadataRequestAuthorizer : RequestAuthorizer {
         } catch (_: ManagementException) {
             return request.deniedAdmission()
         }
-        return if (authorizeMetadata(authz, principal, roles, datasource, context)) RequestAdmission.Allowed() else request.deniedAdmission()
+        return if (authorizeMetadata(authz, principal, parents, datasource, context)) RequestAdmission.Allowed() else request.deniedAdmission()
     }
 }
 
 /** The same datasource.connect gate the HTTP metadata routes use, with context tags derived here. */
-internal fun authorizeMetadata(authz: Authz, principal: String, roles: Set<String>, datasource: Datasource, context: AuthzContext): Boolean {
+internal fun authorizeMetadata(authz: Authz, principal: String, parents: UserParents, datasource: Datasource, context: AuthzContext): Boolean {
     val raw = context.copy(tags = emptySet(), stmtKind = null, nativeOperation = null)
-    val tags = authz.resolveContextTags(principal, roles, datasource.name, raw, datasource.tags)
+    val tags = authz.resolveContextTags(principal, parents, datasource.name, raw, datasource.tags)
     return authz.authorizeDatasourceAction(
-        principal, roles, AuthzAction.DATASOURCE_CONNECT, datasource.name, raw.copy(tags = tags), datasource.tags,
+        principal, parents, AuthzAction.DATASOURCE_CONNECT, datasource.name, raw.copy(tags = tags), datasource.tags,
     ) is AuthzDecision.Allow
 }

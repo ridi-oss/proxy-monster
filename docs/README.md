@@ -19,7 +19,8 @@ auth, the query-approval workflow, and the tamper-evident audit trail with its
 independent monitor. Two tracks are still moving: the OAuth-2.1-authenticated
 MCP surface covers administration, queries, and query approvals but not yet
 audit browsing or JIT grants, and a port of the control-plane to Go (the data
-plane is already Go) is a proposal under evaluation.
+plane is already Go) is a proposal under evaluation
+([`cp-go-migration.md`](./cp-go-migration.md)).
 
 ## Documents
 
@@ -92,6 +93,7 @@ a facts layer.
 | Doc | Summary |
 | --- | --- |
 | [`backlog.md`](./backlog.md) | Roadmap: planned and open work. |
+| [`cp-go-migration.md`](./cp-go-migration.md) | Proposal: move the control plane to Go behind a Go front door, slice by slice. |
 | [`cedar-sim/`](./cedar-sim/) | Runnable Cedar verification behind the approval workflow's assume-role-at-view options. |
 
 ## Relationships

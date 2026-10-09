@@ -1,0 +1,82 @@
+# Control plane to Go — migration plan
+
+The control plane is the last Kotlin component. This plan moves it to Go one
+slice at a time, behind a Go process that owns its ports from the first step.
+
+This file is a summary. The original plan, with diagrams, phase status, and the
+per-phase file lists, is the
+[plan artifact](https://claude.ai/artifact/9V3VoaADjrYinG6TpJLVc7); viewing it
+requires access granted by the maintainers.
+
+Status: proposal, no phase started.
+
+## Shape
+
+A Go front door, `cp-go`, takes over `:8090` and the gRPC port. It starts the
+Kotlin control plane as a child process on loopback ports and forwards every
+route it does not serve itself. Each phase then moves a whole slice (routes,
+service, and store together) into Go and deletes the Kotlin code. Clients see no
+change.
+
+```mermaid
+flowchart TD
+  C[web · goproxy · pmon · MCP] -->|":8090 HTTP · gRPC"| G[cp-go]
+  G -->|ported routes| GS[Go slices]
+  G -->|"loopback :18090 / :18091"| K[Kotlin CP, child process]
+  GS --> PG[(Postgres)]
+  K --> PG
+```
+
+`cp-go` passes the same `PM_*` environment to the child with
+`PM_HTTP_PORT=18090`, `PM_GRPC_PORT=18091`, and `PM_BIND_HOST=127.0.0.1`. The
+bind host is new: without it Kotlin listens on every interface and can be
+reached without going through `cp-go`. If the child exits, `cp-go` exits.
+
+Both processes ship in the existing control-plane image, with `cp-go` as the
+entrypoint, so deployment does not change. After the last phase the image is one
+Go binary with no JRE and no native libraries.
+
+## Phases
+
+```mermaid
+gantt
+  dateFormat X
+  axisFormat %s
+  section Working days
+  0 Front door          :0, 3
+  1 Login and sessions  :3, 9
+  2 Access-check bridge :9, 10
+  3 Leaf slices         :10, 16
+  4 Cedar               :16, 21
+  5 Admin CRUD          :21, 27
+  6 Per-query path      :27, 36
+  7 MCP, OAuth, cleanup :36, 40
+```
+
+| #   | Phase               | Moves                                                      | Kotlin lines | Done when                                                       |
+| --- | ------------------- | ---------------------------------------------------------- | ------------ | --------------------------------------------------------------- |
+| 0   | Front door          | Port ownership, child process, forwarding                  | 0            | e2e passes through `cp-go`; the JVM is unreachable from outside |
+| 1   | Login and sessions  | OIDC, sessions, device login, wire tokens, `ValidateToken` | 2,907        | Web, pmon, and MCP login work end to end                        |
+| 2   | Access-check bridge | Go routes ask Kotlin through one `Authorize` RPC           | 0            | Every Go route calls a gate helper                              |
+| 3   | Leaf slices         | Notifications, audit routes, query history, SCIM           | 2,980        | The audit chain verifies across the switch                      |
+| 4   | Cedar               | `cedar-go` replaces `cedar-java`; the bridge is deleted    | 1,984        | No differences on a recorded request set                        |
+| 5   | Admin CRUD          | Datasources, users, access, policies, approvals            | 7,081        | Console admin and approvals run on Go                           |
+| 6   | Per-query path      | Catalog, roles, `Decide`, `RunExec`, events, Athena        | 6,795        | MySQL wire and editor masking match Kotlin                      |
+| 7   | MCP, OAuth, cleanup | MCP server, OAuth, Flyway handover; delete the JVM build   | 4,927        | The full gate passes with no JVM                                |
+
+Estimated at 31–46 working days in total.
+
+## Risks
+
+- In-memory state split across two processes. The events hub, the task
+  completion hub, SSE streams, and the Cedar policy cache assume one process.
+  Use Postgres `LISTEN/NOTIFY` while both run, and move each hub with every
+  writer to it.
+- `cedar-go` and `cedar-java` can disagree. Diff both on recorded requests
+  before switching.
+- The audit hash chain breaks if Go's canonical form differs by one byte from
+  `AuditCanonical.kt`. Test both on the same rows first.
+- Kotlin's Flyway owns migrations until phase 7; a Go runner then takes over the
+  same files and history table.
+- Go handlers return the same `ApiError(code, params)` and use the same gate
+  helpers, built in phase 0.

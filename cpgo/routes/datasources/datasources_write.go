@@ -5,17 +5,14 @@ import (
 	"errors"
 	"net/http"
 	"slices"
-	"strings"
 
 	"github.com/jackc/pgx/v5"
 
 	"github.com/ridi-oss/proxy-monster/cpgo/api"
 	"github.com/ridi-oss/proxy-monster/cpgo/audit"
+	"github.com/ridi-oss/proxy-monster/cpgo/engine"
 	"github.com/ridi-oss/proxy-monster/cpgo/store/db"
 )
-
-// engines are the wire names a proxy registers; a datasource stores one of them, lowercased.
-var engines = []string{"mysql", "postgres", "athena"}
 
 func conflict(code string) error {
 	return &api.ManagementError{Code: code, Status: http.StatusConflict}
@@ -54,11 +51,11 @@ func decodeDatasource(r *http.Request) (datasourceInput, error) {
 	if in.Engine != nil {
 		raw = *in.Engine
 	}
-	engine := strings.ToLower(raw)
-	if !slices.Contains(engines, engine) {
+	def, ok := engine.ByWireName(raw)
+	if !ok {
 		return in, &api.ManagementError{Code: "datasource.invalid_engine", Params: api.Params{{"engine", raw}}}
 	}
-	in.Engine = &engine
+	in.Engine = &def.WireName
 	return in, nil
 }
 

@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/ridi-oss/proxy-monster/cpgo/api"
+	"github.com/ridi-oss/proxy-monster/cpgo/engine"
 	"github.com/ridi-oss/proxy-monster/cpgo/store/db"
 )
 
@@ -21,6 +22,8 @@ func Register(mux *http.ServeMux, pool *pgxpool.Pool, gate api.Gate) {
 	mux.HandleFunc("POST /api/datasources", gate.RequireAdmin("admin.datasources", ds.create))
 	mux.HandleFunc("PUT /api/datasources/{id}", gate.RequireAdmin("admin.datasources", api.WithID(ds.update)))
 	mux.HandleFunc("DELETE /api/datasources/{id}", gate.RequireAdmin("admin.datasources", api.WithID(ds.delete)))
+	mux.HandleFunc("PUT /api/datasources/{id}/classification", gate.RequireAdmin("admin.datasources", api.WithID(ds.setClassification)))
+	mux.HandleFunc("DELETE /api/datasources/{id}/classification", gate.RequireAdmin("admin.datasources", api.WithID(ds.clearClassification)))
 	mux.HandleFunc("GET /api/datasources", gate.RequireAPIOrBearer(ds.list))
 	mux.HandleFunc("GET /api/datasources/{id}", gate.RequireAPIOrBearer(api.WithID(ds.get)))
 	mux.HandleFunc("GET /api/datasources/{id}/wire-cert", gate.RequireAPIOrBearer(api.WithID(ds.wireCert)))
@@ -65,12 +68,15 @@ func toDatasource(r db.DatasourcesRow) (datasource, error) {
 		n := int(*r.MysqlLowerCaseTableNames)
 		d.MySQLLowerCaseTableNames = &n
 	}
+	var err error
 	d.Engine = strings.ToLower(d.Engine)
+	def, known := engine.ByWireName(d.Engine)
+	if !known {
+		return d, fmt.Errorf("datasource %d: unknown engine %q", d.ID, d.Engine)
+	}
 	d.Tags, d.DefaultSchemas = api.NonNil(r.Tags), api.NonNil(r.DefaultSchemas)
 	d.CatalogSyncedAt, d.LastSeenAt = api.OptInstant(r.CatalogSyncedAt), api.OptInstant(r.LastSeenAt)
-	// Athena has no default-schema statement; the wire engines do.
-	d.DefaultSchemaSettable = d.Engine == "postgres" || d.Engine == "mysql"
-	var err error
+	d.DefaultSchemaSettable = def.DefaultSchemaSettable
 	if r.ConnectionInfo != nil {
 		d.ConnectionInfo, err = canonicalConnectionInfo(r.ConnectionInfo)
 	}

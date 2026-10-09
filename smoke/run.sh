@@ -18,6 +18,8 @@ export SMOKE_PG_PORT="${SMOKE_PG_PORT:-47012}"
 export SMOKE_ATHENA_PORT="${SMOKE_ATHENA_PORT:-47013}"
 CP_HTTP="${SMOKE_CP_HTTP_PORT:-47000}"
 CP_GRPC="${SMOKE_CP_GRPC_PORT:-47001}"
+CP_CHILD_HTTP="${SMOKE_CP_CHILD_HTTP_PORT:-47030}"
+CP_CHILD_GRPC="${SMOKE_CP_CHILD_GRPC_PORT:-47031}"
 PROXY_MYSQL="${SMOKE_PROXY_MYSQL_PORT:-47002}"
 PROXY_PG="${SMOKE_PROXY_PG_PORT:-47003}"
 PROXY_ATHENA="${SMOKE_PROXY_ATHENA_PORT:-47014}"
@@ -58,8 +60,9 @@ cleanup() {
 trap cleanup EXIT
 
 if [ "$BUILD" = 1 ]; then
-  echo "smoke: building control plane, goproxy, pmon"
+  echo "smoke: building control plane, cp-go, goproxy, pmon"
   (cd "$ROOT" && ./gradlew --no-daemon -q :control-plane:installDist) > "$SMOKE_DIR/logs/build-cp.log" 2>&1
+  (cd "$ROOT/cpgo" && go build -o "$SMOKE_DIR/bin/cp-go" ./cmd/cp-go)
   (cd "$ROOT/goproxy" && go build -o "$SMOKE_DIR/bin/goproxy" ./cmd/goproxy)
   (cd "$ROOT/pmon" && go build -o "$SMOKE_DIR/bin/pmon" .)
 fi
@@ -75,8 +78,10 @@ echo "smoke: starting control plane on :$CP_HTTP"
   cd "$ROOT/control-plane" && exec env \
     PM_DB_URL="jdbc:postgresql://127.0.0.1:$SMOKE_CP_DB_PORT/proxymonster" \
     PM_HTTP_PORT="$CP_HTTP" PM_GRPC_PORT="$CP_GRPC" \
+    PM_CP_CHILD_HTTP_PORT="$CP_CHILD_HTTP" PM_CP_CHILD_GRPC_PORT="$CP_CHILD_GRPC" \
+    PM_CP_CHILD="$ROOT/control-plane/build/install/control-plane/bin/control-plane" \
     PM_DEV=true PM_AUTH_DEBUG=true PM_SECRET_TOKEN="$SECRET" PM_RESULT_KEY="$RESULT_KEY" \
-    "$ROOT/control-plane/build/install/control-plane/bin/control-plane" > "$SMOKE_DIR/logs/control-plane.log" 2>&1
+    "$SMOKE_DIR/bin/cp-go" > "$SMOKE_DIR/logs/control-plane.log" 2>&1
 ) &
 pids+=($!)
 for _ in $(seq 1 120); do

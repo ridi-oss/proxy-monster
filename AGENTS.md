@@ -33,6 +33,10 @@ Modules:
   the per-statement `Decide` call, inline result masking, and the target-DB
   broker. `spi/` defines registered providers and configured target operations;
   SQL configuration and connections stay inside the SQL implementations.
+- `cpgo/` — Go front door of the control plane: owns its public HTTP and gRPC
+  ports, runs the Kotlin control plane as a child on loopback, and forwards to
+  it what Go does not serve yet
+  ([docs/cp-go-migration.md](./docs/cp-go-migration.md)).
 - `control-plane/` — Kotlin control plane: identity and roles, Cedar
   authorization, the catalog, the per-statement decision, and the admin +
   console API (HTTP and gRPC).

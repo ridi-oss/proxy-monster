@@ -56,10 +56,20 @@ description = "Stop the local datastores (their volumes survive)"
 run = "docker compose down"
 
 [tasks.control-plane]
-description = "Run the control plane against the local store — HTTP :8080, gRPC :9090"
+description = "Run the control plane (cp-go in front of the Kotlin control plane) against the local store — HTTP :8080, gRPC :9090"
 depends = ["up"]
 shell = "bash -c"
-run = 'PM_DB_URL="${PM_DB_URL:-jdbc:postgresql://localhost:5442/proxymonster}" ./gradlew --no-daemon :control-plane:run'
+# PM_CP_ATTACH=true skips starting Kotlin, for one you run yourself (e.g. from the IDE) with
+# PM_HTTP_PORT=18090 PM_GRPC_PORT=18091 PM_BIND_HOST=127.0.0.1 PM_TRUSTED_PROXIES=127.0.0.1.
+run = '''
+set -euo pipefail
+export PM_DB_URL="${PM_DB_URL:-jdbc:postgresql://localhost:5442/proxymonster}"
+if [ "${PM_CP_ATTACH:-}" != "true" ]; then
+  ./gradlew --no-daemon -q :control-plane:installDist
+fi
+(cd cpgo && go build -o ../control-plane/build/cp-go ./cmd/cp-go)
+PM_CP_CHILD="$PWD/control-plane/build/install/control-plane/bin/control-plane" exec control-plane/build/cp-go
+'''
 
 [tasks.proxy-mysql]
 description = "Run a wire proxy on :6033 fronting the sample MySQL target DB (datasource acme-mysql)"
@@ -241,7 +251,7 @@ mise run proto-check
 # where a race is both most likely and least visible, and a data race is a correctness bug the plain
 # run reports as a pass. These tests wait on containers and sockets far more than they compute, so the
 # detector costs a few seconds of wall clock rather than the usual multiple.
-go test -race ./analyzer/... ./auditmon/... ./goproxy/... ./mysqlwire/... ./pmon/... ./pmon/tray/...
+go test -race ./analyzer/... ./auditmon/... ./cpgo/... ./goproxy/... ./mysqlwire/... ./pmon/... ./pmon/tray/...
 mise run check-image-gomod
 pnpm -C web test:unit
 pnpm -C web build
@@ -250,7 +260,7 @@ pnpm -C web build
 [tasks.check-image-gomod]
 description = "Build each server-image Go module in go.mod mode (GOWORK=off), the way the image build does"
 shell = "bash -c"
-# The server images (goproxy/Dockerfile, auditmon/Dockerfile) build each module GOWORK=off, so it
+# The server images (goproxy/Dockerfile, auditmon/Dockerfile, control-plane/Dockerfile's cp-go) build each module GOWORK=off, so it
 # resolves its OWN go.mod — not the workspace. Every other Go build here goes through go.work, which
 # resolves a sibling like analyzer from ../analyzer and hides a stale transitive pin in goproxy/go.mod:
 # the drift then surfaces only on the release image build (a broken pm-goproxy), never in `verify`.
@@ -258,7 +268,7 @@ shell = "bash -c"
 # `go build ./...` compiles every package and writes no binary.
 run = '''
 set -euo pipefail
-for m in goproxy auditmon; do
+for m in goproxy auditmon cpgo; do
   echo "=== $m (GOWORK=off go build ./...) ==="
   (cd "$m" && GOWORK=off go build ./...)
 done
@@ -291,7 +301,7 @@ shell = "bash -c"
 # module, so a root-relative pattern only resolves once a go.work exists.
 run = '''
 set -euo pipefail
-for m in analyzer auditmon goproxy mysqlwire pmon pmon/tray; do
+for m in analyzer auditmon cpgo goproxy mysqlwire pmon pmon/tray; do
   echo "=== $m ==="
   (cd "$m" && go test -race ./...)
 done

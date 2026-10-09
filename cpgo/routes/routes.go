@@ -61,7 +61,7 @@ func Register(mux *http.ServeMux, pool *pgxpool.Pool, gate api.Gate) {
 	mux.HandleFunc("POST /api/access-requests/{id}/approve", gate.RequireAPI(withID(ac.approve)))
 	mux.HandleFunc("POST /api/access-requests/{id}/reject", gate.RequireAPI(withID(ac.reject)))
 	mux.HandleFunc("POST /api/access-grants/{id}/revoke", gate.RequireAPIElse(ac.unauthenticatedRevoke, withID(ac.revokeGrant)))
-	id := identity{pool: pool, sessionsEnded: gate.SessionsEnded}
+	id := identity{pool: pool, kotlin: gate.Kotlin}
 	admin := func(h http.HandlerFunc) http.HandlerFunc { return gate.RequireAdmin("admin.identity", h) }
 	mux.HandleFunc("GET /api/users", admin(id.listUsers))
 	mux.HandleFunc("POST /api/users", admin(id.createUser))
@@ -77,7 +77,10 @@ func Register(mux *http.ServeMux, pool *pgxpool.Pool, gate api.Gate) {
 	mux.HandleFunc("GET /api/groups/{id}/roles", admin(withID(id.groupRoles)))
 	mux.HandleFunc("POST /api/groups/{id}/roles", admin(withID(id.addGroupRole)))
 	mux.HandleFunc("DELETE /api/groups/{id}/roles/{roleId}", admin(withID(id.removeGroupRole)))
-	ds := datasources{pool: pool, authz: gate.Authz}
+	ds := datasources{pool: pool, authz: gate.Authz, kotlin: gate.Kotlin}
+	mux.HandleFunc("POST /api/datasources", gate.RequireAdmin("admin.datasources", ds.create))
+	mux.HandleFunc("PUT /api/datasources/{id}", gate.RequireAdmin("admin.datasources", withID(ds.update)))
+	mux.HandleFunc("DELETE /api/datasources/{id}", gate.RequireAdmin("admin.datasources", withID(ds.delete)))
 	mux.HandleFunc("GET /api/datasources", gate.RequireAPIOrBearer(ds.list))
 	mux.HandleFunc("GET /api/datasources/{id}", gate.RequireAPIOrBearer(withID(ds.get)))
 	mux.Handle("GET /api/datasources/live", front.Kotlin)

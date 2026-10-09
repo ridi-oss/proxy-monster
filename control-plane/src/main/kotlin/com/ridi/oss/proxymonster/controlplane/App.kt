@@ -716,7 +716,11 @@ fun Application.module(config: Config, core: ControlPlaneCore) {
         }
 
         // Live decision feed for the UI. Requires a session; each record is then filtered by audit.read.
-        internalAuthorizeRoute(config.internalToken, authz, core::mayConnectById, cedarPolicyStore::markCommittedMutation, core::mayRequestById, runExecService::closeSessionsForPrincipal)
+        internalAuthorizeRoute(
+            config.internalToken, authz, core::mayConnectById, cedarPolicyStore::markCommittedMutation,
+            core::mayRequestById, runExecService::closeSessionsForPrincipal, core.proxyEventsHub::attached,
+            { name -> core.connectionCatalog.invalidateDatasource(name) },
+        )
 
         // Dev-only login shortcut; gated by PM_AUTH_DEBUG. OIDC (above) is the production path.
         post("/auth/debug") {

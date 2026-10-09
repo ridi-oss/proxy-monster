@@ -346,7 +346,7 @@ of a route and the gate it calls. Paths are relative to
 | Audit ingest (from the proxy) | `/api/ingest/decision` | `App.kt` | `X-PM-Ingest-Token` vs `PM_SECRET_TOKEN`; open when that env is unset (dev only) |
 | Audit read | `/api/audit`, `/api/audit/{id}` | `cpgo/routes/audit.go` | `requireApi` + Cedar `audit.read` — allow on `AuditLog` returns all rows, else own rows only |
 | Caller capability summary | `/api/me/permissions` | `cpgo/routes/me.go` | `requireApi`; UI convenience, computed from `admin.*` + `audit.read` |
-| Datasources, catalog, classification | `/api/datasources**` | `Datasources.kt`; the list, `{id}` and `{id}/wire-cert` in `cpgo/routes/datasources.go` | mixed: list = `requireApiOrBearer`, redacting non-connectable rows; `live` = `requireApi`; `{id}`, `{id}/catalog`, `{id}/wire-cert`, `{id}/table-detail` = `requireApiOrBearer` + `datasource.connect`; rest = `requireAdmin(admin.datasources)` |
+| Datasources, catalog, classification | `/api/datasources**` | `Datasources.kt`; the list, `{id}`, `{id}/wire-cert`, create, edit and delete in `cpgo/routes/datasources*.go` | mixed: list = `requireApiOrBearer`, redacting non-connectable rows; `live` = `requireApi`; `{id}`, `{id}/catalog`, `{id}/wire-cert`, `{id}/table-detail` = `requireApiOrBearer` + `datasource.connect`; rest = `requireAdmin(admin.datasources)` |
 | One-shot editor query | `/api/datasources/{id}/query` | `Query.kt` | `requireApi`, then the per-statement `decideQuery` |
 | Editor sessions and tasks | `/api/editor/**` | `Query.kt` | `requireApi` + owner scope; cancel adds `task.cancel`, result adds `task.assume` |
 | Task-completion SSE | `/api/tasks/events` | `App.kt` | resolves the session itself; each push re-filtered through `task.read` |

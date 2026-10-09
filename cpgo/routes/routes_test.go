@@ -28,8 +28,24 @@ type env struct {
 	forwarded []string
 	ended     []string
 	authz     fakeAuthz
-	// sessionsEnded records each principal Kotlin was told had its web sessions ended.
-	sessionsEnded []string
+	kotlin    fakeKotlin
+}
+
+// fakeKotlin records what Go told Kotlin and answers attached as the datasources with a proxy.
+type fakeKotlin struct {
+	sessionsEnded, deleted, attached []string
+}
+
+func (k *fakeKotlin) SessionsEnded(_ context.Context, p string) error {
+	k.sessionsEnded = append(k.sessionsEnded, p)
+	return nil
+}
+
+func (k *fakeKotlin) ProxiesAttached(context.Context) ([]string, error) { return k.attached, nil }
+
+func (k *fakeKotlin) DatasourceDeleted(_ context.Context, name string) error {
+	k.deleted = append(k.deleted, name)
+	return nil
 }
 
 // fakeAuthz allows what allow lists and records every decision asked for.
@@ -117,7 +133,7 @@ func setupWith(t *testing.T, authz func(*pgxpool.Pool) api.Authorizer) *env {
 	Register(mux, e.st.Pool, api.Gate{
 		Sessions:      session.NewResolver(e.st.Pool, dbtest.Secret),
 		EndMismatched: func(r *http.Request) { e.ended = append(e.ended, r.Header.Get("Cookie")) },
-		SessionsEnded: func(_ context.Context, p string) error { e.sessionsEnded = append(e.sessionsEnded, p); return nil },
+		Kotlin:        &e.kotlin,
 		AuthDebug:     true,
 		Authz:         decider,
 	})
@@ -175,7 +191,6 @@ func TestUnportedRequestsAreForwarded(t *testing.T) {
 		{http.MethodGet, "/api/datasources/1/catalog"},
 		{http.MethodGet, "/api/datasources/1/table-detail"},
 		{http.MethodPost, "/api/datasources/1/refresh"},
-		{http.MethodPut, "/api/datasources/1"},
 		{http.MethodPut, "/api/datasources/1/classification"},
 		{http.MethodGet, "/api/approvals/inbox"},
 		{http.MethodGet, "/api/approvals/1"},

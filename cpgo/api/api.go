@@ -106,15 +106,23 @@ type Authorizer interface {
 	PoliciesChanged(ctx context.Context) error
 }
 
+// Kotlin is what Go routes tell or ask the Kotlin control plane about the state it holds in memory.
+type Kotlin interface {
+	// SessionsEnded: a committed change revoked the principal's credentials; close its editor runs.
+	SessionsEnded(ctx context.Context, principal string) error
+	// ProxiesAttached names the datasources with a proxy on an open Events stream.
+	ProxiesAttached(ctx context.Context) ([]string, error)
+	// DatasourceDeleted: drop the in-memory catalog keyed by the deleted datasource's name.
+	DatasourceDeleted(ctx context.Context, name string) error
+}
+
 // Gate authenticates console requests for Go routes.
 type Gate struct {
 	Sessions *session.Resolver
 	// EndMismatched has the Kotlin control plane end a session presented from the wrong device. Kotlin
 	// owns that teardown because it also drops the principal's in-memory editor runs.
 	EndMismatched func(*http.Request)
-	// SessionsEnded tells Kotlin a committed change ended the principal's web sessions, so it closes the
-	// editor runs it holds for them.
-	SessionsEnded func(ctx context.Context, principal string) error
+	Kotlin        Kotlin
 	Edges         front.TrustedEdges
 	// AuthDebug lets a session carry the requester IP chosen at its debug login, as Kotlin does.
 	AuthDebug bool

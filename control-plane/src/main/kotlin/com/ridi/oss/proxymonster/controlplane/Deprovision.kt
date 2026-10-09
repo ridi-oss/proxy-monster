@@ -92,8 +92,8 @@ fun revokeActiveCredentialsTx(
  * same lock, so group reconciliation cannot end existing sessions and then lose a race to a zero-role
  * insert. Without the lock a teardown could slip its revoke between the check and the INSERT, leaving
  * a credential that outlives deprovisioning or group revocation. Returns null when [principal] is
- * deprovisioned — the caller maps that to 403; otherwise [mint]'s result. Every credential-mint route
- * (`/api/wire-tokens`, `/api/tokens`, the device-poll session mint) funnels through here so the
+ * deprovisioned — the caller maps that to 403; otherwise [mint]'s result. Every Kotlin credential mint
+ * ([TokenService.mintUser], the device-poll session mint, run tokens) funnels through here so the
  * check-then-mint TOCTOU is closed in one place.
  */
 fun <T> DataSource.mintForActivePrincipalLocked(

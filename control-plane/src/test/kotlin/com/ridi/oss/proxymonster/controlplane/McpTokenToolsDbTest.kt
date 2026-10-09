@@ -10,7 +10,6 @@ import com.ridi.oss.proxymonster.controlplane.support.McpTokens
 import com.ridi.oss.proxymonster.controlplane.support.SharedPostgres
 import com.ridi.oss.proxymonster.controlplane.support.errorCode
 import com.ridi.oss.proxymonster.controlplane.support.installControlPlane
-import com.ridi.oss.proxymonster.controlplane.support.login
 import com.ridi.oss.proxymonster.controlplane.support.mcpCall
 import com.ridi.oss.proxymonster.controlplane.support.mcpRaw
 import com.ridi.oss.proxymonster.controlplane.support.mcpResult
@@ -24,6 +23,8 @@ import io.ktor.client.statement.bodyAsText
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
 import io.ktor.server.testing.testApplication
+import kotlinx.serialization.builtins.ListSerializer
+import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.buildJsonObject
@@ -158,10 +159,11 @@ class McpTokenToolsDbTest {
         assertEquals("true", client.mcpCall(adminToken, "revoke_token", buildJsonObject { put("id", second) }).okResult().jsonObject.str("deleted"))
         assertEquals(1L, count("SELECT count(*) FROM audit_event WHERE principal=? AND action='auth.token.revoke' AND channel='mcp' AND resource=?", admin, "Token::\"$second\""))
 
-        client.login(owner)
-        assertEquals(parseJson(client.get("/api/tokens").bodyAsText()), client.mcpCall(ownerToken, "list_tokens").okResult())
-        client.login(stranger)
-        assertEquals(HttpStatusCode.Forbidden, client.get("/api/tokens?principal=$owner").status)
+        val direct = APP_JSON.encodeToJsonElement(ListSerializer(WireTokenInfo.serializer()), service().list(owner, null, null))
+        assertEquals(direct, client.mcpCall(ownerToken, "list_tokens").okResult())
+        val strangerList = assertFailsWith<TaskServiceException> { service().list(stranger, null, owner) }
+        assertEquals(HttpStatusCode.Forbidden, strangerList.status)
+        assertEquals("common.forbidden", strangerList.error.code)
     }
 
     @Test
@@ -173,9 +175,8 @@ class McpTokenToolsDbTest {
 
         // The bearer is refused before any tool runs, so the service's own locked check is asserted directly too.
         assertEquals(HttpStatusCode.Unauthorized, client.mcpRaw(token, "mint_token").status)
-        val service = TokenService(core.tokenStore, core.userGroupStore, core.authz, core.authAudit)
         val refused = assertFailsWith<TaskServiceException> {
-            service.mintUser(caller, null, emptyList(), AuditActor(caller, channel = AuditSource.MCP), null, null)
+            service().mintUser(caller, null, emptyList(), AuditActor(caller, channel = AuditSource.MCP), null, null)
         }
         assertEquals("auth.principal_deprovisioned", refused.error.code)
         assertEquals(0, core.tokenStore.list(caller).size)
@@ -198,6 +199,8 @@ class McpTokenToolsDbTest {
         }
     }
 
+    private fun service() = TokenService(core.tokenStore, core.userGroupStore, core.authz, core.authAudit)
+
     private fun JsonElement.ids() = (this as JsonArray).map { it.jsonObject.getValue("id").jsonPrimitive.long }.toSet()
 
     private fun principal(label: String) = "mcp-token-$label-${seq.incrementAndGet()}@example.com"
@@ -213,5 +216,10 @@ class McpTokenToolsDbTest {
             values.forEachIndexed { i, v -> ps.setString(i + 1, v) }
             ps.executeQuery().use { rs -> rs.next(); rs.getLong(1) }
         }
+    }
+
+    private companion object {
+        // The console's response encoding (App.kt appJson).
+        val APP_JSON = Json { encodeDefaults = true; explicitNulls = false }
     }
 }

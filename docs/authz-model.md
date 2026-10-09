@@ -353,7 +353,7 @@ of a route and the gate it calls. Paths are relative to
 | Editor query history | `/api/query-history` | `cpgo/routes/routes.go` | `requireApi`, own rows only |
 | Query-approval workflow | `/api/approvals**` | `Approvals.kt`; the own-requests list in `cpgo/routes/access.go` | `requireApi` + per-route Cedar (`task.read` / `task.approve` / `task.cancel` / `task.assume`) |
 | JIT access requests and grants | `/api/access-requests**`, `/api/access-grants**`, `/api/access/principals/{principal}/rate-reset` | `cpgo/routes/access.go`, `access_write.go` | `RequireAPI` + `task.read` forward-filtering; create = `task.request` on its datasource; approve/reject = `task.approve`; revoke = `grant.revoke`; admin rate reset = `RequireAdmin(admin.identity)` |
-| Wire tokens | `/api/wire-tokens`, `/api/tokens**` | `Tokens.kt` | `requireAuthz(token.mint / token.list / token.revoke)` on the token's real owner and kind |
+| Wire tokens | `/api/wire-tokens`, `/api/tokens**` | `cpgo/routes/tokens.go` | `requireAuthz(token.mint / token.list / token.revoke)` on the token's real owner and kind |
 | Roles, mask functions | `/api/roles**`, `/api/mask-fns**` | `cpgo/routes/policies.go`, `policies_write.go` | `requireAdmin(admin.policies)`; `GET /api/roles` is `requireApi` |
 | Principal-to-role assignment | `/api/role-assignments**` | `cpgo/routes/policies.go`, `policies_write.go` | `requireAdmin(admin.identity)` |
 | Users, groups, group-to-role map | `/api/users**`, `/api/groups**` | `cpgo/routes/identity.go` | `requireAdmin(admin.identity)` |
@@ -371,9 +371,9 @@ Routes `cp-go` serves use the same gates from `cpgo/api` (`RequireAPI`,
   401 (`common.unauthenticated`) without a session, 403 (`common.forbidden`,
   carrying the Cedar deny reason) on a deny. A session alone is never enough.
 - `requireAuthz(config, authz, action, resource)` — the same gate for non-admin,
-  resource-scoped actions: token mint / list / revoke (`Tokens.kt`) and grant
-  revoke (`cpgo/routes/access_write.go`), where the resource is built from the
-  row the call targets.
+  resource-scoped actions: token mint / list / revoke (`cpgo/routes/tokens.go`)
+  and grant revoke (`cpgo/routes/access_write.go`), where the resource is built
+  from the row the call targets.
 - `requireScimAuth(config)` (`Scim.kt`) — the standing `PM_SCIM_TOKEN` bearer,
   constant-time compared, TLS-only. Not a session and not Cedar: this is an
   IdP-to-control-plane integration ([`auth-model.md`](./auth-model.md)).

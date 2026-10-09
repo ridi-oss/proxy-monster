@@ -13,6 +13,13 @@ import (
 	"time"
 )
 
+// Kotlin, registered for a path, keeps it on the Kotlin control plane when a Go wildcard route would match it.
+var Kotlin http.Handler = kotlin{}
+
+type kotlin struct{}
+
+func (kotlin) ServeHTTP(w http.ResponseWriter, r *http.Request) { http.NotFound(w, r) }
+
 // Route serves a request with the Go handler registered for it in mux, and forwards every other request
 // to the Kotlin control plane: non-canonical paths ServeMux would redirect, and HEAD, which ServeMux
 // would hand to a GET handler.
@@ -23,7 +30,7 @@ func Route(mux *http.ServeMux, forward http.Handler) http.Handler {
 			http.NotFound(w, r)
 			return
 		}
-		if _, pattern := mux.Handler(r); pattern != "" && r.Method != http.MethodHead && path.Clean(r.URL.Path) == r.URL.Path {
+		if h, pattern := mux.Handler(r); pattern != "" && h != Kotlin && r.Method != http.MethodHead && path.Clean(r.URL.Path) == r.URL.Path {
 			mux.ServeHTTP(w, r)
 			return
 		}

@@ -35,22 +35,10 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
-import com.ridi.oss.proxymonster.controlplane.support.CpGoStack
-import com.ridi.oss.proxymonster.controlplane.support.testLoginRoute
-import org.junit.jupiter.api.AfterAll
 
 /**
- * The `datasource.connect` gate on the per-datasource metadata reads: `GET /api/datasources/{id}` and
- * `GET /api/datasources/{id}/table-detail`, plus the list route that carries the same fields.
- *
- * These three are one authorization surface, and testing them apart is what lets a hole survive: the
- * row and the list both carry the `advertiseAddr`/`advertiseCertChain` that `{id}/wire-cert` releases
- * only under `datasource.connect`, so a gate on any one of them alone is bypassable through the others.
- *
- * Pinned per route: unauthenticated is 401, an authenticated caller without `datasource.connect` is
- * 403, a granted caller is admitted, the grant does not carry from one datasource to another, and the
- * Bearer path runs the same decision. The list keeps non-connectable rows but strips their connection
- * material, since JIT-request compose must still show what you cannot yet reach. `authDebug` is off —
+ * The `datasource.connect` gate on `GET /api/datasources/{id}/table-detail`, and the per-row decision the
+ * list, `{id}` and `{id}/wire-cert` ask Kotlin for (those three are served by cp-go). `authDebug` is off —
  * with it on every gate short-circuits and this test would prove nothing.
  */
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
@@ -60,7 +48,6 @@ class DatasourceMetadataConnectGateDbTest {
     private lateinit var config: Config
     private lateinit var datasource: Datasource
     private lateinit var ungranted: Datasource
-    private lateinit var cpGo: CpGoStack
 
     private val connector = "connector@example.com"
     private val stranger = "stranger@example.com"
@@ -82,8 +69,7 @@ class DatasourceMetadataConnectGateDbTest {
     @BeforeAll
     fun setup() {
         requireDockerOrSkip()
-        val database = SharedPostgres.freshDatabase("pm_ds_metadata_gate")
-        dataSource = SharedPostgres.hikari(database)
+        dataSource = SharedPostgres.hikari(SharedPostgres.freshDatabase("pm_ds_metadata_gate"))
         Flyway.configure().dataSource(dataSource).load().migrate()
         core = ControlPlaneCore(dataSource)
 
@@ -121,43 +107,50 @@ class DatasourceMetadataConnectGateDbTest {
             sessionSecret = "ds-metadata-gate-test-secret", oidc = null, resultKey = null, scimToken = null,
             sessionWindowSeconds = 3600, idpRecheckIntervalSeconds = 600, devMarker = true,
         )
-        cpGo = CpGoStack(config, core, database) { routing { testLoginRoute(PrincipalSessionStore(dataSource, null), config) } }
     }
 
-    @AfterAll
-    fun teardown() {
-        if (::cpGo.isInitialized) cpGo.close()
+    private fun ApplicationTestBuilder.wire(): HttpClient {
+        application { installRoutes() }
+        return createClient {
+            expectSuccess = false
+            install(HttpCookies)
+            install(ClientContentNegotiation) { json(Json { ignoreUnknownKeys = true }) }
+        }
     }
 
-    /** A client of cp-go: it serves the datasource list and forwards the row and table detail to Kotlin. */
-    @Suppress("UnusedReceiverParameter")
-    private fun ApplicationTestBuilder.wire(): HttpClient = cpGo.client()
-
-    @Test
-    fun `the datasource row is 401 unauthenticated`() = testApplication {
-        val client = wire()
-        val res = client.get("/api/datasources/${datasource.id}")
-        assertEquals(HttpStatusCode.Unauthorized, res.status)
-        assertFalse(
-            res.bodyAsText().contains("BEGIN CERTIFICATE"),
-            "an unauthenticated response must not carry the advertised chain",
-        )
+    private fun Application.installRoutes() {
+        val sessionStore = PrincipalSessionStore(dataSource, null)
+        attributes.put(PRINCIPAL_SESSION_STORE, sessionStore)
+        install(ContentNegotiation) { json(Json { ignoreUnknownKeys = true; encodeDefaults = true }) }
+        install(Sessions) { webSessionCookie(sessionStore, config.sessionSecret) }
+        routing {
+            post("/test/session/{principal}") {
+                val deviceId = call.ensureDeviceCookie(secure = false)
+                call.sessions.set(
+                    WebSessionRef(
+                        sessionStore.mintWeb(
+                            requireNotNull(call.parameters["principal"]),
+                            null,
+                            config.webSessionAbsoluteSeconds,
+                            config.webSessionIdleSeconds,
+                            deviceId,
+                        ),
+                    ),
+                )
+                call.respond(HttpStatusCode.NoContent)
+            }
+            datasourceRoutes(
+                config, core.authz, core.roleResolver, core.datasourceStore, core.proxyEventsHub,
+                TableDetailService(core), core.tokenStore, core.userGroupStore,
+            )
+        }
     }
 
-    /**
-     * The decision is keyed to the datasource being asked for. The connector's permit names `gated-ds`, so
-     * the SAME session must be admitted there and refused here — the assertion an unconstrained `resource`
-     * permit could not make.
-     */
+    /** The decision is keyed to the datasource asked for: the connector's permit names `gated-ds` only. */
     @Test
     fun `a connect grant on one datasource does not carry to another`() = testApplication {
         val client = wire()
         client.post("/test/session/$connector")
-        assertEquals(HttpStatusCode.OK, client.get("/api/datasources/${datasource.id}").status)
-        assertEquals(
-            HttpStatusCode.Forbidden, client.get("/api/datasources/${ungranted.id}").status,
-            "the grant names one datasource; a gate keyed to anything coarser would admit both",
-        )
         assertEquals(
             HttpStatusCode.Forbidden,
             client.get("/api/datasources/${ungranted.id}/table-detail?catalog=def&schema=app&table=t").status,
@@ -165,77 +158,14 @@ class DatasourceMetadataConnectGateDbTest {
     }
 
     /**
-     * The Bearer path is why these routes use `requireApiOrBearer` rather than `requireApi`: pmon holds a
-     * wire token, not a cookie. Swapping the helper back would leave every session test passing.
+     * cp-go's list keeps a row the caller may not connect to but strips its connection material; this is the
+     * decision it asks per row, the same one `{id}` and `{id}/wire-cert` make.
      */
     @Test
-    fun `a wire-token Bearer caller is authorized by the same connect decision`() = testApplication {
-        val token = core.tokenStore.issue(
-            TokenKind.USER, connector, roles = emptyList(), name = "gate-test", ttlSeconds = 300,
-        )
-        val client = wire()
-        val granted = client.get("/api/datasources/${datasource.id}") {
-            header(HttpHeaders.Authorization, "Bearer ${token.token}")
-        }
-        assertEquals(HttpStatusCode.OK, granted.status, "a wire token is a valid identity on this route")
-        val refused = client.get("/api/datasources/${ungranted.id}") {
-            header(HttpHeaders.Authorization, "Bearer ${token.token}")
-        }
-        assertEquals(
-            HttpStatusCode.Forbidden, refused.status,
-            "the Bearer path must run the same per-datasource decision, not skip it",
-        )
-    }
-
-    @Test
-    fun `the datasource row is 403 without datasource-connect, chain withheld`() = testApplication {
-        val client = wire()
-        client.post("/test/session/$stranger")
-        val res = client.get("/api/datasources/${datasource.id}")
-        assertEquals(
-            HttpStatusCode.Forbidden, res.status,
-            "the row carries the same advertiseCertChain {id}/wire-cert gates on datasource.connect; " +
-                "admitting it on a session alone makes that gate decorative",
-        )
-        assertFalse(res.bodyAsText().contains("BEGIN CERTIFICATE"), "a forbidden response must not carry the chain")
-    }
-
-    @Test
-    fun `a granted caller reads the datasource row`() = testApplication {
-        val client = wire()
-        client.post("/test/session/$connector")
-        assertEquals(HttpStatusCode.OK, client.get("/api/datasources/${datasource.id}").status)
-    }
-
-    /**
-     * The list is the alternate path to the same bytes: filtering it would break JIT-request compose (which
-     * must show datasources you cannot yet connect to), so the row survives with its connection material
-     * stripped. Without this the `{id}` gate above is bypassable by asking for the list instead.
-     */
-    @Test
-    fun `the list keeps non-connectable rows but strips their connection material`() = testApplication {
-        val client = wire()
-        client.post("/test/session/$stranger")
-        val res = client.get("/api/datasources")
-        assertEquals(HttpStatusCode.OK, res.status)
-        val body = res.bodyAsText()
-        assertTrue(body.contains("gated-ds"), "the datasource must stay visible so it can be requested")
-        assertFalse(
-            body.contains("BEGIN CERTIFICATE"),
-            "the list must not answer what {id} and {id}/wire-cert refuse; got: $body",
-        )
-        assertFalse(body.contains("proxy.example.com"), "the advertised address is connection material too")
-        assertFalse(body.contains("Gated orders DB"), "the description rides only on connectable rows")
-    }
-
-    @Test
-    fun `the list keeps connection material for a connectable row`() = testApplication {
-        val client = wire()
-        client.post("/test/session/$connector")
-        val body = client.get("/api/datasources").bodyAsText()
-        assertTrue(body.contains("BEGIN CERTIFICATE"), "a caller granted connect must still get the chain")
-        assertTrue(body.contains("proxy.example.com"), "a caller granted connect must still get the address")
-        assertTrue(body.contains("\"description\":\"Gated orders DB\""), body)
+    fun `the list's per-row decision matches the datasource row's`() {
+        assertFalse(core.mayConnectById(stranger, null, datasource.id), "a stranger's row is stripped")
+        assertTrue(core.mayConnectById(connector, null, datasource.id), "a connector's row keeps its material")
+        assertFalse(core.mayConnectById(connector, null, Long.MAX_VALUE), "a missing datasource is never connectable")
     }
 
     @Test

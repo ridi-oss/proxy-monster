@@ -1,32 +1,23 @@
 package com.ridi.oss.proxymonster.controlplane
 
 import com.ridi.oss.proxymonster.controlplane.authz.CedarPolicyInput
+import com.ridi.oss.proxymonster.controlplane.support.CpGoStack
 import com.ridi.oss.proxymonster.controlplane.support.SharedPostgres
 import com.ridi.oss.proxymonster.controlplane.support.requireDockerOrSkip
-import com.ridi.oss.proxymonster.controlplane.support.webSessionCookie
 import com.ridi.oss.proxymonster.grpc.Engine
-import io.ktor.client.HttpClient
-import io.ktor.client.plugins.contentnegotiation.ContentNegotiation as ClientContentNegotiation
-import io.ktor.client.plugins.cookies.HttpCookies
 import io.ktor.client.request.get
 import io.ktor.client.request.post
 import io.ktor.client.statement.bodyAsText
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
-import io.ktor.serialization.kotlinx.json.json
-import io.ktor.server.application.Application
-import io.ktor.server.application.install
-import io.ktor.server.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.server.response.respond
 import io.ktor.server.routing.post
 import io.ktor.server.routing.routing
-import io.ktor.server.sessions.Sessions
 import io.ktor.server.sessions.sessions
 import io.ktor.server.sessions.set
-import io.ktor.server.testing.ApplicationTestBuilder
-import io.ktor.server.testing.testApplication
-import kotlinx.serialization.json.Json
 import org.flywaydb.core.Flyway
+import kotlinx.coroutines.runBlocking
+import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.TestInstance
 import javax.sql.DataSource
@@ -46,6 +37,8 @@ import kotlin.test.assertTrue
  * Nothing in the response distinguishes the two cases, which is exactly why it needs a test rather than an
  * inspection.
  *
+ * Runs behind cp-go (support/CpGoStack.kt), which serves this route.
+ *
  * Pinned here: unauthenticated is 401 (never a debug-user fallback), an authenticated caller WITHOUT
  * `datasource.connect` is 403, a datasource whose proxy published no chain is 404 with a distinct code (not
  * "no such datasource"), and only a caller Cedar actually grants gets the PEM.
@@ -57,6 +50,7 @@ class WireCertRouteDbTest {
     private lateinit var config: Config
     private lateinit var withChain: Datasource
     private lateinit var noChain: Datasource
+    private lateinit var stack: CpGoStack
 
     private val connector = "connector@example.com"
     private val stranger = "stranger@example.com"
@@ -79,7 +73,8 @@ class WireCertRouteDbTest {
     @BeforeAll
     fun setup() {
         requireDockerOrSkip()
-        dataSource = SharedPostgres.hikari(SharedPostgres.freshDatabase("pm_wire_cert_route"))
+        val database = SharedPostgres.freshDatabase("pm_wire_cert_route")
+        dataSource = SharedPostgres.hikari(database)
         Flyway.configure().dataSource(dataSource).load().migrate()
         core = ControlPlaneCore(dataSource)
 
@@ -116,22 +111,16 @@ class WireCertRouteDbTest {
             sessionSecret = "wire-cert-route-test-secret", oidc = null, resultKey = null, scimToken = null,
             sessionWindowSeconds = 3600, idpRecheckIntervalSeconds = 600, devMarker = true,
         )
+        stack = CpGoStack(config, core, database) { installLoginRoute() }
     }
 
-    private fun ApplicationTestBuilder.wire(): HttpClient {
-        application { installRoutes() }
-        return createClient {
-            expectSuccess = false
-            install(HttpCookies)
-            install(ClientContentNegotiation) { json(Json { ignoreUnknownKeys = true }) }
-        }
+    @AfterAll
+    fun teardown() {
+        if (::stack.isInitialized) stack.close()
     }
 
-    private fun Application.installRoutes() {
+    private fun io.ktor.server.application.Application.installLoginRoute() {
         val sessionStore = PrincipalSessionStore(dataSource, null)
-        attributes.put(PRINCIPAL_SESSION_STORE, sessionStore)
-        install(ContentNegotiation) { json(Json { ignoreUnknownKeys = true; encodeDefaults = true }) }
-        install(Sessions) { webSessionCookie(sessionStore, config.sessionSecret) }
         routing {
             post("/test/session/{principal}") {
                 val deviceId = call.ensureDeviceCookie(secure = false)
@@ -148,16 +137,12 @@ class WireCertRouteDbTest {
                 )
                 call.respond(HttpStatusCode.NoContent)
             }
-            datasourceRoutes(
-                config, core.authz, core.roleResolver, core.datasourceStore, core.proxyEventsHub,
-                TableDetailService(core), core.tokenStore, core.userGroupStore,
-            )
         }
     }
 
     @Test
-    fun `an unauthenticated caller gets 401, never a debug-user fallback`() = testApplication {
-        val client = wire()
+    fun `an unauthenticated caller gets 401, never a debug-user fallback`() = runBlocking {
+        val client = stack.client()
         val res = client.get("/api/datasources/${withChain.id}/wire-cert")
         assertEquals(
             HttpStatusCode.Unauthorized, res.status,
@@ -171,8 +156,8 @@ class WireCertRouteDbTest {
     }
 
     @Test
-    fun `an authenticated caller without datasource-connect gets 403`() = testApplication {
-        val client = wire()
+    fun `an authenticated caller without datasource-connect gets 403`() = runBlocking {
+        val client = stack.client()
         client.post("/test/session/$stranger")
         val res = client.get("/api/datasources/${withChain.id}/wire-cert")
         assertEquals(
@@ -184,8 +169,8 @@ class WireCertRouteDbTest {
     }
 
     @Test
-    fun `a granted caller downloads the advertised chain as a PEM attachment`() = testApplication {
-        val client = wire()
+    fun `a granted caller downloads the advertised chain as a PEM attachment`() = runBlocking {
+        val client = stack.client()
         client.post("/test/session/$connector")
         val res = client.get("/api/datasources/${withChain.id}/wire-cert")
         assertEquals(HttpStatusCode.OK, res.status)
@@ -199,8 +184,8 @@ class WireCertRouteDbTest {
     }
 
     @Test
-    fun `a datasource whose proxy published no chain is 404 with its own code`() = testApplication {
-        val client = wire()
+    fun `a datasource whose proxy published no chain is 404 with its own code`() = runBlocking {
+        val client = stack.client()
         client.post("/test/session/$connector")
         val res = client.get("/api/datasources/${noChain.id}/wire-cert")
         assertEquals(HttpStatusCode.NotFound, res.status)
@@ -213,8 +198,8 @@ class WireCertRouteDbTest {
     }
 
     @Test
-    fun `an unknown datasource id is 404 and is not confused with a missing chain`() = testApplication {
-        val client = wire()
+    fun `an unknown datasource id is 404 and is not confused with a missing chain`() = runBlocking {
+        val client = stack.client()
         client.post("/test/session/$connector")
         val res = client.get("/api/datasources/999999/wire-cert")
         assertEquals(HttpStatusCode.NotFound, res.status)

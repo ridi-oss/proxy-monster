@@ -123,6 +123,7 @@
   "s.badge.ending": "Ending soon",
   "s.badge.signedIn": "Signed in",
   "s.badge.signedOut": "Signed out",
+  "s.server.version": "Server {version}",
   "s.stat.account": "Account",
   "s.stat.ends": "Sign-in ends",
   "s.stat.ended": "Sign-in ended",

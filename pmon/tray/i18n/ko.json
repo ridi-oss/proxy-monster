@@ -123,6 +123,7 @@
   "s.badge.ending": "곧 만료",
   "s.badge.signedIn": "로그인됨",
   "s.badge.signedOut": "로그아웃됨",
+  "s.server.version": "서버 {version}",
   "s.stat.account": "계정",
   "s.stat.ends": "로그인 만료",
   "s.stat.ended": "로그인 만료됨",

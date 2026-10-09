@@ -307,7 +307,7 @@ function serverCard(s) {
       <button class="danger" data-act="remove" data-s="${esc(s.name)}">${esc(t('s.btn.remove'))}</button></div>` : '';
   return `<div class="card">
     <div class="card-body">
-      <div class="row"><span class="avatar">${SHIELD}</span><div class="grow"><div class="title">${esc(s.name)}</div><div class="sub mono">${esc(s.url)}</div></div>${b}</div>
+      <div class="row"><span class="avatar">${SHIELD}</span><div class="grow"><div class="title">${esc(s.name)}</div><div class="sub mono">${esc(s.url)}</div>${s.version ? `<div class="sub">${esc(t('s.server.version', { version: s.version }))}</div>` : ''}</div>${b}</div>
       ${body}
     </div>
     <div class="card-foot"><span class="hint">${esc(hint)}</span>
@@ -476,7 +476,7 @@ const demoState = {
   running: true, loginItemOn: true, loginItemShown: true, language: 'system', lang: (navigator.language || 'en').startsWith('ko') ? 'ko' : 'en', theme: 'system',
   versions: { app: '0.1.8', pmon: '0.1.8', daemon: '0.1.8' }, updates: { shown: true, auto: true, forced: false },
   servers: [
-    { name: 'acme', url: 'https://pm.acme.example', signedIn: true, account: 'dana@acme.example', endsAt: 'Today 18:40', left: '9h 12m left', datasources: 12 },
+    { name: 'acme', url: 'https://pm.acme.example', version: '0.1.31', signedIn: true, account: 'dana@acme.example', endsAt: 'Today 18:40', left: '9h 12m left', datasources: 12 },
     { name: 'staging', url: 'https://pm.staging.acme.example', signedIn: false, ended: true, account: 'dana@acme.example', endsAt: 'Today 09:58', tokenEndsAt: 'Tomorrow 00:16', left: 'ended', datasources: 4 },
   ],
 };

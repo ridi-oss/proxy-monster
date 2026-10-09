@@ -26,6 +26,7 @@ import (
 type prefsServer struct {
 	Name        string `json:"name"`
 	URL         string `json:"url"`
+	Version     string `json:"version"` // the server's release, empty for one that does not report it
 	SignedIn    bool   `json:"signedIn"`
 	Busy        bool   `json:"busy"`
 	Ending      bool   `json:"ending"`
@@ -122,7 +123,7 @@ func (p *prefs) state() prefsState {
 	st.Versions.Daemon = s.Version
 	now := time.Now()
 	for _, srv := range s.Servers {
-		row := prefsServer{Name: srv.Name, URL: srv.ControlPlane, Account: srv.Principal,
+		row := prefsServer{Name: srv.Name, URL: srv.ControlPlane, Version: srv.ServerVersion, Account: srv.Principal,
 			Ended: signInEnded(srv, now), Busy: p.busy(srv.Name)}
 		row.SignedIn = srv.LoggedIn && !row.Ended
 		if end, ok := signInEnd(srv); ok && srv.LoggedIn {

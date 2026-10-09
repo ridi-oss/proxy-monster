@@ -1,5 +1,6 @@
 package com.ridi.oss.proxymonster.controlplane
 
+import com.ridi.oss.proxymonster.auth.sha256Hex
 import com.ridi.oss.proxymonster.controlplane.authz.Authz
 import com.ridi.oss.proxymonster.controlplane.authz.AuthzAction
 import com.ridi.oss.proxymonster.controlplane.authz.AuthzResource
@@ -7,6 +8,8 @@ import com.ridi.oss.proxymonster.controlplane.authz.requireAdmin
 import com.ridi.oss.proxymonster.controlplane.management.AuditActor
 import com.ridi.oss.proxymonster.controlplane.management.ManagementAuditRecorder
 import com.ridi.oss.proxymonster.controlplane.management.auditEntity
+import com.ridi.oss.proxymonster.probe.Dialect
+import com.ridi.oss.proxymonster.probe.sqlGrantHash
 import io.ktor.http.HttpStatusCode
 import io.ktor.server.request.receive
 import io.ktor.server.response.respond
@@ -21,7 +24,6 @@ import java.sql.Connection
 import java.sql.ResultSet
 import java.sql.Timestamp
 import java.time.Instant
-import java.security.MessageDigest
 import javax.sql.DataSource
 
 // ---- DTOs — the wire contract for /api/access-requests** + /api/access-grants** ----------
@@ -54,6 +56,10 @@ data class AccessRequest(
      *  the query, where masking cannot reach it). Reader-neutral — keyed on classification, never on who
      *  composed it. NULL (never analyzed) is treated as true; absence is not proof the statement is clean. */
     val statementCarriesProtectedLiteral: Boolean? = null,
+    val source: String = "console",
+    val scope: String? = null,
+    val changeKey: String? = null,
+    val mergedAt: String? = null,
 )
 
 /**
@@ -63,7 +69,7 @@ data class AccessRequest(
  */
 fun AccessRequest.toApprovalResource() = AuthzResource.ApprovalRequest(
     requester = principal, approver = decidedBy, executedBy = executedBy,
-    datasourceName = datasourceName, roleName = roleName,
+    datasourceName = datasourceName, roleName = roleName, source = source,
 )
 
 @Serializable
@@ -89,6 +95,12 @@ data class AccessGrant(
 
 @Serializable data class ApproveInput(val durationSec: Long? = null)
 @Serializable data class RejectInput(val reason: String)
+
+/** `n:` the SQL's grant hash, or `r:` its raw bytes' hash when the normalizer refuses it. */
+fun contentHash(sql: String, dialect: Dialect): String =
+    sqlGrantHash(sql, dialect)?.let { "n:$it" } ?: "r:${sha256Hex(sql)}"
+
+fun changeKey(fileKey: String, contentHash: String): String = sha256Hex(fileKey + "\n" + contentHash)
 
 // ---- Store -------------------------------------------------------------------------------
 
@@ -122,22 +134,23 @@ class AccessStore(internal val dataSource: DataSource) {
         }
     }
 
-    fun createRequest(principal: String, input: AccessRequestInput): AccessRequest {
-        val id = dataSource.inTx { c -> createRequest(principal, input, c) }
+    fun createRequest(principal: String, input: AccessRequestInput, source: String = "console"): AccessRequest {
+        val id = dataSource.inTx { c -> createRequest(principal, input, c, source) }
         return getRequest(id)!!
     }
 
     /** Insert a ROLE access request on the caller's transaction, returning its id. */
-    fun createRequest(principal: String, input: AccessRequestInput, c: Connection): Long =
+    fun createRequest(principal: String, input: AccessRequestInput, c: Connection, source: String = "console"): Long =
         c.prepareStatement(
-            """INSERT INTO access_request (principal, role_id, datasource_id, reason, requested_duration_sec)
-               VALUES (?, ?, ?, ?, ?) RETURNING id""",
+            """INSERT INTO access_request (principal, role_id, datasource_id, reason, requested_duration_sec, source)
+               VALUES (?, ?, ?, ?, ?, ?) RETURNING id""",
         ).use { ps ->
             ps.setString(1, principal)
             ps.setLong(2, input.roleId)
             if (input.datasourceId == null) ps.setNull(3, java.sql.Types.BIGINT) else ps.setLong(3, input.datasourceId)
             ps.setString(4, input.reason)
             ps.setLong(5, input.requestedDurationSec)
+            ps.setString(6, source)
             ps.executeQuery().use { rs -> rs.next(); rs.getLong(1) }
         }
 
@@ -147,9 +160,10 @@ class AccessStore(internal val dataSource: DataSource) {
         input: AccessRequestInput,
         actor: AuditActor,
         recorder: ManagementAuditRecorder,
+        source: String = "console",
     ): AccessRequest {
         val id = dataSource.inTx { c ->
-            val newId = createRequest(principal, input, c)
+            val newId = createRequest(principal, input, c, source)
             val roleName = c.prepareStatement("SELECT name FROM app_role WHERE id = ?").use { ps ->
                 ps.setLong(1, input.roleId)
                 ps.executeQuery().use { rs -> if (rs.next()) rs.getString(1) else null }
@@ -216,6 +230,7 @@ class AccessStore(internal val dataSource: DataSource) {
         // are present the created request is recorded as a TASK_REQUEST on the insert's transaction.
         actor: AuditActor? = null,
         recorder: ManagementAuditRecorder? = null,
+        source: String = "console",
     ): AccessRequest {
         require(statements.isNotEmpty()) { "a query request needs at least one statement" }
         val id = dataSource.inTx { c ->
@@ -229,8 +244,8 @@ class AccessStore(internal val dataSource: DataSource) {
                 """INSERT INTO access_request
                    (principal, kind, role_id, datasource_id, deny_reason, source_decision_id, reason, title,
                     evaluated_decision, requested_duration_sec, execute_as, creator_kind,
-                    statement_carries_protected_literal)
-                   VALUES (?, 'QUERY', ?, ?, ?, ?, ?, ?, ?, ?, ?::jsonb, 'WORKFLOW', ?)
+                    statement_carries_protected_literal, source)
+                   VALUES (?, 'QUERY', ?, ?, ?, ?, ?, ?, ?, ?, ?::jsonb, 'WORKFLOW', ?, ?)
                    ON CONFLICT (source_decision_id) WHERE kind = 'QUERY' AND status = 'PENDING' AND source_decision_id IS NOT NULL
                    DO NOTHING
                    RETURNING id""",
@@ -246,6 +261,7 @@ class AccessStore(internal val dataSource: DataSource) {
                 ps.setLong(9, requestedDurationSec)
                 ps.setString(10, json.encodeToString(stringList, executeAs))
                 if (carriesProtectedLiteral == null) ps.setNull(11, java.sql.Types.BOOLEAN) else ps.setBoolean(11, carriesProtectedLiteral)
+                ps.setString(12, source)
                 ps.executeQuery().use { rs ->
                     if (rs.next()) rs.getLong(1) else throw DuplicatePendingQueryRequestException()
                 }
@@ -310,10 +326,6 @@ class AccessStore(internal val dataSource: DataSource) {
      * 0-based position in the batch. Each child carries its OWN sql and sql_hash: the batch is authorized,
      * executed, and stored per statement, so a hash over the joined text would identify nothing that runs.
      */
-    private fun sha256Hex(value: String): String = MessageDigest.getInstance("SHA-256")
-        .digest(value.toByteArray(Charsets.UTF_8))
-        .joinToString("") { "%02x".format(it) }
-
     private fun insertStatements(c: Connection, taskId: Long, statements: List<String>) {
         c.prepareStatement(
             "INSERT INTO query_result (task_id, ordinal, sql, sql_hash) VALUES (?, ?, ?, ?)",
@@ -488,15 +500,49 @@ class AccessStore(internal val dataSource: DataSource) {
     }
 
     /** Atomically claim an approved task for execution. Exactly one concurrent caller wins. */
-    fun claimExecution(id: Long): Boolean = dataSource.connection.use { c -> claimExecution(id, c) }
+    fun claimExecution(id: Long): Boolean = dataSource.inTx { c -> claimExecution(id, c) }
 
-    /** Same as [claimExecution], composed onto a caller-supplied transaction. */
-    fun claimExecution(id: Long, c: Connection): Boolean = c.prepareStatement(
-        "UPDATE access_request SET status = 'EXECUTING', executing_at = ? WHERE id = ? AND kind = 'QUERY' AND status = 'APPROVED'",
-    ).use { ps ->
-        ps.setTimestamp(1, Timestamp.from(Instant.now()))
-        ps.setLong(2, id)
-        ps.executeUpdate() > 0
+    /**
+     * Same as [claimExecution], on the caller's transaction. A scoped request also needs no other run open
+     * in its scope, else [TaskServiceException] 409 `approval.scope_busy`.
+     */
+    fun claimExecution(id: Long, c: Connection): Boolean {
+        val scope = c.prepareStatement("SELECT status, scope FROM access_request WHERE id = ?").use { ps ->
+            ps.setLong(1, id)
+            ps.executeQuery().use { rs -> if (rs.next() && rs.getString(1) == "APPROVED") rs.getString(2) else null }
+        }
+        if (scope != null) checkOrdering(id, scope, c)
+        return c.prepareStatement(
+            "UPDATE access_request SET status = 'EXECUTING', executing_at = ? WHERE id = ? AND kind = 'QUERY' AND status = 'APPROVED'",
+        ).use { ps ->
+            ps.setTimestamp(1, Timestamp.from(Instant.now()))
+            ps.setLong(2, id)
+            ps.executeUpdate() > 0
+        }
+    }
+
+    private fun checkOrdering(id: Long, scope: String, c: Connection) {
+        c.prepareStatement("SELECT pg_advisory_xact_lock(hashtext(?))").use { ps ->
+            ps.setString(1, scope)
+            ps.executeQuery().use { it.next() }
+        }
+        // Re-read under the lock: a concurrent winner has moved the row off APPROVED and loses as false.
+        val approved = c.prepareStatement("SELECT status FROM access_request WHERE id = ?").use { ps ->
+            ps.setLong(1, id)
+            ps.executeQuery().use { rs -> rs.next() && rs.getString(1) == "APPROVED" }
+        }
+        if (!approved) return
+        val busy = c.prepareStatement(
+            """SELECT 1 FROM access_request
+               WHERE scope = ? AND id <> ?
+                 AND (status = 'EXECUTING' OR (status = 'EXECUTED' AND merged_at IS NULL AND source = 'github'))
+               LIMIT 1""",
+        ).use { ps ->
+            ps.setString(1, scope)
+            ps.setLong(2, id)
+            ps.executeQuery().use { it.next() }
+        }
+        if (busy) throw TaskServiceException(HttpStatusCode.Conflict, ApiError("approval.scope_busy"))
     }
 
     fun markExecuted(id: Long): Boolean = dataSource.connection.use { c -> markExecuted(id, c) }
@@ -845,6 +891,10 @@ class AccessStore(internal val dataSource: DataSource) {
         executeAs = json.decodeFromString(stringList, getString("execute_as") ?: "[]"),
         creatorKind = getString("creator_kind"),
         statementCarriesProtectedLiteral = getBoolean("statement_carries_protected_literal").let { if (wasNull()) null else it },
+        source = getString("source") ?: "console",
+        scope = getString("scope"),
+        changeKey = getString("change_key"),
+        mergedAt = getTimestamp("merged_at")?.toInstant()?.toString(),
     )
 
     private fun ResultSet.toGrant() = AccessGrant(
@@ -867,7 +917,8 @@ class AccessStore(internal val dataSource: DataSource) {
                       (SELECT qr.executed_by FROM query_result qr WHERE qr.task_id = ar.id ORDER BY qr.ordinal LIMIT 1) AS executed_by,
                       ar.deny_reason, ar.source_decision_id, ar.title, ar.evaluated_decision,
                       ar.approved_at, ar.executing_at, ar.executed_at, ar.execute_as, ar.creator_kind,
-                      ar.statement_carries_protected_literal
+                      ar.statement_carries_protected_literal, ar.source, ar.scope, ar.change_key,
+                      ar.merged_at
                FROM access_request ar LEFT JOIN app_role r ON r.id = ar.role_id
                LEFT JOIN datasource d ON d.id = ar.datasource_id"""
         // The app_role join is filtered to LIVE roles: a grant of a soft-deleted role must resolve to no

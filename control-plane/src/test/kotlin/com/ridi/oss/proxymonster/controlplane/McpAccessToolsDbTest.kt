@@ -243,6 +243,8 @@ class McpAccessToolsDbTest {
             put("roleName", roleName); put("reason", "parity")
         }).okResult().jsonObject
         assertEquals(restBody - IGNORED, mcp - IGNORED)
+        assertEquals("console", restBody.getValue("source").jsonPrimitive.content)
+        assertEquals("mcp", mcp.getValue("source").jsonPrimitive.content)
 
         client.login(admin)
         val restApproved = parseJson(client.post("/api/access-requests/${restBody.getValue("id").jsonPrimitive.long}/approve").bodyAsText()).jsonObject
@@ -281,7 +283,7 @@ class McpAccessToolsDbTest {
     }
 
     private companion object {
-        val IGNORED = setOf("id", "createdAt", "decidedAt")
+        val IGNORED = setOf("id", "createdAt", "decidedAt", "source")
     }
 }
 

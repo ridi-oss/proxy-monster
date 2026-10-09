@@ -89,13 +89,14 @@ entity Datasource in [Tag] = {
 // `requester` is always present (required). `released` is a no-op OPTIONAL attribute: no code sets
 // it, so it is always absent, and a has-guarded operator policy that reads it
 // (`resource has released && resource.released`) evaluates false (fail-closed) instead of bricking
-// boot on an undeclared attribute. Optionally scoped to its Datasource and Role
-// parents so lifecycle policies can match the requested execution scope.
+// boot on an undeclared attribute. `source`: console, mcp, or github. Optionally scoped to its
+// Datasource and Role parents so lifecycle policies can match the requested execution scope.
 entity Request in [Datasource, Role] = {
     requester: User,
     approver?: User,
     executedBy?: User,
     released?: Bool,
+    source: String,
 };
 
 // An issued JIT access grant (`access_grant` row). `owner`

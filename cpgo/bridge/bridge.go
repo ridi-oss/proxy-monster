@@ -74,6 +74,49 @@ func (c *Client) Authorize(ctx context.Context, principal, action string, resour
 	return out.Allow, out.Reason, err
 }
 
+// Scope is what a decision reads beyond the requester IP: its channel, and the datasource whose context
+// tags it derives first.
+type Scope struct {
+	Channel        string
+	Datasource     *string
+	DatasourceTags []string
+}
+
+// AuthorizeIn is Authorize within s, Kotlin's authorizeWithContext when s names a datasource.
+func (c *Client) AuthorizeIn(ctx context.Context, principal, action string, resource Resource, requesterIP string, s Scope) (bool, string, error) {
+	var out struct {
+		Allow  bool   `json:"allow"`
+		Reason string `json:"reason"`
+	}
+	tags := s.DatasourceTags
+	if tags == nil {
+		tags = []string{}
+	}
+	err := c.post(ctx, c.url, struct {
+		Principal             string   `json:"principal"`
+		Action                string   `json:"action"`
+		Resource              Resource `json:"resource"`
+		RequesterIP           string   `json:"requesterIp,omitempty"`
+		Channel               string   `json:"channel,omitempty"`
+		ContextDatasource     *string  `json:"contextDatasource,omitempty"`
+		ContextDatasourceTags []string `json:"contextDatasourceTags"`
+	}{principal, action, resource, requesterIP, s.Channel, s.Datasource, tags}, &out)
+	return out.Allow, out.Reason, err
+}
+
+// MayRequest is Kotlin's task.request decision on a datasource, false for a missing one.
+func (c *Client) MayRequest(ctx context.Context, principal string, datasourceID int64, requesterIP string) (bool, error) {
+	var out struct {
+		Allow bool `json:"allow"`
+	}
+	err := c.post(ctx, c.upstream.JoinPath("/internal/may-request").String(), struct {
+		Principal    string `json:"principal"`
+		DatasourceID int64  `json:"datasourceId"`
+		RequesterIP  string `json:"requesterIp,omitempty"`
+	}{principal, datasourceID, requesterIP}, &out)
+	return out.Allow, err
+}
+
 // AuthorizeEach decides action on every resource for principal, in order, from one role resolution.
 func (c *Client) AuthorizeEach(ctx context.Context, principal, action string, resources []Resource, requesterIP string) ([]bool, error) {
 	if len(resources) == 0 {

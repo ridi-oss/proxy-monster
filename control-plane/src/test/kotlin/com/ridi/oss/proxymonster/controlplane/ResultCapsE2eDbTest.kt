@@ -5,6 +5,8 @@ import com.ridi.oss.proxymonster.controlplane.authz.CedarSchema
 import com.ridi.oss.proxymonster.controlplane.grpc.CONTROL_PROTOCOL_VERSION
 import com.ridi.oss.proxymonster.controlplane.grpc.ControlPlaneGrpcService
 import com.ridi.oss.proxymonster.controlplane.grpc.GrpcServer
+import com.ridi.oss.proxymonster.controlplane.management.AuditActor
+import com.ridi.oss.proxymonster.controlplane.management.AuditSource
 import com.ridi.oss.proxymonster.controlplane.management.ManagementAuditRecorder
 import com.ridi.oss.proxymonster.controlplane.support.EnforcementFixture
 import com.ridi.oss.proxymonster.controlplane.support.PerConnectionCatalogFixture
@@ -70,6 +72,7 @@ import java.time.Instant
 import java.util.concurrent.TimeUnit
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertNotEquals
 import kotlin.test.assertNotNull
@@ -80,7 +83,7 @@ import kotlin.test.fail
 /**
  * Every result-cap path through the control plane's real surfaces (docs/result-caps.md): the shipped
  * policies, the gRPC Decide the wire proxy calls, the editor run channel, the workflow execute + view, the
- * rate-reset request and admin routes, and policy-save validation. MySQL target; a fake proxy over gRPC
+ * rate-reset request and admin reset through [AccessService], and policy-save validation. MySQL target; a fake proxy over gRPC
  * answers the run channel.
  */
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
@@ -88,6 +91,7 @@ class ResultCapsE2eDbTest {
     private lateinit var fx: EnforcementFixture
     private lateinit var pcf: PerConnectionCatalogFixture
     private lateinit var core: ControlPlaneCore
+    private lateinit var access: AccessService
     private lateinit var runExecService: RunExecService
     private lateinit var resultStore: QueryResultStore
     private lateinit var config: Config
@@ -113,6 +117,7 @@ class ResultCapsE2eDbTest {
         fx = EnforcementFixture.mysql()
         pcf = PerConnectionCatalogFixture(fx)
         core = pcf.core
+        access = AccessService(core.accessStore, core.datasourceStore, core.auditStore, core.roleResolver, core.authz, ManagementAuditRecorder(core.auditStore))
         runExecService = RunExecService(core)
         resultStore = QueryResultStore(fx.dataSource, ResultCrypto(ByteArray(32) { it.toByte() }))
         appScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
@@ -181,11 +186,14 @@ class ResultCapsE2eDbTest {
                     config, core.accessStore, core.auditStore, core.datasourceStore, core.policyStore,
                     core.userGroupStore, resultStore, core.roleResolver, core.authz, runExecService,
                 )
-                accessRoutes(config, core.accessStore, core.authz, core.datasourceStore, core.roleResolver, ManagementAuditRecorder(core.auditStore))
                 cedarPolicyRoutes(config, core.authz, core.cedarPolicyStore)
             }
         }
     }
+
+    private fun actor(principal: String) = AuditActor(principal = principal, channel = AuditSource.CONSOLE)
+
+    private fun refusal(block: () -> Unit) = assertFailsWith<TaskServiceException> { block() }
 
     private suspend fun ApplicationTestBuilder.login(principal: String): HttpClient {
         val client = createClient {
@@ -339,7 +347,7 @@ class ResultCapsE2eDbTest {
         }
     }
 
-    // Wire: the shipped caps per shape, then a spent rate, then the admin reset route clears it.
+    // Wire: the shipped caps per shape, then a spent rate, then an admin reset clears it.
     @Test
     fun `wire Decide stamps the shipped caps and an admin reset lifts a spent rate`() = testApplication {
         wire()
@@ -360,30 +368,17 @@ class ResultCapsE2eDbTest {
         assertEquals(WireEnfAction.DENY, denied.decision)
         assertEquals("$RATE_SPENT_DENY 100MB/1h spent", denied.denyReason)
 
-        val adminClient = login(admin)
-        assertEquals(HttpStatusCode.NoContent, adminClient.get("/api/access/principals/$principal/rate-reset").status, "never reset yet")
-        val blank = adminClient.post("/api/access/principals/$principal/rate-reset") {
-            contentType(ContentType.Application.Json); setBody(RateResetInput(" "))
-        }
+        assertNull(access.lastRateReset(principal), "never reset yet")
+        val blank = refusal { access.resetRate(principal, " ", actor(admin)) }
         assertEquals(HttpStatusCode.BadRequest, blank.status)
-        val reset = adminClient.post("/api/access/principals/$principal/rate-reset") {
-            contentType(ContentType.Application.Json); setBody(RateResetInput("false positive"))
-        }
-        assertEquals(HttpStatusCode.OK, reset.status, reset.bodyAsText())
-        assertEquals(admin, reset.body<RateReset>().resetBy)
-        assertEquals("false positive", adminClient.get("/api/access/principals/$principal/rate-reset").body<RateReset>().reason)
+        assertEquals("common.field_required", blank.error.code)
+        assertEquals(admin, access.resetRate(principal, "false positive", actor(admin)).resetBy)
+        assertEquals("false positive", access.lastRateReset(principal)?.reason)
 
         val lifted = wire.decide("select id from users")
         assertEquals(WireEnfAction.ALLOW, lifted.decision, lifted.denyReason)
         assertEquals(5000L, lifted.maxRows, "a reset leaves the statement cap alone")
         assertNotNull(core.auditStore.recent(50).firstOrNull { it.kind == "admin" && it.principal == admin && "reset spent result rates" in it.statement })
-
-        // Only an admin resets directly.
-        val analystClient = login(analyst)
-        assertEquals(HttpStatusCode.Forbidden, analystClient.post("/api/access/principals/$principal/rate-reset") {
-            contentType(ContentType.Application.Json); setBody(RateResetInput("please"))
-        }.status)
-        assertEquals(HttpStatusCode.Forbidden, analystClient.get("/api/access/principals/$principal/rate-reset").status)
     }
 
     // Workflow: the user files a RATE_RESET request, an approver approves it, the rate is clear again.
@@ -397,32 +392,23 @@ class ResultCapsE2eDbTest {
         completion(principal, 10_000)
         assertEquals("$RATE_SPENT_DENY 10000/1h spent", wire.decide("select id from users").denyReason)
 
-        val user = login(principal)
-        assertEquals(HttpStatusCode.BadRequest, user.post("/api/access-requests/rate-reset") {
-            contentType(ContentType.Application.Json); setBody(RateResetRequestInput("", denyReason = "rate 10000/1h spent"))
-        }.status)
-        val created = user.post("/api/access-requests/rate-reset") {
-            contentType(ContentType.Application.Json); setBody(RateResetRequestInput("monthly export re-run", denyReason = "rate 10000/1h spent"))
-        }
-        assertEquals(HttpStatusCode.Created, created.status, created.bodyAsText())
-        val request = created.body<AccessRequest>()
+        val blank = refusal { access.requestRateReset(principal, actor(principal), RateResetRequestInput("", denyReason = "rate 10000/1h spent")) }
+        assertEquals(HttpStatusCode.BadRequest, blank.status)
+        val request = access.requestRateReset(principal, actor(principal), RateResetRequestInput("monthly export re-run", denyReason = "rate 10000/1h spent"))
         assertEquals("RATE_RESET", request.kind)
         assertEquals("PENDING", request.status)
         assertEquals("rate 10000/1h spent", request.denyReason)
-        val access = AccessService(core.accessStore, core.datasourceStore, core.auditStore, core.roleResolver, core.authz, ManagementAuditRecorder(core.auditStore))
         assertTrue(access.listRequests(principal, null).any { it.id == request.id }, "the requester sees their own row")
         assertNull(core.auditStore.lastRateReset(principal))
 
         // The requester cannot approve their own request; an unrelated non-approver cannot either.
-        assertEquals(HttpStatusCode.Forbidden, user.post("/api/access-requests/${request.id}/approve").status)
-        assertEquals(HttpStatusCode.Forbidden, login(analyst).post("/api/access-requests/${request.id}/approve").status)
+        for (caller in listOf(principal, analyst)) {
+            assertEquals("approval.not_approver", refusal { access.approve(caller, null, actor(caller), request.id, null) }.error.code)
+        }
         assertEquals("$RATE_SPENT_DENY 10000/1h spent", wire.decide("select id from users").denyReason)
 
-        val approverClient = login(approver)
         assertTrue(access.listRequests(approver, "PENDING").any { it.id == request.id })
-        val approved = approverClient.post("/api/access-requests/${request.id}/approve")
-        assertEquals(HttpStatusCode.OK, approved.status, approved.bodyAsText())
-        assertEquals("APPROVED", approved.body<AccessRequest>().status)
+        assertEquals("APPROVED", access.approve(approver, null, actor(approver), request.id, null).status)
         assertEquals(approver, core.auditStore.lastRateReset(principal)?.resetBy)
         val lifted = wire.decide("select id from users")
         assertEquals(WireEnfAction.ALLOW, lifted.decision, lifted.denyReason)
@@ -430,14 +416,8 @@ class ResultCapsE2eDbTest {
         // Volume after the reset counts again, and a rejected request resets nothing.
         completion(principal, 10_000, ageSeconds = 0)
         assertEquals("$RATE_SPENT_DENY 10000/1h spent", wire.decide("select id from users").denyReason)
-        val second = user.post("/api/access-requests/rate-reset") {
-            contentType(ContentType.Application.Json); setBody(RateResetRequestInput("again"))
-        }.body<AccessRequest>()
-        val rejected = approverClient.post("/api/access-requests/${second.id}/reject") {
-            contentType(ContentType.Application.Json); setBody(RejectInput("wait for the window"))
-        }
-        assertEquals(HttpStatusCode.OK, rejected.status, rejected.bodyAsText())
-        assertEquals("REJECTED", rejected.body<AccessRequest>().status)
+        val second = access.requestRateReset(principal, actor(principal), RateResetRequestInput("again"))
+        assertEquals("REJECTED", access.reject(approver, null, actor(approver), second.id, "wait for the window").status)
         assertEquals(approver, core.auditStore.lastRateReset(principal)?.resetBy, "the earlier marker is the only one")
         assertEquals("$RATE_SPENT_DENY 10000/1h spent", wire.decide("select id from users").denyReason)
     }

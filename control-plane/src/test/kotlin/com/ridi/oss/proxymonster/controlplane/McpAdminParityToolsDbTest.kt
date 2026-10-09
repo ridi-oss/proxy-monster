@@ -1,5 +1,6 @@
 package com.ridi.oss.proxymonster.controlplane
 
+import com.ridi.oss.proxymonster.controlplane.management.ManagementAuditRecorder
 import com.ridi.oss.proxymonster.controlplane.support.McpTokens
 import com.ridi.oss.proxymonster.controlplane.support.SharedPostgres
 import com.ridi.oss.proxymonster.controlplane.support.errorCode
@@ -25,6 +26,7 @@ import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.contentType
 import io.ktor.server.testing.testApplication
+import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
@@ -43,8 +45,9 @@ import javax.sql.DataSource
 import kotlin.test.assertContains
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
+import kotlin.test.assertNull
 
-/** The admin tools for group members and roles, principal rates, and datasource CRUD, each against its REST route. */
+/** The admin tools for group members and roles, principal rates, and datasource CRUD, each against its REST route or service. */
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 class McpAdminParityToolsDbTest {
     private lateinit var dataSource: DataSource
@@ -91,16 +94,16 @@ class McpAdminParityToolsDbTest {
     }
 
     @Test
-    fun `a principal rate reset is audited on mcp and read back like REST`() = testApplication {
+    fun `a principal rate reset is audited on mcp and read back like the service`() = testApplication {
         val client = installControlPlane(config, core)
         val admin = admin()
         val target = "mcp-rate-target-${seq.incrementAndGet()}@example.com"
         val token = tokens.token(admin, setOf("mcp:read", "mcp:identity:write"))
-        client.login(admin)
+        val access = AccessService(core.accessStore, core.datasourceStore, core.auditStore, core.roleResolver, core.authz, ManagementAuditRecorder(core.auditStore))
 
         val never = client.mcpCall(token, "get_principal_rate", buildJsonObject { put("principal", target) }).okResult()
         assertEquals(JsonNull, never)
-        assertEquals(HttpStatusCode.NoContent, client.get("/api/access/principals/$target/rate-reset").status)
+        assertNull(access.lastRateReset(target))
 
         val blank = client.mcpCall(token, "reset_principal_rate", buildJsonObject { put("principal", target); put("reason", " ") })
         assertEquals("common.field_required", blank.errorCode())
@@ -114,7 +117,7 @@ class McpAdminParityToolsDbTest {
 
         val read = client.mcpCall(token, "get_principal_rate", buildJsonObject { put("principal", target) }).okResult()
         assertEquals(reset, read)
-        assertEquals(parseJson(client.get("/api/access/principals/$target/rate-reset").bodyAsText()), read)
+        assertEquals(Json.encodeToJsonElement(RateReset.serializer(), assertNotNull(access.lastRateReset(target))), read)
     }
 
     @Test
@@ -228,8 +231,6 @@ class McpAdminParityToolsDbTest {
         val rest = listOf(
             client.get("/api/groups/${group.id}/members"),
             client.get("/api/groups/${group.id}/roles"),
-            client.get("/api/access/principals/someone/rate-reset"),
-            client.post("/api/access/principals/someone/rate-reset") { json("""{"reason":"r"}""") },
             client.post("/api/datasources") { json("""{"name":"mcp-outsider-new"}""") },
             client.put("/api/datasources/${ds.id}") { json("""{"name":"${ds.name}"}""") },
             client.delete("/api/datasources/${ds.id}"),

@@ -87,6 +87,11 @@ type accessGrant struct {
 	RevokedAt *string `json:"revokedAt,omitempty"`
 }
 
+func toGrant(g db.AccessGrantsRow) accessGrant {
+	return accessGrant{ID: g.ID, Principal: g.Principal, RoleID: g.RoleID, RoleName: g.RoleName, GrantedBy: g.GrantedBy,
+		GrantedAt: javaInstant(g.GrantedAt), ExpiresAt: optInstant(g.ExpiresAt), RevokedAt: optInstant(g.RevokedAt)}
+}
+
 type access struct {
 	pool  *pgxpool.Pool
 	authz api.Authorizer
@@ -158,8 +163,7 @@ func (a access) grants(w http.ResponseWriter, r *http.Request) {
 	}
 	all := make([]accessGrant, len(rows))
 	for i, g := range rows {
-		all[i] = accessGrant{ID: g.ID, Principal: g.Principal, RoleID: g.RoleID, RoleName: g.RoleName, GrantedBy: g.GrantedBy,
-			GrantedAt: javaInstant(g.GrantedAt), ExpiresAt: optInstant(g.ExpiresAt), RevokedAt: optInstant(g.RevokedAt)}
+		all[i] = toGrant(g)
 	}
 	resources := make([]bridge.Resource, len(all))
 	for i, g := range all {

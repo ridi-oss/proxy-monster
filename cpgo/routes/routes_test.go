@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -34,6 +35,7 @@ type fakeAuthz struct {
 	allow     map[string]bool
 	asked     []string
 	resources []bridge.Resource
+	scopes    []bridge.Scope
 	changed   int
 	// atSignal, when set, records what another connection sees each time PoliciesChanged runs.
 	atSignal func() string
@@ -66,6 +68,17 @@ func (f *fakeAuthz) Authorize(_ context.Context, principal, action string, resou
 	return false, "no permit for " + action, nil
 }
 
+func (f *fakeAuthz) AuthorizeIn(ctx context.Context, principal, action string, resource bridge.Resource, ip string, s bridge.Scope) (bool, string, error) {
+	f.scopes = append(f.scopes, s)
+	return f.Authorize(ctx, principal, action, resource, ip)
+}
+
+func (f *fakeAuthz) MayRequest(_ context.Context, principal string, id int64, ip string) (bool, error) {
+	key := fmt.Sprintf("%s task.request %d", principal, id)
+	f.asked = append(f.asked, key+" @"+ip)
+	return f.allow[key], nil
+}
+
 func (f *fakeAuthz) MayConnect(_ context.Context, principal string, ids []int64, ip string) ([]bool, error) {
 	out := make([]bool, len(ids))
 	for i, id := range ids {
@@ -84,9 +97,16 @@ func (f *fakeAuthz) AuthorizeEach(ctx context.Context, principal, action string,
 	return out, nil
 }
 
-func setup(t *testing.T) *env {
+func setup(t *testing.T) *env { return setupWith(t, nil) }
+
+// setupWith serves the routes with authz deciding, or the recording fake when authz is nil.
+func setupWith(t *testing.T, authz func(*pgxpool.Pool) api.Authorizer) *env {
 	t.Helper()
 	e := &env{st: dbtest.Open(t)}
+	var decider api.Authorizer = &e.authz
+	if authz != nil {
+		decider = authz(e.st.Pool)
+	}
 	forward := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		e.forwarded = append(e.forwarded, r.Method+" "+r.URL.Path)
 		w.WriteHeader(http.StatusTeapot)
@@ -96,7 +116,7 @@ func setup(t *testing.T) *env {
 		Sessions:      session.NewResolver(e.st.Pool, dbtest.Secret),
 		EndMismatched: func(r *http.Request) { e.ended = append(e.ended, r.Header.Get("Cookie")) },
 		AuthDebug:     true,
-		Authz:         &e.authz,
+		Authz:         decider,
 	})
 	e.srv = httptest.NewServer(front.Route(mux, forward))
 	t.Cleanup(e.srv.Close)

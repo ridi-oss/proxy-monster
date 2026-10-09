@@ -1,6 +1,8 @@
 package com.ridi.oss.proxymonster.controlplane
 
 import com.ridi.oss.proxymonster.controlplane.authz.CedarPolicyInput
+import com.ridi.oss.proxymonster.controlplane.management.AuditActor
+import com.ridi.oss.proxymonster.controlplane.management.AuditSource
 import com.ridi.oss.proxymonster.controlplane.management.ManagementAuditRecorder
 import com.ridi.oss.proxymonster.controlplane.support.SharedPostgres
 import com.ridi.oss.proxymonster.controlplane.support.requireDockerOrSkip
@@ -38,18 +40,19 @@ import org.junit.jupiter.api.TestInstance
 import javax.sql.DataSource
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
- * ROUTE-level coverage of the non-query context wiring that [ElevationContextTagTest]
+ * Coverage of the non-query context wiring that [ElevationContextTagTest]
  * (which drives the [com.ridi.oss.proxymonster.controlplane.authz.authorizeWithContext] helper directly)
- * cannot pin: whether the PRODUCTION routes actually thread `call.httpAuthzContext(config)` + the request's
- * datasource into that helper. Deleting the wiring at Access.kt (the ROLE access-request TASK_APPROVE
- * sites) or Approvals.kt (the query-approval `mayDecide` call) leaves the helper test
- * green — so this test drives the REAL routes through [testApplication] end to end.
+ * cannot pin: whether the PRODUCTION callers actually thread the requester IP + the request's
+ * datasource into that helper. Deleting the wiring in [AccessService] (the ROLE access-request TASK_APPROVE
+ * site) or Approvals.kt (the query-approval `mayDecide` call) leaves the helper test
+ * green — so this test drives [AccessService] and the REAL approval routes through [testApplication].
  *
  * The gate is a `workflow.approve` permit conditioned ONLY on a requester-IP-derived datasource `context.tag`
  * (the ElevationContextTagTest `trustedNetworkTagRule` + `tagGatedApprovePermit` shape). A request that
@@ -71,6 +74,7 @@ class ElevationContextRouteAuthzDbTest {
     private lateinit var resultStore: QueryResultStore
     private lateinit var datasource: Datasource
     private lateinit var config: Config
+    private lateinit var access: AccessService
     private var targetRoleId: Long = 0
 
     private val approver = "approver@example.com"
@@ -110,6 +114,7 @@ class ElevationContextRouteAuthzDbTest {
         // The elevation role R every request targets — a distinct role, so the approve-authority check is a real
         // R-scoped Cedar decision against that role, not a trivial no-elevation case.
         targetRoleId = core.policyStore.createRole(RoleInput("target-role")).id
+        access = AccessService(core.accessStore, core.datasourceStore, core.auditStore, core.roleResolver, core.authz, ManagementAuditRecorder(core.auditStore))
 
         core.cedarPolicyStore.create(CedarPolicyInput(name = "elev-trusted-network-tag", cedarSrc = trustedNetworkTagRule), updatedBy = null)
         core.cedarPolicyStore.create(CedarPolicyInput(name = "elev-tag-gated-approve", cedarSrc = tagGatedApprovePermit), updatedBy = null)
@@ -156,7 +161,6 @@ class ElevationContextRouteAuthzDbTest {
                 )
                 call.respond(HttpStatusCode.NoContent)
             }
-            accessRoutes(config, core.accessStore, core.authz, core.datasourceStore, core.roleResolver, ManagementAuditRecorder(core.auditStore))
             datasourceRoutes(config, core.authz, core.roleResolver, core.datasourceStore, core.proxyEventsHub, TableDetailService(core), core.tokenStore, core.userGroupStore)
             approvalRoutes(
                 config, core.accessStore, core.auditStore, core.datasourceStore, core.policyStore,
@@ -197,27 +201,17 @@ class ElevationContextRouteAuthzDbTest {
     }
 
     @Test
-    fun `ROLE access-request approve fires the tag-gated permit only through a trusted edge (Access-kt wiring)`() = testApplication {
-        val client = wire()
-        client.post("/test/session/$approver")
-
-        // No trusted XFF -> requester_ip absent -> tag not derived -> the tag-gated approve permit cannot fire.
+    fun `ROLE access-request approve fires the tag-gated permit only for an in-range requester IP (AccessService wiring)`() {
+        // requester_ip absent -> tag not derived -> the tag-gated approve permit cannot fire.
         val forbidden = seedRoleRequest()
-        val denied = client.post("/api/access-requests/$forbidden/approve")
-        assertEquals(
-            HttpStatusCode.Forbidden, denied.status,
-            "no requester_ip -> no trusted-network tag -> TASK_APPROVE denied (would still pass if the route dropped httpAuthzContext)",
-        )
+        val denied = assertFailsWith<TaskServiceException> { access.approve(approver, null, actor(), forbidden, null) }
+        assertEquals(HttpStatusCode.Forbidden, denied.status)
+        assertEquals("approval.not_approver", denied.error.code)
 
-        // A trusted edge's in-range XFF -> requester_ip 100.100.5.5 -> trusted-network tag -> the permit fires.
+        // requester_ip 100.100.5.5 -> trusted-network tag -> the permit fires; FAILS if the service drops the
+        // requester IP or the datasource tag-scoping.
         val approved = seedRoleRequest()
-        val ok = client.post("/api/access-requests/$approved/approve") {
-            header("X-Forwarded-For", "100.100.5.5")
-        }
-        assertEquals(
-            HttpStatusCode.OK, ok.status,
-            "trusted-edge requester_ip -> derived tag -> approve succeeds; FAILS if the route drops httpAuthzContext or the datasource tag-scoping",
-        )
+        assertEquals("APPROVED", access.approve(approver, TRUSTED_IP, actor(), approved, null).status)
     }
 
     @Test
@@ -250,19 +244,14 @@ class ElevationContextRouteAuthzDbTest {
     }
 
     @Test
-    fun `approve routes write a kind=admin audit event through the wiring`() = testApplication {
+    fun `approvals write a kind=admin audit event through the wiring`() = testApplication {
         val client = wire()
         client.post("/test/session/$approver")
 
-        // ROLE approve through the real route writes one kind="admin" event; count is scoped to this
-        // request's id so the per-class DB's other approvals don't pollute it. Drop call.auditActor/recorder
-        // from the route and this count is 0.
+        // Counts are scoped to the request id so the per-class DB's other approvals don't pollute them.
         val roleReq = seedRoleRequest()
-        assertEquals(
-            HttpStatusCode.OK,
-            client.post("/api/access-requests/$roleReq/approve") { header("X-Forwarded-For", "100.100.5.5") }.status,
-        )
-        assertEquals(1, adminAuditCount("approve access request #$roleReq:%"), "ROLE approve route must audit")
+        access.approve(approver, TRUSTED_IP, actor(), roleReq, null)
+        assertEquals(1, adminAuditCount("approve access request #$roleReq:%"), "ROLE approve must audit")
 
         val queryReq = seedQueryRequest()
         assertEquals(
@@ -275,6 +264,8 @@ class ElevationContextRouteAuthzDbTest {
         )
         assertEquals(1, adminAuditCount("approve query request #$queryReq%"), "QUERY approve route must audit")
     }
+
+    private fun actor() = AuditActor(principal = approver, clientAddr = TRUSTED_IP, channel = AuditSource.CONSOLE)
 
     private fun adminAuditCount(statementLike: String): Int = dataSource.connection.use { c ->
         c.prepareStatement("SELECT count(*) FROM audit_event WHERE kind='admin' AND statement LIKE ?").use { ps ->
@@ -404,17 +395,12 @@ class ElevationContextRouteAuthzDbTest {
     }
 
     @Test
-    fun `ROLE request creation against a datasource is gated by workflow-request`() = testApplication {
-        val client = wire()
-        client.post("/test/session/$requester")
-        val body = """{"roleId": $targetRoleId, "datasourceId": ${datasource.id}, "reason": "need it"}"""
+    fun `ROLE request creation against a datasource is gated by workflow-request`() {
+        val input = AccessRequestInput(roleId = targetRoleId, datasourceId = datasource.id, reason = "need it")
+        val requesterActor = AuditActor(principal = requester, channel = AuditSource.CONSOLE)
 
         // The shipped -16 workflow.request-default permits everyone -> creating against the datasource succeeds.
-        val created = client.post("/api/access-requests") {
-            contentType(ContentType.Application.Json)
-            setBody(body)
-        }
-        assertEquals(HttpStatusCode.Created, created.status, "default workflow.request permit -> create allowed")
+        assertEquals("PENDING", access.createRequest(requester, null, requesterActor, input).status, "default workflow.request permit -> create allowed")
 
         // A per-datasource forbid on workflow.request denies opening a request against that datasource.
         val forbid = core.cedarPolicyStore.create(
@@ -425,11 +411,9 @@ class ElevationContextRouteAuthzDbTest {
             updatedBy = null,
         )
         try {
-            val denied = client.post("/api/access-requests") {
-                contentType(ContentType.Application.Json)
-                setBody(body)
-            }
+            val denied = assertFailsWith<TaskServiceException> { access.createRequest(requester, null, requesterActor, input) }
             assertEquals(HttpStatusCode.Forbidden, denied.status, "per-datasource workflow.request forbid -> create denied")
+            assertEquals("approval.request_not_permitted", denied.error.code)
         } finally {
             core.cedarPolicyStore.setEnabled(forbid.id, false, "test-cleanup")
         }
@@ -450,5 +434,9 @@ class ElevationContextRouteAuthzDbTest {
         } finally {
             core.cedarPolicyStore.setEnabled(connect.id, false, "test-cleanup")
         }
+    }
+
+    private companion object {
+        const val TRUSTED_IP = "100.100.5.5"
     }
 }

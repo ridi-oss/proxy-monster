@@ -64,8 +64,12 @@ func main() {
 		resources = append(resources, bridge.Resource{Type: "AccessGrant", Principal: g.Principal, ID: g.ID, RoleName: &g.Name})
 	}
 	datasources := must(q.CedarDiffDatasources(ctx))
+	tagsOf := map[string][]string{}
+	for _, d := range must(q.CedarDiffDatasourceTags(ctx)) {
+		tagsOf[d.Name] = d.Tags
+	}
 
-	checked, mismatches, allows := 0, 0, 0
+	checked, mismatches, allows, inAllows, requestAllows := 0, 0, 0, 0, 0
 	for _, p := range principals {
 		for _, ip := range ips {
 			for _, a := range actions {
@@ -81,6 +85,38 @@ func main() {
 						fmt.Printf("MISMATCH authorize principal=%s action=%s resource=%+v ip=%q kotlin=%v(%s, %v) go=%v(%s, %v)\n",
 							p, a, r, ip, kok, kreason, kerr, gok, greason, gerr)
 					}
+				}
+			}
+			for _, r := range resources {
+				if r.Type != "ApprovalRequest" {
+					continue
+				}
+				scope := bridge.Scope{Channel: "workflow-viewer", Datasource: r.DatasourceName}
+				if r.DatasourceName != nil {
+					scope.DatasourceTags = tagsOf[*r.DatasourceName]
+				}
+				kok, kreason, kerr := kotlin.AuthorizeIn(ctx, p, "task.approve", r, ip, scope)
+				gok, greason, gerr := local.AuthorizeIn(ctx, p, "task.approve", r, ip, scope)
+				checked++
+				if kok {
+					inAllows++
+				}
+				if kerr != nil || gerr != nil || kok != gok || !authz.SameReason(kreason, greason) {
+					mismatches++
+					fmt.Printf("MISMATCH authorize-in principal=%s resource=%+v ip=%q kotlin=%v(%s, %v) go=%v(%s, %v)\n",
+						p, r, ip, kok, kreason, kerr, gok, greason, gerr)
+				}
+			}
+			for _, id := range datasources {
+				kok, kerr := kotlin.MayRequest(ctx, p, id, ip)
+				gok, gerr := local.MayRequest(ctx, p, id, ip)
+				checked++
+				if kok {
+					requestAllows++
+				}
+				if kerr != nil || gerr != nil || kok != gok {
+					mismatches++
+					fmt.Printf("MISMATCH may-request principal=%s datasource=%d ip=%q kotlin=%v(%v) go=%v(%v)\n", p, id, ip, kok, kerr, gok, gerr)
 				}
 			}
 			kc, kerr := kotlin.MayConnect(ctx, p, datasources, ip)
@@ -101,8 +137,8 @@ func main() {
 			fmt.Printf("MISMATCH validate source=%q kotlin=%v(%v) go=%v\n", src, kerrs, kerr, gerrs)
 		}
 	}
-	fmt.Printf("checked %d decisions (%d authorize allows) over %d principals, %d actions, %d resources, %d IPs, %d datasources: %d mismatches\n",
-		checked, allows, len(principals), len(actions), len(resources), len(ips), len(datasources), mismatches)
+	fmt.Printf("checked %d decisions (%d authorize, %d scoped task.approve, %d task.request allows) over %d principals, %d actions, %d resources, %d IPs, %d datasources: %d mismatches\n",
+		checked, allows, inAllows, requestAllows, len(principals), len(actions), len(resources), len(ips), len(datasources), mismatches)
 	if mismatches > 0 {
 		os.Exit(1)
 	}

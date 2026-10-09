@@ -6,10 +6,6 @@ import (
 	"net/http"
 	"strings"
 	"testing"
-
-	"github.com/ridi-oss/proxy-monster/auditmon/canon"
-	"github.com/ridi-oss/proxy-monster/auditmon/store"
-	"github.com/ridi-oss/proxy-monster/auditmon/verify"
 )
 
 func TestPolicyWrites(t *testing.T) {
@@ -20,21 +16,6 @@ func TestPolicyWrites(t *testing.T) {
 	e.authz.allow = map[string]bool{
 		"admin@example.com admin.policies System:": true,
 		"admin@example.com admin.identity System:": true,
-	}
-	audits := func() []string {
-		rows, err := e.st.Pool.Query(ctx, `SELECT kind || '|' || principal || '|' || action || '|' || resource || '|' || statement || '|' || coalesce(client_addr, '') || '|' || channel
-			FROM audit_event ORDER BY id`)
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer rows.Close()
-		var out []string
-		for rows.Next() {
-			var s string
-			_ = rows.Scan(&s)
-			out = append(out, s)
-		}
-		return out
 	}
 	do := func(method, path, body string, c []*http.Cookie, wantStatus int) string {
 		t.Helper()
@@ -104,17 +85,9 @@ func TestPolicyWrites(t *testing.T) {
 		"admin|admin@example.com|admin.policies|MaskFn::\"hash-it\"|delete mask function 'hash-it'|127.0.0.1|console",
 		"admin|admin@example.com|admin.policies|Role::\"analyst-2\"|delete role 'analyst-2'|127.0.0.1|console",
 	}
-	if got := audits(); strings.Join(got, "\n") != strings.Join(want, "\n") {
+	if got := auditRows(t, e); strings.Join(got, "\n") != strings.Join(want, "\n") {
 		t.Fatalf("audit rows:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
 	}
 
-	dsn := strings.Replace(strings.TrimPrefix(e.st.JDBCURL, "jdbc:"), "postgresql://", "postgresql://"+e.st.User+":"+e.st.Password+"@", 1)
-	reader, err := store.Open(ctx, dsn)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer reader.Close()
-	if finding, err := verify.VerifyFromGenesis(ctx, reader, canon.GenesisHash(), nil); err != nil || finding != nil {
-		t.Fatalf("chain: %+v %v", finding, err)
-	}
+	verifyChain(t, e)
 }

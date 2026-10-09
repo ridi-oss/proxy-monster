@@ -86,6 +86,8 @@ func Register(mux *http.ServeMux, pool *pgxpool.Pool, gate api.Gate) {
 	mux.HandleFunc("POST /api/datasources", gate.RequireAdmin("admin.datasources", ds.create))
 	mux.HandleFunc("PUT /api/datasources/{id}", gate.RequireAdmin("admin.datasources", withID(ds.update)))
 	mux.HandleFunc("DELETE /api/datasources/{id}", gate.RequireAdmin("admin.datasources", withID(ds.delete)))
+	mux.HandleFunc("PUT /api/datasources/{id}/classification", gate.RequireAdmin("admin.datasources", withID(ds.setClassification)))
+	mux.HandleFunc("DELETE /api/datasources/{id}/classification", gate.RequireAdmin("admin.datasources", withID(ds.clearClassification)))
 	mux.HandleFunc("GET /api/datasources", gate.RequireAPIOrBearer(ds.list))
 	mux.HandleFunc("GET /api/datasources/{id}", gate.RequireAPIOrBearer(withID(ds.get)))
 	mux.Handle("GET /api/datasources/live", front.Kotlin)

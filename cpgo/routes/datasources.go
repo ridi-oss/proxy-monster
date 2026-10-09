@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/ridi-oss/proxy-monster/cpgo/api"
+	"github.com/ridi-oss/proxy-monster/cpgo/engine"
 	"github.com/ridi-oss/proxy-monster/cpgo/store/db"
 )
 
@@ -55,12 +56,15 @@ func toDatasource(r db.DatasourcesRow) (datasource, error) {
 		n := int(*r.MysqlLowerCaseTableNames)
 		d.MySQLLowerCaseTableNames = &n
 	}
+	var err error
 	d.Engine = strings.ToLower(d.Engine)
+	def, known := engine.ByWireName(d.Engine)
+	if !known {
+		return d, fmt.Errorf("datasource %d: unknown engine %q", d.ID, d.Engine)
+	}
 	d.Tags, d.DefaultSchemas = nonNil(r.Tags), nonNil(r.DefaultSchemas)
 	d.CatalogSyncedAt, d.LastSeenAt = optInstant(r.CatalogSyncedAt), optInstant(r.LastSeenAt)
-	// Athena has no default-schema statement; the wire engines do.
-	d.DefaultSchemaSettable = d.Engine == "postgres" || d.Engine == "mysql"
-	var err error
+	d.DefaultSchemaSettable = def.DefaultSchemaSettable
 	if r.ConnectionInfo != nil {
 		d.ConnectionInfo, err = canonicalConnectionInfo(r.ConnectionInfo)
 	}

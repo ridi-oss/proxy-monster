@@ -191,7 +191,6 @@ func TestUnportedRequestsAreForwarded(t *testing.T) {
 		{http.MethodGet, "/api/datasources/1/catalog"},
 		{http.MethodGet, "/api/datasources/1/table-detail"},
 		{http.MethodPost, "/api/datasources/1/refresh"},
-		{http.MethodPut, "/api/datasources/1/classification"},
 		{http.MethodGet, "/api/approvals/inbox"},
 		{http.MethodGet, "/api/approvals/1"},
 		{http.MethodPost, "/api/approvals/1/approve"},

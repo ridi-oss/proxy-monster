@@ -440,11 +440,13 @@ func cliApp(id, name, bin string, scope []string, file configFile) App {
 					return nil, err
 				}
 			}
-			add := append([]string{"mcp", "add"}, scope...)
+			// The name goes first: claude's -e takes every value up to the next option, so a name after it is
+			// read as one more variable.
+			add := append([]string{"mcp", "add", entry}, scope...)
 			for k, v := range DaemonEnv() {
 				add = append(add, envFlag, k+"="+v)
 			}
-			if _, err := run(append(add, entry, "--", s.Pmon, "mcp", srv.Name)...); err != nil {
+			if _, err := run(append(add, "--", s.Pmon, "mcp", srv.Name)...); err != nil {
 				return nil, err
 			}
 			var replaced []string

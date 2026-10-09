@@ -382,9 +382,21 @@ func cliApp(id, name, bin string, scope []string, file configFile) App {
 			if mine, ok := others[entry]; exists && !own && !(ok && replaceable(mine, srv)) {
 				return nil, &EntryError{App: name, Entry: entry, Taken: true}
 			}
-			if exists {
+			// codex replaces an entry of the same name; claude refuses one, so its entry is removed first and put
+			// back if the add fails.
+			restore := func(err error) error { return err }
+			if exists && bin == "claude" {
+				prev, _, _ := readDesktopServers(claudeCodePath())
 				if _, err := run(append([]string{"mcp", "remove", entry}, scope...)...); err != nil {
 					return nil, err
+				}
+				if raw, ok := prev[entry]; ok {
+					restore = func(err error) error {
+						if _, rerr := run(append([]string{"mcp", "add-json", entry, string(raw)}, scope...)...); rerr != nil {
+							return fmt.Errorf("%w; putting the previous %s back also failed: %v", err, entry, rerr)
+						}
+						return err
+					}
 				}
 			}
 			// The name goes first: claude's -e takes every value up to the next option, so a name after it is
@@ -394,7 +406,7 @@ func cliApp(id, name, bin string, scope []string, file configFile) App {
 				add = append(add, envFlag, k+"="+v)
 			}
 			if _, err := run(append(add, "--", s.Pmon, "mcp", srv.Name)...); err != nil {
-				return nil, err
+				return nil, restore(err)
 			}
 			var replaced []string
 			for _, other := range replaceableNames(others, entry, srv) {

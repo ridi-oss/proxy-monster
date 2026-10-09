@@ -51,6 +51,7 @@ internal fun ControlPlaneCore.resolveRequestIdentity(token: String, clientAddr: 
         TokenKind.SESSION, TokenKind.USER -> Channel.WIRE
         TokenKind.EDITOR -> Channel.EDITOR
         TokenKind.APPROVER_EXEC -> if (providedRoles == null) Channel.EDITOR else Channel.WORKFLOW_EXECUTOR
+        TokenKind.WORKLOAD -> throw StatusException(Status.UNAUTHENTICATED.withDescription("unsupported token kind"))
     }
     val httpIp = if (ephemeral) runRequesterIps.get(tokenHash(token)) else null
     return ResolvedRequestIdentity(

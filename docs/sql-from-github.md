@@ -51,7 +51,6 @@ jobs:
       - uses: ridi-oss/proxy-monster/sql-action@v1
         with:
           server: https://proxy-monster.internal.example
-          audience: proxy-monster
           dir: db/orders
           datasource: shop-mysql
           schema: orders
@@ -333,11 +332,12 @@ events, and a PR comment is one more transport beside Slack.
   execute route refuses it: the merge trigger runs it.
 - Filing: the Action exchanges its GitHub Actions OIDC token for a short-lived
   control-plane token. The exchange accepts the trusted OIDC issuers in
-  `PM_CI_OIDC_ISSUERS="<name>=<issuerUrl>|<audience>;…"`, so other CI systems
-  that issue OIDC tokens work the same way. The caller is the Cedar principal
-  `Workload::"<name>"`, whose `issuer` attribute is the issuer URL and whose
-  optional attributes are the token's `repository`, `repository_id`, `ref`,
-  `base_ref`, `workflow_ref`, `event_name`, and `actor` claims
+  `PM_CI_OIDC_ISSUERS=<name>=<issuerUrl>,…` with the audience
+  `PM_CI_OIDC_AUDIENCE` (the control plane's public origin by default), so other
+  CI systems that issue OIDC tokens work the same way. The caller is the Cedar
+  principal `Workload::"<name>"`, whose `issuer` attribute is the issuer URL and
+  whose optional attributes are the token's `repository`, `repository_id`,
+  `ref`, `base_ref`, `workflow_ref`, `event_name`, and `actor` claims
   ([auth-model.md](./auth-model.md#ci-oidc-token-exchange)). On a `pull_request`
   run, `base_ref` is the PR's target branch:
 

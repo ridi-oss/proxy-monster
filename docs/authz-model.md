@@ -322,7 +322,7 @@ schema, entity marshaling, and the policy store stay internal.
 
 ## HTTP auth gates
 
-Every control-plane HTTP route funnels through one of four gate helpers. Which
+Every control-plane HTTP route funnels through one of five gate helpers. Which
 one a route calls _is_ its auth requirement; grep the helper name to find its
 call sites. Per-route request and response shapes are the Kotlin DTO data
 classes in the owning file.
@@ -343,6 +343,7 @@ of a route and the gate it calls. Paths are relative to
 | Daemon session MCP token | `/auth/session/mcp-token` | `PmonMcpToken.kt` | `Authorization: Bearer <renewalToken>` only |
 | OAuth 2.1 authorization server | `/.well-known/oauth-authorization-server`, `/oauth/**` | `oauth/OAuthRoutes.kt` | protocol-native (PKCE, client metadata, consent CSRF); `/oauth/consents` needs a session |
 | MCP admin surface | `/mcp`, `/.well-known/oauth-protected-resource**` | `mcp/McpServer.kt` | MCP access-token bearer + host/origin checks in an interceptor; metadata routes public |
+| CI token exchange | `/api/workload/token` | `WorkloadTokenRoutes.kt` | none — verifies the CI OIDC JWT itself; mints a `WORKLOAD` bearer |
 | SCIM 2.0 provisioning | `/api/scim/v2/**` | `Scim.kt` | `requireScimAuth` — `PM_SCIM_TOKEN` bearer, TLS-only; 501 when unconfigured |
 | Audit ingest (from the proxy) | `/api/ingest/decision` | `App.kt` | `X-PM-Ingest-Token` vs `PM_SECRET_TOKEN`; open when that env is unset (dev only) |
 | Audit read | `/api/audit`, `/api/audit/{id}` | `AuditRoutes.kt` | `requireApi` + Cedar `audit.read` — allow on `AuditLog` returns all rows, else own rows only |
@@ -375,6 +376,10 @@ of a route and the gate it calls. Paths are relative to
 - `requireScimAuth(config)` (`Scim.kt`) — the standing `PM_SCIM_TOKEN` bearer,
   constant-time compared, TLS-only. Not a session and not Cedar: this is an
   IdP-to-control-plane integration ([`auth-model.md`](./auth-model.md)).
+- `requireWorkload(config, tokenStore)` (`WorkloadToken.kt`) — a `WORKLOAD`
+  bearer from the CI token exchange, returning the Workload principal with its
+  claims. 401 (`common.unauthenticated`) otherwise. No route accepts it yet
+  ([`auth-model.md`](./auth-model.md#ci-oidc-token-exchange)).
 
 `PM_AUTH_DEBUG` is an authentication setting: it enables one extra **login
 method**, `POST /auth/debug`, which signs in as any principal with any roles and

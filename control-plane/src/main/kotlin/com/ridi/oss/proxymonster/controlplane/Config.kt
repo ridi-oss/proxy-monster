@@ -5,6 +5,9 @@ import java.net.URI
 
 typealias OidcGroupMapping = com.ridi.oss.proxymonster.auth.OidcGroupMapping
 
+/** A trusted CI OIDC issuer; [name] keys the Cedar principal (`Workload::"github"`). */
+data class CiOidcIssuer(val name: String, val issuer: String, val audience: String)
+
 /**
  * Generic OIDC settings (docs/auth-model.md) — provider-agnostic: endpoints are resolved from
  * discovery (`${issuer}/.well-known/openid-configuration`), not hardcoded per-provider paths.
@@ -112,6 +115,9 @@ data class Config(
     // Names this deployment to agents and in the MCP install name `pmon-<instanceName>`.
     val instanceName: String = defaultInstanceName("http://127.0.0.1:8080/mcp"),
     val instanceDescription: String = "",
+    // PM_CI_OIDC_ISSUERS="<name>=<issuerUrl>,…", e.g. github=https://token.actions.githubusercontent.com;
+    // empty disables CI token exchange. Every issuer's tokens must carry PM_CI_OIDC_AUDIENCE.
+    val ciOidcIssuers: List<CiOidcIssuer> = emptyList(),
 ) {
     init {
         require(webSessionSlideSeconds < webSessionIdleSeconds) {
@@ -312,6 +318,7 @@ data class Config(
                 notifyLocale = notifyLocale,
                 instanceName = instanceName,
                 instanceDescription = instanceDescription,
+                ciOidcIssuers = parseCiOidcIssuers(env, env("PM_CI_OIDC_AUDIENCE")?.trim()?.ifEmpty { null } ?: mcpIssuer),
             )
         }
 
@@ -349,6 +356,25 @@ data class Config(
                 uri.scheme == "https" && uri.host != null && uri.userInfo == null &&
                     uri.query == null && uri.fragment == null,
             ) { "$name must be an HTTPS issuer URI" }
+        }
+
+        private val CI_ISSUER_NAME = Regex("[a-z0-9][a-z0-9-]*")
+
+        // The audience names this control plane, so it is one value for every issuer: its public origin unless
+        // PM_CI_OIDC_AUDIENCE overrides it.
+        private fun parseCiOidcIssuers(env: (String) -> String?, audience: String): List<CiOidcIssuer> {
+            val raw = env("PM_CI_OIDC_ISSUERS") ?: return emptyList()
+            val issuers = raw.split(',').map { it.trim() }.filter { it.isNotEmpty() }.map { entry ->
+                val name = entry.substringBefore('=', "").trim()
+                val issuer = entry.substringAfter('=', "").trim()
+                require(CI_ISSUER_NAME.matches(name) && issuer.isNotEmpty()) {
+                    "PM_CI_OIDC_ISSUERS entry '$entry' must be '<name>=<issuerUrl>' with name [a-z0-9-]"
+                }
+                requireSecureOidcUri(issuer, "PM_CI_OIDC_ISSUERS issuer")
+                CiOidcIssuer(name, issuer, audience)
+            }
+            require(issuers.map { it.name }.toSet().size == issuers.size) { "PM_CI_OIDC_ISSUERS names must be unique" }
+            return issuers
         }
 
     }

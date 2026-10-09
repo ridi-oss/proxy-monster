@@ -109,5 +109,9 @@
     "invalid_descriptor": "네이티브 요청을 검증할 수 없습니다.",
     "not_authorized": "이 네이티브 작업은 허용되지 않습니다.",
     "scope_violation": "네이티브 요청이 이 데이터소스의 설정 범위를 벗어났습니다."
+  },
+  "workload": {
+    "not_configured": "CI 토큰 교환이 이 서버에 설정되어 있지 않습니다.",
+    "issuer_not_trusted": "토큰 발급자를 신뢰할 수 없습니다."
   }
 }

@@ -45,3 +45,17 @@ func (q *Queries) LiveWebSession(ctx context.Context, sessionKey *string) (LiveW
 	)
 	return i, err
 }
+
+const wirePrincipal = `-- name: WirePrincipal :one
+SELECT t.principal FROM proxy_token t
+WHERE t.token_hash = $1 AND t.kind IN ('SESSION', 'USER') AND t.revoked_at IS NULL
+  AND t.retired_at IS NULL AND t.expires_at > now()
+  AND NOT EXISTS (SELECT 1 FROM app_user u WHERE u.principal = t.principal AND NOT u.active)
+`
+
+func (q *Queries) WirePrincipal(ctx context.Context, tokenHash string) (string, error) {
+	row := q.db.QueryRow(ctx, wirePrincipal, tokenHash)
+	var principal string
+	err := row.Scan(&principal)
+	return principal, err
+}

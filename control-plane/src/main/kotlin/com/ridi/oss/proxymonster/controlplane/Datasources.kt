@@ -854,6 +854,14 @@ private suspend fun ApplicationCall.requireApiOrBearer(config: Config, tokenStor
 
 private val datasourceLog = org.slf4j.LoggerFactory.getLogger("com.ridi.oss.proxymonster.controlplane.Datasources")
 
+/** The datasource.connect decision cp-go's datasource list asks for each row: false for a missing datasource
+ *  or a deactivated principal, else [authorizeMetadata]. */
+internal fun ControlPlaneCore.mayConnectById(principal: String, requesterIp: String?, datasourceId: Long): Boolean {
+    val ds = datasourceStore.get(datasourceId) ?: return false
+    return !userGroupStore.isDeactivated(principal) &&
+        authorizeMetadata(authz, principal, roleResolver.resolve(principal), ds, AuthzContext(requesterIp = requesterIp))
+}
+
 /** Whether Cedar grants [principal] datasource.connect on [ds] — the decision the proxy runs on connect. */
 internal fun mayConnect(authz: Authz, roleResolver: RoleResolver, principal: String, requesterIp: String?, ds: Datasource): Boolean =
     authorizeMetadata(authz, principal, roleResolver.resolve(principal), ds, AuthzContext(requesterIp = requesterIp))
@@ -897,21 +905,6 @@ fun Route.datasourceRoutes(
     // is served without its connection material. Everything keyed to ONE datasource — the row, its catalog,
     // its wire cert, its table detail — is connect-gated below. Only mutation/config routes require
     // admin.datasources.
-    get("/api/datasources") {
-        // Discovery route: the pmon daemon reads this (with a Bearer wire token) to learn each datasource's
-        // engine + advertised proxy address, so it can open a local broker port per datasource.
-        val principal = call.requireApiOrBearer(config, tokenStore, userGroupStore) ?: return@get
-        val all = management.listDatasources()
-        val connectableOnly = call.request.queryParameters["connectable"].equals("true", ignoreCase = true)
-        // The list stays unfiltered by default — JIT-request compose must show datasources you cannot yet
-        // connect to, precisely so they can be requested — but a row you may not connect to is stripped of
-        // its connection material, the same decision {id} and {id}/wire-cert make. A row this list would
-        // answer more fully than {id} does is a bypass of {id}.
-        val visible = if (connectableOnly) all.filter { mayConnect(call, principal, it) } else {
-            all.map { if (mayConnect(call, principal, it)) it else it.withoutConnectionMaterial() }
-        }
-        call.respond(visible)
-    }
     // Which datasources currently have a proxy attached (an open Events stream) — the admin liveness
     // view. Read-only; returns the set of attached datasource names.
     get("/api/datasources/live") {

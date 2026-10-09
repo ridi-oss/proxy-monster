@@ -230,34 +230,14 @@ class DatasourceMetadataConnectGateDbTest {
     }
 
     /**
-     * The list is the alternate path to the same bytes: filtering it would break JIT-request compose (which
-     * must show datasources you cannot yet connect to), so the row survives with its connection material
-     * stripped. Without this the `{id}` gate above is bypassable by asking for the list instead.
+     * cp-go's list keeps a row the caller may not connect to but strips its connection material; this is the
+     * decision it asks per row, the same one `{id}` and `{id}/wire-cert` make.
      */
     @Test
-    fun `the list keeps non-connectable rows but strips their connection material`() = testApplication {
-        val client = wire()
-        client.post("/test/session/$stranger")
-        val res = client.get("/api/datasources")
-        assertEquals(HttpStatusCode.OK, res.status)
-        val body = res.bodyAsText()
-        assertTrue(body.contains("gated-ds"), "the datasource must stay visible so it can be requested")
-        assertFalse(
-            body.contains("BEGIN CERTIFICATE"),
-            "the list must not answer what {id} and {id}/wire-cert refuse; got: $body",
-        )
-        assertFalse(body.contains("proxy.example.com"), "the advertised address is connection material too")
-        assertFalse(body.contains("Gated orders DB"), "the description rides only on connectable rows")
-    }
-
-    @Test
-    fun `the list keeps connection material for a connectable row`() = testApplication {
-        val client = wire()
-        client.post("/test/session/$connector")
-        val body = client.get("/api/datasources").bodyAsText()
-        assertTrue(body.contains("BEGIN CERTIFICATE"), "a caller granted connect must still get the chain")
-        assertTrue(body.contains("proxy.example.com"), "a caller granted connect must still get the address")
-        assertTrue(body.contains("\"description\":\"Gated orders DB\""), body)
+    fun `the list's per-row decision matches the datasource row's`() {
+        assertFalse(core.mayConnectById(stranger, null, datasource.id), "a stranger's row is stripped")
+        assertTrue(core.mayConnectById(connector, null, datasource.id), "a connector's row keeps its material")
+        assertFalse(core.mayConnectById(connector, null, Long.MAX_VALUE), "a missing datasource is never connectable")
     }
 
     @Test

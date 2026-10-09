@@ -90,3 +90,28 @@ func TestAuthorizeEach(t *testing.T) {
 		t.Fatalf("no resources makes no call: %v %v", allow, err)
 	}
 }
+
+func TestMayConnect(t *testing.T) {
+	var got struct {
+		Principal     string
+		DatasourceIDs []int64
+		RequesterIP   string
+	}
+	kotlin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/internal/may-connect" || r.Header.Get(TokenHeader) != "tok" {
+			http.NotFound(w, r)
+			return
+		}
+		_ = json.NewDecoder(r.Body).Decode(&got)
+		_, _ = w.Write([]byte(`{"allow":[false,true]}`))
+	}))
+	defer kotlin.Close()
+	u, _ := url.Parse(kotlin.URL)
+	allow, err := New(u, "tok").MayConnect(context.Background(), "alice", []int64{7, 9}, "203.0.113.4")
+	if err != nil || len(allow) != 2 || allow[0] || !allow[1] {
+		t.Fatalf("allow %v err %v", allow, err)
+	}
+	if got.Principal != "alice" || len(got.DatasourceIDs) != 2 || got.DatasourceIDs[1] != 9 || got.RequesterIP != "203.0.113.4" {
+		t.Fatalf("sent %+v", got)
+	}
+}

@@ -121,6 +121,39 @@ class McpAdminParityToolsCpGoTest {
         assertEquals(parseJson(client.get("/api/access/principals/$target/rate-reset").bodyAsText()), read)
     }
 
+    @Test
+    fun `invalid engine, engine change and in-use delete answer REST's codes`() = runBlocking<Unit> {
+        val client = stack.client()
+        val admin = admin()
+        val n = seq.incrementAndGet()
+        val token = tokens.token(admin, setOf("mcp:read", "mcp:datasources:write"))
+        client.login(admin)
+
+        val invalid = client.mcpCall(token, "create_datasource", buildJsonObject { put("name", "mcp-bad-$n"); put("engine", "oracle") })
+        assertEquals("datasource.invalid_engine", invalid.errorCode())
+        assertEquals("oracle", invalid.getValue("structuredContent").jsonObject.getValue("params").jsonObject.str("engine"))
+        val restInvalid = client.post("/api/datasources") { json("""{"name":"mcp-bad-rest-$n","engine":"oracle"}""") }
+        assertEquals(HttpStatusCode.BadRequest, restInvalid.status)
+        assertEquals("datasource.invalid_engine", restCode(restInvalid))
+        assertEquals(null, core.datasourceStore.getByName("mcp-bad-$n"))
+
+        val ds = core.datasourceStore.create(DatasourceInput("mcp-immutable-$n", "postgres"))
+        val immutable = client.mcpCall(token, "update_datasource", buildJsonObject { put("datasource", ds.name); put("engine", "mysql") })
+        assertEquals("datasource.engine_immutable", immutable.errorCode())
+        val restImmutable = client.put("/api/datasources/${ds.id}") { json("""{"name":"${ds.name}","engine":"mysql"}""") }
+        assertEquals(HttpStatusCode.Conflict, restImmutable.status)
+        assertEquals("datasource.engine_immutable", restCode(restImmutable))
+
+        val role = core.policyStore.createRole(RoleInput("mcp-in-use-role-$n"))
+        core.accessStore.createRequest("requester-$n@example.com", AccessRequestInput(roleId = role.id, datasourceId = ds.id))
+        val inUse = client.mcpCall(token, "delete_datasource", buildJsonObject { put("datasource", ds.name) })
+        assertEquals("datasource.in_use_active_requests", inUse.errorCode())
+        val restInUse = client.delete("/api/datasources/${ds.id}")
+        assertEquals(HttpStatusCode.Conflict, restInUse.status)
+        assertEquals("datasource.in_use_active_requests", restCode(restInUse))
+        assertNotNull(core.datasourceStore.get(ds.id))
+    }
+
     private fun admin(): String {
         val principal = "mcp-admin-${seq.incrementAndGet()}@example.com"
         val role = assertNotNull(core.policyStore.getRoleByName("system:admin"))

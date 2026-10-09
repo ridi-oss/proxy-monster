@@ -15,7 +15,7 @@ import (
 )
 
 func Register(mux *http.ServeMux, pool *pgxpool.Pool, gate api.Gate) {
-	id := identity{pool: pool, sessionsEnded: gate.SessionsEnded}
+	id := identity{pool: pool, kotlin: gate.Kotlin}
 	admin := func(h http.HandlerFunc) http.HandlerFunc { return gate.RequireAdmin("admin.identity", h) }
 	mux.HandleFunc("GET /api/users", admin(id.listUsers))
 	mux.HandleFunc("POST /api/users", admin(id.createUser))
@@ -73,8 +73,8 @@ type groupRole struct {
 }
 
 type identity struct {
-	pool          *pgxpool.Pool
-	sessionsEnded func(ctx context.Context, principal string) error
+	pool   *pgxpool.Pool
+	kotlin api.Kotlin
 }
 
 func refsBy[R any](rows []R, owned func(R) (int64, ref)) map[int64][]ref {
@@ -276,7 +276,7 @@ func revokeCredentials(ctx context.Context, tx pgx.Tx, principal string, ended *
 func (h identity) signalEnded(ended *[]string) func(context.Context) error {
 	return func(ctx context.Context) error {
 		for _, p := range *ended {
-			if err := h.sessionsEnded(ctx, p); err != nil {
+			if err := h.kotlin.SessionsEnded(ctx, p); err != nil {
 				return err
 			}
 		}

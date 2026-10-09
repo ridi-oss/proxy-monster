@@ -137,7 +137,7 @@ func TestIdentityWrites(t *testing.T) {
 	}
 	do(http.MethodDelete, "/api/users/999999", "", admin, http.StatusNotFound)
 	do(http.MethodPut, "/api/users/abc", `{"principal":"x"}`, admin, http.StatusBadRequest)
-	if got := strings.Join(e.SessionsEnded, ","); got != "dave@example.com,carol@example.com,caroline@example.com,caroline@example.com,erin@example.com,frank@example.com,frances@example.com" {
+	if got := strings.Join(e.Kotlin.Ended, ","); got != "dave@example.com,carol@example.com,caroline@example.com,caroline@example.com,erin@example.com,frank@example.com,frances@example.com" {
 		t.Fatalf("sessions ended %s", got)
 	}
 
@@ -174,6 +174,17 @@ func TestIdentityWrites(t *testing.T) {
 	}
 	if got := do(http.MethodGet, fmt.Sprintf("/api/groups/%d/members", ops), "", admin, http.StatusOK); got != "["+member+"]" {
 		t.Fatalf("members %s", got)
+	}
+	if got := do(http.MethodGet, fmt.Sprintf("/api/groups/%d/roles", ops), "", admin, http.StatusOK); got != fmt.Sprintf(`[{"roleId":%d,"roleName":"analyst"}]`, analyst) {
+		t.Fatalf("group roles %s", got)
+	}
+	for _, path := range []string{fmt.Sprintf("/api/groups/%d/members", ops), fmt.Sprintf("/api/groups/%d/roles", ops)} {
+		if body := do(http.MethodGet, path, "", plain, http.StatusForbidden); body != `{"code":"common.forbidden","params":{"detail":"no permit for admin.identity"}}` {
+			t.Fatalf("%s for a non-admin: %s", path, body)
+		}
+	}
+	if body := do(http.MethodGet, "/api/groups/9223372036854775807/members", "", admin, http.StatusNotFound); !strings.HasPrefix(body, `{"code":"common.not_found",`) {
+		t.Fatalf("missing group members: %s", body)
 	}
 	do(http.MethodGet, "/api/groups/999999/roles", "", admin, http.StatusNotFound)
 	do(http.MethodDelete, fmt.Sprintf("/api/groups/%d/roles/%d", ops, analyst), "", admin, http.StatusNoContent)

@@ -36,11 +36,11 @@ func OptText(b []byte) *string {
 }
 
 func Forbidden(code string, params Params) error {
-	return &ManagementError{Code: code, Params: params, status: http.StatusForbidden}
+	return &ManagementError{Code: code, Params: params, Status: http.StatusForbidden}
 }
 
 func BadRequest(code string) error {
-	return &ManagementError{Code: code, status: http.StatusBadRequest}
+	return &ManagementError{Code: code, Status: http.StatusBadRequest}
 }
 
 func NonNil(s []string) []string {
@@ -74,7 +74,7 @@ func WriteRows[R, T any](w http.ResponseWriter, rows []R, err error, to func(R) 
 type ManagementError struct {
 	Code   string
 	Params Params
-	status int
+	Status int
 }
 
 func (e *ManagementError) Error() string { return e.Code }
@@ -155,8 +155,8 @@ func WriteMutationError(w http.ResponseWriter, err error) {
 		case "role.system_immutable", "policy.system_immutable", "group.system_immutable":
 			code = http.StatusConflict
 		}
-		if me.status != 0 {
-			code = me.status
+		if me.Status != 0 {
+			code = me.Status
 		}
 		WriteErrorParams(w, code, me.Code, me.Params)
 	default:

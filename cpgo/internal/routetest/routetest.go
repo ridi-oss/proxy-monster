@@ -26,8 +26,24 @@ type Env struct {
 	Forwarded []string
 	Ended     []string
 	Authz     fakeAuthz
-	// SessionsEnded records each principal Kotlin was told had its web sessions ended.
-	SessionsEnded []string
+	Kotlin    fakeKotlin
+}
+
+// fakeKotlin records what Go told Kotlin and answers attached as the datasources with a proxy.
+type fakeKotlin struct {
+	Ended, Deleted, Attached []string
+}
+
+func (k *fakeKotlin) SessionsEnded(_ context.Context, p string) error {
+	k.Ended = append(k.Ended, p)
+	return nil
+}
+
+func (k *fakeKotlin) ProxiesAttached(context.Context) ([]string, error) { return k.Attached, nil }
+
+func (k *fakeKotlin) DatasourceDeleted(_ context.Context, name string) error {
+	k.Deleted = append(k.Deleted, name)
+	return nil
 }
 
 // fakeAuthz allows what allow lists and records every decision asked for.
@@ -132,7 +148,7 @@ func SetupConfig(t *testing.T, c Config) *Env {
 		Sessions:      session.NewResolver(e.St.Pool, dbtest.Secret),
 		EndMismatched: func(r *http.Request) { e.Ended = append(e.Ended, r.Header.Get("Cookie")) },
 		Edges:         front.ParseTrustedEdges(c.Edges),
-		SessionsEnded: func(_ context.Context, p string) error { e.SessionsEnded = append(e.SessionsEnded, p); return nil },
+		Kotlin:        &e.Kotlin,
 		AuthDebug:     true,
 		Authz:         decider,
 	})

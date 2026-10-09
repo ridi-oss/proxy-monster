@@ -208,6 +208,23 @@ class InternalAuthorizeDbTest {
     }
 
     @Test
+    fun `proxies-attached and datasource-deleted reach the in-memory state`() = testApplication {
+        val deleted = mutableListOf<String>()
+        val client = app(proxiesAttached = { setOf("b-ds", "a-ds") }, datasourceDeleted = { deleted += it })
+        suspend fun call(path: String, body: Any, token: String? = TOKEN) = client.post(path) {
+            token?.let { header(INTERNAL_TOKEN_HEADER, it) }
+            contentType(ContentType.Application.Json)
+            setBody(body)
+        }
+        assertEquals(listOf("a-ds", "b-ds"), call("/internal/proxies-attached", emptyMap<String, String>()).body<InternalNamesResult>().names)
+        assertEquals(HttpStatusCode.NotFound, call("/internal/proxies-attached", emptyMap<String, String>(), token = null).status)
+        assertEquals(HttpStatusCode.NotFound, call("/internal/datasource-deleted", InternalNameRequest("a-ds"), token = null).status)
+        assertEquals(emptyList(), deleted)
+        assertEquals(HttpStatusCode.NoContent, call("/internal/datasource-deleted", InternalNameRequest("a-ds")).status)
+        assertEquals(listOf("a-ds"), deleted)
+    }
+
+    @Test
     fun `an unknown action or resource is rejected`() = testApplication {
         val client = app()
         assertEquals(HttpStatusCode.BadRequest, client.authorize(InternalAuthorizeRequest(AUDITOR, "audit.write", InternalResource("AuditLog"))).status)
@@ -219,13 +236,15 @@ class InternalAuthorizeDbTest {
         token: String? = TOKEN,
         mayRequest: (String, String?, Long) -> Boolean = { _, _, _ -> false },
         sessionsEnded: (String) -> Unit = {},
+        proxiesAttached: () -> Set<String> = { emptySet() },
+        datasourceDeleted: (String) -> Unit = {},
     ): HttpClient {
         application {
             install(ContentNegotiation) { json(Json { ignoreUnknownKeys = true; encodeDefaults = true; explicitNulls = false }) }
             routing {
                 internalAuthorizeRoute(
                     token, authz, policiesChanged = cedarPolicyStore::markCommittedMutation, mayRequest = mayRequest,
-                    sessionsEnded = sessionsEnded,
+                    sessionsEnded = sessionsEnded, proxiesAttached = proxiesAttached, datasourceDeleted = datasourceDeleted,
                 )
             }
         }

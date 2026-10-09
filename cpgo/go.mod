@@ -4,6 +4,7 @@ go 1.26.0
 
 require (
 	github.com/alecthomas/kong v1.16.1
+	github.com/cedar-policy/cedar-go v1.8.0
 	github.com/jackc/pgx/v5 v5.10.0
 	github.com/moby/moby/api v1.55.0
 	github.com/ridi-oss/proxy-monster/auditmon v0.0.0-00010101000000-000000000000
@@ -62,6 +63,7 @@ require (
 	go.opentelemetry.io/otel/metric v1.44.0 // indirect
 	go.opentelemetry.io/otel/trace v1.44.0 // indirect
 	golang.org/x/crypto v0.55.0 // indirect
+	golang.org/x/exp v0.0.0-20220921023135-46d9e7742f1e // indirect
 	golang.org/x/net v0.58.0 // indirect
 	golang.org/x/sync v0.22.0 // indirect
 	golang.org/x/sys v0.47.0 // indirect

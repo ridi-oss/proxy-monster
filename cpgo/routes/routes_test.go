@@ -88,7 +88,7 @@ func (e *env) do(t *testing.T, method, path, body string, cookies []*http.Cookie
 
 func TestUnauthenticated(t *testing.T) {
 	e := setup(t)
-	for _, path := range []string{"/api/query-history", "/api/audit", "/api/audit/1", "/api/roles", "/api/role-assignments", "/api/mask-fns", "/api/policies", "/api/me/permissions", "/api/access-requests", "/api/access-grants"} {
+	for _, path := range []string{"/api/query-history", "/api/audit", "/api/audit/1", "/api/roles", "/api/role-assignments", "/api/mask-fns", "/api/policies", "/api/me/permissions", "/api/access-requests", "/api/access-grants", "/api/approvals"} {
 		status, body := e.do(t, http.MethodGet, path, "", nil)
 		if status != http.StatusUnauthorized || body != `{"code":"common.unauthenticated","params":{}}` {
 			t.Fatalf("%s: %d %s", path, status, body)
@@ -462,5 +462,41 @@ func TestAccessLists(t *testing.T) {
 	}
 	if _, body = e.do(t, http.MethodGet, "/api/access-grants?principal=bob@example.com", "", alice); body != "[]" {
 		t.Fatalf("naming another principal must not widen the listing: %s", body)
+	}
+}
+
+func TestOwnApprovals(t *testing.T) {
+	e := setup(t)
+	ctx := context.Background()
+	var ds int64
+	if err := e.st.Pool.QueryRow(ctx, `INSERT INTO datasource (name, host, port, db_name) VALUES ('acme', 'db', 5432, 'acme') RETURNING id`).Scan(&ds); err != nil {
+		t.Fatal(err)
+	}
+	var mine int64
+	for _, row := range []struct{ principal, kind, creator, status string }{
+		{"alice@example.com", "QUERY", "WORKFLOW", "PENDING"},
+		{"alice@example.com", "QUERY", "EDITOR", "PENDING"},
+		{"alice@example.com", "RATE_RESET", "WORKFLOW", "PENDING"},
+		{"bob@example.com", "QUERY", "WORKFLOW", "PENDING"},
+	} {
+		var id int64
+		if err := e.st.Pool.QueryRow(ctx, `INSERT INTO access_request (principal, kind, creator_kind, status, requested_duration_sec, datasource_id)
+			VALUES ($1, $2, $3, $4, 0, $5) RETURNING id`, row.principal, row.kind, row.creator, row.status, ds).Scan(&id); err != nil {
+			t.Fatal(err)
+		}
+		if mine == 0 {
+			mine = id
+		}
+	}
+	alice := e.st.WebSession(t, "alice@example.com", "k-a", "dev-a")
+	status, body := e.do(t, http.MethodGet, "/api/approvals", "", alice)
+	if status != http.StatusOK || strings.Count(body, `"id":`) != 1 || !strings.HasPrefix(body, fmt.Sprintf(`[{"id":%d,"principal":"alice@example.com",`, mine)) {
+		t.Fatalf("own approvals: %d %s", status, body)
+	}
+	if _, body = e.do(t, http.MethodGet, "/api/approvals?status=APPROVED", "", alice); body != "[]" {
+		t.Fatalf("status filter: %s", body)
+	}
+	if len(e.authz.asked) != 0 {
+		t.Fatalf("listing one's own requests asks Cedar nothing: %v", e.authz.asked)
 	}
 }

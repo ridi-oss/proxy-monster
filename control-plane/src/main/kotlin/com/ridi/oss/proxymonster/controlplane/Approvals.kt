@@ -436,11 +436,6 @@ fun Route.approvalRoutes(
         }
     }
 
-    get("/api/approvals") {
-        val principal = call.requireApi() ?: return@get
-        call.respond(service.listOwn(principal, call.request.queryParameters["status"]))
-    }
-
     get("/api/approvals/inbox") {
         val principal = call.requireApi() ?: return@get
         call.respond(service.inbox(principal, call.httpRequesterIp(config)))

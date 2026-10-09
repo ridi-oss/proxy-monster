@@ -385,3 +385,200 @@ func (q *Queries) LiveAccessGrantsOf(ctx context.Context, principal string) ([]L
 	}
 	return items, nil
 }
+
+const ownApprovals = `-- name: OwnApprovals :many
+SELECT ar.id, ar.principal, ar.role_id, r.name AS role_name, ar.datasource_id, d.name AS datasource_name,
+       ar.reason, ar.requested_duration_sec, ar.status, ar.decided_by,
+       (SELECT qr.executed_by FROM query_result qr WHERE qr.task_id = ar.id ORDER BY qr.ordinal LIMIT 1) AS executed_by,
+       ar.decided_at, ar.rejection_reason, ar.created_at, ar.kind,
+       (SELECT string_agg(qr.sql, E';\n' ORDER BY qr.ordinal) FROM query_result qr WHERE qr.task_id = ar.id) AS sql,
+       (SELECT qr.sql_hash FROM query_result qr WHERE qr.task_id = ar.id ORDER BY qr.ordinal LIMIT 1) AS sql_hash,
+       (SELECT count(*) FROM query_result qr WHERE qr.task_id = ar.id) AS statement_count,
+       ar.deny_reason, ar.source_decision_id, ar.title, ar.evaluated_decision,
+       ar.approved_at, ar.executing_at, ar.executed_at, ar.execute_as, ar.creator_kind,
+       ar.statement_carries_protected_literal
+FROM access_request ar LEFT JOIN app_role r ON r.id = ar.role_id
+LEFT JOIN datasource d ON d.id = ar.datasource_id
+WHERE ar.kind = 'QUERY' AND ar.creator_kind = 'WORKFLOW' AND ar.principal = $1 ORDER BY ar.created_at DESC
+`
+
+type OwnApprovalsRow struct {
+	ID                               int64
+	Principal                        string
+	RoleID                           *int64
+	RoleName                         *string
+	DatasourceID                     *int64
+	DatasourceName                   *string
+	Reason                           *string
+	RequestedDurationSec             int64
+	Status                           string
+	DecidedBy                        *string
+	ExecutedBy                       *string
+	DecidedAt                        *time.Time
+	RejectionReason                  *string
+	CreatedAt                        time.Time
+	Kind                             string
+	Sql                              []byte
+	SqlHash                          *string
+	StatementCount                   int64
+	DenyReason                       *string
+	SourceDecisionID                 *int64
+	Title                            *string
+	EvaluatedDecision                *string
+	ApprovedAt                       *time.Time
+	ExecutingAt                      *time.Time
+	ExecutedAt                       *time.Time
+	ExecuteAs                        []string
+	CreatorKind                      *string
+	StatementCarriesProtectedLiteral *bool
+}
+
+func (q *Queries) OwnApprovals(ctx context.Context, principal string) ([]OwnApprovalsRow, error) {
+	rows, err := q.db.Query(ctx, ownApprovals, principal)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []OwnApprovalsRow
+	for rows.Next() {
+		var i OwnApprovalsRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Principal,
+			&i.RoleID,
+			&i.RoleName,
+			&i.DatasourceID,
+			&i.DatasourceName,
+			&i.Reason,
+			&i.RequestedDurationSec,
+			&i.Status,
+			&i.DecidedBy,
+			&i.ExecutedBy,
+			&i.DecidedAt,
+			&i.RejectionReason,
+			&i.CreatedAt,
+			&i.Kind,
+			&i.Sql,
+			&i.SqlHash,
+			&i.StatementCount,
+			&i.DenyReason,
+			&i.SourceDecisionID,
+			&i.Title,
+			&i.EvaluatedDecision,
+			&i.ApprovedAt,
+			&i.ExecutingAt,
+			&i.ExecutedAt,
+			&i.ExecuteAs,
+			&i.CreatorKind,
+			&i.StatementCarriesProtectedLiteral,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const ownApprovalsByStatus = `-- name: OwnApprovalsByStatus :many
+SELECT ar.id, ar.principal, ar.role_id, r.name AS role_name, ar.datasource_id, d.name AS datasource_name,
+       ar.reason, ar.requested_duration_sec, ar.status, ar.decided_by,
+       (SELECT qr.executed_by FROM query_result qr WHERE qr.task_id = ar.id ORDER BY qr.ordinal LIMIT 1) AS executed_by,
+       ar.decided_at, ar.rejection_reason, ar.created_at, ar.kind,
+       (SELECT string_agg(qr.sql, E';\n' ORDER BY qr.ordinal) FROM query_result qr WHERE qr.task_id = ar.id) AS sql,
+       (SELECT qr.sql_hash FROM query_result qr WHERE qr.task_id = ar.id ORDER BY qr.ordinal LIMIT 1) AS sql_hash,
+       (SELECT count(*) FROM query_result qr WHERE qr.task_id = ar.id) AS statement_count,
+       ar.deny_reason, ar.source_decision_id, ar.title, ar.evaluated_decision,
+       ar.approved_at, ar.executing_at, ar.executed_at, ar.execute_as, ar.creator_kind,
+       ar.statement_carries_protected_literal
+FROM access_request ar LEFT JOIN app_role r ON r.id = ar.role_id
+LEFT JOIN datasource d ON d.id = ar.datasource_id
+WHERE ar.kind = 'QUERY' AND ar.creator_kind = 'WORKFLOW' AND ar.principal = $1 AND ar.status = $2 ORDER BY ar.created_at DESC
+`
+
+type OwnApprovalsByStatusParams struct {
+	Principal string
+	Status    string
+}
+
+type OwnApprovalsByStatusRow struct {
+	ID                               int64
+	Principal                        string
+	RoleID                           *int64
+	RoleName                         *string
+	DatasourceID                     *int64
+	DatasourceName                   *string
+	Reason                           *string
+	RequestedDurationSec             int64
+	Status                           string
+	DecidedBy                        *string
+	ExecutedBy                       *string
+	DecidedAt                        *time.Time
+	RejectionReason                  *string
+	CreatedAt                        time.Time
+	Kind                             string
+	Sql                              []byte
+	SqlHash                          *string
+	StatementCount                   int64
+	DenyReason                       *string
+	SourceDecisionID                 *int64
+	Title                            *string
+	EvaluatedDecision                *string
+	ApprovedAt                       *time.Time
+	ExecutingAt                      *time.Time
+	ExecutedAt                       *time.Time
+	ExecuteAs                        []string
+	CreatorKind                      *string
+	StatementCarriesProtectedLiteral *bool
+}
+
+func (q *Queries) OwnApprovalsByStatus(ctx context.Context, arg OwnApprovalsByStatusParams) ([]OwnApprovalsByStatusRow, error) {
+	rows, err := q.db.Query(ctx, ownApprovalsByStatus, arg.Principal, arg.Status)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []OwnApprovalsByStatusRow
+	for rows.Next() {
+		var i OwnApprovalsByStatusRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Principal,
+			&i.RoleID,
+			&i.RoleName,
+			&i.DatasourceID,
+			&i.DatasourceName,
+			&i.Reason,
+			&i.RequestedDurationSec,
+			&i.Status,
+			&i.DecidedBy,
+			&i.ExecutedBy,
+			&i.DecidedAt,
+			&i.RejectionReason,
+			&i.CreatedAt,
+			&i.Kind,
+			&i.Sql,
+			&i.SqlHash,
+			&i.StatementCount,
+			&i.DenyReason,
+			&i.SourceDecisionID,
+			&i.Title,
+			&i.EvaluatedDecision,
+			&i.ApprovedAt,
+			&i.ExecutingAt,
+			&i.ExecutedAt,
+			&i.ExecuteAs,
+			&i.CreatorKind,
+			&i.StatementCarriesProtectedLiteral,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}

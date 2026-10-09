@@ -26,6 +26,7 @@ import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.contentType
 import io.ktor.server.testing.testApplication
+import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
@@ -66,7 +67,7 @@ class McpAdminParityToolsDbTest {
     }
 
     @Test
-    fun `group members and roles match the REST listing`() = testApplication {
+    fun `group members and roles match the store listing`() = testApplication {
         val client = installControlPlane(config, core)
         val admin = admin()
         val n = seq.incrementAndGet()
@@ -82,15 +83,15 @@ class McpAdminParityToolsDbTest {
 
         val members = client.mcpCall(token, "list_group_members", buildJsonObject { put("groupName", group.name) }).okResult()
         assertEquals(user.principal, members.jsonArray.single().jsonObject.str("principal"))
-        assertEquals(parseJson(client.get("/api/groups/${group.id}/members").bodyAsText()), members)
+        val listJson = Json { explicitNulls = false }
+        assertEquals(listJson.encodeToJsonElement(ListSerializer(GroupMemberEntry.serializer()), core.userGroupStore.listMembers(group.id)), members)
 
         val roles = client.mcpCall(token, "list_group_roles", buildJsonObject { put("groupName", group.name) }).okResult()
         assertEquals(role.name, roles.jsonArray.single().jsonObject.str("roleName"))
-        assertEquals(parseJson(client.get("/api/groups/${group.id}/roles").bodyAsText()), roles)
+        assertEquals(listJson.encodeToJsonElement(ListSerializer(GroupRoleEntry.serializer()), core.userGroupStore.listGroupRoles(group.id)), roles)
 
         val missing = client.mcpCall(token, "list_group_members", buildJsonObject { put("groupName", "no-such-group") })
         assertEquals("common.not_found", missing.errorCode())
-        assertEquals("common.not_found", restCode(client.get("/api/groups/${Long.MAX_VALUE}/members")))
     }
 
     @Test
@@ -229,8 +230,6 @@ class McpAdminParityToolsDbTest {
             assertEquals("common.forbidden", mcpResult(response.bodyAsText()).errorCode(), tool)
         }
         val rest = listOf(
-            client.get("/api/groups/${group.id}/members"),
-            client.get("/api/groups/${group.id}/roles"),
             client.post("/api/datasources") { json("""{"name":"mcp-outsider-new"}""") },
             client.put("/api/datasources/${ds.id}") { json("""{"name":"${ds.name}"}""") },
             client.delete("/api/datasources/${ds.id}"),

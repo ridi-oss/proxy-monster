@@ -28,6 +28,8 @@ type env struct {
 	forwarded []string
 	ended     []string
 	authz     fakeAuthz
+	// sessionsEnded records each principal Kotlin was told had its web sessions ended.
+	sessionsEnded []string
 }
 
 // fakeAuthz allows what allow lists and records every decision asked for.
@@ -115,6 +117,7 @@ func setupWith(t *testing.T, authz func(*pgxpool.Pool) api.Authorizer) *env {
 	Register(mux, e.st.Pool, api.Gate{
 		Sessions:      session.NewResolver(e.st.Pool, dbtest.Secret),
 		EndMismatched: func(r *http.Request) { e.ended = append(e.ended, r.Header.Get("Cookie")) },
+		SessionsEnded: func(_ context.Context, p string) error { e.sessionsEnded = append(e.sessionsEnded, p); return nil },
 		AuthDebug:     true,
 		Authz:         decider,
 	})

@@ -1,24 +1,16 @@
 package com.ridi.oss.proxymonster.controlplane
 
 import com.ridi.oss.proxymonster.controlplane.AuthAuditRecorder.Companion.ACTION_LOGOUT
-import com.ridi.oss.proxymonster.controlplane.AuthAuditRecorder.Companion.ACTION_SESSION_EXPIRE
 import com.ridi.oss.proxymonster.controlplane.AuthAuditRecorder.Companion.ACTION_SESSION_RENEW
 import com.ridi.oss.proxymonster.controlplane.AuthAuditRecorder.Companion.CHANNEL_PMON
-import com.ridi.oss.proxymonster.controlplane.AuthAuditRecorder.Companion.CHANNEL_SESSION
 import com.ridi.oss.proxymonster.auth.canonicalScopes
 import com.ridi.oss.proxymonster.controlplane.management.AuditActor
 import com.ridi.oss.proxymonster.controlplane.management.auditEntity
-import io.ktor.client.HttpClient
-import io.ktor.client.call.body
-import io.ktor.client.plugins.ClientRequestException
-import io.ktor.client.request.forms.submitForm
 import io.ktor.http.HttpStatusCode
-import io.ktor.http.Parameters
 import io.ktor.server.response.respond
 import io.ktor.server.routing.Route
 import io.ktor.server.routing.post
 import kotlinx.serialization.Serializable
-import org.slf4j.Logger
 import java.security.MessageDigest
 import java.security.SecureRandom
 import java.sql.Connection
@@ -63,7 +55,6 @@ const val ENDED_SIGNED_OUT = "SIGNED_OUT"
 const val ENDED_DISPLACED = "DISPLACED"
 const val ENDED_DEACTIVATED = "DEACTIVATED"
 const val ENDED_GROUP_REVOKED = "GROUP_REVOKED"
-const val ENDED_IDP_REJECTED = "IDP_REJECTED"
 const val ENDED_DEVICE_BIND_MISMATCH = "DEVICE_BIND_MISMATCH"
 
 // ---- Store -------------------------------------------------------------------------------------
@@ -94,19 +85,10 @@ data class WebSessionRow(
     val debugRequesterIp: String? = null,
 )
 
-data class LivenessCandidate(
-    val id: Long,
-    val kind: String,
-    val principal: String,
-    val refreshTokenEnc: ByteArray?,
-    val lastIdpCheckAt: Instant?,
-)
-
 /**
  * Server-side session state for every kind of authenticated principal, discriminated by the `kind`
  * column: DAEMON rows back CLI/daemon logins, WEB rows back browser-console logins. Daemon lookups
- * and renewal remain scoped `kind = 'DAEMON'`; web lifecycle methods remain scoped `kind = 'WEB'`;
- * only the liveness candidate query intentionally covers both kinds.
+ * and renewal remain scoped `kind = 'DAEMON'`; web lifecycle methods remain scoped `kind = 'WEB'`.
  *
  * DAEMON (docs/auth-model.md "Session renewal" + "Liveness"): one row per completed device-auth
  * login; [DaemonSessionRow.sessionExpiresAt] is the hard cap on silent wire-token renewal — past it,
@@ -449,21 +431,6 @@ class PrincipalSessionStore(
         }
     }
 
-    fun markCheck(id: Long, status: String) = dataSource.connection.use { c -> markCheck(id, status, c) }
-
-    fun markCheck(id: Long, status: String, c: Connection) {
-        c.prepareStatement(
-            """UPDATE principal_session
-               SET last_idp_check_at = now(),
-                   liveness_status = CASE WHEN ended_at IS NULL THEN ? ELSE liveness_status END
-               WHERE id = ?""",
-        ).use { ps ->
-            ps.setString(1, status)
-            ps.setLong(2, id)
-            ps.executeUpdate()
-        }
-    }
-
     /**
      * Close EVERY still-in-window session for [principal] NOW and mark them INACTIVE — the daemon
      * arm of [revokeActiveCredentials]. Deactivating by principal (not by a single row id) is what
@@ -485,19 +452,6 @@ class PrincipalSessionStore(
         ).use { ps ->
             ps.setString(1, LIVENESS_INACTIVE)
             ps.setString(2, principal)
-            ps.executeUpdate()
-        }
-
-    /** Close only the specified daemon session's still-open renewal window, on the caller's connection [c].
-     *  Returns the count closed, so a caller can tell a real close from a repeat on an already-closed one. */
-    fun closeDaemonWindow(id: Long, c: Connection): Int =
-        c.prepareStatement(
-            """UPDATE principal_session
-               SET liveness_status = ?, absolute_expires_at = now()
-               WHERE id = ? AND kind = 'DAEMON' AND absolute_expires_at > now()""",
-        ).use { ps ->
-            ps.setString(1, LIVENESS_INACTIVE)
-            ps.setLong(2, id)
             ps.executeUpdate()
         }
 
@@ -581,45 +535,6 @@ class PrincipalSessionStore(
         // points, so the callback lands on both).
         if (ended > 0) onWebSessionEnded?.invoke(principal, c)
         return ended
-    }
-
-    /** Live sessions whose liveness cache is older than [recheckIntervalSeconds], or was never checked. */
-    fun staleSessions(recheckIntervalSeconds: Long): List<LivenessCandidate> = dataSource.connection.use { c ->
-        c.prepareStatement(
-            """SELECT id, kind, principal, refresh_token_enc, last_idp_check_at
-               FROM principal_session
-               WHERE (last_idp_check_at IS NULL OR last_idp_check_at < now() - make_interval(secs => ?))
-                 AND ((kind = 'DAEMON' AND absolute_expires_at > now())
-                   OR (kind = 'WEB' AND ended_at IS NULL AND absolute_expires_at > now() AND idle_expires_at > now()))""",
-        ).use { ps ->
-            ps.setDouble(1, recheckIntervalSeconds.toDouble())
-            ps.executeQuery().use { rs ->
-                val out = ArrayList<LivenessCandidate>()
-                while (rs.next()) {
-                    out += LivenessCandidate(
-                        id = rs.getLong("id"),
-                        kind = rs.getString("kind"),
-                        principal = rs.getString("principal"),
-                        refreshTokenEnc = rs.getBytes("refresh_token_enc"),
-                        lastIdpCheckAt = rs.getTimestamp("last_idp_check_at")?.toInstant(),
-                    )
-                }
-                out
-            }
-        }
-    }
-
-    /** Persist a rotated refresh token returned by a refresh-grant liveness check. No-op when [crypto] is unset. */
-    fun updateRefresh(id: Long, refreshToken: String) {
-        val crypto = crypto ?: return
-        val encrypted = crypto.encrypt(refreshToken.toByteArray(Charsets.UTF_8))
-        dataSource.connection.use { c ->
-            c.prepareStatement("UPDATE principal_session SET refresh_token_enc = ? WHERE id = ?").use { ps ->
-                ps.setBytes(1, encrypted)
-                ps.setLong(2, id)
-                ps.executeUpdate()
-            }
-        }
     }
 
     /** Decrypt [row]'s stored refresh token, or null if there isn't one (no `offline_access`, or [crypto] unset). */
@@ -805,177 +720,4 @@ internal fun Route.sessionRenewRoutes(
 
         call.respond(RenewSessionResponse(issued.token, issued.expiresAt))
     }
-}
-
-// ---- IdP liveness sweep -------------------------------------------------------------------------
-
-/**
- * The sole IdP revalidator: one timer-driven pass over every live web or daemon session whose cached
- * check is stale. Each session's own refresh token determines only that session's fate; transient
- * failures leave its state and check timestamp untouched. The IdP HTTP round-trip always completes
- * before any principal lock is taken; only the successful response's local DB phase is serialized.
- */
-suspend fun sweepSessionLiveness(
-    config: Config,
-    discovery: OidcDiscovery?,
-    validator: IdTokenValidator?,
-    http: HttpClient,
-    sessionStore: PrincipalSessionStore,
-    userGroupStore: UserGroupStore,
-    roleResolver: RoleResolver,
-    authAudit: AuthAuditRecorder,
-    log: Logger,
-) {
-    if (config.oidc == null || discovery == null) return
-    for (row in sessionStore.staleSessions(config.idpRecheckIntervalSeconds)) {
-        runCatching {
-            revalidateSession(
-                row, config, discovery, validator, http, sessionStore, userGroupStore, roleResolver, authAudit, log,
-            )
-        }.onFailure { log.warn("IdP liveness sweep failed for {} session {}", row.principal, row.id, it) }
-    }
-}
-
-/**
- * Revalidate one session through its own refresh grant. A successful response is trusted only after
- * its id_token validates and resolves to the stored principal; then current IdP groups are synced and
- * the complete local role union is resolved. `invalid_grant` retires only the affected row.
- */
-private suspend fun revalidateSession(
-    row: LivenessCandidate,
-    config: Config,
-    discovery: OidcDiscovery,
-    validator: IdTokenValidator?,
-    http: HttpClient,
-    sessionStore: PrincipalSessionStore,
-    userGroupStore: UserGroupStore,
-    roleResolver: RoleResolver,
-    authAudit: AuthAuditRecorder,
-    log: Logger,
-) {
-    val oidc = config.oidc ?: return
-    val refreshToken = sessionStore.decryptRefresh(row.refreshTokenEnc)
-    if (refreshToken == null) {
-        log.debug("no refresh token to revalidate liveness for {} session {}", row.principal, row.id)
-        return
-    }
-    val document = discovery.document()
-    when (val outcome = refreshGrant(http, document.token_endpoint, oidc.clientId, oidc.clientSecret, refreshToken)) {
-        is RefreshOutcome.Active -> {
-            if (outcome.rotatedRefreshToken != null) {
-                sessionStore.updateRefresh(row.id, outcome.rotatedRefreshToken)
-            }
-            val claims = outcome.idToken?.let { validator?.validate(it, expectedNonce = null) }
-            if (claims == null) {
-                log.warn("IdP liveness check returned no valid id_token for {} session {}", row.principal, row.id)
-                return
-            }
-            val refreshedPrincipal = claims.email ?: claims.subject
-            if (refreshedPrincipal != row.principal) {
-                log.warn(
-                    "IdP liveness identity mismatch for {} session {}: got {}",
-                    row.principal,
-                    row.id,
-                    refreshedPrincipal,
-                )
-                return
-            }
-            userGroupStore.provisionFromOidc(row.principal, claims.email, claims.groups, oidc.groupMapping)
-            if (roleResolver.resolve(row.principal).isEmpty()) {
-                // Reconciliation is principal-global, so a zero-role verdict ends every live web
-                // session for the principal regardless of which kind produced this candidate. Daemon
-                // rows stay open; each daemon query re-resolves roles and fail-closes on its own.
-                sessionStore.dataSource.inTx { c ->
-                    val ended = sessionStore.endAllWebForPrincipal(row.principal, ENDED_GROUP_REVOKED, c)
-                    if (ended > 0) {
-                        authAudit.success(
-                            c,
-                            AuditActor(row.principal, clientAddr = null, channel = CHANNEL_SESSION),
-                            ACTION_SESSION_EXPIRE,
-                            auditEntity("User", row.principal),
-                            "IdP liveness ended $ended web session(s)",
-                            detail = "group_revoked",
-                        )
-                    }
-                }
-            }
-            sessionStore.markCheck(row.id, LIVENESS_ACTIVE)
-        }
-        is RefreshOutcome.Inactive -> {
-            log.warn("IdP rejected refresh token for {} session {} ({})", row.principal, row.id, outcome.reason)
-            // Each kind has its own end (a web row is ended; a daemon row's renewal window is closed), but the
-            // record is the same event either way, and it commits with the end so a recorded revocation is one
-            // that took effect. A row already ended by an earlier sweep transitions nothing and records nothing.
-            val end: ((Connection) -> Boolean)? = when (row.kind) {
-                "WEB" -> { c -> sessionStore.endWeb(row.id, ENDED_IDP_REJECTED, c) }
-                "DAEMON" -> { c -> sessionStore.closeDaemonWindow(row.id, c) > 0 }
-                else -> {
-                    log.warn("ignoring unknown principal session kind {} for row {}", row.kind, row.id)
-                    null
-                }
-            }
-            if (end != null) {
-                sessionStore.dataSource.inTx { c ->
-                    if (end(c)) {
-                        authAudit.success(
-                            c,
-                            AuditActor(row.principal, clientAddr = null, channel = CHANNEL_SESSION),
-                            ACTION_SESSION_EXPIRE,
-                            auditEntity("Session", row.id.toString()),
-                            "IdP rejected ${row.kind.lowercase()} session",
-                            detail = "idp_rejected",
-                        )
-                    }
-                }
-            }
-        }
-        is RefreshOutcome.Transient ->
-            log.warn("IdP liveness check transiently failed for {} session {}: {}", row.principal, row.id, outcome.reason)
-    }
-}
-
-private sealed interface RefreshOutcome {
-    data class Active(val rotatedRefreshToken: String?, val idToken: String?) : RefreshOutcome
-    data class Inactive(val reason: String) : RefreshOutcome
-    data class Transient(val reason: String) : RefreshOutcome
-}
-
-@Serializable
-private data class RefreshTokenResponse(
-    val access_token: String,
-    val refresh_token: String? = null,
-    val id_token: String? = null,
-)
-
-@Serializable
-private data class RefreshErrorBody(val error: String? = null, val error_description: String? = null)
-
-private suspend fun refreshGrant(
-    http: HttpClient,
-    tokenEndpoint: String,
-    clientId: String,
-    clientSecret: String,
-    refreshToken: String,
-): RefreshOutcome = try {
-    val resp: RefreshTokenResponse = http.submitForm(
-        url = tokenEndpoint,
-        formParameters = Parameters.build {
-            append("grant_type", "refresh_token")
-            append("refresh_token", refreshToken)
-            append("client_id", clientId)
-            append("client_secret", clientSecret)
-        },
-    ).body()
-    RefreshOutcome.Active(resp.refresh_token, resp.id_token)
-} catch (e: ClientRequestException) {
-    // Only `invalid_grant` is the IdP's definitive "this refresh token/account is no longer valid"
-    // signal. The rest of the 4xx space — `invalid_client` (a rotated `client_secret`),
-    // `unsupported_grant_type` (IdP-side config drift), etc. — is OUR-side/config trouble, not proof
-    // the account is gone, and must NOT revoke a live session (a transient IdP/config error keeps
-    // the last-known-good, docs/auth-model.md "Security invariants").
-    val body = runCatching { e.response.body<RefreshErrorBody>() }.getOrNull()
-    val error = body?.error ?: "http_${e.response.status.value}"
-    if (error == "invalid_grant") RefreshOutcome.Inactive(error) else RefreshOutcome.Transient(error)
-} catch (e: Exception) {
-    RefreshOutcome.Transient(e.message ?: e::class.simpleName ?: "unknown error")
 }

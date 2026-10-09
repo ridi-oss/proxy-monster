@@ -56,7 +56,7 @@ class DeviceLoginStoreDbTest {
         requireDockerOrSkip()
         ds = SharedPostgres.hikari(SharedPostgres.freshDatabase("pm_device_login"))
         Flyway.configure().dataSource(ds).load().migrate()
-        store = DeviceLoginStore(ds)
+        store = DeviceLoginStore(ds, ResultCrypto(ByteArray(32) { it.toByte() }))
     }
 
     @Test
@@ -175,7 +175,7 @@ class DeviceLoginStoreDbTest {
                 // resolveWeb refuses a session whose stored device_id doesn't match the request's cookie.
                 val deviceId = call.ensureDeviceCookie(secure = false)
                 val sessionId = lastPrincipalSessionStore.mintWeb(
-                    call.parameters["principal"]!!, null, config.webSessionAbsoluteSeconds, config.webSessionIdleSeconds, deviceId,
+                    call.parameters["principal"]!!, call.request.queryParameters["refresh"], config.webSessionAbsoluteSeconds, config.webSessionIdleSeconds, deviceId,
                 )
                 call.sessions.set(WebSessionRef(sessionId))
                 call.respond(HttpStatusCode.OK, "ok")
@@ -423,6 +423,17 @@ class DeviceLoginStoreDbTest {
             ),
             "the device-login handle is a credential and must never reach the audit trail",
         )
+    }
+
+    @Test
+    fun `the approving web session's IdP refresh token is carried onto the device login`() = testApplication {
+        val client = installDeviceRoutes()
+        val started = client.startLogin()
+        client.get("/test/login-as/carol@example.com?refresh=web-refresh-secret")
+        assertEquals(HttpStatusCode.OK, client.confirm(started.userCode).status)
+        assertEquals("/device/success", client.authorize(started.userCode).headers[HttpHeaders.Location])
+
+        assertEquals("web-refresh-secret", store.decryptRefresh(store.get(started.handle)!!))
     }
 
     @Test

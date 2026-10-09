@@ -137,3 +137,27 @@ func TestBarePmonMCPIsTheDefaultServer(t *testing.T) {
 		t.Error("`pmon mcp` should be the default server's relay and only that")
 	}
 }
+
+// With CODEX_HOME or CLAUDE_CONFIG_DIR set, the CLIs edit the config there, so pmon reads and edits that one and
+// leaves the default one alone.
+func TestConfigDirOverridesAreHonored(t *testing.T) {
+	writeCodex(t, "[mcp_servers.keep]\nurl = \"https://pm.example.com/mcp\"\n")
+	codexHome := t.TempDir()
+	t.Setenv("CODEX_HOME", codexHome)
+	if err := os.WriteFile(filepath.Join(codexHome, "config.toml"), []byte("[mcp_servers.keep]\nurl = \"https://unrelated.example.com/mcp\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	replaced, err := configApp("codex", "Codex", codexConfig()).Add(Setup{Pmon: "/pmon"}, acme)
+	if err != nil || len(replaced) != 0 {
+		t.Fatalf("replaced %v, err %v: the unrelated keep in CODEX_HOME must stay", replaced, err)
+	}
+	if _, found, _ := codexConfig().read("keep"); !found {
+		t.Error("the entry in CODEX_HOME was deleted")
+	}
+
+	claudeDir := t.TempDir()
+	t.Setenv("CLAUDE_CONFIG_DIR", claudeDir)
+	if !strings.HasPrefix(claudeCodePath(), claudeDir) {
+		t.Error("Claude Code's config is not read from CLAUDE_CONFIG_DIR")
+	}
+}

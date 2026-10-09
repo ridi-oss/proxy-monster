@@ -26,9 +26,10 @@ type configFile struct {
 
 func userHome() string { h, _ := os.UserHomeDir(); return h }
 
-// claudeCodeConfig is ~/.claude.json, where `claude mcp add --scope user` keeps its servers.
+// claudeCodeConfig is where `claude mcp add --scope user` keeps its servers: .claude.json in CLAUDE_CONFIG_DIR,
+// or in the home directory.
 func claudeCodeConfig() configFile {
-	path := func() string { return filepath.Join(userHome(), ".claude.json") }
+	path := claudeCodePath
 	return configFile{
 		exists: func() bool { _, err := os.Stat(path()); return err == nil },
 		list: func() (map[string]entry, error) {
@@ -68,10 +69,22 @@ func claudeCodeConfig() configFile {
 	}
 }
 
-// codexConfig is ~/.codex/config.toml. It is read with a TOML parser but edited as text, one
-// [mcp_servers.<entry>] table at a time, so the rest of the file keeps its formatting and comments.
+func claudeCodePath() string {
+	if dir := os.Getenv("CLAUDE_CONFIG_DIR"); dir != "" {
+		return filepath.Join(dir, ".claude.json")
+	}
+	return filepath.Join(userHome(), ".claude.json")
+}
+
+// codexConfig is config.toml in CODEX_HOME, or in ~/.codex. It is read with a TOML parser but edited as text,
+// one [mcp_servers.<entry>] table at a time, so the rest of the file keeps its formatting and comments.
 func codexConfig() configFile {
-	path := func() string { return filepath.Join(userHome(), ".codex", "config.toml") }
+	path := func() string {
+		if dir := os.Getenv("CODEX_HOME"); dir != "" {
+			return filepath.Join(dir, "config.toml")
+		}
+		return filepath.Join(userHome(), ".codex", "config.toml")
+	}
 	return configFile{
 		exists: func() bool { _, err := os.Stat(path()); return err == nil },
 		list: func() (map[string]entry, error) {

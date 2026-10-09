@@ -340,51 +340,6 @@ func ours(command string, args []string, env map[string]string, pmon, server str
 	return err == nil && !fi.IsDir()
 }
 
-// parseClaudeGet reads the command, args and environment from `claude mcp get` output. Args are space-joined
-// there, which is unambiguous for `mcp <server>` because a server name has no spaces.
-func parseClaudeGet(out string) (string, []string, map[string]string) {
-	var command string
-	var args []string
-	env := map[string]string{}
-	inEnv := false
-	for _, line := range strings.Split(out, "\n") {
-		trimmed := strings.TrimSpace(line)
-		switch {
-		case inEnv && strings.HasPrefix(line, "    ") && strings.Contains(trimmed, "="):
-			k, v, _ := strings.Cut(trimmed, "=")
-			env[k] = v
-			continue
-		case trimmed == "Environment:":
-			inEnv = true
-			continue
-		}
-		inEnv = false
-		if v, ok := strings.CutPrefix(trimmed, "Command: "); ok {
-			command = v
-		} else if v, ok := strings.CutPrefix(trimmed, "Args: "); ok {
-			args = strings.Fields(v)
-		}
-	}
-	return command, args, env
-}
-
-func parseCodexGet(out string) (string, []string, map[string]string) {
-	var got struct {
-		Transport struct {
-			Command string            `json:"command"`
-			Args    []string          `json:"args"`
-			Env     map[string]string `json:"env"`
-		} `json:"transport"`
-	}
-	if json.Unmarshal([]byte(out), &got) != nil {
-		return "", nil, nil
-	}
-	if got.Transport.Env == nil {
-		got.Transport.Env = map[string]string{}
-	}
-	return got.Transport.Command, got.Transport.Args, got.Transport.Env
-}
-
 func cliApp(id, name, bin string, scope []string, file configFile) App {
 	envFlag := "-e"
 	if bin == "codex" {
@@ -403,20 +358,15 @@ func cliApp(id, name, bin string, scope []string, file configFile) App {
 		}
 		return string(out), nil
 	}
-	// lookup reports whether entry exists, and whether it is pmon's. A failed `get` (missing entry or a broken
-	// CLI alike) reads as absent, so nothing is ever removed or replaced on its strength.
+	// lookup reads entry from the config the CLI edits, not from `mcp get`: get answers with whichever scope
+	// wins in the current directory, while add and remove act on the user's. A file it cannot read reads as
+	// absent, so nothing is ever removed or replaced on its strength.
 	lookup := func(s Setup, entry, server string) (exists, own, current bool) {
-		get := []string{"mcp", "get", entry}
-		parse := parseClaudeGet
-		if bin == "codex" {
-			get, parse = append(get, "--json"), parseCodexGet
-		}
-		out, err := run(get...)
-		if err != nil {
+		c, found, err := file.read(entry)
+		if err != nil || !found {
 			return false, false, false
 		}
-		command, args, env := parse(out)
-		return true, ownCommand(command, args, server), ours(command, args, env, s.Pmon, server)
+		return true, ownCommand(c.Command, c.Args, server), ours(c.Command, c.Args, envOrEmpty(c.Env), s.Pmon, server)
 	}
 	return App{
 		ID: id, Name: name,

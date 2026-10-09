@@ -300,7 +300,7 @@ fun Application.module(config: Config, core: ControlPlaneCore) {
         queryResultStore, store, runExecService, taskCompletionHub,
     )
 
-    val deviceLoginStore = DeviceLoginStore(dataSource, resultCrypto)
+    val deviceLoginStore = DeviceLoginStore(dataSource)
     val principalSessionStore = PrincipalSessionStore(
         dataSource,
         resultCrypto,
@@ -380,22 +380,6 @@ fun Application.module(config: Config, core: ControlPlaneCore) {
                 ),
             )
         }
-        // Short-lived signed cookie proving the browser viewed the /device page for a specific user_code —
-        // the only channel that binds a device login to SSO, so a raw /auth/oidc/login link can't approve a
-        // handle the user never confirmed (device-phishing defense).
-        cookie<DeviceVerifySession>(DEVICE_VERIFY_COOKIE) {
-            cookie.path = "/"
-            cookie.httpOnly = true
-            cookie.secure = config.mcpIssuer.startsWith("https://")
-            cookie.extensions["SameSite"] = "Lax"
-            cookie.maxAgeInSeconds = 600 // ~10 min — matches the device-login TTL
-            serializer = jsonSessionSerializer()
-            transform(
-                SessionTransportTransformerMessageAuthentication(
-                    config.sessionSecret.toByteArray(),
-                ),
-            )
-        }
         cookie<McpPendingAuthorization>(MCP_OAUTH_PENDING_COOKIE) {
             cookie.path = "/"
             cookie.httpOnly = true
@@ -465,17 +449,6 @@ fun Application.module(config: Config, core: ControlPlaneCore) {
         // OAuth 2.1/CIMD authorization-server routes share this process, origin, DB pool, OIDC login,
         // and signed user session with the control plane. There is no service-to-service auth hop.
         mcpOAuthRoutes(config, dataSource, principalSessionStore, core.authAudit)
-
-        // CLI/daemon login surface: /auth/device/start + /poll (pmon), the /device verification page + its
-        // SSO/debug choices, and /auth/session/renew (docs/auth-model.md "CLI / daemon login").
-        deviceSessionRoutes(
-            config, deviceLoginStore, principalSessionStore,
-            tokenStore, userGroupStore, core.authAudit, this@module.environment.log, core.clock,
-        )
-        pmonLogoutRoute(config, principalSessionStore, core.authAudit)
-        pmonMcpTokenRoute(
-            config, principalSessionStore, userGroupStore, OAuthAuthorizationStore(dataSource), core.authAudit, core.clock,
-        )
 
         // SCIM 2.0 provisioning (docs/auth-model.md "SCIM 2.0 provisioning") — bearer+TLS gated,
         // not a user session. principalSessionStore is passed so a SCIM deprovision durably closes the

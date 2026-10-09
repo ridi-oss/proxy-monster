@@ -21,31 +21,6 @@ import java.time.Instant
 import java.util.Base64
 import javax.sql.DataSource
 
-// ---- Wire DTOs -------------------------------------------------------------------------------
-
-@Serializable
-data class RenewSessionResponse(val token: String, val expiresAt: String)
-
-// ---- Renewal secret --------------------------------------------------------------------------
-
-private val renewalTokenRng = SecureRandom()
-
-/** A fresh high-entropy renewal bearer secret (`pmr_...`) — mint-once, returned only in the device-poll result. */
-private fun newRenewalToken(): String {
-    val raw = ByteArray(32).also { renewalTokenRng.nextBytes(it) }
-    return "pmr_" + Base64.getUrlEncoder().withoutPadding().encodeToString(raw)
-}
-
-/**
- * SHA-256 hex digest — the SAME idiom [TokenStore]'s private `hash()` uses for `proxy_token.
- * token_hash`, kept self-contained here rather than reaching into [TokenStore] (that's a different
- * part's file; this store persists its own hashed secret in its own column).
- */
-private fun sha256Hex(s: String): String {
-    val md = MessageDigest.getInstance("SHA-256")
-    return md.digest(s.toByteArray(Charsets.UTF_8)).joinToString("") { "%02x".format(it) }
-}
-
 // ---- Liveness status -------------------------------------------------------------------------
 
 /** A principal session's last-known IdP-liveness verdict (docs/auth-model.md "Liveness"). */
@@ -58,20 +33,6 @@ const val ENDED_GROUP_REVOKED = "GROUP_REVOKED"
 const val ENDED_DEVICE_BIND_MISMATCH = "DEVICE_BIND_MISMATCH"
 
 // ---- Store -------------------------------------------------------------------------------------
-
-data class DaemonSessionRow(
-    val id: Long,
-    val principal: String,
-    val handle: String?,
-    val refreshTokenEnc: ByteArray?,
-    val ttlSeconds: Long,
-    val sessionExpiresAt: Instant,
-    val lastIdpCheckAt: Instant?,
-    val livenessStatus: String,
-    val createdAt: Instant,
-    val scopes: Set<String> = emptySet(),
-    val elevatedUntil: Instant? = null,
-)
 
 data class WebSessionRow(
     val id: Long,
@@ -86,22 +47,9 @@ data class WebSessionRow(
 )
 
 /**
- * Server-side session state for every kind of authenticated principal, discriminated by the `kind`
- * column: DAEMON rows back CLI/daemon logins, WEB rows back browser-console logins. Daemon lookups
- * and renewal remain scoped `kind = 'DAEMON'`; web lifecycle methods remain scoped `kind = 'WEB'`.
- *
- * DAEMON (docs/auth-model.md "Session renewal" + "Liveness"): one row per completed device-auth
- * login; [DaemonSessionRow.sessionExpiresAt] is the hard cap on silent wire-token renewal — past it,
- * `pmon` must re-run device-auth. WEB: one row per console login with a sliding idle deadline plus
- * an immovable absolute cap. Plain resolution validates liveness and device binding without extending
- * idle; only [touchWeb] extends it, at most once per slide interval. A web row is live only while both
- * deadlines are in the future and it has not been explicitly ended ([endWeb]).
- *
- * A stored IdP refresh token (present only when the client granted `offline_access`) is encrypted
- * at rest via [crypto] — the SAME AES-256-GCM idiom [QueryResultStore] uses for APPROVER_EXEC results — and is
- * NEVER stored in plaintext; when [crypto] is null (`PM_RESULT_KEY` unset), the refresh token simply
- * isn't persisted (for daemons, silent renewal + the session window still work and the refresh-grant
- * IdP liveness recheck degrades to "can't verify, leave cached status alone").
+ * The Kotlin side of `principal_session`: WEB sessions the console still resolves here, and the daemon
+ * teardowns deprovisioning and OAuth consent revocation run. cp-go mints and renews daemon sessions.
+ * A WEB row is live only while both deadlines are in the future and it has not been ended ([endWeb]).
  */
 class PrincipalSessionStore(
     internal val dataSource: DataSource,
@@ -118,50 +66,6 @@ class PrincipalSessionStore(
     // tabs. Defaulted null so every existing construction (Main, tests) compiles and stays a no-op.
     private val onWebSessionEnded: ((String, Connection) -> Unit)? = null,
 ) {
-
-    /** A freshly-minted session row plus its plaintext [renewalToken] — visible ONLY at creation time. */
-    data class CreatedDaemonSession(val row: DaemonSessionRow, val renewalToken: String)
-
-    fun create(principal: String, handle: String?, refreshToken: String?, windowSeconds: Long, ttlSeconds: Long): CreatedDaemonSession =
-        dataSource.connection.use { c -> create(principal, handle, refreshToken, windowSeconds, ttlSeconds, c) }
-
-    /**
-     * Same as [create], on a caller-supplied connection [c] — so a device-login can re-check
-     * deprovisioning + open the session window + issue the SESSION token as ONE locked transaction.
-     * Reads the row back on [c] (the just-inserted, still-uncommitted row), never the
-     * plain [getById] which would open a second connection with a different view.
-     */
-    fun create(
-        principal: String,
-        handle: String?,
-        refreshToken: String?,
-        windowSeconds: Long,
-        ttlSeconds: Long,
-        c: Connection,
-        scopes: Set<String> = PMON_DEFAULT_SCOPES,
-        elevatedUntil: Instant? = null,
-    ): CreatedDaemonSession {
-        val encrypted = refreshToken?.let { crypto?.encrypt(it.toByteArray(Charsets.UTF_8)) }
-        val renewalToken = newRenewalToken()
-        val id = c.prepareStatement(
-            """INSERT INTO principal_session
-               (principal, handle, refresh_token_enc, ttl_seconds, absolute_expires_at, liveness_status, renewal_token_hash, kind, scopes, elevated_until)
-               VALUES (?, ?, ?, ?, now() + make_interval(secs => ?), ?, ?, 'DAEMON', ?, ?)
-               RETURNING id""",
-        ).use { ps ->
-            ps.setString(1, principal)
-            ps.setString(2, handle)
-            if (encrypted == null) ps.setNull(3, Types.BINARY) else ps.setBytes(3, encrypted)
-            ps.setLong(4, ttlSeconds)
-            ps.setDouble(5, windowSeconds.toDouble())
-            ps.setString(6, LIVENESS_ACTIVE)
-            ps.setString(7, sha256Hex(renewalToken))
-            ps.setString(8, canonicalScopes(scopes))
-            ps.setTimestamp(9, elevatedUntil?.let(java.sql.Timestamp::from))
-            ps.executeQuery().use { rs -> rs.next(); rs.getLong(1) }
-        }
-        return CreatedDaemonSession(queryOneOn(c, "$SELECT AND id = ?") { it.setLong(1, id) }!!, renewalToken)
-    }
 
     /**
      * Mint a newest-wins web session. When [c] is supplied, the caller must already be inside a
@@ -319,38 +223,6 @@ class PrincipalSessionStore(
         }
     }
 
-    /**
-     * The decrypted IdP refresh token of a live WEB session, if it has one. Used when that session approves a
-     * pmon device login: the token is carried onto the device login so the daemon session minted from it keeps
-     * its IdP-liveness revalidation. Null when the login granted no `offline_access` or no result key is set —
-     * [WebSessionRow] deliberately doesn't carry the ciphertext, so this is the narrow read for that case.
-     */
-    fun webRefreshToken(id: Long): String? = dataSource.connection.use { c ->
-        c.prepareStatement(
-            "SELECT refresh_token_enc FROM principal_session WHERE id = ? AND kind = 'WEB' AND ended_at IS NULL",
-        ).use { ps ->
-            ps.setLong(1, id)
-            ps.executeQuery().use { rs -> if (rs.next()) decryptRefresh(rs.getBytes("refresh_token_enc")) else null }
-        }
-    }
-
-    /**
-     * Whether WEB session [id] is still live RIGHT NOW — not ended and inside both deadlines. A request's
-     * resolved identity is cached per call, so an action that grants a new credential off that identity
-     * re-checks here immediately before committing: the liveness sweep may have ended the session (e.g. the
-     * IdP answered `invalid_grant`) after it was resolved.
-     */
-    fun webSessionIsLive(id: Long): Boolean = dataSource.connection.use { c ->
-        c.prepareStatement(
-            """SELECT 1 FROM principal_session
-               WHERE id = ? AND kind = 'WEB' AND ended_at IS NULL
-                 AND absolute_expires_at > now() AND (idle_expires_at IS NULL OR idle_expires_at > now())""",
-        ).use { ps ->
-            ps.setLong(1, id)
-            ps.executeQuery().use { it.next() }
-        }
-    }
-
     fun linkWebSessionKey(rowId: Long, key: String) {
         dataSource.inTx { c ->
             c.prepareStatement(
@@ -392,43 +264,6 @@ class PrincipalSessionStore(
         // Same-connection cleanup (see [onWebSessionEnded]); shares this auto-commit connection.
         if (principal != null) onWebSessionEnded?.invoke(principal, c)
         principal != null
-    }
-
-    fun getById(id: Long): DaemonSessionRow? = queryOne("$SELECT AND id = ?") { it.setLong(1, id) }
-
-    /** The most recent session for [principal] (a principal may be logged in from more than one daemon). */
-    fun getByPrincipal(principal: String): DaemonSessionRow? =
-        queryOne("$SELECT AND principal = ? ORDER BY created_at DESC, id DESC LIMIT 1") { it.setString(1, principal) }
-
-    fun getByHandle(handle: String): DaemonSessionRow? = queryOne("$SELECT AND handle = ?") { it.setString(1, handle) }
-
-    /**
-     * Resolve a session by the SHA-256 hash of its renewal bearer secret — the ONLY lookup
-     * `POST /auth/session/renew` performs now (docs/auth-model.md "Session renewal"). Never look
-     * this up by a caller-supplied principal/handle; that was the unauthenticated-renewal flaw.
-     */
-    fun getByRenewalTokenHash(hash: String): DaemonSessionRow? =
-        queryOne("$SELECT AND renewal_token_hash = ?") { it.setString(1, hash) }
-
-    /**
-     * True iff [principal]'s most recent session is still inside its renewal window. False (fail-closed)
-     * when there's none at all. The `absolute_expires_at > now()` comparison runs in the DATABASE clock
-     * domain — the SAME clock that STAMPS `absolute_expires_at` on create/deactivate (`now()`) — so a
-     * CP-vs-DB clock skew can't make a window that was just closed to `now()` momentarily read as
-     * still-open (the mixed DB-timestamp-vs-JVM-`Instant.now()` compare this replaced could, under a
-     * DB-ahead clock).
-     */
-    fun withinWindow(principal: String): Boolean = dataSource.connection.use { c ->
-        c.prepareStatement(
-            """SELECT absolute_expires_at > now() AS within
-               FROM principal_session
-               WHERE principal = ? AND kind = 'DAEMON'
-               ORDER BY created_at DESC, id DESC
-               LIMIT 1""",
-        ).use { ps ->
-            ps.setString(1, principal)
-            ps.executeQuery().use { rs -> if (rs.next()) rs.getBoolean("within") else false }
-        }
     }
 
     /**
@@ -535,189 +370,5 @@ class PrincipalSessionStore(
         // points, so the callback lands on both).
         if (ended > 0) onWebSessionEnded?.invoke(principal, c)
         return ended
-    }
-
-    /** Decrypt [row]'s stored refresh token, or null if there isn't one (no `offline_access`, or [crypto] unset). */
-    fun decryptRefresh(row: DaemonSessionRow): String? = decryptRefresh(row.refreshTokenEnc)
-
-    /** Decrypt an encrypted refresh token, or null when either the token or crypto is absent. */
-    fun decryptRefresh(enc: ByteArray?): String? {
-        val blob = enc ?: return null
-        val crypto = crypto ?: return null
-        return crypto.decrypt(blob).toString(Charsets.UTF_8)
-    }
-
-    /**
-     * The locked core of `POST /auth/session/renew`: open a transaction, take the per-principal
-     * advisory lock first, re-select [row] by id, and re-run every fail-closed check against that fresh
-     * read. Authoritative deprovisioning takes the same lock, so it either commits before this re-read
-     * or tears down the credential after this transaction commits. Returns null when any check fails
-     * under the lock or the row no longer exists; otherwise returns the freshly-issued token.
-     */
-    fun renewLocked(
-        row: DaemonSessionRow,
-        isDeactivated: (String, Connection) -> Boolean,
-        mint: (DaemonSessionRow, Connection) -> IssuedToken,
-    ): IssuedToken? = dataSource.inTx { c ->
-        c.advisoryLockPrincipal(row.principal) // may block for a while behind a concurrent teardown
-        val fresh = queryOneOn(c, "$SELECT AND id = ?") { it.setLong(1, row.id) } ?: return@inTx null
-        // The window check runs in the DATABASE clock domain (same fix as withinWindow) — comparing
-        // fresh.sessionExpiresAt against the JVM's Instant.now() would let a CP-vs-DB clock skew
-        // accept a renew for a window the DB itself already considers closed.
-        if (!withinWindowOn(c, fresh.id) ||
-            isDeactivated(fresh.principal, c) ||
-            fresh.livenessStatus == LIVENESS_INACTIVE
-        ) {
-            return@inTx null
-        }
-        mint(fresh, c)
-    }
-
-    /** Runs [mint] on [row] under its principal's lock (deprovision takes it too); null once ended or deactivated. */
-    fun <T> withLiveDaemonSessionLocked(
-        row: DaemonSessionRow,
-        isDeactivated: (String, Connection) -> Boolean,
-        mint: (DaemonSessionRow, Connection) -> T?,
-    ): T? = dataSource.inTx { c ->
-        c.advisoryLockPrincipal(row.principal)
-        val fresh = queryOneOn(c, "$SELECT AND id = ?") { it.setLong(1, row.id) } ?: return@inTx null
-        if (fresh.livenessStatus == LIVENESS_INACTIVE || isDeactivated(fresh.principal, c)) return@inTx null
-        mint(fresh, c)
-    }
-
-    /**
-     * [withinWindow], scoped to ONE row by id and read on the caller-supplied (locked) connection
-     * [c] — what [renewLocked] needs. Uses `clock_timestamp()`, NOT `now()`:
-     * Postgres's `now()` is frozen at the enclosing TRANSACTION's start, not the current instant —
-     * [renewLocked] takes the advisory lock before this check and can block on it for a while, so
-     * `now()` here could still reflect a moment BEFORE that wait, letting a window that has since
-     * actually expired read as still open. `clock_timestamp()` always reflects the real current time.
-     */
-    private fun withinWindowOn(c: Connection, id: Long): Boolean =
-        c.prepareStatement("SELECT absolute_expires_at > clock_timestamp() FROM principal_session WHERE id = ? AND kind = 'DAEMON'").use { ps ->
-            ps.setLong(1, id)
-            ps.executeQuery().use { rs -> rs.next() && rs.getBoolean(1) }
-        }
-
-    private fun queryOne(sql: String, bind: (PreparedStatement) -> Unit): DaemonSessionRow? =
-        dataSource.connection.use { c -> queryOneOn(c, sql, bind) }
-
-    private fun queryOneOn(c: Connection, sql: String, bind: (PreparedStatement) -> Unit): DaemonSessionRow? =
-        c.prepareStatement(sql).use { ps ->
-            bind(ps)
-            ps.executeQuery().use { rs -> if (rs.next()) rs.toRow() else null }
-        }
-
-    private fun ResultSet.toRow() = DaemonSessionRow(
-        id = getLong("id"),
-        principal = getString("principal"),
-        handle = getString("handle"),
-        refreshTokenEnc = getBytes("refresh_token_enc"),
-        ttlSeconds = getLong("ttl_seconds"),
-        sessionExpiresAt = getTimestamp("absolute_expires_at").toInstant(),
-        lastIdpCheckAt = getTimestamp("last_idp_check_at")?.toInstant(),
-        livenessStatus = getString("liveness_status"),
-        createdAt = getTimestamp("created_at").toInstant(),
-        scopes = parseScopes(getString("scopes")),
-        elevatedUntil = getTimestamp("elevated_until")?.toInstant(),
-    )
-
-    private companion object {
-        const val SELECT =
-            """SELECT id, principal, handle, refresh_token_enc, ttl_seconds, absolute_expires_at, last_idp_check_at, liveness_status, created_at,
-                      scopes, elevated_until
-               FROM principal_session
-               WHERE kind = 'DAEMON'"""
-    }
-}
-
-// ---- Renewal route -----------------------------------------------------------------------------
-
-/**
- * `POST /auth/session/renew` (docs/auth-model.md "Session renewal") — silently re-mint a wire
- * SESSION token *within* the session window; refuse (401) once the window has closed, the
- * principal has been deprovisioned, or liveness has gone INACTIVE, so the daemon falls back to a
- * fresh device-auth (re-prompt). The timer sweep is the sole IdP revalidator; renewal only reads the
- * cached result. Registered from [deviceSessionRoutes] (DeviceAuth.kt) so the two files compose into
- * one route group without either owning the other's table.
- *
- * Authenticates by the `Authorization: Bearer <renewalToken>` header ONLY — a high-entropy,
- * mint-once secret handed back in the `/auth/device/poll` result and hashed at rest, looked up by
- * hash. There is deliberately no request-body identity (no `handle`/`principal`): a bare knowledge
- * of someone's principal string must never be enough to mint them a fresh wire token.
- */
-/** `POST /auth/session/logout[?replaced=true]` ends the daemon session (see [PrincipalSessionStore.endDaemon]); 204 even for an unknown token. */
-internal fun Route.pmonLogoutRoute(config: Config, sessionStore: PrincipalSessionStore, authAudit: AuthAuditRecorder) {
-    post("/auth/session/logout") {
-        val authHeader = call.request.headers["Authorization"]
-        if (authHeader == null || !authHeader.startsWith("Bearer ")) {
-            call.respond(HttpStatusCode.Unauthorized, ApiError("auth.missing_renewal_token"))
-            return@post
-        }
-        val row = sessionStore.getByRenewalTokenHash(sha256Hex(authHeader.removePrefix("Bearer ").trim()))
-        if (row != null) {
-            val clientAddr = call.httpRequesterIp(config)
-            val replaced = call.request.queryParameters["replaced"] == "true"
-            sessionStore.dataSource.inTx { c ->
-                c.advisoryLockPrincipal(row.principal)
-                sessionStore.endDaemon(row.id, c, replaced)?.let { owner ->
-                    authAudit.success(
-                        c,
-                        AuditActor(owner, clientAddr = clientAddr, channel = CHANNEL_PMON),
-                        ACTION_LOGOUT,
-                        auditEntity("Session", row.id.toString()),
-                        if (replaced) "pmon session replaced by a new login" else "pmon session signed out",
-                    )
-                }
-            }
-        }
-        call.respond(HttpStatusCode.NoContent)
-    }
-}
-
-internal fun Route.sessionRenewRoutes(
-    config: Config,
-    daemonSessionStore: PrincipalSessionStore,
-    tokenStore: TokenStore,
-    userGroupStore: UserGroupStore,
-    authAudit: AuthAuditRecorder,
-) {
-    post("/auth/session/renew") {
-        val authHeader = call.request.headers["Authorization"]
-        if (authHeader == null || !authHeader.startsWith("Bearer ")) {
-            call.respond(HttpStatusCode.Unauthorized, ApiError("auth.missing_renewal_token"))
-            return@post
-        }
-        val secret = authHeader.removePrefix("Bearer ").trim()
-        val row = daemonSessionStore.getByRenewalTokenHash(sha256Hex(secret))
-        if (row == null) {
-            call.respond(HttpStatusCode.Unauthorized, ApiError("common.unauthenticated"))
-            return@post
-        }
-        val clientAddr = call.httpRequesterIp(config)
-        // Re-check and mint under the per-principal advisory lock, not against [row]'s pre-lock
-        // snapshot. Every fail-closed decision is repeated on the locked connection before issuance.
-        val issued = daemonSessionStore.renewLocked(
-            row,
-            isDeactivated = { principal, c -> userGroupStore.isDeactivated(principal, c) },
-            mint = { fresh, c ->
-                tokenStore.issue(TokenKind.SESSION, fresh.principal, emptyList(), name = null, ttlSeconds = fresh.ttlSeconds, c, fresh.id)
-                    .also { token ->
-                        authAudit.success(
-                            c,
-                            AuditActor(fresh.principal, clientAddr = clientAddr, channel = CHANNEL_PMON),
-                            ACTION_SESSION_RENEW,
-                            auditEntity("Token", token.id.toString()),
-                            "Daemon session renewed SESSION token",
-                        )
-                    }
-            },
-        )
-        if (issued == null) {
-            call.respond(HttpStatusCode.Unauthorized, ApiError("auth.session_window_expired"))
-            return@post
-        }
-
-        call.respond(RenewSessionResponse(issued.token, issued.expiresAt))
     }
 }

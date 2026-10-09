@@ -107,9 +107,9 @@ class PmonLogoutDbTest {
     fun `a replaced login keeps its open connections but opens no new one`() = testApplication {
         val client = installControlPlane(config, core)
         val login = client.pmonLogin(principal())
-        val pmon = createClient { }
-        val discover = suspend { pmon.get("/api/datasources") { header(HttpHeaders.Authorization, "Bearer ${login.token}") }.status }
-        assertEquals(HttpStatusCode.OK, discover())
+        // Datasource discovery accepts a bearer only while it resolves with retired tokens excluded.
+        val discoverable = { core.tokenStore.resolve(login.token, allowRetired = false) != null }
+        assertEquals(true, discoverable())
         val mcp = client.mint(login.renewalToken)
 
         assertEquals(HttpStatusCode.NoContent, client.bearerPost("/auth/session/logout?replaced=true", login.renewalToken).status)
@@ -119,7 +119,7 @@ class PmonLogoutDbTest {
         assertEquals(HttpStatusCode.Unauthorized, client.bearerPost("/auth/session/renew", login.renewalToken).status)
         assertEquals(false, wireValid(login.token), "a new connection is refused")
         assertEquals(login.principal, core.resolveRequestIdentity(login.token, null).identity.principal, "an open connection's statements still run")
-        assertEquals(HttpStatusCode.Unauthorized, discover(), "a retired token is refused as a fresh bearer")
+        assertEquals(false, discoverable(), "a retired token is refused as a fresh bearer")
     }
 
     @Test

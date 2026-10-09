@@ -142,49 +142,6 @@ class AuthAndIngestRoutesDbTest {
         }
     }
 
-    @Test
-    fun `datasource discovery accepts a wire-token Bearer and rejects missing or bad auth`() = testApplication {
-        val dataSource = migratedDatabase("pm_ds_bearer")
-        val core = ControlPlaneCore(dataSource)
-        application { module(config(authDebug = false), core) }
-        val client = wireClient()
-
-        core.datasourceStore.create(
-            DatasourceInput(name = "ds-bearer", engine = "mysql", host = "h", port = 3306, dbName = "app"),
-        )
-        val token = core.tokenStore.issue(TokenKind.USER, "alice@example.com", emptyList(), name = null, ttlSeconds = 3600).token
-
-        // A valid wire-token Bearer authenticates discovery (the pmon daemon's path) and lists the datasource.
-        val ok = client.get("/api/datasources") { header(HttpHeaders.Authorization, "Bearer $token") }
-        assertEquals(HttpStatusCode.OK, ok.status)
-        assertTrue(ok.bodyAsText().contains("ds-bearer"), "expected the datasource in the discovery response")
-
-        // With authDebug off, no auth and a garbage Bearer are both unauthorized.
-        assertEquals(HttpStatusCode.Unauthorized, client.get("/api/datasources").status)
-        val badBearer = client.get("/api/datasources") { header(HttpHeaders.Authorization, "Bearer pmk_not-a-real-token") }
-        assertEquals(HttpStatusCode.Unauthorized, badBearer.status)
-
-        // A non-native-wire kind (EDITOR / APPROVER_EXEC) must NOT authenticate the discovery path — only
-        // SESSION/USER are the pmon-client kinds; the ephemeral editor/approver-exec tokens are wire-only.
-        val editorToken = core.tokenStore.issue(TokenKind.EDITOR, "editor@example.com", emptyList(), name = null, ttlSeconds = 3600).token
-        assertEquals(
-            HttpStatusCode.Unauthorized,
-            client.get("/api/datasources") { header(HttpHeaders.Authorization, "Bearer $editorToken") }.status,
-            "EDITOR-kind tokens must not authenticate the Bearer discovery path",
-        )
-
-        // A deactivated principal's still-valid token must fail closed (matches the gRPC decide path).
-        dataSource.connection.use { c ->
-            c.prepareStatement("INSERT INTO app_user (principal, active) VALUES ('deact@example.com', false)").use { it.executeUpdate() }
-        }
-        val deactToken = core.tokenStore.issue(TokenKind.USER, "deact@example.com", emptyList(), name = null, ttlSeconds = 3600).token
-        assertEquals(
-            HttpStatusCode.Unauthorized,
-            client.get("/api/datasources") { header(HttpHeaders.Authorization, "Bearer $deactToken") }.status,
-            "a deactivated principal's token must not enumerate datasources",
-        )
-    }
-
     private fun io.ktor.server.testing.ApplicationTestBuilder.wireClient() = createClient {
         expectSuccess = false
         install(ClientContentNegotiation) { json(Json { ignoreUnknownKeys = true }) }

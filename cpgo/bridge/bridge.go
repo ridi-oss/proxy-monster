@@ -35,15 +35,16 @@ func AuditRecord(owner string) Resource { return Resource{Type: "AuditRecord", P
 
 // Client calls Kotlin's /internal/authorize routes.
 type Client struct {
-	url, batchURL string
-	token         string
-	http          *http.Client
+	url, batchURL, mayConnectURL string
+	token                        string
+	http                         *http.Client
 }
 
 func New(upstream *url.URL, token string) *Client {
 	return &Client{
 		url:      upstream.JoinPath("/internal/authorize").String(),
 		batchURL: upstream.JoinPath("/internal/authorize-batch").String(),
+		mayConnectURL: upstream.JoinPath("/internal/may-connect").String(),
 		token:    token,
 		http:     &http.Client{Timeout: 10 * time.Second},
 	}
@@ -80,6 +81,26 @@ func (c *Client) AuthorizeEach(ctx context.Context, principal, action string, re
 	}{principal, action, resources, requesterIP}, &out)
 	if err == nil && len(out.Allow) != len(resources) {
 		err = fmt.Errorf("bridge: %d decisions for %d resources", len(out.Allow), len(resources))
+	}
+	return out.Allow, err
+}
+
+// MayConnect is Kotlin's datasource.connect decision for each datasource, in order: context tags derived
+// from the datasource first, and false for a deactivated principal or a missing datasource.
+func (c *Client) MayConnect(ctx context.Context, principal string, datasourceIDs []int64, requesterIP string) ([]bool, error) {
+	if len(datasourceIDs) == 0 {
+		return nil, nil
+	}
+	var out struct {
+		Allow []bool `json:"allow"`
+	}
+	err := c.post(ctx, c.mayConnectURL, struct {
+		Principal     string  `json:"principal"`
+		DatasourceIDs []int64 `json:"datasourceIds"`
+		RequesterIP   string  `json:"requesterIp,omitempty"`
+	}{principal, datasourceIDs, requesterIP}, &out)
+	if err == nil && len(out.Allow) != len(datasourceIDs) {
+		err = fmt.Errorf("bridge: %d decisions for %d datasources", len(out.Allow), len(datasourceIDs))
 	}
 	return out.Allow, err
 }

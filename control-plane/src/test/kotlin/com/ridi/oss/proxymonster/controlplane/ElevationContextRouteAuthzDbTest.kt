@@ -436,22 +436,8 @@ class ElevationContextRouteAuthzDbTest {
     }
 
     @Test
-    fun `datasource list is filtered by connect only when connectable is requested`() = testApplication {
-        val client = wire()
-        client.post("/test/session/$requester")
-
-        // Default (no param): the full list, so JIT-request compose can show datasources the caller cannot
-        // yet connect to -- elev-ds is present even without a connect grant.
-        val full = client.get("/api/datasources")
-        assertEquals(HttpStatusCode.OK, full.status)
-        assertTrue(full.bodyAsText().contains(datasource.name), "the default list is unfiltered (compose needs it)")
-
-        // ?connectable=true with no datasource.connect grant -> elev-ds is filtered out (the query picker).
-        val filtered = client.get("/api/datasources?connectable=true")
-        assertEquals(HttpStatusCode.OK, filtered.status)
-        assertFalse(filtered.bodyAsText().contains(datasource.name), "no datasource.connect -> excluded from ?connectable=true")
-
-        // Granting datasource.connect brings it into the connectable list.
+    fun `the datasource list's per-row connect decision follows datasource connect grants`() {
+        assertFalse(core.mayConnectById(requester, null, datasource.id), "no datasource.connect -> excluded from ?connectable=true")
         val connect = core.cedarPolicyStore.create(
             CedarPolicyInput(
                 name = "elev-requester-connect-list",
@@ -460,8 +446,7 @@ class ElevationContextRouteAuthzDbTest {
             updatedBy = null,
         )
         try {
-            val allowed = client.get("/api/datasources?connectable=true")
-            assertTrue(allowed.bodyAsText().contains(datasource.name), "with datasource.connect -> included in ?connectable=true")
+            assertTrue(core.mayConnectById(requester, null, datasource.id), "with datasource.connect -> included in ?connectable=true")
         } finally {
             core.cedarPolicyStore.setEnabled(connect.id, false, "test-cleanup")
         }

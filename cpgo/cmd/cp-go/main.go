@@ -19,8 +19,12 @@ import (
 	"github.com/alecthomas/kong"
 	"google.golang.org/grpc"
 
+	"github.com/ridi-oss/proxy-monster/cpgo/api"
 	"github.com/ridi-oss/proxy-monster/cpgo/child"
 	"github.com/ridi-oss/proxy-monster/cpgo/front"
+	"github.com/ridi-oss/proxy-monster/cpgo/routes"
+	"github.com/ridi-oss/proxy-monster/cpgo/session"
+	"github.com/ridi-oss/proxy-monster/cpgo/store"
 )
 
 type config struct {
@@ -32,11 +36,27 @@ type config struct {
 	ChildGRPCPort  int           `env:"PM_CP_CHILD_GRPC_PORT" default:"18091" help:"Loopback gRPC port of the Kotlin control plane."`
 	Attach         bool          `env:"PM_CP_ATTACH" help:"Forward to a Kotlin control plane already running on the child ports instead of starting one."`
 	StartTimeout   time.Duration `env:"PM_CP_START_TIMEOUT" default:"10m" help:"How long to wait for the Kotlin control plane to become healthy."`
+	// Shared with the Kotlin child, which reads them from the environment, so they are never flags.
+	DBURL         string `kong:"-"`
+	DBUser        string `kong:"-"`
+	DBPassword    string `kong:"-"`
+	SessionSecret string `kong:"-"`
+}
+
+func envOr(key, def string) string {
+	if v, ok := os.LookupEnv(key); ok {
+		return v
+	}
+	return def
 }
 
 func main() {
 	var cfg config
 	kong.Parse(&cfg, kong.Name("cp-go"), kong.Description("proxy-monster control plane front door."))
+	cfg.DBURL = envOr("PM_DB_URL", "jdbc:postgresql://localhost:5432/proxymonster")
+	cfg.DBUser = envOr("PM_DB_USER", "proxymonster")
+	cfg.DBPassword = envOr("PM_DB_PASSWORD", "proxymonster")
+	cfg.SessionSecret = envOr("PM_SESSION_SECRET", "dev-insecure-session-secret-change-me")
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	code := run(ctx, cfg)
 	stop()
@@ -72,10 +92,24 @@ func run(ctx context.Context, cfg config) int {
 	}
 	defer conn.Close()
 
+	// Opened after the child is healthy, so its migrations have run.
+	pool, err := store.Open(ctx, cfg.DBURL, cfg.DBUser, cfg.DBPassword)
+	if err != nil {
+		slog.Error("cp-go: " + err.Error())
+		return shutdownChild(kt)
+	}
+	defer pool.Close()
+
 	edges := front.ParseTrustedEdges(cfg.TrustedProxies)
+	forward := front.NewHTTP(httpUpstream, edges)
+	mux := http.NewServeMux()
+	routes.Register(mux, pool, api.Gate{
+		Sessions:      session.NewResolver(pool, cfg.SessionSecret),
+		EndMismatched: api.KotlinSessionCheck(httpUpstream),
+	})
 	httpSrv := &http.Server{
 		Addr:              ":" + strconv.Itoa(cfg.HTTPPort),
-		Handler:           front.NewHTTP(httpUpstream, edges),
+		Handler:           front.Route(mux, forward),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 	grpcSrv := front.NewGRPC(conn)

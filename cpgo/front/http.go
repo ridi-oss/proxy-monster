@@ -8,8 +8,22 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"path"
 	"time"
 )
+
+// Route serves a request with the Go handler registered for it in mux, and forwards every other request
+// to the Kotlin control plane: non-canonical paths ServeMux would redirect, and HEAD, which ServeMux
+// would hand to a GET handler.
+func Route(mux *http.ServeMux, forward http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if h, pattern := mux.Handler(r); pattern != "" && r.Method != http.MethodHead && path.Clean(r.URL.Path) == r.URL.Path {
+			h.ServeHTTP(w, r)
+			return
+		}
+		forward.ServeHTTP(w, r)
+	})
+}
 
 // NewHTTP forwards every request to the Kotlin control plane at upstream (e.g. http://127.0.0.1:18090).
 func NewHTTP(upstream *url.URL, edges TrustedEdges) http.Handler {

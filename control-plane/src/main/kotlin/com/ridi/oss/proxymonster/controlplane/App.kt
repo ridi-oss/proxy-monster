@@ -16,9 +16,7 @@ import com.ridi.oss.proxymonster.controlplane.management.AuditSource
 import com.ridi.oss.proxymonster.controlplane.management.DatasourceManagementService
 import com.ridi.oss.proxymonster.controlplane.management.IdentityManagementService
 import com.ridi.oss.proxymonster.controlplane.management.ManagementAuditRecorder
-import com.ridi.oss.proxymonster.controlplane.notify.NotificationStore
 import com.ridi.oss.proxymonster.controlplane.notify.installNotifications
-import com.ridi.oss.proxymonster.controlplane.notify.localeRoutes
 import com.ridi.oss.proxymonster.controlplane.management.ManagementException
 import com.ridi.oss.proxymonster.controlplane.management.PolicyManagementService
 import com.ridi.oss.proxymonster.controlplane.management.auditEntity
@@ -710,7 +708,6 @@ fun Application.module(config: Config, core: ControlPlaneCore) {
 
         // Self-service: the caller's own display language, which notification delivery reads. Not an admin
         // surface and not an authorization input — it only changes which locale a message renders in.
-        localeRoutes(config, NotificationStore(dataSource))
 
         // Enforcing SQL query endpoint (deny + result masking; effective roles come from RoleResolver).
         queryRoutes(config, datasourceStore, queryHistoryStore, runExecService)
@@ -725,7 +722,6 @@ fun Application.module(config: Config, core: ControlPlaneCore) {
         taskEventsRoute(config, taskCompletionHub, accessStore, authz, datasourceStore, principalSessionStore, appJson)
 
         // Per-principal editor query history (auto-saved on each run; recalled in the editor).
-        queryHistoryRoutes(config, queryHistoryStore)
 
         // Wire-auth: SESSION/PAT token issuance + revocation.
         tokenRoutes(config, tokenStore, userGroupStore, authz, core.authAudit, tokenService)

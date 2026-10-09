@@ -58,7 +58,19 @@ scopes and when the extra ones expire. To change scopes, log in again.
 
 `pmon mcp [server]` is a local stdio MCP server. An agent runs it as a command,
 and it relays to `<server>/mcp` with a short-lived MCP token the daemon mints
-from your pmon login, so the agent needs no sign-in of its own:
+from your pmon login, so the agent needs no sign-in of its own.
+
+`pmon mcp --install` registers it with every AI app installed on this machine
+(Claude Desktop, Claude Code, Codex) for every server; name servers or pass
+`--app` to narrow it, and `--uninstall` removes the entries:
+
+```sh
+pmon mcp --install
+pmon mcp --install --app claude-code hr
+pmon mcp --uninstall hr
+```
+
+By hand, the same entries are:
 
 ```sh
 claude mcp add --scope user pmon-hr -- pmon mcp hr

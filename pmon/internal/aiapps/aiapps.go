@@ -140,7 +140,7 @@ func claudeDesktop() App {
 			err = withClaudeDesktopClosed(s.Confirm, func() error {
 				return editDesktopServers(claudeDesktopConfig(), func(m map[string]json.RawMessage) {
 					var c mcpCommand
-					if prev, ok := m[entry]; ok && (json.Unmarshal(prev, &c) != nil || c.Command != s.Pmon) {
+					if prev, ok := m[entry]; ok && (json.Unmarshal(prev, &c) != nil || !ownCommand(c.Command, c.Args, server)) {
 						taken = &EntryError{App: "Claude Desktop", Entry: entry, Taken: true}
 						return
 					}
@@ -153,7 +153,7 @@ func claudeDesktop() App {
 			return withClaudeDesktopClosed(s.Confirm, func() error {
 				return editDesktopServers(claudeDesktopConfig(), func(m map[string]json.RawMessage) {
 					var c mcpCommand
-					if json.Unmarshal(m[entry], &c) == nil && ownCommand(c.Command, c.Args, s.Pmon, server) {
+					if json.Unmarshal(m[entry], &c) == nil && ownCommand(c.Command, c.Args, server) {
 						delete(m, entry)
 					}
 				})
@@ -253,16 +253,24 @@ func writeDesktopConfig(path string, before []byte, servers, top map[string]json
 
 // --- Claude Code and Codex: their own `mcp add/get/remove` commands ---
 
-// ownCommand reports whether a registered command is `pmon mcp <server>` run by pmon: pmon wrote it, so it
-// may replace or remove it.
-func ownCommand(command string, args []string, pmon, server string) bool {
-	return command == pmon && len(args) == 2 && args[0] == "mcp" && args[1] == server
+// ownCommand reports whether a registered command is `pmon mcp <server>`, whichever pmon runs it: the CLI
+// and Proxy Monster Desktop register different copies, and either may replace or remove the other's entry.
+func ownCommand(command string, args []string, server string) bool {
+	name := strings.ToLower(filepath.Base(strings.ReplaceAll(command, `\`, "/")))
+	return (name == "pmon" || name == "pmon.exe") && len(args) == 2 && args[0] == "mcp" && args[1] == server
 }
 
-// ours reports whether the entry is pmon's and reaches the daemon in use, which is what "connected" means: an
-// entry written for another PMON_CONFIG_DIR would reach a different login.
+// ours reports whether the entry is pmon's, runs a pmon that exists, and reaches the daemon in use, which is
+// what "connected" means: an entry written for another PMON_CONFIG_DIR would reach a different login.
 func ours(command string, args []string, env map[string]string, pmon, server string) bool {
-	return ownCommand(command, args, pmon, server) && maps.Equal(env, DaemonEnv())
+	if !ownCommand(command, args, server) || !maps.Equal(env, DaemonEnv()) {
+		return false
+	}
+	if command == pmon {
+		return true
+	}
+	fi, err := os.Stat(command)
+	return err == nil && !fi.IsDir()
 }
 
 // parseClaudeGet reads the command, args and environment from `claude mcp get` output. Args are space-joined
@@ -341,7 +349,7 @@ func cliApp(id, name, bin string, scope []string) App {
 			return false, false, false
 		}
 		command, args, env := parse(out)
-		return true, ownCommand(command, args, s.Pmon, server), ours(command, args, env, s.Pmon, server)
+		return true, ownCommand(command, args, server), ours(command, args, env, s.Pmon, server)
 	}
 	return App{
 		ID: id, Name: name,

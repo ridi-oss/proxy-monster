@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"errors"
+	"io"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -84,8 +85,13 @@ func UpdateSummary(typ, before, after string) string {
 	return "update " + typ + " '" + before + "' -> '" + after + "'"
 }
 
+// DecodeBody reads exactly one JSON value; anything after it fails the request before it changes anything.
 func DecodeBody(r *http.Request, v any) error {
-	if err := json.NewDecoder(r.Body).Decode(v); err != nil {
+	dec := json.NewDecoder(r.Body)
+	if err := dec.Decode(v); err != nil || dec.More() {
+		return &ManagementError{"common.invalid_value", Params{{"field", "body"}}}
+	}
+	if _, err := dec.Token(); !errors.Is(err, io.EOF) {
 		return &ManagementError{"common.invalid_value", Params{{"field", "body"}}}
 	}
 	return nil

@@ -34,11 +34,9 @@ func (p Params) MarshalJSON() ([]byte, error) {
 		if i > 0 {
 			b.WriteByte(',')
 		}
-		k, _ := json.Marshal(kv[0])
-		v, _ := json.Marshal(kv[1])
-		b.Write(k)
+		b.Write(jsonString(kv[0]))
 		b.WriteByte(':')
-		b.Write(v)
+		b.Write(jsonString(kv[1]))
 	}
 	b.WriteByte('}')
 	return b.Bytes(), nil
@@ -57,6 +55,14 @@ func WriteJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_, _ = w.Write(bytes.TrimSuffix(buf.Bytes(), []byte("\n")))
+}
+
+func jsonString(s string) []byte {
+	var b bytes.Buffer
+	enc := json.NewEncoder(&b)
+	enc.SetEscapeHTML(false)
+	_ = enc.Encode(s)
+	return bytes.TrimSuffix(b.Bytes(), []byte("\n"))
 }
 
 // WriteError writes an ApiError; params holds at most one key, use WriteErrorParams for more.

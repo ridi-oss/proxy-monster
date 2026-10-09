@@ -266,3 +266,25 @@ func TestToICOWrapsThePNG(t *testing.T) {
 		t.Errorf("the recolored shield is not white at its center")
 	}
 }
+
+func TestAIEntryShapes(t *testing.T) {
+	ai := []aiState{{id: "claude-desktop", name: "Claude Desktop", connected: map[string]bool{"acme": true}}}
+	one := buildMenu(twoServersWith("acme"), view{now: now, ai: ai})
+	if e := find(one, "ai:claude-desktop"); e == nil || !e.checkbox || !e.checked || e.act.connect {
+		t.Fatalf("one server: %+v", e)
+	}
+	two := buildMenu(twoServers(), view{now: now, ai: ai})
+	if e := find(two, "ai:claude-desktop:staging"); e == nil || e.checked || !e.act.connect || e.act.server != "staging" {
+		t.Fatalf("two servers, staging: %+v", e)
+	}
+	if find(buildMenu(twoServers(), view{now: now}), "ai") != nil {
+		t.Error("an AI section with no AI apps installed")
+	}
+}
+
+func twoServersWith(name string) *control.Status {
+	s := twoServers()
+	s.Servers = s.Servers[:1]
+	s.Servers[0].Name = name
+	return s
+}

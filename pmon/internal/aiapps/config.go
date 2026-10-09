@@ -1,4 +1,4 @@
-package main
+package aiapps
 
 import (
 	"bytes"
@@ -183,33 +183,33 @@ func editText(path string, edit func(string) string) error {
 }
 
 // configApp is an AI app whose CLI is missing but whose config file is present.
-func configApp(id, name, after string, file configFile) aiApp {
-	return aiApp{
-		id: id, name: name, after: after,
+func configApp(id, name string, file configFile) App {
+	return App{
+		ID: id, Name: name,
 		installed: file.exists,
-		connected: func(entry, pmon, server string) bool {
+		connected: func(s Setup, entry, server string) bool {
 			c, found, err := file.read(entry)
-			return err == nil && found && ours(c.Command, c.Args, envOrEmpty(c.Env), pmon, server)
+			return err == nil && found && ours(c.Command, c.Args, envOrEmpty(c.Env), s.Pmon, server)
 		},
-		add: func(entry, pmon, server string) error {
+		add: func(s Setup, entry, server string) error {
 			c, found, err := file.read(entry)
 			if err != nil {
 				return err
 			}
-			if found && !ownCommand(c.Command, c.Args, pmon, server) {
-				return errors.New(T("ai.taken", "app", name, "entry", entry))
+			if found && !ownCommand(c.Command, c.Args, s.Pmon, server) {
+				return &EntryError{App: name, Entry: entry, Taken: true}
 			}
-			return file.write(entry, mcpCommand{Command: pmon, Args: []string{"mcp", server}, Env: daemonEnv()})
+			return file.write(entry, mcpCommand{Command: s.Pmon, Args: []string{"mcp", server}, Env: DaemonEnv()})
 		},
-		remove: func(entry, pmon, server string) error {
+		remove: func(s Setup, entry, server string) error {
 			c, found, err := file.read(entry)
 			switch {
 			case err != nil:
 				return err
 			case !found:
 				return nil
-			case !ownCommand(c.Command, c.Args, pmon, server):
-				return errors.New(T("ai.notOurs", "app", name, "entry", entry))
+			case !ownCommand(c.Command, c.Args, s.Pmon, server):
+				return &EntryError{App: name, Entry: entry}
 			}
 			return file.delete(entry)
 		},

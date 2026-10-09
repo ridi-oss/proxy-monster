@@ -920,36 +920,6 @@ fun Route.datasourceRoutes(
             call.respondManagementError(e)
         }
     }
-    post("/api/datasources") {
-        if (!call.requireAdmin(config, authz, AuthzAction.ADMIN_DATASOURCES)) return@post
-        val input = call.receive<DatasourceInput>()
-        try {
-            call.respond(HttpStatusCode.Created, management.createDatasource(input, call.auditActor(config)))
-        } catch (e: ManagementException) {
-            call.respondManagementError(e)
-        }
-    }
-    put("/api/datasources/{id}") {
-        if (!call.requireAdmin(config, authz, AuthzAction.ADMIN_DATASOURCES)) return@put
-        val id = call.idParam() ?: return@put call.respond(HttpStatusCode.BadRequest, ApiError("common.bad_id"))
-        val input = call.receive<DatasourceInput>()
-        try {
-            management.updateDatasource(id, input, call.auditActor(config))?.let { call.respond(it) }
-                ?: call.respond(HttpStatusCode.NotFound, ApiError("common.not_found", mapOf("resource" to "datasource")))
-        } catch (e: ManagementException) {
-            call.respondManagementError(e)
-        }
-    }
-    delete("/api/datasources/{id}") {
-        if (!call.requireAdmin(config, authz, AuthzAction.ADMIN_DATASOURCES)) return@delete
-        val id = call.idParam() ?: return@delete call.respond(HttpStatusCode.BadRequest, ApiError("common.bad_id"))
-        try {
-            if (management.deleteDatasource(id, call.auditActor(config)).deleted) call.respond(HttpStatusCode.NoContent)
-            else call.respond(HttpStatusCode.NotFound, ApiError("common.not_found", mapOf("resource" to "datasource")))
-        } catch (e: ManagementException) {
-            call.respondManagementError(e)
-        }
-    }
     post("/api/datasources/{id}/test") {
         if (!call.requireAdmin(config, authz, AuthzAction.ADMIN_DATASOURCES)) return@post
         val id = call.idParam() ?: return@post call.respond(HttpStatusCode.BadRequest, ApiError("common.bad_id"))

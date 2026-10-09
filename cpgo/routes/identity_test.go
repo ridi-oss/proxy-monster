@@ -135,7 +135,7 @@ func TestIdentityWrites(t *testing.T) {
 	}
 	do(http.MethodDelete, "/api/users/999999", "", admin, http.StatusNotFound)
 	do(http.MethodPut, "/api/users/abc", `{"principal":"x"}`, admin, http.StatusBadRequest)
-	if got := strings.Join(e.sessionsEnded, ","); got != "dave@example.com,carol@example.com,caroline@example.com,caroline@example.com,erin@example.com,frank@example.com,frances@example.com" {
+	if got := strings.Join(e.kotlin.sessionsEnded, ","); got != "dave@example.com,carol@example.com,caroline@example.com,caroline@example.com,erin@example.com,frank@example.com,frances@example.com" {
 		t.Fatalf("sessions ended %s", got)
 	}
 

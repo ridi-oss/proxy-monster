@@ -125,7 +125,7 @@ func run(ctx context.Context, cfg config) int {
 	routes.Register(mux, pool, api.Gate{
 		Sessions:      session.NewResolver(pool, cfg.SessionSecret),
 		EndMismatched: api.KotlinSessionCheck(httpUpstream),
-		SessionsEnded: kotlin.SessionsEnded,
+		Kotlin:        kotlin,
 		Edges:         edges,
 		AuthDebug:     cfg.AuthDebug,
 		Authz:         authorizer(cfg.Cedar, pool, kotlin),

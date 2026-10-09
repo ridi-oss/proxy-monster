@@ -180,6 +180,22 @@ func (c *Client) SessionsEnded(ctx context.Context, principal string) error {
 	}{principal}, nil)
 }
 
+// ProxiesAttached names the datasources with a proxy attached to Kotlin's Events stream.
+func (c *Client) ProxiesAttached(ctx context.Context) ([]string, error) {
+	var out struct {
+		Names []string `json:"names"`
+	}
+	err := c.post(ctx, c.upstream.JoinPath("/internal/proxies-attached").String(), struct{}{}, &out)
+	return out.Names, err
+}
+
+// DatasourceDeleted tells Kotlin a datasource was deleted, so it drops the catalog it keyed by that name.
+func (c *Client) DatasourceDeleted(ctx context.Context, name string) error {
+	return c.post(ctx, c.upstream.JoinPath("/internal/datasource-deleted").String(), struct {
+		Name string `json:"name"`
+	}{name}, nil)
+}
+
 func (c *Client) post(ctx context.Context, url string, in, out any) error {
 	body, err := json.Marshal(in)
 	if err != nil {

@@ -67,6 +67,34 @@ class McpAdminParityToolsCpGoTest {
     }
 
     @Test
+    fun `group members and roles match the REST listing`() = runBlocking<Unit> {
+        val client = stack.client()
+        val admin = admin()
+        val n = seq.incrementAndGet()
+        val group = core.userGroupStore.createGroup(AppGroupInput("mcp-parity-group-$n"))
+        val user = core.userGroupStore.createUser(
+            AppUserInput("mcp-parity-member-$n@example.com"), core.tokenStore, core.accessStore, PrincipalSessionStore(dataSource, null),
+        )
+        core.userGroupStore.addMember(group.id, user.id)
+        val role = core.policyStore.createRole(RoleInput("mcp-parity-group-role-$n"))
+        core.userGroupStore.addGroupRole(group.id, role.id)
+        val token = tokens.token(admin, setOf("mcp:read"))
+        client.login(admin)
+
+        val members = client.mcpCall(token, "list_group_members", buildJsonObject { put("groupName", group.name) }).okResult()
+        assertEquals(user.principal, members.jsonArray.single().jsonObject.str("principal"))
+        assertEquals(parseJson(client.get("/api/groups/${group.id}/members").bodyAsText()), members)
+
+        val roles = client.mcpCall(token, "list_group_roles", buildJsonObject { put("groupName", group.name) }).okResult()
+        assertEquals(role.name, roles.jsonArray.single().jsonObject.str("roleName"))
+        assertEquals(parseJson(client.get("/api/groups/${group.id}/roles").bodyAsText()), roles)
+
+        val missing = client.mcpCall(token, "list_group_members", buildJsonObject { put("groupName", "no-such-group") })
+        assertEquals("common.not_found", missing.errorCode())
+        assertEquals("common.not_found", restCode(client.get("/api/groups/${Long.MAX_VALUE}/members")))
+    }
+
+    @Test
     fun `a principal rate reset is audited on mcp and read back like REST`() = runBlocking<Unit> {
         val client = stack.client()
         val admin = admin()

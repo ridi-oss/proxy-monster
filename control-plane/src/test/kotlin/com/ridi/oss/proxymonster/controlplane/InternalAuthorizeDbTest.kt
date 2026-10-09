@@ -193,6 +193,21 @@ class InternalAuthorizeDbTest {
     }
 
     @Test
+    fun `sessions-ended closes the principal's editor runs`() = testApplication {
+        val ended = mutableListOf<String>()
+        val client = app(sessionsEnded = { ended += it })
+        suspend fun signal(token: String? = TOKEN) = client.post("/internal/sessions-ended") {
+            token?.let { header(INTERNAL_TOKEN_HEADER, it) }
+            contentType(ContentType.Application.Json)
+            setBody(InternalPrincipalRequest(ALICE))
+        }
+        assertEquals(HttpStatusCode.NotFound, signal(token = null).status)
+        assertEquals(emptyList(), ended)
+        assertEquals(HttpStatusCode.NoContent, signal().status)
+        assertEquals(listOf(ALICE), ended)
+    }
+
+    @Test
     fun `an unknown action or resource is rejected`() = testApplication {
         val client = app()
         assertEquals(HttpStatusCode.BadRequest, client.authorize(InternalAuthorizeRequest(AUDITOR, "audit.write", InternalResource("AuditLog"))).status)
@@ -203,10 +218,16 @@ class InternalAuthorizeDbTest {
     private fun ApplicationTestBuilder.app(
         token: String? = TOKEN,
         mayRequest: (String, String?, Long) -> Boolean = { _, _, _ -> false },
+        sessionsEnded: (String) -> Unit = {},
     ): HttpClient {
         application {
             install(ContentNegotiation) { json(Json { ignoreUnknownKeys = true; encodeDefaults = true; explicitNulls = false }) }
-            routing { internalAuthorizeRoute(token, authz, policiesChanged = cedarPolicyStore::markCommittedMutation, mayRequest = mayRequest) }
+            routing {
+                internalAuthorizeRoute(
+                    token, authz, policiesChanged = cedarPolicyStore::markCommittedMutation, mayRequest = mayRequest,
+                    sessionsEnded = sessionsEnded,
+                )
+            }
         }
         return createClient {
             expectSuccess = false

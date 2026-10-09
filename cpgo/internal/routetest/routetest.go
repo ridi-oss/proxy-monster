@@ -26,6 +26,8 @@ type Env struct {
 	Forwarded []string
 	Ended     []string
 	Authz     fakeAuthz
+	// SessionsEnded records each principal Kotlin was told had its web sessions ended.
+	SessionsEnded []string
 }
 
 // fakeAuthz allows what allow lists and records every decision asked for.
@@ -130,6 +132,7 @@ func SetupConfig(t *testing.T, c Config) *Env {
 		Sessions:      session.NewResolver(e.St.Pool, dbtest.Secret),
 		EndMismatched: func(r *http.Request) { e.Ended = append(e.Ended, r.Header.Get("Cookie")) },
 		Edges:         front.ParseTrustedEdges(c.Edges),
+		SessionsEnded: func(_ context.Context, p string) error { e.SessionsEnded = append(e.SessionsEnded, p); return nil },
 		AuthDebug:     true,
 		Authz:         decider,
 	})

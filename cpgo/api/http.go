@@ -50,6 +50,12 @@ func NonNil(s []string) []string {
 	return s
 }
 
+type DBTX interface {
+	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
+}
+
 // WriteRows answers with every row as a JSON array, [] when there are none.
 func WriteRows[R, T any](w http.ResponseWriter, rows []R, err error, to func(R) T) {
 	if err != nil {
@@ -146,7 +152,7 @@ func WriteMutationError(w http.ResponseWriter, err error) {
 		switch me.Code {
 		case "common.not_found":
 			code = http.StatusNotFound
-		case "role.system_immutable", "policy.system_immutable":
+		case "role.system_immutable", "policy.system_immutable", "group.system_immutable":
 			code = http.StatusConflict
 		}
 		if me.status != 0 {

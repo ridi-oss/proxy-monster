@@ -158,14 +158,16 @@ func run(ctx context.Context, cfg config) int {
 	}
 	defer pool.Close()
 
+	kotlin := bridge.New(httpUpstream, internalToken)
 	serve := func(edges front.TrustedEdges) http.Handler {
 		mux := http.NewServeMux()
 		routes.Register(mux, pool, api.Gate{
 			Sessions:      session.NewResolver(pool, cfg.SessionSecret),
 			EndMismatched: api.KotlinSessionCheck(httpUpstream),
+			SessionsEnded: kotlin.SessionsEnded,
 			Edges:         edges,
 			AuthDebug:     cfg.AuthDebug,
-			Authz:         authorizer(cfg.Cedar, pool, bridge.New(httpUpstream, internalToken)),
+			Authz:         authorizer(cfg.Cedar, pool, kotlin),
 		})
 		h := front.Route(mux, front.NewHTTP(httpUpstream, edges))
 		if web != nil {

@@ -2,6 +2,7 @@ package audit
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -38,12 +39,19 @@ func TestGoWrittenRowsVerifyFromGenesis(t *testing.T) {
 		return err
 	})
 	// A rolled-back change leaves no row and does not move the head.
-	_ = pgx.BeginFunc(ctx, st.Pool, func(tx pgx.Tx) error {
+	rolledBack := pgx.BeginFunc(ctx, st.Pool, func(tx pgx.Tx) error {
 		if err := Admin(ctx, tx, Actor{Principal: "admin@example.com", Channel: "console"}, "admin.policies", Entity("Role", "x"), "never"); err != nil {
 			return err
 		}
+		var inTx int
+		if err := tx.QueryRow(ctx, `SELECT count(*) FROM audit_event WHERE statement = 'never'`).Scan(&inTx); err != nil || inTx != 1 {
+			t.Fatalf("the row must exist inside the transaction: %d %v", inTx, err)
+		}
 		return context.Canceled
 	})
+	if !errors.Is(rolledBack, context.Canceled) {
+		t.Fatalf("rollback: %v", rolledBack)
+	}
 	write(func(tx pgx.Tx) error {
 		return Admin(ctx, tx, Actor{Principal: "admin@example.com", Channel: "mcp"}, "admin.identity", Entity("Role", "analyst"), "assign")
 	})

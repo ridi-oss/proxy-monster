@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -83,8 +84,13 @@ func (p policies) mutate(w http.ResponseWriter, r *http.Request, status int, cha
 	}
 }
 
+// decodeBody reads exactly one JSON value; anything after it fails the request before it changes anything.
 func decodeBody(r *http.Request, v any) error {
-	if err := json.NewDecoder(r.Body).Decode(v); err != nil {
+	dec := json.NewDecoder(r.Body)
+	if err := dec.Decode(v); err != nil || dec.More() {
+		return &managementError{"common.invalid_value", api.Params{{"field", "body"}}}
+	}
+	if _, err := dec.Token(); !errors.Is(err, io.EOF) {
 		return &managementError{"common.invalid_value", api.Params{{"field", "body"}}}
 	}
 	return nil

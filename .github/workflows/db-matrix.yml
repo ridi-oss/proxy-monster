@@ -100,7 +100,7 @@ jobs:
       # Installs java/gradle/go/node/pnpm from mise.toml, so versions are never restated here. Go is
       # needed for the JVM leg too: :analyzer:jvm's processResources shells out to
       # `go build -buildmode=c-shared`.
-      - uses: jdx/mise-action@v4
+      - uses: jdx/mise-action@v5
 
       - uses: gradle/actions/setup-gradle@v6
 
@@ -144,7 +144,7 @@ jobs:
       PM_TEST_MYSQL_IMAGE: ${{ matrix.mysql }}
     steps:
       - uses: actions/checkout@v7
-      - uses: jdx/mise-action@v4
+      - uses: jdx/mise-action@v5
       # goproxy's dbtest helpers t.Fatal without Docker rather than skipping, so no opt-in flag is
       # needed here to make a Docker-less run fail.
       - name: Test
@@ -164,7 +164,7 @@ jobs:
       PM_TEST_POSTGRES_IMAGE: ${{ matrix.pg }}
     steps:
       - uses: actions/checkout@v7
-      - uses: jdx/mise-action@v4
+      - uses: jdx/mise-action@v5
       - name: Test
         working-directory: auditmon
         run: go test -race ./...

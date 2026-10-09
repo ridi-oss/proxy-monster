@@ -218,6 +218,17 @@ func (c *Client) SetDefault(ctx context.Context, req SetDefaultRequest) error {
 	return resp.Body.Close()
 }
 
+// RenameServer renames a server, keeping its login and sticky ports.
+func (c *Client) RenameServer(ctx context.Context, req RenameServerRequest) (RenameServerResult, error) {
+	var res RenameServerResult
+	resp, err := c.do(ctx, http.MethodPost, PathServerRename, req)
+	if err != nil {
+		return res, err
+	}
+	defer resp.Body.Close()
+	return res, json.NewDecoder(resp.Body).Decode(&res)
+}
+
 // UnsetServer logs a server out and deletes it.
 func (c *Client) UnsetServer(ctx context.Context, req UnsetServerRequest) ([]string, error) {
 	resp, err := c.do(ctx, http.MethodPost, PathServerUnset, req)

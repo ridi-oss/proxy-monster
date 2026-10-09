@@ -74,6 +74,10 @@ func (f *fakeBackend) UnsetServer(UnsetServerRequest) ([]string, error) { return
 
 func (f *fakeBackend) SetDefault(SetDefaultRequest) error { return nil }
 
+func (f *fakeBackend) RenameServer(context.Context, RenameServerRequest) (RenameServerResult, error) {
+	return RenameServerResult{}, nil
+}
+
 func (f *fakeBackend) Logout(LogoutRequest) ([]string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()

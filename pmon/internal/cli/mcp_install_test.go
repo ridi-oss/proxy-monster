@@ -133,3 +133,51 @@ func TestMCPInstallUsesTheAdvertisedMCPURL(t *testing.T) {
 		t.Errorf("after uninstall: %v", servers)
 	}
 }
+
+// A renamed server keeps its login, port and default, and its AI-app entries move with it.
+func TestServerRenameMovesEverything(t *testing.T) {
+	// Built before HOME moves: go build would fill the temporary HOME with read-only module files.
+	e := newEnv(t)
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("APPDATA", filepath.Join(home, "AppData", "Roaming"))
+	t.Setenv("LOCALAPPDATA", filepath.Join(home, "AppData", "Local"))
+	dir := claudeDesktopDir(home)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	cp := fakeCP(t, []map[string]any{{"name": "acme-mysql", "engine": "mysql", "dbName": "app", "advertiseAddr": dummyProxy(t)}})
+	e.mustRun(t, "login", "--url", cp.URL, "dev")
+	e.mustRun(t, "mcp", "--install", "--app", "claude-desktop")
+	// An https entry for the server, added after the install: a rename moves pmon's entry without replacing it.
+	cfg := filepath.Join(dir, "claude_desktop_config.json")
+	installed := readDesktopServers(t, dir)
+	installed["dev-https"] = json.RawMessage(`{"url":"` + cp.URL + `/mcp"}`)
+	data, _ := json.Marshal(map[string]any{"mcpServers": installed})
+	if err := os.WriteFile(cfg, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	before := e.mustRun(t, "show", "acme-mysql")
+
+	if out, err := e.run("server", "rename", "dev"); err == nil || !strings.Contains(out, "does not advertise a name") {
+		t.Errorf("rename to an unadvertised name: %v\n%s", err, out)
+	}
+	out := e.mustRun(t, "server", "rename", "dev", "staging")
+	if !strings.Contains(out, `server "dev" renamed to "staging"`) || !strings.Contains(out, "Claude Desktop: now runs pmon mcp staging as pmon-staging") {
+		t.Errorf("rename output:\n%s", out)
+	}
+	if got := strings.TrimSpace(e.mustRun(t, "server", "default")); got != "staging" {
+		t.Errorf("default after rename = %q", got)
+	}
+	if after := e.mustRun(t, "show", "acme-mysql"); after != before {
+		t.Errorf("connection string changed across the rename:\n%s\n%s", before, after)
+	}
+	servers := readDesktopServers(t, dir)
+	var c struct {
+		Args []string `json:"args"`
+	}
+	if _, old := servers["pmon-dev"]; old || servers["dev-https"] == nil || json.Unmarshal(servers["pmon-staging"], &c) != nil || strings.Join(c.Args, " ") != "mcp staging" {
+		t.Errorf("Claude Desktop entries after rename: %v", servers)
+	}
+}

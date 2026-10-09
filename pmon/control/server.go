@@ -29,6 +29,8 @@ type Backend interface {
 	UnsetServer(req UnsetServerRequest) ([]string, error)
 	// SetDefault makes a server the one a command addresses when it names none.
 	SetDefault(req SetDefaultRequest) error
+	// RenameServer renames a server, keeping its login and sticky ports.
+	RenameServer(ctx context.Context, req RenameServerRequest) (RenameServerResult, error)
 	// Reload forces an immediate rediscovery.
 	Reload()
 	// Subscribe opens a state-change stream; the returned cancel must be called when the stream ends.
@@ -88,6 +90,7 @@ func Listen(backend Backend) (*Server, error) {
 	mux.HandleFunc(PathServerSet, s.handleServerSet)
 	mux.HandleFunc(PathServerUnset, s.handleServerUnset)
 	mux.HandleFunc(PathServerDefault, s.handleServerDefault)
+	mux.HandleFunc(PathServerRename, s.handleServerRename)
 	mux.HandleFunc(PathReload, s.handleReload)
 	mux.HandleFunc(PathShutdown, s.handleShutdown)
 	mux.HandleFunc(PathEvents, s.handleEvents)
@@ -241,6 +244,23 @@ func (s *Server) handleServerDefault(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, s.backend.Status())
+}
+
+func (s *Server) handleServerRename(w http.ResponseWriter, r *http.Request) {
+	if !requireMethod(w, r, http.MethodPost) {
+		return
+	}
+	var req RenameServerRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	res, err := s.backend.RenameServer(r.Context(), req)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, res)
 }
 
 func (s *Server) handleReload(w http.ResponseWriter, r *http.Request) {

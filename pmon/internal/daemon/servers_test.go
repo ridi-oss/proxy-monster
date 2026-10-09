@@ -308,3 +308,26 @@ func TestServerNamedAfterItsInstance(t *testing.T) {
 		t.Errorf("a server that failed to answer was named anyway: %v", err)
 	}
 }
+
+func TestRenameServerRefusesATakenName(t *testing.T) {
+	isolate(t)
+	d := New("test", providers.Builtins())
+	for _, name := range []string{"dev", "prod"} {
+		if _, err := d.SetServer(control.SetServerRequest{Name: name, ControlPlane: "https://" + name + ".example"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := d.RenameServer(context.Background(), control.RenameServerRequest{Name: "dev", To: "prod"}); err == nil || !strings.Contains(err.Error(), `"prod" already exists`) {
+		t.Errorf("rename onto another server: %v", err)
+	}
+	if _, err := d.RenameServer(context.Background(), control.RenameServerRequest{Name: "nope", To: "x"}); err == nil {
+		t.Error("renamed an unknown server")
+	}
+	if res, err := d.RenameServer(context.Background(), control.RenameServerRequest{Name: "prod", To: "live"}); err != nil || res.To != "live" {
+		t.Fatalf("rename = %+v, %v", res, err)
+	}
+	s := d.Status()
+	if s.Server("prod") != nil || s.Server("live") == nil || s.DefaultServer != "dev" {
+		t.Errorf("after renaming a server that is not the default: %+v", s.Servers)
+	}
+}

@@ -187,6 +187,19 @@ type UnsetServerRequest struct {
 	Name string `json:"name"`
 }
 
+// RenameServerRequest renames server Name (the default server when empty) to To, or to the name the server
+// advertises when To is empty.
+type RenameServerRequest struct {
+	Name string `json:"name"`
+	To   string `json:"to"`
+}
+
+// RenameServerResult is the rename made.
+type RenameServerResult struct {
+	Name string `json:"name"`
+	To   string `json:"to"`
+}
+
 // SetDefaultRequest makes Name the server a command addresses when it names none.
 type SetDefaultRequest struct {
 	Name string `json:"name"`
@@ -237,6 +250,7 @@ const (
 	PathServerSet     = "/servers/set"
 	PathServerUnset   = "/servers/unset"
 	PathServerDefault = "/servers/default"
+	PathServerRename  = "/servers/rename"
 	PathReload        = "/reload"
 	PathShutdown      = "/shutdown"
 	PathEvents        = "/events"

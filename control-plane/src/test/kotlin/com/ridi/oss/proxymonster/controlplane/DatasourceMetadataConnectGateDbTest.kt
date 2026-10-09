@@ -37,17 +37,8 @@ import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 /**
- * The `datasource.connect` gate on the per-datasource metadata reads: `GET /api/datasources/{id}` and
- * `GET /api/datasources/{id}/table-detail`, plus the list route that carries the same fields.
- *
- * These three are one authorization surface, and testing them apart is what lets a hole survive: the
- * row and the list both carry the `advertiseAddr`/`advertiseCertChain` that `{id}/wire-cert` releases
- * only under `datasource.connect`, so a gate on any one of them alone is bypassable through the others.
- *
- * Pinned per route: unauthenticated is 401, an authenticated caller without `datasource.connect` is
- * 403, a granted caller is admitted, the grant does not carry from one datasource to another, and the
- * Bearer path runs the same decision. The list keeps non-connectable rows but strips their connection
- * material, since JIT-request compose must still show what you cannot yet reach. `authDebug` is off —
+ * The `datasource.connect` gate on `GET /api/datasources/{id}/table-detail`, and the per-row decision the
+ * list, `{id}` and `{id}/wire-cert` ask Kotlin for (those three are served by cp-go). `authDebug` is off —
  * with it on every gate short-circuits and this test would prove nothing.
  */
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
@@ -155,78 +146,15 @@ class DatasourceMetadataConnectGateDbTest {
         }
     }
 
-    @Test
-    fun `the datasource row is 401 unauthenticated`() = testApplication {
-        val client = wire()
-        val res = client.get("/api/datasources/${datasource.id}")
-        assertEquals(HttpStatusCode.Unauthorized, res.status)
-        assertFalse(
-            res.bodyAsText().contains("BEGIN CERTIFICATE"),
-            "an unauthenticated response must not carry the advertised chain",
-        )
-    }
-
-    /**
-     * The decision is keyed to the datasource being asked for. The connector's permit names `gated-ds`, so
-     * the SAME session must be admitted there and refused here — the assertion an unconstrained `resource`
-     * permit could not make.
-     */
+    /** The decision is keyed to the datasource asked for: the connector's permit names `gated-ds` only. */
     @Test
     fun `a connect grant on one datasource does not carry to another`() = testApplication {
         val client = wire()
         client.post("/test/session/$connector")
-        assertEquals(HttpStatusCode.OK, client.get("/api/datasources/${datasource.id}").status)
-        assertEquals(
-            HttpStatusCode.Forbidden, client.get("/api/datasources/${ungranted.id}").status,
-            "the grant names one datasource; a gate keyed to anything coarser would admit both",
-        )
         assertEquals(
             HttpStatusCode.Forbidden,
             client.get("/api/datasources/${ungranted.id}/table-detail?catalog=def&schema=app&table=t").status,
         )
-    }
-
-    /**
-     * The Bearer path is why these routes use `requireApiOrBearer` rather than `requireApi`: pmon holds a
-     * wire token, not a cookie. Swapping the helper back would leave every session test passing.
-     */
-    @Test
-    fun `a wire-token Bearer caller is authorized by the same connect decision`() = testApplication {
-        val token = core.tokenStore.issue(
-            TokenKind.USER, connector, roles = emptyList(), name = "gate-test", ttlSeconds = 300,
-        )
-        val client = wire()
-        val granted = client.get("/api/datasources/${datasource.id}") {
-            header(HttpHeaders.Authorization, "Bearer ${token.token}")
-        }
-        assertEquals(HttpStatusCode.OK, granted.status, "a wire token is a valid identity on this route")
-        val refused = client.get("/api/datasources/${ungranted.id}") {
-            header(HttpHeaders.Authorization, "Bearer ${token.token}")
-        }
-        assertEquals(
-            HttpStatusCode.Forbidden, refused.status,
-            "the Bearer path must run the same per-datasource decision, not skip it",
-        )
-    }
-
-    @Test
-    fun `the datasource row is 403 without datasource-connect, chain withheld`() = testApplication {
-        val client = wire()
-        client.post("/test/session/$stranger")
-        val res = client.get("/api/datasources/${datasource.id}")
-        assertEquals(
-            HttpStatusCode.Forbidden, res.status,
-            "the row carries the same advertiseCertChain {id}/wire-cert gates on datasource.connect; " +
-                "admitting it on a session alone makes that gate decorative",
-        )
-        assertFalse(res.bodyAsText().contains("BEGIN CERTIFICATE"), "a forbidden response must not carry the chain")
-    }
-
-    @Test
-    fun `a granted caller reads the datasource row`() = testApplication {
-        val client = wire()
-        client.post("/test/session/$connector")
-        assertEquals(HttpStatusCode.OK, client.get("/api/datasources/${datasource.id}").status)
     }
 
     /**

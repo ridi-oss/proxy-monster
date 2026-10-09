@@ -10,7 +10,10 @@ import (
 	"github.com/ridi-oss/proxy-monster/cpgo/store/db"
 )
 
-type policies struct{ pool *pgxpool.Pool }
+type policies struct {
+	pool  *pgxpool.Pool
+	authz api.Authorizer
+}
 
 type role struct {
 	ID          int64   `json:"id"`

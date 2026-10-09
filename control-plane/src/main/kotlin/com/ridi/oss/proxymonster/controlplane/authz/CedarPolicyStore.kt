@@ -1,26 +1,14 @@
 package com.ridi.oss.proxymonster.controlplane.authz
 
-import com.ridi.oss.proxymonster.controlplane.ApiError
 import com.ridi.oss.proxymonster.controlplane.AuditStore
 import com.ridi.oss.proxymonster.controlplane.Config
 import com.ridi.oss.proxymonster.controlplane.PolicyStore
-import com.ridi.oss.proxymonster.controlplane.auditActor
-import com.ridi.oss.proxymonster.controlplane.idParam
 import com.ridi.oss.proxymonster.controlplane.inTx
-import com.ridi.oss.proxymonster.controlplane.management.CedarValidationManagementException
 import com.ridi.oss.proxymonster.controlplane.management.ManagementAuditRecorder
-import com.ridi.oss.proxymonster.controlplane.management.ManagementException
 import com.ridi.oss.proxymonster.controlplane.management.PolicyManagementService
-import com.ridi.oss.proxymonster.controlplane.respondManagementError
-import com.ridi.oss.proxymonster.controlplane.userSession
-import io.ktor.http.HttpStatusCode
-import io.ktor.server.request.receive
 import io.ktor.server.response.respond
 import io.ktor.server.routing.Route
-import io.ktor.server.routing.delete
 import io.ktor.server.routing.get
-import io.ktor.server.routing.post
-import io.ktor.server.routing.put
 import kotlinx.serialization.Serializable
 import java.sql.ResultSet
 import javax.sql.DataSource
@@ -239,73 +227,8 @@ fun Route.cedarPolicyRoutes(
     management: PolicyManagementService =
         PolicyManagementService(store, PolicyStore(store.dataSource), ManagementAuditRecorder(AuditStore(store.dataSource))),
 ) {
-    post("/api/policies") {
-        if (!call.requireAdmin(config, authz, AuthzAction.ADMIN_POLICIES)) return@post
-        val input = call.receive<CedarPolicyInput>()
-        try {
-            call.respond(
-                HttpStatusCode.Created,
-                management.createPolicy(input.name, input.cedarSrc, input.enabled, call.userSession()?.principal, call.auditActor(config)),
-            )
-        } catch (e: CedarValidationManagementException) {
-            call.respond(HttpStatusCode.BadRequest, mapOf("errors" to e.errors))
-        } catch (e: ManagementException) {
-            call.respondManagementError(e)
-        }
-    }
-    put("/api/policies/{id}") {
-        if (!call.requireAdmin(config, authz, AuthzAction.ADMIN_POLICIES)) return@put
-        val id = call.idParam() ?: return@put call.respond(HttpStatusCode.BadRequest, ApiError("common.bad_id"))
-        val input = call.receive<CedarPolicyInput>()
-        try {
-            call.respond(management.updatePolicy(id, input, call.userSession()?.principal, call.auditActor(config)))
-        } catch (e: CedarValidationManagementException) {
-            call.respond(HttpStatusCode.BadRequest, mapOf("errors" to e.errors))
-        } catch (e: ManagementException) {
-            call.respondManagementError(e)
-        }
-    }
-    delete("/api/policies/{id}") {
-        if (!call.requireAdmin(config, authz, AuthzAction.ADMIN_POLICIES)) return@delete
-        val id = call.idParam() ?: return@delete call.respond(HttpStatusCode.BadRequest, ApiError("common.bad_id"))
-        try {
-            management.deletePolicy(id, call.auditActor(config))
-            call.respond(HttpStatusCode.NoContent)
-        } catch (e: ManagementException) {
-            call.respondManagementError(e)
-        }
-    }
-    post("/api/policies/validate") {
-        if (!call.requireAdmin(config, authz, AuthzAction.ADMIN_POLICIES)) return@post
-        val input = call.receive<CedarValidateInput>()
-        try {
-            call.respond(management.validatePolicy(input.cedarSrc))
-        } catch (e: ManagementException) {
-            call.respondManagementError(e)
-        }
-    }
     get("/api/policies/schema") {
         if (!call.requireAdmin(config, authz, AuthzAction.ADMIN_POLICIES)) return@get
         call.respond(management.policySchema())
-    }
-    post("/api/policies/{id}/enable") {
-        if (!call.requireAdmin(config, authz, AuthzAction.ADMIN_POLICIES)) return@post
-        val id = call.idParam() ?: return@post call.respond(HttpStatusCode.BadRequest, ApiError("common.bad_id"))
-        try {
-            call.respond(management.setPolicyEnabled(id, true, call.userSession()?.principal, call.auditActor(config)))
-        } catch (e: CedarValidationManagementException) {
-            call.respond(HttpStatusCode.BadRequest, mapOf("errors" to e.errors))
-        } catch (e: ManagementException) {
-            call.respondManagementError(e)
-        }
-    }
-    post("/api/policies/{id}/disable") {
-        if (!call.requireAdmin(config, authz, AuthzAction.ADMIN_POLICIES)) return@post
-        val id = call.idParam() ?: return@post call.respond(HttpStatusCode.BadRequest, ApiError("common.bad_id"))
-        try {
-            call.respond(management.setPolicyEnabled(id, false, call.userSession()?.principal, call.auditActor(config)))
-        } catch (e: ManagementException) {
-            call.respondManagementError(e)
-        }
     }
 }

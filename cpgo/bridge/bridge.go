@@ -35,6 +35,7 @@ func AuditRecord(owner string) Resource { return Resource{Type: "AuditRecord", P
 
 // Client calls Kotlin's /internal/authorize routes.
 type Client struct {
+	upstream                     *url.URL
 	url, batchURL, mayConnectURL string
 	token                        string
 	http                         *http.Client
@@ -42,11 +43,12 @@ type Client struct {
 
 func New(upstream *url.URL, token string) *Client {
 	return &Client{
-		url:      upstream.JoinPath("/internal/authorize").String(),
-		batchURL: upstream.JoinPath("/internal/authorize-batch").String(),
+		upstream:      upstream,
+		url:           upstream.JoinPath("/internal/authorize").String(),
+		batchURL:      upstream.JoinPath("/internal/authorize-batch").String(),
 		mayConnectURL: upstream.JoinPath("/internal/may-connect").String(),
-		token:    token,
-		http:     &http.Client{Timeout: 10 * time.Second},
+		token:         token,
+		http:          &http.Client{Timeout: 10 * time.Second},
 	}
 }
 
@@ -105,6 +107,22 @@ func (c *Client) MayConnect(ctx context.Context, principal string, datasourceIDs
 	return out.Allow, err
 }
 
+// Validate checks a Cedar source against the authorization schema, returning the validator's errors.
+func (c *Client) Validate(ctx context.Context, cedarSrc string) ([]string, error) {
+	var out struct {
+		Errors []string `json:"errors"`
+	}
+	err := c.post(ctx, c.upstream.JoinPath("/internal/cedar-validate").String(), struct {
+		CedarSrc string `json:"cedarSrc"`
+	}{cedarSrc}, &out)
+	return out.Errors, err
+}
+
+// PoliciesChanged tells Kotlin a policy change committed, so its next decision rebuilds the policy set.
+func (c *Client) PoliciesChanged(ctx context.Context) error {
+	return c.post(ctx, c.upstream.JoinPath("/internal/policies-changed").String(), struct{}{}, nil)
+}
+
 func (c *Client) post(ctx context.Context, url string, in, out any) error {
 	body, err := json.Marshal(in)
 	if err != nil {
@@ -121,8 +139,11 @@ func (c *Client) post(ctx context.Context, url string, in, out any) error {
 		return fmt.Errorf("bridge: %w", err)
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
+	if resp.StatusCode != http.StatusOK && !(out == nil && resp.StatusCode == http.StatusNoContent) {
 		return fmt.Errorf("bridge: %s returned %s", url, resp.Status)
+	}
+	if out == nil {
+		return nil
 	}
 	if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
 		return fmt.Errorf("bridge: %w", err)

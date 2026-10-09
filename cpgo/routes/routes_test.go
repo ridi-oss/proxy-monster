@@ -10,7 +10,7 @@ import (
 
 func TestUnauthenticated(t *testing.T) {
 	e := routetest.Setup(t)
-	for _, path := range []string{"/api/query-history", "/api/audit", "/api/audit/1", "/api/roles", "/api/role-assignments", "/api/mask-fns", "/api/policies", "/api/me/permissions", "/api/access-requests", "/api/access-grants", "/api/approvals"} {
+	for _, path := range []string{"/api/query-history", "/api/audit", "/api/audit/1", "/api/roles", "/api/role-assignments", "/api/mask-fns", "/api/policies", "/api/me/permissions", "/api/access-requests", "/api/access-grants", "/api/approvals", "/api/datasources"} {
 		status, body := e.Do(t, http.MethodGet, path, "", nil)
 		if status != http.StatusUnauthorized || body != `{"code":"common.unauthenticated","params":{}}` {
 			t.Fatalf("%s: %d %s", path, status, body)
@@ -38,7 +38,7 @@ func TestUnportedRequestsAreForwarded(t *testing.T) {
 		{http.MethodGet, "/api//query-history"},
 		{http.MethodGet, "/api/query-history/"},
 		{http.MethodHead, "/api/query-history"},
-		{http.MethodGet, "/api/datasources"},
+		{http.MethodGet, "/api/datasources/live"},
 	} {
 		if status, _ := e.Do(t, tc.method, tc.path, "", nil); status != http.StatusTeapot {
 			t.Fatalf("%s %s: status %d, want forwarded", tc.method, tc.path, status)

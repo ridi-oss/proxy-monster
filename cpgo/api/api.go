@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 
 	"github.com/ridi-oss/proxy-monster/cpgo/bridge"
@@ -65,6 +66,7 @@ func RequesterIP(ctx context.Context) string {
 type Authorizer interface {
 	Authorize(ctx context.Context, principal, action string, resource bridge.Resource, requesterIP string) (bool, string, error)
 	AuthorizeEach(ctx context.Context, principal, action string, resources []bridge.Resource, requesterIP string) ([]bool, error)
+	MayConnect(ctx context.Context, principal string, datasourceIDs []int64, requesterIP string) ([]bool, error)
 }
 
 // Gate authenticates console requests for Go routes.
@@ -77,6 +79,59 @@ type Gate struct {
 	// AuthDebug lets a session carry the requester IP chosen at its debug login, as Kotlin does.
 	AuthDebug bool
 	Authz     Authorizer
+}
+
+// RequireAPIOrBearer is Kotlin's requireApiOrBearer, for read-only datasource discovery: a web session,
+// else pmon's native wire token (SESSION or USER) as an Authorization bearer.
+func (g Gate) RequireAPIOrBearer(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		s, err := g.Sessions.Resolve(r.Context(), r)
+		if errors.Is(err, session.ErrDeviceMismatch) {
+			g.EndMismatched(r)
+			s, err = nil, nil
+		}
+		if err != nil {
+			slog.Error("api: resolving session", "err", err)
+			WriteError(w, http.StatusInternalServerError, "common.fallback", nil)
+			return
+		}
+		if s != nil {
+			next(w, r.WithContext(context.WithValue(r.Context(), callerKey{}, g.sessionCaller(r, s))))
+			return
+		}
+		principal := ""
+		if token, ok := bearer(r); ok {
+			if principal, err = g.Sessions.WirePrincipal(r.Context(), token); err != nil {
+				slog.Error("api: resolving wire token", "err", err)
+				WriteError(w, http.StatusInternalServerError, "common.fallback", nil)
+				return
+			}
+		}
+		if principal == "" {
+			WriteError(w, http.StatusUnauthorized, "common.unauthenticated", nil)
+			return
+		}
+		c := caller{principal, front.RequesterIP(r, g.Edges)}
+		next(w, r.WithContext(context.WithValue(r.Context(), callerKey{}, c)))
+	}
+}
+
+// sessionCaller is the session's principal and requester IP, the debug-login address winning under AuthDebug.
+func (g Gate) sessionCaller(r *http.Request, s *session.Web) caller {
+	ip := front.RequesterIP(r, g.Edges)
+	if g.AuthDebug && s.DebugRequesterIP != "" {
+		ip = s.DebugRequesterIP
+	}
+	return caller{s.Principal, ip}
+}
+
+func bearer(r *http.Request) (string, bool) {
+	h := r.Header.Get("Authorization")
+	if len(h) < 7 || !strings.EqualFold(h[:7], "Bearer ") {
+		return "", false
+	}
+	t := strings.TrimSpace(h[7:])
+	return t, t != ""
 }
 
 // RequireAdmin is Kotlin's requireAdmin: a session, then Cedar's decision on action over the System
@@ -131,11 +186,7 @@ func (g Gate) RequireAPI(next http.HandlerFunc) http.HandlerFunc {
 		case s == nil:
 			WriteError(w, http.StatusUnauthorized, "common.unauthenticated", nil)
 		default:
-			ip := front.RequesterIP(r, g.Edges)
-			if g.AuthDebug && s.DebugRequesterIP != "" {
-				ip = s.DebugRequesterIP
-			}
-			next(w, r.WithContext(context.WithValue(r.Context(), callerKey{}, caller{s.Principal, ip})))
+			next(w, r.WithContext(context.WithValue(r.Context(), callerKey{}, g.sessionCaller(r, s))))
 		}
 	}
 }

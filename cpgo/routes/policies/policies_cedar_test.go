@@ -59,20 +59,48 @@ func TestCedarPolicyWrites(t *testing.T) {
 	if body := do(http.MethodPost, "/api/policies", `{"name":"system:x","cedarSrc":"`+src+`"}`, http.StatusBadRequest); body != `{"code":"policy.reserved_name","params":{}}` {
 		t.Fatalf("reserved: %s", body)
 	}
+	if body := do(http.MethodPut, fmt.Sprintf("/api/policies/%d", id), `{"name":"system:renamed","cedarSrc":"`+src+`"}`, http.StatusBadRequest); body != `{"code":"policy.reserved_name","params":{}}` {
+		t.Fatalf("reserved rename: %s", body)
+	}
+	var name string
+	if _ = e.St.Pool.QueryRow(ctx, `SELECT name FROM policy WHERE id = $1`, id).Scan(&name); name != "p1" {
+		t.Fatalf("a refused rename changed the name to %q", name)
+	}
 	do(http.MethodPut, fmt.Sprintf("/api/policies/%d", id), `{"name":"p1-renamed","cedarSrc":"`+src+`"}`, http.StatusOK, 1)
 	do(http.MethodPut, "/api/policies/999999", `{"name":"x","cedarSrc":"`+src+`"}`, http.StatusNotFound)
-	if body := do(http.MethodPut, "/api/policies/-1", `{"name":"x","cedarSrc":"`+src+`"}`, http.StatusConflict); body != `{"code":"policy.system_immutable","params":{}}` {
+	system := func() string {
+		var row string
+		_ = e.St.Pool.QueryRow(ctx, `SELECT to_jsonb(p)::text FROM policy p WHERE id = -1`).Scan(&row)
+		return row
+	}
+	before := system()
+	if body := do(http.MethodPut, "/api/policies/-1", `{"name":"system:rewritten","cedarSrc":"not cedar","enabled":false}`, http.StatusConflict); body != `{"code":"policy.system_immutable","params":{}}` {
 		t.Fatalf("system update: %s", body)
 	}
-	do(http.MethodDelete, "/api/policies/-1", "", http.StatusConflict)
+	if body := do(http.MethodDelete, "/api/policies/-1", "", http.StatusConflict); body != `{"code":"policy.system_immutable","params":{}}` {
+		t.Fatalf("system delete: %s", body)
+	}
+	if after := system(); before == "" || after != before {
+		t.Fatalf("system policy changed:\n%s\n%s", before, after)
+	}
 
 	if _, err := e.St.Pool.Exec(ctx, `UPDATE policy SET cedar_src = 'BAD stored' WHERE id = $1`, id); err != nil {
 		t.Fatal(err)
 	}
-	do(http.MethodPost, fmt.Sprintf("/api/policies/%d/enable", id), "", http.StatusBadRequest)
+	if body := do(http.MethodPost, fmt.Sprintf("/api/policies/%d/enable", id), "", http.StatusBadRequest); body != "{\"errors\":[\"unrecognized action `BAD`\"]}" {
+		t.Fatalf("enabling an invalid stored source: %s", body)
+	}
 	do(http.MethodPost, fmt.Sprintf("/api/policies/%d/disable", id), "", http.StatusOK, 1)
-	do(http.MethodPost, "/api/policies/-1/disable", "", http.StatusOK, 1)
-	do(http.MethodPost, "/api/policies/-1/enable", "", http.StatusOK, 1)
+	if body := do(http.MethodPost, "/api/policies/-1/disable", "", http.StatusOK, 1); !strings.Contains(body, `"enabled":false`) {
+		t.Fatalf("disable: %s", body)
+	}
+	if body := do(http.MethodPost, "/api/policies/-1/enable", "", http.StatusOK, 1); !strings.Contains(body, `"enabled":true`) {
+		t.Fatalf("enable: %s", body)
+	}
+	var enabled bool
+	if _ = e.St.Pool.QueryRow(ctx, `SELECT enabled FROM policy WHERE id = -1`).Scan(&enabled); !enabled {
+		t.Fatal("the system policy is left disabled")
+	}
 
 	do(http.MethodDelete, fmt.Sprintf("/api/policies/%d", id), "", http.StatusNoContent, 1)
 	do(http.MethodDelete, fmt.Sprintf("/api/policies/%d", id), "", http.StatusNotFound)
@@ -84,6 +112,12 @@ func TestCedarPolicyWrites(t *testing.T) {
 		t.Fatalf("validate good: %s", body)
 	}
 
+	var row string
+	_ = e.St.Pool.QueryRow(ctx, `SELECT kind || '|' || principal || '|' || resource || '|' || channel || '|' || coalesce(client_addr, '')
+		FROM audit_event WHERE statement = $1`, "disable policy 'system:admin'").Scan(&row)
+	if row != `admin|admin@example.com|Policy::"-1"|console|127.0.0.1` {
+		t.Fatalf("policy audit row: %s", row)
+	}
 	rows, _ := e.St.Pool.Query(ctx, `SELECT statement FROM audit_event WHERE action = 'admin.policies' ORDER BY id`)
 	var got []string
 	for rows.Next() {

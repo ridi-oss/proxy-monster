@@ -34,6 +34,20 @@ type fakeAuthz struct {
 	allow     map[string]bool
 	asked     []string
 	resources []bridge.Resource
+	changed   int
+}
+
+// Validate rejects any source containing BAD, standing in for Kotlin's Cedar validator.
+func (f *fakeAuthz) Validate(_ context.Context, src string) ([]string, error) {
+	if strings.Contains(src, "BAD") {
+		return []string{"unrecognized action `BAD`"}, nil
+	}
+	return nil, nil
+}
+
+func (f *fakeAuthz) PoliciesChanged(context.Context) error {
+	f.changed++
+	return nil
 }
 
 func (f *fakeAuthz) Authorize(_ context.Context, principal, action string, resource bridge.Resource, ip string) (bool, string, error) {

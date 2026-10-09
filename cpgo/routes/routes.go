@@ -29,7 +29,7 @@ func Register(mux *http.ServeMux, pool *pgxpool.Pool, gate api.Gate) {
 	a := auditLog{pool: pool, authz: gate.Authz}
 	mux.HandleFunc("GET /api/audit", gate.RequireAPI(a.list))
 	mux.HandleFunc("GET /api/audit/{id}", gate.RequireAPI(a.get))
-	p := policies{pool: pool}
+	p := policies{pool: pool, authz: gate.Authz}
 	mux.HandleFunc("GET /api/roles", gate.RequireAPI(p.roles))
 	mux.HandleFunc("GET /api/role-assignments", gate.RequireAdmin("admin.identity", p.roleAssignments))
 	mux.HandleFunc("GET /api/mask-fns", gate.RequireAdmin("admin.policies", p.maskFns))
@@ -42,6 +42,12 @@ func Register(mux *http.ServeMux, pool *pgxpool.Pool, gate api.Gate) {
 	mux.HandleFunc("POST /api/mask-fns", gate.RequireAdmin("admin.policies", p.createMaskFn))
 	mux.HandleFunc("PUT /api/mask-fns/{id}", gate.RequireAdmin("admin.policies", withID(p.updateMaskFn)))
 	mux.HandleFunc("DELETE /api/mask-fns/{id}", gate.RequireAdmin("admin.policies", withID(p.deleteMaskFn)))
+	mux.HandleFunc("POST /api/policies", gate.RequireAdmin("admin.policies", p.createPolicy))
+	mux.HandleFunc("PUT /api/policies/{id}", gate.RequireAdmin("admin.policies", withID(p.updatePolicy)))
+	mux.HandleFunc("DELETE /api/policies/{id}", gate.RequireAdmin("admin.policies", withID(p.deletePolicy)))
+	mux.HandleFunc("POST /api/policies/{id}/enable", gate.RequireAdmin("admin.policies", withID(p.setPolicyEnabled(true))))
+	mux.HandleFunc("POST /api/policies/{id}/disable", gate.RequireAdmin("admin.policies", withID(p.setPolicyEnabled(false))))
+	mux.HandleFunc("POST /api/policies/validate", gate.RequireAdmin("admin.policies", p.validatePolicy))
 	mux.HandleFunc("GET /api/me/permissions", gate.RequireAPI(permissions(gate.Authz)))
 	ac := access{pool: pool, authz: gate.Authz}
 	mux.HandleFunc("GET /api/access-requests", gate.RequireAPI(ac.requests))

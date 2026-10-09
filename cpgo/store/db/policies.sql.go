@@ -49,6 +49,29 @@ func (q *Queries) CreateMaskFn(ctx context.Context, arg CreateMaskFnParams) (Cre
 	return i, err
 }
 
+const createPolicy = `-- name: CreatePolicy :one
+INSERT INTO policy (name, cedar_src, enabled, updated_by, origin) VALUES ($1, $2, $3, $4, 'USER') RETURNING id
+`
+
+type CreatePolicyParams struct {
+	Name      string
+	CedarSrc  string
+	Enabled   bool
+	UpdatedBy *string
+}
+
+func (q *Queries) CreatePolicy(ctx context.Context, arg CreatePolicyParams) (int64, error) {
+	row := q.db.QueryRow(ctx, createPolicy,
+		arg.Name,
+		arg.CedarSrc,
+		arg.Enabled,
+		arg.UpdatedBy,
+	)
+	var id int64
+	err := row.Scan(&id)
+	return id, err
+}
+
 const createRole = `-- name: CreateRole :one
 INSERT INTO app_role (name, description) VALUES ($1, $2) RETURNING id, name, description
 `
@@ -83,6 +106,18 @@ func (q *Queries) DeleteMaskFn(ctx context.Context, id int64) (int64, error) {
 	return result.RowsAffected(), nil
 }
 
+const deletePolicy = `-- name: DeletePolicy :execrows
+UPDATE policy SET deleted_at = now() WHERE id = $1 AND deleted_at IS NULL
+`
+
+func (q *Queries) DeletePolicy(ctx context.Context, id int64) (int64, error) {
+	result, err := q.db.Exec(ctx, deletePolicy, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const deleteRole = `-- name: DeleteRole :execrows
 UPDATE app_role SET deleted_at = now() WHERE id = $1 AND deleted_at IS NULL
 `
@@ -105,6 +140,37 @@ func (q *Queries) IsSystemRole(ctx context.Context, roleID int64) (bool, error) 
 	var exists bool
 	err := row.Scan(&exists)
 	return exists, err
+}
+
+const lockPolicy = `-- name: LockPolicy :one
+SELECT id, origin, system_key, name, cedar_src, enabled, updated_by, updated_at FROM policy WHERE id = $1 AND deleted_at IS NULL FOR UPDATE
+`
+
+type LockPolicyRow struct {
+	ID        int64
+	Origin    string
+	SystemKey *string
+	Name      string
+	CedarSrc  string
+	Enabled   bool
+	UpdatedBy *string
+	UpdatedAt time.Time
+}
+
+func (q *Queries) LockPolicy(ctx context.Context, id int64) (LockPolicyRow, error) {
+	row := q.db.QueryRow(ctx, lockPolicy, id)
+	var i LockPolicyRow
+	err := row.Scan(
+		&i.ID,
+		&i.Origin,
+		&i.SystemKey,
+		&i.Name,
+		&i.CedarSrc,
+		&i.Enabled,
+		&i.UpdatedBy,
+		&i.UpdatedAt,
+	)
+	return i, err
 }
 
 const maskFn = `-- name: MaskFn :one
@@ -197,6 +263,37 @@ func (q *Queries) Policies(ctx context.Context) ([]PoliciesRow, error) {
 		return nil, err
 	}
 	return items, nil
+}
+
+const policy = `-- name: Policy :one
+SELECT id, origin, system_key, name, cedar_src, enabled, updated_by, updated_at FROM policy WHERE id = $1 AND deleted_at IS NULL
+`
+
+type PolicyRow struct {
+	ID        int64
+	Origin    string
+	SystemKey *string
+	Name      string
+	CedarSrc  string
+	Enabled   bool
+	UpdatedBy *string
+	UpdatedAt time.Time
+}
+
+func (q *Queries) Policy(ctx context.Context, id int64) (PolicyRow, error) {
+	row := q.db.QueryRow(ctx, policy, id)
+	var i PolicyRow
+	err := row.Scan(
+		&i.ID,
+		&i.Origin,
+		&i.SystemKey,
+		&i.Name,
+		&i.CedarSrc,
+		&i.Enabled,
+		&i.UpdatedBy,
+		&i.UpdatedAt,
+	)
+	return i, err
 }
 
 const role = `-- name: Role :one
@@ -443,6 +540,21 @@ func (q *Queries) Roles(ctx context.Context) ([]RolesRow, error) {
 	return items, nil
 }
 
+const setPolicyEnabled = `-- name: SetPolicyEnabled :exec
+UPDATE policy SET enabled = $1, updated_by = $2, updated_at = now() WHERE id = $3 AND deleted_at IS NULL
+`
+
+type SetPolicyEnabledParams struct {
+	Enabled   bool
+	UpdatedBy *string
+	ID        int64
+}
+
+func (q *Queries) SetPolicyEnabled(ctx context.Context, arg SetPolicyEnabledParams) error {
+	_, err := q.db.Exec(ctx, setPolicyEnabled, arg.Enabled, arg.UpdatedBy, arg.ID)
+	return err
+}
+
 const unassignRole = `-- name: UnassignRole :execrows
 DELETE FROM principal_role WHERE id = $1
 `
@@ -467,6 +579,29 @@ type UpdateMaskFnParams struct {
 
 func (q *Queries) UpdateMaskFn(ctx context.Context, arg UpdateMaskFnParams) error {
 	_, err := q.db.Exec(ctx, updateMaskFn, arg.Name, arg.Kind, arg.ID)
+	return err
+}
+
+const updatePolicy = `-- name: UpdatePolicy :exec
+UPDATE policy SET name = $1, cedar_src = $2, enabled = $3, updated_by = $4, updated_at = now() WHERE id = $5 AND deleted_at IS NULL
+`
+
+type UpdatePolicyParams struct {
+	Name      string
+	CedarSrc  string
+	Enabled   bool
+	UpdatedBy *string
+	ID        int64
+}
+
+func (q *Queries) UpdatePolicy(ctx context.Context, arg UpdatePolicyParams) error {
+	_, err := q.db.Exec(ctx, updatePolicy,
+		arg.Name,
+		arg.CedarSrc,
+		arg.Enabled,
+		arg.UpdatedBy,
+		arg.ID,
+	)
 	return err
 }
 

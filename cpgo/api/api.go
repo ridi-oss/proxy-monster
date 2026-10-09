@@ -100,6 +100,8 @@ type Authorizer interface {
 	Authorize(ctx context.Context, principal, action string, resource bridge.Resource, requesterIP string) (bool, string, error)
 	AuthorizeEach(ctx context.Context, principal, action string, resources []bridge.Resource, requesterIP string) ([]bool, error)
 	MayConnect(ctx context.Context, principal string, datasourceIDs []int64, requesterIP string) ([]bool, error)
+	Validate(ctx context.Context, cedarSrc string) ([]string, error)
+	PoliciesChanged(ctx context.Context) error
 }
 
 // Gate authenticates console requests for Go routes.

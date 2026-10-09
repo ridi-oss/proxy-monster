@@ -69,3 +69,21 @@ UPDATE mask_fn SET name = $1, kind = $2 WHERE id = $3 AND deleted_at IS NULL;
 
 -- name: DeleteMaskFn :execrows
 UPDATE mask_fn SET deleted_at = now() WHERE id = $1 AND deleted_at IS NULL;
+
+-- name: Policy :one
+SELECT id, origin, system_key, name, cedar_src, enabled, updated_by, updated_at FROM policy WHERE id = $1 AND deleted_at IS NULL;
+
+-- name: LockPolicy :one
+SELECT id, origin, system_key, name, cedar_src, enabled, updated_by, updated_at FROM policy WHERE id = $1 AND deleted_at IS NULL FOR UPDATE;
+
+-- name: CreatePolicy :one
+INSERT INTO policy (name, cedar_src, enabled, updated_by, origin) VALUES ($1, $2, $3, $4, 'USER') RETURNING id;
+
+-- name: UpdatePolicy :exec
+UPDATE policy SET name = $1, cedar_src = $2, enabled = $3, updated_by = $4, updated_at = now() WHERE id = $5 AND deleted_at IS NULL;
+
+-- name: DeletePolicy :execrows
+UPDATE policy SET deleted_at = now() WHERE id = $1 AND deleted_at IS NULL;
+
+-- name: SetPolicyEnabled :exec
+UPDATE policy SET enabled = $1, updated_by = $2, updated_at = now() WHERE id = $3 AND deleted_at IS NULL;

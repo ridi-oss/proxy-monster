@@ -50,11 +50,9 @@ type config struct {
 	BridgePort     int            `env:"PM_CP_GO_GRPC_PORT" default:"0" help:"Loopback port the Kotlin control plane calls Go on; 0 picks a free one. Set it, and the child's PM_CP_GO_GRPC_ADDR, with PM_CP_ATTACH."`
 	Cedar          string         `env:"PM_CP_CEDAR" default:"go" enum:"kotlin,shadow,go" help:"Who decides Cedar for Go routes: go, kotlin, or shadow (kotlin decides, go is compared and mismatches logged)."`
 	// Shared with the Kotlin child, which reads them from the environment, so they are never flags.
-	DBURL         string `kong:"-"`
-	DBUser        string `kong:"-"`
-	DBPassword    string `kong:"-"`
-	SessionSecret string `kong:"-"`
-	AuthDebug     bool   `kong:"-"`
+	DBURL      string `kong:"-"`
+	DBUser     string `kong:"-"`
+	DBPassword string `kong:"-"`
 	// InternalToken authenticates cp-go to the child; generated per boot unless attaching.
 	InternalToken string `kong:"-"`
 }
@@ -72,8 +70,6 @@ func main() {
 	cfg.DBURL = envOr("PM_DB_URL", "jdbc:postgresql://localhost:5432/proxymonster")
 	cfg.DBUser = envOr("PM_DB_USER", "proxymonster")
 	cfg.DBPassword = envOr("PM_DB_PASSWORD", "proxymonster")
-	cfg.SessionSecret = envOr("PM_SESSION_SECRET", "dev-insecure-session-secret-change-me")
-	cfg.AuthDebug = envOr("PM_AUTH_DEBUG", "true") == "true"
 	cfg.InternalToken = os.Getenv("PM_CP_INTERNAL_TOKEN")
 	cfg.GitHub.AppID = strings.TrimSpace(os.Getenv("PM_GITHUB_APP_ID"))
 	// Normalized as the Kotlin control plane normalizes it for its web links.
@@ -104,6 +100,11 @@ func run(ctx context.Context, cfg config) int {
 	}
 	if err := authz.DeclareUserAttributesFromEnv(); err != nil {
 		slog.Error("cp-go: " + err.Error())
+		return 1
+	}
+	sessions, err := session.SettingsFromEnv()
+	if err != nil {
+		slog.Error("cp-go: session settings", "err", err)
 		return 1
 	}
 	var kt *child.Child
@@ -162,12 +163,11 @@ func run(ctx context.Context, cfg config) int {
 	serve := func(edges front.TrustedEdges) http.Handler {
 		mux := http.NewServeMux()
 		routes.Register(mux, pool, api.Gate{
-			Sessions:      session.NewResolver(pool, cfg.SessionSecret),
-			EndMismatched: api.KotlinSessionCheck(httpUpstream),
-			Kotlin:        kotlin,
-			Edges:         edges,
-			AuthDebug:     cfg.AuthDebug,
-			Authz:         authorizer(cfg.Cedar, pool, kotlin),
+			Sessions:  session.NewResolver(pool, sessions),
+			Kotlin:    kotlin,
+			Edges:     edges,
+			AuthDebug: sessions.AuthDebug,
+			Authz:     authorizer(cfg.Cedar, pool, kotlin),
 		})
 		h := front.Route(mux, front.NewHTTP(httpUpstream, edges))
 		if web != nil {

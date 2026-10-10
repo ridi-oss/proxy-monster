@@ -1,6 +1,7 @@
 package com.ridi.oss.proxymonster.controlplane
 
 import com.ridi.oss.proxymonster.controlplane.authz.CedarPolicyInput
+import com.ridi.oss.proxymonster.controlplane.authz.CedarSchema
 import com.ridi.oss.proxymonster.controlplane.grpc.CONTROL_PROTOCOL_VERSION
 import com.ridi.oss.proxymonster.controlplane.grpc.ControlPlaneGrpcService
 import com.ridi.oss.proxymonster.controlplane.grpc.GrpcServer
@@ -542,27 +543,16 @@ class ResultCapsE2eDbTest {
 
     // Policy save: the cap grammar is enforced where an admin types it.
     @Test
-    fun `saving a malformed or misplaced cap annotation is refused with the errors`() = testApplication {
-        wire()
-        val adminClient = login(admin)
-        suspend fun save(src: String) = adminClient.post("/api/policies") {
-            contentType(ContentType.Application.Json); setBody(CedarPolicyInput("e2e-cap-${System.nanoTime()}", src))
-        }
+    fun `a malformed or misplaced cap annotation fails validation with the errors`() {
         for (bad in listOf(
             """@cap("5M") permit(principal, action == Action::"result.cap", resource);""",
             """@cap("1/32d") permit(principal, action == Action::"result.cap", resource);""",
             """@cap("10/1x") permit(principal, action == Action::"result.cap", resource);""",
             """@cap("5") permit(principal in Role::"analyst", action == Action::"result.read.unmasked", resource);""",
         )) {
-            val response = save(bad)
-            assertEquals(HttpStatusCode.BadRequest, response.status, bad)
-            val errors = Json.parseToJsonElement(response.bodyAsText()).let { it.toString() }
-            assertTrue("errors" in errors && ("@cap" in errors || "result.cap" in errors), "$bad -> $errors")
+            val errors = CedarSchema.validate(bad).joinToString()
+            assertTrue("@cap" in errors || "result.cap" in errors, "$bad -> $errors")
         }
-        val ok = save("""@cap("2000, 3MB, 100KB/10m, 7GB/31d") permit(principal in Role::"analyst", action == Action::"result.cap", resource);""")
-        assertTrue(ok.status.value in 200..201, ok.bodyAsText())
-        assertEquals(HttpStatusCode.Forbidden, login(analyst).post("/api/policies") {
-            contentType(ContentType.Application.Json); setBody(CedarPolicyInput("e2e-cap-nope", """@cap("1") permit(principal, action == Action::"result.cap", resource);"""))
-        }.status)
+        assertEquals(emptyList(), CedarSchema.validate("""@cap("2000, 3MB, 100KB/10m, 7GB/31d") permit(principal in Role::"analyst", action == Action::"result.cap", resource);"""))
     }
 }

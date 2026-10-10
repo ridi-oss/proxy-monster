@@ -4,6 +4,8 @@ import com.ridi.oss.proxymonster.controlplane.authz.Authz
 import com.ridi.oss.proxymonster.controlplane.authz.CedarEngine
 import com.ridi.oss.proxymonster.controlplane.authz.CedarPolicyInput
 import com.ridi.oss.proxymonster.controlplane.authz.CedarPolicyStore
+import com.ridi.oss.proxymonster.controlplane.authz.CedarSchema
+import com.ridi.oss.proxymonster.controlplane.authz.CedarValidateResult
 import com.ridi.oss.proxymonster.controlplane.authz.RoleSource
 import com.ridi.oss.proxymonster.controlplane.support.SharedPostgres
 import com.ridi.oss.proxymonster.controlplane.support.requireDockerOrSkip
@@ -36,6 +38,7 @@ import kotlin.test.assertEquals
 class InternalAuthorizeDbTest {
     private lateinit var dataSource: DataSource
     private lateinit var authz: Authz
+    private lateinit var cedarPolicyStore: CedarPolicyStore
 
     @BeforeAll
     fun setup() {
@@ -47,7 +50,7 @@ class InternalAuthorizeDbTest {
         policyStore.createAssignment(RoleAssignmentInput(principal = AUDITOR, roleId = policyStore.getRoleByName("system:admin")!!.id))
         val role = policyStore.createRole(RoleInput(name = "ip-auditor", description = "ip-gated audit read"))
         policyStore.createAssignment(RoleAssignmentInput(principal = EDGE_AUDITOR, roleId = role.id))
-        val cedarPolicyStore = CedarPolicyStore(dataSource)
+        cedarPolicyStore = CedarPolicyStore(dataSource)
         cedarPolicyStore.create(
             CedarPolicyInput(
                 name = "ip-gated-audit-read",
@@ -101,6 +104,37 @@ class InternalAuthorizeDbTest {
     }
 
     @Test
+    fun `a policy written behind Kotlin's back applies only after policies-changed`() = testApplication {
+        val client = app()
+        val ask = InternalAuthorizeRequest(LATE, "audit.read", InternalResource("AuditLog"))
+        assertEquals(false, client.authorize(ask).body<InternalAuthorizeResult>().allow)
+        dataSource.connection.use { c ->
+            c.createStatement().use {
+                it.executeUpdate("""INSERT INTO policy (name, cedar_src, enabled, origin) VALUES ('late-grant',
+                    'permit(principal == User::"$LATE", action == Action::"audit.read", resource);', true, 'USER')""")
+            }
+        }
+        assertEquals(false, client.authorize(ask).body<InternalAuthorizeResult>().allow, "the cached policy set has not moved")
+        val signal = client.post("/internal/policies-changed") { header(INTERNAL_TOKEN_HEADER, TOKEN) }
+        assertEquals(HttpStatusCode.NoContent, signal.status)
+        assertEquals(true, client.authorize(ask).body<InternalAuthorizeResult>().allow)
+    }
+
+    @Test
+    fun `cedar-validate returns the validator's errors`() = testApplication {
+        val client = app()
+        suspend fun validate(src: String) = client.post("/internal/cedar-validate") {
+            header(INTERNAL_TOKEN_HEADER, TOKEN)
+            contentType(ContentType.Application.Json)
+            setBody(InternalValidateRequest(src))
+        }.body<CedarValidateResult>()
+        assertEquals(CedarValidateResult(true, emptyList()), validate("""permit(principal, action == Action::"audit.read", resource);"""))
+        val bad = validate("""permit(principal, action == Action::"audit.write", resource);""")
+        assertEquals(false, bad.valid)
+        assertEquals(CedarSchema.validate("""permit(principal, action == Action::"audit.write", resource);"""), bad.errors)
+    }
+
+    @Test
     fun `an unknown action or resource is rejected`() = testApplication {
         val client = app()
         assertEquals(HttpStatusCode.BadRequest, client.authorize(InternalAuthorizeRequest(AUDITOR, "audit.write", InternalResource("AuditLog"))).status)
@@ -111,7 +145,7 @@ class InternalAuthorizeDbTest {
     private fun ApplicationTestBuilder.app(token: String? = TOKEN): HttpClient {
         application {
             install(ContentNegotiation) { json(Json { ignoreUnknownKeys = true; encodeDefaults = true; explicitNulls = false }) }
-            routing { internalAuthorizeRoute(token, authz) }
+            routing { internalAuthorizeRoute(token, authz, policiesChanged = cedarPolicyStore::markCommittedMutation) }
         }
         return createClient {
             expectSuccess = false
@@ -132,5 +166,6 @@ class InternalAuthorizeDbTest {
         const val BOB = "bob"
         const val AUDITOR = "auditor-user"
         const val EDGE_AUDITOR = "edge-auditor"
+        const val LATE = "late-auditor"
     }
 }

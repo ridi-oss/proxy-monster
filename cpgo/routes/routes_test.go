@@ -34,6 +34,26 @@ type fakeAuthz struct {
 	allow     map[string]bool
 	asked     []string
 	resources []bridge.Resource
+	changed   int
+	// atSignal, when set, records what another connection sees each time PoliciesChanged runs.
+	atSignal func() string
+	seen     []string
+}
+
+// Validate rejects any source containing BAD, standing in for Kotlin's Cedar validator.
+func (f *fakeAuthz) Validate(_ context.Context, src string) ([]string, error) {
+	if strings.Contains(src, "BAD") {
+		return []string{"unrecognized action `BAD`"}, nil
+	}
+	return nil, nil
+}
+
+func (f *fakeAuthz) PoliciesChanged(context.Context) error {
+	f.changed++
+	if f.atSignal != nil {
+		f.seen = append(f.seen, f.atSignal())
+	}
+	return nil
 }
 
 func (f *fakeAuthz) Authorize(_ context.Context, principal, action string, resource bridge.Resource, ip string) (bool, string, error) {

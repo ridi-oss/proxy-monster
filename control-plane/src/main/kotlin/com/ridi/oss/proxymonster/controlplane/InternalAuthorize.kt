@@ -5,6 +5,8 @@ import com.ridi.oss.proxymonster.controlplane.authz.AuthzAction
 import com.ridi.oss.proxymonster.controlplane.authz.AuthzContext
 import com.ridi.oss.proxymonster.controlplane.authz.AuthzDecision
 import com.ridi.oss.proxymonster.controlplane.authz.AuthzResource
+import com.ridi.oss.proxymonster.controlplane.authz.CedarSchema
+import com.ridi.oss.proxymonster.controlplane.authz.CedarValidateResult
 import io.ktor.http.HttpStatusCode
 import io.ktor.server.request.receive
 import io.ktor.server.response.respond
@@ -49,6 +51,9 @@ data class InternalAuthorizeBatchRequest(
 data class InternalAuthorizeBatchResult(val allow: List<Boolean>)
 
 @Serializable
+data class InternalValidateRequest(val cedarSrc: String)
+
+@Serializable
 data class InternalMayConnectRequest(val principal: String, val datasourceIds: List<Long>, val requesterIp: String? = null)
 
 private fun InternalResource.toAuthz(): AuthzResource? = when (type) {
@@ -68,6 +73,7 @@ fun Route.internalAuthorizeRoute(
     token: String?,
     authz: Authz,
     mayConnect: (principal: String, requesterIp: String?, datasourceId: Long) -> Boolean = { _, _, _ -> false },
+    policiesChanged: () -> Unit = {},
 ) {
     if (token.isNullOrEmpty()) return
     post("/internal/authorize") {
@@ -97,6 +103,22 @@ fun Route.internalAuthorizeRoute(
         val context = AuthzContext(requesterIp = request.requesterIp)
         val roles = authz.rolesOf(request.principal)
         call.respond(InternalAuthorizeBatchResult(resources.map { authz.authorizeAs(request.principal, roles, action, it!!, context) == AuthzDecision.Allow }))
+    }
+    // The policy-editor validation cp-go's policy writes need before they store a source.
+    post("/internal/cedar-validate") {
+        if (!constantTimeEquals(call.request.headers[INTERNAL_TOKEN_HEADER], token)) {
+            return@post call.respond(HttpStatusCode.NotFound)
+        }
+        val errors = CedarSchema.validate(call.receive<InternalValidateRequest>().cedarSrc)
+        call.respond(CedarValidateResult(errors.isEmpty(), errors))
+    }
+    // cp-go committed a policy change: rebuild this process's PolicySet on its next decision.
+    post("/internal/policies-changed") {
+        if (!constantTimeEquals(call.request.headers[INTERNAL_TOKEN_HEADER], token)) {
+            return@post call.respond(HttpStatusCode.NotFound)
+        }
+        policiesChanged()
+        call.respond(HttpStatusCode.NoContent)
     }
     // datasource.connect needs the datasource's context tags derived first, so it is asked as a whole.
     post("/internal/may-connect") {

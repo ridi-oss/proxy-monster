@@ -14,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/ridi-oss/proxy-monster/cpgo/api"
+	"github.com/ridi-oss/proxy-monster/cpgo/store/db"
 )
 
 // locales is the closed set the message catalog carries (MessageCatalog.LOCALES).
@@ -25,6 +26,15 @@ func Register(mux *http.ServeMux, pool *pgxpool.Pool, gate api.Gate) {
 	mux.HandleFunc("PUT /api/me/locale", gate.RequireAPI(h.putLocale))
 	mux.HandleFunc("GET /api/query-history", gate.RequireAPI(h.getQueryHistory))
 	mux.HandleFunc("DELETE /api/query-history", gate.RequireAPI(h.deleteQueryHistory))
+	a := audit{pool: pool, authz: gate.Authz}
+	mux.HandleFunc("GET /api/audit", gate.RequireAPI(a.list))
+	mux.HandleFunc("GET /api/audit/{id}", gate.RequireAPI(a.get))
+	p := policies{pool: pool}
+	mux.HandleFunc("GET /api/roles", gate.RequireAPI(p.roles))
+	mux.HandleFunc("GET /api/role-assignments", gate.RequireAdmin("admin.identity", p.roleAssignments))
+	mux.HandleFunc("GET /api/mask-fns", gate.RequireAdmin("admin.policies", p.maskFns))
+	mux.HandleFunc("GET /api/policies", gate.RequireAdmin("admin.policies", p.policies))
+	mux.HandleFunc("GET /api/me/permissions", gate.RequireAPI(permissions(gate.Authz)))
 }
 
 type handlers struct{ pool *pgxpool.Pool }
@@ -44,9 +54,8 @@ func (h handlers) putLocale(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// A principal with no directory row keeps the instance default; that is not an error.
-	if _, err := h.pool.Exec(r.Context(), `UPDATE app_user SET locale = $1 WHERE principal = $2`,
-		locale, api.Principal(r.Context())); err != nil {
-		h.fail(w, err)
+	if err := db.New(h.pool).SetLocale(r.Context(), db.SetLocaleParams{Locale: &locale, Principal: api.Principal(r.Context())}); err != nil {
+		fail(w, err)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -64,49 +73,27 @@ func (h handlers) getQueryHistory(w http.ResponseWriter, r *http.Request) {
 	if n, err := strconv.Atoi(r.URL.Query().Get("limit")); err == nil {
 		limit = min(max(n, 1), 200)
 	}
-	rows, err := h.pool.Query(r.Context(), `
-		SELECT sql, datasource_id, created_at FROM (
-		    SELECT DISTINCT ON (sql) sql, datasource_id, created_at
-		    FROM query_history WHERE principal = $1
-		    ORDER BY sql, created_at DESC
-		) q
-		ORDER BY created_at DESC
-		LIMIT $2`, api.Principal(r.Context()), limit)
+	rows, err := db.New(h.pool).QueryHistory(r.Context(), db.QueryHistoryParams{Principal: api.Principal(r.Context()), Limit: int32(limit)})
 	if err != nil {
-		h.fail(w, err)
+		fail(w, err)
 		return
 	}
-	defer rows.Close()
 	out := []historyEntry{}
-	for rows.Next() {
-		var (
-			e  historyEntry
-			at time.Time
-		)
-		if err := rows.Scan(&e.SQL, &e.DatasourceID, &at); err != nil {
-			h.fail(w, err)
-			return
-		}
-		e.RanAt = javaInstant(at)
-		out = append(out, e)
-	}
-	if err := rows.Err(); err != nil {
-		h.fail(w, err)
-		return
+	for _, row := range rows {
+		out = append(out, historyEntry{SQL: row.Sql, DatasourceID: row.DatasourceID, RanAt: javaInstant(row.CreatedAt)})
 	}
 	api.WriteJSON(w, http.StatusOK, out)
 }
 
 func (h handlers) deleteQueryHistory(w http.ResponseWriter, r *http.Request) {
-	if _, err := h.pool.Exec(r.Context(), `DELETE FROM query_history WHERE principal = $1`,
-		api.Principal(r.Context())); err != nil {
-		h.fail(w, err)
+	if err := db.New(h.pool).DeleteQueryHistory(r.Context(), api.Principal(r.Context())); err != nil {
+		fail(w, err)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func (handlers) fail(w http.ResponseWriter, err error) {
+func fail(w http.ResponseWriter, err error) {
 	slog.Error("routes: store query failed", "err", err)
 	api.WriteError(w, http.StatusInternalServerError, "common.fallback", nil)
 }

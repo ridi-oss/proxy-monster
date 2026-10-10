@@ -15,6 +15,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/ridi-oss/proxy-monster/cpgo/store/db"
 )
 
 const (
@@ -35,6 +37,8 @@ type Web struct {
 	AbsoluteExpiresAt time.Time
 	IdleExpiresAt     time.Time
 	Now               time.Time
+	// DebugRequesterIP is the address chosen at a PM_AUTH_DEBUG login, if any.
+	DebugRequesterIP string
 }
 
 // Resolver reads sessions without extending them; only the heartbeat route slides idle.
@@ -59,24 +63,16 @@ func (r *Resolver) Resolve(ctx context.Context, req *http.Request) (*Web, error)
 			device = &v
 		}
 	}
-	var (
-		w         Web
-		rowDevice *string
-	)
-	err := r.pool.QueryRow(ctx, `
-		SELECT id, principal, created_at, absolute_expires_at, idle_expires_at, device_id,
-		       clock_timestamp()
-		FROM principal_session
-		WHERE session_key = $1 AND kind = 'WEB' AND ended_at IS NULL
-		  AND absolute_expires_at > clock_timestamp()
-		  AND idle_expires_at > clock_timestamp()`, key,
-	).Scan(&w.ID, &w.Principal, &w.CreatedAt, &w.AbsoluteExpiresAt, &w.IdleExpiresAt, &rowDevice, &w.Now)
+	row, err := db.New(r.pool).LiveWebSession(ctx, &key)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, err
 	}
+	w := Web{ID: row.ID, Principal: row.Principal, CreatedAt: row.CreatedAt, AbsoluteExpiresAt: row.AbsoluteExpiresAt,
+		IdleExpiresAt: *row.IdleExpiresAt, Now: row.DbNow, DebugRequesterIP: row.DebugRequesterIp}
+	rowDevice := row.DeviceID
 	if rowDevice == nil || device == nil || *rowDevice != *device {
 		return nil, ErrDeviceMismatch
 	}

@@ -73,18 +73,6 @@ class CedarPolicyRoutesTest {
     }
 
     @Test
-    fun `list exposes system provenance without accepting it in input`() = testApplication {
-        val client = policyClient()
-
-        val response = client.get("/api/policies")
-        assertEquals(HttpStatusCode.OK, response.status)
-        val system = response.body<List<CedarPolicy>>().single { it.id == -1L }
-        assertEquals("SYSTEM", system.origin)
-        assertEquals("bootstrap.pm-admin", system.systemKey)
-        assertEquals("system:admin", system.name)
-    }
-
-    @Test
     fun `POST and USER rename reject the reserved system namespace`() = testApplication {
         val client = policyClient()
         val postResponse = client.post("/api/policies") {

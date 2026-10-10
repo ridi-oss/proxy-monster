@@ -3,6 +3,7 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -11,6 +12,8 @@ import (
 	"net/url"
 	"time"
 
+	"github.com/ridi-oss/proxy-monster/cpgo/bridge"
+	"github.com/ridi-oss/proxy-monster/cpgo/front"
 	"github.com/ridi-oss/proxy-monster/cpgo/session"
 )
 
@@ -20,12 +23,19 @@ type Error struct {
 	Params map[string]string `json:"params"`
 }
 
+// WriteJSON writes v the way the Kotlin control plane's serializer does: no HTML escaping, no trailing newline.
 func WriteJSON(w http.ResponseWriter, status int, v any) {
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(v); err != nil {
+		slog.Error("api: encoding response", "err", err)
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	if err := json.NewEncoder(w).Encode(v); err != nil {
-		slog.Warn("api: writing response", "err", err)
-	}
+	_, _ = w.Write(bytes.TrimSuffix(buf.Bytes(), []byte("\n")))
 }
 
 func WriteError(w http.ResponseWriter, status int, code string, params map[string]string) {
@@ -35,12 +45,25 @@ func WriteError(w http.ResponseWriter, status int, code string, params map[strin
 	WriteJSON(w, status, Error{Code: code, Params: params})
 }
 
-type principalKey struct{}
+type caller struct{ principal, requesterIP string }
+
+type callerKey struct{}
 
 // Principal is the caller RequireAPI authenticated.
 func Principal(ctx context.Context) string {
-	p, _ := ctx.Value(principalKey{}).(string)
-	return p
+	c, _ := ctx.Value(callerKey{}).(caller)
+	return c.principal
+}
+
+// RequesterIP is the caller's address as Cedar's requester_ip, "" when unknown.
+func RequesterIP(ctx context.Context) string {
+	c, _ := ctx.Value(callerKey{}).(caller)
+	return c.requesterIP
+}
+
+// Authorizer is the Cedar decision a route asks for: allowed, or denied with Cedar's reason.
+type Authorizer interface {
+	Authorize(ctx context.Context, principal, action string, resource bridge.Resource, requesterIP string) (bool, string, error)
 }
 
 // Gate authenticates console requests for Go routes.
@@ -49,6 +72,28 @@ type Gate struct {
 	// EndMismatched has the Kotlin control plane end a session presented from the wrong device. Kotlin
 	// owns that teardown because it also drops the principal's in-memory editor runs.
 	EndMismatched func(*http.Request)
+	Edges         front.TrustedEdges
+	// AuthDebug lets a session carry the requester IP chosen at its debug login, as Kotlin does.
+	AuthDebug bool
+	Authz     Authorizer
+}
+
+// RequireAdmin is Kotlin's requireAdmin: a session, then Cedar's decision on action over the System
+// resource, 403 common.forbidden with Cedar's reason on a deny.
+func (g Gate) RequireAdmin(action string, next http.HandlerFunc) http.HandlerFunc {
+	return g.RequireAPI(func(w http.ResponseWriter, r *http.Request) {
+		ctx := r.Context()
+		ok, reason, err := g.Authz.Authorize(ctx, Principal(ctx), action, bridge.System, RequesterIP(ctx))
+		switch {
+		case err != nil:
+			slog.Error("api: authorizing", "action", action, "err", err)
+			WriteError(w, http.StatusInternalServerError, "common.fallback", nil)
+		case !ok:
+			WriteError(w, http.StatusForbidden, "common.forbidden", map[string]string{"detail": reason})
+		default:
+			next(w, r)
+		}
+	})
 }
 
 // KotlinSessionCheck resolves the request's session through Kotlin's /auth/session/status, which ends a
@@ -85,7 +130,11 @@ func (g Gate) RequireAPI(next http.HandlerFunc) http.HandlerFunc {
 		case s == nil:
 			WriteError(w, http.StatusUnauthorized, "common.unauthenticated", nil)
 		default:
-			next(w, r.WithContext(context.WithValue(r.Context(), principalKey{}, s.Principal)))
+			ip := front.RequesterIP(r, g.Edges)
+			if g.AuthDebug && s.DebugRequesterIP != "" {
+				ip = s.DebugRequesterIP
+			}
+			next(w, r.WithContext(context.WithValue(r.Context(), callerKey{}, caller{s.Principal, ip})))
 		}
 	}
 }

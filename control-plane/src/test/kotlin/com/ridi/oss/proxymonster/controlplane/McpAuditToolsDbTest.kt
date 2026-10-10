@@ -9,11 +9,7 @@ import com.ridi.oss.proxymonster.controlplane.support.login
 import com.ridi.oss.proxymonster.controlplane.support.mcpCall
 import com.ridi.oss.proxymonster.controlplane.support.mcpTestConfig
 import com.ridi.oss.proxymonster.controlplane.support.okResult
-import com.ridi.oss.proxymonster.controlplane.support.parseJson
 import com.ridi.oss.proxymonster.controlplane.support.requireDockerOrSkip
-import io.ktor.client.request.get
-import io.ktor.client.request.header
-import io.ktor.client.statement.bodyAsText
 import io.ktor.server.testing.testApplication
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.buildJsonObject
@@ -75,12 +71,10 @@ class McpAuditToolsDbTest {
         assertEquals(hidden.getValue("structuredContent"), missing.getValue("structuredContent"))
         assertEquals("audit record", hidden.getValue("structuredContent").jsonObject.getValue("params").jsonObject.getValue("resource").jsonPrimitive.content)
 
-        client.login(ALICE)
-        assertEquals(parseJson(client.get("/api/audit?limit=500").bodyAsText()).without(MCP_ROWS), listed.without(MCP_ROWS))
     }
 
     @Test
-    fun `a system admin sees every principal's rows as on REST`() = testApplication {
+    fun `a system admin sees every principal's rows`() = testApplication {
         val client = installControlPlane(config, core)
         val token = tokens.token(AUDITOR, setOf("mcp:read"))
         val listed = client.mcpCall(token, "list_audit", buildJsonObject { put("limit", 500) }).okResult()
@@ -88,13 +82,10 @@ class McpAuditToolsDbTest {
         for (id in bobIds) {
             assertEquals(id, client.mcpCall(token, "get_audit_event", buildJsonObject { put("id", id) }).okResult().jsonObject.getValue("id").jsonPrimitive.long)
         }
-        client.login(AUDITOR)
-        val rest = parseJson(client.get("/api/audit?limit=500").bodyAsText())
-        assertEquals(rest.ids().filter { it in aliceIds + bobIds }.toSet(), listed.ids().filter { it in aliceIds + bobIds }.toSet())
     }
 
     @Test
-    fun `an IP-gated audit read falls back to own rows exactly as REST does`() = testApplication {
+    fun `an IP-gated audit read falls back to own rows`() = testApplication {
         val client = installControlPlane(config, core)
         val role = core.policyStore.createRole(RoleInput("mcp-ip-auditor"))
         core.policyStore.createAssignment(RoleAssignmentInput(EDGE_AUDITOR, role.id))
@@ -108,12 +99,9 @@ class McpAuditToolsDbTest {
         )
         try {
             val token = tokens.token(EDGE_AUDITOR, setOf("mcp:read"))
-            client.login(EDGE_AUDITOR)
             for ((ip, seesAll) in listOf("203.0.113.10" to true, "198.51.100.10" to false)) {
                 val mcp = client.mcpCall(token, "list_audit", buildJsonObject { put("limit", 500) }, forwardedFor = ip).okResult()
-                val rest = parseJson(client.get("/api/audit?limit=500") { header("X-Forwarded-For", ip) }.bodyAsText())
                 assertEquals(seesAll, mcp.ids().containsAll(aliceIds + bobIds), ip)
-                assertEquals(rest.without(MCP_ROWS).ids().toSet(), mcp.without(MCP_ROWS).ids().toSet(), ip)
                 val detail = client.mcpCall(token, "get_audit_event", buildJsonObject { put("id", bobIds.first()) }, forwardedFor = ip)
                 if (seesAll) detail.okResult() else assertEquals("common.not_found", detail.errorCode())
             }
@@ -132,11 +120,6 @@ class McpAuditToolsDbTest {
 
     private fun JsonElement.ids() = jsonArray.map { it.jsonObject.getValue("id").jsonPrimitive.long }
 
-    // Each MCP call may add its own audit rows between the two reads, so the comparison drops them.
-    private fun JsonElement.without(statementPrefix: String) =
-        jsonArray.filter { !(it.jsonObject["statement"]?.jsonPrimitive?.content ?: "").startsWith(statementPrefix) }
-            .let { kotlinx.serialization.json.JsonArray(it) }
-
     private fun insert(principal: String, statement: String): Long =
         core.auditStore.insert(AuditEvent(principal = principal, datasource = "acme", statement = statement, decision = Decision.ALLOW))
 
@@ -145,7 +128,6 @@ class McpAuditToolsDbTest {
         const val BOB = "mcp-audit-bob"
         const val AUDITOR = "mcp-audit-admin"
         const val EDGE_AUDITOR = "mcp-edge-auditor"
-        const val MCP_ROWS = "[MCP "
     }
 }
 

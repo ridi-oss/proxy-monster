@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -20,6 +21,7 @@ import (
 	"google.golang.org/grpc"
 
 	"github.com/ridi-oss/proxy-monster/cpgo/api"
+	"github.com/ridi-oss/proxy-monster/cpgo/bridge"
 	"github.com/ridi-oss/proxy-monster/cpgo/child"
 	"github.com/ridi-oss/proxy-monster/cpgo/front"
 	"github.com/ridi-oss/proxy-monster/cpgo/routes"
@@ -41,6 +43,9 @@ type config struct {
 	DBUser        string `kong:"-"`
 	DBPassword    string `kong:"-"`
 	SessionSecret string `kong:"-"`
+	AuthDebug     bool   `kong:"-"`
+	// InternalToken authenticates cp-go to the child; generated per boot unless attaching.
+	InternalToken string `kong:"-"`
 }
 
 func envOr(key, def string) string {
@@ -57,6 +62,8 @@ func main() {
 	cfg.DBUser = envOr("PM_DB_USER", "proxymonster")
 	cfg.DBPassword = envOr("PM_DB_PASSWORD", "proxymonster")
 	cfg.SessionSecret = envOr("PM_SESSION_SECRET", "dev-insecure-session-secret-change-me")
+	cfg.AuthDebug = envOr("PM_AUTH_DEBUG", "true") == "true"
+	cfg.InternalToken = os.Getenv("PM_CP_INTERNAL_TOKEN")
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	code := run(ctx, cfg)
 	stop()
@@ -67,9 +74,17 @@ func main() {
 func run(ctx context.Context, cfg config) int {
 	var kt *child.Child
 	var exited <-chan struct{}
+	internalToken := cfg.InternalToken
+	if internalToken == "" {
+		if cfg.Attach {
+			slog.Error("cp-go: PM_CP_ATTACH needs PM_CP_INTERNAL_TOKEN, set to the same value for the Kotlin control plane")
+			return 1
+		}
+		internalToken = rand.Text()
+	}
 	if !cfg.Attach {
 		var err error
-		if kt, err = child.Start(cfg.Child, cfg.ChildHTTPPort, cfg.ChildGRPCPort); err != nil {
+		if kt, err = child.Start(cfg.Child, cfg.ChildHTTPPort, cfg.ChildGRPCPort, internalToken); err != nil {
 			slog.Error("cp-go: " + err.Error())
 			return 1
 		}
@@ -106,6 +121,9 @@ func run(ctx context.Context, cfg config) int {
 	routes.Register(mux, pool, api.Gate{
 		Sessions:      session.NewResolver(pool, cfg.SessionSecret),
 		EndMismatched: api.KotlinSessionCheck(httpUpstream),
+		Edges:         edges,
+		AuthDebug:     cfg.AuthDebug,
+		Authz:         bridge.New(httpUpstream, internalToken),
 	})
 	httpSrv := &http.Server{
 		Addr:              ":" + strconv.Itoa(cfg.HTTPPort),

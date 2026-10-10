@@ -21,7 +21,7 @@ type Child struct {
 
 // Start launches command with the caller's environment, overriding the ports and bind host so the
 // child listens only on loopback and trusts only cp-go's forwarded headers.
-func Start(command string, httpPort, grpcPort int) (*Child, error) {
+func Start(command string, httpPort, grpcPort int, internalToken string) (*Child, error) {
 	cmd := exec.Command(command)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
@@ -30,6 +30,7 @@ func Start(command string, httpPort, grpcPort int) (*Child, error) {
 		"PM_GRPC_PORT="+strconv.Itoa(grpcPort),
 		"PM_BIND_HOST=127.0.0.1",
 		"PM_TRUSTED_PROXIES=127.0.0.1",
+		"PM_CP_INTERNAL_TOKEN="+internalToken,
 	)
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("child: starting %s: %w", command, err)

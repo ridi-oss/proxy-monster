@@ -9,6 +9,7 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"path"
+	"strings"
 	"time"
 )
 
@@ -17,8 +18,13 @@ import (
 // would hand to a GET handler.
 func Route(mux *http.ServeMux, forward http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if h, pattern := mux.Handler(r); pattern != "" && r.Method != http.MethodHead && path.Clean(r.URL.Path) == r.URL.Path {
-			h.ServeHTTP(w, r)
+		// cp-go's own calls into the Kotlin child; never reachable from outside.
+		if strings.HasPrefix(path.Clean("/"+r.URL.Path), "/internal/") || path.Clean("/"+r.URL.Path) == "/internal" {
+			http.NotFound(w, r)
+			return
+		}
+		if _, pattern := mux.Handler(r); pattern != "" && r.Method != http.MethodHead && path.Clean(r.URL.Path) == r.URL.Path {
+			mux.ServeHTTP(w, r)
 			return
 		}
 		forward.ServeHTTP(w, r)

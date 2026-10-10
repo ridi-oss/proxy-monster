@@ -18,9 +18,11 @@ import (
 	"time"
 
 	"github.com/alecthomas/kong"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"google.golang.org/grpc"
 
 	"github.com/ridi-oss/proxy-monster/cpgo/api"
+	"github.com/ridi-oss/proxy-monster/cpgo/authz"
 	"github.com/ridi-oss/proxy-monster/cpgo/bridge"
 	"github.com/ridi-oss/proxy-monster/cpgo/child"
 	"github.com/ridi-oss/proxy-monster/cpgo/front"
@@ -38,6 +40,7 @@ type config struct {
 	ChildGRPCPort  int           `env:"PM_CP_CHILD_GRPC_PORT" default:"18091" help:"Loopback gRPC port of the Kotlin control plane."`
 	Attach         bool          `env:"PM_CP_ATTACH" help:"Forward to a Kotlin control plane already running on the child ports instead of starting one."`
 	StartTimeout   time.Duration `env:"PM_CP_START_TIMEOUT" default:"10m" help:"How long to wait for the Kotlin control plane to become healthy."`
+	Cedar          string        `env:"PM_CP_CEDAR" default:"go" enum:"kotlin,shadow,go" help:"Who decides Cedar for Go routes: go, kotlin, or shadow (kotlin decides, go is compared and mismatches logged)."`
 	// Shared with the Kotlin child, which reads them from the environment, so they are never flags.
 	DBURL         string `kong:"-"`
 	DBUser        string `kong:"-"`
@@ -123,7 +126,7 @@ func run(ctx context.Context, cfg config) int {
 		EndMismatched: api.KotlinSessionCheck(httpUpstream),
 		Edges:         edges,
 		AuthDebug:     cfg.AuthDebug,
-		Authz:         bridge.New(httpUpstream, internalToken),
+		Authz:         authorizer(cfg.Cedar, pool, bridge.New(httpUpstream, internalToken)),
 	})
 	httpSrv := &http.Server{
 		Addr:              ":" + strconv.Itoa(cfg.HTTPPort),
@@ -198,6 +201,17 @@ func shutdownChild(kt *child.Child) int {
 		kt.Stop(childGrace)
 	}
 	return 1
+}
+
+func authorizer(mode string, pool *pgxpool.Pool, kotlin *bridge.Client) api.Authorizer {
+	local := authz.Local{Engine: authz.New(pool), Kotlin: kotlin}
+	switch mode {
+	case "kotlin":
+		return kotlin
+	case "shadow":
+		return authz.Shadow{Primary: kotlin, Candidate: local}
+	}
+	return local
 }
 
 func loopback(port int) string { return net.JoinHostPort("127.0.0.1", strconv.Itoa(port)) }

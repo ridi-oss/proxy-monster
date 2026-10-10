@@ -24,6 +24,13 @@ type Resource struct {
 	ExecutedBy     *string `json:"executedBy,omitempty"`
 	DatasourceName *string `json:"datasourceName,omitempty"`
 	RoleName       *string `json:"roleName,omitempty"`
+	// Token: the token kind (SESSION, USER, …), "" for any kind.
+	Kind string `json:"kind,omitempty"`
+	// NativeResource fields.
+	NativeKind     string   `json:"nativeKind,omitempty"`
+	NativeID       string   `json:"nativeId,omitempty"`
+	Owner          *string  `json:"owner,omitempty"`
+	DatasourceTags []string `json:"datasourceTags,omitempty"`
 }
 
 var (

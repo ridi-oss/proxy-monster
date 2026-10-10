@@ -46,7 +46,7 @@ func (q *Queries) QueryHistory(ctx context.Context, arg QueryHistoryParams) ([]Q
 		return nil, err
 	}
 	defer rows.Close()
-	var items []QueryHistoryRow
+	items := []QueryHistoryRow{}
 	for rows.Next() {
 		var i QueryHistoryRow
 		if err := rows.Scan(&i.Sql, &i.DatasourceID, &i.CreatedAt); err != nil {

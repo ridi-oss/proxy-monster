@@ -206,7 +206,7 @@ func (q *Queries) MaskFns(ctx context.Context) ([]MaskFnsRow, error) {
 		return nil, err
 	}
 	defer rows.Close()
-	var items []MaskFnsRow
+	items := []MaskFnsRow{}
 	for rows.Next() {
 		var i MaskFnsRow
 		if err := rows.Scan(&i.ID, &i.Name, &i.Kind); err != nil {
@@ -242,7 +242,7 @@ func (q *Queries) Policies(ctx context.Context) ([]PoliciesRow, error) {
 		return nil, err
 	}
 	defer rows.Close()
-	var items []PoliciesRow
+	items := []PoliciesRow{}
 	for rows.Next() {
 		var i PoliciesRow
 		if err := rows.Scan(
@@ -372,7 +372,7 @@ func (q *Queries) RoleAssignments(ctx context.Context) ([]RoleAssignmentsRow, er
 		return nil, err
 	}
 	defer rows.Close()
-	var items []RoleAssignmentsRow
+	items := []RoleAssignmentsRow{}
 	for rows.Next() {
 		var i RoleAssignmentsRow
 		if err := rows.Scan(
@@ -410,7 +410,7 @@ func (q *Queries) RoleAssignmentsOfPrincipal(ctx context.Context, principal stri
 		return nil, err
 	}
 	defer rows.Close()
-	var items []RoleAssignmentsOfPrincipalRow
+	items := []RoleAssignmentsOfPrincipalRow{}
 	for rows.Next() {
 		var i RoleAssignmentsOfPrincipalRow
 		if err := rows.Scan(
@@ -453,7 +453,7 @@ func (q *Queries) RoleAssignmentsOfPrincipalRole(ctx context.Context, arg RoleAs
 		return nil, err
 	}
 	defer rows.Close()
-	var items []RoleAssignmentsOfPrincipalRoleRow
+	items := []RoleAssignmentsOfPrincipalRoleRow{}
 	for rows.Next() {
 		var i RoleAssignmentsOfPrincipalRoleRow
 		if err := rows.Scan(
@@ -491,7 +491,7 @@ func (q *Queries) RoleAssignmentsOfRole(ctx context.Context, roleID int64) ([]Ro
 		return nil, err
 	}
 	defer rows.Close()
-	var items []RoleAssignmentsOfRoleRow
+	items := []RoleAssignmentsOfRoleRow{}
 	for rows.Next() {
 		var i RoleAssignmentsOfRoleRow
 		if err := rows.Scan(
@@ -526,7 +526,7 @@ func (q *Queries) Roles(ctx context.Context) ([]RolesRow, error) {
 		return nil, err
 	}
 	defer rows.Close()
-	var items []RolesRow
+	items := []RolesRow{}
 	for rows.Next() {
 		var i RolesRow
 		if err := rows.Scan(&i.ID, &i.Name, &i.Description); err != nil {

@@ -44,6 +44,10 @@ configured per proxy under `PM_TARGET_*`.
   `jdbc:postgresql://pm.cluster-xxxx.ap-northeast-2.rds.amazonaws.com:5432/proxymonster`
 - `PM_HTTP_PORT` / `PM_GRPC_PORT` — _optional_. HTTP (web/auth/MCP) and gRPC
   (proxies) listen ports. Defaults: `8080` · `9090`.
+- `PM_CP_CEDAR` — _optional_. Which engine decides Cedar for the routes `cp-go`
+  serves: `go` (default, cedar-go), `kotlin` (the Kotlin control plane, through
+  `/internal/authorize`), or `shadow` (Kotlin decides, Go decides alongside it,
+  and every disagreement is logged as `authz: shadow mismatch`).
 - `PM_CP_CHILD_HTTP_PORT` / `PM_CP_CHILD_GRPC_PORT` — _optional_. The image's
   entrypoint, `cp-go`, owns the two public ports and runs the Kotlin control
   plane as a child on these loopback ports, forwarding to it. Defaults: `18090`

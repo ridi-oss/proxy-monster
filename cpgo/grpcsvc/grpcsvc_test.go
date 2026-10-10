@@ -19,6 +19,7 @@ import (
 	"github.com/ridi-oss/proxy-monster/auditmon/store"
 	"github.com/ridi-oss/proxy-monster/auditmon/verify"
 	"github.com/ridi-oss/proxy-monster/cpgo/audit"
+	"github.com/ridi-oss/proxy-monster/cpgo/authz"
 	"github.com/ridi-oss/proxy-monster/cpgo/front"
 	"github.com/ridi-oss/proxy-monster/cpgo/internal/dbtest"
 	pb "github.com/ridi-oss/proxy-monster/cpgo/internal/pb"
@@ -59,7 +60,7 @@ func setup(t *testing.T, secret string) (dbtest.Store, pb.ControlPlaneClient) {
 	}
 	t.Cleanup(func() { _ = up.Close() })
 	fd := front.NewGRPC(up, grpc.UnaryInterceptor(SecretToken(secret)))
-	Register(fd, st.Pool)
+	Register(fd, st.Pool, authz.New(st.Pool))
 	conn, err := grpc.NewClient(serve(t, fd), grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
 		t.Fatal(err)

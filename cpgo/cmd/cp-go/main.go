@@ -26,6 +26,7 @@ import (
 	"github.com/ridi-oss/proxy-monster/cpgo/bridge"
 	"github.com/ridi-oss/proxy-monster/cpgo/child"
 	"github.com/ridi-oss/proxy-monster/cpgo/front"
+	"github.com/ridi-oss/proxy-monster/cpgo/idp"
 	"github.com/ridi-oss/proxy-monster/cpgo/routes"
 	"github.com/ridi-oss/proxy-monster/cpgo/session"
 	"github.com/ridi-oss/proxy-monster/cpgo/store"
@@ -123,13 +124,28 @@ func run(ctx context.Context, cfg config) int {
 	forward := front.NewHTTP(httpUpstream, edges)
 	mux := http.NewServeMux()
 	kotlin := bridge.New(httpUpstream, internalToken)
+	resolver := session.NewResolver(pool, sessions)
+	var login routes.Login
+	if login.Crypto, err = idp.CryptoFromEnv(); err != nil {
+		slog.Error("cp-go: " + err.Error())
+		return 1
+	}
+	oidcCfg, err := idp.ConfigFromEnv()
+	if err != nil {
+		slog.Error("cp-go: " + err.Error())
+		return 1
+	}
+	if oidcCfg != nil {
+		login.Provider = idp.NewProvider(*oidcCfg)
+		go routes.Liveness{Pool: pool, Sessions: resolver, Kotlin: kotlin, Provider: login.Provider, Crypto: login.Crypto}.Run(ctx)
+	}
 	routes.Register(mux, pool, api.Gate{
-		Sessions:  session.NewResolver(pool, sessions),
+		Sessions:  resolver,
 		Kotlin:    kotlin,
 		Edges:     edges,
 		AuthDebug: sessions.AuthDebug,
 		Authz:     authorizer(cfg.Cedar, pool, kotlin),
-	})
+	}, login)
 	httpSrv := &http.Server{
 		Addr:              ":" + strconv.Itoa(cfg.HTTPPort),
 		Handler:           front.Route(mux, forward),

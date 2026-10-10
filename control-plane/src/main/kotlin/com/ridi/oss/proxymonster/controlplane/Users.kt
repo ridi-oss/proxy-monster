@@ -296,8 +296,7 @@ class UserGroupStore(internal val dataSource: DataSource) {
 
     /**
      * True if the group is SYSTEM-owned (e.g. the seeded `system:admin`). Such groups are immutable
-     * through the API/SCIM (docs/backlog.md) — the routes reject mutation. The internal
-     * OIDC-sync ([provisionFromOidc]) still manages membership by calling the store methods directly.
+     * through the API/SCIM (docs/backlog.md) — the routes reject mutation.
      */
     fun isSystemGroup(id: Long): Boolean = dataSource.connection.use { isSystemGroup(id, it) }
 
@@ -320,34 +319,7 @@ class UserGroupStore(internal val dataSource: DataSource) {
         }
     }
 
-    // ---- OIDC JIT provisioning + SCIM reconciliation (docs/auth-model.md) -------------------
-
-    /**
-     * JIT-provision an `app_user` from a validated OIDC login (id_token `sub`/`email` + the
-     * `groups` claim) and additively mirror `groups` into local group membership. Never removes a
-     * membership (SCIM push is the only path that revokes `group_member` rows) and never clobbers
-     * a `source=SCIM` user — SCIM is authoritative once it manages a principal.
-     */
-    /**
-     * Upsert an OIDC-authenticated user and **sync** their group membership to the IdP group claim
-     * (docs/backlog.md): [idpGroups] is resolved through [mapping] to the authoritative
-     * pm-group set, then the user's membership is reconciled to exactly it — added where missing, REMOVED
-     * where no longer claimed (so dropping someone from the IdP admin group revokes their `system:admin`
-     * on their next login). OIDC is authoritative for an OIDC user's membership; a manual/SCIM group
-     * assignment for that user is reconciled away (accepted for now — no membership-origin column yet;
-     * see the backlog). The internal add/remove intentionally bypasses the route-level SYSTEM-group
-     * immutability guard: membership of `system:admin` is system-managed here, not hand-edited.
-     */
-    fun provisionFromOidc(
-        principal: String,
-        email: String?,
-        idpGroups: List<String>,
-        mapping: OidcGroupMapping = OidcGroupMapping(emptyMap(), null),
-    ): AppUser {
-        val userId = com.ridi.oss.proxymonster.auth.OidcDirectoryProvisioner(dataSource)
-            .provision(principal, email, idpGroups, mapping)
-        return getUser(userId)!!
-    }
+    // ---- SCIM reconciliation (docs/auth-model.md) ----------------------------------------------
 
     private fun groupIdsForUser(userId: Long): Set<Long> = dataSource.connection.use { c ->
         c.prepareStatement("SELECT group_id FROM group_member WHERE user_id = ?").use { ps ->

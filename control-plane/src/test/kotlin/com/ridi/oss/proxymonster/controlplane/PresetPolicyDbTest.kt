@@ -10,6 +10,7 @@ import com.ridi.oss.proxymonster.controlplane.authz.authorizeColumns
 import com.ridi.oss.proxymonster.controlplane.authz.authorizeDatasourceActionId
 import com.ridi.oss.proxymonster.controlplane.support.EnforcementFixture
 import com.ridi.oss.proxymonster.controlplane.support.requireDockerOrSkip
+import com.ridi.oss.proxymonster.controlplane.support.seedOidcUser
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
@@ -62,11 +63,9 @@ class PresetPolicyDbTest {
             fx.policyStore.createAssignment(RoleAssignmentInput(principal, roles.getValue(roleName).id))
         }
         // Exercise the real default aggregate group rather than manually assigning its five roles.
-        fx.userGroupStore.provisionFromOidc(
-            developer,
-            developer,
-            listOf("okta-developers"),
-            OidcGroupMapping(mapOf("okta-developers" to "system:developer"), null),
+        fx.userGroupStore.addMember(
+            checkNotNull(fx.userGroupStore.getGroupByName("system:developer")).id,
+            fx.userGroupStore.seedOidcUser(developer, developer).id,
         )
         // No test-authored trusted-network producer: the shipped -300 example (100.100.0.0/16) is the producer.
     }

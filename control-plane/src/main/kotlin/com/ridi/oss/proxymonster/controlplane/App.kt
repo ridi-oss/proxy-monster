@@ -52,7 +52,6 @@ import kotlinx.coroutines.selects.select
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import org.slf4j.event.Level
-import kotlin.time.Duration.Companion.seconds
 
 /** How often the background sweep deletes expired result rows. */
 private const val RESULT_PURGE_INTERVAL_MS = 15 * 60 * 1000L
@@ -301,12 +300,6 @@ fun Application.module(config: Config, core: ControlPlaneCore) {
         queryResultStore, store, runExecService, taskCompletionHub,
     )
 
-    // OIDC (docs/auth-model.md): provider-agnostic via discovery, so any OIDC IdP works. `discovery`/
-    // `validator` are null when `config.oidc` is unset — every consumer degrades gracefully (501),
-    // never NPEs. Device-authorization reuses this SAME confidential client (no separate CLI client).
-    val oidcHttp = oidcHttpClient()
-    val discovery = config.oidc?.let { OidcDiscovery(oidcHttp, it.issuer) }
-    val validator = config.oidc?.let { IdTokenValidator(discovery!!, it.issuer, it.clientId) }
     val deviceLoginStore = DeviceLoginStore(dataSource, resultCrypto)
     val principalSessionStore = PrincipalSessionStore(
         dataSource,
@@ -354,24 +347,6 @@ fun Application.module(config: Config, core: ControlPlaneCore) {
         }
     }
 
-
-    // Timer-driven IdP liveness is the sole revalidator for web and daemon sessions. A rejected
-    // refresh token retires only its own session; transient failures preserve the cached state.
-    launch {
-        // Config guarantees a positive interval; `.seconds` converts without the overflow a raw
-        // `* 1000` (Long millis) could hit for very large values.
-        val recheckInterval = config.idpRecheckIntervalSeconds.seconds
-        while (true) {
-            delay(recheckInterval)
-            runCatching {
-                sweepSessionLiveness(
-                    config, discovery, validator, oidcHttp, principalSessionStore, userGroupStore,
-                    roleResolver, core.authAudit, environment.log,
-                )
-            }.onFailure { environment.log.warn("session liveness sweep failed", it) }
-        }
-    }
-
     install(ContentNegotiation) {
         json(appJson)
     }
@@ -405,20 +380,6 @@ fun Application.module(config: Config, core: ControlPlaneCore) {
                 ),
             )
         }
-        // Short-lived signed cookie holding the OAuth CSRF state across the OIDC redirect.
-        cookie<OAuthStateSession>(OAUTH_STATE_COOKIE) {
-            cookie.path = "/"
-            cookie.httpOnly = true
-            cookie.secure = config.mcpIssuer.startsWith("https://")
-            cookie.extensions["SameSite"] = "Lax"
-            cookie.maxAgeInSeconds = 300 // ~5 min — only needs to outlive the authorize round-trip
-            serializer = jsonSessionSerializer()
-            transform(
-                SessionTransportTransformerMessageAuthentication(
-                    config.sessionSecret.toByteArray(),
-                ),
-            )
-        }
         // Short-lived signed cookie proving the browser viewed the /device page for a specific user_code —
         // the only channel that binds a device login to SSO, so a raw /auth/oidc/login link can't approve a
         // handle the user never confirmed (device-phishing defense).
@@ -428,36 +389,6 @@ fun Application.module(config: Config, core: ControlPlaneCore) {
             cookie.secure = config.mcpIssuer.startsWith("https://")
             cookie.extensions["SameSite"] = "Lax"
             cookie.maxAgeInSeconds = 600 // ~10 min — matches the device-login TTL
-            serializer = jsonSessionSerializer()
-            transform(
-                SessionTransportTransformerMessageAuthentication(
-                    config.sessionSecret.toByteArray(),
-                ),
-            )
-        }
-        // Short-lived signed cookie holding the OIDC nonce across the redirect (docs/auth-model.md
-        // — id_token nonce validation defends against authorization-code injection).
-        cookie<OAuthNonceSession>(OAUTH_NONCE_COOKIE) {
-            cookie.path = "/"
-            cookie.httpOnly = true
-            cookie.secure = config.mcpIssuer.startsWith("https://")
-            cookie.extensions["SameSite"] = "Lax"
-            cookie.maxAgeInSeconds = 300 // ~5 min — only needs to outlive the authorize round-trip
-            serializer = jsonSessionSerializer()
-            transform(
-                SessionTransportTransformerMessageAuthentication(
-                    config.sessionSecret.toByteArray(),
-                ),
-            )
-        }
-        // Short-lived signed cookie holding the PKCE code_verifier across the redirect. Same
-        // lifetime as the nonce above: it only has to outlive one authorize round-trip.
-        cookie<OAuthVerifierSession>(OAUTH_VERIFIER_COOKIE) {
-            cookie.path = "/"
-            cookie.httpOnly = true
-            cookie.secure = config.mcpIssuer.startsWith("https://")
-            cookie.extensions["SameSite"] = "Lax"
-            cookie.maxAgeInSeconds = 300 // ~5 min — only needs to outlive the authorize round-trip
             serializer = jsonSessionSerializer()
             transform(
                 SessionTransportTransformerMessageAuthentication(
@@ -530,12 +461,6 @@ fun Application.module(config: Config, core: ControlPlaneCore) {
                 ),
             )
         }
-
-        // OIDC authorization-code routes (/auth/oidc/login, /auth/oidc/callback).
-        oidcRoutes(
-            config, discovery, validator, oidcHttp, userGroupStore, roleResolver, principalSessionStore,
-            core.authAudit, this@module.environment.log,
-        )
 
         // OAuth 2.1/CIMD authorization-server routes share this process, origin, DB pool, OIDC login,
         // and signed user session with the control plane. There is no service-to-service auth hop.

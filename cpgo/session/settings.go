@@ -20,6 +20,8 @@ type Settings struct {
 	OIDCEnabled bool
 	// ResultKey is whether editor results are stored; ending a session deletes them only then.
 	ResultKey bool
+	// WebOrigin prefixes redirects into the console when it is served from another origin.
+	WebOrigin string
 
 	AbsoluteSeconds, IdleSeconds, SlideSeconds   int64
 	IdleWarnLeadSeconds, AbsoluteWarnLeadSeconds int64
@@ -33,6 +35,7 @@ func SettingsFromEnv() (Settings, error) {
 		AuthDebug:   strictBool(os.Getenv("PM_AUTH_DEBUG"), true),
 		Secure:      strings.HasPrefix(envOr("PM_MCP_RESOURCE", "http://127.0.0.1:8080/mcp"), "https://"),
 		ResultKey:   os.Getenv("PM_RESULT_KEY") != "",
+		WebOrigin:   os.Getenv("PM_WEB_ORIGIN"),
 		OIDCEnabled: true,
 	}
 	for _, k := range []string{"PM_OIDC_ISSUER", "PM_OIDC_CLIENT_ID", "PM_OIDC_CLIENT_SECRET", "PM_OIDC_REDIRECT_URI"} {
@@ -115,4 +118,12 @@ func strictBool(raw string, def bool) bool {
 		return false
 	}
 	return def
+}
+
+// WebRedirect is a console path, under PM_WEB_ORIGIN when that is set.
+func (s Settings) WebRedirect(path string) string {
+	if strings.TrimSpace(s.WebOrigin) == "" {
+		return path
+	}
+	return strings.TrimRight(strings.TrimSpace(s.WebOrigin), "/") + path
 }

@@ -336,7 +336,7 @@ of a route and the gate it calls. Paths are relative to
 | Health, auth config, debug login, logout | `/health`, `/auth/config`, `/auth/debug`, `/auth/logout` | `App.kt` (`/health`); the rest in `cpgo/routes/auth.go` | none (`/auth/debug` 404s unless `PM_AUTH_DEBUG`) |
 | Instance name and version | `/api/instance` | `mcp/McpConnect.kt` | none — under `/api` so the console forwards it |
 | Web session | `/auth/me`, `/auth/session/status`, `/auth/session/heartbeat` | `cpgo/routes/auth.go` | a live session, else 401 `{"reason"}` |
-| OIDC web login | `/auth/oidc/login`, `/auth/oidc/callback` | `Oidc.kt` | none — this mints the session |
+| OIDC web login | `/auth/oidc/login`, `/auth/oidc/callback` | `cpgo/routes/oidc.go` | none — this mints the session |
 | CLI device authorization | `/auth/device/start`, `/auth/device/poll` | `DeviceAuth.kt` | none — the handle plus the IdP grant are the credential |
 | Daemon session renew, logout | `/auth/session/renew`, `/auth/session/logout` | `DaemonSession.kt` | `Authorization: Bearer <renewalToken>` only |
 | Daemon session MCP token | `/auth/session/mcp-token` | `PmonMcpToken.kt` | `Authorization: Bearer <renewalToken>` only |

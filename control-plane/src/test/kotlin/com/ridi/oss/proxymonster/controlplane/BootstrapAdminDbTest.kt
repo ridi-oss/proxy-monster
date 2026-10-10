@@ -15,17 +15,13 @@ import kotlin.test.assertTrue
 
 /**
  * DB-backed tests for the first-admin bootstrap (docs/backlog.md): the shipped seed
- * (`system:admin` SYSTEM group + `system:admin` role + their `group_role` link), the OIDC group mapping +
- * membership sync, and the system-group immutability predicate. End to end: a user in the IdP admin
- * group resolves `system:admin`; dropping them from that group revokes it on the next login.
+ * (`system:admin` SYSTEM group + `system:admin` role + their `group_role` link) and the system-group
+ * immutability predicate.
  */
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 class BootstrapAdminDbTest {
     private lateinit var ds: DataSource
     private lateinit var store: UserGroupStore
-    private lateinit var accessStore: AccessStore
-    private lateinit var roleResolver: RoleResolver
-    private val adminMap = OidcGroupMapping(mapOf("proxy-monster-admin" to "system:admin"), "proxy-monster-")
 
     @BeforeAll
     fun setup() {
@@ -33,8 +29,6 @@ class BootstrapAdminDbTest {
         ds = SharedPostgres.hikari(SharedPostgres.freshDatabase("pm_bootstrap_admin"))
         Flyway.configure().dataSource(ds).load().migrate()
         store = UserGroupStore(ds)
-        accessStore = AccessStore(ds)
-        roleResolver = RoleResolver(ds, store, accessStore)
     }
 
     @Test
@@ -49,26 +43,6 @@ class BootstrapAdminDbTest {
     }
 
     @Test
-    fun `an IdP admin-group member resolves system-admin and loses it when the group is dropped (sync)`() {
-        val principal = "boot-admin@example.com"
-        val admin = store.provisionFromOidc(principal, principal, listOf("proxy-monster-admin"), adminMap)
-        assertTrue(admin.groups.any { it.name == "system:admin" }, "the IdP admin group maps to system:admin")
-        assertTrue("system:admin" in roleResolver.resolve(principal), "membership in system:admin confers system:admin")
-
-        // Next login without the IdP admin group → synced out of system:admin → system:admin revoked.
-        val after = store.provisionFromOidc(principal, principal, emptyList(), adminMap)
-        assertFalse(after.groups.any { it.name == "system:admin" }, "sync removes the no-longer-claimed admin group")
-        assertFalse("system:admin" in roleResolver.resolve(principal), "dropping the IdP admin group revokes system:admin")
-    }
-
-    @Test
-    fun `an unmapped IdP group is created by name with the prefix stripped`() {
-        val user = store.provisionFromOidc("analyst@example.com", null, listOf("proxy-monster-analysts"), adminMap)
-        val analysts = user.groups.first { it.name == "analysts" }
-        assertFalse(store.isSystemGroup(analysts.id), "a JIT-created group is not a SYSTEM group")
-    }
-
-    @Test
     fun `isSystemGroup distinguishes the seeded system group from a user-created one`() {
         val systemId = store.listGroups().first { it.name == "system:admin" }.id
         assertTrue(store.isSystemGroup(systemId))
@@ -76,21 +50,6 @@ class BootstrapAdminDbTest {
         // The SCIM POST upsert guards by name (it matches an existing group by displayName).
         assertTrue(store.isSystemGroupByName("system:admin"), "SCIM upsert must recognize system:admin by name")
         assertFalse(store.isSystemGroupByName("eng"))
-    }
-
-    @Test
-    fun `a raw reserved-name claim without a mapping does not confer admin (escalation closed)`() {
-        // An IdP token whose groups claim literally contains "system:admin", with NO
-        // PM_OIDC_GROUP_MAP, must NOT self-assign the seeded admin group (the create-by-name fallback
-        // must not reach the reserved namespace). This is the privilege-escalation the gate caught.
-        val noMapping = OidcGroupMapping(emptyMap(), null)
-        val intruder = store.provisionFromOidc("intruder@example.com", null, listOf("system:admin"), noMapping)
-        assertFalse(intruder.groups.any { it.name == "system:admin" }, "a raw system:admin claim must not self-assign admin")
-        assertFalse("system:admin" in roleResolver.resolve("intruder@example.com"), "no admin without an explicit mapping")
-
-        // The explicit-mapping path remains the intended admin route (contrast).
-        val admin = store.provisionFromOidc("mapped-admin@example.com", null, listOf("proxy-monster-admin"), adminMap)
-        assertTrue("system:admin" in roleResolver.resolve("mapped-admin@example.com"), "an explicit map entry still confers admin")
     }
 
     @Test

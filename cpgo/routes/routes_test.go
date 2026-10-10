@@ -117,7 +117,7 @@ func (f *fakeAuthz) AuthorizeEach(ctx context.Context, principal, action string,
 func setup(t *testing.T) *env { return setupWith(t, nil) }
 
 // setupWith serves the routes with authz deciding, or the recording fake when authz is nil.
-func setupWith(t *testing.T, authz func(*pgxpool.Pool) api.Authorizer) *env {
+func setupWith(t *testing.T, authz func(*pgxpool.Pool) api.Authorizer, login ...Login) *env {
 	t.Helper()
 	e := &env{st: dbtest.Open(t)}
 	var decider api.Authorizer = &e.authz
@@ -134,7 +134,7 @@ func setupWith(t *testing.T, authz func(*pgxpool.Pool) api.Authorizer) *env {
 		Kotlin:    &e.kotlin,
 		AuthDebug: true,
 		Authz:     decider,
-	})
+	}, append(login, Login{})[0])
 	e.srv = httptest.NewServer(front.Route(mux, forward))
 	t.Cleanup(e.srv.Close)
 	return e

@@ -1,6 +1,9 @@
 package pgproxy
 
 import (
+	"regexp"
+	"strings"
+
 	"github.com/jackc/pgx/v5/pgproto3"
 )
 
@@ -16,22 +19,29 @@ import (
 //
 //   - Message (the free-form primary text) is replaced with the SQLSTATE's canonical condition name — a
 //     fixed value-free identity looked up from the code (see pgDiagnosticMessage), never reconstructed from
-//     the target DB's echoed text. It is the one field an ordinary error (a type conversion) fills with a
-//     value, and its content can't be bounded.
-//   - Detail is dropped: `DETAIL: Failing row contains (…)` prints columns the statement never named — the
-//     one reachable way an ordinary error exposes a masked *sibling* value.
+//     the target DB's echoed text. The exception is a message that matches its SQLSTATE's schema-only template
+//     (pgSchemaMessages) on an error raised by the statement itself, which is kept verbatim.
+//   - Detail is dropped: `DETAIL: Failing row contains (…)` prints columns the statement never named.
+//   - Where is dropped: an input function reports the text it failed on there (`JSON data, line 1: …`).
+//   - InternalQuery and InternalPosition are dropped, and their presence also strips Message: they mark an
+//     error in SQL text built at run time (query_to_xml, ts_stat), where a value can fill any template.
 //   - UnknownFields is dropped: field codes the proxy can't classify fail closed.
 //
 // Everything else is KEPT — the SQLSTATE + severity, the structural object names
-// (Schema/Table/Column/DataType/coNstraint), the PL/pgSQL context (Where, InternalQuery), the query
-// positions, and the server source location. For an ordinary error those hold object names or are empty,
-// not row values; the ONLY way to put an arbitrary value there is `RAISE … USING`, which needs PL/pgSQL and
-// is denied for a restricted principal. A pre-existing trigger or vouched function that RAISEs a value into
-// one of them is the accepted defense-in-depth residual — see docs/diagnostic-redaction.md.
+// (Schema/Table/Column/DataType/coNstraint), Hint, the statement position, and the server source location.
+// For an ordinary error those hold object names, fixed text, or are empty; the way to put an arbitrary value
+// there is `RAISE … USING`, which needs PL/pgSQL and is denied for a restricted principal. A pre-existing
+// trigger or vouched function that RAISEs a value into one of them is the accepted defense-in-depth residual
+// — see docs/diagnostic-redaction.md.
 func sanitizeError(msg *pgproto3.ErrorResponse) *pgproto3.ErrorResponse {
 	out := *msg
-	out.Message = pgDiagnosticMessage(msg.Code)
+	if msg.InternalQuery != "" || !isSchemaOnlyMessage(msg.Code, msg.Message) {
+		out.Message = pgDiagnosticMessage(msg.Code)
+	}
 	out.Detail = ""
+	out.Where = ""
+	out.InternalQuery = ""
+	out.InternalPosition = 0
 	out.UnknownFields = nil
 	return &out
 }
@@ -56,4 +66,43 @@ func forwardError(sess *session, msg *pgproto3.ErrorResponse) {
 func forwardNotice(sess *session, msg *pgproto3.NoticeResponse) {
 	copyMessage := *msg
 	sess.client.Send(&copyMessage)
+}
+
+func isSchemaOnlyMessage(sqlState, message string) bool {
+	for _, re := range pgSchemaPatterns[sqlState] {
+		if re.MatchString(message) {
+			return true
+		}
+	}
+	return false
+}
+
+var pgSchemaPatterns = compilePgSchemaMessages()
+
+var pgPlaceholder = regexp.MustCompile(`"%s"|%[it]`)
+
+var pgPlaceholderPatterns = map[string]string{
+	`"%s"`: `"[^"]*"`,
+	`%i`:   `[A-Za-z_][A-Za-z0-9_$]*`,
+	`%t`:   `[A-Za-z0-9_ .\[\]"]+`,
+}
+
+func compilePgSchemaMessages() map[string][]*regexp.Regexp {
+	out := make(map[string][]*regexp.Regexp, len(pgSchemaMessages))
+	for sqlState, templates := range pgSchemaMessages {
+		for _, t := range templates {
+			var b strings.Builder
+			b.WriteString(`\A`)
+			last := 0
+			for _, loc := range pgPlaceholder.FindAllStringIndex(t, -1) {
+				b.WriteString(regexp.QuoteMeta(t[last:loc[0]]))
+				b.WriteString(pgPlaceholderPatterns[t[loc[0]:loc[1]]])
+				last = loc[1]
+			}
+			b.WriteString(regexp.QuoteMeta(t[last:]))
+			b.WriteString(`\z`)
+			out[sqlState] = append(out[sqlState], regexp.MustCompile(b.String()))
+		}
+	}
+	return out
 }

@@ -43,10 +43,11 @@ message:
   `RAISE` form needs PL/pgSQL (an anonymous `DO`, a `CALL`, or
   `CREATE FUNCTION`), which a restricted principal has no grant to run. So
   `RAISE`-based vectors are not reachable through the principal's own statement,
-  and for an ordinary error the structural / `q` / `W` fields hold object names
-  or are empty, not row values. Those fields are kept; the only reachable
-  value-carriers are stripped — the target DB's own `M` (conversion) and `D`
-  (the whole-row `DETAIL` dump).
+  and for an ordinary error the structural fields and `H` hold object names or
+  fixed text. Ordinary SQL does reach `M` (conversion), `D` (the whole-row
+  `DETAIL` dump), `W` (an input function's context:
+  `JSON data, line 1: {"value":"<stored value>"`), and `q` (SQL text built at
+  run time and run by `query_to_xml` or `ts_stat`); those four are stripped.
 - The editor/approval run path stores a failed statement's target-DB error, so
   `goproxy/run/runner.go` carries both forms (raw + redacted strip) and the
   control plane picks one per viewer at view time — an error string cannot be
@@ -93,8 +94,10 @@ When a decision is redacted (per decision, not per connection — see
 that can carry a value a restricted principal could not otherwise reach, and
 keeps the rest:
 
-- The free-form message (`M`) is replaced with the code's canonical identity
-  from a static table the proxy owns (`goproxy/pgproxy/diagcodes.go`,
+- The free-form message (`M`) is kept verbatim when it names only schema objects
+  (see [Schema names pass, values never](#schema-names-pass-values-never)).
+  Otherwise it is replaced with the code's canonical identity from a static
+  table the proxy owns (`goproxy/pgproxy/diagcodes.go`,
   `goproxy/mysqlproxy/diagcodes.go`) — PostgreSQL to the SQLSTATE condition name
   (`23514` → `check_violation`), falling back to the 2-char class name (`23` →
   `integrity_constraint_violation`) then a generic string; MySQL to the essno
@@ -104,25 +107,89 @@ keeps the rest:
   crafted value can contain the delimiters. A free-message catch-all code (MySQL
   `1105` `ER_UNKNOWN_ERROR`, which `extractvalue`/`updatexml` abuse) keeps only
   its honest symbol, never the text.
-- PostgreSQL `Detail` (`D`) is dropped: it is the one field an ordinary error
-  fills with a value the statement never named — the whole-row
-  `Failing row contains (…)` dump. Unknown fields are dropped too, since their
-  content cannot be classified. Codes absent from the table degrade to the
-  class/generic message — a fail-safe UX default, not the boundary (the strip
-  is).
+- PostgreSQL `Detail` (`D`) is dropped: an ordinary error fills it with a value
+  the statement never named — the whole-row `Failing row contains (…)` dump.
+- PostgreSQL `Where` (`W`) is dropped: an input function reports the text it
+  failed on there (`JSON data, line 1: …`).
+- PostgreSQL `InternalQuery` (`q`) and internal position (`p`) are dropped, and
+  an error that carries `q` also strips `M`: `q` marks an error in SQL text
+  built at run time (`query_to_xml('SELECT ' || col, …)`, `ts_stat`), where a
+  value can fill any schema-name template.
+- Unknown fields are dropped, since their content cannot be classified. Codes
+  absent from the table degrade to the class/generic message — a fail-safe UX
+  default, not the boundary (the strip is).
 
 Everything else is kept. For an ordinary target-DB error the remaining
-PostgreSQL fields hold object names, not row values — the structural
-`s`/`t`/`c`/`d`/`n` (schema/table/column/type/constraint), and the PL/pgSQL
-context `W`/`q` which are simply empty. The only way to put an arbitrary value
-in any of them is `RAISE … USING` or dynamic PL/pgSQL, which needs a
-`DO`/`CALL`/function and is denied for a restricted principal. Keeping them
-gives a developer the real diagnostic —
+PostgreSQL fields hold object names or fixed text, not row values — the
+structural `s`/`t`/`c`/`d`/`n` (schema/table/column/type/constraint) and the
+hint `H`. The only way to put an arbitrary value in any of them is
+`RAISE … USING` or dynamic PL/pgSQL, which needs a `DO`/`CALL`/function and is
+denied for a restricted principal. Keeping them gives a developer the real
+diagnostic —
 `[23514] check_violation on orders.amount, constraint amount_positive` — instead
 of a bare code. The accepted residual: a pre-existing trigger or vouched
 function that RAISEs a value into one of those fields, fired by an allowed
 statement — it needs a privileged author, so it is outside the
 restricted-principal threat model.
+
+### Schema names pass, values never
+
+Schema is not data. A message whose interpolated parts are only schema names —
+database/schema, table/view/relation, column, index/key, constraint, routine,
+trigger, type, collation, charset, engine — or numbers from the definition (a
+column count, a maximum key length) reaches the client verbatim:
+`Table 'acme.orders' doesn't exist`,
+`null value in column "email" of relation "orders" violates not-null constraint`.
+A message that can carry a stored value, a statement literal or fragment
+(`1064 … near '…'`), a row number, a file path, an account name, or free text is
+stripped as above.
+
+The allowlists are explicit tables, keyed by code and matched against the
+message template:
+
+- MySQL — `goproxy/mysqlproxy/diagschema.go`: essno → the English template from
+  `share/messages_to_clients.txt` of MySQL 8.0 and 8.4. A code is listed only
+  when its template is schema-only in both series. The message must match the
+  template, so a `SIGNAL` text under that essno, a non-English `lc_messages`, or
+  a truncated message is stripped.
+- PostgreSQL — `goproxy/pgproxy/diagschema.go`: SQLSTATE → anchored `M`
+  templates from the PostgreSQL 16 and 17 message catalogs. A SQLSTATE covers
+  many messages, so the SQLSTATE alone keeps nothing. A quoted name stops at the
+  template's quote, so a name containing `"` is stripped. Only `M` is affected;
+  `D` and the other fields follow the table below.
+
+A template is listed only when its name can come solely from statement text or
+the catalog. Where a run-time value can become the name, the template is omitted
+— even though enforcement denies the vector — so the allowlist never depends on
+enforcement holding.
+
+- PostgreSQL has single-statement resolvers that turn a string into an object
+  name and report it: `'…'::regclass` / `::regtype` / `::regnamespace` /
+  `::regoper` / `::regcollation`, `nextval`/`currval`, the `has_*_privilege`
+  family (`has_column_privilege` resolves its column argument too),
+  `pg_relation_size` and the other size functions, `pg_get_serial_sequence`, and
+  `pg_get_object_address`. The error _is_ the exfiltration channel, so the
+  templates they produce are not allowlisted: `relation "%s" does not exist`
+  (42P01), `column "%s" of relation "%s" does not exist` (42703),
+  `type "%s" does not exist`, `collation "%s" for encoding "%s" does not exist`,
+  and `trigger "%s" for table "%s" does not exist` (42704),
+  `schema "%s" does not exist` (3F000), and every 42883 form —
+  `operator does not exist: …` and the `function`/`procedure name(argtypes)`
+  signatures. These strip to the SQLSTATE condition name even for a plain
+  mistyped name. Kept: the bare `column "%s" does not exist`, `column t.c`, the
+  index/constraint `does not exist` forms, and the `missing FROM` /
+  table/view/sequence/matview variants, whose names come only from statement
+  text. Statement text built at run time (`query_to_xml`, `ts_stat`) can fill
+  those too; PostgreSQL marks such an error with `q`, and any error carrying `q`
+  strips `M`.
+- MySQL has no such single-statement resolver — identifiers are always literal
+  statement text. The only value-to-name path is dynamic SQL: load the value
+  into a user variable, then `PREPARE` a statement text built from it. That path
+  is denied at its first step, which is the real barrier, not this allowlist:
+  `SET @v = (SELECT <masked or ungranted col>)` is a write to an unmaskable
+  target and denies, and if it ever did not, `SELECT @v` would return the value
+  as an ordinary row that no allowlist governs. The MySQL schema-name templates
+  are therefore kept. The barrier is locked by `DynamicSqlNameExfilMySqlDbTest`.
 
 ### PostgreSQL error/notice fields — kept vs stripped
 
@@ -131,20 +198,20 @@ restricted-principal threat model.
 | --- | --- | --- |
 | `S` / `V` | Severity (localized / non-localized) | kept |
 | `C` | SQLSTATE code | kept — drives the canonical message |
-| `M` | primary message | replaced with the code's canonical identity |
+| `M` | primary message | kept if schema-only and `q` is empty, else replaced with the code's canonical identity |
 | `D` | Detail | dropped — the whole-row `Failing row contains (…)` |
-| `H` | Hint | kept (advisory; object names) |
-| `P` / `p` | Position / internal position | kept (offsets into the query, not values) |
-| `q` | Internal query | kept — empty for ordinary SQL; a value needs denied dynamic PL/pgSQL |
-| `W` | Where (context) | kept — ditto |
+| `H` | Hint | kept (advisory; object names or fixed text) |
+| `P` | Position | kept (an offset into the client's own statement) |
+| `p` / `q` | Internal position / internal query | dropped — SQL text built at run time (`query_to_xml`, `ts_stat`); its presence also strips `M` |
+| `W` | Where (context) | dropped — an input function's context echoes its input (`JSON data, line 1: …`) |
 | `s` `t` `c` `d` `n` | Schema / Table / Column / DataType / coNstraint names | kept — object names; a value needs denied `RAISE … USING` |
 | `F` / `L` / `R` | File / Line / Routine (server source) | kept (no user data) |
 | _unknown_ | unrecognized field codes | dropped (unclassifiable) |
 
 `NoticeResponse` is forwarded unchanged (see
 [Notices are forwarded, not redacted](#notices-are-forwarded-not-redacted)).
-MySQL ERR packets keep essno + SQLSTATE and replace the message with the essno
-symbol; MySQL has no structured error fields.
+MySQL ERR packets keep essno + SQLSTATE and the schema-only message, or replace
+the message with the essno symbol; MySQL has no structured error fields.
 
 The strip runs where the target DB wire is decoded — the native relay
 (`goproxy/pgproxy/relay.go`, `goproxy/mysqlproxy/relay.go`, and the PostgreSQL

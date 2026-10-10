@@ -103,7 +103,7 @@ func (s *RunSession) ServeStatement(sql string, maxRows int) (result engine.Stat
 		h.OnSysVars = checkSysVarInvariants
 		// A run result is stored and re-gated per viewer at view time, so — unlike the wire path — redaction
 		// is NOT decided here; the run captures BOTH forms of a target-DB ERR. The hook keeps the raw packet
-		// for the full-reader view and hands the collector the redacted symbol for the masked view.
+		// for the full-reader view and hands the collector the redacted form for the masked view.
 		var rawErrPacket []byte
 		h.RedactErr = func(raw []byte) []byte {
 			rawErrPacket = append([]byte(nil), raw...)
@@ -116,8 +116,8 @@ func (s *RunSession) ServeStatement(sql string, maxRows int) (result engine.Stat
 			return false, relayErr
 		}
 		if collect.targetDbErr != nil {
-			// The target DB's own ERR for THIS executed statement — raw for a full-reader view, the value-free
-			// essno + SQLSTATE + symbol for a masked view. An internal probe/refetch ERR never reaches here.
+			// The target DB's own ERR for THIS executed statement — raw for a full-reader view, the redacted form
+			// for a masked view. An internal probe/refetch ERR never reaches here.
 			raw := collect.targetDbErr.Error()
 			redacted := collect.targetDbErr.Error()
 			if len(rawErrPacket) > 0 {

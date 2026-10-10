@@ -8,10 +8,11 @@ per-phase file lists, is the
 [plan artifact](https://claude.ai/artifact/9V3VoaADjrYinG6TpJLVc7); viewing it
 requires access granted by the maintainers.
 
-Status: phases 0–2 done; phases 3–6 in progress (Go decides Cedar for the routes
+Status: phases 0–2 done; phases 3–7 in progress (Go decides Cedar for the routes
 it serves; roles, mask functions, policies, JIT access requests, users, groups,
 datasources, tokens, web sessions, OIDC login, the IdP recheck, pmon's device
-login and its daemon session run on Go); phases 7–8 not started.
+login and its daemon session run on Go, and so does the `ReportCompletion` RPC,
+while every other RPC is forwarded); phase 8 not started.
 
 ## Shape
 

@@ -71,14 +71,14 @@ func DialUpstream(target string) (*grpc.ClientConn, error) {
 }
 
 // NewGRPC returns a server that forwards every call it has no handler for to upstream.
-func NewGRPC(upstream *grpc.ClientConn) *grpc.Server {
-	return grpc.NewServer(
+func NewGRPC(upstream *grpc.ClientConn, opts ...grpc.ServerOption) *grpc.Server {
+	return grpc.NewServer(append([]grpc.ServerOption{
 		grpc.ForceServerCodecV2(newCodec()),
 		grpc.UnknownServiceHandler(func(_ any, ss grpc.ServerStream) error { return forward(upstream, ss) }),
 		grpc.MaxRecvMsgSize(maxInboundMessageBytes),
 		grpc.KeepaliveParams(keepalive.ServerParameters{Time: keepaliveTime, Timeout: keepaliveTimeout}),
 		grpc.KeepaliveEnforcementPolicy(keepalive.EnforcementPolicy{MinTime: permitKeepaliveTime, PermitWithoutStream: true}),
-	)
+	}, opts...)...)
 }
 
 var forwardDesc = &grpc.StreamDesc{ServerStreams: true, ClientStreams: true}

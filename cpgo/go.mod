@@ -9,10 +9,12 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/jackc/pgx/v5 v5.10.0
 	github.com/moby/moby/api v1.55.0
+	github.com/ridi-oss/proxy-monster/analyzer v0.0.0-00010101000000-000000000000
 	github.com/ridi-oss/proxy-monster/auditmon v0.0.0-00010101000000-000000000000
 	github.com/testcontainers/testcontainers-go v0.44.0
 	github.com/zitadel/oidc/v3 v3.51.14
 	google.golang.org/grpc v1.83.2
+	google.golang.org/protobuf v1.36.12
 )
 
 require (
@@ -74,9 +76,11 @@ require (
 	golang.org/x/sys v0.47.0 // indirect
 	golang.org/x/text v0.42.0 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260526163538-3dc84a4a5aaa // indirect
-	google.golang.org/protobuf v1.36.12 // indirect
 )
 
-// auditmon/canon is the audit hash both writers produce; resolve it from source so the GOWORK=off image
-// build (control-plane/Dockerfile copies ../auditmon in) matches the workspace.
+// auditmon/canon is the audit hash both writers produce, and analyzer/probe/pb holds the shared proto types;
+// resolve both from source so the GOWORK=off image build (control-plane/Dockerfile copies them in) matches
+// the workspace.
 replace github.com/ridi-oss/proxy-monster/auditmon => ../auditmon
+
+replace github.com/ridi-oss/proxy-monster/analyzer => ../analyzer

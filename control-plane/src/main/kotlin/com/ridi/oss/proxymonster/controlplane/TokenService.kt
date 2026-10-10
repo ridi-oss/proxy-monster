@@ -12,8 +12,8 @@ import com.ridi.oss.proxymonster.controlplane.management.auditEntity
 import io.ktor.http.HttpStatusCode
 
 /**
- * USER wire tokens shared by the REST token routes and the MCP token tools: list, mint and revoke, each a
- * Cedar decision on the Token resource. Failures throw [TaskServiceException].
+ * USER wire tokens for the MCP token tools: list, mint and revoke, each a Cedar decision on the Token
+ * resource. Failures throw [TaskServiceException].
  */
 class TokenService(
     private val store: TokenStore,
@@ -37,15 +37,7 @@ class TokenService(
         name: String?,
         ttlSeconds: Long?,
     ): IssuedToken {
-        authorizeMintUser(caller, requesterIp)
-        return issueUser(caller, roles, actor, name, ttlSeconds)
-    }
-
-    internal fun authorizeMintUser(caller: String, requesterIp: String?) =
         authorize(caller, requesterIp, AuthzAction.TOKEN_MINT, AuthzResource.Token(caller, TokenKind.USER))
-
-    /** The mint after [authorizeMintUser] passed, so REST reads its body only once the caller may mint. */
-    internal fun issueUser(caller: String, roles: List<String>, actor: AuditActor, name: String?, ttlSeconds: Long?): IssuedToken {
         val ttl = ttlSeconds ?: store.defaultUserTtlSeconds
         // The active check and the INSERT share one locked transaction, so no deprovision revoke can race between them.
         return store.dataSource.mintForActivePrincipalLocked(caller, userGroupStore) { c ->

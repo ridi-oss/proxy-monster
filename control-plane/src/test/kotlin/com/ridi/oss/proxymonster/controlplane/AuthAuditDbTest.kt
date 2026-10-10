@@ -10,41 +10,17 @@ import com.ridi.oss.proxymonster.controlplane.authz.CedarEngine
 import com.ridi.oss.proxymonster.controlplane.authz.CedarPolicyStore
 import com.ridi.oss.proxymonster.controlplane.authz.RoleSource
 import com.ridi.oss.proxymonster.controlplane.grpc.ControlPlaneGrpcService
+import com.ridi.oss.proxymonster.controlplane.management.AuditActor
 import com.ridi.oss.proxymonster.controlplane.management.auditEntity
 import com.ridi.oss.proxymonster.controlplane.support.SharedPostgres
 import com.ridi.oss.proxymonster.controlplane.support.auditChainHead
 import com.ridi.oss.proxymonster.controlplane.support.requireDockerOrSkip
 import com.ridi.oss.proxymonster.controlplane.support.verifyAuditChain
-import com.ridi.oss.proxymonster.controlplane.support.webSessionCookie
 import com.ridi.oss.proxymonster.grpc.validateTokenRequest
 import io.grpc.Status
 import io.grpc.StatusException
-import io.ktor.client.call.body
-import io.ktor.client.plugins.contentnegotiation.ContentNegotiation as ClientContentNegotiation
-import io.ktor.client.plugins.DefaultRequest
-import io.ktor.client.plugins.cookies.HttpCookies
-import io.ktor.client.request.delete
-import io.ktor.client.request.header
-import io.ktor.client.request.post
-import io.ktor.client.request.setBody
-import io.ktor.http.ContentType
 import io.ktor.http.HttpStatusCode
-import io.ktor.http.contentType
-import io.ktor.serialization.kotlinx.json.json
-import io.ktor.server.application.call
-import io.ktor.server.application.install
-import io.ktor.server.plugins.contentnegotiation.ContentNegotiation
-import io.ktor.server.plugins.statuspages.StatusPages
-import io.ktor.server.response.respond
-import io.ktor.server.routing.post as serverPost
-import io.ktor.server.routing.routing
-import io.ktor.server.sessions.Sessions
-import io.ktor.server.sessions.sessions
-import io.ktor.server.sessions.set
-import io.ktor.server.testing.ApplicationTestBuilder
-import io.ktor.server.testing.testApplication
 import kotlinx.coroutines.runBlocking
-import kotlinx.serialization.json.Json
 import org.flywaydb.core.Flyway
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.Test
@@ -52,15 +28,16 @@ import org.junit.jupiter.api.TestInstance
 import javax.sql.DataSource
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
+import kotlin.test.assertFails
 import kotlin.test.assertFailsWith
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
- * DB-backed coverage of the `kind="auth"` trail written by [AuthAuditRecorder], through the routes and
- * the gRPC service that own each chokepoint rather than a re-composition of their store calls — deleting
- * an emission in `Tokens.kt` or `ControlPlaneGrpcService.kt` has to fail here.
+ * DB-backed coverage of the `kind="auth"` trail written by [AuthAuditRecorder], through [TokenService] and
+ * the gRPC service that own each chokepoint — deleting an emission in `TokenService.kt` or
+ * `ControlPlaneGrpcService.kt` has to fail here.
  *
  * The load-bearing assertion is the last one: a SUCCESSFUL wire-token validation writes NO row. That path
  * runs per connection and per query, and burying the rejected attempts under it would defeat the trail.
@@ -94,71 +71,30 @@ class AuthAuditDbTest {
         datasourceName = core.datasourceStore.create(DatasourceInput("auth-audit-ds", "postgres")).name
     }
 
-    /** The point here is who the audit row NAMES, not whether the route admits — a signed-in caller is
-     *  established through the same web-session cookie the app uses, and authorizes on its real roles.
-     *  The test host's socket peer is trusted as an edge so [CALLER_ADDR] resolves off `X-Forwarded-For`,
-     *  which is how the recorder's client-address wiring is pinned to a known value. */
-    private fun testConfig() = Config(
-        httpPort = 0, dbUrl = "", dbUser = "", dbPassword = "", authDebug = true, secretToken = null,
-        sessionSecret = "auth-audit-test-secret-at-least-32-bytes", oidc = null, resultKey = null,
-        scimToken = null, sessionWindowSeconds = 3600, idpRecheckIntervalSeconds = 600, devMarker = true,
-        trustedProxies = setOf("localhost"),
-    )
+    private fun service() = TokenService(core.tokenStore, core.userGroupStore, authz, core.authAudit)
 
-    private fun ApplicationTestBuilder.installTokenRoutes() {
-        val config = testConfig()
-        application {
-            attributes.put(PRINCIPAL_SESSION_STORE, sessionStore)
-            install(ContentNegotiation) { json(Json { ignoreUnknownKeys = true; encodeDefaults = true }) }
-            // Mirrors the application-level fallback module() installs, so a route that throws answers 500
-            // here the way it would in the running server instead of surfacing as a transport failure.
-            install(StatusPages) { exception<Throwable> { call, _ -> call.respond(HttpStatusCode.InternalServerError) } }
-            install(Sessions) { webSessionCookie(sessionStore, config.sessionSecret) }
-            routing {
-                serverPost("/test/login/{principal}") {
-                    val principal = requireNotNull(call.parameters["principal"])
-                    val deviceId = call.ensureDeviceCookie(secure = false)
-                    call.sessions.set(
-                        WebSessionRef(
-                            sessionStore.mintWeb(
-                                principal, null, config.webSessionAbsoluteSeconds, config.webSessionIdleSeconds, deviceId,
-                            ),
-                        ),
-                    )
-                    call.respond(HttpStatusCode.NoContent)
-                }
-                tokenRoutes(config, core.tokenStore, core.userGroupStore, authz, core.authAudit)
+    private fun actor(principal: String) = AuditActor(principal, clientAddr = CALLER_ADDR, channel = CHANNEL_WIRE)
+
+    private fun mintUser(principal: String, name: String) =
+        service().mintUser(principal, CALLER_ADDR, emptyList(), actor(principal), name, null)
+
+    private fun mintSession(principal: String) =
+        core.tokenStore.dataSource.mintForActivePrincipalLocked(principal, core.userGroupStore) { c ->
+            core.tokenStore.issue(TokenKind.SESSION, principal, emptyList(), name = null, ttlSeconds = core.tokenStore.sessionTtlSeconds, c).also {
+                core.authAudit.success(c, actor(principal), ACTION_TOKEN_MINT, auditEntity("Token", it.id.toString()), "Minted SESSION wire token")
             }
         }
-    }
-
-    /** A cookie-jar client that presents [CALLER_ADDR] as its forwarded source on every request. */
-    private fun ApplicationTestBuilder.callerClient() = createClient {
-        expectSuccess = false
-        install(HttpCookies)
-        install(ClientContentNegotiation) { json(Json { ignoreUnknownKeys = true }) }
-        install(DefaultRequest) { header("X-Forwarded-For", CALLER_ADDR) }
-    }
 
     @Test
-    fun `token mint and revoke are audited through their routes and name the caller`() = testApplication {
-        installTokenRoutes()
-        val client = callerClient()
-
+    fun `token mint and revoke are audited and name the caller`() {
         val owner = "token-owner@example.com"
-        client.post("/test/login/$owner")
-        val minted: IssuedToken = client.post("/api/tokens") {
-            contentType(ContentType.Application.Json)
-            setBody(CreateTokenInput(name = "audited"))
-        }.body()
+        val minted = mintUser(owner, "audited")
         assertEvent(owner, ACTION_TOKEN_MINT, auditEntity("Token", minted.id.toString()), "SUCCESS", "ALLOW")
 
         // An identity admin may revoke someone else's token (the token.revoke oversight seed). The row must
         // name the ADMIN who did it, not the owner it was done to — otherwise the trail frames the victim.
         val admin = "token-admin@example.com"
-        val adminClient = callerClient()
-        adminClient.post("/test/login/$admin")
-        assertEquals(HttpStatusCode.NoContent, adminClient.delete("/api/tokens/${minted.id}").status)
+        assertTrue(service().revoke(admin, CALLER_ADDR, actor(admin), minted.id))
         assertNotNull(core.tokenStore.get(minted.id)?.revokedAt)
         assertEvent(admin, ACTION_TOKEN_REVOKE, auditEntity("Token", minted.id.toString()), "SUCCESS", "ALLOW")
         assertEquals(
@@ -166,9 +102,10 @@ class AuthAuditDbTest {
             "the token's owner did not perform this revocation and must not be named as its actor",
         )
 
-        // A 404 revoke changes nothing, so it records nothing.
+        // A not-found revoke changes nothing, so it records nothing.
         val before = countAuth()
-        assertEquals(HttpStatusCode.NotFound, adminClient.delete("/api/tokens/${minted.id}").status)
+        val again = assertFailsWith<TaskServiceException> { service().revoke(admin, CALLER_ADDR, actor(admin), minted.id) }
+        assertEquals(HttpStatusCode.NotFound, again.status)
         assertEquals(before, countAuth(), "a revoke that changed no row must not write an event")
 
         assertEquals(
@@ -178,29 +115,17 @@ class AuthAuditDbTest {
         verifyAuditChain(dataSource)
     }
 
-    /**
-     * Atomicity proven through the ROUTES, not a re-composition of their store calls: a route that committed
-     * the credential change and then recorded it separately would satisfy every other assertion in this class
-     * while leaving a rejected insert with a committed mutation behind it.
-     */
+    /** A service that committed the credential change and then recorded it separately would leave a rejected
+     *  insert with a committed mutation behind it. */
     @Test
-    fun `a rejected auth audit insert rolls the token route's own mutation back`() = testApplication {
-        installTokenRoutes()
-        val client = callerClient()
+    fun `a rejected auth audit insert rolls the token service's own mutation back`() {
         val principal = "auth-audit-rollback@example.com"
-        client.post("/test/login/$principal")
 
         val headBeforeMint = auditChainHead(dataSource)
         val tokensBefore = count("SELECT count(*) FROM proxy_token WHERE principal = '$principal'")
         rejectAction(ACTION_TOKEN_MINT)
         try {
-            assertEquals(
-                HttpStatusCode.InternalServerError,
-                client.post("/api/tokens") {
-                    contentType(ContentType.Application.Json)
-                    setBody(CreateTokenInput(name = "rolled-back"))
-                }.status,
-            )
+            assertFails { mintUser(principal, "rolled-back") }
             assertEquals(
                 tokensBefore, count("SELECT count(*) FROM proxy_token WHERE principal = '$principal'"),
                 "a mint whose audit insert was rejected must leave no token behind",
@@ -210,69 +135,16 @@ class AuthAuditDbTest {
             dropRejectTrigger()
         }
 
-        val minted: IssuedToken = client.post("/api/tokens") {
-            contentType(ContentType.Application.Json)
-            setBody(CreateTokenInput(name = "revoke-rollback"))
-        }.body()
+        val minted = mintUser(principal, "revoke-rollback")
         val headBeforeRevoke = auditChainHead(dataSource)
         rejectAction(ACTION_TOKEN_REVOKE)
         try {
-            assertEquals(HttpStatusCode.InternalServerError, client.delete("/api/tokens/${minted.id}").status)
+            assertFails { service().revoke(principal, CALLER_ADDR, actor(principal), minted.id) }
             assertNull(
                 core.tokenStore.get(minted.id)?.revokedAt,
                 "a revoke whose audit insert was rejected must leave the token usable",
             )
             assertHeadUnchanged(headBeforeRevoke)
-        } finally {
-            dropRejectTrigger()
-        }
-        verifyAuditChain(dataSource)
-    }
-
-    @Test
-    fun `session wire-token mint is audited through its route and names the caller`() = testApplication {
-        installTokenRoutes()
-        val client = callerClient()
-
-        val owner = "wire-token-owner@example.com"
-        client.post("/test/login/$owner")
-        val minted: IssuedToken = client.post("/api/wire-tokens") {
-            contentType(ContentType.Application.Json)
-            setBody(MintSessionTokenInput())
-        }.body()
-        assertEquals(TokenKind.SESSION.name, minted.kind)
-        assertEvent(owner, ACTION_TOKEN_MINT, auditEntity("Token", minted.id.toString()), "SUCCESS", "ALLOW")
-
-        assertEquals(
-            0, count("SELECT count(*) FROM audit_event WHERE statement LIKE '%${minted.token}%' OR detail LIKE '%${minted.token}%'"),
-            "a minted token's secret must never reach the audit trail",
-        )
-        verifyAuditChain(dataSource)
-    }
-
-    @Test
-    fun `a rejected auth audit insert rolls the wire-token route's own mint back`() = testApplication {
-        installTokenRoutes()
-        val client = callerClient()
-        val principal = "wire-audit-rollback@example.com"
-        client.post("/test/login/$principal")
-
-        val headBeforeMint = auditChainHead(dataSource)
-        val tokensBefore = count("SELECT count(*) FROM proxy_token WHERE principal = '$principal'")
-        rejectAction(ACTION_TOKEN_MINT)
-        try {
-            assertEquals(
-                HttpStatusCode.InternalServerError,
-                client.post("/api/wire-tokens") {
-                    contentType(ContentType.Application.Json)
-                    setBody(MintSessionTokenInput())
-                }.status,
-            )
-            assertEquals(
-                tokensBefore, count("SELECT count(*) FROM proxy_token WHERE principal = '$principal'"),
-                "a mint whose audit insert was rejected must leave no token behind",
-            )
-            assertHeadUnchanged(headBeforeMint)
         } finally {
             dropRejectTrigger()
         }
@@ -430,8 +302,7 @@ class AuthAuditDbTest {
     private fun execute(sql: String) = dataSource.connection.use { c -> c.createStatement().use { it.execute(sql) } }
 
     private companion object {
-        /** The forwarded source address every HTTP request in this class presents — a documentation range,
-         *  never a real host, and the value the audit rows must carry back. */
+        /** The caller address every call in this class presents — a documentation range, never a real host. */
         const val CALLER_ADDR = "203.0.113.7"
     }
 }

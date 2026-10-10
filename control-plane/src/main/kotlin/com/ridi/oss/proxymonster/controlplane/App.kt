@@ -693,11 +693,6 @@ fun Application.module(config: Config, core: ControlPlaneCore) {
 
         taskEventsRoute(config, taskCompletionHub, accessStore, authz, datasourceStore, principalSessionStore, appJson)
 
-        // Per-principal editor query history (auto-saved on each run; recalled in the editor).
-
-        // Wire-auth: SESSION/PAT token issuance + revocation.
-        tokenRoutes(config, tokenStore, userGroupStore, authz, core.authAudit, tokenService)
-
         // Cedar policy admin: put/enable/disable + validate-on-write. Admin-gated: admin.policies.
         cedarPolicyRoutes(config, authz, cedarPolicyStore, policyManagement)
 

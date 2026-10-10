@@ -99,5 +99,12 @@ action, resource and requester IP a store holds and prints each disagreement.
   `AuditCanonical.kt`. Test both on the same rows first.
 - Kotlin's Flyway owns migrations until phase 8; a Go runner then takes over the
   same files and history table.
+- cp-go reads `PM_DB_URL`, `PM_DB_USER`, `PM_DB_PASSWORD` and
+  `PM_CP_INTERNAL_TOKEN` from the environment only, because the Kotlin child
+  reads the same variables. Once Kotlin is gone they become ordinary flags with
+  environment defaults, like the rest of cp-go's settings.
+- Code that only bridges to Kotlin's conventions retires with it: `store.DSN`
+  (the JDBC `PM_DB_URL` turned into a pgx DSN) and the JDBC URL in
+  `internal/dbtest`, the `/internal/` bridge, and the cp-go → Kotlin signals.
 - Go handlers return the same `ApiError(code, params)` and use the same gate
   helpers, built in phase 0.

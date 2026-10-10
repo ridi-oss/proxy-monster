@@ -62,3 +62,5 @@ sql:
             go_type: { type: string, slice: true }
           - column: audit_event.context_tags
             go_type: { type: string, slice: true }
+          - column: access_request.execute_as
+            go_type: { type: string, slice: true }

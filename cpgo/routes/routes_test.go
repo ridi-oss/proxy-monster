@@ -29,17 +29,27 @@ type env struct {
 
 // fakeAuthz allows what allow lists and records every decision asked for.
 type fakeAuthz struct {
-	allow map[string]bool
-	asked []string
+	allow     map[string]bool
+	asked     []string
+	resources []bridge.Resource
 }
 
 func (f *fakeAuthz) Authorize(_ context.Context, principal, action string, resource bridge.Resource, ip string) (bool, string, error) {
 	key := principal + " " + action + " " + resource.Type + ":" + resource.Principal
 	f.asked = append(f.asked, key+" @"+ip)
+	f.resources = append(f.resources, resource)
 	if f.allow[key] {
 		return true, "", nil
 	}
 	return false, "no permit for " + action, nil
+}
+
+func (f *fakeAuthz) AuthorizeEach(ctx context.Context, principal, action string, resources []bridge.Resource, ip string) ([]bool, error) {
+	out := make([]bool, len(resources))
+	for i, r := range resources {
+		out[i], _, _ = f.Authorize(ctx, principal, action, r, ip)
+	}
+	return out, nil
 }
 
 func setup(t *testing.T) *env {
@@ -78,7 +88,7 @@ func (e *env) do(t *testing.T, method, path, body string, cookies []*http.Cookie
 
 func TestUnauthenticated(t *testing.T) {
 	e := setup(t)
-	for _, path := range []string{"/api/query-history", "/api/audit", "/api/audit/1", "/api/roles", "/api/role-assignments", "/api/mask-fns", "/api/policies", "/api/me/permissions"} {
+	for _, path := range []string{"/api/query-history", "/api/audit", "/api/audit/1", "/api/roles", "/api/role-assignments", "/api/mask-fns", "/api/policies", "/api/me/permissions", "/api/access-requests", "/api/access-grants", "/api/approvals"} {
 		status, body := e.do(t, http.MethodGet, path, "", nil)
 		if status != http.StatusUnauthorized || body != `{"code":"common.unauthenticated","params":{}}` {
 			t.Fatalf("%s: %d %s", path, status, body)
@@ -387,6 +397,194 @@ func TestMePermissions(t *testing.T) {
 		c := e.st.WebSession(t, tc.principal, "k-"+tc.principal, "dev-1")
 		if status, body := e.do(t, http.MethodGet, "/api/me/permissions", "", c); status != http.StatusOK || body != tc.want {
 			t.Fatalf("%s: %d %s", tc.principal, status, body)
+		}
+	}
+}
+
+func TestAccessLists(t *testing.T) {
+	e := setup(t)
+	ctx := context.Background()
+	var roleID, mine, theirs int64
+	if err := e.st.Pool.QueryRow(ctx, `INSERT INTO app_role (name) VALUES ('zz-jit') RETURNING id`).Scan(&roleID); err != nil {
+		t.Fatal(err)
+	}
+	for _, q := range []struct {
+		principal, status string
+		id               *int64
+	}{{"alice@example.com", "PENDING", &mine}, {"bob@example.com", "APPROVED", &theirs}} {
+		if err := e.st.Pool.QueryRow(ctx, `INSERT INTO access_request (principal, role_id, requested_duration_sec, status)
+			VALUES ($1, $2, 3600, $3) RETURNING id`, q.principal, roleID, q.status).Scan(q.id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := e.st.Pool.Exec(ctx, `INSERT INTO access_grant (principal, role_id, granted_by, expires_at) VALUES
+		('alice@example.com', $1, 'admin', now() + interval '1 hour'),
+		('alice@example.com', $1, 'admin', now() - interval '1 hour'),
+		('bob@example.com', $1, 'admin', NULL)`, roleID); err != nil {
+		t.Fatal(err)
+	}
+	alice := e.st.WebSession(t, "alice@example.com", "k-a", "dev-a")
+	// Stand-in for the shipped self-request / self-grant permits: a principal reads their own rows.
+	e.authz.allow = map[string]bool{
+		"alice@example.com task.read ApprovalRequest:alice@example.com": true,
+		"alice@example.com task.read AccessGrant:alice@example.com":     true,
+	}
+
+	status, body := e.do(t, http.MethodGet, "/api/access-requests", "", alice)
+	want := fmt.Sprintf(`[{"id":%d,"principal":"alice@example.com","roleId":%d,"roleName":"zz-jit","requestedDurationSec":3600,"status":"PENDING",`, mine, roleID)
+	if status != http.StatusOK || !strings.HasPrefix(body, want) || strings.Contains(body, "bob@example.com") ||
+		!strings.Contains(body, `"kind":"ROLE","statementCount":0,`) || !strings.Contains(body, `"executeAs":[]`) {
+		t.Fatalf("requests: %d %s", status, body)
+	}
+	if e.authz.asked[len(e.authz.asked)-1] != "alice@example.com task.read ApprovalRequest:alice@example.com @" {
+		t.Fatalf("request listings decide without a requester IP: %v", e.authz.asked)
+	}
+	last := e.authz.resources[len(e.authz.resources)-1]
+	if last.Approver != nil || last.ExecutedBy != nil || last.DatasourceName != nil || last.RoleName == nil || *last.RoleName != "zz-jit" {
+		t.Fatalf("request resource %+v", last)
+	}
+	if _, body = e.do(t, http.MethodGet, "/api/access-requests?status=APPROVED", "", alice); body != "[]" {
+		t.Fatalf("status filter: %s", body)
+	}
+
+	e.authz.resources = nil
+	if _, body = e.do(t, http.MethodGet, "/api/access-grants", "", alice); strings.Count(body, `"id"`) != 2 || strings.Contains(body, "bob@example.com") ||
+		!strings.Contains(body, `"roleName":"zz-jit","grantedBy":"admin","grantedAt":"`) {
+		t.Fatalf("grants: %s", body)
+	}
+	for _, r := range e.authz.resources {
+		if r.Type != "AccessGrant" || r.ID == 0 || r.RoleName == nil || *r.RoleName != "zz-jit" || r.DatasourceName != nil {
+			t.Fatalf("grant resource %+v", r)
+		}
+	}
+	if _, body = e.do(t, http.MethodGet, "/api/access-grants?active=TRUE", "", alice); strings.Count(body, `"id"`) != 1 {
+		t.Fatalf("active grants: %s", body)
+	}
+	if _, body = e.do(t, http.MethodGet, "/api/access-grants?principal=bob@example.com", "", alice); body != "[]" {
+		t.Fatalf("naming another principal must not widen the listing: %s", body)
+	}
+}
+
+func TestOwnApprovals(t *testing.T) {
+	e := setup(t)
+	ctx := context.Background()
+	var ds int64
+	if err := e.st.Pool.QueryRow(ctx, `INSERT INTO datasource (name, host, port, db_name) VALUES ('acme', 'db', 5432, 'acme') RETURNING id`).Scan(&ds); err != nil {
+		t.Fatal(err)
+	}
+	var mine int64
+	for _, row := range []struct{ principal, kind, creator, status string }{
+		{"alice@example.com", "QUERY", "WORKFLOW", "PENDING"},
+		{"alice@example.com", "QUERY", "EDITOR", "PENDING"},
+		{"alice@example.com", "RATE_RESET", "WORKFLOW", "PENDING"},
+		{"bob@example.com", "QUERY", "WORKFLOW", "PENDING"},
+	} {
+		var id int64
+		if err := e.st.Pool.QueryRow(ctx, `INSERT INTO access_request (principal, kind, creator_kind, status, requested_duration_sec, datasource_id)
+			VALUES ($1, $2, $3, $4, 0, $5) RETURNING id`, row.principal, row.kind, row.creator, row.status, ds).Scan(&id); err != nil {
+			t.Fatal(err)
+		}
+		if mine == 0 {
+			mine = id
+		}
+	}
+	alice := e.st.WebSession(t, "alice@example.com", "k-a", "dev-a")
+	status, body := e.do(t, http.MethodGet, "/api/approvals", "", alice)
+	if status != http.StatusOK || strings.Count(body, `"id":`) != 1 || !strings.HasPrefix(body, fmt.Sprintf(`[{"id":%d,"principal":"alice@example.com",`, mine)) {
+		t.Fatalf("own approvals: %d %s", status, body)
+	}
+	if _, body = e.do(t, http.MethodGet, "/api/approvals?status=APPROVED", "", alice); body != "[]" {
+		t.Fatalf("status filter: %s", body)
+	}
+	if len(e.authz.asked) != 0 {
+		t.Fatalf("listing one's own requests asks Cedar nothing: %v", e.authz.asked)
+	}
+}
+
+func TestAccessListFilters(t *testing.T) {
+	e := setup(t)
+	ctx := context.Background()
+	var roleID, goneRole, ds int64
+	_ = e.st.Pool.QueryRow(ctx, `INSERT INTO app_role (name) VALUES ('zz-live') RETURNING id`).Scan(&roleID)
+	_ = e.st.Pool.QueryRow(ctx, `INSERT INTO app_role (name, deleted_at) VALUES ('zz-gone', now()) RETURNING id`).Scan(&goneRole)
+	_ = e.st.Pool.QueryRow(ctx, `INSERT INTO datasource (name, host, port, db_name) VALUES ('prod', 'h', 1, 'd') RETURNING id`).Scan(&ds)
+	exec := func(sql string, args ...any) {
+		t.Helper()
+		if _, err := e.st.Pool.Exec(ctx, sql, args...); err != nil {
+			t.Fatal(err)
+		}
+	}
+	exec(`INSERT INTO access_request (principal, role_id, datasource_id, requested_duration_sec, status, created_at)
+		VALUES ('alice@example.com', $1, $2, 60, 'PENDING', now() - interval '3 minutes')`, roleID, ds)
+	exec(`INSERT INTO access_request (principal, role_id, requested_duration_sec, status, decided_by, decided_at, created_at, execute_as, statement_carries_protected_literal)
+		VALUES ('alice@example.com', $1, 60, 'APPROVED', 'boss@example.com', now(), now() - interval '2 minutes', '["analyst"]', false)`, roleID)
+	exec(`INSERT INTO access_request (principal, kind, requested_duration_sec, status, created_at)
+		VALUES ('alice@example.com', 'RATE_RESET', 0, 'PENDING', now() - interval '1 minute')`)
+	exec(`INSERT INTO access_request (principal, kind, datasource_id, requested_duration_sec, status) VALUES ('alice@example.com', 'QUERY', $1, 0, 'PENDING')`, ds)
+	exec(`INSERT INTO access_grant (principal, role_id, granted_at, expires_at) VALUES
+		('alice@example.com', $1, now() - interval '3 minutes', now() + interval '1 hour'),
+		('alice@example.com', $1, now() - interval '2 minutes', now() - interval '1 hour'),
+		('alice@example.com', $1, now() - interval '1 minute', NULL)`, roleID)
+	exec(`UPDATE access_grant SET revoked_at = now() WHERE granted_at = (SELECT max(granted_at) FROM access_grant)`)
+	exec(`INSERT INTO access_grant (principal, role_id) VALUES ('alice@example.com', $1)`, goneRole)
+	alice := e.st.WebSession(t, "alice@example.com", "k-a", "dev-a")
+	e.authz.allow = map[string]bool{
+		"alice@example.com task.read ApprovalRequest:alice@example.com": true,
+		"alice@example.com task.read AccessGrant:alice@example.com":     true,
+	}
+	statuses := func(body string) string {
+		var got []struct{ Kind, Status, ExpiresAt, RevokedAt string }
+		if err := json.Unmarshal([]byte(body), &got); err != nil {
+			t.Fatalf("%v: %s", err, body)
+		}
+		var out []string
+		for _, g := range got {
+			out = append(out, g.Kind+"/"+g.Status)
+		}
+		return strings.Join(out, ",")
+	}
+
+	e.authz.resources = nil
+	_, body := e.do(t, http.MethodGet, "/api/access-requests", "", alice)
+	if got := statuses(body); got != "RATE_RESET/PENDING,ROLE/APPROVED,ROLE/PENDING" {
+		t.Fatalf("requests newest first, query tasks excluded: %s", got)
+	}
+	if !strings.Contains(body, `"executeAs":["analyst"],"statementCarriesProtectedLiteral":false}`) {
+		t.Fatalf("populated optional fields: %s", body)
+	}
+	byKind := map[string]bridge.Resource{}
+	for _, r := range e.authz.resources {
+		if r.Approver != nil {
+			byKind["decided"] = r
+		}
+		if r.DatasourceName != nil {
+			byKind["scoped"] = r
+		}
+	}
+	if *byKind["decided"].Approver != "boss@example.com" || *byKind["scoped"].DatasourceName != "prod" {
+		t.Fatalf("request resources carry approver and datasource: %+v", e.authz.resources)
+	}
+	if _, body = e.do(t, http.MethodGet, "/api/access-requests?status=APPROVED", "", alice); statuses(body) != "ROLE/APPROVED" {
+		t.Fatalf("status filter: %s", body)
+	}
+
+	var grants []struct{ ExpiresAt, RevokedAt *string }
+	_, body = e.do(t, http.MethodGet, "/api/access-grants", "", alice)
+	_ = json.Unmarshal([]byte(body), &grants)
+	if len(grants) != 3 || grants[0].RevokedAt == nil || grants[2].ExpiresAt == nil {
+		t.Fatalf("grants newest first, a deleted role's grant excluded: %s", body)
+	}
+	for _, active := range []string{"true", "TRUE"} {
+		_, body = e.do(t, http.MethodGet, "/api/access-grants?active="+active, "", alice)
+		grants = nil
+		_ = json.Unmarshal([]byte(body), &grants)
+		if len(grants) != 1 || grants[0].RevokedAt != nil || grants[0].ExpiresAt == nil {
+			t.Fatalf("active=%s keeps only the unexpired, unrevoked grant: %s", active, body)
+		}
+	}
+	for _, notActive := range []string{"false", "1", "yes"} {
+		if _, body = e.do(t, http.MethodGet, "/api/access-grants?active="+notActive, "", alice); strings.Count(body, `"id"`) != 3 {
+			t.Fatalf("active=%s is not true: %s", notActive, body)
 		}
 	}
 }

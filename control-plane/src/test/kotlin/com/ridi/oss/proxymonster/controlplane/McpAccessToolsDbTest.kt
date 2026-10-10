@@ -12,7 +12,6 @@ import com.ridi.oss.proxymonster.controlplane.support.okResult
 import com.ridi.oss.proxymonster.controlplane.support.parseJson
 import com.ridi.oss.proxymonster.controlplane.support.requireDockerOrSkip
 import com.ridi.oss.proxymonster.controlplane.support.str
-import io.ktor.client.request.get
 import io.ktor.client.request.post
 import io.ktor.client.request.setBody
 import io.ktor.client.statement.HttpResponse
@@ -167,12 +166,6 @@ class McpAccessToolsDbTest {
         val ownerGrants = client.mcpCall(ownerToken, "list_access_grants", buildJsonObject { put("principal", owner) }).okResult()
         assertEquals(1, ownerGrants.jsonArray.size)
 
-        client.login(stranger)
-        assertEquals(parseJson(client.get("/api/access-grants?principal=$owner").bodyAsText()), strangerGrants)
-        assertEquals(
-            parseJson(client.get("/api/access-requests").bodyAsText()),
-            client.mcpCall(strangerToken, "list_access_requests").okResult(),
-        )
     }
 
     @Test

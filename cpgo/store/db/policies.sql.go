@@ -10,6 +10,120 @@ import (
 	"time"
 )
 
+const assignRole = `-- name: AssignRole :one
+INSERT INTO principal_role (principal, role_id) VALUES ($1, $2)
+ON CONFLICT (principal, role_id) DO UPDATE SET principal = EXCLUDED.principal RETURNING id
+`
+
+type AssignRoleParams struct {
+	Principal string
+	RoleID    int64
+}
+
+func (q *Queries) AssignRole(ctx context.Context, arg AssignRoleParams) (int64, error) {
+	row := q.db.QueryRow(ctx, assignRole, arg.Principal, arg.RoleID)
+	var id int64
+	err := row.Scan(&id)
+	return id, err
+}
+
+const createMaskFn = `-- name: CreateMaskFn :one
+INSERT INTO mask_fn (name, kind) VALUES ($1, $2) RETURNING id, name, kind
+`
+
+type CreateMaskFnParams struct {
+	Name string
+	Kind string
+}
+
+type CreateMaskFnRow struct {
+	ID   int64
+	Name string
+	Kind string
+}
+
+func (q *Queries) CreateMaskFn(ctx context.Context, arg CreateMaskFnParams) (CreateMaskFnRow, error) {
+	row := q.db.QueryRow(ctx, createMaskFn, arg.Name, arg.Kind)
+	var i CreateMaskFnRow
+	err := row.Scan(&i.ID, &i.Name, &i.Kind)
+	return i, err
+}
+
+const createRole = `-- name: CreateRole :one
+INSERT INTO app_role (name, description) VALUES ($1, $2) RETURNING id, name, description
+`
+
+type CreateRoleParams struct {
+	Name        string
+	Description *string
+}
+
+type CreateRoleRow struct {
+	ID          int64
+	Name        string
+	Description *string
+}
+
+func (q *Queries) CreateRole(ctx context.Context, arg CreateRoleParams) (CreateRoleRow, error) {
+	row := q.db.QueryRow(ctx, createRole, arg.Name, arg.Description)
+	var i CreateRoleRow
+	err := row.Scan(&i.ID, &i.Name, &i.Description)
+	return i, err
+}
+
+const deleteMaskFn = `-- name: DeleteMaskFn :execrows
+UPDATE mask_fn SET deleted_at = now() WHERE id = $1 AND deleted_at IS NULL
+`
+
+func (q *Queries) DeleteMaskFn(ctx context.Context, id int64) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteMaskFn, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const deleteRole = `-- name: DeleteRole :execrows
+UPDATE app_role SET deleted_at = now() WHERE id = $1 AND deleted_at IS NULL
+`
+
+func (q *Queries) DeleteRole(ctx context.Context, id int64) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteRole, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const isSystemRole = `-- name: IsSystemRole :one
+SELECT EXISTS(SELECT 1 FROM group_role gr JOIN app_group g ON g.id = gr.group_id
+WHERE gr.role_id = $1 AND g.source = 'SYSTEM')
+`
+
+func (q *Queries) IsSystemRole(ctx context.Context, roleID int64) (bool, error) {
+	row := q.db.QueryRow(ctx, isSystemRole, roleID)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
+}
+
+const maskFn = `-- name: MaskFn :one
+SELECT id, name, kind FROM mask_fn WHERE id = $1 AND deleted_at IS NULL
+`
+
+type MaskFnRow struct {
+	ID   int64
+	Name string
+	Kind string
+}
+
+func (q *Queries) MaskFn(ctx context.Context, id int64) (MaskFnRow, error) {
+	row := q.db.QueryRow(ctx, maskFn, id)
+	var i MaskFnRow
+	err := row.Scan(&i.ID, &i.Name, &i.Kind)
+	return i, err
+}
+
 const maskFns = `-- name: MaskFns :many
 SELECT id, name, kind FROM mask_fn WHERE deleted_at IS NULL ORDER BY name
 `
@@ -83,6 +197,63 @@ func (q *Queries) Policies(ctx context.Context) ([]PoliciesRow, error) {
 		return nil, err
 	}
 	return items, nil
+}
+
+const role = `-- name: Role :one
+SELECT id, name, description FROM app_role WHERE id = $1 AND deleted_at IS NULL
+`
+
+type RoleRow struct {
+	ID          int64
+	Name        string
+	Description *string
+}
+
+func (q *Queries) Role(ctx context.Context, id int64) (RoleRow, error) {
+	row := q.db.QueryRow(ctx, role, id)
+	var i RoleRow
+	err := row.Scan(&i.ID, &i.Name, &i.Description)
+	return i, err
+}
+
+const roleAssigned = `-- name: RoleAssigned :one
+SELECT EXISTS(SELECT 1 FROM principal_role WHERE principal = $1 AND role_id = $2)
+`
+
+type RoleAssignedParams struct {
+	Principal string
+	RoleID    int64
+}
+
+func (q *Queries) RoleAssigned(ctx context.Context, arg RoleAssignedParams) (bool, error) {
+	row := q.db.QueryRow(ctx, roleAssigned, arg.Principal, arg.RoleID)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
+}
+
+const roleAssignment = `-- name: RoleAssignment :one
+SELECT pr.id, pr.principal, pr.role_id, r.name AS role_name
+FROM principal_role pr JOIN app_role r ON r.id = pr.role_id AND r.deleted_at IS NULL WHERE pr.id = $1
+`
+
+type RoleAssignmentRow struct {
+	ID        int64
+	Principal string
+	RoleID    int64
+	RoleName  string
+}
+
+func (q *Queries) RoleAssignment(ctx context.Context, id int64) (RoleAssignmentRow, error) {
+	row := q.db.QueryRow(ctx, roleAssignment, id)
+	var i RoleAssignmentRow
+	err := row.Scan(
+		&i.ID,
+		&i.Principal,
+		&i.RoleID,
+		&i.RoleName,
+	)
+	return i, err
 }
 
 const roleAssignments = `-- name: RoleAssignments :many
@@ -270,4 +441,46 @@ func (q *Queries) Roles(ctx context.Context) ([]RolesRow, error) {
 		return nil, err
 	}
 	return items, nil
+}
+
+const unassignRole = `-- name: UnassignRole :execrows
+DELETE FROM principal_role WHERE id = $1
+`
+
+func (q *Queries) UnassignRole(ctx context.Context, id int64) (int64, error) {
+	result, err := q.db.Exec(ctx, unassignRole, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const updateMaskFn = `-- name: UpdateMaskFn :exec
+UPDATE mask_fn SET name = $1, kind = $2 WHERE id = $3 AND deleted_at IS NULL
+`
+
+type UpdateMaskFnParams struct {
+	Name string
+	Kind string
+	ID   int64
+}
+
+func (q *Queries) UpdateMaskFn(ctx context.Context, arg UpdateMaskFnParams) error {
+	_, err := q.db.Exec(ctx, updateMaskFn, arg.Name, arg.Kind, arg.ID)
+	return err
+}
+
+const updateRole = `-- name: UpdateRole :exec
+UPDATE app_role SET name = $1, description = $2 WHERE id = $3 AND deleted_at IS NULL
+`
+
+type UpdateRoleParams struct {
+	Name        string
+	Description *string
+	ID          int64
+}
+
+func (q *Queries) UpdateRole(ctx context.Context, arg UpdateRoleParams) error {
+	_, err := q.db.Exec(ctx, updateRole, arg.Name, arg.Description, arg.ID)
+	return err
 }

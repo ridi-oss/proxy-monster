@@ -26,7 +26,7 @@ func Register(mux *http.ServeMux, pool *pgxpool.Pool, gate api.Gate) {
 	mux.HandleFunc("PUT /api/me/locale", gate.RequireAPI(h.putLocale))
 	mux.HandleFunc("GET /api/query-history", gate.RequireAPI(h.getQueryHistory))
 	mux.HandleFunc("DELETE /api/query-history", gate.RequireAPI(h.deleteQueryHistory))
-	a := audit{pool: pool, authz: gate.Authz}
+	a := auditLog{pool: pool, authz: gate.Authz}
 	mux.HandleFunc("GET /api/audit", gate.RequireAPI(a.list))
 	mux.HandleFunc("GET /api/audit/{id}", gate.RequireAPI(a.get))
 	p := policies{pool: pool}
@@ -34,6 +34,14 @@ func Register(mux *http.ServeMux, pool *pgxpool.Pool, gate api.Gate) {
 	mux.HandleFunc("GET /api/role-assignments", gate.RequireAdmin("admin.identity", p.roleAssignments))
 	mux.HandleFunc("GET /api/mask-fns", gate.RequireAdmin("admin.policies", p.maskFns))
 	mux.HandleFunc("GET /api/policies", gate.RequireAdmin("admin.policies", p.policies))
+	mux.HandleFunc("POST /api/roles", gate.RequireAdmin("admin.policies", p.createRole))
+	mux.HandleFunc("PUT /api/roles/{id}", gate.RequireAdmin("admin.policies", withID(p.updateRole)))
+	mux.HandleFunc("DELETE /api/roles/{id}", gate.RequireAdmin("admin.policies", withID(p.deleteRole)))
+	mux.HandleFunc("POST /api/role-assignments", gate.RequireAdmin("admin.identity", p.assignRole))
+	mux.HandleFunc("DELETE /api/role-assignments/{id}", gate.RequireAdmin("admin.identity", withID(p.unassignRole)))
+	mux.HandleFunc("POST /api/mask-fns", gate.RequireAdmin("admin.policies", p.createMaskFn))
+	mux.HandleFunc("PUT /api/mask-fns/{id}", gate.RequireAdmin("admin.policies", withID(p.updateMaskFn)))
+	mux.HandleFunc("DELETE /api/mask-fns/{id}", gate.RequireAdmin("admin.policies", withID(p.deleteMaskFn)))
 	mux.HandleFunc("GET /api/me/permissions", gate.RequireAPI(permissions(gate.Authz)))
 	ac := access{pool: pool, authz: gate.Authz}
 	mux.HandleFunc("GET /api/access-requests", gate.RequireAPI(ac.requests))

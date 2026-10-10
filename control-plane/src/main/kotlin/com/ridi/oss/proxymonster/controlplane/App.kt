@@ -669,7 +669,6 @@ fun Application.module(config: Config, core: ControlPlaneCore) {
 
         // Roles, principal->role, mask functions, column policies. Admin-gated: admin.policies
         // (role-assignments are admin.identity — see Policies.kt).
-        policyRoutes(config, authz, policyStore, policyManagement)
 
         // Local users + groups + group->role mapping (docs/authz-model.md). Admin-gated: admin.identity.
         // tokenStore/accessStore/principalSessionStore are threaded through so a local-admin rename or

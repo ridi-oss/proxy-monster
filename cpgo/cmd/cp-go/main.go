@@ -121,12 +121,14 @@ func run(ctx context.Context, cfg config) int {
 	edges := front.ParseTrustedEdges(cfg.TrustedProxies)
 	forward := front.NewHTTP(httpUpstream, edges)
 	mux := http.NewServeMux()
+	kotlin := bridge.New(httpUpstream, internalToken)
 	routes.Register(mux, pool, api.Gate{
 		Sessions:      session.NewResolver(pool, cfg.SessionSecret),
 		EndMismatched: api.KotlinSessionCheck(httpUpstream),
+		SessionsEnded: kotlin.SessionsEnded,
 		Edges:         edges,
 		AuthDebug:     cfg.AuthDebug,
-		Authz:         authorizer(cfg.Cedar, pool, bridge.New(httpUpstream, internalToken)),
+		Authz:         authorizer(cfg.Cedar, pool, kotlin),
 	})
 	httpSrv := &http.Server{
 		Addr:              ":" + strconv.Itoa(cfg.HTTPPort),

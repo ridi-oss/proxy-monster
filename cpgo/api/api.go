@@ -112,6 +112,9 @@ type Gate struct {
 	// EndMismatched has the Kotlin control plane end a session presented from the wrong device. Kotlin
 	// owns that teardown because it also drops the principal's in-memory editor runs.
 	EndMismatched func(*http.Request)
+	// SessionsEnded tells Kotlin a committed change ended the principal's web sessions, so it closes the
+	// editor runs it holds for them.
+	SessionsEnded func(ctx context.Context, principal string) error
 	Edges         front.TrustedEdges
 	// AuthDebug lets a session carry the requester IP chosen at its debug login, as Kotlin does.
 	AuthDebug bool

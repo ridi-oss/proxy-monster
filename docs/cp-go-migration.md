@@ -9,8 +9,8 @@ per-phase file lists, is the
 requires access granted by the maintainers.
 
 Status: phases 0–2 done; phases 3–5 in progress (Go decides Cedar for the routes
-it serves; roles, mask functions, policies, and JIT access requests run on Go);
-phases 6–8 not started.
+it serves; roles, mask functions, policies, JIT access requests, users, and
+groups run on Go); phases 6–8 not started.
 
 ## Shape
 

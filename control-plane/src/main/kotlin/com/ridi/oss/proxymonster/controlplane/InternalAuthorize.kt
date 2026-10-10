@@ -60,6 +60,9 @@ data class InternalAuthorizeBatchResult(val allow: List<Boolean>)
 data class InternalValidateRequest(val cedarSrc: String)
 
 @Serializable
+data class InternalPrincipalRequest(val principal: String)
+
+@Serializable
 data class InternalMayRequestRequest(val principal: String, val datasourceId: Long, val requesterIp: String? = null)
 
 @Serializable
@@ -87,6 +90,7 @@ fun Route.internalAuthorizeRoute(
     mayConnect: (principal: String, requesterIp: String?, datasourceId: Long) -> Boolean = { _, _, _ -> false },
     policiesChanged: () -> Unit = {},
     mayRequest: (principal: String, requesterIp: String?, datasourceId: Long) -> Boolean = { _, _, _ -> false },
+    sessionsEnded: (principal: String) -> Unit = {},
 ) {
     if (token.isNullOrEmpty()) return
     post("/internal/authorize") {
@@ -153,5 +157,13 @@ fun Route.internalAuthorizeRoute(
         }
         val request = call.receive<InternalMayRequestRequest>()
         call.respond(InternalAuthorizeResult(mayRequest(request.principal, request.requesterIp, request.datasourceId)))
+    }
+    // cp-go committed an end of the principal's web sessions: close their editor runs held in memory here.
+    post("/internal/sessions-ended") {
+        if (!constantTimeEquals(call.request.headers[INTERNAL_TOKEN_HEADER], token)) {
+            return@post call.respond(HttpStatusCode.NotFound)
+        }
+        sessionsEnded(call.receive<InternalPrincipalRequest>().principal)
+        call.respond(HttpStatusCode.NoContent)
     }
 }

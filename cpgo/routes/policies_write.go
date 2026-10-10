@@ -103,7 +103,7 @@ func writeMutationError(w http.ResponseWriter, err error) {
 		switch me.code {
 		case "common.not_found":
 			code = http.StatusNotFound
-		case "role.system_immutable", "policy.system_immutable":
+		case "role.system_immutable", "policy.system_immutable", "group.system_immutable":
 			code = http.StatusConflict
 		}
 		if me.status != 0 {

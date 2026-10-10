@@ -356,7 +356,7 @@ of a route and the gate it calls. Paths are relative to
 | Wire tokens | `/api/wire-tokens`, `/api/tokens**` | `Tokens.kt` | `requireAuthz(token.mint / token.list / token.revoke)` on the token's real owner and kind |
 | Roles, mask functions | `/api/roles**`, `/api/mask-fns**` | `cpgo/routes/policies.go`, `policies_write.go` | `requireAdmin(admin.policies)`; `GET /api/roles` is `requireApi` |
 | Principal-to-role assignment | `/api/role-assignments**` | `cpgo/routes/policies.go`, `policies_write.go` | `requireAdmin(admin.identity)` |
-| Users, groups, group-to-role map | `/api/users**`, `/api/groups**` | `Users.kt` | `requireAdmin(admin.identity)` |
+| Users, groups, group-to-role map | `/api/users**`, `/api/groups**` | `cpgo/routes/identity.go` | `requireAdmin(admin.identity)` |
 | Cedar policies | `/api/policies**` | `cpgo/routes/policies_cedar.go`; `/api/policies/schema` in `authz/CedarPolicyStore.kt` | `requireAdmin(admin.policies)` |
 
 Routes `cp-go` serves use the same gates from `cpgo/api` (`RequireAPI`,

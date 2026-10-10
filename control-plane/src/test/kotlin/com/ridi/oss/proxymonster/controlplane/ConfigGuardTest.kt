@@ -47,6 +47,12 @@ class ConfigGuardTest {
         assertFailsWith<IllegalArgumentException> { Config.fromEnv(envOf("PM_QUERY_TIMEOUT" to "abc")) }
     }
 
+    @Test fun `PM_ELEVATED_SCOPE_TTL defaults to an hour and is clamped like the OAuth TTLs`() {
+        assertEquals(3_600L, Config.fromEnv(envOf()).elevatedScopeTtlSeconds)
+        assertEquals(900L, Config.fromEnv(envOf("PM_ELEVATED_SCOPE_TTL" to "900")).elevatedScopeTtlSeconds)
+        assertEquals(60L, Config.fromEnv(envOf("PM_ELEVATED_SCOPE_TTL" to "5")).elevatedScopeTtlSeconds)
+    }
+
     @Test fun `PM_NOTIFY_STATEMENT takes omit auto full, coerces legacy truncated, rejects the rest`() {
         assertEquals("auto", Config.fromEnv(envOf()).notifyStatement, "default is auto")
         assertEquals("omit", Config.fromEnv(envOf("PM_NOTIFY_STATEMENT" to "omit")).notifyStatement)

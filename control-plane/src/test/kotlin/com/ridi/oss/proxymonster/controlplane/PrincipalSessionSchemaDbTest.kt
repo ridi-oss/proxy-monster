@@ -2,6 +2,7 @@ package com.ridi.oss.proxymonster.controlplane
 
 import com.ridi.oss.proxymonster.controlplane.support.SharedPostgres
 import com.ridi.oss.proxymonster.controlplane.support.requireDockerOrSkip
+import com.ridi.oss.proxymonster.controlplane.support.seedDaemonSession
 import org.flywaydb.core.Flyway
 import org.junit.jupiter.api.Test
 import kotlin.test.assertEquals
@@ -21,10 +22,8 @@ class PrincipalSessionSchemaDbTest {
         Flyway.configure().dataSource(dataSource).load().migrate()
 
         // Two daemon sessions, both with a NULL session_key — the partial index must let them coexist.
-        val first = PrincipalSessionStore(dataSource, null)
-            .create("first@example.com", null, null, 7200, 60).row.id
-        val second = PrincipalSessionStore(dataSource, null)
-            .create("second@example.com", null, null, 7200, 60).row.id
+        val first = dataSource.seedDaemonSession("first@example.com", 7200, 60)
+        val second = dataSource.seedDaemonSession("second@example.com", 7200, 60)
         assertTrue(second > first)
 
         dataSource.connection.use { c ->

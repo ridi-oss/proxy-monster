@@ -41,6 +41,14 @@ func Register(mux *http.ServeMux, pool *pgxpool.Pool, gate api.Gate, login Login
 	oi := oidcLogin{auth: au, provider: login.Provider, crypto: login.Crypto}
 	mux.HandleFunc("GET /auth/oidc/login", oi.login)
 	mux.HandleFunc("GET /auth/oidc/callback", oi.callback)
+	dv := device{au}
+	mux.HandleFunc("POST /auth/device/start", dv.start)
+	mux.HandleFunc("POST /auth/device/confirm", dv.confirm)
+	mux.HandleFunc("GET /auth/device/authorize", dv.authorize)
+	mux.HandleFunc("POST /auth/device/poll", dv.poll)
+	mux.HandleFunc("POST /auth/session/renew", dv.renew)
+	mux.HandleFunc("POST /auth/session/logout", dv.logout)
+	mux.HandleFunc("POST /auth/session/mcp-token", dv.mcpToken)
 	mux.HandleFunc("PUT /api/me/locale", gate.RequireAPI(h.putLocale))
 	mux.HandleFunc("GET /api/query-history", gate.RequireAPI(h.getQueryHistory))
 	mux.HandleFunc("DELETE /api/query-history", gate.RequireAPI(h.deleteQueryHistory))

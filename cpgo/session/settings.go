@@ -3,6 +3,7 @@ package session
 import (
 	"fmt"
 	"math"
+	"net/url"
 	"os"
 	"regexp"
 	"strconv"
@@ -23,6 +24,15 @@ type Settings struct {
 	// WebOrigin prefixes redirects into the console when it is served from another origin.
 	WebOrigin string
 
+	// MCPResource is PM_MCP_RESOURCE in its canonical form, the resource every MCP token is bound to.
+	MCPResource string
+	// SessionWindowSeconds caps how long a pmon login renews its wire token before logging in again.
+	SessionWindowSeconds int64
+	// ElevatedScopeTTL is how long a pmon login's scopes beyond mcp:read and mcp:query last.
+	ElevatedScopeTTL int64
+	// MCPAccessTTL is an MCP access token's lifetime.
+	MCPAccessTTL int64
+
 	AbsoluteSeconds, IdleSeconds, SlideSeconds   int64
 	IdleWarnLeadSeconds, AbsoluteWarnLeadSeconds int64
 	HeartbeatSeconds                             int64
@@ -31,12 +41,15 @@ type Settings struct {
 // SettingsFromEnv reads Settings the way Kotlin's Config does, refusing a duration Kotlin would refuse.
 func SettingsFromEnv() (Settings, error) {
 	s := Settings{
-		Secret:      envOr("PM_SESSION_SECRET", "dev-insecure-session-secret-change-me"),
-		AuthDebug:   strictBool(os.Getenv("PM_AUTH_DEBUG"), true),
-		Secure:      strings.HasPrefix(envOr("PM_MCP_RESOURCE", "http://127.0.0.1:8080/mcp"), "https://"),
-		ResultKey:   os.Getenv("PM_RESULT_KEY") != "",
-		WebOrigin:   os.Getenv("PM_WEB_ORIGIN"),
-		OIDCEnabled: true,
+		Secret:           envOr("PM_SESSION_SECRET", "dev-insecure-session-secret-change-me"),
+		AuthDebug:        strictBool(os.Getenv("PM_AUTH_DEBUG"), true),
+		Secure:           strings.HasPrefix(envOr("PM_MCP_RESOURCE", "http://127.0.0.1:8080/mcp"), "https://"),
+		ResultKey:        os.Getenv("PM_RESULT_KEY") != "",
+		WebOrigin:        os.Getenv("PM_WEB_ORIGIN"),
+		OIDCEnabled:      true,
+		MCPResource:      canonicalResource(envOr("PM_MCP_RESOURCE", "http://127.0.0.1:8080/mcp")),
+		ElevatedScopeTTL: clampedSeconds(os.Getenv("PM_ELEVATED_SCOPE_TTL"), 3600),
+		MCPAccessTTL:     clampedSeconds(os.Getenv("PM_OAUTH_ACCESS_TTL"), 600),
 	}
 	for _, k := range []string{"PM_OIDC_ISSUER", "PM_OIDC_CLIENT_ID", "PM_OIDC_CLIENT_SECRET", "PM_OIDC_REDIRECT_URI"} {
 		if os.Getenv(k) == "" {
@@ -54,6 +67,7 @@ func SettingsFromEnv() (Settings, error) {
 		{"PM_WEB_SESSION_IDLE_WARN_LEAD", 60, &s.IdleWarnLeadSeconds},
 		{"PM_WEB_SESSION_ABSOLUTE_WARN_LEAD", 300, &s.AbsoluteWarnLeadSeconds},
 		{"PM_WEB_SESSION_HEARTBEAT", 90, &s.HeartbeatSeconds},
+		{"PM_SESSION_WINDOW", 7200, &s.SessionWindowSeconds},
 	} {
 		*d.dst = d.def
 		if raw := os.Getenv(d.env); raw != "" {
@@ -126,4 +140,30 @@ func (s Settings) WebRedirect(path string) string {
 		return path
 	}
 	return strings.TrimRight(strings.TrimSpace(s.WebOrigin), "/") + path
+}
+
+// canonicalResource is Kotlin's canonicalMcpResource for a URI it accepted: lowercase scheme and host, path /mcp.
+func canonicalResource(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" {
+		return raw
+	}
+	return strings.ToLower(u.Scheme) + "://" + strings.ToLower(u.Host) + "/mcp"
+}
+
+// clampedSeconds is a token lifetime: def when raw is not an integer, then clamped to [60s, 24h].
+func clampedSeconds(raw string, def int64) int64 {
+	v, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil {
+		v = def
+	}
+	return min(max(v, 60), 24*3600)
+}
+
+// WebBase is the console's origin for links pmon prints: PM_WEB_ORIGIN, else this server's own origin.
+func (s Settings) WebBase() string {
+	if origin := strings.TrimRight(strings.TrimSpace(s.WebOrigin), "/"); origin != "" {
+		return origin
+	}
+	return strings.TrimSuffix(s.MCPResource, "/mcp")
 }

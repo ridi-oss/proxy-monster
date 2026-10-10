@@ -1,5 +1,40 @@
 # Changelog
 
+## [0.1.31](https://github.com/ridi-oss/proxy-monster/compare/server-v0.1.30...server-v0.1.31) (2026-10-10)
+
+
+### Features
+
+* **control-plane:** add PM_BIND_HOST for the HTTP and gRPC listeners ([cbc31dd](https://github.com/ridi-oss/proxy-monster/commit/cbc31dd57ab3e39d74c88206473f3eeabe809096))
+* **control-plane:** publish the instance name and version ([c1efd96](https://github.com/ridi-oss/proxy-monster/commit/c1efd96dc7dc0f5bd32a29dd502e60e0c47a854e))
+* **control-plane:** tell agents the server version ([1ddf632](https://github.com/ridi-oss/proxy-monster/commit/1ddf632e4cdf8d983c773cbb65d67539193c2561))
+* **cpgo:** add the control-plane front door ([4d2dced](https://github.com/ridi-oss/proxy-monster/commit/4d2dced033ac81cce63408b05babf242990863c6))
+* **cpgo:** serve the audit routes in Go through a Kotlin authz bridge ([aba688d](https://github.com/ridi-oss/proxy-monster/commit/aba688dc998336f7166b2b02894b565a983f068a))
+* **cpgo:** serve the locale and query-history routes in Go ([06b2163](https://github.com/ridi-oss/proxy-monster/commit/06b2163d8d1572370d5934abf6e92e9044a10c74))
+* **pmon:** choose the default server ([033c27a](https://github.com/ridi-oss/proxy-monster/commit/033c27aa8f9aad87834c08dabd7ae10d78ad2548))
+* **pmon:** name a server after its instance ([1b4385c](https://github.com/ridi-oss/proxy-monster/commit/1b4385c454b2816c1c94bcf3612663802cc32e78))
+* **pmon:** pmon mcp --install and --uninstall ([1dc5c5c](https://github.com/ridi-oss/proxy-monster/commit/1dc5c5ccf2d96a5dae5ffd5c068e5af8af597429))
+* **pmon:** replace a server's https MCP entry with pmon's relay ([c65b8e7](https://github.com/ridi-oss/proxy-monster/commit/c65b8e7d14fd267bf87319afd5aee3458d7cb39e))
+
+
+### Bug Fixes
+
+* **devenv:** grant the sample MySQL user mysql.func, as the smoke stack does ([ccf17b7](https://github.com/ridi-oss/proxy-monster/commit/ccf17b79556c706cc78f72a7c3c7c91fcdf51595))
+
+
+### Build & Dependencies
+
+* **control-plane:** run the control plane behind cp-go ([cb0907b](https://github.com/ridi-oss/proxy-monster/commit/cb0907b4abbb4792c56e3f20b8d8914de389bb8c))
+* **tray:** per-user MSI for Windows ([e80f419](https://github.com/ridi-oss/proxy-monster/commit/e80f419f51e5b25ff0dad5ece595735acf90b8fe))
+
+
+### Documentation
+
+* add the control-plane Go migration plan ([c993c81](https://github.com/ridi-oss/proxy-monster/commit/c993c815c31f4aea92be6da1abce8ae22cad3b06))
+* mark cp-go phase 0 done ([b9d42fc](https://github.com/ridi-oss/proxy-monster/commit/b9d42fc8fa1ac6ac1d0b6e8c4b571a0b81c02f23))
+* mark cp-go phase 2 done ([ff9a369](https://github.com/ridi-oss/proxy-monster/commit/ff9a369708189818eb041c9a6b5319a606e3bdd0))
+* reorder cp-go phases so login follows admin CRUD ([c03e0ac](https://github.com/ridi-oss/proxy-monster/commit/c03e0ac5ef87eeffd53de90173f55d39736d4075))
+
 ## [0.1.30](https://github.com/ridi-oss/proxy-monster/compare/server-v0.1.29...server-v0.1.30) (2026-10-08)
 
 

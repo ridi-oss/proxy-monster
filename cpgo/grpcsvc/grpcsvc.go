@@ -21,23 +21,27 @@ import (
 	pb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
 	"github.com/ridi-oss/proxy-monster/auditmon/canon"
 	"github.com/ridi-oss/proxy-monster/cpgo/audit"
+	"github.com/ridi-oss/proxy-monster/cpgo/authz"
 	"github.com/ridi-oss/proxy-monster/cpgo/store/db"
 )
 
 // owned is every ControlPlane method this package serves.
-var owned = []string{"ReportCompletion"}
+var owned = []string{"ReportCompletion", "AuthorizeRequest"}
 
 type service struct {
 	pb.UnimplementedControlPlaneServer
-	pool *pgxpool.Pool
+	pool  *pgxpool.Pool
+	authz *authz.Engine
+	// admit replaces the datasource engine's request decision; only a test binary honors it (testing.Testing).
+	admit func(context.Context, *pb.RequestAuthorization, requestDatasource, caller) (admission, error)
 }
 
-// Register adds Go's ControlPlane methods to s.
-func Register(s *grpc.Server, pool *pgxpool.Pool) {
+// Register adds Go's ControlPlane methods to s; engine decides their Cedar questions.
+func Register(s *grpc.Server, pool *pgxpool.Pool, engine *authz.Engine) {
 	desc := pb.ControlPlane_ServiceDesc
 	desc.Methods = slices.DeleteFunc(slices.Clone(desc.Methods), func(m grpc.MethodDesc) bool { return !slices.Contains(owned, m.MethodName) })
 	desc.Streams = nil
-	s.RegisterService(&desc, &service{pool: pool})
+	s.RegisterService(&desc, &service{pool: pool, authz: engine})
 }
 
 // SecretToken is SecretTokenInterceptor: with a secret set, a call without a matching x-pm-secret-token

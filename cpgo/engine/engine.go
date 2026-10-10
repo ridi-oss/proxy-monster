@@ -7,12 +7,23 @@ import (
 	"strings"
 )
 
+// Requests is which authorizer decides an engine's operations that carry no SQL (AuthorizeRequest).
+type Requests int
+
+const (
+	// MetadataRequests admits catalog and table-metadata reads under datasource.connect.
+	MetadataRequests Requests = iota
+	// AthenaRequests admits Athena API calls described by an AthenaNativeDescriptor.
+	AthenaRequests
+)
+
 // Definition is one engine.
 type Definition struct {
 	// WireName is the persistence, registration, and JSON name: "mysql", "postgres", "athena".
 	WireName string
 	// DefaultSchemaSettable reports whether the engine has a statement that sets a session's default schema.
 	DefaultSchemaSettable bool
+	Requests              Requests
 
 	systemSchemas   []string
 	foldCase        bool
@@ -33,7 +44,7 @@ var definitions = []*Definition{
 		catalogName:     func(db string) string { return db },
 	},
 	{
-		WireName: "athena", foldCase: true,
+		WireName: "athena", foldCase: true, Requests: AthenaRequests,
 		systemSchemas: []string{"information_schema"},
 		catalogName:   strings.ToLower,
 	},

@@ -20,6 +20,7 @@ import (
 	"github.com/ridi-oss/proxy-monster/auditmon/store"
 	"github.com/ridi-oss/proxy-monster/auditmon/verify"
 	"github.com/ridi-oss/proxy-monster/cpgo/audit"
+	"github.com/ridi-oss/proxy-monster/cpgo/authz"
 	"github.com/ridi-oss/proxy-monster/cpgo/front"
 	"github.com/ridi-oss/proxy-monster/cpgo/internal/dbtest"
 )
@@ -59,7 +60,7 @@ func setup(t *testing.T, secret string) (dbtest.Store, pb.ControlPlaneClient) {
 	}
 	t.Cleanup(func() { _ = up.Close() })
 	fd := front.NewGRPC(up, grpc.UnaryInterceptor(SecretToken(secret)))
-	Register(fd, st.Pool)
+	Register(fd, st.Pool, authz.New(st.Pool))
 	conn, err := grpc.NewClient(serve(t, fd), grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
 		t.Fatal(err)
@@ -68,14 +69,16 @@ func setup(t *testing.T, secret string) (dbtest.Store, pb.ControlPlaneClient) {
 	return st, pb.NewControlPlaneClient(conn)
 }
 
-func decision(t *testing.T, st dbtest.Store) int64 {
+func decision(t *testing.T, st dbtest.Store) int64 { return decisionOf(t, st, "ALLOW") }
+
+func decisionOf(t *testing.T, st dbtest.Store, verdict string) int64 {
 	t.Helper()
 	ctx := context.Background()
 	channel := "wire"
 	var id int64
 	err := pgx.BeginFunc(ctx, st.Pool, func(tx pgx.Tx) (err error) {
 		id, err = audit.Insert(ctx, tx, canon.AuditEvent{Kind: "decision", Principal: "analyst@example.com", Roles: []string{"analyst"},
-			Datasource: "sales-mysql", Statement: "SELECT name FROM users", Decision: "ALLOW", Channel: &channel})
+			Datasource: "sales-mysql", Statement: "SELECT name FROM users", Decision: verdict, Channel: &channel})
 		return err
 	})
 	if err != nil {
@@ -113,6 +116,12 @@ func TestReportCompletion(t *testing.T) {
 	if want := "analyst@example.com|sales-mysql|SELECT name FROM users|ALLOW|wire|50000|262144|ok|12|" + strconv.FormatInt(id, 10) + "|[]"; row != want {
 		t.Fatalf("completion row %s, want %s", row, want)
 	}
+	var chained bool
+	if err := st.Pool.QueryRow(ctx, `SELECT c.chain_version = $1 AND c.prev_hash = p.row_hash AND h.last_id = c.id AND h.head_hash = c.row_hash
+		FROM audit_event c JOIN audit_event p ON p.id = (SELECT max(id) FROM audit_event WHERE id < c.id), audit_chain_head h
+		WHERE c.kind = 'completion' AND h.id = 1`, int32(canon.ChainVersion)).Scan(&chained); err != nil || !chained {
+		t.Fatalf("the completion must chain at the current version and advance the head: %v", err)
+	}
 	var taskStatus string
 	_ = st.Pool.QueryRow(ctx, `SELECT status FROM access_request WHERE id = $1 AND executing_at IS NOT NULL AND executed_at IS NOT NULL`, task).Scan(&taskStatus)
 	if taskStatus != "EXECUTED" {
@@ -121,6 +130,13 @@ func TestReportCompletion(t *testing.T) {
 	_ = st.Pool.QueryRow(ctx, `SELECT status FROM access_request WHERE source_decision_id = $1`, failed).Scan(&taskStatus)
 	if taskStatus != "APPROVED" {
 		t.Fatalf("another decision's wire task %q", taskStatus)
+	}
+	if _, err := c.ReportCompletion(ctx, &pb.CompletionReport{DecisionId: id, Status: "ok"}); err != nil {
+		t.Fatal(err)
+	}
+	_ = st.Pool.QueryRow(ctx, `SELECT status FROM access_request WHERE id = $1`, task).Scan(&taskStatus)
+	if taskStatus != "EXECUTED" {
+		t.Fatalf("a duplicate clean report moved the wire task to %q", taskStatus)
 	}
 	if _, err := c.ReportCompletion(ctx, &pb.CompletionReport{DecisionId: id, Status: "error"}); err != nil {
 		t.Fatalf("a repeated report still records its completion: %v", err)
@@ -137,14 +153,38 @@ func TestReportCompletion(t *testing.T) {
 		decision int64
 		status   string
 	}{{failed, "error"}, {canceled, "canceled"}} {
-		if _, err := c.ReportCompletion(ctx, &pb.CompletionReport{DecisionId: r.decision, Status: r.status}); err != nil {
+		if _, err := c.ReportCompletion(ctx, &pb.CompletionReport{DecisionId: r.decision, Status: r.status, RowsReturned: 7, BytesReturned: 512}); err != nil {
 			t.Fatal(err)
+		}
+		var outcome string
+		var rows int64
+		_ = st.Pool.QueryRow(ctx, `SELECT outcome, rows_returned FROM audit_event WHERE kind = 'completion' AND decision_id = $1`, r.decision).Scan(&outcome, &rows)
+		if outcome != r.status || rows != 7 {
+			t.Fatalf("a %s completion recorded %q with %d rows", r.status, outcome, rows)
 		}
 		_ = st.Pool.QueryRow(ctx, `SELECT status FROM access_request WHERE source_decision_id = $1
 			AND executing_at IS NOT NULL AND executed_at IS NULL`, r.decision).Scan(&taskStatus)
 		if taskStatus != "FAILED" {
 			t.Fatalf("a %s report left its wire task %q", r.status, taskStatus)
 		}
+	}
+	masked := decisionOf(t, st, "MASK")
+	if _, err := st.Pool.Exec(ctx, wireTask, masked); err != nil {
+		t.Fatal(err)
+	}
+	maskedTask := func() string {
+		var s string
+		_ = st.Pool.QueryRow(ctx, `SELECT status FROM access_request WHERE source_decision_id = $1`, masked).Scan(&s)
+		return s
+	}
+	if s := maskedTask(); s != "APPROVED" {
+		t.Fatalf("a MASK wire task before completion %q", s)
+	}
+	if _, err := c.ReportCompletion(ctx, &pb.CompletionReport{DecisionId: masked, Status: "ok"}); err != nil {
+		t.Fatal(err)
+	}
+	if s := maskedTask(); s != "EXECUTED" {
+		t.Fatalf("a MASK wire task after a clean completion %q", s)
 	}
 
 	for _, tc := range []struct {
@@ -161,7 +201,7 @@ func TestReportCompletion(t *testing.T) {
 	}
 	var n int
 	_ = st.Pool.QueryRow(ctx, `SELECT count(*) FROM audit_event WHERE kind = 'completion'`).Scan(&n)
-	if n != 4 {
+	if n != 6 {
 		t.Fatalf("%d completion rows", n)
 	}
 	dsn := strings.Replace(strings.TrimPrefix(st.JDBCURL, "jdbc:"), "postgresql://", "postgresql://"+st.User+":"+st.Password+"@", 1)

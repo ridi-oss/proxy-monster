@@ -5,7 +5,7 @@ import (
 	"unicode"
 	"unicode/utf16"
 
-	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
+	pb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
 )
 
 // BindMasks binds mask specs to result-set indexes by output ordinal; out-of-range ordinals are

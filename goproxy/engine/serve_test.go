@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
+	pb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
 )
 
 func serveInput() AuthzInput {

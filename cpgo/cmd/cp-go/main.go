@@ -29,6 +29,7 @@ import (
 	"github.com/ridi-oss/proxy-monster/cpgo/front"
 	"github.com/ridi-oss/proxy-monster/cpgo/gobridge"
 	bridgepb "github.com/ridi-oss/proxy-monster/cpgo/gobridge/pb"
+	"github.com/ridi-oss/proxy-monster/cpgo/grpcsvc"
 	"github.com/ridi-oss/proxy-monster/cpgo/idp"
 	"github.com/ridi-oss/proxy-monster/cpgo/routes"
 	"github.com/ridi-oss/proxy-monster/cpgo/routes/oidc"
@@ -197,7 +198,8 @@ func run(ctx context.Context, cfg config) int {
 		Handler:           serve(front.ParseTrustedEdges(cfg.TrustedProxies)),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
-	grpcSrv := front.NewGRPC(conn)
+	grpcSrv := front.NewGRPC(conn, grpc.UnaryInterceptor(grpcsvc.SecretToken(os.Getenv("PM_SECRET_TOKEN"))))
+	grpcsvc.Register(grpcSrv, pool)
 
 	httpLn, err := net.Listen("tcp", httpSrv.Addr)
 	if err != nil {

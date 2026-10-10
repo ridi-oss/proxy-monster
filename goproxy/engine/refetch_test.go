@@ -7,8 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	analyzerpb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
-	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
+	pb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
 )
 
 type refetchDb struct{}
@@ -37,7 +36,7 @@ func (refetchDb) SchemaRoutinesSQL(schema string) string { return "routines:" + 
 func (refetchDb) LowerCaseTableNamesProbeSQL() string    { return "" }
 func (refetchDb) FoldFunctionName(name string) string    { return name }
 
-func (refetchDb) NormalizeColumns(_ int, columns []*analyzerpb.Column) []*analyzerpb.Column {
+func (refetchDb) NormalizeColumns(_ int, columns []*pb.Column) []*pb.Column {
 	return columns
 }
 
@@ -124,11 +123,11 @@ type normalizingRefetchDb struct {
 func (d *normalizingRefetchDb) LowerCaseTableNamesProbeSQL() string { return "lctn" }
 func (d *normalizingRefetchDb) FoldFunctionName(name string) string { return name }
 
-func (d *normalizingRefetchDb) NormalizeColumns(mode int, columns []*analyzerpb.Column) []*analyzerpb.Column {
+func (d *normalizingRefetchDb) NormalizeColumns(mode int, columns []*pb.Column) []*pb.Column {
 	d.gotMode = &mode
-	out := make([]*analyzerpb.Column, len(columns))
+	out := make([]*pb.Column, len(columns))
 	for i, c := range columns {
-		out[i] = &analyzerpb.Column{Schema: strings.ToUpper(c.GetSchema()), Table: strings.ToUpper(c.GetTable()), Column: strings.ToUpper(c.GetColumn())}
+		out[i] = &pb.Column{Schema: strings.ToUpper(c.GetSchema()), Table: strings.ToUpper(c.GetTable()), Column: strings.ToUpper(c.GetColumn())}
 	}
 	return out
 }

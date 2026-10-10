@@ -5,8 +5,7 @@ import (
 	"encoding/json"
 	"strings"
 
-	enginepb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
-	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
+	pb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
 	"github.com/ridi-oss/proxy-monster/goproxy/spi"
 )
 
@@ -22,7 +21,7 @@ func NewTableDetailRunner(client spi.TableDetailClient, targetDb spi.Db) *TableD
 }
 
 // Run blocks for the short table-detail session lifetime.
-func (r *TableDetailRunner) Run(sessionID string, table *enginepb.ObjectRef) {
+func (r *TableDetailRunner) Run(sessionID string, table *pb.ObjectRef) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 

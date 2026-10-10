@@ -33,8 +33,7 @@ import (
 
 	// The shared proxymonster.v1.Engine enum lives in analyzer/probe/pb (see engine/engine.go's
 	// import comment for why goproxy resolves it there instead of generating a second copy).
-	enginepb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
-	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
+	pb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
 )
 
 // ProtocolVersion is this proxy's proxy<->control-plane wire-protocol version, exchanged at Register so a
@@ -269,12 +268,12 @@ func decisionFromWire(d *pb.WireDecision) ([]*pb.ProxyCommand, *engine.Decision)
 		rewrittenSQL := *v.RewrittenSql
 		rewritten = &rewrittenSQL
 	}
-	var submission *enginepb.Submission
+	var submission *pb.Submission
 	if v.Submission != nil {
 		if rewritten == nil {
 			return nil, denyClosed("control plane returned a submission without rewritten SQL")
 		}
-		submission = proto.Clone(v.Submission).(*enginepb.Submission)
+		submission = proto.Clone(v.Submission).(*pb.Submission)
 	}
 	afterStatement, err := commandsFromWire(v.GetAfterStatement())
 	if err != nil {
@@ -426,9 +425,9 @@ func (c *Client) ReportCompletion(report engine.CompletionReport) {
 // advertiseCertChain is a pointer for explicit presence. nil means "no opinion" and preserves whatever the
 // control plane stores (a transient read at re-register); a non-nil empty string is authoritative and CLEARS
 // the stored chain, so an operator who stops publishing does not leave clients on dead roots.
-func (c *Client) Register(registrationEngine enginepb.Engine, host string, port int, dbName string, tags []string, advertiseAddr string, advertiseCertChain *string, wireTLS bool, connectionInfo *pb.ConnectionInfo, description *string) error {
+func (c *Client) Register(registrationEngine pb.Engine, host string, port int, dbName string, tags []string, advertiseAddr string, advertiseCertChain *string, wireTLS bool, connectionInfo *pb.ConnectionInfo, description *string) error {
 	// Fail-closed defense-in-depth — never send an unspecified engine (boot already validated the provider).
-	if registrationEngine == enginepb.Engine_ENGINE_UNSPECIFIED {
+	if registrationEngine == pb.Engine_ENGINE_UNSPECIFIED {
 		return fmt.Errorf("cp: refusing to register datasource %q with an unspecified engine", c.datasourceName)
 	}
 
@@ -528,7 +527,7 @@ func (c *Client) CloseConnection(connectionID []byte) error {
 func (c *Client) StreamEvents(
 	onRefresh func(),
 	onOpenRun func(spi.RunOpen),
-	onOpenTableDetail func(sessionID string, table *enginepb.ObjectRef),
+	onOpenTableDetail func(sessionID string, table *pb.ObjectRef),
 ) error {
 	timings := defaultEventLoopTimings()
 	return c.streamEvents(context.Background(), timings.streamMaxAge, onRefresh, onOpenRun, onOpenTableDetail)
@@ -550,7 +549,7 @@ func (c *Client) streamEvents(
 	maxAge time.Duration,
 	onRefresh func(),
 	onOpenRun func(spi.RunOpen),
-	onOpenTableDetail func(sessionID string, table *enginepb.ObjectRef),
+	onOpenTableDetail func(sessionID string, table *pb.ObjectRef),
 ) error {
 	ctx, cancel := context.WithTimeout(c.outCtx(parent), maxAge)
 	defer cancel()
@@ -598,7 +597,7 @@ func (c *Client) streamEvents(
 			})
 		case ev.GetOpenTableDetailChannel() != nil:
 			t := ev.GetOpenTableDetailChannel()
-			onOpenTableDetail(t.GetSessionId(), &enginepb.ObjectRef{Catalog: t.GetCatalog(), Schema: t.GetSchema(), Table: t.GetTable()})
+			onOpenTableDetail(t.GetSessionId(), &pb.ObjectRef{Catalog: t.GetCatalog(), Schema: t.GetSchema(), Table: t.GetTable()})
 		}
 	}
 }
@@ -621,7 +620,7 @@ func (c *Client) RunEventsLoop(
 	resync func(),
 	onRefresh func(),
 	onOpenRun func(spi.RunOpen),
-	onOpenTableDetail func(sessionID string, table *enginepb.ObjectRef),
+	onOpenTableDetail func(sessionID string, table *pb.ObjectRef),
 ) error {
 	return c.runEventsLoop(ctx, defaultEventLoopTimings(), resync, onRefresh, onOpenRun, onOpenTableDetail)
 }
@@ -632,7 +631,7 @@ func (c *Client) runEventsLoop(
 	resync func(),
 	onRefresh func(),
 	onOpenRun func(spi.RunOpen),
-	onOpenTableDetail func(sessionID string, table *enginepb.ObjectRef),
+	onOpenTableDetail func(sessionID string, table *pb.ObjectRef),
 ) error {
 	for {
 		err := c.streamEvents(ctx, timings.streamMaxAge, onRefresh, onOpenRun, onOpenTableDetail)

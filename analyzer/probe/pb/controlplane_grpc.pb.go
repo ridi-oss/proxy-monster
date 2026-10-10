@@ -8,7 +8,7 @@
 // Single source of truth for both sides' generated bindings. Internal, trusted
 // service-to-service surface only — the web UI keeps talking HTTP/JSON to control-plane.
 
-package proxymonsterv1
+package pb
 
 import (
 	context "context"

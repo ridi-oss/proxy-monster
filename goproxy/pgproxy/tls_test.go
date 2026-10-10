@@ -17,7 +17,7 @@ import (
 	"github.com/jackc/pgx/v5/pgproto3"
 	"google.golang.org/protobuf/proto"
 
-	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
+	pb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
 )
 
 const sslRequestCode = 80877103

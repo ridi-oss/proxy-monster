@@ -10,11 +10,10 @@ import (
 	"strings"
 	"time"
 
-	enginepb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
+	pb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
 	"github.com/ridi-oss/proxy-monster/goproxy/db"
 	"github.com/ridi-oss/proxy-monster/goproxy/dialects/athena"
 	"github.com/ridi-oss/proxy-monster/goproxy/engine"
-	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
 	"github.com/ridi-oss/proxy-monster/goproxy/introspect"
 	"github.com/ridi-oss/proxy-monster/goproxy/mysqlproxy"
 	"github.com/ridi-oss/proxy-monster/goproxy/pgproxy"
@@ -66,7 +65,7 @@ func (d *sqlDb) Introspect(ctx context.Context) (*pb.CatalogRequest, error) {
 	return introspect.Run(ctx, d.pool, d.provider.db, d.provider.probe, d.target.Db)
 }
 
-func (d *sqlDb) ReadTableDetail(ctx context.Context, table *enginepb.ObjectRef) (*spi.TableDetail, error) {
+func (d *sqlDb) ReadTableDetail(ctx context.Context, table *pb.ObjectRef) (*spi.TableDetail, error) {
 	if table == nil || table.Schema == "" || table.Table == "" {
 		return nil, fmt.Errorf("table selector is incomplete")
 	}

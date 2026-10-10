@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
+	pb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
 )
 
 func TestRunSessionSubmitsPollsReadsAndMasks(t *testing.T) {

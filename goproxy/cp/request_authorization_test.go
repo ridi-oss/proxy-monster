@@ -4,9 +4,7 @@ import (
 	"context"
 	"testing"
 
-	enginepb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
-
-	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
+	pb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
@@ -23,8 +21,8 @@ func (s authorizationServer) AuthorizeRequest(ctx context.Context, request *pb.R
 
 func TestAuthorizeRequestPreservesQualifiedContext(t *testing.T) {
 	requests := []*pb.RequestAuthorization{
-		{Operation: &pb.RequestAuthorization_ReadCatalog{ReadCatalog: &pb.ReadCatalog{Namespace: &enginepb.ObjectRef{Catalog: "catalog", Schema: "schema"}}}},
-		{Operation: &pb.RequestAuthorization_ReadTableMetadata{ReadTableMetadata: &pb.ReadTableMetadata{Table: &enginepb.ObjectRef{Catalog: "catalog", Schema: "schema", Table: "orders"}}}},
+		{Operation: &pb.RequestAuthorization_ReadCatalog{ReadCatalog: &pb.ReadCatalog{Namespace: &pb.ObjectRef{Catalog: "catalog", Schema: "schema"}}}},
+		{Operation: &pb.RequestAuthorization_ReadTableMetadata{ReadTableMetadata: &pb.ReadTableMetadata{Table: &pb.ObjectRef{Catalog: "catalog", Schema: "schema", Table: "orders"}}}},
 	}
 	for _, request := range requests {
 		request.Token, request.DatasourceName, request.ClientAddr = "token", "other", "192.0.2.4"
@@ -60,7 +58,7 @@ func TestAuthorizeRequestFailsClosedOnTransportError(t *testing.T) {
 	client := startControlPlane(t, authorizationServer{authorize: func(context.Context, *pb.RequestAuthorization) (*pb.RequestAuthorizationResult, error) {
 		return nil, status.Error(codes.Unauthenticated, "expired token")
 	}})
-	if response, err := client.AuthorizeRequest(context.Background(), &pb.RequestAuthorization{Operation: &pb.RequestAuthorization_ReadCatalog{ReadCatalog: &pb.ReadCatalog{Namespace: &enginepb.ObjectRef{Catalog: "catalog", Schema: "schema"}}}}); response != nil || err == nil {
+	if response, err := client.AuthorizeRequest(context.Background(), &pb.RequestAuthorization{Operation: &pb.RequestAuthorization_ReadCatalog{ReadCatalog: &pb.ReadCatalog{Namespace: &pb.ObjectRef{Catalog: "catalog", Schema: "schema"}}}}); response != nil || err == nil {
 		t.Fatalf("authorization = %v, %v", response, err)
 	}
 	if _, err := client.AuthorizeRequest(context.Background(), nil); err == nil {

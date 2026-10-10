@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
+	pb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
 )
 
 // checkingTargetError plays the control plane's unanalyzable floor: ask for a target error check, then

@@ -9,10 +9,9 @@ import (
 	"strings"
 	"testing"
 
-	analyzerpb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
+	pb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
 	"github.com/ridi-oss/proxy-monster/goproxy/engine"
 	"github.com/ridi-oss/proxy-monster/goproxy/internal/dbtest"
-	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
 )
 
 func TestMySqlRefetcherIntegration(t *testing.T) {
@@ -53,7 +52,7 @@ func TestMySqlRefetcherIntegration(t *testing.T) {
 			t.Fatalf("byte-identical tables in distinct schemas collided: %x", current)
 		}
 		push := runRefetchIntegration(t, adapter, conn, "def", otherSchema, previous)
-		assertFullRefetch(t, push, current, "def", []*analyzerpb.Column{
+		assertFullRefetch(t, push, current, "def", []*pb.Column{
 			{Schema: otherSchema, Table: "base", Column: "a", DataType: "int", Ordinal: 1},
 		}, nil)
 	})
@@ -61,13 +60,13 @@ func TestMySqlRefetcherIntegration(t *testing.T) {
 	steps := []struct {
 		name      string
 		statement string
-		columns   []*analyzerpb.Column
+		columns   []*pb.Column
 		routines  []string
 	}{
 		{
 			name:      "add column",
 			statement: "ALTER TABLE " + quote(schema) + ".base ADD COLUMN b VARCHAR(20) NULL",
-			columns: []*analyzerpb.Column{
+			columns: []*pb.Column{
 				{Schema: schema, Table: "base", Column: "a", DataType: "int", Ordinal: 1},
 				{Schema: schema, Table: "base", Column: "b", DataType: "varchar", Ordinal: 2, Nullable: true},
 			},
@@ -75,7 +74,7 @@ func TestMySqlRefetcherIntegration(t *testing.T) {
 		{
 			name:      "rename column",
 			statement: "ALTER TABLE " + quote(schema) + ".base RENAME COLUMN b TO renamed",
-			columns: []*analyzerpb.Column{
+			columns: []*pb.Column{
 				{Schema: schema, Table: "base", Column: "a", DataType: "int", Ordinal: 1},
 				{Schema: schema, Table: "base", Column: "renamed", DataType: "varchar", Ordinal: 2, Nullable: true},
 			},
@@ -83,7 +82,7 @@ func TestMySqlRefetcherIntegration(t *testing.T) {
 		{
 			name:      "change data type",
 			statement: "ALTER TABLE " + quote(schema) + ".base MODIFY COLUMN renamed TEXT NULL",
-			columns: []*analyzerpb.Column{
+			columns: []*pb.Column{
 				{Schema: schema, Table: "base", Column: "a", DataType: "int", Ordinal: 1},
 				{Schema: schema, Table: "base", Column: "renamed", DataType: "text", Ordinal: 2, Nullable: true},
 			},
@@ -91,7 +90,7 @@ func TestMySqlRefetcherIntegration(t *testing.T) {
 		{
 			name:      "change ordinal",
 			statement: "ALTER TABLE " + quote(schema) + ".base MODIFY COLUMN renamed TEXT NULL FIRST",
-			columns: []*analyzerpb.Column{
+			columns: []*pb.Column{
 				{Schema: schema, Table: "base", Column: "renamed", DataType: "text", Ordinal: 1, Nullable: true},
 				{Schema: schema, Table: "base", Column: "a", DataType: "int", Ordinal: 2},
 			},
@@ -99,7 +98,7 @@ func TestMySqlRefetcherIntegration(t *testing.T) {
 		{
 			name:      "change nullability",
 			statement: "ALTER TABLE " + quote(schema) + ".base MODIFY COLUMN renamed TEXT NOT NULL FIRST",
-			columns: []*analyzerpb.Column{
+			columns: []*pb.Column{
 				{Schema: schema, Table: "base", Column: "renamed", DataType: "text", Ordinal: 1},
 				{Schema: schema, Table: "base", Column: "a", DataType: "int", Ordinal: 2},
 			},
@@ -107,7 +106,7 @@ func TestMySqlRefetcherIntegration(t *testing.T) {
 		{
 			name:      "rename table",
 			statement: "RENAME TABLE " + quote(schema) + ".base TO " + quote(schema) + ".renamed_table",
-			columns: []*analyzerpb.Column{
+			columns: []*pb.Column{
 				{Schema: schema, Table: "renamed_table", Column: "renamed", DataType: "text", Ordinal: 1},
 				{Schema: schema, Table: "renamed_table", Column: "a", DataType: "int", Ordinal: 2},
 			},
@@ -115,7 +114,7 @@ func TestMySqlRefetcherIntegration(t *testing.T) {
 		{
 			name:      "create function",
 			statement: "CREATE FUNCTION " + quote(schema) + ".AddTax(amount INT) RETURNS INT DETERMINISTIC RETURN amount * 11 / 10",
-			columns: []*analyzerpb.Column{
+			columns: []*pb.Column{
 				{Schema: schema, Table: "renamed_table", Column: "renamed", DataType: "text", Ordinal: 1},
 				{Schema: schema, Table: "renamed_table", Column: "a", DataType: "int", Ordinal: 2},
 			},
@@ -124,7 +123,7 @@ func TestMySqlRefetcherIntegration(t *testing.T) {
 		{
 			name:      "drop function",
 			statement: "DROP FUNCTION " + quote(schema) + ".AddTax",
-			columns: []*analyzerpb.Column{
+			columns: []*pb.Column{
 				{Schema: schema, Table: "renamed_table", Column: "renamed", DataType: "text", Ordinal: 1},
 				{Schema: schema, Table: "renamed_table", Column: "a", DataType: "int", Ordinal: 2},
 			},
@@ -132,7 +131,7 @@ func TestMySqlRefetcherIntegration(t *testing.T) {
 		{
 			name:      "drop table",
 			statement: "DROP TABLE " + quote(schema) + ".renamed_table",
-			columns:   []*analyzerpb.Column{},
+			columns:   []*pb.Column{},
 		},
 	}
 	for _, step := range steps {
@@ -207,7 +206,7 @@ func TestPostgresRefetcherIntegration(t *testing.T) {
 					t.Fatalf("byte-identical tables in distinct schemas collided: %x", current)
 				}
 				push := runRefetchIntegration(t, adapter, conn, databaseName, otherSchema, previous)
-				assertFullRefetch(t, push, current, databaseName, []*analyzerpb.Column{
+				assertFullRefetch(t, push, current, databaseName, []*pb.Column{
 					{Schema: otherSchema, Table: "base", Column: "a", DataType: "integer", Ordinal: 1},
 				}, nil)
 			})
@@ -216,13 +215,13 @@ func TestPostgresRefetcherIntegration(t *testing.T) {
 				name      string
 				before    string
 				statement string
-				columns   []*analyzerpb.Column
+				columns   []*pb.Column
 				routines  []string
 			}{
 				{
 					name:      "add column",
 					statement: "ALTER TABLE " + quote(schema) + ".base ADD COLUMN b CHARACTER VARYING(20) NULL",
-					columns: []*analyzerpb.Column{
+					columns: []*pb.Column{
 						{Schema: schema, Table: "base", Column: "a", DataType: "integer", Ordinal: 1},
 						{Schema: schema, Table: "base", Column: "b", DataType: "character varying", Ordinal: 2, Nullable: true},
 					},
@@ -230,7 +229,7 @@ func TestPostgresRefetcherIntegration(t *testing.T) {
 				{
 					name:      "rename column",
 					statement: "ALTER TABLE " + quote(schema) + ".base RENAME COLUMN b TO renamed",
-					columns: []*analyzerpb.Column{
+					columns: []*pb.Column{
 						{Schema: schema, Table: "base", Column: "a", DataType: "integer", Ordinal: 1},
 						{Schema: schema, Table: "base", Column: "renamed", DataType: "character varying", Ordinal: 2, Nullable: true},
 					},
@@ -238,7 +237,7 @@ func TestPostgresRefetcherIntegration(t *testing.T) {
 				{
 					name:      "change data type",
 					statement: "ALTER TABLE " + quote(schema) + ".base ALTER COLUMN renamed TYPE TEXT",
-					columns: []*analyzerpb.Column{
+					columns: []*pb.Column{
 						{Schema: schema, Table: "base", Column: "a", DataType: "integer", Ordinal: 1},
 						{Schema: schema, Table: "base", Column: "renamed", DataType: "text", Ordinal: 2, Nullable: true},
 					},
@@ -246,7 +245,7 @@ func TestPostgresRefetcherIntegration(t *testing.T) {
 				{
 					name:      "set not null",
 					statement: "ALTER TABLE " + quote(schema) + ".base ALTER COLUMN renamed SET NOT NULL",
-					columns: []*analyzerpb.Column{
+					columns: []*pb.Column{
 						{Schema: schema, Table: "base", Column: "a", DataType: "integer", Ordinal: 1},
 						{Schema: schema, Table: "base", Column: "renamed", DataType: "text", Ordinal: 2},
 					},
@@ -254,7 +253,7 @@ func TestPostgresRefetcherIntegration(t *testing.T) {
 				{
 					name:      "drop not null",
 					statement: "ALTER TABLE " + quote(schema) + ".base ALTER COLUMN renamed DROP NOT NULL",
-					columns: []*analyzerpb.Column{
+					columns: []*pb.Column{
 						{Schema: schema, Table: "base", Column: "a", DataType: "integer", Ordinal: 1},
 						{Schema: schema, Table: "base", Column: "renamed", DataType: "text", Ordinal: 2, Nullable: true},
 					},
@@ -262,7 +261,7 @@ func TestPostgresRefetcherIntegration(t *testing.T) {
 				{
 					name:      "change ordinal",
 					statement: "ALTER TABLE " + quote(schema) + ".base DROP COLUMN a, ADD COLUMN a INTEGER NOT NULL",
-					columns: []*analyzerpb.Column{
+					columns: []*pb.Column{
 						{Schema: schema, Table: "base", Column: "renamed", DataType: "text", Ordinal: 2, Nullable: true},
 						{Schema: schema, Table: "base", Column: "a", DataType: "integer", Ordinal: 3},
 					},
@@ -270,7 +269,7 @@ func TestPostgresRefetcherIntegration(t *testing.T) {
 				{
 					name:      "rename table",
 					statement: "ALTER TABLE " + quote(schema) + ".base RENAME TO renamed_table",
-					columns: []*analyzerpb.Column{
+					columns: []*pb.Column{
 						{Schema: schema, Table: "renamed_table", Column: "renamed", DataType: "text", Ordinal: 2, Nullable: true},
 						{Schema: schema, Table: "renamed_table", Column: "a", DataType: "integer", Ordinal: 3},
 					},
@@ -279,7 +278,7 @@ func TestPostgresRefetcherIntegration(t *testing.T) {
 					name:      "create function inside an open transaction",
 					statement: "CREATE FUNCTION " + quote(schema) + ".AddTax(integer) RETURNS integer LANGUAGE sql IMMUTABLE AS 'select $1 * 11 / 10'",
 					before:    "BEGIN",
-					columns: []*analyzerpb.Column{
+					columns: []*pb.Column{
 						{Schema: schema, Table: "renamed_table", Column: "renamed", DataType: "text", Ordinal: 2, Nullable: true},
 						{Schema: schema, Table: "renamed_table", Column: "a", DataType: "integer", Ordinal: 3},
 					},
@@ -288,7 +287,7 @@ func TestPostgresRefetcherIntegration(t *testing.T) {
 				{
 					name:      "roll the function back",
 					statement: "ROLLBACK",
-					columns: []*analyzerpb.Column{
+					columns: []*pb.Column{
 						{Schema: schema, Table: "renamed_table", Column: "renamed", DataType: "text", Ordinal: 2, Nullable: true},
 						{Schema: schema, Table: "renamed_table", Column: "a", DataType: "integer", Ordinal: 3},
 					},
@@ -296,7 +295,7 @@ func TestPostgresRefetcherIntegration(t *testing.T) {
 				{
 					name:      "drop table",
 					statement: "DROP TABLE " + quote(schema) + ".renamed_table",
-					columns:   []*analyzerpb.Column{},
+					columns:   []*pb.Column{},
 				},
 			}
 			for _, step := range steps {
@@ -337,11 +336,11 @@ func TestMySqlRefetcherTruncationFallsBackToFullFetch(t *testing.T) {
 		_, _ = database.ExecContext(context.Background(), "DROP DATABASE IF EXISTS "+quote(schema))
 	})
 	definitions := make([]string, 0, 24)
-	wantColumns := make([]*analyzerpb.Column, 0, 24)
+	wantColumns := make([]*pb.Column, 0, 24)
 	for i := 0; i < 24; i++ {
 		column := fmt.Sprintf("column_%02d", i)
 		definitions = append(definitions, column+" VARCHAR(255)")
-		wantColumns = append(wantColumns, &analyzerpb.Column{
+		wantColumns = append(wantColumns, &pb.Column{
 			Schema: schema, Table: "wide", Column: column, DataType: "varchar", Ordinal: int32(i + 1), Nullable: true,
 		})
 	}
@@ -462,7 +461,7 @@ func runRefetchIntegration(t *testing.T, adapter engine.Db, conn *sql.Conn, cata
 	return push
 }
 
-func assertFullRefetch(t *testing.T, push *pb.SchemaFragmentPush, currentHash []byte, catalog string, wantColumns []*analyzerpb.Column, wantRoutines []string) {
+func assertFullRefetch(t *testing.T, push *pb.SchemaFragmentPush, currentHash []byte, catalog string, wantColumns []*pb.Column, wantRoutines []string) {
 	t.Helper()
 	if push.Unchanged {
 		t.Fatalf("push = %+v, want full fetch", push)

@@ -7,8 +7,8 @@ import (
 	"errors"
 	"fmt"
 
+	pb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
 	"github.com/ridi-oss/proxy-monster/goproxy/engine"
-	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
 )
 
 var ErrResultShape = errors.New("athena: result shape cannot be enforced")

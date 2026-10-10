@@ -12,9 +12,8 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awsa "github.com/aws/aws-sdk-go-v2/service/athena"
 	"github.com/aws/aws-sdk-go-v2/service/athena/types"
-	enginepb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
+	pb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
 	"github.com/ridi-oss/proxy-monster/goproxy/engine"
-	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
 	"github.com/ridi-oss/proxy-monster/goproxy/wire"
 )
 
@@ -97,22 +96,22 @@ func (r *refetcher) run(command *pb.Refetch) error {
 
 // fragmentColumns lists one database's columns; a database Glue does not know is an empty fragment, so a
 // statement naming it resolves fail-closed instead of erroring the connection.
-func (t *target) fragmentColumns(ctx context.Context, catalog, database string) ([]*enginepb.Column, error) {
+func (t *target) fragmentColumns(ctx context.Context, catalog, database string) ([]*pb.Column, error) {
 	columns, err := t.readColumns(ctx, catalog, database)
 	var metadata *types.MetadataException
 	if errors.As(err, &metadata) && strings.Contains(strings.ToLower(aws.ToString(metadata.Message)), "not found") {
-		return []*enginepb.Column{}, nil
+		return []*pb.Column{}, nil
 	}
 	if err != nil {
 		return nil, err
 	}
 	if columns == nil {
-		columns = []*enginepb.Column{}
+		columns = []*pb.Column{}
 	}
 	return columns, nil
 }
 
-func fragmentHash(columns []*enginepb.Column) ([]byte, error) {
+func fragmentHash(columns []*pb.Column) ([]byte, error) {
 	rows := make([][]any, 0, len(columns))
 	for _, column := range columns {
 		rows = append(rows, []any{column.GetCatalog(), column.GetSchema(), column.GetTable(), column.GetColumn(), column.GetDataType(), column.GetOrdinal(), column.GetNullable()})
@@ -129,7 +128,7 @@ func fragmentHash(columns []*enginepb.Column) ([]byte, error) {
 // prepared statements and appends the result to session's Athena scope; the analyzer never trusts a
 // definition the client supplied. The fetch must name the request's workgroup, must not repeat one already
 // held, and the scope holds at most maxPreparedDefinitions per decision.
-func (t *target) fetchPreparedDefinitionInto(fetch *enginepb.FetchAthenaPreparedDefinition, session *engine.SessionObservation) error {
+func (t *target) fetchPreparedDefinitionInto(fetch *pb.FetchAthenaPreparedDefinition, session *engine.SessionObservation) error {
 	if fetch.GetWorkgroup() == "" || fetch.GetName() == "" {
 		return errors.New("blank prepared definition selector")
 	}
@@ -156,7 +155,7 @@ func (t *target) fetchPreparedDefinitionInto(fetch *enginepb.FetchAthenaPrepared
 	return nil
 }
 
-func (t *target) fetchPreparedDefinition(fetch *enginepb.FetchAthenaPreparedDefinition) (*enginepb.AthenaPreparedDefinition, error) {
+func (t *target) fetchPreparedDefinition(fetch *pb.FetchAthenaPreparedDefinition) (*pb.AthenaPreparedDefinition, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), metadataTimeout)
 	defer cancel()
 	response, err := t.api.GetPreparedStatement(ctx, &awsa.GetPreparedStatementInput{
@@ -169,5 +168,5 @@ func (t *target) fetchPreparedDefinition(fetch *enginepb.FetchAthenaPreparedDefi
 	if statement == nil || aws.ToString(statement.StatementName) != fetch.GetName() || aws.ToString(statement.QueryStatement) == "" {
 		return nil, errors.New("athena: prepared statement metadata is incomplete")
 	}
-	return &enginepb.AthenaPreparedDefinition{Workgroup: fetch.GetWorkgroup(), Name: fetch.GetName(), QueryString: aws.ToString(statement.QueryStatement)}, nil
+	return &pb.AthenaPreparedDefinition{Workgroup: fetch.GetWorkgroup(), Name: fetch.GetName(), QueryString: aws.ToString(statement.QueryStatement)}, nil
 }

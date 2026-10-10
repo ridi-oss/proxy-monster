@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	enginepb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
 	"net"
 	"reflect"
 	"strings"
@@ -16,10 +15,10 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/protobuf/proto"
 
+	pb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
 	"github.com/ridi-oss/proxy-monster/goproxy/cp"
 	"github.com/ridi-oss/proxy-monster/goproxy/engine"
 	"github.com/ridi-oss/proxy-monster/goproxy/internal/dbtest"
-	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
 	"github.com/ridi-oss/proxy-monster/goproxy/run"
 	"github.com/ridi-oss/proxy-monster/goproxy/spi"
 )
@@ -108,7 +107,7 @@ func tableDetailRun(
 ) *pb.ProxyTableDetailMsg {
 	t.Helper()
 	tableDetailFake.tableDetailExpect(tableDetailSessionID)
-	run.NewTableDetailRunner(tableDetailClient, tableDetailDb).Run(tableDetailSessionID, &enginepb.ObjectRef{Catalog: catalog, Schema: schema, Table: table})
+	run.NewTableDetailRunner(tableDetailClient, tableDetailDb).Run(tableDetailSessionID, &pb.ObjectRef{Catalog: catalog, Schema: schema, Table: table})
 	select {
 	case tableDetailObservation := <-tableDetailFake.observed:
 		if tableDetailObservation.err != nil {

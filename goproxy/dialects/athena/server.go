@@ -15,9 +15,8 @@ import (
 	"sync"
 	"time"
 
-	enginepb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
+	pb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
 	"github.com/ridi-oss/proxy-monster/goproxy/engine"
-	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
 	"github.com/ridi-oss/proxy-monster/goproxy/listen"
 	"github.com/ridi-oss/proxy-monster/goproxy/spi"
 	"google.golang.org/grpc/codes"
@@ -113,7 +112,7 @@ type nativeRequest struct {
 	tokened   bool
 	started   time.Time
 	// Cached contexts the request phase found for the referenced executions.
-	contexts  map[string]*enginepb.AthenaCachedContext
+	contexts  map[string]*pb.AthenaCachedContext
 	firstPage bool
 }
 
@@ -153,7 +152,7 @@ func (s *nativeServer) ServeHTTP(w http.ResponseWriter, request *http.Request) {
 		nativeError(w, http.StatusBadRequest, "athena.invalid_client_address")
 		return
 	}
-	call := &nativeRequest{server: s, request: request, token: token, clientAddr: clientAddr, operation: operation, contexts: map[string]*enginepb.AthenaCachedContext{}}
+	call := &nativeRequest{server: s, request: request, token: token, clientAddr: clientAddr, operation: operation, contexts: map[string]*pb.AthenaCachedContext{}}
 	defer call.release()
 	forwarder, err := NewForwarder(ForwardOptions{
 		Endpoint: s.target.endpoint, MaxBodyBytes: defaultRequestLimit, Sign: s.target.sign, Transport: s.target.transport,
@@ -204,7 +203,7 @@ func (c *nativeRequest) authorizeRequest(ctx context.Context, incoming *http.Req
 	if err := c.lookupContexts(envelope); err != nil {
 		return nil, err
 	}
-	descriptor := c.descriptor(enginepb.NativeAuthorizationPhase_NATIVE_AUTHORIZATION_PHASE_REQUEST, nil)
+	descriptor := c.descriptor(pb.NativeAuthorizationPhase_NATIVE_AUTHORIZATION_PHASE_REQUEST, nil)
 	result, instructions, err := c.server.authorize(ctx, c.token, c.clientAddr, descriptor)
 	if err != nil {
 		return nil, err
@@ -214,12 +213,12 @@ func (c *nativeRequest) authorizeRequest(ctx context.Context, incoming *http.Req
 		return nil, ErrUnauthorized
 	}
 	switch instructions.Action {
-	case enginepb.AthenaNativeInstruction_ATHENA_NATIVE_INSTRUCTION_FORWARD_REQUEST:
+	case pb.AthenaNativeInstruction_ATHENA_NATIVE_INSTRUCTION_FORWARD_REQUEST:
 		if c.operation == "StartQueryExecution" || c.operation == "GetQueryResultsStream" {
 			return nil, ErrUnauthorized
 		}
 		return envelope, nil
-	case enginepb.AthenaNativeInstruction_ATHENA_NATIVE_INSTRUCTION_REQUIRE_SQL_ADMISSION:
+	case pb.AthenaNativeInstruction_ATHENA_NATIVE_INSTRUCTION_REQUIRE_SQL_ADMISSION:
 		if c.operation != "StartQueryExecution" {
 			return nil, ErrUnauthorized
 		}
@@ -347,7 +346,7 @@ func (c *nativeRequest) authorizeResponse(status int, body []byte) ([]byte, erro
 			return nil, err
 		}
 	}
-	descriptor := c.descriptor(enginepb.NativeAuthorizationPhase_NATIVE_AUTHORIZATION_PHASE_RESPONSE, observations)
+	descriptor := c.descriptor(pb.NativeAuthorizationPhase_NATIVE_AUTHORIZATION_PHASE_RESPONSE, observations)
 	result, instructions, err := c.server.authorize(c.request.Context(), c.token, c.clientAddr, descriptor)
 	if err != nil {
 		return nil, err
@@ -356,12 +355,12 @@ func (c *nativeRequest) authorizeResponse(status int, body []byte) ([]byte, erro
 		return nil, ErrUnauthorized
 	}
 	switch instructions.Action {
-	case enginepb.AthenaNativeInstruction_ATHENA_NATIVE_INSTRUCTION_RELEASE_METADATA:
+	case pb.AthenaNativeInstruction_ATHENA_NATIVE_INSTRUCTION_RELEASE_METADATA:
 		if c.operation == "GetQueryResults" || c.operation == "GetQueryResultsStream" {
 			return nil, ErrUnauthorized
 		}
 		return body, nil
-	case enginepb.AthenaNativeInstruction_ATHENA_NATIVE_INSTRUCTION_APPLY_ORIGINAL_CONTEXT:
+	case pb.AthenaNativeInstruction_ATHENA_NATIVE_INSTRUCTION_APPLY_ORIGINAL_CONTEXT:
 		return c.applyContexts(status, body, instructions.Contexts)
 	default:
 		return nil, ErrUnauthorized
@@ -369,7 +368,7 @@ func (c *nativeRequest) authorizeResponse(status int, body []byte) ([]byte, erro
 }
 
 // observe reports AWS-returned execution identities so the control plane can bind them to cached contexts.
-func (c *nativeRequest) observe(status int, body []byte) ([]*enginepb.AthenaResourceObservation, error) {
+func (c *nativeRequest) observe(status int, body []byte) ([]*pb.AthenaResourceObservation, error) {
 	if status != http.StatusOK {
 		return nil, nil
 	}
@@ -377,7 +376,7 @@ func (c *nativeRequest) observe(status int, body []byte) ([]*enginepb.AthenaReso
 	if err != nil {
 		return nil, ErrResultShape
 	}
-	var observations []*enginepb.AthenaResourceObservation
+	var observations []*pb.AthenaResourceObservation
 	observe := func(raw json.RawMessage) error {
 		if raw == nil {
 			return nil
@@ -393,7 +392,7 @@ func (c *nativeRequest) observe(status int, body []byte) ([]*enginepb.AthenaReso
 		if err := json.Unmarshal(execution.Field("QueryExecutionId"), &id); err != nil || id == "" {
 			return ErrResultShape
 		}
-		observation := &enginepb.AthenaResourceObservation{Source: enginepb.AthenaObservationSource_ATHENA_OBSERVATION_SOURCE_AWS_RESPONSE, Kind: "query-execution", Id: id}
+		observation := &pb.AthenaResourceObservation{Source: pb.AthenaObservationSource_ATHENA_OBSERVATION_SOURCE_AWS_RESPONSE, Kind: "query-execution", Id: id}
 		if raw := execution.Field("WorkGroup"); raw != nil {
 			_ = json.Unmarshal(raw, &observation.Workgroup)
 		}
@@ -420,7 +419,7 @@ func (c *nativeRequest) observe(status int, body []byte) ([]*enginepb.AthenaReso
 			return nil, ErrResultShape
 		}
 		for _, id := range ids {
-			observations = append(observations, &enginepb.AthenaResourceObservation{Source: enginepb.AthenaObservationSource_ATHENA_OBSERVATION_SOURCE_AWS_RESPONSE, Kind: "query-execution", Id: id})
+			observations = append(observations, &pb.AthenaResourceObservation{Source: pb.AthenaObservationSource_ATHENA_OBSERVATION_SOURCE_AWS_RESPONSE, Kind: "query-execution", Id: id})
 		}
 	}
 	return observations, nil
@@ -500,7 +499,7 @@ func (c *nativeRequest) settle(id string) {
 }
 
 // applyContexts enforces the admitted instructions on a result page or releases a status response.
-func (c *nativeRequest) applyContexts(status int, body []byte, refs []*enginepb.AthenaContextRef) ([]byte, error) {
+func (c *nativeRequest) applyContexts(status int, body []byte, refs []*pb.AthenaContextRef) ([]byte, error) {
 	if status != http.StatusOK {
 		if c.sanitizeDiagnostics(nil) {
 			return redactDiagnostics(body)
@@ -548,7 +547,7 @@ func (c *nativeRequest) applyContexts(status int, body []byte, refs []*enginepb.
 		return nil, err
 	}
 	if len(record.MetadataDigest) == 0 {
-		bound := proto.Clone(record).(*enginepb.AthenaCachedContext)
+		bound := proto.Clone(record).(*pb.AthenaCachedContext)
 		bound.MetadataDigest = digest
 		if err := c.server.target.contexts.Rebind(c.server.datasourceName(), record, bound); err != nil {
 			return nil, err
@@ -559,7 +558,7 @@ func (c *nativeRequest) applyContexts(status int, body []byte, refs []*enginepb.
 
 // filterExecutionIDs keeps only the referenced executions in a listing, in AWS order; the page token passes
 // through so the client keeps paging.
-func filterExecutionIDs(body []byte, refs []*enginepb.AthenaContextRef) ([]byte, error) {
+func filterExecutionIDs(body []byte, refs []*pb.AthenaContextRef) ([]byte, error) {
 	envelope, err := DecodeEnvelope(body)
 	if err != nil {
 		return nil, ErrResultShape
@@ -589,8 +588,8 @@ func filterExecutionIDs(body []byte, refs []*enginepb.AthenaContextRef) ([]byte,
 
 // sanitizeDiagnostics reports whether any context this call touches (the referenced ones, else every one
 // the request named) was admitted with diagnostic redaction; an undecodable context redacts too.
-func (c *nativeRequest) sanitizeDiagnostics(refs []*enginepb.AthenaContextRef) bool {
-	records := make([]*enginepb.AthenaCachedContext, 0, len(c.contexts))
+func (c *nativeRequest) sanitizeDiagnostics(refs []*pb.AthenaContextRef) bool {
+	records := make([]*pb.AthenaCachedContext, 0, len(c.contexts))
 	if refs == nil {
 		for _, record := range c.contexts {
 			records = append(records, record)
@@ -610,7 +609,7 @@ func (c *nativeRequest) sanitizeDiagnostics(refs []*enginepb.AthenaContextRef) b
 	return false
 }
 
-func expectedWidth(record *enginepb.AthenaCachedContext) *int32 {
+func expectedWidth(record *pb.AthenaCachedContext) *int32 {
 	if record.ExpectedWidth == nil {
 		return nil
 	}
@@ -618,7 +617,7 @@ func expectedWidth(record *enginepb.AthenaCachedContext) *int32 {
 	return &width
 }
 
-func (c *nativeRequest) descriptor(phase enginepb.NativeAuthorizationPhase, observations []*enginepb.AthenaResourceObservation) *enginepb.AthenaNativeDescriptor {
+func (c *nativeRequest) descriptor(phase pb.NativeAuthorizationPhase, observations []*pb.AthenaResourceObservation) *pb.AthenaNativeDescriptor {
 	descriptor := nativeDescriptor(c.request, c.operation, c.requestBody, phase)
 	descriptor.Observations = observations
 	for _, record := range c.contexts {
@@ -676,8 +675,8 @@ func (c *nativeRequest) release() {
 	}
 }
 
-func (s *nativeServer) authorize(ctx context.Context, token, clientAddr string, descriptor *enginepb.AthenaNativeDescriptor) (*pb.RequestAuthorizationResult, *enginepb.AthenaNativeInstructions, error) {
-	descriptor.Target = &enginepb.AthenaTarget{Region: s.target.config.region, DefaultWorkgroup: s.target.config.workgroup, DefaultCatalog: s.target.config.catalog, DefaultDatabase: s.target.config.database, Endpoint: s.target.endpoint, TargetBinding: s.target.binding}
+func (s *nativeServer) authorize(ctx context.Context, token, clientAddr string, descriptor *pb.AthenaNativeDescriptor) (*pb.RequestAuthorizationResult, *pb.AthenaNativeInstructions, error) {
+	descriptor.Target = &pb.AthenaTarget{Region: s.target.config.region, DefaultWorkgroup: s.target.config.workgroup, DefaultCatalog: s.target.config.catalog, DefaultDatabase: s.target.config.database, Endpoint: s.target.endpoint, TargetBinding: s.target.binding}
 	if proto.Size(descriptor) > 1<<20 {
 		return nil, nil, ErrBodyTooLarge
 	}
@@ -702,14 +701,14 @@ func (s *nativeServer) authorize(ctx context.Context, token, clientAddr string, 
 	}
 	instructions := *result.GetAthena()
 	switch descriptor.Phase {
-	case enginepb.NativeAuthorizationPhase_NATIVE_AUTHORIZATION_PHASE_REQUEST:
-		if instructions.Action != enginepb.AthenaNativeInstruction_ATHENA_NATIVE_INSTRUCTION_FORWARD_REQUEST &&
-			instructions.Action != enginepb.AthenaNativeInstruction_ATHENA_NATIVE_INSTRUCTION_REQUIRE_SQL_ADMISSION {
+	case pb.NativeAuthorizationPhase_NATIVE_AUTHORIZATION_PHASE_REQUEST:
+		if instructions.Action != pb.AthenaNativeInstruction_ATHENA_NATIVE_INSTRUCTION_FORWARD_REQUEST &&
+			instructions.Action != pb.AthenaNativeInstruction_ATHENA_NATIVE_INSTRUCTION_REQUIRE_SQL_ADMISSION {
 			return nil, nil, ErrUnauthorized
 		}
-	case enginepb.NativeAuthorizationPhase_NATIVE_AUTHORIZATION_PHASE_RESPONSE:
-		if instructions.Action != enginepb.AthenaNativeInstruction_ATHENA_NATIVE_INSTRUCTION_RELEASE_METADATA &&
-			instructions.Action != enginepb.AthenaNativeInstruction_ATHENA_NATIVE_INSTRUCTION_APPLY_ORIGINAL_CONTEXT {
+	case pb.NativeAuthorizationPhase_NATIVE_AUTHORIZATION_PHASE_RESPONSE:
+		if instructions.Action != pb.AthenaNativeInstruction_ATHENA_NATIVE_INSTRUCTION_RELEASE_METADATA &&
+			instructions.Action != pb.AthenaNativeInstruction_ATHENA_NATIVE_INSTRUCTION_APPLY_ORIGINAL_CONTEXT {
 			return nil, nil, ErrUnauthorized
 		}
 	default:
@@ -718,10 +717,10 @@ func (s *nativeServer) authorize(ctx context.Context, token, clientAddr string, 
 	return result, &instructions, nil
 }
 
-func nativeDescriptor(request *http.Request, operation string, body []byte, phase enginepb.NativeAuthorizationPhase) *enginepb.AthenaNativeDescriptor {
-	descriptor := &enginepb.AthenaNativeDescriptor{Service: "athena", Operation: operation, Method: request.Method, Path: request.URL.Path, RawQuery: request.URL.RawQuery, Body: body, Phase: phase}
+func nativeDescriptor(request *http.Request, operation string, body []byte, phase pb.NativeAuthorizationPhase) *pb.AthenaNativeDescriptor {
+	descriptor := &pb.AthenaNativeDescriptor{Service: "athena", Operation: operation, Method: request.Method, Path: request.URL.Path, RawQuery: request.URL.RawQuery, Body: body, Phase: phase}
 	for name, values := range upstreamHeaders(request.Header) {
-		descriptor.FunctionalHeaders = append(descriptor.FunctionalHeaders, &enginepb.NativeHeader{Name: name, Values: values})
+		descriptor.FunctionalHeaders = append(descriptor.FunctionalHeaders, &pb.NativeHeader{Name: name, Values: values})
 	}
 	return descriptor
 }

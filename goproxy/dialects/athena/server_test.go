@@ -8,8 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	enginepb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
-	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
+	pb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
 	"github.com/ridi-oss/proxy-monster/goproxy/spi"
 )
 
@@ -17,7 +16,7 @@ func (requestClient) DatasourceName() string { return "athena-dev" }
 
 type requestClient struct {
 	spi.EnforcementClient
-	authorize func(*pb.RequestAuthorization, *enginepb.AthenaNativeDescriptor) (*pb.RequestAuthorizationResult, error)
+	authorize func(*pb.RequestAuthorization, *pb.AthenaNativeDescriptor) (*pb.RequestAuthorizationResult, error)
 }
 
 func (c requestClient) AuthorizeRequest(_ context.Context, request *pb.RequestAuthorization) (*pb.RequestAuthorizationResult, error) {
@@ -31,13 +30,13 @@ func (c requestClient) AuthorizeRequest(_ context.Context, request *pb.RequestAu
 	return c.authorize(request, descriptor)
 }
 
-func nativePermission(t *testing.T, descriptor *enginepb.AthenaNativeDescriptor, principal string) *pb.RequestAuthorizationResult {
+func nativePermission(t *testing.T, descriptor *pb.AthenaNativeDescriptor, principal string) *pb.RequestAuthorizationResult {
 	t.Helper()
-	action := enginepb.AthenaNativeInstruction_ATHENA_NATIVE_INSTRUCTION_FORWARD_REQUEST
-	if descriptor.Phase == enginepb.NativeAuthorizationPhase_NATIVE_AUTHORIZATION_PHASE_RESPONSE {
-		action = enginepb.AthenaNativeInstruction_ATHENA_NATIVE_INSTRUCTION_RELEASE_METADATA
+	action := pb.AthenaNativeInstruction_ATHENA_NATIVE_INSTRUCTION_FORWARD_REQUEST
+	if descriptor.Phase == pb.NativeAuthorizationPhase_NATIVE_AUTHORIZATION_PHASE_RESPONSE {
+		action = pb.AthenaNativeInstruction_ATHENA_NATIVE_INSTRUCTION_RELEASE_METADATA
 	}
-	return &pb.RequestAuthorizationResult{Allowed: true, Principal: principal, Instructions: &pb.RequestAuthorizationResult_Athena{Athena: &enginepb.AthenaNativeInstructions{Action: action}}}
+	return &pb.RequestAuthorizationResult{Allowed: true, Principal: principal, Instructions: &pb.RequestAuthorizationResult_Athena{Athena: &pb.AthenaNativeInstructions{Action: action}}}
 }
 
 func nativeTestRequest(operation, body string) *http.Request {
@@ -61,12 +60,12 @@ func TestNativeServerDeniesWithoutUpstreamCalls(t *testing.T) {
 }
 
 func TestNativeServerRejectsBooleanOnlyAndWrongPhasePermission(t *testing.T) {
-	for _, action := range []enginepb.AthenaNativeInstruction{enginepb.AthenaNativeInstruction_ATHENA_NATIVE_INSTRUCTION_UNSPECIFIED, enginepb.AthenaNativeInstruction_ATHENA_NATIVE_INSTRUCTION_RELEASE_METADATA} {
+	for _, action := range []pb.AthenaNativeInstruction{pb.AthenaNativeInstruction_ATHENA_NATIVE_INSTRUCTION_UNSPECIFIED, pb.AthenaNativeInstruction_ATHENA_NATIVE_INSTRUCTION_RELEASE_METADATA} {
 		target := testTarget(t, func(w http.ResponseWriter, request *http.Request) { t.Fatal("invalid instruction reached AWS") })
-		client := requestClient{authorize: func(_ *pb.RequestAuthorization, _ *enginepb.AthenaNativeDescriptor) (*pb.RequestAuthorizationResult, error) {
+		client := requestClient{authorize: func(_ *pb.RequestAuthorization, _ *pb.AthenaNativeDescriptor) (*pb.RequestAuthorizationResult, error) {
 			result := &pb.RequestAuthorizationResult{Allowed: true, Principal: "alice"}
-			if action != enginepb.AthenaNativeInstruction_ATHENA_NATIVE_INSTRUCTION_UNSPECIFIED {
-				result.Instructions = &pb.RequestAuthorizationResult_Athena{Athena: &enginepb.AthenaNativeInstructions{Action: action}}
+			if action != pb.AthenaNativeInstruction_ATHENA_NATIVE_INSTRUCTION_UNSPECIFIED {
+				result.Instructions = &pb.RequestAuthorizationResult_Athena{Athena: &pb.AthenaNativeInstructions{Action: action}}
 			}
 			return result, nil
 		}}
@@ -89,7 +88,7 @@ func TestNativeServerChecksEachRequestAndPreservesNativeErrors(t *testing.T) {
 		w.WriteHeader(http.StatusBadRequest)
 		_, _ = io.WriteString(w, native)
 	})
-	client := requestClient{authorize: func(request *pb.RequestAuthorization, descriptor *enginepb.AthenaNativeDescriptor) (*pb.RequestAuthorizationResult, error) {
+	client := requestClient{authorize: func(request *pb.RequestAuthorization, descriptor *pb.AthenaNativeDescriptor) (*pb.RequestAuthorizationResult, error) {
 		authorizations++
 		if request.Token != "test-login" || request.ClientAddr != "192.0.2.25" || descriptor.Operation != "GetWorkGroup" {
 			return &pb.RequestAuthorizationResult{}, nil

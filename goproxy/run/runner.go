@@ -9,9 +9,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	enginepb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
+	pb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
 	"github.com/ridi-oss/proxy-monster/goproxy/engine"
-	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
 	"github.com/ridi-oss/proxy-monster/goproxy/spi"
 )
 
@@ -118,7 +117,7 @@ func (r *Runner) Run(open spi.RunOpen, draining <-chan struct{}) {
 	// control-plane sends during the open, or a drain, aborts it instead of finishing a target-DB handshake for
 	// a run nobody is waiting for.
 	messages = receiveRunMessages(ctx, stream)
-	var namespace *enginepb.Namespace
+	var namespace *pb.Namespace
 	sess, namespace = r.openTargetDb(ctx, stream, messages, draining, open, guard)
 	if sess == nil {
 		// The open failed (RunError already sent) or was aborted by an early RunClose / drain. openTargetDb owns
@@ -211,13 +210,13 @@ func (r *Runner) Run(open spi.RunOpen, draining <-chan struct{}) {
 // the open is reaped in the background (see abort). A close or drain that lands just as the open completes
 // still fails the open (the post-completion re-check) so a live session is never installed on an abandoned
 // run or a departing proxy — the editor re-homes to the replacement rather than onto a stream about to die.
-func (r *Runner) openTargetDb(ctx context.Context, stream runStream, messages <-chan *pb.ControlRunMsg, draining <-chan struct{}, open spi.RunOpen, guard engine.ExecGuard) (spi.TargetDbSession, *enginepb.Namespace) {
+func (r *Runner) openTargetDb(ctx context.Context, stream runStream, messages <-chan *pb.ControlRunMsg, draining <-chan struct{}, open spi.RunOpen, guard engine.ExecGuard) (spi.TargetDbSession, *pb.Namespace) {
 	openCtx, cancelOpen := context.WithCancel(ctx)
 	defer cancelOpen()
 
 	type openResult struct {
 		sess      spi.TargetDbSession
-		namespace *enginepb.Namespace
+		namespace *pb.Namespace
 		err       error
 		errWhat   string
 	}
@@ -240,7 +239,7 @@ func (r *Runner) openTargetDb(ctx context.Context, stream runStream, messages <-
 	// The cancel unwinds the target DB dial/auth/catalog reads at once; a catalog push RPC to the control-plane
 	// is not cancellable here and runs to its own deadline, so the reap runs off the hot path rather than
 	// making the drain/close wait out that deadline (and the follow-on connection-release RPC).
-	abort := func() (spi.TargetDbSession, *enginepb.Namespace) {
+	abort := func() (spi.TargetDbSession, *pb.Namespace) {
 		cancelOpen()
 		go func() {
 			res := <-done
@@ -391,7 +390,7 @@ func (r *Runner) handleQuery(sess spi.TargetDbSession, stream runStream, query *
 }
 
 // sessionNamespace returns nil when the read fails or outlasts guard. Authorization never uses it.
-func sessionNamespace(sess spi.TargetDbSession, guard engine.ExecGuard) *enginepb.Namespace {
+func sessionNamespace(sess spi.TargetDbSession, guard engine.ExecGuard) *pb.Namespace {
 	var catalog string
 	var searchPath []string
 	read := func() (err error) {
@@ -408,7 +407,7 @@ func sessionNamespace(sess spi.TargetDbSession, guard engine.ExecGuard) *enginep
 		slog.Warn("run session namespace probe failed", "error", err)
 		return nil
 	}
-	return &enginepb.Namespace{Catalog: catalog, SearchPath: searchPath}
+	return &pb.Namespace{Catalog: catalog, SearchPath: searchPath}
 }
 
 func sendDecision(stream runStream, decision *engine.Decision) bool {

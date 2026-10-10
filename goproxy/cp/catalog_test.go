@@ -3,8 +3,8 @@ package cp
 import (
 	"testing"
 
+	pb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
 	"github.com/ridi-oss/proxy-monster/goproxy/engine"
-	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
 )
 
 func TestDecideCarriesCatalogs(t *testing.T) {

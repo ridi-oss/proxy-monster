@@ -3,9 +3,8 @@ package run
 import (
 	"testing"
 
-	enginepb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
+	pb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
 	"github.com/ridi-oss/proxy-monster/goproxy/engine"
-	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
 )
 
 type captureStream struct{ sent []*pb.ProxyRunMsg }
@@ -18,8 +17,8 @@ func (c *captureStream) CloseSend() error                 { return nil }
 // leg. sendDecision must forward engine.Decision.ResultFingerprint onto RunDecision unchanged, or a stored
 // result would carry no fingerprint and fail closed at view. Guards the forward at runner.go.
 func TestSendDecisionForwardsResultFingerprint(t *testing.T) {
-	fp := []*enginepb.RequireResultReadGrant{
-		{Resource: &enginepb.RequireResultReadGrant_Function{Function: &enginepb.FunctionResource{Name: "now"}}},
+	fp := []*pb.RequireResultReadGrant{
+		{Resource: &pb.RequireResultReadGrant_Function{Function: &pb.FunctionResource{Name: "now"}}},
 	}
 	s := &captureStream{}
 	if !sendDecision(s, &engine.Decision{Action: "ALLOW", ResultFingerprint: fp}) {

@@ -14,14 +14,7 @@ import (
 	"strconv"
 	"time"
 
-	// The shared proxymonster.v1.Engine enum (engine.proto) is generated once, into analyzer/probe/pb —
-	// goproxy links analyzer/probe into this same binary in-process (introspect.go, db.go), and two
-	// independently-generated copies of the same .proto file panic the protobuf runtime's global file
-	// registry at init. controlplane.proto's own generated code (goproxy/internal/pb) already resolves
-	// its Engine field to this same package (see goproxy/buf.gen.yaml's Mengine.proto= mapping); this
-	// import is the same resolution for this file's hand-written Dialect.Proto().
-	enginepb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
-	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
+	pb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -90,16 +83,16 @@ func (d Dialect) Valid() bool { return d != invalidDialect }
 // Proto maps the dialect to its protobuf Engine for the registration RPC, fail-closed: an unrecognized
 // dialect maps to ENGINE_UNSPECIFIED so the control plane rejects it rather than defaulting to a real
 // engine.
-func (d Dialect) Proto() enginepb.Engine {
+func (d Dialect) Proto() pb.Engine {
 	switch d {
 	case MySQL:
-		return enginepb.Engine_MYSQL
+		return pb.Engine_MYSQL
 	case Postgres:
-		return enginepb.Engine_POSTGRES
+		return pb.Engine_POSTGRES
 	case Athena:
-		return enginepb.Engine_ATHENA
+		return pb.Engine_ATHENA
 	default:
-		return enginepb.Engine_ENGINE_UNSPECIFIED
+		return pb.Engine_ENGINE_UNSPECIFIED
 	}
 }
 
@@ -218,14 +211,14 @@ type Decision struct {
 	// ResultFingerprint is the decision's authorization requirements (the analyzer's result-read grants). The
 	// proxy does not interpret them; it only echoes them back on a RunDecision so an execute-under-R run can
 	// freeze them with the stored result (the control plane's result-view drift gate).
-	ResultFingerprint []*enginepb.RequireResultReadGrant
+	ResultFingerprint []*pb.RequireResultReadGrant
 	// MaxRows / MaxBytes are the result caps the control plane resolved from the statement's Cedar permits
 	// (Verdict.max_rows / max_bytes); 0 = uncapped. See docs/result-caps.md.
 	MaxRows  int64
 	MaxBytes int64
 	// Submission is the engine-specific companion to RewrittenSQL (analyzer.proto Submission); the dialect
 	// reads its own arm. nil = the text is the whole submission.
-	Submission *enginepb.Submission
+	Submission *pb.Submission
 }
 
 // PageRows is the row count a paging caller should ask the target DB for: its own page size narrowed by the
@@ -381,7 +374,7 @@ type Db interface {
 	// MySQL, an identity function for Postgres. The refetch path calls this so the schema-fragment pool
 	// pushed to the control plane matches the same canonical spelling introspect's bulk catalog push
 	// uses — no caller decides whether/how to fold.
-	NormalizeColumns(lowerCaseTableNames int, columns []*enginepb.Column) []*enginepb.Column
+	NormalizeColumns(lowerCaseTableNames int, columns []*pb.Column) []*pb.Column
 	// FoldFunctionName folds an introspected function name the way the analyzer resolves an
 	// unquoted call for this dialect.
 	FoldFunctionName(name string) string
@@ -396,9 +389,9 @@ type Db interface {
 // the only configuration where canonical spelling can legitimately diverge in case from live storage
 // (case-insensitive lookup, case-preserving storage), so it's the only one where this tolerates a case
 // difference — Postgres and MySQL modes 0/1 require an exact match, same as before this normalized the
-// comparison at all. The column is the proto Column (enginepb.Column) used AS the data class.
-func FragmentColumnsFromRows(db Db, lowerCaseTableNames int, schema string, rows [][]*string) ([]*enginepb.Column, error) {
-	raw := make([]*enginepb.Column, 0, len(rows))
+// comparison at all. The column is the proto Column (pb.Column) used AS the data class.
+func FragmentColumnsFromRows(db Db, lowerCaseTableNames int, schema string, rows [][]*string) ([]*pb.Column, error) {
+	raw := make([]*pb.Column, 0, len(rows))
 	for i, row := range rows {
 		if len(row) != 7 {
 			return nil, fmt.Errorf("fragment row %d has %d columns, want 7", i, len(row))
@@ -421,7 +414,7 @@ func FragmentColumnsFromRows(db Db, lowerCaseTableNames int, schema string, rows
 		default:
 			return nil, fmt.Errorf("fragment row %d nullable %q is not YES or NO", i, *row[5])
 		}
-		raw = append(raw, &enginepb.Column{
+		raw = append(raw, &pb.Column{
 			Catalog:  *row[6],
 			Schema:   *row[0],
 			Table:    *row[1],
@@ -432,7 +425,7 @@ func FragmentColumnsFromRows(db Db, lowerCaseTableNames int, schema string, rows
 		})
 	}
 
-	canonicalSchema := db.NormalizeColumns(lowerCaseTableNames, []*enginepb.Column{{Schema: schema, Table: "_", Column: "_"}})[0].GetSchema()
+	canonicalSchema := db.NormalizeColumns(lowerCaseTableNames, []*pb.Column{{Schema: schema, Table: "_", Column: "_"}})[0].GetSchema()
 	columns := db.NormalizeColumns(lowerCaseTableNames, raw)
 	for i, column := range columns {
 		if column.GetSchema() != canonicalSchema {
@@ -520,14 +513,14 @@ func (e *QueryEngine) SetNamespace(namespace []string) {
 type SessionObservation struct {
 	CurrentCatalog string
 	Namespace      []string
-	*enginepb.SessionObservation
+	*pb.SessionObservation
 }
 
 // Clone copies the observation so a cached snapshot cannot be mutated through shared state.
 func (o SessionObservation) Clone() SessionObservation {
 	o.Namespace = append([]string{}, o.Namespace...)
 	if o.SessionObservation != nil {
-		o.SessionObservation = proto.Clone(o.SessionObservation).(*enginepb.SessionObservation)
+		o.SessionObservation = proto.Clone(o.SessionObservation).(*pb.SessionObservation)
 	}
 	return o
 }

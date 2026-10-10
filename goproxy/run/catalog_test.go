@@ -3,7 +3,7 @@ package run_test
 import (
 	"testing"
 
-	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
+	pb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
 )
 
 func TestRunnerCatalogIdentity(t *testing.T) {

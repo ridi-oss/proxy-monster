@@ -9,11 +9,10 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	enginepb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
+	pb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
 	"github.com/ridi-oss/proxy-monster/goproxy/cp"
 	"github.com/ridi-oss/proxy-monster/goproxy/engine"
 	"github.com/ridi-oss/proxy-monster/goproxy/internal/dbtest"
-	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
 	"github.com/ridi-oss/proxy-monster/goproxy/spi"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -129,7 +128,7 @@ func TestPostgresCatalogThroughDatabaseAlias(t *testing.T) {
 	t.Cleanup(func() { _ = client.Close() })
 
 	t.Run("table detail", func(t *testing.T) {
-		detail, err := target.ReadTableDetail(ctx, &enginepb.ObjectRef{Catalog: measured, Schema: schema, Table: "child"})
+		detail, err := target.ReadTableDetail(ctx, &pb.ObjectRef{Catalog: measured, Schema: schema, Table: "child"})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -140,7 +139,7 @@ func TestPostgresCatalogThroughDatabaseAlias(t *testing.T) {
 		if relation.SourceCatalog != measured || relation.TargetCatalog != measured {
 			t.Fatalf("relation = %+v", relation)
 		}
-		if _, err := target.ReadTableDetail(ctx, &enginepb.ObjectRef{Catalog: "advisory", Schema: schema, Table: "child"}); err == nil {
+		if _, err := target.ReadTableDetail(ctx, &pb.ObjectRef{Catalog: "advisory", Schema: schema, Table: "child"}); err == nil {
 			t.Fatal("advisory alias was accepted as a measured table catalog")
 		}
 	})

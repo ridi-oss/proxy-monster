@@ -3,7 +3,7 @@ package engine
 import (
 	"testing"
 
-	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
+	pb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
 )
 
 func TestQueryEngineCachesCatalogWithNamespace(t *testing.T) {

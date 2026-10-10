@@ -10,9 +10,8 @@ import (
 	"strings"
 	"time"
 
-	enginepb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
+	pb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
 	"github.com/ridi-oss/proxy-monster/goproxy/engine"
-	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
 )
 
 // TargetDb is the per-datasource target-DB connection details (the service-account broker target).
@@ -224,7 +223,7 @@ type Db interface {
 	// properties the engine allows. A wire dialect publishes only the advertised address.
 	ConnectionInfo() *pb.ConnectionInfo
 	Introspect(ctx context.Context) (*pb.CatalogRequest, error)
-	ReadTableDetail(ctx context.Context, table *enginepb.ObjectRef) (*TableDetail, error)
+	ReadTableDetail(ctx context.Context, table *pb.ObjectRef) (*TableDetail, error)
 	NewWireServer(listen Listen, client EnforcementClient, tlsProvider func() (*tls.Config, error)) WireServer
 	// NewRunSession dials and authenticates the target DB. ctx is the target-DB open context: cancelling it aborts
 	// an in-flight dial/auth so a run the control-plane already closed does not finish a target-DB handshake.

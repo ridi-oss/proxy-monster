@@ -3,10 +3,9 @@ package introspect
 import (
 	"testing"
 
-	analyzerpb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
+	pb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
 	"github.com/ridi-oss/proxy-monster/goproxy/db"
 	"github.com/ridi-oss/proxy-monster/goproxy/internal/dbtest"
-	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
 	"github.com/ridi-oss/proxy-monster/goproxy/spi"
 	"google.golang.org/protobuf/proto"
 )
@@ -40,7 +39,7 @@ func TestRoutinesObservation(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		want := []*analyzerpb.SchemaFunctions{
+		want := []*pb.SchemaFunctions{
 			{Schema: "app", Names: []string{"lookup"}},
 			{Schema: "mysql", Names: []string{"plugin_fn"}},
 		}

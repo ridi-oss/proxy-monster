@@ -8,11 +8,10 @@ import (
 	"testing"
 	"time"
 
-	analyzerpb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
+	pb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
 	"github.com/ridi-oss/proxy-monster/goproxy/db"
 	"github.com/ridi-oss/proxy-monster/goproxy/engine"
 	"github.com/ridi-oss/proxy-monster/goproxy/internal/dbtest"
-	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
 	"github.com/ridi-oss/proxy-monster/goproxy/spi"
 )
 
@@ -127,7 +126,7 @@ func TestRunPinsOneConnectionOnDeadTarget(t *testing.T) {
 }
 
 // hasColumn reports whether cols contains a column matching schema/table/column.
-func hasColumn(cols []*analyzerpb.Column, schema, table, column string) bool {
+func hasColumn(cols []*pb.Column, schema, table, column string) bool {
 	for _, c := range cols {
 		if c.GetSchema() == schema && c.GetTable() == table && c.GetColumn() == column {
 			return true
@@ -138,7 +137,7 @@ func hasColumn(cols []*analyzerpb.Column, schema, table, column string) bool {
 
 // hasSchema reports whether any column belongs to schema — the signal that a schema was captured (i.e.
 // NOT excluded).
-func hasSchema(cols []*analyzerpb.Column, schema string) bool {
+func hasSchema(cols []*pb.Column, schema string) bool {
 	for _, c := range cols {
 		if c.GetSchema() == schema {
 			return true
@@ -148,7 +147,7 @@ func hasSchema(cols []*analyzerpb.Column, schema string) bool {
 }
 
 // schemaFunctions finds the name set for schema in an function-catalog group, or nil if the schema is absent.
-func schemaFunctions(groups []*analyzerpb.SchemaFunctions, schema string) []string {
+func schemaFunctions(groups []*pb.SchemaFunctions, schema string) []string {
 	for _, g := range groups {
 		if g.GetSchema() == schema {
 			return g.GetNames()

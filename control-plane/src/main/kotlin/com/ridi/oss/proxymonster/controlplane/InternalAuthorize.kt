@@ -63,6 +63,12 @@ data class InternalValidateRequest(val cedarSrc: String)
 data class InternalPrincipalRequest(val principal: String)
 
 @Serializable
+data class InternalNameRequest(val name: String)
+
+@Serializable
+data class InternalNamesResult(val names: List<String>)
+
+@Serializable
 data class InternalMayRequestRequest(val principal: String, val datasourceId: Long, val requesterIp: String? = null)
 
 @Serializable
@@ -91,6 +97,8 @@ fun Route.internalAuthorizeRoute(
     policiesChanged: () -> Unit = {},
     mayRequest: (principal: String, requesterIp: String?, datasourceId: Long) -> Boolean = { _, _, _ -> false },
     sessionsEnded: (principal: String) -> Unit = {},
+    proxiesAttached: () -> Set<String> = { emptySet() },
+    datasourceDeleted: (name: String) -> Unit = {},
 ) {
     if (token.isNullOrEmpty()) return
     post("/internal/authorize") {
@@ -164,6 +172,22 @@ fun Route.internalAuthorizeRoute(
             return@post call.respond(HttpStatusCode.NotFound)
         }
         sessionsEnded(call.receive<InternalPrincipalRequest>().principal)
+        call.respond(HttpStatusCode.NoContent)
+    }
+    // The datasources with a proxy on an open Events stream, which this process holds.
+    post("/internal/proxies-attached") {
+        if (!constantTimeEquals(call.request.headers[INTERNAL_TOKEN_HEADER], token)) {
+            return@post call.respond(HttpStatusCode.NotFound)
+        }
+        call.respond(InternalNamesResult(proxiesAttached().sorted()))
+    }
+    // cp-go committed a datasource delete: drop the in-memory catalog keyed by its name, which a new
+    // datasource may reuse.
+    post("/internal/datasource-deleted") {
+        if (!constantTimeEquals(call.request.headers[INTERNAL_TOKEN_HEADER], token)) {
+            return@post call.respond(HttpStatusCode.NotFound)
+        }
+        datasourceDeleted(call.receive<InternalNameRequest>().name)
         call.respond(HttpStatusCode.NoContent)
     }
 }

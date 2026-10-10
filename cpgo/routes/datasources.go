@@ -48,7 +48,7 @@ func (d datasource) withoutConnectionMaterial() datasource {
 }
 
 func toDatasource(r db.DatasourcesRow) (datasource, error) {
-	d := datasource{ID: r.ID, Name: r.Name, Engine: r.Engine, Host: r.Host, Port: int(r.Port), DBName: r.DbName,
+	d := datasource{ID: r.ID, Name: r.Name, Engine: r.Engine, Host: r.Host, Port: r.Port, DBName: r.DbName,
 		EngineVersion: r.EngineVersion, AdvertiseAddr: r.AdvertiseAddr, AdvertiseCertChain: r.AdvertiseCertChain,
 		AdvertiseWireTLS: r.AdvertiseWireTls, CurrentCatalog: r.CurrentCatalogName, Description: r.Description}
 	if r.MysqlLowerCaseTableNames != nil {
@@ -95,8 +95,9 @@ func nonNil(s []string) []string {
 }
 
 type datasources struct {
-	pool  *pgxpool.Pool
-	authz api.Authorizer
+	pool   *pgxpool.Pool
+	authz  api.Authorizer
+	kotlin api.Kotlin
 }
 
 // list is every live datasource; a row the caller may not connect to loses its connection material, and

@@ -69,3 +69,5 @@ sql:
             go_type: { type: string, slice: true }
           - column: datasource.default_schemas
             go_type: { type: string, slice: true }
+          - column: datasource.port
+            go_type: int

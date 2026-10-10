@@ -1,0 +1,64 @@
+version: "2"
+sql:
+  - engine: postgresql
+    # Kotlin's Flyway migrations, in version order (`mise run sqlc-check` keeps this list complete).
+    schema:
+      - ../control-plane/src/main/resources/db/migration/V1__identity.sql
+      - ../control-plane/src/main/resources/db/migration/V2__catalog.sql
+      - ../control-plane/src/main/resources/db/migration/V3__policy.sql
+      - ../control-plane/src/main/resources/db/migration/V4__audit.sql
+      - ../control-plane/src/main/resources/db/migration/V5__tasks.sql
+      - ../control-plane/src/main/resources/db/migration/V6__sessions.sql
+      - ../control-plane/src/main/resources/db/migration/V7__tokens.sql
+      - ../control-plane/src/main/resources/db/migration/V8__seed.sql
+      - ../control-plane/src/main/resources/db/migration/V9__datasource_cert_chain.sql
+      - ../control-plane/src/main/resources/db/migration/V10__debug_requester_ip.sql
+      - ../control-plane/src/main/resources/db/migration/V11__result_deny_context.sql
+      - ../control-plane/src/main/resources/db/migration/V12__format_policy_source.sql
+      - ../control-plane/src/main/resources/db/migration/V13__datasource_soft_delete.sql
+      - ../control-plane/src/main/resources/db/migration/V14__role_maskfn_soft_delete.sql
+      - ../control-plane/src/main/resources/db/migration/V15__group_soft_delete.sql
+      - ../control-plane/src/main/resources/db/migration/V16__policy_soft_delete.sql
+      - ../control-plane/src/main/resources/db/migration/V17__notifications.sql
+      - ../control-plane/src/main/resources/db/migration/V18__statement_category_presets.sql
+      - ../control-plane/src/main/resources/db/migration/V19__rename_exception_gates.sql
+      - ../control-plane/src/main/resources/db/migration/V20__statement_predicate_literals.sql
+      - ../control-plane/src/main/resources/db/migration/V21__explain_unmasked_preset.sql
+      - ../control-plane/src/main/resources/db/migration/V22__notification_kind.sql
+      - ../control-plane/src/main/resources/db/migration/V23__result_error_detail.sql
+      - ../control-plane/src/main/resources/db/migration/V24__result_error_detail_comment.sql
+      - ../control-plane/src/main/resources/db/migration/V25__query_result_batch.sql
+      - ../control-plane/src/main/resources/db/migration/V26__catalog_snapshot.sql
+      - ../control-plane/src/main/resources/db/migration/V27__result_cap_defaults.sql
+      - ../control-plane/src/main/resources/db/migration/V28__completion_volume_index.sql
+      - ../control-plane/src/main/resources/db/migration/V29__result_rate_reset.sql
+      - ../control-plane/src/main/resources/db/migration/V30__catalog_identity.sql
+      - ../control-plane/src/main/resources/db/migration/V31__completion_volume_by_datasource.sql
+      - ../control-plane/src/main/resources/db/migration/V32__datasource_connection_info.sql
+      - ../control-plane/src/main/resources/db/migration/V33__datasource_description.sql
+      - ../control-plane/src/main/resources/db/migration/V34__pmon_login_scopes.sql
+      - ../control-plane/src/main/resources/db/migration/V35__session_linked_tokens.sql
+    queries: store/queries
+    gen:
+      go:
+        package: db
+        out: store/db
+        sql_package: pgx/v5
+        emit_pointers_for_null_types: true
+        omit_unused_structs: true
+        overrides:
+          - db_type: timestamptz
+            go_type: time.Time
+          - db_type: timestamptz
+            nullable: true
+            go_type: { type: time.Time, pointer: true }
+          - column: audit_event.roles
+            go_type: { type: string, slice: true }
+          - column: audit_event.masked_columns
+            go_type: { type: string, slice: true }
+          - column: audit_event.pii_touched
+            go_type: { type: string, slice: true }
+          - column: audit_event.effective_namespace
+            go_type: { type: string, slice: true }
+          - column: audit_event.context_tags
+            go_type: { type: string, slice: true }

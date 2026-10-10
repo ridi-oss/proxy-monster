@@ -17,6 +17,8 @@ go = "1.26"
 buf = "1.72.0"
 protoc-gen-go = "1.35.2"
 protoc-gen-go-grpc = "1.5.1"
+# cp-go's typed store queries (cpgo/sqlc.yaml → cpgo/store/db).
+sqlc = "1.31.1"
 # web/ (Next.js). Pinned rather than "whatever's on PATH" so `pnpm install`'s lockfile resolution
 # and `next build` behavior stay reproducible across machines. Match web/Dockerfile's base image +
 # corepack pin when bumping either.
@@ -189,6 +191,32 @@ set -euo pipefail
 (cd goproxy && buf generate ../proto/src/main/proto --path ../proto/src/main/proto/controlplane.proto)
 '''
 
+[tasks.sqlc-generate]
+description = "Regenerate cp-go's store queries, listing every migration as sqlc's schema in version order"
+shell = "bash -c"
+run = '''
+set -euo pipefail
+ls control-plane/src/main/resources/db/migration | sort -t_ -k1.2 -n | sed 's#^#      - ../control-plane/src/main/resources/db/migration/#' > cpgo/sqlc.schema.tmp
+awk 'NR == FNR {list = list $0 "\n"; next} /^    schema:$/ {print; printf "%s", list; skip = 1; next} skip && /^      - / {next} {skip = 0; print}' \
+  cpgo/sqlc.schema.tmp cpgo/sqlc.yaml > cpgo/sqlc.yaml.new
+mv cpgo/sqlc.yaml.new cpgo/sqlc.yaml
+rm cpgo/sqlc.schema.tmp
+(cd cpgo && sqlc generate)
+'''
+
+[tasks.sqlc-check]
+description = "Verify cp-go's sqlc schema lists every migration and the generated store code is current"
+shell = "bash -c"
+run = '''
+set -euo pipefail
+want=$(ls control-plane/src/main/resources/db/migration | sort -t_ -k1.2 -n | sed 's#^#      - ../control-plane/src/main/resources/db/migration/#')
+if [ "$want" != "$(grep '^      - ../control-plane/' cpgo/sqlc.yaml)" ]; then
+  echo "cpgo/sqlc.yaml does not list the current migrations; run: mise run sqlc-generate" >&2
+  exit 1
+fi
+(cd cpgo && sqlc diff) || { echo "cp-go store code is stale; run: mise run sqlc-generate" >&2; exit 1; }
+'''
+
 [tasks.proto-check]
 description = "Verify the checked-in Go protobuf bindings are current"
 shell = "bash -c"
@@ -241,6 +269,7 @@ run = '''
 set -euo pipefail
 mise run lint
 mise run proto-check
+mise run sqlc-check
 # The JVM tests are DB-backed (Testcontainers) and fail rather than skip, so Docker must be running.
 # --no-daemon: a shared Gradle daemon is machine-wide state, so a build here can recycle a JVM another
 # process depends on. Without it, this gate is not self-contained.

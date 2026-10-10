@@ -5,13 +5,13 @@ import (
 	"errors"
 	"net/http"
 	"strconv"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/ridi-oss/proxy-monster/cpgo/api"
 	"github.com/ridi-oss/proxy-monster/cpgo/bridge"
+	"github.com/ridi-oss/proxy-monster/cpgo/store/db"
 )
 
 // Authorizer is the Cedar decision a route asks for.
@@ -45,13 +45,6 @@ type auditEvent struct {
 	DecisionID         *int64   `json:"decisionId,omitempty"`
 }
 
-const auditSelect = `
-	SELECT id, ts, principal, roles, datasource, client_addr, statement, decision,
-	       failed_stage, masked_columns, pii_touched, latency_ms, detail, effective_namespace,
-	       channel, context_tags, action, resource, outcome, kind, rows_returned, bytes_returned,
-	       decision_id
-	FROM audit_event`
-
 type audit struct {
 	pool  *pgxpool.Pool
 	authz Authorizer
@@ -70,23 +63,20 @@ func (a audit) list(w http.ResponseWriter, r *http.Request) {
 		fail(w, err)
 		return
 	}
-	var rows pgx.Rows
+	q := db.New(a.pool)
+	var rows []db.AuditEvent
 	if all {
-		rows, err = a.pool.Query(ctx, auditSelect+` ORDER BY ts DESC LIMIT $1`, limit)
+		rows, err = q.AuditLog(ctx, int32(limit))
 	} else {
-		rows, err = a.pool.Query(ctx, auditSelect+` WHERE principal = $1 ORDER BY ts DESC LIMIT $2`, principal, limit)
+		rows, err = q.AuditLogOf(ctx, db.AuditLogOfParams{Principal: principal, Limit: int32(limit)})
 	}
 	if err != nil {
 		fail(w, err)
 		return
 	}
-	out, err := pgx.CollectRows(rows, scanAuditEvent)
-	if err != nil {
-		fail(w, err)
-		return
-	}
-	if out == nil {
-		out = []auditEvent{}
+	out := make([]auditEvent, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, toAuditEvent(row))
 	}
 	api.WriteJSON(w, http.StatusOK, out)
 }
@@ -99,8 +89,8 @@ func (a audit) get(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ctx := r.Context()
-	rows, _ := a.pool.Query(ctx, auditSelect+` WHERE id = $1`, id)
-	e, err := pgx.CollectExactlyOneRow(rows, scanAuditEvent)
+	row, err := db.New(a.pool).AuditEvent(ctx, id)
+	e := toAuditEvent(row)
 	if errors.Is(err, pgx.ErrNoRows) {
 		api.WriteError(w, http.StatusNotFound, "common.not_found", map[string]string{"resource": "audit record"})
 		return
@@ -121,20 +111,19 @@ func (a audit) get(w http.ResponseWriter, r *http.Request) {
 	api.WriteJSON(w, http.StatusOK, e)
 }
 
-func scanAuditEvent(row pgx.CollectableRow) (auditEvent, error) {
-	var (
-		e  auditEvent
-		ts time.Time
-	)
-	err := row.Scan(&e.ID, &ts, &e.Principal, &e.Roles, &e.Datasource, &e.ClientAddr, &e.Statement, &e.Decision,
-		&e.FailedStage, &e.MaskedColumns, &e.PIITouched, &e.LatencyMS, &e.Detail, &e.EffectiveNamespace,
-		&e.Channel, &e.ContextTags, &e.AuthzAction, &e.AuthzResource, &e.Outcome, &e.Kind,
-		&e.RowsReturned, &e.BytesReturned, &e.DecisionID)
-	e.TS = javaInstant(ts)
+func toAuditEvent(r db.AuditEvent) auditEvent {
+	e := auditEvent{
+		ID: r.ID, TS: javaInstant(r.Ts), Principal: r.Principal, Roles: r.Roles, Datasource: r.Datasource,
+		ClientAddr: r.ClientAddr, Statement: r.Statement, Decision: r.Decision, FailedStage: r.FailedStage,
+		EffectiveNamespace: r.EffectiveNamespace, MaskedColumns: r.MaskedColumns, PIITouched: r.PiiTouched,
+		LatencyMS: r.LatencyMs, Detail: r.Detail, Channel: r.Channel, ContextTags: r.ContextTags,
+		AuthzAction: r.Action, AuthzResource: r.Resource, Outcome: r.Outcome, Kind: r.Kind,
+		RowsReturned: r.RowsReturned, BytesReturned: r.BytesReturned, DecisionID: r.DecisionID,
+	}
 	for _, l := range []*[]string{&e.Roles, &e.MaskedColumns, &e.PIITouched, &e.EffectiveNamespace, &e.ContextTags} {
 		if *l == nil {
 			*l = []string{}
 		}
 	}
-	return e, err
+	return e
 }

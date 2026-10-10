@@ -2,6 +2,8 @@ package routes
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -42,6 +44,16 @@ func (f *fakeAuthz) Authorize(_ context.Context, principal, action string, resou
 		return true, "", nil
 	}
 	return false, "no permit for " + action, nil
+}
+
+func (f *fakeAuthz) MayConnect(_ context.Context, principal string, ids []int64, ip string) ([]bool, error) {
+	out := make([]bool, len(ids))
+	for i, id := range ids {
+		key := fmt.Sprintf("%s datasource.connect %d", principal, id)
+		f.asked = append(f.asked, key+" @"+ip)
+		out[i] = f.allow[key]
+	}
+	return out, nil
 }
 
 func (f *fakeAuthz) AuthorizeEach(ctx context.Context, principal, action string, resources []bridge.Resource, ip string) ([]bool, error) {
@@ -88,7 +100,7 @@ func (e *env) do(t *testing.T, method, path, body string, cookies []*http.Cookie
 
 func TestUnauthenticated(t *testing.T) {
 	e := setup(t)
-	for _, path := range []string{"/api/query-history", "/api/audit", "/api/audit/1", "/api/roles", "/api/role-assignments", "/api/mask-fns", "/api/policies", "/api/me/permissions", "/api/access-requests", "/api/access-grants", "/api/approvals"} {
+	for _, path := range []string{"/api/query-history", "/api/audit", "/api/audit/1", "/api/roles", "/api/role-assignments", "/api/mask-fns", "/api/policies", "/api/me/permissions", "/api/access-requests", "/api/access-grants", "/api/approvals", "/api/datasources"} {
 		status, body := e.do(t, http.MethodGet, path, "", nil)
 		if status != http.StatusUnauthorized || body != `{"code":"common.unauthenticated","params":{}}` {
 			t.Fatalf("%s: %d %s", path, status, body)
@@ -116,7 +128,7 @@ func TestUnportedRequestsAreForwarded(t *testing.T) {
 		{http.MethodGet, "/api//query-history"},
 		{http.MethodGet, "/api/query-history/"},
 		{http.MethodHead, "/api/query-history"},
-		{http.MethodGet, "/api/datasources"},
+		{http.MethodGet, "/api/datasources/live"},
 	} {
 		if status, _ := e.do(t, tc.method, tc.path, "", nil); status != http.StatusTeapot {
 			t.Fatalf("%s %s: status %d, want forwarded", tc.method, tc.path, status)
@@ -410,7 +422,7 @@ func TestAccessLists(t *testing.T) {
 	}
 	for _, q := range []struct {
 		principal, status string
-		id               *int64
+		id                *int64
 	}{{"alice@example.com", "PENDING", &mine}, {"bob@example.com", "APPROVED", &theirs}} {
 		if err := e.st.Pool.QueryRow(ctx, `INSERT INTO access_request (principal, role_id, requested_duration_sec, status)
 			VALUES ($1, $2, 3600, $3) RETURNING id`, q.principal, roleID, q.status).Scan(q.id); err != nil {
@@ -586,5 +598,130 @@ func TestAccessListFilters(t *testing.T) {
 		if _, body = e.do(t, http.MethodGet, "/api/access-grants?active="+notActive, "", alice); strings.Count(body, `"id"`) != 3 {
 			t.Fatalf("active=%s is not true: %s", notActive, body)
 		}
+	}
+}
+
+func TestDatasourceList(t *testing.T) {
+	e := setup(t)
+	ctx := context.Background()
+	var open, closed int64
+	if err := e.st.Pool.QueryRow(ctx, `INSERT INTO datasource (name, engine, host, port, db_name, tags, advertise_addr, connection_info, description)
+		VALUES ('acme', 'mysql', 'db', 3306, 'acme', '["pii"]', 'proxy:6033', '{"properties": {"tls": "on", "aa": "b", "z": "c"}, "endpoint": "proxy:6033"}', 'orders')
+		RETURNING id`).Scan(&open); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.st.Pool.QueryRow(ctx, `INSERT INTO datasource (name, engine, host, port, db_name, description,
+		advertise_addr, advertise_cert_chain, current_catalog_name, connection_info)
+		VALUES ('lake', 'athena', 'athena', 443, 'lake', 'secret lake', 'lake-proxy:443', 'BEGIN CERTIFICATE lake', 'AwsDataCatalog',
+		'{"endpoint": "lake-proxy:443", "properties": {}}') RETURNING id`).Scan(&closed); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.st.Pool.Exec(ctx, `INSERT INTO datasource (name, host, port, db_name, deleted_at) VALUES ('gone', 'h', 1, 'd', now())`); err != nil {
+		t.Fatal(err)
+	}
+	alice := e.st.WebSession(t, "alice@example.com", "k-a", "dev-a")
+	e.authz.allow = map[string]bool{fmt.Sprintf("alice@example.com datasource.connect %d", open): true}
+
+	status, body := e.do(t, http.MethodGet, "/api/datasources", "", alice)
+	want := fmt.Sprintf(`[{"id":%d,"name":"acme","engine":"mysql","host":"db","port":3306,"dbName":"acme","tags":["pii"],"defaultSchemas":[],`+
+		`"advertiseAddr":"proxy:6033","advertiseWireTls":false,"connectionInfo":{"endpoint":"proxy:6033","properties":{"z":"c","aa":"b","tls":"on"}},"description":"orders","defaultSchemaSettable":true},`+
+		`{"id":%d,"name":"lake","engine":"athena","host":"","port":0,"dbName":"","tags":[],"defaultSchemas":[],"advertiseWireTls":false,"description":"","defaultSchemaSettable":false}]`, open, closed)
+	if status != http.StatusOK || body != want {
+		t.Fatalf("list:\n got %s\nwant %s", body, want)
+	}
+	if _, body = e.do(t, http.MethodGet, "/api/datasources?connectable=TRUE", "", alice); strings.Count(body, `"id"`) != 1 || strings.Contains(body, "lake") {
+		t.Fatalf("connectable only: %s", body)
+	}
+
+	// A session wins over a bearer, and a wrong-device session falls through to the bearer, as in Kotlin.
+	carolSum := sha256.Sum256([]byte("carol-token"))
+	if _, err := e.st.Pool.Exec(ctx, `INSERT INTO proxy_token (token_hash, principal, kind, expires_at) VALUES ($1, 'carol@example.com', 'USER', now() + interval '1 hour')`,
+		hex.EncodeToString(carolSum[:])); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		cookies []*http.Cookie
+		want    string
+	}{
+		{alice, "alice@example.com"},
+		{[]*http.Cookie{alice[0], {Name: "pm_did", Value: "stolen"}}, "carol@example.com"},
+	} {
+		e.authz.asked = nil
+		req, _ := http.NewRequest(http.MethodGet, e.srv.URL+"/api/datasources", nil)
+		req.Header.Set("Authorization", "Bearer carol-token")
+		for _, c := range tc.cookies {
+			req.AddCookie(c)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = resp.Body.Close()
+		if resp.StatusCode != http.StatusOK || !strings.HasPrefix(e.authz.asked[0], tc.want+" ") {
+			t.Fatalf("want %s: %d asked %v", tc.want, resp.StatusCode, e.authz.asked)
+		}
+	}
+	if len(e.ended) != 1 {
+		t.Fatalf("the wrong-device session must still be ended: %v", e.ended)
+	}
+	alice = e.st.WebSession(t, "alice@example.com", "k-a2", "dev-a")
+
+	var token = "wire-token-for-bob"
+	sum := sha256.Sum256([]byte(token))
+	if _, err := e.st.Pool.Exec(ctx, `INSERT INTO proxy_token (token_hash, principal, kind, expires_at) VALUES ($1, 'bob@example.com', 'SESSION', now() + interval '1 hour')`,
+		hex.EncodeToString(sum[:])); err != nil {
+		t.Fatal(err)
+	}
+	e.authz.asked = nil
+	req, _ := http.NewRequest(http.MethodGet, e.srv.URL+"/api/datasources", nil)
+	req.Header.Set("Authorization", "bearer "+token)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusOK || len(e.authz.asked) != 2 || !strings.HasPrefix(e.authz.asked[0], "bob@example.com datasource.connect") ||
+		!strings.HasSuffix(e.authz.asked[0], " @127.0.0.1") {
+		t.Fatalf("pmon bearer: %d asked %v", resp.StatusCode, e.authz.asked)
+	}
+	for _, tc := range []struct{ token, kind, extra string }{
+		{"editor-token", "EDITOR", ""},
+		{"retired-token", "SESSION", ", retired_at = now()"},
+		{"revoked-token", "SESSION", ", revoked_at = now()"},
+		{"expired-token", "USER", ", expires_at = now() - interval '1 second'"},
+	} {
+		sum := sha256.Sum256([]byte(tc.token))
+		if _, err := e.st.Pool.Exec(ctx, `INSERT INTO proxy_token (token_hash, principal, kind, expires_at) VALUES ($1, 'carol@example.com', $2, now() + interval '1 hour')`,
+			hex.EncodeToString(sum[:]), tc.kind); err != nil {
+			t.Fatal(err)
+		}
+		if tc.extra != "" {
+			if _, err := e.st.Pool.Exec(ctx, `UPDATE proxy_token SET principal = principal`+tc.extra+` WHERE token_hash = $1`, hex.EncodeToString(sum[:])); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	for _, tok := range []string{"editor-token", "retired-token", "revoked-token", "expired-token", "pmk_not-a-real-token"} {
+		r, _ := http.NewRequest(http.MethodGet, e.srv.URL+"/api/datasources", nil)
+		r.Header.Set("Authorization", "Bearer "+tok)
+		resp, err := http.DefaultClient.Do(r)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = resp.Body.Close()
+		if resp.StatusCode != http.StatusUnauthorized {
+			t.Fatalf("bearer %s: %d, want 401", tok, resp.StatusCode)
+		}
+	}
+	if _, err := e.st.Pool.Exec(ctx, `INSERT INTO app_user (principal, active) VALUES ('bob@example.com', false)`); err != nil {
+		t.Fatal(err)
+	}
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("a deactivated principal's wire token: %d", resp.StatusCode)
 	}
 }

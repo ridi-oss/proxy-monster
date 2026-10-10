@@ -64,3 +64,7 @@ sql:
             go_type: { type: string, slice: true }
           - column: access_request.execute_as
             go_type: { type: string, slice: true }
+          - column: datasource.tags
+            go_type: { type: string, slice: true }
+          - column: datasource.default_schemas
+            go_type: { type: string, slice: true }

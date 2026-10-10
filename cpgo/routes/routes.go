@@ -39,6 +39,8 @@ func Register(mux *http.ServeMux, pool *pgxpool.Pool, gate api.Gate) {
 	mux.HandleFunc("GET /api/access-requests", gate.RequireAPI(ac.requests))
 	mux.HandleFunc("GET /api/access-grants", gate.RequireAPI(ac.grants))
 	mux.HandleFunc("GET /api/approvals", gate.RequireAPI(ac.ownApprovals))
+	ds := datasources{pool: pool, authz: gate.Authz}
+	mux.HandleFunc("GET /api/datasources", gate.RequireAPIOrBearer(ds.list))
 }
 
 type handlers struct{ pool *pgxpool.Pool }

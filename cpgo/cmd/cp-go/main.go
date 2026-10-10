@@ -26,6 +26,7 @@ import (
 	"github.com/ridi-oss/proxy-monster/cpgo/bridge"
 	"github.com/ridi-oss/proxy-monster/cpgo/child"
 	"github.com/ridi-oss/proxy-monster/cpgo/front"
+	"github.com/ridi-oss/proxy-monster/cpgo/grpcsvc"
 	"github.com/ridi-oss/proxy-monster/cpgo/idp"
 	"github.com/ridi-oss/proxy-monster/cpgo/routes"
 	"github.com/ridi-oss/proxy-monster/cpgo/session"
@@ -151,7 +152,8 @@ func run(ctx context.Context, cfg config) int {
 		Handler:           front.Route(mux, forward),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
-	grpcSrv := front.NewGRPC(conn)
+	grpcSrv := front.NewGRPC(conn, grpc.UnaryInterceptor(grpcsvc.SecretToken(os.Getenv("PM_SECRET_TOKEN"))))
+	grpcsvc.Register(grpcSrv, pool)
 
 	httpLn, err := net.Listen("tcp", httpSrv.Addr)
 	if err != nil {

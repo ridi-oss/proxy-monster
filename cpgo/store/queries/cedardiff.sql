@@ -15,3 +15,6 @@ SELECT id FROM datasource ORDER BY id;
 
 -- name: CedarDiffPolicySources :many
 SELECT cedar_src FROM policy;
+
+-- name: CedarDiffDatasourceTags :many
+SELECT name, tags FROM datasource;

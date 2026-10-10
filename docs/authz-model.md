@@ -344,20 +344,23 @@ of a route and the gate it calls. Paths are relative to
 | MCP admin surface | `/mcp`, `/.well-known/oauth-protected-resource**` | `mcp/McpServer.kt` | MCP access-token bearer + host/origin checks in an interceptor; metadata routes public |
 | SCIM 2.0 provisioning | `/api/scim/v2/**` | `Scim.kt` | `requireScimAuth` — `PM_SCIM_TOKEN` bearer, TLS-only; 501 when unconfigured |
 | Audit ingest (from the proxy) | `/api/ingest/decision` | `App.kt` | `X-PM-Ingest-Token` vs `PM_SECRET_TOKEN`; open when that env is unset (dev only) |
-| Audit read | `/api/audit`, `/api/audit/{id}` | `AuditRoutes.kt` | `requireApi` + Cedar `audit.read` — allow on `AuditLog` returns all rows, else own rows only |
-| Caller capability summary | `/api/me/permissions` | `App.kt` | `requireApi`; UI convenience, computed from `admin.*` + `audit.read` |
-| Datasources, catalog, classification | `/api/datasources**` | `Datasources.kt` | mixed: list = `requireApiOrBearer`, redacting non-connectable rows; `live` = `requireApi`; `{id}`, `{id}/catalog`, `{id}/wire-cert`, `{id}/table-detail` = `requireApiOrBearer` + `datasource.connect`; rest = `requireAdmin(admin.datasources)` |
+| Audit read | `/api/audit`, `/api/audit/{id}` | `cpgo/routes/audit.go` | `requireApi` + Cedar `audit.read` — allow on `AuditLog` returns all rows, else own rows only |
+| Caller capability summary | `/api/me/permissions` | `cpgo/routes/me.go` | `requireApi`; UI convenience, computed from `admin.*` + `audit.read` |
+| Datasources, catalog, classification | `/api/datasources**` | `Datasources.kt`; the list in `cpgo/routes/datasources.go` | mixed: list = `requireApiOrBearer`, redacting non-connectable rows; `live` = `requireApi`; `{id}`, `{id}/catalog`, `{id}/wire-cert`, `{id}/table-detail` = `requireApiOrBearer` + `datasource.connect`; rest = `requireAdmin(admin.datasources)` |
 | One-shot editor query | `/api/datasources/{id}/query` | `Query.kt` | `requireApi`, then the per-statement `decideQuery` |
 | Editor sessions and tasks | `/api/editor/**` | `Query.kt` | `requireApi` + owner scope; cancel adds `task.cancel`, result adds `task.assume` |
 | Task-completion SSE | `/api/tasks/events` | `App.kt` | resolves the session itself; each push re-filtered through `task.read` |
-| Editor query history | `/api/query-history` | `QueryHistory.kt` | `requireApi`, own rows only |
-| Query-approval workflow | `/api/approvals**` | `Approvals.kt` | `requireApi` + per-route Cedar (`task.read` / `task.approve` / `task.cancel` / `task.assume`) |
-| JIT access requests and grants | `/api/access-requests**`, `/api/access-grants**` | `Access.kt` | `requireApi` + `task.read` forward-filtering; revoke = `requireAuthz(grant.revoke)` |
+| Editor query history | `/api/query-history` | `cpgo/routes/routes.go` | `requireApi`, own rows only |
+| Query-approval workflow | `/api/approvals**` | `Approvals.kt`; the own-requests list in `cpgo/routes/access.go` | `requireApi` + per-route Cedar (`task.read` / `task.approve` / `task.cancel` / `task.assume`) |
+| JIT access requests and grants | `/api/access-requests**`, `/api/access-grants**`, `/api/access/principals/{principal}/rate-reset` | `cpgo/routes/access.go`, `access_write.go` | `RequireAPI` + `task.read` forward-filtering; create = `task.request` on its datasource; approve/reject = `task.approve`; revoke = `grant.revoke`; admin rate reset = `RequireAdmin(admin.identity)` |
 | Wire tokens | `/api/wire-tokens`, `/api/tokens**` | `Tokens.kt` | `requireAuthz(token.mint / token.list / token.revoke)` on the token's real owner and kind |
-| Roles, mask functions | `/api/roles**`, `/api/mask-fns**` | `Policies.kt` | `requireAdmin(admin.policies)`; `GET /api/roles` is `requireApi` |
-| Principal-to-role assignment | `/api/role-assignments**` | `Policies.kt` | `requireAdmin(admin.identity)` |
+| Roles, mask functions | `/api/roles**`, `/api/mask-fns**` | `cpgo/routes/policies.go`, `policies_write.go` | `requireAdmin(admin.policies)`; `GET /api/roles` is `requireApi` |
+| Principal-to-role assignment | `/api/role-assignments**` | `cpgo/routes/policies.go`, `policies_write.go` | `requireAdmin(admin.identity)` |
 | Users, groups, group-to-role map | `/api/users**`, `/api/groups**` | `Users.kt` | `requireAdmin(admin.identity)` |
-| Cedar policies | `/api/policies**` | `authz/CedarPolicyStore.kt` | `requireAdmin(admin.policies)` |
+| Cedar policies | `/api/policies**` | `cpgo/routes/policies_cedar.go`; `/api/policies/schema` in `authz/CedarPolicyStore.kt` | `requireAdmin(admin.policies)` |
+
+Routes `cp-go` serves use the same gates from `cpgo/api` (`RequireAPI`,
+`RequireAdmin`, `RequireAPIOrBearer`).
 
 - `requireApi()` (`Datasources.kt`) — a live web session, returning the caller
   principal so a route never re-reads it behind an assertion. Authentication
@@ -369,8 +372,8 @@ of a route and the gate it calls. Paths are relative to
   carrying the Cedar deny reason) on a deny. A session alone is never enough.
 - `requireAuthz(config, authz, action, resource)` — the same gate for non-admin,
   resource-scoped actions: token mint / list / revoke (`Tokens.kt`) and grant
-  revoke (`Access.kt`), where the resource is built from the row the call
-  targets.
+  revoke (`cpgo/routes/access_write.go`), where the resource is built from the
+  row the call targets.
 - `requireScimAuth(config)` (`Scim.kt`) — the standing `PM_SCIM_TOKEN` bearer,
   constant-time compared, TLS-only. Not a session and not Cedar: this is an
   IdP-to-control-plane integration ([`auth-model.md`](./auth-model.md)).

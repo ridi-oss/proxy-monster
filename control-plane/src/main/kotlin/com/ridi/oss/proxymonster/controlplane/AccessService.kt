@@ -12,8 +12,8 @@ import io.ktor.http.HttpStatusCode
 import java.sql.Connection
 
 /**
- * JIT role requests, rate resets and grants, shared by the REST access routes and the MCP access tools. Each
- * Cedar decision runs on the same context REST builds. Failures throw [TaskServiceException].
+ * JIT role requests, rate resets and grants for the MCP access tools. Each Cedar decision runs on the same
+ * context cp-go's access routes build. Failures throw [TaskServiceException].
  */
 class AccessService(
     private val accessStore: AccessStore,
@@ -52,16 +52,12 @@ class AccessService(
 
     fun reject(principal: String, requesterIp: String?, actor: AuditActor, id: Long, reason: String): AccessRequest {
         requireApprover(principal, requesterIp, id)
-        return rejectApproved(principal, actor, id, reason)
+        return accessStore.reject(id, reason, principal, actor, recorder) ?: throw serviceNotFound("access request")
     }
-
-    /** The reject after [requireApprover] passed, so REST reads its body only once the request is decidable. */
-    internal fun rejectApproved(principal: String, actor: AuditActor, id: Long, reason: String): AccessRequest =
-        accessStore.reject(id, reason, principal, actor, recorder) ?: throw serviceNotFound("access request")
 
     // Self-approval is the shipped no-self-approval forbid, never an app rule. The Role:: resource lets a policy
     // scope approvers by the requested role.
-    internal fun requireApprover(principal: String, requesterIp: String?, id: Long) {
+    private fun requireApprover(principal: String, requesterIp: String?, id: Long) {
         val req = accessStore.getRequest(id) ?: throw serviceNotFound("access request")
         if (req.kind == "QUERY") {
             throw TaskServiceException(HttpStatusCode.BadRequest, ApiError("approval.use_query_approval_endpoint"))

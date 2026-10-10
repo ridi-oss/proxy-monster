@@ -7,6 +7,7 @@ import com.ridi.oss.proxymonster.controlplane.authz.AuthzDecision
 import com.ridi.oss.proxymonster.controlplane.authz.AuthzResource
 import com.ridi.oss.proxymonster.controlplane.authz.CedarSchema
 import com.ridi.oss.proxymonster.controlplane.authz.CedarValidateResult
+import com.ridi.oss.proxymonster.controlplane.authz.authorizeWithContext
 import io.ktor.http.HttpStatusCode
 import io.ktor.server.request.receive
 import io.ktor.server.response.respond
@@ -35,6 +36,10 @@ data class InternalAuthorizeRequest(
     val action: String,
     val resource: InternalResource,
     val requesterIp: String? = null,
+    val channel: String? = null,
+    // The datasource whose context tags the decision derives first, as authorizeWithContext does.
+    val contextDatasource: String? = null,
+    val contextDatasourceTags: List<String> = emptyList(),
 )
 
 @Serializable
@@ -53,6 +58,9 @@ data class InternalAuthorizeBatchResult(val allow: List<Boolean>)
 
 @Serializable
 data class InternalValidateRequest(val cedarSrc: String)
+
+@Serializable
+data class InternalMayRequestRequest(val principal: String, val datasourceId: Long, val requesterIp: String? = null)
 
 @Serializable
 data class InternalMayConnectRequest(val principal: String, val datasourceIds: List<Long>, val requesterIp: String? = null)
@@ -78,6 +86,7 @@ fun Route.internalAuthorizeRoute(
     authz: Authz,
     mayConnect: (principal: String, requesterIp: String?, datasourceId: Long) -> Boolean = { _, _, _ -> false },
     policiesChanged: () -> Unit = {},
+    mayRequest: (principal: String, requesterIp: String?, datasourceId: Long) -> Boolean = { _, _, _ -> false },
 ) {
     if (token.isNullOrEmpty()) return
     post("/internal/authorize") {
@@ -90,7 +99,12 @@ fun Route.internalAuthorizeRoute(
         if (action == null || resource == null) {
             return@post call.respondError(HttpStatusCode.BadRequest, "common.invalid_value", mapOf("field" to "resource"))
         }
-        val decision = authz.authorize(request.principal, action, resource, AuthzContext(requesterIp = request.requesterIp))
+        val context = AuthzContext(requesterIp = request.requesterIp, channel = request.channel)
+        val decision = if (request.contextDatasource == null) {
+            authz.authorize(request.principal, action, resource, context)
+        } else {
+            authz.authorizeWithContext(request.principal, action, resource, context, request.contextDatasource, request.contextDatasourceTags)
+        }
         call.respond(InternalAuthorizeResult(decision == AuthzDecision.Allow, (decision as? AuthzDecision.Deny)?.reason))
     }
     // One decision per resource, for a list route that filters its rows.
@@ -131,5 +145,13 @@ fun Route.internalAuthorizeRoute(
         }
         val request = call.receive<InternalMayConnectRequest>()
         call.respond(InternalAuthorizeBatchResult(request.datasourceIds.map { mayConnect(request.principal, request.requesterIp, it) }))
+    }
+    // task.request on a datasource, for opening an access request against it.
+    post("/internal/may-request") {
+        if (!constantTimeEquals(call.request.headers[INTERNAL_TOKEN_HEADER], token)) {
+            return@post call.respond(HttpStatusCode.NotFound)
+        }
+        val request = call.receive<InternalMayRequestRequest>()
+        call.respond(InternalAuthorizeResult(mayRequest(request.principal, request.requesterIp, request.datasourceId)))
     }
 }

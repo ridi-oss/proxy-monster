@@ -862,6 +862,10 @@ internal fun ControlPlaneCore.mayConnectById(principal: String, requesterIp: Str
         authorizeMetadata(authz, principal, roleResolver.resolve(principal), ds, AuthzContext(requesterIp = requesterIp))
 }
 
+/** The task.request decision cp-go asks before opening an access request; false for a missing datasource. */
+internal fun ControlPlaneCore.mayRequestById(principal: String, requesterIp: String?, datasourceId: Long): Boolean =
+    datasourceStore.get(datasourceId)?.let { mayRequestOn(authz, roleResolver, principal, requesterIp, it) } ?: false
+
 /** Whether Cedar grants [principal] datasource.connect on [ds] — the decision the proxy runs on connect. */
 internal fun mayConnect(authz: Authz, roleResolver: RoleResolver, principal: String, requesterIp: String?, ds: Datasource): Boolean =
     authorizeMetadata(authz, principal, roleResolver.resolve(principal), ds, AuthzContext(requesterIp = requesterIp))

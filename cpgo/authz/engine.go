@@ -236,7 +236,7 @@ func (g graph) resource(r bridge.Resource) (types.EntityUID, error) {
 		if r.Owner != nil {
 			attrs["owner"] = uid("User", *r.Owner)
 		}
-		id := strings.Join([]string{url.QueryEscape(*r.DatasourceName), url.QueryEscape(r.NativeKind), url.QueryEscape(r.NativeID)}, "/")
+		id := strings.Join([]string{formEncode(*r.DatasourceName), formEncode(r.NativeKind), formEncode(r.NativeID)}, "/")
 		e = types.Entity{UID: uid("NativeResource", id), Attributes: types.NewRecord(attrs), Parents: types.NewEntityUIDSet(ds)}
 	default:
 		return types.EntityUID{}, fmt.Errorf("authz: unknown resource type %q", r.Type)
@@ -353,4 +353,10 @@ func (e *Engine) AuthorizeWithContext(ctx context.Context, principal, action str
 		}
 	}
 	return e.AuthorizeAs(ctx, principal, roles, action, r, c)
+}
+
+// formEncode is java.net.URLEncoder.encode, which Kotlin's native resource UIDs use: it keeps '*' and escapes '~',
+// the reverse of url.QueryEscape.
+func formEncode(s string) string {
+	return strings.NewReplacer("%2A", "*", "~", "%7E").Replace(url.QueryEscape(s))
 }

@@ -153,7 +153,7 @@ func run(ctx context.Context, cfg config) int {
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 	grpcSrv := front.NewGRPC(conn, grpc.UnaryInterceptor(grpcsvc.SecretToken(os.Getenv("PM_SECRET_TOKEN"))))
-	grpcsvc.Register(grpcSrv, pool)
+	grpcsvc.Register(grpcSrv, pool, authz.New(pool))
 
 	httpLn, err := net.Listen("tcp", httpSrv.Addr)
 	if err != nil {

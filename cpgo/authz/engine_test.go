@@ -232,3 +232,11 @@ func TestMayRequestAndScopedDecisions(t *testing.T) {
 		}
 	}
 }
+
+func TestFormEncodeMatchesJavaURLEncoder(t *testing.T) {
+	for in, want := range map[string]string{"lake~prod": "lake%7Eprod", "a*b": "a*b", "a b/c": "a+b%2Fc", "ok-._": "ok-._"} {
+		if got := formEncode(in); got != want {
+			t.Errorf("formEncode(%q) = %q, want %q", in, got, want)
+		}
+	}
+}

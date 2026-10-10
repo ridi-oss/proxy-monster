@@ -12,11 +12,9 @@ import com.ridi.oss.proxymonster.analyzer.pb.engineConfig
 import com.ridi.oss.proxymonster.analyzer.pb.functionCatalog
 import com.ridi.oss.proxymonster.classification.AthenaNativeFunctions
 import com.ridi.oss.proxymonster.controlplane.ApiError
-import com.ridi.oss.proxymonster.controlplane.AthenaRequestAuthorizer
 import com.ridi.oss.proxymonster.controlplane.CatalogColumn
 import com.ridi.oss.proxymonster.controlplane.Datasource
 import com.ridi.oss.proxymonster.controlplane.EngineDefinition
-import com.ridi.oss.proxymonster.controlplane.RequestAuthorizer
 import com.ridi.oss.proxymonster.controlplane.management.ManagementException
 import com.ridi.oss.proxymonster.grpc.ConnectionInfo
 import com.ridi.oss.proxymonster.grpc.Engine
@@ -32,7 +30,6 @@ internal object AthenaEngineDefinition : EngineDefinition {
     override val engine = Engine.ATHENA
     override val wireName = "athena"
     override val dialect = Dialect.ATHENA
-    override val requestAuthorizer: RequestAuthorizer = AthenaRequestAuthorizer
     override val connectionProperties = setOf("region", "workgroup", "catalog", "database")
     override val systemSchemas = setOf("information_schema")
     override val catalogIsConnectionIndependent = true

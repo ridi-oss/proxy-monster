@@ -371,7 +371,7 @@ func (r *Runner) handleQuery(sess spi.TargetDbSession, stream runStream, query *
 		var targetDbErr engine.TargetDbError
 		if errors.As(err, &targetDbErr) {
 			// The only failure the CP may surface as errorDetail: the target DB's own ERR for the executed
-			// statement. Send BOTH forms (raw + redacted symbol) so the CP re-gates it per viewer at view.
+			// statement. Send BOTH forms (raw + redacted) so the CP re-gates it per viewer at view.
 			return sendTargetDbError(stream, targetDbErr.Message, targetDbErr.Redacted)
 		}
 		message := "query execution failed: " + err.Error()

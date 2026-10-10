@@ -320,9 +320,11 @@ A database's own error text quotes data. MySQL reports
 `Truncated incorrect INTEGER value: '010-1234-5678'`; PostgreSQL adds
 `DETAIL: Failing row contains (…)` with the whole row. So where the caller could
 learn something masked, the proxy replaces the message with the code's name —
-PostgreSQL `23514` becomes `check_violation`, MySQL `1146` becomes
-`ER_NO_SUCH_TABLE` — and drops PostgreSQL's `Detail`. SQLSTATE, schema, table,
-column, and constraint names survive. An unknown code becomes
+PostgreSQL `22P02` becomes `invalid_text_representation`, MySQL `1292` becomes
+`ER_TRUNCATED_WRONG_VALUE` — and drops PostgreSQL's `Detail`, `Where`, and
+internal query. A message that names only schema objects is kept as is, such as
+`Table 'acme.orders' doesn't exist`. SQLSTATE, schema, table, column, and
+constraint names survive. An unknown code becomes
 `target-DB diagnostic details are redacted on this connection (proxy-monster)`.
 
 It applies per statement and per column. A `MASK` or `DENY` always redacts. An

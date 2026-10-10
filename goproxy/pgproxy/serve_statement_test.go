@@ -308,7 +308,7 @@ func TestRunSessionExecutePGTargetDbError(t *testing.T) {
 
 func TestStreamResultTargetDbErrStaysProxyInternalWithBothForms(t *testing.T) {
 	core, closeCore := scriptedStreamCore(t, encodePG(t,
-		&pgproto3.ErrorResponse{Severity: "ERROR", Code: "42P01", Message: "relation \"nope\" does not exist"},
+		&pgproto3.ErrorResponse{Severity: "ERROR", Code: "22P02", Message: "invalid input syntax for type integer: \"010-1234-5678\""},
 		&pgproto3.ReadyForQuery{TxStatus: 'I'},
 	))
 	defer closeCore()
@@ -328,11 +328,11 @@ func TestStreamResultTargetDbErrStaysProxyInternalWithBothForms(t *testing.T) {
 	if !errors.As(targetDbErr, &pgErr) {
 		t.Fatalf("targetDbErr = %T, want *pgTargetDbErr carrying both forms", targetDbErr)
 	}
-	if !strings.Contains(pgErr.message, "does not exist") {
+	if !strings.Contains(pgErr.message, "010-1234-5678") {
 		t.Errorf("raw message = %q, want the verbatim target-DB text", pgErr.message)
 	}
-	if pgErr.redacted == "" || strings.Contains(pgErr.redacted, "nope") {
-		t.Errorf("redacted = %q, want a value-free form without the object name", pgErr.redacted)
+	if pgErr.redacted == "" || strings.Contains(pgErr.redacted, "010-1234-5678") {
+		t.Errorf("redacted = %q, want a value-free form", pgErr.redacted)
 	}
 }
 

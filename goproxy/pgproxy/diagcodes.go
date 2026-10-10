@@ -23,7 +23,7 @@ func pgDiagnosticMessage(sqlState string) string {
 
 // pgConditionNames: exact SQLSTATE → condition name. This is the complete catalog generated from the
 // authoritative PostgreSQL errcodes.txt appendix (every code that carries a condition name), not a curated
-// subset — it is a fail-safe UX/identity table, NOT the security boundary (that is the unconditional strip).
+// subset — it is a fail-safe UX/identity table, NOT the security boundary (that is the strip).
 // Codes absent here degrade to the class name or the generic redacted message.
 var pgConditionNames = map[string]string{
 	// Class 00 — successful_completion

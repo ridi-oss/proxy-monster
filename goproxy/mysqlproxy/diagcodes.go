@@ -16,7 +16,7 @@ func mysqlDiagnosticMessage(essno int) string {
 
 // mysqlErrorSymbols: essno → ER_* symbol. This is the complete catalog generated from the authoritative
 // MySQL mysqld_error.h as published by PyMySQL (constants/ER.py), not a curated subset — it is a fail-safe
-// UX/identity table, NOT the security boundary (that is the unconditional strip). Note 1105 (ER_UNKNOWN_ERROR)
+// UX/identity table, NOT the security boundary (that is the strip). Note 1105 (ER_UNKNOWN_ERROR)
 // is the free-message catch-all extractvalue/updatexml abuse: its symbol is honest, and the value it would
 // otherwise carry is dropped.
 var mysqlErrorSymbols = map[int]string{

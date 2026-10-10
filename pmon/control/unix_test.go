@@ -261,7 +261,8 @@ func TestStartDaemonUsesTheResolvedBinary(t *testing.T) {
 	}
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
-		if data, err := os.ReadFile(marker); err == nil {
+		// The shell creates the file before echo writes it, so an empty read is not the answer yet.
+		if data, err := os.ReadFile(marker); err == nil && len(data) > 0 {
 			got := string(data)
 			if !strings.Contains(got, "pmon") || !strings.Contains(got, "daemon") {
 				t.Errorf("spawned %q, want the resolved pmon with the daemon subcommand", got)

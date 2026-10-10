@@ -1,5 +1,49 @@
 # Changelog
 
+## [0.1.10](https://github.com/ridi-oss/proxy-monster/compare/pmon-v0.1.9...pmon-v0.1.10) (2026-10-10)
+
+
+### Features
+
+* **pmon:** choose the default server ([033c27a](https://github.com/ridi-oss/proxy-monster/commit/033c27aa8f9aad87834c08dabd7ae10d78ad2548))
+* **pmon:** match AI-app entries to the MCP URL the server advertises ([1a49f43](https://github.com/ridi-oss/proxy-monster/commit/1a49f43fc4d262137e3eaab0f68541dd61c87aa6))
+* **pmon:** name a server after its instance ([1b4385c](https://github.com/ridi-oss/proxy-monster/commit/1b4385c454b2816c1c94bcf3612663802cc32e78))
+* **pmon:** name AI-app entries pmon-&lt;server&gt; ([9fc90ef](https://github.com/ridi-oss/proxy-monster/commit/9fc90eff19a394c917ee135536f22f834eeca96d))
+* **pmon:** pmon mcp --install and --uninstall ([1dc5c5c](https://github.com/ridi-oss/proxy-monster/commit/1dc5c5ccf2d96a5dae5ffd5c068e5af8af597429))
+* **pmon:** pmon server rename ([5c45477](https://github.com/ridi-oss/proxy-monster/commit/5c4547789f195765d9f6b8008e8d745fb5826f6a))
+* **pmon:** pmon version, and the server version in pmon status ([fdddb93](https://github.com/ridi-oss/proxy-monster/commit/fdddb93efa15ef1b36483e4d23abddb385c5d663))
+* **pmon:** replace a server's https MCP entry with pmon's relay ([c65b8e7](https://github.com/ridi-oss/proxy-monster/commit/c65b8e7d14fd267bf87319afd5aee3458d7cb39e))
+* **tray:** connect Claude Code and Codex without their CLIs ([a883bd5](https://github.com/ridi-oss/proxy-monster/commit/a883bd56db2d44e8d1d7720a175ea14bca56011a))
+* **tray:** Settings window on Windows ([c3941e1](https://github.com/ridi-oss/proxy-monster/commit/c3941e1ac89f62f37e7c7d2007be48cdb2c27d1e))
+* **tray:** show the server version in Settings ([9b6cba5](https://github.com/ridi-oss/proxy-monster/commit/9b6cba5bc84816f1c59a9a9235d23739aa3253d3))
+* **tray:** start the daemon when the app launches ([ee2de34](https://github.com/ridi-oss/proxy-monster/commit/ee2de3432012073c859011f8dd24ed2354fe7383))
+* **tray:** update itself on Windows with WinSparkle ([7dde046](https://github.com/ridi-oss/proxy-monster/commit/7dde04683b12b816dcc64f0e6babe9500758a48f))
+* **tray:** Windows dialog, clipboard, links and AI-app locations ([4239d5f](https://github.com/ridi-oss/proxy-monster/commit/4239d5f0e352cace22cb62006cdb59b57caa3dd8))
+* **tray:** Windows login item, preferences, toasts and pmon:// links ([e8da31e](https://github.com/ridi-oss/proxy-monster/commit/e8da31ede61d5ebf7a5ee69319216fc505367c3a))
+* **tray:** Windows notification-area icon ([5131419](https://github.com/ridi-oss/proxy-monster/commit/5131419d11d18233751d99fd3304e58816aef610))
+
+
+### Bug Fixes
+
+* **pmon:** judge AI-app entries in the config their CLI edits ([a0d0834](https://github.com/ridi-oss/proxy-monster/commit/a0d0834b974213b3ac42ba7d1fecefcbdfbb9040))
+* **pmon:** keep a dotted name one Codex server ([169bce0](https://github.com/ridi-oss/proxy-monster/commit/169bce085a7d5001b41cebbaafbb7e55f9a3a973))
+* **pmon:** keep an AI app's entry when replacing it fails ([8c571ce](https://github.com/ridi-oss/proxy-monster/commit/8c571ce49e267e1b7f00ade21338a76d52384d0e))
+* **pmon:** keep the Windows daemon running when its launcher's job ends ([5f32a0a](https://github.com/ridi-oss/proxy-monster/commit/5f32a0a0506b175ad7d390a5f6cbb208c3e7aad0))
+* **pmon:** let an unelevated process use state an elevated one created ([42eb19c](https://github.com/ridi-oss/proxy-monster/commit/42eb19c3e9127b5aeab09602439fa426d81d3174))
+* **pmon:** put the entry name before claude mcp add's -e values ([74d17cf](https://github.com/ridi-oss/proxy-monster/commit/74d17cfab179e83f1d9bcc4423793f3a06c18455))
+* **pmon:** restart Claude Desktop once for pmon mcp --install ([c2d643b](https://github.com/ridi-oss/proxy-monster/commit/c2d643ba8d121072f70bf1f844afdb247dde1739))
+
+
+### Refactoring
+
+* **pmon:** share AI-app MCP registration in internal/aiapps ([70fe02b](https://github.com/ridi-oss/proxy-monster/commit/70fe02b173f5a946ea75b39213853e9392b8bdf7))
+* **tray:** talk to the Settings window over its stdin and stdout ([592e9b8](https://github.com/ridi-oss/proxy-monster/commit/592e9b8aba38a1457217209b9e737c90cce6a1c7))
+
+
+### Build & Dependencies
+
+* **tray:** per-user MSI for Windows ([e80f419](https://github.com/ridi-oss/proxy-monster/commit/e80f419f51e5b25ff0dad5ece595735acf90b8fe))
+
 ## [0.1.9](https://github.com/ridi-oss/proxy-monster/compare/pmon-v0.1.8...pmon-v0.1.9) (2026-10-08)
 
 

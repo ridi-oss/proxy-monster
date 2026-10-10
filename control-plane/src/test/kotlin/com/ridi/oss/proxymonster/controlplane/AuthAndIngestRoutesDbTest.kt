@@ -10,7 +10,6 @@ import io.ktor.client.request.post
 import io.ktor.client.request.setBody
 import io.ktor.client.statement.bodyAsText
 import io.ktor.http.ContentType
-import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.contentType
 import io.ktor.serialization.kotlinx.json.json
@@ -30,44 +29,14 @@ import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 /**
- * These three routes (`/auth/me`, `/auth/debug`, `/api/ingest/decision`) live inline in
- * `Application.module()`, not in a dedicated `Route.xRoutes()` extension, so they can only be exercised
- * by booting the full module (mirrors ReadinessDiagnosticDbTest.kt). Pins the migration of App.kt's
- * vestigial `ErrorResponse("...")` envelopes onto `ApiError(code, params)`.
+ * `/api/ingest/decision` and the StatusPages fallback live inline in `Application.module()`, so they can only
+ * be exercised by booting the full module (mirrors ReadinessDiagnosticDbTest.kt).
  */
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 class AuthAndIngestRoutesDbTest {
     @BeforeAll
     fun requireDatabase() {
         requireDockerOrSkip()
-    }
-
-    @Test
-    fun `auth me without a session is unauthenticated`() = testApplication {
-        application { module(config(), ControlPlaneCore(migratedDatabase("pm_auth_ingest_me"))) }
-        val client = wireClient()
-
-        val response = client.get("/auth/me")
-
-        assertEquals(HttpStatusCode.Unauthorized, response.status)
-        assertEquals("no-store", response.headers[HttpHeaders.CacheControl])
-        assertEquals(SessionStatusError("none"), response.body())
-    }
-
-    @Test
-    fun `auth debug is a 404 endpoint when PM_AUTH_DEBUG is off`() = testApplication {
-        application { module(config(authDebug = false), ControlPlaneCore(migratedDatabase("pm_auth_ingest_debug"))) }
-        val client = wireClient()
-
-        val response = client.post("/auth/debug") {
-            contentType(ContentType.Application.Json)
-            setBody("""{"principal":"alice","roles":[]}""")
-        }
-
-        assertEquals(HttpStatusCode.NotFound, response.status)
-        val error = response.body<ApiError>()
-        assertEquals("common.not_found", error.code)
-        assertEquals("endpoint", error.params["resource"])
     }
 
     @Test
@@ -153,12 +122,12 @@ class AuthAndIngestRoutesDbTest {
         return ds
     }
 
-    private fun config(authDebug: Boolean = false) = Config(
+    private fun config() = Config(
         httpPort = 0,
         dbUrl = "",
         dbUser = "",
         dbPassword = "",
-        authDebug = authDebug,
+        authDebug = false,
         secretToken = INGEST_TOKEN,
         sessionSecret = "auth-ingest-route-test-secret",
         oidc = null,

@@ -79,8 +79,8 @@ func startFront(t *testing.T) (config, context.CancelFunc, <-chan int) {
 		Child: os.Args[0], ChildHTTPPort: freePort(t), ChildGRPCPort: freePort(t),
 		StartTimeout: 30 * time.Second,
 		DBURL:        st.JDBCURL, DBUser: st.User, DBPassword: st.Password,
-		SessionSecret: dbtest.Secret,
 	}
+	t.Setenv("PM_SESSION_SECRET", dbtest.Secret)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan int, 1)
 	go func() { done <- run(ctx, cfg) }()

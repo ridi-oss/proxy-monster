@@ -42,11 +42,9 @@ type config struct {
 	StartTimeout   time.Duration `env:"PM_CP_START_TIMEOUT" default:"10m" help:"How long to wait for the Kotlin control plane to become healthy."`
 	Cedar          string        `env:"PM_CP_CEDAR" default:"go" enum:"kotlin,shadow,go" help:"Who decides Cedar for Go routes: go, kotlin, or shadow (kotlin decides, go is compared and mismatches logged)."`
 	// Shared with the Kotlin child, which reads them from the environment, so they are never flags.
-	DBURL         string `kong:"-"`
-	DBUser        string `kong:"-"`
-	DBPassword    string `kong:"-"`
-	SessionSecret string `kong:"-"`
-	AuthDebug     bool   `kong:"-"`
+	DBURL      string `kong:"-"`
+	DBUser     string `kong:"-"`
+	DBPassword string `kong:"-"`
 	// InternalToken authenticates cp-go to the child; generated per boot unless attaching.
 	InternalToken string `kong:"-"`
 }
@@ -64,8 +62,6 @@ func main() {
 	cfg.DBURL = envOr("PM_DB_URL", "jdbc:postgresql://localhost:5432/proxymonster")
 	cfg.DBUser = envOr("PM_DB_USER", "proxymonster")
 	cfg.DBPassword = envOr("PM_DB_PASSWORD", "proxymonster")
-	cfg.SessionSecret = envOr("PM_SESSION_SECRET", "dev-insecure-session-secret-change-me")
-	cfg.AuthDebug = envOr("PM_AUTH_DEBUG", "true") == "true"
 	cfg.InternalToken = os.Getenv("PM_CP_INTERNAL_TOKEN")
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	code := run(ctx, cfg)
@@ -75,6 +71,11 @@ func main() {
 
 // run serves until ctx ends or the child exits, and returns the process exit code.
 func run(ctx context.Context, cfg config) int {
+	sessions, err := session.SettingsFromEnv()
+	if err != nil {
+		slog.Error("cp-go: session settings", "err", err)
+		return 1
+	}
 	var kt *child.Child
 	var exited <-chan struct{}
 	internalToken := cfg.InternalToken
@@ -96,7 +97,7 @@ func run(ctx context.Context, cfg config) int {
 
 	httpUpstream := &url.URL{Scheme: "http", Host: loopback(cfg.ChildHTTPPort)}
 	startCtx, cancelStart := context.WithTimeout(ctx, cfg.StartTimeout)
-	err := child.WaitHealthy(startCtx, httpUpstream.String()+"/health", exited)
+	err = child.WaitHealthy(startCtx, httpUpstream.String()+"/health", exited)
 	cancelStart()
 	if err != nil {
 		slog.Error("cp-go: " + err.Error())
@@ -123,12 +124,11 @@ func run(ctx context.Context, cfg config) int {
 	mux := http.NewServeMux()
 	kotlin := bridge.New(httpUpstream, internalToken)
 	routes.Register(mux, pool, api.Gate{
-		Sessions:      session.NewResolver(pool, cfg.SessionSecret),
-		EndMismatched: api.KotlinSessionCheck(httpUpstream),
-		Kotlin:        kotlin,
-		Edges:         edges,
-		AuthDebug:     cfg.AuthDebug,
-		Authz:         authorizer(cfg.Cedar, pool, kotlin),
+		Sessions:  session.NewResolver(pool, sessions),
+		Kotlin:    kotlin,
+		Edges:     edges,
+		AuthDebug: sessions.AuthDebug,
+		Authz:     authorizer(cfg.Cedar, pool, kotlin),
 	})
 	httpSrv := &http.Server{
 		Addr:              ":" + strconv.Itoa(cfg.HTTPPort),

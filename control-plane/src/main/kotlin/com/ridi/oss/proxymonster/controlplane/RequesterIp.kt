@@ -198,22 +198,6 @@ private fun stripToBareIp(candidate: String?): String? {
 }
 
 /**
- * Whether [candidate] can be stored AND evaluated by the Cedar engine.
- *
- * `IpAddress` is a Java-side regex, looser than the Rust engine that ultimately parses the value: it
- * accepts a NUL-bearing string (which Postgres then rejects at INSERT) and non-canonical IPv4 like
- * `100.100.001.010` (which the engine refuses — and an unevaluable context value fails the whole
- * authorization closed, so the request denies everywhere with nothing naming the address). Hence
- * [evaluatesInCedar], the authoritative gate; the character allowlist is only a cheap pre-filter.
- */
-internal fun isStorableIpLiteral(candidate: String, evaluatesInCedar: (String) -> Boolean): Boolean {
-    if (candidate.isEmpty()) return false
-    if (!candidate.all { it.isDigit() || it == '.' || it == ':' || it in 'a'..'f' || it in 'A'..'F' }) return false
-    if (runCatching { IpAddress(candidate) }.isFailure) return false
-    return evaluatesInCedar(candidate)
-}
-
-/**
  * The HTTP entry point's resolved requester IP — trusted-edge-gated per
  * [resolveHttpRequesterIp]. `request.local.remoteAddress` is the raw socket peer Ktor's Netty engine reports;
  * no `ForwardedHeaders`/`XForwardedHeaders` plugin is installed (App.kt), so nothing upstream of this call

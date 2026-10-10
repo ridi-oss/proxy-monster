@@ -5,6 +5,7 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
+	"github.com/ridi-oss/proxy-monster/cpgo/session"
 	"net/http"
 	"net/url"
 	"testing"
@@ -12,6 +13,13 @@ import (
 
 // Secret signs the session cookies these helpers mint.
 const Secret = "test-session-secret-at-least-32-chars"
+
+// Settings are the session settings tests run with: the default lifetimes, debug login on.
+var Settings = session.Settings{
+	Secret: Secret, AuthDebug: true, ResultKey: true,
+	AbsoluteSeconds: 7200, IdleSeconds: 900, SlideSeconds: 120,
+	IdleWarnLeadSeconds: 60, AbsoluteWarnLeadSeconds: 300, HeartbeatSeconds: 90,
+}
 
 // WebSession inserts a live WEB session for principal bound to device and returns the request cookies
 // that present it, signed the way Ktor signs pm_session.

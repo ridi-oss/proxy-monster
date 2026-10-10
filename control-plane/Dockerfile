@@ -56,6 +56,7 @@ RUN ./gradlew --no-daemon :control-plane:installDist -x test
 FROM go AS cpgo
 WORKDIR /workspace/cpgo
 COPY auditmon /workspace/auditmon
+COPY analyzer /workspace/analyzer
 COPY cpgo ./
 ENV GOTOOLCHAIN=local CGO_ENABLED=0 GOWORK=off
 RUN go build -trimpath -o /out/cp-go ./cmd/cp-go

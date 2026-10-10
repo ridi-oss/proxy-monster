@@ -189,6 +189,7 @@ run = '''
 set -euo pipefail
 (cd analyzer && buf generate ../proto/src/main/proto --path ../proto/src/main/proto/analyzer.proto --path ../proto/src/main/proto/engine.proto --path ../proto/src/main/proto/athena.proto)
 (cd goproxy && buf generate ../proto/src/main/proto --path ../proto/src/main/proto/controlplane.proto)
+(cd cpgo && buf generate ../proto/src/main/proto --path ../proto/src/main/proto/controlplane.proto)
 '''
 
 [tasks.sqlc-generate]
@@ -228,6 +229,8 @@ files=(
   analyzer/probe/pb/athena.pb.go
   goproxy/internal/pb/controlplane.pb.go
   goproxy/internal/pb/controlplane_grpc.pb.go
+  cpgo/internal/pb/controlplane.pb.go
+  cpgo/internal/pb/controlplane_grpc.pb.go
 )
 before=$(git hash-object "${files[@]}")
 mise run proto-generate

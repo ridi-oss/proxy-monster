@@ -92,11 +92,6 @@ private const val TABLE_DETAIL_STREAM_TIMEOUT_MS = 60_000L
 // a server-v* release always ships both at the same value.
 internal const val CONTROL_PROTOCOL_VERSION = 4
 
-// The completion-event terminal statuses the proxy reports: a clean finish, a target DB/relay error carrying
-// partial counts, or a canceled statement. Any other value is rejected fail-closed so a malformed report
-// can't write an uninterpretable outcome into the audit trail.
-private val COMPLETION_STATUSES = setOf("ok", "error", "canceled")
-
 /**
  * Build the session-temp overlay from a decide request's proxy-supplied [temps], applying BOTH
  * trust gates before any column can be read UNMASKED (an overlay column is read without a Cedar grant and
@@ -271,48 +266,6 @@ class ControlPlaneGrpcService(
                 outcome.afterStatement,
             )
         }
-    }
-
-    /**
-     * Record the post-relay completion as a chained audit event and the execution boundary for a native-wire
-     * task. The correlated task moves APPROVED → EXECUTED on `ok`, or APPROVED → FAILED on `error`/`canceled`,
-     * in the same transaction as the completion event. Decisions without a WIRE task remain audit-only, so
-     * editor and workflow execution lifecycles are untouched. This handler records the proxy's outcome; it
-     * never re-decides enforcement.
-     *
-     * The completion mirrors the referenced decision's identity fields so the row is self-describing for the
-     * audit monitor and satisfies the audit schema. `decision_id` 0 is rejected, and an unknown id is
-     * `NOT_FOUND`. Duplicate reports still append completion events as before; the task transition is an
-     * idempotent compare-and-set and silently no-ops after the first terminal report.
-     */
-    override suspend fun reportCompletion(request: CompletionReport): Empty {
-        if (request.decisionId == 0L) {
-            throw StatusException(Status.INVALID_ARGUMENT.withDescription("decision_id must reference a recorded decision"))
-        }
-        val status = request.status
-        if (status !in COMPLETION_STATUSES) {
-            throw StatusException(
-                Status.INVALID_ARGUMENT.withDescription("status must be one of ${COMPLETION_STATUSES.joinToString("|")}"),
-            )
-        }
-        val decision = core.auditStore.get(request.decisionId)
-            ?: throw StatusException(Status.NOT_FOUND.withDescription("unknown decision_id ${request.decisionId}"))
-        val completionEvent = completionEvent(
-            decision, request.decisionId, request.rowsReturned, request.bytesReturned, status, request.durationMs,
-        )
-        core.dataSource.inTx { conn ->
-            core.auditStore.insert(conn, completionEvent)
-            core.accessStore.wireTaskIdForDecision(request.decisionId, conn)?.let { taskId ->
-                if (core.accessStore.claimExecution(taskId, conn)) {
-                    if (status == "ok") {
-                        check(core.accessStore.markExecuted(taskId, conn)) { "wire task $taskId left EXECUTING" }
-                    } else {
-                        check(core.accessStore.markFailed(taskId, conn)) { "wire task $taskId left EXECUTING" }
-                    }
-                }
-            }
-        }
-        return Empty.getDefaultInstance()
     }
 
     override suspend fun pushSchemaFragment(request: SchemaFragmentPush): SchemaFragmentAck {

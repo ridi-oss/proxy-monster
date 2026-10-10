@@ -1,0 +1,10 @@
+version: v2
+# controlplane.proto's Go package comes from the M-option; engine, analyzer and athena types resolve to
+# analyzer/probe/pb, the copy the analyzer import already registers (see goproxy/buf.gen.yaml).
+plugins:
+  - local: protoc-gen-go
+    out: internal/pb
+    opt: paths=source_relative,Mcontrolplane.proto=github.com/ridi-oss/proxy-monster/cpgo/internal/pb;proxymonsterv1,Mengine.proto=github.com/ridi-oss/proxy-monster/analyzer/probe/pb,Manalyzer.proto=github.com/ridi-oss/proxy-monster/analyzer/probe/pb,Mathena.proto=github.com/ridi-oss/proxy-monster/analyzer/probe/pb
+  - local: protoc-gen-go-grpc
+    out: internal/pb
+    opt: paths=source_relative,Mcontrolplane.proto=github.com/ridi-oss/proxy-monster/cpgo/internal/pb;proxymonsterv1,Mengine.proto=github.com/ridi-oss/proxy-monster/analyzer/probe/pb,Manalyzer.proto=github.com/ridi-oss/proxy-monster/analyzer/probe/pb,Mathena.proto=github.com/ridi-oss/proxy-monster/analyzer/probe/pb

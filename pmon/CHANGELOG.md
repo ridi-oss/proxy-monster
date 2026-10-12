@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.11](https://github.com/ridi-oss/proxy-monster/compare/pmon-v0.1.10...pmon-v0.1.11) (2026-10-12)
+
+
+### Bug Fixes
+
+* **tray:** resolve package-windows.sh's paths from the caller's directory ([b1c8833](https://github.com/ridi-oss/proxy-monster/commit/b1c8833814c9ef477faf69e164fdcda0eda534d8))
+
 ## [0.1.10](https://github.com/ridi-oss/proxy-monster/compare/pmon-v0.1.9...pmon-v0.1.10) (2026-10-12)
 
 

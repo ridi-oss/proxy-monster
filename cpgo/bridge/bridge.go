@@ -24,6 +24,8 @@ type Resource struct {
 	ExecutedBy     *string `json:"executedBy,omitempty"`
 	DatasourceName *string `json:"datasourceName,omitempty"`
 	RoleName       *string `json:"roleName,omitempty"`
+	// ApprovalRequest: where the request came from (console, mcp, github); "" is console.
+	Source string `json:"source,omitempty"`
 	// Token: the token kind (SESSION, USER, …), "" for any kind.
 	Kind string `json:"kind,omitempty"`
 	// NativeResource fields.

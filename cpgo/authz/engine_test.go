@@ -92,6 +92,7 @@ func TestDecisionsUnderShippedPolicies(t *testing.T) {
 	exec(`INSERT INTO policy (name, cedar_src, enabled, origin) VALUES ('ip-gated', 'permit(principal in Role::"ip-auditor", action == Action::"audit.read", resource) when { context has requester_ip && context.requester_ip.isInRange(ip("203.0.113.0/24")) };', true, 'USER')`)
 	exec(`INSERT INTO datasource (name, host, port, db_name, tags) VALUES ('gated', 'h', 1, 'd', '["prod"]')`)
 	exec(`INSERT INTO policy (name, cedar_src, enabled, origin) VALUES ('connect', 'permit(principal == User::"connector", action == Action::"datasource.connect", resource == Datasource::"gated");', true, 'USER')`)
+	exec(`INSERT INTO policy (name, cedar_src, enabled, origin) VALUES ('no-github-reads', 'forbid(principal == User::"alice", action == Action::"task.read", resource) when { resource has source && resource.source == "github" };', true, 'USER')`)
 	exec(`INSERT INTO app_user (principal, active) VALUES ('gone', false)`)
 	exec(`INSERT INTO principal_role (principal, role_id) SELECT 'gone', id FROM app_role WHERE name = 'system:admin'`)
 
@@ -125,6 +126,8 @@ func TestDecisionsUnderShippedPolicies(t *testing.T) {
 		{"ip-gated without an address", "edge", "audit.read", bridge.AuditLog, "", false},
 		{"ip-gated garbage address", "edge", "audit.read", bridge.AuditLog, "not-an-ip", false},
 		{"own request", "alice", "task.read", bridge.Resource{Type: "ApprovalRequest", Principal: "alice", DatasourceName: &ds, RoleName: &role}, "", true},
+		{"own request filed from github", "alice", "task.read", bridge.Resource{Type: "ApprovalRequest", Principal: "alice", Source: "github"}, "", false},
+		{"own request filed from mcp", "alice", "task.read", bridge.Resource{Type: "ApprovalRequest", Principal: "alice", Source: "mcp"}, "", true},
 		{"another's request", "bob", "task.read", bridge.Resource{Type: "ApprovalRequest", Principal: "alice"}, "", false},
 		{"own grant", "alice", "task.read", bridge.Resource{Type: "AccessGrant", Principal: "alice", ID: 1, RoleName: &role}, "", true},
 		{"deactivated admin", "gone", "admin.policies", bridge.System, "", false},

@@ -28,6 +28,7 @@ data class InternalResource(
     val datasourceName: String? = null,
     val roleName: String? = null,
     val kind: String? = null,
+    val source: String? = null,
 )
 
 @Serializable
@@ -79,7 +80,7 @@ private fun InternalResource.toAuthz(): AuthzResource? = when (type) {
     "AuditLog" -> AuthzResource.AuditLog
     "AuditRecord" -> principal?.let { AuthzResource.AuditRecord(it) }
     "AccessGrant" -> if (principal != null && id != null) AuthzResource.AccessGrant(principal, id, datasourceName, roleName) else null
-    "ApprovalRequest" -> principal?.let { AuthzResource.ApprovalRequest(it, approver, executedBy, datasourceName, roleName) }
+    "ApprovalRequest" -> principal?.let { AuthzResource.ApprovalRequest(it, approver, executedBy, datasourceName, roleName, source ?: "console") }
     "Token" -> principal?.let { owner ->
         if (kind == null) AuthzResource.Token(owner, null) else TokenKind.fromWire(kind)?.let { AuthzResource.Token(owner, it) }
     }

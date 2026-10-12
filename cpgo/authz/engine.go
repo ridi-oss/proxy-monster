@@ -1,6 +1,7 @@
 package authz
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -209,6 +210,7 @@ func (g graph) resource(r bridge.Resource) (types.EntityUID, error) {
 		if r.ExecutedBy != nil {
 			attrs["executedBy"] = uid("User", *r.ExecutedBy)
 		}
+		attrs["source"] = types.String(cmp.Or(r.Source, "console"))
 		ds := "-"
 		if r.DatasourceName != nil {
 			ds = *r.DatasourceName

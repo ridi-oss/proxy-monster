@@ -8,7 +8,7 @@ SELECT ar.id, ar.principal, ar.role_id, r.name AS role_name, ar.datasource_id, d
        (SELECT count(*) FROM query_result qr WHERE qr.task_id = ar.id) AS statement_count,
        ar.deny_reason, ar.source_decision_id, ar.title, ar.evaluated_decision,
        ar.approved_at, ar.executing_at, ar.executed_at, ar.execute_as, ar.creator_kind,
-       ar.statement_carries_protected_literal
+       ar.statement_carries_protected_literal, ar.source, ar.scope, ar.change_key, ar.merged_at
 FROM access_request ar LEFT JOIN app_role r ON r.id = ar.role_id
 LEFT JOIN datasource d ON d.id = ar.datasource_id
 WHERE ar.kind IN ('ROLE', 'RATE_RESET') ORDER BY ar.created_at DESC;
@@ -23,7 +23,7 @@ SELECT ar.id, ar.principal, ar.role_id, r.name AS role_name, ar.datasource_id, d
        (SELECT count(*) FROM query_result qr WHERE qr.task_id = ar.id) AS statement_count,
        ar.deny_reason, ar.source_decision_id, ar.title, ar.evaluated_decision,
        ar.approved_at, ar.executing_at, ar.executed_at, ar.execute_as, ar.creator_kind,
-       ar.statement_carries_protected_literal
+       ar.statement_carries_protected_literal, ar.source, ar.scope, ar.change_key, ar.merged_at
 FROM access_request ar LEFT JOIN app_role r ON r.id = ar.role_id
 LEFT JOIN datasource d ON d.id = ar.datasource_id
 WHERE ar.kind IN ('ROLE', 'RATE_RESET') AND ar.status = $1 ORDER BY ar.created_at DESC;
@@ -38,7 +38,7 @@ SELECT ar.id, ar.principal, ar.role_id, r.name AS role_name, ar.datasource_id, d
        (SELECT count(*) FROM query_result qr WHERE qr.task_id = ar.id) AS statement_count,
        ar.deny_reason, ar.source_decision_id, ar.title, ar.evaluated_decision,
        ar.approved_at, ar.executing_at, ar.executed_at, ar.execute_as, ar.creator_kind,
-       ar.statement_carries_protected_literal
+       ar.statement_carries_protected_literal, ar.source, ar.scope, ar.change_key, ar.merged_at
 FROM access_request ar LEFT JOIN app_role r ON r.id = ar.role_id
 LEFT JOIN datasource d ON d.id = ar.datasource_id
 WHERE ar.kind = 'QUERY' AND ar.creator_kind = 'WORKFLOW' AND ar.principal = $1 ORDER BY ar.created_at DESC;
@@ -53,7 +53,7 @@ SELECT ar.id, ar.principal, ar.role_id, r.name AS role_name, ar.datasource_id, d
        (SELECT count(*) FROM query_result qr WHERE qr.task_id = ar.id) AS statement_count,
        ar.deny_reason, ar.source_decision_id, ar.title, ar.evaluated_decision,
        ar.approved_at, ar.executing_at, ar.executed_at, ar.execute_as, ar.creator_kind,
-       ar.statement_carries_protected_literal
+       ar.statement_carries_protected_literal, ar.source, ar.scope, ar.change_key, ar.merged_at
 FROM access_request ar LEFT JOIN app_role r ON r.id = ar.role_id
 LEFT JOIN datasource d ON d.id = ar.datasource_id
 WHERE ar.kind = 'QUERY' AND ar.creator_kind = 'WORKFLOW' AND ar.principal = $1 AND ar.status = $2 ORDER BY ar.created_at DESC;
@@ -88,7 +88,7 @@ SELECT ar.id, ar.principal, ar.role_id, r.name AS role_name, ar.datasource_id, d
        (SELECT count(*) FROM query_result qr WHERE qr.task_id = ar.id) AS statement_count,
        ar.deny_reason, ar.source_decision_id, ar.title, ar.evaluated_decision,
        ar.approved_at, ar.executing_at, ar.executed_at, ar.execute_as, ar.creator_kind,
-       ar.statement_carries_protected_literal
+       ar.statement_carries_protected_literal, ar.source, ar.scope, ar.change_key, ar.merged_at
 FROM access_request ar LEFT JOIN app_role r ON r.id = ar.role_id
 LEFT JOIN datasource d ON d.id = ar.datasource_id
 WHERE ar.id = $1;

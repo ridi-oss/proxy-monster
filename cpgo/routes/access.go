@@ -42,6 +42,10 @@ type accessRequest struct {
 	ExecuteAs                        []string `json:"executeAs"`
 	CreatorKind                      *string  `json:"creatorKind,omitempty"`
 	StatementCarriesProtectedLiteral *bool    `json:"statementCarriesProtectedLiteral,omitempty"`
+	Source                           string   `json:"source"`
+	Scope                            *string  `json:"scope,omitempty"`
+	ChangeKey                        *string  `json:"changeKey,omitempty"`
+	MergedAt                         *string  `json:"mergedAt,omitempty"`
 }
 
 func toAccessRequest(r db.AccessRequestsRow) accessRequest {
@@ -51,7 +55,8 @@ func toAccessRequest(r db.AccessRequestsRow) accessRequest {
 		CreatedAt: javaInstant(r.CreatedAt), Kind: r.Kind, SQL: optText(r.Sql), SQLHash: r.SqlHash, StatementCount: int(r.StatementCount),
 		DenyReason: r.DenyReason, SourceDecisionID: r.SourceDecisionID, Title: r.Title, EvaluatedDecision: r.EvaluatedDecision,
 		ApprovedAt: optInstant(r.ApprovedAt), ExecutingAt: optInstant(r.ExecutingAt), ExecutedAt: optInstant(r.ExecutedAt),
-		ExecuteAs: r.ExecuteAs, CreatorKind: r.CreatorKind, StatementCarriesProtectedLiteral: r.StatementCarriesProtectedLiteral}
+		ExecuteAs: r.ExecuteAs, CreatorKind: r.CreatorKind, StatementCarriesProtectedLiteral: r.StatementCarriesProtectedLiteral,
+		Source: r.Source, Scope: r.Scope, ChangeKey: r.ChangeKey, MergedAt: optInstant(r.MergedAt)}
 	if a.ExecuteAs == nil {
 		a.ExecuteAs = []string{}
 	}
@@ -61,7 +66,7 @@ func toAccessRequest(r db.AccessRequestsRow) accessRequest {
 // approvalResource is Kotlin's AccessRequest.toApprovalResource.
 func (a accessRequest) approvalResource() bridge.Resource {
 	return bridge.Resource{Type: "ApprovalRequest", Principal: a.Principal, Approver: a.DecidedBy,
-		ExecutedBy: a.ExecutedBy, DatasourceName: a.DatasourceName, RoleName: a.RoleName}
+		ExecutedBy: a.ExecutedBy, DatasourceName: a.DatasourceName, RoleName: a.RoleName, Source: a.Source}
 }
 
 // ownApprovals lists the caller's own workflow approval requests; owning them is the whole check.

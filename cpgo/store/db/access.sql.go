@@ -144,7 +144,7 @@ SELECT ar.id, ar.principal, ar.role_id, r.name AS role_name, ar.datasource_id, d
        (SELECT count(*) FROM query_result qr WHERE qr.task_id = ar.id) AS statement_count,
        ar.deny_reason, ar.source_decision_id, ar.title, ar.evaluated_decision,
        ar.approved_at, ar.executing_at, ar.executed_at, ar.execute_as, ar.creator_kind,
-       ar.statement_carries_protected_literal
+       ar.statement_carries_protected_literal, ar.source, ar.scope, ar.change_key, ar.merged_at
 FROM access_request ar LEFT JOIN app_role r ON r.id = ar.role_id
 LEFT JOIN datasource d ON d.id = ar.datasource_id
 WHERE ar.id = $1
@@ -179,6 +179,10 @@ type AccessRequestRow struct {
 	ExecuteAs                        []string
 	CreatorKind                      *string
 	StatementCarriesProtectedLiteral *bool
+	Source                           string
+	Scope                            *string
+	ChangeKey                        *string
+	MergedAt                         *time.Time
 }
 
 func (q *Queries) AccessRequest(ctx context.Context, id int64) (AccessRequestRow, error) {
@@ -213,6 +217,10 @@ func (q *Queries) AccessRequest(ctx context.Context, id int64) (AccessRequestRow
 		&i.ExecuteAs,
 		&i.CreatorKind,
 		&i.StatementCarriesProtectedLiteral,
+		&i.Source,
+		&i.Scope,
+		&i.ChangeKey,
+		&i.MergedAt,
 	)
 	return i, err
 }
@@ -227,7 +235,7 @@ SELECT ar.id, ar.principal, ar.role_id, r.name AS role_name, ar.datasource_id, d
        (SELECT count(*) FROM query_result qr WHERE qr.task_id = ar.id) AS statement_count,
        ar.deny_reason, ar.source_decision_id, ar.title, ar.evaluated_decision,
        ar.approved_at, ar.executing_at, ar.executed_at, ar.execute_as, ar.creator_kind,
-       ar.statement_carries_protected_literal
+       ar.statement_carries_protected_literal, ar.source, ar.scope, ar.change_key, ar.merged_at
 FROM access_request ar LEFT JOIN app_role r ON r.id = ar.role_id
 LEFT JOIN datasource d ON d.id = ar.datasource_id
 WHERE ar.kind IN ('ROLE', 'RATE_RESET') ORDER BY ar.created_at DESC
@@ -262,6 +270,10 @@ type AccessRequestsRow struct {
 	ExecuteAs                        []string
 	CreatorKind                      *string
 	StatementCarriesProtectedLiteral *bool
+	Source                           string
+	Scope                            *string
+	ChangeKey                        *string
+	MergedAt                         *time.Time
 }
 
 func (q *Queries) AccessRequests(ctx context.Context) ([]AccessRequestsRow, error) {
@@ -302,6 +314,10 @@ func (q *Queries) AccessRequests(ctx context.Context) ([]AccessRequestsRow, erro
 			&i.ExecuteAs,
 			&i.CreatorKind,
 			&i.StatementCarriesProtectedLiteral,
+			&i.Source,
+			&i.Scope,
+			&i.ChangeKey,
+			&i.MergedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -323,7 +339,7 @@ SELECT ar.id, ar.principal, ar.role_id, r.name AS role_name, ar.datasource_id, d
        (SELECT count(*) FROM query_result qr WHERE qr.task_id = ar.id) AS statement_count,
        ar.deny_reason, ar.source_decision_id, ar.title, ar.evaluated_decision,
        ar.approved_at, ar.executing_at, ar.executed_at, ar.execute_as, ar.creator_kind,
-       ar.statement_carries_protected_literal
+       ar.statement_carries_protected_literal, ar.source, ar.scope, ar.change_key, ar.merged_at
 FROM access_request ar LEFT JOIN app_role r ON r.id = ar.role_id
 LEFT JOIN datasource d ON d.id = ar.datasource_id
 WHERE ar.kind IN ('ROLE', 'RATE_RESET') AND ar.status = $1 ORDER BY ar.created_at DESC
@@ -358,6 +374,10 @@ type AccessRequestsByStatusRow struct {
 	ExecuteAs                        []string
 	CreatorKind                      *string
 	StatementCarriesProtectedLiteral *bool
+	Source                           string
+	Scope                            *string
+	ChangeKey                        *string
+	MergedAt                         *time.Time
 }
 
 func (q *Queries) AccessRequestsByStatus(ctx context.Context, status string) ([]AccessRequestsByStatusRow, error) {
@@ -398,6 +418,10 @@ func (q *Queries) AccessRequestsByStatus(ctx context.Context, status string) ([]
 			&i.ExecuteAs,
 			&i.CreatorKind,
 			&i.StatementCarriesProtectedLiteral,
+			&i.Source,
+			&i.Scope,
+			&i.ChangeKey,
+			&i.MergedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -675,7 +699,7 @@ SELECT ar.id, ar.principal, ar.role_id, r.name AS role_name, ar.datasource_id, d
        (SELECT count(*) FROM query_result qr WHERE qr.task_id = ar.id) AS statement_count,
        ar.deny_reason, ar.source_decision_id, ar.title, ar.evaluated_decision,
        ar.approved_at, ar.executing_at, ar.executed_at, ar.execute_as, ar.creator_kind,
-       ar.statement_carries_protected_literal
+       ar.statement_carries_protected_literal, ar.source, ar.scope, ar.change_key, ar.merged_at
 FROM access_request ar LEFT JOIN app_role r ON r.id = ar.role_id
 LEFT JOIN datasource d ON d.id = ar.datasource_id
 WHERE ar.kind = 'QUERY' AND ar.creator_kind = 'WORKFLOW' AND ar.principal = $1 ORDER BY ar.created_at DESC
@@ -710,6 +734,10 @@ type OwnApprovalsRow struct {
 	ExecuteAs                        []string
 	CreatorKind                      *string
 	StatementCarriesProtectedLiteral *bool
+	Source                           string
+	Scope                            *string
+	ChangeKey                        *string
+	MergedAt                         *time.Time
 }
 
 func (q *Queries) OwnApprovals(ctx context.Context, principal string) ([]OwnApprovalsRow, error) {
@@ -750,6 +778,10 @@ func (q *Queries) OwnApprovals(ctx context.Context, principal string) ([]OwnAppr
 			&i.ExecuteAs,
 			&i.CreatorKind,
 			&i.StatementCarriesProtectedLiteral,
+			&i.Source,
+			&i.Scope,
+			&i.ChangeKey,
+			&i.MergedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -771,7 +803,7 @@ SELECT ar.id, ar.principal, ar.role_id, r.name AS role_name, ar.datasource_id, d
        (SELECT count(*) FROM query_result qr WHERE qr.task_id = ar.id) AS statement_count,
        ar.deny_reason, ar.source_decision_id, ar.title, ar.evaluated_decision,
        ar.approved_at, ar.executing_at, ar.executed_at, ar.execute_as, ar.creator_kind,
-       ar.statement_carries_protected_literal
+       ar.statement_carries_protected_literal, ar.source, ar.scope, ar.change_key, ar.merged_at
 FROM access_request ar LEFT JOIN app_role r ON r.id = ar.role_id
 LEFT JOIN datasource d ON d.id = ar.datasource_id
 WHERE ar.kind = 'QUERY' AND ar.creator_kind = 'WORKFLOW' AND ar.principal = $1 AND ar.status = $2 ORDER BY ar.created_at DESC
@@ -811,6 +843,10 @@ type OwnApprovalsByStatusRow struct {
 	ExecuteAs                        []string
 	CreatorKind                      *string
 	StatementCarriesProtectedLiteral *bool
+	Source                           string
+	Scope                            *string
+	ChangeKey                        *string
+	MergedAt                         *time.Time
 }
 
 func (q *Queries) OwnApprovalsByStatus(ctx context.Context, arg OwnApprovalsByStatusParams) ([]OwnApprovalsByStatusRow, error) {
@@ -851,6 +887,10 @@ func (q *Queries) OwnApprovalsByStatus(ctx context.Context, arg OwnApprovalsBySt
 			&i.ExecuteAs,
 			&i.CreatorKind,
 			&i.StatementCarriesProtectedLiteral,
+			&i.Source,
+			&i.Scope,
+			&i.ChangeKey,
+			&i.MergedAt,
 		); err != nil {
 			return nil, err
 		}

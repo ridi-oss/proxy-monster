@@ -58,7 +58,7 @@ func main() {
 	}
 	for _, r := range must(q.CedarDiffRequests(ctx)) {
 		resources = append(resources, bridge.Resource{Type: "ApprovalRequest", Principal: r.Principal, Approver: r.DecidedBy,
-			DatasourceName: r.DatasourceName, RoleName: r.RoleName, ExecutedBy: r.ExecutedBy})
+			DatasourceName: r.DatasourceName, RoleName: r.RoleName, ExecutedBy: r.ExecutedBy, Source: r.Source})
 	}
 	for _, g := range must(q.CedarDiffGrants(ctx)) {
 		resources = append(resources, bridge.Resource{Type: "AccessGrant", Principal: g.Principal, ID: g.ID, RoleName: &g.Name})

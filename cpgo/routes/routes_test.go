@@ -637,7 +637,7 @@ func TestAccessListFilters(t *testing.T) {
 	if got := statuses(body); got != "RATE_RESET/PENDING,ROLE/APPROVED,ROLE/PENDING" {
 		t.Fatalf("requests newest first, query tasks excluded: %s", got)
 	}
-	if !strings.Contains(body, `"executeAs":["analyst"],"statementCarriesProtectedLiteral":false}`) {
+	if !strings.Contains(body, `"executeAs":["analyst"],"statementCarriesProtectedLiteral":false,"source":"console"}`) {
 		t.Fatalf("populated optional fields: %s", body)
 	}
 	byKind := map[string]bridge.Resource{}

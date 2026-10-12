@@ -142,7 +142,7 @@ func (q *Queries) CedarDiffPrincipals(ctx context.Context) ([]string, error) {
 }
 
 const cedarDiffRequests = `-- name: CedarDiffRequests :many
-SELECT ar.principal, ar.decided_by, d.name AS datasource_name, r.name AS role_name,
+SELECT ar.principal, ar.decided_by, d.name AS datasource_name, r.name AS role_name, ar.source,
 (SELECT qr.executed_by FROM query_result qr WHERE qr.task_id = ar.id ORDER BY qr.ordinal LIMIT 1) AS executed_by
 FROM access_request ar LEFT JOIN app_role r ON r.id = ar.role_id LEFT JOIN datasource d ON d.id = ar.datasource_id
 `
@@ -152,6 +152,7 @@ type CedarDiffRequestsRow struct {
 	DecidedBy      *string
 	DatasourceName *string
 	RoleName       *string
+	Source         string
 	ExecutedBy     *string
 }
 
@@ -169,6 +170,7 @@ func (q *Queries) CedarDiffRequests(ctx context.Context) ([]CedarDiffRequestsRow
 			&i.DecidedBy,
 			&i.DatasourceName,
 			&i.RoleName,
+			&i.Source,
 			&i.ExecutedBy,
 		); err != nil {
 			return nil, err

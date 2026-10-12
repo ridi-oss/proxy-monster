@@ -73,7 +73,9 @@ release attaches attested unsigned binaries
 (`ProxyMonsterDesktop_<version>_windows_<arch>_unsigned.zip`). The token holder
 runs `sign-windows.sh pmon-v<version>` where the token is plugged in (macOS or
 Linux, with osslsigncode), which signs the executables, packages and signs the
-MSIs, and uploads them with the signed zips. Then
+MSIs, and uploads them with the signed zips. It reads the PIN from 1Password
+(`PIN_REF`; empty, it prompts), embeds `windows/signing-chain.pem` and verifies
+against `windows/signing-root.pem`; its header lists the rest. Then
 `gh workflow run desktop-feed-windows.yml --ref pmon-v<version>` checks that the
 MSIs are signed by the certificate whose SHA-1 thumbprint is in
 `windows/signing-cert-sha1` (it refuses to publish until that file exists) and
@@ -81,6 +83,12 @@ publishes `appcast-windows.xml` and `ProxyMonsterDesktop-x64.msi` on
 `desktop-feed`. WinSparkle reads that feed; an organization turns updates off
 with the policy value `AutoUpdate` = 0 under
 `HKLM\Software\Policies\RIDI\Proxy Monster Desktop`.
+
+A renewed certificate has a new thumbprint: commit it to
+`windows/signing-cert-sha1` before signing with it, or the feed workflow refuses
+the MSIs; replace the two PEM files if its issuer changed. The thumbprint is the
+SHA-1 of the certificate's DER
+(`openssl x509 -in cert.pem -outform der | shasum`).
 
 ## The menu
 

@@ -237,14 +237,40 @@ pnpm -C web install
 [tasks.verify]
 description = "The full verification gate: lint, JVM tests, Go tests, web unit tests + build"
 shell = "bash -c"
+# CI runs the same three tasks as parallel jobs, sharding the two test tasks.
+run = '''
+set -euo pipefail
+mise run verify-static
+mise run verify-jvm
+mise run verify-go
+'''
+
+[tasks.verify-static]
+description = "The gate's non-test checks: lint, proto bindings, image go.mod builds, web unit tests + build"
+shell = "bash -c"
 run = '''
 set -euo pipefail
 mise run lint
 mise run proto-check
+mise run check-image-gomod
+pnpm -C web test:unit
+pnpm -C web build
+'''
+
+[tasks.verify-jvm]
+description = "The gate's JVM tests (PM_TEST_SHARD=i/n runs one slice of the test classes)"
+shell = "bash -c"
 # The JVM tests are DB-backed (Testcontainers) and fail rather than skip, so Docker must be running.
 # --no-daemon: a shared Gradle daemon is machine-wide state, so a build here can recycle a JVM another
 # process depends on. Without it, this gate is not self-contained.
-./gradlew --no-daemon :analyzer:jvm:test :engine:test :control-plane:test
+run = '''
+set -euo pipefail
+./gradlew --no-daemon ${PM_TEST_SHARD:+-Ppm.testShard=$PM_TEST_SHARD} :analyzer:jvm:test :engine:test :control-plane:test
+'''
+
+[tasks.verify-go]
+description = "The gate's Go tests (PM_GO_PACKAGES narrows them to some module patterns)"
+shell = "bash -c"
 # Explicit module patterns: the repo root is a Go workspace, not a module, so `./...` does not resolve
 # there. go.work is what makes these root-relative paths work with no cd.
 #
@@ -255,10 +281,10 @@ mise run proto-check
 #
 # The packages share one testcontainers reaper, which exits 10s after its last package lets go; a package
 # starting in that window waits on the dying reaper until its 60s deadline.
-TESTCONTAINERS_RYUK_RECONNECTION_TIMEOUT=5m go test -race ./analyzer/... ./auditmon/... ./cpgo/... ./goproxy/... ./mysqlwire/... ./pmon/... ./pmon/tray/...
-mise run check-image-gomod
-pnpm -C web test:unit
-pnpm -C web build
+run = '''
+set -euo pipefail
+pkgs=${PM_GO_PACKAGES:-./analyzer/... ./auditmon/... ./cpgo/... ./goproxy/... ./mysqlwire/... ./pmon/... ./pmon/tray/...}
+TESTCONTAINERS_RYUK_RECONNECTION_TIMEOUT=5m go test -race $pkgs
 '''
 
 [tasks.check-image-gomod]

@@ -283,7 +283,7 @@ shell = "bash -c"
 # starting in that window waits on the dying reaper until its 60s deadline.
 run = '''
 set -euo pipefail
-pkgs=${PM_GO_PACKAGES:-./analyzer/... ./auditmon/... ./cpgo/... ./goproxy/... ./mysqlwire/... ./pmon/... ./pmon/tray/...}
+pkgs=${PM_GO_PACKAGES:-./analyzer/... ./auditmon/... ./cpgo/... ./goproxy/... ./mysqlwire/... ./pmon/... ./pmon/tray/... ./sql-action/...}
 TESTCONTAINERS_RYUK_RECONNECTION_TIMEOUT=5m go test -race $pkgs
 '''
 
@@ -331,7 +331,7 @@ shell = "bash -c"
 # module, so a root-relative pattern only resolves once a go.work exists.
 run = '''
 set -euo pipefail
-for m in analyzer auditmon cpgo goproxy mysqlwire pmon pmon/tray; do
+for m in analyzer auditmon cpgo goproxy mysqlwire pmon pmon/tray sql-action; do
   echo "=== $m ==="
   (cd "$m" && go test -race ./...)
 done

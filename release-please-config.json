@@ -56,7 +56,7 @@
       "component": "server",
       "release-type": "simple",
       "changelog-path": "CHANGELOG.md",
-      "exclude-paths": ["pmon", "mysqlwire"],
+      "exclude-paths": ["pmon", "mysqlwire", "sql-action"],
       "extra-files": [
         {
           "type": "json",
@@ -72,6 +72,12 @@
     },
     "pmon": {
       "component": "pmon",
+      "release-type": "go",
+      "extra-files": [{ "type": "generic", "path": "version.go" }],
+      "changelog-path": "CHANGELOG.md"
+    },
+    "sql-action": {
+      "component": "pm-ci",
       "release-type": "go",
       "extra-files": [{ "type": "generic", "path": "version.go" }],
       "changelog-path": "CHANGELOG.md"

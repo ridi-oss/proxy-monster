@@ -53,6 +53,9 @@ Modules:
   short-lived token upstream. Its menu-bar app is `pmon/tray/`.
   Connection-string formatters and brokers use its
   [provider SPI](./pmon/AGENTS.md).
+- `sql-action/` — the GitHub Action that files a pull request's SQL files, and
+  `pm-ci`, the Go binary it runs
+  ([docs/sql-from-github.md](./docs/sql-from-github.md)).
 - `mysqlwire/` — Go MySQL wire-protocol codec library (shared by `goproxy` and
   `pmon`).
 - `proto/` — protobuf contracts: the proxy↔control-plane gRPC surface and the
@@ -174,9 +177,9 @@ in [CONTRIBUTING.md](./CONTRIBUTING.md#build-test-run). Install and deploy:
 
 ## Releases
 
-release-please cuts three trains (server, `pmon`, `mysqlwire`) from one config;
-see [CONTRIBUTING.md](./CONTRIBUTING.md#releases). The paths a commit touches
-decide its train.
+release-please cuts four trains (server, `pmon`, `pm-ci`, `mysqlwire`) from one
+config; see [CONTRIBUTING.md](./CONTRIBUTING.md#releases). The paths a commit
+touches decide its train.
 
 Never force a version with an empty commit carrying a `Release-As:` footer. An
 empty commit touches no path, so release-please counts it toward every train:

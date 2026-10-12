@@ -29,12 +29,13 @@ func isolate(t *testing.T) {
 	t.Setenv("PMON_PORT_BASE", fmt.Sprintf("%d", freePortRange(t, 8)))
 }
 
-// freePortRange returns the first of n consecutive free ports below the ephemeral range, so a broker on
-// base+1 cannot collide with a test server the kernel placed there.
+// freePortRange returns the first of n consecutive free ports below Linux's ephemeral range (32768+), so a
+// broker on base+1 cannot collide with a test server the kernel placed there. 26000+ keeps clear of the
+// cli package's ranges, which run at the same time.
 func freePortRange(t *testing.T, n int) int {
 	t.Helper()
 	for {
-		base, ok := 20000+rand.IntN(20000), true
+		base, ok := 26000+rand.IntN(6700), true
 		for p := base; p < base+n && ok; p++ {
 			ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", p))
 			if err != nil {

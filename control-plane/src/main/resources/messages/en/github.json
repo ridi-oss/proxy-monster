@@ -28,6 +28,7 @@
     "failed_at": "`{path}` on **{schema}** — failed at statement {ordinal} of {statementCount}. Approved by **{decidedBy}**.\n\n```sql\n{statement}\n```\n\n```\n{error}\n```\n\n[Open the request]({link})",
     "cancelled": "`{path}` on **{schema}** — cancelled. [Open the request]({link})",
     "closed_after_run": "`{path}` on **{schema}** ran, but this pull request was closed without merging. The scope stays blocked until this file reaches main: reopen and merge this pull request, or add the identical file in a new one. [Open the request]({link})",
-    "merged_without_file": "`{path}` on **{schema}** ran, but this pull request merged without the file, so the target has SQL that main does not. Admins have been alerted. [Open the request]({link})"
+    "merged_without_file": "`{path}` on **{schema}** ran, but this pull request merged without the file, so the target has SQL that main does not. Admins have been alerted. [Open the request]({link})",
+    "force_run": "Force-run by **{forcedBy}**: `{path}` on **{schema}** skips the scope's freshness and one-PR-at-a-time checks. It still runs only when the pull request is ready to merge. [Open the request]({link})"
   }
 }

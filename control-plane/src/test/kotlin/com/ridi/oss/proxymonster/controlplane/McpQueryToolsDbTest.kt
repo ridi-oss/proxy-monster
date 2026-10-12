@@ -131,7 +131,7 @@ class McpQueryToolsDbTest {
         val client = createClient { expectSuccess = false }
         val principal = analyst("scope")
         val taskTools = McpCapabilityRegistry.entries.filter { it.gate == McpGate.RESOURCE }
-        assertEquals(36, taskTools.size)
+        assertEquals(37, taskTools.size)
         for (tool in taskTools) {
             val allButOwn = token(principal, McpCapabilityRegistry.supportedScopes - tool.requiredScope)
             val response = client.rawCall(allButOwn, tool.toolName)
@@ -140,7 +140,7 @@ class McpQueryToolsDbTest {
             assertEquals("mcp.insufficient_scope", structured(response.bodyAsText()).code(), tool.toolName)
         }
         val queryOnly = token(principal, setOf("mcp:query"))
-        for (tool in listOf("approve_approval", "reject_approval", "execute_approval")) {
+        for (tool in listOf("approve_approval", "reject_approval", "execute_approval", "force_run_approval")) {
             val response = client.rawCall(queryOnly, tool, buildJsonObject { put("id", 1) })
             assertEquals(HttpStatusCode.Forbidden, response.status, tool)
             assertContains(assertNotNull(response.headers[HttpHeaders.WWWAuthenticate]), "scope=\"mcp:approvals:write\"")
@@ -297,6 +297,33 @@ class McpQueryToolsDbTest {
             }
             assertEquals("APPROVED", core.accessStore.getRequest(id)?.status)
             assertEquals(0, runs.get())
+        } finally {
+            core.cedarPolicyStore.delete(policy.id)
+        }
+    }
+
+    @Test
+    fun `force_run_approval needs task force_run, not task approve`() = testApplication {
+        application { installTestMcp() }
+        val client = createClient { expectSuccess = false }
+        val requester = analyst("force")
+        val approver = "mcp-force-approver-${seq.incrementAndGet()}@example.com"
+        val policy = core.cedarPolicyStore.create(
+            CedarPolicyInput(
+                "mcp-force-approver-${seq.incrementAndGet()}",
+                """permit(principal == User::"$approver", action in [Action::"task.approve", Action::"task.read"], resource);""",
+            ),
+            "test",
+        )
+        try {
+            val id = pendingRequest(requester, fx.datasource.id)
+            fx.dataSource.connection.use { c ->
+                c.prepareStatement("UPDATE access_request SET source = 'github', scope = 'gh-force', repository = 'acme/shop', pr = 2 WHERE id = ?")
+                    .use { ps -> ps.setLong(1, id); ps.executeUpdate() }
+            }
+            val result = client.call(token(approver, setOf("mcp:query", "mcp:approvals:write")), "force_run_approval", idArg(id))
+            assertEquals("approval.not_approver", result.error())
+            assertEquals(false, core.accessStore.getRequest(id)?.forceRun)
         } finally {
             core.cedarPolicyStore.delete(policy.id)
         }

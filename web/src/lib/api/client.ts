@@ -651,6 +651,10 @@ export function cancelApproval(id: number): Promise<AccessRequest> {
   return request<AccessRequest>(`/api/approvals/${id}/cancel`, { method: 'POST' })
 }
 
+export function forceRunApproval(id: number): Promise<AccessRequest> {
+  return request<AccessRequest>(`/api/approvals/${id}/force-run`, { method: 'POST' })
+}
+
 /** Fetch decrypted rows after the latest child reaches DONE. */
 /** [ordinal] selects one statement of a batch; omit it for the active statement. */
 export function getApprovalResult(id: number, ordinal?: number): Promise<QueryResultView> {

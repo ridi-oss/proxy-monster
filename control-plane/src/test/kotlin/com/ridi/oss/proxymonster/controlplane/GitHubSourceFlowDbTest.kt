@@ -5,6 +5,7 @@ import com.ridi.oss.proxymonster.controlplane.authz.CedarPolicyInput
 import com.ridi.oss.proxymonster.controlplane.grpc.ControlPlaneGrpcService
 import com.ridi.oss.proxymonster.controlplane.grpc.GrpcServer
 import com.ridi.oss.proxymonster.controlplane.management.AuditActor
+import com.ridi.oss.proxymonster.controlplane.management.AuditSource
 import com.ridi.oss.proxymonster.controlplane.notify.NotificationService
 import com.ridi.oss.proxymonster.controlplane.notify.NotificationStore
 import com.ridi.oss.proxymonster.controlplane.notify.RecipientResolver
@@ -114,6 +115,7 @@ class GitHubSourceFlowDbTest {
     private val alice = "alice@example.com"
     private val bob = "bob@example.com"
     private val carol = "carol@example.com"
+    private val dave = "dave@example.com"
     private val aliceUser = SourceUser("1", "alice")
     private val bobUser = SourceUser("2", "bob")
     private val carolUser = SourceUser("3", "carol")
@@ -133,9 +135,10 @@ class GitHubSourceFlowDbTest {
             DatasourceInput(name = "shop-pg", engine = "postgres", host = "localhost", port = 5432, dbName = "app"),
         )
         role = core.policyStore.createRole(RoleInput("schema-migrator"))
-        for (p in listOf(alice, bob, carol)) {
+        for (p in listOf(alice, bob, carol, dave)) {
             core.userGroupStore.createUser(AppUserInput(principal = p), core.tokenStore, core.accessStore, sessionStore)
         }
+        core.policyStore.createAssignment(RoleAssignmentInput(dave, core.policyStore.getRoleByName("system:admin")!!.id))
         // alice holds the permit too, so her own review is refused by the shipped no-self-approval forbid alone.
         core.cedarPolicyStore.create(
             CedarPolicyInput(
@@ -249,7 +252,9 @@ class GitHubSourceFlowDbTest {
 
     private fun status(id: Long) = core.accessStore.getRequest(id)?.status
 
-    private fun recheck(n: Int) = runBlocking { flow.evaluate(repo, n, adapter.readPullRequests(repo, listOf(n))[n]) }
+    private suspend fun evaluate(n: Int) = flow.evaluate(repo, n, adapter.readPullRequests(repo, listOf(n))[n])
+
+    private fun recheck(n: Int) = runBlocking { evaluate(n) }
 
     /** The proxy's answer to one statement: ALLOW and done, or a target error when the SQL contains [fail]. */
     private fun answer(sql: String, fail: String?): List<ProxyRunMsg> {
@@ -437,6 +442,113 @@ class GitHubSourceFlowDbTest {
         pollWithProxy()
         assertEquals("EXECUTED", rows(b).single().status)
         assertEquals(CheckConclusion.SUCCESS, lastCheck(b).conclusion)
+    }
+
+    private fun forceRun(id: Long) = approvals.forceRun(dave, null, AuditActor(dave, channel = AuditSource.CONSOLE), id)
+
+    @Test
+    fun `force-run needs task force_run, and an approver without it is refused`() = testApplication {
+        val client = serve()
+        val n = number()
+        open(n)
+        val req = file(n, schema(), listOf("db/f.sql" to "create table f (id int)")).single()
+
+        assertEquals(HttpStatusCode.NoContent, client.post("/test/session/$bob").status)
+        val refused = client.post("/api/approvals/${req.id}/force-run")
+        assertEquals(HttpStatusCode.Forbidden to "approval.not_approver", refused.status to refused.body<ApiError>().code)
+        assertEquals(false, core.accessStore.getRequest(req.id)?.forceRun)
+
+        assertEquals(HttpStatusCode.NoContent, client.post("/test/session/$dave").status)
+        val forced = client.post("/api/approvals/${req.id}/force-run")
+        assertEquals(HttpStatusCode.OK, forced.status)
+        val body = forced.body<AccessRequest>()
+        assertEquals(true to dave, body.forceRun to body.forceRunBy)
+        assertTrue(outboxRecipients(req.id, "task.force_run").isNotEmpty())
+
+        val outbox = outboxRecipients(req.id, "task.force_run").size
+        assertEquals(HttpStatusCode.OK, client.post("/api/approvals/${req.id}/force-run").status)
+        assertEquals(outbox, outboxRecipients(req.id, "task.force_run").size)
+        Unit
+    }
+
+    @Test
+    fun `a forced request runs while another pull request's run is unmerged`() {
+        val schema = schema()
+        val a = number()
+        open(a)
+        file(a, schema, listOf("db/00051_a.sql" to "create table fa (id int)"))
+        readyToMerge(a)
+        withProxy { evaluate(a) }
+        assertEquals("EXECUTED", rows(a).single().status)
+
+        val b = number()
+        open(b)
+        val req = file(b, schema, listOf("db/00051_b.sql" to "create table fb (id int)")).single()
+        readyToMerge(b)
+        withProxy { evaluate(b) }
+        assertEquals("APPROVED", status(req.id))
+        assertEquals("Waiting for #$a to merge", lastCheck(b).title)
+
+        forceRun(req.id)
+        assertTrue(outboxRecipients(req.id, "task.force_run").isNotEmpty())
+        withProxy { evaluate(b) }
+        assertEquals("EXECUTED", status(req.id))
+        assertEquals(CheckConclusion.SUCCESS, lastCheck(b).conclusion)
+    }
+
+    @Test
+    fun `a forced request runs on a branch behind the scope's last merged run`() {
+        val schema = schema()
+        val merged = runToMerge(schema, listOf("db/00061.sql" to "create table fbase (id int)")).single()
+        val n = number()
+        open(n)
+        val req = file(n, schema, listOf("db/00062.sql" to "create table fbehind (id int)")).single()
+        readyToMerge(n)
+        adapter.relations[Triple(repo, merged.pullRequest!!.mergeSha!!, "sha$n")] = CommitRelation.BEHIND
+        withProxy { evaluate(n) }
+        assertEquals("APPROVED", status(req.id))
+        assertTrue(lastCheck(n).title.startsWith("Update your branch"), lastCheck(n).title)
+
+        forceRun(req.id)
+        withProxy { evaluate(n) }
+        assertEquals("EXECUTED", status(req.id))
+    }
+
+    @Test
+    fun `a forced request still waits for auto-merge and the other checks`() {
+        val n = number()
+        open(n)
+        update(n) { it.copy(checks = null) }
+        val req = file(n, schema(), listOf("db/00071.sql" to "create table fwait (id int)")).single()
+        update(n) { it.copy(reviews = listOf(approval(bobUser))) }
+        recheck(n)
+        assertEquals("APPROVED", status(req.id))
+        forceRun(req.id)
+
+        withProxy { evaluate(n) }
+        assertEquals("APPROVED", status(req.id))
+        assertEquals(CheckStatus.IN_PROGRESS, lastCheck(n).status)
+        assertTrue(lastCheck(n).title.contains("auto-merge"), lastCheck(n).title)
+
+        update(n) { it.copy(autoMerge = AutoMerge(carolUser, Instant.now())) }
+        withProxy { evaluate(n) }
+        assertEquals("APPROVED", status(req.id))
+        assertEquals("Waiting for other checks", lastCheck(n).title)
+    }
+
+    @Test
+    fun `a push that edits a forced file clears the force`() {
+        val n = number()
+        val schema = schema()
+        open(n)
+        val req = file(n, schema, listOf("db/00072.sql" to "create table fedit (id int)")).single()
+        forceRun(req.id)
+        assertEquals(true, core.accessStore.getRequest(req.id)?.forceRun)
+
+        update(n) { it.copy(headSha = "sha$n-2") }
+        val edited = file(n, schema, listOf("db/00072.sql" to "create table fedit (id bigint)")).single()
+        assertEquals(req.id, edited.id)
+        assertEquals(false to null, edited.forceRun to edited.forceRunBy)
     }
 
     @Test

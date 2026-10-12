@@ -23,13 +23,15 @@ enum class NotificationEvent(val wire: String) {
     TASK_CLOSED_AFTER_RUN("task.closed_after_run"),
     /** A pull request merged without a file whose SQL ran: an alert, so a fresh message. */
     TASK_MERGED_WITHOUT_FILE("task.merged_without_file"),
+    /** An admin forced a pull request's request past its scope checks: an alert, so a fresh message. */
+    TASK_FORCE_RUN("task.force_run"),
     ;
 
     /** True when this event should edit an existing message rather than start a new thread of its own. The two
      *  creation events — the approvers' request and the requester's own receipt — start threads; every later
      *  event edits the message its recipient already holds, except an alert. */
     val isUpdate: Boolean get() =
-        this != TASK_REQUESTED && this != TASK_SUBMITTED && this != TASK_CLOSED_AFTER_RUN && this != TASK_MERGED_WITHOUT_FILE
+        this !in setOf(TASK_REQUESTED, TASK_SUBMITTED, TASK_CLOSED_AFTER_RUN, TASK_MERGED_WITHOUT_FILE, TASK_FORCE_RUN)
 
     /** The events that open a task's thread; a ref already left for one means a prior attempt delivered it. */
     val isCreation: Boolean get() = this == TASK_REQUESTED || this == TASK_SUBMITTED
@@ -170,6 +172,8 @@ data class NotificationMessage(
     val failure: String? = null,
     /** FAILED only: which statement of the batch failed, and its SQL. */
     val failedStatement: FailedStatement? = null,
+    /** FORCE_RUN only: the admin who forced the run. */
+    val forcedBy: String? = null,
 )
 
 /** [ordinal] is 0-based, as stored on the `query_result` child. */

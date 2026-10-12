@@ -842,7 +842,7 @@ private fun schemaFor(tool: String): ToolSchema {
             "edit_approval" -> { integer("id"); string("sql"); string("title"); string("reason") }
             "list_my_approvals" -> string("status")
             "approve_approval" -> { integer("id"); integer("revision", min = 1) }
-            "get_approval", "execute_approval", "cancel_approval" -> integer("id")
+            "get_approval", "execute_approval", "cancel_approval", "force_run_approval" -> integer("id")
             "reject_approval" -> { integer("id"); string("reason") }
             "get_approval_result" -> { integer("id"); resultPage() }
             "list_audit" -> integer("limit", min = 1, max = 500)
@@ -892,7 +892,7 @@ private fun schemaFor(tool: String): ToolSchema {
         "request_approval" -> listOf("roleName", "reason")
         "edit_approval" -> listOf("id", "sql")
         "approve_approval" -> listOf("id", "revision")
-        "get_approval", "execute_approval", "cancel_approval", "get_approval_result" -> listOf("id")
+        "get_approval", "execute_approval", "cancel_approval", "force_run_approval", "get_approval_result" -> listOf("id")
         "reject_approval" -> listOf("id", "reason")
         "get_audit_event", "approve_access_request", "revoke_access_grant", "revoke_token" -> listOf("id")
         "request_access" -> listOf("roleName", "reason")

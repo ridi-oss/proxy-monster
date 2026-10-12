@@ -299,6 +299,23 @@ class NotificationServiceDbTest {
     }
 
     @Test
+    fun `an approval after a force-run edits the request message, not the force-run alert`() = runBlocking {
+        val task = newTask().id
+        transport.deliverResult = DeliveryResult.Sent("ref-request")
+        enqueue(task, NotificationEvent.TASK_REQUESTED, "sam@x")
+        svc.drainOnce()
+
+        transport.deliverResult = DeliveryResult.Sent("ref-force-run")
+        enqueue(task, NotificationEvent.TASK_FORCE_RUN, "sam@x")
+        svc.drainOnce()
+        assertEquals("ref-request", store.externalRef(task, "fake", "sam@x", NotificationKind.APPROVER))
+
+        enqueue(task, NotificationEvent.TASK_DECIDED, "sam@x")
+        svc.drainOnce()
+        assertEquals(listOf("ref-request"), transport.updated.map { it.ref }, "the decision clears the request's buttons")
+    }
+
+    @Test
     fun `an update waits while the requested message it edits is still pending`() = runBlocking {
         val task = newTask().id
         transport.deliverResult = DeliveryResult.Retry("ratelimited") // the requested stays pending

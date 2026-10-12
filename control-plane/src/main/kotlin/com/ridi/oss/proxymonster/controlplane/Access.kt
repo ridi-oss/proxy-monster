@@ -83,6 +83,9 @@ data class AccessRequest(
     /** [contentHash] of the request's SQL; an edit that keeps it keeps the revision and the approval. */
     val contentHash: String? = null,
     val pullRequest: PullRequestRef? = null,
+    /** An admin let this request run past its scope's freshness and one-PR-at-a-time checks. */
+    val forceRun: Boolean = false,
+    val forceRunBy: String? = null,
 ) {
     val fromPullRequest: Boolean get() = source == SOURCE_GITHUB
 }
@@ -631,6 +634,7 @@ class AccessStore(internal val dataSource: DataSource) {
                        rejection_reason = NULL, source_decision_id = NULL, deny_reason = ?, evaluated_decision = ?,
                        statement_carries_protected_literal = ?, title = COALESCE(?, title), reason = COALESCE(?, reason),
                        content_hash = ?, revision = revision + 1, revised_at = now(), approved_review_id = NULL,
+                       force_run = FALSE, force_run_by = NULL,
                        file_key = COALESCE(?, file_key),
                        change_key = COALESCE(?, change_key), head_sha = COALESCE(?, head_sha)
                    WHERE id = ? AND kind = 'QUERY' AND creator_kind = 'WORKFLOW' AND status IN ('PENDING', 'APPROVED')
@@ -731,10 +735,10 @@ class AccessStore(internal val dataSource: DataSource) {
         // Re-read under the lock: a concurrent winner has moved the row off APPROVED and loses as false.
         var repository: String? = null
         var pr: Int? = null
-        c.prepareStatement("SELECT status, repository, pr FROM access_request WHERE id = ?").use { ps ->
+        c.prepareStatement("SELECT status, repository, pr, force_run FROM access_request WHERE id = ?").use { ps ->
             ps.setLong(1, id)
             ps.executeQuery().use { rs ->
-                if (!rs.next() || rs.getString(1) != "APPROVED") return
+                if (!rs.next() || rs.getString(1) != "APPROVED" || rs.getBoolean(4)) return
                 repository = rs.getString(2)
                 pr = rs.getInt(3).takeUnless { rs.wasNull() }
             }
@@ -839,6 +843,39 @@ class AccessStore(internal val dataSource: DataSource) {
             }
             won
         }
+
+    /**
+     * Mark a GitHub request, PENDING or APPROVED, to run past its scope's checks, recording a
+     * [TASK_FORCE_RUN][AuthzAction.TASK_FORCE_RUN] event. Null when there is no such row not yet forced.
+     */
+    fun forceRun(
+        id: Long,
+        admin: String,
+        actor: AuditActor,
+        recorder: ManagementAuditRecorder,
+        onForced: (Connection, AccessRequest) -> Unit,
+    ): AccessRequest? = dataSource.inTx { c ->
+        val won = c.prepareStatement(
+            """UPDATE access_request SET force_run = TRUE, force_run_by = ?
+               WHERE id = ? AND kind = 'QUERY' AND source = 'github' AND status IN ('PENDING', 'APPROVED')
+                 AND force_run = FALSE""",
+        ).use { ps ->
+            ps.setString(1, admin)
+            ps.setLong(2, id)
+            ps.executeUpdate() > 0
+        }
+        if (!won) return@inTx null
+        recorder.record(
+            c, actor, AuthzAction.TASK_FORCE_RUN, auditEntity("AccessRequest", id.toString()),
+            "force-run query request #$id past the scope checks",
+        )
+        val forced = c.prepareStatement("$REQ_SELECT WHERE ar.id = ?").use { ps ->
+            ps.setLong(1, id)
+            ps.executeQuery().use { rs -> rs.next(); rs.toRequest() }
+        }
+        onForced(c, forced)
+        forced
+    }
 
     /**
      * Record that a pull request merged: its own requests, and the scope's executed requests carrying its keys.
@@ -1281,6 +1318,8 @@ class AccessStore(internal val dataSource: DataSource) {
         revisedAt = getTimestamp("revised_at")?.toInstant()?.toString(),
         contentHash = getString("content_hash"),
         pullRequest = pullRequestRef(),
+        forceRun = getBoolean("force_run"),
+        forceRunBy = getString("force_run_by"),
     )
 
     private fun ResultSet.pullRequestRef(): PullRequestRef? {
@@ -1324,7 +1363,8 @@ class AccessStore(internal val dataSource: DataSource) {
                       ar.statement_carries_protected_literal, ar.source, ar.scope, ar.change_key,
                       ar.merged_at, ar.revision, ar.revised_at, ar.path, ar.pr_url, ar.repository, ar.pr,
                       ar.default_schema, ar.pr_auto_merge, ar.head_sha, ar.merge_sha,
-                      ar.approved_review_id, ar.filed_head, ar.file_key, ar.content_hash, ar.key_order
+                      ar.approved_review_id, ar.filed_head, ar.file_key, ar.content_hash, ar.key_order,
+                      ar.force_run, ar.force_run_by
                FROM access_request ar LEFT JOIN app_role r ON r.id = ar.role_id
                LEFT JOIN datasource d ON d.id = ar.datasource_id"""
         // The app_role join is filtered to LIVE roles: a grant of a soft-deleted role must resolve to no

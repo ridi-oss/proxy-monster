@@ -36,6 +36,7 @@ enum class AuthzAction(val cedarId: String) {
     TASK_ASSUME("task.assume"),
     TASK_CANCEL("task.cancel"),
     TASK_DELETE("task.delete"),
+    TASK_FORCE_RUN("task.force_run"),
     GRANT_REVOKE("grant.revoke"),
     TOKEN_MINT("token.mint"),
     TOKEN_LIST("token.list"),

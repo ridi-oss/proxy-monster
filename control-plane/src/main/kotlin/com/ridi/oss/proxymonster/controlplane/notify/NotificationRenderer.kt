@@ -71,6 +71,7 @@ class NotificationRenderer(private val catalog: MessageCatalog = MessageCatalog(
                 "datasource" to escapeMrkdwn(m.datasource),
                 "statement" to statement,
                 "decidedBy" to (m.decidedBy ?: "—"),
+                "forcedBy" to (m.forcedBy ?: "—"),
                 "rowCount" to (m.rowCount?.toString() ?: "—"),
                 "role" to (m.roleName?.let { catalog.text("field.role", locale, mapOf("role" to escapeMrkdwn(it))) } ?: ""),
                 "reason" to reason,
@@ -87,7 +88,12 @@ class NotificationRenderer(private val catalog: MessageCatalog = MessageCatalog(
         // would ask for a `task.decided_approved_fallback` that does not exist.
         "task.${m.event.name.removePrefix("TASK_").lowercase()}_fallback",
         locale,
-        mapOf("requester" to m.requester, "datasource" to m.datasource, "decidedBy" to (m.decidedBy ?: "—")),
+        mapOf(
+            "requester" to m.requester,
+            "datasource" to m.datasource,
+            "decidedBy" to (m.decidedBy ?: "—"),
+            "forcedBy" to (m.forcedBy ?: "—"),
+        ),
     )
 
     private fun bodyKey(m: NotificationMessage): String = when (m.event) {
@@ -105,6 +111,7 @@ class NotificationRenderer(private val catalog: MessageCatalog = MessageCatalog(
         NotificationEvent.TASK_CANCELLED -> "task.cancelled"
         NotificationEvent.TASK_CLOSED_AFTER_RUN -> "task.closed_after_run"
         NotificationEvent.TASK_MERGED_WITHOUT_FILE -> "task.merged_without_file"
+        NotificationEvent.TASK_FORCE_RUN -> "task.force_run"
     }
 
     companion object {

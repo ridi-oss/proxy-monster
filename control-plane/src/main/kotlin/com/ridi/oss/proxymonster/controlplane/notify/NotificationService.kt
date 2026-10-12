@@ -81,7 +81,7 @@ class NotificationService(
                 // emit() only carries later events; a pending request is enqueued by emitRequested. Kept total.
                 NotificationEvent.TASK_REQUESTED -> recipients.recipientsFor(req).map { it to NotificationKind.APPROVER }
                 // An alert reaches everyone who may approve (admins included) and every party, fresh.
-                NotificationEvent.TASK_CLOSED_AFTER_RUN, NotificationEvent.TASK_MERGED_WITHOUT_FILE ->
+                NotificationEvent.TASK_CLOSED_AFTER_RUN, NotificationEvent.TASK_MERGED_WITHOUT_FILE, NotificationEvent.TASK_FORCE_RUN ->
                     recipients.recipientsFor(req, listOfNotNull(req.principal, req.decidedBy, req.executedBy))
                         .map { it to NotificationKind.APPROVER }
                 // Every later event edits the threads of exactly the people who were TOLD about the request —
@@ -338,6 +338,7 @@ class NotificationService(
             failure = failure,
             failedStatement = failedRun?.takeIf { it.meta.status == "FAILED" && !it.sql.isNullOrBlank() }
                 ?.let { FailedStatement(it.meta.ordinal, it.sql!!) },
+            forcedBy = req.forceRunBy,
         )
     }
 

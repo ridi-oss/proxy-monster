@@ -350,7 +350,7 @@ export interface MaskFnInput {
 
 export type AccessRequestStatus =
   | 'DRAFT' | 'PENDING' | 'APPROVED' | 'REJECTED'
-  | 'EXECUTING' | 'EXECUTED' | 'FAILED' | 'CANCELLED' | 'DELETED'
+  | 'EXECUTING' | 'EXECUTED' | 'FAILED' | 'CANCELLED' | 'DELETED' | 'ALREADY_RAN'
 
 export interface AccessRequest {
   id: number
@@ -384,6 +384,18 @@ export interface AccessRequest {
   /** Grows with each edit of the SQL; an approval names the revision it approves. */
   revision: number
   revisedAt?: string | null
+  source?: string
+  pullRequest?: PullRequestRef | null
+}
+
+/** The pull request a GitHub request came from. */
+export interface PullRequestRef {
+  /** `owner/name` of the pull request's repository. */
+  repository: string
+  pr: number
+  prUrl?: string | null
+  /** The file's path in git. */
+  path?: string | null
 }
 
 export interface AccessRequestInput {

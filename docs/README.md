@@ -15,12 +15,12 @@ work lives in [`backlog.md`](./backlog.md). To build, test, and contribute see
 
 proxy-monster runs on `main`: the enforcing wire proxy for MySQL and PostgreSQL,
 the Cedar authorization core, the sqlglot-go lineage analyzer, OIDC and session
-auth, the query-approval workflow, and the tamper-evident audit trail with its
-independent monitor. Two tracks are still moving: the OAuth-2.1-authenticated
-MCP surface covers administration, queries, and query approvals but not yet
-audit browsing or JIT grants, and a port of the control-plane to Go (the data
-plane is already Go) is a proposal under evaluation
-([`cp-go-migration.md`](./cp-go-migration.md)).
+auth, the query-approval workflow with SQL files run from GitHub pull requests,
+and the tamper-evident audit trail with its independent monitor. Two tracks are
+still moving: the OAuth-2.1-authenticated MCP surface covers administration,
+queries, and query approvals but not yet audit browsing or JIT grants, and a
+port of the control-plane to Go (the data plane is already Go) is a proposal
+under evaluation ([`cp-go-migration.md`](./cp-go-migration.md)).
 
 ## Documents
 
@@ -70,6 +70,7 @@ a facts layer.
 | [`auth-model.md`](./auth-model.md) | Authentication: OIDC web login + CP-brokered device-auth; roles resolved locally. |
 | [`session-lifetime.md`](./session-lifetime.md) | Server-side sessions on a unified `principal_session` table; two clocks; newest-wins / device-bind; ≤5-min IdP revalidation. |
 | [`approval-workflow.md`](./approval-workflow.md) | Run a query under role R, once, via an approver: role discovery + execute-under-R + view-as-R. |
+| [`sql-from-github.md`](./sql-from-github.md) | SQL files in a pull request become approval requests, approved in proxy-monster and run in key order as the PR merges. |
 | [`task-execution.md`](./task-execution.md) | The execute-under-R task model behind the approval workflow: executor context, masking, viewing. |
 | [`mcp-access-control.md`](./mcp-access-control.md) | OAuth-2.1-authenticated MCP access-control tools over the live Cedar/RoleResolver authority; co-hosted authorization server. |
 

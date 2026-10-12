@@ -402,6 +402,8 @@ class RunExecService(
         dialTimeoutMs: Long = RUN_DIALBACK_TIMEOUT_MS,
         noProgressMs: Long = RUN_NO_PROGRESS_TIMEOUT_MS,
         openTimeoutMs: Long = RUN_OPEN_TIMEOUT_MS,
+        // The connection's default namespaces; null keeps the datasource's.
+        namespaces: Collection<String>? = null,
         // The schema the target connection opens in; null keeps the datasource's.
         defaultSchema: String? = null,
     ) {
@@ -423,7 +425,7 @@ class RunExecService(
         val kind = (if (approverExec) TokenKind.APPROVER_EXEC else TokenKind.EDITOR).name
         val opened = core.connectionCatalog.open(
             Binding(ds.name, principal, kind, ds.effectiveCatalog),
-            ds.namespaces(ds.defaultSchemas + ds.engine.systemSchemas),
+            ds.namespaces((namespaces ?: ds.defaultSchemas) + ds.engine.systemSchemas),
             adoptHeldContent = ds.engine.catalogIsConnectionIndependent,
         )
         val sessionId = UUID.randomUUID().toString()

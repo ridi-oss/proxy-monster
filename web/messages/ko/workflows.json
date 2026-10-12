@@ -41,7 +41,8 @@
     "rejectionReason": "반려 사유",
     "sourceDecision": "원본 결정",
     "requesterReason": "요청자 사유",
-    "grantDuration": "부여 기간"
+    "grantDuration": "부여 기간",
+    "pullRequest": "풀 리퀘스트"
   },
   "durations": {
     "asRequested": "요청한 기간대로",
@@ -175,6 +176,7 @@
     "rejectedToast": "쿼리 승인이 반려되었습니다",
     "rejectFailed": "반려에 실패했습니다",
     "approvedExecuteUnderR": "승인됨 — 승인자가 요청된 역할로 실행을 제출할 수 있습니다.",
+    "approvedGithub": "승인됨 — 풀 리퀘스트를 머지할 준비가 되면 실행됩니다.",
     "runUnderRole": "승인된 쿼리를 요청된 역할로 실행합니다. 진행 상태와 결과는 자동으로 갱신됩니다.",
     "runStatus": "{status} · {rows, plural, other {#개 행}} · 만료 {expires}",
     "failedCode": "실행 실패: {code}",
@@ -202,7 +204,9 @@
     "title": "쿼리 요청 승인 후 실행",
     "descriptionWithPrincipal": "{principal}님의 쿼리 요청을 승인하고 요청된 역할로 실행합니다.",
     "descriptionFallback": "이 쿼리 요청을 승인하고 요청된 역할로 실행합니다.",
-    "executeUnderRNote": "승인되면 승인자가 요청된 역할로 쿼리를 실행하고 결과를 공개합니다. 요청자는 해당 역할이 볼 수 있는 범위 이상을 볼 수 없습니다."
+    "executeUnderRNote": "승인되면 승인자가 요청된 역할로 쿼리를 실행하고 결과를 공개합니다. 요청자는 해당 역할이 볼 수 있는 범위 이상을 볼 수 없습니다.",
+    "titleGithub": "쿼리 요청 승인",
+    "approvedToast": "{principal}님의 요청을 승인했습니다."
   },
   "tokenDialog": {
     "generateFailed": "생성에 실패했습니다",

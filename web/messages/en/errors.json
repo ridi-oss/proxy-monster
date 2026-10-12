@@ -14,6 +14,10 @@
   "approval": {
     "already_decided": "This request has already been decided.",
     "already_executed": "This request has already been executed — an approved query runs exactly once.",
+    "github_runs_on_merge": "This request came from a pull request; it runs when the pull request is ready to merge.",
+    "github_key_not_numeric": "The key of {path} is not a number. Numeric order needs keys made of digits; use string order or change the files pattern.",
+    "github_stale_head": "This filing is for a commit that is no longer the pull request's head ({head}). File again from the current head.",
+    "github_repository_mismatch": "This workload token was issued for a different repository.",
     "exactly_one_source_required": "Provide either a source decision or a datasource and SQL, not both.",
     "no_policy_configured": "No query-approval policy is configured for this datasource.",
     "no_sql": "This request has no SQL to run.",
@@ -41,7 +45,8 @@
     "statement_skipped": "Skipped — an earlier statement stopped the batch.",
     "request_changed": "This request was changed after you opened it. Review the new SQL and approve again.",
     "not_editable": "Only a pending or approved request that has not run can be edited.",
-    "edit_forbidden": "Only the requester can edit this request."
+    "edit_forbidden": "Only the requester can edit this request.",
+    "github_edit_by_push": "A request from a GitHub pull request changes with a push to its file, not here."
   },
   "auth": {
     "invalid_id_token": "Invalid ID token.",

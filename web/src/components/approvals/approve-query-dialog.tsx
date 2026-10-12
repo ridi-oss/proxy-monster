@@ -43,6 +43,8 @@ export function ApproveQueryDialog({
   const t = useTranslations('Workflows')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  // A pull request's merge runs its request, so the console only approves it.
+  const runsOnMerge = request?.source === 'github'
 
   const handleOpenChange = (open: boolean) => {
     if (!open && !busy) onClose()
@@ -64,8 +66,12 @@ export function ApproveQueryDialog({
       return
     }
     try {
-      await executeApproval(request.id)
-      toast.success(t('approveDialog.approveAndRunToast', { principal: request.principal }))
+      if (runsOnMerge) {
+        toast.success(t('approveDialog.approvedToast', { principal: request.principal }))
+      } else {
+        await executeApproval(request.id)
+        toast.success(t('approveDialog.approveAndRunToast', { principal: request.principal }))
+      }
     } catch (err) {
       // Approval already committed; surface the run's REAL localized error (e.g. no result store, deleted
       // datasource) rather than a blanket "retry" line that may not be actionable. The detail refresh below
@@ -84,11 +90,13 @@ export function ApproveQueryDialog({
     <Dialog open={request !== null} onOpenChange={handleOpenChange}>
       <DialogContent className="sm:max-w-md">
         <DialogHeader>
-          <DialogTitle>{t('approveDialog.title')}</DialogTitle>
+          <DialogTitle>{t(runsOnMerge ? 'approveDialog.titleGithub' : 'approveDialog.title')}</DialogTitle>
           <DialogDescription>
-            {request
-              ? t('approveDialog.descriptionWithPrincipal', { principal: request.principal })
-              : t('approveDialog.descriptionFallback')}
+            {runsOnMerge
+              ? t('approvalDetail.approvedGithub')
+              : request
+                ? t('approveDialog.descriptionWithPrincipal', { principal: request.principal })
+                : t('approveDialog.descriptionFallback')}
           </DialogDescription>
         </DialogHeader>
 
@@ -98,7 +106,9 @@ export function ApproveQueryDialog({
           </div>
         )}
 
-        <p className="text-muted-foreground text-sm">{t('approveDialog.executeUnderRNote')}</p>
+        {!runsOnMerge && (
+          <p className="text-muted-foreground text-sm">{t('approveDialog.executeUnderRNote')}</p>
+        )}
 
         <DialogFooter>
           <Button variant="outline" onClick={onClose} disabled={busy}>
@@ -109,7 +119,9 @@ export function ApproveQueryDialog({
             disabled={busy}
             className="bg-emerald-600 text-white hover:bg-emerald-700"
           >
-            {busy ? t('actions.approvingAndRunning') : t('actions.approveAndRun')}
+            {runsOnMerge
+              ? t(busy ? 'actions.approving' : 'actions.approve')
+              : t(busy ? 'actions.approvingAndRunning' : 'actions.approveAndRun')}
           </Button>
         </DialogFooter>
       </DialogContent>

@@ -68,6 +68,7 @@ Closed set (a value outside it is a config error → fail-closed deny):
 | `workflow-viewer` | the unelevated human side of a task: viewing a stored result, and approving or rejecting one | the control-plane view + task-decision routes |
 | `slack` | a task decided from a Slack button rather than a console session | the Slack interaction handler (`Channel.SLACK`) |
 | `mcp` | an access-control change over the MCP admin surface | the MCP request handler (`Channel.MCP`) |
+| `github` | a task approved from a pull-request review | the GitHub source flow (`Channel.GITHUB`) |
 
 For the proxy-mediated paths the value is derived from the ephemeral-token kind
 (the control-plane mints the kind; the proxy cannot assert it); the view and

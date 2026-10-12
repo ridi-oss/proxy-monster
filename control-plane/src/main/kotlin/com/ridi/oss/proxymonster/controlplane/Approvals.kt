@@ -235,7 +235,7 @@ internal fun viewerDecision(
         catalog = structure?.catalog ?: datasourceStore.catalog(ds.id), policyStore = policyStore, accessStore = accessStore,
         userGroupStore = userGroupStore, roleResolver = roleResolver, authz = authz, auditStore = auditStore,
         providedRoles = roles, context = callerContext, systemClassification = systemClassification,
-        liveSearchPath = structure?.inputs?.searchPath,
+        liveSearchPath = structure?.inputs?.searchPath ?: req.pullRequest?.defaultSchema?.let { listOf(it) },
         session = structure?.inputs?.session ?: SessionObservation.getDefaultInstance(),
         tempColumns = structure?.inputs?.tempColumns.orEmpty(),
     )
@@ -560,6 +560,7 @@ internal suspend fun runApprovedTask(
     taskCompletionHub: TaskCompletionHub?,
     notifications: NotificationService?,
     log: org.slf4j.Logger,
+    defaultSchema: String? = null,
 ) {
     val dsName = req.datasourceId?.let { req.datasourceName } ?: "?"
     fun lifecycleRecord(event: String, channel: Channel) = AuditEvent(
@@ -588,6 +589,8 @@ internal suspend fun runApprovedTask(
             taskId = id,
             preflight = { store.meta(id)?.status == "RUNNING" },
             exchangeTimeoutMs = config.queryExchangeTimeoutMs,
+            namespaces = defaultSchema?.let { listOf(it) },
+            defaultSchema = defaultSchema,
             statementAt = { ordinal ->
                 if (ordinal == 0) statements[0].sql else store.startNextRun(id, executor)?.sql
             },

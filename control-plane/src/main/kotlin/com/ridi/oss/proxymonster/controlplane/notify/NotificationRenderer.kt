@@ -1,5 +1,6 @@
 package com.ridi.oss.proxymonster.controlplane.notify
 
+import com.ridi.oss.proxymonster.controlplane.SOURCE_GITHUB
 import com.ridi.oss.proxymonster.controlplane.i18n.MessageCatalog
 
 /**
@@ -12,6 +13,7 @@ class NotificationRenderer(private val catalog: MessageCatalog = MessageCatalog(
     fun actionLabel(action: NotificationAction, locale: String): String = catalog.text(
         when (action) {
             NotificationAction.APPROVE_AND_RUN -> "action.approve_and_run"
+            NotificationAction.APPROVE -> "action.approve"
             NotificationAction.DENY -> "action.deny"
             NotificationAction.OPEN -> "action.open"
         },
@@ -48,6 +50,10 @@ class NotificationRenderer(private val catalog: MessageCatalog = MessageCatalog(
             ?: ""
         // "Open it to read the statement" only where one was withheld — never on the requester's own receipt,
         // which omits the statement by design (they authored it).
+        val failure = m.failure
+            ?.takeIf { it.isNotBlank() && m.event == NotificationEvent.TASK_FAILED }
+            ?.let { "\n" + catalog.text("field.failure", locale, mapOf("error" to escapeMrkdwn(it.take(REASON_MAX_CHARS)))) }
+            ?: ""
         val statementNote = if (m.event != NotificationEvent.TASK_SUBMITTED && (m.statement.text == null || !m.statement.complete)) {
             "\n" + catalog.text("field.statement_hidden_note", locale)
         } else {
@@ -70,6 +76,7 @@ class NotificationRenderer(private val catalog: MessageCatalog = MessageCatalog(
                 "reason" to reason,
                 "notified" to notified,
                 "statementNote" to statementNote,
+                "failure" to failure,
             ),
         )
     }
@@ -86,11 +93,18 @@ class NotificationRenderer(private val catalog: MessageCatalog = MessageCatalog(
     private fun bodyKey(m: NotificationMessage): String = when (m.event) {
         NotificationEvent.TASK_REQUESTED -> "task.requested"
         NotificationEvent.TASK_SUBMITTED -> "task.submitted"
-        NotificationEvent.TASK_DECIDED -> if (m.approved == true) "task.decided_approved" else "task.decided_rejected"
+        NotificationEvent.TASK_DECIDED -> when {
+            m.approved != true -> "task.decided_rejected"
+            m.source != SOURCE_GITHUB -> "task.decided_approved"
+            m.autoMergeEnabled -> "task.decided_approved_github_automerge"
+            else -> "task.decided_approved_github"
+        }
         NotificationEvent.TASK_EDITED -> "task.edited"
         NotificationEvent.TASK_EXECUTED -> "task.executed"
         NotificationEvent.TASK_FAILED -> "task.failed"
         NotificationEvent.TASK_CANCELLED -> "task.cancelled"
+        NotificationEvent.TASK_CLOSED_AFTER_RUN -> "task.closed_after_run"
+        NotificationEvent.TASK_MERGED_WITHOUT_FILE -> "task.merged_without_file"
     }
 
     companion object {

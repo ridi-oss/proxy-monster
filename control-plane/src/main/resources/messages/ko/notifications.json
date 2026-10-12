@@ -7,24 +7,32 @@
     "submitted": "*{datasource}*에서 쿼리를 실행하려는 요청이 승인 대기 중입니다{role}.{notified}",
     "submitted_fallback": "{datasource}에 대한 요청이 승인 대기 중입니다",
     "decided_approved": "*{datasource}*에서 {statement}를 실행하려는 *{requester}* 님의 요청을 *{decidedBy}* 님이 승인했고 실행 중입니다.{statementNote}",
+    "decided_approved_github": "*{datasource}*에서 {statement}를 실행하려는 *{requester}* 님의 요청을 *{decidedBy}* 님이 승인했습니다. 풀 리퀘스트에서 자동 머지를 켜면 실행 후 머지됩니다.{statementNote}",
+    "decided_approved_github_automerge": "*{datasource}*에서 {statement}를 실행하려는 *{requester}* 님의 요청을 *{decidedBy}* 님이 승인했습니다. 풀 리퀘스트를 머지할 준비가 되면 실행됩니다.{statementNote}",
     "decided_rejected": "*{datasource}*에서 {statement}를 실행하려는 *{requester}* 님의 요청을 *{decidedBy}* 님이 거부했습니다.{statementNote}",
     "decided_fallback": "{datasource}에 대한 {requester} 님의 요청을 {decidedBy} 님이 처리했습니다",
     "executed": "*{datasource}*에서 {statement}를 실행하려는 *{requester}* 님의 요청이 완료되었습니다 — {rowCount}행.{statementNote}",
     "executed_fallback": "{datasource}에 대한 {requester} 님의 요청이 완료되었습니다",
-    "failed": "*{datasource}*에서 {statement}를 실행하려는 *{requester}* 님의 요청이 실패했습니다.{statementNote}",
+    "failed": "*{datasource}*에서 {statement}를 실행하려는 *{requester}* 님의 요청이 실패했습니다.{failure}{statementNote}",
     "failed_fallback": "{datasource}에 대한 {requester} 님의 요청이 실패했습니다",
     "cancelled": "*{datasource}*에서 {statement}를 실행하려는 *{requester}* 님의 요청이 취소되었습니다.{statementNote}",
-    "cancelled_fallback": "{datasource}에 대한 {requester} 님의 요청이 취소되었습니다"
+    "cancelled_fallback": "{datasource}에 대한 {requester} 님의 요청이 취소되었습니다",
+    "closed_after_run": "*{datasource}*에서 {statement}를 실행하려는 *{requester}* 님의 요청이 실행되었지만, 풀 리퀘스트가 머지되지 않고 닫혔습니다. 그 파일이 main에 들어갈 때까지 이 스코프는 막혀 있습니다.{statementNote}",
+    "closed_after_run_fallback": "{datasource}에 대한 {requester} 님의 요청이 실행되었지만 풀 리퀘스트가 머지되지 않고 닫혔습니다",
+    "merged_without_file": "*{datasource}*에서 {statement}를 실행하려는 *{requester}* 님의 요청이 실행되었지만, 풀 리퀘스트가 그 파일 없이 머지되어 main에는 기록되지 않았습니다.{statementNote}",
+    "merged_without_file_fallback": "{datasource}에 대한 {requester} 님의 요청이 실행되었지만 풀 리퀘스트가 그 파일 없이 머지되었습니다"
   },
   "field": {
     "role": " (역할: *{role}*)",
     "reason": "> {reason}",
     "statement_hidden": "쿼리",
     "statement_hidden_note": "_전체 구문은 여기에 표시되지 않습니다. 요청을 열어 확인하세요._",
-    "notified": "승인 알림 대상: {notified}"
+    "notified": "승인 알림 대상: {notified}",
+    "failure": "> {error}"
   },
   "action": {
     "approve_and_run": "승인 후 실행",
+    "approve": "승인",
     "deny": "거부",
     "open": "요청 열기"
   },

@@ -175,4 +175,28 @@ class NotificationRendererTest {
         assertFalse(summary.contains("task."), summary)
         assertTrue(summary.contains("alice@example.com"))
     }
+
+    @Test
+    fun `an approved pull-request request asks for auto-merge only while it is off`() {
+        for (locale in MessageCatalog.LOCALES) {
+            val base = message(NotificationEvent.TASK_DECIDED, RenderedStatement("SELECT 1", true), approved = true).copy(source = "github")
+            val off = renderer.summary(base, locale)
+            val on = renderer.summary(base.copy(autoMergeEnabled = true), locale)
+            val console = renderer.summary(base.copy(source = "console"), locale)
+            assertFalse(off.contains("task.") || on.contains("task."), "$locale fell through to a raw key")
+            assertTrue(off != on && off != console && on != console, "$locale: three distinct bodies")
+        }
+        val en = message(NotificationEvent.TASK_DECIDED, RenderedStatement("SELECT 1", true), approved = true).copy(source = "github")
+        assertTrue(renderer.summary(en, "en").contains("Enable auto-merge"))
+        assertFalse(renderer.summary(en.copy(autoMergeEnabled = true), "en").contains("auto-merge"))
+    }
+
+    @Test
+    fun `the approve action has its own label`() {
+        for (locale in MessageCatalog.LOCALES) {
+            val approve = renderer.actionLabel(NotificationAction.APPROVE, locale)
+            assertFalse(approve.contains("action."), locale)
+            assertTrue(approve != renderer.actionLabel(NotificationAction.APPROVE_AND_RUN, locale), locale)
+        }
+    }
 }

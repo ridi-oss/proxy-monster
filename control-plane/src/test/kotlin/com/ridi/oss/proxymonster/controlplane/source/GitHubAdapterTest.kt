@@ -143,7 +143,7 @@ class GitHubAdapterTest {
         assertEquals(AutoMerge(SourceUser("101", "alice"), Instant.parse("2026-10-09T00:10:00Z")), open.autoMerge)
         assertEquals(
             listOf(
-                Review("501", SourceUser("102", "bob"), ReviewState.APPROVED, Instant.parse("2026-10-09T00:20:00Z"), "https://github.com/acme/shop/pull/1#r501"),
+                Review("501", SourceUser("102", "bob"), ReviewState.APPROVED, Instant.parse("2026-10-09T00:20:00Z"), "https://github.com/acme/shop/pull/1#r501", "sha1"),
                 Review("502", SourceUser("103", "carol"), ReviewState.DISMISSED, Instant.parse("2026-10-09T00:05:00Z"), "https://github.com/acme/shop/pull/1#r502"),
             ),
             open.reviews,
@@ -156,6 +156,19 @@ class GitHubAdapterTest {
             open.checks,
         )
         assertEquals(listOf(ChangedFile("sql/old.sql", FileChange.DELETED), ChangedFile("sql/new.sql", FileChange.ADDED)), open.files)
+        assertEquals(
+            listOf(
+                CommitAuthor("101", "alice@acme.com", merge = false),
+                CommitAuthor("101", " alice@acme.com", merge = false),
+                CommitAuthor(null, null, merge = false),
+                CommitAuthor("102", "bob@acme.com", merge = false),
+                CommitAuthor("101", "merge@acme.com", merge = true),
+                CommitAuthor(null, "nouser@acme.com", merge = false),
+            ),
+            open.commits,
+        )
+        assertEquals(listOf("alice@acme.com"), open.commitEmailsBy(SourceUser("101", "alice")))
+        assertEquals(listOf("bob@acme.com"), open.commitEmailsBy(SourceUser("102", "bob")))
 
         val closed = prs.getValue(2)
         assertFalse(closed.open)
@@ -363,6 +376,10 @@ class GitHubAdapterTest {
         assertEquals("completed", patch["status"]!!.jsonPrimitive.content)
         assertEquals("failure", patch["conclusion"]!!.jsonPrimitive.content)
         assertTrue(fake.requests.none { it.url.encodedPath.endsWith("/check-runs/7") })
+
+        runBlocking { a.postCheck(repo, "sha1", "proxy-monster", CheckStatus.COMPLETED, CheckConclusion.SKIPPED, "No SQL", "") }
+        val skipped = fake.requestsTo(HttpMethod.Patch, "/repos/acme/shop/check-runs/8").last().jsonBody()
+        assertEquals("skipped", skipped["conclusion"]!!.jsonPrimitive.content)
 
         assertFailsWith<IllegalArgumentException> {
             runBlocking { a.postCheck(repo, "sha1", "proxy-monster", CheckStatus.COMPLETED, null, "t", "s") }

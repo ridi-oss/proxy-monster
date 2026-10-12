@@ -19,12 +19,20 @@ enum class NotificationEvent(val wire: String) {
     TASK_EXECUTED("task.executed"),
     TASK_FAILED("task.failed"),
     TASK_CANCELLED("task.cancelled"),
+    /** A pull request closed without merging after its SQL ran: an alert, so a fresh message. */
+    TASK_CLOSED_AFTER_RUN("task.closed_after_run"),
+    /** A pull request merged without a file whose SQL ran: an alert, so a fresh message. */
+    TASK_MERGED_WITHOUT_FILE("task.merged_without_file"),
     ;
 
     /** True when this event should edit an existing message rather than start a new thread of its own. The two
      *  creation events — the approvers' request and the requester's own receipt — start threads; every later
-     *  event edits the message its recipient already holds. */
-    val isUpdate: Boolean get() = this != TASK_REQUESTED && this != TASK_SUBMITTED
+     *  event edits the message its recipient already holds, except an alert. */
+    val isUpdate: Boolean get() =
+        this != TASK_REQUESTED && this != TASK_SUBMITTED && this != TASK_CLOSED_AFTER_RUN && this != TASK_MERGED_WITHOUT_FILE
+
+    /** The events that open a task's thread; a ref already left for one means a prior attempt delivered it. */
+    val isCreation: Boolean get() = this == TASK_REQUESTED || this == TASK_SUBMITTED
 
     companion object {
         fun fromWire(wire: String): NotificationEvent? = entries.firstOrNull { it.wire == wire }
@@ -120,8 +128,9 @@ fun discloseStatement(disclosure: StatementDisclosure, pending: Boolean, cleared
         StatementDisclosure.FULL -> pending || cleared
     }
 
-/** An action a message may offer. [OPEN] is always available; the other two are gated. */
-enum class NotificationAction { APPROVE_AND_RUN, DENY, OPEN }
+/** An action a message may offer. [OPEN] is always available; the others are gated. [APPROVE] approves without
+ *  running, for a request whose run is started elsewhere (a pull request's merge). */
+enum class NotificationAction { APPROVE_AND_RUN, APPROVE, DENY, OPEN }
 
 /**
  * One notification, transport-neutral. Carries message KEYS and their values rather than finished prose, so
@@ -149,7 +158,22 @@ data class NotificationMessage(
     /** SUBMITTED only: the approvers the request was routed to, shown to the requester as their receipt.
      *  Plain identities, not `<@id>` mentions — the requester learns who can act without re-pinging them. */
     val notifiedApprovers: List<String> = emptyList(),
+    val source: String = "console",
+    /** A source request's file path, pull request, and the schema its run opens on. */
+    val path: String? = null,
+    val prUrl: String? = null,
+    val schema: String? = null,
+    /** DECIDED on a pull-request request: whether auto-merge is already on, so the message need not ask. */
+    val autoMergeEnabled: Boolean = false,
+    val statementCount: Int = 1,
+    /** FAILED only: the failed statement's redacted error. Never rows. */
+    val failure: String? = null,
+    /** FAILED only: which statement of the batch failed, and its SQL. */
+    val failedStatement: FailedStatement? = null,
 )
+
+/** [ordinal] is 0-based, as stored on the `query_result` child. */
+data class FailedStatement(val ordinal: Int, val sql: String)
 
 /** The outcome of one delivery attempt. Only the transport knows which failures are worth another try. */
 sealed interface DeliveryResult {
@@ -177,6 +201,12 @@ interface NotificationTransport {
 
     /** False for a transport with no edit primitive (email); an update then sends a fresh message. */
     val supportsUpdate: Boolean get() = false
+
+    /** True when this transport addresses a task rather than a person; it then hears only tasks [taskAddress] names. */
+    val addressesTasks: Boolean get() = false
+
+    /** The one address every event of [req] goes to on this transport, or null to address people. */
+    fun taskAddress(req: com.ridi.oss.proxymonster.controlplane.AccessRequest): String? = null
 
     /**
      * This principal's address on this transport, or null when they have none — a null DROPS the row, since no

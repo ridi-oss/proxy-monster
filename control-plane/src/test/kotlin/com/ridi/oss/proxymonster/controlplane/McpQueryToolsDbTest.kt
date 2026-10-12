@@ -271,6 +271,38 @@ class McpQueryToolsDbTest {
     }
 
     @Test
+    fun `approve_approval approves a GitHub request without running it, and execute_approval refuses it`() = testApplication {
+        application { installTestMcp() }
+        val client = createClient { expectSuccess = false }
+        val requester = analyst("github")
+        val approver = "mcp-github-approver-${seq.incrementAndGet()}@example.com"
+        val policy = core.cedarPolicyStore.create(
+            CedarPolicyInput(
+                "mcp-github-approver-${seq.incrementAndGet()}",
+                """permit(principal == User::"$approver", action in [Action::"task.approve", Action::"task.read"], resource);""",
+            ),
+            "test",
+        )
+        val runs = AtomicInteger()
+        try {
+            val id = pendingRequest(requester, fx.datasource.id)
+            fx.dataSource.connection.use { c ->
+                c.prepareStatement("UPDATE access_request SET source = 'github', scope = 'gh-mcp', repository = 'acme/shop', pr = 1 WHERE id = ?")
+                    .use { ps -> ps.setLong(1, id); ps.executeUpdate() }
+            }
+            val token = token(approver, setOf("mcp:query", "mcp:approvals:write"))
+            withFakeProxy({ _, _, _ -> runs.incrementAndGet(); emptyList() }) {
+                assertEquals("APPROVED", client.call(token, "approve_approval", approveArgs(id)).ok().result().str("status"))
+                assertEquals("approval.github_runs_on_merge", client.call(token, "execute_approval", idArg(id)).error())
+            }
+            assertEquals("APPROVED", core.accessStore.getRequest(id)?.status)
+            assertEquals(0, runs.get())
+        } finally {
+            core.cedarPolicyStore.delete(policy.id)
+        }
+    }
+
+    @Test
     fun `a datasource-scoped approver sees and decides only that datasource's requests`() = testApplication {
         application { installTestMcp() }
         val client = createClient { expectSuccess = false }

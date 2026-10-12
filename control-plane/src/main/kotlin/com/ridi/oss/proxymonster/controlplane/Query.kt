@@ -147,6 +147,8 @@ enum class Channel(val contextValue: String) {
      */
     SLACK("slack"),
     MCP("mcp"),
+    /** A task approved from a pull-request review: no session and no `requester_ip`, like [SLACK]. */
+    GITHUB("github"),
 }
 
 /** The analyzer's result-read grants bundled as the [ResultFingerprint] message [decideResultView] freezes

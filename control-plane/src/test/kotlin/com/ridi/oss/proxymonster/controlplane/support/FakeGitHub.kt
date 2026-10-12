@@ -4,6 +4,8 @@ import com.ridi.oss.proxymonster.controlplane.GitHubConfig
 import com.ridi.oss.proxymonster.controlplane.GitHubIdentityResolver
 import com.ridi.oss.proxymonster.controlplane.source.GitHubAdapter
 import com.ridi.oss.proxymonster.controlplane.source.PrincipalDirectory
+import com.ridi.oss.proxymonster.controlplane.source.PullRequest
+import com.ridi.oss.proxymonster.controlplane.source.SourceUser
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.mock.MockEngine
 import io.ktor.client.engine.mock.MockRequestHandleScope
@@ -17,8 +19,15 @@ import io.ktor.http.HttpStatusCode
 import io.ktor.http.content.TextContent
 import io.ktor.http.headersOf
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.addJsonObject
+import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.put
+import kotlinx.serialization.json.putJsonArray
+import kotlinx.serialization.json.putJsonObject
 import java.security.KeyPair
 import java.security.KeyPairGenerator
 import java.time.Clock
@@ -117,11 +126,18 @@ internal object GitHubFixtures {
             "author":{"login":"alice","databaseId":101},
             "autoMergeRequest":{"enabledAt":"2026-10-09T00:10:00Z","enabledBy":{"login":"alice","databaseId":101}},
             "reviews":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[
-              {"databaseId":501,"state":"APPROVED","submittedAt":"2026-10-09T00:20:00Z","url":"https://github.com/acme/shop/pull/1#r501","author":{"login":"bob","databaseId":102}},
+              {"databaseId":501,"state":"APPROVED","submittedAt":"2026-10-09T00:20:00Z","url":"https://github.com/acme/shop/pull/1#r501","commit":{"oid":"sha1"},"author":{"login":"bob","databaseId":102}},
               {"databaseId":502,"state":"DISMISSED","submittedAt":"2026-10-09T00:05:00Z","url":"https://github.com/acme/shop/pull/1#r502","author":{"login":"carol","databaseId":103}}]},
             "files":{"pageInfo":{"hasNextPage":${filesNext != null},"endCursor":${filesNext?.let { "\"$it\"" } ?: "null"}},"nodes":[
               {"path":"sql/old.sql","changeType":"DELETED"},{"path":"sql/new.sql","changeType":"ADDED"}]},
-            "commits":{"nodes":[{"commit":{"oid":"$rollupOid","statusCheckRollup":$rollup}}]}}"""
+            "commits":{"nodes":[{"commit":{"oid":"$rollupOid","statusCheckRollup":$rollup}}]},
+            "authors":{"nodes":[
+              {"commit":{"parents":{"totalCount":1},"author":{"email":"alice@acme.com","user":{"databaseId":101}}}},
+              {"commit":{"parents":{"totalCount":1},"author":{"email":" alice@acme.com","user":{"databaseId":101}}}},
+              {"commit":{"parents":{"totalCount":1},"author":null}},
+              {"commit":{"parents":{"totalCount":1},"author":{"email":"bob@acme.com","user":{"databaseId":102}}}},
+              {"commit":{"parents":{"totalCount":2},"author":{"email":"merge@acme.com","user":{"databaseId":101}}}},
+              {"commit":{"parents":{"totalCount":1},"author":{"email":"nouser@acme.com","user":null}}}]}}"""
     }
 
     fun merged(number: Int): String =
@@ -130,4 +146,72 @@ internal object GitHubFixtures {
             "url":"https://github.com/acme/shop/pull/$number","author":null,"autoMergeRequest":null,
             "reviews":{"pageInfo":{"hasNextPage":false},"nodes":[]},"files":{"pageInfo":{"hasNextPage":false},"nodes":[]},
             "commits":{"nodes":[{"commit":{"oid":"sha2","statusCheckRollup":null}}]}}"""
+
+    /** [pr] as GraphQL returns it; null [PullRequest.checks] is a head commit without a rollup. */
+    fun pullRequestJson(pr: PullRequest): String = buildJsonObject {
+        fun user(u: SourceUser?): JsonElement = u?.let { buildJsonObject { put("login", it.login); put("databaseId", it.id.toLong()) } } ?: JsonNull
+        val lastPage = buildJsonObject { put("hasNextPage", false) }
+        put("number", pr.number)
+        put("state", if (pr.merged) "MERGED" else if (pr.open) "OPEN" else "CLOSED")
+        put("merged", pr.merged)
+        put("mergedAt", pr.mergedAt?.toString())
+        pr.mergeCommit?.let { putJsonObject("mergeCommit") { put("oid", it) } }
+        put("headRefOid", pr.headSha)
+        put("baseRefName", pr.baseRef)
+        put("url", "https://github.com/acme/shop/pull/${pr.number}")
+        put("author", user(pr.author))
+        put(
+            "autoMergeRequest",
+            pr.autoMerge?.let { buildJsonObject { put("enabledAt", it.enabledAt?.toString()); put("enabledBy", user(it.enabledBy)) } } ?: JsonNull,
+        )
+        putJsonObject("reviews") {
+            put("pageInfo", lastPage)
+            putJsonArray("nodes") {
+                for (r in pr.reviews) {
+                    addJsonObject {
+                        put("databaseId", r.id.toLong())
+                        put("state", r.state.name)
+                        put("submittedAt", r.submittedAt?.toString())
+                        put("url", r.url)
+                        r.commit?.let { oid -> putJsonObject("commit") { put("oid", oid) } }
+                        put("author", user(r.reviewer))
+                    }
+                }
+            }
+        }
+        putJsonObject("files") {
+            put("pageInfo", lastPage)
+            putJsonArray("nodes") { for (f in pr.files) addJsonObject { put("path", f.path); put("changeType", f.change.name) } }
+        }
+        putJsonObject("commits") {
+            putJsonArray("nodes") {
+                addJsonObject {
+                    putJsonObject("commit") {
+                        put("oid", pr.headSha)
+                        put(
+                            "statusCheckRollup",
+                            pr.checks?.let { checks ->
+                                buildJsonObject {
+                                    putJsonObject("contexts") {
+                                        put("pageInfo", lastPage)
+                                        putJsonArray("nodes") {
+                                            for (c in checks) {
+                                                addJsonObject {
+                                                    put("__typename", "CheckRun")
+                                                    put("name", c.name)
+                                                    put("status", c.status.name)
+                                                    put("conclusion", c.conclusion?.name)
+                                                    put("isRequired", c.required)
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            } ?: JsonNull,
+                        )
+                    }
+                }
+            }
+        }
+    }.toString()
 }

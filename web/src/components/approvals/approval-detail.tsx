@@ -36,6 +36,7 @@ const STATUS_STYLE: Record<string, string> = {
   FAILED: 'border-red-500/30 bg-red-500/10 text-red-500',
   CANCELLED: 'border-border text-muted-foreground',
   DELETED: 'border-border text-muted-foreground',
+  ALREADY_RAN: 'border-border text-muted-foreground',
   SKIPPED: 'border-border text-muted-foreground',
 }
 
@@ -201,7 +202,10 @@ export function ApprovalDetail({ id }: { id: number }) {
     }
   }
 
-  const approvedCopy = t('approvalDetail.approvedExecuteUnderR')
+  const fromGithub = request.source === 'github'
+  const approvedCopy = fromGithub
+    ? t('approvalDetail.approvedGithub')
+    : t('approvalDetail.approvedExecuteUnderR')
 
   const ranStatements = statements.filter((s) => s.status === 'DONE' || s.status === 'FAILED')
 
@@ -279,6 +283,13 @@ export function ApprovalDetail({ id }: { id: number }) {
                 {request.sourceDecisionId != null ? `#${request.sourceDecisionId}` : t('values.proactive')}
               </code>
             </Field>
+            {request.pullRequest?.prUrl && (
+              <Field label={t('fields.pullRequest')}>
+                <a href={request.pullRequest.prUrl} target="_blank" rel="noreferrer" className="font-mono underline">
+                  {request.pullRequest.path ?? request.pullRequest.prUrl}
+                </a>
+              </Field>
+            )}
           </div>
 
           <div className="space-y-3">
@@ -365,7 +376,7 @@ export function ApprovalDetail({ id }: { id: number }) {
 
               {!runStarted && !data.canExecute && request.status === 'APPROVED' && (
                 <p className="text-muted-foreground text-sm">
-                  {t('approvalDetail.awaitingApprover')}
+                  {fromGithub ? t('approvalDetail.approvedGithub') : t('approvalDetail.awaitingApprover')}
                 </p>
               )}
             </div>

@@ -4,6 +4,7 @@ import com.ridi.oss.proxymonster.grpc.runError
 
 import com.ridi.oss.proxymonster.controlplane.authz.CedarPolicyInput
 import com.ridi.oss.proxymonster.controlplane.support.EnforcementFixture
+import com.ridi.oss.proxymonster.controlplane.support.pushTestCatalog
 import com.ridi.oss.proxymonster.controlplane.support.requireDockerOrSkip
 import com.ridi.oss.proxymonster.controlplane.support.webSessionCookie
 import io.ktor.client.HttpClient
@@ -541,6 +542,40 @@ class ApprovalResultViewContextDbTest {
             response.bodyAsText().contains(rawSsn),
             "task.assume admits the requester and the live exactly-R view decision applies the task role",
         )
+    }
+
+    @Test
+    fun `a result run in the request's default schema reads back under that schema`() = testApplication {
+        resetMutableAuthzState()
+        fx.execOnTarget("CREATE SCHEMA IF NOT EXISTS sales")
+        fx.execOnTarget("CREATE TABLE IF NOT EXISTS sales.ledger (id BIGINT, amount BIGINT)")
+        fx.datasourceStore.pushTestCatalog(fx.datasource, fx.targetJdbcUrl, fx.targetUser, fx.targetPassword)
+        fx.cedarPolicyStore.create(
+            CedarPolicyInput(
+                name = "approval-view-ledger",
+                cedarSrc = """permit(
+                    principal in Role::"$roleName", action == Action::"result.read.unmasked",
+                    resource in Table::"${fx.datasource.name}/${fx.datasource.dbName}/sales/ledger"
+                );""",
+            ),
+            updatedBy = "test-fixture",
+        )
+        val sql = "SELECT id, amount FROM ledger"
+        val ran = decideQuery(
+            executor, fx.datasource, sql, Channel.WORKFLOW_EXECUTOR, fx.datasourceStore.catalog(fx.datasource.id),
+            fx.policyStore, fx.accessStore, fx.userGroupStore, fx.roleResolver, fx.authz,
+            providedRoles = setOf(roleName), liveSearchPath = listOf("sales"),
+        )
+        val id = seedResult(sql = sql, columns = listOf("id", "amount"), rows = listOf(listOf("1", "4242")), resultFingerprint = ran.resultFingerprint)
+        fx.dataSource.connection.use { c ->
+            c.prepareStatement("UPDATE access_request SET source = 'github', repository = 'acme/shop', pr = 1, default_schema = 'sales' WHERE id = ?").use { ps -> ps.setLong(1, id); ps.executeUpdate() }
+        }
+        val client = wire()
+        client.login(requester)
+
+        val response = client.get("/api/approvals/$id/result")
+        assertEquals(HttpStatusCode.OK, response.status, response.bodyAsText())
+        assertTrue(response.bodyAsText().contains("4242"))
     }
 
     @Test

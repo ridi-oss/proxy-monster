@@ -8,7 +8,7 @@ services:
       POSTGRES_USER: proxymonster
       POSTGRES_PASSWORD: proxymonster
     ports:
-      - "${SMOKE_CP_DB_PORT:-47010}:5432"
+      - "${SMOKE_CP_DB_PORT:-17010}:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U proxymonster -d proxymonster"]
       interval: 3s
@@ -24,7 +24,7 @@ services:
       MYSQL_PASSWORD: acme
       MYSQL_ROOT_PASSWORD: root
     ports:
-      - "${SMOKE_MYSQL_PORT:-47011}:3306"
+      - "${SMOKE_MYSQL_PORT:-17011}:3306"
     volumes:
       - ../deploy/seed/target-seed-mysql.sql:/docker-entrypoint-initdb.d/target-seed-mysql.sql
       - ./mysql-grants.sql:/docker-entrypoint-initdb.d/zz-mysql-grants.sql
@@ -42,7 +42,7 @@ services:
       POSTGRES_PASSWORD: acme
       POSTGRES_HOST_AUTH_METHOD: trust
     ports:
-      - "${SMOKE_PG_PORT:-47012}:5432"
+      - "${SMOKE_PG_PORT:-17012}:5432"
     volumes:
       - ../deploy/seed/target-seed.sql:/docker-entrypoint-initdb.d/target-seed.sql
     healthcheck:
@@ -64,7 +64,7 @@ services:
       MINISTACK_ACCOUNT_ID: "000000000000"
       MINISTACK_REGION: us-east-1
     ports:
-      - "${SMOKE_ATHENA_PORT:-47013}:4566"
+      - "${SMOKE_ATHENA_PORT:-17013}:4566"
     volumes:
       - ./athena/seed.py:/docker-entrypoint-initaws.d/ready.d/seed.py:ro
     healthcheck:

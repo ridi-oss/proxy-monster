@@ -16,9 +16,11 @@
 # only HKCU does not depend on the package's platform.
 set -euo pipefail
 
-cd "$(dirname "$0")"
 ARCH="$1"
-OUT="$2"
+mkdir -p "$2"
+OUT="$(cd "$2" && pwd)"
+[ -z "${BIN:-}" ] || BIN="$(cd "$BIN" && pwd)"
+cd "$(dirname "$0")"
 : "${VERSION:?VERSION is required}"
 [[ "$ARCH" == amd64 || "$ARCH" == arm64 ]] || { echo "error: arch is amd64 or arm64, not $ARCH" >&2; exit 1; }
 [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "error: VERSION is x.y.z, not $VERSION" >&2; exit 1; }
@@ -28,8 +30,6 @@ fi
 WINSPARKLE_VERSION=0.9.4
 WINSPARKLE_SHA256=6037df37fc263bd1650a1c4949681a9d40ffe991d01f35892a406cb5d103c976
 
-mkdir -p "$OUT"
-OUT="$(cd "$OUT" && pwd)"
 if [ -z "${BIN:-}" ]; then
     BIN="$OUT/bin-$ARCH"
     mkdir -p "$BIN"
@@ -43,7 +43,6 @@ if [ -z "${BIN:-}" ]; then
     "${target[@]}" go build -trimpath -o "$BIN/pmontray.exe" \
         -ldflags "-s -w -H=windowsgui -X main.version=$VERSION -X main.feedURL=${FEED_URL:-} -X main.sparklePublicKey=${SPARKLE_PUBLIC_KEY:-}" .
 fi
-BIN="$(cd "$BIN" && pwd)"
 
 zip="$OUT/WinSparkle-$WINSPARKLE_VERSION.zip"
 [ -f "$zip" ] || curl -fsSL -o "$zip" "https://github.com/vslavik/winsparkle/releases/download/v$WINSPARKLE_VERSION/WinSparkle-$WINSPARKLE_VERSION.zip"

@@ -256,6 +256,17 @@ class McpToolCoverageDbTest {
         }
         on("get_approval_result") { client.ok(req, "get_approval_result", args("id" to approvalId)) }
         on("cancel_approval") { client.ok(req, "cancel_approval", args("id" to approvalId)) }
+        on("force_run_approval") {
+            val github = core.accessStore.createQueryRequest(
+                principal = requester, datasourceId = ds.id, statements = listOf(sql), denyReason = null,
+                sourceDecisionId = null, reason = "coverage", title = null, evaluatedDecision = "ALLOW", roleId = role(ANALYST),
+            ).id
+            fx.dataSource.connection.use { c ->
+                c.prepareStatement("UPDATE access_request SET source = 'github', scope = 'cov-gh', repository = 'acme/shop', pr = 1 WHERE id = ?")
+                    .use { ps -> ps.setLong(1, github); ps.executeUpdate() }
+            }
+            client.ok(adm, "force_run_approval", args("id" to github))
+        }
 
         // JIT access, rates, audit, permissions and tokens.
         on("get_my_permissions") { client.ok(req, "get_my_permissions") }

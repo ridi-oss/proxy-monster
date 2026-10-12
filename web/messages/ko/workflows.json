@@ -22,7 +22,9 @@
     "copyCommand": "명령어 복사",
     "edit": "수정",
     "saving": "저장 중…",
-    "save": "저장"
+    "save": "저장",
+    "forceRun": "강제 실행",
+    "forcingRun": "지정 중…"
   },
   "fields": {
     "requester": "요청자",
@@ -195,7 +197,10 @@
     "editReasonLabel": "사유",
     "editedToast": "요청을 수정했습니다",
     "editFailed": "요청을 수정하지 못했습니다.",
-    "revision": "수정본 {revision}"
+    "revision": "수정본 {revision}",
+    "forceRunToast": "스코프 확인을 건너뛰도록 지정했습니다. 풀 리퀘스트를 머지할 준비가 되면 실행됩니다.",
+    "forceRunFailed": "강제 실행을 지정하지 못했습니다.",
+    "forcedBy": "{admin} 님이 스코프의 브랜치 최신 여부 확인과 한 번에 한 PR만 실행하는 규칙을 건너뛰도록 지정했습니다."
   },
   "approveDialog": {
     "approveFailed": "승인에 실패했습니다",

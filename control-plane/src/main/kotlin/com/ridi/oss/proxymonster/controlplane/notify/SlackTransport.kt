@@ -94,6 +94,7 @@ class SlackTransport(
         message.copy(
             requester = mentionFor(message.requester),
             decidedBy = message.decidedBy?.let { mentionFor(it) },
+            forcedBy = message.forcedBy?.let { mentionFor(it) },
             notifiedApprovers = message.notifiedApprovers.map { mentionFor(it) },
         )
 

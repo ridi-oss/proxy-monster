@@ -22,7 +22,9 @@
     "copyCommand": "Copy command",
     "edit": "Edit",
     "saving": "Saving…",
-    "save": "Save"
+    "save": "Save",
+    "forceRun": "Force run",
+    "forcingRun": "Forcing…"
   },
   "fields": {
     "requester": "Requester",
@@ -195,7 +197,10 @@
     "editReasonLabel": "Reason",
     "editedToast": "Request updated",
     "editFailed": "Could not update the request.",
-    "revision": "Revision {revision}"
+    "revision": "Revision {revision}",
+    "forceRunToast": "Forced past the scope checks; it runs when the pull request is ready to merge.",
+    "forceRunFailed": "Could not force the run.",
+    "forcedBy": "Forced past the scope's freshness and one-PR-at-a-time checks by {admin}."
   },
   "approveDialog": {
     "approveFailed": "approve failed",

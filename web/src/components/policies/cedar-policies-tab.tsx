@@ -88,6 +88,7 @@ const ACTION_REFERENCE: { resource: string; actions: { name: string; noteKey: st
       { name: 'task.assume', noteKey: 'taskAssume' },
       { name: 'task.cancel', noteKey: 'taskCancel' },
       { name: 'task.delete', noteKey: 'taskDelete' },
+      { name: 'task.force_run', noteKey: 'taskForceRun' },
     ],
   },
   {

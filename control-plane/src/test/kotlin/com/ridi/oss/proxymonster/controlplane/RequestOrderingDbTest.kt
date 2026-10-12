@@ -115,6 +115,23 @@ class RequestOrderingDbTest {
         assertTrue(core.accessStore.claimExecution(request("APPROVED", console, changeKey = "k1")))
     }
 
+    @Test
+    fun `a forced request claims past an unmerged github run in its scope`() {
+        val s = scope()
+        request("EXECUTED", s, changeKey = "k0", source = "github")
+        val id = request("APPROVED", s, changeKey = "k1", source = "github")
+        assertRefused("approval.scope_busy", id)
+
+        dataSource.connection.use { c ->
+            c.prepareStatement("UPDATE access_request SET force_run = TRUE WHERE id = ?").use { ps ->
+                ps.setLong(1, id)
+                ps.executeUpdate()
+            }
+        }
+        assertTrue(core.accessStore.claimExecution(id))
+        assertEquals("EXECUTING", status(id))
+    }
+
     private fun onPullRequest(id: Long, repository: String, pr: Int): Long {
         dataSource.connection.use { c ->
             c.prepareStatement("UPDATE access_request SET repository = ?, pr = ? WHERE id = ?").use { ps ->

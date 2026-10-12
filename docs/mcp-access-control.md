@@ -406,6 +406,9 @@ All under `admin.policies` (write tools also require `mcp:policies:write`):
   approval's rows (REST: `GET /api/approvals/{id}/result`).
 - `cancel_approval` (`task.cancel`, scope `mcp:query`) — REST:
   `POST /api/approvals/{id}/cancel`.
+- `force_run_approval` (`task.force_run`, scope `mcp:approvals:write`) — lets a
+  GitHub request skip its scope's freshness and one-PR-at-a-time checks (REST:
+  `POST /api/approvals/{id}/force-run`).
 - `delete_query_task` (`taskId`; `task.delete`, scope `mcp:query`, destructive)
   — removes one of the caller's editor tasks and its stored result (REST:
   `DELETE /api/editor/tasks/{id}`).

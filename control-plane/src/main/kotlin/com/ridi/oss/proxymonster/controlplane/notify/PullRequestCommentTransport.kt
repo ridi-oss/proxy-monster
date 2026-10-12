@@ -63,6 +63,7 @@ class PullRequestCommentTransport(
             NotificationEvent.TASK_CANCELLED -> "comment.cancelled"
             NotificationEvent.TASK_CLOSED_AFTER_RUN -> "comment.closed_after_run"
             NotificationEvent.TASK_MERGED_WITHOUT_FILE -> "comment.merged_without_file"
+            NotificationEvent.TASK_FORCE_RUN -> "comment.force_run"
         }
         val target = m.schema?.let { "${m.datasource}/$it" } ?: m.datasource
         return catalog.text(
@@ -73,6 +74,7 @@ class PullRequestCommentTransport(
                 "datasource" to m.datasource,
                 "schema" to target,
                 "decidedBy" to (m.decidedBy ?: "—"),
+                "forcedBy" to (m.forcedBy ?: "—"),
                 "statementCount" to m.statementCount.toString(),
                 "error" to (m.failure?.let(::fenceSafe) ?: "—"),
                 "ordinal" to ((m.failedStatement?.ordinal ?: 0) + 1).toString(),

@@ -348,7 +348,8 @@ class GitHubSourceFlow(
         if (blocked != null) return post(blocked)
 
         val toRun = active.filter { it.status == "APPROVED" }
-        for (scope in toRun.mapNotNull { it.scope }.distinct()) {
+        for ((scope, scoped) in toRun.filter { it.scope != null }.groupBy { it.scope!! }) {
+            if (scoped.all { it.forceRun }) continue
             waitingOn(scope, repo, number, pr.headSha)?.let { return post(pending(it)) }
         }
         val enabledBy = pr.autoMerge?.enabledBy

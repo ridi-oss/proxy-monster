@@ -20,7 +20,9 @@
     "closed_after_run": "*{datasource}*에서 {statement}를 실행하려는 *{requester}* 님의 요청이 실행되었지만, 풀 리퀘스트가 머지되지 않고 닫혔습니다. 그 파일이 main에 들어갈 때까지 이 스코프는 막혀 있습니다.{statementNote}",
     "closed_after_run_fallback": "{datasource}에 대한 {requester} 님의 요청이 실행되었지만 풀 리퀘스트가 머지되지 않고 닫혔습니다",
     "merged_without_file": "*{datasource}*에서 {statement}를 실행하려는 *{requester}* 님의 요청이 실행되었지만, 풀 리퀘스트가 그 파일 없이 머지되어 main에는 기록되지 않았습니다.{statementNote}",
-    "merged_without_file_fallback": "{datasource}에 대한 {requester} 님의 요청이 실행되었지만 풀 리퀘스트가 그 파일 없이 머지되었습니다"
+    "merged_without_file_fallback": "{datasource}에 대한 {requester} 님의 요청이 실행되었지만 풀 리퀘스트가 그 파일 없이 머지되었습니다",
+    "force_run": "*{forcedBy}* 님이 *{datasource}*에서 {statement}를 실행하려는 *{requester}* 님의 요청을 강제 실행으로 지정했습니다. 스코프의 브랜치 최신 여부 확인과 한 번에 한 PR만 실행하는 규칙을 건너뜁니다.{statementNote}",
+    "force_run_fallback": "{forcedBy} 님이 {datasource}에 대한 {requester} 님의 요청을 강제 실행으로 지정했습니다"
   },
   "field": {
     "role": " (역할: *{role}*)",

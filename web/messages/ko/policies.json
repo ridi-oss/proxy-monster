@@ -131,7 +131,8 @@
       "stmtCatDdl": "CREATE/ALTER/DROP/TRUNCATE 실행 (및 CTAS/CREATE VIEW)",
       "stmtCatMetadata": "스키마 조회용 SHOW/DESCRIBE 실행",
       "stmtCatSession": "세션 구문 실행 (SET/BEGIN/COMMIT)",
-      "stmtCatAdmin": "관리 구문 실행 — 복제/계정/파일/실행 등 (stmt.cat.admin.file 같은 하위 항목)"
+      "stmtCatAdmin": "관리 구문 실행 — 복제/계정/파일/실행 등 (stmt.cat.admin.file 같은 하위 항목)",
+      "taskForceRun": "GitHub 요청을 스코프의 브랜치 최신 여부 확인과 한 번에 한 PR 규칙을 건너뛰고 실행"
     }
   }
 }

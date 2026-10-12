@@ -67,7 +67,7 @@ class PolicyOriginDbTest {
             }
         }
         assertEquals(
-            "176f5f46f11ea1760b98e97e6cc6a63f",
+            "b5fb7a2210012169fbe9a164541638b5",
             digest,
             "the seeded security posture changed: a policy body, id, key, origin, enabled flag, role, " +
                 "group, or group-to-role link differs from what a fresh install is supposed to enforce",
@@ -295,7 +295,8 @@ class PolicyOriginDbTest {
                  Action::"grant.revoke",
                  Action::"task.request",
                  Action::"task.cancel",
-                 Action::"task.delete"],
+                 Action::"task.delete",
+                 Action::"task.force_run"],
               resource
             );
             """.trimIndent() + "\n"

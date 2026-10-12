@@ -131,6 +131,7 @@ fun discoverRoles(
     val canExecute: Boolean = false,
     val canCancel: Boolean = false,
     val canEdit: Boolean = false,
+    val canForceRun: Boolean = false,
 )
 
 /**
@@ -478,6 +479,16 @@ fun Route.approvalRoutes(
         val input = call.receive<EditQueryRequestInput>()
         try {
             call.respond(service.edit(principal, call.httpRequesterIp(config), call.auditActor(config), id, input))
+        } catch (e: TaskServiceException) {
+            call.respondServiceError(e)
+        }
+    }
+
+    post("/api/approvals/{id}/force-run") {
+        val principal = call.requireApi() ?: return@post
+        val id = call.idParam() ?: return@post call.respond(HttpStatusCode.BadRequest, ApiError("common.bad_id"))
+        try {
+            call.respond(service.forceRun(principal, call.httpRequesterIp(config), call.auditActor(config), id))
         } catch (e: TaskServiceException) {
             call.respondServiceError(e)
         }

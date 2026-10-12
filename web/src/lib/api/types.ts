@@ -386,6 +386,9 @@ export interface AccessRequest {
   revisedAt?: string | null
   source?: string
   pullRequest?: PullRequestRef | null
+  /** An admin let this GitHub request skip its scope's freshness and one-PR-at-a-time checks. */
+  forceRun?: boolean
+  forceRunBy?: string | null
 }
 
 /** The pull request a GitHub request came from. */
@@ -491,6 +494,7 @@ export interface QueryRequestDetail {
   canExecute?: boolean
   canCancel?: boolean
   canEdit?: boolean
+  canForceRun?: boolean
 }
 
 /** Decrypted rows of an APPROVER_EXEC result (returned only to an authorized viewer). */

@@ -131,7 +131,8 @@
       "stmtCatDdl": "run CREATE/ALTER/DROP/TRUNCATE (and CTAS/CREATE VIEW)",
       "stmtCatMetadata": "run schema-introspecting SHOW/DESCRIBE",
       "stmtCatSession": "run session statements (SET/BEGIN/COMMIT)",
-      "stmtCatAdmin": "run admin statements — replication/account/file/exec/… (finer leaves like stmt.cat.admin.file)"
+      "stmtCatAdmin": "run admin statements — replication/account/file/exec/… (finer leaves like stmt.cat.admin.file)",
+      "taskForceRun": "run a GitHub request past its scope's freshness and one-PR-at-a-time checks"
     }
   }
 }

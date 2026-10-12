@@ -20,7 +20,9 @@
     "closed_after_run": "*{requester}*'s request to run {statement} on *{datasource}* ran, but its pull request was closed without merging. The scope stays blocked until that file reaches main.{statementNote}",
     "closed_after_run_fallback": "{requester}'s request on {datasource} ran, but its pull request was closed without merging",
     "merged_without_file": "*{requester}*'s request to run {statement} on *{datasource}* ran, but its pull request merged without the file, so main does not record it.{statementNote}",
-    "merged_without_file_fallback": "{requester}'s request on {datasource} ran, but its pull request merged without the file"
+    "merged_without_file_fallback": "{requester}'s request on {datasource} ran, but its pull request merged without the file",
+    "force_run": "*{forcedBy}* forced *{requester}*'s request to run {statement} on *{datasource}* past the scope's freshness and one-PR-at-a-time checks.{statementNote}",
+    "force_run_fallback": "{forcedBy} forced {requester}'s request on {datasource} past the scope checks"
   },
   "field": {
     "role": " as *{role}*",

@@ -4,7 +4,7 @@ import { useEffect, useState, type ReactNode } from 'react'
 import { useTranslations } from 'next-intl'
 import { mutate as globalMutate } from 'swr'
 import { toast } from 'sonner'
-import { cancelApproval, editApproval, executeApproval, rejectApproval } from '@/lib/api/client'
+import { cancelApproval, editApproval, executeApproval, forceRunApproval, rejectApproval } from '@/lib/api/client'
 import { onTaskEvent, subscribeTaskEvents } from '@/lib/api/task-events'
 import { swrKeys, useApproval } from '@/lib/hooks'
 import type { AccessRequest } from '@/lib/api/types'
@@ -83,7 +83,7 @@ function Pill({ value, styles }: { value?: string | null; styles: Record<string,
 export function ApprovalDetail({ id }: { id: number }) {
   const t = useTranslations('Workflows')
   const { data, error, isLoading } = useApproval(id, { refreshInterval: 15000 })
-  const [busy, setBusy] = useState<'reject' | 'run' | 'cancel' | 'edit' | null>(null)
+  const [busy, setBusy] = useState<'reject' | 'run' | 'cancel' | 'edit' | 'forceRun' | null>(null)
   const [editOpen, setEditOpen] = useState(false)
   const [editSql, setEditSql] = useState('')
   const [editReason, setEditReason] = useState('')
@@ -157,6 +157,19 @@ export function ApprovalDetail({ id }: { id: number }) {
       refresh()
     } catch (err) {
       toast.error(err instanceof Error ? err.message : t('approvalDetail.cancelFailed'))
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  const handleForceRun = async () => {
+    setBusy('forceRun')
+    try {
+      await forceRunApproval(id)
+      toast.success(t('approvalDetail.forceRunToast'))
+      refresh()
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : t('approvalDetail.forceRunFailed'))
     } finally {
       setBusy(null)
     }
@@ -324,6 +337,25 @@ export function ApprovalDetail({ id }: { id: number }) {
             <div className="rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-sm text-emerald-600 dark:text-emerald-400">
               {approvedCopy}
             </div>
+          )}
+
+          {fromGithub && request.forceRun && (
+            <p className="text-muted-foreground text-sm">
+              {t('approvalDetail.forcedBy', { admin: request.forceRunBy ?? '—' })}
+            </p>
+          )}
+
+          {fromGithub && data.canForceRun && (request.status === 'PENDING' || request.status === 'APPROVED') && (
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={handleForceRun}
+              disabled={busy !== null}
+              data-testid="force-run-approval"
+            >
+              {busy === 'forceRun' ? t('actions.forcingRun') : t('actions.forceRun')}
+            </Button>
           )}
 
           {(request.status === 'APPROVED' || runStarted) && (

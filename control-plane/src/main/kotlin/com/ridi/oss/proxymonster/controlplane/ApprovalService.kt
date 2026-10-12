@@ -403,6 +403,8 @@ class ApprovalService(
         val canExecute = queryResultStore != null && isApprover && req.status == "APPROVED" && req.decidedBy == principal &&
             !req.fromPullRequest
         val canCancel = req.status == "EXECUTING" && mayDecide(principal, requesterIp, AuthzAction.TASK_CANCEL, req)
+        val canForceRun = req.fromPullRequest && req.status in FORCEABLE && !req.forceRun &&
+            mayDecide(principal, requesterIp, AuthzAction.TASK_FORCE_RUN, req)
         return QueryRequestDetail(
             req,
             canDecide = req.status == "PENDING" && isApprover,
@@ -411,7 +413,23 @@ class ApprovalService(
             canExecute = canExecute,
             canCancel = canCancel,
             canEdit = req.principal == principal && req.status in EDITABLE && !req.fromPullRequest,
+            canForceRun = canForceRun,
         )
+    }
+
+    /** Let a GitHub request run past its scope's freshness and one-PR-at-a-time checks; every other gate stays. */
+    fun forceRun(principal: String, requesterIp: String?, actor: AuditActor, id: Long): AccessRequest {
+        val req = workflowRequest(id)
+        if (!mayDecide(principal, requesterIp, AuthzAction.TASK_FORCE_RUN, req)) throw notApprover()
+        if (req.status in setOf("EXECUTING", "EXECUTED", "FAILED", "CANCELLED")) throw alreadyExecuted()
+        if (!req.fromPullRequest || req.status !in FORCEABLE) throw alreadyDecided()
+        if (req.forceRun) return req
+        val forced = accessStore.forceRun(id, principal, actor, recorder) { c, r ->
+            notifications?.emit(c, NotificationEvent.TASK_FORCE_RUN, r)
+        } ?: return workflowRequest(id)
+        notifications?.wake()
+        log.info("query approval force-run request={} pr={}#{} by={}", id, req.pullRequest?.repository, req.pullRequest?.pr, principal)
+        return forced
     }
 
     /** Approve [revision] of a request: the version the approver read. A later edit refuses it. */
@@ -694,5 +712,6 @@ class ApprovalService(
     private companion object {
         const val REQUEST = "query approval request"
         val EDITABLE = setOf("PENDING", "APPROVED")
+        val FORCEABLE = setOf("PENDING", "APPROVED")
     }
 }

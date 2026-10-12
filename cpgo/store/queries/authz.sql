@@ -24,3 +24,10 @@ SELECT EXISTS(SELECT 1 FROM app_user WHERE principal = $1 AND NOT active);
 
 -- name: DatasourceNameTags :one
 SELECT name, tags FROM datasource WHERE id = $1 AND deleted_at IS NULL;
+
+-- name: PrincipalGroups :many
+SELECT DISTINCT g.name FROM app_user u
+JOIN group_member gm ON gm.user_id = u.id
+JOIN app_group g ON g.id = gm.group_id AND g.deleted_at IS NULL
+WHERE u.principal = $1 AND u.active
+ORDER BY g.name;

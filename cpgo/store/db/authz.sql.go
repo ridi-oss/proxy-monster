@@ -77,6 +77,34 @@ func (q *Queries) PolicyFingerprint(ctx context.Context) (string, error) {
 	return fingerprint, err
 }
 
+const principalGroups = `-- name: PrincipalGroups :many
+SELECT DISTINCT g.name FROM app_user u
+JOIN group_member gm ON gm.user_id = u.id
+JOIN app_group g ON g.id = gm.group_id AND g.deleted_at IS NULL
+WHERE u.principal = $1 AND u.active
+ORDER BY g.name
+`
+
+func (q *Queries) PrincipalGroups(ctx context.Context, principal string) ([]string, error) {
+	rows, err := q.db.Query(ctx, principalGroups, principal)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []string{}
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return nil, err
+		}
+		items = append(items, name)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const principalRoles = `-- name: PrincipalRoles :many
 SELECT r.name FROM principal_role pr JOIN app_role r ON r.id = pr.role_id AND r.deleted_at IS NULL
 WHERE pr.principal = $1

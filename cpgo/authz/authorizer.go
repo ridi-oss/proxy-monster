@@ -24,11 +24,11 @@ type Local struct {
 }
 
 func (l Local) Authorize(ctx context.Context, principal, action string, r bridge.Resource, ip string) (bool, string, error) {
-	roles, err := l.Engine.Roles(ctx, principal)
+	p, err := l.Engine.Parents(ctx, principal)
 	if err != nil {
 		return false, "", err
 	}
-	d, err := l.Engine.AuthorizeAs(ctx, principal, roles, action, r, Context{RequesterIP: ip})
+	d, err := l.Engine.AuthorizeAs(ctx, principal, p, action, r, Context{RequesterIP: ip})
 	return d.Allow, d.Reason, err
 }
 
@@ -36,13 +36,13 @@ func (l Local) AuthorizeEach(ctx context.Context, principal, action string, rs [
 	if len(rs) == 0 {
 		return nil, nil
 	}
-	roles, err := l.Engine.Roles(ctx, principal)
+	p, err := l.Engine.Parents(ctx, principal)
 	if err != nil {
 		return nil, err
 	}
 	out := make([]bool, len(rs))
 	for i, r := range rs {
-		d, err := l.Engine.AuthorizeAs(ctx, principal, roles, action, r, Context{RequesterIP: ip})
+		d, err := l.Engine.AuthorizeAs(ctx, principal, p, action, r, Context{RequesterIP: ip})
 		if err != nil {
 			return nil, err
 		}
@@ -66,15 +66,15 @@ func (l Local) MayRequest(ctx context.Context, principal string, id int64, ip st
 		return false, err
 	}
 	name, tags := row.Name, row.Tags
-	roles, err := l.Engine.Roles(ctx, principal)
+	p, err := l.Engine.Parents(ctx, principal)
 	if err != nil {
 		return false, err
 	}
 	raw := Context{RequesterIP: ip}
-	if raw.Tags, err = l.Engine.ContextTags(ctx, principal, roles, name, tags, raw); err != nil {
+	if raw.Tags, err = l.Engine.ContextTags(ctx, principal, p, name, tags, raw); err != nil {
 		return false, err
 	}
-	d, err := l.Engine.DatasourceAction(ctx, principal, roles, "task.request", name, tags, raw)
+	d, err := l.Engine.DatasourceAction(ctx, principal, p, "task.request", name, tags, raw)
 	return d.Allow, err
 }
 
@@ -89,7 +89,7 @@ func (l Local) MayConnect(ctx context.Context, principal string, ids []int64, ip
 	if err != nil || deactivated {
 		return out, err
 	}
-	roles, err := l.Engine.Roles(ctx, principal)
+	p, err := l.Engine.Parents(ctx, principal)
 	if err != nil {
 		return nil, err
 	}
@@ -100,10 +100,10 @@ func (l Local) MayConnect(ctx context.Context, principal string, ids []int64, ip
 		}
 		name, tags := row.Name, row.Tags
 		raw := Context{RequesterIP: ip}
-		if raw.Tags, err = l.Engine.ContextTags(ctx, principal, roles, name, tags, raw); err != nil {
+		if raw.Tags, err = l.Engine.ContextTags(ctx, principal, p, name, tags, raw); err != nil {
 			return nil, err
 		}
-		d, err := l.Engine.DatasourceAction(ctx, principal, roles, "datasource.connect", name, tags, raw)
+		d, err := l.Engine.DatasourceAction(ctx, principal, p, "datasource.connect", name, tags, raw)
 		if err != nil {
 			return nil, err
 		}

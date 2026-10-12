@@ -165,7 +165,7 @@ func (f *fixture) bounded(r *pb.RequestAuthorization, ds requestDatasource, role
 	if r.DatasourceName == "" {
 		r.DatasourceName = ds.name
 	}
-	a, err := f.s.authorizeBounded(context.Background(), r, ds, caller{principal: "alice", roles: roles, context: c})
+	a, err := f.s.authorizeBounded(context.Background(), r, ds, caller{principal: "alice", parents: authz.Parents{Roles: roles}, context: c})
 	if err != nil {
 		f.t.Fatal(err)
 	}
@@ -237,7 +237,7 @@ func TestMetadataChannel(t *testing.T) {
 		{"editor channel", authz.Context{Channel: "editor"}, false},
 		{"wire channel", authz.Context{Channel: "wire"}, true},
 	} {
-		ok, err := f.s.mayConnect(context.Background(), ds, caller{principal: "alice", roles: []string{"reader"}, context: tc.ctx})
+		ok, err := f.s.mayConnect(context.Background(), ds, caller{principal: "alice", parents: authz.Parents{Roles: []string{"reader"}}, context: tc.ctx})
 		if err != nil || ok != tc.want {
 			t.Errorf("%s: %v %v, want %v", tc.name, ok, err, tc.want)
 		}
@@ -320,7 +320,7 @@ func TestMetadataSelectors(t *testing.T) {
 			t.Errorf("%s: deny %q", tc.name, a.deny)
 		}
 	}
-	if a, _ := f.s.authorizeBounded(context.Background(), tableOp(ref("def", "app", "users")), ds, caller{principal: "alice", roles: []string{"reader"}}); a.deny != notConnectable {
+	if a, _ := f.s.authorizeBounded(context.Background(), tableOp(ref("def", "app", "users")), ds, caller{principal: "alice", parents: authz.Parents{Roles: []string{"reader"}}}); a.deny != notConnectable {
 		t.Errorf("empty datasource name: deny %q", a.deny)
 	}
 	if _, err := f.authorize(on(catalogOp(ref("def", "app", "")), alice, "other", "")); status.Code(err) != codes.NotFound {

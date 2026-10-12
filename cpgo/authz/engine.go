@@ -89,6 +89,21 @@ func (e *Engine) Roles(ctx context.Context, principal string) ([]string, error) 
 	return roles, nil
 }
 
+// Parents is a principal's Cedar parents: its roles and the local groups it belongs to.
+type Parents struct {
+	Roles, Groups []string
+}
+
+// Parents is RoleResolver.resolveParents: Roles' role set plus the active user's non-deleted groups.
+func (e *Engine) Parents(ctx context.Context, principal string) (Parents, error) {
+	roles, err := e.Roles(ctx, principal)
+	if err != nil || roles == nil {
+		return Parents{Roles: roles}, err
+	}
+	groups, err := db.New(e.pool).PrincipalGroups(ctx, principal)
+	return Parents{Roles: roles, Groups: groups}, err
+}
+
 func (e *Engine) deactivated(ctx context.Context, principal string) (bool, error) {
 	return db.New(e.pool).IsDeactivated(ctx, principal)
 }
@@ -97,23 +112,53 @@ func uid(typ, id string) types.EntityUID {
 	return types.NewEntityUID(types.EntityType(typ), types.String(id))
 }
 
-// graph is the entity set one decision evaluates: the principal with its roles as parents, the roles, and
-// whatever the resource resolves against.
+// graph is the entity set one decision evaluates: the principal with its roles and groups as parents, those
+// roles and groups, and whatever the resource resolves against.
 type graph struct {
 	principal types.EntityUID
 	entities  types.EntityMap
+	// parentsOf resolves another user the resource names, seeded with the principal's own snapshot.
+	parentsOf func(user string) (Parents, error)
 }
 
-func newGraph(principal string, roles []string) graph {
-	g := graph{principal: uid("User", principal), entities: types.EntityMap{}}
-	var parents []types.EntityUID
-	for _, r := range roles {
-		ru := uid("Role", r)
-		parents = append(parents, ru)
-		g.add(types.Entity{UID: ru})
-	}
-	g.entities[g.principal] = types.Entity{UID: g.principal, Parents: types.NewEntityUIDSet(parents...)}
+func (e *Engine) newGraph(ctx context.Context, principal string, p Parents) graph {
+	known := map[string]Parents{principal: p}
+	g := graph{principal: uid("User", principal), entities: types.EntityMap{}, parentsOf: func(user string) (Parents, error) {
+		if p, ok := known[user]; ok {
+			return p, nil
+		}
+		p, err := e.Parents(ctx, user)
+		known[user] = p
+		return p, err
+	}}
+	g.user(principal, p)
 	return g
+}
+
+// user adds a User entity whose parents are its roles and groups, and those role and group entities.
+func (g graph) user(name string, p Parents) types.EntityUID {
+	var parents []types.EntityUID
+	for _, r := range p.Roles {
+		parents = append(parents, uid("Role", r))
+	}
+	for _, gr := range p.Groups {
+		parents = append(parents, uid("Group", gr))
+	}
+	u := uid("User", name)
+	g.add(types.Entity{UID: u, Parents: types.NewEntityUIDSet(parents...)})
+	for _, pu := range parents {
+		g.add(types.Entity{UID: pu})
+	}
+	return u
+}
+
+// namedUser adds a user the resource names, with its own roles and groups.
+func (g graph) namedUser(name string) (types.EntityUID, error) {
+	p, err := g.parentsOf(name)
+	if err != nil {
+		return types.EntityUID{}, err
+	}
+	return g.user(name, p), nil
 }
 
 // add keeps the first entity for a UID, as Kotlin's dedupeByEuid does.
@@ -203,12 +248,16 @@ func (g graph) resource(r bridge.Resource) (types.EntityUID, error) {
 		e = types.Entity{UID: uid("AuditRecord", r.Principal),
 			Attributes: types.NewRecord(types.RecordMap{"principal": uid("User", r.Principal)})}
 	case "ApprovalRequest":
-		attrs := types.RecordMap{"requester": uid("User", r.Principal)}
-		if r.Approver != nil {
-			attrs["approver"] = uid("User", *r.Approver)
-		}
-		if r.ExecutedBy != nil {
-			attrs["executedBy"] = uid("User", *r.ExecutedBy)
+		attrs := types.RecordMap{}
+		for key, name := range map[string]*string{"requester": &r.Principal, "approver": r.Approver, "executedBy": r.ExecutedBy} {
+			if name == nil {
+				continue
+			}
+			u, err := g.namedUser(*name)
+			if err != nil {
+				return types.EntityUID{}, err
+			}
+			attrs[types.String(key)] = u
 		}
 		attrs["source"] = types.String(cmp.Or(r.Source, "console"))
 		ds := "-"
@@ -282,7 +331,7 @@ func decide(policies *cedar.PolicySet, g graph, action string, resource types.En
 }
 
 // AuthorizeAs is Kotlin's authorizeAs: one decision with an already-resolved role set.
-func (e *Engine) AuthorizeAs(ctx context.Context, principal string, roles []string, action string, r bridge.Resource, c Context) (Decision, error) {
+func (e *Engine) AuthorizeAs(ctx context.Context, principal string, p Parents, action string, r bridge.Resource, c Context) (Decision, error) {
 	if r.Type == "NativeResource" && (r.DatasourceName == nil || *r.DatasourceName == "" || r.NativeKind == "" ||
 		r.NativeID == "" || (r.Owner != nil && *r.Owner == "") || c.NativeOperation == "") {
 		return Decision{Reason: "invalid native resource or operation"}, nil
@@ -291,7 +340,7 @@ func (e *Engine) AuthorizeAs(ctx context.Context, principal string, roles []stri
 	if err != nil {
 		return Decision{}, err
 	}
-	g := newGraph(principal, roles)
+	g := e.newGraph(ctx, principal, p)
 	res, err := g.resource(r)
 	if err != nil {
 		return Decision{}, err
@@ -301,12 +350,12 @@ func (e *Engine) AuthorizeAs(ctx context.Context, principal string, roles []stri
 
 // DatasourceAction is authorizeDatasourceActionId: an action on the name-keyed Datasource itself, with the
 // action's group ancestry as entities so a category permit reaches it.
-func (e *Engine) DatasourceAction(ctx context.Context, principal string, roles []string, action, datasource string, tags []string, c Context) (Decision, error) {
+func (e *Engine) DatasourceAction(ctx context.Context, principal string, p Parents, action, datasource string, tags []string, c Context) (Decision, error) {
 	policies, _, err := e.load(ctx)
 	if err != nil {
 		return Decision{}, err
 	}
-	g := newGraph(principal, roles)
+	g := e.newGraph(ctx, principal, p)
 	ds := g.datasource(datasource, tags)
 	for a, parents := range actionAncestry(action) {
 		var ps []types.EntityUID
@@ -320,12 +369,12 @@ func (e *Engine) DatasourceAction(ctx context.Context, principal string, roles [
 
 // ContextTags is resolveContextTags: the tags whose rules permit this principal on the datasource, from the
 // raw context alone.
-func (e *Engine) ContextTags(ctx context.Context, principal string, roles []string, datasource string, tags []string, raw Context) ([]string, error) {
+func (e *Engine) ContextTags(ctx context.Context, principal string, p Parents, datasource string, tags []string, raw Context) ([]string, error) {
 	policies, vocab, err := e.load(ctx)
 	if err != nil || len(vocab) == 0 {
 		return nil, err
 	}
-	g := newGraph(principal, roles)
+	g := e.newGraph(ctx, principal, p)
 	ds := g.datasource(datasource, tags)
 	rec := raw.record(false)
 	var out []string
@@ -344,17 +393,17 @@ func (e *Engine) ContextTags(ctx context.Context, principal string, roles []stri
 // AuthorizeWithContext is authorizeWithContext: one role snapshot for both passes, context tags derived only
 // when the decision has a datasource in scope.
 func (e *Engine) AuthorizeWithContext(ctx context.Context, principal, action string, r bridge.Resource, raw Context, datasource *string, tags []string) (Decision, error) {
-	roles, err := e.Roles(ctx, principal)
+	p, err := e.Parents(ctx, principal)
 	if err != nil {
 		return Decision{}, err
 	}
 	c := raw
 	if datasource != nil {
-		if c.Tags, err = e.ContextTags(ctx, principal, roles, *datasource, tags, raw); err != nil {
+		if c.Tags, err = e.ContextTags(ctx, principal, p, *datasource, tags, raw); err != nil {
 			return Decision{}, err
 		}
 	}
-	return e.AuthorizeAs(ctx, principal, roles, action, r, c)
+	return e.AuthorizeAs(ctx, principal, p, action, r, c)
 }
 
 // formEncode is java.net.URLEncoder.encode, which Kotlin's native resource UIDs use: it keeps '*' and escapes '~',

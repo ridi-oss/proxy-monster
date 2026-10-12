@@ -138,7 +138,7 @@ func (l *lake) direct(r *pb.RequestAuthorization, now time.Time) outcome {
 		r.DatasourceName = "lake"
 	}
 	a, err := l.s.admitAthena(context.Background(), r, reqDS("lake", "athena", "analytics", "production"),
-		caller{principal: "alice", roles: []string{"reader"}, context: authz.Context{Channel: "wire"}}, func() time.Time { return now })
+		caller{principal: "alice", parents: authz.Parents{Roles: []string{"reader"}}, context: authz.Context{Channel: "wire"}}, func() time.Time { return now })
 	var d denyError
 	if errors.As(err, &d) {
 		return deny(string(d))

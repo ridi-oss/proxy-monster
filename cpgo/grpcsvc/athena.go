@@ -185,12 +185,12 @@ type athenaGate struct {
 func (g athenaGate) invoke(ctx context.Context, kind, id string, owner *string) error {
 	raw := g.c.context
 	raw.NativeOperation = g.operation
-	tags, err := g.s.authz.ContextTags(ctx, g.c.principal, g.c.roles, g.ds.name, g.ds.tags, raw)
+	tags, err := g.s.authz.ContextTags(ctx, g.c.principal, g.c.parents, g.ds.name, g.ds.tags, raw)
 	if err != nil {
 		return err
 	}
 	raw.Tags = tags
-	d, err := g.s.authz.AuthorizeAs(ctx, g.c.principal, g.c.roles, "native.invoke", bridge.Resource{
+	d, err := g.s.authz.AuthorizeAs(ctx, g.c.principal, g.c.parents, "native.invoke", bridge.Resource{
 		Type: "NativeResource", DatasourceName: &g.ds.name, NativeKind: kind, NativeID: id, Owner: owner, DatasourceTags: g.ds.tags,
 	}, raw)
 	if err != nil {

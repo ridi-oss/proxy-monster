@@ -93,6 +93,13 @@ func TestDecisionsUnderShippedPolicies(t *testing.T) {
 	exec(`INSERT INTO datasource (name, host, port, db_name, tags) VALUES ('gated', 'h', 1, 'd', '["prod"]')`)
 	exec(`INSERT INTO policy (name, cedar_src, enabled, origin) VALUES ('connect', 'permit(principal == User::"connector", action == Action::"datasource.connect", resource == Datasource::"gated");', true, 'USER')`)
 	exec(`INSERT INTO policy (name, cedar_src, enabled, origin) VALUES ('no-github-reads', 'forbid(principal == User::"alice", action == Action::"task.read", resource) when { resource has source && resource.source == "github" };', true, 'USER')`)
+	exec(`INSERT INTO app_user (principal, active) VALUES ('grouped', true), ('lapsed', false)`)
+	exec(`INSERT INTO app_group (name, source) VALUES ('eng', 'LOCAL'), ('retired', 'LOCAL')`)
+	exec(`UPDATE app_group SET deleted_at = now() WHERE name = 'retired'`)
+	exec(`INSERT INTO group_member (group_id, user_id) SELECT g.id, u.id FROM app_group g, app_user u WHERE u.principal IN ('grouped', 'lapsed') AND g.name IN ('eng', 'retired')`)
+	exec(`INSERT INTO policy (name, cedar_src, enabled, origin) VALUES ('eng-audit', 'permit(principal in Group::"eng", action == Action::"audit.read", resource == AuditLog::"all");', true, 'USER'),
+		('retired-audit', 'permit(principal in Group::"retired", action == Action::"admin.policies", resource);', true, 'USER'),
+		('eng-requests', 'permit(principal == User::"watcher", action == Action::"task.read", resource) when { resource.requester in Group::"eng" };', true, 'USER')`)
 	exec(`INSERT INTO app_user (principal, active) VALUES ('gone', false)`)
 	exec(`INSERT INTO principal_role (principal, role_id) SELECT 'gone', id FROM app_role WHERE name = 'system:admin'`)
 
@@ -131,6 +138,11 @@ func TestDecisionsUnderShippedPolicies(t *testing.T) {
 		{"another's request", "bob", "task.read", bridge.Resource{Type: "ApprovalRequest", Principal: "alice"}, "", false},
 		{"own grant", "alice", "task.read", bridge.Resource{Type: "AccessGrant", Principal: "alice", ID: 1, RoleName: &role}, "", true},
 		{"deactivated admin", "gone", "admin.policies", bridge.System, "", false},
+		{"group member", "grouped", "audit.read", bridge.AuditLog, "", true},
+		{"deleted group grants nothing", "grouped", "admin.policies", bridge.System, "", false},
+		{"inactive member has no groups", "lapsed", "audit.read", bridge.AuditLog, "", false},
+		{"requester in a group", "watcher", "task.read", bridge.Resource{Type: "ApprovalRequest", Principal: "grouped"}, "", true},
+		{"requester outside the group", "watcher", "task.read", bridge.Resource{Type: "ApprovalRequest", Principal: "alice"}, "", false},
 	} {
 		if got := allow(tc.principal, tc.action, tc.resource, tc.ip); got != tc.want {
 			t.Errorf("%s: got %v want %v", tc.name, got, tc.want)

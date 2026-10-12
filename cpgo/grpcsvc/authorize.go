@@ -35,7 +35,7 @@ type requestDatasource struct {
 // caller is who a request authorizes as: the token's principal with the roles it resolves to now.
 type caller struct {
 	principal string
-	roles     []string
+	parents   authz.Parents
 	context   authz.Context
 }
 
@@ -80,16 +80,16 @@ func (s *service) AuthorizeRequest(ctx context.Context, r *pb.RequestAuthorizati
 	if row.CurrentCatalogName != nil {
 		ds.catalog = *row.CurrentCatalogName
 	}
-	roles, err := s.authz.Roles(ctx, tok.Principal)
+	parents, err := s.authz.Parents(ctx, tok.Principal)
 	if err != nil {
 		return nil, err
 	}
-	c := caller{principal: tok.Principal, roles: roles, context: authz.Context{Channel: "wire", RequesterIP: requesterIP(r.GetClientAddr())}}
+	c := caller{principal: tok.Principal, parents: parents, context: authz.Context{Channel: "wire", RequesterIP: requesterIP(r.GetClientAddr())}}
 	a, err := s.authorizeBounded(ctx, r, ds, c)
 	if err != nil {
 		return nil, err
 	}
-	out := &pb.RequestAuthorizationResult{Allowed: a.deny == "", DenyReason: a.deny, EffectiveRoles: roles}
+	out := &pb.RequestAuthorizationResult{Allowed: a.deny == "", DenyReason: a.deny, EffectiveRoles: parents.Roles}
 	if a.deny == "" {
 		out.Principal = tok.Principal
 		if a.athena != nil {
@@ -168,12 +168,12 @@ func (s *service) authorizeMetadata(ctx context.Context, r *pb.RequestAuthorizat
 // mayConnect is the datasource.connect gate the HTTP metadata routes use, with context tags derived first.
 func (s *service) mayConnect(ctx context.Context, ds requestDatasource, c caller) (bool, error) {
 	raw := c.context
-	tags, err := s.authz.ContextTags(ctx, c.principal, c.roles, ds.name, ds.tags, raw)
+	tags, err := s.authz.ContextTags(ctx, c.principal, c.parents, ds.name, ds.tags, raw)
 	if err != nil {
 		return false, err
 	}
 	raw.Tags = tags
-	d, err := s.authz.DatasourceAction(ctx, c.principal, c.roles, "datasource.connect", ds.name, ds.tags, raw)
+	d, err := s.authz.DatasourceAction(ctx, c.principal, c.parents, "datasource.connect", ds.name, ds.tags, raw)
 	return d.Allow, err
 }
 

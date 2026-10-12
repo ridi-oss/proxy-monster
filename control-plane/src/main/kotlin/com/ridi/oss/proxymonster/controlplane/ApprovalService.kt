@@ -136,6 +136,7 @@ class ApprovalService(
                     // Nothing re-analyzes the copied statement, so it is unknown and delivery withholds the text.
                     carriesProtectedLiteral = null,
                     source = source,
+                    contentHash = contentHash(denied.statement, ds.engine.dialect),
                     onCreated = { c, taskId, roleName -> notifications?.emitRequested(c, taskId, principal, ds, roleName) },
                 )
             } catch (_: DuplicatePendingQueryRequestException) {
@@ -155,7 +156,33 @@ class ApprovalService(
         val splitConfig = ds.splitEngineConfig() ?: throw unsplittableSql()
         val statements = splitStatements(sql, splitConfig) ?: throw unsplittableSql()
 
-        // Analysis only: nothing executes and no audit row is written. Each statement previews on its own.
+        val analysis = analyze(principal, ds, statements, requesterIp)
+        val request = accessStore.createQueryRequest(
+            principal = principal,
+            datasourceId = ds.id,
+            statements = statements,
+            denyReason = analysis.denyReason,
+            sourceDecisionId = null,
+            reason = input.reason.trim(),
+            title = input.title!!.trim(),
+            evaluatedDecision = analysis.decision.name,
+            roleId = roleId,
+            requestedDurationSec = input.requestedDurationSec,
+            actor = actor,
+            recorder = recorder,
+            carriesProtectedLiteral = analysis.carriesProtectedLiteral,
+            onCreated = { c, taskId, roleName -> notifications?.emitRequested(c, taskId, principal, ds, roleName) },
+            source = source,
+            contentHash = contentHash(sql, ds.engine.dialect),
+        )
+        notifications?.wake()
+        return CreateQueryRequestResponse(request, wouldAllow = analysis.decision == EnfAction.ALLOW)
+    }
+
+    private class Analysis(val decision: EnfAction, val denyReason: String?, val carriesProtectedLiteral: Boolean?)
+
+    /** Analysis only: nothing executes and no audit row is written. Each statement previews on its own. */
+    private fun analyze(principal: String, ds: Datasource, statements: List<String>, requesterIp: String?): Analysis {
         val catalog = datasourceStore.catalog(ds.id)
         // Carries requester_ip so the preview matches the real editor execution's verdict.
         val composeContext = AuthzContext(requesterIp = requesterIp)
@@ -179,19 +206,9 @@ class ApprovalService(
         val decision = decisions.firstOrNull { it.action == EnfAction.DENY }
             ?: decisions.firstOrNull { it.masks.isNotEmpty() }
             ?: decisions.first()
-        val request = accessStore.createQueryRequest(
-            principal = principal,
-            datasourceId = ds.id,
-            statements = statements,
+        return Analysis(
+            decision = decision.action,
             denyReason = if (decision.action == EnfAction.DENY) (decision.denyReason ?: decision.detail) else null,
-            sourceDecisionId = null,
-            reason = input.reason.trim(),
-            title = input.title!!.trim(),
-            evaluatedDecision = decision.action.name,
-            roleId = roleId,
-            requestedDurationSec = input.requestedDurationSec,
-            actor = actor,
-            recorder = recorder,
             // The disclosure hint is reader-neutral and independent of the authorization decision: null
             // (unanalyzable) and true both withhold; only a proven clean batch discloses. A catalog-changing
             // statement can change what a later one binds to, so any such statement makes the hint unknown.
@@ -202,11 +219,7 @@ class ApprovalService(
                     .map { protectedPredicateLiterals(ds, it, catalog)?.isNotEmpty() }
                     .reduce { a, b -> if (a == null || b == null) null else a || b }
             },
-            onCreated = { c, taskId, roleName -> notifications?.emitRequested(c, taskId, principal, ds, roleName) },
-            source = source,
         )
-        notifications?.wake()
-        return CreateQueryRequestResponse(request, wouldAllow = decision.action == EnfAction.ALLOW)
     }
 
     /**
@@ -257,18 +270,22 @@ class ApprovalService(
             statements = visibleStatements,
             canExecute = canExecute,
             canCancel = canCancel,
+            canEdit = req.principal == principal && req.status in EDITABLE,
         )
     }
 
-    fun approve(principal: String, requesterIp: String?, actor: AuditActor, id: Long): AccessRequest {
+    /** Approve [revision] of a request: the version the approver read. A later edit refuses it. */
+    fun approve(principal: String, requesterIp: String?, actor: AuditActor, id: Long, revision: Int): AccessRequest {
         val req = workflowRequest(id)
         if (req.status != "PENDING") throw alreadyDecided()
         if (!mayDecide(principal, requesterIp, AuthzAction.TASK_APPROVE, req)) throw notApprover()
+        if (req.revision != revision) throw requestChanged()
         val updated = accessStore.decideQueryRequest(
             id, approved = true, rejectionReason = null, decidedBy = principal,
             actor = actor, recorder = recorder,
             onDecided = { c, decided -> notifications?.emit(c, NotificationEvent.TASK_DECIDED, decided) },
-        ) ?: throw alreadyDecided()
+            revision = revision,
+        ) ?: throw if (accessStore.getRequest(id)?.status == "PENDING") requestChanged() else alreadyDecided()
         notifications?.wake()
         log.info(
             "query approval approved request={} requester={} decider={} sourceDecisionId={}",
@@ -285,7 +302,7 @@ class ApprovalService(
         if (!mayDecide(principal, requesterIp, AuthzAction.TASK_APPROVE, req)) throw notApprover()
         val updated = accessStore.decideQueryRequest(
             id, approved = false, rejectionReason = reason.trim(), decidedBy = principal,
-            actor = actor, recorder = recorder,
+            actor = actor, recorder = recorder, revision = req.revision,
             onDecided = { c, decided -> notifications?.emit(c, NotificationEvent.TASK_DECIDED, decided) },
         ) ?: throw alreadyDecided()
         notifications?.wake()
@@ -294,6 +311,54 @@ class ApprovalService(
             id, req.principal, principal, req.sourceDecisionId,
         )
         return updated
+    }
+
+    /**
+     * Replace the SQL (and optionally the title or reason) of the caller's own PENDING or APPROVED request. It
+     * goes back to PENDING under a new revision, so an earlier approval no longer counts.
+     */
+    fun edit(principal: String, requesterIp: String?, actor: AuditActor, id: Long, input: EditQueryRequestInput): AccessRequest {
+        val req = workflowRequest(id)
+        if (req.principal != principal) throw TaskServiceException(HttpStatusCode.Forbidden, ApiError("approval.edit_forbidden"))
+        if (req.status !in EDITABLE) throw notEditable()
+        if (input.sql.isBlank()) throw fieldRequired("sql")
+        if (input.reason != null && input.reason.isBlank()) throw fieldRequired("reason")
+        val ds = req.datasourceId?.let(datasourceStore::get) ?: throw serviceNotFound("datasource")
+        if (!mayRequest(principal, requesterIp, ds)) throw serviceForbidden()
+        val splitConfig = ds.splitEngineConfig() ?: throw unsplittableSql()
+        val statements = splitStatements(input.sql, splitConfig)?.takeIf { it.isNotEmpty() } ?: throw unsplittableSql()
+        val edited = revise(req, ds, input.sql, statements, trimmedTitle(input.title), input.reason?.trim(), actor, requesterIp)
+            ?: throw notEditable()
+        log.info("query approval edited request={} revision={} by={}", id, edited.revision, principal)
+        return edited
+    }
+
+    /**
+     * Give a not-yet-run request [req] new SQL. SQL with the same [contentHash] keeps the revision and the
+     * approval, so only the title or reason changes; other SQL is analyzed again and the request returns to
+     * PENDING under the next revision. Null when [req] is no longer editable.
+     */
+    private fun revise(
+        req: AccessRequest,
+        ds: Datasource,
+        sql: String,
+        statements: List<String>,
+        title: String?,
+        reason: String?,
+        actor: AuditActor,
+        requesterIp: String?,
+    ): AccessRequest? {
+        val hash = contentHash(sql, ds.engine.dialect)
+        if (hash == req.contentHash) return accessStore.editQueryRequestDetails(req.id, title, reason, actor, recorder)
+        val analysis = analyze(req.principal, ds, statements, requesterIp)
+        val edited = accessStore.editQueryRequest(
+            req.id, statements,
+            RequestEdit(hash, analysis.denyReason, analysis.decision.name, analysis.carriesProtectedLiteral, title, reason),
+            actor, recorder,
+            onEdited = { c, r -> notifications?.emit(c, NotificationEvent.TASK_EDITED, r) },
+        ) ?: return null
+        notifications?.wake()
+        return edited
     }
 
     suspend fun cancel(principal: String, requesterIp: String?, id: Long): AccessRequest {
@@ -470,11 +535,16 @@ class ApprovalService(
 
     private fun alreadyDecided() = TaskServiceException(HttpStatusCode.Conflict, ApiError("approval.already_decided"))
 
+    private fun requestChanged() = TaskServiceException(HttpStatusCode.Conflict, ApiError("approval.request_changed"))
+
+    private fun notEditable() = TaskServiceException(HttpStatusCode.Conflict, ApiError("approval.not_editable"))
+
     private fun alreadyExecuted() = TaskServiceException(HttpStatusCode.Conflict, ApiError("approval.already_executed"))
 
     private fun notApprover() = TaskServiceException(HttpStatusCode.Forbidden, ApiError("approval.not_approver"))
 
     private companion object {
         const val REQUEST = "query approval request"
+        val EDITABLE = setOf("PENDING", "APPROVED")
     }
 }

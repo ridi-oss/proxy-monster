@@ -65,6 +65,8 @@ class SlackDecisionHandler(
         }
 
         val approve = interaction.actionId == SlackTransport.ACTION_APPROVE
+        // A decision is about the SQL the message showed, so a click from before an edit decides nothing.
+        if (req.revision != interaction.revision) return reply("request_changed")
         val actor = AuditActor(
             principal = interaction.principal,
             clientAddr = null,
@@ -78,7 +80,8 @@ class SlackDecisionHandler(
             actor = actor,
             recorder = auditRecorder,
             onDecided = { c, decided -> notifications.emit(c, NotificationEvent.TASK_DECIDED, decided) },
-        ) ?: return reply("already_done")
+            revision = req.revision,
+        ) ?: return reply(if (accessStore.getRequest(interaction.taskId)?.status == "PENDING") "request_changed" else "already_done")
         // The decide committed; deliver the "decided/running" message edit now rather than on the next poll.
         // This is what removes the buttons the user just clicked, so a slow update never invites a re-click.
         notifications.wake()

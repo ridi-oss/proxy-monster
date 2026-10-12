@@ -76,7 +76,7 @@ class RecipientResolverDbTest {
         val resolver = RecipientResolver(fx.authz, fx.roleResolver) { candidates }
         val req = AccessRequest(
             id = 1, principal = requester, datasourceName = fx.datasource.name,
-            requestedDurationSec = 0, status = "PENDING", createdAt = "",
+            requestedDurationSec = 0, status = "PENDING", createdAt = "", revision = 1,
         )
         val notified = resolver.recipientsFor(req)
 

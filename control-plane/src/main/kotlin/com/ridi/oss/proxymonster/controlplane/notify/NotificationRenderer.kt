@@ -33,7 +33,7 @@ class NotificationRenderer(private val catalog: MessageCatalog = MessageCatalog(
         // plus their own sub-template, or empty — the same shape as `role`, so the template owns the whole
         // layout (line breaks and field order) rather than code assembling it piece by piece.
         val reason = m.reason
-            ?.takeIf { it.isNotBlank() && m.event == NotificationEvent.TASK_REQUESTED }
+            ?.takeIf { it.isNotBlank() && (m.event == NotificationEvent.TASK_REQUESTED || m.event == NotificationEvent.TASK_EDITED) }
             // `field.reason` renders as a Slack blockquote (`> …`); carry the quote onto every wrapped line so a
             // multi-line reason stays inside it. A blockquote is per line, so — unlike italic — it never glues a
             // formatting mark onto a bare URL and corrupts the link.
@@ -87,6 +87,7 @@ class NotificationRenderer(private val catalog: MessageCatalog = MessageCatalog(
         NotificationEvent.TASK_REQUESTED -> "task.requested"
         NotificationEvent.TASK_SUBMITTED -> "task.submitted"
         NotificationEvent.TASK_DECIDED -> if (m.approved == true) "task.decided_approved" else "task.decided_rejected"
+        NotificationEvent.TASK_EDITED -> "task.edited"
         NotificationEvent.TASK_EXECUTED -> "task.executed"
         NotificationEvent.TASK_FAILED -> "task.failed"
         NotificationEvent.TASK_CANCELLED -> "task.cancelled"

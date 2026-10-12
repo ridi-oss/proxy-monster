@@ -57,7 +57,7 @@ export function ApproveQueryDialog({
     setBusy(true)
     setError(null)
     try {
-      await approveApproval(request.id)
+      await approveApproval(request.id, request.revision)
     } catch (err) {
       setError(errorMessage(err, t))
       setBusy(false)

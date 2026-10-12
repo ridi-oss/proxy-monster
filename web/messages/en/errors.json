@@ -38,7 +38,10 @@
     "result_view_denied": "You do not have permission to view this result.",
     "use_query_approval_endpoint": "Query approvals are decided via /api/approvals/{id}.",
     "unsplittable_sql": "This SQL could not be split into statements. Check for an unterminated quote or comment.",
-    "statement_skipped": "Skipped — an earlier statement stopped the batch."
+    "statement_skipped": "Skipped — an earlier statement stopped the batch.",
+    "request_changed": "This request was changed after you opened it. Review the new SQL and approve again.",
+    "not_editable": "Only a pending or approved request that has not run can be edited.",
+    "edit_forbidden": "Only the requester can edit this request."
   },
   "auth": {
     "invalid_id_token": "Invalid ID token.",

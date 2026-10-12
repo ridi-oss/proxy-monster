@@ -2,6 +2,8 @@
   "task": {
     "requested": "*{requester}* wants to run {statement} on *{datasource}*{role}{reason}{statementNote}",
     "requested_fallback": "{requester} wants to run a query on {datasource}",
+    "edited": "*{requester}* changed their request and wants to run {statement} on *{datasource}*{role}{reason}{statementNote}",
+    "edited_fallback": "{requester} changed their request on {datasource}",
     "submitted": "Your request to run a query on *{datasource}*{role} is pending approval.{notified}",
     "submitted_fallback": "Your request on {datasource} is pending approval",
     "decided_approved": "*{requester}*'s request to run {statement} on *{datasource}* was approved by *{decidedBy}* and is running.{statementNote}",
@@ -31,6 +33,7 @@
     "already_status": "Already {status} — nothing to do.",
     "already_done": "This request was already decided — nothing to do.",
     "not_authorized": "You are not authorized to decide this request.",
-    "run_failed": "Approved, but the run could not be started. Open the request to retry."
+    "run_failed": "Approved, but the run could not be started. Open the request to retry.",
+    "request_changed": "This request was changed since this message was sent. Open it to review the new SQL."
   }
 }

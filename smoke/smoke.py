@@ -349,7 +349,7 @@ class Stack:
             "datasourceId": ds["id"], "sql": "SELECT id, email FROM users ORDER BY id",
             "title": "smoke", "reason": "smoke test", "roleId": role_id})
         rid = created["request"]["id"]
-        self.admin.call("POST", f"/api/approvals/{rid}/approve")
+        self.admin.call("POST", f"/api/approvals/{rid}/approve", {"revision": created["request"]["revision"]})
         self.admin.call("POST", f"/api/approvals/{rid}/execute")
         deadline = time.time() + 90
         while True:

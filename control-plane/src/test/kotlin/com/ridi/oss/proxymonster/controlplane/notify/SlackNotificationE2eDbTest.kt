@@ -312,7 +312,7 @@ class SlackNotificationE2eDbTest {
                     """
                     {"envelope_id":"env-run","type":"interactive",
                      "payload":{"type":"block_actions","team":{"id":"${slack.teamId}"},"user":{"id":"U_ADMIN"},
-                       "actions":[{"action_id":"${SlackTransport.ACTION_APPROVE}","value":"${req.id}"}],
+                       "actions":[{"action_id":"${SlackTransport.ACTION_APPROVE}","value":"${req.id}:${req.revision}"}],
                        "response_url":"${slack.responseUrl}","channel":{"id":"C_MOCK"},
                        "message":{"ts":"1700000000001.000100"}}}
                     """.trimIndent(),

@@ -28,6 +28,16 @@ import javax.sql.DataSource
 
 // ---- DTOs — the wire contract for /api/access-requests** + /api/access-grants** ----------
 
+/** What an edit sets besides the statements: the new SQL's hash and analysis, and a title or reason to replace (null keeps). */
+data class RequestEdit(
+    val contentHash: String,
+    val denyReason: String?,
+    val evaluatedDecision: String?,
+    val carriesProtectedLiteral: Boolean?,
+    val title: String? = null,
+    val reason: String? = null,
+)
+
 @Serializable
 data class AccessRequest(
     val id: Long, val principal: String, val roleId: Long? = null, val roleName: String? = null,
@@ -60,6 +70,11 @@ data class AccessRequest(
     val scope: String? = null,
     val changeKey: String? = null,
     val mergedAt: String? = null,
+    /** Starts at 1 and grows with each edit of the SQL; an approval names the revision it approves. */
+    val revision: Int,
+    val revisedAt: String? = null,
+    /** [contentHash] of the request's SQL; an edit that keeps it keeps the revision and the approval. */
+    val contentHash: String? = null,
 )
 
 /**
@@ -231,6 +246,7 @@ class AccessStore(internal val dataSource: DataSource) {
         actor: AuditActor? = null,
         recorder: ManagementAuditRecorder? = null,
         source: String = "console",
+        contentHash: String? = null,
     ): AccessRequest {
         require(statements.isNotEmpty()) { "a query request needs at least one statement" }
         val id = dataSource.inTx { c ->
@@ -244,8 +260,8 @@ class AccessStore(internal val dataSource: DataSource) {
                 """INSERT INTO access_request
                    (principal, kind, role_id, datasource_id, deny_reason, source_decision_id, reason, title,
                     evaluated_decision, requested_duration_sec, execute_as, creator_kind,
-                    statement_carries_protected_literal, source)
-                   VALUES (?, 'QUERY', ?, ?, ?, ?, ?, ?, ?, ?, ?::jsonb, 'WORKFLOW', ?, ?)
+                    statement_carries_protected_literal, source, content_hash)
+                   VALUES (?, 'QUERY', ?, ?, ?, ?, ?, ?, ?, ?, ?::jsonb, 'WORKFLOW', ?, ?, ?)
                    ON CONFLICT (source_decision_id) WHERE kind = 'QUERY' AND status = 'PENDING' AND source_decision_id IS NOT NULL
                    DO NOTHING
                    RETURNING id""",
@@ -262,6 +278,7 @@ class AccessStore(internal val dataSource: DataSource) {
                 ps.setString(10, json.encodeToString(stringList, executeAs))
                 if (carriesProtectedLiteral == null) ps.setNull(11, java.sql.Types.BOOLEAN) else ps.setBoolean(11, carriesProtectedLiteral)
                 ps.setString(12, source)
+                ps.setString(13, contentHash)
                 ps.executeQuery().use { rs ->
                     if (rs.next()) rs.getLong(1) else throw DuplicatePendingQueryRequestException()
                 }
@@ -428,8 +445,9 @@ class AccessStore(internal val dataSource: DataSource) {
         approved: Boolean,
         rejectionReason: String?,
         decidedBy: String,
+        revision: Int,
     ): AccessRequest? {
-        val won = dataSource.inTx { c -> decideQueryRequest(id, approved, rejectionReason, decidedBy, c) }
+        val won = dataSource.inTx { c -> decideQueryRequest(id, approved, rejectionReason, decidedBy, c, revision) }
         return if (won) getRequest(id) else null
     }
 
@@ -440,12 +458,13 @@ class AccessStore(internal val dataSource: DataSource) {
         rejectionReason: String?,
         decidedBy: String,
         c: Connection,
+        revision: Int,
     ): Boolean {
         val decidedAt = Timestamp.from(Instant.now())
         return c.prepareStatement(
             """UPDATE access_request
                SET status = ?, decided_by = ?, decided_at = ?, approved_at = ?, rejection_reason = ?
-               WHERE id = ? AND kind = 'QUERY' AND status = 'PENDING'""",
+               WHERE id = ? AND kind = 'QUERY' AND status = 'PENDING' AND revision = ?""",
         ).use { ps ->
             ps.setString(1, if (approved) "APPROVED" else "REJECTED")
             ps.setString(2, decidedBy)
@@ -453,13 +472,14 @@ class AccessStore(internal val dataSource: DataSource) {
             if (approved) ps.setTimestamp(4, decidedAt) else ps.setNull(4, java.sql.Types.TIMESTAMP)
             ps.setString(5, rejectionReason)
             ps.setLong(6, id)
+            ps.setInt(7, revision)
             ps.executeUpdate() > 0
         }
     }
 
     /**
      * Decide a pending QUERY task, recording the [TASK_APPROVE][AuthzAction.TASK_APPROVE] decision atomically.
-     * A task no longer PENDING transitions no row, so nothing is recorded.
+     * A task no longer PENDING, or edited past [revision], transitions no row, so nothing is recorded.
      */
     fun decideQueryRequest(
         id: Long,
@@ -468,6 +488,7 @@ class AccessStore(internal val dataSource: DataSource) {
         decidedBy: String,
         actor: AuditActor,
         recorder: ManagementAuditRecorder,
+        revision: Int,
         // Queues the decision notification in the SAME transaction as the transition, so a crash can never
         // leave a request decided with nobody told. No-op when the notification layer is not configured.
         onDecided: ((Connection, AccessRequest) -> Unit)? = null,
@@ -475,11 +496,11 @@ class AccessStore(internal val dataSource: DataSource) {
         val before = getRequest(id)
         val roleName = before?.roleName
         val won = dataSource.inTx { c ->
-            decideQueryRequest(id, approved, rejectionReason, decidedBy, c).also { transitioned ->
+            decideQueryRequest(id, approved, rejectionReason, decidedBy, c, revision).also { transitioned ->
                 if (transitioned) {
                     recorder.record(
                         c, actor, AuthzAction.TASK_APPROVE, auditEntity("AccessRequest", id.toString()),
-                        if (approved) "approve query request #$id under role '$roleName'" else "reject query request #$id",
+                        if (approved) "approve query request #$id revision $revision under role '$roleName'" else "reject query request #$id revision $revision",
                     )
                     // The row the hook sees carries the decision that just landed: the pre-read plus the
                     // fields this transaction set, since the UPDATE is not visible to another connection yet.
@@ -497,6 +518,84 @@ class AccessStore(internal val dataSource: DataSource) {
             }
         }
         return if (won) getRequest(id) else null
+    }
+
+    /**
+     * Replace a PENDING or APPROVED workflow request's statements, returning it to PENDING under the next revision
+     * and recording a [TASK_REQUEST][AuthzAction.TASK_REQUEST] event. Null when it is no longer editable.
+     */
+    fun editQueryRequest(
+        id: Long,
+        statements: List<String>,
+        edit: RequestEdit,
+        actor: AuditActor,
+        recorder: ManagementAuditRecorder,
+        onEdited: ((Connection, AccessRequest) -> Unit)? = null,
+    ): AccessRequest? {
+        require(statements.isNotEmpty()) { "a query request needs at least one statement" }
+        val edited = dataSource.inTx { c ->
+            val revision = c.prepareStatement(
+                """UPDATE access_request
+                   SET status = 'PENDING', decided_by = NULL, decided_at = NULL, approved_at = NULL,
+                       rejection_reason = NULL, source_decision_id = NULL, deny_reason = ?, evaluated_decision = ?,
+                       statement_carries_protected_literal = ?, title = COALESCE(?, title), reason = COALESCE(?, reason),
+                       content_hash = ?, revision = revision + 1, revised_at = now()
+                   WHERE id = ? AND kind = 'QUERY' AND creator_kind = 'WORKFLOW' AND status IN ('PENDING', 'APPROVED')
+                   RETURNING revision""",
+            ).use { ps ->
+                ps.setString(1, edit.denyReason)
+                ps.setString(2, edit.evaluatedDecision)
+                if (edit.carriesProtectedLiteral == null) ps.setNull(3, java.sql.Types.BOOLEAN) else ps.setBoolean(3, edit.carriesProtectedLiteral)
+                ps.setString(4, edit.title)
+                ps.setString(5, edit.reason)
+                ps.setString(6, edit.contentHash)
+                ps.setLong(7, id)
+                ps.executeQuery().use { rs -> if (rs.next()) rs.getInt(1) else null }
+            } ?: return@inTx false
+            c.prepareStatement("DELETE FROM query_result WHERE task_id = ?").use { ps ->
+                ps.setLong(1, id)
+                ps.executeUpdate()
+            }
+            insertStatements(c, id, statements)
+            recorder.record(
+                c, actor, AuthzAction.TASK_REQUEST, auditEntity("AccessRequest", id.toString()),
+                "edit query request #$id to revision $revision (sql ${sha256Hex(statements.joinToString(";\n")).take(12)})",
+            )
+            onEdited?.invoke(c, c.prepareStatement("$REQ_SELECT WHERE ar.id = ?").use { ps ->
+                ps.setLong(1, id)
+                ps.executeQuery().use { rs -> rs.next(); rs.toRequest() }
+            })
+            true
+        }
+        return if (edited) getRequest(id) else null
+    }
+
+    /** Replace the title or reason (null keeps) of a PENDING or APPROVED request whose SQL did not change. */
+    fun editQueryRequestDetails(
+        id: Long,
+        title: String?,
+        reason: String?,
+        actor: AuditActor,
+        recorder: ManagementAuditRecorder,
+    ): AccessRequest? {
+        val edited = dataSource.inTx { c ->
+            val revision = c.prepareStatement(
+                """UPDATE access_request SET title = COALESCE(?, title), reason = COALESCE(?, reason)
+                   WHERE id = ? AND kind = 'QUERY' AND creator_kind = 'WORKFLOW' AND status IN ('PENDING', 'APPROVED')
+                   RETURNING revision""",
+            ).use { ps ->
+                ps.setString(1, title)
+                ps.setString(2, reason)
+                ps.setLong(3, id)
+                ps.executeQuery().use { rs -> if (rs.next()) rs.getInt(1) else null }
+            } ?: return@inTx false
+            recorder.record(
+                c, actor, AuthzAction.TASK_REQUEST, auditEntity("AccessRequest", id.toString()),
+                "edit query request #$id at revision $revision (same sql)",
+            )
+            true
+        }
+        return if (edited) getRequest(id) else null
     }
 
     /** Atomically claim an approved task for execution. Exactly one concurrent caller wins. */
@@ -895,6 +994,9 @@ class AccessStore(internal val dataSource: DataSource) {
         scope = getString("scope"),
         changeKey = getString("change_key"),
         mergedAt = getTimestamp("merged_at")?.toInstant()?.toString(),
+        revision = getInt("revision"),
+        revisedAt = getTimestamp("revised_at")?.toInstant()?.toString(),
+        contentHash = getString("content_hash"),
     )
 
     private fun ResultSet.toGrant() = AccessGrant(
@@ -918,7 +1020,7 @@ class AccessStore(internal val dataSource: DataSource) {
                       ar.deny_reason, ar.source_decision_id, ar.title, ar.evaluated_decision,
                       ar.approved_at, ar.executing_at, ar.executed_at, ar.execute_as, ar.creator_kind,
                       ar.statement_carries_protected_literal, ar.source, ar.scope, ar.change_key,
-                      ar.merged_at
+                      ar.merged_at, ar.revision, ar.revised_at, ar.content_hash
                FROM access_request ar LEFT JOIN app_role r ON r.id = ar.role_id
                LEFT JOIN datasource d ON d.id = ar.datasource_id"""
         // The app_role join is filtered to LIVE roles: a grant of a soft-deleted role must resolve to no

@@ -30,6 +30,7 @@ class NotificationRendererTest {
         rowCount = 3,
         deepLink = "https://console.example.com/workflows/42",
         actions = setOf(NotificationAction.OPEN),
+        revision = 1,
     )
 
     /** en/ko parity: a key present in one locale and missing in the other renders the raw key. */

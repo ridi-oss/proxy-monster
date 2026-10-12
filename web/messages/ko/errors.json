@@ -38,7 +38,10 @@
     "result_view_denied": "이 결과를 볼 수 있는 권한이 없습니다.",
     "use_query_approval_endpoint": "쿼리 승인은 /api/approvals/{id}를 통해 처리됩니다.",
     "unsplittable_sql": "SQL을 문장 단위로 나눌 수 없습니다. 닫히지 않은 따옴표나 주석이 있는지 확인하세요.",
-    "statement_skipped": "건너뜀 — 앞선 문장에서 실행이 중단되었습니다."
+    "statement_skipped": "건너뜀 — 앞선 문장에서 실행이 중단되었습니다.",
+    "request_changed": "요청을 연 뒤 내용이 수정되었습니다. 새 SQL을 확인하고 다시 승인하세요.",
+    "not_editable": "실행되지 않은 대기 중이거나 승인된 요청만 수정할 수 있습니다.",
+    "edit_forbidden": "요청자만 이 요청을 수정할 수 있습니다."
   },
   "auth": {
     "invalid_id_token": "유효하지 않은 ID 토큰입니다.",

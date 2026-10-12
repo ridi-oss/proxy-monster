@@ -229,7 +229,7 @@ class ElevationContextRouteAuthzDbTest {
         val forbidden = seedQueryRequest()
         val denied = client.post("/api/approvals/$forbidden/approve") {
             contentType(ContentType.Application.Json)
-            setBody("""{"mode":"APPROVER_EXEC"}""")
+            setBody("""{"revision":1}""")
         }
         assertEquals(
             HttpStatusCode.Forbidden, denied.status,
@@ -241,7 +241,7 @@ class ElevationContextRouteAuthzDbTest {
         val ok = client.post("/api/approvals/$approved/approve") {
             header("X-Forwarded-For", "100.100.5.5")
             contentType(ContentType.Application.Json)
-            setBody("""{"mode":"APPROVER_EXEC"}""")
+            setBody("""{"revision":1}""")
         }
         assertEquals(
             HttpStatusCode.OK, ok.status,
@@ -270,7 +270,7 @@ class ElevationContextRouteAuthzDbTest {
             client.post("/api/approvals/$queryReq/approve") {
                 header("X-Forwarded-For", "100.100.5.5")
                 contentType(ContentType.Application.Json)
-                setBody("""{"mode":"APPROVER_EXEC"}""")
+                setBody("""{"revision":1}""")
             }.status,
         )
         assertEquals(1, adminAuditCount("approve query request #$queryReq%"), "QUERY approve route must audit")
@@ -297,6 +297,8 @@ class ElevationContextRouteAuthzDbTest {
         // No proxy is attached to runExecService; a pure approve must not need one.
         val ok = client.post("/api/approvals/$id/approve") {
             header("X-Forwarded-For", "100.100.5.5")
+            contentType(ContentType.Application.Json)
+            setBody("""{"revision":1}""")
         }
         assertEquals(HttpStatusCode.OK, ok.status, "trusted-edge approve succeeds")
 

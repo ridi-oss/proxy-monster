@@ -42,6 +42,13 @@ data class CreateQueryRequestInput(
     val requestedDurationSec: Long = 3600,
 )
 
+/** A request's new SQL; a null title or reason keeps the current one. */
+@Serializable
+data class EditQueryRequestInput(val sql: String, val title: String? = null, val reason: String? = null)
+
+@Serializable
+data class ApproveQueryRequestInput(val revision: Int)
+
 @Serializable
 data class DiscoverRolesRequest(val datasourceId: Long, val sql: String)
 
@@ -123,6 +130,7 @@ fun discoverRoles(
     val statements: List<QueryResultMeta> = emptyList(),
     val canExecute: Boolean = false,
     val canCancel: Boolean = false,
+    val canEdit: Boolean = false,
 )
 
 /**
@@ -455,8 +463,21 @@ fun Route.approvalRoutes(
     post("/api/approvals/{id}/approve") {
         val principal = call.requireApi() ?: return@post
         val id = call.idParam() ?: return@post call.respond(HttpStatusCode.BadRequest, ApiError("common.bad_id"))
+        val revision = runCatching { call.receive<ApproveQueryRequestInput>() }.getOrNull()?.revision
+            ?: return@post call.respond(HttpStatusCode.BadRequest, ApiError("common.field_required", mapOf("fields" to "revision")))
         try {
-            call.respond(service.approve(principal, call.httpRequesterIp(config), call.auditActor(config), id))
+            call.respond(service.approve(principal, call.httpRequesterIp(config), call.auditActor(config), id, revision))
+        } catch (e: TaskServiceException) {
+            call.respondServiceError(e)
+        }
+    }
+
+    post("/api/approvals/{id}/edit") {
+        val principal = call.requireApi() ?: return@post
+        val id = call.idParam() ?: return@post call.respond(HttpStatusCode.BadRequest, ApiError("common.bad_id"))
+        val input = call.receive<EditQueryRequestInput>()
+        try {
+            call.respond(service.edit(principal, call.httpRequesterIp(config), call.auditActor(config), id, input))
         } catch (e: TaskServiceException) {
             call.respondServiceError(e)
         }

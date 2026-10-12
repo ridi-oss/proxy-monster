@@ -389,6 +389,8 @@ All under `admin.policies` (write tools also require `mcp:policies:write`):
 - `request_approval` (`task.request`, scope `mcp:query`) — from a denied
   `decisionId`, or proactive from datasource + SQL + title (REST:
   `POST /api/approvals`).
+- `edit_approval` (`task.request`, scope `mcp:query`) — the requester's own
+  pending or approved request (REST: `POST /api/approvals/{id}/edit`).
 - `list_my_approvals` (`task.read`, scope `mcp:query`) — REST:
   `GET /api/approvals`.
 - `list_approval_inbox` (`task.approve`, scope `mcp:query`) — REST:

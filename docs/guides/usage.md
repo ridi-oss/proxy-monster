@@ -157,6 +157,8 @@ Request approval:
    from the list, and check the outcome — a role can be listed and still mask
    what you need.
 3. **Give a reason.** The approver reads it, so say what you are investigating.
+   Until it runs you can **Edit** the request; changing the SQL sends it back
+   for approval.
 4. **Wait.** Whoever policy grants `task.approve` on the request sees it under
    **Workflows → Incoming** — administrators by default, never yourself. If
    Slack is set up, approvers also get a DM with **Approve and run**.

@@ -57,7 +57,7 @@ class QueryResultBatchDbTest {
             title = "t",
             evaluatedDecision = "ALLOW",
         ).id
-        accessStore.decideQueryRequest(id, approved = true, rejectionReason = null, decidedBy = "bob@example.com")
+        accessStore.decideQueryRequest(id, approved = true, rejectionReason = null, decidedBy = "bob@example.com", revision = 1)
         return id
     }
 

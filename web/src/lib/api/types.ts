@@ -381,6 +381,9 @@ export interface AccessRequest {
   executedAt?: string | null
   executeAs: string[]
   creatorKind?: 'WIRE' | 'EDITOR' | 'WORKFLOW' | null
+  /** Grows with each edit of the SQL; an approval names the revision it approves. */
+  revision: number
+  revisedAt?: string | null
 }
 
 export interface AccessRequestInput {
@@ -475,6 +478,7 @@ export interface QueryRequestDetail {
   statements?: QueryResultMeta[]
   canExecute?: boolean
   canCancel?: boolean
+  canEdit?: boolean
 }
 
 /** Decrypted rows of an APPROVER_EXEC result (returned only to an authorized viewer). */

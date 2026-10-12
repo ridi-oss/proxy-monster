@@ -85,7 +85,7 @@ class PmonMcpTokenDbTest {
         client.mcpCall(minted.accessToken, "get_my_permissions").ok()
         client.mcpCall(minted.accessToken, "list_connectable_datasources").ok()
         val id = pendingRequest()
-        assertEquals("mcp.insufficient_scope", client.mcpCall(minted.accessToken, "approve_approval", idArg(id)).errorCode())
+        assertEquals("mcp.insufficient_scope", client.mcpCall(minted.accessToken, "approve_approval", approveArgs(id)).errorCode())
     }
 
     @Test
@@ -97,14 +97,14 @@ class PmonMcpTokenDbTest {
 
         val early = client.mint(login.renewalToken)
         assertEquals("mcp:approvals:write mcp:query mcp:read", early.scope)
-        val approved = client.mcpCall(early.accessToken, "approve_approval", idArg(pendingRequest()))
+        val approved = client.mcpCall(early.accessToken, "approve_approval", approveArgs(pendingRequest()))
         assertEquals("APPROVED", approved.okResult().jsonObject.str("status"))
 
         clock.now = elevatedUntil.plusSeconds(1)
         try {
             val late = client.mint(login.renewalToken)
             assertEquals("mcp:query mcp:read", late.scope)
-            assertEquals("mcp.insufficient_scope", client.mcpCall(late.accessToken, "approve_approval", idArg(pendingRequest())).errorCode())
+            assertEquals("mcp.insufficient_scope", client.mcpCall(late.accessToken, "approve_approval", approveArgs(pendingRequest())).errorCode())
             val run = client.mcpCall(
                 late.accessToken, "run_query",
                 buildJsonObject { put("datasource", datasource.name); put("sql", "SELECT 1") },
@@ -231,6 +231,7 @@ class PmonMcpTokenDbTest {
     }
 
     private fun idArg(id: Long) = buildJsonObject { put("id", id) }
+    private fun approveArgs(id: Long) = buildJsonObject { put("id", id); put("revision", 1) }
 
     private fun pendingRequest(): Long = core.accessStore.createQueryRequest(
         principal = principal(), datasourceId = datasource.id, statements = listOf("SELECT 1"), denyReason = null,

@@ -19,7 +19,10 @@
     "done": "Done",
     "copy": "Copy",
     "copied": "Copied",
-    "copyCommand": "Copy command"
+    "copyCommand": "Copy command",
+    "edit": "Edit",
+    "saving": "Saving…",
+    "save": "Save"
   },
   "fields": {
     "requester": "Requester",
@@ -183,7 +186,14 @@
     "statementLabel": "Statement {n} of {total}",
     "statementTab": "Statement {n}",
     "statementRows": "{rows, plural, one {# row} other {# rows}}",
-    "batchSummary": "{count, plural, one {# statement} other {# statements}}"
+    "batchSummary": "{count, plural, one {# statement} other {# statements}}",
+    "editTitle": "Edit request",
+    "editDescription": "Changing the SQL returns the request to pending, so it must be approved again.",
+    "editSqlLabel": "SQL",
+    "editReasonLabel": "Reason",
+    "editedToast": "Request updated",
+    "editFailed": "Could not update the request.",
+    "revision": "Revision {revision}"
   },
   "approveDialog": {
     "approveFailed": "approve failed",

@@ -4,9 +4,10 @@ import { useEffect, useState, type ReactNode } from 'react'
 import { useTranslations } from 'next-intl'
 import { mutate as globalMutate } from 'swr'
 import { toast } from 'sonner'
-import { cancelApproval, executeApproval, rejectApproval } from '@/lib/api/client'
+import { cancelApproval, editApproval, executeApproval, rejectApproval } from '@/lib/api/client'
 import { onTaskEvent, subscribeTaskEvents } from '@/lib/api/task-events'
 import { swrKeys, useApproval } from '@/lib/hooks'
+import type { AccessRequest } from '@/lib/api/types'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -81,8 +82,13 @@ function Pill({ value, styles }: { value?: string | null; styles: Record<string,
 export function ApprovalDetail({ id }: { id: number }) {
   const t = useTranslations('Workflows')
   const { data, error, isLoading } = useApproval(id, { refreshInterval: 15000 })
-  const [busy, setBusy] = useState<'reject' | 'run' | 'cancel' | null>(null)
-  const [approveOpen, setApproveOpen] = useState(false)
+  const [busy, setBusy] = useState<'reject' | 'run' | 'cancel' | 'edit' | null>(null)
+  const [editOpen, setEditOpen] = useState(false)
+  const [editSql, setEditSql] = useState('')
+  const [editReason, setEditReason] = useState('')
+  const [editError, setEditError] = useState<string | null>(null)
+  // The request as it was when the approver opened the dialog; a poll that brings a newer revision must not change it.
+  const [approving, setApproving] = useState<AccessRequest | null>(null)
   const [rejectOpen, setRejectOpen] = useState(false)
   const [rejectReason, setRejectReason] = useState('')
   const [rejectError, setRejectError] = useState<string | null>(null)
@@ -172,6 +178,29 @@ export function ApprovalDetail({ id }: { id: number }) {
     }
   }
 
+  const openEdit = () => {
+    setEditSql(request.sql ?? '')
+    setEditReason(request.reason ?? '')
+    setEditError(null)
+    setEditOpen(true)
+  }
+
+  const handleEdit = async () => {
+    if (!editSql.trim() || !editReason.trim()) return
+    setBusy('edit')
+    setEditError(null)
+    try {
+      await editApproval(id, { sql: editSql, reason: editReason.trim() })
+      toast.success(t('approvalDetail.editedToast'))
+      setEditOpen(false)
+      refresh()
+    } catch (err) {
+      setEditError(err instanceof Error ? err.message : t('approvalDetail.editFailed'))
+    } finally {
+      setBusy(null)
+    }
+  }
+
   const approvedCopy = t('approvalDetail.approvedExecuteUnderR')
 
   const ranStatements = statements.filter((s) => s.status === 'DONE' || s.status === 'FAILED')
@@ -192,8 +221,18 @@ export function ApprovalDetail({ id }: { id: number }) {
               <div className="flex flex-wrap items-center gap-2">
                 <Pill value={request.status} styles={STATUS_STYLE} />
                 <Pill value={request.evaluatedDecision} styles={DECISION_STYLE} />
+                {request.revision > 1 && (
+                  <span className="text-muted-foreground text-xs">
+                    {t('approvalDetail.revision', { revision: request.revision })}
+                  </span>
+                )}
               </div>
             </div>
+            {data.canEdit && (
+              <Button variant="outline" onClick={openEdit} disabled={busy !== null}>
+                {t('actions.edit')}
+              </Button>
+            )}
             {canDecide && (
               <div className="flex items-center gap-2">
                 <Button
@@ -205,7 +244,7 @@ export function ApprovalDetail({ id }: { id: number }) {
                   {t('actions.reject')}
                 </Button>
                 <Button
-                  onClick={() => setApproveOpen(true)}
+                  onClick={() => setApproving(request)}
                   disabled={busy !== null}
                   className="bg-emerald-600 text-white hover:bg-emerald-700"
                 >
@@ -352,11 +391,56 @@ export function ApprovalDetail({ id }: { id: number }) {
       </ResizablePanelGroup>
 
       <ApproveQueryDialog
-        key={approveOpen ? request.id : 'closed'}
-        request={approveOpen ? request : null}
-        onClose={() => setApproveOpen(false)}
+        key={approving ? approving.id : 'closed'}
+        request={approving}
+        onClose={() => setApproving(null)}
         onApproved={refresh}
       />
+
+      <Dialog open={editOpen} onOpenChange={setEditOpen}>
+        <DialogContent className="sm:max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>{t('approvalDetail.editTitle')}</DialogTitle>
+            <DialogDescription>{t('approvalDetail.editDescription')}</DialogDescription>
+          </DialogHeader>
+
+          {editError && (
+            <div className="rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-500">
+              {editError}
+            </div>
+          )}
+
+          <div className="space-y-1.5">
+            <Label htmlFor="query-approval-edit-sql">{t('approvalDetail.editSqlLabel')}</Label>
+            <Textarea
+              id="query-approval-edit-sql"
+              value={editSql}
+              onChange={(e) => setEditSql(e.target.value)}
+              rows={10}
+              className="font-mono text-xs"
+              autoFocus
+            />
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="query-approval-edit-reason">{t('approvalDetail.editReasonLabel')}</Label>
+            <Textarea
+              id="query-approval-edit-reason"
+              value={editReason}
+              onChange={(e) => setEditReason(e.target.value)}
+              rows={2}
+            />
+          </div>
+
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setEditOpen(false)} disabled={busy === 'edit'}>
+              {t('actions.cancel')}
+            </Button>
+            <Button onClick={handleEdit} disabled={!editSql.trim() || !editReason.trim() || busy === 'edit'}>
+              {busy === 'edit' ? t('actions.saving') : t('actions.save')}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <Dialog open={rejectOpen} onOpenChange={setRejectOpen}>
         <DialogContent className="sm:max-w-md">

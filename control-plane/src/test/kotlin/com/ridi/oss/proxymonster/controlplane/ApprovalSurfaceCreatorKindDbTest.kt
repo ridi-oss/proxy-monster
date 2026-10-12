@@ -159,7 +159,10 @@ class ApprovalSurfaceCreatorKindDbTest {
     /** Every id-addressed approval route must 404 a non-WORKFLOW task even though the Cedar gate passes. */
     private suspend fun assertUnreachableAsApproval(client: HttpClient, id: Long) {
         assertEquals(HttpStatusCode.NotFound, client.get("/api/approvals/$id").status, "detail")
-        assertEquals(HttpStatusCode.NotFound, client.post("/api/approvals/$id/approve").status, "approve")
+        assertEquals(HttpStatusCode.NotFound, client.post("/api/approvals/$id/approve") {
+            contentType(ContentType.Application.Json)
+            setBody("""{"revision":1}""")
+        }.status, "approve")
         val reject = client.post("/api/approvals/$id/reject") {
             contentType(ContentType.Application.Json)
             setBody("""{"reason":"x"}""")

@@ -24,6 +24,8 @@ data class SlackInteraction(
     val principal: String,
     val actionId: String,
     val taskId: Long,
+    /** The revision the clicked message showed; null for a button from before revisions, which decides nothing. */
+    val revision: Int?,
     val responseUrl: String?,
     val triggerChannel: String?,
     val triggerTs: String?,
@@ -148,7 +150,9 @@ class SlackSocketMode(
         val action = payload["actions"]?.jsonArray?.firstOrNull()?.jsonObject ?: return
         val actionId = action["action_id"]?.jsonPrimitive?.content ?: return
         if (actionId != SlackTransport.ACTION_APPROVE && actionId != SlackTransport.ACTION_DENY) return
-        val taskId = action["value"]?.jsonPrimitive?.content?.toLongOrNull() ?: return
+        val value = action["value"]?.jsonPrimitive?.content?.split(':') ?: return
+        val taskId = value[0].toLongOrNull() ?: return
+        val revision = value.getOrNull(1)?.let { it.toIntOrNull() ?: return }
 
         val slackUserId = payload["user"]?.jsonObject?.get("id")?.jsonPrimitive?.content ?: return
         val principal = resolvePrincipal(slackUserId) ?: run {
@@ -161,6 +165,7 @@ class SlackSocketMode(
                 principal = principal,
                 actionId = actionId,
                 taskId = taskId,
+                revision = revision,
                 responseUrl = payload["response_url"]?.jsonPrimitive?.content,
                 triggerChannel = payload["channel"]?.jsonObject?.get("id")?.jsonPrimitive?.content,
                 triggerTs = payload["message"]?.jsonObject?.get("ts")?.jsonPrimitive?.content,

@@ -16,3 +16,5 @@ char *pm_pref_string(const char *key);
 void pm_set_pref_string(const char *key, const char *value);
 char *pm_preferred_languages(void);
 void pm_set_appearance(void *window, int mode);
+void pm_forget_prefs(void);
+char *pm_trash(const char *path);

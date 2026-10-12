@@ -22,13 +22,23 @@ system's.
 Each `pmon-v*` release attaches a universal (arm64 + x86_64) build, signed with
 RIDI's Developer ID and notarized:
 
-- `ProxyMonsterDesktop_<version>.pkg` installs
-  `/Applications/Proxy Monster Desktop.app` and links `/usr/local/bin/pmon` to
-  the `pmon` inside it.
+- `ProxyMonsterDesktop_<version>.pkg` installs the app for the current user
+  (`~/Applications`, no password) or for all users (`/Applications`), as the
+  Installer asks.
 - `ProxyMonsterDesktop_<version>_darwin_universal.zip` is the app alone.
 
 `brew install --cask ridi-oss/tap/proxy-monster-desktop` installs the zip and
 puts its `pmon` on `PATH`; it cannot install beside the `pmon` formula.
+
+On its first launch the app offers to put `pmon` on `PATH`, unless a new
+terminal already finds a `pmon`: for all users (`/usr/local/bin/pmon`, with an
+administrator's password) or only for the current user (`~/.local/bin/pmon`,
+adding `~/.local/bin` to `~/.zshrc`, `~/.bash_profile` and `~/.bashrc` where
+they exist and do not name it, or creating the login shell's profile). Settings
+› General changes the choice, and its Uninstall button stops the daemon, removes
+Open at Login, the link, the PATH line and the app's settings, and moves the app
+to the Trash. Saved servers and sign-ins stay for the CLI; `pmontray --forget`
+does the same cleanup without the Trash.
 
 The release job runs `signing-keychain.sh`, `build-app.sh` and
 `package-macos.sh`; each script lists the environment it reads. Unset, the

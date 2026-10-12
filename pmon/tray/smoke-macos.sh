@@ -32,12 +32,13 @@ PKG="$WORK/out/ProxyMonsterDesktop_0.0.0-smoke.pkg"
 
 pkgutil --expand "$PKG" "$WORK/x"
 grep -q "<title>$NAME</title>" "$WORK/x/Distribution" || fail "installer title is not '$NAME'"
+grep -q '<domains enable_localSystem="true" enable_currentUserHome="true"/>' "$WORK/x/Distribution" ||
+    fail "the pkg does not offer both install domains"
 grep -q '<relocate/>\|<relocate>[[:space:]]*</relocate>' "$WORK/x/component.pkg/PackageInfo" ||
     fail "the app bundle is relocatable"
 mkdir "$WORK/payload"
 (cd "$WORK/payload" && gunzip -dc <"$WORK/x/component.pkg/Payload" | cpio -i --quiet)
-target="$(readlink "$WORK/payload/usr/local/bin/pmon")"
-[ "$target" = "/Applications/$NAME.app/Contents/MacOS/pmon" ] || fail "pmon links to '$target'"
-[ -x "$WORK/payload/Applications/$NAME.app/Contents/MacOS/pmon" ] || fail "the link target is not in the payload"
+[ -x "$WORK/payload/Applications/$NAME.app/Contents/MacOS/pmon" ] || fail "the app's pmon is not in the payload"
+[ "$(ls -A "$WORK/payload")" = Applications ] || fail "the payload holds more than the app: $(ls -A "$WORK/payload")"
 
 echo "smoke: ok"

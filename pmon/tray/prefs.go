@@ -53,6 +53,7 @@ type prefsState struct {
 	Servers        []prefsServer `json:"servers"`
 	LoginItemOn    bool          `json:"loginItemOn"`
 	LoginItemShown bool          `json:"loginItemShown"`
+	UninstallShown bool          `json:"uninstallShown"`
 	Versions       prefsVersions `json:"versions"`
 	Updates        prefsUpdates  `json:"updates"`
 }
@@ -106,7 +107,7 @@ func (p *prefs) state() prefsState {
 	if _, ok := catalogs[language]; !ok {
 		language = "system"
 	}
-	st := prefsState{Language: language, Lang: lang(), Theme: theme(), LoginItemOn: on, LoginItemShown: shown, Servers: []prefsServer{},
+	st := prefsState{Language: language, Lang: lang(), Theme: theme(), LoginItemOn: on, LoginItemShown: shown, UninstallShown: canUninstall, Servers: []prefsServer{},
 		Versions: prefsVersions{App: version, Pmon: p.pmonVersion}}
 	st.Updates.Shown = updatesConfigured()
 	st.Updates.Auto, st.Updates.Forced = autoUpdates()
@@ -282,7 +283,10 @@ func (p *prefs) handlers() map[string]func(args []json.RawMessage) (any, error) 
 			}
 			return p.setOpenAtLogin(on), nil
 		},
-		"checkUpdates": func([]json.RawMessage) (any, error) { return p.checkUpdates(), nil },
+		"checkUpdates":  func([]json.RawMessage) (any, error) { return p.checkUpdates(), nil },
+		"terminalState": func([]json.RawMessage) (any, error) { return terminalInfo(), nil },
+		"linkTerminal":  one(func(mode string) any { return p.linkTerminal(mode) }),
+		"uninstall":     func([]json.RawMessage) (any, error) { return p.uninstall(), nil },
 		"setAutoUpdates": func(args []json.RawMessage) (any, error) {
 			var on bool
 			if len(args) < 1 || json.Unmarshal(args[0], &on) != nil {
@@ -422,6 +426,26 @@ func (p *prefs) setAutoUpdates(on bool) string {
 // checkUpdates asks the menu-bar process, which runs the updater and reads this process's stdout, to check now.
 func (p *prefs) checkUpdates() string {
 	_, err := fmt.Fprintln(toMenuBar, "check-updates")
+	return errText(err)
+}
+
+// linkTerminal links pmon for all users or for this user; a declined password prompt is a quiet no.
+func (p *prefs) linkTerminal(mode string) any {
+	if mode != "all" && mode != "me" {
+		return "unknown mode " + mode
+	}
+	if err := linkTerminal(mode); err != nil {
+		if errors.Is(err, errCanceled) {
+			return nil
+		}
+		return err.Error()
+	}
+	return ""
+}
+
+// uninstall asks the menu-bar process, which owns the daemon and the app's lifetime, to uninstall.
+func (p *prefs) uninstall() string {
+	_, err := fmt.Fprintln(toMenuBar, "uninstall")
 	return errText(err)
 }
 

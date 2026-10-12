@@ -288,8 +288,11 @@ func (a *app) openPreferences(add bool) {
 	go func() {
 		lines := bufio.NewScanner(out)
 		for lines.Scan() {
-			if lines.Text() == "check-updates" {
+			switch lines.Text() {
+			case "check-updates":
 				checkForUpdates()
+			case "uninstall":
+				go a.uninstall()
 			}
 		}
 		_ = cmd.Wait()

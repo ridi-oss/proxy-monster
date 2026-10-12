@@ -4,7 +4,7 @@
 #   ./sign-windows.sh pmon-v0.1.9
 #
 # Run on the macOS or Linux machine the USB token is plugged into, from a checkout of this repository at the tag;
-# it asks for the token PIN once. It downloads the release's unsigned binaries, checks they were built by this
+# it reads the token PIN once. It downloads the release's unsigned binaries, checks they were built by this
 # repository's release workflow (GitHub artifact attestation), signs pmontray.exe and pmon.exe, packages them
 # into MSIs (package-windows.sh), signs the MSIs, and uploads them with zips of the signed files. Then publish
 # the update feed:
@@ -14,13 +14,17 @@
 #   PKCS11_MODULE   the token's PKCS#11 library (default: SafeNet Authentication Client's)
 #   PKCS11_CERT     PKCS#11 URI of the signing certificate (default: the token's only one)
 #   PKCS11_KEY      PKCS#11 URI of its private key (default: the token's only one)
-#   CHAIN           PEM file of the intermediate certificates to embed
-#   CA_FILE         PEM roots to verify the signatures against (default: the system bundle, which may lack the
-#                   code-signing root)
+#   PIN_REF         1Password reference of the token PIN, read with `op read` (default: RIDI's); empty, the
+#                   script prompts for it
+#   CHAIN           PEM file of the intermediate certificates to embed, so Windows verifies without fetching them
+#                   (default: windows/signing-chain.pem, the signing certificate's GlobalSign issuer)
+#   CA_FILE         PEM roots to verify the signatures against (default: windows/signing-root.pem, its GlobalSign
+#                   root, which macOS's bundle lacks; empty, the system bundle)
 #   TIMESTAMP_URL   RFC 3161 timestamp server (default: DigiCert's)
 #   REPO            default ridi-oss/proxy-monster
 #
-# Needs osslsigncode, OpenSSL's PKCS#11 provider (brew install osslsigncode libp11 msitools), and gh, logged in.
+# Needs osslsigncode, OpenSSL's PKCS#11 provider (brew install osslsigncode libp11 msitools), gh, logged in, and op
+# unless PIN_REF is empty.
 set -euo pipefail
 
 cd "$(dirname "$0")"
@@ -30,6 +34,9 @@ PKCS11_MODULE="${PKCS11_MODULE:-/usr/local/lib/libeToken.dylib}"
 PKCS11_CERT="${PKCS11_CERT:-pkcs11:type=cert}"
 PKCS11_KEY="${PKCS11_KEY:-pkcs11:type=private}"
 TIMESTAMP_URL="${TIMESTAMP_URL:-http://timestamp.digicert.com}"
+PIN_REF="${PIN_REF-op://Windows Code Signing/eToken PIN/password}"
+CHAIN="${CHAIN-$PWD/windows/signing-chain.pem}"
+CA_FILE="${CA_FILE-$PWD/windows/signing-root.pem}"
 [[ "$TAG" =~ ^pmon-v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "error: $TAG is not a pmon release tag (pmon-v<major>.<minor>.<patch>)" >&2; exit 1; }
 VERSION="${TAG#pmon-v}"
 # The MSI is authored from this checkout, so it must be the tag, unmodified.
@@ -46,7 +53,12 @@ WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"; unset PIN' EXIT
 
 { set +x; } 2>/dev/null
-read -rsp "Token PIN: " PIN; echo
+if [ -n "$PIN_REF" ]; then
+    PIN="$(op read "$PIN_REF")"
+else
+    read -rsp "Token PIN: " PIN; echo
+fi
+[ -n "$PIN" ] || { echo "error: no token PIN" >&2; exit 1; }
 
 sign() {
     local f="$1"

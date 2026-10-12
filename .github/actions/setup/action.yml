@@ -1,0 +1,70 @@
+name: Set up the toolchain
+description:
+  Installs the mise.toml toolchain and restores the Go, pnpm and Gradle caches a
+  job asks for.
+
+inputs:
+  go-cache:
+    description:
+      Names this job's Go build cache. Jobs that build different packages keep
+      separate caches.
+    required: true
+  pnpm:
+    description: Restore the pnpm store.
+    default: "false"
+  gradle:
+    description: Set up Gradle caching.
+    default: "false"
+
+outputs:
+  go-paths:
+    description: The Go module and build cache directories, for a later save.
+    value: |
+      ${{ steps.paths.outputs.go-mod }}
+      ${{ steps.paths.outputs.go-build }}
+
+runs:
+  using: composite
+  steps:
+    # Installs java, gradle, go, node, pnpm from mise.toml — the versions are
+    # never restated here — and exports JAVA_HOME/GOROOT/PATH to later steps.
+    # Go is needed by the Gradle leg too: :analyzer:jvm's processResources shells
+    # out to `go build -buildmode=c-shared`.
+    - uses: jdx/mise-action@v4
+
+    - name: Resolve cache paths
+      id: paths
+      shell: bash
+      run: |
+        echo "go-mod=$(go env GOMODCACHE)" >>"$GITHUB_OUTPUT"
+        echo "go-build=$(go env GOCACHE)" >>"$GITHUB_OUTPUT"
+        if [ "${{ inputs.pnpm }}" = true ]; then
+          echo "pnpm-store=$(pnpm store path --silent)" >>"$GITHUB_OUTPUT"
+        fi
+
+    # Saved from main only, keyed by commit, so every pull request starts from
+    # main's latest build cache instead of a snapshot taken when go.sum last
+    # changed. A job with no cache of its own yet starts from another job's.
+    - name: Restore the Go caches
+      uses: actions/cache/restore@v6
+      with:
+        path: |
+          ${{ steps.paths.outputs.go-mod }}
+          ${{ steps.paths.outputs.go-build }}
+        key: go-${{ runner.os }}-${{ inputs.go-cache }}-${{ github.sha }}
+        restore-keys: |
+          go-${{ runner.os }}-${{ inputs.go-cache }}-
+          go-${{ runner.os }}-
+
+    - name: Restore the pnpm store
+      if: inputs.pnpm == 'true'
+      uses: actions/cache@v6
+      with:
+        path: ${{ steps.paths.outputs.pnpm-store }}
+        key: pnpm-${{ runner.os }}-${{ hashFiles('web/pnpm-lock.yaml') }}
+        restore-keys: pnpm-${{ runner.os }}-
+
+    # Caches the Gradle User Home (dependencies, wrapper, build cache) and
+    # validates the checked-in wrapper jar's checksum.
+    - if: inputs.gradle == 'true'
+      uses: gradle/actions/setup-gradle@v6

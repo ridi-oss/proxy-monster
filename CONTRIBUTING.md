@@ -18,9 +18,12 @@ mise run verify   # the whole gate: lint, JVM tests, Go tests, web unit tests + 
 ```
 
 Run `mise run verify` before opening a pull request — it is the gate documented
-in [AGENTS.md](./AGENTS.md#build-test-run). `mise tasks ls` lists the
-per-component tasks for running one piece at a time; install, run locally, and
-deploy is [INSTALL.md](./INSTALL.md).
+in [AGENTS.md](./AGENTS.md#build-test-run). It runs `verify-static`,
+`verify-jvm` and `verify-go`, which CI runs as parallel jobs:
+`PM_TEST_SHARD=i/n` runs one slice of the JVM test classes, and `PM_GO_PACKAGES`
+narrows the Go tests. `mise tasks ls` lists the per-component tasks for running
+one piece at a time; install, run locally, and deploy is
+[INSTALL.md](./INSTALL.md).
 
 Prettier owns the prose-and-config formats (`.md`, `.json`, `.yml`/`.yaml`,
 `.css`); eslint owns TypeScript. `mise run lint` checks both and
@@ -41,9 +44,13 @@ without it is a weaker check than the gate: a data race reads as a pass.
 ## Tests are DB-backed
 
 Enforcement is exercised against real databases, not mocks. Write MySQL and
-PostgreSQL tests with Testcontainers, and reuse containers across tests where
-you can. They are required, not optional: without a Docker environment they fail
-rather than skip, so Docker must be running for `mise run verify`.
+PostgreSQL tests with Testcontainers through the shared helpers
+(`SharedPostgres`/`SharedMySql` on the JVM, each module's `dbtest` in Go). They
+start each container once per test JVM or `go test` run, and tests isolate by
+database or schema; never start a container per test. The control-plane tests
+run in parallel forks (`-Ppm.testForks=n`), each with its own pair of
+containers. They are required, not optional: without a Docker environment they
+fail rather than skip, so Docker must be running for `mise run verify`.
 
 `PM_REQUIRE_DB_TESTS=true` turns a missing-Docker skip into a hard failure. CI
 sets it so a security test can never pass by skipping. Locally, leaving it unset

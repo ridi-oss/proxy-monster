@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"os/exec"
 	"strings"
 	"testing"
@@ -72,7 +71,7 @@ func mcpFakeCP(t *testing.T) *httptest.Server {
 func (e *env) runMCP(t *testing.T, input string, args ...string) (stdout, stderr string, err error) {
 	t.Helper()
 	cmd := exec.Command(e.bin, append([]string{"mcp"}, args...)...)
-	cmd.Env = append(os.Environ(), "PMON_CONFIG_DIR="+e.stateDir, fmt.Sprintf("PMON_PORT_BASE=%d", e.portBase), "PMON_NO_BROWSER=1")
+	cmd.Env = e.environ()
 	var out, errOut bytes.Buffer
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = strings.NewReader(input), &out, &errOut
 	err = cmd.Run()

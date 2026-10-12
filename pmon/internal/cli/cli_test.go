@@ -22,27 +22,35 @@ import (
 // through the actual control socket rather than an in-process fake: the CLI starts a daemon, logs in through
 // it, reads status, formats connection strings, and stops it.
 
-// buildPmon compiles the binary once per test run and returns its path.
+var pmonBin string
+
+// TestMain compiles the binary once for the package.
 //
 // Built with the race detector whenever the tests are, because the daemon these tests drive runs as a
 // separate process: instrumenting the test binary says nothing about the goroutines actually serving the
 // control socket and brokering tokens. A race there aborts the daemon with exit 2 and a report on its
 // stderr, which is the daemon log — see [assertNoDaemonRace].
-func buildPmon(t *testing.T) string {
-	t.Helper()
-	bin := filepath.Join(t.TempDir(), "pmon")
-	if runtime.GOOS == "windows" {
-		bin += ".exe"
+func TestMain(m *testing.M) {
+	dir, err := os.MkdirTemp("", "pmon-cli-test")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
 	}
-	args := []string{"build", "-o", bin}
+	pmonBin = filepath.Join(dir, "pmon")
+	if runtime.GOOS == "windows" {
+		pmonBin += ".exe"
+	}
+	args := []string{"build", "-o", pmonBin}
 	if raceEnabled {
 		args = append(args, "-race")
 	}
-	out, err := exec.Command("go", append(args, "../..")...).CombinedOutput()
-	if err != nil {
-		t.Fatalf("go build: %v\n%s", err, out)
+	if out, err := exec.Command("go", append(args, "../..")...).CombinedOutput(); err != nil {
+		fmt.Fprintf(os.Stderr, "go build: %v\n%s", err, out)
+		os.Exit(1)
 	}
-	return bin
+	code := m.Run()
+	_ = os.RemoveAll(dir)
+	os.Exit(code)
 }
 
 // assertNoDaemonRace fails the test if the daemon logged a race report. The daemon is detached, so its
@@ -62,17 +70,19 @@ func assertNoDaemonRace(t *testing.T, stateDir string) {
 	}
 }
 
-// env isolates a pmon invocation: its own state dir and its own broker port range, so it neither touches the
-// real user config nor fights a running daemon for 6100+.
+// env isolates a pmon invocation: its own state dir, broker port range and HOME, so it neither touches the
+// real user config nor fights another test's daemon, and the tests run in parallel.
 type env struct {
 	bin      string
 	stateDir string
 	portBase int
+	home     string
 }
 
 func newEnv(t *testing.T) *env {
 	t.Helper()
-	e := &env{bin: buildPmon(t), stateDir: t.TempDir(), portBase: freePortRange(t, 4)}
+	t.Parallel()
+	e := &env{bin: pmonBin, stateDir: t.TempDir(), portBase: freePortRange(t, 4), home: t.TempDir()}
 	t.Cleanup(func() {
 		// Always stop the daemon this env may have started, or it outlives the test (it is detached by design).
 		_, _ = e.run("stop", "--force")
@@ -82,11 +92,21 @@ func newEnv(t *testing.T) *env {
 	return e
 }
 
-// freePortRange returns the first of n consecutive free ports below the ephemeral range, so a broker on
-// base+1 cannot collide with a test server the kernel placed there.
+// nextPort hands out disjoint ranges to this package's parallel tests, starting at a random point so
+// concurrently running packages are unlikely to probe the same ports.
+var nextPort atomic.Int32
+
+func init() { nextPort.Store(int32(20000 + rand.IntN(3000))) }
+
+// freePortRange returns the first of n consecutive free ports below Linux's ephemeral range (32768+), so
+// neither a test server nor an outbound connection is handed one of them by the kernel.
 func freePortRange(t *testing.T, n int) int {
 	t.Helper()
-	for base := 20000 + rand.IntN(20000); ; base = 20000 + rand.IntN(20000) {
+	for {
+		base := int(nextPort.Add(int32(n))) - n
+		if base+n > 32768 {
+			t.Fatal("no free port range below 32768")
+		}
 		ok := true
 		for p := base; p < base+n && ok; p++ {
 			ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", p))
@@ -105,14 +125,23 @@ func freePortRange(t *testing.T, n int) int {
 // run invokes pmon and returns its combined output.
 func (e *env) run(args ...string) (string, error) {
 	cmd := exec.Command(e.bin, args...)
-	// PMON_NO_BROWSER: these drive a real login, and a real $BROWSER would open a tab per run.
-	cmd.Env = append(os.Environ(),
+	cmd.Env = e.environ()
+	out, err := cmd.CombinedOutput()
+	return string(out), err
+}
+
+// environ is the child environment. PMON_NO_BROWSER: these drive a real login, and a real $BROWSER would
+// open a tab per run.
+func (e *env) environ() []string {
+	return append(os.Environ(),
 		"PMON_CONFIG_DIR="+e.stateDir,
 		fmt.Sprintf("PMON_PORT_BASE=%d", e.portBase),
 		"PMON_NO_BROWSER=1",
+		"HOME="+e.home,
+		"USERPROFILE="+e.home,
+		"APPDATA="+filepath.Join(e.home, "AppData", "Roaming"),
+		"LOCALAPPDATA="+filepath.Join(e.home, "AppData", "Local"),
 	)
-	out, err := cmd.CombinedOutput()
-	return string(out), err
 }
 
 // mustRun fails the test if pmon exits non-zero.

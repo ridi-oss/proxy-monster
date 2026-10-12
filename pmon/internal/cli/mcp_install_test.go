@@ -25,13 +25,8 @@ func claudeDesktopDir(home string) string {
 }
 
 func TestMCPInstallRegistersEveryServer(t *testing.T) {
-	// Built before HOME moves: go build would fill the temporary HOME with read-only module files.
 	e := newEnv(t)
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("USERPROFILE", home)
-	t.Setenv("APPDATA", filepath.Join(home, "AppData", "Roaming"))
-	t.Setenv("LOCALAPPDATA", filepath.Join(home, "AppData", "Local"))
+	home := e.home
 	dir := claudeDesktopDir(home)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		t.Fatal(err)
@@ -101,13 +96,8 @@ func readDesktopServers(t *testing.T, dir string) map[string]json.RawMessage {
 
 // The entry is named after the pmon server, and replaces the https entry for the MCP URL the server advertises.
 func TestMCPInstallUsesTheAdvertisedMCPURL(t *testing.T) {
-	// Built before HOME moves: go build would fill the temporary HOME with read-only module files.
 	e := newEnv(t)
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("USERPROFILE", home)
-	t.Setenv("APPDATA", filepath.Join(home, "AppData", "Roaming"))
-	t.Setenv("LOCALAPPDATA", filepath.Join(home, "AppData", "Local"))
+	home := e.home
 	dir := claudeDesktopDir(home)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		t.Fatal(err)
@@ -138,13 +128,8 @@ func TestMCPInstallUsesTheAdvertisedMCPURL(t *testing.T) {
 
 // A renamed server keeps its login, port and default, and its AI-app entries move with it.
 func TestServerRenameMovesEverything(t *testing.T) {
-	// Built before HOME moves: go build would fill the temporary HOME with read-only module files.
 	e := newEnv(t)
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("USERPROFILE", home)
-	t.Setenv("APPDATA", filepath.Join(home, "AppData", "Roaming"))
-	t.Setenv("LOCALAPPDATA", filepath.Join(home, "AppData", "Local"))
+	home := e.home
 	dir := claudeDesktopDir(home)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		t.Fatal(err)

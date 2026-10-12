@@ -218,7 +218,7 @@ class AccessStore(internal val dataSource: DataSource) {
         // no elevation role (the approver runs as themselves). The FK to app_role validates R.
         roleId: Long? = null,
         // Carried on the shared access_request row; not consumed by the query-approval flow (see
-        // CreateApprovalInput.requestedDurationSec). Kept for the column the ROLE-elevation path needs.
+        // CreateQueryRequestInput.requestedDurationSec). Kept for the column the ROLE-elevation path needs.
         requestedDurationSec: Long = 3600,
         // Advisory hint: whether a literal was compared against a CLASSIFIED column (reader-neutral — see
         // AccessRequest.statementCarriesProtectedLiteral). NULL when not analyzed → downstream withholds.

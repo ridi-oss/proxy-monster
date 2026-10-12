@@ -17,7 +17,7 @@ import com.ridi.oss.proxymonster.controlplane.ApprovalService
 import com.ridi.oss.proxymonster.controlplane.CatalogColumn
 import com.ridi.oss.proxymonster.controlplane.Config
 import com.ridi.oss.proxymonster.controlplane.ControlPlaneCore
-import com.ridi.oss.proxymonster.controlplane.CreateApprovalInput
+import com.ridi.oss.proxymonster.controlplane.CreateQueryRequestInput
 import com.ridi.oss.proxymonster.controlplane.EditorTaskService
 import com.ridi.oss.proxymonster.controlplane.EngineWireSerializer
 import com.ridi.oss.proxymonster.controlplane.QueryResultMeta
@@ -125,7 +125,7 @@ internal class McpTaskTools(
                 if ((decisionId != null) == (dsName != null || sql != null)) {
                     throw TaskServiceException(HttpStatusCode.BadRequest, ApiError("approval.exactly_one_source_required"))
                 }
-                val input = CreateApprovalInput(
+                val input = CreateQueryRequestInput(
                     sourceDecisionId = decisionId,
                     datasourceId = dsName?.let { datasource(it).id },
                     sql = sql,

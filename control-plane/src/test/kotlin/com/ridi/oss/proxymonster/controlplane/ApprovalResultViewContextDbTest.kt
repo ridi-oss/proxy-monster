@@ -566,14 +566,14 @@ class ApprovalResultViewContextDbTest {
         // GET /{id} returns the un-redacted meta.
         client.login(requester)
         assertNotNull(
-            client.get("/api/approvals/$id").body<ApprovalDetail>().result?.rowCount,
+            client.get("/api/approvals/$id").body<QueryRequestDetail>().result?.rowCount,
             "an assumer sees the result row count in metadata",
         )
 
         client.login(admin)
         val adminDetail = client.get("/api/approvals/$id")
         assertEquals(HttpStatusCode.OK, adminDetail.status, "admin may read metadata")
-        val adminMeta = adminDetail.body<ApprovalDetail>().result
+        val adminMeta = adminDetail.body<QueryRequestDetail>().result
         assertNotNull(adminMeta, "admin still sees execution status metadata")
         assertNull(adminMeta.rowCount, "admin (task.read only) must not learn the result row count")
         assertTrue(adminMeta.columns.isEmpty(), "admin (task.read only) must not learn the result column shape")
@@ -693,7 +693,7 @@ class ApprovalResultViewContextDbTest {
             adminDetail.bodyAsText().let { it.contains("orders_missing") || it.contains("undefined_table") },
             "no target-DB detail rides on the task.read metadata poll",
         )
-        assertEquals("approval.query_failed", adminDetail.body<ApprovalDetail>().result?.errorCode)
+        assertEquals("approval.query_failed", adminDetail.body<QueryRequestDetail>().result?.errorCode)
     }
 
     // The raw-release branch is covered in PresetPolicyDbTest (full reader → sanitizeDiagnostics=false).

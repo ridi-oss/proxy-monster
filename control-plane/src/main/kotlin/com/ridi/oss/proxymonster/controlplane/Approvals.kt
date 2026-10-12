@@ -28,7 +28,7 @@ import kotlinx.serialization.Serializable
 // ---- DTOs ---------------------------------------------------------------------------------
 
 @Serializable
-data class CreateApprovalInput(
+data class CreateQueryRequestInput(
     val sourceDecisionId: Long? = null,
     val datasourceId: Long? = null,
     val sql: String? = null,
@@ -45,7 +45,7 @@ data class CreateApprovalInput(
 @Serializable
 data class DiscoverRolesRequest(val datasourceId: Long, val sql: String)
 
-@Serializable data class CreateApprovalResponse(val request: AccessRequest, val wouldAllow: Boolean)
+@Serializable data class CreateQueryRequestResponse(val request: AccessRequest, val wouldAllow: Boolean)
 
 /**
  * A human query-approval request: a WORKFLOW-origin QUERY task. EDITOR and WIRE tasks share the
@@ -114,7 +114,7 @@ fun discoverRoles(
     return DiscoverRolesResponse(options = options)
 }
 
-@Serializable data class ApprovalDetail(
+@Serializable data class QueryRequestDetail(
     val request: AccessRequest,
     val canDecide: Boolean,
     // The active statement's execution metadata. Rows remain behind the result endpoint.
@@ -152,7 +152,7 @@ fun discoverRoles(
 )
 
 /** Submit acknowledgement. Completion is observed by polling the task detail/result endpoints. */
-@Serializable data class ExecuteApprovalResponse(val decision: String)
+@Serializable data class ExecuteQueryRequestResponse(val decision: String)
 
 // ---- APPROVAL execute-under-R + live view re-decision (approval-workflow.md) --------------------------
 //
@@ -411,7 +411,7 @@ fun Route.approvalRoutes(
 ) {
     post("/api/approvals") {
         val principal = call.requireApi() ?: return@post
-        val input = call.receive<CreateApprovalInput>()
+        val input = call.receive<CreateQueryRequestInput>()
         try {
             call.respond(
                 HttpStatusCode.Created,

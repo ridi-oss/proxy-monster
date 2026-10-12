@@ -6,7 +6,7 @@ import com.ridi.oss.proxymonster.controlplane.AuditEvent
 import com.ridi.oss.proxymonster.controlplane.Decision
 import com.ridi.oss.proxymonster.controlplane.Config
 import com.ridi.oss.proxymonster.controlplane.ControlPlaneCore
-import com.ridi.oss.proxymonster.controlplane.CreateApprovalResponse
+import com.ridi.oss.proxymonster.controlplane.CreateQueryRequestResponse
 import com.ridi.oss.proxymonster.controlplane.PRINCIPAL_SESSION_STORE
 import com.ridi.oss.proxymonster.controlplane.PrincipalSessionStore
 import com.ridi.oss.proxymonster.controlplane.QueryResultStore
@@ -286,7 +286,7 @@ class SlackNotificationE2eDbTest {
         //    createQueryRequest + the request notification, all in one HTTP call.
         val created = client.createApproval("SELECT ssn FROM users")
         assertEquals(HttpStatusCode.Created, created.status)
-        val req = created.body<CreateApprovalResponse>().request
+        val req = created.body<CreateQueryRequestResponse>().request
         val executionDecisionId = core.auditStore.insert(
             AuditEvent(principal = approver, datasource = fx.datasource.name, statement = "SELECT ssn FROM users", decision = Decision.ALLOW, channel = "workflow-executor"),
         )

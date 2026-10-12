@@ -66,6 +66,8 @@ func statementKind(root exp.Expression, eng engine) pb.StatementKind {
 		return alterKind(objectKindText(root))
 	case exp.KindDrop:
 		return dropKind(objectKindText(root))
+	case exp.KindComment:
+		return commentKind(strings.ToUpper(objectKindText(root)))
 	case exp.KindTruncateTable:
 		return pb.StatementKind_STATEMENT_KIND_TRUNCATE_TABLE
 	case exp.KindTransaction:
@@ -396,6 +398,24 @@ func dropKind(object string) pb.StatementKind {
 		return pb.StatementKind_STATEMENT_KIND_DROP_ROLE
 	case "RESOURCE":
 		return pb.StatementKind_STATEMENT_KIND_DROP_RESOURCE_GROUP
+	}
+	return pb.StatementKind_STATEMENT_KIND_STMT_UNKNOWN
+}
+
+// commentKind maps a PostgreSQL COMMENT ON target to the ALTER kind that changes the same object —
+// MySQL sets a comment through ALTER TABLE/MODIFY COLUMN itself. The parser keeps `kind` as typed.
+func commentKind(object string) pb.StatementKind {
+	switch object {
+	case "TABLE", "COLUMN":
+		return pb.StatementKind_STATEMENT_KIND_ALTER_TABLE
+	case "VIEW":
+		return pb.StatementKind_STATEMENT_KIND_ALTER_VIEW
+	case "SCHEMA", "DATABASE":
+		return pb.StatementKind_STATEMENT_KIND_ALTER_DATABASE
+	case "FUNCTION":
+		return pb.StatementKind_STATEMENT_KIND_ALTER_FUNCTION
+	case "PROCEDURE":
+		return pb.StatementKind_STATEMENT_KIND_ALTER_PROCEDURE
 	}
 	return pb.StatementKind_STATEMENT_KIND_STMT_UNKNOWN
 }

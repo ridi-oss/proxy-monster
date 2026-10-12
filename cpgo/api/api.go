@@ -23,7 +23,7 @@ type Error struct {
 	Params map[string]string `json:"params"`
 }
 
-// WriteJSON writes v the way the Kotlin control plane's serializer does: no HTML escaping, no trailing newline.
+// WriteJSON writes v byte-identical to the Kotlin serializer (no HTML escaping, no trailing newline), so old-vs-new response diffs stay clean.
 func WriteJSON(w http.ResponseWriter, status int, v any) {
 	var buf bytes.Buffer
 	enc := json.NewEncoder(&buf)

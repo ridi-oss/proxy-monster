@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
+	"github.com/ridi-oss/proxy-monster/goproxy/pgproxy"
 )
 
 // End-to-end proof, through the real proxy against a real PostgreSQL target DB, that a
@@ -91,7 +92,68 @@ func TestDiagnosticRedactionStripsWholeRowDetailEndToEnd(t *testing.T) {
 	}
 }
 
-// On a redacted connection a PostgreSQL error whose primary message names only schema objects keeps that
+// pgKeptCase raises one allowlisted template with ordinary SQL; setup and cleanup run on the same session
+// around each attempt.
+type pgKeptCase struct {
+	code, template, sql string
+	setup, cleanup      []string
+}
+
+var (
+	asNoPerm  = []string{"SET ROLE diag_noperm"}
+	resetRole = []string{"RESET ROLE"}
+)
+
+// pgKeptCases covers every template in pgSchemaMessages except pgUnitOnlyTemplates.
+var pgKeptCases = []pgKeptCase{
+	{"42P01", `missing FROM-clause entry for table "%s"`, "SELECT x.id FROM it_pgproxy.diag_orders o", nil, nil},
+	{"42P01", `table "%s" does not exist`, "DROP TABLE it_pgproxy.diag_nosuch", nil, nil},
+	{"42P01", `view "%s" does not exist`, "DROP VIEW it_pgproxy.diag_nosuch", nil, nil},
+	{"42P01", `sequence "%s" does not exist`, "DROP SEQUENCE it_pgproxy.diag_nosuch", nil, nil},
+	{"42P01", `materialized view "%s" does not exist`, "DROP MATERIALIZED VIEW it_pgproxy.diag_nosuch", nil, nil},
+	{"42P07", `relation "%s" already exists`, "CREATE TABLE it_pgproxy.diag_orders (a int)", nil, nil},
+	{"42703", `column "%s" does not exist`, "SELECT shipped_at FROM it_pgproxy.diag_orders", nil, nil},
+	{"42703", `column %i.%i does not exist`, "SELECT o.shipped_at FROM it_pgproxy.diag_orders o", nil, nil},
+	{"42703", `column "%s" referenced in foreign key constraint does not exist`,
+		"CREATE TABLE it_pgproxy.diag_new (a int, FOREIGN KEY (z) REFERENCES it_pgproxy.diag_orders (id))", nil, nil},
+	{"42701", `column "%s" specified more than once`, "INSERT INTO it_pgproxy.diag_orders (id, id) VALUES (1, 1)", nil, nil},
+	{"42701", `column "%s" of relation "%s" already exists`, "ALTER TABLE it_pgproxy.diag_orders ADD COLUMN email text", nil, nil},
+	{"42702", `column reference "%s" is ambiguous`, "SELECT id FROM it_pgproxy.diag_orders, it_pgproxy.diag_items", nil, nil},
+	{"42704", `index "%s" does not exist`, "DROP INDEX it_pgproxy.diag_nosuch", nil, nil},
+	{"42704", `constraint "%s" of relation "%s" does not exist`, "ALTER TABLE it_pgproxy.diag_orders DROP CONSTRAINT diag_nosuch", nil, nil},
+	{"42P06", `schema "%s" already exists`, "CREATE SCHEMA it_pgproxy", nil, nil},
+	{"42710", `constraint "%s" for relation "%s" already exists`,
+		"ALTER TABLE it_pgproxy.diag_orders ADD CONSTRAINT diag_orders_amount_check CHECK (amount > 1)", nil, nil},
+	{"42710", `trigger "%s" for relation "%s" already exists`,
+		"CREATE TRIGGER diag_trg BEFORE INSERT ON it_pgproxy.diag_items FOR EACH ROW EXECUTE FUNCTION it_pgproxy.diag_trgfn()", nil, nil},
+	{"42710", `type "%s" already exists`, "CREATE TYPE it_pgproxy.diag_type AS (a int)", nil, nil},
+	{"42723", `function "%s" already exists with same argument types`,
+		"CREATE FUNCTION it_pgproxy.diag_fn(int) RETURNS int LANGUAGE sql AS 'SELECT $1'", nil, nil},
+	{"42804", `column "%s" is of type %t but expression is of type %t`, "UPDATE it_pgproxy.diag_orders SET amount = 'x'::text", nil, nil},
+	{"42501", `permission denied for table %i`, "SELECT * FROM it_pgproxy.diag_orders", asNoPerm, resetRole},
+	{"42501", `permission denied for view %i`, "SELECT * FROM it_pgproxy.diag_v", asNoPerm, resetRole},
+	{"42501", `permission denied for materialized view %i`, "SELECT * FROM it_pgproxy.diag_mv", asNoPerm, resetRole},
+	{"42501", `permission denied for sequence %i`, "SELECT nextval('it_pgproxy.diag_seq')", asNoPerm, resetRole},
+	{"42501", `permission denied for schema %i`, "SELECT * FROM it_diag_private.t", asNoPerm, resetRole},
+	{"42501", `permission denied for function %i`, "SELECT it_pgproxy.diag_fn(1)", asNoPerm, resetRole},
+	{"42501", `permission denied for procedure %i`, "CALL it_pgproxy.diag_proc()", asNoPerm, resetRole},
+	{"23502", `null value in column "%s" of relation "%s" violates not-null constraint`,
+		"INSERT INTO it_pgproxy.diag_orders VALUES (2, 10, 'b', NULL)", nil, nil},
+	{"23505", `duplicate key value violates unique constraint "%s"`,
+		"INSERT INTO it_pgproxy.diag_orders VALUES (3, 10, '" + diagSentinel + "', 'new')", nil, nil},
+	{"23503", `insert or update on table "%s" violates foreign key constraint "%s"`, "INSERT INTO it_pgproxy.diag_items VALUES (2, 99)", nil, nil},
+	{"23503", `update or delete on table "%s" violates foreign key constraint "%s" on table "%s"`,
+		"DELETE FROM it_pgproxy.diag_orders WHERE id = 1", nil, nil},
+	{"23514", `new row for relation "%s" violates check constraint "%s"`, "UPDATE it_pgproxy.diag_orders SET amount = -1 WHERE id = 1", nil, nil},
+	{"23514", `check constraint "%s" of relation "%s" is violated by some row`,
+		"ALTER TABLE it_pgproxy.diag_neg ADD CONSTRAINT diag_neg_pos CHECK (a > 0)", nil, nil},
+	{"23P01", `conflicting key value violates exclusion constraint "%s"`, "INSERT INTO it_pgproxy.diag_circles VALUES ('<(0,0),1>')", nil, nil},
+}
+
+// pgUnitOnlyTemplates are allowlisted templates ordinary SQL on a test server cannot raise.
+var pgUnitOnlyTemplates = []struct{ code, template, reason string }{}
+
+// On a redacted connection every allowlisted PostgreSQL template a test server can raise keeps its primary
 // message exactly as the target DB sent it, while Detail is still dropped and a value-carrying message is
 // replaced by its condition name.
 func TestDiagnosticRedactionKeepsSchemaOnlyMessageEndToEnd(t *testing.T) {
@@ -106,47 +168,73 @@ func TestDiagnosticRedactionKeepsSchemaOnlyMessageEndToEnd(t *testing.T) {
 		t.Fatalf("connect: %v", err)
 	}
 	for _, sql := range []string{
-		"DROP TABLE IF EXISTS it_pgproxy.diag_items, it_pgproxy.diag_orders",
+		"DROP TABLE IF EXISTS it_pgproxy.diag_items, it_pgproxy.diag_orders, it_pgproxy.diag_neg, it_pgproxy.diag_circles CASCADE",
+		"DROP SEQUENCE IF EXISTS it_pgproxy.diag_seq",
+		"DROP TYPE IF EXISTS it_pgproxy.diag_type",
+		"DROP FUNCTION IF EXISTS it_pgproxy.diag_fn(int), it_pgproxy.diag_trgfn()",
+		"DROP PROCEDURE IF EXISTS it_pgproxy.diag_proc()",
+		"DROP SCHEMA IF EXISTS it_diag_private CASCADE",
+		"DO $$ BEGIN CREATE ROLE diag_noperm NOLOGIN; EXCEPTION WHEN duplicate_object THEN NULL; END $$",
+		"GRANT USAGE ON SCHEMA it_pgproxy TO diag_noperm",
 		"CREATE TABLE it_pgproxy.diag_orders (id int PRIMARY KEY, amount int CHECK (amount > 0), " +
 			"email text UNIQUE, status text NOT NULL)",
 		"CREATE TABLE it_pgproxy.diag_items (id int, order_id int REFERENCES it_pgproxy.diag_orders (id))",
 		"INSERT INTO it_pgproxy.diag_orders VALUES (1, 10, '" + diagSentinel + "', 'paid')",
 		"INSERT INTO it_pgproxy.diag_items VALUES (1, 1)",
+		"CREATE VIEW it_pgproxy.diag_v AS SELECT id FROM it_pgproxy.diag_orders",
+		"CREATE MATERIALIZED VIEW it_pgproxy.diag_mv AS SELECT id FROM it_pgproxy.diag_orders",
+		"CREATE SEQUENCE it_pgproxy.diag_seq",
+		"CREATE FUNCTION it_pgproxy.diag_fn(int) RETURNS int LANGUAGE sql AS 'SELECT $1'",
+		"REVOKE EXECUTE ON FUNCTION it_pgproxy.diag_fn(int) FROM PUBLIC",
+		"CREATE PROCEDURE it_pgproxy.diag_proc() LANGUAGE sql AS 'SELECT 1'",
+		"REVOKE EXECUTE ON PROCEDURE it_pgproxy.diag_proc() FROM PUBLIC",
+		"CREATE FUNCTION it_pgproxy.diag_trgfn() RETURNS trigger LANGUAGE plpgsql AS 'BEGIN RETURN NEW; END'",
+		"CREATE TRIGGER diag_trg BEFORE INSERT ON it_pgproxy.diag_items FOR EACH ROW EXECUTE FUNCTION it_pgproxy.diag_trgfn()",
+		"CREATE TYPE it_pgproxy.diag_type AS (a int)",
+		"CREATE TABLE it_pgproxy.diag_neg (a int)",
+		"INSERT INTO it_pgproxy.diag_neg VALUES (-1)",
+		"CREATE TABLE it_pgproxy.diag_circles (c circle, EXCLUDE USING gist (c WITH &&))",
+		"INSERT INTO it_pgproxy.diag_circles VALUES ('<(0,0),1>')",
+		"CREATE SCHEMA it_diag_private",
 	} {
 		if _, err := conn.Exec(ctx, sql); err != nil {
 			t.Fatalf("seed %q: %v", sql, err)
 		}
 	}
-	run := func(redact bool, sql string) *pgconn.PgError {
+	exec := func(redact bool, sql string, setup, cleanup []string) *pgconn.PgError {
 		t.Helper()
 		sanitize.Store(redact)
+		for _, q := range setup {
+			if _, err := conn.Exec(ctx, q); err != nil {
+				t.Fatalf("%s: setup %q: %v", sql, q, err)
+			}
+		}
 		_, err := conn.Exec(ctx, sql)
+		for _, q := range cleanup {
+			if _, cerr := conn.Exec(ctx, q); cerr != nil {
+				t.Fatalf("%s: cleanup %q: %v", sql, q, cerr)
+			}
+		}
 		var pgErr *pgconn.PgError
 		if err == nil || !errors.As(err, &pgErr) {
 			t.Fatalf("%s: error = %T %v, want *pgconn.PgError", sql, err, err)
 		}
 		return pgErr
 	}
-
-	kept := []struct{ code, sql string }{
-		{"42703", "SELECT shipped_at FROM it_pgproxy.diag_orders"},
-		{"42703", "SELECT o.shipped_at FROM it_pgproxy.diag_orders o"},
-		{"42P07", "CREATE TABLE it_pgproxy.diag_orders (a int)"},
-		{"42701", "ALTER TABLE it_pgproxy.diag_orders ADD COLUMN email text"},
-		{"42702", "SELECT id FROM it_pgproxy.diag_orders, it_pgproxy.diag_items"},
-		{"42804", "UPDATE it_pgproxy.diag_orders SET amount = 'x'::text"},
-		{"23502", "INSERT INTO it_pgproxy.diag_orders VALUES (2, 10, 'b', NULL)"},
-		{"23505", "INSERT INTO it_pgproxy.diag_orders VALUES (3, 10, '" + diagSentinel + "', 'new')"},
-		{"23514", "UPDATE it_pgproxy.diag_orders SET amount = -1 WHERE id = 1"},
-		{"23503", "INSERT INTO it_pgproxy.diag_items VALUES (2, 99)"},
-		{"23503", "DELETE FROM it_pgproxy.diag_orders WHERE id = 1"},
+	run := func(redact bool, sql string) *pgconn.PgError {
+		t.Helper()
+		return exec(redact, sql, nil, nil)
 	}
-	for _, c := range kept {
-		raw := run(false, c.sql)
-		got := run(true, c.sql)
+
+	for _, c := range pgKeptCases {
+		raw := exec(false, c.sql, c.setup, c.cleanup)
+		got := exec(true, c.sql, c.setup, c.cleanup)
 		if raw.Code != c.code || got.Code != c.code {
-			t.Errorf("%s: SQLSTATE raw=%s redacted=%s, want %s", c.sql, raw.Code, got.Code, c.code)
+			t.Errorf("%s: SQLSTATE raw=%s %q redacted=%s, want %s", c.sql, raw.Code, raw.Message, got.Code, c.code)
 			continue
+		}
+		if !pgproxy.MatchesSchemaTemplate(c.code, c.template, raw.Message) {
+			t.Errorf("%s: target DB message %q does not match template %q", c.sql, raw.Message, c.template)
 		}
 		if got.Message != raw.Message {
 			t.Errorf("%s: redacted message = %q, want the target DB message %q", c.sql, got.Message, raw.Message)
@@ -180,6 +268,36 @@ func TestDiagnosticRedactionKeepsSchemaOnlyMessageEndToEnd(t *testing.T) {
 	}
 	if got := run(true, conversion); got.Code != "22P02" || got.Message != "invalid_text_representation" {
 		t.Errorf("redacted conversion error = %s %q, want 22P02 invalid_text_representation", got.Code, got.Message)
+	}
+}
+
+// Every allowlisted template is either raised end to end above or consciously listed as unit-only.
+func TestPgSchemaMessagesCoveredEndToEnd(t *testing.T) {
+	covered := map[[2]string]bool{}
+	for _, c := range pgKeptCases {
+		covered[[2]string{c.code, c.template}] = true
+	}
+	for _, u := range pgUnitOnlyTemplates {
+		key := [2]string{u.code, u.template}
+		if covered[key] {
+			t.Errorf("%s %q is both raised end to end and listed unit-only", u.code, u.template)
+		}
+		covered[key] = true
+	}
+	allowlisted := map[[2]string]bool{}
+	for code, templates := range pgproxy.SchemaMessageTemplates() {
+		for _, template := range templates {
+			key := [2]string{code, template}
+			allowlisted[key] = true
+			if !covered[key] {
+				t.Errorf("allowlisted %s %q has no end-to-end case and is not listed unit-only", code, template)
+			}
+		}
+	}
+	for key := range covered {
+		if !allowlisted[key] {
+			t.Errorf("%s %q is covered but not allowlisted", key[0], key[1])
+		}
 	}
 }
 

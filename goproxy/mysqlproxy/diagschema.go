@@ -146,7 +146,6 @@ var mysqlSchemaMessages = map[int][]string{
 	3013: {"Invalid size for column '%-.192s'."},
 	3504: {"Too many enumeration values for column %.192s."},
 	3505: {"Too long enumeration/set value for column %.192s."},
-	3511: {"Comment for routine '%-.64s' is too long (max = %lu)"},
 	3644: {"The SRID specification on the column '%.64s' cannot be changed because there is a spatial index on the column. Please remove the spatial index before altering the SRID specification."},
 	3856: {"AUTO_INCREMENT support for FLOAT/DOUBLE columns is deprecated and will be removed in a future release. Consider removing AUTO_INCREMENT from column '%-.192s'."},
 	// Views: view and table names.

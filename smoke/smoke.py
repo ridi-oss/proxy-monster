@@ -12,11 +12,12 @@ import ssl
 import struct
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.request
 
-LEGS = ["editor", "browser", "wire", "pmon", "workflow", "rate", "audit"]
+LEGS = ["editor", "browser", "wire", "pmon", "workflow", "rate", "audit", "github"]
 MASK = "####"
 TRUSTED_IP = "100.100.1.8"
 PRODUCTION_PRESETS = [-200, -201, -202, *range(-238, -229), -250, -251, -255, *range(-262, -255), -280, -300, -305, -306, -307]
@@ -24,6 +25,15 @@ PRODUCTION_PRESETS = [-200, -201, -202, *range(-238, -229), -250, -251, -255, *r
 
 class Fail(Exception):
     pass
+
+
+class Skip(Exception):
+    pass
+
+
+GITHUB_REPO = "acme/db"
+GITHUB_DEV = ("dev", 201)
+GITHUB_DEV_EMAIL = "dev@smoke.example"
 
 
 CATALOGS = {"mysql": ("def", "acme"), "postgres": ("acme", "public"), "athena": ("awsdatacatalog", "acme")}
@@ -89,6 +99,11 @@ class Stack:
         self.admin = Session(args.cp, self.setup_log).login("smoke-admin", ["system:admin"])
         self.datasources = {}
         self.produced = {}
+        self.github = None
+        if args.github:
+            from fake_github import FakeGitHub
+            tls_port, http_port, cert, key, signing_key, app_id = args.github.split(",")
+            self.github = FakeGitHub(int(tls_port), int(http_port), cert, key, signing_key, app_id)
 
     def session(self, name):
         return Session(self.args.cp, open(os.path.join(self.logs, name + ".log"), "a"))
@@ -125,6 +140,10 @@ class Stack:
                    {"catalog": catalog, "schema": schema, "table": "users", "column": "email",
                     "tags": ["pii"], "maskFnId": fixed["id"]})
             self.datasources[engine] = {"id": d["id"], "name": name, "port": int(port), "engine": engine}
+        if self.github:
+            _, users, _ = a.call("GET", "/api/users")
+            if GITHUB_DEV_EMAIL not in {u.get("email") for u in users}:
+                a.call("POST", "/api/users", {"principal": "smoke-github-dev", "email": GITHUB_DEV_EMAIL})
         # The wire cert is connect-gated, so a viewer fetches it the way a client would.
         viewer = self.session("setup").login("smoke-viewer", ["system:production-viewer"])
         for ds in self.datasources.values():
@@ -375,6 +394,84 @@ class Stack:
         self.produced.setdefault(ds["engine"], set()).add("workflow")
         self.produced.setdefault("approval_ids", set()).add(rid)
 
+    def leg_github(self, ds):
+        # One engine is enough to prove the flow; MySQL is the primary target.
+        if not self.github or not self.args.pm_ci or ds["engine"] != "mysql":
+            raise Skip()
+        gh, repo, a = self.github, GITHUB_REPO, self.args
+        work = tempfile.mkdtemp(prefix="pm-smoke-github-")
+        gh.repo_dir = work
+
+        def git(*args):
+            rc, out, err = run(["git", "-c", "user.name=dev", "-c", f"user.email={GITHUB_DEV_EMAIL}", *args], cwd=work)
+            expect(rc == 0, f"git {args[0]}: {err.strip()}")
+            return out.strip()
+
+        def commit(path, content, msg):
+            os.makedirs(os.path.join(work, os.path.dirname(path)), exist_ok=True)
+            with open(os.path.join(work, path), "w") as f:
+                f.write(content)
+            git("add", "-A")
+            git("commit", "-q", "-m", msg)
+            return git("rev-parse", "HEAD")
+
+        def file(head):
+            env = dict(os.environ, ACTIONS_ID_TOKEN_REQUEST_URL=gh.token_url, ACTIONS_ID_TOKEN_REQUEST_TOKEN="smoke",
+                       PM_CI_SERVER_URL=a.cp, PM_CI_AUDIENCE="smoke-github")
+            rc, out, err = run([a.pm_ci, "file", "--repository", repo, "--pr", "1", "--base", base, "--head", head,
+                                "--dir", "db", "--datasource", ds["name"], "--schema", "acme",
+                                "--role", "system:production-architect"], env=env, cwd=work)
+            expect(rc == 0, f"pm-ci file -> {rc}: {(out + err).strip()[-400:]}")
+
+        def detail(rid):
+            return self.admin.call("GET", f"/api/approvals/{rid}")[1]["request"]
+
+        def wait(desc, fn, timeout=90):
+            deadline = time.time() + timeout
+            while time.time() < deadline:
+                v = fn()
+                if v:
+                    return v
+                time.sleep(1)
+            raise Fail(f"timed out waiting for {desc}")
+
+        table = f"gh_smoke_{int(time.time())}"
+        path = "db/0001_create.sql"
+        git("init", "-q", "-b", "main")
+        commit("README.md", "smoke\n", "base")
+        base = git("rev-parse", "HEAD")
+        git("checkout", "-q", "-b", "change")
+        head = commit(path, f"CREATE TABLE {table} (id INT PRIMARY KEY);\n", "add a table")
+        gh.claims = {"sub": f"repo:{repo}:pull_request", "repository": repo, "repository_id": "1",
+                     "ref": "refs/pull/1/merge", "base_ref": "main", "event_name": "pull_request", "actor": GITHUB_DEV[0],
+                     "workflow_ref": f"{repo}/.github/workflows/sql.yml@refs/pull/1/merge"}
+        gh.open_pr(repo, 1, head, GITHUB_DEV, GITHUB_DEV_EMAIL, [path])
+        file(head)
+        req = wait("the filed request", lambda: next((r for r in self.admin.call("GET", "/api/approvals/inbox")[1]
+                                                      if (r.get("pullRequest") or {}).get("repository") == repo), None))
+        expect(req["revision"] == 1, f"a new request is revision 1: {req['revision']}")
+        expect((gh.check(repo, head) or {}).get("status") == "in_progress", f"query executed is pending: {gh.check(repo, head)}")
+
+        # An edit before approval changes the same request.
+        head = commit(path, f"CREATE TABLE {table} (id BIGINT PRIMARY KEY);\n", "widen the key")
+        gh.update_pr(repo, 1, head=head)
+        file(head)
+        edited = detail(req["id"])
+        expect((edited["status"], edited["revision"]) == ("PENDING", 2), f"the edit is revision 2: {edited['status']} {edited['revision']}")
+        status, body, _ = self.admin.call("POST", f"/api/approvals/{req['id']}/approve", {"revision": 1}, ok=None)
+        expect(status == 409 and body.get("code") == "approval.request_changed", f"approving revision 1 is refused: {status} {body}")
+        self.admin.call("POST", f"/api/approvals/{req['id']}/approve", {"revision": 2})
+
+        gh.update_pr(repo, 1, autoMerge=(*GITHUB_DEV, dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")))
+        wait("the run on auto-merge", lambda: detail(req["id"])["status"] in ("EXECUTED", "FAILED"))
+        expect(detail(req["id"])["status"] == "EXECUTED", f"the run failed: {detail(req['id'])}")
+        wait("query executed green", lambda: (gh.check(repo, head) or {}).get("conclusion") == "success")
+        expect(any("Statements run" in c for c in gh.comments_on(repo, 1)), f"the PR comment reports the run: {gh.comments_on(repo, 1)}")
+
+        gh.update_pr(repo, 1, state="MERGED", merged=True, mergeCommit=head,
+                     mergedAt=dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))
+        wait("the merge recorded", lambda: detail(req["id"]).get("mergedAt"))
+
     def leg_rate(self, ds):
         principal = f"smoke-rated-{ds['engine']}"
         rated = self.session("rate").login(principal, ["system:production-viewer", f"smoke-rate-{ds['engine']}"])
@@ -475,6 +572,8 @@ def main():
     ap.add_argument("--pmon-port-base", type=int, required=True)
     ap.add_argument("--logs", required=True)
     ap.add_argument("--only", choices=LEGS)
+    ap.add_argument("--pm-ci", help="the pm-ci binary the github leg files with")
+    ap.add_argument("--github", help="tlsPort,httpPort,cert,key,signingKey,appId for the fake GitHub; the github leg skips without it")
     ap.add_argument("--engine", choices=["mysql", "postgres", "athena"])
     args = ap.parse_args()
     args.datasource = [tuple(d.split(":")) for d in args.datasource]
@@ -496,6 +595,9 @@ def main():
             try:
                 getattr(stack, f"leg_{leg}")(ds)
                 results.append((engine, leg, "PASS", ""))
+            except Skip:
+                results.append((engine, leg, "-", ""))
+                continue
             except Fail as e:
                 results.append((engine, leg, "FAIL", str(e)))
             except Exception as e:  # a crashed leg is a failed leg, with the crash as its message

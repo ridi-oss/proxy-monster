@@ -5,7 +5,7 @@
 #   smoke/run.sh                 full run, tears everything down at the end
 #   smoke/run.sh --keep          leave the stack up for debugging (prints how to stop it)
 #   smoke/run.sh --no-build      reuse the binaries from the last run
-#   smoke/run.sh --only wire     run one leg (editor|browser|wire|pmon|workflow|audit|rate)
+#   smoke/run.sh --only wire     run one leg (editor|browser|wire|pmon|workflow|audit|rate|github)
 #   smoke/run.sh --engine mysql  run one engine (mysql|postgres|athena)
 set -euo pipefail
 
@@ -24,6 +24,8 @@ PROXY_MYSQL="${SMOKE_PROXY_MYSQL_PORT:-17002}"
 PROXY_PG="${SMOKE_PROXY_PG_PORT:-17003}"
 PROXY_ATHENA="${SMOKE_PROXY_ATHENA_PORT:-17014}"
 PMON_BASE="${SMOKE_PMON_PORT_BASE:-17020}"
+GITHUB_TLS="${SMOKE_GITHUB_PORT:-17040}"
+GITHUB_HTTP="${SMOKE_GITHUB_TOKEN_PORT:-17041}"
 WEB="${SMOKE_WEB_PORT:-17004}"
 
 KEEP=0; BUILD=1; ONLY=""; ENGINE=""
@@ -38,8 +40,8 @@ while [ $# -gt 0 ]; do
   shift
 done
 
-mkdir -p "$SMOKE_DIR/logs" "$SMOKE_DIR/bin" "$SMOKE_DIR/pmon" "$SMOKE_DIR/athena"
-chmod 700 "$SMOKE_DIR/pmon" "$SMOKE_DIR/athena"
+mkdir -p "$SMOKE_DIR/logs" "$SMOKE_DIR/bin" "$SMOKE_DIR/pmon" "$SMOKE_DIR/athena" "$SMOKE_DIR/github"
+chmod 700 "$SMOKE_DIR/pmon" "$SMOKE_DIR/athena" "$SMOKE_DIR/github"
 echo "smoke: logs in $SMOKE_DIR/logs"
 
 compose() { docker compose -p "$PROJECT" -f "$ROOT/smoke/docker-compose.yml" "$@"; }
@@ -66,12 +68,12 @@ compose_pid=$!
 pids+=("$compose_pid")
 
 if [ "$BUILD" = 1 ]; then
-  echo "smoke: building control plane, cp-go, goproxy, pmon"
+  echo "smoke: building control plane, cp-go, goproxy, pmon, pm-ci"
   builds=()
   (cd "$ROOT" && ./gradlew --no-daemon -q :control-plane:installDist) > "$SMOKE_DIR/logs/build-cp.log" 2>&1 &
   builds+=($!)
   pids+=($!)
-  for target in cpgo:cp-go:./cmd/cp-go goproxy:goproxy:./cmd/goproxy pmon:pmon:.; do
+  for target in cpgo:cp-go:./cmd/cp-go goproxy:goproxy:./cmd/goproxy pmon:pmon:. sql-action:pm-ci:.; do
     IFS=: read -r dir bin pkg <<< "$target"
     (cd "$ROOT/$dir" && go build -o "$SMOKE_DIR/bin/$bin" "$pkg") > "$SMOKE_DIR/logs/build-$bin.log" 2>&1 &
     builds+=($!)
@@ -91,6 +93,17 @@ echo "smoke: starting the console on :$WEB"
 ) &
 pids+=($!)
 
+# The fake GitHub (smoke/fake_github.py, run inside smoke.py): its HTTPS cert, which the control plane trusts
+# through a throwaway truststore, the key that signs its CI tokens, and the App key the control plane signs with.
+GH="$SMOKE_DIR/github"
+rm -f "$GH"/*
+openssl req -x509 -newkey rsa:2048 -nodes -days 2 -subj "/CN=smoke-github" \
+  -addext "subjectAltName=IP:127.0.0.1,DNS:localhost" -keyout "$GH/tls-key.pem" -out "$GH/tls-cert.pem" 2>/dev/null
+openssl genrsa -out "$GH/oidc-key.pem" 2048 2>/dev/null
+openssl genrsa -out "$GH/app-key.pem" 2048 2>/dev/null
+keytool -importcert -noprompt -alias smoke-github -file "$GH/tls-cert.pem" \
+  -keystore "$GH/truststore.p12" -storetype PKCS12 -storepass smoke-github >/dev/null 2>&1
+
 RESULT_KEY=$(openssl rand -base64 32)
 SECRET=smoke-$(openssl rand -hex 8)
 echo "smoke: starting control plane on :$CP_HTTP"
@@ -101,6 +114,10 @@ echo "smoke: starting control plane on :$CP_HTTP"
     PM_CP_CHILD_HTTP_PORT="$CP_CHILD_HTTP" PM_CP_CHILD_GRPC_PORT="$CP_CHILD_GRPC" \
     PM_CP_CHILD="$ROOT/control-plane/build/install/control-plane/bin/control-plane" \
     PM_DEV=true PM_AUTH_DEBUG=true PM_SECRET_TOKEN="$SECRET" PM_RESULT_KEY="$RESULT_KEY" \
+    PM_GITHUB_APP_ID=1 PM_GITHUB_APP_PRIVATE_KEY_FILE="$GH/app-key.pem" PM_GITHUB_API_URL="https://127.0.0.1:$GITHUB_TLS" \
+    PM_GITHUB_IDENTITY=commit-email \
+    PM_CI_OIDC_ISSUERS="smoke=https://127.0.0.1:$GITHUB_TLS" PM_CI_OIDC_AUDIENCE=smoke-github \
+    JAVA_OPTS="-Djavax.net.ssl.trustStore=$GH/truststore.p12 -Djavax.net.ssl.trustStoreType=PKCS12 -Djavax.net.ssl.trustStorePassword=smoke-github" \
     "$SMOKE_DIR/bin/cp-go" > "$SMOKE_DIR/logs/control-plane.log" 2>&1
 ) &
 pids+=($!)
@@ -162,6 +179,7 @@ if [ -n "${SMOKE_WAIT_FOR:-}" ]; then
 fi
 
 args=(--cp "http://127.0.0.1:$CP_HTTP" --web "http://127.0.0.1:$WEB" --root "$ROOT" --cp-db "postgresql://proxymonster:proxymonster@127.0.0.1:$SMOKE_CP_DB_PORT/proxymonster" --pmon "$SMOKE_DIR/bin/pmon" --pmon-dir "$SMOKE_DIR/pmon" --pmon-port-base "$PMON_BASE" --logs "$SMOKE_DIR/logs")
+args+=(--github "$GITHUB_TLS,$GITHUB_HTTP,$GH/tls-cert.pem,$GH/tls-key.pem,$GH/oidc-key.pem,1" --pm-ci "$SMOKE_DIR/bin/pm-ci")
 args+=(--datasource "mysql:smoke-mysql:$PROXY_MYSQL" --datasource "postgres:smoke-postgres:$PROXY_PG" --datasource "athena:smoke-athena:$PROXY_ATHENA")
 [ -n "$ONLY" ] && args+=(--only "$ONLY")
 [ -n "$ENGINE" ] && args+=(--engine "$ENGINE")
